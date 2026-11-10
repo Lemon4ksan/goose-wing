@@ -178,7 +178,7 @@ and [`.githooks/pre-commit`](file:///.githooks/pre-commit):
      variants, escaped quotes (`\"`), CRLF injection, and OWS variations.
 2. **Canonical RFC citation comment format**:
    - Verified by [`scripts/audit_rfc_citations.py`](file:///scripts/audit_rfc_citations.py)
-     against `.gemini/rfc/rfc<NUM>.txt`. Cite current RFCs (RFC 9110/9112/9113/
+     against `.agents/rfc/rfc<NUM>.txt`. Cite current RFCs (RFC 9110/9112/9113/
      9114 over obsolete RFC 2616/7230) using this exact format:
      ```goose
      // RFC <NUM> Section <X.Y>: <VERBATIM_SECTION_TITLE> - <SPECIFIC_REQUIREMENT>

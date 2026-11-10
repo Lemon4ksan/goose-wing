@@ -2027,7 +2027,7 @@ fn test_host_header_query_fragment_rejection(t: lit::T&) {
 }
 
 // --- Component: regress_issues_batch02 ---
-// Phase 2 RED test suite based on .gemini audit reports and Go / uWebSockets issue trackers.
+// Phase 2 RED test suite based on security audit reports and Go / uWebSockets issue trackers.
 // Verifies protocol flaws, RFC non-conformances, and security bypasses that are CURRENTLY UNFIXED in goose-wing.
 //
 // Issues covered:
@@ -2081,7 +2081,7 @@ fn test_connection_header_hop_by_hop_token_capacity(t: lit::T&) {
 }
 
 // --- Component: regress_issues_batch03 ---
-// Phase 3 regression test suite based on .gemini audit reports and Go / uWebSockets issue trackers.
+// Phase 3 regression test suite based on security audit reports and Go / uWebSockets issue trackers.
 //
 // Issues covered:
 // 1. Go #81508 & RFC 9110 §14.1.2: Unsupported Range Unit Must Return 200 OK (Not 416)
@@ -2143,7 +2143,7 @@ fn test_http1_wire_response_status_line_validation(t: lit::T&) {
 }
 
 // --- Component: regress_issues_batch04 ---
-// Phase 4 RED test suite based on .gemini audit reports and Go / uWebSockets issue trackers.
+// Phase 4 RED test suite based on security audit reports and Go / uWebSockets issue trackers.
 // Verifies protocol flaws, RFC non-conformances, and security vulnerabilities that are CURRENTLY UNFIXED in goose-wing.
 //
 // Issues covered:
@@ -2247,7 +2247,7 @@ fn test_response_invalid_transfer_encoding_rejected(t: lit::T&) {
 }
 
 // --- Component: regress_issues_batch05 ---
-// Phase 5 RED test suite based on .gemini audit reports and Go / uWebSockets issue trackers.
+// Phase 5 RED test suite based on security audit reports and Go / uWebSockets issue trackers.
 // Verifies protocol flaws, RFC non-conformances, and security vulnerabilities that are CURRENTLY UNFIXED in goose-wing.
 //
 // Issues covered:
@@ -2444,7 +2444,7 @@ fn test_chunked_bws_before_semicolon(t: lit::T&) {
 }
 
 // --- Component: regress_issues_batch09 ---
-// Phase 9 RED test suite based on .gemini issue trackers and RFC specifications.
+// Phase 9 RED test suite based on security issue trackers and RFC specifications.
 // Verifies protocol flaws, RFC non-conformances, and security edge cases:
 //
 // 1. RFC 9112 §7.2 / RFC 3986 §3.2.2 & uWebSockets #1949: HTTP/1.1 Host Header Character Validation & Duplicate Rejection

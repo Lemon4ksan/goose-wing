@@ -7,7 +7,7 @@
 
 Automated ASD-STE100 state-machine specification (.sm.md) generator for goose-wing.
 Invokes `goose2rfc compile` across specified packages or .goose files, writes outputs
-into `.gemini/rfc_specs/<rel_path>.sm.md`, and formats/validates them with `goosemarklint`.
+into `.agents/rfc_specs/<rel_path>.sm.md`, and formats/validates them with `goosemarklint`.
 
 Usage:
     python scripts/gen_rfc_specs.py --all
@@ -136,7 +136,7 @@ def compile_one_spec(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate and format .gemini/rfc_specs/*.sm.md via goose2rfc"
+        description="Generate and format .agents/rfc_specs/*.sm.md via goose2rfc"
     )
     parser.add_argument(
         "targets",
@@ -146,12 +146,12 @@ def main() -> int:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Compile all production packages into .gemini/rfc_specs",
+        help="Compile all production packages into .agents/rfc_specs",
     )
     parser.add_argument(
         "--out-dir",
-        default=".gemini/rfc_specs",
-        help="Output directory root relative to repo root (default: .gemini/rfc_specs)",
+        default=".agents/rfc_specs",
+        help="Output directory root relative to repo root (default: .agents/rfc_specs)",
     )
     parser.add_argument(
         "--bin",
@@ -182,7 +182,7 @@ def main() -> int:
 
     out_root = Path(args.out_dir)
     if not out_root.is_absolute():
-        out_root = (root / out_root).resolve()
+        out_root = Path(os.path.abspath(root / out_root))
 
     src_files = collect_goose_files(root, args.targets, args.all)
     if not src_files:

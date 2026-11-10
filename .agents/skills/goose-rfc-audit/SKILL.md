@@ -12,14 +12,13 @@ metadata:
 > [Apache-2.0 License](file:///LICENSE).
 
 Two-phase RFC conformance, wire-framing, and state-machine audit workflow for
-`goose-wing` powered by the [`goose2rfc`](file:///d:/GooseProjects/goose2rfc)
-ASD-STE100 specification compiler and
+`goose-wing` powered by the `goose2rfc` ASD-STE100 specification compiler and
 [`scripts/gen_rfc_specs.py`](file:///scripts/gen_rfc_specs.py).
 
 ## 1. Specification Generation (`scripts/gen_rfc_specs.py`)
 
 Before auditing a package or after modifying `.goose` protocol files, compile
-the target modules into `.gemini/rfc_specs/<pkg>/<module>.sm.md`:
+the target modules into `.agents/rfc_specs/<pkg>/<module>.sm.md`:
 
 ```bash
 # Compile specific packages or files in parallel and format with goosemarklint
@@ -59,8 +58,8 @@ for copy-paste subagent prompts.
 Spawn parallel `research` Hunter subagents (`2-4` modules per Hunter).
 
 - **Allowed inputs**:
-  - `.gemini/rfc_specs/<pkg>/<module>.sm.md`
-  - Normative RFC text in `.gemini/rfc/rfc<NUM>.txt`
+  - `.agents/rfc_specs/<pkg>/<module>.sm.md`
+  - Normative RFC text in `.agents/rfc/rfc<NUM>.txt`
 - **Strictly forbidden in Phase 1**:
   - Reading any `.goose` source file or `tests/*` file.
 - **What Hunters look for**:
@@ -107,7 +106,7 @@ Phase 1 candidate must pass 3 refutation gates before any code is modified:
 When a `.sm.md` specification shows an anomaly that contradicts the `.goose`
 source code, classify it into one of two categories:
 
-| Symptom in `.sm.md` | Root Cause in `goose2rfc` (`d:\GooseProjects\goose2rfc`) |
+| Symptom in `.sm.md` | Root Cause in `goose2rfc` |
 | --- | --- |
 | Second `let x = ...` branch shows expression from first branch | `inl_add_binding` in `src/sema/inliner.goose` must update existing binding `x` in place instead of appending a shadowed duplicate. |
 | Stdlib call `json::finish(r)` inlines unrelated `finish` from another file | `inl_try_inline_guard_call` / `inl_try_inline_let_stmt` in `src/sema/inliner.goose` must not strip `json::` / `std::` prefixes and must check parameter arity in `inl_bind_call_params`. |
@@ -116,15 +115,6 @@ source code, classify it into one of two categories:
 | `a >= X && a <= Y` renders as `` `a >= X && a` must be at most `Y` `` | `inl_emit_bound_callee_clause` in `src/sema/inliner.goose` must split top-level `&&` clauses before matching `<=` / `>=`. |
 | `json::each_member` / `json::each_element` flagged as `[UNRESOLVED_AST_HAZARD]` | `parse_assign_or_expr_stmt` in `src/frontend/parser.goose` must parse trailing-block calls `callee(args) { ... };` as `AstKind.ForStmt`. |
 | Dispatcher `if k == "x" { mutate(out); return true; }` marked `DIRTY_EXPOSED` | `scan_param_mutations` in `src/sema/effects.goose` must skip `IfStmt` blocks that unconditionally end with `return true;` (`if_stmt_returns_only_true_eff`). |
-
-After fixing any analyzer bug in `d:\GooseProjects\goose2rfc`, rebuild and
-verify the analyzer before regenerating `.sm.md` specs:
-
-```bash
-goose build D:/GooseProjects/goose2rfc/src/main.goose -o D:/GooseProjects/goose2rfc/goose2rfc.exe --cc gcc
-goose-lit D:/GooseProjects/goose2rfc/tests/lit
-python scripts/gen_rfc_specs.py <pkg>
-```
 
 ## 4. Mandatory Verification Checklist Before Commit
 

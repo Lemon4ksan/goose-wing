@@ -3511,7 +3511,7 @@ fn test_h2_push_promise_frame_rules(t: lit::T&) {
 }
 
 // --- Component: regress_issues_batch07 ---
-// Phase 7 RED test suite based on .gemini issue trackers and RFC specifications.
+// Phase 7 RED test suite based on security issue trackers and RFC specifications.
 // Verifies protocol flaws, RFC non-conformances, and edge cases that are CURRENTLY UNFIXED in goose-wing.
 //
 // Issues covered:
@@ -3687,7 +3687,7 @@ fn test_h2_authority_host_consistency_and_duplicates(t: lit::T&) {
 }
 
 // --- Component: regress_issues_batch08 ---
-// Phase 8 RED test suite based on .gemini issue trackers and RFC specifications.
+// Phase 8 RED test suite based on security issue trackers and RFC specifications.
 // Verifies protocol flaws, RFC non-conformances, and edge cases:
 //
 // 1. RFC 9113 §6.8 & Go #80759: HTTP/2 GOAWAY Last-Stream-ID Peer Role Invariant

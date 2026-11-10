@@ -92,8 +92,8 @@ def main():
     parser.add_argument(
         "--dir",
         "-d",
-        default=".gemini/rfc",
-        help="Destination directory for downloaded RFC files (default: .gemini/rfc, e.g. .claude/rfc)",
+        default=".agents/rfc",
+        help="Destination directory for downloaded RFC files (default: .agents/rfc)",
     )
     parser.add_argument(
         "--concurrency", "-c", type=int, default=8, help="Maximum concurrent downloads (default: 8)"

@@ -14,16 +14,16 @@ in `d:\GooseProjects\goose-wing`.
 
 STRICT ISOLATION RULE:
 - Read ONLY the generated `.sm.md` specification files listed below and the
-  normative RFC text files in `.gemini/rfc/rfc*.txt`.
+  normative RFC text files in `.agents/rfc/rfc*.txt`.
 - DO NOT read any `.goose` source code files or `tests/*` files. Your job is to
   audit the extracted specification against the RFCs without implementation bias.
 
 Target specification files:
-- `.gemini/rfc_specs/<pkg>/<mod1>.sm.md`
-- `.gemini/rfc_specs/<pkg>/<mod2>.sm.md`
+- `.agents/rfc_specs/<pkg>/<mod1>.sm.md`
+- `.agents/rfc_specs/<pkg>/<mod2>.sm.md`
 
-Relevant RFCs in `.gemini/rfc/`:
-- `.gemini/rfc/rfc<NUM>.txt`
+Relevant RFCs in `.agents/rfc/`:
+- `.agents/rfc/rfc<NUM>.txt`
 
 For each specification file, inspect:
 1. `### 3. Requirements`: Check every `R1..Rn` bound and predicate against RFC

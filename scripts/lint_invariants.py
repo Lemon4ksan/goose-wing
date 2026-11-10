@@ -120,9 +120,7 @@ def main() -> int:
                     f"{os.sep}vendor{os.sep}",
                     f"{os.sep}goosemarklint{os.sep}",
                     f"{os.sep}scratch{os.sep}",
-                    f"{os.sep}.gemini{os.sep}",
-                    f"{os.sep}.worktrees{os.sep}",
-                    f"{os.sep}.git{os.sep}",
+                    f"{os.sep}.",
                     f"{os.sep}bin{os.sep}",
                     f"{os.sep}build{os.sep}",
                 ]
@@ -145,7 +143,9 @@ def main() -> int:
         token_re = re.compile(r"\b[A-Za-z0-9_]+\b")
         for r, dirs, files in os.walk(root):
             dirs[:] = [
-                d for d in dirs if d not in (".git", ".gemini", "build", "target", "node_modules")
+                d
+                for d in dirs
+                if not d.startswith(".") and d not in ("build", "target", "node_modules", "vendor")
             ]
             for f in files:
                 if f.endswith((".goose", ".c")):

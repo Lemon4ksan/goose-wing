@@ -93,18 +93,15 @@ def get_tracked_files(repo_root: Path) -> list[Path]:
     except Exception:
         # Fallback directory walk
         ignored_dirs = {
-            ".git",
             "vendor",
             "scratch",
             "bin",
-            ".gemini",
-            ".vscode",
             "node_modules",
             "target",
         }
         res: list[Path] = []
         for root, dirs, filenames in os.walk(repo_root):
-            dirs[:] = [d for d in dirs if d not in ignored_dirs]
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ignored_dirs]
             for fn in filenames:
                 res.append(Path(root) / fn)
         return res

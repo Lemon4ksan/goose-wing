@@ -25,6 +25,12 @@ reports/
 tools/bench-vs-uwebsockets/server_goose_wing.c
 tests/wasm_runner.c
 
-# goose-lit artifacts
+# goose-lit
 .lit/cache/
-.gemini/
+
+# local agent caches
+.agents/rfc/
+.agents/rfc_specs/
+.agents/audit_reports/
+.agents/goose_audit/
+.agents/scratch/

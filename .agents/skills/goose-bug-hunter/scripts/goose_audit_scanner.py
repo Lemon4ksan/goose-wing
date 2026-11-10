@@ -119,7 +119,7 @@ def detect_environment(repo_root: Path) -> dict[str, Any]:
         repo_root / ".agents" / "AGENTS.md"
     ).exists()
     has_lint_invariants = (repo_root / "scripts" / "lint_invariants.py").exists()
-    has_rfc_dir = (repo_root / ".gemini" / "rfc").is_dir() or (repo_root / "docs" / "rfc").is_dir()
+    has_rfc_dir = (repo_root / ".agents" / "rfc").is_dir() or (repo_root / "docs" / "rfc").is_dir()
     return {
         "goose_available": goose_bin is not None,
         "goose_lit_available": goose_lit_bin is not None,
@@ -574,7 +574,9 @@ def cmd_scan(args: argparse.Namespace) -> int:
         goose_files = [target] if target.suffix == ".goose" else []
     else:
         goose_files = sorted(
-            p for p in target.rglob("*.goose") if ".gemini" not in p.parts and ".git" not in p.parts
+            p
+            for p in target.rglob("*.goose")
+            if not any(part.startswith(".") for part in p.relative_to(target).parts)
         )
 
     if not goose_files:
@@ -586,7 +588,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if args.out_dir:
         out_dir = Path(args.out_dir).resolve()
     else:
-        out_dir = (repo_root / ".gemini" / "goose_audit" / run_id).resolve()
+        out_dir = (repo_root / ".agents" / "goose_audit" / run_id).resolve()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     env_caps = detect_environment(repo_root)
@@ -786,7 +788,9 @@ def cmd_variants(args: argparse.Namespace) -> int:
         [scope]
         if scope.is_file()
         else sorted(
-            p for p in scope.rglob("*.goose") if ".gemini" not in p.parts and ".git" not in p.parts
+            p
+            for p in scope.rglob("*.goose")
+            if not any(part.startswith(".") for part in p.relative_to(scope).parts)
         )
     )
 

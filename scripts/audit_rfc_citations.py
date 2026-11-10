@@ -13,8 +13,8 @@ import re
 import sys
 from collections import defaultdict
 
-DEFAULT_RFC_DIR = os.path.abspath(".gemini/rfc")
-DEFAULT_REPORT_PATH = os.path.abspath(".gemini/audit_reports/rfc_citation_discrepancies.json")
+DEFAULT_RFC_DIR = os.path.abspath(".agents/rfc")
+DEFAULT_REPORT_PATH = os.path.abspath(".agents/audit_reports/rfc_citation_discrepancies.json")
 
 # Matches canonical citations:
 # // RFC 9113 Section 4.3: Header Compression and Decompression
@@ -188,13 +188,13 @@ def main():
         "--rfc-dir",
         "-d",
         default=DEFAULT_RFC_DIR,
-        help="Path to directory containing downloaded RFC txt files (default: .gemini/rfc, e.g. .claude/rfc)",
+        help="Path to directory containing downloaded RFC txt files (default: .agents/rfc)",
     )
     parser.add_argument(
         "--report",
         "-r",
         default=DEFAULT_REPORT_PATH,
-        help="Path to output JSON report (default: .gemini/audit_reports/rfc_citation_discrepancies.json)",
+        help="Path to output JSON report (default: .agents/audit_reports/rfc_citation_discrepancies.json)",
     )
     args = parser.parse_args()
     return audit_codebase(os.path.abspath(args.rfc_dir), os.path.abspath(args.report))
