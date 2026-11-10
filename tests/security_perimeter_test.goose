@@ -1957,6 +1957,108 @@ fn test_cors_preflight_validation_and_hsts_localhost(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 24. goose2rfc Security Audit Regressions (SEC2_C08 & SEC1_C01..C09)
+// ----------------------------------------------------------------------------
+fn test_goose2rfc_security_audit_regressions(t: lit::T&) {
+    t.run("SEC2_C08: Privacy Pass challenge parameter grammar, empty token-key & comma separator") { sub =>
+        var chal = wing::TokenChallenge {
+            token_type:  0x0002,
+            issuer_name: "issuer.example",
+            ..
+        };
+        var chal_wire: u8[..256] = [];
+        wing::marshal_token_challenge(chal, chal_wire);
+        var b64_chal: u8[..384] = [];
+        core::base64url_encode(chal_wire[..], b64_chal);
+
+        var out_chal = wing::TokenChallenge { .. };
+        var out_key: u8[..128] = [];
+        var max_age: i64       = 0;
+
+        // 1. Empty token-key="" must be rejected
+        var hdr_empty_key: u8[..512] = "PrivateToken challenge=\"";
+        hdr_empty_key.append(b64_chal[..]);
+        hdr_empty_key.append("\", token-key=\"\"");
+        sub.assert_false(
+            wing::parse_private_token_challenge(hdr_empty_key[..], out_chal, out_key, max_age),
+            "empty token-key rejected per RFC 9577 §2.1.2",
+        );
+
+        // 2. Missing comma between auth-params must be rejected
+        var hdr_no_comma: u8[..512] = "PrivateToken challenge=\"";
+        hdr_no_comma.append(b64_chal[..]);
+        hdr_no_comma.append("\" max-age=60");
+        sub.assert_false(
+            wing::parse_private_token_challenge(hdr_no_comma[..], out_chal, out_key, max_age),
+            "missing comma delimiter between auth-params rejected per RFC 9110 §11.2",
+        );
+
+        // 3. Unquoted '=' in parameter value must be rejected
+        var hdr_unquoted_eq: u8[..512] = "PrivateToken challenge=\"";
+        hdr_unquoted_eq.append(b64_chal[..]);
+        hdr_unquoted_eq.append("\", token-key=a2V5==");
+        sub.assert_false(
+            wing::parse_private_token_challenge(hdr_unquoted_eq[..], out_chal, out_key, max_age),
+            "unquoted '=' in auth-param token rejected per RFC 9577 §2.1.2",
+        );
+    };
+
+    t.run("SEC1_C01..C09: Origin port validation, default port normalization, SF tokens & CORS policy") { sub =>
+        // SEC1_C01 & SEC1_C06: Empty host before colon and invalid port rejected
+        sub.assert_bytes_eq(wing::extract_origin_from_url("https://:443/path"), "", "empty host before colon rejected");
+        sub.assert_bytes_eq(wing::extract_origin_from_url("https://example.com:abc/path"), "", "non-digit port rejected");
+        sub.assert_bytes_eq(wing::extract_hostname_from_origin("https://example.com:99999"), "", "out-of-range port rejected");
+        sub.assert_bytes_eq(wing::extract_hostname_from_origin("https://[::1]:abc"), "", "IPv6 non-digit port rejected");
+
+        // SEC1_C01: Default port normalization (:443 for https, :80 for http) in CSRF fallback check
+        let guard_cfg = wing::CrossOriginGuard { .. };
+        var ctx_port = wing::FetchContext {
+            site:           wing::SecFetchSite.Missing,
+            method_is_safe: false,
+            has_origin:     true,
+            ..
+        };
+        ctx_port.origin.append("https://app.example.com:443");
+        ctx_port.target_host.append("app.example.com");
+        ctx_port.path.clear();
+        ctx_port.path.append("/transfer");
+        let dec_port = wing::evaluate_fetch_metadata(guard_cfg, ctx_port);
+        sub.assert_true(
+            wing::is_allowed(dec_port),
+            "HTTPS default port :443 normalized in CSRF fallback origin check",
+        );
+
+        // SEC1_C03: validate_cors_policy rejects "null" with credentials, negative max-age < -1, and bad tokens
+        var cred_null = wing::CorsPolicy { allow_credentials: true, .. };
+        let _ = wing::add_allowed_origin(cred_null, "null");
+        sub.assert_false(wing::validate_cors_policy(cred_null), "null origin with allow_credentials rejected");
+
+        var neg_age = wing::CorsPolicy { max_age_sec: -2, .. };
+        sub.assert_false(wing::validate_cors_policy(neg_age), "max_age_sec < -1 rejected");
+
+        // SEC1_C07 & SEC1_C08: Case-sensitive lowercase SF tokens & unclosed quote parameter rejection
+        sub.assert_true(wing::parse_coop("SAME-ORIGIN") == wing::CoopPolicy.Unknown, "uppercase COOP rejected");
+        sub.assert_true(wing::parse_coep("REQUIRE-CORP") == wing::CoepPolicy.Unknown, "uppercase COEP rejected");
+        sub.assert_true(wing::parse_corp("SAME-ORIGIN") == wing::CorpPolicy.Unknown, "uppercase CORP rejected");
+        sub.assert_true(
+            wing::parse_coop("same-origin; report-to=\"unclosed") == wing::CoopPolicy.Unknown,
+            "unclosed quote in SF parameter rejected",
+        );
+        sub.assert_true(wing::parse_sec_fetch_site("SAME-ORIGIN") == wing::SecFetchSite.Unknown, "uppercase Sec-Fetch-Site rejected");
+        sub.assert_true(wing::parse_sec_fetch_mode("NAVIGATE") == wing::SecFetchMode.Other, "uppercase Sec-Fetch-Mode rejected");
+        sub.assert_true(wing::parse_sec_fetch_dest("DOCUMENT") == wing::SecFetchDest.Other, "uppercase Sec-Fetch-Dest rejected");
+
+        // SEC1_C09: Oversize target_host (> 256B) fails closed by clearing ctx.target_host
+        var long_host: u8[..300] = [];
+        for i in 260 { long_host.push('a'); }
+        long_host.append(".com");
+        var req_long = wing::new_request("POST", "/transfer");
+        let ctx_long = wing::extract_fetch_context(req_long, long_host[..]);
+        sub.assert_eq(ctx_long.target_host.len, 0, "oversize target_host cleared fail-closed");
+    };
+}
+
 fn main() {
     let title = "Application Perimeter Security, CSRF, HSTS, and Policy Suite";
     var runner = lit::new_runner(title, lit::Verbosity.Verbose);
@@ -1984,6 +2086,7 @@ fn main() {
     lit::run_case(runner, "21. F007 RFC 6797 HSTS Invariants", test_f007_hsts_rfc6797_invariants);
     lit::run_case(runner, "22. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing", test_cors_wildcard_origin_smuggling_and_csrf_userinfo);
     lit::run_case(runner, "23. CORS Preflight Validation, Client CORS & HSTS Localhost Exemption", test_cors_preflight_validation_and_hsts_localhost);
+    lit::run_case(runner, "24. goose2rfc Security Audit Regressions (SEC2_C08 & SEC1_C01..C09)", test_goose2rfc_security_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

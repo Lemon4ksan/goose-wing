@@ -146,9 +146,34 @@ fn has_wildcard_origin(policy: const CorsPolicy&) -> bool {
     return false;
 }
 
-// Validates policy configuration invariants (Fetch §3.2.2 forbids '*' with allow_credentials).
+// Validates that a comma-separated CORS policy token list contains only valid RFC 9110 tokens.
+inline fn validate_cors_token_list(list: const u8[:], allow_wildcard: bool) -> bool {
+    guard list.trim_lws().len > 0 else { return true; }
+    var tok_iter = core::make_byte_tokenizer(list, ',');
+    loop {
+        let item, ok = core::token_next(tok_iter);
+        guard ok else { break; }
+        let trimmed = item.trim_lws();
+        if allow_wildcard && trimmed == "*" { continue; }
+        guard is_valid_cors_token(trimmed) else { return false; }
+    }
+    return true;
+}
+
+// Validates policy configuration invariants (Fetch §3.2.2 forbids '*' or 'null' with allow_credentials).
 fn validate_cors_policy(policy: const CorsPolicy&) -> bool {
-    return !(policy.allow_credentials && has_wildcard_origin(policy));
+    guard policy.max_age_sec >= -1 else { return false; }
+    if policy.allow_credentials {
+        for idx in policy.allowed_origins.len {
+            let pat = policy.allowed_origins[idx][..].trim_lws();
+            if pat == "*" || pat.eq_ascii_fold("null") {
+                return false;
+            }
+        }
+    }
+    let allow_wild = !policy.allow_credentials;
+    return validate_cors_token_list(policy.allowed_methods[..], allow_wild) &&
+        validate_cors_token_list(policy.allowed_headers[..], allow_wild);
 }
 
 // Checks whether a comma-separated HTTP header value contains a specific token (case-insensitive, RFC 9110 §5.6.1).

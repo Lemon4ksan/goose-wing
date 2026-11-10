@@ -91,12 +91,12 @@ inline fn wire_token(v: SecFetchSite.Missing) -> const u8[:] { return ""; }
 //   val = "same-origin"
 //   returns: SecFetchSite.SameOrigin
 fn parse_sec_fetch_site(val: const u8[:]) -> SecFetchSite {
-    let clean = val.trim_lws();
+    let clean = strip_sf_parameters(val);
     guard clean.len > 0 else { return SecFetchSite.Unknown; }
     const for <N, V> in variants<SecFetchSite> {
         let v = default<V>();
         let tok = wire_token(v);
-        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+        if tok.len > 0 && clean == tok {
             let candidate: SecFetchSite = v;
             return candidate;
         }
@@ -117,11 +117,11 @@ inline fn wire_token(v: SecFetchMode.Other) -> const u8[:] { return ""; }
 //   val = "navigate"
 //   returns: SecFetchMode.Navigate
 fn parse_sec_fetch_mode(val: const u8[:]) -> SecFetchMode {
-    let clean = val.trim_lws();
+    let clean = strip_sf_parameters(val);
     const for <N, V> in variants<SecFetchMode> {
         let v = default<V>();
         let tok = wire_token(v);
-        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+        if tok.len > 0 && clean == tok {
             let candidate: SecFetchMode = v;
             return candidate;
         }
@@ -148,11 +148,11 @@ inline fn wire_token(v: SecFetchDest.Other) -> const u8[:] { return ""; }
 //   val = "document"
 //   returns: SecFetchDest.Document
 fn parse_sec_fetch_dest(val: const u8[:]) -> SecFetchDest {
-    let clean = val.trim_lws();
+    let clean = strip_sf_parameters(val);
     const for <N, V> in variants<SecFetchDest> {
         let v = default<V>();
         let tok = wire_token(v);
-        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+        if tok.len > 0 && clean == tok {
             let candidate: SecFetchDest = v;
             return candidate;
         }
@@ -294,11 +294,11 @@ fn extract_origin_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     let delim = core::find_byteset(rest, "/?#");
     let end_idx = if delim >= 0 { delim } else { rest.len };
 
-    let host = rest[..end_idx];
-    if host.len == 0 || host.contains_byte('@') || host.contains_byte('\\') {
+    let origin = s[..core::add_sat_i64(scheme_len, end_idx)];
+    guard extract_hostname_from_origin(origin).len > 0 else {
         return s[..0];
     }
-    return s[..core::add_sat_i64(scheme_len, end_idx)];
+    return origin;
 }
 
 // Extracts host from URL or Origin string (RFC 6454 / RFC 3986).
@@ -366,6 +366,18 @@ fn evaluate_crosssite_fetch(guard_cfg: const CrossOriginGuard&, ctx: const Fetch
     return CsrfDecision.RejectForbidden { reason: CsrfRejectReason.CrossSiteUnauthorizedSubresource };
 }
 
+// Strips default port (`:443` for https, `:80` for http) per RFC 6454 Section 6.2.
+inline fn strip_default_origin_port(host_port: const u8[:], is_https: bool) -> const u8[:] {
+    if is_https {
+        let stripped, ok = host_port.strip_suffix(":443");
+        if ok { return stripped; }
+    } else {
+        let stripped, ok = host_port.strip_suffix(":80");
+        if ok { return stripped; }
+    }
+    return host_port;
+}
+
 fn evaluate_fallback_origin_fetch(guard_cfg: const CrossOriginGuard&, ctx: const FetchContext&) -> CsrfDecision {
     let candidate = if ctx.has_origin { ctx.origin[..] } else { ctx.referer[..] };
     let candidate_origin = extract_origin_from_url(candidate);
@@ -378,8 +390,11 @@ fn evaluate_fallback_origin_fetch(guard_cfg: const CrossOriginGuard&, ctx: const
         ""
     };
     let scheme_ok = ctx.target_scheme.len == 0 || subtle_equal_ascii_fold(cand_scheme, ctx.target_scheme[..]);
+    let is_https = cand_scheme == "https";
+    let norm_cand_host = strip_default_origin_port(candidate_host, is_https);
+    let norm_target_host = strip_default_origin_port(ctx.target_host[..], is_https);
 
-    if candidate_host.len > 0 && scheme_ok && subtle_equal_ascii_fold(candidate_host, ctx.target_host[..]) {
+    if norm_cand_host.len > 0 && scheme_ok && subtle_equal_ascii_fold(norm_cand_host, norm_target_host) {
         return CsrfDecision.Allow;
     }
     if candidate_origin.len > 0 && is_origin_trusted(guard_cfg, candidate_origin) {
@@ -468,8 +483,9 @@ fn extract_fetch_context<Req>(
     if req.url[..].starts_with_fold("http://") {
         ctx.target_scheme.try_set("http");
     }
-    let th_len = min(target_host.len, ctx.target_host.cap);
-    ctx.target_host.try_set(target_host[..th_len]);
+    if !ctx.target_host.try_set(target_host) {
+        ctx.target_host.clear();
+    }
 
     let req_path = extract_path_from_url(req.url[..]);
     if !canonicalize_route_path(req_path, ctx.path) {

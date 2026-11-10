@@ -154,10 +154,11 @@ fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
     }
     let delim = core::find_byteset(after_eq, ", \t");
     let v_len = if delim >= 0 { delim } else { after_eq.len };
-    guard v_len > 0 else { return "", false; }
+    let val = after_eq[..v_len];
+    guard is_valid_cors_token(val) else { return "", false; }
     idx = core::add_sat_i64(v_start, v_len);
     committed = true;
-    return after_eq[..v_len], true;
+    return val, true;
 }
 
 // Decodes base64url-encoded token-key parameter into buffer.
@@ -166,8 +167,9 @@ fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
 //   val = "ZXhhbXBsZQ"
 //   returns: ok = true, temp_token_key = "example"
 fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..512]&) -> bool {
+    guard val.len > 0 else { return false; }
     var raw_key: u8[..512] = [];
-    guard core::base64url_decode(val, raw_key) else { return false; }
+    guard core::base64url_decode(val, raw_key) && raw_key.len > 0 else { return false; }
     return temp_token_key.try_set(raw_key[..]);
 }
 
@@ -179,6 +181,20 @@ fn decode_token_key_param(val: const u8[:], temp_token_key: u8[..512]&) -> bool 
 fn read_param_key(rem: const u8[:]) -> const u8[:] {
     let delim = core::find_byteset(rem, "=, \t");
     return if delim >= 0 { rem[..delim] } else { rem };
+}
+
+// Advances `idx` past optional LWS and a required comma separator between auth-params (RFC 9110 Section 11.2).
+//
+// Example:
+//   params_str = ", max-age=60", idx = 0
+//   returns: true, idx = 1
+inline fn consume_challenge_param_delimiter(params_str: const u8[:], idx: i64&) -> bool {
+    let after_val = params_str[idx..].trim_lws_start();
+    idx = core::sub_sat_i64(params_str.len, after_val.len);
+    guard idx < params_str.len else { return true; }
+    guard params_str[idx] == ',' else { return false; }
+    idx = core::add_sat_i64(idx, 1);
+    return params_str[idx..].trim_lws().len > 0;
 }
 
 // Parses comma-separated PrivateToken challenge parameters.
@@ -197,12 +213,12 @@ fn parse_challenge_params(
     var seen_max_age = false;
     var idx: i64 = 0;
     while idx < params_str.len {
-        let rem = params_str[idx..].trim_start_bytes(" \t,");
+        let rem = params_str[idx..].trim_lws_start();
         idx = core::sub_sat_i64(params_str.len, rem.len);
         guard idx < params_str.len else { break; }
 
         let key = read_param_key(rem);
-        guard key.len > 0 else { return "", false; }
+        guard is_valid_cors_token(key) else { return "", false; }
         idx = core::add_sat_i64(idx, key.len);
 
         let val, ok_v = parse_param_val(params_str, idx);
@@ -222,6 +238,7 @@ fn parse_challenge_params(
             seen_max_age = true;
             temp_max_age = secs;
         }
+        guard consume_challenge_param_delimiter(params_str, idx) else { return "", false; }
     }
     return challenge_slice, challenge_slice.len > 0;
 }

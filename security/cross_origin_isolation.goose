@@ -45,13 +45,30 @@ struct CrossOriginIsolationContext {
 
 // ---- Policy Parsers ------------------------------------------------------
 
+// Validates that Structured Field parameter tail contains no CTLs or unclosed quotes (RFC 8941 Section 3.1.2).
+inline fn is_valid_sf_param_tail(params: const u8[:]) -> bool {
+    var in_quotes = false;
+    var escaped = false;
+    for b in params {
+        guard core::is_ascii_printable(b) || b == '\t' else { return false; }
+        if escaped {
+            escaped = false;
+        } else if in_quotes && b == '\\' {
+            escaped = true;
+        } else if b == '"' {
+            in_quotes = !in_quotes;
+        }
+    }
+    return !in_quotes && !escaped;
+}
+
 // Extracts the primary token before any RFC 8941 structured field parameters (';').
-// Rejects unquoted commas (multi-item lists) and leading semicolons without a token.
+// Rejects unquoted commas (multi-item lists), leading semicolons, and malformed parameter quotes/CTLs.
 inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
     guard val.find_unquoted_byte(',') == val.len else { return ";"; }
-    let head, _, has_semi = val.split_once_byte(';');
+    let head, params, has_semi = val.split_once_byte(';');
     let clean = head.trim_lws();
-    if has_semi && clean.len == 0 {
+    if has_semi && (clean.len == 0 || !is_valid_sf_param_tail(params)) {
         return ";";
     }
     return clean;
@@ -73,7 +90,7 @@ fn parse_coop(val: const u8[:]) -> CoopPolicy {
     const for <N, V> in variants<CoopPolicy> {
         let v = default<V>();
         let tok = wire_token(v);
-        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+        if tok.len > 0 && clean == tok {
             let candidate: CoopPolicy = v;
             return candidate;
         }
@@ -97,7 +114,7 @@ fn parse_coep(val: const u8[:]) -> CoepPolicy {
     const for <N, V> in variants<CoepPolicy> {
         let v = default<V>();
         let tok = wire_token(v);
-        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+        if tok.len > 0 && clean == tok {
             let candidate: CoepPolicy = v;
             return candidate;
         }
@@ -122,12 +139,19 @@ fn parse_corp(val: const u8[:]) -> CorpPolicy {
     const for <N, V> in variants<CorpPolicy> {
         let v = default<V>();
         let tok = wire_token(v);
-        if tok.len > 0 && clean.eq_ascii_fold(tok) {
+        if tok.len > 0 && clean == tok {
             let candidate: CorpPolicy = v;
             return candidate;
         }
     }
     return CorpPolicy.Unknown;
+}
+
+// Validates that an origin port suffix is a decimal port in 1..65535 (RFC 6454 Section 6.1).
+inline fn is_valid_origin_port(port_str: const u8[:]) -> bool {
+    guard port_str.len > 0 && port_str.len <= 5 else { return false; }
+    let port, ok = port_str.parse_u32_dec();
+    return ok && port >= 1 && port <= 65535;
 }
 
 // Extracts host from an origin or URL string (RFC 3986 §3.2.2).
@@ -151,11 +175,19 @@ fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
     if auth[0] == '[' {
         let close_idx = auth.index_of_byte(']');
         let end_bracket = core::add_sat_i64(close_idx, 1);
-        guard close_idx > 1 && (end_bracket == auth.len || auth[end_bracket] == ':') else { return ""; }
+        guard close_idx > 1 else { return ""; }
+        if end_bracket < auth.len {
+            guard auth[end_bracket] == ':' && is_valid_origin_port(auth[core::add_sat_i64(end_bracket, 1)..]) else {
+                return "";
+            }
+        }
         return auth[..end_bracket];
     }
     let colon_idx = auth.index_of_byte(':');
     if colon_idx >= 0 {
+        guard colon_idx > 0 && is_valid_origin_port(auth[core::add_sat_i64(colon_idx, 1)..]) else {
+            return "";
+        }
         return auth[..colon_idx];
     }
     return auth;
