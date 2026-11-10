@@ -2576,12 +2576,19 @@ fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
     };
 
     t.run("RS256 & PS256 JWT Sign, Verify, and JWKS Integration") { sub =>
-        // 1024-bit test RSA modulus n = 2^1024 - 179 (e=3, d=(2n-1)/3)
-        var rsa_n: u8[128] = [0xFF; 128];
-        rsa_n[127] = 0x4D;
+        // 2048-bit test RSA modulus n = 2^2048 - 2543 (e=3, d=(2n-1)/3, RFC 7518 §3.3/§3.5 >= 2048 bits)
+        var rsa_n: u8[256] = [0xFF; 256];
+        rsa_n[254] = 0xF6;
+        rsa_n[255] = 0x11;
         let rsa_e: u8[1] = [0x03];
-        var rsa_d: u8[128] = [0xAA; 128];
-        rsa_d[127] = 0x33;
+        var rsa_d: u8[256] = [0xAA; 256];
+        rsa_d[254] = 0xA4;
+        rsa_d[255] = 0x0B;
+
+        var small_n: u8[128] = [0xFF; 128];
+        small_n[127] = 0x4D;
+        var jwks_small = wing::Jwks { .. };
+        sub.assert_false(wing::add_rsa_key(jwks_small, "small-rsa", wing::JwtAlg.RS256, small_n[..], rsa_e[..]), "1024-bit RSA key rejected (RFC 7518 §3.3)");
 
         var hdr_rs = wing::new_jwt_header(wing::JwtAlg.RS256, "rsa-key-1");
         var clm_rs = wing::JwtClaims { .. };
@@ -2952,6 +2959,24 @@ fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
             "{\"device_code\":\"dc\",\"user_code\":\"uc\",\"verification_uri\":\"https://ex.com/dev\",\"expires_in\":600,\"interval\":0}",
         );
         sub.assert_false(ok_dev_zero, "interval=0 in device auth response rejected");
+
+        // DPoP proof verification with empty raw key when expected_jkt is provided (RFC 9449 §6.1)
+        let dpop_seed: u8[32] = [0x22; 32];
+        let dpop_pub = core::ed25519_public_key(dpop_seed);
+        var jwk_k = wing::JwksKey { kty: wing::JwkKeyType.OKP, public_key: dpop_pub, valid: true, .. };
+        let _ = jwk_k.crv.try_set("Ed25519");
+        var jkt_buf: u8[..64] = [];
+        sub.assert_true(wing::compute_jwk_thumbprint(jwk_k, jkt_buf), "compute_jwk_thumbprint ok");
+        var dpop_tok: u8[..1024] = [];
+        sub.assert_true(wing::create_dpop_proof(dpop_seed[..], "GET", "https://ex.com/api", "", "", 1700000000, "jti-jkt-only", dpop_tok), "create_dpop_proof ok");
+        sub.assert_true(
+            wing::verify_dpop_proof(dpop_tok[..], "", "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, jkt_buf[..], "EdDSA"),
+            "verify_dpop_proof with empty key and valid expected_jkt succeeds",
+        );
+        sub.assert_false(
+            wing::verify_dpop_proof(dpop_tok[..], "", "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, "", "EdDSA"),
+            "verify_dpop_proof with both empty key and empty expected_jkt rejected",
+        );
     };
 }
 

@@ -166,7 +166,7 @@ fn apply_digest_core_param(
         return true, (seen_mask & 2) == 0 && chal.nonce.try_set(val) && try_mark_digest_param(seen_mask, 2);
     }
     if key.eq_ascii_fold("algorithm") {
-        guard (seen_mask & 4) == 0 && chal.algorithm.try_set(val) && try_mark_digest_param(seen_mask, 4) else {
+        guard chal.algorithm.try_set(val) && try_mark_digest_param(seen_mask, 4) else {
             return true, false;
         }
         chal.has_explicit_algo = true;

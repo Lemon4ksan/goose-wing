@@ -76,9 +76,9 @@ inline fn is_valid_jwk_ec_p256_coords(x: const u8[:], y: const u8[:]) -> bool {
     return ok_pt;
 }
 
-// Validates RFC 7518 §2 & §6.3.1.1-6.3.1.2 minimal Base64urlUInt RSA modulus and public exponent.
+// Validates RFC 7518 §2, §3.3, §3.5 & §6.3.1.1-6.3.1.2 Base64urlUInt RSA modulus (>= 2048 bits) and exponent.
 inline fn is_canonical_jwk_rsa_params(n_be: const u8[:], e_be: const u8[:]) -> bool {
-    guard n_be.len >= 64 && n_be.len <= 512 && e_be.len >= 1 && e_be.len <= 8 else { return false; }
+    guard n_be.len >= 256 && n_be.len <= 512 && e_be.len >= 1 && e_be.len <= 8 else { return false; }
     let n_last = core::sub_sat_i64(n_be.len, 1);
     guard (n_be[0] & 0x80) != 0 && (n_be[n_last] & 1) == 1 else { return false; }
     return e_be[0] != 0 && core::is_valid_rsa_public_exponent(e_be, n_be);

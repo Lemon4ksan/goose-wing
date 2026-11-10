@@ -355,7 +355,7 @@ struct JwtClaims {
     nbf:           i64                = -1,
     iat:           i64                = -1,
     custom_claims: JwtClaimItem[..16] = [],
-    raw_payload:   u8[..1024]         = [],
+    raw_payload:   u8[..2048]         = [],
 }
 
 fn set_audience(claims: JwtClaims&, aud: const u8[:]) -> bool {
@@ -758,7 +758,7 @@ inline fn record_custom_claim(
 //   json_bytes = "{\"sub\":\"user123\",\"exp\":1700000000}"
 //   returns: ok = true, out_claims.sub = "user123"
 fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> bool {
-    guard json_bytes.validate_utf8() else {
+    guard json_bytes.validate_utf8() && out_claims.raw_payload.try_set(json_bytes) else {
         out_claims = JwtClaims { .. };
         return false;
     }
@@ -772,8 +772,6 @@ fn parse_jwt_claims_json(json_bytes: const u8[:], out_claims: JwtClaims&) -> boo
     out_claims.nbf = -1;
     out_claims.iat = -1;
     out_claims.custom_claims.clear();
-    out_claims.raw_payload.clear();
-    let _ = out_claims.raw_payload.try_set(json_bytes[..min(json_bytes.len, 1024)]);
     var had_error = false;
 
     var seen_iss = false;
@@ -1003,7 +1001,7 @@ fn sign_jwt_rs256<B>(
     d_be:      const u8[:],
     out_token: B&,
 ) -> bool {
-    guard header.alg == JwtAlg.RS256 else { return false; }
+    guard header.alg == JwtAlg.RS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
 
     var token_buf: u8[..8192] = [];
@@ -1022,7 +1020,7 @@ fn sign_jwt_rs256(
     d_be:      const u8[:],
     out_token: u8[>..]&,
 ) -> bool {
-    guard header.alg == JwtAlg.RS256 else { return false; }
+    guard header.alg == JwtAlg.RS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
     var sig_buf: u8[..512] = [];
@@ -1041,7 +1039,7 @@ fn sign_jwt_ps256<B>(
     salt:      const u8[:],
     out_token: B&,
 ) -> bool {
-    guard header.alg == JwtAlg.PS256 else { return false; }
+    guard header.alg == JwtAlg.PS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
 
     var token_buf: u8[..8192] = [];
@@ -1061,7 +1059,7 @@ fn sign_jwt_ps256(
     salt:      const u8[:],
     out_token: u8[>..]&,
 ) -> bool {
-    guard header.alg == JwtAlg.PS256 else { return false; }
+    guard header.alg == JwtAlg.PS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
     var sig_buf: u8[..512] = [];
@@ -1568,6 +1566,7 @@ fn verify_jwt_rsa_signature(
     signing_input: const u8[:],
     sig_bytes:     const u8[:],
 ) -> bool {
+    guard n_be.len >= 256 && n_be.len <= 512 else { return false; }
     if alg == JwtAlg.RS256 {
         return core::rsa_pkcs1_sha256_verify(n_be, e_be, signing_input, sig_bytes);
     } else if alg == JwtAlg.PS256 {
