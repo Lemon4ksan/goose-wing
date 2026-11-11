@@ -650,6 +650,7 @@ fn verify_dpop_header(header_json: const u8[:], expected_alg: const u8[:] = "EdD
 }
 
 fn verify_dpop_signature(signing_input: const u8[:], sig_b64: const u8[:], pub_key: const u8[32]) -> bool {
+    guard sig_b64.len > 0 && sig_b64.index_of_byte('=') == -1 else { return false; }
     var sig_bytes: u8[..128] = [];
     guard core::base64url_decode(sig_b64, sig_bytes) else { return false; }
     guard sig_bytes.len == 64 else { return false; }
@@ -664,8 +665,10 @@ fn verify_dpop_signature_with_jwk(
     alg:           const u8[:],
     jwk_info:      const DPoPJwkInfo&,
 ) -> bool {
+    guard sig_b64.len > 0 && sig_b64.index_of_byte('=') == -1 else { return false; }
     if alg == "EdDSA" {
         guard jwk_info.kty[..] == "OKP" && jwk_info.crv[..] == "Ed25519" else { return false; }
+        guard jwk_info.x[..].index_of_byte('=') == -1 else { return false; }
         var decoded_x: u8[..64] = [];
         guard core::base64url_decode(jwk_info.x[..], decoded_x) && decoded_x.len == 32 else { return false; }
         var pub_arr: u8[32] = [0; 32];
@@ -673,6 +676,7 @@ fn verify_dpop_signature_with_jwk(
         return verify_dpop_signature(signing_input, sig_b64, pub_arr);
     } else if alg == "ES256" {
         guard jwk_info.kty[..] == "EC" && jwk_info.crv[..] == "P-256" else { return false; }
+        guard jwk_info.x[..].index_of_byte('=') == -1 && jwk_info.y[..].index_of_byte('=') == -1 else { return false; }
         var decoded_x: u8[..64] = [];
         var decoded_y: u8[..64] = [];
         guard core::base64url_decode(jwk_info.x[..], decoded_x) && decoded_x.len == 32 else { return false; }
@@ -686,6 +690,7 @@ fn verify_dpop_signature_with_jwk(
         return core::ecdsa_p256_verify(pub_pt[..], signing_input, sig_bytes[..]);
     } else if alg == "RS256" || alg == "PS256" {
         guard jwk_info.kty[..] == "RSA" else { return false; }
+        guard jwk_info.n[..].index_of_byte('=') == -1 && jwk_info.e[..].index_of_byte('=') == -1 else { return false; }
         var decoded_n: u8[..512] = [];
         var decoded_e: u8[..8]   = [];
         guard core::base64url_decode(jwk_info.n[..], decoded_n) else { return false; }
@@ -708,17 +713,18 @@ fn verify_dpop_signature_with_jwk(
 //   returns: out.iat = 1700000000, out.has_iat = true, had_error = false
 inline fn parse_dpop_iat_field(reader: json::Reader&, out: DPoPClaims&, had_error: bool&) {
     let p = json::peek(reader);
-    guard (p >= '0' && p <= '9') || p == '-' else {
+    guard p >= '0' && p <= '9' else {
         json::skip(reader);
         had_error = true;
         return;
     }
-    let num = json::read_number(reader);
-    guard num >= 0.0 && num <= 9223372036854774784.0 else {
+    let val = json::read_int(reader);
+    let next_ch = json::peek(reader);
+    guard val > 0 && next_ch != '.' && next_ch != 'e' && next_ch != 'E' else {
         had_error = true;
         return;
     }
-    out.iat = num as i64;
+    out.iat = val;
     out.has_iat = true;
 }
 
@@ -849,19 +855,15 @@ fn verify_dpop_uri(claims_json: const u8[:], expected_uri: const u8[:]) -> bool 
 }
 
 fn verify_dpop_iat(claims_json: const u8[:], now_sec: i64, max_age_sec: i64, max_skew_sec: i64) -> bool {
-    guard now_sec >= 0 else { return false; }
+    guard now_sec > 0 && max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
     var claims = DPoPClaims { .. };
     guard parse_dpop_claims(claims_json, claims) else { return false; }
     guard claims.has_iat && claims.iat > 0 else { return false; }
-    if now_sec > 0 {
-        guard max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
-        let max_future = core::add_sat_i64(now_sec, max_skew_sec);
-        guard claims.iat <= max_future else { return false; }
-        let age = core::sub_sat_i64(now_sec, claims.iat);
-        let max_allowed_age = core::add_sat_i64(max_age_sec, max_skew_sec);
-        guard age <= max_allowed_age else { return false; }
-    }
-    return true;
+    let max_future = core::add_sat_i64(now_sec, max_skew_sec);
+    guard claims.iat <= max_future else { return false; }
+    let age = core::sub_sat_i64(now_sec, claims.iat);
+    let max_allowed_age = core::add_sat_i64(max_age_sec, max_skew_sec);
+    return age <= max_allowed_age;
 }
 
 // RFC 9449 Section 6.1 / RFC 7638: Verifies JWK Thumbprint ('jkt') confirmation claim.
@@ -914,15 +916,15 @@ fn verify_dpop_claims(
         guard claims.nonce.len > 0 && claims.nonce.len == expected_nonce.len else { return false; }
         guard core::ct_eq_bytes(claims.nonce[..], expected_nonce) else { return false; }
     }
-    if expected_jkt.len > 0 && claims.jkt.len > 0 {
-        guard claims.jkt.len == expected_jkt.len else { return false; }
+    if expected_jkt.len > 0 {
+        guard claims.jkt.len > 0 && claims.jkt.len == expected_jkt.len else { return false; }
         guard core::ct_eq_bytes(claims.jkt[..], expected_jkt) else { return false; }
     }
 
     // RFC 9449 §4.3: Mandatory creation time & validity window
-    guard now_sec >= 0 && claims.has_iat && claims.iat > 0 else { return false; }
+    guard now_sec >= 0 && max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
+    guard claims.has_iat && claims.iat > 0 else { return false; }
     if now_sec > 0 {
-        guard max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
         let max_future = core::add_sat_i64(now_sec, max_skew_sec);
         guard claims.iat <= max_future else { return false; }
         let age = core::sub_sat_i64(now_sec, claims.iat);
@@ -1030,10 +1032,10 @@ fn verify_dpop_key_binding(
 ) -> bool {
     guard key.len > 0 || expected_jkt.len > 0 else { return false; }
     if key.len == 0 {
-        return true;
+        return matches_dpop_jkt_thumbprint_jwk(jwk_info, "", expected_jkt);
     }
     if alg == "EdDSA" {
-        guard key.len == 32 else { return false; }
+        guard key.len == 32 && jwk_info.x[..].index_of_byte('=') == -1 else { return false; }
         var jwk_pub: u8[..64] = [];
         guard core::base64url_decode(jwk_info.x[..], jwk_pub) && jwk_pub.len == 32 else { return false; }
         var key_seed: u8[32] = [0; 32];
@@ -1042,6 +1044,7 @@ fn verify_dpop_key_binding(
         let derived_pub = core::ed25519_public_key(key_seed);
         return core::ct_eq_bytes(jwk_pub[..], key) || core::ct_eq_bytes(jwk_pub[..], derived_pub[..]);
     } else if alg == "ES256" {
+        guard jwk_info.x[..].index_of_byte('=') == -1 && jwk_info.y[..].index_of_byte('=') == -1 else { return false; }
         var decoded_x: u8[..64] = [];
         var decoded_y: u8[..64] = [];
         guard core::base64url_decode(jwk_info.x[..], decoded_x) && decoded_x.len == 32 else { return false; }
@@ -1054,15 +1057,10 @@ fn verify_dpop_key_binding(
             return core::ct_eq_bytes(pub_pt[..], key);
         } else if key.len == 64 {
             return core::ct_eq_bytes(pub_pt[1..65], key);
-        } else if key.len == 32 {
-            var priv_arr: u8[32] = [0; 32];
-            defer core::secure_zeroize_32(priv_arr);
-            for i in 32 { priv_arr[i] = key[i]; }
-            let derived_pt = core::ecdsa_p256_public_key(priv_arr);
-            return core::ct_eq_bytes(pub_pt[..], derived_pt[..]);
         }
         return false;
     } else if alg == "RS256" || alg == "PS256" {
+        guard jwk_info.n[..].index_of_byte('=') == -1 && jwk_info.e[..].index_of_byte('=') == -1 else { return false; }
         var decoded_n: u8[..512] = [];
         var decoded_e: u8[..8]   = [];
         guard core::base64url_decode(jwk_info.n[..], decoded_n) else { return false; }
@@ -1073,7 +1071,8 @@ fn verify_dpop_key_binding(
             let n_ok = core::ct_eq_bytes(decoded_n[..], key[..decoded_n.len]);
             return n_ok && core::ct_eq_bytes(decoded_e[..], key[decoded_n.len..]);
         }
-        return core::ct_eq_bytes(decoded_n[..], key);
+        let is_std_e = decoded_e.len == 3 && decoded_e[0] == 1 && decoded_e[1] == 0 && decoded_e[2] == 1;
+        return is_std_e && core::ct_eq_bytes(decoded_n[..], key);
     }
     return false;
 }
@@ -1244,7 +1243,7 @@ fn check_and_record_dpop_jti(
     // RFC 9449 Section 11.1: DPoP Proof Replay - As long as the jti value is tracked and duplicates
     // are rejected for the lifetime of the nonce, there is no additional risk of token replay.
     guard jti.len > 0 && jti.len <= 128 else { return false; }
-    guard now_sec >= 0 && ttl_sec >= 0 && max_skew_sec >= 0 else { return false; }
+    guard now_sec > 0 && ttl_sec >= 0 && max_skew_sec >= 0 else { return false; }
 
     var free_idx: i64 = -1;
     for i in cache.entries.len {
@@ -1288,6 +1287,7 @@ fn verify_dpop_proof_with_replay_cache(
     expected_jkt:    const u8[:] = "",
     expected_alg:    const u8[:] = "EdDSA",
 ) -> bool {
+    guard now_sec > 0 else { return false; }
     var claims = DPoPClaims { .. };
     guard verify_dpop_proof_into_claims(
         jwt, key, expected_method, expected_uri,

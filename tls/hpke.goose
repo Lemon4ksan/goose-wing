@@ -34,7 +34,8 @@ fn hpke_labeled_extract(
     ikm:      const u8[:],
 ) -> u8[32] {
     var labeled_ikm: u8[..1024] = [];
-    guard 7 + suite_id.len + label.len + ikm.len <= labeled_ikm.cap else {
+    let needed = core::add_sat_i64(7, core::add_sat_i64(suite_id.len, core::add_sat_i64(label.len, ikm.len)));
+    guard needed <= labeled_ikm.cap else {
         return [0; 32];
     }
     labeled_ikm.append("HPKE-v1");

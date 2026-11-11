@@ -945,7 +945,7 @@ fn pop_free_slot(stack: FreeSlotStack&) -> i64 {
 
 // Restores slot index back into the free stack in O(1).
 fn push_free_slot(stack: FreeSlotStack&, slot: i64) -> bool {
-    guard slot >= 0 && slot < FREE_SLOT_STACK_CAP && stack.top < stack.capacity else { return false; }
+    guard slot >= 0 && slot < stack.capacity && stack.top < stack.capacity else { return false; }
     stack.indices[stack.top] = slot as u16;
     stack.top++;
     return true;

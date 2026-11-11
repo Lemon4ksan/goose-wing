@@ -984,22 +984,22 @@ fn parse_tls_record_header_at(
     cursor: i64&,
 ) -> u8, u16, u16, TlsAlert, bool {
     let saved = cursor;
+    var committed = false;
+    defer if !committed { cursor = saved; };
+
     var content_type: u8  = 0;
     var version:      u16 = 0;
     var length:       u16 = 0;
     guard slice_get_u8(raw, cursor, content_type) &&
           slice_get_u16(raw, cursor, version) &&
           slice_get_u16(raw, cursor, length) else {
-        cursor = saved;
         return 0, 0, 0, TlsAlert.DecodeError, false;
     }
 
     if version != rfc::TLS_LEGACY_VERSION_1_2 && version != rfc::TLS_LEGACY_VERSION_1_0 {
-        cursor = saved;
         return content_type, version, length, TlsAlert.ProtocolVersion, false;
     }
     if content_type < rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC || content_type > rfc::TLS_CONTENT_APPLICATION_DATA {
-        cursor = saved;
         return content_type, version, length, TlsAlert.UnexpectedMessage, false;
     }
     let max_len = if content_type == rfc::TLS_CONTENT_APPLICATION_DATA {
@@ -1008,13 +1008,12 @@ fn parse_tls_record_header_at(
         rfc::TLS_MAX_RECORD_PLAINTEXT_LEN
     };
     if length > max_len {
-        cursor = saved;
         return content_type, version, length, TlsAlert.RecordOverflow, false;
     }
     if length == 0 && content_type != rfc::TLS_CONTENT_APPLICATION_DATA {
-        cursor = saved;
         return content_type, version, length, TlsAlert.UnexpectedMessage, false;
     }
+    committed = true;
     return content_type, version, length, TlsAlert.CloseNotify, true;
 }
 

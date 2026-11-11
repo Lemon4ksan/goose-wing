@@ -18,6 +18,8 @@ struct ParsedCrl {
     issuer:       const u8[:] = "",
     serials:      u64[..128]  = [],
     serial_count: i32         = 0,
+    this_update:  i64         = 0,
+    next_update:  i64         = 0,
     tbs_raw:      Span16      = Span16 { offset: 0, length: 0 },
     sig_alg_oid:  Span16      = Span16 { offset: 0, length: 0 },
     signature:    Span16      = Span16 { offset: 0, length: 0 },
@@ -185,7 +187,8 @@ fn x509_crl_read_outer_sig(
     return crl_seq.cursor_len() == 0;
 }
 
-inline fn x509_crl_skip_optional_next_update(tbs_cert_list: ByteCursor&) -> bool {
+inline fn x509_crl_read_optional_next_update(tbs_cert_list: ByteCursor&, out_next: i64&) -> bool {
+    out_next = 0;
     guard tbs_cert_list.cursor_len() > 0 else { return true; }
     let next_tag = tbs_cert_list.buf[0];
     guard next_tag == rfc::ASN1_TAG_UTC_TIME || next_tag == rfc::ASN1_TAG_GENERALIZED_TIME else {
@@ -194,8 +197,10 @@ inline fn x509_crl_skip_optional_next_update(tbs_cert_list: ByteCursor&) -> bool
     var next_up_tag: u8 = 0;
     var next_up_elem = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_any_asn1_element(tbs_cert_list, next_up_tag, next_up_elem) else { return false; }
-    let _, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
-    return ok_next;
+    let next_sec, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
+    guard ok_next else { return false; }
+    out_next = next_sec;
+    return true;
 }
 
 // Parses an X.509 CertificateList (CRL) in ASN.1 DER format (RFC 5280 Section 5.1).
@@ -241,8 +246,10 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     var this_up_tag: u8 = 0;
     var this_up_elem = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_any_asn1_element(tbs_cert_list, this_up_tag, this_up_elem) else { return false; }
-    let _, ok_this = parse_asn1_time(this_up_tag, this_up_elem.buf);
-    guard ok_this && x509_crl_skip_optional_next_update(tbs_cert_list) else { return false; }
+    let this_sec, ok_this = parse_asn1_time(this_up_tag, this_up_elem.buf);
+    guard ok_this else { return false; }
+    out.this_update = this_sec;
+    guard x509_crl_read_optional_next_update(tbs_cert_list, out.next_update) else { return false; }
 
     if tbs_cert_list.cursor_len() > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_SEQUENCE {
         var revoked_seq = core::cursor_from(tbs_cert_list.buf[..0]);

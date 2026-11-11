@@ -1022,13 +1022,23 @@ fn validate_pseudo_path(field: const HeaderField&, counts: H3HeaderCounts&) -> b
     counts.pseudo_path++;
     guard counts.pseudo_path == 1 && field.value.len > 0 else { return false; }
     let p0 = field.value[0];
-    return p0 == '/' || (p0 == '*' && field.value.len == 1);
+    guard p0 == '/' || (p0 == '*' && field.value.len == 1) else { return false; }
+    for b in field.value {
+        if b < 0x20 || b == 0x7F || b == ' ' {
+            return false;
+        }
+    }
+    return true;
 }
 
 fn validate_pseudo_protocol(field: const HeaderField&, counts: H3HeaderCounts&, enable_conn_proto: bool) -> bool {
     guard enable_conn_proto else { return false; }
     counts.pseudo_protocol++;
-    return counts.pseudo_protocol == 1 && field.value.len > 0;
+    guard counts.pseudo_protocol == 1 && field.value.len > 0 else { return false; }
+    for b in field.value {
+        guard core::is_tchar(b) else { return false; }
+    }
+    return true;
 }
 
 fn process_h3_pseudo_field(
@@ -1294,7 +1304,7 @@ fn handle_bidi_push_promise(conn: H3Connection&, s_idx: i32, payload: const u8[:
         conn.error_code = rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED;
         return rfc::H3_ERR_QPACK_DECOMPRESSION_FAILED;
     }
-    if q_err == QpackError.None && decoded_fields.len > 0 {
+    if q_err == QpackError.None {
         let v_err = validate_h3_push_promise_fields(conn, decoded_fields);
         guard v_err == rfc::H3_ERR_NO_ERROR else { return v_err; }
     }
@@ -1502,8 +1512,13 @@ fn handle_stream_data(
     }
 
     // RFC 9114 Section 6.1: HTTP/3 does not use server-initiated bidirectional streams.
-    // Client-initiated bidirectional streams have (stream_id & 0x01) == 0.
-    guard (stream_id & 0x01) == 0 else {
+    // Client-initiated bidirectional streams have (stream_id & 0x03) == 0.
+    // WebTransport permits server-initiated bidirectional streams with (stream_id & 0x03) == 1.
+    let is_client_bidi = (stream_id & 0x03) == 0;
+    let wt_enabled = conn.local_settings.enable_webtransport > 0 &&
+        conn.peer_settings.enable_webtransport > 0;
+    let is_server_wt_bidi = wt_enabled && ((stream_id & 0x03) == 1);
+    guard is_client_bidi || is_server_wt_bidi else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_STREAM_CREATION;
         return rfc::H3_ERR_STREAM_CREATION;
@@ -1621,8 +1636,18 @@ fn send_response_headers_body_and_trailers<B>(
     guard found else { return false; }
 
     let saved_out_len = out.len;
+    let saved_enc_len = conn.encoder_stream_buf.len;
+    let saved_headers_sent = conn.streams[s_idx].headers_sent;
+    let saved_fin_sent = conn.streams[s_idx].fin_sent;
+    let saved_state = conn.streams[s_idx].state;
     var committed = false;
-    defer if !committed { out.resize(saved_out_len); };
+    defer if !committed {
+        out.resize(saved_out_len);
+        conn.encoder_stream_buf.resize(saved_enc_len);
+        conn.streams[s_idx].headers_sent = saved_headers_sent;
+        conn.streams[s_idx].fin_sent = saved_fin_sent;
+        conn.streams[s_idx].state = saved_state;
+    };
 
     var sc_str: u8[..16] = [];
     status_code.format_i64_dec(sc_str);

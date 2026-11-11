@@ -14,6 +14,7 @@ struct ParsedSct {
     timestamp_ms: u64    = 0,
     hash_alg:     u8     = 0,
     sig_alg:      u8     = 0,
+    extensions:   Span16 = Span16 { offset: 0, length: 0 },
     signature:    Span16 = Span16 { offset: 0, length: 0 },
 }
 
@@ -40,7 +41,7 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
     let log_id, ok_l = c.read_bytes(rfc::SCT_LOG_ID_LEN);
     let ts_hi, ok_th = c.read_u32();
     let ts_lo, ok_tl = c.read_u32();
-    let _, ok_ext = c.read_u16_sub_cursor();
+    let ext_sub, ok_ext = c.read_u16_sub_cursor();
     let hash_alg, ok_h = c.read_u8();
     let sig_alg, ok_s = c.read_u8();
     let sig_bytes, ok_sig = c.read_u16_prefixed();
@@ -54,6 +55,7 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
     out.timestamp_ms = pack_sct_timestamp_ms(ts_hi, ts_lo);
     out.hash_alg = hash_alg;
     out.sig_alg = sig_alg;
+    out.extensions = make_span(raw, ext_sub.buf);
     out.signature = make_span(raw, sig_bytes);
     return true;
 }

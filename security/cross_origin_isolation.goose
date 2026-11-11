@@ -154,6 +154,14 @@ inline fn is_valid_origin_port(port_str: const u8[:]) -> bool {
     return ok && port >= 1 && port <= 65535;
 }
 
+inline fn is_valid_ipv6_bracket_body(body: const u8[:]) -> bool {
+    guard body.len >= 2 && body.contains_byte(':') else { return false; }
+    for b in body {
+        guard core::is_ascii_hexdigit(b) || b == ':' || b == '.' else { return false; }
+    }
+    return true;
+}
+
 // Extracts host from an origin or URL string (RFC 3986 §3.2.2).
 //
 // Example:
@@ -175,7 +183,7 @@ fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
     if auth[0] == '[' {
         let close_idx = auth.index_of_byte(']');
         let end_bracket = core::add_sat_i64(close_idx, 1);
-        guard close_idx > 1 else { return ""; }
+        guard close_idx > 1 && is_valid_ipv6_bracket_body(auth[1..close_idx]) else { return ""; }
         if end_bracket < auth.len {
             guard auth[end_bracket] == ':' && is_valid_origin_port(auth[core::add_sat_i64(end_bracket, 1)..]) else {
                 return "";

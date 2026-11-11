@@ -436,8 +436,7 @@ fn test_gcra_long_key_normalization() {
     let long_key = "x-client-session-very-long-unique-telemetry-identifier-0123456789-abcdefghijklmnop";
     assert(long_key.len > 64);
 
-    var eff_key: u8[..64] = [];
-    wing::format_gcra_key(long_key, eff_key);
+    let eff_key = wing::format_gcra_key(long_key);
     assert(eff_key.len == 64);
 
     // Normalizing does not crash and isolates keys

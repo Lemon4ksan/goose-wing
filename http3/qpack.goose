@@ -605,8 +605,7 @@ inline fn ensure_arena_capacity(tbl: QpackTable&, raw_len: u32) -> bool {
 }
 
 inline fn validate_literal_inputs(name: const u8[:], val: const u8[:]) -> bool {
-    guard validate_qpack_entry_name(name) else { return false; }
-    guard val.len <= 4096 else { return false; }
+    guard name.len > 0 && validate_qpack_field_name(name) else { return false; }
     return validate_qpack_field_val(val);
 }
 
@@ -1276,9 +1275,9 @@ fn decode_qpack_section<F>(
         }
     }
 
-    // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must be >= min required insert count and <= insert_count.
+    // Invariant: RFC 9204 §2.1.2 & §4.5.1: RIC must be exactly the required insert count and <= insert_count.
     let min_ric = if used_any_dyn { max_dyn_abs_used + 1 } else { 0 };
-    guard ric >= min_ric && ric <= tbl.insert_count else {
+    guard ric == min_ric && ric <= tbl.insert_count else {
         out_fields.clear();
         return QpackError.DecompressionFailed;
     }
@@ -1300,6 +1299,9 @@ fn decode_or_block_qpack_section<F>(
     is_push_promise:   bool = false,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
+    guard !qpack_is_stream_blocked(tbl, stream_id) else {
+        return QpackError.StreamBlocked;
+    }
     let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
     guard ok_ric else { return QpackError.DecompressionFailed; }
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
@@ -1653,6 +1655,9 @@ fn decode_or_block_qpack_to_map(
     max_field_section: u64 = 16384,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
+    guard !qpack_is_stream_blocked(tbl, stream_id) else {
+        return QpackError.StreamBlocked;
+    }
     let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
     guard ok_ric else { return QpackError.DecompressionFailed; }
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);

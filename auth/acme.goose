@@ -96,6 +96,7 @@ fn acme_match_http01(path: const u8[:], token: const u8[:]) -> bool {
 }
 
 inline fn is_valid_acme_challenge_slot(ch: const AcmeChallenge&) -> bool {
+    guard acme_validate_token(ch.token[..]) else { return false; }
     let tok_len = ch.token.len;
     let thumb_idx = core::add_sat_i64(tok_len, 1);
     guard ch.key_auth_len > 0 && ch.key_auth.len == ch.key_auth_len && ch.key_auth.len > thumb_idx else {

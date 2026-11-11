@@ -2056,6 +2056,44 @@ fn test_goose2rfc_security_audit_regressions(t: lit::T&) {
         var req_long = wing::new_request("POST", "/transfer");
         let ctx_long = wing::extract_fetch_context(req_long, long_host[..]);
         sub.assert_eq(ctx_long.target_host.len, 0, "oversize target_host cleared fail-closed");
+
+        // Wildcard method/header rejected when allow_credentials == true
+        var cred_wild_m = wing::CorsPolicy { allow_credentials: true, .. };
+        let _ = wing::add_allowed_origin(cred_wild_m, "https://app.example.com");
+        cred_wild_m.allowed_methods.clear();
+        cred_wild_m.allowed_methods.append("*");
+        sub.assert_false(wing::validate_cors_policy(cred_wild_m), "wildcard method with allow_credentials rejected");
+
+        // CryptoJar append into non-empty buffer preserves prefix and enforces key expiration
+        var store = wing::KeyStore { .. };
+        let kslot = core::KeySlot {
+            key_id:         7,
+            master_key:     [0x42; 32],
+            created_at_sec: 1000,
+            expires_at_sec: 2000,
+            revoked:        false,
+        };
+        sub.assert_true(wing::add_key(store, kslot), "key added");
+        let pjar = wing::PrivateJar { store: store, use_hkdf_aes: false };
+        var wire: u8[..256] = [];
+        sub.assert_true(
+            wing::private_jar_seal_binary(pjar, "sid", "world", 1500, 99, wire),
+            "seal before key expiry succeeds",
+        );
+        var wire_exp: u8[..256] = [];
+        sub.assert_false(
+            wing::private_jar_seal_binary(pjar, "sid", "world", 2001, 99, wire_exp),
+            "seal after key expiry rejected",
+        );
+        var out_buf: u8[..64] = [];
+        out_buf.append("hello ");
+        let slot_active, ok_act = wing::active_key(pjar.store);
+        sub.assert_true(ok_act, "active key found");
+        sub.assert_true(
+            wing::open_binary_xchacha20(pjar, slot_active, "sid", wire[..], 1500, out_buf),
+            "append into non-empty out_plaintext succeeds",
+        );
+        sub.assert_bytes_eq(out_buf[..], "hello world", "existing prefix preserved on open_binary_xchacha20");
     };
 }
 

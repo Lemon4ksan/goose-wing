@@ -565,6 +565,10 @@ fn apply_jitter_to_decision(d: GcraDecision&, jitter: const GcraJitter&, prng_st
 
 // Applies a random jitter offset directly to a `RateLimitDecision` (`Reserved` or `Rejected`).
 fn apply_jitter_to_decision(d: RateLimitDecision&, jitter: const GcraJitter&, prng_state: u64&) {
+    match d {
+        Allowed _ => { return; },
+        _ => {},
+    };
     let offset = sample_gcra_jitter_ns(jitter, prng_state);
     guard offset > 0 else { return; }
     let off_u = offset as u64;

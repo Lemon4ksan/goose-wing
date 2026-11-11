@@ -553,6 +553,32 @@ fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: JwksKey&) 
     return true;
 }
 
+inline fn validate_jwk_x5c_spki(leaf_der: const u8[:], key_item: const JwksKey&) -> bool {
+    guard key_item.kty != JwkKeyType.Oct && key_item.kty != JwkKeyType.Unknown else { return false; }
+    var cert = ParsedCert { .. };
+    if !parse_x509_certificate(leaf_der, cert) {
+        return !(leaf_der.len > 32 && leaf_der[0] == 0x30);
+    }
+    var spki_pub = span_slice(leaf_der, cert.spki_pubkey);
+    if spki_pub.len >= 2 && spki_pub[0] == 0 {
+        spki_pub = spki_pub[1..];
+    }
+    if key_item.kty == JwkKeyType.OKP {
+        return spki_pub.len == 32 && core::ct_eq_bytes(spki_pub, key_item.public_key[..]);
+    }
+    if key_item.kty == JwkKeyType.EC {
+        guard spki_pub.len == 65 && spki_pub[0] == 0x04 else { return false; }
+        let x_ok = core::ct_eq_bytes(spki_pub[1..33], key_item.ec_x[..]);
+        return x_ok && core::ct_eq_bytes(spki_pub[33..65], key_item.ec_y[..]);
+    }
+    if key_item.kty == JwkKeyType.RSA {
+        let cert_n, cert_e, ok_rsa = core::parse_rsa_public_key_der(spki_pub);
+        guard ok_rsa else { return false; }
+        return core::ct_eq_bytes(cert_n, key_item.rsa_n[..]) && core::ct_eq_bytes(cert_e, key_item.rsa_e[..]);
+    }
+    return false;
+}
+
 inline fn validate_jwk_x5c_and_ops(mat: const JwkRawMaterial&, key_item: JwksKey&) -> bool {
     // RFC 7517 §4.3: "use" and "key_ops" MUST NOT be used together unless consistent
     if key_item.use[..] == "sig" && (key_item.key_ops & JWK_OP_ENCRYPT) != 0 {
@@ -566,6 +592,7 @@ inline fn validate_jwk_x5c_and_ops(mat: const JwkRawMaterial&, key_item: JwksKey
         guard core::base64_decode(mat.raw_x5c_leaf[..], leaf_der) && leaf_der.len > 0 else {
             return false;
         }
+        guard validate_jwk_x5c_spki(leaf_der[..], key_item) else { return false; }
         let digest = core::sha256(leaf_der[..]);
         var computed_x5t: u8[..44] = [];
         core::base64url_encode(digest[..], computed_x5t);
@@ -585,8 +612,7 @@ fn finalize_jwk_key(
     key_item: JwksKey&,
 ) -> bool {
     guard !key_item.has_invalid_type else { return false; }
-    guard validate_jwk_x5c_and_ops(mat, key_item) else { return false; }
-    return match key_item.kty {
+    let kty_ok = match key_item.kty {
         OKP => mat.raw_y.len == 0 && mat.raw_k.len == 0 && mat.raw_n.len == 0 && mat.raw_e.len == 0 &&
                finalize_okp_key(mat.raw_x[..], key_item),
         Oct => key_item.crv.len == 0 && mat.raw_x.len == 0 && mat.raw_y.len == 0 &&
@@ -597,6 +623,11 @@ fn finalize_jwk_key(
                mat.raw_k.len == 0 && finalize_rsa_key(mat.raw_n[..], mat.raw_e[..], key_item),
         Unknown => false,
     };
+    guard kty_ok && validate_jwk_x5c_and_ops(mat, key_item) else {
+        zeroize_jwks_key(key_item);
+        return false;
+    }
+    return true;
 }
 
 // Securely wipes cryptographic keys and invalidates a JWK key entry.

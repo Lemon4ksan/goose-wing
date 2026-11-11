@@ -16,6 +16,7 @@ from pathlib import Path
 PACKAGES = [
     "auth",
     "cookie",
+    "dns",
     "http",
     "http2",
     "http3",

@@ -190,8 +190,9 @@ fn server_wait_done_transition(current: HsState, incoming_msg_type: u8) -> HsSta
             return HsState.Connected, true;
         }
     } else if current == HsState.Connected {
-        // Post-handshake: client MUST NOT send Finished, Certificate, etc. Only KeyUpdate permitted.
-        if incoming_msg_type == rfc::TLS_HS_KEY_UPDATE {
+        // Post-handshake: KeyUpdate or post-handshake client auth (RFC 8446 §4.6.2)
+        if incoming_msg_type == rfc::TLS_HS_KEY_UPDATE ||
+            incoming_msg_type == rfc::TLS_HS_CERTIFICATE {
             return HsState.Connected, true;
         }
     }
@@ -226,13 +227,14 @@ fn validate_server_handshake_transition(
     incoming_msg_type:     u8,
     client_auth_requested: bool,
     early_data_accepted:   EarlyDataAccepted = EarlyDataAccepted.Rejected,
+    client_cert_is_empty:  bool              = false,
 ) -> HsState, bool {
     let c_auth = if client_auth_requested { ClientAuthMode.Requested } else { ClientAuthMode.Disabled };
     return validate_server_handshake_transition_auth(
         current,
         incoming_msg_type,
         c_auth,
-        false,
+        client_cert_is_empty,
         early_data_accepted,
     );
 }
@@ -1526,7 +1528,7 @@ fn early_data_record_sent(ctrl: EarlyDataController&, record_len: u32) -> bool {
 // ---- Mutual TLS (mTLS) Client Authentication (RFC 8446 Section 4.4.2) ---
 
 fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
-    guard sig_algorithms.len <= 64 else { return; }
+    guard sig_algorithms.len >= 1 && sig_algorithms.len <= 64 else { return; }
     out.append_u16_be(rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
     let algs_bytes_len = (sig_algorithms.len * 2) as u16;
     out.append_u16_be(algs_bytes_len + 2);
@@ -1574,7 +1576,7 @@ fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: co
 
 // Encodes a client CertificateVerify message (RFC 8446 §4.4.3).
 fn encode_client_certificate_verify<B>(out: B&, sig_scheme: u16, signature: const u8[:]) -> bool {
-    guard signature.len > 0 && signature.len <= 512 else { return false; }
+    guard signature.len > 0 && signature.len <= 1024 else { return false; }
     guard core::add_sat_i64(out.len, core::add_sat_i64(4, signature.len)) <= out.cap else { return false; }
     out.append_u16_be(sig_scheme);
     out.append_u16_be(signature.len as u16);

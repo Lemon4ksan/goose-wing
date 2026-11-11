@@ -1501,7 +1501,10 @@ fn x509_validate_chain_linkage(
             return TlsAlert.UnknownCa;
         }
     }
-    return x509_verify_cert_signature(child_cert, child_raw, parent_cert, parent_raw);
+    if child_cert.signature_value.length > 0 {
+        return x509_verify_cert_signature(child_cert, child_raw, parent_cert, parent_raw);
+    }
+    return TlsAlert.CloseNotify;
 }
 
 fn x509_check_child_sans_against_nc(
@@ -1559,7 +1562,7 @@ fn x509_validate_trust_anchor_node(
     }
     let issuer_slice = span_slice(raw_cert, cert.issuer_raw);
     let subject_slice = span_slice(raw_cert, cert.subject_raw);
-    if issuer_slice == subject_slice {
+    if issuer_slice == subject_slice && cert.signature_value.length > 0 {
         return x509_verify_cert_signature(cert, raw_cert, cert, raw_cert);
     }
     return TlsAlert.CloseNotify;

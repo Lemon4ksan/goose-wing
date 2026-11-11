@@ -1915,6 +1915,9 @@ fn validate_mandatory_pseudo_headers(pseudo: const H2PseudoHeaders&) -> u32 {
             guard !pseudo.has_protocol else { return rfc::H2_ERR_PROTOCOL_ERROR; }
             guard pseudo.has_scheme && pseudo.has_path else { return rfc::H2_ERR_PROTOCOL_ERROR; }
         }
+        if pseudo.has_path && pseudo.path[..] == "*" {
+            guard pseudo.method[..] == "OPTIONS" else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+        }
         return rfc::H2_ERR_NO_ERROR;
     }
     return rfc::H2_ERR_PROTOCOL_ERROR;

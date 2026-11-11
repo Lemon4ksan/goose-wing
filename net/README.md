@@ -1,8 +1,8 @@
 # `net`
 
 Package `net` provides zero-allocation TCP and UDP socket primitives, I/O event
-multiplexing, Happy Eyeballs v3 racing, DNS-over-HTTPS resolution, MASQUE
-tunneling, PROXY protocol framing, and connection pooling for `goose-wing`.
+multiplexing, Happy Eyeballs v3 racing, MASQUE tunneling, PROXY protocol
+framing, and connection pooling for `goose-wing`.
 
 All parsers and serializers operate without dynamic heap allocations on the hot
 path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices
@@ -131,40 +131,7 @@ fingerprinting profiles. `validate_p0f_socket_invariants` rejects out-of-range
 TTL (`0`), invalid MSS (`< 536` or `> 9000`), or RFC 7323 window scale shifts
 exceeding `14` before `apply_socket_options` configures the live socket.
 
-### 6. DNS, DoH Resolution & IDNA Validation (`net/dns.goose`)
-
-```goose
-enum DnsCacheStatus { Fresh, StaleWhileRevalidate, Expired, Miss }
-struct HttpsRecord {
-    priority: u16, target_name: u8[..256], alpn_h3: bool, alpn_h2: bool,
-    port: u16, ech_config: u8[..256], ipv4_hints: u8[..64][..4], ipv6_hints: u8[..64][..4]
-}
-struct DnsResponse { ... }
-struct DnsCacheEntry { ... }
-struct DnsCache { entries: DnsCacheEntry[..64] }
-fn build_dns_query(domain: const u8[:], qtype: u16, tx_id: u16, out: u8[..512]&) -> bool
-fn build_doh_post_body(domain: const u8[:], qtype: u16, out_body: u8[..512]&) -> bool
-fn build_doh_get_url(endpoint_url: const u8[:], domain: const u8[:], qtype: u16, out_url: u8[..1024]&) -> bool
-fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool
-fn parse_https_svc_params(rdata: const u8[:], pos: i64, rdlen: i64, rec: HttpsRecord&) -> bool
-fn validate_punycode_label(label: const u8[:]) -> bool
-fn validate_idna_domain_bounds(domain: const u8[:]) -> bool
-fn dns_cache_lookup(cache: const DnsCache&, domain: const u8[:], now_ms: i64, out_resp: DnsResponse&) -> DnsCacheStatus
-fn dns_cache_insert(cache: DnsCache&, domain: const u8[:], resp: const DnsResponse&, now_ms: i64, swr_window_sec: u32 = 60)
-```
-
-`build_dns_query` and `build_doh_post_body` serialize RFC 1035 DNS packets into
-512-byte buffers (`u8[..512]`), while `build_doh_get_url` formats RFC 8484
-Base64url `?dns=` request URLs up to 1024 bytes. `parse_dns_response` enforces
-pointer-compression hop limits to block compression loop bombs and extracts RFC
-9460 `HTTPS` (`TYPE=65`) service bindings via `parse_https_svc_params`.
-`validate_idna_domain_bounds` and `validate_punycode_label` enforce RFC 1035
-63-octet label limits, 253-octet total domain length limits, and RFC 5891 `xn--`
-ASCII-Compatible Encoding invariants. `DnsCache` holds 64 entries and supports
-RFC 5861 `StaleWhileRevalidate` lookups when a record's primary TTL has elapsed
-but `now_ms` falls within `swr_window_sec`.
-
-### 7. Happy Eyeballs v3 (`net/happy_eyeballs.goose`)
+### 6. Happy Eyeballs v3 (`net/happy_eyeballs.goose`)
 
 ```goose
 enum AddressFamily { IPv6, IPv4 }
@@ -197,7 +164,7 @@ candidates lead TCP and IPv4 fallbacks, while `AttemptManager` spaces parallel
 connection attempts by the Connection Attempt Delay (`10 ms..2000 ms`, default
 `250 ms`) and cancels in-flight losers when `bind_winner_attempt` succeeds.
 
-### 8. Connection Pooling & HTTP/2 Coalescing (`net/pool.goose`)
+### 7. Connection Pooling & HTTP/2 Coalescing (`net/pool.goose`)
 
 ```goose
 enum PoolScheme { Http, Https, Socks5, Masque }
@@ -226,7 +193,7 @@ and SAN certificate coverage. `UpstreamPool` maintains up to 128 idle backend
 keep-alive sockets (`UpstreamKeepAliveEntry[..128]`) for reverse proxy reuse;
 `acquire_upstream_conn` returns `-1` on a cache miss.
 
-### 9. MASQUE HTTP Datagram & IP Tunneling (`net/masque.goose`)
+### 8. MASQUE HTTP Datagram & IP Tunneling (`net/masque.goose`)
 
 ```goose
 struct HttpCapsule { capsule_type: u64, payload: u8[..1500] }
@@ -255,7 +222,7 @@ copying forwarded packets into `out_packet` (`u8[..1500]`); if `wire` is
 truncated or malformed, `idx` is left at the failing offset and the trailing
 `bool` is `false`.
 
-### 10. PROXY Protocol v1 & v2 (`net/proxy_protocol.goose`, `net/proxy_protocol_internal.goose`)
+### 9. PROXY Protocol v1 & v2 (`net/proxy_protocol.goose`, `net/proxy_protocol_internal.goose`)
 
 ```goose
 enum ProxyProtocolVersion { None, V1, V2 }
@@ -286,7 +253,7 @@ and return `(hdr, consumed_bytes, ok)`, returning `consumed_bytes = 0` and
 `out_hdr` and returns the remaining zero-copy payload slice following the PROXY
 header.
 
-### 11. Forward Proxies & Slowloris Defense (`net/proxy.goose`)
+### 10. Forward Proxies & Slowloris Defense (`net/proxy.goose`)
 
 ```goose
 enum ProxyScheme { Direct, Http, Https, Socks4, Socks4a, Socks5, Socks5h }
@@ -322,7 +289,7 @@ header bytes up to `\r\n\r\n` and returns a `SlowlorisViolation` if the header
 deadline, minimum byte rate, total header byte ceiling, or field count limit is
 breached.
 
-### 12. Retry, Backoff, and Circuit Breakers (`net/retry.goose`)
+### 11. Retry, Backoff, and Circuit Breakers (`net/retry.goose`)
 
 ```goose
 enum JitterStrategy { None, FullJitter, EqualJitter, DecorrelatedJitter }
@@ -354,7 +321,7 @@ RFC 9110 §10.2.3 `Retry-After` headers in either delta-seconds
 (`try_parse_retry_after_seconds`) or IMF-fixdate
 (`try_parse_retry_after_http_date`) format into non-negative milliseconds.
 
-### 13. Hierarchical Tick Timer Wheel (`net/tick_timer.goose`)
+### 12. Hierarchical Tick Timer Wheel (`net/tick_timer.goose`)
 
 ```goose
 struct TickTimerWheel { slots: u64[64], current_tick: u64, tick_resolution_ms: u64 }
@@ -370,7 +337,7 @@ bitmask slots (`u64[64]`) in constant time. `tick_timer_advance` steps
 `current_tick` to `now_ms`, clears traversed slots, and returns the bitwise OR
 mask of expired connection IDs.
 
-### 14. Network Isolation Keys (`net/isolation.goose`)
+### 13. Network Isolation Keys (`net/isolation.goose`)
 
 ```goose
 struct NetworkIsolationKey {

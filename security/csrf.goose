@@ -458,8 +458,96 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
         s = s[7..];
         let slash = s.index_of_byte('/');
         s = if slash >= 0 { s[slash..] } else { "/" };
+    } else if s.starts_with_fold("wss://") {
+        s = s[6..];
+        let slash = s.index_of_byte('/');
+        s = if slash >= 0 { s[slash..] } else { "/" };
+    } else if s.starts_with_fold("ws://") {
+        s = s[5..];
+        let slash = s.index_of_byte('/');
+        s = if slash >= 0 { s[slash..] } else { "/" };
+    } else if core::starts_with(s, "//") {
+        s = s[2..];
+        let slash = s.index_of_byte('/');
+        s = if slash >= 0 { s[slash..] } else { "/" };
     }
     return if s.len > 0 { s } else { "/" };
+}
+
+inline fn apply_sec_fetch_site_mode(
+    ctx:       FetchContext&,
+    name:      const u8[:],
+    val:       const u8[:],
+    seen_mode: bool&,
+) -> bool {
+    if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_SITE) {
+        let parsed_site = parse_sec_fetch_site(val);
+        if ctx.site == SecFetchSite.Missing {
+            ctx.site = parsed_site;
+        } else if parsed_site != ctx.site {
+            ctx.site = SecFetchSite.CrossSite;
+        }
+        return true;
+    }
+    if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_MODE) {
+        let parsed_mode = parse_sec_fetch_mode(val);
+        if !seen_mode {
+            ctx.mode = parsed_mode;
+            seen_mode = true;
+        } else if parsed_mode != ctx.mode {
+            ctx.mode = SecFetchMode.Other;
+        }
+        return true;
+    }
+    return false;
+}
+
+inline fn apply_sec_fetch_dest_user(
+    ctx:       FetchContext&,
+    name:      const u8[:],
+    val:       const u8[:],
+    seen_dest: bool&,
+    seen_user: bool&,
+) -> bool {
+    if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_DEST) {
+        let parsed_dest = parse_sec_fetch_dest(val);
+        if !seen_dest {
+            ctx.dest = parsed_dest;
+            seen_dest = true;
+        } else if parsed_dest != ctx.dest {
+            ctx.dest = SecFetchDest.Other;
+        }
+        return true;
+    }
+    if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_USER) {
+        let parsed_user = (val == "?1");
+        if !seen_user {
+            ctx.user_activated = parsed_user;
+            seen_user = true;
+        } else if parsed_user != ctx.user_activated {
+            ctx.user_activated = false;
+        }
+        return true;
+    }
+    return false;
+}
+
+inline fn apply_auth_and_origin_headers(
+    ctx:  FetchContext&,
+    name: const u8[:],
+    val:  const u8[:],
+) {
+    if name.eq_ascii_fold(rfc::HEADER_ORIGIN) {
+        if ctx.has_origin || !ctx.origin.try_set(val) { ctx.origin.clear(); }
+        ctx.has_origin = true;
+    } else if name.eq_ascii_fold(rfc::HEADER_REFERER) {
+        if ctx.has_referer || !ctx.referer.try_set(val) { ctx.referer.clear(); }
+        ctx.has_referer = true;
+    } else if name.eq_ascii_fold(rfc::HEADER_COOKIE) {
+        ctx.has_session_cookie = true;
+    } else if name.eq_ascii_fold(rfc::HEADER_AUTHORIZATION) || name.eq_ascii_fold("X-API-Key") {
+        ctx.has_explicit_auth = true;
+    }
 }
 
 // Extracts FetchContext from an incoming Request.
@@ -480,7 +568,7 @@ fn extract_fetch_context<Req>(
     // RFC 9110 Section 9.2.1 & RFC 10008 Section 2: safe methods
     let m = req.method[..];
     ctx.method_is_safe = (m == "GET" || m == "HEAD" || m == "OPTIONS" || m == "QUERY");
-    if req.url[..].starts_with_fold("http://") {
+    if req.url[..].starts_with_fold("http://") || req.url[..].starts_with_fold("ws://") {
         ctx.target_scheme.try_set("http");
     }
     if !ctx.target_host.try_set(target_host) {
@@ -492,33 +580,15 @@ fn extract_fetch_context<Req>(
         ctx.path.clear();
     }
 
+    var seen_mode = false;
+    var seen_dest = false;
+    var seen_user = false;
     for &e in req.headers.entries {
         let name = entry_name(req.headers, e);
         let val = entry_value(req.headers, e).trim_lws();
-
-        if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_SITE) {
-            let parsed_site = parse_sec_fetch_site(val);
-            if ctx.site == SecFetchSite.Missing {
-                ctx.site = parsed_site;
-            } else if parsed_site != ctx.site {
-                ctx.site = SecFetchSite.CrossSite;
-            }
-        } else if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_MODE) {
-            ctx.mode = parse_sec_fetch_mode(val);
-        } else if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_DEST) {
-            ctx.dest = parse_sec_fetch_dest(val);
-        } else if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_USER) {
-            ctx.user_activated = (val == "?1");
-        } else if name.eq_ascii_fold(rfc::HEADER_ORIGIN) {
-            if ctx.has_origin || !ctx.origin.try_set(val) { ctx.origin.clear(); }
-            ctx.has_origin = true;
-        } else if name.eq_ascii_fold(rfc::HEADER_REFERER) {
-            if ctx.has_referer || !ctx.referer.try_set(val) { ctx.referer.clear(); }
-            ctx.has_referer = true;
-        } else if name.eq_ascii_fold(rfc::HEADER_COOKIE) {
-            ctx.has_session_cookie = true;
-        } else if name.eq_ascii_fold(rfc::HEADER_AUTHORIZATION) || name.eq_ascii_fold("X-API-Key") {
-            ctx.has_explicit_auth = true;
+        if !apply_sec_fetch_site_mode(ctx, name, val, seen_mode) &&
+            !apply_sec_fetch_dest_user(ctx, name, val, seen_dest, seen_user) {
+            apply_auth_and_origin_headers(ctx, name, val);
         }
     }
 

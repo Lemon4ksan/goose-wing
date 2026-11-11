@@ -645,12 +645,17 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
         }
         sub.assert_true(is_diff, "empty context vs custom context produce distinct exporter outputs");
 
-        // 3. Exporter context length bound (> 255 bytes, RFC 8446 §7.5) MUST be rejected
-        var long_ctx: u8[256] = [0x77; 256];
+        // 3. Exporter context is hashed via Hash(context_value) (RFC 8446 §7.5), arbitrary length supported
+        var long_ctx: u8[300] = [0x77; 300];
         let ok_long_ctx = internal::ks_export_keying_material(sched, "test-label", long_ctx[..], 32, out_exp[..]);
-        sub.assert_false(ok_long_ctx, "context > 255 bytes rejected");
+        sub.assert_true(ok_long_ctx, "context > 255 bytes hashed and accepted (RFC 8446 §7.5)");
 
-        // 4. Empty label MUST be rejected
+        // 4. Exporter label length bound (> 245 bytes) MUST be rejected
+        var long_lbl: u8[246] = ['a'; 246];
+        let ok_long_lbl = internal::ks_export_keying_material(sched, long_lbl[..], [], 32, out_exp[..]);
+        sub.assert_false(ok_long_lbl, "label > 245 bytes rejected");
+
+        // 5. Empty label MUST be rejected
         let ok_no_lbl = internal::ks_export_keying_material(sched, "", [], 32, out_exp[..]);
         sub.assert_false(ok_no_lbl, "empty exporter label rejected");
     };
@@ -4067,7 +4072,7 @@ fn test_remediation_x509_signatures(t: lit::T&) {
         let empty_cert = wing::ParsedCert {};
         let dummy_parent = wing::ParsedCert {};
         let empty_alert = wing::x509_verify_cert_signature(empty_cert, "", dummy_parent, "");
-        sub.assert_eq(wing::tls_alert_to_u8(empty_alert), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "empty cert sig returns CloseNotify");
+        sub.assert_eq(wing::tls_alert_to_u8(empty_alert), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificate), "empty cert sig returns BadCertificate");
 
         let empty_ocsp = wing::ParsedOcspResponse {};
         let ocsp_sig_alert = wing::x509_verify_ocsp_signature(empty_ocsp, "", dummy_parent, "");

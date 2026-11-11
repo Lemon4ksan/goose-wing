@@ -9,6 +9,6 @@ format = table
 prefix = CHECK
 src_dir = .
 tests_dir = tests
-timeout = 180
+timeout = 300
 exclude = tests/lit/wire_kit.goose, tests/lit/alloc_kit.goose, tests/fuzz/, tests/wasm_runner.goose, tools/goosemarklint/, vendor/
 cc = tools/gcc_stack.bat

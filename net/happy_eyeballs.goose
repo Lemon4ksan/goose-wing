@@ -7,7 +7,7 @@ namespace wing;
 
 import std;
 import core from "..";
-import .dns;
+import dns.svcb;
 
 // ---- RFC 8305 and HEv3 normative constants ------------------------------
 

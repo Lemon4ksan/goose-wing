@@ -243,10 +243,7 @@ fn validate_jwks_key_compatibility(
     if key.key_ops != 0 && (key.key_ops & JWK_OP_VERIFY) == 0 {
         return JwtError.UnsupportedAlgorithm;
     }
-    if header_alg == JwtAlg.Unknown {
-        return JwtError.UnsupportedAlgorithm;
-    }
-    if header_alg == JwtAlg.None && !allow_none {
+    if header_alg == JwtAlg.Unknown || header_alg == JwtAlg.None {
         return JwtError.UnsupportedAlgorithm;
     }
     // RFC 8725 §3.2: Key Confusion Defense (Asymmetric vs Symmetric)

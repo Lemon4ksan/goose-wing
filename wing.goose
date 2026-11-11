@@ -70,6 +70,13 @@ import tls.post_quantum;
 import tls.cert_compression;
 import tls.session;
 
+// ---- domain name system (rfc 1035, rfc 9460 svcb, rfc 8484 doh, rfc 5861 cache) -
+
+import dns.svcb;
+import dns.wire;
+import dns.cache;
+import dns.doh;
+
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 
 import net.proxy;
@@ -80,7 +87,6 @@ import net.happy_eyeballs;
 import net.proxy_protocol_internal;
 import net.proxy_protocol;
 import net.retry;
-import net.dns;
 import net.masque;
 import net.tick_timer;
 import net.isolation;

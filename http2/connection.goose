@@ -969,7 +969,7 @@ inline fn commit_stream_send_quota(
     sync_stream_urgency_node(s, chosen_idx);
 
     // Update anti-starvation streak tracking
-    if chosen.priority.urgency < 3 {
+    if chosen.priority.urgency < 7 {
         s.urgency_streak_count++;
     } else {
         s.urgency_streak_count = 0;
@@ -1084,7 +1084,7 @@ fn select_and_commit_stream(
 inline fn apply_urgency_anti_starvation(s: H2Connection&, mask: u8) -> u8 {
     guard s.urgency_streak_count >= MAX_HIGH_URGENCY_STREAK else { return mask; }
     let dominant_u = ctz_urgency_mask(mask);
-    guard dominant_u < 3 else {
+    guard dominant_u < 7 else {
         s.urgency_streak_count = 0;
         return mask;
     }

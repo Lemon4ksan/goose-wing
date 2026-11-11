@@ -38,7 +38,7 @@ import client.session.h1_exchange;
 import net.pool;
 import net.isolation;
 import net.proxy;
-import net.dns;
+import dns.cache;
 import net.happy_eyeballs;
 import net.retry;
 import http2.framing;

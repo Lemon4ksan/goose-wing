@@ -37,6 +37,8 @@ form the two-part rulebook for `goose-wing`. Both are loaded into
     (RFC 7617), PAKE.
   - `security/*`: CORS, CSRF, HSTS, CSP, SSRF IP/CIDR classifier, rate limiting,
     sanitizer, decompression bomb guard.
+  - `dns/*`: Deterministic DNS wire codec (RFC 1035), RFC 9460 HTTPS/SVCB
+    Type 65, RFC 8484 DoH query builders, and RFC 5861 LRU cache.
   - `net/*`, `client/*`, `server/*`, `proxy/*`, `realtime/*`, `grpc/*`,
     `cookie/*`, `fingerprint/*`: L4 sockets (`io_uring`, `kqueue`, Winsock RIO,
     AF_XDP, DPDK), connection pools, SoA timer wheels (`server/soa_timer.goose`),

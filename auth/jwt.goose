@@ -62,21 +62,21 @@ fn parse_jwt_alg(s: const u8[:]) -> JwtAlg {
 
 enum JwtError {
     None,
-    MalformedToken,        // Missing dots, wrong part count (must be exactly 3 parts)
-    InvalidBase64,         // Base64URL decoding failed
-    InvalidHeaderJson,     // Header JSON could not be parsed
-    InvalidClaimsJson,     // Claims JSON could not be parsed
-    UnsupportedAlgorithm,  // Unknown algorithm or 'none' when not explicitly allowed
-    AlgorithmMismatch,     // Token header alg does not match expected verification alg
-    SignatureInvalid,      // Cryptographic signature check failed
-    TokenExpired,          // exp claim is before now - leeway
-    TokenNotYetValid,      // nbf claim is after now + leeway
-    IssuerMismatch,        // iss claim does not match expected issuer
-    AudienceMismatch,      // aud claim does not match expected audience
-    SubjectMismatch,       // sub claim does not match expected subject
-    KeyNotFound,           // kid requested by token not found in JWKS
+    MalformedToken,            // Missing dots, wrong part count (must be exactly 3 parts)
+    InvalidBase64,             // Base64URL decoding failed
+    InvalidHeaderJson,         // Header JSON could not be parsed
+    InvalidClaimsJson,         // Claims JSON could not be parsed
+    UnsupportedAlgorithm,      // Unknown algorithm or 'none' when not explicitly allowed
+    AlgorithmMismatch,         // Token header alg does not match expected verification alg
+    SignatureInvalid,          // Cryptographic signature check failed
+    TokenExpired,              // exp claim is before now - leeway
+    TokenNotYetValid,          // nbf claim is after now + leeway
+    IssuerMismatch,            // iss claim does not match expected issuer
+    AudienceMismatch,          // aud claim does not match expected audience
+    SubjectMismatch,           // sub claim does not match expected subject
+    KeyNotFound,               // kid requested by token not found in JWKS
     CriticalHeaderUnsupported, // crit header contains unsupported param (RFC 7515 §4.1.11 / RFC 8725 §3.8)
-    TypeMismatch,          // typ header does not match expected type (RFC 8725 §3.11 / RFC 9068)
+    TypeMismatch,              // typ header does not match expected type (RFC 8725 §3.11 / RFC 9068)
 }
 
 // ---- JWT Header Model & Parser -------------------------------------------
@@ -1102,8 +1102,7 @@ fn split_jwt_parts(
 }
 
 fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_sec: i64) -> bool {
-    guard leeway >= 0 else { return false; }
-    guard now_unix_sec >= 0 else { return false; }
+    guard leeway >= 0 && now_unix_sec >= 0 && exp >= -1 else { return false; }
     if exp >= 0 {
         let max_exp_cutoff = core::add_sat_i64(exp, leeway);
         return now_unix_sec < max_exp_cutoff;
@@ -1112,8 +1111,7 @@ fn validate_jwt_expiration(exp: i64, require_exp: bool, leeway: i64, now_unix_se
 }
 
 fn validate_jwt_not_before(nbf: i64, require_nbf: bool, leeway: i64, now_unix_sec: i64) -> bool {
-    guard leeway >= 0 else { return false; }
-    guard now_unix_sec >= 0 else { return false; }
+    guard leeway >= 0 && now_unix_sec >= 0 && nbf >= -1 else { return false; }
     if nbf >= 0 {
         let min_nbf_cutoff = max(0, core::sub_sat_i64(nbf, leeway));
         return now_unix_sec >= min_nbf_cutoff;
@@ -1264,6 +1262,20 @@ fn parse_jwt_unverified(
     var temp_header = JwtHeader { .. };
     let hdr_err = decode_jwt_header(token[..dot1], temp_header);
     guard hdr_err == JwtError.None else { return hdr_err; }
+    if temp_header.has_b64 && !temp_header.b64 {
+        return JwtError.CriticalHeaderUnsupported;
+    }
+
+    let sig_start = core::add_sat_i64(dot2, 1);
+    let sig_part = token[sig_start..];
+    if temp_header.alg == JwtAlg.None {
+        guard sig_part.len == 0 else { return JwtError.MalformedToken; }
+    } else {
+        var sig_buf: u8[..512] = [];
+        guard sig_part.len > 0 && core::base64url_decode(sig_part, sig_buf) else {
+            return JwtError.InvalidBase64;
+        }
+    }
 
     var temp_claims = JwtClaims { .. };
     let clm_start = core::add_sat_i64(dot1, 1);
@@ -1279,8 +1291,8 @@ fn verify_jwt_algorithm(header_alg: JwtAlg, expected_alg: JwtAlg, allow_none: bo
     if header_alg == JwtAlg.Unknown {
         return JwtError.UnsupportedAlgorithm;
     }
-    if header_alg == JwtAlg.None && !allow_none {
-        return JwtError.UnsupportedAlgorithm;
+    if header_alg == JwtAlg.None {
+        return if allow_none { JwtError.None } else { JwtError.UnsupportedAlgorithm };
     }
     if header_alg != expected_alg {
         return JwtError.AlgorithmMismatch;
@@ -1333,11 +1345,9 @@ fn verify_jwt_header_rules(header: const JwtHeader&, options: const JwtValidatio
         }
     }
 
-    // RFC 7797 §3: When "b64" is false, "b64" MUST be integrity protected and listed in "crit"
+    // RFC 7797 §7: JWTs MUST NOT use the JWS Unencoded Payload Option ("b64": false)
     if header.has_b64 && !header.b64 {
-        if !has_crit_param_in_header(header, "b64") {
-            return JwtError.CriticalHeaderUnsupported;
-        }
+        return JwtError.CriticalHeaderUnsupported;
     }
 
     // RFC 7515 §4.1.11 / RFC 8725 §3.8: Critical Header Parameters (crit)

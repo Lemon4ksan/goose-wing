@@ -39,6 +39,7 @@ struct IntrospectionResponse {
 fn encode_token_endpoint_form<B>(token: const u8[:], hint: TokenTypeHint, out: B&) -> bool {
     out.clear();
     guard token.len > 0 && token.len <= 4096 else { return false; }
+    guard core::swar_find_ctl(token) == token.len && token.validate_utf8() else { return false; }
     var buf:   u8[..8192] = [];
     var chunk: u8[..1024] = [];
     buf.append("token=");

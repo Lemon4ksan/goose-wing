@@ -189,8 +189,9 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
 
     if ver == rfc::ECH_VERSION_RFC9849 {
         var cfg = EchConfig { .. };
-        guard parse_ech_config(entry_start[..total_entry], cfg) else { return false; }
-        guard out.configs.try_push(cfg) else { return false; }
+        if parse_ech_config(entry_start[..total_entry], cfg) {
+            guard out.configs.try_push(cfg) else { return false; }
+        }
     }
     list_cursor.buf = list_cursor.buf[total_entry..];
     return true;

@@ -148,7 +148,12 @@ fn parse_param_val(rem: const u8[:], idx: i64&) -> const u8[:], bool {
         let rel_q = quoted_body.index_of_byte('"');
         guard rel_q >= 0 else { return "", false; }
         let val = quoted_body[..rel_q];
-        idx = core::add_sat_i64(v_start, core::add_sat_i64(rel_q, 2));
+        guard !val.contains_byte('\\') && core::swar_find_ctl(val) == val.len else { return "", false; }
+        let next_idx = core::add_sat_i64(v_start, core::add_sat_i64(rel_q, 2));
+        guard next_idx <= rem.len else { return "", false; }
+        let tail = rem[next_idx..];
+        guard tail.len == 0 || core::is_lws(tail[0]) || tail[0] == ',' else { return "", false; }
+        idx = next_idx;
         committed = true;
         return val, true;
     }
@@ -254,10 +259,6 @@ fn parse_private_token_challenge<B>(
     out_token_key:   B&,
     out_max_age_sec: i64&,
 ) -> bool {
-    out_challenge = TokenChallenge { .. };
-    out_token_key.clear();
-    out_max_age_sec = 0;
-
     let clean = header_val.trim_lws();
     let scheme_len = rfc::SCHEME_PRIVATE_TOKEN.len;
     guard clean.len > scheme_len else { return false; }
@@ -282,6 +283,7 @@ fn parse_private_token_challenge<B>(
     guard unmarshal_token_challenge(raw_challenge[..], temp_chal) else { return false; }
 
     guard can_fit(out_token_key, temp_token_key.len) else { return false; }
+    out_token_key.clear();
     out_token_key.append(temp_token_key[..]);
     out_max_age_sec = temp_max_age;
     out_challenge = temp_chal;

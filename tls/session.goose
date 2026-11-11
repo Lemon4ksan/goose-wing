@@ -972,6 +972,12 @@ struct TlsServerHandshakeConfig {
 fn extract_leaf_ocsp_extension(ext_bytes: const u8[:]) -> const u8[:], bool {
     var entries: TlsExtensionEntry[..32] = [];
     guard parse_extensions_block(ext_bytes, entries) else { return "", false; }
+    for e in entries {
+        guard e.ext_type == rfc::TLS_EXT_STATUS_REQUEST ||
+            e.ext_type == rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP else {
+            return "", false;
+        }
+    }
     let status_data, has_st = find_extension(entries, rfc::TLS_EXT_STATUS_REQUEST);
     guard has_st else { return "", true; }
     return unwrap_tls_ocsp_response(status_data);
@@ -1326,6 +1332,11 @@ fn verify_crl_for_chain(
         crl_parsed, crl_der, chain_parsed[issuer_idx], chain_slices[issuer_idx],
     );
     guard sig_alert == TlsAlert.CloseNotify else { return false; }
+    let now_sec = core::unix(core::now());
+    guard crl_parsed.this_update <= now_sec else { return false; }
+    if crl_parsed.next_update > 0 {
+        guard now_sec <= crl_parsed.next_update else { return false; }
+    }
     let ser_bytes = span_slice(chain_slices[0], chain_parsed[0].serial_number);
     let ser_u64, ok_ser = parse_asn1_serial_u64(ser_bytes);
     guard ok_ser else { return false; }
@@ -1777,11 +1788,12 @@ fn handle_client_hrr_transition(
     sh:            ParsedServerHello&,
 ) -> bool {
     let hrr_cipher = sh.cipher_suite;
-    let has_group = sh.selected_group != 0;
+    let hrr_group = sh.selected_group;
+    let has_group = hrr_group != 0;
     guard has_group || sh.hrr_cookie.len > 0 else { return false; }
 
     let enable_pq_ch2, ok_regen = regenerate_client_hrr_keyshare(
-        sh.selected_group, config.enable_pq_hybrid, client_priv, client_pub, pq_priv, pq_pub,
+        hrr_group, config.enable_pq_hybrid, client_priv, client_pub, pq_priv, pq_pub,
     );
     guard ok_regen else { return false; }
 
@@ -1810,7 +1822,8 @@ fn handle_client_hrr_transition(
     guard read_plaintext_handshake_record(fd, sh2_msg) else { return false; }
     guard parse_live_server_hello(sh2_msg[..], sh) &&
         !sh.is_hrr &&
-        validate_hrr_cipher_suite(hrr_cipher, sh.cipher_suite) else {
+        validate_hrr_cipher_suite(hrr_cipher, sh.cipher_suite) &&
+        (hrr_group == 0 || sh.selected_group == hrr_group) else {
         return false;
     }
     transcript_update(transcript, sh2_msg[..]);
@@ -2072,8 +2085,8 @@ fn select_server_alpn_from_ext(
     out_alpn:        u8[..32]&,
 ) -> bool {
     out_alpn.clear();
-    guard alpn_ext.len >= 3 else { return false; }
     guard server_alpn_csv.len > 0 else { return true; }
+    guard alpn_ext.len >= 3 else { return false; }
     var c = core::cursor_from(alpn_ext);
     let list_bytes, ok_l = c.read_u16_prefixed();
     guard ok_l && c.buf.len == 0 && list_bytes.len >= 1 else { return false; }
@@ -2095,6 +2108,39 @@ fn select_server_alpn_from_ext(
     return true;
 }
 
+fn verify_single_psk_binder(
+    ticket_id:    const u8[:],
+    binder_slice: const u8[:],
+    ch_msg:       const u8[:],
+    binders_len:  u16,
+    out_psk:      u8[32]&,
+) -> bool {
+    var full_psk: u8[..48] = [];
+    var cs:       u16      = 0;
+    guard lookup_tls13_ticket_by_identity_full(ticket_id, full_psk, cs) && full_psk.len >= 32 else {
+        return false;
+    }
+    let suite = if cs != 0 { cs } else { rfc::TLS_CIPHER_AES_128_GCM_SHA256 };
+    var ks_early, ok_kse = internal::ks_init(suite);
+    defer internal::ks_zeroize(ks_early);
+    guard ok_kse && internal::ks_init_early_secret(ks_early, full_psk[..]) else { return false; }
+    guard binder_slice.len == ks_early.hash_len else { return false; }
+
+    var b_key: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(b_key);
+    for i in min(ks_early.hash_len, 32) { b_key[i] = ks_early.binder_key[i]; }
+
+    let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg, binders_len);
+    guard ok_tr else { return false; }
+
+    var exp_binder: u8[32] = [0; 32];
+    guard compute_tls13_psk_binder(b_key, trunc_ch, exp_binder) else { return false; }
+    guard core::ct_eq_bytes(exp_binder[0..ks_early.hash_len], binder_slice) else { return false; }
+
+    core::ct_copy_bytes(out_psk[..], full_psk[0..32]);
+    return true;
+}
+
 // Verifies ClientHello pre_shared_key extension and PSK binder against cached server tickets (RFC 8446 §4.2.11).
 fn verify_client_hello_psk_binder(
     ch_msg:  const u8[:],
@@ -2108,34 +2154,32 @@ fn verify_client_hello_psk_binder(
     let ids_bytes, ok_ids = c.read_u16_prefixed();
     guard ok_ids && ids_bytes.len >= 7 else { return false; }
     let binders_bytes, ok_b = c.read_u16_prefixed();
-    guard ok_b && c.buf.len == 0 && binders_bytes.len == 33 else { return false; }
+    guard ok_b && c.buf.len == 0 && binders_bytes.len >= 33 else { return false; }
 
     var ic = core::cursor_from(ids_bytes);
-    let ticket_id, ok_t = ic.read_u16_prefixed();
-    guard ok_t && ticket_id.len > 0 else { return false; }
-    let _, ok_age = ic.read_u32();
-    guard ok_age && ic.buf.len == 0 else { return false; }
-
     var bc = core::cursor_from(binders_bytes);
-    let binder_slice, ok_bs = bc.read_u8_prefixed();
-    guard ok_bs && binder_slice.len == 32 && bc.buf.len == 0 else { return false; }
+    var matched_psk: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(matched_psk);
+    var matched = false;
 
-    guard lookup_tls13_ticket_by_identity(ticket_id, out_psk) else { return false; }
+    while ic.buf.len > 0 && bc.buf.len > 0 {
+        let ticket_id, ok_t = ic.read_u16_prefixed();
+        guard ok_t && ticket_id.len > 0 else { return false; }
+        let obf_age, ok_age = ic.read_u32();
+        guard ok_age else { return false; }
+        let binder_slice, ok_bs = bc.read_u8_prefixed();
+        guard ok_bs && binder_slice.len >= 32 else { return false; }
 
-    var ks_early, ok_kse = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
-    defer internal::ks_zeroize(ks_early);
-    guard ok_kse && internal::ks_init_early_secret(ks_early, out_psk[..]) else { return false; }
-
-    var b_key: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(b_key);
-    for i in 32 { b_key[i] = ks_early.binder_key[i]; }
-    let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg, 33);
-    guard ok_tr else { return false; }
-    var exp_binder: u8[32] = [0; 32];
-    guard compute_tls13_psk_binder(b_key, trunc_ch, exp_binder) &&
-        core::ct_eq_bytes(exp_binder[..], binder_slice) else {
-        return false;
+        if !matched {
+            if verify_single_psk_binder(
+                ticket_id, binder_slice, ch_msg, binders_bytes.len as u16, matched_psk,
+            ) {
+                matched = true;
+            }
+        }
     }
+    guard matched && ic.buf.len == 0 && bc.buf.len == 0 else { return false; }
+    core::ct_copy_bytes(out_psk[..], matched_psk[..]);
     committed = true;
     return true;
 }
@@ -2232,7 +2276,15 @@ fn select_cipher_suite(raw: const u8[:]) -> u16, bool {
     return 0, false;
 }
 
-// Parses ClientHello payload for server handshake, extracting session ID, client X25519 key share, ALPN, SNI, and PSK.
+fn has_forbidden_extension(entries: const TlsExtensionEntry[..32]&) -> bool {
+    for e in entries {
+        if rfc::is_forbidden_ch_extension(e.ext_type) { return true; }
+    }
+    return false;
+}
+
+// Parses ClientHello payload for server handshake, extracting session ID,
+// client X25519 key share, ALPN, SNI, and PSK.
 //
 // Example:
 //   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, 0x00, 0x13, 0x01]
@@ -2272,9 +2324,18 @@ fn parse_client_hello_for_server_sni(
 
     var entries: TlsExtensionEntry[..32] = [];
     guard parse_extensions_block(bc.buf, entries) else { return false; }
-    for e in entries {
-        guard !rfc::is_forbidden_ch_extension(e.ext_type) else { return false; }
-    }
+    guard !has_forbidden_extension(entries) else { return false; }
+
+    let sv_ext, has_sv = find_extension(entries, rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    guard has_sv else { return false; }
+    let supports_13, ok_sv = parse_client_supported_versions(sv_ext);
+    guard ok_sv && supports_13 else { return false; }
+
+    let _, has_sig = find_extension(entries, rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
+    guard has_sig else { return false; }
+
+    let _, has_grp = find_extension(entries, rfc::TLS_EXT_SUPPORTED_GROUPS);
+    guard has_grp else { return false; }
 
     let sni_ext, has_sni = find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
     if has_sni {
@@ -2613,6 +2674,11 @@ fn tls_server_handshake_with_ch(
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
+    let cipher_suite, ok_cs = select_cipher_suite(ch_msg);
+    guard ok_cs else {
+        free_tls_cipher_slot(slot_idx);
+        return 0xFFFF, false;
+    }
     let _ = g_tls_cipher_slots[idx].server_name.try_set(client_sni[..]);
 
     let server_random = tls_random_bytes_32();
@@ -2623,12 +2689,6 @@ fn tls_server_handshake_with_ch(
     var ecdhe_secret, ok_ecdhe = core::x25519_shared_secret(server_priv, client_pub);
     defer core::secure_zeroize_32(ecdhe_secret);
     guard ok_ecdhe else {
-        free_tls_cipher_slot(slot_idx);
-        return 0xFFFF, false;
-    }
-
-    let cipher_suite, ok_cs = select_cipher_suite(ch_msg);
-    guard ok_cs else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }

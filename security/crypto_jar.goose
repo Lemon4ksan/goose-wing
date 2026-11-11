@@ -17,13 +17,14 @@ const K_OVERHEAD_XCHACHA20:    i64 = 53; // 1 + 4 + 8 + 24 + 16
 const K_OVERHEAD_HKDF_AES_GCM: i64 = 65; // 1 + 4 + 32 + 12 + 16
 const K_OVERHEAD_HMAC_SHA256:  i64 = 45; // 1 + 4 + 8 + 32
 const MAX_COOKIE_NAME_LEN:     i64 = 4096; // RFC 6265 §6.1
+const MAX_ENCODED_COOKIE_LEN:  i64 = 16384;
 
 inline fn can_fit<B>(buf: const B&, needed: i64) -> bool {
-    return needed <= buf.cap;
+    return needed >= 0 && needed <= buf.cap;
 }
 
 inline fn can_fit(buf: const u8[>..]&, needed: i64) -> bool {
-    return true;
+    return needed >= 0;
 }
 
 inline fn can_fit_base64url<B>(buf: const B&, raw_len: i64) -> bool {
@@ -106,12 +107,12 @@ struct KeyStore {
     clock_skew_tolerance_sec: i64          = 300,     // 5 minutes skew tolerance
 }
 
-// Appends a KeySlot to the store if capacity permits and key_id is not already active.
+// Appends a KeySlot to the store if capacity permits and key_id is not already present.
 // Derives domain-separated signing and encryption subkeys via HKDF-SHA256.
 fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
     guard !slot.revoked && store.keys.len < store.keys.cap else { return false; }
     for idx in store.keys.len {
-        if store.keys[idx].key_id == slot.key_id && !store.keys[idx].revoked {
+        if store.keys[idx].key_id == slot.key_id {
             return false;
         }
     }
@@ -127,6 +128,14 @@ fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
     let ok = store.keys.try_push(derived);
     zeroize_jar_key_slot(derived);
     return ok;
+}
+
+inline fn is_jar_key_valid_at(slot: const KeySlot&, now_sec: i64) -> bool {
+    guard !slot.revoked else { return false; }
+    if slot.expires_at_sec > 0 && now_sec > 0 && now_sec >= slot.expires_at_sec {
+        return false;
+    }
+    return true;
 }
 
 // Returns the currently active, non-revoked KeySlot.
@@ -172,15 +181,19 @@ fn revoke_key(store: KeyStore&, key_id: u32) -> bool {
     return found;
 }
 
-// Checks if a key needs proactive rotation (starts >= 24 hours before expiration).
+// Checks if a key needs proactive rotation (revoked or starts >= 24 hours before expiration).
 fn needs_rotation(slot: const KeySlot&, now_sec: i64) -> bool {
-    guard slot.expires_at_sec > 0 && now_sec >= 0 && !slot.revoked else { return false; }
+    guard now_sec >= 0 else { return false; }
+    if slot.revoked { return true; }
+    guard slot.expires_at_sec > 0 else { return false; }
     if now_sec >= slot.expires_at_sec { return true; }
     return core::sub_sat_i64(slot.expires_at_sec, now_sec) <= 86400;
 }
 
 fn needs_rotation(slot: const core::KeySlot&, now_sec: i64) -> bool {
-    guard slot.expires_at_sec > 0 && now_sec >= 0 && !slot.revoked else { return false; }
+    guard now_sec >= 0 else { return false; }
+    if slot.revoked { return true; }
+    guard slot.expires_at_sec > 0 else { return false; }
     if now_sec >= slot.expires_at_sec { return true; }
     return core::sub_sat_i64(slot.expires_at_sec, now_sec) <= 86400;
 }
@@ -262,7 +275,8 @@ fn seal_binary_hkdf_aes<B>(
     out.clear();
     var committed = false;
     defer if !committed { out.clear(); };
-    guard now_sec > 0 && cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard now_sec > 0 && is_jar_key_valid_at(slot, now_sec) &&
+        cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard can_fit(out, core::add_sat_i64(K_OVERHEAD_HKDF_AES_GCM, plaintext.len)) else { return false; }
 
     out.push(WIRE_VER_HKDF_AES_GCM);
@@ -299,7 +313,8 @@ fn seal_binary_xchacha20<B>(
     out:         B&,
 ) -> bool {
     out.clear();
-    guard now_sec > 0 && cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
+    guard now_sec > 0 && is_jar_key_valid_at(slot, now_sec) &&
+        cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard can_fit(out, core::add_sat_i64(K_OVERHEAD_XCHACHA20, plaintext.len)) else { return false; }
 
     let now_u = now_sec as u64;
@@ -334,7 +349,10 @@ fn private_jar_seal_binary<B>(
 ) -> bool {
     out.clear();
     var slot, ok_key = active_key(jar.store);
-    guard ok_key else { return false; }
+    guard ok_key && is_jar_key_valid_at(slot, now_sec) else {
+        zeroize_jar_key_slot(slot);
+        return false;
+    }
 
     let ok = if jar.use_hkdf_aes {
         seal_binary_hkdf_aes(slot, cookie_name, plaintext, now_sec, nonce_seed, out)
@@ -355,14 +373,20 @@ fn open_binary_xchacha20<B>(
 ) -> bool {
     let saved_len = out_plaintext.len;
     var committed = false;
-    defer if !committed { out_plaintext.resize(saved_len); };
-    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN && raw_wire.len >= K_OVERHEAD_XCHACHA20 else {
+    defer if !committed {
+        core::secure_zeroize_slice(out_plaintext[saved_len..]);
+        out_plaintext.resize(saved_len);
+    };
+    guard is_jar_key_valid_at(slot, now_sec) &&
+        cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN &&
+        raw_wire.len >= K_OVERHEAD_XCHACHA20 else {
         return false;
     }
     let ct_len = core::sub_sat_i64(raw_wire.len, K_OVERHEAD_XCHACHA20);
-    guard can_fit(out_plaintext, ct_len) else { return false; }
+    guard can_fit(out_plaintext, core::add_sat_i64(saved_len, ct_len)) else { return false; }
 
     let ts = core::read_be_u64(raw_wire, 5);
+    guard is_cookie_timestamp_valid(jar.store, ts, now_sec) else { return false; }
 
     var nonce24: u8[24] = [0; 24];
     for i in 24 { nonce24[i] = raw_wire[core::add_sat_i64(13, i)]; }
@@ -376,13 +400,9 @@ fn open_binary_xchacha20<B>(
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, ts, cookie_name, aad_stack);
     guard core::xchacha20_poly1305_open(slot.encryption_key, nonce24, ct, aad_stack[..], tag, out_plaintext) else {
-        core::secure_zeroize_slice(out_plaintext[..]);
-        out_plaintext.clear();
         return false;
     }
-    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, ts, now_sec) else {
-        core::secure_zeroize_slice(out_plaintext[..]);
-        out_plaintext.clear();
+    guard core::sub_sat_i64(out_plaintext.len, saved_len) == ct_len else {
         return false;
     }
     committed = true;
@@ -399,13 +419,17 @@ fn open_binary_hkdf_aes<B>(
 ) -> bool {
     let saved_len = out_plaintext.len;
     var committed = false;
-    defer if !committed { out_plaintext.resize(saved_len); };
-    guard cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN &&
+    defer if !committed {
+        core::secure_zeroize_slice(out_plaintext[saved_len..]);
+        out_plaintext.resize(saved_len);
+    };
+    guard is_jar_key_valid_at(slot, now_sec) &&
+        cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN &&
         raw_wire.len >= K_OVERHEAD_HKDF_AES_GCM else {
         return false;
     }
     let ct_len = core::sub_sat_i64(raw_wire.len, K_OVERHEAD_HKDF_AES_GCM);
-    guard can_fit(out_plaintext, ct_len) else { return false; }
+    guard can_fit(out_plaintext, core::add_sat_i64(saved_len, ct_len)) else { return false; }
 
     var salt32: u8[32] = [0; 32];
     for i in 32 { salt32[i] = raw_wire[core::add_sat_i64(5, i)]; }
@@ -414,6 +438,7 @@ fn open_binary_hkdf_aes<B>(
     for i in 12 { nonce12[i] = raw_wire[core::add_sat_i64(37, i)]; }
 
     let ts = core::read_le_u64(salt32[..], 8);
+    guard is_cookie_timestamp_valid(jar.store, ts, now_sec) else { return false; }
     let tag_off = core::add_sat_i64(49, ct_len);
     let ct = raw_wire[49..tag_off];
 
@@ -423,13 +448,9 @@ fn open_binary_hkdf_aes<B>(
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, ts, cookie_name, aad_stack);
     guard core::hkdf_aes256_gcm_open(slot.encryption_key, salt32, nonce12, ct, aad_stack[..], tag, out_plaintext) else {
-        core::secure_zeroize_slice(out_plaintext[..]);
-        out_plaintext.clear();
         return false;
     }
-    guard out_plaintext.len == ct_len && is_cookie_timestamp_valid(jar.store, ts, now_sec) else {
-        core::secure_zeroize_slice(out_plaintext[..]);
-        out_plaintext.clear();
+    guard core::sub_sat_i64(out_plaintext.len, saved_len) == ct_len else {
         return false;
     }
     committed = true;
@@ -450,7 +471,10 @@ fn private_jar_open_binary<B>(
     let key_id = core::read_be_u32(raw_wire, 1);
 
     var slot, ok_key = find_key(jar.store, key_id);
-    guard ok_key else { return false; }
+    guard ok_key && is_jar_key_valid_at(slot, now_sec) else {
+        zeroize_jar_key_slot(slot);
+        return false;
+    }
 
     var ok = false;
     if ver == WIRE_VER_XCHACHA20 {
@@ -490,6 +514,7 @@ fn private_jar_open<B>(
     out_plaintext: B&,
 ) -> bool {
     out_plaintext.clear();
+    guard encoded_val.len > 0 && encoded_val.len <= MAX_ENCODED_COOKIE_LEN else { return false; }
     var raw_wire_stack: u8[..4200] = [];
     if encoded_val.len <= 5500 {
         guard core::base64url_decode(encoded_val, raw_wire_stack) else { return false; }
@@ -528,7 +553,10 @@ fn signed_jar_seal_binary<B>(
     }
 
     var slot, ok_key = active_key(jar.store);
-    guard ok_key else { return false; }
+    guard ok_key && is_jar_key_valid_at(slot, now_sec) else {
+        zeroize_jar_key_slot(slot);
+        return false;
+    }
 
     let now_u = now_sec as u64;
     out.push(WIRE_VER_HMAC_SHA256);
@@ -572,7 +600,10 @@ fn signed_jar_open_binary<B>(
     let key_id = core::read_be_u32(raw_wire, 1);
 
     var slot, ok_key = find_key(jar.store, key_id);
-    guard ok_key else { return false; }
+    guard ok_key && is_jar_key_valid_at(slot, now_sec) else {
+        zeroize_jar_key_slot(slot);
+        return false;
+    }
 
     let cookie_u = core::read_be_u64(raw_wire, 5);
     let tag_off = core::add_sat_i64(13, payload_len);
@@ -624,6 +655,7 @@ fn signed_jar_open<B>(
     out_payload: B&,
 ) -> bool {
     out_payload.clear();
+    guard encoded_val.len > 0 && encoded_val.len <= MAX_ENCODED_COOKIE_LEN else { return false; }
     var raw_wire_stack: u8[..4200] = [];
     if encoded_val.len <= 5500 {
         guard core::base64url_decode(encoded_val, raw_wire_stack) else { return false; }

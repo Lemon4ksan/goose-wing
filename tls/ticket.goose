@@ -9,14 +9,14 @@ import std;
 import core from "..";
 
 struct Tls13CachedSessionTicket {
-    in_use:       bool      = false,
-    server_name:  u8[..256] = [],
-    ticket:       u8[..256] = [],
-    psk:          u8[..48]  = [],
-    age_add:      u32       = 0,
-    lifetime:     u32       = 0,
-    cipher_suite: u16       = 0,
-    issued_at_ms: i64       = 0,
+    in_use:       bool       = false,
+    server_name:  u8[..256]  = [],
+    ticket:       u8[..1024] = [],
+    psk:          u8[..48]   = [],
+    age_add:      u32        = 0,
+    lifetime:     u32        = 0,
+    cipher_suite: u16        = 0,
+    issued_at_ms: i64        = 0,
 }
 
 var g_tls13_tickets: Tls13CachedSessionTicket[16] = [Tls13CachedSessionTicket { .. }; 16];
@@ -193,10 +193,8 @@ fn open_stateless_tls13_ticket(
 
 inline fn is_cached_ticket_fresh(entry: const Tls13CachedSessionTicket&, now_ms: i64) -> bool {
     guard entry.lifetime > 0 && entry.lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else { return false; }
-    if entry.issued_at_ms > 0 && now_ms > 0 {
-        return is_stateless_ticket_within_lifetime(entry.issued_at_ms, now_ms, entry.lifetime);
-    }
-    return true;
+    guard entry.issued_at_ms > 0 && now_ms > 0 else { return false; }
+    return is_stateless_ticket_within_lifetime(entry.issued_at_ms, now_ms, entry.lifetime);
 }
 
 inline fn populate_cached_ticket_slot(
@@ -231,7 +229,7 @@ fn store_tls13_session_ticket(
     issued_at_ms: i64 = 0,
 ) {
     guard server_name.len > 0 && server_name.len <= 255 else { return; }
-    guard ticket.len > 0 && ticket.len <= 256 &&
+    guard ticket.len > 0 && ticket.len <= 1024 &&
         lifetime > 0 && lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else {
         return;
     }
@@ -259,9 +257,9 @@ fn store_tls13_session_ticket(
 }
 
 // Looks up a cached TLS 1.3 session ticket by server hostname, returning the full PSK and cipher suite.
-fn lookup_tls13_session_ticket_full(
+fn lookup_tls13_session_ticket_full<B>(
     server_name:      const u8[:],
-    out_ticket:       u8[..256]&,
+    out_ticket:       B&,
     out_psk:          u8[..48]&,
     out_age_add:      u32&,
     out_cipher_suite: u16&,
@@ -278,9 +276,7 @@ fn lookup_tls13_session_ticket_full(
             guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
                 out_ticket.try_set(g_tls13_tickets[i].ticket[..]) &&
                 out_psk.try_set(g_tls13_tickets[i].psk[..]) else {
-                out_ticket.clear();
-                out_psk.clear();
-                return false;
+                continue;
             }
             out_age_add = g_tls13_tickets[i].age_add;
             out_cipher_suite = g_tls13_tickets[i].cipher_suite;
@@ -291,9 +287,9 @@ fn lookup_tls13_session_ticket_full(
 }
 
 // Looks up a cached TLS 1.3 session ticket by server hostname (32-byte PSK view).
-fn lookup_tls13_session_ticket(
+fn lookup_tls13_session_ticket<B>(
     server_name: const u8[:],
-    out_ticket:  u8[..256]&,
+    out_ticket:  B&,
     out_psk:     u8[32]&,
     out_age_add: u32&,
     now_ms:      i64 = 0,
@@ -308,7 +304,7 @@ fn lookup_tls13_session_ticket(
             guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
                 g_tls13_tickets[i].psk.len >= 32 &&
                 out_ticket.try_set(g_tls13_tickets[i].ticket[..]) else {
-                return false;
+                continue;
             }
             core::ct_copy_bytes(out_psk[..], g_tls13_tickets[i].psk[0..32]);
             out_age_add = g_tls13_tickets[i].age_add;
@@ -330,8 +326,31 @@ fn lookup_tls13_ticket_by_identity(
     for i in 16 {
         if g_tls13_tickets[i].in_use && core::ct_eq_bytes(g_tls13_tickets[i].ticket[..], ticket_id) {
             guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
-                g_tls13_tickets[i].psk.len >= 32 else { return false; }
+                g_tls13_tickets[i].psk.len >= 32 else { continue; }
             core::ct_copy_bytes(out_psk[..], g_tls13_tickets[i].psk[0..32]);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Looks up a cached TLS 1.3 session ticket by opaque ticket identity bytes with
+// full PSK (32 or 48 bytes) and cipher suite.
+fn lookup_tls13_ticket_by_identity_full(
+    ticket_id:        const u8[:],
+    out_psk:          u8[..48]&,
+    out_cipher_suite: u16&,
+    now_ms:           i64 = 0,
+) -> bool {
+    out_psk.clear();
+    out_cipher_suite = 0;
+    guard ticket_id.len > 0 else { return false; }
+    let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
+    for i in 16 {
+        if g_tls13_tickets[i].in_use && core::ct_eq_bytes(g_tls13_tickets[i].ticket[..], ticket_id) {
+            guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
+                out_psk.try_set(g_tls13_tickets[i].psk[..]) else { continue; }
+            out_cipher_suite = g_tls13_tickets[i].cipher_suite;
             return true;
         }
     }

@@ -193,8 +193,9 @@ fn apply_digest_opt_param(
         return (seen_mask & 32) == 0 && chal.domain.try_set(val) && try_mark_digest_param(seen_mask, 32);
     }
     if key.eq_ascii_fold("stale") {
-        guard try_mark_digest_param(seen_mask, 64) else { return false; }
-        chal.stale = val.eq_ascii_fold("true");
+        let is_true = val.eq_ascii_fold("true");
+        guard (is_true || val.eq_ascii_fold("false")) && try_mark_digest_param(seen_mask, 64) else { return false; }
+        chal.stale = is_true;
         return true;
     }
     if key.eq_ascii_fold("userhash") {

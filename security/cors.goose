@@ -154,8 +154,11 @@ inline fn validate_cors_token_list(list: const u8[:], allow_wildcard: bool) -> b
         let item, ok = core::token_next(tok_iter);
         guard ok else { break; }
         let trimmed = item.trim_lws();
-        if allow_wildcard && trimmed == "*" { continue; }
-        guard is_valid_cors_token(trimmed) else { return false; }
+        if trimmed == "*" {
+            guard allow_wildcard else { return false; }
+            continue;
+        }
+        guard !trimmed.contains_byte('*') && is_valid_cors_token(trimmed) else { return false; }
     }
     return true;
 }

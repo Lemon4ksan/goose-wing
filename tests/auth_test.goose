@@ -2978,6 +2978,55 @@ fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
             "verify_dpop_proof with both empty key and empty expected_jkt rejected",
         );
     };
+
+    t.run("AUTH-ROUND2: DPoP key binding, JWT b64/none, ACME slot, and Introspection CTL") { sub =>
+        // 1. verify_dpop_key_binding with empty key validates expected_jkt directly
+        var jwk_info = wing::DPoPJwkInfo { kty: "OKP", crv: "Ed25519", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", valid: true, .. };
+        sub.assert_false(wing::verify_dpop_key_binding("", "wrong_jkt", "EdDSA", jwk_info), "empty key with mismatched expected_jkt rejected");
+
+        // 2. ES256 verify_dpop_key_binding rejects 32-byte private scalar
+        let ec_priv: u8[32] = [0x11; 32];
+        var ec_jwk = wing::DPoPJwkInfo { kty: "EC", crv: "P-256", valid: true, .. };
+        let ec_pub = core::ecdsa_p256_public_key(ec_priv);
+        core::base64url_encode(ec_pub[1..33], ec_jwk.x);
+        core::base64url_encode(ec_pub[33..65], ec_jwk.y);
+        sub.assert_false(wing::verify_dpop_key_binding(ec_priv[..], "", "ES256", ec_jwk), "ES256 32-byte private key rejected in verify_dpop_key_binding");
+        sub.assert_true(wing::verify_dpop_key_binding(ec_pub[..], "", "ES256", ec_jwk), "ES256 65-byte public key accepted in verify_dpop_key_binding");
+
+        // 3. verify_dpop_iat and check_and_record_dpop_jti reject now_sec == 0, float iat rejected
+        sub.assert_false(wing::verify_dpop_iat("{\"jti\":\"j1\",\"htm\":\"GET\",\"htu\":\"https://ex.com\",\"iat\":1700000000}", 0, 300, 60), "verify_dpop_iat rejects now_sec == 0");
+        var flt_claims = wing::DPoPClaims { .. };
+        sub.assert_false(wing::parse_dpop_claims("{\"jti\":\"j1\",\"htm\":\"GET\",\"htu\":\"https://ex.com\",\"iat\":1700000000.5}", flt_claims), "float iat in DPoP claims rejected");
+        var rcache = wing::DPoPReplayCache { .. };
+        sub.assert_false(wing::check_and_record_dpop_jti(rcache, "jti-1", 0, 300, 60), "check_and_record_dpop_jti rejects now_sec == 0");
+
+        // 4. verify_dpop_claims with non-empty expected_jkt rejects empty claims.jkt
+        var ok_claims = wing::DPoPClaims { jti: "j1", htm: "GET", htu: "https://ex.com/api", iat: 1700000000, has_iat: true, .. };
+        sub.assert_false(wing::verify_dpop_claims(ok_claims, "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, "expected-jkt-val"), "empty claims.jkt rejected when expected_jkt is set");
+
+        // 5. parse_jwt_unverified rejects non-empty sig on alg=none and empty sig on alg=HS256
+        var uh = wing::JwtHeader { .. };
+        var uc = wing::JwtClaims { .. };
+        let none_with_sig = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.c2ln";
+        sub.assert_eq(wing::parse_jwt_unverified(none_with_sig, uh, uc), wing::JwtError.MalformedToken, "alg=none with non-empty signature rejected");
+        let hs256_empty_sig = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSJ9.";
+        sub.assert_eq(wing::parse_jwt_unverified(hs256_empty_sig, uh, uc), wing::JwtError.InvalidBase64, "alg=HS256 with empty signature rejected");
+
+        // 6. verify_jwt_algorithm with allow_none=true accepts JwtAlg.None, and exp < -1 rejected
+        sub.assert_eq(wing::verify_jwt_algorithm(wing::JwtAlg.None, wing::JwtAlg.HS256, true), wing::JwtError.None, "JwtAlg.None allowed when allow_none=true");
+        sub.assert_false(wing::validate_jwt_expiration(-5, false, 60, 1700000000), "exp < -1 rejected even when require_exp=false");
+        sub.assert_false(wing::validate_jwt_not_before(-5, false, 60, 1700000000), "nbf < -1 rejected even when require_nbf=false");
+
+        // 7. Digest invalid stale value, ACME empty slot token, and Introspection CTL token
+        let _, ok_stale = wing::parse_digest_challenge("Digest realm=\"api\", nonce=\"abcd\", stale=invalid");
+        sub.assert_false(ok_stale, "Digest challenge with stale=invalid rejected");
+        var bad_acme_table: wing::AcmeChallenge[..8] = [wing::AcmeChallenge { token: "", key_auth: ".TP", key_auth_len: 3 }];
+        var acme_body:      u8[..256]                = [];
+        var acme_len:       i32                      = 0;
+        sub.assert_false(wing::acme_find_challenge(bad_acme_table, "/.well-known/acme-challenge/", acme_body, acme_len), "ACME slot with empty token rejected");
+        var form_out: u8[..256] = [];
+        sub.assert_false(wing::encode_token_endpoint_form("tok\x07en", wing::TokenTypeHint.AccessToken, form_out), "CTL byte in encode_token_endpoint_form rejected");
+    };
 }
 
 fn main() {
