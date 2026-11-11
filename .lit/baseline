@@ -2599,7 +2599,7 @@ quic/connection.goose 1104 internal::quic_aead_seal_payload_inplace 0.49 0 0.85
 quic/connection.goose 1132 internal::quic_seal_packet 90.66 0 0.85
 quic/connection.goose 1180 internal::calc_coalesced_packet_wire_len 90.12 0 0.85
 quic/connection.goose 1196 internal::get_rx_space_keys_installed 0.01 0 0.85
-quic/connection.goose 1204 internal::verify_and_decrypt_packet 31.94 0 0.85
+quic/connection.goose 1213 internal::verify_and_decrypt_packet 122.3 0 0.85
 quic/connection.goose 1269 internal::get_dcid_len 0.00 0 0.85
 quic/connection.goose 1273 internal::conn_inc_packets_rx 15.00 0 0.85
 quic/connection.goose 1279 internal::is_stateless_reset_datagram 0.17 0 0.85

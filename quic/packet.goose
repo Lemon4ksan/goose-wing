@@ -160,6 +160,11 @@ struct QuicHeader {
     header_len:     u32            = 0,
 }
 
+struct QuicHeaderOptions {
+    allow_grease: bool = false,
+    is_masked:    bool = false,
+}
+
 // Parses a Version Negotiation Long Header (RFC 9000 §17.2.1).
 //
 // Example:
@@ -233,14 +238,20 @@ fn parse_quic_long_cids(
 //   returns: true, idx = 5, token = "tokn"
 fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> bool {
     let initial_idx = idx;
+    let initial_len = token.len;
+    var committed = false;
+    defer if !committed {
+        token.resize(initial_len);
+        idx = initial_idx;
+    };
     let tok_len, ok_tok = quic_decode_varint_cursor(src, idx);
     let itok = tok_len as i64;
     let tok_end = idx + itok;
     guard ok_tok && itok >= 0 && tok_end <= src.len && token.try_append(src[idx..tok_end]) else {
-        idx = initial_idx;
         return false;
     }
     idx = tok_end;
+    committed = true;
     return true;
 }
 
@@ -296,7 +307,11 @@ inline fn decode_unmasked_pn(src: const u8[:], idx: i64, pn_len: i64) -> u64 {
 // Example:
 //   src = [0xC0, 0x00, 0x00, 0x00, 0x01, ...], first = 0xC0
 //   returns: QuicHeader { header_type: Initial, version: 1 }, ok = true
-fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
+fn parse_quic_long_header(
+    src:   const u8[:],
+    first: u8,
+    opts:  QuicHeaderOptions = QuicHeaderOptions { .. },
+) -> QuicHeader, bool {
     var hdr = QuicHeader {};
     guard src.len >= 5 else { return hdr, false; }
     let ver = read_version_u32_be(src);
@@ -306,8 +321,9 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
         return parse_quic_version_negotiation(src, hdr);
     }
 
-    // Fixed bit (0x40) MUST be set for non-Version Negotiation Long Headers (RFC 9000 §17.2)
-    guard (first & 0x40) != 0 else { return hdr, false; }
+    // Fixed bit (0x40) MUST be set for non-Version Negotiation Long Headers
+    // unless GREASE was negotiated (RFC 9000 §17.2, RFC 9287).
+    guard (first & 0x40) != 0 || opts.allow_grease else { return hdr, false; }
 
     let type_bits = (first >> 4) & 0x03;
     let ht, ok_ht = quic_long_header_type(ver, type_bits);
@@ -320,9 +336,9 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
         hdr.header_type = ht1;
     }
 
-    // Reserved bits check (RFC 9000 §17.2): For Initial, 0-RTT, and Handshake,
-    // bits 2 and 3 of byte 0 (mask 0x0C) are reserved and MUST be 0.
-    if hdr.header_type != QuicHeaderType.Retry {
+    // Reserved bits check (RFC 9000 §17.2, RFC 9001 §5.4.1): Only checked for unmasked headers.
+    // Masked headers check reserved bits strictly after AEAD decryption.
+    if !opts.is_masked && hdr.header_type != QuicHeaderType.Retry {
         guard (first & 0x0C) == 0 else { return hdr, false; }
     }
 
@@ -342,6 +358,13 @@ fn parse_quic_long_header(src: const u8[:], first: u8) -> QuicHeader, bool {
     guard ok_plen else { return hdr, false; }
     hdr.payload_length = plen;
     hdr.pn_offset = idx as u32;
+
+    if opts.is_masked {
+        hdr.pn_length = 0;
+        hdr.header_len = hdr.pn_offset;
+        return hdr, true;
+    }
+
     hdr.pn_length = (first & 0x03) + 1;
     let ipn: i64 = hdr.pn_length;
     let hdr_end = idx + ipn;
@@ -360,16 +383,21 @@ fn parse_quic_short_header(
     src:            const u8[:],
     first:          u8,
     dcid_len_short: u8,
+    opts:           QuicHeaderOptions = QuicHeaderOptions { .. },
 ) -> QuicHeader, bool {
     var hdr = QuicHeader {};
-    // Fixed bit (0x40) MUST be set (RFC 9000 §17.3)
-    guard (first & 0x40) != 0 else { return hdr, false; }
-    // Reserved bits check (RFC 9000 §17.3): Bits 3 and 4 of byte 0 (mask 0x18) MUST be 0
-    guard (first & 0x18) == 0 else { return hdr, false; }
+    // Fixed bit (0x40) MUST be set unless GREASE negotiated (RFC 9000 §17.3, RFC 9287)
+    guard (first & 0x40) != 0 || opts.allow_grease else { return hdr, false; }
+    // Reserved bits check (RFC 9000 §17.3, RFC 9001 §5.4.1): Only checked for unmasked headers.
+    if !opts.is_masked {
+        guard (first & 0x18) == 0 else { return hdr, false; }
+    }
     guard dcid_len_short <= rfc::QUIC_MAX_CID_LEN else { return hdr, false; }
     hdr.header_type = QuicHeaderType.OneRtt;
     hdr.spin_bit = (first & 0x20) != 0;
-    hdr.key_phase = (first & 0x04) != 0;
+    if !opts.is_masked {
+        hdr.key_phase = (first & 0x04) != 0;
+    }
 
     let dlen: i64 = dcid_len_short;
     var idx: i64 = 1;
@@ -380,6 +408,13 @@ fn parse_quic_short_header(
         idx = d_end;
     }
     hdr.pn_offset = idx as u32;
+
+    if opts.is_masked {
+        hdr.pn_length = 0;
+        hdr.header_len = hdr.pn_offset;
+        return hdr, true;
+    }
+
     hdr.pn_length = (first & 0x03) + 1;
     let ipn: i64 = hdr.pn_length;
     let hdr_end = idx + ipn;

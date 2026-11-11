@@ -121,6 +121,7 @@ struct RttState {
 
 // Encodes an ACK or ACK_ECN frame into wire VarInt format.
 fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
+    guard ack.largest_acked >= ack.first_ack_range else { return false; }
     let orig_len = out.len;
     var committed = false;
     defer if !committed { out.resize(orig_len, 0); };
@@ -191,7 +192,11 @@ fn decode_ack_ranges(
         guard ok_iv else { return false; }
         cur_smallest = iv.smallest;
 
-        guard ack.ranges.try_push(AckRange { gap: gap, ack_range: rlen }) else { return false; }
+        if ack.ranges.len < ack.ranges.cap {
+            let _ = ack.ranges.try_push(AckRange { gap: gap, ack_range: rlen });
+        } else {
+            // Saturated capacity; RFC 9000 §19.3.1 permits ignoring older ranges.
+        }
         r_idx = core::add_sat_u64(r_idx, 1);
     }
     return true;
@@ -219,7 +224,7 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
     cur = next_cur2;
 
     let range_cnt, next_cur3, ok3 = quic_decode_varint(src, cur);
-    guard ok3 && range_cnt <= 64 else { return AckFrame {}, offset, false; }
+    guard ok3 && range_cnt <= rfc::QUIC_VARINT_MAX else { return AckFrame {}, offset, false; }
     cur = next_cur3;
 
     let first_range, next_cur4, ok4 = quic_decode_varint(src, cur);
@@ -237,7 +242,6 @@ fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool {
         ..
     };
 
-    guard range_cnt <= (ack.ranges.cap as u64) else { return AckFrame {}, offset, false; }
     guard decode_ack_ranges(src, cur, range_cnt, largest_acked, first_range, ack) else {
         return AckFrame {}, offset, false;
     }

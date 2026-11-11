@@ -644,6 +644,7 @@ fn test_quic_role_polarity() {
 
     // Case A: Server receives HANDSHAKE_DONE
     var server_conn = internal::new_quic_server_connection(scid[..]);
+    server_conn.allow_unencrypted_test_packets = true;
     var dgram_serv: u8[..64] = [];
     dgram_serv.push(0x40); // 1-RTT Short Header
     dgram_serv.append(scid[..]);
@@ -658,6 +659,7 @@ fn test_quic_role_polarity() {
 
     // Case B: Client receives HANDSHAKE_DONE
     var client_conn = internal::new_quic_client_connection(scid[..], scid[..]);
+    client_conn.allow_unencrypted_test_packets = true;
     var dgram_cli: u8[..64] = [];
     dgram_cli.push(0x40); // 1-RTT Short Header
     dgram_cli.append(scid[..]);

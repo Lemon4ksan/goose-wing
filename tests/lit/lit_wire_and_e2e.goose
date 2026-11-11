@@ -2784,6 +2784,7 @@ fn test_h2_wire_loopback() {
 fn test_quic_wire_loopback() {
     let scid: u8[4] = [0x50, 0x51, 0x52, 0x53];
     var server_conn = internal::new_quic_server_connection(scid[..]);
+    server_conn.allow_unencrypted_test_packets = true;
 
     var dgram: u8[..256] = [];
     dgram.push(0x40); // 1-RTT Short Header

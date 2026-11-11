@@ -1402,6 +1402,7 @@ fn test_rfc9000_packet_number_decoding(t: lit::T&) {
 fn test_connection_datagram_demuxing(t: lit::T&) {
     let scid: u8[4] = [0x01, 0x02, 0x03, 0x04];
     var conn = internal::new_quic_server_connection(scid[..]);
+    conn.allow_unencrypted_test_packets = true;
 
     // Construct a synthetic 1-RTT packet:
     // Byte 0: 0x40 (Short header, 1-RTT, 1-byte PN)
@@ -1431,6 +1432,7 @@ fn test_connection_datagram_demuxing(t: lit::T&) {
     // Now test connection-level ingress violation with exceeding payload
     let scid2: u8[4] = [0x05, 0x06, 0x07, 0x08];
     var conn2 = internal::new_quic_server_connection(scid2[..]);
+    conn2.allow_unencrypted_test_packets = true;
     conn2.flow_ctrl.max_data_local = 10; // Low limit
 
     var dgram2: u8[..128] = [];
@@ -1830,6 +1832,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-01: Flow Control & ResetStream field mapping (RFC 9000)") { sub =>
         let scid: u8[4] = [0x11, 0x22, 0x33, 0x44];
         var conn = internal::new_quic_server_connection(scid[..]);
+        conn.allow_unencrypted_test_packets = true;
 
         // 1. MAX_DATA datagram updates conn.flow_ctrl.max_data_remote
         var dgram_md: u8[..64] = [];
@@ -1883,6 +1886,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-02: Multiplexed ACK and STREAM payload processing & Frame Error") { sub =>
         let scid: u8[4] = [0x21, 0x22, 0x23, 0x24];
         var conn = internal::new_quic_server_connection(scid[..]);
+        conn.allow_unencrypted_test_packets = true;
         internal::quic_conn_record_sent(conn, internal::PnSpaceId.ApplicationData, 0, 1200, true, 1000);
 
         // Synthesize datagram containing ACK frame followed by STREAM frame
@@ -1926,6 +1930,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-03: Peer Stream Limit Enforcement (RFC 9000 §4.6)") { sub =>
         let scid: u8[4] = [0x31, 0x32, 0x33, 0x34];
         var conn = internal::new_quic_server_connection(scid[..]);
+        conn.allow_unencrypted_test_packets = true;
         conn.stream_table.max_streams_bidi = 5; // Allow streams 0, 4, 8, 12, 16 (stream_idx 0..4)
 
         // Stream ID 20 corresponds to stream_idx 5 -> exceeds limit 5!
@@ -1945,6 +1950,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-04: HANDSHAKE_DONE server rejection and PATH_CHALLENGE accounting") { sub =>
         let scid: u8[4] = [0x41, 0x42, 0x43, 0x44];
         var conn = internal::new_quic_server_connection(scid[..]);
+        conn.allow_unencrypted_test_packets = true;
 
         // Server receives HANDSHAKE_DONE frame (0x1E)
         var dgram_hd: u8[..32] = [];
@@ -1961,6 +1967,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
 
         // Fresh connection: PATH_CHALLENGE byte accounting
         var conn2 = internal::new_quic_server_connection(scid[..]);
+        conn2.allow_unencrypted_test_packets = true;
         var dgram_pc: u8[..32] = [];
         dgram_pc.push(0x40);
         dgram_pc.append(scid[..]);
@@ -2709,6 +2716,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
     t.run("QUINN-CONN-02: Out-of-Order STREAM + Early FIN + Conflicting RESET_STREAM Final-Size Guard (RFC 9000 §4.5)") { sub =>
         let scid: u8[4] = [0x10, 0x20, 0x30, 0x40];
         var srv = internal::new_quic_server_connection(scid[..]);
+        srv.allow_unencrypted_test_packets = true;
         var ack_out = internal::AckFrame { .. };
 
         // 1. Arrive out-of-order tail fragment [offset=10, len=5, fin=true] -> establishes final_size = 15 (SizeKnown)
@@ -2821,6 +2829,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case A: Server receives STREAM on Server-Initiated Uni stream (ID 3) -> STREAM_STATE_ERROR (cannot receive on send-only stream)
         var srv_a = internal::new_quic_server_connection(scid[..]);
+        srv_a.allow_unencrypted_test_packets = true;
         let sid_a, _, ok_open_s3 = internal::quic_table_open_local_stream(srv_a.stream_table, false);
         sub.assert_true(ok_open_s3, "server opens its own Uni stream 3");
         sub.assert_eq(sid_a, 3, "server local Uni stream ID is 3");
@@ -2835,6 +2844,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case B: Server receives STREAM on unopened Server-Initiated Bidi stream (ID 1) -> STREAM_STATE_ERROR
         var srv_b = internal::new_quic_server_connection(scid[..]);
+        srv_b.allow_unencrypted_test_packets = true;
         var d_s1: u8[..64] = [];
         d_s1.push(0x40);
         d_s1.append(scid[..]);
@@ -2846,6 +2856,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case C: Server receives STOP_SENDING on Client-Initiated Uni stream (ID 2, recv-only for server) -> STREAM_STATE_ERROR
         var srv_c = internal::new_quic_server_connection(scid[..]);
+        srv_c.allow_unencrypted_test_packets = true;
         var d_ss2: u8[..64] = [];
         d_ss2.push(0x40);
         d_ss2.append(scid[..]);
@@ -2857,6 +2868,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case D: Server receives MAX_STREAM_DATA on Client-Initiated Uni stream (ID 2) -> STREAM_STATE_ERROR
         var srv_d = internal::new_quic_server_connection(scid[..]);
+        srv_d.allow_unencrypted_test_packets = true;
         var d_msd2: u8[..64] = [];
         d_msd2.push(0x40);
         d_msd2.append(scid[..]);
@@ -2868,6 +2880,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case E: Server receives STREAM_DATA_BLOCKED on Server-Initiated Uni stream (ID 3) -> STREAM_STATE_ERROR
         var srv_e = internal::new_quic_server_connection(scid[..]);
+        srv_e.allow_unencrypted_test_packets = true;
         let _, _, _ = internal::quic_table_open_local_stream(srv_e.stream_table, false);
         var d_sdb3: u8[..64] = [];
         d_sdb3.push(0x40);
@@ -2880,6 +2893,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case F: Client connection receives STREAM on Server-Initiated Uni stream (ID 3) -> VALID!
         var cli_f = internal::new_quic_client_connection(scid[..], scid[..]);
+        cli_f.allow_unencrypted_test_packets = true;
         var d_cli3: u8[..64] = [];
         d_cli3.push(0x40);
         d_cli3.append(scid[..]);
@@ -2890,6 +2904,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case G: Client connection receives RESET_STREAM on Client-Initiated Uni stream (ID 2) -> STREAM_STATE_ERROR
         var cli_g = internal::new_quic_client_connection(scid[..], scid[..]);
+        cli_g.allow_unencrypted_test_packets = true;
         let _, _, _ = internal::quic_table_open_local_stream(cli_g.stream_table, false);
         var d_rst2: u8[..64] = [];
         d_rst2.push(0x40);
@@ -3131,6 +3146,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // 1. Valid NEW_CONNECTION_ID (seq=2, retire_prior_to=1 <= seq) on connection with non-empty peer DCID
         var srv1 = internal::new_quic_client_connection(scid[..], scid[..]);
+        srv1.allow_unencrypted_test_packets = true;
         var d_ncid_ok: u8[..64] = [];
         d_ncid_ok.push(0x40);
         d_ncid_ok.append(scid[..]);
@@ -3146,12 +3162,14 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // 1b. NEW_CONNECTION_ID on endpoint with 0-length peer DCID -> PROTOCOL_VIOLATION (RFC 9000 §19.15)
         var srv1_zero_dcid = internal::new_quic_server_connection(scid[..]); // dcid is initially empty
+        srv1_zero_dcid.allow_unencrypted_test_packets = true;
         let ok_ncid_zero, _ = internal::quic_conn_process_datagram(srv1_zero_dcid, d_ncid_ok[..], 1000, ack_out);
         sub.assert_false(ok_ncid_zero, "NEW_CONNECTION_ID rejected when peer DCID is 0-length (RFC 9000 §19.15)");
         sub.assert_eq(srv1_zero_dcid.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "PROTOCOL_VIOLATION (0x0A)");
 
         // 2. Invalid NEW_CONNECTION_ID with retire_prior_to (5) > seq_num (3) -> rejected at frame decode as FRAME_ENCODING_ERROR
         var srv2 = internal::new_quic_server_connection(scid[..]);
+        srv2.allow_unencrypted_test_packets = true;
         var d_ncid_bad: u8[..64] = [];
         d_ncid_bad.push(0x40);
         d_ncid_bad.append(scid[..]);
@@ -3168,6 +3186,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // 3. Server receiving NEW_TOKEN (0x07) -> PROTOCOL_VIOLATION (RFC 9000 §19.7: only client may receive NEW_TOKEN)
         var srv3 = internal::new_quic_server_connection(scid[..]);
+        srv3.allow_unencrypted_test_packets = true;
         var d_nt_srv: u8[..64] = [];
         d_nt_srv.push(0x40);
         d_nt_srv.append(scid[..]);
@@ -3179,6 +3198,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // 4. Client receiving NEW_TOKEN + HANDSHAKE_DONE -> accepted and sets handshake_confirmed = true
         var cli4 = internal::new_quic_client_connection(scid[..], scid[..]);
+        cli4.allow_unencrypted_test_packets = true;
         var d_cli_ok: u8[..64] = [];
         d_cli_ok.push(0x40);
         d_cli_ok.append(scid[..]);
@@ -3193,6 +3213,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
         // 5. RETIRE_CONNECTION_ID on connection with 0-length local SCID -> PROTOCOL_VIOLATION (RFC 9000 §19.16)
         let empty_cid: u8[0] = [];
         var srv5 = internal::new_quic_server_connection(empty_cid[..]);
+        srv5.allow_unencrypted_test_packets = true;
         var d_ret: u8[..32] = [];
         d_ret.push(0x40);
         d_ret.push(0x01);

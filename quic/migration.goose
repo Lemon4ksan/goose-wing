@@ -90,6 +90,16 @@ fn decode_preferred_address(src: const u8[:], out: QuicPreferredAddress&) -> boo
     let v6_port, ok_p6 = cur.read_u16();
     guard ok_v4 && ok_p4 && ok_v6 && ok_p6 else { return false; }
 
+    let has_v4 = (v4_slice[0] | v4_slice[1] | v4_slice[2] | v4_slice[3]) != 0;
+    var v6_bits: u8 = 0;
+    for i in 16 { v6_bits = v6_bits | v6_slice[i]; }
+    let has_v6 = v6_bits != 0;
+
+    // Both cannot have port != 0 while IP is 0, or IP != 0 while port is 0 (RFC 9000 §18.2)
+    guard (has_v4 == (v4_port != 0)) && (has_v6 == (v6_port != 0)) else { return false; }
+    // Must contain at least one valid address
+    guard has_v4 || has_v6 else { return false; }
+
     let cid_slice, ok_cid = cur.read_u8_prefixed();
     guard ok_cid && cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
     let tok_slice, ok_tok = cur.read_bytes(16);

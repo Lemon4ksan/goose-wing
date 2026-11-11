@@ -246,6 +246,7 @@ fn encode_stream_frame_explicit<B>(
 ) -> bool {
     guard stream_id <= rfc::QUIC_VARINT_MAX else { return false; }
     guard quic_valid_offset_len(offset, data.len as u64) else { return false; }
+    guard offset == 0 || flags.with_offset else { return false; }
 
     let orig_len = out.len;
     var committed = false;
@@ -477,6 +478,7 @@ fn encode_connection_close_frame<B>(
     is_app:     bool = false,
 ) -> bool {
     guard error_code <= rfc::QUIC_VARINT_MAX else { return false; }
+    guard is_app || frame_type <= rfc::QUIC_VARINT_MAX else { return false; }
     let orig_len = out.len;
     var committed = false;
     defer if !committed { out.resize(orig_len, 0); };
@@ -554,7 +556,7 @@ inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool, fra
     guard ok_ad else { return QuicFrame { .. }, false; }
 
     let range_cnt, ok_rc = quic_decode_varint_cursor(src, idx);
-    guard ok_rc && range_cnt <= 64 else { return QuicFrame { .. }, false; }
+    guard ok_rc else { return QuicFrame { .. }, false; }
 
     let first_range, ok_fr = quic_decode_varint_cursor(src, idx);
     guard ok_fr && largest_acked >= first_range else { return QuicFrame { .. }, false; }
@@ -963,10 +965,12 @@ fn decode_quic_datagram_frame(
     let ftype, off1, ok1 = quic_decode_varint(src, offset);
     guard ok1 && off1 <= limit else { return "", offset, false; }
 
+    guard ftype == rfc::QUIC_FRAME_DATAGRAM || ftype == rfc::QUIC_FRAME_DATAGRAM_LEN else {
+        return "", offset, false;
+    }
     if ftype == rfc::QUIC_FRAME_DATAGRAM {
         return src[(off1 as i64)..(limit as i64)], limit, true;
     }
-    guard ftype == rfc::QUIC_FRAME_DATAGRAM_LEN else { return "", offset, false; }
     let dlen, off2, ok2 = quic_decode_varint(src, off1);
     let eff_end = core::add_sat_u64(off2, dlen);
     guard ok2 && eff_end <= limit else { return "", offset, false; }
@@ -1323,21 +1327,29 @@ const QUIC_TP_BIT_MIN_ACK_DELAY:    u64 = (1 as u64) << 20;
 fn encode_tp_varint<B>(out: B&, id: u64, val: u64) -> bool {
     var vbuf: u8[..8] = [];
     guard quic_encode_varint(vbuf, val) else { return false; }
+    let orig_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(orig_len); };
     guard quic_encode_varint(out, id)
         && quic_encode_varint(out, vbuf.len as u64)
         && out.try_append(vbuf[..]) else {
         return false;
     }
+    committed = true;
     return true;
 }
 
 // Appends a raw byte-slice transport parameter `(id, bytes.len, bytes)` into `out`.
 fn encode_tp_bytes<B>(out: B&, id: u64, bytes: const u8[:]) -> bool {
+    let orig_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(orig_len); };
     guard quic_encode_varint(out, id)
         && quic_encode_varint(out, bytes.len as u64)
         && out.try_append(bytes) else {
         return false;
     }
+    committed = true;
     return true;
 }
 

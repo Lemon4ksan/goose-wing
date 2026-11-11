@@ -85,6 +85,7 @@ struct Dplpmtud {
     probe_idx:           u32 = 0,
     probe_count:         u32 = 0,
     max_probes:          u32 = 3,
+    max_pmtu:            u32 = rfc::PMTU_ETHERNET,
     search_timer_ms:     u64 = 0,
     search_interval_ms:  u64 = 60000,
     pmtu_raise_timer_ms: u64 = 600000,
@@ -141,7 +142,7 @@ fn dplpmtud_on_search_timer(d: Dplpmtud&, now_ms: u64) {
     guard d.state == DplpmtudState.SearchComplete else { return; }
     if now_ms >= d.search_timer_ms {
         d.search_timer_ms = core::add_sat_u64(now_ms, d.pmtu_raise_timer_ms);
-        guard d.current_pmtu < rfc::PMTU_ETHERNET else { return; }
+        guard d.current_pmtu < d.max_pmtu else { return; }
         var next_idx: u32 = 1;
         if d.current_pmtu >= rfc::PMTU_INTERMEDIATE {
             next_idx = 3;

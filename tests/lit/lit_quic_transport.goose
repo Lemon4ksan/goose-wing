@@ -240,6 +240,7 @@ fn test_coalesced_quic_datagram_demux() {
     let srv_cid = "12345678";
     let cli_cid = "87654321";
     var srv = internal::new_quic_server_connection(srv_cid);
+    srv.allow_unencrypted_test_packets = true;
 
     var coalesced_dgram: u8[..256] = [];
 
@@ -918,6 +919,7 @@ fn test_f023_to_f027_stream_invariants() {
 fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
     // F028: Non-ACK-eliciting packet (PADDING-only) MUST NOT set needs_ack = true (RFC 9000 §13.2.1)
     var conn_pad = internal::new_quic_server_connection("scid");
+    conn_pad.allow_unencrypted_test_packets = true;
     var pad_pkt: u8[..64] = [];
     var hdr_pad = internal::QuicHeader {
         header_type:   internal::QuicHeaderType.OneRtt,
@@ -935,6 +937,7 @@ fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
 
     // F029a: RTT sample generated when largest_acked is non-ack-eliciting if batch has ack-eliciting (RFC 9002 §5.1)
     var conn_rtt = internal::new_quic_client_connection("scid", "dcid");
+    conn_rtt.allow_unencrypted_test_packets = true;
     conn_rtt.state = internal::QuicConnState.Handshake;
     conn_rtt.rtt.first_sample_time_us = 1;
     conn_rtt.rtt.min_rtt_us = 10000;
@@ -1192,6 +1195,7 @@ fn test_regress_conn_traffic_counter_saturation() {
 
 fn test_grease_quic_bit_rfc9287() {
     var conn = internal::new_quic_server_connection("scid");
+    conn.allow_unencrypted_test_packets = true;
     // Short header with Fixed Bit (0x40) cleared: 0x00, DCID="scid", PN=0x01, PING frame (0x01)
     let greased_pkt: u8[7] = [0x00, 's', 'c', 'i', 'd', 0x01, 0x01];
     let _, ok_disabled = internal::parse_quic_packet_pre_hp(conn, greased_pkt[..], 4);
@@ -1391,6 +1395,7 @@ fn test_quic_pn_space_segregation() {
 
 fn test_quic_datagram_ack_generation() {
     var conn = internal::new_quic_server_connection("server_cid_01");
+    conn.allow_unencrypted_test_packets = true;
 
     // Construct valid wire Initial packet
     var initial_pkt: u8[..128] = [];
@@ -2125,6 +2130,13 @@ fn test_quic_preferred_address_migration() {
     // Reject truncated or zero-length CID preferred_address
     var bad_pref = internal::QuicPreferredAddress { .. };
     assert(!internal::decode_preferred_address(raw_pref[..40], bad_pref));
+
+    // Reject preferred address with all zero IPs and ports
+    var zero_pref_buf: u8[..64] = [];
+    for i in 24 { zero_pref_buf.push(0); }
+    zero_pref_buf.append([4, 1, 2, 3, 4]);
+    for i in 16 { zero_pref_buf.push(0x20 as u8); }
+    assert(!internal::decode_preferred_address(zero_pref_buf[..], bad_pref));
 
     let init_addr = internal::new_quic_endpoint_addr([192, 0, 2, 1], 443);
     var mgr = internal::new_quic_migration_manager(init_addr);

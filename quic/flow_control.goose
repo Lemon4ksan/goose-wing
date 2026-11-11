@@ -31,7 +31,8 @@ inline fn calc_advertised_window_candidate(base: u64, window_size: u64) -> u64 {
 
 // Computes flow control window renewal trigger threshold (RFC 9000 §4.2).
 inline fn calc_window_renewal_threshold(window_size: u64) -> u64 {
-    return window_size >> 1;
+    if window_size == 0 { return 0; }
+    return max(1, window_size >> 1);
 }
 
 // Safely advances consumed byte counter with arithmetic wrap protection (RFC 9000 §4.1).
@@ -226,6 +227,11 @@ fn quic_fc_record_recv_reset(
 
     s.bytes_recv = final_size;
     fc.bytes_recv_total = projected_conn_recv;
+    let unread_retired = core::sub_sat_u64(final_size, s.recv_consumed);
+    s.recv_consumed = final_size;
+    fc.bytes_read_total = calc_safe_accumulate_bytes(fc.bytes_read_total, unread_retired);
+    s.has_recv_final_size = true;
+    s.recv_final_size = final_size;
     return true, rfc::QUIC_ERR_NO_ERROR;
 }
 
@@ -288,6 +294,7 @@ fn quic_fc_check_conn_window_update(fc: QuicFlowControl&) -> bool, u64 {
 // Credit is evaluated against effective consumed/received bytes (RFC 9000 §4.1).
 // Returns (should_send: bool, new_max_stream_data: u64).
 fn quic_fc_check_stream_window_update(s: QuicStream&, stream_window_size: u64) -> bool, u64 {
+    guard !s.has_recv_final_size else { return false, 0; }
     let consumed = max(s.bytes_recv, s.recv_consumed);
     let available = calc_unspent_credit(s.recv_max_data, consumed);
     let threshold = calc_window_renewal_threshold(stream_window_size);
