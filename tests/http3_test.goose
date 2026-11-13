@@ -2463,6 +2463,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
     t.run("handle_stream_data rejects second trailer section and DATA after trailers") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
+        let _s0, _ = conn.open_request_stream();
 
         // Setup control stream
         var ctrl_wire: u8[..64] = [];
@@ -2503,6 +2504,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
 
         // Reset and test second trailer section rejection
         var conn2 = internal::new_h3_client_connection(settings);
+        let _s2, _ = conn2.open_request_stream();
         conn2.handle_stream_data(2, false, ctrl_wire[..], false);
         conn2.handle_stream_data(0, true, resp_hdrs[..], false);
         conn2.handle_stream_data(0, true, data_frame[..], false);
@@ -2516,6 +2518,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
     t.run("handle_stream_data validates 3-digit status code and trailer disallowed headers") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
+        let _s0, _ = conn.open_request_stream();
 
         // Setup control stream
         var ctrl_wire: u8[..64] = [];
@@ -2537,6 +2540,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
 
         // 2. Disallowed content-length in trailer section MUST fail
         var conn3 = internal::new_h3_client_connection(settings);
+        let _s3, _ = conn3.open_request_stream();
         conn3.handle_stream_data(2, false, ctrl_wire[..], false);
         var sec_ok:  u8[..16] = [0x00, 0x00, 0xD9]; // :status 200
         var ok_hdrs: u8[..32] = [];
@@ -2685,6 +2689,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
     t.run("H3: reject DATA frame on stream with 204 No Content") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
+        let _s0, _ = conn.open_request_stream();
 
         // Control stream setup
         var ctrl_wire: u8[..64] = [];
@@ -2716,6 +2721,8 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
     t.run("H3: reject DATA frame on stream with 304 Not Modified") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
+        let _s0, _ = conn.open_request_stream();
+        let _s4, _ = conn.open_request_stream();
 
         var ctrl_wire: u8[..64] = [];
         internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
@@ -2742,6 +2749,9 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
     t.run("H3: reject DATA frame on stream with 103 Early Hints") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
+        let _s0, _ = conn.open_request_stream();
+        let _s4, _ = conn.open_request_stream();
+        let _s8, _ = conn.open_request_stream();
 
         var ctrl_wire: u8[..64] = [];
         internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
@@ -2773,6 +2783,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
     t.run("H3: reject prohibited framing headers in trailers") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
+        let _s0, _ = conn.open_request_stream();
 
         var ctrl_wire: u8[..64] = [];
         internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
@@ -2803,6 +2814,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
 
         // 3. New connection: trailer with prohibited connection: close
         var conn2 = internal::new_h3_client_connection(settings);
+        let _s2, _ = conn2.open_request_stream();
         conn2.handle_stream_data(2, false, ctrl_wire[..], false);
         conn2.handle_stream_data(0, true, wire_h[..], false);
 
@@ -2819,6 +2831,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
 
         // 4. New connection: trailer with prohibited upgrade
         var conn3 = internal::new_h3_client_connection(settings);
+        let _s3, _ = conn3.open_request_stream();
         conn3.handle_stream_data(2, false, ctrl_wire[..], false);
         conn3.handle_stream_data(0, true, wire_h[..], false);
 
@@ -3013,6 +3026,7 @@ fn test_h3_empty_frame_flooding(t: lit::T&) {
     t.run("H3: reject flood of empty DATA frames (> 32 streak)") { sub =>
         let settings = wing::H3Settings { .. };
         var conn = internal::new_h3_client_connection(settings);
+        let _s0, _ = conn.open_request_stream();
 
         var ctrl_wire: u8[..64] = [];
         internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);

@@ -8,6 +8,8 @@ import std;
 import core from "..";
 import http.headers;
 import tls.x509;
+import tls.session;
+import tls.pem;
 
 // Dynamic Runtime SNI multi-certificate credentials (uWebSockets addServerName / removeServerName pattern).
 struct SniCertEntry {
@@ -173,4 +175,12 @@ fn resolve_sni_credentials_with_fallback<S, Fallback: fn(const u8[:]) -> SniCred
         return fb_creds, true;
     }
     return SniCredentials { .. }, false;
+}
+
+// Decodes PEM certificate and private key from resolved SNI credentials into a TLS server config.
+fn sni_credentials_to_tls_config(
+    creds:   const SniCredentials&,
+    out_cfg: TlsServerHandshakeConfig&,
+) -> bool {
+    return load_tls_server_credentials_pem(creds.cert_pem, creds.key_pem, out_cfg);
 }

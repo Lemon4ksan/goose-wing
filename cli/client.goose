@@ -317,6 +317,18 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
     sess.ssrf_guard.enabled = false;
     sess.max_redirects = cfg.max_redirects;
     if cfg.insecure_tls { sess.enable_hsts = false; }
+    if cfg.cacert_file.len > 0 {
+        var ca_pem: u8[>..] = [];
+        guard read_file(cfg.cacert_file[..], ca_pem) else {
+            write_stderr(str("wing: cannot read cacert file: ", cfg.cacert_file[..], "\n"));
+            return 77;
+        }
+        let _, ok_ca = wing::add_trust_anchors_pem(sess.trust_store, ca_pem[..]);
+        if !ok_ca {
+            write_stderr(str("wing: invalid CA PEM bundle: ", cfg.cacert_file[..], "\n"));
+            return 77;
+        }
+    }
     sess.http2_prior_knowledge = cfg.http2_prior;
     if cfg.http1_1_only {
         let _ = sess.profile_spec.tls.alpn.try_set("http/1.1");

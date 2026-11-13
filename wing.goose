@@ -69,6 +69,7 @@ import tls.ech;
 import tls.post_quantum;
 import tls.cert_compression;
 import tls.session;
+import tls.pem;
 
 // ---- domain name system (rfc 1035, rfc 9460 svcb, rfc 8484 doh, rfc 5861 cache) -
 

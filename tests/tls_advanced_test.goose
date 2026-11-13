@@ -735,7 +735,7 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
 
         // Construct synthetic DNS response containing Type 65 HTTPS RR with Key 5 (ECH)
         var dns_resp_wire: u8[>..] = [];
-        dns_resp_wire.push(0x12); dns_resp_wire.push(0x34); // ID 0x1234
+        dns_resp_wire.push(0x00); dns_resp_wire.push(0x00); // ID 0x0000 (RFC 8484 §4.1)
         dns_resp_wire.push(0x81); dns_resp_wire.push(0x80); // Flags: standard response
         dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); // QDCOUNT=1
         dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); // ANCOUNT=1

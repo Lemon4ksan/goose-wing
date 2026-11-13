@@ -115,6 +115,11 @@ def main() -> int:
     root_dir = Path(__file__).resolve().parent.parent
     tests_dir = root_dir / "tests"
     examples_dir = root_dir / "examples"
+
+    if platform.system() == "Windows":
+        gcc_noavx = root_dir / "tools" / "gcc_noavx.cmd"
+        if gcc_noavx.exists():
+            os.environ.setdefault("GOOSE_CC", str(gcc_noavx))
     core_file = root_dir / "core.goose"
     rfc_file = root_dir / "rfc.goose"
     wing_file = root_dir / "wing.goose"
@@ -176,12 +181,14 @@ def main() -> int:
     if "*" not in pat and "?" not in pat:
         pat = f"*{pat}*"
 
-    all_test_files = [
-        f for f in sorted(tests_dir.glob("*.goose")) if fnmatch.fnmatch(f.name, pat)
-    ]
+    all_test_files = [f for f in sorted(tests_dir.glob("*.goose")) if fnmatch.fnmatch(f.name, pat)]
 
     if not all_test_files:
-        print(yellow(f"No test files matching '{args.pattern}' (resolved: '{pat}') found in {tests_dir}."))
+        print(
+            yellow(
+                f"No test files matching '{args.pattern}' (resolved: '{pat}') found in {tests_dir}."
+            )
+        )
         return 0
 
     # 3. Check-only mode
@@ -232,7 +239,10 @@ def main() -> int:
     def build_test(f: Path) -> tuple[Path, Path, int, str, str, float]:
         exe_path = f.with_suffix(exe_suffix)
         t_start = time.perf_counter()
-        cmd = [goose, "build", opt_flag, "-o", str(exe_path), str(f)]
+        extra_args: list[str] = []
+        if f.name == "telemetry_test.goose":
+            extra_args = ["--include", "shim/prof_hook.h"]
+        cmd = [goose, "build", opt_flag, *extra_args, "-o", str(exe_path), str(f)]
         code, out, err = run_command(cmd, cwd=root_dir)
         elapsed = time.perf_counter() - t_start
         return f, exe_path, code, out, err, elapsed

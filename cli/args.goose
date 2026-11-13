@@ -55,6 +55,7 @@ struct CliConfig {
     cookie_header:    u8[..1024]          = [],
     cookie_jar_in:    u8[..512]           = [],
     cookie_jar_out:   u8[..512]           = [],
+    cacert_file:      u8[..512]           = [],
     write_out:        u8[..256]           = [],
     headers:          HeaderPair[..16]    = [],
     resolves:         ResolveEntry[..8]   = [],
@@ -603,6 +604,9 @@ fn apply_cli_auth_or_serve_string_opt(arg: const u8[:], val: const u8[:], cfg: C
     }
     if arg == "--noproxy" {
         return true, cfg.no_proxy.try_set(val) || set_cli_error(cfg, "noproxy list too long");
+    }
+    if arg == "--cacert" {
+        return true, cfg.cacert_file.try_set(val) || set_cli_error(cfg, "cacert path too long");
     }
     if arg == "--host" {
         return true, cfg.bind_host.try_set(val) || set_cli_error(cfg, "host too long");

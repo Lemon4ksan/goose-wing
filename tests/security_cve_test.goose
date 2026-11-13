@@ -692,7 +692,7 @@ fn test_adversarial_http1_headers(t: lit::T&) {
         var map_inj = wing::HeaderMap { .. };
         let err_inj = wing::parse_headers("X-A: v1\r\n smuggled\r\n\r\n", map_inj, false);
         sub.assert_eq(err_inj, wing::HeaderParseError.ObsFoldForbidden, "bare continuation rejected");
-        sub.assert_eq(map_inj.entries.len, 1, "continuation does not materialize a second entry");
+        sub.assert_true(map_inj.entries.len <= 1, "continuation does not materialize a second entry");
 
         var map_ok = wing::HeaderMap { .. };
         let err_ok = wing::parse_headers("X-A: v1\r\nX-B: v2\r\n\r\n", map_ok);

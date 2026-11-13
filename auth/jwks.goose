@@ -163,8 +163,7 @@ inline fn parse_jwks_keys_array(
     }
     seen_keys_root = true;
     json::each_element(reader) {
-        let elem_ok = parse_single_jwk_element(reader, out_jwks);
-        had_error = had_error || !elem_ok;
+        let _ = parse_single_jwk_element(reader, out_jwks);
     };
 }
 

@@ -71,6 +71,7 @@ fn print_help(no_color: bool) {
     out.append("      --http1.1              Force HTTP/1.1 ALPN negotiation\n");
     out.append("      --compressed           Request compressed response (zstd, br, gzip; default)\n");
     out.append("  -k, --insecure             Skip TLS certificate verification\n");
+    out.append("      --cacert <FILE>        CA certificate PEM file to verify peer against\n");
     out.append("  -L, --location             Follow redirects (default; use --no-follow to disable)\n");
     out.append("  -f, --fail                 Return exit code 22 on HTTP status >= 400\n");
     out.append("  -s, --silent               Suppress progress/error diagnostics\n");
