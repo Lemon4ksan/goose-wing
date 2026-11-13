@@ -172,26 +172,96 @@ inline fn count_scheme_trailing_slashes(remainder: const u8[:], is_spec: bool) -
     return slash_count;
 }
 
-// Parses input string into a URL struct relative to an optional base URL.
+inline fn is_url_precleaned(raw: const u8[:]) -> bool {
+    guard raw.len > 0 else {
+        return false;
+    }
+    let tail = raw[^1..];
+    return raw[0] > 0x20 && tail[0] > 0x20 && find_any(raw, URL_TAB_CRLF_SET) < 0;
+}
+
+// Parses the scheme-specific body of a special-scheme trimmed URL.
 //
 // Example:
-//   raw_input = "https://example.com/api", base_url = Url { .. }, has_base = false
+//   scheme_slice = "https", slash_count = 2, remainder = "//example.com/a"
 //   returns: out_url populated, err = UrlParseError.None
-fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
-    var out_url = Url { valid: false, .. };
-
-    var cleaned: u8[..2048] = [];
-    guard clean_input_string(raw_input, cleaned) else {
-        return out_url, UrlParseError.InputTooLong;
+fn parse_url_special_trimmed(
+    out_url:      Url,
+    scheme_slice: const u8[:],
+    colon_idx:    i64,
+    slash_count:  i64,
+    remainder:    const u8[:],
+    base_url:     const Url&,
+    has_base:     bool,
+) -> Url, UrlParseError {
+    if scheme_slice == "file" && (colon_idx > 0 || slash_count >= 2) {
+        let auth_start = if slash_count >= 2 { 2 } else { 0 };
+        return parse_absolute_authority_url(out_url, scheme_slice, true, remainder[auth_start..]);
     }
-    guard cleaned.len > 0 else {
-        if has_base {
-            return resolve_relative_path_against_base(out_url, base_url, "");
+    if slash_count == 3 {
+        // Exactly 3 slashes in special scheme (e.g. https:///path): scheme:// followed by /path has empty host
+        return out_url, UrlParseError.MissingHost;
+    }
+    if slash_count >= 2 {
+        return parse_absolute_authority_url(out_url, scheme_slice, true, remainder[slash_count..]);
+    }
+    if colon_idx > 0 {
+        if has_base && scheme_slice == scheme(base_url) {
+            return resolve_relative_path_against_base(out_url, base_url, remainder);
         }
-        return out_url, UrlParseError.EmptyInput;
+        if slash_count < remainder.len {
+            return parse_absolute_authority_url(out_url, scheme_slice, true, remainder[slash_count..]);
+        }
+        return out_url, UrlParseError.MissingHost;
     }
+    guard has_base else {
+        return out_url, UrlParseError.RelativeWithoutBase;
+    }
+    return resolve_relative_path_against_base(out_url, base_url, remainder);
+}
 
-    let input_bytes = cleaned[..];
+// Parses the scheme-specific body of a non-special-scheme trimmed URL.
+//
+// Example:
+//   scheme_slice = "custom", colon_idx = 6, slash_count = 1, remainder = "/a/b"
+//   returns: out_url populated, err = UrlParseError.None
+fn parse_url_nonspecial_trimmed(
+    out_url:      Url,
+    scheme_slice: const u8[:],
+    colon_idx:    i64,
+    slash_count:  i64,
+    remainder:    const u8[:],
+    base_url:     const Url&,
+    has_base:     bool,
+) -> Url, UrlParseError {
+    if slash_count >= 2 {
+        return parse_absolute_authority_url(out_url, scheme_slice, false, remainder[2..]);
+    }
+    if colon_idx > 0 && slash_count == 1 {
+        // Absolute path without authority: custom:/a/b/c
+        out_url.href.append(scheme_slice);
+        out_url.href.push(':');
+        out_url.scheme_end = scheme_slice.len as i32;
+        let path_err = append_canonical_path_and_query(out_url, false, remainder);
+        guard path_err == UrlParseError.None else {
+            return out_url, path_err;
+        }
+        out_url.valid = true;
+        return out_url, UrlParseError.None;
+    }
+    guard has_base else {
+        return out_url, UrlParseError.RelativeWithoutBase;
+    }
+    return resolve_relative_path_against_base(out_url, base_url, remainder);
+}
+
+// Parses trimmed and tab/newline-free input bytes into a URL struct relative to an optional base URL.
+//
+// Example:
+//   input_bytes = "https://example.com/api", base_url = Url { .. }, has_base = false
+//   returns: out_url populated, err = UrlParseError.None
+fn parse_url_trimmed(input_bytes: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
+    var out_url = Url { valid: false, .. };
 
     let colon_idx, ok_scheme = parse_url_scheme_delimiter(input_bytes);
     guard ok_scheme else {
@@ -207,7 +277,7 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
             return out_url, UrlParseError.InvalidScheme;
         }
         to_lower(scheme_str[..]);
-        remainder_start = colon_idx + 1;
+        remainder_start = core::add_sat_i64(colon_idx, 1);
     } else {
         // Relative URL: requires base
         guard has_base else {
@@ -233,55 +303,63 @@ fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bo
         return parse_opaque_path_url(out_url, scheme_str[..], remainder);
     }
 
-    // Slashes count after scheme:
     let slash_count = count_scheme_trailing_slashes(remainder, is_spec);
 
-    // Special schemes or URLs with // authority
     if is_spec {
-        if scheme_str == "file" && (colon_idx > 0 || slash_count >= 2) {
-            let auth_start = if slash_count >= 2 { 2 } else { 0 };
-            return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[auth_start..]);
-        }
-        if slash_count == 3 {
-            // Exactly 3 slashes in special scheme (e.g. https:///path): scheme:// followed by /path has empty host
-            return out_url, UrlParseError.MissingHost;
-        }
-        if slash_count >= 2 {
-            return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[slash_count..]);
-        }
-        if colon_idx > 0 {
-            if has_base && scheme_str == scheme(base_url) {
-                return resolve_relative_path_against_base(out_url, base_url, remainder);
-            }
-            if slash_count < remainder.len {
-                return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[slash_count..]);
-            }
-            return out_url, UrlParseError.MissingHost;
-        }
-    } else {
-        if slash_count >= 2 {
-            return parse_absolute_authority_url(out_url, scheme_str[..], is_spec, remainder[2..]);
-        }
-        if colon_idx > 0 && slash_count == 1 {
-            // Absolute path without authority: custom:/a/b/c
-            out_url.href.append(scheme_str[..]);
-            out_url.href.push(':');
-            out_url.scheme_end = scheme_str.len as i32;
-            let path_err = append_canonical_path_and_query(out_url, is_spec, remainder);
-            guard path_err == UrlParseError.None else {
-                return out_url, path_err;
-            }
-            out_url.valid = true;
-            return out_url, UrlParseError.None;
-        }
+        return parse_url_special_trimmed(
+            out_url,
+            scheme_str[..],
+            colon_idx,
+            slash_count,
+            remainder,
+            base_url,
+            has_base,
+        );
     }
+    return parse_url_nonspecial_trimmed(
+        out_url,
+        scheme_str[..],
+        colon_idx,
+        slash_count,
+        remainder,
+        base_url,
+        has_base,
+    );
+}
 
-    // Relative path resolution against base
-    guard has_base else {
-        return out_url, UrlParseError.RelativeWithoutBase;
+// Cleans leading/trailing C0 controls and internal tabs/newlines before parsing `raw_input`.
+//
+// Example:
+//   raw_input = " https://example.com/\tapi ", has_base = false
+//   returns: out_url populated, err = UrlParseError.None
+fn parse_url_dirty_fallback(raw_input: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
+    var cleaned: u8[..2048] = [];
+    guard clean_input_string(raw_input, cleaned) else {
+        return Url { valid: false, .. }, UrlParseError.InputTooLong;
     }
+    guard cleaned.len > 0 else {
+        if has_base {
+            var out_url = Url { valid: false, .. };
+            return resolve_relative_path_against_base(out_url, base_url, "");
+        }
+        return Url { valid: false, .. }, UrlParseError.EmptyInput;
+    }
+    return parse_url_trimmed(cleaned[..], base_url, has_base);
+}
 
-    return resolve_relative_path_against_base(out_url, base_url, remainder);
+// Parses input string into a URL struct relative to an optional base URL.
+//
+// Example:
+//   raw_input = "https://example.com/api", base_url = Url { .. }, has_base = false
+//   returns: out_url populated, err = UrlParseError.None
+fn parse_url_internal(raw_input: const u8[:], base_url: const Url&, has_base: bool) -> Url, UrlParseError {
+    if is_url_precleaned(raw_input) {
+        guard raw_input.len <= 2048 else {
+            return Url { valid: false, .. }, UrlParseError.InputTooLong;
+        }
+        return parse_url_trimmed(raw_input, base_url, has_base);
+    }
+    return parse_url_dirty_fallback(raw_input, base_url, has_base);
 }
 
 fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) -> bool {

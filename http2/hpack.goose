@@ -701,6 +701,30 @@ fn huff_decode_step(
 // Example:
 //   src = [0x9C, 0xC5], out = []
 //   returns: ok = true, out = "www"
+inline fn huff_step_nibble<B>(
+    state:         u8&,
+    flags:         u8&,
+    out:           B&,
+    next_i:        u64,
+    last_sym_byte: u64&,
+    nibble:        u8,
+) -> bool {
+    let d = huff_decode_lookup(state, nibble);
+    guard (d.flags & HUFF_FAIL) == 0 else { return false; }
+    if (d.flags & HUFF_SYM) != 0 {
+        guard out.try_push(d.sym) else { return false; }
+        last_sym_byte = next_i;
+    }
+    state = d.fstate;
+    flags = d.flags;
+    return true;
+}
+
+// Decodes a Huffman-encoded byte slice into any appendable buffer without stack scratch zeroing.
+//
+// Example:
+//   src = [0x9C, 0xC5], out = []
+//   returns: ok = true, out = "www"
 fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
     let start_len = out.len;
     var committed = false;
@@ -710,16 +734,12 @@ fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
     var i:     u64 = 0;
     let src_len = src.len as u64;
     var last_sym_byte: u64 = 0;
+
     while i < src_len {
         let c = src[i];
         let next_i = core::add_sat_u64(i, 1);
-        let s1, _, ok1 = huff_apply_nibble(state, c >> 4, next_i, last_sym_byte, out);
-        let s2, f2, ok2 = huff_apply_nibble(s1, c & 0x0F, next_i, last_sym_byte, out);
-        if !ok1 || !ok2 {
-            return false;
-        }
-        state = s2;
-        flags = f2;
+        guard huff_step_nibble(state, flags, out, next_i, last_sym_byte, c >> 4) else { return false; }
+        guard huff_step_nibble(state, flags, out, next_i, last_sym_byte, c & 0x0F) else { return false; }
         i = next_i;
     }
 
@@ -1421,15 +1441,17 @@ fn validate_h2_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
         i++;
     }
 
-    // Validate value
-    if val.len > 0 {
-        // No leading/trailing SP or HTAB
-        if val[0] == ' ' || val[0] == '\t' || val[val.len - 1] == ' ' || val[val.len - 1] == '\t' {
-            return false;
-        }
-        for b in val {
-            if (b < 0x20 && b != '\t') || b == 0x7F {
-                return false; // Forbidden CTL characters and DEL (RFC 9113 Section 8.2.1)
+    guard val.len > 0 else { return true; }
+    // No leading/trailing SP or HTAB
+    if val[0] == ' ' || val[0] == '\t' || val[val.len - 1] == ' ' || val[val.len - 1] == '\t' {
+        return false;
+    }
+    guard !val.contains_byte(0x7F) else { return false; }
+    let ctl_idx = core::swar_find_ctl(val);
+    if ctl_idx < val.len {
+        for b in val[ctl_idx..] {
+            if b < 0x20 && b != '\t' {
+                return false;
             }
         }
     }
@@ -1788,28 +1810,31 @@ fn decode_literal_field_slices(
     prefix_bits: u8,
     name_buf:    u8[..256]&,
     val_buf:     u8[..8192]&,
-) -> u64, u32 {
+) -> u64, const u8[:], u32 {
     let name_mark = name_buf.len;
     let val_mark = val_buf.len;
     var committed = false;
     defer if !committed { name_buf.resize(name_mark); val_buf.resize(val_mark); };
     let name_idx, init_off, ok_idx = hpack_decode_int(src, offset, prefix_bits);
-    guard ok_idx else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
+    guard ok_idx else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
     var mut_off = init_off;
 
     if name_idx == 0 {
         let next_name_off, ok_name = decode_hpack_string(src, mut_off, name_buf);
-        guard ok_name else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
+        guard ok_name else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
         mut_off = next_name_off;
-    } else {
+    } else if name_idx > 61 {
         let ok_n = get_indexed_header_name(dt, name_idx, name_buf);
-        guard ok_n else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
+        guard ok_n else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
     }
 
     let val_next_off, ok_val = decode_hpack_string(src, mut_off, val_buf);
-    guard ok_val else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
+    guard ok_val else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
     committed = true;
-    return val_next_off, rfc::H2_ERR_NO_ERROR;
+    if name_idx >= 1 && name_idx <= 61 {
+        return val_next_off, HPACK_STATIC_TABLE[name_idx].name, rfc::H2_ERR_NO_ERROR;
+    }
+    return val_next_off, name_buf[..], rfc::H2_ERR_NO_ERROR;
 }
 
 // Applies an HPACK dynamic table size update instruction at `offset` (RFC 7541 Section 6.3).
@@ -1881,14 +1906,14 @@ fn decode_hpack_field_step_with_scratch(
         updates_allowed = false;
         name_buf.clear();
         val_buf.clear();
-        let val_next_off, err_dec = decode_literal_field_slices(dt, src, offset, 6, name_buf, val_buf);
+        let val_next_off, name_slice, err_dec = decode_literal_field_slices(dt, src, offset, 6, name_buf, val_buf);
         guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
-        insert_header(dt, name_buf[..], val_buf[..], false);
+        insert_header(dt, name_slice, val_buf[..], false);
         let err = append_decoded_header_to_map(
             out_pseudo,
             out_headers,
-            name_buf[..],
+            name_slice,
             val_buf[..],
             max_header_list_size,
             validate_http2_rules,
@@ -1905,13 +1930,13 @@ fn decode_hpack_field_step_with_scratch(
     updates_allowed = false;
     name_buf.clear();
     val_buf.clear();
-    let val_next_off, err_dec = decode_literal_field_slices(dt, src, offset, 4, name_buf, val_buf);
+    let val_next_off, name_slice, err_dec = decode_literal_field_slices(dt, src, offset, 4, name_buf, val_buf);
     guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
     let err = append_decoded_header_to_map(
         out_pseudo,
         out_headers,
-        name_buf[..],
+        name_slice,
         val_buf[..],
         max_header_list_size,
         validate_http2_rules,
@@ -2149,22 +2174,6 @@ inline fn rollback_hpack_out<B>(out: B&, start_len: i64) {
     while out.len > start_len {
         let _ = out.pop();
     }
-}
-
-inline fn huff_apply_nibble<B>(
-    state:         u8,
-    nibble:        u8,
-    byte_idx:      u64,
-    last_sym_byte: u64&,
-    out:           B&,
-) -> u8, u8, bool {
-    let t = huff_decode_lookup(state, nibble);
-    guard (t.flags & HUFF_FAIL) == 0 else { return 0, 0, false; }
-    if (t.flags & HUFF_SYM) != 0 {
-        guard out.try_push(t.sym) else { return 0, 0, false; }
-        last_sym_byte = byte_idx;
-    }
-    return t.fstate, t.flags, true;
 }
 
 inline fn is_hpack_volatile_header(name: const u8[:]) -> bool {
