@@ -14,3 +14,4 @@ import core.math.arithmetic;
 import core.math.random;
 import core.math.hash;
 import core.math.network;
+import core.math.flat_index;

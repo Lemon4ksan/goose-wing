@@ -336,15 +336,16 @@ struct ConnectionGroup {
 }
 
 struct StreamPool {
-    conns:                         PooledConnection[..64] = [],
-    groups:                        ConnectionGroup[..32]  = [],
-    max_sockets_per_group:         i32                    = DEFAULT_MAX_SOCKETS_PER_GROUP,
-    max_sockets_per_proxy:         i32                    = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
-    socket_soft_cap:               i32                    = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
-    idle_timeout_ns:               i64                    = DEFAULT_IDLE_CONN_TIMEOUT_NS,
-    enable_ip_coalescing_h2:       bool                   = true,
-    negative_ip_pool_result_count: i64                    = 0,
-    next_conn_id:                  i32                    = 1,
+    conns:                         PooledConnection[..64]    = [],
+    groups:                        ConnectionGroup[..32]     = [],
+    group_index:                   core::FlatIndexBucket[64] = [core::FlatIndexBucket { .. }; 64],
+    max_sockets_per_group:         i32                       = DEFAULT_MAX_SOCKETS_PER_GROUP,
+    max_sockets_per_proxy:         i32                       = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
+    socket_soft_cap:               i32                       = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
+    idle_timeout_ns:               i64                       = DEFAULT_IDLE_CONN_TIMEOUT_NS,
+    enable_ip_coalescing_h2:       bool                      = true,
+    negative_ip_pool_result_count: i64                       = 0,
+    next_conn_id:                  i32                       = 1,
 }
 
 fn new_stream_pool(
@@ -363,6 +364,12 @@ fn new_stream_pool(
 // Finds an existing connection group by key.
 fn find_group_index(pool: const StreamPool&, key: const PoolKey&) -> i32 {
     let kh = pool_key_hash(key);
+    let res = core::flat_index_get(pool.group_index[..], kh);
+    if res.found && res.slot_idx >= 0 && res.slot_idx < pool.groups.len {
+        if pool.groups[res.slot_idx].key.pool_key_equals(key) {
+            return res.slot_idx;
+        }
+    }
     for &grp, idx in pool.groups {
         if grp.key_hash == kh && grp.key.pool_key_equals(key) {
             return idx as i32;
@@ -371,23 +378,34 @@ fn find_group_index(pool: const StreamPool&, key: const PoolKey&) -> i32 {
     return -1;
 }
 
-// Finds an existing connection group or creates a new one.
+// Finds an existing connection group or creates a new one using single-pass GetOrPut.
 fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
-    let idx = pool.find_group_index(key);
-    if idx >= 0 {
-        return idx;
-    }
     let kh = pool_key_hash(key);
+    let probe = core::flat_index_get_or_put(pool.group_index[..], kh);
+    if probe.found {
+        if probe.slot_idx >= 0 && probe.slot_idx < pool.groups.len {
+            if pool.groups[probe.slot_idx].key.pool_key_equals(key) {
+                return probe.slot_idx;
+            }
+        }
+        for &grp, idx in pool.groups {
+            if grp.key_hash == kh && grp.key.pool_key_equals(key) {
+                return idx as i32;
+            }
+        }
+    }
     let grp = ConnectionGroup {
         key:        copy(key),
         key_hash:   kh,
         wait_queue: WantQueue { .. },
         ..
     };
-    if pool.groups.try_push(grp) {
-        return (pool.groups.len - 1) as i32;
+    guard pool.groups.try_push(grp) else { return -1; }
+    let new_idx = core::sub_sat_i64(pool.groups.len, 1);
+    if !probe.found && probe.bucket_idx >= 0 {
+        let _, _ = core::flat_index_commit_put(pool.group_index[..], probe.bucket_idx, kh, new_idx as u16);
     }
-    return -1;
+    return new_idx as i32;
 }
 
 // Scans for a closed connection slot that can be reclaimed.
@@ -988,6 +1006,13 @@ fn reclaim_idle_origin_groups(pool: StreamPool&) -> i32 {
     }
     if reclaimed > 0 {
         pool.groups = kept;
+        core::flat_index_clear(pool.group_index[..]);
+        for &g, gi in pool.groups {
+            let gp = core::flat_index_get_or_put(pool.group_index[..], g.key_hash);
+            if !gp.found && gp.bucket_idx >= 0 {
+                let _, _ = core::flat_index_commit_put(pool.group_index[..], gp.bucket_idx, g.key_hash, gi as u16);
+            }
+        }
     }
     return reclaimed as i32;
 }

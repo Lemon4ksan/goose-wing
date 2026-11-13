@@ -120,7 +120,8 @@ struct H2Connection {
     coalesce_window_updates:   bool         = false,
 
     // Active streams table (bounded inline storage)
-    streams: H2Stream[..128] = [],
+    streams:      H2Stream[..128]            = [],
+    stream_index: core::FlatIndexBucket[256] = [core::FlatIndexBucket { .. }; 256],
 
     // Exclusive CONTINUATION lock (0 if not expecting CONTINUATION)
     continuation_stream_id:       u32 = 0,
@@ -202,12 +203,13 @@ fn has_free_stream_slot(s: const H2Connection&) -> bool {
 
 // Finds an active stream by stream_id. Returns (index, true) or (-1, false).
 fn find_h2_stream_idx(s: const H2Connection&, stream_id: u32) -> i32, bool {
-    var idx: i32 = 0;
-    while idx < (s.streams.len as i32) {
-        if s.streams[idx].active && s.streams[idx].stream_id == stream_id {
-            return idx, true;
-        }
-        idx++;
+    let res = core::flat_index_get(s.stream_index[..], stream_id);
+    guard res.found && res.slot_idx >= 0 && res.slot_idx < s.streams.len else {
+        return -1, false;
+    }
+    let st .= s.streams[res.slot_idx];
+    if st.active && st.stream_id == stream_id {
+        return res.slot_idx, true;
     }
     return -1, false;
 }
@@ -256,18 +258,28 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
         ..
     };
 
-    var placed = false;
-    for &slot in s.streams {
-        if !slot.active {
-            slot = new_stream;
-            placed = true;
+    var slot_idx: i32 = -1;
+    for i in s.streams.len {
+        if !s.streams[i].active {
+            s.streams[i] = new_stream;
+            slot_idx = i as i32;
             break;
         }
     }
-    if !placed {
+    if slot_idx < 0 {
         guard s.streams.try_push(new_stream) else { return; }
+        slot_idx = core::sub_sat_i64(s.streams.len, 1) as i32;
     }
-    s.active_stream_count++;
+    let res = core::flat_index_get_or_put(s.stream_index[..], stream_id);
+    if !res.found && res.bucket_idx >= 0 {
+        let _, _ = core::flat_index_commit_put(
+            s.stream_index[..],
+            res.bucket_idx,
+            stream_id,
+            slot_idx as u16,
+        );
+    }
+    s.active_stream_count = core::add_sat_u64(s.active_stream_count, 1) as u32;
 }
 
 // Marks the local half of a stream as closed (e.g. after sending END_STREAM).
@@ -280,6 +292,7 @@ fn close_local_stream(s: H2Connection&, stream_id: u32) {
     if st.state == H2StreamState.HalfClosedRemote {
         st.state = H2StreamState.Closed;
         st.active = false;
+        let _ = core::flat_index_remove(s.stream_index[..], stream_id);
         if s.active_stream_count > 0 {
             s.active_stream_count--;
         }
@@ -298,6 +311,7 @@ fn reset_session_stream(s: H2Connection&, stream_id: u32) {
     st.state = H2StreamState.Closed;
     st.closed_by_rst = true;
     st.active = false;
+    let _ = core::flat_index_remove(s.stream_index[..], stream_id);
     if s.active_stream_count > 0 {
         s.active_stream_count--;
     }
@@ -310,6 +324,7 @@ inline fn apply_stream_end_remote(s: H2Connection&, s_idx: i32) {
     if st.state == H2StreamState.HalfClosedLocal {
         st.state = H2StreamState.Closed;
         st.active = false;
+        let _ = core::flat_index_remove(s.stream_index[..], st.stream_id);
         if s.active_stream_count > 0 {
             s.active_stream_count--;
         }
@@ -414,6 +429,7 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
         st.state = H2StreamState.Closed;
         st.closed_by_rst = true;
         st.active = false;
+        let _ = core::flat_index_remove(s.stream_index[..], hdr.stream_id);
         if s.active_stream_count > 0 {
             s.active_stream_count--;
         }

@@ -101,6 +101,8 @@ struct PollerTimer {
 struct Poller {
     driver_cfg:              internal::TransportDriverConfig = internal::TransportDriverConfig { .. },
     registrations:           SocketRegistration[..512]       = [SocketRegistration { .. }; 512],
+    fd_index:                core::FlatIndexBucket[1024]     = [core::FlatIndexBucket { .. }; 1024],
+    tag_index:               core::FlatIndexBucket[1024]     = [core::FlatIndexBucket { .. }; 1024],
     timers:                  PollerTimer[..64]               = [PollerTimer { .. }; 64],
     active_fd_count:         u32                             = 0,
     active_timer_count:      u32                             = 0,
@@ -162,6 +164,8 @@ fn close_poller(p: Poller&) {
     for i in p.registrations.len {
         p.registrations[i].in_use = false;
     }
+    core::flat_index_clear(p.fd_index[..]);
+    core::flat_index_clear(p.tag_index[..]);
     for i in p.timers.len {
         p.timers[i].active = false;
     }
@@ -176,21 +180,18 @@ fn close_poller(p: Poller&) {
 // ---- Registration Management --------------------------------------------
 
 fn find_registration(p: const Poller&, fd: i32) -> i64 {
-    for i in p.registrations.len {
-        if p.registrations[i].in_use && p.registrations[i].fd == fd {
-            return i;
-        }
-    }
-    return -1;
+    guard fd >= 0 else { return -1; }
+    let res = core::flat_index_get(p.fd_index[..], fd as u64);
+    guard res.found && res.slot_idx >= 0 && res.slot_idx < p.registrations.len else { return -1; }
+    guard p.registrations[res.slot_idx].in_use && p.registrations[res.slot_idx].fd == fd else { return -1; }
+    return res.slot_idx;
 }
 
 fn find_by_tag(p: const Poller&, tag: u64) -> i64 {
-    for i in p.registrations.len {
-        if p.registrations[i].in_use && p.registrations[i].tag == tag {
-            return i;
-        }
-    }
-    return -1;
+    let res = core::flat_index_get(p.tag_index[..], tag);
+    guard res.found && res.slot_idx >= 0 && res.slot_idx < p.registrations.len else { return -1; }
+    guard p.registrations[res.slot_idx].in_use && p.registrations[res.slot_idx].tag == tag else { return -1; }
+    return res.slot_idx;
 }
 
 inline fn poller_bind_native_registration(
@@ -225,7 +226,8 @@ fn register_socket(
     trigger:  PollTrigger = PollTrigger.Level,
 ) -> bool {
     guard fd >= 0 else { return false; }
-    guard find_registration(p, fd) < 0 else { return false; } // Already registered
+    let fd_probe = core::flat_index_get_or_put(p.fd_index[..], fd as u64);
+    guard !fd_probe.found && fd_probe.bucket_idx >= 0 else { return false; }
 
     for i in p.registrations.len {
         if !p.registrations[i].in_use {
@@ -240,6 +242,11 @@ fn register_socket(
             p.registrations[i].sim.bytes = 0;
             p.registrations[i].sim.eof = false;
             p.active_fd_count += 1;
+            let _, _ = core::flat_index_commit_put(p.fd_index[..], fd_probe.bucket_idx, fd as u64, i as u16);
+            let tag_probe = core::flat_index_get_or_put(p.tag_index[..], tag);
+            if !tag_probe.found && tag_probe.bucket_idx >= 0 {
+                let _, _ = core::flat_index_commit_put(p.tag_index[..], tag_probe.bucket_idx, tag, i as u16);
+            }
             poller_bind_native_registration(p, fd, tag, interest, trigger);
             return true;
         }
@@ -257,6 +264,14 @@ fn modify_socket(
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
 
+    let old_tag = p.registrations[idx].tag;
+    if old_tag != tag {
+        let _ = core::flat_index_remove(p.tag_index[..], old_tag);
+        let tag_probe = core::flat_index_get_or_put(p.tag_index[..], tag);
+        if !tag_probe.found && tag_probe.bucket_idx >= 0 {
+            let _, _ = core::flat_index_commit_put(p.tag_index[..], tag_probe.bucket_idx, tag, idx as u16);
+        }
+    }
     p.registrations[idx].tag = tag;
     p.registrations[idx].interest = interest;
     p.registrations[idx].trigger = trigger;
@@ -268,6 +283,9 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
 
+    let old_tag = p.registrations[idx].tag;
+    let _ = core::flat_index_remove(p.fd_index[..], fd as u64);
+    let _ = core::flat_index_remove(p.tag_index[..], old_tag);
     p.registrations[idx].in_use = false;
     p.registrations[idx].fd = -1;
     p.registrations[idx].tag = 0;

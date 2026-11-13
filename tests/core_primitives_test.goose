@@ -2644,6 +2644,79 @@ fn test_json_bounded_primitives(t: lit::T&) {
     };
 }
 
+fn test_flat_index_map(t: lit::T&) {
+    t.run("FlatIndexMap GetOrPut, Backward-Shift Delete, and ABA Gen") { sub =>
+        var buckets: core::FlatIndexBucket[8] = [core::FlatIndexBucket { .. }; 8];
+
+        // 1. Empty lookup misses
+        let miss = core::flat_index_get(buckets[..], 101);
+        sub.assert_false(miss.found, "empty table misses");
+        sub.assert_eq(miss.bucket_idx, -1, "miss bucket_idx is -1");
+
+        // 2. GetOrPut + CommitPut + Get hit
+        let ins1 = core::flat_index_get_or_put(buckets[..], 101);
+        sub.assert_false(ins1.found, "key 101 not yet present");
+        sub.assert_true(ins1.bucket_idx >= 0, "valid bucket_idx returned for insert");
+        let gen1, ok1 = core::flat_index_commit_put(buckets[..], ins1.bucket_idx, 101, 7);
+        sub.assert_true(ok1, "commit_put succeeds");
+        sub.assert_eq(gen1, 1 as u16, "first generation is 1");
+
+        let hit1 = core::flat_index_get(buckets[..], 101);
+        sub.assert_true(hit1.found, "key 101 found after commit");
+        sub.assert_eq(hit1.slot_idx, 7, "slot_idx matches 7");
+        sub.assert_eq(hit1.gen, 1 as u16, "gen matches 1");
+
+        // 3. GetOrPut on existing key returns existing entry
+        let dup1 = core::flat_index_get_or_put(buckets[..], 101);
+        sub.assert_true(dup1.found, "get_or_put finds existing key 101");
+        sub.assert_eq(dup1.slot_idx, 7, "existing slot_idx preserved");
+
+        // 4. Insert keys 1..=7 to force probe chains & fill table (cap 8)
+        var k: u64 = 1;
+        while k <= 7 {
+            let r = core::flat_index_get_or_put(buckets[..], k);
+            sub.assert_false(r.found, "new key not found");
+            sub.assert_true(r.bucket_idx >= 0, "bucket available before full");
+            let _, ok_k = core::flat_index_commit_put(buckets[..], r.bucket_idx, k, (k * 10) as u16);
+            sub.assert_true(ok_k, "commit_put succeeds for key");
+            k++;
+        }
+
+        // Table is now full (8/8): new key must fail cleanly
+        let full_res = core::flat_index_get_or_put(buckets[..], 999);
+        sub.assert_false(full_res.found, "full table miss");
+        sub.assert_eq(full_res.bucket_idx, -1, "full table returns bucket_idx == -1");
+
+        // 5. Remove half the keys (backward-shift deletion) and verify remaining keys stay reachable
+        let rm1 = core::flat_index_remove(buckets[..], 2);
+        sub.assert_true(rm1.found, "remove key 2 succeeds");
+        sub.assert_eq(rm1.slot_idx, 20, "removed key 2 had slot_idx 20");
+        let rm2 = core::flat_index_remove(buckets[..], 4);
+        sub.assert_true(rm2.found, "remove key 4 succeeds");
+        let rm3 = core::flat_index_remove(buckets[..], 101);
+        sub.assert_true(rm3.found, "remove key 101 succeeds");
+        sub.assert_false(core::flat_index_get(buckets[..], 101).found, "key 101 gone after remove");
+
+        sub.assert_eq(core::flat_index_get(buckets[..], 1).slot_idx, 10, "key 1 intact after backward-shift");
+        sub.assert_eq(core::flat_index_get(buckets[..], 3).slot_idx, 30, "key 3 intact after backward-shift");
+        sub.assert_eq(core::flat_index_get(buckets[..], 5).slot_idx, 50, "key 5 intact after backward-shift");
+        sub.assert_eq(core::flat_index_get(buckets[..], 6).slot_idx, 60, "key 6 intact after backward-shift");
+        sub.assert_eq(core::flat_index_get(buckets[..], 7).slot_idx, 70, "key 7 intact after backward-shift");
+
+        // 6. Re-insert at freed bucket increments ABA generation
+        let re_ins = core::flat_index_get_or_put(buckets[..], 202);
+        sub.assert_false(re_ins.found, "key 202 not present");
+        let gen2, ok2 = core::flat_index_commit_put(buckets[..], re_ins.bucket_idx, 202, 42);
+        sub.assert_true(ok2, "commit_put key 202 succeeds");
+        sub.assert_true(gen2 >= 1 as u16, "generation counter >= 1");
+
+        // 7. Clear resets occupied flags
+        core::flat_index_clear(buckets[..]);
+        sub.assert_false(core::flat_index_get(buckets[..], 1).found, "key 1 cleared");
+        sub.assert_false(core::flat_index_get(buckets[..], 202).found, "key 202 cleared");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite", lit::Verbosity.Verbose);
 
@@ -2687,6 +2760,7 @@ fn main() {
     lit::run_case(runner, "38. Compress & Time Regressions", test_compress_and_time_regressions);
     lit::run_case(runner, "39. URL Regressions", test_url_regressions);
     lit::run_case(runner, "40. Bounded JSON Primitives", test_json_bounded_primitives);
+    lit::run_case(runner, "41. FlatIndexMap GetOrPut, Backward-Shift Delete & ABA Gen", test_flat_index_map);
 
     let ok = lit::finish(runner);
     assert(ok);
