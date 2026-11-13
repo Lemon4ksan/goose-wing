@@ -356,6 +356,14 @@ func main() {
 	}
 	defer c5.Close()
 
+	leafOnlyCert := validLeaf
+	leafOnlyCert.Certificate = [][]byte{validLeaf.Certificate[0]}
+	leafOnlyPort, c6, err := startTLSServer(leafOnlyCert, []string{"h2", "http/1.1"}, true, handler)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c6.Close()
+
 	scenarios := []ScenarioSpec{
 		{
 			Name:       "h2_get",
@@ -412,6 +420,14 @@ func main() {
 			UseCA:  true,
 		},
 		{
+			Name:       "h2_leaf_only_chain",
+			Target:     "leaf_only",
+			Method:     "GET",
+			URL:        fmt.Sprintf("https://localhost:%d/get", leafOnlyPort),
+			UseCA:      true,
+			GoCheckHdr: map[string]string{"content-type": "", "x-oracle-proto": ""},
+		},
+		{
 			Name:   "reject_untrusted_ca",
 			Target: "untrusted",
 			Method: "GET",
@@ -454,6 +470,7 @@ func main() {
 		Ports: map[string]int{
 			"h2":        h2Port,
 			"h1":        h1Port,
+			"leaf_only": leafOnlyPort,
 			"wrong_san": wrongSanPort,
 			"expired":   expiredPort,
 			"untrusted": untrustedPort,

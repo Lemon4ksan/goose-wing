@@ -18,16 +18,16 @@ const DEFAULT_BENCH_ITERS: i64 = 10000;
 const AEAD_RECORD_SIZE:    i64 = 1024;
 
 // Prints a non-negative integer scaled by 100 as `whole.frac` (2 decimal places).
-fn format_fixed_x100<B>(scaled: i64, out: B&) {
-    let clamped = max(scaled, 0);
-    let whole = clamped / 100;
-    let frac = clamped % 100;
-    whole.format_i64_dec(out);
+fn format_fixed_x100<B>(scaled: u64, out: B&) {
+    let clamped = min(scaled, 9000000000000000000) as i64;
+    let whole = core::div_euclid_i64(clamped, 100) as u64;
+    let frac = core::rem_euclid_i64(clamped, 100) as u64;
+    whole.format_u64_dec(out);
     let _ = out.try_push('.');
     if frac < 10 {
         let _ = out.try_push('0');
     }
-    frac.format_i64_dec(out);
+    frac.format_u64_dec(out);
 }
 
 // Emits one structured machine-readable benchmark line and checks non-zero checksum.
@@ -35,15 +35,16 @@ fn report_bench(
     name:        const u8[:],
     iters:       i64,
     elapsed_ns:  i64,
-    bytes_total: i64,
+    bytes_total: u64,
     checksum:    u64,
 ) {
     assert(checksum != 0);
-    let eff_ns = max(elapsed_ns, 1);
-    let ns_op_f = (eff_ns * 100.0) / iters;
-    let mb_s_f = (bytes_total * 100000.0) / eff_ns;
-    let ns_op_x100 = (ns_op_f + 0.5) as i64;
-    let mb_s_x100 = (mb_s_f + 0.5) as i64;
+    let eff_ns = max(elapsed_ns, 1) as u64;
+    let u_iters = max(iters, 1) as u64;
+    let num_ns = core::add_sat_u64(core::mul_sat_u64(eff_ns, 100), u_iters >> 1);
+    let num_mb = core::add_sat_u64(core::mul_sat_u64(bytes_total, 100000), eff_ns >> 1);
+    let ns_op_x100 = core::div_euclid_i64(min(num_ns, 9000000000000000000) as i64, u_iters as i64) as u64;
+    let mb_s_x100 = core::div_euclid_i64(min(num_mb, 9000000000000000000) as i64, eff_ns as i64) as u64;
 
     var ns_buf: u8[..32] = [];
     var mb_buf: u8[..32] = [];
@@ -65,11 +66,13 @@ fn report_bench(
 //   argv = ["codec_perf_benchmark.exe", "--iters", "5000"]
 //   returns: 5000
 fn parse_iters_arg<S>(argv: const S[:]) -> i64 {
-    var i: i64 = 1;
-    while i < argv.len {
+    var i: u64 = 1;
+    let argc = argv.len as u64;
+    while i < argc {
         let arg = argv[i];
-        if arg == "--iters" && (i + 1) < argv.len {
-            let parsed, ok = argv[i + 1].parse_i64_dec();
+        let next_i = core::add_sat_u64(i, 1);
+        if arg == "--iters" && next_i < argc {
+            let parsed, ok = argv[next_i].parse_i64_dec();
             if ok && parsed > 0 {
                 return parsed;
             }
@@ -78,13 +81,14 @@ fn parse_iters_arg<S>(argv: const S[:]) -> i64 {
         if pos_ok && pos_val > 0 {
             return pos_val;
         }
-        i += 1;
+        i = next_i;
     }
     return DEFAULT_BENCH_ITERS;
 }
 
 inline fn calc_warmup_iters(iters: i64) -> i64 {
-    return min(max(iters / 10, 64), 2000);
+    let tenth = max(iters, 0) >> 3;
+    return min(max(tenth, 64), 2000);
 }
 
 fn append_sample_h1_request<B>(out: B&) {
@@ -113,7 +117,7 @@ fn bench_h1_request(iters: i64) -> u64 {
     for _ in warmup {
         let err = wing::parse_request_headers(req_wire, map);
         assert(wing::is_ok(err));
-        checksum += map.entries.len as u64;
+        checksum = core::add_sat_u64(checksum, map.entries.len as u64);
     }
 
     let watch = core::stopwatch();
@@ -121,10 +125,11 @@ fn bench_h1_request(iters: i64) -> u64 {
         let err = wing::parse_request_headers(req_wire, map);
         assert(wing::is_ok(err) && map.entries.len == 9);
         let req_id = wing::get_header(map, "x-request-id");
-        checksum += (map.entries.len as u64) + (req_id.len as u64);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(map.entries.len as u64, req_id.len as u64));
     }
     let dt = core::elapsed(watch);
-    report_bench("h1_parse_request", iters, dt.as_nanos(), iters * req_wire.len, checksum);
+    let total_bytes = core::mul_sat_u64(iters as u64, req_wire.len as u64);
+    report_bench("h1_parse_request", iters, dt.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -153,7 +158,7 @@ fn bench_h1_response(iters: i64) -> u64 {
     for _ in warmup {
         let err = wing::parse_response_headers(resp_wire, map);
         assert(wing::is_ok(err));
-        checksum += map.status_code as u64;
+        checksum = core::add_sat_u64(checksum, map.status_code as u64);
     }
 
     let watch = core::stopwatch();
@@ -161,10 +166,11 @@ fn bench_h1_response(iters: i64) -> u64 {
         let err = wing::parse_response_headers(resp_wire, map);
         assert(wing::is_ok(err) && map.status_code == 200);
         let etag = wing::get_header(map, "etag");
-        checksum += (map.status_code as u64) + (etag.len as u64);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(map.status_code as u64, etag.len as u64));
     }
     let dt = core::elapsed(watch);
-    report_bench("h1_parse_response", iters, dt.as_nanos(), iters * resp_wire.len, checksum);
+    let total_bytes = core::mul_sat_u64(iters as u64, resp_wire.len as u64);
+    report_bench("h1_parse_response", iters, dt.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -186,32 +192,33 @@ fn bench_headermap_write(iters: i64) -> u64 {
     var checksum: u64 = 0;
 
     for _ in warmup {
-        checksum += populate_sample_headermap(map) as u64;
+        checksum = core::add_sat_u64(checksum, populate_sample_headermap(map) as u64);
     }
 
     var bytes_per_op: i64 = 0;
     let watch = core::stopwatch();
     for _ in iters {
         bytes_per_op = populate_sample_headermap(map);
-        checksum += (bytes_per_op as u64) + (map.entries.len as u64);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(bytes_per_op as u64, map.entries.len as u64));
     }
     let dt = core::elapsed(watch);
-    report_bench("headermap_append_set", iters, dt.as_nanos(), iters * bytes_per_op, checksum);
+    let total_bytes = core::mul_sat_u64(iters as u64, bytes_per_op as u64);
+    report_bench("headermap_append_set", iters, dt.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
 fn bench_headermap_lookup(iters: i64) -> u64 {
     var map = wing::HeaderMap { .. };
     let _ = populate_sample_headermap(map);
-    let keys:         const u8[:][4] = ["Host", "content-type", "X-Request-Id", "x-trace-b3"];
-    let bytes_per_op: i64            = 4 + 12 + 12 + 10 + 15 + 16 + 15 + 32;
+    let keys:      const u8[:][4] = ["Host", "content-type", "X-Request-Id", "x-trace-b3"];
+    let avg_bytes: u64            = 29;
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
 
     for k in warmup {
         let key = keys[k & 3];
         assert(wing::has_header(map, key));
-        checksum += wing::get_header(map, key).len as u64;
+        checksum = core::add_sat_u64(checksum, wing::get_header(map, key).len as u64);
     }
 
     let watch = core::stopwatch();
@@ -220,11 +227,11 @@ fn bench_headermap_lookup(iters: i64) -> u64 {
         let present = wing::has_header(map, key);
         let val = wing::get_header(map, key);
         assert(present && val.len > 0);
-        checksum += (val.len as u64) + val[0];
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(val.len as u64, val[0]));
     }
     let dt = core::elapsed(watch);
-    let avg_bytes = bytes_per_op / 4;
-    report_bench("headermap_get_has_hit", iters, dt.as_nanos(), iters * avg_bytes, checksum);
+    let total_bytes = core::mul_sat_u64(iters as u64, avg_bytes);
+    report_bench("headermap_get_has_hit", iters, dt.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -261,7 +268,7 @@ fn bench_bloom_filter(iters: i64) -> u64 {
         let mk = miss_keys[k & 3];
         let hit = wing::might_have_header(bf, mk);
         assert(!hit);
-        checksum += mk.len as u64;
+        checksum = core::add_sat_u64(checksum, mk.len as u64);
     }
 
     let watch = core::stopwatch();
@@ -269,10 +276,11 @@ fn bench_bloom_filter(iters: i64) -> u64 {
         let mk = miss_keys[k & 3];
         let hit = wing::might_have_header(bf, mk);
         assert(!hit);
-        checksum += mk.len as u64;
+        checksum = core::add_sat_u64(checksum, mk.len as u64);
     }
     let dt = core::elapsed(watch);
-    report_bench("bloom_fast_miss", iters, dt.as_nanos(), iters * 18, checksum);
+    let total_bytes = core::mul_sat_u64(iters as u64, 18);
+    report_bench("bloom_fast_miss", iters, dt.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -289,17 +297,18 @@ fn bench_url_parse(iters: i64) -> u64 {
     for k in warmup {
         let u, err = core::parse_url(urls[k & 3]);
         assert(core::is_ok(err) && u.valid);
-        checksum += u.href.len as u64;
+        checksum = core::add_sat_u64(checksum, u.href.len as u64);
     }
 
-    var total_bytes: i64 = 0;
+    var total_bytes: u64 = 0;
     let watch = core::stopwatch();
     for k in iters {
         let raw = urls[k & 3];
-        total_bytes += raw.len;
+        total_bytes = core::add_sat_u64(total_bytes, raw.len as u64);
         let u, err = core::parse_url(raw);
         assert(core::is_ok(err) && u.valid);
-        checksum += (u.href.len as u64) + ((u.pathname_end - u.pathname_start) as u64);
+        let path_len = core::sub_sat_i64(u.pathname_end, u.pathname_start) as u64;
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(u.href.len as u64, path_len));
     }
     let dt = core::elapsed(watch);
     report_bench("url_parse", iters, dt.as_nanos(), total_bytes, checksum);
@@ -319,17 +328,18 @@ fn bench_url_parse_view(iters: i64) -> u64 {
     for k in warmup {
         let v, err = core::parse_url_view(urls[k & 3]);
         assert(core::is_ok(err) && v.valid);
-        checksum += v.host.len as u64;
+        checksum = core::add_sat_u64(checksum, v.host.len as u64);
     }
 
-    var total_bytes: i64 = 0;
+    var total_bytes: u64 = 0;
     let watch = core::stopwatch();
     for k in iters {
         let raw = urls[k & 3];
-        total_bytes += raw.len;
+        total_bytes = core::add_sat_u64(total_bytes, raw.len as u64);
         let v, err = core::parse_url_view(raw);
         assert(core::is_ok(err) && v.valid);
-        checksum += (v.host.len as u64) + (v.pathname.len as u64) + (v.search.len as u64);
+        let sum_parts = core::add_sat_u64(v.host.len as u64, core::add_sat_u64(v.pathname.len as u64, v.search.len as u64));
+        checksum = core::add_sat_u64(checksum, sum_parts);
     }
     let dt = core::elapsed(watch);
     report_bench("url_parse_view", iters, dt.as_nanos(), total_bytes, checksum);
@@ -341,7 +351,7 @@ fn encode_sample_hpack_block<B>(
     out:      B&,
     path_val: const u8[:],
     req_id:   const u8[:],
-) -> i64 {
+) -> u64 {
     out.clear();
     let inc = internal::HpackIndexing.Incremental;
     let lit_none = internal::HpackIndexing.None;
@@ -353,7 +363,8 @@ fn encode_sample_hpack_block<B>(
     assert(internal::encode_hpack_field(dt, out, "user-agent", "goose-wing/2.0", inc, true));
     assert(internal::encode_hpack_field(dt, out, "content-type", "application/json", inc, true));
     assert(internal::encode_hpack_field(dt, out, "x-request-id", req_id, lit_none, true));
-    return 10 + 12 + 25 + 5 + path_val.len + 22 + 24 + 28 + 12 + req_id.len;
+    let fixed_bytes: u64 = 138;
+    return core::add_sat_u64(fixed_bytes, core::add_sat_u64(path_val.len as u64, req_id.len as u64));
 }
 
 fn bench_hpack_encode(iters: i64) -> u64 {
@@ -366,14 +377,14 @@ fn bench_hpack_encode(iters: i64) -> u64 {
     var checksum: u64 = 0;
     for k in warmup {
         let _ = encode_sample_hpack_block(dt, out, paths[k & 1], req_ids[k & 1]);
-        checksum += out.len as u64;
+        checksum = core::add_sat_u64(checksum, out.len as u64);
     }
 
-    var total_bytes: i64 = 0;
+    var total_bytes: u64 = 0;
     let watch = core::stopwatch();
     for k in iters {
-        total_bytes += encode_sample_hpack_block(dt, out, paths[k & 1], req_ids[k & 1]);
-        checksum += (out.len as u64) + out[0];
+        total_bytes = core::add_sat_u64(total_bytes, encode_sample_hpack_block(dt, out, paths[k & 1], req_ids[k & 1]));
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(out.len as u64, out[0]));
     }
     let dt_elapsed = core::elapsed(watch);
     report_bench("hpack_encode_huffman", iters, dt_elapsed.as_nanos(), total_bytes, checksum);
@@ -396,7 +407,7 @@ fn bench_hpack_decode(iters: i64) -> u64 {
     for _ in warmup {
         let err = internal::decode_hpack_to_map(dec_dt, wire_block[..], pseudo, hdrs);
         assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);
-        checksum += pseudo.path.len as u64;
+        checksum = core::add_sat_u64(checksum, pseudo.path.len as u64);
     }
 
     let watch = core::stopwatch();
@@ -404,10 +415,11 @@ fn bench_hpack_decode(iters: i64) -> u64 {
         let err = internal::decode_hpack_to_map(dec_dt, wire_block[..], pseudo, hdrs);
         assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);
         let req_id = wing::get_header(hdrs, "x-request-id");
-        checksum += (pseudo.path.len as u64) + (req_id.len as u64);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(pseudo.path.len as u64, req_id.len as u64));
     }
     let dt_elapsed = core::elapsed(watch);
-    report_bench("hpack_decode_huffman", iters, dt_elapsed.as_nanos(), iters * raw_bytes, checksum);
+    let total_bytes = core::mul_sat_u64(iters as u64, raw_bytes);
+    report_bench("hpack_decode_huffman", iters, dt_elapsed.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -419,19 +431,20 @@ fn fill_aead_fixtures(
     nonce: u8[12]&,
 ) {
     for i in AEAD_RECORD_SIZE {
-        pt[i] = ((i * 131 + 17) & 0xFF) as u8;
+        let val = core::add_sat_u64(core::mul_sat_u64(i as u64, 131), 17);
+        pt[i] = (val & 0xFF) as u8;
     }
     for i in 13 {
-        aad[i] = (0xA0 + i) as u8;
+        aad[i] = core::add_sat_u64(0xA0, i as u64) as u8;
     }
     for i in 16 {
-        key16[i] = (0x10 + i) as u8;
+        key16[i] = core::add_sat_u64(0x10, i as u64) as u8;
     }
     for i in 32 {
-        key32[i] = (0x30 + i) as u8;
+        key32[i] = core::add_sat_u64(0x30, i as u64) as u8;
     }
     for i in 12 {
-        nonce[i] = (0x50 + i) as u8;
+        nonce[i] = core::add_sat_u64(0x50, i as u64) as u8;
     }
 }
 
@@ -449,19 +462,18 @@ fn bench_aes128_gcm(
     for _ in warmup {
         let tag, ok = core::aes128_gcm_seal_inplace(key16, nonce, work[..], aad[..]);
         assert(ok);
-        checksum += tag[0];
+        checksum = core::add_sat_u64(checksum, tag[0]);
     }
 
     let w_seal = core::stopwatch();
     for _ in iters {
         let tag, ok = core::aes128_gcm_seal_inplace(key16, nonce, work[..], aad[..]);
         assert(ok);
-        checksum += tag[0] + work[0];
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(tag[0], work[0]));
     }
     let dt_seal = core::elapsed(w_seal);
-    report_bench(
-        "aes128_gcm_seal_1kb", iters, dt_seal.as_nanos(), iters * AEAD_RECORD_SIZE, checksum,
-    );
+    let total_bytes = core::mul_sat_u64(iters as u64, AEAD_RECORD_SIZE as u64);
+    report_bench("aes128_gcm_seal_1kb", iters, dt_seal.as_nanos(), total_bytes, checksum);
 
     var ct: u8[1024] = pt;
     let open_tag, seal_ok = core::aes128_gcm_seal_inplace(key16, nonce, ct[..], aad[..]);
@@ -474,12 +486,10 @@ fn bench_aes128_gcm(
             key16, nonce, work[..], aad[..], open_tag,
         );
         assert(ok && dec_len == AEAD_RECORD_SIZE && work[0] == pt[0] && work[1023] == pt[1023]);
-        checksum += work[512];
+        checksum = core::add_sat_u64(checksum, work[512]);
     }
     let dt_open = core::elapsed(w_open);
-    report_bench(
-        "aes128_gcm_open_1kb", iters, dt_open.as_nanos(), iters * AEAD_RECORD_SIZE, checksum,
-    );
+    report_bench("aes128_gcm_open_1kb", iters, dt_open.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -497,19 +507,18 @@ fn bench_aes256_gcm(
     for _ in warmup {
         let tag, ok = core::aes256_gcm_seal_inplace(key32, nonce, work[..], aad[..]);
         assert(ok);
-        checksum += tag[0];
+        checksum = core::add_sat_u64(checksum, tag[0]);
     }
 
     let w_seal = core::stopwatch();
     for _ in iters {
         let tag, ok = core::aes256_gcm_seal_inplace(key32, nonce, work[..], aad[..]);
         assert(ok);
-        checksum += tag[0] + work[0];
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(tag[0], work[0]));
     }
     let dt_seal = core::elapsed(w_seal);
-    report_bench(
-        "aes256_gcm_seal_1kb", iters, dt_seal.as_nanos(), iters * AEAD_RECORD_SIZE, checksum,
-    );
+    let total_bytes = core::mul_sat_u64(iters as u64, AEAD_RECORD_SIZE as u64);
+    report_bench("aes256_gcm_seal_1kb", iters, dt_seal.as_nanos(), total_bytes, checksum);
 
     var ct: u8[1024] = pt;
     let open_tag, seal_ok = core::aes256_gcm_seal_inplace(key32, nonce, ct[..], aad[..]);
@@ -522,12 +531,10 @@ fn bench_aes256_gcm(
             key32, nonce, work[..], aad[..], open_tag,
         );
         assert(ok && dec_len == AEAD_RECORD_SIZE && work[0] == pt[0] && work[1023] == pt[1023]);
-        checksum += work[512];
+        checksum = core::add_sat_u64(checksum, work[512]);
     }
     let dt_open = core::elapsed(w_open);
-    report_bench(
-        "aes256_gcm_open_1kb", iters, dt_open.as_nanos(), iters * AEAD_RECORD_SIZE, checksum,
-    );
+    report_bench("aes256_gcm_open_1kb", iters, dt_open.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -545,19 +552,18 @@ fn bench_chacha20_poly1305(
     for _ in warmup {
         let tag, ok = core::chacha20_poly1305_seal_inplace(key32, nonce, work[..], aad[..]);
         assert(ok);
-        checksum += tag[0];
+        checksum = core::add_sat_u64(checksum, tag[0]);
     }
 
     let w_seal = core::stopwatch();
     for _ in iters {
         let tag, ok = core::chacha20_poly1305_seal_inplace(key32, nonce, work[..], aad[..]);
         assert(ok);
-        checksum += tag[0] + work[0];
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(tag[0], work[0]));
     }
     let dt_seal = core::elapsed(w_seal);
-    report_bench(
-        "chacha20_poly1305_seal_1kb", iters, dt_seal.as_nanos(), iters * AEAD_RECORD_SIZE, checksum,
-    );
+    let total_bytes = core::mul_sat_u64(iters as u64, AEAD_RECORD_SIZE as u64);
+    report_bench("chacha20_poly1305_seal_1kb", iters, dt_seal.as_nanos(), total_bytes, checksum);
 
     var ct: u8[1024] = pt;
     let open_tag, seal_ok = core::chacha20_poly1305_seal_inplace(key32, nonce, ct[..], aad[..]);
@@ -570,12 +576,10 @@ fn bench_chacha20_poly1305(
             key32, nonce, work[..], aad[..], open_tag,
         );
         assert(ok && dec_len == AEAD_RECORD_SIZE && work[0] == pt[0] && work[1023] == pt[1023]);
-        checksum += work[512];
+        checksum = core::add_sat_u64(checksum, work[512]);
     }
     let dt_open = core::elapsed(w_open);
-    report_bench(
-        "chacha20_poly1305_open_1kb", iters, dt_open.as_nanos(), iters * AEAD_RECORD_SIZE, checksum,
-    );
+    report_bench("chacha20_poly1305_open_1kb", iters, dt_open.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -584,15 +588,15 @@ fn main() {
     let iters = parse_iters_arg(argv[..]);
     var total_checksum: u64 = 0;
 
-    total_checksum += bench_h1_request(iters);
-    total_checksum += bench_h1_response(iters);
-    total_checksum += bench_headermap_write(iters);
-    total_checksum += bench_headermap_lookup(iters);
-    total_checksum += bench_bloom_filter(iters);
-    total_checksum += bench_url_parse(iters);
-    total_checksum += bench_url_parse_view(iters);
-    total_checksum += bench_hpack_encode(iters);
-    total_checksum += bench_hpack_decode(iters);
+    total_checksum = core::add_sat_u64(total_checksum, bench_h1_request(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_h1_response(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_headermap_write(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_headermap_lookup(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_bloom_filter(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_url_parse(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_url_parse_view(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_hpack_encode(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_hpack_decode(iters));
 
     var pt:    u8[1024] = [0; 1024];
     var aad:   u8[13]   = [0; 13];
@@ -601,9 +605,9 @@ fn main() {
     var nonce: u8[12]   = [0; 12];
     fill_aead_fixtures(pt, aad, key16, key32, nonce);
 
-    total_checksum += bench_aes128_gcm(iters, pt, aad, key16, nonce);
-    total_checksum += bench_aes256_gcm(iters, pt, aad, key32, nonce);
-    total_checksum += bench_chacha20_poly1305(iters, pt, aad, key32, nonce);
+    total_checksum = core::add_sat_u64(total_checksum, bench_aes128_gcm(iters, pt, aad, key16, nonce));
+    total_checksum = core::add_sat_u64(total_checksum, bench_aes256_gcm(iters, pt, aad, key32, nonce));
+    total_checksum = core::add_sat_u64(total_checksum, bench_chacha20_poly1305(iters, pt, aad, key32, nonce));
 
     assert(total_checksum != 0);
     print("CODEC_BENCH_DONE total_checksum=", total_checksum);

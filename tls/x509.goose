@@ -575,23 +575,62 @@ fn read_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: Parse
 // ---- Trust Anchors and RFC 5280 Verification -----------------------------
 
 struct TrustAnchor {
-    subject_dn_sha256: u8[32] = [0; 32],
-    spki_sha256:       u8[32] = [0; 32],
-    is_valid:          bool   = false,
+    subject_dn_sha256:   u8[32]    = [0; 32],
+    spki_sha256:         u8[32]    = [0; 32],
+    subject_raw:         u8[..384] = [],
+    spki_pubkey:         u8[..600] = [],
+    skid_key_id:         u8[..64]  = [],
+    has_skid:            bool      = false,
+    has_pub_material:    bool      = false,
+    validity_not_before: i64       = 0,
+    validity_not_after:  i64       = 0,
+    has_validity:        bool      = false,
+    is_valid:            bool      = false,
 }
 
 struct TrustAnchorStore {
     anchors: TrustAnchor[..16] = [],
 }
 
+// Extracts raw public key bytes from DER SubjectPublicKeyInfo or raw key material.
+//
+// Example:
+//   spki_raw = DER SEQUENCE(AlgId, BIT STRING(0x00 || pubkey))
+//   returns: true, out_pk = pubkey
+fn extract_spki_pubkey_material(spki_raw: const u8[:], out_pk: u8[..600]&) -> bool {
+    out_pk.clear();
+    guard spki_raw.len > 0 && spki_raw[0] == rfc::ASN1_TAG_SEQUENCE else {
+        return out_pk.try_set(spki_raw);
+    }
+    var top = core::cursor_from(spki_raw);
+    var spki = core::cursor_from(spki_raw[..0]);
+    var spki_alg = core::cursor_from(spki_raw[..0]);
+    var spki_pk = core::cursor_from(spki_raw[..0]);
+    guard get_asn1_element(top, rfc::ASN1_TAG_SEQUENCE, spki) && top.cursor_len() == 0 else { return false; }
+    guard get_asn1_element(spki, rfc::ASN1_TAG_SEQUENCE, spki_alg) else { return false; }
+    guard get_asn1_element(spki, rfc::ASN1_TAG_BIT_STRING, spki_pk) else { return false; }
+    guard validate_asn1_bit_string(spki_pk.buf) else { return false; }
+    var pk = spki_pk.buf;
+    if pk.len >= 2 && pk[0] == 0 {
+        pk = pk[1..];
+    }
+    return out_pk.try_set(pk);
+}
+
 fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw: const u8[:]) -> bool {
-    let s_hash = core::sha256(subject_raw);
-    let spki_hash = core::sha256(spki_raw);
-    return store.anchors.try_push(TrustAnchor {
-        subject_dn_sha256: s_hash,
-        spki_sha256:       spki_hash,
+    var anchor = TrustAnchor {
+        subject_dn_sha256: core::sha256(subject_raw),
+        spki_sha256:       core::sha256(spki_raw),
         is_valid:          true,
-    });
+    };
+    let subj_ok = anchor.subject_raw.try_set(subject_raw);
+    let pk_ok = extract_spki_pubkey_material(spki_raw, anchor.spki_pubkey);
+    anchor.has_pub_material = subj_ok && pk_ok;
+    if !anchor.has_pub_material {
+        anchor.subject_raw.clear();
+        anchor.spki_pubkey.clear();
+    }
+    return store.anchors.try_push(anchor);
 }
 
 // Parses a DER-encoded X.509 certificate and adds its Subject DN and SPKI to the trust anchor store.
@@ -601,7 +640,30 @@ fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]
     let subj = span_slice(raw_cert_der, cert.subject_raw);
     let spki = span_slice(raw_cert_der, cert.spki_raw);
     guard subj.len > 0 && spki.len > 0 else { return false; }
-    return add_trust_anchor(store, subj, spki);
+
+    var anchor = TrustAnchor {
+        subject_dn_sha256:   core::sha256(subj),
+        spki_sha256:         core::sha256(spki),
+        validity_not_before: cert.validity_not_before,
+        validity_not_after:  cert.validity_not_after,
+        has_validity:        true,
+        is_valid:            true,
+    };
+    var pk = span_slice(raw_cert_der, cert.spki_pubkey);
+    if pk.len >= 2 && pk[0] == 0 {
+        pk = pk[1..];
+    }
+    let subj_ok = anchor.subject_raw.try_set(subj);
+    let pk_ok = anchor.spki_pubkey.try_set(pk);
+    anchor.has_pub_material = subj_ok && pk_ok;
+    if cert.has_skid {
+        anchor.has_skid = anchor.skid_key_id.try_set(span_slice(raw_cert_der, cert.skid_key_id));
+    }
+    if !anchor.has_pub_material {
+        anchor.subject_raw.clear();
+        anchor.spki_pubkey.clear();
+    }
+    return store.anchors.try_push(anchor);
 }
 
 fn matches_trust_anchor(store: const TrustAnchorStore&, cert: const ParsedCert&, raw_cert: const u8[:]) -> bool {
@@ -1552,20 +1614,63 @@ fn x509_enforce_chain_name_constraints(
     return TlsAlert.CloseNotify;
 }
 
+fn x509_verify_cert_against_anchor(
+    cert:     const ParsedCert&,
+    raw_cert: const u8[:],
+    anchor:   const TrustAnchor&,
+    now_unix: i64,
+) -> TlsAlert {
+    if anchor.has_validity {
+        if anchor.validity_not_before > anchor.validity_not_after {
+            return TlsAlert.BadCertificate;
+        }
+        if now_unix < anchor.validity_not_before || now_unix > anchor.validity_not_after {
+            return TlsAlert.CertificateExpired;
+        }
+    }
+    let sig_oid = span_slice(raw_cert, cert.sig_alg_oid);
+    let tbs_data = span_slice(raw_cert, cert.tbs_cert);
+    let sig_bytes = span_slice(raw_cert, cert.signature_value);
+    return x509_verify_signature_by_oid(sig_oid, tbs_data, sig_bytes, anchor.spki_pubkey[..], TlsAlert.BadCertificate);
+}
+
 fn x509_validate_trust_anchor_node(
     cert:        const ParsedCert&,
     raw_cert:    const u8[:],
     trust_store: const TrustAnchorStore&,
+    now_unix:    i64,
 ) -> TlsAlert {
-    guard matches_trust_anchor(trust_store, cert, raw_cert) else {
-        return TlsAlert.UnknownCa;
+    if matches_trust_anchor(trust_store, cert, raw_cert) {
+        let issuer_slice = span_slice(raw_cert, cert.issuer_raw);
+        let subject_slice = span_slice(raw_cert, cert.subject_raw);
+        if issuer_slice == subject_slice && cert.signature_value.length > 0 {
+            return x509_verify_cert_signature(cert, raw_cert, cert, raw_cert);
+        }
+        return TlsAlert.CloseNotify;
     }
+
+    guard cert.signature_value.length > 0 && cert.tbs_cert.length > 0 else {
+        return TlsAlert.BadCertificate;
+    }
+
     let issuer_slice = span_slice(raw_cert, cert.issuer_raw);
-    let subject_slice = span_slice(raw_cert, cert.subject_raw);
-    if issuer_slice == subject_slice && cert.signature_value.length > 0 {
-        return x509_verify_cert_signature(cert, raw_cert, cert, raw_cert);
+    var saw_candidate = false;
+    var last_alert = TlsAlert.UnknownCa;
+    for i in trust_store.anchors.len {
+        let anchor .= trust_store.anchors[i];
+        guard anchor.is_valid && anchor.has_pub_material else { continue; }
+        guard anchor.subject_raw[..] == issuer_slice else { continue; }
+        if cert.has_akid && anchor.has_skid {
+            guard span_slice(raw_cert, cert.akid_key_id) == anchor.skid_key_id[..] else { continue; }
+        }
+        saw_candidate = true;
+        let alert = x509_verify_cert_against_anchor(cert, raw_cert, anchor, now_unix);
+        if alert == TlsAlert.CloseNotify {
+            return TlsAlert.CloseNotify;
+        }
+        last_alert = alert;
     }
-    return TlsAlert.CloseNotify;
+    return if saw_candidate { last_alert } else { TlsAlert.UnknownCa };
 }
 
 fn x509_validate_chain_nodes(
@@ -1582,7 +1687,7 @@ fn x509_validate_chain_nodes(
         );
         guard cert_alert == TlsAlert.CloseNotify else { return cert_alert; }
         if i + 1 == n {
-            let ta_alert = x509_validate_trust_anchor_node(chain_certs[i], raw_certs[i], trust_store);
+            let ta_alert = x509_validate_trust_anchor_node(chain_certs[i], raw_certs[i], trust_store, now_unix);
             guard ta_alert == TlsAlert.CloseNotify else { return ta_alert; }
         }
     }
