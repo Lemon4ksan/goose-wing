@@ -29,6 +29,10 @@ typedef struct {
     const uint8_t *data;
     int64_t len;
 } wing_bytes_ro;
+typedef struct {
+    const uint32_t *data;
+    int64_t len;
+} wing_u32_ro;
 
 // Forward declaration from shim/tcp.c
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data);
@@ -1055,4 +1059,52 @@ int32_t wing_simd_match_l0(wing_bytes_ro path, uint8_t method_id, const wing_l0_
     }
     return -1;
 #endif
+}
+
+// Decodes RFC 7541 Appendix B Huffman-encoded `src` into `dst` using the 4096-entry
+// nibble state transition table `table` (`fstate | (flags << 8) | (sym << 16)`).
+// Returns decoded byte count (>= 0) on success, or -1 on invalid encoding or overflow.
+int64_t wing_hpack_huff_decode(wing_bytes_ro src, wing_bytes_rw dst, wing_u32_ro table) {
+    if (src.len < 0 || dst.len < 0 || !table.data || table.len != 4096) return -1;
+    if (src.len == 0) return 0;
+    if (!src.data || (!dst.data && dst.len > 0)) return -1;
+
+    const uint8_t *s = src.data;
+    uint8_t *out = dst.data;
+    const uint32_t *tbl = table.data;
+    int64_t s_len = src.len;
+    int64_t d_len = dst.len;
+    int64_t out_idx = 0;
+    int64_t last_sym_byte = 0;
+    uint8_t state = 0;
+    uint8_t flags = 0x01; // HUFF_ACCEPTED
+
+    for (int64_t i = 0; i < s_len; i++) {
+        uint8_t c = s[i];
+        int64_t next_i = i + 1;
+
+        uint32_t d1 = tbl[((uint32_t)state << 4) | (c >> 4)];
+        uint8_t f1 = (uint8_t)(d1 >> 8);
+        if (f1 & 0x04) return -1; // HUFF_FAIL
+        if (f1 & 0x02) { // HUFF_SYM
+            if (out_idx >= d_len) return -1;
+            out[out_idx++] = (uint8_t)(d1 >> 16);
+            last_sym_byte = next_i;
+        }
+        state = (uint8_t)d1;
+
+        uint32_t d2 = tbl[((uint32_t)state << 4) | (c & 0x0F)];
+        uint8_t f2 = (uint8_t)(d2 >> 8);
+        if (f2 & 0x04) return -1; // HUFF_FAIL
+        if (f2 & 0x02) { // HUFF_SYM
+            if (out_idx >= d_len) return -1;
+            out[out_idx++] = (uint8_t)(d2 >> 16);
+            last_sym_byte = next_i;
+        }
+        state = (uint8_t)d2;
+        flags = f2;
+    }
+
+    if ((flags & 0x01) == 0 || last_sym_byte != s_len) return -1;
+    return out_idx;
 }

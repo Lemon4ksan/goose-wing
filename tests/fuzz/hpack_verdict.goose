@@ -81,7 +81,7 @@ fn decode_hpack_step(
         updates_allowed = false;
         var n_buf: u8[..256]  = [];
         var v_buf: u8[..8192] = [];
-        let next_off, n_s, err = internal::decode_literal_field_slices(dt, blk, offset, 6, n_buf, v_buf);
+        let next_off, n_s, _, err = internal::decode_literal_field_slices(dt, blk, offset, 6, n_buf, v_buf);
         guard err == 0 else { return false; }
         internal::insert_header(dt, n_s, v_buf[..], false);
         append_field_line(fields_out, n_s, v_buf[..], false);
@@ -101,7 +101,7 @@ fn decode_hpack_step(
     let is_never = (b & 0x10) != 0;
     var n_buf: u8[..256]  = [];
     var v_buf: u8[..8192] = [];
-    let next_off, n_s, err = internal::decode_literal_field_slices(dt, blk, offset, 4, n_buf, v_buf);
+    let next_off, n_s, _, err = internal::decode_literal_field_slices(dt, blk, offset, 4, n_buf, v_buf);
     guard err == 0 else { return false; }
     append_field_line(fields_out, n_s, v_buf[..], is_never);
     offset = next_off;

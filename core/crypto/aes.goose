@@ -26,6 +26,26 @@ extern fn native_aes_gcm_open_aead(
     dst: u8[:],
 ) -> i64 = "wing_aes_gcm_open_aead";
 
+extern fn native_aes_gcm_prepare_key(key: const u8[:], ctx_out: u8[:]) -> i32 = "wing_aes_gcm_prepare_key";
+
+extern fn native_aes_gcm_seal_prepared(
+    ctx:     const u8[:],
+    iv:      const u8[:],
+    src:     const u8[:],
+    aad:     const u8[:],
+    dst:     u8[:],
+    tag_out: u8[:],
+) -> i64 = "wing_aes_gcm_seal_prepared";
+
+extern fn native_aes_gcm_open_prepared(
+    ctx: const u8[:],
+    iv:  const u8[:],
+    src: const u8[:],
+    aad: const u8[:],
+    tag: const u8[:],
+    dst: u8[:],
+) -> i64 = "wing_aes_gcm_open_prepared";
+
 let AES_SBOX: const u8[256] = [
     0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
     0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
@@ -650,4 +670,106 @@ fn hkdf_aes256_gcm_open<B>(
     let ok = aes256_gcm_open(derived_key, nonce12, ciphertext, aad, tag, out_plaintext);
     secure_zeroize_32(derived_key);
     return ok;
+}
+
+const AES_GCM_STATE_BYTES: i64 = 320;
+
+// Pre-expanded AES-128/256-GCM key schedule and Karatsuba GHASH powers (H, H^2, H^3, H^4).
+struct AesGcmKey {
+    state:   u8[AES_GCM_STATE_BYTES] = [0; AES_GCM_STATE_BYTES],
+    key_len: u8                      = 0,
+    valid:   bool                    = false,
+}
+
+// Securely wipes pre-expanded AES-GCM round keys and GHASH subkeys.
+fn zeroize_aes_gcm_key(ctx: AesGcmKey&) {
+    secure_zeroize_slice(ctx.state[..]);
+    ctx.key_len = 0;
+    ctx.valid = false;
+}
+
+// Pre-expands an AES-128 (16-byte) or AES-256 (32-byte) key into `ctx` for repeated AEAD calls.
+fn aes_gcm_prepare_key(key: const u8[:], ctx: AesGcmKey&) -> bool {
+    guard key.len == 16 || key.len == 32 else {
+        zeroize_aes_gcm_key(ctx);
+        return false;
+    }
+    let rc = native_aes_gcm_prepare_key(key, ctx.state[..]);
+    guard rc == 0 else {
+        zeroize_aes_gcm_key(ctx);
+        return false;
+    }
+    ctx.key_len = if key.len == 32 { 32 } else { 16 };
+    ctx.valid = true;
+    return true;
+}
+
+// Encrypts and authenticates `plaintext` into `dst` using pre-expanded `ctx` (NIST SP 800-38D).
+//
+// Example:
+//   ctx = prepared AES-128 key, iv12 = nonce, plaintext = "hello", aad = "", dst = [0; 5]
+//   returns: tag16, written = 5, ok = true
+fn aes_gcm_seal_prepared(
+    ctx:       const AesGcmKey&,
+    iv12:      const u8[12]&,
+    plaintext: const u8[:],
+    aad:       const u8[:],
+    dst:       u8[:],
+) -> u8[16], i64, bool {
+    var tag: u8[16] = [0; 16];
+    guard ctx.valid && dst.len >= plaintext.len else {
+        return tag, 0, false;
+    }
+    let n = native_aes_gcm_seal_prepared(ctx.state[..], iv12[..], plaintext, aad, dst, tag[..]);
+    guard n == plaintext.len else {
+        secure_zeroize_slice(tag[..]);
+        return tag, 0, false;
+    }
+    return tag, n, true;
+}
+
+// Decrypts and verifies `ciphertext` into `dst` using pre-expanded `ctx` (NIST SP 800-38D).
+//
+// Example:
+//   ctx = prepared AES-128 key, iv12 = nonce, ciphertext = [..5], aad = "", tag = tag16, dst = [0; 5]
+//   returns: written = 5, ok = true
+fn aes_gcm_open_prepared_into(
+    ctx:        const AesGcmKey&,
+    iv12:       const u8[12]&,
+    ciphertext: const u8[:],
+    aad:        const u8[:],
+    tag:        const u8[16]&,
+    dst:        u8[:],
+) -> i64, bool {
+    guard ctx.valid && dst.len >= ciphertext.len else {
+        return 0, false;
+    }
+    let n = native_aes_gcm_open_prepared(ctx.state[..], iv12[..], ciphertext, aad, tag[..], dst);
+    guard n == ciphertext.len else {
+        return 0, false;
+    }
+    return n, true;
+}
+
+// Encrypts and authenticates `buf` in-place using pre-expanded `ctx` (NIST SP 800-38D).
+//
+// Example:
+//   ctx = prepared AES-128 key, iv12 = nonce, buf = [1, 2, 3, 4], aad = ""
+//   returns: tag16, written = 4, ok = true (with `buf` encrypted in-place)
+fn aes_gcm_seal_prepared_inplace(
+    ctx:  const AesGcmKey&,
+    iv12: const u8[12]&,
+    buf:  u8[:],
+    aad:  const u8[:],
+) -> u8[16], i64, bool {
+    var tag: u8[16] = [0; 16];
+    guard ctx.valid else {
+        return tag, 0, false;
+    }
+    let n = native_aes_gcm_seal_prepared(ctx.state[..], iv12[..], buf, aad, buf, tag[..]);
+    guard n == buf.len else {
+        secure_zeroize_slice(tag[..]);
+        return tag, 0, false;
+    }
+    return tag, n, true;
 }

@@ -420,6 +420,20 @@ fn bench_hpack_decode(iters: i64) -> u64 {
     let dt_elapsed = core::elapsed(watch);
     let total_bytes = core::mul_sat_u64(iters as u64, raw_bytes);
     report_bench("hpack_decode_huffman", iters, dt_elapsed.as_nanos(), total_bytes, checksum);
+
+    var name_buf: u8[..256]  = [];
+    var val_buf:  u8[..8192] = [];
+    let w_scratch = core::stopwatch();
+    for _ in iters {
+        let err = internal::decode_hpack_to_map_with_scratch(
+            dec_dt, wire_block[..], pseudo, hdrs, name_buf, val_buf,
+        );
+        assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);
+        let req_id = wing::get_header(hdrs, "x-request-id");
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(pseudo.path.len as u64, req_id.len as u64));
+    }
+    let dt_scratch = core::elapsed(w_scratch);
+    report_bench("hpack_decode_huffman_scratch", iters, dt_scratch.as_nanos(), total_bytes, checksum);
     return checksum;
 }
 
@@ -583,6 +597,88 @@ fn bench_chacha20_poly1305(
     return checksum;
 }
 
+fn bench_url_parse_into(iters: i64) -> u64 {
+    let urls: const u8[:][4] = [
+        "https://api.example.com:8443/api/v1/../v2/users/42/orders?status=active&limit=50&sort=desc",
+        "http://svc.internal:8080/v1/catalog/items/9876/./details?currency=USD&include=inventory",
+        "https://cdn.assets.example.org/static/2026/11/../12/bundle.min.js?v=42&cache=1",
+        "https://auth.example.net:9443/oauth2/authorize?client_id=gw_app&response_type=code&scope=read",
+    ];
+
+    var u = core::Url { valid: false, .. };
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+    for k in warmup {
+        let err = core::parse_url_into(urls[k & 3], u);
+        assert(core::is_ok(err) && u.valid);
+        checksum = core::add_sat_u64(checksum, u.href.len as u64);
+    }
+
+    var total_bytes: u64 = 0;
+    let watch = core::stopwatch();
+    for k in iters {
+        let raw = urls[k & 3];
+        total_bytes = core::add_sat_u64(total_bytes, raw.len as u64);
+        let err = core::parse_url_into(raw, u);
+        assert(core::is_ok(err) && u.valid);
+        let path_len = core::sub_sat_i64(u.pathname_end, u.pathname_start) as u64;
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(u.href.len as u64, path_len));
+    }
+    let dt = core::elapsed(watch);
+    report_bench("url_parse_into", iters, dt.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
+fn bench_aes_gcm_prepared(
+    iters:     i64,
+    seal_name: const u8[:],
+    open_name: const u8[:],
+    key:       const u8[:],
+    pt:        const u8[1024]&,
+    aad:       const u8[13]&,
+    nonce:     const u8[12]&,
+) -> u64 {
+    var ctx = core::AesGcmKey { .. };
+    defer core::zeroize_aes_gcm_key(ctx);
+    assert(core::aes_gcm_prepare_key(key, ctx));
+
+    var work: u8[1024] = pt;
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+
+    for _ in warmup {
+        let tag, n, ok = core::aes_gcm_seal_prepared_inplace(ctx, nonce, work[..], aad[..]);
+        assert(ok && n == AEAD_RECORD_SIZE);
+        checksum = core::add_sat_u64(checksum, tag[0]);
+    }
+
+    let w_seal = core::stopwatch();
+    for _ in iters {
+        let tag, n, ok = core::aes_gcm_seal_prepared_inplace(ctx, nonce, work[..], aad[..]);
+        assert(ok && n == AEAD_RECORD_SIZE);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(tag[0], work[0]));
+    }
+    let dt_seal = core::elapsed(w_seal);
+    let total_bytes = core::mul_sat_u64(iters as u64, AEAD_RECORD_SIZE as u64);
+    report_bench(seal_name, iters, dt_seal.as_nanos(), total_bytes, checksum);
+
+    var ct: u8[1024] = pt;
+    let open_tag, ct_n, seal_ok = core::aes_gcm_seal_prepared_inplace(ctx, nonce, ct[..], aad[..]);
+    assert(seal_ok && ct_n == AEAD_RECORD_SIZE);
+
+    let w_open = core::stopwatch();
+    for _ in iters {
+        let dec_len, ok = core::aes_gcm_open_prepared_into(
+            ctx, nonce, ct[..], aad[..], open_tag, work[..],
+        );
+        assert(ok && dec_len == AEAD_RECORD_SIZE && work[0] == pt[0] && work[1023] == pt[1023]);
+        checksum = core::add_sat_u64(checksum, work[512]);
+    }
+    let dt_open = core::elapsed(w_open);
+    report_bench(open_name, iters, dt_open.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
 fn main() {
     let argv = args();
     let iters = parse_iters_arg(argv[..]);
@@ -594,6 +690,7 @@ fn main() {
     total_checksum = core::add_sat_u64(total_checksum, bench_headermap_lookup(iters));
     total_checksum = core::add_sat_u64(total_checksum, bench_bloom_filter(iters));
     total_checksum = core::add_sat_u64(total_checksum, bench_url_parse(iters));
+    total_checksum = core::add_sat_u64(total_checksum, bench_url_parse_into(iters));
     total_checksum = core::add_sat_u64(total_checksum, bench_url_parse_view(iters));
     total_checksum = core::add_sat_u64(total_checksum, bench_hpack_encode(iters));
     total_checksum = core::add_sat_u64(total_checksum, bench_hpack_decode(iters));
@@ -606,7 +703,31 @@ fn main() {
     fill_aead_fixtures(pt, aad, key16, key32, nonce);
 
     total_checksum = core::add_sat_u64(total_checksum, bench_aes128_gcm(iters, pt, aad, key16, nonce));
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_aes_gcm_prepared(
+            iters,
+            "aes128_gcm_prepared_seal_1kb",
+            "aes128_gcm_prepared_open_1kb",
+            key16[..],
+            pt,
+            aad,
+            nonce,
+        ),
+    );
     total_checksum = core::add_sat_u64(total_checksum, bench_aes256_gcm(iters, pt, aad, key32, nonce));
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_aes_gcm_prepared(
+            iters,
+            "aes256_gcm_prepared_seal_1kb",
+            "aes256_gcm_prepared_open_1kb",
+            key32[..],
+            pt,
+            aad,
+            nonce,
+        ),
+    );
     total_checksum = core::add_sat_u64(total_checksum, bench_chacha20_poly1305(iters, pt, aad, key32, nonce));
 
     assert(total_checksum != 0);

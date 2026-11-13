@@ -129,6 +129,8 @@ struct TlsCipherSlot {
     tx_seq:             u64                = 0,
     rx_key:             u8[32]             = [0; 32],
     tx_key:             u8[32]             = [0; 32],
+    rx_aes_key:         core::AesGcmKey    = core::AesGcmKey { .. },
+    tx_aes_key:         core::AesGcmKey    = core::AesGcmKey { .. },
     rx_iv:              u8[12]             = [0; 12],
     tx_iv:              u8[12]             = [0; 12],
     rx_traffic_secret:  u8[48]             = [0; 48],
@@ -185,10 +187,20 @@ fn alloc_tls_cipher_slot() -> u16 {
             g_tls_cipher_slots[i].bytes_sent = 0;
             g_tls_cipher_slots[i].key_update_tracker = KeyUpdateTracker { .. };
             g_tls_cipher_slots[i].ticket_cache = SessionTicketCache { .. };
+            core::zeroize_aes_gcm_key(g_tls_cipher_slots[i].rx_aes_key);
+            core::zeroize_aes_gcm_key(g_tls_cipher_slots[i].tx_aes_key);
             return i as u16;
         }
     }
     return 0xFFFF;
+}
+
+inline fn tls_prepare_cipher_aes_key(cipher_suite: u16, key: const u8[:], ctx: core::AesGcmKey&) {
+    if cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 || cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        let _ = core::aes_gcm_prepare_key(key, ctx);
+    } else {
+        core::zeroize_aes_gcm_key(ctx);
+    }
 }
 
 // Releases a cipher slot and securely wipes all cryptographic key material.
@@ -197,6 +209,8 @@ fn free_tls_cipher_slot(slot_idx: u16) {
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return; }
     core::secure_zeroize_32(g_tls_cipher_slots[idx].rx_key);
     core::secure_zeroize_32(g_tls_cipher_slots[idx].tx_key);
+    core::zeroize_aes_gcm_key(g_tls_cipher_slots[idx].rx_aes_key);
+    core::zeroize_aes_gcm_key(g_tls_cipher_slots[idx].tx_aes_key);
     core::secure_zeroize_slice(g_tls_cipher_slots[idx].rx_iv[..]);
     core::secure_zeroize_slice(g_tls_cipher_slots[idx].tx_iv[..]);
     core::secure_zeroize_48(g_tls_cipher_slots[idx].rx_traffic_secret);
@@ -315,9 +329,10 @@ fn tls_send_encrypted_record(
         ct_buf.push(0);
     }
     let klen = g_tls_cipher_slots[idx].key_len as i64;
-    let sealed_len, alert, ok_seal = tls_record_seal_into(
+    let sealed_len, alert, ok_seal = tls_record_seal_prepared_into(
         g_tls_cipher_slots[idx].cipher_suite,
         g_tls_cipher_slots[idx].tx_key[..klen],
+        g_tls_cipher_slots[idx].tx_aes_key,
         g_tls_cipher_slots[idx].tx_iv,
         g_tls_cipher_slots[idx].tx_seq,
         inner_type,
@@ -453,6 +468,11 @@ fn tls_send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
         g_tls_cipher_slots[idx].tx_key[..k_len as i64],
         g_tls_cipher_slots[idx].tx_iv,
     );
+    tls_prepare_cipher_aes_key(
+        g_tls_cipher_slots[idx].cipher_suite,
+        g_tls_cipher_slots[idx].tx_key[..k_len as i64],
+        g_tls_cipher_slots[idx].tx_aes_key,
+    );
     g_tls_cipher_slots[idx].tx_seq = 0;
     return true;
 }
@@ -472,6 +492,11 @@ fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
         k_len,
         g_tls_cipher_slots[idx].rx_key[..k_len_i64],
         g_tls_cipher_slots[idx].rx_iv,
+    );
+    tls_prepare_cipher_aes_key(
+        g_tls_cipher_slots[idx].cipher_suite,
+        g_tls_cipher_slots[idx].rx_key[..k_len_i64],
+        g_tls_cipher_slots[idx].rx_aes_key,
     );
     g_tls_cipher_slots[idx].rx_seq = 0;
     if needs_resp {
@@ -577,9 +602,10 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
     var plain_dec: u8[..16640] = [];
     while plain_dec.len < payload_len { plain_dec.push(0); }
     let klen = g_tls_cipher_slots[idx].key_len as i64;
-    let dec_len, inner_type, alert_dec, ok_dec = tls_record_decrypt_into(
+    let dec_len, inner_type, alert_dec, ok_dec = tls_record_decrypt_prepared_into(
         g_tls_cipher_slots[idx].cipher_suite,
         g_tls_cipher_slots[idx].rx_key[..klen],
+        g_tls_cipher_slots[idx].rx_aes_key,
         g_tls_cipher_slots[idx].rx_iv,
         g_tls_cipher_slots[idx].rx_seq,
         hdr_buf[..],
@@ -1676,9 +1702,11 @@ fn tls_setup_client_cipher_slot(
     g_tls_cipher_slots[idx].hash_len = ks.hash_len;
     g_tls_cipher_slots[idx].is_server = false;
     for i in c_ap_key.len { g_tls_cipher_slots[idx].tx_key[i] = c_ap_key[i]; }
+    tls_prepare_cipher_aes_key(cipher_suite, c_ap_key, g_tls_cipher_slots[idx].tx_aes_key);
     for i in 12 { g_tls_cipher_slots[idx].tx_iv[i] = c_ap_iv[i]; }
     g_tls_cipher_slots[idx].tx_seq = 0;
     for i in s_ap_key.len { g_tls_cipher_slots[idx].rx_key[i] = s_ap_key[i]; }
+    tls_prepare_cipher_aes_key(cipher_suite, s_ap_key, g_tls_cipher_slots[idx].rx_aes_key);
     for i in 12 { g_tls_cipher_slots[idx].rx_iv[i] = s_ap_iv[i]; }
     g_tls_cipher_slots[idx].rx_seq = 0;
     for i in 48 { g_tls_cipher_slots[idx].tx_traffic_secret[i] = ks.client_ap_traffic[i]; }
@@ -2636,9 +2664,11 @@ fn tls_setup_server_cipher_slot(
     g_tls_cipher_slots[idx].hash_len = ks.hash_len;
     g_tls_cipher_slots[idx].is_server = true;
     for i in s_ap_key.len { g_tls_cipher_slots[idx].tx_key[i] = s_ap_key[i]; }
+    tls_prepare_cipher_aes_key(cipher_suite, s_ap_key, g_tls_cipher_slots[idx].tx_aes_key);
     for i in 12 { g_tls_cipher_slots[idx].tx_iv[i] = s_ap_iv[i]; }
     g_tls_cipher_slots[idx].tx_seq = 0;
     for i in c_ap_key.len { g_tls_cipher_slots[idx].rx_key[i] = c_ap_key[i]; }
+    tls_prepare_cipher_aes_key(cipher_suite, c_ap_key, g_tls_cipher_slots[idx].rx_aes_key);
     for i in 12 { g_tls_cipher_slots[idx].rx_iv[i] = c_ap_iv[i]; }
     g_tls_cipher_slots[idx].rx_seq = 0;
     for i in 48 { g_tls_cipher_slots[idx].tx_traffic_secret[i] = ks.server_ap_traffic[i]; }

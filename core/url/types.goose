@@ -174,6 +174,41 @@ fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin
 
 // ---- parsing factories and api ---------------------------------------------
 
+const EMPTY_URL_BASE: Url = Url { valid: false, .. };
+
+inline fn reset_url_for_parse(out_url: Url&) {
+    out_url.href.clear();
+    out_url.scheme_end = -1;
+    out_url.username_start = -1;
+    out_url.username_end = -1;
+    out_url.password_start = -1;
+    out_url.password_end = -1;
+    out_url.host_start = -1;
+    out_url.host_end = -1;
+    out_url.port_start = -1;
+    out_url.port_end = -1;
+    out_url.pathname_start = -1;
+    out_url.pathname_end = -1;
+    out_url.search_start = -1;
+    out_url.search_end = -1;
+    out_url.hash_start = -1;
+    out_url.hash_end = -1;
+    out_url.port = -1;
+    out_url.is_special = false;
+    out_url.has_opaque_path = false;
+    out_url.valid = false;
+}
+
+// Parses an absolute URL directly into caller-provided `out_url` without stack-copying `Url`.
+//
+// Example:
+//   raw_input = "https://example.com/path", out_url = Url { .. }
+//   returns: UrlParseError.None with out_url populated
+fn parse_url_into(raw_input: const u8[:], out_url: Url&) -> UrlParseError {
+    reset_url_for_parse(out_url);
+    return parse_url_internal(raw_input, EMPTY_URL_BASE, false, out_url);
+}
+
 // Parses an absolute URL into a normalized Url. Schemes and hosts are
 // lowercased, default ports are omitted, IPv6 literals use canonical
 // compression (RFC 5952), and path dot-segments are normalized in place.
@@ -182,8 +217,9 @@ fn new_origin_tuple(scheme: const u8[:], host: const u8[:], port: i32) -> Origin
 //   raw_input = "https://example.com/path"
 //   returns: Url { ... }, UrlParseError.None
 fn parse_url(raw_input: const u8[:]) -> Url, UrlParseError {
-    let dummy_base = Url { valid: false, .. };
-    return parse_url_internal(raw_input, dummy_base, false);
+    var out_url = Url { valid: false, .. };
+    let err = parse_url_internal(raw_input, EMPTY_URL_BASE, false, out_url);
+    return out_url, err;
 }
 
 // parse_url_with_base parses raw_input relative to base_url according to WHATWG URL resolution.
@@ -195,7 +231,9 @@ fn parse_url(raw_input: const u8[:]) -> Url, UrlParseError {
 //   raw_input = "/path", base_url = Url { ... }
 //   returns: Url { ... }, UrlParseError.None
 fn parse_url_with_base(raw_input: const u8[:], base_url: const Url&) -> Url, UrlParseError {
-    return parse_url_internal(raw_input, base_url, base_url.valid);
+    var out_url = Url { valid: false, .. };
+    let err = parse_url_internal(raw_input, base_url, base_url.valid, out_url);
+    return out_url, err;
 }
 
 // new_url parses raw_input into a Url, returning a Url with .valid == false if parsing fails.

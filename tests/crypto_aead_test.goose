@@ -450,6 +450,81 @@ fn test_hkdf_aes256_gcm_scheme(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 6. Prepared AES-128/256-GCM Key Schedule Contexts
+// ----------------------------------------------------------------------------
+fn test_aes_gcm_prepared_key_contexts(t: lit::T&) {
+    t.run("Prepared AES-128-GCM matches one-shot and rejects tampered tag") { sub =>
+        let key16: u8[16]      = [0x11; 16];
+        let nonce: u8[12]      = [0x22; 12];
+        let pt:    const u8[:] = "prepared-key-128-payload-covering-multi-block-aes-gcm-64-plus-bytes-tail-check!";
+        let aad:   const u8[:] = "tls13-aad-hdr";
+
+        var ctx = core::AesGcmKey { .. };
+        defer core::zeroize_aes_gcm_key(ctx);
+        sub.assert_true(core::aes_gcm_prepare_key(key16[..], ctx), "prepare 128 key succeeds");
+        sub.assert_true(ctx.valid, "ctx.valid is true");
+
+        var ct_prep: u8[..128] = [];
+        var ct_one:  u8[..128] = [];
+        for _ in pt.len {
+            ct_prep.push(0);
+            ct_one.push(0);
+        }
+        let tag_p, n_p, ok_p = core::aes_gcm_seal_prepared(ctx, nonce, pt, aad, ct_prep[..]);
+        let tag_o, n_o, ok_o = core::aes128_gcm_seal(key16, nonce, pt, aad, ct_one[..]);
+        sub.assert_true(ok_p && ok_o, "both seal paths succeed");
+        sub.assert_eq(n_p, pt.len, "prepared sealed length matches");
+        sub.assert_eq(n_o, pt.len, "one-shot sealed length matches");
+        sub.assert_eq(ct_prep[..n_p], ct_one[..n_o], "ciphertext matches one-shot");
+        sub.assert_eq(tag_p[..], tag_o[..], "tag matches one-shot");
+
+        var dec: u8[..128] = [];
+        for _ in pt.len { dec.push(0xAA); }
+        let dec_len, ok_dec = core::aes_gcm_open_prepared_into(ctx, nonce, ct_prep[..], aad, tag_p, dec[..]);
+        sub.assert_true(ok_dec && dec_len == pt.len, "prepared open succeeds");
+        sub.assert_eq(dec[..dec_len], pt, "plaintext round-trip matches");
+
+        var bad_tag = tag_p;
+        bad_tag[0] ^= 0x01;
+        let bad_len, ok_bad = core::aes_gcm_open_prepared_into(ctx, nonce, ct_prep[..], aad, bad_tag, dec[..]);
+        sub.assert_false(ok_bad, "tampered tag must fail");
+        sub.assert_eq(bad_len, 0, "tampered dec len must be 0");
+        for i in pt.len { sub.assert_eq(dec[i], 0, "dst zeroized on tampered open"); }
+    };
+
+    t.run("Prepared AES-256-GCM in-place and invalid/zeroized key rejection") { sub =>
+        let key32: u8[32]      = [0x33; 32];
+        let nonce: u8[12]      = [0x44; 12];
+        let pt:    const u8[:] = "prepared-256-in-place-payload-exceeding-64-bytes-plus-partial-tail-block";
+        let aad:   const u8[:] = "aad-256";
+
+        var bad_ctx = core::AesGcmKey { .. };
+        let short_key: u8[15] = [0; 15];
+        sub.assert_false(core::aes_gcm_prepare_key(short_key[..], bad_ctx), "15-byte key rejected");
+        sub.assert_false(bad_ctx.valid, "bad_ctx stays invalid");
+
+        var ctx = core::AesGcmKey { .. };
+        sub.assert_true(core::aes_gcm_prepare_key(key32[..], ctx), "prepare 256 key succeeds");
+
+        var buf: u8[..128] = [];
+        buf.append(pt);
+        let tag_p, n_p, ok_p = core::aes_gcm_seal_prepared_inplace(ctx, nonce, buf[..], aad);
+        sub.assert_true(ok_p && n_p == pt.len, "in-place prepared seal succeeds");
+
+        var dec: u8[..128] = [];
+        for _ in pt.len { dec.push(0); }
+        let dec_len, ok_o = core::aes256_gcm_open_into(key32, nonce, buf[..], aad, tag_p, dec[..]);
+        sub.assert_true(ok_o && dec_len == pt.len, "one-shot open verifies prepared ciphertext");
+        sub.assert_eq(dec[..dec_len], pt, "decrypted plaintext matches");
+
+        core::zeroize_aes_gcm_key(ctx);
+        sub.assert_false(ctx.valid, "zeroized ctx marked invalid");
+        let _, _, ok_after = core::aes_gcm_seal_prepared(ctx, nonce, pt, aad, dec[..]);
+        sub.assert_false(ok_after, "zeroized ctx rejects seal");
+    };
+}
+
 fn main() {
     let runner = lit::new_runner("Symmetric AEAD In-Place & Destination Slices Suite");
 
@@ -458,6 +533,7 @@ fn main() {
     lit::run_case(runner, "3. RFC 8439 ChaCha20-Poly1305 Vectors", test_chacha20_poly1305_rfc8439_vectors);
     lit::run_case(runner, "4. In-Place Auto-Zeroization on Tamper", test_aead_auto_zeroization_on_tamper);
     lit::run_case(runner, "5. HKDF-SHA256 AES-256-GCM Scheme", test_hkdf_aes256_gcm_scheme);
+    lit::run_case(runner, "6. Prepared AES-128/256-GCM Key Schedule Contexts", test_aes_gcm_prepared_key_contexts);
 
     let ok = lit::finish(runner);
     assert(ok);

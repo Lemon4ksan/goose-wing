@@ -1855,14 +1855,11 @@ fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[:] {
     return "";
 }
 
-fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
-    let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
-    guard valid_name && is_valid_header_value(value) else { return false; }
+fn append_validated_header(map: HeaderMap&, name: const u8[:], trimmed: const u8[:]) -> bool {
     guard map.entries.len < 128 else { return false; }
 
-    let trimmed = value.trim_lws();
-    let needed = name.len + trimmed.len;
-    guard (map.raw_buf.len + needed) <= 8192 else { return false; }
+    let needed = core::add_sat_i64(name.len, trimmed.len);
+    guard core::add_sat_i64(map.raw_buf.len, needed) <= 8192 else { return false; }
 
     let n_begin = map.raw_buf.len as u16;
     map.raw_buf.append(name);
@@ -1896,6 +1893,12 @@ fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool
     map.entries.push(entry);
     map.header_contains_comma.push(contains_comma);
     return true;
+}
+
+fn append_header(map: HeaderMap&, name: const u8[:], value: const u8[:]) -> bool {
+    let valid_name = is_valid_header_name(name) || is_valid_header_name_h2(name);
+    guard valid_name && is_valid_header_value(value) else { return false; }
+    return append_validated_header(map, name, value.trim_lws());
 }
 
 const SLOT_CONTENT_TYPE:     u8 = 1;  // WellKnownHeader.ContentType

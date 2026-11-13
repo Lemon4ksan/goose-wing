@@ -697,56 +697,55 @@ fn huff_decode_step(
 }
 
 // Decodes a Huffman-encoded byte slice directly into any appendable buffer without stack scratch zeroing.
-//
-// Example:
-//   src = [0x9C, 0xC5], out = []
-//   returns: ok = true, out = "www"
-inline fn huff_step_nibble<B>(
-    state:         u8&,
-    flags:         u8&,
-    out:           B&,
-    next_i:        u64,
-    last_sym_byte: u64&,
-    nibble:        u8,
-) -> bool {
-    let d = huff_decode_lookup(state, nibble);
-    guard (d.flags & HUFF_FAIL) == 0 else { return false; }
-    if (d.flags & HUFF_SYM) != 0 {
-        guard out.try_push(d.sym) else { return false; }
-        last_sym_byte = next_i;
-    }
-    state = d.fstate;
-    flags = d.flags;
-    return true;
-}
+extern fn native_hpack_huff_decode(src: const u8[:], dst: u8[:], table: const u32[:]) -> i64 = "wing_hpack_huff_decode";
 
-// Decodes a Huffman-encoded byte slice into any appendable buffer without stack scratch zeroing.
+// Decodes a Huffman-encoded byte slice into any bounded appendable buffer without scratch zeroing.
 //
 // Example:
 //   src = [0x9C, 0xC5], out = []
 //   returns: ok = true, out = "www"
 fn huff_decode_bytes<B>(src: const u8[:], out: B&) -> bool {
-    let start_len = out.len;
-    var committed = false;
-    defer if !committed { rollback_hpack_out(out, start_len); };
-    var state: u8  = 0;
-    var flags: u8  = HUFF_ACCEPTED;
-    var i:     u64 = 0;
-    let src_len = src.len as u64;
-    var last_sym_byte: u64 = 0;
-
-    while i < src_len {
-        let c = src[i];
-        let next_i = core::add_sat_u64(i, 1);
-        guard huff_step_nibble(state, flags, out, next_i, last_sym_byte, c >> 4) else { return false; }
-        guard huff_step_nibble(state, flags, out, next_i, last_sym_byte, c & 0x0F) else { return false; }
-        i = next_i;
+    if src.len == 0 {
+        return true;
     }
-
-    guard (flags & HUFF_ACCEPTED) != 0 && (src_len == 0 || last_sym_byte == src_len) else {
+    let start_len = out.len;
+    if start_len >= out.cap {
         return false;
     }
-    committed = true;
+    let avail = core::sub_sat_i64(out.cap, start_len);
+    let max_out = core::add_sat_i64(src.len, src.len);
+    let probe = min(avail, max_out);
+    out.resize(core::add_sat_i64(start_len, probe), 0);
+    let n = native_hpack_huff_decode(src, out[start_len..], HUFF_DECODE_TABLE_PACKED[..]);
+    if n < 0 {
+        out.resize(start_len);
+        return false;
+    }
+    out.resize(core::add_sat_i64(start_len, n));
+    return true;
+}
+
+// Decodes a Huffman-encoded byte slice into a resizable `u8[>..]` buffer.
+//
+// Example:
+//   src = [0x9C, 0xC5], out = []
+//   returns: ok = true, out = "www"
+fn huff_decode_bytes(src: const u8[:], out: u8[>..]&) -> bool {
+    if src.len == 0 {
+        return true;
+    }
+    if src.len > 16777216 {
+        return false;
+    }
+    let start_len = out.len;
+    let max_out = core::add_sat_i64(src.len, src.len);
+    out.resize(core::add_sat_i64(start_len, max_out), 0);
+    let n = native_hpack_huff_decode(src, out[start_len..], HUFF_DECODE_TABLE_PACKED[..]);
+    if n < 0 {
+        out.resize(start_len);
+        return false;
+    }
+    out.resize(core::add_sat_i64(start_len, n));
     return true;
 }
 
@@ -1421,29 +1420,33 @@ fn clear_h2_pseudo_headers(p: H2PseudoHeaders&, keep_trailer_flag: bool = true) 
     p.wireframe_size = 0;
 }
 
-// Validates RFC 9113 Section 8.2.1 header field syntax:
-// 1. Name must be lowercase ASCII token without whitespace or uppercase.
-// 2. Value must not contain NUL, CR, or LF, nor leading/trailing SP/HTAB.
-fn validate_h2_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
+enum H2FieldOrigin {
+    Wire,
+    StaticName,
+    StaticBoth,
+}
+
+fn validate_h2_field_name(name: const u8[:]) -> bool {
     guard name.len > 0 else { return false; }
 
-    // Validate name
-    var is_pseudo = (name[0] == ':');
-    var i: i64 = if is_pseudo { 1 } else { 0 };
-    guard i < name.len else { return false; }
+    let start: i64 = if name[0] == ':' { 1 } else { 0 };
+    guard start < name.len else { return false; }
 
-    while i < name.len {
-        let c = name[i];
+    for c in name[start..] {
         // Rejects uppercase 'A'..'Z' and non-tchar characters (RFC 9113 §8.2.1 & RFC 9110 §5.6.2)
         if (c >= 'A' && c <= 'Z') || !wing::is_tchar(c) {
             return false;
         }
-        i++;
     }
+    return true;
+}
 
+fn validate_h2_field_value(val: const u8[:]) -> bool {
     guard val.len > 0 else { return true; }
     // No leading/trailing SP or HTAB
-    if val[0] == ' ' || val[0] == '\t' || val[val.len - 1] == ' ' || val[val.len - 1] == '\t' {
+    let head = val[0];
+    let tail = val[^1..][0];
+    if head == ' ' || head == '\t' || tail == ' ' || tail == '\t' {
         return false;
     }
     guard !val.contains_byte(0x7F) else { return false; }
@@ -1456,6 +1459,13 @@ fn validate_h2_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
         }
     }
     return true;
+}
+
+// Validates RFC 9113 Section 8.2.1 header field syntax:
+// 1. Name must be lowercase ASCII token without whitespace or uppercase.
+// 2. Value must not contain NUL, CR, or LF, nor leading/trailing SP/HTAB.
+fn validate_h2_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
+    return validate_h2_field_name(name) && validate_h2_field_value(val);
 }
 
 // Decodes string literal from HPACK stream (with Huffman or raw octets).
@@ -1677,6 +1687,24 @@ fn validate_content_length_pseudo(pseudo: H2PseudoHeaders&, val: const u8[:]) ->
     return rfc::H2_ERR_NO_ERROR;
 }
 
+fn validate_h2_host_header(
+    pseudo:      const H2PseudoHeaders&,
+    out_headers: const wing::HeaderMap&,
+    val:         const u8[:],
+) -> u32 {
+    guard val.len > 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    for b in val {
+        guard !is_forbidden_authority_byte(b) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    }
+    guard !wing::has_header(out_headers, "host") else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    if pseudo.has_authority {
+        guard pseudo.authority[..].eq_ascii_fold(val) else {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
+    }
+    return rfc::H2_ERR_NO_ERROR;
+}
+
 fn validate_regular_header_to_map(
     pseudo:      H2PseudoHeaders&,
     out_headers: const wing::HeaderMap&,
@@ -1691,34 +1719,68 @@ fn validate_regular_header_to_map(
         guard !is_forbidden_trailer else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
 
-    if name == "host" {
-        guard val.len > 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-        for b in val {
-            guard !is_forbidden_authority_byte(b) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-        }
-        guard !wing::has_header(out_headers, "host") else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-        if pseudo.has_authority {
-            guard pseudo.authority[..].eq_ascii_fold(val) else {
-                return rfc::H2_ERR_PROTOCOL_ERROR;
+    let err_reg: u32 = match name.len {
+        2 => {
+            if name == "te" && (pseudo.has_status || val != "trailers") {
+                rfc::H2_ERR_PROTOCOL_ERROR
+            } else {
+                rfc::H2_ERR_NO_ERROR
             }
-        }
-    }
-
-    let is_forbidden_conn = name == "connection" || name == "keep-alive"
-        || name == "proxy-connection" || name == "transfer-encoding"
-        || name == "upgrade";
-    guard !is_forbidden_conn else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-    guard name != "te" || (!pseudo.has_status && val == "trailers") else {
-        return rfc::H2_ERR_PROTOCOL_ERROR;
-    }
-
-    if name == "content-length" {
-        let v_cl = validate_content_length_pseudo(pseudo, val);
-        guard v_cl == rfc::H2_ERR_NO_ERROR else { return v_cl; }
-    }
+        },
+        4 => {
+            if name == "host" {
+                validate_h2_host_header(pseudo, out_headers, val)
+            } else {
+                rfc::H2_ERR_NO_ERROR
+            }
+        },
+        7 => if name == "upgrade" { rfc::H2_ERR_PROTOCOL_ERROR } else { rfc::H2_ERR_NO_ERROR },
+        10 => {
+            if name == "connection" || name == "keep-alive" {
+                rfc::H2_ERR_PROTOCOL_ERROR
+            } else {
+                rfc::H2_ERR_NO_ERROR
+            }
+        },
+        14 => {
+            if name == "content-length" {
+                validate_content_length_pseudo(pseudo, val)
+            } else {
+                rfc::H2_ERR_NO_ERROR
+            }
+        },
+        16 => {
+            if name == "proxy-connection" {
+                rfc::H2_ERR_PROTOCOL_ERROR
+            } else {
+                rfc::H2_ERR_NO_ERROR
+            }
+        },
+        17 => {
+            if name == "transfer-encoding" {
+                rfc::H2_ERR_PROTOCOL_ERROR
+            } else {
+                rfc::H2_ERR_NO_ERROR
+            }
+        },
+        _ => rfc::H2_ERR_NO_ERROR,
+    };
+    guard err_reg == rfc::H2_ERR_NO_ERROR else { return err_reg; }
 
     pseudo.has_regular_header = true;
     return rfc::H2_ERR_NO_ERROR;
+}
+
+inline fn validate_h2_field_by_origin(
+    name:   const u8[:],
+    val:    const u8[:],
+    origin: H2FieldOrigin,
+) -> bool {
+    return match origin {
+        StaticBoth => true,
+        StaticName => validate_h2_field_value(val),
+        Wire => validate_h2_field_syntax(name, val),
+    };
 }
 
 // Validates and records a single decoded HPACK field into `out_pseudo` and `out_headers`.
@@ -1727,10 +1789,11 @@ fn validate_header_ordering_and_rules(
     out_headers:          wing::HeaderMap&,
     name:                 const u8[:],
     val:                  const u8[:],
-    validate_http2_rules: bool = true,
+    validate_http2_rules: bool          = true,
+    origin:               H2FieldOrigin = H2FieldOrigin.Wire,
 ) -> u32 {
     if validate_http2_rules {
-        guard validate_h2_field_syntax(name, val) else {
+        guard validate_h2_field_by_origin(name, val, origin) else {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
     } else {
@@ -1738,18 +1801,11 @@ fn validate_header_ordering_and_rules(
     }
 
     if name[0] == ':' {
-        let saved_pseudo = out_pseudo;
-        let err = validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
-        if err != rfc::H2_ERR_NO_ERROR {
-            out_pseudo = saved_pseudo;
-            return err;
-        }
         if validate_http2_rules && (name == ":path" || name == ":scheme") &&
            out_pseudo.has_method && out_pseudo.method[..] == "CONNECT" && !out_pseudo.has_protocol {
-            out_pseudo = saved_pseudo;
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
-        return rfc::H2_ERR_NO_ERROR;
+        return validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
     }
 
     let saved_has_reg = out_pseudo.has_regular_header;
@@ -1765,12 +1821,14 @@ fn validate_header_ordering_and_rules(
     if validate_http2_rules {
         let v_reg = validate_regular_header_to_map(out_pseudo, out_headers, name, val);
         guard v_reg == rfc::H2_ERR_NO_ERROR else { return v_reg; }
+        guard wing::append_validated_header(out_headers, name, val) else {
+            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+        }
     } else {
         out_pseudo.has_regular_header = true;
-    }
-
-    guard wing::append_header(out_headers, name, val) else {
-        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+        guard wing::append_header(out_headers, name, val) else {
+            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+        }
     }
     committed = true;
     return rfc::H2_ERR_NO_ERROR;
@@ -1783,6 +1841,7 @@ fn append_decoded_header_to_map(
     val:                  const u8[:],
     max_header_list_size: u32,
     validate_http2_rules: bool,
+    origin:               H2FieldOrigin = H2FieldOrigin.Wire,
 ) -> u32 {
     let field_size = (name.len + val.len + 32) as u32;
     out_pseudo.wireframe_size += field_size;
@@ -1790,12 +1849,12 @@ fn append_decoded_header_to_map(
         return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
     if name.len > 0 && name[0] == ':' {
-        if validate_http2_rules && !validate_h2_field_syntax(name, val) {
+        if validate_http2_rules && !validate_h2_field_by_origin(name, val, origin) {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
         return validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
     }
-    return validate_header_ordering_and_rules(out_pseudo, out_headers, name, val, validate_http2_rules);
+    return validate_header_ordering_and_rules(out_pseudo, out_headers, name, val, validate_http2_rules, origin);
 }
 
 // Decodes an HPACK literal header field with given prefix bits into bounded name/value buffers.
@@ -1810,31 +1869,39 @@ fn decode_literal_field_slices(
     prefix_bits: u8,
     name_buf:    u8[..256]&,
     val_buf:     u8[..8192]&,
-) -> u64, const u8[:], u32 {
+) -> u64, const u8[:], H2FieldOrigin, u32 {
     let name_mark = name_buf.len;
     let val_mark = val_buf.len;
     var committed = false;
     defer if !committed { name_buf.resize(name_mark); val_buf.resize(val_mark); };
     let name_idx, init_off, ok_idx = hpack_decode_int(src, offset, prefix_bits);
-    guard ok_idx else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
+    guard ok_idx else { return offset, "", H2FieldOrigin.Wire, rfc::H2_ERR_COMPRESSION_ERROR; }
     var mut_off = init_off;
 
     if name_idx == 0 {
         let next_name_off, ok_name = decode_hpack_string(src, mut_off, name_buf);
-        guard ok_name else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
+        guard ok_name else { return offset, "", H2FieldOrigin.Wire, rfc::H2_ERR_COMPRESSION_ERROR; }
         mut_off = next_name_off;
     } else if name_idx > 61 {
         let ok_n = get_indexed_header_name(dt, name_idx, name_buf);
-        guard ok_n else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
+        guard ok_n else { return offset, "", H2FieldOrigin.Wire, rfc::H2_ERR_COMPRESSION_ERROR; }
     }
 
     let val_next_off, ok_val = decode_hpack_string(src, mut_off, val_buf);
-    guard ok_val else { return offset, "", rfc::H2_ERR_COMPRESSION_ERROR; }
+    guard ok_val else { return offset, "", H2FieldOrigin.Wire, rfc::H2_ERR_COMPRESSION_ERROR; }
     committed = true;
-    if name_idx >= 1 && name_idx <= 61 {
-        return val_next_off, HPACK_STATIC_TABLE[name_idx].name, rfc::H2_ERR_NO_ERROR;
+    guard name_idx >= 1 && name_idx <= 61 else {
+        return val_next_off, name_buf[..], H2FieldOrigin.Wire, rfc::H2_ERR_NO_ERROR;
     }
-    return val_next_off, name_buf[..], rfc::H2_ERR_NO_ERROR;
+    return val_next_off, HPACK_STATIC_TABLE[name_idx].name, H2FieldOrigin.StaticName, rfc::H2_ERR_NO_ERROR;
+}
+
+inline fn hpack_indexed_origin(idx: u64) -> H2FieldOrigin {
+    return if idx <= rfc::HPACK_STATIC_TABLE_ENTRIES {
+        H2FieldOrigin.StaticBoth
+    } else {
+        H2FieldOrigin.Wire
+    };
 }
 
 // Applies an HPACK dynamic table size update instruction at `offset` (RFC 7541 Section 6.3).
@@ -1890,6 +1957,7 @@ fn decode_hpack_field_step_with_scratch(
         let name_slice, val_slice, ok_get = get_indexed_header_slices(dt, idx);
         guard ok_get else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
 
+        let origin = hpack_indexed_origin(idx);
         let err = append_decoded_header_to_map(
             out_pseudo,
             out_headers,
@@ -1897,6 +1965,7 @@ fn decode_hpack_field_step_with_scratch(
             val_slice,
             max_header_list_size,
             validate_http2_rules,
+            origin,
         );
         return next_off, err;
     }
@@ -1906,7 +1975,14 @@ fn decode_hpack_field_step_with_scratch(
         updates_allowed = false;
         name_buf.clear();
         val_buf.clear();
-        let val_next_off, name_slice, err_dec = decode_literal_field_slices(dt, src, offset, 6, name_buf, val_buf);
+        let val_next_off, name_slice, origin, err_dec = decode_literal_field_slices(
+            dt,
+            src,
+            offset,
+            6,
+            name_buf,
+            val_buf,
+        );
         guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
         insert_header(dt, name_slice, val_buf[..], false);
@@ -1917,6 +1993,7 @@ fn decode_hpack_field_step_with_scratch(
             val_buf[..],
             max_header_list_size,
             validate_http2_rules,
+            origin,
         );
         return val_next_off, err;
     }
@@ -1930,7 +2007,14 @@ fn decode_hpack_field_step_with_scratch(
     updates_allowed = false;
     name_buf.clear();
     val_buf.clear();
-    let val_next_off, name_slice, err_dec = decode_literal_field_slices(dt, src, offset, 4, name_buf, val_buf);
+    let val_next_off, name_slice, origin, err_dec = decode_literal_field_slices(
+        dt,
+        src,
+        offset,
+        4,
+        name_buf,
+        val_buf,
+    );
     guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
     let err = append_decoded_header_to_map(
@@ -1940,6 +2024,7 @@ fn decode_hpack_field_step_with_scratch(
         val_buf[..],
         max_header_list_size,
         validate_http2_rules,
+        origin,
     );
     return val_next_off, err;
 }
@@ -2014,11 +2099,13 @@ fn validate_mandatory_pseudo_headers(pseudo: const H2PseudoHeaders&) -> u32 {
 // Example:
 //   src = [0x82, 0x86, 0x84], out_pseudo = H2PseudoHeaders { .. }, out_headers = wing::HeaderMap { .. }
 //   returns: error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
-fn decode_hpack_to_map(
+fn decode_hpack_to_map_with_scratch(
     dt:                   DynamicTable&,
     src:                  const u8[:],
     out_pseudo:           H2PseudoHeaders&,
     out_headers:          wing::HeaderMap&,
+    name_buf:             u8[..256]&,
+    val_buf:              u8[..8192]&,
     max_header_list_size: u32  = 8192,
     validate_http2_rules: bool = true,
 ) -> u32 {
@@ -2031,13 +2118,13 @@ fn decode_hpack_to_map(
 
     clear_h2_pseudo_headers(out_pseudo, true);
     out_headers.clear();
+    name_buf.clear();
+    val_buf.clear();
     defer if !committed {
         clear_h2_pseudo_headers(out_pseudo, true);
         out_headers.clear();
     };
 
-    var name_buf: u8[..256]  = [];
-    var val_buf:  u8[..8192] = [];
     while offset < src_len {
         let next_off, err = decode_hpack_field_step_with_scratch(
             dt,
@@ -2070,6 +2157,33 @@ fn decode_hpack_to_map(
 
     committed = true;
     return rfc::H2_ERR_NO_ERROR;
+}
+
+// Decodes a complete HPACK header block into `out_pseudo` and `out_headers` using stack scratch buffers.
+//
+// Example:
+//   src = [0x82, 0x86, 0x84], out_pseudo = H2PseudoHeaders { .. }, out_headers = wing::HeaderMap { .. }
+//   returns: error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
+fn decode_hpack_to_map(
+    dt:                   DynamicTable&,
+    src:                  const u8[:],
+    out_pseudo:           H2PseudoHeaders&,
+    out_headers:          wing::HeaderMap&,
+    max_header_list_size: u32  = 8192,
+    validate_http2_rules: bool = true,
+) -> u32 {
+    var name_buf: u8[..256]  = [];
+    var val_buf:  u8[..8192] = [];
+    return decode_hpack_to_map_with_scratch(
+        dt,
+        src,
+        out_pseudo,
+        out_headers,
+        name_buf,
+        val_buf,
+        max_header_list_size,
+        validate_http2_rules,
+    );
 }
 
 enum HpackIndexing {
