@@ -372,3 +372,239 @@ fn decode_hpack_to_map(
     }
     return rfc::H2_ERR_NO_ERROR;
 }
+
+// Public HTTP/2 pseudo-header set (RFC 9113 Section 8.3).
+struct WireH2PseudoHeaders {
+    method:             u8[..16]   = [],
+    scheme:             u8[..16]   = [],
+    authority:          u8[..256]  = [],
+    path:               u8[..2048] = [],
+    protocol:           u8[..64]   = [],
+    status:             i32        = 0,
+    has_method:         bool       = false,
+    has_scheme:         bool       = false,
+    has_authority:      bool       = false,
+    has_path:           bool       = false,
+    has_protocol:       bool       = false,
+    has_status:         bool       = false,
+    has_regular_header: bool       = false,
+    has_content_length: bool       = false,
+    content_length_val: i64        = -1,
+    is_trailer:         bool       = false,
+    wireframe_size:     u32        = 0,
+}
+
+// Stateful public HPACK codec context bundling a dynamic table and accounting
+// counters/limits without exposing `internal::DynamicTable` to callers.
+struct WireHpackState {
+    table:                internal::DynamicTable = internal::DynamicTable {},
+    max_header_list_size: u32                    = 8192,
+    blocks_encoded:       u64                    = 0,
+    blocks_decoded:       u64                    = 0,
+    bytes_encoded:        u64                    = 0,
+    bytes_decoded:        u64                    = 0,
+}
+
+// Initializes a bounded stateful HPACK codec context (`max_table_size <= 4096`
+// and `max_header_list_size > 0`).
+//
+// Example:
+//   let st, ok = wire::init_hpack_state(4096, 8192);
+//   returns: initialized WireHpackState, ok = true (or ok = false if limits invalid)
+fn init_hpack_state(
+    max_table_size:       u64 = 4096,
+    max_header_list_size: u32 = 8192,
+) -> WireHpackState, bool {
+    guard max_table_size <= internal::HPACK_MAX_ARENA_BYTES && max_header_list_size > 0 else {
+        return WireHpackState {}, false;
+    }
+    return WireHpackState {
+        table:                internal::new_dynamic_table(max_table_size),
+        max_header_list_size: max_header_list_size,
+        ..
+    }, true;
+}
+
+// Updates the active dynamic table max size within the negotiated arena cap and
+// evicts entries exceeding `new_max_size` (RFC 7541 Section 4.2).
+//
+// Example:
+//   let ok = wire::hpack_reset_table_size(st, 1024);
+//   returns: true if within bounds, false otherwise
+fn hpack_reset_table_size(state: WireHpackState&, new_max_size: u64) -> bool {
+    guard new_max_size <= state.table.max_allowed_size &&
+          new_max_size <= internal::HPACK_MAX_ARENA_BYTES else {
+        return false;
+    }
+    internal::update_dynamic_table_max_size(state.table, new_max_size);
+    return true;
+}
+
+// Builds and validates HTTP/2 request pseudo-headers (`:method`, `:scheme`,
+// optional `:authority`, and optional `:path`) (RFC 9113 Section 8.3.1).
+//
+// Example:
+//   let pseudo, ok = wire::make_h2_request_pseudo("GET", "https", "example.com", "/");
+//   returns: populated WireH2PseudoHeaders, ok = true
+fn make_h2_request_pseudo(
+    method:    const u8[:],
+    scheme:    const u8[:],
+    authority: const u8[:],
+    path:      const u8[:],
+) -> WireH2PseudoHeaders, bool {
+    var p = WireH2PseudoHeaders {};
+    guard method.len > 0 && p.method.try_set(method) else { return WireH2PseudoHeaders {}, false; }
+    for b in method {
+        guard core::is_tchar(b) else { return WireH2PseudoHeaders {}, false; }
+    }
+    guard internal::is_valid_h2_scheme(scheme) && p.scheme.try_set(scheme) else {
+        return WireH2PseudoHeaders {}, false;
+    }
+    p.has_method = true;
+    p.has_scheme = true;
+
+    if authority.len > 0 {
+        guard internal::is_valid_h2_authority(authority) && p.authority.try_set(authority) else {
+            return WireH2PseudoHeaders {}, false;
+        }
+        p.has_authority = true;
+    }
+    if path.len > 0 {
+        guard internal::is_valid_h2_path(path) && p.path.try_set(path) else {
+            return WireH2PseudoHeaders {}, false;
+        }
+        p.has_path = true;
+    }
+    return p, true;
+}
+
+// Builds and validates HTTP/2 response `:status` pseudo-headers (`100..599`)
+// (RFC 9113 Section 8.3.2).
+//
+// Example:
+//   let pseudo, ok = wire::make_h2_response_pseudo(200);
+//   returns: WireH2PseudoHeaders { status: 200, has_status: true, .. }, ok = true
+fn make_h2_response_pseudo(status: i32) -> WireH2PseudoHeaders, bool {
+    guard status >= 100 && status <= 599 else { return WireH2PseudoHeaders {}, false; }
+    return WireH2PseudoHeaders { status: status, has_status: true, .. }, true;
+}
+
+fn to_internal_h2_pseudo(src: const WireH2PseudoHeaders&) -> internal::H2PseudoHeaders {
+    var dst = internal::H2PseudoHeaders {
+        status:             src.status,
+        has_method:         src.has_method,
+        has_scheme:         src.has_scheme,
+        has_authority:      src.has_authority,
+        has_path:           src.has_path,
+        has_protocol:       src.has_protocol,
+        has_status:         src.has_status,
+        has_regular_header: src.has_regular_header,
+        has_content_length: src.has_content_length,
+        content_length_val: src.content_length_val,
+        is_trailer:         src.is_trailer,
+        wireframe_size:     src.wireframe_size,
+        ..
+    };
+    dst.method.try_set(src.method[..]);
+    dst.scheme.try_set(src.scheme[..]);
+    dst.authority.try_set(src.authority[..]);
+    dst.path.try_set(src.path[..]);
+    dst.protocol.try_set(src.protocol[..]);
+    return dst;
+}
+
+fn from_internal_h2_pseudo(src: const internal::H2PseudoHeaders&) -> WireH2PseudoHeaders {
+    var dst = WireH2PseudoHeaders {
+        status:             src.status,
+        has_method:         src.has_method,
+        has_scheme:         src.has_scheme,
+        has_authority:      src.has_authority,
+        has_path:           src.has_path,
+        has_protocol:       src.has_protocol,
+        has_status:         src.has_status,
+        has_regular_header: src.has_regular_header,
+        has_content_length: src.has_content_length,
+        content_length_val: src.content_length_val,
+        is_trailer:         src.is_trailer,
+        wireframe_size:     src.wireframe_size,
+        ..
+    };
+    dst.method.try_set(src.method[..]);
+    dst.scheme.try_set(src.scheme[..]);
+    dst.authority.try_set(src.authority[..]);
+    dst.path.try_set(src.path[..]);
+    dst.protocol.try_set(src.protocol[..]);
+    return dst;
+}
+
+// Encodes HTTP/2 pseudo-headers and regular headers into an HPACK block using
+// `state`, rolling back `out` and `state` cleanly on failure (RFC 7541).
+//
+// Example:
+//   let ok = wire::hpack_encode_header_block(st, pseudo, headers, out, true);
+//   returns: true with HPACK block appended to `out` and `st.blocks_encoded` incremented
+fn hpack_encode_header_block<B>(
+    state:       WireHpackState&,
+    pseudo:      const WireH2PseudoHeaders&,
+    headers:     const wing::HeaderMap&,
+    out:         B&,
+    use_huffman: bool = true,
+) -> bool {
+    let start_len = out.len;
+    let saved_table = state.table;
+    var committed = false;
+    defer if !committed {
+        out.resize(start_len);
+        state.table = saved_table;
+    };
+
+    let int_pseudo = to_internal_h2_pseudo(pseudo);
+    guard encode_hpack_from_map(state.table, int_pseudo, headers, out, use_huffman) else {
+        return false;
+    }
+
+    let encoded_bytes = core::sub_sat_i64(out.len, start_len) as u64;
+    state.blocks_encoded = core::add_sat_u64(state.blocks_encoded, 1);
+    state.bytes_encoded = core::add_sat_u64(state.bytes_encoded, encoded_bytes);
+    committed = true;
+    return true;
+}
+
+// Decodes an HPACK header block into `out_pseudo` and `out_headers` using
+// `state`, rolling back `state.table`, `out_pseudo`, and `out_headers` on any
+// error (RFC 7541, RFC 9113 Section 8.2).
+//
+// Example:
+//   let err = wire::hpack_decode_block(st, raw, out_pseudo, out_headers);
+//   returns: rfc::H2_ERR_NO_ERROR with `out_pseudo` and `out_headers` populated
+fn hpack_decode_block(
+    state:                WireHpackState&,
+    src:                  const u8[:],
+    out_pseudo:           WireH2PseudoHeaders&,
+    out_headers:          wing::HeaderMap&,
+    validate_http2_rules: bool = true,
+) -> u32 {
+    let saved_table = state.table;
+    let was_trailer = out_pseudo.is_trailer;
+    var int_pseudo = internal::H2PseudoHeaders { is_trailer: was_trailer, .. };
+
+    let err = decode_hpack_to_map(
+        state.table,
+        src,
+        int_pseudo,
+        out_headers,
+        state.max_header_list_size,
+        validate_http2_rules,
+    );
+    guard err == rfc::H2_ERR_NO_ERROR else {
+        state.table = saved_table;
+        out_pseudo = WireH2PseudoHeaders { is_trailer: was_trailer, .. };
+        out_headers.clear();
+        return err;
+    }
+
+    out_pseudo = from_internal_h2_pseudo(int_pseudo);
+    state.blocks_decoded = core::add_sat_u64(state.blocks_decoded, 1);
+    state.bytes_decoded = core::add_sat_u64(state.bytes_decoded, src.len as u64);
+    return rfc::H2_ERR_NO_ERROR;
+}

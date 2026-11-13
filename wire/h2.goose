@@ -310,6 +310,37 @@ inline fn calc_h2_headers_chunk_flags(f_type: u8, end_stream: bool, rem_after: i
 // Example:
 //   encode_h2_headers_frame_from_map(dt, 1, pseudo, headers, true, out, 16384)
 //   returns: true, out contains 9-byte HEADERS frame header + HPACK block
+fn emit_h2_headers_chunks<B>(
+    stream_id:      u32,
+    hpack_bytes:    const u8[:],
+    end_stream:     bool,
+    out:            B&,
+    max_frame_size: u32,
+) -> bool {
+    let max_chunk = max_frame_size as i64;
+    var offset: i64 = 0;
+    var first = true;
+    while first || offset < hpack_bytes.len {
+        let rem = core::sub_sat_i64(hpack_bytes.len, offset);
+        let chunk_len = min(rem, max_chunk);
+        let rem_after = core::sub_sat_i64(rem, chunk_len);
+        let next_off = core::add_sat_i64(offset, chunk_len);
+        let f_type = if first { rfc::H2_FRAME_HEADERS } else { rfc::H2_FRAME_CONTINUATION };
+        let hdr = WireFrameHeader {
+            length:     chunk_len as u32,
+            frame_type: f_type,
+            flags:      calc_h2_headers_chunk_flags(f_type, end_stream, rem_after),
+            stream_id:  stream_id,
+        };
+        guard encode_frame_header(hdr, out) && out.try_append(hpack_bytes[offset..next_off]) else {
+            return false;
+        }
+        offset = next_off;
+        first = false;
+    }
+    return true;
+}
+
 fn encode_h2_headers_frame_from_map<B>(
     dt:             internal::DynamicTable&,
     stream_id:      u32,
@@ -333,27 +364,45 @@ fn encode_h2_headers_frame_from_map<B>(
 
     var hpack_buf: u8[..16384] = [];
     guard encode_hpack_from_map(dt, pseudo, headers, hpack_buf, true) else { return false; }
+    guard emit_h2_headers_chunks(stream_id, hpack_buf[..], end_stream, out, max_frame_size) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
 
-    let max_chunk = max_frame_size as i64;
-    var offset: i64 = 0;
-    var first = true;
-    while first || offset < hpack_buf.len {
-        let rem = core::sub_sat_i64(hpack_buf.len, offset);
-        let chunk_len = min(rem, max_chunk);
-        let rem_after = core::sub_sat_i64(rem, chunk_len);
-        let next_off = core::add_sat_i64(offset, chunk_len);
-        let f_type = if first { rfc::H2_FRAME_HEADERS } else { rfc::H2_FRAME_CONTINUATION };
-        let hdr = WireFrameHeader {
-            length:     chunk_len as u32,
-            frame_type: f_type,
-            flags:      calc_h2_headers_chunk_flags(f_type, end_stream, rem_after),
-            stream_id:  stream_id,
-        };
-        guard encode_frame_header(hdr, out) && out.try_append(hpack_buf[offset..next_off]) else {
-            return false;
-        }
-        offset = next_off;
-        first = false;
+// Encodes HTTP/2 pseudo-headers and `HeaderMap` into a HEADERS frame (and any
+// required CONTINUATION frames) using a stateful `WireHpackState`, rolling back
+// `out` and `state` cleanly on failure (RFC 9113 Sections 6.2, 6.10).
+//
+// Example:
+//   let ok = wire::encode_h2_headers_frame_from_map(st, 1, pseudo, hdrs, true, out);
+//   returns: true with framed HTTP/2 HEADERS (+CONTINUATION) bytes appended to `out`
+fn encode_h2_headers_frame_from_map<B>(
+    state:          WireHpackState&,
+    stream_id:      u32,
+    pseudo:         const WireH2PseudoHeaders&,
+    headers:        const wing::HeaderMap&,
+    end_stream:     bool,
+    out:            B&,
+    max_frame_size: u32 = 16384,
+) -> bool {
+    guard stream_id > 0 && stream_id <= 0x7FFFFFFF &&
+          max_frame_size > 0 && max_frame_size <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
+        return false;
+    }
+    let saved_state = state;
+    let start_len = out.len;
+    var committed = false;
+    defer if !committed {
+        out.resize(start_len);
+        state = saved_state;
+    };
+
+    var hpack_buf: u8[..16384] = [];
+    guard hpack_encode_header_block(state, pseudo, headers, hpack_buf, true) else { return false; }
+    guard emit_h2_headers_chunks(stream_id, hpack_buf[..], end_stream, out, max_frame_size) else {
+        return false;
     }
     committed = true;
     return true;

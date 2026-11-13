@@ -1707,10 +1707,6 @@ fn validate_header_ordering_and_rules(
     val:                  const u8[:],
     validate_http2_rules: bool = true,
 ) -> u32 {
-    let saved_pseudo = out_pseudo;
-    var committed = false;
-    defer if !committed { out_pseudo = saved_pseudo; };
-
     if validate_http2_rules {
         guard validate_h2_field_syntax(name, val) else {
             return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -1720,15 +1716,29 @@ fn validate_header_ordering_and_rules(
     }
 
     if name[0] == ':' {
+        let saved_pseudo = out_pseudo;
         let err = validate_and_record_pseudo_header(out_pseudo, name, val, validate_http2_rules);
-        guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+        if err != rfc::H2_ERR_NO_ERROR {
+            out_pseudo = saved_pseudo;
+            return err;
+        }
         if validate_http2_rules && (name == ":path" || name == ":scheme") &&
            out_pseudo.has_method && out_pseudo.method[..] == "CONNECT" && !out_pseudo.has_protocol {
+            out_pseudo = saved_pseudo;
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
-        committed = true;
         return rfc::H2_ERR_NO_ERROR;
     }
+
+    let saved_has_reg = out_pseudo.has_regular_header;
+    let saved_has_cl = out_pseudo.has_content_length;
+    let saved_cl_val = out_pseudo.content_length_val;
+    var committed = false;
+    defer if !committed {
+        out_pseudo.has_regular_header = saved_has_reg;
+        out_pseudo.has_content_length = saved_has_cl;
+        out_pseudo.content_length_val = saved_cl_val;
+    };
 
     if validate_http2_rules {
         let v_reg = validate_regular_header_to_map(out_pseudo, out_headers, name, val);
@@ -1802,12 +1812,36 @@ fn decode_literal_field_slices(
     return val_next_off, rfc::H2_ERR_NO_ERROR;
 }
 
-// Decodes a single HPACK field representation step directly into `out_pseudo` and `out_headers`.
+// Applies an HPACK dynamic table size update instruction at `offset` (RFC 7541 Section 6.3).
 //
 // Example:
-//   src = [0x82], offset = 0, dt = DynamicTable { .. }
+//   src = [0x20], offset = 0, updates_allowed = true, update_count = 0
+//   returns: next_offset = 1, error_code = ERR_NO_ERROR, update_count = 1
+fn decode_hpack_table_size_update(
+    dt:              DynamicTable&,
+    src:             const u8[:],
+    offset:          u64,
+    updates_allowed: bool,
+    update_count:    u32&,
+) -> u64, u32 {
+    guard updates_allowed && update_count < 16 else {
+        return offset, rfc::H2_ERR_COMPRESSION_ERROR;
+    }
+    update_count = core::add_sat_u64(update_count, 1) as u32;
+
+    let new_size, next_off, ok_size = hpack_decode_int(src, offset, 5);
+    guard ok_size && update_dynamic_table_max_size(dt, new_size) else {
+        return offset, rfc::H2_ERR_COMPRESSION_ERROR;
+    }
+    return next_off, rfc::H2_ERR_NO_ERROR;
+}
+
+// Decodes a single HPACK field using caller-supplied scratch buffers into `out_pseudo` and `out_headers`.
+//
+// Example:
+//   src = [0x82], offset = 0, name_buf = [], val_buf = []
 //   returns: next_offset = 1, error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
-fn decode_hpack_field_step_to_map(
+fn decode_hpack_field_step_with_scratch(
     dt:                   DynamicTable&,
     src:                  const u8[:],
     offset:               u64,
@@ -1817,6 +1851,8 @@ fn decode_hpack_field_step_to_map(
     out_headers:          wing::HeaderMap&,
     max_header_list_size: u32,
     validate_http2_rules: bool,
+    name_buf:             u8[..256]&,
+    val_buf:              u8[..8192]&,
 ) -> u64, u32 {
     let b = src[offset];
 
@@ -1843,8 +1879,8 @@ fn decode_hpack_field_step_to_map(
     // 2. Literal Header Field with Incremental Indexing: 01xxxxxx (6-bit prefix)
     if (b & 0xC0) == 0x40 {
         updates_allowed = false;
-        var name_buf: u8[..256]  = [];
-        var val_buf:  u8[..8192] = [];
+        name_buf.clear();
+        val_buf.clear();
         let val_next_off, err_dec = decode_literal_field_slices(dt, src, offset, 6, name_buf, val_buf);
         guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
@@ -1862,23 +1898,13 @@ fn decode_hpack_field_step_to_map(
 
     // 3. Dynamic Table Size Update: 001xxxxx (5-bit prefix)
     if (b & 0xE0) == 0x20 {
-        guard updates_allowed else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
-        update_count++;
-        guard update_count <= 16 else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
-
-        let new_size, next_off, ok_size = hpack_decode_int(src, offset, 5);
-        guard ok_size else { return offset, rfc::H2_ERR_COMPRESSION_ERROR; }
-
-        guard update_dynamic_table_max_size(dt, new_size) else {
-            return offset, rfc::H2_ERR_COMPRESSION_ERROR;
-        }
-        return next_off, rfc::H2_ERR_NO_ERROR;
+        return decode_hpack_table_size_update(dt, src, offset, updates_allowed, update_count);
     }
 
     // 4. Literal Header without Indexing (0000xxxx) or Never Indexed (0001xxxx)
     updates_allowed = false;
-    var name_buf: u8[..256]  = [];
-    var val_buf:  u8[..8192] = [];
+    name_buf.clear();
+    val_buf.clear();
     let val_next_off, err_dec = decode_literal_field_slices(dt, src, offset, 4, name_buf, val_buf);
     guard err_dec == rfc::H2_ERR_NO_ERROR else { return offset, err_dec; }
 
@@ -1891,6 +1917,39 @@ fn decode_hpack_field_step_to_map(
         validate_http2_rules,
     );
     return val_next_off, err;
+}
+
+// Decodes a single HPACK field representation step directly into `out_pseudo` and `out_headers`.
+//
+// Example:
+//   src = [0x82], offset = 0, dt = DynamicTable { .. }
+//   returns: next_offset = 1, error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
+fn decode_hpack_field_step_to_map(
+    dt:                   DynamicTable&,
+    src:                  const u8[:],
+    offset:               u64,
+    updates_allowed:      bool&,
+    update_count:         u32&,
+    out_pseudo:           H2PseudoHeaders&,
+    out_headers:          wing::HeaderMap&,
+    max_header_list_size: u32,
+    validate_http2_rules: bool,
+) -> u64, u32 {
+    var name_buf: u8[..256]  = [];
+    var val_buf:  u8[..8192] = [];
+    return decode_hpack_field_step_with_scratch(
+        dt,
+        src,
+        offset,
+        updates_allowed,
+        update_count,
+        out_pseudo,
+        out_headers,
+        max_header_list_size,
+        validate_http2_rules,
+        name_buf,
+        val_buf,
+    );
 }
 
 // RFC 9113 Section 8.3.1 & 8.3.2: Verify mandatory pseudo-headers in non-trailer header blocks
@@ -1952,8 +2011,10 @@ fn decode_hpack_to_map(
         out_headers.clear();
     };
 
+    var name_buf: u8[..256]  = [];
+    var val_buf:  u8[..8192] = [];
     while offset < src_len {
-        let next_off, err = decode_hpack_field_step_to_map(
+        let next_off, err = decode_hpack_field_step_with_scratch(
             dt,
             src,
             offset,
@@ -1963,6 +2024,8 @@ fn decode_hpack_to_map(
             out_headers,
             max_header_list_size,
             validate_http2_rules,
+            name_buf,
+            val_buf,
         );
         if err == rfc::H2_ERR_COMPRESSION_ERROR {
             return err;
@@ -2025,9 +2088,12 @@ fn encode_hpack_field<B>(
     let is_never = (indexing == HpackIndexing.NeverIndexed);
     let is_inc = (indexing == HpackIndexing.Incremental);
 
+    var s_idx:       u64 = 0;
+    var d_match_idx: u64 = 0;
     if !is_never {
         // 1. Check for exact match in static table
-        let s_idx, exact_s = find_hpack_static_field(name, val);
+        let found_s, exact_s = find_hpack_static_field(name, val);
+        s_idx = found_s;
         if s_idx > 0 && exact_s {
             // Indexed field (1xxxxxxx)
             guard hpack_encode_int(out, s_idx, 7, 0x80) else { return false; }
@@ -2044,19 +2110,16 @@ fn encode_hpack_field<B>(
         }
 
         // 3. Fallback scan for name-only match or collision resolution in dynamic table
-        let d_match_idx, d_exact = find_hpack_dynamic_field(dt, name, val);
+        let dyn_idx, d_exact = find_hpack_dynamic_field(dt, name, val);
+        d_match_idx = dyn_idx;
         if d_exact {
             guard hpack_encode_int(out, d_match_idx, 7, 0x80) else { return false; }
             committed = true;
             return true;
         }
-    }
-
-    let s_idx, _ = find_hpack_static_field(name, val);
-    var d_match_idx: u64 = 0;
-    if !is_never {
-        let dyn_idx, _ = find_hpack_dynamic_field(dt, name, val);
-        d_match_idx = dyn_idx;
+    } else {
+        let found_s, _ = find_hpack_static_field(name, val);
+        s_idx = found_s;
     }
 
     // Choose prefix depending on indexing mode

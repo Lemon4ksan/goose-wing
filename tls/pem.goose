@@ -11,11 +11,12 @@ import .asn1;
 import .x509;
 import .session;
 
-const PEM_PRE_EB:        const u8[:] = "-----BEGIN ";
-const PEM_POST_EB:       const u8[:] = "-----END ";
-const PEM_DASHES:        const u8[:] = "-----";
-const PEM_MAX_DER_LEN:   i64         = 4096;
-const PEM_MAX_LABEL_LEN: i64         = 64;
+const PEM_PRE_EB:           const u8[:] = "-----BEGIN ";
+const PEM_POST_EB:          const u8[:] = "-----END ";
+const PEM_DASHES:           const u8[:] = "-----";
+const PEM_MAX_DER_LEN:      i64         = 4096;
+const PEM_MAX_LABEL_LEN:    i64         = 64;
+const PEM_MAX_BUNDLE_BYTES: i64         = 1048576; // 1 MiB cap for PEM trust-store bundles
 
 enum PrivateKeyKind {
     Unknown,
@@ -176,6 +177,29 @@ fn add_trust_anchors_pem(store: TrustAnchorStore&, pem_bundle: const u8[:]) -> i
         }
     }
     return count, count > 0;
+}
+
+// Reads a PEM CA bundle file from `path`, validates size bounds, and loads all
+// "CERTIFICATE" blocks into `store`. Zeroizes the temporary buffer and rolls back
+// `store.anchors` on any read, size, or parse error.
+//
+// Example:
+//   load_trust_anchors_pem_file(store, "ca-bundle.pem")
+//   returns: added_count = 1, ok = true
+fn load_trust_anchors_pem_file(store: TrustAnchorStore&, path: const u8[:]) -> i64, bool {
+    guard path.len > 0 && path.len <= 4096 else { return 0, false; }
+    var raw_pem: u8[>..] = [];
+    defer core::secure_zeroize_slice(raw_pem[..]);
+    guard read_file(path, raw_pem) else { return 0, false; }
+    guard raw_pem.len > 0 && raw_pem.len <= PEM_MAX_BUNDLE_BYTES else { return 0, false; }
+
+    let saved_len = store.anchors.len;
+    let added, ok_pem = add_trust_anchors_pem(store, raw_pem[..]);
+    guard ok_pem else {
+        store.anchors.resize(saved_len);
+        return 0, false;
+    }
+    return added, true;
 }
 
 inline fn sec1_check_curve_oid(ec_seq: ByteCursor&, der_ref: const u8[:]) -> bool {

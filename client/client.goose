@@ -25,6 +25,7 @@ import dns.wire;
 import dns.cache;
 import dns.doh;
 import tls.ech;
+import tls.pem;
 import http.altsvc;
 import net.happy_eyeballs;
 import http.compression_dict;
@@ -557,6 +558,46 @@ fn trust_location_host(session: Session&, host_name: const u8[:]) -> bool {
 
 fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> bool {
     return session.trusted_location_hosts.any() { it[..].eq_ascii_fold(host_name) };
+}
+
+// Loads PEM-encoded CA trust anchors from `path` into `sess.trust_store` and
+// enforces peer certificate verification on the session.
+//
+// Example:
+//   let count, ok = wing::load_trust_anchors_pem_file(sess, "certs/ca.pem");
+//   returns: count >= 1, ok = true (or 0, false if unreadable/empty/invalid)
+fn load_trust_anchors_pem_file(sess: Session&, path: const u8[:]) -> i64, bool {
+    guard path.len > 0 else { return 0, false; }
+    let count, ok = load_trust_anchors_pem_file(sess.trust_store, path);
+    guard ok else { return 0, false; }
+    sess.insecure_skip_verify = false;
+    return count, true;
+}
+
+// Validates and appends PEM CA trust anchors into `sess.trust_store`, enforces
+// certificate verification, and optionally allows loopback/local-network
+// targets for local test or proxy harnesses.
+//
+// Example:
+//   let count, ok = wing::configure_session_tls_ca_pem(sess, ca_pem, true);
+//   returns: count >= 1, ok = true with `sess.ssrf_guard.deny_local_network = false`
+fn configure_session_tls_ca_pem(
+    sess:           Session&,
+    pem_bundle:     const u8[:],
+    allow_loopback: bool = false,
+) -> i64, bool {
+    guard pem_bundle.len > 0 else { return 0, false; }
+    let saved_len = sess.trust_store.anchors.len;
+    let count, ok = add_trust_anchors_pem(sess.trust_store, pem_bundle);
+    guard ok && count > 0 else {
+        sess.trust_store.anchors.resize(saved_len);
+        return 0, false;
+    }
+    sess.insecure_skip_verify = false;
+    if allow_loopback {
+        sess.ssrf_guard.deny_local_network = false;
+    }
+    return count, true;
 }
 
 // ---- mock route registration methods ---------------------------------------

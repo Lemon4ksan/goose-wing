@@ -108,3 +108,26 @@ e2e-http3:
 # Run Toxiproxy chaos verification suite
 e2e-chaos:
     python tools/toxiproxy.py --docker
+
+# Run cryptographic, compression, and framing differential fuzzing suite
+diff-fuzz:
+    python scripts/diff_fuzz.py
+
+# Run HTTP/1.1 anti-smuggling differential harness against Go net/http
+diff-h1 n="1000":
+    python scripts/h1_differential.py --random {{ n }}
+
+# Run URL parsing differential harness against Go net/url
+diff-url n="1000":
+    python scripts/url_differential.py --random {{ n }}
+
+# Run stateful HPACK differential harness against Go x/net/http2/hpack
+diff-hpack conns="500":
+    python scripts/hpack_differential.py --conns {{ conns }}
+
+# Run live TLS 1.3 and HTTP/2 differential harness against Go crypto/tls + net/http
+diff-h2-tls:
+    python scripts/h2_tls_differential.py -v
+
+# Run all differential verification harnesses sequentially
+diff-all: diff-fuzz diff-h1 diff-url diff-hpack diff-h2-tls

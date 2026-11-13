@@ -177,49 +177,16 @@ fn fused_aes_gcm_encrypt(
     aad:       const u8[:],
     dst:       u8[:],
 ) -> u8[16], i64, bool {
-    var empty_tag: u8[16] = [0; 16];
-    guard dst.len >= plaintext.len else {
-        return empty_tag, 0, false;
+    var tag: u8[16] = [0; 16];
+    guard dst.len >= plaintext.len else { return tag, 0, false; }
+    let written = native_aes_gcm_seal_aead(
+        key[..], nonce12[..], plaintext, aad, dst[..plaintext.len], tag[..],
+    );
+    guard written == plaintext.len else {
+        secure_zeroize_slice(tag[..]);
+        return tag, 0, false;
     }
-
-    let ks = aes128_key_schedule(key);
-    let zero_block: u8[16] = [0; 16];
-    var h = aes128_encrypt_block(ks, zero_block);
-    let j0 = init_j0(nonce12);
-    var enc_j0 = aes128_encrypt_block(ks, j0);
-
-    var ghash_acc: u8[16] = [0; 16];
-    ghash_update(h, ghash_acc, aad);
-
-    var ctr = j0;
-    var offset: i64 = 0;
-    while offset + 64 <= plaintext.len {
-        fused_aes128_gcm_encrypt_4blocks(ks, h, ctr, ghash_acc, plaintext, dst, offset);
-        offset += 64;
-    }
-
-    while offset < plaintext.len {
-        inc_ctr32(ctr);
-        let ek = aes128_encrypt_block(ks, ctr);
-        let rem = plaintext.len - offset;
-        let take = min(rem, 16);
-        var gblk: u8[16] = [0; 16];
-        for i in take {
-            let c_byte = plaintext[offset + i] ^ ek[i];
-            dst[offset + i] = c_byte;
-            gblk[i] = c_byte;
-        }
-        for i in 16 {
-            ghash_acc[i] ^= gblk[i];
-        }
-        ghash_acc = ghash_mul(ghash_acc, h);
-        offset += take;
-    }
-
-    let tag = fused_aes128_gcm_finalize_tag(h, enc_j0, ghash_acc, aad.len, plaintext.len);
-    secure_zeroize_16(h);
-    secure_zeroize_16(enc_j0);
-    return tag, plaintext.len, true;
+    return tag, written, true;
 }
 
 // Out-of-place 4-block fused AES-128-GCM decryption (NIST SP 800-38D).
@@ -236,50 +203,13 @@ fn fused_aes_gcm_decrypt(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard dst.len >= ciphertext.len else {
-        return 0, false;
-    }
-
-    let ks = aes128_key_schedule(key);
-    let zero_block: u8[16] = [0; 16];
-    var h = aes128_encrypt_block(ks, zero_block);
-    let j0 = init_j0(nonce12);
-    var enc_j0 = aes128_encrypt_block(ks, j0);
-
-    var ghash_acc: u8[16] = [0; 16];
-    ghash_update(h, ghash_acc, aad);
-
-    var ctr = j0;
-    var offset: i64 = 0;
-    while offset + 64 <= ciphertext.len {
-        fused_aes128_gcm_decrypt_4blocks(ks, h, ctr, ghash_acc, ciphertext, dst, offset);
-        offset += 64;
-    }
-
-    while offset < ciphertext.len {
-        inc_ctr32(ctr);
-        let ek = aes128_encrypt_block(ks, ctr);
-        let rem = ciphertext.len - offset;
-        let take = min(rem, 16);
-        var gblk: u8[16] = [0; 16];
-        for i in take {
-            let c_byte = ciphertext[offset + i];
-            gblk[i] = c_byte;
-            dst[offset + i] = c_byte ^ ek[i];
-        }
-        for i in 16 {
-            ghash_acc[i] ^= gblk[i];
-        }
-        ghash_acc = ghash_mul(ghash_acc, h);
-        offset += take;
-    }
-
-    let computed_tag = fused_aes128_gcm_finalize_tag(h, enc_j0, ghash_acc, aad.len, ciphertext.len);
-    secure_zeroize_16(h);
-    secure_zeroize_16(enc_j0);
-    guard ct_eq_bytes(computed_tag[..], tag[..]) else {
+    guard dst.len >= ciphertext.len else { return 0, false; }
+    let dec_len = native_aes_gcm_open_aead(
+        key[..], nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
+    );
+    guard dec_len == ciphertext.len else {
         secure_zeroize_slice(dst[..ciphertext.len]);
         return 0, false;
     }
-    return ciphertext.len, true;
+    return dec_len, true;
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Differential HPACK codec runner (RFC 7541) against tests/fuzz/hpackoracle.
 // Usage:
 //   hpack_verdict decode <batch_file>

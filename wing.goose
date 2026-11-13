@@ -234,6 +234,7 @@ import wire.h1;
 import wire.hpack;
 import wire.h2;
 import wire.h3;
+import wire.tls;
 import wire.pool;
 import wire.cmd;
 import wire.pipeline;

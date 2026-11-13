@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // Differential verdict runner for core/url (parse_url and parse_url_with_base).
 // Reads a batch file of hex-encoded P/R operations and prints parsed components.
 

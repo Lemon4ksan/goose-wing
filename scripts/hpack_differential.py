@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
 """Stateful HPACK differential oracle (wing vs golang.org/x/net/http2/hpack).
 
 Runs two directions over randomized multi-block connections with dynamic table
@@ -407,4 +411,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

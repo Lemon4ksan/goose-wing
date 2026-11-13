@@ -126,6 +126,67 @@ jobs:
             fi
           fi
 
+  differential-oracles:
+    name: Differential oracle suites
+    needs: changes
+    if: needs.changes.outputs.goose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/fuzz/hpackoracle/go.mod
+
+      - name: Set up toolchain and Goose compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential gcc curl ca-certificates
+          curl -sSL --retry 5 --retry-delay 2 --retry-connrefused https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz | sudo tar -xz -C /opt
+          sudo ln -sf /opt/goose-v2026.3-linux-x64/goose /usr/local/bin/goose
+
+      - name: Download Go module dependencies for HPACK oracle
+        run: |
+          (cd tests/fuzz/hpackoracle && go mod download)
+
+      - name: Run cryptographic and compression differential fuzzer
+        run: |
+          git clone --depth 1 https://github.com/C2SP/wycheproof.git ../wycheproof || true
+          WP_DIR=""
+          if [ -d "../wycheproof/testvectors_v1" ]; then
+            WP_DIR="../wycheproof/testvectors_v1"
+          elif [ -d "../wycheproof/testvectors" ]; then
+            WP_DIR="../wycheproof/testvectors"
+          fi
+          if [ -n "$WP_DIR" ]; then
+            python scripts/diff_fuzz.py --wycheproof-dir "$WP_DIR"
+          else
+            python scripts/diff_fuzz.py
+          fi
+
+      - name: Run HTTP/1.1 anti-smuggling differential oracle
+        run: |
+          python scripts/h1_differential.py --random 1000
+
+      - name: Run URL parsing differential oracle
+        run: |
+          python scripts/url_differential.py --random 1000
+
+      - name: Run HPACK differential oracle
+        run: |
+          python scripts/hpack_differential.py --conns 500
+
+      - name: Run live TLS 1.3 and HTTP/2 differential oracle
+        run: |
+          python scripts/h2_tls_differential.py -v
+
   e2e-protocols:
     name: Protocol tests
     needs: changes
