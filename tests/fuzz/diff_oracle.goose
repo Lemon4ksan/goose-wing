@@ -97,7 +97,92 @@ fn eval_mac_and_x25519_op<B>(op: const u8[:], key: const u8[:], msg: const u8[:]
         append_hex_bytes(shared[..], out_line);
         return true;
     }
+    if op == "mlkem768_keygen_decaps" {
+        guard key.len == 64 && msg.len == 1088 else {
+            out_line.append("ERR");
+            return true;
+        }
+        var d_seed: u8[32] = [0; 32];
+        var z_seed: u8[32] = [0; 32];
+        for i in 32 {
+            d_seed[i] = key[i];
+            z_seed[i] = key[32 + i];
+        }
+        let ek, dk = internal::mlkem768_keygen(d_seed, z_seed);
+        var ss: u8[32] = [0; 32];
+        guard internal::mlkem768_decapsulate(msg, dk[..], ss[..]) else {
+            out_line.append("ERR");
+            return true;
+        }
+        out_line.append("OK ");
+        append_hex_bytes(ek[..], out_line);
+        append_hex_bytes(ss[..], out_line);
+        return true;
+    }
+    if op == "mlkem768_encaps" {
+        guard key.len == 1184 && msg.len == 32 else {
+            out_line.append("ERR");
+            return true;
+        }
+        var ek:     u8[1184] = [0; 1184];
+        var m_rand: u8[32]   = [0; 32];
+        for i in 1184 { ek[i] = key[i]; }
+        for i in 32 { m_rand[i] = msg[i]; }
+        let ct, ss, ok = internal::mlkem768_encapsulate(ek, m_rand);
+        guard ok else {
+            out_line.append("ERR");
+            return true;
+        }
+        out_line.append("OK ");
+        append_hex_bytes(ct[..], out_line);
+        append_hex_bytes(ss[..], out_line);
+        return true;
+    }
     return false;
+}
+
+fn eval_ecdsa_op<B>(is_p384: bool, pub_key: const u8[:], msg: const u8[:], sig: const u8[:], out_line: B&) {
+    let ok = if is_p384 {
+        core::ecdsa_p384_verify(pub_key, msg, sig)
+    } else {
+        core::ecdsa_p256_verify(pub_key, msg, sig)
+    };
+    if ok {
+        out_line.append("OK");
+    } else {
+        out_line.append("ERR");
+    }
+}
+
+fn eval_rsa_verify_op<B>(op: const u8[:], packed_key: const u8[:], msg: const u8[:], sig: const u8[:], out_line: B&) {
+    guard packed_key.len >= 3 else {
+        out_line.append("ERR");
+        return;
+    }
+    let n_len = core::read_be_u16(packed_key, 0) as i64;
+    guard n_len > 0 && core::add_sat_i64(2, n_len) < packed_key.len else {
+        out_line.append("ERR");
+        return;
+    }
+    let n_be = packed_key[2..2 + n_len];
+    let e_be = packed_key[2 + n_len..];
+    var ok = false;
+    if op == "rsa_pkcs1_sha256_verify" {
+        ok = core::rsa_pkcs1_sha256_verify(n_be, e_be, msg, sig);
+    } else if op == "rsa_pkcs1_sha384_verify" {
+        ok = core::rsa_pkcs1_sha384_verify(n_be, e_be, msg, sig);
+    } else if op == "rsa_pss_sha256_verify" {
+        ok = core::rsa_pss_sha256_verify(n_be, e_be, msg, sig);
+    } else if op == "rsa_pss_sha384_verify" {
+        ok = core::rsa_pss_sha384_verify(n_be, e_be, msg, sig);
+    } else if op == "rsa_pss_sha512_verify" {
+        ok = core::rsa_pss_sha512_verify(n_be, e_be, msg, sig);
+    }
+    if ok {
+        out_line.append("OK");
+    } else {
+        out_line.append("ERR");
+    }
 }
 
 fn eval_ed25519_op<B>(arg1: const u8[:], arg2: const u8[:], arg3: const u8[:], out_line: B&) {
@@ -358,6 +443,16 @@ fn dispatch_three_arg_op<B>(
         eval_aes256_gcm_op(op == "aes256_gcm_seal", arg1, arg2, arg3, scratch, out_line);
         return true;
     }
+    if op == "ecdsa_p256_verify" || op == "ecdsa_p384_verify" {
+        eval_ecdsa_op(op == "ecdsa_p384_verify", arg1, arg2, arg3, out_line);
+        return true;
+    }
+    if op == "rsa_pkcs1_sha256_verify" || op == "rsa_pkcs1_sha384_verify" ||
+        op == "rsa_pss_sha256_verify" || op == "rsa_pss_sha384_verify" ||
+        op == "rsa_pss_sha512_verify" {
+        eval_rsa_verify_op(op, arg1, arg2, arg3, out_line);
+        return true;
+    }
     return false;
 }
 
@@ -426,6 +521,27 @@ fn eval_base64_op<B>(op: const u8[:], payload: const u8[:], scratch: u8[..16384]
 }
 
 fn eval_http1_op<B>(op: const u8[:], payload: const u8[:], out_line: B&) -> bool {
+    if op == "http1_verdict" {
+        var req = wing::Request { .. };
+        let ok, consumed = wing::parse_http1_wire_request(payload, req);
+        if !ok || consumed <= 0 {
+            out_line.append("ERR");
+            return true;
+        }
+        out_line.append("ok ");
+        if (req.presence_mask & wing::HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
+            out_line.append("chunked");
+        } else if req.body.len > 0 {
+            out_line.append("length");
+        } else {
+            out_line.append("none");
+        }
+        out_line.push(' ');
+        core::format_i64_dec(req.body.len, out_line);
+        out_line.push(' ');
+        append_hex_bytes(req.body[..], out_line);
+        return true;
+    }
     guard op == "http1_req" else { return false; }
     var req = wing::Request { .. };
     let ok, consumed = wing::parse_http1_wire_request(payload, req);

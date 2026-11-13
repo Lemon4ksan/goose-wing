@@ -191,6 +191,87 @@ def load_wycheproof_vectors(wycheproof_dir: Path) -> list[VectorTuple]:
                 exp = (f"OK {okm.hex()}" if okm else "OK") if valid else "ERR"
                 vectors.append((hkdf_op, [ikm, salt, len_be + info], exp))
 
+    # 7. ECDSA P-256 and P-384 (DER and IEEE P1363)
+    for ecdsa_op, fname in (
+        ("ecdsa_p256_verify", "ecdsa_secp256r1_sha256_test.json"),
+        ("ecdsa_p256_verify", "ecdsa_secp256r1_sha256_p1363_test.json"),
+        ("ecdsa_p384_verify", "ecdsa_secp384r1_sha384_test.json"),
+        ("ecdsa_p384_verify", "ecdsa_secp384r1_sha384_p1363_test.json"),
+    ):
+        ec_file = wycheproof_dir / fname
+        if not ec_file.exists():
+            continue
+        doc = json.loads(ec_file.read_text(encoding="utf-8"))
+        for group in doc.get("testGroups", []):
+            pub = bytes.fromhex(group.get("publicKey", {}).get("uncompressed", ""))
+            if not pub:
+                continue
+            for tc in group.get("tests", []):
+                if tc["result"] == "acceptable":
+                    continue
+                msg = bytes.fromhex(tc["msg"])
+                sig = bytes.fromhex(tc["sig"])
+                vectors.append((ecdsa_op, [pub, msg, sig], "OK" if tc["result"] == "valid" else "ERR"))
+
+    # 8. RSA PKCS#1 v1.5 and RSASSA-PSS verification
+    rsa_files = (
+        ("rsa_pkcs1_sha256_verify", "rsa_signature_2048_sha256_test.json"),
+        ("rsa_pkcs1_sha384_verify", "rsa_signature_2048_sha384_test.json"),
+        ("rsa_pkcs1_sha256_verify", "rsa_signature_3072_sha256_test.json"),
+        ("rsa_pkcs1_sha384_verify", "rsa_signature_3072_sha384_test.json"),
+        ("rsa_pkcs1_sha256_verify", "rsa_signature_4096_sha256_test.json"),
+        ("rsa_pkcs1_sha384_verify", "rsa_signature_4096_sha384_test.json"),
+        ("rsa_pss_sha256_verify", "rsa_pss_2048_sha256_mgf1_32_test.json"),
+        ("rsa_pss_sha384_verify", "rsa_pss_2048_sha384_mgf1_48_test.json"),
+        ("rsa_pss_sha256_verify", "rsa_pss_3072_sha256_mgf1_32_test.json"),
+        ("rsa_pss_sha256_verify", "rsa_pss_4096_sha256_mgf1_32_test.json"),
+        ("rsa_pss_sha384_verify", "rsa_pss_4096_sha384_mgf1_48_test.json"),
+        ("rsa_pss_sha512_verify", "rsa_pss_4096_sha512_mgf1_64_test.json"),
+    )
+    for rsa_op, fname in rsa_files:
+        rsa_file = wycheproof_dir / fname
+        if not rsa_file.exists():
+            continue
+        doc = json.loads(rsa_file.read_text(encoding="utf-8"))
+        for group in doc.get("testGroups", []):
+            pk = group.get("publicKey", {})
+            n_be = bytes.fromhex(pk.get("modulus", "")).lstrip(b"\x00")
+            e_be = bytes.fromhex(pk.get("publicExponent", "")).lstrip(b"\x00")
+            if not n_be or not e_be or len(n_be) > 512:
+                continue
+            packed_ne = len(n_be).to_bytes(2, "big") + n_be + e_be
+            for tc in group.get("tests", []):
+                if tc["result"] == "acceptable":
+                    continue
+                msg = bytes.fromhex(tc["msg"])
+                sig = bytes.fromhex(tc["sig"])
+                if len(msg) > 8192 or len(sig) > 8192:
+                    continue
+                vectors.append((rsa_op, [packed_ne, msg, sig], "OK" if tc["result"] == "valid" else "ERR"))
+
+    # 9. ML-KEM-768 (FIPS 203)
+    mlkem_file = wycheproof_dir / "mlkem_768_test.json"
+    if mlkem_file.exists():
+        doc = json.loads(mlkem_file.read_text(encoding="utf-8"))
+        for group in doc.get("testGroups", []):
+            gtype = group.get("type", "")
+            for tc in group.get("tests", []):
+                if gtype == "MLKEMTest" and tc["result"] == "valid":
+                    seed = bytes.fromhex(tc["seed"])
+                    ek = bytes.fromhex(tc["ek"])
+                    ct = bytes.fromhex(tc["c"])
+                    ss = bytes.fromhex(tc["K"])
+                    vectors.append(("mlkem768_keygen_decaps", [seed, ct], f"OK {(ek + ss).hex()}"))
+                elif gtype == "MLKEMEncapsTest":
+                    ek = bytes.fromhex(tc["ek"])
+                    m = bytes.fromhex(tc["m"])
+                    if tc["result"] == "invalid":
+                        vectors.append(("mlkem768_encaps", [ek, m], "ERR"))
+                    elif tc["result"] == "valid":
+                        ct = bytes.fromhex(tc["c"])
+                        ss = bytes.fromhex(tc["K"])
+                        vectors.append(("mlkem768_encaps", [ek, m], f"OK {(ct + ss).hex()}"))
+
     return vectors
 
 
