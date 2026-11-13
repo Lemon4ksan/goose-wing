@@ -377,13 +377,8 @@ fn validate_hrr_selected_group(
 // Returns true if the last 8 bytes of server_random match DOWNGRD\x01 or DOWNGRD\x00
 inline fn has_downgrade_sentinel(server_random: const u8[32]&) -> bool {
     let last8 = server_random[24..32];
-    var is_tls12 = true;
-    var is_tls11 = true;
-    for i in 8 {
-        if last8[i] != rfc::DOWNGRADE_SENTINEL_TLS12[i] { is_tls12 = false; }
-        if last8[i] != rfc::DOWNGRADE_SENTINEL_TLS11[i] { is_tls11 = false; }
-    }
-    return is_tls12 || is_tls11;
+    return core::equal_short(last8, rfc::DOWNGRADE_SENTINEL_TLS12) ||
+           core::equal_short(last8, rfc::DOWNGRADE_SENTINEL_TLS11);
 }
 
 // Validates ServerHello.random downgrade protection (RFC 8446 Section 4.1.3).
@@ -536,9 +531,7 @@ inline fn is_valid_alpn_proto(proto: const u8[:]) -> bool {
 }
 
 inline fn is_http11_name(proto: const u8[:]) -> bool {
-    guard proto.len == 8 else { return false; }
-    return proto[0] == 'h' && proto[1] == 't' && proto[2] == 't' && proto[3] == 'p' &&
-           proto[4] == '/' && proto[5] == '1' && proto[6] == '.' && proto[7] == '1';
+    return core::equal_short(proto, "http/1.1");
 }
 
 fn match_alpn_protocol(proto: const u8[:], has_h3: bool&, has_h2: bool&, has_http11: bool&) -> bool {

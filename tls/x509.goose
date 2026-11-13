@@ -1126,13 +1126,8 @@ fn x509_extract_uri_authority(candidate_uri: const u8[:]) -> const u8[:] {
         s = s[scheme_end + 3..];
     }
 
-    var auth_end = s.len;
-    let slash_idx = s.index_of_byte('/');
-    if slash_idx >= 0 && slash_idx < auth_end { auth_end = slash_idx; }
-    let q_idx = s.index_of_byte('?');
-    if q_idx >= 0 && q_idx < auth_end { auth_end = q_idx; }
-    let h_idx = s.index_of_byte('#');
-    if h_idx >= 0 && h_idx < auth_end { auth_end = h_idx; }
+    let delim_idx = core::find_byteset(s, "/?#");
+    let auth_end = if delim_idx >= 0 { delim_idx } else { s.len };
     return s[..auth_end];
 }
 

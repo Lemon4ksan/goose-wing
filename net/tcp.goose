@@ -234,8 +234,8 @@ fn tcp_recv_slice(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
 }
 
 inline fn ensure_shared_buf_len(buf: u8[..65536]&, eff_max: i32) {
-    while (buf.len as i32) < eff_max {
-        buf.push(0);
+    if (buf.len as i32) < eff_max {
+        buf.resize(eff_max as i64, 0);
     }
 }
 

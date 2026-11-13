@@ -859,7 +859,7 @@ fn attach_dictionary_request_headers(
     let now_sec = session.virtual_clock_us / 1000000;
     let best_idx = find_best_matching_dict_idx(session.dict_cache, origin, url_path, now_sec);
     guard best_idx >= 0 && best_idx < session.dict_cache.entries.len else { return false; }
-    let entry = session.dict_cache.entries[best_idx];
+    let entry .= session.dict_cache.entries[best_idx];
     set_header(req, "Available-Dictionary", entry.sha256_base64[..]);
     if entry.id.len > 0 {
         var id_hdr: u8[..128] = [];

@@ -291,7 +291,7 @@ fn seal_binary_hkdf_aes<B>(
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec as u64, cookie_name, aad_stack);
     let ct_start = out.len;
-    for i in plaintext.len { out.push(0); }
+    out.resize(core::add_sat_i64(ct_start, plaintext.len), 0);
     let tag, _, ok_seal = core::hkdf_aes256_gcm_seal(
         slot.encryption_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
     );

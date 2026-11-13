@@ -345,11 +345,12 @@ fn decode_h1_response_head(
     out_status = 0;
     out_headers.clear();
 
-    let head_no_end, _, has_crlfcrlf = raw.split_once("\r\n\r\n");
-    guard has_crlfcrlf else {
+    let crlfcrlf_off = core::fast_find_crlfcrlf(raw);
+    guard crlfcrlf_off >= 0 else {
         return 0, wing::HeaderParseError.Incomplete;
     }
-    let body_offset = core::add_sat_i64(head_no_end.len, 4);
+    let head_no_end = raw[..crlfcrlf_off];
+    let body_offset = core::add_sat_i64(crlfcrlf_off, 4);
 
     let status_line, headers_no_end, has_crlf = head_no_end.split_once("\r\n");
     if !has_crlf {

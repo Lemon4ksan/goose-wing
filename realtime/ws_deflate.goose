@@ -31,11 +31,7 @@ inline fn strip_pmd_sync_flush_tail(buf: const u8[:]) -> i64 {
     let eff_len = buf.len;
     guard eff_len >= 4 else { return eff_len; }
     let base_idx = core::sub_sat_i64(eff_len, 4);
-    let b0 = buf[base_idx];
-    let b1 = buf[core::add_sat_i64(base_idx, 1)];
-    let b2 = buf[core::add_sat_i64(base_idx, 2)];
-    let b3 = buf[core::add_sat_i64(base_idx, 3)];
-    if b0 == 0x00 && b1 == 0x00 && b2 == 0xFF && b3 == 0xFF {
+    if core::read_be_u32(buf, base_idx) == 0x0000FFFF {
         return base_idx;
     }
     return eff_len;

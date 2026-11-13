@@ -170,14 +170,11 @@ fn get_u8_length_prefixed(c: ByteCursor&, out: ByteCursor&) -> bool {
 //   c.buf = [0x02, 0xAA, 0xBB, 0xCC]
 //   returns: slice = [0xAA, 0xBB], ok = true, c.buf = [0xCC]
 fn read_u8_prefixed(c: ByteCursor&) -> const u8[:], bool {
-    let saved = c.buf;
-    var length: u8 = 0;
-    guard get_u8(c, length) else { return c.buf[..0], false; }
-    let sub, ok = read_bytes(c, length);
-    guard ok else {
-        c.buf = saved;
-        return c.buf[..0], false;
-    }
+    guard c.buf.len > 0 else { return c.buf[..0], false; }
+    let end = core::add_sat_i64(1, c.buf[0]);
+    guard c.buf.len >= end else { return c.buf[..0], false; }
+    let sub = c.buf[1..end];
+    c.buf = c.buf[end..];
     return sub, true;
 }
 

@@ -596,7 +596,7 @@ fn find_earliest_standard_pto(
 ) -> u64 {
     var earliest_pto: u64 = 0;
     for s in 3 {
-        let space = spaces[s];
+        let space .= spaces[s];
         var space_has_eliciting = false;
         for p in space.sent_packets.len {
             if space.sent_packets[p].ack_eliciting { space_has_eliciting = true; break; }

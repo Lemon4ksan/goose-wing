@@ -168,27 +168,28 @@ inline fn tls_session_is_resumed(slot_idx: u16) -> bool {
 // Allocates an unused slot from the global static cipher slot pool.
 fn alloc_tls_cipher_slot() -> u16 {
     for i in MAX_TLS_CIPHER_SLOTS {
-        if !g_tls_cipher_slots[i].in_use {
-            g_tls_cipher_slots[i].in_use = true;
-            g_tls_cipher_slots[i].is_server = false;
-            g_tls_cipher_slots[i].cipher_suite = 0;
-            g_tls_cipher_slots[i].hash_id = 1;
-            g_tls_cipher_slots[i].hash_len = 32;
-            g_tls_cipher_slots[i].key_len = 16;
-            g_tls_cipher_slots[i].rx_seq = 0;
-            g_tls_cipher_slots[i].tx_seq = 0;
-            g_tls_cipher_slots[i].peer_closed = false;
-            g_tls_cipher_slots[i].resumed = false;
-            g_tls_cipher_slots[i].negotiated_alpn.clear();
-            g_tls_cipher_slots[i].server_name.clear();
-            g_tls_cipher_slots[i].san_hosts.clear();
-            g_tls_cipher_slots[i].rx_plain_buf.clear();
-            g_tls_cipher_slots[i].rx_plain_pos = 0;
-            g_tls_cipher_slots[i].bytes_sent = 0;
-            g_tls_cipher_slots[i].key_update_tracker = KeyUpdateTracker { .. };
-            g_tls_cipher_slots[i].ticket_cache = SessionTicketCache { .. };
-            core::zeroize_aes_gcm_key(g_tls_cipher_slots[i].rx_aes_key);
-            core::zeroize_aes_gcm_key(g_tls_cipher_slots[i].tx_aes_key);
+        let slot .= g_tls_cipher_slots[i];
+        if !slot.in_use {
+            slot.in_use = true;
+            slot.is_server = false;
+            slot.cipher_suite = 0;
+            slot.hash_id = 1;
+            slot.hash_len = 32;
+            slot.key_len = 16;
+            slot.rx_seq = 0;
+            slot.tx_seq = 0;
+            slot.peer_closed = false;
+            slot.resumed = false;
+            slot.negotiated_alpn.clear();
+            slot.server_name.clear();
+            slot.san_hosts.clear();
+            slot.rx_plain_buf.clear();
+            slot.rx_plain_pos = 0;
+            slot.bytes_sent = 0;
+            slot.key_update_tracker = KeyUpdateTracker { .. };
+            slot.ticket_cache = SessionTicketCache { .. };
+            core::zeroize_aes_gcm_key(slot.rx_aes_key);
+            core::zeroize_aes_gcm_key(slot.tx_aes_key);
             return i as u16;
         }
     }
@@ -1532,8 +1533,9 @@ fn tls_seal_and_send_hs(
     hs_msg:       const u8[:],
 ) -> bool {
     var ct_buf: u8[..4096] = [];
-    guard hs_msg.len + 32 <= ct_buf.cap else { return false; }
-    while ct_buf.len < hs_msg.len + 32 { ct_buf.push(0); }
+    let needed = hs_msg.len + 32;
+    guard needed <= ct_buf.cap else { return false; }
+    ct_buf.resize(needed, 0);
     let s_len, _, ok_seal = tls_record_seal_into(
         cipher_suite, key, iv, seq,
         rfc::TLS_CONTENT_HANDSHAKE, hs_msg, ct_buf[..],

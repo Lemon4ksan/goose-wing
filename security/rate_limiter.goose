@@ -604,15 +604,12 @@ fn retain_recent_shards(limiter: ShardedGcraLimiter&, drop_below_ns: i64) -> i64
     guard drop_below_ns >= 0 else { return 0; }
     let threshold = drop_below_ns as u64;
     var reclaimed: i64 = 0;
-    for s_idx in 256 {
-        let n_slots = limiter.shards[s_idx].slots.len;
-        for idx in n_slots {
-            let is_act = limiter.shards[s_idx].slots[idx].active;
-            let tat = limiter.shards[s_idx].slots[idx].cell.tat_ns;
-            if is_act && tat <= threshold {
-                limiter.shards[s_idx].slots[idx].active = false;
-                limiter.shards[s_idx].slots[idx].key.clear();
-                limiter.shards[s_idx].slots[idx].cell.tat_ns = 0;
+    for &shard in limiter.shards {
+        for &slot in shard.slots {
+            if slot.active && slot.cell.tat_ns <= threshold {
+                slot.active = false;
+                slot.key.clear();
+                slot.cell.tat_ns = 0;
                 reclaimed = core::add_sat_i64(reclaimed, 1);
             }
         }

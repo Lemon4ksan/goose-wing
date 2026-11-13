@@ -500,7 +500,7 @@ fn encode_cookie_header_to_map(
     for i in matched_indices.len {
         let idx = matched_indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
-        let cookie_val = jar.cookies[idx];
+        let cookie_val .= jar.cookies[idx];
         guard cookie_val.name.len > 0 || cookie_val.value.len > 0 else { continue; }
         if cookie_hdr_val.len > 0 {
             guard cookie_hdr_val.try_append("; ") else { return false; }
@@ -620,7 +620,7 @@ fn enforce_chips_quota(
         }
         let idx = candidate_indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
-        let candidate_cookie = jar.cookies[idx];
+        let candidate_cookie .= jar.cookies[idx];
         total_bytes = core::sub_sat_i64(total_bytes, candidate_cookie.payload_size());
         rem_count = core::sub_sat_i64(rem_count, 1);
         guard to_delete_seqs.try_push(candidate_cookie.creation_seq) else { break; }

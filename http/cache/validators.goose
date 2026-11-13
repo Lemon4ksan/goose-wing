@@ -55,23 +55,14 @@ fn parse_etag(raw: const u8[:]) -> EntityTag {
 // Opaque tags must match byte-for-byte; weakness flags are ignored.
 fn weak_eq(a: EntityTag, b: EntityTag) -> bool {
     guard a.valid && b.valid else { return false; }
-    guard a.tag.len == b.tag.len else { return false; }
-    for i in a.tag.len {
-        if a.tag[i] != b.tag[i] { return false; }
-    }
-    return true;
+    return core::equal_short(a.tag[..], b.tag[..]);
 }
 
 // Performs strong comparison of two entity tags (RFC 9110 §8.8.3.2).
 // Requires that neither tag is weak and opaque tags match byte-for-byte.
 fn strong_eq(a: EntityTag, b: EntityTag) -> bool {
-    guard a.valid && b.valid else { return false; }
-    guard !a.is_weak && !b.is_weak else { return false; }
-    guard a.tag.len == b.tag.len else { return false; }
-    for i in a.tag.len {
-        if a.tag[i] != b.tag[i] { return false; }
-    }
-    return true;
+    guard a.valid && b.valid && !a.is_weak && !b.is_weak else { return false; }
+    return core::equal_short(a.tag[..], b.tag[..]);
 }
 
 fn read_next_etag_token(s: const u8[:], cursor: i64&) -> const u8[:] {

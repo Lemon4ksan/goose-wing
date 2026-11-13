@@ -247,11 +247,7 @@ const TLS_CIPHER_AES_128_CCM_8_SHA256:     u16 = 0x1305; // RFC 8446 Appendix B.
 
 // RFC 8446 Appendix B.4: Validates whether a cipher suite is an RFC 8446 TLS 1.3 cipher suite
 inline fn is_supported_tls13_cipher_suite(cs: u16) -> bool {
-    return cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256
-        || cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384
-        || cs == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256
-        || cs == rfc::TLS_CIPHER_AES_128_CCM_SHA256
-        || cs == rfc::TLS_CIPHER_AES_128_CCM_8_SHA256;
+    return cs >= rfc::TLS_CIPHER_AES_128_GCM_SHA256 && cs <= rfc::TLS_CIPHER_AES_128_CCM_8_SHA256;
 }
 
 // RFC 8446 Appendix B.4: Returns the AEAD key length in bytes for a TLS 1.3 cipher suite.

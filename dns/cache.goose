@@ -128,11 +128,11 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
     }
 
     let new_idx = cache.entries.len as i32;
-    var copy = entry;
-    copy.valid = true;
-    copy.lru_prev = -1;
-    copy.lru_next = -1;
-    if cache.entries.try_push(copy) {
+    if cache.entries.try_push(entry) {
+        let cur .= cache.entries[new_idx as i64];
+        cur.valid = true;
+        cur.lru_prev = -1;
+        cur.lru_next = -1;
         attach_dns_lru_tail(cache, new_idx);
     } else {
         let victim_idx: i32 = if cache.lru_head >= 0 && cache.lru_head < cache.entries.len {
@@ -141,7 +141,11 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
             0
         };
         detach_dns_lru(cache, victim_idx);
-        cache.entries[victim_idx as i64] = copy;
+        let cur .= cache.entries[victim_idx as i64];
+        cur = entry;
+        cur.valid = true;
+        cur.lru_prev = -1;
+        cur.lru_next = -1;
         attach_dns_lru_tail(cache, victim_idx);
     }
 }

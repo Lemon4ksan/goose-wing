@@ -1247,7 +1247,7 @@ fn check_and_record_dpop_jti(
 
     var free_idx: i64 = -1;
     for i in cache.entries.len {
-        let entry = cache.entries[i];
+        let entry .= cache.entries[i];
         if entry.expires_at_sec > now_sec {
             if core::ct_eq_bytes(entry.jti[..], jti) {
                 return false; // Replay attack detected!
@@ -1261,10 +1261,9 @@ fn check_and_record_dpop_jti(
     let exp = core::add_sat_i64(now_sec, total_ttl);
 
     if free_idx >= 0 {
-        var slot = cache.entries[free_idx];
+        let slot .= cache.entries[free_idx];
         guard slot.jti.try_set(jti) else { return false; }
         slot.expires_at_sec = exp;
-        cache.entries[free_idx] = slot;
         return true;
     }
 

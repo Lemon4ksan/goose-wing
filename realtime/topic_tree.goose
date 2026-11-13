@@ -1070,7 +1070,7 @@ fn subscriber_queued_messages(tree: const TopicTree&, sock_fd: i64) -> i32 {
 inline fn find_retained_slot_for_topic(tree: const TopicTree&, topic: const u8[:]) -> i64 {
     var free_slot: i64 = -1;
     for i in tree.retained.len {
-        let entry = tree.retained[i];
+        let entry .= tree.retained[i];
         if entry.active && entry.topic[..] == topic {
             return i;
         }
@@ -1161,7 +1161,7 @@ fn subscribe_with_retained(tree: TopicTree&, sub_id: u64, pattern: const u8[:]) 
     guard subscribe(tree, sub_fd, pattern) else { return PubSubError.CapacityExceeded; }
 
     for i in tree.retained.len {
-        let entry = tree.retained[i];
+        let entry .= tree.retained[i];
         if entry.active && match_topic(pattern, entry.topic[..]) {
             enqueue_retained_to_subscriber(tree, sub_fd, entry.payload[..], entry.is_binary);
         }

@@ -261,11 +261,9 @@ fn dafsa_lookup_string(key: const u8[:]) -> i32 {
 // Example:
 //   norm = "www.ck", start = 0 -> returns 3
 fn dafsa_scan_to_next_dot(norm: const u8[:], start: i64) -> i64 {
-    var dot = start;
-    while dot < norm.len && norm[dot] != 0x2E {
-        dot = core::add_sat_i64(dot, 1);
-    }
-    return dot;
+    guard start < norm.len else { return norm.len; }
+    let rel = norm[start..].index_of_byte('.');
+    return if rel >= 0 { core::add_sat_i64(start, rel) } else { norm.len };
 }
 
 // Resolves the public suffix slice when a DAFSA rule matches at `idx` with `flags`.

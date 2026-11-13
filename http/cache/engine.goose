@@ -821,7 +821,7 @@ fn is_response_cacheable(
 }
 
 // Stores or updates a cached entry using O(1) LRU insertion and eviction.
-fn upsert_cache_entry(cache: HttpCache&, entry: CachedEntry, req_headers: const HeaderMap&) -> i64 {
+fn upsert_cache_entry(cache: HttpCache&, entry: const CachedEntry&, req_headers: const HeaderMap&) -> i64 {
     for &existing, idx in cache.entries {
         let exact_match = existing.url_hash == entry.url_hash && existing.url[..] == entry.url[..];
         let nvs_match = are_urls_nvs_equivalent(existing.url[..], entry.url[..], existing.nvs) ||

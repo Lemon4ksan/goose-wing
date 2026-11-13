@@ -352,21 +352,6 @@ fn read_response_headers(conn: PooledConnection&, timeout_ms: u32) -> i64, bool 
     return hdr_end_idx, true;
 }
 
-// Drains consumed bytes from beginning of receive buffer in-place.
-//
-// Example:
-//   rx_buf = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK", consumed = 25
-//   returns: rx_buf = "HTTP/1.1 200 OK"
-fn drain_rx_buf(rx_buf: u8[..8192]&, consumed: i64) {
-    if consumed >= rx_buf.len {
-        rx_buf.clear();
-        return;
-    }
-    var rem: u8[..8192] = [];
-    let _ = rem.try_set(rx_buf[consumed..]);
-    let _ = rx_buf.try_set(rem[..]);
-}
-
 fn pump_cl_body(
     conn:       PooledConnection&,
     resp:       Response&,
@@ -485,7 +470,7 @@ fn execute_h1_exchange(
             resp.status_code < rfc::STATUS_OK &&
             resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS;
         if is_interim {
-            drain_rx_buf(conn.rx_buf, leftover_start);
+            conn.rx_buf.compact_wire_buffer(leftover_start);
             continue;
         }
 

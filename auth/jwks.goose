@@ -104,7 +104,7 @@ fn add_symmetric_key(
 // Finds the index of a key by kid (-1 if not found)
 fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
     for i in jwks.keys.len {
-        let k = jwks.keys[i];
+        let k .= jwks.keys[i];
         if k.valid && k.kid[..] == kid {
             return i as i32;
         }
@@ -310,7 +310,7 @@ fn verify(
         return JwtError.KeyNotFound;
     }
 
-    let matched_key = jwks.keys[key_idx];
+    let matched_key .= jwks.keys[key_idx];
     guard matched_key.valid else { return JwtError.KeyNotFound; }
 
     return dispatch_jwks_verification(

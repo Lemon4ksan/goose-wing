@@ -46,11 +46,16 @@ fn format_u64_dec<B>(val: u64, out: B&) {
         digits[count + 1] = DIGITS_LUT[r * 2];
         count += 2;
     }
-    var rev: u8[24] = [0; 24];
-    for i in count {
-        rev[i] = digits[count - 1 - i];
+    var left = 0;
+    var right = count - 1;
+    while left < right {
+        let tmp = digits[left];
+        digits[left] = digits[right];
+        digits[right] = tmp;
+        left++;
+        right--;
     }
-    out.append(rev[..count]);
+    out.append(digits[..count]);
 }
 
 // Formats a signed 64-bit integer in decimal notation into appendable buffer out.

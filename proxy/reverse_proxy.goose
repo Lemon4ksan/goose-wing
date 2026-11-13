@@ -766,7 +766,7 @@ fn exchange_prepared_wire_on_conn_with_hints(
                 out_early_hints = up_tmp.early_hints;
                 has_early_hints = up_tmp.has_early_hints;
             }
-            drain_rx_buf(conn.rx_buf, leftover_start);
+            conn.rx_buf.compact_wire_buffer(leftover_start);
             continue;
         }
         var leftover: u8[..8192] = [];

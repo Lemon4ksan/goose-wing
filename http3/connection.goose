@@ -933,7 +933,7 @@ fn is_forbidden_connection_header(name: const u8[:], value: const u8[:]) -> bool
 }
 
 fn validate_h3_trailers<F>(conn: H3Connection&, fields: const F&) -> u64 {
-    for field in fields {
+    for &field in fields {
         let fname = field.name[..];
         let fval = field.value[..];
         if fname.len > 0 && fname[0] == ':' {
@@ -1194,7 +1194,7 @@ fn validate_h3_headers<F>(conn: H3Connection&, s_idx: i32, fields: const F&) -> 
     var host_val: u8[..256] = [];
     conn.streams[s_idx].content_length = -1;
 
-    for field in fields {
+    for &field in fields {
         let h_err = validate_single_h3_header(conn, s_idx, field, seen_regular, counts, auth_val, host_val);
         guard h_err == rfc::H3_ERR_NO_ERROR else { return h_err; }
     }
@@ -1586,7 +1586,7 @@ fn copy_stream_headers(conn: const H3Connection&, stream_id: u64, out_headers: w
         return false;
     }
     out_headers.clear();
-    let src = conn.streams[s_idx].headers;
+    let src .= conn.streams[s_idx].headers;
     for &e in src.entries {
         let name = wing::entry_name(src, e);
         let val = wing::entry_value(src, e);
@@ -1603,7 +1603,7 @@ fn copy_stream_trailers(conn: const H3Connection&, stream_id: u64, out_trailers:
         return false;
     }
     out_trailers.clear();
-    let src = conn.streams[s_idx].trailers;
+    let src .= conn.streams[s_idx].trailers;
     for &e in src.entries {
         let name = wing::entry_name(src, e);
         let val = wing::entry_value(src, e);

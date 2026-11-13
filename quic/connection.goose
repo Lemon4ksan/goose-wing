@@ -1238,13 +1238,12 @@ fn verify_and_decrypt_packet(
     }
     guard is_valid_inbound_dcid(conn, hdr) else { return false; }
 
-    let space = if space_id == PnSpaceId.Initial {
-        conn.initial_space
+    var space .= conn.app_space;
+    if space_id == PnSpaceId.Initial {
+        space .= conn.initial_space;
     } else if space_id == PnSpaceId.Handshake {
-        conn.handshake_space
-    } else {
-        conn.app_space
-    };
+        space .= conn.handshake_space;
+    }
 
     var work_pkt: u8[..16512] = [];
     guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return false; }

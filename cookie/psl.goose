@@ -22,14 +22,7 @@ fn validate_and_lowercase_psl_domain(domain: const u8[:], out: u8[..256]&) -> bo
     guard domain.len > 0 && domain.len <= 256 else {
         return false;
     }
-    var has_non_ascii = false;
-    for b in domain {
-        if b >= 0x80 {
-            has_non_ascii = true;
-            break;
-        }
-    }
-    if has_non_ascii {
+    if !core::is_pure_ascii(domain) {
         return core::punycode_encode_domain(domain, out);
     }
     let last_idx = core::sub_sat_i64(domain.len, 1);
@@ -84,14 +77,7 @@ fn psl_is_public_suffix(domain: const u8[:]) -> bool {
     if matched {
         return suffix.len == norm.len;
     }
-    var i: i64 = 0;
-    while i < norm.len {
-        if norm[i] == 0x2E {
-            return false;
-        }
-        i = core::add_sat_i64(i, 1);
-    }
-    return true;
+    return !norm.contains_byte('.');
 }
 
 enum PslRuleType {
@@ -161,14 +147,7 @@ fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     guard trimmed.len > 0 && trimmed.len <= 256 && !is_invalid_psl_domain_syntax(trimmed) else {
         return false;
     }
-    var has_non_ascii = false;
-    for b in trimmed {
-        if b >= 0x80 {
-            has_non_ascii = true;
-            break;
-        }
-    }
-    if has_non_ascii {
+    if !core::is_pure_ascii(trimmed) {
         var ace_buf: u8[..256] = [];
         guard core::punycode_encode_domain(trimmed, ace_buf) else { return false; }
         return out.try_set(ace_buf[..]);

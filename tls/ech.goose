@@ -230,19 +230,13 @@ inline fn is_supported_ech_cipher(cs: const EchCipherSuite&) -> bool {
 
 // Selects the first compatible ECHConfig and cipher suite supporting X25519 & HKDF-SHA256.
 fn select_ech_config(list: const EchConfigList&, out_cfg: EchConfig&, out_cs: EchCipherSuite&) -> bool {
-    let cfg_count = list.configs.len;
-    for i in cfg_count {
-        guard i < list.configs.len else { break; }
-        let cfg = list.configs[i];
+    for &cfg in list.configs {
         guard cfg.version == rfc::ECH_VERSION_RFC9849 else { continue; }
         guard cfg.kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { continue; }
 
-        let cs_count = cfg.cipher_suites.len;
-        for j in cs_count {
-            guard j < cfg.cipher_suites.len else { break; }
-            let cs = cfg.cipher_suites[j];
+        for &cs in cfg.cipher_suites {
             if is_supported_ech_cipher(cs) {
-                out_cfg = cfg;
+                out_cfg = copy(cfg);
                 out_cs = cs;
                 return true;
             }

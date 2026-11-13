@@ -388,12 +388,7 @@ fn match_akamai_fingerprints(a: const AkamaiFingerprint&, b: const AkamaiFingerp
     }
 
     // 4. Pseudo-headers order
-    if a.pseudo_headers.len != b.pseudo_headers.len { return false; }
-    for i in a.pseudo_headers.len {
-        if a.pseudo_headers[i] != b.pseudo_headers[i] {
-            return false;
-        }
-    }
+    if a.pseudo_headers[..] != b.pseudo_headers[..] { return false; }
 
     return true;
 }

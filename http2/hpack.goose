@@ -2285,9 +2285,7 @@ fn encode_hpack_field<B>(
 }
 
 inline fn rollback_hpack_out<B>(out: B&, start_len: i64) {
-    while out.len > start_len {
-        let _ = out.pop();
-    }
+    out.resize(start_len);
 }
 
 inline fn is_hpack_volatile_header(name: const u8[:]) -> bool {

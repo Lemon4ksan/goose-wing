@@ -214,20 +214,11 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
 }
 
 fn split_url_host_and_path(rest_url: const u8[:]) -> const u8[:], const u8[:] {
-    var slash_idx = -1;
-    for char_idx in rest_url.len {
-        if rest_url[char_idx] == '/' || rest_url[char_idx] == '?' || rest_url[char_idx] == '#' {
-            slash_idx = char_idx;
-            break;
-        }
-    }
+    let slash_idx = core::find_byteset(rest_url, "/?#");
     let host_part = if slash_idx >= 0 { rest_url[..slash_idx] } else { rest_url };
     let path_part = if slash_idx >= 0 && rest_url[slash_idx] == '/' {
-        var query_idx = -1;
-        for scan_idx in slash_idx..rest_url.len {
-            if rest_url[scan_idx] == '?' || rest_url[scan_idx] == '#' { query_idx = scan_idx; break; }
-        }
-        if query_idx >= 0 { rest_url[slash_idx..query_idx] } else { rest_url[slash_idx..] }
+        let rel_q = core::find_byteset(rest_url[slash_idx..], "?#");
+        if rel_q >= 0 { rest_url[slash_idx..core::add_sat_i64(slash_idx, rel_q)] } else { rest_url[slash_idx..] }
     } else {
         "/"
     };

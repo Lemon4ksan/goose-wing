@@ -164,10 +164,9 @@ inline fn build_stream_frame_type(flags: QuicStreamFlags) -> u64 {
 // Encodes one or more PADDING frames (0x00) into output buffer.
 fn encode_padding_frame<B>(out: B&, count: u64 = 1) -> bool {
     guard count > 0 else { return true; }
-    guard count <= ((out.cap - out.len) as u64) else { return false; }
-    for _ in count {
-        out.push(rfc::QUIC_FRAME_PADDING as u8);
-    }
+    guard count <= (core::sub_sat_i64(out.cap, out.len) as u64) else { return false; }
+    let new_len = core::add_sat_i64(out.len, count as i64);
+    out.resize(new_len, 0);
     return true;
 }
 

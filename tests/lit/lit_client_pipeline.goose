@@ -1577,7 +1577,7 @@ fn test_ssrf_6to4_three_octet() {
 fn test_drain_rx_buf() {
     var rx: u8[..8192] = [];
     rx.append("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\n");
-    wing::drain_rx_buf(rx, 25);
+    rx.compact_wire_buffer(25);
     assert(core::starts_with(rx[..], "HTTP/1.1 200 OK"));
     print("CHECK_DRAIN_RX: OK");
 }
