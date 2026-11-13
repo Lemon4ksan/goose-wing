@@ -10,7 +10,47 @@ namespace wing;
 
 import std;
 import core from "..";
-import .pool;
+
+// ---- Network Anonymization Key (NAK) Model --------------------------------
+
+// Network Anonymization Key (Chromium NAK / NIK parity) for cross-site partition isolation.
+// All 4 components (top_frame_site, is_cross_site, nonce, network_isolation_partition)
+// and optional worker_session_id must be compared to prevent cross-site side-channel leaks.
+struct NetworkAnonymizationKey {
+    top_frame_site:              u8[..128] = [],
+    is_cross_site:               bool      = false,
+    nonce:                       u64       = 0,
+    network_isolation_partition: u32       = 0,
+    worker_session_id:           u32       = 0,
+}
+
+fn new_network_anonymization_key(
+    top_site:     const u8[:],
+    cross_site:   bool = false,
+    nonce_val:    u64  = 0,
+    partition_id: u32  = 0,
+    worker_id:    u32  = 0,
+) -> NetworkAnonymizationKey {
+    var nak = NetworkAnonymizationKey {
+        is_cross_site:               cross_site,
+        nonce:                       nonce_val,
+        network_isolation_partition: partition_id,
+        worker_session_id:           worker_id,
+        ..
+    };
+    if nak.top_frame_site.try_set(top_site) {
+        to_lower(nak.top_frame_site[..]);
+    }
+    return nak;
+}
+
+fn network_anonymization_key_equals(a: const NetworkAnonymizationKey&, b: const NetworkAnonymizationKey&) -> bool {
+    if a.nonce != b.nonce { return false; }
+    if a.is_cross_site != b.is_cross_site { return false; }
+    if a.network_isolation_partition != b.network_isolation_partition { return false; }
+    if a.worker_session_id != b.worker_session_id { return false; }
+    return a.top_frame_site[..].eq_ascii_fold(b.top_frame_site[..]);
+}
 
 // ---- Network Isolation Key (NIK) Model -----------------------------------
 

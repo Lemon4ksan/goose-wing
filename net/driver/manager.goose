@@ -356,13 +356,9 @@ fn format_driver_summary<B>(cfg: const TransportDriverConfig&, out: B&) {
     }
 
     out.append(" | RingSize: ");
-    format_driver_int(out, cfg.ring_size as i64);
+    (cfg.ring_size as i64).format_i64_dec(out);
     out.append(" | RegBuf: ");
-    format_driver_int(out, cfg.registered_buffer_size as i64);
+    (cfg.registered_buffer_size as i64).format_i64_dec(out);
     out.append("B | Status: ");
     out.append(cfg.status_message[..]);
-}
-
-fn format_driver_int<B>(out: B&, val: i64) {
-    val.format_i64_dec(out);
 }

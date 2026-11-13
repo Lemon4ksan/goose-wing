@@ -80,10 +80,15 @@ import dns.doh;
 
 // ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
 
+import net.want_queue;
+import net.slowloris;
 import net.proxy;
+import net.socks5;
+import net.http_connect;
 import net.tcp;
 import net.transport;
 import net.pool;
+import net.upstream_pool;
 import net.happy_eyeballs;
 import net.proxy_protocol_internal;
 import net.proxy_protocol;
@@ -94,6 +99,7 @@ import net.isolation;
 import net.sockopt;
 import net.driver;
 import net.poller;
+import net.event_loop;
 
 // ---- client session and application layer ----------------------------------
 

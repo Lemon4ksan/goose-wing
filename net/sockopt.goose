@@ -40,6 +40,12 @@ const IP_MTU_DISCOVER_LINUX: i32 = 10; // Linux IP_MTU_DISCOVER (PMTUDISC_DO = 2
 
 // ---- Socket p0f Profile Configuration -----------------------------------
 
+enum SocketP0fKind {
+    None,
+    Wing,
+    Custom,
+}
+
 struct SocketP0fProfile {
     ttl:               i32      = 64,
     window_size:       i32      = 65535,
@@ -51,11 +57,11 @@ struct SocketP0fProfile {
     os_name:           u8[..32] = "Universal/POSIX",
 }
 
-// Generates the socket option profile from an active Profile enum
-fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
+// Generates the socket option profile from a Layer-4 socket persona enum.
+fn p0f_socket_config(p: SocketP0fKind) -> SocketP0fProfile {
     var cfg = SocketP0fProfile { .. };
 
-    if p == wing::Profile.None {
+    if p == SocketP0fKind.None {
         // Minimal / raw OS socket defaults
         cfg.ttl = 64;
         cfg.window_size = 65535;
@@ -64,7 +70,7 @@ fn p0f_socket_config(p: wing::Profile) -> SocketP0fProfile {
         cfg.mss = 1460;
         cfg.wscale = 7;
         let _ = cfg.os_name.try_set("Raw/None NetStack");
-    } else if p == wing::Profile.Custom {
+    } else if p == SocketP0fKind.Custom {
         // User-customized L4 socket configuration
         cfg.ttl = 64;
         cfg.window_size = 65535;

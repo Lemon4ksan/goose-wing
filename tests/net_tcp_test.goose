@@ -904,7 +904,7 @@ fn test_peer_abort_propagation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_socket_p0f_profiles(t: lit::T&) {
     t.run("Wing Authentic Zero-Heap NetStack Profile") { sub =>
-        let wing_cfg = internal::p0f_socket_config(wing::Profile.Wing);
+        let wing_cfg = internal::p0f_socket_config(internal::SocketP0fKind.Wing);
         sub.assert_eq(wing_cfg.ttl, 64, "Wing TTL is 64");
         sub.assert_eq(wing_cfg.window_size, 65535, "Wing window size is 65535");
         sub.assert_true(wing_cfg.has_dont_fragment, "Wing DF is enabled");
@@ -915,7 +915,7 @@ fn test_socket_p0f_profiles(t: lit::T&) {
     };
 
     t.run("Custom Socket Profile") { sub =>
-        let custom_cfg = internal::p0f_socket_config(wing::Profile.Custom);
+        let custom_cfg = internal::p0f_socket_config(internal::SocketP0fKind.Custom);
         sub.assert_eq(custom_cfg.ttl, 64, "Custom TTL is 64");
         sub.assert_eq(custom_cfg.window_size, 65535, "Custom window size is 65535");
         sub.assert_true(custom_cfg.has_dont_fragment, "Custom DF is enabled");
@@ -924,7 +924,7 @@ fn test_socket_p0f_profiles(t: lit::T&) {
     };
 
     t.run("None / Raw Socket Profile") { sub =>
-        let none_cfg = internal::p0f_socket_config(wing::Profile.None);
+        let none_cfg = internal::p0f_socket_config(internal::SocketP0fKind.None);
         sub.assert_eq(none_cfg.ttl, 64, "None TTL is 64");
         sub.assert_eq(none_cfg.window_size, 65535, "None window size is 65535");
         sub.assert_false(none_cfg.has_dont_fragment, "None DF is disabled");
@@ -938,7 +938,7 @@ fn test_socket_p0f_profiles(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_socket_invariant_validation(t: lit::T&) {
     t.run("Invariant Boundary Checks") { sub =>
-        var bad_cfg = internal::p0f_socket_config(wing::Profile.Wing);
+        var bad_cfg = internal::p0f_socket_config(internal::SocketP0fKind.Wing);
 
         // Invalid TTL
         bad_cfg.ttl = 99;
@@ -968,7 +968,7 @@ fn test_socket_invariant_validation(t: lit::T&) {
     };
 
     t.run("Summary String Formatting") { sub =>
-        let cfg = internal::p0f_socket_config(wing::Profile.Wing);
+        let cfg = internal::p0f_socket_config(internal::SocketP0fKind.Wing);
         var summary: u8[>..] = [];
         internal::format_socket_p0f_summary(cfg, summary);
         sub.assert_true(summary.len > 0, "Summary formatted");
