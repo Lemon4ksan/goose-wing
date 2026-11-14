@@ -49,12 +49,12 @@ enum PollTrigger {
 }
 
 inline fn apply_trigger_clear_mask(t: PollTrigger.Edge, sim: SimulatedReadyState&, triggered: u32) {
-    sim.ready &= ~triggered;
+    sim.ready.clear_flag(triggered);
     sim.bytes = 0;
 }
 
 inline fn apply_trigger_clear_mask(t: PollTrigger.Level, sim: SimulatedReadyState&, triggered: u32) {
-    sim.ready &= ~POLL_WRITE;
+    sim.ready.clear_flag(POLL_WRITE);
 }
 
 struct PollReadyEvent {
@@ -465,7 +465,7 @@ fn check_coarse_timeouts(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..6
 fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready |= POLL_READ;
+    p.registrations[idx].sim.ready.set_flag(POLL_READ);
     p.registrations[idx].sim.bytes = bytes_avail;
     return true;
 }
@@ -473,21 +473,21 @@ fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
 fn simulate_write_ready(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready |= POLL_WRITE;
+    p.registrations[idx].sim.ready.set_flag(POLL_WRITE);
     return true;
 }
 
 fn simulate_error(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready |= POLL_ERROR;
+    p.registrations[idx].sim.ready.set_flag(POLL_ERROR);
     return true;
 }
 
 fn simulate_hangup(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready |= POLL_HANGUP;
+    p.registrations[idx].sim.ready.set_flag(POLL_HANGUP);
     p.registrations[idx].sim.eof = true;
     return true;
 }

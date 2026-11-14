@@ -21,48 +21,6 @@ const MAX_PENDING_CTRL_FRAMES:              u32 = 64;    // PING/SETTINGS Flood 
 const MAX_CONCURRENCY_VIOLATIONS:           u32 = 5;     // Rapid Reset non-cancelling variant defense
 const DEFAULT_MAX_HEADER_BLOCK_DURATION_MS: u64 = 10000; // Slow-Drip CONTINUATION memory retention defense
 
-// ---- token bucket rate limiter (rapid reset cve-2023-44487) -------------
-
-struct TokenBucket {
-    tokens:         u64 = 1000,
-    burst:          u64 = 1000,
-    rate_per_sec:   u64 = 33,
-    last_refill_ms: u64 = 0,
-}
-
-fn new_h2_token_bucket(burst: u64 = 1000, rate_per_sec: u64 = 33, now_ms: u64 = 0) -> TokenBucket {
-    return TokenBucket {
-        tokens:         burst,
-        burst:          burst,
-        rate_per_sec:   rate_per_sec,
-        last_refill_ms: now_ms,
-    };
-}
-
-// Consumes one token from bucket, refilling based on elapsed milliseconds.
-// Returns false when rate limit is exceeded.
-fn consume_token(tb: TokenBucket&, now_ms: u64) -> bool {
-    if now_ms > tb.last_refill_ms {
-        let elapsed_ms = now_ms - tb.last_refill_ms;
-        if elapsed_ms >= 100000 {
-            tb.tokens = tb.burst;
-            tb.last_refill_ms = now_ms;
-        } else {
-            let added = (elapsed_ms * tb.rate_per_sec) / 1000;
-            if added > 0 {
-                let next_tokens = tb.tokens + added;
-                tb.tokens = min(next_tokens, tb.burst);
-                tb.last_refill_ms = now_ms;
-            }
-        }
-    }
-    if tb.tokens == 0 {
-        return false;
-    }
-    tb.tokens--;
-    return true;
-}
-
 // ---- stream state machine & stream descriptors (rfc 9113 section 5.1) ---
 
 enum H2StreamState {
@@ -131,11 +89,11 @@ struct H2Connection {
     max_header_block_duration_ms: u64 = 10000,
 
     // Anti-DoS resource limiters
-    reset_limiter:               TokenBucket = TokenBucket { .. },
-    empty_frame_streak:          u32         = 0,
-    pending_control_frames:      u32         = 0,
-    concurrency_violations:      u32         = 0,
-    initial_window_update_count: u32         = 0,
+    reset_limiter:               core::TokenBucket = core::TokenBucket { .. },
+    empty_frame_streak:          u32               = 0,
+    pending_control_frames:      u32               = 0,
+    concurrency_violations:      u32               = 0,
+    initial_window_update_count: u32               = 0,
 
     // RFC 9218 prioritization flags
     client_sent_priority:  bool = false,
@@ -170,8 +128,13 @@ fn new_h2_connection(
     behind_proxy:    bool = false,
 ) -> H2Connection {
     return H2Connection {
-        hpack_dec:            new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
-        reset_limiter:        new_h2_token_bucket(DEFAULT_RESET_BURST, DEFAULT_RESET_RATE, now_ms),
+        hpack_dec: new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
+        reset_limiter: core::TokenBucket {
+            tokens:         DEFAULT_RESET_BURST,
+            burst:          DEFAULT_RESET_BURST,
+            rate_per_sec:   DEFAULT_RESET_RATE,
+            last_refill_ms: now_ms,
+        },
         max_header_list_size: max_header_list,
         is_behind_proxy:      behind_proxy,
         is_server:            false,
@@ -420,7 +383,7 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
-    if !consume_token(s.reset_limiter, now_ms) {
+    if !core::token_bucket_consume(s.reset_limiter, now_ms) {
         return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
 

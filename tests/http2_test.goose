@@ -553,7 +553,7 @@ fn test_anti_dos_mitigations(t: lit::T&) {
     t.run("DOS-01: Rapid Reset Token Bucket Defense (CVE-2023-44487)") { sub =>
         // Session with small reset burst = 5
         var sess = internal::SessionState {
-            reset_limiter: internal::new_h2_token_bucket(5, 1, 0),
+            reset_limiter: core::TokenBucket { tokens: 5, burst: 5, rate_per_sec: 1, last_refill_ms: 0 },
             ..
         };
 
@@ -2047,7 +2047,7 @@ fn test_continuation_flood_and_interleaving(t: lit::T&) {
 fn test_rapid_reset_and_dos_floods(t: lit::T&) {
     t.run("RESET-01: Rapid Reset Flood Defense (CVE-2023-44487)") { sub =>
         var conn = internal::new_h2_connection(0);
-        conn.reset_limiter = internal::new_h2_token_bucket(100, 33, 0);
+        conn.reset_limiter = core::TokenBucket { tokens: 100, burst: 100, rate_per_sec: 33, last_refill_ms: 0 };
         conn.last_peer_stream_id = 1;
 
         for _ in 100 {

@@ -321,7 +321,7 @@ fn test_h2_continuation_flood_and_interleaving() {
 fn test_h2_dos_and_stream_parity() {
     // 1. Rapid Reset DoS (CVE-2023-44487): 100 allowed, 101st triggers EnhanceYourCalm
     var conn_rr = internal::new_h2_connection(0);
-    conn_rr.reset_limiter = internal::new_h2_token_bucket(100, 33, 0);
+    conn_rr.reset_limiter = core::TokenBucket { tokens: 100, burst: 100, rate_per_sec: 33, last_refill_ms: 0 };
     conn_rr.last_peer_stream_id = 1;
     for _ in 100 {
         let rst_hdr = internal::FrameHeader {

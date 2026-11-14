@@ -210,3 +210,28 @@ fn ::is_all_alphanumeric(s: const u8[:]) -> bool { return core::is_all_alphanume
 fn ::is_all_printable_ascii(s: const u8[:]) -> bool { return core::is_all_printable_ascii(s); }
 fn ::is_valid_base64(s: const u8[:]) -> bool { return core::is_valid_base64(s); }
 fn ::is_valid_base64url(s: const u8[:]) -> bool { return core::is_valid_base64url(s); }
+
+// ---- bitmask & bitset ufcs bridges (u32, u64, u64[:]) ----------------------
+
+fn ::set_flag(mask: u32&, flag: u32) { core::set_flag_u32(mask, flag); }
+fn ::clear_flag(mask: u32&, flag: u32) { core::clear_flag_u32(mask, flag); }
+fn ::toggle_flag(mask: u32&, flag: u32) { core::toggle_flag_u32(mask, flag); }
+fn ::pop_lowest_bit(mask: u32&) -> u32, bool { return core::pop_lowest_bit_u32(mask); }
+
+fn ::has_flag(mask: u64, flag: u64) -> bool { return core::has_flag_u64(mask, flag); }
+fn ::has_all_flags(mask: u64, flags: u64) -> bool { return core::has_all_flags_u64(mask, flags); }
+fn ::set_flag(mask: u64&, flag: u64) { core::set_flag_u64(mask, flag); }
+fn ::clear_flag(mask: u64&, flag: u64) { core::clear_flag_u64(mask, flag); }
+fn ::toggle_flag(mask: u64&, flag: u64) { core::toggle_flag_u64(mask, flag); }
+fn ::test_bit(mask: u64, bit_idx: u32) -> bool { return core::test_bit_u64(mask, bit_idx); }
+fn ::set_bit(mask: u64&, bit_idx: u32) { core::set_bit_u64(mask, bit_idx); }
+fn ::clear_bit(mask: u64&, bit_idx: u32) { core::clear_bit_u64(mask, bit_idx); }
+fn ::pop_lowest_bit(mask: u64&) -> u32, bool { return core::pop_lowest_bit_u64(mask); }
+
+fn ::bitset_test(words: const u64[:], bit: u64) -> bool { return core::bitset_test(words, bit); }
+fn ::bitset_set(words: u64[:], bit: u64) -> bool { return core::bitset_set(words, bit); }
+fn ::bitset_clear(words: u64[:], bit: u64) -> bool { return core::bitset_clear(words, bit); }
+fn ::bitset_next_set(words: const u64[:], from_bit: u64) -> u64, bool { return core::bitset_next_set(words, from_bit); }
+fn ::bitset_any(words: const u64[:]) -> bool { return core::bitset_any(words); }
+fn ::bitset_clear_all(words: u64[:]) { core::bitset_clear_all(words); }
+fn ::bitset_popcount(words: const u64[:]) -> u64 { return core::bitset_popcount(words); }

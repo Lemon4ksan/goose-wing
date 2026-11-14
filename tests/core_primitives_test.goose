@@ -2717,6 +2717,97 @@ fn test_flat_index_map(t: lit::T&) {
     };
 }
 
+fn test_bitmask_and_bitset(t: lit::T&) {
+    t.run("Bitmask u32/u64 Flag Ops and Multi-Word u64[:] BitSet") { sub =>
+        // 1. u32 flag operations
+        var m32: u32 = 0;
+        m32.set_flag(0x05);
+        sub.assert_true(m32.has_flag(0x01), "u32 has_flag 0x01");
+        sub.assert_true(m32.has_all_flags(0x05), "u32 has_all_flags 0x05");
+        sub.assert_false(m32.has_all_flags(0x07), "u32 missing 0x02");
+        m32.toggle_flag(0x06); // 0b101 ^ 0b110 = 0b011
+        sub.assert_eq(m32, 0x03 as u32, "u32 toggle_flag");
+        m32.clear_flag(0x01);
+        sub.assert_eq(m32, 0x02 as u32, "u32 clear_flag");
+
+        let b32, ok32 = m32.pop_lowest_bit();
+        sub.assert_true(ok32, "u32 pop_lowest_bit succeeds");
+        sub.assert_eq(b32, 1 as u32, "u32 lowest bit index is 1");
+        sub.assert_eq(m32, 0 as u32, "u32 mask cleared after pop");
+        let _, empty32 = m32.pop_lowest_bit();
+        sub.assert_false(empty32, "u32 pop_lowest_bit on 0 returns false");
+
+        // 2. u64 flag & bit-index operations
+        var m64: u64 = 0;
+        m64.set_bit(0);
+        m64.set_bit(63);
+        m64.set_bit(64); // out-of-range no-op
+        sub.assert_true(m64.test_bit(0), "u64 bit 0 set");
+        sub.assert_true(m64.test_bit(63), "u64 bit 63 set");
+        sub.assert_false(m64.test_bit(64), "u64 bit 64 out of range");
+        m64.clear_bit(63);
+        sub.assert_false(m64.test_bit(63), "u64 bit 63 cleared");
+        m64.set_bit(63);
+        sub.assert_eq(popcount(m64), 2, "u64 popcount is 2");
+
+        let lo1, ok1 = m64.pop_lowest_bit();
+        sub.assert_true(ok1 && lo1 == 0, "u64 first popped bit is 0");
+        let lo2, ok2 = m64.pop_lowest_bit();
+        sub.assert_true(ok2 && lo2 == 63, "u64 second popped bit is 63");
+        sub.assert_eq(m64, 0 as u64, "u64 mask empty");
+
+        // 3. Multi-word BitSet (256 bits)
+        var bs: u64[4] = [0; 4];
+        sub.assert_false(bs[..].bitset_any(), "empty bitset_any is false");
+        sub.assert_true(bs[..].bitset_set(3), "set bit 3");
+        sub.assert_true(bs[..].bitset_set(66), "set bit 66 (word 1)");
+        sub.assert_true(bs[..].bitset_set(255), "set bit 255 (word 3)");
+        sub.assert_false(bs[..].bitset_set(256), "out-of-range bit 256 rejected");
+        sub.assert_true(bs[..].bitset_any(), "bitset_any is true");
+        sub.assert_true(bs[..].bitset_test(66), "bitset_test(66)");
+        sub.assert_eq(bs[..].bitset_popcount(), 3 as u64, "bitset_popcount == 3");
+
+        let n1, fn1 = bs[..].bitset_next_set(0);
+        sub.assert_true(fn1 && n1 == 3, "next_set from 0 is 3");
+        let n2, fn2 = bs[..].bitset_next_set(4);
+        sub.assert_true(fn2 && n2 == 66, "next_set from 4 skips to 66");
+        let n3, fn3 = bs[..].bitset_next_set(67);
+        sub.assert_true(fn3 && n3 == 255, "next_set from 67 skips to 255");
+
+        sub.assert_true(bs[..].bitset_clear(66), "clear bit 66");
+        sub.assert_false(bs[..].bitset_test(66), "bit 66 cleared");
+        sub.assert_eq(bs[..].bitset_popcount(), 2 as u64, "bitset_popcount == 2");
+
+        bs[..].bitset_clear_all();
+        sub.assert_false(bs[..].bitset_any(), "bitset_clear_all empties all words");
+    };
+}
+
+fn test_token_bucket(t: lit::T&) {
+    t.run("TokenBucket Saturating Refill & Burst Clamping") { sub =>
+        var tb = core::TokenBucket { tokens: 5, burst: 5, rate_per_sec: 10, last_refill_ms: 1000 };
+        sub.assert_eq(tb.tokens, 5 as u64, "starts full at burst");
+
+        sub.assert_true(core::token_bucket_consume(tb, 1000, 3), "consume 3 tokens");
+        sub.assert_eq(tb.tokens, 2 as u64, "2 tokens left");
+        sub.assert_false(core::token_bucket_consume(tb, 1000, 3), "reject 3 when 2 left");
+        sub.assert_eq(tb.tokens, 2 as u64, "tokens unchanged on rejection");
+        sub.assert_true(core::token_bucket_consume(tb, 1000, 2), "consume remaining 2");
+        sub.assert_eq(tb.tokens, 0 as u64, "bucket empty");
+
+        // Backward timestamp is ignored safely
+        sub.assert_false(core::token_bucket_consume(tb, 500, 1), "backward clock does not refill");
+
+        // 100ms at 10/sec adds 1 token
+        sub.assert_true(core::token_bucket_consume(tb, 1100, 1), "100ms adds 1 token");
+        sub.assert_false(core::token_bucket_consume(tb, 1100, 1), "empty again after 1 token");
+
+        // Large elapsed time clamps to burst (5), never overflows
+        core::token_bucket_refill(tb, 1000000000);
+        sub.assert_eq(tb.tokens, 5 as u64, "large refill clamped to burst");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite", lit::Verbosity.Verbose);
 
@@ -2761,6 +2852,8 @@ fn main() {
     lit::run_case(runner, "39. URL Regressions", test_url_regressions);
     lit::run_case(runner, "40. Bounded JSON Primitives", test_json_bounded_primitives);
     lit::run_case(runner, "41. FlatIndexMap GetOrPut, Backward-Shift Delete & ABA Gen", test_flat_index_map);
+    lit::run_case(runner, "42. Bitmask u32/u64 Flag Ops & Multi-Word BitSet", test_bitmask_and_bitset);
+    lit::run_case(runner, "43. TokenBucket Saturating Refill & Burst Clamping", test_token_bucket);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -1506,8 +1506,8 @@ inline fn decode_tp_exact_varint(val: const u8[:]) -> u64, bool {
 
 // Marks `bit` in `seen_mask`, returning `false` on duplicate transport parameter ID.
 inline fn mark_tp_seen(seen_mask: u64&, bit: u64) -> bool {
-    guard (seen_mask & bit) == 0 else { return false; }
-    seen_mask = seen_mask | bit;
+    guard !seen_mask.has_flag(bit) else { return false; }
+    seen_mask.set_flag(bit);
     return true;
 }
 
@@ -1776,7 +1776,7 @@ fn decode_quic_transport_params(
         let val, ok_val = cur.read_bytes(vlen as i64);
         guard ok_val && decode_single_tp(id, val, is_server, tp) else { return false; }
     }
-    if (tp.seen_mask & QUIC_TP_BIT_MIN_ACK_DELAY) != 0 {
+    if tp.seen_mask.has_flag(QUIC_TP_BIT_MIN_ACK_DELAY) {
         let max_delay_us = core::mul_sat_u64(tp.max_ack_delay, 1000);
         guard tp.min_ack_delay_us <= max_delay_us else { return false; }
     }
