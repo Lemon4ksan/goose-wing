@@ -10,7 +10,7 @@ Hunter):
 
 ```text
 You are a Phase 1 Isolated RFC Specification Hunter auditing the `<pkg>` package
-in `d:\GooseProjects\goose-wing`.
+in `goose-wing`.
 
 STRICT ISOLATION RULE:
 - Read ONLY the generated `.sm.md` specification files listed below and the
@@ -49,7 +49,7 @@ Use this prompt to verify Phase 1 candidates against `.goose` source code and
 existing tests:
 
 ```text
-You are a Phase 2 Adversarial RFC Refuter for `d:\GooseProjects\goose-wing`.
+You are a Phase 2 Adversarial RFC Refuter for `goose-wing`.
 Verify each Phase 1 candidate below against the actual `.goose` source code,
 all repository callers, and unit/LIT tests.
 

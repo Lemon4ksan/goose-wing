@@ -219,9 +219,8 @@ Enforced by `goose format --check .`, `scripts/lint_invariants.py`, and
   - Prose paragraphs, blockquotes, and list items in `.md` files must hard-wrap
     at **80 columns** (tables, code blocks, headings, and long links are
     exempt).
-  - Run `./tools/bin/goosemarklint.exe fmt <files>` and
-    `./tools/bin/goosemarklint.exe check <files>` (or `just md-fmt` /
-    `just md-lint`) after editing any `.md` file.
+  - Run `just md-fmt` and `just md-lint` (or `goosemarklint fmt <files>` /
+    `goosemarklint check <files>`) after editing any `.md` file.
 - **Communication & anti-AI tone**:
   - Start directly with the technical answer; never use sycophantic openers or
     closing platitudes.

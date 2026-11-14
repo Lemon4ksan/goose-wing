@@ -69,9 +69,9 @@ Every candidate finding—whether discovered by a Hunter subagent in `Full Pipel
 {
   "run_id": "run_20261103_221000",
   "created_at": "2026-11-03T22:10:00+00:00",
-  "repo_root": "D:/GooseProjects/goose-wing",
+  "repo_root": "/path/to/goose-wing",
   "finding_scope_root": "auth",
-  "context_roots": ["D:/GooseProjects/goose-wing"],
+  "context_roots": ["/path/to/goose-wing"],
   "profile": "wing",
   "recommended_mode": "full_pipeline",
   "capabilities": {
