@@ -2808,6 +2808,66 @@ fn test_token_bucket(t: lit::T&) {
     };
 }
 
+fn test_ring_cursor(t: lit::T&) {
+    t.run("RingCursor Power-of-Two Wraparound & Capacity Guards") { sub =>
+        var c = core::RingCursor { head: 2, tail: 2, mask: 3 }; // cap = 4
+        sub.assert_eq(core::ring_cursor_cap(c), 4 as u64, "cap is mask + 1");
+        sub.assert_eq(core::ring_cursor_len(c), 0 as u64, "initially empty");
+        sub.assert_eq(core::ring_cursor_free(c), 4 as u64, "4 free slots");
+
+        let _, empty_ok = core::ring_cursor_pop(c);
+        sub.assert_false(empty_ok, "pop on empty fails");
+
+        let s0, ok0 = core::ring_cursor_push(c);
+        let s1, ok1 = core::ring_cursor_push(c);
+        let s2, ok2 = core::ring_cursor_push(c);
+        let s3, ok3 = core::ring_cursor_push(c);
+        sub.assert_true(ok0 && s0 == 2, "push 0 -> slot 2");
+        sub.assert_true(ok1 && s1 == 3, "push 1 -> slot 3");
+        sub.assert_true(ok2 && s2 == 0, "push 2 wraps -> slot 0");
+        sub.assert_true(ok3 && s3 == 1, "push 3 wraps -> slot 1");
+
+        let _, full_ok = core::ring_cursor_push(c);
+        sub.assert_false(full_ok, "push on full fails");
+        sub.assert_eq(core::ring_cursor_free(c), 0 as u64, "0 free slots");
+
+        let p0, pok0 = core::ring_cursor_pop(c);
+        sub.assert_true(pok0 && p0 == 2, "pop 0 -> slot 2");
+        sub.assert_eq(core::ring_cursor_len(c), 3 as u64, "3 occupied after pop");
+    };
+}
+
+fn test_free_index_list(t: lit::T&) {
+    t.run("FreeIndexList O(1) Init, Alloc, Exhaustion & LIFO Free") { sub =>
+        var fl = core::FreeIndexList { .. };
+        var next: i32[4] = [-1; 4];
+        core::free_list_init(fl, next[..]);
+        sub.assert_eq(fl.head, 0, "init head is 0");
+        sub.assert_eq(fl.active, 0, "init active is 0");
+
+        let i0, ok0 = core::free_list_alloc(fl, next[..]);
+        let i1, ok1 = core::free_list_alloc(fl, next[..]);
+        let i2, ok2 = core::free_list_alloc(fl, next[..]);
+        let i3, ok3 = core::free_list_alloc(fl, next[..]);
+        sub.assert_true(ok0 && i0 == 0, "alloc 0");
+        sub.assert_true(ok1 && i1 == 1, "alloc 1");
+        sub.assert_true(ok2 && i2 == 2, "alloc 2");
+        sub.assert_true(ok3 && i3 == 3, "alloc 3");
+        sub.assert_eq(fl.active, 4, "active == 4");
+
+        let _, ex_ok = core::free_list_alloc(fl, next[..]);
+        sub.assert_false(ex_ok, "exhausted returns false");
+
+        sub.assert_false(core::free_list_free(fl, next[..], -1), "out-of-bounds free rejected");
+        sub.assert_false(core::free_list_free(fl, next[..], 4), "out-of-bounds free rejected");
+
+        sub.assert_true(core::free_list_free(fl, next[..], 2), "free slot 2");
+        sub.assert_eq(fl.active, 3, "active decremented to 3");
+        let re, re_ok = core::free_list_alloc(fl, next[..]);
+        sub.assert_true(re_ok && re == 2, "re-alloc returns freed slot 2");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Core Primitives (Time, Math, Sync, Bytes, IO Streams) Suite", lit::Verbosity.Verbose);
 
@@ -2854,6 +2914,8 @@ fn main() {
     lit::run_case(runner, "41. FlatIndexMap GetOrPut, Backward-Shift Delete & ABA Gen", test_flat_index_map);
     lit::run_case(runner, "42. Bitmask u32/u64 Flag Ops & Multi-Word BitSet", test_bitmask_and_bitset);
     lit::run_case(runner, "43. TokenBucket Saturating Refill & Burst Clamping", test_token_bucket);
+    lit::run_case(runner, "44. RingCursor Power-of-Two Wraparound & Capacity Guards", test_ring_cursor);
+    lit::run_case(runner, "45. FreeIndexList O(1) Init, Alloc, Exhaustion & LIFO Free", test_free_index_list);
 
     let ok = lit::finish(runner);
     assert(ok);

@@ -23,6 +23,7 @@ import core.io.vec;
 import core.io.page_ring;
 import core.io.page_mem;
 import core.io.cursor;
+import core.io.ring_cursor;
 
 // Appends a 16-bit integer in Big-Endian wire order into any appendable buffer.
 fn append_u16_be<B>(out: B&, v: u16) {

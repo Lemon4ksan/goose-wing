@@ -9,7 +9,6 @@ namespace wing;
 
 import std;
 import core from "..";
-import net.tick_timer;
 
 const SOA_TABLE_CAP:    i64 = 4096;
 const SOA_INVALID_FD:   i64 = -1;
@@ -135,7 +134,7 @@ inline fn soa_table_touch(table: SoAConnTable&, slot: i64, new_tick: u8) {
 // Scans tightly-packed 1-byte timeout ticks; returns count of expired connections found.
 fn soa_table_sweep_expired(
     table:       SoAConnTable&,
-    timer_wheel: const TickTimerWheel&,
+    timer_wheel: const core::TickTimerWheel&,
     out_expired: i64[:],
 ) -> i64 {
     var expired_n: i64 = 0;
@@ -143,7 +142,7 @@ fn soa_table_sweep_expired(
 
     for s in limit {
         let tick = table.timeout_ticks[s];
-        guard tick != SOA_INVALID_TICK && tick_timer_is_expired(timer_wheel, tick) else { continue; }
+        guard tick != SOA_INVALID_TICK && core::tick_timer_is_expired(timer_wheel, tick) else { continue; }
         guard table.is_active_slot(s) else { continue; }
         guard expired_n < out_expired.len else { break; }
         expired_n = record_expired_conn(out_expired, expired_n, s);

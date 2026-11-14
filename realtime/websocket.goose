@@ -347,7 +347,7 @@ struct WebSocketSession {
     close_code:         u16      = 0,
     close_sent_ms:      u64      = 0,
     close_timeout_ms:   u64      = 5000,
-    max_payload_length: u64      = 65536, // Maximum allowed frame payload length (0 = unlimited)
+    max_payload_length: u64      = 65536,      // Maximum allowed frame payload length (0 = unlimited)
     mask_rng_state:     u32      = 0x9E3779B9, // Fast linear congruential PRNG for 4-byte client masking keys
 
     // Multi-frame fragmented message assembly (RFC 6455 §5.4 & RFC 7692 §5.1)
@@ -380,8 +380,8 @@ struct WebSocketSession {
     elapsed_lifetime_s:         u32  = 0,
     send_pings_automatically:   bool = false,
     reset_idle_timeout_on_send: bool = true,
-    timeout_slot:               u8   = TICK_TIMER_DISARMED,
-    ping_slot:                  u8   = TICK_TIMER_DISARMED,
+    timeout_slot:               u8   = core::TICK_TIMER_DISARMED,
+    ping_slot:                  u8   = core::TICK_TIMER_DISARMED,
     pings_sent:                 u64  = 0,
     pongs_received:             u64  = 0,
 }
@@ -403,26 +403,26 @@ enum WsHeartbeatAction {
 }
 
 // Arms connection slot timeouts in modular tick wheel (uSockets loop.c / uWebSockets pattern)
-fn arm_heartbeat(ws: WebSocketSession&, wheel: const TickTimerWheel&) {
+fn arm_heartbeat(ws: WebSocketSession&, wheel: const core::TickTimerWheel&) {
     if ws.idle_timeout_s > 0 {
         let idle_sec = min(ws.idle_timeout_s, 239) as u8;
-        ws.timeout_slot = tick_timer_arm(wheel, idle_sec);
+        ws.timeout_slot = core::tick_timer_arm(wheel, idle_sec);
         if ws.send_pings_automatically && ws.idle_timeout_s > 1 {
             let ping_delay = max(1, idle_sec / 2);
-            ws.ping_slot = tick_timer_arm(wheel, ping_delay);
+            ws.ping_slot = core::tick_timer_arm(wheel, ping_delay);
         } else {
-            ws.ping_slot = TICK_TIMER_DISARMED;
+            ws.ping_slot = core::TICK_TIMER_DISARMED;
         }
     } else {
-        ws.timeout_slot = TICK_TIMER_DISARMED;
-        ws.ping_slot = TICK_TIMER_DISARMED;
+        ws.timeout_slot = core::TICK_TIMER_DISARMED;
+        ws.ping_slot = core::TICK_TIMER_DISARMED;
     }
 }
 
 // Disarms heartbeat timers
 fn disarm_heartbeat(ws: WebSocketSession&) {
-    ws.timeout_slot = TICK_TIMER_DISARMED;
-    ws.ping_slot = TICK_TIMER_DISARMED;
+    ws.timeout_slot = core::TICK_TIMER_DISARMED;
+    ws.ping_slot = core::TICK_TIMER_DISARMED;
 }
 
 // Advances session lifetime counter by elapsed_seconds (uWebSockets maxLifetime sweeper).
@@ -431,36 +431,36 @@ fn ws_advance_lifetime(ws: WebSocketSession&, elapsed_seconds: u32 = 1) {
 }
 
 // Touches the session to reset idle timeout on incoming frame or send
-fn touch(ws: WebSocketSession&, wheel: const TickTimerWheel&) {
-    if ws.timeout_slot != TICK_TIMER_DISARMED {
+fn touch(ws: WebSocketSession&, wheel: const core::TickTimerWheel&) {
+    if ws.timeout_slot != core::TICK_TIMER_DISARMED {
         arm_heartbeat(ws, wheel);
     }
 }
 
 // Evaluates heartbeat tick without serializing wire bytes
-fn check_heartbeat(ws: WebSocketSession&, wheel: const TickTimerWheel&) -> WsHeartbeatAction {
+fn check_heartbeat(ws: WebSocketSession&, wheel: const core::TickTimerWheel&) -> WsHeartbeatAction {
     if ws.is_closed { return WsHeartbeatAction.None; }
     if ws.max_lifetime_s > 0 && ws.elapsed_lifetime_s >= ws.max_lifetime_s {
         return WsHeartbeatAction.CloseMaxLifetime;
     }
-    if ws.timeout_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.timeout_slot) {
+    if ws.timeout_slot != core::TICK_TIMER_DISARMED && core::tick_timer_is_expired(wheel, ws.timeout_slot) {
         return WsHeartbeatAction.CloseIdle;
     }
     if !ws.close_received && !ws.close_sent && ws.send_pings_automatically &&
-        ws.ping_slot != TICK_TIMER_DISARMED && tick_timer_is_expired(wheel, ws.ping_slot) {
+        ws.ping_slot != core::TICK_TIMER_DISARMED && core::tick_timer_is_expired(wheel, ws.ping_slot) {
         return WsHeartbeatAction.SendPing;
     }
     return WsHeartbeatAction.None;
 }
 
 // Executes periodic heartbeat check and automatically writes Ping or Close frame
-fn tick_heartbeat<B>(ws: WebSocketSession&, wheel: const TickTimerWheel&, out_wire: B&) -> WsHeartbeatAction {
+fn tick_heartbeat<B>(ws: WebSocketSession&, wheel: const core::TickTimerWheel&, out_wire: B&) -> WsHeartbeatAction {
     let action = check_heartbeat(ws, wheel);
     if action == WsHeartbeatAction.SendPing {
         send_ping(ws, "", out_wire);
         let idle_sec = min(ws.idle_timeout_s, 239) as u8;
         let ping_delay = if ws.idle_timeout_s > 1 { max(1, idle_sec / 2) } else { 1 };
-        ws.ping_slot = tick_timer_arm(wheel, ping_delay);
+        ws.ping_slot = core::tick_timer_arm(wheel, ping_delay);
     } else if action == WsHeartbeatAction.CloseIdle {
         close(ws, rfc::WS_STATUS_NORMAL, "Idle timeout", out_wire);
         ws.is_closed = true;

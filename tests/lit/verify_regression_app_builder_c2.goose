@@ -162,7 +162,7 @@ fn test_ab_c2_04_websocket_session_invariants() {
     var ws_hb = wing::new_websocket_session(false);
     ws_hb.idle_timeout_s = 10;
     ws_hb.send_pings_automatically = true;
-    var wheel = wing::TickTimerWheel { current_tick: 0, .. };
+    var wheel = core::TickTimerWheel { current_tick: 0, .. };
     wing::arm_heartbeat(ws_hb, wheel);
     var close_wire: u8[..64] = [];
     wing::close_at(ws_hb, rfc::WS_STATUS_NORMAL, "closing", 1000, close_wire);

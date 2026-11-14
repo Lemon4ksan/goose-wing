@@ -131,8 +131,8 @@ fn test_soa_conn_table_lifecycle(t: lit::T&) {
         sub.assert_eq(table.timeout_ticks[s1], 25 as u8);
 
         // Timer wheel setup: advance to 22
-        var wheel = wing::new_tick_timer_wheel(15);
-        wing::tick_timer_advance(wheel, 15);
+        var wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
+        core::tick_timer_advance(wheel, 15);
 
         // Sweep expired
         var expired: i64[16] = [0; 16];

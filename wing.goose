@@ -94,7 +94,6 @@ import net.proxy_protocol_internal;
 import net.proxy_protocol;
 import net.retry;
 import net.masque;
-import net.tick_timer;
 import net.isolation;
 import net.sockopt;
 import net.driver;

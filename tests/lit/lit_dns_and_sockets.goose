@@ -703,8 +703,8 @@ fn verify_iocomp_track_e(p_cfg: const internal::TransportDriverConfig&) {
 
 fn run_05_verify_net_audit() {
     // F001: tick_timer_arm u8 wrap-around when current_tick + delay_sec >= 256
-    var wheel = wing::TickTimerWheel { current_tick: 200, .. };
-    let target_slot = wing::tick_timer_arm(wheel, 60);
+    var wheel = core::TickTimerWheel { current_tick: 200, .. };
+    let target_slot = core::tick_timer_arm(wheel, 60);
     assert(target_slot == 20);
     print("F001_TICK_SLOT: ", target_slot);
 
@@ -988,9 +988,9 @@ fn run_05_verify_net_audit() {
     assert(amgr.attempts[0].state == wing::AttemptState.Failed);
     print("F015_BIND_WINNER_FAILED: 1");
 
-    // F016: format_driver_int formats negative integers correctly
+    // F016: format_i64_dec formats negative integers correctly
     var drv_neg: u8[..32] = [];
-    internal::format_driver_int(drv_neg, -42);
+    core::format_i64_dec(-42, drv_neg);
     assert(drv_neg[..] == "-42");
     print("F016_DRIVER_INT_NEG: 1");
 
@@ -1291,8 +1291,8 @@ fn test_r008_poller_timer_tcp_and_drivers() {
     wing::close_poller(p);
 
     // 2. TickTimerWheel u32 addition wrap-around when current_tick + elapsed >= 2^32 (2^32 % 240 == 16 != 0)
-    var wheel = wing::TickTimerWheel { current_tick: 200, .. };
-    let next_tick = wing::tick_timer_advance(wheel, 0xFFFFFFFF);
+    var wheel = core::TickTimerWheel { current_tick: 200, .. };
+    let next_tick = core::tick_timer_advance(wheel, 0xFFFFFFFF);
     assert(next_tick == 215);
 
     // 3. UringSqe reuse clears stale ioprio and RIO sub-buffer guards u64 overflow

@@ -6,6 +6,7 @@
 namespace internal;
 
 import std;
+import core from "../..";
 import net.driver.types;
 
 // Native C bindings from shim/af_xdp.c
@@ -195,17 +196,18 @@ struct XskRingState {
 // Enqueues a burst of UMEM frame addresses into `ring` using bounded ring slot staging.
 fn xsk_fill_ring_enqueue_burst(ring: XskRingState&, addrs: const u64[:]) -> u32 {
     guard addrs.len > 0 else { return 0; }
-    var prod = ring.prod_head as u64;
-    let cons = ring.cons_head as u64;
-    var used = core::sub_sat_u64(prod, cons);
+    var cur = core::RingCursor {
+        head: ring.prod_head,
+        tail: ring.cons_head,
+        mask: ring.mask,
+    };
     var staged: u64 = 0;
     for addr in addrs {
-        guard used < 64 else { break; }
-        ring.entries[prod & 63] = addr;
-        prod = core::add_sat_u64(prod, 1);
-        used = core::add_sat_u64(used, 1);
+        let slot_idx, ok = core::ring_cursor_push(cur);
+        guard ok else { break; }
+        ring.entries[slot_idx] = addr;
         staged = core::add_sat_u64(staged, 1);
     }
-    ring.prod_head = prod as u32;
+    ring.prod_head = cur.head as u32;
     return staged as u32;
 }

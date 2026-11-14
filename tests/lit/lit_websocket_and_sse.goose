@@ -28,7 +28,7 @@ fn test_heartbeat_ping_delay_wrap() {
     ws.idle_timeout_s = 480;
     ws.send_pings_automatically = true;
 
-    var wheel = wing::TickTimerWheel { .. };
+    var wheel = core::TickTimerWheel { .. };
     wing::arm_heartbeat(ws, wheel);
 
     // With idle_timeout_s = 480 (8 mins), idle_sec is clamped to 239s.
@@ -168,7 +168,7 @@ fn test_wsrt03_04_half_closed_and_masking() {
     let st_bin2 = wing::send_binary_compressed_with_status(ws2, "comp_bin_payload_data", shared_comp, bin_wire);
     assert(st_bin2 == wing::WsSendStatus.Backpressure);
     wing::disarm_heartbeat(ws2);
-    assert(ws2.timeout_slot == wing::TICK_TIMER_DISARMED);
+    assert(ws2.timeout_slot == core::TICK_TIMER_DISARMED);
 
     var pending = wing::new_ws_pending_upgrade(99, "dGhlIHNhbXBsZSBub25jZQ==");
     wing::abort_with_hook(pending) { _fd: i64, _tag: u64 => };
@@ -1343,7 +1343,7 @@ fn wing_validate_ws_close_wire(buf: const u8[:]) -> i64 {
     guard buf.len >= 2 else { return -1; }
     let code = core::read_be_u16(buf, 0);
     guard rfc::is_valid_ws_close_code(code) else { return -2; }
-    return code as! i64;
+    return code;
 }
 
 // Wire validator for streaming UTF-8 using core::validate_utf8_streaming

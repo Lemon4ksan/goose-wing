@@ -140,7 +140,7 @@ fn reactor_sweep_timeouts(
     epfd:           i64,
     table:          SoAConnTable&,
     free_slots:     FreeSlotStack&,
-    timer_wheel:    TickTimerWheel&,
+    timer_wheel:    core::TickTimerWheel&,
     now_sec:        i64,
     last_sweep_sec: i64&,
     total_served:   i64&,
@@ -148,7 +148,7 @@ fn reactor_sweep_timeouts(
     guard now_sec > last_sweep_sec else { return; }
     let elapsed = if last_sweep_sec == 0 { 1 } else { (now_sec - last_sweep_sec) as u32 };
     last_sweep_sec = now_sec;
-    tick_timer_advance(timer_wheel, elapsed);
+    core::tick_timer_advance(timer_wheel, elapsed);
 
     var expired: i64[4096] = [0; 4096];
     let n_expired = table.soa_table_sweep_expired(timer_wheel, expired[..]);
@@ -164,7 +164,7 @@ fn reactor_evict_stale_slot(
     epfd:         i64,
     table:        SoAConnTable&,
     free_slots:   FreeSlotStack&,
-    timer_wheel:  TickTimerWheel&,
+    timer_wheel:  core::TickTimerWheel&,
     total_served: i64&,
 ) -> i64 {
     var expired: i64[1] = [0];
@@ -184,10 +184,10 @@ inline fn reactor_register_client_slot(
     table:       SoAConnTable&,
     client_fd:   i64,
     slot:        i64,
-    timer_wheel: TickTimerWheel&,
+    timer_wheel: core::TickTimerWheel&,
 ) {
     table.fds[slot] = client_fd;
-    table.timeout_ticks[slot] = tick_timer_arm(timer_wheel, 15);
+    table.timeout_ticks[slot] = core::tick_timer_arm(timer_wheel, 15);
     table.leftover_lens[slot] = 0;
     table.is_h2[slot] = false;
     table.h2_slot_map[slot] = -1;
@@ -217,7 +217,7 @@ fn reactor_drain_listener(
     epfd:         i64,
     table:        SoAConnTable&,
     free_slots:   FreeSlotStack&,
-    timer_wheel:  TickTimerWheel&,
+    timer_wheel:  core::TickTimerWheel&,
     total_served: i64&,
 ) {
     loop {
@@ -242,7 +242,7 @@ fn reactor_drain_worker_ring(
     epfd:         i64,
     table:        SoAConnTable&,
     free_slots:   FreeSlotStack&,
-    timer_wheel:  TickTimerWheel&,
+    timer_wheel:  core::TickTimerWheel&,
     total_served: i64&,
 ) {
     guard ring.is_open && ring.handle != 0 else { return; }
@@ -431,7 +431,7 @@ fn reactor_handle_ingress<Stage>(
     leftovers:    ReactorLeftoverBuf[:],
     slot:         i64,
     free_slots:   FreeSlotStack&,
-    timer_wheel:  TickTimerWheel&,
+    timer_wheel:  core::TickTimerWheel&,
     now_ns:       u64,
     chunk:        ReactorIngressBuf&,
     cork_wire:    u8[..65536]&,
@@ -441,7 +441,7 @@ fn reactor_handle_ingress<Stage>(
     let conn = table.fds[slot];
     let prev_len = table.leftover_lens[slot] as i64;
     if server.pipeline.enable_slowloris_timer {
-        table.soa_table_touch(slot, tick_timer_arm(timer_wheel, 15));
+        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, 15));
     }
 
     chunk.len = 0;
@@ -511,7 +511,7 @@ fn reactor_dispatch_events<Stage>(
     table:        SoAConnTable&,
     leftovers:    ReactorLeftoverBuf[:],
     free_slots:   FreeSlotStack&,
-    timer_wheel:  TickTimerWheel&,
+    timer_wheel:  core::TickTimerWheel&,
     ready_udata:  const u64[:],
     now_ns:       u64,
     chunk:        ReactorIngressBuf&,
@@ -567,7 +567,7 @@ inline fn reactor_poll_sweep(
     epfd:           i64,
     table:          SoAConnTable&,
     free_slots:     FreeSlotStack&,
-    timer_wheel:    TickTimerWheel&,
+    timer_wheel:    core::TickTimerWheel&,
     n:              i32,
     turn:           i64,
     last_sweep_sec: i64&,
@@ -618,7 +618,7 @@ fn serve_reactor_with_stage<Stage>(
     var total_served: i64       = 0;
 
     reset_reactor_state(g_default_reactor);
-    var timer_wheel = new_tick_timer_wheel(15);
+    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
     var last_sweep_sec: i64 = 0;
     var turn_counter:   i64 = 0;
     var cached_now_ns:  u64 = 0;
@@ -667,7 +667,7 @@ fn reactor_accept_tls_client(
     epfd:         i64,
     table:        SoAConnTable&,
     free_slots:   FreeSlotStack&,
-    timer_wheel:  TickTimerWheel&,
+    timer_wheel:  core::TickTimerWheel&,
     tls_config:   const TlsServerHandshakeConfig&,
     total_served: i64&,
 ) {
@@ -702,7 +702,7 @@ fn reactor_dispatch_tls_events(
     table:        SoAConnTable&,
     leftovers:    ReactorLeftoverBuf[:],
     free_slots:   FreeSlotStack&,
-    timer_wheel:  TickTimerWheel&,
+    timer_wheel:  core::TickTimerWheel&,
     tls_config:   const TlsServerHandshakeConfig&,
     ready_udata:  const u64[:],
     now_ns:       u64,
@@ -749,7 +749,7 @@ fn serve_reactor_tls(
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
     reset_reactor_state(g_default_reactor);
-    var timer_wheel = new_tick_timer_wheel(15);
+    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
     var last_sweep_sec: i64 = 0;
     var turn_counter:   i64 = 0;
     var cached_now_ns:  u64 = 0;

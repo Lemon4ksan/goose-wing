@@ -226,7 +226,7 @@ fn test_selective_compression(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
     t.run("1. Auto-Ping Generation & Idle Timeout Reaper") { sub =>
-        var wheel = wing::new_tick_timer_wheel(10);
+        var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
         var ws = wing::new_websocket_session(false);
         ws.idle_timeout_s = 10;
         ws.send_pings_automatically = true;
@@ -236,7 +236,7 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
         sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "No action at tick 0");
 
         // Advance 5 seconds: half of idle timeout triggers ping
-        wing::tick_timer_advance(wheel, 5);
+        core::tick_timer_advance(wheel, 5);
         sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.SendPing, "Ping action triggered at 5s");
 
         var wire_ping: u8[..256] = [];
@@ -250,7 +250,7 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
         sub.assert_eq(hdr.opcode, rfc::WS_OPCODE_PING, "Frame opcode is Ping (0x9)");
 
         // Advance another 5 seconds without touching: idle timeout (10s) expires
-        wing::tick_timer_advance(wheel, 5);
+        core::tick_timer_advance(wheel, 5);
         sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.CloseIdle, "CloseIdle action triggered at 10s");
 
         var wire_close: u8[..256] = [];
@@ -265,17 +265,17 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
     };
 
     t.run("2. Touch Resets Idle Timeout") { sub =>
-        var wheel = wing::new_tick_timer_wheel(10);
+        var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
         var ws = wing::new_websocket_session(false);
         ws.idle_timeout_s = 10;
         ws.arm_heartbeat(wheel);
 
-        wing::tick_timer_advance(wheel, 8);
+        core::tick_timer_advance(wheel, 8);
         // Client activity touches session
         ws.touch(wheel);
 
         // Advance 2 more seconds: total 10 ticks, but touched at tick 8 so not expired yet
-        wing::tick_timer_advance(wheel, 2);
+        core::tick_timer_advance(wheel, 2);
         sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "Idle timer was reset by touch");
         sub.assert_false(ws.is_closed, "Session remains open");
     };
@@ -1132,42 +1132,42 @@ fn test_http_route_cache(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_tick_timer_wheel(t: lit::T&) {
     t.run("1. 1-Byte Tick Wheel Low-Overhead Timeout Sweeper") { sub =>
-        var wheel = wing::new_tick_timer_wheel(10); // 10s default
+        var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. }; // 10s default
         sub.assert_eq(wheel.current_tick, 0, "Initial tick is 0");
 
         // Arm two slots
-        let slot1 = wing::tick_timer_arm(wheel, 10);
-        let slot2 = wing::tick_timer_arm(wheel, 5);
+        let slot1 = core::tick_timer_arm(wheel, 10);
+        let slot2 = core::tick_timer_arm(wheel, 5);
         sub.assert_eq(slot1, 10, "Slot 1 timeout tick is 10");
         sub.assert_eq(slot2, 5, "Slot 2 timeout tick is 5");
 
-        sub.assert_false(wing::tick_timer_is_expired(wheel, slot1), "Slot 1 not expired at t=0");
-        sub.assert_false(wing::tick_timer_is_expired(wheel, slot2), "Slot 2 not expired at t=0");
+        sub.assert_false(core::tick_timer_is_expired(wheel, slot1), "Slot 1 not expired at t=0");
+        sub.assert_false(core::tick_timer_is_expired(wheel, slot2), "Slot 2 not expired at t=0");
 
         // Advance 5 ticks
-        wing::tick_timer_advance(wheel, 5);
+        core::tick_timer_advance(wheel, 5);
         sub.assert_eq(wheel.current_tick, 5, "Wheel at tick 5");
-        sub.assert_true(wing::tick_timer_is_expired(wheel, slot2), "Slot 2 expired at t=5");
-        sub.assert_false(wing::tick_timer_is_expired(wheel, slot1), "Slot 1 still active at t=5");
+        sub.assert_true(core::tick_timer_is_expired(wheel, slot2), "Slot 2 expired at t=5");
+        sub.assert_false(core::tick_timer_is_expired(wheel, slot1), "Slot 1 still active at t=5");
 
         // Advance 5 more ticks
-        wing::tick_timer_advance(wheel, 5);
+        core::tick_timer_advance(wheel, 5);
         sub.assert_eq(wheel.current_tick, 10, "Wheel at tick 10");
-        sub.assert_true(wing::tick_timer_is_expired(wheel, slot1), "Slot 1 expired at t=10");
+        sub.assert_true(core::tick_timer_is_expired(wheel, slot1), "Slot 1 expired at t=10");
 
         // Disarmed slot
-        let slot_disarmed = wing::tick_timer_disarm();
-        sub.assert_eq(slot_disarmed, wing::TICK_TIMER_DISARMED, "Disarmed is 255");
-        sub.assert_false(wing::tick_timer_is_expired(wheel, slot_disarmed), "Disarmed slot never expires");
+        let slot_disarmed = core::tick_timer_disarm();
+        sub.assert_eq(slot_disarmed, core::TICK_TIMER_DISARMED, "Disarmed is 255");
+        sub.assert_false(core::tick_timer_is_expired(wheel, slot_disarmed), "Disarmed slot never expires");
 
         // Modular wraparound (modulo 240)
         wheel.current_tick = 235;
-        let slot_wrap = wing::tick_timer_arm(wheel, 10); // (235 + 10) % 240 = 5
+        let slot_wrap = core::tick_timer_arm(wheel, 10); // (235 + 10) % 240 = 5
         sub.assert_eq(slot_wrap, 5, "Wraps modulo 240 cleanly to 5");
-        sub.assert_false(wing::tick_timer_is_expired(wheel, slot_wrap), "Not expired before wrap");
-        wing::tick_timer_advance(wheel, 10); // 235 + 10 = 5 mod 240
+        sub.assert_false(core::tick_timer_is_expired(wheel, slot_wrap), "Not expired before wrap");
+        core::tick_timer_advance(wheel, 10); // 235 + 10 = 5 mod 240
         sub.assert_eq(wheel.current_tick, 5, "Advanced across 240 boundary to 5");
-        sub.assert_true(wing::tick_timer_is_expired(wheel, slot_wrap), "Expires at wrapped tick 5");
+        sub.assert_true(core::tick_timer_is_expired(wheel, slot_wrap), "Expires at wrapped tick 5");
     };
 }
 
@@ -1975,21 +1975,21 @@ fn test_uweb_prepared_message(t: lit::T&) {
 // 51. WebSocket maxLifetime Session Timeout
 // ----------------------------------------------------------------------------
 fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
-    var wheel = wing::new_tick_timer_wheel(10);
+    var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
     var ws = wing::new_websocket_session(false);
     ws.idle_timeout_s = 10;
     ws.max_lifetime_s = 20; // 20 seconds maximum lifetime
     ws.arm_heartbeat(wheel);
 
     // Advance 8s, then touch (client active)
-    wing::tick_timer_advance(wheel, 8);
+    core::tick_timer_advance(wheel, 8);
     wing::ws_advance_lifetime(ws, 8);
     ws.touch(wheel);
 
     t.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "No expiry after touch at 8s");
 
     // Advance another 8s, touch again (total 16s lifetime, idle was reset)
-    wing::tick_timer_advance(wheel, 8);
+    core::tick_timer_advance(wheel, 8);
     wing::ws_advance_lifetime(ws, 8);
     ws.touch(wheel);
 
@@ -1997,7 +1997,7 @@ fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
     t.assert_false(ws.is_closed, "Session still open at 16s");
 
     // Advance another 5s (total 21s, exceeds max_lifetime_s = 20)
-    wing::tick_timer_advance(wheel, 5);
+    core::tick_timer_advance(wheel, 5);
     wing::ws_advance_lifetime(ws, 5);
 
     // Despite being touched at 16s (idle would not expire until 26s), maxLifetime forces CloseMaxLifetime

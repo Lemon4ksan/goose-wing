@@ -29,6 +29,7 @@ DEFAULT_PACKAGES = [
     "client",
     "cookie",
     "core",
+    "dns",
     "fingerprint",
     "grpc",
     "http",

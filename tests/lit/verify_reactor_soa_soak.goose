@@ -11,12 +11,12 @@ import wing from "../..";
 
 fn verify_soa_conn_table_churn() {
     var table = wing::SoAConnTable { .. };
-    var wheel = wing::new_tick_timer_wheel(10);
+    var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
     var expired: i64[4096] = [0; 4096];
 
     for wave in 10 {
-        let short_tick = wing::tick_timer_arm(wheel, 5);
-        let long_tick = wing::tick_timer_arm(wheel, 20);
+        let short_tick = core::tick_timer_arm(wheel, 5);
+        let long_tick = core::tick_timer_arm(wheel, 20);
 
         for i in 4096 {
             let fd = (wave + 1) * 10000 + i + 1;
@@ -32,7 +32,7 @@ fn verify_soa_conn_table_churn() {
         assert(wing::soa_table_alloc(table, 999999, short_tick) == wing::SOA_INVALID_FD);
 
         // Advance tick wheel by 6 seconds: all 2048 short_tick (5s) Slowloris slots must expire
-        let _ = wing::tick_timer_advance(wheel, 6);
+        let _ = core::tick_timer_advance(wheel, 6);
         let n_exp = wing::soa_table_sweep_expired(table, wheel, expired[..]);
         assert(n_exp == 2048);
         for k in n_exp {
