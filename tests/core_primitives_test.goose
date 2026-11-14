@@ -1155,7 +1155,7 @@ fn test_prng_and_lemire_range(t: lit::T&) {
     t.run("Lemire Fast-Range Bounds (Biased and Unbiased)") { sub =>
         // Boundary check: output must strictly be in [0, range)
         for i in 100 {
-            let r_biased = core::fast_range_biased_u32((i * 123456789) as u32, 50);
+            let r_biased = core::fast_range_biased_u32((i * 123456789) as! u32, 50);
             sub.assert_lt(r_biased, 50, "fast_range_biased_u32 < 50");
         }
 

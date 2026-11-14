@@ -16,6 +16,7 @@ import argparse
 import fnmatch
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -87,12 +88,32 @@ def run_command(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]
 def main() -> int:
     parser = argparse.ArgumentParser(description="goose-wing Cross-Platform Test Runner")
     parser.add_argument(
-        "-p", "--pattern", default="*_test.goose", help="Glob pattern for test files in tests/"
+        "-p",
+        "--pattern",
+        default="*_test.goose",
+        help="Glob pattern(s) for test files in tests/ (comma- or pipe-separated)",
     )
     parser.add_argument(
         "--check-only",
         action="store_true",
         help="Only run goose check on core, wing, examples and tests",
+    )
+    parser.add_argument(
+        "-f",
+        "--fast",
+        action="store_true",
+        help="Fast local iteration: build with -O0 and skip examples/ check when -p filters tests",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Pass --debug to goose build (checked casts/overflows, unoptimized C)",
+    )
+    parser.add_argument(
+        "--opt",
+        choices=["-O0", "-O1", "-O2"],
+        default=None,
+        help="Goose inlining level (default: -O0 with --fast, otherwise -O2)",
     )
     parser.add_argument(
         "-r", "--release", action="store_true", help="Compile test suites with -O2 optimization"
@@ -137,56 +158,55 @@ def main() -> int:
     total_steps = 2 if args.check_only else 3
 
     # 1. Typecheck core, rfc, wing and examples
-    print(f"\n{yellow(f'[1/{total_steps}] Typechecking core, rfc, wing, and examples...')}")
+    skip_examples = args.fast and args.pattern != "*_test.goose"
+    example_files = (
+        []
+        if skip_examples
+        else sorted(examples_dir.glob("*.goose")) + sorted((root_dir / "tools").glob("*/*.goose"))
+    )
+    check_targets = [core_file, rfc_file, wing_file, *example_files]
+    scope_desc = "core, rfc, wing" if skip_examples else f"core, rfc, wing, and {len(example_files)} examples"
+    print(f"\n{yellow(f'[1/{total_steps}] Typechecking {scope_desc} ({args.jobs} workers)...')}")
     t0_core = time.perf_counter()
 
-    for target in [core_file, rfc_file, wing_file]:
+    def check_target(target: Path) -> tuple[str, int, str, str]:
+        rel = target.relative_to(root_dir).as_posix()
         code, out, err = run_command([goose, "check", str(target)], cwd=root_dir)
-        if code != 0:
-            print(red(f"FATAL: goose check {target.name} failed!"))
-            if out:
-                print(yellow(out))
-            if err:
-                print(red(err))
-            return 1
+        return rel, code, out, err
 
-    # Check examples and tools E2E servers
-    example_files = sorted(examples_dir.glob("*.goose")) + sorted(
-        (root_dir / "tools").glob("*/*.goose")
-    )
-    for ex in example_files:
-        rel_ex = ex.relative_to(root_dir).as_posix()
-        code, out, err = run_command([goose, "check", str(ex)], cwd=root_dir)
-        if code != 0:
-            print(red(f"FATAL: goose check {rel_ex} failed!"))
-            if out:
-                print(yellow(out))
-            if err:
-                print(red(err))
-            return 1
+    with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+        futures = [executor.submit(check_target, t) for t in check_targets]
+        for fut in as_completed(futures):
+            rel, code, out, err = fut.result()
+            if code != 0:
+                print(red(f"FATAL: goose check {rel} failed!"))
+                if out:
+                    print(yellow(out))
+                if err:
+                    print(red(err))
+                return 1
 
     dt_core_ms = int((time.perf_counter() - t0_core) * 1000)
-    print(
-        green(
-            f"  OK: core, wing & {len(example_files)} examples typechecked cleanly in {dt_core_ms}ms."
-        )
-    )
+    print(green(f"  OK: {scope_desc} typechecked cleanly in {dt_core_ms}ms."))
 
     # 2. Discover test suites
     if not tests_dir.exists():
         print(red(f"Tests directory not found: {tests_dir}"))
         return 1
 
-    pat = args.pattern
-    if "*" not in pat and "?" not in pat:
-        pat = f"*{pat}*"
+    raw_patterns = [p.strip() for p in re.split(r"[,|]", args.pattern) if p.strip()]
+    if not raw_patterns:
+        raw_patterns = ["*_test.goose"]
+    pats = [p if ("*" in p or "?" in p) else f"*{p}*" for p in raw_patterns]
 
-    all_test_files = [f for f in sorted(tests_dir.glob("*.goose")) if fnmatch.fnmatch(f.name, pat)]
+    all_test_files = [
+        f for f in sorted(tests_dir.glob("*.goose")) if any(fnmatch.fnmatch(f.name, p) for p in pats)
+    ]
 
     if not all_test_files:
         print(
             yellow(
-                f"No test files matching '{args.pattern}' (resolved: '{pat}') found in {tests_dir}."
+                f"No test files matching '{args.pattern}' (resolved: {pats}) found in {tests_dir}."
             )
         )
         return 0
@@ -227,10 +247,14 @@ def main() -> int:
         return 0
 
     # 4. Parallel compilation
-    opt_flag = "-O2"
+    opt_flag = args.opt if args.opt else ("-O0" if args.fast else "-O2")
+    if args.release:
+        opt_flag = "-O2"
+    debug_args = ["--debug"] if (args.debug and not args.release) else []
+    mode_desc = f"{opt_flag} --debug" if debug_args else opt_flag
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
     print(
-        f"\n{yellow(f'[2/3] Compiling {len(all_test_files)} suites ({args.jobs} parallel workers, {opt_flag})...')}"
+        f"\n{yellow(f'[2/3] Compiling {len(all_test_files)} suites ({args.jobs} parallel workers, {mode_desc})...')}"
     )
     t0_build = time.perf_counter()
 
@@ -242,7 +266,7 @@ def main() -> int:
         extra_args: list[str] = []
         if f.name == "telemetry_test.goose":
             extra_args = ["--include", "shim/prof_hook.h"]
-        cmd = [goose, "build", opt_flag, *extra_args, "-o", str(exe_path), str(f)]
+        cmd = [goose, "build", opt_flag, *debug_args, *extra_args, "-o", str(exe_path), str(f)]
         code, out, err = run_command(cmd, cwd=root_dir)
         elapsed = time.perf_counter() - t_start
         return f, exe_path, code, out, err, elapsed
