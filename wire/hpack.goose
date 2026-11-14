@@ -73,7 +73,7 @@ fn hpack_encode_string<B>(out: B&, str: const u8[:]) -> bool {
 fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
     guard internal::validate_h2_field_syntax(name, val) else { return false; }
     let start_len = out.len;
-    guard out.try_push(0x00) &&
+    guard out.try_push(0x00 as u8) &&
           hpack_encode_string(out, name) &&
           hpack_encode_string(out, val) else {
         out.resize(start_len);
@@ -86,7 +86,7 @@ fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: con
 fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
     guard internal::validate_h2_field_syntax(name, val) else { return false; }
     let start_len = out.len;
-    guard out.try_push(0x10) &&
+    guard out.try_push(0x10 as u8) &&
           hpack_encode_string(out, name) &&
           hpack_encode_string(out, val) else {
         out.resize(start_len);
@@ -179,14 +179,21 @@ inline fn is_h2_skipped_header_name(name: const u8[:]) -> bool {
         || name.eq_ascii_fold("upgrade");
 }
 
+enum WireHeaderSectionKind {
+    Request,
+    Response,
+    Trailer,
+}
+
 fn is_valid_h2_request_pseudo_fields(pseudo: const internal::H2PseudoHeaders&) -> bool {
     guard pseudo.has_method && wing::is_valid_token_swar(pseudo.method[..]) else { return false; }
     if pseudo.has_authority {
         guard internal::is_valid_h2_authority(pseudo.authority[..]) else { return false; }
     }
     if pseudo.has_protocol {
-        guard pseudo.method[..] == "CONNECT" && pseudo.protocol.len > 0
-            && internal::validate_h2_field_syntax(":protocol", pseudo.protocol[..]) else {
+        // RFC 8441 Section 4: The Extended CONNECT Method - requires :scheme, :path, :authority, and token :protocol.
+        guard pseudo.method[..] == "CONNECT" && pseudo.has_authority
+            && pseudo.protocol.len > 0 && wing::is_valid_token_swar(pseudo.protocol[..]) else {
             return false;
         }
     }
@@ -255,6 +262,7 @@ inline fn should_skip_h2_entry(
     headers:  const wing::HeaderMap&,
     raw_name: const u8[:],
     val:      const u8[:],
+    kind:     WireHeaderSectionKind,
 ) -> bool {
     if raw_name.len > 0 && raw_name[0] == ':' {
         return true;
@@ -262,7 +270,17 @@ inline fn should_skip_h2_entry(
     if is_h2_skipped_header_name(raw_name) || wing::is_token_in_connection_header_map(headers, raw_name) {
         return true;
     }
-    return raw_name.eq_ascii_fold("te") && !val.trim_lws().eq_ascii_fold("trailers");
+    // RFC 9113 Section 8.2.2: Connection-Specific Header Fields - TE is only permitted in requests with "trailers".
+    if raw_name.eq_ascii_fold("te") {
+        if kind == WireHeaderSectionKind.Trailer {
+            return false;
+        }
+        if kind == WireHeaderSectionKind.Response {
+            return true;
+        }
+        return !val.trim_lws().eq_ascii_fold("trailers");
+    }
+    return false;
 }
 
 inline fn is_forbidden_h2_trailer_field(lower_name: const u8[:]) -> bool {
@@ -274,19 +292,19 @@ fn encode_single_hpack_map_entry<B>(
     dt:          internal::DynamicTable&,
     headers:     const wing::HeaderMap&,
     e:           const wing::HeaderEntry&,
-    is_trailer:  bool,
+    kind:        WireHeaderSectionKind,
     out:         B&,
     use_huffman: bool,
 ) -> bool {
     let raw_name = wing::entry_name(headers, e);
     let val = wing::entry_value(headers, e);
-    if should_skip_h2_entry(headers, raw_name, val) {
+    if should_skip_h2_entry(headers, raw_name, val, kind) {
         return true;
     }
     var lower_name: u8[..256] = [];
     guard raw_name.len > 0 && raw_name.len <= lower_name.cap else { return false; }
     raw_name.to_lower_ascii(lower_name);
-    if is_trailer && is_forbidden_h2_trailer_field(lower_name[..]) {
+    if kind == WireHeaderSectionKind.Trailer && is_forbidden_h2_trailer_field(lower_name[..]) {
         return false;
     }
     let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
@@ -318,14 +336,42 @@ fn encode_hpack_from_map<B>(
         dt = saved_dt;
     };
     guard encode_hpack_pseudo_fields(dt, pseudo, out, use_huffman) else { return false; }
+    let kind = if pseudo.is_trailer {
+        WireHeaderSectionKind.Trailer
+    } else if pseudo.has_status {
+        WireHeaderSectionKind.Response
+    } else {
+        WireHeaderSectionKind.Request
+    };
 
     for &e in headers.entries {
-        guard encode_single_hpack_map_entry(dt, headers, e, pseudo.is_trailer, out, use_huffman) else {
+        guard encode_single_hpack_map_entry(dt, headers, e, kind, out, use_huffman) else {
             return false;
         }
     }
     committed = true;
     return true;
+}
+
+fn coalesce_h2_cookie_headers(map: wing::HeaderMap&) -> bool {
+    var count: i64 = 0;
+    for &e in map.entries {
+        if wing::entry_name(map, e).eq_ascii_fold("cookie") {
+            count = core::add_sat_i64(count, 1);
+        }
+    }
+    guard count >= 2 else { return true; }
+    var combined: u8[..8192] = [];
+    var first = true;
+    for &e in map.entries {
+        guard wing::entry_name(map, e).eq_ascii_fold("cookie") else { continue; }
+        if !first {
+            guard combined.try_append("; ") else { return false; }
+        }
+        first = false;
+        guard combined.try_append(wing::entry_value(map, e)) else { return false; }
+    }
+    return wing::set_or_replace(map, "cookie", combined[..], true);
 }
 
 // Decodes an HPACK header block into `out_pseudo` and `out_headers` using `dt` (RFC 7541, RFC 9113 §8.2).
@@ -346,9 +392,15 @@ fn decode_hpack_to_map(
     let src_len = src.len as u64;
     var updates_allowed = true;
     var update_count: u32 = 0;
+    var first_err:    u32 = rfc::H2_ERR_NO_ERROR;
+    var committed = false;
 
     internal::clear_h2_pseudo_headers(out_pseudo, true);
     out_headers.clear();
+    defer if !committed {
+        internal::clear_h2_pseudo_headers(out_pseudo, true);
+        out_headers.clear();
+    };
 
     while offset < src_len {
         let next_off, err = internal::decode_hpack_field_step_to_map(
@@ -362,14 +414,29 @@ fn decode_hpack_to_map(
             max_header_list_size,
             validate_http2_rules,
         );
-        guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+        if err == rfc::H2_ERR_COMPRESSION_ERROR || next_off <= offset {
+            return if err != rfc::H2_ERR_NO_ERROR { err } else { rfc::H2_ERR_COMPRESSION_ERROR };
+        }
+        if err != rfc::H2_ERR_NO_ERROR && first_err == rfc::H2_ERR_NO_ERROR {
+            first_err = err;
+        }
         offset = next_off;
     }
+
+    guard first_err == rfc::H2_ERR_NO_ERROR else { return first_err; }
 
     if validate_http2_rules && !out_pseudo.is_trailer {
         let v_err = internal::validate_mandatory_pseudo_headers(out_pseudo);
         guard v_err == rfc::H2_ERR_NO_ERROR else { return v_err; }
+        if out_pseudo.has_status && wing::has_header(out_headers, "te") {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
     }
+
+    guard coalesce_h2_cookie_headers(out_headers) else {
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+    }
+    committed = true;
     return rfc::H2_ERR_NO_ERROR;
 }
 
@@ -597,7 +664,10 @@ fn hpack_decode_block(
         validate_http2_rules,
     );
     guard err == rfc::H2_ERR_NO_ERROR else {
-        state.table = saved_table;
+        // RFC 7541 Section 2.2: Encoding and Decoding Contexts - retain table updates on stream-level HTTP/2 errors.
+        if err == rfc::H2_ERR_COMPRESSION_ERROR {
+            state.table = saved_table;
+        }
         out_pseudo = WireH2PseudoHeaders { is_trailer: was_trailer, .. };
         out_headers.clear();
         return err;

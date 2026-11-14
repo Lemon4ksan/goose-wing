@@ -465,7 +465,7 @@ fn test_l0_overflow_and_dynamic_routes() {
 }
 
 fn test_l0_pipeline_execution() {
-    let quota = wing::new_gcra_quota(100, core::secs(1), 10);
+    let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
     var cfg = wing::new_server_pipeline_config("example.com", quota);
 
     assert(wing::add_route(cfg.router, "GET", "/healthz", 1001));
@@ -523,7 +523,7 @@ fn run_04_verify_l0_simd_routing() {
 fn test_h2_stream_progression() {
     print("=== H2_STREAM_PROGRESSION ===");
     var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -824,8 +824,8 @@ fn run_06_verify_role_polarity() {
 
 fn test_cryptojar_bounded_buffer_truncation() {
     var store = wing::KeyStore { .. };
-    var raw_key: u8[32] = [0x55; 32];
-    let slot = core::new_key_slot(1, raw_key[..], 1700000000);
+    let raw_key: u8[32] = [0x55; 32];
+    let slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
     assert(wing::add_key(store, slot));
 
     let pjar_xchacha = wing::new_private_jar(store, false);
@@ -901,7 +901,7 @@ fn test_csrf_path_prefix_exemption() {
 }
 
 fn test_gcra_shard_slot_allocation_priority() {
-    let quota = wing::new_gcra_quota(10, core::seconds(1), 5);
+    let quota = wing::new_gcra_quota(10, wing::secs(1), 5);
     var limiter = wing::new_sharded_limiter(quota);
 
     // Request from client A at t = 1000
@@ -932,7 +932,7 @@ fn test_privacypass_duplicate_params() {
 
     // RFC 9577 §2.1: Duplicate challenge param MUST be rejected
     let ok_dup_chal = wing::parse_private_token_challenge(
-        "PrivateToken challenge=\"AQIDBA\", challenge=\"BQYHCA\"",
+        "PrivateToken challenge=\"AQIDBA==\", challenge=\"BQYHCA==\"",
         out_chal,
         out_key,
         max_age,
@@ -941,7 +941,7 @@ fn test_privacypass_duplicate_params() {
 
     // RFC 9577 §2.1: Duplicate token-key param MUST be rejected
     let ok_dup_key = wing::parse_private_token_challenge(
-        "PrivateToken challenge=\"AQIDBA\", token-key=\"a2V5MQ\", token-key=\"a2V5Mg\"",
+        "PrivateToken challenge=\"AQIDBA==\", token-key=\"a2V5MQ==\", token-key=\"a2V5Mg==\"",
         out_chal,
         out_key,
         max_age,
@@ -950,7 +950,7 @@ fn test_privacypass_duplicate_params() {
 
     // RFC 9577 §2.1: Duplicate max-age param MUST be rejected
     let ok_dup_age = wing::parse_private_token_challenge(
-        "PrivateToken challenge=\"AQIDBA\", max-age=60, max-age=120",
+        "PrivateToken challenge=\"AQIDBA==\", max-age=60, max-age=120",
         out_chal,
         out_key,
         max_age,
@@ -998,8 +998,8 @@ fn test_missing_security_apis() {
 
 fn test_cryptojar_private_open_bounded_buffer() {
     var store = wing::KeyStore { .. };
-    var raw_key: u8[32] = [0x42; 32];
-    let slot = core::new_key_slot(1, raw_key[..], 1700000000);
+    let raw_key: u8[32] = [0x42; 32];
+    let slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
     assert(wing::add_key(store, slot));
 
     let pjar_xchacha = wing::new_private_jar(store, false);
@@ -1049,7 +1049,7 @@ fn test_privacypass_cache_eviction_perpetual_tokens() {
 }
 
 fn test_rate_limiter_probabilistic_saturation() {
-    let quota = wing::new_gcra_quota(1, core::seconds(1), 0);
+    let quota = wing::new_gcra_quota(1, wing::secs(1), 0);
     var pgcra = wing::new_probabilistic_gcra(quota, 100);
     pgcra.cell.tat_ns = 5000000000;
 
@@ -1106,8 +1106,8 @@ fn test_cross_origin_isolation_edge_cases() {
 
 fn test_cryptojar_base64_and_debug_cast_bounds() {
     var store = wing::KeyStore { .. };
-    var raw_key: u8[32] = [0x33; 32];
-    let slot = core::new_key_slot(1, raw_key[..], 1700000000);
+    let raw_key: u8[32] = [0x33; 32];
+    let slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
     assert(wing::add_key(store, slot));
 
     let pjar = wing::new_private_jar(store, false);
@@ -1180,7 +1180,7 @@ fn test_privacypass_rsa_spki_and_negative_ttl() {
     var ch_wire: u8[>..] = [];
     wing::marshal_token_challenge(ch, ch_wire);
     var ch_b64: u8[..256] = [];
-    core::base64url_encode(ch_wire[..], ch_b64);
+    wing::encode_padded_base64url(ch_wire[..], ch_b64);
 
     var raw_spki: u8[342]   = [0x30; 342];
     var spki_b64: u8[..512] = [];
@@ -1211,7 +1211,7 @@ fn test_privacypass_rsa_spki_and_negative_ttl() {
 
 fn test_gcra_clock_drift_persist_and_probabilistic_low_burst() {
     // FIND-0011: Backward clock jump exceeding GCRA_MAX_CLOCK_DRIFT_NS must persist clamped tat_ns in cell
-    let quota = wing::new_gcra_quota(10, core::seconds(1), 2);
+    let quota = wing::new_gcra_quota(10, wing::secs(1), 2);
     var cell = wing::GcraCell { tat_ns: 60000000000 };
     let now_backward: u64 = 10000000000;
     let dec1 = wing::gcra_check_n(quota, cell, 1, now_backward);
@@ -1222,7 +1222,7 @@ fn test_gcra_clock_drift_persist_and_probabilistic_low_burst() {
 
     // FIND-0012: ProbabilisticGcra with burst < sample_rate (e.g. burst = 2, sample_rate = 20)
     // must admit sampled requests when idle and update cell.tat_ns
-    let p_quota = wing::new_gcra_quota(10, core::seconds(1), 2);
+    let p_quota = wing::new_gcra_quota(10, wing::secs(1), 2);
     var pgcra = wing::new_probabilistic_gcra(p_quota, 20);
     pgcra.rng_state = 1; // Force next xorshift step to sample (or test across 100 steps)
     var sampled_admitted = false;
@@ -1238,8 +1238,14 @@ fn test_gcra_clock_drift_persist_and_probabilistic_low_burst() {
 
     // COOKIERL-05: HKDF-SHA256 Master Key Domain Separation in KeyStore
     var kstore = wing::KeyStore { .. };
-    var master_secret: u8[32] = [0x42; 32];
-    let kslot = core::new_key_slot(7, master_secret[..], 1700000000, 1700100000);
+    let master_secret: u8[32] = [0x42; 32];
+    let kslot = wing::KeySlot {
+        key_id:         7,
+        master_key:     master_secret,
+        created_at_sec: 1700000000,
+        expires_at_sec: 1700100000,
+        ..
+    };
     assert(wing::add_key(kstore, kslot));
     let act_slot, ok_act = wing::active_key(kstore);
     assert(ok_act);

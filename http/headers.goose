@@ -41,10 +41,13 @@ inline fn val_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
 // Whether name is a credential or session header that should be stripped on
 // cross-origin redirects or scheme downgrades.
 fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
+    // RFC 9421 Section 7.2.1: Insufficient Coverage - Strip Signature and Signature-Input on cross-origin redirects
     return name.eq_ascii_fold("authorization") ||
            name.eq_ascii_fold("proxy-authorization") ||
            name.eq_ascii_fold("cookie") ||
            name.eq_ascii_fold("dpop") ||
+           name.eq_ascii_fold("signature") ||
+           name.eq_ascii_fold("signature-input") ||
            name.eq_ascii_fold("x-api-key") ||
            name.eq_ascii_fold("x-auth-token") ||
            name.eq_ascii_fold("x-access-token") ||
@@ -955,6 +958,10 @@ fn handle_obs_fold_stack(
         return HeaderParseError.CapacityExceeded;
     }
 
+    let saved_raw_len = map.raw_buf.len;
+    var committed = false;
+    defer if !committed { map.raw_buf.resize(saved_raw_len); };
+
     let new_begin = map.raw_buf.len as u16;
     map.raw_buf.append(orig_val);
     map.raw_buf.push(' ');
@@ -973,6 +980,7 @@ fn handle_obs_fold_stack(
         map.entries[prev_idx].flags |= HEADER_FLAG_CONTAINS_COMMA;
         map.header_contains_comma[prev_idx] = true;
     }
+    committed = true;
     return HeaderParseError.None;
 }
 
@@ -1006,7 +1014,7 @@ fn handle_obs_fold(
 ) -> HeaderParseError {
     let in_spill = arena.spill_entries.len > 0;
     let prev_in_arena = in_spill
-        || (map.entries.len > 0 && map.entries[map.entries.len - 1].reserved == HEADER_SRC_ARENA);
+        || (map.entries.len > 0 && map.entries[core::sub_sat_i64(map.entries.len, 1)].reserved == HEADER_SRC_ARENA);
     if !prev_in_arena {
         return handle_obs_fold(line, policy, map);
     }
@@ -1472,6 +1480,41 @@ fn parse_headers_with_overflow(
 
 // Parses an HTTP status line into major/minor versions and status code.
 //
+// RFC 9112 Section 4: Status Line - reason-phrase = 1*( HTAB / SP / VCHAR / obs-text )
+inline fn is_valid_reason_phrase(s: const u8[:]) -> bool {
+    for b in s {
+        guard is_valid_header_value_byte(b) else { return false; }
+    }
+    return true;
+}
+
+// Parses an ICY Shoutcast compatibility status line (`ICY 200 OK`) into HTTP/1.0 status fields.
+//
+// Example:
+//   status_line = "ICY 200 OK"
+//   returns: HeaderParseError.None, major = 1, minor = 0, code = 200
+fn parse_icy_status_line(
+    status_line: const u8[:],
+    major:       i32&,
+    minor:       i32&,
+    code:        i32&,
+) -> HeaderParseError {
+    let sc_slice = status_line[4..].trim_lws_start();
+    guard sc_slice.len >= 3 && (sc_slice.len == 3 || sc_slice[3] == ' ') else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+    let sc_val, ok_sc = sc_slice[..3].parse_i32_dec();
+    let reason_off = min<i64>(4, sc_slice.len);
+    guard ok_sc && sc_val >= 100 && sc_val <= 599 &&
+          is_valid_reason_phrase(sc_slice[reason_off..]) else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+    major = 1;
+    minor = 0;
+    code = sc_val;
+    return HeaderParseError.None;
+}
+
 // Example:
 //   status_line = "HTTP/1.1 200 OK"
 //   returns: HeaderParseError.None, major = 1, minor = 1, code = 200
@@ -1483,58 +1526,47 @@ fn parse_http_status_line(
     mode:        H1ResponseParseMode = H1ResponseParseMode.Strict,
 ) -> HeaderParseError {
     if mode == H1ResponseParseMode.ClientCompat && status_line.len >= 7 && status_line[..4].eq_ascii_fold("ICY ") {
-        let sc_slice = status_line[4..].trim_lws_start();
-        guard sc_slice.len >= 3 && (sc_slice.len == 3 || sc_slice[3] == ' ') else {
+        return parse_icy_status_line(status_line, major, minor, code);
+    }
+
+    let min_len: i64 = if mode == H1ResponseParseMode.Strict { 13 } else { 12 };
+    guard status_line.len >= min_len && status_line[..5] == "HTTP/" else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+
+    let maj_v, ok_maj = status_line[5..6].parse_i32_dec();
+    let min_v, ok_min = status_line[7..8].parse_i32_dec();
+    guard status_line[6] == '.' && ok_maj && ok_min && status_line[8] == ' ' else {
+        return HeaderParseError.MalformedStatusLine;
+    }
+
+    var sp_idx: i64 = 9;
+    if mode == H1ResponseParseMode.Strict {
+        guard status_line[12] == ' ' else {
             return HeaderParseError.MalformedStatusLine;
         }
-        let sc_val, ok_sc = sc_slice[..3].parse_i32_dec();
-        guard ok_sc && sc_val >= 100 && sc_val <= 599 else {
+    } else {
+        while sp_idx < status_line.len && status_line[sp_idx] == ' ' {
+            sp_idx = core::add_sat_i64(sp_idx, 1);
+        }
+        let sc_end_chk = core::add_sat_i64(sp_idx, 3);
+        guard sc_end_chk <= status_line.len &&
+              (sc_end_chk == status_line.len || status_line[sc_end_chk] == ' ') else {
             return HeaderParseError.MalformedStatusLine;
         }
-        major = 1;
-        minor = 0;
-        code = sc_val;
-        return HeaderParseError.None;
     }
 
-    guard status_line.len >= 12 else {
-        return HeaderParseError.MalformedStatusLine;
-    }
-
-    // RFC 9112 Section 2.3: HTTP Version - HTTP-name is case-sensitive "HTTP".
-    guard status_line[..5] == "HTTP/" else {
+    let sc_end = core::add_sat_i64(sp_idx, 3);
+    let sc_val, ok_sc = status_line[sp_idx..sc_end].parse_i32_dec();
+    let reason_off = min<i64>(core::add_sat_i64(sp_idx, 4), status_line.len);
+    guard ok_sc && sc_val >= 100 && sc_val <= 599 &&
+          is_valid_reason_phrase(status_line[reason_off..]) else {
         return HeaderParseError.MalformedStatusLine;
     }
 
-    let maj = status_line[5] - '0';
-    let dot = status_line[6];
-    let min = status_line[7] - '0';
-    guard dot == '.' && maj >= 0 && maj <= 9 && min >= 0 && min <= 9 else {
-        return HeaderParseError.MalformedStatusLine;
-    }
-
-    guard status_line[8] == ' ' else {
-        return HeaderParseError.MalformedStatusLine;
-    }
-    var sp_idx: i64 = 8;
-    while sp_idx < status_line.len && status_line[sp_idx] == ' ' { sp_idx++; }
-    guard sp_idx + 3 <= status_line.len else {
-        return HeaderParseError.MalformedStatusLine;
-    }
-    guard sp_idx + 3 == status_line.len || status_line[sp_idx + 3] == ' ' else {
-        return HeaderParseError.MalformedStatusLine;
-    }
-
-    let c0 = status_line[sp_idx] - '0';
-    let c1 = status_line[sp_idx + 1] - '0';
-    let c2 = status_line[sp_idx + 2] - '0';
-    guard c0 >= 1 && c0 <= 5 && c1 >= 0 && c1 <= 9 && c2 >= 0 && c2 <= 9 else {
-        return HeaderParseError.MalformedStatusLine;
-    }
-
-    major = maj;
-    minor = min;
-    code = c0 * 100 + c1 * 10 + c2;
+    major = maj_v;
+    minor = min_v;
+    code = sc_val;
     return HeaderParseError.None;
 }
 
@@ -2329,6 +2361,8 @@ fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_le
     var first = true;
     var found = false;
     let hname = hash_header_name(name);
+    // RFC 9113 Section 8.2.3: Compressing the Cookie Header Field - Join multiple Cookie fields with "; "
+    let sep_ch: u8 = if name.eq_ascii_fold("cookie") { ';' } else { ',' };
 
     for entry in map.entries {
         guard entry.name_hash == hname else { continue; }
@@ -2337,7 +2371,7 @@ fn get_combined<B>(map: const HeaderMap&, name: const u8[:], out: B&, max_out_le
         found = true;
         if !first {
             guard out.len + 2 <= max_out_len else { out.clear(); return false; }
-            out.push(',');
+            out.push(sep_ch);
             out.push(' ');
         }
         first = false;
@@ -2558,13 +2592,15 @@ fn append_folded_header_values(
     out:       u8[>..]&,
 ) {
     var first = true;
+    // RFC 6265 Section 5.4: The Cookie Header - Join multiple Cookie fields with "; "
+    let sep: const u8[:] = if name.eq_ascii_fold("cookie") { "; " } else { ", " };
     for j in start_idx..map.entries.len {
         let other = map.entries[j];
         guard other.name_hash == entry.name_hash else { continue; }
         let other_name = map.raw_buf[other.name_begin..other.name_end];
         guard other_name.eq_ascii_fold(name) else { continue; }
         if !first {
-            out.append(", ");
+            out.append(sep);
         }
         first = false;
         let val = map.raw_buf[other.values_begin..other.values_end];

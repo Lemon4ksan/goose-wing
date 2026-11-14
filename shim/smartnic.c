@@ -91,15 +91,37 @@ int32_t wing_smartnic_probe(void) {
 }
 
 int32_t wing_smartnic_enable_ktls(int64_t fd) {
+    if (fd <= 0) {
+        return -EINVAL;
+    }
     if (setsockopt((int)fd, SOL_TCP, TCP_ULP, "tls", sizeof("tls")) < 0) {
         return -errno;
     }
     return 0;
 }
 
+void wing_smartnic_abort_ktls(int64_t fd) {
+    if (fd > 0) {
+        (void)shutdown((int)fd, SHUT_RDWR);
+    }
+}
+
+static void wing_zeroize_mem(void *ptr, size_t len) {
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+    for (size_t i = 0; i < len; ++i) {
+        p[i] = 0;
+    }
+}
+
+static int wing_has_valid_ktls_params(int64_t fd, wing_bytes_ro key, int64_t req_key_len, wing_bytes_ro iv,
+                                      wing_bytes_ro salt, wing_bytes_ro rec_seq) {
+    return fd > 0 && key.data != NULL && key.len == req_key_len && iv.data != NULL && iv.len >= 4 &&
+           salt.data != NULL && salt.len >= 4 && rec_seq.data != NULL && rec_seq.len >= 8;
+}
+
 int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
                                           wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
-    if (cipher_type == TLS_CIPHER_AES_GCM_128 && key.len >= 16) {
+    if (cipher_type == TLS_CIPHER_AES_GCM_128 && wing_has_valid_ktls_params(fd, key, 16, iv, salt, rec_seq)) {
         struct wing_tls_crypto_info_aes_gcm_128 info;
         __builtin_memset(&info, 0, sizeof(info));
         info.version = version;
@@ -109,11 +131,11 @@ int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t
         __builtin_memcpy(info.salt, salt.data, 4);
         __builtin_memcpy(info.rec_seq, rec_seq.data, 8);
 
-        if (setsockopt((int)fd, SOL_TLS, TLS_TX, &info, sizeof(info)) < 0) {
-            return -errno;
-        }
-        return 0;
-    } else if (cipher_type == TLS_CIPHER_AES_GCM_256 && key.len >= 32) {
+        int rc = setsockopt((int)fd, SOL_TLS, TLS_TX, &info, sizeof(info));
+        int err = (rc < 0) ? -errno : 0;
+        wing_zeroize_mem(&info, sizeof(info));
+        return err;
+    } else if (cipher_type == TLS_CIPHER_AES_GCM_256 && wing_has_valid_ktls_params(fd, key, 32, iv, salt, rec_seq)) {
         struct wing_tls_crypto_info_aes_gcm_256 info;
         __builtin_memset(&info, 0, sizeof(info));
         info.version = version;
@@ -123,17 +145,17 @@ int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t
         __builtin_memcpy(info.salt, salt.data, 4);
         __builtin_memcpy(info.rec_seq, rec_seq.data, 8);
 
-        if (setsockopt((int)fd, SOL_TLS, TLS_TX, &info, sizeof(info)) < 0) {
-            return -errno;
-        }
-        return 0;
+        int rc = setsockopt((int)fd, SOL_TLS, TLS_TX, &info, sizeof(info));
+        int err = (rc < 0) ? -errno : 0;
+        wing_zeroize_mem(&info, sizeof(info));
+        return err;
     }
     return -EINVAL;
 }
 
 int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
                                           wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
-    if (cipher_type == TLS_CIPHER_AES_GCM_128 && key.len >= 16) {
+    if (cipher_type == TLS_CIPHER_AES_GCM_128 && wing_has_valid_ktls_params(fd, key, 16, iv, salt, rec_seq)) {
         struct wing_tls_crypto_info_aes_gcm_128 info;
         __builtin_memset(&info, 0, sizeof(info));
         info.version = version;
@@ -143,11 +165,11 @@ int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t
         __builtin_memcpy(info.salt, salt.data, 4);
         __builtin_memcpy(info.rec_seq, rec_seq.data, 8);
 
-        if (setsockopt((int)fd, SOL_TLS, TLS_RX, &info, sizeof(info)) < 0) {
-            return -errno;
-        }
-        return 0;
-    } else if (cipher_type == TLS_CIPHER_AES_GCM_256 && key.len >= 32) {
+        int rc = setsockopt((int)fd, SOL_TLS, TLS_RX, &info, sizeof(info));
+        int err = (rc < 0) ? -errno : 0;
+        wing_zeroize_mem(&info, sizeof(info));
+        return err;
+    } else if (cipher_type == TLS_CIPHER_AES_GCM_256 && wing_has_valid_ktls_params(fd, key, 32, iv, salt, rec_seq)) {
         struct wing_tls_crypto_info_aes_gcm_256 info;
         __builtin_memset(&info, 0, sizeof(info));
         info.version = version;
@@ -157,10 +179,10 @@ int32_t wing_smartnic_set_hardware_tls_rx(int64_t fd, uint16_t version, uint16_t
         __builtin_memcpy(info.salt, salt.data, 4);
         __builtin_memcpy(info.rec_seq, rec_seq.data, 8);
 
-        if (setsockopt((int)fd, SOL_TLS, TLS_RX, &info, sizeof(info)) < 0) {
-            return -errno;
-        }
-        return 0;
+        int rc = setsockopt((int)fd, SOL_TLS, TLS_RX, &info, sizeof(info));
+        int err = (rc < 0) ? -errno : 0;
+        wing_zeroize_mem(&info, sizeof(info));
+        return err;
     }
     return -EINVAL;
 }
@@ -183,6 +205,10 @@ int32_t wing_smartnic_probe(void) {
 int32_t wing_smartnic_enable_ktls(int64_t fd) {
     (void)fd;
     return -1;
+}
+
+void wing_smartnic_abort_ktls(int64_t fd) {
+    (void)fd;
 }
 
 int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
@@ -219,6 +245,9 @@ int32_t wing_smartnic_probe(void) { return -ENOSYS; }
 int32_t wing_smartnic_enable_ktls(int64_t fd) {
     (void)fd;
     return -ENOSYS;
+}
+void wing_smartnic_abort_ktls(int64_t fd) {
+    (void)fd;
 }
 int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
                                           wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {

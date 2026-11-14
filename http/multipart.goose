@@ -289,6 +289,14 @@ fn parse_multipart_part(
     total_memory_used: i64&,
     msg:               MultipartMessage&,
 ) -> MultipartError {
+    let saved_cursor = cursor;
+    let saved_mem = total_memory_used;
+    var committed = false;
+    defer if !committed {
+        cursor = saved_cursor;
+        total_memory_used = saved_mem;
+    };
+
     if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
         cursor += 2;
     } else if cursor < body.len && body[cursor] == '\n' {
@@ -359,6 +367,7 @@ fn parse_multipart_part(
     msg.parts.push(part);
 
     cursor = next_delim_pos + part_delim.len;
+    committed = true;
     return MultipartError.None;
 }
 
@@ -487,7 +496,7 @@ struct NormalizedRange {
 }
 
 struct RangeSet {
-    ranges:          NormalizedRange[..16] = [],
+    ranges:          NormalizedRange[..32] = [],
     is_satisfiable:  bool                  = true,
     coalesced:       bool                  = false,
     resource_length: i64                   = 0,
@@ -576,8 +585,8 @@ fn normalize_range_spec(spec: const RangeSpec&, resource_len: i64, norm: Normali
     }
 }
 
-fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: NormalizedRange[..16]&) {
-    guard raw_ranges.len > 0 else { return; }
+fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: NormalizedRange[..32]&) -> bool {
+    guard raw_ranges.len > 0 else { return true; }
     for i in 1..raw_ranges.len {
         var j = i;
         while j > 0 && (raw_ranges[j].start < raw_ranges[j - 1].start ||
@@ -598,11 +607,11 @@ fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: No
         if can_merge {
             merged.end_pos = max(merged.end_pos, next_r.end_pos);
         } else {
-            let _ = out_ranges.try_push(merged);
+            guard out_ranges.try_push(merged) else { return false; }
             merged = next_r;
         }
     }
-    let _ = out_ranges.try_push(merged);
+    return out_ranges.try_push(merged);
 }
 
 // Parses a comma-separated list of range specifications.
@@ -692,11 +701,13 @@ fn parse_range_header(
     }
 
     if with_coalesce && raw_ranges.len > 1 {
-        coalesce_normalized_ranges(raw_ranges, rs.ranges);
+        guard coalesce_normalized_ranges(raw_ranges, rs.ranges) else {
+            return rs, RangeError.ExceededMaxRanges;
+        }
         rs.coalesced = true;
     } else {
         for r in raw_ranges {
-            let _ = rs.ranges.try_push(r);
+            guard rs.ranges.try_push(r) else { return rs, RangeError.ExceededMaxRanges; }
         }
         rs.coalesced = false;
     }
@@ -727,7 +738,7 @@ fn format_content_range<B>(start: i64, end_pos: i64, total_len: i64, out: B&) {
 fn evaluate_if_range(
     if_range_header: const u8[:],
     etag:            const u8[:],
-    mod_time:        core::Time,
+    mod_unix_sec:    i64,
 ) -> bool {
     let trimmed = if_range_header.trim_lws();
     guard trimmed.len > 0 else { return false; }
@@ -745,10 +756,8 @@ fn evaluate_if_range(
     let parsed_date, date_ok = core::parse_http_date(trimmed);
     guard date_ok else { return false; }
 
-    // Compare timestamps truncated to whole seconds (RFC 9110 Section 13.1.5).
-    let mod_sec = core::unix(mod_time);
-    let parsed_sec = core::unix(parsed_date);
-    return mod_sec == parsed_sec;
+    // Compare timestamps in whole seconds (RFC 9110 Section 13.1.5).
+    return mod_unix_sec == core::unix(parsed_date);
 }
 
 // Validates a Content-Range header for a byte-range PATCH payload (draft-wright-http-range-patch).
@@ -760,27 +769,24 @@ fn validate_byterange_patch(content_range_val: const u8[:], body_len: i64) -> i6
         return 0, 0, false;
     }
 
-    let rem = trimmed[6..].trim_lws();
-    // Unsatisfied form "bytes */1000" or wildcard range "bytes */*" is an explicit syntax error in PATCH
-    guard rem.len > 0 && rem[0] != '*' else { return 0, 0, false; }
+    let rem = trimmed[6..];
+    // RFC 9110 Section 14.4: Single SP after range-unit; interior LWS and unsatisfied '*' are rejected
+    guard rem.len > 0 && !core::is_lws(rem[0]) && rem[0] != '*' else { return 0, 0, false; }
 
-    let range_raw, total_raw, has_slash = rem.split_once_byte('/');
-    guard has_slash && range_raw.len > 0 else { return 0, 0, false; }
-
-    let range_part = range_raw.trim_lws();
-    guard range_part.len > 0 && range_part != "*" else { return 0, 0, false; }
+    let range_part, total_part, has_slash = rem.split_once_byte('/');
+    guard has_slash && range_part.len > 0 && range_part != "*" && total_part.len > 0 else {
+        return 0, 0, false;
+    }
 
     let start_raw, end_raw, has_dash = range_part.split_once_byte('-');
     guard has_dash && start_raw.len > 0 && end_raw.len > 0 else { return 0, 0, false; }
 
-    let start_val, s_ok = parse_i64_slice(start_raw.trim_lws());
-    let end_val, e_ok = parse_i64_slice(end_raw.trim_lws());
+    let start_val, s_ok = parse_i64_slice(start_raw);
+    let end_val, e_ok = parse_i64_slice(end_raw);
     guard s_ok && e_ok && start_val >= 0 && end_val >= start_val else {
         return 0, 0, false;
     }
 
-    let total_part = total_raw.trim_lws();
-    guard total_part.len > 0 else { return 0, 0, false; }
     if total_part != "*" {
         let total_val, t_ok = parse_i64_slice(total_part);
         guard t_ok && total_val > end_val else { return 0, 0, false; }
@@ -799,7 +805,7 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     req_range_header: const u8[:],
     if_range_header:  const u8[:],
     etag:             const u8[:],
-    mod_time:         core::Time,
+    mod_unix_sec:     i64,
     resource_len:     i64,
     content_type:     const u8[:],
     out_status:       i32&,
@@ -812,7 +818,7 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
 
     // Check If-Range if present
     if if_range_header.len > 0 {
-        let is_match = evaluate_if_range(if_range_header, etag, mod_time);
+        let is_match = evaluate_if_range(if_range_header, etag, mod_unix_sec);
         if !is_match {
             out_status = 200;
             insert_header(out_headers, "content-type", content_type);
@@ -850,7 +856,7 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     };
 }
 
-fn validate_range_set_bounds(ranges: const NormalizedRange[..16]&) -> bool {
+fn validate_range_set_bounds(ranges: const NormalizedRange[..32]&) -> bool {
     for r in ranges {
         if r.end_pos < r.start || r.start < 0 || r.end_pos - r.start >= 9223372036854775807 {
             return false;
@@ -860,7 +866,7 @@ fn validate_range_set_bounds(ranges: const NormalizedRange[..16]&) -> bool {
 }
 
 fn serve_multipart_ranges<OpenFn: fn(i64, i64, u8[>..]&)>(
-    ranges:       const NormalizedRange[..16]&,
+    ranges:       const NormalizedRange[..32]&,
     resource_len: i64,
     content_type: const u8[:],
     boundary:     const u8[:],

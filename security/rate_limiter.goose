@@ -21,8 +21,8 @@ struct GcraQuota {
 
 // Calculates GCRA quota parameters from sustained limit, period, and burst tolerance.
 // T = period / limit (emission interval), tau = T * burst (delay tolerance).
-fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> GcraQuota {
-    let p_ns = if period_dur.nanos > 0 { period_dur.nanos as u64 } else { 1000000000 as u64 };
+fn new_gcra_quota(limit: u64, period_ns: i64, burst: u64 = 0) -> GcraQuota {
+    let p_ns = if period_ns > 0 { period_ns as u64 } else { SECOND as u64 };
     let l = max(limit, 1);
     let t_ns = max(fast_div_u64(p_ns, l), 1);
     let tau_ns = core::mul_sat_u64(t_ns, burst);
@@ -299,31 +299,51 @@ fn check_rate_limit(
 // ---- probabilistic sampled gcra -------------------------------------------
 
 struct ProbabilisticGcra {
-    quota:       GcraQuota = GcraQuota { .. },
-    cell:        GcraCell  = GcraCell { .. },
-    sample_rate: u64       = 20, // 5% sampling
-    rng_state:   u64       = 0x853c49e6748fea9b,
+    quota:         GcraQuota = GcraQuota { .. },
+    cell:          GcraCell  = GcraCell { .. },
+    sample_rate:   u64       = 20, // 5% sampling
+    rng_state:     u64       = 0,
+    window_pos:    u64       = 0,
+    window_target: u64       = 0,
+    initialized:   bool      = false,
 }
 
 fn new_probabilistic_gcra(quota: GcraQuota, sample_rate: u64 = 20) -> ProbabilisticGcra {
+    let rate = if sample_rate > 0 { sample_rate } else { 20 as u64 };
+    var seed = (clock_ns() as u64) ^ 0x853c49e6748fea9b;
+    let first_mix = core::splitmix64(seed);
     return ProbabilisticGcra {
-        quota:       quota,
-        cell:        GcraCell { .. },
-        sample_rate: if sample_rate > 0 { sample_rate } else { 20 },
-        rng_state:   0x853c49e6748fea9b,
+        quota:         quota,
+        cell:          GcraCell { .. },
+        sample_rate:   rate,
+        rng_state:     seed,
+        window_pos:    0,
+        window_target: core::fast_range_biased_u64(first_mix, rate),
+        initialized:   true,
     };
 }
 
-// 5% sampled check: 19 of 20 requests pass immediately without touch;
-// 1 in 20 applies cost * sample_rate to the TAT cell.
+inline fn advance_probabilistic_sample_slot(pgcra: ProbabilisticGcra&, rate: u64) -> bool {
+    if !pgcra.initialized || pgcra.rng_state == 0 {
+        pgcra.rng_state = (clock_ns() as u64) ^ 0x853c49e6748fea9b;
+        let init_mix = core::splitmix64(pgcra.rng_state);
+        pgcra.window_pos = 0;
+        pgcra.window_target = core::fast_range_biased_u64(init_mix, rate);
+        pgcra.initialized = true;
+    } else if pgcra.window_pos >= rate {
+        let next_mix = core::splitmix64(pgcra.rng_state);
+        pgcra.window_pos = 0;
+        pgcra.window_target = core::fast_range_biased_u64(next_mix, rate);
+    }
+    let sampled = pgcra.window_pos == pgcra.window_target;
+    pgcra.window_pos = core::add_sat_u64(pgcra.window_pos, 1);
+    return sampled;
+}
+
+// Stratified 1-in-rate sampled check: applies cost * sample_rate once per random slot in each rate-window.
 fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> RateLimitDecision {
     let rate = if pgcra.sample_rate > 0 { pgcra.sample_rate } else { 20 as u64 };
-    if pgcra.rng_state == 0 {
-        pgcra.rng_state = 0x853c49e6748fea9b;
-    }
-    pgcra.rng_state ^= pgcra.rng_state >> 12;
-    pgcra.rng_state ^= pgcra.rng_state << 25;
-    pgcra.rng_state ^= pgcra.rng_state >> 27;
+    let sampled = advance_probabilistic_sample_slot(pgcra, rate);
 
     let t = max(pgcra.quota.emission_interval_ns, 1);
     let tau = pgcra.quota.delay_tolerance_ns;
@@ -335,9 +355,6 @@ fn check_rate_limit(pgcra: ProbabilisticGcra&, cost_n: u64, now_ns: u64) -> Rate
         pgcra.cell.tat_ns = tat_curr;
     }
 
-    let q_samp = fast_div_u64(pgcra.rng_state, rate);
-    let rem_samp = core::sub_sat_u64(pgcra.rng_state, core::mul_sat_u64(q_samp, rate));
-    let sampled = rem_samp == 0;
     if sampled {
         let dec = gcra_check_n(pgcra.quota, pgcra.cell, cost_n, now_ns);
         guard is_allowed(dec) else { return dec; }
@@ -479,7 +496,7 @@ fn apply_rate_limit_headers<Res>(res: Res&, quota: const GcraQuota&, decision: c
             set_ratelimit_u64_header(
                 res.headers, rfc::HEADER_RATELIMIT_REMAINING, rfc::HASH_HDR_RATELIMIT_REMAINING, 0xFF, 0,
             );
-            let retry_sec = ceil_ns_to_sec(rej.retry_after_ns);
+            let retry_sec = max(ceil_ns_to_sec(rej.retry_after_ns), 1);
             set_ratelimit_u64_header(
                 res.headers, rfc::HEADER_RATELIMIT_RESET, rfc::HASH_HDR_RATELIMIT_RESET, 0xFF, retry_sec,
             );
@@ -490,6 +507,8 @@ fn apply_rate_limit_headers<Res>(res: Res&, quota: const GcraQuota&, decision: c
                 SLOT_RETRY_AFTER,
                 retry_sec,
             );
+            // RFC 6585 Section 4: 429 Too Many Requests - Responses with the 429 status code MUST NOT be stored by a cache.
+            let _ = set_or_replace(res.headers, "Cache-Control", "no-store", false);
             res.status_code = rfc::STATUS_TOO_MANY_REQUESTS;
         },
     };
@@ -535,21 +554,17 @@ fn to_gcra_decision(decision: const RateLimitDecision&) -> GcraDecision {
     };
 }
 
-// Samples a uniform random nanosecond offset in `[jitter.min_ns, jitter.max_ns)` using XorShift64.
+// Samples a uniform random nanosecond offset in `[jitter.min_ns, jitter.max_ns)` using SplitMix64.
 fn sample_gcra_jitter_ns(jitter: const GcraJitter&, prng_state: u64&) -> i64 {
     let min_val = max(jitter.min_ns, 0);
     guard jitter.max_ns > min_val else { return min_val; }
     if prng_state == 0 {
-        prng_state = 0x853c49e6748fea9b;
+        let seeded = (clock_ns() as u64) ^ 0x853c49e6748fea9b;
+        prng_state = if seeded != 0 { seeded } else { 0x853c49e6748fea9b };
     }
-    prng_state ^= prng_state >> 12;
-    prng_state ^= prng_state >> 25;
-    prng_state ^= prng_state >> 27;
-    let mixed = core::add_sat_u64(prng_state, 0x9e3779b97f4a7c15);
-    prng_state = mixed;
+    let mixed = core::splitmix64(prng_state);
     let span = (core::sub_sat_i64(jitter.max_ns, min_val)) as u64;
-    let q = fast_div_u64(mixed, span);
-    let rem = core::sub_sat_u64(mixed, core::mul_sat_u64(q, span));
+    let rem = core::fast_range_biased_u64(mixed, span);
     let offset = (min(rem, 0x7FFFFFFFFFFFFFFF)) as i64;
     return core::add_sat_i64(min_val, offset);
 }

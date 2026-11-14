@@ -239,8 +239,8 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
     }
     guard cursor < text.len else { return Duration { 0 }, false; }
 
-    let max_i64 = 9223372036854775807;
-    var total_nanos: i64 = 0;
+    let max_mag: u64 = if is_neg { 0x8000000000000000 } else { 0x7FFFFFFFFFFFFFFF };
+    var total_mag: u64 = 0;
 
     while cursor < text.len {
         let num_start = cursor;
@@ -261,13 +261,17 @@ fn parse_duration(raw_str: const u8[:]) -> Duration, bool {
         let unit_mult, ok_unit = duration_unit_multiplier(unit_str);
         guard ok_unit else { return Duration { 0 }, false; }
 
-        let component_nanos, ok_comp = parse_duration_component(num_str, unit_mult);
-        guard ok_comp else { return Duration { 0 }, false; }
-        guard total_nanos <= max_i64 - component_nanos else { return Duration { 0 }, false; }
+        let comp_mag, ok_comp = parse_duration_component(num_str, unit_mult, max_mag);
+        guard ok_comp && comp_mag <= max_mag - total_mag else { return Duration { 0 }, false; }
 
-        total_nanos += component_nanos;
+        total_mag += comp_mag;
     }
 
-    if is_neg { total_nanos = -total_nanos; }
-    return Duration { nanos: total_nanos }, true;
+    if is_neg {
+        if total_mag == 0x8000000000000000 {
+            return Duration { nanos: DURATION_MIN_NANOS }, true;
+        }
+        return Duration { nanos: -(total_mag as i64) }, true;
+    }
+    return Duration { nanos: total_mag as i64 }, true;
 }

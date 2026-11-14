@@ -5,6 +5,7 @@
 namespace core;
 
 import std;
+import core.math.arithmetic;
 
 enum Month {
     January,
@@ -67,7 +68,8 @@ fn month_number(month_val: Month) -> i64 {
 }
 
 fn month_from_number(month_num: i64) -> Month {
-    return match month_num {
+    let norm = rem_euclid_i64(month_num, 12);
+    return match norm {
         1 => Month.January,
         2 => Month.February,
         3 => Month.March,
@@ -79,7 +81,7 @@ fn month_from_number(month_num: i64) -> Month {
         9 => Month.September,
         10 => Month.October,
         11 => Month.November,
-        12 => Month.December,
+        0 => Month.December,
         _ => Month.January,
     };
 }
@@ -105,7 +107,8 @@ fn weekday_number(weekday_val: Weekday) -> i64 {
 }
 
 fn weekday_from_number(weekday_num: i64) -> Weekday {
-    return match weekday_num {
+    let norm = rem_euclid_i64(weekday_num, 7);
+    return match norm {
         0 => Weekday.Sunday,
         1 => Weekday.Monday,
         2 => Weekday.Tuesday,
@@ -131,30 +134,31 @@ fn weekday_short_name(weekday_val: Weekday) -> const u8[:] {
 // Unix epoch (1970-01-01) in O(1) time without loops, lookup tables, or heap allocations.
 // Reference: Howard Hinnant, "chrono-Compatible Low-Level Date Algorithms" (2013).
 fn days_to_civil(days_since_epoch: i64) -> i64, i64, i64 {
-    var shifted_days = days_since_epoch + 719468;
-    let era = (if shifted_days >= 0 { shifted_days } else { shifted_days - 146096 }) / 146097;
-    let day_of_era = shifted_days - era * 146097;
+    let shifted_days = add_sat_i64(days_since_epoch, 719468);
+    let era = div_euclid_i64(shifted_days, 146097);
+    let day_of_era = shifted_days % 146097;
     let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
-    var year_val = year_of_era + era * 400;
+    var year_val = add_sat_i64(year_of_era, mul_sat_i64(era, 400));
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
     let day_val = day_of_year - (153 * month_prime + 2) / 5 + 1;
     let month_val = if month_prime < 10 { month_prime + 3 } else { month_prime - 9 };
-    if month_val <= 2 { year_val += 1; }
+    if month_val <= 2 { year_val = add_sat_i64(year_val, 1); }
     return year_val, month_val, day_val;
 }
 
 fn civil_to_days(year_val: i64, month_val: i64, day_val: i64) -> i64 {
-    var adjusted_year = year_val;
-    let adjusted_month = month_val;
-    let adjusted_day = day_val;
-    if adjusted_month <= 2 { adjusted_year -= 1; }
-    let era = (if adjusted_year >= 0 { adjusted_year } else { adjusted_year - 399 }) / 400;
-    let year_of_era = adjusted_year - era * 400;
+    let m0 = sub_sat_i64(month_val, 1);
+    let year_carry = div_euclid_i64(m0, 12);
+    let adjusted_month = (m0 % 12) + 1;
+    var adjusted_year = add_sat_i64(year_val, year_carry);
+    if adjusted_month <= 2 { adjusted_year = sub_sat_i64(adjusted_year, 1); }
+    let era = div_euclid_i64(adjusted_year, 400);
+    let year_of_era = adjusted_year % 400;
     let m_shift = if adjusted_month > 2 { adjusted_month - 3 } else { adjusted_month + 9 };
-    let day_of_year = (153 * m_shift + 2) / 5 + adjusted_day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    return era * 146097 + day_of_era - 719468;
+    let day_of_year = add_sat_i64((153 * m_shift + 2) / 5, sub_sat_i64(day_val, 1));
+    let day_of_era = add_sat_i64(365 * year_of_era + year_of_era / 4 - year_of_era / 100, day_of_year);
+    return sub_sat_i64(add_sat_i64(mul_sat_i64(era, 146097), day_of_era), 719468);
 }
 
 fn is_leap_year(year_val: i64) -> bool {

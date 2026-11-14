@@ -48,7 +48,7 @@ inline fn cork_is_full(cb: const CorkBuffer&) -> bool {
 
 // Yields buffered bytes as a contiguous slice for sending.
 inline fn cork_as_slice(cb: const CorkBuffer&) -> const u8[:] {
-    let end = cb.len;
+    let end = clamp(cb.len, 0, CORK_BUFFER_CAP);
     return cb.storage[..end];
 }
 
@@ -92,6 +92,9 @@ fn cork_write_u8(cb: CorkBuffer&, b: u8) -> IoError {
 
 // Appends 24-bit integer in Big-Endian wire order (RFC 9113 HTTP/2 framing).
 fn cork_write_u24_be(cb: CorkBuffer&, v: u32) -> IoError {
+    guard v <= 0xFFFFFF else {
+        return IoError.InvalidArgument;
+    }
     guard cork_available(cb) >= 3 else {
         return IoError.BufferFull;
     }
@@ -149,5 +152,12 @@ fn clear(cb: CorkBuffer&) {
 }
 
 fn resize(cb: CorkBuffer&, new_len: i64) {
-    cb.len = clamp(new_len, 0, CORK_BUFFER_CAP);
+    let clamped = clamp(new_len, 0, CORK_BUFFER_CAP);
+    if clamped > cb.len {
+        let safe_start = max(0, cb.len);
+        for i in safe_start..clamped {
+            cb.storage[i] = 0;
+        }
+    }
+    cb.len = clamped;
 }

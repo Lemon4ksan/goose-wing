@@ -85,10 +85,9 @@ fn add_symmetric_key(
     alg:        JwtAlg,
     secret_key: const u8[:],
 ) -> bool {
-    guard secret_key.len >= 16 && secret_key.len <= 64 else { return false; }
-    guard alg == JwtAlg.Unspecified || alg == JwtAlg.HS256 || alg == JwtAlg.HS384 || alg == JwtAlg.HS512 else {
-        return false;
-    }
+    // RFC 7518 Section 3.2: HMAC with SHA-2 Functions - key must be at least hash output length
+    let min_len = if alg == JwtAlg.Unspecified { rfc::HMAC_SHA256_MAC_LEN } else { hmac_min_key_len(alg) };
+    guard min_len > 0 && secret_key.len >= min_len && secret_key.len <= 128 else { return false; }
     var key = JwksKey {
         kty:   JwkKeyType.Oct,
         crv:   "",
@@ -127,22 +126,37 @@ fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {
     out.append("]}");
 }
 
-// Parses and validates a single JWK key object from the "keys" JSON array.
+// RFC 7517 Section 5: JWK Set Format - parses a single JWK object from the "keys" JSON array
 //
 // Example:
 //   reader positioned at {"kty":"OKP", ...}
 //   appends validated key to out_jwks, returns: true
 fn parse_single_jwk_element(
-    reader:   json::Reader&,
-    out_jwks: Jwks&,
+    reader:    json::Reader&,
+    out_jwks:  Jwks&,
+    had_error: bool&,
 ) -> bool {
+    guard json::peek(reader) == '{' else {
+        had_error = true;
+        json::skip(reader);
+        return false;
+    }
     var key_item = JwksKey { .. };
     var mat = JwkRawMaterial { .. };
     defer zeroize_jwks_key(key_item);
     defer core::secure_zeroize_slice(mat.raw_k[..]);
 
     parse_jwk_key_fields(reader, mat, key_item);
-    return finalize_jwk_key(mat, key_item) && out_jwks.keys.try_push(key_item);
+    if key_item.has_invalid_type {
+        had_error = true;
+        return false;
+    }
+    guard finalize_jwk_key(mat, key_item) else { return false; }
+    if !out_jwks.keys.try_push(key_item) {
+        had_error = true;
+        return false;
+    }
+    return true;
 }
 
 // Parses the top-level `"keys"` JSON array of an RFC 7517 §5 JWK Set document.
@@ -163,7 +177,7 @@ inline fn parse_jwks_keys_array(
     }
     seen_keys_root = true;
     json::each_element(reader) {
-        let _ = parse_single_jwk_element(reader, out_jwks);
+        let _ = parse_single_jwk_element(reader, out_jwks, had_error);
     };
 }
 

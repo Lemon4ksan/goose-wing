@@ -61,6 +61,7 @@ struct ServerPipelineConfig {
     enable_csrf_guard:       bool                      = true,
     enable_cors:             bool                      = true,
     enable_slowloris_timer:  bool                      = true,
+    tls_enabled:             bool                      = true,
     trust_proxy_headers:     bool                      = false,
     server_pso_capabilities: u64                       = 0xFFFFFFFFFFFFFFFF,
     hdr_scan_cursor:         i64                       = 0,
@@ -94,7 +95,7 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
 }
 
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig {
-    return new_server_pipeline_config(target_host, new_gcra_quota(1000, core::secs(1), 100));
+    return new_server_pipeline_config(target_host, new_gcra_quota(1000, secs(1), 100));
 }
 
 // Configures or updates a parameter-slot GCRA rate limiter (slot 0..3) in `cfg.tier_limiters`.
@@ -312,43 +313,123 @@ fn validate_pipeline_expect_header(req: const Request&) -> bool {
 
 // ---- 2. RFC 7239 Forwarded & Client IP Resolution Helpers -------------------
 
-// Normalizes an RFC 7239 forwarded IP value, stripping quotes, brackets, and ports.
+inline fn is_valid_forwarded_quoted_body(inner: const u8[:]) -> bool {
+    var rem = inner;
+    while rem.len > 0 {
+        let b = rem[0];
+        if b == '\\' {
+            guard rem.len >= 2 else { return false; }
+            let esc = rem[1];
+            guard esc == ' ' || esc == '\t' || (esc >= 0x21 && esc != 0x7F) else { return false; }
+            rem = rem[2..];
+            continue;
+        }
+        guard b != '"' && (b == ' ' || b == '\t' || (b >= 0x21 && b != 0x7F)) else { return false; }
+        rem = rem[1..];
+    }
+    return true;
+}
+
+inline fn is_valid_forwarded_port(port_str: const u8[:]) -> bool {
+    guard port_str.len > 0 else { return false; }
+    if port_str[0] == '_' {
+        guard port_str.len >= 2 else { return false; }
+        for b in port_str[1..] {
+            let ok = core::is_ascii_alphanumeric(b) || b == '.' || b == '_' || b == '-';
+            guard ok else { return false; }
+        }
+        return true;
+    }
+    let port_num, ok_port = core::parse_port_number(port_str);
+    return ok_port && port_num > 0;
+}
+
+inline fn is_valid_ipv4_address_slice(ip: const u8[:]) -> bool {
+    var rest = ip;
+    for _ in 3 {
+        let head, tail, ok_dot = rest.split_once_byte('.');
+        guard ok_dot && head.len > 0 else { return false; }
+        let _, ok_oct = core::parse_ipv4_decimal_octet(head);
+        guard ok_oct else { return false; }
+        rest = tail;
+    }
+    let _, ok_last = core::parse_ipv4_decimal_octet(rest);
+    return ok_last;
+}
+
+inline fn normalize_forwarded_bracket_ipv6(val: const u8[:]) -> const u8[:] {
+    let after_open = val[1..];
+    let v6_body, after_close, has_close = after_open.split_once_byte(']');
+    var ipv6_buf: u8[..64] = [];
+    guard has_close && v6_body.len > 0 && core::parse_and_compress_ipv6(v6_body, ipv6_buf) else {
+        return "";
+    }
+    if after_close.len > 0 {
+        guard after_close[0] == ':' && is_valid_forwarded_port(after_close[1..]) else {
+            return "";
+        }
+    }
+    return v6_body;
+}
+
+// RFC 7239 Section 6: Node Identifiers - normalizes a forwarded IP value, rejecting `unknown` and `_obfnode`.
 //
 // Example:
 //   raw_val = "\"[2001:db8:cafe::17]:4711\""
 //   returns: "2001:db8:cafe::17"
 fn normalize_forwarded_ip(raw_val: const u8[:]) -> const u8[:] {
+    guard raw_val.len > 0 else { return ""; }
     var val = raw_val;
-    if core::starts_with(val, "\"") && core::ends_with(val, "\"") && val.len >= 2 {
-        val = val[1..^1];
+    if val[0] == '"' {
+        let after_q, ok_l = val.strip_prefix("\"");
+        let inner_q, ok_r = after_q.strip_suffix("\"");
+        guard ok_l && ok_r && is_valid_forwarded_quoted_body(inner_q) else { return ""; }
+        val = inner_q;
+    } else if val.contains_byte('"') {
+        return "";
     }
-    guard val.len > 0 else { return ""; }
-
-    if core::starts_with(val, "[") {
-        let close_br = val.index_of_byte(']');
-        guard close_br > 1 else { return ""; }
-        return val[1..close_br];
+    guard val.len > 0 && !val.eq_ascii_fold("unknown") && val[0] != '_' else { return ""; }
+    if val[0] == '[' {
+        return normalize_forwarded_bracket_ipv6(val);
     }
 
-    let col1 = val.index_of_byte(':');
-    guard col1 > 0 else { return val; }
-    let col2 = val[(col1 + 1)..].index_of_byte(':');
-    guard col2 < 0 else { return val; }
-    return val[..col1];
+    let host_part, after_col1, has_col1 = val.split_once_byte(':');
+    if !has_col1 {
+        return if is_valid_ipv4_address_slice(val) { val } else { "" };
+    }
+    if after_col1.contains_byte(':') {
+        var ipv6_buf: u8[..64] = [];
+        return if core::parse_and_compress_ipv6(val, ipv6_buf) { val } else { "" };
+    }
+    guard host_part.len > 0 && is_valid_forwarded_port(after_col1) && is_valid_ipv4_address_slice(host_part) else {
+        return "";
+    }
+    return host_part;
 }
 
-// Parses a single key=value pair from a Forwarded header element.
+// RFC 7239 Section 4: Forwarded HTTP Header Field - parses a `for=` parameter pair without BWS around `=`.
 //
 // Example:
 //   pair = "for=\"192.0.2.60:4711\""
 //   returns: "192.0.2.60"
 fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
     let trimmed = pair.trim_lws();
-    let eq_idx = trimmed.index_of_byte('=');
-    guard eq_idx > 0 else { return ""; }
-    let key = trimmed[..eq_idx].trim_lws();
-    guard key.eq_ascii_fold("for") else { return ""; }
-    return normalize_forwarded_ip(trimmed[(eq_idx + 1)..].trim_lws());
+    let key, raw_val, has_eq = trimmed.split_once_byte('=');
+    guard has_eq && key.eq_ascii_fold("for") && raw_val.len > 0 else { return ""; }
+    if raw_val[0] == '"' {
+        let after_q, ok_l = raw_val.strip_prefix("\"");
+        let inner, ok_r = after_q.strip_suffix("\"");
+        guard ok_l && ok_r && inner.len > 0 && is_valid_forwarded_quoted_body(inner) else { return ""; }
+        let _, after_c1, has_c1 = inner.split_once_byte(':');
+        if inner[0] != '[' && has_c1 && after_c1.contains_byte(':') {
+            return "";
+        }
+        return normalize_forwarded_ip(inner);
+    }
+    for b in raw_val {
+        guard core::is_tchar(b) else { return ""; }
+    }
+    return normalize_forwarded_ip(raw_val);
 }
 
 // Extracts the client IP from the first element of an RFC 7239 Forwarded header.
@@ -611,16 +692,17 @@ fn stage_server_cors(
 
 // Stage 7 (Server Ingress): Fetch Metadata (`Sec-Fetch-*`) cross-origin isolation & CSRF guard.
 fn stage_server_csrf(
-    csrf_guard:  const CrossOriginGuard&,
-    enabled:     bool,
-    target_host: const u8[:],
-    req:         const Request&,
-    res:         Response&,
+    csrf_guard:    const CrossOriginGuard&,
+    enabled:       bool,
+    target_host:   const u8[:],
+    req:           const Request&,
+    res:           Response&,
+    target_scheme: CsrfTargetScheme = CsrfTargetScheme.Https,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.csrf");
     defer prof_leave(_prof);
-    let csrf_res = evaluate_request_csrf(csrf_guard, req, target_host);
+    let csrf_res = evaluate_request_csrf(csrf_guard, req, target_host, false, target_scheme);
     apply_isolation_headers(res);
     return match csrf_res {
         RejectForbidden _ => {
@@ -690,6 +772,22 @@ fn stage_server_auth_cookie<Jar>(
     return wire::StageVerdict.Continue;
 }
 
+// RFC 6750 Section 2.1: Authorization Request Header Field - "Bearer" 1*SP b64token
+fn is_b64token_slice(tok: const u8[:]) -> bool {
+    guard tok.len > 0 && tok[0] != '=' else { return false; }
+    var seen_pad = false;
+    for b in tok {
+        if b == '=' {
+            seen_pad = true;
+        } else {
+            let ok_ch = core::is_ascii_alphanumeric(b)
+                || b == '-' || b == '.' || b == '_' || b == '~' || b == '+' || b == '/';
+            guard !seen_pad && ok_ch else { return false; }
+        }
+    }
+    return true;
+}
+
 // Extracts Bearer token from an Authorization header value (RFC 6750 §2.1).
 //
 // Example:
@@ -697,9 +795,11 @@ fn stage_server_auth_cookie<Jar>(
 //   returns: "eyJhbGciOiJIUzI1NiJ9.e30.sig"
 fn extract_bearer_token(auth_hdr: const u8[:]) -> const u8[:] {
     let trimmed = auth_hdr.trim_lws();
-    guard trimmed.len > 7 else { return ""; }
-    guard trimmed[..7].eq_ascii_fold("Bearer ") else { return ""; }
-    return trimmed[7..].trim_lws();
+    let rest, ok_pfx = trimmed.strip_prefix_fold("Bearer ");
+    guard ok_pfx else { return ""; }
+    let tok = rest.trim_start_byte(' ');
+    guard is_b64token_slice(tok) else { return ""; }
+    return tok;
 }
 
 // Stage 9 (Server Ingress): RFC 7519 / RFC 8725 JWT Bearer token verification against `Jwks`.
@@ -775,7 +875,10 @@ fn stage_server_cache_lookup(
     res:        Response&,
     handler_id: i32 = -1,
 ) -> wire::StageVerdict {
-    guard req.method[..] == "GET" || req.method[..] == "HEAD" else {
+    // RFC 9111 Section 3.5: Storing Responses to Authenticated Requests - bypass shared route cache on Authorization
+    let has_auth = (req.presence_mask & HDR_PRESENCE_AUTHORIZATION) != 0
+        || has_header(req.headers, rfc::HEADER_AUTHORIZATION);
+    guard !has_auth && (req.method[..] == "GET" || req.method[..] == "HEAD") else {
         return wire::StageVerdict.Continue;
     }
     let _prof = prof_enter("stage.cache_lookup");
@@ -1046,7 +1149,8 @@ fn stage_server_cache_store(
 ) -> wire::StageVerdict {
     let _prof = prof_enter("stage.cache_store");
     defer prof_leave(_prof);
-    if res.status_code == 200 && res.body.len > 0 {
+    // RFC 9111 Section 4.1: Calculating Cache Keys with the Vary Header Field - skip unkeyed Vary responses
+    if res.status_code == 200 && res.body.len > 0 && !has_header(res.headers, rfc::HEADER_VARY) {
         let ctype = get_inline(res.headers, WellKnownHeader.ContentType);
         let existing_etag = get_inline(res.headers, WellKnownHeader.ETag);
         if existing_etag.len > 0 {
@@ -1378,7 +1482,10 @@ fn evaluate_pipeline_cors_and_csrf(
     }
 
     if (mask & (STAGE_INGRESS_FETCH_CSRF | wire::STAGE_SRV_IN_CSRF)) != 0 {
-        let v_csrf = stage_server_csrf(cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res);
+        let scheme = if cfg.tls_enabled { CsrfTargetScheme.Https } else { CsrfTargetScheme.Http };
+        let v_csrf = stage_server_csrf(
+            cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res, scheme,
+        );
         match v_csrf {
             ShortCircuit _ => { return PipelineOutcome.CsrfRejected, true; },
             _ => {},
@@ -1431,7 +1538,10 @@ fn execute_bound_ingress_stage_verdict<UserStage>(
         return stage_server_cors(cfg.cors_policy, cfg.enable_cors, req, res);
     }
     if b.stage_id == wire::STAGE_ID_SRV_IN_CSRF {
-        return stage_server_csrf(cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res);
+        let scheme = if cfg.tls_enabled { CsrfTargetScheme.Https } else { CsrfTargetScheme.Http };
+        return stage_server_csrf(
+            cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res, scheme,
+        );
     }
     if b.stage_id == wire::STAGE_ID_SRV_IN_AUTH_COOKIE {
         return stage_server_auth_cookie(cfg.private_jar, req, ext, now_ns);
@@ -1726,7 +1836,9 @@ fn execute_found_route_handler<UserStage>(
         apply_route_payload(cfg, f.handler_id, res);
     }
     prof_leave(_prof_h);
-    if (f.egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 {
+    let has_auth = (req.presence_mask & HDR_PRESENCE_AUTHORIZATION) != 0
+        || has_header(req.headers, rfc::HEADER_AUTHORIZATION);
+    if (f.egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 && req.method[..] == "GET" && !has_auth {
         let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, f.handler_id, req.url[..]);
     } else {
         cfg.route_cache.is_updating = false;

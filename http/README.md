@@ -190,7 +190,7 @@ fn parse_media_type(raw: const u8[:]) -> MediaType, bool
 fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool
 fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartOptions = MultipartOptions { .. }) -> MultipartMessage, MultipartError
 fn parse_range_header(header_val: const u8[:], resource_len: i64, with_coalesce: bool = true, max_ranges: i32 = 16) -> RangeSet, RangeError
-fn evaluate_if_range(if_range_header: const u8[:], etag: const u8[:], mod_time: core::Time) -> bool
+fn evaluate_if_range(if_range_header: const u8[:], etag: const u8[:], mod_unix_sec: i64) -> bool
 ```
 
 `MediaType` stores a parsed type, subtype, and up to 16 parameters

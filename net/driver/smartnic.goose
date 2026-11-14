@@ -12,6 +12,7 @@ import net.driver.types;
 // Native C bindings from shim/smartnic.c
 extern fn native_smartnic_probe() -> i32 = "wing_smartnic_probe";
 extern fn native_smartnic_enable_ktls(fd: i64) -> i32 = "wing_smartnic_enable_ktls";
+extern fn native_smartnic_abort_ktls(fd: i64) = "wing_smartnic_abort_ktls";
 extern fn wing_smartnic_set_hardware_tls_tx(
     fd:      i64, version: u16, cipher_type: u16,
     key:     const u8[:],
@@ -80,12 +81,19 @@ fn new_smartnic_session(fd: i64 = -1) -> SmartNicSession {
     };
 }
 
+inline fn has_valid_tls_offload_material(
+    req_klen: i64,
+    key:      const u8[:],
+    iv:       const u8[:],
+    salt:     const u8[:],
+    seq:      const u8[:],
+) -> bool {
+    return key.len == req_klen && iv.len >= 4 && salt.len >= 4 && seq.len >= 8;
+}
+
 // Configures hardware SmartNIC TLS crypto offload on a socket.
 // Plaintext buffers sent via tcp_send / recv are automatically encrypted/decrypted
 // on the NIC chip without CPU cycle consumption.
-//
-// RFC / FINDING-R6-FRAME-05: Uses separate TX and RX key/IV contexts.
-// Returns an error if TX offload fails to strictly prevent unencrypted wire leaks.
 fn smartnic_attach_hardware_tls(
     fd:      i64,
     cipher:  SmartNicCipherSuite,
@@ -100,6 +108,20 @@ fn smartnic_attach_hardware_tls(
 ) -> SmartNicSession, i32 {
     guard fd > 0 else { return new_smartnic_session(), -1; }
 
+    let req_klen: i64 = match cipher {
+        AesGcm128 => 16,
+        AesGcm256 => 32,
+    };
+    guard has_valid_tls_offload_material(req_klen, tx_key, tx_iv, tx_salt, tx_seq) else {
+        return new_smartnic_session(fd), -22;
+    }
+    let has_any_rx = rx_key.len > 0 || rx_iv.len > 0 || rx_salt.len > 0 || rx_seq.len > 0;
+    if has_any_rx {
+        guard has_valid_tls_offload_material(req_klen, rx_key, rx_iv, rx_salt, rx_seq) else {
+            return new_smartnic_session(fd), -22;
+        }
+    }
+
     let ktls_err = native_smartnic_enable_ktls(fd);
     if ktls_err != 0 {
         return new_smartnic_session(fd), ktls_err;
@@ -110,38 +132,33 @@ fn smartnic_attach_hardware_tls(
         AesGcm256 => TLS_CIPHER_AES_GCM_256_ID,
     };
 
-    var sess = SmartNicSession {
-        fd:           fd,
-        ktls_active:  true,
-        tx_offloaded: false,
-        rx_offloaded: false,
-        cipher:       cipher,
-    };
-
     let tx_err = wing_smartnic_set_hardware_tls_tx(
         fd, rfc::TLS_VERSION_1_3, cipher_id,
         tx_key, tx_iv, tx_salt, tx_seq,
     );
-    // RFC / FINDING-R6-FRAME-05: Return error if TX offload fails.
-    // Silent fallback to unencrypted wire data is strictly forbidden.
     guard tx_err == 0 else {
-        return sess, tx_err;
+        native_smartnic_abort_ktls(fd);
+        return new_smartnic_session(fd), tx_err;
     }
-    sess.tx_offloaded = true;
 
-    let eff_rx_key = if rx_key.len > 0 { rx_key } else { tx_key };
-    let eff_rx_iv = if rx_iv.len > 0 { rx_iv } else { tx_iv };
-    let eff_rx_salt = if rx_salt.len > 0 { rx_salt } else { tx_salt };
-    let eff_rx_seq = if rx_seq.len > 0 { rx_seq } else { tx_seq };
-
-    let rx_err = wing_smartnic_set_hardware_tls_rx(
-        fd, rfc::TLS_VERSION_1_3, cipher_id,
-        eff_rx_key, eff_rx_iv, eff_rx_salt, eff_rx_seq,
-    );
-    guard rx_err == 0 else {
-        return sess, rx_err;
+    var rx_offloaded = false;
+    if has_any_rx {
+        let rx_err = wing_smartnic_set_hardware_tls_rx(
+            fd, rfc::TLS_VERSION_1_3, cipher_id,
+            rx_key, rx_iv, rx_salt, rx_seq,
+        );
+        guard rx_err == 0 else {
+            native_smartnic_abort_ktls(fd);
+            return new_smartnic_session(fd), rx_err;
+        }
+        rx_offloaded = true;
     }
-    sess.rx_offloaded = true;
 
-    return sess, 0;
+    return SmartNicSession {
+        fd:           fd,
+        ktls_active:  true,
+        tx_offloaded: true,
+        rx_offloaded: rx_offloaded,
+        cipher:       cipher,
+    }, 0;
 }

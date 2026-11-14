@@ -350,8 +350,10 @@ fn encode_h2_headers_frame_from_map<B>(
     out:            B&,
     max_frame_size: u32 = 16384,
 ) -> bool {
+    let is_1xx = pseudo.has_status && pseudo.status >= 100 && pseudo.status < 200;
     guard stream_id > 0 && stream_id <= 0x7FFFFFFF &&
-          max_frame_size > 0 && max_frame_size <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
+          max_frame_size > 0 && max_frame_size <= rfc::H2_MAX_FRAME_SIZE_LIMIT &&
+          (!pseudo.is_trailer || end_stream) && !(is_1xx && end_stream) else {
         return false;
     }
     let saved_dt = dt;
@@ -387,8 +389,10 @@ fn encode_h2_headers_frame_from_map<B>(
     out:            B&,
     max_frame_size: u32 = 16384,
 ) -> bool {
+    let is_1xx = pseudo.has_status && pseudo.status >= 100 && pseudo.status < 200;
     guard stream_id > 0 && stream_id <= 0x7FFFFFFF &&
-          max_frame_size > 0 && max_frame_size <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
+          max_frame_size > 0 && max_frame_size <= rfc::H2_MAX_FRAME_SIZE_LIMIT &&
+          (!pseudo.is_trailer || end_stream) && !(is_1xx && end_stream) else {
         return false;
     }
     let saved_state = state;

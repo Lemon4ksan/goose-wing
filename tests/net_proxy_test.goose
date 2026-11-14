@@ -1221,7 +1221,7 @@ fn test_gateway_rate_limiter(t: lit::T&) {
 fn test_gcra_tat_and_burst(t: lit::T&) {
     t.run("Single-Cell Ingress & Burst Tolerance Exhaustion") { sub =>
         // Limit: 10 req/s (T = 100 ms), Burst: 2 (tau = 200 ms)
-        let quota = wing::new_gcra_quota(10, core::secs(1), 2);
+        let quota = wing::new_gcra_quota(10, wing::secs(1), 2);
         sub.assert_eq(quota.emission_interval_ns, 100000000, "T = 100ms");
         sub.assert_eq(quota.delay_tolerance_ns, 200000000, "tau = 200ms");
 
@@ -1267,7 +1267,7 @@ fn test_gcra_tat_and_burst(t: lit::T&) {
 fn test_anti_starvation_reservation(t: lit::T&) {
     t.run("Priority Reservation Preempts Small Subsequent Requests") { sub =>
         // Limit: 1 req/sec (T = 1s), Burst: 0 (tau = 0)
-        let quota = wing::new_gcra_quota(1, core::secs(1), 0);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 0);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now: u64 = 1000000000;
 
@@ -1303,7 +1303,7 @@ fn test_anti_starvation_reservation(t: lit::T&) {
 fn test_sharded_gcra_limiter(t: lit::T&) {
     t.run("Independent Client Quotas Across Shards") { sub =>
         // Limit: 2 req/s, Burst: 1 (allows 2 immediate requests at t0, 3rd rejected)
-        let quota = wing::new_gcra_quota(2, core::secs(1), 1);
+        let quota = wing::new_gcra_quota(2, wing::secs(1), 1);
         var limiter = wing::new_sharded_limiter(quota);
         let now: u64 = 2000000000;
 
@@ -1354,7 +1354,7 @@ fn test_sharded_gcra_limiter(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_probabilistic_ddos_mitigation(t: lit::T&) {
     t.run("5% Statistical Sampling Under Extreme Load") { sub =>
-        let quota = wing::new_gcra_quota(1000, core::secs(1), 100);
+        let quota = wing::new_gcra_quota(1000, wing::secs(1), 100);
         var pgcra = wing::new_probabilistic_gcra(quota, 20); // 1-in-20 = 5%
 
         var sampled_count = 0;
@@ -1383,7 +1383,7 @@ fn test_probabilistic_ddos_mitigation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_ietf_rate_limit_headers(t: lit::T&) {
     t.run("IETF Headers on Allowed Request") { sub =>
-        let quota = wing::new_gcra_quota(100, core::secs(1), 10);
+        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
         let dec: wing::RateLimitDecision = wing::RateLimitDecision.Allowed {
             remaining_burst: 8,
             new_tat_ns:      1200000000,
@@ -1402,7 +1402,7 @@ fn test_ietf_rate_limit_headers(t: lit::T&) {
     };
 
     t.run("IETF Headers & 429 Status on Rejected Request") { sub =>
-        let quota = wing::new_gcra_quota(50, core::secs(1), 0);
+        let quota = wing::new_gcra_quota(50, wing::secs(1), 0);
         let dec: wing::RateLimitDecision = wing::RateLimitDecision.Rejected {
             retry_after_ns: 2500000000, // 2.5 seconds
             current_tat_ns: 3500000000,
@@ -1426,7 +1426,7 @@ fn test_ietf_rate_limit_headers(t: lit::T&) {
 fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     t.run("Zero Emission Interval Handling & Division by Zero") { sub =>
         // Limit 2,000,000 req per 1 ms (p_ns = 1,000,000, l = 2,000,000 -> p_ns / l = 0)
-        let quota = wing::new_gcra_quota(2000000, core::Duration { nanos: 1000000 }, 10);
+        let quota = wing::new_gcra_quota(2000000, wing::millis(1), 10);
         sub.assert_true(quota.emission_interval_ns >= 1, "emission interval floored to >= 1ns to prevent division by zero");
 
         var cell = wing::GcraCell { tat_ns: 0 };
@@ -1436,7 +1436,7 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
 
     t.run("Accurate Burst Remaining Calculation in Reservation") { sub =>
         // Limit: 1 req/s (T = 1s), Burst: 5 (tau = 5s)
-        let quota = wing::new_gcra_quota(1, core::secs(1), 5);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 5);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now: u64 = 1000000000;
 
@@ -1453,7 +1453,7 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     };
 
     t.run("U64 Nanosecond Overflow In Burst Calculation") { sub =>
-        let quota = wing::new_gcra_quota(1, core::secs(1), 5); // T = 1s, tau = 5s
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 5); // T = 1s, tau = 5s
         let now: u64 = 18446744073709551615 - 30000000000; // 30s before u64::MAX
         var cell = wing::GcraCell { tat_ns: now };
 
@@ -1469,7 +1469,7 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     };
 
     t.run("Clock Drift & Backward NTP Jump Recovery") { sub =>
-        let quota = wing::new_gcra_quota(10, core::secs(1), 2);
+        let quota = wing::new_gcra_quota(10, wing::secs(1), 2);
         var cell = wing::GcraCell { tat_ns: 60000000000 }; // TAT at 60s
         let now_backward: u64 = 10000000000; // Clock jumped back to 10s (50s backward jump)
         let dec = wing::gcra_check_n(quota, cell, 1, now_backward);
@@ -1482,7 +1482,7 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     };
 
     t.run("Clock Drift & Backward NTP Jump Recovery in Reservation") { sub =>
-        let quota = wing::new_gcra_quota(1, core::secs(1), 0);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 0);
         var cell = wing::GcraCell { tat_ns: 70000000000 }; // TAT at 70s
         let now_backward: u64 = 10000000000; // Clock jumped back to 10s
         let dec = wing::gcra_reserve_n(quota, cell, 1, now_backward, 5000000000);

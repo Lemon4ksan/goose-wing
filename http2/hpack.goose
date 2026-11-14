@@ -1091,24 +1091,27 @@ struct HpackHashTable {
 }
 
 struct DynamicTable {
-    entries:          HpackHeaderField[128] = [HpackHeaderField { .. }; 128],
-    arena:            u8[4096]              = [0; 4096],
-    hash_table:       HpackHashTable        = HpackHashTable { .. },
-    head:             u64                   = 0, // Oldest entry index in ring
-    count:            u64                   = 0, // Current number of active entries
-    arena_write_pos:  u32                   = 0, // Sequential write cursor in arena
-    arena_head:       u32                   = 0, // Linearized boundary write start offset
-    arena_tail:       u32                   = 0, // Linearized boundary oldest live byte offset
-    next_generation:  u8                    = 1, // Monotonic non-zero generation counter
-    used_bytes:       u64                   = 0, // Total protocol size (sum of meta_size)
-    max_allowed_size: u64                   = 4096, // From SETTINGS_HEADER_TABLE_SIZE
-    current_max_size: u64                   = 4096, // Set by HPACK size updates
+    entries:                 HpackHeaderField[128] = [HpackHeaderField { .. }; 128],
+    arena:                   u8[4096]              = [0; 4096],
+    hash_table:              HpackHashTable        = HpackHashTable { .. },
+    head:                    u64                   = 0, // Oldest entry index in ring
+    count:                   u64                   = 0, // Current number of active entries
+    arena_write_pos:         u32                   = 0, // Sequential write cursor in arena
+    arena_head:              u32                   = 0, // Linearized boundary write start offset
+    arena_tail:              u32                   = 0, // Linearized boundary oldest live byte offset
+    next_generation:         u8                    = 1, // Monotonic non-zero generation counter
+    used_bytes:              u64                   = 0, // Total protocol size (sum of meta_size)
+    max_allowed_size:        u64                   = 4096, // From SETTINGS_HEADER_TABLE_SIZE
+    current_max_size:        u64                   = 4096, // Set by HPACK size updates
+    pending_size_update_req: bool                  = false,
+    pending_min_table_size:  u64                   = 4096,
 }
 
 fn new_dynamic_table(max_allowed: u64 = 4096) -> DynamicTable {
     return DynamicTable {
-        max_allowed_size: max_allowed,
-        current_max_size: max_allowed,
+        max_allowed_size:       max_allowed,
+        current_max_size:       max_allowed,
+        pending_min_table_size: max_allowed,
         ..
     };
 }
@@ -1783,6 +1786,23 @@ inline fn validate_h2_field_by_origin(
     };
 }
 
+// RFC 9113 Section 8.2.3: Compressing the Cookie Header Field - Concatenates extra cookie fields with "; ".
+fn try_join_existing_h2_cookie(
+    out_headers: wing::HeaderMap&,
+    name:        const u8[:],
+    val:         const u8[:],
+) -> bool, bool {
+    guard name.eq_ascii_fold("cookie") && wing::has_header(out_headers, "cookie") else {
+        return false, true;
+    }
+    let prev = wing::get_header(out_headers, "cookie");
+    var combined: u8[..8192] = [];
+    guard combined.try_append(prev) && combined.try_append("; ") && combined.try_append(val) else {
+        return true, false;
+    }
+    return true, wing::insert_header(out_headers, "cookie", combined[..]);
+}
+
 // Validates and records a single decoded HPACK field into `out_pseudo` and `out_headers`.
 fn validate_header_ordering_and_rules(
     out_pseudo:           H2PseudoHeaders&,
@@ -1821,13 +1841,23 @@ fn validate_header_ordering_and_rules(
     if validate_http2_rules {
         let v_reg = validate_regular_header_to_map(out_pseudo, out_headers, name, val);
         guard v_reg == rfc::H2_ERR_NO_ERROR else { return v_reg; }
-        guard wing::append_validated_header(out_headers, name, val) else {
-            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+        let joined, ok_join = try_join_existing_h2_cookie(out_headers, name, val);
+        if joined {
+            guard ok_join else { return rfc::H2_ERR_ENHANCE_YOUR_CALM; }
+        } else {
+            guard wing::append_validated_header(out_headers, name, val) else {
+                return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+            }
         }
     } else {
         out_pseudo.has_regular_header = true;
-        guard wing::append_header(out_headers, name, val) else {
-            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+        let joined, ok_join = try_join_existing_h2_cookie(out_headers, name, val);
+        if joined {
+            guard ok_join else { return rfc::H2_ERR_ENHANCE_YOUR_CALM; }
+        } else {
+            guard wing::append_header(out_headers, name, val) else {
+                return rfc::H2_ERR_ENHANCE_YOUR_CALM;
+            }
         }
     }
     committed = true;
@@ -1843,11 +1873,13 @@ fn append_decoded_header_to_map(
     validate_http2_rules: bool,
     origin:               H2FieldOrigin = H2FieldOrigin.Wire,
 ) -> u32 {
-    let field_size = (name.len + val.len + 32) as u32;
-    out_pseudo.wireframe_size += field_size;
-    guard out_pseudo.wireframe_size <= max_header_list_size else {
+    let field_size = core::add_sat_u64(core::add_sat_u64(name.len as u64, val.len as u64), 32);
+    let next_wireframe = core::add_sat_u64(out_pseudo.wireframe_size, field_size);
+    guard next_wireframe <= max_header_list_size else {
+        out_pseudo.wireframe_size = min(next_wireframe, 0xFFFFFFFF) as u32;
         return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
+    out_pseudo.wireframe_size = next_wireframe as u32;
     if name.len > 0 && name[0] == ':' {
         if validate_http2_rules && !validate_h2_field_by_origin(name, val, origin) {
             return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -1925,6 +1957,9 @@ fn decode_hpack_table_size_update(
     guard ok_size && update_dynamic_table_max_size(dt, new_size) else {
         return offset, rfc::H2_ERR_COMPRESSION_ERROR;
     }
+    if dt.pending_size_update_req && new_size <= dt.pending_min_table_size {
+        dt.pending_size_update_req = false;
+    }
     return next_off, rfc::H2_ERR_NO_ERROR;
 }
 
@@ -1947,6 +1982,12 @@ fn decode_hpack_field_step_with_scratch(
     val_buf:              u8[..8192]&,
 ) -> u64, u32 {
     let b = src[offset];
+    if (b & 0xE0) != 0x20 {
+        // RFC 7541 Section 4.2: Maximum Table Size - Reject missing or oversized dynamic table size update.
+        guard !dt.pending_size_update_req && dt.current_max_size <= dt.max_allowed_size else {
+            return offset, rfc::H2_ERR_COMPRESSION_ERROR;
+        }
+    }
 
     // 1. Indexed Header Field Representation: 1xxxxxxx (7-bit prefix)
     if (b & 0x80) != 0 {
@@ -2062,6 +2103,41 @@ fn decode_hpack_field_step_to_map(
     );
 }
 
+inline fn is_valid_connect_port(port_slice: const u8[:]) -> bool {
+    guard port_slice.len >= 1 && port_slice.len <= 5 else { return false; }
+    for c in port_slice {
+        guard core::is_ascii_digit(c) else { return false; }
+    }
+    let port, ok = port_slice.parse_u32_dec();
+    return ok && port >= 1 && port <= 65535;
+}
+
+inline fn is_valid_connect_ipv6_authority(auth: const u8[:]) -> bool {
+    let ipv6_body, tail, has_close = auth[1..].split_once_byte(']');
+    guard has_close && ipv6_body.len > 0 && tail.len >= 2 && tail[0] == ':' else {
+        return false;
+    }
+    for b in ipv6_body {
+        let ok = core::is_ascii_hexdigit(b) || b == ':' || b == '.';
+        guard ok else { return false; }
+    }
+    return is_valid_connect_port(tail[1..]);
+}
+
+// RFC 9113 Section 8.5: The CONNECT Method - Validates authority-form `host:port` for standard CONNECT.
+fn is_valid_connect_authority(auth: const u8[:]) -> bool {
+    guard auth.len >= 3 else { return false; }
+    if auth[0] == '[' {
+        return is_valid_connect_ipv6_authority(auth);
+    }
+    let host, port_slice, has_colon = auth.rsplit_once_byte(':');
+    guard has_colon && host.len > 0 else { return false; }
+    guard !host.contains_byte(':') && !host.contains_byte('[') && !host.contains_byte(']') else {
+        return false;
+    }
+    return is_valid_connect_port(port_slice);
+}
+
 // RFC 9113 Section 8.3.1 & 8.3.2: Verify mandatory pseudo-headers in non-trailer header blocks
 fn validate_mandatory_pseudo_headers(pseudo: const H2PseudoHeaders&) -> u32 {
     if pseudo.has_status {
@@ -2074,7 +2150,9 @@ fn validate_mandatory_pseudo_headers(pseudo: const H2PseudoHeaders&) -> u32 {
     if pseudo.has_method {
         let is_connect = (pseudo.method[..] == "CONNECT");
         if is_connect && !pseudo.has_protocol {
-            guard pseudo.has_authority else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+            guard pseudo.has_authority && is_valid_connect_authority(pseudo.authority[..]) else {
+                return rfc::H2_ERR_PROTOCOL_ERROR;
+            }
             guard !pseudo.has_scheme && !pseudo.has_path else { return rfc::H2_ERR_PROTOCOL_ERROR; }
         } else if is_connect && pseudo.has_protocol {
             guard pseudo.has_scheme && pseudo.has_path && pseudo.has_authority else {
@@ -2146,6 +2224,10 @@ fn decode_hpack_to_map_with_scratch(
             first_err = err;
         }
         offset = next_off;
+    }
+
+    guard !dt.pending_size_update_req && dt.current_max_size <= dt.max_allowed_size else {
+        return rfc::H2_ERR_COMPRESSION_ERROR;
     }
 
     guard first_err == rfc::H2_ERR_NO_ERROR else { return first_err; }

@@ -755,23 +755,42 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
         sub.assert_eq(conn.state, internal::H3ConnState.Closed, "connection closed on frame error");
     };
 
-    t.run("H3-R1-02: HTTP/2 Reserved Frame 0x0A (ALTSVC) Rejection (RFC 9114 Section 7.2.8)") { sub =>
-        sub.assert_true(rfc::is_h2_reserved_frame_in_h3(0x0A), "0x0A is reserved from H2");
-        sub.assert_false(rfc::is_allowed_on_control_stream(0x0A), "0x0A forbidden on control stream");
-        sub.assert_false(rfc::is_allowed_on_request_stream(0x0A), "0x0A forbidden on request stream");
+    t.run("H3-R1-02: HTTP/2 Reserved Frames vs Unknown 0x0A Extension (RFC 9114 Section 7.2.8 & Section 9)") { sub =>
+        let reserved_h2: u64[4] = [0x02, 0x06, 0x08, 0x09];
+        for i in 4 {
+            let ft = reserved_h2[i];
+            sub.assert_true(rfc::is_h2_reserved_frame_in_h3(ft), "0x02/0x06/0x08/0x09 reserved from H2");
+            sub.assert_false(rfc::is_allowed_on_control_stream(ft), "reserved H2 frame forbidden on control stream");
+            sub.assert_false(rfc::is_allowed_on_request_stream(ft), "reserved H2 frame forbidden on request stream");
+        }
 
+        // Control stream with valid SETTINGS followed by reserved frame 0x02 -> H3_ERR_FRAME_UNEXPECTED
         let settings = wing::H3Settings { .. };
-        var conn = internal::new_h3_client_connection(settings);
+        var conn_res = internal::new_h3_client_connection(settings);
+        var ctrl_res: u8[..64] = [];
+        internal::quic_encode_varint(ctrl_res, rfc::H3_STREAM_CONTROL);
+        internal::encode_h3_settings_frame(ctrl_res, settings);
+        internal::quic_encode_varint(ctrl_res, 0x02);
+        internal::quic_encode_varint(ctrl_res, 0);
+        let err_res = conn_res.handle_stream_data(3, false, ctrl_res[..], false);
+        sub.assert_eq(err_res, rfc::H3_ERR_FRAME_UNEXPECTED, "reserved frame 0x02 rejected with H3_FRAME_UNEXPECTED");
 
-        // Control stream with valid SETTINGS followed by frame type 0x0A
+        // RFC 9114 §7.2.8 & §9: Frame 0x0A (H2 ALTSVC) is NOT in the H3 reserved list and MUST be ignored
+        sub.assert_false(rfc::is_h2_reserved_frame_in_h3(0x0A), "0x0A is not reserved in H3");
+        sub.assert_true(rfc::is_allowed_on_control_stream(0x0A), "0x0A permitted as unknown extension on control stream");
+        sub.assert_true(rfc::is_allowed_on_request_stream(0x0A), "0x0A permitted as unknown extension on request stream");
+
+        var conn = internal::new_h3_client_connection(settings);
         var ctrl_wire: u8[..64] = [];
         internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
         internal::encode_h3_settings_frame(ctrl_wire, settings);
         internal::quic_encode_varint(ctrl_wire, 0x0A);
-        internal::quic_encode_varint(ctrl_wire, 0);
+        internal::quic_encode_varint(ctrl_wire, 2);
+        ctrl_wire.push('h');
+        ctrl_wire.push('3');
 
         let err = conn.handle_stream_data(3, false, ctrl_wire[..], false);
-        sub.assert_eq(err, rfc::H3_ERR_FRAME_UNEXPECTED, "frame 0x0A rejected with H3_FRAME_UNEXPECTED");
+        sub.assert_eq(err, rfc::H3_ERR_NO_ERROR, "unknown frame 0x0A ignored on control stream after SETTINGS");
     };
 
     t.run("H3-R1-03: Unknown Unidirectional Stream Persistence (RFC 9114 Section 6.2)") { sub =>
@@ -1383,9 +1402,13 @@ fn test_webtransport_stream_framing(t: lit::T&) {
         var invalid_wire: u8[..32] = [];
         invalid_wire.push(0x40);
         invalid_wire.push(0x55);
-        invalid_wire.push(0x01);
+        invalid_wire.push(0x04);
         var bad_decoded = wing::WebTransportUniStreamHeader { .. };
         sub.assert_false(wing::decode_webtransport_uni_stream_header(invalid_wire[..], bad_decoded), "Rejected non-0x54 stream type");
+
+        // Invalid non-4*N session_id (1 is server-initiated bidi, not client-initiated bidi)
+        let bad_sid_uni: u8[3] = [0x40, 0x54, 0x01];
+        sub.assert_false(wing::decode_webtransport_uni_stream_header(bad_sid_uni[..], bad_decoded), "Rejected non-4*N session ID on uni stream");
     };
 
     t.run("Bidirectional Stream Opening Framing (Signal 0x41)") { sub =>
@@ -1407,9 +1430,13 @@ fn test_webtransport_stream_framing(t: lit::T&) {
         var invalid_wire: u8[..32] = [];
         invalid_wire.push(0x40);
         invalid_wire.push(0x42);
-        invalid_wire.push(0x02);
+        invalid_wire.push(0x04);
         var bad_decoded = wing::WebTransportBidiStreamHeader { .. };
         sub.assert_false(wing::decode_webtransport_bidi_stream_header(invalid_wire[..], bad_decoded), "Rejected non-0x41 signal");
+
+        // Invalid non-4*N session_id (2 is client-initiated uni, not client-initiated bidi)
+        let bad_sid_bidi: u8[3] = [0x40, 0x41, 0x02];
+        sub.assert_false(wing::decode_webtransport_bidi_stream_header(bad_sid_bidi[..], bad_decoded), "Rejected non-4*N session ID on bidi stream");
     };
 }
 
@@ -1530,22 +1557,26 @@ fn test_webtransport_session_lifecycle(t: lit::T&) {
 // 15. WebTransport Stream Demuxing & Session Routing
 // ----------------------------------------------------------------------------
 fn test_webtransport_stream_demuxing(t: lit::T&) {
-    t.run("1. Bidirectional Stream Wire Demuxing (Signal 0x41 & Direct Session ID)") { sub =>
-        // Case A: draft-ietf-webtrans-http3 Section 4.2 with 0x41 signal
-        // Wire: 0x40, 0x41 (signal 65) || 0x1A (session ID 26) || payload "TELEMETRY"
+    t.run("1. Bidirectional Stream Wire Demuxing (Signal 0x41 & Client Bidi Session ID 4*N)") { sub =>
+        // Case A: draft-ietf-webtrans-http3 Section 4.2 with 0x41 signal and valid 4*N session ID 24 (0x18)
         let bidi_wire_sig: u8[12] = [
-            0x40, 0x41, 0x1A,
+            0x40, 0x41, 0x18,
             'T', 'E', 'L', 'E', 'M', 'E', 'T', 'R', 'Y',
         ];
         let sid_a, payload_a, ok_a = wing::demux_webtransport_bidi_stream(bidi_wire_sig[..]);
-        sub.assert_true(ok_a, "Demuxed bidi stream with 0x41 signal");
-        sub.assert_eq(sid_a, 26, "Session ID is 26");
+        sub.assert_true(ok_a, "Demuxed bidi stream with 0x41 signal and 4*N session ID");
+        sub.assert_eq(sid_a, 24, "Session ID is 24");
         sub.assert_bytes_eq(payload_a, "TELEMETRY", "Extracted payload matches");
 
+        // Negative check: non-4*N session ID (26 = 0x1A, low bits 0b10 != 0b00) is rejected
+        let bad_sid_bidi: u8[4] = [0x40, 0x41, 0x1A, 'X'];
+        let _, _, ok_bad_sid = wing::demux_webtransport_bidi_stream(bad_sid_bidi[..]);
+        sub.assert_false(ok_bad_sid, "Non-4*N session ID 26 rejected on bidi stream");
+
         // Case B: draft-ietf-webtrans-http3 Section 4.2 requires 0x41 signal; streams lacking it are rejected
-        // Wire: 0x1A (session ID 26) without 0x41 signal || payload "DIRECT_DATA"
+        // Wire: 0x18 (session ID 24) without 0x41 signal || payload "DIRECT_DATA"
         let bidi_wire_direct: u8[12] = [
-            0x1A,
+            0x18,
             'D', 'I', 'R', 'E', 'C', 'T', '_', 'D', 'A', 'T', 'A',
         ];
         let _, _, ok_b = wing::demux_webtransport_bidi_stream(bidi_wire_direct[..]);
@@ -1557,25 +1588,37 @@ fn test_webtransport_stream_demuxing(t: lit::T&) {
         sub.assert_false(ok_c_empty, "Empty wire fails");
     };
 
-    t.run("2. Unidirectional Stream Wire Demuxing (Type 0x54 + Session ID)") { sub =>
-        // Wire: 0x40, 0x54 (type 84) || 0x2A (session ID 42) || payload "UNI_PAYLOAD"
+    t.run("2. Unidirectional Stream Wire Demuxing (Type 0x54 + Client Bidi Session ID 4*N)") { sub =>
+        // Wire: 0x40, 0x54 (type 84) || 0x28 (session ID 40) || payload "UNI_PAYLOAD"
         let uni_wire: u8[14] = [
-            0x40, 0x54, 0x2A,
+            0x40, 0x54, 0x28,
             'U', 'N', 'I', '_', 'P', 'A', 'Y', 'L', 'O', 'A', 'D',
         ];
         let sid, payload, ok = wing::demux_webtransport_uni_stream(uni_wire[..]);
-        sub.assert_true(ok, "Demuxed uni stream with type 0x54");
-        sub.assert_eq(sid, 42, "Session ID is 42");
+        sub.assert_true(ok, "Demuxed uni stream with type 0x54 and 4*N session ID");
+        sub.assert_eq(sid, 40, "Session ID is 40");
         sub.assert_bytes_eq(payload, "UNI_PAYLOAD", "Payload matches");
 
+        // Negative check: non-4*N session ID (42 = 0x2A, low bits 0b10 != 0b00) is rejected
+        let bad_sid_uni: u8[4] = [0x40, 0x54, 0x2A, 'X'];
+        let _, _, ok_bad_uni_sid = wing::demux_webtransport_uni_stream(bad_sid_uni[..]);
+        sub.assert_false(ok_bad_uni_sid, "Non-4*N session ID 42 rejected on uni stream");
+
         // Wrong stream type (0x55 instead of 0x54)
-        let bad_uni_wire: u8[4] = [0x40, 0x55, 0x2A, 'X'];
+        let bad_uni_wire: u8[4] = [0x40, 0x55, 0x28, 'X'];
         let _, _, bad_ok = wing::demux_webtransport_uni_stream(bad_uni_wire[..]);
         sub.assert_false(bad_ok, "Wrong stream type rejected");
     };
 
     t.run("3. WebTransportDemuxer Session Lifecycle and Routing State Machine") { sub =>
         var demuxer = wing::WebTransportDemuxer { .. };
+
+        // Negative check: non-4*N session ID registration and response activation rejected
+        sub.assert_false(wing::register_webtransport_session(demuxer, 26), "Rejected non-4*N session 26 registration");
+        var bad_sess = wing::WebTransportSession { session_id: 42, .. };
+        var ok_resp = wing::Response { status_code: 200, .. };
+        wing::format_webtransport_connect_response(ok_resp);
+        sub.assert_false(wing::handle_webtransport_response(ok_resp, bad_sess), "Rejected non-4*N session 42 response");
 
         // 1. Register Session 100
         sub.assert_true(wing::register_webtransport_session(demuxer, 100), "Registered session 100");

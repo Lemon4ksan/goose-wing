@@ -28,7 +28,14 @@ enum QuicConnState {
     Handshake,
     Established,
     Closing,
+    Draining,
     Closed,
+}
+
+inline fn quic_conn_is_closing_or_closed(state: QuicConnState) -> bool {
+    return state == QuicConnState.Closing
+        || state == QuicConnState.Draining
+        || state == QuicConnState.Closed;
 }
 
 struct QuicConnection {
@@ -386,7 +393,7 @@ fn bind_initial_server_cids(conn: QuicConnection&, hdr: const QuicHeader&) {
 }
 
 fn dispatch_packet_type(conn: QuicConnection&, hdr: const QuicHeader&, out_ack: AckFrame&) -> bool, bool {
-    guard conn.state != QuicConnState.Closing && conn.state != QuicConnState.Closed else {
+    guard !quic_conn_is_closing_or_closed(conn.state) else {
         return false, false;
     }
 
@@ -708,7 +715,9 @@ inline fn dispatch_conn_id_frame(conn: QuicConnection&, frame: const QuicFrame&)
 
 fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> bool, bool {
     if frame.frame_type == QuicFrameType.ConnectionClose || frame.frame_type == QuicFrameType.ConnectionCloseApp {
-        quic_conn_close(conn, frame.error_code);
+        // RFC 9000 Section 10.2.2: Draining Connection State - Receipt of CONNECTION_CLOSE enters Draining state.
+        conn.close_code = frame.error_code;
+        conn.state = QuicConnState.Draining;
         return true, false;
     }
     if frame.frame_type == QuicFrameType.HandshakeDone {
@@ -716,7 +725,7 @@ fn dispatch_session_frame(conn: QuicConnection&, frame: const QuicFrame&) -> boo
             quic_conn_close(conn, rfc::QUIC_ERR_PROTOCOL_VIOLATION);
             return false, false;
         }
-        if conn.state != QuicConnState.Closing && conn.state != QuicConnState.Closed {
+        if !quic_conn_is_closing_or_closed(conn.state) {
             conn.state = QuicConnState.Established;
         }
         return true, true;
@@ -912,7 +921,7 @@ fn quic_conn_process_payload(
     htype:   QuicHeaderType = QuicHeaderType.OneRtt,
     now_us:  u64            = 100000,
 ) -> bool, bool {
-    guard conn.state != QuicConnState.Closing && conn.state != QuicConnState.Closed else {
+    guard !quic_conn_is_closing_or_closed(conn.state) else {
         return false, false;
     }
     // RFC 9000 Section 12.4: Frames and Frame Types - An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
@@ -943,6 +952,9 @@ fn quic_conn_process_payload(
 
         let handled, ack_el = dispatch_inbound_frame(conn, frame, htype);
         guard handled else { return false, false; }
+        if quic_conn_is_closing_or_closed(conn.state) {
+            return true, false;
+        }
         if ack_el {
             any_ack_el = true;
         }
@@ -1190,7 +1202,8 @@ fn calc_coalesced_packet_wire_len(pkt_slice: const u8[:], hdr: const QuicHeader&
 inline fn is_valid_inbound_dcid(conn: const QuicConnection&, hdr: const QuicHeader&) -> bool {
     if conn.role == QuicRole.Server && hdr.header_type == QuicHeaderType.Initial {
         if conn.packets_rx == 0 {
-            return hdr.dcid.len >= 8;
+            // RFC 9000 Section 7.2: Negotiating Connection IDs - Accept >= 8-byte ODCID or server-chosen SCID.
+            return hdr.dcid.len >= 8 || (conn.scid.len > 0 && core::ct_eq_bytes(hdr.dcid, conn.scid[..]));
         }
         if conn.original_dcid.len > 0 && core::ct_eq_bytes(hdr.dcid, conn.original_dcid[..]) {
             return true;
@@ -1210,6 +1223,7 @@ inline fn get_rx_space_keys_installed(conn: const QuicConnection&, space_id: PnS
 
 // Removes RFC 9001 Header Protection and AEAD-decrypts an inbound QUIC packet when space keys are installed.
 // Preserves `out_plaintext` with the unencrypted payload when `keys_installed` is false for unit test vectors.
+// Returns `(ok: bool, fatal_err: u64)`, where `fatal_err != 0` indicates a fatal protocol violation.
 fn verify_and_decrypt_packet(
     conn:          const QuicConnection&,
     space_id:      PnSpaceId,
@@ -1218,25 +1232,37 @@ fn verify_and_decrypt_packet(
     dgram_len:     i64,
     hdr:           QuicHeader&,
     out_plaintext: u8[..16384]&,
-) -> bool {
+) -> bool, u64 {
+    let saved_hdr = hdr;
+    var committed = false;
+    defer if !committed {
+        hdr = saved_hdr;
+        out_plaintext.clear();
+    };
     out_plaintext.clear();
     let keys_installed = get_rx_space_keys_installed(conn, space_id);
     if !keys_installed {
-        guard conn.allow_unencrypted_test_packets else { return false; }
+        guard conn.allow_unencrypted_test_packets else { return false, 0; }
+        // RFC 9000 Section 17.2.2: Initial Packet - Clients MUST reject Initial packets with non-zero Token Length.
+        if conn.role == QuicRole.Client && hdr.header_type == QuicHeaderType.Initial && hdr.token.len > 0 {
+            return false, rfc::QUIC_ERR_PROTOCOL_VIOLATION;
+        }
         let pn_len = (pkt_slice[0] & 0x03) + 1;
         hdr.pn_length = pn_len;
         hdr.header_len = hdr.pn_offset + pn_len;
         let raw_pl = get_packet_payload(pkt_slice[..pkt_wire_len], hdr);
-        if hdr.payload_length > hdr.pn_length && raw_pl.len == 0 {
-            return false;
+        guard !(hdr.payload_length > hdr.pn_length && raw_pl.len == 0)
+            && out_plaintext.try_append(raw_pl) else {
+            return false, 0;
         }
-        return out_plaintext.try_append(raw_pl);
+        committed = true;
+        return true, 0;
     }
 
     if hdr.header_type == QuicHeaderType.Initial && conn.role == QuicRole.Server {
-        guard dgram_len >= 1200 else { return false; }
+        guard dgram_len >= 1200 else { return false, 0; }
     }
-    guard is_valid_inbound_dcid(conn, hdr) else { return false; }
+    guard is_valid_inbound_dcid(conn, hdr) else { return false, 0; }
 
     var space .= conn.app_space;
     if space_id == PnSpaceId.Initial {
@@ -1246,15 +1272,15 @@ fn verify_and_decrypt_packet(
     }
 
     var work_pkt: u8[..16512] = [];
-    guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return false; }
+    guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return false, 0; }
 
     let sample_slice, ok_samp = wing::quic_extract_hp_sample(work_pkt[..], hdr.pn_offset);
-    guard ok_samp else { return false; }
+    guard ok_samp else { return false, 0; }
     let hp_mask, ok_mask = quic_compute_hp_mask(space, sample_slice);
-    guard ok_mask else { return false; }
+    guard ok_mask else { return false, 0; }
 
     let pn_len, trunc_pn = remove_header_protection(work_pkt[..], hdr.pn_offset, hp_mask);
-    guard pn_len >= 1 && pn_len <= 4 else { return false; }
+    guard pn_len >= 1 && pn_len <= 4 else { return false, 0; }
 
     let unmasked_b0 = work_pkt[0];
     if (unmasked_b0 & 0x80) == 0 {
@@ -1262,24 +1288,29 @@ fn verify_and_decrypt_packet(
     }
 
     let full_pn, pn_ok = decode_packet_number_checked(space.largest_recv_pn, trunc_pn, pn_len);
-    guard pn_ok else { return false; }
+    guard pn_ok else { return false, 0; }
     hdr.packet_number = full_pn;
     hdr.pn_length = pn_len;
     hdr.header_len = hdr.pn_offset + pn_len;
     let hdr_end = hdr.header_len as i64;
-    guard hdr_end < work_pkt.len else { return false; }
+    guard hdr_end < work_pkt.len else { return false, 0; }
 
     let aad = work_pkt[..hdr_end];
     let ciphertext = work_pkt[hdr_end..];
-    guard quic_aead_open_payload(space, full_pn, aad, ciphertext, out_plaintext) else { return false; }
+    guard quic_aead_open_payload(space, full_pn, aad, ciphertext, out_plaintext) else { return false, 0; }
 
-    // RFC 9000 §17.2, §17.3, RFC 9001 §5.4.1: Reserved bits MUST be verified strictly AFTER AEAD verification.
-    if (unmasked_b0 & 0x80) != 0 {
-        guard (unmasked_b0 & 0x0C) == 0 else { return false; }
-    } else {
-        guard (unmasked_b0 & 0x18) == 0 else { return false; }
+    // RFC 9000 Section 17.2.2: Initial Packet - Clients MUST reject Initial packets with non-zero Token Length.
+    if conn.role == QuicRole.Client && hdr.header_type == QuicHeaderType.Initial && hdr.token.len > 0 {
+        return false, rfc::QUIC_ERR_PROTOCOL_VIOLATION;
     }
-    return true;
+    // RFC 9000 Section 17.2: Long Header Packets - Non-zero reserved bits after AEAD open are PROTOCOL_VIOLATION.
+    // RFC 9000 Section 17.3.1: 1-RTT Packet - Non-zero reserved bits after AEAD open are PROTOCOL_VIOLATION.
+    let reserved_mask: u8 = if (unmasked_b0 & 0x80) != 0 { 0x0C } else { 0x18 };
+    guard (unmasked_b0 & reserved_mask) == 0 else {
+        return false, rfc::QUIC_ERR_PROTOCOL_VIOLATION;
+    }
+    committed = true;
+    return true, 0;
 }
 
 inline fn get_dcid_len(len: i64) -> u8 {
@@ -1342,7 +1373,7 @@ fn process_single_coalesced_packet(
     now_us:    u64,
     out_ack:   AckFrame&,
 ) -> i64, bool, bool {
-    guard conn.state != QuicConnState.Closing && conn.state != QuicConnState.Closed else {
+    guard !quic_conn_is_closing_or_closed(conn.state) else {
         return 0, false, false;
     }
 
@@ -1367,8 +1398,13 @@ fn process_single_coalesced_packet(
 
     let space_id = header_type_to_space_id(hdr.header_type);
     var plaintext_payload: u8[..16384] = [];
-    guard verify_and_decrypt_packet(conn, space_id, pkt_slice, pkt_wire_len, dgram_len, hdr, plaintext_payload) else {
-        if hdr.header_type == QuicHeaderType.OneRtt && is_stateless_reset_datagram(conn, pkt_slice) {
+    let ok_dec, fatal_err = verify_and_decrypt_packet(
+        conn, space_id, pkt_slice, pkt_wire_len, dgram_len, hdr, plaintext_payload,
+    );
+    guard ok_dec else {
+        if fatal_err != 0 {
+            quic_conn_close(conn, fatal_err);
+        } else if hdr.header_type == QuicHeaderType.OneRtt && is_stateless_reset_datagram(conn, pkt_slice) {
             conn.state = QuicConnState.Closed;
         }
         return 0, false, false;
@@ -1379,7 +1415,7 @@ fn process_single_coalesced_packet(
 
     conn_inc_packets_rx(conn);
     bind_initial_server_cids(conn, hdr);
-    if conn.state == QuicConnState.Closing || conn.state == QuicConnState.Closed {
+    if quic_conn_is_closing_or_closed(conn.state) {
         return pkt_wire_len, true, false;
     }
     let handled_pkt, _ = dispatch_packet_type(conn, hdr, out_ack);

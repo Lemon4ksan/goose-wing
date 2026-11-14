@@ -11,9 +11,12 @@ import tls.x509;
 import tls.session;
 import tls.pem;
 
+// RFC 6066 Section 3: Server Name Indication - DNS HostName up to 253 ASCII bytes
+const MAX_SNI_HOSTNAME_LEN: i64 = 253;
+
 // Dynamic Runtime SNI multi-certificate credentials (uWebSockets addServerName / removeServerName pattern).
 struct SniCertEntry {
-    pattern:  u8[..128]  = [],
+    pattern:  u8[..255]  = [],
     cert_pem: u8[..4096] = [],
     key_pem:  u8[..4096] = [],
     in_use:   bool       = false,
@@ -32,7 +35,7 @@ struct SniCredentials {
 }
 
 inline fn is_valid_sni_pattern(p_norm: const u8[:]) -> bool {
-    guard p_norm.len > 0 && p_norm.len <= 128 && p_norm != "*" else { return false; }
+    guard p_norm.len > 0 && p_norm.len <= MAX_SNI_HOSTNAME_LEN && p_norm != "*" else { return false; }
     guard !x509_is_ip_literal(p_norm) && !p_norm.contains_byte(':') else { return false; }
     if p_norm[0] == '*' {
         guard p_norm.len >= 3 && p_norm[1] == '.' && p_norm[2..].contains_byte('.') else {

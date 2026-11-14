@@ -6,6 +6,7 @@
 namespace wing;
 
 import std;
+import core from "..";
 import rfc.h2;
 import rfc.grpc;
 
@@ -113,16 +114,44 @@ fn grpc_status_from_http(http_status: i32) -> GrpcStatusCode {
         401 => GrpcStatusCode.Unauthenticated,
         403 => GrpcStatusCode.PermissionDenied,
         404 => GrpcStatusCode.Unimplemented,
-        409 => GrpcStatusCode.Aborted,
         429 => GrpcStatusCode.ResourceExhausted,
-        499 => GrpcStatusCode.Cancelled,
-        500 => GrpcStatusCode.Internal,
-        501 => GrpcStatusCode.Unimplemented,
         502 => GrpcStatusCode.Unavailable,
         503 => GrpcStatusCode.Unavailable,
         504 => GrpcStatusCode.DeadlineExceeded,
         _ => GrpcStatusCode.Unknown,
     };
+}
+
+inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool {
+    guard ct.starts_with_fold(prefix) else { return false; }
+    if ct.len == prefix.len { return true; }
+    let next_byte = ct[prefix.len];
+    let suffix_idx = core::add_sat_i64(prefix.len, 1);
+    if next_byte == '+' {
+        return ct.len > suffix_idx && core::is_tchar(ct[suffix_idx]);
+    }
+    return next_byte == ';' || next_byte == ' ' || next_byte == '\t';
+}
+
+// Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text.
+fn is_grpc_content_type(ct: const u8[:]) -> bool {
+    let trimmed = ct.trim_lws();
+    return matches_grpc_media_type(trimmed, rfc::GRPC_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
+}
+
+// Returns true if Content-Type indicates gRPC-Web (binary or text).
+fn is_grpc_web(ct: const u8[:]) -> bool {
+    let trimmed = ct.trim_lws();
+    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
+           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
+}
+
+// Returns true if Content-Type is specifically gRPC-Web-Text (Base64 encoded).
+fn is_grpc_web_text(ct: const u8[:]) -> bool {
+    let trimmed = ct.trim_lws();
+    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Maps HTTP/2 RST_STREAM error codes (RFC 9113 §7) to canonical gRPC status codes.

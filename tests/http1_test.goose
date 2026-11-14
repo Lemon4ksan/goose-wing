@@ -361,7 +361,7 @@ fn test_oneshot_chunked_trailers(t: lit::T&) {
     };
 
     t.run("Extraction of multiple custom trailers") { sub =>
-        let raw = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123xyz\r\nX-Timing: dur=15.4\r\n\r\n";
+        let raw = "5\r\nHello\r\n0\r\nETag: \"v1-abc\"\r\nX-Checksum: sha256-abc123xyz\r\nX-Timing: dur=15.4\r\n\r\n";
         var out_body: u8[>..] = [];
         var out_trailers = wing::HeaderMap { .. };
 
@@ -375,7 +375,7 @@ fn test_oneshot_chunked_trailers(t: lit::T&) {
         req.trailers = copy(out_trailers);
         sub.assert_true(wing::has_trailer(req, "x-checksum"), "Has x-checksum");
         sub.assert_bytes_eq(wing::trailer(req, "x-checksum"), "sha256-abc123xyz", "Trailer x-checksum value");
-        sub.assert_bytes_eq(wing::trailer(req, "expires"), "Wed, 21 Oct 2026 07:28:00 GMT", "Trailer expires value");
+        sub.assert_bytes_eq(wing::trailer(req, "etag"), "\"v1-abc\"", "Trailer etag value");
         sub.assert_bytes_eq(wing::trailer(req, "x-timing"), "dur=15.4", "Trailer x-timing value");
         sub.assert_bytes_eq(wing::trailer(req, "missing"), "", "Empty string for missing trailer");
     };
@@ -496,10 +496,15 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
         sub.assert_true(rfc::is_disallowed_trailer_field(":path"), "pseudo-header :path is forbidden");
         sub.assert_true(rfc::is_disallowed_trailer_field(":status"), "pseudo-header :status is forbidden");
         sub.assert_true(rfc::is_disallowed_trailer_field(":authority"), "pseudo-header :authority is forbidden");
+        sub.assert_true(rfc::is_disallowed_trailer_field("expires"), "expires is forbidden per RFC 9110 §6.5.1");
+        sub.assert_true(rfc::is_disallowed_trailer_field("vary"), "vary is forbidden per RFC 9110 §6.5.1");
+        sub.assert_true(rfc::is_disallowed_trailer_field("date"), "date is forbidden per RFC 9110 §6.5.1");
+        sub.assert_true(rfc::is_disallowed_trailer_field("pragma"), "pragma is forbidden per RFC 9110 §6.5.1");
 
-        // Allowed custom trailers
+        // Allowed custom and metadata trailers
         sub.assert_false(rfc::is_disallowed_trailer_field("x-checksum"), "x-checksum is allowed");
-        sub.assert_false(rfc::is_disallowed_trailer_field("expires"), "expires is allowed");
+        sub.assert_false(rfc::is_disallowed_trailer_field("etag"), "etag is allowed");
+        sub.assert_false(rfc::is_disallowed_trailer_field("server-timing"), "server-timing is allowed");
     };
 
     t.run("RFC 9112 Section 7.1.2: Chunked FSM trailer syntax & colon enforcement") { sub =>
@@ -2102,13 +2107,13 @@ fn test_unsupported_range_unit_ignored(t: lit::T&) {
         var out_body: u8[>..] = [];
 
         let payload: const u8[:] = "Hello World Range Test";
-        let mod_time = core::unix(1700000000);
+        let mod_sec: i64         = 1700000000;
 
         wing::serve_range_request(
             "items=0-10",
             "",
             "\"etag123\"",
-            mod_time,
+            mod_sec,
             payload.len as i64,
             "text/plain",
             out_status,
@@ -2196,7 +2201,7 @@ fn test_exceeded_max_ranges_returns_200(t: lit::T&) {
         var out_body: u8[>..] = [];
 
         let payload: const u8[:] = "0123456789abcdefghijklmnopqrstuvwxyz";
-        let mod_time = core::unix(1700000000);
+        let mod_sec: i64         = 1700000000;
 
         // 17 small ranges exceeds max_ranges=16
         let excessive_range = "bytes=0-1,2-3,4-5,6-7,8-9,10-11,12-13,14-15,16-17,18-19,20-21,22-23,24-25,26-27,28-29,30-31,32-33";
@@ -2205,7 +2210,7 @@ fn test_exceeded_max_ranges_returns_200(t: lit::T&) {
             excessive_range,
             "",
             "\"etag123\"",
-            mod_time,
+            mod_sec,
             payload.len,
             "text/plain",
             out_status,
@@ -2927,6 +2932,10 @@ fn test_goose2rfc_http1_audit_regressions(t: lit::T&) {
         sub.assert_false(wing::parse_single_proxy_status_entry("edge1; received-status=bad", p_idx, ps), "Invalid received-status fails ProxyStatusEntry");
         sub.assert_eq(p_idx, 0, "Proxy-Status cursor rolled back to 0");
         sub.assert_eq(ps.proxy_name.len, 0, "ProxyStatusEntry rolled back on error");
+
+        var hm = wing::HeaderMap { .. };
+        sub.assert_true(wing::append_header(hm, "www-authenticate", "Bearer realm=\"api\""), "WWW-Authenticate added");
+        sub.assert_true(wing::is_challenge(hm.entries[0]), "WWW-Authenticate tagged with challenge flag");
     };
 }
 

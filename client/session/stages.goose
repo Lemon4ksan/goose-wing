@@ -99,7 +99,7 @@ fn stage_client_ssrf_guard(
 fn stage_client_cache_lookup<Cache>(
     req:             const Request&,
     eff_url:         const u8[:],
-    now_ts:          core::Time,
+    now_sec:         i64,
     headers:         HeaderMap&,
     out_resp:        Response&,
     out_reval_idx:   i64&,
@@ -114,7 +114,7 @@ fn stage_client_cache_lookup<Cache>(
         let _ = lookup_req.method.try_set(method_override);
     }
     lookup_req.headers = copy(headers);
-    let lookup_dec = cache.lookup(lookup_req, now_ts);
+    let lookup_dec = cache.lookup(lookup_req, now_sec);
     if lookup_dec.kind == LookupResultKind.Hit {
         out_resp = copy(lookup_dec.cached_response);
         for &e in out_resp.headers.entries {
@@ -312,6 +312,8 @@ fn verify_dict_encoding_precheck(
     raw_body:   const u8[:],
     enc:        const u8[:],
     dict_cache: const DictionaryCache&,
+    eff_url:    const u8[:] = "",
+    now_sec:    i64         = 0,
 ) -> bool {
     var tokens: u8[..16][..4] = [];
     guard parse_content_encoding_chain(enc, tokens) else { return false; }
@@ -328,9 +330,9 @@ fn verify_dict_encoding_precheck(
         let _, ok_hdr = decode_dcb_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
     }
-    var dict_entry = DictionaryEntry { .. };
-    guard dictionary_lookup_by_hash(dict_cache, dict_hash, dict_entry) else { return false; }
-    let _, ok_magic = verify_dcz_dcb_magic(raw_body, is_dcz, dict_entry.sha256_hash);
+    let idx = find_matching_dict_entry(dict_cache, dict_hash[..], eff_url, now_sec);
+    guard idx >= 0 && idx < dict_cache.entries.len else { return false; }
+    let _, ok_magic = verify_dcz_dcb_magic(raw_body, is_dcz, dict_cache.entries[idx].sha256_hash);
     return ok_magic;
 }
 
@@ -340,14 +342,15 @@ fn stage_client_decompress(
     resp:        Response&,
     dict_cache:  const DictionaryCache&,
     strict_mode: bool = false,
+    now_sec:     i64  = 0,
 ) -> wire::StageVerdict {
     let has_cd = header(resp, rfc::HEADER_CONTENT_DIGEST).len > 0;
     let cd_ok_pre = if strict_mode && has_cd { verify_response_content_digest(resp) } else { true };
 
     let enc = header(resp, "Content-Encoding");
     if enc.len > 0 {
-        let ok_magic = verify_dict_encoding_precheck(resp.body[..], enc, dict_cache);
-        let ok_dec = ok_magic && decode_body_with_dictionary(resp, dict_cache);
+        let ok_magic = verify_dict_encoding_precheck(resp.body[..], enc, dict_cache, resp.effective_url[..], now_sec);
+        let ok_dec = ok_magic && decode_body_with_dictionary(resp, dict_cache, now_sec);
         if !ok_dec && strict_mode {
             return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
         }
@@ -370,7 +373,7 @@ fn stage_client_decompress(
 fn stage_client_cache_store<Cache>(
     req:            const Request&,
     headers:        const HeaderMap&,
-    current_url:    const core::Url&,
+    effective_url:  const u8[:],
     method:         const u8[:],
     out_resp:       Response&,
     cache_ts:       CacheTimestamps&,
@@ -379,9 +382,9 @@ fn stage_client_cache_store<Cache>(
     enable_cache:   bool,
 ) -> wire::StageVerdict {
     guard enable_cache else { return wire::StageVerdict.Continue; }
-    cache_ts.response_time = cache_ts.now;
+    cache_ts.response_sec = cache_ts.now_sec;
     var hop_req = copy(req);
-    let _ = hop_req.url.try_set(current_url.href[..]);
+    let _ = hop_req.url.try_set(effective_url);
     let _ = hop_req.method.try_set(method);
     hop_req.headers = copy(headers);
     let resp_dec = cache.on_response(hop_req, out_resp, cache_ts, revalidate_idx);
@@ -668,36 +671,77 @@ inline fn on_client_custom_slot<Stage>(
 
 // ---- 3. Hop Security, Signature & Dictionary Stage Helpers ------------------
 
+inline fn is_same_origin_session_hop(
+    ctx:         const RequestExecutionContext&,
+    current_url: const core::Url&,
+) -> bool {
+    guard !ctx.tainted_origin else { return false; }
+    if ctx.url_chain.len <= 1 {
+        return true;
+    }
+    return core::is_same_origin(core::origin_from_url(ctx.url_chain[0]), core::origin_from_url(current_url));
+}
+
+inline fn is_secure_dpop_hop_url(url_val: const core::Url&) -> bool {
+    if url_val.is_secure_scheme() {
+        return true;
+    }
+    guard url_val.scheme() == "http" else { return false; }
+    let h = url_val.hostname();
+    return h.eq_ascii_fold("localhost") || h == "127.0.0.1" || h == "::1" || h == "[::1]";
+}
+
 inline fn apply_client_early_data_and_dpop_headers(
     session:     const Client&,
     ctx:         RequestExecutionContext&,
     current_url: const core::Url&,
     now_sec:     i64,
 ) {
-    if session.enable_early_data && !ctx.auth_retried {
-        if evaluate_early_data_request(ctx.current_method[..]) == EarlyDataDecision.Allow {
-            set_header(ctx.headers, "Early-Data", "1");
-        }
+    if session.enable_early_data && !ctx.auth_retried && !ctx.early_data_disabled &&
+        evaluate_early_data_request(ctx.current_method[..]) == EarlyDataDecision.Allow {
+        set_header(ctx.headers, "Early-Data", "1");
+    } else {
+        remove_header_by_name(ctx.headers, "Early-Data");
     }
     guard session.dpop.has_key else { return; }
+    guard is_same_origin_session_hop(ctx, current_url) else {
+        remove_header_by_name(ctx.headers, rfc::DPOP_HEADER);
+        return;
+    }
+    let existing_auth = find_header(ctx.headers, "Authorization").trim_lws();
+    var token_buf: u8[..4096] = [];
+    if existing_auth.len > 0 {
+        let rest, is_dpop = existing_auth.strip_prefix_fold("dpop");
+        guard is_dpop && rest.len > 0 && (rest[0] == ' ' || rest[0] == '\t') else {
+            remove_header_by_name(ctx.headers, rfc::DPOP_HEADER);
+            return;
+        }
+        let trimmed_tok = rest.trim_lws();
+        guard trimmed_tok.len > 0 && token_buf.try_set(trimmed_tok) else { return; }
+    } else if session.dpop.access_token.len > 0 {
+        guard is_secure_dpop_hop_url(current_url) else {
+            remove_header_by_name(ctx.headers, rfc::DPOP_HEADER);
+            return;
+        }
+        guard token_buf.try_set(session.dpop.access_token[..]) else { return; }
+    }
     let htu_no_q, _, _ = current_url.href[..].partition_byte('?');
     let htu_clean, _, _ = htu_no_q.partition_byte('#');
-    var proof: u8[..2048] = [];
+    var proof: u8[..4096] = [];
     guard create_dpop_proof(
         session.dpop.private_key[..],
         ctx.current_method[..],
         htu_clean,
-        session.dpop.access_token[..],
+        token_buf[..],
         session.dpop.last_nonce[..],
         now_sec,
         "",
         proof,
     ) else { return; }
     set_header(ctx.headers, rfc::DPOP_HEADER, proof[..], true);
-    if session.dpop.access_token.len > 0 && find_header(ctx.headers, "Authorization").len == 0 {
-        var auth_val: u8[..4096] = [];
-        auth_val.append("DPoP ");
-        let _ = auth_val.try_append(session.dpop.access_token[..]);
+    if existing_auth.len == 0 && token_buf.len > 0 {
+        var auth_val: u8[..4112] = [];
+        guard auth_val.try_append("DPoP ") && auth_val.try_append(token_buf[..]) else { return; }
         set_header(ctx.headers, "Authorization", auth_val[..], true);
     }
 }
@@ -708,6 +752,11 @@ fn apply_client_request_signature(
     current_url: const core::Url&,
 ) {
     guard session.sig_private_key.len == 32 else { return; }
+    guard is_same_origin_session_hop(ctx, current_url) else {
+        remove_header_by_name(ctx.headers, rfc::HEADER_SIGNATURE);
+        remove_header_by_name(ctx.headers, rfc::HEADER_SIGNATURE_INPUT);
+        return;
+    }
     var sig_req = Request {
         method:  copy(ctx.current_method),
         url:     copy(current_url.href),
@@ -799,7 +848,7 @@ fn run_client_preflight_stages<UserStage>(
         let v_cache = stage_client_cache_lookup(
             req,
             parsed_initial.href[..],
-            cache_ts.now,
+            cache_ts.now_sec,
             cache_hdrs,
             out_resp,
             cache_revalidate_idx,
@@ -1110,6 +1159,7 @@ fn dispatch_client_egress_stage(
             out_resp,
             session.dict_cache,
             session.strict_content_decoding || session.verify_content_digest,
+            div_euclid(session.virtual_clock_us, 1000000),
         );
         match dec_v {
             Abort ab => {
@@ -1123,7 +1173,7 @@ fn dispatch_client_egress_stage(
         return stage_client_cache_store(
             req,
             ctx.headers,
-            current_url,
+            current_url.href[..],
             ctx.current_method[..],
             out_resp,
             cache_ts,
@@ -1362,7 +1412,7 @@ fn execute_single_client_hop_iteration<UserStage>(
         let v_redir_cache = stage_client_cache_lookup(
             req,
             current_url.href[..],
-            cache_ts.now,
+            cache_ts.now_sec,
             ctx.headers,
             resp,
             hop_reval_idx,
@@ -1381,6 +1431,7 @@ fn execute_single_client_hop_iteration<UserStage>(
     let hop_start_us = session.virtual_clock_us;
     resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
     guard ok(hop_err) else { return true; }
+    ctx.body_consumed = true;
 
     let hop_dur_us = session.virtual_clock_us - hop_start_us;
     apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, hop_dur_us);
@@ -1429,11 +1480,11 @@ fn execute_client_pipeline_with_stage<UserStage>(
     var raw_eff_url: u8[..2048] = [];
     build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
-    let req_time = div_euclid(session.virtual_clock_us, 1000000);
-    let req_time_ns = ((session.virtual_clock_us % 1000000) * 1000) as u32;
+    let req_sec = div_euclid(session.virtual_clock_us, 1000000);
     var cache_ts = CacheTimestamps {
-        request_time: core::unix(req_time, req_time_ns),
-        now:          core::unix(req_time, req_time_ns),
+        request_sec: req_sec,
+        now_sec:     req_sec,
+        ..
     };
 
     var ctx = RequestExecutionContext { .. };

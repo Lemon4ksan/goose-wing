@@ -79,9 +79,9 @@ let H2_CLIENT_PREFACE: const u8[24] = [
     '\r', '\n', '\r', '\n', 'S', 'M', '\r', '\n', '\r', '\n',
 ];
 
-// RFC 9113 Section 5.1.1: Stream Identifiers - Stream ID 0 rules and stream association.
+// RFC 9113 Section 4.1: Frame Format - Masks reserved bit 31 and validates stream 0 frame association.
 inline fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32 {
-    if stream_id == 0 {
+    if (stream_id & 0x7FFFFFFF) == 0 {
         if frame_type == H2_FRAME_DATA ||
            frame_type == H2_FRAME_HEADERS ||
            frame_type == H2_FRAME_PRIORITY ||
@@ -94,8 +94,7 @@ inline fn validate_stream_id_association(stream_id: u32, frame_type: u8) -> u32 
         if frame_type == H2_FRAME_SETTINGS ||
            frame_type == H2_FRAME_PING ||
            frame_type == H2_FRAME_GOAWAY ||
-           frame_type == H2_FRAME_PRIORITY_UPDATE ||
-           frame_type == H2_FRAME_ORIGIN {
+           frame_type == H2_FRAME_PRIORITY_UPDATE {
             return H2_ERR_PROTOCOL_ERROR;
         }
     }

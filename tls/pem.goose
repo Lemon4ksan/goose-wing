@@ -202,16 +202,53 @@ fn load_trust_anchors_pem_file(store: TrustAnchorStore&, path: const u8[:]) -> i
     return added, true;
 }
 
+const P256_ORDER_BYTES: const u8[32] = [
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84,
+    0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+];
+
+inline fn is_valid_p256_scalar(scalar: const u8[:]) -> bool {
+    guard scalar.len == 32 else { return false; }
+    var non_zero: u8 = 0;
+    var decided:  u8 = 0;
+    var is_less:  u8 = 0;
+    for i in 32 {
+        let s = scalar[i];
+        let n = P256_ORDER_BYTES[i];
+        non_zero = non_zero | s;
+        let lt: u8 = if s < n { 1 } else { 0 };
+        let ne: u8 = if s != n { 1 } else { 0 };
+        is_less = is_less | ((decided ^ 1) & lt);
+        decided = decided | ne;
+    }
+    return non_zero != 0 && is_less == 1;
+}
+
 inline fn sec1_check_curve_oid(ec_seq: ByteCursor&, der_ref: const u8[:]) -> bool {
-    guard ec_seq.cursor_len() > 0 else { return true; }
-    var tag: u8 = 0;
-    var opt_val = core::cursor_from(der_ref[..0]);
-    guard get_any_asn1_element(ec_seq, tag, opt_val) else { return false; }
-    guard tag == 0xA0 else { return true; }
-    var curve_oid = core::cursor_from(der_ref[..0]);
-    return get_asn1_element(opt_val, rfc::ASN1_TAG_OID, curve_oid)
-        && opt_val.cursor_len() == 0
-        && curve_oid.buf == rfc::OID_SECP256R1[..];
+    if ec_seq.cursor_len() > 0 && ec_seq.buf[0] == 0xA0 {
+        var opt_params = core::cursor_from(der_ref[..0]);
+        var curve_oid = core::cursor_from(der_ref[..0]);
+        guard get_asn1_element(ec_seq, 0xA0, opt_params)
+            && get_asn1_element(opt_params, rfc::ASN1_TAG_OID, curve_oid)
+            && opt_params.cursor_len() == 0
+            && curve_oid.buf == rfc::OID_SECP256R1[..] else {
+            return false;
+        }
+    }
+    if ec_seq.cursor_len() > 0 && ec_seq.buf[0] == 0xA1 {
+        var opt_pub = core::cursor_from(der_ref[..0]);
+        var pub_bits = core::cursor_from(der_ref[..0]);
+        var unused: u8 = 0;
+        guard get_asn1_element(ec_seq, 0xA1, opt_pub)
+            && get_asn1_bit_string(opt_pub, pub_bits, unused)
+            && unused == 0
+            && opt_pub.cursor_len() == 0 else {
+            return false;
+        }
+    }
+    return ec_seq.cursor_len() == 0;
 }
 
 // Parses an unencrypted SEC 1 `ECPrivateKey` DER sequence for P-256 (RFC 5915 Section 3).
@@ -235,7 +272,7 @@ fn parse_sec1_ec_private_key_der(der: const u8[:], out_key: u8[32]&) -> bool {
 
     var priv_oct = core::cursor_from(der[..0]);
     guard get_asn1_element(ec_seq, rfc::ASN1_TAG_OCTET_STRING, priv_oct) else { return false; }
-    guard priv_oct.buf.len == 32 else { return false; }
+    guard is_valid_p256_scalar(priv_oct.buf) else { return false; }
     guard sec1_check_curve_oid(ec_seq, der) else { return false; }
 
     for i in 32 {
@@ -243,6 +280,22 @@ fn parse_sec1_ec_private_key_der(der: const u8[:], out_key: u8[32]&) -> bool {
     }
     committed = true;
     return true;
+}
+
+inline fn pki_check_optional_tail(pki_seq: ByteCursor&) -> bool {
+    if pki_seq.cursor_len() > 0 && pki_seq.buf[0] == 0xA0 {
+        var attrs = core::cursor_from(pki_seq.buf[..0]);
+        guard get_asn1_element(pki_seq, 0xA0, attrs) else { return false; }
+    }
+    if pki_seq.cursor_len() > 0 && pki_seq.buf[0] == 0x81 {
+        var pub_im = core::cursor_from(pki_seq.buf[..0]);
+        guard get_asn1_element(pki_seq, 0x81, pub_im)
+            && validate_asn1_bit_string(pub_im.buf)
+            && pub_im.buf[0] == 0 else {
+            return false;
+        }
+    }
+    return pki_seq.cursor_len() == 0;
 }
 
 inline fn pkcs8_extract_ed25519(
@@ -303,7 +356,8 @@ fn parse_pkcs8_private_key_der(der: const u8[:], out_key: u8[32]&) -> PrivateKey
     var priv_oct = core::cursor_from(der[..0]);
     guard get_asn1_element(pki_seq, rfc::ASN1_TAG_SEQUENCE, alg_seq)
         && get_asn1_element(alg_seq, rfc::ASN1_TAG_OID, alg_oid)
-        && get_asn1_element(pki_seq, rfc::ASN1_TAG_OCTET_STRING, priv_oct) else {
+        && get_asn1_element(pki_seq, rfc::ASN1_TAG_OCTET_STRING, priv_oct)
+        && pki_check_optional_tail(pki_seq) else {
         return PrivateKeyKind.Unknown, false;
     }
 

@@ -208,28 +208,18 @@ inline fn decode_grpc_web_trailer_frame(
     return true;
 }
 
-// Parses a gRPC-Web response body into payload and trailers.
+// Scans gRPC-Web data and trailer frames in `wire_bytes` for a unary RPC response.
 //
 // Example:
-//   body = "\x00\x00\x00\x00\x05hello\x80\x00\x00\x00\x0Fgrpc-status: 0\r\n"
-//   returns: true, out_resp.payload = "hello", out_resp.status = Ok
-fn parse_grpc_web_unary_body(
-    res_headers:  const HeaderMap&,
-    res_trailers: const HeaderMap&,
-    body:         const u8[:],
-    out_resp:     GrpcResponse&,
+//   wire_bytes = "\x00\x00\x00\x00\x05hello\x80\x00\x00\x00\x0Fgrpc-status: 0\r\n"
+//   returns: true, found_data = true, found_trailer = true
+fn scan_grpc_web_unary_frames(
+    wire_bytes:    const u8[:],
+    out_resp:      GrpcResponse&,
+    found_data:    bool&,
+    found_trailer: bool&,
 ) -> bool {
-    var wire_bytes: u8[>..] = [];
-    let content_type = get_header(res_headers, "content-type");
-    if content_type.starts_with_fold(rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
-        guard decode_grpc_web_text(body, wire_bytes) else { return false; }
-    } else {
-        wire_bytes.append(body);
-    }
-
-    var offset: u32 = 0;
-    var found_trailer = false;
-    var found_data = false;
+    var offset:        u32     = 0;
     var frame_payload: u8[>..] = [];
     while offset < (wire_bytes.len as u32) {
         guard !found_trailer else {
@@ -260,6 +250,37 @@ fn parse_grpc_web_unary_body(
         }
         offset = core::add_sat_u32(offset, consumed);
     }
+    return true;
+}
+
+// Parses a gRPC-Web response body into payload and trailers.
+//
+// Example:
+//   body = "\x00\x00\x00\x00\x05hello\x80\x00\x00\x00\x0Fgrpc-status: 0\r\n"
+//   returns: true, out_resp.payload = "hello", out_resp.status = Ok
+fn parse_grpc_web_unary_body(
+    res_headers:  const HeaderMap&,
+    res_trailers: const HeaderMap&,
+    body:         const u8[:],
+    out_resp:     GrpcResponse&,
+) -> bool {
+    var wire_bytes: u8[>..] = [];
+    let content_type = get_header(res_headers, "content-type");
+    if content_type.len > 0 && !is_grpc_web(content_type) {
+        out_resp.status = grpc_status_from_http(resolve_effective_http_status(res_headers));
+        return false;
+    }
+    if is_grpc_web_text(content_type) {
+        guard decode_grpc_web_text(body, wire_bytes) else { return false; }
+    } else {
+        wire_bytes.append(body);
+    }
+
+    var found_trailer = false;
+    var found_data = false;
+    guard scan_grpc_web_unary_frames(wire_bytes[..], out_resp, found_data, found_trailer) else {
+        return false;
+    }
 
     if !found_trailer {
         let has_hdr_status = extract_grpc_status(res_headers, res_trailers, out_resp.status, out_resp.message);
@@ -268,10 +289,22 @@ fn parse_grpc_web_unary_body(
             return false;
         }
         out_resp.is_trailers_only = true;
+        if out_resp.status == GrpcStatusCode.Ok {
+            out_resp.status = GrpcStatusCode.Internal;
+            return false;
+        }
         return true;
     }
-    if resolve_effective_http_status(res_headers) != 200 && out_resp.status == GrpcStatusCode.Ok {
-        out_resp.status = grpc_status_from_http(resolve_effective_http_status(res_headers));
+    let http_st = resolve_effective_http_status(res_headers);
+    if http_st != 200 && out_resp.status == GrpcStatusCode.Ok {
+        out_resp.status = grpc_status_from_http(http_st);
+    }
+    if !found_data {
+        out_resp.is_trailers_only = true;
+        if out_resp.status == GrpcStatusCode.Ok {
+            out_resp.status = GrpcStatusCode.Internal;
+            return false;
+        }
     }
     return true;
 }
@@ -298,6 +331,12 @@ fn parse_grpc_unary_response(
         return parse_grpc_web_unary_body(res_headers, res_trailers, body, out_resp);
     }
 
+    let ct = get_header(res_headers, "content-type");
+    if ct.len > 0 && !matches_grpc_media_type(ct.trim_lws(), rfc::GRPC_CONTENT_TYPE) {
+        out_resp.status = grpc_status_from_http(resolve_effective_http_status(res_headers));
+        return false;
+    }
+
     // Native HTTP/2 or HTTP/3 gRPC
     let has_wire_status = extract_grpc_status(res_headers, res_trailers, out_resp.status, out_resp.message);
     var details_b64 = get_header(res_trailers, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
@@ -310,6 +349,10 @@ fn parse_grpc_unary_response(
         );
     }
     if body.len >= 5 {
+        guard has_wire_status else {
+            out_resp.payload.clear();
+            return false;
+        }
         var comp = false;
         let ok_lpm, consumed = decode_grpc_lpm(body, 0, out_resp.payload, comp);
         guard ok_lpm && consumed == body.len else {
@@ -346,6 +389,10 @@ fn parse_grpc_unary_response(
 
     if body.len == 0 && has_wire_status {
         out_resp.is_trailers_only = true;
+        if out_resp.status == GrpcStatusCode.Ok {
+            out_resp.status = GrpcStatusCode.Internal;
+            return false;
+        }
         return true;
     }
 
@@ -371,45 +418,74 @@ fn parse_grpc_status_code(status_val: const u8[:]) -> u32 {
 
 // Processes incoming gRPC-Web response body and trailers.
 fn process_grpc_web_response(body: const u8[:], ct: const u8[:], out_resp: GrpcResponse&) -> bool {
+    guard is_grpc_web(ct) else {
+        out_resp.status = GrpcStatusCode.Unknown;
+        return false;
+    }
     var wire_bytes: u8[>..] = [];
-    if ct.starts_with_fold(rfc::GRPC_WEB_TEXT_CONTENT_TYPE) {
+    if is_grpc_web_text(ct) {
         guard decode_grpc_web_text(body, wire_bytes) else { return false; }
     } else {
         wire_bytes.append(body);
     }
 
-    var offset:        u32     = 0;
-    var found_trailer: bool    = false;
-    var found_data:    bool    = false;
-    var frame_payload: u8[>..] = [];
-    while offset < (wire_bytes.len as u32) {
-        guard !found_trailer else {
-            out_resp.payload.clear();
+    var found_trailer = false;
+    var found_data = false;
+    guard scan_grpc_web_unary_frames(wire_bytes[..], out_resp, found_data, found_trailer) else {
+        return false;
+    }
+    guard found_trailer else {
+        out_resp.payload.clear();
+        out_resp.status = GrpcStatusCode.Internal;
+        return false;
+    }
+    if !found_data {
+        out_resp.is_trailers_only = true;
+        if out_resp.status == GrpcStatusCode.Ok {
+            out_resp.status = GrpcStatusCode.Internal;
             return false;
         }
-        frame_payload.clear();
-        var is_trailers = false;
-        var is_comp = false;
-        let ok_frame, consumed = decode_grpc_web_frame(wire_bytes[..], offset, frame_payload, is_trailers, is_comp);
-        guard ok_frame else {
-            out_resp.payload.clear();
-            return false;
-        }
+    }
+    return true;
+}
 
-        if is_trailers {
-            guard decode_grpc_web_trailer_frame(frame_payload[..], is_comp, out_resp) else {
-                out_resp.payload.clear();
-                return false;
-            }
-            found_trailer = true;
-        } else {
-            guard !found_data && append_grpc_web_data_frame(frame_payload[..], is_comp, out_resp) else {
-                out_resp.payload.clear();
-                return false;
-            }
-            found_data = true;
-        }
-        offset = core::add_sat_u32(offset, consumed);
+// Extracts `grpc-status`, `grpc-message`, and `grpc-status-details-bin` from `res` trailers or headers.
+//
+// Example:
+//   res.trailers["grpc-status"] = "0", res.status_code = 200
+//   returns: true, out_resp.status = GrpcStatusCode.Ok
+inline fn extract_client_response_status(res: const Response&, out_resp: GrpcResponse&) -> bool {
+    let in_trailers = has_header(res.trailers, rfc::HEADER_GRPC_STATUS);
+    let in_headers = !in_trailers && has_header(res.headers, rfc::HEADER_GRPC_STATUS);
+    if !in_trailers && !in_headers {
+        out_resp.status = grpc_status_from_http(res.status_code);
+        return false;
+    }
+    let status_val = if in_trailers {
+        trailer(res, rfc::HEADER_GRPC_STATUS)
+    } else {
+        header(res, rfc::HEADER_GRPC_STATUS)
+    };
+    let msg_val = if in_trailers {
+        trailer(res, rfc::HEADER_GRPC_MESSAGE)
+    } else {
+        header(res, rfc::HEADER_GRPC_MESSAGE)
+    };
+    out_resp.status = grpc_status_from_code(parse_grpc_status_code(status_val));
+    if res.status_code != 200 && out_resp.status == GrpcStatusCode.Ok {
+        out_resp.status = grpc_status_from_http(res.status_code);
+    }
+    if msg_val.len > 0 {
+        decode_grpc_message(msg_val, out_resp.message);
+    }
+    var details_b64 = trailer(res, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
+    if details_b64.len == 0 {
+        details_b64 = header(res, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
+    }
+    if details_b64.len > 0 {
+        let _ = decode_grpc_status_details(
+            details_b64, out_resp.status, out_resp.status, out_resp.message, out_resp.details,
+        );
     }
     return true;
 }
@@ -453,39 +529,21 @@ fn grpc_unary_call(
         return false;
     }
 
-    // Check for explicit grpc-status in response trailers first, then headers (Trailers-Only)
-    var status_val = trailer(res, rfc::HEADER_GRPC_STATUS);
-    var msg_val = trailer(res, rfc::HEADER_GRPC_MESSAGE);
-    if status_val.len == 0 {
-        status_val = header(res, rfc::HEADER_GRPC_STATUS);
-        msg_val = header(res, rfc::HEADER_GRPC_MESSAGE);
-    }
-
-    if status_val.len > 0 {
-        let status_int = parse_grpc_status_code(status_val);
-        out_resp.status = grpc_status_from_code(status_int);
-        if res.status_code != 200 && out_resp.status == GrpcStatusCode.Ok {
-            out_resp.status = grpc_status_from_http(res.status_code);
-        }
-
-        if msg_val.len > 0 {
-            decode_grpc_message(msg_val, out_resp.message);
-        }
-        var details_b64 = trailer(res, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
-        if details_b64.len == 0 {
-            details_b64 = header(res, rfc::HEADER_GRPC_STATUS_DETAILS_BIN);
-        }
-        if details_b64.len > 0 {
-            let _ = decode_grpc_status_details(
-                details_b64, out_resp.status, out_resp.status, out_resp.message, out_resp.details,
-            );
-        }
-    } else {
-        out_resp.status = grpc_status_from_http(res.status_code);
-    }
-
+    let has_wire_status = extract_client_response_status(res, out_resp);
+    let ct = header(res, "content-type");
     if cfg.is_web || cfg.is_web_text {
-        let ct = header(res, "content-type");
+        guard is_grpc_web(ct) else {
+            out_resp.status = grpc_status_from_http(res.status_code);
+            return false;
+        }
+        if res.body.len == 0 && has_wire_status {
+            out_resp.is_trailers_only = true;
+            if out_resp.status == GrpcStatusCode.Ok {
+                out_resp.status = GrpcStatusCode.Internal;
+                return false;
+            }
+            return true;
+        }
         let ok_web = process_grpc_web_response(res.body[..], ct, out_resp);
         if res.status_code != 200 && out_resp.status == GrpcStatusCode.Ok {
             out_resp.status = grpc_status_from_http(res.status_code);
@@ -493,8 +551,28 @@ fn grpc_unary_call(
         return ok_web;
     }
 
-    // Native gRPC body
+    guard matches_grpc_media_type(ct.trim_lws(), rfc::GRPC_CONTENT_TYPE) else {
+        out_resp.status = grpc_status_from_http(res.status_code);
+        return false;
+    }
+    return decode_client_native_unary_body(res, has_wire_status, out_resp);
+}
+
+// Decodes a native HTTP/2 or HTTP/3 unary gRPC response body or Trailers-Only response.
+//
+// Example:
+//   res.body = "\x00\x00\x00\x00\x05hello", has_wire_status = true
+//   returns: true, out_resp.payload = "hello"
+fn decode_client_native_unary_body(
+    res:             const Response&,
+    has_wire_status: bool,
+    out_resp:        GrpcResponse&,
+) -> bool {
     if res.body.len >= 5 {
+        guard has_wire_status else {
+            out_resp.payload.clear();
+            return false;
+        }
         var comp = false;
         let ok_lpm, consumed = decode_grpc_lpm(res.body[..], 0, out_resp.payload, comp);
         guard ok_lpm && consumed == res.body.len else {
@@ -529,8 +607,12 @@ fn grpc_unary_call(
         return true;
     }
 
-    if res.body.len == 0 {
+    if res.body.len == 0 && has_wire_status {
         out_resp.is_trailers_only = true;
+        if out_resp.status == GrpcStatusCode.Ok {
+            out_resp.status = GrpcStatusCode.Internal;
+            return false;
+        }
         return true;
     }
 

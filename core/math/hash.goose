@@ -79,7 +79,7 @@ fn xxhash32(data: const u8[:], seed: u32 = 0) -> u32 {
         h32 = seed + XXH_PRIME32_5;
     }
 
-    h32 += len as u32;
+    h32 += (len & 0xFFFFFFFF) as u32;
 
     while offset + 4 <= len {
         h32 += read_le_u32(data, offset) * XXH_PRIME32_3;
@@ -104,9 +104,12 @@ const WYHASH_DEFAULT_SECRET: u64[4] = [
 ];
 
 inline fn wy_read_small(data: const u8[:], len: i64) -> u64 {
-    return ((data[0] as u64) << 16) |
-           ((data[len >> 1] as u64) << 8) |
-           data[len - 1];
+    guard len > 0 && len <= data.len else { return 0; }
+    let mid = ((len as u64) >> 1) as i64;
+    let last = sub_sat_i64(len, 1);
+    return shl_sat_u64(data[0], 16) |
+           shl_sat_u64(data[mid], 8) |
+           data[last];
 }
 
 // Canonical WyHash64 non-cryptographic 64-bit hash function.

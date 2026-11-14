@@ -100,7 +100,7 @@ fn main() {
     // Scenario 5: RFC 9112 Chunked Transfer Encoding & Trailer Extraction
     // ------------------------------------------------------------------------
     print("\n[5/11] RFC 9112 Chunked Transfer Coding & Trailers...\n");
-    let chunked_wire = "5\r\nHello\r\n8\r\n, World!\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123\r\n\r\n";
+    let chunked_wire = "5\r\nHello\r\n8\r\n, World!\r\n0\r\nETag: \"v1\"\r\nX-Checksum: sha256-abc123\r\n\r\n";
     var body_out: u8[>..] = [];
     var trailers_out = wing::HeaderMap { .. };
     let err_chunk, _consumed = wing::decode_chunked_body_with_trailers(chunked_wire, body_out, trailers_out);

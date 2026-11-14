@@ -13,6 +13,7 @@ namespace wing;
 import std;
 import core from "..";
 import rfc.http;
+import .mime;
 
 // ---- HSTS Directive Model ------------------------------------------------
 
@@ -25,24 +26,36 @@ struct HstsDirective {
 
 // ---- Header Parsing (RFC 6797 Section 6.1) -------------------------------
 
-// Parses delta-seconds from max-age directive, supporting optional quotes.
+// Parses non-empty ASCII decimal digits into `i64`.
+//
+// Example:
+//   s = "31536000"
+//   returns: 31536000, ok = true
+fn parse_hsts_digits(s: const u8[:]) -> i64, bool {
+    guard s.len > 0 else { return 0, false; }
+    for b in s {
+        guard core::is_ascii_digit(b) else { return 0, false; }
+    }
+    return s.parse_i64_dec();
+}
+
+// RFC 6797 Section 6.1.1: The max-age Directive - Unescape quoted-string before delta-seconds parse.
 //
 // Example:
 //   val = "31536000"
 //   returns: 31536000, ok = true
 fn parse_hsts_max_age(val: const u8[:]) -> i64, bool {
     guard val.len > 0 else { return 0, false; }
-    var unquoted = val;
     if val[0] == '"' {
-        guard val.len >= 2 && val[val.len - 1] == '"' else { return 0, false; }
-        unquoted = val[1..^1];
+        var unq_buf: u8[..32] = [];
+        guard strict_unquote(val, unq_buf, 32) else { return 0, false; }
+        return parse_hsts_digits(unq_buf[..]);
     }
-    guard unquoted.len > 0 && unquoted[0] >= '0' && unquoted[0] <= '9' else { return 0, false; }
-    return unquoted.parse_i64_dec();
+    return parse_hsts_digits(val);
 }
 
-// RFC 6797 Section 6.1: Strict-Transport-Security Header Field - Every directive MUST appear at most once.
-fn record_unique_hsts_ext(seen_ext: u8[..64][..8]&, key: const u8[:]) -> bool {
+// RFC 6797 Section 6.1: Strict-Transport-Security HTTP Response Header Field - Every directive MUST appear at most once.
+fn record_unique_hsts_ext(seen_ext: u8[..64][..16]&, key: const u8[:]) -> bool {
     for &ext in seen_ext {
         if ext[..].eq_ascii_fold(key) {
             return false;
@@ -52,7 +65,7 @@ fn record_unique_hsts_ext(seen_ext: u8[..64][..8]&, key: const u8[:]) -> bool {
     return name_buf.try_set(key) && seen_ext.try_push(name_buf);
 }
 
-fn apply_hsts_directive(d: HstsDirective&, seen_ext: u8[..64][..8]&, trimmed: const u8[:]) -> bool {
+fn apply_hsts_directive(d: HstsDirective&, seen_ext: u8[..64][..16]&, trimmed: const u8[:]) -> bool {
     let name, val, has_val = trimmed.split_once_byte('=');
     let key = name.trim_lws();
     if key.eq_ascii_fold(rfc::HSTS_DIR_INCLUDE_SUBDOMAINS) {
@@ -77,12 +90,10 @@ fn apply_hsts_directive(d: HstsDirective&, seen_ext: u8[..64][..8]&, trimmed: co
     for b in key {
         guard core::is_tchar(b) else { return false; }
     }
+    // RFC 6797 Section 6.1: Strict-Transport-Security HTTP Response Header Field - Validate token or quoted-string extension value.
     if has_val {
-        let v_trim = val.trim_lws();
-        guard v_trim.len > 0 else { return false; }
-        if v_trim[0] == '"' {
-            guard v_trim.len >= 2 && v_trim[v_trim.len - 1] == '"' else { return false; }
-        }
+        var ext_val: u8[..256] = [];
+        guard decode_token_or_quoted_param(val.trim_lws(), ext_val, 256) else { return false; }
     }
     return record_unique_hsts_ext(seen_ext, key);
 }
@@ -96,7 +107,7 @@ fn parse_hsts_header(raw: const u8[:]) -> HstsDirective, bool {
     var d = HstsDirective { .. };
     guard raw.len > 0 else { return d, false; }
 
-    var seen_ext: u8[..64][..8] = [];
+    var seen_ext: u8[..64][..16] = [];
     var rem = raw;
     while rem.len > 0 {
         let semi_idx = rem.find_unquoted_byte(';');

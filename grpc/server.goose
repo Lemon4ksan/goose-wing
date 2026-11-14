@@ -16,40 +16,6 @@ import client.request;
 import client.response;
 import core from "..";
 
-// Wire protocol constants
-
-inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool {
-    guard ct.starts_with_fold(prefix) else { return false; }
-    if ct.len == prefix.len { return true; }
-    let next_byte = ct[prefix.len];
-    let suffix_idx = core::add_sat_i64(prefix.len, 1);
-    if next_byte == '+' {
-        return ct.len > suffix_idx && core::is_tchar(ct[suffix_idx]);
-    }
-    return next_byte == ';' || next_byte == ' ' || next_byte == '\t';
-}
-
-// Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text
-fn is_grpc_content_type(ct: const u8[:]) -> bool {
-    let trimmed = ct.trim_lws();
-    return matches_grpc_media_type(trimmed, rfc::GRPC_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-}
-
-// Returns true if Content-Type indicates gRPC-Web (binary or text)
-fn is_grpc_web(ct: const u8[:]) -> bool {
-    let trimmed = ct.trim_lws();
-    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-}
-
-// Returns true if Content-Type is specifically gRPC-Web-Text (Base64 encoded)
-fn is_grpc_web_text(ct: const u8[:]) -> bool {
-    let trimmed = ct.trim_lws();
-    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-}
-
 // Inspects an incoming Request to determine if it is a gRPC or Connect GET call.
 fn is_grpc_request(req: const Request&) -> bool {
     let ct = req.header("content-type");
@@ -60,7 +26,7 @@ fn is_grpc_request(req: const Request&) -> bool {
 }
 
 inline fn is_valid_grpc_path_segment(seg: const u8[:]) -> bool {
-    guard seg.len > 0 && seg.len <= 64 else { return false; }
+    guard seg.len > 0 && seg.len <= 128 else { return false; }
     for b in seg {
         guard b > 0x20 && b < 0x7F && b != '/' && b != '?' && b != '#' else { return false; }
     }
@@ -68,19 +34,16 @@ inline fn is_valid_grpc_path_segment(seg: const u8[:]) -> bool {
 }
 
 // Parses standard gRPC URI path: `/{service}/{method}` or `/{package}.{service}/{method}`.
-// Returns (ok) and populates out_service and out_method.
+// Leaves `out_service` and `out_method` untouched when returning false.
 //
 // Example:
 //   path = "/helloworld.Greeter/SayHello"
 //   returns: ok = true, out_service = "helloworld.Greeter", out_method = "SayHello"
-fn parse_grpc_path(
+fn parse_grpc_path<S, M>(
     path:        const u8[:],
-    out_service: u8[..64]&,
-    out_method:  u8[..64]&,
+    out_service: S&,
+    out_method:  M&,
 ) -> bool {
-    out_service.clear();
-    out_method.clear();
-
     guard path.len >= 3 && path[0] == '/' else { return false; }
     let service_part, method_part, ok_split = path[1..].split_once_byte('/');
     guard ok_split
@@ -88,15 +51,19 @@ fn parse_grpc_path(
         && is_valid_grpc_path_segment(method_part) else {
         return false;
     }
-
-    return out_service.try_set(service_part) && out_method.try_set(method_part);
+    guard service_part.len <= out_service.cap && method_part.len <= out_method.cap else {
+        return false;
+    }
+    let _ = out_service.try_set(service_part);
+    let _ = out_method.try_set(method_part);
+    return true;
 }
 
 // ---- Server Invocation Context ------------------------------------------
 
 struct GrpcServerContext {
-    service:           u8[..64]           = [],
-    method:            u8[..64]           = [],
+    service:           u8[..128]          = [],
+    method:            u8[..128]          = [],
     peer_ip:           u8[..48]           = [],
     timeout_ms:        u64                = 0,
     deadline_mono_ns:  u64                = 0,
@@ -154,9 +121,9 @@ enum GrpcIdempotency {
 }
 
 struct GrpcMethodEntry {
-    service:     u8[..64]        = [],
-    method:      u8[..64]        = [],
-    full_path:   u8[..160]       = [],
+    service:     u8[..128]       = [],
+    method:      u8[..128]       = [],
+    full_path:   u8[..260]       = [],
     method_type: GrpcMethodType  = GrpcMethodType.Unary,
     idempotency: GrpcIdempotency = GrpcIdempotency.Default,
     handler_id:  u16             = 0,
@@ -184,7 +151,7 @@ fn set_grpc_service_health(
     service: const u8[:],
     status:  GrpcServingStatus,
 ) -> bool {
-    guard service.len <= 64 else { return false; }
+    guard service.len <= 128 else { return false; }
     for i in d.health_entries.len {
         if d.health_entries[i].service[..] == service {
             d.health_entries[i].status = status;
@@ -427,10 +394,55 @@ inline fn compute_safe_grpc_deadline(base_ns: u64, ms: u64) -> u64 {
 
 inline fn is_reserved_grpc_header(n: const u8[:]) -> bool {
     if n.starts_with_fold(":") { return true; }
-    if n.eq_ascii_fold("te") { return true; }
-    if n.eq_ascii_fold("host") { return true; }
-    if n.eq_ascii_fold("connection") { return true; }
-    return false;
+    return n.eq_ascii_fold("te")
+        || n.eq_ascii_fold("host")
+        || n.eq_ascii_fold("connection")
+        || n.eq_ascii_fold("keep-alive")
+        || n.eq_ascii_fold("proxy-connection")
+        || n.eq_ascii_fold("transfer-encoding")
+        || n.eq_ascii_fold("upgrade")
+        || n.eq_ascii_fold("content-length")
+        || n.eq_ascii_fold("user-agent");
+}
+
+inline fn is_valid_grpc_bin_segment(seg: const u8[:]) -> bool {
+    if seg.len == 0 { return true; }
+    let rem = seg.len & 3;
+    guard rem != 1 else { return false; }
+    if rem == 0 {
+        return core::is_valid_base64(seg);
+    }
+    for b in seg {
+        guard core::base64_val(b) >= 0 else { return false; }
+    }
+    let last_val = core::base64_val(seg[core::sub_sat_i64(seg.len, 1)]);
+    return if rem == 2 { (last_val & 0x0F) == 0 } else { (last_val & 0x03) == 0 };
+}
+
+fn is_valid_grpc_bin_header_value(raw: const u8[:]) -> bool {
+    var rem = raw;
+    while rem.len > 0 {
+        let head, tail, has_comma = rem.split_once_byte(',');
+        let seg = (if has_comma { head } else { rem }).trim_lws();
+        guard is_valid_grpc_bin_segment(seg) else { return false; }
+        if !has_comma { break; }
+        rem = tail;
+    }
+    return true;
+}
+
+inline fn is_valid_grpc_request_header_pair(n: const u8[:], v: const u8[:]) -> bool {
+    guard n.len > 0 else { return false; }
+    for b in n {
+        guard core::is_tchar(b) else { return false; }
+    }
+    for vb in v {
+        guard vb == '\t' || (vb >= 0x20 && vb <= 0x7E) || vb >= 0x80 else { return false; }
+    }
+    if n.ends_with_fold("-bin") {
+        return is_valid_grpc_bin_header_value(v);
+    }
+    return true;
 }
 
 inline fn process_grpc_request_header(
@@ -439,31 +451,41 @@ inline fn process_grpc_request_header(
     out_ctx:           GrpcServerContext&,
     now_mono_ns:       u64,
     req_start_mono_ns: u64,
-) -> bool {
+) -> GrpcStatusCode {
+    if n.starts_with_fold(":") { return GrpcStatusCode.Ok; }
+    guard is_valid_grpc_request_header_pair(n, v) else {
+        return GrpcStatusCode.InvalidArgument;
+    }
     if n.eq_ascii_fold("content-type") {
-        if v.len == 0 { return true; }
-        return is_grpc_content_type(v);
+        if v.len == 0 || is_grpc_content_type(v) { return GrpcStatusCode.Ok; }
+        return GrpcStatusCode.InvalidArgument;
     }
     if n.eq_ascii_fold("accept") {
         if is_grpc_web_text(v) {
             out_ctx.res_is_web_text = true;
         }
-        return true;
+        return GrpcStatusCode.Ok;
     }
     if n.eq_ascii_fold(rfc::HEADER_GRPC_TIMEOUT) {
         let ms, ok_to = parse_grpc_timeout(v);
-        guard ok_to else { return false; }
+        guard ok_to else { return GrpcStatusCode.InvalidArgument; }
         out_ctx.timeout_ms = ms;
         let base_ns = if req_start_mono_ns > 0 { req_start_mono_ns } else { now_mono_ns };
         out_ctx.deadline_mono_ns = compute_safe_grpc_deadline(base_ns, ms);
-        return true;
+        return GrpcStatusCode.Ok;
     }
     if is_reserved_grpc_header(n) {
-        return true;
+        return GrpcStatusCode.Ok;
     }
     var item = GrpcMetadata { .. };
-    guard item.key.try_set(n) && item.value.try_set(v) else { return false; }
-    return out_ctx.metadata.try_push(item);
+    guard n.len <= item.key.cap && item.value.try_set(v) else {
+        return GrpcStatusCode.ResourceExhausted;
+    }
+    n.to_lower_ascii(item.key);
+    guard out_ctx.metadata.try_push(item) else {
+        return GrpcStatusCode.ResourceExhausted;
+    }
+    return GrpcStatusCode.Ok;
 }
 
 inline fn init_grpc_context_transport(req: const Request&, out_ctx: GrpcServerContext&) {
@@ -474,17 +496,7 @@ inline fn init_grpc_context_transport(req: const Request&, out_ctx: GrpcServerCo
     out_ctx.res_is_web_text = out_ctx.is_web_text || is_grpc_web_text(accept_hdr);
 }
 
-// Extracts service, method, timeout, and metadata from incoming HTTP request.
-//
-// Example:
-//   req.url = "/echo.Echo/Ping", req.headers = [content-type: application/grpc]
-//   returns: ok = true, out_ctx.service = "echo.Echo", out_ctx.method = "Ping"
-fn extract_grpc_server_context(
-    req:               const Request&,
-    out_ctx:           GrpcServerContext&,
-    now_mono_ns:       u64 = 0,
-    req_start_mono_ns: u64 = 0,
-) -> bool {
+inline fn reset_grpc_server_context(out_ctx: GrpcServerContext&) {
     out_ctx.service.clear();
     out_ctx.method.clear();
     out_ctx.metadata.clear();
@@ -492,27 +504,48 @@ fn extract_grpc_server_context(
     out_ctx.response_trailers.clear();
     out_ctx.timeout_ms = 0;
     out_ctx.deadline_mono_ns = 0;
-    init_grpc_context_transport(req, out_ctx);
+}
 
-    // Parse path: `/{service}/{method}` (stripping query string for Connect GET)
+// Extracts service, method, timeout, and metadata from an incoming gRPC HTTP request,
+// returning `Ok` or the canonical `GrpcStatusCode` failure reason.
+//
+// Example:
+//   req.url = "/echo.Echo/Ping", req.headers = [content-type: application/grpc]
+//   returns: GrpcStatusCode.Ok, out_ctx.service = "echo.Echo", out_ctx.method = "Ping"
+fn extract_grpc_server_context_status(
+    req:               const Request&,
+    out_ctx:           GrpcServerContext&,
+    now_mono_ns:       u64 = 0,
+    req_start_mono_ns: u64 = 0,
+) -> GrpcStatusCode {
+    reset_grpc_server_context(out_ctx);
+    init_grpc_context_transport(req, out_ctx);
+    var committed = false;
+    defer if !committed {
+        reset_grpc_server_context(out_ctx);
+        init_grpc_context_transport(req, out_ctx);
+    };
+
     let raw_url = req.url[..];
     let q_idx = raw_url.index_of_byte('?');
     let path_only = if q_idx >= 0 && is_connect_get_request(req) { raw_url[..q_idx] } else { raw_url };
-    let ok_path = parse_grpc_path(path_only, out_ctx.service, out_ctx.method);
-    guard ok_path else { return false; }
+    guard parse_grpc_path(path_only, out_ctx.service, out_ctx.method) else {
+        return GrpcStatusCode.Unimplemented;
+    }
 
     for &e in req.headers.entries {
-        let ok_hdr = process_grpc_request_header(
+        let hdr_st = process_grpc_request_header(
             entry_name(req.headers, e),
             entry_value(req.headers, e),
             out_ctx,
             now_mono_ns,
             req_start_mono_ns,
         );
-        guard ok_hdr else { return false; }
+        guard hdr_st == GrpcStatusCode.Ok else { return hdr_st; }
     }
 
-    return true;
+    committed = true;
+    return GrpcStatusCode.Ok;
 }
 
 // ---- Streaming Primitives -----------------------------------------------
@@ -645,6 +678,9 @@ fn decode_and_validate_single_lpm(
     res:         Response&,
     req_payload: u8[>..]&,
 ) -> bool {
+    req_payload.clear();
+    var committed = false;
+    defer if !committed { req_payload.clear(); };
     let enc = get_metadata(ctx, rfc::HEADER_GRPC_ENCODING).trim_lws();
     guard is_supported_grpc_encoding(enc) else {
         build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Unsupported grpc-encoding", ctx, res);
@@ -707,6 +743,7 @@ fn decode_and_validate_single_lpm(
         return false;
     }
 
+    committed = true;
     return true;
 }
 
@@ -721,7 +758,13 @@ fn handle_builtin_grpc_health_check(
     guard decode_and_validate_single_lpm(d, req, ctx, res, req_payload) else {
         return true;
     }
-    let target_svc = decode_grpc_health_check_service(req_payload[..]);
+    let target_svc, ok_pb = try_decode_grpc_health_check_request(req_payload[..]);
+    if !ok_pb {
+        build_grpc_trailers_only_response(
+            GrpcStatusCode.InvalidArgument, "Malformed HealthCheckRequest protobuf", ctx, res,
+        );
+        return true;
+    }
     let serving_st, found = lookup_grpc_service_health(d, target_svc);
     if !found {
         build_grpc_trailers_only_response(GrpcStatusCode.NotFound, "unknown service", ctx, res);
@@ -823,14 +866,19 @@ fn dispatch_grpc_unary<HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>.
     }
 
     // 3. Extract Context & Validate URI Path
-    let ok_ctx = extract_grpc_server_context(req, ctx, now_mono_ns, req_start_mono_ns);
-    if !ok_ctx {
-        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Malformed gRPC URI path", ctx, res);
+    let ctx_st = extract_grpc_server_context_status(req, ctx, now_mono_ns, req_start_mono_ns);
+    if ctx_st != GrpcStatusCode.Ok {
+        let ctx_msg = if ctx_st == GrpcStatusCode.Unimplemented {
+            "Malformed gRPC URI path"
+        } else {
+            "Malformed gRPC request headers"
+        };
+        build_grpc_trailers_only_response(ctx_st, ctx_msg, ctx, res);
         return true;
     }
 
     // 4. Match Registered Service & Method
-    var path_buf: u8[..160] = [];
+    var path_buf: u8[..260] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -926,11 +974,17 @@ fn prepare_grpc_unary_dispatch(
         build_grpc_trailers_only_response(GrpcStatusCode.Internal, "HTTP method must be POST", ctx, res);
         return 0, false;
     }
-    if !extract_grpc_server_context(req, ctx, now_mono_ns, req_start_mono_ns) {
-        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Malformed gRPC URI path", ctx, res);
+    let ctx_st = extract_grpc_server_context_status(req, ctx, now_mono_ns, req_start_mono_ns);
+    if ctx_st != GrpcStatusCode.Ok {
+        let ctx_msg = if ctx_st == GrpcStatusCode.Unimplemented {
+            "Malformed gRPC URI path"
+        } else {
+            "Malformed gRPC request headers"
+        };
+        build_grpc_trailers_only_response(ctx_st, ctx_msg, ctx, res);
         return 0, false;
     }
-    var path_buf: u8[..160] = [];
+    var path_buf: u8[..260] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -1012,13 +1066,18 @@ fn dispatch_grpc_server_streaming<
         return true;
     }
 
-    let ok_ctx = extract_grpc_server_context(req, ctx, now_mono_ns, req_start_mono_ns);
-    if !ok_ctx {
-        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Malformed gRPC URI path", ctx, res);
+    let ctx_st = extract_grpc_server_context_status(req, ctx, now_mono_ns, req_start_mono_ns);
+    if ctx_st != GrpcStatusCode.Ok {
+        let ctx_msg = if ctx_st == GrpcStatusCode.Unimplemented {
+            "Malformed gRPC URI path"
+        } else {
+            "Malformed gRPC request headers"
+        };
+        build_grpc_trailers_only_response(ctx_st, ctx_msg, ctx, res);
         return true;
     }
 
-    var path_buf: u8[..160] = [];
+    var path_buf: u8[..260] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -1159,13 +1218,18 @@ fn dispatch_grpc_client_streaming<
         return true;
     }
 
-    let ok_ctx = extract_grpc_server_context(req, ctx, now_mono_ns, req_start_mono_ns);
-    if !ok_ctx {
-        build_grpc_trailers_only_response(GrpcStatusCode.Unimplemented, "Malformed gRPC URI path", ctx, res);
+    let ctx_st = extract_grpc_server_context_status(req, ctx, now_mono_ns, req_start_mono_ns);
+    if ctx_st != GrpcStatusCode.Ok {
+        let ctx_msg = if ctx_st == GrpcStatusCode.Unimplemented {
+            "Malformed gRPC URI path"
+        } else {
+            "Malformed gRPC request headers"
+        };
+        build_grpc_trailers_only_response(ctx_st, ctx_msg, ctx, res);
         return true;
     }
 
-    var path_buf: u8[..160] = [];
+    var path_buf: u8[..260] = [];
     path_buf.push('/');
     path_buf.append(ctx.service[..]);
     path_buf.push('/');
@@ -1452,17 +1516,26 @@ fn emit_grpc_h2_response_frames<B>(
     }
 }
 
-fn slice_grpc_h2_headers_fragment(payload: const u8[:], flags: u8) -> const u8[:], bool {
+fn slice_grpc_h2_headers_fragment(
+    payload:   const u8[:],
+    flags:     u8,
+    stream_id: u32 = 0,
+) -> const u8[:], bool {
     var pad_offset: i64 = 0;
     var pay_end:    i64 = payload.len;
     if (flags & rfc::H2_FLAG_PADDED) != 0 {
         guard payload.len > 0 else { return "", false; }
         let pad_len = payload[0] as i64;
+        guard pad_len < payload.len else { return "", false; }
         pad_offset = core::add_sat_i64(pad_offset, 1);
         pay_end = core::sub_sat_i64(pay_end, pad_len);
     }
     if (flags & rfc::H2_FLAG_PRIORITY) != 0 {
-        pad_offset = core::add_sat_i64(pad_offset, 5);
+        let next_off = core::add_sat_i64(pad_offset, 5);
+        guard next_off <= pay_end else { return "", false; }
+        let dep_id = core::read_be_u32(payload, pad_offset) & 0x7FFFFFFF;
+        guard stream_id == 0 || dep_id != stream_id else { return "", false; }
+        pad_offset = next_off;
     }
     guard pad_offset <= pay_end else { return "", false; }
     return payload[pad_offset..pay_end], true;
@@ -1497,10 +1570,28 @@ inline fn is_valid_h2_settings_frame(hdr: const wire::WireFrameHeader&) -> bool 
     return is_mult6;
 }
 
-fn handle_grpc_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, payload: const u8[:]) -> bool {
+inline fn validate_h2_settings_payload(payload: const u8[:]) -> bool {
+    var off: i64 = 0;
+    while core::add_sat_i64(off, 6) <= payload.len {
+        let s = wire::WireSetting {
+            id:  core::read_be_u16(payload, off),
+            val: core::read_be_u32(payload, core::add_sat_i64(off, 2)),
+        };
+        guard wire::is_valid_wire_setting(s) else { return false; }
+        off = core::add_sat_i64(off, 6);
+    }
+    return off == payload.len;
+}
+
+fn handle_grpc_h2_control_frame(
+    conn:    i64,
+    hdr:     const wire::WireFrameHeader&,
+    payload: const u8[:],
+) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_SETTINGS {
         guard is_valid_h2_settings_frame(hdr) && payload.len == hdr.length else { return false; }
         if (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
+            guard validate_h2_settings_payload(payload) else { return false; }
             var ack: u8[..16] = [];
             let ack_hdr = wire::WireFrameHeader {
                 length:     0,
@@ -1524,7 +1615,27 @@ fn handle_grpc_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, pa
         }
         return true;
     }
-    return false;
+    if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE {
+        guard payload.len == 4 else { return false; }
+        let inc = core::read_be_u32(payload, 0) & 0x7FFFFFFF;
+        return inc >= 1 && inc <= rfc::H2_MAX_WINDOW_SIZE;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_RST_STREAM {
+        return hdr.stream_id > 0 && (hdr.stream_id & 1) == 1 && payload.len == 4;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_PRIORITY {
+        guard hdr.stream_id > 0 && payload.len == 5 else { return false; }
+        let dep_id = core::read_be_u32(payload, 0) & 0x7FFFFFFF;
+        return dep_id != hdr.stream_id;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_GOAWAY {
+        guard hdr.stream_id == 0 && payload.len >= 8 else { return false; }
+        return false;
+    }
+    if hdr.frame_type == rfc::H2_FRAME_PUSH_PROMISE || hdr.frame_type == rfc::H2_FRAME_CONTINUATION {
+        return false;
+    }
+    return true;
 }
 
 inline fn slice_grpc_h2_data_payload(payload: const u8[:], flags: u8) -> const u8[:], bool {
@@ -1552,20 +1663,37 @@ fn handle_grpc_h2_wire_frame<
     payload:   const u8[:],
     out_wire:  u8[..65536]&,
 ) -> bool {
-    if hdr.frame_type == rfc::H2_FRAME_SETTINGS || hdr.frame_type == rfc::H2_FRAME_PING {
-        return handle_grpc_h2_control_frame(conn, hdr, payload);
+    guard hdr.length <= rfc::H2_DEFAULT_MAX_FRAME_SIZE && payload.len == hdr.length else {
+        return false;
+    }
+    if hdr.frame_type != rfc::H2_FRAME_HEADERS && hdr.frame_type != rfc::H2_FRAME_DATA {
+        let ok_ctrl = handle_grpc_h2_control_frame(conn, hdr, payload);
+        if ok_ctrl && hdr.frame_type == rfc::H2_FRAME_RST_STREAM {
+            reset_server_request_fast(pending);
+        }
+        return ok_ctrl;
     }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS {
-        guard hdr.stream_id > 0 else { return false; }
-        let frag, ok_frag = slice_grpc_h2_headers_fragment(payload, hdr.flags);
+        guard hdr.stream_id > 0 && (hdr.stream_id & 1) == 1
+            && (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0
+            && pending.headers.entries.len == 0 else {
+            return false;
+        }
+        let frag, ok_frag = slice_grpc_h2_headers_fragment(payload, hdr.flags, hdr.stream_id);
         guard ok_frag else { return false; }
         var pseudo = internal::H2PseudoHeaders { .. };
         reset_server_request_fast(pending);
         let _ = pending.method.try_set("POST");
         let hpack_res = internal::decode_hpack_to_map(
-            hpack_dec, frag, pseudo, pending.headers, 8192, false,
+            hpack_dec, frag, pseudo, pending.headers, 8192, true,
         );
-        guard hpack_res == rfc::H2_ERR_NO_ERROR else { return false; }
+        guard hpack_res == rfc::H2_ERR_NO_ERROR
+            && pseudo.has_method
+            && !pseudo.has_status
+            && !pseudo.has_protocol else {
+            reset_server_request_fast(pending);
+            return false;
+        }
         if pseudo.method.len > 0 {
             let _ = pending.method.try_set(pseudo.method[..]);
         }
@@ -1589,24 +1717,31 @@ fn handle_grpc_h2_wire_frame<
         }
         return true;
     }
-    if hdr.frame_type == rfc::H2_FRAME_DATA {
-        guard hdr.stream_id > 0 else { return false; }
-        let data_slice, ok_data = slice_grpc_h2_data_payload(payload, hdr.flags);
-        guard ok_data else { return false; }
-        pending.body.append(data_slice);
-        if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
-            var res = Response { .. };
-            execute_grpc_server_unary(server, d, client_ip, pending, res, HandlerFn);
-            out_wire.clear();
-            emit_grpc_h2_response_frames(hpack_enc, hdr.stream_id, res, out_wire);
-            if out_wire.len > 0 {
-                let _ = tcp_send(conn, out_wire[..]);
-            }
-            reset_server_request_fast(pending);
-        }
-        return true;
+    guard hdr.stream_id > 0 && (hdr.stream_id & 1) == 1 && pending.headers.entries.len > 0 else {
+        return false;
     }
-    return hdr.frame_type != rfc::H2_FRAME_GOAWAY;
+    let data_slice, ok_data = slice_grpc_h2_data_payload(payload, hdr.flags);
+    guard ok_data else { return false; }
+    let max_body = max(
+        core::add_sat_u64(d.max_message_size, rfc::GRPC_LPM_HEADER_LEN),
+        core::add_sat_u64(rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE, rfc::GRPC_LPM_HEADER_LEN),
+    );
+    guard core::add_sat_u64(pending.body.len as u64, data_slice.len as u64) <= max_body else {
+        reset_server_request_fast(pending);
+        return false;
+    }
+    pending.body.append(data_slice);
+    if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
+        var res = Response { .. };
+        execute_grpc_server_unary(server, d, client_ip, pending, res, HandlerFn);
+        out_wire.clear();
+        emit_grpc_h2_response_frames(hpack_enc, hdr.stream_id, res, out_wire);
+        if out_wire.len > 0 {
+            let _ = tcp_send(conn, out_wire[..]);
+        }
+        reset_server_request_fast(pending);
+    }
+    return true;
 }
 
 fn drain_grpc_h2_frames<

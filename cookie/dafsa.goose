@@ -122,13 +122,18 @@ fn dafsa_get_next_offset(pos: i64&, offset: i64&) -> bool {
         bytes_consumed = 2;
     }
 
-    if (b0 & DAFSA_END_BIT) != 0 {
-        pos = PSL_DAFSA_LEN;
+    let next_pos = if (b0 & DAFSA_END_BIT) != 0 {
+        PSL_DAFSA_LEN
     } else {
-        pos = core::add_sat_i64(pos, bytes_consumed);
+        core::add_sat_i64(pos, bytes_consumed)
+    };
+    let next_offset = core::add_sat_i64(offset, delta);
+    guard next_offset >= 0 && next_offset < PSL_DAFSA_LEN else {
+        return false;
     }
-    offset = core::add_sat_i64(offset, delta);
-    return offset >= 0 && offset < PSL_DAFSA_LEN;
+    pos = next_pos;
+    offset = next_offset;
+    return true;
 }
 
 // Evaluates a single DAFSA node character against `key_byte` in ASCII or `0x1F` multibyte UTF-8 mode.

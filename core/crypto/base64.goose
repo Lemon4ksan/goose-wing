@@ -132,6 +132,7 @@ fn base64url_decode<B>(encoded: const u8[:], out: B&) -> bool {
 }
 
 inline fn is_valid_padded_base64url(src: const u8[:]) -> bool {
+    if src.len == 0 { return true; }
     guard (src.len & 3) == 0 else { return false; }
     let body_end = core::sub_sat_i64(src.len, 2);
     var idx: i64 = 0;
@@ -141,11 +142,16 @@ inline fn is_valid_padded_base64url(src: const u8[:]) -> bool {
     }
     let c1_val = base64url_val(src[core::sub_sat_i64(body_end, 1)]);
     let c2 = src[body_end];
+    let c3 = src[core::add_sat_i64(body_end, 1)];
     if c2 == '=' {
-        return (c1_val & 0x0F) == 0;
+        return c3 == '=' && c1_val >= 0 && (c1_val & 0x0F) == 0;
     }
     let c2_val = base64url_val(c2);
-    return c2_val >= 0 && (c2_val & 0x03) == 0;
+    guard c2_val >= 0 else { return false; }
+    if c3 == '=' {
+        return (c2_val & 0x03) == 0;
+    }
+    return base64url_val(c3) >= 0;
 }
 
 // Validates Base64URL text (RFC 4648 Section 5, padded or unpadded) and canonical zero pad bits
@@ -239,6 +245,10 @@ checkfree inline fn base64_val(ch: u8) -> i32 {
 
 fn base64_decode<B>(encoded: const u8[:], out: B&) -> bool {
     guard encoded.len > 0 else { return true; }
+    guard (encoded.len & 3) == 0 else {
+        out.clear();
+        return false;
+    }
     var buf:  u32 = 0;
     var bits: i32 = 0;
     var idx:  i64 = 0;

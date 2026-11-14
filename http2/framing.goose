@@ -146,8 +146,8 @@ fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -
     guard payload.len >= 1 else {
         return payload, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
-    let pad_len = payload[0] as u32;
-    guard (1 + pad_len) <= (payload.len as u32) else {
+    let pad_len = payload[0] as i64;
+    guard (1 + pad_len) <= payload.len else {
         return payload, rfc::H2_ERR_PROTOCOL_ERROR;
     }
     let eff_end = payload.len - pad_len;
@@ -170,17 +170,21 @@ fn extract_headers_frame_payload(
 ) -> const u8[:], u32 {
     let has_pad = (hdr.flags & rfc::H2_FLAG_PADDED) != 0;
     let has_prio = (hdr.flags & rfc::H2_FLAG_PRIORITY) != 0;
-    let min_overhead = (if has_pad { 1 } else { 0 }) + (if has_prio { 5 } else { 0 });
-    guard payload.len >= min_overhead else { return payload, rfc::H2_ERR_FRAME_SIZE_ERROR; }
+    let prio_overhead: i64 = if has_prio { 5 } else { 0 };
+    let pad_overhead:  i64 = if has_pad { 1 } else { 0 };
+    guard payload.len >= (pad_overhead + prio_overhead) else {
+        return payload, rfc::H2_ERR_FRAME_SIZE_ERROR;
+    }
 
     var raw = payload;
     if has_pad {
-        let pad_len = raw[0] as u32;
-        guard (1 + pad_len + (if has_prio { 5 } else { 0 })) <= (raw.len as u32) else {
+        let pad_len = raw[0] as i64;
+        let min_hdr = 1 + prio_overhead;
+        guard (min_hdr + pad_len) <= raw.len else {
             return raw, rfc::H2_ERR_PROTOCOL_ERROR;
         }
         let eff_end = raw.len - pad_len;
-        guard eff_end >= (1 + (if has_prio { 5 } else { 0 })) else {
+        guard eff_end >= min_hdr else {
             return raw, rfc::H2_ERR_PROTOCOL_ERROR;
         }
         raw = raw[1..eff_end];
@@ -272,8 +276,12 @@ fn parse_priority_update_payload(
     return prioritized_stream_id, parsed, rfc::H2_ERR_NO_ERROR;
 }
 
-// Encodes PRIORITY_UPDATE frame payload (RFC 9218 Section 7.1).
+// RFC 9218 Section 7.1: HTTP/2 PRIORITY_UPDATE Frame - Encodes PRIORITY_UPDATE payload atomically.
 fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const wing::PriorityParam&, out: B&) {
-    out.append_u32_be(prioritized_stream_id & 0x7FFFFFFF);
-    wing::serialize_http_priority(prio, out);
+    let clean_id = prioritized_stream_id & 0x7FFFFFFF;
+    guard clean_id != 0 && prio.urgency <= 7 else { return; }
+    var tmp: u8[..32] = [];
+    tmp.append_u32_be(clean_id);
+    wing::serialize_http_priority(prio, tmp);
+    let _ = out.try_append(tmp[..]);
 }

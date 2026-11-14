@@ -393,22 +393,38 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
     return true;
 }
 
+// RFC 9110 Section 5.6.4: Quoted Strings - Validate qdtext and backslash quoted-pair escapes.
+//
+// Example:
+//   v = "\"a\\\"b\"" -> true
+//   v = "\"a\\\""    -> false
+fn is_valid_rfc9110_quoted_string(v: const u8[:]) -> bool {
+    guard v.len >= 2 && v[0] == '"' && core::ends_with(v, "\"") else { return false; }
+    var idx: i64 = 1;
+    let end = core::sub_sat_i64(v.len, 1);
+    while idx < end {
+        let b = v[idx];
+        if b == '\\' {
+            idx = core::add_sat_i64(idx, 1);
+            guard idx < end && is_valid_header_value_byte(v[idx]) else { return false; }
+            idx = core::add_sat_i64(idx, 1);
+            continue;
+        }
+        guard b != '"' && is_valid_header_value_byte(b) else { return false; }
+        idx = core::add_sat_i64(idx, 1);
+    }
+    return true;
+}
+
 // RFC 9112 Section 7: Validates a transfer-coding element (e.g. "chunked", "gzip", "identity", "gzip;q=1.0").
 // transfer-coding = token *( OWS ";" OWS transfer-parameter )
 fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
     let trimmed = coding.trim_lws();
     guard trimmed.len > 0 else { return false; }
 
-    var semi_idx: i64 = 0;
-    while semi_idx < trimmed.len && trimmed[semi_idx] != ';' {
-        semi_idx++;
-    }
-
+    let semi_idx = trimmed.find_unquoted_byte(';');
     let name = trimmed[..semi_idx].trim_lws();
-    guard name.len > 0 else { return false; }
-    for b in name {
-        guard is_tchar(b) else { return false; }
-    }
+    guard name.len > 0 && is_valid_token_swar(name) else { return false; }
 
     // RFC 9112 Section 6.1: Reject unrecognized transfer codings (must be chunked, gzip, deflate, compress, br, zstd, or identity)
     let is_known = name.eq_ascii_fold("chunked") ||
@@ -437,14 +453,8 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
         let k = k_raw.trim_lws();
         let v = v_raw.trim_lws();
         guard k.len > 0 && v.len > 0 && is_valid_token_swar(k) else { return false; }
-        if v[0] == '"' {
-            guard v.len >= 2 && v[v.len - 1] == '"' else { return false; }
-            for b in v {
-                guard (b >= 0x20 || b == 0x09) && b != 0x7F else { return false; }
-            }
-        } else {
-            guard is_valid_token_swar(v) else { return false; }
-        }
+        let ok_val = if v[0] == '"' { is_valid_rfc9110_quoted_string(v) } else { is_valid_token_swar(v) };
+        guard ok_val else { return false; }
         if p_end >= rem.len { break; }
         rem = rem[p_end + 1..];
     }
@@ -466,19 +476,11 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
     var last_is_chunked = false;
 
     while cursor <= trimmed.len {
-        var comma_idx = cursor;
-        while comma_idx < trimmed.len && trimmed[comma_idx] != ',' {
-            comma_idx++;
-        }
-
+        let comma_idx = cursor + trimmed[cursor..].find_unquoted_byte(',');
         let piece = trimmed[cursor..comma_idx].trim_lws();
-        guard piece.len > 0 else { return false; }
-        guard is_valid_transfer_coding(piece) else { return false; }
+        guard piece.len > 0 && is_valid_transfer_coding(piece) else { return false; }
 
-        var semi_idx: i64 = 0;
-        while semi_idx < piece.len && piece[semi_idx] != ';' {
-            semi_idx++;
-        }
+        let semi_idx = piece.find_unquoted_byte(';');
         let coding_name = piece[..semi_idx].trim_lws();
 
         let is_chunked = coding_name.eq_ascii_fold("chunked");

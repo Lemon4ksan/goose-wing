@@ -7,9 +7,8 @@ HMAC cookie jars, IETF Privacy Pass tokens, and Generic Cell Rate Algorithm
 
 ```goose
 import wing;
-import core;
 
-let quota = wing::new_gcra_quota(100, core::Duration { nanos: 60000000000 }, 20);
+let quota = wing::new_gcra_quota(100, wing::secs(60), 20);
 var limiter = wing::new_sharded_limiter(quota);
 let decision = wing::check_rate_limit(limiter, "tenant-42", 1, 1700000000000000000);
 let ok = wing::is_allowed(decision);
@@ -112,7 +111,7 @@ struct SignedJar {
 }
 
 fn zeroize_jar_key_slot(slot: KeySlot&)
-fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool
+fn add_key(store: KeyStore&, slot: const KeySlot&) -> bool
 fn active_key(store: const KeyStore&) -> KeySlot, bool
 fn set_active_key_id(store: KeyStore&, key_id: u32) -> bool
 fn find_key(store: const KeyStore&, key_id: u32) -> KeySlot, bool
@@ -323,7 +322,7 @@ struct GcraJitter {
     enabled:       bool = false,
 }
 
-fn new_gcra_quota(limit: u64, period_dur: core::Duration, burst: u64 = 0) -> GcraQuota
+fn new_gcra_quota(limit: u64, period_ns: i64, burst: u64 = 0) -> GcraQuota
 fn new_sharded_limiter(quota: GcraQuota) -> ShardedGcraLimiter
 fn new_probabilistic_gcra(quota: GcraQuota, sample_rate: u64 = 20) -> ProbabilisticGcra
 fn gcra_check_n(quota: const GcraQuota&, cell: GcraCell&, cost_n: u64, now_ns: u64) -> RateLimitDecision

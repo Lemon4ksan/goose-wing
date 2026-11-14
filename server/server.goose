@@ -51,6 +51,9 @@ struct HttpServer {
     fast_l0_last_close:        bool                      = false,
     enable_header_memoization: bool                      = false,
     turn_in_use:               bool                      = false,
+    handle_os_signals:         bool                      = false,
+    honor_shutdown_flag:       bool                      = true,
+    shutdown_grace_ns:         u64                       = 2000000000,
 }
 
 // Enables or disables Keep-Alive HTTP/1.1 header block memoization (`g_h1_parse_cache`,
@@ -464,6 +467,14 @@ fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool
     return false;
 }
 
+inline fn apply_shutdown_connection_close(server: HttpServer&, res: Response&) {
+    guard server.honor_shutdown_flag && shutdown_requested() else { return; }
+    server.is_running = false;
+    if res.status_code != 101 {
+        set_header(res, "Connection", "close");
+    }
+}
+
 inline fn reset_server_response_fixed(res: Response&) {
     res.status_code = 200;
     res.presence_mask = 0;
@@ -557,6 +568,7 @@ fn finish_single_h1_wire_turn<Stage, B>(
     };
 
     check_and_apply_connection_close(g_turn_req, g_turn_res);
+    apply_shutdown_connection_close(server, g_turn_res);
     serialize_http1_response(g_turn_res, server.server_name[..], wire_out);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 
@@ -605,6 +617,7 @@ fn execute_single_h1_wire_turn<Stage, B>(
     };
 
     check_and_apply_connection_close(req, res);
+    apply_shutdown_connection_close(server, res);
 
     serialize_http1_response(res, server.server_name[..], wire_out);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
@@ -1922,6 +1935,17 @@ inline fn flush_http1_cork_buf<OutBuf>(conn_fd: i64, out_wire: OutBuf&) {
 
 // Dispatches a single parsed HTTP/1.1 request through `server` and `stage`, appends the response
 // into `out_wire` for pipelined cork batching, and returns true if keep-alive should continue.
+inline fn server_should_stop(server: const HttpServer&) -> bool {
+    return !server.is_running || (server.honor_shutdown_flag && shutdown_requested());
+}
+
+inline fn server_init_run_state(server: HttpServer&) {
+    if server.handle_os_signals {
+        let _ = install_shutdown_signals();
+    }
+    server.is_running = true;
+}
+
 fn dispatch_http1_connection_turn<Stage, OutBuf>(
     conn_fd:  i64,
     server:   HttpServer&,
@@ -1934,6 +1958,9 @@ fn dispatch_http1_connection_turn<Stage, OutBuf>(
     let now_ns = core::monotonic_now().as_nanos();
     let _ = dispatch_server_request_with_stage(server, peer_ip, req, now_ns, res, stage);
     if req.url[..] == "/shutdown" && res.status_code == 200 {
+        server.is_running = false;
+    }
+    if server.honor_shutdown_flag && shutdown_requested() {
         server.is_running = false;
     }
     let conn_hdr = res.header("Connection");
@@ -2182,8 +2209,8 @@ fn serve_http_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
     recv_timeout_ms: u32 = 500,
 ) {
     guard listener_fd > 0 else { return; }
-    server.is_running = true;
-    while server.is_running {
+    server_init_run_state(server);
+    while !server_should_stop(server) {
         let conn = tcp_accept(listener_fd, 200);
         if conn <= 0 {
             continue;
@@ -2193,6 +2220,7 @@ fn serve_http_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
         );
         tcp_close(conn);
     }
+    server.is_running = false;
 }
 
 // Accepts and serves HTTP/1.1, HTTP/2 (`h2c`), and WebSocket connections with caller buffers and `wire::NoOpStage`.
@@ -2283,9 +2311,10 @@ fn serve_page_ring_loop<Stage>(
     var cork = core::new_cork_buffer();
     var peer_ip:      u8[..64] = [];
     var total_served: i64      = 0;
+    server_init_run_state(server);
 
-    while max_connections == 0 || total_served < max_connections {
-        let conn = tcp_accept(listener_fd, 0);
+    while !server_should_stop(server) && (max_connections == 0 || total_served < max_connections) {
+        let conn = tcp_accept(listener_fd, 200);
         if conn <= 0 {
             continue;
         }
@@ -2295,9 +2324,14 @@ fn serve_page_ring_loop<Stage>(
         cork.cork_reset();
         tcp_get_peer_ip(conn, peer_ip);
 
-        while step_page_ring_conn(server, conn, peer_ip[..], ring, cork, stage) {}
+        while !server_should_stop(server) {
+            if !step_page_ring_conn(server, conn, peer_ip[..], ring, cork, stage) {
+                break;
+            }
+        }
         total_served = core::add_sat_i64(total_served, 1);
     }
+    server.is_running = false;
 
     return total_served;
 }
@@ -2322,6 +2356,7 @@ inline fn step_pipe_loop_conn<Stage>(
     h2_idx:  i64,
     stage:   Stage&,
 ) -> bool {
+    guard !server_should_stop(server) else { return false; }
     let recvd = tcp_recv_pipe(conn, pipe, 4096, 5000);
     guard recvd > 0 else { return false; }
     let now_ns = core::monotonic_now().as_nanos();
@@ -2351,9 +2386,10 @@ fn serve_pipe_loop<Stage>(
     var cork = core::new_cork_buffer();
     var peer_ip:      u8[..64] = [];
     var total_served: i64      = 0;
+    server_init_run_state(server);
 
-    while max_connections == 0 || total_served < max_connections {
-        let conn = tcp_accept(listener_fd, 0);
+    while !server_should_stop(server) && (max_connections == 0 || total_served < max_connections) {
+        let conn = tcp_accept(listener_fd, 200);
         if conn <= 0 {
             continue;
         }
@@ -2372,6 +2408,7 @@ fn serve_pipe_loop<Stage>(
         while step_pipe_loop_conn(server, conn, peer_ip[..], pipe, cork, h2_idx, stage) {}
         total_served = core::add_sat_i64(total_served, 1);
     }
+    server.is_running = false;
 
     return total_served;
 }
@@ -2479,9 +2516,10 @@ fn serve_tls(
     var cork = core::new_cork_buffer();
     var peer_ip:      u8[..64] = [];
     var total_served: i64      = 0;
+    server_init_run_state(server);
 
-    while max_connections == 0 || total_served < max_connections {
-        let conn = tcp_accept(listener_fd, 0);
+    while !server_should_stop(server) && (max_connections == 0 || total_served < max_connections) {
+        let conn = tcp_accept(listener_fd, 200);
         if conn <= 0 { continue; }
 
         let slot_idx, ok_hs = tls_server_handshake(conn, tls_config);
@@ -2506,9 +2544,14 @@ fn serve_tls(
         }
         defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
-        while step_tls_loop_conn(server, conn, slot_idx, peer_ip[..], pipe, cork, h2_idx) {}
+        while !server_should_stop(server) {
+            if !step_tls_loop_conn(server, conn, slot_idx, peer_ip[..], pipe, cork, h2_idx) {
+                break;
+            }
+        }
         total_served = core::add_sat_i64(total_served, 1);
     }
+    server.is_running = false;
     return total_served;
 }
 

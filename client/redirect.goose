@@ -468,6 +468,14 @@ fn compute_new_referrer<B>(
 
 // ---- header sanitization on redirect ---------------------------------------
 
+inline fn is_redirect_rewritten_payload_header(name: const u8[:]) -> bool {
+    return rfc::is_payload_or_conditional_header(name) ||
+           name.eq_ascii_fold("content-digest") ||
+           name.eq_ascii_fold("repr-digest") ||
+           name.eq_ascii_fold("content-range") ||
+           name.eq_ascii_fold("trailer");
+}
+
 // Strips payload and conditional validator headers in a single O(N) pass
 // when a redirect mutates request to GET (RFC 9110 Section 15.4).
 fn remove_payload_and_conditional_headers(headers: HeaderMap&) {
@@ -478,7 +486,7 @@ fn remove_payload_and_conditional_headers(headers: HeaderMap&) {
 
     for read_i in total_entries {
         let name = entry_name(headers, headers.entries[read_i]);
-        if rfc::is_payload_or_conditional_header(name) {
+        if is_redirect_rewritten_payload_header(name) {
             found = true;
             continue;
         }
@@ -555,6 +563,9 @@ fn sanitize_headers_on_redirect(
         (redirect_info.is_cross_origin && (!options.trusted_location_forwarding || redirect_info.is_port_changed));
     if strip_auth {
         remove_sensitive_headers(headers);
+        remove_header_by_name(headers, "DPoP");
+        remove_header_by_name(headers, "Signature");
+        remove_header_by_name(headers, "Signature-Input");
     }
     if redirect_info.is_scheme_downgrade {
         remove_sec_headers_on_downgrade(headers, redirect_info.new_url);

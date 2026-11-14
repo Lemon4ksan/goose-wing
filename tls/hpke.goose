@@ -10,6 +10,9 @@ import core from "..";
 
 // ---- RFC 9180 Identifiers and Code Points --------------------------------
 
+// RFC 9180 Section 7.3: Authenticated Encryption with Associated Data (AEAD) Functions - Export-only AEAD identifier.
+const HPKE_AEAD_EXPORT_ONLY: u16 = 0xFFFF;
+
 // kem_id/kdf_id are retained so suite_id is recoverable for Secret Export
 // (RFC 9180 Section 5.3) after the key schedule completes.
 struct HpkeContext {
@@ -33,7 +36,7 @@ fn hpke_labeled_extract(
     label:    const u8[:],
     ikm:      const u8[:],
 ) -> u8[32] {
-    var labeled_ikm: u8[..1024] = [];
+    var labeled_ikm: u8[..4096] = [];
     let needed = core::add_sat_i64(7, core::add_sat_i64(suite_id.len, core::add_sat_i64(label.len, ikm.len)));
     guard needed <= labeled_ikm.cap else {
         return [0; 32];
@@ -44,14 +47,15 @@ fn hpke_labeled_extract(
     labeled_ikm.append(ikm);
 
     let prk = core::hkdf_extract(salt, labeled_ikm[..]);
-    for i in labeled_ikm.len { labeled_ikm[i] = 0; }
+    core::secure_zeroize_slice(labeled_ikm[..]);
     return prk;
 }
 
 inline fn is_valid_hpke_aead(aead_id: u16) -> bool {
     return aead_id == rfc::HPKE_AEAD_AES_128_GCM
         || aead_id == rfc::HPKE_AEAD_AES_256_GCM
-        || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305;
+        || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305
+        || aead_id == HPKE_AEAD_EXPORT_ONLY;
 }
 
 // Computes LabeledExpand(prk, label, info, L) =
@@ -64,8 +68,10 @@ fn hpke_labeled_expand(
     length:   u16,
     out:      u8[:],
 ) -> bool {
-    var labeled_info: u8[..1024] = [];
-    guard 9 + suite_id.len + label.len + info.len <= labeled_info.cap else {
+    // RFC 9180 Section 7.2.1: Input Length Restrictions - Support multi-kilobyte ECHConfig and application info buffers.
+    var labeled_info: u8[..4096] = [];
+    let needed = core::add_sat_i64(9, core::add_sat_i64(suite_id.len, core::add_sat_i64(label.len, info.len)));
+    guard needed <= labeled_info.cap && length <= out.len && length <= 8160 else {
         return false;
     }
     labeled_info.append_u16_be(length);
@@ -146,6 +152,75 @@ fn dhkem_x25519_decap(
 
 // ---- HPKE Key Schedule (RFC 9180 Section 5.1) ----------------------------
 
+// RFC 9180 Section 5.1: Creating the Encryption Context - Zeroizes derived AEAD and exporter secrets.
+inline fn zeroize_hpke_context(ctx: HpkeContext&) {
+    core::secure_zeroize_32(ctx.key);
+    core::secure_zeroize_slice(ctx.base_nonce[..]);
+    core::secure_zeroize_32(ctx.exporter_secret);
+    ctx.aead_id = 0;
+    ctx.kem_id = 0;
+    ctx.kdf_id = 0;
+    ctx.key_len = 0;
+    ctx.nonce_len = 0;
+    ctx.seq = 0;
+}
+
+// RFC 9180 Section 5.1: Creating the Encryption Context - Derives base-mode HPKE key schedule and exporter secret.
+fn hpke_key_schedule_base(
+    kem_id:        u16,
+    kdf_id:        u16,
+    aead_id:       u16,
+    shared_secret: const u8[32]&,
+    info:          const u8[:],
+    out_ctx:       HpkeContext&,
+) -> bool {
+    var hpke_suite_id: u8[10] = [
+        0x48, 0x50, 0x4B, 0x45,
+        ((kem_id >> 8) & 0xFF) as u8, (kem_id & 0xFF) as u8,
+        ((kdf_id >> 8) & 0xFF) as u8, (kdf_id & 0xFF) as u8,
+        ((aead_id >> 8) & 0xFF) as u8, (aead_id & 0xFF) as u8,
+    ];
+    let psk_id_hash = hpke_labeled_extract(hpke_suite_id[..], [], "psk_id_hash", []);
+    let info_hash = hpke_labeled_extract(hpke_suite_id[..], [], "info_hash", info);
+
+    var ks_context: u8[65] = [0; 65];
+    ks_context[0] = rfc::HPKE_MODE_BASE;
+    core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
+    core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
+
+    var secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
+    defer core::secure_zeroize_32(secret);
+
+    var key_len:   u16 = 0;
+    var nonce_len: u16 = 0;
+    if aead_id != HPKE_AEAD_EXPORT_ONLY {
+        key_len = if aead_id == rfc::HPKE_AEAD_AES_128_GCM { 16 } else { 32 };
+        nonce_len = 12;
+        guard hpke_labeled_expand(
+            hpke_suite_id[..], secret[..], "key", ks_context[..], key_len, out_ctx.key[..key_len],
+        ) else {
+            return false;
+        }
+        guard hpke_labeled_expand(
+            hpke_suite_id[..], secret[..], "base_nonce", ks_context[..], nonce_len, out_ctx.base_nonce[..nonce_len],
+        ) else {
+            return false;
+        }
+    }
+    guard hpke_labeled_expand(
+        hpke_suite_id[..], secret[..], "exp", ks_context[..], 32, out_ctx.exporter_secret[..],
+    ) else {
+        return false;
+    }
+    out_ctx.aead_id = aead_id;
+    out_ctx.kem_id = kem_id;
+    out_ctx.kdf_id = kdf_id;
+    out_ctx.key_len = key_len;
+    out_ctx.nonce_len = nonce_len;
+    out_ctx.seq = 0;
+    return true;
+}
+
 // Sets up a base-mode sender context (SetupBaseS).
 fn hpke_setup_base_s(
     pkR:          const u8[32]&,
@@ -157,86 +232,25 @@ fn hpke_setup_base_s(
     out_enc:      u8[32]&,
     out_ctx:      HpkeContext&,
 ) -> bool {
+    core::secure_zeroize_32(out_enc);
+    zeroize_hpke_context(out_ctx);
+    var committed = false;
+    defer if !committed {
+        core::secure_zeroize_32(out_enc);
+        zeroize_hpke_context(out_ctx);
+    };
+
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
     guard is_valid_hpke_aead(aead_id) else { return false; }
-    guard info.len <= 998 else { return false; }
+    guard info.len <= 4070 else { return false; }
 
     var shared_secret: u8[32] = [0; 32];
     defer core::secure_zeroize_32(shared_secret);
     guard dhkem_x25519_encap(pkR, ephemeral_sk, out_enc, shared_secret) else { return false; }
+    guard hpke_key_schedule_base(kem_id, kdf_id, aead_id, shared_secret, info, out_ctx) else { return false; }
 
-    // hpke_suite_id = "HPKE" || I2OSP(kem_id, 2) || I2OSP(kdf_id, 2) || I2OSP(aead_id, 2)
-    var hpke_suite_id: u8[10] = [
-        0x48, 0x50, 0x4B, 0x45,
-        ((kem_id >> 8) & 0xFF) as u8, (kem_id & 0xFF) as u8,
-        ((kdf_id >> 8) & 0xFF) as u8, (kdf_id & 0xFF) as u8,
-        ((aead_id >> 8) & 0xFF) as u8, (aead_id & 0xFF) as u8,
-    ];
-
-    // psk_id_hash = LabeledExtract("", "psk_id_hash", "")
-    let psk_id_hash = hpke_labeled_extract(hpke_suite_id[..], [], "psk_id_hash", []);
-
-    // info_hash = LabeledExtract("", "info_hash", info)
-    let info_hash = hpke_labeled_extract(hpke_suite_id[..], [], "info_hash", info);
-
-    // key_schedule_context = mode (1B) || psk_id_hash (32B) || info_hash (32B)
-    var ks_context: u8[65] = [0; 65];
-    ks_context[0] = rfc::HPKE_MODE_BASE;
-    core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
-    core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
-
-    // secret = LabeledExtract(shared_secret, "secret", "")
-    var secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
-    defer core::secure_zeroize_32(secret);
-
-    // Key and Nonce lengths based on AEAD
-    var key_len: u16 = 16;
-    if aead_id == rfc::HPKE_AEAD_AES_256_GCM || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
-        key_len = 32;
-    }
-    let nonce_len: u16 = 12;
-
-    out_ctx.aead_id = aead_id;
-    out_ctx.kem_id = kem_id;
-    out_ctx.kdf_id = kdf_id;
-    out_ctx.key_len = key_len;
-    out_ctx.nonce_len = nonce_len;
-    out_ctx.seq = 0;
-
-    guard hpke_labeled_expand(
-        hpke_suite_id[..],
-        secret[..],
-        "key",
-        ks_context[..],
-        key_len,
-        out_ctx.key[..key_len],
-    ) else {
-        return false;
-    }
-    guard hpke_labeled_expand(
-        hpke_suite_id[..],
-        secret[..],
-        "base_nonce",
-        ks_context[..],
-        nonce_len,
-        out_ctx.base_nonce[..nonce_len],
-    ) else {
-        core::secure_zeroize_32(out_ctx.key);
-        return false;
-    }
-    guard hpke_labeled_expand(
-        hpke_suite_id[..],
-        secret[..],
-        "exp",
-        ks_context[..],
-        32,
-        out_ctx.exporter_secret[..],
-    ) else {
-        core::secure_zeroize_32(out_ctx.key);
-        return false;
-    }
-
+    committed = true;
     return true;
 }
 
@@ -250,80 +264,22 @@ fn hpke_setup_base_r(
     aead_id: u16,
     out_ctx: HpkeContext&,
 ) -> bool {
+    zeroize_hpke_context(out_ctx);
+    var committed = false;
+    defer if !committed { zeroize_hpke_context(out_ctx); };
+
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
     guard is_valid_hpke_aead(aead_id) else { return false; }
-    guard info.len <= 998 else { return false; }
+    guard info.len <= 4070 else { return false; }
 
     let pkR = core::x25519_base_scalarmult(skR);
     var shared_secret: u8[32] = [0; 32];
     defer core::secure_zeroize_32(shared_secret);
     guard dhkem_x25519_decap(enc, skR, pkR, shared_secret) else { return false; }
+    guard hpke_key_schedule_base(kem_id, kdf_id, aead_id, shared_secret, info, out_ctx) else { return false; }
 
-    var hpke_suite_id: u8[10] = [
-        0x48, 0x50, 0x4B, 0x45,
-        ((kem_id >> 8) & 0xFF) as u8, (kem_id & 0xFF) as u8,
-        ((kdf_id >> 8) & 0xFF) as u8, (kdf_id & 0xFF) as u8,
-        ((aead_id >> 8) & 0xFF) as u8, (aead_id & 0xFF) as u8,
-    ];
-
-    let psk_id_hash = hpke_labeled_extract(hpke_suite_id[..], [], "psk_id_hash", []);
-    let info_hash = hpke_labeled_extract(hpke_suite_id[..], [], "info_hash", info);
-
-    var ks_context: u8[65] = [0; 65];
-    ks_context[0] = rfc::HPKE_MODE_BASE;
-    core::ct_copy_bytes(ks_context[1..33], psk_id_hash[..]);
-    core::ct_copy_bytes(ks_context[33..65], info_hash[..]);
-
-    var secret = hpke_labeled_extract(hpke_suite_id[..], shared_secret[..], "secret", []);
-    defer core::secure_zeroize_32(secret);
-
-    var key_len: u16 = 16;
-    if aead_id == rfc::HPKE_AEAD_AES_256_GCM || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
-        key_len = 32;
-    }
-    let nonce_len: u16 = 12;
-
-    out_ctx.aead_id = aead_id;
-    out_ctx.kem_id = kem_id;
-    out_ctx.kdf_id = kdf_id;
-    out_ctx.key_len = key_len;
-    out_ctx.nonce_len = nonce_len;
-    out_ctx.seq = 0;
-
-    guard hpke_labeled_expand(
-        hpke_suite_id[..],
-        secret[..],
-        "key",
-        ks_context[..],
-        key_len,
-        out_ctx.key[..key_len],
-    ) else {
-        return false;
-    }
-    guard hpke_labeled_expand(
-        hpke_suite_id[..],
-        secret[..],
-        "base_nonce",
-        ks_context[..],
-        nonce_len,
-        out_ctx.base_nonce[..nonce_len],
-    ) else {
-        core::secure_zeroize_32(out_ctx.key);
-        return false;
-    }
-    guard hpke_labeled_expand(
-        hpke_suite_id[..],
-        secret[..],
-        "exp",
-        ks_context[..],
-        32,
-        out_ctx.exporter_secret[..],
-    ) else {
-        core::secure_zeroize_32(out_ctx.key);
-        return false;
-    }
-
+    committed = true;
     return true;
 }
 
@@ -349,7 +305,8 @@ fn hpke_dispatch_seal<B>(
     aad:     const u8[:],
     out_ct:  B&,
 ) -> bool {
-    guard is_valid_hpke_aead(aead_id) else { return false; }
+    // RFC 9180 Section 5.2: Encryption and Decryption - Export-only contexts reject AEAD Seal operations.
+    guard aead_id != HPKE_AEAD_EXPORT_ONLY && is_valid_hpke_aead(aead_id) else { return false; }
     guard core::add_sat_i64(out_ct.len, core::add_sat_i64(pt.len, 16)) <= out_ct.cap else {
         return false;
     }
@@ -438,7 +395,7 @@ fn hpke_open<B>(
     guard hpke_dispatch_open(ctx.aead_id, ctx.key, nonce, ct, aad, tag, out_pt) else {
         return false;
     }
-    ctx.seq += 1;
+    ctx.seq = core::add_sat_u64(ctx.seq, 1);
     return true;
 }
 
@@ -448,10 +405,9 @@ fn hpke_open<B>(
 // Context.Export(exporter_context, L) = LabeledExpand(exporter_secret, "sec",
 // exporter_context, L). Does not advance seq or consume context state.
 fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:]) -> bool {
-    guard out.len > 0 && out.len <= 8160 else { return false; } // 255 * Nh for SHA-256
-    // labeled_info = I2OSP(L,2) || "HPKE-v1" || suite_id || "sec" || context
-    // fits u8[..1024] (22 fixed bytes + exporter_context).
-    guard exporter_context.len + 22 <= 1024 else { return false; }
+    // RFC 9180 Section 5.3: Secret Export - Enforce L <= 255 * Nh (8160 bytes for SHA-256).
+    guard out.len > 0 && out.len <= 8160 else { return false; }
+    guard core::add_sat_i64(exporter_context.len, 22) <= 4096 else { return false; }
     let suite_id: u8[10] = [
         0x48, 0x50, 0x4B, 0x45,
         ((ctx.kem_id >> 8) & 0xFF) as u8, (ctx.kem_id & 0xFF) as u8,
@@ -480,6 +436,7 @@ fn hpke_seal_base<B>(
     out_ct:       B&,
 ) -> bool {
     var ctx = HpkeContext { .. };
+    defer zeroize_hpke_context(ctx);
     guard hpke_setup_base_s(
         pkR,
         info,
@@ -492,10 +449,7 @@ fn hpke_seal_base<B>(
     ) else {
         return false;
     }
-    let ok = hpke_seal(ctx, aad, pt, out_ct);
-    core::secure_zeroize_32(ctx.key);
-    core::secure_zeroize_32(ctx.exporter_secret);
-    return ok;
+    return hpke_seal(ctx, aad, pt, out_ct);
 }
 
 // Single-shot open for ECH recipient.
@@ -509,6 +463,7 @@ fn hpke_open_base<B>(
     out_pt:      B&,
 ) -> bool {
     var ctx = HpkeContext { .. };
+    defer zeroize_hpke_context(ctx);
     guard hpke_setup_base_r(
         enc,
         skR,
@@ -520,8 +475,5 @@ fn hpke_open_base<B>(
     ) else {
         return false;
     }
-    let ok = hpke_open(ctx, aad, ct_with_tag, out_pt);
-    core::secure_zeroize_32(ctx.key);
-    core::secure_zeroize_32(ctx.exporter_secret);
-    return ok;
+    return hpke_open(ctx, aad, ct_with_tag, out_pt);
 }

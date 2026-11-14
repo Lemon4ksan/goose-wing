@@ -59,10 +59,10 @@ struct CacheTimestamps
 struct FreshnessMetrics
 struct FreshnessPolicy
 
-fn new_cache_timestamps(req_time: core::Time, resp_time: core::Time, cur_now: core::Time) -> CacheTimestamps
-fn with_monotonic(ts: CacheTimestamps, req_mono: core::MonotonicInstant, resp_mono: core::MonotonicInstant, cur_mono: core::MonotonicInstant) -> CacheTimestamps
+fn new_cache_timestamps(req_sec: i64, resp_sec: i64, cur_now_sec: i64) -> CacheTimestamps
+fn with_monotonic(ts: CacheTimestamps, req_mono_ns: u64, resp_mono_ns: u64, cur_mono_ns: u64) -> CacheTimestamps
 fn parse_age_header(raw_age: const u8[:]) -> i64
-fn compute_apparent_age(response_time: core::Time, date_value: core::Time) -> i64
+fn compute_apparent_age(response_sec: i64, date_sec: i64) -> i64
 fn compute_response_delay(ts: const CacheTimestamps&) -> i64
 fn compute_corrected_initial_age(apparent_age: i64, age_hdr: i64, response_delay: i64) -> i64
 fn compute_resident_time(ts: const CacheTimestamps&) -> i64
@@ -71,15 +71,15 @@ fn compute_freshness_lifetime(resp_cc: const CacheControl&, resp_headers: const 
 fn evaluate_freshness(resp_cc: const CacheControl&, req_cc: const CacheControl&, resp_headers: const HeaderMap&, ts: const CacheTimestamps&, policy: FreshnessPolicy = FreshnessPolicy { .. }, heuristic_fraction: i64 = 10, immutable_min_ttl_sec: i64 = 31536000) -> FreshnessMetrics
 ```
 
-`CacheTimestamps` captures wall-clock (`core::Time`) and optional monotonic
-(`core::MonotonicInstant`) checkpoints to compute RFC 9111 §4.2.3 apparent age,
-network response delay, corrected initial age, and cache resident time without
-wall-clock jump distortion. `compute_freshness_lifetime` resolves freshness
-precedence across `s-maxage` (when `shared` is true), `max-age`, `Expires`,
-`immutable`, and `Last-Modified` heuristics (`1 / heuristic_fraction`).
-`evaluate_freshness` combines response freshness with request constraints
-(`min-fresh`, `max-age`, `max-stale`) and RFC 5861 stale serving windows under
-`FreshnessPolicy` (`shared`, `security_zeroed`).
+`CacheTimestamps` captures wall-clock unix seconds and optional monotonic
+nanosecond checkpoints to compute RFC 9111 §4.2.3 apparent age, network response
+delay, corrected initial age, and cache resident time without wall-clock jump
+distortion. `compute_freshness_lifetime` resolves freshness precedence across
+`s-maxage` (when `shared` is true), `max-age`, `Expires`, `immutable`, and
+`Last-Modified` heuristics (`1 / heuristic_fraction`). `evaluate_freshness`
+combines response freshness with request constraints (`min-fresh`, `max-age`,
+`max-stale`) and RFC 5861 stale serving windows under `FreshnessPolicy`
+(`shared`, `security_zeroed`).
 
 ### Validators & Vary Engine (`validators.goose`)
 
@@ -93,7 +93,7 @@ fn weak_eq(a: EntityTag, b: EntityTag) -> bool
 fn strong_eq(a: EntityTag, b: EntityTag) -> bool
 fn match_if_none_match(raw_if_none_match: const u8[:], cached_etag: const EntityTag&) -> bool
 fn match_if_match(raw_if_match: const u8[:], cached_etag: const EntityTag&) -> bool
-fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityTag&, cached_last_modified: core::Time) -> bool
+fn evaluate_cache_if_range(raw_if_range: const u8[:], cached_etag: const EntityTag&, cached_last_modified_sec: i64) -> bool
 fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderMap&) -> VarySnapshot
 fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap&) -> bool
 fn sanitize_for_storage(src: const HeaderMap&, dst: HeaderMap&, shared: bool = false, cc: const CacheControl& = CacheControl { .. })
@@ -122,7 +122,7 @@ struct CacheWriters
 struct HttpCache
 
 fn new_http_cache(options: CacheOptions = CacheOptions { .. }) -> HttpCache
-fn lookup(cache: HttpCache&, req: const Request&, cur_now: core::Time, cur_mono: core::MonotonicInstant = core::MonotonicInstant { .. }) -> LookupDecision
+fn lookup(cache: HttpCache&, req: const Request&, cur_now_sec: i64, cur_mono_ns: u64 = 0) -> LookupDecision
 fn on_response(cache: HttpCache&, req: const Request&, resp: const Response&, ts: const CacheTimestamps&, revalidate_entry_idx: i64 = -1) -> ResponseDecision
 fn freshen_cached_entry_304(cache: HttpCache&, revalidate_entry_idx: i64, resp: const Response&, ts: const CacheTimestamps&, req_headers: const HeaderMap& = HeaderMap { .. }) -> ResponseDecision
 fn invalidate_matching_url(cache: HttpCache&, target_url: const u8[:]) -> i64
@@ -146,7 +146,7 @@ struct CacheGroupTag
 fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_count: i32&) -> bool
 fn serialize_cache_group_list(tags: const CacheGroupTag[..32]&, count: i32, out: u8[..512]&) -> i32
 fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool
-fn invalidate_group(cache: HttpCache&, group: const u8[:], base_orig: core::Origin = core::Origin { .. }) -> i64
+fn invalidate_group(cache: HttpCache&, group: const u8[:], base_url: const u8[:] = "") -> i64
 ```
 
 Implements RFC 9875 HTTP Cache Groups. `CacheGroupTag` stores a group string up
@@ -154,4 +154,5 @@ to 64 bytes (`name: u8[..64]`), and `parse_cache_group_list` extracts up to 32
 group tags (`CacheGroupTag[..32]`) from `Cache-Groups` or
 `Cache-Group-Invalidation` Structured Field List-of-Strings headers.
 `entry_has_group` compares group names case-sensitively per RFC 9875 §2.1, and
-`invalidate_group` evicts all matching entries sharing the same `core::Origin`.
+`invalidate_group` evicts all matching entries sharing the same origin as
+`base_url` (or across all origins when `base_url` is empty).

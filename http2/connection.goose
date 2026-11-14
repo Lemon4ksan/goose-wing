@@ -57,6 +57,12 @@ struct StreamNode {
     prev:      i32 = -1,
 }
 
+// RFC 9218 Section 7.1: HTTP/2 PRIORITY_UPDATE Frame - Buffered priority for an idle peer stream.
+struct IdleStreamPriority {
+    stream_id: u32                 = 0,
+    prio:      wing::PriorityParam = wing::PriorityParam { .. },
+}
+
 // ---- http/2 connection state & coordinator -------------------------------
 
 struct H2Connection {
@@ -71,6 +77,7 @@ struct H2Connection {
     max_concurrent_streams:    u32          = 128,
     active_stream_count:       u32          = 0,
     last_peer_stream_id:       u32          = 0,
+    last_local_stream_id:      u32          = 0,
     is_server:                 bool         = false,
     enable_push:               bool         = true,
     enable_connect_protocol:   u32          = 1,
@@ -78,8 +85,9 @@ struct H2Connection {
     coalesce_window_updates:   bool         = false,
 
     // Active streams table (bounded inline storage)
-    streams:      H2Stream[..128]            = [],
-    stream_index: core::FlatIndexBucket[256] = [core::FlatIndexBucket { .. }; 256],
+    streams:         H2Stream[..128]            = [],
+    stream_index:    core::FlatIndexBucket[256] = [core::FlatIndexBucket { .. }; 256],
+    idle_priorities: IdleStreamPriority[..128]  = [],
 
     // Exclusive CONTINUATION lock (0 if not expecting CONTINUATION)
     continuation_stream_id:       u32 = 0,
@@ -200,6 +208,47 @@ inline fn is_closed_peer_stream_id(s: const H2Connection&, stream_id: u32) -> bo
     return closed_slot || ((stream_id & 1) == 1 && stream_id <= s.last_peer_stream_id);
 }
 
+inline fn is_closed_stream_id(s: const H2Connection&, stream_id: u32) -> bool {
+    guard stream_id > 0 else { return false; }
+    if is_closed_peer_stream_id(s, stream_id) {
+        return true;
+    }
+    if !s.is_server && s.last_peer_stream_id > 0 && (s.last_peer_stream_id & 1) == 0 {
+        if (stream_id & 1) == 0 && stream_id <= s.last_peer_stream_id {
+            return true;
+        }
+    }
+    if s.last_local_stream_id > 0 && stream_id <= s.last_local_stream_id {
+        if (stream_id & 1) == (s.last_local_stream_id & 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline fn should_keep_idle_priority(item: const IdleStreamPriority&, opened_id: u32) -> bool {
+    if item.stream_id == opened_id {
+        return false;
+    }
+    return (opened_id & 1) == 0 || (item.stream_id & 1) != 1 || item.stream_id > opened_id;
+}
+
+fn take_idle_stream_priority(s: H2Connection&, stream_id: u32) -> wing::PriorityParam, bool {
+    var matched_prio = wing::PriorityParam { .. };
+    var found = false;
+    var kept: IdleStreamPriority[..128] = [];
+    for &item in s.idle_priorities {
+        if item.stream_id == stream_id {
+            matched_prio = item.prio;
+            found = true;
+        } else if should_keep_idle_priority(item, stream_id) {
+            guard kept.try_push(item) else { break; }
+        }
+    }
+    s.idle_priorities = kept;
+    return matched_prio, found;
+}
+
 // ---- frame ingress coordinator & anti-dos barriers -----------------------
 
 // Opens a new stream descriptor with default RFC 9218 priority.
@@ -209,15 +258,20 @@ fn open_new_session_stream(s: H2Connection&, stream_id: u32, end_stream: bool) {
         // Go 1.27 #75500: default to incremental=true before first client priority signal
         incremental: if s.is_behind_proxy { true } else { !s.client_sent_priority },
     };
+    let idle_prio, has_idle_prio = take_idle_stream_priority(s, stream_id);
+    if has_idle_prio {
+        def_prio = idle_prio;
+    }
 
     var new_stream = H2Stream {
-        stream_id:        stream_id,
-        state:            if end_stream { H2StreamState.HalfClosedRemote } else { H2StreamState.Open },
-        send_window:      s.peer_initial_window_size,
-        recv_window:      s.local_initial_window_size,
-        priority:         def_prio,
-        headers_received: true,
-        active:           true,
+        stream_id:                    stream_id,
+        state:                        if end_stream { H2StreamState.HalfClosedRemote } else { H2StreamState.Open },
+        send_window:                  s.peer_initial_window_size,
+        recv_window:                  s.local_initial_window_size,
+        priority:                     def_prio,
+        has_explicit_priority_update: has_idle_prio,
+        headers_received:             true,
+        active:                       true,
         ..
     };
 
@@ -379,7 +433,7 @@ fn handle_h2_rst_stream_header(s: H2Connection&, hdr: const FrameHeader&, now_ms
     }
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
-    if !found && !is_closed_peer_stream_id(s, hdr.stream_id) {
+    if !found && !is_closed_stream_id(s, hdr.stream_id) {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
@@ -510,19 +564,27 @@ inline fn calc_push_promise_hpack_len(hdr: const FrameHeader&) -> u32 {
     return len;
 }
 
-// RFC 9113 §6.6: Tracks CONTINUATION state machine when PUSH_PROMISE has END_HEADERS cleared.
+// RFC 9113 Section 6.6: PUSH_PROMISE - Tracks CONTINUATION and permits locally RST_STREAM-closed streams.
 fn handle_h2_push_promise_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u64) -> u32 {
     let rule_err = validate_frame_header_rules(hdr, s.local_max_frame_size);
     guard rule_err == rfc::H2_ERR_NO_ERROR else { return rule_err; }
 
     guard !s.is_server && s.enable_push else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     guard hdr.stream_id != 0 && (hdr.stream_id & 1) == 1 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
-    let _, is_closed = find_closed_h2_stream_idx(s, hdr.stream_id);
-    guard !is_closed else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    let c_idx, is_closed = find_closed_h2_stream_idx(s, hdr.stream_id);
+    if is_closed {
+        guard s.streams[c_idx].closed_by_rst else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    }
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     if found {
         let st = s.streams[s_idx].state;
-        guard st == H2StreamState.Open || st == H2StreamState.HalfClosedLocal else {
+        let ok_state = st == H2StreamState.Open || st == H2StreamState.HalfClosedLocal
+            || (st == H2StreamState.Closed && s.streams[s_idx].closed_by_rst);
+        guard ok_state else {
+            return rfc::H2_ERR_PROTOCOL_ERROR;
+        }
+    } else if !is_closed && (s.streams.len > 0 || s.last_local_stream_id > 0) {
+        if s.last_local_stream_id == 0 || hdr.stream_id > s.last_local_stream_id {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
     }
@@ -587,16 +649,8 @@ fn on_ingress_frame_header(s: H2Connection&, hdr: const FrameHeader&, now_ms: u6
 
 // ---- two-level flow control & signed window deltas (inv-flow-01) ----------
 
-// Dynamically updates stream send windows upon receiving SETTINGS_INITIAL_WINDOW_SIZE.
-// Computes signed delta = int64(new_init_win) - int64(old_init_win).
-// Enforces MAX_INITIAL_WINDOW_SIZE ceiling and allows negative stream windows.
+// RFC 9113 Section 6.9.2: Initial Flow-Control Window Size - Applies signed window delta across active streams.
 fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> u32 {
-    s.initial_window_update_count = core::add_sat_u32(s.initial_window_update_count, 1);
-    // CVE-2026-78669 defense: prevent excessive CPU consumption from repeated initial window changes
-    if s.initial_window_update_count > 16 {
-        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
-    }
-
     let new_win_i64 = new_init_win as i64;
     guard new_win_i64 <= rfc::H2_MAX_WINDOW_SIZE else {
         return rfc::H2_ERR_FLOW_CONTROL_ERROR;
@@ -609,6 +663,13 @@ fn apply_peer_initial_window_size_delta(s: H2Connection&, new_init_win: u32) -> 
                 return rfc::H2_ERR_FLOW_CONTROL_ERROR;
             }
         }
+    }
+
+    let next_cnt = core::add_sat_u32(s.initial_window_update_count, 1);
+    s.initial_window_update_count = next_cnt;
+    // CVE-2026-78669 defense: prevent excessive CPU consumption from repeated initial window changes
+    if next_cnt > 16 {
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
 
     s.peer_initial_window_size = new_win_i64;
@@ -639,8 +700,24 @@ fn apply_goaway(s: H2Connection&, last_stream_id: u32, error_code: u32) -> u32 {
     return rfc::H2_ERR_NO_ERROR;
 }
 
+// RFC 9113 Section 5.1: Stream States - Returns true when a WINDOW_UPDATE error on `stream_id` is connection-fatal.
+fn is_conn_error_on_window_update(s: const H2Connection&, stream_id: u32) -> bool {
+    if stream_id == 0 {
+        return true;
+    }
+    let s_idx, found = find_session_stream_idx(s, stream_id);
+    if !found {
+        return !is_closed_stream_id(s, stream_id);
+    }
+    let st = s.streams[s_idx].state;
+    return st == H2StreamState.Idle || st == H2StreamState.ReservedRemote;
+}
+
 // Processes incoming WINDOW_UPDATE frame (RFC 9113 Section 6.9).
 fn apply_window_update(s: H2Connection&, stream_id: u32, increment: u32) -> u32 {
+    if stream_id != 0 && is_conn_error_on_window_update(s, stream_id) {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
     guard increment > 0 && increment <= rfc::H2_MAX_WINDOW_SIZE else {
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
@@ -659,15 +736,13 @@ fn apply_window_update(s: H2Connection&, stream_id: u32, increment: u32) -> u32 
     // Stream-level window
     let s_idx, found = find_session_stream_idx(s, stream_id);
     guard found else {
-        // If stream ID is unknown but closed peer stream, ignore update on closed stream
-        if is_closed_peer_stream_id(s, stream_id) {
+        if is_closed_stream_id(s, stream_id) {
             return rfc::H2_ERR_NO_ERROR;
         }
         return rfc::H2_ERR_PROTOCOL_ERROR;
     }
 
-    // RFC 9113 Section 5.1: Endpoints MUST ignore WINDOW_UPDATE on closed streams,
-    // and reject WINDOW_UPDATE on idle or reserved (remote) streams with PROTOCOL_ERROR.
+    // RFC 9113 Section 5.1: Stream States - Ignore WINDOW_UPDATE on closed streams.
     let st .= s.streams[s_idx];
     if st.state == H2StreamState.Idle || st.state == H2StreamState.ReservedRemote {
         return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -700,11 +775,11 @@ fn compute_stream_send_quota(s: const H2Connection&, stream_id: u32) -> i64 {
     return min(s.conn_send_window, st_win);
 }
 
-// Updates receive windows upon processing incoming DATA frame (including padding).
-// Conforms to RFC 9113 §5.1 & §6.9: Flow-controlled DATA frames MUST always be accounted
-// against the connection flow-control window, even if the stream is closed or in error.
+// RFC 9113 Section 6.1: DATA - Updates connection and stream receive windows on incoming DATA frames.
 fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len: u32) -> u32 {
-    guard hdr.stream_id != 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    guard hdr.stream_id != 0 && payload_len <= hdr.length && (hdr.length as i64) <= rfc::H2_MAX_WINDOW_SIZE else {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
 
     // RFC 9113 §6.9: Always account for DATA frames against connection flow control first
     let total_consumed = hdr.length as i64;
@@ -715,7 +790,7 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
 
     let s_idx, found = find_session_stream_idx(s, hdr.stream_id);
     guard found else {
-        if is_closed_peer_stream_id(s, hdr.stream_id) {
+        if is_closed_stream_id(s, hdr.stream_id) {
             return rfc::H2_ERR_STREAM_CLOSED;
         }
         return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -739,7 +814,7 @@ fn on_data_frame_received(s: H2Connection&, hdr: const FrameHeader&, payload_len
         return rfc::H2_ERR_FLOW_CONTROL_ERROR;
     }
 
-    st.received_data_bytes += payload_len;
+    st.received_data_bytes = core::add_sat_i64(st.received_data_bytes, payload_len);
 
     // RFC 9113 §8.1.2: Check if incoming DATA causes total data to exceed declared Content-Length
     let dec_len = st.declared_content_length;
@@ -875,15 +950,53 @@ fn enqueue_stream_send_bytes(s: H2Connection&, stream_id: u32, bytes: u32) -> bo
     return true;
 }
 
-// Applies dynamic priority update (from PRIORITY_UPDATE frame or Priority header).
+fn record_idle_stream_priority(
+    s:         H2Connection&,
+    stream_id: u32,
+    prio:      wing::PriorityParam,
+) -> u32 {
+    var final_prio = prio;
+    if s.is_behind_proxy {
+        final_prio.urgency = 3;
+        final_prio.incremental = true;
+    }
+    for &entry in s.idle_priorities {
+        if entry.stream_id == stream_id {
+            entry.prio = final_prio;
+            return rfc::H2_ERR_NO_ERROR;
+        }
+    }
+    let total_tracked = core::add_sat_i64(core::add_sat_i64(s.active_stream_count, s.idle_priorities.len), 1);
+    guard total_tracked <= s.max_concurrent_streams else {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
+    guard s.idle_priorities.try_push(IdleStreamPriority {
+        stream_id: stream_id,
+        prio:      final_prio,
+    }) else {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
+    return rfc::H2_ERR_NO_ERROR;
+}
+
+// RFC 9218 Section 7.1: HTTP/2 PRIORITY_UPDATE Frame - Applies dynamic priority update to active or idle streams.
 fn apply_priority_update(s: H2Connection&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {
     guard prioritized_stream_id != 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     let s_idx, found = find_session_stream_idx(s, prioritized_stream_id);
     if !found {
         if (prioritized_stream_id & 1) == 0 {
-            let _, closed = find_closed_h2_stream_idx(s, prioritized_stream_id);
-            guard closed else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+            guard is_closed_stream_id(s, prioritized_stream_id) else {
+                return rfc::H2_ERR_PROTOCOL_ERROR;
+            }
+            s.client_sent_priority = true;
+            return rfc::H2_ERR_NO_ERROR;
         }
+        if is_closed_stream_id(s, prioritized_stream_id) {
+            s.client_sent_priority = true;
+            return rfc::H2_ERR_NO_ERROR;
+        }
+        let idle_err = record_idle_stream_priority(s, prioritized_stream_id, prio);
+        guard idle_err == rfc::H2_ERR_NO_ERROR else { return idle_err; }
         s.client_sent_priority = true;
         return rfc::H2_ERR_NO_ERROR;
     }

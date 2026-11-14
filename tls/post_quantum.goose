@@ -13,7 +13,7 @@ import core from "..";
 
 // ---- RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 
-// RFC 10024 Section 3: Key Exchange Messages - Expected Client Key Share Length
+// RFC 10024 Section 4.1: Client Share - Expected Client Key Share Length
 inline fn pq_hybrid_client_share_len(group: u16) -> i64 {
     if group == rfc::GROUP_SECP256R1_MLKEM768 {
         return rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN;
@@ -25,7 +25,7 @@ inline fn pq_hybrid_client_share_len(group: u16) -> i64 {
     return 0;
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Expected Server Key Share Length
+// RFC 10024 Section 4.2: Server Share - Expected Server Key Share Length
 inline fn pq_hybrid_server_share_len(group: u16) -> i64 {
     if group == rfc::GROUP_SECP256R1_MLKEM768 {
         return rfc::SECP256R1_MLKEM768_SERVER_SHARE_LEN;
@@ -163,7 +163,7 @@ fn parse_hybrid_server_key_share(share: PostQuantumServerShare&, raw: const u8[:
     return true;
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Formats SecP256r1+ML-KEM-768 Client KeyShareEntry
+// RFC 10024 Section 4.1: Client Share - Formats SecP256r1+ML-KEM-768 Client KeyShareEntry
 fn format_secp256r1_mlkem768_key_share<B>(share: const SecP256r1MLKEM768KeyShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP256R1_MLKEM768 else { return; }
     out.append_u16_be(share.group);
@@ -172,7 +172,7 @@ fn format_secp256r1_mlkem768_key_share<B>(share: const SecP256r1MLKEM768KeyShare
     out.append(share.mlkem768_public[..]);
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Parses SecP256r1+ML-KEM-768 Client KeyShareEntry
+// RFC 10024 Section 4.1: Client Share - Parses SecP256r1+ML-KEM-768 Client KeyShareEntry and validates P-256 curve point and ML-KEM-768 modulus.
 //
 // Example:
 //   raw = [0x11, 0xEB, 0x04, 0xE1, 0x04, ... (1249 bytes key)]
@@ -185,7 +185,8 @@ fn parse_secp256r1_mlkem768_key_share(share: SecP256r1MLKEM768KeyShare&, raw: co
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP256R1_MLKEM768_CLIENT_SHARE_LEN else { return false; }
-    guard raw[4] == 0x04 else { return false; }
+    let _, ok_pt = core::decode_p256_public_key(raw[4..69]);
+    guard ok_pt && verify_ek768_poly_modulus(raw[69..1253]) else { return false; }
 
     share.group = group;
     core::ct_copy_bytes(share.secp256r1_public[..], raw[4..69]);
@@ -194,7 +195,7 @@ fn parse_secp256r1_mlkem768_key_share(share: SecP256r1MLKEM768KeyShare&, raw: co
     return true;
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Formats SecP256r1+ML-KEM-768 Server KeyShareEntry
+// RFC 10024 Section 4.2: Server Share - Formats SecP256r1+ML-KEM-768 Server KeyShareEntry
 fn format_secp256r1_mlkem768_server_share<B>(share: const SecP256r1MLKEM768ServerShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP256R1_MLKEM768 else { return; }
     out.append_u16_be(share.group);
@@ -203,7 +204,7 @@ fn format_secp256r1_mlkem768_server_share<B>(share: const SecP256r1MLKEM768Serve
     out.append(share.mlkem768_ciphertext[..]);
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Parses SecP256r1+ML-KEM-768 Server KeyShareEntry
+// RFC 10024 Section 4.2: Server Share - Parses SecP256r1+ML-KEM-768 Server KeyShareEntry and validates P-256 curve point.
 //
 // Example:
 //   raw = [0x11, 0xEB, 0x04, 0x81, 0x04, ... (1153 bytes key + ciphertext)]
@@ -216,7 +217,8 @@ fn parse_secp256r1_mlkem768_server_share(share: SecP256r1MLKEM768ServerShare&, r
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP256R1_MLKEM768_SERVER_SHARE_LEN else { return false; }
-    guard raw[4] == 0x04 else { return false; }
+    let _, ok_pt = core::decode_p256_public_key(raw[4..69]);
+    guard ok_pt else { return false; }
 
     share.group = group;
     core::ct_copy_bytes(share.secp256r1_public[..], raw[4..69]);
@@ -225,7 +227,7 @@ fn parse_secp256r1_mlkem768_server_share(share: SecP256r1MLKEM768ServerShare&, r
     return true;
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Formats SecP384r1+ML-KEM-1024 Client KeyShareEntry
+// RFC 10024 Section 4.1: Client Share - Formats SecP384r1+ML-KEM-1024 Client KeyShareEntry
 fn format_secp384r1_mlkem1024_key_share<B>(share: const SecP384r1MLKEM1024KeyShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP384R1_MLKEM1024 else { return; }
     out.append_u16_be(share.group);
@@ -234,7 +236,7 @@ fn format_secp384r1_mlkem1024_key_share<B>(share: const SecP384r1MLKEM1024KeySha
     out.append(share.mlkem1024_public[..]);
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Parses SecP384r1+ML-KEM-1024 Client KeyShareEntry
+// RFC 10024 Section 4.1: Client Share - Parses SecP384r1+ML-KEM-1024 Client KeyShareEntry and validates P-384 curve point and ML-KEM-1024 modulus.
 //
 // Example:
 //   raw = [0x11, 0xED, 0x06, 0x81, 0x04, ... (1665 bytes key)]
@@ -247,7 +249,8 @@ fn parse_secp384r1_mlkem1024_key_share(share: SecP384r1MLKEM1024KeyShare&, raw: 
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP384R1_MLKEM1024_CLIENT_SHARE_LEN else { return false; }
-    guard raw[4] == 0x04 else { return false; }
+    let _, ok_pt = core::decode_p384_public_key(raw[4..101]);
+    guard ok_pt && verify_ek1024_poly_modulus(raw[101..1669]) else { return false; }
 
     share.group = group;
     core::ct_copy_bytes(share.secp384r1_public[..], raw[4..101]);
@@ -256,7 +259,7 @@ fn parse_secp384r1_mlkem1024_key_share(share: SecP384r1MLKEM1024KeyShare&, raw: 
     return true;
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Formats SecP384r1+ML-KEM-1024 Server KeyShareEntry
+// RFC 10024 Section 4.2: Server Share - Formats SecP384r1+ML-KEM-1024 Server KeyShareEntry
 fn format_secp384r1_mlkem1024_server_share<B>(share: const SecP384r1MLKEM1024ServerShare&, out: B&) {
     guard share.group == rfc::GROUP_SECP384R1_MLKEM1024 else { return; }
     out.append_u16_be(share.group);
@@ -265,7 +268,7 @@ fn format_secp384r1_mlkem1024_server_share<B>(share: const SecP384r1MLKEM1024Ser
     out.append(share.mlkem1024_ciphertext[..]);
 }
 
-// RFC 10024 Section 3: Key Exchange Messages - Parses SecP384r1+ML-KEM-1024 Server KeyShareEntry
+// RFC 10024 Section 4.2: Server Share - Parses SecP384r1+ML-KEM-1024 Server KeyShareEntry and validates P-384 curve point.
 //
 // Example:
 //   raw = [0x11, 0xED, 0x06, 0x81, 0x04, ... (1665 bytes key + ciphertext)]
@@ -278,7 +281,8 @@ fn parse_secp384r1_mlkem1024_server_share(share: SecP384r1MLKEM1024ServerShare&,
 
     let kex_len = core::read_be_u16(raw, 2) as i64;
     guard kex_len == rfc::SECP384R1_MLKEM1024_SERVER_SHARE_LEN else { return false; }
-    guard raw[4] == 0x04 else { return false; }
+    let _, ok_pt = core::decode_p384_public_key(raw[4..101]);
+    guard ok_pt else { return false; }
 
     share.group = group;
     core::ct_copy_bytes(share.secp384r1_public[..], raw[4..101]);
@@ -1214,14 +1218,27 @@ fn verify_ek_poly_modulus(ek_slice: const u8[:]) -> bool {
     return core::ct_eq_bytes(reencoded[..], ek_slice);
 }
 
+fn verify_ek768_poly_modulus(ek: const u8[:]) -> bool {
+    guard ek.len == 1184 else { return false; }
+    return verify_ek_poly_modulus(ek[0..384]) &&
+        verify_ek_poly_modulus(ek[384..768]) &&
+        verify_ek_poly_modulus(ek[768..1152]);
+}
+
+fn verify_ek1024_poly_modulus(ek: const u8[:]) -> bool {
+    guard ek.len == 1568 else { return false; }
+    return verify_ek_poly_modulus(ek[0..384]) &&
+        verify_ek_poly_modulus(ek[384..768]) &&
+        verify_ek_poly_modulus(ek[768..1152]) &&
+        verify_ek_poly_modulus(ek[1152..1536]);
+}
+
 // FIPS 203 Section 7.2 Algorithm 17: ML-KEM-768 Encapsulation (ML-KEM.Encaps_internal).
 // Performs the FIPS 203 encapsulation key modulus check on `ek[0..1152]` before encapsulating.
 fn mlkem768_encapsulate(ek: const u8[1184]&, m_rand: const u8[32]&) -> u8[1088], u8[32], bool {
     var ct_zero: u8[1088] = [0; 1088];
     var ss_zero: u8[32]   = [0; 32];
-    guard verify_ek_poly_modulus(ek[0..384]) &&
-        verify_ek_poly_modulus(ek[384..768]) &&
-        verify_ek_poly_modulus(ek[768..1152]) else {
+    guard verify_ek768_poly_modulus(ek[..]) else {
         return ct_zero, ss_zero, false;
     }
 

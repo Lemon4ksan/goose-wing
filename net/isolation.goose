@@ -17,11 +17,12 @@ import core from "..";
 // All 4 components (top_frame_site, is_cross_site, nonce, network_isolation_partition)
 // and optional worker_session_id must be compared to prevent cross-site side-channel leaks.
 struct NetworkAnonymizationKey {
-    top_frame_site:              u8[..128] = [],
+    top_frame_site:              u8[..256] = [],
     is_cross_site:               bool      = false,
     nonce:                       u64       = 0,
     network_isolation_partition: u32       = 0,
     worker_session_id:           u32       = 0,
+    overflowed:                  bool      = false,
 }
 
 fn new_network_anonymization_key(
@@ -40,11 +41,14 @@ fn new_network_anonymization_key(
     };
     if nak.top_frame_site.try_set(top_site) {
         to_lower(nak.top_frame_site[..]);
+    } else {
+        nak.overflowed = true;
     }
     return nak;
 }
 
 fn network_anonymization_key_equals(a: const NetworkAnonymizationKey&, b: const NetworkAnonymizationKey&) -> bool {
+    guard !a.overflowed && !b.overflowed else { return false; }
     if a.nonce != b.nonce { return false; }
     if a.is_cross_site != b.is_cross_site { return false; }
     if a.network_isolation_partition != b.network_isolation_partition { return false; }
@@ -55,8 +59,8 @@ fn network_anonymization_key_equals(a: const NetworkAnonymizationKey&, b: const 
 // ---- Network Isolation Key (NIK) Model -----------------------------------
 
 struct NetworkIsolationKey {
-    top_level_site: u8[..128] = [], // e.g. "https://site-a.com"
-    frame_site:     u8[..128] = [], // e.g. "https://site-b.com"
+    top_level_site: u8[..256] = [], // e.g. "https://site-a.com"
+    frame_site:     u8[..256] = [], // e.g. "https://site-b.com"
     is_cross_site:  bool      = false,
     is_empty:       bool      = true,
 }

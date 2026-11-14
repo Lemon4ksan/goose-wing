@@ -66,6 +66,9 @@ fn serialize_h1_request(
     guard format_request_target(req, url_val, target_buf) else { return false; }
     let has_cl = req.header("Content-Length").len > 0;
     let has_te = req.header("Transfer-Encoding").len > 0;
+    guard !(req.method[..].eq_ascii_fold("TRACE") && (req.body.len > 0 || has_cl || has_te)) else {
+        return false;
+    }
     let needs_zero_cl = req.method[..].eq_ascii_fold(rfc::METHOD_POST) || req.method[..].eq_ascii_fold(rfc::METHOD_PUT);
     var hdrs = req.headers;
     if !has_cl && !has_te && (req.body.len > 0 || needs_zero_cl) {
@@ -100,6 +103,14 @@ fn parse_h1_status_code(status_str: const u8[:]) -> i32 {
     return val as i32;
 }
 
+inline fn is_valid_h1_reason_phrase(reason: const u8[:]) -> bool {
+    for b in reason {
+        let ok = b == '\t' || b == ' ' || (b >= 0x21 && b != 0x7F);
+        guard ok else { return false; }
+    }
+    return true;
+}
+
 // Parses HTTP/1.1 status line: `HTTP/1.1 <status> <reason>\r\n` (RFC 9112 §4).
 // Populates resp.protocol and resp.status_code.
 //
@@ -111,12 +122,14 @@ fn parse_h1_status_line(
     resp: Response&,
 ) -> bool {
     guard starts_with(line, "HTTP/1.1 ") || starts_with(line, "HTTP/1.0 ") else { return false; }
-    guard line.len >= 12 else { return false; }
-
-    let _ = resp.protocol.try_set(line[..8]);
+    guard line.len >= 12 && (line.len == 12 || line[12] == ' ') else { return false; }
+    if line.len > 13 {
+        guard is_valid_h1_reason_phrase(line[13..]) else { return false; }
+    }
 
     let code = parse_h1_status_code(line[9..12]);
     guard code >= 100 && code <= 599 else { return false; }
+    guard resp.protocol.try_set(line[..8]) else { return false; }
     resp.status_code = code;
     return true;
 }
@@ -130,6 +143,7 @@ fn strip_conflicting_content_length(resp: Response&) {
     let te = header(resp, "Transfer-Encoding");
     let cl = header(resp, "Content-Length");
     guard te.len > 0 && cl.len > 0 else { return; }
+    resp.had_te_cl_conflict = true;
     remove_header_by_name(resp.headers, "content-length");
     resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
 }
@@ -143,6 +157,7 @@ fn parse_h1_header_block(
 ) -> bool {
     resp.headers.clear();
     resp.presence_mask = 0;
+    resp.had_te_cl_conflict = false;
 
     var offset: i64 = 0;
     while offset < header_bytes.len {
@@ -333,6 +348,13 @@ fn send_h1_request(
     guard serialize_h1_request(req, url_val, req_wire) else { return false; }
     guard send_all(conn.transport, req_wire[..]) else { return false; }
 
+    if header_has_token(req.header("Transfer-Encoding"), "chunked") && !req.body_prechunked {
+        var chunk_wire: u8[>..] = [];
+        guard encode_chunked_payload(req.body[..], req.trailers, 4096, chunk_wire) else {
+            return false;
+        }
+        return send_all(conn.transport, chunk_wire[..]);
+    }
     if req.body.len > 0 {
         guard send_all(conn.transport, req.body[..]) else { return false; }
     }
@@ -388,6 +410,50 @@ fn has_rogue_empty_status_framing(method: const u8[:], status: i32, headers: con
     return !ok_cl || cl_val > 0;
 }
 
+inline fn is_valid_h1_te_coding(tok: const u8[:]) -> bool {
+    guard tok.len > 0 else { return false; }
+    for b in tok {
+        guard core::is_tchar(b) else { return false; }
+    }
+    return true;
+}
+
+// Classifies a non-empty Transfer-Encoding header (RFC 9112 Section 6.1 & Section 6.3):
+// returns `0` on invalid syntax or duplicate `chunked`, `1` when `chunked` is the final coding,
+// and `2` when `chunked` is not final (requires close-delimited EOF framing).
+fn classify_h1_transfer_encoding(te: const u8[:]) -> i32 {
+    var rem = te.trim_lws();
+    guard rem.len > 0 else { return 0; }
+    var chunked_cnt:  i64  = 0;
+    var last_chunked: bool = false;
+    while rem.len > 0 {
+        let head, tail, has_comma = rem.split_once_byte(',');
+        let tok = head.trim_lws();
+        guard is_valid_h1_te_coding(tok) else { return 0; }
+        last_chunked = tok.eq_ascii_fold("chunked");
+        if last_chunked {
+            chunked_cnt = core::add_sat_i64(chunked_cnt, 1);
+            guard chunked_cnt <= 1 else { return 0; }
+        }
+        if !has_comma { break; }
+        rem = tail.trim_lws();
+        guard rem.len > 0 else { return 0; }
+    }
+    return if last_chunked { 1 } else { 2 };
+}
+
+fn pump_eof_response_body(conn: PooledConnection&, resp: Response&, leftover: const u8[:], timeout_ms: u32) {
+    if leftover.len > 0 {
+        resp.body.append(leftover);
+    }
+    var raw_recv: u8[4096] = [0; 4096];
+    loop {
+        let recvd = conn.transport.recv_slice(raw_recv[..], timeout_ms);
+        if recvd <= 0 { break; }
+        resp.body.append(raw_recv[..recvd]);
+    }
+}
+
 fn pump_response_body(
     conn:       PooledConnection&,
     req:        const Request&,
@@ -398,10 +464,14 @@ fn pump_response_body(
     let req_conn = req.header("Connection");
     let conn_hdr = resp.header("Connection");
     let is_conn_close = header_has_token(conn_hdr, "close") || header_has_token(req_conn, "close");
-    let keep_alive = !is_conn_close && (resp.protocol == "HTTP/1.1" || resp.protocol == "h1");
+    let keep_alive = !is_conn_close && !resp.had_te_cl_conflict &&
+        (resp.protocol == "HTTP/1.1" || resp.protocol == "h1");
 
     let is_upgrade = resp.status_code == rfc::STATUS_SWITCHING_PROTOCOLS;
-    if req.method == "HEAD" || is_upgrade || rfc::is_empty_body_status(resp.status_code) {
+    let is_connect_2xx = req.method[..].eq_ascii_fold("CONNECT") &&
+        resp.status_code >= rfc::STATUS_OK && resp.status_code < 300;
+    if req.method[..].eq_ascii_fold("HEAD") || is_connect_2xx || is_upgrade ||
+        rfc::is_empty_body_status(resp.status_code) {
         let status = resp.status_code;
         if status == 204 || status == 304 {
             let allow_ka = keep_alive && !has_rogue_empty_status_framing(req.method[..], status, resp.headers);
@@ -410,21 +480,28 @@ fn pump_response_body(
             }
             return true, allow_ka;
         }
-        if (keep_alive || is_upgrade) && leftover.len > 0 {
+        if (keep_alive || is_upgrade || is_connect_2xx) && leftover.len > 0 {
             let _ = conn.rx_buf.try_append(leftover);
         }
-        return true, keep_alive || is_upgrade;
+        return true, keep_alive || is_upgrade || is_connect_2xx;
     }
 
     let te = resp.header("Transfer-Encoding");
-    if header_has_token(te, "chunked") {
-        var dec = internal::new_chunk_fsm_decoder();
-        let ok_chunk = pump_h1_chunked_body(conn, dec, leftover, resp, timeout_ms);
-        if ok_chunk {
-            remove_header_by_name(resp.headers, "transfer-encoding");
-            resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_TRANSFER_ENCODING);
+    if te.len > 0 {
+        guard resp.protocol != "HTTP/1.0" else { return false, false; }
+        let te_mode = classify_h1_transfer_encoding(te);
+        guard te_mode != 0 else { return false, false; }
+        if te_mode == 1 {
+            var dec = internal::new_chunk_fsm_decoder();
+            let ok_chunk = pump_h1_chunked_body(conn, dec, leftover, resp, timeout_ms);
+            if ok_chunk {
+                remove_header_by_name(resp.headers, "transfer-encoding");
+                resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_TRANSFER_ENCODING);
+            }
+            return ok_chunk, keep_alive;
         }
-        return ok_chunk, keep_alive;
+        pump_eof_response_body(conn, resp, leftover, timeout_ms);
+        return true, false;
     }
 
     let cl_str = resp.header("Content-Length");
@@ -433,16 +510,7 @@ fn pump_response_body(
         return ok_fixed, keep_alive;
     }
 
-    // Close-delimited body
-    if leftover.len > 0 {
-        resp.body.append(leftover);
-    }
-    var raw_recv: u8[4096] = [0; 4096];
-    loop {
-        let recvd = conn.transport.recv_slice(raw_recv[..], timeout_ms);
-        if recvd <= 0 { break; }
-        resp.body.append(raw_recv[..recvd]);
-    }
+    pump_eof_response_body(conn, resp, leftover, timeout_ms);
     return true, false;
 }
 
@@ -470,6 +538,11 @@ fn execute_h1_exchange(
             resp.status_code < rfc::STATUS_OK &&
             resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS;
         if is_interim {
+            guard !resp.had_te_cl_conflict &&
+                resp.header("Transfer-Encoding").len == 0 &&
+                resp.header("Content-Length").len == 0 else {
+                return false, false;
+            }
             conn.rx_buf.compact_wire_buffer(leftover_start);
             continue;
         }

@@ -125,6 +125,7 @@ fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> Res
 
     var req = new_request("POST", url);
     set_header(req, "Transfer-Encoding", "chunked");
+    req.body_prechunked = true;
     req.body.append(writer.buffer[..]);
     req.rewindable = req.rewind_buf.try_set(writer.buffer[..]);
     return do(session, req);
@@ -422,23 +423,55 @@ fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
 
 // ---- masque connect-udp & connect-ip tunnels (rfc 9298, rfc 9484) -----------
 
+inline fn is_masque_reg_name_char(b: u8) -> bool {
+    return core::is_uri_unreserved(b) ||
+           b == '!' || b == '$' || b == '&' || b == '\'' ||
+           b == '(' || b == ')' || b == '*' || b == '+' ||
+           b == ',' || b == ';' || b == '=';
+}
+
+inline fn append_masque_ipv6_encoded(v6_raw: const u8[:], out_host: u8[..128]&) -> bool {
+    var comp_v6: u8[..64] = [];
+    guard core::parse_and_compress_ipv6(v6_raw, comp_v6) else { return false; }
+    for b in v6_raw {
+        let ok_b = if b == ':' { out_host.try_append("%3A") } else { out_host.try_push(b) };
+        guard ok_b else { return false; }
+    }
+    return true;
+}
+
 // Normalizes a MASQUE target host by stripping IPv6 brackets and percent-encoding ':' as '%3A' (RFC 9298 §2).
 //
 // Example:
 //   target_host = "[2001:db8::1]"
 //   returns: out_host = "2001%3Adb8%3A%3A1", ok = true
 fn encode_masque_target_host(target_host: const u8[:], out_host: u8[..128]&) -> bool {
-    let has_brackets = target_host.len >= 2 && target_host[0] == '[' && target_host[target_host.len - 1] == ']';
-    let clean_host = if has_brackets { target_host[1..^1] } else { target_host };
-    guard clean_host.len > 0 else { return false; }
+    guard target_host.len > 0 && !target_host.contains_byte('%') else { return false; }
     let saved_len = out_host.len;
     var committed = false;
     defer if !committed { out_host.resize(saved_len); };
     out_host.clear();
-    for b in clean_host {
-        let ok_b = if b == ':' { out_host.try_append("%3A") } else { out_host.try_push(b) };
-        guard ok_b else { return false; }
+
+    if core::starts_with(target_host, "[") || core::ends_with(target_host, "]") {
+        let after_l, ok_l = target_host.strip_prefix("[");
+        let inner, ok_r = after_l.strip_suffix("]");
+        guard ok_l && ok_r && inner.len >= 2 && append_masque_ipv6_encoded(inner, out_host) else {
+            return false;
+        }
+        committed = true;
+        return true;
     }
+
+    if target_host.contains_byte(':') {
+        guard append_masque_ipv6_encoded(target_host, out_host) else { return false; }
+        committed = true;
+        return true;
+    }
+
+    for b in target_host {
+        guard is_masque_reg_name_char(b) else { return false; }
+    }
+    guard out_host.try_set(target_host) else { return false; }
     committed = true;
     return true;
 }

@@ -21,6 +21,7 @@
 #include <mstcpip.h>
 #include <afunix.h>
 #include <windows.h>
+#include <signal.h>
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
 #endif
@@ -106,6 +107,15 @@ typedef struct {
     int64_t len;
 } wing_slice_u16_ro;
 #pragma pack(pop)
+
+#ifdef __wasm__
+static volatile int g_wing_stop_requested = 0;
+static volatile int g_wing_reload_requested = 0;
+#else
+static volatile sig_atomic_t g_wing_stop_requested = 0;
+static volatile sig_atomic_t g_wing_reload_requested = 0;
+static volatile sig_atomic_t g_wing_signals_installed = 0;
+#endif
 
 // Helper to copy a slice into a null-terminated stack string buffer
 static void slice_to_cstr(wing_bytes_ro s, char *out, size_t max_out) {
@@ -1957,3 +1967,91 @@ int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i3
 }
 
 #endif // !defined(__wasm__)
+
+// ---- Cross-Platform Process Shutdown & Reload Signals ---------------------
+
+#ifdef _WIN32
+static void wing_win_crt_signal_handler(int sig) {
+    (void)sig;
+    g_wing_stop_requested = 1;
+}
+
+static BOOL WINAPI wing_win_console_ctrl_handler(DWORD ctrl_type) {
+    switch (ctrl_type) {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            g_wing_stop_requested = 1;
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+
+int32_t wing_install_shutdown_signals(void) {
+    signal(SIGINT, wing_win_crt_signal_handler);
+    signal(SIGTERM, wing_win_crt_signal_handler);
+    if (!g_wing_signals_installed) {
+        (void)SetConsoleCtrlHandler(wing_win_console_ctrl_handler, TRUE);
+        g_wing_signals_installed = 1;
+    }
+    return 0;
+}
+#elif defined(__wasm__)
+int32_t wing_install_shutdown_signals(void) {
+    return 0;
+}
+#else
+static void wing_posix_stop_handler(int sig) {
+    (void)sig;
+    g_wing_stop_requested = 1;
+}
+
+static void wing_posix_reload_handler(int sig) {
+    (void)sig;
+    g_wing_reload_requested = 1;
+}
+
+int32_t wing_install_shutdown_signals(void) {
+    struct sigaction sa_stop;
+    memset(&sa_stop, 0, sizeof(sa_stop));
+    sa_stop.sa_handler = wing_posix_stop_handler;
+    sigemptyset(&sa_stop.sa_mask);
+    // Omit SA_RESTART so blocking accept/poll/epoll_wait wakes immediately with EINTR.
+    sa_stop.sa_flags = 0;
+    if (sigaction(SIGINT, &sa_stop, NULL) != 0) return -1;
+    if (sigaction(SIGTERM, &sa_stop, NULL) != 0) return -1;
+
+    struct sigaction sa_reload;
+    memset(&sa_reload, 0, sizeof(sa_reload));
+    sa_reload.sa_handler = wing_posix_reload_handler;
+    sigemptyset(&sa_reload.sa_mask);
+    sa_reload.sa_flags = SA_RESTART;
+    (void)sigaction(SIGHUP, &sa_reload, NULL);
+
+    g_wing_signals_installed = 1;
+    return 0;
+}
+#endif
+
+int32_t wing_shutdown_requested(void) {
+    return g_wing_stop_requested != 0 ? 1 : 0;
+}
+
+void wing_request_shutdown(void) {
+    g_wing_stop_requested = 1;
+}
+
+void wing_reset_shutdown_signals(void) {
+    g_wing_stop_requested = 0;
+    g_wing_reload_requested = 0;
+}
+
+int32_t wing_consume_reload_signal(void) {
+    if (g_wing_reload_requested != 0) {
+        g_wing_reload_requested = 0;
+        return 1;
+    }
+    return 0;
+}

@@ -115,25 +115,29 @@ fn parse_link_params(params_str: const u8[:], link: EarlyHintLink&) -> bool {
     return true;
 }
 
-// Parses a single Link element enclosed in angle brackets with parameters.
+// Parses a single RFC 8288 Link element (<URI> with optional semicolon parameters).
 //
 // Example:
 //   entry_str = "</style.css>; rel=preload; as=style"
 //   returns: true, link populated with uri="/style.css", rel="preload", as_type="style"
 fn parse_single_link(entry_str: const u8[:], link: EarlyHintLink&) -> bool {
+    link = EarlyHintLink { .. };
+    var committed = false;
+    defer if !committed { link = EarlyHintLink { .. }; };
     guard entry_str.len > 2 && entry_str[0] == '<' else { return false; }
     let rel_close = entry_str[1..].index_of_byte('>');
     guard rel_close >= 0 else { return false; }
     let close_idx = 1 + rel_close;
     let uri_slice = entry_str[1..close_idx];
-    // Reject empty URI (<>) and enforce capacity
     guard uri_slice.len > 0 && link.uri.try_append(uri_slice) else { return false; }
 
     let after_uri = entry_str[close_idx + 1..].trim_lws_start();
     if after_uri.len > 0 {
         guard after_uri[0] == ';' else { return false; }
+        guard parse_link_params(after_uri, link) else { return false; }
     }
-    return parse_link_params(after_uri, link);
+    committed = true;
+    return true;
 }
 
 // Parses RFC 8288 `Link` header: `<uri>; rel=...; as=...`

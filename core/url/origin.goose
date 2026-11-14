@@ -126,11 +126,16 @@ fn is_known_wildcard_rule<B>(domain: const u8[:], out: B&) -> bool {
         "compute.amazonaws.com",
     ];
     for base in wildcards {
+        if domain == base {
+            out.append(base);
+            return true;
+        }
         if ends_with_dot_suffix(domain, base) {
             extract_wildcard_suffix(domain, base, out);
             return true;
         }
     }
+    out.clear();
     return false;
 }
 
@@ -304,7 +309,7 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
     return is_icann_suffix;
 }
 
-// Extracts the effective top-level domain plus one label (eTLD+1).
+// RFC 6265 Section 5.3: Storage Model - Reject bare public suffixes as registrable domains.
 //
 // Example:
 //   host = "sub.example.co.uk"
@@ -312,44 +317,46 @@ fn compute_public_suffix<B>(clean_domain: const u8[:], out: B&) -> bool {
 fn extract_etld_plus_one<B>(host: const u8[:], out: B&) {
     out.clear();
     let trimmed = trim_byte(host, '.');
-    guard trimmed.len > 0 && trimmed.len <= 256 else { return; }
+    guard trimmed.len > 0 && trimmed.len <= 256 && !contains(trimmed, "..") else { return; }
     var no_zone: u8[..256] = [];
     strip_ipv6_zone_id(trimmed, no_zone);
     let clean_host = no_zone[..];
 
-    if is_ip_address_literal(clean_host) || count_byte(clean_host, '.') == 0 {
-        out.try_append(clean_host);
+    if is_ip_address_literal(clean_host) {
+        let _ = out.try_append(clean_host);
         to_lower(out[..]);
+        return;
+    }
+
+    if count_byte(clean_host, '.') == 0 {
+        var lower_lbl: u8[..256] = [];
+        guard lower_lbl.try_append(clean_host) else { return; }
+        to_lower(lower_lbl[..]);
+        if is_known_one_level_suffix(lower_lbl[..]) || lower_lbl[..] == "ck" || lower_lbl[..] == "bd" {
+            return;
+        }
+        let _ = out.try_append(lower_lbl[..]);
         return;
     }
 
     var suffix: u8[..256] = [];
     compute_public_suffix(clean_host, suffix);
-
-    if suffix.len == 0 || eq_ascii_fold(clean_host, suffix[..]) {
-        out.try_append(clean_host);
-        to_lower(out[..]);
-        return;
-    }
+    guard suffix.len > 0 && !eq_ascii_fold(clean_host, suffix[..]) else { return; }
 
     let suffix_len = suffix.len;
     if clean_host.len > suffix_len && clean_host[clean_host.len - suffix_len - 1] == '.' {
         let prefix = clean_host[..sub_sat_i64(sub_sat_i64(clean_host.len, suffix_len), 1)];
         let last_dot_in_prefix = last_index_of_byte(prefix, '.');
         let start_pos = max(0, last_dot_in_prefix + 1);
-        out.try_append(clean_host[start_pos..]);
+        let _ = out.try_append(clean_host[start_pos..]);
         to_lower(out[..]);
-        return;
     }
-
-    out.try_append(clean_host);
-    to_lower(out[..]);
 }
 
 fn public_suffix_with_icann<B>(domain: const u8[:], out_suffix: B&) -> bool {
     out_suffix.clear();
     let clean_domain = trim_byte(domain, '.');
-    guard clean_domain.len > 0 else { return false; }
+    guard clean_domain.len > 0 && !contains(clean_domain, "..") else { return false; }
     if is_ip_address_literal(clean_domain) { return false; }
 
     return compute_public_suffix(clean_domain, out_suffix);

@@ -1665,7 +1665,7 @@ fn test_proxy_cache_h2_extended_connect_seams() {
     cached_resp.body.append("CACHED_ROOT_PAYLOAD");
     var ts = wing::CacheTimestamps { .. };
     let _ = wing::stage_client_cache_store(
-        req_root, req_root.headers, parsed_root, "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
+        req_root, req_root.headers, parsed_root.href[..], "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
     );
 
     let early_resp, early_err = wing::execute_request(g_seam_session, req_root);
@@ -2713,7 +2713,7 @@ fn encode_client_request_headers<B>(
 fn test_h2_wire_loopback() {
     var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/api/ping", 200);
 

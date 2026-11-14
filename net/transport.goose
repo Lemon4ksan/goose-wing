@@ -285,22 +285,26 @@ fn recv_slice(t: Transport.Disconnected, dst: u8[:], timeout_ms: u32 = 5000) -> 
 }
 
 fn recv_slice(t: Transport.Tcp, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
-    guard t.fd > 0 else { return 0; }
+    guard dst.len > 0 else { return 0; }
+    guard t.fd > 0 else { return -1; }
     return tcp_recv_slice(t.fd, dst, timeout_ms);
 }
 
 fn recv_slice(t: Transport.Unix, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
-    guard t.fd > 0 else { return 0; }
+    guard dst.len > 0 else { return 0; }
+    guard t.fd > 0 else { return -1; }
     return tcp_recv_slice(t.fd, dst, timeout_ms);
 }
 
 fn recv_slice(t: Transport.Tls, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
-    guard t.fd > 0 else { return 0; }
+    guard dst.len > 0 else { return 0; }
+    guard t.fd > 0 else { return -1; }
     return tls_transport_recv_slice(t.fd, t.cipher_slot, dst, timeout_ms);
 }
 
 fn recv_slice(t: Transport.Udp, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
-    guard t.fd > 0 else { return 0; }
+    guard dst.len > 0 else { return 0; }
+    guard t.fd > 0 else { return -1; }
     var peer_ip4:  u32 = 0;
     var peer_port: u16 = 0;
     return udp_recvfrom(t.fd, dst, timeout_ms, peer_ip4, peer_port);

@@ -400,7 +400,7 @@ fn test_http_sfv_dcb_and_cache_lru() {
     // 3d. ScalableHttpCache unified LRU (lru_head = MRU, lru_tail = LRU victim)
     var cache = wing::ScalableHttpCache { .. };
     wing::init_scalable_http_cache(cache, 8, 4096);
-    let now_ts = core::Time { wall_sec: 1700000000, .. };
+    let now_ts: i64 = 1700000000;
 
     let c_req0 = wing::new_request("GET", "https://cdn.example.com/lru/0");
     let c_req1 = wing::new_request("GET", "https://cdn.example.com/lru/1");

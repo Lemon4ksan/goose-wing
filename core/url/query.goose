@@ -205,23 +205,26 @@ inline fn extract_token_descriptor(
     let eq_pos = find_first_equals(pair);
     let has_esc = slice_has_percent(pair);
     let flags: u64 = if has_esc { QUERY_TOKEN_FLAG_ESCAPE } else { 0 };
+    let key_off = add_sat_i64(base_offset, start);
+    let off_over = key_off < 0 || key_off > 0x3FFFFFFF;
 
     if eq_pos < 0 {
-        let is_over = (pair.len > MAX_URL_QUERY_KEY_LIMIT) || (pair.len > 0xFFFF);
+        let is_over = off_over || (pair.len > MAX_URL_QUERY_KEY_LIMIT) || (pair.len > 0xFFFF);
         let k_len = min(pair.len, 0xFFFF);
-        let tok = pack_query_token(base_offset + start, k_len, 0, flags | QUERY_TOKEN_FLAG_VALUELESS);
+        let tok = pack_query_token(key_off, k_len, 0, flags | QUERY_TOKEN_FLAG_VALUELESS);
         return tok, is_over;
     }
 
     let k_raw = eq_pos;
     let v_raw = pair.len - (eq_pos + 1);
-    let is_over = (k_raw > MAX_URL_QUERY_KEY_LIMIT) ||
+    let is_over = off_over ||
+        (k_raw > MAX_URL_QUERY_KEY_LIMIT) ||
         (v_raw > MAX_URL_QUERY_VAL_LIMIT) ||
         (k_raw > 0xFFFF) ||
         (v_raw > 0xFFFF);
     let k_len = min(k_raw, 0xFFFF);
     let v_len = min(v_raw, 0xFFFF);
-    let tok = pack_query_token(base_offset + start, k_len, v_len, flags);
+    let tok = pack_query_token(key_off, k_len, v_len, flags);
     return tok, is_over;
 }
 
@@ -245,13 +248,15 @@ fn parse_query_params(raw_search: const u8[:]) -> QueryTokens {
         }
         let end = find_next_ampersand(input, start);
         let pair = input[start..end];
+        let token_start = start;
         start = end + 1;
         guard pair.len > 0 else { continue; }
 
-        let tok, is_over = extract_token_descriptor(pair, base_offset, end - pair.len);
+        let tok, is_over = extract_token_descriptor(pair, base_offset, token_start);
         if is_over {
             res.overflow = true;
-            if pair.len > 0xFFFF {
+            let key_off = add_sat_i64(base_offset, token_start);
+            if key_off > 0x3FFFFFFF || pair.len > 0xFFFF {
                 continue;
             }
         }
@@ -540,7 +545,8 @@ inline fn append_form_urlencoded(src: const u8[:], dst: u8[..1024]&) -> bool {
 inline fn decode_form_urlencoded(src: const u8[:], out: u8[..256]&) -> bool {
     out.clear();
     var temp: u8[..256] = [];
-    var i:    i64       = 0;
+    defer secure_zeroize_slice(temp[..]);
+    var i: i64 = 0;
     while i < src.len {
         let b = src[i];
         if b == '+' {
@@ -562,7 +568,6 @@ inline fn decode_form_urlencoded(src: const u8[:], out: u8[..256]&) -> bool {
         }
     }
     out.append(temp[..]);
-    secure_zeroize_slice(temp[..]);
     return true;
 }
 

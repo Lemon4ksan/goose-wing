@@ -219,13 +219,11 @@ fn compute_ja4(
 
 // ---- ja4h http client fingerprint calculation ------------------------------
 
-fn compare_lower_ascii(a: const u8[:], b: const u8[:]) -> i32 {
+fn compare_raw_bytes(a: const u8[:], b: const u8[:]) -> i32 {
     let min_len = min(a.len, b.len);
     for i in min_len {
-        let ca = core::to_lower_ascii_byte(a[i]);
-        let cb = core::to_lower_ascii_byte(b[i]);
-        if ca != cb {
-            return if ca < cb { -1 } else { 1 };
+        if a[i] != b[i] {
+            return if a[i] < b[i] { -1 } else { 1 };
         }
     }
     if a.len < b.len { return -1; }
@@ -233,13 +231,31 @@ fn compare_lower_ascii(a: const u8[:], b: const u8[:]) -> i32 {
     return 0;
 }
 
-fn sort_cookie_indices(names: const u8[:][:], order: i64[>..]&) {
+fn compare_cookie_pair(
+    names:  const u8[:][:],
+    values: const u8[:][:],
+    a_idx:  i64,
+    b_idx:  i64,
+) -> i32 {
+    let cmp_name = compare_raw_bytes(names[a_idx], names[b_idx]);
+    if cmp_name != 0 {
+        return cmp_name;
+    }
+    let val_a = if a_idx < values.len { values[a_idx] } else { "" };
+    let val_b = if b_idx < values.len { values[b_idx] } else { "" };
+    return compare_raw_bytes(val_a, val_b);
+}
+
+fn sort_cookie_indices(
+    names:  const u8[:][:],
+    values: const u8[:][:],
+    order:  i64[>..]&,
+) {
     if order.len <= 1 { return; }
     for i in 1..order.len {
         let key_idx = order[i];
-        let key_name = names[key_idx];
         var j = core::sub_sat_i64(i, 1);
-        while j >= 0 && compare_lower_ascii(names[order[j]], key_name) > 0 {
+        while j >= 0 && compare_cookie_pair(names, values, order[j], key_idx) > 0 {
             order[core::add_sat_i64(j, 1)] = order[j];
             j = core::sub_sat_i64(j, 1);
         }
@@ -295,7 +311,7 @@ fn append_ja4h_cookies_hash<B>(
     }
     var order: i64[>..] = [];
     for i in cookie_names.len { order.push(i); }
-    sort_cookie_indices(cookie_names, order);
+    sort_cookie_indices(cookie_names, cookie_values, order);
 
     var cbuf: u8[>..] = [];
     for i in order.len {

@@ -45,28 +45,74 @@ struct CrossOriginIsolationContext {
 
 // ---- Policy Parsers ------------------------------------------------------
 
-// Validates that Structured Field parameter tail contains no CTLs or unclosed quotes (RFC 8941 Section 3.1.2).
-inline fn is_valid_sf_param_tail(params: const u8[:]) -> bool {
-    var in_quotes = false;
+inline fn is_valid_sf_param_key(key: const u8[:]) -> bool {
+    guard key.len > 0 else { return false; }
+    let first = key[0];
+    guard (first >= 'a' && first <= 'z') || first == '*' else { return false; }
+    for b in key {
+        let ok = (b >= 'a' && b <= 'z') || core::is_ascii_digit(b) ||
+            b == '_' || b == '-' || b == '.' || b == '*';
+        guard ok else { return false; }
+    }
+    return true;
+}
+
+inline fn is_valid_sf_quoted_val(val: const u8[:]) -> bool {
+    guard val.len >= 2 && core::starts_with(val, "\"") && core::ends_with(val, "\"") else {
+        return false;
+    }
+    let end_idx = core::sub_sat_i64(val.len, 1);
+    let inner = val[1..end_idx];
     var escaped = false;
-    for b in params {
-        guard core::is_ascii_printable(b) || b == '\t' else { return false; }
+    for b in inner {
+        guard b >= 0x20 && b <= 0x7E else { return false; }
         if escaped {
+            guard b == '"' || b == '\\' else { return false; }
             escaped = false;
-        } else if in_quotes && b == '\\' {
+        } else if b == '\\' {
             escaped = true;
         } else if b == '"' {
-            in_quotes = !in_quotes;
+            return false;
         }
     }
-    return !in_quotes && !escaped;
+    return !escaped;
+}
+
+inline fn is_valid_sf_param_val(val: const u8[:]) -> bool {
+    guard val.len > 0 else { return false; }
+    if val[0] == '"' {
+        return is_valid_sf_quoted_val(val);
+    }
+    for b in val {
+        guard b > 0x20 && b <= 0x7E && b != '"' && b != ';' && b != ',' else { return false; }
+    }
+    return true;
+}
+
+// Validates RFC 8941 Section 3.1.2 Structured Field parameters after `;`.
+inline fn is_valid_sf_param_tail(params: const u8[:]) -> bool {
+    var rem = params;
+    loop {
+        let seg, tail, has_more = rem.split_once_unquoted_byte(';');
+        let after_sp = seg.trim_start_byte(' ');
+        guard after_sp.len > 0 else { return false; }
+        let key, val_raw, has_eq = after_sp.split_once_byte('=');
+        guard is_valid_sf_param_key(key) else { return false; }
+        if has_eq {
+            guard is_valid_sf_param_val(val_raw) else { return false; }
+        }
+        guard has_more else { break; }
+        rem = tail;
+    }
+    return true;
 }
 
 // Extracts the primary token before any RFC 8941 structured field parameters (';').
-// Rejects unquoted commas (multi-item lists), leading semicolons, and malformed parameter quotes/CTLs.
+// Rejects unquoted commas (multi-item lists), leading semicolons, and malformed parameter syntax/CTLs.
 inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
-    guard val.find_unquoted_byte(',') == val.len else { return ";"; }
-    let head, params, has_semi = val.split_once_byte(';');
+    let trimmed = val.trim_lws();
+    guard trimmed.find_unquoted_byte(',') == trimmed.len else { return ";"; }
+    let head, params, has_semi = trimmed.split_once_byte(';');
     let clean = head.trim_lws();
     if has_semi && (clean.len == 0 || !is_valid_sf_param_tail(params)) {
         return ";";
@@ -162,6 +208,17 @@ inline fn is_valid_ipv6_bracket_body(body: const u8[:]) -> bool {
     return true;
 }
 
+inline fn is_valid_reg_hostname(host: const u8[:]) -> bool {
+    guard host.len > 0 && !core::starts_with(host, ".") &&
+        !core::ends_with(host, ".") && !core::contains(host, "..") else {
+        return false;
+    }
+    for b in host {
+        guard core::is_ascii_alphanumeric(b) || b == '.' || b == '-' || b == '_' else { return false; }
+    }
+    return true;
+}
+
 // Extracts host from an origin or URL string (RFC 3986 §3.2.2).
 //
 // Example:
@@ -196,8 +253,11 @@ fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
         guard colon_idx > 0 && is_valid_origin_port(auth[core::add_sat_i64(colon_idx, 1)..]) else {
             return "";
         }
-        return auth[..colon_idx];
+        let host_part = auth[..colon_idx];
+        guard is_valid_reg_hostname(host_part) else { return ""; }
+        return host_part;
     }
+    guard is_valid_reg_hostname(auth) else { return ""; }
     return auth;
 }
 
@@ -238,10 +298,14 @@ fn is_subresource_allowed(
     subresource_origin:      const u8[:],
     subresource_corp_header: const u8[:],
 ) -> bool {
-    let doc_orig = ctx.document_origin[..].trim_lws();
-    let sub_orig = subresource_origin.trim_lws();
-    let doc_valid = doc_orig.len > 0 && !doc_orig.eq_ascii_fold("null");
-    let sub_valid = sub_orig.len > 0 && !sub_orig.eq_ascii_fold("null");
+    let raw_doc = ctx.document_origin[..].trim_lws();
+    let raw_sub = subresource_origin.trim_lws();
+    let norm_doc = extract_origin_from_url(raw_doc);
+    let norm_sub = extract_origin_from_url(raw_sub);
+    let doc_orig = if norm_doc.len > 0 { norm_doc } else { raw_doc };
+    let sub_orig = if norm_sub.len > 0 { norm_sub } else { raw_sub };
+    let doc_valid = norm_doc.len > 0 && !raw_doc.eq_ascii_fold("null");
+    let sub_valid = norm_sub.len > 0 && !raw_sub.eq_ascii_fold("null");
     let is_same_origin = doc_valid && sub_valid && doc_orig.eq_ascii_fold(sub_orig);
     guard !is_same_origin else { return true; }
 

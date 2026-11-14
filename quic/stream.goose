@@ -73,6 +73,7 @@ struct QuicStream {
     stream_type: QuicStreamType = QuicStreamType.ClientBidi,
     send_state:  QuicSendState  = QuicSendState.Ready,
     recv_state:  QuicRecvState  = QuicRecvState.Receive,
+    can_recv:    bool           = true,
 
     // Flow control & Send progress
     bytes_sent:          u64  = 0,
@@ -102,6 +103,17 @@ fn new_quic_stream(stream_id: u64, max_recv_flow: u64 = 65536) -> QuicStream {
         stream_id:     stream_id,
         stream_type:   stype,
         recv_max_data: max_recv_flow,
+    };
+}
+
+fn new_quic_role_stream(stream_id: u64, role: QuicRole, max_recv_flow: u64 = 65536) -> QuicStream {
+    let stype = quic_stream_type(stream_id);
+    let can_recv = quic_stream_can_recv(stream_id, role);
+    return QuicStream {
+        stream_id:     stream_id,
+        stream_type:   stype,
+        can_recv:      can_recv,
+        recv_max_data: if can_recv { max_recv_flow } else { 0 },
     };
 }
 
@@ -456,7 +468,7 @@ inline fn quic_table_insert_stream(
     default_recv_flow: u64,
 ) -> i32 {
     let new_idx = tbl.streams.len as i32;
-    let st = new_quic_stream(stream_id, default_recv_flow);
+    let st = new_quic_role_stream(stream_id, tbl.role, default_recv_flow);
     tbl.streams.push(st);
     return new_idx;
 }
@@ -514,7 +526,7 @@ fn quic_table_get_or_open_stream(
         let slot .= tbl.streams[i];
         if quic_stream_is_terminal(slot, tbl.role) {
             record_evicted_closed_stream(tbl, slot.stream_id);
-            slot = new_quic_stream(stream_id, default_recv_flow);
+            slot = new_quic_role_stream(stream_id, tbl.role, default_recv_flow);
             return i as i32, true;
         }
     }
@@ -554,7 +566,7 @@ fn quic_table_open_local_stream(
         if quic_stream_is_terminal(slot, tbl.role) {
             record_evicted_closed_stream(tbl, slot.stream_id);
             let stream_id = advance_stream_counter(tbl, is_bidi);
-            slot = new_quic_stream(stream_id, default_recv_flow);
+            slot = new_quic_role_stream(stream_id, tbl.role, default_recv_flow);
             return stream_id, i as i32, true;
         }
     }

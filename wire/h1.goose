@@ -58,14 +58,12 @@ fn record_h1_framing_header(name: const u8[:], val: const u8[:], flags: H1Header
         return true;
     }
     if name.eq_ascii_fold("content-length") {
-        guard !flags.has_te else { return false; }
+        // RFC 9112 Section 6.2: Content-Length - reject duplicate Content-Length or Transfer-Encoding co-presence.
+        guard !flags.has_te && !flags.has_cl else { return false; }
         let trimmed_cl = val.trim_lws();
         let parsed_cl, ok_cl = trimmed_cl.parse_i64_dec();
         let _, ok_u = trimmed_cl.parse_u64_dec();
         guard ok_cl && ok_u && parsed_cl >= 0 else { return false; }
-        if flags.has_cl && flags.cl_val != parsed_cl {
-            return false;
-        }
         flags.has_cl = true;
         flags.cl_val = parsed_cl;
     }
@@ -155,6 +153,10 @@ fn encode_h1_request<B>(
 
     var flags = H1HeaderScanFlags { .. };
     guard append_h1_request_headers(headers, filter_mode, flags, out) else { return false; }
+    // RFC 9112 Section 3.2: Request Target - an HTTP/1.1 client MUST send a Host header field in all requests.
+    guard eff_ver != "HTTP/1.1" || flags.has_host || host.len > 0 else { return false; }
+    // RFC 9112 Section 6.1: Transfer-Encoding - MUST NOT apply Transfer-Encoding to an HTTP/1.0 message.
+    guard !(eff_ver == "HTTP/1.0" && flags.has_te) else { return false; }
     guard !(flags.has_cl && body.len > 0 && flags.cl_val != body.len) else { return false; }
 
     if !flags.has_host && host.len > 0 {
@@ -181,22 +183,21 @@ fn encode_h1_request<B>(
 }
 
 fn append_h1_response_headers<B>(
-    headers:         const wing::HeaderMap&,
-    is_empty_status: bool,
-    flags:           H1HeaderScanFlags&,
-    out:             B&,
+    headers:     const wing::HeaderMap&,
+    status_code: u16,
+    flags:       H1HeaderScanFlags&,
+    out:         B&,
 ) -> bool {
+    let forbid_cl = status_code < 200 || status_code == 204;
+    let forbid_te = rfc::is_empty_body_status(status_code as i32);
     for &e in headers.entries {
         let name = wing::entry_name(headers, e);
         let val = wing::entry_value(headers, e);
-        if is_empty_status &&
-           (name.eq_ascii_fold("content-length") || name.eq_ascii_fold("transfer-encoding")) {
-            guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
-                return false;
-            }
-            continue;
-        }
         guard check_and_record_h1_header_entry(name, val, false, flags) else { return false; }
+        guard !(forbid_cl && name.eq_ascii_fold("content-length")) &&
+              !(forbid_te && name.eq_ascii_fold("transfer-encoding")) else {
+            return false;
+        }
         guard out.try_append(name) &&
               out.try_append(": ") &&
               out.try_append(val) &&
@@ -245,8 +246,8 @@ fn encode_h1_response<B>(
 
     let is_empty_status = rfc::is_empty_body_status(status_code as i32);
     var flags = H1HeaderScanFlags { .. };
-    guard append_h1_response_headers(headers, is_empty_status, flags, out) else { return false; }
-    guard !(!is_head_request && !is_empty_status && flags.has_cl && body.len > 0 && flags.cl_val != body.len) else {
+    guard append_h1_response_headers(headers, status_code, flags, out) else { return false; }
+    guard !(!is_head_request && !is_empty_status && flags.has_cl && flags.cl_val != body.len) else {
         return false;
     }
 
@@ -329,6 +330,19 @@ fn parse_h1_wire_status_line(line: const u8[:], out_status: u16&) -> bool {
     return true;
 }
 
+inline fn has_bare_cr_or_lf(s: const u8[:]) -> bool {
+    for i in s.len {
+        let b = s[i];
+        if b == '\r' && (core::add_sat_i64(i, 1) >= s.len || s[i + 1] != '\n') {
+            return true;
+        }
+        if b == '\n' && (i == 0 || s[i - 1] != '\r') {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Decodes an HTTP/1.1 response status line and headers directly into `out_headers` (RFC 9112 §4).
 // Returns `(body_start_offset, HeaderParseError)`. When headers are incomplete (`\r\n\r\n` not yet received),
 // returns `(0, HeaderParseError.Incomplete)`.
@@ -342,8 +356,13 @@ fn decode_h1_response_head(
     out_headers:    wing::HeaderMap&,
     allow_obs_fold: bool = false,
 ) -> i64, wing::HeaderParseError {
+    var committed = false;
     out_status = 0;
     out_headers.clear();
+    defer if !committed {
+        out_status = 0;
+        out_headers.clear();
+    };
 
     let crlfcrlf_off = core::fast_find_crlfcrlf(raw);
     guard crlfcrlf_off >= 0 else {
@@ -354,16 +373,21 @@ fn decode_h1_response_head(
 
     let status_line, headers_no_end, has_crlf = head_no_end.split_once("\r\n");
     if !has_crlf {
-        guard head_no_end.len >= 12 && parse_h1_wire_status_line(head_no_end, out_status) else {
+        guard head_no_end.len >= 12 &&
+              !has_bare_cr_or_lf(head_no_end) &&
+              parse_h1_wire_status_line(head_no_end, out_status) else {
             return 0, wing::HeaderParseError.MalformedStatusLine;
         }
         out_headers.status_code = out_status;
         out_headers.http_major = 1;
         out_headers.http_minor = if core::starts_with(head_no_end, "HTTP/1.0 ") { 0 } else { 1 };
+        committed = true;
         return body_offset, wing::HeaderParseError.None;
     }
 
-    guard status_line.len >= 12 && parse_h1_wire_status_line(status_line, out_status) else {
+    guard status_line.len >= 12 &&
+          !has_bare_cr_or_lf(status_line) &&
+          parse_h1_wire_status_line(status_line, out_status) else {
         return 0, wing::HeaderParseError.MalformedStatusLine;
     }
     let minor: u8 = if core::starts_with(status_line, "HTTP/1.0 ") { 0 } else { 1 };
@@ -372,17 +396,21 @@ fn decode_h1_response_head(
         out_headers.status_code = out_status;
         out_headers.http_major = 1;
         out_headers.http_minor = minor;
+        committed = true;
         return body_offset, wing::HeaderParseError.None;
+    }
+
+    guard !has_bare_cr_or_lf(headers_no_end) else {
+        return 0, wing::HeaderParseError.InvalidHeaderValue;
     }
 
     let err = wing::parse_headers(headers_no_end, out_headers, allow_obs_fold);
     guard err == wing::HeaderParseError.None else {
-        out_status = 0;
-        out_headers.clear();
         return 0, err;
     }
     out_headers.status_code = out_status;
     out_headers.http_major = 1;
     out_headers.http_minor = minor;
+    committed = true;
     return body_offset, wing::HeaderParseError.None;
 }

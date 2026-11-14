@@ -6,6 +6,8 @@
 namespace core;
 
 import std;
+import core.math.arithmetic;
+import core.compress.deflate;
 
 // ---- Built-in Static Dictionary (122,784 bytes, RFC 7932 Section 8) -----
 
@@ -176,17 +178,13 @@ const BROTLI_TRANSFORMS: BrotliTransform[121] = [
     BrotliTransform { prefix: " ", transform_type: 10, suffix: "='" },
 ];
 
-fn emit_transformed_word_body<B>(word: const u8[:], tt: u8, out: B&) {
+fn emit_transformed_word_body<B>(word: const u8[:], tt: u8, out: B&) -> bool {
     var start: i64 = 0;
     var len = word.len;
 
     if tt <= TRANSFORM_OMIT_LAST_9 {
         let omit = tt as i64;
-        if omit <= len {
-            len -= omit;
-        } else {
-            len = 0;
-        }
+        len = if omit <= len { len - omit } else { 0 };
     } else if tt >= TRANSFORM_OMIT_FIRST_1 && tt <= TRANSFORM_OMIT_FIRST_9 {
         let skip = (tt - (TRANSFORM_OMIT_FIRST_1 - 1)) as i64;
         if skip <= len {
@@ -197,25 +195,26 @@ fn emit_transformed_word_body<B>(word: const u8[:], tt: u8, out: B&) {
         }
     }
 
-    if len > 0 {
-        let sub = word[start..(start + len)];
-        if tt == TRANSFORM_UPPERCASE_FIRST {
-            var first = sub[0];
-            if first >= 'a' && first <= 'z' { first -= 32; }
-            out.push(first);
-            if sub.len > 1 {
-                out.append(sub[1..sub.len]);
-            }
-        } else if tt == TRANSFORM_UPPERCASE_ALL {
-            for b in sub {
-                var c = b;
-                if c >= 'a' && c <= 'z' { c -= 32; }
-                out.push(c);
-            }
-        } else {
-            out.append(sub);
+    guard len > 0 else { return true; }
+    let sub = word[start..(start + len)];
+    if tt == TRANSFORM_UPPERCASE_FIRST {
+        var first = sub[0];
+        if first >= 'a' && first <= 'z' { first -= 32; }
+        guard comp_try_push(out, first) else { return false; }
+        if sub.len > 1 {
+            guard comp_try_append(out, sub[1..sub.len]) else { return false; }
         }
+        return true;
     }
+    if tt == TRANSFORM_UPPERCASE_ALL {
+        for b in sub {
+            var c = b;
+            if c >= 'a' && c <= 'z' { c -= 32; }
+            guard comp_try_push(out, c) else { return false; }
+        }
+        return true;
+    }
+    return comp_try_append(out, sub);
 }
 
 // Applies word transformation and appends to output buffer.
@@ -226,11 +225,27 @@ fn brotli_transform_word<B>(
 ) -> bool {
     guard (transform_idx as i64) < 121 else { return false; }
     let t = BROTLI_TRANSFORMS[transform_idx as i64];
-
-    out.append(t.prefix);
-    emit_transformed_word_body(word, t.transform_type, out);
-    out.append(t.suffix);
+    let saved_len = out.len;
+    if !comp_try_append(out, t.prefix) ||
+       !emit_transformed_word_body(word, t.transform_type, out) ||
+       !comp_try_append(out, t.suffix) {
+        out.resize(saved_len);
+        return false;
+    }
     return true;
+}
+
+// Checks whether `(distance, max_dist, copy_len)` designates a valid RFC 7932 static dictionary entry.
+fn is_valid_brotli_dict_word(distance: u32, max_dist: u32, copy_len: u32) -> bool {
+    guard copy_len >= 4 && copy_len <= 24 && distance > max_dist else { return false; }
+    let word_id = sub_sat_u32(distance, add_sat_u32(max_dist, 1)) as u64;
+    let n_bits = BROTLI_DICT_NDBITS[copy_len as i64] as u32;
+    let scale = shl_sat_u64(1, n_bits);
+    let transform_id, index = div_rem_u64(word_id, scale);
+    guard transform_id < 121 else { return false; }
+    let offset = add_sat_u64(BROTLI_DICT_DOFFSET[copy_len as i64], mul_sat_u64(index, copy_len));
+    let end_offset = add_sat_u64(offset, copy_len);
+    return end_offset <= 122784;
 }
 
 // Looks up a word in the built-in static dictionary and applies the designated transformation.
@@ -240,8 +255,7 @@ fn brotli_lookup_dictionary_word<B>(
     copy_len: u32,
     out:      B&,
 ) -> bool {
-    guard copy_len >= 4 && copy_len <= 24 else { return false; }
-    guard distance > max_dist else { return false; }
+    guard is_valid_brotli_dict_word(distance, max_dist, copy_len) else { return false; }
 
     let word_id = distance - (max_dist + 1);
     let n_bits = BROTLI_DICT_NDBITS[copy_len as i64] as u32;
@@ -249,11 +263,9 @@ fn brotli_lookup_dictionary_word<B>(
 
     let index = word_id % n_words;
     let transform_id = word_id >> n_bits;
-    guard transform_id < 121 else { return false; }
 
     let offset = (BROTLI_DICT_DOFFSET[copy_len as i64] as u64) + ((index as u64) * (copy_len as u64));
     let end_offset = offset + (copy_len as u64);
-    guard (end_offset as i64) <= BROTLI_DICTIONARY.len else { return false; }
 
     let base_word = BROTLI_DICTIONARY[(offset as i64)..(end_offset as i64)];
     return brotli_transform_word(base_word, transform_id, out);

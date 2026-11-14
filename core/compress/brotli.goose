@@ -206,12 +206,13 @@ inline fn brotli_drop_bits(r: BrotliBitReader&, n: u32) {
 }
 
 struct BrotliBitWriter {
-    bit_buf:   u64 = 0,
-    bit_count: u32 = 0,
+    bit_buf:   u64  = 0,
+    bit_count: u32  = 0,
+    overflow:  bool = false,
 }
 
 fn new_brotli_bit_writer() -> BrotliBitWriter {
-    return BrotliBitWriter { bit_buf: 0, bit_count: 0 };
+    return BrotliBitWriter { bit_buf: 0, bit_count: 0, overflow: false };
 }
 
 fn brotli_write_bits<B>(w: BrotliBitWriter&, n: u32, val: u64, out: B&) {
@@ -219,7 +220,9 @@ fn brotli_write_bits<B>(w: BrotliBitWriter&, n: u32, val: u64, out: B&) {
     w.bit_buf |= (val & mask) << (w.bit_count as u64);
     w.bit_count += n;
     while w.bit_count >= 8 {
-        out.push((w.bit_buf & 0xFF) as u8);
+        if !comp_try_push(out, (w.bit_buf & 0xFF) as u8) {
+            w.overflow = true;
+        }
         w.bit_buf >>= 8;
         w.bit_count -= 8;
     }
@@ -227,7 +230,9 @@ fn brotli_write_bits<B>(w: BrotliBitWriter&, n: u32, val: u64, out: B&) {
 
 fn brotli_write_byte_align<B>(w: BrotliBitWriter&, out: B&) {
     if w.bit_count > 0 {
-        out.push((w.bit_buf & 0xFF) as u8);
+        if !comp_try_push(out, (w.bit_buf & 0xFF) as u8) {
+            w.overflow = true;
+        }
         w.bit_buf = 0;
         w.bit_count = 0;
     }
@@ -993,7 +998,9 @@ fn emit_brotli_uncompressed_chunk<B>(w: BrotliBitWriter&, chunk: const u8[:], ou
     brotli_write_bits(w, 16, (chunk.len - 1) as u64, out);
     brotli_write_bits(w, 1, 1, out);
     brotli_write_byte_align(w, out);
-    out.append(chunk);
+    if !comp_try_append(out, chunk) {
+        w.overflow = true;
+    }
 }
 
 fn emit_brotli_final_empty_metablock<B>(w: BrotliBitWriter&, out: B&) {
@@ -1017,10 +1024,9 @@ fn encode_brotli_level1_chunk<B>(
     }
 }
 
-fn brotli_compress_stream<B>(src: const u8[:], level: i32, out: B&) {
+fn brotli_compress_stream<B>(src: const u8[:], level: i32, out: B&) -> bool {
     if src.len == 0 {
-        out.push(6);
-        return;
+        return comp_try_push(out, 6 as u8);
     }
 
     var w = new_brotli_bit_writer();
@@ -1031,40 +1037,30 @@ fn brotli_compress_stream<B>(src: const u8[:], level: i32, out: B&) {
 
     var offset: i64 = 0;
     while offset < src.len {
-        var chunk_len = src.len - offset;
-        if chunk_len > max_chunk {
-            chunk_len = max_chunk;
-        }
-        let chunk = src[offset..(offset + chunk_len)];
+        let chunk_len = min(sub_sat_i64(src.len, offset), max_chunk);
+        let next_offset = add_sat_i64(offset, chunk_len);
+        let chunk = src[offset..next_offset];
         if level <= 0 {
             emit_brotli_uncompressed_chunk(w, chunk, out);
         } else {
             encode_brotli_level1_chunk(w, chunk, cmds, dist_ring, out);
         }
-        offset += chunk_len;
+        guard !w.overflow else { return false; }
+        offset = next_offset;
     }
 
     emit_brotli_final_empty_metablock(w, out);
-}
-
-fn brotli_compress_level0<B>(src: const u8[:], out: B&) {
-    brotli_compress_stream(src, 0, out);
-}
-
-// Fast Level 1 compressor: uses greedy LZ77 command encoding and falls back to uncompressed meta-blocks
-// when LZ77 savings do not outweigh the prefix tree header.
-fn brotli_compress_level1<B>(src: const u8[:], out: B&) {
-    brotli_compress_stream(src, 1, out);
+    return !w.overflow;
 }
 
 // Universal Brotli compression entry point.
 fn brotli_compress<B>(src: const u8[:], out: B&, level: i32 = 0) -> bool {
-    if level <= 0 {
-        brotli_compress_level0(src, out);
-    } else {
-        brotli_compress_level1(src, out);
+    let saved_len = out.len;
+    let ok = brotli_compress_stream(src, if level <= 0 { 0 } else { 1 }, out);
+    if !ok {
+        out.resize(saved_len);
     }
-    return true;
+    return ok;
 }
 
 // ---- Main RFC 7932 Brotli Decompressor -----------------------------------
@@ -1094,16 +1090,19 @@ fn decode_varlen_uint8(r: BrotliBitReader&) -> u32 {
 //   returns: CompressError.None, out_wbits = 16
 fn decode_brotli_window_bits(r: BrotliBitReader&, out_wbits: u32&) -> CompressError {
     let wbit0 = brotli_read_bits(r, 1);
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     if wbit0 == 0 {
         out_wbits = 16;
         return CompressError.None;
     }
     let n = brotli_read_bits(r, 3);
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     if n != 0 {
         out_wbits = 17 + n;
         return CompressError.None;
     }
     let m = brotli_read_bits(r, 3);
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     if m != 0 {
         let wbits = 8 + m;
         guard wbits >= BROTLI_MIN_WINDOW_BITS && wbits <= BROTLI_MAX_WINDOW_BITS else {
@@ -1381,9 +1380,11 @@ fn read_brotli_tree_arrays(
 //   returns: CompressError.None
 fn decode_brotli_metadata_block(r: BrotliBitReader&) -> CompressError {
     let reserved = brotli_read_bits(r, 1);
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     guard reserved == 0 else { return CompressError.CorruptedBitstream; }
 
     let mskipbytes = brotli_read_bits(r, 2);
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     var mskiplen: u32 = 0;
     if mskipbytes > 0 {
         var last_byte: u32 = 0;
@@ -1392,6 +1393,7 @@ fn decode_brotli_metadata_block(r: BrotliBitReader&) -> CompressError {
             mskiplen |= b << (8 * i);
             last_byte = b;
         }
+        guard !r.underflow else { return CompressError.InputBufferTruncated; }
         guard mskipbytes == 1 || last_byte != 0 else {
             return CompressError.CorruptedBitstream;
         }
@@ -1401,6 +1403,7 @@ fn decode_brotli_metadata_block(r: BrotliBitReader&) -> CompressError {
     let rem_bits = r.bit_count & 7;
     if rem_bits > 0 {
         let fill = brotli_read_bits(r, rem_bits);
+        guard !r.underflow else { return CompressError.InputBufferTruncated; }
         guard fill == 0 else { return CompressError.CorruptedBitstream; }
     }
 
@@ -1428,6 +1431,7 @@ fn decode_brotli_uncompressed_block<B>(
     let align_bits = r.bit_count & 7;
     if align_bits > 0 {
         let align_pad = brotli_read_bits(r, align_bits);
+        guard !r.underflow else { return CompressError.InputBufferTruncated; }
         guard align_pad == 0 else { return CompressError.CorruptedBitstream; }
     }
     for i in mlen {
@@ -1435,7 +1439,7 @@ fn decode_brotli_uncompressed_block<B>(
             return CompressError.InputBufferTruncated;
         }
         let b = brotli_read_bits(r, 8) as u8;
-        out.push(b);
+        guard comp_try_push(out, b) else { return CompressError.OutputBufferOverflow; }
         prev_p2 = prev_p1;
         prev_p1 = b;
     }
@@ -1462,16 +1466,62 @@ fn decode_meta_block_length(r: BrotliBitReader&, mnibbles: u32) -> u32, bool {
     return mlen + 1, true;
 }
 
-inline fn brotli_read_backward_byte<B>(out: const B&, dict: const u8[:], dist_offset: i64) -> u8 {
-    if dist_offset <= out.len {
+inline fn brotli_read_backward_byte<B>(
+    out:           const B&,
+    out_start_pos: i64,
+    dict:          const u8[:],
+    dist_offset:   i64,
+) -> u8 {
+    let produced = sub_sat_i64(out.len, out_start_pos);
+    if dist_offset <= produced {
         return out[sub_sat_i64(out.len, dist_offset)];
     }
-    let dict_back = sub_sat_i64(dist_offset, out.len);
+    let dict_back = sub_sat_i64(dist_offset, produced);
     return dict[sub_sat_i64(dict.len, dict_back)];
+}
+
+fn apply_brotli_dict_copy<B>(
+    out:                  B&,
+    out_start_pos:        i64,
+    distance:             u32,
+    copy_len:             u32,
+    max_allowed_backward: u32,
+    max_output_bytes:     i64,
+    meta_block_remaining: u32&,
+    dist_ring:            u32[4]&,
+    dist_ring_prev:       const u32[4]&,
+    prev_p1:              u8&,
+    prev_p2:              u8&,
+) -> CompressError {
+    guard is_valid_brotli_dict_word(distance, max_allowed_backward, copy_len) else {
+        return CompressError.DistanceOutOfBounds;
+    }
+    dist_ring = dist_ring_prev;
+    let len_before = out.len;
+    guard brotli_lookup_dictionary_word(distance, max_allowed_backward, copy_len, out) else {
+        return CompressError.OutputBufferOverflow;
+    }
+    let dict_len = sub_sat_i64(out.len, len_before) as u32;
+    guard meta_block_remaining >= dict_len else {
+        return CompressError.CorruptedBitstream;
+    }
+    if max_output_bytes >= 0 && sub_sat_i64(out.len, out_start_pos) > max_output_bytes {
+        return CompressError.OutputBufferOverflow;
+    }
+    meta_block_remaining = sub_sat_u32(meta_block_remaining, dict_len);
+    if dict_len >= 2 {
+        prev_p1 = out[sub_sat_i64(out.len, 1)];
+        prev_p2 = out[sub_sat_i64(out.len, 2)];
+    } else if dict_len == 1 {
+        prev_p2 = prev_p1;
+        prev_p1 = out[sub_sat_i64(out.len, 1)];
+    }
+    return CompressError.None;
 }
 
 fn apply_brotli_copy<B>(
     out:                  B&,
+    out_start_pos:        i64,
     dict:                 const u8[:],
     distance:             u32,
     copy_len:             u32,
@@ -1487,41 +1537,35 @@ fn apply_brotli_copy<B>(
         guard meta_block_remaining >= copy_len else {
             return CompressError.CorruptedBitstream;
         }
-        if max_output_bytes >= 0 && add_sat_i64(out.len, copy_len as i64) > max_output_bytes {
+        let produced = sub_sat_i64(out.len, out_start_pos);
+        if max_output_bytes >= 0 && add_sat_i64(produced, copy_len as i64) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
         let dist_offset = distance as i64;
-        guard dist_offset <= add_sat_i64(out.len, dict.len) else { return CompressError.DistanceOutOfBounds; }
+        guard dist_offset <= add_sat_i64(produced, dict.len) else { return CompressError.DistanceOutOfBounds; }
 
         for k in copy_len {
-            let b = brotli_read_backward_byte(out, dict, dist_offset);
-            out.push(b);
+            let b = brotli_read_backward_byte(out, out_start_pos, dict, dist_offset);
+            guard comp_try_push(out, b) else { return CompressError.OutputBufferOverflow; }
             prev_p2 = prev_p1;
             prev_p1 = b;
         }
-        meta_block_remaining -= copy_len;
+        meta_block_remaining = sub_sat_u32(meta_block_remaining, copy_len);
         return CompressError.None;
     }
-
-    dist_ring = dist_ring_prev;
-    let len_before = out.len;
-    let ok_dict = brotli_lookup_dictionary_word(distance, max_allowed_backward, copy_len, out);
-    guard ok_dict else { return CompressError.DistanceOutOfBounds; }
-    let dict_len = (out.len - len_before) as u32;
-
-    guard meta_block_remaining >= dict_len else {
-        return CompressError.CorruptedBitstream;
-    }
-    if max_output_bytes >= 0 && out.len > max_output_bytes {
-        return CompressError.OutputBufferOverflow;
-    }
-    meta_block_remaining -= dict_len;
-
-    if out.len > 0 {
-        prev_p1 = out[out.len - 1];
-        prev_p2 = if out.len > 1 { out[out.len - 2] } else { 0 };
-    }
-    return CompressError.None;
+    return apply_brotli_dict_copy(
+        out,
+        out_start_pos,
+        distance,
+        copy_len,
+        max_allowed_backward,
+        max_output_bytes,
+        meta_block_remaining,
+        dist_ring,
+        dist_ring_prev,
+        prev_p1,
+        prev_p2,
+    );
 }
 
 fn insert_brotli_literals<B>(
@@ -1532,8 +1576,10 @@ fn insert_brotli_literals<B>(
     prev_p1:          u8&,
     prev_p2:          u8&,
     out:              B&,
+    out_start_pos:    i64,
 ) -> CompressError {
-    if max_output_bytes >= 0 && add_sat_i64(out.len, ins_len as i64) > max_output_bytes {
+    let produced = sub_sat_i64(out.len, out_start_pos);
+    if max_output_bytes >= 0 && add_sat_i64(produced, ins_len as i64) > max_output_bytes {
         return CompressError.OutputBufferOverflow;
     }
     for i in ins_len {
@@ -1546,7 +1592,7 @@ fn insert_brotli_literals<B>(
         let lit, ok_l = decode_brotli_symbol(r, bs.lit_tables[htree_idx]);
         guard ok_l && lit >= 0 else { return CompressError.CorruptedBitstream; }
         let lit_byte = lit as u8;
-        out.push(lit_byte);
+        guard comp_try_push(out, lit_byte) else { return CompressError.OutputBufferOverflow; }
         prev_p2 = prev_p1;
         prev_p1 = lit_byte;
     }
@@ -1622,6 +1668,7 @@ fn decode_brotli_commands<B>(
     prev_p2:             u8&,
     out:                 B&,
     dict:                const u8[:] = "",
+    out_start_pos:       i64         = 0,
 ) -> CompressError {
     var meta_block_remaining = mlen;
     while meta_block_remaining > 0 {
@@ -1633,7 +1680,9 @@ fn decode_brotli_commands<B>(
         guard meta_block_remaining >= ins_len else {
             return CompressError.CorruptedBitstream;
         }
-        let ins_err = insert_brotli_literals(r, ins_len, bs, max_output_bytes, prev_p1, prev_p2, out);
+        let ins_err = insert_brotli_literals(
+            r, ins_len, bs, max_output_bytes, prev_p1, prev_p2, out, out_start_pos,
+        );
         guard ins_err == CompressError.None else { return ins_err; }
 
         meta_block_remaining = sub_sat_u32(meta_block_remaining, ins_len);
@@ -1645,11 +1694,13 @@ fn decode_brotli_commands<B>(
         let distance, dist_err = read_brotli_command_distance(r, dist_zero, copy_len, bs, npostfix, ndirect, dist_ring);
         guard dist_err == CompressError.None else { return dist_err; }
 
-        let total_hist_u32 = add_sat_i64(out.len, dict.len) as u32;
-        let max_allowed_backward = min(total_hist_u32, max_window_distance);
+        let produced = sub_sat_i64(out.len, out_start_pos);
+        let total_hist = min(add_sat_i64(produced, dict.len), max_window_distance as i64);
+        let max_allowed_backward = total_hist as u32;
 
         let copy_err = apply_brotli_copy(
             out,
+            out_start_pos,
             dict,
             distance,
             copy_len,
@@ -1716,30 +1767,37 @@ fn decode_brotli_meta_block<B>(
     out:                 B&,
     is_last:             bool&,
     dict:                const u8[:] = "",
+    out_start_pos:       i64         = 0,
 ) -> CompressError {
     is_last = brotli_read_bits(r, 1) != 0;
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     if is_last {
         let is_last_empty = brotli_read_bits(r, 1) != 0;
+        guard !r.underflow else { return CompressError.InputBufferTruncated; }
         if is_last_empty {
             return CompressError.None;
         }
     }
 
     let mnibbles = brotli_read_bits(r, 2);
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     if mnibbles == 3 {
         return decode_brotli_metadata_block(r);
     }
 
     let mlen, ok_len = decode_meta_block_length(r, mnibbles);
+    guard !r.underflow else { return CompressError.InputBufferTruncated; }
     guard ok_len else { return CompressError.CorruptedBitstream; }
 
-    if max_output_bytes >= 0 && add_sat_i64(out.len, mlen as i64) > max_output_bytes {
+    let produced_so_far = sub_sat_i64(out.len, out_start_pos);
+    if max_output_bytes >= 0 && add_sat_i64(produced_so_far, mlen as i64) > max_output_bytes {
         return CompressError.OutputBufferOverflow;
     }
 
     var is_uncompressed = false;
     if !is_last {
         is_uncompressed = brotli_read_bits(r, 1) != 0;
+        guard !r.underflow else { return CompressError.InputBufferTruncated; }
     }
     if is_uncompressed {
         return decode_brotli_uncompressed_block(r, mlen, out, prev_p1, prev_p2);
@@ -1767,6 +1825,7 @@ fn decode_brotli_meta_block<B>(
         prev_p2,
         out,
         dict,
+        out_start_pos,
     );
 }
 
@@ -1786,6 +1845,10 @@ fn brotli_decompress_with_limit_impl<B>(
     guard src.len > 0 else {
         return CompressError.InputBufferTruncated;
     }
+
+    let out_start_pos = out.len;
+    var committed = false;
+    defer if !committed { out.resize(out_start_pos); };
 
     var r = new_brotli_bit_reader(src);
 
@@ -1809,6 +1872,7 @@ fn brotli_decompress_with_limit_impl<B>(
             out,
             is_last,
             dict,
+            out_start_pos,
         );
         guard meta_err == CompressError.None else { return meta_err; }
         guard !r.underflow else { return CompressError.InputBufferTruncated; }
@@ -1825,6 +1889,7 @@ fn brotli_decompress_with_limit_impl<B>(
         return CompressError.CorruptedBitstream;
     }
 
+    committed = true;
     return CompressError.None;
 }
 

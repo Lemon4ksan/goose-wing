@@ -12,6 +12,20 @@ import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
+fn put_der_tlv(b: core::ByteBuilder&, tag: u8, body: const u8[:]) {
+    core::put_u8(b, tag);
+    if body.len >= 256 {
+        core::put_u8(b, 0x82);
+        core::put_u16(b, body.len as u16);
+    } else if body.len >= 128 {
+        core::put_u8(b, 0x81);
+        core::put_u8(b, body.len as u8);
+    } else {
+        core::put_u8(b, body.len as u8);
+    }
+    core::put_bytes(b, body);
+}
+
 // 1. ByteCursor, ByteBuilder, and Serialization Conformance
 fn test_byte_cursor_and_builder(t: lit::T&) {
     t.run("TLS-01: Zero-Copy ByteCursor Reading & Primitive Extraction") { sub =>
@@ -2151,8 +2165,9 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
     };
 
     t.run("TLS-39: CS-15 OCSP Stapling Wire Framing, ResponseStatus, Temporal Inversion & CertID Matching") { sub =>
-        // 1. Wire unwrapping (unwrap_tls_ocsp_response)
+        // 1. Wire unwrapping (unwrap_tls_ocsp_response): CertificateStatusType = ocsp (1) + uint24 length
         var b_wire = core::builder_init();
+        core::put_u8(b_wire, 1); // status_type = ocsp (1)
         core::put_u8(b_wire, 0); // uint24 high
         core::put_u8(b_wire, 0); // uint24 mid
         core::put_u8(b_wire, 4); // uint24 low = 4 bytes
@@ -2161,18 +2176,22 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_true(ok_unwrap, "unwrap valid wire response");
         sub.assert_eq(unwrapped, "OCSP", "unwrapped content matches");
 
+        // Unknown CertificateStatusType (2) rejected
+        let bad_type_wire: u8[8] = [2, 0, 0, 4, 'O', 'C', 'S', 'P'];
+        let _, ok_bad_type = wing::unwrap_tls_ocsp_response(bad_type_wire[..]);
+        sub.assert_false(ok_bad_type, "reject non-ocsp status_type");
+
         // Truncated wire response
-        let trunc_wire: u8[5] = [0, 0, 10, 0xAA, 0xBB]; // Declares 10, only 2 provided
+        let trunc_wire: u8[6] = [1, 0, 0, 10, 0xAA, 0xBB]; // Declares 10, only 2 provided
         let _, ok_trunc = wing::unwrap_tls_ocsp_response(trunc_wire[..]);
         sub.assert_false(ok_trunc, "reject truncated wire response");
 
         // Trailing wire response
-        let trail_wire: u8[6] = [0, 0, 2, 0xAA, 0xBB, 0xCC]; // Declares 2, 3 provided
+        let trail_wire: u8[7] = [1, 0, 0, 2, 0xAA, 0xBB, 0xCC]; // Declares 2, 3 provided
         let _, ok_trail = wing::unwrap_tls_ocsp_response(trail_wire[..]);
         sub.assert_false(ok_trail, "reject trailing bytes wire response");
 
         // 2. OCSP Response with error status (e.g. TryLater = 3)
-        // SEQUENCE { ENUMERATED 3 }
         let ocsp_try_later: u8[5] = [0x30, 0x03, 0x0A, 0x01, 0x03];
         var parsed_later = wing::ParsedOcspResponse {};
         sub.assert_true(wing::parse_ocsp_response(ocsp_try_later[..], parsed_later), "parse TryLater status");
@@ -2182,96 +2201,67 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         let alert_later = wing::validate_ocsp_stapling(ocsp_try_later[..], dummy_leaf, "dummy", 2000);
         sub.assert_eq(wing::tls_alert_to_u8(alert_later), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificateStatusResponse), "non-successful status returns BadCertificateStatusResponse");
 
-        // 3. Construct a full valid OCSP Response
-        // Serial number: 0x42 (1 byte)
-        // CertStatus: good [0] NULL
-        // thisUpdate: 2026-10-28 00:00:00Z ("20261028000000Z")
-        // nextUpdate: 2026-10-29 00:00:00Z ("20261029000000Z")
+        // 3. Construct a full RFC 6960 signed OCSP Response with SHA-256 CertID and Ed25519 issuer
+        let issuer_seed: u8[32] = [0x41; 32];
+        var issuer_der: u8[..2048] = [];
+        sub.assert_true(wing::build_test_ed25519_cert_der(issuer_seed, "Test OCSP Issuer", "", "", issuer_der), "build OCSP issuer cert");
+        var issuer_cert = wing::ParsedCert {};
+        sub.assert_true(wing::parse_x509_certificate(issuer_der[..], issuer_cert), "parse OCSP issuer cert");
+        let iss_dn = wing::span_slice(issuer_der[..], issuer_cert.subject_raw);
+        let iss_pk = wing::span_slice(issuer_der[..], issuer_cert.spki_pubkey)[1..];
+        let iss_nh = core::sha256(iss_dn);
+        let iss_kh = core::sha256(iss_pk);
+
+        var b_cert_id_body = core::builder_init();
+        core::put_bytes(b_cert_id_body, "\x30\x0B\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01"); // SHA-256 AlgorithmIdentifier
+        put_der_tlv(b_cert_id_body, 0x04, iss_nh[..]);
+        put_der_tlv(b_cert_id_body, 0x04, iss_kh[..]);
+        core::put_bytes(b_cert_id_body, "\x02\x01\x42"); // serialNumber INTEGER 0x42
+
+        var b_single_body = core::builder_init();
+        put_der_tlv(b_single_body, 0x30, b_cert_id_body.buf[..]);
+        core::put_bytes(b_single_body, "\x80\x00"); // certStatus [0] IMPLICIT NULL (Good)
+        put_der_tlv(b_single_body, 0x18, "20261028000000Z"); // thisUpdate
+        var b_next_time = core::builder_init();
+        put_der_tlv(b_next_time, 0x18, "20261029000000Z");
+        put_der_tlv(b_single_body, 0xA0, b_next_time.buf[..]); // nextUpdate [0] EXPLICIT
+
+        var b_responses_body = core::builder_init();
+        put_der_tlv(b_responses_body, 0x30, b_single_body.buf[..]);
+
+        var b_tbs_body = core::builder_init();
+        put_der_tlv(b_tbs_body, 0xA1, iss_dn); // responderID [1] EXPLICIT byName
+        put_der_tlv(b_tbs_body, 0x18, "20261028000000Z"); // producedAt
+        put_der_tlv(b_tbs_body, 0x30, b_responses_body.buf[..]); // responses
+
         var b_tbs = core::builder_init();
-        core::put_u8(b_tbs, 0x30); // tbsResponseData SEQUENCE
-        core::start_u8_prefix(b_tbs);
+        put_der_tlv(b_tbs, 0x30, b_tbs_body.buf[..]);
+        let ocsp_sig = core::ed25519_sign(issuer_seed, b_tbs.buf[..]);
 
-        // responderID [1] EXPLICIT byName (empty sequence for mock)
-        core::put_u8(b_tbs, 0xA1);
-        core::put_u8(b_tbs, 2);
-        core::put_u8(b_tbs, 0x30);
-        core::put_u8(b_tbs, 0);
-
-        // producedAt GeneralizedTime
-        core::put_u8(b_tbs, 0x18);
-        core::put_u8(b_tbs, 15);
-        core::put_bytes(b_tbs, "20261028000000Z");
-
-        // responses SEQUENCE OF SingleResponse
-        core::put_u8(b_tbs, 0x30);
-        core::start_u8_prefix(b_tbs);
-        core::put_u8(b_tbs, 0x30); // SingleResponse SEQUENCE
-        core::start_u8_prefix(b_tbs);
-
-        // certID SEQUENCE
-        core::put_u8(b_tbs, 0x30);
-        core::put_u8(b_tbs, 9);
-        // hashAlgorithm SEQUENCE (empty)
-        core::put_u8(b_tbs, 0x30);
-        core::put_u8(b_tbs, 0);
-        // issuerNameHash OCTET STRING (empty)
-        core::put_u8(b_tbs, 0x04);
-        core::put_u8(b_tbs, 0);
-        // issuerKeyHash OCTET STRING (empty)
-        core::put_u8(b_tbs, 0x04);
-        core::put_u8(b_tbs, 0);
-        // serialNumber INTEGER 0x42
-        core::put_u8(b_tbs, 0x02);
-        core::put_u8(b_tbs, 1);
-        core::put_u8(b_tbs, 0x42);
-
-        // certStatus [0] IMPLICIT NULL (Good)
-        core::put_u8(b_tbs, 0x80);
-        core::put_u8(b_tbs, 0);
-
-        // thisUpdate GeneralizedTime: 2026-10-28 00:00:00Z
-        core::put_u8(b_tbs, 0x18);
-        core::put_u8(b_tbs, 15);
-        core::put_bytes(b_tbs, "20261028000000Z");
-
-        // nextUpdate [0] EXPLICIT GeneralizedTime: 2026-10-29 00:00:00Z
-        core::put_u8(b_tbs, 0xA0);
-        core::put_u8(b_tbs, 17);
-        core::put_u8(b_tbs, 0x18);
-        core::put_u8(b_tbs, 15);
-        core::put_bytes(b_tbs, "20261029000000Z");
-
-        sub.assert_true(core::finish_u8_prefix(b_tbs), "finish single_resp");
-        sub.assert_true(core::finish_u8_prefix(b_tbs), "finish responses");
-        sub.assert_true(core::finish_u8_prefix(b_tbs), "finish tbsResponseData");
+        var b_basic_body = core::builder_init();
+        core::put_bytes(b_basic_body, b_tbs.buf[..]);
+        core::put_bytes(b_basic_body, "\x30\x05\x06\x03\x2B\x65\x70"); // Ed25519 AlgorithmIdentifier
+        core::put_u8(b_basic_body, 0x03);
+        core::put_u8(b_basic_body, 65);
+        core::put_u8(b_basic_body, 0x00);
+        core::put_bytes(b_basic_body, ocsp_sig[..]);
 
         var b_basic = core::builder_init();
-        core::put_u8(b_basic, 0x30); // BasicOCSPResponse SEQUENCE
-        core::start_u8_prefix(b_basic);
-        core::put_bytes(b_basic, b_tbs.buf[..]);
-        sub.assert_true(core::finish_u8_prefix(b_basic), "finish BasicOCSPResponse");
+        put_der_tlv(b_basic, 0x30, b_basic_body.buf[..]);
+
+        var b_resp_bytes_body = core::builder_init();
+        put_der_tlv(b_resp_bytes_body, 0x06, "\x2B\x06\x01\x05\x05\x07\x30\x01\x01"); // id-pkix-ocsp-basic
+        put_der_tlv(b_resp_bytes_body, 0x04, b_basic.buf[..]);
+
+        var b_resp_bytes_seq = core::builder_init();
+        put_der_tlv(b_resp_bytes_seq, 0x30, b_resp_bytes_body.buf[..]);
+
+        var b_ocsp_body = core::builder_init();
+        core::put_bytes(b_ocsp_body, "\x0A\x01\x00"); // ENUMERATED 0 (Successful)
+        put_der_tlv(b_ocsp_body, 0xA0, b_resp_bytes_seq.buf[..]);
 
         var b_ocsp = core::builder_init();
-        core::put_u8(b_ocsp, 0x30); // outer OCSPResponse SEQUENCE
-        core::start_u8_prefix(b_ocsp);
-        core::put_u8(b_ocsp, 0x0A); // ENUMERATED responseStatus
-        core::put_u8(b_ocsp, 1);
-        core::put_u8(b_ocsp, 0);    // 0 = Successful
-
-        core::put_u8(b_ocsp, 0xA0); // [0] EXPLICIT ResponseBytes
-        core::start_u8_prefix(b_ocsp);
-        core::put_u8(b_ocsp, 0x30); // ResponseBytes SEQUENCE
-        core::start_u8_prefix(b_ocsp);
-        core::put_u8(b_ocsp, 0x06); // OID id-pkix-ocsp-basic
-        core::put_u8(b_ocsp, 9);
-        core::put_bytes(b_ocsp, "\x2B\x06\x01\x05\x05\x07\x30\x01\x01");
-        core::put_u8(b_ocsp, 0x04); // response OCTET STRING
-        core::start_u8_prefix(b_ocsp);
-        core::put_bytes(b_ocsp, b_basic.buf[..]);
-        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish response OCTET STRING");
-        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish ResponseBytes SEQUENCE");
-        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish [0] ResponseBytes");
-        sub.assert_true(core::finish_u8_prefix(b_ocsp), "finish OCSPResponse");
+        put_der_tlv(b_ocsp, 0x30, b_ocsp_body.buf[..]);
 
         var parsed_ok = wing::ParsedOcspResponse {};
         sub.assert_true(wing::parse_ocsp_response(b_ocsp.buf[..], parsed_ok), "parse full OCSP response");
@@ -2280,15 +2270,25 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_true(parsed_ok.has_next_update, "has nextUpdate");
         sub.assert_true(parsed_ok.this_update < parsed_ok.next_update, "thisUpdate < nextUpdate");
 
-        // Mock leaf cert with serialNumber 0x42
+        // Leaf cert descriptor with serialNumber 0x42
         let raw_leaf_serial: u8[1] = [0x42];
         var leaf_matching = wing::ParsedCert {
             serial_number: wing::Span16 { offset: 0, length: 1 },
         };
-        // Verify with valid timestamp (halfway between 2026-10-28 and 2026-10-29)
         let mid_time = (parsed_ok.this_update + parsed_ok.next_update) / 2;
         let alert_ocsp_ok = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], mid_time);
         sub.assert_eq(wing::tls_alert_to_u8(alert_ocsp_ok), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid OCSP stapling succeeds");
+
+        // Full cryptographic signature + CertID issuer verification (RFC 6960 §4.1.1 & §4.2.1)
+        let alert_with_issuer = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], mid_time, issuer_der[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_with_issuer), wing::tls_alert_to_u8(wing::TlsAlert.CloseNotify), "valid OCSP stapling with issuer signature succeeds");
+
+        // Wrong issuer key defense: signature / CertID mismatch MUST fail
+        let wrong_seed: u8[32] = [0x99; 32];
+        var wrong_issuer_der: u8[..2048] = [];
+        sub.assert_true(wing::build_test_ed25519_cert_der(wrong_seed, "Test OCSP Issuer", "", "", wrong_issuer_der), "build wrong issuer cert");
+        let alert_wrong_issuer = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_matching, raw_leaf_serial[..], mid_time, wrong_issuer_der[..]);
+        sub.assert_eq(wing::tls_alert_to_u8(alert_wrong_issuer), wing::tls_alert_to_u8(wing::TlsAlert.BadCertificateStatusResponse), "forged/wrong-key OCSP stapling rejected");
 
         // Serial number mismatch defense: leaf cert with serial 0x99
         let raw_mismatch_serial: u8[1] = [0x99];
@@ -2632,11 +2632,11 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         sub.assert_eq(internal::pq_hybrid_client_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 client share 1665B");
         sub.assert_eq(internal::pq_hybrid_server_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 server share 1665B");
 
-        // SecP256r1MLKEM768 (0x11EB) Codecs
+        // SecP256r1MLKEM768 (0x11EB) Codecs (RFC 10024 §4.1: valid P-256 point + canonical ML-KEM-768 ek)
         var client_share = internal::SecP256r1MLKEM768KeyShare { .. };
-        client_share.secp256r1_public[0] = 0x04;
-        for i in 64 { client_share.secp256r1_public[1 + i] = ((i * 5 + 3) & 0xFF) as u8; }
-        for i in 1184 { client_share.mlkem768_public[i] = ((i * 7 + 1) & 0xFF) as u8; }
+        let sk256: u8[32] = [0x11; 32];
+        client_share.secp256r1_public = core::ecdsa_p256_public_key(sk256);
+        for i in 1184 { client_share.mlkem768_public[i] = ((i * 7 + 1) & 0x07) as u8; }
 
         var wire: u8[>..] = [];
         internal::format_secp256r1_mlkem768_key_share(client_share, wire);
@@ -2651,11 +2651,27 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         var bad_client = internal::SecP256r1MLKEM768KeyShare { .. };
         sub.assert_false(internal::parse_secp256r1_mlkem768_key_share(bad_client, wire[..1000]), "Truncated client share fails");
 
+        // Off-curve P-256 point rejected per RFC 10024 §4.1 / NIST SP 800-56A
+        var bad_curve_share = client_share;
+        for i in 64 { bad_curve_share.secp256r1_public[1 + i] = 0xFF; }
+        var bad_curve_wire: u8[>..] = [];
+        internal::format_secp256r1_mlkem768_key_share(bad_curve_share, bad_curve_wire);
+        sub.assert_false(internal::parse_secp256r1_mlkem768_key_share(bad_client, bad_curve_wire[..]), "Off-curve P-256 point rejected");
+
+        // Non-canonical ML-KEM-768 encapsulation key (coeff 4095 >= 3329) rejected per FIPS 203 §7.2
+        var bad_ek_share = client_share;
+        bad_ek_share.mlkem768_public[0] = 0xFF;
+        bad_ek_share.mlkem768_public[1] = 0xFF;
+        bad_ek_share.mlkem768_public[2] = 0xFF;
+        var bad_ek_wire: u8[>..] = [];
+        internal::format_secp256r1_mlkem768_key_share(bad_ek_share, bad_ek_wire);
+        sub.assert_false(internal::parse_secp256r1_mlkem768_key_share(bad_client, bad_ek_wire[..]), "Non-canonical ML-KEM-768 ek rejected");
+
         // SecP384r1MLKEM1024 (0x11ED) Codecs
         var client_384 = internal::SecP384r1MLKEM1024KeyShare { .. };
-        client_384.secp384r1_public[0] = 0x04;
-        for i in 96 { client_384.secp384r1_public[1 + i] = ((i * 3 + 7) & 0xFF) as u8; }
-        for i in 1568 { client_384.mlkem1024_public[i] = ((i * 11 + 3) & 0xFF) as u8; }
+        let sk384: u8[48] = [0x22; 48];
+        client_384.secp384r1_public = core::ecdsa_p384_public_key(sk384);
+        for i in 1568 { client_384.mlkem1024_public[i] = ((i * 11 + 3) & 0x07) as u8; }
 
         var wire_384: u8[>..] = [];
         internal::format_secp384r1_mlkem1024_key_share(client_384, wire_384);
@@ -2680,6 +2696,14 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         let ok_sg = wing::parse_supported_groups_extension(ext_wire[4..], parsed_groups);
         sub.assert_true(ok_sg, "Parsed supported groups");
         sub.assert_eq(parsed_groups.len, 3, "Parsed 3 groups");
+
+        // RFC 8446 §4.2.7: >32 groups (40 groups) parsed into u16[..64] without artificial 32-group cap
+        var groups40:   u16[40] = [rfc::GROUP_X25519; 40];
+        var ext_wire40: u8[>..] = [];
+        wing::encode_supported_groups_extension(ext_wire40, groups40[..]);
+        var parsed_groups64: u16[..64] = [];
+        sub.assert_true(wing::parse_supported_groups_extension(ext_wire40[4..], parsed_groups64), "40 supported groups parsed into u16[..64]");
+        sub.assert_eq(parsed_groups64.len, 40, "Parsed all 40 groups");
 
         var ecdh256: u8[32] = [0; 32];
         for i in 32 { ecdh256[i] = (i + 1) as u8; }
@@ -3081,6 +3105,23 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         let ok_trunc_list = wing::parse_ech_config_list(b_trunc.buf[..], cfg_list_bad);
         sub.assert_false(ok_trunc_list, "ECHConfigList with trailing garbage rejected");
 
+        // 6b. Corrupt 0xFE0D entry followed by valid 0xFE0D entry MUST fail entire list (RFC 9849 §4)
+        var b_corrupt_entry = core::builder_init();
+        core::start_u16_prefix(b_corrupt_entry);
+        core::put_u16(b_corrupt_entry, rfc::ECH_VERSION_RFC9849);
+        core::put_u16(b_corrupt_entry, 4);
+        core::put_bytes(b_corrupt_entry, "\x01\x00\x20\x00"); // truncated key_config
+        core::put_bytes(b_corrupt_entry, b_cfg.buf[..]);
+        core::finish_u16_prefix(b_corrupt_entry);
+        sub.assert_false(wing::parse_ech_config_list(b_corrupt_entry.buf[..], cfg_list_bad), "corrupt 0xFE0D entry aborts ECHConfigList");
+
+        // 6c. GREASE-only retry_configs accepted by parse_and_validate_ech_retry_configs (RFC 9849 §6.1.6)
+        let grease_only_list: u8[8] = [0x00, 0x06, 0x0A, 0x0A, 0x00, 0x02, 0xAA, 0xBB];
+        sub.assert_false(wing::parse_ech_config_list(grease_only_list[..], cfg_list_bad), "GREASE-only list has no supported client config");
+        var grease_rc = wing::EchConfigList { .. };
+        sub.assert_true(wing::parse_and_validate_ech_retry_configs(grease_only_list[..], grease_rc), "GREASE-only retry_configs syntactically valid");
+        sub.assert_eq(grease_rc.configs.len, 0, "GREASE-only retry_configs yields 0 supported configs");
+
         // 7. ECH inner padding bounds
         var padded: u8[..512] = [];
         sub.assert_false(wing::pad_ech_inner("", 64, 10, padded), "empty inner_bytes rejected");
@@ -3344,92 +3385,133 @@ fn test_handshake_r2_invariants(t: lit::T&) {
             "corrupted retry_configs rejected",
         );
 
-        // 3. parse_ech_hrr_retry_configs rejection on malformed wire
-        var hrr_wire: u8[>..] = [];
+        // 3. parse_ech_hrr_confirmation: requires exact 8-byte confirmation payload (RFC 9849 §5)
+        var hrr_conf_out: u8[8] = [0; 8];
         sub.assert_false(
-            wing::parse_ech_hrr_retry_configs(corrupted_rc[..], hrr_wire),
-            "parse_ech_hrr_retry_configs rejects malformed wire payload",
+            wing::parse_ech_hrr_confirmation(corrupted_rc[..], hrr_conf_out),
+            "parse_ech_hrr_confirmation rejects non-8-byte payload",
         );
+        sub.assert_true(
+            wing::parse_ech_hrr_confirmation(expected_confirm[..], hrr_conf_out),
+            "parse_ech_hrr_confirmation accepts 8-byte payload",
+        );
+        sub.assert_bytes_eq(hrr_conf_out[..], expected_confirm[..], "parsed HRR confirmation matches");
 
-        // 4. ECH FSM progression on HRR and ServerHello
+        // 4. ECH FSM progression on HRR, ServerHello, and EncryptedExtensions (RFC 9849 §6.1.4-6.1.6)
         var fsm = wing::EchFsm {
             mode:              wing::EchHandshakeMode.Offered,
             has_hrr:           false,
             offered_config_id: 1,
         };
 
-        // HRR with retry_configs
+        // HRR with non-8-byte ECH extension (e.g. retry_configs list) MUST fail decode_error
+        var fsm_bad_hrr = fsm;
         var dummy_rc = wing::EchConfigList { .. };
+        sub.assert_false(
+            wing::ech_fsm_on_server_hello(
+                fsm_bad_hrr,
+                wing::EchServerHelloType.HelloRetryRequest,
+                true,
+                b_list.buf[..],
+                expected_confirm,
+                dummy_rc,
+            ),
+            "HRR with non-8-byte ECH extension rejected",
+        );
+
+        // HRR without ECH extension rejects ECH (Bypassed) -> EncryptedExtensions delivers retry_configs
         let ok_fsm_hrr = wing::ech_fsm_on_server_hello(
             fsm,
             wing::EchServerHelloType.HelloRetryRequest,
-            true, // has_ech_ext
-            b_list.buf[..],
+            false,
+            corrupted_rc[..0],
             expected_confirm,
             dummy_rc,
         );
-        sub.assert_true(ok_fsm_hrr, "fsm handles HRR with retry configs");
-        sub.assert_true(fsm.mode == wing::EchHandshakeMode.RejectedWithRetry, "mode is RejectedWithRetry");
+        sub.assert_true(ok_fsm_hrr, "fsm handles HRR ECH rejection (no ECH ext)");
+        sub.assert_true(fsm.mode == wing::EchHandshakeMode.Bypassed, "mode is Bypassed after HRR without ECH ext");
 
         // Second HRR strictly rejected!
         let ok_fsm_hrr2 = wing::ech_fsm_on_server_hello(
             fsm,
             wing::EchServerHelloType.HelloRetryRequest,
-            true,
-            b_list.buf[..],
+            false,
+            corrupted_rc[..0],
             expected_confirm,
             dummy_rc,
         );
         sub.assert_false(ok_fsm_hrr2, "second HRR in ECH FSM strictly rejected");
 
-        // Fresh FSM: ECH accepted in ServerHello
+        // EncryptedExtensions carries retry_configs when ECH was bypassed (RFC 9849 §6.1.6)
+        sub.assert_true(
+            wing::ech_fsm_on_encrypted_extensions(fsm, true, b_list.buf[..], dummy_rc),
+            "EncryptedExtensions retry_configs parsed in Bypassed mode",
+        );
+        sub.assert_true(fsm.mode == wing::EchHandshakeMode.RejectedWithRetry, "mode transitions to RejectedWithRetry");
+        sub.assert_eq(dummy_rc.configs.len, 1, "1 retry config extracted from EncryptedExtensions");
+
+        // Fresh FSM: ECH accepted via ServerHello.random[24..32] (has_ech_ext MUST be false per RFC 9849 §5)
         var fsm_accept = wing::EchFsm {
             mode:              wing::EchHandshakeMode.Offered,
             has_hrr:           false,
             offered_config_id: 1,
         };
+        sub.assert_false(
+            wing::ech_fsm_on_server_hello(
+                fsm_accept,
+                wing::EchServerHelloType.ServerHello,
+                true, // illegal ECH extension in non-HRR ServerHello
+                expected_confirm[..],
+                expected_confirm,
+                dummy_rc,
+            ),
+            "non-HRR ServerHello carrying ECH extension rejected",
+        );
         let ok_fsm_sh = wing::ech_fsm_on_server_hello(
             fsm_accept,
             wing::EchServerHelloType.ServerHello,
-            true,  // has_ech_ext
+            false, // acceptance signaled in ServerHello.random[24..32]
             expected_confirm[..],
             expected_confirm,
             dummy_rc,
         );
-        sub.assert_true(ok_fsm_sh, "fsm handles SH with valid confirmation");
+        sub.assert_true(ok_fsm_sh, "fsm handles SH with valid random[24..32] confirmation");
         sub.assert_true(fsm_accept.mode == wing::EchHandshakeMode.Accepted, "mode is Accepted");
+        sub.assert_false(
+            wing::ech_fsm_on_encrypted_extensions(fsm_accept, true, b_list.buf[..], dummy_rc),
+            "EncryptedExtensions ECH extension forbidden when ECH was Accepted",
+        );
 
-        // 5. Post-HRR ECH Acceptance Downgrade / Stripping Attack Defense (RFC 9849 §7.2)
-        // If HRR accepted ECH (has_ech_ext == false), ServerHello MUST confirm acceptance.
-        // ServerHello omitting ECH extension MUST NOT silently downgrade to Bypassed; it MUST be rejected!
+        // 5. Post-HRR ECH Acceptance Downgrade / Stripping Attack Defense (RFC 9849 §6.1.5)
+        // HRR accepts ECH via 8-byte confirmation in HRR ECH extension; subsequent ServerHello MUST confirm!
         var fsm_hrr_accept = wing::EchFsm {
             mode:              wing::EchHandshakeMode.Offered,
             has_hrr:           false,
             offered_config_id: 1,
         };
-        // HRR accepts ECH
         let ok_hrr_acc = wing::ech_fsm_on_server_hello(
             fsm_hrr_accept,
             wing::EchServerHelloType.HelloRetryRequest,
-            false, // has_ech_ext == false -> ECH accepted for HRR flight
-            corrupted_rc[..0],
+            true, // HRR ECH extension carries 8-byte confirmation
+            expected_confirm[..],
             expected_confirm,
             dummy_rc,
         );
-        sub.assert_true(ok_hrr_acc, "HRR accepts ECH");
+        sub.assert_true(ok_hrr_acc, "HRR accepts ECH via 8-byte confirmation");
         sub.assert_true(fsm_hrr_accept.has_hrr, "has_hrr is true");
         sub.assert_true(fsm_hrr_accept.mode == wing::EchHandshakeMode.Offered, "mode remains Offered for ClientHello2");
 
-        // Attacker strips ECH confirmation from ServerHello2 (has_ech_ext == false)
+        // Attacker strips/corrupts ECH confirmation in ServerHello2.random[24..32]
+        let zero_confirm: u8[8] = [0; 8];
         let ok_sh_strip = wing::ech_fsm_on_server_hello(
             fsm_hrr_accept,
             wing::EchServerHelloType.ServerHello,
-            false, // ECH extension missing / stripped!
-            corrupted_rc[..0],
+            false,
+            zero_confirm[..],
             expected_confirm,
             dummy_rc,
         );
-        sub.assert_false(ok_sh_strip, "RFC 9849 §7.2: ServerHello omitting ECH confirmation after HRR acceptance MUST abort");
+        sub.assert_false(ok_sh_strip, "RFC 9849 §6.1.5: ServerHello failing ECH confirmation after HRR acceptance MUST abort");
 
         // 6. ECH Outer ALPN Separation (RFC 9849 - OpenSSL Issue #33428 ALPN separation)
         let inner_alpn = "h2";
@@ -3444,6 +3526,14 @@ fn test_handshake_r2_invariants(t: lit::T&) {
             wing::validate_ech_alpn_negotiation(true, "http/1.1", inner_alpn, outer_alpn),
             "ECH accepted: outer ALPN 'http/1.1' strictly rejected",
         );
+        sub.assert_true(
+            wing::validate_ech_alpn_negotiation(true, "http/1.1", "h2,http/1.1", "http/1.1"),
+            "ECH accepted: multi-protocol inner ALPN list 'h2,http/1.1' matches 'http/1.1'",
+        );
+        sub.assert_true(
+            wing::validate_ech_alpn_negotiation(true, "", "", outer_alpn),
+            "ECH accepted: empty selected ALPN allowed when inner ALPN offer was omitted",
+        );
 
         // When ECH is rejected/bypassed: selected ALPN MUST match outer ALPN offer
         sub.assert_true(
@@ -3455,7 +3545,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
             "ECH bypassed: inner ALPN 'h2' strictly rejected per OpenSSL #33428",
         );
 
-        // Empty selected ALPN strictly rejected
+        // Empty selected ALPN strictly rejected when ALPN was offered
         let empty_alpn = "";
         sub.assert_false(
             wing::validate_ech_alpn_negotiation(false, empty_alpn, inner_alpn, outer_alpn),
@@ -3872,14 +3962,24 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         let _, ok_bomb = wing::parse_compressed_certificate(bomb_payload[..]);
         sub.assert_false(ok_bomb, "decompression bomb exceeding MAX_UNCOMPRESSED_CERT_LEN rejected");
 
-        // 5. Client transition accepts CompressedCertificate in place of Certificate
-        let next_cc_cr, ok_cc_cr = wing::validate_client_handshake_transition(
+        // 5. Client & Server transitions reject unsolicited CompressedCertificate unless offered (RFC 8879 §4)
+        let _, ok_unsol_cr = wing::validate_client_handshake_transition(
             wing::HsState.ClientWaitCertCr,
             rfc::TLS_HS_COMPRESSED_CERTIFICATE,
             wing::HandshakeMode.Full,
             false,
         );
-        sub.assert_true(ok_cc_cr, "CompressedCertificate accepted in ClientWaitCertCr");
+        sub.assert_false(ok_unsol_cr, "unsolicited CompressedCertificate rejected in ClientWaitCertCr");
+
+        let next_cc_cr, ok_cc_cr = wing::validate_client_handshake_transition(
+            wing::HsState.ClientWaitCertCr,
+            rfc::TLS_HS_COMPRESSED_CERTIFICATE,
+            wing::HandshakeMode.Full,
+            false,
+            wing::PostHandshakeAuth.Disabled,
+            wing::CertCompressionOffer.Offered,
+        );
+        sub.assert_true(ok_cc_cr, "offered CompressedCertificate accepted in ClientWaitCertCr");
         sub.assert_true(next_cc_cr == wing::HsState.ClientWaitCV, "transitions to ClientWaitCV");
 
         let next_cc, ok_cc = wing::validate_client_handshake_transition(
@@ -3887,9 +3987,32 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             rfc::TLS_HS_COMPRESSED_CERTIFICATE,
             wing::HandshakeMode.Full,
             false,
+            wing::PostHandshakeAuth.Disabled,
+            wing::CertCompressionOffer.Offered,
         );
-        sub.assert_true(ok_cc, "CompressedCertificate accepted in ClientWaitCert");
+        sub.assert_true(ok_cc, "offered CompressedCertificate accepted in ClientWaitCert");
         sub.assert_true(next_cc == wing::HsState.ClientWaitCV, "transitions to ClientWaitCV");
+
+        let _, ok_srv_unsol = wing::validate_server_handshake_transition_auth(
+            wing::HsState.ServerWaitCert,
+            rfc::TLS_HS_COMPRESSED_CERTIFICATE,
+            wing::ClientAuthMode.Requested,
+            false,
+        );
+        sub.assert_false(ok_srv_unsol, "server rejects unsolicited CompressedCertificate");
+        let next_srv_cc, ok_srv_cc = wing::validate_server_handshake_transition_auth(
+            wing::HsState.ServerWaitCert,
+            rfc::TLS_HS_COMPRESSED_CERTIFICATE,
+            wing::ClientAuthMode.Requested,
+            false,
+            wing::EarlyDataAccepted.Rejected,
+            wing::CertCompressionOffer.Offered,
+        );
+        sub.assert_true(ok_srv_cc && next_srv_cc == wing::HsState.ServerWaitCV, "server accepts offered CompressedCertificate");
+
+        let brotli_only: u16[1] = [rfc::CERT_COMPRESSION_BROTLI];
+        let _, ok_unoffered_algo = wing::parse_compressed_certificate(valid_comp_payload[..], brotli_only[..]);
+        sub.assert_false(ok_unoffered_algo, "Zstd CompressedCertificate rejected when only Brotli was offered");
     };
 }
 
@@ -4089,13 +4212,22 @@ fn test_remediation_x509_signatures(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_remediation_misc(t: lit::T&) {
     t.run("CryptoShield: Post-Handshake Auth, Boundary & ECH Public Name") { sub =>
-        let st, ok_pha = wing::validate_client_handshake_transition(
+        let _, ok_pha_dis = wing::validate_client_handshake_transition(
             wing::HsState.Connected,
             rfc::TLS_HS_CERTIFICATE_REQUEST,
             wing::HandshakeMode.Full,
             false,
         );
-        sub.assert_true(ok_pha, "post-handshake CertificateRequest allowed in Connected");
+        sub.assert_false(ok_pha_dis, "unsolicited post-handshake CertificateRequest rejected per RFC 8446 §4.2.6");
+
+        let st, ok_pha = wing::validate_client_handshake_transition(
+            wing::HsState.Connected,
+            rfc::TLS_HS_CERTIFICATE_REQUEST,
+            wing::HandshakeMode.Full,
+            false,
+            wing::PostHandshakeAuth.Offered,
+        );
+        sub.assert_true(ok_pha, "post-handshake CertificateRequest allowed when PostHandshakeAuth.Offered");
         sub.assert_true(st == wing::HsState.Connected, "state remains Connected");
 
         let hs_msg: u8[14] = [0x01, 0x00, 0x00, 0x0A, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -4446,6 +4578,7 @@ fn check_goose2rfc_pki_and_ech_regressions(t: lit::T&) {
         sub.assert_false(wing::validate_ech_public_name_bytes("example.123"), "numeric TLD rejected");
         sub.assert_false(wing::validate_ech_public_name_bytes("example.0x1a"), "hex-prefixed TLD rejected");
         sub.assert_true(wing::validate_ech_public_name_bytes("123.example.com"), "numeric non-final label allowed");
+        sub.assert_true(wing::validate_ech_public_name_bytes("edge.3m"), "digit-leading alphanumeric TLD allowed per RFC 1123/9849");
 
         var ext_mand: u8[6] = [0x80, 0x01, 0x00, 0x02, 0xAA, 0xBB];
         var cur_mand = core::cursor_from(ext_mand[..]);
@@ -4454,6 +4587,15 @@ fn check_goose2rfc_pki_and_ech_regressions(t: lit::T&) {
         var ext_dup: u8[8] = [0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
         var cur_dup = core::cursor_from(ext_dup[..]);
         sub.assert_false(wing::validate_ech_config_extensions(cur_dup), "duplicate ECH ext rejected");
+
+        // RFC 5280 §4.1.2.2: <= 7-byte serials stay < 0x8000000000000000 while >= 8-byte serials hash with MSB set
+        let ser7: u8[7] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        let ser9: u8[9] = [0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let v7, ok_s7 = wing::parse_asn1_serial_u64(ser7[..]);
+        let v9, ok_s9 = wing::parse_asn1_serial_u64(ser9[..]);
+        sub.assert_true(ok_s7 && ok_s9, "7-byte and 8-byte unsigned serials parsed");
+        sub.assert_true((v7 & 0x8000000000000000) == 0, "7-byte serial keeps MSB clear");
+        sub.assert_true((v9 & 0x8000000000000000) != 0, "8-byte serial hashes into MSB-set domain");
     };
 }
 

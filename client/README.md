@@ -134,8 +134,8 @@ struct RedirectInfo {
     should_redirect: bool, new_method: u8[..16], target_url: u8[..2048],
     is_cross_origin: bool, preserve_body: bool
 }
-struct Backoff { base_delay_ms: i64, max_delay_ms: i64, factor: i64, jitter: bool }
-struct RateLimiter { tokens: f64, capacity: f64, refill_rate_per_ms: f64, last_ms: i64 }
+struct Backoff { base_ns: i64, max_ns: i64, factor: f64 }
+struct RateLimiter { rate_per_sec: f64, burst_capacity: f64, tokens: f64, last_update_mono_ns: i64 }
 fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> bool
 fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool
 fn add_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: LogLevel) -> bool
@@ -145,10 +145,10 @@ fn add_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "0
 fn add_retry(pipeline: InterceptorPipeline&, max_retries: i32 = 3, retry_on_5xx: bool = true) -> bool
 fn compute_redirect_info(status_code: i32, req_method: const u8[:], location_header: const u8[:], current_url: const u8[:]) -> RedirectInfo
 fn sanitize_headers_on_redirect(req: Request&)
-fn new_backoff(base_delay_ms: i64, max_delay_ms: i64, factor: i64 = 2, jitter: bool = true) -> Backoff
-fn delay(b: const Backoff&, attempt: i32, rng_seed: u64 = 0) -> i64
-fn new_rate_limiter(rate_per_sec: f64, burst: f64) -> RateLimiter
-fn allow(rl: RateLimiter&, now_ms: i64, tokens: f64 = 1.0) -> bool
+fn new_backoff(base_ns: i64, max_ns: i64, factor: f64 = 2.0) -> Backoff
+fn delay(backoff: const Backoff&, attempt: i64) -> i64
+fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter
+fn allow(limiter: RateLimiter&, now_mono: i64) -> bool
 ```
 
 `InterceptorPipeline` dispatches up to 64 application and network interceptors

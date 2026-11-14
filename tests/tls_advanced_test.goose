@@ -1069,11 +1069,18 @@ fn test_rfc8879_certificate_compression(t: lit::T&) {
         sub.assert_true(core::zstd_compress(fake_cert, compressed), "Zstandard compression of certificate succeeds");
 
         var hs_payload: u8[>..] = [];
-        wing::encode_compressed_certificate_payload(
-            hs_payload,
-            rfc::CERT_COMPRESSION_ZSTD,
-            fake_cert.len as u32,
-            compressed[..],
+        sub.assert_true(
+            wing::encode_compressed_certificate_payload(
+                hs_payload,
+                rfc::CERT_COMPRESSION_ZSTD,
+                fake_cert.len as u32,
+                compressed[..],
+            ),
+            "Encode CompressedCertificate payload succeeds",
+        );
+        sub.assert_false(
+            wing::encode_compressed_certificate_payload(hs_payload, rfc::CERT_COMPRESSION_ZSTD, 0, compressed[..]),
+            "Encode CompressedCertificate rejects uncompressed_len == 0",
         );
 
         let parsed, ok_parse = wing::parse_compressed_certificate(hs_payload[..]);
@@ -1611,8 +1618,8 @@ fn test_aead_ciphers(t: lit::T&) {
 fn test_crypto_jar_container(t: lit::T&) {
     t.run("PrivateJar XChaCha20-Poly1305 (53B Overhead) & AAD Binding") { sub =>
         var store = wing::KeyStore { .. };
-        var raw_key: u8[32] = [0x33; 32];
-        let slot = core::new_key_slot(1, raw_key[..], 1700000000);
+        let raw_key: u8[32] = [0x33; 32];
+        let slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
         wing::add_key(store, slot);
 
         var jar = wing::new_private_jar(store, false);
@@ -1640,8 +1647,8 @@ fn test_crypto_jar_container(t: lit::T&) {
 
     t.run("PrivateJar HKDF-AES-GCM (65B Overhead)") { sub =>
         var store = wing::KeyStore { .. };
-        var raw_key: u8[32] = [0x44; 32];
-        let slot = core::new_key_slot(2, raw_key[..], 1700000000);
+        let raw_key: u8[32] = [0x44; 32];
+        let slot = wing::KeySlot { key_id: 2, master_key: raw_key, created_at_sec: 1700000000, .. };
         wing::add_key(store, slot);
 
         var jar = wing::new_private_jar(store, true);
@@ -1659,8 +1666,8 @@ fn test_crypto_jar_container(t: lit::T&) {
 
     t.run("SignedJar HMAC-SHA256 (45B Overhead) & Forgery Resistance") { sub =>
         var store = wing::KeyStore { .. };
-        var raw_key: u8[32] = [0x88; 32];
-        let slot = core::new_key_slot(7, raw_key[..], 1700000000);
+        let raw_key: u8[32] = [0x88; 32];
+        let slot = wing::KeySlot { key_id: 7, master_key: raw_key, created_at_sec: 1700000000, .. };
         wing::add_key(store, slot);
 
         var jar = wing::new_signed_jar(store);
@@ -1684,10 +1691,10 @@ fn test_crypto_jar_container(t: lit::T&) {
 
     t.run("KeyStore Proactive Key Rotation") { sub =>
         var store = wing::KeyStore { .. };
-        var k1: u8[32] = [0x11; 32];
-        var k2: u8[32] = [0x22; 32];
-        wing::add_key(store, core::new_key_slot(10, k1[..], 1700000000));
-        wing::add_key(store, core::new_key_slot(20, k2[..], 1700086400)); // 24h later
+        let k1: u8[32] = [0x11; 32];
+        let k2: u8[32] = [0x22; 32];
+        wing::add_key(store, wing::KeySlot { key_id: 10, master_key: k1, created_at_sec: 1700000000, .. });
+        wing::add_key(store, wing::KeySlot { key_id: 20, master_key: k2, created_at_sec: 1700086400, .. }); // 24h later
 
         // Rotate active key to key 20
         sub.assert_true(wing::set_active_key_id(store, 20), "rotated active key to id 20");
@@ -1837,7 +1844,10 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
         var cc_wire: u8[..128] = [];
         sub.assert_true(internal::encode_compressed_certificate(cc_msg, cc_wire), "encode CompressedCertificate message");
         var pub_cc_wire: u8[>..] = [];
-        wing::encode_compressed_certificate_payload(pub_cc_wire, rfc::CERT_COMPRESSION_ZSTD, 128, comp_bytes);
+        sub.assert_true(
+            wing::encode_compressed_certificate_payload(pub_cc_wire, rfc::CERT_COMPRESSION_ZSTD, 128, comp_bytes),
+            "public encode_compressed_certificate_payload succeeds",
+        );
         sub.assert_bytes_eq(pub_cc_wire[..], cc_wire[..], "public and internal RFC 8879 encoders produce identical 8B+data wire format");
 
         var k: i64 = 0;

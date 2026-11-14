@@ -53,7 +53,7 @@ static uint32_t next_pow2_u32(uint32_t n) {
 }
 
 int32_t wing_spsc_create(uint32_t min_capacity, uint64_t *out_handle, uint32_t *out_capacity) {
-    if (!out_handle || !out_capacity || min_capacity == 0) {
+    if (!out_handle || !out_capacity || min_capacity == 0 || min_capacity > 0x40000000u) {
         return -1;
     }
 

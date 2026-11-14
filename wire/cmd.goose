@@ -44,7 +44,7 @@ inline fn can_begin_command_buffer(s: WireCommandBufferState.Pending) -> bool { 
 inline fn can_begin_command_buffer(s: WireCommandBufferState.Invalid) -> bool { return false; }
 
 inline fn can_commit_command_buffer(s: WireCommandBufferState.Executable) -> bool { return true; }
-inline fn can_commit_command_buffer(s: WireCommandBufferState.Recording) -> bool { return true; }
+inline fn can_commit_command_buffer(s: WireCommandBufferState.Recording) -> bool { return false; }
 inline fn can_commit_command_buffer(s: WireCommandBufferState.Initial) -> bool { return false; }
 inline fn can_commit_command_buffer(s: WireCommandBufferState.RecordingHeaders) -> bool { return false; }
 inline fn can_commit_command_buffer(s: WireCommandBufferState.Pending) -> bool { return false; }
@@ -255,6 +255,9 @@ fn end_command_buffer(cmd: WireCommandBuffer&) -> WireResult {
 
 // Resets a command buffer to the Initial state (VkResetCommandBuffer).
 fn reset_command_buffer(cmd: WireCommandBuffer&, flags: u32) -> WireResult {
+    guard cmd.state != WireCommandBufferState.Pending && cmd.state != WireCommandBufferState.Invalid else {
+        return WireResult.ErrorCommandBufferLocked;
+    }
     cmd.buf.clear();
     cmd.has_error = false;
     cmd.state = WireCommandBufferState.Initial;
@@ -286,7 +289,7 @@ fn reset(cmd: WireCommandBuffer&) {
 
 // Writes an octet to buffer.
 fn write_u8(cmd: WireCommandBuffer&, val: u8) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -299,7 +302,7 @@ fn write_u8(cmd: WireCommandBuffer&, val: u8) -> bool {
 
 // Writes a 24-bit big-endian unsigned integer (RFC 9113 Section 4.1).
 fn write_u24_be(cmd: WireCommandBuffer&, val: u32) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -318,7 +321,7 @@ fn write_u24_be(cmd: WireCommandBuffer&, val: u32) -> bool {
 
 // Writes a raw byte sequence into buffer.
 fn write_raw(cmd: WireCommandBuffer&, data: const u8[:]) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -338,7 +341,7 @@ fn write_h2_preface(cmd: WireCommandBuffer&) -> bool {
 
 // Writes a 9-byte binary frame header.
 fn write_h2_frame_header(cmd: WireCommandBuffer&, hdr: const WireFrameHeader&) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -351,7 +354,7 @@ fn write_h2_frame_header(cmd: WireCommandBuffer&, hdr: const WireFrameHeader&) -
 
 // Writes an HTTP/2 SETTINGS frame (RFC 9113 Section 6.5).
 fn write_h2_settings(cmd: WireCommandBuffer&, settings: const WireSetting[:]) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -364,7 +367,7 @@ fn write_h2_settings(cmd: WireCommandBuffer&, settings: const WireSetting[:]) ->
 
 // Writes a WINDOW_UPDATE frame (RFC 9113 Section 6.9).
 fn write_h2_window_update(cmd: WireCommandBuffer&, stream_id: u32, increment: u32) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -377,7 +380,7 @@ fn write_h2_window_update(cmd: WireCommandBuffer&, stream_id: u32, increment: u3
 
 // Writes a RST_STREAM frame (RFC 9113 Section 6.4).
 fn write_h2_rst_stream(cmd: WireCommandBuffer&, stream_id: u32, error_code: u32) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -390,7 +393,7 @@ fn write_h2_rst_stream(cmd: WireCommandBuffer&, stream_id: u32, error_code: u32)
 
 // Writes a PING frame with an 8-byte payload (RFC 9113 Section 6.7).
 fn write_h2_ping(cmd: WireCommandBuffer&, payload: const u8[8], is_ack: bool) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -408,7 +411,7 @@ fn write_h2_data(
     payload:    const u8[:],
     end_stream: bool,
 ) -> bool {
-    guard cmd.state == WireCommandBufferState.Recording else {
+    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
         cmd.has_error = true;
         return false;
     }
@@ -436,10 +439,12 @@ inline fn rollback_headers_frame_on_error(cmd: WireCommandBuffer&) {
 
 // Begins a dynamic HEADERS frame block by reserving 9 bytes in-place at `cmd.headers_frame_offset`.
 fn begin_h2_headers(cmd: WireCommandBuffer&, stream_id: u32, flags: u8) -> bool {
+    let allowed_flags = rfc::H2_FLAG_END_STREAM | rfc::H2_FLAG_END_HEADERS;
     guard cmd.state == WireCommandBufferState.Recording &&
           !cmd.has_error &&
           stream_id > 0 &&
-          stream_id <= 0x7FFFFFFF else {
+          stream_id <= 0x7FFFFFFF &&
+          (flags & (~allowed_flags)) == 0 else {
         cmd.has_error = true;
         return false;
     }
@@ -462,7 +467,7 @@ fn hpack_indexed(cmd: WireCommandBuffer&, index: u64) -> bool {
         cmd.has_error = true;
         return false;
     }
-    guard hpack_encode_indexed(cmd.buf, index) else {
+    guard index >= 1 && index <= rfc::HPACK_STATIC_TABLE_ENTRIES && hpack_encode_indexed(cmd.buf, index) else {
         rollback_headers_frame_on_error(cmd);
         return false;
     }

@@ -37,29 +37,97 @@ inline fn decode_origin_slice(rem: const u8[:]) -> const u8[:], i64, bool {
     return rem[2..total], total, true;
 }
 
-// RFC 8336 Section 2: The ORIGIN HTTP/2 Frame - Parses ORIGIN frame payload
-// Validates stream 0 requirement and populates out_entries.
+// RFC 8336 Section 2.1: Syntax - Reserved low-nibble flags (0x01..0x08) on ORIGIN frames.
+const H2_ORIGIN_RESERVED_FLAGS: u8 = 0x0F;
+
+inline fn is_valid_h2_origin_scheme(scheme: const u8[:]) -> bool {
+    guard scheme.len > 0 && core::is_ascii_alpha(scheme[0]) else { return false; }
+    for b in scheme {
+        let ok = (b >= 'a' && b <= 'z') || core::is_ascii_digit(b)
+            || b == '+' || b == '-' || b == '.';
+        guard ok else { return false; }
+    }
+    return true;
+}
+
+inline fn is_valid_h2_origin_port(port_str: const u8[:]) -> bool {
+    guard port_str.len >= 1 && port_str.len <= 5 && port_str[0] != '0' else {
+        return false;
+    }
+    for b in port_str {
+        guard core::is_ascii_digit(b) else { return false; }
+    }
+    let port, ok = port_str.parse_u32_dec();
+    return ok && port >= 1 && port <= 65535;
+}
+
+inline fn is_valid_h2_origin_ipv6_authority(rest: const u8[:]) -> bool {
+    let ipv6_body, tail, has_close = rest[1..].split_once_byte(']');
+    guard has_close && ipv6_body.len > 0 else { return false; }
+    for b in ipv6_body {
+        let ok = core::is_ascii_hexdigit(b) || b == ':' || b == '.';
+        guard ok else { return false; }
+    }
+    if tail.len == 0 {
+        return true;
+    }
+    guard tail[0] == ':' else { return false; }
+    return is_valid_h2_origin_port(tail[1..]);
+}
+
+// RFC 8336 Section 2.2: Processing ORIGIN Frames - Validates serialized ASCII-Origin syntax.
+fn is_valid_h2_origin_entry(raw: const u8[:]) -> bool {
+    let scheme, rest, has_sep = raw.split_once("://");
+    guard has_sep && is_valid_h2_origin_scheme(scheme) && rest.len > 0 else {
+        return false;
+    }
+    for b in raw {
+        guard core::is_ascii_vchar(b) else { return false; }
+    }
+    if rest[0] == '[' {
+        return is_valid_h2_origin_ipv6_authority(rest);
+    }
+    let host, port_str, has_port = rest.split_once_byte(':');
+    let eff_host = if has_port { host } else { rest };
+    guard eff_host.len > 0 else { return false; }
+    for b in eff_host {
+        let bad = b == '/' || b == '?' || b == '#' || b == '@'
+            || b == '*' || b == ':' || b == '[' || b == ']';
+        guard !bad else { return false; }
+    }
+    if has_port {
+        return is_valid_h2_origin_port(port_str);
+    }
+    return true;
+}
+
+// RFC 8336 Section 2.2: Processing ORIGIN Frames - Ignores non-zero streams and reserved flags.
+// Parses stream 0 ORIGIN frame payload, skips malformed Origin-Entry values, and populates out_entries.
 //
 // Example:
-//   payload = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm'], stream_id = 0
-//   returns: count = 1, H2_ERR_NO_ERROR, out_entries = ["ex.com"]
+//   payload = [0x00, 0x0E, 'h', 't', 't', 'p', 's', ':', '/', '/', 'e', 'x', '.', 'c', 'o', 'm'], stream_id = 0
+//   returns: count = 1, H2_ERR_NO_ERROR, out_entries = ["https://ex.com"]
 fn parse_origin_frame(
     payload:     const u8[:],
     stream_id:   u32,
     out_entries: const u8[:][..16]&,
+    flags:       u8 = 0,
 ) -> u32, u32 {
     let saved_len = out_entries.len;
     var committed = false;
     defer if !committed { out_entries.resize(saved_len); };
-    guard stream_id == 0 else {
-        return 0, rfc::H2_ERR_PROTOCOL_ERROR;
+    if (stream_id & 0x7FFFFFFF) != 0 || (flags & H2_ORIGIN_RESERVED_FLAGS) != 0 {
+        committed = true;
+        return saved_len as u32, rfc::H2_ERR_NO_ERROR;
     }
     var idx: i64 = 0;
     while idx < payload.len {
         let entry, total, ok = decode_origin_slice(payload[idx..]);
         guard ok else { return saved_len as u32, rfc::H2_ERR_FRAME_SIZE_ERROR; }
-        guard out_entries.try_push(entry) else {
-            return saved_len as u32, rfc::H2_ERR_PROTOCOL_ERROR;
+        if is_valid_h2_origin_entry(entry) {
+            guard out_entries.try_push(entry) else {
+                return saved_len as u32, rfc::H2_ERR_PROTOCOL_ERROR;
+            }
         }
         idx += total;
     }
@@ -118,7 +186,7 @@ fn encode_origin_frame<B>(out: B&, origins: const u8[:][..16]&) -> bool {
     return true;
 }
 
-// RFC 7838 Section 4.1: The ALTSVC Frame - Parses ALTSVC frame payload
+// RFC 7838 Section 4: The ALTSVC HTTP/2 Frame - Parses ALTSVC frame payload
 //
 // Example:
 //   payload = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm', 'h', '3'], stream_id = 0
@@ -143,7 +211,7 @@ fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> H2AltSvcFrame, u3
     }, rfc::H2_ERR_NO_ERROR;
 }
 
-// RFC 7838 Section 4.1: The ALTSVC Frame - Encodes ALTSVC frame payload into buffer
+// RFC 7838 Section 4: The ALTSVC HTTP/2 Frame - Encodes ALTSVC frame payload into buffer
 //
 // Example:
 //   origin = "example.com", alt_svc_val = "h3=\":443\"", stream_id = 0

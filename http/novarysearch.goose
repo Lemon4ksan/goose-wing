@@ -45,21 +45,20 @@ fn apply_nvs_params(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
     if member.is_inner_list {
         guard copy_sfv_inner_string_list(member.inner_list[..], nvs.params) else { return false; }
         nvs.ignore_all_params = false;
-        nvs.except_params.clear();
         return true;
     }
     guard member.item.bare.kind == SfvType.Boolean else { return false; }
     nvs.ignore_all_params = member.item.bare.bool_val;
     nvs.params.clear();
-    if !nvs.ignore_all_params {
-        nvs.except_params.clear();
-    }
     return true;
 }
 
-fn apply_nvs_except(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
-    guard nvs.ignore_all_params && member.is_inner_list else { return false; }
-    return copy_sfv_inner_string_list(member.inner_list[..], nvs.except_params);
+fn apply_nvs_except(nvs: NoVarySearch&, member: const SfvMember&, has_except: bool&) -> bool {
+    guard member.is_inner_list && copy_sfv_inner_string_list(member.inner_list[..], nvs.except_params) else {
+        return false;
+    }
+    has_except = true;
+    return true;
 }
 
 fn apply_nvs_key_order(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
@@ -68,22 +67,21 @@ fn apply_nvs_key_order(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
     return true;
 }
 
-fn apply_nvs_entry(nvs: NoVarySearch&, entry: const SfvDictEntry&) -> bool {
+fn apply_nvs_entry(nvs: NoVarySearch&, entry: const SfvDictEntry&, has_except: bool&) -> bool {
     let key = entry.key[..];
     if key == "params" {
         return apply_nvs_params(nvs, entry.member);
     }
     if key == "except" {
-        return apply_nvs_except(nvs, entry.member);
+        return apply_nvs_except(nvs, entry.member, has_except);
     }
     if key == "key-order" {
         return apply_nvs_key_order(nvs, entry.member);
     }
-    // RFC 9440 Section 2.2: Unknown dictionary keys MUST be ignored.
     return true;
 }
 
-// Parses `No-Vary-Search: params, except=("id"), key-order`
+// RFC 9651 Section 3.2: Dictionaries - Validate except/params dependency after full dictionary parse.
 //
 // Example:
 //   raw = "params, key-order"
@@ -94,10 +92,14 @@ fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
         return NoVarySearch { .. }, false;
     }
     var nvs = NoVarySearch { is_valid: true, .. };
+    var has_except = false;
     for &entry in dict.entries {
-        guard apply_nvs_entry(nvs, entry) else {
+        guard apply_nvs_entry(nvs, entry, has_except) else {
             return NoVarySearch { .. }, false;
         }
+    }
+    guard !has_except || nvs.ignore_all_params else {
+        return NoVarySearch { .. }, false;
     }
     return nvs, true;
 }
@@ -150,12 +152,54 @@ fn parse_single_query_param(pair: const u8[:], p: QueryParam&) -> bool {
     return true;
 }
 
+inline fn try_decode_nvs_pct_octet(raw: const u8[:], i: i64) -> u8, i64 {
+    let next = core::add_sat_i64(i, 1);
+    let hex_end = core::add_sat_i64(i, 3);
+    guard hex_end <= raw.len else { return '%', next; }
+    let hval, ok_h = raw[next..hex_end].parse_u8_hex();
+    guard ok_h else { return '%', next; }
+    return hval, hex_end;
+}
+
+// Decodes URL-encoded query parameter key bytes ('+' as space and '%HH' hex octets).
+//
+// Example:
+//   raw = "%75tm+source", out = []
+//   returns: true, out = "utm source"
+fn decode_nvs_query_key(raw: const u8[:], out: u8[..128]&) -> bool {
+    out.clear();
+    var i: i64 = 0;
+    while i < raw.len {
+        let b = raw[i];
+        var dec:  u8  = 0;
+        var next: i64 = core::add_sat_i64(i, 1);
+        if b == '+' {
+            dec = ' ';
+        } else if b == '%' {
+            let pct_b, pct_next = try_decode_nvs_pct_octet(raw, i);
+            dec = pct_b;
+            next = pct_next;
+        } else {
+            dec = b;
+        }
+        guard out.try_push(dec) else {
+            out.clear();
+            return false;
+        }
+        i = next;
+    }
+    return true;
+}
+
 // Parses query string and applies No-Vary-Search filtering rules.
 //
 // Example:
 //   raw_query = "?a=1&b=2", nvs ignores "a"
 //   returns: true, params contains only "b=2"
 fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch&, params: QueryParam[..128]&) -> bool {
+    params.clear();
+    var committed = false;
+    defer if !committed { params.clear(); };
     let trimmed = if raw_query.len > 0 && raw_query[0] == '?' { raw_query[1..] } else { raw_query };
     var tok = core::make_byte_tokenizer(trimmed, '&');
 
@@ -165,13 +209,17 @@ fn parse_and_filter_query_params(raw_query: const u8[:], nvs: const NoVarySearch
         if pair.len == 0 { continue; }
 
         let k_raw, _, _ = pair.split_once_byte('=');
-        if is_param_ignored(nvs, k_raw) {
+        var k_dec: u8[..128] = [];
+        let has_dec = decode_nvs_query_key(k_raw, k_dec);
+        let key_view = if has_dec { k_dec[..] } else { k_raw };
+        if is_param_ignored(nvs, key_view) {
             continue;
         }
 
         var p = QueryParam { .. };
         guard parse_single_query_param(pair, p) && params.try_push(p) else { return false; }
     }
+    committed = true;
     return true;
 }
 

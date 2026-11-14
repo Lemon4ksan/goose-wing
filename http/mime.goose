@@ -115,12 +115,24 @@ fn decode_token_or_quoted_param<B>(raw_val: const u8[:], out: B&, max_len: i64 =
 //   p_trim = "charset=\"utf-8\"", p_item = MediaTypeParam { .. }
 //   returns: true, p_item.name = "charset", p_item.value = "utf-8"
 fn parse_single_media_param(p_trim: const u8[:], p_item: MediaTypeParam&) -> bool {
+    p_item.name.clear();
+    p_item.value.clear();
+    var committed = false;
+    defer if !committed {
+        p_item.name.clear();
+        p_item.value.clear();
+    };
+
     let p_name, p_val_raw, ok = p_trim.split_once_byte('=');
     guard ok && is_valid_header_name(p_name) && p_item.name.try_append(p_name) else {
         return false;
     }
     to_lower(p_item.name[..]);
-    return decode_token_or_quoted_param(p_val_raw, p_item.value, 256);
+    guard decode_token_or_quoted_param(p_val_raw, p_item.value, 256) else {
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 // Parses semicolon-separated MIME parameters (RFC 9110 Section 8.3).

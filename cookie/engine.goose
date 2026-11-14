@@ -414,7 +414,7 @@ fn get_canonical_cookies_for_request(
 
 // Collects matching cookie slot indices for an outgoing HTTP request without sorting.
 fn collect_matching_cookie_indices(
-    jar:           CanonicalCookieJar&,
+    jar:           const CanonicalCookieJar&,
     host:          const u8[:],
     path:          const u8[:],
     scheme:        const u8[:],
@@ -435,10 +435,16 @@ fn collect_matching_cookie_indices(
             continue;
         }
         guard out_indices.try_push(idx as u16) else { break; }
+    }
+}
 
-        let delta_us = core::sub_sat_i64(now_us, cookie_val.last_access_utc);
+fn stamp_accessed_cookies(jar: CanonicalCookieJar&, indices: const u16[:], now_us: i64) {
+    for i in indices.len {
+        let idx = indices[i] as i64;
+        guard idx >= 0 && idx < jar.cookies.len else { continue; }
+        let delta_us = core::sub_sat_i64(now_us, jar.cookies[idx].last_access_utc);
         if jar.access_update_threshold_us <= 0 || delta_us >= jar.access_update_threshold_us {
-            cookie_val.last_access_utc = now_us;
+            jar.cookies[idx].last_access_utc = now_us;
         }
     }
 }
@@ -470,6 +476,7 @@ fn get_canonical_cookies_for_request(
     collect_matching_cookie_indices(
         jar, host, path, scheme, port, source, partition_key, now_us, out_indices, access,
     );
+    stamp_accessed_cookies(jar, out_indices[..], now_us);
     sort_cookie_indices(jar, out_indices);
 }
 
@@ -488,9 +495,10 @@ fn encode_cookie_header_to_map(
     headers:       HeaderMap&,
 ) -> bool {
     var matched_indices: u16[..180] = [];
-    get_canonical_cookies_for_request(
+    collect_matching_cookie_indices(
         jar, host, path, scheme, port, source, partition_key, now_us, matched_indices, access,
     );
+    sort_cookie_indices(jar, matched_indices);
     if matched_indices.len == 0 {
         let _ = remove_header(headers, "Cookie");
         return true;
@@ -516,7 +524,11 @@ fn encode_cookie_header_to_map(
         let _ = remove_header(headers, "Cookie");
         return true;
     }
-    return set_or_replace(headers, "Cookie", cookie_hdr_val[..], true);
+    guard set_or_replace(headers, "Cookie", cookie_hdr_val[..], true) else {
+        return false;
+    }
+    stamp_accessed_cookies(jar, matched_indices[..], now_us);
+    return true;
 }
 
 // ---- quotas & garbage collection engine ------------------------------------

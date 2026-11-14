@@ -127,7 +127,7 @@ fn make_cacheable_item_response(idx: i64) -> wing::Response {
 fn test_scalable_http_cache_and_stage_polymorphism() {
     var cache = wing::ScalableHttpCache { .. };
     wing::init_scalable_http_cache(cache, 128, 4096);
-    let now_ts = core::Time { wall_sec: 1700000000, .. };
+    let now_ts: i64 = 1700000000;
 
     // Populate 48 entries (> 32 and > old static 16-entry limit)
     for i in 48 {

@@ -438,6 +438,7 @@ fn test_h3_grease_and_h2_reserved() {
     assert(rfc::is_h2_reserved_frame_in_h3(0x06)); // PING
     assert(rfc::is_h2_reserved_frame_in_h3(0x08)); // WINDOW_UPDATE
     assert(rfc::is_h2_reserved_frame_in_h3(0x09)); // CONTINUATION
+    assert(!rfc::is_h2_reserved_frame_in_h3(0x0A)); // ALTSVC is unknown extension in H3, not reserved
     assert(!rfc::is_h2_reserved_frame_in_h3(0x00)); // DATA is H3
     assert(!rfc::is_h2_reserved_frame_in_h3(0x01)); // HEADERS is H3
 
@@ -445,11 +446,13 @@ fn test_h3_grease_and_h2_reserved() {
     assert(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_SETTINGS));
     assert(rfc::is_allowed_on_control_stream(rfc::H3_FRAME_GOAWAY));
     assert(rfc::is_allowed_on_control_stream(0x21)); // GREASE allowed on control
+    assert(rfc::is_allowed_on_control_stream(0x0A)); // Unknown 0x0A ignored on control
     assert(!rfc::is_allowed_on_control_stream(rfc::H3_FRAME_DATA));
     assert(!rfc::is_allowed_on_control_stream(rfc::H3_FRAME_HEADERS));
 
     assert(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_DATA));
     assert(rfc::is_allowed_on_request_stream(rfc::H3_FRAME_HEADERS));
+    assert(rfc::is_allowed_on_request_stream(0x0A)); // Unknown 0x0A ignored on request
     assert(!rfc::is_allowed_on_request_stream(rfc::H3_FRAME_SETTINGS));
     assert(!rfc::is_allowed_on_request_stream(rfc::H3_FRAME_GOAWAY));
     print("H3_RULES_AND_GREASE: OK");

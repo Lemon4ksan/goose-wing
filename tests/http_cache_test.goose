@@ -131,6 +131,22 @@ fn test_cache_control_parsing_and_overflow(t: lit::T&) {
         wing::append_header(map_ws_cdn, "CDN-Cache-Control", "   ,  ");
         let cc_ws_cdn = wing::parse_targeted_cache_control_headers(map_ws_cdn, "CDN");
         sub.assert_eq(cc_ws_cdn.max_age, 2400, "Whitespace/comma CDN-Cache-Control falls back to standard Cache-Control");
+
+        // RFC 9213 §3.1: Valid non-empty SF Dictionary with unrecognized directive (`none`) overrides Cache-Control: no-store
+        var map_none = wing::HeaderMap { .. };
+        wing::append_header(map_none, "Cache-Control", "no-store");
+        wing::append_header(map_none, "CDN-Cache-Control", "none");
+        let cc_none = wing::parse_targeted_cache_control_headers(map_none, "CDN");
+        sub.assert_false(wing::is_no_store(cc_none), "CDN-Cache-Control: none overrides Cache-Control: no-store per RFC 9213 §3.1");
+
+        // RFC 9213 §2.2 & §2.4: Full targeted header field names ("Edge-Cache-Control", "Surrogate-Control") also match
+        let cc_full = wing::parse_targeted_cache_control_headers(map, "Edge-Cache-Control");
+        sub.assert_eq(cc_full.max_age, 60, "Exact header name Edge-Cache-Control matches");
+        var map_surr = wing::HeaderMap { .. };
+        wing::append_header(map_surr, "Cache-Control", "no-store");
+        wing::append_header(map_surr, "Surrogate-Control", "max-age=300");
+        let cc_surr = wing::parse_targeted_cache_control_headers(map_surr, "Surrogate-Control");
+        sub.assert_eq(cc_surr.max_age, 300, "Exact non-suffixed targeted field Surrogate-Control matches per RFC 9213 §2.4");
     };
 }
 
@@ -142,10 +158,10 @@ fn test_cache_control_parsing_and_overflow(t: lit::T&) {
 fn test_freshness_math_and_clock_skew(t: lit::T&) {
     t.run("RFC 9111 §4.2.3 Age Calculations") { sub =>
         // Time points: request at t=100, response at t=102 (2s delay), date header t=100
-        let req_time = core::unix(100, 0);
-        let resp_time = core::unix(102, 0);
-        let cur_now = core::unix(112, 0); // 10s resident time
-        let date_time = core::unix(100, 0);
+        let req_time = 100;
+        let resp_time = 102;
+        let cur_now = 112; // 10s resident time
+        let date_time = 100;
 
         let apparent_age = wing::compute_apparent_age(resp_time, date_time); // 102 - 100 = 2
         sub.assert_eq(apparent_age, 2, "apparent_age == 2");
@@ -182,8 +198,8 @@ fn test_freshness_math_and_clock_skew(t: lit::T&) {
     };
 
     t.run("Freshness Lifetime Priority Hierarchy") { sub =>
-        let req_time = core::unix(100, 0);
-        let resp_time = core::unix(100, 0);
+        let req_time = 100;
+        let resp_time = 100;
         let ts = wing::new_cache_timestamps(req_time, resp_time, resp_time);
 
         // 1. Corrupted freshness sets lifetime to 0
@@ -238,7 +254,7 @@ fn test_freshness_math_and_clock_skew(t: lit::T&) {
         let lt_exp_inv = wing::compute_freshness_lifetime(cc_empty, hdrs_exp_inv, ts);
         sub.assert_eq(lt_exp_inv, 0, "Invalid Expires yields 0 freshness lifetime without falling back to Last-Modified heuristic");
 
-        let ts_mono = wing::with_monotonic(ts, core::monotonic_now(), core::monotonic_now(), core::monotonic_now());
+        let ts_mono = wing::with_monotonic(ts, 1000, 1000, 1000);
         sub.assert_true(ts_mono.has_monotonic, "with_monotonic sets has_monotonic");
     };
 }
@@ -290,7 +306,7 @@ fn test_etag_validators(t: lit::T&) {
         sub.assert_false(wing::match_if_match("W/\"v2.0\"", cached_weak), "If-Match rejects weak cached tag");
         sub.assert_true(wing::match_if_match("\"v2.0\"", cached), "If-Match succeeds for strong match");
 
-        let ir_ok = wing::evaluate_cache_if_range("\"v2.0\"", cached, core::unix(0, 0));
+        let ir_ok = wing::evaluate_cache_if_range("\"v2.0\"", cached, 0);
         sub.assert_true(ir_ok, "evaluate_cache_if_range matches cached etag");
     };
 }
@@ -348,9 +364,9 @@ fn test_vary_normalization_and_cve_2026_93750(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_2026_93748_max_stale_guards(t: lit::T&) {
     t.run("CVE-2026-93748: Blocking max-stale on must-revalidate / s-maxage / security-zeroed") { sub =>
-        let t_req = core::unix(100, 0);
-        let t_resp = core::unix(100, 0);
-        let t_now = core::unix(500, 0); // Well past expiration (stale)
+        let t_req = 100;
+        let t_resp = 100;
+        let t_now = 500; // Well past expiration (stale)
         let ts = wing::new_cache_timestamps(t_req, t_resp, t_now);
 
         var hdrs = wing::HeaderMap { .. };
@@ -410,7 +426,7 @@ fn test_cve_2026_93748_max_stale_guards(t: lit::T&) {
 fn test_cache_transaction_and_304_merge(t: lit::T&) {
     t.run("Lookup Miss -> Store -> Hit Lifecycle with Age Header") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
 
         // 1. Initial request -> Cache Miss
         let req = wing::new_get("https://example.com/api/data");
@@ -431,7 +447,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         sub.assert_eq(cache.entries.len, 1, "Cache entries count is 1");
 
         // 3. Second request 10 seconds later (t=1010) -> Cache Hit!
-        let t1 = core::unix(1010, 0);
+        let t1 = 1010;
         let dec_2 = wing::lookup(cache, req, t1);
         sub.assert_true(dec_2.kind == wing::LookupResultKind.Hit, "Subsequent lookup is Hit");
         sub.assert_eq(dec_2.cached_response.status_code, 200, "Cached response status 200");
@@ -444,7 +460,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
 
     t.run("Stale Entry -> Conditional Revalidation -> 304 Merge") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
 
         let req = wing::new_get("https://example.com/resource");
         var resp = wing::Response { .. };
@@ -460,7 +476,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         wing::on_response(cache, req, resp, ts0);
 
         // Advance time to t=1200 (stale by 140s)
-        let t_stale = core::unix(1200, 0);
+        let t_stale = 1200;
         let dec_stale = wing::lookup(cache, req, t_stale);
         sub.assert_true(dec_stale.kind == wing::LookupResultKind.Revalidate, "Lookup returns Revalidate");
         sub.assert_bytes_eq(wing::get_header(dec_stale.conditional_headers, "If-None-Match"), "\"tag-abc\"", "If-None-Match built");
@@ -490,7 +506,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
 
     t.run("304 Not Modified Freshening Keeps Entry Fresh on Subsequent Lookup") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
 
         let req = wing::new_get("https://example.com/freshness-test");
         var resp = wing::Response { .. };
@@ -504,7 +520,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         wing::on_response(cache, req, resp, ts0);
 
         // At t=4600 (1 hour later), cache is stale
-        let t_stale = core::unix(4600, 0);
+        let t_stale = 4600;
         let dec_stale = wing::lookup(cache, req, t_stale);
         sub.assert_true(dec_stale.kind == wing::LookupResultKind.Revalidate, "Lookup at t=4600 requires revalidation");
 
@@ -513,13 +529,13 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
         resp_304.status_code = 304;
         wing::set_header(resp_304, "Cache-Control", "max-age=60");
 
-        let t_resp_304 = core::unix(4601, 0);
+        let t_resp_304 = 4601;
         let ts_304 = wing::new_cache_timestamps(t_stale, t_resp_304, t_resp_304);
         let dec_freshen = wing::on_response(cache, req, resp_304, ts_304, dec_stale.entry_idx);
         sub.assert_true(dec_freshen.kind == wing::ResponseDecisionKind.FreshenAndReturn, "Freshened cached entry");
 
         // 1 second later at t=4602: MUST BE FRESH HIT!
-        let t_subsequent = core::unix(4602, 0);
+        let t_subsequent = 4602;
         let dec_sub = wing::lookup(cache, req, t_subsequent);
         sub.assert_true(dec_sub.kind == wing::LookupResultKind.Hit, "Subsequent lookup after 304 merge must be Hit, not expired");
         let age_sub = wing::header(dec_sub.cached_response, "Age");
@@ -535,7 +551,7 @@ fn test_cache_transaction_and_304_merge(t: lit::T&) {
 fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
     t.run("only-if-cached Returns 504 on Cache Miss and Stale") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
 
         var req = wing::new_get("https://example.com/missing");
         wing::set_header(req, "Cache-Control", "only-if-cached");
@@ -547,7 +563,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
     t.run("must-understand Status Whitelist Protection") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let req = wing::new_get("https://example.com/custom");
 
         // Unknown status code 299 with must-understand -> MUST NOT be stored
@@ -564,7 +580,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
     t.run("HEAD vs GET Separation (RFC 9111 §4.3.5)") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
 
         // Store a HEAD response
         var req_head = wing::new_request("HEAD", "https://example.com/asset.png");
@@ -586,7 +602,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
     t.run("Unsafe Method Cascade Invalidation (RFC 9111 §4.4)") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         // Store two cached entries for same origin
@@ -629,7 +645,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
     t.run("Relative Location and Content-Location Invalidation") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         let req_child = wing::new_get("https://example.com/posts/42");
@@ -654,7 +670,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
     t.run("Non-Heuristic Status Codes Require Explicit Freshness (RFC 9111 §3)") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         // 500 without Cache-Control -> MUST NOT store
@@ -681,7 +697,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
     t.run("LRU Integrity and Slot Reuse After Invalidation") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         // Store 3 items
@@ -732,7 +748,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
 
     t.run("Qualified no-cache=\"Field\" Does Not Force Revalidation of Stored Response") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         let req = wing::new_get("https://example.com/qualified-no-cache");
@@ -752,7 +768,7 @@ fn test_rfc9111_special_behaviors_and_invalidation(t: lit::T&) {
         sub.assert_bytes_eq(kept_pub, "hello", "X-Public was kept");
 
         // Next request within 10s: MUST BE HIT (not forced revalidation)
-        let t1 = core::unix(1010, 0);
+        let t1 = 1010;
         let dec = wing::lookup(cache, req, t1);
         sub.assert_eq(dec.kind, wing::LookupResultKind.Hit, "Qualified no-cache allows Hit within freshness lifetime");
     };
@@ -877,7 +893,7 @@ fn test_cache_groups(t: lit::T&) {
 
     t.run("Store Path Attaches Cache-Groups to CachedEntry (RFC 9875 §2)") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         let req = wing::new_get("https://example.com/app.js");
@@ -897,7 +913,7 @@ fn test_cache_groups(t: lit::T&) {
 
     t.run("Group Invalidation via invalidate_group and Cache-Group-Invalidation (RFC 9875 §3)") { sub =>
         var cache = wing::new_http_cache();
-        let t0 = core::unix(1000, 0);
+        let t0 = 1000;
         let ts = wing::new_cache_timestamps(t0, t0, t0);
 
         // Two entries tagged "catalog", one tagged "user-42"
@@ -1019,8 +1035,8 @@ fn test_rfc5861_stale_extensions(t: lit::T&) {
     t.run("1. RFC 5861 Section 3: stale-while-revalidate Cache Decision") { sub =>
         var cache = wing::new_http_cache();
         var ts = wing::CacheTimestamps {
-            request_time:  core::unix(1700000000, 0),
-            response_time: core::unix(1700000001, 0),
+            request_sec:  1700000000,
+            response_sec: 1700000001,
             ..
         };
 
@@ -1036,20 +1052,20 @@ fn test_rfc5861_stale_extensions(t: lit::T&) {
         sub.assert_eq(dec_store.kind, wing::ResponseDecisionKind.StoreAndReturn, "Initial response stored");
 
         // 1. Query at t = +30s (Fresh: within max-age=60)
-        let t_fresh = core::unix(1700000030, 0);
+        let t_fresh = 1700000030;
         let dec_fresh = wing::lookup(cache, req, t_fresh);
         sub.assert_eq(dec_fresh.kind, wing::LookupResultKind.Hit, "Fresh hit");
         sub.assert_false(dec_fresh.revalidate_in_background, "Background revalidation not needed yet");
 
         // 2. Query at t = +100s (Stale, but within stale-while-revalidate=120, total window 180s)
-        let t_stale_swr = core::unix(1700000100, 0);
+        let t_stale_swr = 1700000100;
         let dec_swr = wing::lookup(cache, req, t_stale_swr);
         sub.assert_eq(dec_swr.kind, wing::LookupResultKind.Hit, "Stale hit permitted under stale-while-revalidate");
         sub.assert_true(dec_swr.revalidate_in_background, "Flagged for background revalidation per RFC 5861");
         sub.assert_bytes_eq(dec_swr.cached_response.body[..], "Feed Content V1", "Served cached payload");
 
         // 3. Query at t = +200s (Beyond max-age + stale-while-revalidate = 180s)
-        let t_expired = core::unix(1700000200, 0);
+        let t_expired = 1700000200;
         let dec_exp = wing::lookup(cache, req, t_expired);
         sub.assert_eq(dec_exp.kind, wing::LookupResultKind.Revalidate, "Expired requires immediate synchronous revalidation");
     };
@@ -1057,8 +1073,8 @@ fn test_rfc5861_stale_extensions(t: lit::T&) {
     t.run("2. RFC 5861 Section 4: stale-if-error Fallback on 5xx Origin Failure") { sub =>
         var cache = wing::new_http_cache();
         var ts = wing::CacheTimestamps {
-            request_time:  core::unix(1700000000, 0),
-            response_time: core::unix(1700000001, 0),
+            request_sec:  1700000000,
+            response_sec: 1700000001,
             ..
         };
 
@@ -1075,7 +1091,7 @@ fn test_rfc5861_stale_extensions(t: lit::T&) {
 
         // At t = +150s, entry is stale (max-age=60 expired)
         // Client performs revalidation request to origin
-        let t_reval = core::unix(1700000150, 0);
+        let t_reval = 1700000150;
         let dec_req = wing::lookup(cache, req, t_reval);
         sub.assert_eq(dec_req.kind, wing::LookupResultKind.Revalidate, "Entry requires revalidation");
 
@@ -1083,8 +1099,8 @@ fn test_rfc5861_stale_extensions(t: lit::T&) {
         var resp_503 = wing::Response { .. };
         resp_503.status_code = 503;
         var ts_503 = wing::CacheTimestamps {
-            request_time:  t_reval,
-            response_time: t_reval,
+            request_sec:  t_reval,
+            response_sec: t_reval,
             ..
         };
 
@@ -1093,10 +1109,10 @@ fn test_rfc5861_stale_extensions(t: lit::T&) {
         sub.assert_bytes_eq(dec_err.response.body[..], "Price: $42.00", "Cached prices returned to caller despite 503");
 
         // At t = +500s, beyond max-age (60) + stale-if-error (300) = 360s
-        let t_expired_err = core::unix(1700000500, 0);
+        let t_expired_err = 1700000500;
         var ts_500 = wing::CacheTimestamps {
-            request_time:  t_expired_err,
-            response_time: t_expired_err,
+            request_sec:  t_expired_err,
+            response_sec: t_expired_err,
             ..
         };
         let dec_exp_err = wing::on_response(cache, req, resp_503, ts_500, dec_req.entry_idx);
@@ -1564,7 +1580,7 @@ fn test_http_signatures(t: lit::T&) {
         let ok_base = wing::build_signature_base(req, params, sig_base);
         sub.assert_true(ok_base, "Signature base with @query built");
         sub.assert_contains(sig_base[..], "\"@query\": ?filter=active&sort=desc\n", "Contains @query");
-        sub.assert_contains(sig_base[..], "\"x-custom\": spaced value\n", "Whitespace trimmed and collapsed");
+        sub.assert_contains(sig_base[..], "\"x-custom\": spaced   value\n", "Leading/trailing OWS trimmed while preserving internal whitespace per RFC 9421 §2.1");
 
         let key = "hmac_key_test_secret_32_bytes!!";
         let sign_ok = wing::sign_http_request(req, params, key);
@@ -1808,7 +1824,7 @@ fn test_incremental_stream_reader(t: lit::T&) {
         // Chunked stream with small max_bytes reads retaining unconsumed remainder and exposing trailers
         var resp_chunked = wing::Response { status_code: 200, .. };
         wing::set_header(resp_chunked, "Transfer-Encoding", "chunked");
-        resp_chunked.body.append("10\r\n0123456789abcdef\r\n0\r\nExpires: 0\r\nX-Checksum: sha256-abc\r\n\r\n");
+        resp_chunked.body.append("10\r\n0123456789abcdef\r\n0\r\nServer-Timing: app;dur=1.2\r\nX-Checksum: sha256-abc\r\n\r\n");
 
         var reader_ch = wing::new_stream_reader(resp_chunked);
         var part1: u8[>..] = [];
@@ -1836,7 +1852,7 @@ fn test_incremental_stream_reader(t: lit::T&) {
         var resp_target = wing::Response { status_code: 200, .. };
         wing::copy_trailers_to_response(reader_ch, resp_target);
         sub.assert_eq(resp_target.trailers.entries.len, 2, "trailers copied to Response object");
-        sub.assert_bytes_eq(wing::trailer(resp_target, "expires"), "0", "Response has expires trailer");
+        sub.assert_bytes_eq(wing::trailer(resp_target, "server-timing"), "app;dur=1.2", "Response has server-timing trailer");
     };
 }
 
@@ -2043,7 +2059,7 @@ fn test_f013_http_cache_invariants(t: lit::T&) {
         wing::set_header(head_res, "Cache-Control", "max-age=3600");
         let dec2 = wing::on_response(cache, head_req, head_res, ts, -1);
 
-        let look = wing::lookup(cache, get_req, ts.response_time);
+        let look = wing::lookup(cache, get_req, ts.response_sec);
         sub.assert_true(look.kind == wing::LookupResultKind.Hit, "Subsequent GET must still hit cached GET entry");
         sub.assert_bytes_eq(look.cached_response.body[..], "cached-get-body", "Cached GET body must remain intact after HEAD");
     };
@@ -2121,9 +2137,9 @@ fn test_f029_f031_http_cache_and_targeted_cache(t: lit::T&) {
         wing::parse_cache_control_str("max-age=10", req_cc);
         let hdrs = wing::HeaderMap { .. };
         let ts = wing::CacheTimestamps {
-            request_time:  core::Time { wall_sec: 1000, .. },
-            response_time: core::Time { wall_sec: 1000, .. },
-            now:           core::Time { wall_sec: 1100, .. },
+            request_sec:  1000,
+            response_sec: 1000,
+            now_sec:      1100,
             ..
         };
         let metrics = wing::evaluate_freshness(resp_cc, req_cc, hdrs, ts);
@@ -2157,9 +2173,9 @@ fn test_f029_f031_http_cache_and_targeted_cache(t: lit::T&) {
     t.run("F031: Cross-origin Cache-Group-Invalidation isolation & invalid Targeted Cache-Control fallback") { sub =>
         var cache = wing::new_http_cache();
         let ts = wing::CacheTimestamps {
-            request_time:  core::Time { wall_sec: 1000, .. },
-            response_time: core::Time { wall_sec: 1000, .. },
-            now:           core::Time { wall_sec: 1000, .. },
+            request_sec:  1000,
+            response_sec: 1000,
+            now_sec:      1000,
             ..
         };
         var req_a = wing::new_request("GET", "https://victim.example/asset.js");
@@ -2396,14 +2412,14 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         resp1.body.append("cached-item-42");
 
         let ts = wing::CacheTimestamps {
-            request_time:  core::unix(1000, 0),
-            response_time: core::unix(1000, 0),
-            now:           core::unix(1000, 0),
+            request_sec:  1000,
+            response_sec: 1000,
+            now_sec:      1000,
         };
         let _ = cache.on_response(req1, resp1, ts, -1);
 
         var req2 = wing::new_request("GET", "https://cdn.example.com/item?id=42&utm_source=social");
-        let dec = cache.lookup(req2, core::unix(1010, 0));
+        let dec = cache.lookup(req2, 1010);
         sub.assert_true(dec.kind == wing::LookupResultKind.Hit, "NVS equivalent URL hits fresh cache entry");
         sub.assert_bytes_eq(dec.cached_response.text(), "cached-item-42", "Returned cached body across differing utm_source");
     };
@@ -2417,9 +2433,9 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         resp_full.body.append("0123456789ABCDEF");
 
         let ts = wing::CacheTimestamps {
-            request_time:  core::unix(2000, 0),
-            response_time: core::unix(2000, 0),
-            now:           core::unix(2000, 0),
+            request_sec:  2000,
+            response_sec: 2000,
+            now_sec:      2000,
         };
         let _ = cache.on_response(req_full, resp_full, ts, -1);
 
@@ -2427,7 +2443,7 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         var req_range = wing::new_request("GET", "https://cdn.example.com/video.mp4");
         wing::set_header(req_range, "Range", "bytes=4-9");
         wing::set_header(req_range, "If-Range", "\"v1-strong\"");
-        let dec_206 = cache.lookup(req_range, core::unix(2010, 0));
+        let dec_206 = cache.lookup(req_range, 2010);
         sub.assert_true(dec_206.kind == wing::LookupResultKind.Hit, "Range hit served from cache");
         sub.assert_eq(dec_206.cached_response.status_code, 206, "Synthesized 206 Partial Content");
         sub.assert_bytes_eq(dec_206.cached_response.text(), "456789", "Sliced bytes 4..=9");
@@ -2436,7 +2452,7 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         // 2. Unsatisfiable Range -> 416 Range Not Satisfiable
         var req_416 = wing::new_request("GET", "https://cdn.example.com/video.mp4");
         wing::set_header(req_416, "Range", "bytes=50-60");
-        let dec_416 = cache.lookup(req_416, core::unix(2010, 0));
+        let dec_416 = cache.lookup(req_416, 2010);
         sub.assert_eq(dec_416.cached_response.status_code, 416, "Synthesized 416 on out-of-bounds range");
         sub.assert_bytes_eq(dec_416.cached_response.header("Content-Range"), "bytes */16", "416 Content-Range");
 
@@ -2444,7 +2460,7 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         var req_miss = wing::new_request("GET", "https://cdn.example.com/video.mp4");
         wing::set_header(req_miss, "Range", "bytes=0-3");
         wing::set_header(req_miss, "If-Range", "\"v2-other\"");
-        let dec_miss = cache.lookup(req_miss, core::unix(2010, 0));
+        let dec_miss = cache.lookup(req_miss, 2010);
         sub.assert_true(dec_miss.kind == wing::LookupResultKind.Hit, "If-Range mismatch serves full cached entry");
         sub.assert_eq(dec_miss.cached_response.status_code, 200, "If-Range mismatch preserves 200 OK status");
         sub.assert_bytes_eq(dec_miss.cached_response.text(), "0123456789ABCDEF", "If-Range mismatch returns full body");
@@ -2481,7 +2497,7 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         resp.set_header("Fastly-Cache-Control", "public, max-age=300");
         resp.body.append("edge-cached-body");
 
-        let ts = wing::new_cache_timestamps(core::unix(1000, 0), core::unix(1000, 0), core::unix(1000, 0));
+        let ts = wing::new_cache_timestamps(1000, 1000, 1000);
         let store_dec = cache.on_response(req, resp, ts);
         sub.assert_true(store_dec.kind == wing::ResponseDecisionKind.StoreAndReturn, "Stored targeted entry");
         sub.assert_true(
@@ -2490,7 +2506,7 @@ fn test_nvs_cache_equivalence_range_and_304_security(t: lit::T&) {
         );
 
         // At t=1050 (past standard max-age=10, within Fastly-Cache-Control max-age=300), must still HIT!
-        let hit_dec = cache.lookup(req, core::unix(1050, 0));
+        let hit_dec = cache.lookup(req, 1050);
         sub.assert_true(hit_dec.kind == wing::LookupResultKind.Hit, "Shared cache honors Fastly-Cache-Control max-age=300");
         sub.assert_true(
             core::contains_fold(hit_dec.cached_response.header("Cache-Status"), "Fastly; hit"),

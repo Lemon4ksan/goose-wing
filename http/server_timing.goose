@@ -27,6 +27,19 @@ fn clear(rec: ServerTimingRecorder&) {
     rec.spans.clear();
 }
 
+// RFC 9110 Section 5.6.4: Quoted Strings - Reject non-HTAB control octets and enforce capacity.
+inline fn copy_valid_timing_desc(src: const u8[:], dst: u8[..64]&) -> bool {
+    dst.clear();
+    for b in src {
+        if b == '\r' || b == '\n' || b == 0 { continue; }
+        guard (b == '\t' || (b >= 0x20 && b != 0x7F)) && dst.try_push(b) else {
+            dst.clear();
+            return false;
+        }
+    }
+    return true;
+}
+
 // Starts a monotonic span in `rec` and returns its slot index (or -1 if full/invalid).
 fn start_span(
     rec:    ServerTimingRecorder&,
@@ -38,7 +51,7 @@ fn start_span(
     var sp = ServerTimingSpan { start_ns: now_ns, active: true, .. };
     guard sp.name.try_set(name) else { return -1; }
     if desc.len > 0 {
-        sanitize_header_bytes(desc, sp.desc);
+        guard copy_valid_timing_desc(desc, sp.desc) else { return -1; }
     }
     let idx = rec.spans.len as i32;
     guard rec.spans.try_push(sp) else { return -1; }
@@ -67,7 +80,7 @@ fn record_duration_ns(
     var sp = ServerTimingSpan { dur_ns: dur_ns, has_dur: true, .. };
     guard sp.name.try_set(name) else { return false; }
     if desc.len > 0 {
-        sanitize_header_bytes(desc, sp.desc);
+        guard copy_valid_timing_desc(desc, sp.desc) else { return false; }
     }
     return rec.spans.try_push(sp);
 }
@@ -94,6 +107,9 @@ fn format_dur_ms_tenths<B>(dur_ns: u64, out: B&) -> bool {
 }
 
 inline fn append_timing_desc_quoted<B>(desc: const u8[:], out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     guard out.try_append(";desc=\"") else { return false; }
     for b in desc {
         if (b == '"' || b == '\\') && !out.try_push('\\') {
@@ -101,7 +117,9 @@ inline fn append_timing_desc_quoted<B>(desc: const u8[:], out: B&) -> bool {
         }
         guard out.try_push(b) else { return false; }
     }
-    return out.try_push('"');
+    guard out.try_push('"') else { return false; }
+    committed = true;
+    return true;
 }
 
 // Serializes recorded spans into W3C `Server-Timing` header syntax (quoted-string safe).

@@ -423,11 +423,19 @@ inline fn is_non_canonical_ipv4(host: const u8[:]) -> bool {
 }
 
 inline fn is_forbidden_internal_domain(host: const u8[:]) -> bool {
-    if host == "localhost" || host == "metadata.google.internal" || host == "instance-data" { return true; }
-    if core::ends_with(host, ".localhost") || core::ends_with(host, ".local") { return true; }
-    if core::ends_with(host, ".internal") || core::ends_with(host, ".lan") { return true; }
-    if core::ends_with(host, ".corp") { return true; }
+    let h = host.trim_end_byte('.');
+    if h.eq_ascii_fold("localhost") || h.eq_ascii_fold("metadata.google.internal") || h.eq_ascii_fold("instance-data") {
+        return true;
+    }
+    if h.ends_with_fold(".localhost") || h.ends_with_fold(".local") { return true; }
+    if h.ends_with_fold(".internal") || h.ends_with_fold(".lan") { return true; }
+    if h.ends_with_fold(".corp") { return true; }
     return false;
+}
+
+inline fn is_cloud_metadata_domain(host: const u8[:]) -> bool {
+    let h = host.trim_end_byte('.');
+    return h.eq_ascii_fold("metadata.google.internal") || h.eq_ascii_fold("instance-data");
 }
 
 inline fn is_forbidden_internal_host(host: const u8[:]) -> bool {
@@ -458,12 +466,113 @@ fn is_dangerous_service_port(port_num: i32) -> bool {
            port_num == 28017;    // MongoDB Web Status
 }
 
-fn is_cloud_metadata_or_reserved_ip(ip_str: const u8[:]) -> bool {
+inline fn is_cloud_metadata_or_reserved_ipv4_octets(o0: i32, o1: i32) -> bool {
+    return o0 == 0 || (o0 == 169 && o1 == 254) || o0 >= 224;
+}
+
+fn is_cloud_metadata_ipv4_suffix(suffix: const u8[:]) -> bool {
     var octets: u8[4] = [0, 0, 0, 0];
-    if parse_flexible_ipv4(ip_str, octets) {
-        return octets[0] == 0 || (octets[0] == 169 && octets[1] == 254) || octets[0] >= 224;
+    if parse_flexible_ipv4(suffix, octets) {
+        return is_cloud_metadata_or_reserved_ipv4_octets(octets[0], octets[1]);
     }
-    return ip_str == "::" || ip_str == "[::]";
+    let p1, p2, has_colon = suffix.split_once_byte(':');
+    if !has_colon {
+        let val_low = parse_hex_u16(suffix);
+        guard val_low >= 0 else { return false; }
+        return is_cloud_metadata_or_reserved_ipv4_octets(0, 0);
+    }
+    guard p1.len > 0 && p2.len > 0 && !p2.contains_byte(':') else {
+        return false;
+    }
+    let val1 = parse_hex_u16(p1);
+    let val2 = parse_hex_u16(p2);
+    guard val1 >= 0 && val2 >= 0 else { return false; }
+    return is_cloud_metadata_or_reserved_ipv4_octets((val1 >> 8) & 0xFF, val1 & 0xFF);
+}
+
+inline fn is_cloud_metadata_mapped_or_nat64_ipv6(eff_ip: const u8[:]) -> bool, bool {
+    if starts_with(eff_ip, "::ffff:") || starts_with(eff_ip, "0:0:0:0:0:ffff:") {
+        let raw_sfx = if starts_with(eff_ip, "::ffff:") { eff_ip[7..] } else { eff_ip[15..] };
+        let suffix = if starts_with(raw_sfx, "0:") { raw_sfx[2..] } else { raw_sfx };
+        return true, is_cloud_metadata_ipv4_suffix(suffix);
+    }
+    if starts_with(eff_ip, "64:ff9b::") {
+        let suffix = eff_ip[9..];
+        let blocked = if suffix.len == 0 { true } else { is_cloud_metadata_ipv4_suffix(suffix) };
+        return true, blocked;
+    }
+    return false, false;
+}
+
+fn is_cloud_metadata_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
+    if eff_ip == "::" || starts_with(eff_ip, "ff") || eff_ip == "fd00:ec2::254" {
+        return true;
+    }
+    let matched_map, map_res = is_cloud_metadata_mapped_or_nat64_ipv6(eff_ip);
+    if matched_map {
+        return map_res;
+    }
+    if starts_with(eff_ip, "2002:") {
+        let rem = eff_ip[5..];
+        let p1, _, has_col = rem.split_once_byte(':');
+        let h1 = if has_col && p1.len > 0 { p1 } else { rem };
+        let hex_val1 = parse_hex_u16(h1);
+        if hex_val1 >= 0 {
+            return is_cloud_metadata_or_reserved_ipv4_octets((hex_val1 >> 8) & 0xFF, hex_val1 & 0xFF);
+        }
+    }
+    return false;
+}
+
+inline fn strip_ssrf_ip_brackets_and_zone(ip_str: const u8[:]) -> const u8[:] {
+    var clean_ip = ip_str;
+    if clean_ip.len > 2 && core::starts_with(clean_ip, "[") && core::ends_with(clean_ip, "]") {
+        let after_l, _ = clean_ip.strip_prefix("[");
+        let inner, _ = after_l.strip_suffix("]");
+        clean_ip = inner;
+    }
+    let before_pct, _, has_pct = clean_ip.split_once_byte('%');
+    if has_pct {
+        clean_ip = before_pct;
+    }
+    return clean_ip;
+}
+
+fn is_cloud_metadata_or_reserved_ip(ip_str: const u8[:]) -> bool {
+    guard ip_str.len > 0 else { return false; }
+    if is_cloud_metadata_domain(ip_str) {
+        return true;
+    }
+    let clean_ip = strip_ssrf_ip_brackets_and_zone(ip_str).trim_end_byte('.');
+    guard clean_ip.len > 0 && clean_ip.len <= 256 else { return false; }
+
+    var lower_buf: u8[..256] = [];
+    clean_ip.to_lower_ascii(lower_buf);
+    let norm_ip = lower_buf[..];
+
+    var octets: u8[4] = [0, 0, 0, 0];
+    if parse_flexible_ipv4(norm_ip, octets) {
+        return is_cloud_metadata_or_reserved_ipv4_octets(octets[0], octets[1]);
+    }
+    if norm_ip.contains_byte(':') {
+        var comp_buf: u8[..64] = [];
+        let ipv6_ok = core::parse_and_compress_ipv6(norm_ip, comp_buf);
+        let eff_ip = if ipv6_ok { comp_buf[..] } else { norm_ip };
+        return is_cloud_metadata_or_reserved_ipv6(eff_ip);
+    }
+    return false;
+}
+
+inline fn is_valid_resolved_ip_literal(ip_str: const u8[:]) -> bool {
+    guard ip_str.len > 0 && ip_str.len <= 256 else { return false; }
+    let clean_ip = strip_ssrf_ip_brackets_and_zone(ip_str);
+    guard clean_ip.len > 0 else { return false; }
+    if clean_ip.contains_byte(':') {
+        var comp_buf: u8[..64] = [];
+        return core::parse_and_compress_ipv6(clean_ip, comp_buf);
+    }
+    var octets: u8[4] = [0, 0, 0, 0];
+    return parse_flexible_ipv4(clean_ip, octets);
 }
 
 fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
@@ -487,6 +596,9 @@ fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardP
     }
 
     let host_str = url_val.hostname();
+    if is_cloud_metadata_domain(host_str) {
+        return RedirectError.SsrfBlockedIp;
+    }
     if policy.deny_local_network {
         if is_private_or_reserved_ip(host_str) {
             return RedirectError.SsrfBlockedIp;
@@ -500,7 +612,11 @@ fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardP
 
 fn validate_resolved_ips_against_ssrf(ips: const u8[:][:], policy: const SsrfGuardPolicy&) -> RedirectError {
     guard policy.enabled else { return RedirectError.None; }
+    guard ips.len > 0 else { return RedirectError.SsrfBlockedIp; }
     for ip in ips {
+        guard is_valid_resolved_ip_literal(ip) else {
+            return RedirectError.SsrfBlockedIp;
+        }
         let blocked = if policy.deny_local_network {
             is_private_or_reserved_ip(ip)
         } else {

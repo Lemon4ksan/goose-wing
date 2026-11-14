@@ -171,23 +171,30 @@ struct QuicHeaderOptions {
 //   src = [0x80, 0x00, 0x00, 0x00, 0x00, 0x04, ...], in_hdr = initial header
 //   returns: QuicHeader { header_type: VersionNegotiation, version: 0 }, ok = true
 fn parse_quic_version_negotiation(src: const u8[:], in_hdr: QuicHeader) -> QuicHeader, bool {
-    var hdr = in_hdr;
-    hdr.header_type = QuicHeaderType.VersionNegotiation;
-    guard src.len >= 7 else { return hdr, false; }
+    // RFC 9000 Section 17.2.1: Version Negotiation Packet - Header Form bit MUST be 1 and Version MUST be 0.
+    guard src.len >= 7
+        && (src[0] & 0x80) != 0
+        && core::read_be_u32(src, 1) == rfc::QUIC_VERSION_NEGOTIATION else {
+        return in_hdr, false;
+    }
     let dlen: i64 = src[5];
     let d_end = 6 + dlen;
     let s_start = 7 + dlen;
-    guard dlen <= rfc::QUIC_MAX_CID_LEN && s_start <= src.len else { return hdr, false; }
-    hdr.dcid.append(src[6..d_end]);
+    guard dlen <= rfc::QUIC_MAX_CID_LEN && s_start <= src.len else { return in_hdr, false; }
     let slen: i64 = src[d_end];
     let s_end = s_start + slen;
-    guard slen <= rfc::QUIC_MAX_CID_LEN && s_end <= src.len else { return hdr, false; }
-    hdr.scid.append(src[s_start..s_end]);
+    guard slen <= rfc::QUIC_MAX_CID_LEN && s_end <= src.len else { return in_hdr, false; }
 
-    // RFC 9000 §17.2.1: Version Negotiation packet MUST contain one or more 32-bit versions
+    // RFC 9000 Section 17.2.1: Version Negotiation Packet - Must contain one or more 32-bit versions.
     let rem_versions = src.len - s_end;
-    guard rem_versions >= 4 && (rem_versions & 3) == 0 else { return hdr, false; }
+    guard rem_versions >= 4 && (rem_versions & 3) == 0 else { return in_hdr, false; }
 
+    var hdr = in_hdr;
+    guard hdr.dcid.try_set(src[6..d_end]) && hdr.scid.try_set(src[s_start..s_end]) else {
+        return in_hdr, false;
+    }
+    hdr.header_type = QuicHeaderType.VersionNegotiation;
+    hdr.version = rfc::QUIC_VERSION_NEGOTIATION;
     hdr.header_len = s_end as u32;
     return hdr, true;
 }
@@ -225,9 +232,11 @@ fn parse_quic_long_cids(
         return false;
     }
 
+    guard dcid.try_set(src[d_start..d_end]) && scid.try_set(src[s_start..s_end]) else {
+        idx = initial_idx;
+        return false;
+    }
     idx = s_end;
-    dcid.append(src[d_start..d_end]);
-    scid.append(src[s_start..s_end]);
     return true;
 }
 
@@ -498,10 +507,12 @@ fn encode_quic_long_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8, pn_bi
 
 // Encodes a QUIC Long or Short header in unmasked form into out buffer.
 fn encode_quic_header<B>(out: B&, hdr: const QuicHeader&, pn_len: u8) -> bool {
-    guard pn_len >= 1 && pn_len <= 4 else { return false; }
+    // RFC 9000 Section 17.2.5: Retry Packet - Retry packets carry no packet number; permit pn_len == 0.
+    let is_retry = hdr.header_type == QuicHeaderType.Retry;
+    guard (is_retry && pn_len <= 4) || (pn_len >= 1 && pn_len <= 4) else { return false; }
     guard hdr.dcid.len <= rfc::QUIC_MAX_CID_LEN && hdr.scid.len <= rfc::QUIC_MAX_CID_LEN else { return false; }
 
-    let pn_bits = (pn_len - 1) & 0x03;
+    let pn_bits = if pn_len == 0 { 0 } else { (pn_len - 1) & 0x03 };
 
     if hdr.header_type != QuicHeaderType.OneRtt {
         return encode_quic_long_header(out, hdr, pn_len, pn_bits);

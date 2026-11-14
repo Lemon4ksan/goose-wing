@@ -16,38 +16,80 @@ import http.headers.chunked_fsm;
 
 // ---- RFC 9112 Chunked Transfer Framing -----------------------------------
 
+inline fn has_chunk_buf_space<B>(out: const B&, needed: i64) -> bool {
+    return needed >= 0 && core::sub_sat_i64(out.cap, out.len) >= needed;
+}
+
+inline fn has_chunk_buf_space(_out: const u8[>..]&, needed: i64) -> bool {
+    return needed >= 0;
+}
+
+inline fn count_chunk_hex_digits(len_val: i64) -> i64 {
+    var v = len_val;
+    var digits: i64 = 0;
+    while v > 0 {
+        v = v >> 4;
+        digits = core::add_sat_i64(digits, 1);
+    }
+    return max(digits, 1);
+}
+
+inline fn measure_chunked_payload_wire_len(
+    body:       const u8[:],
+    trailers:   const HeaderMap&,
+    chunk_size: i64,
+) -> i64 {
+    let step = if chunk_size > 0 { chunk_size } else { 4096 };
+    var total: i64 = 0;
+    if body.len > 0 {
+        var offset: i64 = 0;
+        while offset < body.len {
+            let end_off = min(core::add_sat_i64(offset, step), body.len);
+            let c_len = core::sub_sat_i64(end_off, offset);
+            let hex_digits = count_chunk_hex_digits(c_len);
+            let frame_len = core::add_sat_i64(hex_digits, core::add_sat_i64(c_len, 4));
+            total = core::add_sat_i64(total, frame_len);
+            offset = end_off;
+        }
+    }
+    total = core::add_sat_i64(total, 5);
+    for &e in trailers.entries {
+        let tname = entry_name(trailers, e);
+        let tval = entry_value(trailers, e);
+        if is_valid_header_name(tname) && is_valid_header_value(tval) && !rfc::is_disallowed_trailer_field(tname) {
+            let tr_len = core::add_sat_i64(tname.len, core::add_sat_i64(tval.len, 4));
+            total = core::add_sat_i64(total, tr_len);
+        }
+    }
+    return total;
+}
+
 // Encodes a single chunk frame: `<hex-size>\r\n<data>\r\n`
-fn encode_chunk<B>(data: const u8[:], out: B&) {
-    guard data.len > 0 else { return; }
+fn encode_chunk<B>(data: const u8[:], out: B&) -> bool {
+    guard data.len > 0 else { return true; }
     let chunk_len = data.len as! u64;
-    chunk_len.format_u64_hex(out);
-    out.push('\r');
-    out.push('\n');
-    out.append(data);
-    out.push('\r');
-    out.push('\n');
+    var hex_buf: u8[..24] = [];
+    chunk_len.format_u64_hex(hex_buf);
+    let needed = core::add_sat_i64(data.len, core::add_sat_i64(hex_buf.len, 4));
+    guard has_chunk_buf_space(out, needed) else { return false; }
+    return out.try_append(hex_buf[..]) && out.try_append("\r\n") &&
+        out.try_append(data) && out.try_append("\r\n");
 }
 
 // Encodes the terminal 0-size chunk: `0\r\n\r\n` (or with trailers)
-fn encode_chunk_end<B>(out: B&) {
-    out.push('0');
-    out.push('\r');
-    out.push('\n');
-    out.push('\r');
-    out.push('\n');
+fn encode_chunk_end<B>(out: B&) -> bool {
+    return out.try_append("0\r\n\r\n");
 }
 
 // Encodes trailer header: `<name>: <value>\r\n` (RFC 9112 §7.1.2)
-fn encode_chunk_trailer<B>(name: const u8[:], val: const u8[:], out: B&) {
+fn encode_chunk_trailer<B>(name: const u8[:], val: const u8[:], out: B&) -> bool {
     guard is_valid_header_name(name) && is_valid_header_value(val) && !rfc::is_disallowed_trailer_field(name) else {
-        return;
+        return false;
     }
-    out.append(name);
-    out.push(':');
-    out.push(' ');
-    out.append(val);
-    out.push('\r');
-    out.push('\n');
+    let needed = core::add_sat_i64(name.len, core::add_sat_i64(val.len, 4));
+    guard has_chunk_buf_space(out, needed) else { return false; }
+    return out.try_append(name) && out.try_append(": ") &&
+        out.try_append(val) && out.try_append("\r\n");
 }
 
 // Encodes an entire body buffer as RFC 9112 chunked transfer frames with optional trailers.
@@ -56,29 +98,31 @@ fn encode_chunked_payload<B>(
     trailers:   const HeaderMap&,
     chunk_size: i64,
     out:        B&,
-) {
+) -> bool {
+    let total_needed = measure_chunked_payload_wire_len(body, trailers, chunk_size);
+    guard has_chunk_buf_space(out, total_needed) else { return false; }
     let step = if chunk_size > 0 { chunk_size } else { 4096 };
     if body.len > 0 {
         var offset: i64 = 0;
         while offset < body.len {
             let end_off = min(offset + step, body.len);
-            encode_chunk(body[offset..end_off], out);
+            guard encode_chunk(body[offset..end_off], out) else { return false; }
             offset = end_off;
         }
     }
 
     if trailers.entries.len == 0 {
-        encode_chunk_end(out);
-    } else {
-        out.push('0');
-        out.push('\r');
-        out.push('\n');
-        for &e in trailers.entries {
-            encode_chunk_trailer(entry_name(trailers, e), entry_value(trailers, e), out);
-        }
-        out.push('\r');
-        out.push('\n');
+        return encode_chunk_end(out);
     }
+    guard out.try_append("0\r\n") else { return false; }
+    for &e in trailers.entries {
+        let tname = entry_name(trailers, e);
+        let tval = entry_value(trailers, e);
+        if is_valid_header_name(tname) && is_valid_header_value(tval) && !rfc::is_disallowed_trailer_field(tname) {
+            guard encode_chunk_trailer(tname, tval, out) else { return false; }
+        }
+    }
+    return out.try_append("\r\n");
 }
 
 // ---- Chunk Stream Writer (for Chunked Uploads) ---------------------------
@@ -106,13 +150,20 @@ fn finish_chunk_writer(writer: ChunkWriter&) {
     guard !writer.finished else { return; }
     writer.finished = true;
     if writer.trailers.entries.len == 0 {
-        encode_chunk_end(writer.buffer);
+        let _ = encode_chunk_end(writer.buffer);
     } else {
         writer.buffer.push('0');
         writer.buffer.push('\r');
         writer.buffer.push('\n');
-        for &e in writer.trailers.entries {
-            encode_chunk_trailer(entry_name(writer.trailers, e), entry_value(writer.trailers, e), writer.buffer);
+        for i in writer.trailers.entries.len {
+            let e = writer.trailers.entries[i];
+            var name_buf: u8[..256]  = [];
+            var val_buf:  u8[..8192] = [];
+            guard name_buf.try_set(entry_name(writer.trailers, e)) &&
+                val_buf.try_set(entry_value(writer.trailers, e)) else {
+                continue;
+            }
+            let _ = encode_chunk_trailer(name_buf[..], val_buf[..], writer.buffer);
         }
         writer.buffer.push('\r');
         writer.buffer.push('\n');

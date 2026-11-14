@@ -499,6 +499,7 @@ fn encode_connection_close_frame<B>(
 // ---- Dedicated Frame Decoders (RFC 9000 Section 19) ----------------------
 
 // Decodes ACK frame range intervals, ensuring monotonically descending bounds (RFC 9000 §19.3.1).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [gap=0, rlen=2], idx = 0, range_cnt = 1, largest_acked = 10, first_range = 2
@@ -510,6 +511,9 @@ inline fn decode_ack_ranges(
     largest_acked: u64,
     first_range:   u64,
 ) -> bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     var cur_smallest = largest_acked - first_range;
     var r_idx: u64 = 0;
     while r_idx < range_cnt {
@@ -524,30 +528,40 @@ inline fn decode_ack_ranges(
         cur_smallest = cur_largest - rlen;
         r_idx++;
     }
+    committed = true;
     return true;
 }
 
 // Decodes ACK ECN counters (ECT0, ECT1, ECN-CE) directly from slice with cursor (RFC 9000 §19.3.2).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [ect0=0, ect1=0, ce=0], idx = 0
 //   returns: ok = true, idx = 3
 inline fn decode_ack_ecn_counts(src: const u8[:], idx: i64&) -> bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let _, ok_e0 = quic_decode_varint_cursor(src, idx);
     guard ok_e0 else { return false; }
     let _, ok_e1 = quic_decode_varint_cursor(src, idx);
     guard ok_e1 else { return false; }
     let _, ok_ce = quic_decode_varint_cursor(src, idx);
-    return ok_ce;
+    guard ok_ce else { return false; }
+    committed = true;
+    return true;
 }
 
 // Decodes an ACK (0x02) or ACK_ECN (0x03) frame directly from slice with cursor (RFC 9000 §19.3).
-// Assumes the frame type varint has already been consumed.
+// Assumes the frame type varint has already been consumed; restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [largest_acked=10, delay=0, range_count=0, first_range=5], idx = 0, is_ecn = false
 //   returns: QuicFrame { frame_type: Ack, offset: 10, length: 5 }, ok = true
 inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool, frame_start: i64 = 0) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let largest_acked, ok_la = quic_decode_varint_cursor(src, idx);
     guard ok_la else { return QuicFrame { .. }, false; }
 
@@ -571,6 +585,7 @@ inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool, fra
     let k = if is_ecn { QuicFrameType.AckEcn } else { QuicFrameType.Ack };
     let raw = if is_ecn { rfc::QUIC_FRAME_ACK_ECN } else { rfc::QUIC_FRAME_ACK };
     let payload_slice = if frame_start >= 0 && frame_start <= idx { src[frame_start..idx] } else { src[..0] };
+    committed = true;
     return QuicFrame {
         frame_type: k,
         raw_type:   raw,
@@ -588,12 +603,16 @@ inline fn decode_ack_frame_cursor(src: const u8[:], idx: i64&, is_ecn: bool, fra
 //   src = [0x04, 't', 'o', 'k', 'n'], idx = 0
 //   returns: QuicFrame { frame_type: NewToken, length: 4, payload: "tokn" }, ok = true, idx = 5
 inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let tlen, ok_len = quic_decode_varint_cursor(src, idx);
     guard ok_len && tlen > 0 else { return QuicFrame { .. }, false; }
     let ilen = tlen as i64;
     guard ilen >= 0 && ilen <= src.len - idx else { return QuicFrame { .. }, false; }
     let token = src[idx..idx + ilen];
     idx += ilen;
+    committed = true;
     return QuicFrame {
         frame_type: QuicFrameType.NewToken,
         raw_type:   rfc::QUIC_FRAME_NEW_TOKEN,
@@ -603,11 +622,15 @@ inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool
 }
 
 // Decodes a RESET_STREAM frame (0x04) directly from slice with cursor (RFC 9000 §19.4).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [stream_id=4, error_code=0x10c, final_size=1024], idx = 0
 //   returns: QuicResetStreamFrame { stream_id: 4, error_code: 0x10c, final_size: 1024 }, ok = true
 inline fn decode_reset_stream_frame(src: const u8[:], idx: i64&) -> QuicResetStreamFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let stream_id, ok_sid = quic_decode_varint_cursor(src, idx);
     guard ok_sid else { return QuicResetStreamFrame { .. }, false; }
 
@@ -617,6 +640,7 @@ inline fn decode_reset_stream_frame(src: const u8[:], idx: i64&) -> QuicResetStr
     let final_size, ok_fs = quic_decode_varint_cursor(src, idx);
     guard ok_fs else { return QuicResetStreamFrame { .. }, false; }
 
+    committed = true;
     return QuicResetStreamFrame {
         stream_id:  stream_id,
         error_code: error_code,
@@ -625,17 +649,22 @@ inline fn decode_reset_stream_frame(src: const u8[:], idx: i64&) -> QuicResetStr
 }
 
 // Decodes a STOP_SENDING frame (0x05) directly from slice with cursor (RFC 9000 §19.5).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [stream_id=4, error_code=0x10c], idx = 0
 //   returns: QuicStopSendingFrame { stream_id: 4, error_code: 0x10c }, ok = true
 inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> QuicStopSendingFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let stream_id, ok_sid = quic_decode_varint_cursor(src, idx);
     guard ok_sid else { return QuicStopSendingFrame { .. }, false; }
 
     let error_code, ok_err = quic_decode_varint_cursor(src, idx);
     guard ok_err else { return QuicStopSendingFrame { .. }, false; }
 
+    committed = true;
     return QuicStopSendingFrame {
         stream_id:  stream_id,
         error_code: error_code,
@@ -643,7 +672,7 @@ inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> QuicStopSend
 }
 
 // Decodes a CRYPTO frame (0x06) directly from slice with cursor (RFC 9000 Section 19.6).
-// Assumes the frame type varint (0x06) has already been consumed.
+// Assumes the frame type varint (0x06) has already been consumed; restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [0x00, 0x04, 't', 'e', 's', 't'], idx = 0
@@ -651,6 +680,9 @@ inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> QuicStopSend
 // crap:trusted
 // crap:trusted-bounds
 inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let offset, ok_off = quic_decode_varint_cursor(src, idx);
     guard ok_off else { return QuicCryptoFrame { .. }, false; }
 
@@ -667,6 +699,7 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, b
 
     let payload = src[idx..idx + dlen];
     idx += dlen;
+    committed = true;
 
     return QuicCryptoFrame {
         offset: offset,
@@ -676,7 +709,7 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, b
 
 // Decodes a STREAM frame (0x08-0x0F) directly from slice with cursor (RFC 9000 Section 19.8).
 // Flags encoded in `ftype`: 0x04 = OFF, 0x02 = LEN, 0x01 = FIN.
-// If LEN (0x02) is unset, consumes all remaining bytes in `src`.
+// If LEN (0x02) is unset, consumes all remaining bytes in `src`; restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [0x04, 0x00, 0x02, 'o', 'k'], idx = 0, ftype = 0x0f (OFF|LEN|FIN)
@@ -684,6 +717,9 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> QuicCryptoFrame, b
 //
 // crap:trusted-bounds
 inline fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicStreamFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     guard ftype >= rfc::QUIC_FRAME_STREAM_BASE && ftype <= rfc::QUIC_STREAM_MAX_TYPE else {
         return QuicStreamFrame { .. }, false;
     }
@@ -722,6 +758,7 @@ inline fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicSt
 
     let payload = src[idx..idx + dlen];
     idx += dlen;
+    committed = true;
 
     return QuicStreamFrame {
         stream_id: stream_id,
@@ -732,22 +769,31 @@ inline fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicSt
 }
 
 // Decodes a MAX_DATA frame (0x10) directly from slice with cursor (RFC 9000 §19.9).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [0x50, 0x00], idx = 0 (varint 4096)
 //   returns: QuicMaxDataFrame { max_data: 4096 }, ok = true, idx = 2
 inline fn decode_max_data_frame(src: const u8[:], idx: i64&) -> QuicMaxDataFrame, bool {
+    let saved_idx = idx;
     let max_data, ok = quic_decode_varint_cursor(src, idx);
-    guard ok && max_data <= rfc::QUIC_VARINT_MAX else { return QuicMaxDataFrame { .. }, false; }
+    guard ok && max_data <= rfc::QUIC_VARINT_MAX else {
+        idx = saved_idx;
+        return QuicMaxDataFrame { .. }, false;
+    }
     return QuicMaxDataFrame { max_data: max_data }, true;
 }
 
 // Decodes a MAX_STREAM_DATA frame (0x11) directly from slice with cursor (RFC 9000 §19.10).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [0x04, 0x50, 0x00], idx = 0 (stream_id = 4, max_stream_data = 4096)
 //   returns: QuicMaxStreamDataFrame { stream_id: 4, max_stream_data: 4096 }, ok = true, idx = 3
 inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> QuicMaxStreamDataFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let stream_id, ok_sid = quic_decode_varint_cursor(src, idx);
     guard ok_sid else { return QuicMaxStreamDataFrame { .. }, false; }
 
@@ -756,6 +802,7 @@ inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> QuicMaxSt
         return QuicMaxStreamDataFrame { .. }, false;
     }
 
+    committed = true;
     return QuicMaxStreamDataFrame {
         stream_id:       stream_id,
         max_stream_data: max_stream_data,
@@ -763,6 +810,7 @@ inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> QuicMaxSt
 }
 
 // Decodes a NEW_CONNECTION_ID frame (0x18) directly from slice with cursor (RFC 9000 §19.15).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [seq=1, retire=0, len=4, 1, 2, 3, 4, ...16 token bytes...], idx = 0
@@ -770,6 +818,9 @@ inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> QuicMaxSt
 //
 // crap:trusted-bounds
 inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let seq, ok_seq = quic_decode_varint_cursor(src, idx);
     guard ok_seq else { return QuicFrame { .. }, false; }
     let retire_prior, ok_ret = quic_decode_varint_cursor(src, idx);
@@ -781,6 +832,7 @@ inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame, bo
     guard cid_len + 16 <= src.len - idx else { return QuicFrame { .. }, false; }
     let payload = src[idx..idx + cid_len + 16];
     idx += cid_len + 16;
+    committed = true;
     return QuicFrame {
         frame_type: QuicFrameType.NewConnectionId,
         raw_type:   rfc::QUIC_FRAME_NEW_CONNECTION_ID,
@@ -792,13 +844,18 @@ inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame, bo
 }
 
 // Decodes a RETIRE_CONNECTION_ID frame (0x19) directly from slice with cursor (RFC 9000 §19.16).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [seq=2], idx = 0
 //   returns: QuicFrame { frame_type: RetireConnectionId, stream_id: 2 }, ok = true
 inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let saved_idx = idx;
     let seq, ok_seq = quic_decode_varint_cursor(src, idx);
-    guard ok_seq else { return QuicFrame { .. }, false; }
+    guard ok_seq else {
+        idx = saved_idx;
+        return QuicFrame { .. }, false;
+    }
     return QuicFrame {
         frame_type: QuicFrameType.RetireConnectionId,
         raw_type:   rfc::QUIC_FRAME_RETIRE_CONNECTION_ID,
@@ -807,6 +864,7 @@ inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame,
 }
 
 // Decodes a DATAGRAM frame (0x30 / 0x31) directly from slice with cursor (RFC 9221 §3).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [0x04, 't', 'e', 's', 't'], idx = 0, ftype = 0x31
@@ -814,10 +872,18 @@ inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> QuicFrame,
 //
 // crap:trusted-bounds
 inline fn decode_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
+    // RFC 9221 Section 4: Datagram Frame Types - Valid DATAGRAM frame types are 0x30 and 0x31.
+    guard ftype == rfc::QUIC_FRAME_DATAGRAM || ftype == rfc::QUIC_FRAME_DATAGRAM_LEN else {
+        return QuicFrame { .. }, false;
+    }
     guard idx >= 0 && idx <= src.len else { return QuicFrame { .. }, false; }
     if ftype == rfc::QUIC_FRAME_DATAGRAM {
         let payload = src[idx..src.len];
         idx = src.len;
+        committed = true;
         return QuicFrame {
             frame_type: QuicFrameType.Datagram,
             raw_type:   ftype,
@@ -831,6 +897,7 @@ inline fn decode_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> Quic
     guard ilen >= 0 && ilen <= src.len - idx else { return QuicFrame { .. }, false; }
     let payload = src[idx..idx + ilen];
     idx += ilen;
+    committed = true;
     return QuicFrame {
         frame_type: QuicFrameType.Datagram,
         raw_type:   ftype,
@@ -902,16 +969,21 @@ fn decode_ack_frequency_frame(c: core::ByteCursor&, out: QuicAckFrequencyFrame&)
 }
 
 // Decodes an ACK_FREQUENCY frame (0xAF) into QuicFrame using an in-out index cursor.
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [0x01, 0x02, 0x40, 0x64, 0x03], idx = 0
 //   returns: QuicFrame { frame_type: AckFrequency, stream_id: 1, length: 2, max_data: 100, offset: 3 }, ok = true
 inline fn demux_ack_frequency_frame(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     let seq, ok1 = quic_decode_varint_cursor(src, idx);
     let thresh, ok2 = quic_decode_varint_cursor(src, idx);
     let max_delay, ok3 = quic_decode_varint_cursor(src, idx);
     let reorder, ok4 = quic_decode_varint_cursor(src, idx);
     guard ok1 && ok2 && ok3 && ok4 && thresh >= 1 else { return QuicFrame { .. }, false; }
+    committed = true;
     return QuicFrame {
         frame_type: QuicFrameType.AckFrequency,
         raw_type:   rfc::QUIC_FRAME_ACK_FREQUENCY,
@@ -1089,12 +1161,15 @@ fn demux_core_frame(src: const u8[:], idx: i64&, ftype: u64, frame_start: i64 = 
 }
 
 // Dispatches stream count limit frames (0x12, 0x13, 0x16, 0x17).
-// Limits cannot exceed 2^60 (RFC 9000 §19.11, §19.14).
+// Limits cannot exceed 2^60 (RFC 9000 §19.11, §19.14); restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [varint(100)], idx = 0, ftype = QUIC_FRAME_MAX_STREAMS_BIDI (0x12)
 //   returns: QuicFrame { frame_type: MaxStreamsBidi, max_data: 100 }, ok = true
 fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     if ftype == rfc::QUIC_FRAME_MAX_STREAMS_BIDI || ftype == rfc::QUIC_FRAME_MAX_STREAMS_UNI {
         let limit, ok = quic_decode_varint_cursor(src, idx);
         guard ok && limit <= rfc::QUIC_MAX_STREAMS_LIMIT else { return QuicFrame { .. }, false; }
@@ -1103,6 +1178,7 @@ fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFra
         } else {
             QuicFrameType.MaxStreamsUni
         };
+        committed = true;
         return QuicFrame { frame_type: k, raw_type: ftype, max_data: limit }, true;
     }
     if ftype == rfc::QUIC_FRAME_STREAMS_BLOCKED_BIDI || ftype == rfc::QUIC_FRAME_STREAMS_BLOCKED_UNI {
@@ -1113,26 +1189,33 @@ fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFra
         } else {
             QuicFrameType.StreamsBlockedUni
         };
+        committed = true;
         return QuicFrame { frame_type: k, raw_type: ftype, max_data: lim }, true;
     }
     return QuicFrame { .. }, false;
 }
 
 // Dispatches data blocked frames (0x14, 0x15).
+// Restores `idx` on failure (`false`).
 //
 // Example:
 //   src = [varint(5000)], idx = 0, ftype = QUIC_FRAME_DATA_BLOCKED (0x14)
 //   returns: QuicFrame { frame_type: DataBlocked, max_data: 5000 }, ok = true
 fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
     if ftype == rfc::QUIC_FRAME_DATA_BLOCKED {
         let limit, ok = quic_decode_varint_cursor(src, idx);
         guard ok else { return QuicFrame { .. }, false; }
+        committed = true;
         return QuicFrame { frame_type: QuicFrameType.DataBlocked, raw_type: ftype, max_data: limit }, true;
     }
     if ftype == rfc::QUIC_FRAME_STREAM_DATA_BLOCKED {
         let sid, ok_sid = quic_decode_varint_cursor(src, idx);
         let lim, ok_lim = quic_decode_varint_cursor(src, idx);
         guard ok_sid && ok_lim else { return QuicFrame { .. }, false; }
+        committed = true;
         return QuicFrame {
             frame_type: QuicFrameType.StreamDataBlocked,
             raw_type:   ftype,
@@ -1144,9 +1227,10 @@ fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> QuicFrame, bo
 }
 
 // Decodes a CONNECTION_CLOSE frame (0x1C or 0x1D) directly from slice with cursor (RFC 9000 §19.19).
+// Restores `idx` on failure (`false`).
 //
 // Example:
-//   src = [0x00, 0x00, 0x02, 'b', 'y', 'e'], idx = 0, ftype = 0x1C
+//   src = [0x00, 0x00, 0x03, 'b', 'y', 'e'], idx = 0, ftype = 0x1C
 //   returns: QuicFrame { frame_type: ConnectionClose, error_code: 0, payload: "bye" }, ok = true
 //
 // crap:trusted-bounds
@@ -1155,6 +1239,13 @@ inline fn decode_connection_close_frame(
     idx:   i64&,
     ftype: u64,
 ) -> QuicFrame, bool {
+    let saved_idx = idx;
+    var committed = false;
+    defer if !committed { idx = saved_idx; };
+    // RFC 9000 Section 19.19: CONNECTION_CLOSE Frames - Valid frame types are 0x1c and 0x1d.
+    guard ftype == rfc::QUIC_FRAME_CONNECTION_CLOSE || ftype == rfc::QUIC_FRAME_CONNECTION_CLOSE_APP else {
+        return QuicFrame { .. }, false;
+    }
     let err, ok_err = quic_decode_varint_cursor(src, idx);
     guard ok_err else { return QuicFrame { .. }, false; }
     var trigger_type: u64 = 0;
@@ -1174,6 +1265,7 @@ inline fn decode_connection_close_frame(
     } else {
         QuicFrameType.ConnectionCloseApp
     };
+    committed = true;
     return QuicFrame {
         frame_type: k,
         raw_type:   ftype,
@@ -1405,6 +1497,28 @@ fn encode_tp_streams_and_ack<B>(out: B&, tp: const QuicTransportParams&) -> bool
     return true;
 }
 
+// RFC 9000 Section 18.2: Transport Parameter Definitions - Validates preferred_address structure and IP/port invariants.
+//
+// crap:trusted-bounds
+inline fn is_valid_tp_preferred_address(val: const u8[:]) -> bool {
+    var cur = core::cursor_from(val);
+    let v4, ok4 = cur.read_bytes(4);
+    let p4, okp4 = cur.read_u16();
+    let v6, ok6 = cur.read_bytes(16);
+    let p6, okp6 = cur.read_u16();
+    let cid_slice, ok_cid = cur.read_u8_prefixed();
+    let _, ok_tok = cur.read_bytes(16);
+    guard ok4 && okp4 && ok6 && okp6 && ok_cid && ok_tok && cur.buf.len == 0 else { return false; }
+    guard cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
+    let has_v4 = (v4[0] | v4[1] | v4[2] | v4[3]) != 0;
+    var v6_or: u8 = 0;
+    for i in 16 {
+        v6_or = v6_or | v6[i];
+    }
+    let has_v6 = v6_or != 0;
+    return has_v4 == (p4 != 0) && has_v6 == (p6 != 0) && (has_v4 || has_v6);
+}
+
 // Encodes CID limit and extension transport parameters (`0x0e`, `0x20`, `0x2ab2`, `0xde1a`).
 fn encode_tp_extensions<B>(out: B&, tp: const QuicTransportParams&) -> bool {
     if tp.active_connection_id_limit != 2 {
@@ -1420,6 +1534,7 @@ fn encode_tp_extensions<B>(out: B&, tp: const QuicTransportParams&) -> bool {
         guard encode_tp_bytes(out, rfc::QUIC_TP_GREASE_QUIC_BIT, "") else { return false; }
     }
     if tp.min_ack_delay_us > 0 {
+        guard tp.min_ack_delay_us <= core::mul_sat_u64(tp.max_ack_delay, 1000) else { return false; }
         guard encode_tp_varint(out, rfc::QUIC_TP_MIN_ACK_DELAY, tp.min_ack_delay_us) else { return false; }
     }
     return true;
@@ -1427,7 +1542,10 @@ fn encode_tp_extensions<B>(out: B&, tp: const QuicTransportParams&) -> bool {
 
 // Encodes RFC 9368 `version_information` (`0x11`) transport parameter into `out`.
 fn encode_tp_version_info<B>(out: B&, tp: const QuicTransportParams&) -> bool {
-    guard tp.chosen_version != 0 else { return true; }
+    // RFC 9369 Section 4: Version Negotiation Considerations - Reject non-empty available_versions when chosen_version is 0.
+    if tp.chosen_version == 0 {
+        return tp.available_versions.len == 0;
+    }
     var vbuf: u8[..40] = [];
     vbuf.append_u32_be(tp.chosen_version);
     for i in tp.available_versions.len {
@@ -1446,17 +1564,17 @@ fn encode_tp_cids_and_server<B>(out: B&, tp: const QuicTransportParams&, is_serv
             && tp.original_destination_connection_id.len == 0
             && tp.retry_source_connection_id.len == 0;
     }
-    if tp.original_destination_connection_id.len > 0 {
-        let id = rfc::QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID;
-        guard encode_tp_bytes(out, id, tp.original_destination_connection_id[..]) else { return false; }
-    }
+    // RFC 9000 Section 7.3: Authenticating Connection IDs - Servers MUST send original_destination_connection_id.
+    let odcid_id = rfc::QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID;
+    guard encode_tp_bytes(out, odcid_id, tp.original_destination_connection_id[..]) else { return false; }
     if tp.has_stateless_reset_token {
         guard encode_tp_bytes(out, rfc::QUIC_TP_STATELESS_RESET_TOKEN, tp.stateless_reset_token[..]) else {
             return false;
         }
     }
     if tp.preferred_address.len > 0 {
-        guard encode_tp_bytes(out, rfc::QUIC_TP_PREFERRED_ADDRESS, tp.preferred_address[..]) else {
+        guard is_valid_tp_preferred_address(tp.preferred_address[..])
+            && encode_tp_bytes(out, rfc::QUIC_TP_PREFERRED_ADDRESS, tp.preferred_address[..]) else {
             return false;
         }
     }
@@ -1478,10 +1596,9 @@ fn encode_quic_transport_params<B>(
     defer if !committed { out.resize(orig_len, 0); };
 
     guard encode_tp_cids_and_server(out, tp, is_server) else { return false; }
-    if tp.initial_source_connection_id.len > 0 {
-        let id = rfc::QUIC_TP_INITIAL_SOURCE_CONNECTION_ID;
-        guard encode_tp_bytes(out, id, tp.initial_source_connection_id[..]) else { return false; }
-    }
+    // RFC 9000 Section 7.3: Authenticating Connection IDs - Both endpoints MUST send initial_source_connection_id.
+    let iscid_id = rfc::QUIC_TP_INITIAL_SOURCE_CONNECTION_ID;
+    guard encode_tp_bytes(out, iscid_id, tp.initial_source_connection_id[..]) else { return false; }
     guard encode_tp_flow_data(out, tp)
         && encode_tp_streams_and_ack(out, tp)
         && encode_tp_extensions(out, tp)
@@ -1523,13 +1640,13 @@ inline fn decode_tp_version_info(val: const u8[:], tp: QuicTransportParams&) -> 
     var cur = core::cursor_from(val);
     let chosen, ok_c = cur.read_u32();
     guard ok_c && chosen != 0 else { return false; }
-    tp.chosen_version = chosen;
-    tp.available_versions.clear();
+    var parsed_vers: u32[..8] = [];
     while cur.buf.len >= 4 {
         let av, ok_a = cur.read_u32();
-        guard ok_a && av != 0 else { return false; }
-        guard tp.available_versions.try_push(av) else { return false; }
+        guard ok_a && av != 0 && parsed_vers.try_push(av) else { return false; }
     }
+    tp.chosen_version = chosen;
+    tp.available_versions = parsed_vers;
     return true;
 }
 
@@ -1541,12 +1658,7 @@ inline fn decode_tp_version_info(val: const u8[:], tp: QuicTransportParams&) -> 
 //
 // crap:trusted-bounds
 inline fn decode_tp_preferred_addr(val: const u8[:], tp: QuicTransportParams&) -> bool {
-    var cur = core::cursor_from(val);
-    let _, ok_hdr = cur.read_bytes(24);
-    let cid_slice, ok_cid = cur.read_u8_prefixed();
-    let _, ok_tok = cur.read_bytes(16);
-    guard ok_hdr && ok_cid && ok_tok && cur.buf.len == 0 else { return false; }
-    guard cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
+    guard is_valid_tp_preferred_address(val) else { return false; }
     return tp.preferred_address.try_set(val);
 }
 
@@ -1640,25 +1752,45 @@ fn decode_tp_cid_or_server_param(
     tp:        QuicTransportParams&,
 ) -> bool {
     if id == rfc::QUIC_TP_INITIAL_SOURCE_CONNECTION_ID {
-        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_ISCID) else { return false; }
-        return tp.initial_source_connection_id.try_set(val);
+        guard !tp.seen_mask.has_flag(QUIC_TP_BIT_ISCID)
+            && tp.initial_source_connection_id.try_set(val) else {
+            return false;
+        }
+        tp.seen_mask.set_flag(QUIC_TP_BIT_ISCID);
+        return true;
     }
     guard is_server else { return false; }
     if id == rfc::QUIC_TP_ORIGINAL_DESTINATION_CONNECTION_ID {
-        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_ODCID) else { return false; }
-        return tp.original_destination_connection_id.try_set(val);
+        guard !tp.seen_mask.has_flag(QUIC_TP_BIT_ODCID)
+            && tp.original_destination_connection_id.try_set(val) else {
+            return false;
+        }
+        tp.seen_mask.set_flag(QUIC_TP_BIT_ODCID);
+        return true;
     }
     if id == rfc::QUIC_TP_STATELESS_RESET_TOKEN {
-        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_SR_TOKEN) else { return false; }
-        return set_tp_stateless_reset_token(val, tp);
+        guard !tp.seen_mask.has_flag(QUIC_TP_BIT_SR_TOKEN)
+            && set_tp_stateless_reset_token(val, tp) else {
+            return false;
+        }
+        tp.seen_mask.set_flag(QUIC_TP_BIT_SR_TOKEN);
+        return true;
     }
     if id == rfc::QUIC_TP_PREFERRED_ADDRESS {
-        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_PREF_ADDR) else { return false; }
-        return decode_tp_preferred_addr(val, tp);
+        guard !tp.seen_mask.has_flag(QUIC_TP_BIT_PREF_ADDR)
+            && decode_tp_preferred_addr(val, tp) else {
+            return false;
+        }
+        tp.seen_mask.set_flag(QUIC_TP_BIT_PREF_ADDR);
+        return true;
     }
     if id == rfc::QUIC_TP_RETRY_SOURCE_CONNECTION_ID {
-        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_RSCID) else { return false; }
-        return tp.retry_source_connection_id.try_set(val);
+        guard !tp.seen_mask.has_flag(QUIC_TP_BIT_RSCID)
+            && tp.retry_source_connection_id.try_set(val) else {
+            return false;
+        }
+        tp.seen_mask.set_flag(QUIC_TP_BIT_RSCID);
+        return true;
     }
     return false;
 }
@@ -1704,8 +1836,12 @@ fn decode_tp_ext_param(id: u64, val: const u8[:], tp: QuicTransportParams&) -> b
         return decode_tp_ack_and_mig(id, val, tp);
     }
     if id == rfc::QUIC_TP_VERSION_INFORMATION {
-        guard mark_tp_seen(tp.seen_mask, QUIC_TP_BIT_VERSION_INFO) else { return false; }
-        return decode_tp_version_info(val, tp);
+        guard !tp.seen_mask.has_flag(QUIC_TP_BIT_VERSION_INFO)
+            && decode_tp_version_info(val, tp) else {
+            return false;
+        }
+        tp.seen_mask.set_flag(QUIC_TP_BIT_VERSION_INFO);
+        return true;
     }
     if id == rfc::QUIC_TP_MAX_DATAGRAM_FRAME_SIZE {
         let v, ok = decode_tp_exact_varint(val);
@@ -1756,7 +1892,7 @@ inline fn decode_single_tp(
 // `is_server` indicates whether the encoded parameters were sent by a server (`true`) or client (`false`).
 //
 // Example:
-//   src = [0x03, 0x02, 0x45, 0xDC, 0x0c, 0x00], is_server = true
+//   src = [0x00, 0x00, 0x0f, 0x00, 0x03, 0x02, 0x45, 0xDC, 0x0c, 0x00], is_server = true
 //   returns: true, out_tp.max_udp_payload_size = 1500, out_tp.disable_active_migration = true
 //
 // crap:trusted-bounds
@@ -1775,6 +1911,11 @@ fn decode_quic_transport_params(
         cur.buf = cur.buf[idx..];
         let val, ok_val = cur.read_bytes(vlen as i64);
         guard ok_val && decode_single_tp(id, val, is_server, tp) else { return false; }
+    }
+    // RFC 9000 Section 7.3: Authenticating Connection IDs - Reject missing initial_source_connection_id or server original_destination_connection_id.
+    guard tp.seen_mask.has_flag(QUIC_TP_BIT_ISCID)
+        && (!is_server || tp.seen_mask.has_flag(QUIC_TP_BIT_ODCID)) else {
+        return false;
     }
     if tp.seen_mask.has_flag(QUIC_TP_BIT_MIN_ACK_DELAY) {
         let max_delay_us = core::mul_sat_u64(tp.max_ack_delay, 1000);

@@ -104,11 +104,16 @@ fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> ChunkedDecodeError
 }
 
 // Parses a single chunk extension parameter: ;name[=val]
+// Leaves `cursor` unchanged on error.
 //
 // Example:
 //   s = ";name=val", cursor = 0
 //   returns: ChunkedDecodeError.None, cursor = 9
 fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+    let saved_cursor = cursor;
+    var committed = false;
+    defer if !committed { cursor = saved_cursor; };
+
     guard cursor < s.len && s[cursor] == ';' else {
         return ChunkedDecodeError.InvalidChunkExtension;
     }
@@ -118,24 +123,39 @@ fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     guard parse_chunk_ext_name(s, cursor) else {
         return ChunkedDecodeError.InvalidChunkExtension;
     }
+    let after_name = cursor;
     skip_bws(s, cursor);
+    // RFC 9112 Section 7.1.1: Chunk Extensions - Reject trailing BWS before CRLF
+    guard cursor == after_name || cursor < s.len else {
+        return ChunkedDecodeError.InvalidChunkExtension;
+    }
 
     if cursor < s.len && s[cursor] == '=' {
         cursor++; // skip '='
         skip_bws(s, cursor);
         let val_err = parse_chunk_ext_param_val(s, cursor);
         guard val_err == ChunkedDecodeError.None else { return val_err; }
+        let after_val = cursor;
         skip_bws(s, cursor);
+        guard cursor == after_val || cursor < s.len else {
+            return ChunkedDecodeError.InvalidChunkExtension;
+        }
     }
+    committed = true;
     return ChunkedDecodeError.None;
 }
 
 // Parses all chunk extensions following the chunk size hex.
+// Leaves `cursor` unchanged on error.
 //
 // Example:
 //   s = ";ext1;ext2=val", cursor = 0
 //   returns: ChunkedDecodeError.None
 fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+    let saved_cursor = cursor;
+    var committed = false;
+    defer if !committed { cursor = saved_cursor; };
+
     skip_bws(s, cursor);
     guard cursor < s.len && s[cursor] == ';' else {
         return ChunkedDecodeError.InvalidChunkSizeHex;
@@ -144,6 +164,7 @@ fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
         let err = parse_chunk_ext_param(s, cursor);
         guard err == ChunkedDecodeError.None else { return err; }
     }
+    committed = true;
     return ChunkedDecodeError.None;
 }
 
@@ -280,6 +301,7 @@ fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderMap&) ->
 }
 
 // RFC 9112 Section 7.1.2: Parse chunked trailers and populate out_trailers list.
+// Leaves `cursor` unchanged and clears `out_trailers` on error.
 //
 // Example:
 //   raw = "ETag: 123\r\n\r\n", cursor = 0
@@ -289,6 +311,15 @@ fn parse_chunked_trailers_with_out(
     cursor:       i64&,
     out_trailers: HeaderMap&,
 ) -> ChunkedDecodeError {
+    let saved_cursor = cursor;
+    var committed = false;
+    reset_for_keep_alive(out_trailers);
+    defer if !committed {
+        cursor = saved_cursor;
+        reset_for_keep_alive(out_trailers);
+        out_trailers.valid = false;
+    };
+
     var trailer_count:       i32 = 0;
     var total_trailer_bytes: i64 = 0;
 
@@ -306,6 +337,7 @@ fn parse_chunked_trailers_with_out(
         cursor = tr_end + 1;
 
         if tr_line.len == 0 {
+            committed = true;
             return ChunkedDecodeError.None;
         }
 

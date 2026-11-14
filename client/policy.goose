@@ -10,25 +10,25 @@ import std;
 
 // Exponential backoff policy for retrying failed network requests.
 struct Backoff {
-    base_ns: i64 = 100 * core::MILLISECOND, // Base initial retry delay in nanoseconds.
-    max_ns:  i64 = 10 * core::SECOND,       // Upper bound cap for retry delay in nanoseconds.
+    base_ns: i64 = 100 * MILLISECOND, // Base initial retry delay in nanoseconds.
+    max_ns:  i64 = 10 * SECOND,       // Upper bound cap for retry delay in nanoseconds.
     factor:  f64 = 2.0,               // Multiplier applied per failed attempt.
 }
 
-fn new_backoff(base: core::Duration, max_delay: core::Duration, factor: f64 = 2.0) -> Backoff {
+fn new_backoff(base_ns: i64, max_ns: i64, factor: f64 = 2.0) -> Backoff {
     return Backoff {
-        base_ns: base.nanos,
-        max_ns:  max_delay.nanos,
+        base_ns: base_ns,
+        max_ns:  max_ns,
         factor:  factor,
     };
 }
 
-// The retry delay for an attempt (0-indexed), capped at max_ns.
-fn delay(backoff: const Backoff&, attempt: i64) -> core::Duration {
+// The retry delay for an attempt (0-indexed) in nanoseconds, capped at max_ns.
+fn delay(backoff: const Backoff&, attempt: i64) -> i64 {
     let cap_ns = max(0, backoff.max_ns);
     let base_ns = max(0, backoff.base_ns);
     if attempt <= 0 || cap_ns == 0 || base_ns == 0 {
-        return core::Duration { nanos: min(base_ns, cap_ns) };
+        return min(base_ns, cap_ns);
     }
     let eff_factor = if backoff.factor >= 1.0 { backoff.factor } else { 1.0 };
     let safe_attempt = min(attempt, 60);
@@ -37,11 +37,11 @@ fn delay(backoff: const Backoff&, attempt: i64) -> core::Duration {
     for step_idx in safe_attempt {
         current *= eff_factor;
         if !(current < cap_f64) {
-            return core::Duration { nanos: cap_ns };
+            return cap_ns;
         }
     }
     let res = current as i64;
-    return core::Duration { nanos: min(max(0, res), cap_ns) };
+    return min(max(0, res), cap_ns);
 }
 
 // ---- token bucket rate limiter ---------------------------------------------

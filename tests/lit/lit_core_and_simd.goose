@@ -938,7 +938,7 @@ fn test_pso_route_matching() {
 }
 
 fn test_pso_fast_path_and_ingress() {
-    let quota = wing::new_gcra_quota(100, core::secs(1), 10);
+    let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
     var cfg = wing::new_server_pipeline_config("example.com", quota);
 
     // Register /healthz with pso_mask = 0
@@ -991,7 +991,7 @@ fn test_pso_fast_path_and_ingress() {
 }
 
 fn test_pso_egress_security_headers() {
-    let quota = wing::new_gcra_quota(100, core::secs(1), 10);
+    let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
     var cfg = wing::new_server_pipeline_config("example.com", quota);
 
     let secure_pso: u64 = wing::STAGE_EGRESS_SECURITY_HEADERS;

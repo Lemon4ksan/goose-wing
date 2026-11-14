@@ -2526,6 +2526,12 @@ fn test_compress_and_time_regressions(t: lit::T&) {
         sub.assert_false(ok_b1, "rfc850-date must reject 3-letter day-name");
         let t_bad2, ok_b2 = core::parse_http_date("Sun,06 Nov 1994 08:49:37 GMT");
         sub.assert_false(ok_b2, "IMF-fixdate must require SP after comma");
+
+        var le_buf: u8[..16] = [];
+        core::write_le_u32(le_buf, 0x78563412);
+        core::write_le_u64(le_buf, 0x0807060504030201);
+        sub.assert_eq(core::read_le_u32(le_buf[..], 0), 0x78563412, "write_le_u32 round-trip");
+        sub.assert_eq(core::read_le_u64(le_buf[..], 4), 0x0807060504030201, "write_le_u64 round-trip");
     };
 }
 

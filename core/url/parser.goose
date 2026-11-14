@@ -355,6 +355,7 @@ fn parse_url_dirty_fallback(
 }
 
 // Parses input string into `out_url` relative to an optional base URL.
+// Rolls back `out_url` to a clean invalid state on any parse error.
 //
 // Example:
 //   raw_input = "https://example.com/api", base_url = Url { .. }, has_base = false
@@ -365,13 +366,21 @@ fn parse_url_internal(
     has_base:  bool,
     out_url:   Url&,
 ) -> UrlParseError {
+    var committed = false;
+    defer if !committed { reset_url_for_parse(out_url); };
+
+    var err = UrlParseError.None;
     if is_url_precleaned(raw_input) {
-        guard raw_input.len <= 2048 else {
-            return UrlParseError.InputTooLong;
+        if raw_input.len > 2048 {
+            err = UrlParseError.InputTooLong;
+        } else {
+            err = parse_url_trimmed(raw_input, base_url, has_base, out_url);
         }
-        return parse_url_trimmed(raw_input, base_url, has_base, out_url);
+    } else {
+        err = parse_url_dirty_fallback(raw_input, base_url, has_base, out_url);
     }
-    return parse_url_dirty_fallback(raw_input, base_url, has_base, out_url);
+    committed = err == UrlParseError.None;
+    return err;
 }
 
 fn append_userinfo_to_url(out_url: Url&, userinfo: const u8[:]) -> bool {
@@ -442,7 +451,12 @@ fn apply_canonical_host_and_port(
         return extract_err;
     }
 
-    if is_file && port_val >= 0 {
+    let has_file_colon = if host_port_part[0] == '[' {
+        ends_with(host_port_part, "]:")
+    } else {
+        contains_byte(host_port_part, ':')
+    };
+    if is_file && (port_val >= 0 || has_file_colon) {
         return UrlParseError.InvalidPort;
     }
 
@@ -506,17 +520,15 @@ fn parse_absolute_authority_url(
     let path_and_beyond = auth_and_path[end_of_auth..];
 
     // Check for userinfo (username:password@)
-    var at_pos = -1;
-    for scan_idx in auth_str.len {
-        if auth_str[scan_idx] == '@' {
-            at_pos = scan_idx;
-        }
-    }
+    let at_pos = last_index_of_byte(auth_str, '@');
 
     var host_port_part = auth_str;
     if at_pos >= 0 {
+        guard scheme_str != "file" else {
+            return UrlParseError.ForbiddenHostCodePoint;
+        }
         let userinfo = auth_str[..at_pos];
-        host_port_part = auth_str[at_pos + 1..];
+        host_port_part = auth_str[add_sat_i64(at_pos, 1)..];
         guard append_userinfo_to_url(out_url, userinfo) else {
             return UrlParseError.InputTooLong;
         }
@@ -588,10 +600,13 @@ fn resolve_bracketed_ipv6_host(view: UrlView&, host_port_slice: const u8[:]) -> 
         guard host_port_slice[close_bracket + 1] == ':' else {
             return UrlParseError.InvalidHost;
         }
+        guard !eq_ascii_fold(view.scheme, "file") else {
+            return UrlParseError.InvalidPort;
+        }
         let port_str = host_port_slice[close_bracket + 2..];
         if port_str.len > 0 {
             let port_num, port_ok = parse_port_number(port_str);
-            guard port_ok && !eq_ascii_fold(view.scheme, "file") else { return UrlParseError.InvalidPort; }
+            guard port_ok else { return UrlParseError.InvalidPort; }
             view.port = port_num;
         } else {
             view.port = -1;
@@ -601,16 +616,16 @@ fn resolve_bracketed_ipv6_host(view: UrlView&, host_port_slice: const u8[:]) -> 
 }
 
 fn resolve_regular_host_port(view: UrlView&, host_port_slice: const u8[:]) -> UrlParseError {
-    var host_colon = -1;
-    for scan_idx in host_port_slice.len {
-        if host_port_slice[scan_idx] == ':' { host_colon = scan_idx; break; }
-    }
+    let host_colon = index_of_byte(host_port_slice, ':');
     if host_colon >= 0 {
+        guard !eq_ascii_fold(view.scheme, "file") else {
+            return UrlParseError.InvalidPort;
+        }
         view.host = host_port_slice[..host_colon];
-        let port_str = host_port_slice[host_colon + 1..];
+        let port_str = host_port_slice[add_sat_i64(host_colon, 1)..];
         if port_str.len > 0 {
             let port_num, port_ok = parse_port_number(port_str);
-            guard port_ok && !eq_ascii_fold(view.scheme, "file") else { return UrlParseError.InvalidPort; }
+            guard port_ok else { return UrlParseError.InvalidPort; }
             view.port = port_num;
         } else {
             view.port = -1;
@@ -701,6 +716,50 @@ inline fn is_valid_scheme_slice(scheme_slice: const u8[:]) -> bool {
     return true;
 }
 
+// Consumes leading authority slashes and resolves `view` authority fields.
+// Leaves `cursor` unchanged if an error is returned.
+//
+// Example:
+//   raw_input = "https://example.com/path", cursor = 6
+//   returns: UrlParseError.None, cursor = 19 (pointing to "/path")
+inline fn consume_url_view_authority(
+    view:      UrlView&,
+    raw_input: const u8[:],
+    cursor:    i64&,
+) -> UrlParseError {
+    let slash_count = count_scheme_trailing_slashes(raw_input[cursor..], false);
+    let is_file = eq_ascii_fold(view.scheme, "file");
+    var auth_skip: i64 = -1;
+
+    if view.is_special && !is_file {
+        guard slash_count >= 2 && slash_count != 3 else {
+            return UrlParseError.MissingHost;
+        }
+        auth_skip = slash_count;
+    } else if slash_count >= 2 {
+        auth_skip = 2;
+    }
+
+    guard auth_skip >= 0 else {
+        return UrlParseError.None;
+    }
+
+    let auth_start = add_sat_i64(cursor, auth_skip);
+    let auth_slice = raw_input[auth_start..];
+    let rel_delim = if view.is_special {
+        find_any(auth_slice, URL_AUTH_SPECIAL_DELIM_SET)
+    } else {
+        find_any(auth_slice, URL_AUTH_GENERIC_DELIM_SET)
+    };
+    let auth_end = if rel_delim >= 0 { add_sat_i64(auth_start, rel_delim) } else { raw_input.len };
+    let auth_err = resolve_url_view_authority(view, raw_input[auth_start..auth_end]);
+    guard auth_err == UrlParseError.None else {
+        return auth_err;
+    }
+    cursor = auth_end;
+    return UrlParseError.None;
+}
+
 // Parses a URL of arbitrary length into a non-owning UrlView with zero heap allocations.
 //
 // Example:
@@ -737,32 +796,15 @@ fn parse_url_view(raw_input: const u8[:]) -> UrlView, UrlParseError {
     view.scheme = scheme_slice;
     view.is_special = is_special_scheme(scheme_slice);
 
+    // Reject unnormalized backslashes in zero-copy special-scheme views so authority/path slices cannot desync
+    guard !view.is_special || !contains_byte(raw_input, '\\') else {
+        return view, UrlParseError.ForbiddenHostCodePoint;
+    }
+
     var cursor = colon_idx + 1;
-
-    // Check for authority "//"
-    let has_auth = cursor + 1 < raw_input.len &&
-        (raw_input[cursor] == '/' || (view.is_special && raw_input[cursor] == '\\')) &&
-        (raw_input[cursor + 1] == '/' || (view.is_special && raw_input[cursor + 1] == '\\'));
-
-    if has_auth {
-        cursor += 2;
-        let auth_start = cursor;
-        let auth_slice = raw_input[auth_start..];
-        let rel_delim = if view.is_special {
-            find_any(auth_slice, URL_AUTH_SPECIAL_DELIM_SET)
-        } else {
-            find_any(auth_slice, URL_AUTH_GENERIC_DELIM_SET)
-        };
-        let auth_end = if rel_delim >= 0 { auth_start + rel_delim } else { raw_input.len };
-        cursor = auth_end;
-        let authority = raw_input[auth_start..auth_end];
-
-        let auth_err = resolve_url_view_authority(view, authority);
-        guard auth_err == UrlParseError.None else {
-            return view, auth_err;
-        }
-    } else if view.is_special && !eq_ascii_fold(view.scheme, "file") {
-        return view, UrlParseError.MissingHost;
+    let auth_err = consume_url_view_authority(view, raw_input, cursor);
+    guard auth_err == UrlParseError.None else {
+        return view, auth_err;
     }
 
     let rest = raw_input[cursor..];
@@ -782,13 +824,7 @@ fn resolve_bracketed_ipv6<B>(
     host_out:  B&,
     port_out:  i32&,
 ) -> UrlParseError {
-    var close_bracket = -1;
-    for scan_idx in host_port.len {
-        if host_port[scan_idx] == ']' {
-            close_bracket = scan_idx;
-            break;
-        }
-    }
+    let close_bracket = index_of_byte(host_port, ']');
     guard close_bracket > 0 else {
         return UrlParseError.InvalidIpv6;
     }
@@ -811,30 +847,40 @@ fn resolve_bracketed_ipv6<B>(
             return UrlParseError.InvalidIpv6;
         }
 
-        host_out.push('[');
-        host_out.append(compressed_ipv6[..]);
-        host_out.append("%25");
-        host_out.append(zone_id);
-        host_out.push(']');
+        let wrote_ok = host_out.try_push('[') &&
+            host_out.try_append(compressed_ipv6[..]) &&
+            host_out.try_append("%25") &&
+            host_out.try_append(zone_id) &&
+            host_out.try_push(']');
+        guard wrote_ok else {
+            host_out.clear();
+            return UrlParseError.InvalidHost;
+        }
     } else {
         let ipv6_ok = parse_and_compress_ipv6(ipv6_body, compressed_ipv6);
         guard ipv6_ok else {
             return UrlParseError.InvalidIpv6;
         }
 
-        host_out.push('[');
-        host_out.append(compressed_ipv6[..]);
-        host_out.push(']');
+        let wrote_ok = host_out.try_push('[') &&
+            host_out.try_append(compressed_ipv6[..]) &&
+            host_out.try_push(']');
+        guard wrote_ok else {
+            host_out.clear();
+            return UrlParseError.InvalidHost;
+        }
     }
 
     if close_bracket + 1 < host_port.len {
         if host_port[close_bracket + 1] != ':' {
+            host_out.clear();
             return UrlParseError.InvalidPort;
         }
         let p_str = host_port[close_bracket + 2..];
         if p_str.len > 0 {
             let p_num, p_ok = parse_port_number(p_str);
             guard p_ok else {
+                host_out.clear();
                 return UrlParseError.InvalidPort;
             }
             port_out = p_num;
@@ -890,6 +936,7 @@ fn extract_host_and_port_canonical<B>(
         if p_str.len > 0 {
             let p_num, p_ok = parse_port_number(p_str);
             guard p_ok else {
+                host_out.clear();
                 return UrlParseError.InvalidPort;
             }
             port_out = p_num;

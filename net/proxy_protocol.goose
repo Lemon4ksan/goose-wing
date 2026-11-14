@@ -198,6 +198,9 @@ fn parse_hex_u16(str: const u8[:], out_val: u16&) -> bool {
 //   returns: ok = true, groups = [0x2001, 0x0db8]
 fn parse_colon_groups(part: const u8[:], groups: u16[..8]&) -> bool {
     guard part.len > 0 else { return true; }
+    let saved_len = groups.len;
+    var committed = false;
+    defer if !committed { groups.resize(saved_len); };
     var tok_start: i64 = 0;
     for i in part.len {
         guard part[i] == ':' else { continue; }
@@ -209,6 +212,7 @@ fn parse_colon_groups(part: const u8[:], groups: u16[..8]&) -> bool {
     let seg = part[tok_start..];
     var val: u16 = 0;
     guard parse_hex_u16(seg, val) && groups.try_push(val) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -319,21 +323,18 @@ fn parse_proxy_v1(wire: const u8[:]) -> ProxyHeader, i64, bool {
     var hdr = ProxyHeader { version: ProxyProtocolVersion.V1, .. };
     guard wire.len >= 8 && wire[..6] == internal::PROXY_V1_PREFIX[..] else { return hdr, 0, false; }
 
-    // Locate CRLF terminator within maximum allowed length (107 bytes)
-    var crlf_idx: i64 = -1;
-    let scan_limit = min(wire.len, internal::PROXY_V1_MAX_LEN);
-    for i in 6..scan_limit {
-        if wire[i] == '\r' && i + 1 < wire.len && wire[i + 1] == '\n' {
-            crlf_idx = i;
-            break;
-        }
+    // Locate CRLF terminator within maximum allowed length (107 bytes including \r\n)
+    let body_window = wire[6..min(wire.len, internal::PROXY_V1_MAX_LEN)];
+    let rel_crlf = core::find(body_window, "\r\n");
+    guard rel_crlf >= 0 else { return hdr, 0, false; }
+    let line = body_window[..rel_crlf];
+    let consumed = core::add_sat_i64(rel_crlf, 8);
+    guard core::swar_find_ctl(line) == line.len && !line.contains_byte(0x7F) else {
+        return hdr, 0, false;
     }
-    guard crlf_idx >= 6 else { return hdr, 0, false; }
-    let line = wire[6..crlf_idx];
-    let consumed = crlf_idx + 2;
 
     // Check for "UNKNOWN" protocol (must be "UNKNOWN" or followed by space)
-    if (line == "UNKNOWN" || line.starts_with("UNKNOWN ")) && !line.contains_byte(0) {
+    if line == "UNKNOWN" || line.starts_with("UNKNOWN ") {
         hdr.command = ProxyCommand.Local;
         hdr.family = ProxyAddressFamily.Unspec;
         hdr.transport = ProxyTransportProtocol.Unspec;
@@ -539,6 +540,7 @@ fn parse_proxy_v2_addresses(
     hdr:          ProxyHeader&,
     out_addr_len: i64&,
 ) -> bool {
+    guard payload_len >= 0 && wire.len >= core::add_sat_i64(16, payload_len) else { return false; }
     // HAProxy PROXY Protocol v2 Specification §2.2 & uWS #1948:
     // For command LOCAL (0x00), the receiver MUST NOT interpret addresses and MUST NOT report
     // any address information, preserving the real connection endpoint address.

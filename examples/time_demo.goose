@@ -291,12 +291,12 @@ fn test_calendar_boundaries() {
 fn test_http_resilience_policies() {
     print("=== 11. HTTP Resilience Policies: Backoff & RateLimiter ===");
 
-    // Backoff (moved to app/policy.goose)
-    let backoff = wing::new_backoff(core::millis(100), core::secs(5), 2.0);
-    assert(backoff.delay(0).as_millis() == 100, "Attempt 0 is base delay 100ms");
-    assert(backoff.delay(1).as_millis() == 200, "Attempt 1 is 200ms");
-    assert(backoff.delay(2).as_millis() == 400, "Attempt 2 is 400ms");
-    assert(backoff.delay(10).as_secs_f64() == 5.0, "Attempt 10 capped at max 5.0s");
+    // Backoff (moved to client/policy.goose)
+    let backoff = wing::new_backoff(wing::millis(100), wing::secs(5), 2.0);
+    assert(backoff.delay(0) == wing::millis(100), "Attempt 0 is base delay 100ms");
+    assert(backoff.delay(1) == wing::millis(200), "Attempt 1 is 200ms");
+    assert(backoff.delay(2) == wing::millis(400), "Attempt 2 is 400ms");
+    assert(backoff.delay(10) == wing::secs(5), "Attempt 10 capped at max 5.0s");
 
     // RateLimiter (Token Bucket, moved to app/policy.goose)
     var limiter = wing::new_rate_limiter(10.0, 2); // 10 tokens/sec, burst 2

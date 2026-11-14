@@ -125,6 +125,7 @@ const H3_FRAME_CANCEL_PUSH:             u64 = 0x03;
 const H3_FRAME_SETTINGS:                u64 = 0x04;
 const H3_FRAME_PUSH_PROMISE:            u64 = 0x05;
 const H3_FRAME_GOAWAY:                  u64 = 0x07;
+const H3_FRAME_ORIGIN:                  u64 = 0x0C;
 const H3_FRAME_MAX_PUSH_ID:             u64 = 0x0D;
 const H3_FRAME_PRIORITY_UPDATE_REQUEST: u64 = 0xF0700; // RFC 9218 Section 7.2
 const H3_FRAME_PRIORITY_UPDATE_PUSH:    u64 = 0xF0701; // RFC 9218 Section 7.2
@@ -142,33 +143,31 @@ const H3_SETTING_QPACK_BLOCKED_STREAMS:    u64 = 0x07;
 const H3_SETTING_ENABLE_CONNECT_PROTOCOL:  u64 = 0x08; // RFC 9220 Section 3
 const H3_SETTING_H3_DATAGRAM:              u64 = 0x33; // RFC 9297 Section 2.1.1
 
-// RFC 9114 Section 7.2.8: Frame Types of the Format 0x1f * N + 0x21 - Checks if a frame type is a reserved GREASE frame.
+// RFC 9114 Section 7.2.8: Reserved Frame Types - Frame types 0x1f * N + 0x21 within 62-bit varint bounds.
 inline fn is_h3_grease_frame(frame_type: u64) -> bool {
-    guard frame_type >= 0x21 else { return false; }
+    guard frame_type >= 0x21 && frame_type <= QUIC_VARINT_MAX else { return false; }
     return ((frame_type - 0x21) % 0x1F) == 0;
 }
 
-// RFC 9114 Section 7.2.8: Frame Types of the Format 0x1f * N + 0x21 - Checks if a frame type is reserved from HTTP/2 (0x02, 0x06, 0x08, 0x09, 0x0a).
+// RFC 9114 Section 7.2.8: Reserved Frame Types - Checks if a frame type is reserved from HTTP/2 (0x02, 0x06, 0x08, 0x09).
 inline fn is_h2_reserved_frame_in_h3(frame_type: u64) -> bool {
-    return frame_type == 0x02 || frame_type == 0x06 || frame_type == 0x08 || frame_type == 0x09 || frame_type == 0x0A;
+    return frame_type == 0x02 || frame_type == 0x06 || frame_type == 0x08 || frame_type == 0x09;
 }
 
 // RFC 9114 Section 7.2: Frame Definitions - Checks if a frame is permitted on the HTTP/3 Control Stream.
 inline fn is_allowed_on_control_stream(frame_type: u64) -> bool {
-    if is_h2_reserved_frame_in_h3(frame_type) { return false; }
-    if frame_type == H3_FRAME_DATA ||
-       frame_type == H3_FRAME_HEADERS ||
-       frame_type == H3_FRAME_PUSH_PROMISE {
-        return false;
-    }
-    return true;
+    guard frame_type <= QUIC_VARINT_MAX && !is_h2_reserved_frame_in_h3(frame_type) else { return false; }
+    return frame_type != H3_FRAME_DATA &&
+           frame_type != H3_FRAME_HEADERS &&
+           frame_type != H3_FRAME_PUSH_PROMISE;
 }
 
 // RFC 9114 Section 7.2: Frame Definitions - Checks if a frame is permitted on an HTTP/3 Request Stream (RFC 9218 Section 7.2).
 inline fn is_allowed_on_request_stream(frame_type: u64) -> bool {
-    if is_h2_reserved_frame_in_h3(frame_type) { return false; }
+    guard frame_type <= QUIC_VARINT_MAX && !is_h2_reserved_frame_in_h3(frame_type) else { return false; }
     if frame_type == H3_FRAME_SETTINGS || frame_type == H3_FRAME_GOAWAY ||
        frame_type == H3_FRAME_CANCEL_PUSH || frame_type == H3_FRAME_MAX_PUSH_ID ||
+       frame_type == H3_FRAME_ORIGIN ||
        frame_type == H3_FRAME_PRIORITY_UPDATE_REQUEST || frame_type == H3_FRAME_PRIORITY_UPDATE_PUSH {
         return false;
     }

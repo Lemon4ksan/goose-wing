@@ -623,6 +623,7 @@ inline fn hash_fd_bucket(fd: i64) -> u64 {
 // Appends a socket descriptor to `out_fds` if not previously recorded in bitmask or array.
 // Returns `(count: i32, ok: bool)` with `ok = false` when `out_fds` reaches its 512-subscriber capacity.
 fn add_distinct_subscriber(out_fds: i64[..512]&, seen_mask: u64[4]&, fd: i64) -> i32, bool {
+    guard fd > 0 else { return out_fds.len as i32, false; }
     let h = hash_fd_bucket(fd);
     let word_idx = (h >> 6) as i64;
     let bit = (1 as u64) << (h & 63);
@@ -902,6 +903,7 @@ fn check_and_mark_batch_seen(
     seen_fds:  i64[..512]&,
     seen_mask: u64[4]&,
 ) -> bool, bool {
+    guard fd > 0 else { return false, false; }
     let h = hash_fd_bucket(fd);
     let word_idx = (h >> 6) as i64;
     let bit = (1 as u64) << (h & 63);

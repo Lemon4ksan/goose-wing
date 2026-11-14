@@ -39,7 +39,7 @@ struct SpscRing {
 
 // Initializes a cache-line aligned SPSC ring queue with capacity rounded to next power of 2.
 fn spsc_init(min_capacity: u32) -> SpscRing, bool {
-    guard min_capacity > 0 else {
+    guard min_capacity > 0 && min_capacity <= 0x40000000 else {
         return SpscRing {}, false;
     }
 

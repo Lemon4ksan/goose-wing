@@ -109,11 +109,11 @@ fn test_cab_c2_02_cookie_samesite_and_psl() {
 fn test_cab_c2_03_crypto_jar_and_cors() {
     // 1. Revoked KeySlot must be rejected by add_key.
     var store = wing::KeyStore { max_age_sec: 60, clock_skew_tolerance_sec: 10, .. };
-    var raw_key: u8[32] = [0x42; 32];
-    let active_slot = core::new_key_slot(1, raw_key[..], 1700000000);
+    let raw_key: u8[32] = [0x42; 32];
+    let active_slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
     assert(wing::add_key(store, active_slot));
 
-    var revoked_slot = core::new_key_slot(99, raw_key[..], 1700000000);
+    var revoked_slot = wing::KeySlot { key_id: 99, master_key: raw_key, created_at_sec: 1700000000, .. };
     revoked_slot.revoked = true;
     let revoked_added = wing::add_key(store, revoked_slot);
 

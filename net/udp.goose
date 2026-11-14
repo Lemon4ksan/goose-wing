@@ -211,10 +211,17 @@ fn batch_recv_messages(fd: i32, queue: UdpBatchQueue&) -> i32, bool {
         return 0, false;
     }
 
+    var staged: UdpDatagram[..32] = [];
     let count_i64: i64 = recvd;
     for i in count_i64 {
         let dgram, ok = unpack_arena_to_datagram(i, arena[..], lengths[i], ips[i], ports[i]);
-        guard ok && queue.msgs.try_push(dgram) else {
+        guard ok && staged.try_push(dgram) else {
+            return 0, false;
+        }
+    }
+    for i in staged.len {
+        guard queue.msgs.try_push(copy(staged[i])) else {
+            queue.msgs.clear();
             return 0, false;
         }
     }

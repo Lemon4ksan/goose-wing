@@ -915,44 +915,40 @@ fn parse_sfv_key(raw: const u8[:], cursor: i64&, out_key: u8[..64]&) -> bool {
 }
 
 fn sf_item_to_sfv_bare(item: const SfItem&, out_bare: SfvBareItem&) -> bool {
-    out_bare.text.clear();
+    var tmp = SfvBareItem { .. };
+    var ok = false;
     if item.kind == SfType.Integer {
-        out_bare.kind = SfvType.Integer;
-        out_bare.int_val = item.int_val;
-        return true;
+        tmp.kind = SfvType.Integer;
+        tmp.int_val = item.int_val;
+        ok = true;
+    } else if item.kind == SfType.Decimal {
+        tmp.kind = SfvType.Decimal;
+        tmp.int_val = item.int_val;
+        ok = true;
+    } else if item.kind == SfType.Boolean {
+        tmp.kind = SfvType.Boolean;
+        tmp.bool_val = item.bool_val;
+        ok = true;
+    } else if item.kind == SfType.Date {
+        tmp.kind = SfvType.Date;
+        tmp.int_val = item.int_val;
+        ok = true;
+    } else if item.kind == SfType.Token {
+        tmp.kind = SfvType.Token;
+        ok = tmp.text.try_set(item.str_val);
+    } else if item.kind == SfType.String {
+        tmp.kind = SfvType.String;
+        ok = sf_unescape_string(item.str_val, tmp.text);
+    } else if item.kind == SfType.Binary {
+        tmp.kind = SfvType.ByteSequence;
+        ok = item.str_val.len <= 1088 && sf_decode_byte_sequence(item, tmp.text);
+    } else if item.kind == SfType.DisplayString {
+        tmp.kind = SfvType.DisplayString;
+        ok = sf_decode_display_string(item.str_val, tmp.text);
     }
-    if item.kind == SfType.Decimal {
-        out_bare.kind = SfvType.Decimal;
-        out_bare.int_val = item.int_val;
-        return true;
-    }
-    if item.kind == SfType.Boolean {
-        out_bare.kind = SfvType.Boolean;
-        out_bare.bool_val = item.bool_val;
-        return true;
-    }
-    if item.kind == SfType.Date {
-        out_bare.kind = SfvType.Date;
-        out_bare.int_val = item.int_val;
-        return true;
-    }
-    if item.kind == SfType.Token {
-        out_bare.kind = SfvType.Token;
-        return out_bare.text.try_set(item.str_val);
-    }
-    if item.kind == SfType.String {
-        out_bare.kind = SfvType.String;
-        return sf_unescape_string(item.str_val, out_bare.text);
-    }
-    if item.kind == SfType.Binary {
-        out_bare.kind = SfvType.ByteSequence;
-        return item.str_val.len <= 1088 && sf_decode_byte_sequence(item, out_bare.text);
-    }
-    if item.kind == SfType.DisplayString {
-        out_bare.kind = SfvType.DisplayString;
-        return sf_decode_display_string(item.str_val, out_bare.text);
-    }
-    return false;
+    guard ok else { return false; }
+    out_bare = tmp;
+    return true;
 }
 
 // RFC 8941 Section 3.3: Bare item dispatcher
@@ -979,12 +975,43 @@ fn upsert_sfv_param(out_params: SfvParam[..16]&, param_key: const u8[..64]&, par
     return out_params.try_push(SfvParam { key: param_key, value: param_val });
 }
 
+// Validates and skips RFC 8941 parameters without storing them, leaving `cursor` unchanged on error.
+//
+// Example:
+//   raw = "; a=1; b=?0, \"next\"", cursor = 0
+//   returns: true, cursor = 11 (points to ',')
+fn skip_sfv_parameters(raw: const u8[:], cursor: i64&) -> bool {
+    let saved_cursor = cursor;
+    var committed = false;
+    defer if !committed { cursor = saved_cursor; };
+
+    while cursor < raw.len && raw[cursor] == ';' {
+        cursor = sf_skip_ws(raw, core::add_sat_i64(cursor, 1));
+        let _, next_key, ok_key = sf_parse_key(raw, cursor);
+        guard ok_key else { return false; }
+        cursor = next_key;
+        if cursor < raw.len && raw[cursor] == '=' {
+            cursor = core::add_sat_i64(cursor, 1);
+            var ignored = SfvBareItem { .. };
+            guard parse_sfv_bare_item(raw, cursor, ignored) else { return false; }
+        }
+    }
+    committed = true;
+    return true;
+}
+
 // RFC 8941 Section 3.1.2: Parameters parser (*( ";" *SP key [ "=" bare-item ] ))
+// Leaves `cursor` and `out_params` unchanged on error.
 //
 // Example:
 //   raw = "; q=0.5; v=?1", cursor = 0, out_params = []
 //   returns: true, cursor advances past parameters
 fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..16]&) -> bool {
+    let saved_cursor = cursor;
+    var staged = copy(out_params);
+    var committed = false;
+    defer if !committed { cursor = saved_cursor; };
+
     while cursor < raw.len && raw[cursor] == ';' {
         cursor = sf_skip_ws(raw, core::add_sat_i64(cursor, 1)); // skip ';' and OWS
 
@@ -997,8 +1024,10 @@ fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..1
             guard parse_sfv_bare_item(raw, cursor, param_val) else { return false; }
         }
 
-        guard upsert_sfv_param(out_params, param_key, param_val) else { return false; }
+        guard upsert_sfv_param(staged, param_key, param_val) else { return false; }
     }
+    out_params = staged;
+    committed = true;
     return true;
 }
 

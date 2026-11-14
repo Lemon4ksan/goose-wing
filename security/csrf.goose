@@ -58,6 +58,11 @@ enum CsrfDecision {
     AllowExempt,
 }
 
+enum CsrfTargetScheme {
+    Https,
+    Http,
+}
+
 // 5-attribute vector projection pi_FM(r) = (sigma, mu, delta, u, m)
 struct FetchContext {
     method_is_safe:                bool         = true,
@@ -267,9 +272,17 @@ fn verify_masked_csrf_token(masked_token: const u8[:], expected_unmasked: const 
 }
 
 fn is_origin_trusted(guard_cfg: const CrossOriginGuard&, origin_str: const u8[:]) -> bool {
-    guard origin_str.len > 0 else { return false; }
+    let trimmed = origin_str.trim_lws();
+    guard trimmed.len > 0 else { return false; }
+    let norm_cand = extract_origin_from_url(trimmed);
+    if trimmed.starts_with_fold("https://") || trimmed.starts_with_fold("http://") {
+        guard norm_cand.len > 0 else { return false; }
+    }
+    let cand = if norm_cand.len > 0 { norm_cand } else { trimmed };
     for &orig in guard_cfg.trusted_origins {
-        if subtle_equal_ascii_fold(orig[..], origin_str) {
+        let norm_pat = extract_origin_from_url(orig[..]);
+        let pat = if norm_pat.len > 0 { norm_pat } else { orig[..] };
+        if subtle_equal_ascii_fold(pat, cand) {
             return true;
         }
     }
@@ -298,7 +311,8 @@ fn extract_origin_from_url(url_or_origin: const u8[:]) -> const u8[:] {
     guard extract_hostname_from_origin(origin).len > 0 else {
         return s[..0];
     }
-    return origin;
+    let norm_host = strip_default_origin_port(origin[scheme_len..], scheme_len == 8);
+    return origin[..core::add_sat_i64(scheme_len, norm_host.len)];
 }
 
 // Extracts host from URL or Origin string (RFC 6454 / RFC 3986).
@@ -474,27 +488,35 @@ fn extract_path_from_url(raw: const u8[:]) -> const u8[:] {
     return if s.len > 0 { s } else { "/" };
 }
 
+struct SecFetchHeaderSeen {
+    site: bool = false,
+    mode: bool = false,
+    dest: bool = false,
+    user: bool = false,
+}
+
 inline fn apply_sec_fetch_site_mode(
-    ctx:       FetchContext&,
-    name:      const u8[:],
-    val:       const u8[:],
-    seen_mode: bool&,
+    ctx:  FetchContext&,
+    name: const u8[:],
+    val:  const u8[:],
+    seen: SecFetchHeaderSeen&,
 ) -> bool {
     if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_SITE) {
         let parsed_site = parse_sec_fetch_site(val);
-        if ctx.site == SecFetchSite.Missing {
+        if !seen.site {
             ctx.site = parsed_site;
-        } else if parsed_site != ctx.site {
+            seen.site = true;
+        } else {
             ctx.site = SecFetchSite.CrossSite;
         }
         return true;
     }
     if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_MODE) {
         let parsed_mode = parse_sec_fetch_mode(val);
-        if !seen_mode {
+        if !seen.mode {
             ctx.mode = parsed_mode;
-            seen_mode = true;
-        } else if parsed_mode != ctx.mode {
+            seen.mode = true;
+        } else {
             ctx.mode = SecFetchMode.Other;
         }
         return true;
@@ -503,28 +525,27 @@ inline fn apply_sec_fetch_site_mode(
 }
 
 inline fn apply_sec_fetch_dest_user(
-    ctx:       FetchContext&,
-    name:      const u8[:],
-    val:       const u8[:],
-    seen_dest: bool&,
-    seen_user: bool&,
+    ctx:  FetchContext&,
+    name: const u8[:],
+    val:  const u8[:],
+    seen: SecFetchHeaderSeen&,
 ) -> bool {
     if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_DEST) {
         let parsed_dest = parse_sec_fetch_dest(val);
-        if !seen_dest {
+        if !seen.dest {
             ctx.dest = parsed_dest;
-            seen_dest = true;
-        } else if parsed_dest != ctx.dest {
+            seen.dest = true;
+        } else {
             ctx.dest = SecFetchDest.Other;
         }
         return true;
     }
     if name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_USER) {
-        let parsed_user = (val == "?1");
-        if !seen_user {
+        let parsed_user = (strip_sf_parameters(val) == "?1");
+        if !seen.user {
             ctx.user_activated = parsed_user;
-            seen_user = true;
-        } else if parsed_user != ctx.user_activated {
+            seen.user = true;
+        } else {
             ctx.user_activated = false;
         }
         return true;
@@ -557,8 +578,9 @@ inline fn apply_auth_and_origin_headers(
 //   returns: ctx with method = "POST", target_host = "api.example.com"
 fn extract_fetch_context<Req>(
     req:              const Req&,
-    target_host:      const u8[:],
-    is_sensitive_nav: bool = false,
+    target_host:      const u8[:]      = "",
+    is_sensitive_nav: bool             = false,
+    target_scheme:    CsrfTargetScheme = CsrfTargetScheme.Https,
 ) -> FetchContext {
     var ctx = FetchContext { .. };
     ctx.is_sensitive_navigation_route = is_sensitive_nav;
@@ -568,7 +590,7 @@ fn extract_fetch_context<Req>(
     // RFC 9110 Section 9.2.1 & RFC 10008 Section 2: safe methods
     let m = req.method[..];
     ctx.method_is_safe = (m == "GET" || m == "HEAD" || m == "OPTIONS" || m == "QUERY");
-    if req.url[..].starts_with_fold("http://") || req.url[..].starts_with_fold("ws://") {
+    if target_scheme == CsrfTargetScheme.Http {
         ctx.target_scheme.try_set("http");
     }
     if !ctx.target_host.try_set(target_host) {
@@ -580,14 +602,12 @@ fn extract_fetch_context<Req>(
         ctx.path.clear();
     }
 
-    var seen_mode = false;
-    var seen_dest = false;
-    var seen_user = false;
+    var seen = SecFetchHeaderSeen { .. };
     for &e in req.headers.entries {
         let name = entry_name(req.headers, e);
         let val = entry_value(req.headers, e).trim_lws();
-        if !apply_sec_fetch_site_mode(ctx, name, val, seen_mode) &&
-            !apply_sec_fetch_dest_user(ctx, name, val, seen_dest, seen_user) {
+        if !apply_sec_fetch_site_mode(ctx, name, val, seen) &&
+            !apply_sec_fetch_dest_user(ctx, name, val, seen) {
             apply_auth_and_origin_headers(ctx, name, val);
         }
     }
@@ -604,21 +624,23 @@ inline fn is_csrf_safe_method(m: const u8[:]) -> bool {
 }
 
 // Scans request headers for `Sec-Fetch-Site` without materializing `FetchContext`.
-// Returns `SecFetchSite.Missing` when absent, or `SecFetchSite.CrossSite` on conflicting duplicates.
+// Returns `SecFetchSite.Missing` when absent, or `SecFetchSite.CrossSite` on duplicate headers.
 //
 // Example:
 //   req with header "Sec-Fetch-Site: same-origin"
 //   returns: SecFetchSite.SameOrigin
 fn scan_request_sec_fetch_site<Req>(req: const Req&) -> SecFetchSite {
     var site = SecFetchSite.Missing;
+    var seen_site = false;
     for &e in req.headers.entries {
         guard e.well_known_id == 0xFF else { continue; }
         let name = entry_name(req.headers, e);
         guard name.len == 14 && name.eq_ascii_fold(rfc::HEADER_SEC_FETCH_SITE) else { continue; }
         let parsed = parse_sec_fetch_site(entry_value(req.headers, e).trim_lws());
-        if site == SecFetchSite.Missing {
+        if !seen_site {
             site = parsed;
-        } else if parsed != site {
+            seen_site = true;
+        } else {
             site = SecFetchSite.CrossSite;
         }
     }
@@ -631,7 +653,8 @@ fn evaluate_request_csrf<Req>(
     guard_cfg:        const CrossOriginGuard&,
     req:              const Req&,
     target_host:      const u8[:],
-    is_sensitive_nav: bool = false,
+    is_sensitive_nav: bool             = false,
+    target_scheme:    CsrfTargetScheme = CsrfTargetScheme.Https,
 ) -> CsrfDecision {
     if !is_sensitive_nav && guard_cfg.exempt_paths.len == 0 && is_csrf_safe_method(req.method[..]) {
         let site = scan_request_sec_fetch_site(req);
@@ -639,7 +662,7 @@ fn evaluate_request_csrf<Req>(
             return CsrfDecision.Allow;
         }
     }
-    let ctx = extract_fetch_context(req, target_host, is_sensitive_nav);
+    let ctx = extract_fetch_context(req, target_host, is_sensitive_nav, target_scheme);
     return evaluate_fetch_metadata(guard_cfg, ctx);
 }
 
@@ -693,16 +716,7 @@ fn apply_isolation_headers<Res>(res: Res&) {
             set_header(res, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
         }
     } else {
-        let existing_vary = res.headers.find_header(rfc::HEADER_VARY);
-        if existing_vary != rfc::FETCH_METADATA_VARY_VALUE &&
-            !header_list_has_token(existing_vary, rfc::HEADER_SEC_FETCH_SITE) {
-            var merged: u8[..2048] = [];
-            if merged.try_set(existing_vary) &&
-                merged.try_append(", ") &&
-                merged.try_append(rfc::FETCH_METADATA_VARY_VALUE) {
-                set_header(res, rfc::HEADER_VARY, merged[..]);
-            }
-        }
+        merge_response_vary_tokens(res.headers, rfc::FETCH_METADATA_VARY_VALUE);
     }
 
     if res.headers.inline_slots[CSRF_HSTS_SLOT as i64] == 0xFF {

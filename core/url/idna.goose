@@ -233,6 +233,105 @@ fn punycode_encode_domain(utf8_domain: const u8[:], out_ace: u8[..256]&) -> bool
     return out_ace.len > 0;
 }
 
+inline fn punycode_base36_digit(b: u8) -> u64, bool {
+    if b >= 'a' && b <= 'z' { return sub_sat_u64(b, 97), true; }
+    if b >= 'A' && b <= 'Z' { return sub_sat_u64(b, 65), true; }
+    if b >= '0' && b <= '9' { return add_sat_u64(sub_sat_u64(b, 48), 26), true; }
+    return 0, false;
+}
+
+inline fn is_valid_punycode_basic_prefix(prefix: const u8[:]) -> bool {
+    for b in prefix {
+        guard is_ascii_alphanumeric(b) || b == '-' else { return false; }
+    }
+    return true;
+}
+
+// Decodes one variable-length Bootstring integer delta from `ace_body[pos..]` (RFC 3492 Section 6.2).
+// Leaves `pos` unchanged if decoding fails.
+//
+// Example:
+//   ace_body = "kva", pos = 0, i = 0, bias = 72
+//   returns: ok = true, pos = 3, i = 745
+inline fn punycode_decode_delta(
+    ace_body: const u8[:],
+    pos:      i64&,
+    i:        u64&,
+    bias:     u64,
+) -> bool {
+    let saved_pos = pos;
+    let saved_i = i;
+    var committed = false;
+    defer if !committed { pos = saved_pos; i = saved_i; };
+
+    var w: u64 = 1;
+    var k = PUNYCODE_BASE;
+    while true {
+        guard pos < ace_body.len else { return false; }
+        let d, ok_d = punycode_base36_digit(ace_body[pos]);
+        guard ok_d else { return false; }
+        pos = add_sat_i64(pos, 1);
+
+        let max_add = sub_sat_u64(0xFFFFFFFF, i);
+        let max_d, _ = punycode_div_u64(max_add, w);
+        guard d <= max_d else { return false; }
+        i = add_sat_u64(i, mul_sat_u64(d, w));
+
+        let bias_plus_tmax = add_sat_u64(bias, PUNYCODE_TMAX);
+        let t = if k <= bias {
+            PUNYCODE_TMIN
+        } else if k >= bias_plus_tmax {
+            PUNYCODE_TMAX
+        } else {
+            sub_sat_u64(k, bias)
+        };
+        if d < t { break; }
+
+        let base_minus_t = sub_sat_u64(PUNYCODE_BASE, t);
+        let max_w, _ = punycode_div_u64(0xFFFFFFFF, base_minus_t);
+        guard w <= max_w else { return false; }
+        w = mul_sat_u64(w, base_minus_t);
+        k = add_sat_u64(k, PUNYCODE_BASE);
+    }
+    committed = true;
+    return true;
+}
+
+// Validates that `ace_body` (after `xn--`) is a well-formed RFC 3492 Bootstring encoding
+// producing at least one non-ASCII Unicode scalar value in `[U+00A0, U+10FFFF]`.
+//
+// Example:
+//   ace_body = "bcher-kva"
+//   returns: true
+fn is_valid_punycode_ace_body(ace_body: const u8[:]) -> bool {
+    guard ace_body.len > 0 && ace_body[0] != '-' else { return false; }
+    let delim = last_index_of_byte(ace_body, '-');
+    let basic_len = max(0, delim) as u64;
+    guard delim <= 0 || is_valid_punycode_basic_prefix(ace_body[..delim]) else { return false; }
+    var pos = max(0, add_sat_i64(delim, 1));
+    guard pos < ace_body.len else { return false; }
+
+    var out_len = basic_len;
+    var n = PUNYCODE_INITIAL_N;
+    var i: u64 = 0;
+    var bias = PUNYCODE_INITIAL_BIAS;
+
+    while pos < ace_body.len {
+        let oldi = i;
+        guard punycode_decode_delta(ace_body, pos, i, bias) else { return false; }
+        let next_len = add_sat_u64(out_len, 1);
+        guard next_len <= 63 else { return false; }
+        bias = punycode_adapt(sub_sat_u64(i, oldi), next_len, oldi == 0);
+        let q_n, rem_i = punycode_div_u64(i, next_len);
+        guard q_n <= sub_sat_u64(0x10FFFF, n) else { return false; }
+        n = add_sat_u64(n, q_n);
+        guard n > 0x9F && (n < 0xD800 || n > 0xDFFF) else { return false; }
+        i = add_sat_u64(rem_i, 1);
+        out_len = next_len;
+    }
+    return out_len > basic_len;
+}
+
 // CVE-2026-39821 defense: Validates an ACE / Punycode label starting with "xn--"
 // and enforces RFC 952 / RFC 1123 LDH label rules on all labels.
 // Per RFC 3492 / RFC 5891 Section 4.2.3, a Punycode label MUST encode at least one non-ASCII code point.
@@ -246,8 +345,8 @@ fn validate_punycode_label(label: const u8[:]) -> bool {
     }
     guard label.len >= 4 && label[2] == '-' && label[3] == '-' else { return true; }
     let ace_body, is_xn = strip_prefix_fold(label, "xn--");
-    guard is_xn && ace_body.len > 0 else { return false; }
-    return ace_body[0] != '-' && !contains_byte(ace_body, '_');
+    guard is_xn && !contains_byte(ace_body, '_') else { return false; }
+    return is_valid_punycode_ace_body(ace_body);
 }
 
 // CVE-2026-97044 defense: Validates FQDN wire bounds for internationalized domain names.
@@ -260,8 +359,10 @@ fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
     var start: i64 = 0;
     while start < domain.len {
         let dot_pos = scan_domain_label_end(domain, start);
+        guard dot_pos > start else { return false; }
         let label = domain[start..dot_pos];
         guard validate_punycode_label(label) else { return false; }
+        if dot_pos == domain.len { break; }
         start = add_sat_i64(dot_pos, 1);
     }
     return true;
@@ -270,16 +371,29 @@ fn validate_idna_domain_bounds(domain: const u8[:]) -> bool {
 // Go #78760 / CVE-2026-39821 & CVE-2026-97044: Reject invalid ACE/Punycode labels that contain no
 // non-ASCII delta, and enforce RFC 1035 DNS label (<= 63B) and total domain (<= 253B) length limits.
 fn validate_host_punycode_labels(host_str: const u8[:]) -> bool {
+    if host_str.len == 0 {
+        return true;
+    }
     let trimmed, _ = strip_suffix(host_str, ".");
-    guard trimmed.len <= 253 else { return false; }
+    guard trimmed.len > 0 && trimmed.len <= 253 else { return false; }
 
-    each_non_empty_token(host_str, '.') { label =>
+    var start: i64 = 0;
+    while start < trimmed.len {
+        let dot_pos = scan_domain_label_end(trimmed, start);
+        guard dot_pos > start else { return false; }
+        let label = trimmed[start..dot_pos];
         guard label.len <= 63 else { return false; }
         let ace_body, is_xn = strip_prefix_fold(label, "xn--");
         if is_xn {
-            let last_lbl_idx = sub_sat_i64(ace_body.len, 1);
-            guard ace_body.len > 0 && ace_body[last_lbl_idx] != '-' else { return false; }
+            let last_lbl_idx = sub_sat_i64(label.len, 1);
+            guard label[0] != '-' && label[last_lbl_idx] != '-' && !contains_byte(ace_body, '_') else {
+                return false;
+            }
+            guard is_valid_punycode_ace_body(ace_body) else { return false; }
         }
-    };
+        if dot_pos == trimmed.len { break; }
+        start = add_sat_i64(dot_pos, 1);
+        guard start < trimmed.len else { return false; }
+    }
     return true;
 }

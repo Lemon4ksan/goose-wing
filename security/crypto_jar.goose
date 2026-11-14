@@ -7,6 +7,8 @@ namespace wing;
 import std;
 import core from "..";
 
+extern fn jar_crypto_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
+
 // ---- protocol wire constants & overhead definitions ------------------------
 
 const WIRE_VER_XCHACHA20:    u8 = 0x01;
@@ -109,7 +111,8 @@ struct KeyStore {
 
 // Appends a KeySlot to the store if capacity permits and key_id is not already present.
 // Derives domain-separated signing and encryption subkeys via HKDF-SHA256.
-fn add_key(store: KeyStore&, slot: core::KeySlot) -> bool {
+fn add_key(store: KeyStore&, slot: KeySlot) -> bool {
+    defer zeroize_jar_key_slot(slot);
     guard !slot.revoked && store.keys.len < store.keys.cap else { return false; }
     for idx in store.keys.len {
         if store.keys[idx].key_id == slot.key_id {
@@ -190,17 +193,10 @@ fn needs_rotation(slot: const KeySlot&, now_sec: i64) -> bool {
     return core::sub_sat_i64(slot.expires_at_sec, now_sec) <= 86400;
 }
 
-fn needs_rotation(slot: const core::KeySlot&, now_sec: i64) -> bool {
-    guard now_sec >= 0 else { return false; }
-    if slot.revoked { return true; }
-    guard slot.expires_at_sec > 0 else { return false; }
-    if now_sec >= slot.expires_at_sec { return true; }
-    return core::sub_sat_i64(slot.expires_at_sec, now_sec) <= 86400;
-}
-
 // Validates cookie creation timestamp against clock skew tolerance and max age TTL.
 fn is_cookie_timestamp_valid(store: const KeyStore&, cookie_u: u64, now_sec: i64) -> bool {
-    guard now_sec > 0 && store.clock_skew_tolerance_sec >= 0 && store.max_age_sec >= 0 else {
+    // RFC 6265 Section 5.2.2: The Max-Age Attribute - Zero or negative max-age expires immediately.
+    guard now_sec > 0 && store.clock_skew_tolerance_sec >= 0 && store.max_age_sec > 0 else {
         return false;
     }
     let now_u = now_sec as u64;
@@ -231,30 +227,36 @@ fn new_private_jar(store: KeyStore, use_hkdf_aes: bool = false) -> PrivateJar {
 
 var g_jar_nonce_counter: u64 = 1;
 
-// Derives 32 bytes of cryptographically secure non-linear entropy by mixing
-// caller seed, monotonic invocation counter, high-resolution hardware/OS clock (clock_ns),
-// and timestamp through SHA-256.
-fn generate_jar_entropy(seed: u64, now_sec: i64, domain: u64 = 0) -> u8[32] {
+// RFC 8439 Section 4: Security Considerations - Mix OS CSPRNG, counter, clock, and cookie name for AEAD nonce uniqueness.
+fn generate_jar_entropy(
+    seed:        u64,
+    now_sec:     i64,
+    cookie_name: const u8[:] = "",
+    domain:      u64         = 0,
+) -> u8[32] {
     g_jar_nonce_counter = g_jar_nonce_counter + 1;
     let now_ns = clock_ns() as u64;
-    var entropy_in: u8[32] = [0; 32];
-    core::write_le_u64_at(entropy_in[..], 0, seed ^ domain);
-    core::write_le_u64_at(entropy_in[..], 8, g_jar_nonce_counter);
-    core::write_le_u64_at(entropy_in[..], 16, now_ns);
-    core::write_le_u64_at(entropy_in[..], 24, now_sec as u64);
+    let name_hash = core::fnv1a_64(cookie_name);
+    var entropy_in: u8[64] = [0; 64];
+    let _ = jar_crypto_random_bytes(entropy_in[0..32]);
+    core::write_le_u64_at(entropy_in[..], 32, seed ^ domain ^ name_hash);
+    core::write_le_u64_at(entropy_in[..], 40, g_jar_nonce_counter);
+    core::write_le_u64_at(entropy_in[..], 48, now_ns);
+    core::write_le_u64_at(entropy_in[..], 56, now_sec as u64);
     let out = core::sha256(entropy_in[..]);
-    core::secure_zeroize_32(entropy_in);
+    core::secure_zeroize_64(entropy_in);
     return out;
 }
 
 inline fn init_hkdf_salt_nonce(
-    nonce_seed: u64,
-    now_sec:    i64,
-    salt:       u8[32]&,
-    nonce12:    u8[12]&,
+    nonce_seed:  u64,
+    now_sec:     i64,
+    cookie_name: const u8[:],
+    salt:        u8[32]&,
+    nonce12:     u8[12]&,
 ) {
-    var entropy1 = generate_jar_entropy(nonce_seed, now_sec, 0x73616c745f686b64);
-    var entropy2 = generate_jar_entropy(nonce_seed, now_sec, 0x6e6f6e63655f3132);
+    var entropy1 = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x73616c745f686b64);
+    var entropy2 = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x6e6f6e63655f3132);
     salt = entropy1;
     core::write_le_u64_at(salt[..], 8, now_sec as u64);
     for i in 12 {
@@ -284,7 +286,7 @@ fn seal_binary_hkdf_aes<B>(
 
     var salt:    u8[32] = [0; 32];
     var nonce12: u8[12] = [0; 12];
-    init_hkdf_salt_nonce(nonce_seed, now_sec, salt, nonce12);
+    init_hkdf_salt_nonce(nonce_seed, now_sec, cookie_name, salt, nonce12);
     out.append(salt[..]);
     out.append(nonce12[..]);
 
@@ -322,7 +324,7 @@ fn seal_binary_xchacha20<B>(
     out.append_u32_be(slot.key_id);
     out.append_u64_be(now_u);
 
-    var entropy = generate_jar_entropy(nonce_seed, now_sec, 0x7863686163686132);
+    var entropy = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x7863686163686132);
     var nonce24: u8[24] = [0; 24];
     for i in 24 {
         nonce24[i] = entropy[i];
@@ -468,6 +470,8 @@ fn private_jar_open_binary<B>(
     out_plaintext.clear();
     guard raw_wire.len >= K_OVERHEAD_XCHACHA20 else { return false; }
     let ver = raw_wire[0];
+    let expected_ver = if jar.use_hkdf_aes { WIRE_VER_HKDF_AES_GCM } else { WIRE_VER_XCHACHA20 };
+    guard ver == expected_ver else { return false; }
     let key_id = core::read_be_u32(raw_wire, 1);
 
     var slot, ok_key = find_key(jar.store, key_id);

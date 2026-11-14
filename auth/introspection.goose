@@ -8,6 +8,7 @@ namespace wing;
 import std;
 import json;
 import core from "..";
+import .jwt;
 
 enum TokenTypeHint {
     None,
@@ -115,7 +116,7 @@ inline fn parse_introspection_str_field<B>(reader: json::Reader&, dst: B&, had_e
     }
 }
 
-// Reads a non-negative JSON integer timestamp for RFC 7662 introspection metadata (`exp`, `iat`, `nbf`).
+// RFC 7519 Section 2: Terminology - NumericDate allows non-negative integer or fractional seconds since Epoch.
 //
 // Example:
 //   reader at "1700000000"
@@ -123,7 +124,12 @@ inline fn parse_introspection_str_field<B>(reader: json::Reader&, dst: B&, had_e
 inline fn parse_introspection_int_field(reader: json::Reader&, dst: i64&, had_err: bool&) {
     let p = json::peek(reader);
     if p >= '0' && p <= '9' {
-        dst = json::read_int(reader);
+        let num = json::read_number(reader);
+        if num >= 0.0 && num <= 9223372036854774784.0 {
+            dst = num as i64;
+        } else {
+            had_err = true;
+        }
     } else {
         json::skip(reader);
         had_err = true;
@@ -190,6 +196,7 @@ inline fn parse_introspection_field(
     reader:    json::Reader&,
     out:       IntrospectionResponse&,
     seen_mask: u32&,
+    seen_ext:  SeenHeaderKey[..32]&,
     had_err:   bool&,
 ) {
     if key.contains('\\') {
@@ -217,10 +224,19 @@ inline fn parse_introspection_field(
     if key == "exp" { read_unique_introspection_int(reader, out.exp, seen_mask, 512, had_err); return; }
     if key == "iat" { read_unique_introspection_int(reader, out.iat, seen_mask, 1024, had_err); return; }
     if key == "nbf" { read_unique_introspection_int(reader, out.nbf, seen_mask, 2048, had_err); return; }
+    // RFC 8725 Section 2.6: Multiplicity of JSON Encodings - reject duplicate extension member names
+    if is_header_key_present(key, seen_ext[..]) {
+        had_err = true;
+    } else {
+        var ext_item = SeenHeaderKey { .. };
+        if !ext_item.name.try_set(key) || !seen_ext.try_push(ext_item) {
+            had_err = true;
+        }
+    }
     json::skip(reader);
 }
 
-// Parses an RFC 7662 §2.2 Token Introspection Response JSON document.
+// Parses a Token Introspection Response JSON document.
 // Requires `"active"` to be explicitly present as a JSON boolean and clears metadata when `active == false`.
 //
 // Example:
@@ -232,10 +248,11 @@ fn parse_introspection_response(raw_json: const u8[:]) -> IntrospectionResponse,
     guard raw_json.len > 0 && raw_json.len <= 4096 && raw_json.validate_utf8() else { return empty, false; }
     var reader = json::reader(raw_json);
     guard json::peek(reader) == '{' else { return empty, false; }
-    var seen_mask: u32 = 0;
+    var seen_mask: u32                 = 0;
+    var seen_ext:  SeenHeaderKey[..32] = [];
     var had_err = false;
     json::each_member(reader) { key =>
-        parse_introspection_field(key, reader, out, seen_mask, had_err);
+        parse_introspection_field(key, reader, out, seen_mask, seen_ext, had_err);
     };
     guard json::finish(reader) && !had_err && (seen_mask & 1) != 0 else {
         return empty, false;
@@ -276,12 +293,13 @@ fn encode_oauth2_basic_auth<B>(
     guard core::append_form_urlencoded(client_secret, cred_buf) else { return false; }
 
     var b64_buf: u8[..1536] = [];
+    defer core::secure_zeroize_slice(b64_buf[..]);
     b64_buf.append("Basic ");
     core::base64_encode(cred_buf[..], b64_buf);
     return out_header_val.try_set(b64_buf[..]);
 }
 
-// Decodes an RFC 6749 §2.3.1 `Authorization: Basic ...` header value into `out_id` and `out_secret`,
+// Decodes an `Authorization: Basic ...` header value into `out_id` and `out_secret`,
 // reversing Base64 and `application/x-www-form-urlencoded` on each component.
 //
 // Example:
@@ -296,7 +314,8 @@ fn decode_oauth2_basic_auth(
     out_secret.clear();
     guard header_val.len > 6 && header_val.len <= 2048 else { return false; }
     guard header_val.starts_with_fold("Basic ") else { return false; }
-    let b64_part = header_val[6..].trim_lws();
+    // RFC 9110 Section 11.4: Credentials - auth-scheme and token68 are separated by 1*SP (not HTAB)
+    let b64_part = header_val[6..].trim_start_byte(' ').trim_lws_end();
     guard b64_part.len > 0 else { return false; }
 
     var raw_cred: u8[..1024] = [];
@@ -309,6 +328,7 @@ fn decode_oauth2_basic_auth(
     let ok_ctl = is_valid_basic_auth_credential(out_id[..]) && is_valid_basic_auth_credential(out_secret[..]);
     guard ok_id && ok_sec && ok_ctl else {
         out_id.clear();
+        core::secure_zeroize_slice(out_secret[..]);
         out_secret.clear();
         return false;
     }

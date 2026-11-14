@@ -82,7 +82,42 @@ fn server_cork_write2(sc: ServerCork&, head: const u8[:], body: const u8[:]) -> 
     return total_len as i32;
 }
 
+// RFC 9112 Section 7.1: Chunked Transfer Coding - writes `<hex>\r\n<payload>\r\n` atomically into `sc`.
+fn cork_write_chunk_frame(sc: ServerCork&, chunk_hdr: const u8[:], payload: const u8[:]) -> i32 {
+    guard sc.sock_fd > 0 else { return -1; }
+    let head_body_len = core::add_sat_i64(chunk_hdr.len, payload.len);
+    let frame_len = core::add_sat_i64(head_body_len, 2);
+    if frame_len <= sc.buffer.cork_available() {
+        let _ = sc.buffer.cork_write(chunk_hdr);
+        let _ = sc.buffer.cork_write(payload);
+        let _ = sc.buffer.cork_write("\r\n");
+        return frame_len as i32;
+    }
+
+    let flushed = server_cork_flush(sc);
+    guard flushed >= 0 && sc.buffer.cork_is_empty() else { return -1; }
+
+    if frame_len < core::CORK_BUFFER_CAP {
+        let _ = sc.buffer.cork_write(chunk_hdr);
+        let _ = sc.buffer.cork_write(payload);
+        let _ = sc.buffer.cork_write("\r\n");
+        return frame_len as i32;
+    }
+
+    let w1 = tcp_send2(sc.sock_fd, chunk_hdr, payload);
+    guard w1 >= 0 else { return -1; }
+    let w2 = tcp_send(sc.sock_fd, "\r\n");
+    guard w2 >= 0 else { return -1; }
+    return core::add_sat_i64(w1, w2) as i32;
+}
+
 fn write_cork_chunked_response_stream<Res>(sc: ServerCork&, res: const Res&, server_name: const u8[:]) -> i32 {
+    // RFC 9112 Section 6.1: Transfer-Encoding - forbidden in 1xx/204/304 and HTTP/1.0 responses
+    guard sc.sock_fd > 0
+        && !rfc::is_empty_body_status(res.status_code)
+        && res.protocol[..] != "HTTP/1.0" else {
+        return -1;
+    }
     if res.body.len <= 8192 {
         var wire_out: u8[..16384] = [];
         serialize_http1_chunked_response(res, server_name, 4096, wire_out);
@@ -111,11 +146,9 @@ fn write_cork_chunked_response_stream<Res>(sc: ServerCork&, res: const Res&, ser
         chunk_u64.format_u64_hex(chunk_hdr);
         chunk_hdr.append("\r\n");
         let chunk_end = core::add_sat_i64(off, chunk_n);
-        let w1 = server_cork_write2(sc, chunk_hdr[..], res.body[off..chunk_end]);
-        guard w1 >= 0 else { return -1; }
-        let w2 = server_cork_write(sc, "\r\n");
-        guard w2 >= 0 else { return -1; }
-        total_written = core::add_sat_i64(total_written, core::add_sat_i64(w1, w2)) as i32;
+        let w_chunk = cork_write_chunk_frame(sc, chunk_hdr[..], res.body[off..chunk_end]);
+        guard w_chunk >= 0 else { return -1; }
+        total_written = core::add_sat_i64(total_written, w_chunk) as i32;
         off = chunk_end;
     }
     let tail_slice = hdr_wire[hdr_end..];
@@ -167,7 +200,12 @@ fn cork_begin_http1_chunked(
     res:         Response&,
     server_name: const u8[:],
 ) -> i32 {
-    guard sc.sock_fd > 0 && !rfc::is_empty_body_status(res.status_code) else { return -1; }
+    // RFC 9112 Section 6.1: Transfer-Encoding - forbidden in 1xx/204/304 and HTTP/1.0 responses
+    guard sc.sock_fd > 0
+        && !rfc::is_empty_body_status(res.status_code)
+        && res.protocol[..] != "HTTP/1.0" else {
+        return -1;
+    }
     set_header(res, rfc::HEADER_TRANSFER_ENCODING, "chunked");
     remove_header(res, rfc::HEADER_CONTENT_LENGTH);
     var hdr_wire: u8[..8192] = [];
@@ -186,11 +224,7 @@ fn cork_write_http1_chunk(sc: ServerCork&, payload: const u8[:]) -> i32 {
     var chunk_hdr: u8[..24] = [];
     (payload.len as u64).format_u64_hex(chunk_hdr, false);
     chunk_hdr.append("\r\n");
-    let w1 = server_cork_write2(sc, chunk_hdr[..], payload);
-    guard w1 >= 0 else { return -1; }
-    let w2 = server_cork_write(sc, "\r\n");
-    guard w2 >= 0 else { return -1; }
-    return core::add_sat_i64(w1, w2) as i32;
+    return cork_write_chunk_frame(sc, chunk_hdr[..], payload);
 }
 
 // RFC 9112 Section 7.1: Chunked Transfer Coding - writes terminating `0\r\n\r\n` and flushes `sc`.

@@ -220,11 +220,16 @@ fn x509_parse_ocsp_basic_response(
     return x509_ocsp_read_basic_sig(basic_seq, raw_ocsp, out);
 }
 
-// Parses an OCSPResponse (RFC 6960 §4.2.1) with zero dynamic allocation.
+// RFC 6960 Section 4.2.1: ASN.1 Specification of the OCSP Response - Parses DER OCSPResponse with rollback.
+//
 // Example:
 //   raw_ocsp = 0x30 ... (DER encoded OCSPResponse)
 //   returns: ok = true, out filled with status and cert status
 fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
+    out = ParsedOcspResponse {};
+    var committed = false;
+    defer if !committed { out = ParsedOcspResponse {}; };
+
     var c = core::cursor_from(raw_ocsp);
     var ocsp_seq = core::cursor_from(raw_ocsp[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, ocsp_seq) { return false; }
@@ -236,6 +241,7 @@ fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool 
 
     guard x509_parse_ocsp_status(status_oct.buf[0], out.status) else { return false; }
     if out.status != OcspResponseStatus.Successful {
+        committed = true;
         return true;
     }
 
@@ -246,7 +252,9 @@ fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool 
     var resp_bytes_seq = core::cursor_from(resp_bytes_ctx.buf[..0]);
     if !get_asn1_element(resp_bytes_ctx, rfc::ASN1_TAG_SEQUENCE, resp_bytes_seq) { return false; }
 
-    return x509_parse_ocsp_basic_response(resp_bytes_seq, raw_ocsp, out);
+    guard x509_parse_ocsp_basic_response(resp_bytes_seq, raw_ocsp, out) else { return false; }
+    committed = true;
+    return true;
 }
 
 fn x509_validate_ocsp_temporal(resp: const ParsedOcspResponse&, now_unix: i64) -> TlsAlert {
@@ -262,27 +270,91 @@ fn x509_validate_ocsp_temporal(resp: const ParsedOcspResponse&, now_unix: i64) -
     return TlsAlert.CloseNotify;
 }
 
+const OID_OCSP_SHA1:   const u8[5] = [0x2B, 0x0E, 0x03, 0x02, 0x1A];
+const OID_OCSP_SHA256: const u8[9] = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+// RFC 6066 Section 8: Certificate Status Request - CertificateStatusType ocsp(1).
+const CERT_STATUS_TYPE_OCSP: u8 = 1;
+
+// RFC 6960 Section 4.1.1: ASN.1 Specification of the OCSP Request - Validates CertID hashAlgorithm OID and hash lengths.
+inline fn x509_validate_ocsp_cert_id_alg(resp: const ParsedOcspResponse&, raw_ocsp: const u8[:]) -> bool {
+    let alg_oid = span_slice(raw_ocsp, resp.hash_alg_oid);
+    let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
+    let ocsp_kh = span_slice(raw_ocsp, resp.issuer_key_hash);
+    if alg_oid == OID_OCSP_SHA256[..] {
+        return ocsp_nh.len == 32 && ocsp_kh.len == 32;
+    }
+    if alg_oid == OID_OCSP_SHA1[..] {
+        return ocsp_nh.len == 20 && ocsp_kh.len == 20;
+    }
+    return false;
+}
+
 inline fn x509_verify_ocsp_issuer_name_hash(
+    alg_oid:   const u8[:],
     ocsp_nh:   const u8[:],
     issuer_dn: const u8[:],
 ) -> bool {
-    if ocsp_nh.len == 32 {
+    if alg_oid == OID_OCSP_SHA256[..] && ocsp_nh.len == 32 {
         let h = core::sha256(issuer_dn);
         return core::ct_eq_bytes(ocsp_nh, h[..]);
     }
-    if ocsp_nh.len == 20 {
+    if alg_oid == OID_OCSP_SHA1[..] && ocsp_nh.len == 20 {
         let h = core::sha1(issuer_dn);
         return core::ct_eq_bytes(ocsp_nh, h[..]);
     }
     return false;
 }
 
+// RFC 6960 Section 4.1.1: ASN.1 Specification of the OCSP Request - Verifies hashAlgorithm, issuerNameHash, and issuerKeyHash.
+fn x509_verify_ocsp_cert_id_material(
+    resp:              const ParsedOcspResponse&,
+    raw_ocsp:          const u8[:],
+    issuer_subject_dn: const u8[:],
+    issuer_pubkey_val: const u8[:],
+) -> bool {
+    guard issuer_subject_dn.len > 0 && issuer_pubkey_val.len > 0 else { return false; }
+    let alg_oid = span_slice(raw_ocsp, resp.hash_alg_oid);
+    let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
+    let ocsp_kh = span_slice(raw_ocsp, resp.issuer_key_hash);
+    if alg_oid == OID_OCSP_SHA256[..] {
+        guard ocsp_nh.len == 32 && ocsp_kh.len == 32 else { return false; }
+        let nh = core::sha256(issuer_subject_dn);
+        let kh = core::sha256(issuer_pubkey_val);
+        return core::ct_eq_bytes(ocsp_nh, nh[..]) && core::ct_eq_bytes(ocsp_kh, kh[..]);
+    }
+    if alg_oid == OID_OCSP_SHA1[..] {
+        guard ocsp_nh.len == 20 && ocsp_kh.len == 20 else { return false; }
+        let nh = core::sha1(issuer_subject_dn);
+        let kh = core::sha1(issuer_pubkey_val);
+        return core::ct_eq_bytes(ocsp_nh, nh[..]) && core::ct_eq_bytes(ocsp_kh, kh[..]);
+    }
+    return false;
+}
+
+fn x509_verify_ocsp_cert_id_with_issuer(
+    resp:           const ParsedOcspResponse&,
+    raw_ocsp:       const u8[:],
+    leaf_cert:      const ParsedCert&,
+    leaf_raw:       const u8[:],
+    issuer_cert:    const ParsedCert&,
+    issuer_raw_der: const u8[:],
+) -> bool {
+    let issuer_subject = span_slice(issuer_raw_der, issuer_cert.subject_raw);
+    if leaf_cert.issuer_raw.length > 0 {
+        guard issuer_subject == span_slice(leaf_raw, leaf_cert.issuer_raw) else { return false; }
+    }
+    let pk_bits = span_slice(issuer_raw_der, issuer_cert.spki_pubkey);
+    guard pk_bits.len >= 2 && pk_bits[0] == 0 else { return false; }
+    return x509_verify_ocsp_cert_id_material(resp, raw_ocsp, issuer_subject, pk_bits[1..]);
+}
+
 // Validates an OCSP stapled response against the leaf certificate (RFC 6066 §8, RFC 6960).
 fn validate_ocsp_stapling(
-    raw_ocsp:  const u8[:],
-    leaf_cert: const ParsedCert&,
-    leaf_raw:  const u8[:],
-    now_unix:  i64,
+    raw_ocsp:       const u8[:],
+    leaf_cert:      const ParsedCert&,
+    leaf_raw:       const u8[:],
+    now_unix:       i64,
+    issuer_raw_der: const u8[:] = "",
 ) -> TlsAlert {
     var resp = ParsedOcspResponse {};
     guard parse_ocsp_response(raw_ocsp, resp) && resp.status == OcspResponseStatus.Successful else {
@@ -300,24 +372,50 @@ fn validate_ocsp_stapling(
     guard ocsp_serial.len > 0 && ocsp_serial == leaf_serial else {
         return TlsAlert.BadCertificateStatusResponse;
     }
+    guard x509_validate_ocsp_cert_id_alg(resp, raw_ocsp) else {
+        return TlsAlert.BadCertificateStatusResponse;
+    }
 
-    if leaf_cert.issuer_raw.length > 0 {
-        guard resp.issuer_name_hash.length > 0 else {
+    if issuer_raw_der.len > 0 {
+        var issuer_cert = ParsedCert { .. };
+        guard parse_x509_certificate(issuer_raw_der, issuer_cert) else {
             return TlsAlert.BadCertificateStatusResponse;
         }
+        guard x509_verify_ocsp_cert_id_with_issuer(
+            resp, raw_ocsp, leaf_cert, leaf_raw, issuer_cert, issuer_raw_der,
+        ) else {
+            return TlsAlert.BadCertificateStatusResponse;
+        }
+        let sig_alert = x509_verify_ocsp_signature(resp, raw_ocsp, issuer_cert, issuer_raw_der);
+        guard sig_alert == TlsAlert.CloseNotify else {
+            return sig_alert;
+        }
+    } else if leaf_cert.issuer_raw.length > 0 {
+        let alg_oid = span_slice(raw_ocsp, resp.hash_alg_oid);
         let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
         let issuer_dn = span_slice(leaf_raw, leaf_cert.issuer_raw);
-        guard x509_verify_ocsp_issuer_name_hash(ocsp_nh, issuer_dn) else {
-            return TlsAlert.BadCertificateStatusResponse;
-        }
-    } else if resp.issuer_name_hash.length > 0 {
-        let ocsp_nh = span_slice(raw_ocsp, resp.issuer_name_hash);
-        guard ocsp_nh.len == 32 || ocsp_nh.len == 20 else {
+        guard x509_verify_ocsp_issuer_name_hash(alg_oid, ocsp_nh, issuer_dn) else {
             return TlsAlert.BadCertificateStatusResponse;
         }
     }
 
     return x509_validate_ocsp_temporal(resp, now_unix);
+}
+
+fn x509_verify_ocsp_signature_with_pubkey(
+    resp:          const ParsedOcspResponse&,
+    raw_ocsp:      const u8[:],
+    parent_pubkey: const u8[:],
+) -> TlsAlert {
+    guard resp.signature.length > 0 && resp.tbs_raw.length > 0 && parent_pubkey.len > 0 else {
+        return TlsAlert.BadCertificateStatusResponse;
+    }
+    let sig_oid = span_slice(raw_ocsp, resp.sig_alg_oid);
+    let tbs_data = span_slice(raw_ocsp, resp.tbs_raw);
+    let sig_bytes = span_slice(raw_ocsp, resp.signature);
+    return x509_verify_signature_by_oid(
+        sig_oid, tbs_data, sig_bytes, parent_pubkey, TlsAlert.BadCertificateStatusResponse,
+    );
 }
 
 fn x509_verify_ocsp_signature(
@@ -326,26 +424,22 @@ fn x509_verify_ocsp_signature(
     issuer_cert: const ParsedCert&,
     issuer_raw:  const u8[:],
 ) -> TlsAlert {
-    guard resp.signature.length > 0 && resp.tbs_raw.length > 0 else {
-        return TlsAlert.BadCertificateStatusResponse;
-    }
-    let sig_oid = span_slice(raw_ocsp, resp.sig_alg_oid);
-    let tbs_data = span_slice(raw_ocsp, resp.tbs_raw);
-    let sig_bytes = span_slice(raw_ocsp, resp.signature);
     var parent_pubkey = span_slice(issuer_raw, issuer_cert.spki_pubkey);
-
     if parent_pubkey.len >= 2 && parent_pubkey[0] == 0 {
         parent_pubkey = parent_pubkey[1..];
     }
-
-    return x509_verify_signature_by_oid(
-        sig_oid, tbs_data, sig_bytes, parent_pubkey, TlsAlert.BadCertificateStatusResponse,
-    );
+    return x509_verify_ocsp_signature_with_pubkey(resp, raw_ocsp, parent_pubkey);
 }
 
-// Unwraps TLS 1.3 / TLS 1.2 status_request extension wire framing (opaque OCSPResponse<1..2^24-1>).
+// RFC 6066 Section 8: Certificate Status Request - Unwraps CertificateStatus (status_type = ocsp(1) + u24 OCSPResponse).
+//
+// Example:
+//   ext_data = [0x01, 0x00, 0x00, 0x04, 'O', 'C', 'S', 'P']
+//   returns: "OCSP", ok = true
 fn unwrap_tls_ocsp_response(ext_data: const u8[:]) -> const u8[:], bool {
     var c = core::cursor_from(ext_data);
+    var status_type: u8 = 0;
+    guard c.get_u8(status_type) && status_type == CERT_STATUS_TYPE_OCSP else { return "", false; }
     var resp_len: u32 = 0;
     if !c.get_u24(resp_len) { return "", false; }
     guard resp_len > 0 && resp_len == c.cursor_len() else { return "", false; }

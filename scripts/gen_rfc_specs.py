@@ -214,6 +214,13 @@ def main() -> int:
         return 1
 
     generated.sort()
+    if (args.all or not args.targets) and out_root.is_dir():
+        expected = {p.resolve() for p in generated}
+        for existing in sorted(out_root.rglob("*.sm.md")):
+            if existing.resolve() not in expected:
+                existing.unlink()
+                print(f"[PRUNE] Removed orphaned spec {existing.relative_to(root).as_posix()}")
+
     if not args.no_lint and generated:
         marklint_bin = find_goosemarklint(root)
         if marklint_bin:

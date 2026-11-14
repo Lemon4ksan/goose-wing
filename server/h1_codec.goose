@@ -110,10 +110,10 @@ fn swar_find_space(s: const u8[:], start: i64) -> i64 {
     return -1;
 }
 
-// Validates that request-target contains only visible ASCII characters (0x21..0x7E) per RFC 9112 §3.2.
+// RFC 9112 Section 3.2: Request Target - visible ASCII excluding '#' fragment delimiter
 fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
     for b in path_slice {
-        guard b >= 0x21 && b <= 0x7E else { return false; }
+        guard b >= 0x21 && b <= 0x7E && b != '#' else { return false; }
     }
     return true;
 }
@@ -237,13 +237,23 @@ fn parse_http1_request_line<Req>(
     return true;
 }
 
+// RFC 3986 Section 3.2.2: Host - reg-name characters and valid pct-encoded triplets
 fn validate_host_header_chars(host_val: const u8[:]) -> bool {
-    for b in host_val {
+    for i in host_val.len {
+        let b = host_val[i];
         guard b > 0x20 && b < 0x7F else { return false; }
         guard b != '/' && b != '?' && b != '#' && b != '@' && b != ','
             && b != '\\' && b != '<' && b != '>' && b != '"' && b != '^'
             && b != '|' && b != '`' && b != '{' && b != '}' else {
             return false;
+        }
+        if b == '%' {
+            let rem = host_val[i..];
+            guard rem.len >= 3
+                && core::is_ascii_hexdigit(rem[1])
+                && core::is_ascii_hexdigit(rem[2]) else {
+                return false;
+            }
         }
     }
     return true;
@@ -631,7 +641,8 @@ fn parse_http1_request_headers_fixed<Req>(
     }
 
     if (presence_tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
-        guard validate_span_te_header(out_req.headers, presence_tracker.te_idx) else {
+        // RFC 9112 Section 6.1: Transfer-Encoding - reject Transfer-Encoding in HTTP/1.0 requests
+        guard !out_req.is_http10 && validate_span_te_header(out_req.headers, presence_tracker.te_idx) else {
             clear_request_headers_state(out_req);
             return false;
         }
@@ -701,8 +712,7 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
             out_req.body.clear();
             out_req.trailers.clear();
             if dec_err != ChunkedDecodeError.UnexpectedEof &&
-               dec_err != ChunkedDecodeError.EmptyInput &&
-               dec_err != ChunkedDecodeError.None {
+               dec_err != ChunkedDecodeError.EmptyInput {
                 clear_request_headers_state(out_req);
             }
             return false, 0;
@@ -713,10 +723,14 @@ fn parse_http1_wire_request<Req>(wire: const u8[:], out_req: Req&) -> bool, i64 
     }
 
     // Guard against signed integer addition overflow and enforce MAX_SERVER_BODY_LIMIT (10 MB)
-    guard cl_len >= 0 && cl_len <= MAX_SERVER_BODY_LIMIT && wire.len >= body_start_idx + cl_len else {
+    guard cl_len >= 0 && cl_len <= MAX_SERVER_BODY_LIMIT else {
+        clear_request_headers_state(out_req);
         return false, 0;
     }
-    let total_consumed = body_start_idx + cl_len;
+    let total_consumed = core::add_sat_i64(body_start_idx, cl_len);
+    guard wire.len >= total_consumed else {
+        return false, 0;
+    }
 
     if cl_len > 0 {
         let _pbf = prof_enter("http1.body_framing");
@@ -827,23 +841,21 @@ inline fn purge_conflicting_cl_from_response<Res>(out_res: Res&) {
     out_res.presence_mask = detect_response_presence_mask(out_res.headers);
 }
 
-// Parses an HTTP/1.1 status line and populates out_res.status_code and out_res.protocol (RFC 9112 §4).
+// RFC 9112 Section 4: Status Line - HTTP-version SP status-code SP [ reason-phrase ]
 //
 // Example:
 //   status_line = "HTTP/1.1 200 OK"
 //   returns: true, out_res.status_code = 200
 fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) -> bool {
-    guard status_line.len >= 12 &&
+    guard status_line.len >= 13 &&
           status_line[..7] == "HTTP/1." &&
           (status_line[7] == '0' || status_line[7] == '1') &&
-          status_line[8] == ' ' else {
+          status_line[8] == ' ' &&
+          status_line[12] == ' ' else {
         return false;
     }
-    if status_line.len > 12 {
-        guard status_line[12] == ' ' else { return false; }
-        for b in status_line[13..] {
-            guard is_valid_header_value_byte(b) else { return false; }
-        }
+    for b in status_line[13..] {
+        guard is_valid_header_value_byte(b) else { return false; }
     }
 
     guard status_line[9] >= '1' && status_line[9] <= '5' &&

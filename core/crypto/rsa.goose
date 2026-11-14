@@ -189,7 +189,7 @@ fn rsa_be_mul_mod(a: const u8[:], b: const u8[:], m: const u8[:], out: u8[..512]
     rsa_limbs_to_be(prod_raw[..], k, out);
 }
 
-// Advances one exponent bit during Montgomery modular exponentiation.
+// Advances one exponent bit during constant-time Montgomery modular exponentiation.
 // crap:ignore
 fn rsa_monty_exp_step(
     acc:     u32[..128]&,
@@ -197,24 +197,15 @@ fn rsa_monty_exp_step(
     m_limbs: const u32[:],
     m0i:     u32,
     b_val:   u8,
-    started: bool&,
 ) {
-    var tmp: u32[..128] = [];
-    if started {
-        rsa_monty_mul(acc[..], acc[..], m_limbs, m0i, tmp);
-        acc.clear();
-        acc.append(tmp[..]);
+    var sq:   u32[..128] = [];
+    var prod: u32[..128] = [];
+    rsa_monty_mul(acc[..], acc[..], m_limbs, m0i, sq);
+    rsa_monty_mul(sq[..], base_m, m_limbs, m0i, prod);
+    let mask: u32 = 0 - ((b_val & 1) as u32);
+    for i in m_limbs.len {
+        acc[i] = (sq[i] & (~mask)) | (prod[i] & mask);
     }
-    guard b_val == 1 else { return; }
-    if !started {
-        acc.clear();
-        acc.append(base_m);
-        started = true;
-        return;
-    }
-    rsa_monty_mul(acc[..], base_m, m_limbs, m0i, tmp);
-    acc.clear();
-    acc.append(tmp[..]);
 }
 
 // Computes `out = base^exp mod m` where `m` is big-endian modulus of length `64 <= k <= 512`.
@@ -223,8 +214,13 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
     let k = m.len;
     guard k >= 64 && k <= 512 else { return false; }
     guard base.len == k && exp.len > 0 && exp.len <= 512 else { return false; }
-    guard (m[k - 1] & 1) == 1 && (m[0] & 0x80) != 0 else { return false; }
+    guard (m[k - 1] & 1) == 1 && m[0] != 0 else { return false; }
     guard rsa_be_cmp(base, m) < 0 else { return false; }
+    var exp_nonzero: u8 = 0;
+    for i in exp.len {
+        exp_nonzero |= exp[i];
+    }
+    guard exp_nonzero != 0 else { return false; }
 
     var m_limbs:    u32[..128] = [];
     var base_limbs: u32[..128] = [];
@@ -239,17 +235,15 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
     rsa_monty_mul(base_limbs[..], r2_mod[..], m_limbs[..], m0i, base_mont);
     acc_mont.append(r_mod[..]);
 
-    var started = false;
     for i in exp.len {
         let eb = exp[i];
         var bit: i32 = 7;
         while bit >= 0 {
             let b_val = (eb >> bit) & 1;
-            rsa_monty_exp_step(acc_mont, base_mont[..], m_limbs[..], m0i, b_val, started);
+            rsa_monty_exp_step(acc_mont, base_mont[..], m_limbs[..], m0i, b_val);
             bit -= 1;
         }
     }
-    guard started else { return false; }
 
     var one_limbs: u32[..128] = [];
     one_limbs.push(1);
@@ -264,10 +258,10 @@ fn rsa_mod_exp(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..51
     return true;
 }
 
-// Validates that an RSA public exponent `e_be` is an odd integer in `3 <= e < n` (RFC 8017 §3.1).
+// Validates that an RSA public exponent `e_be` is an odd integer in `3 <= e < n` with odd modulus `n` (RFC 8017 §3.1).
 // crap:ignore
 fn is_valid_rsa_public_exponent(e_be: const u8[:], n_be: const u8[:]) -> bool {
-    guard e_be.len > 0 && n_be.len >= 64 else { return false; }
+    guard e_be.len > 0 && n_be.len >= 64 && (n_be[n_be.len - 1] & 1) == 1 else { return false; }
     var start: i64 = 0;
     while start < e_be.len && e_be[start] == 0 {
         start += 1;
@@ -435,7 +429,9 @@ fn rsa_pkcs1_sha256_sign(
     let digest = sha256(message);
     var em: u8[..512] = [];
     guard build_emsa_pkcs1_v15(PKCS1_DIGESTINFO_SHA256[..], digest[..], n_be.len, em) else { return false; }
-    return rsa_mod_exp(em[..], d_be, n_be, out_sig);
+    let ok = rsa_mod_exp(em[..], d_be, n_be, out_sig);
+    secure_zeroize_slice(em[..]);
+    return ok;
 }
 
 // ---- MGF1 & RSASSA-PSS Encoding / Verification (RFC 8017 Section 9.1) ----
@@ -480,22 +476,31 @@ fn rsa_mgf1_xor(seed: const u8[:], hash_len: i64, dst: u8[:]) {
     }
 }
 
-// Verifies an EMSA-PSS encoded block `em` against `m_hash` with salt length equal to `m_hash.len`.
+// Computes the leftmost-bit mask for EMSA-PSS `EM[0]` from `mod_first_byte` (RFC 8017 Section 9.1.1).
 // crap:ignore
-fn verify_emsa_pss(em: const u8[:], m_hash: const u8[:], mod_first_byte: u8) -> bool {
-    let h_len = m_hash.len;
-    let em_len = em.len;
-    guard (h_len == 32 || h_len == 48 || h_len == 64) && mod_first_byte > 1 else { return false; }
-    guard em_len >= h_len + h_len + 2 && em_len <= 512 else { return false; }
-    guard em[em_len - 1] == 0xBC else { return false; }
-
+inline fn pss_top_mask(mod_first_byte: u8) -> u8 {
+    if mod_first_byte <= 1 {
+        return 0xFF;
+    }
     var top_mask: u8 = 0xFF;
     var b = mod_first_byte;
     while (b & 0x80) == 0 && b != 0 {
         top_mask >>= 1;
         b <<= 1;
     }
-    top_mask >>= 1;
+    return top_mask >> 1;
+}
+
+// Verifies an EMSA-PSS encoded block `em` against `m_hash` with salt length equal to `m_hash.len`.
+// crap:ignore
+fn verify_emsa_pss(em: const u8[:], m_hash: const u8[:], mod_first_byte: u8) -> bool {
+    let h_len = m_hash.len;
+    let em_len = em.len;
+    guard (h_len == 32 || h_len == 48 || h_len == 64) && mod_first_byte >= 1 else { return false; }
+    guard em_len >= h_len + h_len + 2 && em_len <= 512 else { return false; }
+    guard em[em_len - 1] == 0xBC else { return false; }
+
+    let top_mask = pss_top_mask(mod_first_byte);
     guard (em[0] & (~top_mask)) == 0 else { return false; }
 
     let db_len = em_len - h_len - 1;
@@ -540,6 +545,10 @@ fn rsa_pss_sha256_verify(n_be: const u8[:], e_be: const u8[:], message: const u8
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let m_hash = sha256(message);
+    if n_be[0] == 1 {
+        guard em.len > 1 && em[0] == 0x00 else { return false; }
+        return verify_emsa_pss(em[1..], m_hash[..], 1);
+    }
     return verify_emsa_pss(em[..], m_hash[..], n_be[0]);
 }
 
@@ -550,6 +559,10 @@ fn rsa_pss_sha384_verify(n_be: const u8[:], e_be: const u8[:], message: const u8
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let m_hash = sha384(message);
+    if n_be[0] == 1 {
+        guard em.len > 1 && em[0] == 0x00 else { return false; }
+        return verify_emsa_pss(em[1..], m_hash[..], 1);
+    }
     return verify_emsa_pss(em[..], m_hash[..], n_be[0]);
 }
 
@@ -560,6 +573,10 @@ fn rsa_pss_sha512_verify(n_be: const u8[:], e_be: const u8[:], message: const u8
     var em: u8[..512] = [];
     guard rsa_mod_exp(sig, e_be, n_be, em) else { return false; }
     let m_hash = sha512(message);
+    if n_be[0] == 1 {
+        guard em.len > 1 && em[0] == 0x00 else { return false; }
+        return verify_emsa_pss(em[1..], m_hash[..], 1);
+    }
     return verify_emsa_pss(em[..], m_hash[..], n_be[0]);
 }
 
@@ -588,7 +605,7 @@ fn encode_emsa_pss(
 ) -> bool {
     let h_len = m_hash.len;
     let s_len = salt.len;
-    guard (h_len == 32 || h_len == 48 || h_len == 64) && mod_first_byte > 1 else { return false; }
+    guard (h_len == 32 || h_len == 48 || h_len == 64) && mod_first_byte >= 1 else { return false; }
     guard s_len == h_len && em_len >= h_len + s_len + 2 && em_len <= 512 else { return false; }
 
     var m_prime: u8[..136] = [];
@@ -618,21 +635,33 @@ fn encode_emsa_pss(
         db[zero_pad_len + 1 + i] = salt[i];
     }
     rsa_mgf1_xor(h_buf[..], h_len, db[0..db_len]);
-
-    var top_mask: u8 = 0xFF;
-    var b = mod_first_byte;
-    while (b & 0x80) == 0 && b != 0 {
-        top_mask >>= 1;
-        b <<= 1;
-    }
-    top_mask >>= 1;
-    db[0] &= top_mask;
+    db[0] &= pss_top_mask(mod_first_byte);
 
     out_em.clear();
     out_em.append(db[0..db_len]);
     out_em.append(h_buf[..]);
     out_em.push(0xBC);
     return true;
+}
+
+// Encodes an EMSA-PSS message block sized for modulus `n_be` (prepending `0x00` when `n_be[0] == 1`).
+// crap:ignore
+fn encode_pss_for_modulus(
+    m_hash: const u8[:],
+    salt:   const u8[:],
+    n_be:   const u8[:],
+    out_em: u8[..512]&,
+) -> bool {
+    if n_be[0] == 1 {
+        var sub_em: u8[..512] = [];
+        guard encode_emsa_pss(m_hash, salt, n_be.len - 1, 1, sub_em) else { return false; }
+        out_em.clear();
+        out_em.push(0x00);
+        out_em.append(sub_em[..]);
+        secure_zeroize_slice(sub_em[..]);
+        return true;
+    }
+    return encode_emsa_pss(m_hash, salt, n_be.len, n_be[0], out_em);
 }
 
 // Generates an RSASSA-PSS SHA-256 signature using big-endian modulus `n_be`, exponent `d_be`, and 32-byte `salt`.
@@ -647,8 +676,10 @@ fn rsa_pss_sha256_sign(
     guard n_be.len >= 64 && salt.len == 32 else { return false; }
     let m_hash = sha256(message);
     var em: u8[..512] = [];
-    guard encode_emsa_pss(m_hash[..], salt, n_be.len, n_be[0], em) else { return false; }
-    return rsa_mod_exp(em[..], d_be, n_be, out_sig);
+    guard encode_pss_for_modulus(m_hash[..], salt, n_be, em) else { return false; }
+    let ok = rsa_mod_exp(em[..], d_be, n_be, out_sig);
+    secure_zeroize_slice(em[..]);
+    return ok;
 }
 
 // Generates an RSASSA-PSS SHA-512 signature using big-endian modulus `n_be`, exponent `d_be`, and 64-byte `salt`.
@@ -663,6 +694,8 @@ fn rsa_pss_sha512_sign(
     guard n_be.len >= 130 && salt.len == 64 else { return false; }
     let m_hash = sha512(message);
     var em: u8[..512] = [];
-    guard encode_emsa_pss(m_hash[..], salt, n_be.len, n_be[0], em) else { return false; }
-    return rsa_mod_exp(em[..], d_be, n_be, out_sig);
+    guard encode_pss_for_modulus(m_hash[..], salt, n_be, em) else { return false; }
+    let ok = rsa_mod_exp(em[..], d_be, n_be, out_sig);
+    secure_zeroize_slice(em[..]);
+    return ok;
 }

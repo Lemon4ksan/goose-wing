@@ -53,7 +53,7 @@ struct JwksKey {
     alg:              JwtAlg     = JwtAlg.Unspecified,
     use:              u8[..16]   = "",
     kid:              u8[..64]   = [],
-    symmetric_key:    u8[..64]   = [],
+    symmetric_key:    u8[..128]  = [],
     public_key:       u8[32]     = [0; 32],
     ec_x:             u8[..48]   = [],
     ec_y:             u8[..48]   = [],
@@ -363,16 +363,18 @@ struct JwkRawMaterial {
     raw_k:        u8[..128]  = [],
     raw_n:        u8[..1024] = [],
     raw_e:        u8[..32]   = [],
-    raw_x5c_leaf: u8[..2048] = [],
+    raw_x5c_leaf: u8[..3072] = [],
     has_x5c:      bool       = false,
 }
 
-// Validates a non-empty Base64 certificate string token in `reader` (RFC 7517 §4.7).
+// RFC 7517 Section 4.7: "x5c" (X.509 Certificate Chain) Parameter - every chain entry must be valid PKIX DER
 inline fn read_valid_x5c_cert_b64(reader: json::Reader&) -> bool {
-    var b64_buf: u8[..2048] = [];
+    var b64_buf: u8[..3072] = [];
     var der_buf: u8[..2048] = [];
-    return core::read_json_string_into(reader, b64_buf) && b64_buf.len > 0 &&
-           core::base64_decode(b64_buf[..], der_buf) && der_buf.len > 0;
+    guard core::read_json_string_into(reader, b64_buf) && b64_buf.len > 0 else { return false; }
+    guard core::base64_decode(b64_buf[..], der_buf) && der_buf.len > 0 else { return false; }
+    var cert = ParsedCert { .. };
+    return parse_x509_certificate(der_buf[..], cert);
 }
 
 // Parses JWK "x5c" certificate chain array and extracts the leaf DER Base64 string (RFC 7517 §4.7).
@@ -509,14 +511,17 @@ fn finalize_okp_key(raw_x: const u8[:], key_item: JwksKey&) -> bool {
 }
 
 fn finalize_oct_key(raw_k: const u8[:], key_item: JwksKey&) -> bool {
-    guard key_item.alg == JwtAlg.Unspecified || key_item.alg == JwtAlg.HS256 ||
-          key_item.alg == JwtAlg.HS384 || key_item.alg == JwtAlg.HS512 else { return false; }
-    guard raw_k.len > 0 else { return false; }
+    let min_len = if key_item.alg == JwtAlg.Unspecified {
+        rfc::HMAC_SHA256_MAC_LEN
+    } else {
+        hmac_min_key_len(key_item.alg)
+    };
+    guard min_len > 0 && raw_k.len > 0 else { return false; }
     var decoded_k: u8[..128] = [];
     defer core::secure_zeroize_slice(decoded_k[..]);
     guard core::base64url_decode(raw_k, decoded_k) else { return false; }
-    // RFC 8725 §3.6 & RFC 7518 §3.2: Reject weak symmetric keys (< 128 bits / 16 bytes)
-    guard decoded_k.len >= 16 && decoded_k.len <= rfc::HMAC_SHA512_MAC_LEN else {
+    // RFC 7518 Section 3.2: HMAC with SHA-2 Functions - key must be at least hash output length
+    guard decoded_k.len >= min_len && decoded_k.len <= key_item.symmetric_key.cap else {
         return false;
     }
     let _ = key_item.symmetric_key.try_set(decoded_k[..]);
@@ -553,12 +558,11 @@ fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: JwksKey&) 
     return true;
 }
 
+// RFC 7517 Section 4.7: "x5c" (X.509 Certificate Chain) Parameter - leaf DER must parse and match JWK key
 inline fn validate_jwk_x5c_spki(leaf_der: const u8[:], key_item: const JwksKey&) -> bool {
     guard key_item.kty != JwkKeyType.Oct && key_item.kty != JwkKeyType.Unknown else { return false; }
     var cert = ParsedCert { .. };
-    if !parse_x509_certificate(leaf_der, cert) {
-        return !(leaf_der.len > 32 && leaf_der[0] == 0x30);
-    }
+    guard parse_x509_certificate(leaf_der, cert) else { return false; }
     var spki_pub = span_slice(leaf_der, cert.spki_pubkey);
     if spki_pub.len >= 2 && spki_pub[0] == 0 {
         spki_pub = spki_pub[1..];
@@ -588,7 +592,7 @@ inline fn validate_jwk_x5c_and_ops(mat: const JwkRawMaterial&, key_item: JwksKey
         return false;
     }
     if mat.has_x5c {
-        var leaf_der: u8[..1536] = [];
+        var leaf_der: u8[..2048] = [];
         guard core::base64_decode(mat.raw_x5c_leaf[..], leaf_der) && leaf_der.len > 0 else {
             return false;
         }

@@ -126,6 +126,9 @@ fn queue_delete(batcher: WriteBackBatcher&, cookie_val: const CanonicalCookie&) 
 const MAX_COOKIE_HEADER_LEN: i64 = 8192;
 
 fn try_append_cookie_pair(out: u8[>..]&, cookie_val: const CanonicalCookie&, with_delim: bool) -> bool {
+    guard cookie_val.name.len > 0 || cookie_val.value.len > 0 else {
+        return true;
+    }
     let delim_len: i64 = if with_delim { 2 } else { 0 };
     let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
     let pair_len = core::add_sat_i64(cookie_val.name.len, core::add_sat_i64(eq_len, cookie_val.value.len));
@@ -145,6 +148,9 @@ fn try_append_cookie_pair(out: u8[>..]&, cookie_val: const CanonicalCookie&, wit
 }
 
 fn try_append_cookie_pair<B>(out: B&, cookie_val: const CanonicalCookie&, with_delim: bool) -> bool {
+    guard cookie_val.name.len > 0 || cookie_val.value.len > 0 else {
+        return true;
+    }
     let delim_len: i64 = if with_delim { 2 } else { 0 };
     let eq_len:    i64 = if cookie_val.name.len > 0 { 1 } else { 0 };
     let pair_len = core::add_sat_i64(cookie_val.name.len, core::add_sat_i64(eq_len, cookie_val.value.len));
@@ -178,7 +184,7 @@ fn format_cookie_header_from_indices(
     for i in indices.len {
         let idx = indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
-        guard try_append_cookie_pair(out, jar.cookies[idx], i > 0) else { return; }
+        guard try_append_cookie_pair(out, jar.cookies[idx], out.len > 0) else { return; }
     }
 }
 
@@ -191,7 +197,7 @@ fn format_cookie_header_from_indices<B>(
     for i in indices.len {
         let idx = indices[i] as i64;
         guard idx >= 0 && idx < jar.cookies.len else { continue; }
-        guard try_append_cookie_pair(out, jar.cookies[idx], i > 0) else { return; }
+        guard try_append_cookie_pair(out, jar.cookies[idx], out.len > 0) else { return; }
     }
 }
 
@@ -199,14 +205,14 @@ fn format_cookie_header_from_indices<B>(
 // Stops cleanly before exceeding 8192-byte limit (curl test 427 & 443, RFC 6265 Section 5.4).
 fn format_cookie_header_value(out: u8[>..]&, cookies: const CanonicalCookie[:]) {
     for cookie_idx in cookies.len {
-        guard try_append_cookie_pair(out, cookies[cookie_idx], cookie_idx > 0) else { return; }
+        guard try_append_cookie_pair(out, cookies[cookie_idx], out.len > 0) else { return; }
     }
 }
 
 // Formats cookies into bounded stack buffers, respecting both buffer capacity and 8192-byte limit.
 fn format_cookie_header_value<B>(out: B&, cookies: const CanonicalCookie[:]) {
     for cookie_idx in cookies.len {
-        guard try_append_cookie_pair(out, cookies[cookie_idx], cookie_idx > 0) else { return; }
+        guard try_append_cookie_pair(out, cookies[cookie_idx], out.len > 0) else { return; }
     }
 }
 
@@ -562,14 +568,14 @@ fn are_cookies_store_identical(cookie_a: const CanonicalCookie&, cookie_b: const
 //   pair_slice = "user=alice"
 //   out = [CanonicalCookie{name="user", value="alice"}]
 fn parse_single_server_cookie_pair<C>(pair_slice: const u8[:], now_us: i64, out: C&) {
-    let clean_pair = pair_slice.trim_ascii_space();
+    if has_prohibited_cookie_ctl(pair_slice) { return; }
+    let clean_pair = pair_slice.trim_lws();
     guard clean_pair.len > 0 else { return; }
-    if has_prohibited_cookie_ctl(clean_pair) { return; }
 
     let lhs, rhs, has_eq = clean_pair.split_once_byte('=');
     guard has_eq else { return; }
-    let cookie_name = lhs.trim_ascii_space();
-    let cookie_val = rhs.trim_ascii_space();
+    let cookie_name = lhs.trim_lws();
+    let cookie_val = rhs.trim_lws();
     guard cookie_name.len > 0 else { return; }
     if core::add_sat_i64(cookie_name.len, cookie_val.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return;
@@ -748,7 +754,12 @@ fn read_json_cookie_member(
         let s = json::read_string(json_reader, scratch);
         guard cookie_ref.partition_key.try_set(s) else { ok = false; return; }
     } else if key == "same_site" {
-        cookie_ref.same_site = parse_cookie_same_site(json::read_string(json_reader, scratch));
+        let ss_str = json::read_string(json_reader, scratch);
+        cookie_ref.same_site = if ss_str.eq_ascii_fold("default") {
+            CookieSameSite.Default
+        } else {
+            parse_cookie_same_site(ss_str)
+        };
     } else if key == "priority" {
         cookie_ref.priority = parse_cookie_priority(json::read_string(json_reader, scratch));
     } else if key == "source_scheme" {

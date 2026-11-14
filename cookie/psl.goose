@@ -11,7 +11,25 @@ import .dafsa;
 
 // ---- public suffix data structures and enumerations ------------------------
 
-// Validates that `domain` is non-empty, <= 256 bytes, valid UTF-8, has no leading
+// RFC 1034 Section 3.1: Name space specifications and terminology - Total length <= 253 octets and labels 1..63 octets.
+fn has_valid_dns_label_lengths(domain: const u8[:]) -> bool {
+    guard domain.len > 0 && domain.len <= 253 else {
+        return false;
+    }
+    var label_len: i64 = 0;
+    for b in domain {
+        if b == '.' {
+            guard label_len >= 1 && label_len <= 63 else { return false; }
+            label_len = 0;
+        } else {
+            label_len = core::add_sat_i64(label_len, 1);
+            guard label_len <= 63 else { return false; }
+        }
+    }
+    return label_len >= 1 && label_len <= 63;
+}
+
+// Validates that `domain` is non-empty, <= 253 ASCII bytes, valid UTF-8, has no leading
 // or trailing '.', has no empty '..' labels, is not an IP literal, and normalizes to lowercase.
 //
 // Example:
@@ -23,38 +41,27 @@ fn validate_and_lowercase_psl_domain(domain: const u8[:], out: u8[..256]&) -> bo
         return false;
     }
     if !core::is_pure_ascii(domain) {
-        return core::punycode_encode_domain(domain, out);
+        guard core::punycode_encode_domain(domain, out)
+            && !is_invalid_psl_domain_syntax(out[..])
+            && has_valid_dns_label_lengths(out[..]) else {
+            out.clear();
+            return false;
+        }
+        return true;
     }
     let last_idx = core::sub_sat_i64(domain.len, 1);
     guard domain[0] != 0x2E && domain[last_idx] != 0x2E else {
         return false;
     }
-    guard !core::is_ip_address_literal(domain) else {
+    guard !core::is_ip_address_literal(domain)
+        && !is_invalid_psl_domain_syntax(domain)
+        && has_valid_dns_label_lengths(domain) else {
         return false;
     }
-    var committed = false;
-    defer if !committed { out.clear(); };
-    var i: i64 = 0;
-    var prev_was_dot = false;
-    while i < domain.len {
-        let b = domain[i];
-        guard b > 0x20 && b != 0x7F else {
-            return false;
-        }
-        if b == 0x2E {
-            guard !prev_was_dot else {
-                return false;
-            }
-            prev_was_dot = true;
-        } else {
-            prev_was_dot = false;
-        }
-        guard out.try_push(core::to_lower_ascii_byte(b)) else {
-            return false;
-        }
-        i = core::add_sat_i64(i, 1);
+    guard out.try_set(domain) else {
+        return false;
     }
-    committed = true;
+    to_lower(out[..]);
     return true;
 }
 
@@ -133,14 +140,14 @@ fn is_invalid_psl_domain_syntax(trimmed: const u8[:]) -> bool {
         return true;
     }
     for b in trimmed {
-        if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' {
+        if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '\\' {
             return true;
         }
     }
     return false;
 }
 
-//Normalizes domain: strips leading/trailing dots and outer IPv6 brackets, then converts to lowercase or Punycode.
+// Normalizes domain: strips leading/trailing dots and outer IPv6 brackets, then converts to lowercase or Punycode.
 fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     out.clear();
     let trimmed = domain.trim_byte('.').trim_byte('[').trim_byte(']');
@@ -149,8 +156,15 @@ fn psl_normalize_domain<B>(domain: const u8[:], out: B&) -> bool {
     }
     if !core::is_pure_ascii(trimmed) {
         var ace_buf: u8[..256] = [];
-        guard core::punycode_encode_domain(trimmed, ace_buf) else { return false; }
+        guard core::punycode_encode_domain(trimmed, ace_buf)
+            && !is_invalid_psl_domain_syntax(ace_buf[..])
+            && has_valid_dns_label_lengths(ace_buf[..]) else {
+            return false;
+        }
         return out.try_set(ace_buf[..]);
+    }
+    if !core::is_ip_address_literal(trimmed) {
+        guard has_valid_dns_label_lengths(trimmed) else { return false; }
     }
     guard out.try_set(trimmed) else { return false; }
     to_lower(out[..]);
@@ -455,6 +469,7 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
 
     let clean_host = host.trim_byte('.').trim_byte('[').trim_byte(']');
     let clean_domain = cookie_domain.trim_byte('.').trim_byte('[').trim_byte(']');
+    guard clean_host.len > 0 && clean_domain.len > 0 else { return false; }
 
     if clean_host.eq_ascii_fold(clean_domain) {
         return true;

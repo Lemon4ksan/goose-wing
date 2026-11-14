@@ -294,7 +294,10 @@ fn quic_fc_check_conn_window_update(fc: QuicFlowControl&) -> bool, u64 {
 // Credit is evaluated against effective consumed/received bytes (RFC 9000 §4.1).
 // Returns (should_send: bool, new_max_stream_data: u64).
 fn quic_fc_check_stream_window_update(s: QuicStream&, stream_window_size: u64) -> bool, u64 {
-    guard !s.has_recv_final_size else { return false, 0; }
+    // RFC 9000 Section 19.10: MAX_STREAM_DATA Frames - Only streams in the Recv state advertise receive credit.
+    guard s.can_recv && s.recv_state == QuicRecvState.Receive && !s.has_recv_final_size else {
+        return false, 0;
+    }
     let consumed = max(s.bytes_recv, s.recv_consumed);
     let available = calc_unspent_credit(s.recv_max_data, consumed);
     let threshold = calc_window_renewal_threshold(stream_window_size);

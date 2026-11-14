@@ -57,6 +57,9 @@ fn connect_wire_queue(
     port:       u16,
     timeout_ms: u32 = 5000,
 ) -> bool {
+    if q.fd >= 0 {
+        close_wire_queue(q);
+    }
     let sock = wing::native_tcp_connect(host, port, timeout_ms);
     guard sock >= 0 else { return false; }
 
@@ -88,7 +91,12 @@ fn dispatch_queue_send(q: WireQueue&, data: const u8[:]) -> i64, bool {
     if q.driver == WireDriverKind.Mock {
         return data.len, true;
     }
-    return drain_send_slice(q.fd, data);
+    let sent, ok = drain_send_slice(q.fd, data);
+    if !ok {
+        q.bytes_sent = core::add_sat_u64(q.bytes_sent, sent as u64);
+        close_wire_queue(q);
+    }
+    return sent, ok;
 }
 
 inline fn is_submittable_cmd(cmd: const WireCommandBuffer&) -> bool {
@@ -225,7 +233,7 @@ fn queue_submit_batch(
     info:     const WireSubmitInfo&,
     fence:    WireFence&,
 ) -> i64, WireResult {
-    guard q.is_connected else {
+    guard q.is_connected && (!fence.is_valid || fence.status == WireFenceStatus.Unsignaled) else {
         return 0, WireResult.ErrorInitializationFailed;
     }
     for i in 0..cmd_bufs.len {
@@ -237,7 +245,8 @@ fn queue_submit_batch(
     for i in 0..cmd_bufs.len {
         let sent, ok = submit_single_batch_cmd(q, cmd_bufs[i]);
         guard ok else {
-            return total_batch_bytes, WireResult.ErrorCommandBufferLocked;
+            total_batch_bytes = core::add_sat_i64(total_batch_bytes, sent);
+            return total_batch_bytes, WireResult.ErrorDeviceLost;
         }
         total_batch_bytes = core::add_sat_i64(total_batch_bytes, sent);
         q.bytes_sent = core::add_sat_u64(q.bytes_sent, sent as u64);

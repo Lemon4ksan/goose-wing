@@ -41,8 +41,9 @@ fn normalize_preconnect_scheme(scheme_val: PoolScheme) -> PoolScheme {
 
 // Target origin endpoint (canonical host and TCP/UDP port).
 struct OriginEndpoint {
-    host: u8[..256] = [],
-    port: u16       = 80,
+    host:       u8[..256] = [],
+    port:       u16       = 80,
+    overflowed: bool      = false,
 }
 
 // Copies and normalizes an ASCII hostname or site identifier to lowercase in-place.
@@ -54,11 +55,14 @@ inline fn set_canonical_host<B>(dst: B&, raw_host: const u8[:]) -> bool {
 
 fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint {
     var ep = OriginEndpoint { port: port_num, .. };
-    let _ = ep.host.set_canonical_host(host_str);
+    if !ep.host.set_canonical_host(host_str) {
+        ep.overflowed = true;
+    }
     return ep;
 }
 
 fn origin_endpoint_equals(a: const OriginEndpoint&, b: const OriginEndpoint&) -> bool {
+    guard !a.overflowed && !b.overflowed else { return false; }
     return a.port == b.port && a.host[..].eq_ascii_fold(b.host[..]);
 }
 
@@ -246,22 +250,53 @@ fn is_connection_healthy(
     return true;
 }
 
-// Checks if a candidate host matches an active TLS Subject Alternative Name (SAN).
-fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
-    let pat = pattern.trim_end_byte('.');
-    let host = target_host.trim_end_byte('.');
-    guard pat.len > 0 && host.len > 0 && !host.contains_byte('*') else { return false; }
-
-    if pat.eq_ascii_fold(host) {
+inline fn has_empty_dns_label(name: const u8[:]) -> bool {
+    if name.len == 0 || name.starts_with(".") || name.ends_with(".") {
         return true;
     }
-    // Wildcard SAN check (*.example.com) per RFC 6125 §6.4.3
-    guard pat.starts_with("*.") else { return false; }
-    let suffix = pat[2..];
+    return core::contains(name, "..");
+}
+
+inline fn is_all_numeric_dot_host(host: const u8[:]) -> bool {
+    var saw_digit = false;
+    for b in host {
+        if b == '.' {
+            continue;
+        }
+        if !core::is_ascii_digit(b) {
+            return false;
+        }
+        saw_digit = true;
+    }
+    return saw_digit;
+}
+
+// Checks if a candidate host matches an active TLS Subject Alternative Name (SAN).
+fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
+    // RFC 6125 Section 6.4.3: Checking of Wildcard Certificates - SAN DNSName MUST NOT end with trailing dot
+    guard pattern.len > 0 && !pattern.ends_with(".") else { return false; }
+    let host = if target_host.len > 1 && target_host.ends_with(".") {
+        target_host[..core::sub_sat_i64(target_host.len, 1)]
+    } else {
+        target_host
+    };
+    guard !host.contains_byte('*') && !has_empty_dns_label(host) && !has_empty_dns_label(pattern) else {
+        return false;
+    }
+
+    if pattern.eq_ascii_fold(host) {
+        return true;
+    }
+    // RFC 6125 Section 1.7.2: Out of Scope - wildcards MUST NOT match IPv4 or IPv6 literals
+    guard pattern.starts_with("*.") && !host.contains_byte(':') && !is_all_numeric_dot_host(host) else {
+        return false;
+    }
+    let suffix = pattern[2..];
+    guard !suffix.contains_byte('*') && suffix.contains_byte('.') else { return false; }
     let label, host_suffix, has_dot = host.split_once_byte('.');
     let _, tld, _ = host.rsplit_once_byte('.');
     let _, is_numeric_tld = core::parse_digits(tld);
-    guard has_dot && label.len > 0 && !is_numeric_tld && suffix.contains_byte('.') else {
+    guard has_dot && label.len > 0 && !is_numeric_tld else {
         return false;
     }
     return suffix.eq_ascii_fold(host_suffix);
@@ -743,6 +778,8 @@ fn register_connection(
     now_ns:         i64,
     respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> i32 {
+    guard resolved_ip.len <= 64 else { return -1; }
+    guard pool.find_group_index(key) >= 0 || pool.groups.len < pool.groups.cap else { return -1; }
     guard can_allocate_group_socket(pool, key, respect_limits) else { return -1; }
     if respect_limits == RespectLimits.Enabled && pool.conns.len >= pool.socket_soft_cap {
         pool.evict_oldest_idle_connection(now_ns);
@@ -750,6 +787,9 @@ fn register_connection(
 
     let slot_idx = acquire_connection_slot(pool, now_ns);
     guard slot_idx != -2 else { return -1; }
+
+    let grp_idx = pool.find_or_create_group(key);
+    guard grp_idx >= 0 else { return -1; }
 
     let cid = pool.next_conn_id;
     pool.next_conn_id = core::add_sat_i64(cid, 1) as i32;
@@ -774,11 +814,7 @@ fn register_connection(
         pool.conns.push(conn);
     }
 
-    let grp_idx = pool.find_or_create_group(key);
-    if grp_idx >= 0 {
-        pool.groups[grp_idx].active_conns = core::add_sat_i64(pool.groups[grp_idx].active_conns, 1) as i32;
-    }
-
+    pool.groups[grp_idx].active_conns = core::add_sat_i64(pool.groups[grp_idx].active_conns, 1) as i32;
     return cid;
 }
 
@@ -873,10 +909,10 @@ fn release_connection_or_handoff(
     now_ns:     i64,
     out_waiter: WantConn&,
 ) -> bool, bool {
-    out_waiter = WantConn { .. };
     for &c in pool.conns {
         if c.conn_id == conn_id && !c.closed {
             guard c.active_allocations > 0 else { return false, false; }
+            out_waiter = WantConn { .. };
             if try_handoff_to_group_waiter(pool, c, out_waiter) {
                 return true, true;
             }

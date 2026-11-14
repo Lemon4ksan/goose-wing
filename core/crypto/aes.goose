@@ -364,6 +364,14 @@ fn aes_gcm_compute_tag(
     return tag;
 }
 
+const AES_GCM_MAX_BYTES: i64 = 0xFFFFFFFE0;
+
+inline fn zeroize_aes_gcm_blocks(h: u8[16]&, enc_j0: u8[16]&, tag: u8[16]&) {
+    secure_zeroize_16(h);
+    secure_zeroize_16(enc_j0);
+    secure_zeroize_16(tag);
+}
+
 fn aes_gcm_seal_core(
     key:       const u8[:],
     nonce12:   const u8[12]&,
@@ -372,7 +380,9 @@ fn aes_gcm_seal_core(
     dst:       u8[:],
 ) -> u8[16], i64, bool {
     var tag: u8[16] = [0; 16];
-    guard dst.len >= plaintext.len else { return tag, 0, false; }
+    guard plaintext.len <= AES_GCM_MAX_BYTES && dst.len >= plaintext.len else {
+        return tag, 0, false;
+    }
     let written = native_aes_gcm_seal_aead(key, nonce12[..], plaintext, aad, dst[..plaintext.len], tag[..]);
     guard written == plaintext.len else {
         secure_zeroize_slice(tag[..]);
@@ -394,6 +404,11 @@ fn aes_gcm_open_small<B>(
     let res = native_aes_gcm_open_aead(key, nonce12[..], ciphertext, aad, tag[..], tmp[..ciphertext.len]);
     guard res == ciphertext.len else {
         secure_zeroize_slice(tmp[..ciphertext.len]);
+        return false;
+    }
+    guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
+        secure_zeroize_slice(tmp[..ciphertext.len]);
+        out_plaintext.clear();
         return false;
     }
     let start_len = out_plaintext.len;
@@ -418,6 +433,10 @@ fn aes256_gcm_open_inplace(
     aad:     const u8[:],
     tag:     const u8[16]&,
 ) -> i64, bool {
+    guard in_out.len <= AES_GCM_MAX_BYTES else {
+        secure_zeroize_slice(in_out);
+        return 0, false;
+    }
     let res = native_aes_gcm_open_aead(key[..], nonce12[..], in_out, aad, tag[..], in_out);
     guard res == in_out.len else {
         secure_zeroize_slice(in_out);
@@ -435,6 +454,7 @@ fn aes256_gcm_seal_inplace(
     aad:     const u8[:],
 ) -> u8[16], bool {
     var tag: u8[16] = [0; 16];
+    guard in_out.len <= AES_GCM_MAX_BYTES else { return tag, false; }
     let res = native_aes_gcm_seal_aead(key[..], nonce12[..], in_out, aad, in_out, tag[..]);
     guard res == in_out.len else {
         secure_zeroize_slice(tag[..]);
@@ -452,7 +472,9 @@ fn aes256_gcm_open_into(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard dst.len >= ciphertext.len else { return 0, false; }
+    guard ciphertext.len <= AES_GCM_MAX_BYTES && dst.len >= ciphertext.len else {
+        return 0, false;
+    }
     let res = native_aes_gcm_open_aead(
         key[..], nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
     );
@@ -482,27 +504,36 @@ fn aes256_gcm_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
+    guard ciphertext.len <= AES_GCM_MAX_BYTES else { return false; }
     if ciphertext.len <= 2048 {
         return aes_gcm_open_small(key[..], nonce12, ciphertext, aad, tag, out_plaintext);
     }
     var ks = aes256_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
-    let h = aes_encrypt_block(ks, zero_block);
+    var h = aes_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
-    let enc_j0 = aes_encrypt_block(ks, j0);
-    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
+    var enc_j0 = aes_encrypt_block(ks, j0);
+    var computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
         zeroize_aes256_ks(ks);
+        zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
+        return false;
+    }
+    guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
+        zeroize_aes256_ks(ks);
+        zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
+        out_plaintext.clear();
         return false;
     }
 
     let start_len = out_plaintext.len;
     var ctr = j0;
+    var enc_ctr: u8[16] = [0; 16];
     var offset = 0;
     while offset < ciphertext.len {
         inc_ctr32(ctr);
-        let enc_ctr = aes_encrypt_block(ks, ctr);
+        enc_ctr = aes_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
         let take = min(rem, 16);
         for i in take {
@@ -510,6 +541,8 @@ fn aes256_gcm_open<B>(
         }
         offset += take;
     }
+    secure_zeroize_16(enc_ctr);
+    zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
     zeroize_aes256_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
         out_plaintext.clear();
@@ -527,6 +560,10 @@ fn aes128_gcm_open_inplace(
     aad:     const u8[:],
     tag:     const u8[16]&,
 ) -> i64, bool {
+    guard in_out.len <= AES_GCM_MAX_BYTES else {
+        secure_zeroize_slice(in_out);
+        return 0, false;
+    }
     let res = native_aes_gcm_open_aead(key[..], nonce12[..], in_out, aad, tag[..], in_out);
     guard res == in_out.len else {
         secure_zeroize_slice(in_out);
@@ -544,6 +581,7 @@ fn aes128_gcm_seal_inplace(
     aad:     const u8[:],
 ) -> u8[16], bool {
     var tag: u8[16] = [0; 16];
+    guard in_out.len <= AES_GCM_MAX_BYTES else { return tag, false; }
     let res = native_aes_gcm_seal_aead(key[..], nonce12[..], in_out, aad, in_out, tag[..]);
     guard res == in_out.len else {
         secure_zeroize_slice(tag[..]);
@@ -561,7 +599,9 @@ fn aes128_gcm_open_into(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard dst.len >= ciphertext.len else { return 0, false; }
+    guard ciphertext.len <= AES_GCM_MAX_BYTES && dst.len >= ciphertext.len else {
+        return 0, false;
+    }
     let res = native_aes_gcm_open_aead(
         key[..], nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
     );
@@ -591,27 +631,36 @@ fn aes128_gcm_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
+    guard ciphertext.len <= AES_GCM_MAX_BYTES else { return false; }
     if ciphertext.len <= 2048 {
         return aes_gcm_open_small(key[..], nonce12, ciphertext, aad, tag, out_plaintext);
     }
     var ks = aes128_key_schedule(key);
     let zero_block: u8[16] = [0; 16];
-    let h = aes128_encrypt_block(ks, zero_block);
+    var h = aes128_encrypt_block(ks, zero_block);
     let j0 = init_j0(nonce12);
-    let enc_j0 = aes128_encrypt_block(ks, j0);
-    let computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
+    var enc_j0 = aes128_encrypt_block(ks, j0);
+    var computed_tag = aes_gcm_compute_tag(h, enc_j0, aad, ciphertext);
 
     guard ct_eq_tag16(computed_tag, tag) else {
         zeroize_aes128_ks(ks);
+        zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
+        return false;
+    }
+    guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
+        zeroize_aes128_ks(ks);
+        zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
+        out_plaintext.clear();
         return false;
     }
 
     let start_len = out_plaintext.len;
     var ctr = j0;
+    var enc_ctr: u8[16] = [0; 16];
     var offset = 0;
     while offset < ciphertext.len {
         inc_ctr32(ctr);
-        let enc_ctr = aes128_encrypt_block(ks, ctr);
+        enc_ctr = aes128_encrypt_block(ks, ctr);
         let rem = ciphertext.len - offset;
         let take = min(rem, 16);
         for i in take {
@@ -619,6 +668,8 @@ fn aes128_gcm_open<B>(
         }
         offset += take;
     }
+    secure_zeroize_16(enc_ctr);
+    zeroize_aes_gcm_blocks(h, enc_j0, computed_tag);
     zeroize_aes128_ks(ks);
     if out_plaintext.len - start_len != ciphertext.len {
         out_plaintext.clear();
@@ -717,10 +768,12 @@ fn aes_gcm_seal_prepared(
     dst:       u8[:],
 ) -> u8[16], i64, bool {
     var tag: u8[16] = [0; 16];
-    guard ctx.valid && dst.len >= plaintext.len else {
+    guard ctx.valid && plaintext.len <= AES_GCM_MAX_BYTES && dst.len >= plaintext.len else {
         return tag, 0, false;
     }
-    let n = native_aes_gcm_seal_prepared(ctx.state[..], iv12[..], plaintext, aad, dst, tag[..]);
+    let n = native_aes_gcm_seal_prepared(
+        ctx.state[..], iv12[..], plaintext, aad, dst[..plaintext.len], tag[..],
+    );
     guard n == plaintext.len else {
         secure_zeroize_slice(tag[..]);
         return tag, 0, false;
@@ -741,11 +794,18 @@ fn aes_gcm_open_prepared_into(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard ctx.valid && dst.len >= ciphertext.len else {
+    guard ciphertext.len <= AES_GCM_MAX_BYTES && dst.len >= ciphertext.len else {
         return 0, false;
     }
-    let n = native_aes_gcm_open_prepared(ctx.state[..], iv12[..], ciphertext, aad, tag[..], dst);
+    guard ctx.valid else {
+        secure_zeroize_slice(dst[..ciphertext.len]);
+        return 0, false;
+    }
+    let n = native_aes_gcm_open_prepared(
+        ctx.state[..], iv12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
+    );
     guard n == ciphertext.len else {
+        secure_zeroize_slice(dst[..ciphertext.len]);
         return 0, false;
     }
     return n, true;
@@ -763,7 +823,7 @@ fn aes_gcm_seal_prepared_inplace(
     aad:  const u8[:],
 ) -> u8[16], i64, bool {
     var tag: u8[16] = [0; 16];
-    guard ctx.valid else {
+    guard ctx.valid && buf.len <= AES_GCM_MAX_BYTES else {
         return tag, 0, false;
     }
     let n = native_aes_gcm_seal_prepared(ctx.state[..], iv12[..], buf, aad, buf, tag[..]);

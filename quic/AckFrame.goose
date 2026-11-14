@@ -135,7 +135,12 @@ fn encode_ack_frame<B>(out: B&, ack: const AckFrame&) -> bool {
         return false;
     }
 
+    // RFC 9000 Section 19.3.1: ACK Ranges - Validate monotonically descending non-overlapping ACK ranges.
+    var cur_smallest = core::sub_sat_u64(ack.largest_acked, ack.first_ack_range);
     for i in ack.ranges.len {
+        let iv, ok_iv = step_descending_ack_range(cur_smallest, ack.ranges[i].gap, ack.ranges[i].ack_range);
+        guard ok_iv else { return false; }
+        cur_smallest = iv.smallest;
         guard quic_encode_varint(out, ack.ranges[i].gap)
             && quic_encode_varint(out, ack.ranges[i].ack_range) else {
             return false;
@@ -166,6 +171,7 @@ inline fn step_descending_ack_range(prev_smallest: u64, gap: u64, ack_range: u64
 }
 
 // Decodes sequential ACK gap and range fields.
+// Restores `cur` and `ack.ranges` on failure (`false`).
 //
 // Example:
 //   src = [0x00, 0x01], cur = 0, range_cnt = 1
@@ -178,6 +184,13 @@ fn decode_ack_ranges(
     first_range:   u64,
     ack:           AckFrame&,
 ) -> bool {
+    let saved_cur = cur;
+    let saved_len = ack.ranges.len;
+    var committed = false;
+    defer if !committed {
+        cur = saved_cur;
+        ack.ranges.resize(saved_len);
+    };
     var cur_smallest = core::sub_sat_u64(largest_acked, first_range);
     var r_idx: u64 = 0;
     while r_idx < range_cnt {
@@ -199,6 +212,7 @@ fn decode_ack_ranges(
         }
         r_idx = core::add_sat_u64(r_idx, 1);
     }
+    committed = true;
     return true;
 }
 

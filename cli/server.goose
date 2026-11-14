@@ -98,8 +98,9 @@ fn execute_serve_cmd(cfg: const CliConfig&) -> i64 {
     var ws_frag_buf: u8[..65536] = [];
     var out_wire:    u8[..65536] = [];
 
-    server.is_running = true;
-    while server.is_running {
+    server.handle_os_signals = true;
+    wing::server_init_run_state(server);
+    while !wing::server_should_stop(server) {
         if stage.max_reqs > 0 && stage.served_reqs >= stage.max_reqs {
             break;
         }

@@ -929,21 +929,35 @@ fn run_05_verify_net_audit() {
 
     print("F010_HE_ISO_OK: ", he_mgr.attempts.len);
 
-    // F011: MASQUE empty payload fail-open rejection and apply_assigned_ip protection
+    // F011: RFC 9484 §§4.7.1-4.7.3 empty ADDRESS_ASSIGN / ROUTE_ADVERTISEMENT revocation vs malformed rejection
     let empty_payload: const u8[:] = "";
-    let _, ok_empty_assign = wing::decode_address_assign_capsule(empty_payload);
-    assert(!ok_empty_assign);
+    let empty_assign, ok_empty_assign = wing::decode_address_assign_capsule(empty_payload);
+    assert(ok_empty_assign && empty_assign.assigned_ip.len == 0 && empty_assign.prefix_len == 0);
     let _, ok_empty_req = wing::decode_address_request_capsule(empty_payload);
     assert(!ok_empty_req);
-    let _, ok_empty_route = wing::decode_route_advertisement_capsule(empty_payload);
-    assert(!ok_empty_route);
+    let empty_route, ok_empty_route = wing::decode_route_advertisement_capsule(empty_payload);
+    assert(ok_empty_route && empty_route.start_ip.len == 0 && empty_route.end_ip.len == 0);
+    let trunc_assign: const u8[4] = [0x01, 0x04, 10, 0];
+    let _, ok_trunc_assign = wing::decode_address_assign_capsule(trunc_assign[..]);
+    assert(!ok_trunc_assign);
+    let trunc_route: const u8[3] = [0x04, 10, 0];
+    let _, ok_trunc_route = wing::decode_route_advertisement_capsule(trunc_route[..]);
+    assert(!ok_trunc_route);
     var tun_assigned = wing::new_connect_udp_tunnel("https://proxy.org", "1.1.1.1", 53);
     tun_assigned.state = wing::MasqueTunnelState.Established;
     tun_assigned.assigned_ip.append("192.168.1.100");
     tun_assigned.assigned_prefix_len = 24;
-    assert(!wing::apply_assigned_ip(tun_assigned, empty_payload));
+    let zero_reject: const u8[7] = [0x01, 0x04, 0, 0, 0, 0, 32];
+    assert(!wing::apply_assigned_ip(tun_assigned, trunc_assign[..]));
+    assert(!wing::apply_assigned_ip(tun_assigned, zero_reject[..]));
     assert(tun_assigned.assigned_ip[..] == "192.168.1.100");
-    print("F011_MASQUE_REJECT_EMPTY: 1");
+    var empty_route_wire: u8[..8] = [];
+    assert(wing::encode_http_capsule(empty_route_wire, rfc::CAPSULE_ROUTE_ADVERTISEMENT, empty_payload));
+    var pkt_scratch: u8[..16] = [];
+    assert(wing::receive_capsule(tun_assigned, empty_route_wire[..], pkt_scratch));
+    assert(wing::apply_assigned_ip(tun_assigned, empty_payload));
+    assert(tun_assigned.assigned_ip.len == 0 && tun_assigned.assigned_prefix_len == 0);
+    print("F011_MASQUE_EMPTY_REVOKE: 1");
 
     // F012: UpstreamPool EPOLLRDHUP notification while in_use and release preservation
     var up_test = wing::UpstreamPool { .. };
@@ -1020,7 +1034,7 @@ fn run_05_verify_net_audit() {
 // CHECK: F008_PROXY_OK: 1
 // CHECK: F009_DNS_OK: 1
 // CHECK: F010_HE_ISO_OK: 1
-// CHECK: F011_MASQUE_REJECT_EMPTY: 1
+// CHECK: F011_MASQUE_EMPTY_REVOKE: 1
 // CHECK: F012_UPSTREAM_RDHUP_IN_USE: 1
 // CHECK: F013_DOH_URL_SEP: 1
 // CHECK: F014_DNS_CACHE_SKEW: 1

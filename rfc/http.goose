@@ -143,7 +143,7 @@ inline fn status_phrase_4xx_low(code: i32) -> const u8[:] {
 
 inline fn status_phrase_4xx_high(code: i32) -> const u8[:] {
     return match code {
-        413 => "Payload Too Large",
+        413 => "Content Too Large",
         414 => "URI Too Long",
         415 => "Unsupported Media Type",
         416 => "Range Not Satisfiable",
@@ -271,12 +271,12 @@ inline fn is_redirect_status(code: i32) -> bool {
            code == STATUS_PERMANENT_REDIRECT;
 }
 
-// RFC 9111 Section 4.2.2: Calculating Heuristic Freshness - Status codes heuristically cacheable by default.
+// RFC 9110 Section 15.1: Overview of Status Codes - Status codes cacheable by default (RFC 7725 Section 3).
 inline fn is_heuristically_cacheable_status(status_code: i32) -> bool {
     return status_code == 200 || status_code == 203 || status_code == 204 || status_code == 206 ||
            status_code == 300 || status_code == 301 || status_code == 308 ||
            status_code == 404 || status_code == 405 || status_code == 410 || status_code == 414 ||
-           status_code == 501;
+           status_code == 451 || status_code == 501;
 }
 
 // ---- HTTP Methods & SWAR Word Constants (RFC 9110 Section 9, RFC 9112) ---
@@ -399,17 +399,24 @@ const MIME_PARTIAL_UPLOAD:           const u8[:] = "application/partial-upload";
 
 // ---- Trailer & Redirect Header Predicates (RFC 9110 Section 6.5.1, RFC 9112 Section 7.1.2)
 
-// RFC 9110 Section 6.5.1: Limitations on Use of Trailers - Disallowed framing, routing, connection, and auth trailer fields.
+// RFC 9110 Section 6.5.1: Limitations on Use of Trailers - Disallow framing, routing, control, and caching trailer fields.
 inline fn is_disallowed_control_trailer(name: const u8[:]) -> bool {
     return match name.len {
         2 => name.eq_ascii_fold("te"),
-        4 => name.eq_ascii_fold("host"),
-        7 => name.eq_ascii_fold("trailer") || name.eq_ascii_fold("upgrade"),
+        3 => name.eq_ascii_fold("age"),
+        4 => name.eq_ascii_fold("host") || name.eq_ascii_fold("vary") || name.eq_ascii_fold("date"),
+        6 => name.eq_ascii_fold("expect") || name.eq_ascii_fold("pragma"),
+        7 => name.eq_ascii_fold("trailer") || name.eq_ascii_fold("upgrade") ||
+            name.eq_ascii_fold("warning") || name.eq_ascii_fold("expires"),
+        8 => name.eq_ascii_fold("location"),
         10 => name.eq_ascii_fold("connection") || name.eq_ascii_fold("keep-alive"),
-        13 => name.eq_ascii_fold("authorization"),
+        11 => name.eq_ascii_fold("retry-after"),
+        12 => name.eq_ascii_fold("max-forwards"),
+        13 => name.eq_ascii_fold("authorization") || name.eq_ascii_fold("cache-control"),
         14 => name.eq_ascii_fold("content-length"),
-        16 => name.eq_ascii_fold("proxy-connection"),
+        16 => name.eq_ascii_fold("proxy-connection") || name.eq_ascii_fold("www-authenticate"),
         17 => name.eq_ascii_fold("transfer-encoding"),
+        18 => name.eq_ascii_fold("proxy-authenticate"),
         19 => name.eq_ascii_fold("proxy-authorization"),
         _ => false,
     };
@@ -442,22 +449,24 @@ inline fn is_disallowed_trailer_field(hname: const u8[:]) -> bool {
     return is_disallowed_control_trailer(name) || is_disallowed_content_or_cond_trailer(name);
 }
 
-// RFC 9110 Section 15.4: Redirection 3xx - Identifies payload and conditional validator headers stripped when mutating redirect to GET.
+// RFC 9110 Section 15.4: Redirection 3xx - Payload and conditional headers stripped on GET redirect.
 inline fn is_payload_or_conditional_header(hname: const u8[:]) -> bool {
-    return hname.eq_ascii_fold("content-type") ||
-           hname.eq_ascii_fold("content-length") ||
-           hname.eq_ascii_fold("content-encoding") ||
-           hname.eq_ascii_fold("content-language") ||
-           hname.eq_ascii_fold("content-location") ||
-           hname.eq_ascii_fold("transfer-encoding") ||
-           hname.eq_ascii_fold("digest") ||
-           hname.eq_ascii_fold("if-match") ||
-           hname.eq_ascii_fold("if-none-match") ||
-           hname.eq_ascii_fold("if-modified-since") ||
-           hname.eq_ascii_fold("if-unmodified-since") ||
-           hname.eq_ascii_fold("if-range") ||
-           hname.eq_ascii_fold("expect") ||
-           hname.eq_ascii_fold("te");
+    return match hname.len {
+        2 => hname.eq_ascii_fold("te"),
+        6 => hname.eq_ascii_fold("digest") || hname.eq_ascii_fold("expect"),
+        7 => hname.eq_ascii_fold("trailer"),
+        8 => hname.eq_ascii_fold("if-match") || hname.eq_ascii_fold("if-range"),
+        11 => hname.eq_ascii_fold("repr-digest"),
+        12 => hname.eq_ascii_fold("content-type"),
+        13 => hname.eq_ascii_fold("content-range") || hname.eq_ascii_fold("if-none-match"),
+        14 => hname.eq_ascii_fold("content-length") || hname.eq_ascii_fold("content-digest"),
+        16 => hname.eq_ascii_fold("content-encoding") ||
+            hname.eq_ascii_fold("content-language") ||
+            hname.eq_ascii_fold("content-location"),
+        17 => hname.eq_ascii_fold("transfer-encoding") || hname.eq_ascii_fold("if-modified-since"),
+        19 => hname.eq_ascii_fold("if-unmodified-since"),
+        _ => false,
+    };
 }
 
 // ---- Binary HTTP & Oblivious HTTP (RFC 9292, RFC 9458) -------------------
@@ -484,12 +493,24 @@ const OHTTP_MIN_KEY_CONFIG_LEN: i64         = 41;                       // RFC 9
 
 // ---- Compression Dictionary Transport (RFC 9842) -------------------------
 
-const DCZ_MAGIC_BYTE0: u8 = 0xFF; // RFC 9842 Section 5
+// RFC 9842 Section 5: Dictionary-Compressed Zstandard - 8-byte Zstandard skippable frame magic + 32-byte length.
+const DCZ_RFC9842_MAGIC0: u8 = 0x5E;
+const DCZ_RFC9842_MAGIC1: u8 = 0x2A;
+const DCZ_RFC9842_MAGIC2: u8 = 0x4D;
+const DCZ_RFC9842_MAGIC3: u8 = 0x18;
+const DCZ_RFC9842_MAGIC4: u8 = 0x20;
+const DCZ_RFC9842_MAGIC5: u8 = 0x00;
+const DCZ_RFC9842_MAGIC6: u8 = 0x00;
+const DCZ_RFC9842_MAGIC7: u8 = 0x00;
+
+// Legacy pre-RFC draft 4-byte magic retained for backward-compatible wire decoding.
+const DCZ_MAGIC_BYTE0: u8 = 0xFF;
 const DCZ_MAGIC_BYTE1: u8 = 0x44; // 'D'
 const DCZ_MAGIC_BYTE2: u8 = 0x43; // 'C'
 const DCZ_MAGIC_BYTE3: u8 = 0x5A; // 'Z'
 
-const DCB_MAGIC_BYTE0: u8 = 0xFF; // RFC 9842 Section 4
+// RFC 9842 Section 4: Dictionary-Compressed Brotli - 4-byte fixed magic header.
+const DCB_MAGIC_BYTE0: u8 = 0xFF;
 const DCB_MAGIC_BYTE1: u8 = 0x44; // 'D'
 const DCB_MAGIC_BYTE2: u8 = 0x43; // 'C'
 const DCB_MAGIC_BYTE3: u8 = 0x42; // 'B'
@@ -582,9 +603,11 @@ const DPOP_ERR_INVALID_PROOF: const u8[:] = "invalid_dpop_proof"; // RFC 9449 Se
 const DPOP_ERR_INVALID_TOKEN: const u8[:] = "invalid_token";      // RFC 9449 Section 7.1
 const DPOP_ERR_USE_NONCE:     const u8[:] = "use_dpop_nonce";     // RFC 9449 Section 8
 
-// RFC 9449 Section 8: Authorization Server-Provided Nonce - Validates DPoP-Nonce syntax (NQCHAR: 0x21, 0x23..0x5B, 0x5D..0x7E).
+const MAX_DPOP_NONCE_LEN: i64 = 512; // RFC 9449 Section 8.1
+
+// RFC 9449 Section 8.1: Nonce Syntax - Validates 1*NQCHAR (0x21, 0x23..0x5B, 0x5D..0x7E).
 inline fn is_valid_dpop_nonce(nonce: const u8[:]) -> bool {
-    guard nonce.len > 0 && nonce.len <= 128 else { return false; }
+    guard nonce.len > 0 && nonce.len <= MAX_DPOP_NONCE_LEN else { return false; }
     for b in nonce {
         let valid = b == 0x21 || (b >= 0x23 && b <= 0x5b) || (b >= 0x5d && b <= 0x7e);
         guard valid else { return false; }

@@ -84,7 +84,7 @@ fn handle_creation_response(res: const Response&, state: ResumableUploadState&) 
     guard res.status_code == 201 || res.status_code == 200 else { return false; }
 
     var has_loc = false;
-    var loc_buf: u8[..256] = [];
+    var loc_buf: u8[..512] = [];
     var new_offset = state.offset;
     var new_complete = state.complete;
     for &e in res.headers.entries {
@@ -103,8 +103,10 @@ fn handle_creation_response(res: const Response&, state: ResumableUploadState&) 
             new_complete = comp_val;
         }
     }
-    guard has_loc else { return false; }
-    let _ = state.upload_url.try_set(loc_buf[..]);
+    guard has_loc || new_complete else { return false; }
+    if has_loc {
+        guard state.upload_url.try_set(loc_buf[..]) else { return false; }
+    }
     state.offset = new_offset;
     state.complete = new_complete;
     return true;
@@ -136,8 +138,7 @@ fn format_upload_chunk_request(
 
 // Handles response to PATCH chunk append: updates offset and completion
 fn handle_chunk_response(res: const Response&, state: ResumableUploadState&) -> bool {
-    // 204 No Content is expected for successful PATCH
-    guard res.status_code == 204 || res.status_code == 200 else { return false; }
+    guard res.status_code == 204 || res.status_code == 200 || res.status_code == 201 else { return false; }
 
     var found_offset = false;
     var new_offset = state.offset;

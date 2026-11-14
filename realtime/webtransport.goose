@@ -143,9 +143,19 @@ fn format_webtransport_connect_response(res: Response&) {
     set_header(res, "sec-webtransport-http3-draft", "draft16");
 }
 
+// RFC 9000 Section 2.1: Stream Types and Identifiers - Client-initiated bidirectional stream IDs have low bits 0x00.
+inline fn is_valid_webtransport_session_id(session_id: u64) -> bool {
+    return session_id <= rfc::QUIC_VARINT_MAX && (session_id & 0x03) == 0;
+}
+
 // Validates whether server response accepts the WebTransport session
 fn handle_webtransport_response(res: const Response&, session: WebTransportSession&) -> bool {
-    guard res.status_code >= 200 && res.status_code < 300 else {
+    let status_ok = res.status_code >= 200 && res.status_code < 300 &&
+        res.status_code != 204 && res.status_code != 205 && res.status_code != 206;
+    let hdrs_ok = !res.has_header("content-length") &&
+        !res.has_header("content-type") &&
+        !res.has_header("transfer-encoding");
+    guard is_valid_webtransport_session_id(session.session_id) && status_ok && hdrs_ok else {
         session.is_active = false;
         return false;
     }
@@ -164,6 +174,7 @@ fn encode_webtransport_uni_stream_header<B>(
     session_id: u64,
     out:        B&,
 ) {
+    guard is_valid_webtransport_session_id(session_id) else { return; }
     write_varint(out, rfc::STREAM_TYPE_WEBTRANSPORT);
     write_varint(out, session_id);
 }
@@ -171,20 +182,18 @@ fn encode_webtransport_uni_stream_header<B>(
 // Decodes a WebTransport unidirectional stream header from wire bytes.
 //
 // Example:
-//   wire = [0x54, 0x01]
-//   returns: true, out.session_id = 1
+//   wire = [0x40, 0x54, 0x04]
+//   returns: true, out.session_id = 4
 fn decode_webtransport_uni_stream_header(
     wire: const u8[:],
     out:  WebTransportUniStreamHeader&,
 ) -> bool {
-    out.session_id = 0;
-    out.header_len = 0;
     var idx: i64 = 0;
     let stype, ok1 = read_varint(wire, idx);
     guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else { return false; }
 
     let sid, ok2 = read_varint(wire, idx);
-    guard ok2 else { return false; }
+    guard ok2 && is_valid_webtransport_session_id(sid) else { return false; }
 
     out.session_id = sid;
     out.header_len = idx;
@@ -197,6 +206,7 @@ fn encode_webtransport_bidi_stream_header<B>(
     session_id: u64,
     out:        B&,
 ) {
+    guard is_valid_webtransport_session_id(session_id) else { return; }
     write_varint(out, rfc::WEBTRANSPORT_BIDI_SIGNAL);
     write_varint(out, session_id);
 }
@@ -204,20 +214,18 @@ fn encode_webtransport_bidi_stream_header<B>(
 // Decodes a WebTransport bidirectional stream opening header from wire bytes.
 //
 // Example:
-//   wire = [0x41, 0x02]
-//   returns: true, out.session_id = 2
+//   wire = [0x40, 0x41, 0x04]
+//   returns: true, out.session_id = 4
 fn decode_webtransport_bidi_stream_header(
     wire: const u8[:],
     out:  WebTransportBidiStreamHeader&,
 ) -> bool {
-    out.session_id = 0;
-    out.header_len = 0;
     var idx: i64 = 0;
     let signal, ok1 = read_varint(wire, idx);
     guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else { return false; }
 
     let sid, ok2 = read_varint(wire, idx);
-    guard ok2 else { return false; }
+    guard ok2 && is_valid_webtransport_session_id(sid) else { return false; }
 
     out.session_id = sid;
     out.header_len = idx;
@@ -233,6 +241,7 @@ fn encode_webtransport_datagram<B>(
     payload:    const u8[:],
     out:        B&,
 ) {
+    guard is_valid_webtransport_session_id(session_id) else { return; }
     write_varint(out, session_id >> 2);
     write_varint(out, 0);
     out.append(payload);
@@ -277,7 +286,6 @@ fn decode_quic_datagram_frame<B>(
     wire:        const u8[:],
     out_payload: B&,
 ) -> bool {
-    out_payload.clear();
     var idx: i64 = 0;
     let frame_type, ok_t = read_varint(wire, idx);
     guard ok_t else { return false; }
@@ -289,13 +297,15 @@ fn decode_quic_datagram_frame<B>(
     var payload_end = wire.len;
     if frame_type == rfc::QUIC_FRAME_DATAGRAM_LEN {
         let len, ok_l = read_varint(wire, idx);
-        guard ok_l && idx <= wire.len && len <= (core::sub_sat_i64(wire.len, idx) as u64) else {
+        let rem_len = core::sub_sat_i64(wire.len, idx) as u64;
+        guard ok_l && idx <= wire.len && len == rem_len else {
             return false;
         }
         payload_end = core::add_sat_i64(idx, len as i64);
     }
 
     guard core::sub_sat_i64(payload_end, idx) <= ws_buf_cap(out_payload) else { return false; }
+    out_payload.clear();
     out_payload.append(wire[idx..payload_end]);
     return true;
 }
@@ -331,12 +341,20 @@ fn encode_webtransport_close_session<B>(
     reason:     const u8[:],
     out:        B&,
 ) {
+    var eff_len = min(reason.len, 1024);
+    if reason.len > 1024 {
+        while eff_len > 0 && (reason[eff_len] & 0xC0) == 0x80 {
+            eff_len = core::sub_sat_i64(eff_len, 1);
+        }
+    }
+    let eff_reason = if eff_len > 0 && reason[..eff_len].validate_utf8() { reason[..eff_len] } else { "" };
+
     write_varint(out, rfc::CAPSULE_CLOSE_WEBTRANSPORT);
-    let payload_len = core::add_sat_i64(4, reason.len);
+    let payload_len = core::add_sat_i64(4, eff_reason.len);
     write_varint(out, payload_len as u64);
 
     out.append_u32_be(error_code);
-    out.append(reason);
+    out.append(eff_reason);
 }
 
 // Decodes a CLOSE_WEBTRANSPORT_SESSION capsule from its payload.
@@ -521,43 +539,32 @@ struct WebTransportDemuxer {
 // draft-ietf-webtrans-overview Section 4.2: Bidirectional Streams - WebTransport Bidirectional Stream Header Demux
 // draft-ietf-webtrans-http3 Section 4.2: Bidirectional Streams - WebTransport Bidirectional Stream Header Demux
 // Demuxes a WebTransport bidirectional stream opening frame.
-// Requires 0x41 signal + Session ID varint (draft-http3 §4.2); streams lacking 0x41 signal are rejected.
+// Requires 0x41 signal + client-initiated bidirectional Session ID varint (4*N); invalid frames are rejected.
 //
 // Example:
-//   wire = [0x40, 0x41, 0x05, 'd', 'a', 't', 'a']
-//   returns: session_id = 5, payload = "data", ok = true
+//   wire = [0x40, 0x41, 0x04, 'd', 'a', 't', 'a']
+//   returns: session_id = 4, payload = "data", ok = true
 fn demux_webtransport_bidi_stream(
     wire: const u8[:],
 ) -> u64, const u8[:], bool {
-    guard wire.len > 0 else { return 0, wire[..0], false; }
-    var idx: i64 = 0;
-    let signal, ok1 = read_varint(wire, idx);
-    guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else { return 0, wire[..0], false; }
-
-    let sid, ok2 = read_varint(wire, idx);
-    guard ok2 else { return 0, wire[..0], false; }
-    return sid, wire[idx..], true;
+    var hdr = WebTransportBidiStreamHeader { .. };
+    guard decode_webtransport_bidi_stream_header(wire, hdr) else { return 0, wire[..0], false; }
+    return hdr.session_id, wire[hdr.header_len..], true;
 }
 
 // draft-ietf-webtrans-http3 Section 4.1: Unidirectional Streams - WebTransport Stream Type and Session ID Demux
 // Demuxes a WebTransport unidirectional stream opening frame.
-// Validates 0x54 (STREAM_TYPE_WEBTRANSPORT) stream type prefix followed by Session ID varint.
+// Validates 0x54 (STREAM_TYPE_WEBTRANSPORT) stream type prefix followed by client bidi Session ID varint (4*N).
 //
 // Example:
-//   wire = [0x40, 0x54, 0x05, 'u', 'n', 'i']
-//   returns: session_id = 5, payload = "uni", ok = true
+//   wire = [0x40, 0x54, 0x04, 'u', 'n', 'i']
+//   returns: session_id = 4, payload = "uni", ok = true
 fn demux_webtransport_uni_stream(
     wire: const u8[:],
 ) -> u64, const u8[:], bool {
-    guard wire.len > 0 else { return 0, wire[..0], false; }
-    var idx: i64 = 0;
-    let stype, ok1 = read_varint(wire, idx);
-    guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else { return 0, wire[..0], false; }
-
-    let sid, ok2 = read_varint(wire, idx);
-    guard ok2 else { return 0, wire[..0], false; }
-
-    return sid, wire[idx..], true;
+    var hdr = WebTransportUniStreamHeader { .. };
+    guard decode_webtransport_uni_stream_header(wire, hdr) else { return 0, wire[..0], false; }
+    return hdr.session_id, wire[hdr.header_len..], true;
 }
 
 // draft-ietf-webtrans-overview Section 4.2: Bidirectional Streams - WebTransport Stream Header Demux
@@ -571,34 +578,20 @@ fn demux_webtransport_stream_header(
     is_bidi: bool,
     out:     WebTransportDemuxHeader&,
 ) -> bool {
-    out.kind = WebTransportStreamKind.Unknown;
-    out.session_id = 0;
-    out.header_len = 0;
-    guard wire.len > 0 else { return false; }
-
     if is_bidi {
-        var idx: i64 = 0;
-        let signal, ok1 = read_varint(wire, idx);
-        guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else { return false; }
-
-        let sid, ok2 = read_varint(wire, idx);
-        guard ok2 else { return false; }
+        var bidi = WebTransportBidiStreamHeader { .. };
+        guard decode_webtransport_bidi_stream_header(wire, bidi) else { return false; }
         out.kind = WebTransportStreamKind.Bidirectional;
-        out.session_id = sid;
-        out.header_len = idx;
+        out.session_id = bidi.session_id;
+        out.header_len = bidi.header_len;
         return true;
     }
 
-    var idx: i64 = 0;
-    let stype, ok1 = read_varint(wire, idx);
-    guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else { return false; }
-
-    let sid, ok2 = read_varint(wire, idx);
-    guard ok2 else { return false; }
-
+    var uni = WebTransportUniStreamHeader { .. };
+    guard decode_webtransport_uni_stream_header(wire, uni) else { return false; }
     out.kind = WebTransportStreamKind.Unidirectional;
-    out.session_id = sid;
-    out.header_len = idx;
+    out.session_id = uni.session_id;
+    out.header_len = uni.header_len;
     return true;
 }
 
@@ -630,6 +623,7 @@ fn close_session_streams(demuxer: WebTransportDemuxer&, session_id: u64) {
 
 // Registers a new active session into the demuxer, reusing closed session slots if full
 fn register_webtransport_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
+    guard is_valid_webtransport_session_id(session_id) else { return false; }
     let entry = WebTransportSessionEntry {
         session_id: session_id,
         state:      WebTransportSessionState.Active,
@@ -839,7 +833,7 @@ fn route_new_stream(
 // Zero-heap demuxer for QUIC streams. Handles both stream initiation and continuous streaming chunks.
 //
 // Example:
-//   stream_id = 0, wire = [0x04, 'p', 'i', 'n', 'g'], fin = true
+//   stream_id = 4, wire = [0x40, 0x41, 0x04, 'p', 'i', 'n', 'g'], fin = true
 //   returns: ok = true, out.session_id = 4, out.payload = "ping", out.fin = true
 fn demux_webtransport_stream(
     demuxer:   WebTransportDemuxer&,
@@ -848,12 +842,6 @@ fn demux_webtransport_stream(
     fin:       bool,
     out:       WebTransportStreamPayload&,
 ) -> bool {
-    out.kind = WebTransportStreamKind.Unknown;
-    out.stream_id = stream_id;
-    out.session_id = 0;
-    out.payload = wire[..0];
-    out.fin = fin;
-
     let route_idx, has_route = find_stream_route_index(demuxer, stream_id);
     if has_route {
         return route_existing_stream(demuxer, route_idx, wire, fin, out);

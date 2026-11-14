@@ -20,9 +20,8 @@ import client.response;
 
 // ---- Normative Constants & Wire Magics (RFC 9842) ------------------------
 
-// 4-byte magic headers per RFC 9842 Section 4 (DCB) and Section 5 (DCZ):
-// DCZ: 0xFF, 'D', 'C', 'Z' (0xFF, 0x44, 0x43, 0x5A)
-// DCB: 0xFF, 'D', 'C', 'B' (0xFF, 0x44, 0x43, 0x42)
+// RFC 9842 Section 4 (DCB): 4-byte magic [0xFF, 'D', 'C', 'B'] + 32-byte SHA-256 (36 bytes).
+// RFC 9842 Section 5 (DCZ): 8-byte magic [0x5E, 0x2A, 0x4D, 0x18, 0x20, 0x00, 0x00, 0x00] + 32-byte SHA-256 (40 bytes).
 
 struct DictionaryParams {
     match_pattern: u8[..128]      = [],
@@ -97,13 +96,32 @@ fn apply_dict_ttl(p: DictionaryParams&, item: const SfItem&) -> bool {
     return true;
 }
 
+// RFC 9842 Section 2.1.4: "type" - Value MUST be an SF Token ("raw").
 fn apply_dict_type(p: DictionaryParams&, item: const SfItem&) -> bool {
-    let is_str_or_tok = item.kind == SfType.Token || item.kind == SfType.String;
-    guard is_str_or_tok && item.str_val == "raw" && p.dict_type.try_set(item.str_val) else {
+    guard item.kind == SfType.Token && item.str_val == "raw" && p.dict_type.try_set(item.str_val) else {
         p.valid = false;
         return false;
     }
     return true;
+}
+
+// RFC 9842 Section 2.1.1: "match" - URLPattern regexp groups are prohibited in Use-As-Dictionary match patterns.
+inline fn has_unescaped_urlpattern_regexp(pat: const u8[:]) -> bool {
+    var escaped = false;
+    for b in pat {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if b == '\\' {
+            escaped = true;
+            continue;
+        }
+        if b == '(' || b == ')' {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn apply_dictionary_kv(p: DictionaryParams&, key: const u8[:], item: const SfItem&) -> bool {
@@ -113,7 +131,8 @@ fn apply_dictionary_kv(p: DictionaryParams&, key: const u8[:], item: const SfIte
             p.valid = false;
             return false;
         }
-        guard p.match_pattern.len > 0 && p.match_pattern[0] == '/' else {
+        guard p.match_pattern.len > 0 && p.match_pattern[0] == '/' &&
+              !has_unescaped_urlpattern_regexp(p.match_pattern[..]) else {
             p.match_pattern.clear();
             p.valid = false;
             return false;
@@ -133,20 +152,14 @@ fn apply_dictionary_kv(p: DictionaryParams&, key: const u8[:], item: const SfIte
     return true;
 }
 
+// RFC 9842 Section 2.1: Use-As-Dictionary - Ignore unrecognized SF member parameters.
 fn apply_dictionary_entry(p: DictionaryParams&, entry: const SfDictEntry&) -> bool {
     if entry.key == "match-dest" {
-        guard apply_dict_match_dest(p, entry) else { return false; }
-    } else {
-        guard !entry.is_inner_list && apply_dictionary_kv(p, entry.key, entry.item) else {
-            p.valid = false;
-            return false;
-        }
+        return apply_dict_match_dest(p, entry);
     }
-    for &param in entry.params {
-        guard apply_dictionary_kv(p, param.key, param.item) else {
-            p.valid = false;
-            return false;
-        }
+    guard !entry.is_inner_list && apply_dictionary_kv(p, entry.key, entry.item) else {
+        p.valid = false;
+        return false;
     }
     return true;
 }
@@ -160,17 +173,17 @@ fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, 
     var p = DictionaryParams { .. };
     var entries: SfDictEntry[..16] = [];
     guard header_val.trim_lws().len > 0 && parse_sf_dict(header_val, entries) else {
-        return p, false;
+        return DictionaryParams { .. }, false;
     }
 
     for &entry in entries {
         guard apply_dictionary_entry(p, entry) else {
-            p.valid = false;
-            return p, false;
+            return DictionaryParams { .. }, false;
         }
     }
 
-    return p, p.valid;
+    guard p.valid else { return DictionaryParams { .. }, false; }
+    return p, true;
 }
 
 // Formats `Use-As-Dictionary` header string
@@ -208,17 +221,20 @@ fn format_dictionary_id_header<B>(out: B&, id_str: const u8[:]) {
     out.push('"');
 }
 
-// ---- DCZ / DCB Wire Format Codec (draft Section 7) -----------------------
+// ---- DCZ / DCB Wire Format Codec (RFC 9842 Section 4 & Section 5) ---------
 
-// Encodes a DCZ (Dictionary-Compressed Zstandard) frame:
-// [0xFF, 'D', 'C', 'Z'] || [32-byte Dictionary SHA-256] || [Compressed Zstandard Payload]
+// RFC 9842 Section 5: Dictionary-Compressed Zstandard - Encodes a 40-byte DCZ header + compressed Zstandard payload.
 fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
-    let needed = core::add_sat_i64(core::add_sat_i64(out.len, 36), compressed_payload.len);
+    let needed = core::add_sat_i64(core::add_sat_i64(out.len, 40), compressed_payload.len);
     guard needed <= out.cap else { return false; }
-    out.push(rfc::DCZ_MAGIC_BYTE0);
-    out.push(rfc::DCZ_MAGIC_BYTE1);
-    out.push(rfc::DCZ_MAGIC_BYTE2);
-    out.push(rfc::DCZ_MAGIC_BYTE3);
+    out.push(rfc::DCZ_RFC9842_MAGIC0);
+    out.push(rfc::DCZ_RFC9842_MAGIC1);
+    out.push(rfc::DCZ_RFC9842_MAGIC2);
+    out.push(rfc::DCZ_RFC9842_MAGIC3);
+    out.push(rfc::DCZ_RFC9842_MAGIC4);
+    out.push(rfc::DCZ_RFC9842_MAGIC5);
+    out.push(rfc::DCZ_RFC9842_MAGIC6);
+    out.push(rfc::DCZ_RFC9842_MAGIC7);
     for b in dict_hash {
         out.push(b);
     }
@@ -227,10 +243,14 @@ fn encode_dcz_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: co
 }
 
 fn encode_dcz_frame(out: u8[>..]&, dict_hash: const u8[32]&, compressed_payload: const u8[:]) -> bool {
-    out.push(rfc::DCZ_MAGIC_BYTE0);
-    out.push(rfc::DCZ_MAGIC_BYTE1);
-    out.push(rfc::DCZ_MAGIC_BYTE2);
-    out.push(rfc::DCZ_MAGIC_BYTE3);
+    out.push(rfc::DCZ_RFC9842_MAGIC0);
+    out.push(rfc::DCZ_RFC9842_MAGIC1);
+    out.push(rfc::DCZ_RFC9842_MAGIC2);
+    out.push(rfc::DCZ_RFC9842_MAGIC3);
+    out.push(rfc::DCZ_RFC9842_MAGIC4);
+    out.push(rfc::DCZ_RFC9842_MAGIC5);
+    out.push(rfc::DCZ_RFC9842_MAGIC6);
+    out.push(rfc::DCZ_RFC9842_MAGIC7);
     for b in dict_hash {
         out.push(b);
     }
@@ -268,8 +288,10 @@ fn encode_dcb_frame(out: u8[>..]&, dict_hash: const u8[32]&, compressed_payload:
 
 inline fn is_dcz_rfc9842_magic(wire: const u8[:]) -> bool {
     guard wire.len >= 40 else { return false; }
-    return wire[0] == 0x5E && wire[1] == 0x2A && wire[2] == 0x4D && wire[3] == 0x18 &&
-           wire[4] == 0x20 && wire[5] == 0x00 && wire[6] == 0x00 && wire[7] == 0x00;
+    return wire[0] == rfc::DCZ_RFC9842_MAGIC0 && wire[1] == rfc::DCZ_RFC9842_MAGIC1 &&
+           wire[2] == rfc::DCZ_RFC9842_MAGIC2 && wire[3] == rfc::DCZ_RFC9842_MAGIC3 &&
+           wire[4] == rfc::DCZ_RFC9842_MAGIC4 && wire[5] == rfc::DCZ_RFC9842_MAGIC5 &&
+           wire[6] == rfc::DCZ_RFC9842_MAGIC6 && wire[7] == rfc::DCZ_RFC9842_MAGIC7;
 }
 
 inline fn is_dcz_legacy_magic(wire: const u8[:]) -> bool {
@@ -524,8 +546,7 @@ fn decompress_dcz_payload<B>(
     var decompressed: u8[..16384] = [];
     let ok_z, _ = core::zstd_decompress_with_dict(compressed_payload, dictionary_content, decompressed, 16384);
     guard ok_z else { return false; }
-    out_buf.append(decompressed[..]);
-    return true;
+    return out_buf.try_append(decompressed[..]);
 }
 
 // Compresses a payload with Zstandard using `dictionary_content` for RFC 9842 `dcz` encoding.
@@ -564,8 +585,7 @@ fn decompress_dcb_payload<B>(
     var decompressed: u8[..16384] = [];
     let ok_b, _ = core::brotli_decompress_with_dict(compressed_payload, dictionary_content, decompressed, 16384);
     guard ok_b else { return false; }
-    out_buf.append(decompressed[..]);
-    return true;
+    return out_buf.try_append(decompressed[..]);
 }
 
 // Scans `raw_content` against `dict` with a 4096-entry greedy hash table and records LZ77 commands into `cmds`.

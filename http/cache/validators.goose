@@ -123,9 +123,9 @@ fn match_if_match(raw_if_match: const u8[:], cached_etag: const EntityTag&) -> b
 
 // Evaluates an If-Range header as either a strong entity-tag or an exact HTTP-date (RFC 9110 §13.1.5).
 fn evaluate_cache_if_range(
-    raw_if_range:         const u8[:],
-    cached_etag:          const EntityTag&,
-    cached_last_modified: core::Time,
+    raw_if_range:             const u8[:],
+    cached_etag:              const EntityTag&,
+    cached_last_modified_sec: i64,
 ) -> bool {
     var s = raw_if_range.trim_lws();
     guard s.len > 0 else { return false; }
@@ -135,8 +135,8 @@ fn evaluate_cache_if_range(
     }
 
     let parsed_date, ok_date = core::parse_http_date(s);
-    if ok_date && !cached_last_modified.is_zero() {
-        return core::unix(parsed_date) == core::unix(cached_last_modified);
+    if ok_date && cached_last_modified_sec != 0 {
+        return core::unix(parsed_date) == cached_last_modified_sec;
     }
     return false;
 }

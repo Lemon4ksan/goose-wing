@@ -148,12 +148,14 @@ fn mul_checked_i64(a: i64, b: i64) -> CheckedI64 {
 
     let sign_bit = (((a as! u64) ^ (b as! u64)) >> 63) & 1;
     let limit_u64 = ct_select_u64(ct_mask_u64(sign_bit), 0x8000000000000000, 0x7FFFFFFFFFFFFFFF);
-    let ovf = (hi != 0) || (lo > limit_u64);
+    if hi != 0 || lo > limit_u64 {
+        return CheckedI64 { value: 0, overflow: true };
+    }
 
-    let prod_val = if sign_bit == 1 { 0 - (lo as! i64) } else { lo as! i64 };
+    let prod_u64 = if sign_bit == 1 { 0 - lo } else { lo };
     return CheckedI64 {
-        value:    prod_val,
-        overflow: ovf,
+        value:    prod_u64 as! i64,
+        overflow: false,
     };
 }
 
@@ -167,25 +169,53 @@ inline fn mul_sat_i64(a: i64, b: i64) -> i64 {
     return if sign_bit == 1 { I64_MIN } else { I64_MAX };
 }
 
-// Computes Euclidean remainder: 0 <= r < |rhs| for all inputs.
+// Unsigned 64-bit quotient and remainder returning (0, n) when d == 0.
+fn div_rem_u64(n: u64, d: u64) -> u64, u64 {
+    guard d > 0 && n >= d else { return 0, n; }
+    var cur_d = d;
+    var cur_q: u64 = 1;
+    let half_n = n >> 1;
+    while cur_d <= half_n {
+        cur_d = add_sat_u64(cur_d, cur_d);
+        cur_q = add_sat_u64(cur_q, cur_q);
+    }
+    var rem_n = n;
+    var quotient: u64 = 0;
+    while cur_q > 0 {
+        if rem_n >= cur_d {
+            rem_n = sub_sat_u64(rem_n, cur_d);
+            quotient = quotient | cur_q;
+        }
+        cur_d = cur_d >> 1;
+        cur_q = cur_q >> 1;
+    }
+    return quotient, rem_n;
+}
+
+inline fn safe_euclid_divisor(lhs: i64, rhs: i64) -> i64 {
+    if rhs == 0 { return 1; }
+    if lhs == I64_MIN && rhs == sub_sat_i64(0, 1) { return 1; }
+    return rhs;
+}
+
+// Computes Euclidean remainder: 0 <= r < |rhs| for all inputs (0 when rhs == 0).
 inline fn rem_euclid_i64(lhs: i64, rhs: i64) -> i64 {
-    return lhs % rhs;
+    return lhs % safe_euclid_divisor(lhs, rhs);
 }
 
 // Computes Euclidean division quotient satisfying lhs = q * rhs + rem_euclid_i64(lhs, rhs).
 inline fn div_euclid_i64(lhs: i64, rhs: i64) -> i64 {
-    let q = lhs / rhs;
-    let r = lhs % rhs;
-    let lhs_neg_bit = ((lhs as! u64) >> 63) & 1;
-    let rem_nz_bit = 1 ^ ct_is_zero_u64(r as! u64);
-    let need_adj_mask = ct_mask_u64(lhs_neg_bit & rem_nz_bit);
-    let rhs_neg_bit = ((rhs as! u64) >> 63) & 1;
-    let adjust = ct_select_u64(ct_mask_u64(rhs_neg_bit), 1, U64_MAX);
-    return ((q as! u64) + (adjust & need_adj_mask)) as! i64;
+    guard rhs != 0 else { return 0; }
+    if lhs == I64_MIN && rhs == sub_sat_i64(0, 1) { return I64_MAX; }
+    let q = lhs / safe_euclid_divisor(lhs, rhs);
+    if lhs < 0 && rem_euclid_i64(lhs, rhs) != 0 {
+        return if rhs > 0 { sub_sat_i64(q, 1) } else { add_sat_i64(q, 1) };
+    }
+    return q;
 }
 
 // Fast modulo reduction for ring buffer indices.
 inline fn fast_mod_reduce_i32(x: i32, q: i32) -> i32 {
-    let r = x % q;
-    return if r < 0 { r + q } else { r };
+    guard q > 0 else { return 0; }
+    return x % q;
 }

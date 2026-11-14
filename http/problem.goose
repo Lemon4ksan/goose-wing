@@ -75,7 +75,11 @@ fn parse_problem_core_fields(
     if key == "status" {
         let ch = json::peek(reader);
         if (ch >= '0' && ch <= '9') || ch == '-' {
-            out.status = json::read_int(reader) as i32;
+            let num = json::read_number(reader);
+            let code = num as i32;
+            if num >= 100.0 && num <= 599.0 && code == num {
+                out.status = code;
+            }
         } else {
             json::skip(reader);
         }

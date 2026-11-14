@@ -19,6 +19,20 @@ import rfc.tls;
 import rfc.ws;
 import rfc.grpc;
 
+// ---- nanosecond time unit helpers ------------------------------------------
+
+const MICROSECOND: i64 = 1000;
+const MILLISECOND: i64 = 1000000;
+const SECOND:      i64 = 1000000000;
+const MINUTE:      i64 = 60000000000;
+const HOUR:        i64 = 3600000000000;
+
+inline fn micros(n: i64) -> i64 { return n * MICROSECOND; }
+inline fn millis(n: i64) -> i64 { return n * MILLISECOND; }
+inline fn secs(n: i64) -> i64 { return n * SECOND; }
+inline fn mins(n: i64) -> i64 { return n * MINUTE; }
+inline fn hours(n: i64) -> i64 { return n * HOUR; }
+
 // ---- cookie engine ---------------------------------------------------------
 
 import cookie.limits;

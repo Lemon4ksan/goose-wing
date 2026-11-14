@@ -148,6 +148,7 @@ struct RequestExecutionContext {
     had_cross_site_hop:      bool                = false,
     cors_mode:               bool                = false,
     auth_retried:            bool                = false,
+    early_data_disabled:     bool                = false,
     current_referrer:        u8[..2048]          = [],
     current_referrer_policy: ReferrerPolicy      = ReferrerPolicy.StrictOriginWhenCrossOrigin,
     timeout_ms:              i64                 = 0,
@@ -183,6 +184,14 @@ fn apply_redirect_transition(
     ctx:           RequestExecutionContext&,
     redirect_info: const RedirectInfo&,
 ) -> Error {
+    if !redirect_info.clear_body && !ctx.rewindable && (ctx.body_consumed || ctx.body.len > 0) {
+        return make_error(rfc::STATUS_BAD_REQUEST, "body_rewind", "http: cannot rewind body");
+    }
+    guard redirect_info.new_method.len <= ctx.current_method.cap &&
+        redirect_info.new_referrer.len <= ctx.current_referrer.cap else {
+        return make_error(rfc::STATUS_BAD_REQUEST, "redirect", "redirect state exceeds capacity");
+    }
+
     ctx.had_cross_site_hop = ctx.had_cross_site_hop || redirect_info.is_cross_site_tainted;
     if ctx.cors_mode && redirect_info.is_cross_origin && ctx.url_chain.len > 0 {
         let prev_idx = core::sub_sat_i64(ctx.url_chain.len, 1);
@@ -206,10 +215,6 @@ fn apply_redirect_transition(
         ctx.rewindable = false;
         ctx.body_consumed = false;
     } else {
-        // 307 or 308 redirect preserves method and body
-        if !ctx.rewindable && ctx.body_consumed {
-            return make_error(rfc::STATUS_BAD_REQUEST, "body_rewind", "http: cannot rewind body");
-        }
         ctx.body.clear();
         ctx.body.append(ctx.rewind_buf[..]);
         ctx.body_consumed = false;
@@ -258,6 +263,7 @@ fn init_execution_context(
         current_method:          copy(req.method),
         rewindable:              req.rewindable,
         body_consumed:           false,
+        early_data_disabled:     req.disallow_early_data,
         cors_mode:               req.cors_mode,
         tainted_origin:          req.tainted_origin,
         is_main_frame:           req.is_main_frame,
@@ -490,7 +496,7 @@ fn ingest_compression_dict_header(
     guard ok_p else { return; }
     let enc = header(resp, "Content-Encoding");
     if enc.len > 0 {
-        guard decode_body_with_dictionary(resp, dict_cache) else { return; }
+        guard decode_body_with_dictionary(resp, dict_cache, now_sec) else { return; }
     }
     let pat = if d_params.match_pattern.len > 0 {
         d_params.match_pattern[..]
@@ -520,7 +526,7 @@ fn ingest_transport_response_headers(
     let defer_to_strict_stage = session.strict_content_decoding || session.verify_content_digest;
     if !defer_to_strict_stage &&
         wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_DECOMPRESS) {
-        let _ = stage_client_decompress(resp, session.dict_cache);
+        let _ = stage_client_decompress(resp, session.dict_cache, false, now_sec);
     }
 
     if wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_ALT_SVC) {
@@ -898,6 +904,55 @@ fn dial_live_tcp_or_proxy(
     return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TCP connect failed");
 }
 
+inline fn format_h2_request_target_path(current_url: const core::Url&, out_path: u8[..2048]&) -> bool {
+    let p_str = current_url.pathname();
+    if p_str.len > 0 {
+        guard out_path.try_append(p_str) else { return false; }
+    } else {
+        guard out_path.try_push('/') else { return false; }
+    }
+    let q_str = current_url.search();
+    if q_str.len > 0 {
+        guard out_path.try_append(q_str) else { return false; }
+    }
+    return out_path.len <= 1024;
+}
+
+fn build_h2_request_pseudo_headers(
+    curr_method: const u8[:],
+    current_url: const core::Url&,
+    is_https:    bool,
+    headers:     const HeaderMap&,
+    out_pseudo:  internal::H2PseudoHeaders&,
+) -> bool {
+    let auth_str = current_url.host();
+    let proto_hdr = find_header(headers, ":protocol");
+    if curr_method.eq_ascii_fold("CONNECT") && proto_hdr.len == 0 {
+        out_pseudo = internal::H2PseudoHeaders {
+            has_method: true, has_authority: true, ..
+        };
+        return out_pseudo.method.try_set("CONNECT") && out_pseudo.authority.try_set(auth_str);
+    }
+    let scheme_str: const u8[:] = if is_https { "https" } else { "http" };
+    var path_buf: u8[..2048] = [];
+    guard format_h2_request_target_path(current_url, path_buf) else { return false; }
+
+    out_pseudo = internal::H2PseudoHeaders {
+        has_method: true, has_scheme: true, has_authority: true, has_path: true, ..
+    };
+    guard out_pseudo.method.try_set(curr_method) &&
+        out_pseudo.scheme.try_set(scheme_str) &&
+        out_pseudo.authority.try_set(auth_str) &&
+        out_pseudo.path.try_set(path_buf[..]) else {
+        return false;
+    }
+    if proto_hdr.len > 0 {
+        out_pseudo.has_protocol = true;
+        guard out_pseudo.protocol.try_set(proto_hdr) else { return false; }
+    }
+    return true;
+}
+
 fn encode_h2_client_request<B>(
     curr_method:  const u8[:],
     current_url:  const core::Url&,
@@ -909,29 +964,15 @@ fn encode_h2_client_request<B>(
     out_wire:     B&,
 ) -> bool {
     let saved_len = out_wire.len;
+    let saved_dt = copy(enc_dt);
     var committed = false;
-    defer if !committed { out_wire.resize(saved_len); };
+    defer if !committed { out_wire.resize(saved_len); enc_dt = copy(saved_dt); };
+    guard ctx.body.len <= (rfc::H2_DEFAULT_WINDOW_SIZE as i64) else { return false; }
     out_wire.clear();
-    let scheme_str: const u8[:] = if is_https { "https" } else { "http" };
-    let auth_str = current_url.host();
-    var path_buf: u8[..2048] = [];
-    let p_str = current_url.pathname();
-    if p_str.len > 0 { let _ = path_buf.try_append(p_str); } else { let _ = path_buf.try_push('/'); }
-    let q_str = current_url.search();
-    if q_str.len > 0 { let _ = path_buf.try_append(q_str); }
-    guard path_buf.len <= 1024 else { return false; }
 
-    var pseudo = internal::H2PseudoHeaders {
-        has_method: true, has_scheme: true, has_authority: true, has_path: true, ..
-    };
-    let _ = pseudo.method.try_set(curr_method);
-    let _ = pseudo.scheme.try_set(scheme_str);
-    let _ = pseudo.authority.try_set(auth_str);
-    let _ = pseudo.path.try_set(path_buf[..]);
-    let proto_hdr = find_header(ctx.headers, ":protocol");
-    if proto_hdr.len > 0 {
-        pseudo.has_protocol = true;
-        let _ = pseudo.protocol.try_set(proto_hdr);
+    var pseudo = internal::H2PseudoHeaders { .. };
+    guard build_h2_request_pseudo_headers(curr_method, current_url, is_https, ctx.headers, pseudo) else {
+        return false;
     }
     if send_preface {
         guard out_wire.try_append(rfc::H2_CLIENT_PREFACE) else { return false; }
@@ -978,6 +1019,72 @@ inline fn record_h2_rst_stream_error(payload: const u8[:], resp: Response&) {
     let _ = append_header(resp.trailers, "x-wing-h2-rst-code", rst_buf[..]);
 }
 
+inline fn verify_h2_response_content_length(resp: const Response&, is_head: bool) -> bool {
+    if is_head || rfc::is_empty_body_status(resp.status_code) {
+        return true;
+    }
+    let cl_hdr = header(resp, "Content-Length").trim_lws();
+    if cl_hdr.len == 0 {
+        return true;
+    }
+    let cl_val, ok_cl = cl_hdr.parse_u64_dec();
+    return ok_cl && (resp.body.len as u64) == cl_val;
+}
+
+inline fn apply_initial_h2_response_headers(
+    hdr:      const internal::FrameHeader&,
+    frag:     const u8[:],
+    dec_dt:   internal::DynamicTable&,
+    resp:     Response&,
+    got_hdrs: bool&,
+) -> bool {
+    var pseudo = internal::H2PseudoHeaders { .. };
+    let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
+    guard d_err == rfc::H2_ERR_NO_ERROR && pseudo.has_status &&
+        pseudo.status != rfc::STATUS_SWITCHING_PROTOCOLS else {
+        return false;
+    }
+    resp.status_code = pseudo.status;
+    for &e in resp.headers.entries { update_response_presence(resp, entry_name(resp.headers, e)); }
+    if pseudo.status >= 100 && pseudo.status < 200 {
+        guard (hdr.flags & rfc::H2_FLAG_END_STREAM) == 0 else { return false; }
+        resp.headers.clear();
+        resp.presence_mask = 0;
+    } else {
+        got_hdrs = true;
+    }
+    return true;
+}
+
+fn process_h2_response_headers_frame(
+    hdr:      const internal::FrameHeader&,
+    payload:  const u8[:],
+    is_head:  bool,
+    dec_dt:   internal::DynamicTable&,
+    resp:     Response&,
+    got_hdrs: bool&,
+) -> bool, bool {
+    guard (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 else { return false, false; }
+    let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
+    guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
+    if !got_hdrs {
+        guard apply_initial_h2_response_headers(hdr, frag, dec_dt, resp, got_hdrs) else {
+            return false, false;
+        }
+    } else {
+        guard (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 else { return false, false; }
+        var pseudo = internal::H2PseudoHeaders { is_trailer: true, .. };
+        let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
+        guard d_err == rfc::H2_ERR_NO_ERROR && !pseudo.has_status else { return false, false; }
+    }
+    let end_s = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 ||
+        (got_hdrs && (is_head || rfc::is_empty_body_status(resp.status_code)));
+    if end_s {
+        guard verify_h2_response_content_length(resp, is_head) else { return false, false; }
+    }
+    return true, end_s;
+}
+
 fn process_h2_response_frame<B>(
     hdr:       const internal::FrameHeader&,
     payload:   const u8[:],
@@ -996,40 +1103,26 @@ fn process_h2_response_frame<B>(
         record_h2_rst_stream_error(payload, resp);
         return false, false;
     }
-    if hdr.frame_type == rfc::H2_FRAME_GOAWAY { return false, false; }
+    if hdr.frame_type == rfc::H2_FRAME_GOAWAY {
+        guard payload.len >= 8 && (core::read_be_u32(payload, 0) & 0x7FFFFFFF) >= stream_id else {
+            return false, false;
+        }
+        return true, false;
+    }
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return true, false; }
     let saved_resp = copy(resp);
     let saved_got = got_hdrs;
+    let saved_dt = copy(dec_dt);
     var committed = false;
-    defer if !committed { resp = copy(saved_resp); got_hdrs = saved_got; };
+    defer if !committed { resp = copy(saved_resp); got_hdrs = saved_got; dec_dt = copy(saved_dt); };
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == stream_id {
-        let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
-        guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
-        var pseudo = internal::H2PseudoHeaders { .. };
-        if !got_hdrs {
-            let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
-            guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
-            if pseudo.status > 0 { resp.status_code = pseudo.status; }
-            for &e in resp.headers.entries { update_response_presence(resp, entry_name(resp.headers, e)); }
-            if pseudo.status >= 100 && pseudo.status < 200 {
-                guard (hdr.flags & rfc::H2_FLAG_END_STREAM) == 0 else { return false, false; }
-                resp.headers.clear();
-                resp.presence_mask = 0;
-            } else {
-                got_hdrs = true;
-            }
-        } else {
-            guard (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 else { return false, false; }
-            pseudo.is_trailer = true;
-            let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
-            guard d_err == rfc::H2_ERR_NO_ERROR && !pseudo.has_status else { return false, false; }
-        }
-        let end_s = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 ||
-            (got_hdrs && (is_head || rfc::is_empty_body_status(resp.status_code)));
+        let ok_h, end_s = process_h2_response_headers_frame(hdr, payload, is_head, dec_dt, resp, got_hdrs);
+        guard ok_h else { return false, false; }
         committed = true;
         return true, end_s;
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
+        guard got_hdrs else { return false, false; }
         let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         resp.body.append(d_slice);
@@ -1037,8 +1130,12 @@ fn process_h2_response_frame<B>(
             let _ = wire::encode_window_update_frame(0, hdr.length, out_ctrl);
             let _ = wire::encode_window_update_frame(stream_id, hdr.length, out_ctrl);
         }
+        let end_d = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
+        if end_d {
+            guard verify_h2_response_content_length(resp, is_head) else { return false, false; }
+        }
         committed = true;
-        return true, (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0;
+        return true, end_d;
     }
     committed = true;
     return true, false;
@@ -1075,6 +1172,16 @@ fn drain_h2_response_frames<B1, B2>(
     return true, false;
 }
 
+inline fn rollback_h2_response_preserving_rst(resp: Response&, saved_resp: const Response&) {
+    let rst_val = trailer(resp, "x-wing-h2-rst-code");
+    var rst_copy: u8[..16] = [];
+    let has_rst = rst_val.len > 0 && rst_copy.try_set(rst_val);
+    resp = copy(saved_resp);
+    if has_rst {
+        let _ = append_header(resp.trailers, "x-wing-h2-rst-code", rst_copy[..]);
+    }
+}
+
 fn recv_h2_response_loop(
     tp:          Transport&,
     stream_id:   u32,
@@ -1083,6 +1190,13 @@ fn recv_h2_response_loop(
     eff_timeout: u32,
     resp:        Response&,
 ) -> bool {
+    let saved_resp = copy(resp);
+    let saved_dt = copy(dec_dt);
+    var committed = false;
+    defer if !committed {
+        rollback_h2_response_preserving_rst(resp, saved_resp);
+        dec_dt = copy(saved_dt);
+    };
     var rx_accum: u8[..65536] = [];
     var chunk:    u8[4096]    = [0; 4096];
     var got_hdrs = false;
@@ -1094,13 +1208,7 @@ fn recv_h2_response_loop(
         }
         var ctrl_out: u8[..4096] = [];
         let ok_f, done = drain_h2_response_frames(
-            rx_accum,
-            stream_id,
-            is_head,
-            dec_dt,
-            resp,
-            got_hdrs,
-            ctrl_out,
+            rx_accum, stream_id, is_head, dec_dt, resp, got_hdrs, ctrl_out,
         );
         guard ok_f else { return false; }
         if ctrl_out.len > 0 {
@@ -1112,7 +1220,9 @@ fn recv_h2_response_loop(
         }
         if n <= 0 { break; }
     }
-    return got_hdrs && is_done;
+    guard got_hdrs && is_done else { return false; }
+    committed = true;
+    return true;
 }
 
 fn dispatch_pooled_h2_hop(
@@ -1182,12 +1292,22 @@ fn encode_h3_client_request<B>(
     current_url: const core::Url&,
     out_wire:    B&,
 ) -> bool {
+    let saved_len = out_wire.len;
+    let saved_conn = copy(h3_conn);
+    var committed = false;
+    defer if !committed { out_wire.resize(saved_len); h3_conn = copy(saved_conn); };
     out_wire.clear();
     var path_buf: u8[..2048] = [];
     let p_str = current_url.pathname();
-    if p_str.len > 0 { let _ = path_buf.try_append(p_str); } else { let _ = path_buf.try_push('/'); }
+    if p_str.len > 0 {
+        guard path_buf.try_append(p_str) else { return false; }
+    } else {
+        guard path_buf.try_push('/') else { return false; }
+    }
     let q_str = current_url.search();
-    if q_str.len > 0 { let _ = path_buf.try_append(q_str); }
+    if q_str.len > 0 {
+        guard path_buf.try_append(q_str) else { return false; }
+    }
     guard path_buf.len <= 1024 else { return false; }
 
     let has_body = ctx.body.len > 0;
@@ -1201,6 +1321,7 @@ fn encode_h3_client_request<B>(
             return false;
         }
     }
+    committed = true;
     return true;
 }
 
@@ -1754,6 +1875,7 @@ fn execute_request(session: Client&, req: const Request&) -> Response, Error {
     loop {
         // Phase -1: Application Interceptors (Request Hook) per attempt
         var active_req = copy(req);
+        active_req.disallow_early_data = req.disallow_early_data || attempts > 0;
         apply_app_interceptors_request(session.pipeline, active_req, session.virtual_clock_us);
 
         let resp, err = execute_request_inner(session, active_req);

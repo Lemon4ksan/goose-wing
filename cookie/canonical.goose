@@ -59,16 +59,68 @@ struct CanonicalCookie {
     creation_seq:    i64                = 0,
 }
 
+inline fn is_prohibited_canonical_ctl(s: const u8[:]) -> bool {
+    for b in s {
+        if (b <= 0x08) || (b >= 0x0A && b <= 0x1F) || b == 0x7F {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline fn is_valid_canonical_cookie_name(name: const u8[:]) -> bool {
+    for b in name {
+        guard core::is_tchar(b) else { return false; }
+    }
+    return true;
+}
+
+inline fn is_valid_canonical_cookie_val(val: const u8[:]) -> bool {
+    let is_quoted = val.len >= 2 && val[0] == '"' && val[core::sub_sat_i64(val.len, 1)] == '"';
+    let body = if is_quoted { val[1..^1] } else { val };
+    for b in body {
+        guard core::is_ascii_vchar(b) && b != '"' && b != ',' && b != ';' && b != '\\' else {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline fn is_valid_canonical_domain_attr(dom: const u8[:]) -> bool {
+    guard dom.len > 0 && dom[core::sub_sat_i64(dom.len, 1)] != '.' else { return false; }
+    if !core::is_ip_address_literal(dom) && (core::contains(dom, "..") || dom.contains_byte(':')) {
+        return false;
+    }
+    for b in dom {
+        if b <= 0x20 || b >= 0x7F || b == ';' || b == '/' || b == '?' || b == '#' || b == '\\' {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Constructs a CanonicalCookie, verifying that name and value do not exceed
-// 4096 bytes and contain no control characters (RFC 6265bis Section 5.5).
+// 4096 bytes and contain no prohibited octets or control characters (RFC 6265 Section 4.1.1).
 fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
-    guard new_cookie.name.try_set(name) else {
+    guard core::add_sat_i64(name.len, val.len) <= internal::K_MAX_COOKIE_NAME_VAL_LEN else {
         return new_cookie;
     }
-    guard new_cookie.value.try_set(val) else {
+    guard is_valid_canonical_cookie_name(name) && is_valid_canonical_cookie_val(val) else {
         return new_cookie;
     }
+    if name.len == 0 && val.contains_byte('=') {
+        return new_cookie;
+    }
+    var committed = false;
+    defer if !committed {
+        new_cookie.name.clear();
+        new_cookie.value.clear();
+    };
+    guard new_cookie.name.try_set(name) && new_cookie.value.try_set(val) else {
+        return new_cookie;
+    }
+    committed = true;
     return new_cookie;
 }
 
@@ -100,28 +152,54 @@ fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
 
 // Replaces the cookie value in-place and returns cookie_ref for chaining.
 fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie& {
+    guard core::add_sat_i64(cookie_ref.name.len, val.len) <= internal::K_MAX_COOKIE_NAME_VAL_LEN
+        && is_valid_canonical_cookie_val(val) else {
+        return cookie_ref;
+    }
+    if cookie_ref.name.len == 0 && val.contains_byte('=') {
+        return cookie_ref;
+    }
     let _ = cookie_ref.value.try_set(val);
     return cookie_ref;
 }
 
-// Sets the Domain attribute in-place, stripping any leading dot (RFC 6265bis Section 5.2.3).
+// Sets the Domain attribute in-place, stripping any leading dot (RFC 6265 Section 5.2.3).
 fn with_domain(cookie_ref: CanonicalCookie&, domain_val: const u8[:], host_only: bool = false) -> CanonicalCookie& {
     cookie_ref.has_domain_attr = true;
-    var clean_domain = domain_val;
-    var is_host = host_only;
-    if clean_domain.len > 0 && clean_domain[0] == '.' {
-        clean_domain = clean_domain[1..];
-        is_host = false;
+    let has_lead_dot = domain_val.len > 0 && domain_val[0] == '.';
+    let clean_domain = if has_lead_dot { domain_val[1..] } else { domain_val };
+    let is_host = if has_lead_dot { false } else { host_only };
+    if !core::is_pure_ascii(clean_domain) {
+        var ace_buf: u8[..256] = [];
+        guard core::punycode_encode_domain(clean_domain, ace_buf)
+            && is_valid_canonical_domain_attr(ace_buf[..])
+            && cookie_ref.domain.try_set(ace_buf[..]) else {
+            return cookie_ref;
+        }
+        cookie_ref.host_only = is_host;
+        return cookie_ref;
     }
+    guard is_valid_canonical_domain_attr(clean_domain) else { return cookie_ref; }
     guard cookie_ref.domain.try_set(clean_domain) else { return cookie_ref; }
     to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = is_host;
     return cookie_ref;
 }
 
-// Configures the cookie as host-only for host_val (RFC 6265bis Section 5.5).
+// Configures the cookie as host-only for host_val (RFC 6265 Section 5.3).
 fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCookie& {
     let clean = if host_val.len > 0 && host_val[0] == '.' { host_val[1..] } else { host_val };
+    if !core::is_pure_ascii(clean) {
+        var ace_buf: u8[..256] = [];
+        guard core::punycode_encode_domain(clean, ace_buf)
+            && is_valid_canonical_domain_attr(ace_buf[..])
+            && cookie_ref.domain.try_set(ace_buf[..]) else {
+            return cookie_ref;
+        }
+        cookie_ref.host_only = true;
+        return cookie_ref;
+    }
+    guard is_valid_canonical_domain_attr(clean) else { return cookie_ref; }
     guard cookie_ref.domain.try_set(clean) else { return cookie_ref; }
     to_lower(cookie_ref.domain[..]);
     cookie_ref.host_only = true;
@@ -130,6 +208,11 @@ fn with_host(cookie_ref: CanonicalCookie&, host_val: const u8[:]) -> CanonicalCo
 
 // Sets the cookie Path attribute in-place.
 fn with_path(cookie_ref: CanonicalCookie&, path_val: const u8[:]) -> CanonicalCookie& {
+    guard path_val.len > 0 && path_val[0] == '/'
+        && !is_prohibited_canonical_ctl(path_val)
+        && !path_val.contains_byte(';') else {
+        return cookie_ref;
+    }
     guard cookie_ref.path.try_set(path_val) else { return cookie_ref; }
     cookie_ref.has_path_attr = true;
     return cookie_ref;
@@ -202,6 +285,7 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: CookieSourceScheme, port: i
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool {
     let clean_host = host.trim_byte('.').trim_byte('[').trim_byte(']');
     let clean_domain = cookie_val.domain[..].trim_byte('.').trim_byte('[').trim_byte(']');
+    guard clean_host.len > 0 && clean_domain.len > 0 else { return false; }
 
     // RFC 6265 Section 5.1.3: If either host or cookie domain is an IP address,
     // domain-matching cannot be used; exact equality is required.
@@ -222,38 +306,92 @@ fn matches_path(cookie_val: const CanonicalCookie&, req_path: const u8[:]) -> bo
 
 // ---- unique key formatting & serialization --------------------------------
 
-// Serializes cookie into a Set-Cookie header string.
-fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
-    if cookie_val.name.len > 0 {
-        out.append(cookie_val.name[..]);
-        out.push('=');
+inline fn is_serializable_canonical_cookie(cookie_val: const CanonicalCookie&) -> bool {
+    let cname = cookie_val.name[..];
+    let cval = cookie_val.value[..];
+    guard is_valid_canonical_cookie_name(cname) && is_valid_canonical_cookie_val(cval) else {
+        return false;
     }
-    out.append(cookie_val.value[..]);
-
+    if cname.len == 0 && cval.contains_byte('=') {
+        return false;
+    }
     if !cookie_val.host_only && cookie_val.domain.len > 0 {
-        out.append("; Domain=");
-        out.append(cookie_val.domain[..]);
+        guard is_valid_canonical_domain_attr(cookie_val.domain[..]) else { return false; }
     }
     if cookie_val.path.len > 0 {
-        out.append("; Path=");
-        out.append(cookie_val.path[..]);
+        guard !is_prohibited_canonical_ctl(cookie_val.path[..]) && !cookie_val.path[..].contains_byte(';') else {
+            return false;
+        }
     }
-    if cookie_val.secure { out.append("; Secure"); }
-    if cookie_val.httponly { out.append("; HttpOnly"); }
-    if cookie_val.partitioned { out.append("; Partitioned"); }
+    return true;
+}
 
-    if cookie_val.same_site != CookieSameSite.Default
-        && cookie_val.same_site != CookieSameSite.Unknown {
-        out.append("; SameSite=");
-        out.append(same_site_to_string(cookie_val.same_site));
+inline fn try_format_cookie_bool_flags<B>(out: B&, cookie_val: const CanonicalCookie&) -> bool {
+    if cookie_val.secure {
+        guard out.try_append("; Secure") else { return false; }
     }
-    if cookie_val.priority != CookiePriority.Medium
-        && cookie_val.priority != CookiePriority.Unknown {
-        out.append("; Priority=");
-        out.append(priority_to_string(cookie_val.priority));
+    if cookie_val.httponly {
+        guard out.try_append("; HttpOnly") else { return false; }
+    }
+    if cookie_val.partitioned {
+        guard out.try_append("; Partitioned") else { return false; }
+    }
+    return true;
+}
+
+inline fn try_format_cookie_enum_attrs<B>(out: B&, cookie_val: const CanonicalCookie&) -> bool {
+    if cookie_val.same_site != CookieSameSite.Default &&
+        cookie_val.same_site != CookieSameSite.Unknown {
+        guard out.try_append("; SameSite=") &&
+            out.try_append(same_site_to_string(cookie_val.same_site)) else {
+            return false;
+        }
+    }
+    if cookie_val.priority != CookiePriority.Medium &&
+        cookie_val.priority != CookiePriority.Unknown {
+        guard out.try_append("; Priority=") &&
+            out.try_append(priority_to_string(cookie_val.priority)) else {
+            return false;
+        }
     }
     if cookie_val.persistent && cookie_val.expires_utc <= 0 {
-        out.append("; Max-Age=0");
+        guard out.try_append("; Max-Age=0") else { return false; }
+    }
+    return true;
+}
+
+// Serializes cookie into a Set-Cookie header string with bounded-buffer rollback.
+fn try_format<B>(out: B&, cookie_val: const CanonicalCookie&) -> bool {
+    guard is_serializable_canonical_cookie(cookie_val) else {
+        return false;
+    }
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    if cookie_val.name.len > 0 {
+        guard out.try_append(cookie_val.name[..]) && out.try_push('=') else { return false; }
+    }
+    guard out.try_append(cookie_val.value[..]) else { return false; }
+
+    if !cookie_val.host_only && cookie_val.domain.len > 0 {
+        guard out.try_append("; Domain=") && out.try_append(cookie_val.domain[..]) else { return false; }
+    }
+    if cookie_val.path.len > 0 {
+        guard out.try_append("; Path=") && out.try_append(cookie_val.path[..]) else { return false; }
+    }
+    guard try_format_cookie_bool_flags(out, cookie_val) &&
+        try_format_cookie_enum_attrs(out, cookie_val) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
+// Serializes cookie into a Set-Cookie header string.
+fn format<B>(out: B&, cookie_val: const CanonicalCookie&) {
+    if !try_format(out, cookie_val) {
+        return;
     }
 }
 
@@ -329,7 +467,22 @@ fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
     guard idx >= 0 else { return false; }
     let cur_state = jar.states[idx];
     if cur_state == COOKIE_DELTA_ORIGINAL || cur_state == COOKIE_DELTA_REMOVED {
+        let existing .= jar.cookies[idx];
         var rem = c;
+        if !c.has_domain_attr && c.domain.len == 0 && existing.domain.len > 0 {
+            let _ = rem.domain.try_set(existing.domain[..]);
+            rem.host_only = existing.host_only;
+            rem.has_domain_attr = existing.has_domain_attr;
+        }
+        if !c.has_path_attr && existing.path.len > 0 {
+            let _ = rem.path.try_set(existing.path[..]);
+            rem.has_path_attr = existing.has_path_attr;
+        }
+        rem.secure = existing.secure || c.secure;
+        rem.partitioned = existing.partitioned || c.partitioned;
+        if rem.partitioned && rem.partition_key.len == 0 && existing.partition_key.len > 0 {
+            let _ = rem.partition_key.try_set(existing.partition_key[..]);
+        }
         make_removal(rem);
         jar.cookies[idx] = rem;
         jar.states[idx] = COOKIE_DELTA_REMOVED;
@@ -357,8 +510,10 @@ fn flush_cookie_deltas(jar: const ServerCookieDeltaJar&, headers: HeaderMap&) ->
     for idx in n {
         let state = jar.states[idx];
         if state == COOKIE_DELTA_ADDED || state == COOKIE_DELTA_REMOVED {
-            var cookie_line: u8[..4800] = [];
-            format(cookie_line, jar.cookies[idx]);
+            var cookie_line: u8[..5120] = [];
+            guard try_format(cookie_line, jar.cookies[idx]) else {
+                return false;
+            }
             guard append_header(headers, "Set-Cookie", cookie_line[..]) else {
                 return false;
             }

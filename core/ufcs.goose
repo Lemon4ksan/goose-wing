@@ -104,7 +104,6 @@ fn ::format_u8_hex<B>(val: u8, out: B&, uppercase: bool = false) { core::format_
 
 // ---- utf-8 validation bridge (const u8[:]) ---------------------------------
 
-fn ::is_valid_utf8(data: const u8[:]) -> bool { return core::validate_utf8(data); }
 fn ::validate_utf8(data: const u8[:]) -> bool { return core::validate_utf8(data); }
 
 // ---- fast query lookup bridges (const u8[:]) -------------------------------
@@ -120,7 +119,7 @@ fn ::has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool {
 // ---- safe fixed-capacity buffer operations ---------------------------------
 
 fn ::try_push<A, T>(arr: A&, item: T) -> bool {
-    guard arr.len < arr.cap else { return false; }
+    guard arr.len >= 0 && arr.len < arr.cap else { return false; }
     arr.push(item);
     return true;
 }
@@ -131,7 +130,7 @@ fn ::try_push(arr: u8[>..]&, item: u8) -> bool {
 }
 
 fn ::try_append<A, S>(arr: A&, slice: S) -> bool {
-    guard arr.len + slice.len <= arr.cap else { return false; }
+    guard arr.len >= 0 && slice.len >= 0 && core::add_sat_i64(arr.len, slice.len) <= arr.cap else { return false; }
     arr.append(slice);
     return true;
 }
@@ -142,7 +141,7 @@ fn ::try_append(arr: u8[>..]&, slice: const u8[:]) -> bool {
 }
 
 fn ::try_set<A, S>(arr: A&, slice: S) -> bool {
-    guard slice.len <= arr.cap else { return false; }
+    guard slice.len >= 0 && slice.len <= arr.cap else { return false; }
     arr.clear();
     arr.append(slice);
     return true;

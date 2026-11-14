@@ -10,7 +10,8 @@ import core from "..";
 
 // ---- Frame Headers and Settings Structures -------------------------------
 
-const H3_FRAME_ORIGIN:                       u64 = 0x0c;       // RFC 9412 §2
+// RFC 8336 Section 2: The ORIGIN HTTP/2 Frame - Frame type 0x0c.
+const H3_FRAME_ORIGIN:                       u64 = 0x0c;
 const H3_SETTINGS_H3_DATAGRAM:               u64 = 0x33;       // RFC 9297 §2.1.1
 const H3_SETTINGS_H3_DATAGRAM_DRAFT00:       u64 = 0x276;      // draft-ietf-masque-h3-datagram-00
 const H3_SETTINGS_ENABLE_WEBTRANSPORT:       u64 = 0x2b603742; // draft-ietf-webtrans-http3
@@ -99,43 +100,49 @@ fn encode_h3_push_promise<B>(out: B&, push_id: u64, qpack_field_section: const u
 
 // Encodes a SETTINGS frame (Type 0x04).
 fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
-    // Build payload first in a temporary stack buffer
+    // RFC 9220 Section 3: WebSockets Upgrade over HTTP/3 - SETTINGS_ENABLE_CONNECT_PROTOCOL value MUST be 0 or 1.
+    guard settings.enable_connect_protocol <= 1 &&
+          settings.h3_datagram <= 1 &&
+          settings.enable_webtransport <= 1 else {
+        return false;
+    }
+
     var payload: u8[..128] = [];
+    guard quic_encode_varint(payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY) &&
+          quic_encode_varint(payload, settings.qpack_max_table_capacity) &&
+          quic_encode_varint(payload, rfc::H3_SETTING_MAX_FIELD_SECTION_SIZE) &&
+          quic_encode_varint(payload, settings.max_field_section_size) &&
+          quic_encode_varint(payload, rfc::H3_SETTING_QPACK_BLOCKED_STREAMS) &&
+          quic_encode_varint(payload, settings.qpack_blocked_streams) else {
+        return false;
+    }
 
-    // 1. QPACK_MAX_TABLE_CAPACITY (0x01)
-    quic_encode_varint(payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
-    quic_encode_varint(payload, settings.qpack_max_table_capacity);
-
-    // 2. MAX_FIELD_SECTION_SIZE (0x06)
-    quic_encode_varint(payload, rfc::H3_SETTING_MAX_FIELD_SECTION_SIZE);
-    quic_encode_varint(payload, settings.max_field_section_size);
-
-    // 3. QPACK_BLOCKED_STREAMS (0x07)
-    quic_encode_varint(payload, rfc::H3_SETTING_QPACK_BLOCKED_STREAMS);
-    quic_encode_varint(payload, settings.qpack_blocked_streams);
-
-    // 4. ENABLE_CONNECT_PROTOCOL (0x08)
     if settings.enable_connect_protocol > 0 {
-        quic_encode_varint(payload, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
-        quic_encode_varint(payload, settings.enable_connect_protocol);
+        guard quic_encode_varint(payload, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL) &&
+              quic_encode_varint(payload, settings.enable_connect_protocol) else {
+            return false;
+        }
     }
 
-    // 5. H3_DATAGRAM (0x33)
     if settings.h3_datagram > 0 {
-        quic_encode_varint(payload, H3_SETTINGS_H3_DATAGRAM);
-        quic_encode_varint(payload, settings.h3_datagram);
+        guard quic_encode_varint(payload, H3_SETTINGS_H3_DATAGRAM) &&
+              quic_encode_varint(payload, settings.h3_datagram) else {
+            return false;
+        }
     }
 
-    // 6. ENABLE_WEBTRANSPORT (0x2b603742)
     if settings.enable_webtransport > 0 {
-        quic_encode_varint(payload, H3_SETTINGS_ENABLE_WEBTRANSPORT);
-        quic_encode_varint(payload, settings.enable_webtransport);
+        guard quic_encode_varint(payload, H3_SETTINGS_ENABLE_WEBTRANSPORT) &&
+              quic_encode_varint(payload, settings.enable_webtransport) else {
+            return false;
+        }
     }
 
-    // 7. WEBTRANSPORT_MAX_SESSIONS (0xc671706a)
     if settings.webtransport_max_sessions > 0 {
-        quic_encode_varint(payload, H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS);
-        quic_encode_varint(payload, settings.webtransport_max_sessions);
+        guard quic_encode_varint(payload, H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS) &&
+              quic_encode_varint(payload, settings.webtransport_max_sessions) else {
+            return false;
+        }
     }
 
     var hdr: u8[..16] = [];
@@ -143,8 +150,8 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
     return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
-// Records a setting identifier into the seen list, ensuring uniqueness (RFC 9114 §7.2.4).
-fn record_setting_identifier(seen: u64[..64]&, id: u64) -> bool {
+// RFC 9114 Section 7.2.4: SETTINGS - Each setting identifier MUST NOT appear more than once.
+fn record_setting_identifier(seen: u64[..128]&, id: u64) -> bool {
     for s in seen {
         if s == id {
             return false;
@@ -207,7 +214,7 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
 
     var offset: u64 = 0;
     let total = payload.len as u64;
-    var seen_ids: u64[..64] = [];
+    var seen_ids: u64[..128] = [];
 
     while offset < total {
         let id, off1, ok1 = quic_decode_varint(payload, offset);
@@ -293,8 +300,52 @@ fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
 
 // ---- RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 --------------------------
 
-// Encodes a PRIORITY_UPDATE frame for a request stream (RFC 9218 Section 7.2, Type 0xF0700).
+inline fn apply_h3_priority_entry(
+    entry: const wing::SfDictEntry&,
+    prio:  wing::PriorityParam&,
+) -> bool {
+    if entry.key == "u" {
+        if !entry.is_inner_list &&
+           entry.item.kind == wing::SfType.Integer &&
+           wing::is_valid_urgency(entry.item.int_val) {
+            prio.urgency = entry.item.int_val as u8;
+        }
+        return true;
+    }
+    if entry.key == "i" {
+        if !entry.is_inner_list && entry.item.kind == wing::SfType.Boolean {
+            prio.incremental = entry.item.bool_val;
+        }
+        return true;
+    }
+    return true;
+}
+
+// RFC 9218 Section 4: Priority Parameters - Receivers MUST ignore unrecognized parameters and out-of-range urgency values.
+//
+// Example:
+//   field_value = "u=1, i", default_incremental = false
+//   returns: { urgency: 1, incremental: true }, true
+fn parse_h3_priority_field_value(
+    field_value:         const u8[:],
+    default_incremental: bool = false,
+) -> wing::PriorityParam, bool {
+    var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
+    let trimmed = field_value.trim_ascii_space();
+    if trimmed.len == 0 {
+        return prio, true;
+    }
+    var entries: wing::SfDictEntry[..16] = [];
+    guard wing::parse_sf_dict(trimmed, entries) else { return prio, false; }
+    for &entry in entries {
+        guard apply_h3_priority_entry(entry, prio) else { return prio, false; }
+    }
+    return prio, true;
+}
+
+// RFC 9218 Section 7.2: HTTP/3 PRIORITY_UPDATE Frame - Request-stream Prioritized Element ID MUST be a client-initiated bidirectional stream ID.
 fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
+    guard (stream_id & 0x03) == 0 && prio.urgency <= 7 else { return false; }
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, stream_id) else { return false; }
     wing::serialize_http_priority(prio, payload);
@@ -314,21 +365,18 @@ fn parse_h3_priority_update_request(
     payload:             const u8[:],
     default_incremental: bool = false,
 ) -> u64, wing::PriorityParam, bool {
-    var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
-    guard payload.len > 0 else { return 0, prio, false; }
+    let default_prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
+    guard payload.len > 0 else { return 0, default_prio, false; }
     let stream_id, off, ok = quic_decode_varint(payload, 0);
-    guard ok else { return 0, prio, false; }
-    let field_value = payload[off..];
-    if field_value.trim_ascii_space().len == 0 {
-        return stream_id, prio, true;
-    }
-    let parsed, ok_prio = wing::parse_http_priority(field_value, default_incremental);
-    guard ok_prio else { return stream_id, prio, false; }
+    guard ok else { return 0, default_prio, false; }
+    let parsed, ok_prio = parse_h3_priority_field_value(payload[off..], default_incremental);
+    guard ok_prio else { return stream_id, default_prio, false; }
     return stream_id, parsed, true;
 }
 
 // Encodes a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2, Type 0xF0701).
 fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::PriorityParam&) -> bool {
+    guard prio.urgency <= 7 else { return false; }
     var payload: u8[..64] = [];
     guard quic_encode_varint(payload, push_id) else { return false; }
     wing::serialize_http_priority(prio, payload);
@@ -346,27 +394,31 @@ fn parse_h3_priority_update_push(
     payload:             const u8[:],
     default_incremental: bool = false,
 ) -> u64, wing::PriorityParam, bool {
-    var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
-    guard payload.len > 0 else { return 0, prio, false; }
+    let default_prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
+    guard payload.len > 0 else { return 0, default_prio, false; }
     let push_id, off, ok = quic_decode_varint(payload, 0);
-    guard ok else { return 0, prio, false; }
-    let field_value = payload[off..];
-    if field_value.trim_ascii_space().len == 0 {
-        return push_id, prio, true;
-    }
-    let parsed, ok_prio = wing::parse_http_priority(field_value, default_incremental);
-    guard ok_prio else { return push_id, prio, false; }
+    guard ok else { return 0, default_prio, false; }
+    let parsed, ok_prio = parse_h3_priority_field_value(payload[off..], default_incremental);
+    guard ok_prio else { return push_id, default_prio, false; }
     return push_id, parsed, true;
 }
 
-// ---- RFC 9412 ORIGIN Frame for HTTP/3 ------------------------------------
+// ---- RFC 8336 ORIGIN Frame for HTTP/3 ------------------------------------
 
-// Encodes an HTTP/3 ORIGIN frame (Type 0x0c, RFC 9412 §2).
+inline fn is_valid_ascii_origin(entry: const u8[:]) -> bool {
+    guard entry.len > 0 else { return false; }
+    for b in entry {
+        guard core::is_ascii_vchar(b) else { return false; }
+    }
+    return true;
+}
+
+// RFC 8336 Section 2.1: Syntax - Encodes an ORIGIN frame (Type 0x0c) containing ASCII-Origin entries.
 fn encode_h3_origin_frame<B>(out: B&, origins: const (const u8[:])[:]) -> bool {
     var payload: u8[..2048] = [];
     for org in origins {
         let rem = core::sub_sat_i64(payload.cap, payload.len);
-        guard org.len > 0 && org.len <= 0xFFFF && core::sub_sat_i64(rem, 2) >= org.len else {
+        guard is_valid_ascii_origin(org) && org.len <= 0xFFFF && core::sub_sat_i64(rem, 2) >= org.len else {
             return false;
         }
         payload.append_u16_be(org.len as u16);
@@ -377,8 +429,8 @@ fn encode_h3_origin_frame<B>(out: B&, origins: const (const u8[:])[:]) -> bool {
     return append_h3_frame_parts(out, hdr[..], payload[..]);
 }
 
-// Parses an HTTP/3 ORIGIN frame payload (RFC 9412 §2).
-// Rejects truncated 2-byte big-endian Origin-Len or 0-length entries.
+// RFC 8336 Section 2.1: Syntax - Each Origin-Entry is a serialized ASCII-Origin containing printable ASCII bytes.
+// Rejects truncated 2-byte big-endian Origin-Len, 0-length entries, or non-VCHAR octets.
 //
 // Example:
 //   payload = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm']
@@ -396,8 +448,10 @@ fn parse_h3_origin_frame(payload: const u8[:], out_origins: u8[..128][..16]&) ->
         guard olen > 0 && olen <= 128 && olen <= after_hdr.len else {
             return false;
         }
+        let raw_origin = after_hdr[..olen];
+        guard is_valid_ascii_origin(raw_origin) else { return false; }
         var entry: u8[..128] = [];
-        guard entry.try_set(after_hdr[..olen]) && out_origins.try_push(entry) else {
+        guard entry.try_set(raw_origin) && out_origins.try_push(entry) else {
             return false;
         }
         rem = after_hdr[olen..];

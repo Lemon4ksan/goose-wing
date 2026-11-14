@@ -10,7 +10,7 @@ import core from "..";
 
 // ---- CompressedCertificate Message Model ---------------------------------
 
-// RFC 8879 Section 4: Compressed Certificate Handshake Message - Structure
+// RFC 8879 Section 4: Compressed Certificate Message - Structure
 struct CompressedCertificate {
     algorithm:                      u16         = rfc::CERT_COMPRESSION_BROTLI,
     uncompressed_length:            u32         = 0,
@@ -19,7 +19,7 @@ struct CompressedCertificate {
 
 // ---- Wire Encoding and Decoding (RFC 8879 §4) -----------------------------
 
-// RFC 8879 Section 4: Compressed Certificate Handshake Message - Serializer
+// RFC 8879 Section 4: Compressed Certificate Message - Serializer
 fn encode_compressed_certificate<B>(
     msg: const CompressedCertificate&,
     out: B&,
@@ -43,7 +43,7 @@ fn encode_compressed_certificate<B>(
     return out.try_append(b.buf[..]);
 }
 
-// RFC 8879 Section 4: Compressed Certificate Handshake Message - Parser
+// RFC 8879 Section 4: Compressed Certificate Message - Parser
 //
 // Example:
 //   raw = [0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, ... (compressed data)]
@@ -72,7 +72,7 @@ fn parse_compressed_certificate_msg(
 
 // ---- Safe Decompression Engine (RFC 8879 §4) ------------------------------
 
-// RFC 8879 Section 4: Compressed Certificate Handshake Message - Safe Decompression Handler
+// RFC 8879 Section 4: Compressed Certificate Message - Safe Decompression Handler
 // Verifies uncompressed size against maximum buffer bound and prevents decompression bombs.
 fn decompress_certificate_message<B>(
     msg:             CompressedCertificate,

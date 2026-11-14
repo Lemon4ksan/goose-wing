@@ -40,18 +40,19 @@ enum UpstreamHealthState {
 }
 
 struct UpstreamTarget {
-    host:                u8[..64]            = [],
-    port:                u16                 = 80,
-    active_conns:        i32                 = 0,
-    weight:              u16                 = 1,
-    is_healthy:          bool                = true,
-    health_state:        UpstreamHealthState = UpstreamHealthState.Up,
-    fails:               i32                 = 0,
-    successes:           i32                 = 0,
-    healthy_threshold:   i32                 = 2,
-    unhealthy_threshold: i32                 = 3,
-    total_requests:      u64                 = 0,
-    ejected_until_ms:    i64                 = 0,
+    host:                    u8[..64]            = [],
+    port:                    u16                 = 80,
+    active_conns:            i32                 = 0,
+    weight:                  u16                 = 1,
+    is_healthy:              bool                = true,
+    health_state:            UpstreamHealthState = UpstreamHealthState.Up,
+    fails:                   i32                 = 0,
+    successes:               i32                 = 0,
+    healthy_threshold:       i32                 = 2,
+    unhealthy_threshold:     i32                 = 3,
+    total_requests:          u64                 = 0,
+    ejected_until_ms:        i64                 = 0,
+    has_explicit_thresholds: bool                = false,
 }
 
 struct UpstreamCluster {
@@ -65,16 +66,30 @@ struct UpstreamCluster {
 }
 
 fn new_upstream_cluster(policy: LbPolicy = LbPolicy.RoundRobin, max_fails: i32 = 3) -> UpstreamCluster {
+    let t_ns = core::as_nanos(core::monotonic_now());
+    let seed = if t_ns != 0 { t_ns ^ 0x123456789abcdef0 } else { 0x123456789abcdef0 };
     return UpstreamCluster {
         policy:       policy,
-        max_fails:    max_fails,
+        max_fails:    max(max_fails, 0),
         circuit_open: false,
+        rng_state:    seed,
         ..
     };
 }
 
-fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, weight: u16 = 1) -> bool {
+inline fn is_valid_upstream_host(host: const u8[:]) -> bool {
     guard host.len > 0 else { return false; }
+    for b in host {
+        guard b > 0x20 && b < 0x7F &&
+              b != '/' && b != '?' && b != '#' && b != '\\' && b != '@' && b != ',' else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, weight: u16 = 1) -> bool {
+    guard port > 0 && is_valid_upstream_host(host) else { return false; }
 
     var target = UpstreamTarget {
         port:       port,
@@ -116,8 +131,13 @@ inline fn advance_rr_index(cur_rr: i32, n: i32) -> i32 {
     return if next_rr >= n { 0 } else { next_rr };
 }
 
+inline fn current_monotonic_ms() -> i64 {
+    return core::as_millis(core::duration_since(core::monotonic_now(), core::MonotonicInstant {}));
+}
+
 inline fn is_target_selectable(target: const UpstreamTarget&) -> bool {
-    return target.is_healthy || target.health_state == UpstreamHealthState.Probing;
+    let now_ms = if target.ejected_until_ms > 0 { current_monotonic_ms() } else { 0 };
+    return is_backend_routable(target, now_ms);
 }
 
 // Selects next healthy upstream via Round-Robin.
@@ -230,10 +250,10 @@ fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
         if cluster.ketama_ring.points.len == 0 {
             build_ketama_ring(cluster, cluster.ketama_ring);
         }
-        let idx64, ok_ch = select_consistent_backend(cluster, cluster.ketama_ring, "default", 0);
-        if ok_ch {
-            return idx64 as i32, true;
-        }
+        let now_ms = current_monotonic_ms();
+        let idx64, ok_ch = select_consistent_backend(cluster, cluster.ketama_ring, "default", now_ms);
+        guard ok_ch else { return NO_UPSTREAM_TARGET, false; }
+        return idx64 as i32, true;
     }
     return select_p2c(cluster, n);
 }
@@ -323,7 +343,12 @@ fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
     cluster.targets[target_idx].fails = 0;
     let s = inc_target_successes(cluster.targets[target_idx]);
 
-    let healthy_thresh = max(cluster.targets[target_idx].healthy_threshold, 1);
+    let target_h = max(cluster.targets[target_idx].healthy_threshold, 1);
+    let healthy_thresh = if !cluster.targets[target_idx].has_explicit_thresholds && cluster.max_fails > 0 {
+        1
+    } else {
+        target_h
+    };
 
     if cluster.targets[target_idx].health_state == UpstreamHealthState.Probing {
         if s >= healthy_thresh {
@@ -332,7 +357,7 @@ fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
             cluster.circuit_open = false;
         }
     } else if cluster.targets[target_idx].health_state == UpstreamHealthState.Down {
-        if s >= healthy_thresh || cluster.max_fails > 0 {
+        if s >= healthy_thresh {
             cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
             cluster.targets[target_idx].is_healthy = true;
             cluster.circuit_open = false;
@@ -372,10 +397,17 @@ fn record_upstream_failure(cluster: UpstreamCluster&, target_idx: i32) {
     cluster.targets[target_idx].successes = 0;
     let fails = inc_target_fails(cluster.targets[target_idx]);
 
-    let max_f = if cluster.max_fails > 0 {
+    let target_u = if cluster.targets[target_idx].unhealthy_threshold > 0 {
+        cluster.targets[target_idx].unhealthy_threshold
+    } else {
+        3
+    };
+    let max_f = if cluster.targets[target_idx].has_explicit_thresholds {
+        target_u
+    } else if cluster.max_fails > 0 {
         cluster.max_fails
     } else {
-        cluster.targets[target_idx].unhealthy_threshold
+        target_u
     };
     if fails >= max_f || cluster.targets[target_idx].health_state == UpstreamHealthState.Probing {
         cluster.targets[target_idx].health_state = UpstreamHealthState.Down;
@@ -404,6 +436,7 @@ fn set_target_health_thresholds(
     guard target_idx >= 0 && target_idx < cluster.targets.len else { return false; }
     cluster.targets[target_idx].healthy_threshold = max(healthy_thresh, 1);
     cluster.targets[target_idx].unhealthy_threshold = max(unhealthy_thresh, 1);
+    cluster.targets[target_idx].has_explicit_thresholds = true;
     return true;
 }
 
@@ -416,7 +449,7 @@ inline fn is_backend_routable(target: const UpstreamTarget&, now_ms: i64) -> boo
     if target.ejected_until_ms > 0 && now_ms < target.ejected_until_ms {
         return false;
     }
-    return is_target_selectable(target);
+    return target.is_healthy || target.health_state == UpstreamHealthState.Probing;
 }
 
 // Inserts `pt` into sorted `ring.points`, deduplicating identical 32-bit hash positions.
@@ -445,13 +478,31 @@ fn insert_ketama_point(ring: KetamaRing&, pt: KetamaPoint) {
     ring.points[lo as i64] = pt;
 }
 
+inline fn calc_ketama_target_points(w: i64, total_weight: i64, target_count: i64, ring_cap: i64) -> i64 {
+    let pts_per_w = KETAMA_POINTS_PER_WEIGHT as i64;
+    let raw_total = core::mul_sat_i64(total_weight, pts_per_w);
+    if raw_total <= ring_cap {
+        return core::mul_sat_i64(w, pts_per_w);
+    }
+    let avail = max(core::sub_sat_i64(ring_cap, target_count), 0);
+    let scaled = core::div_euclid_i64(core::mul_sat_i64(w, avail), max(total_weight, 1));
+    return core::add_sat_i64(1, scaled);
+}
+
 // Builds a Pingora-compatible Ketama consistent hashing continuum from `pool.targets`.
 fn build_ketama_ring(pool: const UpstreamCluster&, ring: KetamaRing&) {
     ring.points.clear();
-    for idx in pool.targets.len {
+    let n = pool.targets.len;
+    guard n > 0 else { return; }
+    var total_weight: i64 = 0;
+    for i in n {
+        total_weight = core::add_sat_i64(total_weight, max(pool.targets[i].weight as i64, 1));
+    }
+    let ring_cap = ring.points.cap;
+    for idx in n {
         let target = pool.targets[idx];
-        let w = max(target.weight as u32, 1);
-        let num_pts = core::mul_sat_u64(w, KETAMA_POINTS_PER_WEIGHT) as i64;
+        let w = max(target.weight as i64, 1);
+        let num_pts = calc_ketama_target_points(w, total_weight, n, ring_cap);
         var base_key: u8[..96] = [];
         base_key.append(target.host[..]);
         base_key.push(0);

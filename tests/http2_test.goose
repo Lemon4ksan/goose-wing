@@ -802,7 +802,7 @@ fn encode_client_trailers<B>(
 fn test_h2_handshake_and_settings(t: lit::T&) {
     t.run("H2-01: Preface & Initial Server SETTINGS emission") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var out_wire: u8[..512] = [];
@@ -824,7 +824,7 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 
     t.run("H2-02: Client SETTINGS ACK & PING ACK") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         // Prepend preface
@@ -879,7 +879,7 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 
     t.run("H2-02b: Outbound Frame Aggregation with Zero-Heap CorkBuffer") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[..256] = [];
@@ -919,7 +919,7 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 fn test_h2_request_dispatch(t: lit::T&) {
     t.run("H2-03: Single GET Request through Server Pipeline") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/api/greet", 101);
 
@@ -960,7 +960,7 @@ fn test_h2_request_dispatch(t: lit::T&) {
 
     t.run("H2-04: POST Request with DATA Frame Payload") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/api/data", 202);
 
@@ -983,7 +983,7 @@ fn test_h2_request_dispatch(t: lit::T&) {
 
     t.run("H2-05: Concurrent Multiplexed Streams (Streams 1 and 3)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/first", 1);
         wing::add_route(pipeline.router, "GET", "/second", 2);
@@ -1047,7 +1047,7 @@ fn test_h2_server_wire_integration(t: lit::T&) {
 fn test_h2_continuation_and_anti_dos(t: lit::T&) {
     t.run("H2-06: Multi-Frame CONTINUATION Header Assembly") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/split/headers", 200);
 
@@ -1105,7 +1105,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
 
     t.run("H2-07: Ban Zero-Length Non-Terminal CONTINUATION (CVE-2024-2758 / CVE-2024-31309)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[..512] = [];
@@ -1143,7 +1143,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
 
     t.run("H2-08: Rapid Reset Batch Bypass (CVE-2023-44487)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
 
@@ -1181,7 +1181,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
 fn test_h2_protocol_invariants(t: lit::T&) {
     t.run("H2-09: Client Request Trailers Accepted (RFC 9113 §8.1.2)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/upload/trailers", 10);
 
@@ -1211,7 +1211,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-10: Client Trailers with Pseudo-Headers Rejected (RFC 9113 §8.1.2)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/upload/pseudo-trailer", 11);
 
@@ -1233,7 +1233,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-11: Large Flow Control Ingress Window Replenishment (RFC 9113 §6.9)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/bulk", 12);
 
@@ -1259,7 +1259,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-12: Stream State Transition to Closed (RFC 9113 §5.1)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 13);
 
@@ -1287,7 +1287,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-13: Stream WINDOW_UPDATE increment 0 emits RST_STREAM (RFC 9113 §6.9)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 14);
 
@@ -1325,7 +1325,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-14: Client SETTINGS_ENABLE_PUSH > 1 rejected, 0 and 1 accepted (RFC 9113 §6.5.2)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire_ok: u8[>..] = [];
@@ -1360,7 +1360,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-15: gRPC Response Body Preserved Without Spurious OK (RFC 9113)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var client_hpack = internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
@@ -1386,7 +1386,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-16: PRIORITY Self-Dependency Rejection (RFC 9113 §5.3.1)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1413,7 +1413,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-16b: PRIORITY Frame Size Error Triggers RST_STREAM(FRAME_SIZE_ERROR) Not GOAWAY (RFC 9113 §5.4.2 & §6.3)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1470,7 +1470,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-17: HEADERS on RST-Closed Stream Triggers RST_STREAM(STREAM_CLOSED) Not GOAWAY (RFC 9113 §5.1)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 17);
 
@@ -1518,7 +1518,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-18: Interleaved Non-CONTINUATION Frame During Header Accumulation Triggers GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.10)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1559,7 +1559,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-19: Unprompted CONTINUATION Frame Triggers GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.10)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1589,7 +1589,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-20: Client PUSH_PROMISE Frame Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.6)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1619,7 +1619,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-21: Duplicate / Unsolicited SETTINGS ACK Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.5 & §10.5)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1656,7 +1656,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-22: Control Frame Flood (Excess PINGs/ACKs > 64) Triggers GOAWAY(ENHANCE_YOUR_CALM) (RFC 9113 §10.5)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1699,7 +1699,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-23: HPACK Dynamic Table Size Update Mid-Block Rejected with COMPRESSION_ERROR (RFC 7541 §4.2)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1728,7 +1728,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-24: HPACK Out-of-Bounds Dynamic Table Index Lookup Rejected with COMPRESSION_ERROR (RFC 7541 §2.3.3)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1756,7 +1756,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-25: PRIORITY_UPDATE on Stream 0 and Server-Initiated Stream Rejection (RFC 9218 §7.1)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         // Sub-test A: Prioritized Stream ID 0 must be rejected with PROTOCOL_ERROR
@@ -1828,7 +1828,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-26: Rapid Reset Large Batch Defense (>16 Cancellations) Handled Without Dispatch (CVE-2023-44487)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
 
@@ -1862,7 +1862,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-27: WINDOW_UPDATE on Closed Stream Ignored Without Error (RFC 9113 §5.1)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 27);
 
@@ -1894,7 +1894,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-28: Connection Flow Control Window Exceeding 2^31-1 Emits GOAWAY(FLOW_CONTROL_ERROR) (RFC 9113 §6.9)") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -2721,6 +2721,15 @@ fn test_priority_parsing(t: lit::T&) {
         sub.assert_true(ok6, "Parsed with out-of-range u");
         sub.assert_eq(p6.urgency, 3, "Urgency preserved default 3");
         sub.assert_true(p6.incremental, "Incremental true");
+
+        // 7. Standalone out-of-range u=8 or unknown key foo=1 succeeds with defaults (RFC 9218 §4)
+        let p7, ok7 = wing::parse_http_priority("u=8");
+        sub.assert_true(ok7, "Standalone out-of-range u=8 ignored with defaults");
+        sub.assert_eq(p7.urgency, 3, "Standalone u=8 defaults urgency to 3");
+        sub.assert_false(p7.incremental, "Standalone u=8 defaults incremental to false");
+        let p8, ok8 = wing::parse_http_priority("foo=1");
+        sub.assert_true(ok8, "Unknown-only SF dictionary key ignored with defaults");
+        sub.assert_eq(p8.urgency, 3, "Unknown-only key defaults urgency to 3");
     };
 }
 
@@ -2850,20 +2859,25 @@ fn test_h2_extension_frames(t: lit::T&) {
         sub.assert_eq(parsed_origins[1], "https://api.example.com", "origin 1 matched");
     };
 
-    t.run("ORIGIN-02: Stream ID != 0 violation triggers PROTOCOL_ERROR") { sub =>
-        let dummy_payload: u8[10] = [0x00, 0x08, 'h', 't', 't', 'p', 's', ':', '/', '/'];
+    t.run("ORIGIN-02: Stream ID != 0 is ignored without error (RFC 8336 Section 2.2)") { sub =>
+        let dummy_payload: u8[16] = [
+            0x00, 0x0E,
+            'h', 't', 't', 'p', 's', ':', '/', '/', 'e', 'x', '.', 'c', 'o', 'm',
+        ];
         var parsed: const u8[:][..16] = [];
-        let _, err = internal::parse_origin_frame(dummy_payload[..], 1, parsed);
-        sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "ORIGIN frame on stream 1 returns PROTOCOL_ERROR");
+        let count, err = internal::parse_origin_frame(dummy_payload[..], 1, parsed);
+        sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "ORIGIN frame on stream 1 is ignored with NO_ERROR");
+        sub.assert_eq(count, 0, "ORIGIN frame on stream 1 adds 0 entries");
+        sub.assert_eq(parsed.len, 0, "out_entries untouched on non-zero stream");
 
-        let bad_hdr = internal::FrameHeader {
-            length:     10,
+        let non_zero_hdr = internal::FrameHeader {
+            length:     16,
             frame_type: rfc::H2_FRAME_ORIGIN,
             flags:      0,
             stream_id:  3,
         };
-        let rule_err = internal::validate_frame_header_rules(bad_hdr);
-        sub.assert_eq(rule_err, rfc::H2_ERR_PROTOCOL_ERROR, "validate_frame_header_rules rejects ORIGIN on stream 3");
+        let rule_err = internal::validate_frame_header_rules(non_zero_hdr);
+        sub.assert_eq(rule_err, rfc::H2_ERR_NO_ERROR, "validate_frame_header_rules permits ORIGIN header on stream 3 to be ignored");
     };
 
     t.run("ALTSVC-01: FRAME_ALTSVC on stream 0 with origin") { sub =>
@@ -2912,7 +2926,7 @@ fn test_h2_extension_frames(t: lit::T&) {
 
     t.run("ALTSVC-05: Server Ingress handles ORIGIN and ALTSVC extension frames") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -3066,11 +3080,15 @@ fn test_nghttp2_and_h2_vendor_conformance(t: lit::T&) {
         sub.assert_eq(p6.urgency, 2, "u=2 wins (u=6 after ';' is parameter on i, not dict member)");
         sub.assert_true(p6.incremental, "i=?1 wins (i=?0 after ';' is parameter, not dict member)");
 
-        // 8. Type mismatch: inner list on 'i' or 'u' ("i=(1 2)" or "u=(1 2)") must be rejected
-        let _, ok_bad_i = wing::parse_http_priority("i=(1 2)");
-        sub.assert_false(ok_bad_i, "inner list i=(1 2) rejected as non-boolean");
-        let _, ok_bad_u = wing::parse_http_priority("u=(1 2)");
-        sub.assert_false(ok_bad_u, "inner list u=(1 2) rejected as non-integer");
+        // 8. RFC 9218 §4: Values of unexpected types MUST be ignored, malformed SF rejected
+        let p_bad_i, ok_bad_i = wing::parse_http_priority("i=(1 2), u=1");
+        sub.assert_true(ok_bad_i, "inner list i=(1 2) ignored per RFC 9218 §4");
+        sub.assert_eq(p_bad_i.urgency, 1, "u=1 still applied after ignored i=(1 2)");
+        sub.assert_false(p_bad_i.incremental, "default incremental preserved when i=(1 2) ignored");
+        let p_bad_u, ok_bad_u = wing::parse_http_priority("u=(1 2), i");
+        sub.assert_true(ok_bad_u, "inner list u=(1 2) ignored per RFC 9218 §4");
+        sub.assert_eq(p_bad_u.urgency, 3, "default urgency 3 preserved when u=(1 2) ignored");
+        sub.assert_true(p_bad_u.incremental, "i still applied after ignored u=(1 2)");
         let _, ok_bad_syntax = wing::parse_http_priority("u=0,");
         sub.assert_false(ok_bad_syntax, "trailing comma 'u=0,' rejected");
     };
@@ -3311,7 +3329,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
 
         // 4. Content-Length mismatch with DATA payload length triggers RST_STREAM(PROTOCOL_ERROR) (RFC 9113 §8.1.1)
         var sess_cl = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline_cl = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline_cl = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer_cl = internal::new_connection_timer(30000000000, 1000000000);
         var wire_cl: u8[..512] = [];
         wire_cl.append(rfc::H2_CLIENT_PREFACE[..]);
@@ -3957,7 +3975,7 @@ fn test_h2_authority_whitespace_rejection(t: lit::T&) {
 fn test_h2_multiplexer_and_hpack_rfc9113(t: lit::T&) {
     t.run("H2 server ingress rejects invalid SETTINGS_MAX_FRAME_SIZE < 16384") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         // Client preface + SETTINGS frame with MAX_FRAME_SIZE = 0
@@ -4048,7 +4066,7 @@ fn has_rst_stream_for(wire: const u8[:], stream_id: u32) -> bool {
 
 fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
     var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = internal::new_connection_timer(30000000000, 1000000000);
 
     t.run("H2 ingress rejects Content-Length > 0 on HEADERS frame with END_STREAM") { sub =>
@@ -4188,7 +4206,7 @@ fn test_h2_multiplexer_trailers(t: lit::T&) {
 
     t.run("handle_h2_server_ingress emits response with body and trailers") { sub =>
         var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, core::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = internal::new_connection_timer(30000000000, 1000000000);
 
         var wire_in: u8[>..] = [];

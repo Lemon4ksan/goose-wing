@@ -13,14 +13,17 @@ import .headers;
 // ---- RFC 9292 Framing Indicators (Section 3.3) -----------------------------
 
 // Binary-encoded HTTP request (RFC 9292 Section 3.1 known-length form).
-// Scheme and authority are not retained: `target` carries the request path
-// (RFC 9292 Section 3.4 Path field); empty scheme/authority encode as zero-length.
+// `scheme`, `authority`, and `target` map to RFC 9292 Section 3.4 Request Control Data
+// (Method, Scheme, Authority, Path). When `target` is a full URL, `bhttp_encode_request`
+// decomposes it into `(scheme, authority, path)` automatically.
 struct BhttpRequest {
-    method:   u8[..16]   = "GET",
-    target:   u8[..2048] = [],
-    headers:  HeaderMap  = HeaderMap { .. },
-    body:     u8[..4096] = [],
-    body_len: i32        = 0,
+    method:    u8[..16]   = "GET",
+    scheme:    u8[..16]   = "https",
+    authority: u8[..256]  = [],
+    target:    u8[..2048] = [],
+    headers:   HeaderMap  = HeaderMap { .. },
+    body:      u8[..4096] = [],
+    body_len:  i32        = 0,
 }
 
 // Binary-encoded HTTP response (RFC 9292 Section 3.1 known-length form).
@@ -244,27 +247,6 @@ fn bhttp_decode_tail(
 
 // ---- request codec (RFC 9292 Sections 3.1, 3.3, 3.4) -----------------------
 
-// Encodes a known-length binary HTTP request (framing indicator 0).
-// Scheme and authority encode as zero-length; `target` encodes as Path.
-//
-// Example:
-//   req = { method: "GET", target: "/index.html", ... }, out = []
-//   returns: n > 0 with out[0] == 0x00, or -1 on overflow/invalid status
-fn bhttp_encode_request(req: const BhttpRequest&, out: u8[..8192]&) -> i32 {
-    out.clear();
-    guard req.method.len >= 1 else { return -1; }
-    guard req.body_len >= 0 && req.body_len <= req.body.len else { return -1; }
-
-    out.push(rfc::BHTTP_FRAME_KNOWN_LEN_REQUEST);
-    guard bhttp_put_len_bytes(out, req.method) else { return -1; }
-    guard bhttp_put_len_bytes(out, "") else { return -1; } // scheme
-    guard bhttp_put_len_bytes(out, "") else { return -1; } // authority
-    guard bhttp_put_len_bytes(out, req.target) else { return -1; }
-    let blen = req.body_len as i64;
-    guard bhttp_encode_tail(req.headers, req.body[..blen], out) else { return -1; }
-    return out.len as i32;
-}
-
 inline fn is_valid_bhttp_uri_part(s: const u8[:]) -> bool {
     for b in s {
         guard b > 0x20 && b < 0x7F else { return false; }
@@ -272,19 +254,130 @@ inline fn is_valid_bhttp_uri_part(s: const u8[:]) -> bool {
     return true;
 }
 
+// RFC 9292 Section 3.4: Request Control Data - Scheme follows RFC 3986 ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+inline fn is_valid_bhttp_scheme(s: const u8[:]) -> bool {
+    guard s.len > 0 && s.len <= 16 && core::is_ascii_alpha(s[0]) else { return false; }
+    for b in s[1..] {
+        guard core::is_ascii_alpha(b) || core::is_ascii_digit(b) || b == '+' || b == '-' || b == '.' else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn resolve_bhttp_full_url_control(
+    raw_url:    const u8[:],
+    scheme_out: u8[..16]&,
+    auth_out:   u8[..256]&,
+    path_out:   u8[..2048]&,
+) -> bool {
+    let view, _ = core::parse_url_view(raw_url);
+    guard view.valid && is_valid_bhttp_scheme(view.scheme) && scheme_out.try_set(view.scheme) else {
+        return false;
+    }
+    guard auth_out.try_set(view.host) else { return false; }
+    if view.port > 0 {
+        var pbuf: u8[..16] = [];
+        view.port.format_i64_dec(pbuf);
+        guard auth_out.try_push(':') && auth_out.try_append(pbuf[..]) else { return false; }
+    }
+    let p = if view.pathname.len > 0 { view.pathname } else { "/" };
+    guard path_out.try_set(p) && (view.search.len == 0 || path_out.try_append(view.search)) else {
+        return false;
+    }
+    return is_valid_bhttp_uri_part(auth_out[..]) && is_valid_bhttp_uri_part(path_out[..]);
+}
+
+fn resolve_bhttp_request_control(
+    req:        const BhttpRequest&,
+    scheme_out: u8[..16]&,
+    auth_out:   u8[..256]&,
+    path_out:   u8[..2048]&,
+) -> bool {
+    if core::contains(req.target[..], "://") {
+        return resolve_bhttp_full_url_control(req.target[..], scheme_out, auth_out, path_out);
+    }
+    if req.method[..] == "CONNECT" {
+        let auth_src = if req.authority.len > 0 {
+            req.authority[..]
+        } else if req.target.len > 0 {
+            req.target[..]
+        } else {
+            req.headers.get_header("host")
+        };
+        return auth_src.len > 0 && is_valid_bhttp_uri_part(auth_src) && auth_out.try_set(auth_src);
+    }
+    guard is_valid_bhttp_scheme(req.scheme[..]) && scheme_out.try_set(req.scheme[..]) else {
+        return false;
+    }
+    let auth_src = if req.authority.len > 0 { req.authority[..] } else { req.headers.get_header("host") };
+    guard is_valid_bhttp_uri_part(auth_src) && auth_out.try_set(auth_src) else { return false; }
+    return req.target.len > 0 && is_valid_bhttp_uri_part(req.target[..]) && path_out.try_set(req.target[..]);
+}
+
+// RFC 9292 Section 3.4: Request Control Data - Encodes a known-length binary HTTP request (framing indicator 0).
+//
+// Example:
+//   req = { method: "GET", scheme: "https", target: "/index.html", ... }, out = []
+//   returns: n > 0 with out[0] == 0x00, or -1 on overflow/invalid control data
+fn bhttp_encode_request(req: const BhttpRequest&, out: u8[..8192]&) -> i32 {
+    out.clear();
+    guard req.method.len >= 1 && is_valid_token_swar(req.method[..]) else { return -1; }
+    guard req.body_len >= 0 && req.body_len <= req.body.len else { return -1; }
+
+    var scheme_buf: u8[..16]   = [];
+    var auth_buf:   u8[..256]  = [];
+    var path_buf:   u8[..2048] = [];
+    guard resolve_bhttp_request_control(req, scheme_buf, auth_buf, path_buf) else { return -1; }
+
+    var committed = false;
+    defer if !committed { out.clear(); };
+
+    out.push(rfc::BHTTP_FRAME_KNOWN_LEN_REQUEST);
+    guard bhttp_put_len_bytes(out, req.method[..]) else { return -1; }
+    guard bhttp_put_len_bytes(out, scheme_buf[..]) else { return -1; }
+    guard bhttp_put_len_bytes(out, auth_buf[..]) else { return -1; }
+    guard bhttp_put_len_bytes(out, path_buf[..]) else { return -1; }
+    let blen = req.body_len as i64;
+    guard bhttp_encode_tail(req.headers, req.body[..blen], out) else { return -1; }
+    committed = true;
+    return out.len as i32;
+}
+
+inline fn reset_bhttp_request(out: BhttpRequest&) {
+    out.method.clear();
+    out.scheme.clear();
+    out.authority.clear();
+    out.target.clear();
+    out.headers.reset_for_keep_alive();
+    out.body.clear();
+    out.body_len = 0;
+}
+
+inline fn validate_bhttp_decoded_control(
+    method:    const u8[:],
+    scheme:    const u8[:],
+    authority: const u8[:],
+    path:      const u8[:],
+) -> bool {
+    if method == "CONNECT" {
+        return scheme.len == 0 && path.len == 0 &&
+               authority.len > 0 && authority.len <= 256 && is_valid_bhttp_uri_part(authority);
+    }
+    return is_valid_bhttp_scheme(scheme) &&
+           authority.len <= 256 && is_valid_bhttp_uri_part(authority) &&
+           path.len > 0 && path.len <= 2048 && is_valid_bhttp_uri_part(path);
+}
+
 // Decodes a known-length binary HTTP request; rejects framing indicators other
 // than 0 (RFC 9292 Sections 3.3, 4). Truncated trailing sections decode as
 // empty (Section 3.8). Leaves `out` reset on failure.
 //
 // Example:
-//   raw = [0x00, 0x03, 'G', 'E', 'T', 0x00, 0x00, 0x00, 0x00], out = BhttpRequest { .. }
-//   returns: ok = true, out.method = "GET", idx consumed = 9
+//   raw = [0x00, 0x03, 'G', 'E', 'T', 0x05, 'h', 't', 't', 'p', 's', 0x00, 0x01, '/', 0x00], out = BhttpRequest { .. }
+//   returns: ok = true, out.method = "GET", out.scheme = "https", out.target = "/"
 fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
-    out.method.clear();
-    out.target.clear();
-    out.headers.reset_for_keep_alive();
-    out.body.clear();
-    out.body_len = 0;
+    reset_bhttp_request(out);
 
     var idx: i64 = 0;
     let frame, ok0 = internal::quic_decode_varint_cursor(raw, idx);
@@ -296,22 +389,18 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
     }
 
     let scheme, ok2 = bhttp_read_len_bytes(raw, idx);
-    guard ok2 && is_valid_bhttp_uri_part(scheme) else { return false; }
     let authority, ok3 = bhttp_read_len_bytes(raw, idx);
-    guard ok3 && is_valid_bhttp_uri_part(authority) else { return false; }
     let path, ok4 = bhttp_read_len_bytes(raw, idx);
-    guard ok4 && path.len <= 2048 && is_valid_bhttp_uri_part(path) else {
+    guard ok2 && ok3 && ok4 && validate_bhttp_decoded_control(method, scheme, authority, path) else {
         return false;
     }
     out.method.append(method);
+    out.scheme.append(scheme);
+    out.authority.append(authority);
     out.target.append(path);
 
     if !bhttp_decode_tail(raw, idx, out.headers, out.body, out.body_len) {
-        out.method.clear();
-        out.target.clear();
-        out.headers.reset_for_keep_alive();
-        out.body.clear();
-        out.body_len = 0;
+        reset_bhttp_request(out);
         return false;
     }
     return true;
@@ -330,10 +419,14 @@ fn bhttp_encode_response(res: const BhttpResponse&, out: u8[..8192]&) -> i32 {
     guard res.status >= 200 && res.status <= 599 else { return -1; }
     guard res.body_len >= 0 && res.body_len <= res.body.len else { return -1; }
 
+    var committed = false;
+    defer if !committed { out.clear(); };
+
     out.push(rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE);
     guard internal::quic_encode_varint(out, res.status as u64) else { return -1; }
     let blen = res.body_len as i64;
     guard bhttp_encode_tail(res.headers, res.body[..blen], out) else { return -1; }
+    committed = true;
     return out.len as i32;
 }
 

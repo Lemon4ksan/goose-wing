@@ -3,7 +3,7 @@
 
 // Layer 7 Reverse Proxy Engine, Hop-by-Hop Header Stripping,
 // Forwarded/Via Chaining, Upstream Request Dispatcher,
-// Connection Leak Defense, and Backpressure Shield (RFC 9110 §7.6).
+// Connection Leak Defense, and Backpressure Shield.
 namespace wing;
 
 import std;
@@ -74,7 +74,7 @@ fn append_forwarded_for(out_headers: HeaderMap&, existing_xff: const u8[:], clie
 }
 
 // Identifies untrusted forwarding metadata headers to strip before re-injection.
-// RFC 9440 §2.4: incoming Client-Cert* fields MUST be removed or overwritten before forwarding.
+// RFC 9440 Section 2.4: Processing Rules - incoming Client-Cert fields MUST be removed before forwarding.
 inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
     if name.eq_ascii_fold("x-forwarded-for") { return true; }
     if name.eq_ascii_fold("x-forwarded-proto") { return true; }
@@ -87,6 +87,14 @@ inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
     if name.eq_ascii_fold("client-cert-chain") { return true; }
     if name.eq_ascii_fold("via") { return true; }
     return false;
+}
+
+inline fn is_standard_h2_request_pseudo(name: const u8[:]) -> bool {
+    return name == ":method" ||
+        name == ":scheme" ||
+        name == ":authority" ||
+        name == ":path" ||
+        name == ":protocol";
 }
 
 // Determines if an incoming header should be forwarded to upstream.
@@ -102,15 +110,17 @@ fn should_forward_header(
     if is_forwarded_metadata_header(name) {
         return false;
     }
-    // RFC 9112 Section 6.3: Transfer-Encoding overrides Content-Length.
-    // An intermediary MUST remove Content-Length before forwarding if Transfer-Encoding is present.
+    if name.eq_ascii_fold("max-forwards") {
+        return true;
+    }
+    // RFC 9112 Section 6.3: Message Body Length - remove Content-Length if Transfer-Encoding is present.
     if name.eq_ascii_fold("content-length") && has_header(in_headers, "transfer-encoding") {
         return false;
     }
     guard config.strip_hop_by_hop else { return true; }
 
     if is_hop_by_hop_header_name(name) {
-        // RFC 9110: TE may only be forwarded if the value is trailers
+        // RFC 9110 Section 7.6.1: Connection - TE may only be forwarded if the value is trailers.
         return name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers");
     }
 
@@ -121,7 +131,7 @@ fn should_forward_header(
     return true;
 }
 
-// Checks a single Content-Length entry against previously recorded value (RFC 9112 §6.3).
+// Checks a single Content-Length entry against previously recorded value.
 inline fn check_cl_match(val: const u8[:], first_found: bool&, target_val: i64&) -> bool {
     var parsed_cl: i64 = 0;
     guard validate_content_length_value(val, parsed_cl) else { return false; }
@@ -133,14 +143,23 @@ inline fn check_cl_match(val: const u8[:], first_found: bool&, target_val: i64&)
     return parsed_cl == target_val;
 }
 
-// RFC 9112 Section 6.3 & Section 6.1: Validates framing header integrity before forwarding.
-// Duplicate differing Content-Length headers, duplicate Transfer-Encoding headers, or
-// conflicting Content-Length + Transfer-Encoding headers are rejected (Smuggling Protection).
+inline fn append_canonical_content_length(out_headers: HeaderMap&, name: const u8[:], val: const u8[:]) -> bool {
+    var parsed_cl: i64 = 0;
+    guard validate_content_length_value(val, parsed_cl) else { return false; }
+    var cl_buf: u8[..24] = [];
+    parsed_cl.format_i64_dec(cl_buf);
+    return append_header(out_headers, name, cl_buf[..]);
+}
+
+// Validates framing header integrity before forwarding.
+// Duplicate differing Content-Length headers, duplicate or invalid Transfer-Encoding headers, or
+// conflicting Content-Length + Transfer-Encoding headers are rejected.
 fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
-    // RFC 9110 Section 7.6.1: Connection — A sender MUST NOT send a connection option corresponding
-    // to an end-to-end framing or routing field such as Content-Length or Host.
+    // RFC 9110 Section 7.6.1: Connection - MUST NOT send connection option for end-to-end framing or routing fields.
     guard !is_token_in_connection_header_map(in_headers, "content-length") else { return false; }
+    guard !is_token_in_connection_header_map(in_headers, "transfer-encoding") else { return false; }
     guard !is_token_in_connection_header_map(in_headers, "host") else { return false; }
+    guard !is_token_in_connection_header_map(in_headers, "max-forwards") else { return false; }
 
     var first_cl_found = false;
     var first_cl_val: i64 = 0;
@@ -149,23 +168,23 @@ fn has_consistent_framing_headers(in_headers: const HeaderMap&) -> bool {
     for i in in_headers.entries.len {
         let entry = in_headers.entries[i];
         let name = in_headers.raw_buf[entry.name_begin..entry.name_end];
+        let val = in_headers.raw_buf[entry.values_begin..entry.values_end];
 
         if name.eq_ascii_fold("content-length") {
-            let val = in_headers.raw_buf[entry.values_begin..entry.values_end];
             guard check_cl_match(val, first_cl_found, first_cl_val) else { return false; }
         }
         if name.eq_ascii_fold("transfer-encoding") {
-            guard !has_te else { return false; }
+            guard !has_te && validate_transfer_encoding_value(val) else { return false; }
             has_te = true;
         }
     }
-    // RFC 9112 Section 6.1: Reject TE/CL smuggling conflict before forwarding
+    // RFC 9112 Section 6.3: Message Body Length - reject messages with both Transfer-Encoding and Content-Length.
     guard !(first_cl_found && has_te) else { return false; }
     return true;
 }
 
 // Copies filtered client headers into proxy request header map.
-// Enforces RFC 9112 §6.3: deduplicates identical Content-Length headers into a single occurrence.
+// Deduplicates and canonicalizes Content-Length headers into a single decimal occurrence.
 fn copy_filtered_headers(
     in_headers:  const HeaderMap&,
     out_headers: HeaderMap&,
@@ -176,7 +195,16 @@ fn copy_filtered_headers(
         let name = in_headers.raw_buf[entry.name_begin..entry.name_end];
         let val = in_headers.raw_buf[entry.values_begin..entry.values_end];
 
-        if name.eq_ascii_fold("content-length") && has_header(out_headers, "content-length") {
+        if is_standard_h2_request_pseudo(name) {
+            continue;
+        }
+        // RFC 9113 Section 8.3: HTTP Control Data - reject non-standard or unstripped pseudo-headers.
+        guard is_valid_header_name(name) && is_valid_header_value(val) else { return false; }
+
+        if name.eq_ascii_fold("content-length") {
+            if !has_header(out_headers, "content-length") && should_forward_header(name, val, in_headers, config) {
+                guard append_canonical_content_length(out_headers, name, val) else { return false; }
+            }
             continue;
         }
 
@@ -205,7 +233,42 @@ fn format_via(buf: u8[..64]&, pseudonym: const u8[:], http_version: const u8[:])
     return true;
 }
 
-// Injects Via header (RFC 9110 §7.6.3).
+// Extracts the `received-by` pseudonym or host[:port] token from a single RFC 9110 Via hop.
+//
+// Example:
+//   hop = "1.1 wing-gw (Goose)"
+//   returns: "wing-gw"
+inline fn extract_via_received_by(hop: const u8[:]) -> const u8[:] {
+    let trimmed = hop.trim_lws();
+    var idx: i64 = 0;
+    while idx < trimmed.len && !core::is_lws(trimmed[idx]) {
+        idx = core::add_sat_i64(idx, 1);
+    }
+    let after_proto = trimmed[idx..].trim_lws_start();
+    var end_idx: i64 = 0;
+    while end_idx < after_proto.len && !core::is_lws(after_proto[end_idx]) {
+        end_idx = core::add_sat_i64(end_idx, 1);
+    }
+    return after_proto[..end_idx];
+}
+
+fn has_via_pseudonym_loop(combined_via: const u8[:], pseudonym: const u8[:]) -> bool {
+    guard combined_via.len > 0 && pseudonym.len > 0 else { return false; }
+    var tok = core::make_byte_tokenizer(combined_via, ',');
+    while true {
+        let hop, ok = core::token_next(tok);
+        if !ok {
+            break;
+        }
+        let received_by = extract_via_received_by(hop);
+        if received_by.len > 0 && received_by.eq_ascii_fold(pseudonym) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Injects Via header and rejects self-forwarding loops.
 fn inject_via_header(
     out_headers:  HeaderMap&,
     in_headers:   const HeaderMap&,
@@ -216,6 +279,8 @@ fn inject_via_header(
     let has_existing = has_header(in_headers, "Via");
     if has_existing {
         guard get_combined(in_headers, "Via", combined, 950) else { return false; }
+        // RFC 9110 Section 7.6.3: Via - detect forwarding loops when own pseudonym is already present.
+        guard !has_via_pseudonym_loop(combined[..], pseudonym) else { return false; }
     }
     guard pseudonym.len > 0 else {
         guard combined.len > 0 else { return true; }
@@ -245,7 +310,17 @@ fn append_forwarded_metadata_xff(
     return append_forwarded_for(out_headers, combined_buf[..], client_ip);
 }
 
-// Injects standard proxy forwarding headers (RFC 7239 / de facto).
+inline fn populate_forwarded_for_node(elem: ForwardedElement&, client_ip: const u8[:]) -> bool {
+    // RFC 7239 Section 6: Node Identifiers - IPv6 addresses MUST be enclosed in square brackets.
+    if client_ip.contains_byte(':') && !starts_with(client_ip, "[") {
+        return elem.for_node.try_set("[") &&
+            elem.for_node.try_append(client_ip) &&
+            elem.for_node.try_push(']');
+    }
+    return elem.for_node.try_set(client_ip);
+}
+
+// Injects standard proxy forwarding headers.
 fn inject_forwarded_metadata(
     out_headers: HeaderMap&,
     in_headers:  const HeaderMap&,
@@ -272,10 +347,10 @@ fn inject_forwarded_metadata(
     }
     if config.emit_rfc7239_forwarded {
         var elem = ForwardedElement { .. };
-        elem.by.try_set(config.via_pseudonym[..]);
-        elem.for_node.try_set(client_ip);
-        elem.host.try_set(orig_host);
-        elem.proto.try_set(proto);
+        guard elem.by.try_set(config.via_pseudonym[..]) else { return false; }
+        guard populate_forwarded_for_node(elem, client_ip) else { return false; }
+        guard elem.host.try_set(orig_host) else { return false; }
+        guard elem.proto.try_set(proto) else { return false; }
         guard append_forwarded_header(out_headers, elem) else { return false; }
     }
     return true;
@@ -461,7 +536,7 @@ fn format_upstream_authority(host: const u8[:], port: u16, preserve_host: bool, 
     return true;
 }
 
-// Validates that forwarded Content-Length matches body.len or injects Content-Length when needed (RFC 9112 §6.2).
+// Validates that forwarded Content-Length matches body.len or injects Content-Length when needed.
 // Emits `Content-Length: 0` on empty `POST`, `PUT`, or `PATCH` requests lacking Transfer-Encoding.
 fn ensure_forwarded_body_framing(
     forward_headers: HeaderMap&,
@@ -469,6 +544,8 @@ fn ensure_forwarded_body_framing(
     method:          const u8[:] = "",
 ) -> bool {
     let has_cl = has_header(forward_headers, "content-length");
+    let has_te = has_header(forward_headers, "transfer-encoding");
+    guard !(has_cl && has_te) else { return false; }
     if has_cl {
         var parsed_cl: i64 = 0;
         guard validate_content_length_value(get_header(forward_headers, "content-length"), parsed_cl) else {
@@ -476,7 +553,6 @@ fn ensure_forwarded_body_framing(
         }
         return parsed_cl == body.len;
     }
-    let has_te = has_header(forward_headers, "transfer-encoding");
     if body.len == 0 && !has_cl && !has_te {
         if method == "POST" || method == "PUT" || method == "PATCH" {
             return append_header(forward_headers, "Content-Length", "0");
@@ -487,6 +563,37 @@ fn ensure_forwarded_body_framing(
     var cl_buf: u8[..32] = [];
     body.len.format_i64_dec(cl_buf);
     return append_header(forward_headers, "Content-Length", cl_buf[..]);
+}
+
+// Enforces RFC 9110 Section 7.6.2 Max-Forwards hop decrement and zero-hop halt on TRACE and OPTIONS.
+fn apply_max_forwards_policy(method: const u8[:], forward_headers: HeaderMap&) -> bool {
+    guard method.eq_ascii_fold("TRACE") || method.eq_ascii_fold("OPTIONS") else {
+        return true;
+    }
+    var found = false;
+    var hops: u64 = 0;
+    for &entry in forward_headers.entries {
+        let name = entry_name(forward_headers, entry);
+        if !name.eq_ascii_fold("max-forwards") {
+            continue;
+        }
+        let val = entry_value(forward_headers, entry).trim_lws();
+        let parsed, ok = val.parse_u64_dec();
+        guard ok else { return false; }
+        if !found {
+            hops = parsed;
+            found = true;
+        } else {
+            guard parsed == hops else { return false; }
+        }
+    }
+    guard found else { return true; }
+    // RFC 9110 Section 7.6.2: Max-Forwards - MUST NOT forward the request when Max-Forwards is zero.
+    guard hops > 0 else { return false; }
+    var mf_buf: u8[..24] = [];
+    let next_hops = core::sub_sat_u64(hops, 1);
+    next_hops.format_u64_dec(mf_buf);
+    return set_or_replace(forward_headers, "Max-Forwards", mf_buf[..]);
 }
 
 // Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
@@ -540,6 +647,7 @@ fn prepare_proxy_request_at<B>(
     let target = proxy.cluster.targets[target_idx];
     let ok_prep = format_upstream_authority(target.host[..], target.port, proxy.config.preserve_host, host_buf)
         && filter_and_forward_headers(in_headers, forward_headers, client_ip, proto, host_buf[..], proxy.config)
+        && apply_max_forwards_policy(method, forward_headers)
         && ensure_forwarded_body_framing(forward_headers, body, method)
         && serialize_upstream_request(method, uri, forward_headers, body, out_wire, proxy.config.http_version[..]);
     guard ok_prep else {
@@ -752,7 +860,7 @@ fn exchange_prepared_wire_on_conn_with_hints(
     guard send_all(conn.transport, wire_req) else { return false, false; }
 
     var dummy_req = new_request(method, "/");
-    // RFC 9110 Section 15.2: Informational 1xx — Cap consecutive 1xx interim responses to 5.
+    // RFC 9110 Section 15.2: Informational 1xx - cap consecutive 1xx interim responses to 5.
     for interim_step in 6 {
         guard interim_step < 5 else { return false, false; }
         let leftover_start, ok_hdr = read_and_parse_upstream_headers(conn, out_resp, timeout_ms);
@@ -780,12 +888,12 @@ fn exchange_prepared_wire_on_conn_with_hints(
 // ---- Upstream `X-Accel-*` Control Headers, `Location` Rewriting & `103` Capture ----
 
 struct UpstreamAccelControl {
-    disable_buffering:     bool      = false,
-    incremental_preferred: bool      = false,
-    has_accel_expires:     bool      = false,
-    accel_expires_sec:     i64       = 0,
-    limit_rate_bps:        u64       = 0,
-    accel_redirect:        u8[..256] = [],
+    disable_buffering:     bool       = false,
+    incremental_preferred: bool       = false,
+    has_accel_expires:     bool       = false,
+    accel_expires_sec:     i64        = 0,
+    limit_rate_bps:        u64        = 0,
+    accel_redirect:        u8[..1024] = [],
 }
 
 struct UpstreamResponse {
@@ -793,6 +901,13 @@ struct UpstreamResponse {
     has_early_hints: bool                 = false,
     accel:           UpstreamAccelControl = UpstreamAccelControl { .. },
     resp:            Response             = Response { .. },
+}
+
+inline fn is_valid_accel_redirect_target(target: const u8[:]) -> bool {
+    guard target.len > 0 && target[0] == '/' && !starts_with(target, "//") else {
+        return false;
+    }
+    return wire::is_valid_h1_request_target(target);
 }
 
 // Parses `X-Accel-*` control header values into `accel` (Nginx `ngx_http_upstream_headers_in` parity).
@@ -832,33 +947,124 @@ fn parse_x_accel_control_header(name: const u8[:], val: const u8[:], accel: Upst
         return true;
     }
     if name.eq_ascii_fold("x-accel-redirect") {
-        let _ = accel.accel_redirect.try_set(trimmed);
-        return true;
+        guard accel.accel_redirect.len == 0 && is_valid_accel_redirect_target(trimmed) else {
+            return false;
+        }
+        return accel.accel_redirect.try_set(trimmed);
     }
     return name.starts_with_fold("x-accel-");
 }
 
-// Rewrites an upstream `Location` header if it starts with `backend_url_prefix`.
-fn rewrite_upstream_location_header(
-    loc_val:            const u8[:],
+inline fn matches_backend_url_prefix(url_val: const u8[:], backend_url_prefix: const u8[:]) -> bool {
+    guard backend_url_prefix.len > 0 && url_val.len >= backend_url_prefix.len else {
+        return false;
+    }
+    let scheme_idx = core::find(backend_url_prefix, "://");
+    if scheme_idx >= 0 {
+        let auth_start = core::add_sat_i64(scheme_idx, 3);
+        guard backend_url_prefix.len > auth_start else { return false; }
+        let slash_rel = backend_url_prefix[auth_start..].index_of_byte('/');
+        if slash_rel >= 0 {
+            let origin_len = core::add_sat_i64(auth_start, slash_rel);
+            let origin_ok = url_val[..origin_len].eq_ascii_fold(backend_url_prefix[..origin_len]);
+            let path_ok = starts_with(url_val[origin_len..], backend_url_prefix[origin_len..]);
+            guard origin_ok && path_ok else { return false; }
+        } else {
+            guard url_val[..backend_url_prefix.len].eq_ascii_fold(backend_url_prefix) else {
+                return false;
+            }
+        }
+    } else {
+        guard starts_with(url_val, backend_url_prefix) else { return false; }
+    }
+
+    if ends_with(backend_url_prefix, "/") {
+        return true;
+    }
+    let rem = url_val[backend_url_prefix.len..];
+    return rem.len == 0 || rem[0] == '/' || rem[0] == '?' || rem[0] == '#';
+}
+
+fn try_rewrite_upstream_url<B>(
+    url_val:            const u8[:],
     backend_url_prefix: const u8[:],
     public_url_prefix:  const u8[:],
-    out_location_buf:   u8[..512]&,
-) -> const u8[:] {
-    guard backend_url_prefix.len > 0 && starts_with(loc_val, backend_url_prefix) else {
-        return loc_val;
+    out_buf:            B&,
+) -> const u8[:], bool {
+    guard matches_backend_url_prefix(url_val, backend_url_prefix) else {
+        return url_val, true;
     }
-    let suffix = loc_val[backend_url_prefix.len..];
+    let suffix = url_val[backend_url_prefix.len..];
+    guard !(public_url_prefix.len == 0 && starts_with(suffix, "//")) else {
+        return "", false;
+    }
     var committed = false;
-    defer if !committed { out_location_buf.clear(); };
-    guard out_location_buf.try_set(public_url_prefix) else { return loc_val; }
-    guard out_location_buf.try_append(suffix) else { return loc_val; }
+    defer if !committed { out_buf.clear(); };
+    guard out_buf.try_set(public_url_prefix) else { return "", false; }
+    guard out_buf.try_append(suffix) else { return "", false; }
     committed = true;
-    return out_location_buf[..];
+    return out_buf[..], true;
+}
+
+inline fn filter_single_upstream_response_header(
+    in_headers:          const HeaderMap&,
+    entry_idx:           i64,
+    backend_url_prefix:  const u8[:],
+    public_url_prefix:   const u8[:],
+    out_headers:         HeaderMap&,
+    out_location_buf:    u8[..512]&,
+    accel:               UpstreamAccelControl&,
+    first_loc_entry_idx: i64&,
+) -> bool {
+    let entry = in_headers.entries[entry_idx];
+    let name = entry_name(in_headers, entry);
+    let val = entry_value(in_headers, entry);
+    if name == ":status" {
+        return true;
+    }
+    // RFC 9110 Section 5.1: Field Names - reject malformed or unstripped pseudo-headers in responses.
+    guard is_valid_header_name(name) && is_valid_header_value(val) else { return false; }
+
+    if name.starts_with_fold("x-accel-") {
+        return parse_x_accel_control_header(name, val, accel);
+    }
+    if is_hop_by_hop_header_name(name) || is_token_in_connection_header_map(in_headers, name) {
+        return true;
+    }
+    if name.eq_ascii_fold("content-length") {
+        if !has_header(out_headers, "content-length") {
+            return append_canonical_content_length(out_headers, name, val);
+        }
+        return true;
+    }
+    if name.eq_ascii_fold("location") {
+        // RFC 9110 Section 10.2.2: Location - reject conflicting duplicate Location header fields.
+        let clean_loc = val.trim_lws();
+        if first_loc_entry_idx >= 0 {
+            let prev_loc = entry_value(in_headers, in_headers.entries[first_loc_entry_idx]).trim_lws();
+            return clean_loc == prev_loc;
+        }
+        first_loc_entry_idx = entry_idx;
+        let rewritten, ok_loc = try_rewrite_upstream_url(
+            clean_loc, backend_url_prefix, public_url_prefix, out_location_buf,
+        );
+        guard ok_loc else { return false; }
+        return append_header(out_headers, name, rewritten);
+    }
+    if name.eq_ascii_fold("content-location") {
+        // RFC 9110 Section 8.7: Content-Location - rewrite matching internal backend origin prefix.
+        var cloc_buf: u8[..512] = [];
+        let rewritten_cloc, ok_cloc = try_rewrite_upstream_url(
+            val.trim_lws(), backend_url_prefix, public_url_prefix, cloc_buf,
+        );
+        guard ok_cloc else { return false; }
+        return append_header(out_headers, name, rewritten_cloc);
+    }
+    return append_header(out_headers, name, val);
 }
 
 // Parses `X-Accel-*` control headers, strips hop-by-hop and `X-Accel-*` headers,
-// and rewrites `Location` prefixes matching `backend_url_prefix` to `public_url_prefix`.
+// and rewrites `Location` and `Content-Location` prefixes matching `backend_url_prefix`.
 fn process_and_filter_upstream_response_headers(
     in_headers:         const HeaderMap&,
     backend_url_prefix: const u8[:],
@@ -868,7 +1074,9 @@ fn process_and_filter_upstream_response_headers(
     accel:              UpstreamAccelControl&,
 ) -> bool {
     out_headers.clear();
+    out_location_buf.clear();
     accel = UpstreamAccelControl { .. };
+    guard has_consistent_framing_headers(in_headers) else { return false; }
     var committed = false;
     defer if !committed {
         out_headers.clear();
@@ -879,23 +1087,20 @@ fn process_and_filter_upstream_response_headers(
         accel.incremental_preferred = true;
         accel.disable_buffering = true;
     }
-    for &entry in in_headers.entries {
-        let name = entry_name(in_headers, entry);
-        let val = entry_value(in_headers, entry);
-        if parse_x_accel_control_header(name, val, accel) {
-            continue;
+    var first_loc_entry_idx: i64 = -1;
+    for entry_idx in in_headers.entries.len {
+        guard filter_single_upstream_response_header(
+            in_headers,
+            entry_idx,
+            backend_url_prefix,
+            public_url_prefix,
+            out_headers,
+            out_location_buf,
+            accel,
+            first_loc_entry_idx,
+        ) else {
+            return false;
         }
-        if is_hop_by_hop_header_name(name) || is_token_in_connection_header_map(in_headers, name) {
-            continue;
-        }
-        if name.eq_ascii_fold("location") {
-            let rewritten = rewrite_upstream_location_header(
-                val, backend_url_prefix, public_url_prefix, out_location_buf,
-            );
-            guard append_header(out_headers, name, rewritten) else { return false; }
-            continue;
-        }
-        guard append_header(out_headers, name, val) else { return false; }
     }
     committed = true;
     return true;
@@ -958,12 +1163,24 @@ fn execute_proxy_exchange(
     let ok_ex, keep_alive = exchange_prepared_wire_on_conn(
         pool.conns[c_idx], method, wire_req[..], out_resp, timeout_ms,
     );
-    if ok_ex && keep_alive && pool.conns[c_idx].rx_buf.len == 0 {
+    var headers_valid = ok_ex;
+    if ok_ex {
+        var filtered_hdrs = HeaderMap { .. };
+        var loc_buf: u8[..512] = [];
+        var accel = UpstreamAccelControl { .. };
+        headers_valid = process_and_filter_upstream_response_headers(
+            out_resp.headers, "", "", filtered_hdrs, loc_buf, accel,
+        );
+        if headers_valid {
+            out_resp.headers = filtered_hdrs;
+        }
+    }
+    if headers_valid && keep_alive && pool.conns[c_idx].rx_buf.len == 0 {
         pool.release_connection(conn_id, now_i64);
     } else {
         pool.close_pooled_connection(conn_id);
     }
-    if ok_ex {
+    if headers_valid {
         var ps_entry = ProxyStatusEntry {
             received_status: out_resp.status_code,
             ..
@@ -974,8 +1191,9 @@ fn execute_proxy_exchange(
         format_proxy_status(ps_entry, ps_buf);
         out_resp.set_header("Proxy-Status", ps_buf[..]);
     }
-    complete_upstream_exchange(proxy, target_idx, out_resp.status_code, ok_ex);
-    return ok_ex;
+    let recorded_status = if headers_valid { out_resp.status_code } else { 0 };
+    complete_upstream_exchange(proxy, target_idx, recorded_status, headers_valid);
+    return headers_valid;
 }
 
 // ---- Resilient Upstream Proxy Service Layer (`wire/service.goose` Integration) ----

@@ -104,9 +104,15 @@ fn apply_request_digest_headers(
     include_repr:    bool,
     want_algorithms: const u8[:] = "sha-256=10",
 ) -> bool {
-    guard set_content_digest(req, alg) else { return false; }
+    var cd_val: u8[..128] = [];
+    guard format_digest_field_value(alg, req.body[..], cd_val) else { return false; }
+    var rd_val: u8[..128] = [];
     if include_repr {
-        guard set_repr_digest(req, alg) else { return false; }
+        guard format_digest_field_value(alg, req.body[..], rd_val) else { return false; }
+    }
+    set_header(req, rfc::HEADER_CONTENT_DIGEST, cd_val[..]);
+    if include_repr {
+        set_header(req, rfc::HEADER_REPR_DIGEST, rd_val[..]);
     }
     if want_algorithms.len > 0 {
         set_want_content_digest(req, want_algorithms);
@@ -157,38 +163,53 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
 
 // Verifies Request Content-Digest header against req.body.
 fn verify_request_content_digest(req: const Request&) -> bool {
-    var combined: u8[..512] = [];
-    let ok = req.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined);
-    let hdr = if ok { combined[..] } else { req.header(rfc::HEADER_CONTENT_DIGEST) };
-    guard hdr.len > 0 else { return false; }
-    return verify_digest_field(hdr, req.body[..]);
+    var combined: u8[..4096] = [];
+    guard req.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined, 4096) else { return false; }
+    return verify_digest_field(combined[..], req.body[..]);
 }
 
 // Verifies Request Repr-Digest header against req.body.
 fn verify_request_repr_digest(req: const Request&) -> bool {
-    var combined: u8[..512] = [];
-    let ok = req.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined);
-    let hdr = if ok { combined[..] } else { req.header(rfc::HEADER_REPR_DIGEST) };
-    guard hdr.len > 0 else { return false; }
-    return verify_digest_field(hdr, req.body[..]);
+    var combined: u8[..4096] = [];
+    guard req.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined, 4096) else { return false; }
+    return verify_digest_field(combined[..], req.body[..]);
 }
 
 // Verifies Response Content-Digest header against res.body.
 fn verify_response_content_digest(res: const Response&) -> bool {
-    var combined: u8[..512] = [];
-    let ok = res.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined);
-    let hdr = if ok { combined[..] } else { res.header(rfc::HEADER_CONTENT_DIGEST) };
-    guard hdr.len > 0 else { return false; }
-    return verify_digest_field(hdr, res.body[..]);
+    var combined: u8[..4096] = [];
+    guard res.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined, 4096) else { return false; }
+    return verify_digest_field(combined[..], res.body[..]);
 }
 
 // Verifies Response Repr-Digest header against res.body.
 fn verify_response_repr_digest(res: const Response&) -> bool {
-    var combined: u8[..512] = [];
-    let ok = res.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined);
-    let hdr = if ok { combined[..] } else { res.header(rfc::HEADER_REPR_DIGEST) };
-    guard hdr.len > 0 else { return false; }
-    return verify_digest_field(hdr, res.body[..]);
+    var combined: u8[..4096] = [];
+    guard res.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined, 4096) else { return false; }
+    return verify_digest_field(combined[..], res.body[..]);
+}
+
+// RFC 9530 Section 4: Integrity Preference Fields - Parse Want-*-Digest SF Dictionary weights (0..10).
+fn accumulate_want_digest_weights(
+    raw:   const u8[:],
+    w_256: i64&,
+    w_512: i64&,
+) -> bool {
+    guard raw.len > 0 else { return true; }
+    var entries: SfDictEntry[..16] = [];
+    guard parse_sf_dict(raw, entries) else { return false; }
+    for &e in entries {
+        guard !e.is_inner_list && e.item.kind == SfType.Integer &&
+              e.item.int_val >= 0 && e.item.int_val <= 10 else {
+            return false;
+        }
+        if e.key.eq_ascii_fold(rfc::DIGEST_ALG_SHA256) {
+            w_256 = e.item.int_val;
+        } else if e.key.eq_ascii_fold(rfc::DIGEST_ALG_SHA512) {
+            w_512 = e.item.int_val;
+        }
+    }
+    return true;
 }
 
 // Verifies request Repr-Digest if present and attaches Response Content-Digest when requested via Want-*-Digest.
@@ -197,20 +218,45 @@ fn apply_response_digest_if_wanted(
     res:         Response&,
     default_alg: const u8[:],
 ) -> bool {
-    if req.header(rfc::HEADER_REPR_DIGEST).len > 0 {
+    if req.has_header(rfc::HEADER_REPR_DIGEST) {
         guard verify_request_repr_digest(req) else { return false; }
     }
-    let want_cd = req.header(rfc::HEADER_WANT_CONTENT_DIGEST);
-    let want_rd = req.header(rfc::HEADER_WANT_REPR_DIGEST);
-    if want_cd.len == 0 && want_rd.len == 0 {
+    let has_wcd = req.has_header(rfc::HEADER_WANT_CONTENT_DIGEST);
+    let has_wrd = req.has_header(rfc::HEADER_WANT_REPR_DIGEST);
+    if !has_wcd && !has_wrd {
         return true;
     }
-    let alg = if want_cd.contains_fold(rfc::DIGEST_ALG_SHA512) || want_rd.contains_fold(rfc::DIGEST_ALG_SHA512) {
-        rfc::DIGEST_ALG_SHA512
-    } else {
-        default_alg
-    };
-    return set_response_content_digest(res, alg);
+
+    var w_256: i64 = -1;
+    var w_512: i64 = -1;
+    if has_wcd {
+        var comb_cd: u8[..1024] = [];
+        guard req.headers.get_combined(rfc::HEADER_WANT_CONTENT_DIGEST, comb_cd, 1024) &&
+              accumulate_want_digest_weights(comb_cd[..], w_256, w_512) else {
+            return true;
+        }
+    }
+    if has_wrd {
+        var comb_rd: u8[..1024] = [];
+        guard req.headers.get_combined(rfc::HEADER_WANT_REPR_DIGEST, comb_rd, 1024) &&
+              accumulate_want_digest_weights(comb_rd[..], w_256, w_512) else {
+            return true;
+        }
+    }
+
+    if w_512 == 0 && w_256 == 0 {
+        return true;
+    }
+    if w_512 > 0 && w_512 >= w_256 {
+        return set_response_content_digest(res, rfc::DIGEST_ALG_SHA512);
+    }
+    if w_256 > 0 {
+        return set_response_content_digest(res, rfc::DIGEST_ALG_SHA256);
+    }
+    if w_256 == 0 || w_512 == 0 {
+        return true;
+    }
+    return set_response_content_digest(res, default_alg);
 }
 
 fn apply_response_digest_if_wanted(req: const Request&, res: Response&) -> bool {
@@ -305,15 +351,17 @@ fn finish_streaming_digest(v: StreamingDigestVerifier&) -> bool {
 
 // Initializes an incremental RFC 9530 streaming digest verifier from a Request's Content-Digest or Repr-Digest header.
 fn begin_request_streaming_digest(req: const Request&) -> StreamingDigestVerifier, bool {
-    var combined: u8[..512] = [];
-    let ok_cd = req.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined);
-    let cd_hdr = if ok_cd { combined[..] } else { req.header(rfc::HEADER_CONTENT_DIGEST) };
-    if cd_hdr.len > 0 {
-        return begin_streaming_digest(cd_hdr);
+    var combined: u8[..4096] = [];
+    if req.has_header(rfc::HEADER_CONTENT_DIGEST) {
+        guard req.headers.get_combined(rfc::HEADER_CONTENT_DIGEST, combined, 4096) else {
+            return StreamingDigestVerifier { .. }, false;
+        }
+        return begin_streaming_digest(combined[..]);
     }
-    let ok_rd = req.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined);
-    let rd_hdr = if ok_rd { combined[..] } else { req.header(rfc::HEADER_REPR_DIGEST) };
-    return begin_streaming_digest(rd_hdr);
+    guard req.headers.get_combined(rfc::HEADER_REPR_DIGEST, combined, 4096) else {
+        return StreamingDigestVerifier { .. }, false;
+    }
+    return begin_streaming_digest(combined[..]);
 }
 
 // ---- Push-Streaming Sinks & Monomorphized Decorators ---------------------

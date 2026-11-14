@@ -454,7 +454,7 @@ fn test_curl_expect_100_continue(t: lit::T&) {
     };
 
     t.run("curl test357: unsupported Expect token rejected with 417 Expectation Failed") { sub =>
-        let quota = wing::new_gcra_quota(100, core::secs(1), 10);
+        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
 
@@ -722,23 +722,23 @@ fn test_curl_premature_close_truncated_body(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // 11. Chunked Trailing Headers (curl test 188, 1090)
 // Vectors:
-//   - Chunked response followed by trailers (Expires, X-Checksum, Server-Timing)
+//   - Chunked response followed by trailers (ETag, X-Checksum, Server-Timing)
 //   - Multiple trailers extracted and case-insensitively accessible
 //   - ChunkedStreamDecoder incremental processing with trailers
-//   - Prohibited trailer smuggling defenses per RFC 9112 Section 7.1.2
+//   - Prohibited trailer smuggling defenses per RFC 9110 Section 6.5.1 & RFC 9112 Section 7.1.2
 // ----------------------------------------------------------------------------
 fn test_curl_chunked_trailing_headers(t: lit::T&) {
     t.run("curl test 188, 1090: chunked response followed by trailers parsed and accessible") { sub =>
-        // Vector 1: Full wire response with chunked body and multiple trailers
-        let wire = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n6\r\n World\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nX-Checksum: sha256-abc123xyz\r\nServer-Timing: total;dur=42.5\r\n\r\n";
+        // Vector 1: Full wire response with chunked body and multiple RFC-permitted trailers
+        let wire = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n6\r\n World\r\n0\r\nETag: \"v1-abc\"\r\nX-Checksum: sha256-abc123xyz\r\nServer-Timing: total;dur=42.5\r\n\r\n";
         var res = wing::Response { .. };
         let ok_wire, cons_wire = wing::parse_http1_wire_response(wire, res);
         sub.assert_true(ok_wire, "parse_http1_wire_response succeeds with trailers");
         sub.assert_eq(cons_wire, wire.len, "all wire bytes consumed");
         sub.assert_bytes_eq(res.body[..], "Hello World", "reassembled chunked body matches");
 
-        sub.assert_true(wing::has_trailer(res, "Expires"), "has Expires trailer");
-        sub.assert_bytes_eq(wing::trailer(res, "Expires"), "Wed, 21 Oct 2026 07:28:00 GMT", "Expires trailer value matches");
+        sub.assert_true(wing::has_trailer(res, "ETag"), "has ETag trailer");
+        sub.assert_bytes_eq(wing::trailer(res, "ETag"), "\"v1-abc\"", "ETag trailer value matches");
         sub.assert_true(wing::has_trailer(res, "X-Checksum"), "has X-Checksum trailer");
         sub.assert_bytes_eq(wing::trailer(res, "X-Checksum"), "sha256-abc123xyz", "X-Checksum trailer value matches");
         sub.assert_true(wing::has_trailer(res, "Server-Timing"), "has Server-Timing trailer");
@@ -747,7 +747,7 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
         sub.assert_bytes_eq(wing::trailer(res, "Non-Existent"), "", "absent trailer returns empty slice");
 
         // Vector 2: Direct chunked body decoding with trailers
-        let chunk_wire = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\n\r\n";
+        let chunk_wire = "5\r\nHello\r\n0\r\nX-Checksum: sha256-abc123xyz\r\n\r\n";
         var body_raw: u8[>..] = [];
         var trailers_raw = wing::HeaderMap { .. };
         let err_raw, cons_raw = wing::decode_chunked_body_with_trailers(chunk_wire, body_raw, trailers_raw);
@@ -755,11 +755,11 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
         sub.assert_eq(cons_raw, chunk_wire.len, "exact bytes consumed");
         sub.assert_bytes_eq(body_raw[..], "Hello", "payload matches");
         sub.assert_eq(trailers_raw.entries.len, 1, "exactly 1 trailer extracted");
-        sub.assert_bytes_eq(wing::entry_name(trailers_raw, trailers_raw.entries[0]), "Expires", "trailer name is Expires");
-        sub.assert_bytes_eq(wing::entry_value(trailers_raw, trailers_raw.entries[0]), "Wed, 21 Oct 2026 07:28:00 GMT", "trailer value matches");
+        sub.assert_bytes_eq(wing::entry_name(trailers_raw, trailers_raw.entries[0]), "X-Checksum", "trailer name is X-Checksum");
+        sub.assert_bytes_eq(wing::entry_value(trailers_raw, trailers_raw.entries[0]), "sha256-abc123xyz", "trailer value matches");
 
         // Vector 3: Case-insensitive trailer lookup and multiple fields
-        let multi_tr = "4\r\ntest\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\nETag: \"abc-123\"\r\nVary: Accept-Encoding\r\n\r\n";
+        let multi_tr = "4\r\ntest\r\n0\r\nX-Request-Id: req-42\r\nETag: \"abc-123\"\r\nServer-Timing: db;dur=12.3\r\n\r\n";
         var body_m: u8[>..] = [];
         var tr_m = wing::HeaderMap { .. };
         let err_m, _ = wing::decode_chunked_body_with_trailers(multi_tr, body_m, tr_m);
@@ -768,16 +768,16 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
 
         var res_m = wing::Response { .. };
         wing::append_all_headers(tr_m, res_m.trailers);
-        sub.assert_true(wing::has_trailer(res_m, "expires"), "case-insensitive 'expires' found");
-        sub.assert_bytes_eq(wing::trailer(res_m, "EXPIRES"), "Wed, 21 Oct 2026 07:28:00 GMT", "case-insensitive 'EXPIRES' lookup matches");
+        sub.assert_true(wing::has_trailer(res_m, "x-request-id"), "case-insensitive 'x-request-id' found");
+        sub.assert_bytes_eq(wing::trailer(res_m, "X-REQUEST-ID"), "req-42", "case-insensitive 'X-REQUEST-ID' lookup matches");
         sub.assert_true(wing::has_trailer(res_m, "etag"), "etag found");
         sub.assert_bytes_eq(wing::trailer(res_m, "etag"), "\"abc-123\"", "etag value matches");
-        sub.assert_true(wing::has_trailer(res_m, "vary"), "vary found");
-        sub.assert_bytes_eq(wing::trailer(res_m, "VARY"), "Accept-Encoding", "vary value matches");
+        sub.assert_true(wing::has_trailer(res_m, "server-timing"), "server-timing found");
+        sub.assert_bytes_eq(wing::trailer(res_m, "SERVER-TIMING"), "db;dur=12.3", "server-timing value matches");
     };
 
     t.run("curl test 188, 1090: ChunkedStreamDecoder incremental processing with trailers") { sub =>
-        let chunk_data = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\n\r\n";
+        let chunk_data = "5\r\nHello\r\n0\r\nServer-Timing: total;dur=42.5\r\n\r\n";
         var dec = wing::ChunkedStreamDecoder { .. };
         var body: u8[..64] = [];
         let ok, cons = wing::feed_chunked_stream(dec, chunk_data, body);
@@ -786,13 +786,13 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
         sub.assert_eq(cons, chunk_data.len, "all stream bytes consumed");
         sub.assert_bytes_eq(body[..], "Hello", "body payload extracted");
         sub.assert_eq(dec.trailers.entries.len, 1, "exactly 1 trailer captured");
-        sub.assert_bytes_eq(wing::entry_name(dec.trailers, dec.trailers.entries[0]), "Expires", "decoder trailer name");
-        sub.assert_bytes_eq(wing::entry_value(dec.trailers, dec.trailers.entries[0]), "Wed, 21 Oct 2026 07:28:00 GMT", "decoder trailer value");
+        sub.assert_bytes_eq(wing::entry_name(dec.trailers, dec.trailers.entries[0]), "Server-Timing", "decoder trailer name");
+        sub.assert_bytes_eq(wing::entry_value(dec.trailers, dec.trailers.entries[0]), "total;dur=42.5", "decoder trailer value");
 
         var resp_copy = wing::Response { .. };
         wing::append_all_headers(dec.trailers, resp_copy.trailers);
-        sub.assert_true(wing::has_trailer(resp_copy, "Expires"), "Response has copied trailer");
-        sub.assert_bytes_eq(wing::trailer(resp_copy, "Expires"), "Wed, 21 Oct 2026 07:28:00 GMT", "copied trailer value matches");
+        sub.assert_true(wing::has_trailer(resp_copy, "Server-Timing"), "Response has copied trailer");
+        sub.assert_bytes_eq(wing::trailer(resp_copy, "Server-Timing"), "total;dur=42.5", "copied trailer value matches");
     };
 
     t.run("curl test 188, 1090: Disallowed trailer security defenses per RFC 9112 Section 7.1.2") { sub =>
@@ -813,6 +813,15 @@ fn test_curl_chunked_trailing_headers(t: lit::T&) {
         let host_wire = "4\r\nwiki\r\n0\r\nHost: evil.com\r\n\r\n";
         let e_host, _ = wing::decode_chunked_body_with_trailers(host_wire, body_p, trailers_p);
         sub.assert_eq(e_host, wing::ChunkedDecodeError.DisallowedTrailer, "Host trailer rejected");
+
+        // Expires and Vary in trailer (prohibited response control / caching trailers per RFC 9110 §6.5.1)
+        let exp_wire = "4\r\nwiki\r\n0\r\nExpires: Wed, 21 Oct 2026 07:28:00 GMT\r\n\r\n";
+        let e_exp, _ = wing::decode_chunked_body_with_trailers(exp_wire, body_p, trailers_p);
+        sub.assert_eq(e_exp, wing::ChunkedDecodeError.DisallowedTrailer, "Expires trailer rejected per RFC 9110 §6.5.1");
+
+        let vary_wire = "4\r\nwiki\r\n0\r\nVary: Accept-Encoding\r\n\r\n";
+        let e_vary, _ = wing::decode_chunked_body_with_trailers(vary_wire, body_p, trailers_p);
+        sub.assert_eq(e_vary, wing::ChunkedDecodeError.DisallowedTrailer, "Vary trailer rejected per RFC 9110 §6.5.1");
 
         // Set-Cookie in trailer
         let cookie_wire = "4\r\nwiki\r\n0\r\nSet-Cookie: session=hijack\r\n\r\n";

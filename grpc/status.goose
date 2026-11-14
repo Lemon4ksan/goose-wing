@@ -131,7 +131,10 @@ fn grpc_div_u64(n: u64, d: u64) -> u64 {
 
 // Formats millisecond duration into standard gRPC timeout string (max 8 digits per gRPC spec).
 fn encode_grpc_timeout<B>(timeout_ms: u64, out: B&) {
-    guard timeout_ms > 0 else { return; }
+    if timeout_ms == 0 {
+        let _ = out.try_append("0m");
+        return;
+    }
 
     var tmp: u8[..16] = [];
     let max_val: u64 = 99999999;
@@ -369,6 +372,15 @@ fn build_grpc_status_details(code: i32, msg: const u8[:], dst: u8[:]) -> i32, bo
     return pos as i32, true;
 }
 
+inline fn clamp_utf8_prefix_len(s: const u8[:], max_bytes: i64) -> i64 {
+    if s.len <= max_bytes { return s.len; }
+    var cut = max(max_bytes, 0);
+    while cut > 0 && (s[cut] & 0xC0) == 0x80 {
+        cut = core::sub_sat_i64(cut, 1);
+    }
+    return cut;
+}
+
 // Decodes a single `google.protobuf.Any` submessage (`field 1 = type_url`, `field 2 = value`).
 //
 // Example:
@@ -382,15 +394,33 @@ fn decode_grpc_any_detail(wire: const u8[:], out_detail: GrpcErrorDetail&) -> bo
         out_detail.type_url.clear();
         out_detail.value.clear();
     };
-    let type_slice, ok_type = pb_read_bytes_field(wire, 1);
-    if ok_type {
-        guard out_detail.type_url.try_set(type_slice) else { return false; }
+    var pos:       i64  = 0;
+    var has_field: bool = false;
+    while pos < wire.len {
+        let tag, ok_tag = pb_read_varint(wire, pos);
+        let raw_fnum = tag >> 3;
+        guard ok_tag && raw_fnum >= 1 && raw_fnum <= PB_MAX_FIELD_NUM else { return false; }
+        let fnum = raw_fnum as u32;
+        let wtype = (tag & 0x07) as u32;
+        if fnum == 1 || fnum == 2 {
+            guard wtype == PB_WIRE_LEN else { return false; }
+            let len_u64, ok_len = pb_read_varint(wire, pos);
+            let rem = core::sub_sat_i64(wire.len, pos);
+            guard ok_len && len_u64 <= (rem as u64) else { return false; }
+            let end_pos = core::add_sat_i64(pos, len_u64 as i64);
+            let slice = wire[pos..end_pos];
+            pos = end_pos;
+            if fnum == 1 {
+                guard slice.validate_utf8() && out_detail.type_url.try_set(slice) else { return false; }
+            } else {
+                guard out_detail.value.try_set(slice) else { return false; }
+            }
+            has_field = true;
+        } else {
+            guard pb_skip_field(wire, pos, wtype) else { return false; }
+        }
     }
-    let val_slice, ok_val = pb_read_bytes_field(wire, 2);
-    if ok_val {
-        guard out_detail.value.try_set(val_slice) else { return false; }
-    }
-    guard ok_type || ok_val else { return false; }
+    guard has_field else { return false; }
     committed = true;
     return true;
 }
@@ -415,36 +445,56 @@ fn parse_grpc_status_proto_field(
     guard ok_tag && raw_fnum >= 1 && raw_fnum <= PB_MAX_FIELD_NUM else { return false; }
     let fnum = raw_fnum as u32;
     let wtype = (tag & 0x07) as u32;
-    if fnum == 1 && wtype == PB_WIRE_VARINT {
+    if fnum == 1 {
+        guard wtype == PB_WIRE_VARINT else { return false; }
         let v, ok_v = pb_read_varint(wire, pos);
         guard ok_v && v <= 16 else { return false; }
         out_code = v as u32;
         committed = true;
         return true;
     }
-    guard (fnum == 2 || fnum == 3) && wtype == PB_WIRE_LEN else {
+    if fnum != 2 && fnum != 3 {
         guard pb_skip_field(wire, pos, wtype) else { return false; }
         committed = true;
         return true;
     }
+    guard wtype == PB_WIRE_LEN else { return false; }
     let len_u64, ok_l = pb_read_varint(wire, pos);
     let rem = core::sub_sat_i64(wire.len, pos);
     guard ok_l && len_u64 <= (rem as u64) else { return false; }
     let end_pos = core::add_sat_i64(pos, len_u64 as i64);
     let slice = wire[pos..end_pos];
-    pos = end_pos;
-    committed = true;
     if fnum == 2 {
-        let take_len = min(slice.len, out_msg.cap);
+        guard slice.validate_utf8() else { return false; }
+        let take_len = clamp_utf8_prefix_len(slice, out_msg.cap);
         let _ = out_msg.try_set(slice[..take_len]);
+        pos = end_pos;
+        committed = true;
         return true;
     }
-    guard out_details.len < out_details.cap else { return true; }
     var detail = GrpcErrorDetail { .. };
-    if decode_grpc_any_detail(slice, detail) {
-        let _ = out_details.try_push(detail);
-    }
+    guard decode_grpc_any_detail(slice, detail) && out_details.try_push(detail) else { return false; }
+    pos = end_pos;
+    committed = true;
     return true;
+}
+
+// Decodes padded or unpadded standard/URL-safe Base64 `trimmed` into bounded buffer `out`.
+//
+// Example:
+//   trimmed = "CAMSA2JhZA", out = []
+//   returns: true, out = "\x08\x03\x12\x03bad"
+inline fn decode_grpc_base64_into<B>(trimmed: const u8[:], out: B&) -> bool {
+    if (trimmed.len & 3) == 0 {
+        return core::base64_decode(trimmed, out) || core::base64url_decode(trimmed, out);
+    }
+    guard (trimmed.len & 3) != 1 else { return false; }
+    var padded: u8[..1400] = [];
+    guard padded.try_set(trimmed) else { return false; }
+    while (padded.len & 3) != 0 {
+        guard padded.try_push('=') else { return false; }
+    }
+    return core::base64_decode(padded[..], out) || core::base64url_decode(trimmed, out);
 }
 
 // Decodes Base64-encoded `grpc-status-details-bin` (`google.rpc.Status`) trailer.
@@ -464,11 +514,7 @@ fn decode_grpc_status_details(
     let trimmed = b64_val.trim_lws();
     guard trimmed.len > 0 else { return false; }
     var raw_pb: u8[..1024] = [];
-    var ok_b64 = core::base64_decode(trimmed, raw_pb);
-    if !ok_b64 {
-        ok_b64 = core::base64url_decode(trimmed, raw_pb);
-    }
-    guard ok_b64 else { return false; }
+    guard decode_grpc_base64_into(trimmed, raw_pb) else { return false; }
 
     var proto_code:  u32                  = 0;
     var tmp_msg:     u8[..256]            = [];

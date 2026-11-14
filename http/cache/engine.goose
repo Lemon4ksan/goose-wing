@@ -37,23 +37,23 @@ struct CacheOptions {
 
 // Cached HTTP representation including headers, body, Vary invariants, and intrusive LRU pointers.
 struct CachedEntry {
-    url_hash:        u32             = 0,
-    url:             u8[..2048]      = [],
-    method:          u8[..16]        = "GET",
-    status_code:     i32             = 200,
-    headers:         HeaderMap       = HeaderMap { .. },
-    cc:              CacheControl    = CacheControl { .. },
-    etag:            EntityTag       = EntityTag { .. },
-    last_modified:   core::Time      = core::Time { .. },
-    timestamps:      CacheTimestamps = CacheTimestamps { .. },
-    vary:            VarySnapshot    = VarySnapshot { .. },
-    nvs:             NoVarySearch    = NoVarySearch { .. },
-    body:            u8[..4096]      = [],
-    head_only:       bool            = false,
-    security_zeroed: bool            = false,
-    is_valid:        bool            = false,
-    prev_lru:        i32             = -1,
-    next_lru:        i32             = -1,
+    url_hash:          u32             = 0,
+    url:               u8[..2048]      = [],
+    method:            u8[..16]        = "GET",
+    status_code:       i32             = 200,
+    headers:           HeaderMap       = HeaderMap { .. },
+    cc:                CacheControl    = CacheControl { .. },
+    etag:              EntityTag       = EntityTag { .. },
+    last_modified_sec: i64             = 0,
+    timestamps:        CacheTimestamps = CacheTimestamps { .. },
+    vary:              VarySnapshot    = VarySnapshot { .. },
+    nvs:               NoVarySearch    = NoVarySearch { .. },
+    body:              u8[..4096]      = [],
+    head_only:         bool            = false,
+    security_zeroed:   bool            = false,
+    is_valid:          bool            = false,
+    prev_lru:          i32             = -1,
+    next_lru:          i32             = -1,
 }
 
 // Constructs an empty, uninitialized CachedEntry.
@@ -67,18 +67,18 @@ fn hash_fnv1a(s: const u8[:]) -> u32 {
     return h;
 }
 
-inline fn advance_monotonic_for_age(cur_ts: CacheTimestamps&, cur_now: core::Time, orig_now: core::Time) {
+inline fn advance_monotonic_for_age(cur_ts: CacheTimestamps&, cur_now_sec: i64, orig_now_sec: i64) {
     if cur_ts.has_monotonic {
-        let diff_sec = cur_now.wall_sec - orig_now.wall_sec;
+        let diff_sec = cur_now_sec - orig_now_sec;
         if diff_sec > 0 {
-            cur_ts.now_mono.nanos += (diff_sec as u64) * 1000000000;
+            cur_ts.now_mono_ns = core::add_sat_u64(cur_ts.now_mono_ns, (diff_sec as u64) * 1000000000);
         }
     }
 }
 
 // Converts a CachedEntry to an application Response, attaching calculated Age header (RFC 9111 §5.1).
 // Returns false if buffer capacities are exceeded (Invariant 13).
-fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: Response&) -> bool {
+fn entry_to_response(entry: const CachedEntry&, cur_now_sec: i64, out_resp: Response&) -> bool {
     guard out_resp.effective_url.try_set(entry.url[..]) &&
           out_resp.final_method.try_set(entry.method[..]) else {
         return false;
@@ -95,15 +95,15 @@ fn entry_to_response(entry: const CachedEntry&, cur_now: core::Time, out_resp: R
     }
 
     var cur_ts = entry.timestamps;
-    cur_ts.now = cur_now;
-    advance_monotonic_for_age(cur_ts, cur_now, entry.timestamps.now);
+    cur_ts.now_sec = cur_now_sec;
+    advance_monotonic_for_age(cur_ts, cur_now_sec, entry.timestamps.now_sec);
     let date_raw = entry.headers.get_header("date");
-    var date_time = cur_ts.response_time;
+    var date_sec = cur_ts.response_sec;
     if date_raw.len > 0 {
         let d, ok_d = core::parse_http_date(date_raw);
-        if ok_d { date_time = d; }
+        if ok_d { date_sec = core::unix(d); }
     }
-    let apparent_age = compute_apparent_age(cur_ts.response_time, date_time);
+    let apparent_age = compute_apparent_age(cur_ts.response_sec, date_sec);
     let orig_age = parse_age_header(entry.headers.get_header("age"));
     let cur_age = compute_current_age(apparent_age, orig_age, cur_ts);
 
@@ -522,7 +522,7 @@ fn apply_cached_range_if_requested(entry: const CachedEntry&, req: const Request
     guard range_hdr.len > 0 else { return; }
 
     let if_range_hdr = req.headers.get_header("if-range");
-    if if_range_hdr.len > 0 && !evaluate_cache_if_range(if_range_hdr, entry.etag, entry.last_modified) {
+    if if_range_hdr.len > 0 && !evaluate_cache_if_range(if_range_hdr, entry.etag, entry.last_modified_sec) {
         return;
     }
 
@@ -564,17 +564,17 @@ fn evaluate_matched_cache_entry(
     req:           const Request&,
     req_cc:        const CacheControl&,
     matched_idx:   i64,
-    cur_now:       core::Time,
-    cur_mono:      core::MonotonicInstant,
+    cur_now_sec:   i64,
+    cur_mono_ns:   u64,
 ) -> LookupDecision {
     var dec = LookupDecision { .. };
     var ts = matched_entry.timestamps;
-    ts.now = cur_now;
-    if cur_mono.nanos > 0 {
-        ts.now_mono = cur_mono;
+    ts.now_sec = cur_now_sec;
+    if cur_mono_ns > 0 {
+        ts.now_mono_ns = cur_mono_ns;
         ts.has_monotonic = true;
     } else {
-        advance_monotonic_for_age(ts, cur_now, matched_entry.timestamps.now);
+        advance_monotonic_for_age(ts, cur_now_sec, matched_entry.timestamps.now_sec);
     }
 
     let metrics = evaluate_freshness(
@@ -592,7 +592,7 @@ fn evaluate_matched_cache_entry(
         dec.kind = LookupResultKind.Hit;
         dec.entry_idx = matched_idx;
         dec.revalidate_in_background = metrics.stale_while_revalidate_allowed;
-        matched_entry.entry_to_response(cur_now, dec.cached_response);
+        matched_entry.entry_to_response(cur_now_sec, dec.cached_response);
         apply_cached_range_if_requested(matched_entry, req, dec.cached_response);
         var cs_entry = CacheStatusEntry {
             hit: true,
@@ -622,10 +622,10 @@ fn evaluate_matched_cache_entry(
 // Performs cache lookup for an incoming request (RFC 9111 Section 4).
 // Evaluates freshness, Vary matching, and returns Hit, Revalidate, Miss, or Fail504.
 fn lookup(
-    cache:    HttpCache&,
-    req:      const Request&,
-    cur_now:  core::Time,
-    cur_mono: core::MonotonicInstant = core::MonotonicInstant { .. },
+    cache:       HttpCache&,
+    req:         const Request&,
+    cur_now_sec: i64,
+    cur_mono_ns: u64 = 0,
 ) -> LookupDecision {
     var dec = LookupDecision { .. };
 
@@ -674,8 +674,8 @@ fn lookup(
         req,
         req_cc,
         matched_idx,
-        cur_now,
-        cur_mono,
+        cur_now_sec,
+        cur_mono_ns,
     );
     if eval_dec.kind == LookupResultKind.Hit {
         cache.total_hits = core::add_sat_i64(cache.total_hits, 1);
@@ -734,13 +734,13 @@ fn freshen_cached_entry_304(
         cache.lru_detach(revalidate_entry_idx as i32);
     }
 
-    entry.timestamps.request_time = ts.request_time;
-    entry.timestamps.request_mono = ts.request_mono;
-    entry.timestamps.response_time = ts.response_time;
-    entry.timestamps.response_mono = ts.response_mono;
-    entry.timestamps.now = ts.response_time;
+    entry.timestamps.request_sec = ts.request_sec;
+    entry.timestamps.request_mono_ns = ts.request_mono_ns;
+    entry.timestamps.response_sec = ts.response_sec;
+    entry.timestamps.response_mono_ns = ts.response_mono_ns;
+    entry.timestamps.now_sec = ts.response_sec;
     if ts.has_monotonic {
-        entry.timestamps.now_mono = ts.response_mono;
+        entry.timestamps.now_mono_ns = ts.response_mono_ns;
         entry.timestamps.has_monotonic = true;
     }
     let target_cc = if cache.options.shared {
@@ -761,13 +761,13 @@ fn freshen_cached_entry_304(
     let lm_raw = entry.headers.get_header("last-modified");
     if lm_raw.len > 0 {
         let d_val, ok_d = core::parse_http_date(lm_raw);
-        if ok_d { entry.last_modified = d_val; }
+        if ok_d { entry.last_modified_sec = core::unix(d_val); }
     }
 
     if entry.is_valid {
         cache.lru_touch(revalidate_entry_idx);
     }
-    entry.entry_to_response(ts.response_time, dec.response);
+    entry.entry_to_response(ts.response_sec, dec.response);
     var cs_304 = CacheStatusEntry {
         hit:        true,
         fwd_status: 304,
@@ -792,13 +792,19 @@ fn is_response_cacheable(
     resp:        const Response&,
     resp_cc:     const CacheControl&,
 ) -> bool {
-    if resp.status_code == 206 { return false; }
-    if req_cc.is_no_store() || resp_cc.is_no_store() { return false; }
-    if resp_cc.is_must_understand() && !rfc::is_heuristically_cacheable_status(resp.status_code) { return false; }
+    if resp.status_code == 206 || req_cc.is_no_store() { return false; }
+    // RFC 9111 Section 5.2.2.3: must-understand - Overrides response no-store when status caching semantics are implemented
+    if resp_cc.is_must_understand() {
+        if !rfc::is_heuristically_cacheable_status(resp.status_code) { return false; }
+    } else if resp_cc.is_no_store() {
+        return false;
+    }
 
-    // RFC 9111 Section 3: Status codes not heuristically cacheable require explicit freshness or public directive
+    // RFC 9111 Section 3: Storing Responses in Caches - Non-default status codes require explicit freshness or cacheability directive
     if !rfc::is_heuristically_cacheable_status(resp.status_code) {
-        let has_explicit = has_max_age(resp_cc) || has_s_maxage(resp_cc) ||
+        let has_explicit = has_max_age(resp_cc) ||
+            (options.shared && has_s_maxage(resp_cc)) ||
+            (!options.shared && is_private(resp_cc)) ||
             is_public(resp_cc) || resp.header("Expires").len > 0;
         if !has_explicit { return false; }
     }
@@ -866,6 +872,140 @@ fn upsert_cache_entry(cache: HttpCache&, entry: const CachedEntry&, req_headers:
 
 // ---- on_response handler (store, freshen 304, or passthrough) ---------------
 
+// Evaluates RFC 5861 Section 4 stale-if-error fallback on 5xx gateway/origin errors (500, 502, 503, 504).
+fn try_serve_stale_on_gateway_error(
+    cache:                const HttpCache&,
+    req:                  const Request&,
+    resp:                 const Response&,
+    ts:                   const CacheTimestamps&,
+    revalidate_entry_idx: i64,
+    dec:                  ResponseDecision&,
+) -> bool {
+    let is_gateway_error = resp.status_code == 500 || (resp.status_code >= 502 && resp.status_code <= 504);
+    guard is_gateway_error && revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len else {
+        return false;
+    }
+    let entry = cache.entries[revalidate_entry_idx];
+    guard entry.is_valid else { return false; }
+
+    let req_cc = parse_cache_control_headers(
+        req.headers,
+        CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
+    let age_hdr = parse_age_header(get_header(entry.headers, "age"));
+
+    var eval_ts = entry.timestamps;
+    eval_ts.now_sec = ts.response_sec;
+    if ts.has_monotonic {
+        eval_ts.now_mono_ns = ts.response_mono_ns;
+        eval_ts.has_monotonic = true;
+    }
+
+    let date_raw = get_header(entry.headers, "date");
+    var date_sec = entry.timestamps.response_sec;
+    if date_raw.len > 0 {
+        let d, ok_d = core::parse_http_date(date_raw);
+        if ok_d { date_sec = core::unix(d); }
+    }
+    let apparent = compute_apparent_age(entry.timestamps.response_sec, date_sec);
+    let cur_age = compute_current_age(apparent, age_hdr, eval_ts);
+    let lifetime = compute_freshness_lifetime(
+        entry.cc, entry.headers, eval_ts, cache.options.shared,
+        cache.options.heuristic_fraction, cache.options.immutable_min_ttl_sec,
+    );
+    let can_stale_err = evaluate_stale_if_error(
+        entry.cc,
+        req_cc,
+        cur_age,
+        lifetime,
+        FreshnessPolicy { shared: cache.options.shared, security_zeroed: entry.security_zeroed },
+    );
+    guard can_stale_err else { return false; }
+    dec.kind = ResponseDecisionKind.FreshenAndReturn;
+    dec.entry_idx = revalidate_entry_idx;
+    entry.entry_to_response(ts.response_sec, dec.response);
+    return true;
+}
+
+// Validates Vary/No-Vary-Search metadata, sanitizes headers, and stores a cacheable GET/HEAD response.
+fn store_cacheable_response(
+    cache:        HttpCache&,
+    req:          const Request&,
+    resp:         const Response&,
+    resp_headers: const HeaderMap&,
+    resp_cc:      const CacheControl&,
+    ts:           const CacheTimestamps&,
+    is_head:      bool,
+    dec:          ResponseDecision&,
+) -> bool {
+    var vary_snap = VarySnapshot { .. };
+    if resp_headers.has_header("vary") {
+        var vary_combined: u8[..512] = [];
+        guard get_combined(resp_headers, "vary", vary_combined, 512) else {
+            dec.kind = ResponseDecisionKind.PassThrough;
+            return false;
+        }
+        vary_snap = record_vary_snapshot(vary_combined[..], req.headers);
+        guard !vary_snap.has_star && vary_snap.valid else {
+            dec.kind = ResponseDecisionKind.PassThrough;
+            return false;
+        }
+    }
+
+    var nvs_snap = NoVarySearch { .. };
+    let nvs_raw = resp_headers.get_header("no-vary-search");
+    if nvs_raw.len > 0 {
+        let parsed_nvs, ok_nvs = parse_no_vary_search(nvs_raw);
+        if ok_nvs { nvs_snap = parsed_nvs; }
+    }
+
+    var sanitized = HeaderMap { .. };
+    resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
+
+    let lm_raw = resp_headers.get_header("last-modified");
+    var lm_sec: i64 = 0;
+    if lm_raw.len > 0 {
+        let p_lm, ok_lm = core::parse_http_date(lm_raw);
+        if ok_lm { lm_sec = core::unix(p_lm); }
+    }
+
+    var entry = CachedEntry {
+        url_hash:          hash_fnv1a(req.url[..]),
+        status_code:       resp.status_code,
+        headers:           sanitized,
+        cc:                resp_cc,
+        etag:              parse_etag(resp_headers.get_header("etag")),
+        last_modified_sec: lm_sec,
+        timestamps:        ts,
+        vary:              vary_snap,
+        nvs:               nvs_snap,
+        head_only:         is_head,
+        security_zeroed:   false,
+        is_valid:          true,
+        ..
+    };
+    entry.url.append(req.url[..]);
+    entry.method.append(req.method[..]);
+    entry.body.append(resp.body[..]);
+
+    let store_idx = cache.upsert_cache_entry(entry, req.headers);
+    cache.total_stores = core::add_sat_i64(cache.total_stores, 1);
+    var cs_store = CacheStatusEntry {
+        stored:     true,
+        fwd_status: resp.status_code,
+        ..
+    };
+    let cname_st = if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "GooseCache" };
+    cs_store.cache_name.try_set(cname_st);
+    cs_store.fwd.try_set("uri-miss");
+    var cs_store_buf: u8[..256] = [];
+    format_cache_status(cs_store, cs_store_buf);
+    dec.response.set_header("Cache-Status", cs_store_buf[..]);
+    dec.kind = ResponseDecisionKind.StoreAndReturn;
+    dec.entry_idx = store_idx;
+    return true;
+}
+
 // Coordinates post-network response caching, 304 revalidations, and unsafe invalidations (RFC 9111).
 fn on_response(
     cache:                HttpCache&,
@@ -902,52 +1042,9 @@ fn on_response(
         return dec;
     }
 
-    // RFC 5861 Section 4: stale-if-error fallback on 5xx gateway/origin error (500, 502, 503, 504)
-    let is_gateway_error = resp.status_code == 500 || (resp.status_code >= 502 && resp.status_code <= 504);
-    let valid_reval_idx = revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len;
-    if is_gateway_error && valid_reval_idx {
-        let entry = cache.entries[revalidate_entry_idx];
-        if entry.is_valid {
-            let req_cc = parse_cache_control_headers(
-                req.headers,
-                CacheControlParseOptions { is_request: true, ignore_cargo_cult: cache.options.ignore_cargo_cult },
-            );
-            let age_hdr = parse_age_header(get_header(entry.headers, "age"));
-
-            var eval_ts = entry.timestamps;
-            eval_ts.now = ts.response_time;
-            if ts.has_monotonic {
-                eval_ts.now_mono = ts.response_mono;
-                eval_ts.has_monotonic = true;
-            }
-
-            let date_raw = get_header(entry.headers, "date");
-            var date_time = entry.timestamps.response_time;
-            if date_raw.len > 0 {
-                let d, ok_d = core::parse_http_date(date_raw);
-                if ok_d { date_time = d; }
-            }
-            let apparent = compute_apparent_age(entry.timestamps.response_time, date_time);
-            let cur_age = compute_current_age(apparent, age_hdr, eval_ts);
-            let lifetime = compute_freshness_lifetime(
-                entry.cc, entry.headers, eval_ts, cache.options.shared,
-                cache.options.heuristic_fraction, cache.options.immutable_min_ttl_sec,
-            );
-            let can_stale_err = evaluate_stale_if_error(
-                entry.cc,
-                req_cc,
-                cur_age,
-                lifetime,
-                FreshnessPolicy { shared: cache.options.shared, security_zeroed: entry.security_zeroed },
-            );
-            if can_stale_err {
-                writer_stored = true;
-                dec.kind = ResponseDecisionKind.FreshenAndReturn;
-                dec.entry_idx = revalidate_entry_idx;
-                entry.entry_to_response(ts.response_time, dec.response);
-                return dec;
-            }
-        }
+    if try_serve_stale_on_gateway_error(cache, req, resp, ts, revalidate_entry_idx, dec) {
+        writer_stored = true;
+        return dec;
     }
 
     guard is_get || is_head else {
@@ -971,82 +1068,13 @@ fn on_response(
         CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
     );
 
-    guard req.url.len <= 2048 && req.method.len <= 16 else {
+    guard req.url.len <= 2048 && req.method.len <= 16 &&
+          is_response_cacheable(cache.options, req_cc, req.headers, resp, resp_cc) else {
         dec.kind = ResponseDecisionKind.PassThrough;
         return dec;
     }
 
-    guard is_response_cacheable(cache.options, req_cc, req.headers, resp, resp_cc) else {
-        dec.kind = ResponseDecisionKind.PassThrough;
-        return dec;
-    }
-
-    var vary_snap = VarySnapshot { .. };
-    if resp_headers.has_header("vary") {
-        var vary_combined: u8[..512] = [];
-        guard get_combined(resp_headers, "vary", vary_combined, 512) else {
-            dec.kind = ResponseDecisionKind.PassThrough;
-            return dec;
-        }
-        vary_snap = record_vary_snapshot(vary_combined[..], req.headers);
-        guard !vary_snap.has_star && vary_snap.valid else {
-            dec.kind = ResponseDecisionKind.PassThrough;
-            return dec;
-        }
-    }
-
-    var nvs_snap = NoVarySearch { .. };
-    let nvs_raw = resp_headers.get_header("no-vary-search");
-    if nvs_raw.len > 0 {
-        let parsed_nvs, ok_nvs = parse_no_vary_search(nvs_raw);
-        if ok_nvs { nvs_snap = parsed_nvs; }
-    }
-
-    var sanitized = HeaderMap { .. };
-    resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
-
-    let lm_raw = resp_headers.get_header("last-modified");
-    var lm_time = core::Time { .. };
-    if lm_raw.len > 0 {
-        let p_lm, ok_lm = core::parse_http_date(lm_raw);
-        if ok_lm { lm_time = p_lm; }
-    }
-
-    var entry = CachedEntry {
-        url_hash:        hash_fnv1a(req.url[..]),
-        status_code:     resp.status_code,
-        headers:         sanitized,
-        cc:              resp_cc,
-        etag:            parse_etag(resp_headers.get_header("etag")),
-        last_modified:   lm_time,
-        timestamps:      ts,
-        vary:            vary_snap,
-        nvs:             nvs_snap,
-        head_only:       is_head,
-        security_zeroed: false,
-        is_valid:        true,
-        ..
-    };
-    entry.url.append(req.url[..]);
-    entry.method.append(req.method[..]);
-    entry.body.append(resp.body[..]);
-
-    let store_idx = cache.upsert_cache_entry(entry, req.headers);
-    cache.total_stores++;
-    var cs_store = CacheStatusEntry {
-        stored:     true,
-        fwd_status: resp.status_code,
-        ..
-    };
-    let cname_st = if cache.options.target_name.len > 0 { cache.options.target_name[..] } else { "GooseCache" };
-    cs_store.cache_name.try_set(cname_st);
-    cs_store.fwd.try_set("uri-miss");
-    var cs_store_buf: u8[..256] = [];
-    format_cache_status(cs_store, cs_store_buf);
-    dec.response.set_header("Cache-Status", cs_store_buf[..]);
-    writer_stored = true;
-    dec.kind = ResponseDecisionKind.StoreAndReturn;
-    dec.entry_idx = store_idx;
+    writer_stored = store_cacheable_response(cache, req, resp, resp_headers, resp_cc, ts, is_head, dec);
     return dec;
 }
 
@@ -1102,8 +1130,9 @@ fn check_invalidation(cache: HttpCache&, req: const Request&, resp: const Respon
     var group_tags:  CacheGroupTag[..32] = [];
     var group_count: i32                 = 0;
     if parse_cache_group_list(resp.header("Cache-Group-Invalidation"), group_tags, group_count) {
+        let group_base_url = if err_base == core::UrlParseError.None && parsed_base.valid { req.url[..] } else { "" };
         for slot in 0..group_count {
-            count = add_invalidated_entries(count, cache.invalidate_group(group_tags[slot].name[..], base_orig));
+            count = add_invalidated_entries(count, cache.invalidate_group(group_tags[slot].name[..], group_base_url));
         }
     }
 
@@ -1182,9 +1211,9 @@ fn touch_scalable_lru(cache: ScalableHttpCache&, idx: i32) {
 
 // Performs RFC 9111 cache lookup on `ScalableHttpCache` (compatible with `stage_client_cache_lookup<Cache>`).
 fn lookup(
-    cache:  ScalableHttpCache&,
-    req:    const Request&,
-    now_ts: core::Time,
+    cache:   ScalableHttpCache&,
+    req:     const Request&,
+    now_sec: i64,
 ) -> LookupDecision {
     var dec = LookupDecision { .. };
     let is_get = req.method[..].eq_ascii_fold("GET");
@@ -1221,8 +1250,8 @@ fn lookup(
         req,
         req_cc,
         matched_idx,
-        now_ts,
-        core::MonotonicInstant { .. },
+        now_sec,
+        0,
     );
 }
 
@@ -1292,7 +1321,7 @@ fn populate_entry_validators(entry: CachedEntry&) {
     let lm_raw = entry.headers.get_header("last-modified");
     if lm_raw.len > 0 {
         let d_val, ok_d = core::parse_http_date(lm_raw);
-        if ok_d { entry.last_modified = d_val; }
+        if ok_d { entry.last_modified_sec = core::unix(d_val); }
     }
 }
 
@@ -1306,10 +1335,10 @@ fn resolve_target_cache_name(options: const CacheOptions&) -> const u8[:] {
 
 // Stores a cacheable HTTP response in `ScalableHttpCache` with O(1) LRU eviction at `max_entries`.
 fn store_response(
-    cache:  ScalableHttpCache&,
-    req:    const Request&,
-    resp:   const Response&,
-    now_ts: core::Time,
+    cache:   ScalableHttpCache&,
+    req:     const Request&,
+    resp:    const Response&,
+    now_sec: i64,
 ) -> bool {
     let is_get = req.method[..].eq_ascii_fold("GET");
     let is_head = req.method[..].eq_ascii_fold("HEAD");
@@ -1334,9 +1363,9 @@ fn store_response(
     var sanitized = HeaderMap { .. };
     resp_headers.sanitize_for_storage(sanitized, cache.options.shared, resp_cc);
     let ts = CacheTimestamps {
-        request_time:  now_ts,
-        response_time: now_ts,
-        now:           now_ts,
+        request_sec:  now_sec,
+        response_sec: now_sec,
+        now_sec:      now_sec,
         ..
     };
     var entry = CachedEntry {
@@ -1378,13 +1407,13 @@ fn on_response(
             entry.timestamps = ts;
             populate_entry_validators(entry);
             touch_scalable_lru(cache, revalidate_entry_idx as i32);
-            entry.entry_to_response(ts.response_time, dec.response);
+            entry.entry_to_response(ts.response_sec, dec.response);
             dec.kind = ResponseDecisionKind.FreshenAndReturn;
             dec.entry_idx = revalidate_entry_idx;
             return dec;
         }
     }
-    if cache.store_response(req, resp, ts.response_time) {
+    if cache.store_response(req, resp, ts.response_sec) {
         dec.kind = ResponseDecisionKind.StoreAndReturn;
         dec.entry_idx = cache.lru_head;
     }

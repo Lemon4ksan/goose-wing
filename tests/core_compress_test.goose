@@ -1773,7 +1773,7 @@ fn test_brotli_http_client_integration(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_dictionary_header_parsing_and_matching(t: lit::T&) {
     t.run("Use-As-Dictionary Parser: match, id, ttl") { sub =>
-        let raw = "match=\"/assets/*\", id=\"v1\", ttl=3600, type=\"raw\"";
+        let raw = "match=\"/assets/*\", id=\"v1\", ttl=3600, type=raw";
         let p, ok = wing::parse_use_as_dictionary_header(raw);
         sub.assert_true(ok, "parse_use_as_dictionary_header succeeded");
         sub.assert_bytes_eq(p.match_pattern[..], "/assets/*", "match_pattern is /assets/*");
@@ -1781,12 +1781,20 @@ fn test_dictionary_header_parsing_and_matching(t: lit::T&) {
         sub.assert_eq(p.ttl_sec, 3600, "ttl is 3600");
         sub.assert_bytes_eq(p.dict_type[..], "raw", "type is raw");
 
-        // Semicolon separated format
-        let raw_semi = "match=\"/api/*\"; ttl=7200";
-        let p2, ok2 = wing::parse_use_as_dictionary_header(raw_semi);
-        sub.assert_true(ok2, "semicolon format parsed");
-        sub.assert_bytes_eq(p2.match_pattern[..], "/api/*", "match is /api/*");
+        // Unrecognized SF item parameters are ignored without spoofing dictionary keys (RFC 9842 §2.1)
+        let raw_params = "match=\"/api/*\";ext=1, id=\"v2\";match=\"/spoof\", ttl=7200";
+        let p2, ok2 = wing::parse_use_as_dictionary_header(raw_params);
+        sub.assert_true(ok2, "SF dictionary with ignored member params parsed");
+        sub.assert_bytes_eq(p2.match_pattern[..], "/api/*", "match is /api/* (not spoofed by param)");
         sub.assert_eq(p2.ttl_sec, 7200, "ttl is 7200");
+
+        // RFC 9842 §2.1.4: type MUST be an SF Token, not a String
+        let _, ok_str_type = wing::parse_use_as_dictionary_header("match=\"/assets/*\", type=\"raw\"");
+        sub.assert_false(ok_str_type, "String type=\"raw\" rejected per RFC 9842 §2.1.4");
+
+        // RFC 9842 §2.1.1: URLPattern regexp groups are prohibited
+        let _, ok_regex = wing::parse_use_as_dictionary_header("match=\"/assets/(.*)\"");
+        sub.assert_false(ok_regex, "Regexp group in match pattern rejected per RFC 9842 §2.1.1");
     };
 
     t.run("URL Pattern Matching") { sub =>
@@ -1817,13 +1825,17 @@ fn test_dcz_frame_codec(t: lit::T&) {
         let enc_ok = wing::encode_dcz_response(dcz_wire, hash, uncompressed_target);
         sub.assert_true(enc_ok, "encode_dcz_response ok");
 
-        // Verify wire format:
-        // Byte 0..3: 0xFF, 'D', 'C', 'Z'
-        sub.assert_true(dcz_wire.len >= 36, "dcz frame is at least 36 bytes");
-        sub.assert_eq(dcz_wire[0], 0xFF, "Magic byte 0 is 0xFF");
-        sub.assert_eq(dcz_wire[1], 'D' as u8, "Magic byte 1 is 'D'");
-        sub.assert_eq(dcz_wire[2], 'C' as u8, "Magic byte 2 is 'C'");
-        sub.assert_eq(dcz_wire[3], 'Z' as u8, "Magic byte 3 is 'Z'");
+        // Verify RFC 9842 Section 5 40-byte fixed header:
+        // Byte 0..7: 0x5E, 0x2A, 0x4D, 0x18, 0x20, 0x00, 0x00, 0x00
+        sub.assert_true(dcz_wire.len >= 40, "dcz frame is at least 40 bytes per RFC 9842 §5");
+        sub.assert_eq(dcz_wire[0], 0x5E, "Magic byte 0 is 0x5E");
+        sub.assert_eq(dcz_wire[1], 0x2A, "Magic byte 1 is 0x2A");
+        sub.assert_eq(dcz_wire[2], 0x4D, "Magic byte 2 is 0x4D");
+        sub.assert_eq(dcz_wire[3], 0x18, "Magic byte 3 is 0x18");
+        sub.assert_eq(dcz_wire[4], 0x20, "Magic byte 4 is 0x20 (32-byte hash length)");
+        sub.assert_eq(dcz_wire[5], 0x00, "Magic byte 5 is 0x00");
+        sub.assert_eq(dcz_wire[6], 0x00, "Magic byte 6 is 0x00");
+        sub.assert_eq(dcz_wire[7], 0x00, "Magic byte 7 is 0x00");
 
         // Decode DCZ header
         var decoded_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];

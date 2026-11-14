@@ -189,19 +189,32 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
 //   appends names to out_fields, sets overflow=false
 fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow: bool&) {
     let s = raw_val.trim_lws().trim_byte('"').trim_lws();
-    guard s.len > 0 else { return; }
+    guard s.len > 0 else {
+        overflow = true;
+        return;
+    }
 
+    var added_any = false;
     var tok = core::make_byte_tokenizer(s, ',');
     loop {
         let name_tok, ok = tok.token_next();
         guard ok else { break; }
         let trimmed_name = name_tok.trim_lws();
-        if trimmed_name.len > 0 {
-            var buf: u8[..64] = [];
-            if !buf.try_set(trimmed_name) || !out_fields.try_push(buf) {
-                overflow = true;
-            }
+        if trimmed_name.len == 0 {
+            continue;
         }
+        if !is_valid_header_name(trimmed_name) {
+            overflow = true;
+            return;
+        }
+        var buf: u8[..64] = [];
+        if !buf.try_set(trimmed_name) || !out_fields.try_push(buf) {
+            overflow = true;
+        }
+        added_any = true;
+    }
+    if !added_any {
+        overflow = true;
     }
 }
 

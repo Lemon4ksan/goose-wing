@@ -101,6 +101,14 @@ fn secure_zeroize_slice(buf: u8[:]) {
     native_secure_zeroize(buf);
 }
 
+inline fn crypto_buf_has_room<A>(arr: const A&, needed: i64) -> bool {
+    return needed >= 0 && arr.len <= arr.cap && needed <= arr.cap - arr.len;
+}
+
+inline fn crypto_buf_has_room(arr: const u8[>..]&, needed: i64) -> bool {
+    return needed >= 0;
+}
+
 // KeySlot encapsulates a 256-bit cryptographic master key with rotation metadata.
 struct KeySlot {
     key_id:         u32    = 0,
@@ -111,6 +119,15 @@ struct KeySlot {
 }
 
 fn new_key_slot(key_id: u32, raw_key: const u8[:], created_at_sec: i64 = 0, expires_at_sec: i64 = 0) -> KeySlot {
+    guard raw_key.len == 32 else {
+        return KeySlot {
+            key_id:         key_id,
+            master_key:     [0; 32],
+            created_at_sec: created_at_sec,
+            expires_at_sec: expires_at_sec,
+            revoked:        true,
+        };
+    }
     var slot = KeySlot {
         key_id:         key_id,
         master_key:     [0; 32],
@@ -118,8 +135,7 @@ fn new_key_slot(key_id: u32, raw_key: const u8[:], created_at_sec: i64 = 0, expi
         expires_at_sec: expires_at_sec,
         revoked:        false,
     };
-    let copy_len = min(raw_key.len, 32);
-    for idx in copy_len {
+    for idx in 32 {
         slot.master_key[idx] = raw_key[idx];
     }
     return slot;
@@ -165,7 +181,9 @@ fn new_dudect_context(crop_threshold_ns: f64 = 2000.0) -> DudectContext {
 // Samples exceeding crop_threshold_ns are discarded (cropped), never clamped,
 // preserving unbiased sample means per hardware-rust-crypto methodology.
 fn dudect_push_sample(ctx: DudectContext&, class_idx: i32, elapsed_ns: f64) -> bool {
-    if !(elapsed_ns >= 0.0) || (ctx.crop_threshold_ns > 0.0 && elapsed_ns > ctx.crop_threshold_ns) {
+    guard class_idx == 0 || class_idx == 1 else { return false; }
+    if !(elapsed_ns >= 0.0) || (elapsed_ns - elapsed_ns) != 0.0 ||
+       (ctx.crop_threshold_ns > 0.0 && elapsed_ns > ctx.crop_threshold_ns) {
         ctx.cropped_outliers += 1;
         return false;
     }

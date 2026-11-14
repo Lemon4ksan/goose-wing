@@ -27,7 +27,7 @@ struct EchConfig {
     cipher_suites:       EchCipherSuite[..4] = [],
     maximum_name_length: u8                  = 0,
     public_name:         u8[..255]           = [],
-    raw_bytes:           u8[..512]           = [], // Complete wire bytes of ECHConfig
+    raw_bytes:           u8[..2048]          = [], // Complete wire bytes of ECHConfig
 }
 
 struct EchConfigList {
@@ -41,7 +41,13 @@ struct EchClientState {
     inner_sni:       u8[..255]      = [],
     outer_sni:       u8[..255]      = [],
     enc:             u8[32]         = [0; 32],
-    retry_configs:   u8[..512]      = [],
+    retry_configs:   u8[..2048]     = [],
+}
+
+enum EchEntryStatus {
+    Accepted,
+    SkippedUnsupported,
+    Invalid,
 }
 
 // ---- ECHConfig Parser (RFC 9849 Section 4) ------------------------------
@@ -71,21 +77,37 @@ inline fn is_valid_dns_char(b: u8) -> bool {
     return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '.';
 }
 
+// RFC 9849 Section 4: Encrypted ClientHello Configuration - Rejects IPv4 decimal or hex final DNS labels while permitting digit-leading labels like "3m".
+inline fn is_ipv4_numeric_label(label: const u8[:]) -> bool {
+    guard label.len > 0 else { return false; }
+    if label.len >= 2 && label[0] == '0' && (label[1] == 'x' || label[1] == 'X') {
+        for i in 2..label.len {
+            if !core::is_ascii_hexdigit(label[i]) { return false; }
+        }
+        return true;
+    }
+    for b in label {
+        if !core::is_ascii_digit(b) { return false; }
+    }
+    return true;
+}
+
 fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
     guard pub_raw.len >= 1 && pub_raw.len <= 253 else { return false; }
     var first_b:          u8  = 0;
     var last_b:           u8  = 0;
-    var last_label_first: u8  = 0;
+    var last_label_start: i64 = 0;
     var label_len:        i64 = 0;
-    for b in pub_raw {
+    for i in pub_raw.len {
+        let b = pub_raw[i];
         if first_b == 0 { first_b = b; }
         guard is_valid_dns_char(b) else { return false; }
         if b == '.' {
             guard last_b != '.' && last_b != '-' else { return false; }
             label_len = 0;
+            last_label_start = core::add_sat_i64(i, 1);
         } else {
             guard b != '-' || last_b != '.' else { return false; }
-            if label_len == 0 { last_label_first = b; }
             label_len = core::add_sat_i64(label_len, 1);
             guard label_len <= 63 else { return false; }
         }
@@ -93,8 +115,7 @@ fn validate_ech_public_name_bytes(pub_raw: const u8[:]) -> bool {
     }
     guard first_b != '.' && first_b != '-' else { return false; }
     guard last_b != '.' && last_b != '-' else { return false; }
-    guard !core::is_ascii_digit(last_label_first) else { return false; }
-    return true;
+    return !is_ipv4_numeric_label(pub_raw[last_label_start..]);
 }
 
 // Reads public name from ECH contents cursor.
@@ -131,18 +152,72 @@ fn read_ech_key_config(contents: ByteCursor&, out: EchConfig&) -> bool {
     return read_ech_cipher_suites(contents, out);
 }
 
-fn validate_ech_config_extensions(ext_cursor: ByteCursor&) -> bool {
+// RFC 9849 Section 4.2: Configuration Extensions - Rejects malformed or duplicate extensions and marks unknown critical extensions unsupported.
+fn check_ech_config_extensions(ext_cursor: ByteCursor&) -> EchEntryStatus {
     var seen_types: u16[..16] = [];
+    var has_unknown_critical = false;
     while ext_cursor.cursor_len() > 0 {
         var ext_type: u16 = 0;
         var ext_data = ByteCursor { buf: ext_cursor.buf[..0] };
         guard ext_cursor.get_u16(ext_type) && ext_cursor.get_u16_length_prefixed(ext_data) else {
-            return false;
+            return EchEntryStatus.Invalid;
         }
-        guard (ext_type & 0x8000) == 0 && !seen_types.contains(ext_type) else { return false; }
-        guard seen_types.try_push(ext_type) else { return false; }
+        guard !seen_types.contains(ext_type) && seen_types.try_push(ext_type) else {
+            return EchEntryStatus.Invalid;
+        }
+        if (ext_type & 0x8000) != 0 {
+            has_unknown_critical = true;
+        }
     }
-    return true;
+    if has_unknown_critical {
+        return EchEntryStatus.SkippedUnsupported;
+    }
+    return EchEntryStatus.Accepted;
+}
+
+// RFC 9849 Section 4.2: Configuration Extensions - Validates that all ECHConfig extensions are well-formed, unique, and recognized.
+fn validate_ech_config_extensions(ext_cursor: ByteCursor&) -> bool {
+    return check_ech_config_extensions(ext_cursor) == EchEntryStatus.Accepted;
+}
+
+// Parses a single RFC 9849 ECHConfig entry and classifies syntax errors vs unsupported critical extensions.
+//
+// Example:
+//   raw = [0xFE, 0x0D, 0x00, 0x30, ...], out = EchConfig { .. }
+//   returns: EchEntryStatus.Accepted
+fn parse_ech_config_entry(raw: const u8[:], out: EchConfig&) -> EchEntryStatus {
+    out = EchConfig { .. };
+    var committed = false;
+    defer if !committed { out = EchConfig { .. }; };
+
+    guard raw.len >= 4 else { return EchEntryStatus.Invalid; }
+    var c = core::cursor_from(raw);
+
+    guard c.get_u16(out.version) && c.get_u16(out.length) && out.length <= c.cursor_len() else {
+        return EchEntryStatus.Invalid;
+    }
+    let total_len = core::add_sat_i64(4, out.length);
+    guard total_len == raw.len else { return EchEntryStatus.Invalid; }
+    guard out.version == rfc::ECH_VERSION_RFC9849 else { return EchEntryStatus.SkippedUnsupported; }
+    guard out.raw_bytes.try_set(raw) else { return EchEntryStatus.Invalid; }
+
+    var contents = ByteCursor { buf: raw[..0] };
+    guard c.get_bytes(contents, out.length) else { return EchEntryStatus.Invalid; }
+    guard read_ech_key_config(contents, out) &&
+        contents.get_u8(out.maximum_name_length) &&
+        read_ech_public_name(contents, out) else {
+        return EchEntryStatus.Invalid;
+    }
+
+    var ext_cursor = ByteCursor { buf: raw[..0] };
+    guard contents.get_u16_length_prefixed(ext_cursor) && contents.cursor_len() == 0 else {
+        return EchEntryStatus.Invalid;
+    }
+    let ext_status = check_ech_config_extensions(ext_cursor);
+    if ext_status == EchEntryStatus.Accepted {
+        committed = true;
+    }
+    return ext_status;
 }
 
 // Parses a single ECHConfig from raw wire bytes.
@@ -151,25 +226,17 @@ fn validate_ech_config_extensions(ext_cursor: ByteCursor&) -> bool {
 //   raw = [0xFE, 0x0D, 0x00, 0x30, ...], out = EchConfig { .. }
 //   returns: ok = true, out populated with version, kem_id, public_key, etc.
 fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool {
-    guard raw.len >= 4 else { return false; }
-    var c = core::cursor_from(raw);
-
-    guard c.get_u16(out.version) && out.version == rfc::ECH_VERSION_RFC9849 else { return false; }
-    guard c.get_u16(out.length) && out.length <= c.cursor_len() else { return false; }
-
-    let total_len = 4 + (out.length as i64);
-    guard total_len <= raw.len && out.raw_bytes.try_set(raw[..total_len]) else { return false; }
-
-    var contents = ByteCursor { buf: raw[..0] };
-    guard c.get_bytes(contents, out.length) else { return false; }
-
-    guard read_ech_key_config(contents, out) else { return false; }
-    guard contents.get_u8(out.maximum_name_length) else { return false; }
-    guard read_ech_public_name(contents, out) else { return false; }
-
-    var ext_cursor = ByteCursor { buf: raw[..0] };
-    guard contents.get_u16_length_prefixed(ext_cursor) && contents.cursor_len() == 0 else { return false; }
-    return validate_ech_config_extensions(ext_cursor);
+    guard raw.len >= 4 else {
+        out = EchConfig { .. };
+        return false;
+    }
+    let declared_len = core::read_be_u16(raw, 2);
+    let total_len = core::add_sat_i64(4, declared_len);
+    guard total_len <= raw.len else {
+        out = EchConfig { .. };
+        return false;
+    }
+    return parse_ech_config_entry(raw[..total_len], out) == EchEntryStatus.Accepted;
 }
 
 // Reads a single ECHConfig entry from list cursor.
@@ -184,16 +251,42 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
     var elen: u16 = 0;
     guard probe.get_u16(ver) && probe.get_u16(elen) else { return false; }
 
-    let total_entry = 4 + (elen as i64);
+    let total_entry = core::add_sat_i64(4, elen);
     guard total_entry <= list_cursor.cursor_len() else { return false; }
 
     if ver == rfc::ECH_VERSION_RFC9849 {
         var cfg = EchConfig { .. };
-        if parse_ech_config(entry_start[..total_entry], cfg) {
+        let st = parse_ech_config_entry(entry_start[..total_entry], cfg);
+        guard st != EchEntryStatus.Invalid else { return false; }
+        if st == EchEntryStatus.Accepted {
             guard out.configs.try_push(cfg) else { return false; }
         }
     }
     list_cursor.buf = list_cursor.buf[total_entry..];
+    return true;
+}
+
+// RFC 9849 Section 4: Encrypted ClientHello Configuration - Validates ECHConfigList wire syntax while ignoring unsupported versions.
+//
+// Example:
+//   raw = [0x00, 0x06, 0x0A, 0x0A, 0x00, 0x02, 0x00, 0x00], out = EchConfigList { .. }
+//   returns: ok = true, out.configs.len = 0
+fn parse_ech_config_list_syntax(raw: const u8[:], out: EchConfigList&) -> bool {
+    out.configs.clear();
+    var committed = false;
+    defer if !committed { out.configs.clear(); };
+
+    guard raw.len >= 4 else { return false; }
+    var c = core::cursor_from(raw);
+    var list_cursor = ByteCursor { buf: raw[..0] };
+    guard c.get_u16_length_prefixed(list_cursor) else { return false; }
+    guard c.cursor_len() == 0 && list_cursor.cursor_len() >= 4 else { return false; }
+
+    while list_cursor.cursor_len() >= 4 {
+        guard read_ech_config_entry(list_cursor, out) else { return false; }
+    }
+    guard list_cursor.cursor_len() == 0 else { return false; }
+    committed = true;
     return true;
 }
 
@@ -205,20 +298,12 @@ fn read_ech_config_entry(list_cursor: ByteCursor&, out: EchConfigList&) -> bool 
 //   raw = [0x00, 0x34, 0xFE, 0x0D, 0x00, 0x30, ...], out = EchConfigList { .. }
 //   returns: ok = true, out populated with supported configs
 fn parse_ech_config_list(raw: const u8[:], out: EchConfigList&) -> bool {
-    guard raw.len >= 4 else { return false; }
-    var c = core::cursor_from(raw);
-
-    var list_cursor = ByteCursor { buf: raw[..0] };
-    guard c.get_u16_length_prefixed(list_cursor) else { return false; }
-    guard c.cursor_len() == 0 && list_cursor.cursor_len() >= 4 else { return false; }
-
-    out.configs.clear();
-    while list_cursor.cursor_len() >= 4 {
-        guard read_ech_config_entry(list_cursor, out) else { return false; }
+    guard parse_ech_config_list_syntax(raw, out) else { return false; }
+    guard out.configs.len > 0 else {
+        out.configs.clear();
+        return false;
     }
-
-    guard list_cursor.cursor_len() == 0 else { return false; }
-    return out.configs.len > 0;
+    return true;
 }
 
 inline fn is_supported_ech_cipher(cs: const EchCipherSuite&) -> bool {
@@ -475,7 +560,7 @@ fn seal_ech_inner<B>(
     out_enc:      u8[32]&,
     out_ct:       B&,
 ) -> bool {
-    var info: u8[..600] = [];
+    var info: u8[..2064] = [];
     info.append("tls ech");
     info.push(0x00);
     guard info.try_append(config.raw_bytes[..]) else { return false; }
@@ -492,8 +577,7 @@ fn seal_ech_inner<B>(
     );
 }
 
-// Parses and validates retry_configs from Server HelloRetryRequest ECH extension (RFC 9849 Section 5).
-// Must contain a valid, parseable ECHConfigList.
+// RFC 9849 Section 6.1.6: Handshaking with ClientHelloOuter - Validates EncryptedExtensions retry_configs syntax including GREASE-only lists.
 //
 // Example:
 //   ext_data = [0x00, 0x24, 0xFE, 0x0D, ...], out_config_list = EchConfigList { .. }
@@ -502,21 +586,25 @@ fn parse_and_validate_ech_retry_configs(
     ext_data:        const u8[:],
     out_config_list: EchConfigList&,
 ) -> bool {
-    guard ext_data.len >= 4 else { return false; }
-    return parse_ech_config_list(ext_data, out_config_list);
+    guard ext_data.len >= 4 else {
+        out_config_list.configs.clear();
+        return false;
+    }
+    return parse_ech_config_list_syntax(ext_data, out_config_list);
 }
 
-// Parses retry_configs from Server HelloRetryRequest ECH extension.
-// Enforces that the payload is a valid RFC 9849 ECHConfigList before copying.
+// RFC 9849 Section 5: The "encrypted_client_hello" Extension - Extracts the 8-byte HelloRetryRequest confirmation payload.
 //
 // Example:
-//   ext_data = [0x00, 0x24, 0xFE, 0x0D, ...], out_configs = []
-//   returns: ok = true, out_configs populated with ext_data
-fn parse_ech_hrr_retry_configs(ext_data: const u8[:], out_configs: u8[>..]&) -> bool {
-    guard ext_data.len >= 4 else { return false; }
-    var parsed_list = EchConfigList { .. };
-    guard parse_ech_config_list(ext_data, parsed_list) else { return false; }
-    return out_configs.try_set(ext_data);
+//   ext_data = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], out_confirm = [0; 8]
+//   returns: ok = true, out_confirm = [1, 2, 3, 4, 5, 6, 7, 8]
+fn parse_ech_hrr_confirmation(ext_data: const u8[:], out_confirm: u8[8]&) -> bool {
+    guard ext_data.len == rfc::ECH_ACCEPT_CONFIRM_LEN else {
+        core::secure_zeroize_slice(out_confirm[..]);
+        return false;
+    }
+    core::ct_copy_bytes(out_confirm[..], ext_data);
+    return true;
 }
 
 // Verifies the 8-byte ECH acceptance confirmation in ServerHello (RFC 9849 Section 7.2).
@@ -553,50 +641,81 @@ struct EchFsm {
     offered_config_id: u8               = 0,
 }
 
-// Handles ECH state machine progression on receiving ServerHello or HRR (RFC 9849 Section 6 & 7).
+fn ech_fsm_on_hrr(
+    fsm:              EchFsm&,
+    has_ech_ext:      bool,
+    ech_ext_data:     const u8[:],
+    expected_confirm: const u8[8]&,
+) -> bool {
+    guard !fsm.has_hrr else { return false; }
+    fsm.has_hrr = true;
+    if fsm.mode != EchHandshakeMode.Offered {
+        return !has_ech_ext;
+    }
+    if !has_ech_ext {
+        fsm.mode = EchHandshakeMode.Bypassed;
+        return true;
+    }
+    var hrr_conf: u8[8] = [0; 8];
+    guard parse_ech_hrr_confirmation(ech_ext_data, hrr_conf) else { return false; }
+    fsm.mode = if core::ct_eq_bytes(hrr_conf[..], expected_confirm[..]) {
+        EchHandshakeMode.Offered
+    } else {
+        EchHandshakeMode.Bypassed
+    };
+    return true;
+}
+
+// RFC 9849 Section 6.1.4: Determining ECH Acceptance - Advances ECH state machine on HelloRetryRequest extension or ServerHello.random[24..32].
 fn ech_fsm_on_server_hello(
     fsm:               EchFsm&,
     sh_type:           EchServerHelloType,
     has_ech_ext:       bool,
-    ech_ext_data:      const u8[:],
+    sh_confirm_or_ext: const u8[:],
     expected_confirm:  const u8[8]&,
     out_retry_configs: EchConfigList&,
 ) -> bool {
+    out_retry_configs.configs.clear();
+    if sh_type == EchServerHelloType.HelloRetryRequest {
+        return ech_fsm_on_hrr(fsm, has_ech_ext, sh_confirm_or_ext, expected_confirm);
+    }
+    // RFC 9849 Section 5: The "encrypted_client_hello" Extension - Non-HRR ServerHello MUST NOT contain an ECH extension.
+    guard !has_ech_ext else { return false; }
     if fsm.mode != EchHandshakeMode.Offered {
-        // If ECH was not offered, server MUST NOT send ECH extension
+        return true;
+    }
+    guard sh_confirm_or_ext.len == rfc::ECH_ACCEPT_CONFIRM_LEN else { return false; }
+    if verify_ech_acceptance_confirmation(sh_confirm_or_ext, expected_confirm) {
+        fsm.mode = EchHandshakeMode.Accepted;
+        return true;
+    }
+    // RFC 9849 Section 6.1.5: Handshaking with ClientHelloInner - ServerHello omitting ECH acceptance after HRR acceptance MUST abort.
+    guard !fsm.has_hrr else { return false; }
+    fsm.mode = EchHandshakeMode.Bypassed;
+    return true;
+}
+
+// RFC 9849 Section 6.1.6: Handshaking with ClientHelloOuter - Processes EncryptedExtensions retry_configs and rejects unsolicited ECH extensions.
+fn ech_fsm_on_encrypted_extensions(
+    fsm:               EchFsm&,
+    has_ech_ext:       bool,
+    ech_ext_data:      const u8[:],
+    out_retry_configs: EchConfigList&,
+) -> bool {
+    out_retry_configs.configs.clear();
+    if fsm.mode != EchHandshakeMode.Bypassed {
         return !has_ech_ext;
     }
-
-    if sh_type == EchServerHelloType.HelloRetryRequest {
-        guard !fsm.has_hrr else { return false; } // Strictly only ONE HRR allowed
-        if has_ech_ext {
-            // ECH rejected with retry_configs
-            guard parse_and_validate_ech_retry_configs(ech_ext_data, out_retry_configs) else { return false; }
-            fsm.has_hrr = true;
-            fsm.mode = EchHandshakeMode.RejectedWithRetry;
-            return true;
-        } else {
-            // ECH accepted in HRR; client continues ECH with ClientHello2
-            fsm.has_hrr = true;
-            fsm.mode = EchHandshakeMode.Offered;
-            return true;
-        }
-    } else {
-        // Regular ServerHello
-        if has_ech_ext {
-            // Must verify acceptance confirmation
-            guard verify_ech_acceptance_confirmation(ech_ext_data, expected_confirm) else { return false; }
-            fsm.mode = EchHandshakeMode.Accepted;
-            return true;
-        } else {
-            // ECH rejected / bypassed by server
-            // RFC 9849 Section 7.2: If ECH was accepted in HRR, server MUST confirm ECH acceptance in ServerHello.
-            // ServerHello omitting ECH extension when fsm.has_hrr is true is a fatal protocol violation!
-            guard !fsm.has_hrr else { return false; }
-            fsm.mode = EchHandshakeMode.Bypassed;
-            return true;
-        }
+    if !has_ech_ext {
+        return true;
     }
+    guard parse_and_validate_ech_retry_configs(ech_ext_data, out_retry_configs) else {
+        return false;
+    }
+    if out_retry_configs.configs.len > 0 {
+        fsm.mode = EchHandshakeMode.RejectedWithRetry;
+    }
+    return true;
 }
 
 // RFC 9849 Section 6.1 & Section 10.8: ECH Early Data (0-RTT) Placement Validation.
@@ -608,21 +727,34 @@ inline fn validate_ech_early_data_placement(ch_type: EchClientHelloType, has_ear
     return true;
 }
 
+fn alpn_offer_contains(offer_list: const u8[:], selected: const u8[:]) -> bool {
+    guard offer_list.len > 0 && selected.len > 0 else { return false; }
+    var matched = false;
+    var tok = core::make_byte_tokenizer(offer_list, ',');
+    while true {
+        let item, has_next = core::token_next(tok);
+        if !has_next { break; }
+        let trimmed = item.trim_lws();
+        guard trimmed.len >= 1 && trimmed.len <= 255 else { return false; }
+        if trimmed == selected {
+            matched = true;
+        }
+    }
+    return matched;
+}
+
 // ECH Outer ALPN Separation (rule from OpenSSL #33428; ECH context per RFC 9849)
-// When ECH is accepted, the selected ALPN must match the inner ALPN offer.
-// When ECH is bypassed or rejected, the selected ALPN must match the outer ALPN offer.
-// An outer connection MUST NOT accept a negotiated ALPN that was only offered in the inner list.
+// When ECH is accepted, the selected ALPN must match an inner ALPN offer.
+// When ECH is bypassed or rejected, the selected ALPN must match an outer ALPN offer.
 fn validate_ech_alpn_negotiation(
     is_ech_accepted: bool,
     selected_alpn:   const u8[:],
     inner_alpn:      const u8[:],
     outer_alpn:      const u8[:],
 ) -> bool {
-    guard selected_alpn.len > 0 else { return false; }
-    if is_ech_accepted {
-        return selected_alpn == inner_alpn;
-    } else {
-        guard outer_alpn.len > 0 else { return false; }
-        return selected_alpn == outer_alpn;
+    let active_offer = if is_ech_accepted { inner_alpn } else { outer_alpn };
+    if selected_alpn.len == 0 {
+        return active_offer.len == 0;
     }
+    return alpn_offer_contains(active_offer, selected_alpn);
 }

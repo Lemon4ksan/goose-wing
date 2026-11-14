@@ -75,9 +75,9 @@ fn test_multi_limiter_and_xds_hot_swap() {
     // Slot 0: IP rate limiter (high burst 10)
     // Slot 1: Route rate limiter (medium burst 5)
     // Slot 2: Post-JWT Subject rate limiter (strict 1 req/60s, burst 0)
-    let ok_s0 = wing::configure_tier_limiter(cfg, 0, wing::new_gcra_quota(10, core::secs(60), 10));
-    let ok_s1 = wing::configure_tier_limiter(cfg, 1, wing::new_gcra_quota(5, core::secs(60), 5));
-    let ok_s2 = wing::configure_tier_limiter(cfg, 2, wing::new_gcra_quota(1, core::secs(60), 0));
+    let ok_s0 = wing::configure_tier_limiter(cfg, 0, wing::new_gcra_quota(10, wing::secs(60), 10));
+    let ok_s1 = wing::configure_tier_limiter(cfg, 1, wing::new_gcra_quota(5, wing::secs(60), 5));
+    let ok_s2 = wing::configure_tier_limiter(cfg, 2, wing::new_gcra_quota(1, wing::secs(60), 0));
     print("tier_limiters_init: ", ok_s0 && ok_s1 && ok_s2, " len: ", cfg.tier_limiters.len);
 
     wire::clear_stage_bindings(cfg.wire_pipeline);

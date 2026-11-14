@@ -881,6 +881,16 @@ fn append_jwt_hmac_signature<B>(
     }
 }
 
+// RFC 7518 Section 3.2: HMAC with SHA-2 Functions - key must be at least hash output length
+inline fn hmac_min_key_len(alg: JwtAlg) -> i64 {
+    return match alg {
+        HS256 => rfc::HMAC_SHA256_MAC_LEN,
+        HS384 => rfc::HMAC_SHA384_MAC_LEN,
+        HS512 => rfc::HMAC_SHA512_MAC_LEN,
+        _ => 0,
+    };
+}
+
 // Signs a JWT using symmetric HMAC (HS256, HS384, HS512 per RFC 7518)
 fn sign_jwt_hmac<B>(
     header:     const JwtHeader&,
@@ -888,10 +898,9 @@ fn sign_jwt_hmac<B>(
     secret_key: const u8[:],
     out_token:  B&,
 ) -> bool {
-    guard header.alg == JwtAlg.HS256 || header.alg == JwtAlg.HS384 || header.alg == JwtAlg.HS512 else {
-        return false;
-    }
-    guard secret_key.len >= 16 else { return false; }
+    guard !(header.has_b64 && !header.b64) else { return false; }
+    let min_len = hmac_min_key_len(header.alg);
+    guard min_len > 0 && secret_key.len >= min_len else { return false; }
     out_token.clear();
 
     var token_buf: u8[..8192] = [];
@@ -907,10 +916,9 @@ fn sign_jwt_hmac(
     secret_key: const u8[:],
     out_token:  u8[>..]&,
 ) -> bool {
-    guard header.alg == JwtAlg.HS256 || header.alg == JwtAlg.HS384 || header.alg == JwtAlg.HS512 else {
-        return false;
-    }
-    guard secret_key.len >= 16 else { return false; }
+    guard !(header.has_b64 && !header.b64) else { return false; }
+    let min_len = hmac_min_key_len(header.alg);
+    guard min_len > 0 && secret_key.len >= min_len else { return false; }
     out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
     let signing_input = out_token[..];
@@ -935,7 +943,7 @@ fn sign_jwt_eddsa<B>(
     seed_key:  const u8[32],
     out_token: B&,
 ) -> bool {
-    guard header.alg == JwtAlg.EdDSA else { return false; }
+    guard !(header.has_b64 && !header.b64) && header.alg == JwtAlg.EdDSA else { return false; }
     out_token.clear();
 
     var token_buf: u8[..8192] = [];
@@ -951,7 +959,7 @@ fn sign_jwt_eddsa(
     seed_key:  const u8[32],
     out_token: u8[>..]&,
 ) -> bool {
-    guard header.alg == JwtAlg.EdDSA else { return false; }
+    guard !(header.has_b64 && !header.b64) && header.alg == JwtAlg.EdDSA else { return false; }
     out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
     let signing_input = out_token[..];
@@ -966,7 +974,7 @@ fn sign_jwt_es256<B>(
     priv_key:  const u8[32],
     out_token: B&,
 ) -> bool {
-    guard header.alg == JwtAlg.ES256 else { return false; }
+    guard !(header.has_b64 && !header.b64) && header.alg == JwtAlg.ES256 else { return false; }
     out_token.clear();
 
     var token_buf: u8[..8192] = [];
@@ -984,7 +992,7 @@ fn sign_jwt_es256(
     priv_key:  const u8[32],
     out_token: u8[>..]&,
 ) -> bool {
-    guard header.alg == JwtAlg.ES256 else { return false; }
+    guard !(header.has_b64 && !header.b64) && header.alg == JwtAlg.ES256 else { return false; }
     out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
     let sig64 = core::ecdsa_p256_sign(priv_key, out_token[..]);
@@ -1001,6 +1009,7 @@ fn sign_jwt_rs256<B>(
     d_be:      const u8[:],
     out_token: B&,
 ) -> bool {
+    guard !(header.has_b64 && !header.b64) else { return false; }
     guard header.alg == JwtAlg.RS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
 
@@ -1020,6 +1029,7 @@ fn sign_jwt_rs256(
     d_be:      const u8[:],
     out_token: u8[>..]&,
 ) -> bool {
+    guard !(header.has_b64 && !header.b64) else { return false; }
     guard header.alg == JwtAlg.RS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
@@ -1039,6 +1049,7 @@ fn sign_jwt_ps256<B>(
     salt:      const u8[:],
     out_token: B&,
 ) -> bool {
+    guard !(header.has_b64 && !header.b64) else { return false; }
     guard header.alg == JwtAlg.PS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
 
@@ -1059,6 +1070,7 @@ fn sign_jwt_ps256(
     salt:      const u8[:],
     out_token: u8[>..]&,
 ) -> bool {
+    guard !(header.has_b64 && !header.b64) else { return false; }
     guard header.alg == JwtAlg.PS256 && n_be.len >= 256 && n_be.len <= 512 else { return false; }
     out_token.clear();
     build_jwt_signing_input(header, claims, out_token);
@@ -1368,6 +1380,9 @@ fn verify_jwt_hmac_signature(
     signing_input: const u8[:],
     sig_bytes:     const u8[:],
 ) -> bool {
+    // RFC 7518 Section 3.2: HMAC with SHA-2 Functions - key must be at least hash output length
+    let min_len = hmac_min_key_len(alg);
+    guard min_len > 0 && secret_key.len >= min_len else { return false; }
     if alg == JwtAlg.HS256 {
         guard sig_bytes.len == rfc::HMAC_SHA256_MAC_LEN else { return false; }
         let expected = core::hmac_sha256(secret_key, signing_input);
@@ -1393,10 +1408,6 @@ fn verify_jwt_hmac(
     out_header:   JwtHeader&,
     out_claims:   JwtClaims&,
 ) -> JwtError {
-    guard secret_key.len >= 16 else {
-        return JwtError.SignatureInvalid;
-    }
-
     var dot1: i64 = 0;
     var dot2: i64 = 0;
     guard split_jwt_parts(token, dot1, dot2) else {
@@ -1413,8 +1424,12 @@ fn verify_jwt_hmac(
     let hdr_rule_err = verify_jwt_header_rules(temp_header, options);
     guard hdr_rule_err == JwtError.None else { return hdr_rule_err; }
 
-    if temp_header.alg != JwtAlg.HS256 && temp_header.alg != JwtAlg.HS384 && temp_header.alg != JwtAlg.HS512 {
+    let min_key_len = hmac_min_key_len(temp_header.alg);
+    if min_key_len == 0 {
         return JwtError.AlgorithmMismatch;
+    }
+    guard secret_key.len >= min_key_len else {
+        return JwtError.SignatureInvalid;
     }
 
     var sig_bytes: u8[..128] = [];
@@ -1556,7 +1571,7 @@ fn verify_jwt_es256(
     }
 
     let signing_input = token[..dot2];
-    guard core::ecdsa_p256_verify(public_key, signing_input, sig_bytes[..]) else {
+    guard core::ecdsa_p256_verify_p1363(public_key, signing_input, sig_bytes[..]) else {
         return JwtError.SignatureInvalid;
     }
 
@@ -1650,14 +1665,20 @@ fn verify_jwt_rsa(
 }
 
 // Verifies an RFC 7797 JWS Compact Serialization with unencoded payload ("b64": false) using HS256.
-// Locates the signature after the last '.' and verifies over `header_b64 || '.' || raw_payload`.
+// Locates the signature after the second '.' and verifies over `header_b64 || '.' || raw_payload`.
 fn verify_jws_unencoded_hs256(compact_token: const u8[:], secret: const u8[:]) -> bool {
-    guard secret.len >= 16 && compact_token.len > 0 && compact_token.len <= MAX_JWT_TOKEN_LEN else {
+    guard secret.len >= rfc::HMAC_SHA256_MAC_LEN &&
+        compact_token.len > 0 && compact_token.len <= MAX_JWT_TOKEN_LEN else {
         return false;
     }
     let dot1 = compact_token.index_of_byte('.');
     let last_dot = compact_token.last_index_of_byte('.');
     guard dot1 > 0 && dot1 <= MAX_JWT_HEADER_PART_LEN && last_dot > dot1 else {
+        return false;
+    }
+    let payload_start = core::add_sat_i64(dot1, 1);
+    // RFC 7515 Section 3.1: JWS Compact Serialization Overview - compact JWS must contain exactly two period characters
+    guard !compact_token[payload_start..last_dot].contains_byte('.') else {
         return false;
     }
     let hdr_b64 = compact_token[..dot1];

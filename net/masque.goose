@@ -123,41 +123,55 @@ fn format_connect_udp_path<B>(out: B&, target_host: const u8[:], target_port: u1
 }
 
 inline fn is_forbidden_connect_udp_host_byte(b: u8) -> bool {
-    return b <= 0x20 || b == 0x7F || b == '?' || b == '#' || b == '@' || b == ':' || b == '[' || b == ']';
+    return b <= 0x20 || b == 0x7F || b == '/' || b == '\\' || b == '?' || b == '#' || b == '@' || b == '[' || b == ']';
 }
 
-// Decodes and validates a MASQUE CONNECT-UDP target_host path segment (RFC 9298 §3).
+// Decodes and validates a MASQUE CONNECT-UDP target_host path segment (RFC 9298 Section 3).
+// Rolls back `out_host` on failure.
 //
 // Example:
 //   host_part = "2001%3Adb8%3A%3A1"
 //   returns: true, out_host = "2001:db8::1"
-fn decode_connect_udp_target_host(host_part: const u8[:], out_host: u8[..128]&) -> bool {
-    var pct_state: u8 = 0;
-    for b in host_part {
-        if pct_state == 0 {
-            if b == '%' {
-                pct_state = 1;
-            } else {
-                guard !is_forbidden_connect_udp_host_byte(b) && out_host.try_push(b) else { return false; }
+fn decode_connect_udp_target_host(host_part: const u8[:], out_host: u8[..256]&) -> bool {
+    let saved_len = out_host.len;
+    var committed = false;
+    defer if !committed { out_host.resize(saved_len); };
+    var idx: i64 = 0;
+    while idx < host_part.len {
+        let b = host_part[idx];
+        // RFC 9298 Section 3: Tunneling UDP over HTTP - literal colons in IPv6 MUST be percent-encoded
+        guard b != ':' else { return false; }
+        if b == '%' {
+            let p1 = core::add_sat_i64(idx, 1);
+            let p2 = core::add_sat_i64(idx, 2);
+            let p3 = core::add_sat_i64(idx, 3);
+            guard p2 < host_part.len &&
+                  core::is_ascii_hexdigit(host_part[p1]) &&
+                  core::is_ascii_hexdigit(host_part[p2]) else {
+                return false;
             }
-        } else if pct_state == 1 {
-            guard b == '3' else { return false; }
-            pct_state = 2;
+            let decoded, ok_hex = host_part[p1..p3].parse_u8_hex();
+            guard ok_hex && !is_forbidden_connect_udp_host_byte(decoded) && out_host.try_push(decoded) else {
+                return false;
+            }
+            idx = p3;
         } else {
-            guard core::to_lower_ascii_byte(b) == 'a' && out_host.try_push(':') else { return false; }
-            pct_state = 0;
+            guard !is_forbidden_connect_udp_host_byte(b) && out_host.try_push(b) else { return false; }
+            idx = core::add_sat_i64(idx, 1);
         }
     }
-    return pct_state == 0 && out_host.len > 0;
+    guard out_host.len > saved_len else { return false; }
+    committed = true;
+    return true;
 }
 
-// Parses a MASQUE CONNECT-UDP URI template path into (host, port, ok) (RFC 9298 §2).
+// Parses a MASQUE CONNECT-UDP URI template path into (host, port, ok) (RFC 9298 Section 3).
 //
 // Example:
 //   path = "/.well-known/masque/udp/1.1.1.1/53/"
 //   returns: host = "1.1.1.1", port = 53, ok = true
-fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
-    var out_host: u8[..128] = [];
+fn parse_connect_udp_path(path: const u8[:]) -> u8[..256], u16, bool {
+    var out_host: u8[..256] = [];
     var out_port: u16       = 0;
     let prefix = "/.well-known/masque/udp/";
     guard path.starts_with(prefix) else { return out_host, 0, false; }
@@ -174,7 +188,7 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..128], u16, bool {
     guard port_part.len > 0 && port_part.index_of_byte('/') < 0 else { return out_host, 0, false; }
 
     let p_val, parse_ok = port_part.parse_u32_dec();
-    // RFC 9298 §3: target_port MUST be an integer between 1 and 65535 (port 0 strictly forbidden)
+    // RFC 9298 Section 3: Tunneling UDP over HTTP - target_port MUST be between 1 and 65535
     guard parse_ok && p_val >= 1 && p_val <= 65535 else { return out_host, 0, false; }
     out_port = p_val as u16;
     return out_host, out_port, true;
@@ -420,7 +434,7 @@ fn decode_address_assign_entry(payload: const u8[:], cur: i64&, out_assign: IpAd
     return false;
 }
 
-// Decodes an ADDRESS_ASSIGN Capsule payload (RFC 9484 §4.7.1).
+// RFC 9484 Section 4.7.1: ADDRESS_ASSIGN Capsule - empty capsule withdraws all assigned addresses
 //
 // Example:
 //   payload = "\x01\x04\x0a\x00\x00\x01\x20"
@@ -428,7 +442,10 @@ fn decode_address_assign_entry(payload: const u8[:], cur: i64&, out_assign: IpAd
 //            assign.assigned_ip = [10, 0, 0, 1], assign.prefix_len = 32, ok = true
 fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool {
     var assign = IpAddressAssign { .. };
-    guard payload.len > 0 else { return assign, false; }
+    if payload.len == 0 {
+        assign.prefix_len = 0;
+        return assign, true;
+    }
     var cur: i64 = 0;
     while cur < payload.len {
         guard decode_address_assign_entry(payload, cur, assign) else { return assign, false; }
@@ -506,14 +523,16 @@ fn decode_route_entry(payload: const u8[:], cur: i64&, out_route: RouteAdvertise
     return false;
 }
 
-// Decodes a ROUTE_ADVERTISEMENT Capsule payload (RFC 9484 §4.7.3).
+// RFC 9484 Section 4.7.3: ROUTE_ADVERTISEMENT Capsule - empty capsule withdraws all advertised routes
 //
 // Example:
 //   payload = "\x04\x0a\x00\x00\x00\x0a\x00\x00\xff\x00"
 //   returns: route.ip_version = 4, start_ip = 10.0.0.0, end_ip = 10.0.0.255, ip_protocol = 0, ok = true
 fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisement, bool {
     var route = RouteAdvertisement { .. };
-    guard payload.len > 0 else { return route, false; }
+    if payload.len == 0 {
+        return route, true;
+    }
     var cur: i64 = 0;
     while cur < payload.len {
         guard decode_route_entry(payload, cur, route) else { return route, false; }
@@ -539,7 +558,7 @@ enum MasqueProtocolMode {
 struct MasqueTunnelConfig {
     proxy_url:          u8[..256]          = [],
     mode:               MasqueProtocolMode = MasqueProtocolMode.ConnectUdp,
-    target_host:        u8[..128]          = [],
+    target_host:        u8[..256]          = [],
     target_port:        u16                = 53,
     use_quic_datagrams: bool               = true,
 }
@@ -660,9 +679,27 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
     return ok;
 }
 
+inline fn is_all_zero_ip_bytes(ip: const u8[:]) -> bool {
+    for b in ip {
+        if b != 0 {
+            return false;
+        }
+    }
+    return true;
+}
+
+// RFC 9484 Section 4.7.1: ADDRESS_ASSIGN Capsule - empty payload removes all assigned addresses
 fn apply_assigned_ip(tunnel: MasqueTunnelSession&, payload: const u8[:]) -> bool {
     let assign, ok_a = decode_address_assign_capsule(payload);
-    guard ok_a && assign.assigned_ip.len > 0 else { return false; }
+    guard ok_a else { return false; }
+    if payload.len == 0 {
+        tunnel.assigned_ip.clear();
+        tunnel.assigned_prefix_len = 0;
+        return true;
+    }
+    guard assign.assigned_ip.len > 0 && !is_all_zero_ip_bytes(assign.assigned_ip[..]) else {
+        return false;
+    }
     guard tunnel.assigned_ip.try_set(assign.assigned_ip[..]) else { return false; }
     tunnel.assigned_prefix_len = assign.prefix_len;
     return true;
@@ -674,7 +711,10 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let c, ok_c = parse_http_capsule(capsule_wire);
-    guard ok_c else { return false; }
+    // RFC 9297 Section 3.2: The Capsule Protocol - capsule buffer must match exact Type+Length+Value size
+    guard ok_c && core::add_sat_i64(c.header_len as i64, c.payload.len) == capsule_wire.len else {
+        return false;
+    }
 
     if c.capsule_type == rfc::CAPSULE_DATAGRAM {
         let ctx_id, pkt, ok_pkt = parse_connect_udp_datagram(c.payload);

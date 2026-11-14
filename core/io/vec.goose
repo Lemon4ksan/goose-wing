@@ -8,6 +8,7 @@ namespace core;
 
 import std;
 import core.io.types;
+import core.math.arithmetic;
 
 const IOVEC_CAPACITY: i32 = 16;
 
@@ -83,17 +84,19 @@ fn iovec_push(arr: IoVecArray&, chunk: const u8[:]) -> bool {
         iovec_compact(arr);
     }
     guard arr.entries.try_push(IoVec { base: chunk }) else { return false; }
-    arr.total_bytes += chunk.len;
+    arr.total_bytes = add_sat_i64(arr.total_bytes, chunk.len);
     return true;
 }
 
 // ---- Slice Access & Serialization ----------------------------------------
 
 fn iovec_get(arr: const IoVecArray&, index: i32) -> const u8[:] {
-    let eff_idx = arr.head + index;
-    guard eff_idx >= 0 && eff_idx < (arr.entries.len as i32) else { return ""; }
+    guard index >= 0 && arr.head >= 0 else { return ""; }
+    let eff_idx = (arr.head as i64) + index;
+    guard eff_idx >= 0 && eff_idx < arr.entries.len else { return ""; }
     let raw = arr.entries[eff_idx].base;
     if index == 0 && arr.head_offset > 0 {
+        guard arr.head_offset <= raw.len else { return ""; }
         return raw[arr.head_offset..];
     }
     return raw;
@@ -110,6 +113,9 @@ fn iovec_flatten<B>(arr: const IoVecArray&, out: B&) {
 }
 
 fn iovec_copy_chunk(chunk: const u8[:], count: i64, dst: u8[:], dst_offset: i64) {
+    guard count > 0 && count <= chunk.len && dst_offset >= 0 && sub_sat_i64(dst.len, dst_offset) >= count else {
+        return;
+    }
     var k: i64 = 0;
     while k < count {
         let dst_pos = dst_offset + k;
@@ -136,12 +142,13 @@ fn iovec_copy_to(arr: const IoVecArray&, dst: u8[:]) -> i64 {
 // ---- Partial Write Consumption -------------------------------------------
 
 fn iovec_consume_head(arr: IoVecArray&, avail: i64, needed: i64) -> i64 {
+    guard avail > 0 && needed > 0 && arr.head >= 0 && arr.head < arr.entries.len else { return 0; }
     if needed < avail {
-        arr.head_offset += needed;
-        arr.total_bytes -= needed;
+        arr.head_offset = add_sat_i64(arr.head_offset, needed);
+        arr.total_bytes = max(0, sub_sat_i64(arr.total_bytes, needed));
         return needed;
     }
-    arr.total_bytes -= avail;
+    arr.total_bytes = max(0, sub_sat_i64(arr.total_bytes, avail));
     arr.head += 1;
     arr.head_offset = 0;
     return avail;
@@ -155,6 +162,7 @@ fn iovec_consume(arr: IoVecArray&, bytes_to_consume: i64) -> i64 {
         let head_chunk = iovec_get(arr, 0);
         let avail = head_chunk.len;
         let consumed = iovec_consume_head(arr, avail, rem);
+        guard consumed > 0 else { break; }
         consumed_total += consumed;
         rem -= consumed;
     }

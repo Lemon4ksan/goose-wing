@@ -187,7 +187,7 @@ fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64,
     if target_unix_ms <= now_unix_ms {
         return 0, true;
     }
-    return target_unix_ms - now_unix_ms, true;
+    return core::sub_sat_i64(target_unix_ms, now_unix_ms), true;
 }
 
 // Strict parser for RFC 9110 Retry-After header:
@@ -200,8 +200,10 @@ fn parse_retry_after_ms(
     header_raw:  const u8[:],
     now_unix_ms: i64,
 ) -> i64, bool {
-    let clean = header_raw.trim_ascii_space();
-    guard clean.len > 0 else { return 0, false; }
+    // RFC 9110 Section 10.2.3: Retry-After - trim OWS (SP / HTAB) and reject ASCII CTLs
+    let clean = header_raw.trim_lws();
+    let has_no_ctl = core::swar_find_ctl(clean) == clean.len && !clean.contains_byte(0x7F);
+    guard clean.len > 0 && has_no_ctl else { return 0, false; }
 
     let sec_ms, ok_sec = try_parse_retry_after_seconds(clean);
     if ok_sec {

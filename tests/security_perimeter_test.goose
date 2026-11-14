@@ -1444,7 +1444,7 @@ fn test_har_telemetry_and_isolation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_hardened_security_invariants(t: lit::T&) {
     t.run("Sharded GCRA Limiter Saturated Shard Fail-Closed Rejection") { sub =>
-        let quota = wing::new_gcra_quota(1, core::seconds(1), 1);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 1);
         var limiter = wing::new_sharded_limiter(quota);
         let now_ns: u64 = 10000000000;
 
@@ -1476,7 +1476,7 @@ fn test_hardened_security_invariants(t: lit::T&) {
     };
 
     t.run("Probabilistic GCRA Accurate Remaining Burst on Unsampled Requests") { sub =>
-        let quota = wing::new_gcra_quota(10, core::seconds(1), 10);
+        let quota = wing::new_gcra_quota(10, wing::secs(1), 10);
         var pgcra = wing::new_probabilistic_gcra(quota, 100);
         let now_ns: u64 = 1000000000;
 
@@ -1512,8 +1512,8 @@ fn test_hardened_security_invariants(t: lit::T&) {
 
     t.run("CryptoJar Output Buffer Re-use Clean Truncation") { sub =>
         var store = wing::KeyStore { .. };
-        var raw_key: u8[32] = [0x55; 32];
-        let slot = core::new_key_slot(1, raw_key[..], 1700000000);
+        let raw_key: u8[32] = [0x55; 32];
+        let slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
         wing::add_key(store, slot);
 
         var jar = wing::new_private_jar(store, false);
@@ -1552,8 +1552,8 @@ fn test_hardened_security_invariants(t: lit::T&) {
 fn test_security_audit_regressions(t: lit::T&) {
     t.run("FIND-SEC-001..004: CryptoJar Timestamp Overflow, Bounds, Key Revocation & Dead Code Integration") { sub =>
         var store = wing::KeyStore { .. };
-        var raw_key: u8[32] = [0x42; 32];
-        let slot1 = core::new_key_slot(1, raw_key[..], 1700000000);
+        let raw_key: u8[32] = [0x42; 32];
+        let slot1 = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
         sub.assert_true(wing::add_key(store, slot1), "add slot 1");
 
         // Duplicate key_id must not create unrevokable shadow slot
@@ -1780,17 +1780,25 @@ fn test_security_audit_regressions(t: lit::T&) {
             "PrivateTokenFoo scheme prefix rejected",
         );
 
-        // attach_private_token formats and sets Authorization header
+        // attach_private_token formats and sets Authorization header with '='-padded base64url
         var req_pt = wing::new_request("GET", "https://api.example.com/resource");
         wing::attach_private_token(req_pt, "tok_raw_bytes");
         sub.assert_bytes_eq(
             wing::header(req_pt, "Authorization"),
-            "PrivateToken token=\"dG9rX3Jhd19ieXRlcw\"",
-            "attach_private_token sets Authorization header",
+            "PrivateToken token=\"dG9rX3Jhd19ieXRlcw==\"",
+            "attach_private_token sets padded base64url Authorization header per RFC 9577 §2.2.2",
+        );
+
+        var sec_pst: u8[..128] = [];
+        wing::format_sec_private_state_token("tok_raw_bytes", sec_pst);
+        sub.assert_bytes_eq(
+            sec_pst[..],
+            "dG9rX3Jhd19ieXRlcw==",
+            "format_sec_private_state_token emits padded base64url",
         );
 
         // Probabilistic GCRA with huge cost_n must saturate and reject, not wrap to 0
-        let quota = wing::new_gcra_quota(10, core::seconds(1), 10);
+        let quota = wing::new_gcra_quota(10, wing::secs(1), 10);
         var pgcra = wing::new_probabilistic_gcra(quota, 20);
         let huge_dec = wing::gcra_check_n(quota, pgcra.cell, 0x4000000000000000, 0xFFFFFFFFFFFFFFF0);
         sub.assert_false(wing::is_allowed(huge_dec), "huge cost near u64::MAX rejected without saturation bypass");
@@ -1970,7 +1978,7 @@ fn test_goose2rfc_security_audit_regressions(t: lit::T&) {
         var chal_wire: u8[..256] = [];
         wing::marshal_token_challenge(chal, chal_wire);
         var b64_chal: u8[..384] = [];
-        core::base64url_encode(chal_wire[..], b64_chal);
+        wing::encode_padded_base64url(chal_wire[..], b64_chal);
 
         var out_chal = wing::TokenChallenge { .. };
         var out_key: u8[..128] = [];
@@ -2001,6 +2009,43 @@ fn test_goose2rfc_security_audit_regressions(t: lit::T&) {
         sub.assert_false(
             wing::parse_private_token_challenge(hdr_unquoted_eq[..], out_chal, out_key, max_age),
             "unquoted '=' in auth-param token rejected per RFC 9577 §2.1.2",
+        );
+
+        // 4. SEC-4: Padded base64url accepted while unpadded challenge / token-key rejected (RFC 9577 §2.1.2)
+        var chal_pad = wing::TokenChallenge {
+            token_type:  0x0002,
+            issuer_name: "issuer.example.com",
+            ..
+        };
+        var chal_pad_wire: u8[..256] = [];
+        wing::marshal_token_challenge(chal_pad, chal_pad_wire);
+        var padded_chal_b64:   u8[..384] = [];
+        var unpadded_chal_b64: u8[..384] = [];
+        wing::encode_padded_base64url(chal_pad_wire[..], padded_chal_b64);
+        core::base64url_encode(chal_pad_wire[..], unpadded_chal_b64);
+
+        var hdr_padded_ok: u8[..512] = "PrivateToken challenge=\"";
+        hdr_padded_ok.append(padded_chal_b64[..]);
+        hdr_padded_ok.append("\", token-key=\"AQIDBA==\", max-age=60");
+        sub.assert_true(
+            wing::parse_private_token_challenge(hdr_padded_ok[..], out_chal, out_key, max_age),
+            "padded base64url challenge and token-key accepted per RFC 9577 §2.1.2",
+        );
+
+        var hdr_unpadded_chal: u8[..512] = "PrivateToken challenge=\"";
+        hdr_unpadded_chal.append(unpadded_chal_b64[..]);
+        hdr_unpadded_chal.append("\", token-key=\"AQIDBA==\"");
+        sub.assert_false(
+            wing::parse_private_token_challenge(hdr_unpadded_chal[..], out_chal, out_key, max_age),
+            "unpadded base64url challenge rejected per RFC 9577 §2.1.2",
+        );
+
+        var hdr_unpadded_key: u8[..512] = "PrivateToken challenge=\"";
+        hdr_unpadded_key.append(padded_chal_b64[..]);
+        hdr_unpadded_key.append("\", token-key=\"AQIDBA\"");
+        sub.assert_false(
+            wing::parse_private_token_challenge(hdr_unpadded_key[..], out_chal, out_key, max_age),
+            "unpadded base64url token-key rejected per RFC 9577 §2.1.2",
         );
     };
 
@@ -2066,12 +2111,13 @@ fn test_goose2rfc_security_audit_regressions(t: lit::T&) {
 
         // CryptoJar append into non-empty buffer preserves prefix and enforces key expiration
         var store = wing::KeyStore { .. };
-        let kslot = core::KeySlot {
+        let kslot = wing::KeySlot {
             key_id:         7,
             master_key:     [0x42; 32],
             created_at_sec: 1000,
             expires_at_sec: 2000,
             revoked:        false,
+            ..
         };
         sub.assert_true(wing::add_key(store, kslot), "key added");
         let pjar = wing::PrivateJar { store: store, use_hkdf_aes: false };

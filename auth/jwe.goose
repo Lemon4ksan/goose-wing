@@ -225,10 +225,10 @@ fn jwe_open_dir_a256gcm<B>(
     var tag16: u8[16] = [0; 16];
     for i in 16 { tag16[i] = tag_dec[i]; }
 
-    guard core::aes256_gcm_open(cek, iv12, ct_dec[..], protected_b64, tag16, out_plaintext) else {
-        core::secure_zeroize_slice(out_plaintext[..]);
-        out_plaintext.clear();
-        return false;
-    }
-    return true;
+    // RFC 7518 Section 5.3: Content Encryption with AES GCM - verify authentication tag before copying into caller buffer
+    var pt_buf: u8[4096] = [0; 4096];
+    defer core::secure_zeroize_slice(pt_buf[..]);
+    let pt_len, ok_dec = core::aes256_gcm_open_into(cek, iv12, ct_dec[..], protected_b64, tag16, pt_buf[..]);
+    guard ok_dec else { return false; }
+    return out_plaintext.try_set(pt_buf[..pt_len]);
 }

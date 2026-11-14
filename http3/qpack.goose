@@ -93,6 +93,7 @@ struct BlockedStreamEntry {
     stream_id:        u64        = 0,
     req_insert_count: u64        = 0,
     is_push_promise:  bool       = false,
+    push_id:          u64        = 0,
     encoded_data:     u8[..4096] = [],
 }
 
@@ -116,7 +117,7 @@ struct QpackTable {
     decoder_stream_opened: bool                      = false,
     control_stream_opened: bool                      = false,
     blocked_streams:       BlockedStreamEntry[..128] = [],
-    unacked_sections:      UnackedSection[..16]      = [],
+    unacked_sections:      UnackedSection[..32]      = [],
     arena:                 u8[16384]                 = [0; 16384],
     arena_write_pos:       u32                       = 0,
     entries:               DynamicEntryDesc[..128]   = [],
@@ -473,11 +474,6 @@ inline fn is_qpack_token_char(c: u8) -> bool {
            c == '^' || c == '_' || c == '`' || c == '|' || c == '~';
 }
 
-inline fn validate_qpack_entry_name(name: const u8[:]) -> bool {
-    guard name.len > 0 && name.len <= 256 else { return false; }
-    return validate_qpack_field_name(name);
-}
-
 inline fn validate_qpack_field_val(val: const u8[:]) -> bool {
     for b in val {
         if (b < 0x20 && b != '\t') || b == 0x7F {
@@ -681,14 +677,31 @@ fn qpack_lookup_absolute(
     return false;
 }
 
+// RFC 9204 Section 4.5.4: Literal Field Line with Name Reference - Reads only the field name from the referenced dynamic table entry.
+fn qpack_lookup_name_absolute(
+    tbl:      const QpackTable&,
+    abs_idx:  u64,
+    out_name: u8[..256]&,
+) -> bool {
+    out_name.clear();
+    for &e in tbl.entries {
+        if e.abs_index == abs_idx {
+            let n_start = e.name_off as i64;
+            let n_end = n_start + e.name_len;
+            guard n_end <= 16384 else { return false; }
+            return out_name.try_set(tbl.arena[n_start..n_end]);
+        }
+    }
+    return false;
+}
+
 // Inserts an entry referencing a dynamic name by relative index.
 fn qpack_insert_named_dynamic(tbl: QpackTable&, rel_idx: u64, val: const u8[:]) -> bool {
     guard tbl.insert_count > rel_idx else { return false; }
     let target_abs = tbl.insert_count - rel_idx - 1;
 
-    var n_buf: u8[..256]  = [];
-    var v_buf: u8[..4096] = [];
-    guard qpack_lookup_absolute(tbl, target_abs, n_buf, v_buf) else { return false; }
+    var n_buf: u8[..256] = [];
+    guard qpack_lookup_name_absolute(tbl, target_abs, n_buf) else { return false; }
     return qpack_insert_literal(tbl, n_buf[..], val);
 }
 
@@ -833,29 +846,54 @@ fn qpack_increment_received(tbl: QpackTable&, inc: u64) {
     tbl.known_rcvd_count += inc;
 }
 
-// Checks if a new stream can be blocked according to SETTINGS_QPACK_BLOCKED_STREAMS (RFC 9204 §2.1.2).
-fn qpack_can_block_stream(tbl: const QpackTable&) -> bool {
-    return tbl.blocked_streams.len < tbl.max_blocked;
+inline fn has_blocked_stream_before(
+    entries:   const BlockedStreamEntry[:],
+    limit:     i64,
+    stream_id: u64,
+) -> bool {
+    for j in limit {
+        if entries[j].stream_id == stream_id {
+            return true;
+        }
+    }
+    return false;
 }
 
-// Records a blocked stream waiting for TotalNumberOfInserts to reach req_insert_count (RFC 9204 §2.1.2).
+// RFC 9204 Section 2.1.2: Blocked Streams - SETTINGS_QPACK_BLOCKED_STREAMS bounds distinct blocked streams.
+fn qpack_count_blocked_streams(tbl: const QpackTable&) -> u32 {
+    var count: u32 = 0;
+    for i in tbl.blocked_streams.len {
+        if !has_blocked_stream_before(tbl.blocked_streams[..], i, tbl.blocked_streams[i].stream_id) {
+            count++;
+        }
+    }
+    return count;
+}
+
+// Checks if a new stream can be blocked according to SETTINGS_QPACK_BLOCKED_STREAMS (RFC 9204 Section 2.1.2).
+fn qpack_can_block_stream(tbl: const QpackTable&) -> bool {
+    return qpack_count_blocked_streams(tbl) < tbl.max_blocked &&
+        tbl.blocked_streams.len < tbl.blocked_streams.cap;
+}
+
+// Records a blocked field section waiting for TotalNumberOfInserts to reach req_insert_count (RFC 9204 Section 2.1.2).
 fn qpack_block_stream(
     tbl:             QpackTable&,
     stream_id:       u64,
     ric:             u64,
     data:            const u8[:],
     is_push_promise: bool = false,
+    push_id:         u64  = 0,
 ) -> bool {
-    guard tbl.blocked_streams.len < tbl.max_blocked else { return false; }
-    for &b in tbl.blocked_streams {
-        if b.stream_id == stream_id && b.is_push_promise == is_push_promise {
-            return false;
-        }
+    if !qpack_is_stream_blocked(tbl, stream_id) {
+        guard qpack_can_block_stream(tbl) else { return false; }
     }
+    guard tbl.blocked_streams.len < tbl.blocked_streams.cap else { return false; }
     var entry = BlockedStreamEntry {
         stream_id:        stream_id,
         req_insert_count: ric,
         is_push_promise:  is_push_promise,
+        push_id:          push_id,
         ..
     };
     guard entry.encoded_data.try_set(data) else { return false; }
@@ -872,17 +910,19 @@ fn qpack_is_stream_blocked(tbl: const QpackTable&, stream_id: u64) -> bool {
     return false;
 }
 
-// Unblocks and removes a blocked stream entry once required insert count is satisfied.
+// Unblocks and removes all blocked entries for `stream_id`.
 fn qpack_unblock_stream(tbl: QpackTable&, stream_id: u64) -> bool {
+    var removed = false;
     var i = 0;
     while i < tbl.blocked_streams.len {
         if tbl.blocked_streams[i].stream_id == stream_id {
             tbl.blocked_streams.remove_at(i);
-            return true;
+            removed = true;
+            continue;
         }
         i++;
     }
-    return false;
+    return removed;
 }
 
 // ---- encoder / decoder instruction dispatch ------------------------------
@@ -1019,6 +1059,15 @@ inline fn validate_field_syntax(name: const u8[:], val: const u8[:]) -> bool {
     return validate_qpack_field_val(val);
 }
 
+inline fn try_push_header_field<F>(out_fields: F&, field: const HeaderField&) -> bool {
+    return out_fields.try_push(field);
+}
+
+inline fn try_push_header_field(out_fields: HeaderField[>..]&, field: const HeaderField&) -> bool {
+    out_fields.push(field);
+    return true;
+}
+
 inline fn append_header_field<F>(
     out_fields:  F&,
     name:        const u8[:],
@@ -1027,15 +1076,7 @@ inline fn append_header_field<F>(
 ) -> bool {
     var field = HeaderField { never_index: never_index, .. };
     guard field.name.try_set(name) && field.value.try_set(val) else { return false; }
-    out_fields.push(field);
-    return true;
-}
-
-inline fn check_field_budget(budget_left: u64&, out_len: i64, cost: u64) -> bool {
-    guard out_len < 128 else { return false; }
-    guard budget_left >= cost else { return false; }
-    budget_left -= cost;
-    return true;
+    return try_push_header_field(out_fields, field);
 }
 
 // Emits a parsed field line, enforcing SETTINGS_MAX_FIELD_SECTION_SIZE + 32-byte overhead.
@@ -1048,8 +1089,9 @@ fn emit_field_checked<F>(
 ) -> QpackError {
     guard validate_field_syntax(name, val) else { return QpackError.DecompressionFailed; }
     let cost = qpack_entry_cost(name.len as u64, val.len as u64);
-    guard check_field_budget(budget_left, out_fields.len, cost) else { return QpackError.HeaderListTooLarge; }
+    guard out_fields.len < 128 && budget_left >= cost else { return QpackError.HeaderListTooLarge; }
     guard append_header_field(out_fields, name, val, never_index) else { return QpackError.HeaderListTooLarge; }
+    budget_left -= cost;
     return QpackError.None;
 }
 
@@ -1145,9 +1187,8 @@ fn decode_qpack_field_line<F>(
         } else {
             guard base > name_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base - name_idx - 1;
-            guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.4
-            var dummy_v: u8[..4096] = [];
-            guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+            guard abs_idx < ric else { return QpackError.DecompressionFailed; }
+            guard qpack_lookup_name_absolute(tbl, abs_idx, n) else {
                 return QpackError.DecompressionFailed;
             }
             record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
@@ -1171,11 +1212,10 @@ fn decode_qpack_field_line<F>(
         guard ok_idx else { return QpackError.DecompressionFailed; }
         guard (0xFFFFFFFFFFFFFFFF - base) >= post_name_idx else { return QpackError.DecompressionFailed; }
         let abs_idx = base + post_name_idx;
-        guard abs_idx < ric else { return QpackError.DecompressionFailed; } // RFC 9204 §4.5.5
+        guard abs_idx < ric else { return QpackError.DecompressionFailed; }
 
-        var n:       u8[..256]  = [];
-        var dummy_v: u8[..4096] = [];
-        guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+        var n: u8[..256] = [];
+        guard qpack_lookup_name_absolute(tbl, abs_idx, n) else {
             return QpackError.DecompressionFailed;
         }
         record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
@@ -1238,8 +1278,8 @@ fn decode_qpack_section<F>(
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
     guard ric_err == QpackError.None else { return ric_err; }
 
-    // Blocked Streams constraint (RFC 9204 §2.1.2)
-    if ric > tbl.insert_count && (tbl.max_blocked == 0 || tbl.blocked_streams.len >= tbl.max_blocked) {
+    // RFC 9204 Section 2.1.2: Blocked Streams - Enforce distinct blocked stream limit.
+    if ric > tbl.insert_count && !qpack_can_block_stream(tbl) {
         return QpackError.BlockedStreamsExhausted;
     }
 
@@ -1285,7 +1325,7 @@ fn decode_qpack_section<F>(
     return QpackError.None;
 }
 
-// Decodes an Encoded Field Section or records the stream as blocked if RIC exceeds insert_count (RFC 9204 §2.1.2).
+// Decodes an Encoded Field Section or blocks the stream when RIC exceeds insert_count (RFC 9204 Section 2.1.2).
 //
 // Example:
 //   src = [0x00, 0x00, 0xd1], stream_id = 4
@@ -1297,27 +1337,38 @@ fn decode_or_block_qpack_section<F>(
     out_fields:        F&,
     max_field_section: u64  = 16384,
     is_push_promise:   bool = false,
+    push_id:           u64  = 0,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
-    guard !qpack_is_stream_blocked(tbl, stream_id) else {
-        return QpackError.StreamBlocked;
-    }
     let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
     guard ok_ric else { return QpackError.DecompressionFailed; }
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
     guard ric_err == QpackError.None else { return ric_err; }
 
-    if ric > tbl.insert_count {
-        guard qpack_can_block_stream(tbl) else {
+    let already_blocked = qpack_is_stream_blocked(tbl, stream_id);
+    if already_blocked || ric > tbl.insert_count {
+        if !already_blocked && !qpack_can_block_stream(tbl) {
             return QpackError.BlockedStreamsExhausted;
         }
-        guard qpack_block_stream(tbl, stream_id, ric, src, is_push_promise) else {
+        guard qpack_block_stream(tbl, stream_id, ric, src, is_push_promise, push_id) else {
             return QpackError.BlockedStreamsExhausted;
         }
         return QpackError.StreamBlocked;
     }
 
     return decode_qpack_section(tbl, src, out_fields, max_field_section);
+}
+
+inline fn is_valid_h3_path_bytes(val: const u8[:]) -> bool {
+    guard val.len > 0 && (val[0] == '/' || (val[0] == '*' && val.len == 1)) else {
+        return false;
+    }
+    for b in val {
+        if b <= 0x20 || b == 0x7F || b == '#' {
+            return false;
+        }
+    }
+    return true;
 }
 
 inline fn emit_qpack_field_to_map(
@@ -1369,7 +1420,7 @@ inline fn emit_qpack_field_to_map(
             return QpackError.None;
         }
         if name == ":path" {
-            let valid_p = val.len > 0 && (val[0] == '/' || (val[0] == '*' && val.len == 1));
+            let valid_p = is_valid_h3_path_bytes(val);
             guard !out_pseudo.has_path && valid_p && out_pseudo.path.try_set(val) else {
                 return QpackError.MessageError;
             }
@@ -1506,8 +1557,7 @@ fn decode_qpack_field_line_to_map(
             guard base > name_idx else { return QpackError.DecompressionFailed; }
             let abs_idx = base - name_idx - 1;
             guard abs_idx < ric else { return QpackError.DecompressionFailed; }
-            var dummy_v: u8[..4096] = [];
-            guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+            guard qpack_lookup_name_absolute(tbl, abs_idx, n) else {
                 return QpackError.DecompressionFailed;
             }
             record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
@@ -1532,9 +1582,8 @@ fn decode_qpack_field_line_to_map(
         let abs_idx = base + post_name_idx;
         guard abs_idx < ric else { return QpackError.DecompressionFailed; }
 
-        var n:       u8[..256]  = [];
-        var dummy_v: u8[..4096] = [];
-        guard qpack_lookup_absolute(tbl, abs_idx, n, dummy_v) else {
+        var n: u8[..256] = [];
+        guard qpack_lookup_name_absolute(tbl, abs_idx, n) else {
             return QpackError.DecompressionFailed;
         }
         record_dynamic_abs_used(abs_idx, max_dyn_abs_used, used_any_dyn);
@@ -1594,7 +1643,7 @@ fn decode_qpack_to_map(
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
     guard ric_err == QpackError.None else { return ric_err; }
 
-    if ric > tbl.insert_count && (tbl.max_blocked == 0 || tbl.blocked_streams.len >= tbl.max_blocked) {
+    if ric > tbl.insert_count && !qpack_can_block_stream(tbl) {
         return QpackError.BlockedStreamsExhausted;
     }
 
@@ -1641,7 +1690,7 @@ fn decode_qpack_to_map(
 }
 
 // Decodes an Encoded Field Section directly into `out_pseudo` and `out_headers`,
-// or records the stream as blocked if RIC exceeds `insert_count` (RFC 9204 §2.1.2).
+// or records the stream as blocked if RIC exceeds `insert_count` (RFC 9204 Section 2.1.2).
 //
 // Example:
 //   src = [0x00, 0x00, 0xD1], stream_id = 4
@@ -1655,16 +1704,14 @@ fn decode_or_block_qpack_to_map(
     max_field_section: u64 = 16384,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
-    guard !qpack_is_stream_blocked(tbl, stream_id) else {
-        return QpackError.StreamBlocked;
-    }
     let enc_ric, _, ok_ric = qpack_decode_int(src, 0, 8);
     guard ok_ric else { return QpackError.DecompressionFailed; }
     let ric, ric_err = decode_ric(enc_ric, tbl.insert_count, tbl.max_capacity_bytes);
     guard ric_err == QpackError.None else { return ric_err; }
 
-    if ric > tbl.insert_count {
-        guard qpack_can_block_stream(tbl) else {
+    let already_blocked = qpack_is_stream_blocked(tbl, stream_id);
+    if already_blocked || ric > tbl.insert_count {
+        if !already_blocked && !qpack_can_block_stream(tbl) {
             return QpackError.BlockedStreamsExhausted;
         }
         guard qpack_block_stream(tbl, stream_id, ric, src) else {
@@ -1676,6 +1723,55 @@ fn decode_or_block_qpack_to_map(
     return decode_qpack_to_map(tbl, src, out_pseudo, out_headers, max_field_section);
 }
 
+// Encodes a single field line with optional static index lookup, returning false on buffer overflow.
+fn try_encode_qpack_field<B>(
+    out:         B&,
+    name:        const u8[:],
+    val:         const u8[:],
+    use_huffman: bool = true,
+) -> bool {
+    let start_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(start_len); };
+
+    let s_idx, exact_s = find_qpack_static_field(name, val);
+    if exact_s {
+        guard internal::hpack_encode_int(out, s_idx, 6, 0xC0) else { return false; }
+        committed = true;
+        return true;
+    }
+
+    let s_idx_name, _ = find_qpack_static_field(name, "");
+    if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx_name as i64].name {
+        guard internal::hpack_encode_int(out, s_idx_name, 4, 0x50) &&
+              internal::encode_hpack_string_literal(out, val, use_huffman) else {
+            return false;
+        }
+        committed = true;
+        return true;
+    }
+
+    if use_huffman {
+        let huff_len = internal::huff_encoded_byte_len(name);
+        if huff_len < (name.len as u64) {
+            guard internal::hpack_encode_int(out, huff_len, 3, 0x28) &&
+                  internal::huff_encode_bytes(name, out) &&
+                  internal::encode_hpack_string_literal(out, val, use_huffman) else {
+                return false;
+            }
+            committed = true;
+            return true;
+        }
+    }
+    guard internal::hpack_encode_int(out, name.len as u64, 3, 0x20) &&
+          out.try_append(name) &&
+          internal::encode_hpack_string_literal(out, val, use_huffman) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
 // Encodes a single field line with optional static index lookup.
 fn encode_qpack_field<B>(
     out:         B&,
@@ -1683,48 +1779,7 @@ fn encode_qpack_field<B>(
     val:         const u8[:],
     use_huffman: bool = true,
 ) {
-    let start_len = out.len;
-    var committed = false;
-    defer if !committed { out.resize(start_len); };
-
-    let s_idx, exact_s = find_qpack_static_field(name, val);
-    if exact_s {
-        // Indexed Field Line, Static: 11xxxxxx (6-bit prefix)
-        guard internal::hpack_encode_int(out, s_idx, 6, 0xC0) else { return; }
-        committed = true;
-        return;
-    }
-
-    let s_idx_name, _ = find_qpack_static_field(name, "");
-    if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx_name as i64].name {
-        // Literal with Static Name: 01NTxxxx (4-bit prefix, T=1)
-        guard internal::hpack_encode_int(out, s_idx_name, 4, 0x50) &&
-              internal::encode_hpack_string_literal(out, val, use_huffman) else {
-            return;
-        }
-        committed = true;
-        return;
-    }
-
-    // Literal Name + Literal Value: 001NHxxx (3-bit prefix name)
-    if use_huffman {
-        let huff_len = internal::huff_encoded_byte_len(name);
-        if huff_len < (name.len as u64) {
-            guard internal::hpack_encode_int(out, huff_len, 3, 0x28) &&
-                  internal::huff_encode_bytes(name, out) &&
-                  internal::encode_hpack_string_literal(out, val, use_huffman) else {
-                return;
-            }
-            committed = true;
-            return;
-        }
-    }
-    guard internal::hpack_encode_int(out, name.len as u64, 3, 0x20) &&
-          out.try_append(name) &&
-          internal::encode_hpack_string_literal(out, val, use_huffman) else {
-        return;
-    }
-    committed = true;
+    let _ = try_encode_qpack_field(out, name, val, use_huffman);
 }
 
 // Searches the dynamic table for an entry matching `name` and `val` (or `name` only).
@@ -1820,6 +1875,76 @@ fn encode_qpack_dynamic_insert<B>(
     return tbl.insert_count - 1, true;
 }
 
+inline fn encode_qpack_dyn_index_line<B>(out_section: B&, abs_idx: u64, base: u64) -> bool {
+    if abs_idx < base {
+        let rel_idx = base - abs_idx - 1;
+        return internal::hpack_encode_int(out_section, rel_idx, 6, 0x80);
+    }
+    let post_idx = abs_idx - base;
+    return internal::hpack_encode_int(out_section, post_idx, 4, 0x10);
+}
+
+// RFC 9204 Section 3.2: Dynamic Table - Rolls back encoder and dynamic table state on field section overflow.
+fn try_encode_qpack_field_dynamic<B1, B2>(
+    tbl:              QpackTable&,
+    stream_id:        u64,
+    base:             u64,
+    name:             const u8[:],
+    val:              const u8[:],
+    out_section:      B1&,
+    out_enc_stream:   B2&,
+    max_dyn_abs_used: u64&,
+    used_any_dyn:     bool&,
+    use_huffman:      bool = true,
+) -> bool {
+    let saved_sec_len = out_section.len;
+    let saved_enc_len = out_enc_stream.len;
+    let saved_tbl = tbl;
+    let saved_max_dyn = max_dyn_abs_used;
+    let saved_used_dyn = used_any_dyn;
+    var committed = false;
+    defer if !committed {
+        out_section.resize(saved_sec_len);
+        out_enc_stream.resize(saved_enc_len);
+        tbl = saved_tbl;
+        max_dyn_abs_used = saved_max_dyn;
+        used_any_dyn = saved_used_dyn;
+    };
+
+    let s_idx, exact_s = find_qpack_static_field(name, val);
+    if exact_s {
+        guard internal::hpack_encode_int(out_section, s_idx, 6, 0xC0) else { return false; }
+        committed = true;
+        return true;
+    }
+
+    if tbl.capacity_bytes > 0 {
+        let dyn_abs, exact_d, _ = find_qpack_dynamic_field(tbl, name, val);
+        if exact_d && qpack_track_stream_ref(tbl, stream_id, dyn_abs) {
+            record_dynamic_abs_used(dyn_abs, max_dyn_abs_used, used_any_dyn);
+            guard encode_qpack_dyn_index_line(out_section, dyn_abs, base) else { return false; }
+            committed = true;
+            return true;
+        }
+
+        let new_abs, ins_ok = encode_qpack_dynamic_insert(tbl, name, val, out_enc_stream, use_huffman);
+        if ins_ok {
+            if qpack_track_stream_ref(tbl, stream_id, new_abs) {
+                record_dynamic_abs_used(new_abs, max_dyn_abs_used, used_any_dyn);
+                guard encode_qpack_dyn_index_line(out_section, new_abs, base) else { return false; }
+                committed = true;
+                return true;
+            }
+            out_enc_stream.resize(saved_enc_len);
+            tbl = saved_tbl;
+        }
+    }
+
+    guard try_encode_qpack_field(out_section, name, val, use_huffman) else { return false; }
+    committed = true;
+    return true;
+}
+
 // Encodes a single field line using Static Table, Dynamic Table lookup/insertion, or Literal fallback (RFC 9204 §4.5).
 fn encode_qpack_field_dynamic<B1, B2>(
     tbl:              QpackTable&,
@@ -1833,43 +1958,8 @@ fn encode_qpack_field_dynamic<B1, B2>(
     used_any_dyn:     bool&,
     use_huffman:      bool = true,
 ) {
-    let s_idx, exact_s = find_qpack_static_field(name, val);
-    if exact_s {
-        internal::hpack_encode_int(out_section, s_idx, 6, 0xC0);
-        return;
-    }
-
-    if tbl.capacity_bytes > 0 {
-        let dyn_abs, exact_d, _ = find_qpack_dynamic_field(tbl, name, val);
-        if exact_d {
-            let _ = qpack_track_stream_ref(tbl, stream_id, dyn_abs);
-            record_dynamic_abs_used(dyn_abs, max_dyn_abs_used, used_any_dyn);
-            if dyn_abs < base {
-                let rel_idx = base - dyn_abs - 1;
-                internal::hpack_encode_int(out_section, rel_idx, 6, 0x80);
-            } else {
-                let post_idx = dyn_abs - base;
-                internal::hpack_encode_int(out_section, post_idx, 4, 0x10);
-            }
-            return;
-        }
-
-        let prev_ic = tbl.insert_count;
-        let new_abs, ins_ok = encode_qpack_dynamic_insert(tbl, name, val, out_enc_stream, use_huffman);
-        if ins_ok {
-            let _ = qpack_track_stream_ref(tbl, stream_id, new_abs);
-            record_dynamic_abs_used(new_abs, max_dyn_abs_used, used_any_dyn);
-            if new_abs < base {
-                let rel_idx = base - new_abs - 1;
-                internal::hpack_encode_int(out_section, rel_idx, 6, 0x80);
-            } else {
-                let post_idx = new_abs - base;
-                internal::hpack_encode_int(out_section, post_idx, 4, 0x10);
-            }
-            return;
-        }
-        guard tbl.insert_count == prev_ic else { return; }
-    }
-
-    encode_qpack_field(out_section, name, val, use_huffman);
+    let _ = try_encode_qpack_field_dynamic(
+        tbl, stream_id, base, name, val,
+        out_section, out_enc_stream, max_dyn_abs_used, used_any_dyn, use_huffman,
+    );
 }

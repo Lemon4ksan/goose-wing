@@ -5,11 +5,16 @@
 namespace core;
 
 import std;
+import core.math;
 import core.compress.checksum;
 import core.compress.deflate;
 
 // Compresses src into out using RFC 1950 Zlib format with optional preset dictionary.
 fn zlib_compress_with_dict<B>(src: const u8[:], out: B&, level: i32 = 6, dict: const u8[:] = "") -> bool {
+    let out_start = out.len;
+    var committed = false;
+    defer if !committed { out.resize(out_start); };
+
     let cmf: u8 = 0x78; // CM=8 (deflate), CINFO=7 (32K window)
     var flg: u32 = if level >= 6 { 0x80 } else { 0x00 }; // FLEVEL
 
@@ -23,22 +28,23 @@ fn zlib_compress_with_dict<B>(src: const u8[:], out: B&, level: i32 = 6, dict: c
         flg += 31 - rem;
     }
 
-    out.push(cmf);
-    out.push((flg & 0xFF) as u8);
+    guard comp_try_push(out, cmf) && comp_try_push(out, (flg & 0xFF) as u8) else {
+        return false;
+    }
 
     if dict.len > 0 {
-        write_be_u32(out, adler32(dict));
+        guard comp_try_write_be_u32(out, adler32(dict)) else { return false; }
     }
 
     // Deflate compressed payload
     guard deflate_with_dict(src, out, level, dict) else {
-        out.clear();
         return false;
     }
 
     // 4-byte Adler-32 in Big-Endian
-    write_be_u32(out, adler32(src));
+    guard comp_try_write_be_u32(out, adler32(src)) else { return false; }
 
+    committed = true;
     return true;
 }
 
@@ -63,8 +69,9 @@ fn zlib_decompress_with_dict_limit<B>(
         return CompressError.InvalidHeader;
     }
 
+    let has_fdict = ((flg >> 5) & 1) != 0;
     var deflate_start: i64 = 2;
-    if ((flg >> 5) & 1) != 0 {
+    if has_fdict {
         guard src.len >= 10 else { return CompressError.InputBufferTruncated; }
         guard dict.len > 0 else { return CompressError.NeedDictionary; }
         guard adler32(dict) == read_be_u32(src, 2) else {
@@ -73,22 +80,28 @@ fn zlib_decompress_with_dict_limit<B>(
         deflate_start = 6;
     }
 
-    guard deflate_start + 4 <= src.len else { return CompressError.InputBufferTruncated; }
+    guard add_sat_i64(deflate_start, 4) <= src.len else { return CompressError.InputBufferTruncated; }
 
+    let eff_dict = if has_fdict { dict } else { "" };
+    let max_window_dist = shl_sat_u64(256, cmf >> 4) as i64;
     let out_start = out.len;
-    let err, consumed = inflate_ex(src[deflate_start..], out, dict, max_output_bytes);
+    var committed = false;
+    defer if !committed { out.resize(out_start); };
+
+    let err, consumed = inflate_ex(src[deflate_start..], out, eff_dict, max_output_bytes, max_window_dist);
     guard err == CompressError.None else { return err; }
 
-    let adler_offset = deflate_start + consumed;
-    guard adler_offset + 4 <= src.len else { return CompressError.InputBufferTruncated; }
+    let adler_offset = add_sat_i64(deflate_start, consumed);
+    guard add_sat_i64(adler_offset, 4) <= src.len else { return CompressError.InputBufferTruncated; }
 
     guard adler32(out[out_start..]) == read_be_u32(src, adler_offset) else {
         return CompressError.ChecksumMismatch;
     }
     // RFC 1950 exact finality: Zlib streams do not concatenate; trailing data indicates bitstream corruption
-    guard adler_offset + 4 == src.len else {
+    guard add_sat_i64(adler_offset, 4) == src.len else {
         return CompressError.CorruptedBitstream;
     }
+    committed = true;
     return CompressError.None;
 }
 

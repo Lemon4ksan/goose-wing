@@ -58,9 +58,9 @@ const WS_OPCODE_LUT: const bool[256] = [
     false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
 ];
 
-// RFC 6455 Section 5.5: Control Frames - Checks if an opcode represents a control frame (bit 3 set).
+// RFC 6455 Section 5.2: Base Framing Protocol - Checks if a 4-bit WebSocket opcode is in the control range (0x08..0x0F).
 checkfree inline fn is_ws_control_opcode(opcode: u8) -> bool {
-    return (opcode & 0x08) != 0;
+    return (opcode & 0xF8) == 0x08;
 }
 
 // RFC 6455 Section 5.2: Base Framing Protocol - Checks if an opcode is a valid defined WebSocket opcode.

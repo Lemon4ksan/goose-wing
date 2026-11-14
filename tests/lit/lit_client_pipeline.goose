@@ -577,7 +577,7 @@ fn test_f007_f008_policy_and_early_data() {
         max_ns:  -50,
         factor:  0.5,
     };
-    assert(wing::delay(b, 2).nanos >= 0);
+    assert(wing::delay(b, 2) >= 0);
 
     var lim = wing::RateLimiter {
         rate_per_sec:        -5.0,

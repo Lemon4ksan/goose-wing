@@ -21,6 +21,7 @@ const CHUNK_STATE_EXTENSION_EXPECTS_LF:   u64 = 0x0200000000000000;
 const CHUNK_STATE_EXTENSION_IN_NAME:      u64 = 0x0100000000000000;
 const CHUNK_STATE_EXTENSION_EXPECTS_VAL:  u64 = 0x0020000000000000;
 const CHUNK_STATE_EXTENSION_ESCAPED:      u64 = 0x0010000000000000;
+const CHUNK_STATE_EXTENSION_DONE_QUOTED:  u64 = 0x0008000000000000;
 const CHUNK_STATE_SEEN_HEX:               u64 = 0x0080000000000000;
 const CHUNK_STATE_SEEN_BWS:               u64 = 0x0040000000000000;
 
@@ -31,6 +32,7 @@ const CHUNK_STATE_EXTENSION_ALL_FLAGS: u64 =
     CHUNK_STATE_EXTENSION_EXPECTS_VAL |
     CHUNK_STATE_EXTENSION_QUOTED |
     CHUNK_STATE_EXTENSION_ESCAPED |
+    CHUNK_STATE_EXTENSION_DONE_QUOTED |
     CHUNK_STATE_EXTENSION_EXPECTS_LF |
     CHUNK_STATE_SEEN_HEX |
     CHUNK_STATE_SEEN_BWS;
@@ -39,7 +41,8 @@ const CHUNK_STATE_EXTENSION_INCOMPLETE_FLAGS: u64 =
     CHUNK_STATE_EXTENSION_EXPECTS_NAME |
     CHUNK_STATE_EXTENSION_EXPECTS_VAL |
     CHUNK_STATE_EXTENSION_QUOTED |
-    CHUNK_STATE_EXTENSION_ESCAPED;
+    CHUNK_STATE_EXTENSION_ESCAPED |
+    CHUNK_STATE_SEEN_BWS;
 
 const CHUNK_STATE_SIZE_MASK:     u64 = 0x0000FFFFFFFFFFFF;
 const CHUNK_STATE_SIZE_OVERFLOW: u64 = 0x0000F00000000000;
@@ -320,13 +323,15 @@ inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool
                 dec.state |= CHUNK_STATE_EXTENSION_ESCAPED;
             } else if c == '"' {
                 dec.state &= ~CHUNK_STATE_EXTENSION_QUOTED;
-                dec.state |= CHUNK_STATE_SEEN_BWS;
+                dec.state |= CHUNK_STATE_EXTENSION_DONE_QUOTED;
             }
-        } else if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 {
+        } else if (dec.state & (CHUNK_STATE_SEEN_BWS | CHUNK_STATE_EXTENSION_DONE_QUOTED)) != 0 {
             if c == ';' {
-                dec.state &= ~CHUNK_STATE_SEEN_BWS;
+                dec.state &= ~(CHUNK_STATE_SEEN_BWS | CHUNK_STATE_EXTENSION_DONE_QUOTED);
                 dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
-            } else if c != ' ' && c != '\t' {
+            } else if c == ' ' || c == '\t' {
+                dec.state |= CHUNK_STATE_SEEN_BWS;
+            } else {
                 dec.state = CHUNK_STATE_IS_ERROR;
                 return false;
             }

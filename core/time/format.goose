@@ -5,6 +5,10 @@
 namespace core;
 
 import std;
+import core.math.arithmetic;
+import core.bytes.case;
+import core.bytes.trim;
+import core.bytes.search;
 
 // ---- codecs: RFC 3339 & RFC 9110 HTTP-Date (public API) --------------------
 
@@ -88,13 +92,22 @@ fn format<B>(out: B&, weekday_val: Weekday) {
     out.append(weekday_name(weekday_val));
 }
 
+inline fn is_valid_rfc3339_clock(hour_val: i64, min_val: i64, sec_val: i64, offset_val: i32) -> bool {
+    guard hour_val >= 0 && hour_val <= 23 && min_val >= 0 && min_val <= 59 else { return false; }
+    if sec_val >= 0 && sec_val < 60 { return true; }
+    guard sec_val == 60 else { return false; }
+    let hm_secs = add_sat_i64(mul_sat_i64(hour_val, 3600), mul_sat_i64(min_val, 60));
+    let utc_hm = sub_sat_i64(hm_secs, offset_val);
+    return rem_euclid_i64(utc_hm, 86400) == 86340;
+}
+
 // Parses an RFC 3339 / ISO 8601 string into a Time.
 //
 // Example:
 //   raw_str = "2026-10-30T16:00:00Z"
 //   returns: Time { ... }, ok = true
 fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
-    let text = trim(raw_str);
+    let text = raw_str;
     guard text.len >= 19 else { return Time { .. }, false; }
 
     let is_delim = text[4] == '-' && text[7] == '-' &&
@@ -113,20 +126,19 @@ fn parse_rfc3339(raw_str: const u8[:]) -> Time, bool {
     let valid_date = year_val >= 1 && month_val >= 1 && month_val <= 12 &&
         day_val >= 1 && day_val <= days_in_month(year_val, month_val);
     guard valid_date else { return Time { .. }, false; }
-    let valid_time = hour_val >= 0 && hour_val <= 23 &&
-        min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60;
-    guard valid_time else { return Time { .. }, false; }
 
     let nsec_val, cursor, ok_frac = parse_fractional_nanos(text, 19);
-    guard ok_frac else { return Time { .. }, false; }
+    guard ok_frac && cursor < text.len else { return Time { .. }, false; }
 
-    guard cursor < text.len else { return Time { .. }, false; }
-    let parsed_offset, ok_offset = parse_timezone_offset(text[cursor..]);
-    guard ok_offset else { return Time { .. }, false; }
-    let offset_val = parsed_offset;
+    let offset_val, ok_offset = parse_timezone_offset(text[cursor..]);
+    guard ok_offset && is_valid_rfc3339_clock(hour_val, min_val, sec_val, offset_val) else {
+        return Time { .. }, false;
+    }
 
     let days_count = civil_to_days(year_val, month_val, day_val);
-    let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val - offset_val;
+    let hm_secs = add_sat_i64(mul_sat_i64(hour_val, 3600), mul_sat_i64(min_val, 60));
+    let clock_secs = sub_sat_i64(add_sat_i64(hm_secs, sec_val), offset_val);
+    let total_secs = add_sat_i64(mul_sat_i64(days_count, 86400), clock_secs);
 
     return Time {
         wall_sec:  total_secs,
@@ -165,7 +177,7 @@ fn format_http<B>(out: B&, time_val: Time) {
 //   raw_str = "Sun, 06 Nov 1994 08:49:37 GMT"
 //   returns: Time { ... }, ok = true
 fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
-    let text = trim(raw_str);
+    let text = trim_lws(raw_str);
     guard text.len >= 24 else { return Time { .. }, false; }
 
     var comma_idx = -1;
@@ -182,11 +194,13 @@ fn parse_http_date(raw_str: const u8[:]) -> Time, bool {
             if rest[scan_idx] == '-' { has_dash = true; break; }
         }
         if has_dash {
-            guard is_valid_weekday_name(day_prefix) else { return Time { .. }, false; }
-            return parse_rfc850_date(rest);
+            let expected_wday = parse_weekday_name(day_prefix);
+            guard expected_wday >= 0 else { return Time { .. }, false; }
+            return parse_rfc850_date(rest, expected_wday);
         }
-        guard is_valid_weekday_short(day_prefix) else { return Time { .. }, false; }
-        return parse_imf_fixdate(rest);
+        let expected_wday = parse_weekday_short(day_prefix);
+        guard expected_wday >= 0 else { return Time { .. }, false; }
+        return parse_imf_fixdate(rest, expected_wday);
     }
 
     return parse_asctime_date(text);
@@ -247,32 +261,55 @@ fn parse_digits(str_val: const u8[:]) -> i64, bool {
     return val, true;
 }
 
-fn is_valid_weekday_short(token: const u8[:]) -> bool {
-    guard token.len == 3 else { return false; }
-    var clean_buf: u8[3] = [0; 3];
-    for char_idx in 3 {
-        let char_byte = token[char_idx];
-        clean_buf[char_idx] = if char_byte >= 'A' && char_byte <= 'Z' { char_byte + 32 } else { char_byte };
+// Example:
+//   str_val = "9223372036854775808", limit = 0x8000000000000000
+//   returns: 9223372036854775808, ok = true
+fn parse_digits_bounded_u64(str_val: const u8[:], limit: u64) -> u64, bool {
+    guard str_val.len > 0 else { return 0, false; }
+    var val: u64 = 0;
+    for ch in str_val {
+        guard ch >= '0' && ch <= '9' else { return 0, false; }
+        let digit_val = sub_sat_u64(ch, 48);
+        let max_val, _ = div_rem_u64(sub_sat_u64(limit, digit_val), 10);
+        guard digit_val <= limit && val <= max_val else { return 0, false; }
+        val = add_sat_u64(mul_sat_u64(val, 10), digit_val);
     }
-    let s = clean_buf[..];
-    return s == "sun" || s == "mon" || s == "tue" || s == "wed" || s == "thu" || s == "fri" || s == "sat";
+    return val, true;
 }
 
-fn is_valid_weekday_name(token: const u8[:]) -> bool {
-    guard token.len >= 6 && token.len <= 9 else { return false; }
-    var clean_buf: u8[9] = [0; 9];
-    for char_idx in token.len {
-        let char_byte = token[char_idx];
-        clean_buf[char_idx] = if char_byte >= 'A' && char_byte <= 'Z' { char_byte + 32 } else { char_byte };
-    }
-    let s = clean_buf[..token.len];
-    return s == "sunday" || s == "monday" || s == "tuesday" ||
-           s == "wednesday" || s == "thursday" || s == "friday" || s == "saturday";
+// Example:
+//   token = "Sun"
+//   returns: 0
+fn parse_weekday_short(token: const u8[:]) -> i64 {
+    guard token.len == 3 else { return -1; }
+    if eq_ascii_fold(token, "sun") { return 0; }
+    if eq_ascii_fold(token, "mon") { return 1; }
+    if eq_ascii_fold(token, "tue") { return 2; }
+    if eq_ascii_fold(token, "wed") { return 3; }
+    if eq_ascii_fold(token, "thu") { return 4; }
+    if eq_ascii_fold(token, "fri") { return 5; }
+    if eq_ascii_fold(token, "sat") { return 6; }
+    return -1;
+}
+
+// Example:
+//   token = "Sunday"
+//   returns: 0
+fn parse_weekday_name(token: const u8[:]) -> i64 {
+    guard token.len >= 6 && token.len <= 9 else { return -1; }
+    if eq_ascii_fold(token, "sunday") { return 0; }
+    if eq_ascii_fold(token, "monday") { return 1; }
+    if eq_ascii_fold(token, "tuesday") { return 2; }
+    if eq_ascii_fold(token, "wednesday") { return 3; }
+    if eq_ascii_fold(token, "thursday") { return 4; }
+    if eq_ascii_fold(token, "friday") { return 5; }
+    if eq_ascii_fold(token, "saturday") { return 6; }
+    return -1;
 }
 
 fn duration_unit_multiplier(unit_str: const u8[:]) -> i64, bool {
     if unit_str == "ns" { return NANOSECOND, true; }
-    if unit_str == "us" || unit_str == "us" || unit_str == "\xc2\xb5s" { return MICROSECOND, true; }
+    if unit_str == "us" || unit_str == "\xc2\xb5s" || unit_str == "\xce\xbcs" { return MICROSECOND, true; }
     if unit_str == "ms" { return MILLISECOND, true; }
     if unit_str == "s" { return SECOND, true; }
     if unit_str == "m" { return MINUTE, true; }
@@ -304,9 +341,11 @@ fn parse_scaled_fraction(fraction_str: const u8[:], unit_mult: i64) -> i64, bool
 }
 
 // Example:
-//   num_str = "1.5", unit_mult = SECOND
+//   num_str = "1.5", unit_mult = SECOND, max_mag = 0x7FFFFFFFFFFFFFFF
 //   returns: 1500000000, ok = true
-fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
+fn parse_duration_component(num_str: const u8[:], unit_mult: i64, max_mag: u64) -> u64, bool {
+    guard unit_mult > 0 else { return 0, false; }
+    let mult_u64 = unit_mult as u64;
     var dot_pos = -1;
     for scan_idx in num_str.len {
         if num_str[scan_idx] == '.' {
@@ -315,30 +354,27 @@ fn parse_duration_component(num_str: const u8[:], unit_mult: i64) -> i64, bool {
         }
     }
 
-    let max_i64 = 9223372036854775807;
-
     if dot_pos < 0 {
-        let int_val, int_ok = parse_digits(num_str);
+        let int_val, int_ok = parse_digits_bounded_u64(num_str, max_mag / mult_u64);
         guard int_ok else { return 0, false; }
-        guard int_val <= max_i64 / unit_mult else { return 0, false; }
-        return int_val * unit_mult, true;
+        return int_val * mult_u64, true;
     }
 
     let whole_str = num_str[..dot_pos];
     let fraction_str = num_str[dot_pos + 1..];
-    guard (whole_str.len > 0 || fraction_str.len > 0) && fraction_str.len > 0 else { return 0, false; }
+    guard fraction_str.len > 0 else { return 0, false; }
 
-    var whole_nanos: i64 = 0;
+    var whole_nanos: u64 = 0;
     if whole_str.len > 0 {
-        let whole_val, ok_whole = parse_digits(whole_str);
+        let whole_val, ok_whole = parse_digits_bounded_u64(whole_str, max_mag / mult_u64);
         guard ok_whole else { return 0, false; }
-        guard whole_val <= max_i64 / unit_mult else { return 0, false; }
-        whole_nanos = whole_val * unit_mult;
+        whole_nanos = whole_val * mult_u64;
     }
 
-    let fraction_nanos, ok_frac = parse_scaled_fraction(fraction_str, unit_mult);
+    let fraction_nanos_i64, ok_frac = parse_scaled_fraction(fraction_str, unit_mult);
     guard ok_frac else { return 0, false; }
-    guard whole_nanos <= max_i64 - fraction_nanos else { return 0, false; }
+    let fraction_nanos = fraction_nanos_i64 as u64;
+    guard whole_nanos <= max_mag - fraction_nanos else { return 0, false; }
     return whole_nanos + fraction_nanos, true;
 }
 
@@ -406,34 +442,29 @@ fn parse_timezone_offset(tz_text: const u8[:]) -> i32, bool {
 //   returns: 1
 fn parse_month_name(token: const u8[:]) -> i64 {
     guard token.len == 3 else { return 0; }
-    var clean_buf: u8[3] = [0; 3];
-    for char_idx in 3 {
-        let char_byte = token[char_idx];
-        clean_buf[char_idx] = if char_byte >= 'A' && char_byte <= 'Z' { char_byte + 32 } else { char_byte };
-    }
-    let short_str = clean_buf[..];
-    if short_str == "jan" { return 1; }
-    if short_str == "feb" { return 2; }
-    if short_str == "mar" { return 3; }
-    if short_str == "apr" { return 4; }
-    if short_str == "may" { return 5; }
-    if short_str == "jun" { return 6; }
-    if short_str == "jul" { return 7; }
-    if short_str == "aug" { return 8; }
-    if short_str == "sep" { return 9; }
-    if short_str == "oct" { return 10; }
-    if short_str == "nov" { return 11; }
-    if short_str == "dec" { return 12; }
+    if eq_ascii_fold(token, "jan") { return 1; }
+    if eq_ascii_fold(token, "feb") { return 2; }
+    if eq_ascii_fold(token, "mar") { return 3; }
+    if eq_ascii_fold(token, "apr") { return 4; }
+    if eq_ascii_fold(token, "may") { return 5; }
+    if eq_ascii_fold(token, "jun") { return 6; }
+    if eq_ascii_fold(token, "jul") { return 7; }
+    if eq_ascii_fold(token, "aug") { return 8; }
+    if eq_ascii_fold(token, "sep") { return 9; }
+    if eq_ascii_fold(token, "oct") { return 10; }
+    if eq_ascii_fold(token, "nov") { return 11; }
+    if eq_ascii_fold(token, "dec") { return 12; }
     return 0;
 }
 
 fn make_validated_civil_time(
-    year_val:  i64,
-    month_val: i64,
-    day_val:   i64,
-    hour_val:  i64,
-    min_val:   i64,
-    sec_val:   i64,
+    year_val:      i64,
+    month_val:     i64,
+    day_val:       i64,
+    hour_val:      i64,
+    min_val:       i64,
+    sec_val:       i64,
+    expected_wday: i64,
 ) -> Time, bool {
     guard year_val >= 1 else { return Time { .. }, false; }
     guard month_val >= 1 && month_val <= 12 else { return Time { .. }, false; }
@@ -441,18 +472,24 @@ fn make_validated_civil_time(
     let valid_clock = hour_val >= 0 && hour_val <= 23 &&
         min_val >= 0 && min_val <= 59 && sec_val >= 0 && sec_val <= 60;
     guard valid_clock else { return Time { .. }, false; }
+    guard sec_val < 60 || (hour_val == 23 && min_val == 59) else { return Time { .. }, false; }
 
     let days_count = civil_to_days(year_val, month_val, day_val);
-    let total_secs = days_count * 86400 + hour_val * 3600 + min_val * 60 + sec_val;
+    let wday = rem_euclid_i64(add_sat_i64(rem_euclid_i64(days_count, 7), 4), 7);
+    guard wday == expected_wday else { return Time { .. }, false; }
+
+    let hm_secs = add_sat_i64(mul_sat_i64(hour_val, 3600), mul_sat_i64(min_val, 60));
+    let total_secs = add_sat_i64(mul_sat_i64(days_count, 86400), add_sat_i64(hm_secs, sec_val));
     return unix(total_secs, 0), true;
 }
 
 // Example:
-//   rest = "06 Nov 1994 08:49:37 GMT"
+//   rest = "06 Nov 1994 08:49:37 GMT", expected_wday = 0
 //   returns: Time { ... }, ok = true
-fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
+fn parse_imf_fixdate(rest: const u8[:], expected_wday: i64) -> Time, bool {
     let is_imf = rest.len == 24 && rest[2] == ' ' && rest[6] == ' ' &&
-                 rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' && rest[20..24] == " GMT";
+                 rest[11] == ' ' && rest[14] == ':' && rest[17] == ':' &&
+                 eq_ascii_fold(rest[20..24], " GMT");
     guard is_imf else { return Time { .. }, false; }
     let day_val, ok_day = parse_digits(rest[..2]);
     let month_val = parse_month_name(rest[3..6]);
@@ -464,47 +501,53 @@ fn parse_imf_fixdate(rest: const u8[:]) -> Time, bool {
     guard ok_day && month_val > 0 && ok_year && ok_hour && ok_min && ok_sec else {
         return Time { .. }, false;
     }
-    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
+    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val, expected_wday);
+}
+
+inline fn resolve_rfc850_two_digit_year(parsed_year: i64, ref_year: i64) -> i64 {
+    let century = mul_sat_i64(div_euclid_i64(ref_year, 100), 100);
+    let candidate = add_sat_i64(century, parsed_year);
+    if candidate > add_sat_i64(ref_year, 50) {
+        return sub_sat_i64(candidate, 100);
+    }
+    if candidate < sub_sat_i64(ref_year, 49) {
+        return add_sat_i64(candidate, 100);
+    }
+    return candidate;
 }
 
 // Example:
-//   rest = "Sunday, 06-Nov-94 08:49:37 GMT"
+//   rest = "06-Nov-94 08:49:37 GMT", expected_wday = 0
 //   returns: Time { ... }, ok = true
-fn parse_rfc850_date(rest: const u8[:]) -> Time, bool {
-    var first_dash = -1;
-    for scan_idx in rest.len {
-        if rest[scan_idx] == '-' { first_dash = scan_idx; break; }
-    }
+fn parse_rfc850_date(rest: const u8[:], expected_wday: i64) -> Time, bool {
+    let first_dash = index_of_byte(rest, '-');
     guard first_dash == 2 else { return Time { .. }, false; }
 
     let day_val, ok_day = parse_digits(rest[..first_dash]);
     guard ok_day else { return Time { .. }, false; }
 
-    let after_day = rest[first_dash + 1..];
-    var second_dash = -1;
-    for scan_idx in after_day.len {
-        if after_day[scan_idx] == '-' { second_dash = scan_idx; break; }
-    }
+    let after_day = rest[add_sat_i64(first_dash, 1)..];
+    let second_dash = index_of_byte(after_day, '-');
     guard second_dash == 3 else { return Time { .. }, false; }
 
     let month_val = parse_month_name(after_day[..second_dash]);
     guard month_val > 0 else { return Time { .. }, false; }
 
-    let after_month = after_day[second_dash + 1..];
+    let after_month = after_day[add_sat_i64(second_dash, 1)..];
     let is_rfc850 = after_month.len == 15 && after_month[2] == ' ' && after_month[5] == ':' &&
-        after_month[8] == ':' && after_month[11..15] == " GMT";
+        after_month[8] == ':' && eq_ascii_fold(after_month[11..15], " GMT");
     guard is_rfc850 else { return Time { .. }, false; }
 
     let parsed_year, ok_year = parse_digits(after_month[..2]);
     guard ok_year else { return Time { .. }, false; }
-    let year_val = if parsed_year >= 70 { 1900 + parsed_year } else { 2000 + parsed_year };
+    let year_val = resolve_rfc850_two_digit_year(parsed_year, now().utc().year());
 
     let hour_val, ok_hour = parse_digits(after_month[3..5]);
     let min_val, ok_min = parse_digits(after_month[6..8]);
     let sec_val, ok_sec = parse_digits(after_month[9..11]);
     guard ok_hour && ok_min && ok_sec else { return Time { .. }, false; }
 
-    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
+    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val, expected_wday);
 }
 
 // Example:
@@ -514,7 +557,8 @@ fn parse_asctime_date(text: const u8[:]) -> Time, bool {
     let is_asctime = text.len == 24 && text[3] == ' ' && text[7] == ' ' &&
         text[10] == ' ' && text[13] == ':' && text[16] == ':' && text[19] == ' ';
     guard is_asctime else { return Time { .. }, false; }
-    guard is_valid_weekday_short(text[..3]) else { return Time { .. }, false; }
+    let expected_wday = parse_weekday_short(text[..3]);
+    guard expected_wday >= 0 else { return Time { .. }, false; }
     let month_val = parse_month_name(text[4..7]);
     guard month_val > 0 else { return Time { .. }, false; }
 
@@ -530,5 +574,5 @@ fn parse_asctime_date(text: const u8[:]) -> Time, bool {
     let year_val, ok_year = parse_digits(text[20..24]);
     guard ok_hour && ok_min && ok_sec && ok_year else { return Time { .. }, false; }
 
-    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val);
+    return make_validated_civil_time(year_val, month_val, day_val, hour_val, min_val, sec_val, expected_wday);
 }

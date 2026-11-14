@@ -108,13 +108,30 @@ fn enter_probing_state(health: UpstreamHealth&) -> bool {
     return true;
 }
 
+inline fn is_valid_probe_path(path: const u8[:]) -> bool {
+    guard path.len > 0 && path[0] == '/' else { return false; }
+    for b in path {
+        guard b > 0x20 && b < 0x7F else { return false; }
+    }
+    return true;
+}
+
+inline fn is_valid_probe_reason_phrase(reason: const u8[:]) -> bool {
+    for b in reason {
+        guard (b >= 0x20 && b <= 0x7E) || b >= 0x80 || b == '\t' else { return false; }
+    }
+    return true;
+}
+
 // Serializes HTTP/1.1 GET health probe request wire buffer.
 fn format_health_probe_request(host: const u8[:], path: const u8[:], out: u8[>..]&) {
+    let safe_path = if is_valid_probe_path(path) { path } else { "/healthz" };
+    let safe_host = if is_valid_upstream_host(host) { host } else { "localhost" };
     out.clear();
     out.append("GET ");
-    out.append(if path.len > 0 { path } else { "/healthz" });
+    out.append(safe_path);
     out.append(" HTTP/1.1\r\nHost: ");
-    out.append(if host.len > 0 { host } else { "localhost" });
+    out.append(safe_host);
     out.append("\r\nUser-Agent: wing-health-probe\r\nConnection: close\r\nAccept: */*\r\n\r\n");
 }
 
@@ -124,14 +141,14 @@ fn format_health_probe_request(host: const u8[:], path: const u8[:], out: u8[>..
 //   wire = "HTTP/1.1 200 OK\r\n"
 //   returns: 200, true
 fn parse_probe_status_code(wire: const u8[:]) -> u16, bool {
-    // RFC 9112 Section 4: Status-Line — status-line = HTTP-version SP status-code SP [ reason-phrase ] CRLF
-    guard wire.len >= 12 else { return 0, false; }
-    let ok_ver = wire[..8] == "HTTP/1.1" || wire[..8] == "HTTP/1.0";
-    guard ok_ver && wire[8] == ' ' else { return 0, false; }
-    let ok_delim = wire.len == 12 || wire[12] == ' ' || wire[12] == '\r' || wire[12] == '\n';
-    guard ok_delim else { return 0, false; }
+    // RFC 9112 Section 4: Status Line - status-line = HTTP-version SP status-code SP [ reason-phrase ] CRLF.
+    let status_line, _, has_crlf = wire.split_once("\r\n");
+    guard has_crlf && status_line.len >= 13 else { return 0, false; }
+    let ok_ver = status_line[..8] == "HTTP/1.1" || status_line[..8] == "HTTP/1.0";
+    guard ok_ver && status_line[8] == ' ' && status_line[12] == ' ' else { return 0, false; }
+    guard is_valid_probe_reason_phrase(status_line[13..]) else { return 0, false; }
 
-    let status_u32, ok = wire[9..12].parse_u32_dec();
+    let status_u32, ok = status_line[9..12].parse_u32_dec();
     guard ok && status_u32 >= 100 && status_u32 <= 599 else { return 0, false; }
     return status_u32 as u16, true;
 }

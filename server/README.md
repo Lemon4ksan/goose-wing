@@ -23,7 +23,7 @@ struct HttpServer {
     worker_ring: core::SpscRing, cached_date: CachedHttpDate,
     enable_header_memoization: bool = false, ...
 }
-fn new_http_server(host: const u8[:], port: u16, quota: GcraQuota = new_gcra_quota(1000, core::secs(1), 100)) -> HttpServer
+fn new_http_server(host: const u8[:], port: u16, quota: GcraQuota = new_gcra_quota(1000, secs(1), 100)) -> HttpServer
 fn set_header_memoization(server: HttpServer&, enabled: bool)
 fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 fn serve_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_connections: i64 = 0) -> i64

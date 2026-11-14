@@ -11,6 +11,7 @@ namespace core;
 
 import std;
 import core.io.types;
+import core.bytes.search;
 
 // Feature configuration flags for page allocation
 const PAGE_MEM_GUARD_PAGE: u32 = 0x01;
@@ -196,7 +197,7 @@ inline fn guarded_arena_available(arena: const GuardedArena&) -> u64 {
 
 // Maps a file into virtual address space for zero-copy read access.
 fn mmap_file_open(path: const u8[:]) -> MmapFile, bool {
-    guard path.len > 0 else {
+    guard path.len > 0 && path.len < 1024 && !contains_byte(path, 0) else {
         return MmapFile {}, false;
     }
 

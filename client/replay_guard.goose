@@ -31,7 +31,7 @@ fn evaluate_early_data_response(status_code: u16, was_sent_early: bool) -> Early
     return EarlyDataDecision.Allow;
 }
 
-// Appends `Early-Data: 1` header to request headers (RFC 8470 Section 5.1)
-fn append_early_data_header<B>(out_headers: B&) {
-    out_headers.append("Early-Data: 1\r\n");
+// RFC 8470 Section 5.1: The Early-Data Header Field - Appends `Early-Data: 1\r\n` with capacity check.
+fn append_early_data_header<B>(out_headers: B&) -> bool {
+    return out_headers.try_append("Early-Data: 1\r\n");
 }

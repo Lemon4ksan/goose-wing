@@ -20,6 +20,7 @@ const SEC_TXT_ERR_INVALID_EXPIRES:   i32 = 4;
 const SEC_TXT_ERR_EXPIRED:           i32 = 5;
 const SEC_TXT_ERR_INVALID_CANONICAL: i32 = 6;
 const SEC_TXT_ERR_EMPTY_VALUE:       i32 = 7;
+const SEC_TXT_ERR_INVALID_FIELD:     i32 = 8;
 
 // ---- data structures -------------------------------------------------------
 
@@ -58,9 +59,26 @@ fn is_security_txt_comment_or_pgp(trimmed: const u8[:]) -> bool {
 
 // ---- line field parser helpers ---------------------------------------------
 
+inline fn is_valid_security_txt_uri(val: const u8[:], https_only_web: bool) -> bool {
+    guard val.len > 0 && val.len <= 256 && core::find_byteset(val, " \t\r\n") < 0 else { return false; }
+    if https_only_web && val.starts_with_fold("http://") {
+        return false;
+    }
+    let scheme, rest, has_colon = val.split_once_byte(':');
+    guard has_colon && scheme.len > 0 && rest.len > 0 && core::is_ascii_alpha(scheme[0]) else { return false; }
+    for b in scheme[1..] {
+        guard core::is_ascii_alpha(b) || core::is_ascii_digit(b) || b == '+' || b == '-' || b == '.' else {
+            return false;
+        }
+    }
+    return true;
+}
+
 fn apply_security_txt_contact(val: const u8[:], sec: SecurityTxt&) -> bool {
-    guard sec.contact.len < 8 && val.len <= 256 else { return true; }
-    sec.contact.push(val);
+    guard is_valid_security_txt_uri(val, true) && sec.contact.try_push(val) else {
+        sec.status = SEC_TXT_ERR_INVALID_FIELD;
+        return false;
+    }
     sec.has_contact = true;
     return true;
 }
@@ -87,42 +105,44 @@ fn apply_security_txt_expires(val: const u8[:], now_epoch: i64, sec: SecurityTxt
 }
 
 fn apply_security_txt_canonical(val: const u8[:], sec: SecurityTxt&) -> bool {
-    guard val.starts_with_fold("https://") && val.len <= 256 else {
+    guard val.starts_with_fold("https://") && is_valid_security_txt_uri(val, true) else {
         sec.status = SEC_TXT_ERR_INVALID_CANONICAL;
         return false;
     }
-    guard sec.canonical.len < 4 else { return true; }
-    sec.canonical.push(val);
+    guard sec.canonical.try_push(val) else {
+        sec.status = SEC_TXT_ERR_INVALID_FIELD;
+        return false;
+    }
+    return true;
+}
+
+fn push_security_txt_uri_slot(val: const u8[:], slot: u8[..256][..4]&, sec: SecurityTxt&) -> bool {
+    guard is_valid_security_txt_uri(val, true) && slot.try_push(val) else {
+        sec.status = SEC_TXT_ERR_INVALID_FIELD;
+        return false;
+    }
     return true;
 }
 
 fn apply_security_txt_metadata(name: const u8[:], val: const u8[:], sec: SecurityTxt&) -> bool {
     if name.eq_ascii_fold("encryption") {
-        guard val.len <= 256 else { return false; }
-        guard sec.encryption.len < 4 else { return true; }
-        sec.encryption.push(val);
-        return true;
+        return push_security_txt_uri_slot(val, sec.encryption, sec);
     }
     if name.eq_ascii_fold("acknowledgments") || name.eq_ascii_fold("acknowledgements") {
-        guard val.len <= 256 else { return false; }
-        guard sec.acknowledgments.len < 4 else { return true; }
-        sec.acknowledgments.push(val);
-        return true;
+        return push_security_txt_uri_slot(val, sec.acknowledgments, sec);
     }
     if name.eq_ascii_fold("policy") {
-        guard val.len <= 256 else { return false; }
-        guard sec.policy.len < 4 else { return true; }
-        sec.policy.push(val);
-        return true;
+        return push_security_txt_uri_slot(val, sec.policy, sec);
     }
     if name.eq_ascii_fold("hiring") {
-        guard val.len <= 256 else { return false; }
-        guard sec.hiring.len < 4 else { return true; }
-        sec.hiring.push(val);
-        return true;
+        return push_security_txt_uri_slot(val, sec.hiring, sec);
     }
     if name.eq_ascii_fold("preferred-languages") {
-        return sec.preferred_languages.len == 0 && val.len > 0 && sec.preferred_languages.try_append(val);
+        guard sec.preferred_languages.len == 0 && val.len > 0 && sec.preferred_languages.try_append(val) else {
+            sec.status = SEC_TXT_ERR_INVALID_FIELD;
+            return false;
+        }
+        return true;
     }
     return true;
 }

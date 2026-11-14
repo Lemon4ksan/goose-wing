@@ -537,9 +537,7 @@ fn test_network_pipeline_edge_invariants(t: lit::T&) {
         // Cross-site navigation initiated from evil.com to bank.com
         wing::mock_route(session, "GET", "https://bank.com/dashboard", 200, "ok");
         var req = wing::new_get("https://bank.com/dashboard");
-        let evil_url = core::new_url("https://evil.com");
-        let evil_origin = core::origin_from_url(evil_url);
-        wing::set_initiator(req, evil_origin);
+        let _ = wing::set_initiator(req, "https://evil.com");
         req.site_for_cookies = wing::site_for_cookies_from_url("https://evil.com/");
         req.has_site_for_cookies = true;
 
@@ -1550,9 +1548,10 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         seed_resp.body.append("cached_bundle_v1_payload");
         let now_sec = cli.virtual_clock_us / 1000000;
         let ts = wing::CacheTimestamps {
-            request_time:  core::unix(now_sec, 0),
-            response_time: core::unix(now_sec, 0),
-            now:           core::unix(now_sec, 0),
+            request_sec:  now_sec,
+            response_sec: now_sec,
+            now_sec:      now_sec,
+            ..
         };
         let _ = cli.cache.on_response(seed_req, seed_resp, ts, -1);
 
@@ -1647,14 +1646,12 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         );
 
         // Subresource request (is_main_frame=false) with same-site SiteForCookies and cross-site initiator
-        let init_url = core::new_url("https://other.example.org/");
         let echo_url = core::new_url("https://api.example.com/echo");
         var sub_req = wing::new_request("GET", "https://api.example.com/echo");
         sub_req.is_main_frame = false;
         sub_req.site_for_cookies = wing::site_for_cookies_from_url("https://api.example.com/");
         sub_req.has_site_for_cookies = true;
-        sub_req.initiator = core::origin_from_url(init_url);
-        sub_req.has_initiator = true;
+        let _ = wing::set_initiator(sub_req, "https://other.example.org/");
 
         let exec_ctx = wing::init_execution_context(cli, sub_req, echo_url);
         var samesite_ctx = wing::compute_hop_samesite_context(
@@ -1677,7 +1674,7 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         wing::marshal_token_challenge(chal, raw_chal);
         sub.assert_true(raw_chal.len > 0, "Marshaled TokenChallenge");
         var b64_chal: u8[..384] = [];
-        core::base64url_encode(raw_chal[..], b64_chal);
+        wing::encode_padded_base64url(raw_chal[..], b64_chal);
 
         var dummy_tok = wing::Token { .. };
         let ok_put = wing::put_private_token(

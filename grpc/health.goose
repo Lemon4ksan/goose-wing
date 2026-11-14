@@ -17,18 +17,41 @@ enum GrpcServingStatus {
 }
 
 struct GrpcHealthServiceEntry {
-    service: u8[..64]          = [],
+    service: u8[..128]         = [],
     status:  GrpcServingStatus = GrpcServingStatus.Serving,
 }
 
-// Extracts the target `service` string (field 1) from a protobuf `HealthCheckRequest` payload.
+// Decodes and validates a protobuf `HealthCheckRequest` payload (field 1 = `service` UTF-8 string).
+// Rejects truncated varints, invalid wire types, or invalid UTF-8 in `service`.
 //
 // Example:
 //   req_payload = "\x0A\x0Amy.Service"
-//   returns: "my.Service"
-fn decode_grpc_health_check_service(req_payload: const u8[:]) -> const u8[:] {
-    let svc_slice, ok_svc = pb_read_bytes_field(req_payload, 1);
-    return if ok_svc { svc_slice } else { "" };
+//   returns: "my.Service", true
+fn try_decode_grpc_health_check_request(req_payload: const u8[:]) -> const u8[:], bool {
+    var pos:       i64 = 0;
+    var svc_start: i64 = 0;
+    var svc_end:   i64 = 0;
+    while pos < req_payload.len {
+        let tag, ok_tag = pb_read_varint(req_payload, pos);
+        let raw_fnum = tag >> 3;
+        guard ok_tag && raw_fnum >= 1 && raw_fnum <= PB_MAX_FIELD_NUM else { return "", false; }
+        let fnum = raw_fnum as u32;
+        let wtype = (tag & 0x07) as u32;
+        if fnum == 1 {
+            guard wtype == PB_WIRE_LEN else { return "", false; }
+            let len_u64, ok_len = pb_read_varint(req_payload, pos);
+            let rem = core::sub_sat_i64(req_payload.len, pos);
+            guard ok_len && len_u64 <= (rem as u64) else { return "", false; }
+            let end_pos = core::add_sat_i64(pos, len_u64 as i64);
+            guard req_payload[pos..end_pos].validate_utf8() else { return "", false; }
+            svc_start = pos;
+            svc_end = end_pos;
+            pos = end_pos;
+        } else {
+            guard pb_skip_field(req_payload, pos, wtype) else { return "", false; }
+        }
+    }
+    return req_payload[svc_start..svc_end], true;
 }
 
 // Encodes a protobuf `HealthCheckResponse` message (field 1 = `ServingStatus` varint) wrapped

@@ -169,6 +169,7 @@ enum WsError {
     MissingConnectionHeader,
     InvalidAcceptKey,
     InvalidSubprotocol,
+    InvalidExtension,
 }
 
 inline fn resolve_hdr_entry_name(map: const HeaderMap&, raw_buf: const u8[:], e: const HeaderEntry&) -> const u8[:] {
@@ -235,14 +236,63 @@ fn map_extract_single_header(
     return "", count;
 }
 
+inline fn is_valid_ws_token_slice(s: const u8[:]) -> bool {
+    guard s.len > 0 else { return false; }
+    for b in s {
+        guard core::is_tchar(b) else { return false; }
+    }
+    return true;
+}
+
+fn has_offered_ws_extension_name(offered: const u8[:], ext_name: const u8[:]) -> bool {
+    guard offered.len > 0 && is_valid_ws_token_slice(ext_name) else { return false; }
+    var rem = offered;
+    while rem.len > 0 {
+        let head, tail, has_comma = rem.split_once_unquoted_byte(',');
+        let name_part, _, _ = head.split_once_unquoted_byte(';');
+        if name_part.trim_lws() == ext_name {
+            return true;
+        }
+        if !has_comma { break; }
+        rem = tail;
+    }
+    return false;
+}
+
+fn validate_response_ws_extensions(
+    headers:            const HeaderMap&,
+    raw_buf:            const u8[:],
+    offered_extensions: const u8[:],
+) -> bool {
+    for &e in headers.entries {
+        if !resolve_hdr_entry_name(headers, raw_buf, e).eq_ascii_fold("sec-websocket-extensions") {
+            continue;
+        }
+        guard offered_extensions.len > 0 else { return false; }
+        var rem = resolve_hdr_entry_val(headers, raw_buf, e).trim_lws();
+        guard rem.len > 0 else { return false; }
+        while rem.len > 0 {
+            let head, tail, has_comma = rem.split_once_unquoted_byte(',');
+            let name_part, _, _ = head.split_once_unquoted_byte(';');
+            guard has_offered_ws_extension_name(offered_extensions, name_part.trim_lws()) else {
+                return false;
+            }
+            if !has_comma { break; }
+            rem = tail;
+        }
+    }
+    return true;
+}
+
 // Validates an HTTP/1.1 101 Switching Protocols server response for a client WebSocket handshake (RFC 6455 §4.1).
 // Returns `(negotiated_subprotocol, WsError.None)` on success.
 fn validate_client_upgrade_response(
-    status_code:       u16,
-    headers:           const HeaderMap&,
-    raw_buf:           const u8[:],
-    client_key:        const u8[:],
-    offered_protocols: const u8[:],
+    status_code:        u16,
+    headers:            const HeaderMap&,
+    raw_buf:            const u8[:],
+    client_key:         const u8[:],
+    offered_protocols:  const u8[:],
+    offered_extensions: const u8[:] = "",
 ) -> const u8[:], WsError {
     guard status_code == 101 else { return "", WsError.InvalidStatusCode; }
     guard map_has_header_token(headers, raw_buf, "upgrade", "websocket") else {
@@ -255,6 +305,10 @@ fn validate_client_upgrade_response(
     let accept_val, accept_cnt = map_extract_single_header(headers, raw_buf, "sec-websocket-accept");
     guard accept_cnt == 1 && validate_websocket_accept(client_key, accept_val) else {
         return "", WsError.InvalidAcceptKey;
+    }
+
+    guard validate_response_ws_extensions(headers, raw_buf, offered_extensions) else {
+        return "", WsError.InvalidExtension;
     }
 
     let proto_val, proto_cnt = map_extract_single_header(headers, raw_buf, "sec-websocket-protocol");
@@ -272,18 +326,49 @@ fn validate_client_upgrade_response(
     return "", WsError.None;
 }
 
-// Checks whether an HTTP/1.1 request provides a Host header or an absolute-URI authority (RFC 6455 §4.2.1).
+// Checks whether an HTTP/1.1 request provides a single non-empty Host header or an absolute-URI authority.
 inline fn req_has_ws_host_authority(req: const Request&) -> bool {
-    if req.headers.find_header("Host").len > 0 {
-        return true;
+    let host_cnt = req_count_header(req, "host");
+    if host_cnt > 1 {
+        return false;
+    }
+    if host_cnt == 1 {
+        return req.headers.find_header("Host").trim_lws().len > 0;
     }
     guard req.url.len > 0 else { return false; }
     let u = core::new_url(req.url[..]);
     return u.valid && u.host().len > 0;
 }
 
+fn append_unique_ws_subprotocols(raw_val: const u8[:], seen: (const u8[:])[..32]&) -> bool {
+    guard raw_val.len > 0 else { return false; }
+    var tok = core::make_byte_tokenizer(raw_val, ',');
+    while true {
+        let part, ok = tok.token_next();
+        guard ok else { break; }
+        let item = part.trim_lws();
+        guard is_valid_ws_token_slice(item) else { return false; }
+        for prev in seen {
+            guard prev != item else { return false; }
+        }
+        guard seen.try_push(item) else { return false; }
+    }
+    return true;
+}
+
+fn req_has_valid_ws_subprotocols(req: const Request&) -> bool {
+    var seen: (const u8[:])[..32] = [];
+    for &e in req.headers.entries {
+        if entry_name(req.headers, e).eq_ascii_fold("sec-websocket-protocol") {
+            let raw_val = entry_value(req.headers, e).trim_lws();
+            guard append_unique_ws_subprotocols(raw_val, seen) else { return false; }
+        }
+    }
+    return true;
+}
+
 // Validates RFC 6455 §4.2.1 client upgrade headers (`Upgrade`, `Connection`,
-// `Sec-WebSocket-Version`, `Sec-WebSocket-Key`).
+// `Sec-WebSocket-Version`, `Sec-WebSocket-Key`, and `Sec-WebSocket-Protocol`).
 fn validate_ws_upgrade_headers(req: const Request&, out_resp: Response&) -> const u8[:], bool {
     guard req_has_ws_host_authority(req) &&
         req_has_header_token(req, "upgrade", "websocket") &&
@@ -291,8 +376,9 @@ fn validate_ws_upgrade_headers(req: const Request&, out_resp: Response&) -> cons
         out_resp.status_code = rfc::STATUS_BAD_REQUEST;
         return "", false;
     }
-    guard req_count_header(req, "sec-websocket-version") <= 1 &&
-        req_count_header(req, "sec-websocket-key") == 1 else {
+    guard req_count_header(req, "sec-websocket-version") == 1 &&
+        req_count_header(req, "sec-websocket-key") == 1 &&
+        req_has_valid_ws_subprotocols(req) else {
         out_resp.status_code = rfc::STATUS_BAD_REQUEST;
         return "", false;
     }
@@ -360,12 +446,14 @@ fn is_websocket_upgrade_request(req: const Request&) -> bool {
     if req.presence_mask != 0 {
         guard (req.presence_mask & ws_mask) == ws_mask else { return false; }
     }
-    let host = req.headers.find_header("Host");
-    guard host.len > 0 else { return false; }
+    let host_cnt = req_count_header(req, "host");
+    let host = req.headers.find_header("Host").trim_lws();
+    guard host_cnt == 1 && host.len > 0 else { return false; }
     guard req_has_header_token(req, "upgrade", "websocket") else { return false; }
     guard req_has_header_token(req, "connection", "upgrade") else { return false; }
     guard req_count_header(req, "sec-websocket-version") == 1 &&
-        req_count_header(req, "sec-websocket-key") == 1 else {
+        req_count_header(req, "sec-websocket-key") == 1 &&
+        req_has_valid_ws_subprotocols(req) else {
         return false;
     }
     guard req.headers.find_header("Sec-WebSocket-Version") == rfc::WS_RFC6455_VERSION else { return false; }

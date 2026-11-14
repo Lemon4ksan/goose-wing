@@ -5,6 +5,7 @@
 namespace core;
 
 import std;
+import core.math.arithmetic;
 import core.compress.checksum;
 import core.compress.deflate;
 
@@ -28,46 +29,40 @@ fn gzip_compress_with_header<B>(
     include_fhcrc: bool        = false,
 ) -> bool {
     let out_start = out.len;
+    var committed = false;
+    defer if !committed { out.resize(out_start); };
+
     var flg: u8 = 0;
     if filename.len > 0 { flg |= GZIP_FLG_FNAME; }
     if comment.len > 0 { flg |= GZIP_FLG_FCOMMENT; }
     if include_fhcrc { flg |= GZIP_FLG_FHCRC; }
 
-    out.push(GZIP_ID1);
-    out.push(GZIP_ID2);
-    out.push(GZIP_CM_DEFLATE);
-    out.push(flg);
-    out.push(0); // MTIME (4 bytes 0)
-    out.push(0);
-    out.push(0);
-    out.push(0);
-    out.push(if level >= 6 { 2 } else { 4 }); // XFL
-    out.push(3); // OS = Unix
+    let xfl: u8     = if level >= 6 { 2 } else { 4 };
+    let hdr: u8[10] = [GZIP_ID1, GZIP_ID2, GZIP_CM_DEFLATE, flg, 0, 0, 0, 0, xfl, 3];
+    guard comp_try_append(out, hdr[..]) else { return false; }
 
     if filename.len > 0 {
-        out.append(filename);
-        out.push(0); // Null terminator
+        guard comp_try_append(out, filename) && comp_try_push(out, 0 as u8) else { return false; }
     }
 
     if comment.len > 0 {
-        out.append(comment);
-        out.push(0); // Null terminator
+        guard comp_try_append(out, comment) && comp_try_push(out, 0 as u8) else { return false; }
     }
 
     if include_fhcrc {
         let hdr_bytes = out[out_start..];
         let h_crc = (crc32(hdr_bytes) & 0xFFFF) as u16;
-        write_le_u16(out, h_crc);
+        guard comp_try_write_le_u16(out, h_crc) else { return false; }
     }
 
     guard deflate(src, out, level) else {
-        out.clear();
         return false;
     }
 
-    write_le_u32(out, crc32(src));
-    write_le_u32(out, ((src.len as u64) & 0xFFFFFFFF) as u32);
+    guard comp_try_write_le_u32(out, crc32(src)) else { return false; }
+    guard comp_try_write_le_u32(out, ((src.len as u64) & 0xFFFFFFFF) as u32) else { return false; }
 
+    committed = true;
     return true;
 }
 
@@ -98,7 +93,7 @@ fn skip_gzip_cstring(src: const u8[:], offset: i64) -> i64, bool {
 //   src = [0x1F, 0x8B, 0x08, 0x00, ...], start = 0
 //   returns: 10, CompressError.None
 fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError {
-    guard start >= 0 && start + 10 <= src.len else { return start, CompressError.InputBufferTruncated; }
+    guard start >= 0 && add_sat_i64(start, 10) <= src.len else { return start, CompressError.InputBufferTruncated; }
     guard src[start] == GZIP_ID1 && src[start + 1] == GZIP_ID2 && src[start + 2] == GZIP_CM_DEFLATE else {
         return start, CompressError.InvalidHeader;
     }
@@ -110,9 +105,9 @@ fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError 
     var offset: i64 = start + 10;
 
     if (flg & GZIP_FLG_FEXTRA) != 0 {
-        guard offset + 2 <= src.len else { return start, CompressError.InputBufferTruncated; }
+        guard add_sat_i64(offset, 2) <= src.len else { return start, CompressError.InputBufferTruncated; }
         let xlen: i64 = src[offset] | ((src[offset + 1] as! i64) << 8);
-        offset += 2 + xlen;
+        offset = add_sat_i64(offset, add_sat_i64(2, xlen));
         guard offset <= src.len else { return start, CompressError.InputBufferTruncated; }
     }
     if (flg & GZIP_FLG_FNAME) != 0 {
@@ -126,7 +121,7 @@ fn parse_gzip_header_offset(src: const u8[:], start: i64) -> i64, CompressError 
         offset = next_off;
     }
     if (flg & GZIP_FLG_FHCRC) != 0 {
-        guard offset + 2 <= src.len else { return start, CompressError.InputBufferTruncated; }
+        guard add_sat_i64(offset, 2) <= src.len else { return start, CompressError.InputBufferTruncated; }
         let expected_crc16: u32 = src[offset] | ((src[offset + 1] as! u32) << 8);
         let actual_crc16 = crc32(src[start..offset]) & 0xFFFF;
         guard expected_crc16 == actual_crc16 else { return start, CompressError.ChecksumMismatch; }
@@ -140,6 +135,8 @@ fn gzip_decompress_with_limit_impl<B>(src: const u8[:], out: B&, max_output_byte
     guard src.len > 0 else { return CompressError.InputBufferTruncated; }
     var offset: i64 = 0;
     let overall_out_start = out.len;
+    var committed = false;
+    defer if !committed { out.resize(overall_out_start); };
 
     while offset < src.len {
         let member_start = offset;
@@ -156,8 +153,8 @@ fn gzip_decompress_with_limit_impl<B>(src: const u8[:], out: B&, max_output_byte
         let err, consumed = inflate_ex(src[payload_offset..], out, "", member_quota);
         guard err == CompressError.None else { return err; }
 
-        let trailer_offset = payload_offset + consumed;
-        guard trailer_offset + 8 <= src.len else { return CompressError.InputBufferTruncated; }
+        let trailer_offset = add_sat_i64(payload_offset, consumed);
+        guard add_sat_i64(trailer_offset, 8) <= src.len else { return CompressError.InputBufferTruncated; }
 
         let decomp_slice = out[member_out_start..];
         let expected_crc = read_le_u32(src, trailer_offset);
@@ -174,6 +171,7 @@ fn gzip_decompress_with_limit_impl<B>(src: const u8[:], out: B&, max_output_byte
         offset = trailer_offset + 8;
     }
 
+    committed = true;
     return CompressError.None;
 }
 

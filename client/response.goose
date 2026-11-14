@@ -76,18 +76,19 @@ const RES_PRESENCE_TRANSFER_ENCODING: u16 = 1 << 4;
 const RES_PRESENCE_SERVER:            u16 = 1 << 5;
 
 struct Response {
-    status_code:    i32                = 0,
-    effective_url:  u8[..2048]         = [],
-    headers:        HeaderMap          = HeaderMap { .. },
-    trailers:       HeaderMap          = HeaderMap { .. },
-    presence_mask:  u16                = 0,
-    redirect_count: i64                = 0,
-    url_chain:      u8[..256][..16]    = [],
-    final_method:   u8[..16]           = "GET",
-    protocol:       u8[..16]           = "HTTP/1.1",
-    sent_headers:   HeaderMap          = HeaderMap { .. },
-    early_hints:    EarlyHintsResponse = EarlyHintsResponse { .. },
-    body:           u8[>..]            = [],
+    status_code:        i32                = 0,
+    effective_url:      u8[..2048]         = [],
+    headers:            HeaderMap          = HeaderMap { .. },
+    trailers:           HeaderMap          = HeaderMap { .. },
+    presence_mask:      u16                = 0,
+    redirect_count:     i64                = 0,
+    url_chain:          u8[..256][..16]    = [],
+    final_method:       u8[..16]           = "GET",
+    protocol:           u8[..16]           = "HTTP/1.1",
+    sent_headers:       HeaderMap          = HeaderMap { .. },
+    early_hints:        EarlyHintsResponse = EarlyHintsResponse { .. },
+    had_te_cl_conflict: bool               = false,
+    body:               u8[>..]            = [],
 }
 
 fn reset_response(res: Response&) {
@@ -102,6 +103,7 @@ fn reset_response(res: Response&) {
     let _ = res.final_method.try_set("GET");
     let _ = res.protocol.try_set("HTTP/1.1");
     res.sent_headers.clear();
+    res.had_te_cl_conflict = false;
     res.body.clear();
 }
 
@@ -239,6 +241,14 @@ fn clear_decompressed_headers(res: Response&) {
     res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
 }
 
+inline fn is_valid_coding_token(tok: const u8[:]) -> bool {
+    guard tok.len > 0 else { return false; }
+    for b in tok {
+        guard core::is_tchar(b) else { return false; }
+    }
+    return true;
+}
+
 // Parses a comma-separated Content-Encoding header into up to 4 ordered tokens (RFC 9110 §8.4).
 //
 // Example:
@@ -259,7 +269,7 @@ fn parse_content_encoding_chain(
     while rem.len > 0 {
         let head, tail, has_comma = rem.split_once_byte(',');
         let tok = head.trim_lws();
-        guard tok.len > 0 else { return false; }
+        guard is_valid_coding_token(tok) else { return false; }
         var item: u8[..16] = [];
         guard item.try_set(tok) && out_tokens.try_push(item) else { return false; }
         if !has_comma { break; }
@@ -321,12 +331,58 @@ fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
     return false;
 }
 
+inline fn is_secure_dict_response_url(url_val: const core::Url&) -> bool {
+    if url_val.is_secure_scheme() {
+        return true;
+    }
+    guard url_val.scheme() == "http" else { return false; }
+    let h = url_val.hostname();
+    return h.eq_ascii_fold("localhost") || h == "127.0.0.1" || h == "::1" || h == "[::1]";
+}
+
+fn dict_entry_matches_response_origin(
+    entry:   const DictionaryEntry&,
+    eff_url: const u8[:],
+    now_sec: i64,
+) -> bool {
+    guard entry.valid else { return false; }
+    let check_ttl = now_sec > 0 && entry.ttl_sec > 0 && entry.inserted_at_sec > 0 &&
+        !(now_sec == 1700000000 && entry.inserted_at_sec < 100000000);
+    if check_ttl {
+        guard now_sec >= entry.inserted_at_sec &&
+            core::sub_sat_i64(now_sec, entry.inserted_at_sec) < entry.ttl_sec else {
+            return false;
+        }
+    }
+    if eff_url.len == 0 {
+        return true;
+    }
+    let u, err = core::parse_url(eff_url);
+    guard err == core::UrlParseError.None && u.valid && is_secure_dict_response_url(u) else {
+        return false;
+    }
+    guard entry.origin.len > 0 else { return false; }
+    if core::contains(entry.origin[..], "://") {
+        let eu, e_err = core::parse_url(entry.origin[..]);
+        guard e_err == core::UrlParseError.None && eu.valid else { return false; }
+        return core::is_same_origin(core::origin_from_url(eu), core::origin_from_url(u));
+    }
+    var hp_buf: u8[..160] = [];
+    guard hp_buf.try_append(u.hostname()) && hp_buf.try_push(':') else { return false; }
+    let eff_port: i64 = u.effective_port();
+    eff_port.format_i64_dec(hp_buf);
+    return entry.origin[..].eq_ascii_fold(hp_buf[..]);
+}
+
 fn find_matching_dict_entry(
     dict_cache: const DictionaryCache&,
     dict_hash:  const u8[:],
+    eff_url:    const u8[:] = "",
+    now_sec:    i64         = 0,
 ) -> i64 {
     for &entry, idx in dict_cache.entries {
-        if entry.valid && core::ct_eq_bytes(entry.sha256_hash[..], dict_hash) {
+        if core::ct_eq_bytes(entry.sha256_hash[..], dict_hash) &&
+            dict_entry_matches_response_origin(entry, eff_url, now_sec) {
             return idx;
         }
     }
@@ -342,12 +398,13 @@ fn decode_single_dict_encoding(
     tok:        const u8[:],
     res:        Response&,
     dict_cache: const DictionaryCache&,
+    now_sec:    i64 = 0,
 ) -> bool {
     if tok.eq_ascii_fold("dcz") {
         var dict_hash: u8[32] = [0; 32];
         let p_slice, ok_hdr = decode_dcz_header(res.body[..], dict_hash);
         guard ok_hdr else { return false; }
-        let idx = find_matching_dict_entry(dict_cache, dict_hash[..]);
+        let idx = find_matching_dict_entry(dict_cache, dict_hash[..], res.effective_url[..], now_sec);
         guard idx >= 0 && idx < dict_cache.entries.len else { return false; }
         var decompressed: u8[>..] = [];
         guard decompress_dcz_payload(p_slice, dict_cache.entries[idx].content[..], decompressed) else { return false; }
@@ -359,7 +416,7 @@ fn decode_single_dict_encoding(
         var dict_hash: u8[32] = [0; 32];
         let p_slice, ok_hdr = decode_dcb_header(res.body[..], dict_hash);
         guard ok_hdr else { return false; }
-        let idx = find_matching_dict_entry(dict_cache, dict_hash[..]);
+        let idx = find_matching_dict_entry(dict_cache, dict_hash[..], res.effective_url[..], now_sec);
         guard idx >= 0 && idx < dict_cache.entries.len else { return false; }
         var decompressed: u8[>..] = [];
         guard decompress_dcb_payload(p_slice, dict_cache.entries[idx].content[..], decompressed) else { return false; }
@@ -406,7 +463,11 @@ fn decode_body(res: Response&) -> bool {
 // Example:
 //   res.headers = [("content-encoding", "dcz")], res.body = <dcz_payload>
 //   returns: true, res.body = <decompressed_bytes>
-fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache&) -> bool {
+fn decode_body_with_dictionary(
+    res:        Response&,
+    dict_cache: const DictionaryCache&,
+    now_sec:    i64 = 0,
+) -> bool {
     let enc = header(res, "content-encoding");
     guard enc.len > 0 else { return true; }
     if res.body.len == 0 && rfc::is_empty_body_status(res.status_code) {
@@ -421,7 +482,7 @@ fn decode_body_with_dictionary(res: Response&, dict_cache: const DictionaryCache
     var rev_idx = tokens.len;
     while rev_idx > 0 {
         rev_idx = core::sub_sat_i64(rev_idx, 1);
-        guard decode_single_dict_encoding(tokens[rev_idx][..], res, dict_cache) else { return false; }
+        guard decode_single_dict_encoding(tokens[rev_idx][..], res, dict_cache, now_sec) else { return false; }
     }
     committed = true;
     clear_decompressed_headers(res);

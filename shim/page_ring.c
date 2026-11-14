@@ -104,7 +104,7 @@ static uint32_t align_ring_capacity(uint32_t req) {
 }
 
 int32_t wing_page_ring_create(uint32_t min_capacity, uint64_t *out_handle, uint32_t *out_capacity) {
-    if (!out_handle || !out_capacity) return -1;
+    if (!out_handle || !out_capacity || min_capacity == 0 || min_capacity > 0x7FFF0000u) return -1;
     uint32_t cap = align_ring_capacity(min_capacity);
 
     wing_page_ring_t *ring = (wing_page_ring_t *)calloc(1, sizeof(wing_page_ring_t));

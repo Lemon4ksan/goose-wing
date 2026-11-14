@@ -44,7 +44,7 @@ fn setup_full_pipeline_server() -> wing::HttpServer {
     var server = wing::new_http_server("127.0.0.1", 8080);
     server.pipeline.enable_rate_limiter = true;
     server.pipeline.limiter = wing::new_sharded_limiter(
-        wing::new_gcra_quota(100000000, core::secs(1), 10000000),
+        wing::new_gcra_quota(100000000, wing::secs(1), 10000000),
     );
     server.pipeline.enable_csrf_guard = true;
     server.pipeline.enable_cors = true;

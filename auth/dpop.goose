@@ -17,11 +17,11 @@ import .jwks;
 // ---- RFC 9449 Constants & Identifiers ------------------------------------
 
 struct DPoPClaims {
-    jti:     u8[..128] = [],
+    jti:     u8[..512] = [],
     htm:     u8[..16]  = [],
     htu:     u8[..256] = [],
     iat:     i64       = -1,
-    nonce:   u8[..128] = [],
+    nonce:   u8[..512] = [],
     ath:     u8[..64]  = [],
     jkt:     u8[..64]  = [],
     has_iat: bool      = false,
@@ -29,7 +29,7 @@ struct DPoPClaims {
 
 struct DPoPConfig {
     key:     u8[..64]  = [],
-    nonce:   u8[..128] = [],
+    nonce:   u8[..512] = [],
     alg:     u8[..16]  = "EdDSA",
     enabled: bool      = false,
 }
@@ -125,9 +125,8 @@ inline fn build_dpop_claims_json<B>(
         out.append(auto_jti[..]);
     }
     out.append("\",\"htm\":\"");
-    for b in method {
-        if b >= 'a' && b <= 'z' { out.push(b - 32); } else { out.push(b); }
-    }
+    // RFC 9449 Section 4.2: DPoP Proof JWT Syntax - htm carries exact case-sensitive HTTP method token
+    out.append(method);
     out.append("\",\"htu\":\"");
     out.append(norm_uri);
     out.append("\",\"iat\":");
@@ -434,7 +433,7 @@ fn create_dpop_proof<B>(
         return false;
     }
 
-    var claims_json: u8[..512] = [];
+    var claims_json: u8[..2048] = [];
     guard build_dpop_claims_json(method, norm_uri[..], access_token, nonce, now_sec, jti, claims_json) else {
         return false;
     }
@@ -454,10 +453,10 @@ fn create_dpop_proof<B>(
     var header_b64: u8[..384] = [];
     core::base64url_encode(header_json[..], header_b64);
 
-    var claims_b64: u8[..768] = [];
+    var claims_b64: u8[..2736] = [];
     core::base64url_encode(claims_json[..], claims_b64);
 
-    var signing_input: u8[..1152] = [];
+    var signing_input: u8[..3328] = [];
     signing_input.append(header_b64[..]);
     signing_input.push('.' as u8);
     signing_input.append(claims_b64[..]);
@@ -485,7 +484,7 @@ fn create_dpop_proof(
     jti:          const u8[:],
     out:          u8[>..]&,
 ) -> bool {
-    var bounded: u8[..2048] = [];
+    var bounded: u8[..4096] = [];
     guard create_dpop_proof(key, method, target_uri, access_token, nonce, now_sec, jti, bounded) else {
         return false;
     }
@@ -516,7 +515,7 @@ fn create_dpop_proof_es256<B>(
     var norm_uri: u8[..256] = [];
     guard normalize_dpop_target_uri(target_uri, norm_uri) else { return false; }
 
-    var claims_json: u8[..512] = [];
+    var claims_json: u8[..2048] = [];
     guard build_dpop_claims_json(method, norm_uri[..], access_token, nonce, now_sec, jti, claims_json) else {
         return false;
     }
@@ -537,10 +536,10 @@ fn create_dpop_proof_es256<B>(
     var header_b64: u8[..512] = [];
     core::base64url_encode(header_json[..], header_b64);
 
-    var claims_b64: u8[..768] = [];
+    var claims_b64: u8[..2736] = [];
     core::base64url_encode(claims_json[..], claims_b64);
 
-    var signing_input: u8[..1280] = [];
+    var signing_input: u8[..3328] = [];
     signing_input.append(header_b64[..]);
     signing_input.push('.' as u8);
     signing_input.append(claims_b64[..]);
@@ -578,6 +577,67 @@ fn is_matching_dpop_alg(alg_val: const u8[:], expected_alg: const u8[:]) -> bool
     return true;
 }
 
+struct DPoPHeaderScanState {
+    valid_typ:  bool                = false,
+    valid_alg:  bool                = false,
+    seen_typ:   bool                = false,
+    seen_alg:   bool                = false,
+    seen_jwk:   bool                = false,
+    had_dup:    bool                = false,
+    has_crit:   bool                = false,
+    seen_extra: SeenHeaderKey[..16] = [],
+}
+
+fn read_dpop_typ_member(reader: json::Reader&, st: DPoPHeaderScanState&) {
+    if st.seen_typ { st.had_dup = true; }
+    st.seen_typ = true;
+    var typ_buf: u8[..32] = [];
+    guard core::read_json_string_into(reader, typ_buf) else { return; }
+    if typ_buf[..].eq_ascii_fold("dpop+jwt") || typ_buf[..].eq_ascii_fold("application/dpop+jwt") {
+        st.valid_typ = true;
+    }
+}
+
+fn read_dpop_header_member(
+    reader:       json::Reader&,
+    key:          const u8[:],
+    expected_alg: const u8[:],
+    out_alg:      u8[..16]&,
+    out_jwk:      DPoPJwkInfo&,
+    st:           DPoPHeaderScanState&,
+) {
+    if key.contains_byte('\\') {
+        st.had_dup = true;
+        json::skip(reader);
+        return;
+    }
+    if key == "crit" {
+        st.has_crit = true;
+        json::skip(reader);
+        return;
+    }
+    if key == "typ" {
+        read_dpop_typ_member(reader, st);
+        return;
+    }
+    if key == "alg" {
+        if st.seen_alg { st.had_dup = true; }
+        st.seen_alg = true;
+        if core::read_json_string_into(reader, out_alg) && is_matching_dpop_alg(out_alg[..], expected_alg) {
+            st.valid_alg = true;
+        }
+        return;
+    }
+    if key == "jwk" {
+        if st.seen_jwk { st.had_dup = true; }
+        st.seen_jwk = true;
+        if !verify_dpop_jwk(reader, out_jwk) { st.had_dup = true; }
+        return;
+    }
+    record_dpop_extra_key(key, st.seen_extra, st.had_dup, true);
+    json::skip(reader);
+}
+
 // RFC 9449 §4.3: Validates DPoP JOSE header and populates `out_alg` and `out_jwk`.
 fn verify_dpop_header(
     header_json:  const u8[:],
@@ -588,57 +648,18 @@ fn verify_dpop_header(
     out_alg.clear();
     out_jwk = DPoPJwkInfo { valid: false, .. };
     var reader = json::reader(header_json);
-    var valid_typ = false;
-    var valid_alg = false;
-    var seen_typ = false;
-    var seen_alg = false;
-    var seen_jwk = false;
-    var had_dup = false;
-    var has_crit = false;
-    var seen_extra: SeenHeaderKey[..16] = [];
+    var st = DPoPHeaderScanState { .. };
 
     json::each_member(reader) { key =>
-        if key.contains('\\') {
-            had_dup = true;
-            json::skip(reader);
-        } else if key == "crit" {
-            has_crit = true;
-            json::skip(reader);
-        } else if key == "typ" {
-            if seen_typ { had_dup = true; }
-            seen_typ = true;
-            var typ_buf: u8[..32] = [];
-            let typ_ok = core::read_json_string_into(reader, typ_buf);
-            let typ_val = typ_buf[..];
-            let is_dpop_typ = typ_val.eq_ascii_fold("dpop+jwt") ||
-                typ_val.eq_ascii_fold("application/dpop+jwt");
-            if typ_ok && is_dpop_typ {
-                valid_typ = true;
-            }
-        } else if key == "alg" {
-            if seen_alg { had_dup = true; }
-            seen_alg = true;
-            if core::read_json_string_into(reader, out_alg) && is_matching_dpop_alg(out_alg[..], expected_alg) {
-                valid_alg = true;
-            }
-        } else if key == "jwk" {
-            if seen_jwk { had_dup = true; }
-            seen_jwk = true;
-            if !verify_dpop_jwk(reader, out_jwk) {
-                had_dup = true;
-            }
-        } else {
-            record_dpop_extra_key(key, seen_extra, had_dup, true);
-            json::skip(reader);
-        }
+        read_dpop_header_member(reader, key, expected_alg, out_alg, out_jwk, st);
     };
-    let ok_base = json::finish(reader) && !had_dup && !has_crit && valid_typ && valid_alg && seen_jwk && out_jwk.valid;
-    let ok = ok_base && is_dpop_alg_jwk_compatible(out_alg[..], out_jwk);
-    if !ok {
+    let ok_fields = !st.had_dup && !st.has_crit && st.valid_typ && st.valid_alg && st.seen_jwk && out_jwk.valid;
+    guard json::finish(reader) && ok_fields && is_dpop_alg_jwk_compatible(out_alg[..], out_jwk) else {
         out_alg.clear();
         out_jwk = DPoPJwkInfo { valid: false, .. };
+        return false;
     }
-    return ok;
+    return true;
 }
 
 // RFC 9449 §4.3: Validates DPoP JOSE header.
@@ -687,7 +708,7 @@ fn verify_dpop_signature_with_jwk(
         pub_pt.append(decoded_y[..]);
         var sig_bytes: u8[..128] = [];
         guard core::base64url_decode(sig_b64, sig_bytes) && sig_bytes.len == 64 else { return false; }
-        return core::ecdsa_p256_verify(pub_pt[..], signing_input, sig_bytes[..]);
+        return core::ecdsa_p256_verify_p1363(pub_pt[..], signing_input, sig_bytes[..]);
     } else if alg == "RS256" || alg == "PS256" {
         guard jwk_info.kty[..] == "RSA" else { return false; }
         guard jwk_info.n[..].index_of_byte('=') == -1 && jwk_info.e[..].index_of_byte('=') == -1 else { return false; }
@@ -821,10 +842,11 @@ fn verify_dpop_jti(claims_json: const u8[:]) -> bool {
     return rfc::is_valid_dpop_nonce(claims.jti[..]);
 }
 
+// RFC 9110 Section 9.1: Overview - HTTP method is a case-sensitive token (1*tchar)
 inline fn is_valid_dpop_method(m: const u8[:]) -> bool {
     guard m.len > 0 else { return false; }
     for b in m {
-        guard !(b >= 'a' && b <= 'z') && core::is_tchar(b) else { return false; }
+        guard core::is_tchar(b) else { return false; }
     }
     return true;
 }
@@ -921,17 +943,14 @@ fn verify_dpop_claims(
         guard core::ct_eq_bytes(claims.jkt[..], expected_jkt) else { return false; }
     }
 
-    // RFC 9449 §4.3: Mandatory creation time & validity window
-    guard now_sec >= 0 && max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
+    // RFC 9449 Section 4.3: Checking DPoP Proofs - iat claim MUST be within the acceptable server time window
+    guard now_sec > 0 && max_age_sec >= 0 && max_skew_sec >= 0 else { return false; }
     guard claims.has_iat && claims.iat > 0 else { return false; }
-    if now_sec > 0 {
-        let max_future = core::add_sat_i64(now_sec, max_skew_sec);
-        guard claims.iat <= max_future else { return false; }
-        let age = core::sub_sat_i64(now_sec, claims.iat);
-        let max_allowed_age = core::add_sat_i64(max_age_sec, max_skew_sec);
-        guard age <= max_allowed_age else { return false; }
-    }
-    return true;
+    let max_future = core::add_sat_i64(now_sec, max_skew_sec);
+    guard claims.iat <= max_future else { return false; }
+    let age = core::sub_sat_i64(now_sec, claims.iat);
+    let max_allowed_age = core::add_sat_i64(max_age_sec, max_skew_sec);
+    return age <= max_allowed_age;
 }
 
 const MAX_DPOP_PROOF_LEN: i64 = 4096;
@@ -1223,7 +1242,7 @@ fn extract_dpop_nonce<B>(headers: const HeaderMap&, out_nonce: B&) -> bool {
 // ---- DPoP Replay Cache (RFC 9449 §4.3 Rule 4) ---------------------------
 
 struct DPoPJtiEntry {
-    jti:            u8[..128] = [],
+    jti:            u8[..512] = [],
     expires_at_sec: i64       = 0,
 }
 
@@ -1231,7 +1250,7 @@ struct DPoPReplayCache {
     entries: DPoPJtiEntry[..128] = [],
 }
 
-// Checks whether a DPoP jti has been seen before; if not, records it until now_sec + ttl_sec + max_skew_sec.
+// Checks whether a DPoP jti has been seen before; if not, records it across the full iat acceptance window.
 // Returns true if jti is unique and recorded; returns false if replay detected or input invalid.
 fn check_and_record_dpop_jti(
     cache:        DPoPReplayCache&,
@@ -1240,24 +1259,24 @@ fn check_and_record_dpop_jti(
     ttl_sec:      i64 = 300,
     max_skew_sec: i64 = 60,
 ) -> bool {
-    // RFC 9449 Section 11.1: DPoP Proof Replay - As long as the jti value is tracked and duplicates
-    // are rejected for the lifetime of the nonce, there is no additional risk of token replay.
-    guard jti.len > 0 && jti.len <= 128 else { return false; }
+    // RFC 9449 Section 11.1: DPoP Proof Replay - track jti across ttl_sec + 2 * max_skew_sec
+    guard jti.len > 0 && jti.len <= rfc::MAX_DPOP_NONCE_LEN else { return false; }
     guard now_sec > 0 && ttl_sec >= 0 && max_skew_sec >= 0 else { return false; }
 
     var free_idx: i64 = -1;
     for i in cache.entries.len {
         let entry .= cache.entries[i];
-        if entry.expires_at_sec > now_sec {
+        if entry.expires_at_sec >= now_sec {
             if core::ct_eq_bytes(entry.jti[..], jti) {
-                return false; // Replay attack detected!
+                return false;
             }
         } else if free_idx == -1 {
             free_idx = i;
         }
     }
 
-    let total_ttl = max(core::add_sat_i64(ttl_sec, max_skew_sec), 1);
+    let skew_span = core::add_sat_i64(max_skew_sec, max_skew_sec);
+    let total_ttl = max(core::add_sat_i64(ttl_sec, skew_span), 1);
     let exp = core::add_sat_i64(now_sec, total_ttl);
 
     if free_idx >= 0 {

@@ -112,6 +112,9 @@ fn ohttp_derive_response_aead(
 // Scans supported OHTTP symmetric suites and extracts the first supported pair (RFC 9458 §3.1).
 //
 // Example:
+// RFC 9458 Section 3.1: Key Configuration Encoding - Select the first supported (KDF, AEAD) pair and skip unsupported pairs.
+//
+// Example:
 //   raw = key_config_bytes, kem_id = 0x0020, sym_len = 4
 //   returns: true, out_kdf = 0x0001, out_aead = 0x0001
 fn scan_supported_ohttp_sym_suite(
@@ -121,23 +124,21 @@ fn scan_supported_ohttp_sym_suite(
     out_kdf:  u16&,
     out_aead: u16&,
 ) -> bool {
-    var p: i64 = 0;
     let limit = sym_len as i64;
-    var first = true;
-    while p + 4 <= limit {
-        let kdf = ((raw[37 + p] as u16) << 8) | raw[37 + p + 1];
-        let aead = ((raw[37 + p + 2] as u16) << 8) | raw[37 + p + 3];
-        guard ohttp_suite_supported(kem_id, kdf, aead) else {
-            return false;
-        }
-        if first {
+    let sym_end = core::add_sat_i64(37, limit);
+    guard sym_end <= raw.len else { return false; }
+    var cur = core::cursor_from(raw[37..sym_end]);
+    while cur.buf.len >= 4 {
+        let kdf, ok_kdf = cur.read_u16();
+        let aead, ok_aead = cur.read_u16();
+        guard ok_kdf && ok_aead else { return false; }
+        if ohttp_suite_supported(kem_id, kdf, aead) {
             out_kdf = kdf;
             out_aead = aead;
-            first = false;
+            return true;
         }
-        p += 4;
     }
-    return !first;
+    return false;
 }
 
 // Parses one key configuration: Key Identifier (8), KEM ID (16), Public Key
@@ -170,6 +171,27 @@ fn parse_ohttp_key_config(raw: const u8[:], out: OhttpKeyConfig&) -> bool {
     return true;
 }
 
+fn ohttp_rfc9180_kem_pk_len(kem_id: u16) -> i64 {
+    if kem_id == 0x0010 { return 65; }
+    if kem_id == 0x0011 { return 97; }
+    if kem_id == 0x0012 { return 133; }
+    if kem_id == 0x0020 { return 32; }
+    if kem_id == 0x0021 { return 56; }
+    return 0;
+}
+
+// RFC 9458 Section 3.2: Key Configuration Media Type - Well-formed configs with unsupported KEM/AEAD are skipped.
+fn is_skippable_ohttp_key_config(raw: const u8[:]) -> bool {
+    var cur = core::cursor_from(raw);
+    let _, ok_kid = cur.read_u8();
+    let kem_id, ok_kem = cur.read_u16();
+    let pk_len = ohttp_rfc9180_kem_pk_len(kem_id);
+    guard ok_kid && ok_kem && pk_len > 0 else { return false; }
+    let _, ok_pk = cur.read_bytes(pk_len);
+    let sym_bytes, ok_sym = cur.read_u16_prefixed();
+    return ok_pk && ok_sym && cur.buf.len == 0 && sym_bytes.len >= 4 && (sym_bytes.len & 3) == 0;
+}
+
 // Parses an "application/ohttp-keys" collection: u16be length-prefixed configs
 // concatenated (RFC 9458 Section 3.2). ANY malformed element discards the whole
 // collection: ok == false and out_count == 0 (MUST discard).
@@ -186,23 +208,21 @@ fn parse_ohttp_key_configs(raw: const u8[:], out: OhttpKeyConfig[..4]&, out_coun
         out.clear();
         out_count = 0;
     };
-    var idx:   i64 = 0;
-    var count: i64 = 0;
-    while idx < raw.len {
-        guard (raw.len - idx) >= 2 else { return false; }
-        let elen = ((raw[idx] as i64) << 8) | raw[idx + 1];
-        idx += 2;
-        guard elen > 0 && elen <= (raw.len - idx) && count < OHTTP_MAX_KEY_CONFIGS else {
-            return false;
-        }
+    var cur = core::cursor_from(raw);
+    while cur.buf.len > 0 {
+        let elem_raw, ok_elem = cur.read_u16_prefixed();
+        guard ok_elem && elem_raw.len > 0 else { return false; }
         var elem = OhttpKeyConfig { .. };
-        guard parse_ohttp_key_config(raw[idx..idx + elen], elem) && out.try_push(elem) else {
-            return false;
+        if parse_ohttp_key_config(elem_raw, elem) {
+            guard out.len < OHTTP_MAX_KEY_CONFIGS && out.try_push(elem) else {
+                return false;
+            }
+        } else {
+            guard is_skippable_ohttp_key_config(elem_raw) else { return false; }
         }
-        count += 1;
-        idx += elen;
     }
-    out_count = count as i32;
+    guard out.len > 0 else { return false; }
+    out_count = out.len as i32;
     committed = true;
     return true;
 }

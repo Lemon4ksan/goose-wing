@@ -51,29 +51,7 @@ fn urgency_to_ascii(u: u8) -> u8 {
 
 // ---- RFC 9218 Structured Field Parser ------------------------------------
 
-fn apply_priority_u(dict_str: const u8[:], p: PriorityParam&) -> bool {
-    let u_val = sf_dict_get_int(dict_str, "u", -1);
-    guard is_valid_urgency(u_val) else { return false; }
-    p.urgency = u_val as u8;
-    return true;
-}
-
-fn apply_priority_i(dict_str: const u8[:], p: PriorityParam&) -> bool {
-    var entries: SfDictEntry[..16] = [];
-    guard parse_sf_dict(dict_str, entries) else { return false; }
-    for &entry in entries {
-        if entry.key == "i" {
-            guard !entry.is_inner_list && entry.item.kind == SfType.Boolean else { return false; }
-            p.incremental = entry.item.bool_val;
-            return true;
-        }
-    }
-    return false;
-}
-
-// Parses RFC 9218 Priority header value: e.g. "u=0, i", "u=5", "i=?0, u=2".
-// Ignores unknown parameters per RFC 9218 Section 4.
-// Returns parsed PriorityParam and true if at least one recognized parameter was parsed.
+// RFC 9218 Section 4: Priority Parameters - Parse SF Dictionary once and ignore out-of-range or unknown keys.
 //
 // Example:
 //   raw = "u=0, i"
@@ -81,18 +59,23 @@ fn apply_priority_i(dict_str: const u8[:], p: PriorityParam&) -> bool {
 fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool {
     var p = priority_default(default_incremental);
     let trimmed = raw.trim_ascii_space();
-    if trimmed.len == 0 {
-        return p, false;
-    }
+    guard trimmed.len > 0 else { return p, false; }
 
     var entries: SfDictEntry[..16] = [];
-    if !parse_sf_dict(trimmed, entries) {
-        return p, false;
-    }
+    guard parse_sf_dict(trimmed, entries) && entries.len > 0 else { return p, false; }
 
-    let ok_u = apply_priority_u(trimmed, p);
-    let ok_i = apply_priority_i(trimmed, p);
-    return p, ok_u || ok_i;
+    for &entry in entries {
+        if entry.key == "u" {
+            if !entry.is_inner_list && entry.item.kind == SfType.Integer && is_valid_urgency(entry.item.int_val) {
+                p.urgency = entry.item.int_val as u8;
+            }
+        } else if entry.key == "i" {
+            if !entry.is_inner_list && entry.item.kind == SfType.Boolean {
+                p.incremental = entry.item.bool_val;
+            }
+        }
+    }
+    return p, true;
 }
 
 // ---- RFC 9218 Structured Field Serializer --------------------------------

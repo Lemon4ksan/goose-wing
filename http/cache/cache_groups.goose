@@ -36,6 +36,7 @@ struct CacheGroupTag {
 //   raw = "\"scripts\", \"fonts\"", out_tags = [], out_count = 0
 //   returns: true, out_tags = ["scripts", "fonts"], out_count = 2
 fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_count: i32&) -> bool {
+    out_tags.clear();
     out_count = 0;
     var parsed: CacheGroupTag[..32] = [];
 
@@ -46,8 +47,7 @@ fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_
         guard parse_sfv_bare_item(raw, cursor, bare) else { return false; }
         guard bare.kind == SfvType.String else { return false; }
 
-        var ignored_params: SfvParam[..16] = [];
-        guard parse_sfv_parameters(raw, cursor, ignored_params) else { return false; }
+        guard skip_sfv_parameters(raw, cursor) else { return false; }
 
         var tag = CacheGroupTag { len: bare.text.len as i32, .. };
         guard tag.name.try_set(bare.text[..]) && parsed.try_push(tag) else { return false; }
@@ -129,16 +129,23 @@ fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool {
 // entries invalidated (group invalidation per RFC 9875 §2.1 & §3). Applies the same entry reset as
 // invalidate_matching_url (invalid, security-zeroed, LRU-detached).
 fn invalidate_group(
-    cache:     HttpCache&,
-    group:     const u8[:],
-    base_orig: core::Origin = core::Origin { .. },
+    cache:    HttpCache&,
+    group:    const u8[:],
+    base_url: const u8[:] = "",
 ) -> i64 {
     var count: i64 = 0;
-    let check_origin = base_orig.scheme.len > 0;
+    var has_origin = false;
+    var base_orig = core::Origin { .. };
+    if base_url.len > 0 {
+        let parsed_base, err_base = core::parse_url(base_url);
+        guard err_base == core::UrlParseError.None && parsed_base.valid else { return 0; }
+        base_orig = core::origin_from_url(parsed_base);
+        has_origin = base_orig.scheme.len > 0;
+    }
     for &entry, idx in cache.entries {
         if !entry.is_valid { continue; }
         if !entry_has_group(entry, group) { continue; }
-        if check_origin {
+        if has_origin {
             let entry_url, err_u = core::parse_url(entry.url[..]);
             if err_u != core::UrlParseError.None || !entry_url.valid { continue; }
             let entry_orig = core::origin_from_url(entry_url);

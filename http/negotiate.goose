@@ -17,10 +17,10 @@ const QVALUE_MAX_MILLITHS: i32 = 1000;
 //   returns: 850, true
 fn parse_qvalue_token(qstr: const u8[:]) -> i32, bool {
     guard qstr.len >= 1 && qstr.len <= 5 else { return 0, false; }
-    if qstr == "1" || qstr == "1.0" || qstr == "1.00" || qstr == "1.000" {
+    if qstr == "1" || qstr == "1." || qstr == "1.0" || qstr == "1.00" || qstr == "1.000" {
         return QVALUE_MAX_MILLITHS, true;
     }
-    if qstr == "0" {
+    if qstr == "0" || qstr == "0." {
         return 0, true;
     }
     let whole, frac, has_dot = qstr.split_once_byte('.');

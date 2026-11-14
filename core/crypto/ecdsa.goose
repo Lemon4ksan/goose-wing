@@ -447,28 +447,19 @@ fn p256_is_on_curve(pt: P256Point) -> bool {
     return u256_cmp(lhs, rhs.v) == 0;
 }
 
-// Decodes a P-256 public key from 65-byte uncompressed SEC1 (`0x04 || X || Y`) or 64-byte raw `X || Y`.
+// Decodes a P-256 public key from 65-byte uncompressed SEC1 format (`0x04 || X || Y`).
 //
 // Example:
 //   pub_key = [0x04, X(32 bytes), Y(32 bytes)]
 //   returns: P256Point { x, y, infinity: false }, ok = true
 // crap:ignore
 fn decode_p256_public_key(pub_key: const u8[:]) -> P256Point, bool {
+    guard pub_key.len == 65 && pub_key[0] == 0x04 else { return P256Point { .. }, false; }
     var x_bytes: u8[32] = [0; 32];
     var y_bytes: u8[32] = [0; 32];
-    if pub_key.len == 65 {
-        guard pub_key[0] == 0x04 else { return P256Point { .. }, false; }
-        for i in 32 {
-            x_bytes[i] = pub_key[1 + i];
-            y_bytes[i] = pub_key[33 + i];
-        }
-    } else if pub_key.len == 64 {
-        for i in 32 {
-            x_bytes[i] = pub_key[i];
-            y_bytes[i] = pub_key[32 + i];
-        }
-    } else {
-        return P256Point { .. }, false;
+    for i in 32 {
+        x_bytes[i] = pub_key[1 + i];
+        y_bytes[i] = pub_key[33 + i];
     }
     let pt = P256Point {
         x:        u256_from_be(x_bytes),
@@ -575,7 +566,15 @@ fn ecdsa_p256_encode_der_sig(raw_sig: const u8[64]&, out: u8[..72]&) -> bool {
 // Derives the 65-byte uncompressed SEC1 public key (`0x04 || X || Y`) from a 32-byte P-256 private scalar.
 // crap:ignore
 fn ecdsa_p256_public_key(priv_key: const u8[32]&) -> u8[65] {
+    let ord = U256 { v: P256_ORDER };
     var d = u256_from_be(priv_key);
+    if u256_cmp(d, P256_ORDER) >= 0 {
+        d = u256_sub_mod(d, ord, P256_ORDER);
+    }
+    guard !u256_is_zero(d) else {
+        zeroize_u256(d);
+        return [0; 65];
+    }
     let g = P256Point {
         x:        U256 { v: P256_GX },
         y:        U256 { v: P256_GY },
@@ -592,6 +591,33 @@ fn ecdsa_p256_public_key(priv_key: const u8[32]&) -> u8[65] {
         out[33 + i] = yb[i];
     }
     return out;
+}
+
+// Initializes the RFC 6979 §3.2 HMAC-SHA256 DRBG state (`K`, `V`) from `int2octets(x)` and `bits2octets(h1)`.
+// crap:ignore
+fn rfc6979_p256_init(
+    x_be:     const u8[32]&,
+    z_be:     const u8[32]&,
+    k_hmac:   u8[32]&,
+    v_hmac:   u8[32]&,
+    seed_buf: u8[..97]&,
+) {
+    v_hmac = [0x01; 32];
+    k_hmac = [0x00; 32];
+    seed_buf.clear();
+    seed_buf.append(v_hmac[..]);
+    seed_buf.push(0x00);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
+    k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
+    v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
+    seed_buf.clear();
+    seed_buf.append(v_hmac[..]);
+    seed_buf.push(0x01);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
+    k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
+    v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
 }
 
 // Draws the next valid RFC 6979 §3.2 candidate scalar `k in [1, n - 1]` from the HMAC-SHA256 DRBG state.
@@ -621,34 +647,26 @@ fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[..97]&, re
 // Deterministic RFC 6979 ECDSA P-256 SHA-256 signature generation returning 64-byte `r || s`.
 // crap:ignore
 fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
-    let msg_hash = sha256(message);
     let ord = U256 { v: P256_ORDER };
-    var z = u256_from_be(msg_hash);
-    if u256_cmp(z, P256_ORDER) >= 0 {
-        z = u256_sub_mod(z, ord, P256_ORDER);
-    }
     var d = u256_from_be(priv_key);
     if u256_cmp(d, P256_ORDER) >= 0 {
         d = u256_sub_mod(d, ord, P256_ORDER);
     }
+    guard !u256_is_zero(d) else {
+        zeroize_u256(d);
+        return [0; 64];
+    }
+    let msg_hash = sha256(message);
+    var z = u256_from_be(msg_hash);
+    if u256_cmp(z, P256_ORDER) >= 0 {
+        z = u256_sub_mod(z, ord, P256_ORDER);
+    }
     var x_be = u256_to_be(d);
     let z_be = u256_to_be(z);
-    var v_hmac:   u8[32]   = [0x01; 32];
-    var k_hmac:   u8[32]   = [0x00; 32];
+    var v_hmac:   u8[32]   = [0; 32];
+    var k_hmac:   u8[32]   = [0; 32];
     var seed_buf: u8[..97] = [];
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x00);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
-    k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
-    v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
-    seed_buf.clear();
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x01);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
-    k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
-    v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
+    rfc6979_p256_init(x_be, z_be, k_hmac, v_hmac, seed_buf);
 
     let g = P256Point { x: U256 { v: P256_GX }, y: U256 { v: P256_GY }, infinity: false };
     var r_val = U256 { .. };
@@ -663,8 +681,11 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
             r_val = u256_sub_mod(r_val, ord, P256_ORDER);
         }
         var k_inv = u256_inv_mod(k_scalar, P256_ORDER);
-        let z_plus_rd = u256_add_mod(z, u256_mul_mod(r_val, d, P256_ORDER), P256_ORDER);
+        var rd = u256_mul_mod(r_val, d, P256_ORDER);
+        var z_plus_rd = u256_add_mod(z, rd, P256_ORDER);
         s_val = u256_mul_mod(k_inv, z_plus_rd, P256_ORDER);
+        zeroize_u256(rd);
+        zeroize_u256(z_plus_rd);
         zeroize_u256(k_scalar);
         zeroize_u256(k_inv);
     }
@@ -684,23 +705,9 @@ fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
     return sig;
 }
 
-// Verifies an ECDSA P-256 SHA-256 signature (accepts 64-byte raw `r || s` or ASN.1 DER `SEQUENCE { r, s }`).
+// Verifies a decoded 64-byte `r || s` P-256 signature against affine public point `q_pt` and reduced hash `z`.
 // crap:ignore
-fn ecdsa_p256_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    let q_pt, pub_ok = decode_p256_public_key(pub_key);
-    guard pub_ok else { return false; }
-
-    var raw_sig: u8[64] = [0; 64];
-    if sig.len == 64 {
-        if sig[0] != 0x30 || !ecdsa_p256_decode_der_sig(sig, raw_sig) {
-            for i in 64 {
-                raw_sig[i] = sig[i];
-            }
-        }
-    } else {
-        guard ecdsa_p256_decode_der_sig(sig, raw_sig) else { return false; }
-    }
-
+fn ecdsa_p256_verify_raw_pt(q_pt: P256Point, z: U256, raw_sig: const u8[64]&) -> bool {
     var r_bytes: u8[32] = [0; 32];
     var s_bytes: u8[32] = [0; 32];
     for i in 32 {
@@ -711,13 +718,6 @@ fn ecdsa_p256_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
     let s = u256_from_be(s_bytes);
     guard !u256_is_zero(r) && u256_cmp(r, P256_ORDER) < 0 else { return false; }
     guard !u256_is_zero(s) && u256_cmp(s, P256_ORDER) < 0 else { return false; }
-
-    let msg_hash = sha256(message);
-    var z = u256_from_be(msg_hash);
-    if u256_cmp(z, P256_ORDER) >= 0 {
-        let ord = U256 { v: P256_ORDER };
-        z = u256_sub_mod(z, ord, P256_ORDER);
-    }
 
     let w = u256_inv_mod(s, P256_ORDER);
     let u1 = u256_mul_mod(z, w, P256_ORDER);
@@ -737,6 +737,51 @@ fn ecdsa_p256_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
         v = u256_sub_mod(v, ord, P256_ORDER);
     }
     return u256_cmp(v, r.v) == 0;
+}
+
+// Verifies an ASN.1 DER-encoded ECDSA P-256 SHA-256 signature (`SEQUENCE { r, s }`).
+// crap:ignore
+fn ecdsa_p256_verify_der(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
+    guard sig.len >= 8 && sig[0] == 0x30 else { return false; }
+    var der_raw: u8[64] = [0; 64];
+    guard ecdsa_p256_decode_der_sig(sig, der_raw) else { return false; }
+    let q_pt, pub_ok = decode_p256_public_key(pub_key);
+    guard pub_ok else { return false; }
+    let msg_hash = sha256(message);
+    var z = u256_from_be(msg_hash);
+    if u256_cmp(z, P256_ORDER) >= 0 {
+        let ord = U256 { v: P256_ORDER };
+        z = u256_sub_mod(z, ord, P256_ORDER);
+    }
+    return ecdsa_p256_verify_raw_pt(q_pt, z, der_raw);
+}
+
+// Verifies a fixed-width 64-byte IEEE P1363 (`r || s`) ECDSA P-256 SHA-256 signature.
+// crap:ignore
+fn ecdsa_p256_verify_p1363(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
+    guard sig.len == 64 else { return false; }
+    let q_pt, pub_ok = decode_p256_public_key(pub_key);
+    guard pub_ok else { return false; }
+    let msg_hash = sha256(message);
+    var z = u256_from_be(msg_hash);
+    if u256_cmp(z, P256_ORDER) >= 0 {
+        let ord = U256 { v: P256_ORDER };
+        z = u256_sub_mod(z, ord, P256_ORDER);
+    }
+    var p1363_raw: u8[64] = [0; 64];
+    for i in 64 {
+        p1363_raw[i] = sig[i];
+    }
+    return ecdsa_p256_verify_raw_pt(q_pt, z, p1363_raw);
+}
+
+// Verifies an ECDSA P-256 SHA-256 signature (accepts 64-byte raw `r || s` or ASN.1 DER `SEQUENCE { r, s }`).
+// crap:ignore
+fn ecdsa_p256_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
+    if ecdsa_p256_verify_der(pub_key, message, sig) {
+        return true;
+    }
+    return ecdsa_p256_verify_p1363(pub_key, message, sig);
 }
 
 // ---- NIST P-384 (secp384r1) 12-Limb 32-bit Representation ----------------
@@ -1183,28 +1228,19 @@ fn p384_is_on_curve(pt: P384Point) -> bool {
     return u384_cmp(lhs, rhs.v) == 0;
 }
 
-// Decodes a P-384 public key from 97-byte uncompressed SEC1 (`0x04 || X || Y`) or 96-byte raw `X || Y`.
+// Decodes a P-384 public key from 97-byte uncompressed SEC1 format (`0x04 || X || Y`).
 //
 // Example:
 //   pub_key = [0x04, X(48 bytes), Y(48 bytes)]
 //   returns: P384Point { x, y, infinity: false }, ok = true
 // crap:ignore
 fn decode_p384_public_key(pub_key: const u8[:]) -> P384Point, bool {
+    guard pub_key.len == 97 && pub_key[0] == 0x04 else { return P384Point { .. }, false; }
     var x_bytes: u8[48] = [0; 48];
     var y_bytes: u8[48] = [0; 48];
-    if pub_key.len == 97 {
-        guard pub_key[0] == 0x04 else { return P384Point { .. }, false; }
-        for i in 48 {
-            x_bytes[i] = pub_key[1 + i];
-            y_bytes[i] = pub_key[49 + i];
-        }
-    } else if pub_key.len == 96 {
-        for i in 48 {
-            x_bytes[i] = pub_key[i];
-            y_bytes[i] = pub_key[48 + i];
-        }
-    } else {
-        return P384Point { .. }, false;
+    for i in 48 {
+        x_bytes[i] = pub_key[1 + i];
+        y_bytes[i] = pub_key[49 + i];
     }
     let pt = P384Point {
         x:        u384_from_be(x_bytes),
@@ -1244,7 +1280,15 @@ fn ecdsa_p384_decode_der_sig(der_sig: const u8[:], out_raw: u8[96]&) -> bool {
 // Derives the 97-byte uncompressed SEC1 public key (`0x04 || X || Y`) from a 48-byte P-384 private scalar.
 // crap:ignore
 fn ecdsa_p384_public_key(priv_key: const u8[48]&) -> u8[97] {
+    let ord = U384 { v: P384_ORDER };
     var d = u384_from_be(priv_key);
+    if u384_cmp(d, P384_ORDER) >= 0 {
+        d = u384_sub_mod(d, ord, P384_ORDER);
+    }
+    guard !u384_is_zero(d) else {
+        zeroize_u384(d);
+        return [0; 97];
+    }
     let g = P384Point {
         x:        U384 { v: P384_GX },
         y:        U384 { v: P384_GY },
@@ -1261,6 +1305,33 @@ fn ecdsa_p384_public_key(priv_key: const u8[48]&) -> u8[97] {
         out[49 + i] = yb[i];
     }
     return out;
+}
+
+// Initializes the RFC 6979 §3.2 HMAC-SHA384 DRBG state (`K`, `V`) from `int2octets(x)` and `bits2octets(h1)`.
+// crap:ignore
+fn rfc6979_p384_init(
+    x_be:     const u8[48]&,
+    z_be:     const u8[48]&,
+    k_hmac:   u8[48]&,
+    v_hmac:   u8[48]&,
+    seed_buf: u8[..145]&,
+) {
+    v_hmac = [0x01; 48];
+    k_hmac = [0x00; 48];
+    seed_buf.clear();
+    seed_buf.append(v_hmac[..]);
+    seed_buf.push(0x00);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
+    k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
+    v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
+    seed_buf.clear();
+    seed_buf.append(v_hmac[..]);
+    seed_buf.push(0x01);
+    seed_buf.append(x_be[..]);
+    seed_buf.append(z_be[..]);
+    k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
+    v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
 }
 
 // Draws the next valid RFC 6979 §3.2 candidate scalar `k in [1, n - 1]` from the HMAC-SHA384 DRBG state.
@@ -1290,34 +1361,26 @@ fn rfc6979_p384_next_k(k_hmac: u8[48]&, v_hmac: u8[48]&, seed_buf: u8[..145]&, r
 // Deterministic RFC 6979 ECDSA P-384 SHA-384 signature generation returning 96-byte `r || s`.
 // crap:ignore
 fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
-    let msg_hash = sha384(message);
     let ord = U384 { v: P384_ORDER };
-    var z = u384_from_be(msg_hash);
-    if u384_cmp(z, P384_ORDER) >= 0 {
-        z = u384_sub_mod(z, ord, P384_ORDER);
-    }
     var d = u384_from_be(priv_key);
     if u384_cmp(d, P384_ORDER) >= 0 {
         d = u384_sub_mod(d, ord, P384_ORDER);
     }
+    guard !u384_is_zero(d) else {
+        zeroize_u384(d);
+        return [0; 96];
+    }
+    let msg_hash = sha384(message);
+    var z = u384_from_be(msg_hash);
+    if u384_cmp(z, P384_ORDER) >= 0 {
+        z = u384_sub_mod(z, ord, P384_ORDER);
+    }
     var x_be = u384_to_be(d);
     let z_be = u384_to_be(z);
-    var v_hmac:   u8[48]    = [0x01; 48];
-    var k_hmac:   u8[48]    = [0x00; 48];
+    var v_hmac:   u8[48]    = [0; 48];
+    var k_hmac:   u8[48]    = [0; 48];
     var seed_buf: u8[..145] = [];
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x00);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
-    k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
-    v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
-    seed_buf.clear();
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x01);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
-    k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
-    v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
+    rfc6979_p384_init(x_be, z_be, k_hmac, v_hmac, seed_buf);
 
     let g = P384Point { x: U384 { v: P384_GX }, y: U384 { v: P384_GY }, infinity: false };
     var r_val = U384 { .. };
@@ -1332,8 +1395,11 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
             r_val = u384_sub_mod(r_val, ord, P384_ORDER);
         }
         var k_inv = u384_inv_mod(k_scalar, P384_ORDER);
-        let z_plus_rd = u384_add_mod(z, u384_mul_mod(r_val, d, P384_ORDER), P384_ORDER);
+        var rd = u384_mul_mod(r_val, d, P384_ORDER);
+        var z_plus_rd = u384_add_mod(z, rd, P384_ORDER);
         s_val = u384_mul_mod(k_inv, z_plus_rd, P384_ORDER);
+        zeroize_u384(rd);
+        zeroize_u384(z_plus_rd);
         zeroize_u384(k_scalar);
         zeroize_u384(k_inv);
     }
@@ -1353,23 +1419,9 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
     return sig;
 }
 
-// Verifies an ECDSA P-384 SHA-384 signature (accepts 96-byte raw `r || s` or ASN.1 DER `SEQUENCE { r, s }`).
+// Verifies a decoded 96-byte `r || s` P-384 signature against affine public point `q_pt` and reduced hash `z`.
 // crap:ignore
-fn ecdsa_p384_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
-    let q_pt, pub_ok = decode_p384_public_key(pub_key);
-    guard pub_ok else { return false; }
-
-    var raw_sig: u8[96] = [0; 96];
-    if sig.len == 96 {
-        if sig[0] != 0x30 || !ecdsa_p384_decode_der_sig(sig, raw_sig) {
-            for i in 96 {
-                raw_sig[i] = sig[i];
-            }
-        }
-    } else {
-        guard ecdsa_p384_decode_der_sig(sig, raw_sig) else { return false; }
-    }
-
+fn ecdsa_p384_verify_raw_pt(q_pt: P384Point, z: U384, raw_sig: const u8[96]&) -> bool {
     var r_bytes: u8[48] = [0; 48];
     var s_bytes: u8[48] = [0; 48];
     for i in 48 {
@@ -1380,13 +1432,6 @@ fn ecdsa_p384_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
     let s = u384_from_be(s_bytes);
     guard !u384_is_zero(r) && u384_cmp(r, P384_ORDER) < 0 else { return false; }
     guard !u384_is_zero(s) && u384_cmp(s, P384_ORDER) < 0 else { return false; }
-
-    let msg_hash = sha384(message);
-    var z = u384_from_be(msg_hash);
-    if u384_cmp(z, P384_ORDER) >= 0 {
-        let ord = U384 { v: P384_ORDER };
-        z = u384_sub_mod(z, ord, P384_ORDER);
-    }
 
     let w = u384_inv_mod(s, P384_ORDER);
     let u1 = u384_mul_mod(z, w, P384_ORDER);
@@ -1406,4 +1451,49 @@ fn ecdsa_p384_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:
         v = u384_sub_mod(v, ord, P384_ORDER);
     }
     return u384_cmp(v, r.v) == 0;
+}
+
+// Verifies an ASN.1 DER-encoded ECDSA P-384 SHA-384 signature (`SEQUENCE { r, s }`).
+// crap:ignore
+fn ecdsa_p384_verify_der(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
+    guard sig.len >= 8 && sig[0] == 0x30 else { return false; }
+    var der_raw: u8[96] = [0; 96];
+    guard ecdsa_p384_decode_der_sig(sig, der_raw) else { return false; }
+    let q_pt, pub_ok = decode_p384_public_key(pub_key);
+    guard pub_ok else { return false; }
+    let msg_hash = sha384(message);
+    var z = u384_from_be(msg_hash);
+    if u384_cmp(z, P384_ORDER) >= 0 {
+        let ord = U384 { v: P384_ORDER };
+        z = u384_sub_mod(z, ord, P384_ORDER);
+    }
+    return ecdsa_p384_verify_raw_pt(q_pt, z, der_raw);
+}
+
+// Verifies a fixed-width 96-byte IEEE P1363 (`r || s`) ECDSA P-384 SHA-384 signature.
+// crap:ignore
+fn ecdsa_p384_verify_p1363(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
+    guard sig.len == 96 else { return false; }
+    let q_pt, pub_ok = decode_p384_public_key(pub_key);
+    guard pub_ok else { return false; }
+    let msg_hash = sha384(message);
+    var z = u384_from_be(msg_hash);
+    if u384_cmp(z, P384_ORDER) >= 0 {
+        let ord = U384 { v: P384_ORDER };
+        z = u384_sub_mod(z, ord, P384_ORDER);
+    }
+    var p1363_raw: u8[96] = [0; 96];
+    for i in 96 {
+        p1363_raw[i] = sig[i];
+    }
+    return ecdsa_p384_verify_raw_pt(q_pt, z, p1363_raw);
+}
+
+// Verifies an ECDSA P-384 SHA-384 signature (accepts 96-byte raw `r || s` or ASN.1 DER `SEQUENCE { r, s }`).
+// crap:ignore
+fn ecdsa_p384_verify(pub_key: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
+    if ecdsa_p384_verify_der(pub_key, message, sig) {
+        return true;
+    }
+    return ecdsa_p384_verify_p1363(pub_key, message, sig);
 }

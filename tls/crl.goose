@@ -90,8 +90,8 @@ inline fn validate_crl_serial_length(serial_bytes: const u8[:]) -> bool {
 }
 
 // Decodes a positive ASN.1 DER INTEGER (1..20 significant bytes, RFC 5280 Section 4.1.2.2) into a
-// canonical `u64` serial identifier: exact big-endian value for 1..8 significant bytes, or a 64-bit
-// FNV-1a digest (with high bit set) for 9..20 significant bytes.
+// canonical `u64` serial identifier: exact big-endian value for 1..7 significant bytes, or a 64-bit
+// FNV-1a digest (with high bit set) for 8..20 significant bytes so the two domains never collide.
 //
 // Example:
 //   serial_bytes = [0x01, 0x02]
@@ -105,7 +105,7 @@ fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
         start = 1;
     }
     let sig_len = core::sub_sat_i64(serial_bytes.len, start);
-    if sig_len <= 8 {
+    if sig_len <= 7 {
         var val: u64 = 0;
         for i in sig_len {
             let b = serial_bytes[core::add_sat_i64(start, i)] as u64;
@@ -127,6 +127,28 @@ fn parse_crl_entry_serial(serial_bytes: const u8[:], out: ParsedCrl&) -> bool {
     return crl_insert_serial(out, serial_u64);
 }
 
+// RFC 5280 Section 5.2: CRL Extensions - Rejects empty extension lists and unrecognized critical extensions.
+fn validate_no_critical_x509_extensions(ext_seq_raw: const u8[:]) -> bool {
+    guard ext_seq_raw.len > 0 else { return false; }
+    var seq = core::cursor_from(ext_seq_raw);
+    while seq.cursor_len() > 0 {
+        var single_ext = core::cursor_from(seq.buf[..0]);
+        guard get_asn1_element(seq, rfc::ASN1_TAG_SEQUENCE, single_ext) else { return false; }
+        var oid = core::cursor_from(single_ext.buf[..0]);
+        guard get_asn1_element(single_ext, rfc::ASN1_TAG_OID, oid) && oid.buf.len > 0 else { return false; }
+        // RFC 5280 Section 5.3: CRL Entry Extensions - Unrecognized critical extensions MUST be rejected.
+        if single_ext.cursor_len() > 0 && single_ext.buf[0] == rfc::ASN1_TAG_BOOLEAN {
+            return false;
+        }
+        var ext_oct = core::cursor_from(single_ext.buf[..0]);
+        guard get_asn1_element(single_ext, rfc::ASN1_TAG_OCTET_STRING, ext_oct) &&
+            single_ext.cursor_len() == 0 else {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Parses a single revoked certificate entry SEQUENCE (RFC 5280 §5.1.2.6).
 //
 // Example:
@@ -142,7 +164,15 @@ fn parse_crl_single_entry_raw(entry_raw: const u8[:], out: ParsedCrl&) -> bool {
     var rev_time_elem = core::cursor_from(entry_seq.buf[..0]);
     guard get_any_asn1_element(entry_seq, rev_time_tag, rev_time_elem) else { return false; }
     let _, ok_time = parse_asn1_time(rev_time_tag, rev_time_elem.buf);
-    return ok_time;
+    guard ok_time else { return false; }
+    if entry_seq.cursor_len() > 0 {
+        var entry_exts = core::cursor_from(entry_seq.buf[..0]);
+        guard get_asn1_element(entry_seq, rfc::ASN1_TAG_SEQUENCE, entry_exts) &&
+            validate_no_critical_x509_extensions(entry_exts.buf) else {
+            return false;
+        }
+    }
+    return entry_seq.cursor_len() == 0;
 }
 
 // Parses a sequence of revokedCertificates entries from a TBSCertList (RFC 5280 Section 5.1.2.6).
@@ -165,18 +195,20 @@ fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool 
     return true;
 }
 
+// RFC 5280 Section 5.1.1.2: signatureAlgorithm - Verifies full outer/inner AlgorithmIdentifier match.
 fn x509_crl_read_outer_sig(
-    crl_seq:       ByteCursor&,
-    raw_crl:       const u8[:],
-    inner_sig_oid: const u8[:],
-    out:           ParsedCrl&,
+    crl_seq:           ByteCursor&,
+    raw_crl:           const u8[:],
+    inner_sig_alg_raw: const u8[:],
+    out:               ParsedCrl&,
 ) -> bool {
     guard crl_seq.cursor_len() > 0 else { return false; }
     var outer_sig_alg = core::cursor_from(crl_seq.buf[..0]);
     guard get_asn1_element(crl_seq, rfc::ASN1_TAG_SEQUENCE, outer_sig_alg) else { return false; }
+    let outer_sig_alg_raw = outer_sig_alg.buf;
     var outer_sig_oid = core::cursor_from(outer_sig_alg.buf[..0]);
     guard get_asn1_element(outer_sig_alg, rfc::ASN1_TAG_OID, outer_sig_oid) else { return false; }
-    guard outer_sig_oid.buf == inner_sig_oid else { return false; }
+    guard outer_sig_alg_raw == inner_sig_alg_raw else { return false; }
     out.sig_alg_oid = make_span(raw_crl, outer_sig_oid.buf);
 
     guard crl_seq.cursor_len() > 0 else { return false; }
@@ -203,6 +235,20 @@ inline fn x509_crl_read_optional_next_update(tbs_cert_list: ByteCursor&, out_nex
     return true;
 }
 
+inline fn x509_crl_read_optional_exts(tbs_cert_list: ByteCursor&, is_v2: bool) -> bool {
+    guard tbs_cert_list.cursor_len() > 0 else { return true; }
+    var ext_ctx = core::cursor_from(tbs_cert_list.buf[..0]);
+    var ext_seq = core::cursor_from(tbs_cert_list.buf[..0]);
+    guard is_v2 &&
+        get_asn1_element(tbs_cert_list, 0xA0, ext_ctx) &&
+        get_asn1_element(ext_ctx, rfc::ASN1_TAG_SEQUENCE, ext_seq) &&
+        ext_ctx.cursor_len() == 0 &&
+        validate_no_critical_x509_extensions(ext_seq.buf) else {
+        return false;
+    }
+    return tbs_cert_list.cursor_len() == 0;
+}
+
 // Parses an X.509 CertificateList (CRL) in ASN.1 DER format (RFC 5280 Section 5.1).
 // Extracts the issuer Name slice and populates `out.serials` in ascending sorted order.
 // Fails closed (`false`) on malformed DER or if revoked serials exceed 128 (Invariant 13).
@@ -211,9 +257,9 @@ inline fn x509_crl_read_optional_next_update(tbs_cert_list: ByteCursor&, out_nex
 //   raw_crl = [0x30, ...] (DER CertificateList)
 //   returns: ok = true, out.issuer and out.serials populated
 fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
-    out.issuer = "";
-    out.serials.clear();
-    out.serial_count = 0;
+    out = ParsedCrl { .. };
+    var committed = false;
+    defer if !committed { out = ParsedCrl { .. }; };
 
     var c = core::cursor_from(raw_crl);
     var crl_seq = core::cursor_from(raw_crl[..0]);
@@ -229,15 +275,23 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, crl_seq.buf.len);
     out.tbs_raw = make_span(raw_crl, tbs_raw_start[..tbs_tlv_len]);
 
+    var is_v2 = false;
     if tbs_cert_list.cursor_len() > 0 && tbs_cert_list.buf[0] == rfc::ASN1_TAG_INTEGER {
-        var ver_elem = core::cursor_from(tbs_cert_list.buf[..0]);
-        guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_INTEGER, ver_elem) else { return false; }
+        var crl_ver: i64 = -1;
+        guard get_asn1_integer(tbs_cert_list, crl_ver) && (crl_ver == 0 || crl_ver == 1) else {
+            return false;
+        }
+        is_v2 = crl_ver == 1;
     }
 
     var sig_alg = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, sig_alg) else { return false; }
+    let inner_sig_alg_raw = sig_alg.buf;
     var inner_sig_oid = core::cursor_from(sig_alg.buf[..0]);
-    guard get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, inner_sig_oid) else { return false; }
+    guard get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, inner_sig_oid) &&
+        validate_x509_sig_alg_params(inner_sig_oid.buf, sig_alg) else {
+        return false;
+    }
 
     var issuer_seq = core::cursor_from(tbs_cert_list.buf[..0]);
     guard get_asn1_element(tbs_cert_list, rfc::ASN1_TAG_SEQUENCE, issuer_seq) else { return false; }
@@ -259,7 +313,27 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
         }
     }
 
-    return x509_crl_read_outer_sig(crl_seq, raw_crl, inner_sig_oid.buf, out);
+    guard x509_crl_read_optional_exts(tbs_cert_list, is_v2) &&
+        x509_crl_read_outer_sig(crl_seq, raw_crl, inner_sig_alg_raw, out) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
+// Verifies cryptographic signature on an X.509 CRL against raw issuer public key material.
+fn x509_verify_crl_signature_with_pubkey(
+    crl:           const ParsedCrl&,
+    raw_crl:       const u8[:],
+    parent_pubkey: const u8[:],
+) -> TlsAlert {
+    guard crl.signature.length > 0 && crl.tbs_raw.length > 0 && parent_pubkey.len > 0 else {
+        return TlsAlert.BadCertificate;
+    }
+    let sig_oid = span_slice(raw_crl, crl.sig_alg_oid);
+    let tbs_data = span_slice(raw_crl, crl.tbs_raw);
+    let sig_bytes = span_slice(raw_crl, crl.signature);
+    return x509_verify_signature_by_oid(sig_oid, tbs_data, sig_bytes, parent_pubkey, TlsAlert.BadCertificate);
 }
 
 // Verifies cryptographic signature on an X.509 CRL against issuer's certificate.
@@ -269,17 +343,9 @@ fn x509_verify_crl_signature(
     issuer_cert: const ParsedCert&,
     issuer_raw:  const u8[:],
 ) -> TlsAlert {
-    guard crl.signature.length > 0 && crl.tbs_raw.length > 0 else {
-        return TlsAlert.BadCertificate;
-    }
-    let sig_oid = span_slice(raw_crl, crl.sig_alg_oid);
-    let tbs_data = span_slice(raw_crl, crl.tbs_raw);
-    let sig_bytes = span_slice(raw_crl, crl.signature);
     var parent_pubkey = span_slice(issuer_raw, issuer_cert.spki_pubkey);
-
     if parent_pubkey.len >= 2 && parent_pubkey[0] == 0 {
         parent_pubkey = parent_pubkey[1..];
     }
-
-    return x509_verify_signature_by_oid(sig_oid, tbs_data, sig_bytes, parent_pubkey, TlsAlert.BadCertificate);
+    return x509_verify_crl_signature_with_pubkey(crl, raw_crl, parent_pubkey);
 }

@@ -185,6 +185,7 @@ fn apply_digest_opt_param(
     key:       const u8[:],
     val:       const u8[:],
     seen_mask: u32&,
+    ext_keys:  u8[..64][..16]&,
 ) -> bool {
     if key.eq_ascii_fold("opaque") {
         return (seen_mask & 16) == 0 && chal.opaque.try_set(val) && try_mark_digest_param(seen_mask, 16);
@@ -193,9 +194,9 @@ fn apply_digest_opt_param(
         return (seen_mask & 32) == 0 && chal.domain.try_set(val) && try_mark_digest_param(seen_mask, 32);
     }
     if key.eq_ascii_fold("stale") {
-        let is_true = val.eq_ascii_fold("true");
-        guard (is_true || val.eq_ascii_fold("false")) && try_mark_digest_param(seen_mask, 64) else { return false; }
-        chal.stale = is_true;
+        // RFC 7616 Section 3.3: The WWW-Authenticate Response Header Field - non-"true" stale values mean false
+        guard val.len > 0 && try_mark_digest_param(seen_mask, 64) else { return false; }
+        chal.stale = val.eq_ascii_fold("true");
         return true;
     }
     if key.eq_ascii_fold("userhash") {
@@ -207,6 +208,12 @@ fn apply_digest_opt_param(
     if key.eq_ascii_fold("charset") {
         return val.eq_ascii_fold("UTF-8") && try_mark_digest_param(seen_mask, 256);
     }
+    // RFC 9110 Section 11.2: Authentication Parameters - parameter names MUST NOT occur more than once per challenge
+    for &seen_ext in ext_keys {
+        if seen_ext[..].eq_ascii_fold(key) { return false; }
+    }
+    var kbuf: u8[..64] = [];
+    guard kbuf.try_set(key) && ext_keys.try_push(kbuf) else { return false; }
     seen_mask = seen_mask | 512;
     return true;
 }
@@ -217,12 +224,13 @@ fn apply_digest_param(
     key:       const u8[:],
     val:       const u8[:],
     seen_mask: u32&,
+    ext_keys:  u8[..64][..16]&,
 ) -> bool {
     let handled, ok_core = apply_digest_core_param(chal, key, val, seen_mask);
     if handled {
         return ok_core;
     }
-    return apply_digest_opt_param(chal, key, val, seen_mask);
+    return apply_digest_opt_param(chal, key, val, seen_mask, ext_keys);
 }
 
 // Advances `idx` past any leading whitespace, commas, or line breaks (RFC 7616 §3.3).
@@ -254,8 +262,9 @@ inline fn skip_digest_scheme(raw: const u8[:], idx: i64&) {
 //   returns: DigestChallenge { realm: "api@example.com", nonce: "dcd98b..." }, ok = true
 fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
     var chal = DigestChallenge { .. };
-    var idx:       i64 = 0;
-    var seen_mask: u32 = 0;
+    var idx:       i64            = 0;
+    var seen_mask: u32            = 0;
+    var ext_keys:  u8[..64][..16] = [];
 
     skip_whitespace_and_commas(raw_header, idx);
     skip_digest_scheme(raw_header, idx);
@@ -272,9 +281,12 @@ fn parse_digest_challenge(raw_header: const u8[:]) -> DigestChallenge, bool {
         guard key_ok else { return DigestChallenge { .. }, false; }
 
         var val: u8[..128] = [];
-        guard parse_digest_param_val(raw_header, idx, val) else { return DigestChallenge { .. }, false; }
-
-        guard apply_digest_param(chal, key, val[..], seen_mask) else { return DigestChallenge { .. }, false; }
+        guard parse_digest_param_val(raw_header, idx, val) else {
+            return DigestChallenge { .. }, false;
+        }
+        guard apply_digest_param(chal, key, val[..], seen_mask, ext_keys) else {
+            return DigestChallenge { .. }, false;
+        }
     }
 
     let qop_ok = chal.qop.len == 0 || resolve_active_qop(chal.qop[..]).len > 0;

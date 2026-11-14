@@ -169,7 +169,7 @@ inline fn map_json_short_escape(e: u8) -> u8, bool {
     return 0, false;
 }
 
-// Decodes a `\uXXXX` escape (and optional UTF-16 low surrogate pair) starting at `text[pos]` (RFC 8259 §7).
+// Decodes a `\uXXXX` escape (and optional UTF-16 low surrogate pair) starting at `text[pos]`.
 //
 // Example:
 //   text = "0041", pos = 0, end = 4
@@ -178,20 +178,20 @@ inline fn decode_json_unicode_escape(text: const u8[:], pos: i64, end: i64) -> u
     let hi, ok_hi = parse_json_hex4(text, pos, end);
     guard ok_hi else { return 0, pos, false; }
     let after_hi = add_sat_i64(pos, 4);
-    guard hi >= 0xD800 && hi < 0xDC00 && add_sat_i64(after_hi, 6) <= end &&
-          text[after_hi] == '\\' && text[add_sat_i64(after_hi, 1)] == 'u' else {
+    if hi < 0xD800 || hi > 0xDFFF {
         return hi, after_hi, true;
+    }
+    guard hi < 0xDC00 && add_sat_i64(after_hi, 6) <= end &&
+          text[after_hi] == '\\' && text[add_sat_i64(after_hi, 1)] == 'u' else {
+        return 0, pos, false;
     }
     let lo_start = add_sat_i64(after_hi, 2);
     let lo, ok_lo = parse_json_hex4(text, lo_start, end);
-    guard ok_lo else { return 0, after_hi, false; }
-    if lo >= 0xDC00 && lo < 0xE000 {
-        return combine_utf16_surrogates(hi, lo), add_sat_i64(after_hi, 6), true;
-    }
-    return hi, after_hi, true;
+    guard ok_lo && lo >= 0xDC00 && lo <= 0xDFFF else { return 0, pos, false; }
+    return combine_utf16_surrogates(hi, lo), add_sat_i64(after_hi, 6), true;
 }
 
-// Decodes an escaped JSON string body `text[at..end]` directly into bounded buffer `dst` (RFC 8259 §7).
+// Decodes an escaped JSON string body `text[at..end]` directly into bounded buffer `dst`.
 // Returns false on malformed escape sequences or when `dst` capacity is exceeded.
 //
 // Example:
@@ -199,12 +199,13 @@ inline fn decode_json_unicode_escape(text: const u8[:], pos: i64, end: i64) -> u
 //   returns: true, dst = "hello \"world\""
 fn decode_json_string_into<B>(text: const u8[:], at: i64, end: i64, dst: B&) -> bool {
     dst.clear();
+    guard at >= 0 && end >= at && end <= text.len else { return false; }
     var pos = at;
     while pos < end {
         let c = text[pos];
         pos = add_sat_i64(pos, 1);
         if c != '\\' {
-            guard dst.len < dst.cap else { dst.clear(); return false; }
+            guard c >= 0x20 && c != '"' && dst.len < dst.cap else { dst.clear(); return false; }
             dst.push(c);
             continue;
         }
@@ -221,6 +222,7 @@ fn decode_json_string_into<B>(text: const u8[:], at: i64, end: i64, dst: B&) -> 
             dst.push(decoded_b);
         }
     }
+    guard validate_utf8(dst[..]) else { dst.clear(); return false; }
     return true;
 }
 
@@ -253,6 +255,10 @@ fn read_json_string_into<B>(r: json::Reader&, dst: B&) -> bool {
         return decode_json_string_into(r.text, start, end, dst);
     }
     let raw = r.text[start..end];
+    guard validate_utf8(raw) else {
+        json::fail(r, "invalid utf-8");
+        return false;
+    }
     guard raw.len <= dst.cap else { return false; }
     dst.append(raw);
     return true;

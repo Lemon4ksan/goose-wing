@@ -120,7 +120,8 @@ fn create_wire_semaphore(
     dev:  const WireDevice&,
     info: const WireSemaphoreCreateInfo&,
 ) -> WireSemaphore, WireResult {
-    guard dev.is_active else {
+    guard dev.is_active &&
+          (info.semaphore_type != WireSemaphoreType.Binary || info.initial_value <= 1) else {
         return WireSemaphore { .. }, WireResult.ErrorInitializationFailed;
     }
     return WireSemaphore {
@@ -135,7 +136,11 @@ fn signal_wire_semaphore(sem: WireSemaphore&, val: u64) -> WireResult {
     guard sem.is_valid else {
         return WireResult.ErrorInitializationFailed;
     }
-    if sem.semaphore_type == WireSemaphoreType.Timeline && val < sem.value {
+    if sem.semaphore_type == WireSemaphoreType.Binary {
+        guard val <= 1 else {
+            return WireResult.ErrorInitializationFailed;
+        }
+    } else if val <= sem.value {
         return WireResult.ErrorInitializationFailed;
     }
     sem.value = val;

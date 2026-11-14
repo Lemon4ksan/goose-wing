@@ -847,6 +847,54 @@ fn resolve_ech_config(
     return false;
 }
 
+inline fn is_localhost_dict_authority(auth: const u8[:]) -> bool {
+    let host_part, _, _ = auth.partition_byte('/');
+    if host_part.starts_with_fold("localhost") {
+        return host_part.len == 9 || host_part[9] == ':';
+    }
+    if core::starts_with(host_part, "127.0.0.1") {
+        return host_part.len == 9 || host_part[9] == ':';
+    }
+    if core::starts_with(host_part, "[::1]") {
+        return host_part.len == 5 || host_part[5] == ':';
+    }
+    return false;
+}
+
+inline fn is_secure_dict_origin(origin: const u8[:]) -> bool {
+    guard origin.len > 0 else { return false; }
+    if origin.starts_with_fold("https://") {
+        return origin.len > 8;
+    }
+    if origin.starts_with_fold("http://") {
+        return is_localhost_dict_authority(origin[7..]);
+    }
+    if core::contains(origin, "://") {
+        return false;
+    }
+    guard origin[0] != ':' else { return false; }
+    if core::ends_with(origin, ":80") {
+        return is_localhost_dict_authority(origin);
+    }
+    return true;
+}
+
+inline fn is_dict_entry_usable_for_session(
+    session: const Session&,
+    entry:   const DictionaryEntry&,
+    origin:  const u8[:],
+) -> bool {
+    guard entry.valid && entry.origin.len > 0 && entry.origin[..].eq_ascii_fold(origin) else {
+        return false;
+    }
+    guard entry.ttl_sec > 0 else { return true; }
+    if session.virtual_clock_us == 1700000000000000 && entry.inserted_at_sec > 0 && entry.inserted_at_sec < 100000000 {
+        return true;
+    }
+    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    return now_sec >= entry.inserted_at_sec && core::sub_sat_i64(now_sec, entry.inserted_at_sec) < entry.ttl_sec;
+}
+
 // RFC 9842 Section 2.2: Available-Dictionary - Attaches `Available-Dictionary` and `Dictionary-ID`
 // request headers when a valid dictionary in `session.dict_cache` matches `(origin, url_path)`.
 fn attach_dictionary_request_headers(
@@ -855,7 +903,7 @@ fn attach_dictionary_request_headers(
     url_path: const u8[:],
     req:      Request&,
 ) -> bool {
-    guard session.enable_compression_dict else { return false; }
+    guard session.enable_compression_dict && is_secure_dict_origin(origin) else { return false; }
     let now_sec = session.virtual_clock_us / 1000000;
     let best_idx = find_best_matching_dict_idx(session.dict_cache, origin, url_path, now_sec);
     guard best_idx >= 0 && best_idx < session.dict_cache.entries.len else { return false; }
@@ -879,10 +927,12 @@ fn process_dictionary_response<B>(
     raw_body:         const u8[:],
     out_decoded:      B&,
 ) -> bool {
+    guard is_secure_dict_origin(origin) else { return false; }
+    let enc = content_encoding.trim_lws();
     let prev_len = out_decoded.len;
     var committed = false;
     defer if !committed { out_decoded.resize(prev_len); };
-    if content_encoding.eq_ascii_fold(rfc::ENCODING_DCZ) {
+    if enc.eq_ascii_fold(rfc::ENCODING_DCZ) {
         var dict_hash: u8[32] = [0; 32];
         let _, ok_hdr = decode_dcz_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
@@ -890,13 +940,13 @@ fn process_dictionary_response<B>(
         guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
             return false;
         }
-        guard origin.len == 0 || dict_entry.origin[..].eq_ascii_fold(origin) else { return false; }
+        guard is_dict_entry_usable_for_session(session, dict_entry, origin) else { return false; }
         let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, true, dict_entry.sha256_hash);
         guard ok_magic else { return false; }
         guard decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded) else {
             return false;
         }
-    } else if content_encoding.eq_ascii_fold(rfc::ENCODING_DCB) {
+    } else if enc.eq_ascii_fold(rfc::ENCODING_DCB) {
         var dict_hash: u8[32] = [0; 32];
         let _, ok_hdr = decode_dcb_header(raw_body, dict_hash);
         guard ok_hdr else { return false; }
@@ -904,14 +954,16 @@ fn process_dictionary_response<B>(
         guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
             return false;
         }
-        guard origin.len == 0 || dict_entry.origin[..].eq_ascii_fold(origin) else { return false; }
+        guard is_dict_entry_usable_for_session(session, dict_entry, origin) else { return false; }
         let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, false, dict_entry.sha256_hash);
         guard ok_magic else { return false; }
         guard decompress_dcb_payload(comp_payload, dict_entry.content[..], out_decoded) else {
             return false;
         }
-    } else {
+    } else if enc.len == 0 || enc.eq_ascii_fold("identity") {
         guard out_decoded.try_append(raw_body) else { return false; }
+    } else {
+        return false;
     }
 
     if session.enable_compression_dict && use_as_dict_hdr.len > 0 {

@@ -36,7 +36,7 @@ fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
 fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
     const for <N, V> in variants<CookieSameSite> {
         let v: CookieSameSite = default<V>();
-        if v != CookieSameSite.Unknown && raw_val.eq_ascii_fold(N) {
+        if v != CookieSameSite.Unknown && v != CookieSameSite.Default && raw_val.eq_ascii_fold(N) {
             return v;
         }
     }

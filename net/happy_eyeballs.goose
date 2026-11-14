@@ -98,16 +98,27 @@ fn populate_svcb_ip_hints(rec: const HttpsRecord&, meta: ConnectionEndpointMetad
 //   returns: meta = { mode: ServiceMode, alpn_h3: true, alpn_h2: true, ech_config_present: true, .. }, eff_port = 8443
 fn extract_https_svcb_metadata(
     rec:          const HttpsRecord&,
-    default_port: u16 = 443,
+    default_port: u16         = 443,
+    owner_name:   const u8[:] = "",
 ) -> ConnectionEndpointMetadata, u16 {
     var meta = ConnectionEndpointMetadata { .. };
+    let is_root_target = rec.target_name.len == 0 || rec.target_name[..] == ".";
     if rec.priority == 0 {
+        // RFC 9460 Section 2.4.2: AliasMode - TargetName "." indicates service is not available
+        guard !is_root_target else { return meta, default_port; }
         meta.mode = SvcbMode.AliasMode;
         let _ = meta.alias_target.try_append(rec.target_name[..]);
         return meta, default_port;
     }
     meta.mode = SvcbMode.ServiceMode;
-    let _ = meta.target_name.try_append(rec.target_name[..]);
+    // RFC 9460 Section 2.5.2: ServiceMode - TargetName "." resolves to the record's owner name
+    if is_root_target {
+        if owner_name.len > 0 {
+            let _ = meta.target_name.try_append(owner_name);
+        }
+    } else {
+        let _ = meta.target_name.try_append(rec.target_name[..]);
+    }
     meta.ech_config_present = rec.has_ech && rec.ech_config_list.len > 0;
     populate_svcb_alpn_flags(rec, meta);
     populate_svcb_ip_hints(rec, meta);
@@ -245,9 +256,9 @@ fn on_dns_aaaa_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         task.ready_to_connect = true;
     } else {
         task.aaaa_status = DnsQueryStatus.Negative;
+        task.rd_timer_armed = false;
         // If A already succeeded, negative AAAA immediately unblocks IPv4
         if task.a_status == DnsQueryStatus.Success {
-            task.rd_timer_armed = false;
             task.ready_to_connect = true;
         }
     }
@@ -279,11 +290,10 @@ fn on_dns_a_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
 // Checks RD timer expiration. If 50 ms elapsed without AAAA, unblocks IPv4.
 fn check_dns_resolution_delay_tick(task: DnsRaceTask&, now_ms: i64) -> bool {
     if task.rd_timer_armed && now_ms >= task.rd_deadline_ms {
+        guard task.a_status == DnsQueryStatus.Success else { return false; }
         task.rd_timer_armed = false;
-        if task.a_status == DnsQueryStatus.Success {
-            task.ready_to_connect = true;
-            return true; // Unblocked by RD timer expiration
-        }
+        task.ready_to_connect = true;
+        return true;
     }
     return false;
 }

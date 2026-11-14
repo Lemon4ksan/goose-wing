@@ -8,6 +8,7 @@ namespace core;
 
 import std;
 import core.io.types;
+import core.math.arithmetic;
 
 const PIPE_BUFFER_CAP: i64 = 65536; // 64 KB bounded inline storage
 
@@ -118,11 +119,11 @@ fn get_write_span(p: PipeBuffer&, min_size: i64 = 1) -> u8[:], IoError {
     guard min_size > 0 && min_size <= PIPE_BUFFER_CAP else {
         return p.storage[..0], IoError.InvalidArgument;
     }
+    guard total_available(p) >= min_size else {
+        return p.storage[..0], IoError.BufferFull;
+    }
     if write_space(p) < min_size && p.consumed > 0 {
         compact_pipe(p);
-    }
-    if write_space(p) < min_size {
-        return p.storage[..0], IoError.BufferFull;
     }
     return p.storage[p.written..], IoError.None;
 }
@@ -135,7 +136,7 @@ fn commit_write(p: PipeBuffer&, bytes_written: i64) -> IoError {
     guard bytes_written >= 0 else {
         return IoError.InvalidArgument;
     }
-    guard p.written + bytes_written <= PIPE_BUFFER_CAP else {
+    guard add_sat_i64(p.written, bytes_written) <= PIPE_BUFFER_CAP else {
         return IoError.BufferFull;
     }
     p.written += bytes_written;
@@ -148,11 +149,11 @@ fn write(p: PipeBuffer&, src: const u8[:]) -> i64, IoError {
         return 0, IoError.Closed;
     }
     guard src.len > 0 else { return 0, IoError.None; }
+    guard total_available(p) >= src.len else {
+        return 0, IoError.BufferFull;
+    }
     if write_space(p) < src.len && p.consumed > 0 {
         compact_pipe(p);
-    }
-    guard write_space(p) >= src.len else {
-        return 0, IoError.BufferFull;
     }
     for i in src.len {
         p.storage[p.written + i] = src[i];

@@ -96,8 +96,8 @@ fn new_jacobson_rtt_estimator(initial_rtt_us: u64 = QUIC_INITIAL_RTT_US) -> Jaco
     return JacobsonRttEstimator {
         min_rtt_us:    0xFFFFFFFFFFFFFFFF,
         latest_rtt_us: 0,
-        srtt_scaled:   initial_rtt_us << 3,
-        rttvar_scaled: initial_rtt_us << 1, // 4 * (initial_rtt / 2)
+        srtt_scaled:   shl_sat_u64(initial_rtt_us, 3),
+        rttvar_scaled: shl_sat_u64(initial_rtt_us, 1), // 4 * (initial_rtt / 2)
         has_sample:    false,
     };
 }
@@ -135,15 +135,12 @@ fn on_rtt_sample(
     max_ack_delay_us:    u64,
     handshake_confirmed: bool,
 ) {
-    if latest_rtt_us == 0 {
-        return;
-    }
     est.latest_rtt_us = latest_rtt_us;
 
     if !est.has_sample {
         est.min_rtt_us = latest_rtt_us;
-        est.srtt_scaled = latest_rtt_us << 3;
-        est.rttvar_scaled = latest_rtt_us << 1;
+        est.srtt_scaled = shl_sat_u64(latest_rtt_us, 3);
+        est.rttvar_scaled = shl_sat_u64(latest_rtt_us, 1);
         est.has_sample = true;
         return;
     }
@@ -159,8 +156,8 @@ fn on_rtt_sample(
         prior_srtt - adjusted_rtt,
     );
 
-    est.rttvar_scaled = (est.rttvar_scaled - (est.rttvar_scaled >> 2)) + abs_diff;
-    est.srtt_scaled = (est.srtt_scaled - prior_srtt) + adjusted_rtt;
+    est.rttvar_scaled = add_sat_u64(est.rttvar_scaled - (est.rttvar_scaled >> 2), abs_diff);
+    est.srtt_scaled = add_sat_u64(est.srtt_scaled - prior_srtt, adjusted_rtt);
 }
 
 // Probe Timeout (PTO) computation for loss probe scheduling (RFC 9002 Section 5.3 / 6.2.1).
@@ -168,14 +165,14 @@ inline fn probe_timeout_us(est: const JacobsonRttEstimator&, max_ack_delay_us: u
     let srtt = est.srtt_scaled >> 3;
     let four_rttvar = est.rttvar_scaled; // 4 * rttvar is exactly rttvar_scaled
     let delay = ct_max_u64(four_rttvar, 4 * QUIC_TIMER_GRANULARITY_US);
-    return srtt + delay + max_ack_delay_us;
+    return add_sat_u64(add_sat_u64(srtt, delay), max_ack_delay_us);
 }
 
 // Packet loss time threshold computation (RFC 9002 Section 6.1.2).
 inline fn loss_time_threshold_us(est: const JacobsonRttEstimator&) -> u64 {
     let srtt = est.srtt_scaled >> 3;
     let max_rtt = ct_max_u64(est.latest_rtt_us, srtt);
-    let ratio_rtt = max_rtt + (max_rtt >> 3); // 9/8 * max_rtt
+    let ratio_rtt = add_sat_u64(max_rtt, max_rtt >> 3); // 9/8 * max_rtt
     return ct_max_u64(ratio_rtt, QUIC_TIMER_GRANULARITY_US);
 }
 

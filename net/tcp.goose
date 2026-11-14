@@ -65,6 +65,11 @@ extern fn native_tcp_set_fastopen(sock_fd: i64, qlen: i32) -> i32 = "wing_tcp_se
 extern fn native_tcp_send_fastopen(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send_fastopen";
 extern fn native_tcp_set_tos(sock_fd: i64, tos: i32) -> i32 = "wing_tcp_set_tos";
 extern fn native_tcp_set_tclass(sock_fd: i64, tclass: i32) -> i32 = "wing_tcp_set_tclass";
+extern fn native_install_shutdown_signals() -> i32 = "wing_install_shutdown_signals";
+extern fn native_shutdown_requested() -> i32 = "wing_shutdown_requested";
+extern fn request_shutdown() = "wing_request_shutdown";
+extern fn reset_shutdown_signals() = "wing_reset_shutdown_signals";
+extern fn native_consume_reload_signal() -> i32 = "wing_consume_reload_signal";
 
 // Event flags for epoll multiplexer
 const EPOLL_READ:         u32 = 1;
@@ -95,6 +100,21 @@ fn tcp_cleanup() {
         native_tcp_cleanup();
         g_tcp_initialized = false;
     }
+}
+
+// Installs OS shutdown/reload signal handlers (SIGINT/SIGTERM on POSIX & ConsoleCtrl/CRT signals on Windows).
+fn install_shutdown_signals() -> bool {
+    return native_install_shutdown_signals() == 0;
+}
+
+// Returns true once SIGINT, SIGTERM, or `request_shutdown()` has been triggered.
+fn shutdown_requested() -> bool {
+    return native_shutdown_requested() != 0;
+}
+
+// Atomically reads and clears a pending SIGHUP reload signal (POSIX).
+fn consume_reload_signal() -> bool {
+    return native_consume_reload_signal() != 0;
 }
 
 // Listens for incoming TCP connections on host:port.

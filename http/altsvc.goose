@@ -10,6 +10,8 @@ namespace wing;
 
 import std;
 import core from "..";
+import .headers.lexical;
+import .mime;
 
 // ---- Alt-Svc Models & Constants -----------------------------------------
 
@@ -46,51 +48,62 @@ fn find_origin_entry_idx(cache: const AltSvcCache&, origin: const u8[:]) -> i64 
 
 // ---- RFC 7838 Header Parser ---------------------------------------------
 
-// Parses single parameter token: e.g. `ma=86400` or `persist=1`.
+// Parses single parameter token: e.g. `ma=86400` or `persist=1` (RFC 7838 Section 3).
 //
 // Example:
 //   param_str = "ma=86400"
-//   mutates ep.max_age_sec to 86400
-fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) {
+//   returns: true, mutates ep.max_age_sec to 86400
+fn parse_altsvc_param(param_str: const u8[:], ep: AltSvcEndpoint&) -> bool {
     let p_name_raw, p_val_raw, ok = param_str.split_once_byte('=');
-    guard ok else { return; }
+    guard ok else { return false; }
 
     let p_name = p_name_raw.trim_lws();
     let v_trim = p_val_raw.trim_lws();
-    guard v_trim.len > 0 else { return; }
-    var p_val = v_trim;
-    if v_trim[0] == '"' {
-        guard v_trim.len >= 2 && v_trim[v_trim.len - 1] == '"' else { return; }
-        p_val = v_trim[1..^1];
-    } else {
-        guard v_trim[v_trim.len - 1] != '"' else { return; }
-    }
+    guard p_name.len > 0 && is_valid_token_swar(p_name) && v_trim.len > 0 else { return false; }
+
+    var p_val: u8[..128] = [];
+    guard decode_token_or_quoted_param(v_trim, p_val, 128) else { return false; }
 
     if p_name == "ma" {
-        let num, num_ok = p_val.parse_u32_dec();
-        if num_ok { ep.max_age_sec = num; }
+        guard p_val.len > 0 else { return false; }
+        for b in p_val[..] {
+            guard core::is_ascii_digit(b) else { return false; }
+        }
+        let num, num_ok = p_val[..].parse_u32_dec();
+        guard num_ok else { return false; }
+        ep.max_age_sec = num;
     } else if p_name == "persist" {
-        if p_val == "1" {
+        if p_val[..] == "1" {
             ep.persist = true;
         }
     }
+    return true;
 }
 
-// Parses semicolon-delimited parameter list for an Alt-Svc entry.
+// Parses semicolon-delimited parameter list for an Alt-Svc entry (RFC 7838 Section 3).
 //
 // Example:
 //   params_part = "; ma=86400; persist=1"
-//   populates ep parameters
-fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) {
-    var rem = params_part;
+//   returns: true, populates ep parameters
+fn parse_altsvc_params(params_part: const u8[:], ep: AltSvcEndpoint&) -> bool {
+    let trimmed = params_part.trim_lws();
+    if trimmed.len == 0 {
+        return true;
+    }
+    guard trimmed[0] == ';' else { return false; }
+
+    var rem = trimmed[1..];
     while rem.len > 0 {
         let semi_idx = rem.find_unquoted_byte(';');
         let p_trim = rem[..semi_idx].trim_lws();
-        rem = if semi_idx < rem.len { rem[semi_idx + 1..] } else { rem[..0] };
-        if p_trim.len > 0 {
-            parse_altsvc_param(p_trim, ep);
+        guard p_trim.len > 0 && parse_altsvc_param(p_trim, ep) else { return false; }
+        if semi_idx >= rem.len {
+            break;
         }
+        rem = rem[semi_idx + 1..];
+        guard rem.trim_lws().len > 0 else { return false; }
     }
+    return true;
 }
 
 // Validates host component in Alt-Svc authority (RFC 7838 §3 & RFC 3986 §3.2.2).
@@ -110,39 +123,43 @@ inline fn is_valid_altsvc_host(host_part: const u8[:]) -> bool {
            host_part.index_of_byte(']') < 0;
 }
 
-// Percent-decodes an Alt-Svc ALPN protocol-id token (RFC 7838 §3), rejecting control bytes.
+inline fn is_upper_hex_digit(b: u8) -> bool {
+    return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'F');
+}
+
+// RFC 7838 Section 3.1: Caching Alt-Svc Header Field Values - Percent-decode ALPN protocol-id token.
 //
 // Example:
-//   proto_token = "h3%2D29"
-//   returns: true, out_proto = "h3-29"
+//   proto_token = "h3%2F1"
+//   returns: true, out_proto = "h3/1"
 fn decode_altsvc_proto_id(proto_token: const u8[:], out_proto: u8[..16]&) -> bool {
-    guard core::percent_decode_query(proto_token, out_proto) && out_proto.len > 0 else {
-        out_proto.clear();
-        return false;
-    }
-    var i: u64 = 0;
-    let total = proto_token.len as u64;
-    while i < total {
-        let b = proto_token[i as i64];
+    out_proto.clear();
+    guard proto_token.len > 0 else { return false; }
+    var committed = false;
+    defer if !committed { out_proto.clear(); };
+
+    var i: i64 = 0;
+    while i < proto_token.len {
+        let b = proto_token[i];
         if b == '%' {
-            let i1 = core::add_sat_u64(i, 1);
-            let i2 = core::add_sat_u64(i, 2);
-            guard i2 < total else { return false; }
-            let hi = core::hex_digit_to_val(proto_token[i1 as i64]);
-            let lo = core::hex_digit_to_val(proto_token[i2 as i64]);
-            guard hi >= 0 && lo >= 0 else { return false; }
-            i = core::add_sat_u64(i, 3);
+            let hex_end = core::add_sat_i64(i, 3);
+            guard hex_end <= proto_token.len else { return false; }
+            let hex_pair = proto_token[core::add_sat_i64(i, 1)..hex_end];
+            guard is_upper_hex_digit(hex_pair[0]) && is_upper_hex_digit(hex_pair[1]) else {
+                return false;
+            }
+            let dec, ok_hex = hex_pair.parse_u8_hex();
+            guard ok_hex && core::is_ascii_printable(dec) && out_proto.try_push(dec) else {
+                return false;
+            }
+            i = hex_end;
         } else {
-            i = core::add_sat_u64(i, 1);
+            guard core::is_tchar(b) && out_proto.try_push(b) else { return false; }
+            i = core::add_sat_i64(i, 1);
         }
     }
-    for dec_b in out_proto {
-        guard dec_b > 0x20 && dec_b < 0x7F else {
-            out_proto.clear();
-            return false;
-        }
-    }
-    return true;
+    committed = out_proto.len > 0;
+    return committed;
 }
 
 // Parses host:port authority from Alt-Svc quoted string.
@@ -152,7 +169,10 @@ fn decode_altsvc_proto_id(proto_token: const u8[:], out_proto: u8[..16]&) -> boo
 //   returns: true, ep.host="alt.example.com", ep.port=8443
 fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
     let host_part, port_part, has_colon = authority.rsplit_once_byte(':');
-    guard has_colon && is_valid_altsvc_host(host_part) else { return false; }
+    guard has_colon && is_valid_altsvc_host(host_part) && port_part.len > 0 else { return false; }
+    for b in port_part {
+        guard core::is_ascii_digit(b) else { return false; }
+    }
 
     let port_num, port_ok = port_part.parse_u32_dec();
     guard port_ok && port_num > 0 && port_num <= 65535 else { return false; }
@@ -164,30 +184,53 @@ fn parse_altsvc_authority(authority: const u8[:], ep: AltSvcEndpoint&) -> bool {
     return true;
 }
 
+// Scans the closing '"' of an RFC 9110 quoted-string starting at index 0, returning slice end index or -1.
+//
+// Example:
+//   s = "\"alt.example.com:443\"; ma=60"
+//   returns: 21
+fn scan_altsvc_quoted_end(s: const u8[:]) -> i64 {
+    guard s.len >= 2 && s[0] == '"' else { return -1; }
+    var idx: i64 = 1;
+    while idx < s.len {
+        let b = s[idx];
+        if b == '\\' {
+            idx = core::add_sat_i64(idx, 2);
+            continue;
+        }
+        if b == '"' {
+            return core::add_sat_i64(idx, 1);
+        }
+        idx = core::add_sat_i64(idx, 1);
+    }
+    return -1;
+}
+
 // Parses a single Alt-Svc protocol=authority[; params] directive (RFC 7838 §3).
 //
 // Example:
 //   entry_str = "h3=\":443\"; ma=86400"
 //   returns: true, ep.proto="h3", ep.port=443, ep.max_age_sec=86400
 fn parse_single_altsvc_entry(entry_str: const u8[:], ep: AltSvcEndpoint&) -> bool {
-    let proto_token_raw, rem_entry_raw, has_eq = entry_str.split_once_byte('=');
-    guard has_eq && proto_token_raw.len > 0 else { return false; }
+    ep = AltSvcEndpoint { .. };
+    var committed = false;
+    defer if !committed { ep = AltSvcEndpoint { .. }; };
 
-    let proto_token = proto_token_raw.trim_lws();
-    let rem_entry = rem_entry_raw.trim_lws();
+    let proto_token, rem_entry, has_eq = entry_str.split_once_byte('=');
+    guard has_eq && proto_token.len > 0 && decode_altsvc_proto_id(proto_token, ep.proto) else {
+        return false;
+    }
 
-    guard decode_altsvc_proto_id(proto_token, ep.proto) else { return false; }
+    let q_end = scan_altsvc_quoted_end(rem_entry);
+    guard q_end >= 2 else { return false; }
 
-    // Find authority inside quotes: "host:port"
-    guard rem_entry.len >= 2 && rem_entry[0] == '"' else { return false; }
-    let rel_q = rem_entry[1..].index_of_byte('"');
-    guard rel_q >= 0 else { return false; }
-
-    let authority = rem_entry[1..rel_q + 1];
-    guard parse_altsvc_authority(authority, ep) else { return false; }
-
-    let params_part = rem_entry[rel_q + 2..];
-    parse_altsvc_params(params_part, ep);
+    var authority: u8[..160] = [];
+    guard strict_unquote(rem_entry[..q_end], authority, 160) &&
+          parse_altsvc_authority(authority[..], ep) &&
+          parse_altsvc_params(rem_entry[q_end..], ep) else {
+        return false;
+    }
+    committed = true;
     return true;
 }
 

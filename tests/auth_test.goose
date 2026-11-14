@@ -249,6 +249,9 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
     };
 
     t.run("HS384 and HS512 multi-algorithm verification") { sub =>
+        let secret384 = "0123456789abcdef0123456789abcdef0123456789abcdef";
+        let secret512 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
         // HS384
         var hdr384 = wing::new_jwt_header(wing::JwtAlg.HS384);
         var clm384 = wing::JwtClaims { .. };
@@ -256,12 +259,13 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
         clm384.exp = now_sec + 100;
 
         var token384: u8[>..] = [];
-        sub.assert_true(wing::sign_jwt_hmac(hdr384, clm384, secret, token384), "HS384 signed");
+        sub.assert_false(wing::sign_jwt_hmac(hdr384, clm384, secret, token384), "HS384 rejects < 48-byte key per RFC 7518 §3.2");
+        sub.assert_true(wing::sign_jwt_hmac(hdr384, clm384, secret384, token384), "HS384 signed");
 
         var out_hdr384 = wing::new_jwt_header();
         var out_clm384 = wing::JwtClaims { .. };
         var opts384 = wing::default_jwt_validation_options(wing::JwtAlg.HS384);
-        let err384 = wing::verify_jwt_hmac(token384[..], secret, opts384, now_sec, out_hdr384, out_clm384);
+        let err384 = wing::verify_jwt_hmac(token384[..], secret384, opts384, now_sec, out_hdr384, out_clm384);
         sub.assert_eq(err384, wing::JwtError.None, "HS384 verified");
         sub.assert_bytes_eq(wing::claim_str(out_clm384, "sub"), "agent_384", "HS384 sub");
 
@@ -272,12 +276,13 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
         clm512.exp = now_sec + 100;
 
         var token512: u8[>..] = [];
-        sub.assert_true(wing::sign_jwt_hmac(hdr512, clm512, secret, token512), "HS512 signed");
+        sub.assert_false(wing::sign_jwt_hmac(hdr512, clm512, secret384, token512), "HS512 rejects < 64-byte key per RFC 7518 §3.2");
+        sub.assert_true(wing::sign_jwt_hmac(hdr512, clm512, secret512, token512), "HS512 signed");
 
         var out_hdr512 = wing::new_jwt_header();
         var out_clm512 = wing::JwtClaims { .. };
         var opts512 = wing::default_jwt_validation_options(wing::JwtAlg.HS512);
-        let err512 = wing::verify_jwt_hmac(token512[..], secret, opts512, now_sec, out_hdr512, out_clm512);
+        let err512 = wing::verify_jwt_hmac(token512[..], secret512, opts512, now_sec, out_hdr512, out_clm512);
         sub.assert_eq(err512, wing::JwtError.None, "HS512 verified");
         sub.assert_bytes_eq(wing::claim_str(out_clm512, "sub"), "agent_512", "HS512 sub");
     };
@@ -304,7 +309,7 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
 
         // Wrong secret key
         var opts_key = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err_key = wing::verify_jwt_hmac(token[..], "wrong-secret-key-32byteslong!", opts_key, now_sec, out_h, out_c);
+        let err_key = wing::verify_jwt_hmac(token[..], "wrong-secret-key-32-bytes-long!!", opts_key, now_sec, out_h, out_c);
         sub.assert_eq(err_key, wing::JwtError.SignatureInvalid, "Wrong secret rejected");
     };
 }
@@ -515,7 +520,7 @@ fn test_jwks_serialization_and_parsing(t: lit::T&) {
         wing::add_ed25519_key(jwks, "ed25519-key-2026", ed_pub);
 
         // 2. Add Symmetric HMAC key
-        let hmac_sec = "secret-sym-key-16b";
+        let hmac_sec = "secret-sym-key-32bytes-rfc7518!!";
         wing::add_symmetric_key(jwks, "hmac-key-2026", wing::JwtAlg.HS256, hmac_sec);
 
         sub.assert_eq(jwks.keys.len, 2, "2 keys in JWKS");
@@ -575,16 +580,16 @@ fn test_jwks_serialization_and_parsing(t: lit::T&) {
         var jwks5 = wing::Jwks { .. };
         sub.assert_false(wing::parse_jwks_json(jwk_long_kid, jwks5), "Oversize kid rejected");
 
-        // 5. add_symmetric_key enforces >= 16 bytes (RFC 8725 §3.6)
+        // 5. add_symmetric_key enforces >= hash output length (RFC 7518 §3.2: 32/48/64 bytes)
         var jwks_api = wing::Jwks { .. };
-        sub.assert_false(wing::add_symmetric_key(jwks_api, "short-key", wing::JwtAlg.HS256, "short"), "Key < 16 bytes rejected");
-        sub.assert_true(wing::add_symmetric_key(jwks_api, "valid-key", wing::JwtAlg.HS256, "1234567890123456"), "Key == 16 bytes accepted");
+        sub.assert_false(wing::add_symmetric_key(jwks_api, "short-key", wing::JwtAlg.HS256, "1234567890123456"), "Key < 32 bytes rejected for HS256");
+        sub.assert_true(wing::add_symmetric_key(jwks_api, "valid-key", wing::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"), "Key == 32 bytes accepted for HS256");
 
         // 6. resolve_jwks_key_index: empty kid token rejected when single JWK has configured non-empty kid
         sub.assert_eq(wing::resolve_jwks_key_index(jwks_api, ""), -1, "Empty kid does not match key with explicit kid");
 
         var jwks_anon = wing::Jwks { .. };
-        sub.assert_true(wing::add_symmetric_key(jwks_anon, "", wing::JwtAlg.HS256, "1234567890123456"), "Add anon key");
+        sub.assert_true(wing::add_symmetric_key(jwks_anon, "", wing::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"), "Add anon key");
         sub.assert_eq(wing::resolve_jwks_key_index(jwks_anon, ""), 0, "Empty kid matches anon single key");
     };
 }
@@ -601,7 +606,7 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
         0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x11,
     ];
     let ed_pub = core::ed25519_public_key(ed_seed);
-    let hmac_sec = "shared-vault-secret-token-key-256";
+    let hmac_sec = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     // Setup active JWKS with multiple keys
     var jwks = wing::Jwks { .. };
@@ -1056,7 +1061,7 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
 
     t.run("JWKS oct key without alg rejects alg:none attack") { sub =>
         var jwks = wing::Jwks { .. };
-        let key_json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c3VwZXJfc2VjcmV0X2tleV8zMl9ieXRlcyEh\",\"kid\":\"k-sym-01\"}]}";
+        let key_json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\",\"kid\":\"k-sym-01\"}]}";
         let ok_parse = wing::parse_jwks_json(key_json, jwks);
         sub.assert_true(ok_parse, "JWKS parsed");
 
@@ -1588,14 +1593,16 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_false(fail_proof, "verify_dpop_proof fails when jkt does not match");
     };
 
-    t.run("DPoP Method Validation: exact uppercase String required (RFC 9449 §4.2 & §4.3)") { sub =>
+    t.run("DPoP Method Validation: exact case-sensitive HTTP method token required (RFC 9449 §4.2 & RFC 9110 §9.1)") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
 
         // Direct claims json method checks
-        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"post\"}", "POST"), "Lowercase htm in proof rejected");
-        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"POST\"}", "post"), "Lowercase expected method rejected");
+        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"post\"}", "POST"), "Lowercase htm in proof rejected against uppercase expected");
+        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"POST\"}", "post"), "Lowercase expected method rejected against uppercase htm");
         sub.assert_false(wing::verify_dpop_method("{\"htm\":\"GET\"}", "POST"), "Method mismatch rejected");
         sub.assert_true(wing::verify_dpop_method("{\"htm\":\"POST\"}", "POST"), "Uppercase matching method accepted");
+        sub.assert_true(wing::verify_dpop_method("{\"htm\":\"Proppatch\"}", "Proppatch"), "Case-sensitive RFC 9110 token method accepted");
+        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"Proppatch\"}", "PROPPATCH"), "Case-mismatched RFC 9110 token method rejected");
 
         // Proof with lowercase method MUST be rejected
         var token: u8[..1024] = [];
@@ -1852,6 +1859,7 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
 
         var ch_b64: u8[..512] = [];
         core::base64url_encode(ch_wire[..], ch_b64);
+        while (ch_b64.len % 4) != 0 { ch_b64.push('='); }
 
         var header_val: u8[..1024] = [];
         header_val.append("PrivateToken challenge=\"");
@@ -2476,8 +2484,15 @@ fn test_jwt_header_capacity_rejection(t: lit::T&) {
 // 23. RFC 8555 ACME HTTP-01
 // ----------------------------------------------------------------------------
 fn test_acme_http01(t: lit::T&) {
+    let tok = "LoqXcYV8q5ONbJQxbmR7SC";
+    let thumb = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs";
+    let ka = "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs";
+    let path_tok = "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SC";
+
     t.run("RFC 8555 §8.3 HTTP-01 token validation") { sub =>
         sub.assert_true(wing::acme_validate_token("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"), "RFC 8555 §8.3 example token accepted");
+        sub.assert_true(wing::acme_validate_token(tok), "22-char 128-bit entropy token accepted");
+        sub.assert_false(wing::acme_validate_token("short_21_char_token_1"), "< 128-bit (< 22 char) token rejected");
         sub.assert_false(wing::acme_validate_token("../etc/passwd"), "path traversal rejected");
         sub.assert_false(wing::acme_validate_token("a/b"), "slash rejected");
         sub.assert_false(wing::acme_validate_token(""), "empty token rejected");
@@ -2485,46 +2500,48 @@ fn test_acme_http01(t: lit::T&) {
 
     t.run("RFC 8555 §8.1 key authorization concatenation") { sub =>
         var out: u8[..256] = [];
-        let n = wing::acme_key_authorization("tok", "TP", out);
-        sub.assert_eq(n, 6, "key authorization length");
-        sub.assert_bytes_eq(out[..], "tok.TP", "token || '.' || thumbprint");
+        sub.assert_eq(wing::acme_key_authorization("tok", thumb, out), -1, "short token rejected");
+        sub.assert_eq(wing::acme_key_authorization(tok, "TP", out), -1, "non-43-char thumbprint rejected");
+        let n = wing::acme_key_authorization(tok, thumb, out);
+        sub.assert_eq(n, 66, "key authorization length");
+        sub.assert_bytes_eq(out[..], ka, "token || '.' || thumbprint");
     };
 
     t.run("RFC 8555 §8.3 HTTP-01 path construction") { sub =>
         var out: u8[..128] = [];
-        let n = wing::acme_http01_path("tok", out);
-        sub.assert_eq(n, 31, "path length");
-        sub.assert_bytes_eq(out[..], "/.well-known/acme-challenge/tok", "well-known acme-challenge path");
+        let n = wing::acme_http01_path(tok, out);
+        sub.assert_eq(n, 50, "path length");
+        sub.assert_bytes_eq(out[..], path_tok, "well-known acme-challenge path");
     };
 
     t.run("RFC 8555 §8.3 HTTP-01 path matching rejects traversal") { sub =>
-        sub.assert_true(wing::acme_match_http01("/.well-known/acme-challenge/tok", "tok"), "exact match");
-        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/other", "tok"), "different token");
-        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/../tok", "tok"), "dot-dot traversal");
+        sub.assert_true(wing::acme_match_http01(path_tok, tok), "exact match");
+        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/other_token_0123456789", tok), "different token");
+        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/../LoqXcYV8q5ONbJQxbmR7SC", tok), "dot-dot traversal");
     };
 
     t.run("HTTP-01 challenge responder table lookup") { sub =>
         var table: wing::AcmeChallenge[..8] = [];
         var ch = wing::AcmeChallenge {
-            token:        "tok",
-            key_auth:     "tok.TP",
-            key_auth_len: 6,
+            token:        "LoqXcYV8q5ONbJQxbmR7SC",
+            key_auth:     "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+            key_auth_len: 66,
         };
         table.push(ch);
 
         var body:     u8[..256] = [];
         var body_len: i32       = 0;
         sub.assert_true(
-            wing::acme_find_challenge(table, "/.well-known/acme-challenge/tok", body, body_len),
+            wing::acme_find_challenge(table, path_tok, body, body_len),
             "challenge found",
         );
-        sub.assert_eq(body_len, 6, "body length");
-        sub.assert_bytes_eq(body[..], "tok.TP", "key authorization body");
+        sub.assert_eq(body_len, 66, "body length");
+        sub.assert_bytes_eq(body[..], ka, "key authorization body");
         sub.assert_false(
-            wing::acme_find_challenge(table, "/.well-known/acme-challenge/nope", body, body_len),
+            wing::acme_find_challenge(table, "/.well-known/acme-challenge/other_token_0123456789", body, body_len),
             "unknown path rejected",
         );
-        sub.assert_eq(body_len, 6, "out_len untouched on miss");
+        sub.assert_eq(body_len, 66, "out_len untouched on miss");
     };
 }
 
@@ -3017,9 +3034,9 @@ fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
         sub.assert_false(wing::validate_jwt_expiration(-5, false, 60, 1700000000), "exp < -1 rejected even when require_exp=false");
         sub.assert_false(wing::validate_jwt_not_before(-5, false, 60, 1700000000), "nbf < -1 rejected even when require_nbf=false");
 
-        // 7. Digest invalid stale value, ACME empty slot token, and Introspection CTL token
-        let _, ok_stale = wing::parse_digest_challenge("Digest realm=\"api\", nonce=\"abcd\", stale=invalid");
-        sub.assert_false(ok_stale, "Digest challenge with stale=invalid rejected");
+        // 7. Digest non-"true" stale value treated as stale=false per RFC 7616 §3.3, ACME empty slot token, and Introspection CTL token
+        let chal_stale, ok_stale = wing::parse_digest_challenge("Digest realm=\"api\", nonce=\"abcd\", stale=invalid");
+        sub.assert_true(ok_stale && !chal_stale.stale, "Digest challenge with stale=invalid treated as stale=false per RFC 7616 §3.3");
         var bad_acme_table: wing::AcmeChallenge[..8] = [wing::AcmeChallenge { token: "", key_auth: ".TP", key_auth_len: 3 }];
         var acme_body:      u8[..256]                = [];
         var acme_len:       i32                      = 0;

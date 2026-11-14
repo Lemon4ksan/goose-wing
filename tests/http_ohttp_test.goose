@@ -37,6 +37,7 @@ fn test_bhttp_request_roundtrip(t: lit::T&) {
         let ok = wing::bhttp_decode_request(out[..n], decoded);
         sub.assert_true(ok, "decode succeeds");
         sub.assert_bytes_eq(decoded.method[..], "GET", "method round-trips");
+        sub.assert_bytes_eq(decoded.scheme[..], "https", "scheme round-trips");
         sub.assert_bytes_eq(decoded.target[..], "/index.html", "target round-trips");
         sub.assert_bytes_eq(decoded.headers.get_header("accept"), "*/*", "header round-trips");
         sub.assert_eq(decoded.body_len, 2, "body length round-trips");
@@ -47,6 +48,18 @@ fn test_bhttp_request_roundtrip(t: lit::T&) {
         let n2 = wing::bhttp_encode_request(decoded, out2);
         sub.assert_eq(n2, n, "re-encode length matches");
         sub.assert_bytes_eq(out2[..n2], out[..n], "re-encode is byte-identical");
+
+        // Full URL target decomposes into RFC 9292 §3.4 (Scheme, Authority, Path) and round-trips.
+        var url_req = wing::BhttpRequest { .. };
+        let _ = url_req.target.try_set("https://api.example.com:8443/v1/items?k=v");
+        var url_out: u8[..8192] = [];
+        let n_url = wing::bhttp_encode_request(url_req, url_out);
+        sub.assert_true(n_url > 0, "full URL request encodes");
+        var url_dec = wing::BhttpRequest { .. };
+        sub.assert_true(wing::bhttp_decode_request(url_out[..n_url], url_dec), "full URL request decodes");
+        sub.assert_bytes_eq(url_dec.scheme[..], "https", "decomposed scheme matches");
+        sub.assert_bytes_eq(url_dec.authority[..], "api.example.com:8443", "decomposed authority matches");
+        sub.assert_bytes_eq(url_dec.target[..], "/v1/items?k=v", "decomposed path+query matches");
     };
 }
 
@@ -140,13 +153,28 @@ fn test_ohttp_key_config(t: lit::T&) {
             sub.assert_eq(cfg.public_key[i], pk_expect[i], "public key bytes match");
         }
 
-        // Unsupported suite (AES-256-GCM is outside the restricted OHTTP suite
-        // set) in the first — and only selected — KDF/AEAD pair is rejected.
-        var bad = cfg_bytes;
-        bad[39] = 0x00;
-        bad[40] = 0x02;
+        // RFC 9458 §3.1 / §4.3: Unsupported first AEAD (AES-256-GCM = 0x0002) is skipped
+        // in favor of the second supported pair (ChaCha20-Poly1305 = 0x0003).
+        var fallback_bytes = cfg_bytes;
+        fallback_bytes[39] = 0x00;
+        fallback_bytes[40] = 0x02;
+        var fallback_cfg = wing::OhttpKeyConfig { .. };
+        sub.assert_true(
+            wing::parse_ohttp_key_config(fallback_bytes[..], fallback_cfg),
+            "second supported AEAD pair selected when first pair is unsupported",
+        );
+        sub.assert_eq(
+            fallback_cfg.aead_id,
+            rfc::HPKE_AEAD_CHACHA20_POLY1305,
+            "fallback AEAD is ChaCha20-Poly1305 (0x0003)",
+        );
+
+        // Config where ALL symmetric pairs are unsupported MUST be rejected.
+        var bad = fallback_bytes;
+        bad[43] = 0x00;
+        bad[44] = 0x02;
         var bad_cfg = wing::OhttpKeyConfig { .. };
-        sub.assert_false(wing::parse_ohttp_key_config(bad[..], bad_cfg), "unsupported AEAD pair rejected");
+        sub.assert_false(wing::parse_ohttp_key_config(bad[..], bad_cfg), "all-unsupported AEAD config rejected");
     };
 
     t.run("RFC 9458 Section 3.2 Collection Parse and All-or-Nothing Discard") { sub =>
@@ -293,6 +321,7 @@ fn test_ohttp_response_roundtrip(t: lit::T&) {
         cfg.public_key_len = 32;
 
         var inner = wing::BhttpRequest { .. };
+        inner.target.append("/");
         var inner_buf: u8[..8192] = [];
         let inner_len = wing::bhttp_encode_request(inner, inner_buf);
 
@@ -430,6 +459,8 @@ fn test_ohttp_rfc9458_appendix_a(t: lit::T&) {
         var decoded_req = wing::BhttpRequest { .. };
         sub.assert_true(wing::bhttp_decode_request(bhttp_req[..], decoded_req), "Appendix A bhttp request decodes");
         sub.assert_bytes_eq(decoded_req.method[..], "GET", "method is GET");
+        sub.assert_bytes_eq(decoded_req.scheme[..], "https", "scheme is https");
+        sub.assert_bytes_eq(decoded_req.authority[..], "example.com", "authority is example.com");
         sub.assert_bytes_eq(decoded_req.target[..], "/", "path is /");
 
         // Encapsulated Request (80 bytes): hdr || enc || ct.
@@ -556,11 +587,11 @@ fn test_f004_ohttp_key_configs_discard_and_out(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_f012_bhttp_bounds_and_validation(t: lit::T&) {
     t.run("bhttp_decode_request rejects 8-byte max varint section length without signed overflow") { sub =>
-        // Framing 0x00, GET, empty scheme, empty authority, "/", then 8-byte varint 0xFFFFFFFFFFFFFFFF (len = 0x3FFFFFFFFFFFFFFF)
-        let raw: u8[17] = [
+        // Framing 0x00, GET, "https", empty authority, "/", then 8-byte varint 0xFFFFFFFFFFFFFFFF (len = 0x3FFFFFFFFFFFFFFF)
+        let raw: u8[22] = [
             0x00,
             0x03, 'G', 'E', 'T',
-            0x00,
+            0x05, 'h', 't', 't', 'p', 's',
             0x00,
             0x01, '/',
             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -569,6 +600,10 @@ fn test_f012_bhttp_bounds_and_validation(t: lit::T&) {
         let ok = wing::bhttp_decode_request(raw[..], req);
         sub.assert_false(ok, "Max 62-bit varint section length MUST return false without signed i64 overflow");
         sub.assert_eq(req.method.len, 0, "out request MUST be reset on failure");
+
+        // Non-CONNECT request with empty scheme MUST be rejected per RFC 9292 §3.4 / RFC 9113 §8.3.1.
+        let empty_scheme: u8[9] = [0x00, 0x03, 'G', 'E', 'T', 0x00, 0x00, 0x01, '/'];
+        sub.assert_false(wing::bhttp_decode_request(empty_scheme[..], req), "Empty scheme on GET rejected");
     };
 
     t.run("bhttp_decode_trailer_line rejects control characters in trailer value") { sub =>

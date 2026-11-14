@@ -109,10 +109,11 @@ fn gcra_check(config: const GcraConfig&, cell: GcraTatCell&, cost: u64, now_ns: 
     let t = config.emission_interval_ns;
     let tau = config.tau_ns;
     let limit_window = config.limit_window_ns;
+    let max_cells = core::add_sat_u64(config.max_burst, 1);
     let delta = core::mul_sat_u64(cost, t);
 
-    guard delta <= limit_window else {
-        let over_retry = core::sub_sat_u64(delta, limit_window);
+    guard cost <= max_cells && delta <= limit_window else {
+        let over_retry = max(core::sub_sat_u64(delta, limit_window), 1);
         return GcraDecision {
             allowed:         false,
             remaining_burst: 0,
@@ -157,10 +158,11 @@ fn gcra_peek(config: const GcraConfig&, cell: const GcraTatCell&, cost: u64, now
     let t = config.emission_interval_ns;
     let tau = config.tau_ns;
     let limit_window = config.limit_window_ns;
+    let max_cells = core::add_sat_u64(config.max_burst, 1);
     let delta = core::mul_sat_u64(cost, t);
 
-    guard delta <= limit_window else {
-        let over_retry = core::sub_sat_u64(delta, limit_window);
+    guard cost <= max_cells && delta <= limit_window else {
+        let over_retry = max(core::sub_sat_u64(delta, limit_window), 1);
         return GcraDecision {
             allowed:         false,
             remaining_burst: 0,
@@ -250,7 +252,8 @@ fn find_client_slot(limiter: const GatewayRateLimiter&, client_id: const u8[:]) 
     return GATEWAY_LIMITER_NONE;
 }
 
-// Finds an inactive or expired slot, or oldest active slot for replacement.
+// Finds an inactive slot or the oldest slot whose rate-limit debt has expired (`tat_ns <= now_ns`).
+// Returns `GATEWAY_LIMITER_NONE` when all slots hold active debt so overflow falls back to `fallback_cell`.
 fn find_idle_or_oldest_slot(limiter: const GatewayRateLimiter&, now_ns: u64) -> i32 {
     let n = limiter.entries.len as i32;
     for i in n {
@@ -258,16 +261,11 @@ fn find_idle_or_oldest_slot(limiter: const GatewayRateLimiter&, now_ns: u64) -> 
             return i;
         }
     }
-    for i in n {
-        if limiter.entries[i].cell.tat_ns <= now_ns {
-            return i;
-        }
-    }
     var oldest_idx:  i32 = GATEWAY_LIMITER_NONE;
     var oldest_seen: u64 = 0xFFFFFFFFFFFFFFFF;
 
     for i in n {
-        if limiter.entries[i].last_seen_ns < oldest_seen {
+        if limiter.entries[i].cell.tat_ns <= now_ns && limiter.entries[i].last_seen_ns <= oldest_seen {
             oldest_seen = limiter.entries[i].last_seen_ns;
             oldest_idx = i;
         }

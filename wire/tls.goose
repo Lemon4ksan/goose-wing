@@ -298,6 +298,10 @@ fn seal_tls13_record<B>(
     guard plaintext.len >= 0 && plaintext.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return wing::TlsAlert.RecordOverflow, false;
     }
+    // RFC 8446 Section 5.4: Record Padding - zero-length handshake or alert records MUST NOT be sent.
+    guard plaintext.len > 0 || inner_type == rfc::TLS_CONTENT_APPLICATION_DATA else {
+        return wing::TlsAlert.UnexpectedMessage, false;
+    }
 
     let start_len = out.len;
     let saved_seq = state.seq_num;

@@ -42,6 +42,8 @@ struct Request {
     has_site_for_cookies: bool                = false,
     first_party_policy:   FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
     is_http10:            bool                = false,
+    body_prechunked:      bool                = false,
+    disallow_early_data:  bool                = false,
     body:                 u8[>..]             = [],
 }
 
@@ -259,9 +261,16 @@ fn set_stream_body(req: Request&, stream_bytes: const u8[:], rewindable: bool = 
     req.body_consumed = false;
 }
 
-fn set_initiator(req: Request&, orig: core::Origin) {
-    req.initiator = copy(orig);
+fn set_initiator(req: Request&, origin_url: const u8[:]) -> bool {
+    let parsed, err = core::parse_url(origin_url);
+    guard err == core::UrlParseError.None && parsed.valid else {
+        req.initiator = core::Origin { .. };
+        req.has_initiator = false;
+        return false;
+    }
+    req.initiator = core::origin_from_url(parsed);
     req.has_initiator = true;
+    return true;
 }
 
 // ---- middleware & signers --------------------------------------------------
@@ -315,6 +324,15 @@ fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
 
 // ---- ergonomic request inspectors & decoders -------------------------------
 
+inline fn is_rfc3986_scheme(s: const u8[:]) -> bool {
+    guard s.len > 0 && core::is_ascii_alpha(s[0]) else { return false; }
+    for b in s[1..] {
+        let ok = core::is_ascii_alphanumeric(b) || b == '+' || b == '-' || b == '.';
+        guard ok else { return false; }
+    }
+    return true;
+}
+
 // Extracts the zero-copy path component from an origin-form or absolute-form request URL.
 //
 // Example:
@@ -323,13 +341,14 @@ fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
 fn extract_request_path(raw_url: const u8[:]) -> const u8[:] {
     let before_frag, _, _ = raw_url.partition_byte('#');
     let before_query, _, _ = before_frag.partition_byte('?');
-    let _, after_scheme, has_scheme = before_query.split_once("://");
-    if has_scheme {
+    if before_query.len == 0 { return "/"; }
+    if before_query[0] == '/' || before_query == "*" { return before_query; }
+    let scheme_part, after_scheme, has_scheme = before_query.split_once("://");
+    if has_scheme && is_rfc3986_scheme(scheme_part) {
         let slash_idx = after_scheme.index_of_byte('/');
         if slash_idx < 0 { return "/"; }
         return after_scheme[slash_idx..];
     }
-    if before_query.len == 0 { return "/"; }
     return before_query;
 }
 

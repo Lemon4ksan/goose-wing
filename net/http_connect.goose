@@ -98,48 +98,84 @@ fn sanitize_tunnel_headers_for_origin(headers: HeaderMap&) {
     }
 }
 
+inline fn is_valid_connect_reason_phrase(reason: const u8[:]) -> bool {
+    for b in reason {
+        let valid = (b >= 0x20 || b == '\t') && b != 0x7F;
+        guard valid else { return false; }
+    }
+    return true;
+}
+
+// Parses a single HTTP/1.x status-line + header block from `buf` for CONNECT (RFC 9112 Section 4).
+//
+// Example:
+//   buf = "HTTP/1.1 200 OK\r\n\r\n"
+//   returns: status_code = 200, block_end = 19, err = ConnectTunnelError.None
+fn parse_connect_response_block(buf: const u8[:]) -> i32, i64, ConnectTunnelError {
+    guard buf.len >= 12 else { return 0, 0, ConnectTunnelError.InvalidStatusLine; }
+    guard buf.starts_with("HTTP/1.") else { return 0, 0, ConnectTunnelError.InvalidStatusLine; }
+
+    let delim_idx = find(buf, "\r\n\r\n");
+    guard delim_idx >= 0 else { return 0, 0, ConnectTunnelError.MalformedHeaders; }
+    let header_end_pos = core::add_sat_i64(delim_idx, 4);
+
+    let first_crlf = find(buf[..header_end_pos], "\r\n");
+    guard first_crlf >= 12 else { return 0, 0, ConnectTunnelError.MalformedHeaders; }
+
+    let minor_ver = buf[7];
+    guard (minor_ver == '0' || minor_ver == '1') && buf[8] == ' ' else {
+        return 0, 0, ConnectTunnelError.InvalidStatusLine;
+    }
+
+    let d0 = buf[9];
+    let d1 = buf[10];
+    let d2 = buf[11];
+    guard core::is_ascii_digit(d0) && core::is_ascii_digit(d1) && core::is_ascii_digit(d2) else {
+        return 0, 0, ConnectTunnelError.InvalidStatusLine;
+    }
+    // RFC 9112 Section 4: Status Line - 3-digit status-code MUST be followed by a single SP
+    guard first_crlf >= 13 && buf[12] == ' ' && is_valid_connect_reason_phrase(buf[13..first_crlf]) else {
+        return 0, 0, ConnectTunnelError.InvalidStatusLine;
+    }
+
+    let code, ok_code = buf[9..12].parse_i32_dec();
+    guard ok_code else { return 0, 0, ConnectTunnelError.InvalidStatusLine; }
+    return code, header_end_pos, ConnectTunnelError.None;
+}
+
 // Inspects HTTP CONNECT response and defends against data injection before TLS handshake.
 // OkHttp RealConnection parity: "TLS tunnel buffered too many bytes".
 fn verify_connect_tunnel_response(
     raw_response:        const u8[:],
     sink_buffered_bytes: i64 = 0,
 ) -> ConnectTunnelError {
-    guard raw_response.len >= 12 else { return ConnectTunnelError.InvalidStatusLine; }
-    guard raw_response.starts_with("HTTP/1.") else { return ConnectTunnelError.InvalidStatusLine; }
-
-    let delim_idx = find(raw_response, "\r\n\r\n");
-    guard delim_idx >= 0 else { return ConnectTunnelError.MalformedHeaders; }
-    let header_end_pos = core::add_sat_i64(delim_idx, 4);
-
-    let first_crlf = find(raw_response[..header_end_pos], "\r\n");
-    guard first_crlf >= 12 else { return ConnectTunnelError.MalformedHeaders; }
-
-    let minor_ver = raw_response[7];
-    guard (minor_ver == '0' || minor_ver == '1') && raw_response[8] == ' ' else {
-        return ConnectTunnelError.InvalidStatusLine;
-    }
-
-    let d0 = raw_response[9];
-    let d1 = raw_response[10];
-    let d2 = raw_response[11];
-    guard d0 >= '0' && d0 <= '9' && d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9' else {
-        return ConnectTunnelError.InvalidStatusLine;
-    }
-    if first_crlf > 12 {
-        guard raw_response[12] == ' ' else {
-            return ConnectTunnelError.InvalidStatusLine;
+    var cur = raw_response;
+    var code:      i32 = 0;
+    var block_end: i64 = 0;
+    for _ in 5 {
+        let st, end_pos, err = parse_connect_response_block(cur);
+        guard err == ConnectTunnelError.None else { return err; }
+        code = st;
+        block_end = end_pos;
+        // RFC 9110 Section 15.2: Informational 1xx - skip interim 1xx (excluding 101) before final status
+        if code >= 100 && code < 200 && code != 101 {
+            cur = cur[block_end..];
+            guard cur.len > 0 else { return ConnectTunnelError.MalformedHeaders; }
+            continue;
         }
+        break;
     }
+    guard !(code >= 100 && code < 200) else { return ConnectTunnelError.ConnectFailed; }
 
-    let status_code_str = raw_response[9..12];
-    if status_code_str == "407" {
+    if code == 407 {
         return ConnectTunnelError.ProxyAuthRequired;
     }
-    if status_code_str != "200" {
+    // RFC 9110 Section 9.3.6: CONNECT - any 2xx (Successful) response switches to tunnel mode
+    if code < 200 || code >= 300 {
         return ConnectTunnelError.ConnectFailed;
     }
 
-    if raw_response.len > header_end_pos || sink_buffered_bytes > 0 {
+    if cur.len > block_end || sink_buffered_bytes > 0 {
         return ConnectTunnelError.TunnelBufferedTooManyBytes;
     }
 
@@ -152,7 +188,22 @@ fn should_close_connection_on_connect_error(err: ConnectTunnelError) -> bool {
     return err != ConnectTunnelError.None;
 }
 
-// Executes a live HTTP CONNECT client tunnel handshake over an open TCP socket (RFC 9110 §9.3.6).
+fn has_final_connect_header_terminator(buf: const u8[:]) -> bool {
+    var cur = buf;
+    for _ in 5 {
+        let delim = find(cur, "\r\n\r\n");
+        guard delim >= 0 else { return false; }
+        let block_end = core::add_sat_i64(delim, 4);
+        if cur.len >= 13 && cur.starts_with("HTTP/1.") && cur[9] == '1' && !(cur[10] == '0' && cur[11] == '1') {
+            cur = cur[block_end..];
+            continue;
+        }
+        return true;
+    }
+    return true;
+}
+
+// Executes a live HTTP CONNECT client tunnel handshake over an open TCP socket (RFC 9110 Section 9.3.6).
 fn http_connect_client_handshake(
     sock_fd:     i64,
     target_host: const u8[:],
@@ -164,15 +215,17 @@ fn http_connect_client_handshake(
     guard sock_fd > 0 else { return ConnectTunnelError.ConnectFailed; }
     var req_buf: u8[..1024] = [];
     build_http_connect_request(target_host, target_port, proxy_auth, user_agent, req_buf);
-    guard tcp_send(sock_fd, req_buf[..]) == (req_buf.len as i32) else { return ConnectTunnelError.ConnectFailed; }
+    guard req_buf.len > 0 && tcp_send(sock_fd, req_buf[..]) == (req_buf.len as i32) else {
+        return ConnectTunnelError.ConnectFailed;
+    }
 
     var resp_buf: u8[..4096] = [];
     var chunk:    u8[1024]   = [0; 1024];
-    for step in 8 {
+    for _ in 8 {
         let n = tcp_recv_slice(sock_fd, chunk[..], timeout_ms);
         guard n > 0 else { break; }
         guard resp_buf.try_append(chunk[..n]) else { return ConnectTunnelError.TunnelBufferedTooManyBytes; }
-        if find(resp_buf[..], "\r\n\r\n") >= 0 {
+        if has_final_connect_header_terminator(resp_buf[..]) {
             break;
         }
     }

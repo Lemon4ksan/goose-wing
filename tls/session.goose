@@ -139,7 +139,7 @@ struct TlsCipherSlot {
     resumption_secret:  u8[48]             = [0; 48],
     peer_closed:        bool               = false,
     resumed:            bool               = false,
-    negotiated_alpn:    u8[..32]           = [],
+    negotiated_alpn:    u8[..255]          = [],
     server_name:        u8[..256]          = [],
     san_hosts:          u8[..128][..8]     = [],
     rx_plain_buf:       u8[..16384]        = [],
@@ -230,7 +230,7 @@ fn tls_populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) ->
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return false; }
     var leaf_cert = ParsedCert { .. };
     guard parse_x509_certificate(cert_der, leaf_cert) else { return false; }
-    var sans: SanEntry[..16] = [];
+    var sans: SanEntry[..64] = [];
     guard get_cert_san_extension(leaf_cert, cert_der, sans) else { return false; }
     g_tls_cipher_slots[idx].san_hosts.clear();
     for &san in sans {
@@ -433,7 +433,14 @@ fn tls_send_new_session_ticket(
             } else {
                 "server"
             };
-            store_tls13_session_ticket(sni, ticket, psk_full[..h_len], 0, ticket_lifetime);
+            store_tls13_session_ticket(
+                sni,
+                ticket,
+                psk_full[..h_len],
+                0,
+                ticket_lifetime,
+                g_tls_cipher_slots[idx].cipher_suite,
+            );
         }
     }
     return true;
@@ -972,7 +979,7 @@ fn build_test_ed25519_cert_der(
 
 struct TlsClientHandshakeConfig {
     server_name:          u8[..256]        = [],
-    alpn:                 u8[..32]         = [],
+    alpn:                 u8[..255]        = [],
     trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
     insecure_skip_verify: bool             = false,
     virtual_clock_sec:    i64              = 0,
@@ -986,12 +993,12 @@ struct TlsClientHandshakeConfig {
 struct TlsServerHandshakeConfig {
     cert_der:             u8[..4096] = [],
     priv_seed:            u8[32]     = [0; 32],
-    alpn:                 u8[..32]   = [],
+    alpn:                 u8[..255]  = [],
     compressed_cert_algo: u16        = 0,
     compressed_cert_data: u8[..4096] = [],
 }
 
-// Extracts the optional stapled OCSP response from a leaf CertificateEntry extension block (RFC 8446 §4.4.2.1).
+// Extracts the optional stapled OCSP response from a CertificateEntry extension block (RFC 8446 Section 4.4.2.1).
 //
 // Example:
 //   ext_bytes = [0x00, 0x05, 0x00, 0x06, 0x01, 0x00, 0x00, 0x02, 0x30, 0x00]
@@ -1010,7 +1017,7 @@ fn extract_leaf_ocsp_extension(ext_bytes: const u8[:]) -> const u8[:], bool {
     return unwrap_tls_ocsp_response(status_data);
 }
 
-// Parses raw Certificate message payload into DER certificate slices and optional leaf OCSP response (RFC 8446 §4.4.2).
+// Parses a Certificate message payload into DER cert slices and optional leaf OCSP (RFC 8446 Section 4.4.2).
 //
 // Example:
 //   payload = [0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x04, 'C', 'E', 'R', 'T', 0x00, 0x00]
@@ -1035,10 +1042,12 @@ fn parse_tls13_certificate_chain_and_ocsp(
         guard ok_cert && cert_bytes.len > 0 else { return "", false; }
         let ext_bytes, ok_ext = lc.read_u16_prefixed();
         guard ok_ext else { return "", false; }
-        if out_certs.len == 0 && ext_bytes.len > 0 {
+        if ext_bytes.len > 0 {
             let ocsp_der, ok_ocsp = extract_leaf_ocsp_extension(ext_bytes);
             guard ok_ocsp else { return "", false; }
-            out_leaf_ocsp = ocsp_der;
+            if out_certs.len == 0 {
+                out_leaf_ocsp = ocsp_der;
+            }
         }
         guard out_certs.try_push(cert_bytes) else { return "", false; }
     }
@@ -1071,42 +1080,68 @@ fn encode_alpn_extension_from_csv<B>(out: B&, alpn_csv: const u8[:]) {
     out.append(proto_list[..]);
 }
 
-// Computes a TLS 1.3 PSK binder tag over a truncated ClientHello handshake message (RFC 8446 §4.2.11.2).
+// Computes a TLS 1.3 PSK binder tag (SHA-256 or SHA-384) over a truncated ClientHello (RFC 8446 Section 4.2.11.2).
+fn compute_tls13_psk_binder_for_hash(
+    hash_id:      u8,
+    binder_key:   const u8[:],
+    truncated_ch: const u8[:],
+    out_binder:   u8[..48]&,
+) -> bool {
+    out_binder.clear();
+    if hash_id == internal::HASH_SHA256 {
+        guard binder_key.len >= 32 else { return false; }
+        let ch_hash = core::sha256(truncated_ch);
+        var mac: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(mac);
+        guard internal::ks_compute_finished_verify_data(
+            internal::HASH_SHA256, 32, binder_key[..32], ch_hash[..], mac[..],
+        ) else { return false; }
+        return out_binder.try_set(mac[..]);
+    }
+    if hash_id == internal::HASH_SHA384 {
+        guard binder_key.len >= 48 else { return false; }
+        let ch_hash = core::sha384(truncated_ch);
+        var mac: u8[48] = [0; 48];
+        defer core::secure_zeroize_48(mac);
+        guard internal::ks_compute_finished_verify_data(
+            internal::HASH_SHA384, 48, binder_key[..48], ch_hash[..], mac[..],
+        ) else { return false; }
+        return out_binder.try_set(mac[..]);
+    }
+    return false;
+}
+
+// Computes a TLS 1.3 SHA-256 PSK binder tag over a truncated ClientHello handshake message (RFC 8446 §4.2.11.2).
 fn compute_tls13_psk_binder(
     binder_key:   const u8[32]&,
     truncated_ch: const u8[:],
     out_binder:   u8[32]&,
 ) -> bool {
-    var finished_key: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(finished_key);
-    guard internal::hkdf_expand_label(
-        internal::HASH_SHA256,
-        binder_key[..],
-        "finished",
-        [],
-        32,
-        finished_key[..],
-    ) else { return false; }
-    let ch_hash = core::sha256(truncated_ch);
-    let mac = core::hmac_sha256(finished_key[..], ch_hash[..]);
-    for i in 32 { out_binder[i] = mac[i]; }
+    var full: u8[..48] = [];
+    defer core::secure_zeroize_slice(full[..]);
+    guard compute_tls13_psk_binder_for_hash(internal::HASH_SHA256, binder_key[..], truncated_ch, full) &&
+        full.len == 32 else {
+        return false;
+    }
+    core::ct_copy_bytes(out_binder[..], full[..32]);
     return true;
 }
 
 // Serializes a TLS 1.3 ClientHello payload with standard extensions (RFC 8446 §4.1.2).
 fn build_tls13_client_hello_payload<B>(
-    random:      const u8[32]&,
-    client_pub:  const u8[32]&,
-    server_name: const u8[:],
-    alpn:        const u8[:],
-    out:         B&,
-    psk_ticket:  const u8[:] = "",
-    psk_age_add: u32         = 0,
-    enable_pq:   bool        = false,
-    pq_pub:      const u8[:] = "",
-    ech_ext_raw: const u8[:] = "",
-    hrr_cookie:  const u8[:] = "",
-    offer_pha:   bool        = false,
+    random:         const u8[32]&,
+    client_pub:     const u8[32]&,
+    server_name:    const u8[:],
+    alpn:           const u8[:],
+    out:            B&,
+    psk_ticket:     const u8[:] = "",
+    psk_age_add:    u32         = 0,
+    enable_pq:      bool        = false,
+    pq_pub:         const u8[:] = "",
+    ech_ext_raw:    const u8[:] = "",
+    hrr_cookie:     const u8[:] = "",
+    offer_pha:      bool        = false,
+    psk_binder_len: u8          = 32,
 ) {
     out.clear();
     out.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
@@ -1152,6 +1187,13 @@ fn build_tls13_client_hello_payload<B>(
     ];
     encode_compress_certificate_extension(ext_buf, comp_algos[..]);
 
+    // RFC 6066 Section 8: Certificate Status Request - Solicit stapled OCSP responses (status_type = ocsp (1)).
+    ext_buf.append_u16_be(rfc::TLS_EXT_STATUS_REQUEST);
+    ext_buf.append_u16_be(5);
+    ext_buf.push(1);
+    ext_buf.append_u16_be(0);
+    ext_buf.append_u16_be(0);
+
     if offer_pha {
         encode_post_handshake_auth_extension(ext_buf);
     }
@@ -1195,23 +1237,28 @@ fn build_tls13_client_hello_payload<B>(
         ext_buf.append(ech_ext_raw);
     }
 
-    encode_psk_client_extensions(ext_buf, psk_ticket, psk_age_add);
+    encode_psk_client_extensions(ext_buf, psk_ticket, psk_age_add, psk_binder_len);
 
     out.append_u16_be(ext_buf.len as u16);
     out.append(ext_buf[..]);
 }
 
 // Encodes psk_key_exchange_modes (RFC 8446 §4.2.9) and pre_shared_key (RFC 8446 §4.2.11) extensions.
-fn encode_psk_client_extensions<B>(out: B&, psk_ticket: const u8[:], psk_age_add: u32) {
-    guard psk_ticket.len > 0 && psk_ticket.len <= 256 else { return; }
+fn encode_psk_client_extensions<B>(
+    out:         B&,
+    psk_ticket:  const u8[:],
+    psk_age_add: u32,
+    binder_len:  u8 = 32,
+) {
+    guard psk_ticket.len > 0 && psk_ticket.len <= 256 && (binder_len == 32 || binder_len == 48) else { return; }
     out.append_u16_be(rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES);
     out.append_u16_be(2);
     out.push(1);
     out.push(1);
 
-    let id_entry_len = (2 + psk_ticket.len + 4) as u16;
-    let binders_entry_len: u16 = 33;
-    let psk_ext_len = 2 + id_entry_len + 2 + binders_entry_len;
+    let id_entry_len = core::add_sat_i64(psk_ticket.len, 6) as u16;
+    let binders_entry_len: u16 = if binder_len == 48 { 49 } else { 33 };
+    let psk_ext_len = core::add_sat_i64(id_entry_len as i64, core::add_sat_i64(binders_entry_len as i64, 4)) as u16;
     out.append_u16_be(rfc::TLS_EXT_PRE_SHARED_KEY);
     out.append_u16_be(psk_ext_len);
     out.append_u16_be(id_entry_len);
@@ -1219,8 +1266,8 @@ fn encode_psk_client_extensions<B>(out: B&, psk_ticket: const u8[:], psk_age_add
     out.append(psk_ticket);
     out.append_u32_be(psk_age_add);
     out.append_u16_be(binders_entry_len);
-    out.push(32);
-    for i in 32 { out.push(0); }
+    out.push(binder_len);
+    for i in (binder_len as i64) { out.push(0); }
 }
 
 // Sends a plaintext TLS record containing a handshake message (RFC 8446 §5.1).
@@ -1300,20 +1347,70 @@ fn parse_server_hello_or_hrr(
     return out_server_share.try_set(sh.server_share[..]);
 }
 
-// Parses server EncryptedExtensions payload and extracts single negotiated ALPN protocol if present (RFC 7301 §3.1).
+enum SniOfferState {
+    Omitted,
+    Offered,
+}
+
+inline fn alpn_csv_contains_proto(alpn_csv: const u8[:], target: const u8[:]) -> bool {
+    if alpn_csv == "*" {
+        return true;
+    }
+    guard alpn_csv.len > 0 && target.len > 0 else { return false; }
+    var tok = core::make_byte_tokenizer(alpn_csv, ',');
+    while true {
+        let item, ok = core::token_next(tok);
+        if !ok { break; }
+        if item == target { return true; }
+    }
+    return false;
+}
+
+fn validate_ee_solicited_extensions(
+    entries:          const TlsExtensionEntry[..32]&,
+    offered_alpn_csv: const u8[:],
+    sni_state:        SniOfferState,
+    allow_ech_retry:  bool,
+) -> bool {
+    for e in entries {
+        if e.ext_type == rfc::TLS_EXT_SERVER_NAME {
+            guard sni_state == SniOfferState.Offered && e.data.len == 0 else { return false; }
+        } else if e.ext_type == rfc::TLS_EXT_ALPN {
+            guard offered_alpn_csv.len > 0 else { return false; }
+        } else if e.ext_type == rfc::EXT_ENCRYPTED_CLIENT_HELLO {
+            guard allow_ech_retry && e.data.len >= 2 else { return false; }
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Parses server EncryptedExtensions and extracts a negotiated ALPN protocol (RFC 7301 Section 3.1).
 //
 // Example:
 //   ee_body = [0x00, 0x09, 0x00, 0x10, 0x00, 0x05, 0x00, 0x03, 0x02, 'h', '2']
 //   returns: true, out_alpn = "h2"
-fn parse_encrypted_extensions_alpn(ee_body: const u8[:], out_alpn: u8[..32]&) -> bool {
+fn parse_encrypted_extensions_alpn<B>(
+    ee_body:          const u8[:],
+    out_alpn:         B&,
+    offered_alpn_csv: const u8[:]   = "*",
+    sni_state:        SniOfferState = SniOfferState.Offered,
+    allow_ech_retry:  bool          = false,
+) -> bool {
     out_alpn.clear();
+    var committed = false;
+    defer if !committed { out_alpn.clear(); };
     var entries: TlsExtensionEntry[..32] = [];
     guard parse_extensions_block(ee_body, entries) else { return false; }
-    for e in entries {
-        guard !rfc::is_forbidden_ee_extension(e.ext_type) else { return false; }
+    guard validate_ee_solicited_extensions(entries, offered_alpn_csv, sni_state, allow_ech_retry) else {
+        return false;
     }
     let alpn_data, has_alpn = find_extension(entries, rfc::TLS_EXT_ALPN);
-    guard has_alpn else { return true; }
+    if !has_alpn {
+        committed = true;
+        return true;
+    }
 
     var ac = core::cursor_from(alpn_data);
     let list_bytes, ok_l = ac.read_u16_prefixed();
@@ -1321,8 +1418,40 @@ fn parse_encrypted_extensions_alpn(ee_body: const u8[:], out_alpn: u8[..32]&) ->
 
     var lc = core::cursor_from(list_bytes);
     let proto, ok_p = lc.read_u8_prefixed();
-    guard ok_p && lc.buf.len == 0 && proto.len >= 1 && proto.len <= 32 else { return false; }
-    return out_alpn.try_set(proto);
+    guard ok_p && lc.buf.len == 0 && proto.len >= 1 && proto.len <= 255 else { return false; }
+    guard alpn_csv_contains_proto(offered_alpn_csv, proto) && out_alpn.try_set(proto) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
+fn verify_ocsp_against_trust_store(
+    leaf_ocsp:   const u8[:],
+    leaf_cert:   const ParsedCert&,
+    leaf_raw:    const u8[:],
+    eff_clock:   i64,
+    trust_store: const TrustAnchorStore&,
+) -> bool, bool {
+    let leaf_issuer_dn = span_slice(leaf_raw, leaf_cert.issuer_raw);
+    guard leaf_issuer_dn.len > 0 else { return false, false; }
+    for i in trust_store.anchors.len {
+        let a .= trust_store.anchors[i];
+        if a.is_valid && a.has_pub_material && a.subject_raw[..] == leaf_issuer_dn {
+            let alert = validate_ocsp_stapling(leaf_ocsp, leaf_cert, leaf_raw, eff_clock);
+            guard alert == TlsAlert.CloseNotify else { return true, false; }
+            var ocsp_parsed = ParsedOcspResponse { .. };
+            guard parse_ocsp_response(leaf_ocsp, ocsp_parsed) else { return true, false; }
+            guard x509_verify_ocsp_cert_id_material(
+                ocsp_parsed, leaf_ocsp, a.subject_raw[..], a.spki_pubkey[..],
+            ) else { return true, false; }
+            let sig_alert = x509_verify_ocsp_signature_with_pubkey(
+                ocsp_parsed, leaf_ocsp, a.spki_pubkey[..],
+            );
+            return true, sig_alert == TlsAlert.CloseNotify;
+        }
+    }
+    return false, false;
 }
 
 fn verify_stapled_ocsp_for_chain(
@@ -1330,44 +1459,99 @@ fn verify_stapled_ocsp_for_chain(
     chain_parsed: const ParsedCert[..8]&,
     chain_slices: const (const u8[:])[..8]&,
     eff_clock:    i64,
+    trust_store:  const TrustAnchorStore&,
 ) -> bool {
     guard leaf_ocsp.len > 0 else { return !chain_parsed[0].has_must_staple; }
-    let ocsp_alert = validate_ocsp_stapling(leaf_ocsp, chain_parsed[0], chain_slices[0], eff_clock);
-    guard ocsp_alert == TlsAlert.CloseNotify else { return false; }
-    var ocsp_parsed = ParsedOcspResponse { .. };
-    guard parse_ocsp_response(leaf_ocsp, ocsp_parsed) else { return false; }
-    let issuer_idx: i64 = if chain_parsed.len >= 2 { 1 } else { 0 };
-    let sig_alert = x509_verify_ocsp_signature(
-        ocsp_parsed, leaf_ocsp, chain_parsed[issuer_idx], chain_slices[issuer_idx],
+    if chain_parsed.len >= 2 {
+        return validate_ocsp_stapling(
+            leaf_ocsp, chain_parsed[0], chain_slices[0], eff_clock, chain_slices[1],
+        ) == TlsAlert.CloseNotify;
+    }
+    let anchor_matched, anchor_ok = verify_ocsp_against_trust_store(
+        leaf_ocsp, chain_parsed[0], chain_slices[0], eff_clock, trust_store,
     );
-    return sig_alert == TlsAlert.CloseNotify;
+    if anchor_matched {
+        return anchor_ok;
+    }
+    let leaf_subj = span_slice(chain_slices[0], chain_parsed[0].subject_raw);
+    let leaf_iss = span_slice(chain_slices[0], chain_parsed[0].issuer_raw);
+    guard leaf_subj.len > 0 && leaf_subj == leaf_iss else { return false; }
+    return validate_ocsp_stapling(
+        leaf_ocsp, chain_parsed[0], chain_slices[0], eff_clock, chain_slices[0],
+    ) == TlsAlert.CloseNotify;
+}
+
+// RFC 5280 Section 6.3.3: CRL Processing - Resolves the CRL issuer certificate or trust anchor and verifies cRLSign key usage and signature.
+fn verify_crl_signer_for_cert(
+    crl_parsed:   const ParsedCrl&,
+    crl_der:      const u8[:],
+    cert_idx:     i64,
+    chain_parsed: const ParsedCert[..8]&,
+    chain_slices: const (const u8[:])[..8]&,
+    trust_store:  const TrustAnchorStore&,
+) -> bool {
+    let next_idx = core::add_sat_i64(cert_idx, 1);
+    if next_idx < chain_parsed.len {
+        let iss .= chain_parsed[next_idx];
+        guard !iss.has_key_usage || (iss.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
+        return x509_verify_crl_signature(crl_parsed, crl_der, iss, chain_slices[next_idx]) == TlsAlert.CloseNotify;
+    }
+    for j in trust_store.anchors.len {
+        let a .= trust_store.anchors[j];
+        if a.is_valid && a.has_pub_material && a.subject_raw[..] == crl_parsed.issuer {
+            guard !a.has_key_usage || (a.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
+            let alert = x509_verify_crl_signature_with_pubkey(crl_parsed, crl_der, a.spki_pubkey[..]);
+            return alert == TlsAlert.CloseNotify;
+        }
+    }
+    let self_cert .= chain_parsed[cert_idx];
+    let self_subj = span_slice(chain_slices[cert_idx], self_cert.subject_raw);
+    guard self_subj.len > 0 && self_subj == crl_parsed.issuer else { return false; }
+    guard !self_cert.has_key_usage || (self_cert.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
+    return x509_verify_crl_signature(crl_parsed, crl_der, self_cert, chain_slices[cert_idx]) == TlsAlert.CloseNotify;
+}
+
+// RFC 5280 Section 6.3.3: CRL Processing - Verifies CRL freshness, issuer signature, and revocation status across matching chain certificates.
+fn verify_crl_for_chain_with_store(
+    crl_der:      const u8[:],
+    chain_parsed: const ParsedCert[..8]&,
+    chain_slices: const (const u8[:])[..8]&,
+    now_unix:     i64,
+    trust_store:  const TrustAnchorStore&,
+) -> bool {
+    guard crl_der.len > 0 else { return true; }
+    guard chain_parsed.len > 0 && chain_slices.len == chain_parsed.len else { return false; }
+    var crl_parsed = ParsedCrl { .. };
+    guard parse_x509_crl(crl_der, crl_parsed) else { return false; }
+    let now_sec = if now_unix > 0 { now_unix } else { core::unix(core::now()) };
+    guard crl_parsed.this_update <= now_sec else { return false; }
+    if crl_parsed.next_update > 0 {
+        guard now_sec <= crl_parsed.next_update else { return false; }
+    }
+    var matched_any = false;
+    for i in chain_parsed.len {
+        let cert_issuer = span_slice(chain_slices[i], chain_parsed[i].issuer_raw);
+        if cert_issuer == crl_parsed.issuer {
+            matched_any = true;
+            guard verify_crl_signer_for_cert(
+                crl_parsed, crl_der, i, chain_parsed, chain_slices, trust_store,
+            ) else { return false; }
+            let ser_bytes = span_slice(chain_slices[i], chain_parsed[i].serial_number);
+            let ser_u64, ok_ser = parse_asn1_serial_u64(ser_bytes);
+            guard ok_ser && !crl_is_revoked(crl_parsed, ser_u64) else { return false; }
+        }
+    }
+    return matched_any;
 }
 
 fn verify_crl_for_chain(
     crl_der:      const u8[:],
     chain_parsed: const ParsedCert[..8]&,
     chain_slices: const (const u8[:])[..8]&,
+    now_unix:     i64 = 0,
 ) -> bool {
-    guard crl_der.len > 0 else { return true; }
-    guard chain_parsed.len > 0 && chain_slices.len == chain_parsed.len else { return false; }
-    var crl_parsed = ParsedCrl { .. };
-    guard parse_x509_crl(crl_der, crl_parsed) else { return false; }
-    let leaf_issuer = span_slice(chain_slices[0], chain_parsed[0].issuer_raw);
-    guard crl_parsed.issuer == leaf_issuer else { return false; }
-    let issuer_idx: i64 = if chain_parsed.len >= 2 { 1 } else { 0 };
-    let sig_alert = x509_verify_crl_signature(
-        crl_parsed, crl_der, chain_parsed[issuer_idx], chain_slices[issuer_idx],
-    );
-    guard sig_alert == TlsAlert.CloseNotify else { return false; }
-    let now_sec = core::unix(core::now());
-    guard crl_parsed.this_update <= now_sec else { return false; }
-    if crl_parsed.next_update > 0 {
-        guard now_sec <= crl_parsed.next_update else { return false; }
-    }
-    let ser_bytes = span_slice(chain_slices[0], chain_parsed[0].serial_number);
-    let ser_u64, ok_ser = parse_asn1_serial_u64(ser_bytes);
-    guard ok_ser else { return false; }
-    return !crl_is_revoked(crl_parsed, ser_u64);
+    let empty_store = TrustAnchorStore { .. };
+    return verify_crl_for_chain_with_store(crl_der, chain_parsed, chain_slices, now_unix, empty_store);
 }
 
 // Validates server Certificate and CertificateVerify against trust anchor store and transcript (RFC 8446 §4.4).
@@ -1401,11 +1585,15 @@ fn verify_server_cert_and_signature(
         let eff_clock = if config.virtual_clock_sec > 0 { config.virtual_clock_sec } else { core::now().wall_sec };
         let alert = verify_certificate_chain(chain_parsed, chain_slices, config.trust_store, eff_clock);
         guard alert == TlsAlert.CloseNotify else { return false; }
-        guard verify_stapled_ocsp_for_chain(leaf_ocsp, chain_parsed, chain_slices, eff_clock) else { return false; }
-        guard verify_crl_for_chain(config.crl_der[..], chain_parsed, chain_slices) else { return false; }
+        guard verify_stapled_ocsp_for_chain(
+            leaf_ocsp, chain_parsed, chain_slices, eff_clock, config.trust_store,
+        ) else { return false; }
+        guard verify_crl_for_chain_with_store(
+            config.crl_der[..], chain_parsed, chain_slices, eff_clock, config.trust_store,
+        ) else { return false; }
 
         if config.server_name.len > 0 {
-            var sans: SanEntry[..16] = [];
+            var sans: SanEntry[..64] = [];
             let ok_san = get_cert_san_extension(leaf_cert, chain_slices[0], sans);
             guard ok_san && match_any_san(sans, config.server_name[..]) else { return false; }
         }
@@ -1432,7 +1620,7 @@ fn verify_server_cert_and_signature(
 
 // Ingests and verifies the encrypted server flight: EncryptedExtensions, [CertificateRequest],
 // [Certificate | CompressedCertificate, CertificateVerify], Finished.
-fn tls_client_process_server_flight(
+fn tls_client_process_server_flight<B>(
     hs_reader:             HandshakeRecordReader&,
     fd:                    i64,
     cipher_suite:          u16,
@@ -1442,7 +1630,7 @@ fn tls_client_process_server_flight(
     transcript:            TlsTranscript&,
     config:                const TlsClientHandshakeConfig&,
     psk_resumed:           bool,
-    out_alpn:              u8[..32]&,
+    out_alpn:              B&,
     out_cert_req_received: bool&,
     out_cert_req:          CertificateRequestMsg&,
     slot_idx:              u16 = 0xFFFF,
@@ -1455,7 +1643,14 @@ fn tls_client_process_server_flight(
         hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv, msg_ee, ee_body, 5000,
     ) else { return false; }
     guard msg_ee == rfc::TLS_HS_ENCRYPTED_EXTENSIONS else { return false; }
-    guard parse_encrypted_extensions_alpn(ee_body[..], out_alpn) else { return false; }
+    let sni_state = if validate_sni_host_bytes(config.server_name[..]) {
+        SniOfferState.Offered
+    } else {
+        SniOfferState.Omitted
+    };
+    guard parse_encrypted_extensions_alpn(
+        ee_body[..], out_alpn, config.alpn[..], sni_state, config.ech_config_list.len > 0,
+    ) else { return false; }
     transcript_update_msg(transcript, msg_ee, ee_body[..]);
 
     if !psk_resumed {
@@ -1481,7 +1676,14 @@ fn tls_client_process_server_flight(
         if msg_next == rfc::TLS_HS_COMPRESSED_CERTIFICATE {
             is_comp_cert = true;
             transcript_update_msg(transcript, msg_next, next_body[..]);
-            guard decompress_incoming_certificate(next_body[..], decomp_cert) else { return false; }
+            let offered_comp: u16[3] = [
+                rfc::CERT_COMPRESSION_BROTLI,
+                rfc::CERT_COMPRESSION_ZSTD,
+                rfc::CERT_COMPRESSION_ZLIB,
+            ];
+            guard decompress_incoming_certificate(next_body[..], decomp_cert, offered_comp[..]) else {
+                return false;
+            }
         } else if msg_next == rfc::TLS_HS_CERTIFICATE {
             transcript_update_msg(transcript, msg_next, next_body[..]);
         } else {
@@ -1617,7 +1819,8 @@ fn tls_client_send_client_cert(
         let sig_scheme, ok_sig = sign_tls13_certificate_verify(
             config.client_cert_der[..], config.client_priv_seed, cv_msg_buf[..cv_len], sig_buf,
         );
-        guard ok_sig else { return false; }
+        // RFC 8446 Section 4.4.3: Certificate Verify - Selected scheme must appear in CertificateRequest.signature_algorithms.
+        guard ok_sig && cert_req.sig_algorithms.contains(sig_scheme) else { return false; }
 
         var cv_payload: u8[..512] = [];
         guard encode_client_certificate_verify(cv_payload, sig_scheme, sig_buf[..]) else { return false; }
@@ -1717,21 +1920,44 @@ fn tls_setup_client_cipher_slot(
     for i in 48 { g_tls_cipher_slots[idx].resumption_secret[i] = ks.resumption_secret[i]; }
 }
 
-fn patch_client_hello_psk_binder<B>(ch_msg: B&, psk_secret: const u8[32]&) {
-    guard ch_msg.len > 35 else { return; }
-    var ks_early, ok_kse = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+fn patch_client_hello_psk_binder<B>(ch_msg: B&, psk_secret: const u8[:], psk_suite: u16) {
+    guard ch_msg.len > 35 && (psk_secret.len == 32 || psk_secret.len == 48) else { return; }
+    let suite = if rfc::is_supported_tls13_cipher_suite(psk_suite) {
+        psk_suite
+    } else {
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256
+    };
+    var ks_early, ok_kse = internal::ks_init(suite);
     defer internal::ks_zeroize(ks_early);
-    guard ok_kse && internal::ks_init_early_secret(ks_early, psk_secret[..]) else { return; }
-    var b_key: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(b_key);
-    for i in 32 { b_key[i] = ks_early.binder_key[i]; }
-    let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg[..], 33);
-    var binder: u8[32] = [0; 32];
-    guard ok_tr && compute_tls13_psk_binder(b_key, trunc_ch, binder) else { return; }
+    guard ok_kse && internal::ks_init_early_secret(ks_early, psk_secret) else { return; }
+    let hlen = ks_early.hash_len;
+    let entry_len: u16 = if hlen == 48 { 49 } else { 33 };
+    let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg[..], entry_len);
+    var binder: u8[..48] = [];
+    defer core::secure_zeroize_slice(binder[..]);
+    guard ok_tr && compute_tls13_psk_binder_for_hash(
+        ks_early.hash_id, ks_early.binder_key[..hlen as i64], trunc_ch, binder,
+    ) else { return; }
     while ch_msg.len > trunc_ch.len { ch_msg.pop(); }
-    ch_msg.append_u16_be(33);
-    ch_msg.push(32);
+    ch_msg.append_u16_be(entry_len);
+    ch_msg.push(hlen);
     ch_msg.append(binder[..]);
+}
+
+inline fn is_client_offered_tls13_suite(cs: u16) -> bool {
+    return cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256 ||
+        cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384 ||
+        cs == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256;
+}
+
+// RFC 8446 Section 4.1.3: Server Hello - Verify legacy_session_id_echo, offered cipher suite, and key_share.
+fn validate_live_client_sh(sh: const ParsedServerHello&, client_random: const u8[32]&) -> bool {
+    guard sh.session_id_echo.len == 32 &&
+        core::ct_eq_bytes(sh.session_id_echo[..], client_random[..]) &&
+        is_client_offered_tls13_suite(sh.cipher_suite) else {
+        return false;
+    }
+    return sh.is_hrr || sh.server_share.len > 0;
 }
 
 fn prepare_ech_outer_extension(config: const TlsClientHandshakeConfig&, out: u8[..512]&) {
@@ -1817,10 +2043,24 @@ fn handle_client_hrr_transition(
     hrr_raw_msg:   const u8[:],
     sh:            ParsedServerHello&,
 ) -> bool {
+    guard validate_live_client_sh(sh, client_random) else { return false; }
     let hrr_cipher = sh.cipher_suite;
     let hrr_group = sh.selected_group;
     let has_group = hrr_group != 0;
     guard has_group || sh.hrr_cookie.len > 0 else { return false; }
+    if has_group {
+        let all_groups: u16[4] = [
+            rfc::GROUP_X25519_MLKEM768,
+            rfc::GROUP_X25519,
+            rfc::GROUP_SECP256R1,
+            rfc::GROUP_SECP384R1,
+        ];
+        let init_shares: u16[2] = [rfc::GROUP_X25519_MLKEM768, rfc::GROUP_X25519];
+        let grp_start = if config.enable_pq_hybrid { 0 } else { 1 };
+        guard validate_hrr_selected_group(hrr_group, all_groups[grp_start..], init_shares[grp_start..]) else {
+            return false;
+        }
+    }
 
     let enable_pq_ch2, ok_regen = regenerate_client_hrr_keyshare(
         hrr_group, config.enable_pq_hybrid, client_priv, client_pub, pq_priv, pq_pub,
@@ -1852,6 +2092,7 @@ fn handle_client_hrr_transition(
     guard read_plaintext_handshake_record(fd, sh2_msg) else { return false; }
     guard parse_live_server_hello(sh2_msg[..], sh) &&
         !sh.is_hrr &&
+        validate_live_client_sh(sh, client_random) &&
         validate_hrr_cipher_suite(hrr_cipher, sh.cipher_suite) &&
         (hrr_group == 0 || sh.selected_group == hrr_group) else {
         return false;
@@ -1885,12 +2126,14 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     }
 
     var psk_ticket: u8[..256] = [];
-    var psk_secret: u8[32]    = [0; 32];
-    defer core::secure_zeroize_32(psk_secret);
+    var psk_secret: u8[..48]  = [];
+    defer core::secure_zeroize_slice(psk_secret[..]);
     var psk_age_add: u32 = 0;
-    let has_ticket = lookup_tls13_session_ticket(
-        config.server_name[..], psk_ticket, psk_secret, psk_age_add,
+    var psk_suite:   u16 = 0;
+    let has_ticket = lookup_tls13_session_ticket_full(
+        config.server_name[..], psk_ticket, psk_secret, psk_age_add, psk_suite,
     );
+    let psk_hash_len: u8 = if has_ticket && rfc::tls13_cipher_suite_hash_len(psk_suite) == 48 { 48 } else { 32 };
 
     var ech_ext_raw: u8[..512] = [];
     prepare_ech_outer_extension(config, ech_ext_raw);
@@ -1900,7 +2143,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
         client_random, client_pub, config.server_name[..], config.alpn[..],
         ch_payload, psk_ticket[..], psk_age_add,
         config.enable_pq_hybrid, if config.enable_pq_hybrid { pq_pub[..] } else { "" },
-        ech_ext_raw[..], "", config.client_cert_der.len > 0,
+        ech_ext_raw[..], "", config.client_cert_der.len > 0, psk_hash_len,
     );
     var ch_msg: u8[..4096] = [];
     ch_msg.push(rfc::TLS_HS_CLIENT_HELLO);
@@ -1908,7 +2151,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     ch_msg.append(ch_payload[..]);
 
     if has_ticket {
-        patch_client_hello_psk_binder(ch_msg, psk_secret);
+        patch_client_hello_psk_binder(ch_msg, psk_secret[..], psk_suite);
     }
 
     guard send_plaintext_handshake_record(fd, ch_msg[..]) else {
@@ -1943,6 +2186,10 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
             return 0xFFFF, false;
         }
     } else {
+        guard validate_live_client_sh(sh, client_random) else {
+            free_tls_cipher_slot(slot_idx);
+            return 0xFFFF, false;
+        }
         transcript_update(transcript, sh_msg[..]);
     }
 
@@ -1951,7 +2198,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     let srv_share = sh.server_share[..];
     let psk_resumed = sh.psk_resumed;
 
-    if psk_resumed && !has_ticket {
+    if psk_resumed && (!has_ticket || rfc::tls13_cipher_suite_hash_len(cipher_suite) != psk_hash_len) {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -2044,7 +2291,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     }
 
     var hs_reader = HandshakeRecordReader { .. };
-    var neg_alpn: u8[..32] = [];
+    var neg_alpn: u8[..255] = [];
     var cert_req_received = false;
     var cert_req = CertificateRequestMsg { .. };
     let ok_flight = tls_client_process_server_flight(
@@ -2108,18 +2355,23 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     return slot_idx, true;
 }
 
-// Matches a client ALPN extension against server comma-separated ALPN preferences (RFC 7301 §3.2).
-fn select_server_alpn_from_ext(
+// Matches a client ALPN extension against server comma-separated ALPN preferences (RFC 7301 Section 3.2).
+fn select_server_alpn_from_ext<B>(
     alpn_ext:        const u8[:],
     server_alpn_csv: const u8[:],
-    out_alpn:        u8[..32]&,
+    out_alpn:        B&,
 ) -> bool {
     out_alpn.clear();
-    guard server_alpn_csv.len > 0 else { return true; }
     guard alpn_ext.len >= 3 else { return false; }
     var c = core::cursor_from(alpn_ext);
     let list_bytes, ok_l = c.read_u16_prefixed();
-    guard ok_l && c.buf.len == 0 && list_bytes.len >= 1 else { return false; }
+    guard ok_l && c.buf.len == 0 && list_bytes.len >= 2 else { return false; }
+    var vlc = core::cursor_from(list_bytes);
+    while vlc.buf.len > 0 {
+        let p, ok_vp = vlc.read_u8_prefixed();
+        guard ok_vp && p.len >= 1 && p.len <= 255 else { return false; }
+    }
+    guard server_alpn_csv.len > 0 else { return true; }
 
     var sc: i64 = 0;
     while sc < server_alpn_csv.len {
@@ -2127,89 +2379,114 @@ fn select_server_alpn_from_ext(
         while comma < server_alpn_csv.len && server_alpn_csv[comma] != ',' { comma++; }
         let srv_proto = server_alpn_csv[sc..comma];
         sc = comma + 1;
-        if srv_proto.len == 0 || srv_proto.len > 32 { continue; }
+        if srv_proto.len == 0 || srv_proto.len > 255 { continue; }
         var lc = core::cursor_from(list_bytes);
         while lc.buf.len > 0 {
-            let cli_proto, ok_p = lc.read_u8_prefixed();
-            guard ok_p && cli_proto.len > 0 else { return false; }
+            let cli_proto, _ = lc.read_u8_prefixed();
             if cli_proto == srv_proto { return out_alpn.try_set(srv_proto); }
         }
     }
     return true;
 }
 
-fn verify_single_psk_binder(
+fn verify_single_psk_binder_full(
     ticket_id:    const u8[:],
     binder_slice: const u8[:],
     ch_msg:       const u8[:],
     binders_len:  u16,
-    out_psk:      u8[32]&,
+    selected_cs:  u16,
+    out_psk:      u8[..48]&,
 ) -> bool {
+    out_psk.clear();
     var full_psk: u8[..48] = [];
-    var cs:       u16      = 0;
-    guard lookup_tls13_ticket_by_identity_full(ticket_id, full_psk, cs) && full_psk.len >= 32 else {
+    defer core::secure_zeroize_slice(full_psk[..]);
+    var cs: u16 = 0;
+    guard lookup_tls13_ticket_by_identity_full(ticket_id, full_psk, cs) &&
+        (full_psk.len == 32 || full_psk.len == 48) else {
         return false;
     }
     let suite = if cs != 0 { cs } else { rfc::TLS_CIPHER_AES_128_GCM_SHA256 };
+    if selected_cs != 0 {
+        guard rfc::tls13_cipher_suite_hash_len(suite) == rfc::tls13_cipher_suite_hash_len(selected_cs) else {
+            return false;
+        }
+    }
     var ks_early, ok_kse = internal::ks_init(suite);
     defer internal::ks_zeroize(ks_early);
     guard ok_kse && internal::ks_init_early_secret(ks_early, full_psk[..]) else { return false; }
-    guard binder_slice.len == ks_early.hash_len else { return false; }
-
-    var b_key: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(b_key);
-    for i in min(ks_early.hash_len, 32) { b_key[i] = ks_early.binder_key[i]; }
+    let hlen = ks_early.hash_len as i64;
+    guard binder_slice.len == hlen else { return false; }
 
     let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg, binders_len);
     guard ok_tr else { return false; }
-
-    var exp_binder: u8[32] = [0; 32];
-    guard compute_tls13_psk_binder(b_key, trunc_ch, exp_binder) else { return false; }
-    guard core::ct_eq_bytes(exp_binder[0..ks_early.hash_len], binder_slice) else { return false; }
-
-    core::ct_copy_bytes(out_psk[..], full_psk[0..32]);
-    return true;
+    guard internal::verify_psk_binder(
+        ks_early.hash_id, ks_early.hash_len, ks_early.binder_key[..hlen], trunc_ch, binder_slice,
+    ) else { return false; }
+    return out_psk.try_set(full_psk[..]);
 }
 
-// Verifies ClientHello pre_shared_key extension and PSK binder against cached server tickets (RFC 8446 §4.2.11).
-fn verify_client_hello_psk_binder(
-    ch_msg:  const u8[:],
-    psk_ext: const u8[:],
-    out_psk: u8[32]&,
+// Reads one PskIdentity and matching PskBinderEntry from OfferedPsks cursors (RFC 8446 Section 4.2.11).
+//
+// Example:
+//   ic = [0x00, 0x04, 'T', 'K', 'T', '1', 0, 0, 0, 0], bc = [0x20, ...32 bytes...]
+//   returns: ticket_id = "TKT1", binder_slice = [32 bytes], ok = true
+inline fn read_psk_identity_and_binder(
+    ic: ByteCursor&,
+    bc: ByteCursor&,
+) -> const u8[:], const u8[:], bool {
+    let ticket_id, ok_t = ic.read_u16_prefixed();
+    let _, ok_age = ic.read_u32();
+    let binder_slice, ok_bs = bc.read_u8_prefixed();
+    guard ok_t && ticket_id.len > 0 && ok_age && ok_bs else { return "", "", false; }
+    guard binder_slice.len == 32 || binder_slice.len == 48 else { return "", "", false; }
+    return ticket_id, binder_slice, true;
+}
+
+// RFC 8446 Section 4.2.11: Pre-Shared Key Extension - Verifies OfferedPsks binders and selects matching identity.
+fn verify_client_hello_psk_binder_full(
+    ch_msg:          const u8[:],
+    psk_ext:         const u8[:],
+    selected_cs:     u16,
+    out_psk:         u8[..48]&,
+    out_selected_id: u16&,
 ) -> bool {
-    core::secure_zeroize_32(out_psk);
+    core::secure_zeroize_slice(out_psk[..]);
+    out_psk.clear();
+    out_selected_id = 0;
     var committed = false;
-    defer if !committed { core::secure_zeroize_32(out_psk); };
+    defer if !committed {
+        core::secure_zeroize_slice(out_psk[..]);
+        out_psk.clear();
+        out_selected_id = 0;
+    };
     var c = core::cursor_from(psk_ext);
     let ids_bytes, ok_ids = c.read_u16_prefixed();
-    guard ok_ids && ids_bytes.len >= 7 else { return false; }
     let binders_bytes, ok_b = c.read_u16_prefixed();
-    guard ok_b && c.buf.len == 0 && binders_bytes.len >= 33 else { return false; }
+    guard ok_ids && ids_bytes.len >= 7 && ok_b && c.buf.len == 0 && binders_bytes.len >= 33 else {
+        return false;
+    }
 
     var ic = core::cursor_from(ids_bytes);
     var bc = core::cursor_from(binders_bytes);
-    var matched_psk: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(matched_psk);
+    var matched_psk: u8[..48] = [];
+    defer core::secure_zeroize_slice(matched_psk[..]);
     var matched = false;
+    var cur_idx: u16 = 0;
 
     while ic.buf.len > 0 && bc.buf.len > 0 {
-        let ticket_id, ok_t = ic.read_u16_prefixed();
-        guard ok_t && ticket_id.len > 0 else { return false; }
-        let obf_age, ok_age = ic.read_u32();
-        guard ok_age else { return false; }
-        let binder_slice, ok_bs = bc.read_u8_prefixed();
-        guard ok_bs && binder_slice.len >= 32 else { return false; }
-
-        if !matched {
-            if verify_single_psk_binder(
-                ticket_id, binder_slice, ch_msg, binders_bytes.len as u16, matched_psk,
-            ) {
-                matched = true;
-            }
+        let ticket_id, binder_slice, ok_entry = read_psk_identity_and_binder(ic, bc);
+        guard ok_entry && cur_idx < 0xFFFF else { return false; }
+        if !matched && verify_single_psk_binder_full(
+            ticket_id, binder_slice, ch_msg, binders_bytes.len as u16, selected_cs, matched_psk,
+        ) {
+            matched = true;
+            out_selected_id = cur_idx;
         }
+        cur_idx = core::add_sat_u64(cur_idx, 1) as u16;
     }
-    guard matched && ic.buf.len == 0 && bc.buf.len == 0 else { return false; }
-    core::ct_copy_bytes(out_psk[..], matched_psk[..]);
+    guard matched && ic.buf.len == 0 && bc.buf.len == 0 && out_psk.try_set(matched_psk[..]) else {
+        return false;
+    }
     committed = true;
     return true;
 }
@@ -2226,23 +2503,20 @@ fn has_valid_psk_dhe_ke_mode(modes_ext: const u8[:]) -> bool {
     return has_dhe;
 }
 
-fn verify_client_hello_psk_entry(
-    entries: const TlsExtensionEntry[..32]&,
-    payload: const u8[:],
-    psk_ext: const u8[:],
-    out_psk: u8[32]&,
+fn verify_client_hello_psk_entry_full(
+    entries:         const TlsExtensionEntry[..32]&,
+    payload:         const u8[:],
+    psk_ext:         const u8[:],
+    selected_cs:     u16,
+    out_psk:         u8[..48]&,
+    out_selected_id: u16&,
 ) -> bool {
-    guard entries.len > 0 else { return false; }
-    var last_type: u16 = 0;
-    for e in entries { last_type = e.ext_type; }
-    guard last_type == rfc::TLS_EXT_PRE_SHARED_KEY else { return false; }
+    let last_idx = core::sub_sat_i64(entries.len, 1);
+    guard entries.len > 0 && last_idx >= 0 && last_idx < entries.len else { return false; }
+    guard entries[last_idx].ext_type == rfc::TLS_EXT_PRE_SHARED_KEY else { return false; }
     let modes_ext, has_modes = find_extension(entries, rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES);
     guard has_modes && has_valid_psk_dhe_ke_mode(modes_ext) else { return false; }
-    guard verify_client_hello_psk_binder(payload, psk_ext, out_psk) else {
-        core::secure_zeroize_32(out_psk);
-        return false;
-    }
-    return true;
+    return verify_client_hello_psk_binder_full(payload, psk_ext, selected_cs, out_psk, out_selected_id);
 }
 
 // Extracts the 32-byte X25519 key share from a parsed KeyShareEntry list.
@@ -2276,12 +2550,28 @@ fn ch_cipher_suites_slice(raw: const u8[:]) -> const u8[:] {
     var bc = core::cursor_from(body);
     let ver, ok_v = bc.read_u16();
     let _, ok_r = bc.read_bytes(32);
-    let _, ok_sid = bc.read_u8_prefixed();
+    let sid, ok_sid = bc.read_u8_prefixed();
     let cs_bytes, ok_cs = bc.read_u16_prefixed();
-    guard ok_v && ver == rfc::TLS_LEGACY_VERSION_1_2 && ok_r && ok_sid && ok_cs else {
+    let comp, ok_cm = bc.read_u8_prefixed();
+    let _, ok_ext = bc.read_u16_prefixed();
+    guard ok_v && ver == rfc::TLS_LEGACY_VERSION_1_2 && ok_r && ok_sid && sid.len <= 32 &&
+        ok_cs && ok_cm && comp.len >= 1 && ok_ext && bc.buf.len == 0 else {
         return raw;
     }
     return cs_bytes;
+}
+
+fn select_cipher_suite_from_list(cs_bytes: const u8[:]) -> u16, bool {
+    guard cs_bytes.len >= 2 && (cs_bytes.len & 1) == 0 else { return 0, false; }
+    var c = core::cursor_from(cs_bytes);
+    while c.buf.len >= 2 {
+        let cs, ok = c.read_u16();
+        guard ok else { return 0, false; }
+        if is_client_offered_tls13_suite(cs) {
+            return cs, true;
+        }
+    }
+    return 0, false;
 }
 
 // Negotiates a TLS 1.3 cipher suite from the client's offered cipher suite list or ClientHello (RFC 8446 §4.1.2).
@@ -2290,20 +2580,7 @@ fn ch_cipher_suites_slice(raw: const u8[:]) -> const u8[:] {
 //   raw = [0x13, 0x02, 0x13, 0x01]
 //   returns: cs = 0x1302, ok = true
 fn select_cipher_suite(raw: const u8[:]) -> u16, bool {
-    let cs_bytes = ch_cipher_suites_slice(raw);
-    guard cs_bytes.len >= 2 && (cs_bytes.len & 1) == 0 else { return 0, false; }
-    var c = core::cursor_from(cs_bytes);
-    while c.buf.len >= 2 {
-        let cs, ok = c.read_u16();
-        guard ok else { return 0, false; }
-        let is_supported = cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256 ||
-            cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384 ||
-            cs == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256;
-        if is_supported {
-            return cs, true;
-        }
-    }
-    return 0, false;
+    return select_cipher_suite_from_list(ch_cipher_suites_slice(raw));
 }
 
 fn has_forbidden_extension(entries: const TlsExtensionEntry[..32]&) -> bool {
@@ -2311,6 +2588,209 @@ fn has_forbidden_extension(entries: const TlsExtensionEntry[..32]&) -> bool {
         if rfc::is_forbidden_ch_extension(e.ext_type) { return true; }
     }
     return false;
+}
+
+// RFC 8446 Section 4.2.3: Signature Algorithms - Validates SignatureSchemeList syntax and required server scheme.
+fn validate_ch_sig_algorithms(sig_ext: const u8[:], required_scheme: u16) -> bool {
+    var c = core::cursor_from(sig_ext);
+    let list_bytes, ok = c.read_u16_prefixed();
+    guard ok && c.buf.len == 0 && list_bytes.len >= 2 && (list_bytes.len & 1) == 0 else { return false; }
+    var lc = core::cursor_from(list_bytes);
+    var has_supported = false;
+    while lc.buf.len >= 2 {
+        let scheme, ok_s = lc.read_u16();
+        guard ok_s else { return false; }
+        if required_scheme != 0 {
+            if scheme == required_scheme { has_supported = true; }
+        } else if scheme == rfc::SIG_SCHEME_ED25519 || scheme == rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
+            has_supported = true;
+        }
+    }
+    return has_supported;
+}
+
+inline fn group_bytes_contains(grp_bytes: const u8[:], target: u16) -> bool {
+    var gc = core::cursor_from(grp_bytes);
+    while gc.buf.len >= 2 {
+        let g, ok = gc.read_u16();
+        if ok && g == target { return true; }
+    }
+    return false;
+}
+
+// RFC 8446 Section 4.2.8: Key Share - Every KeyShareEntry group must appear in supported_groups in the same order.
+fn validate_ch_groups_and_shares(grp_ext: const u8[:], shares: const u8[:]) -> bool {
+    var c = core::cursor_from(grp_ext);
+    let grp_bytes, ok = c.read_u16_prefixed();
+    guard ok && c.buf.len == 0 && grp_bytes.len >= 2 && (grp_bytes.len & 1) == 0 else { return false; }
+    guard group_bytes_contains(grp_bytes, rfc::GROUP_X25519) else { return false; }
+
+    var sc = core::cursor_from(shares);
+    var gc = core::cursor_from(grp_bytes);
+    while sc.buf.len > 0 {
+        let ks_grp, ok_g = sc.read_u16();
+        let _, ok_k = sc.read_u16_prefixed();
+        guard ok_g && ok_k else { return false; }
+        var matched = false;
+        while gc.buf.len >= 2 && !matched {
+            let g, ok_grp = gc.read_u16();
+            matched = ok_grp && g == ks_grp;
+        }
+        guard matched else { return false; }
+    }
+    return true;
+}
+
+// Reads and validates ClientHello legacy version, random, session_id, cipher_suites, and compression_methods.
+//
+// Example:
+//   bc = [0x03, 0x03, ...32B random..., 0x00, 0x00, 0x02, 0x13, 0x01, 0x01, 0x00]
+//   returns: cs_bytes = [0x13, 0x01], ok = true
+fn decode_ch_legacy_preamble(bc: ByteCursor&, out_sid: u8[..32]&) -> const u8[:], bool {
+    out_sid.clear();
+    let ver, ok_v = bc.read_u16();
+    let _, ok_r = bc.read_bytes(32);
+    let sid, ok_sid = bc.read_u8_prefixed();
+    let cs_bytes, ok_cs = bc.read_u16_prefixed();
+    let comp_bytes, ok_cm = bc.read_u8_prefixed();
+    guard ok_v && ver == rfc::TLS_LEGACY_VERSION_1_2 && ok_r else { return "", false; }
+    guard ok_cs && ok_cm && comp_bytes.len == 1 && comp_bytes[0] == 0 else { return "", false; }
+    guard ok_sid && sid.len <= 32 && out_sid.try_set(sid) else { return "", false; }
+    return cs_bytes, true;
+}
+
+// Decodes ClientHello handshake framing, legacy preamble, selected cipher suite, and extension table.
+//
+// Example:
+//   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, ...0x13, 0x01...]
+//   returns: sel_cs = 0x1301, ok = true
+fn decode_ch_server_preamble(
+    payload:     const u8[:],
+    out_sid:     u8[..32]&,
+    out_entries: TlsExtensionEntry[..32]&,
+) -> u16, bool {
+    out_sid.clear();
+    out_entries.clear();
+    var committed = false;
+    defer if !committed {
+        out_sid.clear();
+        out_entries.clear();
+    };
+    var c = core::cursor_from(payload);
+    let hs_type, ok_t = c.read_u8();
+    let body, ok_b = c.read_u24_prefixed();
+    guard ok_t && hs_type == rfc::TLS_HS_CLIENT_HELLO && ok_b && c.buf.len == 0 else {
+        return 0, false;
+    }
+    var bc = core::cursor_from(body);
+    let cs_bytes, ok_leg = decode_ch_legacy_preamble(bc, out_sid);
+    guard ok_leg else { return 0, false; }
+    let sel_cs, ok_sel = select_cipher_suite_from_list(cs_bytes);
+    guard ok_sel && parse_extensions_block(bc.buf, out_entries) && !has_forbidden_extension(out_entries) else {
+        return 0, false;
+    }
+    committed = true;
+    return sel_cs, true;
+}
+
+// Validates mandatory TLS 1.3 ClientHello extensions and extracts the client X25519 share and sig_algs slice.
+//
+// Example:
+//   entries = [supported_versions, signature_algorithms, supported_groups, key_share]
+//   returns: sig_ext, ok = true, out_client_pub = [32 bytes]
+fn extract_ch_mandatory_exts(
+    entries:        const TlsExtensionEntry[..32]&,
+    out_client_pub: u8[32]&,
+) -> const u8[:], bool {
+    core::secure_zeroize_32(out_client_pub);
+    let sv_ext, has_sv = find_extension(entries, rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    guard has_sv else { return "", false; }
+    let supports_13, ok_sv = parse_client_supported_versions(sv_ext);
+    guard ok_sv && supports_13 else { return "", false; }
+
+    let sig_ext, has_sig = find_extension(entries, rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
+    guard has_sig && validate_ch_sig_algorithms(sig_ext, 0) else { return "", false; }
+
+    let grp_ext, has_grp = find_extension(entries, rfc::TLS_EXT_SUPPORTED_GROUPS);
+    let ks_data, has_ks = find_extension(entries, rfc::TLS_EXT_KEY_SHARE);
+    guard has_grp && has_ks else { return "", false; }
+    var shares: u8[..4096] = [];
+    guard parse_key_share_client_extension(ks_data, shares) &&
+        validate_ch_groups_and_shares(grp_ext, shares[..]) &&
+        extract_x25519_client_share(shares[..], out_client_pub) else {
+        core::secure_zeroize_32(out_client_pub);
+        return "", false;
+    }
+    return sig_ext, true;
+}
+
+// Parses a TLS 1.3 ClientHello message for server-side negotiation (RFC 8446 Section 4.1.2).
+//
+// Example:
+//   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, ...0x13, 0x01...]
+//   returns: true, out_cipher_suite = 0x1301
+fn parse_client_hello_for_server_full<A>(
+    payload:             const u8[:],
+    server_alpn_csv:     const u8[:],
+    required_sig_scheme: u16,
+    out_session_id:      u8[..32]&,
+    out_client_pub:      u8[32]&,
+    out_alpn:            A&,
+    out_sni:             u8[..255]&,
+    out_cipher_suite:    u16&,
+    out_psk_resumed:     bool&,
+    out_psk_secret:      u8[..48]&,
+    out_selected_psk_id: u16&,
+) -> bool {
+    out_session_id.clear();
+    core::secure_zeroize_32(out_client_pub);
+    out_alpn.clear();
+    out_sni.clear();
+    out_cipher_suite = 0;
+    out_psk_resumed = false;
+    core::secure_zeroize_slice(out_psk_secret[..]);
+    out_psk_secret.clear();
+    out_selected_psk_id = 0;
+    var committed = false;
+    defer if !committed {
+        out_session_id.clear();
+        core::secure_zeroize_32(out_client_pub);
+        out_alpn.clear();
+        out_sni.clear();
+        out_cipher_suite = 0;
+        out_psk_resumed = false;
+        core::secure_zeroize_slice(out_psk_secret[..]);
+        out_psk_secret.clear();
+        out_selected_psk_id = 0;
+    };
+
+    var entries: TlsExtensionEntry[..32] = [];
+    let sel_cs, ok_pre = decode_ch_server_preamble(payload, out_session_id, entries);
+    guard ok_pre else { return false; }
+    let sig_ext, ok_mand = extract_ch_mandatory_exts(entries, out_client_pub);
+    guard ok_mand else { return false; }
+
+    let sni_ext, has_sni = find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
+    if has_sni {
+        guard parse_sni_extension(sni_ext, out_sni) else { return false; }
+    }
+    let alpn_ext, has_alpn = find_extension(entries, rfc::TLS_EXT_ALPN);
+    if has_alpn {
+        guard select_server_alpn_from_ext(alpn_ext, server_alpn_csv, out_alpn) else { return false; }
+    }
+    let psk_ext, has_psk = find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
+    if has_psk {
+        guard verify_client_hello_psk_entry_full(
+            entries, payload, psk_ext, sel_cs, out_psk_secret, out_selected_psk_id,
+        ) else { return false; }
+        out_psk_resumed = true;
+    }
+    if !out_psk_resumed && required_sig_scheme != 0 {
+        guard validate_ch_sig_algorithms(sig_ext, required_sig_scheme) else { return false; }
+    }
+    out_cipher_suite = sel_cs;
+    committed = true;
+    return true;
 }
 
 // Parses ClientHello payload for server handshake, extracting session ID,
@@ -2329,66 +2809,19 @@ fn parse_client_hello_for_server_sni(
     out_psk_resumed: bool&,
     out_psk_secret:  u8[32]&,
 ) -> bool {
-    out_alpn.clear();
-    out_sni.clear();
-    out_psk_resumed = false;
-    var c = core::cursor_from(payload);
-    let hs_type, ok_t = c.read_u8();
-    guard ok_t && hs_type == rfc::TLS_HS_CLIENT_HELLO else { return false; }
-    let body, ok_b = c.read_u24_prefixed();
-    guard ok_b && c.buf.len == 0 else { return false; }
-
-    var bc = core::cursor_from(body);
-    let ver, ok_v = bc.read_u16();
-    guard ok_v && ver == rfc::TLS_LEGACY_VERSION_1_2 else { return false; }
-    let _, ok_r = bc.read_bytes(32);
-    guard ok_r else { return false; }
-
-    let sid, ok_sid = bc.read_u8_prefixed();
-    guard ok_sid && sid.len <= 32 else { return false; }
-    let cs_bytes, ok_cs = bc.read_u16_prefixed();
-    let _, ok_sel_cs = select_cipher_suite(cs_bytes);
-    guard ok_cs && ok_sel_cs else { return false; }
-    let comp_bytes, ok_cm = bc.read_u8_prefixed();
-    guard ok_cm && comp_bytes.len == 1 && comp_bytes[0] == 0 else { return false; }
-
-    var entries: TlsExtensionEntry[..32] = [];
-    guard parse_extensions_block(bc.buf, entries) else { return false; }
-    guard !has_forbidden_extension(entries) else { return false; }
-
-    let sv_ext, has_sv = find_extension(entries, rfc::TLS_EXT_SUPPORTED_VERSIONS);
-    guard has_sv else { return false; }
-    let supports_13, ok_sv = parse_client_supported_versions(sv_ext);
-    guard ok_sv && supports_13 else { return false; }
-
-    let _, has_sig = find_extension(entries, rfc::TLS_EXT_SIGNATURE_ALGORITHMS);
-    guard has_sig else { return false; }
-
-    let _, has_grp = find_extension(entries, rfc::TLS_EXT_SUPPORTED_GROUPS);
-    guard has_grp else { return false; }
-
-    let sni_ext, has_sni = find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
-    if has_sni {
-        guard parse_sni_extension(sni_ext, out_sni) else { return false; }
+    core::secure_zeroize_32(out_psk_secret);
+    var full_psk: u8[..48] = [];
+    defer core::secure_zeroize_slice(full_psk[..]);
+    var sel_cs: u16 = 0;
+    var sel_id: u16 = 0;
+    guard parse_client_hello_for_server_full(
+        payload, server_alpn_csv, 0, out_session_id, out_client_pub,
+        out_alpn, out_sni, sel_cs, out_psk_resumed, full_psk, sel_id,
+    ) else { return false; }
+    if out_psk_resumed && full_psk.len >= 32 {
+        core::ct_copy_bytes(out_psk_secret[..], full_psk[0..32]);
     }
-
-    let ks_data, has_ks = find_extension(entries, rfc::TLS_EXT_KEY_SHARE);
-    guard has_ks else { return false; }
-    var shares: u8[..4096] = [];
-    guard parse_key_share_client_extension(ks_data, shares) &&
-        extract_x25519_client_share(shares[..], out_client_pub) else { return false; }
-
-    let alpn_ext, has_alpn = find_extension(entries, rfc::TLS_EXT_ALPN);
-    if has_alpn {
-        guard select_server_alpn_from_ext(alpn_ext, server_alpn_csv, out_alpn) else { return false; }
-    }
-
-    let psk_ext, has_psk = find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
-    if has_psk {
-        guard verify_client_hello_psk_entry(entries, payload, psk_ext, out_psk_secret) else { return false; }
-        out_psk_resumed = true;
-    }
-    return out_session_id.try_set(sid);
+    return true;
 }
 
 // Parses ClientHello payload for server handshake, extracting session ID, client X25519 key share, ALPN, and PSK.
@@ -2414,12 +2847,13 @@ fn parse_client_hello_for_server(
 
 // Builds a minimal TLS 1.3 ServerHello wire payload echoing session ID and offering X25519 share.
 fn build_tls13_server_hello_payload<B>(
-    server_random: const u8[32]&,
-    session_id:    const u8[:],
-    server_pub:    const u8[32]&,
-    out:           B&,
-    psk_resumed:   bool = false,
-    cipher_suite:  u16  = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+    server_random:   const u8[32]&,
+    session_id:      const u8[:],
+    server_pub:      const u8[32]&,
+    out:             B&,
+    psk_resumed:     bool = false,
+    cipher_suite:    u16  = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+    selected_psk_id: u16  = 0,
 ) {
     out.clear();
     out.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
@@ -2438,7 +2872,7 @@ fn build_tls13_server_hello_payload<B>(
     if psk_resumed {
         ext_buf.append_u16_be(rfc::TLS_EXT_PRE_SHARED_KEY);
         ext_buf.append_u16_be(2);
-        ext_buf.append_u16_be(0);
+        ext_buf.append_u16_be(selected_psk_id);
     }
     out.append_u16_be(ext_buf.len as u16);
     out.append(ext_buf[..]);
@@ -2495,11 +2929,11 @@ fn tls_server_send_ee(
     negotiated_alpn: const u8[:],
     transcript:      TlsTranscript&,
 ) -> bool {
-    var ee_ext: u8[..128] = [];
+    var ee_ext: u8[..264] = [];
     if negotiated_alpn.len > 0 {
         encode_alpn_extension_from_csv(ee_ext, negotiated_alpn);
     }
-    var ee_msg: u8[..160] = [];
+    var ee_msg: u8[..280] = [];
     ee_msg.push(rfc::TLS_HS_ENCRYPTED_EXTENSIONS);
     ee_msg.append_u24_be((2 + ee_ext.len) as u32);
     ee_msg.append_u16_be(ee_ext.len as u16);
@@ -2532,7 +2966,7 @@ fn select_server_cert_comp_algo(ch_msg: const u8[:], server_algo: u16) -> u16 {
     guard parse_extensions_block(bc.buf, entries) else { return 0; }
     let comp_ext, has_comp = find_extension(entries, rfc::TLS_EXT_COMPRESS_CERTIFICATE);
     guard has_comp else { return 0; }
-    var algos: u16[..8] = [];
+    var algos: u16[..127] = [];
     guard parse_compress_certificate_ext(comp_ext, algos) else { return 0; }
     if algos.contains(server_algo) {
         return server_algo;
@@ -2692,22 +3126,20 @@ fn tls_server_handshake_with_ch(
     var transcript = TlsTranscript { .. };
     transcript_update(transcript, ch_msg);
 
-    var session_id:  u8[..32]  = [];
-    var client_pub:  u8[32]    = [0; 32];
-    var neg_alpn:    u8[..32]  = [];
-    var client_sni:  u8[..255] = [];
-    var psk_resumed: bool      = false;
-    var psk_secret:  u8[32]    = [0; 32];
-    defer core::secure_zeroize_32(psk_secret);
-    guard parse_client_hello_for_server_sni(
-        ch_msg, config.alpn[..], session_id, client_pub,
-        neg_alpn, client_sni, psk_resumed, psk_secret,
+    var session_id:      u8[..32]  = [];
+    var client_pub:      u8[32]    = [0; 32];
+    var neg_alpn:        u8[..255] = [];
+    var client_sni:      u8[..255] = [];
+    var cipher_suite:    u16       = 0;
+    var psk_resumed:     bool      = false;
+    var psk_secret:      u8[..48]  = [];
+    var selected_psk_id: u16       = 0;
+    defer core::secure_zeroize_slice(psk_secret[..]);
+    let req_sig = detect_cert_sig_scheme(config.cert_der[..]);
+    guard parse_client_hello_for_server_full(
+        ch_msg, config.alpn[..], req_sig, session_id, client_pub,
+        neg_alpn, client_sni, cipher_suite, psk_resumed, psk_secret, selected_psk_id,
     ) else {
-        free_tls_cipher_slot(slot_idx);
-        return 0xFFFF, false;
-    }
-    let cipher_suite, ok_cs = select_cipher_suite(ch_msg);
-    guard ok_cs else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -2727,7 +3159,8 @@ fn tls_server_handshake_with_ch(
 
     var sh_payload: u8[..2048] = [];
     build_tls13_server_hello_payload(
-        server_random, session_id[..], server_pub, sh_payload, psk_resumed, cipher_suite,
+        server_random, session_id[..], server_pub, sh_payload,
+        psk_resumed, cipher_suite, selected_psk_id,
     );
     var sh_msg: u8[..2048] = [];
     sh_msg.push(rfc::TLS_HS_SERVER_HELLO);

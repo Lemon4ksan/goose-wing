@@ -117,7 +117,7 @@ fn test_jws_unencoded_b64_false() {
     var hdr_b64: u8[..256] = [];
     core::base64url_encode(hdr_json[..], hdr_b64);
 
-    let raw_payload = "$.02.raw.payload.with.dots";
+    let raw_payload = "$02_raw_payload_without_dots";
     let secret = "0123456789abcdef0123456789abcdef";
     var signing_in: u8[..512] = [];
     signing_in.append(hdr_b64[..]);
@@ -131,18 +131,37 @@ fn test_jws_unencoded_b64_false() {
 
     assert(wing::verify_jws_unencoded_hs256(token[..], secret));
     assert(!wing::verify_jws_unencoded_hs256(token[..], "wrong_secret_key_0123456789abcdef"));
+
+    // RFC 7797 §5.2 & RFC 7515 §3.1: '.' inside unencoded compact payload must be rejected
+    var bad_in: u8[..512] = [];
+    bad_in.append(hdr_b64[..]);
+    bad_in.push('.');
+    bad_in.append("$.02.raw.payload.with.dots");
+    let bad_mac = core::hmac_sha256(secret, bad_in[..]);
+    var bad_tok: u8[..512] = [];
+    bad_tok.append(bad_in[..]);
+    bad_tok.push('.');
+    core::base64url_encode(bad_mac[..], bad_tok);
+    assert(!wing::verify_jws_unencoded_hs256(bad_tok[..], secret));
     print("AUTHJOSE_02_JWS_B64_FALSE: PASS");
 }
 
 fn test_jwks_x5c_x5t_and_key_ops() {
-    let der_leaf = "0123456789abcdef";
-    var x5c_b64: u8[..64] = [];
-    core::base64_encode(der_leaf, x5c_b64);
-    let dig = core::sha256(der_leaf);
+    let ed_seed: u8[32] = [
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60,
+        0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c, 0xc4,
+        0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19,
+        0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60,
+    ];
+    var der_leaf: u8[..2048] = [];
+    assert(wing::build_test_ed25519_cert_der(ed_seed, "auth.example.com", "auth.example.com", "", der_leaf));
+    var x5c_b64: u8[..1024] = [];
+    core::base64_encode(der_leaf[..], x5c_b64);
+    let dig = core::sha256(der_leaf[..]);
     var x5t_b64u: u8[..44] = [];
     core::base64url_encode(dig[..], x5t_b64u);
 
-    var jwks_doc: u8[..512] = [];
+    var jwks_doc: u8[..1536] = [];
     jwks_doc.append("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"k1\",\"key_ops\":[\"verify\"],\"x5c\":[\"");
     jwks_doc.append(x5c_b64[..]);
     jwks_doc.append("\"],\"x5t#S256\":\"");
@@ -155,8 +174,13 @@ fn test_jwks_x5c_x5t_and_key_ops() {
     assert((jwks.keys[0].key_ops & wing::JWK_OP_VERIFY) != 0);
     assert(jwks.keys[0].x5t_s256[..] == x5t_b64u[..]);
 
+    // Non-PKIX stub in x5c[0] must fail parsing per RFC 7517 §4.7
+    let stub_doc = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"x5c\":[\"MDEyMzQ1Njc4OWFiY2RlZg==\"]}]}";
+    var stub_jwks = wing::Jwks { .. };
+    assert(!wing::parse_jwks_json(stub_doc, stub_jwks));
+
     // Mismatched x5t#S256 must fail parsing
-    var bad_doc: u8[..512] = [];
+    var bad_doc: u8[..1536] = [];
     bad_doc.append("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"x5c\":[\"");
     bad_doc.append(x5c_b64[..]);
     bad_doc.append("\"],\"x5t#S256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}]}");
@@ -411,18 +435,21 @@ fn test_acme_pkce_dpop_jwks_seams() {
     // 12. ACME (RFC 8555 §8.1 & §8.3): acme_find_challenge rejects mismatched/corrupt key_auth slot
     // and clears out buffers on acme_key_authorization / acme_http01_path failure
     var acme_table: wing::AcmeChallenge[..8] = [];
-    acme_table.push(wing::AcmeChallenge { token: "tok1", key_auth: "other.TP", key_auth_len: 8 });
-    acme_table.push(wing::AcmeChallenge { token: "tok1", key_auth: "tok1.bad/tp", key_auth_len: 11 });
-    acme_table.push(wing::AcmeChallenge { token: "tok1", key_auth: "tok1.TP", key_auth_len: 4 });
-    acme_table.push(wing::AcmeChallenge { token: "tok1", key_auth: "tok1.ValidTP", key_auth_len: 12 });
+    let acme_tok = "LoqXcYV8q5ONbJQxbmR7SC";
+    let acme_tp = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs";
+    let acme_ka = "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs";
+    acme_table.push(wing::AcmeChallenge { token: acme_tok, key_auth: "other_token_0123456789.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs", key_auth_len: 66 });
+    acme_table.push(wing::AcmeChallenge { token: acme_tok, key_auth: "LoqXcYV8q5ONbJQxbmR7SC.bad/thumbprint_0123456789012345678901234567", key_auth_len: 66 });
+    acme_table.push(wing::AcmeChallenge { token: acme_tok, key_auth: "LoqXcYV8q5ONbJQxbmR7SC.ShortTP", key_auth_len: 30 });
+    acme_table.push(wing::AcmeChallenge { token: acme_tok, key_auth: acme_ka, key_auth_len: 66 });
     var acme_body: u8[..256] = [];
     var acme_len:  i32       = 0;
-    let found_acme = wing::acme_find_challenge(acme_table, "/.well-known/acme-challenge/tok1", acme_body, acme_len);
+    let found_acme = wing::acme_find_challenge(acme_table, "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SC", acme_body, acme_len);
     var acme_out: u8[..256] = "stale_key_auth";
-    let bad_ka = wing::acme_key_authorization("bad/tok", "TP", acme_out);
+    let bad_ka = wing::acme_key_authorization("bad/tok", acme_tp, acme_out);
     var acme_path: u8[..128] = "stale_path";
-    let bad_hp = wing::acme_http01_path("bad/tok", acme_path);
-    let r18 = found_acme && acme_len == 12 && acme_body[..] == "tok1.ValidTP" &&
+    let bad_hp = wing::acme_http01_path("short_tok", acme_path);
+    let r18 = found_acme && acme_len == 66 && acme_body[..] == acme_ka &&
               bad_ka == -1 && acme_out.len == 0 && bad_hp == -1 && acme_path.len == 0;
 
     // 13. PKCE (RFC 7636 §4.2): compute_code_challenge clears out on failure & create_pkce_pair clears method on error
@@ -1082,42 +1109,44 @@ fn run_08_rfc_repro_auth_pkce_edge() {
 
     // ---- 5. RFC 8555 §8.1 & §8.3 ACME Challenge Primitives ----------------
     var key_auth: u8[..256] = [];
-    let tok = "LoGraphic_Token-123";
-    let thumb = "kda76_thumbprint-456";
+    let tok = "LoqXcYV8q5ONbJQxbmR7SC";
+    let thumb = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs";
     let auth_len = wing::acme_key_authorization(tok, thumb, key_auth);
-    assert(auth_len > 0);
-    assert(key_auth[..] == "LoGraphic_Token-123.kda76_thumbprint-456");
+    assert(auth_len == 66);
+    assert(key_auth[..] == "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
 
-    // ACME token traversal attempts rejected
+    // ACME token traversal and < 128-bit entropy attempts rejected
     assert(!wing::acme_validate_token("../secret"));
-    assert(!wing::acme_validate_token("token.with.dot"));
-    assert(!wing::acme_validate_token("token/slash"));
-    assert(!wing::acme_validate_token("token with space"));
+    assert(!wing::acme_validate_token("token.with.dot.long22c"));
+    assert(!wing::acme_validate_token("token/slash/long22char"));
+    assert(!wing::acme_validate_token("token with space 22chr"));
+    assert(!wing::acme_validate_token("short_21_char_token_1"));
     assert(!wing::acme_validate_token(""));
 
     // ACME HTTP-01 matching
     var acme_table: wing::AcmeChallenge[..8] = [];
     var ch_entry = wing::AcmeChallenge {
-        token:        "challenge_tok_1",
-        key_auth:     "challenge_tok_1.account_tp",
-        key_auth_len: 26,
+        token:        "LoqXcYV8q5ONbJQxbmR7SC",
+        key_auth:     "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        key_auth_len: 66,
     };
     acme_table.push(ch_entry);
 
     var out_resp: u8[..256] = [];
     var out_len:  i32       = 0;
-    assert(wing::acme_find_challenge(acme_table, "/.well-known/acme-challenge/challenge_tok_1", out_resp, out_len));
-    assert(out_len == 26);
-    assert(out_resp[..] == "challenge_tok_1.account_tp");
+    assert(wing::acme_find_challenge(acme_table, "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SC", out_resp, out_len));
+    assert(out_len == 66);
+    assert(out_resp[..] == "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
 
     // Path traversal or mismatched path rejected
-    assert(!wing::acme_find_challenge(acme_table, "/.well-known/acme-challenge/../other", out_resp, out_len));
-    assert(!wing::acme_find_challenge(acme_table, "/api/v1/challenge_tok_1", out_resp, out_len));
+    assert(!wing::acme_find_challenge(acme_table, "/.well-known/acme-challenge/../LoqXcYV8q5ONbJQxbmR7SC", out_resp, out_len));
+    assert(!wing::acme_find_challenge(acme_table, "/api/v1/LoqXcYV8q5ONbJQxbmR7SC", out_resp, out_len));
 
     // ---- 6. ACME Thumbprint Validation & PKCE Small Buffer Bounds ----------
     assert(wing::acme_key_authorization(tok, "", key_auth) == -1);
-    assert(wing::acme_key_authorization(tok, "bad/thumbprint", key_auth) == -1);
-    assert(wing::acme_key_authorization(tok, "bad.thumbprint", key_auth) == -1);
+    assert(wing::acme_key_authorization(tok, "short_thumbprint_20c", key_auth) == -1);
+    assert(wing::acme_key_authorization(tok, "bad/thumbprint_0123456789012345678901234567", key_auth) == -1);
+    assert(wing::acme_key_authorization(tok, "bad.thumbprint_0123456789012345678901234567", key_auth) == -1);
 
     var tiny_buf: u8[..32] = [];
     assert(!wing::compute_code_challenge(rfc_verifier, "S256", tiny_buf));

@@ -1636,7 +1636,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: lit::T&) {
     };
 
     t.run("RFC 7517 §4.4: Oct key in JWKS omitting optional alg parameter verifies HS256 token") { sub =>
-        let jwk_sym = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\",\"kid\":\"sym-no-alg\"}]}";
+        let jwk_sym = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\",\"kid\":\"sym-no-alg\"}]}";
         var jwks_sym = wing::Jwks { .. };
         let ok_sym = wing::parse_jwks_json(jwk_sym, jwks_sym);
         sub.assert_true(ok_sym, "JWKS parsed");
@@ -1649,7 +1649,7 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: lit::T&) {
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, "secret-sym-key-16bytes", token);
+        wing::sign_jwt_hmac(hdr, clm, "0123456789abcdef0123456789abcdef", token);
 
         var out_h = wing::new_jwt_header();
         var out_c = wing::JwtClaims { .. };

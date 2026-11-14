@@ -204,10 +204,11 @@ fn parse_ws_frame_header(src: const u8[:]) -> WsFrameHeader, bool {
     return hdr, true;
 }
 
-// Encodes RFC 6455 Frame Header
-fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
+// Encodes an RFC 6455 frame header into `out`, rolling back on insufficient capacity.
+fn try_encode_ws_header<B>(hdr: const WsFrameHeader&, out: B&) -> bool {
+    var hdr_buf: u8[..14] = [];
     let eff_fin = if rfc::is_ws_control_opcode(hdr.opcode) { true } else { hdr.fin };
-    out.push(pack_ws_frame_b0(hdr, eff_fin));
+    hdr_buf.push(pack_ws_frame_b0(hdr, eff_fin));
 
     let mask_bit: u8 = if hdr.masked { WS_MASK_BIT } else { 0x00 };
 
@@ -219,30 +220,35 @@ fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
     };
 
     if eff_len <= WS_MAX_CONTROL_LEN {
-        out.push(mask_bit | (eff_len as u8));
+        hdr_buf.push(mask_bit | (eff_len as u8));
     } else if eff_len <= 65535 {
-        out.push(mask_bit | 126);
-        out.append_u16_be(eff_len as u16);
+        hdr_buf.push(mask_bit | 126);
+        hdr_buf.append_u16_be(eff_len as u16);
     } else {
-        out.push(mask_bit | 127);
-        out.append_u64_be(eff_len);
+        hdr_buf.push(mask_bit | 127);
+        hdr_buf.append_u64_be(eff_len);
     }
 
     if hdr.masked {
-        out.append(hdr.mask_key[..]);
+        hdr_buf.append(hdr.mask_key[..]);
     }
+    return out.try_append(hdr_buf[..]);
 }
 
-// High-level frame serializer: writes header + payload (masked if is_client)
-fn encode_ws_frame<B>(
+// Encodes RFC 6455 Frame Header
+fn encode<B>(hdr: const WsFrameHeader&, out: B&) {
+    let _ = try_encode_ws_header(hdr, out);
+}
+
+// Serializes an RFC 6455 frame (header + optional masked payload) with atomic rollback on overflow.
+fn try_encode_ws_frame<B>(
     out:       B&,
     opcode:    u8,
     payload:   const u8[:],
     is_client: bool        = true,
     mask_key:  const u8[4] = [0 as u8; 4],
     fin:       bool        = true,
-) {
-    // RFC 6455 §5.5: Control frames MUST NOT exceed 125 bytes and MUST NOT be fragmented
+) -> bool {
     let eff_payload = if rfc::is_ws_control_opcode(opcode) && payload.len > 125 { payload[..125] } else { payload };
     let eff_fin = if rfc::is_ws_control_opcode(opcode) { true } else { fin };
 
@@ -254,13 +260,30 @@ fn encode_ws_frame<B>(
         payload_len: eff_payload.len as u64,
         ..
     };
-    hdr.encode(out);
+    let saved_len = out.len;
+    guard try_encode_ws_header(hdr, out) else { return false; }
 
     let payload_start = out.len;
-    out.append(eff_payload);
+    guard out.try_append(eff_payload) else {
+        out.resize(saved_len);
+        return false;
+    }
     if is_client {
         mask_websocket_payload(out[payload_start..out.len], mask_key);
     }
+    return true;
+}
+
+// High-level frame serializer: writes header + payload (masked if is_client)
+fn encode_ws_frame<B>(
+    out:       B&,
+    opcode:    u8,
+    payload:   const u8[:],
+    is_client: bool        = true,
+    mask_key:  const u8[4] = [0 as u8; 4],
+    fin:       bool        = true,
+) {
+    let _ = try_encode_ws_frame(out, opcode, payload, is_client, mask_key, fin);
 }
 
 // Computes exact WebSocket frame wire length including header, extended length, mask key, and payload
@@ -274,7 +297,7 @@ fn calc_ws_frame_len(payload_len: u64, is_client: bool) -> u64 {
 
 // Encodes a Close frame payload (2-byte status code + optional UTF-8 reason)
 fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
-    out.append_u16_be(status_code);
+    guard rfc::is_valid_ws_close_code(status_code) else { return; }
     // RFC 6455 §5.5 & §5.5.1 / uWS #1407: Control frame payload must NOT exceed 125 bytes.
     // Close payload contains 2-byte status code, so reason is clamped to at most 123 bytes.
     var eff_len = min(reason.len, 123);
@@ -285,7 +308,14 @@ fn encode_close_payload<B>(out: B&, status_code: u16, reason: const u8[:]) {
             eff_len = core::sub_sat_i64(eff_len, 1);
         }
     }
-    out.append(reason[..eff_len]);
+    let reason_slice = reason[..eff_len];
+    guard reason_slice.len == 0 || reason_slice.validate_utf8() else { return; }
+
+    var code_be: u8[2] = [((status_code >> 8) & 0xFF) as u8, (status_code & 0xFF) as u8];
+    let saved_len = out.len;
+    if !out.try_append(code_be[..]) || !out.try_append(reason_slice) {
+        out.resize(saved_len);
+    }
 }
 
 // Parses a Close frame payload into (status_code, reason_slice, ok)
@@ -351,6 +381,7 @@ struct WebSocketSession {
     mask_rng_state:     u32      = 0x9E3779B9, // Fast linear congruential PRNG for 4-byte client masking keys
 
     // Multi-frame fragmented message assembly (RFC 6455 §5.4 & RFC 7692 §5.1)
+    tx_fragmented:    bool        = false, // Outbound fragmented message currently in flight
     frag_opcode:      u8          = 0,     // 0 if no active fragmentation; WS_OPCODE_TEXT or WS_OPCODE_BINARY
     frag_compressed:  bool        = false, // RFC 7692: remembers if initial fragment had RSV1 set
     frag_utf8_offset: i64         = 0,     // Validated UTF-8 prefix byte offset across streaming fragments
@@ -639,7 +670,7 @@ fn build_handshake_request<B>(
 // High-level method: sends UTF-8 text message
 fn send_text<B>(ws: WebSocketSession&, text: const u8[:], out: B&) {
     // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing message writes
-    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received && !ws.tx_fragmented else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_TEXT, text, ws.is_client, mask, true);
 }
@@ -652,6 +683,7 @@ fn send_text_with_status<B>(
     compress: bool = false,
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
     let frame_len = calc_ws_frame_len(text.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
@@ -671,6 +703,7 @@ fn send_text_compressed_with_status<B>(
     compress:    bool = true,
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
 
     if compress && ws.permessage_deflate && text.len > 0 {
@@ -699,7 +732,7 @@ fn send_text_compressed_with_status<B>(
 // High-level method: sends binary message
 fn send_binary<B>(ws: WebSocketSession&, data: const u8[:], out: B&) {
     // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing message writes
-    guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
+    guard !ws.is_closed && !ws.close_sent && !ws.close_received && !ws.tx_fragmented else { return; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_BINARY, data, ws.is_client, mask, true);
 }
@@ -712,6 +745,7 @@ fn send_binary_with_status<B>(
     compress: bool = false,
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
     let frame_len = calc_ws_frame_len(data.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
@@ -731,6 +765,7 @@ fn send_binary_compressed_with_status<B>(
     compress:    bool = true,
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
+    guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
 
     if compress && ws.permessage_deflate && data.len > 0 {
@@ -776,8 +811,15 @@ fn send_pong<B>(ws: WebSocketSession&, pong_payload: const u8[:], out: B&) {
 // High-level method: sends a fragmented message frame (initial or continuation fragment)
 fn send_fragment<B>(ws: WebSocketSession&, opcode: u8, payload: const u8[:], fin: bool, out: B&) {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
+    if ws.tx_fragmented {
+        guard opcode == rfc::WS_OPCODE_CONTINUATION else { return; }
+    } else {
+        guard opcode == rfc::WS_OPCODE_TEXT || opcode == rfc::WS_OPCODE_BINARY else { return; }
+    }
     let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
-    encode_ws_frame(out, opcode, payload, ws.is_client, mask, fin);
+    if try_encode_ws_frame(out, opcode, payload, ws.is_client, mask, fin) {
+        ws.tx_fragmented = !fin;
+    }
 }
 
 // High-level method: initiates active Close handshake (half-closed CloseSent state) and records timestamp

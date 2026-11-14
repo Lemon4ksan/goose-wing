@@ -301,12 +301,13 @@ fn parse_akamai_priorities(prio_part: const u8[:], fp: AkamaiFingerprint&) -> bo
 //   pseudo_part = "m,a,s,p"
 //   appends: ['m', 'a', 's', 'p'] to fp.pseudo_headers, returns: true
 fn parse_akamai_pseudo_headers(pseudo_part: const u8[:], fp: AkamaiFingerprint&) -> bool {
-    guard pseudo_part.len > 0 else { return true; }
+    guard pseudo_part.len > 0 else { return false; }
     let saved_len = fp.pseudo_headers.len;
     var committed = false;
     defer if !committed { fp.pseudo_headers.resize(saved_len); };
 
     var expect_char = true;
+    var saw_method = false;
     for b in pseudo_part {
         if b == ' ' {
             continue;
@@ -321,9 +322,12 @@ fn parse_akamai_pseudo_headers(pseudo_part: const u8[:], fp: AkamaiFingerprint&)
             guard existing != b else { return false; }
         }
         guard fp.pseudo_headers.try_push(b) else { return false; }
+        if b == 'm' {
+            saw_method = true;
+        }
         expect_char = false;
     }
-    guard !expect_char else { return false; }
+    guard !expect_char && saw_method else { return false; }
     committed = true;
     return true;
 }
@@ -451,7 +455,10 @@ fn process_akamai_settings_frame(
     payload: const u8[:],
     fp:      AkamaiFingerprint&,
 ) -> bool {
-    guard (hdr.length % 6) == 0 else { return false; }
+    let is_settings_frame = hdr.stream_id == 0 && (hdr.flags & rfc::H2_FLAG_ACK) == 0;
+    guard is_settings_frame && (hdr.length % 6) == 0 && (payload.len as u32) == hdr.length else {
+        return false;
+    }
     let saved_len = fp.settings.len;
     var committed = false;
     defer if !committed { fp.settings.resize(saved_len); };
@@ -473,6 +480,9 @@ fn process_akamai_priority_frame(
     payload: const u8[:],
     fp:      AkamaiFingerprint&,
 ) -> bool {
+    guard hdr.stream_id > 0 && hdr.length == 5 && payload.len == 5 else {
+        return false;
+    }
     var cur = core::cursor_from(payload);
     let raw_dep, ok_dep = cur.read_u32();
     let raw_weight, ok_w = cur.read_u8();
@@ -480,7 +490,7 @@ fn process_akamai_priority_frame(
     let exclusive = ((raw_dep >> 31) & 1) as u8;
     let dep_id = raw_dep & H2_MAX_STREAM_ID;
     let weight = core::add_sat_u64(raw_weight, 1) as u16;
-    guard hdr.stream_id > 0 && hdr.stream_id != dep_id else {
+    guard hdr.stream_id != dep_id else {
         return false;
     }
     return fp.priority_frames.try_push(AkamaiPriorityFrame {
@@ -511,23 +521,25 @@ fn extract_akamai_from_wire(
 
     var cur = core::cursor_from(rem);
     var found_settings = false;
+    var ended_on_request_frame = false;
 
     while cur.cursor_len() >= 9 {
         let hdr, err = internal::parse_frame_header(cur.buf);
         if err != rfc::H2_ERR_NO_ERROR || internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR {
             return AkamaiFingerprint { .. }, false;
         }
-        let frame_total_len = core::add_sat_i64(9, hdr.length);
-        guard cur.cursor_len() >= frame_total_len else { break; }
-
         // Connection handshake phase ends on first HEADERS or DATA frame
         if hdr.frame_type == rfc::H2_FRAME_HEADERS || hdr.frame_type == rfc::H2_FRAME_DATA {
+            ended_on_request_frame = true;
             break;
         }
 
+        let frame_total_len = core::add_sat_i64(9, hdr.length);
+        guard cur.cursor_len() >= frame_total_len else { return AkamaiFingerprint { .. }, false; }
+
         let _, _ = cur.read_bytes(9);
         let payload, ok_pay = cur.read_bytes(hdr.length);
-        guard ok_pay else { break; }
+        guard ok_pay else { return AkamaiFingerprint { .. }, false; }
 
         // SETTINGS Frame (Type 0x04) on Stream 0 (non-ACK)
         if hdr.frame_type == rfc::H2_FRAME_SETTINGS && hdr.stream_id == 0 && (hdr.flags & rfc::H2_FLAG_ACK) == 0 {
@@ -550,6 +562,9 @@ fn extract_akamai_from_wire(
         }
     }
 
+    guard ended_on_request_frame || cur.cursor_len() == 0 else {
+        return AkamaiFingerprint { .. }, false;
+    }
     guard found_settings && parse_akamai_pseudo_headers(pseudo_headers_order, fp) else {
         return AkamaiFingerprint { .. }, false;
     }
@@ -559,55 +574,93 @@ fn extract_akamai_from_wire(
 
 // ---- Wire Framing Egress Generator ---------------------------------------
 
-// Serializes the exact HTTP/2 wire frames corresponding to this Akamai fingerprint.
-fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
-    // 1. SETTINGS Frame (Stream 0)
-    let settings_payload_len = core::mul_sat_u64(fp.settings.len as u64, 6) as u32;
-    var settings_hdr = internal::FrameHeader {
-        length:     settings_payload_len,
+inline fn is_valid_akamai_wire_setting(s: const AkamaiSetting&) -> bool {
+    return internal::validate_settings_parameter(s.id, s.val, false) == rfc::H2_ERR_NO_ERROR;
+}
+
+inline fn try_append_frame_header<B>(hdr: const internal::FrameHeader&, out: B&) -> bool {
+    var raw: u8[9] = [0; 9];
+    internal::encode_frame_header(hdr, raw);
+    return out.try_append(raw[..]);
+}
+
+inline fn try_append_u16_be_buf<B>(val: u16, out: B&) -> bool {
+    var raw: u8[2] = [((val >> 8) & 0xFF) as u8, (val & 0xFF) as u8];
+    return out.try_append(raw[..]);
+}
+
+inline fn try_append_u32_be_buf<B>(val: u32, out: B&) -> bool {
+    var raw: u8[4] = [0; 4];
+    core::write_be_u32_at(raw[..], 0, val);
+    return out.try_append(raw[..]);
+}
+
+fn try_encode_akamai_settings_frame<B>(settings: const AkamaiSetting[:], out: B&) -> bool {
+    var valid_settings: u64 = 0;
+    for &s in settings {
+        if is_valid_akamai_wire_setting(s) {
+            valid_settings = core::add_sat_u64(valid_settings, 1);
+        }
+    }
+    let settings_hdr = internal::FrameHeader {
+        length:     core::mul_sat_u64(valid_settings, 6) as u32,
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
         stream_id:  0,
     };
-    internal::encode_frame_header_to(settings_hdr, out);
-
-    for &s in fp.settings {
-        out.append_u16_be(s.id);
-        out.append_u32_be(s.val);
+    guard try_append_frame_header(settings_hdr, out) else { return false; }
+    for &s in settings {
+        if is_valid_akamai_wire_setting(s) {
+            guard try_append_u16_be_buf(s.id, out) && try_append_u32_be_buf(s.val, out) else { return false; }
+        }
     }
+    return true;
+}
 
-    // 2. WINDOW_UPDATE Frame (Stream 0) if increment > 0
-    if fp.window_update > 0 {
-        var wu_hdr = internal::FrameHeader {
+// Serializes validated HTTP/2 wire frames corresponding to this Akamai fingerprint.
+fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    // 1. SETTINGS Frame (Stream 0)
+    guard try_encode_akamai_settings_frame(fp.settings[..], out) else { return; }
+
+    // 2. WINDOW_UPDATE Frame (Stream 0) if masked 31-bit increment > 0
+    let wu_inc = fp.window_update & H2_MAX_STREAM_ID;
+    if wu_inc > 0 {
+        let wu_hdr = internal::FrameHeader {
             length:     4,
             frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
             flags:      0,
             stream_id:  0,
         };
-        internal::encode_frame_header_to(wu_hdr, out);
-
-        let inc = fp.window_update & H2_MAX_STREAM_ID;
-        out.append_u32_be(inc);
+        guard try_append_frame_header(wu_hdr, out) && try_append_u32_be_buf(wu_inc, out) else { return; }
     }
 
-    // 3. PRIORITY Frames (if declared)
+    // 3. PRIORITY Frames (if declared and valid)
     for &p in fp.priority_frames {
-        var p_hdr = internal::FrameHeader {
+        let sid = p.stream_id & H2_MAX_STREAM_ID;
+        let dep_id = p.dep_stream_id & H2_MAX_STREAM_ID;
+        if sid == 0 || sid == dep_id {
+            continue;
+        }
+        let p_hdr = internal::FrameHeader {
             length:     5,
             frame_type: rfc::H2_FRAME_PRIORITY,
             flags:      0,
-            stream_id:  p.stream_id & H2_MAX_STREAM_ID,
+            stream_id:  sid,
         };
-        internal::encode_frame_header_to(p_hdr, out);
-
         let excl_bit = ((p.exclusive & 1) as u32) << 31;
-        let dep = (p.dep_stream_id & H2_MAX_STREAM_ID) | excl_bit;
-        out.append_u32_be(dep);
-
+        let dep = dep_id | excl_bit;
         let w_clamped = min(max(p.weight, 1), 256);
         let w_byte = core::sub_sat_u64(w_clamped, 1) as u8;
-        out.push(w_byte);
+        guard try_append_frame_header(p_hdr, out) && try_append_u32_be_buf(dep, out) && out.try_push(w_byte) else {
+            return;
+        }
     }
+
+    committed = true;
 }
 
 // ---- Pseudo-Header Ordering Helper ---------------------------------------

@@ -6,6 +6,8 @@
 namespace core;
 
 import std;
+import core.math;
+import core.crypto.ct;
 
 extern fn native_chacha_poly_seal_aead(
     key:     const u8[:],
@@ -77,6 +79,7 @@ fn hchacha20(key: const u8[32]&, nonce16: const u8[16]&) -> u8[32] {
     store_u32_le(out[..], 20, s[13]);
     store_u32_le(out[..], 24, s[14]);
     store_u32_le(out[..], 28, s[15]);
+    s = [0; 16];
     return out;
 }
 
@@ -104,8 +107,12 @@ fn chacha20_block(key: const u8[32]&, counter: u32, nonce12: const u8[12]&) -> u
     for i in 16 {
         store_u32_le(blk[..], i * 4, s[i] + orig[i]);
     }
+    s = [0; 16];
+    orig = [0; 16];
     return blk;
 }
+
+const CHACHA20_POLY1305_MAX_BYTES: i64 = 0x3FFFFFFFF0;
 
 fn chacha20_xor<B>(
     key:     const u8[32]&,
@@ -114,10 +121,15 @@ fn chacha20_xor<B>(
     input:   const u8[:],
     out:     B&,
 ) {
+    guard input.len > 0 else { return; }
+    let blocks = add_sat_u64((sub_sat_i64(input.len, 1) as u64) >> 6, 1);
+    guard add_sat_u64(counter as u64, blocks) <= 0x100000000 else { return; }
+    guard crypto_buf_has_room(out, input.len) else { return; }
     var cur_ctr = counter;
     var offset = 0;
+    var blk: u8[64] = [0; 64];
     while offset < input.len {
-        let blk = chacha20_block(key, cur_ctr, nonce12);
+        blk = chacha20_block(key, cur_ctr, nonce12);
         cur_ctr += 1;
         let rem = input.len - offset;
         let take = min(rem, 64);
@@ -126,6 +138,7 @@ fn chacha20_xor<B>(
         }
         offset += take;
     }
+    secure_zeroize_64(blk);
 }
 
 // Poly1305 one-time MAC over GF(2^130 - 5) using 26-bit limbs for pure 64-bit arithmetic.
@@ -306,6 +319,11 @@ fn xchacha20_poly1305_seal<B>(
     aad:            const u8[:],
     out_ciphertext: B&,
 ) -> u8[16] {
+    var zero_tag: u8[16] = [0; 16];
+    guard plaintext.len <= CHACHA20_POLY1305_MAX_BYTES &&
+          crypto_buf_has_room(out_ciphertext, plaintext.len) else {
+        return zero_tag;
+    }
     var nonce16: u8[16] = [0; 16];
     for i in 16 { nonce16[i] = nonce24[i]; }
     var subkey = hchacha20(key, nonce16);
@@ -321,10 +339,9 @@ fn xchacha20_poly1305_seal<B>(
     let ct_start = out_ciphertext.len;
     chacha20_xor(subkey, 1, subnonce, plaintext, out_ciphertext);
     secure_zeroize_32(subkey);
-    guard out_ciphertext.len - ct_start == plaintext.len else {
-        out_ciphertext.clear();
+    guard sub_sat_i64(out_ciphertext.len, ct_start) == plaintext.len else {
+        out_ciphertext.resize(ct_start);
         secure_zeroize_32(otk);
-        var zero_tag: u8[16] = [0; 16];
         return zero_tag;
     }
     let ciphertext_slice = out_ciphertext[ct_start..];
@@ -342,6 +359,7 @@ fn xchacha20_poly1305_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
+    guard ciphertext.len <= CHACHA20_POLY1305_MAX_BYTES else { return false; }
     var nonce16: u8[16] = [0; 16];
     for i in 16 { nonce16[i] = nonce24[i]; }
     var subkey = hchacha20(key, nonce16);
@@ -360,13 +378,18 @@ fn xchacha20_poly1305_open<B>(
         secure_zeroize_32(otk);
         return false;
     }
+    guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
+        secure_zeroize_32(subkey);
+        secure_zeroize_32(otk);
+        return false;
+    }
 
     let start_len = out_plaintext.len;
     chacha20_xor(subkey, 1, subnonce, ciphertext, out_plaintext);
     secure_zeroize_32(subkey);
     secure_zeroize_32(otk);
     guard core::sub_sat_i64(out_plaintext.len, start_len) == ciphertext.len else {
-        out_plaintext.clear();
+        out_plaintext.resize(start_len);
         return false;
     }
     return true;
@@ -381,6 +404,10 @@ fn chacha20_poly1305_open_inplace(
     aad:     const u8[:],
     tag:     const u8[16]&,
 ) -> i64, bool {
+    guard in_out.len <= CHACHA20_POLY1305_MAX_BYTES else {
+        secure_zeroize_slice(in_out);
+        return 0, false;
+    }
     let written = native_chacha_poly_open_aead(key[..], nonce12[..], in_out, aad, tag[..], in_out);
     guard written >= 0 else {
         secure_zeroize_slice(in_out);
@@ -398,6 +425,7 @@ fn chacha20_poly1305_seal_inplace(
     aad:     const u8[:],
 ) -> u8[16], bool {
     var tag: u8[16] = [0; 16];
+    guard in_out.len <= CHACHA20_POLY1305_MAX_BYTES else { return tag, false; }
     let written = native_chacha_poly_seal_aead(key[..], nonce12[..], in_out, aad, in_out, tag[..]);
     guard written >= 0 else {
         secure_zeroize_16(tag);
@@ -415,7 +443,9 @@ fn chacha20_poly1305_open_into(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard dst.len >= ciphertext.len else { return 0, false; }
+    guard ciphertext.len <= CHACHA20_POLY1305_MAX_BYTES && dst.len >= ciphertext.len else {
+        return 0, false;
+    }
     let written = native_chacha_poly_open_aead(
         key[..], nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
     );
@@ -435,7 +465,9 @@ fn chacha20_poly1305_seal(
     dst:       u8[:],
 ) -> u8[16], i64, bool {
     var empty_tag: u8[16] = [0; 16];
-    guard dst.len >= plaintext.len else { return empty_tag, 0, false; }
+    guard plaintext.len <= CHACHA20_POLY1305_MAX_BYTES && dst.len >= plaintext.len else {
+        return empty_tag, 0, false;
+    }
     let written = native_chacha_poly_seal_aead(
         key[..], nonce12[..], plaintext, aad, dst[..plaintext.len], empty_tag[..],
     );
@@ -454,6 +486,7 @@ fn chacha20_poly1305_open_small<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
+    guard ciphertext.len <= 2048 else { return false; }
     var pt_buf: u8[2048] = [0; 2048];
     let pt_slice = pt_buf[..ciphertext.len];
     let written = native_chacha_poly_open_aead(key[..], nonce12[..], ciphertext, aad, tag[..], pt_slice);
@@ -461,11 +494,15 @@ fn chacha20_poly1305_open_small<B>(
         secure_zeroize_slice(pt_slice);
         return false;
     }
+    guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
+        secure_zeroize_slice(pt_slice);
+        return false;
+    }
     let start_len = out_plaintext.len;
     out_plaintext.append(pt_slice);
     secure_zeroize_slice(pt_slice);
     guard core::sub_sat_i64(out_plaintext.len, start_len) == ciphertext.len else {
-        out_plaintext.clear();
+        out_plaintext.resize(start_len);
         return false;
     }
     return true;
@@ -479,6 +516,7 @@ fn chacha20_poly1305_open<B>(
     tag:           const u8[16]&,
     out_plaintext: B&,
 ) -> bool {
+    guard ciphertext.len <= CHACHA20_POLY1305_MAX_BYTES else { return false; }
     if ciphertext.len <= 2048 {
         return chacha20_poly1305_open_small(key, nonce12, ciphertext, aad, tag, out_plaintext);
     }
@@ -493,12 +531,15 @@ fn chacha20_poly1305_open<B>(
         secure_zeroize_32(otk);
         return false;
     }
-
     secure_zeroize_32(otk);
+    guard crypto_buf_has_room(out_plaintext, ciphertext.len) else {
+        return false;
+    }
+
     let start_len = out_plaintext.len;
     chacha20_xor(key, 1, nonce12, ciphertext, out_plaintext);
     guard core::sub_sat_i64(out_plaintext.len, start_len) == ciphertext.len else {
-        out_plaintext.clear();
+        out_plaintext.resize(start_len);
         return false;
     }
     return true;

@@ -51,13 +51,15 @@ fn build_socks5_greeting(
     out[1] = core::sub_sat_i64(out.len, 2) as u8;
 }
 
-// Parses Phase 1 Server Greeting Reply [VER, METHOD].
+// Parses Phase 1 Server Greeting Reply [VER, METHOD] (RFC 1928 Section 3).
 //
 // Example:
 //   buf = [0x05, 0x00]
 //   returns: 0x00, Socks5Error.None
 fn parse_socks5_greeting_reply(buf: const u8[:]) -> u8, Socks5Error {
     guard buf.len >= 2 else { return 0xFF, Socks5Error.BufferTruncated; }
+    // RFC 1928 Section 3: Procedure for TCP-based clients - server selection message is 2 octets
+    guard buf.len == 2 else { return 0xFF, Socks5Error.InvalidReplyHeader; }
     guard buf[0] == rfc::SOCKS5_VER else { return 0xFF, Socks5Error.InvalidVersion; }
     let selected_method = buf[1];
     if selected_method == rfc::SOCKS5_AUTH_NO_ACCEPTABLE {
@@ -86,13 +88,15 @@ fn build_socks5_rfc1929_auth(
     return Socks5Error.None;
 }
 
-// Parses Phase 2 RFC 1929 Reply [0x01, STATUS].
+// Parses Phase 2 RFC 1929 Reply [0x01, STATUS] (RFC 1929 Section 2).
 //
 // Example:
 //   buf = [0x01, 0x00]
 //   returns: Socks5Error.None
 fn parse_socks5_rfc1929_reply(buf: const u8[:]) -> Socks5Error {
     guard buf.len >= 2 else { return Socks5Error.BufferTruncated; }
+    // RFC 1929 Section 2: Initial negotiation - authentication reply frame is exactly 2 octets
+    guard buf.len == 2 else { return Socks5Error.InvalidReplyHeader; }
     guard buf[0] == rfc::SOCKS5_RFC1929_VER else { return Socks5Error.InvalidAuthResponse; }
     if buf[1] != 0x00 {
         return Socks5Error.AuthFailed;
@@ -222,6 +226,8 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
     let needed_len, err = socks5_needed_length(buf, atyp);
     guard err == Socks5Error.None else { return Socks5Reply { .. }, err; }
     guard buf.len >= needed_len else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
+    // RFC 1928 Section 6: Replies - reject trailing bytes beyond the reply frame boundary
+    guard buf.len == needed_len else { return Socks5Reply { .. }, Socks5Error.InvalidReplyHeader; }
 
     let bnd_port = core::read_be_u16(buf, core::sub_sat_i64(needed_len, 2));
 
@@ -250,12 +256,52 @@ fn parse_socks5_ipv4_literal(raw: const u8[:]) -> u8[4], bool {
         } else {
             guard !has_dot else { return out, false; }
         }
+        guard part.len >= 1 && (part.len == 1 || part[0] != '0') else { return out, false; }
         let val, ok_v = part.parse_u32_dec();
         guard ok_v && val <= 255 else { return out, false; }
         out[i] = val as u8;
         rest = rem;
     }
     return out, true;
+}
+
+fn recv_exact_socks5_bytes(sock_fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
+    var off: i64 = 0;
+    while off < dst.len {
+        let n = tcp_recv_slice(sock_fd, dst[off..], timeout_ms);
+        guard n > 0 else { return false; }
+        off = core::add_sat_i64(off, n);
+    }
+    return true;
+}
+
+fn recv_socks5_connect_reply_wire(
+    sock_fd:    i64,
+    buf:        u8[300]&,
+    timeout_ms: u32,
+) -> i64, Socks5Error {
+    // RFC 1928 Section 6: Replies - read 4-octet header, then exact BND.ADDR + BND.PORT without over-reading tunnel
+    guard recv_exact_socks5_bytes(sock_fd, buf[..4], timeout_ms) else {
+        return 0, Socks5Error.BufferTruncated;
+    }
+    var have: i64 = 4;
+    if buf[3] == rfc::SOCKS5_ATYP_DOMAIN {
+        guard recv_exact_socks5_bytes(sock_fd, buf[4..5], timeout_ms) else {
+            return 0, Socks5Error.BufferTruncated;
+        }
+        have = 5;
+    }
+    let needed_len, len_err = socks5_needed_length(buf[..have], buf[3]);
+    guard len_err == Socks5Error.None else { return 0, len_err; }
+    guard needed_len >= have && needed_len <= 300 else {
+        return 0, Socks5Error.InvalidReplyHeader;
+    }
+    if needed_len > have {
+        guard recv_exact_socks5_bytes(sock_fd, buf[have..needed_len], timeout_ms) else {
+            return 0, Socks5Error.BufferTruncated;
+        }
+    }
+    return needed_len, Socks5Error.None;
 }
 
 // Executes a live SOCKS5/SOCKS5h client handshake over an open TCP socket (RFC 1928 & RFC 1929).
@@ -273,10 +319,11 @@ fn socks5_client_handshake(
     build_socks5_greeting(Socks5GreetingOptions { has_credentials: username.len > 0, .. }, greet);
     guard tcp_send(sock_fd, greet[..]) == (greet.len as i32) else { return Socks5Error.ServerFailure; }
 
-    var reply_raw: u8[64] = [0; 64];
-    let n1 = tcp_recv_slice(sock_fd, reply_raw[..2], timeout_ms);
-    guard n1 >= 2 else { return Socks5Error.BufferTruncated; }
-    let method, g_err = parse_socks5_greeting_reply(reply_raw[..n1]);
+    var reply_raw: u8[2] = [0; 2];
+    guard recv_exact_socks5_bytes(sock_fd, reply_raw[..], timeout_ms) else {
+        return Socks5Error.BufferTruncated;
+    }
+    let method, g_err = parse_socks5_greeting_reply(reply_raw[..]);
     guard g_err == Socks5Error.None else { return g_err; }
 
     if method == rfc::SOCKS5_AUTH_USERPASS {
@@ -285,9 +332,10 @@ fn socks5_client_handshake(
         defer core::secure_zeroize_slice(auth_buf[..]);
         guard a_err == Socks5Error.None else { return a_err; }
         guard tcp_send(sock_fd, auth_buf[..]) == (auth_buf.len as i32) else { return Socks5Error.AuthFailed; }
-        let n_auth = tcp_recv_slice(sock_fd, reply_raw[..2], timeout_ms);
-        guard n_auth >= 2 else { return Socks5Error.BufferTruncated; }
-        let auth_res = parse_socks5_rfc1929_reply(reply_raw[..n_auth]);
+        guard recv_exact_socks5_bytes(sock_fd, reply_raw[..], timeout_ms) else {
+            return Socks5Error.BufferTruncated;
+        }
+        let auth_res = parse_socks5_rfc1929_reply(reply_raw[..]);
         guard auth_res == Socks5Error.None else { return auth_res; }
     } else if method != rfc::SOCKS5_AUTH_NONE {
         return Socks5Error.NoAcceptableAuth;
@@ -304,8 +352,8 @@ fn socks5_client_handshake(
     guard tcp_send(sock_fd, req_buf[..]) == (req_buf.len as i32) else { return Socks5Error.ServerFailure; }
 
     var conn_reply_raw: u8[300] = [0; 300];
-    let n2 = tcp_recv_slice(sock_fd, conn_reply_raw[..], timeout_ms);
-    guard n2 >= 4 else { return Socks5Error.BufferTruncated; }
-    let _, c_err = parse_socks5_connect_reply(conn_reply_raw[..n2]);
+    let exact_len, r_err = recv_socks5_connect_reply_wire(sock_fd, conn_reply_raw, timeout_ms);
+    guard r_err == Socks5Error.None else { return r_err; }
+    let _, c_err = parse_socks5_connect_reply(conn_reply_raw[..exact_len]);
     return c_err;
 }

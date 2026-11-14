@@ -345,7 +345,8 @@ typedef struct {
 } wing_mmap_file_t;
 
 int32_t wing_mmap_file_open(wing_bytes_ro path, uint64_t *out_handle, uint64_t *out_size) {
-    if (!out_handle || !out_size || !path.data || path.len <= 0 || path.len >= 1024) {
+    if (!out_handle || !out_size || !path.data || path.len <= 0 || path.len >= 1024 ||
+        memchr(path.data, 0, (size_t)path.len) != NULL) {
         return -1;
     }
 

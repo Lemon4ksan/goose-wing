@@ -337,14 +337,17 @@ inline fn make_bit_reader(src: const u8[:]) -> BitStreamReader {
 //   br = make_bit_reader([0xA5]), width = 4
 //   returns: val = 0x0A, ok = true, br.bit_cnt = 4
 fn read_bits(br: BitStreamReader&, width: i64) -> u64, bool {
-    guard width >= 0 && width <= 56 && br.byte_pos >= 0 && br.bit_cnt >= 0 else { return 0, false; }
+    guard width >= 0 && width <= 56 && br.byte_pos >= 0 && br.bit_cnt >= 0 && br.bit_cnt <= 64 else {
+        return 0, false;
+    }
     let saved_pos = br.byte_pos;
     let saved_buf = br.bit_buf;
     let saved_cnt = br.bit_cnt;
     while br.bit_cnt < width && br.byte_pos >= 0 && br.byte_pos < br.src.len {
         let rem = br.src[br.byte_pos..];
         guard rem.len > 0 else { break; }
-        br.bit_buf = shl_sat_u64(br.bit_buf, 8) | rem[0];
+        let keep_mask = sub_sat_u64(shl_sat_u64(1, br.bit_cnt as u32), 1);
+        br.bit_buf = ((br.bit_buf & keep_mask) << 8) | rem[0];
         br.byte_pos = add_sat_i64(br.byte_pos, 1);
         br.bit_cnt = add_sat_i64(br.bit_cnt, 8);
     }
@@ -426,11 +429,12 @@ fn finish_u8_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
     b.offsets.pop();
-    guard start >= 0 && start < b.buf.len else {
+    guard start >= 0 && add_sat_i64(start, 1) <= b.buf.len else {
         return false;
     }
     let body_len = b.buf.len - start - 1;
     guard body_len >= 0 && body_len <= 255 else {
+        b.buf.resize(start);
         return false;
     }
     b.buf[start] = body_len as u8;
@@ -450,11 +454,12 @@ fn finish_u16_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
     b.offsets.pop();
-    guard start >= 0 && start + 1 < b.buf.len else {
+    guard start >= 0 && add_sat_i64(start, 2) <= b.buf.len else {
         return false;
     }
     let body_len = b.buf.len - start - 2;
     guard body_len >= 0 && body_len <= 65535 else {
+        b.buf.resize(start);
         return false;
     }
     b.buf[start] = ((body_len >> 8) & 0xFF) as u8;
@@ -476,11 +481,12 @@ fn finish_u24_prefix(b: ByteBuilder&) -> bool {
     guard b.offsets.len > 0 else { return false; }
     let start = b.offsets[b.offsets.len - 1];
     b.offsets.pop();
-    guard start >= 0 && start + 2 < b.buf.len else {
+    guard start >= 0 && add_sat_i64(start, 3) <= b.buf.len else {
         return false;
     }
     let body_len = b.buf.len - start - 3;
     guard body_len >= 0 && body_len <= 16777215 else {
+        b.buf.resize(start);
         return false;
     }
     b.buf[start] = ((body_len >> 16) & 0xFF) as u8;

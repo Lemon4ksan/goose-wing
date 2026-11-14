@@ -558,8 +558,7 @@ fn fast_find_crlfcrlf(s: const u8[:]) -> i64 {
 // Places sentinel fence bytes '\r' and 'a' at offset length and length+1 in wire buffer (uWebSockets HttpParser.h).
 // Allows SWAR and vectorized parsers to scan safely without bounds checks in the inner loop.
 fn fence_wire_slice(buf: u8[:], length: i64) -> bool {
-    guard length >= 0 else { return false; }
-    guard length + 2 <= buf.len else { return false; }
+    guard length >= 0 && length <= sub_sat_i64(buf.len, 2) else { return false; }
     buf[length] = '\r';
     buf[length + 1] = 'a';
     return true;

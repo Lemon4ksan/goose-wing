@@ -271,9 +271,13 @@ fn encode_ws_frame_compressed<B>(
         payload_len: eff_payload.len as u64,
         ..
     };
-    hdr.encode(out);
+    let saved_len = out.len;
+    guard try_encode_ws_header(hdr, out) else { return; }
     let payload_start = out.len;
-    out.append(eff_payload);
+    guard out.try_append(eff_payload) else {
+        out.resize(saved_len);
+        return;
+    }
     if masked {
         mask_websocket_payload(out[payload_start..out.len], mask_key);
     }
@@ -323,6 +327,33 @@ const PMD_SEEN_CLIENT_NO_CTX:  u8 = 2;
 const PMD_SEEN_SERVER_MAX_WIN: u8 = 4;
 const PMD_SEEN_CLIENT_MAX_WIN: u8 = 8;
 
+// Unescapes an RFC 6455 Section 9.1 quoted extension parameter value into `out`.
+//
+// Example:
+//   quoted = "\"\\1\\2\"", out = []
+//   returns: true, out = "12"
+fn unescape_pmd_quoted_val(quoted: const u8[:], out: u8[..8]&) -> bool {
+    guard quoted.len >= 2 && quoted[0] == '"' && quoted[quoted.len - 1] == '"' else {
+        return false;
+    }
+    let inner = quoted[1..^1];
+    var i: i64 = 0;
+    while i < inner.len {
+        let b = inner[i];
+        if b == '\\' {
+            let esc_idx = core::add_sat_i64(i, 1);
+            guard esc_idx < inner.len else { return false; }
+            let esc = inner[esc_idx];
+            guard core::is_tchar(esc) && out.try_push(esc) else { return false; }
+            i = core::add_sat_i64(i, 2);
+            continue;
+        }
+        guard b != '"' && core::is_tchar(b) && out.try_push(b) else { return false; }
+        i = core::add_sat_i64(i, 1);
+    }
+    return true;
+}
+
 // Parses a strict RFC 7692 §7.1 window_bits value (base-10 integer in 8..15, no leading '0' or '+').
 // Clamps window_bits == 8 to 9 for raw deflate compatibility (uWebSockets / libwebsockets pattern).
 //
@@ -330,21 +361,22 @@ const PMD_SEEN_CLIENT_MAX_WIN: u8 = 8;
 //   raw = "\"12\""
 //   returns: bits = 12, ok = true
 fn parse_pmd_window_bits(raw: const u8[:]) -> u8, bool {
-    var val = raw.trim_lws();
-    if val.len >= 2 {
-        let last_idx = core::sub_sat_i64(val.len, 1);
-        if val[0] == '"' && val[last_idx] == '"' {
-            val = val[1..^1];
-        }
+    let trimmed = raw.trim_lws();
+    var unescaped: u8[..8] = [];
+    if trimmed.len > 0 && trimmed[0] == '"' {
+        guard unescape_pmd_quoted_val(trimmed, unescaped) else { return 0, false; }
+    } else {
+        guard !trimmed.contains_byte('"') && !trimmed.contains_byte('\\') else { return 0, false; }
+        guard unescaped.try_set(trimmed) else { return 0, false; }
     }
-    if val.len == 1 {
-        let b0 = val[0];
+    if unescaped.len == 1 {
+        let b0 = unescaped[0];
         guard b0 == '8' || b0 == '9' else { return 0, false; }
         return 9, true;
     }
-    guard val.len == 2 else { return 0, false; }
-    let b0 = val[0];
-    let b1 = val[1];
+    guard unescaped.len == 2 else { return 0, false; }
+    let b0 = unescaped[0];
+    let b1 = unescaped[1];
     guard b0 == '1' && b1 >= '0' && b1 <= '5' else { return 0, false; }
     return (core::add_sat_i64(10, core::sub_sat_i64(b1, '0'))) as u8, true;
 }
@@ -367,12 +399,13 @@ inline fn apply_pmd_window_param(
     }
     if key == "client_max_window_bits" {
         guard (seen_mask & PMD_SEEN_CLIENT_MAX_WIN) == 0 else { return false; }
-        seen_mask |= PMD_SEEN_CLIENT_MAX_WIN;
         if has_eq {
             let bits, ok_b = parse_pmd_window_bits(val);
             guard ok_b else { return false; }
+            seen_mask |= PMD_SEEN_CLIENT_MAX_WIN;
             out_cfg.client_max_window_bits = min(server_cfg.client_max_window_bits, bits);
         } else {
+            seen_mask |= PMD_SEEN_CLIENT_MAX_WIN;
             let capped = min(server_cfg.client_max_window_bits, rfc::WS_PMD_MAX_WINDOW_BITS);
             out_cfg.client_max_window_bits = max(9, capped);
         }

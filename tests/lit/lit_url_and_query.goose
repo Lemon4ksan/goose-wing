@@ -83,7 +83,7 @@ fn run_01_verify_http_query() {
     // CHECK: ALLOW_HEADER_CONTAINS_QUERY: 1
 
     // 5. Verify Server Pipeline Rejection when Content-Type is missing (RFC 10008 §2)
-    let quota = wing::new_gcra_quota(100, core::secs(1), 10);
+    let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
     var cfg = wing::new_server_pipeline_config("example.com", quota);
     let ok_add_pipeline = wing::add_route(cfg.router, "QUERY", "/items/search", 42);
     assert(ok_add_pipeline);

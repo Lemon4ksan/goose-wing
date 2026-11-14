@@ -211,12 +211,32 @@ fn run_01_verify_tls_handshake_wire() {
     assert(!ok_fake_srv_pq);
     print("PQ_WRONG_GROUP_REJECTED: OK");
 
-    // 11. Regression: HPKE LabeledExpand must reject oversized info (>1024 labeled buffer) instead of silent truncation (RFC 9180 §4)
+    // 11. Regression: HPKE LabeledExpand accepts 1500B info (RFC 9180 §7.2.1) and rejects >4096 labeled buffer without truncation, plus Export-Only AEAD (0xFFFF)
     let prk_zeros: u8[32]   = [0x11; 32];
-    let big_info:  u8[1020] = [0x42; 1020];
+    let ok_info:   u8[1500] = [0x42; 1500];
+    let big_info:  u8[4090] = [0x42; 4090];
     var hpke_out: u8[32] = [0; 32];
+    assert(wing::hpke_labeled_expand("HPKE\x00\x20\x00\x01\x00\x01", prk_zeros[..], "key", ok_info[..], 32, hpke_out[..]));
     let ok_hpke_big = wing::hpke_labeled_expand("HPKE\x00\x20\x00\x01\x00\x01", prk_zeros[..], "key", big_info[..], 32, hpke_out[..]);
     assert(!ok_hpke_big);
+    let exp_sk1: u8[32] = [0x21; 32];
+    let exp_sk2: u8[32] = [0x22; 32];
+    let exp_pk = core::x25519_base_scalarmult(exp_sk1);
+    var exp_enc: u8[32] = [0; 32];
+    var exp_ctx = wing::HpkeContext { .. };
+    assert(wing::hpke_setup_base_s(
+        exp_pk,
+        "export-info",
+        rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+        rfc::HPKE_KDF_HKDF_SHA256,
+        wing::HPKE_AEAD_EXPORT_ONLY,
+        exp_sk2,
+        exp_enc,
+        exp_ctx,
+    ));
+    assert(wing::hpke_export(exp_ctx, "tls-exporter", hpke_out[..]));
+    var seal_ct: u8[..64] = [];
+    assert(!wing::hpke_seal(exp_ctx, "", "msg", seal_ct));
     print("HPKE_OVERSIZED_INFO_REJECTED: OK");
 
     // 12. Regression: ECH outer extension rejects empty ciphertext (RFC 9849 §5)
@@ -720,14 +740,16 @@ fn verify_mlkem768_decapsulate() {
     }
 
     var p256_srv = internal::SecP256r1MLKEM768ServerShare { .. };
-    p256_srv.secp256r1_public[0] = 0x04;
+    let sk256: u8[32] = [0x11; 32];
+    p256_srv.secp256r1_public = core::ecdsa_p256_public_key(sk256);
     var p256_wire: u8[>..] = [];
     internal::format_secp256r1_mlkem768_server_share(p256_srv, p256_wire);
     var p256_parsed = internal::SecP256r1MLKEM768ServerShare { .. };
     assert(internal::parse_secp256r1_mlkem768_server_share(p256_parsed, p256_wire[..]));
 
     var p384_srv = internal::SecP384r1MLKEM1024ServerShare { .. };
-    p384_srv.secp384r1_public[0] = 0x04;
+    let sk384: u8[48] = [0x22; 48];
+    p384_srv.secp384r1_public = core::ecdsa_p384_public_key(sk384);
     var p384_wire: u8[>..] = [];
     internal::format_secp384r1_mlkem1024_server_share(p384_srv, p384_wire);
     var p384_parsed = internal::SecP384r1MLKEM1024ServerShare { .. };

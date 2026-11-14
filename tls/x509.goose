@@ -80,13 +80,46 @@ fn read_tbs_serial(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&
     return true;
 }
 
-fn read_tbs_sig_alg(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    var sig_alg = core::cursor_from(raw_cert[..0]);
-    if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, sig_alg) { return false; }
-    var sig_oid = core::cursor_from(raw_cert[..0]);
-    if !get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, sig_oid) { return false; }
-    out.sig_alg_oid = make_span(raw_cert, sig_oid.buf);
+// RFC 5280 Section 4.1.1.2: signatureAlgorithm - Validates AlgorithmIdentifier parameters by OID.
+fn validate_x509_sig_alg_params(sig_oid: const u8[:], sig_alg_rem: ByteCursor&) -> bool {
+    if sig_oid == rfc::OID_ED25519[..] ||
+        sig_oid == rfc::OID_SIG_ECDSA_SHA256[..] ||
+        sig_oid == rfc::OID_SIG_ECDSA_SHA384[..] {
+        return sig_alg_rem.cursor_len() == 0;
+    }
+    if sig_alg_rem.cursor_len() == 0 {
+        return true;
+    }
+    var param_tag: u8 = 0;
+    var param_val = core::cursor_from(sig_alg_rem.buf[..0]);
+    guard get_any_asn1_element(sig_alg_rem, param_tag, param_val) && sig_alg_rem.cursor_len() == 0 else {
+        return false;
+    }
+    if sig_oid == rfc::OID_SIG_SHA256_RSA[..] || sig_oid == rfc::OID_SIG_SHA384_RSA[..] {
+        return param_tag == rfc::ASN1_TAG_NULL && param_val.cursor_len() == 0;
+    }
     return true;
+}
+
+fn read_tbs_sig_alg(
+    raw_cert: const u8[:],
+    tbs_seq:  ByteCursor&,
+    out:      ParsedCert&,
+) -> Span16, bool {
+    var sig_alg = core::cursor_from(raw_cert[..0]);
+    if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, sig_alg) {
+        return Span16 { .. }, false;
+    }
+    let inner_span = make_span(raw_cert, sig_alg.buf);
+    var sig_oid = core::cursor_from(raw_cert[..0]);
+    if !get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, sig_oid) {
+        return Span16 { .. }, false;
+    }
+    guard validate_x509_sig_alg_params(sig_oid.buf, sig_alg) else {
+        return Span16 { .. }, false;
+    }
+    out.sig_alg_oid = make_span(raw_cert, sig_oid.buf);
+    return inner_span, true;
 }
 
 fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
@@ -130,7 +163,13 @@ fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) 
 
     var spki_pubkey = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(spki, rfc::ASN1_TAG_BIT_STRING, spki_pubkey) { return false; }
-    if !validate_asn1_bit_string(spki_pubkey.buf) { return false; }
+    // RFC 5280 Section 4.1.2.7: Subject Public Key Info - Require unused_bits == 0 and no trailing SPKI bytes.
+    guard spki.cursor_len() == 0 &&
+        validate_asn1_bit_string(spki_pubkey.buf) &&
+        spki_pubkey.buf.len >= 2 &&
+        spki_pubkey.buf[0] == 0 else {
+        return false;
+    }
     out.spki_pubkey = make_span(raw_cert, spki_pubkey.buf);
     return true;
 }
@@ -188,29 +227,42 @@ fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool {
     let tbs_tlv_len = core::sub_sat_i64(tbs_raw_start.len, cert_seq.buf.len);
     out.tbs_cert = make_span(raw_cert, tbs_raw_start[..tbs_tlv_len]);
 
-    guard x509_read_tbs_components(raw_cert, tbs_seq, out) else { return false; }
-    guard x509_read_outer_signature(raw_cert, cert_seq, out) else { return false; }
+    let inner_sig_span, ok_tbs = x509_read_tbs_components(raw_cert, tbs_seq, out);
+    guard ok_tbs else { return false; }
+    let inner_sig_alg = span_slice(raw_cert, inner_sig_span);
+    guard x509_read_outer_signature(raw_cert, cert_seq, inner_sig_alg, out) else { return false; }
     committed = true;
     return true;
 }
 
-fn x509_read_tbs_components(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
-    guard x509_skip_tbs_version(tbs_seq) else { return false; }
-    if !read_tbs_serial(raw_cert, tbs_seq, out) { return false; }
-    if !read_tbs_sig_alg(raw_cert, tbs_seq, out) { return false; }
-    return read_tbs_identity(raw_cert, tbs_seq, out);
+fn x509_read_tbs_components(
+    raw_cert: const u8[:],
+    tbs_seq:  ByteCursor&,
+    out:      ParsedCert&,
+) -> Span16, bool {
+    guard x509_skip_tbs_version(tbs_seq) else { return Span16 { .. }, false; }
+    if !read_tbs_serial(raw_cert, tbs_seq, out) { return Span16 { .. }, false; }
+    let inner_span, ok_sig = read_tbs_sig_alg(raw_cert, tbs_seq, out);
+    if !ok_sig { return Span16 { .. }, false; }
+    if !read_tbs_identity(raw_cert, tbs_seq, out) { return Span16 { .. }, false; }
+    return inner_span, true;
 }
 
-fn x509_read_outer_signature(raw_cert: const u8[:], cert_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn x509_read_outer_signature(
+    raw_cert:      const u8[:],
+    cert_seq:      ByteCursor&,
+    inner_sig_alg: const u8[:],
+    out:           ParsedCert&,
+) -> bool {
     guard cert_seq.cursor_len() > 0 else { return false; }
     var outer_sig_alg = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(cert_seq, rfc::ASN1_TAG_SEQUENCE, outer_sig_alg) { return false; }
+    let outer_sig_alg_raw = outer_sig_alg.buf;
     var outer_sig_oid = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(outer_sig_alg, rfc::ASN1_TAG_OID, outer_sig_oid) { return false; }
 
-    // RFC 5280 §4.1.2.3: Outer and inner signature algorithms MUST match
-    let inner_sig_oid = span_slice(raw_cert, out.sig_alg_oid);
-    guard outer_sig_oid.buf == inner_sig_oid else { return false; }
+    // RFC 5280 Section 4.1.1.2: signatureAlgorithm - Full outer/inner AlgorithmIdentifier MUST match.
+    guard outer_sig_alg_raw == inner_sig_alg else { return false; }
 
     var sig_bits = core::cursor_from(raw_cert[..0]);
     var unused_bits: u8 = 0;
@@ -580,6 +632,8 @@ struct TrustAnchor {
     subject_raw:         u8[..384] = [],
     spki_pubkey:         u8[..600] = [],
     skid_key_id:         u8[..64]  = [],
+    key_usage:           u16       = 0,
+    has_key_usage:       bool      = false,
     has_skid:            bool      = false,
     has_pub_material:    bool      = false,
     validity_not_before: i64       = 0,
@@ -608,13 +662,14 @@ fn extract_spki_pubkey_material(spki_raw: const u8[:], out_pk: u8[..600]&) -> bo
     var spki_pk = core::cursor_from(spki_raw[..0]);
     guard get_asn1_element(top, rfc::ASN1_TAG_SEQUENCE, spki) && top.cursor_len() == 0 else { return false; }
     guard get_asn1_element(spki, rfc::ASN1_TAG_SEQUENCE, spki_alg) else { return false; }
-    guard get_asn1_element(spki, rfc::ASN1_TAG_BIT_STRING, spki_pk) else { return false; }
-    guard validate_asn1_bit_string(spki_pk.buf) else { return false; }
-    var pk = spki_pk.buf;
-    if pk.len >= 2 && pk[0] == 0 {
-        pk = pk[1..];
+    guard get_asn1_element(spki, rfc::ASN1_TAG_BIT_STRING, spki_pk) &&
+        spki.cursor_len() == 0 &&
+        validate_asn1_bit_string(spki_pk.buf) &&
+        spki_pk.buf.len >= 2 &&
+        spki_pk.buf[0] == 0 else {
+        return false;
     }
-    return out_pk.try_set(pk);
+    return out_pk.try_set(spki_pk.buf[1..]);
 }
 
 fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw: const u8[:]) -> bool {
@@ -644,6 +699,8 @@ fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]
     var anchor = TrustAnchor {
         subject_dn_sha256:   core::sha256(subj),
         spki_sha256:         core::sha256(spki),
+        key_usage:           cert.key_usage,
+        has_key_usage:       cert.has_key_usage,
         validity_not_before: cert.validity_not_before,
         validity_not_after:  cert.validity_not_after,
         has_validity:        true,
@@ -934,7 +991,7 @@ inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type
 // - iPAddress MUST be exactly 4 octets (IPv4) or 16 octets (IPv6).
 // - dNSName MUST be valid preferred name syntax.
 // Example:
-fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> bool {
+fn x509_parse_single_san<S>(names_seq: ByteCursor&, out_sans: S&) -> bool {
     var tag: u8 = 0;
     var elem = core::cursor_from(names_seq.buf[..0]);
     guard get_any_asn1_element(names_seq, tag, elem) else { return false; }
@@ -949,10 +1006,16 @@ fn x509_parse_single_san(names_seq: ByteCursor&, out_sans: SanEntry[..16]&) -> b
     });
 }
 
+// RFC 5280 Section 4.2.1.6: Subject Alternative Name - Parses GeneralNames with transactional rollback.
+//
 // Example:
 //   san_der = 0x30 0x0E 0x82 0x0C "example.com"
 //   returns: ok = true, out_sans contains SanType.Dns "example.com"
-fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool {
+fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool {
+    out_sans.clear();
+    var committed = false;
+    defer if !committed { out_sans.clear(); };
+
     var c = core::cursor_from(san_der);
     var names_seq = core::cursor_from(san_der[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, names_seq) { return false; }
@@ -964,7 +1027,9 @@ fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool 
         guard x509_parse_single_san(names_seq, out_sans) else { return false; }
         count++;
     }
-    return count > 0;
+    guard count > 0 else { return false; }
+    committed = true;
+    return true;
 }
 
 // Matches an IP SAN (binary 4 or 16 octets) against a target IP host (either decimal string or raw binary).
@@ -999,7 +1064,7 @@ fn match_san(san: const SanEntry&, host: const u8[:]) -> bool {
 }
 
 // Matches target host against an array of parsed SAN entries.
-fn match_any_san(sans: const SanEntry[..16]&, host: const u8[:]) -> bool {
+fn match_any_san<S>(sans: const S&, host: const u8[:]) -> bool {
     for i in sans.len {
         if match_san(sans[i], host) {
             return true;
@@ -1009,7 +1074,7 @@ fn match_any_san(sans: const SanEntry[..16]&, host: const u8[:]) -> bool {
 }
 
 // Helper to extract and parse SAN entries from a ParsedCert descriptor.
-fn get_cert_san_extension(cert: const ParsedCert&, raw_cert: const u8[:], out_sans: SanEntry[..16]&) -> bool {
+fn get_cert_san_extension<S>(cert: const ParsedCert&, raw_cert: const u8[:], out_sans: S&) -> bool {
     guard cert.has_san else { return false; }
     let san_bytes = span_slice(raw_cert, cert.san_raw);
     return parse_san_extension(san_bytes, out_sans);
@@ -1433,7 +1498,7 @@ fn x509_validate_single_chain_cert(
         return TlsAlert.BadCertificate;
     }
     if cert.has_san {
-        var sans: SanEntry[..16] = [];
+        var sans: SanEntry[..64] = [];
         guard get_cert_san_extension(cert, raw_cert, sans) else {
             return TlsAlert.BadCertificate;
         }
@@ -1478,14 +1543,14 @@ fn x509_verify_signature_by_oid(
     }
 
     if sig_oid == rfc::OID_SIG_ECDSA_SHA256[..] {
-        guard core::ecdsa_p256_verify(parent_pubkey, tbs_data, sig_bytes) else {
+        guard core::ecdsa_p256_verify_der(parent_pubkey, tbs_data, sig_bytes) else {
             return err_alert;
         }
         return TlsAlert.CloseNotify;
     }
 
     if sig_oid == rfc::OID_SIG_ECDSA_SHA384[..] {
-        guard core::ecdsa_p384_verify(parent_pubkey, tbs_data, sig_bytes) else {
+        guard core::ecdsa_p384_verify_der(parent_pubkey, tbs_data, sig_bytes) else {
             return err_alert;
         }
         return TlsAlert.CloseNotify;
@@ -1570,7 +1635,7 @@ fn x509_check_child_sans_against_nc(
     child_raw:  const u8[:],
 ) -> bool {
     guard child_cert.has_san else { return true; }
-    var child_sans: SanEntry[..16] = [];
+    var child_sans: SanEntry[..64] = [];
     guard get_cert_san_extension(child_cert, child_raw, child_sans) else { return false; }
     for s_idx in child_sans.len {
         if !check_name_constraints(nc_entries, child_sans[s_idx]) {

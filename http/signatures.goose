@@ -78,27 +78,25 @@ fn has_valid_unique_components(components: const u8[..32][..16]&) -> bool {
 // Example:
 //   url_str = "https://example.com/foo?bar=1", comp = "@authority"
 //   returns: true, out populated with "example.com"
-fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024]&) -> bool {
-    guard is_valid_component_name(comp) else {
-        out.clear();
-        return false;
-    }
+fn extract_url_component<B>(url_str: const u8[:], comp: const u8[:], out: B&) -> bool {
+    out.clear();
+    guard is_valid_component_name(comp) else { return false; }
     let view, err = core::parse_url_view(url_str);
-    guard view.valid else {
-        out.clear();
-        return false;
-    }
+    let _ = err;
+    guard view.valid else { return false; }
     if comp == "@authority" {
-        guard view.host.len + 8 <= out.cap else {
+        guard out.try_append(view.host) else {
             out.clear();
             return false;
         }
-        out.clear();
-        out.append(view.host);
         to_lower(out[..]);
         if view.port > 0 && !is_default_port(view.scheme, view.port) {
-            out.push(':');
-            view.port.format_i64_dec(out);
+            var pbuf: u8[..16] = [];
+            view.port.format_i64_dec(pbuf);
+            guard out.try_push(':') && out.try_append(pbuf[..]) else {
+                out.clear();
+                return false;
+            }
         }
         return true;
     }
@@ -120,14 +118,9 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
     }
     if comp == "@request-target" {
         let p = if view.pathname.len > 0 { view.pathname } else { "/" };
-        guard p.len + view.search.len <= out.cap else {
+        guard out.try_append(p) && (view.search.len == 0 || out.try_append(view.search)) else {
             out.clear();
             return false;
-        }
-        out.clear();
-        out.append(p);
-        if view.search.len > 0 {
-            out.append(view.search);
         }
         return true;
     }
@@ -139,8 +132,25 @@ fn extract_url_component(url_str: const u8[:], comp: const u8[:], out: u8[..1024
         to_lower(out[..]);
         return true;
     }
-    out.clear();
     return false;
+}
+
+// RFC 9421 Section 2.1: HTTP Fields - Strip leading/trailing OWS and fold obs-fold CRLF+WSP to SP while preserving internal whitespace.
+//
+// Example:
+//   s = "a\r\n   b", start = 1
+//   returns: next = 6 (points to 'b'), ok = true
+inline fn consume_obs_fold_wsp(s: const u8[:], start: i64) -> i64, bool {
+    let lf_idx = core::add_sat_i64(start, 1);
+    let ws_start = core::add_sat_i64(start, 2);
+    guard ws_start < s.len && s[lf_idx] == '\n' && core::is_lws(s[ws_start]) else {
+        return start, false;
+    }
+    var next = core::add_sat_i64(ws_start, 1);
+    while next < s.len && core::is_lws(s[next]) {
+        next = core::add_sat_i64(next, 1);
+    }
+    return next, true;
 }
 
 fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
@@ -148,18 +158,23 @@ fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
     if trimmed.len == 0 {
         return true;
     }
-    var prev_space = false;
-    for i in trimmed.len {
+    var i: i64 = 0;
+    while i < trimmed.len {
         let ch = trimmed[i];
-        let is_ws = ch == ' ' || ch == '\t';
-        if is_ws && prev_space {
+        if ch == '\r' {
+            let next_i, ok_fold = consume_obs_fold_wsp(trimmed, i);
+            guard ok_fold && out.try_push(' ' as u8) else {
+                out.clear();
+                return false;
+            }
+            i = next_i;
             continue;
         }
-        guard out.try_push(if is_ws { ' ' as u8 } else { ch }) else {
+        guard ch != '\n' && out.try_push(ch) else {
             out.clear();
             return false;
         }
-        prev_space = is_ws;
+        i = core::add_sat_i64(i, 1);
     }
     return true;
 }
@@ -177,7 +192,7 @@ fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:]
     var found = false;
     for &e in headers.entries {
         guard entry_name(headers, e).eq_ascii_fold(name) else { continue; }
-        var norm_buf: u8[..1024] = [];
+        var norm_buf: u8[..4096] = [];
         guard normalize_header_value(entry_value(headers, e), norm_buf) else {
             out.clear();
             return false;
@@ -202,13 +217,16 @@ fn extract_combined_header_value<B>(headers: const HeaderMap&, name: const u8[:]
 // Example:
 //   req has method "GET", comp = "@method"
 //   returns: true, out populated with "GET"
-fn extract_component_value(req: const Request&, comp: const u8[:], out: u8[..1024]&) -> bool {
+fn extract_component_value<B>(req: const Request&, comp: const u8[:], out: B&) -> bool {
     guard is_valid_component_name(comp) else {
         out.clear();
         return false;
     }
     if comp == "@method" {
-        let _ = out.try_set(req.method[..]);
+        guard out.try_set(req.method[..]) else {
+            out.clear();
+            return false;
+        }
         return true;
     }
     if comp == "@target-uri" {
@@ -235,17 +253,18 @@ fn strip_req_component_suffix(comp: const u8[:]) -> const u8[:], bool {
 // Example:
 //   res has status 200, comp = "@status"
 //   returns: true, out populated with "200"
-fn extract_response_component_value(
+fn extract_response_component_value<B>(
     res:  const Response&,
     req:  const Request&,
     comp: const u8[:],
-    out:  u8[..1024]&,
+    out:  B&,
 ) -> bool {
     out.clear();
     guard is_valid_component_name(comp) else { return false; }
     if comp == "@status" {
-        res.status_code.format_i64_dec(out);
-        return true;
+        var st_buf: u8[..16] = [];
+        res.status_code.format_i64_dec(st_buf);
+        return out.try_set(st_buf[..]);
     }
     let req_comp, is_req = strip_req_component_suffix(comp);
     if is_req {
@@ -254,58 +273,80 @@ fn extract_response_component_value(
     return extract_combined_header_value(res.headers, comp, out);
 }
 
-fn append_escaped_string_param<B>(s: const u8[:], out: B&) {
+fn append_escaped_string_param<B>(s: const u8[:], out: B&) -> bool {
     for b in s {
-        if b == '"' || b == '\\' {
-            out.push('\\' as u8);
+        if (b == '"' || b == '\\') && !out.try_push('\\' as u8) {
+            return false;
         }
-        out.push(b);
+        guard out.try_push(b) else { return false; }
     }
+    return true;
+}
+
+fn append_named_sig_int_param<B>(key: const u8[:], val: i64, out: B&) -> bool {
+    var ibuf: u8[..24] = [];
+    val.format_i64_dec(ibuf);
+    return out.try_push(';' as u8) && out.try_append(key) && out.try_push('=' as u8) && out.try_append(ibuf[..]);
+}
+
+fn append_named_sig_str_param<B>(key: const u8[:], val: const u8[:], out: B&) -> bool {
+    guard out.try_push(';' as u8) && out.try_append(key) && out.try_append("=\"") else { return false; }
+    return append_escaped_string_param(val, out) && out.try_push('"' as u8);
 }
 
 // Formats the "@signature-params" inner-list and parameters (RFC 9421 Section 2.5)
-fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) {
-    out.push('(' as u8);
+fn format_signature_params<B>(params: const HttpSignatureParams&, out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard out.try_push('(' as u8) else { return false; }
     for idx in params.components.len {
-        if idx > 0 {
-            out.push(' ' as u8);
-        }
+        if idx > 0 && !out.try_push(' ' as u8) { return false; }
         let base_comp, has_req = strip_req_component_suffix(params.components[idx][..]);
-        out.push('"' as u8);
-        out.append(base_comp);
-        out.push('"' as u8);
-        if has_req {
-            out.append(";req");
+        guard out.try_push('"' as u8) && out.try_append(base_comp) && out.try_push('"' as u8) else {
+            return false;
         }
+        if has_req && !out.try_append(";req") { return false; }
     }
-    out.push(')' as u8);
+    guard out.try_push(')' as u8) else { return false; }
 
-    if params.created > 0 {
-        out.append(";created=");
-        params.created.format_i64_dec(out);
-    }
-    if params.expires > 0 {
-        out.append(";expires=");
-        params.expires.format_i64_dec(out);
-    }
-    if params.key_id.len > 0 {
-        out.append(";keyid=\"");
-        append_escaped_string_param(params.key_id[..], out);
-        out.push('"' as u8);
-    }
-    if params.alg.len > 0 {
-        out.append(";alg=\"");
-        append_escaped_string_param(params.alg[..], out);
-        out.push('"' as u8);
-    }
-    if params.nonce.len > 0 {
-        out.append(";nonce=\"");
-        append_escaped_string_param(params.nonce[..], out);
-        out.push('"' as u8);
-    }
+    if params.created > 0 && !append_named_sig_int_param("created", params.created, out) { return false; }
+    if params.expires > 0 && !append_named_sig_int_param("expires", params.expires, out) { return false; }
+    if params.key_id.len > 0 && !append_named_sig_str_param("keyid", params.key_id[..], out) { return false; }
+    if params.alg.len > 0 && !append_named_sig_str_param("alg", params.alg[..], out) { return false; }
+    if params.nonce.len > 0 && !append_named_sig_str_param("nonce", params.nonce[..], out) { return false; }
+    committed = true;
+    return true;
 }
 
 // ---- Signature Base Generation (RFC 9421 Section 2.5) --------------------
+
+fn build_signature_base_from_params_line<B>(
+    req:             const Request&,
+    components:      const u8[..32][..16]&,
+    sig_params_line: const u8[:],
+    out:             B&,
+) -> bool {
+    out.clear();
+    guard has_valid_unique_components(components) else { return false; }
+    var committed = false;
+    defer if !committed { out.clear(); };
+    for idx in components.len {
+        let comp = components[idx][..];
+        var val: u8[..4096] = [];
+        guard extract_component_value(req, comp, val) else { return false; }
+        guard out.try_push('"' as u8) &&
+              out.try_append(comp) &&
+              out.try_append("\": ") &&
+              out.try_append(val[..]) &&
+              out.try_push('\n' as u8) else {
+            return false;
+        }
+    }
+    guard out.try_append("\"@signature-params\": ") && out.try_append(sig_params_line) else { return false; }
+    committed = true;
+    return true;
+}
 
 fn build_signature_base<B>(
     req:    const Request&,
@@ -313,24 +354,36 @@ fn build_signature_base<B>(
     out:    B&,
 ) -> bool {
     out.clear();
-    guard has_valid_unique_components(params.components) else { return false; }
+    var sp_line: u8[..2048] = [];
+    guard format_signature_params(params, sp_line) else { return false; }
+    return build_signature_base_from_params_line(req, params.components, sp_line[..], out);
+}
+
+fn build_response_signature_base_from_params_line<B>(
+    res:             const Response&,
+    req:             const Request&,
+    components:      const u8[..32][..16]&,
+    sig_params_line: const u8[:],
+    out:             B&,
+) -> bool {
+    out.clear();
+    guard has_valid_unique_components(components) else { return false; }
     var committed = false;
     defer if !committed { out.clear(); };
-    for idx in params.components.len {
-        let comp = params.components[idx][..];
-        var val: u8[..1024] = [];
-        guard extract_component_value(req, comp, val) else {
+    for idx in components.len {
+        let comp = components[idx][..];
+        var val: u8[..4096] = [];
+        guard extract_response_component_value(res, req, comp, val) else { return false; }
+        let base_comp, has_req = strip_req_component_suffix(comp);
+        guard out.try_push('"' as u8) && out.try_append(base_comp) && out.try_push('"' as u8) else {
             return false;
         }
-        out.push('"' as u8);
-        out.append(comp);
-        out.append("\": ");
-        out.append(val[..]);
-        out.push('\n' as u8);
+        if has_req && !out.try_append(";req") { return false; }
+        guard out.try_append(": ") && out.try_append(val[..]) && out.try_push('\n' as u8) else {
+            return false;
+        }
     }
-
-    out.append("\"@signature-params\": ");
-    format_signature_params(params, out);
+    guard out.try_append("\"@signature-params\": ") && out.try_append(sig_params_line) else { return false; }
     committed = true;
     return true;
 }
@@ -342,31 +395,9 @@ fn build_response_signature_base<B>(
     out:    B&,
 ) -> bool {
     out.clear();
-    guard has_valid_unique_components(params.components) else { return false; }
-    var committed = false;
-    defer if !committed { out.clear(); };
-    for idx in params.components.len {
-        let comp = params.components[idx][..];
-        var val: u8[..1024] = [];
-        guard extract_response_component_value(res, req, comp, val) else {
-            return false;
-        }
-        let base_comp, has_req = strip_req_component_suffix(comp);
-        out.push('"' as u8);
-        out.append(base_comp);
-        out.push('"' as u8);
-        if has_req {
-            out.append(";req");
-        }
-        out.append(": ");
-        out.append(val[..]);
-        out.push('\n' as u8);
-    }
-
-    out.append("\"@signature-params\": ");
-    format_signature_params(params, out);
-    committed = true;
-    return true;
+    var sp_line: u8[..2048] = [];
+    guard format_signature_params(params, sp_line) else { return false; }
+    return build_response_signature_base_from_params_line(res, req, params.components, sp_line[..], out);
 }
 
 // ---- Cryptographic Engine (HMAC-SHA256, Ed25519, ECDSA-P256, RSA) --------
@@ -491,7 +522,7 @@ fn verify_crypto_signature(
         return core::ed25519_verify(pub_arr, sig_base, sig_arr);
     } else if alg == rfc::SIG_ALG_ECDSA_P256_SHA256 {
         guard received_sig.len == 64 else { return false; }
-        return core::ecdsa_p256_verify(key_bytes, sig_base, received_sig);
+        return core::ecdsa_p256_verify_p1363(key_bytes, sig_base, received_sig);
     } else if alg == rfc::SIG_ALG_RSA_V1_5_SHA256 {
         if key_bytes.len > 0 && key_bytes[0] == 0x30 {
             return core::rsa_pkcs1_sha256_verify_der(key_bytes, sig_base, received_sig);
@@ -525,21 +556,22 @@ fn extract_signature_value(header_val: const u8[:], label: const u8[:]) -> const
     return "", false;
 }
 
+// RFC 9421 Section 2.3: Signature Parameters - Reject negative timestamps and enforce clock skew.
 fn validate_signature_created(created: i64, expires: i64, now_sec: i64) -> bool {
+    guard created >= 0 && expires >= 0 else { return false; }
     if created > 0 && expires > 0 {
         guard created < expires else { return false; }
     }
     if created > 0 && now_sec > 0 {
-        let max_skew = now_sec + 60;
-        guard max_skew >= created else { return false; }
+        guard core::add_sat_i64(now_sec, 60) >= created else { return false; }
     }
     return true;
 }
 
 fn validate_signature_expires(expires: i64, now_sec: i64) -> bool {
+    guard expires >= 0 else { return false; }
     if expires > 0 && now_sec > 0 {
-        let min_skew = now_sec - 60;
-        guard min_skew <= expires else { return false; }
+        guard core::sub_sat_i64(now_sec, 60) <= expires else { return false; }
     }
     return true;
 }
@@ -549,37 +581,46 @@ fn validate_signature_timestamps(params: const HttpSignatureParams&, now_sec: i6
     return validate_signature_expires(params.expires, now_sec);
 }
 
-fn format_signature_header_value(label: const u8[:], b64_sig: const u8[:], out: u8[..1024]&) {
+fn format_signature_header_value<B>(label: const u8[:], b64_sig: const u8[:], out: B&) -> bool {
     out.clear();
-    out.append(label);
-    out.append("=:");
-    out.append(b64_sig);
-    out.push(':');
+    guard out.try_append(label) && out.try_append("=:") && out.try_append(b64_sig) && out.try_push(':') else {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
-fn format_signature_input_header_value(params: const HttpSignatureParams&, out: u8[..1024]&) {
+fn format_signature_input_header_value<B>(params: const HttpSignatureParams&, out: B&) -> bool {
     out.clear();
-    out.append(params.label[..]);
-    out.push('=');
-    format_signature_params(params, out);
+    guard out.try_append(params.label[..]) && out.try_push('=') && format_signature_params(params, out) else {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
-fn attach_request_signature_headers(req: Request&, params: const HttpSignatureParams&, b64_sig: const u8[:]) {
-    var input_hdr: u8[..1024] = [];
-    format_signature_input_header_value(params, input_hdr);
-    var sig_hdr: u8[..1024] = [];
-    format_signature_header_value(params.label[..], b64_sig, sig_hdr);
+fn attach_request_signature_headers(req: Request&, params: const HttpSignatureParams&, b64_sig: const u8[:]) -> bool {
+    var input_hdr: u8[..4096] = [];
+    var sig_hdr:   u8[..4096] = [];
+    guard format_signature_input_header_value(params, input_hdr) &&
+          format_signature_header_value(params.label[..], b64_sig, sig_hdr) else {
+        return false;
+    }
     set_header(req, rfc::HEADER_SIGNATURE_INPUT, input_hdr[..]);
     set_header(req, rfc::HEADER_SIGNATURE, sig_hdr[..]);
+    return true;
 }
 
-fn attach_response_signature_headers(res: Response&, params: const HttpSignatureParams&, b64_sig: const u8[:]) {
-    var input_hdr: u8[..1024] = [];
-    format_signature_input_header_value(params, input_hdr);
-    var sig_hdr: u8[..1024] = [];
-    format_signature_header_value(params.label[..], b64_sig, sig_hdr);
+fn attach_response_signature_headers(res: Response&, params: const HttpSignatureParams&, b64_sig: const u8[:]) -> bool {
+    var input_hdr: u8[..4096] = [];
+    var sig_hdr:   u8[..4096] = [];
+    guard format_signature_input_header_value(params, input_hdr) &&
+          format_signature_header_value(params.label[..], b64_sig, sig_hdr) else {
+        return false;
+    }
     res.set_header(rfc::HEADER_SIGNATURE_INPUT, input_hdr[..]);
     res.set_header(rfc::HEADER_SIGNATURE, sig_hdr[..]);
+    return true;
 }
 
 // ---- Request Signing & Verification --------------------------------------
@@ -590,7 +631,8 @@ fn sign_http_request_with<Signer>(
     params: const HttpSignatureParams&,
     signer: Signer&,
 ) -> bool {
-    var sig_base: u8[..2048] = [];
+    guard validate_signature_timestamps(params, 0) else { return false; }
+    var sig_base: u8[..4096] = [];
     guard build_signature_base(req, params, sig_base) else {
         return false;
     }
@@ -602,8 +644,7 @@ fn sign_http_request_with<Signer>(
 
     var b64_sig: u8[..1024] = [];
     core::base64_encode(raw_sig[..], b64_sig);
-    attach_request_signature_headers(req, params, b64_sig[..]);
-    return true;
+    return attach_request_signature_headers(req, params, b64_sig[..]);
 }
 
 // Signs an HTTP request according to RFC 9421 and attaches Signature-Input and Signature headers.
@@ -628,63 +669,250 @@ fn matches_signature_component(item: const SfItem&, exp_comp: const u8[:]) -> bo
     return has_req_param && exp_has_req && item.str_val == base_comp;
 }
 
-fn verify_signature_input_label(
-    sig_input_val: const u8[:],
-    label:         const u8[:],
-    params:        const HttpSignatureParams&,
+fn append_wire_sf_bare<B>(
+    kind:     SfType,
+    int_val:  i64,
+    str_val:  const u8[:],
+    bool_val: bool,
+    out:      B&,
 ) -> bool {
-    guard has_valid_unique_components(params.components) else { return false; }
+    if kind == SfType.String {
+        return out.try_push('"' as u8) && out.try_append(str_val) && out.try_push('"' as u8);
+    }
+    if kind == SfType.Integer {
+        var ibuf: u8[..24] = [];
+        int_val.format_i64_dec(ibuf);
+        return out.try_append(ibuf[..]);
+    }
+    if kind == SfType.Boolean {
+        return out.try_append(if bool_val { "?1" } else { "?0" });
+    }
+    if kind == SfType.Token {
+        return out.try_append(str_val);
+    }
+    if kind == SfType.Binary {
+        return out.try_push(':' as u8) && out.try_append(str_val) && out.try_push(':' as u8);
+    }
+    if kind == SfType.Decimal {
+        var dbuf: u8[..32] = [];
+        serialize_sfv_decimal(int_val, dbuf);
+        return out.try_append(dbuf[..]);
+    }
+    if kind == SfType.Date {
+        var dtbuf: u8[..24] = [];
+        dtbuf.push('@' as u8);
+        int_val.format_i64_dec(dtbuf);
+        return out.try_append(dtbuf[..]);
+    }
+    return out.try_append("%\"") && out.try_append(str_val) && out.try_push('"' as u8);
+}
+
+fn append_wire_item_params<B>(params: const SfItemParam[:], out: B&) -> bool {
+    for &p in params {
+        guard out.try_push(';' as u8) && out.try_append(p.key[..]) else { return false; }
+        if p.kind == SfType.Boolean && p.bool_val {
+            continue;
+        }
+        guard out.try_push('=' as u8) &&
+              append_wire_sf_bare(p.kind, p.int_val, p.str_val[..], p.bool_val, out) else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn append_wire_dict_params<B>(params: const SfParameter[:], out: B&) -> bool {
+    for &p in params {
+        guard out.try_push(';' as u8) && out.try_append(p.key) else { return false; }
+        if p.item.kind == SfType.Boolean && p.item.bool_val {
+            continue;
+        }
+        guard out.try_push('=' as u8) &&
+              append_wire_sf_bare(p.item.kind, p.item.int_val, p.item.str_val, p.item.bool_val, out) else {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn serialize_wire_sig_params<B>(entry: const SfDictEntry&, out: B&) -> bool {
+    out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
+    guard out.try_push('(' as u8) else { return false; }
+    for idx in entry.inner_items.len {
+        if idx > 0 && !out.try_push(' ' as u8) { return false; }
+        let it = &entry.inner_items[idx];
+        guard append_wire_sf_bare(it.kind, it.int_val, it.str_val, it.bool_val, out) &&
+              append_wire_item_params(it.params[..], out) else {
+            return false;
+        }
+    }
+    guard out.try_push(')' as u8) && append_wire_dict_params(entry.params[..], out) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
+inline fn sf_str_param_matches(item: const SfItem&, expected: const u8[:]) -> bool {
+    var unq: u8[..128] = [];
+    return item.kind == SfType.String && sf_unescape_string(item.str_val, unq) && unq[..] == expected;
+}
+
+fn check_sig_entry_param(
+    p:            const SfParameter&,
+    params:       const HttpSignatureParams&,
+    seen_mask:    u32&,
+    wire_created: i64&,
+    wire_expires: i64&,
+) -> bool {
+    if p.key == "alg" {
+        return sf_str_param_matches(p.item, params.alg[..]);
+    }
+    if p.key == "keyid" {
+        guard sf_str_param_matches(p.item, params.key_id[..]) else { return false; }
+        seen_mask = seen_mask | 1;
+        return true;
+    }
+    if p.key == "created" {
+        guard p.item.kind == SfType.Integer && p.item.int_val >= 0 &&
+              (params.created == 0 || p.item.int_val == params.created) else {
+            return false;
+        }
+        wire_created = p.item.int_val;
+        seen_mask = seen_mask | 2;
+        return true;
+    }
+    if p.key == "expires" {
+        guard p.item.kind == SfType.Integer && p.item.int_val >= 0 &&
+              (params.expires == 0 || p.item.int_val == params.expires) else {
+            return false;
+        }
+        wire_expires = p.item.int_val;
+        seen_mask = seen_mask | 4;
+        return true;
+    }
+    if p.key == "nonce" {
+        guard sf_str_param_matches(p.item, params.nonce[..]) else { return false; }
+        seen_mask = seen_mask | 8;
+        return true;
+    }
+    return true;
+}
+
+fn verify_sig_entry_match(
+    entry:        const SfDictEntry&,
+    params:       const HttpSignatureParams&,
+    wire_created: i64&,
+    wire_expires: i64&,
+) -> bool {
+    guard entry.inner_items.len == params.components.len else { return false; }
+    for i in params.components.len {
+        guard matches_signature_component(entry.inner_items[i], params.components[i][..]) else {
+            return false;
+        }
+    }
+    var seen_mask: u32 = 0;
+    for &p in entry.params {
+        guard check_sig_entry_param(p, params, seen_mask, wire_created, wire_expires) else {
+            return false;
+        }
+    }
+    if params.key_id.len > 0 && (seen_mask & 1) == 0 { return false; }
+    if params.created > 0 && (seen_mask & 2) == 0 { return false; }
+    if params.expires > 0 && (seen_mask & 4) == 0 { return false; }
+    if params.nonce.len > 0 && (seen_mask & 8) == 0 { return false; }
+    return true;
+}
+
+// RFC 9421 Section 3.2: Verifying a Signature - Match label, components, and wire parameters.
+fn find_verified_sig_params_line<B>(
+    sig_input_val:  const u8[:],
+    label:          const u8[:],
+    params:         const HttpSignatureParams&,
+    out_sig_params: B&,
+    out_created:    i64&,
+    out_expires:    i64&,
+) -> bool {
+    out_sig_params.clear();
+    out_created = 0;
+    out_expires = 0;
+    guard params.created >= 0 && params.expires >= 0 && has_valid_unique_components(params.components) else {
+        return false;
+    }
     var entries: SfDictEntry[..16] = [];
     guard parse_sf_dict(sig_input_val, entries) else { return false; }
     for &entry in entries {
         guard entry.key == label && entry.is_inner_list else { continue; }
-        guard entry.inner_items.len == params.components.len else { return false; }
-        for i in params.components.len {
-            guard matches_signature_component(entry.inner_items[i], params.components[i][..]) else {
-                return false;
-            }
+        var wc: i64 = 0;
+        var we: i64 = 0;
+        guard verify_sig_entry_match(entry, params, wc, we) &&
+              serialize_wire_sig_params(entry, out_sig_params) else {
+            out_sig_params.clear();
+            return false;
         }
-        for &p in entry.params {
-            if p.key == "alg" {
-                guard p.item.kind == SfType.String && p.item.str_val == params.alg[..] else { return false; }
-            } else if p.key == "keyid" {
-                guard p.item.kind == SfType.String && p.item.str_val == params.key_id[..] else { return false; }
-            } else if p.key == "created" {
-                guard p.item.kind == SfType.Integer && p.item.int_val == params.created else { return false; }
-            } else if p.key == "expires" {
-                guard p.item.kind == SfType.Integer && p.item.int_val == params.expires else { return false; }
-            } else if p.key == "nonce" {
-                guard p.item.kind == SfType.String && p.item.str_val == params.nonce[..] else { return false; }
-            }
-        }
+        out_created = wc;
+        out_expires = we;
         return true;
     }
     return false;
 }
 
-fn validate_and_decode_signature_headers(
-    headers: const HeaderMap&,
-    label:   const u8[:],
-    params:  const HttpSignatureParams&,
-    out_sig: u8[..512]&,
+fn verify_signature_input_label(
+    sig_input_val: const u8[:],
+    label:         const u8[:],
+    params:        const HttpSignatureParams&,
 ) -> bool {
+    var wire_sp: u8[..2048] = [];
+    var wc:      i64        = 0;
+    var we:      i64        = 0;
+    return find_verified_sig_params_line(sig_input_val, label, params, wire_sp, wc, we);
+}
+
+fn validate_and_decode_signature_headers(
+    headers:        const HeaderMap&,
+    label:          const u8[:],
+    params:         const HttpSignatureParams&,
+    now_sec:        i64,
+    out_sig_params: u8[..2048]&,
+    out_sig:        u8[..512]&,
+) -> bool {
+    out_sig_params.clear();
     out_sig.clear();
-    var comb_in: u8[..1024] = [];
-    let ok_in = headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 1024);
-    let sig_input_val = if ok_in { comb_in[..] } else { headers.get_header(rfc::HEADER_SIGNATURE_INPUT) };
-    guard sig_input_val.len > 0 && verify_signature_input_label(sig_input_val, label, params) else {
+    var comb_in: u8[..4096] = [];
+    guard headers.get_header(rfc::HEADER_SIGNATURE_INPUT).len > 0 &&
+          headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 4096) else {
+        return false;
+    }
+    var wire_created: i64 = 0;
+    var wire_expires: i64 = 0;
+    guard find_verified_sig_params_line(
+        comb_in[..],
+        label,
+        params,
+        out_sig_params,
+        wire_created,
+        wire_expires,
+    ) else {
+        return false;
+    }
+    guard validate_signature_created(wire_created, wire_expires, now_sec) &&
+          validate_signature_expires(wire_expires, now_sec) else {
+        out_sig_params.clear();
         return false;
     }
 
-    var comb_sig: u8[..1024] = [];
-    let ok_sig = headers.get_combined(rfc::HEADER_SIGNATURE, comb_sig, 1024);
-    let sig_header_val = if ok_sig { comb_sig[..] } else { headers.get_header(rfc::HEADER_SIGNATURE) };
-    guard sig_header_val.len > 0 else { return false; }
+    var comb_sig: u8[..4096] = [];
+    guard headers.get_header(rfc::HEADER_SIGNATURE).len > 0 &&
+          headers.get_combined(rfc::HEADER_SIGNATURE, comb_sig, 4096) else {
+        out_sig_params.clear();
+        return false;
+    }
 
-    let received_b64, ok = extract_signature_value(sig_header_val, label);
-    guard ok else { return false; }
-
-    guard core::base64_decode(received_b64, out_sig) else {
+    let received_b64, ok = extract_signature_value(comb_sig[..], label);
+    guard ok && core::base64_decode(received_b64, out_sig) else {
+        out_sig_params.clear();
         out_sig.clear();
         return false;
     }
@@ -702,11 +930,21 @@ fn verify_http_signature_with<Verifier>(
     guard label == params.label else { return false; }
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
-    var sig_base: u8[..2048] = [];
-    guard build_signature_base(req, params, sig_base) else { return false; }
+    var wire_sig_params: u8[..2048] = [];
+    var received_sig:    u8[..512]  = [];
+    guard validate_and_decode_signature_headers(
+        req.headers,
+        label,
+        params,
+        now_sec,
+        wire_sig_params,
+        received_sig,
+    ) else {
+        return false;
+    }
 
-    var received_sig: u8[..512] = [];
-    guard validate_and_decode_signature_headers(req.headers, label, params, received_sig) else {
+    var sig_base: u8[..4096] = [];
+    guard build_signature_base_from_params_line(req, params.components, wire_sig_params[..], sig_base) else {
         return false;
     }
 
@@ -736,7 +974,8 @@ fn sign_http_response_with<Signer>(
     params: const HttpSignatureParams&,
     signer: Signer&,
 ) -> bool {
-    var sig_base: u8[..2048] = [];
+    guard validate_signature_timestamps(params, 0) else { return false; }
+    var sig_base: u8[..4096] = [];
     guard build_response_signature_base(res, req, params, sig_base) else {
         return false;
     }
@@ -748,8 +987,7 @@ fn sign_http_response_with<Signer>(
 
     var b64_sig: u8[..1024] = [];
     core::base64_encode(raw_sig[..], b64_sig);
-    attach_response_signature_headers(res, params, b64_sig[..]);
-    return true;
+    return attach_response_signature_headers(res, params, b64_sig[..]);
 }
 
 // Signs an HTTP response according to RFC 9421.
@@ -777,11 +1015,27 @@ fn verify_http_response_signature_with<Verifier>(
     guard label == params.label else { return false; }
     guard validate_signature_timestamps(params, now_sec) else { return false; }
 
-    var sig_base: u8[..2048] = [];
-    guard build_response_signature_base(res, req, params, sig_base) else { return false; }
+    var wire_sig_params: u8[..2048] = [];
+    var received_sig:    u8[..512]  = [];
+    guard validate_and_decode_signature_headers(
+        res.headers,
+        label,
+        params,
+        now_sec,
+        wire_sig_params,
+        received_sig,
+    ) else {
+        return false;
+    }
 
-    var received_sig: u8[..512] = [];
-    guard validate_and_decode_signature_headers(res.headers, label, params, received_sig) else {
+    var sig_base: u8[..4096] = [];
+    guard build_response_signature_base_from_params_line(
+        res,
+        req,
+        params.components,
+        wire_sig_params[..],
+        sig_base,
+    ) else {
         return false;
     }
 

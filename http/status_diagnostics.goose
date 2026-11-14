@@ -222,7 +222,7 @@ fn apply_cache_status_param(entry: CacheStatusEntry&, name: const u8[:], val: co
         guard entry.fwd.try_set(val) else { return false; }
     } else if name.eq_ascii_fold("fwd-status") {
         let fwd_v, ok = val.parse_i64_dec();
-        guard ok && fwd_v >= 0 && fwd_v <= 999 else { return false; }
+        guard ok && fwd_v >= 100 && fwd_v <= 599 else { return false; }
         entry.fwd_status = fwd_v as! i32;
     } else if name.eq_ascii_fold("key") {
         guard entry.key.try_set(val) else { return false; }
@@ -340,7 +340,7 @@ fn apply_proxy_status_param(entry: ProxyStatusEntry&, name: const u8[:], val: co
         guard entry.details.try_set(val) else { return false; }
     } else if name.eq_ascii_fold("received-status") {
         let rec_v, ok = val.parse_i64_dec();
-        guard ok && rec_v >= 0 && rec_v <= 999 else { return false; }
+        guard ok && rec_v >= 100 && rec_v <= 599 else { return false; }
         entry.received_status = rec_v as! i32;
     }
     return true;

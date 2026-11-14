@@ -51,6 +51,16 @@ enum EarlyDataAccepted {
     Accepted,
 }
 
+enum PostHandshakeAuth {
+    Disabled,
+    Offered,
+}
+
+enum CertCompressionOffer {
+    NotOffered,
+    Offered,
+}
+
 fn client_wait_pre_transition(current: HsState, incoming_msg_type: u8, is_hrr: bool) -> HsState, bool {
     if current == HsState.ClientWaitSH {
         if incoming_msg_type == rfc::TLS_HS_SERVER_HELLO {
@@ -68,7 +78,12 @@ fn client_wait_pre_transition(current: HsState, incoming_msg_type: u8, is_hrr: b
     return HsState.Closed, false;
 }
 
-fn client_wait_cert_cr_transition(incoming_msg_type: u8, is_psk: bool) -> HsState, bool {
+// RFC 8879 Section 4: Compressed Certificate Message - Accept CompressedCertificate only when compress_certificate was advertised.
+fn client_wait_cert_cr_transition(
+    incoming_msg_type: u8,
+    is_psk:            bool,
+    cert_comp:         CertCompressionOffer = CertCompressionOffer.NotOffered,
+) -> HsState, bool {
     if is_psk {
         // In PSK mode: Certificate and CertificateVerify are omitted; Finished transitions directly to Connected
         if incoming_msg_type == rfc::TLS_HS_FINISHED {
@@ -79,16 +94,26 @@ fn client_wait_cert_cr_transition(incoming_msg_type: u8, is_psk: bool) -> HsStat
     if incoming_msg_type == rfc::TLS_HS_CERTIFICATE_REQUEST {
         return HsState.ClientWaitCert, true;
     }
-    if incoming_msg_type == rfc::TLS_HS_CERTIFICATE || incoming_msg_type == rfc::TLS_HS_COMPRESSED_CERTIFICATE {
+    if incoming_msg_type == rfc::TLS_HS_CERTIFICATE {
+        return HsState.ClientWaitCV, true;
+    }
+    if incoming_msg_type == rfc::TLS_HS_COMPRESSED_CERTIFICATE && cert_comp == CertCompressionOffer.Offered {
         return HsState.ClientWaitCV, true;
     }
     // Strict RFC 8446 Invariant: Finished received before Certificate/CertificateVerify MUST be rejected
     return HsState.Closed, false;
 }
 
-fn client_wait_cert_or_cv_transition(current: HsState, incoming_msg_type: u8) -> HsState, bool {
+fn client_wait_cert_or_cv_transition(
+    current:           HsState,
+    incoming_msg_type: u8,
+    cert_comp:         CertCompressionOffer = CertCompressionOffer.NotOffered,
+) -> HsState, bool {
     if current == HsState.ClientWaitCert {
-        if incoming_msg_type == rfc::TLS_HS_CERTIFICATE || incoming_msg_type == rfc::TLS_HS_COMPRESSED_CERTIFICATE {
+        if incoming_msg_type == rfc::TLS_HS_CERTIFICATE {
+            return HsState.ClientWaitCV, true;
+        }
+        if incoming_msg_type == rfc::TLS_HS_COMPRESSED_CERTIFICATE && cert_comp == CertCompressionOffer.Offered {
             return HsState.ClientWaitCV, true;
         }
     } else if current == HsState.ClientWaitCV {
@@ -99,17 +124,21 @@ fn client_wait_cert_or_cv_transition(current: HsState, incoming_msg_type: u8) ->
     return HsState.Closed, false;
 }
 
-fn client_wait_post_transition(current: HsState, incoming_msg_type: u8) -> HsState, bool {
+// RFC 8446 Section 4.2.6: Post-Handshake Client Authentication - Reject post-handshake CertificateRequest unless post_handshake_auth was offered.
+fn client_wait_post_transition(
+    current:           HsState,
+    incoming_msg_type: u8,
+    pha:               PostHandshakeAuth = PostHandshakeAuth.Disabled,
+) -> HsState, bool {
     if current == HsState.ClientWaitFinished {
         if incoming_msg_type == rfc::TLS_HS_FINISHED {
             return HsState.Connected, true;
         }
     } else if current == HsState.Connected {
-        // RFC 8446 Section 4.6 & Section 4.6.2: Post-handshake messages from server
-        let is_post_hs = incoming_msg_type == rfc::TLS_HS_NEW_SESSION_TICKET
-            || incoming_msg_type == rfc::TLS_HS_KEY_UPDATE
-            || incoming_msg_type == rfc::TLS_HS_CERTIFICATE_REQUEST;
-        if is_post_hs {
+        if incoming_msg_type == rfc::TLS_HS_NEW_SESSION_TICKET || incoming_msg_type == rfc::TLS_HS_KEY_UPDATE {
+            return HsState.Connected, true;
+        }
+        if incoming_msg_type == rfc::TLS_HS_CERTIFICATE_REQUEST && pha == PostHandshakeAuth.Offered {
             return HsState.Connected, true;
         }
     }
@@ -120,7 +149,7 @@ fn client_wait_post_transition(current: HsState, incoming_msg_type: u8) -> HsSta
 // Enforces:
 // - Unexpected messages in wrong state (e.g. Finished before Certificate/CertificateVerify rejected in full handshake).
 // - EncryptedExtensions strictly rejected outside ClientWaitEE.
-// - Post-handshake: only NewSessionTicket and KeyUpdate accepted from server.
+// - Post-handshake: NewSessionTicket and KeyUpdate accepted; CertificateRequest requires PostHandshakeAuth.Offered.
 // - HelloRetryRequest: client transitions to ClientWaitSH waiting for ServerHello2 (not ClientWaitEE).
 // - Synthetic message_hash (254) strictly rejected from wire.
 fn validate_client_handshake_transition(
@@ -128,18 +157,20 @@ fn validate_client_handshake_transition(
     incoming_msg_type: u8,
     mode:              HandshakeMode,
     is_hrr:            bool,
+    pha:               PostHandshakeAuth    = PostHandshakeAuth.Disabled,
+    cert_comp:         CertCompressionOffer = CertCompressionOffer.NotOffered,
 ) -> HsState, bool {
     guard incoming_msg_type != rfc::TLS_HS_MESSAGE_HASH else { return HsState.Closed, false; }
     if current == HsState.ClientWaitSH || current == HsState.ClientWaitEE {
         return client_wait_pre_transition(current, incoming_msg_type, is_hrr);
     }
     if current == HsState.ClientWaitCertCr {
-        return client_wait_cert_cr_transition(incoming_msg_type, mode == HandshakeMode.Psk);
+        return client_wait_cert_cr_transition(incoming_msg_type, mode == HandshakeMode.Psk, cert_comp);
     }
     if current == HsState.ClientWaitCert || current == HsState.ClientWaitCV {
-        return client_wait_cert_or_cv_transition(current, incoming_msg_type);
+        return client_wait_cert_or_cv_transition(current, incoming_msg_type, cert_comp);
     }
-    return client_wait_post_transition(current, incoming_msg_type);
+    return client_wait_post_transition(current, incoming_msg_type, pha);
 }
 
 fn server_wait_initial_transition(
@@ -162,8 +193,14 @@ fn server_wait_initial_transition(
     return HsState.Closed, false;
 }
 
-fn server_wait_cert_step(incoming_msg_type: u8, client_cert_is_empty: bool) -> HsState, bool {
-    if incoming_msg_type == rfc::TLS_HS_CERTIFICATE || incoming_msg_type == rfc::TLS_HS_COMPRESSED_CERTIFICATE {
+fn server_wait_cert_step(
+    incoming_msg_type:    u8,
+    client_cert_is_empty: bool,
+    cert_comp:            CertCompressionOffer = CertCompressionOffer.NotOffered,
+) -> HsState, bool {
+    let is_cert = incoming_msg_type == rfc::TLS_HS_CERTIFICATE
+        || (incoming_msg_type == rfc::TLS_HS_COMPRESSED_CERTIFICATE && cert_comp == CertCompressionOffer.Offered);
+    if is_cert {
         if client_cert_is_empty {
             // RFC 8446 Section 4.4.2: If client has no certificates, CertificateVerify is omitted
             return HsState.ServerWaitFinished, true;
@@ -184,17 +221,27 @@ fn server_wait_cv_step(incoming_msg_type: u8, client_cert_is_empty: bool) -> HsS
     return HsState.Closed, false;
 }
 
-fn server_wait_done_transition(current: HsState, incoming_msg_type: u8) -> HsState, bool {
+fn server_wait_done_transition(
+    current:              HsState,
+    incoming_msg_type:    u8,
+    client_auth:          ClientAuthMode       = ClientAuthMode.Disabled,
+    client_cert_is_empty: bool                 = false,
+    cert_comp:            CertCompressionOffer = CertCompressionOffer.NotOffered,
+) -> HsState, bool {
     if current == HsState.ServerWaitFinished {
-        if incoming_msg_type == rfc::TLS_HS_FINISHED {
-            return HsState.Connected, true;
-        }
-    } else if current == HsState.Connected {
-        // Post-handshake: KeyUpdate or post-handshake client auth (RFC 8446 §4.6.2)
-        if incoming_msg_type == rfc::TLS_HS_KEY_UPDATE ||
-            incoming_msg_type == rfc::TLS_HS_CERTIFICATE {
-            return HsState.Connected, true;
-        }
+        guard incoming_msg_type == rfc::TLS_HS_FINISHED else { return HsState.Closed, false; }
+        return HsState.Connected, true;
+    }
+    guard current == HsState.Connected else { return HsState.Closed, false; }
+    if incoming_msg_type == rfc::TLS_HS_KEY_UPDATE {
+        return HsState.Connected, true;
+    }
+    // RFC 8446 Section 4.4.2: Certificate - Accept post-handshake Certificate only when client auth was requested.
+    let is_post_cert = incoming_msg_type == rfc::TLS_HS_CERTIFICATE
+        || (incoming_msg_type == rfc::TLS_HS_COMPRESSED_CERTIFICATE && cert_comp == CertCompressionOffer.Offered);
+    if is_post_cert && client_auth == ClientAuthMode.Requested {
+        let next = if client_cert_is_empty { HsState.ServerWaitFinished } else { HsState.ServerWaitCV };
+        return next, true;
     }
     return HsState.Closed, false;
 }
@@ -205,7 +252,8 @@ fn validate_server_handshake_transition_auth(
     incoming_msg_type:    u8,
     client_auth:          ClientAuthMode,
     client_cert_is_empty: bool,
-    early_data_accepted:  EarlyDataAccepted = EarlyDataAccepted.Rejected,
+    early_data_accepted:  EarlyDataAccepted    = EarlyDataAccepted.Rejected,
+    cert_comp:            CertCompressionOffer = CertCompressionOffer.NotOffered,
 ) -> HsState, bool {
     guard incoming_msg_type != rfc::TLS_HS_MESSAGE_HASH else { return HsState.Closed, false; }
     if current == HsState.ServerWaitCH || current == HsState.ServerWaitEOED {
@@ -214,12 +262,12 @@ fn validate_server_handshake_transition_auth(
         );
     }
     if current == HsState.ServerWaitCert {
-        return server_wait_cert_step(incoming_msg_type, client_cert_is_empty);
+        return server_wait_cert_step(incoming_msg_type, client_cert_is_empty, cert_comp);
     }
     if current == HsState.ServerWaitCV {
         return server_wait_cv_step(incoming_msg_type, client_cert_is_empty);
     }
-    return server_wait_done_transition(current, incoming_msg_type);
+    return server_wait_done_transition(current, incoming_msg_type, client_auth, client_cert_is_empty, cert_comp);
 }
 
 fn validate_server_handshake_transition(
@@ -456,11 +504,33 @@ fn is_ip_literal_or_invalid(raw: const u8[:]) -> bool {
     return has_colon || is_digits_dots;
 }
 
+// RFC 1035 Section 2.3.4: Size limits - Enforces 1..63 byte LDH labels without leading or trailing hyphens.
+fn is_valid_sni_ldh_labels(raw: const u8[:]) -> bool {
+    var label_len:   u64  = 0;
+    var prev_hyphen: bool = false;
+    for b in raw {
+        if b == '.' {
+            guard label_len >= 1 && !prev_hyphen else { return false; }
+            label_len = 0;
+            prev_hyphen = false;
+        } else {
+            guard core::is_ascii_alphanumeric(b) || b == '-' else { return false; }
+            guard label_len > 0 || b != '-' else { return false; }
+            label_len = core::add_sat_u64(label_len, 1);
+            guard label_len <= 63 else { return false; }
+            prev_hyphen = b == '-';
+        }
+    }
+    return label_len >= 1 && !prev_hyphen;
+}
+
+// RFC 6066 Section 3: Server Name Indication - Requires ASCII DNS HostName <= 253 octets without trailing dot.
 fn validate_sni_host_bytes(raw: const u8[:]) -> bool {
-    guard raw.len >= 1 && raw.len <= 255 else { return false; }
+    guard raw.len >= 1 && raw.len <= 253 else { return false; }
     guard raw[0] != '.' && raw[raw.len - 1] != '.' else { return false; }
     guard !has_consecutive_dots(raw) else { return false; }
-    return !is_ip_literal_or_invalid(raw);
+    guard !is_ip_literal_or_invalid(raw) else { return false; }
+    return is_valid_sni_ldh_labels(raw);
 }
 
 fn read_sni_entry(list_cursor: ByteCursor&, found_host_name: bool&, out_sni: u8[..255]&) -> bool {
@@ -784,13 +854,15 @@ fn encode_compress_certificate_extension<B>(out: B&, algorithms: const u16[:]) {
     out.append(b.buf[..]);
 }
 
-// Parses the client's `compress_certificate` extension payload (RFC 8879 Section 3).
+// RFC 8879 Section 3: Negotiating Certificate Compression - Parses up to 127 algorithm IDs with rollback.
 //
 // Example:
 //   ext_bytes = [0x04, 0x00, 0x02, 0x00, 0x03]
 //   returns: ok = true, out_algos = [2, 3]
-fn parse_compress_certificate_ext(ext_bytes: const u8[:], out_algos: u16[..8]&) -> bool {
+fn parse_compress_certificate_ext<A>(ext_bytes: const u8[:], out_algos: A&) -> bool {
     out_algos.clear();
+    var committed = false;
+    defer if !committed { out_algos.clear(); };
     var c = core::cursor_from(ext_bytes);
     var lc, ok_l = c.read_u8_sub_cursor();
     guard ok_l && c.buf.len == 0 && lc.buf.len >= 2 && (lc.buf.len & 1) == 0 else { return false; }
@@ -798,6 +870,7 @@ fn parse_compress_certificate_ext(ext_bytes: const u8[:], out_algos: u16[..8]&) 
         let algo, ok_a = lc.read_u16();
         guard ok_a && out_algos.try_push(algo) else { return false; }
     }
+    committed = true;
     return true;
 }
 
@@ -805,29 +878,39 @@ fn parse_compress_certificate_ext(ext_bytes: const u8[:], out_algos: u16[..8]&) 
 // Example:
 //   payload = [0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x28, 0xB5, 0x2F, 0xFD]
 //   returns: msg with algorithm = CERT_COMPRESS_ZSTD, uncompressed_len = 256, ok = true
-fn parse_compressed_certificate(payload: const u8[:]) -> CompressedCertMsg, bool {
+fn parse_compressed_certificate(
+    payload:       const u8[:],
+    offered_algos: const u16[:] = [],
+) -> CompressedCertMsg, bool {
     var msg = CompressedCertMsg { compressed_data: payload[..0], .. };
     var ic = internal::CompressedCertificate { .. };
     guard internal::parse_compressed_certificate_msg(payload, ic) else { return msg, false; }
+    // RFC 8879 Section 4: Compressed Certificate Message - Selected algorithm MUST belong to the advertised offer list.
+    guard offered_algos.len == 0 || offered_algos.contains(ic.algorithm) else { return msg, false; }
     msg.algorithm = ic.algorithm;
     msg.uncompressed_len = ic.uncompressed_length;
     msg.compressed_data = ic.compressed_certificate_message;
     return msg, true;
 }
 
-// Encodes a CompressedCertificate handshake message payload (RFC 8879 Section 4)
+// RFC 8879 Section 4: Compressed Certificate Message - Encodes CompressedCertificate payload and propagates validation failure.
 fn encode_compressed_certificate_payload<B>(
     out:              B&,
     algorithm:        u16,
     uncompressed_len: u32,
     compressed_data:  const u8[:],
-) {
+) -> bool {
+    let saved_len = out.len;
     let ic = internal::CompressedCertificate {
         algorithm:                      algorithm,
         uncompressed_length:            uncompressed_len,
         compressed_certificate_message: compressed_data,
     };
-    let _ = internal::encode_compressed_certificate(ic, out);
+    if !internal::encode_compressed_certificate(ic, out) {
+        out.resize(saved_len);
+        return false;
+    }
+    return true;
 }
 
 // Decompresses a CompressedCertificate using Wing's pure RFC 8878 Zstandard engine
@@ -836,17 +919,27 @@ fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len
     return internal::decompress_certificate_zstd(compressed_data, uncompressed_len, out_cert);
 }
 
-// RFC 8879 Section 4: Compressed Certificate Handshake Message - Unified decompressor
-fn decompress_incoming_certificate<B>(payload: const u8[:], out_cert: B&) -> bool {
+// RFC 8879 Section 4: Compressed Certificate Message - Unified decompressor enforcing offered algorithm membership.
+fn decompress_incoming_certificate<B>(
+    payload:       const u8[:],
+    out_cert:      B&,
+    offered_algos: const u16[:] = [],
+) -> bool {
+    out_cert.clear();
     var comp_msg = internal::CompressedCertificate { .. };
     guard internal::parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
+    guard offered_algos.len == 0 || offered_algos.contains(comp_msg.algorithm) else { return false; }
     guard comp_msg.uncompressed_length <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
-    return internal::decompress_certificate_payload(
+    if !internal::decompress_certificate_payload(
         comp_msg.compressed_certificate_message,
         comp_msg.algorithm,
         comp_msg.uncompressed_length,
         out_cert,
-    );
+    ) {
+        out_cert.clear();
+        return false;
+    }
+    return true;
 }
 
 // ---- Supported Groups & Key Share Extensions (RFC 8446 Section 4.2.7-8) --
@@ -863,25 +956,28 @@ fn encode_supported_groups_extension<B>(out: B&, groups: const u16[:]) {
     }
 }
 
-// RFC 8446 Section 4.2.7: Supported Groups - Parses supported_groups extension payload
+// RFC 8446 Section 4.2.7: Supported Groups - Parses supported_groups extension payload into bounded buffer.
 //
 // Example:
 //   data = [0x00, 0x04, 0x11, 0xEB, 0x11, 0xED]
 //   returns: ok = true, out_groups[0..2] = [0x11EB, 0x11ED]
-fn parse_supported_groups_extension(
+fn parse_supported_groups_extension<G>(
     data:       const u8[:],
-    out_groups: u16[..32]&,
+    out_groups: G&,
 ) -> bool {
+    out_groups.clear();
+    var committed = false;
+    defer if !committed { out_groups.clear(); };
     var c = core::cursor_from(data);
     var lc, ok_l = c.read_u16_sub_cursor();
     guard ok_l && c.buf.len == 0 && lc.buf.len >= 2 && (lc.buf.len & 1) == 0 else { return false; }
     let count = lc.buf.len >> 1;
     guard count <= out_groups.cap else { return false; }
-    out_groups.clear();
     while lc.buf.len > 0 {
         let g, ok_g = lc.read_u16();
         guard ok_g && out_groups.try_push(g) else { return false; }
     }
+    committed = true;
     return true;
 }
 
@@ -959,12 +1055,13 @@ fn parse_key_share_server_extension(
 // ---- ServerHello & HelloRetryRequest Parser (RFC 8446 Section 4.1.3-4) ---
 
 struct ParsedServerHello {
-    cipher_suite:   u16        = 0,
-    is_hrr:         bool       = false,
-    selected_group: u16        = 0,
-    server_share:   u8[..2048] = [],
-    hrr_cookie:     u8[..256]  = [],
-    psk_resumed:    bool       = false,
+    cipher_suite:    u16        = 0,
+    is_hrr:          bool       = false,
+    selected_group:  u16        = 0,
+    server_share:    u8[..2048] = [],
+    hrr_cookie:      u8[..256]  = [],
+    psk_resumed:     bool       = false,
+    session_id_echo: u8[..32]   = [],
 }
 
 fn validate_sh_or_hrr_extensions(entries: const TlsExtensionEntry[:], is_hrr: bool) -> bool {
@@ -1030,10 +1127,11 @@ fn read_server_hello_preamble(
     core::ct_copy_bytes(rand_arr[..], srv_rand.buf);
     out.is_hrr = is_hello_retry_request(rand_arr);
 
-    let _, ok_sid = bc.read_u8_sub_cursor();
+    let sid_c, ok_sid = bc.read_u8_sub_cursor();
     let cs, ok_cs = bc.read_u16();
     let comp, ok_cm = bc.read_u8();
-    guard ok_sid && ok_cs && rfc::is_supported_tls13_cipher_suite(cs) && ok_cm && comp == 0 else {
+    guard ok_sid && out.session_id_echo.try_set(sid_c.buf) &&
+        ok_cs && rfc::is_supported_tls13_cipher_suite(cs) && ok_cm && comp == 0 else {
         return "", false;
     }
     out.cipher_suite = cs;
@@ -1177,10 +1275,10 @@ fn read_ticket_bytes(c: ByteCursor&, out: NewSessionTicketMsg&) -> bool {
 //   payload = [0x00, 0x01, 0x00, 0x00]
 //   returns: ok = true, out populated
 fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> bool {
-    out.ticket_nonce.clear();
-    out.ticket.clear();
-    out.has_early_data = false;
-    out.max_early_data_size = 0;
+    let saved = out;
+    out = NewSessionTicketMsg { .. };
+    var committed = false;
+    defer if !committed { out = saved; };
 
     var c = core::cursor_from(payload);
     guard c.get_u32(out.ticket_lifetime) else { return false; }
@@ -1199,6 +1297,7 @@ fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> 
     // RFC 8446 Section 4.2.10 & 4.6.1: early_data MUST NOT be offered when ticket_lifetime is 0
     guard !(out.ticket_lifetime == 0 && out.has_early_data) else { return false; }
 
+    committed = true;
     return true;
 }
 
@@ -1344,7 +1443,7 @@ fn encode_key_update<B>(out: B&, request_update: u8) -> bool {
 // ---- CertificateRequest & Client Authentication (RFC 8446 Section 4.3.2) -
 
 struct CertificateRequestMsg {
-    context:                  u8[..32]  = [],
+    context:                  u8[..255] = [],
     has_signature_algorithms: bool      = false,
     sig_algorithms:           u16[..64] = [],
 }
@@ -1412,7 +1511,7 @@ fn read_cert_req_extensions(ext_cursor: ByteCursor&, out: CertificateRequestMsg&
 }
 
 // Parses and validates CertificateRequest message (RFC 8446 Section 4.3.2).
-// In initial handshake: context MUST be 0 length. In post-handshake: context MUST be <= 32 bytes.
+// In initial handshake: context MUST be 0 length. In post-handshake: context MUST be <= 255 bytes.
 // signature_algorithms extension is mandatory; absence MUST cause rejection.
 // Example:
 //   payload = [0x00, 0x00, 0x08, 0x00, 0x0D, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03]
@@ -1422,9 +1521,9 @@ fn parse_certificate_request(
     is_post_handshake: bool,
     out:               CertificateRequestMsg&,
 ) -> bool {
-    out.context.clear();
-    out.has_signature_algorithms = false;
-    out.sig_algorithms.clear();
+    out = CertificateRequestMsg { .. };
+    var committed = false;
+    defer if !committed { out = CertificateRequestMsg { .. }; };
 
     var c = core::cursor_from(payload);
     guard read_cert_req_context(c, is_post_handshake, out) else { return false; }
@@ -1437,6 +1536,7 @@ fn parse_certificate_request(
 
     // RFC 8446 Section 4.3.2: signature_algorithms MUST be present
     guard out.has_signature_algorithms && out.sig_algorithms.len > 0 else { return false; }
+    committed = true;
     return true;
 }
 
@@ -1450,7 +1550,7 @@ fn parse_certificate_header_is_empty(payload: const u8[:]) -> bool, bool {
     let ctx, ok_ctx = c.read_u8_sub_cursor();
     var list_c = core::cursor_from("");
     let ok_list = c.get_u24_length_prefixed(list_c);
-    guard ok_ctx && ctx.buf.len <= 32 && ok_list && c.buf.len == 0 else { return false, false; }
+    guard ok_ctx && ctx.buf.len <= 255 && ok_list && c.buf.len == 0 else { return false, false; }
     return list_c.buf.len == 0, true;
 }
 
@@ -1531,9 +1631,9 @@ fn encode_cert_req_ext_sig_algs<B>(out: B&, sig_algorithms: const u16[:]) {
     }
 }
 
-// Encodes a CertificateRequest handshake message (RFC 8446 §4.3.2).
+// RFC 8446 Section 4.3.2: Certificate Request - Encodes context<0..2^8-1> and signature_algorithms.
 fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: const u16[:]) -> bool {
-    guard context.len >= 0 && context.len <= 32 else { return false; }
+    guard context.len >= 0 && context.len <= 255 else { return false; }
     guard sig_algorithms.len >= 1 && sig_algorithms.len <= 64 else { return false; }
     var ext_buf: u8[..256] = [];
     encode_cert_req_ext_sig_algs(ext_buf, sig_algorithms);
@@ -1550,8 +1650,8 @@ fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: 
 // Encodes a client Certificate message (RFC 8446 §4.4.2).
 // When cert_der is empty, an empty certificate_list is encoded.
 fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: const u8[:]) -> bool {
-    let max_cert_len = (rfc::MAX_HANDSHAKE_MSG_LEN as i64) - 5;
-    guard cert_context.len <= 32 && cert_der.len <= max_cert_len else { return false; }
+    let max_cert_len = core::sub_sat_i64((rfc::MAX_HANDSHAKE_MSG_LEN as i64) - 4, cert_context.len);
+    guard cert_context.len <= 255 && cert_der.len <= max_cert_len else { return false; }
 
     var b = core::builder_init();
     b.put_u8(cert_context.len as u8);
@@ -1567,8 +1667,9 @@ fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: co
     return out.try_append(b.buf[..]);
 }
 
-// Encodes a client CertificateVerify message (RFC 8446 §4.4.3).
+// RFC 8446 Section 4.4.3: Certificate Verify - Rejects forbidden TLS 1.3 signature schemes before encoding.
 fn encode_client_certificate_verify<B>(out: B&, sig_scheme: u16, signature: const u8[:]) -> bool {
+    guard !rfc::is_forbidden_tls13_sig_scheme(sig_scheme) else { return false; }
     guard signature.len > 0 && signature.len <= 1024 else { return false; }
     guard core::add_sat_i64(out.len, core::add_sat_i64(4, signature.len)) <= out.cap else { return false; }
     out.append_u16_be(sig_scheme);
@@ -1609,10 +1710,10 @@ fn verify_tls13_certificate_verify_sig(
         return core::ed25519_verify(pub_arr, msg, sig_arr);
     }
     if sig_scheme == rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
-        return core::ecdsa_p256_verify(pubkey, msg, signature);
+        return core::ecdsa_p256_verify_der(pubkey, msg, signature);
     }
     if sig_scheme == rfc::SIG_SCHEME_ECDSA_SECP384R1_SHA384 {
-        return core::ecdsa_p384_verify(pubkey, msg, signature);
+        return core::ecdsa_p384_verify_der(pubkey, msg, signature);
     }
     if sig_scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256 {
         return core::rsa_pss_sha256_verify_der(pubkey, msg, signature);

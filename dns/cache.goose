@@ -116,6 +116,12 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
             cur.qtype == entry.qtype &&
             cur.domain[..].eq_ascii_fold(entry.domain[..]);
         if is_match {
+            // RFC 1035 Section 4.1.3: Resource record format - zero TTL prohibits caching
+            if entry.ttl_sec == 0 {
+                detach_dns_lru(cache, i as i32);
+                cur.valid = false;
+                return;
+            }
             let prev = cur.lru_prev;
             let next = cur.lru_next;
             cur = entry;
@@ -125,6 +131,24 @@ fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&) {
             touch_dns_lru(cache, i as i32);
             return;
         }
+    }
+    guard entry.ttl_sec > 0 else { return; }
+
+    var free_idx: i32 = -1;
+    for i in cache.entries.len {
+        if !cache.entries[i].valid {
+            free_idx = i as i32;
+            break;
+        }
+    }
+    if free_idx >= 0 {
+        let cur .= cache.entries[free_idx as i64];
+        cur = entry;
+        cur.valid = true;
+        cur.lru_prev = -1;
+        cur.lru_next = -1;
+        attach_dns_lru_tail(cache, free_idx);
+        return;
     }
 
     let new_idx = cache.entries.len as i32;

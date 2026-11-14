@@ -481,7 +481,7 @@ fn test_cve_2011_3192_apache_killer_and_coalescing(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_if_range_and_seconds_truncation(t: lit::T&) {
     t.run("Strong ETag Matches, Weak ETag FORBIDDEN") { sub =>
-        let file_time = core::unix(0);
+        let file_time: i64 = 0;
 
         // Strong ETag matches
         let ok_strong = wing::evaluate_if_range("\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
@@ -499,18 +499,18 @@ fn test_if_range_and_seconds_truncation(t: lit::T&) {
         sub.assert_false(bad_weak3, "Weak target representation ETag forbidden in If-Range");
     };
 
-    t.run("HTTP-Date Seconds Truncation for Filesystem Timestamps") { sub =>
-        // Suppose filesystem mtime has sub-second resolution (e.g. 1700000000 sec + 450,000,000 ns)
+    t.run("HTTP-Date Exact Seconds Match and Mismatch") { sub =>
         let exact_sec: i64 = 1700000000;
-        let fs_time = core::unix(exact_sec, 450000000);
 
         // Client sends HTTP-Date with 1-second resolution
         var http_date_buf: u8[>..] = [];
         core::format_http(http_date_buf, core::unix(exact_sec));
 
-        // evaluate_if_range MUST truncate fs_time to seconds before comparison!
-        let is_match = wing::evaluate_if_range(http_date_buf[..], "", fs_time);
-        sub.assert_true(is_match, "Filesystem sub-second mtime truncated to seconds matches HTTP-Date");
+        let is_match = wing::evaluate_if_range(http_date_buf[..], "", exact_sec);
+        sub.assert_true(is_match, "Exact unix seconds timestamp matches HTTP-Date");
+
+        let is_mismatch = wing::evaluate_if_range(http_date_buf[..], "", exact_sec + 1);
+        sub.assert_false(is_mismatch, "Different unix seconds timestamp fails If-Range");
     };
 }
 
@@ -530,7 +530,7 @@ fn test_serve_range_and_patch_validation(t: lit::T&) {
             "bytes=0-9",
             "",
             "\"etag\"",
-            core::unix(0),
+            0,
             res_len,
             "text/plain",
             status,

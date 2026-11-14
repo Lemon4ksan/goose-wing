@@ -5,6 +5,7 @@
 namespace core;
 
 import std;
+import core.math.arithmetic;
 import core.math.hash;
 
 struct FlightEntry {
@@ -42,7 +43,7 @@ fn find_flight_entry_idx(g: const SingleflightGroup&, key_str: const u8[:], kh: 
 fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool {
     guard key_str.len <= 64 else {
         // Key exceeds entry capacity; execute unshared to prevent buffer truncation / permanent slot poisoning
-        g.total_leader_calls++;
+        g.total_leader_calls = add_sat_i64(g.total_leader_calls, 1);
         return true, 0, false;
     }
 
@@ -50,9 +51,11 @@ fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool
     let idx = find_flight_entry_idx(g, key_str, kh);
     if idx >= 0 {
         if g.entries[idx].is_in_flight {
-            g.entries[idx].waiter_count++;
+            if g.entries[idx].waiter_count < 0x7FFFFFFF {
+                g.entries[idx].waiter_count += 1;
+            }
             g.entries[idx].shared = true;
-            g.total_shared_calls++;
+            g.total_shared_calls = add_sat_i64(g.total_shared_calls, 1);
             return false, 0, true; // Follower
         }
         if g.entries[idx].is_done {
@@ -68,12 +71,12 @@ fn start_or_join(g: SingleflightGroup&, key_str: const u8[:]) -> bool, i64, bool
         };
         new_entry.key.append(key_str);
         g.entries.push(new_entry);
-        g.total_leader_calls++;
+        g.total_leader_calls = add_sat_i64(g.total_leader_calls, 1);
         return true, 0, false; // Leader
     }
 
     // Capacity overflow fallback: execute unshared
-    g.total_leader_calls++;
+    g.total_leader_calls = add_sat_i64(g.total_leader_calls, 1);
     return true, 0, false;
 }
 

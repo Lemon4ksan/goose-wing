@@ -550,8 +550,48 @@ fn reactor_dispatch_events<Stage>(
 
 // Computes dynamic epoll wait timeout depending on worker ring state.
 inline fn reactor_epoll_timeout(ring: const core::SpscRing&) -> i32 {
-    guard ring.is_open else { return 1000; }
+    guard ring.is_open else { return 200; }
     return if ring.spsc_count() > 0 { 0 } else { 10 };
+}
+
+inline fn reactor_emit_slot_goaway(table: const SoAConnTable&, slot: i64, cork_wire: u8[..65536]&) {
+    let fd = table.fds[slot];
+    guard fd > 0 && table.is_h2[slot] else { return; }
+    let h2_idx = table.h2_slot_map[slot] as i64;
+    guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return; }
+    cork_wire.clear();
+    internal::initiate_graceful_shutdown(g_default_reactor.h2_sessions[h2_idx], cork_wire);
+    guard cork_wire.len > 0 else { return; }
+    if table.has_tls[slot] {
+        let _ = tls_transport_send(fd, table.tls_slots[slot], cork_wire[..]);
+    } else {
+        let _ = tcp_send(fd, cork_wire[..]);
+    }
+}
+
+fn reactor_step_drain_gate(
+    server:            HttpServer&,
+    epfd:              i64,
+    listener_fd:       i64,
+    table:             const SoAConnTable&,
+    cork_wire:         u8[..65536]&,
+    draining:          bool&,
+    drain_deadline_ns: u64&,
+) -> bool {
+    if !draining && server_should_stop(server) {
+        draining = true;
+        server.is_running = false;
+        if listener_fd > 0 {
+            let _ = epoll_del(epfd, listener_fd);
+        }
+        let limit = min(max(table.count, 0), SOA_TABLE_CAP);
+        for s in limit {
+            reactor_emit_slot_goaway(table, s, cork_wire);
+        }
+        drain_deadline_ns = core::add_sat_u64(core::monotonic_now().as_nanos(), server.shutdown_grace_ns);
+    }
+    guard draining else { return false; }
+    return table.count <= 0 || core::monotonic_now().as_nanos() >= drain_deadline_ns;
 }
 
 // Cleans up all active connection slots when shutting down reactor loop.
@@ -595,6 +635,15 @@ inline fn reset_reactor_state(state: ReactorState&) {
     init_free_slots(state.free_slots, SOA_TABLE_CAP);
 }
 
+inline fn reactor_prepare_loop(server: HttpServer&, epfd: i64, listener_fd: i64) {
+    if listener_fd > 0 {
+        tcp_set_nonblocking(listener_fd, true);
+        epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+    }
+    reset_reactor_state(g_default_reactor);
+    server_init_run_state(server);
+}
+
 // Executes a share-nothing reactor loop with epoll and a custom `<Stage>` hook.
 fn serve_reactor_with_stage<Stage>(
     server:          HttpServer&,
@@ -608,24 +657,26 @@ fn serve_reactor_with_stage<Stage>(
     guard epfd >= 0 else { return 0; }
     defer epoll_close(epfd);
 
-    if listener_fd > 0 {
-        tcp_set_nonblocking(listener_fd, true);
-        epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
-    }
+    reactor_prepare_loop(server, epfd, listener_fd);
 
     var empty_fds:    i64[0]    = [];
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
-
-    reset_reactor_state(g_default_reactor);
     var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
-    var last_sweep_sec: i64 = 0;
-    var turn_counter:   i64 = 0;
-    var cached_now_ns:  u64 = 0;
-    var cached_now_sec: i64 = 0;
+    var last_sweep_sec:    i64  = 0;
+    var turn_counter:      i64  = 0;
+    var cached_now_ns:     u64  = 0;
+    var cached_now_sec:    i64  = 0;
+    var draining:          bool = false;
+    var drain_deadline_ns: u64  = 0;
 
     while max_connections == 0 || total_served < max_connections {
-        if server.worker_ring.is_open {
+        if reactor_step_drain_gate(
+            server, epfd, listener_fd, g_default_reactor.table, g_default_reactor.cork, draining, drain_deadline_ns,
+        ) {
+            break;
+        }
+        if !draining && server.worker_ring.is_open {
             reactor_drain_worker_ring(
                 server.worker_ring, epfd, g_default_reactor.table,
                 g_default_reactor.free_slots, timer_wheel, total_served,
@@ -742,20 +793,25 @@ fn serve_reactor_tls(
     guard epfd >= 0 else { return 0; }
     defer epoll_close(epfd);
 
-    tcp_set_nonblocking(listener_fd, true);
-    epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+    reactor_prepare_loop(server, epfd, listener_fd);
 
     var empty_fds:    i64[0]    = [];
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
-    reset_reactor_state(g_default_reactor);
     var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
-    var last_sweep_sec: i64 = 0;
-    var turn_counter:   i64 = 0;
-    var cached_now_ns:  u64 = 0;
-    var cached_now_sec: i64 = 0;
+    var last_sweep_sec:    i64  = 0;
+    var turn_counter:      i64  = 0;
+    var cached_now_ns:     u64  = 0;
+    var cached_now_sec:    i64  = 0;
+    var draining:          bool = false;
+    var drain_deadline_ns: u64  = 0;
 
     while max_connections == 0 || total_served < max_connections {
+        if reactor_step_drain_gate(
+            server, epfd, listener_fd, g_default_reactor.table, g_default_reactor.cork, draining, drain_deadline_ns,
+        ) {
+            break;
+        }
         let n = epoll_wait_direct(epfd, empty_fds[..], ready_udata[..], 10);
         turn_counter++;
         reactor_poll_sweep(
@@ -927,7 +983,6 @@ fn handle_h3_endpoint_settings<B>(
     payload:  const u8[:],
     out_wire: B&,
 ) -> bool {
-    ep.conn.peer_settings_received = false;
     let err = internal::handle_peer_control_frame(ep.conn, hdr, payload);
     guard err == rfc::H3_ERR_NO_ERROR else {
         encode_h3_connection_close(err, out_wire);
@@ -1059,6 +1114,10 @@ fn handle_h3_quic_datagram<B>(
     }
 
     if quic_hdr.header_type == internal::QuicHeaderType.Initial {
+        // RFC 9000 Section 14.1: Initial Datagram Size - server MUST discard client Initial < 1200 bytes
+        guard datagram.len >= (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) else {
+            return false;
+        }
         encode_quic_server_initial(ep, quic_hdr, out_wire);
         return out_wire.len > 0;
     }

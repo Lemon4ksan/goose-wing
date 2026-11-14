@@ -1768,7 +1768,7 @@ fn test_public_suffix_boundary_attacks(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     t.run("RATE-01: Burst capacity boundary (1/s emission, burst=5 allows 6 requests)") { sub =>
-        let quota = wing::new_gcra_quota(1, core::seconds(1), 5); // T=1s, tau=5s
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 5); // T=1s, tau=5s
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000; // t=10s
 
@@ -1791,7 +1791,7 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     };
 
     t.run("RATE-02: Cost > burst pitfall ") { sub =>
-        let quota = wing::new_gcra_quota(1, core::seconds(1), 5);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 5);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000;
 
@@ -1802,7 +1802,7 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     };
 
     t.run("RATE-03: Integer overflow saturation defense") { sub =>
-        let quota = wing::new_gcra_quota(1, core::seconds(1), 5);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 5);
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000;
 
@@ -1812,7 +1812,7 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     };
 
     t.run("RATE-04: Zero-cost inspection does not advance TAT") { sub =>
-        let quota = wing::new_gcra_quota(1, core::seconds(1), 5);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 5);
         var cell = wing::GcraCell { tat_ns: 10000000000 };
         let now_ns: u64 = 10000000000;
 
@@ -1822,7 +1822,7 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     };
 
     t.run("RATE-05: Priority slot reservation (gcra_reserve_n)") { sub =>
-        let quota = wing::new_gcra_quota(1, core::seconds(1), 0); // 1 req/sec, no burst
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 0); // 1 req/sec, no burst
         var cell = wing::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 10000000000;
 
@@ -1842,7 +1842,7 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     };
 
     t.run("RATE-06: 256-shard rate limiter protects distinct client keys") { sub =>
-        let quota = wing::new_gcra_quota(1, core::seconds(1), 1);
+        let quota = wing::new_gcra_quota(1, wing::secs(1), 1);
         var limiter = wing::new_sharded_limiter(quota);
         let now_ns: u64 = 5000000000;
 
@@ -1854,7 +1854,7 @@ fn test_rate_limiter_burst_and_concurrency(t: lit::T&) {
     };
 
     t.run("RATE-07: Probabilistic GCRA DDoS mitigation under flood") { sub =>
-        let quota = wing::new_gcra_quota(1000, core::seconds(1), 100);
+        let quota = wing::new_gcra_quota(1000, wing::secs(1), 100);
         var pgcra = wing::new_probabilistic_gcra(quota, 20); // 5% sample rate
 
         var allowed_count = 0;

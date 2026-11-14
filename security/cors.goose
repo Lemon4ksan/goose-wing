@@ -201,17 +201,81 @@ inline fn is_valid_cors_token(tok: const u8[:]) -> bool {
     return true;
 }
 
+inline fn headers_vary_has_token<H>(headers: const H&, token: const u8[:]) -> bool {
+    for &e in headers.entries {
+        if entry_name(headers, e).eq_ascii_fold(rfc::HEADER_VARY) {
+            if header_list_has_token(entry_value(headers, e), token) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+inline fn headers_vary_has_all_tokens<H>(headers: const H&, required_list: const u8[:]) -> bool {
+    var tok_iter = core::make_byte_tokenizer(required_list, ',');
+    loop {
+        let item, ok = core::token_next(tok_iter);
+        guard ok else { break; }
+        let tok = item.trim_lws();
+        if tok.len > 0 && !headers_vary_has_token(headers, tok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline fn append_missing_vary_tokens<H>(
+    headers:       const H&,
+    required_list: const u8[:],
+    merged:        u8[..2048]&,
+) -> bool {
+    var tok_iter = core::make_byte_tokenizer(required_list, ',');
+    loop {
+        let item, ok = core::token_next(tok_iter);
+        guard ok else { break; }
+        let tok = item.trim_lws();
+        if tok.len == 0 || headers_vary_has_token(headers, tok) {
+            continue;
+        }
+        if merged.len > 0 && !merged.try_append(", ") {
+            return false;
+        }
+        guard merged.try_append(tok) else { return false; }
+    }
+    return true;
+}
+
+// Merges `required_list` tokens across all existing `Vary` header lines (RFC 9110 Section 12.5.5).
+// Falls back to `Vary: *` if combined `Vary` value exceeds 2048 bytes.
+fn merge_response_vary_tokens<H>(headers: H&, required_list: const u8[:]) {
+    if headers_vary_has_all_tokens(headers, required_list) {
+        return;
+    }
+    var merged: u8[..2048] = [];
+    for &e in headers.entries {
+        guard entry_name(headers, e).eq_ascii_fold(rfc::HEADER_VARY) else { continue; }
+        let val = entry_value(headers, e).trim_lws();
+        guard val.len > 0 else { continue; }
+        if merged.len > 0 && !merged.try_append(", ") {
+            headers.set_header(rfc::HEADER_VARY, "*");
+            return;
+        }
+        if !merged.try_append(val) {
+            headers.set_header(rfc::HEADER_VARY, "*");
+            return;
+        }
+    }
+    if !append_missing_vary_tokens(headers, required_list, merged) {
+        headers.set_header(rfc::HEADER_VARY, "*");
+        return;
+    }
+    headers.set_header(rfc::HEADER_VARY, merged[..]);
+}
+
 // Injects Vary: Origin header on dynamic CORS responses (RFC 9111 / WHATWG Fetch §3.2.4).
 inline fn apply_cors_vary_header<Res>(res: Res&) {
-    let existing_vary = res.headers.find_header(rfc::HEADER_VARY);
-    if existing_vary.len == 0 {
-        res.headers.set_header(rfc::HEADER_VARY, rfc::HEADER_ORIGIN);
-    } else if !header_list_has_token(existing_vary, rfc::HEADER_ORIGIN) {
-        var new_vary: u8[..2048] = [];
-        guard new_vary.try_set(existing_vary) else { return; }
-        guard new_vary.try_append(", Origin") else { return; }
-        res.headers.set_header(rfc::HEADER_VARY, new_vary[..]);
-    }
+    merge_response_vary_tokens(res.headers, rfc::HEADER_ORIGIN);
 }
 
 // Populates preflight response headers and sets 204 No Content status.
@@ -260,20 +324,33 @@ struct ClientCorsVerifyOptions {
     include_credentials: bool = false,
 }
 
+inline fn find_unique_cors_header<H>(headers: const H&, target_name: const u8[:]) -> const u8[:], bool {
+    var val = headers.raw_buf[..0];
+    var seen = false;
+    for &e in headers.entries {
+        if entry_name(headers, e).eq_ascii_fold(target_name) {
+            guard !seen else { return headers.raw_buf[..0], false; }
+            val = entry_value(headers, e).trim_lws();
+            seen = true;
+        }
+    }
+    return val, true;
+}
+
 // Validates an inbound HTTP response against WHATWG Fetch §4.9 CORS protocol check on the client side.
 fn verify_client_cors_response<H>(
     resp_headers:   const H&,
     request_origin: const u8[:],
     opts:           ClientCorsVerifyOptions = ClientCorsVerifyOptions { .. },
 ) -> bool {
-    let acao = resp_headers.find_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN).trim_lws();
-    guard acao.len > 0 else { return false; }
+    let acao, acao_unique = find_unique_cors_header(resp_headers, rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN);
+    guard acao_unique && acao.len > 0 && !acao.contains_byte(',') else { return false; }
     let expected_origin = if opts.tainted_origin { "null" } else { request_origin.trim_lws() };
 
     if opts.include_credentials {
         guard acao != "*" && acao.eq_ascii_fold(expected_origin) else { return false; }
-        let acac = resp_headers.find_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS).trim_lws();
-        return acac == "true";
+        let acac, acac_unique = find_unique_cors_header(resp_headers, rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS);
+        return acac_unique && acac == "true";
     }
 
     if acao == "*" {
@@ -286,10 +363,10 @@ fn verify_client_cors_response<H>(
 // Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
 // Wildcard '*' origin is disallowed when allow_credentials is true.
 fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&) -> CorsResult {
-    let origin_raw = req.headers.find_header(rfc::HEADER_ORIGIN);
-    guard origin_raw.len > 0 else { return CorsResult.NoCors; }
-    let origin = origin_raw.trim_lws();
+    let origin, origin_unique = find_unique_cors_header(req.headers, rfc::HEADER_ORIGIN);
+    guard origin_unique else { return CorsResult.RejectedOrigin; }
     guard origin.len > 0 else { return CorsResult.NoCors; }
+    guard !origin.contains_byte(',') else { return CorsResult.RejectedOrigin; }
 
     // Check configuration validity: allow_credentials == true with wildcard "*" origin is invalid (Fetch §3.2.2)
     if !validate_cors_policy(policy) {

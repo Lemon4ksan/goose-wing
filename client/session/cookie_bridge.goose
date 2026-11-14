@@ -98,31 +98,33 @@ fn compute_hop_partition_key<B>(
     out:         B&,
 ) {
     out.clear();
+    let fallback_sch = current_url.scheme();
     if ctx.top_frame_origin.host.len > 0 {
-        let top_sch = if ctx.top_frame_origin.scheme.len > 0 { ctx.top_frame_origin.scheme[..] } else { "https" };
-        let _ = out.try_append(top_sch);
-        let _ = out.try_append("://");
+        let top_sch = if ctx.top_frame_origin.scheme.len > 0 { ctx.top_frame_origin.scheme[..] } else { fallback_sch };
+        guard top_sch.len > 0 else { return; }
         var top_etld: u8[..128] = [];
         psl_extract_etld_plus_one(ctx.top_frame_origin.host[..], top_etld);
-        if top_etld.len > 0 {
-            let _ = out.try_append(top_etld[..]);
-        } else {
-            let _ = out.try_append(ctx.top_frame_origin.host[..]);
+        let site_host = if top_etld.len > 0 { top_etld[..] } else { ctx.top_frame_origin.host[..] };
+        guard out.try_append(top_sch) && out.try_append("://") && out.try_append(site_host) else {
+            out.clear();
+            return;
         }
     } else if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
-        let sfc_sch = if ctx.site_for_cookies.scheme.len > 0 { ctx.site_for_cookies.scheme[..] } else { "https" };
-        let _ = out.try_append(sfc_sch);
-        let _ = out.try_append("://");
-        let _ = out.try_append(ctx.site_for_cookies.registrable_domain[..]);
+        let sfc_sch = if ctx.site_for_cookies.scheme.len > 0 { ctx.site_for_cookies.scheme[..] } else { fallback_sch };
+        guard sfc_sch.len > 0 else { return; }
+        guard out.try_append(sfc_sch) && out.try_append("://") &&
+            out.try_append(ctx.site_for_cookies.registrable_domain[..]) else {
+            out.clear();
+            return;
+        }
     } else {
-        let _ = out.try_append(current_url.scheme());
-        let _ = out.try_append("://");
+        guard fallback_sch.len > 0 else { return; }
         var etld: u8[..128] = [];
         psl_extract_etld_plus_one(current_url.hostname(), etld);
-        if etld.len > 0 {
-            let _ = out.try_append(etld[..]);
-        } else {
-            let _ = out.try_append(current_url.hostname());
+        let site_host = if etld.len > 0 { etld[..] } else { current_url.hostname() };
+        guard out.try_append(fallback_sch) && out.try_append("://") && out.try_append(site_host) else {
+            out.clear();
+            return;
         }
     }
 }

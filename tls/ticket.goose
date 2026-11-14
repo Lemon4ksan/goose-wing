@@ -185,7 +185,8 @@ fn open_stateless_tls13_ticket(
         pt,
     );
     guard ok_open && unpack_stateless_ticket_plaintext(pt[..], raw_ticket, now_ms, out) else {
-        return out, false;
+        core::secure_zeroize_slice(out.psk[..]);
+        return Tls13CachedSessionTicket { .. }, false;
     }
 
     return out, true;
@@ -308,26 +309,6 @@ fn lookup_tls13_session_ticket<B>(
             }
             core::ct_copy_bytes(out_psk[..], g_tls13_tickets[i].psk[0..32]);
             out_age_add = g_tls13_tickets[i].age_add;
-            return true;
-        }
-    }
-    return false;
-}
-
-// Looks up a cached TLS 1.3 session ticket by opaque ticket identity bytes (for server resumption).
-fn lookup_tls13_ticket_by_identity(
-    ticket_id: const u8[:],
-    out_psk:   u8[32]&,
-    now_ms:    i64 = 0,
-) -> bool {
-    core::secure_zeroize_32(out_psk);
-    guard ticket_id.len > 0 else { return false; }
-    let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
-    for i in 16 {
-        if g_tls13_tickets[i].in_use && core::ct_eq_bytes(g_tls13_tickets[i].ticket[..], ticket_id) {
-            guard is_cached_ticket_fresh(g_tls13_tickets[i], cur_ms) &&
-                g_tls13_tickets[i].psk.len >= 32 else { continue; }
-            core::ct_copy_bytes(out_psk[..], g_tls13_tickets[i].psk[0..32]);
             return true;
         }
     }

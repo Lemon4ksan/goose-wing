@@ -7,6 +7,7 @@ namespace core;
 
 import std;
 import core.math.bits;
+import core.math.arithmetic;
 import core.compress.checksum;
 import core.compress.deflate;
 
@@ -74,6 +75,25 @@ const ML_DEFAULT_DIST: i16[53] = [
 const OF_DEFAULT_DIST: i16[29] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
+];
+
+const ZSTD_POW2_U64: u64[64] = [
+    0x0000000000000001, 0x0000000000000002, 0x0000000000000004, 0x0000000000000008,
+    0x0000000000000010, 0x0000000000000020, 0x0000000000000040, 0x0000000000000080,
+    0x0000000000000100, 0x0000000000000200, 0x0000000000000400, 0x0000000000000800,
+    0x0000000000001000, 0x0000000000002000, 0x0000000000004000, 0x0000000000008000,
+    0x0000000000010000, 0x0000000000020000, 0x0000000000040000, 0x0000000000080000,
+    0x0000000000100000, 0x0000000000200000, 0x0000000000400000, 0x0000000000800000,
+    0x0000000001000000, 0x0000000002000000, 0x0000000004000000, 0x0000000008000000,
+    0x0000000010000000, 0x0000000020000000, 0x0000000040000000, 0x0000000080000000,
+    0x0000000100000000, 0x0000000200000000, 0x0000000400000000, 0x0000000800000000,
+    0x0000001000000000, 0x0000002000000000, 0x0000004000000000, 0x0000008000000000,
+    0x0000010000000000, 0x0000020000000000, 0x0000040000000000, 0x0000080000000000,
+    0x0000100000000000, 0x0000200000000000, 0x0000400000000000, 0x0000800000000000,
+    0x0001000000000000, 0x0002000000000000, 0x0004000000000000, 0x0008000000000000,
+    0x0010000000000000, 0x0020000000000000, 0x0040000000000000, 0x0080000000000000,
+    0x0100000000000000, 0x0200000000000000, 0x0400000000000000, 0x0800000000000000,
+    0x1000000000000000, 0x2000000000000000, 0x4000000000000000, 0x8000000000000000,
 ];
 
 // ---- helper bit functions --------------------------------------------------
@@ -202,10 +222,11 @@ struct ForwardBitReader {
     byte_idx:  i64         = 0,
     bit_count: i32         = 0,
     bit_buf:   u64         = 0,
+    underflow: bool        = false,
 }
 
 fn fwd_refill(r: ForwardBitReader&) {
-    while r.bit_count <= 56 && r.byte_idx < r.src.len {
+    while r.bit_count >= 0 && r.bit_count <= 56 && r.byte_idx < r.src.len {
         r.bit_buf |= (r.src[r.byte_idx] as u64) << (r.bit_count as u64);
         r.byte_idx++;
         r.bit_count += 8;
@@ -213,27 +234,54 @@ fn fwd_refill(r: ForwardBitReader&) {
 }
 
 fn new_forward_bit_reader(src: const u8[:], start_offset: i64) -> ForwardBitReader {
+    if start_offset < 0 || start_offset > src.len {
+        return ForwardBitReader {
+            src:       src,
+            byte_idx:  src.len,
+            bit_count: 0,
+            bit_buf:   0,
+            underflow: true,
+        };
+    }
     var r = ForwardBitReader {
         src:       src,
         byte_idx:  start_offset,
         bit_count: 0,
         bit_buf:   0,
+        underflow: false,
     };
     fwd_refill(r);
     return r;
 }
 
 fn fwd_peek(r: ForwardBitReader&, n: i32) -> u32 {
+    guard n > 0 && n <= 32 else { return 0; }
     if r.bit_count < n {
         fwd_refill(r);
     }
-    let mask = ((1 as u64) << (n as u64)) - 1;
-    return (r.bit_buf & mask) as u32;
+    let mask = sub_sat_u64(ZSTD_POW2_U64[(n & 63) as u64], 1);
+    return ((r.bit_buf & mask) & 0xFFFFFFFF) as u32;
 }
 
 fn fwd_consume(r: ForwardBitReader&, n: i32) {
-    r.bit_buf >>= (n as u64);
-    r.bit_count -= n;
+    guard n > 0 else { return; }
+    if r.bit_count < n {
+        fwd_refill(r);
+    }
+    if r.bit_count < n {
+        r.underflow = true;
+        r.bit_count = 0;
+        r.bit_buf = 0;
+        return;
+    }
+    if n >= 64 {
+        r.bit_buf = 0;
+        r.bit_count = 0;
+        return;
+    }
+    let q, _ = div_rem_u64(r.bit_buf, ZSTD_POW2_U64[(n & 63) as u64]);
+    r.bit_buf = q;
+    r.bit_count = (sub_sat_i64(r.bit_count, n) & 63) as i32;
 }
 
 fn fwd_read(r: ForwardBitReader&, n: i32) -> u32 {
@@ -619,9 +667,12 @@ fn fse_build_dtable(
 
 fn read_fse_zero_repeats(r: ForwardBitReader&) -> i32 {
     var repeats: i32 = 0;
-    loop {
+    while !r.underflow {
         let code = fwd_peek(r, 2);
         fwd_consume(r, 2);
+        if r.underflow {
+            break;
+        }
         if code == 3 {
             repeats += 3;
         } else {
@@ -656,7 +707,40 @@ fn read_fse_symbol_count(r: ForwardBitReader&, threshold: i32, max_val: i32, nb_
     return count;
 }
 
-// Reads FSE normalized counts from src and advances offset.
+fn shrink_fse_threshold(remaining: i32, threshold: i32&, nb_bits: i32&) {
+    var thr: i64 = threshold;
+    var nb:  i64 = nb_bits;
+    let rem_u = (remaining & 1023) as u32;
+    while thr > remaining && thr > 1 {
+        if remaining <= 1 {
+            break;
+        }
+        let clz_v = (clz(rem_u) & 63) as u32;
+        let hb = sub_sat_u32(63, clz_v);
+        nb = add_sat_u32(hb, 1);
+        thr = (ZSTD_POW2_U64[(hb as u64) & 15] & 1023) as i64;
+    }
+    threshold = (thr & 1023) as i32;
+    nb_bits = (nb & 15) as i32;
+}
+
+fn record_fse_symbol_count(
+    raw_count: i32,
+    remaining: i32&,
+    counts:    i16[:],
+    char_num:  i32&,
+    previous0: bool&,
+) {
+    let count = sub_sat_i64(raw_count, 1);
+    let rem_next = if count >= 0 { sub_sat_i64(remaining, count) } else { add_sat_i64(remaining, count) };
+    remaining = if rem_next <= 0 { 0 } else { (rem_next & 1023) as i32 };
+    counts[(char_num & 255) as i64] = if count < 0 { -1 as i16 } else { (count & 1023) as i16 };
+    char_num = (add_sat_i64(char_num, 1) & 511) as i32;
+    previous0 = (count == 0);
+}
+
+// Reads FSE normalized counts from src and advances offset (RFC 8878 Section 4.1.1).
+// Leaves `offset` unchanged when returning `false`.
 //
 // Example:
 //   src = [0x22, 0x01, ...], offset = 0
@@ -670,15 +754,13 @@ fn fse_read_ncount(
 ) -> bool {
     var r = new_forward_bit_reader(src, offset);
     let low4 = fwd_read(r, 4);
-    let log = (low4 + 5) as i32;
-    if log > 9 {
-        return false;
-    }
-    table_log = log;
+    let log_u = add_sat_u32(low4, 5);
+    guard log_u <= 9 else { return false; }
 
-    var remaining: i32  = ((1 as i32) << log) + 1;
-    var threshold: i32  = (1 as i32) << log;
-    var nb_bits:   i32  = log + 1;
+    let init_thr = (ZSTD_POW2_U64[(log_u as u64) & 15] & 1023) as i32;
+    var remaining: i32  = (add_sat_i64(init_thr, 1) & 1023) as i32;
+    var threshold: i32  = init_thr;
+    var nb_bits:   i32  = (add_sat_u32(log_u, 1) & 15) as i32;
     var char_num:  i32  = 0;
     var previous0: bool = false;
 
@@ -686,36 +768,24 @@ fn fse_read_ncount(
         if previous0 {
             let repeats = read_fse_zero_repeats(r);
             fill_zero_counts(counts, char_num, repeats);
-            if remaining <= 1 || char_num > 255 {
+            if char_num > 255 {
                 break;
             }
         }
 
-        let max_val: i32 = (2 * threshold - 1) - remaining;
-        var count = read_fse_symbol_count(r, threshold, max_val, nb_bits);
-
-        count--;
-        if count >= 0 {
-            remaining -= count;
-        } else {
-            remaining += count;
-        }
-        counts[char_num] = count as i16;
-        char_num++;
-        previous0 = (count == 0);
-
-        while remaining < threshold && threshold > 1 {
-            if remaining <= 1 { break; }
-            nb_bits = zstd_high_bit(remaining as u32) + 1;
-            threshold = (1 as i32) << (nb_bits - 1);
-        }
+        let max_val = (sub_sat_i64(sub_sat_i64(mul_sat_i64(2, threshold), 1), remaining) & 1023) as i32;
+        let raw_count = read_fse_symbol_count(r, threshold, max_val, nb_bits);
+        record_fse_symbol_count(raw_count, remaining, counts, char_num, previous0);
+        shrink_fse_threshold(remaining, threshold, nb_bits);
     }
 
-    if remaining != 1 {
+    let consumed = fwd_bytes_consumed(r);
+    guard !r.underflow && remaining == 1 && consumed <= src.len else {
         return false;
     }
-    max_symbol = char_num - 1;
-    offset = fwd_bytes_consumed(r);
+    table_log = (log_u & 15) as i32;
+    max_symbol = (sub_sat_i64(char_num, 1) & 255) as i32;
+    offset = consumed;
     return true;
 }
 
@@ -857,15 +927,16 @@ fn read_direct_huf_weights(
 //
 // Example:
 //   weights = [0; 256], num_symbols = 0
-//   advances: num_symbols = 12
+//   returns: true, num_symbols = 12
 fn decode_fse_huf_weights(
     weight_fse_table: const HufWeightTable&,
     r:                ZstdBitReader&,
     weights:          u8[256]&,
     num_symbols:      i32&,
-) {
+) -> bool {
     var state1 = zstd_read_bits(r, weight_fse_table.table_log) as i64;
     var state2 = zstd_read_bits(r, weight_fse_table.table_log) as i64;
+    guard !r.underflow else { return false; }
 
     while num_symbols < 255 {
         let e1 = weight_fse_table.entries[state1];
@@ -892,9 +963,11 @@ fn decode_fse_huf_weights(
             break;
         }
     }
+    return true;
 }
 
 // Reads FSE compressed Huffman weights header and decompresses weights.
+// Leaves `offset` unchanged when returning `false`.
 //
 // Example:
 //   src = [0x10, ...], offset = 0, header_byte = 16
@@ -906,9 +979,8 @@ fn read_fse_huf_weights(
     weights:     u8[256]&,
 ) -> i32, bool {
     let fse_size = header_byte as i64;
-    guard offset + fse_size <= src.len else { return 0, false; }
+    guard fse_size > 0 && offset + fse_size <= src.len else { return 0, false; }
     let fse_slice = src[offset..offset + fse_size];
-    offset += fse_size;
 
     var fse_counts:  i16[256] = [0; 256];
     var fse_max_sym: i32      = 0;
@@ -917,7 +989,7 @@ fn read_fse_huf_weights(
     guard fse_read_ncount(fse_slice, fse_offset, fse_counts[..], fse_max_sym, fse_log) else {
         return 0, false;
     }
-    guard fse_log <= 6 else { return 0, false; }
+    guard fse_max_sym <= 12 && fse_log <= 6 && fse_offset < fse_slice.len else { return 0, false; }
 
     var weight_fse_table = HufWeightTable {};
     guard fse_build_weight_dtable(fse_counts[..], fse_max_sym, fse_log, weight_fse_table) else {
@@ -929,11 +1001,15 @@ fn read_fse_huf_weights(
     guard !r.underflow else { return 0, false; }
 
     var num_symbols: i32 = 0;
-    decode_fse_huf_weights(weight_fse_table, r, weights, num_symbols);
+    guard decode_fse_huf_weights(weight_fse_table, r, weights, num_symbols) else {
+        return 0, false;
+    }
+    offset += fse_size;
     return num_symbols, true;
 }
 
 // Reads a Huffman table header and weights from src and advances offset.
+// Leaves `offset` unchanged when returning `false`.
 //
 // Example:
 //   src = [0x85, 0x12, 0x34], offset = 0
@@ -941,17 +1017,17 @@ fn read_fse_huf_weights(
 fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
     guard offset < src.len else { return false; }
     let header_byte = src[offset];
-    offset++;
+    var pos = add_sat_i64(offset, 1);
 
     var weights:     u8[256] = [0; 256];
     var num_symbols: i32     = 0;
 
     if header_byte >= 128 {
-        let syms, ok = read_direct_huf_weights(src, offset, header_byte, weights);
+        let syms, ok = read_direct_huf_weights(src, pos, header_byte, weights);
         guard ok else { return false; }
         num_symbols = syms;
     } else {
-        let syms, ok = read_fse_huf_weights(src, offset, header_byte, weights);
+        let syms, ok = read_fse_huf_weights(src, pos, header_byte, weights);
         guard ok else { return false; }
         num_symbols = syms;
     }
@@ -960,6 +1036,7 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
     var i:            i32 = 0;
     while i < num_symbols {
         let w = weights[i] as i32;
+        guard w <= 11 else { return false; }
         if w > 0 {
             weight_total += (1 << w) >> 1;
         }
@@ -975,23 +1052,50 @@ fn huf_read_table(src: const u8[:], offset: i64&, table: HufTable&) -> bool {
     weights[num_symbols] = last_weight;
     num_symbols++;
 
-    return huf_build_dtable(weights[..num_symbols], num_symbols, 11, table);
+    guard huf_build_dtable(weights[..num_symbols], num_symbols, 11, table) else { return false; }
+    offset = pos;
+    return true;
 }
 
-inline fn refill_huf_bit_container(
-    r:             ZstdBitReader&,
-    ptr:           i64&,
-    bits_consumed: u32&,
-    bit_container: u64&,
+inline fn refill_huf_stream_container(
+    src:  const u8[:],
+    ptr:  i64&,
+    bits: u32&,
+    cont: u64&,
 ) {
-    guard bits_consumed > 32 && ptr > 0 else { return; }
-    let avail = (bits_consumed >> 3) as i64;
-    let shift_bytes = min(ptr, avail);
-    ptr -= shift_bytes;
-    bits_consumed -= (shift_bytes * 8) as u32;
-    if ptr >= 0 && ptr <= r.src.len - 8 {
-        bit_container = read_le_u64(r.src, ptr);
+    guard bits >= 8 && ptr > 0 else { return; }
+    let avail = (bits >> 3) as i64;
+    let s = min(ptr, avail);
+    ptr -= s;
+    bits -= (s * 8) as u32;
+    if ptr >= 0 && ptr <= src.len - 8 {
+        cont = read_le_u64(src, ptr);
     }
+}
+
+// Initializes a backward Huffman bitstream reader from src.
+//
+// Example:
+//   src = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x80]
+//   returns: ok = true, ptr = 0, bits = 0, cont = 0x8007060504030201
+inline fn init_huf_stream_reader(
+    src:  const u8[:],
+    ptr:  i64&,
+    bits: u32&,
+    cont: u64&,
+) -> bool {
+    let last_b = src[src.len - 1];
+    guard last_b != 0 else { return false; }
+    let stop = (8 - zstd_high_bit(last_b)) as u32;
+    var p = src.len - 8;
+    var b = stop;
+    if stop == 8 && p > 0 { p--; b = 0; }
+    var c: u64 = 0;
+    if p >= 0 && p <= src.len - 8 { c = read_le_u64(src, p); }
+    ptr = p;
+    bits = b;
+    cont = c;
+    return true;
 }
 
 fn huf_decode_fast_4x(
@@ -1037,7 +1141,9 @@ fn huf_decode_fast_4x(
 }
 
 fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]) -> bool {
-    guard !r.underflow && r.src.len > 0 else { return false; }
+    guard !r.underflow && r.src.len > 0 && table.is_defined && table.table_log > 0 else {
+        return false;
+    }
     var decoded: i64 = 0;
     let count = dst.len;
     let mask = (1 << table.table_log) - 1;
@@ -1045,18 +1151,13 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
     let t_log_u32 = t_log as u32;
     let rshift = (64 - t_log_u32) as u64;
 
-    if r.src.len >= 8 && !r.underflow && t_log > 0 {
-        let last_byte = r.src[r.src.len - 1];
-        let stop_bit = if last_byte != 0 { (8 - zstd_high_bit(last_byte)) as! u32 } else { 0 };
-
-        var ptr: i64 = r.src.len - 8;
-        var bit_consumed_init = stop_bit;
-        if stop_bit == 8 && ptr > 0 {
-            ptr--;
-            bit_consumed_init = 0;
+    if r.src.len >= 8 {
+        var ptr:           i64 = 0;
+        var bits_consumed: u32 = 0;
+        var bit_container: u64 = 0;
+        guard init_huf_stream_reader(r.src, ptr, bits_consumed, bit_container) else {
+            return false;
         }
-        var bit_container = read_le_u64(r.src, ptr);
-        var bits_consumed: u32 = bit_consumed_init;
 
         huf_decode_fast_4x(
             table, r.src, dst, count, rshift,
@@ -1064,7 +1165,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
         );
 
         while decoded < count {
-            refill_huf_bit_container(r, ptr, bits_consumed, bit_container);
+            refill_huf_stream_container(r.src, ptr, bits_consumed, bit_container);
             if bits_consumed + t_log_u32 > 64 {
                 break;
             }
@@ -1076,14 +1177,11 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
         }
 
         if decoded == count {
-            return true;
+            return ptr == 0 && bits_consumed == 64;
         }
 
-        let remaining_bits = if ptr == 0 {
-            max(0, 64 - (bits_consumed as i64))
-        } else {
-            ptr * 8 + (64 - (bits_consumed as i64))
-        };
+        let remaining_bits = ptr * 8 + (64 - (bits_consumed as i64));
+        guard remaining_bits >= 0 else { return false; }
         r.bit_pos = remaining_bits;
         r.cache_offset = -1;
     }
@@ -1096,23 +1194,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
         decoded++;
     }
 
-    return decoded == count;
-}
-
-inline fn refill_huf_stream_container(
-    src:  const u8[:],
-    ptr:  i64&,
-    bits: u32&,
-    cont: u64&,
-) {
-    guard bits > 32 && ptr > 0 else { return; }
-    let avail = (bits >> 3) as i64;
-    let s = min(ptr, avail);
-    ptr -= s;
-    bits -= (s * 8) as u32;
-    if ptr >= 0 && ptr <= src.len - 8 {
-        cont = read_le_u64(src, ptr);
-    }
+    return decoded == count && !r.underflow && r.bit_pos == 0;
 }
 
 inline fn huf_decode_4streams_step(
@@ -1181,14 +1263,14 @@ fn huf_decode_stream_tail(
     dst:   u8[:],
     dec:   i64&,
     cnt:   i64,
-) {
-    guard dec < cnt else { return; }
+) -> bool {
+    if dec == cnt {
+        return ptr == 0 && bits == 64;
+    }
     var r = new_zstd_bit_reader(src);
-    let rem = if ptr == 0 {
-        max(0, 64 - (bits as i64))
-    } else {
-        ptr * 8 + (64 - (bits as i64))
-    };
+    guard !r.underflow else { return false; }
+    let rem = ptr * 8 + (64 - (bits as i64));
+    guard rem >= 0 else { return false; }
     r.bit_pos = rem;
     let mask = ((1 << t_log) - 1) & 2047;
     while dec < cnt && !r.underflow {
@@ -1198,31 +1280,7 @@ fn huf_decode_stream_tail(
         zstd_consume_bits(r, entry.nb_bits);
         dec++;
     }
-}
-
-// Initializes a backward Huffman bitstream reader from src.
-//
-// Example:
-//   src = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x80]
-//   returns: ok = true, ptr = 0, bits = 0, cont = 0x8007060504030201
-inline fn init_huf_stream_reader(
-    src:  const u8[:],
-    ptr:  i64&,
-    bits: u32&,
-    cont: u64&,
-) -> bool {
-    let last_b = src[src.len - 1];
-    guard last_b != 0 else { return false; }
-    let stop = (8 - zstd_high_bit(last_b)) as u32;
-    var p = src.len - 8;
-    var b = stop;
-    if stop == 8 && p > 0 { p--; b = 0; }
-    var c: u64 = 0;
-    if p >= 0 && p <= src.len - 8 { c = read_le_u64(src, p); }
-    ptr = p;
-    bits = b;
-    cont = c;
-    return true;
+    return dec == cnt && !r.underflow && r.bit_pos == 0;
 }
 
 fn huf_decode_4streams(
@@ -1276,12 +1334,12 @@ fn huf_decode_4streams(
         guard ok else { break; }
     }
 
-    huf_decode_stream_tail(src1, ptr1, bits1, t_log, table, dst1, dec1, cnt1);
-    huf_decode_stream_tail(src2, ptr2, bits2, t_log, table, dst2, dec2, cnt2);
-    huf_decode_stream_tail(src3, ptr3, bits3, t_log, table, dst3, dec3, cnt3);
-    huf_decode_stream_tail(src4, ptr4, bits4, t_log, table, dst4, dec4, cnt4);
+    let ok1 = huf_decode_stream_tail(src1, ptr1, bits1, t_log, table, dst1, dec1, cnt1);
+    let ok2 = huf_decode_stream_tail(src2, ptr2, bits2, t_log, table, dst2, dec2, cnt2);
+    let ok3 = huf_decode_stream_tail(src3, ptr3, bits3, t_log, table, dst3, dec3, cnt3);
+    let ok4 = huf_decode_stream_tail(src4, ptr4, bits4, t_log, table, dst4, dec4, cnt4);
 
-    return dec1 == cnt1 && dec2 == cnt2 && dec3 == cnt3 && dec4 == cnt4;
+    return ok1 && ok2 && ok3 && ok4;
 }
 
 // ---- literals section decoder (rfc 8878 section 3.1.1.3.1) ----------------
@@ -1433,18 +1491,24 @@ fn decode_huf_4streams_literals(
 }
 
 // Decodes a Zstd literals section from src into lit_buf and advances offset.
+// Leaves `offset` unchanged when returning `ok: false`.
 //
 // Example:
 //   src = [0x00, 0x05, 0x68, 0x65, 0x6C, 0x6C, 0x6F], offset = 0, block_end = 7
 //   returns: DecodedLiterals { ok: true, slice: "hello" }, offset = 7
 fn decode_literals(
-    src:       const u8[:],
-    offset:    i64&,
-    block_end: i64,
-    lit_buf:   u8[>..]&,
-    huf_table: HufTable&,
+    src:            const u8[:],
+    offset:         i64&,
+    block_end:      i64,
+    lit_buf:        u8[>..]&,
+    huf_table:      HufTable&,
+    block_max_size: i64 = ZSTD_BLOCKSIZE_MAX,
 ) -> DecodedLiterals {
     guard offset < block_end else { return DecodedLiterals { ok: false }; }
+    let saved_offset = offset;
+    var committed = false;
+    defer if !committed { offset = saved_offset; };
+
     let header_byte = src[offset];
     let lit_type = (header_byte & 3) as i32;
     let size_format = ((header_byte >> 2) & 3) as i32;
@@ -1454,20 +1518,24 @@ fn decode_literals(
         guard parse_raw_rle_literals_header(src, offset, block_end, header_byte, size_format, regenerated_size) else {
             return DecodedLiterals { ok: false };
         }
+        guard regenerated_size <= block_max_size else {
+            return DecodedLiterals { ok: false };
+        }
 
         if lit_type == 0 {
             guard offset + regenerated_size <= block_end else { return DecodedLiterals { ok: false }; }
             let lit_slice = src[offset..offset + regenerated_size];
             offset += regenerated_size;
+            committed = true;
             return DecodedLiterals { ok: true, slice: lit_slice };
-        } else {
-            guard offset < block_end else { return DecodedLiterals { ok: false }; }
-            let b = src[offset];
-            offset++;
-            lit_buf.clear();
-            lit_buf.resize(regenerated_size, b);
-            return DecodedLiterals { ok: true, slice: lit_buf[..] };
         }
+        guard offset < block_end else { return DecodedLiterals { ok: false }; }
+        let b = src[offset];
+        offset++;
+        lit_buf.clear();
+        lit_buf.resize(regenerated_size, b);
+        committed = true;
+        return DecodedLiterals { ok: true, slice: lit_buf[..] };
     }
 
     if lit_type == 3 && !huf_table.is_defined {
@@ -1484,11 +1552,14 @@ fn decode_literals(
         return DecodedLiterals { ok: false };
     }
 
+    guard regenerated_size <= block_max_size && compressed_size > 0 else {
+        return DecodedLiterals { ok: false };
+    }
     guard offset + compressed_size <= block_end else { return DecodedLiterals { ok: false }; }
     let c_end = offset + compressed_size;
 
     if lit_type == 2 {
-        guard huf_read_table(src, offset, huf_table) else {
+        guard huf_read_table(src[..c_end], offset, huf_table) && offset < c_end else {
             return DecodedLiterals { ok: false };
         }
     }
@@ -1510,6 +1581,7 @@ fn decode_literals(
     }
 
     offset = c_end;
+    committed = true;
     return DecodedLiterals { ok: true, slice: lit_buf[0..regenerated_size] };
 }
 
@@ -1575,17 +1647,58 @@ fn apply_sequence_literals<B>(
     lit_ptr: i64&,
     lit_len: u32,
     out_buf: B&,
-) -> bool {
-    guard lit_len > 0 else { return true; }
+) -> CompressError {
+    guard lit_len > 0 else { return CompressError.None; }
     let next_lit = lit_ptr + (lit_len as i64);
-    guard lit_ptr >= 0 && next_lit >= lit_ptr && next_lit <= lit_buf.len else { return false; }
+    guard lit_ptr >= 0 && next_lit >= lit_ptr && next_lit <= lit_buf.len else {
+        return CompressError.CorruptedBitstream;
+    }
     if lit_len == 1 {
-        out_buf.push(lit_buf[lit_ptr]);
+        guard comp_try_push(out_buf, lit_buf[lit_ptr]) else {
+            return CompressError.OutputBufferOverflow;
+        }
     } else {
-        out_buf.append(lit_buf[lit_ptr..next_lit]);
+        guard comp_try_append(out_buf, lit_buf[lit_ptr..next_lit]) else {
+            return CompressError.OutputBufferOverflow;
+        }
     }
     lit_ptr = next_lit;
-    return true;
+    return CompressError.None;
+}
+
+fn copy_in_frame_match<B>(
+    off:             i64,
+    m_len:           i64,
+    out_buf:         B&,
+    frame_start_out: i64,
+) -> CompressError {
+    let out_len = out_buf.len;
+    let src_idx = sub_sat_i64(out_len, off);
+    guard src_idx >= frame_start_out && src_idx < out_len else {
+        return CompressError.DistanceOutOfBounds;
+    }
+    if off >= m_len {
+        guard comp_try_append(out_buf, out_buf[src_idx..add_sat_i64(src_idx, m_len)]) else {
+            return CompressError.OutputBufferOverflow;
+        }
+        return CompressError.None;
+    }
+    if off == 1 {
+        let b = out_buf[src_idx];
+        guard comp_try_fill(out_buf, m_len, b) else {
+            return CompressError.OutputBufferOverflow;
+        }
+        return CompressError.None;
+    }
+    var curr: i64 = 0;
+    while curr < m_len {
+        let step = min(add_sat_i64(curr, off), sub_sat_i64(m_len, curr));
+        guard comp_try_append(out_buf, out_buf[src_idx..add_sat_i64(src_idx, step)]) else {
+            return CompressError.OutputBufferOverflow;
+        }
+        curr = add_sat_i64(curr, step);
+    }
+    return CompressError.None;
 }
 
 fn apply_sequence_match<B>(
@@ -1594,32 +1707,38 @@ fn apply_sequence_match<B>(
     out_buf:         B&,
     frame_start_out: i64,
     window_size:     i64,
+    dict_content:    const u8[:] = "",
 ) -> CompressError {
     guard match_len > 0 else { return CompressError.None; }
     let off = offset as i64;
     let m_len = match_len as i64;
     let out_len = out_buf.len;
     let current_decoded = out_len - frame_start_out;
-    let max_offset = if window_size > 0 && window_size < current_decoded { window_size } else { current_decoded };
-    guard off > 0 && off <= max_offset else { return CompressError.DistanceOutOfBounds; }
-    let src_idx = out_len - off;
-    if off >= m_len {
-        let src_end = src_idx + m_len;
-        guard src_idx >= frame_start_out && src_end <= out_len else { return CompressError.DistanceOutOfBounds; }
-        out_buf.append(out_buf[src_idx..src_end]);
-    } else if off == 1 {
-        guard src_idx >= frame_start_out && src_idx < out_len else { return CompressError.DistanceOutOfBounds; }
-        let b = out_buf[src_idx];
-        out_buf.resize(out_len + m_len, b);
-    } else {
-        var curr: i64 = 0;
-        while curr < m_len {
-            let avail = curr + off;
-            let rem = m_len - curr;
-            let step = min(avail, rem);
-            out_buf.append(out_buf[src_idx..src_idx + step]);
-            curr += step;
-        }
+    guard off > 0 else { return CompressError.DistanceOutOfBounds; }
+
+    if off <= current_decoded {
+        let max_offset = if window_size > 0 && window_size < current_decoded {
+            window_size
+        } else {
+            current_decoded
+        };
+        guard off <= max_offset else { return CompressError.DistanceOutOfBounds; }
+        return copy_in_frame_match(off, m_len, out_buf, frame_start_out);
+    }
+
+    guard dict_content.len > 0 && (window_size <= 0 || current_decoded <= window_size) else {
+        return CompressError.DistanceOutOfBounds;
+    }
+    let dict_back = off - current_decoded;
+    guard dict_back <= dict_content.len else { return CompressError.DistanceOutOfBounds; }
+    let dict_start = dict_content.len - dict_back;
+    let dict_copy = min(m_len, dict_back);
+    guard comp_try_append(out_buf, dict_content[dict_start..dict_start + dict_copy]) else {
+        return CompressError.OutputBufferOverflow;
+    }
+    let rem_len = m_len - dict_copy;
+    if rem_len > 0 {
+        return copy_in_frame_match(off, rem_len, out_buf, frame_start_out);
     }
     return CompressError.None;
 }
@@ -1638,27 +1757,28 @@ fn execute_single_sequence<B>(
     initial_out_len:  i64,
     frame_start_out:  i64,
     window_size:      i64,
+    dict_content:     const u8[:] = "",
 ) -> CompressError {
     let offset, ok_off = compute_repeat_offset(offset_val, lit_len, rep0, rep1, rep2);
     guard ok_off else { return CompressError.CorruptedBitstream; }
 
     if max_output_bytes >= 0 {
-        let needed = ((out_buf.len - initial_out_len) as i64) + (lit_len as i64) + (match_len as i64);
+        let cur_out = sub_sat_i64(out_buf.len, initial_out_len);
+        let needed = add_sat_i64(cur_out, (lit_len as i64) + (match_len as i64));
         guard needed <= max_output_bytes else { return CompressError.OutputBufferOverflow; }
     }
 
-    guard apply_sequence_literals(lit_buf, lit_ptr, lit_len, out_buf) else {
-        return CompressError.CorruptedBitstream;
-    }
+    let lit_err = apply_sequence_literals(lit_buf, lit_ptr, lit_len, out_buf);
+    guard lit_err == CompressError.None else { return lit_err; }
 
-    return apply_sequence_match(offset, match_len, out_buf, frame_start_out, window_size);
+    return apply_sequence_match(offset, match_len, out_buf, frame_start_out, window_size, dict_content);
 }
 
 // Decodes fast sequence parameters from bit container.
 //
 // Example:
 //   seq_bitstream = [0x12, 0x34], ptr = 0, bit_container = 0x1234, bits_consumed = 0
-//   returns: lit_len = 0, match_len = 3, offset_val = 1
+//   returns: lit_len = 0, match_len = 3, offset_val = 1, ok = true
 fn decode_fast_seq_params(
     seq_bitstream: const u8[:],
     ptr:           i64&,
@@ -1667,7 +1787,7 @@ fn decode_fast_seq_params(
     ll_entry:      FseEntry,
     ml_entry:      FseEntry,
     of_entry:      FseEntry,
-) -> u32, u32, u32 {
+) -> u32, u32, u32, bool {
     let of_eb = of_entry.extra_bits as u32;
     let ml_eb = ml_entry.extra_bits as u32;
     let ll_eb = ll_entry.extra_bits as u32;
@@ -1676,28 +1796,29 @@ fn decode_fast_seq_params(
     var ml_extra: u32 = 0;
     var ll_extra: u32 = 0;
 
-    refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
-
     if of_eb > 0 {
         refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+        guard add_sat_u32(bits_consumed, of_eb) <= 64 else { return 0, 0, 0, false; }
         of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
-        bits_consumed += of_eb;
+        bits_consumed = add_sat_u32(bits_consumed, of_eb);
     }
     if ml_eb > 0 {
         refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+        guard add_sat_u32(bits_consumed, ml_eb) <= 64 else { return 0, 0, 0, false; }
         ml_extra = zstd_extract_bits(bit_container, bits_consumed, ml_eb);
-        bits_consumed += ml_eb;
+        bits_consumed = add_sat_u32(bits_consumed, ml_eb);
     }
     if ll_eb > 0 {
         refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+        guard add_sat_u32(bits_consumed, ll_eb) <= 64 else { return 0, 0, 0, false; }
         ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
-        bits_consumed += ll_eb;
+        bits_consumed = add_sat_u32(bits_consumed, ll_eb);
     }
 
-    let lit_len = ll_entry.base_val + ll_extra;
-    let match_len = ml_entry.base_val + ml_extra;
-    let offset_val = of_entry.base_val + of_extra;
-    return lit_len, match_len, offset_val;
+    let lit_len = add_sat_u32(ll_entry.base_val, ll_extra);
+    let match_len = add_sat_u32(ml_entry.base_val, ml_extra);
+    let offset_val = add_sat_u32(of_entry.base_val, of_extra);
+    return lit_len, match_len, offset_val, true;
 }
 
 fn update_fast_fse_states(
@@ -1711,23 +1832,26 @@ fn update_fast_fse_states(
     state_ll:      i64&,
     state_ml:      i64&,
     state_of:      i64&,
-) {
-    refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
-
+) -> bool {
     let ll_nb = ll_entry.nb_bits as u32;
-    let ll_bits = zstd_extract_bits(bit_container, bits_consumed, ll_nb) as i64;
-    bits_consumed += ll_nb;
-    state_ll = ll_entry.new_state + ll_bits;
-
     let ml_nb = ml_entry.nb_bits as u32;
-    let ml_bits = zstd_extract_bits(bit_container, bits_consumed, ml_nb) as i64;
-    bits_consumed += ml_nb;
-    state_ml = ml_entry.new_state + ml_bits;
-
     let of_nb = of_entry.nb_bits as u32;
+    refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+    let need_bits = add_sat_u32(add_sat_u32(bits_consumed, ll_nb), add_sat_u32(ml_nb, of_nb));
+    guard need_bits <= 64 else { return false; }
+
+    let ll_bits = zstd_extract_bits(bit_container, bits_consumed, ll_nb) as i64;
+    bits_consumed = add_sat_u32(bits_consumed, ll_nb);
+    state_ll = add_sat_i64(ll_entry.new_state, ll_bits);
+
+    let ml_bits = zstd_extract_bits(bit_container, bits_consumed, ml_nb) as i64;
+    bits_consumed = add_sat_u32(bits_consumed, ml_nb);
+    state_ml = add_sat_i64(ml_entry.new_state, ml_bits);
+
     let of_bits = zstd_extract_bits(bit_container, bits_consumed, of_nb) as i64;
-    bits_consumed += of_nb;
-    state_of = of_entry.new_state + of_bits;
+    bits_consumed = add_sat_u32(bits_consumed, of_nb);
+    state_of = add_sat_i64(of_entry.new_state, of_bits);
+    return true;
 }
 
 // Decodes slow sequence parameters using bit reader.
@@ -1807,7 +1931,17 @@ fn parse_number_of_sequences(
     return b1 + (b2 << 8) + 0x7F00, true;
 }
 
+struct SeqExecCtx {
+    lit_buf:          const u8[:] = "",
+    max_output_bytes: i64         = -1,
+    initial_out_len:  i64         = 0,
+    frame_start_out:  i64         = 0,
+    window_size:      i64         = 0,
+    dict_content:     const u8[:] = "",
+}
+
 // Builds or updates literal lengths FSE table from src and advances offset.
+// Leaves `offset` unchanged when returning `false`.
 //
 // Example:
 //   src = [0x00], offset = 0, block_end = 1, ll_mode = 0
@@ -1823,8 +1957,10 @@ fn build_sequence_ll_table(
         fse_init_default_ll(ll_table);
     } else if ll_mode == 1 {
         guard offset < block_end else { return false; }
-        let sym = src[offset]; offset++;
-        let idx = (sym & 63) as i64;
+        let sym = src[offset];
+        guard sym <= 35 else { return false; }
+        offset++;
+        let idx = sym as i64;
         ll_table.table_log = 0;
         ll_table.is_defined = true;
         ll_table.entries[0] = FseEntry {
@@ -1837,8 +1973,18 @@ fn build_sequence_ll_table(
         var counts:    i16[256] = [0; 256];
         var max_sym:   i32      = 0;
         var table_log: i32      = 0;
-        guard fse_read_ncount(src, offset, counts[..], max_sym, table_log) else { return false; }
-        guard fse_build_dtable(counts[..], max_sym, table_log, ll_table, 1) else { return false; }
+        let saved_offset = offset;
+        guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
+            return false;
+        }
+        guard offset <= block_end && max_sym <= 35 && table_log <= 9 else {
+            offset = saved_offset;
+            return false;
+        }
+        guard fse_build_dtable(counts[..], max_sym, table_log, ll_table, 1) else {
+            offset = saved_offset;
+            return false;
+        }
     } else {
         guard ll_table.is_defined else { return false; }
     }
@@ -1846,6 +1992,7 @@ fn build_sequence_ll_table(
 }
 
 // Builds or updates offset FSE table from src and advances offset.
+// Leaves `offset` unchanged when returning `false`.
 //
 // Example:
 //   src = [0x00], offset = 0, block_end = 1, of_mode = 0
@@ -1861,8 +2008,10 @@ fn build_sequence_of_table(
         fse_init_default_of(of_table);
     } else if of_mode == 1 {
         guard offset < block_end else { return false; }
-        let sym = src[offset]; offset++;
-        let sc = (sym & 31) as u32;
+        let sym = src[offset];
+        guard sym <= 31 else { return false; }
+        offset++;
+        let sc = sym as u32;
         of_table.table_log = 0;
         of_table.is_defined = true;
         of_table.entries[0] = FseEntry {
@@ -1875,9 +2024,18 @@ fn build_sequence_of_table(
         var counts:    i16[256] = [0; 256];
         var max_sym:   i32      = 0;
         var table_log: i32      = 0;
-        guard fse_read_ncount(src, offset, counts[..], max_sym, table_log) else { return false; }
-        guard table_log <= 8 else { return false; }
-        guard fse_build_dtable(counts[..], max_sym, table_log, of_table, 2) else { return false; }
+        let saved_offset = offset;
+        guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
+            return false;
+        }
+        guard offset <= block_end && max_sym <= 31 && table_log <= 8 else {
+            offset = saved_offset;
+            return false;
+        }
+        guard fse_build_dtable(counts[..], max_sym, table_log, of_table, 2) else {
+            offset = saved_offset;
+            return false;
+        }
     } else {
         guard of_table.is_defined else { return false; }
     }
@@ -1885,6 +2043,7 @@ fn build_sequence_of_table(
 }
 
 // Builds or updates match lengths FSE table from src and advances offset.
+// Leaves `offset` unchanged when returning `false`.
 //
 // Example:
 //   src = [0x00], offset = 0, block_end = 1, ml_mode = 0
@@ -1900,8 +2059,10 @@ fn build_sequence_ml_table(
         fse_init_default_ml(ml_table);
     } else if ml_mode == 1 {
         guard offset < block_end else { return false; }
-        let sym = src[offset]; offset++;
-        let idx = (sym & 63) as i64;
+        let sym = src[offset];
+        guard sym <= 52 else { return false; }
+        offset++;
+        let idx = sym as i64;
         ml_table.table_log = 0;
         ml_table.is_defined = true;
         ml_table.entries[0] = FseEntry {
@@ -1914,8 +2075,18 @@ fn build_sequence_ml_table(
         var counts:    i16[256] = [0; 256];
         var max_sym:   i32      = 0;
         var table_log: i32      = 0;
-        guard fse_read_ncount(src, offset, counts[..], max_sym, table_log) else { return false; }
-        guard fse_build_dtable(counts[..], max_sym, table_log, ml_table, 3) else { return false; }
+        let saved_offset = offset;
+        guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
+            return false;
+        }
+        guard offset <= block_end && max_sym <= 52 && table_log <= 9 else {
+            offset = saved_offset;
+            return false;
+        }
+        guard fse_build_dtable(counts[..], max_sym, table_log, ml_table, 3) else {
+            offset = saved_offset;
+            return false;
+        }
     } else {
         guard ml_table.is_defined else { return false; }
     }
@@ -1923,106 +2094,102 @@ fn build_sequence_ml_table(
 }
 
 fn decode_fast_seq_pair<B>(
-    seq_bitstream:    const u8[:],
-    seq_i:            i64,
-    nb_seq:           i64,
-    ll_table:         const FseTable&,
-    ml_table:         const FseTable&,
-    of_table:         const FseTable&,
-    of_entry:         FseEntry&,
-    ml_entry:         FseEntry&,
-    ll_entry:         FseEntry&,
-    state_ll:         i64&,
-    state_ml:         i64&,
-    state_of:         i64&,
-    ptr:              i64&,
-    bit_container:    u64&,
-    bits_consumed:    u32&,
-    lit_buf:          const u8[:],
-    lit_ptr:          i64&,
-    out_buf:          B&,
-    rep0:             u32&,
-    rep1:             u32&,
-    rep2:             u32&,
-    max_output_bytes: i64,
-    initial_out_len:  i64,
-    frame_start_out:  i64,
-    window_size:      i64,
+    seq_bitstream: const u8[:],
+    seq_i:         i64,
+    nb_seq:        i64,
+    ll_table:      const FseTable&,
+    ml_table:      const FseTable&,
+    of_table:      const FseTable&,
+    of_entry:      FseEntry&,
+    ml_entry:      FseEntry&,
+    ll_entry:      FseEntry&,
+    state_ll:      i64&,
+    state_ml:      i64&,
+    state_of:      i64&,
+    ptr:           i64&,
+    bit_container: u64&,
+    bits_consumed: u32&,
+    ctx:           const SeqExecCtx&,
+    lit_ptr:       i64&,
+    out_buf:       B&,
+    rep0:          u32&,
+    rep1:          u32&,
+    rep2:          u32&,
 ) -> CompressError {
-    let lit_A, mat_A, off_val_A = decode_fast_seq_params(
+    let lit_A, mat_A, off_val_A, ok_A = decode_fast_seq_params(
         seq_bitstream, ptr, bit_container, bits_consumed,
         ll_entry, ml_entry, of_entry,
     );
+    guard ok_A else { return CompressError.CorruptedBitstream; }
 
-    update_fast_fse_states(
+    guard update_fast_fse_states(
         seq_bitstream, ptr, bit_container, bits_consumed,
         ll_entry, ml_entry, of_entry,
         state_ll, state_ml, state_of,
-    );
+    ) else {
+        return CompressError.CorruptedBitstream;
+    }
     of_entry = of_table.entries[state_of & 511];
     ml_entry = ml_table.entries[state_ml & 511];
     ll_entry = ll_table.entries[state_ll & 511];
 
     let err_A = execute_single_sequence(
-        lit_A, mat_A, off_val_A, lit_buf, lit_ptr, out_buf,
-        rep0, rep1, rep2, max_output_bytes, initial_out_len,
-        frame_start_out, window_size,
+        lit_A, mat_A, off_val_A, ctx.lit_buf, lit_ptr, out_buf,
+        rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
+        ctx.frame_start_out, ctx.window_size, ctx.dict_content,
     );
     guard err_A == CompressError.None else { return err_A; }
 
-    let lit_B, mat_B, off_val_B = decode_fast_seq_params(
+    let lit_B, mat_B, off_val_B, ok_B = decode_fast_seq_params(
         seq_bitstream, ptr, bit_container, bits_consumed,
         ll_entry, ml_entry, of_entry,
     );
+    guard ok_B else { return CompressError.CorruptedBitstream; }
 
     if seq_i + 2 < nb_seq {
-        update_fast_fse_states(
+        guard update_fast_fse_states(
             seq_bitstream, ptr, bit_container, bits_consumed,
             ll_entry, ml_entry, of_entry,
             state_ll, state_ml, state_of,
-        );
+        ) else {
+            return CompressError.CorruptedBitstream;
+        }
         of_entry = of_table.entries[state_of & 511];
         ml_entry = ml_table.entries[state_ml & 511];
         ll_entry = ll_table.entries[state_ll & 511];
     }
 
     return execute_single_sequence(
-        lit_B, mat_B, off_val_B, lit_buf, lit_ptr, out_buf,
-        rep0, rep1, rep2, max_output_bytes, initial_out_len,
-        frame_start_out, window_size,
+        lit_B, mat_B, off_val_B, ctx.lit_buf, lit_ptr, out_buf,
+        rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
+        ctx.frame_start_out, ctx.window_size, ctx.dict_content,
     );
 }
 
+// Decodes fast sequence streams from backward bit container.
+//
+// Example:
+//   seq_bitstream = [0, 0, 0, 0, 0, 0, 0, 0x80], nb_seq = 1
+//   returns: CompressError.None
 fn decode_fast_sequence_streams<B>(
-    seq_bitstream:      const u8[:],
-    nb_seq:             i64,
-    ll_table:           const FseTable&,
-    ml_table:           const FseTable&,
-    of_table:           const FseTable&,
-    state_ll_init:      i64,
-    state_ml_init:      i64,
-    state_of_init:      i64,
-    ptr_init:           i64,
-    bit_container_init: u64,
-    bits_consumed_init: u32,
-    lit_buf:            const u8[:],
-    lit_ptr:            i64&,
-    out_buf:            B&,
-    rep0:               u32&,
-    rep1:               u32&,
-    rep2:               u32&,
-    max_output_bytes:   i64,
-    initial_out_len:    i64,
-    frame_start_out:    i64,
-    window_size:        i64,
+    seq_bitstream: const u8[:],
+    nb_seq:        i64,
+    ll_table:      const FseTable&,
+    ml_table:      const FseTable&,
+    of_table:      const FseTable&,
+    state_ll:      i64&,
+    state_ml:      i64&,
+    state_of:      i64&,
+    ptr:           i64&,
+    bit_container: u64&,
+    bits_consumed: u32&,
+    ctx:           const SeqExecCtx&,
+    lit_ptr:       i64&,
+    out_buf:       B&,
+    rep0:          u32&,
+    rep1:          u32&,
+    rep2:          u32&,
 ) -> CompressError {
-    var ptr = ptr_init;
-    var bit_container = bit_container_init;
-    var bits_consumed = bits_consumed_init;
-    var state_ll = state_ll_init;
-    var state_ml = state_ml_init;
-    var state_of = state_of_init;
-
     var of_entry = of_table.entries[state_of & 511];
     var ml_entry = ml_table.entries[state_ml & 511];
     var ll_entry = ll_table.entries[state_ll & 511];
@@ -2032,61 +2199,57 @@ fn decode_fast_sequence_streams<B>(
         let err = decode_fast_seq_pair(
             seq_bitstream, seq_i, nb_seq, ll_table, ml_table, of_table,
             of_entry, ml_entry, ll_entry, state_ll, state_ml, state_of,
-            ptr, bit_container, bits_consumed, lit_buf, lit_ptr, out_buf,
-            rep0, rep1, rep2, max_output_bytes, initial_out_len,
-            frame_start_out, window_size,
+            ptr, bit_container, bits_consumed, ctx, lit_ptr, out_buf,
+            rep0, rep1, rep2,
         );
         guard err == CompressError.None else { return err; }
         seq_i += 2;
     }
 
     while seq_i < nb_seq {
-        let lit_val, mat_val, off_val = decode_fast_seq_params(
+        let lit_val, mat_val, off_val, ok_p = decode_fast_seq_params(
             seq_bitstream, ptr, bit_container, bits_consumed,
             ll_entry, ml_entry, of_entry,
         );
-
+        guard ok_p else { return CompressError.CorruptedBitstream; }
         let err = execute_single_sequence(
-            lit_val, mat_val, off_val, lit_buf, lit_ptr, out_buf,
-            rep0, rep1, rep2, max_output_bytes, initial_out_len,
-            frame_start_out, window_size,
+            lit_val, mat_val, off_val, ctx.lit_buf, lit_ptr, out_buf,
+            rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
+            ctx.frame_start_out, ctx.window_size, ctx.dict_content,
         );
         guard err == CompressError.None else { return err; }
         seq_i++;
     }
 
+    refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+    guard bits_consumed <= 64 else { return CompressError.CorruptedBitstream; }
+    if (ll_table.table_log | of_table.table_log | ml_table.table_log) != 0 {
+        guard ptr == 0 && bits_consumed == 64 else { return CompressError.CorruptedBitstream; }
+    }
     return CompressError.None;
 }
 
 // Decodes sequence streams using fallback bit reader.
 //
 // Example:
-//   r = bit_reader, nb_seq = 1, lit_buf = [0x61], lit_ptr = 0
+//   r = bit_reader, nb_seq = 1, lit_ptr = 0
 //   returns: CompressError.None
 fn decode_slow_sequence_streams<B>(
-    r:                ZstdBitReader&,
-    nb_seq:           i64,
-    ll_table:         const FseTable&,
-    ml_table:         const FseTable&,
-    of_table:         const FseTable&,
-    state_ll_init:    i64,
-    state_ml_init:    i64,
-    state_of_init:    i64,
-    lit_buf:          const u8[:],
-    lit_ptr:          i64&,
-    out_buf:          B&,
-    rep0:             u32&,
-    rep1:             u32&,
-    rep2:             u32&,
-    max_output_bytes: i64,
-    initial_out_len:  i64,
-    frame_start_out:  i64,
-    window_size:      i64,
+    r:        ZstdBitReader&,
+    nb_seq:   i64,
+    ll_table: const FseTable&,
+    ml_table: const FseTable&,
+    of_table: const FseTable&,
+    state_ll: i64&,
+    state_ml: i64&,
+    state_of: i64&,
+    ctx:      const SeqExecCtx&,
+    lit_ptr:  i64&,
+    out_buf:  B&,
+    rep0:     u32&,
+    rep1:     u32&,
+    rep2:     u32&,
 ) -> CompressError {
-    var state_ll = state_ll_init;
-    var state_ml = state_ml_init;
-    var state_of = state_of_init;
-
     var of_entry = of_table.entries[state_of & 511];
     var ml_entry = ml_table.entries[state_ml & 511];
     var ll_entry = ll_table.entries[state_ll & 511];
@@ -2096,21 +2259,28 @@ fn decode_slow_sequence_streams<B>(
         let lit_len, match_len, offset_val = decode_slow_seq_params(
             r, of_entry, ml_entry, ll_entry,
         );
+        guard !r.underflow else { return CompressError.CorruptedBitstream; }
 
         if seq_i + 1 < nb_seq {
             update_slow_fse_states(r, of_entry, ml_entry, ll_entry, state_ll, state_ml, state_of);
+            guard !r.underflow else { return CompressError.CorruptedBitstream; }
             of_entry = of_table.entries[state_of & 511];
             ml_entry = ml_table.entries[state_ml & 511];
             ll_entry = ll_table.entries[state_ll & 511];
         }
 
         let err = execute_single_sequence(
-            lit_len, match_len, offset_val, lit_buf, lit_ptr, out_buf,
-            rep0, rep1, rep2, max_output_bytes, initial_out_len,
-            frame_start_out, window_size,
+            lit_len, match_len, offset_val, ctx.lit_buf, lit_ptr, out_buf,
+            rep0, rep1, rep2, ctx.max_output_bytes, ctx.initial_out_len,
+            ctx.frame_start_out, ctx.window_size, ctx.dict_content,
         );
         guard err == CompressError.None else { return err; }
         seq_i++;
+    }
+
+    guard !r.underflow else { return CompressError.CorruptedBitstream; }
+    if (ll_table.table_log | of_table.table_log | ml_table.table_log) != 0 {
+        guard r.bit_pos == 0 else { return CompressError.CorruptedBitstream; }
     }
     return CompressError.None;
 }
@@ -2126,14 +2296,48 @@ fn append_trailing_literals<B>(
     let rem_lit = lit_buf.len - lit_ptr;
     guard rem_lit > 0 else { return CompressError.None; }
     if max_output_bytes >= 0 {
-        let total = ((out_buf.len - initial_out_len) as i64) + rem_lit;
+        let total = add_sat_i64(sub_sat_i64(out_buf.len, initial_out_len), rem_lit);
         guard total <= max_output_bytes else { return CompressError.OutputBufferOverflow; }
     }
-    out_buf.append(lit_buf[lit_ptr..lit_buf.len]);
+    guard comp_try_append(out_buf, lit_buf[lit_ptr..lit_buf.len]) else {
+        return CompressError.OutputBufferOverflow;
+    }
     return CompressError.None;
 }
 
+fn init_fast_seq_reader(
+    seq_bitstream: const u8[:],
+    ll_log:        i32,
+    of_log:        i32,
+    ml_log:        i32,
+    ptr:           i64&,
+    bit_container: u64&,
+    bits_consumed: u32&,
+    state_ll:      i64&,
+    state_of:      i64&,
+    state_ml:      i64&,
+) -> bool {
+    guard init_huf_stream_reader(seq_bitstream, ptr, bits_consumed, bit_container) else {
+        return false;
+    }
+    refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+    let ll_u = (ll_log & 15) as u32;
+    let of_u = (of_log & 15) as u32;
+    let ml_u = (ml_log & 15) as u32;
+    let init_bits = add_sat_u32(add_sat_u32(ll_u, of_u), ml_u);
+    guard add_sat_u32(bits_consumed, init_bits) <= 64 else { return false; }
+
+    state_ll = zstd_extract_bits(bit_container, bits_consumed, ll_u);
+    bits_consumed = add_sat_u32(bits_consumed, ll_u);
+    state_of = zstd_extract_bits(bit_container, bits_consumed, of_u);
+    bits_consumed = add_sat_u32(bits_consumed, of_u);
+    state_ml = zstd_extract_bits(bit_container, bits_consumed, ml_u);
+    bits_consumed = add_sat_u32(bits_consumed, ml_u);
+    return true;
+}
+
 // Decodes a Zstd sequences section and emits match and literal streams.
+// Leaves `offset` unchanged when returning an error.
 //
 // Example:
 //   src = [0x01, 0x00], offset = 0, block_end = 2
@@ -2149,85 +2353,93 @@ fn decode_sequences<B>(
     ml_table:         FseTable&,
     of_table:         FseTable&,
     max_output_bytes: i64,
-    frame_start_out:  i64 = 0,
-    window_size:      i64 = 0,
-    initial_out_len:  i64 = 0,
+    frame_start_out:  i64         = 0,
+    window_size:      i64         = 0,
+    initial_out_len:  i64         = 0,
+    dict_content:     const u8[:] = "",
 ) -> CompressError {
     if offset >= block_end {
         return append_trailing_literals(lit_buf, 0, out_buf, initial_out_len, max_output_bytes);
     }
+
+    let saved_offset = offset;
+    var committed = false;
+    defer if !committed { offset = saved_offset; };
 
     let nb_seq, ok_seq = parse_number_of_sequences(src, offset, block_end);
     guard ok_seq else { return CompressError.InputBufferTruncated; }
 
     if nb_seq == 0 {
         guard offset == block_end else { return CompressError.CorruptedBitstream; }
-        return append_trailing_literals(lit_buf, 0, out_buf, initial_out_len, max_output_bytes);
+        let err0 = append_trailing_literals(lit_buf, 0, out_buf, initial_out_len, max_output_bytes);
+        guard err0 == CompressError.None else { return err0; }
+        committed = true;
+        return CompressError.None;
     }
 
     guard offset < block_end else { return CompressError.InputBufferTruncated; }
     let comp_modes = src[offset];
+    // RFC 8878 Section 3.1.1.3.2.1: Symbol_Compression_Modes - reserved low 2 bits must be zero.
+    guard (comp_modes & 3) == 0 else { return CompressError.CorruptedBitstream; }
     offset++;
 
     let ll_mode = ((comp_modes >> 6) & 3) as i32;
     let of_mode = ((comp_modes >> 4) & 3) as i32;
     let ml_mode = ((comp_modes >> 2) & 3) as i32;
 
-    guard build_sequence_ll_table(src, offset, block_end, ll_mode, ll_table) else {
-        return CompressError.CorruptedBitstream;
-    }
-    guard build_sequence_of_table(src, offset, block_end, of_mode, of_table) else {
-        return CompressError.CorruptedBitstream;
-    }
-    guard build_sequence_ml_table(src, offset, block_end, ml_mode, ml_table) else {
+    guard build_sequence_ll_table(src, offset, block_end, ll_mode, ll_table) &&
+          build_sequence_of_table(src, offset, block_end, of_mode, of_table) &&
+          build_sequence_ml_table(src, offset, block_end, ml_mode, ml_table) else {
         return CompressError.CorruptedBitstream;
     }
 
+    guard offset < block_end else { return CompressError.CorruptedBitstream; }
     let seq_bitstream = src[offset..block_end];
-    guard seq_bitstream.len > 0 else { return CompressError.CorruptedBitstream; }
 
+    let ctx = SeqExecCtx {
+        lit_buf:          lit_buf,
+        max_output_bytes: max_output_bytes,
+        initial_out_len:  initial_out_len,
+        frame_start_out:  frame_start_out,
+        window_size:      window_size,
+        dict_content:     dict_content,
+    };
     var lit_ptr: i64 = 0;
     var rep0 = rep[0];
     var rep1 = rep[1];
     var rep2 = rep[2];
 
     if seq_bitstream.len >= 8 {
-        let ptr = seq_bitstream.len - 8;
-        let bit_container = read_le_u64(seq_bitstream, ptr);
-        let last_byte = seq_bitstream[seq_bitstream.len - 1];
-        guard last_byte != 0 else { return CompressError.CorruptedBitstream; }
-        let high_bit = zstd_high_bit(last_byte as u32);
-        var bits_consumed = (8 - high_bit) as u32;
-
-        let state_ll = zstd_extract_bits(bit_container, bits_consumed, ll_table.table_log as u32) as i64;
-        bits_consumed += ll_table.table_log as u32;
-
-        let state_of = zstd_extract_bits(bit_container, bits_consumed, of_table.table_log as u32) as i64;
-        bits_consumed += of_table.table_log as u32;
-
-        let state_ml = zstd_extract_bits(bit_container, bits_consumed, ml_table.table_log as u32) as i64;
-        bits_consumed += ml_table.table_log as u32;
-
+        var ptr:           i64 = 0;
+        var bit_container: u64 = 0;
+        var bits_consumed: u32 = 0;
+        var state_ll:      i64 = 0;
+        var state_of:      i64 = 0;
+        var state_ml:      i64 = 0;
+        guard init_fast_seq_reader(
+            seq_bitstream, ll_table.table_log, of_table.table_log, ml_table.table_log,
+            ptr, bit_container, bits_consumed, state_ll, state_of, state_ml,
+        ) else {
+            return CompressError.CorruptedBitstream;
+        }
         let err = decode_fast_sequence_streams(
             seq_bitstream, nb_seq, ll_table, ml_table, of_table,
             state_ll, state_ml, state_of, ptr, bit_container, bits_consumed,
-            lit_buf, lit_ptr, out_buf, rep0, rep1, rep2,
-            max_output_bytes, initial_out_len, frame_start_out, window_size,
+            ctx, lit_ptr, out_buf, rep0, rep1, rep2,
         );
         guard err == CompressError.None else { return err; }
     } else {
         var r = new_zstd_bit_reader(seq_bitstream);
         guard !r.underflow else { return CompressError.CorruptedBitstream; }
-
-        let state_ll = zstd_read_bits(r, ll_table.table_log) as i64;
-        let state_of = zstd_read_bits(r, of_table.table_log) as i64;
-        let state_ml = zstd_read_bits(r, ml_table.table_log) as i64;
+        var state_ll = zstd_read_bits(r, ll_table.table_log) as i64;
+        var state_of = zstd_read_bits(r, of_table.table_log) as i64;
+        var state_ml = zstd_read_bits(r, ml_table.table_log) as i64;
+        guard !r.underflow else { return CompressError.CorruptedBitstream; }
 
         let err = decode_slow_sequence_streams(
             r, nb_seq, ll_table, ml_table, of_table,
             state_ll, state_ml, state_of,
-            lit_buf, lit_ptr, out_buf, rep0, rep1, rep2,
-            max_output_bytes, initial_out_len, frame_start_out, window_size,
+            ctx, lit_ptr, out_buf, rep0, rep1, rep2,
         );
         guard err == CompressError.None else { return err; }
     }
@@ -2240,6 +2452,7 @@ fn decode_sequences<B>(
     guard trail_err == CompressError.None else { return trail_err; }
 
     offset = block_end;
+    committed = true;
     return CompressError.None;
 }
 
@@ -2250,6 +2463,242 @@ fn decode_sequences<B>(
 // Example:
 //   src = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00], offset = 4
 //   returns: CompressError.None, window_size = 0, frame_content_size = 0, content_checksum_flag = 0
+struct ParsedZstdDict {
+    is_formatted:   bool     = false,
+    dict_id:        u32      = 0,
+    rep:            u32[3]   = [1, 4, 8],
+    huf_table:      HufTable = HufTable {},
+    ll_table:       FseTable = FseTable {},
+    ml_table:       FseTable = FseTable {},
+    of_table:       FseTable = FseTable {},
+    content_offset: i64      = 0,
+}
+
+fn read_formatted_dict_fse_table(
+    dict:            const u8[:],
+    pos:             i64&,
+    max_allowed_sym: i32,
+    max_allowed_log: i32,
+    kind:            i32,
+    out_tbl:         FseTable&,
+) -> bool {
+    var counts:    i16[256] = [0; 256];
+    var max_sym:   i32      = 0;
+    var table_log: i32      = 0;
+    guard fse_read_ncount(dict, pos, counts[..], max_sym, table_log) else { return false; }
+    guard max_sym <= max_allowed_sym && table_log <= max_allowed_log else { return false; }
+    return fse_build_dtable(counts[..], max_sym, table_log, out_tbl, kind);
+}
+
+// Parses RFC 8878 Section 5 formatted dictionary entropy tables and repeat offsets.
+//
+// Example:
+//   dict = [0x37, 0xA4, 0x30, 0xEC, 0x01, 0x00, 0x00, 0x00, ...], start_pos = 8
+//   returns: true
+fn parse_formatted_zstd_tables(dict: const u8[:], start_pos: i64, out_dict: ParsedZstdDict&) -> bool {
+    var pos = start_pos;
+    var huf = HufTable {};
+    guard huf_read_table(dict, pos, huf) else { return false; }
+
+    var of_tbl = FseTable {};
+    var ml_tbl = FseTable {};
+    var ll_tbl = FseTable {};
+    guard read_formatted_dict_fse_table(dict, pos, 31, 8, 2, of_tbl) &&
+          read_formatted_dict_fse_table(dict, pos, 52, 9, 3, ml_tbl) &&
+          read_formatted_dict_fse_table(dict, pos, 35, 9, 1, ll_tbl) else {
+        return false;
+    }
+
+    let next_pos = add_sat_i64(pos, 12);
+    guard next_pos <= dict.len else { return false; }
+    let r0 = read_le_u32(dict, pos);
+    let r1 = read_le_u32(dict, add_sat_i64(pos, 4));
+    let r2 = read_le_u32(dict, add_sat_i64(pos, 8));
+    let content_len = sub_sat_i64(dict.len, next_pos);
+    guard r0 > 0 && r1 > 0 && r2 > 0 else { return false; }
+    guard r0 <= content_len && r1 <= content_len && r2 <= content_len else {
+        return false;
+    }
+
+    out_dict.rep = [r0, r1, r2];
+    out_dict.huf_table = huf;
+    out_dict.of_table = of_tbl;
+    out_dict.ml_table = ml_tbl;
+    out_dict.ll_table = ll_tbl;
+    out_dict.content_offset = next_pos;
+    return true;
+}
+
+// Parses a raw or formatted RFC 8878 Section 5 Zstandard dictionary.
+//
+// Example:
+//   dict = "raw-dict-bytes"
+//   returns: CompressError.None, out_dict.content_offset = 0
+fn parse_zstd_dictionary(dict: const u8[:], out_dict: ParsedZstdDict&) -> CompressError {
+    out_dict = ParsedZstdDict {};
+    if dict.len == 0 {
+        return CompressError.None;
+    }
+    if dict.len < 4 || read_le_u32(dict, 0) != ZSTD_MAGIC_DICTIONARY {
+        out_dict.content_offset = 0;
+        return CompressError.None;
+    }
+    // RFC 8878 Section 5: Dictionary Format - Dictionary_ID must be non-zero after 4-byte magic.
+    guard dict.len >= 8 else { return CompressError.InvalidHeader; }
+    let dict_id = read_le_u32(dict, 4);
+    guard dict_id != 0 else { return CompressError.InvalidHeader; }
+
+    out_dict.is_formatted = true;
+    out_dict.dict_id = dict_id;
+    if !parse_formatted_zstd_tables(dict, 8, out_dict) {
+        out_dict.content_offset = 8;
+    }
+    return CompressError.None;
+}
+
+// Decodes a Zstandard `Window_Descriptor` byte into window size in bytes (RFC 8878 Section 3.1.1.1.2).
+//
+// Example:
+//   wd = 0x00
+//   returns: 1024
+fn decode_zstd_window_descriptor(wd: u8) -> i64 {
+    let hi, _ = div_rem_u64(wd, 8);
+    let exp = add_sat_u32((hi & 31) as u32, 10);
+    let mantissa = (wd & 7) as u64;
+    let window_base = ZSTD_POW2_U64[(exp as u64) & 63];
+    let q, _ = div_rem_u64(window_base, 8);
+    let total = add_sat_u64(window_base, mul_sat_u64(q, mantissa));
+    return (total & 0x7FFFFFFFFFFFFFFF) as i64;
+}
+
+// Parses the optional Zstd `Dictionary_ID` field (RFC 8878 Section 3.1.1.1.3).
+// Leaves `pos` at the end of the field on `CompressError.None`.
+//
+// Example:
+//   src = [0x01], pos = 0, dict_id_flag = 1
+//   returns: CompressError.None, frame_dict_id = 1, pos = 1
+fn parse_zstd_dict_id_field(
+    src:           const u8[:],
+    pos:           i64&,
+    dict_id_flag:  u8,
+    frame_dict_id: u32&,
+) -> CompressError {
+    frame_dict_id = 0;
+    if dict_id_flag == 0 {
+        return CompressError.None;
+    }
+    if dict_id_flag == 1 {
+        guard add_sat_i64(pos, 1) <= src.len else { return CompressError.InputBufferTruncated; }
+        frame_dict_id = src[pos];
+        pos = add_sat_i64(pos, 1);
+        return CompressError.None;
+    }
+    if dict_id_flag == 2 {
+        guard add_sat_i64(pos, 2) <= src.len else { return CompressError.InputBufferTruncated; }
+        frame_dict_id = read_le_u16(src, pos);
+        pos = add_sat_i64(pos, 2);
+        return CompressError.None;
+    }
+    guard add_sat_i64(pos, 4) <= src.len else { return CompressError.InputBufferTruncated; }
+    frame_dict_id = read_le_u32(src, pos);
+    pos = add_sat_i64(pos, 4);
+    return CompressError.None;
+}
+
+// Parses the optional Zstd `Frame_Content_Size` field (RFC 8878 Section 3.1.1.1.4).
+// Leaves `pos` at the end of the field on `CompressError.None`.
+//
+// Example:
+//   src = [0x05], pos = 0, fcs_flag = 0, single_segment = 1
+//   returns: CompressError.None, frame_content_size = 5, pos = 1
+fn parse_zstd_fcs_field(
+    src:                const u8[:],
+    pos:                i64&,
+    fcs_flag:           u8,
+    single_segment:     u8,
+    frame_content_size: i64&,
+) -> CompressError {
+    frame_content_size = -1;
+    if fcs_flag == 0 {
+        if single_segment == 0 {
+            return CompressError.None;
+        }
+        guard add_sat_i64(pos, 1) <= src.len else { return CompressError.InputBufferTruncated; }
+        frame_content_size = src[pos];
+        pos = add_sat_i64(pos, 1);
+        return CompressError.None;
+    }
+    if fcs_flag == 1 {
+        guard add_sat_i64(pos, 2) <= src.len else { return CompressError.InputBufferTruncated; }
+        frame_content_size = add_sat_i64(read_le_u16(src, pos), 256);
+        pos = add_sat_i64(pos, 2);
+        return CompressError.None;
+    }
+    if fcs_flag == 2 {
+        guard add_sat_i64(pos, 4) <= src.len else { return CompressError.InputBufferTruncated; }
+        frame_content_size = read_le_u32(src, pos);
+        pos = add_sat_i64(pos, 4);
+        return CompressError.None;
+    }
+    guard add_sat_i64(pos, 8) <= src.len else { return CompressError.InputBufferTruncated; }
+    let raw_fcs = read_le_u64(src, pos);
+    guard raw_fcs <= 0x7FFFFFFFFFFFFFFF else { return CompressError.CorruptedBitstream; }
+    frame_content_size = (raw_fcs & 0x7FFFFFFFFFFFFFFF) as i64;
+    pos = add_sat_i64(pos, 8);
+    return CompressError.None;
+}
+
+// Parses Zstandard frame header fields including `Dictionary_ID` from src at offset (RFC 8878 Section 3.1.1.1).
+// Leaves `offset` unchanged when returning an error.
+//
+// Example:
+//   src = [0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x00], offset = 4
+//   returns: CompressError.None, window_size = 0, frame_content_size = 0, content_checksum_flag = 0, frame_dict_id = 0
+fn parse_zstd_frame_header_ex(
+    src:                   const u8[:],
+    offset:                i64&,
+    window_size:           i64&,
+    frame_content_size:    i64&,
+    content_checksum_flag: u8&,
+    frame_dict_id:         u32&,
+) -> CompressError {
+    guard offset < src.len else { return CompressError.InputBufferTruncated; }
+    let fhd = src[offset];
+    var pos = add_sat_i64(offset, 1);
+
+    let fcs_flag = (fhd >> 6) & 3;
+    let single_segment = (fhd >> 5) & 1;
+    let reserved_bit = (fhd >> 3) & 1;
+    content_checksum_flag = (fhd >> 2) & 1;
+    let dict_id_flag = fhd & 3;
+    guard reserved_bit == 0 else { return CompressError.InvalidHeader; }
+
+    window_size = 0;
+    if single_segment == 0 {
+        guard pos < src.len else { return CompressError.InputBufferTruncated; }
+        window_size = decode_zstd_window_descriptor(src[pos]);
+        pos = add_sat_i64(pos, 1);
+    }
+
+    let dict_err = parse_zstd_dict_id_field(src, pos, dict_id_flag, frame_dict_id);
+    guard dict_err == CompressError.None else { return dict_err; }
+
+    let fcs_err = parse_zstd_fcs_field(src, pos, fcs_flag, single_segment, frame_content_size);
+    guard fcs_err == CompressError.None else { return fcs_err; }
+    if single_segment == 1 {
+        window_size = frame_content_size;
+    }
+
+    offset = pos;
+    return CompressError.None;
+}
+
+// Parses Zstandard frame header fields from src at offset (RFC 8878 §3.1.1.1).
+// Leaves `offset` unchanged when returning an error.
+//
+// Example:
+//   src = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00], offset = 4
+//   returns: CompressError.None, window_size = 1024, frame_content_size = -1, content_checksum_flag = 0
 fn parse_zstd_frame_header(
     src:                   const u8[:],
     offset:                i64&,
@@ -2257,84 +2706,14 @@ fn parse_zstd_frame_header(
     frame_content_size:    i64&,
     content_checksum_flag: u8&,
 ) -> CompressError {
-    if offset >= src.len { return CompressError.InputBufferTruncated; }
-    let fhd = src[offset];
-    offset++;
-
-    let fcs_flag = (fhd >> 6) & 3;
-    let single_segment = (fhd >> 5) & 1;
-    let reserved_bit = (fhd >> 3) & 1;
-    content_checksum_flag = (fhd >> 2) & 1;
-    let dict_id_flag = fhd & 3;
-
-    if reserved_bit != 0 {
-        return CompressError.InvalidHeader;
-    }
-
-    window_size = 0;
-    if single_segment == 0 {
-        if offset >= src.len { return CompressError.InputBufferTruncated; }
-        let wd = src[offset]; offset++;
-        let exp = (wd >> 3) as i64;
-        let mantissa = (wd & 7) as i64;
-        let window_base = 1 as i64 << (10 + exp);
-        let window_add = (window_base / 8) * mantissa;
-        window_size = window_base + window_add;
-    }
-
-    if dict_id_flag == 1 {
-        if offset + 1 > src.len { return CompressError.InputBufferTruncated; }
-        offset += 1;
-    } else if dict_id_flag == 2 {
-        if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
-        offset += 2;
-    } else if dict_id_flag == 3 {
-        if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-        offset += 4;
-    }
-
-    frame_content_size = -1;
-    if single_segment == 1 {
-        if fcs_flag == 0 {
-            if offset >= src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = src[offset]; offset += 1;
-        } else if fcs_flag == 1 {
-            if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = (src[offset] | ((src[offset + 1] as i64) << 8)) + 256;
-            offset += 2;
-        } else if fcs_flag == 2 {
-            if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = read_le_u32(src, offset);
-            offset += 4;
-        } else {
-            if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
-            let raw_fcs = read_le_u64(src, offset);
-            if (raw_fcs >> 63) != 0 { return CompressError.CorruptedBitstream; }
-            frame_content_size = raw_fcs as! i64;
-            offset += 8;
-        }
-        window_size = frame_content_size;
-    } else {
-        if fcs_flag == 1 {
-            if offset + 2 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = (src[offset] | ((src[offset + 1] as i64) << 8)) + 256;
-            offset += 2;
-        } else if fcs_flag == 2 {
-            if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
-            frame_content_size = read_le_u32(src, offset);
-            offset += 4;
-        } else if fcs_flag == 3 {
-            if offset + 8 > src.len { return CompressError.InputBufferTruncated; }
-            let raw_fcs = read_le_u64(src, offset);
-            if (raw_fcs >> 63) != 0 { return CompressError.CorruptedBitstream; }
-            frame_content_size = raw_fcs as! i64;
-            offset += 8;
-        }
-    }
-    return CompressError.None;
+    var frame_dict_id: u32 = 0;
+    return parse_zstd_frame_header_ex(
+        src, offset, window_size, frame_content_size, content_checksum_flag, frame_dict_id,
+    );
 }
 
 // Decompresses a single Zstandard block and updates tables and output buffer (RFC 8878 §3.1.1.2).
+// Leaves `offset` unchanged when returning an error.
 //
 // Example:
 //   src = [0x01, 0x00, 0x00], offset = 0
@@ -2354,7 +2733,12 @@ fn decompress_zstd_block<B>(
     initial_out_len:  i64,
     frame_start_out:  i64,
     max_output_bytes: i64,
+    dict_content:     const u8[:] = "",
 ) -> CompressError {
+    let saved_offset = offset;
+    var committed = false;
+    defer if !committed { offset = saved_offset; };
+
     if offset + 3 > src.len { return CompressError.InputBufferTruncated; }
     let header_val = read_le_u24(src, offset);
     offset += 3;
@@ -2366,7 +2750,7 @@ fn decompress_zstd_block<B>(
         return CompressError.InvalidBlockType;
     }
 
-    let block_max_size = if window_size > 0 && window_size < ZSTD_BLOCKSIZE_MAX {
+    let block_max_size = if window_size >= 0 && window_size < ZSTD_BLOCKSIZE_MAX {
         window_size
     } else {
         ZSTD_BLOCKSIZE_MAX
@@ -2374,17 +2758,21 @@ fn decompress_zstd_block<B>(
     if block_size > block_max_size {
         return CompressError.CorruptedBitstream;
     }
+    let produced_so_far = sub_sat_i64(out_buf.len, initial_out_len);
 
     if block_type == ZSTD_BLOCK_TYPE_RLE {
         if offset + 1 > src.len {
             return CompressError.InputBufferTruncated;
         }
-        if max_output_bytes >= 0 && ((out_buf.len - initial_out_len) as i64) + block_size > max_output_bytes {
+        if max_output_bytes >= 0 && add_sat_i64(produced_so_far, block_size) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
         let rle_byte = src[offset];
         offset += 1;
-        out_buf.resize(out_buf.len + block_size, rle_byte);
+        guard comp_try_fill(out_buf, block_size, rle_byte) else {
+            return CompressError.OutputBufferOverflow;
+        }
+        committed = true;
         return CompressError.None;
     }
 
@@ -2394,20 +2782,24 @@ fn decompress_zstd_block<B>(
     let block_end = offset + block_size;
 
     if block_type == ZSTD_BLOCK_TYPE_RAW {
-        if max_output_bytes >= 0 && ((out_buf.len - initial_out_len) as i64) + block_size > max_output_bytes {
+        if max_output_bytes >= 0 && add_sat_i64(produced_so_far, block_size) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
-        out_buf.append(src[offset..block_end]);
+        guard comp_try_append(out_buf, src[offset..block_end]) else {
+            return CompressError.OutputBufferOverflow;
+        }
         offset = block_end;
+        committed = true;
         return CompressError.None;
     }
 
     if block_type == ZSTD_BLOCK_TYPE_COMPRESSED {
-        let lits = decode_literals(src, offset, block_end, lit_buf, huf_table);
+        let block_out_start = out_buf.len;
+        let lits = decode_literals(src, offset, block_end, lit_buf, huf_table, block_max_size);
         if !lits.ok {
             return CompressError.CorruptedBitstream;
         }
-        return decode_sequences(
+        let seq_err = decode_sequences(
             src,
             offset,
             block_end,
@@ -2421,9 +2813,17 @@ fn decompress_zstd_block<B>(
             frame_start_out,
             window_size,
             initial_out_len,
+            dict_content,
         );
+        if seq_err != CompressError.None {
+            return seq_err;
+        }
+        if (out_buf.len - block_out_start) > block_max_size {
+            return CompressError.CorruptedBitstream;
+        }
     }
 
+    committed = true;
     return CompressError.None;
 }
 
@@ -2441,21 +2841,16 @@ fn zstd_decompress_frame_blocks<B>(
     frame_content_size: i64,
     initial_out_len:    i64,
     max_output_bytes:   i64,
-    dict_prefix_len:    i64 = 0,
+    parsed_dict:        const ParsedZstdDict&,
+    dict_content:       const u8[:] = "",
 ) -> CompressError {
-    var rep: u32[3] = [1, 4, 8];
-    var huf_table = HufTable {};
-    var ll_table = FseTable {};
-    var ml_table = FseTable {};
-    var of_table = FseTable {};
+    var rep = parsed_dict.rep;
+    var huf_table = parsed_dict.huf_table;
+    var ll_table = parsed_dict.ll_table;
+    var ml_table = parsed_dict.ml_table;
+    var of_table = parsed_dict.of_table;
 
     let frame_start_out = out_buf.len;
-    let match_start_out = sub_sat_i64(frame_start_out, dict_prefix_len);
-    let eff_win = if dict_prefix_len > 0 && window_size > 0 {
-        add_sat_i64(window_size, dict_prefix_len)
-    } else {
-        window_size
-    };
     var last_block = false;
 
     while !last_block {
@@ -2470,10 +2865,11 @@ fn zstd_decompress_frame_blocks<B>(
             ll_table,
             ml_table,
             of_table,
-            eff_win,
+            window_size,
             initial_out_len,
-            match_start_out,
+            frame_start_out,
             max_output_bytes,
+            dict_content,
         );
         if err != CompressError.None {
             return err;
@@ -2498,7 +2894,8 @@ fn decompress_single_zstd_frame<B>(
     lit_buf:          u8[>..]&,
     initial_out_len:  i64,
     max_output_bytes: i64,
-    dict_prefix_len:  i64 = 0,
+    parsed_dict:      const ParsedZstdDict&,
+    dict_content:     const u8[:] = "",
 ) -> CompressError {
     if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
     let magic = read_le_u32(src, offset);
@@ -2507,7 +2904,7 @@ fn decompress_single_zstd_frame<B>(
     if magic >= ZSTD_MAGIC_SKIPPABLE_START && magic <= ZSTD_MAGIC_SKIPPABLE_END {
         if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
         let skip_len = read_le_u32(src, offset) as i64;
-        if skip_len < 0 || offset + 4 + skip_len > src.len {
+        if skip_len < 0 || add_sat_i64(offset + 4, skip_len) > src.len {
             return CompressError.InputBufferTruncated;
         }
         offset += 4 + skip_len;
@@ -2521,16 +2918,26 @@ fn decompress_single_zstd_frame<B>(
     var window_size:           i64 = 0;
     var frame_content_size:    i64 = -1;
     var content_checksum_flag: u8  = 0;
-    let hdr_err = parse_zstd_frame_header(
-        src, offset, window_size, frame_content_size, content_checksum_flag,
+    var frame_dict_id:         u32 = 0;
+    let hdr_err = parse_zstd_frame_header_ex(
+        src, offset, window_size, frame_content_size, content_checksum_flag, frame_dict_id,
     );
     if hdr_err != CompressError.None {
         return hdr_err;
     }
 
-    let total_decoded = (out_buf.len - initial_out_len) as i64;
+    if frame_dict_id != 0 {
+        if !parsed_dict.is_formatted && dict_content.len == 0 {
+            return CompressError.NeedDictionary;
+        }
+        if !parsed_dict.is_formatted || parsed_dict.dict_id != frame_dict_id {
+            return CompressError.DictionaryMismatch;
+        }
+    }
+
+    let total_decoded = sub_sat_i64(out_buf.len, initial_out_len);
     if frame_content_size >= 0 && max_output_bytes >= 0 &&
-       (total_decoded + frame_content_size) > max_output_bytes {
+       add_sat_i64(total_decoded, frame_content_size) > max_output_bytes {
         return CompressError.OutputBufferOverflow;
     }
 
@@ -2545,7 +2952,8 @@ fn decompress_single_zstd_frame<B>(
         frame_content_size,
         initial_out_len,
         max_output_bytes,
-        dict_prefix_len,
+        parsed_dict,
+        dict_content,
     );
     if blk_err != CompressError.None {
         return blk_err;
@@ -2567,27 +2975,41 @@ fn decompress_single_zstd_frame<B>(
     return CompressError.None;
 }
 
-// Internal frame decompressor (RFC 8878 section 3.1.1) with output limit and dictionary prefix guard.
+// Internal frame decompressor (RFC 8878 section 3.1.1) with output limit and dictionary support.
 fn zstd_decompress_with_limit_impl<B>(
     src:              const u8[:],
     out_buf:          B&,
-    max_output_bytes: i64 = -1,
-    dict_prefix_len:  i64 = 0,
+    max_output_bytes: i64         = -1,
+    dict:             const u8[:] = "",
 ) -> CompressError {
     guard src.len > 0 else { return CompressError.InputBufferTruncated; }
-    var offset: i64 = 0;
+    var parsed_dict = ParsedZstdDict {};
+    let dict_err = parse_zstd_dictionary(dict, parsed_dict);
+    if dict_err != CompressError.None {
+        return dict_err;
+    }
+    var dict_buf: u8[>..] = [];
+    if dict.len > parsed_dict.content_offset {
+        dict_buf.append(dict[parsed_dict.content_offset..]);
+    }
+
     let initial_out_len = out_buf.len;
+    var committed = false;
+    defer if !committed { out_buf.resize(initial_out_len); };
+
+    var offset:  i64     = 0;
     var lit_buf: u8[>..] = [];
 
     while offset < src.len {
         let err = decompress_single_zstd_frame(
-            src, offset, out_buf, lit_buf, initial_out_len, max_output_bytes, dict_prefix_len,
+            src, offset, out_buf, lit_buf, initial_out_len, max_output_bytes, parsed_dict, dict_buf[..],
         );
         if err != CompressError.None {
             return err;
         }
     }
 
+    committed = true;
     return CompressError.None;
 }
 
@@ -2601,45 +3023,53 @@ fn zstd_decompress_frames_incremental<B>(
     dict:             const u8[:] = "",
 ) -> i64, CompressError {
     guard src.len > 0 else { return 0, CompressError.InputBufferTruncated; }
-    let raw_dict = extract_zstd_dict_prefix(dict);
-    var window_buf: u8[>..] = [];
-    if raw_dict.len > 0 {
-        window_buf.append(raw_dict);
+    var parsed_dict = ParsedZstdDict {};
+    let dict_err = parse_zstd_dictionary(dict, parsed_dict);
+    if dict_err != CompressError.None {
+        return 0, dict_err;
     }
-    let dict_len = window_buf.len;
+    var dict_buf: u8[>..] = [];
+    if dict.len > parsed_dict.content_offset {
+        dict_buf.append(dict[parsed_dict.content_offset..]);
+    }
+
+    let initial_out_len = out_buf.len;
     var offset:  i64     = 0;
     var lit_buf: u8[>..] = [];
 
     while offset < src.len {
         let saved_offset = offset;
-        let saved_out_len = window_buf.len;
+        let saved_out_len = out_buf.len;
         let err = decompress_single_zstd_frame(
-            src, offset, window_buf, lit_buf, dict_len, max_output_bytes, dict_len,
+            src, offset, out_buf, lit_buf, initial_out_len, max_output_bytes, parsed_dict, dict_buf[..],
         );
         if err == CompressError.InputBufferTruncated {
-            window_buf.resize(saved_out_len);
+            out_buf.resize(saved_out_len);
             if saved_offset > 0 {
-                out_buf.append(window_buf[dict_len..]);
                 return saved_offset, CompressError.None;
             }
             return 0, CompressError.InputBufferTruncated;
         }
         if err != CompressError.None {
+            out_buf.resize(initial_out_len);
             return saved_offset, err;
         }
     }
 
-    out_buf.append(window_buf[dict_len..]);
     return offset, CompressError.None;
 }
 
-// Strips RFC 8878 §5 formatted dictionary header (`ZSTD_MAGIC_DICTIONARY` + 4-byte `Dictionary_ID`) if present.
+// Extracts dictionary content slice from a raw or formatted RFC 8878 Section 5 dictionary.
 //
 // Example:
 //   dict = [0x37, 0xA4, 0x30, 0xEC, 0x01, 0x00, 0x00, 0x00, 'a', 'b']
 //   returns: "ab"
 fn extract_zstd_dict_prefix(dict: const u8[:]) -> const u8[:] {
     if dict.len >= 8 && read_le_u32(dict, 0) == ZSTD_MAGIC_DICTIONARY {
+        var parsed = ParsedZstdDict {};
+        if parse_zstd_dictionary(dict, parsed) == CompressError.None {
+            return dict[parsed.content_offset..];
+        }
         return dict[8..];
     }
     return dict;
@@ -2652,19 +3082,8 @@ fn zstd_decompress_with_dict<B>(
     out_buf:          B&,
     max_output_bytes: i64 = -1,
 ) -> bool, CompressError {
-    let raw_dict = extract_zstd_dict_prefix(dict);
-    if raw_dict.len == 0 {
-        return zstd_decompress_with_limit(src, out_buf, max_output_bytes);
-    }
-    var window_buf: u8[>..] = [];
-    window_buf.append(raw_dict);
-    let dict_len = window_buf.len;
-    let err = zstd_decompress_with_limit_impl(src, window_buf, max_output_bytes, dict_len);
-    guard err == CompressError.None else {
-        return false, err;
-    }
-    out_buf.append(window_buf[dict_len..]);
-    return true, CompressError.None;
+    let err = zstd_decompress_with_limit_impl(src, out_buf, max_output_bytes, dict);
+    return err == CompressError.None, err;
 }
 
 // Decompresses RFC 8878 Zstandard frame from src into out_buf with output limit guard.
@@ -3087,7 +3506,22 @@ fn find_matches(src: const u8[:], rep: u32[3]&, seqs: ZstdSeq[>..]&, lits: u8[>.
     }
 }
 
-fn compress_block<B>(chunk: const u8[:], rep: u32[3]&, is_last: bool, level: i32, out_buf: B&) {
+fn emit_zstd_u24_le<B>(out_buf: B&, val: u32) -> bool {
+    let hdr_bytes: u8[3] = [
+        (val & 0xFF) as u8,
+        ((val >> 8) & 0xFF) as u8,
+        ((val >> 16) & 0xFF) as u8,
+    ];
+    return comp_try_append(out_buf, hdr_bytes[..]);
+}
+
+fn compress_block<B>(
+    chunk:   const u8[:],
+    rep:     u32[3]&,
+    is_last: bool,
+    level:   i32,
+    out_buf: B&,
+) -> bool {
     let saved_rep = rep;
     var seqs: ZstdSeq[>..] = [];
     var lits: u8[>..]      = [];
@@ -3112,52 +3546,65 @@ fn compress_block<B>(chunk: const u8[:], rep: u32[3]&, is_last: bool, level: i32
 
     let b_size = lit_sec.len + seq_sec.len;
     if b_size >= chunk.len {
-        // Raw block fallback
         let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
         let hdr_val = last_bit | (0 << 1) | ((chunk.len as u32) << 3);
-        out_buf.push((hdr_val & 0xFF) as u8);
-        out_buf.push(((hdr_val >> 8) & 0xFF) as u8);
-        out_buf.push(((hdr_val >> 16) & 0xFF) as u8);
-        out_buf.append(chunk);
+        guard emit_zstd_u24_le(out_buf, hdr_val) && comp_try_append(out_buf, chunk) else {
+            return false;
+        }
         rep = saved_rep;
-        return;
+        return true;
     }
 
     let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
     let hdr_val = last_bit | (2 << 1) | ((b_size as u32) << 3);
-    out_buf.push((hdr_val & 0xFF) as u8);
-    out_buf.push(((hdr_val >> 8) & 0xFF) as u8);
-    out_buf.push(((hdr_val >> 16) & 0xFF) as u8);
-    out_buf.append(lit_sec[..]);
-    out_buf.append(seq_sec[..]);
+    return emit_zstd_u24_le(out_buf, hdr_val) &&
+           comp_try_append(out_buf, lit_sec[..]) &&
+           comp_try_append(out_buf, seq_sec[..]);
 }
 
 // Compresses input slice using Zstandard frame container (RFC 8878).
 // level 0: raw uncompressed blocks
-fn emit_zstd_magic_number<B>(out_buf: B&) {
-    out_buf.push(0x28);
-    out_buf.push(0xB5);
-    out_buf.push(0x2F);
-    out_buf.push(0xFD);
+fn emit_zstd_magic_number<B>(out_buf: B&) -> bool {
+    return comp_try_write_le_u32(out_buf, ZSTD_MAGIC);
 }
 
-fn emit_zstd_frame_header<B>(total: i64, include_checksum: bool, out_buf: B&) {
+fn emit_zstd_frame_header<B>(total: i64, include_checksum: bool, out_buf: B&) -> bool {
     var fhd: u8 = 0x20; // single segment
     if include_checksum { fhd |= 0x04; }
 
     if total < 256 {
-        out_buf.push(fhd);
-        out_buf.push(total as u8);
-    } else if total <= 65535 + 256 {
-        out_buf.push(fhd | 0x40);
-        write_le_u16(out_buf, (total - 256) as u16);
-    } else if total <= 4294967295 {
-        out_buf.push(fhd | 0x80);
-        write_le_u32(out_buf, total as u32);
-    } else {
-        out_buf.push(fhd | 0xC0);
-        write_le_u64(out_buf, total as u64);
+        return comp_try_push(out_buf, fhd) && comp_try_push(out_buf, total as u8);
     }
+    if total <= 65535 + 256 {
+        return comp_try_push(out_buf, fhd | 0x40) &&
+               comp_try_write_le_u16(out_buf, (total - 256) as u16);
+    }
+    if total <= 4294967295 {
+        return comp_try_push(out_buf, fhd | 0x80) &&
+               comp_try_write_le_u32(out_buf, total as u32);
+    }
+    return comp_try_push(out_buf, fhd | 0xC0) &&
+           comp_try_write_le_u64(out_buf, total as u64);
+}
+
+fn emit_zstd_raw_blocks<B>(src: const u8[:], out_buf: B&) -> bool {
+    let total = src.len;
+    var offset: i64 = 0;
+    while offset < total {
+        let rem = sub_sat_i64(total, offset);
+        let chunk_size = min(rem, ZSTD_BLOCKSIZE_MAX);
+        let next_off = add_sat_i64(offset, chunk_size);
+        let is_last = (next_off == total);
+        let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
+        let hdr_type = add_sat_u32(last_bit, mul_sat_u32(ZSTD_BLOCK_TYPE_RAW, 2));
+        let block_hdr = hdr_type | mul_sat_u32((chunk_size & 0x3FFFF) as u32, 8);
+        guard emit_zstd_u24_le(out_buf, block_hdr) &&
+              comp_try_append(out_buf, src[offset..next_off]) else {
+            return false;
+        }
+        offset = next_off;
+    }
+    return true;
 }
 
 // level 1: fast compression (hash_log 14, step accelerator)
@@ -3165,36 +3612,27 @@ fn emit_zstd_frame_header<B>(total: i64, include_checksum: bool, out_buf: B&) {
 // level 3: default compression (hash_log 16, rep0 check)
 fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include_checksum: bool = true) -> bool {
     let total = src.len;
+    let saved_len = out_buf.len;
+    var committed = false;
+    defer if !committed { out_buf.resize(saved_len); };
 
-    emit_zstd_magic_number(out_buf);
-    emit_zstd_frame_header(total, include_checksum, out_buf);
+    guard emit_zstd_magic_number(out_buf) &&
+          emit_zstd_frame_header(total, include_checksum, out_buf) else {
+        return false;
+    }
 
     if total == 0 {
-        let hdr_val = 1 | (0 << 1); // 1 empty raw block
-        out_buf.push((hdr_val & 0xFF) as u8);
-        out_buf.push(((hdr_val >> 8) & 0xFF) as u8);
-        out_buf.push(((hdr_val >> 16) & 0xFF) as u8);
+        let hdr_val: u32 = 1 | (0 << 1);
+        guard emit_zstd_u24_le(out_buf, hdr_val) else { return false; }
         if include_checksum {
-            write_le_u32(out_buf, xxh64_digest_32(src));
+            guard comp_try_write_le_u32(out_buf, xxh64_digest_32(src)) else { return false; }
         }
+        committed = true;
         return true;
     }
 
     if level <= 0 {
-        // Raw blocks (level 0)
-        var offset: i64 = 0;
-        while offset < total {
-            let rem = total - offset;
-            let chunk_size = min(rem, ZSTD_BLOCKSIZE_MAX);
-            let is_last = (offset + chunk_size == total);
-            let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
-            let block_hdr = last_bit | (ZSTD_BLOCK_TYPE_RAW << 1) | ((chunk_size as u32) << 3);
-            out_buf.push((block_hdr & 0xFF) as u8);
-            out_buf.push(((block_hdr >> 8) & 0xFF) as u8);
-            out_buf.push(((block_hdr >> 16) & 0xFF) as u8);
-            out_buf.append(src[offset..offset + chunk_size]);
-            offset += chunk_size;
-        }
+        guard emit_zstd_raw_blocks(src, out_buf) else { return false; }
     } else {
         init_global_ctables();
         var rep:    u32[3] = [1, 4, 8];
@@ -3203,14 +3641,17 @@ fn zstd_compress_level<B>(src: const u8[:], out_buf: B&, level: i32 = 3, include
             let rem = total - offset;
             let chunk_sz = min(rem, ZSTD_BLOCKSIZE_MAX);
             let is_last = (offset + chunk_sz == total);
-            compress_block(src[offset..offset + chunk_sz], rep, is_last, level, out_buf);
+            guard compress_block(src[offset..offset + chunk_sz], rep, is_last, level, out_buf) else {
+                return false;
+            }
             offset += chunk_sz;
         }
     }
 
     if include_checksum {
-        write_le_u32(out_buf, xxh64_digest_32(src));
+        guard comp_try_write_le_u32(out_buf, xxh64_digest_32(src)) else { return false; }
     }
+    committed = true;
     return true;
 }
 
@@ -3244,8 +3685,14 @@ fn zstd_compress_with_dict<B>(
         return zstd_compress_level(src, out_buf, level, include_checksum);
     }
 
-    emit_zstd_magic_number(out_buf);
-    emit_zstd_frame_header(total, include_checksum, out_buf);
+    let saved_len = out_buf.len;
+    var committed = false;
+    defer if !committed { out_buf.resize(saved_len); };
+
+    guard emit_zstd_magic_number(out_buf) &&
+          emit_zstd_frame_header(total, include_checksum, out_buf) else {
+        return false;
+    }
     init_global_ctables();
 
     var rep:  u32[3]       = [1, 4, 8];
@@ -3268,16 +3715,16 @@ fn zstd_compress_with_dict<B>(
     var seq_sec: u8[>..] = [];
     encode_sequences(seqs[..], rep, seq_sec);
     let b_size = min(add_sat_i64(lit_sec.len, seq_sec.len), 131072) as u64;
-    let hdr_val = add_sat_u64(5, mul_sat_u64(b_size, 8));
-    let lo16 = min(hdr_val & 0xFFFF, 65535) as u16;
-    let hi8 = min((hdr_val >> 16) & 0xFF, 255) as u8;
-    write_le_u16(out_buf, lo16);
-    out_buf.push(hi8);
-    out_buf.append(lit_sec[..]);
-    out_buf.append(seq_sec[..]);
+    let hdr_val = add_sat_u64(5, mul_sat_u64(b_size, 8)) as u32;
+    guard emit_zstd_u24_le(out_buf, hdr_val) &&
+          comp_try_append(out_buf, lit_sec[..]) &&
+          comp_try_append(out_buf, seq_sec[..]) else {
+        return false;
+    }
 
     if include_checksum {
-        write_le_u32(out_buf, xxh64_digest_32(src));
+        guard comp_try_write_le_u32(out_buf, xxh64_digest_32(src)) else { return false; }
     }
+    committed = true;
     return true;
 }

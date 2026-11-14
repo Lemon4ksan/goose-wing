@@ -290,7 +290,7 @@ const NEAR_MAX_OFFSET: u64 = 20000000000;
 fn test_gcra_burst_precision() {
     // Sustained: 10 req/s (T = 100ms = 100,000,000ns), Burst: 3 (tau = 300,000,000ns)
     // Limit window = tau + T = 400,000,000ns (allows 4 back-to-back requests at t0)
-    let quota = wing::new_gcra_quota(10, core::secs(1), 3);
+    let quota = wing::new_gcra_quota(10, wing::secs(1), 3);
     assert(quota.emission_interval_ns == 100000000);
     assert(quota.delay_tolerance_ns == 300000000);
 
@@ -343,14 +343,14 @@ fn test_gcra_burst_precision() {
 // crap:trusted-bounds
 fn test_gcra_boundary_overflow_underflow() {
     // 1. Division by zero protection: zero period duration or astronomical rate
-    let q_zero = wing::new_gcra_quota(5000000, core::Duration { nanos: 1000000 }, 5);
+    let q_zero = wing::new_gcra_quota(5000000, wing::millis(1), 5);
     assert(q_zero.emission_interval_ns >= 1);
     var cell_zero = wing::GcraCell { tat_ns: 0 };
     let d_zero = wing::gcra_check_n(q_zero, cell_zero, 1, 1000);
     assert(wing::is_allowed(d_zero));
 
     // 2. High-value timestamp near u64::MAX (preventing arithmetic wrap-around)
-    let q_sat = wing::new_gcra_quota(1, core::secs(1), 5);
+    let q_sat = wing::new_gcra_quota(1, wing::secs(1), 5);
     let near_max: u64 = core::sub_sat_u64(U64_MAX_LIMIT, NEAR_MAX_OFFSET);
     var cell_sat = wing::GcraCell { tat_ns: near_max };
 
@@ -373,7 +373,7 @@ fn test_gcra_boundary_overflow_underflow() {
 
 // crap:trusted-bounds
 fn test_gcra_ntp_backward_jump() {
-    let quota = wing::new_gcra_quota(10, core::secs(1), 2);
+    let quota = wing::new_gcra_quota(10, wing::secs(1), 2);
     var cell = wing::GcraCell { tat_ns: 60000000000 };
 
     // Sudden NTP backward step: system clock steps back to 10s (50 seconds in past)
@@ -398,7 +398,7 @@ fn test_gcra_ntp_backward_jump() {
 
 // crap:trusted-bounds
 fn test_gcra_reservation_preemption() {
-    let quota = wing::new_gcra_quota(1, core::secs(1), 0);
+    let quota = wing::new_gcra_quota(1, wing::secs(1), 0);
     var cell = wing::GcraCell { tat_ns: 0 };
     let now: u64 = 1000000000;
 
@@ -428,7 +428,7 @@ fn test_gcra_reservation_preemption() {
 
 // crap:trusted-bounds
 fn test_gcra_long_key_normalization() {
-    let quota = wing::new_gcra_quota(2, core::secs(1), 1);
+    let quota = wing::new_gcra_quota(2, wing::secs(1), 1);
     var limiter = wing::new_sharded_limiter(quota);
     let now: u64 = 2000000000;
 
@@ -592,7 +592,7 @@ fn wing_validate_grpc_lpm_wire(buf: const u8[:]) -> i64 {
     if ok {
         return payload_slice.len;
     }
-    guard buf.len >= (rfc::GRPC_LPM_HEADER_LEN as i64) else { return -1; }
+    guard buf.len >= rfc::GRPC_LPM_HEADER_LEN else { return -1; }
     let flag = buf[0];
     guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return -2; }
     return -1;
@@ -1510,7 +1510,7 @@ fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
 
     var date_buf: u8[..64] = [];
     wing::format_local_http_date(date_buf, 1700000000);
-    var srv = wing::new_http_server_with_quota("127.0.0.1", 8080, wing::new_gcra_quota(100, core::secs(1), 10));
+    var srv = wing::new_http_server_with_quota("127.0.0.1", 8080, wing::new_gcra_quota(100, wing::secs(1), 10));
     wing::refresh_http_server_date(srv, 1700000000);
     wing::add_put_route(srv, "/put", 1);
     wing::add_delete_route(srv, "/del", 2);

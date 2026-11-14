@@ -98,7 +98,9 @@ inline fn validate_zone_id(zone_id: const u8[:]) -> bool {
             let idx1 = add_sat_i64(idx, 1);
             let idx2 = add_sat_i64(idx, 2);
             guard idx2 < zone_id.len else { return false; }
-            guard is_ascii_hexdigit(zone_id[idx1]) && is_ascii_hexdigit(zone_id[idx2]) else { return false; }
+            let hi = hex_digit_to_val(zone_id[idx1]);
+            let lo = hex_digit_to_val(zone_id[idx2]);
+            guard hi >= 2 && lo >= 0 && !(hi == 7 && lo == 15) else { return false; }
             idx = add_sat_i64(idx, 3);
         } else {
             return false;
@@ -348,8 +350,10 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
 
     guard piece_count == 8 else { return false; }
 
-    format_compressed_ipv6(pieces, out);
-    return true;
+    // RFC 5952 Section 4: A Recommendation for IPv6 Text Representation - Canonical IPv6 text is at most 39 bytes.
+    var formatted: u8[..40] = [];
+    format_compressed_ipv6(pieces, formatted);
+    return out.try_append(formatted[..]);
 }
 
 fn format_ipv4_u32(ip4: u32, out: u8[..64]&) {

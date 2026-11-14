@@ -272,12 +272,13 @@ fn bbr_advance_cycle(bbr: BbrState&, round_done: bool) {
 // ---- cubic congestion control (rfc 9438) & app-limited freeze -------------
 
 struct CubicState {
-    cwnd_segments:  u64  = 10,
-    w_max_segments: u64  = 10,
-    epoch_start_us: u64  = 0,
-    k_ms:           u64  = 0,
-    app_limited:    bool = false,
-    last_update_us: u64  = 0,
+    cwnd_segments:     u64  = 10,
+    w_max_segments:    u64  = 10,
+    epoch_start_us:    u64  = 0,
+    k_ms:              u64  = 0,
+    app_limited:       bool = false,
+    last_update_us:    u64  = 0,
+    recovery_start_us: u64  = 0,
 }
 
 // Computes K = cbrt(w_max * beta / C) in milliseconds (RFC 9438 Section 4.1).
@@ -348,8 +349,18 @@ fn cubic_on_ack(
     return cubic.cwnd_segments * mss_bytes;
 }
 
-// Multiplicative decrease upon congestion signal (RFC 9438 Section 4.3).
-fn cubic_on_loss(cubic: CubicState&, now_us: u64) {
+// RFC 9002 Section 7.3.2: Recovery - Enter congestion recovery at most once per round trip.
+// RFC 9438 Section 4.6: Multiplicative Decrease - Multiplicative decrease upon congestion signal.
+fn cubic_on_loss(cubic: CubicState&, now_us: u64, pkt_sent_us: u64 = 0) {
+    if cubic.recovery_start_us > 0 {
+        let sent_in_prior_epoch = if pkt_sent_us > 0 {
+            pkt_sent_us <= cubic.recovery_start_us
+        } else {
+            now_us <= cubic.recovery_start_us
+        };
+        guard !sent_in_prior_epoch else { return; }
+    }
+    cubic.recovery_start_us = max(now_us, 1);
     cubic.w_max_segments = cubic.cwnd_segments;
     cubic.cwnd_segments = max((cubic.cwnd_segments * 7) / 10, 2); // beta = 0.7
     cubic.epoch_start_us = now_us;
