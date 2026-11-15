@@ -77,40 +77,47 @@ error.
 ### 3. Batch UDP Datagrams (`net/udp.goose`)
 
 ```goose
-struct UdpDatagram { peer_ip: u8[..64], peer_port: u16, payload: u8[..1500], gso_size: u16, ecn: u8 }
-struct UdpBatchQueue { packets: UdpDatagram[..64], total_bytes: u64, drops: u64 }
-fn build_udp_datagram(ip: const u8[:], port: u16, data: const u8[:], gso: u16 = 0) -> UdpDatagram
-fn enqueue_udp_datagram(q: UdpBatchQueue&, ip: const u8[:], port: u16, data: const u8[:]) -> bool
-fn batch_send_messages(fd: i64, q: UdpBatchQueue&) -> i32
-fn batch_recv_messages(fd: i64, out_q: UdpBatchQueue&, max_packets: i32 = 64) -> i32
+struct UdpDatagram { payload: u8[..1472], peer_ip4: u32, peer_port: u16, gso_size: u16 }
+struct UdpBatchQueue { msgs: UdpDatagram[..32], count: i32, flushed_batches: u64, total_sent: u64, total_recvd: u64 }
+fn build_udp_datagram(data: const u8[:], peer_ip4: u32, peer_port: u16, gso_size: u16 = 0) -> UdpDatagram, bool
+fn enqueue_udp_datagram(fd: i32, queue: UdpBatchQueue&, dgram: const UdpDatagram&) -> i32, bool
+fn batch_send_messages(fd: i32, queue: UdpBatchQueue&) -> i32, bool
+fn batch_recv_messages(fd: i32, queue: UdpBatchQueue&) -> i32, bool
 ```
 
-`UdpBatchQueue` models `sendmmsg` and `recvmmsg` semantics over a bounded
-64-packet ring (`UdpDatagram[..64]`) where each datagram holds an Ethernet MTU
-payload (`u8[..1500]`), Generic Segmentation Offload segment size (`gso_size`),
-and ECN bits. When `enqueue_udp_datagram` is called on a full 64-slot queue, it
-increments `q.drops` and returns `false`.
+`UdpBatchQueue` batches `sendmmsg` and `recvmmsg` transitions over a bounded
+32-packet queue (`UdpDatagram[..32]`) where each datagram holds a QUIC-safe
+1472-byte UDP payload (`u8[..1472]`) and Generic Segmentation Offload segment
+size (`gso_size`). When `enqueue_udp_datagram` reaches 32 buffered datagrams, it
+flushes the full batch via `batch_send_messages` before appending packet 33 so
+zero datagrams are silently dropped.
 
-### 4. Poller, Event Reactor & Driver Facade (`net/poller.goose`, `net/driver.goose`)
+### 4. Poller, Event Reactor & Driver Facade (`net/poller.goose`, `net/event_loop.goose`, `net/driver.goose`)
 
 ```goose
 struct Poller { ... }
+struct EventLoop { ... }
 struct TcpDialer { default_timeout_ms: u32 = 5000 }
 fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller
+fn enable_os_multiplexing(p: Poller&) -> bool
 fn close_poller(p: Poller&)
+fn enable_os_multiplexing(ev_loop: EventLoop&) -> bool
 fn register_socket(p: Poller&, fd: i32, tag: u64, interest: core::PollInterest, trigger: core::PollTrigger = core::PollTrigger.Level) -> bool
 fn modify_socket(p: Poller&, fd: i32, tag: u64, interest: core::PollInterest, trigger: core::PollTrigger = core::PollTrigger.Level) -> bool
 fn deregister_socket(p: Poller&, fd: i32) -> bool
 fn wake_tag(p: Poller&, tag: u64) -> bool
 fn poll_events(p: Poller&, timeout_ms: i64, now_ns: u64, out_events: core::PollReadyEvent[..64]&) -> i32
-fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i64
+fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i32
 ```
 
-`Poller` multiplexes socket readiness across OS and kernel-bypass drivers
-configured in `net/driver.goose`, implementing the shared `core::Poll*` and
-`core::reactor_*` UFCS contract. `poll_events` harvests up to 64 ready events
-per call into `out_events`, preserving the caller's 64-bit `tag` for
-constant-time connection table lookup.
+Both `Poller` and `EventLoop` implement the shared `core::Poll*` and
+`core::reactor_*` UFCS contract (`register_socket`, `modify_socket`,
+`deregister_socket`, `add_timer`, `cancel_timer`, `wake_tag`, and
+`poll_events`). Call `enable_os_multiplexing` to attach Linux `io_uring`
+(`IORING_OP_POLL_ADD`) or `epoll`, macOS/BSD `kqueue`, or Windows `WSAPoll`
+before calling `core::reactor_poll` on live sockets. `poll_events` harvests up
+to 64 ready events per call into `out_events`, preserving the caller's 64-bit
+`tag` for constant-time connection table lookup.
 
 ### 5. Socket Options & TCP/IP Stack Fingerprinting (`net/sockopt.goose`)
 

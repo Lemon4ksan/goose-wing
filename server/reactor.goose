@@ -1755,56 +1755,74 @@ inline fn dispatch_h3_udp_datagram(
     rx_slice:  const u8[:],
     now_ns:    u64,
     tx_wire:   u8[..1472]&,
+    tx_queue:  UdpBatchQueue&,
 ) {
-    let stream_id = ((served & 15) * 4) as u64;
+    let stream_id = core::shl_sat_u64((served & 15) as u64, 2);
     for st_i in h3_conn.streams.len {
         if h3_conn.streams[st_i].stream_id == stream_id {
             h3_conn.streams[st_i] = internal::H3StreamEntry { stream_id: stream_id, .. };
         }
     }
     var peer_ip_str: u8[..32] = [];
-    format(peer_ip_str, ((peer_ip4 >> 24) & 0xFF) as i64);
-    peer_ip_str.push('.');
-    format(peer_ip_str, ((peer_ip4 >> 16) & 0xFF) as i64);
-    peer_ip_str.push('.');
-    format(peer_ip_str, ((peer_ip4 >> 8) & 0xFF) as i64);
-    peer_ip_str.push('.');
-    format(peer_ip_str, (peer_ip4 & 0xFF) as i64);
+    core::format_u64_dec((peer_ip4 >> 24) & 0xFF, peer_ip_str);
+    let _ = peer_ip_str.try_push('.');
+    core::format_u64_dec((peer_ip4 >> 16) & 0xFF, peer_ip_str);
+    let _ = peer_ip_str.try_push('.');
+    core::format_u64_dec((peer_ip4 >> 8) & 0xFF, peer_ip_str);
+    let _ = peer_ip_str.try_push('.');
+    core::format_u64_dec(peer_ip4 & 0xFF, peer_ip_str);
     let _ = internal::with_connection_slot(g_default_reactor.conn_pool, udp_fd, now_ns as i64) { conn_slot =>
         internal::notify_request_start(conn_slot.timer);
         if server.handle_h3_server_datagram(h3_conn, stream_id, peer_ip_str[..], rx_slice, now_ns, tx_wire) {
-            let udp_tr = Transport.Udp { fd: udp_fd, peer_ip4: peer_ip4, peer_port: peer_port };
-            let _ = udp_tr.send(tx_wire[..]);
+            let dgram, ok_dg = build_udp_datagram(tx_wire[..], peer_ip4, peer_port);
+            if ok_dg {
+                let _, _ = enqueue_udp_datagram(udp_fd as i32, tx_queue, dgram);
+            }
         }
         internal::notify_request_end(conn_slot.timer);
     };
 }
 
-// Executes an Unencrypted H3 over UDP (Datagram Direct) server loop (RFC 9114 framing + QPACK).
-// Demultiplexes direct HTTP/3 `HEADERS`/`DATA`/`SETTINGS` frames carried in raw UDP datagrams
-// for zero-handshake internal/loopback hops; for encrypted RFC 9000 + RFC 9001 TLS 1.3 QUIC v1
-// packets, use `QuicConnection` (`quic/connection.goose`) + `H3Connection` (`http3/connection.goose`).
+// Executes an Unencrypted H3 over UDP (Datagram Direct) server loop (RFC 9114 framing + QPACK)
+// using batched `recvmmsg` / `sendmmsg` transitions up to 32 datagrams per syscall.
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
     guard udp_fd > 0 else { return 0; }
     let h3_settings = H3Settings { .. };
     var h3_conn = internal::new_h3_server_connection(h3_settings);
-    var rx_buf:  u8[1472]   = [0; 1472];
-    var tx_wire: u8[..1472] = [];
-    var served:  i64        = 0;
+    var rx_queue = UdpBatchQueue { .. };
+    var tx_queue = UdpBatchQueue { .. };
+    var tx_wire:    u8[..1472] = [];
+    var served:     i64        = 0;
+    var idle_spins: i64        = 0;
 
     while max_datagrams == 0 || served < max_datagrams {
-        var peer_ip4:  u32 = 0;
-        var peer_port: u16 = 0;
-        let recvd = native_udp_recvfrom(udp_fd, rx_buf[..], 250, peer_ip4, peer_port);
-        if recvd <= 0 {
-            if max_datagrams > 0 { break; }
+        let recvd, ok_rx = batch_recv_messages(udp_fd as i32, rx_queue);
+        if !ok_rx || recvd <= 0 {
+            idle_spins = core::add_sat_i64(idle_spins, 1);
+            if max_datagrams > 0 && idle_spins >= 25 { break; }
             continue;
         }
+        idle_spins = 0;
         let now_ns = core::monotonic_now().as_nanos();
-        dispatch_h3_udp_datagram(
-            server, udp_fd, h3_conn, served, peer_ip4, peer_port, rx_buf[..recvd], now_ns, tx_wire,
-        );
-        served++;
+        for i in rx_queue.msgs.len {
+            if max_datagrams > 0 && served >= max_datagrams { break; }
+            dispatch_h3_udp_datagram(
+                server,
+                udp_fd,
+                h3_conn,
+                served,
+                rx_queue.msgs[i].peer_ip4,
+                rx_queue.msgs[i].peer_port,
+                rx_queue.msgs[i].payload[..],
+                now_ns,
+                tx_wire,
+                tx_queue,
+            );
+            served = core::add_sat_i64(served, 1);
+        }
+        if tx_queue.msgs.len > 0 {
+            let _, _ = batch_send_messages(udp_fd as i32, tx_queue);
+        }
     }
     return served;
 }
@@ -1980,4 +1998,162 @@ fn handle_h3_quic_datagram<B>(
     }
 
     return false;
+}
+
+// Kernel-bypass L2 datapath backend selection for `serve_h3_l2`.
+enum H3L2Backend {
+    UdpFallback,
+    AfXdp,
+    Dpdk,
+}
+
+// L2/L3/L4 binding parameters for `serve_h3_l2` over `AF_XDP`, `DPDK`, or `UdpFallback`.
+struct H3L2Config {
+    backend:       H3L2Backend             = H3L2Backend.UdpFallback,
+    local_ep:      internal::L2UdpEndpoint = internal::L2UdpEndpoint { .. },
+    udp_fd:        i64                     = -1,
+    dpdk_port_id:  u16                     = 0,
+    dpdk_queue_id: u16                     = 0,
+}
+
+fn format_l2_client_ip(ep: const internal::L2UdpEndpoint&, out_ip: u8[..48]&) {
+    out_ip.clear();
+    if ep.is_ipv6 {
+        let _ = out_ip.try_append("ipv6-l2");
+        return;
+    }
+    core::format_u64_dec(ep.ip[0], out_ip);
+    let _ = out_ip.try_push('.');
+    core::format_u64_dec(ep.ip[1], out_ip);
+    let _ = out_ip.try_push('.');
+    core::format_u64_dec(ep.ip[2], out_ip);
+    let _ = out_ip.try_push('.');
+    core::format_u64_dec(ep.ip[3], out_ip);
+}
+
+fn process_h3_l2_frame(
+    server:       HttpServer&,
+    ep:           H3ServerEndpoint&,
+    local_ep:     const internal::L2UdpEndpoint&,
+    rx_frame:     const u8[:],
+    ip_id:        u16,
+    now_ns:       u64,
+    out_tx_frame: u8[..2048]&,
+) -> bool {
+    out_tx_frame.clear();
+    let parsed, ok_dec = internal::decode_l2_udp_frame(rx_frame);
+    guard ok_dec else { return false; }
+    guard local_ep.port == 0 || parsed.dst.port == local_ep.port else { return false; }
+    let pay_end = core::add_sat_i64(parsed.payload_offset, parsed.payload_len);
+    guard pay_end <= rx_frame.len else { return false; }
+    var cli_ip: u8[..48] = [];
+    format_l2_client_ip(parsed.src, cli_ip);
+    var udp_reply: u8[..1472] = [];
+    guard handle_h3_quic_datagram(
+        server,
+        ep,
+        cli_ip[..],
+        rx_frame[parsed.payload_offset..pay_end],
+        now_ns,
+        udp_reply,
+    ) else {
+        return false;
+    }
+    return internal::encode_l2_udp_frame(parsed.dst, parsed.src, udp_reply[..], ip_id, out_tx_frame);
+}
+
+fn recycle_af_xdp_completions(xsk: internal::AfXdpSocket&) {
+    for _ in 64 {
+        let comp_addr, ok_c = internal::af_xdp_complete_pop(xsk);
+        guard ok_c else { break; }
+        let _ = internal::af_xdp_fill_push(xsk, comp_addr);
+    }
+}
+
+fn serve_h3_af_xdp(
+    server:      HttpServer&,
+    ep:          H3ServerEndpoint&,
+    cfg:         const H3L2Config&,
+    xsk:         internal::AfXdpSocket&,
+    max_packets: i64,
+) -> i64 {
+    var rx_frame: u8[..2048] = [];
+    var tx_frame: u8[..2048] = [];
+    var served:   i64        = 0;
+    var ip_seq:   u64        = 1;
+
+    while max_packets == 0 || served < max_packets {
+        recycle_af_xdp_completions(xsk);
+        let desc, ok_rx = internal::af_xdp_rx_poll(xsk);
+        guard ok_rx else { break; }
+        if !internal::af_xdp_umem_read(xsk, desc.addr, desc.len, rx_frame) {
+            let _ = internal::af_xdp_fill_push(xsk, desc.addr);
+            continue;
+        }
+        let now_ns = core::monotonic_now().as_nanos();
+        let pkt_id = (ip_seq & 0xFFFF) as u16;
+        if process_h3_l2_frame(server, ep, cfg.local_ep, rx_frame[..], pkt_id, now_ns, tx_frame) {
+            if internal::af_xdp_umem_write(xsk, desc.addr, tx_frame[..]) {
+                let tx_desc = internal::XdpDesc { addr: desc.addr, len: tx_frame.len as u32, options: 0 };
+                let _ = internal::af_xdp_tx_submit(xsk, tx_desc);
+                served = core::add_sat_i64(served, 1);
+            } else {
+                let _ = internal::af_xdp_fill_push(xsk, desc.addr);
+            }
+        } else {
+            let _ = internal::af_xdp_fill_push(xsk, desc.addr);
+        }
+        ip_seq = core::add_sat_u64(ip_seq, 1);
+    }
+    return served;
+}
+
+fn serve_h3_dpdk(
+    server:      HttpServer&,
+    ep:          H3ServerEndpoint&,
+    cfg:         const H3L2Config&,
+    max_packets: i64,
+) -> i64 {
+    var rx_burst: u8[..2048][..32] = [];
+    var tx_frame: u8[..2048]       = [];
+    var served:   i64              = 0;
+    var ip_seq:   u64              = 1;
+
+    while max_packets == 0 || served < max_packets {
+        let n_rx = internal::dpdk_rx_burst_read(cfg.dpdk_port_id, cfg.dpdk_queue_id, rx_burst);
+        guard n_rx > 0 else { break; }
+        let now_ns = core::monotonic_now().as_nanos();
+        for i in n_rx {
+            if max_packets > 0 && served >= max_packets { break; }
+            let pkt_id = (ip_seq & 0xFFFF) as u16;
+            let encoded = process_h3_l2_frame(server, ep, cfg.local_ep, rx_burst[i][..], pkt_id, now_ns, tx_frame);
+            if encoded && internal::dpdk_tx_packet_push(cfg.dpdk_port_id, cfg.dpdk_queue_id, tx_frame[..]) {
+                served = core::add_sat_i64(served, 1);
+            }
+            ip_seq = core::add_sat_u64(ip_seq, 1);
+        }
+    }
+    return served;
+}
+
+// Serves Direct-H3 and QUIC Initial/Version-Negotiation packets over L2 `AF_XDP`, `DPDK`,
+// or `UdpFallback` (`serve_h3` batched `recvmmsg` / `sendmmsg`).
+fn serve_h3_l2(
+    server:      HttpServer&,
+    ep:          H3ServerEndpoint&,
+    cfg:         const H3L2Config&,
+    xsk:         internal::AfXdpSocket&,
+    max_packets: i64 = 64,
+) -> i64 {
+    match cfg.backend {
+        UdpFallback => {
+            return serve_h3(server, cfg.udp_fd, max_packets);
+        },
+        AfXdp => {
+            return serve_h3_af_xdp(server, ep, cfg, xsk, max_packets);
+        },
+        Dpdk => {
+            return serve_h3_dpdk(server, ep, cfg, max_packets);
+        },
+    }
 }

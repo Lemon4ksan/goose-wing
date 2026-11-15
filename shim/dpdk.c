@@ -8,6 +8,16 @@
 #include <stddef.h>
 #include <string.h>
 
+typedef struct {
+    const void *data;
+    int64_t len;
+} wing_dpdk_ro_slice;
+
+typedef struct {
+    void *data;
+    int64_t len;
+} wing_dpdk_rw_slice;
+
 #ifdef WING_ENABLE_DPDK
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -77,10 +87,57 @@ uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t 
     return rte_eth_tx_burst(port_id, queue_id, (struct rte_mbuf **)(uintptr_t)pkts_in, nb_pkts);
 }
 
+int32_t wing_dpdk_tx_packet_push(uint16_t port_id, uint16_t queue_id, wing_dpdk_ro_slice frame) {
+    if (!frame.data || frame.len <= 0 || frame.len > 2048) {
+        return 0;
+    }
+    if (g_dpdk_mbuf_pool == NULL && wing_dpdk_pktmbuf_pool_create(8192, 2048, 0) == 0) {
+        return 0;
+    }
+    struct rte_mbuf *m = rte_pktmbuf_alloc(g_dpdk_mbuf_pool);
+    if (!m) {
+        return 0;
+    }
+    char *dst = rte_pktmbuf_append(m, (uint16_t)frame.len);
+    if (!dst) {
+        rte_pktmbuf_free(m);
+        return 0;
+    }
+    memcpy(dst, frame.data, (size_t)frame.len);
+    uint16_t sent = rte_eth_tx_burst(port_id, queue_id, &m, 1);
+    if (sent == 0) {
+        rte_pktmbuf_free(m);
+        return 0;
+    }
+    return 1;
+}
+
+int32_t wing_dpdk_rx_burst_read_one(uint16_t port_id, uint16_t queue_id, wing_dpdk_rw_slice dst) {
+    if (!dst.data || dst.len <= 0) {
+        return -1;
+    }
+    struct rte_mbuf *m = NULL;
+    uint16_t recvd = rte_eth_rx_burst(port_id, queue_id, &m, 1);
+    if (recvd == 0 || !m) {
+        return 0;
+    }
+    uint32_t plen = rte_pktmbuf_pkt_len(m);
+    if (plen > 2048 || (int64_t)plen > dst.len) {
+        rte_pktmbuf_free(m);
+        return -1;
+    }
+    const void *src = rte_pktmbuf_mtod(m, const void *);
+    memcpy(dst.data, src, (size_t)plen);
+    rte_pktmbuf_free(m);
+    return (int32_t)plen;
+}
+
 #else
 
 #define WING_DPDK_MAX_PORTS 16
 #define WING_DPDK_RING_CAP 256
+#define WING_DPDK_PKT_RING_CAP 64
+#define WING_DPDK_MAX_FRAME_LEN 2048
 
 typedef struct {
     uint16_t rx_queues;
@@ -94,6 +151,11 @@ typedef struct {
     uint32_t head;
     uint32_t tail;
     uint32_t count;
+    uint8_t pkt_data[WING_DPDK_PKT_RING_CAP][WING_DPDK_MAX_FRAME_LEN];
+    uint16_t pkt_len[WING_DPDK_PKT_RING_CAP];
+    uint32_t pkt_head;
+    uint32_t pkt_tail;
+    uint32_t pkt_count;
 } wing_dpdk_port_state;
 
 static wing_dpdk_port_state g_dpdk_ports[WING_DPDK_MAX_PORTS];
@@ -152,6 +214,9 @@ void wing_dpdk_eth_dev_stop(uint16_t port_id) {
         g_dpdk_ports[port_id].head = 0;
         g_dpdk_ports[port_id].tail = 0;
         g_dpdk_ports[port_id].count = 0;
+        g_dpdk_ports[port_id].pkt_head = 0;
+        g_dpdk_ports[port_id].pkt_tail = 0;
+        g_dpdk_ports[port_id].pkt_count = 0;
     }
 }
 
@@ -191,6 +256,43 @@ uint16_t wing_dpdk_rx_burst(uint16_t port_id, uint16_t queue_id, uint64_t *pkts_
         recvd++;
     }
     return recvd;
+}
+
+int32_t wing_dpdk_tx_packet_push(uint16_t port_id, uint16_t queue_id, wing_dpdk_ro_slice frame) {
+    (void)queue_id;
+    if (port_id >= WING_DPDK_MAX_PORTS || !frame.data || frame.len <= 0 || frame.len > WING_DPDK_MAX_FRAME_LEN) {
+        return 0;
+    }
+    wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
+    if (!st->started || st->pkt_count >= WING_DPDK_PKT_RING_CAP) {
+        return 0;
+    }
+    uint32_t idx = st->pkt_tail;
+    memcpy(st->pkt_data[idx], frame.data, (size_t)frame.len);
+    st->pkt_len[idx] = (uint16_t)frame.len;
+    st->pkt_tail = (idx + 1) % WING_DPDK_PKT_RING_CAP;
+    st->pkt_count++;
+    return 1;
+}
+
+int32_t wing_dpdk_rx_burst_read_one(uint16_t port_id, uint16_t queue_id, wing_dpdk_rw_slice dst) {
+    (void)queue_id;
+    if (port_id >= WING_DPDK_MAX_PORTS || !dst.data || dst.len <= 0) {
+        return -1;
+    }
+    wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
+    if (!st->started || st->pkt_count == 0) {
+        return 0;
+    }
+    uint32_t idx = st->pkt_head;
+    uint16_t plen = st->pkt_len[idx];
+    if ((int64_t)plen > dst.len) {
+        return -1;
+    }
+    memcpy(dst.data, st->pkt_data[idx], (size_t)plen);
+    st->pkt_head = (idx + 1) % WING_DPDK_PKT_RING_CAP;
+    st->pkt_count--;
+    return (int32_t)plen;
 }
 
 #endif

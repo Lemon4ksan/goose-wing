@@ -31,6 +31,24 @@ extern fn native_af_xdp_rx_poll(
     options_out: u32&,
 ) -> i32 = "wing_af_xdp_rx_poll";
 extern fn native_af_xdp_complete_pop(xsk_fd: i64, addr_out: u64&) -> i32 = "wing_af_xdp_complete_pop";
+extern fn native_af_xdp_open_loopback(
+    num_frames:    u32,
+    frame_size:    u32,
+    umem_addr_out: u64&,
+    umem_len_out:  u64&,
+) -> i64 = "wing_af_xdp_open_loopback";
+extern fn native_af_xdp_inject_loopback_rx(
+    xsk_fd:    i64,
+    addr:      u64,
+    frame_len: u32,
+) -> i32 = "wing_af_xdp_inject_loopback_rx";
+extern fn native_af_xdp_umem_write(xsk_fd: i64, addr: u64, src: const u8[:]) -> i32 = "wing_af_xdp_umem_write";
+extern fn native_af_xdp_umem_read(
+    xsk_fd:    i64,
+    addr:      u64,
+    frame_len: u32,
+    dst:       u8[:],
+) -> i32 = "wing_af_xdp_umem_read";
 extern fn native_af_xdp_close(xsk_fd: i64) = "wing_af_xdp_close";
 
 // AF_XDP packet descriptor (matches Linux struct xdp_desc)
@@ -181,6 +199,70 @@ fn af_xdp_close(sock: AfXdpSocket&) {
         sock.rings_mapped = false;
         sock.umem.is_registered = false;
     }
+}
+
+// Opens an in-memory UMEM loopback AF_XDP socket usable without CAP_NET_RAW on all platforms.
+fn af_xdp_open_loopback(num_frames: u32 = 64, frame_size: u32 = 2048) -> AfXdpSocket, bool {
+    guard num_frames > 0 && frame_size > 0 && frame_size <= 4096 else {
+        return new_af_xdp_socket(), false;
+    }
+    var u_addr: u64 = 0;
+    var u_len:  u64 = 0;
+    let fd = native_af_xdp_open_loopback(num_frames, frame_size, u_addr, u_len);
+    guard fd >= 0 else {
+        return new_af_xdp_socket(), false;
+    }
+    return AfXdpSocket {
+        fd:       fd,
+        ifindex:  0,
+        queue_id: 0,
+        umem: AfXdpUmem {
+            addr:          u_addr,
+            len:           u_len,
+            chunk_size:    frame_size,
+            headroom:      0,
+            is_registered: true,
+        },
+        is_bound:       true,
+        rings_mapped:   true,
+        zero_copy_mode: true,
+    }, true;
+}
+
+// Copies `data` into the registered UMEM region at `addr` after bounds and chunk-size validation.
+fn af_xdp_umem_write(sock: const AfXdpSocket&, addr: u64, data: const u8[:]) -> bool {
+    guard sock.fd >= 0 && sock.umem.is_registered && data.len <= 2048 else {
+        return false;
+    }
+    return native_af_xdp_umem_write(sock.fd, addr, data) == 0;
+}
+
+// Reads `frame_len` bytes from the registered UMEM region at `addr` into `out_frame`.
+fn af_xdp_umem_read(
+    sock:      const AfXdpSocket&,
+    addr:      u64,
+    frame_len: u32,
+    out_frame: u8[..2048]&,
+) -> bool {
+    out_frame.clear();
+    guard sock.fd >= 0 && sock.umem.is_registered && frame_len <= 2048 else {
+        return false;
+    }
+    out_frame.resize(frame_len as i64, 0);
+    let n = native_af_xdp_umem_read(sock.fd, addr, frame_len, out_frame[..]);
+    guard n >= 0 && n == (frame_len as i32) else {
+        out_frame.clear();
+        return false;
+    }
+    return true;
+}
+
+// Enqueues a synthetic RX descriptor into a loopback AF_XDP socket's RX ring.
+fn af_xdp_inject_loopback_rx(sock: AfXdpSocket&, addr: u64, frame_len: u32) -> bool {
+    guard sock.fd >= 0 && sock.is_bound && sock.rings_mapped && frame_len > 0 && frame_len <= 2048 else {
+        return false;
+    }
+    return native_af_xdp_inject_loopback_rx(sock.fd, addr, frame_len) == 0;
 }
 
 // AF_XDP Fill/Completion ring state with wrap-split burst enqueueing (`rte_ring_elem_pvt.h` pattern).

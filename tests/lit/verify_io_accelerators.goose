@@ -193,8 +193,8 @@ fn test_poller_live_socket_and_synthetic_fds() {
     print("TASK3_POLLER_LIVE: OK");
 }
 
-fn test_reactor_accelerated_and_fallback() {
-    var srv = wing::new_http_server("127.0.0.1", 0);
+fn test_reactor_accelerated_and_fallback(srv: wing::HttpServer&) {
+    srv.accel_mode = wing::ReactorAccelMode.Auto;
     wing::add_static_get_route(srv, "/", "text/plain", "ACCEL_OK");
 
     // 1. Accelerated listener (RIO on Windows, io_uring on Linux, kqueue on macOS)
@@ -313,15 +313,105 @@ fn test_l2_udp_codec_and_malformed_inputs() {
     print("TASK5_L2_CODEC: OK");
 }
 
+fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
+    // 1. Review Focus #5: AF_XDP UMEM out-of-bounds, oversize, and clean out_frame checks
+    var xsk, ok_xsk = internal::af_xdp_open_loopback(16, 2048);
+    assert(ok_xsk);
+    var big_buf: u8[..2060] = [];
+    big_buf.resize(2060, 0xAA);
+    assert(!internal::af_xdp_umem_write(xsk, 0, big_buf[..]));
+    assert(!internal::af_xdp_umem_write(xsk, 16 * 2048, "OOB"));
+    var rd_buf: u8[..2048] = [];
+    let _ = rd_buf.try_set("DIRTY");
+    assert(!internal::af_xdp_umem_read(xsk, 16 * 2048, 64, rd_buf) && rd_buf.len == 0);
+
+    // 2. Build a QUIC Version Negotiation probe (unknown version 0xBAD00001, >= 1200 bytes)
+    var quic_probe: u8[..1200] = [];
+    quic_probe.resize(1200, 0);
+    quic_probe[0] = 0xC0;
+    quic_probe[1] = 0xBA;
+    quic_probe[2] = 0xD0;
+    quic_probe[3] = 0x00;
+    quic_probe[4] = 0x01;
+    quic_probe[5] = 8;
+    quic_probe[6] = 0x11;
+    quic_probe[14] = 8;
+    quic_probe[15] = 0x22;
+    quic_probe[24] = 16;
+
+    let cli_ep = internal::L2UdpEndpoint {
+        mac:     [0x02, 0, 0, 0, 0, 0x11],
+        ip:      [192, 168, 1, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        is_ipv6: false,
+        port:    55000,
+    };
+    let srv_ep = internal::L2UdpEndpoint {
+        mac:     [0x02, 0, 0, 0, 0, 0x22],
+        ip:      [192, 168, 1, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        is_ipv6: false,
+        port:    443,
+    };
+    var l2_pkt: u8[..2048] = [];
+    assert(internal::encode_l2_udp_frame(cli_ep, srv_ep, quic_probe[..], 1, l2_pkt));
+
+    // 3. Pump through AF_XDP loopback serve_h3_l2 and verify L2 UDP Version-Negotiation reply
+    assert(internal::af_xdp_umem_write(xsk, 0, l2_pkt[..]));
+    assert(internal::af_xdp_inject_loopback_rx(xsk, 0, l2_pkt.len as u32));
+    var h3_ep = wing::new_h3_server_endpoint();
+    let cfg_xdp = wing::H3L2Config {
+        backend:  wing::H3L2Backend.AfXdp,
+        local_ep: srv_ep,
+        ..
+    };
+    assert(wing::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
+    let tx_addr, ok_comp = internal::af_xdp_complete_pop(xsk);
+    assert(ok_comp);
+    // Also verify Direct-H3 SETTINGS frame (0x04 0x00) over AF_XDP L2
+    var l2_h3_settings: u8[..2048] = [];
+    assert(internal::encode_l2_udp_frame(cli_ep, srv_ep, "\x04\x00", 2, l2_h3_settings));
+    assert(internal::af_xdp_umem_write(xsk, tx_addr, l2_h3_settings[..]));
+    assert(internal::af_xdp_inject_loopback_rx(xsk, tx_addr, l2_h3_settings.len as u32));
+    assert(wing::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
+
+    // 4. Pump through DPDK loopback serve_h3_l2 and verify decoded L2 UDP response in TX->RX ring
+    var dpdk_dev = internal::new_dpdk_device(0);
+    let dpdk_cfg = internal::DpdkPortConfig { port_id: 0, rx_queues: 1, tx_queues: 1, .. };
+    assert(internal::dpdk_init_port(dpdk_dev, dpdk_cfg) == 0);
+    assert(internal::dpdk_start_port(dpdk_dev) == 0);
+    assert(internal::dpdk_tx_packet_push(0, 0, l2_pkt[..]));
+    let cfg_dpdk = wing::H3L2Config {
+        backend:       wing::H3L2Backend.Dpdk,
+        local_ep:      srv_ep,
+        dpdk_port_id:  0,
+        dpdk_queue_id: 0,
+        ..
+    };
+    assert(wing::serve_h3_l2(srv, h3_ep, cfg_dpdk, xsk, 1) == 1);
+    var dpdk_replies: u8[..2048][..32] = [];
+    let n_rep = internal::dpdk_rx_burst_read(0, 0, dpdk_replies);
+    assert(n_rep == 1);
+    let rep_parsed, ok_rep = internal::decode_l2_udp_frame(dpdk_replies[0][..]);
+    assert(ok_rep && rep_parsed.src.port == 443 && rep_parsed.dst.port == 55000);
+    let vn_payload = dpdk_replies[0][rep_parsed.payload_offset..rep_parsed.payload_offset + rep_parsed.payload_len];
+    assert(vn_payload.len >= 7 && vn_payload[1] == 0 && vn_payload[2] == 0 && vn_payload[3] == 0 && vn_payload[4] == 0);
+
+    internal::dpdk_stop_port(dpdk_dev);
+    internal::af_xdp_close(xsk);
+    print("TASK6_H3_BATCH_AND_L2: OK");
+}
+
 // CHECK: TASK1_DRIVER_ABIS: OK
 // CHECK: TASK2_TLS_SLICE_AND_KTLS: OK
 // CHECK: TASK3_POLLER_LIVE: OK
 // CHECK: TASK4_REACTOR_ACCEL: OK
 // CHECK: TASK5_L2_CODEC: OK
+// CHECK: TASK6_H3_BATCH_AND_L2: OK
 fn main() {
+    var srv = wing::new_http_server("127.0.0.1", 0);
     test_driver_slice_abis();
     test_tls_slice_codecs_and_ktls_probe();
     test_poller_live_socket_and_synthetic_fds();
-    test_reactor_accelerated_and_fallback();
+    test_reactor_accelerated_and_fallback(srv);
     test_l2_udp_codec_and_malformed_inputs();
+    test_h3_batched_udp_and_l2_kernel_bypass(srv);
 }

@@ -37,6 +37,16 @@ extern fn native_dpdk_tx_burst(
     pkts_in:  const u64&,
     nb_pkts:  u16,
 ) -> u16 = "wing_dpdk_tx_burst";
+extern fn native_dpdk_tx_packet_push(
+    port_id:  u16,
+    queue_id: u16,
+    frame:    const u8[:],
+) -> i32 = "wing_dpdk_tx_packet_push";
+extern fn native_dpdk_rx_burst_read_one(
+    port_id:  u16,
+    queue_id: u16,
+    dst:      u8[:],
+) -> i32 = "wing_dpdk_rx_burst_read_one";
 
 struct DpdkPortConfig {
     port_id:      u16  = 0,
@@ -165,4 +175,26 @@ fn dpdk_stage_tx_burst(ctx: DpdkContext&, mbufs: const u64[:]) -> u32 {
     }
     ctx.tx_count = idx as u32;
     return staged as u32;
+}
+
+// Enqueues a raw L2 Ethernet frame into a started DPDK port queue (`rte_eth_tx_burst` or loopback ring).
+fn dpdk_tx_packet_push(port_id: u16, queue_id: u16, frame: const u8[:]) -> bool {
+    guard frame.len > 0 && frame.len <= 2048 else { return false; }
+    return native_dpdk_tx_packet_push(port_id, queue_id, frame) > 0;
+}
+
+// Drains up to 32 raw L2 Ethernet frames from a DPDK port queue into `out_frames`.
+fn dpdk_rx_burst_read(port_id: u16, queue_id: u16, out_frames: u8[..2048][..32]&) -> u32 {
+    out_frames.clear();
+    var count: u64 = 0;
+    for _ in 32 {
+        var item: u8[..2048] = [];
+        item.resize(2048, 0);
+        let n = native_dpdk_rx_burst_read_one(port_id, queue_id, item[..]);
+        guard n > 0 && n <= 2048 else { break; }
+        item.resize(n as i64);
+        guard out_frames.try_push(item) else { break; }
+        count = core::add_sat_u64(count, 1);
+    }
+    return count as u32;
 }

@@ -15,12 +15,14 @@ add_static_route(srv.pipeline.router, "GET", "/healthz", "text/plain", "ok");
 ### 1. HTTP Server Lifecycle, TLS & Pub/Sub (`server/server.goose`)
 
 ```goose
+enum ReactorAccelMode { Auto, PollFallback, IoUring, Rio, Kqueue }
 struct HttpServer {
     pipeline: ServerPipelineConfig, host: u8[..256], port: u16,
     server_name: u8[..64], timer: internal::ConnectionTimer,
     topic_tree: TopicTree, ws_routes: WsRouteEntry[..16],
     shared_compressor: SharedWsCompressor, sni_registry: SniRegistry,
     worker_ring: core::SpscRing, cached_date: CachedHttpDate,
+    accel_mode: ReactorAccelMode = ReactorAccelMode.Auto,
     enable_header_memoization: bool = false, ...
 }
 fn new_http_server(host: const u8[:], port: u16, quota: GcraQuota = new_gcra_quota(1000, secs(1), 100)) -> HttpServer
@@ -56,9 +58,15 @@ collecting up to 512 matching socket descriptors (`i64[..512]`) in
 
 ```goose
 const REACTOR_MAX_H2_SESSIONS: i64 = 128;
+enum H3L2Backend { UdpFallback, AfXdp, Dpdk }
+struct H3L2Config {
+    backend: H3L2Backend, local_ep: internal::L2UdpEndpoint,
+    udp_fd: i64, dpdk_port_id: u16, dpdk_queue_id: u16
+}
 struct H3ServerEndpoint {
     conn: internal::H3Connection
 }
+fn reactor_listen_accelerated(server: HttpServer&, backlog: i32 = 1024) -> i64
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_requests: i64 = 0) -> i64
 fn serve_reactor_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_requests: i64 = 0) -> i64
 fn serve_reactor_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const TlsServerHandshakeConfig&, max_requests: i64 = 0) -> i64
@@ -66,26 +74,29 @@ fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerE
 fn handle_h3_quic_datagram<B>(server: HttpServer&, ep: H3ServerEndpoint&, client_ip: const u8[:], datagram: const u8[:], now_ns: u64, out_wire: B&) -> bool
 fn handle_h3_server_datagram<B>(server: HttpServer&, h3_conn: internal::H3Connection&, stream_id: u64, client_ip: const u8[:], rx_wire: const u8[:], now_ns: u64, tx_wire: B&) -> bool
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64
+fn serve_h3_l2(server: HttpServer&, ep: H3ServerEndpoint&, cfg: const H3L2Config&, xsk: internal::AfXdpSocket&, max_packets: i64 = 64) -> i64
 ```
 
 `serve_reactor`, `serve_reactor_with_stage`, and `serve_reactor_tls` drive a
-single-threaded non-blocking event loop over `Poller`, a 4096-slot
-`SoAConnTable` (`SOA_TABLE_CAP = 4096`), a 128-slot `H2ServerSession` pool
-(`REACTOR_MAX_H2_SESSIONS = 128`, returning `-1` on saturation instead of
-overwriting active sessions), and per-connection `ReactorLeftoverBuf` /
-`PageRingBuffer` arenas. `H3ServerEndpoint` supports two distinct UDP transport
-modes:
+single-threaded non-blocking event loop over accelerated OS completion and
+readiness backends (`IoUring` provided buffer rings + `IORING_OP_ACCEPT`/
+`RECV`/`SEND`, Windows `RIO` pinned slabs + persistent overlapped `AcceptEx`,
+macOS/BSD `kqueue`, and opportunistic Linux `SOL_TLS` `kTLS` with automatic
+`epoll`/`WSAPoll` fallback for standard `tcp_listen` sockets), paired with a
+4096-slot `SoAConnTable`, a 128-slot `H2ServerSession` pool, and a 256-slot
+in-memory TLS 1.3 cipher table. `H3ServerEndpoint` supports three datapaths:
 
-1. **Unencrypted H3 over UDP (Datagram Direct)**: `serve_h3` and
-   `handle_h3_server_datagram` demultiplex direct RFC 9114 HTTP/3 frames
-   (`SETTINGS`, `HEADERS`, `DATA` with QPACK compression,
-   `(datagram[0] & 0xC0) == 0`) carried over raw UDP datagrams for
-   zero-handshake internal/loopback hops.
-2. **Full QUIC v1 (RFC 9000 + RFC 9001 TLS 1.3)**: `QuicConnection`
-   (`quic/connection.goose`, `quic/tls_quic.goose`) paired with `H3Connection`
-   (`http3/connection.goose`) handles encrypted Initial, Handshake, and 1-RTT
-   short-header packets (`(datagram[0] & 0x80) != 0`), AEAD packet protection,
-   header protection, and loss/congestion control.
+1. `serve_h3` batches up to 32 datagrams per `recvmmsg` / `sendmmsg` transition
+   (`batch_recv_messages` and `batch_send_messages`) and demultiplexes direct
+   RFC 9114 HTTP/3 frames (`SETTINGS`, `HEADERS`, `DATA` with QPACK) for
+   internal/loopback hops.
+2. `serve_h3_l2` decodes Ethernet II + IPv4/IPv6 + UDP frames from `AF_XDP` UMEM
+   or `DPDK` burst queues via `net/driver/l2_frame.goose`, dispatches payloads
+   through `handle_h3_quic_datagram`, and encodes L2 UDP responses.
+3. `QuicConnection` (`quic/connection.goose`, `quic/tls_quic.goose`) paired with
+   `H3Connection` (`http3/connection.goose`) handles encrypted Initial,
+   Handshake, and 1-RTT short-header packets, AEAD packet protection, and
+   congestion control.
 
 ### 3. Radix Tree & Flat Register Routing (`server/router.goose`)
 

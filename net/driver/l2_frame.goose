@@ -39,13 +39,13 @@ fn sum_be16_slice(acc_in: u64, data: const u8[:]) -> u64 {
     var acc = acc_in;
     var idx: i64 = 0;
     while core::add_sat_i64(idx, 2) <= data.len {
-        let hi = core::shl_sat_u64(data[idx] as u64, 8);
-        let lo = data[core::add_sat_i64(idx, 1)] as u64;
+        let hi = core::shl_sat_u64(data[idx], 8);
+        let lo: u64 = data[core::add_sat_i64(idx, 1)];
         acc = core::add_sat_u64(acc, hi | lo);
         idx = core::add_sat_i64(idx, 2);
     }
     if idx < data.len {
-        acc = core::add_sat_u64(acc, core::shl_sat_u64(data[idx] as u64, 8));
+        acc = core::add_sat_u64(acc, core::shl_sat_u64(data[idx], 8));
     }
     return acc;
 }
@@ -65,13 +65,13 @@ fn calc_udp_pseudo_acc(
     if src.is_ipv6 {
         acc = sum_be16_slice(acc, src.ip[..16]);
         acc = sum_be16_slice(acc, dst.ip[..16]);
-        acc = core::add_sat_u64(acc, udp_len as u64);
-        acc = core::add_sat_u64(acc, IP_PROTO_UDP as u64);
+        acc = core::add_sat_u64(acc, udp_len);
+        acc = core::add_sat_u64(acc, IP_PROTO_UDP);
     } else {
         acc = sum_be16_slice(acc, src.ip[..4]);
         acc = sum_be16_slice(acc, dst.ip[..4]);
-        acc = core::add_sat_u64(acc, IP_PROTO_UDP as u64);
-        acc = core::add_sat_u64(acc, udp_len as u64);
+        acc = core::add_sat_u64(acc, IP_PROTO_UDP);
+        acc = core::add_sat_u64(acc, udp_len);
     }
     return acc;
 }
@@ -111,10 +111,10 @@ fn decode_udp_transport_tail(
     let dport, ok_dp = core::read_u16(cur);
     let udp_len, ok_ul = core::read_u16(cur);
     let udp_csum, ok_uc = core::read_u16(cur);
-    guard ok_sp && ok_dp && ok_ul && ok_uc && (udp_len as i64) >= UDP_HDR_LEN else {
+    guard ok_sp && ok_dp && ok_ul && ok_uc && udp_len >= UDP_HDR_LEN else {
         return false;
     }
-    let udp_end = core::add_sat_i64(l4_off, udp_len as i64);
+    let udp_end = core::add_sat_i64(l4_off, udp_len);
     guard udp_end <= ip_end else { return false; }
     out_pkt.src.is_ipv6 = is_ipv6;
     out_pkt.dst.is_ipv6 = is_ipv6;
@@ -124,7 +124,7 @@ fn decode_udp_transport_tail(
         return false;
     }
     out_pkt.payload_offset = core::add_sat_i64(l4_off, UDP_HDR_LEN);
-    out_pkt.payload_len = core::sub_sat_i64(udp_len as i64, UDP_HDR_LEN);
+    out_pkt.payload_len = core::sub_sat_i64(udp_len, UDP_HDR_LEN);
     return true;
 }
 
@@ -155,7 +155,7 @@ fn decode_ipv4_udp_body(frame: const u8[:], out_pkt: L2ParsedUdpFrame&) -> bool 
         return false;
     }
     guard (flags_frag & IPV4_FRAG_MASK) == 0 else { return false; }
-    let ip_end = core::add_sat_i64(ETH_HDR_LEN, total_len as i64);
+    let ip_end = core::add_sat_i64(ETH_HDR_LEN, total_len);
     let l4_off = core::add_sat_i64(ETH_HDR_LEN, ihl_bytes);
     guard l4_off <= ip_end && ip_end <= frame.len else { return false; }
     guard fold_internet_checksum(sum_be16_slice(0, frame[ETH_HDR_LEN..l4_off])) == 0 else {
@@ -183,11 +183,11 @@ fn decode_ipv6_udp_body(frame: const u8[:], out_pkt: L2ParsedUdpFrame&) -> bool 
     let src_ip, ok_si = core::read_bytes(cur, 16);
     let dst_ip, ok_di = core::read_bytes(cur, 16);
     guard ok_vtf && ok_pl && ok_nh && ok_hl && ok_si && ok_di else { return false; }
-    guard (vtf >> 28) == 6 && nh == IP_PROTO_UDP && (plen as i64) >= UDP_HDR_LEN else {
+    guard (vtf >> 28) == 6 && nh == IP_PROTO_UDP && plen >= UDP_HDR_LEN else {
         return false;
     }
     let l4_off = core::add_sat_i64(ETH_HDR_LEN, IPV6_HDR_LEN);
-    let ip_end = core::add_sat_i64(l4_off, plen as i64);
+    let ip_end = core::add_sat_i64(l4_off, plen);
     guard ip_end <= frame.len else { return false; }
     for i in 16 {
         out_pkt.src.ip[i] = src_ip[i];
@@ -251,7 +251,7 @@ fn append_l3_ip_header(
         ok = true;
         return true;
     }
-    let ipv4_total = core::add_sat_i64(IPV4_MIN_HDR_LEN, udp_len as i64) as u16;
+    let ipv4_total = core::add_sat_i64(IPV4_MIN_HDR_LEN, udp_len) as u16;
     var ip4: u8[20] = [
         0x45,
         0x00,
