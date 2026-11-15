@@ -18,6 +18,12 @@ extern fn native_kqueue_kevent(
     timeout_ns: i64,
 ) -> i32 = "wing_kqueue_kevent";
 extern fn native_kqueue_close(kq: i64) = "wing_kqueue_close";
+extern fn native_kqueue_kevent_slice(
+    kq:         i64,
+    changes:    const Kevent[:],
+    events:     Kevent[:],
+    timeout_ns: i64,
+) -> i32 = "wing_kqueue_kevent_slice";
 
 // kqueue filter constants
 const EVFILT_READ:  i16 = -1;
@@ -80,4 +86,15 @@ fn kevent_bytes_available(ev: const Kevent&) -> i64 {
 // Checks if the peer closed or half-closed the connection
 fn kevent_is_eof(ev: const Kevent&) -> bool {
     return (ev.flags & EV_EOF) != 0;
+}
+
+// Submits `changes` and polls up to `out_events.len` kernel events from `kq_fd`.
+fn kqueue_poll_slice(
+    kq_fd:      i64,
+    changes:    const Kevent[:],
+    out_events: Kevent[:],
+    timeout_ns: i64,
+) -> i32 {
+    guard kq_fd >= 0 else { return -1; }
+    return native_kqueue_kevent_slice(kq_fd, changes, out_events, timeout_ns);
 }

@@ -33,6 +33,33 @@ extern fn native_rio_send(
     length:      u32,
     req_context: u64,
 ) -> i32 = "wing_rio_send";
+extern fn native_rio_register_slice(buf: u8[:]) -> u64 = "wing_rio_register_slice";
+extern fn native_rio_dequeue_slice(cq_id: u64, dst: RioResult[:]) -> i32 = "wing_rio_dequeue_slice";
+extern fn native_rio_wait_cq(cq_id: u64, timeout_ms: i32) -> i32 = "wing_rio_wait_cq";
+extern fn native_rio_create_rq_ctx(
+    sock_fd:  i64,
+    max_recv: u32,
+    max_send: u32,
+    recv_cq:  u64,
+    send_cq:  u64,
+    sock_ctx: u64,
+) -> u64 = "wing_rio_create_rq_ctx";
+extern fn native_rio_post_recv(
+    rq_id:   u64,
+    buf_id:  u64,
+    offset:  u32,
+    length:  u32,
+    req_ctx: u64,
+) -> i32 = "wing_rio_post_recv";
+extern fn native_rio_post_send(
+    rq_id:   u64,
+    buf_id:  u64,
+    offset:  u32,
+    length:  u32,
+    req_ctx: u64,
+) -> i32 = "wing_rio_post_send";
+extern fn native_rio_listen(host: const u8[:], port: u16, backlog: i32) -> i64 = "wing_rio_listen";
+extern fn native_rio_accept(listen_fd: i64) -> i64 = "wing_rio_accept";
 
 // Page-locked registered memory buffer slice descriptor for Windows RIO
 struct RioBufferDescriptor {
@@ -204,19 +231,34 @@ struct RioResult {
     request_context:   u64 = 0,
 }
 
+// Creates a Windows RIO-enabled TCP listening socket (`WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED`).
+fn rio_listen(host: const u8[:], port: u16, backlog: i32 = 128) -> i64 {
+    guard host.len <= 127 && backlog > 0 else { return -1; }
+    return native_rio_listen(host, port, backlog);
+}
+
+// Accepts an incoming TCP connection onto a `WSA_FLAG_REGISTERED_IO` socket via `AcceptEx`.
+fn rio_accept(listen_fd: i64) -> i64 {
+    guard listen_fd > 0 else { return -1; }
+    return native_rio_accept(listen_fd);
+}
+
+// Arms `RIONotify` and waits up to `timeout_ms` for CQ completions.
+fn rio_wait_cq(cq_id: u64, timeout_ms: i32) -> i32 {
+    guard cq_id != 0 else { return -1; }
+    return native_rio_wait_cq(cq_id, timeout_ms);
+}
+
 // Drains completed Windows RIO operations into a bounded `RioResult[..64]` slice.
 fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> u32 {
     out_results.clear();
     guard cq_id != 0 else { return 0; }
-    let n = native_rio_dequeue_completion(cq_id, 0, 64);
+    var raw: RioResult[64] = [RioResult { .. }; 64];
+    let n = native_rio_dequeue_slice(cq_id, raw[..]);
+    guard n > 0 else { return 0; }
     let count = min(n as i64, 64);
     for i in count {
-        let _ = out_results.try_push(RioResult {
-            status:            0,
-            bytes_transferred: 0,
-            socket_context:    i as u64,
-            request_context:   i as u64,
-        });
+        let _ = out_results.try_push(raw[i]);
     }
-    return count as u32;
+    return out_results.len as u32;
 }

@@ -41,6 +41,23 @@ extern fn native_uring_peek_cqe(
     res_out:       i32&,
     flags_out:     u32&,
 ) -> i32 = "wing_uring_peek_cqe";
+extern fn native_uring_submit_sqes(ring_fd: i64, sqes: const UringSqe[:]) -> i32 = "wing_uring_submit_sqes";
+extern fn native_uring_wait_cqes(
+    ring_fd:      i64,
+    out_cqes:     UringCqe[:],
+    min_complete: u32,
+    timeout_ns:   i64,
+) -> i32 = "wing_uring_wait_cqes";
+extern fn native_uring_alloc_pbuf_ring(
+    ring_fd:    i64,
+    bgid:       u16,
+    entries:    u32,
+    buf_size:   u32,
+    out_handle: u64&,
+) -> i32 = "wing_uring_alloc_pbuf_ring";
+extern fn native_uring_free_pbuf_ring(handle: u64) = "wing_uring_free_pbuf_ring";
+extern fn native_uring_read_pbuf(handle: u64, bid: u16, len: i32, dst: u8[:]) -> i32 = "wing_uring_read_pbuf";
+extern fn native_uring_recycle_pbuf(handle: u64, bid: u16) = "wing_uring_recycle_pbuf";
 
 // Registered I/O vector for IORING_REGISTER_BUFFERS
 struct UringIovec {
@@ -96,6 +113,7 @@ struct UringSqe {
     off:       u64 = 0,
     addr:      u64 = 0,
     len:       u32 = 0,
+    op_flags:  u32 = 0,
     user_data: u64 = 0,
     buf_index: u16 = 0,
 }
@@ -116,6 +134,7 @@ fn uring_prep_send(sqe: UringSqe&, fd: i32, addr: u64, len: u32, tag: u64, zero_
     sqe.off = 0;
     sqe.addr = addr;
     sqe.len = len;
+    sqe.op_flags = 0;
     sqe.user_data = tag;
     sqe.buf_index = 0;
 }
@@ -129,6 +148,7 @@ fn uring_prep_recv(sqe: UringSqe&, fd: i32, addr: u64, len: u32, tag: u64, multi
     sqe.off = 0;
     sqe.addr = addr;
     sqe.len = len;
+    sqe.op_flags = 0;
     sqe.user_data = tag;
     sqe.buf_index = 0;
 }
@@ -142,6 +162,7 @@ fn uring_prep_accept(sqe: UringSqe&, fd: i32, tag: u64) {
     sqe.off = 0;
     sqe.addr = 0;
     sqe.len = 0;
+    sqe.op_flags = 0;
     sqe.user_data = tag;
     sqe.buf_index = 0;
 }
@@ -155,6 +176,7 @@ fn uring_prep_cancel(sqe: UringSqe&, tag_to_cancel: u64) {
     sqe.off = 0;
     sqe.addr = tag_to_cancel;
     sqe.len = 0;
+    sqe.op_flags = 0;
     sqe.user_data = 0;
     sqe.buf_index = 0;
 }
@@ -169,8 +191,107 @@ fn uring_prep_accept_multishot(sqe: UringSqe&, fd: i32, tag: u64) {
     sqe.off = 0;
     sqe.addr = 0;
     sqe.len = 0;
+    sqe.op_flags = 0;
     sqe.user_data = tag;
     sqe.buf_index = 0;
+}
+
+// Prepares a standalone SQE for multishot provided-buffer receive (`IORING_RECV_MULTISHOT`).
+fn uring_prep_sqe_recv_multishot(sqe: UringSqe&, fd: i32, bgid: u16, user_data: u64) {
+    sqe.opcode = URING_OP_RECV;
+    sqe.flags = URING_SQE_BUFFER_SELECT;
+    sqe.ioprio = URING_RECV_MULTISHOT;
+    sqe.fd = fd;
+    sqe.off = 0;
+    sqe.addr = 0;
+    sqe.len = 0;
+    sqe.op_flags = 0;
+    sqe.user_data = user_data;
+    sqe.buf_index = bgid;
+}
+
+// Prepares an SQE for `recvmsg` (`IORING_OP_RECVMSG`).
+fn uring_prep_recvmsg(sqe: UringSqe&, fd: i32, msg_ptr: u64, msg_flags: u32, user_data: u64) {
+    sqe.opcode = URING_OP_RECVMSG;
+    sqe.flags = 0;
+    sqe.ioprio = 0;
+    sqe.fd = fd;
+    sqe.off = 0;
+    sqe.addr = msg_ptr;
+    sqe.len = 1;
+    sqe.op_flags = msg_flags;
+    sqe.user_data = user_data;
+    sqe.buf_index = 0;
+}
+
+// Prepares an SQE for socket readiness polling (`IORING_OP_POLL_ADD`).
+fn uring_prep_poll_add(sqe: UringSqe&, fd: i32, poll_mask: u32, user_data: u64) {
+    sqe.opcode = URING_OP_POLL_ADD;
+    sqe.flags = 0;
+    sqe.ioprio = 0;
+    sqe.fd = fd;
+    sqe.off = 0;
+    sqe.addr = 0;
+    sqe.len = 0;
+    sqe.op_flags = poll_mask;
+    sqe.user_data = user_data;
+    sqe.buf_index = 0;
+}
+
+// Prepares an SQE removing an active `POLL_ADD` registration by `target_user_data`.
+fn uring_prep_poll_remove(sqe: UringSqe&, target_user_data: u64, user_data: u64) {
+    sqe.opcode = URING_OP_POLL_REMOVE;
+    sqe.flags = 0;
+    sqe.ioprio = 0;
+    sqe.fd = -1;
+    sqe.off = 0;
+    sqe.addr = target_user_data;
+    sqe.len = 0;
+    sqe.op_flags = 0;
+    sqe.user_data = user_data;
+    sqe.buf_index = 0;
+}
+
+// Submits a slice of SQEs into `ring_fd` via mmap SQ ring and `io_uring_enter`.
+fn uring_submit_sqes(ring_fd: i64, sqes: const UringSqe[:]) -> i32 {
+    guard ring_fd >= 0 && sqes.len > 0 else { return -1; }
+    return native_uring_submit_sqes(ring_fd, sqes);
+}
+
+// Waits up to `timeout_ns` (`0` = non-blocking) for `min_complete` CQEs in `ring_fd`.
+fn uring_wait_cqes(ring_fd: i64, out_cqes: UringCqe[:], min_complete: u32, timeout_ns: i64) -> i32 {
+    guard ring_fd >= 0 && out_cqes.len > 0 else { return -1; }
+    return native_uring_wait_cqes(ring_fd, out_cqes, min_complete, timeout_ns);
+}
+
+// Allocates and registers a kernel-managed `IORING_REGISTER_PBUF_RING` slab.
+fn uring_alloc_pbuf_ring(ring_fd: i64, bgid: u16, entries: u32, buf_size: u32) -> u64, bool {
+    guard ring_fd >= 0 && entries >= 1 && entries <= 32768 && (entries & (entries - 1)) == 0 && buf_size > 0 else {
+        return 0, false;
+    }
+    var handle: u64 = 0;
+    let rc = native_uring_alloc_pbuf_ring(ring_fd, bgid, entries, buf_size, handle);
+    return handle, rc == 0 && handle != 0;
+}
+
+// Unregisters and unmaps a kernel-managed `pbuf_ring` slab handle.
+fn uring_free_pbuf_ring(handle: u64) {
+    if handle != 0 {
+        native_uring_free_pbuf_ring(handle);
+    }
+}
+
+// Copies up to `len` bytes from provided buffer `bid` into `dst`.
+fn uring_read_pbuf(handle: u64, bid: u16, len: i32, dst: u8[:]) -> i32 {
+    guard handle != 0 && len >= 0 && dst.len > 0 else { return -1; }
+    return native_uring_read_pbuf(handle, bid, len, dst);
+}
+
+// Returns provided buffer `bid` to the kernel ring tail.
+fn uring_recycle_pbuf(handle: u64, bid: u16) {
+    if handle != 0 {
+        native_uring_recycle_pbuf(handle, bid);
+    }
 }
 
 // Registers fixed preallocated buffers with io_uring (IORING_REGISTER_BUFFERS).
