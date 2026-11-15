@@ -121,7 +121,18 @@ Index searches return `-1` when no match is found, and `split_once*` returns
 ```goose
 // core/io/types.goose & core/io/ring.goose
 enum IoError { .. }
+enum PollInterest { None, Read, Write, ReadWrite }
+enum PollTrigger { Level, Edge }
+struct PollReadyEvent { .. }
+struct DialTarget { .. }
 const DEFAULT_RING_BUFFER_CAP: i64 = 4096
+const POLL_NONE: u32 = 0
+const POLL_READ: u32 = 1 << 0
+const POLL_WRITE: u32 = 1 << 1
+const POLL_ERROR: u32 = 1 << 2
+const POLL_HANGUP: u32 = 1 << 3
+const POLL_TIMER: u32 = 1 << 4
+const POLL_WAKE: u32 = 1 << 5
 struct RingBuffer { .. }
 fn io_error_name(err: IoError) -> const u8[:]
 fn new_ring_buffer(cap: i64 = DEFAULT_RING_BUFFER_CAP) -> RingBuffer
@@ -217,16 +228,32 @@ fn pinned_buffer_init(p: PinnedBuffer&, size: i64) -> bool
 fn pinned_buffer_close(p: PinnedBuffer&)
 fn pinned_buffer_write(p: PinnedBuffer&, offset: i64, src: const u8[:]) -> bool
 fn pinned_buffer_read(p: const PinnedBuffer&, offset: i64, len: i64) -> const u8[:], bool
+
+// core/io/reactor.goose (Zero-shim async stream, dialer, and reactor contract)
+fn stream_send<Io>(io: Io&, data: const u8[:]) -> i32
+fn stream_recv<Io>(io: Io&, dst: u8[:], timeout_ms: u32 = 5000) -> i32
+fn stream_close<Io>(io: Io&)
+fn stream_try_send<Io>(io: Io&, data: const u8[:]) -> i32, IoError
+fn stream_try_recv<Io>(io: Io&, dst: u8[:]) -> i32, IoError
+fn reactor_dial<D>(dialer: D&, target: DialTarget) -> i64, IoError
+fn reactor_register<R>(r: R&, fd: i32, tag: u64, interest: PollInterest, trigger: PollTrigger = PollTrigger.Level) -> bool
+fn reactor_modify<R>(r: R&, fd: i32, tag: u64, interest: PollInterest, trigger: PollTrigger = PollTrigger.Level) -> bool
+fn reactor_deregister<R>(r: R&, fd: i32) -> bool
+fn reactor_add_timer<R>(r: R&, timer_id: u64, delay_ms: u64, tag: u64, periodic: bool = false, now_ns: u64 = 0) -> bool
+fn reactor_cancel_timer<R>(r: R&, timer_id: u64) -> bool
+fn reactor_wake<R>(r: R&, tag: u64) -> bool
+fn reactor_poll<R>(r: R&, timeout_ms: i64, now_ns: u64, out_events: PollReadyEvent[..64]&) -> i32
 ```
 
 Implements circular queues (`core/io/ring.goose`, `core/io/types.goose`),
-producer/consumer pipes (`core/io/pipe.goose`), write-combining frame coalescers
-(`core/io/cork.goose`), network-order wire cursors and length-prefixed builders
-(`core/io/cursor.goose`), scatter-gather vectors (`core/io/vec.goose`), OS
-virtual-memory mirrored ring buffers (`core/io/page_ring.goose`), and
-guard-paged arenas, memory-mapped files, and `mlock`-pinned secret buffers
-(`core/io/page_mem.goose`). `ByteCursor` getters leave the cursor unchanged when
-returning `false` on truncated input.
+zero-shim cross-framework UFCS stream and reactor contracts
+(`core/io/reactor.goose`), producer/consumer pipes (`core/io/pipe.goose`),
+write-combining frame coalescers (`core/io/cork.goose`), network-order wire
+cursors and length-prefixed builders (`core/io/cursor.goose`), scatter-gather
+vectors (`core/io/vec.goose`), OS virtual-memory mirrored ring buffers
+(`core/io/page_ring.goose`), and guard-paged arenas, memory-mapped files, and
+`mlock`-pinned secret buffers (`core/io/page_mem.goose`). `ByteCursor` getters
+leave the cursor unchanged when returning `false` on truncated input.
 
 ### `core/crypto/`: Constant-Time Cryptography
 

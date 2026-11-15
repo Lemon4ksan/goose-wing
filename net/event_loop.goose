@@ -82,8 +82,8 @@ fn bind_connection(
     ev_loop:  EventLoop&,
     fd:       i32,
     tag:      u64,
-    interest: PollInterest,
-    trigger:  PollTrigger = PollTrigger.Level,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger = core::PollTrigger.Level,
 ) -> bool {
     guard register_socket(ev_loop.poller, fd, tag, interest, trigger) else { return false; }
     var committed = false;
@@ -165,7 +165,7 @@ fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
     let r_idx = find_registration(ev_loop.poller, fd);
     if r_idx >= 0 {
         if remaining == 0 {
-            ev_loop.poller.registrations[r_idx].sim.ready &= ~POLL_READ;
+            ev_loop.poller.registrations[r_idx].sim.ready &= ~core::POLL_READ;
             ev_loop.poller.registrations[r_idx].sim.bytes = 0;
         } else {
             ev_loop.poller.registrations[r_idx].sim.bytes = remaining;
@@ -201,7 +201,7 @@ fn flush_writes(ev_loop: EventLoop&, tag: u64) -> i64 {
 }
 
 // Runs a single non-blocking event loop iteration, dispatching harvested events to handler
-fn run_loop_once<HandlerFn: fn(u64, const PollReadyEvent&, EventLoop&)>(
+fn run_loop_once<HandlerFn: fn(u64, const core::PollReadyEvent&, EventLoop&)>(
     ev_loop:    EventLoop&,
     timeout_ms: i64,
     now_ns:     u64,
@@ -209,7 +209,7 @@ fn run_loop_once<HandlerFn: fn(u64, const PollReadyEvent&, EventLoop&)>(
     ev_loop.state = LoopState.Running;
     ev_loop.iteration_count = core::add_sat_u64(ev_loop.iteration_count, 1);
 
-    var events: PollReadyEvent[..64] = [];
+    var events: core::PollReadyEvent[..64] = [];
     let count = poll_events(ev_loop.poller, timeout_ms, now_ns, events);
 
     for i in events.len {
@@ -219,6 +219,12 @@ fn run_loop_once<HandlerFn: fn(u64, const PollReadyEvent&, EventLoop&)>(
     }
 
     return count;
+}
+
+// Queues a wake tag for delivery as `core::POLL_WAKE` on the next poll pass.
+fn wake_tag(ev_loop: EventLoop&, tag: u64) -> bool {
+    guard ev_loop.state != LoopState.Stopped else { return false; }
+    return wake_tag(ev_loop.poller, tag);
 }
 
 // Defers execution of a task to the event loop thread (uWebSockets / uSockets loop->defer pattern)

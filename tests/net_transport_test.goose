@@ -990,22 +990,22 @@ fn test_poller_registration_and_readiness(t: lit::T&) {
 
     t.run("Registration Table: Add, Duplicate Guard, Modify, Deregister") { sub =>
         // Register fd 10
-        let ok_reg = wing::register_socket(poller, 10, 1001, wing::PollInterest.Read, wing::PollTrigger.Level);
+        let ok_reg = wing::register_socket(poller, 10, 1001, core::PollInterest.Read, core::PollTrigger.Level);
         sub.assert_true(ok_reg, "Socket 10 registered");
         sub.assert_eq(poller.active_fd_count, 1, "1 active fd");
 
         // Duplicate registration rejected
-        let dup_reg = wing::register_socket(poller, 10, 1002, wing::PollInterest.Write, wing::PollTrigger.Level);
+        let dup_reg = wing::register_socket(poller, 10, 1002, core::PollInterest.Write, core::PollTrigger.Level);
         sub.assert_false(dup_reg, "Duplicate fd 10 registration rejected");
 
         // Modify interest to ReadWrite
-        let ok_mod = wing::modify_socket(poller, 10, 1001, wing::PollInterest.ReadWrite, wing::PollTrigger.Edge);
+        let ok_mod = wing::modify_socket(poller, 10, 1001, core::PollInterest.ReadWrite, core::PollTrigger.Edge);
         sub.assert_true(ok_mod, "Socket 10 modified");
 
         let idx = wing::find_registration(poller, 10);
         sub.assert_true(idx >= 0, "Socket 10 found");
-        sub.assert_eq(poller.registrations[idx].interest, wing::PollInterest.ReadWrite, "Interest is ReadWrite");
-        sub.assert_eq(poller.registrations[idx].trigger, wing::PollTrigger.Edge, "Trigger is Edge");
+        sub.assert_eq(poller.registrations[idx].interest, core::PollInterest.ReadWrite, "Interest is ReadWrite");
+        sub.assert_eq(poller.registrations[idx].trigger, core::PollTrigger.Edge, "Trigger is Edge");
 
         // Deregister
         let ok_dereg = wing::deregister_socket(poller, 10);
@@ -1015,16 +1015,16 @@ fn test_poller_registration_and_readiness(t: lit::T&) {
     };
 
     t.run("Readiness Multiplexing: Read, Write, Error, Hangup") { sub =>
-        wing::register_socket(poller, 20, 2001, wing::PollInterest.Read, wing::PollTrigger.Level);
-        wing::register_socket(poller, 21, 2002, wing::PollInterest.Write, wing::PollTrigger.Level);
-        wing::register_socket(poller, 22, 2003, wing::PollInterest.ReadWrite, wing::PollTrigger.Level);
+        wing::register_socket(poller, 20, 2001, core::PollInterest.Read, core::PollTrigger.Level);
+        wing::register_socket(poller, 21, 2002, core::PollInterest.Write, core::PollTrigger.Level);
+        wing::register_socket(poller, 22, 2003, core::PollInterest.ReadWrite, core::PollTrigger.Level);
 
         // Simulate events
         wing::simulate_read_ready(poller, 20, 512); // fd 20 has 512 bytes unread
         wing::simulate_write_ready(poller, 21);      // fd 21 ready to write
         wing::simulate_hangup(poller, 22);           // fd 22 hangup/EOF
 
-        var events: wing::PollReadyEvent[..64] = [];
+        var events: core::PollReadyEvent[..64] = [];
         let count = wing::poll_events(poller, 0, 1000000000, events);
 
         sub.assert_eq(count, 3, "3 readiness events harvested");
@@ -1038,17 +1038,17 @@ fn test_poller_registration_and_readiness(t: lit::T&) {
             if events[i].tag == 2001 {
                 found_20 = true;
                 sub.assert_eq(events[i].fd, 20, "fd is 20");
-                sub.assert_true((events[i].events & wing::POLL_READ) != 0, "Event has POLL_READ");
+                sub.assert_true((events[i].events & core::POLL_READ) != 0, "Event has POLL_READ");
                 sub.assert_eq(events[i].bytes_available, 512, "Reported 512 bytes available");
                 sub.assert_false(events[i].is_eof, "Not EOF");
             } else if events[i].tag == 2002 {
                 found_21 = true;
                 sub.assert_eq(events[i].fd, 21, "fd is 21");
-                sub.assert_true((events[i].events & wing::POLL_WRITE) != 0, "Event has POLL_WRITE");
+                sub.assert_true((events[i].events & core::POLL_WRITE) != 0, "Event has POLL_WRITE");
             } else if events[i].tag == 2003 {
                 found_22 = true;
                 sub.assert_eq(events[i].fd, 22, "fd is 22");
-                sub.assert_true((events[i].events & wing::POLL_HANGUP) != 0, "Event has POLL_HANGUP");
+                sub.assert_true((events[i].events & core::POLL_HANGUP) != 0, "Event has POLL_HANGUP");
                 sub.assert_true(events[i].is_eof, "Event is EOF");
             }
         }
@@ -1080,23 +1080,23 @@ fn test_poller_timer_wheel(t: lit::T&) {
         sub.assert_eq(poller.active_timer_count, 1, "1 active timer");
 
         // Poll at 1.04s (40ms elapsed) -> timer should NOT fire
-        var events40: wing::PollReadyEvent[..64] = [];
+        var events40: core::PollReadyEvent[..64] = [];
         let c40 = wing::poll_events(poller, 0, now_ns + 40000000, events40);
         sub.assert_eq(c40, 0, "Timer not yet expired at 40ms");
 
         // Poll at 1.06s (60ms elapsed) -> timer should fire!
-        var events60: wing::PollReadyEvent[..64] = [];
+        var events60: core::PollReadyEvent[..64] = [];
         let c60 = wing::poll_events(poller, 0, now_ns + 60000000, events60);
         sub.assert_eq(c60, 1, "Timer fired at 60ms");
         sub.assert_eq(events60[0].tag, 9101, "Timer tag matches");
         sub.assert_true(events60[0].is_timer, "is_timer flag is true");
-        sub.assert_true((events60[0].events & wing::POLL_TIMER) != 0, "POLL_TIMER flag set");
+        sub.assert_true((events60[0].events & core::POLL_TIMER) != 0, "POLL_TIMER flag set");
 
         // One-shot timer is now deactivated
         sub.assert_eq(poller.active_timer_count, 0, "0 active timers left");
 
         // Subsequent poll should not fire
-        var events70: wing::PollReadyEvent[..64] = [];
+        var events70: core::PollReadyEvent[..64] = [];
         let c70 = wing::poll_events(poller, 0, now_ns + 70000000, events70);
         sub.assert_eq(c70, 0, "No duplicate timer triggers");
     };
@@ -1107,7 +1107,7 @@ fn test_poller_timer_wheel(t: lit::T&) {
         wing::add_timer(poller, 202, 100, 9202, true, now_ns);
 
         // 1st tick at 110ms
-        var ev1: wing::PollReadyEvent[..64] = [];
+        var ev1: core::PollReadyEvent[..64] = [];
         let c1 = wing::poll_events(poller, 0, now_ns + 110000000, ev1);
         sub.assert_eq(c1, 1, "1st tick fired");
         sub.assert_eq(ev1[0].tag, 9202, "Tag matches");
@@ -1116,7 +1116,7 @@ fn test_poller_timer_wheel(t: lit::T&) {
         sub.assert_eq(poller.active_timer_count, 1, "Timer still active");
 
         // 2nd tick at 220ms
-        var ev2: wing::PollReadyEvent[..64] = [];
+        var ev2: core::PollReadyEvent[..64] = [];
         let c2 = wing::poll_events(poller, 0, now_ns + 220000000, ev2);
         sub.assert_eq(c2, 1, "2nd tick fired");
 
@@ -1126,7 +1126,7 @@ fn test_poller_timer_wheel(t: lit::T&) {
         sub.assert_eq(poller.active_timer_count, 0, "0 active timers");
 
         // 3rd tick should NOT fire after cancellation
-        var ev3: wing::PollReadyEvent[..64] = [];
+        var ev3: core::PollReadyEvent[..64] = [];
         let c3 = wing::poll_events(poller, 0, now_ns + 330000000, ev3);
         sub.assert_eq(c3, 0, "No tick after cancellation");
     };
@@ -1137,9 +1137,9 @@ fn test_poller_timer_wheel(t: lit::T&) {
 // ----------------------------------------------------------------------------
 // 18. Non-blocking EventLoop I/O
 // ----------------------------------------------------------------------------
-fn dummy_event_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::EventLoop&) {
+fn dummy_event_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::EventLoop&) {
     if tag == 5001 {
-        if (ev.events & wing::POLL_READ) != 0 {
+        if (ev.events & core::POLL_READ) != 0 {
             var msg_buf: u8[..64] = [];
             wing::consume_read(el, tag, msg_buf);
             // Echo back with prefix "ACK:"
@@ -1155,7 +1155,7 @@ fn test_event_loop_io(t: lit::T&) {
     var el = wing::new_event_loop(cfg);
 
     t.run("Bind Connection, Queue Write, Feed Read & Consume") { sub =>
-        let ok_bind = wing::bind_connection(el, 30, 5001, wing::PollInterest.ReadWrite);
+        let ok_bind = wing::bind_connection(el, 30, 5001, core::PollInterest.ReadWrite);
         sub.assert_true(ok_bind, "Connection 5001 bound");
 
         // Feed incoming data
@@ -1191,9 +1191,9 @@ fn test_event_loop_io(t: lit::T&) {
 var g_server_received: u8[..64] = [];
 var g_client_received: u8[..64] = [];
 
-fn bidi_network_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::EventLoop&) {
+fn bidi_network_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::EventLoop&) {
     if tag == 6001 { // Server connection
-        if (ev.events & wing::POLL_READ) != 0 {
+        if (ev.events & core::POLL_READ) != 0 {
             var buf: u8[..64] = [];
             wing::consume_read(el, tag, buf);
             g_server_received.clear();
@@ -1203,7 +1203,7 @@ fn bidi_network_handler(tag: u64, ev: const wing::PollReadyEvent&, el: wing::Eve
             wing::queue_write(el, tag, "SERVER_OK");
         }
     } else if tag == 6002 { // Client connection
-        if (ev.events & wing::POLL_READ) != 0 {
+        if (ev.events & core::POLL_READ) != 0 {
             var buf: u8[..64] = [];
             wing::consume_read(el, tag, buf);
             g_client_received.clear();
@@ -1220,8 +1220,8 @@ fn test_bidi_client_server_cycle(t: lit::T&) {
         g_server_received.clear();
         g_client_received.clear();
 
-        wing::bind_connection(el, 40, 6001, wing::PollInterest.ReadWrite); // Server
-        wing::bind_connection(el, 41, 6002, wing::PollInterest.ReadWrite); // Client
+        wing::bind_connection(el, 40, 6001, core::PollInterest.ReadWrite); // Server
+        wing::bind_connection(el, 41, 6002, core::PollInterest.ReadWrite); // Client
 
         // 1. Client sends request to Server
         wing::feed_read(el, 6001, "PING_FROM_CLIENT");
@@ -1259,7 +1259,7 @@ fn test_coarse_socket_timeouts(t: lit::T&) {
 
     t.run("Coarse 4-second Socket Timeout Expiry & Cancellation") { sub =>
         let now_ns: u64 = 1000000000; // 1.0s
-        wing::register_socket(poller, 50, 7001, wing::PollInterest.Read, wing::PollTrigger.Level);
+        wing::register_socket(poller, 50, 7001, core::PollInterest.Read, core::PollTrigger.Level);
 
         // Initial timeout is disabled (255)
         sub.assert_eq(wing::get_socket_timeout(poller, 50), wing::COARSE_TIMEOUT_DISABLED, "Timeout disabled initially");
@@ -1270,17 +1270,17 @@ fn test_coarse_socket_timeouts(t: lit::T&) {
         sub.assert_true(wing::get_socket_timeout(poller, 50) != wing::COARSE_TIMEOUT_DISABLED, "Timeout tick armed");
 
         // First poll: initial anchor (delta 0s)
-        var evs1: wing::PollReadyEvent[..64] = [];
+        var evs1: core::PollReadyEvent[..64] = [];
         let c1 = wing::poll_events(poller, 0, now_ns, evs1);
         sub.assert_eq(c1, 0, "No events at initial poll");
 
         // Second poll: +2.0s (less than 4s threshold)
-        var evs2: wing::PollReadyEvent[..64] = [];
+        var evs2: core::PollReadyEvent[..64] = [];
         let c2 = wing::poll_events(poller, 0, now_ns + 2000000000, evs2);
         sub.assert_eq(c2, 0, "No timeout event before 4 seconds");
 
         // Third poll: +4.1s (4-second boundary crossed, tick matches)
-        var evs3: wing::PollReadyEvent[..64] = [];
+        var evs3: core::PollReadyEvent[..64] = [];
         let c3 = wing::poll_events(poller, 0, now_ns + 4100000000, evs3);
         sub.assert_eq(c3, 1, "Coarse timeout event fired at 4s boundary");
         sub.assert_true(evs3[0].is_timer, "Event is marked as timer");
@@ -1299,13 +1299,13 @@ fn test_coarse_socket_timeouts(t: lit::T&) {
 
     t.run("Multi-Tick Jump Expiry Without Skips (elapsed_ticks > 1)") { sub =>
         let now_ns: u64 = 10000000000; // 10.0s
-        wing::register_socket(poller, 60, 8001, wing::PollInterest.Read, wing::PollTrigger.Level);
+        wing::register_socket(poller, 60, 8001, core::PollInterest.Read, core::PollTrigger.Level);
 
         // Arm timeout for 4 seconds (target = current_tick + 1)
         wing::set_socket_timeout(poller, 60, 4);
 
         // Advance poll by 12 seconds (elapsed_ticks = 3, skips over tick + 1)
-        var evs: wing::PollReadyEvent[..64] = [];
+        var evs: core::PollReadyEvent[..64] = [];
         let fired = wing::poll_events(poller, 0, now_ns + 12000000000, evs);
         sub.assert_eq(fired, 1, "Coarse timeout fired even when time jumped 3 ticks ahead");
         sub.assert_true(evs[0].is_timer, "Event is marked as timer");
@@ -2261,6 +2261,74 @@ fn test_hev3_https_svcb_and_address_family_cache(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 37. Core Cross-Framework UFCS Async Reactor & Backpressure Contract
+// ----------------------------------------------------------------------------
+fn wake_echo_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::EventLoop&) {
+    if tag == 8800 && (ev.events & core::POLL_WAKE) != 0 {
+        let _ = wing::defer_task(el, tag, 1, 7);
+    }
+}
+
+fn test_core_reactor_and_wake_contract(t: lit::T&) {
+    t.run("core::Poller Generic Reactor & POLL_WAKE Delivery") { sub =>
+        var cfg = internal::auto_transport_driver_config();
+        var poller = wing::new_poller(cfg);
+
+        sub.assert_true(core::reactor_register(poller, 71, 3001, core::PollInterest.Read, core::PollTrigger.Level), "reactor_register");
+        sub.assert_true(core::reactor_modify(poller, 71, 3001, core::PollInterest.ReadWrite, core::PollTrigger.Edge), "reactor_modify");
+        sub.assert_true(core::reactor_wake(poller, 4444), "reactor_wake 4444");
+        sub.assert_true(core::reactor_wake(poller, 4444), "reactor_wake dedups 4444");
+        sub.assert_true(core::reactor_add_timer(poller, 55, 10, 5555, false, 1000000), "reactor_add_timer");
+        let _ = wing::simulate_read_ready(poller, 71, 128);
+
+        var evs: core::PollReadyEvent[..64] = [];
+        let n = core::reactor_poll(poller, 0, 20000000, evs);
+        sub.assert_eq(n, 3, "Harvested wake + timer + socket read");
+        sub.assert_eq(evs[0].tag, 4444, "First event is wake tag 4444");
+        sub.assert_true((evs[0].events & core::POLL_WAKE) != 0, "Wake event has POLL_WAKE");
+        sub.assert_true(core::reactor_deregister(poller, 71), "reactor_deregister");
+        wing::close_poller(poller);
+    };
+
+    t.run("EventLoop::wake_tag & Stopped Guard") { sub =>
+        var cfg = internal::auto_transport_driver_config();
+        var el = wing::new_event_loop(cfg);
+        sub.assert_true(wing::wake_tag(el, 8800), "wake_tag queued on open loop");
+        let cnt = wing::run_loop_once(el, 0, 1000000, wake_echo_handler);
+        sub.assert_eq(cnt, 1, "1 wake event dispatched");
+        sub.assert_true(wing::has_deferred_tasks(el), "wake_echo_handler deferred follow-up task");
+        wing::close_event_loop(el);
+        sub.assert_false(wing::wake_tag(el, 8801), "wake_tag rejected on stopped loop");
+    };
+
+    t.run("core::stream_try_send/recv Backpressure & wing::TcpDialer") { sub =>
+        var pipe = core::new_pipe_buffer();
+        var rx: u8[16] = [0; 16];
+        let r0, e0 = core::stream_try_recv(pipe, rx[..]);
+        sub.assert_eq(r0, 0, "Empty pipe yields 0 bytes");
+        sub.assert_eq(e0, core::IoError.WouldBlock, "Empty open pipe yields WouldBlock");
+
+        let s1, se1 = core::stream_try_send(pipe, "ASYNC");
+        sub.assert_eq(s1, 5, "Sent 5 bytes");
+        sub.assert_eq(se1, core::IoError.None, "No error on send");
+
+        core::stream_close(pipe);
+        let r1, e1 = core::stream_try_recv(pipe, rx[..]);
+        sub.assert_eq(r1, 5, "Read buffered 5 bytes after close");
+        sub.assert_eq(e1, core::IoError.None, "No error while buffered bytes remain");
+
+        let r2, e2 = core::stream_try_recv(pipe, rx[..]);
+        sub.assert_eq(r2, 0, "0 bytes after drain");
+        sub.assert_eq(e2, core::IoError.Eof, "Closed drained pipe yields Eof");
+
+        var dialer = wing::TcpDialer { default_timeout_ms: 100 };
+        let fd, derr = core::reactor_dial(dialer, core::DialTarget { host: "", port: 0, .. });
+        sub.assert_eq(fd, -1, "Invalid dial target returns -1");
+        sub.assert_eq(derr, core::IoError.InvalidArgument, "Invalid dial target returns InvalidArgument");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Network Transport Drivers, Connection Pool, and Poller Suite", lit::Verbosity.Verbose);
 
@@ -2300,6 +2368,7 @@ fn main() {
     lit::run_case(runner, "34. DNS Name Decoding Length Overflow", test_dns_name_length_overflow);
     lit::run_case(runner, "35. Per-Group & Per-Proxy Socket Quotas + WantQueue Handoff", test_group_and_proxy_quotas_with_waiter_handoff);
     lit::run_case(runner, "36. HEv3 HTTPS/SVCB Metadata Extraction & AddressFamilyCache", test_hev3_https_svcb_and_address_family_cache);
+    lit::run_case(runner, "37. Core Cross-Framework UFCS Async Reactor & Backpressure Contract", test_core_reactor_and_wake_contract);
 
     let ok = lit::finish(runner);
     assert(ok);

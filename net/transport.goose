@@ -379,16 +379,18 @@ fn close(t: Transport&) {
     t = Transport.Disconnected;
 }
 
-// ---- Generic UFCS Stream Adapters (<Io>) -----------------------------------
+// ---- Zero-Shim TCP Dialer (<D>) Adapter ------------------------------------
 
-inline fn stream_send<Io>(io: Io&, data: const u8[:]) -> i32 {
-    return io.send(data);
+struct TcpDialer {
+    default_timeout_ms: u32 = 5000,
 }
 
-inline fn stream_recv<Io>(io: Io&, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
-    return io.recv_slice(dst, timeout_ms);
-}
-
-inline fn stream_close<Io>(io: Io&) {
-    io.close();
+fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i64 {
+    let timeout_ms: u32 = if target.timeout_ms > 0 { target.timeout_ms } else { d.default_timeout_ms };
+    let fd = tcp_connect(target.host, target.port, timeout_ms);
+    guard fd > 0 else { return -1; }
+    if target.non_blocking {
+        let _ = tcp_set_nonblocking(fd, true);
+    }
+    return fd;
 }

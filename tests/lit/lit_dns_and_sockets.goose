@@ -644,8 +644,8 @@ fn verify_iocomp_track_e(p_cfg: const internal::TransportDriverConfig&) {
     let _ = internal::rio_drain_completions(0, rio_res);
     rio_res.push(internal::RioResult { status: 0, bytes_transferred: 128, socket_context: 9001, request_context: 1 });
     var p_rio = wing::new_poller(p_cfg);
-    wing::register_socket(p_rio, 88, 9001, wing::PollInterest.Read, wing::PollTrigger.Level);
-    var rio_evs: wing::PollReadyEvent[..64] = [];
+    wing::register_socket(p_rio, 88, 9001, core::PollInterest.Read, core::PollTrigger.Level);
+    var rio_evs: core::PollReadyEvent[..64] = [];
     let mapped_rio = wing::rio_map_completions_to_events(p_rio, rio_res[..], rio_evs);
     assert(mapped_rio == 1 && rio_evs[0].fd == 88 && rio_evs[0].bytes_available == 128);
     wing::close_poller(p_rio);
@@ -775,12 +775,12 @@ fn run_05_verify_net_audit() {
     // F005: Poller coarse timeout preserved when out_events full, re-entrant defer_task, and bounded consume_read
     var p_cfg = internal::auto_transport_driver_config();
     var poller = wing::new_poller(p_cfg);
-    wing::register_socket(poller, 50, 7001, wing::PollInterest.Read, wing::PollTrigger.Level);
+    wing::register_socket(poller, 50, 7001, core::PollInterest.Read, core::PollTrigger.Level);
     wing::set_socket_timeout(poller, 50, 4);
-    var full_evs: wing::PollReadyEvent[..64] = [];
+    var full_evs: core::PollReadyEvent[..64] = [];
     let _ = wing::poll_events(poller, 0, 1000000000, full_evs);
     for _ in 64 {
-        full_evs.push(wing::PollReadyEvent { .. });
+        full_evs.push(core::PollReadyEvent { .. });
     }
     // Advance 5 seconds with full (64/64) event buffer: timeout must NOT be lost!
     let c_full = wing::check_coarse_timeouts(poller, 6000000000, full_evs);
@@ -789,7 +789,7 @@ fn run_05_verify_net_audit() {
     wing::close_poller(poller);
 
     var el = wing::new_event_loop(p_cfg);
-    let _ = wing::bind_connection(el, 30, 5001, wing::PollInterest.Read);
+    let _ = wing::bind_connection(el, 30, 5001, core::PollInterest.Read);
     let _ = wing::feed_read(el, 5001, "0123456789");
     var small_out: u8[..4] = [];
     let consumed1 = wing::consume_read(el, 5001, small_out);
@@ -898,13 +898,13 @@ fn run_05_verify_net_audit() {
     assert(dgram_rx_ok && dgram_out[..] == "quux");
 
     var p2 = wing::new_poller(p_cfg);
-    wing::register_socket(p2, 60, 8001, wing::PollInterest.Read, wing::PollTrigger.Level);
+    wing::register_socket(p2, 60, 8001, core::PollInterest.Read, core::PollTrigger.Level);
     assert(wing::find_by_tag(p2, 8001) >= 0);
     assert(wing::simulate_error(p2, 60));
     wing::close_poller(p2);
 
     var el2 = wing::new_event_loop(p_cfg);
-    let _ = wing::bind_connection(el2, 61, 8002, wing::PollInterest.Read);
+    let _ = wing::bind_connection(el2, 61, 8002, core::PollInterest.Read);
     assert(wing::set_connection_timeout(el2, 8002, 8));
     wing::close_event_loop(el2);
 
@@ -1292,16 +1292,16 @@ fn test_r008_poller_timer_tcp_and_drivers() {
     // 1. Edge-triggered Poller preserves unreported readiness bits
     var p_cfg = internal::auto_transport_driver_config();
     var p = wing::new_poller(p_cfg);
-    wing::register_socket(p, 10, 100, wing::PollInterest.Read, wing::PollTrigger.Edge);
+    wing::register_socket(p, 10, 100, core::PollInterest.Read, core::PollTrigger.Edge);
     let _ = wing::simulate_read_ready(p, 10, 64);
     let _ = wing::simulate_write_ready(p, 10);
-    var evs: wing::PollReadyEvent[..64] = [];
+    var evs: core::PollReadyEvent[..64] = [];
     let n1 = wing::poll_events(p, 0, 1000, evs);
-    assert(n1 == 1 && (evs[0].events & wing::POLL_READ) != 0 && (evs[0].events & wing::POLL_WRITE) == 0);
-    let _ = wing::modify_socket(p, 10, 100, wing::PollInterest.Write, wing::PollTrigger.Edge);
+    assert(n1 == 1 && (evs[0].events & core::POLL_READ) != 0 && (evs[0].events & core::POLL_WRITE) == 0);
+    let _ = wing::modify_socket(p, 10, 100, core::PollInterest.Write, core::PollTrigger.Edge);
     evs.clear();
     let n2 = wing::poll_events(p, 0, 2000, evs);
-    assert(n2 == 1 && (evs[0].events & wing::POLL_WRITE) != 0);
+    assert(n2 == 1 && (evs[0].events & core::POLL_WRITE) != 0);
     wing::close_poller(p);
 
     // 2. TickTimerWheel u32 addition wrap-around when current_tick + elapsed >= 2^32 (2^32 % 240 == 16 != 0)

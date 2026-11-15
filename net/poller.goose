@@ -22,55 +22,22 @@ const POLLER_MAX_TIMERS:        i64 = 64;
 const COARSE_TIMEOUT_GRANULARITY_NS: u64 = 4000000000; // 4 seconds per tick
 const COARSE_TIMEOUT_DISABLED:       u8  = 255;
 
-// ---- Readiness Event Flags & Types --------------------------------------
+// ---- Readiness Event Trigger Helpers ------------------------------------
 
-const POLL_NONE:   u32 = 0;
-const POLL_READ:   u32 = 1 << 0;  // Ready to read / incoming connection ready to accept
-const POLL_WRITE:  u32 = 1 << 1;  // Socket buffer space available for write
-const POLL_ERROR:  u32 = 1 << 2;  // Error condition on descriptor
-const POLL_HANGUP: u32 = 1 << 3;  // Connection terminated / remote EOF
-const POLL_TIMER:  u32 = 1 << 4;  // High-resolution timer or coarse socket timeout fired
-
-enum PollInterest {
-    None,
-    Read,
-    Write,
-    ReadWrite,
-}
-
-inline fn interest_to_poll_flags(i: PollInterest.None) -> u32 { return POLL_NONE; }
-inline fn interest_to_poll_flags(i: PollInterest.Read) -> u32 { return POLL_READ; }
-inline fn interest_to_poll_flags(i: PollInterest.Write) -> u32 { return POLL_WRITE; }
-inline fn interest_to_poll_flags(i: PollInterest.ReadWrite) -> u32 { return POLL_READ | POLL_WRITE; }
-
-enum PollTrigger {
-    Level, // Level-triggered: persists until condition drained
-    Edge,  // Edge-triggered: notified only on state transition (EPOLLET / EV_CLEAR)
-}
-
-inline fn apply_trigger_clear_mask(t: PollTrigger.Edge, sim: SimulatedReadyState&, triggered: u32) {
+inline fn apply_trigger_clear_mask(t: core::PollTrigger.Edge, sim: SimulatedReadyState&, triggered: u32) {
     sim.ready.clear_flag(triggered);
     sim.bytes = 0;
 }
 
-inline fn apply_trigger_clear_mask(t: PollTrigger.Level, sim: SimulatedReadyState&, triggered: u32) {
-    sim.ready.clear_flag(POLL_WRITE);
-}
-
-struct PollReadyEvent {
-    tag:             u64  = 0,
-    fd:              i32  = -1,
-    events:          u32  = POLL_NONE,
-    bytes_available: i64  = 0, // Exact unread bytes (from kqueue data / io_uring CQE)
-    is_eof:          bool = false,
-    is_timer:        bool = false,
+inline fn apply_trigger_clear_mask(t: core::PollTrigger.Level, sim: SimulatedReadyState&, triggered: u32) {
+    sim.ready.clear_flag(core::POLL_WRITE);
 }
 
 // ---- Socket Registration & Simulated State ------------------------------
 
 // Simulated readiness state for in-memory and testing multiplexing
 struct SimulatedReadyState {
-    ready: u32  = POLL_NONE,
+    ready: u32  = core::POLL_NONE,
     bytes: i64  = 0,
     eof:   bool = false,
 }
@@ -78,10 +45,10 @@ struct SimulatedReadyState {
 struct SocketRegistration {
     fd:            i32                 = -1,
     tag:           u64                 = 0,
-    interest:      PollInterest        = PollInterest.None,
-    trigger:       PollTrigger         = PollTrigger.Level,
+    interest:      core::PollInterest  = core::PollInterest.None,
+    trigger:       core::PollTrigger   = core::PollTrigger.Level,
     in_use:        bool                = false,
-    active_events: u32                 = POLL_NONE,
+    active_events: u32                 = core::POLL_NONE,
     timeout:       u8                  = COARSE_TIMEOUT_DISABLED, // 1-byte coarse timeout tick (0..239, 255 = none)
     sim:           SimulatedReadyState = SimulatedReadyState { .. },
 }
@@ -104,6 +71,7 @@ struct Poller {
     fd_index:                core::FlatIndexBucket[1024]     = [core::FlatIndexBucket { .. }; 1024],
     tag_index:               core::FlatIndexBucket[1024]     = [core::FlatIndexBucket { .. }; 1024],
     timers:                  PollerTimer[..64]               = [PollerTimer { .. }; 64],
+    wake_tags:               u64[..64]                       = [],
     active_fd_count:         u32                             = 0,
     active_timer_count:      u32                             = 0,
     total_polls:             u64                             = 0,
@@ -169,6 +137,7 @@ fn close_poller(p: Poller&) {
     for i in p.timers.len {
         p.timers[i].active = false;
     }
+    p.wake_tags.clear();
 
     p.active_fd_count = 0;
     p.active_timer_count = 0;
@@ -198,15 +167,15 @@ inline fn poller_bind_native_registration(
     p:        Poller&,
     fd:       i32,
     tag:      u64,
-    interest: PollInterest,
-    trigger:  PollTrigger,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger,
 ) {
     if p.kqueue_fd >= 0 {
         var ev = internal::Kevent { .. };
-        let edge = trigger == PollTrigger.Edge;
-        if interest == PollInterest.Read || interest == PollInterest.ReadWrite {
+        let edge = trigger == core::PollTrigger.Edge;
+        if interest == core::PollInterest.Read || interest == core::PollInterest.ReadWrite {
             internal::kevent_prep_read(ev, fd, tag, edge);
-        } else if interest == PollInterest.Write {
+        } else if interest == core::PollInterest.Write {
             internal::kevent_prep_write(ev, fd, tag, edge);
         }
     }
@@ -222,8 +191,8 @@ fn register_socket(
     p:        Poller&,
     fd:       i32,
     tag:      u64,
-    interest: PollInterest,
-    trigger:  PollTrigger = PollTrigger.Level,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger = core::PollTrigger.Level,
 ) -> bool {
     guard fd >= 0 else { return false; }
     let fd_probe = core::flat_index_get_or_put(p.fd_index[..], fd as u64);
@@ -236,9 +205,9 @@ fn register_socket(
             p.registrations[i].interest = interest;
             p.registrations[i].trigger = trigger;
             p.registrations[i].in_use = true;
-            p.registrations[i].active_events = POLL_NONE;
+            p.registrations[i].active_events = core::POLL_NONE;
             p.registrations[i].timeout = COARSE_TIMEOUT_DISABLED;
-            p.registrations[i].sim.ready = POLL_NONE;
+            p.registrations[i].sim.ready = core::POLL_NONE;
             p.registrations[i].sim.bytes = 0;
             p.registrations[i].sim.eof = false;
             p.active_fd_count += 1;
@@ -258,8 +227,8 @@ fn modify_socket(
     p:        Poller&,
     fd:       i32,
     tag:      u64,
-    interest: PollInterest,
-    trigger:  PollTrigger = PollTrigger.Level,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger = core::PollTrigger.Level,
 ) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
@@ -289,9 +258,9 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
     p.registrations[idx].in_use = false;
     p.registrations[idx].fd = -1;
     p.registrations[idx].tag = 0;
-    p.registrations[idx].interest = PollInterest.None;
+    p.registrations[idx].interest = core::PollInterest.None;
     p.registrations[idx].timeout = COARSE_TIMEOUT_DISABLED;
-    p.registrations[idx].sim.ready = POLL_NONE;
+    p.registrations[idx].sim.ready = core::POLL_NONE;
     if p.active_fd_count > 0 {
         p.active_fd_count -= 1;
     }
@@ -350,14 +319,14 @@ fn cancel_timer(p: Poller&, timer_id: u64) -> bool {
     return false;
 }
 
-fn check_expired_timers(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..64]&) -> i32 {
+fn check_expired_timers(p: Poller&, now_ns: u64, out_events: core::PollReadyEvent[..64]&) -> i32 {
     var fired_count: i32 = 0;
     for i in p.timers.len {
         guard p.timers[i].active && now_ns >= p.timers[i].deadline_ns else { continue; }
-        let ev = PollReadyEvent {
+        let ev = core::PollReadyEvent {
             tag:             p.timers[i].tag,
             fd:              -1,
-            events:          POLL_TIMER,
+            events:          core::POLL_TIMER,
             bytes_available: 0,
             is_eof:          false,
             is_timer:        true,
@@ -413,14 +382,14 @@ inline fn dispatch_expired_registration(
     reg:           SocketRegistration&,
     old_tick:      u64,
     elapsed_ticks: u64,
-    out_events:    PollReadyEvent[..64]&,
+    out_events:    core::PollReadyEvent[..64]&,
 ) -> bool {
     guard reg.in_use else { return false; }
     guard is_coarse_timeout_expired(reg.timeout, old_tick, elapsed_ticks) else { return false; }
-    guard out_events.try_push(PollReadyEvent {
+    guard out_events.try_push(core::PollReadyEvent {
         tag:             reg.tag,
         fd:              reg.fd,
-        events:          POLL_TIMER,
+        events:          core::POLL_TIMER,
         bytes_available: 0,
         is_eof:          false,
         is_timer:        true,
@@ -446,7 +415,7 @@ inline fn advance_coarse_clock(p: Poller&, now_ns: u64, old_tick: u64&, elapsed_
 }
 
 // Advances the coarse clock and dispatches expired coarse socket timeouts.
-fn check_coarse_timeouts(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..64]&) -> i32 {
+fn check_coarse_timeouts(p: Poller&, now_ns: u64, out_events: core::PollReadyEvent[..64]&) -> i32 {
     var old_tick:      u64 = 0;
     var elapsed_ticks: u64 = 0;
     guard advance_coarse_clock(p, now_ns, old_tick, elapsed_ticks) else { return 0; }
@@ -460,12 +429,43 @@ fn check_coarse_timeouts(p: Poller&, now_ns: u64, out_events: PollReadyEvent[..6
     return fired;
 }
 
-// ---- Simulated Events (Testing & In-Memory Multiplexing) -----------------
+// ---- Wake Notification & Simulated Events (Testing & In-Memory Multiplexing)
+
+// Queues a non-blocking wake notification for `tag` to be delivered as `POLL_WAKE`.
+fn wake_tag(p: Poller&, tag: u64) -> bool {
+    guard p.is_open else { return false; }
+    for existing in p.wake_tags {
+        if existing == tag {
+            return true;
+        }
+    }
+    return p.wake_tags.try_push(tag);
+}
+
+fn check_wake_events(p: Poller&, out_events: core::PollReadyEvent[..64]&) -> i32 {
+    guard p.wake_tags.len > 0 else { return 0; }
+    var emitted: i64 = 0;
+    for tag in p.wake_tags {
+        let ev = core::PollReadyEvent {
+            tag:             tag,
+            fd:              -1,
+            events:          core::POLL_WAKE,
+            bytes_available: 0,
+            is_eof:          false,
+            is_timer:        false,
+        };
+        guard out_events.try_push(ev) else { break; }
+        emitted = core::add_sat_i64(emitted, 1);
+        p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
+    }
+    p.wake_tags.compact_wire_buffer(emitted);
+    return (emitted & 0x7FFFFFFF) as i32;
+}
 
 fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(POLL_READ);
+    p.registrations[idx].sim.ready.set_flag(core::POLL_READ);
     p.registrations[idx].sim.bytes = bytes_avail;
     return true;
 }
@@ -473,21 +473,21 @@ fn simulate_read_ready(p: Poller&, fd: i32, bytes_avail: i64 = 0) -> bool {
 fn simulate_write_ready(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(POLL_WRITE);
+    p.registrations[idx].sim.ready.set_flag(core::POLL_WRITE);
     return true;
 }
 
 fn simulate_error(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(POLL_ERROR);
+    p.registrations[idx].sim.ready.set_flag(core::POLL_ERROR);
     return true;
 }
 
 fn simulate_hangup(p: Poller&, fd: i32) -> bool {
     let idx = find_registration(p, fd);
     guard idx >= 0 else { return false; }
-    p.registrations[idx].sim.ready.set_flag(POLL_HANGUP);
+    p.registrations[idx].sim.ready.set_flag(core::POLL_HANGUP);
     p.registrations[idx].sim.eof = true;
     return true;
 }
@@ -498,7 +498,7 @@ fn simulate_hangup(p: Poller&, fd: i32) -> bool {
 fn rio_map_completions_to_events(
     p:          Poller&,
     results:    const internal::RioResult[:],
-    out_events: PollReadyEvent[..64]&,
+    out_events: core::PollReadyEvent[..64]&,
 ) -> u64 {
     var added: u64 = 0;
     for res in results {
@@ -506,13 +506,13 @@ fn rio_map_completions_to_events(
         let reg_idx = find_by_tag(p, res.socket_context);
         let fd_val: i32 = if reg_idx >= 0 && reg_idx < p.registrations.len { p.registrations[reg_idx].fd } else { -1 };
         let ev_flags: u32 = if res.status != 0 {
-            POLL_ERROR
+            core::POLL_ERROR
         } else if res.bytes_transferred == 0 {
-            POLL_READ | POLL_HANGUP
+            core::POLL_READ | core::POLL_HANGUP
         } else {
-            POLL_READ
+            core::POLL_READ
         };
-        let _ = out_events.try_push(PollReadyEvent {
+        let _ = out_events.try_push(core::PollReadyEvent {
             tag:             res.socket_context,
             fd:              fd_val,
             events:          ev_flags,
@@ -526,7 +526,7 @@ fn rio_map_completions_to_events(
     return added;
 }
 
-inline fn poller_poll_native_drivers(p: Poller&, timeout_ms: i64, out_events: PollReadyEvent[..64]&) {
+inline fn poller_poll_native_drivers(p: Poller&, timeout_ms: i64, out_events: core::PollReadyEvent[..64]&) {
     if p.kqueue_fd >= 0 {
         internal::native_kqueue_kevent(p.kqueue_fd, 0, 0, 0, 64, timeout_ms * 1000000);
     } else if p.uring_ring_fd >= 0 {
@@ -546,23 +546,26 @@ fn poll_events(
     p:          Poller&,
     timeout_ms: i64,
     now_ns:     u64,
-    out_events: PollReadyEvent[..64]&,
+    out_events: core::PollReadyEvent[..64]&,
 ) -> i32 {
     out_events.clear();
     p.total_polls = core::add_sat_u64(p.total_polls, 1);
     poller_poll_native_drivers(p, timeout_ms, out_events);
+    check_wake_events(p, out_events);
     check_expired_timers(p, now_ns, out_events);
     check_coarse_timeouts(p, now_ns, out_events);
 
     for i in p.registrations.len {
         guard p.registrations[i].in_use else { continue; }
 
-        let interest_mask = interest_to_poll_flags(p.registrations[i].interest) | POLL_ERROR | POLL_HANGUP;
+        let interest_mask = core::interest_to_poll_flags(p.registrations[i].interest)
+            | core::POLL_ERROR
+            | core::POLL_HANGUP;
         let ready = p.registrations[i].sim.ready;
         let triggered: u32 = ready & interest_mask;
 
-        if triggered != POLL_NONE {
-            let ev = PollReadyEvent {
+        if triggered != core::POLL_NONE {
+            let ev = core::PollReadyEvent {
                 tag:             p.registrations[i].tag,
                 fd:              p.registrations[i].fd,
                 events:          triggered,

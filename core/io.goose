@@ -18,6 +18,7 @@ import std;
 import core.io.types;
 import core.io.ring;
 import core.io.pipe;
+import core.io.reactor;
 import core.io.cork;
 import core.io.vec;
 import core.io.page_ring;

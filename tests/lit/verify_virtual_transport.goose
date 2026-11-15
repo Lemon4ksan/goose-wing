@@ -15,19 +15,20 @@ struct CustomVsockTransport {
     closed:   bool             = false,
 }
 
-fn wing::send(v: CustomVsockTransport&, data: const u8[:]) -> i32 {
+fn core::send(v: CustomVsockTransport&, data: const u8[:]) -> i32 {
     guard !v.closed && data.len > 0 else { return -1; }
     let n, _ = core::write(v.loopback, data);
     return (n & 0x7FFFFFFF) as i32;
 }
 
-fn wing::recv_slice(v: CustomVsockTransport&, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+fn core::recv_slice(v: CustomVsockTransport&, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+    let _ = timeout_ms;
     guard !v.closed && dst.len > 0 else { return 0; }
     let n, _ = core::read(v.loopback, dst);
     return (n & 0x7FFFFFFF) as i32;
 }
 
-fn wing::close(v: CustomVsockTransport&) {
+fn core::close(v: CustomVsockTransport&) {
     core::clear(v.loopback);
     v.closed = true;
 }
@@ -62,14 +63,14 @@ fn test_virtual_pipe_pair_and_scoped_helper() {
     assert(!wing::is_connected(end_b));
 
     let ok_scoped = wing::with_virtual_pipe_pair() { pipe_a, pipe_b =>
-        let s1 = wing::stream_send(pipe_a, "SCOPED_FRAME");
+        let s1 = core::stream_send(pipe_a, "SCOPED_FRAME");
         assert(s1 == 12);
         var buf: u8[32] = [0; 32];
-        let r1 = wing::stream_recv(pipe_b, buf[..]);
+        let r1 = core::stream_recv(pipe_b, buf[..]);
         assert(r1 == 12);
         assert(buf[..12] == "SCOPED_FRAME");
-        wing::stream_close(pipe_a);
-        wing::stream_close(pipe_b);
+        core::stream_close(pipe_a);
+        core::stream_close(pipe_b);
     };
     assert(ok_scoped);
     print("VIRTUAL_PIPE_DUPLEX: OK");
@@ -155,25 +156,79 @@ fn test_tls13_over_virtual_pipe_fd() {
 fn test_custom_ufcs_stream_adapter() {
     var vsock = CustomVsockTransport { .. };
     let payload = "CUSTOM_AF_VSOCK_STREAM_FRAME";
-    let n_w = wing::stream_send(vsock, payload);
+    let n_w = core::stream_send(vsock, payload);
     assert(n_w == (payload.len as i32));
 
     var out: u8[64] = [0; 64];
-    let n_r = wing::stream_recv(vsock, out[..], 1000);
+    let n_r = core::stream_recv(vsock, out[..], 1000);
     assert(n_r == (payload.len as i32));
     assert(out[..n_r as i64] == payload);
 
-    wing::stream_close(vsock);
+    core::stream_close(vsock);
     assert(vsock.closed);
-    assert(wing::stream_recv(vsock, out[..], 1000) == 0);
+    assert(core::stream_recv(vsock, out[..], 1000) == 0);
     print("UFCS_CUSTOM_STREAM: OK");
+}
+
+fn test_core_reactor_and_backpressure_contract() {
+    // 1. RingBuffer <Io> backpressure: ShortWrite + WouldBlock + recv WouldBlock
+    var rb = core::RingBuffer { .. };
+    var rx: u8[16] = [0; 16];
+    let r_empty, err_empty = core::stream_try_recv(rb, rx[..]);
+    assert(r_empty == 0 && err_empty == core::IoError.WouldBlock);
+
+    var big: u8[4100] = [0x41; 4100];
+    let n_short, err_short = core::stream_try_send(rb, big[..]);
+    assert(n_short == 4096 && err_short == core::IoError.ShortWrite);
+
+    let n_full, err_full = core::stream_try_send(rb, "X");
+    assert(n_full == 0 && err_full == core::IoError.WouldBlock);
+
+    let r_ok, err_ok = core::stream_try_recv(rb, rx[..]);
+    assert(r_ok == 16 && err_ok == core::IoError.None && rx[0] == 0x41);
+    core::stream_close(rb);
+
+    // 2. PipeBuffer <Io> backpressure and EOF
+    var pipe = core::new_pipe_buffer();
+    let p_n1, p_e1 = core::stream_try_send(pipe, "PGWIRE");
+    assert(p_n1 == 6 && p_e1 == core::IoError.None);
+    var p_rx: u8[16] = [0; 16];
+    let p_r1, p_re1 = core::stream_try_recv(pipe, p_rx[..]);
+    assert(p_r1 == 6 && p_re1 == core::IoError.None && p_rx[..6] == "PGWIRE");
+    let p_r2, p_re2 = core::stream_try_recv(pipe, p_rx[..]);
+    assert(p_r2 == 0 && p_re2 == core::IoError.WouldBlock);
+    core::stream_close(pipe);
+    let p_r3, p_re3 = core::stream_try_recv(pipe, p_rx[..]);
+    assert(p_r3 == 0 && p_re3 == core::IoError.Eof);
+
+    // 3. Reactor <R> + Dialer <D> generic contract over wing::Poller & wing::TcpDialer
+    var dialer = wing::TcpDialer { .. };
+    let bad_fd, bad_err = core::reactor_dial(dialer, core::DialTarget { host: "", port: 0, .. });
+    assert(bad_fd == -1 && bad_err == core::IoError.InvalidArgument);
+
+    var cfg = internal::auto_transport_driver_config();
+    var p = wing::new_poller(cfg);
+    assert(core::reactor_register(p, 77, 4242, core::PollInterest.Read, core::PollTrigger.Edge));
+    assert(core::reactor_modify(p, 77, 4242, core::PollInterest.ReadWrite, core::PollTrigger.Edge));
+    assert(core::reactor_add_timer(p, 11, 25, 7777, false, 1000000));
+    assert(core::reactor_cancel_timer(p, 11));
+    assert(core::reactor_wake(p, 9999));
+
+    var evs: core::PollReadyEvent[..64] = [];
+    let nev = core::reactor_poll(p, 0, 50000000, evs);
+    assert(nev == 1 && evs[0].tag == 9999 && (evs[0].events & core::POLL_WAKE) != 0);
+    assert(core::reactor_deregister(p, 77));
+    wing::close_poller(p);
+    print("CORE_REACTOR_CONTRACT: OK");
 }
 
 // CHECK: VIRTUAL_PIPE_DUPLEX: OK
 // CHECK: TLS13_TUNNEL_IN_TUNNEL: OK
 // CHECK: UFCS_CUSTOM_STREAM: OK
+// CHECK: CORE_REACTOR_CONTRACT: OK
 fn main() {
     test_virtual_pipe_pair_and_scoped_helper();
     test_tls13_over_virtual_pipe_fd();
     test_custom_ufcs_stream_adapter();
+    test_core_reactor_and_backpressure_contract();
 }

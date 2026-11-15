@@ -11,7 +11,7 @@ path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices
 ```goose
 var poller = new_poller(internal::auto_transport_driver_config());
 let fd = tcp_connect("93.184.216.34", 80, 5000);
-register_socket(poller, fd as i32, PollInterest.ReadWrite, 1);
+register_socket(poller, fd as i32, 1, core::PollInterest.ReadWrite);
 tcp_close(fd);
 close_poller(poller);
 ```
@@ -94,19 +94,21 @@ increments `q.drops` and returns `false`.
 ### 4. Poller, Event Reactor & Driver Facade (`net/poller.goose`, `net/driver.goose`)
 
 ```goose
-enum PollInterest { None, Read, Write, ReadWrite }
-struct PollReadyEvent { fd: i32, tag: u64, readable: bool, writable: bool, is_error: bool }
 struct Poller { ... }
+struct TcpDialer { default_timeout_ms: u32 = 5000 }
 fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller
 fn close_poller(p: Poller&)
-fn register_socket(p: Poller&, fd: i32, interest: PollInterest, tag: u64 = 0) -> bool
-fn modify_socket(p: Poller&, fd: i32, interest: PollInterest) -> bool
+fn register_socket(p: Poller&, fd: i32, tag: u64, interest: core::PollInterest, trigger: core::PollTrigger = core::PollTrigger.Level) -> bool
+fn modify_socket(p: Poller&, fd: i32, tag: u64, interest: core::PollInterest, trigger: core::PollTrigger = core::PollTrigger.Level) -> bool
 fn deregister_socket(p: Poller&, fd: i32) -> bool
-fn poll_events(p: Poller&, timeout_ms: i32, out_events: PollReadyEvent[..64]&) -> i32
+fn wake_tag(p: Poller&, tag: u64) -> bool
+fn poll_events(p: Poller&, timeout_ms: i64, now_ns: u64, out_events: core::PollReadyEvent[..64]&) -> i32
+fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i64
 ```
 
 `Poller` multiplexes socket readiness across OS and kernel-bypass drivers
-configured in `net/driver.goose`. `poll_events` harvests up to 64 ready events
+configured in `net/driver.goose`, implementing the shared `core::Poll*` and
+`core::reactor_*` UFCS contract. `poll_events` harvests up to 64 ready events
 per call into `out_events`, preserving the caller's 64-bit `tag` for
 constant-time connection table lookup.
 
