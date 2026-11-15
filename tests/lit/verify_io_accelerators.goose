@@ -253,13 +253,75 @@ fn test_reactor_accelerated_and_fallback() {
     print("TASK4_REACTOR_ACCEL: OK");
 }
 
+fn test_l2_udp_codec_and_malformed_inputs() {
+    let src4 = internal::L2UdpEndpoint {
+        mac:     [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+        ip:      [10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        is_ipv6: false,
+        port:    54321,
+    };
+    let dst4 = internal::L2UdpEndpoint {
+        mac:     [0x02, 0x00, 0x00, 0x00, 0x00, 0x02],
+        ip:      [10, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        is_ipv6: false,
+        port:    443,
+    };
+
+    var frame4: u8[..2048] = [];
+    assert(internal::encode_l2_udp_frame(src4, dst4, "QUIC_PING", 0x1234, frame4));
+    let parsed4, ok4 = internal::decode_l2_udp_frame(frame4[..]);
+    assert(ok4 && parsed4.src.port == 54321 && parsed4.dst.port == 443);
+    assert(frame4[parsed4.payload_offset..parsed4.payload_offset + parsed4.payload_len] == "QUIC_PING");
+
+    // IPv6 roundtrip
+    var src6 = src4;
+    src6.is_ipv6 = true;
+    src6.ip[15] = 1;
+    var dst6 = dst4;
+    dst6.is_ipv6 = true;
+    dst6.ip[15] = 2;
+    var frame6: u8[..2048] = [];
+    assert(internal::encode_l2_udp_frame(src6, dst6, "H3_V6", 0, frame6));
+    let parsed6, ok6 = internal::decode_l2_udp_frame(frame6[..]);
+    assert(ok6 && parsed6.src.is_ipv6 && parsed6.dst.is_ipv6);
+    assert(frame6[parsed6.payload_offset..parsed6.payload_offset + parsed6.payload_len] == "H3_V6");
+
+    // Review Focus #3: reject IPv4 MF fragment, corrupted IPv4/UDP checksum, and truncated UDP length
+    var frag_frame: u8[..2048] = [];
+    let _ = frag_frame.try_set(frame4[..]);
+    frag_frame[20] = 0x20;
+    let _, ok_frag = internal::decode_l2_udp_frame(frag_frame[..]);
+    assert(!ok_frag);
+
+    var bad_csum: u8[..2048] = [];
+    let _ = bad_csum.try_set(frame4[..]);
+    bad_csum[24] ^= 0xFF;
+    let _, ok_csum = internal::decode_l2_udp_frame(bad_csum[..]);
+    assert(!ok_csum);
+
+    var bad_udp_csum: u8[..2048] = [];
+    let _ = bad_udp_csum.try_set(frame6[..]);
+    bad_udp_csum[frame6.len - 1] ^= 0x01;
+    let _, ok_ucsum = internal::decode_l2_udp_frame(bad_udp_csum[..]);
+    assert(!ok_ucsum);
+
+    let _, ok_trunc = internal::decode_l2_udp_frame(frame4[..frame4.len - 3]);
+    assert(!ok_trunc);
+
+    // Transactional out_frame hygiene on mismatched address family
+    assert(!internal::encode_l2_udp_frame(src4, dst6, "BAD", 0, frame4) && frame4.len == 0);
+    print("TASK5_L2_CODEC: OK");
+}
+
 // CHECK: TASK1_DRIVER_ABIS: OK
 // CHECK: TASK2_TLS_SLICE_AND_KTLS: OK
 // CHECK: TASK3_POLLER_LIVE: OK
 // CHECK: TASK4_REACTOR_ACCEL: OK
+// CHECK: TASK5_L2_CODEC: OK
 fn main() {
     test_driver_slice_abis();
     test_tls_slice_codecs_and_ktls_probe();
     test_poller_live_socket_and_synthetic_fds();
     test_reactor_accelerated_and_fallback();
+    test_l2_udp_codec_and_malformed_inputs();
 }
