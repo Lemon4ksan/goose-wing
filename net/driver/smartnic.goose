@@ -11,8 +11,11 @@ import net.driver.types;
 
 // Native C bindings from shim/smartnic.c
 extern fn native_smartnic_probe() -> i32 = "wing_smartnic_probe";
+extern fn native_smartnic_probe_ktls() -> i32 = "wing_smartnic_probe_ktls";
 extern fn native_smartnic_enable_ktls(fd: i64) -> i32 = "wing_smartnic_enable_ktls";
 extern fn native_smartnic_abort_ktls(fd: i64) = "wing_smartnic_abort_ktls";
+extern fn native_smartnic_recv_record(fd: i64, dst: u8[:], out_rt: u8[:]) -> i32 = "wing_smartnic_recv_record";
+extern fn native_smartnic_send_record(fd: i64, src: const u8[:], record_type: u8) -> i32 = "wing_smartnic_send_record";
 extern fn wing_smartnic_set_hardware_tls_tx(
     fd:      i64, version: u16, cipher_type: u16,
     key:     const u8[:],
@@ -30,6 +33,7 @@ extern fn wing_smartnic_set_hardware_tls_rx(
 
 enum SmartNicModel {
     Generic,
+    LinuxKtls,
     MellanoxConnectX6Dx,
     MellanoxConnectX7Dx,
     NvidiaBlueField2,
@@ -40,12 +44,29 @@ enum SmartNicModel {
 fn smartnic_model_name(m: SmartNicModel) -> const u8[:] {
     return match m {
         Generic => "Generic SmartNIC / kTLS Host",
+        LinuxKtls => "Linux Kernel TLS (SOL_TLS / TCP_ULP)",
         MellanoxConnectX6Dx => "Mellanox ConnectX-6 Dx (100GbE / kTLS Inline)",
         MellanoxConnectX7Dx => "Mellanox ConnectX-7 Dx (200/400GbE / kTLS Inline)",
         NvidiaBlueField2 => "NVIDIA BlueField-2 DPU (Dual 100GbE / Full Offload)",
         NvidiaBlueField3 => "NVIDIA BlueField-3 DPU (400GbE / Full Offload)",
         IntelMountEvans => "Intel Mount Evans IPU (200GbE / Infrastructure)",
     };
+}
+
+fn smartnic_probe_ktls() -> bool {
+    return native_smartnic_probe_ktls() > 0;
+}
+
+fn smartnic_recv_record(fd: i64, dst: u8[:]) -> i32, u8 {
+    guard fd > 0 && dst.len > 0 else { return -22, 0; }
+    var rt_buf: u8[1] = [0];
+    let n = native_smartnic_recv_record(fd, dst, rt_buf[..]);
+    return n, rt_buf[0];
+}
+
+fn smartnic_send_record(fd: i64, src: const u8[:], record_type: u8) -> i32 {
+    guard fd > 0 && src.len > 0 else { return -22; }
+    return native_smartnic_send_record(fd, src, record_type);
 }
 
 enum SmartNicCipherSuite {

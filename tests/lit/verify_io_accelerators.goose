@@ -82,7 +82,67 @@ fn test_driver_slice_abis() {
     print("TASK1_DRIVER_ABIS: OK");
 }
 
+fn test_tls_slice_codecs_and_ktls_probe() {
+    assert(internal::smartnic_model_name(internal::SmartNicModel.LinuxKtls).len > 0);
+    let _ = internal::smartnic_probe_ktls();
+    var dummy_rx: u8[16] = [0; 16];
+    let bad_rx, bad_rt = internal::smartnic_recv_record(-1, dummy_rx[..]);
+    assert(bad_rx < 0 && bad_rt == 0);
+    assert(internal::smartnic_send_record(-1, "PING", rfc::TLS_CONTENT_APPLICATION_DATA) < 0);
+
+    let slot_s = wing::alloc_tls_cipher_slot();
+    let slot_c = wing::alloc_tls_cipher_slot();
+    assert(slot_s != 0xFFFF && slot_c != 0xFFFF);
+    let key: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    let iv:  u8[12] = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2];
+    wing::tls_init_cipher_slot_for_test(
+        slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, key[..], iv,
+    );
+    wing::tls_init_cipher_slot_for_test(
+        slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, key[..], iv,
+    );
+
+    // 1. App data roundtrip in memory
+    var wire_buf: u8[..2048] = [];
+    assert(wing::tls_cipher_slot_seal_app_data(slot_c, "GET / HTTP/1.1\r\n\r\n", wire_buf));
+    var plain_out: u8[..2048] = [];
+    let cons1, st1 = wing::tls_cipher_slot_unseal_records(slot_s, wire_buf[..10], plain_out);
+    assert(cons1 == 0 && st1 == wing::TlsSliceUnsealStatus.NeedMore && plain_out.len == 0);
+    let cons2, st2 = wing::tls_cipher_slot_unseal_records(slot_s, wire_buf[..], plain_out);
+    assert(cons2 == wire_buf.len && st2 == wing::TlsSliceUnsealStatus.Ok);
+    assert(plain_out[..] == "GET / HTTP/1.1\r\n\r\n");
+
+    // 2. Review Focus #4: Post-handshake NewSessionTicket (0x04 inside 0x16) skipped, close_notify (0x15) closes
+    var nst_msg: u8[8]  = [4, 0, 0, 4, 0, 0, 0, 1];
+    var nst_rec: u8[64] = [0; 64];
+    let nst_len, _, ok_nst = wing::tls_record_seal_into(
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, 1, rfc::TLS_CONTENT_HANDSHAKE, nst_msg[..], nst_rec[..],
+    );
+    assert(ok_nst);
+    plain_out.clear();
+    let cons_nst, st_nst = wing::tls_cipher_slot_unseal_records(slot_s, nst_rec[..nst_len], plain_out);
+    assert(cons_nst == nst_len && st_nst == wing::TlsSliceUnsealStatus.ControlHandled && plain_out.len == 0);
+
+    var alert_msg: u8[2]  = [1, 0];
+    var alert_rec: u8[64] = [0; 64];
+    let al_len, _, ok_al = wing::tls_record_seal_into(
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, 2, rfc::TLS_CONTENT_ALERT, alert_msg[..], alert_rec[..],
+    );
+    assert(ok_al);
+    let cons_al, st_al = wing::tls_cipher_slot_unseal_records(slot_s, alert_rec[..al_len], plain_out);
+    assert(cons_al == al_len && st_al == wing::TlsSliceUnsealStatus.Closed);
+
+    let _, ktls_bad = wing::tls_try_enable_ktls(slot_s, -1);
+    assert(!ktls_bad);
+
+    wing::free_tls_cipher_slot(slot_s);
+    wing::free_tls_cipher_slot(slot_c);
+    print("TASK2_TLS_SLICE_AND_KTLS: OK");
+}
+
 // CHECK: TASK1_DRIVER_ABIS: OK
+// CHECK: TASK2_TLS_SLICE_AND_KTLS: OK
 fn main() {
     test_driver_slice_abis();
+    test_tls_slice_codecs_and_ktls_probe();
 }

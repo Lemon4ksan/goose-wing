@@ -21,6 +21,7 @@ import .cert_compression;
 import .ech;
 import net.tcp;
 import net.transport;
+import net.driver.smartnic;
 
 // ---- Streaming TLS 1.3 Transcript Hash Context (RFC 8446 §4.4.1) ----------
 
@@ -116,11 +117,21 @@ fn tls_random_bytes_32() -> u8[32] {
 
 // ---- Global Static Cipher Slot Table (Zero-Allocation POD) ----------------
 
-const MAX_TLS_CIPHER_SLOTS: i64 = 64;
+const MAX_TLS_CIPHER_SLOTS: i64 = 256;
+
+enum TlsSliceUnsealStatus {
+    Ok,
+    NeedMore,
+    Closed,
+    ControlHandled,
+    Error,
+}
 
 struct TlsCipherSlot {
     in_use:             bool               = false,
     is_server:          bool               = false,
+    ktls_tx_active:     bool               = false,
+    ktls_rx_active:     bool               = false,
     cipher_suite:       u16                = 0,
     hash_id:            u8                 = 1,
     hash_len:           u8                 = 32,
@@ -149,7 +160,7 @@ struct TlsCipherSlot {
     ticket_cache:       SessionTicketCache = SessionTicketCache { .. },
 }
 
-var g_tls_cipher_slots: TlsCipherSlot[64] = [TlsCipherSlot { .. }; 64];
+var g_tls_cipher_slots: TlsCipherSlot[256] = [TlsCipherSlot { .. }; 256];
 
 // Returns the ALPN protocol negotiated on a cipher slot (empty if none).
 inline fn tls_session_alpn(slot_idx: u16) -> const u8[:] {
@@ -172,6 +183,8 @@ fn alloc_tls_cipher_slot() -> u16 {
         if !slot.in_use {
             slot.in_use = true;
             slot.is_server = false;
+            slot.ktls_tx_active = false;
+            slot.ktls_rx_active = false;
             slot.cipher_suite = 0;
             slot.hash_id = 1;
             slot.hash_len = 32;
@@ -221,7 +234,281 @@ fn free_tls_cipher_slot(slot_idx: u16) {
     g_tls_cipher_slots[idx].san_hosts.clear();
     g_tls_cipher_slots[idx].rx_plain_buf.clear();
     g_tls_cipher_slots[idx].rx_plain_pos = 0;
+    g_tls_cipher_slots[idx].ktls_tx_active = false;
+    g_tls_cipher_slots[idx].ktls_rx_active = false;
     g_tls_cipher_slots[idx].in_use = false;
+}
+
+fn tls_init_cipher_slot_for_test(
+    slot_idx:     u16,
+    cipher_suite: u16,
+    tx_key:       const u8[:],
+    tx_iv:        const u8[12]&,
+    rx_key:       const u8[:],
+    rx_iv:        const u8[12]&,
+) {
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return; }
+    let slot .= g_tls_cipher_slots[idx];
+    let klen: i64 = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 ||
+        cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
+        32
+    } else {
+        16
+    };
+    guard tx_key.len >= klen && rx_key.len >= klen else { return; }
+    slot.cipher_suite = cipher_suite;
+    slot.key_len = klen as u16;
+    slot.hash_id = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        internal::HASH_SHA384
+    } else {
+        internal::HASH_SHA256
+    };
+    slot.hash_len = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 { 48 } else { 32 };
+    slot.ktls_tx_active = false;
+    slot.ktls_rx_active = false;
+    slot.peer_closed = false;
+    slot.tx_seq = 0;
+    slot.rx_seq = 0;
+    for i in klen { slot.tx_key[i] = tx_key[i]; }
+    tls_prepare_cipher_aes_key(cipher_suite, tx_key[..klen], slot.tx_aes_key);
+    for i in 12 { slot.tx_iv[i] = tx_iv[i]; }
+    for i in klen { slot.rx_key[i] = rx_key[i]; }
+    tls_prepare_cipher_aes_key(cipher_suite, rx_key[..klen], slot.rx_aes_key);
+    for i in 12 { slot.rx_iv[i] = rx_iv[i]; }
+}
+
+fn tls_try_enable_ktls(slot_idx: u16, fd: i64) -> internal::SmartNicSession, bool {
+    guard fd > 0 && !is_virtual_pipe_fd(fd) else {
+        return internal::new_smartnic_session(fd), false;
+    }
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else {
+        return internal::new_smartnic_session(fd), false;
+    }
+    let slot .= g_tls_cipher_slots[idx];
+    guard slot.in_use && !slot.peer_closed && slot.rx_plain_pos >= slot.rx_plain_buf.len else {
+        return internal::new_smartnic_session(fd), false;
+    }
+    var nic_cipher = internal::SmartNicCipherSuite.AesGcm128;
+    if slot.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
+        nic_cipher = internal::SmartNicCipherSuite.AesGcm128;
+    } else if slot.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        nic_cipher = internal::SmartNicCipherSuite.AesGcm256;
+    } else {
+        return internal::new_smartnic_session(fd), false;
+    }
+    let klen = slot.key_len as i64;
+    var tx_seq_be: u8[8] = [0; 8];
+    var rx_seq_be: u8[8] = [0; 8];
+    core::write_be_u64_at(tx_seq_be[..], 0, slot.tx_seq);
+    core::write_be_u64_at(rx_seq_be[..], 0, slot.rx_seq);
+    defer core::secure_zeroize_slice(tx_seq_be[..]);
+    defer core::secure_zeroize_slice(rx_seq_be[..]);
+
+    let sess, err = internal::smartnic_attach_hardware_tls(
+        fd,
+        nic_cipher,
+        slot.tx_key[..klen],
+        slot.tx_iv[4..12],
+        slot.tx_iv[0..4],
+        tx_seq_be[..],
+        slot.rx_key[..klen],
+        slot.rx_iv[4..12],
+        slot.rx_iv[0..4],
+        rx_seq_be[..],
+    );
+    guard err == 0 && sess.ktls_active else { return sess, false; }
+    slot.ktls_tx_active = sess.tx_offloaded;
+    slot.ktls_rx_active = sess.rx_offloaded;
+    return sess, true;
+}
+
+inline fn inspect_unsealed_handshake_control(hs_bytes: const u8[:]) -> TlsSliceUnsealStatus {
+    guard hs_bytes.len >= 4 else { return TlsSliceUnsealStatus.Error; }
+    var rem = hs_bytes;
+    while rem.len > 0 {
+        guard rem.len >= 4 else { return TlsSliceUnsealStatus.Error; }
+        let msg_type, msg_len, ok_m = parse_handshake_header(rem);
+        guard ok_m else { return TlsSliceUnsealStatus.Error; }
+        let full_len = core::add_sat_i64(4, msg_len);
+        guard rem.len >= full_len else { return TlsSliceUnsealStatus.Error; }
+        if msg_type == rfc::TLS_HS_KEY_UPDATE {
+            return TlsSliceUnsealStatus.Closed;
+        }
+        guard msg_type == rfc::TLS_HS_NEW_SESSION_TICKET else {
+            return TlsSliceUnsealStatus.Error;
+        }
+        rem = rem[full_len..];
+    }
+    return TlsSliceUnsealStatus.ControlHandled;
+}
+
+inline fn unseal_single_slot_record<B>(
+    slot:      TlsCipherSlot&,
+    rec_hdr:   const u8[:],
+    rec_body:  const u8[:],
+    scratch:   u8[:],
+    out_plain: B&,
+) -> TlsSliceUnsealStatus {
+    let klen = slot.key_len as i64;
+    let dec_len, inner_type, _, ok_dec = tls_record_decrypt_prepared_into(
+        slot.cipher_suite,
+        slot.rx_key[..klen],
+        slot.rx_aes_key,
+        slot.rx_iv,
+        slot.rx_seq,
+        rec_hdr,
+        rec_body,
+        scratch[..rec_body.len],
+    );
+    guard ok_dec else { return TlsSliceUnsealStatus.Error; }
+    increment_record_seq_num(slot.rx_seq);
+
+    if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA {
+        guard out_plain.try_append(scratch[..dec_len]) else { return TlsSliceUnsealStatus.Error; }
+        on_key_update_app_data(slot.key_update_tracker);
+        return TlsSliceUnsealStatus.Ok;
+    }
+    if inner_type == rfc::TLS_CONTENT_ALERT {
+        let _, alert_code, _, ok_a = parse_tls_alert_message(scratch[..dec_len]);
+        if ok_a && alert_code == TlsAlert.CloseNotify {
+            slot.peer_closed = true;
+            return TlsSliceUnsealStatus.Closed;
+        }
+        return TlsSliceUnsealStatus.Error;
+    }
+    if inner_type == rfc::TLS_CONTENT_HANDSHAKE {
+        let hs_st = inspect_unsealed_handshake_control(scratch[..dec_len]);
+        if hs_st == TlsSliceUnsealStatus.Closed {
+            slot.peer_closed = true;
+        }
+        return hs_st;
+    }
+    return TlsSliceUnsealStatus.Error;
+}
+
+inline fn peek_ciphertext_record_len(rem: const u8[:]) -> i64, TlsSliceUnsealStatus {
+    if rem.len < rfc::TLS_RECORD_HEADER_LEN {
+        return 0, TlsSliceUnsealStatus.NeedMore;
+    }
+    let ct, _, rec_len_u16, _, ok_hdr = parse_tls_record_header(rem[..rfc::TLS_RECORD_HEADER_LEN]);
+    let rec_len = rec_len_u16 as i64;
+    guard ok_hdr && ct == rfc::TLS_CONTENT_APPLICATION_DATA &&
+        rec_len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
+        return 0, TlsSliceUnsealStatus.Error;
+    }
+    let total_rec = core::add_sat_i64(rfc::TLS_RECORD_HEADER_LEN, rec_len);
+    if rem.len < total_rec {
+        return 0, TlsSliceUnsealStatus.NeedMore;
+    }
+    return total_rec, TlsSliceUnsealStatus.Ok;
+}
+
+inline fn consume_next_ciphertext_record<B>(
+    slot:      TlsCipherSlot&,
+    rem:       const u8[:],
+    scratch:   u8[:],
+    out_plain: B&,
+) -> i64, TlsSliceUnsealStatus {
+    let total_rec, hdr_st = peek_ciphertext_record_len(rem);
+    guard hdr_st == TlsSliceUnsealStatus.Ok else { return 0, hdr_st; }
+    let rec_slice = rem[..total_rec];
+    let st = unseal_single_slot_record(
+        slot,
+        rec_slice[..rfc::TLS_RECORD_HEADER_LEN],
+        rec_slice[rfc::TLS_RECORD_HEADER_LEN..],
+        scratch,
+        out_plain,
+    );
+    return total_rec, st;
+}
+
+// Decrypts complete TLS 1.3 records from `cipher_in` into `out_plain` (RFC 8446 Section 5.2).
+// Leaves trailing incomplete record bytes unconsumed so reactor buffers can compact them.
+//
+// Example:
+//   cipher_in = <40-byte sealed "GET / HTTP/1.1\r\n\r\n" record>
+//   returns: consumed = 40, status = TlsSliceUnsealStatus.Ok, out_plain = "GET / HTTP/1.1\r\n\r\n"
+fn tls_cipher_slot_unseal_records<B>(
+    slot_idx:  u16,
+    cipher_in: const u8[:],
+    out_plain: B&,
+) -> i64, TlsSliceUnsealStatus {
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else {
+        return 0, TlsSliceUnsealStatus.Error;
+    }
+    let slot .= g_tls_cipher_slots[idx];
+    if slot.peer_closed { return 0, TlsSliceUnsealStatus.Closed; }
+
+    let saved_len = out_plain.len;
+    var scratch: u8[16640] = [0; 16640];
+    defer core::secure_zeroize_slice(scratch[..]);
+
+    var rem = cipher_in;
+    var consumed: i64 = 0;
+    var final_status = TlsSliceUnsealStatus.ControlHandled;
+    while rem.len > 0 {
+        let total_rec, st = consume_next_ciphertext_record(slot, rem, scratch[..], out_plain);
+        if st == TlsSliceUnsealStatus.NeedMore { break; }
+        if st == TlsSliceUnsealStatus.Error {
+            out_plain.resize(saved_len);
+            return 0, TlsSliceUnsealStatus.Error;
+        }
+        consumed = core::add_sat_i64(consumed, total_rec);
+        rem = rem[total_rec..];
+        if st == TlsSliceUnsealStatus.Closed { return consumed, TlsSliceUnsealStatus.Closed; }
+        if st == TlsSliceUnsealStatus.Ok { final_status = TlsSliceUnsealStatus.Ok; }
+    }
+
+    if consumed == 0 { return 0, TlsSliceUnsealStatus.NeedMore; }
+    return consumed, final_status;
+}
+
+fn tls_cipher_slot_seal_app_data<B>(
+    slot_idx:   u16,
+    plain_in:   const u8[:],
+    out_cipher: B&,
+) -> bool {
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return false; }
+    let slot .= g_tls_cipher_slots[idx];
+    guard slot.in_use && !slot.peer_closed else { return false; }
+    if plain_in.len == 0 { return true; }
+
+    let saved_len = out_cipher.len;
+    let saved_seq = slot.tx_seq;
+    var committed = false;
+    defer if !committed {
+        out_cipher.resize(saved_len);
+        slot.tx_seq = saved_seq;
+    };
+
+    var rec_buf: u8[16645] = [0; 16645];
+    let klen = slot.key_len as i64;
+    var rem = plain_in;
+    while rem.len > 0 {
+        let chunk_len = min(rem.len, rfc::TLS_MAX_RECORD_PLAINTEXT_LEN);
+        let sealed_len, _, ok_seal = tls_record_seal_prepared_into(
+            slot.cipher_suite,
+            slot.tx_key[..klen],
+            slot.tx_aes_key,
+            slot.tx_iv,
+            slot.tx_seq,
+            rfc::TLS_CONTENT_APPLICATION_DATA,
+            rem[..chunk_len],
+            rec_buf[..],
+        );
+        guard ok_seal && sealed_len > 0 && out_cipher.try_append(rec_buf[..sealed_len]) else {
+            return false;
+        }
+        increment_record_seq_num(slot.tx_seq);
+        rem = rem[chunk_len..];
+    }
+    on_key_update_app_data(slot.key_update_tracker);
+    committed = true;
+    return true;
 }
 
 // Extracts DNS SubjectAltName entries from a DER X.509 certificate into `g_tls_cipher_slots[slot_idx].san_hosts`.
@@ -678,7 +965,11 @@ fn tls_transport_close(fd: i64, slot_idx: u16) {
             g_tls_cipher_slots[idx].in_use && !g_tls_cipher_slots[idx].peer_closed;
         if valid_slot {
             let alert_data: u8[2] = [1, 0];
-            tls_send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_ALERT, alert_data[..]);
+            if g_tls_cipher_slots[idx].ktls_tx_active {
+                let _ = internal::smartnic_send_record(fd, alert_data[..], rfc::TLS_CONTENT_ALERT);
+            } else {
+                tls_send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_ALERT, alert_data[..]);
+            }
         }
         if is_virtual_pipe_fd(fd) {
             virtual_fd_close(fd);

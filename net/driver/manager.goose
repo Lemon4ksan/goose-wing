@@ -86,6 +86,9 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
         if res.available {
             res.capabilities = CAP_RING_COMPLETION | CAP_ZERO_COPY | CAP_BATCH_IO |
                 CAP_DIRECT_DESCRIPTORS | CAP_MULTISHOT_RECV;
+            if host != TargetPlatform.Linux || smartnic_probe_ktls() {
+                res.capabilities |= CAP_NIC_TLS_OFFLOAD;
+            }
             let _ = res.reason.try_set("Linux io_uring active via kernel submission/completion ring queues");
         } else {
             res.capabilities = CAP_NONE;
