@@ -8,13 +8,19 @@ namespace wing;
 import std;
 import core from "..";
 import json;
-import cookie.policy;
 import http.priority;
 import http.incremental;
 import http.trace;
-import client.response;
+import .response;
 
 // ---- request & query item models -------------------------------------------
+
+struct SiteForCookies {
+    scheme:             u8[..16]  = [],
+    registrable_domain: u8[..256] = [],
+    schemefully_same:   bool      = true,
+    is_null:            bool      = false,
+}
 
 struct QueryItem {
     key:   u8[..64]  = [],

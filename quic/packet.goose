@@ -4,31 +4,10 @@
 // QUIC Transport Framing, Packet Headers, Header Protection & Stream Reassembly (RFC 9000, RFC 9001).
 // Implements VarInt codecs, Long/Short header parsers, AES/ChaCha Header Protection,
 // packet number reconstruction, path anti-amplification 3x limits, and zero-heap reassembler.
-namespace internal;
+namespace quic_internal;
 
 import std;
 import core from "..";
-
-// ---- Initial Salts & HKDF Label Prefixes (RFC 9001 §5.2, RFC 9369 §3.3) --
-
-// Selects the Initial salt for a QUIC version; empty for unknown versions.
-//
-// Example:
-//   version = 0x6b3343cf -> 20-byte v2 salt, ok via non-empty slice
-//   version = 0x0a0a0a0a -> empty slice
-fn quic_initial_salt(version: u32) -> const u8[:] {
-    if version == rfc::QUIC_VERSION_1 { return rfc::QUIC_V1_INITIAL_SALT[..]; }
-    if version == rfc::QUIC_VERSION_2 { return rfc::QUIC_V2_INITIAL_SALT[..]; }
-    return "";
-}
-
-// Returns the HKDF label prefix for a QUIC version: "quic " (v1) or
-// "quicv2 " (v2, RFC 9369 §3.3.2); empty for unknown versions.
-fn quic_hkdf_label_prefix(version: u32) -> const u8[:] {
-    if version == rfc::QUIC_VERSION_1 { return "quic "; }
-    if version == rfc::QUIC_VERSION_2 { return "quicv2 "; }
-    return "";
-}
 
 // ---- Variable-Length Integer Codec (RFC 9000 Section 16) -----------------
 

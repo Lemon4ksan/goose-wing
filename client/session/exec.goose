@@ -10,9 +10,9 @@ import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
 import cookie.engine;
-import client.profile;
-import client.request;
-import client.response;
+import fingerprint.profile;
+import http.request;
+import http.response;
 import client.redirect;
 import client.interceptor;
 import client.telemetry;
@@ -34,13 +34,14 @@ import client.session.ssrf;
 import client.session.mock;
 import client.client;
 import client.session.cookie_bridge;
-import client.session.h1_exchange;
+import wire.h1_exchange;
 import net.pool;
 import net.isolation;
 import net.proxy;
 import dns.cache;
 import net.happy_eyeballs;
 import net.retry;
+import net.transport;
 import http2.framing;
 import http2.hpack;
 import http3.framing;
@@ -838,6 +839,55 @@ fn resolve_and_validate_live_host(
     return Error { .. };
 }
 
+fn dial_proxy_hop(
+    dialer:      TcpDialer&,
+    proxy_url:   const u8[:],
+    ps:          const ProxyServer&,
+    host_str:    const u8[:],
+    port_num:    u16,
+    candidates:  const DnsCandidate[:],
+    eff_timeout: u32,
+    out_ip:      u8[..64]&,
+) -> i64, Error {
+    let target = core::DialTarget { host: ps.host[..], port: ps.port, timeout_ms: eff_timeout, .. };
+    let sock, _ = core::reactor_dial(dialer, target);
+    guard sock > 0 else { return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed"); }
+    var proxy_ready = false;
+    defer if !proxy_ready { native_tcp_close(sock); };
+    let p_url = core::new_url(proxy_url);
+    let p_user = p_url.username();
+    let p_pass = p_url.password();
+    if ps.scheme == ProxyScheme.Socks5 || ps.scheme == ProxyScheme.Socks5h {
+        let use_ip = ps.scheme == ProxyScheme.Socks5 && candidates.len > 0;
+        let t_host = if use_ip { candidates[0].ip[..] } else { host_str };
+        let s_err = socks5_client_handshake(sock, ps.scheme, t_host, port_num, p_user, p_pass, eff_timeout);
+        guard s_err == Socks5Error.None else {
+            return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "SOCKS5 handshake failed");
+        }
+    } else {
+        var proxy_auth: u8[..256] = [];
+        if p_user.len > 0 {
+            var cred_raw: u8[..160] = [];
+            format(cred_raw, p_user, ":", p_pass);
+            var cred_b64: u8[..224] = [];
+            core::base64_encode(cred_raw[..], cred_b64);
+            core::secure_zeroize_slice(cred_raw[..]);
+            format(proxy_auth, "Basic ", cred_b64[..]);
+            core::secure_zeroize_slice(cred_b64[..]);
+        }
+        let c_err = http_connect_client_handshake(
+            sock, host_str, port_num, proxy_auth[..], "goose-wing/1.0", eff_timeout,
+        );
+        core::secure_zeroize_slice(proxy_auth[..]);
+        guard c_err == ConnectTunnelError.None else {
+            return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
+        }
+    }
+    proxy_ready = true;
+    let _ = out_ip.try_set(ps.host[..]);
+    return sock, Error { .. };
+}
+
 fn dial_live_tcp_or_proxy(
     proxy_url:   const u8[:],
     proxy_chain: const ProxyChain&,
@@ -849,49 +899,17 @@ fn dial_live_tcp_or_proxy(
     out_ip:      u8[..64]&,
 ) -> i64, Error {
     out_ip.clear();
+    var dialer = TcpDialer { default_timeout_ms: eff_timeout };
     if !proxy_chain.is_direct && proxy_chain.servers.len > 0 {
-        let ps = proxy_chain.servers[0];
-        let sock = native_tcp_connect(ps.host[..], ps.port, eff_timeout);
-        guard sock > 0 else { return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed"); }
-        var proxy_ready = false;
-        defer if !proxy_ready { native_tcp_close(sock); };
-        let p_url = core::new_url(proxy_url);
-        let p_user = p_url.username();
-        let p_pass = p_url.password();
-        if ps.scheme == ProxyScheme.Socks5 || ps.scheme == ProxyScheme.Socks5h {
-            let use_ip = ps.scheme == ProxyScheme.Socks5 && candidates.len > 0;
-            let t_host = if use_ip { candidates[0].ip[..] } else { host_str };
-            let s_err = socks5_client_handshake(sock, ps.scheme, t_host, port_num, p_user, p_pass, eff_timeout);
-            guard s_err == Socks5Error.None else {
-                return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "SOCKS5 handshake failed");
-            }
-        } else {
-            var proxy_auth: u8[..256] = [];
-            if p_user.len > 0 {
-                var cred_raw: u8[..160] = [];
-                format(cred_raw, p_user, ":", p_pass);
-                var cred_b64: u8[..224] = [];
-                core::base64_encode(cred_raw[..], cred_b64);
-                core::secure_zeroize_slice(cred_raw[..]);
-                format(proxy_auth, "Basic ", cred_b64[..]);
-                core::secure_zeroize_slice(cred_b64[..]);
-            }
-            let c_err = http_connect_client_handshake(
-                sock, host_str, port_num, proxy_auth[..], "goose-wing/1.0", eff_timeout,
-            );
-            core::secure_zeroize_slice(proxy_auth[..]);
-            guard c_err == ConnectTunnelError.None else {
-                return -1, make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
-            }
-        }
-        proxy_ready = true;
-        let _ = out_ip.try_set(ps.host[..]);
-        return sock, Error { .. };
+        return dial_proxy_hop(
+            dialer, proxy_url, proxy_chain.servers[0], host_str, port_num, candidates, eff_timeout, out_ip,
+        );
     }
     var mgr = new_attempt_manager();
     mgr.start_attempt_race(candidates, now_ms);
     for &cand in candidates {
-        let sock = native_tcp_connect(cand.ip[..], cand.port, eff_timeout);
+        let target = core::DialTarget { host: cand.ip[..], port: cand.port, timeout_ms: eff_timeout, .. };
+        let sock, _ = core::reactor_dial(dialer, target);
         if sock > 0 {
             if mgr.attempts.len > 0 {
                 let _ = mgr.bind_winner_attempt(mgr.attempts[core::sub_sat_i64(mgr.attempts.len, 1)].attempt_id, false);
@@ -923,12 +941,12 @@ fn build_h2_request_pseudo_headers(
     current_url: const core::Url&,
     is_https:    bool,
     headers:     const HeaderMap&,
-    out_pseudo:  internal::H2PseudoHeaders&,
+    out_pseudo:  h2_internal::H2PseudoHeaders&,
 ) -> bool {
     let auth_str = current_url.host();
     let proto_hdr = find_header(headers, ":protocol");
     if curr_method.eq_ascii_fold("CONNECT") && proto_hdr.len == 0 {
-        out_pseudo = internal::H2PseudoHeaders {
+        out_pseudo = h2_internal::H2PseudoHeaders {
             has_method: true, has_authority: true, ..
         };
         return out_pseudo.method.try_set("CONNECT") && out_pseudo.authority.try_set(auth_str);
@@ -937,7 +955,7 @@ fn build_h2_request_pseudo_headers(
     var path_buf: u8[..2048] = [];
     guard format_h2_request_target_path(current_url, path_buf) else { return false; }
 
-    out_pseudo = internal::H2PseudoHeaders {
+    out_pseudo = h2_internal::H2PseudoHeaders {
         has_method: true, has_scheme: true, has_authority: true, has_path: true, ..
     };
     guard out_pseudo.method.try_set(curr_method) &&
@@ -958,7 +976,7 @@ fn encode_h2_client_request<B>(
     current_url:  const core::Url&,
     is_https:     bool,
     ctx:          const RequestExecutionContext&,
-    enc_dt:       internal::DynamicTable&,
+    enc_dt:       h2_internal::DynamicTable&,
     stream_id:    u32,
     send_preface: bool,
     out_wire:     B&,
@@ -970,7 +988,7 @@ fn encode_h2_client_request<B>(
     guard ctx.body.len <= (rfc::H2_DEFAULT_WINDOW_SIZE as i64) else { return false; }
     out_wire.clear();
 
-    var pseudo = internal::H2PseudoHeaders { .. };
+    var pseudo = h2_internal::H2PseudoHeaders { .. };
     guard build_h2_request_pseudo_headers(curr_method, current_url, is_https, ctx.headers, pseudo) else {
         return false;
     }
@@ -995,7 +1013,7 @@ fn encode_h2_client_request<B>(
 }
 
 fn process_h2_control_frame<B>(
-    hdr:     const internal::FrameHeader&,
+    hdr:     const h2_internal::FrameHeader&,
     payload: const u8[:],
     out:     B&,
 ) {
@@ -1032,13 +1050,13 @@ inline fn verify_h2_response_content_length(resp: const Response&, is_head: bool
 }
 
 inline fn apply_initial_h2_response_headers(
-    hdr:      const internal::FrameHeader&,
+    hdr:      const h2_internal::FrameHeader&,
     frag:     const u8[:],
-    dec_dt:   internal::DynamicTable&,
+    dec_dt:   h2_internal::DynamicTable&,
     resp:     Response&,
     got_hdrs: bool&,
 ) -> bool {
-    var pseudo = internal::H2PseudoHeaders { .. };
+    var pseudo = h2_internal::H2PseudoHeaders { .. };
     let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
     guard d_err == rfc::H2_ERR_NO_ERROR && pseudo.has_status &&
         pseudo.status != rfc::STATUS_SWITCHING_PROTOCOLS else {
@@ -1057,15 +1075,15 @@ inline fn apply_initial_h2_response_headers(
 }
 
 fn process_h2_response_headers_frame(
-    hdr:      const internal::FrameHeader&,
+    hdr:      const h2_internal::FrameHeader&,
     payload:  const u8[:],
     is_head:  bool,
-    dec_dt:   internal::DynamicTable&,
+    dec_dt:   h2_internal::DynamicTable&,
     resp:     Response&,
     got_hdrs: bool&,
 ) -> bool, bool {
     guard (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 else { return false, false; }
-    let frag, f_err = internal::extract_headers_frame_payload(hdr, payload);
+    let frag, f_err = h2_internal::extract_headers_frame_payload(hdr, payload);
     guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
     if !got_hdrs {
         guard apply_initial_h2_response_headers(hdr, frag, dec_dt, resp, got_hdrs) else {
@@ -1073,7 +1091,7 @@ fn process_h2_response_headers_frame(
         }
     } else {
         guard (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 else { return false, false; }
-        var pseudo = internal::H2PseudoHeaders { is_trailer: true, .. };
+        var pseudo = h2_internal::H2PseudoHeaders { is_trailer: true, .. };
         let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
         guard d_err == rfc::H2_ERR_NO_ERROR && !pseudo.has_status else { return false, false; }
     }
@@ -1086,11 +1104,11 @@ fn process_h2_response_headers_frame(
 }
 
 fn process_h2_response_frame<B>(
-    hdr:       const internal::FrameHeader&,
+    hdr:       const h2_internal::FrameHeader&,
     payload:   const u8[:],
     stream_id: u32,
     is_head:   bool,
-    dec_dt:    internal::DynamicTable&,
+    dec_dt:    h2_internal::DynamicTable&,
     resp:      Response&,
     got_hdrs:  bool&,
     out_ctrl:  B&,
@@ -1123,7 +1141,7 @@ fn process_h2_response_frame<B>(
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
         guard got_hdrs else { return false, false; }
-        let d_slice, d_err = internal::extract_padded_frame_payload(hdr, payload);
+        let d_slice, d_err = h2_internal::extract_padded_frame_payload(hdr, payload);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         resp.body.append(d_slice);
         if hdr.length > 0 {
@@ -1145,7 +1163,7 @@ fn drain_h2_response_frames<B1, B2>(
     rx_accum:  B1&,
     stream_id: u32,
     is_head:   bool,
-    dec_dt:    internal::DynamicTable&,
+    dec_dt:    h2_internal::DynamicTable&,
     resp:      Response&,
     got_hdrs:  bool&,
     out_ctrl:  B2&,
@@ -1153,7 +1171,7 @@ fn drain_h2_response_frames<B1, B2>(
     var consumed: i64 = 0;
     defer rx_accum.compact_wire_buffer(consumed);
     while rx_accum.len - consumed >= 9 {
-        let hdr, h_err = internal::parse_frame_header(rx_accum[consumed..], 16384);
+        let hdr, h_err = h2_internal::parse_frame_header(rx_accum[consumed..], 16384);
         guard h_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         let frame_total = 9 + (hdr.length as i64);
         guard rx_accum.len - consumed >= frame_total else { break; }
@@ -1186,7 +1204,7 @@ fn recv_h2_response_loop(
     tp:          Transport&,
     stream_id:   u32,
     is_head:     bool,
-    dec_dt:      internal::DynamicTable&,
+    dec_dt:      h2_internal::DynamicTable&,
     eff_timeout: u32,
     resp:        Response&,
 ) -> bool {
@@ -1286,7 +1304,7 @@ fn dispatch_pooled_h2_hop(
 }
 
 fn encode_h3_client_request<B>(
-    h3_conn:     internal::H3Connection&,
+    h3_conn:     h3_internal::H3Connection&,
     sid:         u64,
     ctx:         const RequestExecutionContext&,
     current_url: const core::Url&,
@@ -1311,13 +1329,13 @@ fn encode_h3_client_request<B>(
     guard path_buf.len <= 1024 else { return false; }
 
     let has_body = ctx.body.len > 0;
-    guard internal::send_request_headers(
+    guard h3_internal::send_request_headers(
         h3_conn, sid, ctx.current_method[..], "https", current_url.host(),
         path_buf[..], ctx.headers, !has_body, out_wire,
     ) else { return false; }
 
     if has_body {
-        guard internal::send_request_data(h3_conn, sid, ctx.body[..], true, out_wire) else {
+        guard h3_internal::send_request_data(h3_conn, sid, ctx.body[..], true, out_wire) else {
             return false;
         }
     }
@@ -1348,8 +1366,8 @@ fn execute_live_h3_hop(
     defer tcp_close(udp_fd);
 
     let h3_settings = H3Settings { .. };
-    var h3_conn = internal::new_h3_client_connection(h3_settings);
-    let sid, ok_s = internal::open_request_stream(h3_conn);
+    var h3_conn = h3_internal::new_h3_client_connection(h3_settings);
+    let sid, ok_s = h3_internal::open_request_stream(h3_conn);
     guard ok_s else { return false; }
     var req_wire: u8[..4096] = [];
     guard encode_h3_client_request(h3_conn, sid, ctx, current_url, req_wire) else { return false; }
@@ -1363,20 +1381,20 @@ fn execute_live_h3_hop(
     let recvd = udp_recvfrom(udp_fd, rx_buf[..], min(eff_timeout, 250), peer_ip4, peer_port);
     guard recvd > 0 else { return false; }
 
-    let h_err = internal::handle_stream_data(h3_conn, sid, true, rx_buf[..recvd], true);
+    let h_err = h3_internal::handle_stream_data(h3_conn, sid, true, rx_buf[..recvd], true);
     guard h_err == rfc::H3_ERR_NO_ERROR else { return false; }
-    let sc, ok_sc = internal::get_status_code(h3_conn, sid);
+    let sc, ok_sc = h3_internal::get_status_code(h3_conn, sid);
     guard ok_sc else { return false; }
 
     reset_response(resp);
     resp.status_code = sc;
     let _ = resp.protocol.try_set("HTTP/3");
-    let _ = internal::copy_stream_headers(h3_conn, sid, resp.headers);
+    let _ = h3_internal::copy_stream_headers(h3_conn, sid, resp.headers);
     for &e in resp.headers.entries {
         update_response_presence(resp, entry_name(resp.headers, e));
     }
-    let _ = internal::copy_stream_trailers(h3_conn, sid, resp.trailers);
-    let body_slice, ok_b = internal::get_response_body(h3_conn, sid);
+    let _ = h3_internal::copy_stream_trailers(h3_conn, sid, resp.trailers);
+    let body_slice, ok_b = h3_internal::get_response_body(h3_conn, sid);
     if ok_b { resp.body.append(body_slice); }
     resp.effective_url = copy(current_url.href);
     copy_headers(ctx.headers, resp.sent_headers);

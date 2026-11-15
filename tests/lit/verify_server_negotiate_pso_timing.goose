@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RUN: goose %s | %FileCheck %s
 
 import std;
@@ -189,12 +192,12 @@ fn verify_pipeline_fixes_and_cork() {
     let pso = wing::STAGE_EGRESS_COMPRESS_GZIP | wing::STAGE_EGRESS_METRICS;
     let _ = wing::add_route(cfg.router, "GET", "/test", 1, 0, pso);
 
-    var timer = internal::ConnectionTimer {};
+    var timer = server_internal::ConnectionTimer {};
     var req = wing::new_request("HEAD", "/test");
     wing::set_header(req, "Host", "example.com");
     wing::set_header(req, "Accept-Encoding", "gzip");
     var res = wing::Response {};
-    var out_fut = internal::InlineHandlerFuture {};
+    var out_fut = server_internal::InlineHandlerFuture {};
     var stage = LifecycleTestStage { short_circuit_post_auth: true, .. };
     var guarded = wing::ProblemErrorGuardStage<LifecycleTestStage> { inner: stage };
 

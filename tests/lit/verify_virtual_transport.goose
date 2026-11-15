@@ -206,7 +206,7 @@ fn test_core_reactor_and_backpressure_contract() {
     let bad_fd, bad_err = core::reactor_dial(dialer, core::DialTarget { host: "", port: 0, .. });
     assert(bad_fd == -1 && bad_err == core::IoError.InvalidArgument);
 
-    var cfg = internal::auto_transport_driver_config();
+    var cfg = net_internal::auto_transport_driver_config();
     var p = wing::new_poller(cfg);
     assert(core::reactor_register(p, 77, 4242, core::PollInterest.Read, core::PollTrigger.Edge));
     assert(core::reactor_modify(p, 77, 4242, core::PollInterest.ReadWrite, core::PollTrigger.Edge));

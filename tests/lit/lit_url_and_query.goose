@@ -88,27 +88,27 @@ fn run_01_verify_http_query() {
     let ok_add_pipeline = wing::add_route(cfg.router, "QUERY", "/items/search", 42);
     assert(ok_add_pipeline);
 
-    var conn_timer1 = internal::new_connection_timer(30000000000, 1000000000);
+    var conn_timer1 = server_internal::new_connection_timer(30000000000, 1000000000);
     var query_no_ct = wing::new_request("QUERY", "/items/search");
     wing::append_header(query_no_ct.headers, "Host", "example.com");
     wing::append_header(query_no_ct.headers, "Sec-Fetch-Site", "same-origin");
     query_no_ct.body.append("raw filter");
 
     var res1 = wing::Response { .. };
-    var future1 = internal::new_inline_handler_future(0);
+    var future1 = server_internal::new_inline_handler_future(0);
     let outcome1 = wing::execute_pipeline(cfg, conn_timer1, "127.0.0.1", query_no_ct, 1000000000, res1, future1);
     assert(res1.status_code == 400);
     print("QUERY_MISSING_CT_STATUS: ", res1.status_code);
     // CHECK: QUERY_MISSING_CT_STATUS: 400
 
     // 6. Verify Server Pipeline Acceptance when Content-Type is valid
-    var conn_timer2 = internal::new_connection_timer(30000000000, 1000000000);
+    var conn_timer2 = server_internal::new_connection_timer(30000000000, 1000000000);
     var query_valid = wing::new_query("/items/search", "raw filter", "text/plain");
     wing::append_header(query_valid.headers, "Host", "example.com");
     wing::append_header(query_valid.headers, "Sec-Fetch-Site", "same-origin");
 
     var res2 = wing::Response { .. };
-    var future2 = internal::new_inline_handler_future(0);
+    var future2 = server_internal::new_inline_handler_future(0);
     let outcome2 = wing::execute_pipeline(cfg, conn_timer2, "127.0.0.1", query_valid, 2000000000, res2, future2);
     assert(res2.status_code == 200);
     print("QUERY_VALID_CT_STATUS: ", res2.status_code);

@@ -67,49 +67,49 @@ struct PollerTimer {
 // ---- Poller Structure ---------------------------------------------------
 
 struct Poller {
-    driver_cfg:              internal::TransportDriverConfig = internal::TransportDriverConfig { .. },
-    registrations:           SocketRegistration[..512]       = [SocketRegistration { .. }; 512],
-    fd_index:                core::FlatIndexBucket[1024]     = [core::FlatIndexBucket { .. }; 1024],
-    tag_index:               core::FlatIndexBucket[1024]     = [core::FlatIndexBucket { .. }; 1024],
-    timers:                  PollerTimer[..64]               = [PollerTimer { .. }; 64],
-    wake_tags:               u64[..64]                       = [],
-    kqueue_changes:          internal::Kevent[..64]          = [],
-    active_fd_count:         u32                             = 0,
-    active_timer_count:      u32                             = 0,
-    total_polls:             u64                             = 0,
-    total_events_dispatched: u64                             = 0,
-    global_coarse_tick:      u8                              = 0,
-    last_coarse_tick_ns:     u64                             = 0,
-    kqueue_fd:               i64                             = -1,
-    uring_ring_fd:           i64                             = -1,
-    rio_cq_id:               u64                             = 0,
-    epoll_fd:                i64                             = -1,
-    is_open:                 bool                            = false,
+    driver_cfg:              net_internal::TransportDriverConfig = net_internal::TransportDriverConfig { .. },
+    registrations:           SocketRegistration[..512]           = [SocketRegistration { .. }; 512],
+    fd_index:                core::FlatIndexBucket[1024]         = [core::FlatIndexBucket { .. }; 1024],
+    tag_index:               core::FlatIndexBucket[1024]         = [core::FlatIndexBucket { .. }; 1024],
+    timers:                  PollerTimer[..64]                   = [PollerTimer { .. }; 64],
+    wake_tags:               u64[..64]                           = [],
+    kqueue_changes:          net_internal::Kevent[..64]          = [],
+    active_fd_count:         u32                                 = 0,
+    active_timer_count:      u32                                 = 0,
+    total_polls:             u64                                 = 0,
+    total_events_dispatched: u64                                 = 0,
+    global_coarse_tick:      u8                                  = 0,
+    last_coarse_tick_ns:     u64                                 = 0,
+    kqueue_fd:               i64                                 = -1,
+    uring_ring_fd:           i64                                 = -1,
+    rio_cq_id:               u64                                 = 0,
+    epoll_fd:                i64                                 = -1,
+    is_open:                 bool                                = false,
 }
 
-fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller {
+fn new_poller(driver_cfg: const net_internal::TransportDriverConfig&) -> Poller {
     var p = Poller {
         driver_cfg: driver_cfg,
         is_open:    true,
         ..
     };
 
-    let plat = internal::detect_target_platform();
-    if driver_cfg.active_kind == internal::TransportDriverKind.WindowsRIO {
-        if plat == internal::TargetPlatform.Windows && driver_cfg.enable_kernel_bypass {
-            p.rio_cq_id = internal::native_rio_create_cq(driver_cfg.ring_size);
+    let plat = net_internal::detect_target_platform();
+    if driver_cfg.active_kind == net_internal::TransportDriverKind.WindowsRIO {
+        if plat == net_internal::TargetPlatform.Windows && driver_cfg.enable_kernel_bypass {
+            p.rio_cq_id = net_internal::native_rio_create_cq(driver_cfg.ring_size);
         }
         p.epoll_fd = epoll_create();
-    } else if driver_cfg.active_kind == internal::TransportDriverKind.IoUring {
-        if plat == internal::TargetPlatform.Linux {
-            p.uring_ring_fd = internal::native_uring_create(driver_cfg.ring_size, 0);
+    } else if driver_cfg.active_kind == net_internal::TransportDriverKind.IoUring {
+        if plat == net_internal::TargetPlatform.Linux {
+            p.uring_ring_fd = net_internal::native_uring_create(driver_cfg.ring_size, 0);
         }
         if p.uring_ring_fd < 0 {
             p.epoll_fd = epoll_create();
         }
-    } else if driver_cfg.active_kind == internal::TransportDriverKind.Kqueue {
-        if plat == internal::TargetPlatform.Darwin {
-            p.kqueue_fd = internal::native_kqueue_create();
+    } else if driver_cfg.active_kind == net_internal::TransportDriverKind.Kqueue {
+        if plat == net_internal::TargetPlatform.Darwin {
+            p.kqueue_fd = net_internal::native_kqueue_create();
         }
         if p.kqueue_fd < 0 {
             p.epoll_fd = epoll_create();
@@ -139,15 +139,15 @@ fn close_poller(p: Poller&) {
         p.epoll_fd = -1;
     }
     if p.rio_cq_id != 0 {
-        internal::native_rio_close_cq(p.rio_cq_id);
+        net_internal::native_rio_close_cq(p.rio_cq_id);
         p.rio_cq_id = 0;
     }
     if p.uring_ring_fd >= 0 {
-        internal::native_uring_close(p.uring_ring_fd);
+        net_internal::native_uring_close(p.uring_ring_fd);
         p.uring_ring_fd = -1;
     }
     if p.kqueue_fd >= 0 {
-        internal::native_kqueue_close(p.kqueue_fd);
+        net_internal::native_kqueue_close(p.kqueue_fd);
         p.kqueue_fd = -1;
     }
 
@@ -213,16 +213,16 @@ fn interest_to_uring_poll_mask(interest: core::PollInterest) -> u32 {
 
 inline fn is_live_os_socket_fd(fd: i32) -> bool {
     guard fd > 0 else { return false; }
-    if internal::detect_target_platform() == internal::TargetPlatform.Windows {
+    if net_internal::detect_target_platform() == net_internal::TargetPlatform.Windows {
         return native_tcp_get_readable_bytes(fd) >= 0;
     }
     return true;
 }
 
-inline fn poller_push_kqueue_change(p: Poller&, ev: internal::Kevent) {
+inline fn poller_push_kqueue_change(p: Poller&, ev: net_internal::Kevent) {
     if p.kqueue_changes.len >= p.kqueue_changes.cap {
-        var empty_out: internal::Kevent[1] = [internal::Kevent { .. }];
-        let _ = internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], empty_out[..0], 0);
+        var empty_out: net_internal::Kevent[1] = [net_internal::Kevent { .. }];
+        let _ = net_internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], empty_out[..0], 0);
         p.kqueue_changes.clear();
     }
     let _ = p.kqueue_changes.try_push(ev);
@@ -237,13 +237,13 @@ inline fn poller_queue_kqueue_interest(
 ) {
     let edge = trigger == core::PollTrigger.Edge;
     if interest == core::PollInterest.Read || interest == core::PollInterest.ReadWrite {
-        var ev_r = internal::Kevent { .. };
-        internal::kevent_prep_read(ev_r, fd, tag, edge);
+        var ev_r = net_internal::Kevent { .. };
+        net_internal::kevent_prep_read(ev_r, fd, tag, edge);
         poller_push_kqueue_change(p, ev_r);
     }
     if interest == core::PollInterest.Write || interest == core::PollInterest.ReadWrite {
-        var ev_w = internal::Kevent { .. };
-        internal::kevent_prep_write(ev_w, fd, tag, edge);
+        var ev_w = net_internal::Kevent { .. };
+        net_internal::kevent_prep_write(ev_w, fd, tag, edge);
         poller_push_kqueue_change(p, ev_w);
     }
 }
@@ -251,10 +251,10 @@ inline fn poller_queue_kqueue_interest(
 inline fn poller_submit_uring_poll_add(ring_fd: i64, fd: i32, interest: core::PollInterest, tag: u64) {
     let mask = interest_to_uring_poll_mask(interest);
     guard mask != 0 else { return; }
-    var sqe = internal::UringSqe { .. };
-    internal::uring_prep_poll_add(sqe, fd, mask, tag);
-    var batch: internal::UringSqe[1] = [sqe];
-    let _ = internal::uring_submit_sqes(ring_fd, batch[..]);
+    var sqe = net_internal::UringSqe { .. };
+    net_internal::uring_prep_poll_add(sqe, fd, mask, tag);
+    var batch: net_internal::UringSqe[1] = [sqe];
+    let _ = net_internal::uring_submit_sqes(ring_fd, batch[..]);
 }
 
 inline fn poller_bind_native_registration(
@@ -290,19 +290,19 @@ inline fn poller_mod_native_registration(
         }
     }
     if p.kqueue_fd >= 0 {
-        poller_push_kqueue_change(p, internal::Kevent {
-            ident: fd as u64, filter: internal::EVFILT_READ, flags: internal::EV_DELETE, ..
+        poller_push_kqueue_change(p, net_internal::Kevent {
+            ident: fd as u64, filter: net_internal::EVFILT_READ, flags: net_internal::EV_DELETE, ..
         });
-        poller_push_kqueue_change(p, internal::Kevent {
-            ident: fd as u64, filter: internal::EVFILT_WRITE, flags: internal::EV_DELETE, ..
+        poller_push_kqueue_change(p, net_internal::Kevent {
+            ident: fd as u64, filter: net_internal::EVFILT_WRITE, flags: net_internal::EV_DELETE, ..
         });
         poller_queue_kqueue_interest(p, fd, tag, interest, trigger);
     }
     if p.uring_ring_fd >= 0 {
-        var rm_sqe = internal::UringSqe { .. };
-        internal::uring_prep_poll_remove(rm_sqe, old_tag, URING_INTERNAL_CANCEL_TAG);
-        var rm_batch: internal::UringSqe[1] = [rm_sqe];
-        let _ = internal::uring_submit_sqes(p.uring_ring_fd, rm_batch[..]);
+        var rm_sqe = net_internal::UringSqe { .. };
+        net_internal::uring_prep_poll_remove(rm_sqe, old_tag, URING_INTERNAL_CANCEL_TAG);
+        var rm_batch: net_internal::UringSqe[1] = [rm_sqe];
+        let _ = net_internal::uring_submit_sqes(p.uring_ring_fd, rm_batch[..]);
         poller_submit_uring_poll_add(p.uring_ring_fd, fd, interest, tag);
     }
 }
@@ -312,18 +312,18 @@ inline fn poller_bind_native_deregister(p: Poller&, fd: i32, old_tag: u64) {
         let _ = epoll_del(p.epoll_fd, fd);
     }
     if p.kqueue_fd >= 0 {
-        poller_push_kqueue_change(p, internal::Kevent {
-            ident: fd as u64, filter: internal::EVFILT_READ, flags: internal::EV_DELETE, ..
+        poller_push_kqueue_change(p, net_internal::Kevent {
+            ident: fd as u64, filter: net_internal::EVFILT_READ, flags: net_internal::EV_DELETE, ..
         });
-        poller_push_kqueue_change(p, internal::Kevent {
-            ident: fd as u64, filter: internal::EVFILT_WRITE, flags: internal::EV_DELETE, ..
+        poller_push_kqueue_change(p, net_internal::Kevent {
+            ident: fd as u64, filter: net_internal::EVFILT_WRITE, flags: net_internal::EV_DELETE, ..
         });
     }
     if p.uring_ring_fd >= 0 {
-        var rm_sqe = internal::UringSqe { .. };
-        internal::uring_prep_poll_remove(rm_sqe, old_tag, URING_INTERNAL_CANCEL_TAG);
-        var rm_batch: internal::UringSqe[1] = [rm_sqe];
-        let _ = internal::uring_submit_sqes(p.uring_ring_fd, rm_batch[..]);
+        var rm_sqe = net_internal::UringSqe { .. };
+        net_internal::uring_prep_poll_remove(rm_sqe, old_tag, URING_INTERNAL_CANCEL_TAG);
+        var rm_batch: net_internal::UringSqe[1] = [rm_sqe];
+        let _ = net_internal::uring_submit_sqes(p.uring_ring_fd, rm_batch[..]);
     }
 }
 
@@ -637,7 +637,7 @@ fn simulate_hangup(p: Poller&, fd: i32) -> bool {
 // Maps a slice of Windows RIO `RioResult` items into `PollReadyEvent` entries on `out_events`.
 fn rio_map_completions_to_events(
     p:          Poller&,
-    results:    const internal::RioResult[:],
+    results:    const net_internal::RioResult[:],
     out_events: core::PollReadyEvent[..64]&,
 ) -> u64 {
     var added: u64 = 0;
@@ -749,14 +749,14 @@ fn poller_collect_epoll_events(
     }
 }
 
-inline fn map_kevent_to_poll_flags(kev: const internal::Kevent&) -> u32, bool {
+inline fn map_kevent_to_poll_flags(kev: const net_internal::Kevent&) -> u32, bool {
     var flags: u32 = core::POLL_NONE;
-    if kev.filter == internal::EVFILT_READ {
+    if kev.filter == net_internal::EVFILT_READ {
         flags |= core::POLL_READ;
-    } else if kev.filter == internal::EVFILT_WRITE {
+    } else if kev.filter == net_internal::EVFILT_WRITE {
         flags |= core::POLL_WRITE;
     }
-    let is_eof = (kev.flags & internal::EV_EOF) != 0;
+    let is_eof = (kev.flags & net_internal::EV_EOF) != 0;
     if is_eof {
         flags |= core::POLL_HANGUP;
     }
@@ -768,9 +768,9 @@ fn poller_collect_kqueue_events(
     timeout_ms: i64,
     out_events: core::PollReadyEvent[..64]&,
 ) {
-    var kev_out: internal::Kevent[64] = [internal::Kevent { .. }; 64];
-    let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
-    let n = internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], kev_out[..], timeout_ns);
+    var kev_out: net_internal::Kevent[64] = [net_internal::Kevent { .. }; 64];
+    let timeout_ns = net_internal::timeout_ms_to_ns(timeout_ms);
+    let n = net_internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], kev_out[..], timeout_ns);
     p.kqueue_changes.clear();
     guard n > 0 else { return; }
 
@@ -809,10 +809,10 @@ fn poller_collect_uring_events(
     timeout_ms: i64,
     out_events: core::PollReadyEvent[..64]&,
 ) {
-    var cqes: internal::UringCqe[64] = [internal::UringCqe { .. }; 64];
+    var cqes: net_internal::UringCqe[64] = [net_internal::UringCqe { .. }; 64];
     let min_complete: u32 = if timeout_ms == 0 { 0 } else { 1 };
-    let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
-    let n = internal::uring_wait_cqes(p.uring_ring_fd, cqes[..], min_complete, timeout_ns);
+    let timeout_ns = net_internal::timeout_ms_to_ns(timeout_ms);
+    let n = net_internal::uring_wait_cqes(p.uring_ring_fd, cqes[..], min_complete, timeout_ns);
     guard n > 0 else { return; }
 
     let limit = min(n as i64, 64);
@@ -848,8 +848,8 @@ inline fn poller_poll_native_drivers(
     out_events: core::PollReadyEvent[..64]&,
 ) {
     if p.rio_cq_id != 0 {
-        var rio_results: internal::RioResult[..64] = [];
-        let n = internal::rio_drain_completions(p.rio_cq_id, rio_results);
+        var rio_results: net_internal::RioResult[..64] = [];
+        let n = net_internal::rio_drain_completions(p.rio_cq_id, rio_results);
         if n > 0 {
             let _ = rio_map_completions_to_events(p, rio_results[..], out_events);
         }

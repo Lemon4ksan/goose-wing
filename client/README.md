@@ -15,7 +15,7 @@ set_header(req, "Accept", "text/html");
 
 ## Public API
 
-### 1. Configuration & Lifecycle (`client/client.goose`, `client/profile.goose`)
+### 1. Configuration & Lifecycle (`client/client.goose`, `fingerprint/profile.goose`)
 
 ```goose
 enum Profile { Wing, Custom, None }
@@ -59,7 +59,7 @@ TLS 1.3 sessions use `QuicConnection` (`quic/connection.goose`) and
 `H3Connection` (`http3/connection.goose`). `close` is idempotent and drains all
 pooled transport descriptors.
 
-### 2. Request Model (`client/request.goose`, RFC 9110)
+### 2. Request Model (`http/request.goose`, RFC 9110)
 
 ```goose
 struct Request {
@@ -87,7 +87,7 @@ re-allocating. Builder functions (`set_header`, `bearer`, `query`,
 `set_priority`, `sign_hmac_sha256`) mutate `req` in place and return `Request&`
 for method chaining.
 
-### 3. Response Model (`client/response.goose`, RFC 9110)
+### 3. Response Model (`http/response.goose`, RFC 9110)
 
 ```goose
 struct Response {
@@ -191,7 +191,7 @@ fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> StreamReadSt
 fn read_all<B>(reader: StreamReader&, out: B&) -> u64
 fn trailer(reader: const StreamReader&, name: const u8[:]) -> const u8[:]
 fn stream_progress(reader: const StreamReader&) -> StreamProgress
-fn pump_chunk_fsm<Sink, B>(dec: internal::ChunkFsmDecoder&, wire: const u8[:], sink: Sink, out: B&) -> internal::ChunkFsmStatus, i64
+fn pump_chunk_fsm<Sink, B>(dec: http_internal::ChunkFsmDecoder&, wire: const u8[:], sink: Sink, out: B&) -> http_internal::ChunkFsmStatus, i64
 ```
 
 `ChunkWriter` frames outbound RFC 9112 §7.1 chunked bodies with up to 16

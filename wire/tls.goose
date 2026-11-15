@@ -72,7 +72,7 @@ fn init_tls13_record_state(cipher_suite: u16, traffic_secret: const u8[:]) -> Wi
     var committed = false;
     defer if !committed { zeroize_tls_record_state(st); };
 
-    let ks, ok_ks = internal::ks_init(cipher_suite);
+    let ks, ok_ks = tls_internal::ks_init(cipher_suite);
     guard ok_ks else { return st, false; }
 
     let key_len = rfc::tls13_cipher_suite_key_len(cipher_suite);
@@ -86,7 +86,7 @@ fn init_tls13_record_state(cipher_suite: u16, traffic_secret: const u8[:]) -> Wi
     for i in ks.hash_len {
         st.secret[i] = traffic_secret[i];
     }
-    guard internal::ks_derive_key_iv(
+    guard tls_internal::ks_derive_key_iv(
         st.hash_id,
         st.secret[..st.hash_len],
         st.key_len,
@@ -107,15 +107,15 @@ fn advance_ks_to_handshake(
     ecdhe_shared_secret:   const u8[:],
     ch_sh_transcript_hash: const u8[:],
     psk:                   const u8[:],
-) -> internal::KeySchedule, bool {
-    var ks, ok_init = internal::ks_init(cipher_suite);
+) -> tls_internal::KeySchedule, bool {
+    var ks, ok_init = tls_internal::ks_init(cipher_suite);
     guard ok_init else { return ks, false; }
     var committed = false;
-    defer if !committed { internal::ks_zeroize(ks); };
+    defer if !committed { tls_internal::ks_zeroize(ks); };
 
-    guard internal::ks_init_early_secret(ks, psk) else { return ks, false; }
-    guard internal::ks_advance_to_handshake(ks, ecdhe_shared_secret) else { return ks, false; }
-    guard internal::ks_derive_handshake_traffic(ks, ch_sh_transcript_hash) else {
+    guard tls_internal::ks_init_early_secret(ks, psk) else { return ks, false; }
+    guard tls_internal::ks_advance_to_handshake(ks, ecdhe_shared_secret) else { return ks, false; }
+    guard tls_internal::ks_derive_handshake_traffic(ks, ch_sh_transcript_hash) else {
         return ks, false;
     }
     committed = true;
@@ -144,7 +144,7 @@ fn derive_tls13_handshake_keys(
         ch_sh_transcript_hash,
         psk,
     );
-    defer internal::ks_zeroize(ks);
+    defer tls_internal::ks_zeroize(ks);
     guard ok_ks else { return keys, false; }
 
     let cl, ok_c = init_tls13_record_state(cipher_suite, ks.client_hs_traffic[..ks.hash_len]);
@@ -185,9 +185,9 @@ fn derive_tls13_app_keys(
         ch_sh_transcript_hash,
         psk,
     );
-    defer internal::ks_zeroize(ks);
+    defer tls_internal::ks_zeroize(ks);
     guard ok_ks else { return keys, false; }
-    guard internal::ks_advance_to_master(ks, ch_sf_transcript_hash) else {
+    guard tls_internal::ks_advance_to_master(ks, ch_sf_transcript_hash) else {
         return keys, false;
     }
 
@@ -222,7 +222,7 @@ fn compute_tls13_finished_verify_data(
     guard state.active else { return out_verify, false; }
     guard state.hash_len == 32 || state.hash_len == 48 else { return out_verify, false; }
     out_verify.resize(state.hash_len as i64, 0);
-    guard internal::ks_compute_finished_verify_data(
+    guard tls_internal::ks_compute_finished_verify_data(
         state.hash_id,
         state.hash_len,
         state.secret[..state.hash_len],
@@ -257,14 +257,14 @@ fn update_tls13_traffic_keys(state: WireTlsRecordState&) -> bool {
         zeroize_tls_record_state(saved);
     };
 
-    guard internal::ks_update_traffic_secret(
+    guard tls_internal::ks_update_traffic_secret(
         state.hash_id,
         state.hash_len,
         state.secret[..state.hash_len],
     ) else {
         return false;
     }
-    guard internal::ks_derive_key_iv(
+    guard tls_internal::ks_derive_key_iv(
         state.hash_id,
         state.secret[..state.hash_len],
         state.key_len,

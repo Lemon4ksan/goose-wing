@@ -70,7 +70,7 @@ returns a `wire::StageVerdict` (`Continue`, `ShortCircuit`, `RetryAuth`,
 bodies from `rewind_body` on `307`/`308`, and strips sensitive headers on
 cross-origin transitions.
 
-### 3. HTTP/1.1 Wire Exchange (`client/session/h1_exchange.goose`)
+### 3. HTTP/1.1 Wire Exchange (`wire/h1_exchange.goose`)
 
 ```goose
 enum H1ExchangeState { Idle, SendingRequest, ReadingStatusLine, ReadingHeaders, ReadingBody, Complete, ClosedError }

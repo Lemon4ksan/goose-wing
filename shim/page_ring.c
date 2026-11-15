@@ -30,8 +30,7 @@ typedef struct {
 #include <stdlib.h>
 #include <string.h>
 
-// Forward declarations from shim/tcp.c for WebAssembly virtual socket networking
-int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data);
+// Forward declaration from shim/tcp.c for WebAssembly virtual socket networking
 int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms);
 
 #elif defined(_WIN32)
@@ -365,31 +364,6 @@ int32_t wing_page_ring_recv(uint64_t handle, uint64_t tail_offset, uint32_t max_
         setsockopt((int)sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
     ssize_t res = recv((int)sock_fd, dst, (size_t)to_recv, 0);
-    return (int32_t)res;
-#endif
-}
-
-int32_t wing_page_ring_send(uint64_t handle, uint64_t head_offset, uint32_t len, int64_t sock_fd) {
-    if (!handle || sock_fd < 0 || len == 0) return 0;
-    wing_page_ring_t *ring = (wing_page_ring_t *)(uintptr_t)handle;
-    if (!ring->base) return -1;
-
-    uint32_t to_send = len;
-    if (to_send > ring->capacity) {
-        to_send = ring->capacity;
-    }
-
-    uint32_t off = (uint32_t)(head_offset % ring->capacity);
-    const uint8_t *src = ring->base + off;
-
-#if defined(__wasm__)
-    wing_bytes_ro data = {src, (int64_t)to_send};
-    return wing_tcp_send(sock_fd, data);
-#elif defined(_WIN32)
-    int res = send((SOCKET)sock_fd, (const char *)src, (int)to_send, 0);
-    return (int32_t)res;
-#else
-    ssize_t res = send((int)sock_fd, src, (size_t)to_send, 0);
     return (int32_t)res;
 #endif
 }

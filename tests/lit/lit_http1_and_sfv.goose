@@ -21,11 +21,11 @@ import wire_kit from ".";
 
 // Wire adapter for verify_split_stream and fuzzing using wing's internal 64-bit FSM decoder
 fn wing_parse_http1_chunk_frame(buf: const u8[:]) -> i64 {
-    var dec = internal::new_chunk_fsm_decoder();
-    let st, consumed, chunk = internal::chunk_fsm_feed(dec, buf);
+    var dec = http_internal::new_chunk_fsm_decoder();
+    let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, buf);
     match st {
         YieldChunk => {
-            if dec.state == internal::CHUNK_STATE_IS_CHUNKED && consumed == buf.len {
+            if dec.state == http_internal::CHUNK_STATE_IS_CHUNKED && consumed == buf.len {
                 return chunk.len;
             }
             return -1;
@@ -514,11 +514,11 @@ fn run_05_verify_http_problem_and_forwarded() {
 //
 
 fn parse_chunk_step(buf: const u8[:]) -> i64 {
-    var dec = internal::new_chunk_fsm_decoder();
-    let st, consumed, chunk = internal::chunk_fsm_feed(dec, buf);
+    var dec = http_internal::new_chunk_fsm_decoder();
+    let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, buf);
     match st {
         YieldChunk => {
-            if dec.state == internal::CHUNK_STATE_IS_CHUNKED && consumed == buf.len {
+            if dec.state == http_internal::CHUNK_STATE_IS_CHUNKED && consumed == buf.len {
                 return chunk.len;
             }
             return -1;
@@ -727,16 +727,16 @@ fn run_06_verify_smuggling_desync() {
 // Ingests chunks byte-by-byte, specifically checking split between \r and \n.
 fn test_chunked_fsm_drip() {
     let wire = "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
-    var dec = internal::new_chunk_fsm_decoder();
+    var dec = http_internal::new_chunk_fsm_decoder();
     var assembled: u8[..64] = [];
 
     var i: i64 = 0;
     while i < wire.len {
         // Drip 1 byte at a time
         let single_byte = wire[i..i + 1];
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, single_byte);
-        assert(st != internal::ChunkFsmStatus.Error);
-        if st == internal::ChunkFsmStatus.YieldChunk {
+        let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, single_byte);
+        assert(st != http_internal::ChunkFsmStatus.Error);
+        if st == http_internal::ChunkFsmStatus.YieldChunk {
             assembled.append(chunk);
         }
         i += 1;
@@ -750,52 +750,52 @@ fn test_chunked_fsm_drip() {
 // Ingests partial frames through handle_h2_server_ingress, verifying safe postponement
 // until the complete 9-byte header and full payload are assembled in the buffer.
 fn test_h2_socket_drip() {
-    var client_hpack = internal::DynamicTable { .. };
-    var sess = internal::new_h2_server_session("localhost");
+    var client_hpack = h2_internal::DynamicTable { .. };
+    var sess = server_internal::new_h2_server_session("localhost");
     var pipeline = wing::ServerPipelineConfig { .. };
-    var timer = internal::ConnectionTimer { .. };
+    var timer = server_internal::ConnectionTimer { .. };
 
     // Handshake
     var init_wire: u8[..64] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-    let set_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-    internal::encode_frame_header_to(set_hdr, init_wire);
+    let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    h2_internal::encode_frame_header_to(set_hdr, init_wire);
     var server_out: u8[..1024] = [];
-    let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
+    let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
     assert(ok_init);
 
     // Prepare complete HEADERS frame for stream 1
     var full_req:    u8[..256] = [];
     var hpack_block: u8[..128] = [];
-    internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/drip", internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/drip", h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
 
-    let req_hdr = internal::FrameHeader {
+    let req_hdr = h2_internal::FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  1,
     };
-    internal::encode_frame_header_to(req_hdr, full_req);
+    h2_internal::encode_frame_header_to(req_hdr, full_req);
     full_req.append(hpack_block[..]);
 
     // Stage 1: Partial 5 bytes of 9-byte header -> consumed must be 0, ok == true
     server_out.clear();
-    let c1, ok1 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..5], 1001, server_out);
+    let c1, ok1 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..5], 1001, server_out);
     assert(ok1);
     assert(c1 == 0);
     assert(server_out.len == 0);
 
     // Stage 2: Header complete (9 bytes) + partial 3 bytes of payload -> consumed must be 0
-    let c2, ok2 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..12], 1002, server_out);
+    let c2, ok2 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..12], 1002, server_out);
     assert(ok2);
     assert(c2 == 0);
     assert(server_out.len == 0);
 
     // Stage 3: Full frame arrives -> consumed must be full_req.len, response emitted
-    let c3, ok3 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..], 1003, server_out);
+    let c3, ok3 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..], 1003, server_out);
     assert(ok3);
     assert(c3 == full_req.len);
     assert(server_out.len > 0);
@@ -844,12 +844,12 @@ fn test_quic_varint_drip() {
     // Drip 1..7 bytes: all must fail ok == false
     for len in 7 {
         let drip_len = (len + 1) as i64;
-        let _, _, ok = internal::quic_decode_varint(full_8[..drip_len], 0);
+        let _, _, ok = quic_internal::quic_decode_varint(full_8[..drip_len], 0);
         assert(!ok);
     }
 
     // Full 8 bytes succeed
-    let val_8, off_8, ok_8 = internal::quic_decode_varint(full_8[..], 0);
+    let val_8, off_8, ok_8 = quic_internal::quic_decode_varint(full_8[..], 0);
     assert(ok_8);
     assert(off_8 == 8);
     assert(val_8 == 0x3FFFFFFFFFFFFFFF);
@@ -947,11 +947,11 @@ fn run_08_verify_chaos_slicer() {
 
 // Section 1: HTTP/1 chunked parser wired to wing FSM
 fn parse_chunk_size(buf: const u8[:]) -> i64 {
-    var dec = internal::new_chunk_fsm_decoder();
-    let st, consumed, chunk = internal::chunk_fsm_feed(dec, buf);
+    var dec = http_internal::new_chunk_fsm_decoder();
+    let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, buf);
     match st {
         YieldChunk => {
-            if dec.state == internal::CHUNK_STATE_IS_CHUNKED && consumed == buf.len {
+            if dec.state == http_internal::CHUNK_STATE_IS_CHUNKED && consumed == buf.len {
                 return chunk.len;
             }
             return -1;
@@ -1076,9 +1076,9 @@ fn run_09_verify_chaos_fuzzing() {
 // Wire bridge to HTTP/2 frame header decoder and rule validator
 fn decode_h2_header(buf: const u8[:]) -> i64 {
     if buf.len < 9 { return -1; }
-    let hdr, err = internal::parse_frame_header(buf, 16384);
+    let hdr, err = h2_internal::parse_frame_header(buf, 16384);
     if err != rfc::H2_ERR_NO_ERROR { return -2; }
-    if internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR { return -2; }
+    if h2_internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR { return -2; }
     return hdr.length;
 }
 
@@ -1115,15 +1115,15 @@ fn run_10_verify_edge_and_fuzz() {
     assert(wire_kit::fuzz_payload(ws_pkt[..], 100, validate_ws_frame));
     print("EDGE_WS_FRAME: OK");
 
-    var hdr_orig = internal::FrameHeader {
+    var hdr_orig = h2_internal::FrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_STREAM | rfc::H2_FLAG_END_HEADERS,
         stream_id:  3,
     };
     var enc_hdr: u8[9] = [0; 9];
-    internal::encode_frame_header(hdr_orig, enc_hdr);
-    let hdr_dec, err = internal::parse_frame_header(enc_hdr[..]);
+    h2_internal::encode_frame_header(hdr_orig, enc_hdr);
+    let hdr_dec, err = h2_internal::parse_frame_header(enc_hdr[..]);
     assert(err == rfc::H2_ERR_NO_ERROR);
     assert(hdr_dec.length == 8);
     assert(hdr_dec.frame_type == rfc::H2_FRAME_HEADERS);

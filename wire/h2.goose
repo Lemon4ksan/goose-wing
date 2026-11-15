@@ -342,9 +342,9 @@ fn emit_h2_headers_chunks<B>(
 }
 
 fn encode_h2_headers_frame_from_map<B>(
-    dt:             internal::DynamicTable&,
+    dt:             h2_internal::DynamicTable&,
     stream_id:      u32,
-    pseudo:         const internal::H2PseudoHeaders&,
+    pseudo:         const h2_internal::H2PseudoHeaders&,
     headers:        const wing::HeaderMap&,
     end_stream:     bool,
     out:            B&,
@@ -422,11 +422,11 @@ fn decode_h2_frame_header(raw: const u8[:], max_frame_size: u32 = 16384) -> Wire
     guard ok else {
         return hdr, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
-    let f_hdr = internal::FrameHeader {
+    let f_hdr = h2_internal::FrameHeader {
         length:     hdr.length,
         frame_type: hdr.frame_type,
         flags:      hdr.flags,
         stream_id:  hdr.stream_id,
     };
-    return hdr, internal::validate_frame_header_rules(f_hdr, max_frame_size);
+    return hdr, h2_internal::validate_frame_header_rules(f_hdr, max_frame_size);
 }

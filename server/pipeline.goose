@@ -33,40 +33,40 @@ struct ServerCompressAndEtagMemo {
 }
 
 struct ServerPipelineConfig {
-    limiter:                 ShardedGcraLimiter        = ShardedGcraLimiter { .. },
-    tier_limiters:           ShardedGcraLimiter[..4]   = [],
-    csrf_guard:              CrossOriginGuard          = CrossOriginGuard { .. },
-    cors_policy:             CorsPolicy                = CorsPolicy { .. },
-    router:                  RadixRouter               = RadixRouter { .. },
-    private_jar:             PrivateJar                = PrivateJar { .. },
-    edge_filter:             EdgeFilter                = EdgeFilter { .. },
-    route_cache:             HttpRouteCache            = HttpRouteCache { .. },
-    jwks:                    Jwks                      = Jwks { .. },
-    jwt_options:             JwtValidationOptions      = JwtValidationOptions { .. },
-    security_txt:            SecurityTxt               = SecurityTxt { .. },
-    dpop_replay_cache:       DPoPReplayCache           = DPoPReplayCache { .. },
-    dpop_public_key:         u8[..64]                  = [],
-    sig_key_id:              u8[..64]                  = [],
-    sig_public_key:          u8[..64]                  = [],
-    verify_request_digest:   bool                      = false,
-    emit_problem_details:    bool                      = false,
-    wire_pipeline:           wire::WirePipeline        = wire::default_server_pipeline(),
-    header_pool:             internal::HeaderMapPool   = internal::HeaderMapPool { .. },
-    ext_pool:                internal::ExtensionsPool  = internal::ExtensionsPool { .. },
-    slab_pool:               internal::SpillSlabPool   = internal::SpillSlabPool { .. },
-    memo:                    ServerCompressAndEtagMemo = ServerCompressAndEtagMemo { .. },
-    target_host:             u8[..256]                 = "example.com",
-    deadline_ns:             u64                       = 30000000000, // 30s
-    enable_rate_limiter:     bool                      = true,
-    enable_csrf_guard:       bool                      = true,
-    enable_cors:             bool                      = true,
-    enable_slowloris_timer:  bool                      = true,
-    tls_enabled:             bool                      = true,
-    trust_proxy_headers:     bool                      = false,
-    server_pso_capabilities: u64                       = 0xFFFFFFFFFFFFFFFF,
-    hdr_scan_cursor:         i64                       = 0,
-    last_valid_host:         u8[..128]                 = [],
-    has_valid_host:          bool                      = false,
+    limiter:                 ShardedGcraLimiter              = ShardedGcraLimiter { .. },
+    tier_limiters:           ShardedGcraLimiter[..4]         = [],
+    csrf_guard:              CrossOriginGuard                = CrossOriginGuard { .. },
+    cors_policy:             CorsPolicy                      = CorsPolicy { .. },
+    router:                  RadixRouter                     = RadixRouter { .. },
+    private_jar:             PrivateJar                      = PrivateJar { .. },
+    edge_filter:             EdgeFilter                      = EdgeFilter { .. },
+    route_cache:             HttpRouteCache                  = HttpRouteCache { .. },
+    jwks:                    Jwks                            = Jwks { .. },
+    jwt_options:             JwtValidationOptions            = JwtValidationOptions { .. },
+    security_txt:            SecurityTxt                     = SecurityTxt { .. },
+    dpop_replay_cache:       DPoPReplayCache                 = DPoPReplayCache { .. },
+    dpop_public_key:         u8[..64]                        = [],
+    sig_key_id:              u8[..64]                        = [],
+    sig_public_key:          u8[..64]                        = [],
+    verify_request_digest:   bool                            = false,
+    emit_problem_details:    bool                            = false,
+    wire_pipeline:           wire::WirePipeline              = wire::default_server_pipeline(),
+    header_pool:             server_internal::HeaderMapPool  = server_internal::HeaderMapPool { .. },
+    ext_pool:                server_internal::ExtensionsPool = server_internal::ExtensionsPool { .. },
+    slab_pool:               server_internal::SpillSlabPool  = server_internal::SpillSlabPool { .. },
+    memo:                    ServerCompressAndEtagMemo       = ServerCompressAndEtagMemo { .. },
+    target_host:             u8[..256]                       = "example.com",
+    deadline_ns:             u64                             = 30000000000, // 30s
+    enable_rate_limiter:     bool                            = true,
+    enable_csrf_guard:       bool                            = true,
+    enable_cors:             bool                            = true,
+    enable_slowloris_timer:  bool                            = true,
+    tls_enabled:             bool                            = true,
+    trust_proxy_headers:     bool                            = false,
+    server_pso_capabilities: u64                             = 0xFFFFFFFFFFFFFFFF,
+    hdr_scan_cursor:         i64                             = 0,
+    last_valid_host:         u8[..128]                       = [],
+    has_valid_host:          bool                            = false,
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
@@ -81,9 +81,9 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
         jwks:                    Jwks { .. },
         jwt_options:             JwtValidationOptions { .. },
         wire_pipeline:           wire::default_server_pipeline(),
-        header_pool:             internal::HeaderMapPool { .. },
-        ext_pool:                internal::ExtensionsPool { .. },
-        slab_pool:               internal::SpillSlabPool { .. },
+        header_pool:             server_internal::HeaderMapPool { .. },
+        ext_pool:                server_internal::ExtensionsPool { .. },
+        slab_pool:               server_internal::SpillSlabPool { .. },
         target_host:             [],
         deadline_ns:             30000000000,
         trust_proxy_headers:     false,
@@ -518,7 +518,7 @@ fn extract_effective_client_ip(
 
 // Stage 0 (Server Ingress): Connection liveliness / Slowloris defense.
 fn stage_server_slowloris(
-    timer:   internal::ConnectionTimer&,
+    timer:   server_internal::ConnectionTimer&,
     enabled: bool,
     now_ns:  u64,
     res:     Response&,
@@ -526,11 +526,11 @@ fn stage_server_slowloris(
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.slowloris");
     defer prof_leave(_prof);
-    guard internal::check_connection_tick(timer, now_ns) else {
+    guard server_internal::check_connection_tick(timer, now_ns) else {
         res.status_code = 408; // Request Timeout
         return wire::StageVerdict.Abort { err_code: 408 };
     }
-    internal::notify_request_start(timer);
+    server_internal::notify_request_start(timer);
     return wire::StageVerdict.Continue;
 }
 
@@ -595,7 +595,7 @@ fn stage_server_ratelimit_ip<Limiter>(
 fn stage_server_route_match<Router>(
     router:    const Router&,
     req:       const Request&,
-    ext:       internal::RequestExtensions&,
+    ext:       server_internal::RequestExtensions&,
     out_match: RouteMatchResult&,
     res:       Response&,
 ) -> wire::StageVerdict {
@@ -744,7 +744,7 @@ fn extract_session_cookie_value(cookie_hdr: const u8[:]) -> const u8[:] {
 fn stage_server_auth_cookie<Jar>(
     jar:    const Jar&,
     req:    const Request&,
-    ext:    internal::RequestExtensions&,
+    ext:    server_internal::RequestExtensions&,
     now_ns: u64,
 ) -> wire::StageVerdict {
     if req.presence_mask != 0 && (req.presence_mask & HDR_PRESENCE_COOKIE) == 0 {
@@ -761,7 +761,7 @@ fn stage_server_auth_cookie<Jar>(
             guard session_val.len > 0 else { break; }
             ext.session_data.clear();
             if jar.private_jar_open("session", session_val, now_sec, ext.session_data) {
-                ext.populated_entries |= internal::ENTRY_COOKIES;
+                ext.populated_entries |= server_internal::ENTRY_COOKIES;
                 return wire::StageVerdict.Continue;
             }
             let semi = rem.index_of_byte(';');
@@ -807,7 +807,7 @@ fn stage_server_auth_jwt(
     jwks:        const Jwks&,
     jwt_options: const JwtValidationOptions&,
     req:         const Request&,
-    ext:         internal::RequestExtensions&,
+    ext:         server_internal::RequestExtensions&,
     now_ns:      u64,
     res:         Response&,
 ) -> wire::StageVerdict {
@@ -832,7 +832,7 @@ fn stage_server_auth_jwt(
     }
     let _ = ext.auth_subject.try_set(out_claims.sub[..min(out_claims.sub.len, 64)]);
     ext.jwt_claims = out_claims;
-    ext.populated_entries |= internal::ENTRY_SECURITY;
+    ext.populated_entries |= server_internal::ENTRY_SECURITY;
     return wire::StageVerdict.Continue;
 }
 
@@ -1258,7 +1258,7 @@ fn append_matched_route_log_header(map: HeaderMap&, route_slice: const u8[:]) {
 
 // Stage 7..8 (Server Egress): RFC 9218 / Server-Timing metrics and access log emission.
 fn stage_server_metrics_log(
-    ext:    const internal::RequestExtensions&,
+    ext:    const server_internal::RequestExtensions&,
     res:    Response&,
     mask:   u64,
     now_ns: u64,
@@ -1507,7 +1507,7 @@ fn execute_bound_ingress_stage_verdict<UserStage>(
     b:          const wire::StageBinding&,
     req:        const Request&,
     res:        Response&,
-    ext:        internal::RequestExtensions&,
+    ext:        server_internal::RequestExtensions&,
     now_ns:     u64,
     sctx:       ServerStageCtx&,
     user_stage: UserStage&,
@@ -1590,7 +1590,7 @@ fn dispatch_custom_stage_bindings<UserStage>(
     cfg:        ServerPipelineConfig&,
     req:        const Request&,
     res:        Response&,
-    ext:        internal::RequestExtensions&,
+    ext:        server_internal::RequestExtensions&,
     now_ns:     u64,
     sctx:       ServerStageCtx&,
     user_stage: UserStage&,
@@ -1655,7 +1655,7 @@ fn dispatch_ingress_pipeline<UserStage>(
     cfg:        ServerPipelineConfig&,
     req:        const Request&,
     res:        Response&,
-    ext:        internal::RequestExtensions&,
+    ext:        server_internal::RequestExtensions&,
     mask:       u64,
     now_ns:     u64,
     sctx:       ServerStageCtx&,
@@ -1769,7 +1769,7 @@ fn dispatch_egress_pipeline(
         if ext_slot_idx >= 0 && ext_slot_idx < cfg.ext_pool.slots.len {
             let _ = stage_server_metrics_log(cfg.ext_pool.slots[ext_slot_idx], res, egress_mask, now_ns);
         } else {
-            var dummy_ext = internal::RequestExtensions { start_time_ns: now_ns, .. };
+            var dummy_ext = server_internal::RequestExtensions { start_time_ns: now_ns, .. };
             let _ = stage_server_metrics_log(dummy_ext, res, egress_mask, now_ns);
         }
     }
@@ -1785,7 +1785,7 @@ fn execute_found_route_handler<UserStage>(
     req:          const Request&,
     now_ns:       u64,
     res:          Response&,
-    out_future:   internal::InlineHandlerFuture&,
+    out_future:   server_internal::InlineHandlerFuture&,
     f:            const RouteMatchFound&,
     ext_slot_idx: i32,
     sctx:         ServerStageCtx&,
@@ -1796,8 +1796,8 @@ fn execute_found_route_handler<UserStage>(
         return PipelineOutcome.Handled;
     }
 
-    let wants_cookie = (f.entries_mask & internal::ENTRY_COOKIES) != 0;
-    let cookie_unpopulated = (cfg.ext_pool.slots[ext_slot_idx].populated_entries & internal::ENTRY_COOKIES) == 0;
+    let wants_cookie = (f.entries_mask & server_internal::ENTRY_COOKIES) != 0;
+    let cookie_unpopulated = (cfg.ext_pool.slots[ext_slot_idx].populated_entries & server_internal::ENTRY_COOKIES) == 0;
     if wants_cookie && cookie_unpopulated {
         let _ = stage_server_auth_cookie(cfg.private_jar, req, cfg.ext_pool.slots[ext_slot_idx], now_ns);
     }
@@ -1812,8 +1812,8 @@ fn execute_found_route_handler<UserStage>(
     }
 
     let _prof_h = prof_enter("stage.handler");
-    out_future = internal::new_inline_handler_future(f.handler_id as u16);
-    internal::poll_future(out_future);
+    out_future = server_internal::new_inline_handler_future(f.handler_id as u16);
+    server_internal::poll_future(out_future);
 
     res.status_code = 0;
     let route_v = user_stage.on_server_stage(wire::ServerHookPhase.RouteHandler, cfg, req, sctx, res);
@@ -1851,7 +1851,7 @@ fn dispatch_matched_route<UserStage>(
     req:          const Request&,
     now_ns:       u64,
     res:          Response&,
-    out_future:   internal::InlineHandlerFuture&,
+    out_future:   server_internal::InlineHandlerFuture&,
     match_res:    RouteMatchResult,
     ext_slot_idx: i32,
     sctx:         ServerStageCtx&,
@@ -1919,7 +1919,7 @@ inline fn sync_stage_ctx_with_route(sctx: ServerStageCtx&, match_res: RouteMatch
 fn resolve_pipeline_route_match(
     cfg:  ServerPipelineConfig&,
     req:  const Request&,
-    ext:  internal::RequestExtensions&,
+    ext:  server_internal::RequestExtensions&,
     sctx: ServerStageCtx&,
     res:  Response&,
 ) -> RouteMatchResult {
@@ -1978,9 +1978,9 @@ fn verify_pipeline_body_stream<UserStage>(
 }
 
 // Finalizes slowloris request lifecycle tracking.
-inline fn notify_pipeline_timer_end(timer_enabled: bool, timer: internal::ConnectionTimer&) {
+inline fn notify_pipeline_timer_end(timer_enabled: bool, timer: server_internal::ConnectionTimer&) {
     if timer_enabled {
-        internal::notify_request_end(timer);
+        server_internal::notify_request_end(timer);
     }
 }
 
@@ -1989,7 +1989,7 @@ fn finalize_post_auth_and_egress<UserStage>(
     req:           const Request&,
     now_ns:        u64,
     res:           Response&,
-    out_future:    internal::InlineHandlerFuture&,
+    out_future:    server_internal::InlineHandlerFuture&,
     match_res:     RouteMatchResult,
     ext_slot_idx:  i32,
     effective_pso: u64,
@@ -2054,12 +2054,12 @@ fn finalize_post_auth_and_egress<UserStage>(
 // Executes an incoming request through the configured pipeline stages with a compile-time `<UserStage>` hook.
 fn execute_server_pipeline_with_stage<UserStage>(
     cfg:        ServerPipelineConfig&,
-    conn_timer: internal::ConnectionTimer&,
+    conn_timer: server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
     req:        const Request&,
     now_ns:     u64,
     res:        Response&,
-    out_future: internal::InlineHandlerFuture&,
+    out_future: server_internal::InlineHandlerFuture&,
     user_stage: UserStage&,
 ) -> PipelineOutcome {
     let eff_ip = extract_effective_client_ip(cfg.trust_proxy_headers, client_ip, req);
@@ -2072,13 +2072,13 @@ fn execute_server_pipeline_with_stage<UserStage>(
     };
 
     // Acquire request extensions from pool
-    let ext_slot_idx = internal::acquire_extensions(cfg.ext_pool);
+    let ext_slot_idx = server_internal::acquire_extensions(cfg.ext_pool);
     guard ext_slot_idx >= 0 else {
         notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
         res.status_code = 503; // Service Unavailable / Pool Exhausted
         return PipelineOutcome.RateLimited;
     }
-    defer internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+    defer server_internal::release_extensions(cfg.ext_pool, ext_slot_idx);
     defer notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
 
     let e_idx = ext_slot_idx as i64;
@@ -2157,12 +2157,12 @@ fn execute_server_pipeline_with_stage<UserStage>(
 // 5. Egress PSO dispatch (ETag, Compression, Security headers, Metrics/Access log)
 fn execute_pipeline(
     cfg:        ServerPipelineConfig&,
-    conn_timer: internal::ConnectionTimer&,
+    conn_timer: server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
     req:        const Request&,
     now_ns:     u64,
     res:        Response&,
-    out_future: internal::InlineHandlerFuture&,
+    out_future: server_internal::InlineHandlerFuture&,
 ) -> PipelineOutcome {
     var noop = wire::NoOpStage {};
     return execute_server_pipeline_with_stage(cfg, conn_timer, client_ip, req, now_ns, res, out_future, noop);

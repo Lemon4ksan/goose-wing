@@ -8,8 +8,8 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.request;
-import client.response;
+import .request;
+import .response;
 import .sfv;
 
 // ---- Resumable Uploads Constants (draft-14) -------------------------------

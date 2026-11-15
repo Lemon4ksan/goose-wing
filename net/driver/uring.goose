@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Linux io_uring asynchronous submission and completion ring driver.
-namespace internal;
+namespace net_internal;
 
 import std;
 
@@ -483,7 +483,10 @@ fn uring_submit_batch(state: RingQueueState&, sqes: const UringSqe[:], cqes: Uri
         if state.active_pending >= state.ring_size || cqes.len >= cqes.cap {
             break;
         }
-        if uring_try_submit_mmap_sqe(state, sqes[i]) {
+        if state.ring_fd >= 0 {
+            if !uring_try_submit_mmap_sqe(state, sqes[i]) {
+                break;
+            }
             used_mmap = true;
         } else {
             record_sqe_submission(state, sqes[i], cqes);

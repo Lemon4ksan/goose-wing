@@ -3,7 +3,7 @@
 
 // Deterministic QUIC Connection Engine, Packet Number Spaces,
 // Loss Recovery Coordinator, and Path Validation Reactor (RFC 9000, RFC 9002).
-namespace internal;
+namespace quic_internal;
 
 import std;
 import core from "..";
@@ -972,9 +972,9 @@ fn quic_derive_initial_space_keys(
     rx_space: PnSpaceState&,
     tx_space: PnSpaceState&,
 ) -> bool {
-    let salt = quic_initial_salt(version);
+    let salt = rfc::quic_initial_salt(version);
     guard salt.len == 20 else { return false; }
-    let prefix = quic_hkdf_label_prefix(version);
+    let prefix = rfc::quic_hkdf_label_prefix(version);
     guard prefix.len > 0 else { return false; }
 
     var initial_secret = core::hkdf_extract(salt, dcid);
@@ -983,8 +983,13 @@ fn quic_derive_initial_space_keys(
     defer core::secure_zeroize_32(client_secret);
     var server_secret: u8[32] = [0; 32];
     defer core::secure_zeroize_32(server_secret);
-    let ok_c = hkdf_expand_label(HASH_SHA256, initial_secret[..], "client in", [], 32, client_secret[..]);
-    let ok_s = hkdf_expand_label(HASH_SHA256, initial_secret[..], "server in", [], 32, server_secret[..]);
+    let sha256 = tls_internal::HASH_SHA256;
+    let ok_c = tls_internal::hkdf_expand_label(
+        sha256, initial_secret[..], "client in", [], 32, client_secret[..],
+    );
+    let ok_s = tls_internal::hkdf_expand_label(
+        sha256, initial_secret[..], "server in", [], 32, server_secret[..],
+    );
     guard ok_c && ok_s else { return false; }
 
     var lbl_key: u8[..16] = [];
@@ -999,9 +1004,9 @@ fn quic_derive_initial_space_keys(
     var c_iv: u8[12] = [0; 12];
     var c_hp: u8[16] = [0; 16];
     defer core::secure_zeroize_16(c_hp);
-    guard hkdf_expand_label(HASH_SHA256, client_secret[..], lbl_key[..], [], 16, c_key[..])
-        && hkdf_expand_label(HASH_SHA256, client_secret[..], lbl_iv[..], [], 12, c_iv[..])
-        && ks_derive_quic_hp_key(HASH_SHA256, client_secret[..], 16, c_hp[..], version) else {
+    guard tls_internal::hkdf_expand_label(sha256, client_secret[..], lbl_key[..], [], 16, c_key[..])
+        && tls_internal::hkdf_expand_label(sha256, client_secret[..], lbl_iv[..], [], 12, c_iv[..])
+        && tls_internal::ks_derive_quic_hp_key(sha256, client_secret[..], 16, c_hp[..], version) else {
         return false;
     }
 
@@ -1010,9 +1015,9 @@ fn quic_derive_initial_space_keys(
     var s_iv: u8[12] = [0; 12];
     var s_hp: u8[16] = [0; 16];
     defer core::secure_zeroize_16(s_hp);
-    guard hkdf_expand_label(HASH_SHA256, server_secret[..], lbl_key[..], [], 16, s_key[..])
-        && hkdf_expand_label(HASH_SHA256, server_secret[..], lbl_iv[..], [], 12, s_iv[..])
-        && ks_derive_quic_hp_key(HASH_SHA256, server_secret[..], 16, s_hp[..], version) else {
+    guard tls_internal::hkdf_expand_label(sha256, server_secret[..], lbl_key[..], [], 16, s_key[..])
+        && tls_internal::hkdf_expand_label(sha256, server_secret[..], lbl_iv[..], [], 12, s_iv[..])
+        && tls_internal::ks_derive_quic_hp_key(sha256, server_secret[..], 16, s_hp[..], version) else {
         return false;
     }
 

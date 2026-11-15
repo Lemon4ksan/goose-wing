@@ -6,8 +6,8 @@ namespace wing;
 
 import std;
 import core from "../..";
-import client.request;
-import client.response;
+import http.request;
+import http.response;
 import client.stream;
 import realtime.websocket;
 import realtime.sse;

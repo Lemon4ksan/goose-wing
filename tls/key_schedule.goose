@@ -3,11 +3,12 @@
 
 // Deterministic zero-allocation TLS 1.3 Key Schedule and RFC 9001 QUIC Key Derivation.
 // Conforms to RFC 8446 Section 7.1, RFC 9001 Section 5.1-5.4, and BoringSSL HKDF layout.
-namespace internal;
+namespace tls_internal;
 
 import std;
 import core from "..";
-import quic.packet;
+import rfc.h3_quic;
+import rfc.tls;
 
 // ---- Constants and Supported Cipher Suites -------------------------------
 
@@ -452,7 +453,7 @@ fn ks_derive_quic_hp_key(
     out_hp_key: u8[:],
     version:    u32 = rfc::QUIC_VERSION_1,
 ) -> bool {
-    let prefix = quic_hkdf_label_prefix(version);
+    let prefix = rfc::quic_hkdf_label_prefix(version);
     guard prefix.len > 0 else { return false; }
     var lbl: u8[..16] = [];
     lbl.append(prefix);

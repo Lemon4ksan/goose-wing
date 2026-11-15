@@ -500,7 +500,7 @@ fn test_proxy_v2_conformance(t: lit::T&) {
     t.run("PROXY-v2-01: IPv4 TCP binary header parsing") { sub =>
         // Preamble (12) + 0x21 (v2, PROXY) + 0x11 (INET4, STREAM) + len 12 (0x000C)
         var wire: u8[..64] = [];
-        for b in internal::PROXY_V2_PREAMBLE { wire.push(b); }
+        for b in net_internal::PROXY_V2_PREAMBLE { wire.push(b); }
         wire.push(0x21); // version 2, PROXY command
         wire.push(0x11); // INET4, STREAM (TCP)
         wire.push(0x00); wire.push(12); // payload length = 12
@@ -527,7 +527,7 @@ fn test_proxy_v2_conformance(t: lit::T&) {
 
     t.run("PROXY-v2-02: Command LOCAL (health checks)") { sub =>
         var wire: u8[..32] = [];
-        for b in internal::PROXY_V2_PREAMBLE { wire.push(b); }
+        for b in net_internal::PROXY_V2_PREAMBLE { wire.push(b); }
         wire.push(0x20); // version 2, LOCAL command
         wire.push(0x00); // UNSPEC, UNSPEC
         wire.push(0x00); wire.push(0x00); // payload length = 0
@@ -541,7 +541,7 @@ fn test_proxy_v2_conformance(t: lit::T&) {
 
     t.run("PROXY-v2-03: IPv6 TCP binary header parsing") { sub =>
         var wire: u8[..64] = [];
-        for b in internal::PROXY_V2_PREAMBLE { wire.push(b); }
+        for b in net_internal::PROXY_V2_PREAMBLE { wire.push(b); }
         wire.push(0x21); // version 2, PROXY command
         wire.push(0x21); // INET6, STREAM (TCP)
         wire.push(0x00); wire.push(36); // payload length = 36
@@ -570,14 +570,14 @@ fn test_proxy_v2_conformance(t: lit::T&) {
 
         // Wrong version (0x11 instead of 0x21)
         var bad_ver: u8[..32] = [];
-        for b in internal::PROXY_V2_PREAMBLE { bad_ver.push(b); }
+        for b in net_internal::PROXY_V2_PREAMBLE { bad_ver.push(b); }
         bad_ver.push(0x11); bad_ver.push(0x11); bad_ver.push(0); bad_ver.push(0);
         let _, _, ok_ver = wing::parse_proxy_v2(bad_ver[..]);
         sub.assert_false(ok_ver, "version != 2 rejected");
 
         // Truncated payload length claim
         var trunc_wire: u8[..32] = [];
-        for b in internal::PROXY_V2_PREAMBLE { trunc_wire.push(b); }
+        for b in net_internal::PROXY_V2_PREAMBLE { trunc_wire.push(b); }
         trunc_wire.push(0x21); trunc_wire.push(0x11);
         trunc_wire.push(0x00); trunc_wire.push(100); // claim 100 bytes but only 16 present
         let _, _, ok_len = wing::parse_proxy_v2(trunc_wire[..]);
@@ -631,7 +631,7 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
             ..
         };
         hdr.ssl.has_ssl = true;
-        hdr.ssl.client_flags = internal::PP2_CLIENT_SSL | internal::PP2_CLIENT_CERT_CONN;
+        hdr.ssl.client_flags = net_internal::PP2_CLIENT_SSL | net_internal::PP2_CLIENT_CERT_CONN;
         hdr.ssl.verify_result = 0; // successfully verified client cert
         hdr.ssl.version.append("TLSv1.3");
         hdr.ssl.cipher.append("rfc::TLS_CIPHER_AES_128_GCM_SHA256");
@@ -648,7 +648,7 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
         sub.assert_true(ok_parse, "parse_proxy_v2 parses SSL TLVs cleanly");
         sub.assert_eq(consumed, wire.len, "consumed entire buffer");
         sub.assert_true(back_hdr.ssl.has_ssl, "SSL flag set");
-        sub.assert_eq(back_hdr.ssl.client_flags, internal::PP2_CLIENT_SSL | internal::PP2_CLIENT_CERT_CONN, "client flags preserved");
+        sub.assert_eq(back_hdr.ssl.client_flags, net_internal::PP2_CLIENT_SSL | net_internal::PP2_CLIENT_CERT_CONN, "client flags preserved");
         sub.assert_eq(back_hdr.ssl.verify_result, 0, "verify_result is 0");
         sub.assert_bytes_eq(back_hdr.ssl.version[..], "TLSv1.3", "SSL version matches");
         sub.assert_bytes_eq(back_hdr.ssl.cipher[..], "rfc::TLS_CIPHER_AES_128_GCM_SHA256", "Cipher matches");
@@ -1549,10 +1549,10 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
 
         // QUIC DATAGRAM frame (RFC 9221 Type 0x31 with length)
         var quic_frame_wire: u8[..256] = [];
-        let frame_ok = internal::encode_quic_datagram_frame(quic_frame_wire, dgram_wire[..], true);
+        let frame_ok = quic_internal::encode_quic_datagram_frame(quic_frame_wire, dgram_wire[..], true);
         sub.assert_true(frame_ok, "encode_quic_datagram_frame ok");
 
-        let parsed_dgram, end_off, frame_dec_ok = internal::decode_quic_datagram_frame(quic_frame_wire[..], 0);
+        let parsed_dgram, end_off, frame_dec_ok = quic_internal::decode_quic_datagram_frame(quic_frame_wire[..], 0);
         sub.assert_true(frame_dec_ok, "decode_quic_datagram_frame ok");
         sub.assert_bytes_eq(parsed_dgram, dgram_wire[..], "Datagram bytes match inside QUIC frame");
     };
@@ -2685,6 +2685,57 @@ fn test_goose2rfc_net_audit_regressions(t: lit::T&) {
     t.assert_eq(sp.groups[g_idx].idle_conns, 0, "draining connection closed rather than added to idle_conns");
 }
 
+fn test_warm_upstream_pool_and_slowloris_h1_guard(t: lit::T&) {
+    t.run("ReverseProxy Warm UpstreamPool Reuse and EPOLLRDHUP Eviction") { sub =>
+        let slot_idx, ok_pipe = wing::alloc_virtual_pipe_slot();
+        sub.assert_true(ok_pipe, "allocated virtual pipe slot");
+        defer wing::free_virtual_pipe_slot(slot_idx);
+
+        let fd_client = (wing::virtual_pipe_to_fd(slot_idx, false) & 0x7FFFFFFF) as i32;
+        var backend_end: wing::Transport = wing::Transport.Virtual { pipe_slot: slot_idx, is_b_end: true };
+        let canned_resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok";
+        sub.assert_eq(backend_end.send(canned_resp), canned_resp.len as i32, "seeded backend response");
+
+        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+        wing::add_upstream_target(proxy.cluster, "backend.internal", 8080);
+        sub.assert_true(
+            wing::park_proxy_upstream_conn(proxy, fd_client, "backend.internal", 8080),
+            "parked warm upstream socket",
+        );
+
+        var sp = wing::new_stream_pool(6, 32, 4);
+        var in_headers = wing::HeaderMap { .. };
+        wing::append_header(in_headers, "Host", "edge.example.com");
+        var out_resp = wing::Response { .. };
+        let ex_ok = wing::execute_proxy_exchange(
+            proxy, sp, "GET", "/ready", in_headers, "203.0.113.10", "https", "", out_resp, 1000, 1000000,
+        );
+        sub.assert_true(ex_ok, "execute_proxy_exchange reused warm upstream connection");
+        sub.assert_eq(out_resp.status_code, 200, "received 200 OK from warm upstream");
+        sub.assert_bytes_eq(out_resp.body[..], "ok", "received body from warm upstream");
+        sub.assert_false(proxy.warm_upstreams.entries[0].in_use, "warm socket returned to idle pool");
+        sub.assert_true(proxy.warm_upstreams.entries[0].healthy, "warm socket remains healthy");
+
+        sub.assert_true(
+            wing::notify_upstream_epoll_events(proxy.warm_upstreams, fd_client, wing::EPOLLRDHUP),
+            "notified EPOLLRDHUP on warm socket",
+        );
+        sub.assert_eq(proxy.warm_upstreams.evicted_rdhup, 1 as u64, "EPOLLRDHUP evicted idle warm socket");
+        sub.assert_false(proxy.warm_upstreams.entries[0].healthy, "warm socket marked unhealthy");
+    };
+
+    t.run("HTTP/1.1 read_response_headers Enforces Slowloris Header Line Cap") { sub =>
+        var conn = wing::PooledConnection { .. };
+        let _ = conn.rx_buf.try_append("HTTP/1.1 200 OK\r\n");
+        for i in 105 {
+            let _ = conn.rx_buf.try_append("X-Pad: 1\r\n");
+        }
+        let _ = conn.rx_buf.try_append("\r\n");
+        let _, ok_hdr = wing::read_response_headers(conn, 1000);
+        sub.assert_false(ok_hdr, "read_response_headers rejects > 100 header lines via Slowloris guard");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Reverse Proxy, GCRA Rate Limiter, MASQUE, and Alt-Svc Suite", lit::Verbosity.Verbose);
 
@@ -2730,6 +2781,7 @@ fn main() {
     lit::run_case(runner, "40. PROXY Protocol v1 Token Capacity Guard", test_proxy_protocol_overflow);
     lit::run_case(runner, "41. MASQUE Address Request Capsule Bounds", test_masque_address_capsule_bounds);
     lit::run_case(runner, "42. goose2rfc net/ RFC Audit Regressions", test_goose2rfc_net_audit_regressions);
+    lit::run_case(runner, "43. Warm UpstreamPool & Slowloris H1 Guard", test_warm_upstream_pool_and_slowloris_h1_guard);
 
     let ok = lit::finish(runner);
     assert(ok);

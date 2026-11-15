@@ -199,16 +199,6 @@ inline fn reset_url_for_parse(out_url: Url&) {
     out_url.valid = false;
 }
 
-// Parses an absolute URL directly into caller-provided `out_url` without stack-copying `Url`.
-//
-// Example:
-//   raw_input = "https://example.com/path", out_url = Url { .. }
-//   returns: UrlParseError.None with out_url populated
-fn parse_url_into(raw_input: const u8[:], out_url: Url&) -> UrlParseError {
-    reset_url_for_parse(out_url);
-    return parse_url_internal(raw_input, EMPTY_URL_BASE, false, out_url);
-}
-
 // Parses an absolute URL into a normalized Url. Schemes and hosts are
 // lowercased, default ports are omitted, IPv6 literals use canonical
 // compression (RFC 5952), and path dot-segments are normalized in place.

@@ -3,21 +3,12 @@
 
 // Fused 4-Block Interleaved AES-128-GCM Engine (NIST SP 800-38D).
 // Interleaves 4 counter-mode AES-128 block encryptions with GHASH polynomial
-// reduction and exposes the native C AES-NI + PCLMULQDQ fusion shim.
+// reduction.
 namespace core;
 
 import std;
 import core.crypto.ct;
 import core.crypto.aes;
-
-// Native C shim for 4-block interleaved AES-NI (`_mm_aesenc_si128`) and
-// PCLMULQDQ (`_mm_clmulepi64_si128`) fused decryption (`shim/crypto_fusion.c`).
-extern fn native_aes_gcm_decrypt(
-    key: const u8[:],
-    iv:  const u8[:],
-    src: const u8[:],
-    dst: u8[:],
-) -> i32 = "wing_aes_gcm_decrypt";
 
 // Encrypts 4 consecutive AES-128 counter blocks in an interleaved schedule and
 // updates the GHASH accumulator across the resulting 64 bytes of ciphertext.

@@ -3,7 +3,7 @@
 
 // Deterministic zero-allocation HTTP/3 Connection Coordinator and Stream Multiplexer.
 // Conforms to RFC 9114 (HTTP/3), RFC 9204 (QPACK), and RFC 9000 (QUIC Streams).
-namespace internal;
+namespace h3_internal;
 
 import std;
 import core from "..";
@@ -177,10 +177,10 @@ fn encode_client_preambles<B1, B2, B3>(
         out_qpack_dec.resize(saved_dec);
     };
 
-    guard quic_encode_varint(out_ctrl, rfc::H3_STREAM_CONTROL) else { return false; }
+    guard quic_internal::quic_encode_varint(out_ctrl, rfc::H3_STREAM_CONTROL) else { return false; }
     guard encode_h3_settings_frame(out_ctrl, conn.local_settings) else { return false; }
-    guard quic_encode_varint(out_qpack_enc, rfc::H3_STREAM_QPACK_ENCODER) else { return false; }
-    guard quic_encode_varint(out_qpack_dec, rfc::H3_STREAM_QPACK_DECODER) else { return false; }
+    guard quic_internal::quic_encode_varint(out_qpack_enc, rfc::H3_STREAM_QPACK_ENCODER) else { return false; }
+    guard quic_internal::quic_encode_varint(out_qpack_dec, rfc::H3_STREAM_QPACK_DECODER) else { return false; }
 
     conn.local_settings_sent = true;
     committed = true;
@@ -320,10 +320,10 @@ fn try_prepend_qpack_section_prefix<B>(
         let ric = max_dyn_abs + 1;
         guard qpack_track_unacked_stream(tbl, stream_id, ric) else { return false; }
         let enc_ric = encode_ric(ric, tbl.max_capacity_bytes);
-        guard internal::hpack_encode_int(out_payload, enc_ric, 8, 0x00) else { return false; }
+        guard h2_internal::hpack_encode_int(out_payload, enc_ric, 8, 0x00) else { return false; }
         let sign_bit, delta_base = encode_base(base, ric);
         let sign_mask: u8 = if sign_bit != 0 { 0x80 } else { 0x00 };
-        guard internal::hpack_encode_int(out_payload, delta_base, 7, sign_mask) else { return false; }
+        guard h2_internal::hpack_encode_int(out_payload, delta_base, 7, sign_mask) else { return false; }
         committed = true;
         return true;
     }
@@ -485,7 +485,7 @@ fn handle_peer_priority_update(conn: H3Connection&, frame_type: u64, payload: co
         conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
         return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
-    let elem_id, off, ok_id = quic_decode_varint(payload, 0);
+    let elem_id, off, ok_id = quic_internal::quic_decode_varint(payload, 0);
     guard ok_id else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_FRAME_ERROR;
@@ -707,7 +707,7 @@ fn handle_push_stream_open(
         return 0, rfc::H3_ERR_STREAM_CREATION;
     }
 
-    let push_id, rem_off, ok_p = quic_decode_varint(data, offset);
+    let push_id, rem_off, ok_p = quic_internal::quic_decode_varint(data, offset);
     guard ok_p else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -913,7 +913,7 @@ fn register_peer_uni_stream(
     stream_id: u64,
     data:      const u8[:],
 ) -> u64, u64 {
-    let stype, off1, ok_type = quic_decode_varint(data, 0);
+    let stype, off1, ok_type = quic_internal::quic_decode_varint(data, 0);
     guard ok_type else {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -1570,7 +1570,7 @@ fn handle_bidi_push_promise(conn: H3Connection&, s_idx: i32, payload: const u8[:
         conn.error_code = rfc::H3_ERR_FRAME_ERROR;
         return rfc::H3_ERR_FRAME_ERROR;
     }
-    let push_id, qpack_off, ok_p = quic_decode_varint(payload, 0);
+    let push_id, qpack_off, ok_p = quic_internal::quic_decode_varint(payload, 0);
     if !ok_p {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_FRAME_ERROR;

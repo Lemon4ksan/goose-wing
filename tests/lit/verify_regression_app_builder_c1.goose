@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RUN: goose %s | %FileCheck %s
 
 import std;
@@ -18,7 +21,7 @@ fn build_h2_frame_hdr(out: u8[>..]&, length: u32, ftype: u8, flags: u8, stream_i
     out.append_u32_be(stream_id & 0x7FFFFFFF);
 }
 
-fn count_active_slabs(pool: const internal::SpillSlabPool&) -> i64 {
+fn count_active_slabs(pool: const server_internal::SpillSlabPool&) -> i64 {
     var n: i64 = 0;
     for &s in pool.slabs {
         if s.in_use {
@@ -118,25 +121,25 @@ fn test_bug2_response_json_transactional_rollback() {
 
 // 3. Bug 3: HTTP/2 server SpillSlabPool leak when connection aborts with GOAWAY mid-stream
 fn test_bug3_h2_spill_slab_reclaimed_on_goaway() {
-    var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
+    var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
     var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
-    var timer = internal::new_connection_timer(30000000000, 1000000000);
+    var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/upload", 1);
 
     var init_wire: u8[>..] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE);
     build_h2_frame_hdr(init_wire, 0, rfc::H2_FRAME_SETTINGS, 0, 0);
     var wire_out: u8[>..] = [];
-    let _, ok_init = internal::handle_h2_server_ingress(
+    let _, ok_init = server_internal::handle_h2_server_ingress(
         sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out,
     );
     assert(ok_init);
 
-    var dt = internal::new_dynamic_table(4096);
+    var dt = h2_internal::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    internal::encode_hpack_field(dt, h_block, ":method", "POST", internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(dt, h_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(dt, h_block, ":path", "/upload", internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(dt, h_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(dt, h_block, ":path", "/upload", h2_internal::HpackIndexing.Incremental, false);
 
     var stream_wire: u8[>..] = [];
     build_h2_frame_hdr(stream_wire, h_block.len as u32, rfc::H2_FRAME_HEADERS, rfc::H2_FLAG_END_HEADERS, 1);
@@ -150,7 +153,7 @@ fn test_bug3_h2_spill_slab_reclaimed_on_goaway() {
     stream_wire.append(chunk8k[..]);
 
     wire_out.clear();
-    let _, ok_data = internal::handle_h2_server_ingress(
+    let _, ok_data = server_internal::handle_h2_server_ingress(
         sess, pipeline, timer, "127.0.0.1", stream_wire[..], 1001, wire_out,
     );
     let leased_during_stream = ok_data && count_active_slabs(pipeline.slab_pool) == 1;
@@ -161,7 +164,7 @@ fn test_bug3_h2_spill_slab_reclaimed_on_goaway() {
     fatal_wire.append("\x00\x00\x00\x02");
 
     wire_out.clear();
-    let _, ok_fatal = internal::handle_h2_server_ingress(
+    let _, ok_fatal = server_internal::handle_h2_server_ingress(
         sess, pipeline, timer, "127.0.0.1", fatal_wire[..], 1002, wire_out,
     );
     let reclaimed_after_goaway = !ok_fatal && count_active_slabs(pipeline.slab_pool) == 0;

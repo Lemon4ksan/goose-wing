@@ -5,7 +5,7 @@
 // 1. HTTP/1.1 Parser (wing::parse_request_headers, wing::parse_response_headers)
 // 2. HeaderMap & Bloom Filter (wing::append_header, set_header, get_header, has_header, add_header, might_have_header)
 // 3. URL Parser (core::parse_url, core::parse_url_view)
-// 4. HPACK Codec (internal::encode_hpack_field, internal::decode_hpack_to_map with Huffman + dynamic table)
+// 4. HPACK Codec (h2_internal::encode_hpack_field, h2_internal::decode_hpack_to_map with Huffman + dynamic table)
 // 5. AEAD Ciphers (AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 inplace seal/open on 1 KB records)
 //
 // RUN: goose build --cc gcc -O2 -o %t.exe %s
@@ -347,28 +347,28 @@ fn bench_url_parse_view(iters: i64) -> u64 {
 }
 
 fn encode_sample_hpack_block<B>(
-    dt:       internal::DynamicTable&,
+    dt:       h2_internal::DynamicTable&,
     out:      B&,
     path_val: const u8[:],
     req_id:   const u8[:],
 ) -> u64 {
     out.clear();
-    let inc = internal::HpackIndexing.Incremental;
-    let lit_none = internal::HpackIndexing.None;
-    assert(internal::encode_hpack_field(dt, out, ":method", "GET", inc, true));
-    assert(internal::encode_hpack_field(dt, out, ":scheme", "https", inc, true));
-    assert(internal::encode_hpack_field(dt, out, ":authority", "api.example.com", inc, true));
-    assert(internal::encode_hpack_field(dt, out, ":path", path_val, inc, true));
-    assert(internal::encode_hpack_field(dt, out, "accept", "application/json", inc, true));
-    assert(internal::encode_hpack_field(dt, out, "user-agent", "goose-wing/2.0", inc, true));
-    assert(internal::encode_hpack_field(dt, out, "content-type", "application/json", inc, true));
-    assert(internal::encode_hpack_field(dt, out, "x-request-id", req_id, lit_none, true));
+    let inc = h2_internal::HpackIndexing.Incremental;
+    let lit_none = h2_internal::HpackIndexing.None;
+    assert(h2_internal::encode_hpack_field(dt, out, ":method", "GET", inc, true));
+    assert(h2_internal::encode_hpack_field(dt, out, ":scheme", "https", inc, true));
+    assert(h2_internal::encode_hpack_field(dt, out, ":authority", "api.example.com", inc, true));
+    assert(h2_internal::encode_hpack_field(dt, out, ":path", path_val, inc, true));
+    assert(h2_internal::encode_hpack_field(dt, out, "accept", "application/json", inc, true));
+    assert(h2_internal::encode_hpack_field(dt, out, "user-agent", "goose-wing/2.0", inc, true));
+    assert(h2_internal::encode_hpack_field(dt, out, "content-type", "application/json", inc, true));
+    assert(h2_internal::encode_hpack_field(dt, out, "x-request-id", req_id, lit_none, true));
     let fixed_bytes: u64 = 138;
     return core::add_sat_u64(fixed_bytes, core::add_sat_u64(path_val.len as u64, req_id.len as u64));
 }
 
 fn bench_hpack_encode(iters: i64) -> u64 {
-    var dt = internal::new_dynamic_table();
+    var dt = h2_internal::new_dynamic_table();
     var out: u8[..1024] = [];
     let paths:   const u8[:][2] = ["/api/v1/orders?page=1", "/api/v1/orders?page=2"];
     let req_ids: const u8[:][2] = ["req-9f3d2a1b-0001", "req-9f3d2a1b-0002"];
@@ -392,27 +392,27 @@ fn bench_hpack_encode(iters: i64) -> u64 {
 }
 
 fn bench_hpack_decode(iters: i64) -> u64 {
-    var enc_dt = internal::new_dynamic_table();
+    var enc_dt = h2_internal::new_dynamic_table();
     var wire_block: u8[..1024] = [];
     let raw_bytes = encode_sample_hpack_block(
         enc_dt, wire_block, "/api/v1/orders?page=1", "req-9f3d2a1b-0001",
     );
 
-    var dec_dt = internal::new_dynamic_table();
-    var pseudo = internal::H2PseudoHeaders { .. };
+    var dec_dt = h2_internal::new_dynamic_table();
+    var pseudo = h2_internal::H2PseudoHeaders { .. };
     var hdrs = wing::HeaderMap { .. };
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
 
     for _ in warmup {
-        let err = internal::decode_hpack_to_map(dec_dt, wire_block[..], pseudo, hdrs);
+        let err = h2_internal::decode_hpack_to_map(dec_dt, wire_block[..], pseudo, hdrs);
         assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);
         checksum = core::add_sat_u64(checksum, pseudo.path.len as u64);
     }
 
     let watch = core::stopwatch();
     for _ in iters {
-        let err = internal::decode_hpack_to_map(dec_dt, wire_block[..], pseudo, hdrs);
+        let err = h2_internal::decode_hpack_to_map(dec_dt, wire_block[..], pseudo, hdrs);
         assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);
         let req_id = wing::get_header(hdrs, "x-request-id");
         checksum = core::add_sat_u64(checksum, core::add_sat_u64(pseudo.path.len as u64, req_id.len as u64));
@@ -425,7 +425,7 @@ fn bench_hpack_decode(iters: i64) -> u64 {
     var val_buf:  u8[..8192] = [];
     let w_scratch = core::stopwatch();
     for _ in iters {
-        let err = internal::decode_hpack_to_map_with_scratch(
+        let err = h2_internal::decode_hpack_to_map_with_scratch(
             dec_dt, wire_block[..], pseudo, hdrs, name_buf, val_buf,
         );
         assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);

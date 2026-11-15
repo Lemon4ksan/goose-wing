@@ -1337,7 +1337,7 @@ fn test_f003_h1_header_strict_rfc9112() {
 
 // F004: feed_chunk_slice must reject malformed chunked trailers and pump_h1_chunked_body must preserve leftover pipelined bytes.
 fn test_f004_chunked_trailers_and_leftover() {
-    var dec = internal::new_chunk_fsm_decoder();
+    var dec = http_internal::new_chunk_fsm_decoder();
     var resp = wing::Response { .. };
     var trailer_buf: u8[..4096] = [];
     var cur_idx:     i64        = 0;
@@ -1350,7 +1350,7 @@ fn test_f004_chunked_trailers_and_leftover() {
         transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
-    var dec2 = internal::new_chunk_fsm_decoder();
+    var dec2 = http_internal::new_chunk_fsm_decoder();
     var resp2 = wing::Response { .. };
     let coalesced = "4\r\nWiki\r\n0\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
     let ok_chunk = wing::pump_h1_chunked_body(conn, dec2, coalesced, resp2, 100);
@@ -1378,14 +1378,14 @@ fn test_f005_serialize_h1_request_overflow_rejected() {
 // F006: drain_h2_response_frames must fail immediately on H2_ERR_FRAME_SIZE_ERROR and process_h2_response_frame must reject RST_STREAM.
 fn test_f006_h2_oversize_frame_and_rst_stream() {
     var rx_oversize: u8[..64] = [0x00, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-    var dec_dt = internal::new_dynamic_table(4096);
+    var dec_dt = h2_internal::new_dynamic_table(4096);
     var resp = wing::Response { .. };
     var got_hdrs = false;
     var ctrl_out: u8[..256] = [];
     let ok_f, _ = wing::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, got_hdrs, ctrl_out);
     assert(!ok_f);
 
-    let rst_hdr = internal::FrameHeader {
+    let rst_hdr = h2_internal::FrameHeader {
         length:     4,
         frame_type: rfc::H2_FRAME_RST_STREAM,
         flags:      0,

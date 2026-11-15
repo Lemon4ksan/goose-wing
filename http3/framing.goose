@@ -3,7 +3,7 @@
 
 // Deterministic zero-allocation HTTP/3 Frame Codec and Stream Invariant Enforcer.
 // Conforms to RFC 9114 Section 7 (HTTP/3 Framing) and RFC 9204 Section 5.
-namespace internal;
+namespace h3_internal;
 
 import std;
 import core from "..";
@@ -32,10 +32,10 @@ struct H3FrameHeader {
 //   src = [0x00, 0x05], offset = 0
 //   returns: H3FrameHeader { frame_type: 0, payload_len: 5, header_len: 2 }, true
 fn parse_h3_frame_header(src: const u8[:], offset: u64) -> H3FrameHeader, bool {
-    let ftype, off1, ok1 = quic_decode_varint(src, offset);
+    let ftype, off1, ok1 = quic_internal::quic_decode_varint(src, offset);
     guard ok1 else { return H3FrameHeader { .. }, false; }
 
-    let plen, off2, ok2 = quic_decode_varint(src, off1);
+    let plen, off2, ok2 = quic_internal::quic_decode_varint(src, off1);
     guard ok2 else { return H3FrameHeader { .. }, false; }
 
     return H3FrameHeader {
@@ -62,8 +62,8 @@ inline fn append_h3_frame_parts<B>(out: B&, hdr: const u8[:], payload: const u8[
 // Encodes an HTTP/3 frame header (Type: VarInt, Length: VarInt) into buffer.
 fn encode_h3_frame_header<B>(out: B&, frame_type: u64, payload_len: u64) -> bool {
     var hdr: u8[..16] = [];
-    let ok_t = quic_encode_varint(hdr, frame_type);
-    let ok_l = quic_encode_varint(hdr, payload_len);
+    let ok_t = quic_internal::quic_encode_varint(hdr, frame_type);
+    let ok_l = quic_internal::quic_encode_varint(hdr, payload_len);
     guard ok_t && ok_l else { return false; }
     let empty: u8[0] = [];
     return append_h3_frame_parts(out, hdr[..], empty[..]);
@@ -88,7 +88,7 @@ fn encode_h3_headers_frame<B>(out: B&, qpack_field_section: const u8[:]) -> bool
 // Encodes a PUSH_PROMISE frame (Type 0x05, RFC 9114 Section 7.2.5).
 fn encode_h3_push_promise<B>(out: B&, push_id: u64, qpack_field_section: const u8[:]) -> bool {
     var pid_buf: u8[..8] = [];
-    guard quic_encode_varint(pid_buf, push_id) else { return false; }
+    guard quic_internal::quic_encode_varint(pid_buf, push_id) else { return false; }
     let plen = (pid_buf.len as u64) + (qpack_field_section.len as u64);
     var hdr: u8[..24] = [];
     guard encode_h3_frame_header(hdr, rfc::H3_FRAME_PUSH_PROMISE, plen) else { return false; }
@@ -108,39 +108,39 @@ fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
     }
 
     var payload: u8[..128] = [];
-    guard quic_encode_varint(payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY) &&
-          quic_encode_varint(payload, settings.qpack_max_table_capacity) &&
-          quic_encode_varint(payload, rfc::H3_SETTING_MAX_FIELD_SECTION_SIZE) &&
-          quic_encode_varint(payload, settings.max_field_section_size) &&
-          quic_encode_varint(payload, rfc::H3_SETTING_QPACK_BLOCKED_STREAMS) &&
-          quic_encode_varint(payload, settings.qpack_blocked_streams) else {
+    guard quic_internal::quic_encode_varint(payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY) &&
+          quic_internal::quic_encode_varint(payload, settings.qpack_max_table_capacity) &&
+          quic_internal::quic_encode_varint(payload, rfc::H3_SETTING_MAX_FIELD_SECTION_SIZE) &&
+          quic_internal::quic_encode_varint(payload, settings.max_field_section_size) &&
+          quic_internal::quic_encode_varint(payload, rfc::H3_SETTING_QPACK_BLOCKED_STREAMS) &&
+          quic_internal::quic_encode_varint(payload, settings.qpack_blocked_streams) else {
         return false;
     }
 
     if settings.enable_connect_protocol > 0 {
-        guard quic_encode_varint(payload, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL) &&
-              quic_encode_varint(payload, settings.enable_connect_protocol) else {
+        guard quic_internal::quic_encode_varint(payload, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL) &&
+              quic_internal::quic_encode_varint(payload, settings.enable_connect_protocol) else {
             return false;
         }
     }
 
     if settings.h3_datagram > 0 {
-        guard quic_encode_varint(payload, H3_SETTINGS_H3_DATAGRAM) &&
-              quic_encode_varint(payload, settings.h3_datagram) else {
+        guard quic_internal::quic_encode_varint(payload, H3_SETTINGS_H3_DATAGRAM) &&
+              quic_internal::quic_encode_varint(payload, settings.h3_datagram) else {
             return false;
         }
     }
 
     if settings.enable_webtransport > 0 {
-        guard quic_encode_varint(payload, H3_SETTINGS_ENABLE_WEBTRANSPORT) &&
-              quic_encode_varint(payload, settings.enable_webtransport) else {
+        guard quic_internal::quic_encode_varint(payload, H3_SETTINGS_ENABLE_WEBTRANSPORT) &&
+              quic_internal::quic_encode_varint(payload, settings.enable_webtransport) else {
             return false;
         }
     }
 
     if settings.webtransport_max_sessions > 0 {
-        guard quic_encode_varint(payload, H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS) &&
-              quic_encode_varint(payload, settings.webtransport_max_sessions) else {
+        guard quic_internal::quic_encode_varint(payload, H3_SETTINGS_WEBTRANSPORT_MAX_SESSIONS) &&
+              quic_internal::quic_encode_varint(payload, settings.webtransport_max_sessions) else {
             return false;
         }
     }
@@ -217,10 +217,10 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
     var seen_ids: u64[..128] = [];
 
     while offset < total {
-        let id, off1, ok1 = quic_decode_varint(payload, offset);
+        let id, off1, ok1 = quic_internal::quic_decode_varint(payload, offset);
         guard ok1 else { return rfc::H3_ERR_FRAME_ERROR; }
 
-        let val, off2, ok2 = quic_decode_varint(payload, off1);
+        let val, off2, ok2 = quic_internal::quic_decode_varint(payload, off1);
         guard ok2 else { return rfc::H3_ERR_FRAME_ERROR; }
 
         offset = off2;
@@ -241,7 +241,7 @@ fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u
 // Encodes a GOAWAY frame (Type 0x07).
 fn encode_h3_goaway_frame<B>(out: B&, stream_id: u64) -> bool {
     var payload: u8[..8] = [];
-    guard quic_encode_varint(payload, stream_id) else { return false; }
+    guard quic_internal::quic_encode_varint(payload, stream_id) else { return false; }
     var hdr: u8[..16] = [];
     guard encode_h3_frame_header(hdr, rfc::H3_FRAME_GOAWAY, payload.len as u64) else { return false; }
     return append_h3_frame_parts(out, hdr[..], payload[..]);
@@ -253,7 +253,7 @@ fn encode_h3_goaway_frame<B>(out: B&, stream_id: u64) -> bool {
 //   payload = [0x04]
 //   returns: stream_id = 4, true
 fn parse_h3_goaway_frame(payload: const u8[:]) -> u64, bool {
-    let stream_id, off, ok = quic_decode_varint(payload, 0);
+    let stream_id, off, ok = quic_internal::quic_decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
     return stream_id, true;
 }
@@ -261,7 +261,7 @@ fn parse_h3_goaway_frame(payload: const u8[:]) -> u64, bool {
 // Encodes a CANCEL_PUSH frame (Type 0x03).
 fn encode_h3_cancel_push<B>(out: B&, push_id: u64) -> bool {
     var payload: u8[..8] = [];
-    guard quic_encode_varint(payload, push_id) else { return false; }
+    guard quic_internal::quic_encode_varint(payload, push_id) else { return false; }
     var hdr: u8[..16] = [];
     guard encode_h3_frame_header(hdr, rfc::H3_FRAME_CANCEL_PUSH, payload.len as u64) else { return false; }
     return append_h3_frame_parts(out, hdr[..], payload[..]);
@@ -273,7 +273,7 @@ fn encode_h3_cancel_push<B>(out: B&, push_id: u64) -> bool {
 //   payload = [0x02]
 //   returns: push_id = 2, true
 fn parse_h3_cancel_push(payload: const u8[:]) -> u64, bool {
-    let push_id, off, ok = quic_decode_varint(payload, 0);
+    let push_id, off, ok = quic_internal::quic_decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
     return push_id, true;
 }
@@ -281,7 +281,7 @@ fn parse_h3_cancel_push(payload: const u8[:]) -> u64, bool {
 // Encodes a MAX_PUSH_ID frame (Type 0x0D).
 fn encode_h3_max_push_id<B>(out: B&, push_id: u64) -> bool {
     var payload: u8[..8] = [];
-    guard quic_encode_varint(payload, push_id) else { return false; }
+    guard quic_internal::quic_encode_varint(payload, push_id) else { return false; }
     var hdr: u8[..16] = [];
     guard encode_h3_frame_header(hdr, rfc::H3_FRAME_MAX_PUSH_ID, payload.len as u64) else { return false; }
     return append_h3_frame_parts(out, hdr[..], payload[..]);
@@ -293,7 +293,7 @@ fn encode_h3_max_push_id<B>(out: B&, push_id: u64) -> bool {
 //   payload = [0x08]
 //   returns: push_id = 8, true
 fn parse_h3_max_push_id(payload: const u8[:]) -> u64, bool {
-    let push_id, off, ok = quic_decode_varint(payload, 0);
+    let push_id, off, ok = quic_internal::quic_decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
     return push_id, true;
 }
@@ -347,7 +347,7 @@ fn parse_h3_priority_field_value(
 fn encode_h3_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
     guard (stream_id & 0x03) == 0 && prio.urgency <= 7 else { return false; }
     var payload: u8[..64] = [];
-    guard quic_encode_varint(payload, stream_id) else { return false; }
+    guard quic_internal::quic_encode_varint(payload, stream_id) else { return false; }
     wing::serialize_http_priority(prio, payload);
     var hdr: u8[..16] = [];
     let plen = payload.len as u64;
@@ -367,7 +367,7 @@ fn parse_h3_priority_update_request(
 ) -> u64, wing::PriorityParam, bool {
     let default_prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
     guard payload.len > 0 else { return 0, default_prio, false; }
-    let stream_id, off, ok = quic_decode_varint(payload, 0);
+    let stream_id, off, ok = quic_internal::quic_decode_varint(payload, 0);
     guard ok else { return 0, default_prio, false; }
     let parsed, ok_prio = parse_h3_priority_field_value(payload[off..], default_incremental);
     guard ok_prio else { return stream_id, default_prio, false; }
@@ -378,7 +378,7 @@ fn parse_h3_priority_update_request(
 fn encode_h3_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::PriorityParam&) -> bool {
     guard prio.urgency <= 7 else { return false; }
     var payload: u8[..64] = [];
-    guard quic_encode_varint(payload, push_id) else { return false; }
+    guard quic_internal::quic_encode_varint(payload, push_id) else { return false; }
     wing::serialize_http_priority(prio, payload);
     var hdr: u8[..16] = [];
     guard encode_h3_frame_header(hdr, rfc::H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }
@@ -396,7 +396,7 @@ fn parse_h3_priority_update_push(
 ) -> u64, wing::PriorityParam, bool {
     let default_prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
     guard payload.len > 0 else { return 0, default_prio, false; }
-    let push_id, off, ok = quic_decode_varint(payload, 0);
+    let push_id, off, ok = quic_internal::quic_decode_varint(payload, 0);
     guard ok else { return 0, default_prio, false; }
     let parsed, ok_prio = parse_h3_priority_field_value(payload[off..], default_incremental);
     guard ok_prio else { return push_id, default_prio, false; }

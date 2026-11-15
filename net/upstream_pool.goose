@@ -8,6 +8,7 @@ import std;
 import core from "..";
 import .pool;
 import .tcp;
+import .transport;
 
 const EPOLLRDHUP: u32 = 0x2000;
 
@@ -48,7 +49,11 @@ inline fn matches_upstream_partition(
 
 inline fn close_upstream_entry_fd(entry: UpstreamConnEntry&) {
     if entry.fd >= 0 {
-        tcp_close(entry.fd);
+        if is_virtual_pipe_fd(entry.fd) {
+            virtual_fd_close(entry.fd);
+        } else {
+            tcp_close(entry.fd);
+        }
         entry.fd = -1;
     }
 }

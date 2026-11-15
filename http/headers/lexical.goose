@@ -18,7 +18,6 @@ let NULL_SET:   ByteSet     = byte_set(NULL_BYTES[..]);
 
 // ---- lexical validation & fast word operations -----------------------------
 
-extern fn native_swar_to_lower_64(v: u64) -> u64 = "wing_swar_to_lower_64";
 extern fn native_swar_to_lower(slice: u8[:]) = "wing_swar_to_lower";
 
 // 64-bit SWAR parallel ASCII lowercase (Alex Hultman / uWebSockets HttpParser.h)

@@ -12,9 +12,9 @@ import grpc.framing;
 import grpc.status;
 import grpc.server;
 import http.headers;
-import client.profile;
-import client.request;
-import client.response;
+import fingerprint.profile;
+import http.request;
+import http.response;
 import client.client;
 
 // ---- gRPC Request & Response Models -------------------------------------

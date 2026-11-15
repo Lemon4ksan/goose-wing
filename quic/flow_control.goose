@@ -4,7 +4,7 @@
 // Deterministic Flow Control Credit Management (RFC 9000 §4).
 // Enforces connection-level and stream-level byte budgets,
 // detects credit exhaustion, and generates window update thresholds.
-namespace internal;
+namespace quic_internal;
 
 import std;
 import core from "..";

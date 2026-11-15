@@ -2,21 +2,13 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // macOS / Darwin kqueue event multiplexing driver.
-namespace internal;
+namespace net_internal;
 
 import std;
 
 // Native macOS kqueue C shims (sys/event.h)
 extern fn native_kqueue_probe() -> i32 = "wing_kqueue_probe";
 extern fn native_kqueue_create() -> i64 = "wing_kqueue_create";
-extern fn native_kqueue_kevent(
-    kq:         i64,
-    changelist: u64,
-    nchanges:   i32,
-    eventlist:  u64,
-    nevents:    i32,
-    timeout_ns: i64,
-) -> i32 = "wing_kqueue_kevent";
 extern fn native_kqueue_close(kq: i64) = "wing_kqueue_close";
 extern fn native_kqueue_kevent_slice(
     kq:         i64,

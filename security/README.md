@@ -346,3 +346,24 @@ of 64 `KeyedGcraSlot` entries (1,024 active tenants total) with LRU slot
 replacement when a shard is full. `apply_rate_limit_headers` formats
 `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, `RateLimit-Policy`,
 and `Retry-After` headers.
+
+### 10. Gateway GCRA, HPKE & SSRF Policy (`security/gcra.goose`, `security/hpke.goose`, `security/ssrf.goose`)
+
+```goose
+fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig
+fn gcra_check(config: const GcraConfig&, cell: GcraTatCell&, cost: u64, now_ns: u64) -> GcraDecision
+fn new_gateway_rate_limiter(rate_per_sec: u64, burst_capacity: u64) -> GatewayRateLimiter
+fn check_gateway_rate_limit(limiter: GatewayRateLimiter&, client_id: const u8[:], cost: u64, now_ns: u64) -> GcraDecision
+fn hpke_setup_base_s(pkR: const u8[32]&, info: const u8[:], kem_id: u16, kdf_id: u16, aead_id: u16, ephemeral_sk: const u8[32]&, out_enc: u8[32]&, out_ctx: HpkeContext&) -> bool
+fn hpke_setup_base_r(enc: const u8[32]&, skR: const u8[32]&, info: const u8[:], kem_id: u16, kdf_id: u16, aead_id: u16, out_ctx: HpkeContext&) -> bool
+fn hpke_seal_base<B>(pkR: const u8[32]&, info: const u8[:], aad: const u8[:], pt: const u8[:], ephemeral_sk: const u8[32]&, aead_id: u16, out_enc: u8[32]&, out_ct: B&) -> bool
+fn hpke_open_base<B>(enc: const u8[32]&, skR: const u8[32]&, info: const u8[:], aad: const u8[:], ct_with_tag: const u8[:], aead_id: u16, out_pt: B&) -> bool
+fn is_ip_allowed_by_ssrf_policy(ip_str: const u8[:], policy: const SsrfPolicy&) -> bool
+```
+
+`security/gcra.goose` tracks per-client gateway arrival cells across 64 bounded
+LRU entries (`GatewayClientEntry[..64]`). `security/hpke.goose` implements RFC
+9180 HPKE Base mode (`DHKEM(X25519, HKDF-SHA256)`) shared by Oblivious HTTP
+(`http/ohttp.goose`) and TLS 1.3 ECH (`tls/ech.goose`). `security/ssrf.goose`
+classifies loopback, RFC 1918, carrier-grade NAT, link-local, multicast, IPv6
+ULA, and CIDR allowlist/denylist targets for client sessions and JWKS fetchers.

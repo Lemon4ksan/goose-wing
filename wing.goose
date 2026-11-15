@@ -9,7 +9,7 @@ namespace wing;
 import std;
 import json;
 
-// ---- core & rfc subsystems -------------------------------------------------
+// ---- core & rfc subsystems (Layers 0-1) ------------------------------------
 
 import core from ".";
 import rfc.http;
@@ -33,26 +33,24 @@ inline fn secs(n: i64) -> i64 { return n * SECOND; }
 inline fn mins(n: i64) -> i64 { return n * MINUTE; }
 inline fn hours(n: i64) -> i64 { return n * HOUR; }
 
-// ---- cookie engine ---------------------------------------------------------
+// ---- domain name system & security primitives (Layer 2) --------------------
 
-import cookie.limits;
-import cookie.constants;
-import cookie.canonical;
-import cookie.dafsa;
-import cookie.psl;
-import cookie.parser;
-import cookie.policy;
-import cookie.engine;
-import cookie.store;
+import dns.svcb;
+import dns.wire;
+import dns.cache;
+import dns.doh;
 
-// ---- fingerprinting, persona & ja4 (inspired by aoni) ----------------------
+import security.gcra;
+import security.ssrf;
+import security.hpke;
+import security.crypto_jar;
+import security.csrf;
+import security.cors;
+import security.rate_limiter;
+import security.privacypass;
+import security.cross_origin_isolation;
 
-import fingerprint.ja4;
-import fingerprint.profile;
-import fingerprint.p0f;
-import fingerprint.akamai;
-
-// ---- http primitives & headers ---------------------------------------------
+// ---- http primitives, models, headers & cache (Layer 3) --------------------
 
 import http.headers;
 import http.headers.lexical;
@@ -66,33 +64,66 @@ import http.forwarded;
 import http.problem;
 import http.negotiate;
 import http.server_timing;
+import http.early_hints;
+import http.compression_dict;
+import http.trace;
+import http.request;
+import http.response;
+import http.bind;
+import http.mime;
+import http.multipart;
+import http.client_cert;
+import http.altsvc;
+import http.signatures;
+import http.digest_fields;
+import http.security_txt;
+import http.targeted_cache;
+import http.resumable_upload;
+import http.status_diagnostics;
+import http.hsts;
+import http.novarysearch;
+import http.bhttp;
+import http.ohttp;
+import http.cache.cache_control;
+import http.cache.freshness;
+import http.cache.validators;
+import http.cache.engine;
+import http.cache.cache_groups;
 
-// ---- tls 1.3 & x.509 pki -------------------------------------------------
+// ---- cookie engine, http/2 & authentication (Layer 4) ----------------------
 
-import tls.record;
-import tls.key_schedule;
-import tls.asn1;
-import tls.sct;
-import tls.x509;
-import tls.ocsp;
-import tls.crl;
-import tls.ticket;
-import tls.handshake;
-import tls.hpke;
-import tls.ech;
-import tls.post_quantum;
-import tls.cert_compression;
-import tls.session;
-import tls.pem;
+import cookie.limits;
+import cookie.constants;
+import cookie.canonical;
+import cookie.dafsa;
+import cookie.psl;
+import cookie.parser;
+import cookie.policy;
+import cookie.engine;
+import cookie.store;
 
-// ---- domain name system (rfc 1035, rfc 9460 svcb, rfc 8484 doh, rfc 5861 cache) -
+import http2.framing;
+import http2.frames;
+import http2.hpack;
+import http2.connection;
 
-import dns.svcb;
-import dns.wire;
-import dns.cache;
-import dns.doh;
+import auth.digest;
+import auth.pkce;
+import auth.device_grant;
+import auth.introspection;
+import auth.dpop;
+import auth.jwt;
+import auth.jwe;
+import auth.jwk;
+import auth.jwks;
+import auth.acme;
 
-// ---- resilient networking & transport (rfc 8305, socks5, pool, retry) ------
+// ---- fingerprinting & resilient l4 networking (Layer 5) --------------------
+
+import fingerprint.ja4;
+import fingerprint.p0f;
+import fingerprint.akamai;
+import fingerprint.profile;
 
 import net.want_queue;
 import net.slowloris;
@@ -111,55 +142,27 @@ import net.masque;
 import net.isolation;
 import net.sockopt;
 import net.driver;
+import net.accel;
 import net.poller;
 import net.event_loop;
 
-// ---- client session and application layer ----------------------------------
+// ---- tls 1.3, quic & http/3 (Layers 6-8) -----------------------------------
 
-import client.profile;
-import client.request;
-import client.response;
-import client.redirect;
-import client.session.ssrf;
-import client.session.mock;
-import client.client;
-import client.session.cookie_bridge;
-import client.session.stages;
-import client.session.exec;
-import client.session.h1_exchange;
-import client.session.verbs;
-import client.policy;
-import client.replay_guard;
-import client.telemetry;
-import client.interceptor;
-import client.stream;
+import tls.record;
+import tls.key_schedule;
+import tls.asn1;
+import tls.sct;
+import tls.x509;
+import tls.ocsp;
+import tls.crl;
+import tls.ticket;
+import tls.handshake;
+import tls.ech;
+import tls.post_quantum;
+import tls.cert_compression;
+import tls.session;
+import tls.pem;
 
-// ---- http protocols & extensions -------------------------------------------
-
-import http.mime;
-import http.multipart;
-import http.trace;
-import http.client_cert;
-import http.altsvc;
-import http.compression_dict;
-import http.signatures;
-import http.digest_fields;
-import http.security_txt;
-import http.targeted_cache;
-import http.resumable_upload;
-import http.status_diagnostics;
-import http.hsts;
-import http.early_hints;
-import http.novarysearch;
-import http.bhttp;
-import http.ohttp;
-import http2.framing;
-import http2.frames;
-import http2.hpack;
-import http2.connection;
-import http3.qpack;
-import http3.framing;
-import http3.connection;
 import quic.packet;
 import quic.frames;
 import quic.migration;
@@ -170,41 +173,54 @@ import quic.AckFrame;
 import quic.bbr;
 import quic.connection;
 
-// ---- http cache engine (rfc 9111) ------------------------------------------
+import http3.qpack;
+import http3.framing;
+import http3.connection;
 
-import http.cache.cache_control;
-import http.cache.freshness;
-import http.cache.validators;
-import http.cache.engine;
-import http.cache.cache_groups;
+// ---- wire subsystem (Layer 9) ----------------------------------------------
 
-// ---- security --------------------------------------------------------------
+import wire.result;
+import wire.types;
+import wire.h1;
+import wire.h1_exchange;
+import wire.hpack;
+import wire.h2;
+import wire.h3;
+import wire.tls;
+import wire.pool;
+import wire.cmd;
+import wire.pipeline;
+import wire.sync;
+import wire.submit;
+import wire.service;
 
-import security.crypto_jar;
-import security.csrf;
-import security.cors;
-import security.rate_limiter;
-import security.privacypass;
-import security.cross_origin_isolation;
+// ---- realtime & streaming (Layer 10) ---------------------------------------
 
-// ---- authentication (rfc 7616 digest, rfc 7636 pkce, rfc 9449 dpop) ---------
+import realtime.ws_deflate;
+import realtime.ws_handshake;
+import realtime.websocket;
+import realtime.topic_tree;
+import realtime.sse;
+import realtime.webtransport;
 
-import auth.digest;
-import auth.pkce;
-import auth.device_grant;
-import auth.introspection;
-import auth.dpop;
-import auth.jwt;
-import auth.jwe;
-import auth.jwk;
-import auth.jwks;
-import auth.acme;
+// ---- client session & server engines (Layer 11) ----------------------------
 
-// ---- server primitives -----------------------------------------------------
+import client.redirect;
+import client.session.ssrf;
+import client.session.mock;
+import client.client;
+import client.contract;
+import client.session.cookie_bridge;
+import client.session.stages;
+import client.session.exec;
+import client.session.verbs;
+import client.policy;
+import client.replay_guard;
+import client.telemetry;
+import client.interceptor;
+import client.stream;
 
 import server.router;
-import http.bind;
-import client.contract;
 import server.pool;
 import server.edge_filter;
 import server.cache;
@@ -219,16 +235,7 @@ import server.h2_multiplexer;
 import server.soa_timer;
 import server.profiler;
 
-// ---- realtime & streaming (rfc 6455 ws & w3c eventsource sse) --------------
-
-import realtime.ws_deflate;
-import realtime.ws_handshake;
-import realtime.websocket;
-import realtime.topic_tree;
-import realtime.sse;
-import realtime.webtransport;
-
-// ---- grpc over http/2 & http/3 & grpc-web ---------------------------------
+// ---- grpc & reverse proxy gateways (Layer 12) ------------------------------
 
 import grpc.constants;
 import grpc.framing;
@@ -238,25 +245,6 @@ import grpc.health;
 import grpc.client;
 import grpc.server;
 
-// ---- reverse proxy & load balancer -----------------------------------------
-
-import proxy.gcra;
 import proxy.health_check;
 import proxy.load_balancer;
 import proxy.reverse_proxy;
-
-// ---- wire subsystem (vulkan-style explicit networking) --------------------
-
-import wire.result;
-import wire.types;
-import wire.h1;
-import wire.hpack;
-import wire.h2;
-import wire.h3;
-import wire.tls;
-import wire.pool;
-import wire.cmd;
-import wire.pipeline;
-import wire.sync;
-import wire.submit;
-import wire.service;

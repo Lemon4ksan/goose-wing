@@ -904,32 +904,32 @@ fn test_peer_abort_propagation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_socket_p0f_profiles(t: lit::T&) {
     t.run("Wing Authentic Zero-Heap NetStack Profile") { sub =>
-        let wing_cfg = internal::p0f_socket_config(internal::SocketP0fKind.Wing);
+        let wing_cfg = net_internal::p0f_socket_config(net_internal::SocketP0fKind.Wing);
         sub.assert_eq(wing_cfg.ttl, 64, "Wing TTL is 64");
         sub.assert_eq(wing_cfg.window_size, 65535, "Wing window size is 65535");
         sub.assert_true(wing_cfg.has_dont_fragment, "Wing DF is enabled");
         sub.assert_true(wing_cfg.tcp_nodelay, "Wing TCP_NODELAY is enabled");
         sub.assert_eq(wing_cfg.wscale, 8, "Wing WScale is 8");
         sub.assert_eq(wing_cfg.mss, 1460, "Wing MSS is 1460");
-        sub.assert_true(internal::validate_p0f_socket_invariants(wing_cfg), "Wing invariants valid");
+        sub.assert_true(net_internal::validate_p0f_socket_invariants(wing_cfg), "Wing invariants valid");
     };
 
     t.run("Custom Socket Profile") { sub =>
-        let custom_cfg = internal::p0f_socket_config(internal::SocketP0fKind.Custom);
+        let custom_cfg = net_internal::p0f_socket_config(net_internal::SocketP0fKind.Custom);
         sub.assert_eq(custom_cfg.ttl, 64, "Custom TTL is 64");
         sub.assert_eq(custom_cfg.window_size, 65535, "Custom window size is 65535");
         sub.assert_true(custom_cfg.has_dont_fragment, "Custom DF is enabled");
         sub.assert_eq(custom_cfg.wscale, 8, "Custom WScale is 8");
-        sub.assert_true(internal::validate_p0f_socket_invariants(custom_cfg), "Custom invariants valid");
+        sub.assert_true(net_internal::validate_p0f_socket_invariants(custom_cfg), "Custom invariants valid");
     };
 
     t.run("None / Raw Socket Profile") { sub =>
-        let none_cfg = internal::p0f_socket_config(internal::SocketP0fKind.None);
+        let none_cfg = net_internal::p0f_socket_config(net_internal::SocketP0fKind.None);
         sub.assert_eq(none_cfg.ttl, 64, "None TTL is 64");
         sub.assert_eq(none_cfg.window_size, 65535, "None window size is 65535");
         sub.assert_false(none_cfg.has_dont_fragment, "None DF is disabled");
         sub.assert_eq(none_cfg.wscale, 7, "None WScale is 7");
-        sub.assert_true(internal::validate_p0f_socket_invariants(none_cfg), "None invariants valid");
+        sub.assert_true(net_internal::validate_p0f_socket_invariants(none_cfg), "None invariants valid");
     };
 }
 
@@ -938,39 +938,39 @@ fn test_socket_p0f_profiles(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_socket_invariant_validation(t: lit::T&) {
     t.run("Invariant Boundary Checks") { sub =>
-        var bad_cfg = internal::p0f_socket_config(internal::SocketP0fKind.Wing);
+        var bad_cfg = net_internal::p0f_socket_config(net_internal::SocketP0fKind.Wing);
 
         // Invalid TTL
         bad_cfg.ttl = 99;
-        sub.assert_false(internal::validate_p0f_socket_invariants(bad_cfg), "TTL 99 is invalid");
+        sub.assert_false(net_internal::validate_p0f_socket_invariants(bad_cfg), "TTL 99 is invalid");
 
         // Valid TTLs
         bad_cfg.ttl = 64;
-        sub.assert_true(internal::validate_p0f_socket_invariants(bad_cfg), "TTL 64 is valid");
+        sub.assert_true(net_internal::validate_p0f_socket_invariants(bad_cfg), "TTL 64 is valid");
         bad_cfg.ttl = 128;
-        sub.assert_true(internal::validate_p0f_socket_invariants(bad_cfg), "TTL 128 is valid");
+        sub.assert_true(net_internal::validate_p0f_socket_invariants(bad_cfg), "TTL 128 is valid");
 
         // Invalid Window Size
         bad_cfg.window_size = 0;
-        sub.assert_false(internal::validate_p0f_socket_invariants(bad_cfg), "Window 0 is invalid");
+        sub.assert_false(net_internal::validate_p0f_socket_invariants(bad_cfg), "Window 0 is invalid");
         bad_cfg.window_size = 70000;
-        sub.assert_false(internal::validate_p0f_socket_invariants(bad_cfg), "Window 70000 is invalid");
+        sub.assert_false(net_internal::validate_p0f_socket_invariants(bad_cfg), "Window 70000 is invalid");
         bad_cfg.window_size = 64240;
 
         // Invalid MSS
         bad_cfg.mss = 200;
-        sub.assert_false(internal::validate_p0f_socket_invariants(bad_cfg), "MSS 200 is invalid");
+        sub.assert_false(net_internal::validate_p0f_socket_invariants(bad_cfg), "MSS 200 is invalid");
         bad_cfg.mss = 1460;
 
         // Invalid WScale
         bad_cfg.wscale = 15;
-        sub.assert_false(internal::validate_p0f_socket_invariants(bad_cfg), "WScale 15 is invalid");
+        sub.assert_false(net_internal::validate_p0f_socket_invariants(bad_cfg), "WScale 15 is invalid");
     };
 
     t.run("Summary String Formatting") { sub =>
-        let cfg = internal::p0f_socket_config(internal::SocketP0fKind.Wing);
+        let cfg = net_internal::p0f_socket_config(net_internal::SocketP0fKind.Wing);
         var summary: u8[>..] = [];
-        internal::format_socket_p0f_summary(cfg, summary);
+        net_internal::format_socket_p0f_summary(cfg, summary);
         sub.assert_true(summary.len > 0, "Summary formatted");
         // Verify key substrings
         sub.assert_contains(summary[..], "Wing/1.0 NetStack", "Summary contains OS/stack name");

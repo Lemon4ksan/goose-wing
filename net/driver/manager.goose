@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Layer 4 Transport Driver manager: platform probing, graceful fallback, and diagnostics.
-namespace internal;
+namespace net_internal;
 
 import std;
 import core from "../..";
@@ -152,10 +152,29 @@ fn probe_transport_driver_for_platform(kind: TransportDriverKind, plat: TargetPl
     }
 
     if effective_kind == TransportDriverKind.Dpdk {
-        res.available = true;
-        res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DPDK_PMD;
-        res.error_code = ERR_SUCCESS;
-        let _ = res.reason.try_set("DPDK Poll Mode Driver active via direct PCIe BAR mapping");
+        if plat == TargetPlatform.Linux {
+            let host = detect_target_platform();
+            if host == TargetPlatform.Linux {
+                let probe_code = native_dpdk_probe();
+                res.available = (probe_code == ERR_SUCCESS);
+                res.error_code = probe_code;
+            } else {
+                res.available = true;
+                res.error_code = ERR_SUCCESS;
+            }
+            if res.available {
+                res.capabilities = CAP_KERNEL_BYPASS | CAP_ZERO_COPY | CAP_BATCH_IO | CAP_DPDK_PMD;
+                let _ = res.reason.try_set("DPDK Poll Mode Driver active via direct PCIe BAR mapping");
+            } else {
+                res.capabilities = CAP_NONE;
+                let _ = res.reason.try_set("DPDK Poll Mode Driver probe failed on current Linux host");
+            }
+        } else {
+            res.available = false;
+            res.capabilities = CAP_NONE;
+            res.error_code = ERR_ENOSYS;
+            let _ = res.reason.try_set("DPDK Poll Mode Driver requires Linux VFIO/UIO PCIe BAR mapping");
+        }
         return res;
     }
 

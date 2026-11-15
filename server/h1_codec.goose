@@ -13,8 +13,8 @@ import http.headers.lexical;
 import http.headers.chunked;
 import http.headers.perfect_hash;
 import net.tcp;
-import client.request;
-import client.response;
+import http.request;
+import http.response;
 import .profiler;
 
 // ---- HTTP/1.1 Wire Request Parser ---------------------------------------

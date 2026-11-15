@@ -116,15 +116,15 @@ fn main() {
     // Scenario 6: RFC 9113 HTTP/2 Multiplexed Framing & Stream Control
     // ------------------------------------------------------------------------
     print("\n[6/11] RFC 9113 HTTP/2 Framing & Stream Demux...\n");
-    let h2_hdr = internal::FrameHeader {
+    let h2_hdr = h2_internal::FrameHeader {
         length:     24,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  101,
     };
     var h2_wire: u8[9] = [0; 9];
-    internal::encode_frame_header(h2_hdr, h2_wire);
-    let parsed_h2, err_h2 = internal::parse_frame_header(h2_wire[..]);
+    h2_internal::encode_frame_header(h2_hdr, h2_wire);
+    let parsed_h2, err_h2 = h2_internal::parse_frame_header(h2_wire[..]);
     print("  H2 Parse Err:        ", err_h2, "\n");
     print("  H2 Frame Type:       ", parsed_h2.frame_type as i64, " (FRAME_HEADERS)\n");
     print("  H2 Stream ID:        ", parsed_h2.stream_id as i64, "\n");
@@ -208,19 +208,19 @@ fn main() {
     // Scenario 9: RFC 7541 HTTP/2 HPACK Dynamic Table & Huffman Compression
     // ------------------------------------------------------------------------
     print("\n[9/11] RFC 7541 HPACK Dynamic Table & Huffman Coding...\n");
-    var dt_enc = internal::new_dynamic_table(4096);
-    var dt_dec = internal::new_dynamic_table(4096);
+    var dt_enc = h2_internal::new_dynamic_table(4096);
+    var dt_dec = h2_internal::new_dynamic_table(4096);
     var hpack_wire: u8[>..] = [];
 
-    internal::encode_hpack_field(dt_enc, hpack_wire, ":method", "GET", internal::HpackIndexing.Incremental, true);
-    internal::encode_hpack_field(dt_enc, hpack_wire, ":path", "/api/v2/market/stream", internal::HpackIndexing.Incremental, true);
-    internal::encode_hpack_field(dt_enc, hpack_wire, ":scheme", "https", internal::HpackIndexing.Incremental, true);
-    internal::encode_hpack_field(dt_enc, hpack_wire, "custom-header", "wasm-edge-flight", internal::HpackIndexing.Incremental, true);
+    h2_internal::encode_hpack_field(dt_enc, hpack_wire, ":method", "GET", h2_internal::HpackIndexing.Incremental, true);
+    h2_internal::encode_hpack_field(dt_enc, hpack_wire, ":path", "/api/v2/market/stream", h2_internal::HpackIndexing.Incremental, true);
+    h2_internal::encode_hpack_field(dt_enc, hpack_wire, ":scheme", "https", h2_internal::HpackIndexing.Incremental, true);
+    h2_internal::encode_hpack_field(dt_enc, hpack_wire, "custom-header", "wasm-edge-flight", h2_internal::HpackIndexing.Incremental, true);
     print("  HPACK Encoded Bytes: ", hpack_wire.len, "\n");
 
-    var decoded_pseudo = internal::H2PseudoHeaders { .. };
+    var decoded_pseudo = h2_internal::H2PseudoHeaders { .. };
     var decoded_headers = wing::HeaderMap { .. };
-    let hpack_dec_err = internal::decode_hpack_to_map(dt_dec, hpack_wire[..], decoded_pseudo, decoded_headers);
+    let hpack_dec_err = h2_internal::decode_hpack_to_map(dt_dec, hpack_wire[..], decoded_pseudo, decoded_headers);
     print("  HPACK Decode Err:    ", hpack_dec_err, " (0 == OK)\n");
     print("  Decoded Headers:     ", decoded_headers.entries.len + 3, "\n");
     print("    [0] :method = ", decoded_pseudo.method[..], "\n");
@@ -235,7 +235,7 @@ fn main() {
     // Scenario 10: TLS 1.3 Post-Quantum Hybrid Key Share (X25519MLKEM768)
     // ------------------------------------------------------------------------
     print("\n[10/11] TLS 1.3 Post-Quantum Hybrid Key Exchange (X25519MLKEM768)...\n");
-    var client_share = internal::PostQuantumKeyShare {
+    var client_share = tls_internal::PostQuantumKeyShare {
         group: rfc::GROUP_X25519_MLKEM768,
         ..
     };
@@ -246,7 +246,7 @@ fn main() {
     client_share.format_hybrid_key_share(pq_wire);
     print("  PQ Client Share Wire:  ", pq_wire.len, " bytes (expected 1220)\n");
 
-    var parsed_pq = internal::PostQuantumKeyShare { .. };
+    var parsed_pq = tls_internal::PostQuantumKeyShare { .. };
     let ok_pq_parse = parsed_pq.parse_hybrid_key_share(pq_wire[..]);
     print("  PQ Client Share Parse: ", ok_pq_parse, "\n");
     print("  PQ NamedGroup:         ", parsed_pq.group, " (0x11EC == X25519MLKEM768)\n");
@@ -259,7 +259,7 @@ fn main() {
         33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
         49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64,
     ];
-    let hybrid_secret = internal::derive_hybrid_shared_secret(classical_ss, pq_ss);
+    let hybrid_secret = tls_internal::derive_hybrid_shared_secret(classical_ss, pq_ss);
     print("  Hybrid Combined Secret: SHA256[0..4] = [", hybrid_secret[0], ", ", hybrid_secret[1], ", ", hybrid_secret[2], ", ", hybrid_secret[3], "]\n");
 
     // ------------------------------------------------------------------------
@@ -271,23 +271,23 @@ fn main() {
     var v4_wire: u8[..16] = [];
     var v8_wire: u8[..16] = [];
 
-    internal::quic_encode_varint(v1_wire, 37);
-    internal::quic_encode_varint(v2_wire, 15293);
-    internal::quic_encode_varint(v4_wire, 49487296);
-    internal::quic_encode_varint(v8_wire, 0x123456789ABCDEF0);
+    quic_internal::quic_encode_varint(v1_wire, 37);
+    quic_internal::quic_encode_varint(v2_wire, 15293);
+    quic_internal::quic_encode_varint(v4_wire, 49487296);
+    quic_internal::quic_encode_varint(v8_wire, 0x123456789ABCDEF0);
 
-    let dec_v1, _, ok_v1 = internal::quic_decode_varint(v1_wire[..], 0);
-    let dec_v2, _, ok_v2 = internal::quic_decode_varint(v2_wire[..], 0);
-    let dec_v4, _, ok_v4 = internal::quic_decode_varint(v4_wire[..], 0);
-    let dec_v8, _, ok_v8 = internal::quic_decode_varint(v8_wire[..], 0);
+    let dec_v1, _, ok_v1 = quic_internal::quic_decode_varint(v1_wire[..], 0);
+    let dec_v2, _, ok_v2 = quic_internal::quic_decode_varint(v2_wire[..], 0);
+    let dec_v4, _, ok_v4 = quic_internal::quic_decode_varint(v4_wire[..], 0);
+    let dec_v8, _, ok_v8 = quic_internal::quic_decode_varint(v8_wire[..], 0);
 
     print("  QUIC Varint 1B: ", dec_v1, " (ok: ", ok_v1, ", len: ", v1_wire.len, ")\n");
     print("  QUIC Varint 2B: ", dec_v2, " (ok: ", ok_v2, ", len: ", v2_wire.len, ")\n");
     print("  QUIC Varint 4B: ", dec_v4, " (ok: ", ok_v4, ", len: ", v4_wire.len, ")\n");
     print("  QUIC Varint 8B: ", dec_v8, " (ok: ", ok_v8, ", len: ", v8_wire.len, ")\n");
 
-    var quic_hdr = internal::QuicHeader {
-        header_type:    internal::QuicHeaderType.Initial,
+    var quic_hdr = quic_internal::QuicHeader {
+        header_type:    quic_internal::QuicHeaderType.Initial,
         version:        rfc::QUIC_VERSION_1,
         payload_length: 1280,
         packet_number:  99,
@@ -297,8 +297,8 @@ fn main() {
     quic_hdr.scid.append([0xCA, 0xFE, 0xBA, 0xBE]);
 
     var quic_wire: u8[..128] = [];
-    let ok_qhdr = internal::encode_quic_header(quic_wire, quic_hdr, 2);
-    let parsed_qhdr, ok_qdec = internal::parse_quic_header(quic_wire[..], 0);
+    let ok_qhdr = quic_internal::encode_quic_header(quic_wire, quic_hdr, 2);
+    let parsed_qhdr, ok_qdec = quic_internal::parse_quic_header(quic_wire[..], 0);
     print("  QUIC Initial Header Encoded: ", ok_qhdr, " (", quic_wire.len, " bytes)\n");
     print("  QUIC Initial Header Decoded: ", ok_qdec, "\n");
     print("  QUIC Version:                0x", parsed_qhdr.version, "\n");

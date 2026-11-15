@@ -15,8 +15,8 @@ import core from "..";
 import rfc.http;
 import http.headers;
 import http.sfv;
-import client.request;
-import client.response;
+import .request;
+import .response;
 
 // ---- Normative Constants & Wire Magics (RFC 9842) ------------------------
 

@@ -275,8 +275,6 @@ struct PslDatabase {
 fn new_psl_database() -> PslDatabase
 fn add_psl_rule(db: PslDatabase&, pattern: const u8[:], rule_type: PslRuleType, section: PslSection) -> bool
 fn update_with_list(db: PslDatabase&, raw_list: const u8[:]) -> i64
-fn punycode_encode_label<B>(utf8_label: const u8[:], out: B&) -> bool
-fn punycode_encode_domain<B>(domain: const u8[:], out: B&) -> bool
 fn match_public_suffix(db: const PslDatabase&, domain: const u8[:], include_private: bool = true) -> PslMatch
 fn find_public_suffix<B>(db: const PslDatabase&, domain: const u8[:], out: B&) -> bool, bool
 fn extract_etld_plus_one<B>(db: const PslDatabase&, host: const u8[:], out: B&) -> bool
@@ -290,9 +288,9 @@ fn compute_default_cookie_path<B>(uri_path: const u8[:], out: B&)
 
 `PslDatabase` combines a compiled 920-byte Deterministic Acyclic Finite State
 Automaton (`PSL_DAFSA_GRAPH`) with dynamic `PslRule` entries loaded via
-`add_psl_rule` or `update_with_list`. `punycode_encode_label` and
-`punycode_encode_domain` convert internationalized UTF-8 labels to `xn--` ASCII
-per RFC 3492 before suffix lookup. `cookie_domain_match` enforces RFC 6265
+`add_psl_rule` or `update_with_list`. `core::punycode_encode_label` and
+`core::punycode_encode_domain` convert internationalized UTF-8 labels to `xn--`
+ASCII per RFC 3492 before suffix lookup. `cookie_domain_match` enforces RFC 6265
 §5.1.3 domain suffix matching on DNS names and exact byte matching on IPv4/IPv6
 literals per RFC 6055.
 
@@ -313,31 +311,28 @@ struct WriteBackBatcher {
     max_pending_threshold: i64                   = 64,
 }
 
-fn new_write_back_batcher(commit_interval_us: i64 = 30000000, max_pending_threshold: i64 = 64) -> WriteBackBatcher
+fn new_write_back_batcher(now_ms: i64 = 0) -> WriteBackBatcher
 fn queue_store_mutation(batcher: WriteBackBatcher&, op_type: StoreOpType, c: const CanonicalCookie&) -> bool
 fn queue_insert(batcher: WriteBackBatcher&, c: const CanonicalCookie&) -> bool
 fn queue_delete(batcher: WriteBackBatcher&, c: const CanonicalCookie&) -> bool
-fn should_commit_batch(batcher: const WriteBackBatcher&, now_us: i64) -> bool
-fn flush_store_batch<B>(batcher: WriteBackBatcher&, now_us: i64, out_sql: B&) -> i64
-fn generate_sqlite_v24_schema<B>(out: B&)
-fn generate_sqlite_insert_sql<B>(c: const CanonicalCookie&, out: B&)
-fn generate_sqlite_delete_sql<B>(c: const CanonicalCookie&, out: B&)
-fn generate_sqlite_session_cleanup_sql<B>(purge_non_secure: bool, out: B&)
+fn coalesce_store_mutation(batcher: WriteBackBatcher&, op_type: StoreOpType, c: const CanonicalCookie&) -> bool
+fn generate_sqlite_insert_sql<B>(out: B&, cookie_val: const CanonicalCookie&)
+fn generate_sqlite_delete_sql<B>(out: B&, cookie_val: const CanonicalCookie&)
 fn format_cookie_header_from_indices<B>(jar: const CanonicalCookieJar&, indices: const u16[:], out: B&)
 fn format_cookie_header_value<B>(cookies: const CanonicalCookie[:], out: B&)
 fn parse_server_cookie_header(raw_cookie_hdr: const u8[:], out_cookies: CanonicalCookie[..64]&) -> i64
-fn get_server_cookie(raw_cookie_hdr: const u8[:], target_name: const u8[:]) -> const u8[:], bool
+fn get_server_cookie(cookies: const CanonicalCookie[:], name: const u8[:]) -> const u8[:]
 fn are_cookies_store_identical(a: const CanonicalCookie&, b: const CanonicalCookie&) -> bool
 fn import_netscape(jar: CanonicalCookieJar&, text: const u8[:], now_us: i64) -> i64
 fn export_netscape<B>(jar: const CanonicalCookieJar&, out: B&)
 fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) -> i64
-fn export_json<B>(jar: const CanonicalCookieJar&, out: B&)
+fn export_json(jar: const CanonicalCookieJar&, out: u8[>..]&)
 ```
 
 `WriteBackBatcher` coalesces up to 128 pending mutations by the 6-tuple unique
 store key `(domain, name, path, partition_key, host_only, source_port)` checked
-via `are_cookies_store_identical`, flushing transactional SQLite v24 statements
-when `should_commit_batch` triggers (default 64 operations or 30 seconds).
+via `are_cookies_store_identical`, formatting SQLite v24 `INSERT` and `DELETE`
+statements via `generate_sqlite_insert_sql` and `generate_sqlite_delete_sql`.
 `import_netscape` / `export_netscape` and `import_json` / `export_json`
 serialize persistent cookies to Netscape `cookies.txt` and JSON formats.
 

@@ -204,7 +204,7 @@ int32_t wing_rio_available(void) {
     return g_rio_available;
 }
 
-uint64_t wing_rio_register_buffer(void *buf, uint32_t len) {
+static uint64_t wing_rio_register_buffer(void *buf, uint32_t len) {
     if (!g_rio_available && init_rio_table() != 0) {
         return 0;
     }
@@ -320,20 +320,6 @@ int32_t wing_rio_wait_cq(uint64_t cq_id, int32_t timeout_ms) {
     return -1;
 }
 
-uint32_t wing_rio_dequeue_completion(uint64_t cq_id, void *results, uint32_t count) {
-    if (!g_rio_available && init_rio_table() != 0) {
-        return 0;
-    }
-    if (!cq_id || !results || !g_rio.RIODequeueCompletion) {
-        return 0;
-    }
-    ULONG n = g_rio.RIODequeueCompletion((WING_RIO_CQ)(uintptr_t)cq_id, (WING_RIO_RESULT *)results, count);
-    if (n == 0xFFFFFFFFUL) {
-        return 0;
-    }
-    return (uint32_t)n;
-}
-
 int32_t wing_rio_dequeue_slice(uint64_t cq_id, wing_rio_results_rw dst) {
     if (!g_rio_available && init_rio_table() != 0) {
         return 0;
@@ -347,22 +333,6 @@ int32_t wing_rio_dequeue_slice(uint64_t cq_id, wing_rio_results_rw dst) {
         return -1;
     }
     return (int32_t)n;
-}
-
-uint64_t wing_rio_create_rq(int64_t sock_fd, uint64_t cq_id, uint32_t max_recv, uint32_t max_send) {
-    if (!g_rio_available && init_rio_table() != 0) {
-        return 0;
-    }
-    if (sock_fd <= 0 || cq_id == 0 || !g_rio.RIOCreateRequestQueue) {
-        return 0;
-    }
-    WING_RIO_RQ rq = g_rio.RIOCreateRequestQueue((SOCKET)sock_fd, max_recv, 1, max_send, 1,
-                                                 (WING_RIO_CQ)(uintptr_t)cq_id, (WING_RIO_CQ)(uintptr_t)cq_id,
-                                                 (PVOID)(uintptr_t)sock_fd);
-    if ((uintptr_t)rq == (uintptr_t)RIO_INVALID_RQ) {
-        return 0;
-    }
-    return (uint64_t)(uintptr_t)rq;
 }
 
 uint64_t wing_rio_create_rq_ctx(int64_t sock_fd, uint32_t max_recv, uint32_t max_send, uint64_t recv_cq,
@@ -687,11 +657,6 @@ int64_t wing_rio_poll_accept(int64_t listen_fd, int32_t timeout_ms) {
 // Non-Windows platform stubs
 int32_t wing_rio_probe(void) { return -ENOSYS; }
 int32_t wing_rio_available(void) { return 0; }
-uint64_t wing_rio_register_buffer(void *buf, uint32_t len) {
-    (void)buf;
-    (void)len;
-    return 0;
-}
 uint64_t wing_rio_register_slice(wing_rio_bytes_rw buf) {
     (void)buf;
     return 0;
@@ -707,22 +672,9 @@ int32_t wing_rio_wait_cq(uint64_t cq_id, int32_t timeout_ms) {
     (void)timeout_ms;
     return -ENOSYS;
 }
-uint32_t wing_rio_dequeue_completion(uint64_t cq_id, void *results, uint32_t count) {
-    (void)cq_id;
-    (void)results;
-    (void)count;
-    return 0;
-}
 int32_t wing_rio_dequeue_slice(uint64_t cq_id, wing_rio_results_rw dst) {
     (void)cq_id;
     (void)dst;
-    return 0;
-}
-uint64_t wing_rio_create_rq(int64_t sock_fd, uint64_t cq_id, uint32_t max_recv, uint32_t max_send) {
-    (void)sock_fd;
-    (void)cq_id;
-    (void)max_recv;
-    (void)max_send;
     return 0;
 }
 uint64_t wing_rio_create_rq_ctx(int64_t sock_fd, uint32_t max_recv, uint32_t max_send, uint64_t recv_cq,

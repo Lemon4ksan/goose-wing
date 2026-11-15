@@ -207,24 +207,24 @@ fn test_radix_trie_routing(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_tako_v2_pool_mechanisms(t: lit::T&) {
     t.run("HeaderMapPool Acquisition and Clean Release") { sub =>
-        var pool = internal::HeaderMapPool { .. };
-        let s0 = internal::acquire_header_map(pool);
-        let s1 = internal::acquire_header_map(pool);
+        var pool = server_internal::HeaderMapPool { .. };
+        let s0 = server_internal::acquire_header_map(pool);
+        let s1 = server_internal::acquire_header_map(pool);
 
         sub.assert_true(s0 >= 0 && s1 >= 0 && s0 != s1, "acquired distinct header map slots");
         sub.assert_true(pool.pool[s0].in_use, "slot marked in_use");
 
-        internal::release_header_map(pool, s0);
+        server_internal::release_header_map(pool, s0);
         sub.assert_false(pool.pool[s0].in_use, "slot released and in_use cleared");
 
         // Reacquire should reuse slot s0
-        let s2 = internal::acquire_header_map(pool);
+        let s2 = server_internal::acquire_header_map(pool);
         sub.assert_eq(s2, s0, "reacquired released slot");
     };
 
     t.run("ExtensionsPool Sanitization (Zero State Leakage)") { sub =>
-        var pool = internal::ExtensionsPool { .. };
-        let idx = internal::acquire_extensions(pool);
+        var pool = server_internal::ExtensionsPool { .. };
+        let idx = server_internal::acquire_extensions(pool);
         sub.assert_true(idx >= 0, "acquired extensions slot");
 
         // Populate slot with sensitive request state
@@ -234,7 +234,7 @@ fn test_tako_v2_pool_mechanisms(t: lit::T&) {
         pool.slots[idx].populated_entries = 0xFF;
 
         // Release slot: must wipe all fields
-        internal::release_extensions(pool, idx);
+        server_internal::release_extensions(pool, idx);
         sub.assert_false(pool.slots[idx].in_use, "slot released");
         sub.assert_eq(pool.slots[idx].peer_ip.len, 0, "peer_ip sanitized");
         sub.assert_eq(pool.slots[idx].matched_route.len, 0, "matched_route sanitized");
@@ -243,21 +243,21 @@ fn test_tako_v2_pool_mechanisms(t: lit::T&) {
     };
 
     t.run("SyncHeadRelease & ConnectionTimer Slowloris Sweep") { sub =>
-        var shr = internal::new_sync_head_release();
+        var shr = server_internal::new_sync_head_release();
         sub.assert_false(shr.head_buffer_released, "starts unreleased");
-        internal::mark_head_released(shr, 4096);
+        server_internal::mark_head_released(shr, 4096);
         sub.assert_true(shr.head_buffer_released, "marked released");
         sub.assert_eq(shr.bytes_consumed, 4096, "consumed 4096 bytes");
 
         // ConnectionTimer: 10s deadline
         let start_ns: u64 = 1000000000;
-        var timer = internal::new_connection_timer(10000000000, start_ns);
+        var timer = server_internal::new_connection_timer(10000000000, start_ns);
 
         // Within deadline
-        sub.assert_true(internal::check_connection_tick(timer, start_ns + 5000000000), "tick ok at 5s");
+        sub.assert_true(server_internal::check_connection_tick(timer, start_ns + 5000000000), "tick ok at 5s");
 
         // Beyond deadline: Slowloris sweep terminates connection
-        sub.assert_false(internal::check_connection_tick(timer, start_ns + 11000000000), "tick fails after deadline exceeded");
+        sub.assert_false(server_internal::check_connection_tick(timer, start_ns + 11000000000), "tick fails after deadline exceeded");
     };
 }
 
@@ -270,7 +270,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/v1/users/{id}", 42);
 
-        var conn_timer = internal::new_connection_timer(30000000000, 1000000000);
+        var conn_timer = server_internal::new_connection_timer(30000000000, 1000000000);
         var req = wing::new_request("GET", "/api/v1/users/777");
         wing::set_header(req, "Host", "example.com");
         wing::set_header(req, "Sec-Fetch-Site", "same-origin");
@@ -278,7 +278,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
         wing::set_header(req, "Sec-Fetch-Dest", "empty");
 
         var res = wing::Response { .. };
-        var fut = internal::new_inline_handler_future(0);
+        var fut = server_internal::new_inline_handler_future(0);
 
         let outcome = wing::execute_pipeline(cfg, conn_timer, "127.0.0.1", req, 1000000000, res, fut);
         let ok_handled = match outcome {
@@ -295,18 +295,18 @@ fn test_unified_server_pipeline(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/health", 1);
 
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         var req = wing::new_request("GET", "/health");
         wing::set_header(req, "Sec-Fetch-Site", "same-origin");
 
         var res1 = wing::Response { .. };
-        var fut1 = internal::new_inline_handler_future(0);
+        var fut1 = server_internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res1, fut1);
         sub.assert_true(out1 == wing::PipelineOutcome.Handled, "first request handled");
 
         // Second request at same nanosecond -> Rate Limited
         var res2 = wing::Response { .. };
-        var fut2 = internal::new_inline_handler_future(0);
+        var fut2 = server_internal::new_inline_handler_future(0);
         let out2 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req, 1000000000, res2, fut2);
         sub.assert_true(out2 == wing::PipelineOutcome.RateLimited, "second request rate limited");
         sub.assert_eq(res2.status_code, 429, "status code 429 Too Many Requests");
@@ -317,13 +317,13 @@ fn test_unified_server_pipeline(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/api/transfer", 99);
 
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         var evil_req = wing::new_request("POST", "/api/transfer");
         wing::set_header(evil_req, "Sec-Fetch-Site", "cross-site");
         wing::set_header(evil_req, "Sec-Fetch-Mode", "cors");
 
         var res = wing::Response { .. };
-        var fut = internal::new_inline_handler_future(0);
+        var fut = server_internal::new_inline_handler_future(0);
         let out = wing::execute_pipeline(cfg, timer, "192.168.1.1", evil_req, 1000000000, res, fut);
         sub.assert_true(out == wing::PipelineOutcome.CsrfRejected, "cross-site mutation rejected by CSRF guard");
         sub.assert_eq(res.status_code, 403, "status code 403 Forbidden");
@@ -334,14 +334,14 @@ fn test_unified_server_pipeline(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/data", 10);
 
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         // POST to GET-only route -> 405 Method Not Allowed
         var req_post = wing::new_request("POST", "/api/data");
         wing::set_header(req_post, "Sec-Fetch-Site", "same-origin");
 
         var res = wing::Response { .. };
-        var fut = internal::new_inline_handler_future(0);
+        var fut = server_internal::new_inline_handler_future(0);
         let out = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_post, 1000000000, res, fut);
         sub.assert_true(out == wing::PipelineOutcome.MethodNotAllowed, "method not allowed triggered");
         sub.assert_eq(res.status_code, 405, "status code 405");
@@ -355,7 +355,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
         wing::set_header(req_head, "Sec-Fetch-Site", "same-origin");
         var res_head = wing::Response { .. };
         res_head.body.append("Should be suppressed");
-        var fut_head = internal::new_inline_handler_future(0);
+        var fut_head = server_internal::new_inline_handler_future(0);
         let out_head = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_head, 1000000000, res_head, fut_head);
         sub.assert_true(out_head == wing::PipelineOutcome.Handled, "HEAD request handled by GET route in pipeline");
         sub.assert_eq(res_head.status_code, 200, "HEAD status code 200");
@@ -367,7 +367,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
 
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         // 1. Valid Expect: 100-continue proceeds to pipeline routing
         var req_100 = wing::new_request("POST", "/upload");
@@ -375,7 +375,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
         wing::set_header(req_100, "Expect", "100-continue");
 
         var res1 = wing::Response { .. };
-        var fut1 = internal::new_inline_handler_future(0);
+        var fut1 = server_internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_100, 1000000000, res1, fut1);
         sub.assert_true(out1 == wing::PipelineOutcome.Handled, "Expect: 100-continue on valid route handled");
 
@@ -385,7 +385,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
         wing::set_header(req_unknown, "Expect", "unknown-feature-flag");
 
         var res2 = wing::Response { .. };
-        var fut2 = internal::new_inline_handler_future(0);
+        var fut2 = server_internal::new_inline_handler_future(0);
         let out2 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_unknown, 1000000000, res2, fut2);
         sub.assert_true(out2 == wing::PipelineOutcome.ExpectationFailed, "unknown Expect rejected with ExpectationFailed");
         sub.assert_eq(res2.status_code, 417, "RFC 9110 status code 417 Expectation Failed");
@@ -401,13 +401,13 @@ fn test_unified_server_pipeline(t: lit::T&) {
         // Route with security egress headers
         wing::add_route_pso(cfg.router, "GET", "/secure", 1002, wing::STAGE_EGRESS_SECURITY_HEADERS);
 
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         // Request 1 to /healthz: even with invalid Expect header, passes via fast-path bypass
         var req1 = wing::new_request("GET", "/healthz");
         wing::set_header(req1, "Expect", "invalid-expectation");
         var res1 = wing::Response { .. };
-        var fut1 = internal::new_inline_handler_future(0);
+        var fut1 = server_internal::new_inline_handler_future(0);
         let out1 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req1, 1000000000, res1, fut1);
         sub.assert_true(out1 == wing::PipelineOutcome.Handled, "fast-path /healthz handled");
         sub.assert_eq(res1.status_code, 200, "status code 200");
@@ -415,7 +415,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
 
         // Request 2 to /healthz at same nanosecond: not rate limited because rate limiter is bypassed
         var res2 = wing::Response { .. };
-        var fut2 = internal::new_inline_handler_future(0);
+        var fut2 = server_internal::new_inline_handler_future(0);
         let out2 = wing::execute_pipeline(cfg, timer, "10.0.0.1", req1, 1000000000, res2, fut2);
         sub.assert_true(out2 == wing::PipelineOutcome.Handled, "second /healthz handled without rate limiting");
 
@@ -423,7 +423,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
         var req_sec = wing::new_request("GET", "/secure");
         wing::set_header(req_sec, "Host", "example.com");
         var res_sec = wing::Response { .. };
-        var fut_sec = internal::new_inline_handler_future(0);
+        var fut_sec = server_internal::new_inline_handler_future(0);
         let out_sec = wing::execute_pipeline(cfg, timer, "10.0.0.1", req_sec, 1000000000, res_sec, fut_sec);
         sub.assert_true(out_sec == wing::PipelineOutcome.Handled, "secure route handled");
         sub.assert_true(res_sec.has_header("Strict-Transport-Security"), "HSTS header present");
@@ -626,7 +626,7 @@ var g_worker_react_app: wing::HttpServer = wing::HttpServer { .. };
 
 thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
     g_worker_sync_app.is_running = true;
-    g_worker_sync_app.timer = internal::new_connection_timer(30000000000, 1000000000);
+    g_worker_sync_app.timer = server_internal::new_connection_timer(30000000000, 1000000000);
     g_worker_sync_app.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1000, wing::secs(1), 100));
     g_worker_sync_app.pipeline.router = wing::new_radix_router();
     let _ = g_worker_sync_app.pipeline.target_host.try_set("127.0.0.1");
@@ -640,7 +640,7 @@ thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) 
 
 thread_fn serve_reactor_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
     g_worker_react_app.is_running = true;
-    g_worker_react_app.timer = internal::new_connection_timer(30000000000, 1000000000);
+    g_worker_react_app.timer = server_internal::new_connection_timer(30000000000, 1000000000);
     g_worker_react_app.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1000, wing::secs(1), 100));
     g_worker_react_app.pipeline.router = wing::new_radix_router();
     let _ = g_worker_react_app.pipeline.target_host.try_set("127.0.0.1");
@@ -1064,7 +1064,7 @@ fn test_server_audit_regressions(t: lit::T&) {
     };
 
     t.run("2. H2ServerSession role, presence_mask, GOAWAY & RST_STREAM") { sub =>
-        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
+        var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
         sub.assert_true(sess.conn.is_server, "H2ServerSession must initialize conn.is_server = true");
         sub.assert_false(sess.conn.enable_push, "H2ServerSession must initialize conn.enable_push = false");
         sub.assert_eq(sess.conn.max_concurrent_streams, 16, "H2ServerSession max_concurrent_streams is 16");
@@ -1072,25 +1072,25 @@ fn test_server_audit_regressions(t: lit::T&) {
         // F012 & F013: copy_stream_headers_and_trailers must populate req.presence_mask so wing::header() works on HTTP/2 requests!
         // Test with HTTP/2 QUERY request which requires Content-Type in pipeline.goose
         var pipeline = wing::new_server_pipeline_config("example.com", wing::new_gcra_quota(1000, wing::secs(1), 100));
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "QUERY", "/search", 10);
 
         var init_wire: u8[>..] = [];
         init_wire.append(rfc::H2_CLIENT_PREFACE);
         build_h2_test_frame_header(init_wire, 0, 0x04, 0x00, 0);
         var wire_out: u8[>..] = [];
-        let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
+        let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
         sub.assert_true(ok_init, "H2 preface and SETTINGS handled");
 
-        var dt = internal::new_dynamic_table(4096);
+        var dt = h2_internal::new_dynamic_table(4096);
         var h_block: u8[>..] = [];
-        internal::encode_hpack_field(dt, h_block, ":method", "QUERY", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, ":authority", "example.com", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, ":path", "/search", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, "content-type", "application/json", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, "content-length", "2", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":method", "QUERY", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":path", "/search", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, "content-type", "application/json", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, "content-length", "2", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", h2_internal::HpackIndexing.Incremental, false);
 
         var req_wire: u8[>..] = [];
         build_h2_test_frame_header(req_wire, h_block.len as u32, 0x01, 0x04, 1); // HEADERS + END_HEADERS
@@ -1103,17 +1103,17 @@ fn test_server_audit_regressions(t: lit::T&) {
         build_h2_test_frame_header(req_wire, 4, 0x03, 0x00, 1);
 
         wire_out.clear();
-        let consumed, ok_req = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", req_wire[..], 1000, wire_out);
+        let consumed, ok_req = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", req_wire[..], 1000, wire_out);
         sub.assert_true(ok_req, "H2 QUERY request + partial tail RST_STREAM succeeded");
         sub.assert_eq(consumed, (req_wire.len - 9) as i64, "Consumed complete frames, left 9-byte incomplete RST_STREAM");
         sub.assert_gt(wire_out.len, 0, "Stream 1 was NOT falsely cancelled by incomplete tail RST_STREAM");
 
         // Decode response HEADERS frame from wire_out (starts at offset 13 after one 13-byte conn WINDOW_UPDATE frame)
-        var resp_dt = internal::new_dynamic_table(4096);
-        var resp_pseudo = internal::H2PseudoHeaders { .. };
+        var resp_dt = h2_internal::new_dynamic_table(4096);
+        var resp_pseudo = h2_internal::H2PseudoHeaders { .. };
         var resp_list = wing::HeaderMap { .. };
         let h_len = ((wire_out[13] as i64) << 16) | ((wire_out[14] as i64) << 8) | (wire_out[15] as i64);
-        let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
+        let dec_err = h2_internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
         sub.assert_true(resp_pseudo.has_status, "First response field is :status");
         sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
@@ -1123,18 +1123,18 @@ fn test_server_audit_regressions(t: lit::T&) {
         build_h2_test_frame_header(goaway_wire, 8, 0x07, 0x00, 0); // GOAWAY len=8, stream=0
         goaway_wire.append([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         wire_out.clear();
-        let _, ok_go = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", goaway_wire[..], 1000, wire_out);
+        let _, ok_go = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", goaway_wire[..], 1000, wire_out);
         sub.assert_true(ok_go, "Client GOAWAY frame accepted");
         sub.assert_true(sess.conn.goaway_received, "sess.conn.goaway_received set to true");
     };
 
     t.run("3. Pipeline HEAD CL dedup, CORS/CSRF PSO & RFC 7239 Forwarded") { sub =>
         // F020: ExtensionsPool resets conn_id and request_seq
-        var ext_pool = internal::ExtensionsPool { .. };
-        let e_idx = internal::acquire_extensions(ext_pool);
+        var ext_pool = server_internal::ExtensionsPool { .. };
+        let e_idx = server_internal::acquire_extensions(ext_pool);
         ext_pool.slots[e_idx].conn_id = 99;
         ext_pool.slots[e_idx].request_seq = 42;
-        internal::release_extensions(ext_pool, e_idx);
+        server_internal::release_extensions(ext_pool, e_idx);
         sub.assert_eq(ext_pool.slots[e_idx].conn_id, 0, "conn_id reset on release");
         sub.assert_eq(ext_pool.slots[e_idx].request_seq, 0, "request_seq reset on release");
 
@@ -1153,12 +1153,12 @@ fn test_server_audit_regressions(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_allowed_origin(cfg.cors_policy, "https://trusted.example.com");
         wing::add_route(cfg.router, "OPTIONS", "/cors-resource", 55);
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         var bad_preflight = wing::new_request("OPTIONS", "/cors-resource");
         wing::set_header(bad_preflight, "Origin", "https://evil.attacker.com");
         wing::set_header(bad_preflight, "Access-Control-Request-Method", "POST");
         var res_cors = wing::Response { .. };
-        var fut_cors = internal::new_inline_handler_future(0);
+        var fut_cors = server_internal::new_inline_handler_future(0);
         let out_cors = wing::execute_pipeline(cfg, timer, "127.0.0.1", bad_preflight, 1000000000, res_cors, fut_cors);
         sub.assert_true(out_cors == wing::PipelineOutcome.CsrfRejected, "Rejected CORS preflight must be rejected, not routed to handler");
         sub.assert_eq(res_cors.status_code, 403, "Rejected CORS preflight returns 403");
@@ -1273,26 +1273,26 @@ fn test_server_audit_regressions(t: lit::T&) {
         wing::add_get_route(server, "/h3-check", 2001);
 
         let h3_settings = wing::H3Settings { .. };
-        var h3_cli = internal::new_h3_client_connection(h3_settings);
-        let sid, ok_sid = internal::open_request_stream(h3_cli);
+        var h3_cli = h3_internal::new_h3_client_connection(h3_settings);
+        let sid, ok_sid = h3_internal::open_request_stream(h3_cli);
         sub.assert_true(ok_sid && sid == 0, "open client H3 stream 0");
         var extra = wing::HeaderMap { .. };
         var req_wire: u8[..1024] = [];
-        let ok_send = internal::send_request_headers(
+        let ok_send = h3_internal::send_request_headers(
             h3_cli, sid, "GET", "https", "127.0.0.1", "/h3-check", extra, true, req_wire,
         );
         sub.assert_true(ok_send, "encode H3 request");
 
-        var h3_srv = internal::new_h3_server_connection(h3_settings);
+        var h3_srv = h3_internal::new_h3_server_connection(h3_settings);
         var tx_wire: u8[..1024] = [];
         let ok_h3 = wing::handle_h3_server_datagram(
             server, h3_srv, sid, "127.0.0.1", req_wire[..], 1000000000, tx_wire,
         );
         sub.assert_true(ok_h3 && tx_wire.len > 0, "handle_h3_server_datagram produced response");
 
-        let rx_err = internal::handle_stream_data(h3_cli, sid, true, tx_wire[..], true);
+        let rx_err = h3_internal::handle_stream_data(h3_cli, sid, true, tx_wire[..], true);
         sub.assert_eq(rx_err, rfc::H3_ERR_NO_ERROR, "client decoded H3 server response");
-        let sc, ok_sc = internal::get_status_code(h3_cli, sid);
+        let sc, ok_sc = h3_internal::get_status_code(h3_cli, sid);
         sub.assert_true(ok_sc && sc == 200, "H3 server response status is 200");
 
         let tls_cfg = wing::TlsServerHandshakeConfig { .. };
@@ -1370,7 +1370,7 @@ fn test_route_handler_stage_and_ergonomics(t: lit::T&) {
             "GET",
             "/users/:id",
             101,
-            internal::ENTRY_PARAMS,
+            server_internal::ENTRY_PARAMS,
             wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_EGRESS_ACCESS_LOG | wing::STAGE_EGRESS_METRICS,
         );
         wing::add_post_route(server, "/items", 103);
@@ -1437,7 +1437,7 @@ fn test_route_handler_stage_and_ergonomics(t: lit::T&) {
             "GET",
             "/jwt-info",
             102,
-            internal::ENTRY_SECURITY,
+            server_internal::ENTRY_SECURITY,
             wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_INGRESS_AUTH_JWT,
         );
 
@@ -1521,32 +1521,32 @@ fn test_srv_reg1_s1(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_srv_reg1_s2(t: lit::T&) {
     t.run("2. H2ServerSession role, presence_mask, GOAWAY & RST_STREAM") { sub =>
-        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
+        var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
         sub.assert_true(sess.conn.is_server, "H2ServerSession must initialize conn.is_server = true");
         sub.assert_false(sess.conn.enable_push, "H2ServerSession must initialize conn.enable_push = false");
         sub.assert_eq(sess.conn.max_concurrent_streams, 16, "H2ServerSession max_concurrent_streams is 16");
 
         // F012 & F013: copy_stream_headers_and_trailers must populate req.presence_mask so wing::header() works on HTTP/2 requests!
         var pipeline = wing::new_server_pipeline_config("example.com", wing::new_gcra_quota(1000, wing::secs(1), 100));
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "QUERY", "/search", 10);
 
         var init_wire: u8[>..] = [];
         init_wire.append(rfc::H2_CLIENT_PREFACE);
         build_h2_test_frame_header(init_wire, 0, 0x04, 0x00, 0);
         var wire_out: u8[>..] = [];
-        let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
+        let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
         sub.assert_true(ok_init, "H2 preface and SETTINGS handled");
 
-        var dt = internal::new_dynamic_table(4096);
+        var dt = h2_internal::new_dynamic_table(4096);
         var h_block: u8[>..] = [];
-        internal::encode_hpack_field(dt, h_block, ":method", "QUERY", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, ":authority", "example.com", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, ":path", "/search", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, "content-type", "application/json", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, "content-length", "2", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":method", "QUERY", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, ":path", "/search", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, "content-type", "application/json", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, "content-length", "2", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", h2_internal::HpackIndexing.Incremental, false);
 
         var req_wire: u8[>..] = [];
         build_h2_test_frame_header(req_wire, h_block.len as u32, 0x01, 0x04, 1);
@@ -1558,17 +1558,17 @@ fn test_srv_reg1_s2(t: lit::T&) {
         build_h2_test_frame_header(req_wire, 4, 0x03, 0x00, 1);
 
         wire_out.clear();
-        let consumed, ok_req = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", req_wire[..], 1000, wire_out);
+        let consumed, ok_req = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", req_wire[..], 1000, wire_out);
         sub.assert_true(ok_req, "H2 QUERY request + partial tail RST_STREAM succeeded");
         sub.assert_eq(consumed, (req_wire.len - 9) as i64, "Consumed complete frames, left 9-byte incomplete RST_STREAM");
         sub.assert_gt(wire_out.len, 0, "Stream 1 was NOT falsely cancelled by incomplete tail RST_STREAM");
 
         if wire_out.len >= 22 {
-            var resp_dt = internal::new_dynamic_table(4096);
-            var resp_pseudo = internal::H2PseudoHeaders { .. };
+            var resp_dt = h2_internal::new_dynamic_table(4096);
+            var resp_pseudo = h2_internal::H2PseudoHeaders { .. };
             var resp_list = wing::HeaderMap { .. };
             let h_len = ((wire_out[13] as i64) << 16) | ((wire_out[14] as i64) << 8) | (wire_out[15] as i64);
-            let dec_err = internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
+            let dec_err = h2_internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
             sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
             sub.assert_true(resp_pseudo.has_status, "First response field is :status");
             sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
@@ -1579,7 +1579,7 @@ fn test_srv_reg1_s2(t: lit::T&) {
         build_h2_test_frame_header(goaway_wire, 8, 0x07, 0x00, 0);
         goaway_wire.append([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         wire_out.clear();
-        let _, ok_go = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", goaway_wire[..], 1000, wire_out);
+        let _, ok_go = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", goaway_wire[..], 1000, wire_out);
         sub.assert_true(ok_go, "Client GOAWAY frame accepted");
         sub.assert_true(sess.conn.goaway_received, "sess.conn.goaway_received set to true");
     };
@@ -1591,11 +1591,11 @@ fn test_srv_reg1_s2(t: lit::T&) {
 fn test_srv_reg1_s3a(t: lit::T&) {
     t.run("3a. ExtensionsPool and HEAD Content-Length dedup") { sub =>
         // F020: ExtensionsPool resets conn_id and request_seq
-        var ext_pool = internal::ExtensionsPool { .. };
-        let e_idx = internal::acquire_extensions(ext_pool);
+        var ext_pool = server_internal::ExtensionsPool { .. };
+        let e_idx = server_internal::acquire_extensions(ext_pool);
         ext_pool.slots[e_idx].conn_id = 99;
         ext_pool.slots[e_idx].request_seq = 42;
-        internal::release_extensions(ext_pool, e_idx);
+        server_internal::release_extensions(ext_pool, e_idx);
         sub.assert_eq(ext_pool.slots[e_idx].conn_id, 0, "conn_id reset on release");
         sub.assert_eq(ext_pool.slots[e_idx].request_seq, 0, "request_seq reset on release");
 
@@ -1621,12 +1621,12 @@ fn test_srv_reg1_s3b(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_allowed_origin(cfg.cors_policy, "https://trusted.example.com");
         wing::add_route(cfg.router, "OPTIONS", "/cors-resource", 55);
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         var bad_preflight = wing::new_request("OPTIONS", "/cors-resource");
         wing::set_header(bad_preflight, "Origin", "https://evil.attacker.com");
         wing::set_header(bad_preflight, "Access-Control-Request-Method", "POST");
         var res_cors = wing::Response { .. };
-        var fut_cors = internal::new_inline_handler_future(0);
+        var fut_cors = server_internal::new_inline_handler_future(0);
         let out_cors = wing::execute_pipeline(cfg, timer, "127.0.0.1", bad_preflight, 1000000000, res_cors, fut_cors);
         sub.assert_true(out_cors == wing::PipelineOutcome.CsrfRejected, "Rejected CORS preflight must be rejected, not routed to handler");
         sub.assert_eq(res_cors.status_code, 403, "Rejected CORS preflight returns 403");
@@ -1764,10 +1764,10 @@ fn srv_reg1_run_round2_part1a(t: lit::T&) {
         sub.assert_true(wing::edge_rule_matches(r_admin, "/public/../admin/panel", empty_hdrs), "edge_rule_matches catches /public/../admin/panel");
 
         // R2-F002: reset_h2_server_session_inplace resets urgency_heads and urgency_tails to -1
-        var h2_sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
+        var h2_sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
         h2_sess.conn.urgency_heads[3] = 5;
         h2_sess.conn.urgency_tails[3] = 5;
-        internal::reset_h2_server_session_inplace(h2_sess, "goose-wing/1.0", 2000);
+        server_internal::reset_h2_server_session_inplace(h2_sess, "goose-wing/1.0", 2000);
         sub.assert_eq(h2_sess.conn.urgency_heads[3], -1, "urgency_heads reset to -1");
         sub.assert_eq(h2_sess.conn.urgency_tails[3], -1, "urgency_tails reset to -1");
 
@@ -1775,7 +1775,7 @@ fn srv_reg1_run_round2_part1a(t: lit::T&) {
         var bad_trailers = wing::HeaderMap { .. };
         wing::append_header(bad_trailers, "content-length", "10");
         var tr_wire: u8[..128] = [];
-        internal::emit_response_trailers(h2_sess, 1, bad_trailers, tr_wire);
+        server_internal::emit_response_trailers(h2_sess, 1, bad_trailers, tr_wire);
         sub.assert_eq(tr_wire.len, 9, "Filtered empty trailer block emits 9-byte frame");
         if tr_wire.len >= 9 {
             sub.assert_eq(tr_wire[3], 0x00, "Filtered empty trailer emits DATA frame (0x00), not HEADERS (0x01)");
@@ -1784,20 +1784,20 @@ fn srv_reg1_run_round2_part1a(t: lit::T&) {
 
         // R2-F004 & R2-F005: 0-length DATA on closed stream does not emit WINDOW_UPDATE(0); self-dependent PRIORITY terminates stream
         var pipeline = wing::new_server_pipeline_config("example.com", wing::new_gcra_quota(1000, wing::secs(1), 100));
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 10);
         var h2_wire: u8[>..] = [];
         h2_wire.append(rfc::H2_CLIENT_PREFACE);
         build_h2_test_frame_header(h2_wire, 0, 0x04, 0x00, 0);
         var h2_out: u8[>..] = [];
-        let _, _ = internal::handle_h2_server_ingress(
+        let _, _ = server_internal::handle_h2_server_ingress(
             h2_sess, pipeline, timer, "127.0.0.1", h2_wire[..], 1000, h2_out,
         );
         h2_sess.conn.last_peer_stream_id = 1;
         var zero_data_wire: u8[>..] = [];
         build_h2_test_frame_header(zero_data_wire, 0, 0x00, 0x01, 1);
         h2_out.clear();
-        let _, ok_zd = internal::handle_h2_server_ingress(
+        let _, ok_zd = server_internal::handle_h2_server_ingress(
             h2_sess, pipeline, timer, "127.0.0.1", zero_data_wire[..], 1000, h2_out,
         );
         sub.assert_true(ok_zd, "0-length DATA on closed stream handled");
@@ -1811,7 +1811,7 @@ fn srv_reg1_run_round2_part1a(t: lit::T&) {
 fn srv_reg1_run_round2_part1b(t: lit::T&) {
     t.run("6b. Round 2 Server Audit Regressions (H2 Host, Timer, Router)") { sub =>
         // R2-F006: copy_stream_headers_and_trailers preserves synthesized Host from :authority even with 32 regular headers
-        var st_full = internal::H2ServerStream { .. };
+        var st_full = server_internal::H2ServerStream { .. };
         st_full.authority.append("api.example.com");
         for h_i in 32 {
             var hname: u8[..64] = [];
@@ -1820,12 +1820,12 @@ fn srv_reg1_run_round2_part1b(t: lit::T&) {
             wing::append_header(st_full.headers, hname[..], "v");
         }
         var req_h2_full = wing::new_request("GET", "/test");
-        internal::copy_stream_headers_and_trailers(st_full, req_h2_full);
+        server_internal::copy_stream_headers_and_trailers(st_full, req_h2_full);
         sub.assert_eq(wing::header(req_h2_full, "host"), "api.example.com", "Synthesized host header preserved when 32 regular headers present");
 
         // R2-F008: check_connection_tick does not underflow u64 when now_ns < timer.last_tick_mono_ns
-        var ctimer = internal::new_connection_timer(30000000000, 1000000000);
-        sub.assert_true(internal::check_connection_tick(ctimer, 500), "now_ns < last_tick_mono_ns must not wrap u64");
+        var ctimer = server_internal::new_connection_timer(30000000000, 1000000000);
+        sub.assert_true(server_internal::check_connection_tick(ctimer, 500), "now_ns < last_tick_mono_ns must not wrap u64");
         sub.assert_eq(ctimer.missed_ticks, 0, "missed_ticks remains 0 when now_ns < last_tick_mono_ns");
 
         // R2-F013, R2-F014, R2-F015: Router unclosed '{*{}' guard, origin-form '://' preservation, and deep param backtracking
@@ -1956,8 +1956,8 @@ fn test_srv_reg2_r1_cache_and_edge_filter(t: lit::T&) {
         var req_a = wing::new_request("GET", "/json");
         wing::set_header(req_a, "Host", "127.0.0.1");
         var res_a = wing::Response { status_code: 200, .. };
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
-        var fut = internal::InlineHandlerFuture { .. };
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
+        var fut = server_internal::InlineHandlerFuture { .. };
         let v_a = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_a, 1000000000, res_a, fut);
         sub.assert_true(v_a == wing::PipelineOutcome.Handled, "First /json request populates cache");
         sub.assert_eq(wing::header(res_a, "content-type"), "application/json", "First /json has Content-Type");
@@ -1990,9 +1990,9 @@ fn test_srv_reg2_r1_cache_and_edge_filter(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
     t.run("2. H2 HPACK dyn table update, conn window replenish on RST, partial send body corruption") { sub =>
-        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
+        var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/echo", 1);
 
         var init_wire: u8[..256] = [];
@@ -2004,25 +2004,25 @@ fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
         init_wire.push(0x00); init_wire.push(0x04);
         init_wire.push(0x00); init_wire.push(0x00); init_wire.push(0x03); init_wire.push(0xE8); // 1000
         var wire_out: u8[>..] = [];
-        let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
+        let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
         sub.assert_true(ok_init, "H2 preface and SETTINGS handled");
 
         // F006: Stream 1 sends Content-Length: 5, then sends 10-byte DATA frame -> stream error PROTOCOL_ERROR,
         // but conn_recv_window MUST remain 65535 (replenished via conn WINDOW_UPDATE)!
-        var dt = internal::new_dynamic_table(4096);
+        var dt = h2_internal::new_dynamic_table(4096);
         var h1: u8[..512] = [];
-        internal::encode_hpack_field(dt, h1, ":method", "POST", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1, ":authority", "127.0.0.1", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1, ":path", "/echo", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1, "content-length", "5", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1, ":path", "/echo", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1, "content-length", "5", h2_internal::HpackIndexing.Incremental, false);
         var w1: u8[..1024] = [];
         build_h2_frame(w1, h1.len as u32, 0x01, 0x04, 1);
         w1.append(h1[..]);
         build_h2_frame(w1, 10, 0x00, 0x01, 1);
         w1.append("0123456789");
         wire_out.clear();
-        let _, ok_w1 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", w1[..], 1000, wire_out);
+        let _, ok_w1 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", w1[..], 1000, wire_out);
         sub.assert_true(ok_w1, "Stream 1 CL mismatch resets stream, keeps conn alive");
         sub.assert_eq(sess.conn.conn_recv_window, 65535, "conn_recv_window replenished after stream DATA error");
 
@@ -2035,17 +2035,17 @@ fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
         let in_cache = wire::STAGE_SRV_IN_DEFAULT_MASK | wire::STAGE_SRV_IN_CACHE_LOOKUP;
         wing::add_route_pso(pipeline.router, "GET", "/cached-big", 55, in_cache, wire::STAGE_SRV_OUT_DEFAULT_MASK);
         var h5: u8[..512] = [];
-        internal::encode_hpack_field(dt, h5, ":method", "GET", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h5, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h5, ":authority", "127.0.0.1", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h5, ":path", "/cached-big", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h5, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h5, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h5, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h5, ":path", "/cached-big", h2_internal::HpackIndexing.Incremental, false);
         var w5: u8[..1024] = [];
         build_h2_frame(w5, h5.len as u32, 0x01, 0x04, 5);
         w5.append(h5[..]);
         build_h2_frame(w5, 16, 0x00, 0x01, 5);
         w5.append("LEAKED_REQ_BYTES");
         wire_out.clear();
-        let _, ok_w5 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", w5[..], 1000, wire_out);
+        let _, ok_w5 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", w5[..], 1000, wire_out);
         sub.assert_true(ok_w5, "Stream 5 partial send initiated");
 
         // Send WINDOW_UPDATE for conn (0) and stream 5 (+20000)
@@ -2055,7 +2055,7 @@ fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
         build_h2_frame(wu5, 4, 0x08, 0x00, 5);
         wu5.push(0x00); wu5.push(0x00); wu5.push(0x4E); wu5.push(0x20);
         wire_out.clear();
-        let _, ok_wu5 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wu5[..], 1000, wire_out);
+        let _, ok_wu5 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wu5[..], 1000, wire_out);
         sub.assert_true(ok_wu5, "Stream 5 WINDOW_UPDATE handled");
         sub.assert_false(core::contains(wire_out[..], "LEAKED_REQ_BYTES"), "Request body must NEVER leak into response DATA");
         sub.assert_true(wire_out.len >= 9000, "Remaining 9000 response bytes flushed after WINDOW_UPDATE");
@@ -2082,8 +2082,8 @@ fn test_srv_reg2_r3_pipeline_and_router(t: lit::T&) {
         var req_get = wing::new_request("GET", "/item");
         wing::set_header(req_get, "Host", "127.0.0.1");
         var res_get = wing::Response { status_code: 200, .. };
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
-        var fut = internal::InlineHandlerFuture { .. };
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
+        var fut = server_internal::InlineHandlerFuture { .. };
         let _ = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_get, 1000000000, res_get, fut);
         let etag_val = wing::header(res_get, "etag");
         sub.assert_true(etag_val.len > 0, "GET /item produces ETag");
@@ -2252,8 +2252,8 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
         wing::set_header(req_opt, "Origin", "https://app.example.com");
         wing::set_header(req_opt, "Access-Control-Request-Method", "POST");
         var res_opt = wing::Response { status_code: 200, .. };
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
-        var fut = internal::InlineHandlerFuture { .. };
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
+        var fut = server_internal::InlineHandlerFuture { .. };
         let v_opt = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_opt, 1000000000, res_opt, fut);
         sub.assert_true(v_opt == wing::PipelineOutcome.CorsPreflight, "CORS preflight OPTIONS returns CorsPreflight");
         sub.assert_eq(res_opt.status_code as i64, 204, "CORS preflight returns 204 without 401 JWT escalation");
@@ -2271,7 +2271,7 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
         hdr_cookie.append(sealed_val[..]);
         var req_ck = wing::new_request("GET", "/");
         wing::set_header(req_ck, "Cookie", hdr_cookie[..]);
-        var ext_ck = internal::RequestExtensions { .. };
+        var ext_ck = server_internal::RequestExtensions { .. };
         let _ = wing::stage_server_auth_cookie(cfg.private_jar, req_ck, ext_ck, 1000000000);
         sub.assert_eq(ext_ck.session_data[..], "uid=42", "Valid second session cookie accepted after tossed first cookie");
 
@@ -2281,13 +2281,13 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
         let ip_out = wing::extract_effective_client_ip(true, "127.0.0.1", req_ip);
         sub.assert_eq(ip_out, "2001:db8::1", "Forwarded second element for= extracted and port stripped");
 
-        var ctimer = internal::new_connection_timer(2000, 100);
-        internal::notify_request_start(ctimer);
-        internal::notify_request_end(ctimer);
-        let t_alive1 = internal::advance_connection_tick(ctimer);
-        internal::notify_request_start(ctimer);
-        internal::notify_request_end(ctimer);
-        let t_alive2 = internal::advance_connection_tick(ctimer);
+        var ctimer = server_internal::new_connection_timer(2000, 100);
+        server_internal::notify_request_start(ctimer);
+        server_internal::notify_request_end(ctimer);
+        let t_alive1 = server_internal::advance_connection_tick(ctimer);
+        server_internal::notify_request_start(ctimer);
+        server_internal::notify_request_end(ctimer);
+        let t_alive2 = server_internal::advance_connection_tick(ctimer);
         sub.assert_true(t_alive1 && t_alive2, "Completed requests between ticks must reset missed_ticks and keep connection alive");
     };
 }
@@ -2298,43 +2298,43 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
 fn test_srv_reg3_r3_h2_and_router(t: lit::T&) {
     t.run("3. H2 rejected HEADERS HPACK sync, 8192 initial window & Router OPTIONS *, >512B path, suffix param") { sub =>
         // F007a: local_initial_window_size must match advertised H2_SERVER_INITIAL_STREAM_WINDOW (8192)
-        var sess = internal::new_h2_server_session("goose-wing/1.0", 1000);
+        var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
         sub.assert_eq(sess.conn.local_initial_window_size as i64, 8192, "H2 session local_initial_window_size matches advertised 8192");
 
         // F007b: Self-dependent HEADERS (stream 1 depends on stream 1) with PRIORITY (0x20) + END_HEADERS (0x04)
         // must still decode HPACK incremental indexing so subsequent stream 3 referencing that dynamic entry succeeds!
         var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/ok", 10);
 
         var wire_in: u8[..1024] = [];
         wire_in.append(rfc::H2_CLIENT_PREFACE);
         build_h2_frame(wire_in, 0, 0x04, 0x00, 0);
 
-        var dt = internal::new_dynamic_table(4096);
+        var dt = h2_internal::new_dynamic_table(4096);
         var h1_pri: u8[..512] = [];
         // 5-byte PRIORITY header: dep = stream 1 (self-dependency -> RST_STREAM(PROTOCOL_ERROR)), weight = 15
         h1_pri.push(0x00); h1_pri.push(0x00); h1_pri.push(0x00); h1_pri.push(0x01); h1_pri.push(15);
-        internal::encode_hpack_field(dt, h1_pri, ":method", "GET", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1_pri, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1_pri, ":authority", "127.0.0.1", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1_pri, ":path", "/ok", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h1_pri, "x-shared-dyn", "dyn-value-123", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1_pri, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1_pri, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1_pri, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1_pri, ":path", "/ok", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h1_pri, "x-shared-dyn", "dyn-value-123", h2_internal::HpackIndexing.Incremental, false);
         build_h2_frame(wire_in, h1_pri.len as u32, 0x01, 0x25, 1); // END_STREAM(0x01) | END_HEADERS(0x04) | PRIORITY(0x20)
         wire_in.append(h1_pri[..]);
 
         // Stream 3 references the newly indexed dynamic table entry ("x-shared-dyn: dyn-value-123")
         var h3: u8[..512] = [];
-        internal::encode_hpack_field(dt, h3, ":method", "GET", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h3, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h3, ":authority", "127.0.0.1", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h3, ":path", "/ok", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(dt, h3, "x-shared-dyn", "dyn-value-123", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h3, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h3, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h3, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h3, ":path", "/ok", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(dt, h3, "x-shared-dyn", "dyn-value-123", h2_internal::HpackIndexing.Incremental, false);
         build_h2_frame(wire_in, h3.len as u32, 0x01, 0x05, 3);
         wire_in.append(h3[..]);
 
         var wire_out: u8[>..] = [];
-        let _, ok_h2 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, wire_out);
+        let _, ok_h2 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire_in[..], 1000, wire_out);
         sub.assert_true(ok_h2, "H2 connection survives self-dependent stream 1 and decodes stream 3 dynamic HPACK entry");
         sub.assert_true(sess.conn.hpack_dec.entries.len > 0, "HPACK decoder dynamic table updated on rejected stream 1");
 
@@ -2425,8 +2425,8 @@ fn test_srv_reg3_r4_server_wire(t: lit::T&) {
         );
         wing::add_route(cfg.router, "POST", "/submit", 1);
 
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
-        var fut = internal::InlineHandlerFuture { .. };
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
+        var fut = server_internal::InlineHandlerFuture { .. };
 
         // 1. /.well-known/security.txt automatic serving
         var req_sec = wing::new_request("GET", "/.well-known/security.txt");
@@ -2456,27 +2456,27 @@ fn test_srv_reg3_r4_server_wire(t: lit::T&) {
 
 fn test_goose2rfc_server_audit_regressions(t: lit::T&) {
     t.run("1. SERVER1_C01: H2 GOAWAY 0x7FFFFFFF graceful shutdown & non-increasing last_stream_id (RFC 9113 §6.8)") { sub =>
-        var sess = internal::H2ServerSession { .. };
+        var sess = server_internal::H2ServerSession { .. };
         sess.conn.is_server = true;
         var out_wire: u8[..256] = [];
-        let ga_hdr = internal::FrameHeader {
+        let ga_hdr = h2_internal::FrameHeader {
             length:     8,
             frame_type: rfc::H2_FRAME_GOAWAY,
             flags:      0,
             stream_id:  0,
         };
         var payload_max: u8[8] = [0x7F, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00];
-        let ok_max = internal::process_ingress_goaway(sess, ga_hdr, payload_max[..], out_wire);
+        let ok_max = server_internal::process_ingress_goaway(sess, ga_hdr, payload_max[..], out_wire);
         sub.assert_true(ok_max, "Client graceful-shutdown GOAWAY with last_stream_id=0x7FFFFFFF accepted");
         sub.assert_eq(sess.conn.goaway_last_stream_id, 0x7FFFFFFF, "goaway_last_stream_id recorded as 0x7FFFFFFF");
 
         var payload_even: u8[8] = [0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00];
-        let ok_even = internal::process_ingress_goaway(sess, ga_hdr, payload_even[..], out_wire);
+        let ok_even = server_internal::process_ingress_goaway(sess, ga_hdr, payload_even[..], out_wire);
         sub.assert_true(ok_even, "Subsequent GOAWAY with lower even stream ID 2 accepted");
         sub.assert_eq(sess.conn.goaway_last_stream_id, 2, "goaway_last_stream_id decreased to 2");
 
         var payload_inc: u8[8] = [0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00];
-        let ok_inc = internal::process_ingress_goaway(sess, ga_hdr, payload_inc[..], out_wire);
+        let ok_inc = server_internal::process_ingress_goaway(sess, ga_hdr, payload_inc[..], out_wire);
         sub.assert_false(ok_inc, "Subsequent GOAWAY increasing last_stream_id from 2 to 4 rejected");
         sub.assert_true(out_wire.len > 0, "PROTOCOL_ERROR GOAWAY emitted on increasing last_stream_id");
     };

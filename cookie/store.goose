@@ -71,8 +71,8 @@ struct PendingStoreOp {
 // WriteBackBatcher manages asynchronous, non-blocking mutation batching
 // with queue coalescing and threshold-based transaction committing.
 struct WriteBackBatcher {
-    max_batch_size:      i64 = internal::K_COMMIT_AFTER_BATCH_SIZE,  // 512
-    commit_interval_ms:  i64 = internal::K_COMMIT_INTERVAL_MS,       // 30000
+    max_batch_size:      i64 = cookie_internal::K_COMMIT_AFTER_BATCH_SIZE,  // 512
+    commit_interval_ms:  i64 = cookie_internal::K_COMMIT_INTERVAL_MS,       // 30000
     last_commit_ms:      i64 = 0,
     total_committed_ops: i64 = 0,
     total_coalesced_ops: i64 = 0,
@@ -84,8 +84,8 @@ struct WriteBackBatcher {
 // Constructs a new WriteBackBatcher with default Chromium thresholds.
 fn new_write_back_batcher(now_ms: i64 = 0) -> WriteBackBatcher {
     return WriteBackBatcher {
-        max_batch_size:      internal::K_COMMIT_AFTER_BATCH_SIZE,
-        commit_interval_ms:  internal::K_COMMIT_INTERVAL_MS,
+        max_batch_size:      cookie_internal::K_COMMIT_AFTER_BATCH_SIZE,
+        commit_interval_ms:  cookie_internal::K_COMMIT_INTERVAL_MS,
         last_commit_ms:      now_ms,
         total_committed_ops: 0,
         total_coalesced_ops: 0,
@@ -318,7 +318,7 @@ fn import_netscape(jar: CanonicalCookieJar&, content: const u8[:], now_us: i64) 
 
     while line_start < content.len {
         // Go #75672 (CVE-2025-58186): Enforce K_MAX_COOKIES cap on bulk cookie import to prevent memory/CPU exhaustion
-        guard imported_count < internal::K_MAX_COOKIES else { break; }
+        guard imported_count < cookie_internal::K_MAX_COOKIES else { break; }
 
         let line_end, next_start = find_netscape_line_range(content, line_start);
         if try_import_netscape_cookie(jar, content[line_start..line_end], now_us) {
@@ -381,7 +381,7 @@ fn import_json(jar: CanonicalCookieJar&, json_text: const u8[:], now_us: i64) ->
 
     json::each_element(json_reader) {
         // Go #75672 (CVE-2025-58186): Enforce K_MAX_COOKIES cap on bulk cookie import to prevent memory/CPU exhaustion
-        guard imported_count < internal::K_MAX_COOKIES else { return imported_count; }
+        guard imported_count < cookie_internal::K_MAX_COOKIES else { return imported_count; }
         var parsed_cookie = CanonicalCookie { .. };
         let read_ok = read_canonical_cookie_json_object(json_reader, parsed_cookie);
 
@@ -577,7 +577,7 @@ fn parse_single_server_cookie_pair<C>(pair_slice: const u8[:], now_us: i64, out:
     let cookie_name = lhs.trim_lws();
     let cookie_val = rhs.trim_lws();
     guard cookie_name.len > 0 else { return; }
-    if core::add_sat_i64(cookie_name.len, cookie_val.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
+    if core::add_sat_i64(cookie_name.len, cookie_val.len) > cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return;
     }
     guard validate_cookie_name(cookie_name) && is_valid_cookie_value(cookie_val) else { return; }
@@ -663,7 +663,7 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     var committed = false;
     defer if !committed { cookie_ref = CanonicalCookie { .. }; };
 
-    guard core::add_sat_i64(n_part.len, v_part.len) <= internal::K_MAX_COOKIE_NAME_VAL_LEN else { return false; }
+    guard core::add_sat_i64(n_part.len, v_part.len) <= cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN else { return false; }
     guard cookie_ref.domain.try_set(d_part)
         && cookie_ref.path.try_set(p_part)
         && cookie_ref.name.try_set(n_part)
@@ -686,7 +686,7 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     if !cookie_ref.host_only && is_public_suffix_domain(cookie_ref.domain[..]) {
         return false;
     }
-    if core::add_sat_i64(cookie_ref.name.len, cookie_ref.value.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
+    if core::add_sat_i64(cookie_ref.name.len, cookie_ref.value.len) > cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return false;
     }
     committed = true;

@@ -7,7 +7,7 @@ namespace wing;
 import std;
 import core from "..";
 import rfc.http;
-import proxy.gcra;
+import security.gcra;
 
 // ---- quota specification & decisions ---------------------------------------
 

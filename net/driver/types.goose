@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Layer 4 Transport Driver types, capabilities, and configurations.
-namespace internal;
+namespace net_internal;
 
 import std;
 import os;

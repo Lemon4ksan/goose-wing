@@ -801,38 +801,6 @@ fn publish_prepared(
     return delivered;
 }
 
-// Publishes a PreparedMessage with selective compression support (uWebSockets sendPrepared pattern).
-// Dispatches `msg.compressed_wire` if `msg.has_compressed` is true and `supports_compression(fd)` returns true;
-// otherwise dispatches `msg.wire`.
-fn publish_prepared_selective<LookupFn: fn(i64) -> bool>(
-    tree:                 TopicTree&,
-    topic:                const u8[:],
-    msg:                  const PreparedMessage&,
-    supports_compression: LookupFn,
-) -> i64 {
-    guard is_valid_publish_topic(topic) && msg.wire.len > 0 else { return 0; }
-
-    var matched_fds: i64[..512] = [];
-    find_subscribers(tree, topic, matched_fds);
-
-    var delivered: i64 = 0;
-    for fd in matched_fds {
-        let wire_to_send = if msg.has_compressed && supports_compression(fd) {
-            msg.compressed_wire[..]
-        } else {
-            msg.wire[..]
-        };
-
-        let sent = tcp_send(fd, wire_to_send);
-        if sent > 0 {
-            delivered += 1;
-        }
-    }
-
-    record_publish_stats(tree, delivered);
-    return delivered;
-}
-
 // ---- uWebSockets TopicTree Batch Drainage & Message Palette Engine ---------
 
 fn flush_node_palette_messages(tree: const TopicTree&, n_i64: i64, fd: i64, count: i64) -> i64 {

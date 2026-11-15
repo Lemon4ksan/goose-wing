@@ -8,8 +8,8 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.request;
-import client.response;
+import .request;
+import .response;
 import http.headers.chunked_fsm;
 import .sfv;
 
@@ -406,49 +406,49 @@ fn finish_hashing_sink<Inner>(sink: HashingSink<Inner>&) -> u8[32] {
 
 // Feeds incoming wire slice through 64-bit ChunkFsmDecoder and emits clean slices into sink.
 fn pump_chunk_fsm<Sink, B>(
-    dec:  internal::ChunkFsmDecoder&,
+    dec:  http_internal::ChunkFsmDecoder&,
     wire: const u8[:],
     sink: Sink&,
     out:  B&,
-) -> internal::ChunkFsmStatus, i64 {
+) -> http_internal::ChunkFsmStatus, i64 {
     var total_consumed: i64 = 0;
     var cursor:         i64 = 0;
     while cursor < wire.len {
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, wire[cursor..]);
+        let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, wire[cursor..]);
         cursor = core::add_sat_i64(cursor, consumed);
         total_consumed = core::add_sat_i64(total_consumed, consumed);
         if chunk.len > 0 {
             guard sink.emit(chunk, out) else {
-                return internal::ChunkFsmStatus.Error, total_consumed;
+                return http_internal::ChunkFsmStatus.Error, total_consumed;
             }
         }
-        if st == internal::ChunkFsmStatus.Complete || st == internal::ChunkFsmStatus.Error {
+        if st == http_internal::ChunkFsmStatus.Complete || st == http_internal::ChunkFsmStatus.Error {
             return st, total_consumed;
         }
     }
-    return internal::ChunkFsmStatus.NeedMore, total_consumed;
+    return http_internal::ChunkFsmStatus.NeedMore, total_consumed;
 }
 
 // Feeds incoming wire slice through 64-bit ChunkFsmDecoder and invokes callback F(chunk)
 // on each zero-copy decoded slice in constant stack RAM without growing an output buffer.
 fn pump_chunk_fsm_streaming<F>(
-    dec:  internal::ChunkFsmDecoder&,
+    dec:  http_internal::ChunkFsmDecoder&,
     wire: const u8[:],
-) -> internal::ChunkFsmStatus, i64 {
+) -> http_internal::ChunkFsmStatus, i64 {
     var total_consumed: i64 = 0;
     var cursor:         i64 = 0;
     while cursor < wire.len {
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, wire[cursor..]);
+        let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, wire[cursor..]);
         cursor = core::add_sat_i64(cursor, consumed);
         total_consumed = core::add_sat_i64(total_consumed, consumed);
         if chunk.len > 0 {
             F(chunk);
         }
-        if st == internal::ChunkFsmStatus.Complete || st == internal::ChunkFsmStatus.Error {
+        if st == http_internal::ChunkFsmStatus.Complete || st == http_internal::ChunkFsmStatus.Error {
             return st, total_consumed;
         }
     }
-    return internal::ChunkFsmStatus.NeedMore, total_consumed;
+    return http_internal::ChunkFsmStatus.NeedMore, total_consumed;
 }
 
 // Decodes an HTTP/1.1 chunked body from wire bytes into `out_body` while verifying
@@ -463,22 +463,22 @@ fn verify_chunked_wire_digest<B>(
     var ver, ok_v = begin_request_streaming_digest(req);
     guard ok_v else { return false; }
 
-    var dec_stream = internal::new_chunk_fsm_decoder();
+    var dec_stream = http_internal::new_chunk_fsm_decoder();
     var feed_ok = true;
     let st_stream, consumed_stream = pump_chunk_fsm_streaming(dec_stream, wire_chunks) { chunk =>
         if !update_streaming_digest(ver, chunk) {
             feed_ok = false;
         }
     };
-    guard feed_ok && st_stream == internal::ChunkFsmStatus.Complete && consumed_stream == wire_chunks.len else {
+    guard feed_ok && st_stream == http_internal::ChunkFsmStatus.Complete && consumed_stream == wire_chunks.len else {
         return false;
     }
     guard finish_streaming_digest(ver) else { return false; }
 
-    var dec = internal::new_chunk_fsm_decoder();
+    var dec = http_internal::new_chunk_fsm_decoder();
     var hsink = new_hashing_sink(ArenaSink { max_bytes: max_bytes });
     let st, consumed = pump_chunk_fsm(dec, wire_chunks, hsink, out_body);
-    guard st == internal::ChunkFsmStatus.Complete && consumed == wire_chunks.len else {
+    guard st == http_internal::ChunkFsmStatus.Complete && consumed == wire_chunks.len else {
         out_body.clear();
         return false;
     }

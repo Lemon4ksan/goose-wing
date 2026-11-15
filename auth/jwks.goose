@@ -8,7 +8,7 @@ namespace wing;
 import std;
 import json;
 import core from "..";
-import client.session.ssrf;
+import security.ssrf;
 import .jwt;
 import .jwk;
 

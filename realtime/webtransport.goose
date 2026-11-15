@@ -10,9 +10,9 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.profile;
-import client.request;
-import client.response;
+import fingerprint.profile;
+import http.request;
+import http.response;
 
 // ---- WebTransport & RFC 9221 Constants (draft-16) -------------------------
 

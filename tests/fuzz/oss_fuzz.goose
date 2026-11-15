@@ -275,16 +275,16 @@ fn fuzz_target_http1(data: const u8[:]) -> u64 {
     if err_chunk == wing::ChunkedDecodeError.None { sig = fuzz_mix_state(sig, 0x1005 ^ (trailers.entries.len as u64)); }
 
     var fdp = new_fdp(data);
-    var fsm = internal::new_chunk_fsm_decoder();
+    var fsm = http_internal::new_chunk_fsm_decoder();
     while fdp_remaining(fdp) > 0 {
         let step_len = ((fdp_consume_u8(fdp) & 0x1F) as i64) | 1;
         let chunk = fdp_consume_bytes(fdp, step_len);
-        let st, _, _ = internal::chunk_fsm_feed(fsm, chunk);
-        if st == internal::ChunkFsmStatus.Complete {
+        let st, _, _ = http_internal::chunk_fsm_feed(fsm, chunk);
+        if st == http_internal::ChunkFsmStatus.Complete {
             sig = fuzz_mix_state(sig, 0x1006);
             break;
         }
-        if st == internal::ChunkFsmStatus.Error { break; }
+        if st == http_internal::ChunkFsmStatus.Error { break; }
     }
 
     let mp_opts = wing::MultipartOptions { .. };
@@ -311,10 +311,10 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
     let max_cap = max(cap_choice, 64);
     let rest = fdp_consume_remaining(fdp);
 
-    var dt = internal::new_dynamic_table(max_cap);
+    var dt = h2_internal::new_dynamic_table(max_cap);
     var hdrs = wing::HeaderMap { .. };
-    var pseudo = internal::H2PseudoHeaders { .. };
-    let hpack_err = internal::decode_hpack_to_map(dt, rest, pseudo, hdrs, 65536, true);
+    var pseudo = h2_internal::H2PseudoHeaders { .. };
+    let hpack_err = h2_internal::decode_hpack_to_map(dt, rest, pseudo, hdrs, 65536, true);
     assert(dt.used_bytes <= dt.current_max_size && dt.current_max_size <= dt.max_allowed_size && dt.count <= 128);
     if hpack_err == rfc::H2_ERR_NO_ERROR {
         sig = fuzz_mix_state(sig, 0x2001 ^ (hdrs.entries.len as u64));
@@ -324,7 +324,7 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
     var steps: i64 = 0;
     while core::add_sat_i64(cur, 9) <= data.len && steps < 32 {
         let hdr_end = core::add_sat_i64(cur, 9);
-        let fh, err_fh = internal::parse_frame_header(data[cur..hdr_end]);
+        let fh, err_fh = h2_internal::parse_frame_header(data[cur..hdr_end]);
         cur = hdr_end;
         steps = core::add_sat_i64(steps, 1);
         if err_fh != 0 { break; }
@@ -335,11 +335,11 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
         let payload = data[cur..pay_end];
         cur = pay_end;
 
-        let _, _ = internal::extract_padded_frame_payload(fh, payload);
-        let _, _ = internal::extract_headers_frame_payload(fh, payload);
-        let _, _, err_pri = internal::parse_priority_update_payload(payload, false);
+        let _, _ = h2_internal::extract_padded_frame_payload(fh, payload);
+        let _, _ = h2_internal::extract_headers_frame_payload(fh, payload);
+        let _, _, err_pri = h2_internal::parse_priority_update_payload(payload, false);
         if err_pri == 0 { sig = fuzz_mix_state(sig, 0x2020); }
-        let _ = internal::parse_altsvc_frame(payload, fh.stream_id);
+        let _ = h2_internal::parse_altsvc_frame(payload, fh.stream_id);
     }
     return sig;
 }
@@ -348,25 +348,25 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
 // Ported from vendor/nghttp2/fuzz/fuzz_target.cc & fuzz_target_fdp.cc
 fn fuzz_target_http2_session(data: const u8[:]) -> u64 {
     var sig: u64 = 0x3000;
-    var srv_sess = internal::new_h2_server_session("localhost");
+    var srv_sess = server_internal::new_h2_server_session("localhost");
     var pipeline = wing::ServerPipelineConfig { .. };
-    var timer = internal::ConnectionTimer { .. };
+    var timer = server_internal::ConnectionTimer { .. };
     var out_wire: u8[..16384] = [];
 
     var with_preface: u8[..4096] = [];
     with_preface.append(rfc::H2_CLIENT_PREFACE[..]);
-    let set_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-    internal::encode_frame_header_to(set_hdr, with_preface);
+    let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    h2_internal::encode_frame_header_to(set_hdr, with_preface);
     let rem_cap = core::sub_sat_i64(with_preface.cap, with_preface.len);
     let take = min(data.len, rem_cap);
     with_preface.append(data[..take]);
 
-    let consumed1, ok1 = internal::handle_h2_server_ingress(srv_sess, pipeline, timer, "127.0.0.1", with_preface[..], 1000, out_wire);
+    let consumed1, ok1 = server_internal::handle_h2_server_ingress(srv_sess, pipeline, timer, "127.0.0.1", with_preface[..], 1000, out_wire);
     if ok1 { sig = fuzz_mix_state(sig, 0x3001 ^ (consumed1 as u64) ^ (out_wire.len as u64)); }
 
-    var raw_sess = internal::new_h2_server_session("localhost");
+    var raw_sess = server_internal::new_h2_server_session("localhost");
     out_wire.clear();
-    let consumed2, ok2 = internal::handle_h2_server_ingress(raw_sess, pipeline, timer, "127.0.0.1", data, 1000, out_wire);
+    let consumed2, ok2 = server_internal::handle_h2_server_ingress(raw_sess, pipeline, timer, "127.0.0.1", data, 1000, out_wire);
     if ok2 { sig = fuzz_mix_state(sig, 0x3002 ^ (consumed2 as u64)); }
     return sig;
 }
@@ -381,15 +381,15 @@ fn fuzz_target_http3_qpack(data: const u8[:]) -> u64 {
     let enc_bytes = fdp_consume_bytes(fdp, enc_len);
     let block_bytes = fdp_consume_remaining(fdp);
 
-    var tbl = internal::new_qpack_table(cap, 16);
+    var tbl = h3_internal::new_qpack_table(cap, 16);
     var off:   u64 = 0;
     var steps: i64 = 0;
     while off < (enc_bytes.len as u64) && steps < 32 {
-        let next_off, err = internal::qpack_process_encoder_instruction(tbl, enc_bytes, off);
+        let next_off, err = h3_internal::qpack_process_encoder_instruction(tbl, enc_bytes, off);
         assert(tbl.used_bytes <= tbl.capacity_bytes && tbl.capacity_bytes <= tbl.max_capacity_bytes);
         assert(tbl.draining_index <= tbl.insert_count);
         steps = core::add_sat_i64(steps, 1);
-        if err != internal::QpackError.None || next_off <= off {
+        if err != h3_internal::QpackError.None || next_off <= off {
             break;
         }
         off = next_off;
@@ -397,10 +397,10 @@ fn fuzz_target_http3_qpack(data: const u8[:]) -> u64 {
     }
 
     var map = wing::HeaderMap { .. };
-    var pseudo = internal::H3PseudoHeaders { .. };
-    let qerr = internal::decode_or_block_qpack_to_map(tbl, 0, block_bytes, pseudo, map, 65536);
+    var pseudo = h3_internal::H3PseudoHeaders { .. };
+    let qerr = h3_internal::decode_or_block_qpack_to_map(tbl, 0, block_bytes, pseudo, map, 65536);
     assert(tbl.used_bytes <= tbl.capacity_bytes && tbl.draining_index <= tbl.insert_count);
-    if qerr == internal::QpackError.None {
+    if qerr == h3_internal::QpackError.None {
         sig = fuzz_mix_state(sig, 0x4020 ^ (map.entries.len as u64));
     }
     return sig;
@@ -412,8 +412,8 @@ fn fuzz_target_http3_conn(data: const u8[:]) -> u64 {
     var sig: u64 = 0x5000;
     var fdp = new_fdp(data);
     let h3_settings = wing::H3Settings { .. };
-    var srv = internal::new_h3_server_connection(h3_settings);
-    var cli = internal::new_h3_client_connection(h3_settings);
+    var srv = h3_internal::new_h3_server_connection(h3_settings);
+    var cli = h3_internal::new_h3_client_connection(h3_settings);
     let stream_ids: u64[8] = [2, 6, 10, 0, 4, 8, 12, 16];
 
     var steps: i64 = 0;
@@ -426,9 +426,9 @@ fn fuzz_target_http3_conn(data: const u8[:]) -> u64 {
 
         let is_uni = stream_sel < 3;
         let sid = stream_ids[stream_sel];
-        let err_s = internal::handle_stream_data(srv, sid, !is_uni, chunk, fin);
+        let err_s = h3_internal::handle_stream_data(srv, sid, !is_uni, chunk, fin);
         if err_s == 0 { sig = fuzz_mix_state(sig, 0x5010 ^ sid); }
-        let err_c = internal::handle_stream_data(cli, sid, !is_uni, chunk, fin);
+        let err_c = h3_internal::handle_stream_data(cli, sid, !is_uni, chunk, fin);
         if err_c == 0 { sig = fuzz_mix_state(sig, 0x5020 ^ sid); }
     }
     return sig;
@@ -440,7 +440,7 @@ fn fuzz_target_quic_packets_and_frames(data: const u8[:]) -> u64 {
     var sig: u64 = 0x6000;
     let cid_lens: u8[4] = [0, 4, 8, 20];
     for i in 4 {
-        let hdr, ok_qh = internal::parse_quic_header(data, cid_lens[i]);
+        let hdr, ok_qh = quic_internal::parse_quic_header(data, cid_lens[i]);
         if ok_qh {
             sig = fuzz_mix_state(sig, 0x6010 ^ (hdr.version as u64));
         }
@@ -450,13 +450,13 @@ fn fuzz_target_quic_packets_and_frames(data: const u8[:]) -> u64 {
     var steps: i64 = 0;
     while cur < data.len && steps < 64 {
         let prev = cur;
-        let _, ok = internal::decode_quic_frame_cursor(data, cur);
+        let _, ok = quic_internal::decode_quic_frame_cursor(data, cur);
         steps = core::add_sat_i64(steps, 1);
         if !ok || cur <= prev { break; }
         sig = fuzz_mix_state(sig, 0x6020 ^ (cur as u64));
     }
 
-    let ack_f, _, ok_ack = internal::decode_ack_frame(data, 0);
+    let ack_f, _, ok_ack = quic_internal::decode_ack_frame(data, 0);
     if ok_ack {
         assert(ack_f.largest_acked >= ack_f.first_ack_range);
         sig = fuzz_mix_state(sig, 0x6030);
@@ -465,7 +465,7 @@ fn fuzz_target_quic_packets_and_frames(data: const u8[:]) -> u64 {
 }
 
 fn dispatch_quic_stream_fuzz_op(
-    tbl:       internal::QuicStreamTable&,
+    tbl:       quic_internal::QuicStreamTable&,
     op:        u8,
     sid:       u64,
     offset:    u64,
@@ -473,18 +473,18 @@ fn dispatch_quic_stream_fuzz_op(
     fin:       bool,
 ) {
     if op == 0 {
-        let _, _, _ = internal::quic_table_open_local_stream(tbl, fin);
+        let _, _, _ = quic_internal::quic_table_open_local_stream(tbl, fin);
         return;
     }
-    let idx, ok_s = internal::quic_table_get_or_open_stream(tbl, sid);
+    let idx, ok_s = quic_internal::quic_table_get_or_open_stream(tbl, sid);
     guard ok_s && idx >= 0 else { return; }
     let s_idx = idx as i64;
     if op == 1 {
-        let _, _ = internal::quic_stream_on_recv_stream_frame(tbl.streams[s_idx], offset, chunk_len, fin);
+        let _, _ = quic_internal::quic_stream_on_recv_stream_frame(tbl.streams[s_idx], offset, chunk_len, fin);
     } else if op == 2 {
-        let _, _ = internal::quic_stream_on_recv_reset(tbl.streams[s_idx], offset, offset);
+        let _, _ = quic_internal::quic_stream_on_recv_reset(tbl.streams[s_idx], offset, offset);
     } else if op == 3 {
-        let _, _ = internal::quic_stream_on_recv_stop_sending(tbl.streams[s_idx], offset, internal::QuicRole.Server);
+        let _, _ = quic_internal::quic_stream_on_recv_stop_sending(tbl.streams[s_idx], offset, quic_internal::QuicRole.Server);
     }
     assert(tbl.streams[s_idx].bytes_recv <= tbl.streams[s_idx].recv_max_data);
     if tbl.streams[s_idx].has_recv_final_size {
@@ -497,9 +497,9 @@ fn dispatch_quic_stream_fuzz_op(
 fn fuzz_target_quic_rob_and_streams(data: const u8[:]) -> u64 {
     var sig: u64 = 0x7000;
     var fdp = new_fdp(data);
-    var rbuf = internal::new_reassembly_buffer();
-    var ack_ranges: internal::AckInterval[..64] = [];
-    var tbl = internal::new_quic_stream_table(internal::QuicRole.Server);
+    var rbuf = quic_internal::new_reassembly_buffer();
+    var ack_ranges: quic_internal::AckInterval[..64] = [];
+    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Server);
 
     var steps: i64 = 0;
     while fdp_remaining(fdp) > 0 && steps < 32 {
@@ -511,15 +511,15 @@ fn fuzz_target_quic_rob_and_streams(data: const u8[:]) -> u64 {
         let chunk = fdp_consume_bytes(fdp, chunk_len);
 
         let prev_consumed = rbuf.consumed_offset;
-        if internal::insert_fragment(rbuf, offset, chunk, fin) {
+        if quic_internal::insert_fragment(rbuf, offset, chunk, fin) {
             sig = fuzz_mix_state(sig, 0x7010 ^ rbuf.consumed_offset);
         }
         var read_out: u8[..256] = [];
-        let n_read = internal::read_contiguous(rbuf, read_out);
+        let n_read = quic_internal::read_contiguous(rbuf, read_out);
         assert(rbuf.consumed_offset == core::add_sat_u64(prev_consumed, n_read));
 
-        internal::record_received_pn(ack_ranges, offset);
-        let _, _ = internal::build_ack_frame(ack_ranges, 10, true);
+        quic_internal::record_received_pn(ack_ranges, offset);
+        let _, _ = quic_internal::build_ack_frame(ack_ranges, 10, true);
 
         let sid = offset & 0x7C;
         dispatch_quic_stream_fuzz_op(tbl, op, sid, offset, chunk.len as u64, fin);
@@ -532,14 +532,14 @@ fn fuzz_target_quic_rob_and_streams(data: const u8[:]) -> u64 {
 fn fuzz_target_quic_conn(data: const u8[:]) -> u64 {
     var sig: u64 = 0x8000;
     let scid: u8[8] = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
-    var srv_plain = internal::new_quic_server_connection(scid[..]);
-    var ack_out = internal::AckFrame { .. };
-    let ok1, _ = internal::quic_conn_process_datagram(srv_plain, data, 1000, ack_out);
+    var srv_plain = quic_internal::new_quic_server_connection(scid[..]);
+    var ack_out = quic_internal::AckFrame { .. };
+    let ok1, _ = quic_internal::quic_conn_process_datagram(srv_plain, data, 1000, ack_out);
     if ok1 { sig = fuzz_mix_state(sig, 0x8010); }
 
-    var srv_enc = internal::new_quic_server_connection(scid[..]);
-    let _ = internal::quic_conn_install_initial_keys(srv_enc, scid[..]);
-    let ok2, _ = internal::quic_conn_process_datagram(srv_enc, data, 2000, ack_out);
+    var srv_enc = quic_internal::new_quic_server_connection(scid[..]);
+    let _ = quic_internal::quic_conn_install_initial_keys(srv_enc, scid[..]);
+    let ok2, _ = quic_internal::quic_conn_process_datagram(srv_enc, data, 2000, ack_out);
     if ok2 { sig = fuzz_mix_state(sig, 0x8020); }
     return sig;
 }

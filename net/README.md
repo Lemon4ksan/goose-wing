@@ -9,7 +9,7 @@ path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices
 (`const u8[:]`).
 
 ```goose
-var poller = new_poller(internal::auto_transport_driver_config());
+var poller = new_poller(net_internal::auto_transport_driver_config());
 let fd = tcp_connect("93.184.216.34", 80, 5000);
 register_socket(poller, fd as i32, 1, core::PollInterest.ReadWrite);
 tcp_close(fd);
@@ -98,7 +98,7 @@ zero datagrams are silently dropped.
 struct Poller { ... }
 struct EventLoop { ... }
 struct TcpDialer { default_timeout_ms: u32 = 5000 }
-fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller
+fn new_poller(driver_cfg: const net_internal::TransportDriverConfig&) -> Poller
 fn enable_os_multiplexing(p: Poller&) -> bool
 fn close_poller(p: Poller&)
 fn enable_os_multiplexing(ev_loop: EventLoop&) -> bool
@@ -330,21 +330,20 @@ RFC 9110 §10.2.3 `Retry-After` headers in either delta-seconds
 (`try_parse_retry_after_seconds`) or IMF-fixdate
 (`try_parse_retry_after_http_date`) format into non-negative milliseconds.
 
-### 12. Hierarchical Tick Timer Wheel (`net/tick_timer.goose`)
+### 12. Reactor I/O Accelerators (`net/accel.goose`)
 
 ```goose
-struct TickTimerWheel { slots: u64[64], current_tick: u64, tick_resolution_ms: u64 }
-fn new_tick_timer_wheel(resolution_ms: u64 = 100, start_ms: u64 = 0) -> TickTimerWheel
-fn tick_timer_arm(wheel: TickTimerWheel&, conn_id: i32, timeout_ticks: u64) -> u8
-fn tick_timer_disarm(wheel: TickTimerWheel&, conn_id: i32, slot: u8)
-fn tick_timer_advance(wheel: TickTimerWheel&, now_ms: u64) -> u64
-fn tick_timer_is_expired(expired_mask: u64, conn_id: i32) -> bool
+enum ReactorAccelMode { Auto, IoUring, Rio, Kqueue, PollFallback }
+struct ReactorAccelRuntime { ... }
+fn listen_accelerated_tcp(host: const u8[:], port: u16, accel_mode: ReactorAccelMode, backlog: i32 = 128) -> i64
+fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, listener_fd: i64) -> bool
+fn reactor_close_accel(accel: ReactorAccelRuntime&)
+fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64)
 ```
 
-`TickTimerWheel` tracks up to 64 concurrent connection IDs (`0..63`) across 64
-bitmask slots (`u64[64]`) in constant time. `tick_timer_advance` steps
-`current_tick` to `now_ms`, clears traversed slots, and returns the bitwise OR
-mask of expired connection IDs.
+`ReactorAccelRuntime` encapsulates Linux `io_uring`, Windows `RIO`, BSD/macOS
+`kqueue`, and Linux `epoll` completion/readiness runtimes behind a uniform state
+machine with automatic `poll`/`WSAPoll` fallback.
 
 ### 13. Network Isolation Keys (`net/isolation.goose`)
 

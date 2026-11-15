@@ -37,8 +37,8 @@ def audit_package_readme(pkg_name: str, root_dir: Path) -> list[str]:
     readme_text = readme_path.read_text(encoding="utf-8")
 
     # Collect declared function names in README code fences
-    # Looking for: fn func_name(...)
-    fn_pattern = re.compile(r"\bfn\s+([a-zA-Z0-9_]+)\s*\(")
+    # Looking for: fn func_name(...) or fn func_name<T>(...)
+    fn_pattern = re.compile(r"\bfn\s+([a-zA-Z0-9_]+)\s*(?:<[^>]+>)?\s*\(")
     readme_fns = set(fn_pattern.findall(readme_text))
 
     # Collect all function declarations in the package's .goose files

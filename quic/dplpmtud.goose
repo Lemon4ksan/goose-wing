@@ -4,7 +4,7 @@
 // Datagram Packetization Layer PMTU Discovery (DPLPMTUD, RFC 8899) Engine for QUIC.
 // Implements zero-allocation state machine (Search, Base, SearchComplete, Error),
 // padded probe frame generation, probe acknowledgement tracking, and search interval timers.
-namespace internal;
+namespace quic_internal;
 
 import std;
 import core from "..";

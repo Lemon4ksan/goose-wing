@@ -6,6 +6,7 @@ namespace wing;
 
 import std;
 import core from "..";
+import http.bind;
 import wire.pipeline;
 
 // ---- pipeline stage bitmask constants (64-bit register layout) --------------
@@ -96,108 +97,6 @@ enum NodeType {
     Static,
     Param { suffix: bool },
     CatchAll,
-}
-
-struct ParamSpan {
-    name:      u8[..32] = [],
-    key_start: u16      = 0,
-    key_end:   u16      = 0,
-    val_start: u16      = 0,
-    val_end:   u16      = 0,
-}
-
-struct ZeroAllocParams {
-    spans: ParamSpan[8] = [ParamSpan { .. }; 8],
-    len:   i64          = 0,
-}
-
-fn clear(params: ZeroAllocParams&) {
-    params.len = 0;
-}
-
-fn add_param(
-    params:  ZeroAllocParams&,
-    k_start: u16,
-    k_end:   u16,
-    v_start: u16,
-    v_end:   u16,
-) -> bool {
-    guard params.len >= 0 && params.len < params.spans.len else { return false; }
-    params.spans[params.len] = ParamSpan {
-        name:      [],
-        key_start: k_start,
-        key_end:   k_end,
-        val_start: v_start,
-        val_end:   v_end,
-    };
-    params.len = core::add_sat_i64(params.len, 1);
-    return true;
-}
-
-fn add_param(
-    params:  ZeroAllocParams&,
-    name:    const u8[:],
-    k_start: u16,
-    k_end:   u16,
-    v_start: u16,
-    v_end:   u16,
-) -> bool {
-    guard params.len >= 0 && params.len < params.spans.len else { return false; }
-    let idx = params.len;
-    guard params.spans[idx].name.try_set(name) else { return false; }
-    params.spans[idx].key_start = k_start;
-    params.spans[idx].key_end = k_end;
-    params.spans[idx].val_start = v_start;
-    params.spans[idx].val_end = v_end;
-    params.len = core::add_sat_i64(params.len, 1);
-    return true;
-}
-
-fn param_val(params: const ZeroAllocParams&, idx: i64, req_path: const u8[:]) -> const u8[:] {
-    guard idx >= 0 && idx < params.len else { return ""; }
-    let span = params.spans[idx];
-    guard span.val_end <= req_path.len && span.val_start <= span.val_end else { return ""; }
-    return req_path[(span.val_start as i64)..(span.val_end as i64)];
-}
-
-fn param_key(params: const ZeroAllocParams&, idx: i64, route_template: const u8[:]) -> const u8[:] {
-    guard idx >= 0 && idx < params.len else { return ""; }
-    let span = &params.spans[idx];
-    if span.key_end <= route_template.len && span.key_start < span.key_end {
-        return route_template[(span.key_start as i64)..(span.key_end as i64)];
-    }
-    if span.name.len > 0 {
-        return span.name[..];
-    }
-    return "";
-}
-
-fn param_by_name(
-    params:         const ZeroAllocParams&,
-    name:           const u8[:],
-    route_template: const u8[:],
-    req_path:       const u8[:],
-) -> const u8[:], bool {
-    for idx in params.len {
-        let k = params.param_key(idx, route_template);
-        if k == name {
-            return params.param_val(idx, req_path), true;
-        }
-    }
-    return "", false;
-}
-
-fn param_by_name(
-    params:   const ZeroAllocParams&,
-    name:     const u8[:],
-    req_path: const u8[:],
-) -> const u8[:], bool {
-    for idx in params.len {
-        if params.spans[idx].name[..] == name {
-            return params.param_val(idx, req_path), true;
-        }
-    }
-    return "", false;
 }
 
 // ---- radix trie node & arena storage ---------------------------------------

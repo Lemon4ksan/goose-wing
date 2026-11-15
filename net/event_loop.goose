@@ -38,17 +38,17 @@ struct DeferredTask {
 }
 
 struct EventLoop {
-    poller:                  Poller                          = Poller { .. },
-    driver_cfg:              internal::TransportDriverConfig = internal::TransportDriverConfig { .. },
-    buffers:                 ConnectionBuffer[..64]          = [ConnectionBuffer { .. }; 64],
-    deferred_tasks:          DeferredTask[..64]              = [DeferredTask { .. }; 64],
-    deferred_count:          i64                             = 0,
-    state:                   LoopState                       = LoopState.Created,
-    iteration_count:         u64                             = 0,
-    events_dispatched_total: u64                             = 0,
+    poller:                  Poller                              = Poller { .. },
+    driver_cfg:              net_internal::TransportDriverConfig = net_internal::TransportDriverConfig { .. },
+    buffers:                 ConnectionBuffer[..64]              = [ConnectionBuffer { .. }; 64],
+    deferred_tasks:          DeferredTask[..64]                  = [DeferredTask { .. }; 64],
+    deferred_count:          i64                                 = 0,
+    state:                   LoopState                           = LoopState.Created,
+    iteration_count:         u64                                 = 0,
+    events_dispatched_total: u64                                 = 0,
 }
 
-fn new_event_loop(driver_cfg: const internal::TransportDriverConfig&) -> EventLoop {
+fn new_event_loop(driver_cfg: const net_internal::TransportDriverConfig&) -> EventLoop {
     var p = new_poller(driver_cfg);
     return EventLoop {
         poller:     p,

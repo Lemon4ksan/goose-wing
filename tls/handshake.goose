@@ -883,8 +883,8 @@ fn parse_compressed_certificate(
     offered_algos: const u16[:] = [],
 ) -> CompressedCertMsg, bool {
     var msg = CompressedCertMsg { compressed_data: payload[..0], .. };
-    var ic = internal::CompressedCertificate { .. };
-    guard internal::parse_compressed_certificate_msg(payload, ic) else { return msg, false; }
+    var ic = tls_internal::CompressedCertificate { .. };
+    guard tls_internal::parse_compressed_certificate_msg(payload, ic) else { return msg, false; }
     // RFC 8879 Section 4: Compressed Certificate Message - Selected algorithm MUST belong to the advertised offer list.
     guard offered_algos.len == 0 || offered_algos.contains(ic.algorithm) else { return msg, false; }
     msg.algorithm = ic.algorithm;
@@ -901,12 +901,12 @@ fn encode_compressed_certificate_payload<B>(
     compressed_data:  const u8[:],
 ) -> bool {
     let saved_len = out.len;
-    let ic = internal::CompressedCertificate {
+    let ic = tls_internal::CompressedCertificate {
         algorithm:                      algorithm,
         uncompressed_length:            uncompressed_len,
         compressed_certificate_message: compressed_data,
     };
-    if !internal::encode_compressed_certificate(ic, out) {
+    if !tls_internal::encode_compressed_certificate(ic, out) {
         out.resize(saved_len);
         return false;
     }
@@ -916,7 +916,7 @@ fn encode_compressed_certificate_payload<B>(
 // Decompresses a CompressedCertificate using Wing's pure RFC 8878 Zstandard engine
 fn decompress_certificate_zstd<B>(compressed_data: const u8[:], uncompressed_len: u32, out_cert: B&) -> bool {
     guard uncompressed_len > 0 else { return false; }
-    return internal::decompress_certificate_zstd(compressed_data, uncompressed_len, out_cert);
+    return tls_internal::decompress_certificate_zstd(compressed_data, uncompressed_len, out_cert);
 }
 
 // RFC 8879 Section 4: Compressed Certificate Message - Unified decompressor enforcing offered algorithm membership.
@@ -926,11 +926,11 @@ fn decompress_incoming_certificate<B>(
     offered_algos: const u16[:] = [],
 ) -> bool {
     out_cert.clear();
-    var comp_msg = internal::CompressedCertificate { .. };
-    guard internal::parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
+    var comp_msg = tls_internal::CompressedCertificate { .. };
+    guard tls_internal::parse_compressed_certificate_msg(payload, comp_msg) else { return false; }
     guard offered_algos.len == 0 || offered_algos.contains(comp_msg.algorithm) else { return false; }
     guard comp_msg.uncompressed_length <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else { return false; }
-    if !internal::decompress_certificate_payload(
+    if !tls_internal::decompress_certificate_payload(
         comp_msg.compressed_certificate_message,
         comp_msg.algorithm,
         comp_msg.uncompressed_length,

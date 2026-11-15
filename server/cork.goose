@@ -11,7 +11,7 @@ import core from "..";
 import rfc.http;
 import http.headers;
 import net.tcp;
-import client.response;
+import http.response;
 import realtime.sse;
 import .h1_codec;
 

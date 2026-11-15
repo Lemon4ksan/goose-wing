@@ -151,8 +151,8 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
 fn validate_ticket_age(obfuscated_ticket_age: u32, ticket_age_add: u32, expected_age_ms: i64, tolerance_ms: i64) -> bool
 ```
 
-`KeySchedule` (in `namespace internal`) enforces stage transitions (`Early` ->
-`Handshake` -> `Master` -> `Resumption`) using SHA-256
+`KeySchedule` (in `namespace tls_internal`) enforces stage transitions (`Early`
+-> `Handshake` -> `Master` -> `Resumption`) using SHA-256
 (`TLS_AES_128_GCM_SHA256`, `TLS_CHACHA20_POLY1305_SHA256`) or SHA-384
 (`TLS_AES_256_GCM_SHA384`). `verify_psk_binder` compares the `PreSharedKey`
 binder HMAC in constant time. For 0-RTT early data (RFC 8446 §8),
@@ -370,9 +370,8 @@ fn transcript_replace_with_message_hash(t: TlsTranscript&, hash_id: u8, hash_len
 fn seal_stateless_tls13_ticket<B>(ring: const TlsTicketKeyRing&, psk: const u8[..48]&, cipher_suite: u16, issued_at_ms: i64, nonce_iv: const u8[12]&, out_ticket: B&) -> bool
 fn open_stateless_tls13_ticket(ring: const TlsTicketKeyRing&, raw_ticket: const u8[:], now_ms: i64) -> Tls13CachedSessionTicket, bool
 fn store_tls13_session_ticket(server_name: const u8[:], ticket: const u8[:], psk: const u8[:], age_add: u32, lifetime: u32, cipher_suite: u16 = rfc::TLS_CIPHER_AES_128_GCM_SHA256)
-fn lookup_tls13_session_ticket_full(server_name: const u8[:], out_ticket: u8[..256]&, out_psk: u8[..48]&, out_age_add: u32&, out_cipher_suite: u16&) -> bool
-fn lookup_tls13_session_ticket(server_name: const u8[:], out_ticket: u8[..256]&, out_psk: u8[32]&, out_age_add: u32&) -> bool
-fn lookup_tls13_ticket_by_identity(ticket_id: const u8[:], out_psk: u8[32]&) -> bool
+fn lookup_tls13_session_ticket_full<B1, B2>(server_name: const u8[:], out_ticket: B1&, out_psk: B2&, out_age_add: u32&, out_cipher_suite: u16&) -> bool
+fn lookup_tls13_session_ticket<B>(server_name: const u8[:], out_ticket: B&, out_psk: u8[32]&, out_age_add: u32&) -> bool
 fn clear_tls13_session_tickets()
 fn alloc_tls_cipher_slot() -> u16
 fn free_tls_cipher_slot(slot_idx: u16)
@@ -612,7 +611,7 @@ Supports `X25519MLKEM768` (`0x11EC`, ordered `mlkem768 || x25519`),
 `SecP256r1MLKEM768` (`0x11EB`, ordered `secp256r1 || mlkem768`), and
 `SecP384r1MLKEM1024` (`0x11ED`, ordered `secp384r1 || mlkem1024`) per RFC 10024.
 
-### Encrypted Client Hello & HPKE (`tls/ech.goose`, `tls/hpke.goose`, RFC 9849, RFC 9180)
+### Encrypted Client Hello (`tls/ech.goose`, RFC 9849)
 
 ```goose
 struct EchCipherSuite { kdf_id: u16 = rfc::HPKE_KDF_HKDF_SHA256, aead_id: u16 = rfc::HPKE_AEAD_AES_128_GCM }
@@ -677,23 +676,15 @@ fn verify_ech_acceptance_confirmation(ext_data: const u8[:], expected_confirmati
 fn parse_and_validate_ech_retry_configs(ext_data: const u8[:], out_config_list: EchConfigList&) -> bool
 fn ech_fsm_on_server_hello(fsm: EchFsm&, sh_type: EchServerHelloType, has_ech_ext: bool, ech_ext_data: const u8[:], expected_confirm: const u8[8]&, out_retry_configs: EchConfigList&) -> bool
 fn validate_ech_alpn_negotiation(is_ech_accepted: bool, selected_alpn: const u8[:], inner_alpn: const u8[:], outer_alpn: const u8[:]) -> bool
-fn dhkem_x25519_encap(pkR: const u8[32]&, ephemeral_sk: const u8[32]&, out_enc: u8[32]&, out_shared_secret: u8[32]&) -> bool
-fn dhkem_x25519_decap(enc: const u8[32]&, skR: const u8[32]&, pkR: const u8[32]&, out_shared_secret: u8[32]&) -> bool
-fn hpke_setup_base_s(pkR: const u8[32]&, info: const u8[:], kem_id: u16, kdf_id: u16, aead_id: u16, ephemeral_sk: const u8[32]&, out_enc: u8[32]&, out_ctx: HpkeContext&) -> bool
-fn hpke_setup_base_r(enc: const u8[32]&, skR: const u8[32]&, info: const u8[:], kem_id: u16, kdf_id: u16, aead_id: u16, out_ctx: HpkeContext&) -> bool
-fn hpke_seal<B>(ctx: HpkeContext&, aad: const u8[:], pt: const u8[:], out_ct: B&) -> bool
-fn hpke_open<B>(ctx: HpkeContext&, aad: const u8[:], ct_with_tag: const u8[:], out_pt: B&) -> bool
-fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:]) -> bool
-fn hpke_seal_base<B>(pkR: const u8[32]&, info: const u8[:], aad: const u8[:], pt: const u8[:], ephemeral_sk: const u8[32]&, aead_id: u16, out_enc: u8[32]&, out_ct: B&) -> bool
-fn hpke_open_base<B>(enc: const u8[32]&, skR: const u8[32]&, info: const u8[:], aad: const u8[:], ct_with_tag: const u8[:], aead_id: u16, out_pt: B&) -> bool
 ```
 
 `select_ech_config` chooses the first `0xfe0d` configuration using
 `DHKEM(X25519, HKDF-SHA256)`, `HKDF-SHA256`, and `AES-128-GCM` or
 `ChaCha20Poly1305`. `pad_ech_inner` pads `EncodedClientHelloInner` to a 32-byte
 multiple per RFC 9849 §6.1.3 before `seal_ech_inner` encrypts it with HPKE Base
-mode (`"tls ech\0"` info label). `verify_ech_acceptance_confirmation` checks the
-8-byte confirmation signal in constant time.
+mode (`security/hpke.goose`, `"tls ech\0"` info label).
+`verify_ech_acceptance_confirmation` checks the 8-byte confirmation signal in
+constant time.
 
 ### Certificate Compression (`tls/cert_compression.goose`, RFC 8879)
 

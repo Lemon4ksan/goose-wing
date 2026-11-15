@@ -25,115 +25,123 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // ----------------------------------------------------------------------------
 fn test_driver_probing(t: lit::T&) {
     t.run("Standard Driver Probing (Universal)") { sub =>
-        let p_win = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Standard, internal::TargetPlatform.Windows);
+        let p_win = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Standard, net_internal::TargetPlatform.Windows);
         sub.assert_true(p_win.available, "Standard available on Windows");
-        sub.assert_eq(p_win.error_code, internal::ERR_SUCCESS, "Standard error code 0 on Windows");
+        sub.assert_eq(p_win.error_code, net_internal::ERR_SUCCESS, "Standard error code 0 on Windows");
 
-        let p_linux = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Standard, internal::TargetPlatform.Linux);
+        let p_linux = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Standard, net_internal::TargetPlatform.Linux);
         sub.assert_true(p_linux.available, "Standard available on Linux");
-        sub.assert_eq(p_linux.error_code, internal::ERR_SUCCESS, "Standard error code 0 on Linux");
+        sub.assert_eq(p_linux.error_code, net_internal::ERR_SUCCESS, "Standard error code 0 on Linux");
 
-        let p_mac = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Standard, internal::TargetPlatform.Darwin);
+        let p_mac = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Standard, net_internal::TargetPlatform.Darwin);
         sub.assert_true(p_mac.available, "Standard available on macOS");
-        sub.assert_eq(p_mac.error_code, internal::ERR_SUCCESS, "Standard error code 0 on macOS");
+        sub.assert_eq(p_mac.error_code, net_internal::ERR_SUCCESS, "Standard error code 0 on macOS");
     };
 
     t.run("Windows RIO Probing") { sub =>
-        let p_win = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.WindowsRIO, internal::TargetPlatform.Windows);
+        let p_win = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.WindowsRIO, net_internal::TargetPlatform.Windows);
         sub.assert_true(p_win.available, "RIO available on Windows");
-        sub.assert_eq(p_win.error_code, internal::ERR_SUCCESS, "RIO error code 0 on Windows");
-        sub.assert_true(internal::driver_has_cap(p_win.capabilities, internal::CAP_KERNEL_BYPASS), "RIO has KernelBypass");
-        sub.assert_true(internal::driver_has_cap(p_win.capabilities, internal::CAP_ZERO_COPY), "RIO has ZeroCopy");
-        sub.assert_true(internal::driver_has_cap(p_win.capabilities, internal::CAP_PAGE_LOCKED_BUFFERS), "RIO has PageLockedBuffers");
-        sub.assert_true(internal::driver_has_cap(p_win.capabilities, internal::CAP_BATCH_IO), "RIO has BatchIO");
+        sub.assert_eq(p_win.error_code, net_internal::ERR_SUCCESS, "RIO error code 0 on Windows");
+        sub.assert_true(net_internal::driver_has_cap(p_win.capabilities, net_internal::CAP_KERNEL_BYPASS), "RIO has KernelBypass");
+        sub.assert_true(net_internal::driver_has_cap(p_win.capabilities, net_internal::CAP_ZERO_COPY), "RIO has ZeroCopy");
+        sub.assert_true(net_internal::driver_has_cap(p_win.capabilities, net_internal::CAP_PAGE_LOCKED_BUFFERS), "RIO has PageLockedBuffers");
+        sub.assert_true(net_internal::driver_has_cap(p_win.capabilities, net_internal::CAP_BATCH_IO), "RIO has BatchIO");
 
-        let p_linux = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.WindowsRIO, internal::TargetPlatform.Linux);
+        let p_linux = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.WindowsRIO, net_internal::TargetPlatform.Linux);
         sub.assert_false(p_linux.available, "RIO unavailable on Linux");
-        sub.assert_eq(p_linux.error_code, internal::ERR_ENOSYS, "RIO returns -ENOSYS on Linux");
+        sub.assert_eq(p_linux.error_code, net_internal::ERR_ENOSYS, "RIO returns -ENOSYS on Linux");
 
-        let p_mac = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.WindowsRIO, internal::TargetPlatform.Darwin);
+        let p_mac = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.WindowsRIO, net_internal::TargetPlatform.Darwin);
         sub.assert_false(p_mac.available, "RIO unavailable on macOS");
-        sub.assert_eq(p_mac.error_code, internal::ERR_ENOSYS, "RIO returns -ENOSYS on macOS");
+        sub.assert_eq(p_mac.error_code, net_internal::ERR_ENOSYS, "RIO returns -ENOSYS on macOS");
     };
 
     t.run("Linux io_uring Probing") { sub =>
-        let p_linux = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.IoUring, internal::TargetPlatform.Linux);
+        let p_linux = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.IoUring, net_internal::TargetPlatform.Linux);
         sub.assert_true(p_linux.available, "io_uring available on Linux");
-        sub.assert_eq(p_linux.error_code, internal::ERR_SUCCESS, "io_uring error code 0 on Linux");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_RING_COMPLETION), "io_uring has RingCompletion");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_ZERO_COPY), "io_uring has ZeroCopy");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_BATCH_IO), "io_uring has BatchIO");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_DIRECT_DESCRIPTORS), "io_uring has DirectDescriptors");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_MULTISHOT_RECV), "io_uring has MultishotRecv");
+        sub.assert_eq(p_linux.error_code, net_internal::ERR_SUCCESS, "io_uring error code 0 on Linux");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_RING_COMPLETION), "io_uring has RingCompletion");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_ZERO_COPY), "io_uring has ZeroCopy");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_BATCH_IO), "io_uring has BatchIO");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_DIRECT_DESCRIPTORS), "io_uring has DirectDescriptors");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_MULTISHOT_RECV), "io_uring has MultishotRecv");
 
-        let p_win = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.IoUring, internal::TargetPlatform.Windows);
+        let p_win = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.IoUring, net_internal::TargetPlatform.Windows);
         sub.assert_false(p_win.available, "io_uring unavailable on Windows");
-        sub.assert_eq(p_win.error_code, internal::ERR_ENOSYS, "io_uring returns -ENOSYS on Windows");
+        sub.assert_eq(p_win.error_code, net_internal::ERR_ENOSYS, "io_uring returns -ENOSYS on Windows");
 
-        let p_mac = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.IoUring, internal::TargetPlatform.Darwin);
+        let p_mac = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.IoUring, net_internal::TargetPlatform.Darwin);
         sub.assert_false(p_mac.available, "io_uring unavailable on macOS");
-        sub.assert_eq(p_mac.error_code, internal::ERR_ENOSYS, "io_uring returns -ENOSYS on macOS");
+        sub.assert_eq(p_mac.error_code, net_internal::ERR_ENOSYS, "io_uring returns -ENOSYS on macOS");
     };
 
     t.run("macOS kqueue Probing") { sub =>
-        let p_mac = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Kqueue, internal::TargetPlatform.Darwin);
+        let p_mac = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Kqueue, net_internal::TargetPlatform.Darwin);
         sub.assert_true(p_mac.available, "kqueue available on macOS");
-        sub.assert_eq(p_mac.error_code, internal::ERR_SUCCESS, "kqueue error code 0 on macOS");
-        sub.assert_true(internal::driver_has_cap(p_mac.capabilities, internal::CAP_BATCH_IO), "kqueue has BatchIO");
-        sub.assert_true(internal::driver_has_cap(p_mac.capabilities, internal::CAP_RING_COMPLETION), "kqueue has RingCompletion");
-        sub.assert_true(internal::driver_has_cap(p_mac.capabilities, internal::CAP_DIRECT_DESCRIPTORS), "kqueue has DirectDescriptors");
-        sub.assert_true(internal::driver_has_cap(p_mac.capabilities, internal::CAP_EXACT_BUF_METRICS), "kqueue has ExactBufMetrics");
+        sub.assert_eq(p_mac.error_code, net_internal::ERR_SUCCESS, "kqueue error code 0 on macOS");
+        sub.assert_true(net_internal::driver_has_cap(p_mac.capabilities, net_internal::CAP_BATCH_IO), "kqueue has BatchIO");
+        sub.assert_true(net_internal::driver_has_cap(p_mac.capabilities, net_internal::CAP_RING_COMPLETION), "kqueue has RingCompletion");
+        sub.assert_true(net_internal::driver_has_cap(p_mac.capabilities, net_internal::CAP_DIRECT_DESCRIPTORS), "kqueue has DirectDescriptors");
+        sub.assert_true(net_internal::driver_has_cap(p_mac.capabilities, net_internal::CAP_EXACT_BUF_METRICS), "kqueue has ExactBufMetrics");
 
-        let p_win = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Kqueue, internal::TargetPlatform.Windows);
+        let p_win = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Kqueue, net_internal::TargetPlatform.Windows);
         sub.assert_false(p_win.available, "kqueue unavailable on Windows");
-        sub.assert_eq(p_win.error_code, internal::ERR_ENOSYS, "kqueue returns -ENOSYS on Windows");
+        sub.assert_eq(p_win.error_code, net_internal::ERR_ENOSYS, "kqueue returns -ENOSYS on Windows");
 
-        let p_linux = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Kqueue, internal::TargetPlatform.Linux);
+        let p_linux = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Kqueue, net_internal::TargetPlatform.Linux);
         sub.assert_false(p_linux.available, "kqueue unavailable on Linux");
-        sub.assert_eq(p_linux.error_code, internal::ERR_ENOSYS, "kqueue returns -ENOSYS on Linux");
+        sub.assert_eq(p_linux.error_code, net_internal::ERR_ENOSYS, "kqueue returns -ENOSYS on Linux");
     };
 
     t.run("Linux AF_XDP (XSK Kernel-Bypass) Probing") { sub =>
-        let p_linux = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.AfXdp, internal::TargetPlatform.Linux);
+        let p_linux = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.AfXdp, net_internal::TargetPlatform.Linux);
         sub.assert_true(p_linux.available, "AF_XDP available on Linux target");
-        sub.assert_eq(p_linux.error_code, internal::ERR_SUCCESS, "AF_XDP error code 0 on Linux");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_KERNEL_BYPASS), "AF_XDP has KernelBypass");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_ZERO_COPY), "AF_XDP has ZeroCopy");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_PAGE_LOCKED_BUFFERS), "AF_XDP has PageLockedBuffers");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_AF_XDP_UMEM), "AF_XDP has AfXdpUmem");
+        sub.assert_eq(p_linux.error_code, net_internal::ERR_SUCCESS, "AF_XDP error code 0 on Linux");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_KERNEL_BYPASS), "AF_XDP has KernelBypass");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_ZERO_COPY), "AF_XDP has ZeroCopy");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_PAGE_LOCKED_BUFFERS), "AF_XDP has PageLockedBuffers");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_AF_XDP_UMEM), "AF_XDP has AfXdpUmem");
 
-        let p_win = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.AfXdp, internal::TargetPlatform.Windows);
+        let p_win = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.AfXdp, net_internal::TargetPlatform.Windows);
         sub.assert_false(p_win.available, "AF_XDP unavailable on Windows");
-        sub.assert_eq(p_win.error_code, internal::ERR_ENOSYS, "AF_XDP returns -ENOSYS on Windows");
+        sub.assert_eq(p_win.error_code, net_internal::ERR_ENOSYS, "AF_XDP returns -ENOSYS on Windows");
 
-        let p_mac = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.AfXdp, internal::TargetPlatform.Darwin);
+        let p_mac = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.AfXdp, net_internal::TargetPlatform.Darwin);
         sub.assert_false(p_mac.available, "AF_XDP unavailable on macOS");
-        sub.assert_eq(p_mac.error_code, internal::ERR_ENOSYS, "AF_XDP returns -ENOSYS on macOS");
+        sub.assert_eq(p_mac.error_code, net_internal::ERR_ENOSYS, "AF_XDP returns -ENOSYS on macOS");
     };
 
     t.run("DPDK Poll Mode Driver Probing") { sub =>
-        let p_linux = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Dpdk, internal::TargetPlatform.Linux);
-        sub.assert_true(p_linux.available, "DPDK PMD available");
-        sub.assert_eq(p_linux.error_code, internal::ERR_SUCCESS, "DPDK error code 0");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_KERNEL_BYPASS), "DPDK has KernelBypass");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_ZERO_COPY), "DPDK has ZeroCopy");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_BATCH_IO), "DPDK has BatchIO");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_DPDK_PMD), "DPDK has DpdkPmd");
+        let p_linux = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Dpdk, net_internal::TargetPlatform.Linux);
+        sub.assert_true(p_linux.available, "DPDK PMD available on Linux");
+        sub.assert_eq(p_linux.error_code, net_internal::ERR_SUCCESS, "DPDK error code 0");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_KERNEL_BYPASS), "DPDK has KernelBypass");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_ZERO_COPY), "DPDK has ZeroCopy");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_BATCH_IO), "DPDK has BatchIO");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_DPDK_PMD), "DPDK has DpdkPmd");
+
+        let p_win = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Dpdk, net_internal::TargetPlatform.Windows);
+        sub.assert_false(p_win.available, "DPDK unavailable on Windows");
+        sub.assert_eq(p_win.error_code, net_internal::ERR_ENOSYS, "DPDK returns -ENOSYS on Windows");
+
+        let p_mac = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Dpdk, net_internal::TargetPlatform.Darwin);
+        sub.assert_false(p_mac.available, "DPDK unavailable on macOS");
+        sub.assert_eq(p_mac.error_code, net_internal::ERR_ENOSYS, "DPDK returns -ENOSYS on macOS");
     };
 
     t.run("SmartNIC Hardware TLS Offload Probing") { sub =>
-        let p_linux = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.SmartNicOffload, internal::TargetPlatform.Linux);
+        let p_linux = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.SmartNicOffload, net_internal::TargetPlatform.Linux);
         sub.assert_true(p_linux.available, "SmartNIC available on Linux");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_ZERO_COPY), "SmartNIC has ZeroCopy");
-        sub.assert_true(internal::driver_has_cap(p_linux.capabilities, internal::CAP_NIC_TLS_OFFLOAD), "SmartNIC has NicTlsOffload");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_ZERO_COPY), "SmartNIC has ZeroCopy");
+        sub.assert_true(net_internal::driver_has_cap(p_linux.capabilities, net_internal::CAP_NIC_TLS_OFFLOAD), "SmartNIC has NicTlsOffload");
 
-        let p_win = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.SmartNicOffload, internal::TargetPlatform.Windows);
+        let p_win = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.SmartNicOffload, net_internal::TargetPlatform.Windows);
         sub.assert_true(p_win.available, "SmartNIC available on Windows");
-        sub.assert_true(internal::driver_has_cap(p_win.capabilities, internal::CAP_NIC_TLS_OFFLOAD), "SmartNIC has NicTlsOffload on Windows");
+        sub.assert_true(net_internal::driver_has_cap(p_win.capabilities, net_internal::CAP_NIC_TLS_OFFLOAD), "SmartNIC has NicTlsOffload on Windows");
 
-        let p_mac = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.SmartNicOffload, internal::TargetPlatform.Darwin);
+        let p_mac = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.SmartNicOffload, net_internal::TargetPlatform.Darwin);
         sub.assert_false(p_mac.available, "SmartNIC unavailable on macOS");
-        sub.assert_eq(p_mac.error_code, internal::ERR_ENOSYS, "SmartNIC returns -ENOSYS on macOS");
+        sub.assert_eq(p_mac.error_code, net_internal::ERR_ENOSYS, "SmartNIC returns -ENOSYS on macOS");
     };
 }
 
@@ -142,70 +150,70 @@ fn test_driver_probing(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_driver_fallback_and_selection(t: lit::T&) {
     t.run("Standard Selection Everywhere") { sub =>
-        var cfg = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.Standard,
+        var cfg = net_internal::TransportDriverConfig {
+            preferred_kind: net_internal::TransportDriverKind.Standard,
             ..
         };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg, internal::TargetPlatform.Windows), "Init ok on Windows");
-        sub.assert_true(cfg.active_kind == internal::TransportDriverKind.Standard, "Active is Standard");
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg, net_internal::TargetPlatform.Windows), "Init ok on Windows");
+        sub.assert_true(cfg.active_kind == net_internal::TransportDriverKind.Standard, "Active is Standard");
         sub.assert_true(cfg.is_probed, "Is probed");
     };
 
     t.run("Windows Auto-Selection: io_uring preferred with kernel bypass") { sub =>
-        var cfg = internal::TransportDriverConfig {
-            preferred_kind:       internal::TransportDriverKind.IoUring,
+        var cfg = net_internal::TransportDriverConfig {
+            preferred_kind:       net_internal::TransportDriverKind.IoUring,
             enable_kernel_bypass: true,
             ..
         };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg, internal::TargetPlatform.Windows), "Init ok");
-        sub.assert_true(cfg.active_kind == internal::TransportDriverKind.WindowsRIO, "Auto-selected WindowsRIO");
-        sub.assert_true(internal::driver_has_cap(cfg.capabilities, internal::CAP_KERNEL_BYPASS), "Has KernelBypass");
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg, net_internal::TargetPlatform.Windows), "Init ok");
+        sub.assert_true(cfg.active_kind == net_internal::TransportDriverKind.WindowsRIO, "Auto-selected WindowsRIO");
+        sub.assert_true(net_internal::driver_has_cap(cfg.capabilities, net_internal::CAP_KERNEL_BYPASS), "Has KernelBypass");
     };
 
     t.run("Windows Graceful Fallback: io_uring preferred without bypass") { sub =>
-        var cfg = internal::TransportDriverConfig {
-            preferred_kind:       internal::TransportDriverKind.IoUring,
+        var cfg = net_internal::TransportDriverConfig {
+            preferred_kind:       net_internal::TransportDriverKind.IoUring,
             enable_kernel_bypass: false,
             ..
         };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg, internal::TargetPlatform.Windows), "Init ok");
-        sub.assert_true(cfg.active_kind == internal::TransportDriverKind.Standard, "Fell back to Standard");
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg, net_internal::TargetPlatform.Windows), "Init ok");
+        sub.assert_true(cfg.active_kind == net_internal::TransportDriverKind.Standard, "Fell back to Standard");
     };
 
     t.run("Linux Auto-Selection: WindowsRIO preferred") { sub =>
-        var cfg = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.WindowsRIO,
+        var cfg = net_internal::TransportDriverConfig {
+            preferred_kind: net_internal::TransportDriverKind.WindowsRIO,
             ..
         };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg, internal::TargetPlatform.Linux), "Init ok");
-        sub.assert_true(cfg.active_kind == internal::TransportDriverKind.IoUring, "Auto-selected io_uring");
-        sub.assert_true(internal::driver_has_cap(cfg.capabilities, internal::CAP_RING_COMPLETION), "Has RingCompletion");
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg, net_internal::TargetPlatform.Linux), "Init ok");
+        sub.assert_true(cfg.active_kind == net_internal::TransportDriverKind.IoUring, "Auto-selected io_uring");
+        sub.assert_true(net_internal::driver_has_cap(cfg.capabilities, net_internal::CAP_RING_COMPLETION), "Has RingCompletion");
     };
 
     t.run("macOS Auto-Selection: io_uring or WindowsRIO preferred") { sub =>
-        var cfg = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.IoUring,
+        var cfg = net_internal::TransportDriverConfig {
+            preferred_kind: net_internal::TransportDriverKind.IoUring,
             ..
         };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg, internal::TargetPlatform.Darwin), "Init ok");
-        sub.assert_true(cfg.active_kind == internal::TransportDriverKind.Kqueue, "Auto-selected kqueue on macOS");
-        sub.assert_true(internal::driver_has_cap(cfg.capabilities, internal::CAP_EXACT_BUF_METRICS), "Has ExactBufMetrics");
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg, net_internal::TargetPlatform.Darwin), "Init ok");
+        sub.assert_true(cfg.active_kind == net_internal::TransportDriverKind.Kqueue, "Auto-selected kqueue on macOS");
+        sub.assert_true(net_internal::driver_has_cap(cfg.capabilities, net_internal::CAP_EXACT_BUF_METRICS), "Has ExactBufMetrics");
     };
 
     t.run("Universal Auto Driver Selection (Windows, Linux, macOS)") { sub =>
-        var cfg_win = internal::TransportDriverConfig { preferred_kind: internal::TransportDriverKind.Auto, .. };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg_win, internal::TargetPlatform.Windows), "Auto on Windows ok");
-        sub.assert_true(cfg_win.active_kind == internal::TransportDriverKind.WindowsRIO, "Auto Windows activates RIO");
+        var cfg_win = net_internal::TransportDriverConfig { preferred_kind: net_internal::TransportDriverKind.Auto, .. };
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg_win, net_internal::TargetPlatform.Windows), "Auto on Windows ok");
+        sub.assert_true(cfg_win.active_kind == net_internal::TransportDriverKind.WindowsRIO, "Auto Windows activates RIO");
 
-        var cfg_linux = internal::TransportDriverConfig { preferred_kind: internal::TransportDriverKind.Auto, .. };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg_linux, internal::TargetPlatform.Linux), "Auto on Linux ok");
-        sub.assert_true(cfg_linux.active_kind == internal::TransportDriverKind.IoUring, "Auto Linux activates io_uring");
+        var cfg_linux = net_internal::TransportDriverConfig { preferred_kind: net_internal::TransportDriverKind.Auto, .. };
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg_linux, net_internal::TargetPlatform.Linux), "Auto on Linux ok");
+        sub.assert_true(cfg_linux.active_kind == net_internal::TransportDriverKind.IoUring, "Auto Linux activates io_uring");
 
-        var cfg_mac = internal::TransportDriverConfig { preferred_kind: internal::TransportDriverKind.Auto, .. };
-        sub.assert_true(internal::init_transport_driver_with_platform(cfg_mac, internal::TargetPlatform.Darwin), "Auto on macOS ok");
-        sub.assert_true(cfg_mac.active_kind == internal::TransportDriverKind.Kqueue, "Auto macOS activates kqueue");
+        var cfg_mac = net_internal::TransportDriverConfig { preferred_kind: net_internal::TransportDriverKind.Auto, .. };
+        sub.assert_true(net_internal::init_transport_driver_with_platform(cfg_mac, net_internal::TargetPlatform.Darwin), "Auto on macOS ok");
+        sub.assert_true(cfg_mac.active_kind == net_internal::TransportDriverKind.Kqueue, "Auto macOS activates kqueue");
 
-        let auto_cfg = internal::auto_transport_driver_config(2048, 131072);
+        let auto_cfg = net_internal::auto_transport_driver_config(2048, 131072);
         sub.assert_true(auto_cfg.is_probed, "Host auto config is probed");
         sub.assert_eq(auto_cfg.ring_size, 2048, "Ring size set");
         sub.assert_eq(auto_cfg.registered_buffer_size, 131072, "Reg buf size set");
@@ -217,42 +225,42 @@ fn test_driver_fallback_and_selection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rio_buffer_lifecycle(t: lit::T&) {
     t.run("RIO Buffer Registration and Slicing") { sub =>
-        var buf = internal::new_rio_buffer(1001, 65536);
+        var buf = net_internal::new_rio_buffer(1001, 65536);
         sub.assert_eq(buf.buffer_id, 1001, "Buffer ID matches");
         sub.assert_eq(buf.offset, 0, "Initial offset is 0");
         sub.assert_eq(buf.length, 65536, "Length is 65536");
         sub.assert_true(buf.is_registered, "Buffer is registered");
         sub.assert_true(buf.page_locked, "Buffer is page-locked");
 
-        sub.assert_true(internal::rio_can_zero_copy(buf, 1024), "Can zero-copy 1024B");
-        sub.assert_true(internal::rio_can_zero_copy(buf, 65536), "Can zero-copy 65536B");
-        sub.assert_false(internal::rio_can_zero_copy(buf, 70000), "Cannot zero-copy 70000B");
+        sub.assert_true(net_internal::rio_can_zero_copy(buf, 1024), "Can zero-copy 1024B");
+        sub.assert_true(net_internal::rio_can_zero_copy(buf, 65536), "Can zero-copy 65536B");
+        sub.assert_false(net_internal::rio_can_zero_copy(buf, 70000), "Cannot zero-copy 70000B");
 
         // Sub-slice
-        let sub_buf = internal::rio_sub_buffer(buf, 4096, 2048);
+        let sub_buf = net_internal::rio_sub_buffer(buf, 4096, 2048);
         sub.assert_eq(sub_buf.buffer_id, 1001, "Sub-slice keeps buffer ID");
         sub.assert_eq(sub_buf.offset, 4096, "Sub-slice offset is 4096");
         sub.assert_eq(sub_buf.length, 2048, "Sub-slice length is 2048");
         sub.assert_true(sub_buf.is_registered, "Sub-slice is registered");
 
         // Out of bounds sub-slice
-        let oob_buf = internal::rio_sub_buffer(buf, 60000, 10000);
+        let oob_buf = net_internal::rio_sub_buffer(buf, 60000, 10000);
         sub.assert_false(oob_buf.is_registered, "OOB slice fails safely");
 
         // Deregister
-        internal::rio_deregister_buffer(buf);
+        net_internal::rio_deregister_buffer(buf);
         sub.assert_false(buf.is_registered, "Buffer deregistered");
         sub.assert_false(buf.page_locked, "Page lock released");
-        sub.assert_false(internal::rio_can_zero_copy(buf, 100), "Cannot zero-copy after deregister");
-        sub.assert_eq(internal::rio_submit_send(0, buf, 0), -1, "rio_submit_send rejects unregistered buffer");
-        sub.assert_eq(internal::rio_submit_recv(0, buf, 0), -1, "rio_submit_recv rejects unregistered buffer");
+        sub.assert_false(net_internal::rio_can_zero_copy(buf, 100), "Cannot zero-copy after deregister");
+        sub.assert_eq(net_internal::rio_submit_send(0, buf, 0), -1, "rio_submit_send rejects unregistered buffer");
+        sub.assert_eq(net_internal::rio_submit_recv(0, buf, 0), -1, "rio_submit_recv rejects unregistered buffer");
     };
 
     t.run("Physical Windows RIO Kernel Registration") { sub =>
-        if internal::detect_target_platform() == internal::TargetPlatform.Windows {
-            let avail = internal::native_rio_available();
+        if net_internal::detect_target_platform() == net_internal::TargetPlatform.Windows {
+            let avail = net_internal::native_rio_available();
             sub.assert_eq(avail, 1, "Native RIO is available in mswsock.dll");
-            let probe = internal::native_rio_probe();
+            let probe = net_internal::native_rio_probe();
             sub.assert_eq(probe, 0, "Native RIO probe succeeds");
         }
     };
@@ -263,40 +271,40 @@ fn test_rio_buffer_lifecycle(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_uring_sqe_cqe_batch(t: lit::T&) {
     t.run("io_uring SQE Preparation") { sub =>
-        var sqe_send = internal::UringSqe { .. };
-        internal::uring_prep_send(sqe_send, 42, 0x1000, 2048, 999, true);
-        sub.assert_eq(sqe_send.opcode, internal::URING_OP_SEND_ZC, "Send opcode is SEND_ZC");
+        var sqe_send = net_internal::UringSqe { .. };
+        net_internal::uring_prep_send(sqe_send, 42, 0x1000, 2048, 999, true);
+        sub.assert_eq(sqe_send.opcode, net_internal::URING_OP_SEND_ZC, "Send opcode is SEND_ZC");
         sub.assert_eq(sqe_send.fd, 42, "FD matches");
         sub.assert_eq(sqe_send.addr, 0x1000, "Addr matches");
         sub.assert_eq(sqe_send.len, 2048, "Len matches");
         sub.assert_eq(sqe_send.user_data, 999, "Tag matches");
 
-        var sqe_recv = internal::UringSqe { .. };
-        internal::uring_prep_recv(sqe_recv, 42, 0x2000, 4096, 1000, true);
-        sub.assert_eq(sqe_recv.opcode, internal::URING_OP_RECV, "Recv opcode is RECV");
-        sub.assert_eq(sqe_recv.flags, internal::URING_SQE_BUFFER_SELECT, "Multishot buffer select set");
+        var sqe_recv = net_internal::UringSqe { .. };
+        net_internal::uring_prep_recv(sqe_recv, 42, 0x2000, 4096, 1000, true);
+        sub.assert_eq(sqe_recv.opcode, net_internal::URING_OP_RECV, "Recv opcode is RECV");
+        sub.assert_eq(sqe_recv.flags, net_internal::URING_SQE_BUFFER_SELECT, "Multishot buffer select set");
 
-        var sqe_accept = internal::UringSqe { .. };
-        internal::uring_prep_accept(sqe_accept, 5, 1001);
-        sub.assert_eq(sqe_accept.opcode, internal::URING_OP_ACCEPT, "Accept opcode matches");
+        var sqe_accept = net_internal::UringSqe { .. };
+        net_internal::uring_prep_accept(sqe_accept, 5, 1001);
+        sub.assert_eq(sqe_accept.opcode, net_internal::URING_OP_ACCEPT, "Accept opcode matches");
 
-        var sqe_cancel = internal::UringSqe { .. };
-        internal::uring_prep_cancel(sqe_cancel, 999);
-        sub.assert_eq(sqe_cancel.opcode, internal::URING_OP_ASYNC_CANCEL, "Cancel opcode matches");
+        var sqe_cancel = net_internal::UringSqe { .. };
+        net_internal::uring_prep_cancel(sqe_cancel, 999);
+        sub.assert_eq(sqe_cancel.opcode, net_internal::URING_OP_ASYNC_CANCEL, "Cancel opcode matches");
         sub.assert_eq(sqe_cancel.addr, 999, "Tag to cancel stored in addr");
     };
 
     t.run("io_uring Batch Submission and CQE Reaping") { sub =>
-        var state = internal::new_ring_queue_state(128);
-        var sqes: internal::UringSqe[4] = [
-            internal::UringSqe { opcode: internal::URING_OP_SEND, len: 512, user_data: 101, .. },
-            internal::UringSqe { opcode: internal::URING_OP_SEND_ZC, len: 1024, user_data: 102, .. },
-            internal::UringSqe { opcode: internal::URING_OP_RECV, flags: internal::URING_SQE_BUFFER_SELECT, len: 4096, user_data: 103, .. },
-            internal::UringSqe { opcode: internal::URING_OP_NOP, len: 0, user_data: 104, .. },
+        var state = net_internal::new_ring_queue_state(128);
+        var sqes: net_internal::UringSqe[4] = [
+            net_internal::UringSqe { opcode: net_internal::URING_OP_SEND, len: 512, user_data: 101, .. },
+            net_internal::UringSqe { opcode: net_internal::URING_OP_SEND_ZC, len: 1024, user_data: 102, .. },
+            net_internal::UringSqe { opcode: net_internal::URING_OP_RECV, flags: net_internal::URING_SQE_BUFFER_SELECT, len: 4096, user_data: 103, .. },
+            net_internal::UringSqe { opcode: net_internal::URING_OP_NOP, len: 0, user_data: 104, .. },
         ];
 
-        var cqes: internal::UringCqe[..32] = [];
-        let submitted = internal::uring_submit_batch(state, sqes[..], cqes);
+        var cqes: net_internal::UringCqe[..32] = [];
+        let submitted = net_internal::uring_submit_batch(state, sqes[..], cqes);
         sub.assert_eq(submitted, 4, "Submitted 4 SQEs");
         sub.assert_eq(cqes.len, 4, "Reaped 4 CQEs");
         sub.assert_eq(state.submissions_total, 4, "State submissions total is 4");
@@ -309,7 +317,16 @@ fn test_uring_sqe_cqe_batch(t: lit::T&) {
         sub.assert_eq(cqes[1].res, 1024, "CQE 1 res matches len");
         sub.assert_eq(cqes[2].user_data, 103, "CQE 2 tag matches");
         sub.assert_eq(cqes[2].res, 4096, "CQE 2 res matches len");
-        sub.assert_true((cqes[2].flags & internal::URING_CQE_F_MORE) != 0, "Multishot CQE has F_MORE flag");
+        sub.assert_true((cqes[2].flags & net_internal::URING_CQE_F_MORE) != 0, "Multishot CQE has F_MORE flag");
+
+        // Invalid live kernel ring_fd (>= 0) must never fabricate loopback CQEs
+        var bad_live_state = net_internal::new_ring_queue_state(128, 9999);
+        var bad_cqes: net_internal::UringCqe[..32] = [];
+        let bad_submitted = net_internal::uring_submit_batch(bad_live_state, sqes[..], bad_cqes);
+        sub.assert_eq(bad_submitted, 0, "Invalid live ring_fd submits 0 SQEs");
+        sub.assert_eq(bad_cqes.len, 0, "Invalid live ring_fd fabricates 0 CQEs");
+        sub.assert_eq(bad_live_state.submissions_total, 0, "Invalid live ring_fd records 0 submissions");
+        sub.assert_eq(bad_live_state.completions_total, 0, "Invalid live ring_fd records 0 completions");
     };
 }
 
@@ -318,33 +335,33 @@ fn test_uring_sqe_cqe_batch(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_kqueue_event_lifecycle(t: lit::T&) {
     t.run("kqueue Kevent Preparation and Buffer Metrics") { sub =>
-        var ev_read = internal::Kevent { .. };
-        internal::kevent_prep_read(ev_read, 12, 501, true);
+        var ev_read = net_internal::Kevent { .. };
+        net_internal::kevent_prep_read(ev_read, 12, 501, true);
         sub.assert_eq(ev_read.ident, 12, "Read ident is fd 12");
-        sub.assert_eq(ev_read.filter, internal::EVFILT_READ, "Filter is EVFILT_READ");
-        sub.assert_true((ev_read.flags & internal::EV_CLEAR) != 0, "Edge-triggered EV_CLEAR is set");
+        sub.assert_eq(ev_read.filter, net_internal::EVFILT_READ, "Filter is EVFILT_READ");
+        sub.assert_true((ev_read.flags & net_internal::EV_CLEAR) != 0, "Edge-triggered EV_CLEAR is set");
         sub.assert_eq(ev_read.udata, 501, "udata matches tag 501");
 
-        var ev_write = internal::Kevent { .. };
-        internal::kevent_prep_write(ev_write, 14, 502, false);
+        var ev_write = net_internal::Kevent { .. };
+        net_internal::kevent_prep_write(ev_write, 14, 502, false);
         sub.assert_eq(ev_write.ident, 14, "Write ident is fd 14");
-        sub.assert_eq(ev_write.filter, internal::EVFILT_WRITE, "Filter is EVFILT_WRITE");
-        sub.assert_false((ev_write.flags & internal::EV_CLEAR) != 0, "Level-triggered EV_CLEAR not set");
+        sub.assert_eq(ev_write.filter, net_internal::EVFILT_WRITE, "Filter is EVFILT_WRITE");
+        sub.assert_false((ev_write.flags & net_internal::EV_CLEAR) != 0, "Level-triggered EV_CLEAR not set");
 
-        var ev_timer = internal::Kevent { .. };
-        internal::kevent_prep_timer(ev_timer, 99, 250, 503);
+        var ev_timer = net_internal::Kevent { .. };
+        net_internal::kevent_prep_timer(ev_timer, 99, 250, 503);
         sub.assert_eq(ev_timer.ident, 99, "Timer ident is 99");
-        sub.assert_eq(ev_timer.filter, internal::EVFILT_TIMER, "Filter is EVFILT_TIMER");
+        sub.assert_eq(ev_timer.filter, net_internal::EVFILT_TIMER, "Filter is EVFILT_TIMER");
         sub.assert_eq(ev_timer.data, 250, "Timer period is 250ms");
 
         // Test exact buffer metrics
         ev_read.data = 16384;
-        sub.assert_eq(internal::kevent_bytes_available(ev_read), 16384, "Exact 16384 bytes available in kernel buffer");
+        sub.assert_eq(net_internal::kevent_bytes_available(ev_read), 16384, "Exact 16384 bytes available in kernel buffer");
 
         // Test EOF flag
-        sub.assert_false(internal::kevent_is_eof(ev_read), "Not EOF yet");
-        ev_read.flags |= internal::EV_EOF;
-        sub.assert_true(internal::kevent_is_eof(ev_read), "EOF flag detected cleanly");
+        sub.assert_false(net_internal::kevent_is_eof(ev_read), "Not EOF yet");
+        ev_read.flags |= net_internal::EV_EOF;
+        sub.assert_true(net_internal::kevent_is_eof(ev_read), "EOF flag detected cleanly");
     };
 }
 
@@ -353,16 +370,16 @@ fn test_kqueue_event_lifecycle(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_driver_summary_formatter(t: lit::T&) {
     t.run("Summary String Formatting") { sub =>
-        var cfg_rio = internal::TransportDriverConfig {
-            preferred_kind:         internal::TransportDriverKind.WindowsRIO,
+        var cfg_rio = net_internal::TransportDriverConfig {
+            preferred_kind:         net_internal::TransportDriverKind.WindowsRIO,
             ring_size:              2048,
             registered_buffer_size: 131072,
             ..
         };
-        internal::init_transport_driver_with_platform(cfg_rio, internal::TargetPlatform.Windows);
+        net_internal::init_transport_driver_with_platform(cfg_rio, net_internal::TargetPlatform.Windows);
 
         var summary_buf: u8[>..] = [];
-        internal::format_driver_summary(cfg_rio, summary_buf);
+        net_internal::format_driver_summary(cfg_rio, summary_buf);
 
         sub.assert_true(summary_buf.len > 0, "Summary buffer is not empty");
         sub.assert_contains(summary_buf[..], "Windows RIO", "Contains Windows RIO");
@@ -371,24 +388,24 @@ fn test_driver_summary_formatter(t: lit::T&) {
         sub.assert_contains(summary_buf[..], "2048", "Contains ring size 2048");
         sub.assert_contains(summary_buf[..], "131072B", "Contains buffer size 131072B");
 
-        var cfg_kq = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.Kqueue,
+        var cfg_kq = net_internal::TransportDriverConfig {
+            preferred_kind: net_internal::TransportDriverKind.Kqueue,
             ..
         };
-        internal::init_transport_driver_with_platform(cfg_kq, internal::TargetPlatform.Darwin);
+        net_internal::init_transport_driver_with_platform(cfg_kq, net_internal::TargetPlatform.Darwin);
         summary_buf.clear();
-        internal::format_driver_summary(cfg_kq, summary_buf);
+        net_internal::format_driver_summary(cfg_kq, summary_buf);
         sub.assert_contains(summary_buf[..], "kqueue", "Contains kqueue");
         sub.assert_contains(summary_buf[..], "ExactBufMetrics", "Contains ExactBufMetrics");
         sub.assert_contains(summary_buf[..], "BatchIO", "Contains BatchIO");
 
-        var cfg_std = internal::TransportDriverConfig {
-            preferred_kind: internal::TransportDriverKind.Standard,
+        var cfg_std = net_internal::TransportDriverConfig {
+            preferred_kind: net_internal::TransportDriverKind.Standard,
             ..
         };
-        internal::init_transport_driver_with_platform(cfg_std, internal::TargetPlatform.Linux);
+        net_internal::init_transport_driver_with_platform(cfg_std, net_internal::TargetPlatform.Linux);
         summary_buf.clear();
-        internal::format_driver_summary(cfg_std, summary_buf);
+        net_internal::format_driver_summary(cfg_std, summary_buf);
         sub.assert_contains(summary_buf[..], "Standard", "Contains Standard");
         sub.assert_contains(summary_buf[..], "None (Standard Stream)", "Contains None");
     };
@@ -399,7 +416,7 @@ fn test_driver_summary_formatter(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
     t.run("AF_XDP UMEM Descriptor Lifecycle") { sub =>
-        var umem = internal::AfXdpUmem {
+        var umem = net_internal::AfXdpUmem {
             addr:          0x10000000,
             len:           8388608, // 8 MB UMEM
             chunk_size:    2048,
@@ -410,7 +427,7 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
         sub.assert_eq(umem.chunk_size, 2048, "Chunk size is 2048 bytes");
 
         // Verify XdpDesc packet descriptor
-        var desc = internal::XdpDesc {
+        var desc = net_internal::XdpDesc {
             addr:    0x10000800,
             len:     1460, // MSS payload
             options: 0,
@@ -418,21 +435,21 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
         sub.assert_eq(desc.addr, 0x10000800, "Packet buffer offset mapped");
         sub.assert_eq(desc.len, 1460, "Packet length 1460 bytes");
 
-        var xsk = internal::new_af_xdp_socket();
-        sub.assert_false(internal::af_xdp_fill_push(xsk, 0x10000800), "fill_push rejects unbound socket");
-        sub.assert_false(internal::af_xdp_tx_submit(xsk, desc), "tx_submit rejects unbound socket");
-        let _, rx_ok = internal::af_xdp_rx_poll(xsk);
+        var xsk = net_internal::new_af_xdp_socket();
+        sub.assert_false(net_internal::af_xdp_fill_push(xsk, 0x10000800), "fill_push rejects unbound socket");
+        sub.assert_false(net_internal::af_xdp_tx_submit(xsk, desc), "tx_submit rejects unbound socket");
+        let _, rx_ok = net_internal::af_xdp_rx_poll(xsk);
         sub.assert_false(rx_ok, "rx_poll rejects unbound socket");
-        let _, comp_ok = internal::af_xdp_complete_pop(xsk);
+        let _, comp_ok = net_internal::af_xdp_complete_pop(xsk);
         sub.assert_false(comp_ok, "complete_pop rejects unbound socket");
-        internal::af_xdp_close(xsk);
+        net_internal::af_xdp_close(xsk);
     };
 
     t.run("DPDK Port and Mempool Interface") { sub =>
-        var dev = internal::new_dpdk_device(0);
+        var dev = net_internal::new_dpdk_device(0);
         sub.assert_false(dev.is_initialized, "starts uninitialized");
 
-        var pcfg = internal::DpdkPortConfig {
+        var pcfg = net_internal::DpdkPortConfig {
             port_id:      0,
             rx_queues:    4,
             tx_queues:    4,
@@ -440,28 +457,28 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
             tx_ring_size: 1024,
             promiscuous:  true,
         };
-        let init_res = internal::dpdk_init_port(dev, pcfg);
+        let init_res = net_internal::dpdk_init_port(dev, pcfg);
         sub.assert_eq(init_res, 0, "dpdk_init_port succeeded");
         sub.assert_true(dev.is_initialized, "dev is initialized");
 
-        let start_res = internal::dpdk_start_port(dev);
+        let start_res = net_internal::dpdk_start_port(dev);
         sub.assert_eq(start_res, 0, "dpdk_start_port succeeded");
         sub.assert_true(dev.is_started, "dev is started and polling NIC BAR");
 
-        let pool = internal::dpdk_create_mempool(4096, 2048);
+        let pool = net_internal::dpdk_create_mempool(4096, 2048);
         sub.assert_true(pool.is_created, "mempool created");
         sub.assert_eq(pool.n_elements, 4096, "4096 packet mbufs");
 
         let tx_mbufs: u64[2] = [0xA001, 0xA002];
-        let sent_pkts = internal::dpdk_tx_burst(dev, 0, tx_mbufs[..]);
+        let sent_pkts = net_internal::dpdk_tx_burst(dev, 0, tx_mbufs[..]);
         sub.assert_eq(sent_pkts, 2 as u16, "dpdk_tx_burst sent 2 packets");
         var rx_mbufs: u64[..32] = [];
-        let recvd_pkts = internal::dpdk_rx_burst(dev, 0, rx_mbufs, 32);
+        let recvd_pkts = net_internal::dpdk_rx_burst(dev, 0, rx_mbufs, 32);
         sub.assert_eq(recvd_pkts, 2 as u16, "dpdk_rx_burst received 2 packets");
         sub.assert_eq(rx_mbufs[0], 0xA001 as u64, "mbuf 0 matches");
         sub.assert_eq(rx_mbufs[1], 0xA002 as u64, "mbuf 1 matches");
 
-        internal::dpdk_stop_port(dev);
+        net_internal::dpdk_stop_port(dev);
         sub.assert_false(dev.is_started, "dev stopped cleanly");
     };
 }
@@ -471,9 +488,9 @@ fn test_af_xdp_and_dpdk_kernel_bypass(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_smartnic_ktls_offload(t: lit::T&) {
     t.run("SmartNIC Hardware Model Identification") { sub =>
-        sub.assert_contains(internal::smartnic_model_name(internal::SmartNicModel.MellanoxConnectX6Dx), "Mellanox ConnectX-6", "Identified CX-6 Dx");
-        sub.assert_contains(internal::smartnic_model_name(internal::SmartNicModel.NvidiaBlueField3), "NVIDIA BlueField-3", "Identified BlueField-3 DPU");
-        sub.assert_contains(internal::smartnic_model_name(internal::SmartNicModel.IntelMountEvans), "Intel Mount Evans", "Identified Mount Evans IPU");
+        sub.assert_contains(net_internal::smartnic_model_name(net_internal::SmartNicModel.MellanoxConnectX6Dx), "Mellanox ConnectX-6", "Identified CX-6 Dx");
+        sub.assert_contains(net_internal::smartnic_model_name(net_internal::SmartNicModel.NvidiaBlueField3), "NVIDIA BlueField-3", "Identified BlueField-3 DPU");
+        sub.assert_contains(net_internal::smartnic_model_name(net_internal::SmartNicModel.IntelMountEvans), "Intel Mount Evans", "Identified Mount Evans IPU");
     };
 
     t.run("SmartNIC AES-GCM-128 / 256 Key Offload Configuration") { sub =>
@@ -488,9 +505,9 @@ fn test_smartnic_ktls_offload(t: lit::T&) {
         let rx_seq:  u8[8]  = [0, 0, 0, 0, 0, 0, 0, 1];
 
         // Attach to socket (dummy fd = 100 for test) with separate TX and RX contexts
-        let sess, err = internal::smartnic_attach_hardware_tls(
+        let sess, err = net_internal::smartnic_attach_hardware_tls(
             100,
-            internal::SmartNicCipherSuite.AesGcm128,
+            net_internal::SmartNicCipherSuite.AesGcm128,
             tx_key[..],
             tx_iv[..],
             tx_salt[..],
@@ -500,7 +517,7 @@ fn test_smartnic_ktls_offload(t: lit::T&) {
             rx_salt[..],
             rx_seq[..],
         );
-        if internal::detect_target_platform() == internal::TargetPlatform.Linux && err == 0 {
+        if net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux && err == 0 {
             sub.assert_true(sess.ktls_active, "kTLS active");
             sub.assert_true(sess.tx_offloaded, "TX offloaded");
             sub.assert_true(sess.rx_offloaded, "RX offloaded");
@@ -512,9 +529,9 @@ fn test_smartnic_ktls_offload(t: lit::T&) {
         }
 
         // Verify invalid fd rejects immediately with error
-        let sess_bad, err_bad = internal::smartnic_attach_hardware_tls(
+        let sess_bad, err_bad = net_internal::smartnic_attach_hardware_tls(
             -1,
-            internal::SmartNicCipherSuite.AesGcm128,
+            net_internal::SmartNicCipherSuite.AesGcm128,
             tx_key[..],
             tx_iv[..],
             tx_salt[..],
@@ -953,8 +970,8 @@ fn test_cve_2026_56866_connect_rejection_pool_safety(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_poller_creation_and_lifecycle(t: lit::T&) {
     t.run("Standard Driver Poller Lifecycle") { sub =>
-        var cfg = internal::auto_transport_driver_config();
-        cfg.active_kind = internal::TransportDriverKind.Standard;
+        var cfg = net_internal::auto_transport_driver_config();
+        cfg.active_kind = net_internal::TransportDriverKind.Standard;
 
         var poller = wing::new_poller(cfg);
         sub.assert_true(poller.is_open, "Poller is open");
@@ -966,13 +983,13 @@ fn test_poller_creation_and_lifecycle(t: lit::T&) {
     };
 
     t.run("Windows RIO / io_uring / kqueue Probed Poller Creation") { sub =>
-        let plat = internal::detect_target_platform();
-        var cfg = internal::auto_transport_driver_config();
+        let plat = net_internal::detect_target_platform();
+        var cfg = net_internal::auto_transport_driver_config();
 
         var poller = wing::new_poller(cfg);
         sub.assert_true(poller.is_open, "Poller created successfully with auto-selected driver");
 
-        if plat == internal::TargetPlatform.Windows && cfg.active_kind == internal::TransportDriverKind.WindowsRIO {
+        if plat == net_internal::TargetPlatform.Windows && cfg.active_kind == net_internal::TransportDriverKind.WindowsRIO {
             sub.assert_true(poller.rio_cq_id != 0, "Windows RIO completion queue initialized");
         }
 
@@ -985,7 +1002,7 @@ fn test_poller_creation_and_lifecycle(t: lit::T&) {
 // 16. Socket Registration & Readiness Multiplexing
 // ----------------------------------------------------------------------------
 fn test_poller_registration_and_readiness(t: lit::T&) {
-    var cfg = internal::auto_transport_driver_config();
+    var cfg = net_internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
     t.run("Registration Table: Add, Duplicate Guard, Modify, Deregister") { sub =>
@@ -1069,7 +1086,7 @@ fn test_poller_registration_and_readiness(t: lit::T&) {
 // 17. High-Resolution Timer Wheel
 // ----------------------------------------------------------------------------
 fn test_poller_timer_wheel(t: lit::T&) {
-    var cfg = internal::auto_transport_driver_config();
+    var cfg = net_internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
     t.run("One-shot Timer Expiration") { sub =>
@@ -1151,7 +1168,7 @@ fn dummy_event_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::Even
 }
 
 fn test_event_loop_io(t: lit::T&) {
-    var cfg = internal::auto_transport_driver_config();
+    var cfg = net_internal::auto_transport_driver_config();
     var el = wing::new_event_loop(cfg);
 
     t.run("Bind Connection, Queue Write, Feed Read & Consume") { sub =>
@@ -1213,7 +1230,7 @@ fn bidi_network_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::Eve
 }
 
 fn test_bidi_client_server_cycle(t: lit::T&) {
-    var cfg = internal::auto_transport_driver_config();
+    var cfg = net_internal::auto_transport_driver_config();
     var el = wing::new_event_loop(cfg);
 
     t.run("Complete Non-blocking Bidi Request-Response Roundtrip") { sub =>
@@ -1254,7 +1271,7 @@ fn test_bidi_client_server_cycle(t: lit::T&) {
 // 20. 15-bit / 4-second Coarse Socket Timeouts (uWebSockets Pattern)
 // ----------------------------------------------------------------------------
 fn test_coarse_socket_timeouts(t: lit::T&) {
-    var cfg = internal::auto_transport_driver_config();
+    var cfg = net_internal::auto_transport_driver_config();
     var poller = wing::new_poller(cfg);
 
     t.run("Coarse 4-second Socket Timeout Expiry & Cancellation") { sub =>
@@ -2272,7 +2289,7 @@ fn wake_echo_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::EventL
 
 fn test_core_reactor_and_wake_contract(t: lit::T&) {
     t.run("core::Poller Generic Reactor & POLL_WAKE Delivery") { sub =>
-        var cfg = internal::auto_transport_driver_config();
+        var cfg = net_internal::auto_transport_driver_config();
         var poller = wing::new_poller(cfg);
 
         sub.assert_true(core::reactor_register(poller, 71, 3001, core::PollInterest.Read, core::PollTrigger.Level), "reactor_register");
@@ -2292,7 +2309,7 @@ fn test_core_reactor_and_wake_contract(t: lit::T&) {
     };
 
     t.run("EventLoop::wake_tag & Stopped Guard") { sub =>
-        var cfg = internal::auto_transport_driver_config();
+        var cfg = net_internal::auto_transport_driver_config();
         var el = wing::new_event_loop(cfg);
         sub.assert_true(wing::wake_tag(el, 8800), "wake_tag queued on open loop");
         let cnt = wing::run_loop_once(el, 0, 1000000, wake_echo_handler);
@@ -2326,6 +2343,100 @@ fn test_core_reactor_and_wake_contract(t: lit::T&) {
         let fd, derr = core::reactor_dial(dialer, core::DialTarget { host: "", port: 0, .. });
         sub.assert_eq(fd, -1, "Invalid dial target returns -1");
         sub.assert_eq(derr, core::IoError.InvalidArgument, "Invalid dial target returns InvalidArgument");
+    };
+}
+
+// ----------------------------------------------------------------------------
+// 38. Live OS Loopback E2E + VirtualPipe Backpressure Parity
+// ----------------------------------------------------------------------------
+fn test_live_os_loopback_reactor_e2e(t: lit::T&) {
+    t.run("Live OS Loopback: TcpDialer + EventLoop OS Multiplexing + Eof") { sub =>
+        let srv = wing::tcp_listen("127.0.0.1", 0);
+        sub.assert_true(srv > 0, "tcp_listen ephemeral loopback");
+        defer if srv > 0 { wing::tcp_close(srv); };
+        let port = wing::tcp_getsockname_port(srv);
+        sub.assert_true(port != 0, "getsockname returns bound port");
+
+        var dialer = wing::TcpDialer { default_timeout_ms: 2000 };
+        let target = core::DialTarget { host: "127.0.0.1", port: port, timeout_ms: 2000, non_blocking: true };
+        let cli_fd, derr = core::reactor_dial(dialer, target);
+        sub.assert_true(cli_fd > 0 && derr == core::IoError.None, "reactor_dial non_blocking loopback");
+        var cli_tr: wing::Transport = wing::Transport.Tcp { fd: cli_fd };
+        defer core::stream_close(cli_tr);
+
+        let acc_fd = wing::tcp_accept(srv, 1000);
+        sub.assert_true(acc_fd > 0, "tcp_accept loopback peer");
+        var acc_tr: wing::Transport = wing::Transport.Tcp { fd: acc_fd };
+        defer core::stream_close(acc_tr);
+
+        var rx: u8[32] = [0; 32];
+        let r0, e0 = core::stream_try_recv(cli_tr, rx[..]);
+        sub.assert_eq(r0, 0, "Empty non-blocking Tcp recv yields 0");
+        sub.assert_eq(e0, core::IoError.WouldBlock, "Empty non-blocking Tcp recv yields WouldBlock");
+
+        var cfg = net_internal::auto_transport_driver_config();
+        var el = wing::new_event_loop(cfg);
+        defer wing::close_event_loop(el);
+        sub.assert_true(wing::enable_os_multiplexing(el), "EventLoop enable_os_multiplexing");
+        sub.assert_true(core::reactor_register(el, cli_fd as i32, 7070, core::PollInterest.Read), "reactor_register");
+        sub.assert_true(core::reactor_modify(el, cli_fd as i32, 7070, core::PollInterest.ReadWrite), "reactor_modify");
+        sub.assert_true(core::reactor_add_timer(el, 91, 5000, 9191, false, 1000), "reactor_add_timer");
+        sub.assert_true(core::reactor_cancel_timer(el, 91), "reactor_cancel_timer");
+        sub.assert_true(core::reactor_modify(el, cli_fd as i32, 7070, core::PollInterest.Read), "restore Read interest");
+
+        let s1, se1 = core::stream_try_send(acc_tr, "WING_REACTOR");
+        sub.assert_eq(s1, 12, "Server sent 12 bytes");
+        sub.assert_eq(se1, core::IoError.None, "Server send IoError.None");
+
+        var evs: core::PollReadyEvent[..64] = [];
+        let n_ready = core::reactor_poll(el, 500, 2000, evs);
+        sub.assert_true(
+            n_ready >= 1 && evs[0].tag == 7070 && (evs[0].events & core::POLL_READ) != 0,
+            "EventLoop woke with POLL_READ",
+        );
+
+        let r1, e1 = core::stream_try_recv(cli_tr, rx[..]);
+        sub.assert_eq(r1, 12, "Client read 12 bytes after POLL_READ");
+        sub.assert_eq(e1, core::IoError.None, "Client read IoError.None");
+        sub.assert_true(core::equal_short(rx[..r1], "WING_REACTOR"), "Payload matches WING_REACTOR");
+
+        core::stream_close(acc_tr);
+        let n_eof = core::reactor_poll(el, 500, 3000, evs);
+        sub.assert_true(n_eof >= 1 && evs[0].tag == 7070, "EventLoop signaled readable on peer close");
+        let r2, e2 = core::stream_try_recv(cli_tr, rx[..]);
+        sub.assert_eq(r2, 0, "Client recv 0 after peer close");
+        sub.assert_eq(e2, core::IoError.Eof, "Client recv IoError.Eof after peer close");
+        sub.assert_true(core::reactor_deregister(el, cli_fd as i32), "reactor_deregister");
+    };
+
+    t.run("Transport.Virtual: Empty WouldBlock, Full WouldBlock, and Peer Close Eof") { sub =>
+        let ran = wing::with_virtual_pipe_pair() { end_a, end_b =>
+            var rx: u8[512] = [0; 512];
+            let r0, e0 = core::stream_try_recv(end_b, rx[..]);
+            sub.assert_eq(r0, 0, "Empty virtual pipe recv yields 0");
+            sub.assert_eq(e0, core::IoError.WouldBlock, "Empty open virtual pipe yields WouldBlock");
+
+            var tx: u8[512] = [0x41; 512];
+            var saw_backpressure = false;
+            for _ in 128 {
+                let _, se = core::stream_try_send(end_a, tx[..]);
+                if se == core::IoError.WouldBlock {
+                    saw_backpressure = true;
+                    break;
+                }
+            }
+            sub.assert_true(saw_backpressure, "Full virtual pipe returns IoError.WouldBlock");
+
+            for _ in 128 {
+                let _, re = core::stream_try_recv(end_b, rx[..]);
+                if re == core::IoError.WouldBlock { break; }
+            }
+            core::stream_close(end_a);
+            let r1, e1 = core::stream_try_recv(end_b, rx[..]);
+            sub.assert_eq(r1, 0, "Drained peer-closed virtual pipe yields 0");
+            sub.assert_eq(e1, core::IoError.Eof, "Drained peer-closed virtual pipe yields Eof");
+        };
+        sub.assert_true(ran, "Allocated virtual pipe pair");
     };
 }
 
@@ -2369,6 +2480,7 @@ fn main() {
     lit::run_case(runner, "35. Per-Group & Per-Proxy Socket Quotas + WantQueue Handoff", test_group_and_proxy_quotas_with_waiter_handoff);
     lit::run_case(runner, "36. HEv3 HTTPS/SVCB Metadata Extraction & AddressFamilyCache", test_hev3_https_svcb_and_address_family_cache);
     lit::run_case(runner, "37. Core Cross-Framework UFCS Async Reactor & Backpressure Contract", test_core_reactor_and_wake_contract);
+    lit::run_case(runner, "38. Live OS Loopback E2E & VirtualPipe Backpressure Parity", test_live_os_loopback_reactor_e2e);
 
     let ok = lit::finish(runner);
     assert(ok);

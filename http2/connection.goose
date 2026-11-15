@@ -3,7 +3,7 @@
 
 // HTTP/2 connection session coordinator, RFC 9218 write scheduler,
 // two-level credit-based flow control, and defense-in-depth Anti-DoS mitigations (RFC 9113, RFC 9218).
-namespace internal;
+namespace h2_internal;
 
 import std;
 import core from "..";

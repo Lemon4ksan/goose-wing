@@ -59,7 +59,7 @@ fn append_field_line(out: u8[>..]&, name: const u8[:], val: const u8[:], sensiti
 }
 
 fn decode_hpack_step(
-    dt:              internal::DynamicTable&,
+    dt:              h2_internal::DynamicTable&,
     blk:             const u8[:],
     offset:          u64&,
     updates_allowed: bool&,
@@ -69,9 +69,9 @@ fn decode_hpack_step(
     let b = blk[offset];
     if (b & 0x80) != 0 {
         updates_allowed = false;
-        let idx, next_off, ok_i = internal::hpack_decode_int(blk, offset, 7);
+        let idx, next_off, ok_i = h2_internal::hpack_decode_int(blk, offset, 7);
         guard ok_i && idx != 0 else { return false; }
-        let n_s, v_s, ok_g = internal::get_indexed_header_slices(dt, idx);
+        let n_s, v_s, ok_g = h2_internal::get_indexed_header_slices(dt, idx);
         guard ok_g else { return false; }
         append_field_line(fields_out, n_s, v_s, false);
         offset = next_off;
@@ -81,9 +81,9 @@ fn decode_hpack_step(
         updates_allowed = false;
         var n_buf: u8[..256]  = [];
         var v_buf: u8[..8192] = [];
-        let next_off, n_s, _, err = internal::decode_literal_field_slices(dt, blk, offset, 6, n_buf, v_buf);
+        let next_off, n_s, _, err = h2_internal::decode_literal_field_slices(dt, blk, offset, 6, n_buf, v_buf);
         guard err == 0 else { return false; }
-        internal::insert_header(dt, n_s, v_buf[..], false);
+        h2_internal::insert_header(dt, n_s, v_buf[..], false);
         append_field_line(fields_out, n_s, v_buf[..], false);
         offset = next_off;
         return true;
@@ -92,8 +92,8 @@ fn decode_hpack_step(
         guard updates_allowed else { return false; }
         update_count += 1;
         guard update_count <= 16 else { return false; }
-        let new_sz, next_off, ok_s = internal::hpack_decode_int(blk, offset, 5);
-        guard ok_s && internal::update_dynamic_table_max_size(dt, new_sz) else { return false; }
+        let new_sz, next_off, ok_s = h2_internal::hpack_decode_int(blk, offset, 5);
+        guard ok_s && h2_internal::update_dynamic_table_max_size(dt, new_sz) else { return false; }
         offset = next_off;
         return true;
     }
@@ -101,7 +101,7 @@ fn decode_hpack_step(
     let is_never = (b & 0x10) != 0;
     var n_buf: u8[..256]  = [];
     var v_buf: u8[..8192] = [];
-    let next_off, n_s, _, err = internal::decode_literal_field_slices(dt, blk, offset, 4, n_buf, v_buf);
+    let next_off, n_s, _, err = h2_internal::decode_literal_field_slices(dt, blk, offset, 4, n_buf, v_buf);
     guard err == 0 else { return false; }
     append_field_line(fields_out, n_s, v_buf[..], is_never);
     offset = next_off;
@@ -114,7 +114,7 @@ fn decode_hpack_step(
 // Example:
 //   blk = [0x82] -> fields_out = "field 3a6d6574686f64 474554 0\n", returns true
 fn decode_hpack_block_fields(
-    dt:         internal::DynamicTable&,
+    dt:         h2_internal::DynamicTable&,
     blk:        const u8[:],
     fields_out: u8[>..]&,
 ) -> bool {
@@ -133,7 +133,7 @@ fn decode_hpack_block_fields(
 
 fn handle_decode_line(
     line:       const u8[:],
-    dt:         internal::DynamicTable&,
+    dt:         h2_internal::DynamicTable&,
     block_buf:  u8[>..]&,
     fields_out: u8[>..]&,
 ) {
@@ -142,7 +142,7 @@ fn handle_decode_line(
     if cmd == "conn" {
         let lim, ok_u = arg.parse_u64_dec();
         if ok_u {
-            dt = internal::new_dynamic_table(lim);
+            dt = h2_internal::new_dynamic_table(lim);
         }
         return;
     }
@@ -165,7 +165,7 @@ fn handle_decode_line(
 
 fn handle_encode_field(
     rest:      const u8[:],
-    dt:        internal::DynamicTable&,
+    dt:        h2_internal::DynamicTable&,
     block_out: u8[>..]&,
     n_buf:     u8[>..]&,
     v_buf:     u8[>..]&,
@@ -177,15 +177,15 @@ fn handle_encode_field(
     guard ok2 else { return; }
     guard decode_hex_or_dash(n_hex, n_buf) && decode_hex_or_dash(v_hex, v_buf) else { return; }
     let idx_mode = if s_flag == "1" {
-        internal::HpackIndexing.NeverIndexed
+        h2_internal::HpackIndexing.NeverIndexed
     } else {
-        internal::HpackIndexing.Incremental
+        h2_internal::HpackIndexing.Incremental
     };
-    let _ = internal::encode_hpack_field(dt, block_out, n_buf[..], v_buf[..], idx_mode, use_huff);
+    let _ = h2_internal::encode_hpack_field(dt, block_out, n_buf[..], v_buf[..], idx_mode, use_huff);
 }
 
 fn run_decode_batch(raw_batch: const u8[:]) {
-    var dt = internal::new_dynamic_table(4096);
+    var dt = h2_internal::new_dynamic_table(4096);
     var block_buf:  u8[>..] = [];
     var fields_out: u8[>..] = [];
     var pos:        i64     = 0;
@@ -205,7 +205,7 @@ fn run_decode_batch(raw_batch: const u8[:]) {
 
 fn handle_encode_line(
     line:      const u8[:],
-    dt:        internal::DynamicTable&,
+    dt:        h2_internal::DynamicTable&,
     block_out: u8[>..]&,
     line_out:  u8[>..]&,
     n_buf:     u8[>..]&,
@@ -225,15 +225,15 @@ fn handle_encode_line(
     if cmd == "conn" {
         let lim, ok_u = arg.parse_u64_dec();
         if ok_u {
-            dt = internal::new_dynamic_table(lim);
+            dt = h2_internal::new_dynamic_table(lim);
             block_out.clear();
         }
         return;
     }
     if cmd == "limit" {
         let lim, ok_u = arg.parse_u64_dec();
-        if ok_u && internal::update_dynamic_table_max_size(dt, lim) {
-            let _ = internal::hpack_encode_int(block_out, lim, 5, 0x20);
+        if ok_u && h2_internal::update_dynamic_table_max_size(dt, lim) {
+            let _ = h2_internal::hpack_encode_int(block_out, lim, 5, 0x20);
         }
         return;
     }
@@ -243,7 +243,7 @@ fn handle_encode_line(
 }
 
 fn run_encode_batch(raw_batch: const u8[:], use_huff: bool) {
-    var dt = internal::new_dynamic_table(4096);
+    var dt = h2_internal::new_dynamic_table(4096);
     var block_out: u8[>..] = [];
     var line_out:  u8[>..] = [];
     var n_buf:     u8[>..] = [];

@@ -9,8 +9,8 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.request;
-import client.response;
+import .request;
+import .response;
 import .sfv;
 
 // ---- RFC 9421 Constants --------------------------------------------------

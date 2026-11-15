@@ -18,7 +18,7 @@ add_static_route(srv.pipeline.router, "GET", "/healthz", "text/plain", "ok");
 enum ReactorAccelMode { Auto, PollFallback, IoUring, Rio, Kqueue }
 struct HttpServer {
     pipeline: ServerPipelineConfig, host: u8[..256], port: u16,
-    server_name: u8[..64], timer: internal::ConnectionTimer,
+    server_name: u8[..64], timer: server_internal::ConnectionTimer,
     topic_tree: TopicTree, ws_routes: WsRouteEntry[..16],
     shared_compressor: SharedWsCompressor, sni_registry: SniRegistry,
     worker_ring: core::SpscRing, cached_date: CachedHttpDate,
@@ -60,11 +60,11 @@ collecting up to 512 matching socket descriptors (`i64[..512]`) in
 const REACTOR_MAX_H2_SESSIONS: i64 = 128;
 enum H3L2Backend { UdpFallback, AfXdp, Dpdk }
 struct H3L2Config {
-    backend: H3L2Backend, local_ep: internal::L2UdpEndpoint,
+    backend: H3L2Backend, local_ep: net_internal::L2UdpEndpoint,
     udp_fd: i64, dpdk_port_id: u16, dpdk_queue_id: u16
 }
 struct H3ServerEndpoint {
-    conn: internal::H3Connection
+    conn: h3_internal::H3Connection
 }
 fn reactor_listen_accelerated(server: HttpServer&, backlog: i32 = 1024) -> i64
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_requests: i64 = 0) -> i64
@@ -72,9 +72,9 @@ fn serve_reactor_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, us
 fn serve_reactor_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const TlsServerHandshakeConfig&, max_requests: i64 = 0) -> i64
 fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerEndpoint
 fn handle_h3_quic_datagram<B>(server: HttpServer&, ep: H3ServerEndpoint&, client_ip: const u8[:], datagram: const u8[:], now_ns: u64, out_wire: B&) -> bool
-fn handle_h3_server_datagram<B>(server: HttpServer&, h3_conn: internal::H3Connection&, stream_id: u64, client_ip: const u8[:], rx_wire: const u8[:], now_ns: u64, tx_wire: B&) -> bool
+fn handle_h3_server_datagram<B>(server: HttpServer&, h3_conn: h3_internal::H3Connection&, stream_id: u64, client_ip: const u8[:], rx_wire: const u8[:], now_ns: u64, tx_wire: B&) -> bool
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64
-fn serve_h3_l2(server: HttpServer&, ep: H3ServerEndpoint&, cfg: const H3L2Config&, xsk: internal::AfXdpSocket&, max_packets: i64 = 64) -> i64
+fn serve_h3_l2(server: HttpServer&, ep: H3ServerEndpoint&, cfg: const H3L2Config&, xsk: net_internal::AfXdpSocket&, max_packets: i64 = 64) -> i64
 ```
 
 `serve_reactor`, `serve_reactor_with_stage`, and `serve_reactor_tls` drive a
@@ -119,8 +119,6 @@ fn add_route(router: RadixRouter&, method: const u8[:], path: const u8[:], handl
 fn add_route_pso(router: RadixRouter&, method: const u8[:], path: const u8[:], handler_id: i32, pso_mask: u64) -> bool
 fn add_static_route(router: RadixRouter&, method: const u8[:], path: const u8[:], content_type: const u8[:], body: const u8[:], handler_id: i32 = 0) -> bool
 fn match_route(router: const RadixRouter&, method: const u8[:], path: const u8[:], params: ZeroAllocParams&) -> RouteMatchResult
-fn param_val(params: const ZeroAllocParams&, idx: i64, req_path: const u8[:]) -> const u8[:]
-fn param_by_name(params: const ZeroAllocParams&, name: const u8[:], req_path: const u8[:]) -> const u8[:], bool
 ```
 
 `RadixRouter` pairs a Tier 0 `L0RegisterTable` (matching exact paths up to 16
@@ -154,8 +152,8 @@ struct ServerPipelineConfig {
     edge_filter: EdgeFilter, route_cache: HttpRouteCache,
     jwks: Jwks, jwt_options: JwtValidationOptions,
     security_txt: SecurityTxt, dpop_replay_cache: DPoPReplayCache,
-    wire_pipeline: wire::WirePipeline, header_pool: internal::HeaderMapPool,
-    ext_pool: internal::ExtensionsPool, slab_pool: internal::SpillSlabPool,
+    wire_pipeline: wire::WirePipeline, header_pool: server_internal::HeaderMapPool,
+    ext_pool: server_internal::ExtensionsPool, slab_pool: server_internal::SpillSlabPool,
     memo: ServerCompressAndEtagMemo, target_host: u8[..256],
     server_pso_capabilities: u64, ...
 }
@@ -165,26 +163,26 @@ struct ServerStageCtx {
 }
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig
 fn validate_pipeline_expect_header(req: const Request&) -> bool
-fn execute_pipeline(cfg: ServerPipelineConfig&, conn_timer: internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: internal::InlineHandlerFuture&) -> PipelineOutcome
-fn execute_server_pipeline_with_stage<UserStage>(cfg: ServerPipelineConfig&, conn_timer: internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: internal::InlineHandlerFuture&, user_stage: UserStage&) -> PipelineOutcome
+fn execute_pipeline(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&) -> PipelineOutcome
+fn execute_server_pipeline_with_stage<UserStage>(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&, user_stage: UserStage&) -> PipelineOutcome
 fn on_server_stage<First, Next>(chain: wire::StageChain<First, Next>&, phase: wire::ServerHookPhase, cfg: ServerPipelineConfig&, req: const Request&, ctx: ServerStageCtx&, res: Response&) -> wire::StageVerdict
 fn on_server_custom_slot<First, Next>(chain: wire::StageChain<First, Next>&, slot_id: u8, param_slot: u8, cfg: ServerPipelineConfig&, req: const Request&, sctx: ServerStageCtx&, res: Response&) -> wire::StageVerdict
-fn stage_server_slowloris(timer: internal::ConnectionTimer&, enabled: bool, now_ns: u64, res: Response&) -> wire::StageVerdict
+fn stage_server_slowloris(timer: server_internal::ConnectionTimer&, enabled: bool, now_ns: u64, res: Response&) -> wire::StageVerdict
 fn stage_server_expect_100(req: const Request&, res: Response&) -> wire::StageVerdict
 fn stage_server_edge_filter(filter: EdgeFilter&, req: const Request&, res: Response&) -> wire::StageVerdict
 fn stage_server_ratelimit_ip<Limiter>(limiter: Limiter&, enabled: bool, peer_ip: const u8[:], now_ns: u64, res: Response&) -> wire::StageVerdict
-fn stage_server_route_match<Router>(router: const Router&, req: const Request&, ext: internal::RequestExtensions&, out_match: RouteMatchResult&, res: Response&) -> wire::StageVerdict
+fn stage_server_route_match<Router>(router: const Router&, req: const Request&, ext: server_internal::RequestExtensions&, out_match: RouteMatchResult&, res: Response&) -> wire::StageVerdict
 fn stage_server_ratelimit_route<Limiter>(limiter: Limiter&, enabled: bool, peer_ip: const u8[:], route_path: const u8[:], now_ns: u64, res: Response&) -> wire::StageVerdict
 fn stage_server_cors(cors_policy: const CorsPolicy&, enabled: bool, req: const Request&, res: Response&) -> wire::StageVerdict
 fn stage_server_csrf(csrf_guard: const CrossOriginGuard&, enabled: bool, target_host: const u8[:], req: const Request&, res: Response&) -> wire::StageVerdict
-fn stage_server_auth_cookie<Jar>(jar: const Jar&, req: const Request&, ext: internal::RequestExtensions&, now_ns: u64) -> wire::StageVerdict
-fn stage_server_auth_jwt(jwks: const Jwks&, jwt_options: const JwtValidationOptions&, req: const Request&, ext: internal::RequestExtensions&, now_ns: u64, res: Response&) -> wire::StageVerdict
+fn stage_server_auth_cookie<Jar>(jar: const Jar&, req: const Request&, ext: server_internal::RequestExtensions&, now_ns: u64) -> wire::StageVerdict
+fn stage_server_auth_jwt(jwks: const Jwks&, jwt_options: const JwtValidationOptions&, req: const Request&, ext: server_internal::RequestExtensions&, now_ns: u64, res: Response&) -> wire::StageVerdict
 fn stage_server_cache_lookup(cache: HttpRouteCache&, req: const Request&, now_ms: u64, res: Response&, handler_id: i32 = -1) -> wire::StageVerdict
 fn stage_server_etag(req: const Request&, res: Response&, memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. }) -> wire::StageVerdict
 fn stage_server_compress(req: const Request&, res: Response&, mask: u64, memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. }) -> wire::StageVerdict
 fn stage_server_cache_store(cache: HttpRouteCache&, now_ms: u64, res: Response&, handler_id: i32 = -1, url_key: const u8[:] = "") -> wire::StageVerdict
 fn stage_server_security_headers(res: Response&) -> wire::StageVerdict
-fn stage_server_metrics_log(ext: const internal::RequestExtensions&, res: Response&, mask: u64, now_ns: u64) -> wire::StageVerdict
+fn stage_server_metrics_log(ext: const server_internal::RequestExtensions&, res: Response&, mask: u64, now_ns: u64) -> wire::StageVerdict
 ```
 
 `execute_pipeline` and `execute_server_pipeline_with_stage` intersect

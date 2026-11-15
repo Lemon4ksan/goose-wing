@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RUN: goose %s | %FileCheck %s
 
 import std;
@@ -99,24 +102,24 @@ fn test_multi_limiter_and_xds_hot_swap() {
     var req_beta = wing::new_request("GET", "/v1/orders");
     wing::set_header(req_beta, "Authorization", auth_beta[..]);
 
-    var timer = internal::new_connection_timer(30000000000, 1000000000);
+    var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     let now_ns: u64 = 100000000000;
 
     // 1st request for tenant-alpha succeeds (200)
     var res1 = wing::Response { .. };
-    var fut1 = internal::new_inline_handler_future(0);
+    var fut1 = server_internal::new_inline_handler_future(0);
     let out1 = wing::execute_pipeline(cfg, timer, "198.51.100.7", req_alpha, now_ns, res1, fut1);
     print("alpha_req1: ", out1 == wing::PipelineOutcome.Handled, " status: ", res1.status_code);
 
     // 2nd immediate request for tenant-alpha hits slot 2 subject rate limit (429)
     var res2 = wing::Response { .. };
-    var fut2 = internal::new_inline_handler_future(0);
+    var fut2 = server_internal::new_inline_handler_future(0);
     let out2 = wing::execute_pipeline(cfg, timer, "198.51.100.7", req_alpha, now_ns, res2, fut2);
     print("alpha_req2_limited: ", out2 == wing::PipelineOutcome.RateLimited, " status: ", res2.status_code);
 
     // Request from same IP & route for tenant-beta succeeds because slot 0 (IP) & slot 1 (route) have remaining burst
     var res3 = wing::Response { .. };
-    var fut3 = internal::new_inline_handler_future(0);
+    var fut3 = server_internal::new_inline_handler_future(0);
     let out3 = wing::execute_pipeline(cfg, timer, "198.51.100.7", req_beta, now_ns, res3, fut3);
     print("beta_req1_allowed: ", out3 == wing::PipelineOutcome.Handled, " status: ", res3.status_code);
 
@@ -136,7 +139,7 @@ fn test_multi_limiter_and_xds_hot_swap() {
     ];
     let swap_ok = wire::replace_ingress_bindings(cfg.wire_pipeline, xds_bindings[..]);
     var res4 = wing::Response { .. };
-    var fut4 = internal::new_inline_handler_future(0);
+    var fut4 = server_internal::new_inline_handler_future(0);
     let out4 = wing::execute_pipeline(cfg, timer, "198.51.100.7", req_alpha, now_ns, res4, fut4);
     print(
         "xds_swap_ok: ",

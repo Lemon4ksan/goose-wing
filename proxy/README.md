@@ -39,19 +39,19 @@ fn advance_read(ring: ProxyStreamRing&, consumed: i64)
 fn feed_stream_chunk(ring: ProxyStreamRing&, chunk: const u8[:]) -> bool
 fn forward_userspace_stream_chunk<B>(ring: ProxyStreamRing&, chunk: const u8[:], out_wire: B&) -> i64, bool
 fn parse_x_accel_control_header(name: const u8[:], val: const u8[:], accel: UpstreamAccelControl&) -> bool
-fn rewrite_upstream_location_header(loc_val: const u8[:], backend_url_prefix: const u8[:], public_url_prefix: const u8[:], out_location_buf: u8[..512]&) -> const u8[:]
+fn try_rewrite_upstream_url<B>(url_val: const u8[:], backend_url_prefix: const u8[:], public_url_prefix: const u8[:], out_rewritten: B&) -> bool
 fn process_and_filter_upstream_response_headers(in_headers: const HeaderMap&, backend_url_prefix: const u8[:], public_url_prefix: const u8[:], out_headers: HeaderMap&, out_location_buf: u8[..512]&, accel: UpstreamAccelControl&) -> bool
 fn execute_proxy_exchange(proxy: ReverseProxy&, pool: StreamPool&, method: const u8[:], uri: const u8[:], in_headers: const HeaderMap&, client_ip: const u8[:], proto: const u8[:], body: const u8[:], out_resp: Response&, timeout_ms: u32 = 5000, now_ns: u64 = 0) -> bool
-fn capture_upstream_early_hints<B>(raw_103_wire: const u8[:], out_resp: UpstreamResponse&, client_early_wire: B&) -> bool
+fn capture_upstream_early_hints(in_resp: const Response&, out_upstream: UpstreamResponse&)
 fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy
-fn prepare_proxy_request(proxy: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const HeaderMap&, client_ip: const u8[:], proto: const u8[:], body: const u8[:], out_wire: u8[>..]&) -> i32, bool
-fn prepare_proxy_request_at(proxy: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const HeaderMap&, client_ip: const u8[:], proto: const u8[:], body: const u8[:], out_wire: u8[>..]&, now_ns: u64) -> i32, bool
+fn prepare_proxy_request<B>(proxy: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const HeaderMap&, client_ip: const u8[:], proto: const u8[:], body: const u8[:], out_wire: B&) -> i32, bool
+fn prepare_proxy_request_at<B>(proxy: ReverseProxy&, method: const u8[:], uri: const u8[:], in_headers: const HeaderMap&, client_ip: const u8[:], proto: const u8[:], body: const u8[:], out_wire: B&, now_ns: u64) -> i32, bool
 fn exchange_prepared_wire_on_conn_with_hints<B1, B2>(proxy: ReverseProxy&, target_idx: i32, out_wire: const u8[:], now_ms: u64, client_103_out: B1&, final_resp_out: B2&) -> i32, bool
 fn finish_proxy_request(proxy: ReverseProxy&, target_idx: i32, success: bool)
 fn abort_proxy_request(proxy: ReverseProxy&, target_idx: i32)
 fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64)
 fn filter_and_forward_headers(in_headers: const HeaderMap&, out_headers: HeaderMap&, client_ip: const u8[:], proto: const u8[:], upstream_host: const u8[:], config: const ProxyConfig&) -> bool
-fn serialize_upstream_request(method: const u8[:], uri: const u8[:], headers: const HeaderMap&, body: const u8[:], out: u8[>..]&, http_version: const u8[:] = "HTTP/1.1")
+fn serialize_upstream_request<B>(method: const u8[:], uri: const u8[:], headers: const HeaderMap&, body: const u8[:], out: B&, http_version: const u8[:] = "HTTP/1.1") -> bool
 ```
 
 `ReverseProxy` sanitizes RFC 9110 §7.6 hop-by-hop headers (`Connection`,
@@ -113,12 +113,12 @@ struct ClusterHealthChecker { ... }
 fn new_health_check_config(interval_ms: u64 = 5000, timeout_ms: u64 = 2000, healthy_thresh: u32 = 2, unhealthy_thresh: u32 = 3) -> HealthCheckConfig
 fn record_probe_success(health: UpstreamHealth&, rtt_us: u32, config: const HealthCheckConfig&) -> HealthState
 fn record_probe_failure(health: UpstreamHealth&, config: const HealthCheckConfig&) -> HealthState
-fn is_probe_due(health: const UpstreamHealth&, now_ms: u64, interval_ms: u64) -> bool
-fn format_health_probe_request<B>(target_host: const u8[:], config: const HealthCheckConfig&, out: B&)
-fn evaluate_probe_response(status_code: u16, config: const HealthCheckConfig&) -> bool
+fn enter_probing_state(health: UpstreamHealth&) -> bool
+fn format_health_probe_request(host: const u8[:], path: const u8[:], out: u8[>..]&)
+fn parse_probe_status_code(wire: const u8[:]) -> u16, bool
+fn evaluate_probe_response(wire: const u8[:], expected_status: u16) -> bool
 fn new_cluster_health_checker(config: HealthCheckConfig = HealthCheckConfig { .. }) -> ClusterHealthChecker
 fn register_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32) -> bool
-fn poll_next_probe(checker: ClusterHealthChecker&, cluster: const UpstreamCluster&, now_ms: u64, out_wire: u8[>..]&) -> i32, bool
 fn on_probe_success(checker: ClusterHealthChecker&, cluster: UpstreamCluster&, target_idx: i32, rtt_us: u32) -> HealthState
 fn on_probe_failure(checker: ClusterHealthChecker&, cluster: UpstreamCluster&, target_idx: i32) -> HealthState
 fn check_probe_timeouts(checker: ClusterHealthChecker&, cluster: UpstreamCluster&, now_ms: u64) -> i32
@@ -128,37 +128,5 @@ fn check_probe_timeouts(checker: ClusterHealthChecker&, cluster: UpstreamCluster
 `config.path`, up to 64 bytes) across registered cluster targets, requiring
 `healthy_threshold` consecutive passes to promote a `Probing` node to `Up` and
 `unhealthy_threshold` consecutive failures or timeouts (`check_probe_timeouts`)
-to mark a node `Down`.
-
-### 4. Generic Cell Rate Algorithm Rate Limiter (`proxy/gcra.goose`)
-
-```goose
-struct GcraConfig { emission_interval_ns: u64, tau_ns: u64, max_burst: u64, limit_window_ns: u64 }
-struct GcraTatCell { tat_ns: u64 }
-struct GcraDecision {
-    allowed: bool, remaining_burst: u64, retry_after_ns: u64,
-    reset_after_ns: u64, tat_ns: u64
-}
-struct GatewayClientEntry { ... }
-struct GatewayRateLimiter {
-    config: GcraConfig, entries: GatewayClientEntry[..64],
-    total_allowed: u64, total_rejected: u64
-}
-fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig
-fn new_gcra_config_interval(interval_ns: u64, tau_ns: u64, max_burst: u64) -> GcraConfig
-fn gcra_check(config: const GcraConfig&, cell: GcraTatCell&, cost: u64, now_ns: u64) -> GcraDecision
-fn gcra_peek(config: const GcraConfig&, cell: const GcraTatCell&, cost: u64, now_ns: u64) -> GcraDecision
-fn gcra_penalize(config: const GcraConfig&, cell: GcraTatCell&, penalty_ns: u64, now_ns: u64)
-fn gcra_reset(cell: GcraTatCell&)
-fn new_gateway_rate_limiter(rate_per_sec: u64, burst_capacity: u64) -> GatewayRateLimiter
-fn check_gateway_rate_limit(limiter: GatewayRateLimiter&, client_id: const u8[:], cost: u64, now_ns: u64) -> GcraDecision
-fn penalize_gateway_client(limiter: GatewayRateLimiter&, client_id: const u8[:], penalty_ns: u64, now_ns: u64)
-fn evict_idle_gateway_clients(limiter: GatewayRateLimiter&, max_idle_ns: u64, now_ns: u64) -> i32
-fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&)
-```
-
-Tracks per-client Theoretical Arrival Time (`tat_ns`) across a bounded 64-slot
-table (`GatewayClientEntry[..64]`) with LRU slot eviction when full.
-`gcra_check` advances `cell.tat_ns` only when `allowed` is `true` and computes
-`retry_after_ns` and `reset_after_ns` for `Retry-After` / `RateLimit-*` headers;
-`gcra_peek` does a non-mutating check.
+to mark a node `Down`. Gateway GCRA rate limiting (`GcraConfig`,
+`GatewayRateLimiter`) lives in `security/gcra.goose`.

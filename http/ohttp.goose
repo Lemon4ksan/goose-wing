@@ -9,7 +9,7 @@ namespace wing;
 
 import std;
 import core from "..";
-import tls.hpke;
+import security.hpke;
 import .bhttp;
 
 // ---- RFC 9458 constants ----------------------------------------------------

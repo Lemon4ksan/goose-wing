@@ -44,8 +44,8 @@ fragments in a 16 KB `SegmentedArena` with up to 64 interval descriptors
 (`intervals: Interval[..64]`).
 
 ```goose
-var conn = internal::new_quic_client_connection(server_dcid, client_scid);
-let ok = internal::quic_conn_install_initial_keys(conn, server_dcid);
+var conn = quic_internal::new_quic_client_connection(server_dcid, client_scid);
+let ok = quic_internal::quic_conn_install_initial_keys(conn, server_dcid);
 ```
 
 ### Frame Codecs & Transport Parameters (`frames.goose`, RFC 9000 §18–19)

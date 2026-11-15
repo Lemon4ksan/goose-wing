@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
 // RUN: goose %s | %FileCheck %s
 //
 // Protocol Smuggler — Cycle 2 Regression Suite
@@ -108,66 +111,66 @@ fn test_ps_c2_01_grpc_smuggling_and_truncation() {
 // ---------------------------------------------------------------------------
 fn test_ps_c2_02_quic_stream_and_loss_integrity() {
     // 2a. Evicted closed stream must not be reopened by quic_table_get_or_open_stream (RFC 9000 Section 3.2)
-    var tbl = internal::new_quic_stream_table(internal::QuicRole.Server);
+    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Server);
     tbl.max_streams_bidi = 300;
-    let idx0, ok0 = internal::quic_table_get_or_open_stream(tbl, 0, 65536);
+    let idx0, ok0 = quic_internal::quic_table_get_or_open_stream(tbl, 0, 65536);
     assert(ok0 && idx0 == 0);
     // Drive stream 0 (ClientBidi) to terminal state in both directions
-    let ok_rx, _ = internal::quic_stream_on_recv_stream_frame(tbl.streams[idx0], 0, 0, true);
+    let ok_rx, _ = quic_internal::quic_stream_on_recv_stream_frame(tbl.streams[idx0], 0, 0, true);
     assert(ok_rx);
-    let _ = internal::quic_stream_on_app_read(tbl.streams[idx0], 0);
-    let ok_tx, _ = internal::quic_stream_on_send_data(tbl.streams[idx0], 0, 0, true);
+    let _ = quic_internal::quic_stream_on_app_read(tbl.streams[idx0], 0);
+    let ok_tx, _ = quic_internal::quic_stream_on_send_data(tbl.streams[idx0], 0, 0, true);
     assert(ok_tx);
-    assert(internal::quic_stream_on_send_ack(tbl.streams[idx0], true));
-    assert(internal::quic_stream_is_terminal(tbl.streams[idx0], internal::QuicRole.Server));
+    assert(quic_internal::quic_stream_on_send_ack(tbl.streams[idx0], true));
+    assert(quic_internal::quic_stream_is_terminal(tbl.streams[idx0], quic_internal::QuicRole.Server));
 
     // Fill remaining 127 slots and trigger eviction of stream 0 on the 129th stream
     var s_idx: u64 = 1;
     while s_idx <= 128 {
-        let _, ok_s = internal::quic_table_get_or_open_stream(tbl, s_idx * 4, 65536);
+        let _, ok_s = quic_internal::quic_table_get_or_open_stream(tbl, s_idx * 4, 65536);
         assert(ok_s);
         s_idx += 1;
     }
-    assert(internal::quic_table_is_evicted_closed_stream(tbl, 0));
-    let _, ok_reopen = internal::quic_table_get_or_open_stream(tbl, 0, 65536);
+    assert(quic_internal::quic_table_is_evicted_closed_stream(tbl, 0));
+    let _, ok_reopen = quic_internal::quic_table_get_or_open_stream(tbl, 0, 65536);
     assert(!ok_reopen);
 
     // 2b. ImmediateAck (0x1f) and AckFrequency (0xaf) must be accepted in 1-RTT and rejected in 0-RTT
-    var conn = internal::new_quic_server_connection("server_cid");
-    conn.state = internal::QuicConnState.Established;
+    var conn = quic_internal::new_quic_server_connection("server_cid");
+    conn.state = quic_internal::QuicConnState.Established;
     let imm_buf: u8[1] = [rfc::QUIC_FRAME_IMMEDIATE_ACK as u8];
-    let ok_1rtt, ack_el_1rtt = internal::quic_conn_process_payload(
+    let ok_1rtt, ack_el_1rtt = quic_internal::quic_conn_process_payload(
         conn,
         imm_buf[..],
-        internal::QuicHeaderType.OneRtt,
+        quic_internal::QuicHeaderType.OneRtt,
         100000,
     );
     assert(ok_1rtt && ack_el_1rtt);
 
-    var conn_0rtt = internal::new_quic_server_connection("server_cid");
-    let ok_0rtt, _ = internal::quic_conn_process_payload(
+    var conn_0rtt = quic_internal::new_quic_server_connection("server_cid");
+    let ok_0rtt, _ = quic_internal::quic_conn_process_payload(
         conn_0rtt,
         imm_buf[..],
-        internal::QuicHeaderType.ZeroRtt,
+        quic_internal::QuicHeaderType.ZeroRtt,
         100000,
     );
     assert(!ok_0rtt && conn_0rtt.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // 2c. detect_lost_packets must preserve uncollected packets without duplication when out_lost is full
-    var space = internal::PnSpaceState {
+    var space = quic_internal::PnSpaceState {
         has_acked_packets: true,
         largest_acked_pn:  10,
         ..
     };
     // p0 (lost), p1 (not lost, pn=9), p2 (lost), p3 (lost, overflows out_lost[..2])
-    space.sent_packets.push(internal::SentPacketMeta { pn: 1, time_sent_us: 1000, size_bytes: 100, .. });
-    space.sent_packets.push(internal::SentPacketMeta { pn: 9, time_sent_us: 90000, size_bytes: 100, .. });
-    space.sent_packets.push(internal::SentPacketMeta { pn: 2, time_sent_us: 1000, size_bytes: 100, .. });
-    space.sent_packets.push(internal::SentPacketMeta { pn: 3, time_sent_us: 1000, size_bytes: 100, .. });
+    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 1, time_sent_us: 1000, size_bytes: 100, .. });
+    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 9, time_sent_us: 90000, size_bytes: 100, .. });
+    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 2, time_sent_us: 1000, size_bytes: 100, .. });
+    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 3, time_sent_us: 1000, size_bytes: 100, .. });
 
-    let rtt = internal::RttState { smoothed_rtt_us: 10000, latest_rtt_us: 10000, .. };
-    var out_lost: internal::SentPacketMeta[..2] = [];
-    let ok_loss = internal::detect_lost_packets(space, rtt, 95000, out_lost);
+    let rtt = quic_internal::RttState { smoothed_rtt_us: 10000, latest_rtt_us: 10000, .. };
+    var out_lost: quic_internal::SentPacketMeta[..2] = [];
+    let ok_loss = quic_internal::detect_lost_packets(space, rtt, 95000, out_lost);
     assert(!ok_loss);
     assert(out_lost.len == 2);
     // Remaining in sent_packets must be strictly [pn=9, pn=3] (2 packets, no duplicate pn=9 or already-removed pn=2)

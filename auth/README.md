@@ -329,10 +329,9 @@ fn add_audience(claims: JwtClaims&, aud: const u8[:]) -> bool
 fn set_claim(claims: JwtClaims&, key: const u8[:], val: const u8[:]) -> bool
 fn set_claim_int(claims: JwtClaims&, key: const u8[:], val: i64) -> bool
 fn set_claim_bool(claims: JwtClaims&, key: const u8[:], val: bool) -> bool
-fn claim_str(claims: const JwtClaims&, key: const u8[:]) -> const u8[:], bool
+fn claim_str(claims: const JwtClaims&, key: const u8[:]) -> const u8[:]
 fn claim_int(claims: const JwtClaims&, key: const u8[:]) -> i64, bool
 fn claim_bool(claims: const JwtClaims&, key: const u8[:]) -> bool, bool
-fn has_claim(claims: const JwtClaims&, key: const u8[:]) -> bool
 fn serialize_jwt_claims<B>(claims: const JwtClaims&, out: B&)
 fn parse_jwt_claims_json(json_bytes: const u8[:], out: JwtClaims&) -> bool
 fn default_jwt_validation_options(expected_alg: JwtAlg) -> JwtValidationOptions

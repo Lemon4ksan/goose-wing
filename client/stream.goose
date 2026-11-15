@@ -7,9 +7,9 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.profile;
-import client.request;
-import client.response;
+import fingerprint.profile;
+import http.request;
+import http.response;
 import http.digest_fields;
 import http.headers;
 import http.headers.chunked_fsm;

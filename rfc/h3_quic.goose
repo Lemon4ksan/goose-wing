@@ -298,3 +298,24 @@ const SOCKS5_REP_CONN_REFUSED:       u8 = 0x05; // RFC 1928 Section 6
 const SOCKS5_REP_TTL_EXPIRED:        u8 = 0x06; // RFC 1928 Section 6
 const SOCKS5_REP_CMD_NOT_SUPPORTED:  u8 = 0x07; // RFC 1928 Section 6
 const SOCKS5_REP_ATYP_NOT_SUPPORTED: u8 = 0x08; // RFC 1928 Section 6
+
+// ---- QUIC Initial Salts & HKDF Label Prefixes (RFC 9001 §5.2, RFC 9369 §3.3) ----
+
+// Selects the Initial salt for a QUIC version; empty for unknown versions.
+//
+// Example:
+//   version = 0x6b3343cf -> 20-byte v2 salt, ok via non-empty slice
+//   version = 0x0a0a0a0a -> empty slice
+fn quic_initial_salt(version: u32) -> const u8[:] {
+    if version == QUIC_VERSION_1 { return QUIC_V1_INITIAL_SALT[..]; }
+    if version == QUIC_VERSION_2 { return QUIC_V2_INITIAL_SALT[..]; }
+    return "";
+}
+
+// Returns the HKDF label prefix for a QUIC version: "quic " (v1) or
+// "quicv2 " (v2, RFC 9369 §3.3.2); empty for unknown versions.
+fn quic_hkdf_label_prefix(version: u32) -> const u8[:] {
+    if version == QUIC_VERSION_1 { return "quic "; }
+    if version == QUIC_VERSION_2 { return "quicv2 "; }
+    return "";
+}

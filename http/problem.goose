@@ -8,7 +8,7 @@ namespace wing;
 import std;
 import core from "..";
 import json;
-import client.response;
+import .response;
 import .headers;
 
 // RFC 9457 Section 3: The Problem Details JSON Object.

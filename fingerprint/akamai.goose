@@ -8,7 +8,7 @@
 namespace wing;
 
 import std;
-import client.profile;
+import fingerprint.profile;
 import core from "..";
 import http2.framing;
 
@@ -451,7 +451,7 @@ fn detect_akamai_anomaly(
 // ---- Wire Framing Ingress Extractor ---------------------------------------
 
 fn process_akamai_settings_frame(
-    hdr:     const internal::FrameHeader&,
+    hdr:     const h2_internal::FrameHeader&,
     payload: const u8[:],
     fp:      AkamaiFingerprint&,
 ) -> bool {
@@ -476,7 +476,7 @@ fn process_akamai_settings_frame(
 }
 
 fn process_akamai_priority_frame(
-    hdr:     const internal::FrameHeader&,
+    hdr:     const h2_internal::FrameHeader&,
     payload: const u8[:],
     fp:      AkamaiFingerprint&,
 ) -> bool {
@@ -524,8 +524,8 @@ fn extract_akamai_from_wire(
     var ended_on_request_frame = false;
 
     while cur.cursor_len() >= 9 {
-        let hdr, err = internal::parse_frame_header(cur.buf);
-        if err != rfc::H2_ERR_NO_ERROR || internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR {
+        let hdr, err = h2_internal::parse_frame_header(cur.buf);
+        if err != rfc::H2_ERR_NO_ERROR || h2_internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR {
             return AkamaiFingerprint { .. }, false;
         }
         // Connection handshake phase ends on first HEADERS or DATA frame
@@ -575,12 +575,12 @@ fn extract_akamai_from_wire(
 // ---- Wire Framing Egress Generator ---------------------------------------
 
 inline fn is_valid_akamai_wire_setting(s: const AkamaiSetting&) -> bool {
-    return internal::validate_settings_parameter(s.id, s.val, false) == rfc::H2_ERR_NO_ERROR;
+    return h2_internal::validate_settings_parameter(s.id, s.val, false) == rfc::H2_ERR_NO_ERROR;
 }
 
-inline fn try_append_frame_header<B>(hdr: const internal::FrameHeader&, out: B&) -> bool {
+inline fn try_append_frame_header<B>(hdr: const h2_internal::FrameHeader&, out: B&) -> bool {
     var raw: u8[9] = [0; 9];
-    internal::encode_frame_header(hdr, raw);
+    h2_internal::encode_frame_header(hdr, raw);
     return out.try_append(raw[..]);
 }
 
@@ -602,7 +602,7 @@ fn try_encode_akamai_settings_frame<B>(settings: const AkamaiSetting[:], out: B&
             valid_settings = core::add_sat_u64(valid_settings, 1);
         }
     }
-    let settings_hdr = internal::FrameHeader {
+    let settings_hdr = h2_internal::FrameHeader {
         length:     core::mul_sat_u64(valid_settings, 6) as u32,
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
@@ -629,7 +629,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
     // 2. WINDOW_UPDATE Frame (Stream 0) if masked 31-bit increment > 0
     let wu_inc = fp.window_update & H2_MAX_STREAM_ID;
     if wu_inc > 0 {
-        let wu_hdr = internal::FrameHeader {
+        let wu_hdr = h2_internal::FrameHeader {
             length:     4,
             frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
             flags:      0,
@@ -645,7 +645,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) {
         if sid == 0 || sid == dep_id {
             continue;
         }
-        let p_hdr = internal::FrameHeader {
+        let p_hdr = h2_internal::FrameHeader {
             length:     5,
             frame_type: rfc::H2_FRAME_PRIORITY,
             flags:      0,

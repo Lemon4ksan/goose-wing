@@ -104,12 +104,12 @@ fn test_hashing_sink_and_zero_copy_streaming_fsm() {
     // CHECK: === 3. HashingSink & Zero-Copy pump_chunk_fsm_streaming ===
 
     let chunked_wire: const u8[:] = "4\r\nWiki\r\n5\r\npedia\r\n6\r\n rocks\r\n0\r\n\r\n";
-    var dec = internal::new_chunk_fsm_decoder();
+    var dec = http_internal::new_chunk_fsm_decoder();
     var hsink = wing::new_hashing_sink(wing::ArenaSink { max_bytes: 65536 });
     var out_body: u8[>..] = [];
 
     let st, consumed = wing::pump_chunk_fsm(dec, chunked_wire, hsink, out_body);
-    assert(st == internal::ChunkFsmStatus.Complete);
+    assert(st == http_internal::ChunkFsmStatus.Complete);
     assert(consumed == chunked_wire.len);
     assert(hsink.total_len == 15);
     assert(core::equal_short(out_body[..], "Wikipedia rocks"));
@@ -126,7 +126,7 @@ fn test_hashing_sink_and_zero_copy_streaming_fsm() {
     var stream_ver, ok_sv = wing::begin_streaming_digest(hdr_wiki[..]);
     assert(ok_sv);
 
-    var dec_stream = internal::new_chunk_fsm_decoder();
+    var dec_stream = http_internal::new_chunk_fsm_decoder();
     var ring = core::new_ring_buffer();
     var total_streamed: u64 = 0;
 
@@ -138,7 +138,7 @@ fn test_hashing_sink_and_zero_copy_streaming_fsm() {
         total_streamed = core::add_sat_u64(total_streamed, readable.len as! u64);
         core::clear(ring);
     };
-    assert(st_stream == internal::ChunkFsmStatus.Complete);
+    assert(st_stream == http_internal::ChunkFsmStatus.Complete);
     assert(consumed_stream == chunked_wire.len);
     assert(total_streamed == 15);
     let stream_digest_ok = wing::finish_streaming_digest(stream_ver);

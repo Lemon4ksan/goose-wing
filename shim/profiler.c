@@ -1,7 +1,7 @@
-#define WING_PROF_SHIM_INTERNAL 1
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
+#define WING_PROF_SHIM_INTERNAL 1
 // Hardware Cycle-Accurate Stage Profiler, Three-Channel Memory Auditor &
 // testing.B Benchmark Engine for goose-wing.
 
@@ -1006,66 +1006,6 @@ void wing_bench_print_report(void) {
         }
     }
 }
-
-static wing_prof_str_t g_active_case_name = {NULL, 0};
-static int32_t g_active_pass_state = 0; // 0 = idle, 1 = calibrating, 2 = timing, 3 = memory
-static int64_t g_active_cur_n = 1;
-
-int32_t wing_bench_next_pass(wing_prof_str_t case_name, int64_t *out_n) {
-    if (!wing_bench_should_run(case_name)) {
-        g_active_pass_state = 0;
-        if (out_n) *out_n = 0;
-        return 0;
-    }
-    if (g_active_pass_state == 0) {
-        g_active_case_name = case_name;
-        g_active_cur_n = 1;
-        g_active_pass_state = 1;
-        wing_bench_begin_pass(case_name, 0, g_suite_target_ns);
-        if (out_n) *out_n = g_active_cur_n;
-        return 1;
-    }
-    if (g_active_pass_state == 1) {
-        int64_t res = wing_bench_end_pass(0, g_active_cur_n, g_suite_target_ns);
-        if (res < 0) {
-            g_active_cur_n = -res;
-            wing_bench_begin_pass(case_name, 0, g_suite_target_ns);
-            if (out_n) *out_n = g_active_cur_n;
-            return 1;
-        }
-        g_active_cur_n = res > 0 ? res : 1;
-        g_active_pass_state = 2;
-        wing_bench_begin_pass(case_name, 1, g_suite_target_ns);
-        if (out_n) *out_n = g_active_cur_n;
-        return 2;
-    }
-    if (g_active_pass_state == 2) {
-        wing_bench_end_pass(1, g_active_cur_n, g_suite_target_ns);
-        g_active_pass_state = 3;
-        wing_bench_begin_pass(case_name, 2, g_suite_target_ns);
-        if (out_n) *out_n = 1;
-        return 3;
-    }
-    if (g_active_pass_state == 3) {
-        wing_bench_end_pass(2, 1, g_suite_target_ns);
-        g_active_pass_state = 0;
-        if (out_n) *out_n = g_active_cur_n;
-        return 0;
-    }
-    g_active_pass_state = 0;
-    return 0;
-}
-
-void wing_bench_end_case(void) {
-    if (g_active_case_name.data != NULL && g_active_case_name.len > 0) {
-        wing_bench_commit(g_active_case_name, g_active_cur_n, g_cur_bytes_per_op);
-    }
-    g_active_case_name.data = NULL;
-    g_active_case_name.len = 0;
-    g_active_pass_state = 0;
-}
-
-void wing_bench_end_suite(void) { wing_bench_print_report(); }
 
 void wing_prof_print_summary(void) {
     uint64_t grand_self = 0;

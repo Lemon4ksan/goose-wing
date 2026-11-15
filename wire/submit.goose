@@ -84,8 +84,8 @@ fn connect_wire_queue(
 
 fn wait_wire_socket_writable(fd: i64, poller_tag: u64, timeout_ms: i64) -> bool {
     guard fd > 0 else { return false; }
-    var cfg = internal::TransportDriverConfig { .. };
-    let _ = internal::init_transport_driver(cfg);
+    var cfg = net_internal::TransportDriverConfig { .. };
+    let _ = net_internal::init_transport_driver(cfg);
     var p = wing::new_poller(cfg);
     defer wing::close_poller(p);
     let tag = if poller_tag != 0 { poller_tag } else { 1 };

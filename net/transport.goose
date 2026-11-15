@@ -112,8 +112,8 @@ fn with_virtual_pipe_pair<F>() -> bool {
     let slot_idx, ok = alloc_virtual_pipe_slot();
     guard ok else { return false; }
     defer free_virtual_pipe_slot(slot_idx);
-    var end_a = Transport.Virtual { pipe_slot: slot_idx, is_b_end: false };
-    var end_b = Transport.Virtual { pipe_slot: slot_idx, is_b_end: true };
+    var end_a: Transport = Transport.Virtual { pipe_slot: slot_idx, is_b_end: false };
+    var end_b: Transport = Transport.Virtual { pipe_slot: slot_idx, is_b_end: true };
     F(end_a, end_b);
     return true;
 }
@@ -150,9 +150,9 @@ fn virtual_pipe_send(pipe_slot: u16, is_b_end: bool, data: const u8[:]) -> i32 {
     if is_b_end {
         rb .= slot.b_to_a;
     }
+    guard core::available(rb) > 0 else { return -2; }
     let span1, _ = core::write_slices(rb);
-    guard span1.len > 0 else { return -1; }
-    if data.len <= span1.len {
+    if span1.len > 0 && data.len <= span1.len {
         for i in data.len {
             span1[i] = data[i];
         }
@@ -160,7 +160,7 @@ fn virtual_pipe_send(pipe_slot: u16, is_b_end: bool, data: const u8[:]) -> i32 {
         return (data.len & 0x7FFFFFFF) as i32;
     }
     let written, _ = core::write(rb, data);
-    guard written > 0 else { return -1; }
+    guard written > 0 else { return -2; }
     return (written & 0x7FFFFFFF) as i32;
 }
 
@@ -177,7 +177,13 @@ fn virtual_pipe_recv(pipe_slot: u16, is_b_end: bool, dst: u8[:]) -> i32 {
         guard !slot.closed_a else { return 0; }
     }
     let readable = core::contiguous_readable_slice(rb);
-    guard readable.len > 0 else { return 0; }
+    if readable.len == 0 {
+        let peer_closed = if is_b_end { slot.closed_a } else { slot.closed_b };
+        if peer_closed {
+            return 0;
+        }
+        return -2;
+    }
     if dst.len <= readable.len {
         for i in dst.len {
             dst[i] = readable[i];
@@ -287,12 +293,18 @@ fn recv_slice(t: Transport.Disconnected, dst: u8[:], timeout_ms: u32 = 5000) -> 
 fn recv_slice(t: Transport.Tcp, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard dst.len > 0 else { return 0; }
     guard t.fd > 0 else { return -1; }
+    if timeout_ms == 0 {
+        return tcp_recv_nonblocking_slice(t.fd, dst);
+    }
     return tcp_recv_slice(t.fd, dst, timeout_ms);
 }
 
 fn recv_slice(t: Transport.Unix, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard dst.len > 0 else { return 0; }
     guard t.fd > 0 else { return -1; }
+    if timeout_ms == 0 {
+        return tcp_recv_nonblocking_slice(t.fd, dst);
+    }
     return tcp_recv_slice(t.fd, dst, timeout_ms);
 }
 

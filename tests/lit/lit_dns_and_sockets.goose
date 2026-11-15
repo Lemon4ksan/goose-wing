@@ -431,30 +431,30 @@ fn verify_udp_batch_engine() {
 
 fn verify_uring_pbuf_ring() {
     // Negative tests: non-power-of-2 entries (0, 3, 100), negative ring_fd
-    assert(!internal::uring_register_buf_ring(1, 0, 1));
-    assert(!internal::uring_register_buf_ring(1, 3, 1));
-    assert(!internal::uring_register_buf_ring(1, 100, 1));
-    assert(!internal::uring_register_buf_ring(1, 40000, 1));
-    assert(!internal::uring_register_buf_ring(-1, 128, 1));
+    assert(!net_internal::uring_register_buf_ring(1, 0, 1));
+    assert(!net_internal::uring_register_buf_ring(1, 3, 1));
+    assert(!net_internal::uring_register_buf_ring(1, 100, 1));
+    assert(!net_internal::uring_register_buf_ring(1, 40000, 1));
+    assert(!net_internal::uring_register_buf_ring(-1, 128, 1));
 
     // Positive power-of-2 validator check
-    assert(internal::is_valid_pbuf_ring_entries(1));
-    assert(internal::is_valid_pbuf_ring_entries(64));
-    assert(internal::is_valid_pbuf_ring_entries(1024));
-    assert(internal::is_valid_pbuf_ring_entries(32768));
-    assert(!internal::is_valid_pbuf_ring_entries(32769));
+    assert(net_internal::is_valid_pbuf_ring_entries(1));
+    assert(net_internal::is_valid_pbuf_ring_entries(64));
+    assert(net_internal::is_valid_pbuf_ring_entries(1024));
+    assert(net_internal::is_valid_pbuf_ring_entries(32768));
+    assert(!net_internal::is_valid_pbuf_ring_entries(32769));
     print("URING_PBUF_RING_VALIDATION: OK\n");
 }
 
 fn verify_rio_address_pool() {
-    var pool = internal::RioAddressPool { .. };
-    assert(internal::rio_init_address_pool(pool, 0xCAFE0001));
+    var pool = net_internal::RioAddressPool { .. };
+    assert(net_internal::rio_init_address_pool(pool, 0xCAFE0001));
     assert(pool.initialized && pool.active_count == 0);
 
     // Acquire all 128 pre-registered address descriptors in O(1)
     var k: i32 = 0;
     while k < 128 {
-        let slot_idx, buf_desc, ok = internal::rio_acquire_address_buf(pool);
+        let slot_idx, buf_desc, ok = net_internal::rio_acquire_address_buf(pool);
         assert(ok);
         assert(slot_idx == k);
         assert(buf_desc.length == 28);
@@ -463,7 +463,7 @@ fn verify_rio_address_pool() {
     assert(pool.active_count == 128);
 
     // 129th acquire MUST fail closed (Invariant 13)
-    let _, _, ok_129 = internal::rio_acquire_address_buf(pool);
+    let _, _, ok_129 = net_internal::rio_acquire_address_buf(pool);
     if ok_129 {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
     }
@@ -471,12 +471,12 @@ fn verify_rio_address_pool() {
     print("RIO_ADDRESS_POOL_EXHAUSTION_129: REJECTED_OK\n");
 
     // Release descriptor 42 and re-acquire in O(1)
-    assert(internal::rio_release_address_buf(pool, 42));
-    assert(!internal::rio_release_address_buf(pool, 42)); // Double-release rejected
-    assert(!internal::rio_release_address_buf(pool, -1));
-    assert(!internal::rio_release_address_buf(pool, 128));
+    assert(net_internal::rio_release_address_buf(pool, 42));
+    assert(!net_internal::rio_release_address_buf(pool, 42)); // Double-release rejected
+    assert(!net_internal::rio_release_address_buf(pool, -1));
+    assert(!net_internal::rio_release_address_buf(pool, 128));
 
-    let re_idx, _, re_ok = internal::rio_acquire_address_buf(pool);
+    let re_idx, _, re_ok = net_internal::rio_acquire_address_buf(pool);
     assert(re_ok && re_idx == 42);
     print("RIO_ADDRESS_POOL_RECYCLE: slot=", re_idx, "\n");
 }
@@ -624,25 +624,25 @@ fn reentrant_task_cb(tag: u64, user_data: u64, task_id: u32, el: wing::EventLoop
     }
 }
 
-fn verify_iocomp_track_e(p_cfg: const internal::TransportDriverConfig&) {
-    assert(internal::URING_OP_SEND_ZC == 47);
-    assert(internal::URING_CQE_F_NOTIF == 8);
-    assert(internal::URING_RECV_MULTISHOT == 2);
+fn verify_iocomp_track_e(p_cfg: const net_internal::TransportDriverConfig&) {
+    assert(net_internal::URING_OP_SEND_ZC == 47);
+    assert(net_internal::URING_CQE_F_NOTIF == 8);
+    assert(net_internal::URING_RECV_MULTISHOT == 2);
 
-    var r_state = internal::new_ring_queue_state(32);
-    assert(internal::uring_prep_recv_multishot(r_state, 10, 7, 1234));
-    assert(r_state.staged_sqes[0].buf_index == 7 && r_state.staged_sqes[0].ioprio == internal::URING_RECV_MULTISHOT);
+    var r_state = net_internal::new_ring_queue_state(32);
+    assert(net_internal::uring_prep_recv_multishot(r_state, 10, 7, 1234));
+    assert(r_state.staged_sqes[0].buf_index == 7 && r_state.staged_sqes[0].ioprio == net_internal::URING_RECV_MULTISHOT);
 
-    var br = internal::UringBufRing { .. };
-    internal::uring_buf_ring_recycle(br, 5, 0x1000, 2048);
+    var br = net_internal::UringBufRing { .. };
+    net_internal::uring_buf_ring_recycle(br, 5, 0x1000, 2048);
     assert(br.tail == 1 && br.entries[0].bid == 5);
-    let cqe_buf = internal::UringCqe { user_data: 1, res: 64, flags: (5 << 16) | internal::URING_CQE_F_BUFFER };
-    let sel_bid, has_bid = internal::extract_uring_cqe_buffer_id(cqe_buf);
+    let cqe_buf = net_internal::UringCqe { user_data: 1, res: 64, flags: (5 << 16) | net_internal::URING_CQE_F_BUFFER };
+    let sel_bid, has_bid = net_internal::extract_uring_cqe_buffer_id(cqe_buf);
     assert(has_bid && sel_bid == 5);
 
-    var rio_res: internal::RioResult[..64] = [];
-    let _ = internal::rio_drain_completions(0, rio_res);
-    rio_res.push(internal::RioResult { status: 0, bytes_transferred: 128, socket_context: 9001, request_context: 1 });
+    var rio_res: net_internal::RioResult[..64] = [];
+    let _ = net_internal::rio_drain_completions(0, rio_res);
+    rio_res.push(net_internal::RioResult { status: 0, bytes_transferred: 128, socket_context: 9001, request_context: 1 });
     var p_rio = wing::new_poller(p_cfg);
     wing::register_socket(p_rio, 88, 9001, core::PollInterest.Read, core::PollTrigger.Level);
     var rio_evs: core::PollReadyEvent[..64] = [];
@@ -650,7 +650,7 @@ fn verify_iocomp_track_e(p_cfg: const internal::TransportDriverConfig&) {
     assert(mapped_rio == 1 && rio_evs[0].fd == 88 && rio_evs[0].bytes_available == 128);
     wing::close_poller(p_rio);
 
-    let sock_opts = internal::SocketOptions {
+    let sock_opts = net_internal::SocketOptions {
         keepalive_idle_secs:      60,
         keepalive_interval_secs:  10,
         keepalive_probes:         3,
@@ -658,15 +658,15 @@ fn verify_iocomp_track_e(p_cfg: const internal::TransportDriverConfig&) {
         win_skip_iocp_on_success: true,
         ..
     };
-    assert(internal::apply_socket_options(-1, sock_opts));
+    assert(net_internal::apply_socket_options(-1, sock_opts));
 
-    var dpdk_ctx = internal::DpdkContext { .. };
+    var dpdk_ctx = net_internal::DpdkContext { .. };
     let mbuf_batch: u64[5] = [101, 102, 103, 104, 105];
-    let staged_dpdk = internal::dpdk_stage_tx_burst(dpdk_ctx, mbuf_batch[..]);
+    let staged_dpdk = net_internal::dpdk_stage_tx_burst(dpdk_ctx, mbuf_batch[..]);
     assert(staged_dpdk == 5 && dpdk_ctx.tx_burst[4] == 105);
 
-    var xsk_ring = internal::XskRingState { prod_head: 62, cons_head: 60, .. };
-    let xsk_enq = internal::xsk_fill_ring_enqueue_burst(xsk_ring, mbuf_batch[..]);
+    var xsk_ring = net_internal::XskRingState { prod_head: 62, cons_head: 60, .. };
+    let xsk_enq = net_internal::xsk_fill_ring_enqueue_burst(xsk_ring, mbuf_batch[..]);
     assert(xsk_enq == 5 && xsk_ring.entries[62] == 101 && xsk_ring.entries[0] == 103);
 
     var fmt_dict: u8[..64] = [0x37, 0xA4, 0x30, 0xEC, 0x01, 0x00, 0x00, 0x00];
@@ -773,7 +773,7 @@ fn run_05_verify_net_audit() {
     print("F004_POOL_OK: ", sp.groups[g_idx].idle_conns);
 
     // F005: Poller coarse timeout preserved when out_events full, re-entrant defer_task, and bounded consume_read
-    var p_cfg = internal::auto_transport_driver_config();
+    var p_cfg = net_internal::auto_transport_driver_config();
     var poller = wing::new_poller(p_cfg);
     wing::register_socket(poller, 50, 7001, core::PollInterest.Read, core::PollTrigger.Level);
     wing::set_socket_timeout(poller, 50, 4);
@@ -912,20 +912,20 @@ fn run_05_verify_net_audit() {
     assert(!wing::epoll_mod(-1, 1, wing::EPOLL_READ, 0));
     wing::tcp_cleanup();
 
-    let probe_res = internal::probe_transport_driver(internal::TransportDriverKind.Standard);
+    let probe_res = net_internal::probe_transport_driver(net_internal::TransportDriverKind.Standard);
     assert(probe_res.available);
-    assert(internal::platform_name(internal::TargetPlatform.Windows) == "Windows");
+    assert(net_internal::platform_name(net_internal::TargetPlatform.Windows) == "Windows");
 
-    var xsk, _ = internal::af_xdp_open_socket(1, 0, 0, 4096);
-    internal::af_xdp_close(xsk);
+    var xsk, _ = net_internal::af_xdp_open_socket(1, 0, 0, 4096);
+    net_internal::af_xdp_close(xsk);
 
-    var sqe = internal::UringSqe { .. };
-    internal::uring_prep_accept_multishot(sqe, 10, 99);
-    assert(sqe.ioprio == internal::URING_ACCEPT_MULTISHOT);
-    var iov: internal::UringIovec[1] = [internal::UringIovec { iov_base: 0, iov_len: 4096 }];
-    assert(internal::uring_register_buffers(-1, iov[..]) == -1);
-    assert(internal::uring_unregister_buffers(-1) == -1);
-    let _ = internal::uring_has_fast_poll(-1);
+    var sqe = net_internal::UringSqe { .. };
+    net_internal::uring_prep_accept_multishot(sqe, 10, 99);
+    assert(sqe.ioprio == net_internal::URING_ACCEPT_MULTISHOT);
+    var iov: net_internal::UringIovec[1] = [net_internal::UringIovec { iov_base: 0, iov_len: 4096 }];
+    assert(net_internal::uring_register_buffers(-1, iov[..]) == -1);
+    assert(net_internal::uring_unregister_buffers(-1) == -1);
+    let _ = net_internal::uring_has_fast_poll(-1);
 
     print("F010_HE_ISO_OK: ", he_mgr.attempts.len);
 
@@ -1290,7 +1290,7 @@ fn test_r007_isolation_and_retry_rfc() {
 
 fn test_r008_poller_timer_tcp_and_drivers() {
     // 1. Edge-triggered Poller preserves unreported readiness bits
-    var p_cfg = internal::auto_transport_driver_config();
+    var p_cfg = net_internal::auto_transport_driver_config();
     var p = wing::new_poller(p_cfg);
     wing::register_socket(p, 10, 100, core::PollInterest.Read, core::PollTrigger.Edge);
     let _ = wing::simulate_read_ready(p, 10, 64);
@@ -1310,12 +1310,12 @@ fn test_r008_poller_timer_tcp_and_drivers() {
     assert(next_tick == 215);
 
     // 3. UringSqe reuse clears stale ioprio and RIO sub-buffer guards u64 overflow
-    var sqe = internal::UringSqe { .. };
-    internal::uring_prep_accept_multishot(sqe, 5, 1);
-    internal::uring_prep_accept(sqe, 5, 2);
+    var sqe = net_internal::UringSqe { .. };
+    net_internal::uring_prep_accept_multishot(sqe, 5, 1);
+    net_internal::uring_prep_accept(sqe, 5, 2);
     assert(sqe.ioprio == 0);
-    let rio_buf = internal::new_rio_buffer(1, 4096);
-    let rio_oob = internal::rio_sub_buffer(rio_buf, 0xFFFFFFFFFFFFFFFF, 1);
+    let rio_buf = net_internal::new_rio_buffer(1, 4096);
+    let rio_oob = net_internal::rio_sub_buffer(rio_buf, 0xFFFFFFFFFFFFFFFF, 1);
     assert(!rio_oob.is_registered);
     print("R008_REACTOR_DRV: 1");
 }

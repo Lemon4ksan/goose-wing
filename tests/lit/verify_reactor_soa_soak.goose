@@ -54,30 +54,30 @@ fn verify_soa_conn_table_churn() {
 }
 
 fn verify_server_pools_saturation_and_zeroize() {
-    var hdr_pool = internal::HeaderMapPool { .. };
-    var ext_pool = internal::ExtensionsPool { .. };
-    var slab_pool = internal::SpillSlabPool { .. };
+    var hdr_pool = server_internal::HeaderMapPool { .. };
+    var ext_pool = server_internal::ExtensionsPool { .. };
+    var slab_pool = server_internal::SpillSlabPool { .. };
 
     for _ in 32 {
         for i in 16 {
-            let h_idx = internal::acquire_header_map(hdr_pool);
-            let e_idx = internal::acquire_extensions(ext_pool);
-            let s_idx = internal::acquire_spill_slab(slab_pool);
+            let h_idx = server_internal::acquire_header_map(hdr_pool);
+            let e_idx = server_internal::acquire_extensions(ext_pool);
+            let s_idx = server_internal::acquire_spill_slab(slab_pool);
             assert(h_idx == i && e_idx == i && s_idx == i);
-            ext_pool.slots[e_idx].populated_entries = internal::ENTRY_COOKIES | internal::ENTRY_SECURITY;
+            ext_pool.slots[e_idx].populated_entries = server_internal::ENTRY_COOKIES | server_internal::ENTRY_SECURITY;
             ext_pool.slots[e_idx].session_data.append("secret-session-cookie-material");
             ext_pool.slots[e_idx].jwt_claims.sub.append("admin-user");
         }
         // Pool saturation must return -1
-        assert(internal::acquire_header_map(hdr_pool) == -1);
-        assert(internal::acquire_extensions(ext_pool) == -1);
-        assert(internal::acquire_spill_slab(slab_pool) == -1);
+        assert(server_internal::acquire_header_map(hdr_pool) == -1);
+        assert(server_internal::acquire_extensions(ext_pool) == -1);
+        assert(server_internal::acquire_spill_slab(slab_pool) == -1);
 
         for i in 16 {
             let idx = i as i32;
-            internal::release_header_map(hdr_pool, idx);
-            internal::release_extensions(ext_pool, idx);
-            internal::release_spill_slab(slab_pool, idx);
+            server_internal::release_header_map(hdr_pool, idx);
+            server_internal::release_extensions(ext_pool, idx);
+            server_internal::release_spill_slab(slab_pool, idx);
             assert(ext_pool.slots[i].session_data.len == 0);
             assert(ext_pool.slots[i].jwt_claims.sub.len == 0);
         }

@@ -22,7 +22,7 @@ enum WireDriverKind {
     Mock,
 }
 
-inline fn map_transport_to_wire_driver(kind: internal::TransportDriverKind) -> WireDriverKind {
+inline fn map_transport_to_wire_driver(kind: net_internal::TransportDriverKind) -> WireDriverKind {
     return match kind {
         Auto => WireDriverKind.Auto,
         Standard => WireDriverKind.Standard,
@@ -158,17 +158,17 @@ fn enumerate_physical_devices(inst: const WireInstance&, out: WirePhysicalDevice
     guard inst.device_count > 0 else {
         return WireResult.ErrorInitializationFailed;
     }
-    let plat = internal::detect_target_platform();
-    let probe = internal::probe_transport_driver_for_platform(internal::TransportDriverKind.Auto, plat);
+    let plat = net_internal::detect_target_platform();
+    let probe = net_internal::probe_transport_driver_for_platform(net_internal::TransportDriverKind.Auto, plat);
     let active_driver = if probe.available {
         map_transport_to_wire_driver(probe.kind)
     } else {
         WireDriverKind.Standard
     };
-    let caps = if probe.available { probe.capabilities } else { internal::CAP_NONE };
-    let has_zero_copy = (caps & internal::CAP_ZERO_COPY) != 0;
-    let has_hw_tls = (caps & internal::CAP_NIC_TLS_OFFLOAD) != 0;
-    let has_batch = (caps & internal::CAP_BATCH_IO) != 0;
+    let caps = if probe.available { probe.capabilities } else { net_internal::CAP_NONE };
+    let has_zero_copy = (caps & net_internal::CAP_ZERO_COPY) != 0;
+    let has_hw_tls = (caps & net_internal::CAP_NIC_TLS_OFFLOAD) != 0;
+    let has_batch = (caps & net_internal::CAP_BATCH_IO) != 0;
     let q_flags = WIRE_QUEUE_TRANSMIT_BIT | WIRE_QUEUE_RECEIVE_BIT |
         (if has_batch { WIRE_QUEUE_BATCH_BIT } else { 0 });
 

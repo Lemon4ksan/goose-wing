@@ -327,12 +327,12 @@ fn test_span_headers_and_parsing() {
 fn test_push_sink_chunked_streaming() {
     print("=== Push-Sink Chunked Streaming ===");
     let chunked_wire: const u8[:] = "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
-    var dec = internal::new_chunk_fsm_decoder();
+    var dec = http_internal::new_chunk_fsm_decoder();
     var sink = wing::ArenaSink { max_bytes: 65536 };
     var out_body: u8[>..] = [];
 
     let st, consumed = wing::pump_chunk_fsm(dec, chunked_wire, sink, out_body);
-    print(if st == internal::ChunkFsmStatus.Complete { "chunk_complete" } else { "chunk_incomplete" });
+    print(if st == http_internal::ChunkFsmStatus.Complete { "chunk_complete" } else { "chunk_incomplete" });
     // CHECK: chunk_complete
 
     print(out_body[..]);
@@ -627,7 +627,7 @@ fn run_06_verify_overflow_fallback() {
 //
 
 fn encode_client_h2_request<B>(
-    dt:        internal::DynamicTable&,
+    dt:        h2_internal::DynamicTable&,
     stream_id: u32,
     method:    const u8[:],
     path:      const u8[:],
@@ -636,41 +636,41 @@ fn encode_client_h2_request<B>(
     out:       B&,
 ) {
     var hpack_block: u8[..512] = [];
-    internal::encode_hpack_field(dt, hpack_block, ":method", method, internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(dt, hpack_block, ":path", path, internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, internal::HpackIndexing.Incremental, false);
-    internal::encode_hpack_field(dt, hpack_block, ":authority", authority, internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(dt, hpack_block, ":method", method, h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(dt, hpack_block, ":path", path, h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, h2_internal::HpackIndexing.Incremental, false);
+    h2_internal::encode_hpack_field(dt, hpack_block, ":authority", authority, h2_internal::HpackIndexing.Incremental, false);
 
-    let hdr = internal::FrameHeader {
+    let hdr = h2_internal::FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  stream_id,
     };
-    internal::encode_frame_header_to(hdr, out);
+    h2_internal::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
 }
 
 // 1. HTTP/2 2x Capacity Lifecycle:
 // Capacity is 16 streams. Sequentially open and close 32 request streams.
 fn test_h2_capacity_lifecycle() {
-    var client_hpack = internal::DynamicTable { .. };
-    var sess = internal::new_h2_server_session("localhost");
+    var client_hpack = h2_internal::DynamicTable { .. };
+    var sess = server_internal::new_h2_server_session("localhost");
     var pipeline = wing::ServerPipelineConfig { .. };
-    var timer = internal::ConnectionTimer { .. };
+    var timer = server_internal::ConnectionTimer { .. };
 
     // Handshake
     var init_wire: u8[..64] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-    let set_hdr = internal::FrameHeader {
+    let set_hdr = h2_internal::FrameHeader {
         length:     0,
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
         stream_id:  0,
     };
-    internal::encode_frame_header_to(set_hdr, init_wire);
+    h2_internal::encode_frame_header_to(set_hdr, init_wire);
     var server_out: u8[..4096] = [];
-    let _, ok_init = internal::handle_h2_server_ingress(
+    let _, ok_init = server_internal::handle_h2_server_ingress(
         sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out,
     );
     assert(ok_init);
@@ -684,7 +684,7 @@ fn test_h2_capacity_lifecycle() {
         );
 
         server_out.clear();
-        let consumed, ok = internal::handle_h2_server_ingress(
+        let consumed, ok = server_internal::handle_h2_server_ingress(
             sess, pipeline, timer, "127.0.0.1", req_wire[..], 1000 + (i as u64), server_out,
         );
         assert(ok);
@@ -704,12 +704,12 @@ fn test_h3_capacity_lifecycle() {
         qpack_blocked_streams:    16,
         enable_connect_protocol:  1,
     };
-    var server_conn = internal::new_h3_server_connection(settings);
+    var server_conn = h3_internal::new_h3_server_connection(settings);
 
     // Ingest Control Stream with SETTINGS
     var ctrl_wire: u8[..128] = [];
-    internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
-    internal::encode_h3_settings_frame(ctrl_wire, settings);
+    quic_internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
+    h3_internal::encode_h3_settings_frame(ctrl_wire, settings);
     let err_ctrl = server_conn.handle_stream_data(3, false, ctrl_wire[..], false);
     assert(err_ctrl == rfc::H3_ERR_NO_ERROR);
 
@@ -719,12 +719,12 @@ fn test_h3_capacity_lifecycle() {
         'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
     ];
     var req_wire: u8[..64] = [];
-    assert(internal::encode_h3_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
+    assert(h3_internal::encode_h3_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
     req_wire.append(qpack_sec[..]);
 
     let body = "PING";
     var data_wire: u8[..64] = [];
-    assert(internal::encode_h3_frame_header(data_wire, rfc::H3_FRAME_DATA, body.len as u64));
+    assert(h3_internal::encode_h3_frame_header(data_wire, rfc::H3_FRAME_DATA, body.len as u64));
     data_wire.append(body);
 
     for i in 64 {
@@ -735,10 +735,10 @@ fn test_h3_capacity_lifecycle() {
         let err_d = server_conn.handle_stream_data(stream_id, true, data_wire[..], true);
         assert(err_d == rfc::H3_ERR_NO_ERROR);
 
-        let s_idx, found = internal::find_h3_stream_idx(server_conn, stream_id);
+        let s_idx, found = h3_internal::find_h3_stream_idx(server_conn, stream_id);
         assert(found);
         // Mark stream closed on server side to reclaim slot
-        server_conn.streams[s_idx].state = internal::H3StreamState.Closed;
+        server_conn.streams[s_idx].state = h3_internal::H3StreamState.Closed;
 
         assert(server_conn.streams.len <= 32);
     }
@@ -749,22 +749,22 @@ fn test_h3_capacity_lifecycle() {
 // 3. QUIC Stream Table 2x Capacity Lifecycle:
 // Capacity is 128 streams. Sequentially process 256 streams.
 fn test_quic_capacity_lifecycle() {
-    var tbl = internal::new_quic_stream_table(internal::QuicRole.Server);
+    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Server);
     tbl.max_streams_bidi = 1000;
 
     for i in 256 {
         let stream_id = (i * 4) as u64; // Peer-initiated Client Bidi streams: 0, 4, 8...
-        let idx, ok = internal::quic_table_get_or_open_stream(tbl, stream_id, 65536);
+        let idx, ok = quic_internal::quic_table_get_or_open_stream(tbl, stream_id, 65536);
         assert(ok);
         assert(idx >= 0);
 
         // Transition stream to terminal
-        let ok_send, _ = internal::quic_stream_on_send_data(tbl.streams[idx as i64], 0, 10, true);
+        let ok_send, _ = quic_internal::quic_stream_on_send_data(tbl.streams[idx as i64], 0, 10, true);
         assert(ok_send);
-        assert(internal::quic_stream_on_send_ack(tbl.streams[idx as i64], true));
+        assert(quic_internal::quic_stream_on_send_ack(tbl.streams[idx as i64], true));
 
-        tbl.streams[idx as i64].recv_state = internal::QuicRecvState.DataRead;
-        assert(internal::quic_stream_is_terminal(tbl.streams[idx as i64], tbl.role));
+        tbl.streams[idx as i64].recv_state = quic_internal::QuicRecvState.DataRead;
+        assert(quic_internal::quic_stream_is_terminal(tbl.streams[idx as i64], tbl.role));
 
         assert(tbl.streams.len <= 128);
     }
@@ -793,7 +793,7 @@ fn run_08_verify_rio_memory_escape() {
     print("=== VERIFY_RIO_MEMORY_ESCAPE ===\n");
 
     // Create a parent RIO buffer descriptor representing an offset partition (4096..5120)
-    let parent = internal::RioBufferDescriptor {
+    let parent = net_internal::RioBufferDescriptor {
         buffer_id:     101,
         offset:        4096,
         length:        1024,
@@ -802,7 +802,7 @@ fn run_08_verify_rio_memory_escape() {
     };
 
     // Case 1: Valid sub-slice within the partition
-    let valid_sub = internal::rio_sub_buffer(parent, 4096, 512);
+    let valid_sub = net_internal::rio_sub_buffer(parent, 4096, 512);
     assert(valid_sub.is_registered);
     assert(valid_sub.offset == 4096);
     assert(valid_sub.length == 512);
@@ -811,14 +811,14 @@ fn run_08_verify_rio_memory_escape() {
 
     // Case 2: Attempt memory escape: off = 0 (before parent.offset = 4096)
     // Previously, off + len = 1024 <= 5120 was true, erroneously permitting access to bytes 0..1024!
-    let escape_sub = internal::rio_sub_buffer(parent, 0, 1024);
+    let escape_sub = net_internal::rio_sub_buffer(parent, 0, 1024);
     assert(!escape_sub.is_registered);
     assert(escape_sub.length == 0);
     print("CASE_2_ESCAPE_BEFORE_OFFSET_REJECTED: OK\n");
     // CHECK: CASE_2_ESCAPE_BEFORE_OFFSET_REJECTED: OK
 
     // Case 3: Attempt memory escape: off = 5000, len = 200 (past parent.offset + length = 5120)
-    let escape_past = internal::rio_sub_buffer(parent, 5000, 200);
+    let escape_past = net_internal::rio_sub_buffer(parent, 5000, 200);
     assert(!escape_past.is_registered);
     assert(escape_past.length == 0);
     print("CASE_3_ESCAPE_PAST_END_REJECTED: OK\n");
@@ -838,25 +838,25 @@ fn run_08_verify_rio_memory_escape() {
 fn run_09_verify_uring_leak() {
     print("=== VERIFY_URING_LEAK ===\n");
 
-    var state = internal::RingQueueState {
+    var state = net_internal::RingQueueState {
         ring_size:         32,
         active_pending:    0,
         submissions_total: 0,
         completions_total: 0,
     };
 
-    var sqes: internal::UringSqe[33] = [internal::UringSqe { .. }; 33];
+    var sqes: net_internal::UringSqe[33] = [net_internal::UringSqe { .. }; 33];
     for i in 33 {
-        sqes[i].opcode = internal::URING_OP_SEND;
+        sqes[i].opcode = net_internal::URING_OP_SEND;
         sqes[i].fd = 10;
         sqes[i].len = 64;
         sqes[i].user_data = (i + 1) as u64;
     }
 
-    var cqes: internal::UringCqe[..32] = [];
+    var cqes: net_internal::UringCqe[..32] = [];
 
     // Batch 1: Submit 33 SQEs with 32 CQE slots available
-    let submitted = internal::uring_submit_batch(state, sqes[..], cqes);
+    let submitted = net_internal::uring_submit_batch(state, sqes[..], cqes);
     assert(submitted == 32);
     assert(cqes.len == 32);
     // After reaping 32 completions, active_pending MUST be 0, not 1!
@@ -866,7 +866,7 @@ fn run_09_verify_uring_leak() {
 
     // Batch 2: Submit another batch - must NOT be rejected due to leaked active_pending!
     cqes.clear();
-    let submitted2 = internal::uring_submit_batch(state, sqes[..], cqes);
+    let submitted2 = net_internal::uring_submit_batch(state, sqes[..], cqes);
     assert(submitted2 == 32);
     assert(state.active_pending == 0);
     print("BATCH_2_NO_DEADLOCK: OK\n");
@@ -947,7 +947,7 @@ fn test_pso_fast_path_and_ingress() {
     // Register /protected with default pso_mask
     assert(wing::add_route(cfg.router, "POST", "/protected", 1002));
 
-    var timer = internal::new_connection_timer(30000000000, 1000000000);
+    var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
     // Case 1: Fast-path probe bypasses invalid Expect header
     var req_probe = wing::new_request("GET", "/healthz");
@@ -955,7 +955,7 @@ fn test_pso_fast_path_and_ingress() {
     wing::append_header(req_probe.headers, "Expect", "invalid-unsupported-expectation");
 
     var res_probe = wing::Response { .. };
-    var fut_probe = internal::new_inline_handler_future(0);
+    var fut_probe = server_internal::new_inline_handler_future(0);
     let outcome_probe = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_probe, 1000000000, res_probe, fut_probe);
 
     assert(outcome_probe == wing::PipelineOutcome.Handled);
@@ -969,7 +969,7 @@ fn test_pso_fast_path_and_ingress() {
     wing::append_header(req_bad_exp.headers, "Expect", "invalid-unsupported-expectation");
 
     var res_bad_exp = wing::Response { .. };
-    var fut_bad_exp = internal::new_inline_handler_future(0);
+    var fut_bad_exp = server_internal::new_inline_handler_future(0);
     let outcome_bad_exp = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_bad_exp, 1000000000, res_bad_exp, fut_bad_exp);
 
     assert(outcome_bad_exp == wing::PipelineOutcome.ExpectationFailed);
@@ -982,7 +982,7 @@ fn test_pso_fast_path_and_ingress() {
     wing::append_header(req_ok_exp.headers, "Expect", "100-continue");
 
     var res_ok_exp = wing::Response { .. };
-    var fut_ok_exp = internal::new_inline_handler_future(0);
+    var fut_ok_exp = server_internal::new_inline_handler_future(0);
     let outcome_ok_exp = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_ok_exp, 1000000000, res_ok_exp, fut_ok_exp);
 
     assert(outcome_ok_exp == wing::PipelineOutcome.Handled);
@@ -997,12 +997,12 @@ fn test_pso_egress_security_headers() {
     let secure_pso: u64 = wing::STAGE_EGRESS_SECURITY_HEADERS;
     assert(wing::add_route_pso(cfg.router, "GET", "/secure-api", 1002, secure_pso));
 
-    var timer = internal::new_connection_timer(30000000000, 1000000000);
+    var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var req = wing::new_request("GET", "/secure-api");
     wing::append_header(req.headers, "Host", "example.com");
 
     var res = wing::Response { .. };
-    var fut = internal::new_inline_handler_future(0);
+    var fut = server_internal::new_inline_handler_future(0);
     let outcome = wing::execute_pipeline(cfg, timer, "127.0.0.1", req, 1000000000, res, fut);
 
     assert(outcome == wing::PipelineOutcome.Handled);

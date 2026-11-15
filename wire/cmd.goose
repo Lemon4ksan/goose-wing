@@ -569,9 +569,9 @@ fn cmd_encode_h1_response(
 // Records an HTTP/2 HEADERS frame (and any CONTINUATION frames) from `pseudo` and `headers` into `cmd.buf`.
 fn cmd_encode_h2_headers_map(
     cmd:            WireCommandBuffer&,
-    dt:             internal::DynamicTable&,
+    dt:             h2_internal::DynamicTable&,
     stream_id:      u32,
-    pseudo:         const internal::H2PseudoHeaders&,
+    pseudo:         const h2_internal::H2PseudoHeaders&,
     headers:        const wing::HeaderMap&,
     end_stream:     bool,
     max_frame_size: u32 = 16384,
@@ -593,9 +593,9 @@ fn cmd_encode_h2_headers_map(
 // Records an HTTP/3 HEADERS frame from `pseudo` and `headers` into `cmd.buf` using QPACK `tbl` (RFC 9114 §7.2.2).
 fn cmd_encode_h3_headers_map<B>(
     cmd:            WireCommandBuffer&,
-    tbl:            internal::QpackTable&,
+    tbl:            h3_internal::QpackTable&,
     stream_id:      u64,
-    pseudo:         const internal::H3PseudoHeaders&,
+    pseudo:         const h3_internal::H3PseudoHeaders&,
     headers:        const wing::HeaderMap&,
     out_enc_stream: B&,
 ) -> bool {

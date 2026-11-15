@@ -17,10 +17,11 @@ import http.incremental;
 import net.tcp;
 import net.transport;
 import net.pool;
-import client.request;
-import client.response;
-import client.session.h1_exchange;
-import proxy.gcra;
+import net.upstream_pool;
+import http.request;
+import http.response;
+import wire.h1_exchange;
+import security.gcra;
 import proxy.load_balancer;
 import proxy.health_check;
 import rfc.http;
@@ -433,6 +434,7 @@ fn serialize_upstream_request<B>(
 // Layer 7 Reverse Proxy Gateway instance managing an UpstreamCluster.
 struct ReverseProxy {
     cluster:            UpstreamCluster      = UpstreamCluster { .. },
+    warm_upstreams:     UpstreamPool         = UpstreamPool { .. },
     config:             ProxyConfig          = ProxyConfig { .. },
     rate_limiter:       GatewayRateLimiter   = GatewayRateLimiter { .. },
     health_checker:     ClusterHealthChecker = ClusterHealthChecker { .. },
@@ -789,12 +791,42 @@ fn forward_userspace_stream_chunk(
 
 // ---- Live Pooled Upstream Execution ----------------------------------------
 
+inline fn transport_from_upstream_fd(fd: i32) -> Transport {
+    let pipe_slot, is_b_end, is_virt = decode_virtual_pipe_fd(fd);
+    if is_virt {
+        return Transport.Virtual { pipe_slot: pipe_slot, is_b_end: is_b_end };
+    }
+    return Transport.Tcp { fd: fd };
+}
+
+// Registers a pre-warmed backend socket into the proxy's `UpstreamPool` for zero-RTT keep-alive reuse.
+fn park_proxy_upstream_conn(
+    proxy:           ReverseProxy&,
+    fd:              i32,
+    host:            const u8[:],
+    port:            u16,
+    tls_fingerprint: u64 = 0,
+    nik:             u64 = 0,
+) -> bool {
+    guard fd >= 0 && host.len > 0 && port > 0 else { return false; }
+    let pool_key = new_pool_key(
+        PoolScheme.Http,
+        host,
+        port,
+        new_direct_proxy_chain(),
+        NetworkAnonymizationKey { .. },
+        TlsAndDnsPolicy { .. },
+    );
+    return register_upstream_conn(proxy.warm_upstreams, fd, pool_key.origin_endpoint, tls_fingerprint, nik);
+}
+
 fn acquire_or_dial_upstream_conn(
     pool:       StreamPool&,
+    warm_pool:  UpstreamPool&,
     target:     const UpstreamTarget&,
     timeout_ms: u32,
     now_ns:     i64,
-) -> i32, bool {
+) -> i32, i32, bool {
     let pool_key = new_pool_key(
         PoolScheme.Http,
         target.host[..],
@@ -805,17 +837,50 @@ fn acquire_or_dial_upstream_conn(
     );
     let existing_cid, has_pooled = acquire_pooled_connection(pool, pool_key, "", now_ns);
     if has_pooled && existing_cid > 0 {
-        return existing_cid, true;
+        return existing_cid, -1, true;
+    }
+    let warm_fd, has_warm = acquire_upstream_conn(warm_pool, pool_key.origin_endpoint, 0, 0);
+    if has_warm && warm_fd >= 0 {
+        let warm_t = transport_from_upstream_fd(warm_fd);
+        let warm_cid = register_connection(pool, pool_key, NegotiatedProtocol.Http11, warm_t, "", 1, now_ns);
+        guard warm_cid > 0 else {
+            let _ = release_upstream_conn(warm_pool, warm_fd, EPOLLRDHUP);
+            return -1, -1, false;
+        }
+        return warm_cid, warm_fd, true;
     }
     let sock = tcp_connect(target.host[..], target.port, timeout_ms);
-    guard sock > 0 else { return -1, false; }
+    guard sock > 0 else { return -1, -1, false; }
     var t = Transport.Tcp { fd: sock };
     let new_cid = register_connection(pool, pool_key, NegotiatedProtocol.Http11, t, "", 1, now_ns);
     guard new_cid > 0 else {
         t.close();
-        return -1, false;
+        return -1, -1, false;
     }
-    return new_cid, true;
+    return new_cid, -1, true;
+}
+
+inline fn finalize_proxy_upstream_conn(
+    proxy:     ReverseProxy&,
+    pool:      StreamPool&,
+    conn_id:   i32,
+    c_idx:     i64,
+    warm_fd:   i32,
+    can_reuse: bool,
+    now_ns:    i64,
+) {
+    if warm_fd >= 0 {
+        pool.conns[c_idx].transport = Transport.Disconnected;
+        pool.close_pooled_connection(conn_id);
+        let ev: u32 = if can_reuse { 0 } else { EPOLLRDHUP };
+        let _ = release_upstream_conn(proxy.warm_upstreams, warm_fd, ev);
+        return;
+    }
+    if can_reuse {
+        pool.release_connection(conn_id, now_ns);
+    } else {
+        pool.close_pooled_connection(conn_id);
+    }
 }
 
 fn read_and_parse_upstream_headers(
@@ -1146,7 +1211,9 @@ fn execute_proxy_exchange(
 
     let target = proxy.cluster.targets[target_idx];
     let now_i64 = effective_now as i64;
-    let conn_id, ok_conn = acquire_or_dial_upstream_conn(pool, target, timeout_ms, now_i64);
+    let conn_id, warm_fd, ok_conn = acquire_or_dial_upstream_conn(
+        pool, proxy.warm_upstreams, target, timeout_ms, now_i64,
+    );
     guard ok_conn && conn_id > 0 else {
         complete_upstream_exchange(proxy, target_idx, 0, false);
         return false;
@@ -1154,7 +1221,11 @@ fn execute_proxy_exchange(
 
     let c_idx = pool.find_connection_index(conn_id);
     guard c_idx >= 0 else {
-        pool.close_pooled_connection(conn_id);
+        if warm_fd >= 0 {
+            let _ = release_upstream_conn(proxy.warm_upstreams, warm_fd, EPOLLRDHUP);
+        } else {
+            pool.close_pooled_connection(conn_id);
+        }
         complete_upstream_exchange(proxy, target_idx, 0, false);
         return false;
     }
@@ -1175,11 +1246,8 @@ fn execute_proxy_exchange(
             out_resp.headers = filtered_hdrs;
         }
     }
-    if headers_valid && keep_alive && pool.conns[c_idx].rx_buf.len == 0 {
-        pool.release_connection(conn_id, now_i64);
-    } else {
-        pool.close_pooled_connection(conn_id);
-    }
+    let can_reuse = headers_valid && keep_alive && pool.conns[c_idx].rx_buf.len == 0;
+    finalize_proxy_upstream_conn(proxy, pool, conn_id, c_idx, warm_fd, can_reuse, now_i64);
     if headers_valid {
         var ps_entry = ProxyStatusEntry {
             received_status: out_resp.status_code,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
+
 // RUN: goose %s | %FileCheck %s
 
 import std;
@@ -7,56 +8,56 @@ import core from "../..";
 import wing from "../..";
 
 fn test_driver_slice_abis() {
-    var empty_res: internal::RioResult[..64] = [];
-    assert(internal::rio_drain_completions(0, empty_res) == 0);
+    var empty_res: net_internal::RioResult[..64] = [];
+    assert(net_internal::rio_drain_completions(0, empty_res) == 0);
 
-    var sqe = internal::UringSqe { .. };
-    internal::uring_prep_poll_add(sqe, 5, 1, 0xABCD);
-    assert(sqe.opcode == internal::URING_OP_POLL_ADD && sqe.fd == 5 && sqe.op_flags == 1 && sqe.user_data == 0xABCD);
-    internal::uring_prep_poll_remove(sqe, 0xABCD, 0xABCE);
-    assert(sqe.opcode == internal::URING_OP_POLL_REMOVE && sqe.addr == 0xABCD && sqe.user_data == 0xABCE);
-    internal::uring_prep_sqe_recv_multishot(sqe, 7, 3, 0x9999);
-    assert(sqe.opcode == internal::URING_OP_RECV && sqe.buf_index == 3 && sqe.ioprio == internal::URING_RECV_MULTISHOT);
-    internal::uring_prep_recvmsg(sqe, 8, 0x1000, 2, 0x8888);
-    assert(sqe.opcode == internal::URING_OP_RECVMSG && sqe.fd == 8 && sqe.op_flags == 2);
+    var sqe = net_internal::UringSqe { .. };
+    net_internal::uring_prep_poll_add(sqe, 5, 1, 0xABCD);
+    assert(sqe.opcode == net_internal::URING_OP_POLL_ADD && sqe.fd == 5 && sqe.op_flags == 1 && sqe.user_data == 0xABCD);
+    net_internal::uring_prep_poll_remove(sqe, 0xABCD, 0xABCE);
+    assert(sqe.opcode == net_internal::URING_OP_POLL_REMOVE && sqe.addr == 0xABCD && sqe.user_data == 0xABCE);
+    net_internal::uring_prep_sqe_recv_multishot(sqe, 7, 3, 0x9999);
+    assert(sqe.opcode == net_internal::URING_OP_RECV && sqe.buf_index == 3 && sqe.ioprio == net_internal::URING_RECV_MULTISHOT);
+    net_internal::uring_prep_recvmsg(sqe, 8, 0x1000, 2, 0x8888);
+    assert(sqe.opcode == net_internal::URING_OP_RECVMSG && sqe.fd == 8 && sqe.op_flags == 2);
 
-    var sqe_batch: internal::UringSqe[1] = [sqe];
-    var cqe_batch: internal::UringCqe[4] = [internal::UringCqe { .. }; 4];
-    assert(internal::uring_submit_sqes(-1, sqe_batch[..]) < 0);
-    assert(internal::uring_wait_cqes(-1, cqe_batch[..], 1, 0) < 0);
-    let bad_pb, ok_pb = internal::uring_alloc_pbuf_ring(-1, 1, 16, 4096);
+    var sqe_batch: net_internal::UringSqe[1] = [sqe];
+    var cqe_batch: net_internal::UringCqe[4] = [net_internal::UringCqe { .. }; 4];
+    assert(net_internal::uring_submit_sqes(-1, sqe_batch[..]) < 0);
+    assert(net_internal::uring_wait_cqes(-1, cqe_batch[..], 1, 0) < 0);
+    let bad_pb, ok_pb = net_internal::uring_alloc_pbuf_ring(-1, 1, 16, 4096);
     assert(!ok_pb && bad_pb == 0);
     var dummy_dst: u8[16] = [0; 16];
-    assert(internal::uring_read_pbuf(0, 0, 8, dummy_dst[..]) < 0);
-    internal::uring_recycle_pbuf(0, 0);
-    internal::uring_free_pbuf_ring(0);
+    assert(net_internal::uring_read_pbuf(0, 0, 8, dummy_dst[..]) < 0);
+    net_internal::uring_recycle_pbuf(0, 0);
+    net_internal::uring_free_pbuf_ring(0);
 
-    var kev_in:  internal::Kevent[1] = [internal::Kevent { .. }];
-    var kev_out: internal::Kevent[4] = [internal::Kevent { .. }; 4];
-    let kq_rc = internal::kqueue_poll_slice(-1, kev_in[..], kev_out[..], 0);
+    var kev_in:  net_internal::Kevent[1] = [net_internal::Kevent { .. }];
+    var kev_out: net_internal::Kevent[4] = [net_internal::Kevent { .. }; 4];
+    let kq_rc = net_internal::kqueue_poll_slice(-1, kev_in[..], kev_out[..], 0);
     assert(kq_rc < 0);
 
-    if internal::detect_target_platform() == internal::TargetPlatform.Windows &&
-        internal::native_rio_available() == 1 {
-        let lfd = internal::rio_listen("127.0.0.1", 0, 16);
+    if net_internal::detect_target_platform() == net_internal::TargetPlatform.Windows &&
+        net_internal::native_rio_available() == 1 {
+        let lfd = net_internal::rio_listen("127.0.0.1", 0, 16);
         assert(lfd > 0);
         let port = wing::tcp_getsockname_port(lfd);
         assert(port > 0);
         let cfd = wing::tcp_connect("127.0.0.1", port);
         assert(cfd > 0);
-        let sfd = internal::rio_accept(lfd);
+        let sfd = net_internal::rio_accept(lfd);
         assert(sfd > 0);
-        let cq = internal::native_rio_create_cq(64);
+        let cq = net_internal::native_rio_create_cq(64);
         assert(cq != 0);
-        let rq = internal::native_rio_create_rq_ctx(sfd, 16, 16, cq, cq, 777);
+        let rq = net_internal::native_rio_create_rq_ctx(sfd, 16, 16, cq, cq, 777);
         assert(rq != 0);
         var backing: u8[4096] = [0; 4096];
-        let buf_id = internal::native_rio_register_slice(backing[..]);
+        let buf_id = net_internal::native_rio_register_slice(backing[..]);
         assert(buf_id != 0);
-        assert(internal::native_rio_post_recv(rq, buf_id, 0, 1024, 888) == 0);
+        assert(net_internal::native_rio_post_recv(rq, buf_id, 0, 1024, 888) == 0);
         assert(wing::tcp_send(cfd, "PING") == 4);
-        assert(internal::rio_wait_cq(cq, 1000) >= 0);
-        let drained = internal::rio_drain_completions(cq, empty_res);
+        assert(net_internal::rio_wait_cq(cq, 1000) >= 0);
+        let drained = net_internal::rio_drain_completions(cq, empty_res);
         assert(drained == 1 && empty_res[0].bytes_transferred == 4);
         assert(empty_res[0].socket_context == 777 && empty_res[0].request_context == 888);
         assert(backing[..4] == "PING");
@@ -65,15 +66,15 @@ fn test_driver_slice_abis() {
         backing[2049] = 'O';
         backing[2050] = 'N';
         backing[2051] = 'G';
-        assert(internal::native_rio_post_send(rq, buf_id, 2048, 4, 889) == 0);
-        assert(internal::rio_wait_cq(cq, 1000) >= 0);
-        let drained_tx = internal::rio_drain_completions(cq, empty_res);
+        assert(net_internal::native_rio_post_send(rq, buf_id, 2048, 4, 889) == 0);
+        assert(net_internal::rio_wait_cq(cq, 1000) >= 0);
+        let drained_tx = net_internal::rio_drain_completions(cq, empty_res);
         assert(drained_tx == 1 && empty_res[0].request_context == 889);
         var pong_rx: u8[8] = [0; 8];
         assert(wing::tcp_recv_slice(cfd, pong_rx[..]) == 4 && pong_rx[..4] == "PONG");
 
-        internal::native_rio_deregister_buffer(buf_id);
-        internal::native_rio_close_cq(cq);
+        net_internal::native_rio_deregister_buffer(buf_id);
+        net_internal::native_rio_close_cq(cq);
         wing::tcp_close(sfd);
         wing::tcp_close(cfd);
         wing::tcp_close(lfd);
@@ -82,12 +83,12 @@ fn test_driver_slice_abis() {
 }
 
 fn test_tls_slice_codecs_and_ktls_probe() {
-    assert(internal::smartnic_model_name(internal::SmartNicModel.LinuxKtls).len > 0);
-    let _ = internal::smartnic_probe_ktls();
+    assert(net_internal::smartnic_model_name(net_internal::SmartNicModel.LinuxKtls).len > 0);
+    let _ = net_internal::smartnic_probe_ktls();
     var dummy_rx: u8[16] = [0; 16];
-    let bad_rx, bad_rt = internal::smartnic_recv_record(-1, dummy_rx[..]);
+    let bad_rx, bad_rt = net_internal::smartnic_recv_record(-1, dummy_rx[..]);
     assert(bad_rx < 0 && bad_rt == 0);
-    assert(internal::smartnic_send_record(-1, "PING", rfc::TLS_CONTENT_APPLICATION_DATA) < 0);
+    assert(net_internal::smartnic_send_record(-1, "PING", rfc::TLS_CONTENT_APPLICATION_DATA) < 0);
 
     let slot_s = wing::alloc_tls_cipher_slot();
     let slot_c = wing::alloc_tls_cipher_slot();
@@ -140,7 +141,7 @@ fn test_tls_slice_codecs_and_ktls_probe() {
 }
 
 fn test_poller_live_socket_and_synthetic_fds() {
-    let cfg = internal::auto_transport_driver_config();
+    let cfg = net_internal::auto_transport_driver_config();
     var p = wing::new_poller(cfg);
 
     // Review Focus #2: synthetic FD 77 coexists with live sockets without POLLNVAL/EBADF failure
@@ -247,20 +248,20 @@ fn test_reactor_accelerated_and_fallback(srv: wing::HttpServer&) {
     // 4. TLS reactor entrypoint guard + slice SQE helper smoke check
     let tls_cfg = wing::TlsServerHandshakeConfig { .. };
     assert(wing::serve_reactor_tls(srv, -1, tls_cfg, 1) == 0);
-    var send_sqe = internal::UringSqe { .. };
-    internal::uring_prep_send_slice(send_sqe, 9, resp[..8], 555);
-    assert(send_sqe.opcode == internal::URING_OP_SEND && send_sqe.len == 8 && send_sqe.addr != 0);
+    var send_sqe = net_internal::UringSqe { .. };
+    net_internal::uring_prep_send_slice(send_sqe, 9, resp[..8], 555);
+    assert(send_sqe.opcode == net_internal::URING_OP_SEND && send_sqe.len == 8 && send_sqe.addr != 0);
     print("TASK4_REACTOR_ACCEL: OK");
 }
 
 fn test_l2_udp_codec_and_malformed_inputs() {
-    let src4 = internal::L2UdpEndpoint {
+    let src4 = net_internal::L2UdpEndpoint {
         mac:     [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
         ip:      [10, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         is_ipv6: false,
         port:    54321,
     };
-    let dst4 = internal::L2UdpEndpoint {
+    let dst4 = net_internal::L2UdpEndpoint {
         mac:     [0x02, 0x00, 0x00, 0x00, 0x00, 0x02],
         ip:      [10, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         is_ipv6: false,
@@ -268,8 +269,8 @@ fn test_l2_udp_codec_and_malformed_inputs() {
     };
 
     var frame4: u8[..2048] = [];
-    assert(internal::encode_l2_udp_frame(src4, dst4, "QUIC_PING", 0x1234, frame4));
-    let parsed4, ok4 = internal::decode_l2_udp_frame(frame4[..]);
+    assert(net_internal::encode_l2_udp_frame(src4, dst4, "QUIC_PING", 0x1234, frame4));
+    let parsed4, ok4 = net_internal::decode_l2_udp_frame(frame4[..]);
     assert(ok4 && parsed4.src.port == 54321 && parsed4.dst.port == 443);
     assert(frame4[parsed4.payload_offset..parsed4.payload_offset + parsed4.payload_len] == "QUIC_PING");
 
@@ -281,8 +282,8 @@ fn test_l2_udp_codec_and_malformed_inputs() {
     dst6.is_ipv6 = true;
     dst6.ip[15] = 2;
     var frame6: u8[..2048] = [];
-    assert(internal::encode_l2_udp_frame(src6, dst6, "H3_V6", 0, frame6));
-    let parsed6, ok6 = internal::decode_l2_udp_frame(frame6[..]);
+    assert(net_internal::encode_l2_udp_frame(src6, dst6, "H3_V6", 0, frame6));
+    let parsed6, ok6 = net_internal::decode_l2_udp_frame(frame6[..]);
     assert(ok6 && parsed6.src.is_ipv6 && parsed6.dst.is_ipv6);
     assert(frame6[parsed6.payload_offset..parsed6.payload_offset + parsed6.payload_len] == "H3_V6");
 
@@ -290,40 +291,40 @@ fn test_l2_udp_codec_and_malformed_inputs() {
     var frag_frame: u8[..2048] = [];
     let _ = frag_frame.try_set(frame4[..]);
     frag_frame[20] = 0x20;
-    let _, ok_frag = internal::decode_l2_udp_frame(frag_frame[..]);
+    let _, ok_frag = net_internal::decode_l2_udp_frame(frag_frame[..]);
     assert(!ok_frag);
 
     var bad_csum: u8[..2048] = [];
     let _ = bad_csum.try_set(frame4[..]);
     bad_csum[24] ^= 0xFF;
-    let _, ok_csum = internal::decode_l2_udp_frame(bad_csum[..]);
+    let _, ok_csum = net_internal::decode_l2_udp_frame(bad_csum[..]);
     assert(!ok_csum);
 
     var bad_udp_csum: u8[..2048] = [];
     let _ = bad_udp_csum.try_set(frame6[..]);
     bad_udp_csum[frame6.len - 1] ^= 0x01;
-    let _, ok_ucsum = internal::decode_l2_udp_frame(bad_udp_csum[..]);
+    let _, ok_ucsum = net_internal::decode_l2_udp_frame(bad_udp_csum[..]);
     assert(!ok_ucsum);
 
-    let _, ok_trunc = internal::decode_l2_udp_frame(frame4[..frame4.len - 3]);
+    let _, ok_trunc = net_internal::decode_l2_udp_frame(frame4[..frame4.len - 3]);
     assert(!ok_trunc);
 
     // Transactional out_frame hygiene on mismatched address family
-    assert(!internal::encode_l2_udp_frame(src4, dst6, "BAD", 0, frame4) && frame4.len == 0);
+    assert(!net_internal::encode_l2_udp_frame(src4, dst6, "BAD", 0, frame4) && frame4.len == 0);
     print("TASK5_L2_CODEC: OK");
 }
 
 fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     // 1. Review Focus #5: AF_XDP UMEM out-of-bounds, oversize, and clean out_frame checks
-    var xsk, ok_xsk = internal::af_xdp_open_loopback(16, 2048);
+    var xsk, ok_xsk = net_internal::af_xdp_open_loopback(16, 2048);
     assert(ok_xsk);
     var big_buf: u8[..2060] = [];
     big_buf.resize(2060, 0xAA);
-    assert(!internal::af_xdp_umem_write(xsk, 0, big_buf[..]));
-    assert(!internal::af_xdp_umem_write(xsk, 16 * 2048, "OOB"));
+    assert(!net_internal::af_xdp_umem_write(xsk, 0, big_buf[..]));
+    assert(!net_internal::af_xdp_umem_write(xsk, 16 * 2048, "OOB"));
     var rd_buf: u8[..2048] = [];
     let _ = rd_buf.try_set("DIRTY");
-    assert(!internal::af_xdp_umem_read(xsk, 16 * 2048, 64, rd_buf) && rd_buf.len == 0);
+    assert(!net_internal::af_xdp_umem_read(xsk, 16 * 2048, 64, rd_buf) && rd_buf.len == 0);
 
     // 2. Build a QUIC Version Negotiation probe (unknown version 0xBAD00001, >= 1200 bytes)
     var quic_probe: u8[..1200] = [];
@@ -339,24 +340,24 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     quic_probe[15] = 0x22;
     quic_probe[24] = 16;
 
-    let cli_ep = internal::L2UdpEndpoint {
+    let cli_ep = net_internal::L2UdpEndpoint {
         mac:     [0x02, 0, 0, 0, 0, 0x11],
         ip:      [192, 168, 1, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         is_ipv6: false,
         port:    55000,
     };
-    let srv_ep = internal::L2UdpEndpoint {
+    let srv_ep = net_internal::L2UdpEndpoint {
         mac:     [0x02, 0, 0, 0, 0, 0x22],
         ip:      [192, 168, 1, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         is_ipv6: false,
         port:    443,
     };
     var l2_pkt: u8[..2048] = [];
-    assert(internal::encode_l2_udp_frame(cli_ep, srv_ep, quic_probe[..], 1, l2_pkt));
+    assert(net_internal::encode_l2_udp_frame(cli_ep, srv_ep, quic_probe[..], 1, l2_pkt));
 
     // 3. Pump through AF_XDP loopback serve_h3_l2 and verify L2 UDP Version-Negotiation reply
-    assert(internal::af_xdp_umem_write(xsk, 0, l2_pkt[..]));
-    assert(internal::af_xdp_inject_loopback_rx(xsk, 0, l2_pkt.len as u32));
+    assert(net_internal::af_xdp_umem_write(xsk, 0, l2_pkt[..]));
+    assert(net_internal::af_xdp_inject_loopback_rx(xsk, 0, l2_pkt.len as u32));
     var h3_ep = wing::new_h3_server_endpoint();
     let cfg_xdp = wing::H3L2Config {
         backend:  wing::H3L2Backend.AfXdp,
@@ -364,21 +365,21 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
         ..
     };
     assert(wing::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
-    let tx_addr, ok_comp = internal::af_xdp_complete_pop(xsk);
+    let tx_addr, ok_comp = net_internal::af_xdp_complete_pop(xsk);
     assert(ok_comp);
     // Also verify Direct-H3 SETTINGS frame (0x04 0x00) over AF_XDP L2
     var l2_h3_settings: u8[..2048] = [];
-    assert(internal::encode_l2_udp_frame(cli_ep, srv_ep, "\x04\x00", 2, l2_h3_settings));
-    assert(internal::af_xdp_umem_write(xsk, tx_addr, l2_h3_settings[..]));
-    assert(internal::af_xdp_inject_loopback_rx(xsk, tx_addr, l2_h3_settings.len as u32));
+    assert(net_internal::encode_l2_udp_frame(cli_ep, srv_ep, "\x04\x00", 2, l2_h3_settings));
+    assert(net_internal::af_xdp_umem_write(xsk, tx_addr, l2_h3_settings[..]));
+    assert(net_internal::af_xdp_inject_loopback_rx(xsk, tx_addr, l2_h3_settings.len as u32));
     assert(wing::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
 
     // 4. Pump through DPDK loopback serve_h3_l2 and verify decoded L2 UDP response in TX->RX ring
-    var dpdk_dev = internal::new_dpdk_device(0);
-    let dpdk_cfg = internal::DpdkPortConfig { port_id: 0, rx_queues: 1, tx_queues: 1, .. };
-    assert(internal::dpdk_init_port(dpdk_dev, dpdk_cfg) == 0);
-    assert(internal::dpdk_start_port(dpdk_dev) == 0);
-    assert(internal::dpdk_tx_packet_push(0, 0, l2_pkt[..]));
+    var dpdk_dev = net_internal::new_dpdk_device(0);
+    let dpdk_cfg = net_internal::DpdkPortConfig { port_id: 0, rx_queues: 1, tx_queues: 1, .. };
+    assert(net_internal::dpdk_init_port(dpdk_dev, dpdk_cfg) == 0);
+    assert(net_internal::dpdk_start_port(dpdk_dev) == 0);
+    assert(net_internal::dpdk_tx_packet_push(0, 0, l2_pkt[..]));
     let cfg_dpdk = wing::H3L2Config {
         backend:       wing::H3L2Backend.Dpdk,
         local_ep:      srv_ep,
@@ -388,15 +389,15 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     };
     assert(wing::serve_h3_l2(srv, h3_ep, cfg_dpdk, xsk, 1) == 1);
     var dpdk_replies: u8[..2048][..32] = [];
-    let n_rep = internal::dpdk_rx_burst_read(0, 0, dpdk_replies);
+    let n_rep = net_internal::dpdk_rx_burst_read(0, 0, dpdk_replies);
     assert(n_rep == 1);
-    let rep_parsed, ok_rep = internal::decode_l2_udp_frame(dpdk_replies[0][..]);
+    let rep_parsed, ok_rep = net_internal::decode_l2_udp_frame(dpdk_replies[0][..]);
     assert(ok_rep && rep_parsed.src.port == 443 && rep_parsed.dst.port == 55000);
     let vn_payload = dpdk_replies[0][rep_parsed.payload_offset..rep_parsed.payload_offset + rep_parsed.payload_len];
     assert(vn_payload.len >= 7 && vn_payload[1] == 0 && vn_payload[2] == 0 && vn_payload[3] == 0 && vn_payload[4] == 0);
 
-    internal::dpdk_stop_port(dpdk_dev);
-    internal::af_xdp_close(xsk);
+    net_internal::dpdk_stop_port(dpdk_dev);
+    net_internal::af_xdp_close(xsk);
     print("TASK6_H3_BATCH_AND_L2: OK");
 }
 
@@ -411,12 +412,12 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
     assert(udp_port > 0);
 
     let h3_settings = wing::H3Settings { .. };
-    var h3_cli = internal::new_h3_client_connection(h3_settings);
-    let sid, ok_sid = internal::open_request_stream(h3_cli);
+    var h3_cli = h3_internal::new_h3_client_connection(h3_settings);
+    let sid, ok_sid = h3_internal::open_request_stream(h3_cli);
     assert(ok_sid && sid == 0);
     var extra = wing::HeaderMap { .. };
     var req_wire: u8[..1024] = [];
-    assert(internal::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
+    assert(h3_internal::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
 
     for _ in 4 {
         assert(wing::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
@@ -430,11 +431,11 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
         assert(ok_b);
         if got > 0 {
             for i in rx_batch.msgs.len {
-                var dec_cli = internal::new_h3_client_connection(h3_settings);
-                let d_sid, _ = internal::open_request_stream(dec_cli);
-                let rx_err = internal::handle_stream_data(dec_cli, d_sid, true, rx_batch.msgs[i].payload[..], true);
+                var dec_cli = h3_internal::new_h3_client_connection(h3_settings);
+                let d_sid, _ = h3_internal::open_request_stream(dec_cli);
+                let rx_err = h3_internal::handle_stream_data(dec_cli, d_sid, true, rx_batch.msgs[i].payload[..], true);
                 assert(rx_err == rfc::H3_ERR_NO_ERROR);
-                let sc, ok_sc = internal::get_status_code(dec_cli, d_sid);
+                let sc, ok_sc = h3_internal::get_status_code(dec_cli, d_sid);
                 assert(ok_sc && sc == 200);
             }
             total_rx += got;
@@ -444,7 +445,7 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
     assert(total_rx == 4);
 
     // 2. Verify UdpFallback path of serve_h3_l2 over live UDP socket
-    var dummy_xsk = internal::new_af_xdp_socket();
+    var dummy_xsk = net_internal::new_af_xdp_socket();
     var h3_ep = wing::new_h3_server_endpoint();
     let cfg_fb = wing::H3L2Config {
         backend: wing::H3L2Backend.UdpFallback,
@@ -460,15 +461,15 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
     wing::tcp_close(udp_srv);
 
     // 3. Live Linux io_uring pbuf_ring + completion reactor roundtrip when running on Linux
-    if internal::detect_target_platform() == internal::TargetPlatform.Linux {
-        let rfd = internal::native_uring_create(64, 0);
+    if net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux {
+        let rfd = net_internal::native_uring_create(64, 0);
         if rfd >= 0 {
-            let pbuf_h, ok_pbuf = internal::uring_alloc_pbuf_ring(rfd, 1, 16, 4096);
+            let pbuf_h, ok_pbuf = net_internal::uring_alloc_pbuf_ring(rfd, 1, 16, 4096);
             if ok_pbuf {
-                internal::uring_recycle_pbuf(pbuf_h, 0);
-                internal::uring_free_pbuf_ring(pbuf_h);
+                net_internal::uring_recycle_pbuf(pbuf_h, 0);
+                net_internal::uring_free_pbuf_ring(pbuf_h);
             }
-            internal::native_uring_close(rfd);
+            net_internal::native_uring_close(rfd);
         }
         srv.accel_mode = wing::ReactorAccelMode.IoUring;
         let lfd = wing::reactor_listen_accelerated(srv, 16);
@@ -491,13 +492,13 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
 
 fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: wing::HttpServer&) {
     // 1. Important #1: millisecond-to-nanosecond conversion for io_uring / kqueue waits
-    assert(internal::timeout_ms_to_ns(-1) == -1);
-    assert(internal::timeout_ms_to_ns(0) == 0);
-    assert(internal::timeout_ms_to_ns(10) == 10000000);
-    assert(internal::timeout_ms_to_ns(250) == 250000000);
+    assert(net_internal::timeout_ms_to_ns(-1) == -1);
+    assert(net_internal::timeout_ms_to_ns(0) == 0);
+    assert(net_internal::timeout_ms_to_ns(10) == 10000000);
+    assert(net_internal::timeout_ms_to_ns(250) == 250000000);
 
-    if internal::detect_target_platform() == internal::TargetPlatform.Linux {
-        let idle_cfg = internal::auto_transport_driver_config();
+    if net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux {
+        let idle_cfg = net_internal::auto_transport_driver_config();
         var p_idle = wing::new_poller(idle_cfg);
         let _ = wing::enable_os_multiplexing(p_idle);
         var evs: core::PollReadyEvent[..64] = [];
@@ -509,14 +510,14 @@ fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: wing::HttpServe
     }
 
     // 2. Important #2: synchronous AcceptEx cancellation drain before handle close on Windows RIO
-    if internal::detect_target_platform() == internal::TargetPlatform.Windows &&
-        internal::native_rio_available() == 1 {
+    if net_internal::detect_target_platform() == net_internal::TargetPlatform.Windows &&
+        net_internal::native_rio_available() == 1 {
         srv.accel_mode = wing::ReactorAccelMode.Rio;
         let r_lfd = wing::reactor_listen_accelerated(srv, 16);
         assert(r_lfd > 0);
-        assert(internal::native_rio_poll_accept(r_lfd, 0) == 0);
-        assert(internal::native_rio_cancel_accept(r_lfd) == 1);
-        assert(internal::native_rio_cancel_accept(r_lfd) == 0);
+        assert(net_internal::native_rio_poll_accept(r_lfd, 0) == 0);
+        assert(net_internal::native_rio_cancel_accept(r_lfd) == 1);
+        assert(net_internal::native_rio_cancel_accept(r_lfd) == 0);
         wing::tcp_close(r_lfd);
     }
 

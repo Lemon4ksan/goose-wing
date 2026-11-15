@@ -6,8 +6,8 @@ namespace wing;
 
 import std;
 import core from "..";
-import .request;
-import .response;
+import http.request;
+import http.response;
 import .client;
 import .session.exec;
 

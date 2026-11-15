@@ -103,7 +103,7 @@ inline fn is_valid_canonical_domain_attr(dom: const u8[:]) -> bool {
 // 4096 bytes and contain no prohibited octets or control characters (RFC 6265 Section 4.1.1).
 fn new_canonical_cookie(name: const u8[:], val: const u8[:]) -> CanonicalCookie {
     var new_cookie = CanonicalCookie { .. };
-    guard core::add_sat_i64(name.len, val.len) <= internal::K_MAX_COOKIE_NAME_VAL_LEN else {
+    guard core::add_sat_i64(name.len, val.len) <= cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN else {
         return new_cookie;
     }
     guard is_valid_canonical_cookie_name(name) && is_valid_canonical_cookie_val(val) else {
@@ -140,7 +140,7 @@ fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
 fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     if cookie_val.same_site != CookieSameSite.Default { return false; }
     let elapsed_us = core::sub_sat_i64(now_us, cookie_val.creation_utc);
-    return elapsed_us >= 0 && elapsed_us <= internal::K_LAX_ALLOWING_UNSAFE_WINDOW_US;
+    return elapsed_us >= 0 && elapsed_us <= cookie_internal::K_LAX_ALLOWING_UNSAFE_WINDOW_US;
 }
 
 // Combined size of name and value in bytes (RFC 6265bis Section 5.5).
@@ -152,7 +152,7 @@ fn payload_size(cookie_val: const CanonicalCookie&) -> i64 {
 
 // Replaces the cookie value in-place and returns cookie_ref for chaining.
 fn with_value(cookie_ref: CanonicalCookie&, val: const u8[:]) -> CanonicalCookie& {
-    guard core::add_sat_i64(cookie_ref.name.len, val.len) <= internal::K_MAX_COOKIE_NAME_VAL_LEN
+    guard core::add_sat_i64(cookie_ref.name.len, val.len) <= cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN
         && is_valid_canonical_cookie_val(val) else {
         return cookie_ref;
     }
@@ -259,7 +259,7 @@ fn with_max_age_seconds(cookie_ref: CanonicalCookie&, seconds: i64, now_us: i64)
         cookie_ref.expires_utc = 0;
         return cookie_ref;
     }
-    let capped_sec = min(seconds, internal::K_MAX_COOKIE_AGE_SEC);
+    let capped_sec = min(seconds, cookie_internal::K_MAX_COOKIE_AGE_SEC);
     let delta_us = core::mul_sat_i64(capped_sec, 1000000);
     cookie_ref.expires_utc = core::add_sat_i64(now_us, delta_us);
     return cookie_ref;

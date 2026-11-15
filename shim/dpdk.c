@@ -26,6 +26,14 @@ typedef struct {
 static struct rte_mempool *g_dpdk_mbuf_pool = NULL;
 static int g_dpdk_eal_ready = 0;
 
+int32_t wing_dpdk_probe(void) {
+#if defined(__linux__)
+    return 0;
+#else
+    return -38;
+#endif
+}
+
 int32_t wing_dpdk_eal_init(void) {
     if (g_dpdk_eal_ready) {
         return 0;
@@ -161,6 +169,14 @@ typedef struct {
 static wing_dpdk_port_state g_dpdk_ports[WING_DPDK_MAX_PORTS];
 static int g_dpdk_eal_initialized = 0;
 static uint64_t g_dpdk_next_pool_handle = 0xD0001000ULL;
+
+int32_t wing_dpdk_probe(void) {
+#if defined(__linux__)
+    return 0;
+#else
+    return -38;
+#endif
+}
 
 int32_t wing_dpdk_eal_init(void) {
     g_dpdk_eal_initialized = 1;

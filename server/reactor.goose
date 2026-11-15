@@ -15,24 +15,10 @@ import .pipeline;
 import .h2_multiplexer;
 import .soa_timer;
 import .server;
+import net.accel;
 
 const REACTOR_LEFTOVER_CAP:    i64 = 8192;
 const REACTOR_MAX_H2_SESSIONS: i64 = 128;
-
-const REACTOR_ACCEL_SLOTS:      i64 = 64;
-const REACTOR_ACCEL_BUF_SIZE:   i64 = 4096;
-const REACTOR_ACCEL_SLAB_BYTES: i64 = 524288;
-
-const REACTOR_REQ_RX_TAG: u64 = 1;
-const REACTOR_REQ_TX_TAG: u64 = 2;
-
-const REACTOR_URING_TAG_ACCEPT:    u64 = 0x100000000;
-const REACTOR_URING_TAG_RECV:      u64 = 0x200000000;
-const REACTOR_URING_TAG_SEND:      u64 = 0x300000000;
-const REACTOR_URING_TAG_POLL:      u64 = 0x400000000;
-const REACTOR_URING_TAG_KIND_MASK: u64 = 0xF00000000;
-const REACTOR_URING_PBUF_BGID:     u16 = 1;
-const REACTOR_KQUEUE_EV_ERROR:     u16 = 0x4000;
 
 struct ReactorLeftoverBuf {
     bytes: u8[8192] = [0; 8192],
@@ -43,269 +29,35 @@ struct ReactorIngressBuf {
     len:   i64       = 0,
 }
 
-struct ReactorAccelRuntime {
-    mode:                ReactorAccelMode        = ReactorAccelMode.PollFallback,
-    epfd:                i64                     = -1,
-    kq_fd:               i64                     = -1,
-    kq_changes:          internal::Kevent[..256] = [],
-    uring_fd:            i64                     = -1,
-    uring_pbuf:          u64                     = 0,
-    rio_cq:              u64                     = 0,
-    rio_buf_id:          u64                     = 0,
-    rio_listener_fd:     i64                     = -1,
-    active_accel_slots:  i64                     = 0,
-    slot_accel:          bool[64]                = [false; 64],
-    slot_ktls_rx:        bool[64]                = [false; 64],
-    slot_rio_rq:         u64[64]                 = [0; 64],
-    slot_tx_inflight:    bool[64]                = [false; 64],
-    slot_close_after_tx: bool[64]                = [false; 64],
-    slab:                u8[..524288]            = [],
-    tls_ct_leftover:     u8[..16648][64]         = [[]; 64],
-    tls_plain_scratch:   u8[..32768]             = [],
-    tls_seal_scratch:    u8[..65536]             = [],
-}
-
 struct ReactorState {
-    h2_sessions: internal::H2ServerSession[128]  = [internal::H2ServerSession { .. }; 128],
-    h2_in_use:   bool[128]                       = [false; 128],
-    leftovers:   ReactorLeftoverBuf[4096]        = [ReactorLeftoverBuf { .. }; 4096],
-    table:       SoAConnTable                    = SoAConnTable { .. },
-    chunk:       ReactorIngressBuf               = ReactorIngressBuf { .. },
-    cork:        u8[..65536]                     = [],
-    free_slots:  FreeSlotStack                   = FreeSlotStack { .. },
-    conn_pool:   internal::ReactorConnectionPool = internal::ReactorConnectionPool { .. },
-    accel:       ReactorAccelRuntime             = ReactorAccelRuntime { .. },
+    h2_sessions: server_internal::H2ServerSession[..128] = [],
+    h2_in_use:   bool[128]                               = [false; 128],
+    leftovers:   ReactorLeftoverBuf[..4096]              = [],
+    table:       SoAConnTable                            = SoAConnTable { .. },
+    chunk:       ReactorIngressBuf                       = ReactorIngressBuf { .. },
+    cork:        u8[..65536]                             = [],
+    free_slots:  FreeSlotStack                           = FreeSlotStack { .. },
+    conn_pool:   server_internal::ReactorConnectionPool  = server_internal::ReactorConnectionPool { .. },
+    accel:       ReactorAccelRuntime                     = ReactorAccelRuntime { .. },
 }
 
 var g_default_reactor: ReactorState = ReactorState { .. };
 
+fn ensure_reactor_h2_capacity(state: ReactorState&) {
+    if state.h2_sessions.len < REACTOR_MAX_H2_SESSIONS {
+        state.h2_sessions.resize(REACTOR_MAX_H2_SESSIONS, server_internal::H2ServerSession { .. });
+    }
+}
+
+fn ensure_reactor_leftovers_capacity(state: ReactorState&) {
+    if state.leftovers.len < SOA_TABLE_CAP {
+        state.leftovers.resize(SOA_TABLE_CAP, ReactorLeftoverBuf { .. });
+    }
+}
+
 // Opens a listening TCP socket configured for OS completion accelerators when supported.
 fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 128) -> i64 {
-    let plat = internal::detect_target_platform();
-    let want_rio = server.accel_mode == ReactorAccelMode.Auto || server.accel_mode == ReactorAccelMode.Rio;
-    if plat == internal::TargetPlatform.Windows && want_rio && internal::native_rio_available() == 1 {
-        let fd = internal::rio_listen(server.host[..], server.port, backlog);
-        if fd > 0 {
-            return fd;
-        }
-    }
-    return tcp_listen(server.host[..], server.port);
-}
-
-fn reactor_queue_kq_change(accel: ReactorAccelRuntime&, fd: i64, flags: u16, udata: u64) {
-    guard accel.kq_fd >= 0 && fd > 0 else { return; }
-    let ev = internal::Kevent {
-        ident:  fd as u64,
-        filter: internal::EVFILT_READ,
-        flags:  flags,
-        fflags: 0,
-        data:   0,
-        udata:  udata,
-    };
-    if !accel.kq_changes.try_push(ev) {
-        var ignored: internal::Kevent[1] = [internal::Kevent { .. }];
-        let _ = internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], ignored[..], 0);
-        accel.kq_changes.clear();
-        let _ = accel.kq_changes.try_push(ev);
-    }
-}
-
-fn reactor_arm_uring_accept(accel: ReactorAccelRuntime&, listener_fd: i64) {
-    guard accel.uring_fd >= 0 && listener_fd > 0 else { return; }
-    var sqe = internal::UringSqe { .. };
-    internal::uring_prep_accept_multishot(sqe, listener_fd as i32, REACTOR_URING_TAG_ACCEPT);
-    var batch: internal::UringSqe[1] = [sqe];
-    let _ = internal::uring_submit_sqes(accel.uring_fd, batch[..]);
-}
-
-fn reactor_arm_uring_slot_rx(accel: ReactorAccelRuntime&, slot: i64, fd: i64) {
-    guard accel.uring_fd >= 0 && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && fd > 0 else { return; }
-    var sqe = internal::UringSqe { .. };
-    if accel.slot_ktls_rx[slot] {
-        internal::uring_prep_poll_add(sqe, fd as i32, 1, REACTOR_URING_TAG_POLL | (slot as u64));
-    } else {
-        internal::uring_prep_sqe_recv_multishot(
-            sqe, fd as i32, REACTOR_URING_PBUF_BGID, REACTOR_URING_TAG_RECV | (slot as u64),
-        );
-    }
-    var batch: internal::UringSqe[1] = [sqe];
-    let _ = internal::uring_submit_sqes(accel.uring_fd, batch[..]);
-}
-
-fn reactor_post_rio_slot_rx(accel: ReactorAccelRuntime&, slot: i64) -> bool {
-    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
-    let rx_off = core::shl_sat_u64(slot as u64, 13) as u32;
-    return internal::native_rio_post_recv(
-        accel.slot_rio_rq[slot],
-        accel.rio_buf_id,
-        rx_off,
-        REACTOR_ACCEL_BUF_SIZE as u32,
-        REACTOR_REQ_RX_TAG,
-    ) == 0;
-}
-
-fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
-    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
-    if accel.slot_accel[slot] {
-        accel.active_accel_slots = max(core::sub_sat_i64(accel.active_accel_slots, 1), 0);
-    }
-    accel.slot_accel[slot] = false;
-    accel.slot_ktls_rx[slot] = false;
-    accel.slot_rio_rq[slot] = 0;
-    accel.slot_tx_inflight[slot] = false;
-    accel.slot_close_after_tx[slot] = false;
-    accel.tls_ct_leftover[slot].clear();
-}
-
-fn reactor_close_accel(accel: ReactorAccelRuntime&) {
-    if accel.rio_listener_fd > 0 {
-        let _ = internal::native_rio_cancel_accept(accel.rio_listener_fd);
-        accel.rio_listener_fd = -1;
-    }
-    if accel.rio_buf_id != 0 {
-        internal::native_rio_deregister_buffer(accel.rio_buf_id);
-        accel.rio_buf_id = 0;
-    }
-    if accel.rio_cq != 0 {
-        internal::native_rio_close_cq(accel.rio_cq);
-        accel.rio_cq = 0;
-    }
-    if accel.uring_pbuf != 0 {
-        internal::uring_free_pbuf_ring(accel.uring_pbuf);
-        accel.uring_pbuf = 0;
-    }
-    if accel.uring_fd >= 0 {
-        internal::native_uring_close(accel.uring_fd);
-        accel.uring_fd = -1;
-    }
-    if accel.kq_fd >= 0 {
-        internal::native_kqueue_close(accel.kq_fd);
-        accel.kq_fd = -1;
-    }
-    if accel.epfd >= 0 {
-        epoll_close(accel.epfd);
-        accel.epfd = -1;
-    }
-    accel.kq_changes.clear();
-    accel.active_accel_slots = 0;
-    accel.mode = ReactorAccelMode.PollFallback;
-}
-
-fn reactor_try_open_uring(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    let rfd = internal::native_uring_create(256, 0);
-    guard rfd >= 0 else { return false; }
-    let pbuf, ok_pb = internal::uring_alloc_pbuf_ring(rfd, REACTOR_URING_PBUF_BGID, 256, 4096);
-    if !ok_pb || pbuf == 0 {
-        internal::native_uring_close(rfd);
-        return false;
-    }
-    accel.mode = ReactorAccelMode.IoUring;
-    accel.uring_fd = rfd;
-    accel.uring_pbuf = pbuf;
-    if listener_fd > 0 {
-        tcp_set_nonblocking(listener_fd, true);
-        reactor_arm_uring_accept(accel, listener_fd);
-    }
-    return true;
-}
-
-fn reactor_try_open_rio(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    guard internal::native_rio_available() == 1 && accel.epfd >= 0 else { return false; }
-    let cq = internal::native_rio_create_cq(512);
-    guard cq != 0 else { return false; }
-    let bid = internal::native_rio_register_slice(accel.slab[..]);
-    if bid == 0 {
-        internal::native_rio_close_cq(cq);
-        return false;
-    }
-    accel.mode = ReactorAccelMode.Rio;
-    accel.rio_cq = cq;
-    accel.rio_buf_id = bid;
-    if listener_fd > 0 {
-        if internal::native_rio_is_listener(listener_fd) == 1 {
-            accel.rio_listener_fd = listener_fd;
-        } else {
-            tcp_set_nonblocking(listener_fd, true);
-            epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
-        }
-    }
-    return true;
-}
-
-fn reactor_try_open_kqueue(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    let kq = internal::native_kqueue_create();
-    guard kq >= 0 else { return false; }
-    accel.mode = ReactorAccelMode.Kqueue;
-    accel.kq_fd = kq;
-    if listener_fd > 0 {
-        tcp_set_nonblocking(listener_fd, true);
-        reactor_queue_kq_change(accel, listener_fd, internal::EV_ADD | internal::EV_ENABLE, EPOLL_LISTENER_TAG);
-    }
-    return true;
-}
-
-fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, listener_fd: i64) -> bool {
-    reactor_close_accel(accel);
-    accel.slab.resize(REACTOR_ACCEL_SLAB_BYTES, 0);
-    for s in REACTOR_ACCEL_SLOTS {
-        reactor_reset_accel_slot(accel, s);
-    }
-    accel.epfd = epoll_create();
-    let plat = internal::detect_target_platform();
-
-    if plat == internal::TargetPlatform.Linux &&
-        (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.IoUring) &&
-        reactor_try_open_uring(accel, listener_fd) {
-        return true;
-    }
-    if plat == internal::TargetPlatform.Windows &&
-        (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.Rio) &&
-        reactor_try_open_rio(accel, listener_fd) {
-        return true;
-    }
-    if plat == internal::TargetPlatform.Darwin &&
-        (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.Kqueue) &&
-        reactor_try_open_kqueue(accel, listener_fd) {
-        return true;
-    }
-
-    guard accel.epfd >= 0 else {
-        reactor_close_accel(accel);
-        return false;
-    }
-    accel.mode = ReactorAccelMode.PollFallback;
-    if listener_fd > 0 {
-        tcp_set_nonblocking(listener_fd, true);
-        epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
-    }
-    return true;
-}
-
-fn reactor_bind_slot_backend(accel: ReactorAccelRuntime&, slot: i64, client_fd: i64) {
-    if accel.mode == ReactorAccelMode.Rio && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && !accel.slot_ktls_rx[slot] {
-        let rq = internal::native_rio_create_rq_ctx(client_fd, 16, 16, accel.rio_cq, accel.rio_cq, slot as u64);
-        if rq != 0 {
-            accel.slot_rio_rq[slot] = rq;
-            accel.slot_accel[slot] = true;
-            if reactor_post_rio_slot_rx(accel, slot) {
-                accel.active_accel_slots = core::add_sat_i64(accel.active_accel_slots, 1);
-                return;
-            }
-            accel.slot_accel[slot] = false;
-            accel.slot_rio_rq[slot] = 0;
-        }
-    } else if accel.mode == ReactorAccelMode.IoUring && slot >= 0 && slot < REACTOR_ACCEL_SLOTS {
-        accel.slot_accel[slot] = true;
-        accel.active_accel_slots = core::add_sat_i64(accel.active_accel_slots, 1);
-        reactor_arm_uring_slot_rx(accel, slot, client_fd);
-        return;
-    } else if accel.mode == ReactorAccelMode.Kqueue && accel.kq_fd >= 0 {
-        reactor_queue_kq_change(accel, client_fd, internal::EV_ADD | internal::EV_ENABLE, slot as u64);
-        return;
-    }
-    if accel.epfd >= 0 {
-        epoll_add(accel.epfd, client_fd, EPOLL_READ, slot as u64);
-    }
+    return listen_accelerated_tcp(server.host[..], server.port, server.accel_mode, backlog);
 }
 
 fn alloc_reactor_h2_session(
@@ -313,11 +65,12 @@ fn alloc_reactor_h2_session(
     server_name: const u8[:],
     now_ms:      u64,
 ) -> i16 {
+    ensure_reactor_h2_capacity(g_default_reactor);
     for i in REACTOR_MAX_H2_SESSIONS {
         if !g_default_reactor.h2_in_use[i] {
-            internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[i], pipeline);
+            server_internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[i], pipeline);
             g_default_reactor.h2_in_use[i] = true;
-            internal::reset_h2_server_session_inplace(g_default_reactor.h2_sessions[i], server_name, now_ms);
+            server_internal::reset_h2_server_session_inplace(g_default_reactor.h2_sessions[i], server_name, now_ms);
             return i as i16;
         }
     }
@@ -327,7 +80,7 @@ fn alloc_reactor_h2_session(
 fn free_reactor_h2_session(h2_idx: i16, pipeline: ServerPipelineConfig&) {
     let idx = h2_idx as i64;
     guard idx >= 0 && idx < REACTOR_MAX_H2_SESSIONS && g_default_reactor.h2_in_use[idx] else { return; }
-    internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[idx], pipeline);
+    server_internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[idx], pipeline);
     g_default_reactor.h2_in_use[idx] = false;
 }
 
@@ -387,7 +140,7 @@ fn reactor_cleanup_slot(
     let fd = table.fds[slot_idx];
     if fd > 0 {
         if g_default_reactor.accel.kq_fd >= 0 {
-            reactor_queue_kq_change(g_default_reactor.accel, fd, internal::EV_DELETE, slot_idx as u64);
+            reactor_queue_kq_change(g_default_reactor.accel, fd, net_internal::EV_DELETE, slot_idx as u64);
         }
         if epfd >= 0 {
             epoll_del(epfd, fd);
@@ -401,7 +154,7 @@ fn reactor_cleanup_slot(
                 g_default_reactor.h2_in_use[h2_i] = false;
             }
         }
-        internal::free_connection_slot(g_default_reactor.conn_pool, slot_idx as i32);
+        server_internal::free_connection_slot(g_default_reactor.conn_pool, slot_idx as i32);
         table.soa_table_free(slot_idx);
     } else {
         reactor_reset_accel_slot(g_default_reactor.accel, slot_idx);
@@ -471,7 +224,7 @@ inline fn reactor_init_slot_record(
     table.peer_ip_hashes[slot] = 0;
     table.peer_ips[slot].clear();
     table.count = advance_high_water_mark(table.count, slot);
-    let _ = internal::alloc_connection_slot(g_default_reactor.conn_pool, client_fd, 0);
+    let _ = server_internal::alloc_connection_slot(g_default_reactor.conn_pool, client_fd, 0);
 }
 
 // Registers an accepted non-blocking client connection into an allocated slot.
@@ -627,56 +380,10 @@ fn reactor_save_leftover(
     return true;
 }
 
-inline fn inc_sent_total(total: i64, sent: i32) -> i64 {
-    return total + sent;
-}
-
-// Flushes cork aggregation buffer to connection via bounded non-blocking send loop.
-inline fn reactor_drain_cork_wire(conn: i64, wire: const u8[:]) -> bool {
-    var sent_total: i64 = 0;
-    while sent_total < wire.len {
-        let sent = tcp_send(conn, wire[sent_total..]);
-        if sent <= 0 { return false; }
-        sent_total = inc_sent_total(sent_total, sent);
-    }
-    return true;
-}
-
-fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
-    if wire.len <= REACTOR_ACCEL_BUF_SIZE && !accel.slot_tx_inflight[slot] {
-        let tx_off_u32 = (core::shl_sat_u64(slot as u64, 13) as u32) | 4096;
-        let tx_off = tx_off_u32 as i64;
-        let tx_end = core::add_sat_i64(tx_off, wire.len);
-        for i in wire.len {
-            accel.slab[core::add_sat_i64(tx_off, i)] = wire[i];
-        }
-        if accel.mode == ReactorAccelMode.Rio && accel.slot_rio_rq[slot] != 0 {
-            let rc = internal::native_rio_post_send(
-                accel.slot_rio_rq[slot], accel.rio_buf_id, tx_off_u32, wire.len as u32, REACTOR_REQ_TX_TAG,
-            );
-            if rc == 0 {
-                accel.slot_tx_inflight[slot] = true;
-                return true;
-            }
-        } else if accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0 {
-            var sqe = internal::UringSqe { .. };
-            internal::uring_prep_send_slice(
-                sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | (slot as u64),
-            );
-            var batch: internal::UringSqe[1] = [sqe];
-            if internal::uring_submit_sqes(accel.uring_fd, batch[..]) > 0 {
-                accel.slot_tx_inflight[slot] = true;
-                return true;
-            }
-        }
-    }
-    return reactor_drain_cork_wire(conn, wire);
-}
-
 fn reactor_send_slot_wire(table: const SoAConnTable&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
     let in_accel_range = slot >= 0 && slot < REACTOR_ACCEL_SLOTS;
     if in_accel_range && g_default_reactor.accel.slot_ktls_rx[slot] {
-        return internal::smartnic_send_record(conn, wire, rfc::TLS_CONTENT_APPLICATION_DATA) > 0;
+        return net_internal::smartnic_send_record(conn, wire, rfc::TLS_CONTENT_APPLICATION_DATA) > 0;
     }
     if in_accel_range && g_default_reactor.accel.slot_accel[slot] {
         if table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
@@ -718,7 +425,7 @@ fn reactor_handle_h2_ingress<Stage>(
     let h2_idx = table.ensure_h2_session(slot, server.pipeline, server.server_name[..], now_ms);
     guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return false; }
     let peer_ip_slice = reactor_resolve_slot_peer_ip(table, slot, conn);
-    let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
+    let consumed_h2, ok_h2 = server_internal::handle_h2_server_ingress(
         g_default_reactor.h2_sessions[h2_idx], server.pipeline, server.timer,
         peer_ip_slice, chunk.bytes[..chunk.len], now_ms, cork_wire, stage,
     );
@@ -792,7 +499,7 @@ fn classify_ktls_recv_turn(
 fn reactor_read_ktls_slot(conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
     guard chunk.len < 65536 else { return false, false; }
     let start = chunk.len;
-    let recvd, rtype = internal::smartnic_recv_record(conn, chunk.bytes[start..]);
+    let recvd, rtype = net_internal::smartnic_recv_record(conn, chunk.bytes[start..]);
     let added, any_recvd, should_close = classify_ktls_recv_turn(
         recvd, rtype, chunk.bytes[start..], start,
     );
@@ -1043,43 +750,9 @@ inline fn reactor_epoll_timeout(ring: const core::SpscRing&) -> i32 {
     return if ring.spsc_count() > 0 { 0 } else { 10 };
 }
 
-fn reactor_wait_readiness_events(
-    accel:       ReactorAccelRuntime&,
-    ready_udata: u64[:],
-    timeout_ms:  i32,
-) -> i32 {
-    if accel.mode == ReactorAccelMode.Kqueue && accel.kq_fd >= 0 {
-        var kev_out: internal::Kevent[128] = [internal::Kevent { .. }; 128];
-        let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
-        let n_kq = internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], kev_out[..], timeout_ns);
-        accel.kq_changes.clear();
-        guard n_kq > 0 else { return 0; }
-        let limit = min(min(n_kq as i64, 128), ready_udata.len);
-        var out_idx: i64 = 0;
-        for i in limit {
-            if (kev_out[i].flags & REACTOR_KQUEUE_EV_ERROR) == 0 {
-                ready_udata[out_idx] = kev_out[i].udata;
-                out_idx = core::add_sat_i64(out_idx, 1);
-            }
-        }
-        return out_idx as i32;
-    }
-
-    guard accel.epfd >= 0 else { return 0; }
-    var empty_fds: i64[0] = [];
-    let rio_has_work = accel.active_accel_slots > 0 || accel.rio_listener_fd > 0;
-    let eff_timeout = if accel.mode == ReactorAccelMode.IoUring ||
-        (accel.mode == ReactorAccelMode.Rio && rio_has_work) {
-        0
-    } else {
-        timeout_ms
-    };
-    return epoll_wait_direct(accel.epfd, empty_fds[..], ready_udata, eff_timeout);
-}
-
 fn reactor_dispatch_single_rio_result<Stage>(
     server:       HttpServer&,
-    res:          const internal::RioResult&,
+    res:          const net_internal::RioResult&,
     table:        SoAConnTable&,
     leftovers:    ReactorLeftoverBuf[:],
     free_slots:   FreeSlotStack&,
@@ -1142,7 +815,7 @@ fn reactor_poll_rio_listener(
     } else {
         0
     };
-    let cfd = internal::native_rio_poll_accept(lfd, wait_ms);
+    let cfd = net_internal::native_rio_poll_accept(lfd, wait_ms);
     guard cfd > 0 else { return; }
     let epfd = g_default_reactor.accel.epfd;
     if is_tls {
@@ -1178,11 +851,11 @@ fn reactor_step_rio_completions<Stage>(
         server, draining, tls_config, is_tls, timeout_ms, table, free_slots, timer_wheel, total_served,
     );
     guard g_default_reactor.accel.active_accel_slots > 0 else { return 0; }
-    var rio_results: internal::RioResult[..64] = [];
-    var n = internal::rio_drain_completions(g_default_reactor.accel.rio_cq, rio_results);
+    var rio_results: net_internal::RioResult[..64] = [];
+    var n = net_internal::rio_drain_completions(g_default_reactor.accel.rio_cq, rio_results);
     if n == 0 && timeout_ms > 0 {
-        let _ = internal::rio_wait_cq(g_default_reactor.accel.rio_cq, min(timeout_ms, 5));
-        n = internal::rio_drain_completions(g_default_reactor.accel.rio_cq, rio_results);
+        let _ = net_internal::rio_wait_cq(g_default_reactor.accel.rio_cq, min(timeout_ms, 5));
+        n = net_internal::rio_drain_completions(g_default_reactor.accel.rio_cq, rio_results);
     }
     for i in rio_results.len {
         reactor_dispatch_single_rio_result(
@@ -1232,7 +905,7 @@ fn reactor_accept_single_tls_fd(
 
 fn reactor_dispatch_uring_recv_cqe<Stage>(
     server:       HttpServer&,
-    cqe:          const internal::UringCqe&,
+    cqe:          const net_internal::UringCqe&,
     slot:         i64,
     table:        SoAConnTable&,
     leftovers:    ReactorLeftoverBuf[:],
@@ -1244,11 +917,11 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
     total_served: i64&,
     stage:        Stage&,
 ) {
-    let has_buf = (cqe.flags & internal::URING_CQE_F_BUFFER) != 0;
+    let has_buf = (cqe.flags & net_internal::URING_CQE_F_BUFFER) != 0;
     let bid = ((cqe.flags >> 16) & 0xFFFF) as u16;
     if cqe.res <= 0 {
         if has_buf {
-            internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
+            net_internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
         }
         if slot >= 0 && slot < REACTOR_ACCEL_SLOTS && table.fds[slot] > 0 {
             reactor_request_slot_close(
@@ -1259,7 +932,7 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
     }
     guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && table.fds[slot] > 0 else {
         if has_buf {
-            internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
+            net_internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
         }
         return;
     }
@@ -1267,8 +940,8 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
     var rx_tmp: u8[4096] = [0; 4096];
     var copied: i32      = 0;
     if has_buf {
-        copied = internal::uring_read_pbuf(g_default_reactor.accel.uring_pbuf, bid, cqe.res, rx_tmp[..]);
-        internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
+        copied = net_internal::uring_read_pbuf(g_default_reactor.accel.uring_pbuf, bid, cqe.res, rx_tmp[..]);
+        net_internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
     }
     if copied > 0 {
         reactor_handle_completed_rx(
@@ -1276,7 +949,7 @@ fn reactor_dispatch_uring_recv_cqe<Stage>(
             free_slots, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
         );
     }
-    if (cqe.flags & internal::URING_CQE_F_MORE) == 0 &&
+    if (cqe.flags & net_internal::URING_CQE_F_MORE) == 0 &&
         table.fds[slot] > 0 &&
         !g_default_reactor.accel.slot_close_after_tx[slot] {
         reactor_arm_uring_slot_rx(g_default_reactor.accel, slot, table.fds[slot]);
@@ -1289,7 +962,7 @@ fn reactor_dispatch_uring_accept_cqe(
     draining:     bool,
     tls_config:   const TlsServerHandshakeConfig&,
     is_tls:       bool,
-    cqe:          const internal::UringCqe&,
+    cqe:          const net_internal::UringCqe&,
     table:        SoAConnTable&,
     free_slots:   FreeSlotStack&,
     timer_wheel:  core::TickTimerWheel&,
@@ -1307,14 +980,14 @@ fn reactor_dispatch_uring_accept_cqe(
             reactor_accept_plain_fd(cfd, epfd, table, free_slots, timer_wheel, total_served);
         }
     }
-    if (cqe.flags & internal::URING_CQE_F_MORE) == 0 && !draining && listener_fd > 0 {
+    if (cqe.flags & net_internal::URING_CQE_F_MORE) == 0 && !draining && listener_fd > 0 {
         reactor_arm_uring_accept(g_default_reactor.accel, listener_fd);
     }
 }
 
 fn reactor_dispatch_uring_send_cqe(
     server:       HttpServer&,
-    cqe:          const internal::UringCqe&,
+    cqe:          const net_internal::UringCqe&,
     slot:         i64,
     table:        SoAConnTable&,
     free_slots:   FreeSlotStack&,
@@ -1329,7 +1002,7 @@ fn reactor_dispatch_uring_send_cqe(
 
 fn reactor_dispatch_uring_poll_cqe<Stage>(
     server:       HttpServer&,
-    cqe:          const internal::UringCqe&,
+    cqe:          const net_internal::UringCqe&,
     slot:         i64,
     table:        SoAConnTable&,
     leftovers:    ReactorLeftoverBuf[:],
@@ -1362,7 +1035,7 @@ fn reactor_dispatch_single_uring_cqe<Stage>(
     draining:     bool,
     tls_config:   const TlsServerHandshakeConfig&,
     is_tls:       bool,
-    cqe:          const internal::UringCqe&,
+    cqe:          const net_internal::UringCqe&,
     table:        SoAConnTable&,
     leftovers:    ReactorLeftoverBuf[:],
     free_slots:   FreeSlotStack&,
@@ -1413,10 +1086,10 @@ fn reactor_step_uring_completions<Stage>(
         g_default_reactor.accel.uring_fd >= 0 else {
         return 0;
     }
-    var cqes: internal::UringCqe[64] = [internal::UringCqe { .. }; 64];
+    var cqes: net_internal::UringCqe[64] = [net_internal::UringCqe { .. }; 64];
     let min_c: u32 = if timeout_ms > 0 { 1 } else { 0 };
-    let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
-    let n = internal::uring_wait_cqes(g_default_reactor.accel.uring_fd, cqes[..], min_c, timeout_ns);
+    let timeout_ns = net_internal::timeout_ms_to_ns(timeout_ms);
+    let n = net_internal::uring_wait_cqes(g_default_reactor.accel.uring_fd, cqes[..], min_c, timeout_ns);
     guard n > 0 else { return 0; }
     let limit = min(n as i64, 64);
     for i in limit {
@@ -1434,29 +1107,9 @@ inline fn reactor_emit_slot_goaway(table: const SoAConnTable&, slot: i64, cork_w
     let h2_idx = table.h2_slot_map[slot] as i64;
     guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return; }
     cork_wire.clear();
-    internal::initiate_graceful_shutdown(g_default_reactor.h2_sessions[h2_idx], cork_wire);
+    server_internal::initiate_graceful_shutdown(g_default_reactor.h2_sessions[h2_idx], cork_wire);
     guard cork_wire.len > 0 else { return; }
     let _ = reactor_send_slot_wire(table, slot, fd, cork_wire[..]);
-}
-
-fn reactor_detach_listener(accel: ReactorAccelRuntime&, listener_fd: i64) {
-    guard listener_fd > 0 else { return; }
-    if accel.rio_listener_fd == listener_fd {
-        internal::native_rio_cancel_accept(listener_fd);
-        accel.rio_listener_fd = -1;
-    }
-    if accel.kq_fd >= 0 {
-        reactor_queue_kq_change(accel, listener_fd, internal::EV_DELETE, EPOLL_LISTENER_TAG);
-    }
-    if accel.uring_fd >= 0 {
-        var sqe = internal::UringSqe { .. };
-        internal::uring_prep_cancel(sqe, REACTOR_URING_TAG_ACCEPT);
-        var batch: internal::UringSqe[1] = [sqe];
-        let _ = internal::uring_submit_sqes(accel.uring_fd, batch[..]);
-    }
-    if accel.epfd >= 0 {
-        let _ = epoll_del(accel.epfd, listener_fd);
-    }
 }
 
 fn reactor_step_drain_gate(
@@ -1517,8 +1170,10 @@ inline fn reactor_poll_sweep(
 }
 
 inline fn reset_reactor_state(state: ReactorState&) {
+    ensure_reactor_h2_capacity(state);
+    ensure_reactor_leftovers_capacity(state);
     reset_soa_table_inplace(state.table);
-    internal::reset_connection_pool_inplace(state.conn_pool);
+    server_internal::reset_connection_pool_inplace(state.conn_pool);
     state.cork.clear();
     state.chunk.len = 0;
     init_free_slots(state.free_slots, SOA_TABLE_CAP);
@@ -1717,7 +1372,7 @@ fn serve_reactor_tls(
 // Processes an incoming HTTP/3 request stream payload through `H3Connection` and `server.pipeline` (RFC 9114).
 fn handle_h3_server_datagram<B>(
     server:    HttpServer&,
-    h3_conn:   internal::H3Connection&,
+    h3_conn:   h3_internal::H3Connection&,
     stream_id: u64,
     client_ip: const u8[:],
     rx_wire:   const u8[:],
@@ -1728,10 +1383,10 @@ fn handle_h3_server_datagram<B>(
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
-    let h_err = internal::handle_stream_data(h3_conn, stream_id, true, rx_wire, true);
+    let h_err = h3_internal::handle_stream_data(h3_conn, stream_id, true, rx_wire, true);
     guard h_err == rfc::H3_ERR_NO_ERROR else { return false; }
 
-    let s_idx, found = internal::find_h3_stream_idx(h3_conn, stream_id);
+    let s_idx, found = h3_internal::find_h3_stream_idx(h3_conn, stream_id);
     guard found && s_idx >= 0 && s_idx < h3_conn.streams.len else { return false; }
     guard h3_conn.streams[s_idx].headers_received else { return false; }
 
@@ -1742,18 +1397,18 @@ fn handle_h3_server_datagram<B>(
         let _ = append_header(req.headers, "host", h3_conn.streams[s_idx].req_authority[..]);
         req.presence_mask |= HDR_PRESENCE_HOST;
     }
-    let _ = internal::copy_stream_headers(h3_conn, stream_id, req.headers);
+    let _ = h3_internal::copy_stream_headers(h3_conn, stream_id, req.headers);
     for &e in req.headers.entries {
         let known_id = identify_known_header(entry_name(req.headers, e));
         req.presence_mask |= header_id_to_bit(known_id);
     }
-    let _ = internal::copy_stream_trailers(h3_conn, stream_id, req.trailers);
+    let _ = h3_internal::copy_stream_trailers(h3_conn, stream_id, req.trailers);
     if h3_conn.streams[s_idx].received_body.len > 0 {
         req.body.append(h3_conn.streams[s_idx].received_body[..]);
     }
 
     var res = Response { .. };
-    var future = internal::new_inline_handler_future(0);
+    var future = server_internal::new_inline_handler_future(0);
     execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
     server.requests_processed++;
 
@@ -1766,7 +1421,7 @@ fn handle_h3_server_datagram<B>(
         hdr_name.to_lower_ascii(lname);
         let _ = extra_map.append_header(lname[..], hdr_val);
     }
-    return internal::send_response_headers_body_and_trailers(
+    return h3_internal::send_response_headers_body_and_trailers(
         h3_conn, stream_id, res.status_code, extra_map, res.body[..], res.trailers, tx_wire,
     );
 }
@@ -1774,7 +1429,7 @@ fn handle_h3_server_datagram<B>(
 inline fn dispatch_h3_udp_datagram(
     server:    HttpServer&,
     udp_fd:    i64,
-    h3_conn:   internal::H3Connection&,
+    h3_conn:   h3_internal::H3Connection&,
     served:    i64,
     peer_ip4:  u32,
     peer_port: u16,
@@ -1786,7 +1441,7 @@ inline fn dispatch_h3_udp_datagram(
     let stream_id = core::shl_sat_u64((served & 15) as u64, 2);
     for st_i in h3_conn.streams.len {
         if h3_conn.streams[st_i].stream_id == stream_id {
-            h3_conn.streams[st_i] = internal::H3StreamEntry { stream_id: stream_id, .. };
+            h3_conn.streams[st_i] = h3_internal::H3StreamEntry { stream_id: stream_id, .. };
         }
     }
     var peer_ip_str: u8[..32] = [];
@@ -1797,15 +1452,15 @@ inline fn dispatch_h3_udp_datagram(
     core::format_u64_dec((peer_ip4 >> 8) & 0xFF, peer_ip_str);
     let _ = peer_ip_str.try_push('.');
     core::format_u64_dec(peer_ip4 & 0xFF, peer_ip_str);
-    let _ = internal::with_connection_slot(g_default_reactor.conn_pool, udp_fd, now_ns as i64) { conn_slot =>
-        internal::notify_request_start(conn_slot.timer);
+    let _ = server_internal::with_connection_slot(g_default_reactor.conn_pool, udp_fd, now_ns as i64) { conn_slot =>
+        server_internal::notify_request_start(conn_slot.timer);
         if server.handle_h3_server_datagram(h3_conn, stream_id, peer_ip_str[..], rx_slice, now_ns, tx_wire) {
             let dgram, ok_dg = build_udp_datagram(tx_wire[..], peer_ip4, peer_port);
             if ok_dg {
                 let _, _ = enqueue_udp_datagram(udp_fd as i32, tx_queue, dgram);
             }
         }
-        internal::notify_request_end(conn_slot.timer);
+        server_internal::notify_request_end(conn_slot.timer);
     };
 }
 
@@ -1814,7 +1469,7 @@ inline fn dispatch_h3_udp_datagram(
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
     guard udp_fd > 0 else { return 0; }
     let h3_settings = H3Settings { .. };
-    var h3_conn = internal::new_h3_server_connection(h3_settings);
+    var h3_conn = h3_internal::new_h3_server_connection(h3_settings);
     var rx_queue = UdpBatchQueue { .. };
     var tx_queue = UdpBatchQueue { .. };
     var tx_wire:    u8[..1472] = [];
@@ -1856,12 +1511,12 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
 // Public HTTP/3 and QUIC server endpoint state (RFC 9000, RFC 9114, RFC 9204).
 // Encapsulates HTTP/3 connection state, QPACK tables, and QUIC handshake framing.
 struct H3ServerEndpoint {
-    conn: internal::H3Connection = internal::H3Connection { .. },
+    conn: h3_internal::H3Connection = h3_internal::H3Connection { .. },
 }
 
 fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerEndpoint {
     var ep = H3ServerEndpoint {
-        conn: internal::new_h3_server_connection(settings),
+        conn: h3_internal::new_h3_server_connection(settings),
     };
     ep.conn.qpack_table.capacity_bytes = 0;
     return ep;
@@ -1869,22 +1524,22 @@ fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerE
 
 fn encode_h3_connection_close<B>(err_code: u64, out_wire: B&) {
     out_wire.clear();
-    internal::quic_encode_varint(out_wire, 0x1D);
-    internal::quic_encode_varint(out_wire, err_code);
-    internal::quic_encode_varint(out_wire, 0);
+    quic_internal::quic_encode_varint(out_wire, 0x1D);
+    quic_internal::quic_encode_varint(out_wire, err_code);
+    quic_internal::quic_encode_varint(out_wire, 0);
 }
 
-inline fn is_h3_wire_frame_bounded(datagram: const u8[:], hdr: const internal::H3FrameHeader&) -> bool {
+inline fn is_h3_wire_frame_bounded(datagram: const u8[:], hdr: const h3_internal::H3FrameHeader&) -> bool {
     return ((hdr.header_len + hdr.payload_len) as i64) <= datagram.len;
 }
 
 fn handle_h3_endpoint_settings<B>(
     ep:       H3ServerEndpoint&,
-    hdr:      const internal::H3FrameHeader&,
+    hdr:      const h3_internal::H3FrameHeader&,
     payload:  const u8[:],
     out_wire: B&,
 ) -> bool {
-    let err = internal::handle_peer_control_frame(ep.conn, hdr, payload);
+    let err = h3_internal::handle_peer_control_frame(ep.conn, hdr, payload);
     guard err == rfc::H3_ERR_NO_ERROR else {
         encode_h3_connection_close(err, out_wire);
         return true;
@@ -1905,10 +1560,10 @@ fn handle_h3_endpoint_request<B>(
 ) -> bool {
     for st_i in ep.conn.streams.len {
         if ep.conn.streams[st_i].stream_id == 0 {
-            ep.conn.streams[st_i] = internal::H3StreamEntry { stream_id: 0, .. };
+            ep.conn.streams[st_i] = h3_internal::H3StreamEntry { stream_id: 0, .. };
         }
     }
-    ep.conn.state = internal::H3ConnState.Active;
+    ep.conn.state = h3_internal::H3ConnState.Active;
     ep.conn.error_code = rfc::H3_ERR_NO_ERROR;
 
     let ok = handle_h3_server_datagram(server, ep.conn, 0, client_ip, datagram, now_ns, out_wire);
@@ -1932,7 +1587,7 @@ fn handle_h3_endpoint_frame<B>(
     now_ns:    u64,
     out_wire:  B&,
 ) -> bool {
-    let hdr, ok_hdr = internal::parse_h3_frame_header(datagram, 0);
+    let hdr, ok_hdr = h3_internal::parse_h3_frame_header(datagram, 0);
     guard ok_hdr && is_h3_wire_frame_bounded(datagram, hdr) else { return false; }
 
     let start = hdr.header_len as i64;
@@ -1948,7 +1603,7 @@ fn handle_h3_endpoint_frame<B>(
     return false;
 }
 
-fn encode_quic_version_negotiation<B>(hdr: const internal::QuicHeader&, out_wire: B&) {
+fn encode_quic_version_negotiation<B>(hdr: const quic_internal::QuicHeader&, out_wire: B&) {
     out_wire.clear();
     out_wire.push(0xC0);
     out_wire.append_u32_be(rfc::QUIC_VERSION_NEGOTIATION);
@@ -1961,7 +1616,7 @@ fn encode_quic_version_negotiation<B>(hdr: const internal::QuicHeader&, out_wire
 
 fn encode_quic_server_initial<B>(
     ep:       const H3ServerEndpoint&,
-    hdr:      const internal::QuicHeader&,
+    hdr:      const quic_internal::QuicHeader&,
     out_wire: B&,
 ) {
     out_wire.clear();
@@ -1975,12 +1630,12 @@ fn encode_quic_server_initial<B>(
     out_wire.push(0);
 
     var h3_ctrl: u8[..128] = [];
-    internal::quic_encode_varint(h3_ctrl, rfc::H3_STREAM_CONTROL);
-    internal::encode_h3_settings_frame(h3_ctrl, ep.conn.local_settings);
-    internal::encode_h3_frame_header(h3_ctrl, 0x21, 0);
+    quic_internal::quic_encode_varint(h3_ctrl, rfc::H3_STREAM_CONTROL);
+    h3_internal::encode_h3_settings_frame(h3_ctrl, ep.conn.local_settings);
+    h3_internal::encode_h3_frame_header(h3_ctrl, 0x21, 0);
 
     let payload_len = (2 + h3_ctrl.len) as u64;
-    internal::quic_encode_varint(out_wire, payload_len);
+    quic_internal::quic_encode_varint(out_wire, payload_len);
     out_wire.append_u16_be(1);
     out_wire.append(h3_ctrl[..]);
 }
@@ -2006,7 +1661,7 @@ fn handle_h3_quic_datagram<B>(
         }
     }
 
-    let quic_hdr, ok_qhdr = internal::parse_quic_header(datagram);
+    let quic_hdr, ok_qhdr = quic_internal::parse_quic_header(datagram);
     guard ok_qhdr else { return false; }
 
     if quic_hdr.version != rfc::QUIC_VERSION_1 && quic_hdr.version != rfc::QUIC_VERSION_NEGOTIATION {
@@ -2014,7 +1669,7 @@ fn handle_h3_quic_datagram<B>(
         return out_wire.len > 0;
     }
 
-    if quic_hdr.header_type == internal::QuicHeaderType.Initial {
+    if quic_hdr.header_type == quic_internal::QuicHeaderType.Initial {
         // RFC 9000 Section 14.1: Initial Datagram Size - server MUST discard client Initial < 1200 bytes
         guard datagram.len >= (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) else {
             return false;
@@ -2035,14 +1690,14 @@ enum H3L2Backend {
 
 // L2/L3/L4 binding parameters for `serve_h3_l2` over `AF_XDP`, `DPDK`, or `UdpFallback`.
 struct H3L2Config {
-    backend:       H3L2Backend             = H3L2Backend.UdpFallback,
-    local_ep:      internal::L2UdpEndpoint = internal::L2UdpEndpoint { .. },
-    udp_fd:        i64                     = -1,
-    dpdk_port_id:  u16                     = 0,
-    dpdk_queue_id: u16                     = 0,
+    backend:       H3L2Backend                 = H3L2Backend.UdpFallback,
+    local_ep:      net_internal::L2UdpEndpoint = net_internal::L2UdpEndpoint { .. },
+    udp_fd:        i64                         = -1,
+    dpdk_port_id:  u16                         = 0,
+    dpdk_queue_id: u16                         = 0,
 }
 
-fn format_l2_client_ip(ep: const internal::L2UdpEndpoint&, out_ip: u8[..48]&) {
+fn format_l2_client_ip(ep: const net_internal::L2UdpEndpoint&, out_ip: u8[..48]&) {
     out_ip.clear();
     if ep.is_ipv6 {
         let _ = out_ip.try_append("ipv6-l2");
@@ -2060,14 +1715,14 @@ fn format_l2_client_ip(ep: const internal::L2UdpEndpoint&, out_ip: u8[..48]&) {
 fn process_h3_l2_frame(
     server:       HttpServer&,
     ep:           H3ServerEndpoint&,
-    local_ep:     const internal::L2UdpEndpoint&,
+    local_ep:     const net_internal::L2UdpEndpoint&,
     rx_frame:     const u8[:],
     ip_id:        u16,
     now_ns:       u64,
     out_tx_frame: u8[..2048]&,
 ) -> bool {
     out_tx_frame.clear();
-    let parsed, ok_dec = internal::decode_l2_udp_frame(rx_frame);
+    let parsed, ok_dec = net_internal::decode_l2_udp_frame(rx_frame);
     guard ok_dec else { return false; }
     guard local_ep.port == 0 || parsed.dst.port == local_ep.port else { return false; }
     let pay_end = core::add_sat_i64(parsed.payload_offset, parsed.payload_len);
@@ -2085,14 +1740,14 @@ fn process_h3_l2_frame(
     ) else {
         return false;
     }
-    return internal::encode_l2_udp_frame(parsed.dst, parsed.src, udp_reply[..], ip_id, out_tx_frame);
+    return net_internal::encode_l2_udp_frame(parsed.dst, parsed.src, udp_reply[..], ip_id, out_tx_frame);
 }
 
-fn recycle_af_xdp_completions(xsk: internal::AfXdpSocket&) {
+fn recycle_af_xdp_completions(xsk: net_internal::AfXdpSocket&) {
     for _ in 64 {
-        let comp_addr, ok_c = internal::af_xdp_complete_pop(xsk);
+        let comp_addr, ok_c = net_internal::af_xdp_complete_pop(xsk);
         guard ok_c else { break; }
-        let _ = internal::af_xdp_fill_push(xsk, comp_addr);
+        let _ = net_internal::af_xdp_fill_push(xsk, comp_addr);
     }
 }
 
@@ -2100,7 +1755,7 @@ fn serve_h3_af_xdp(
     server:      HttpServer&,
     ep:          H3ServerEndpoint&,
     cfg:         const H3L2Config&,
-    xsk:         internal::AfXdpSocket&,
+    xsk:         net_internal::AfXdpSocket&,
     max_packets: i64,
 ) -> i64 {
     var rx_frame: u8[..2048] = [];
@@ -2110,24 +1765,24 @@ fn serve_h3_af_xdp(
 
     while max_packets == 0 || served < max_packets {
         recycle_af_xdp_completions(xsk);
-        let desc, ok_rx = internal::af_xdp_rx_poll(xsk);
+        let desc, ok_rx = net_internal::af_xdp_rx_poll(xsk);
         guard ok_rx else { break; }
-        if !internal::af_xdp_umem_read(xsk, desc.addr, desc.len, rx_frame) {
-            let _ = internal::af_xdp_fill_push(xsk, desc.addr);
+        if !net_internal::af_xdp_umem_read(xsk, desc.addr, desc.len, rx_frame) {
+            let _ = net_internal::af_xdp_fill_push(xsk, desc.addr);
             continue;
         }
         let now_ns = core::monotonic_now().as_nanos();
         let pkt_id = (ip_seq & 0xFFFF) as u16;
         if process_h3_l2_frame(server, ep, cfg.local_ep, rx_frame[..], pkt_id, now_ns, tx_frame) {
-            if internal::af_xdp_umem_write(xsk, desc.addr, tx_frame[..]) {
-                let tx_desc = internal::XdpDesc { addr: desc.addr, len: tx_frame.len as u32, options: 0 };
-                let _ = internal::af_xdp_tx_submit(xsk, tx_desc);
+            if net_internal::af_xdp_umem_write(xsk, desc.addr, tx_frame[..]) {
+                let tx_desc = net_internal::XdpDesc { addr: desc.addr, len: tx_frame.len as u32, options: 0 };
+                let _ = net_internal::af_xdp_tx_submit(xsk, tx_desc);
                 served = core::add_sat_i64(served, 1);
             } else {
-                let _ = internal::af_xdp_fill_push(xsk, desc.addr);
+                let _ = net_internal::af_xdp_fill_push(xsk, desc.addr);
             }
         } else {
-            let _ = internal::af_xdp_fill_push(xsk, desc.addr);
+            let _ = net_internal::af_xdp_fill_push(xsk, desc.addr);
         }
         ip_seq = core::add_sat_u64(ip_seq, 1);
     }
@@ -2146,14 +1801,14 @@ fn serve_h3_dpdk(
     var ip_seq:   u64              = 1;
 
     while max_packets == 0 || served < max_packets {
-        let n_rx = internal::dpdk_rx_burst_read(cfg.dpdk_port_id, cfg.dpdk_queue_id, rx_burst);
+        let n_rx = net_internal::dpdk_rx_burst_read(cfg.dpdk_port_id, cfg.dpdk_queue_id, rx_burst);
         guard n_rx > 0 else { break; }
         let now_ns = core::monotonic_now().as_nanos();
         for i in n_rx {
             if max_packets > 0 && served >= max_packets { break; }
             let pkt_id = (ip_seq & 0xFFFF) as u16;
             let encoded = process_h3_l2_frame(server, ep, cfg.local_ep, rx_burst[i][..], pkt_id, now_ns, tx_frame);
-            if encoded && internal::dpdk_tx_packet_push(cfg.dpdk_port_id, cfg.dpdk_queue_id, tx_frame[..]) {
+            if encoded && net_internal::dpdk_tx_packet_push(cfg.dpdk_port_id, cfg.dpdk_queue_id, tx_frame[..]) {
                 served = core::add_sat_i64(served, 1);
             }
             ip_seq = core::add_sat_u64(ip_seq, 1);
@@ -2168,7 +1823,7 @@ fn serve_h3_l2(
     server:      HttpServer&,
     ep:          H3ServerEndpoint&,
     cfg:         const H3L2Config&,
-    xsk:         internal::AfXdpSocket&,
+    xsk:         net_internal::AfXdpSocket&,
     max_packets: i64 = 64,
 ) -> i64 {
     match cfg.backend {

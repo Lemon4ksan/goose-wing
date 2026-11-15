@@ -14,8 +14,8 @@ import grpc.constants;
 import grpc.framing;
 import grpc.status;
 import http.headers;
-import client.request;
-import client.response;
+import http.request;
+import http.response;
 
 const CONNECT_FLAG_END_STREAM: u8          = 0x02; // Connect Protocol streaming EndStream envelope flag
 const CONNECT_CONTENT_PREFIX:  const u8[:] = "application/connect+";

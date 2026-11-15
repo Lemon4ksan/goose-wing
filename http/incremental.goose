@@ -10,7 +10,7 @@ import std;
 import core from "..";
 import .headers;
 import .sfv;
-import client.response;
+import .response;
 
 // ---- RFC 10036 Constants --------------------------------------------------
 

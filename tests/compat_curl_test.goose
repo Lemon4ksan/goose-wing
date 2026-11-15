@@ -458,14 +458,14 @@ fn test_curl_expect_100_continue(t: lit::T&) {
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
 
-        var timer = internal::new_connection_timer(30000000000, 1000000000);
+        var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var req = wing::new_request("POST", "/upload");
         wing::set_header(req, "Sec-Fetch-Site", "same-origin");
         wing::set_header(req, "Expect", "unsupported-feature");
 
         var res = wing::Response { .. };
-        var fut = internal::new_inline_handler_future(0);
+        var fut = server_internal::new_inline_handler_future(0);
         let outcome = wing::execute_pipeline(cfg, timer, "127.0.0.1", req, 1000000000, res, fut);
 
         sub.assert_true(outcome == wing::PipelineOutcome.ExpectationFailed, "pipeline outcome is ExpectationFailed");
@@ -484,9 +484,9 @@ fn test_curl_expect_100_continue(t: lit::T&) {
 fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
     t.run("curl test 1941, 1936: non-hex chunk length rejected by ChunkedFsmDecoder and stream decoders") { sub =>
         // Vector 1: '1Z' non-hex chunk size
-        var fsm1 = internal::new_chunk_fsm_decoder();
-        let st1, _, _ = internal::chunk_fsm_feed(fsm1, "1Z\r\nHello\r\n0\r\n\r\n");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "1Z non-hex rejected by ChunkFsmDecoder");
+        var fsm1 = http_internal::new_chunk_fsm_decoder();
+        let st1, _, _ = http_internal::chunk_fsm_feed(fsm1, "1Z\r\nHello\r\n0\r\n\r\n");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.Error, "1Z non-hex rejected by ChunkFsmDecoder");
 
         var dec1 = wing::ChunkedStreamDecoder { .. };
         var out1: u8[..64] = [];
@@ -500,9 +500,9 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         sub.assert_eq(err1, wing::ChunkedDecodeError.InvalidChunkSizeHex, "decode_chunked_body rejects 1Z");
 
         // Vector 2: 'foo' non-hex chunk size
-        var fsm2 = internal::new_chunk_fsm_decoder();
-        let st2, _, _ = internal::chunk_fsm_feed(fsm2, "foo\r\nHello\r\n0\r\n\r\n");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "foo non-hex rejected by ChunkFsmDecoder");
+        var fsm2 = http_internal::new_chunk_fsm_decoder();
+        let st2, _, _ = http_internal::chunk_fsm_feed(fsm2, "foo\r\nHello\r\n0\r\n\r\n");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "foo non-hex rejected by ChunkFsmDecoder");
 
         var dec2 = wing::ChunkedStreamDecoder { .. };
         var out2: u8[..64] = [];
@@ -523,9 +523,9 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
 
     t.run("curl test 1941, 1936: 64-bit integer overflow and oversized hex chunk length rejected") { sub =>
         // Vector 1: FFFFFFFFFFFFFFFF (16 F's - integer overflow)
-        var fsm1 = internal::new_chunk_fsm_decoder();
-        let st1, _, _ = internal::chunk_fsm_feed(fsm1, "FFFFFFFFFFFFFFFF\r\nfoo\r\n0\r\n\r\n");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "FFFFFFFFFFFFFFFF overflow rejected by ChunkFsmDecoder");
+        var fsm1 = http_internal::new_chunk_fsm_decoder();
+        let st1, _, _ = http_internal::chunk_fsm_feed(fsm1, "FFFFFFFFFFFFFFFF\r\nfoo\r\n0\r\n\r\n");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.Error, "FFFFFFFFFFFFFFFF overflow rejected by ChunkFsmDecoder");
 
         var dec1 = wing::ChunkedStreamDecoder { .. };
         var out1: u8[..64] = [];
@@ -538,9 +538,9 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         sub.assert_eq(err1, wing::ChunkedDecodeError.ChunkSizeOverflow, "decode_chunked_body rejects FFFFFFFFFFFFFFFF overflow");
 
         // Vector 2: 17-digit hex overflow
-        var fsm2 = internal::new_chunk_fsm_decoder();
-        let st2, _, _ = internal::chunk_fsm_feed(fsm2, "10000000000000000\r\nfoo\r\n0\r\n\r\n");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "17-digit hex overflow rejected by ChunkFsmDecoder");
+        var fsm2 = http_internal::new_chunk_fsm_decoder();
+        let st2, _, _ = http_internal::chunk_fsm_feed(fsm2, "10000000000000000\r\nfoo\r\n0\r\n\r\n");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "17-digit hex overflow rejected by ChunkFsmDecoder");
 
         var dec2 = wing::ChunkedStreamDecoder { .. };
         var out2: u8[..64] = [];
@@ -553,9 +553,9 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         // Vector 1: Valid chunk extension 1A;ext=val (26 bytes: 'a'..'z')
         let raw_1a = "1A;ext=val\r\nabcdefghijklmnopqrstuvwxyz\r\n0\r\n\r\n";
 
-        var fsm1 = internal::new_chunk_fsm_decoder();
-        let st1, _, chunk1 = internal::chunk_fsm_feed(fsm1, raw_1a);
-        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "FSM yields chunk for 1A;ext=val");
+        var fsm1 = http_internal::new_chunk_fsm_decoder();
+        let st1, _, chunk1 = http_internal::chunk_fsm_feed(fsm1, raw_1a);
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.YieldChunk, "FSM yields chunk for 1A;ext=val");
         sub.assert_bytes_eq(chunk1, "abcdefghijklmnopqrstuvwxyz", "FSM yields 26 payload bytes");
 
         var dec1 = wing::ChunkedStreamDecoder { .. };
@@ -581,9 +581,9 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         sub.assert_bytes_eq(body_q[..], "Hello", "quoted extension payload matches");
 
         // Vector 3: Corrupted extension with missing name before '=' (5;=val)
-        var fsm_bad1 = internal::new_chunk_fsm_decoder();
-        let st_bad1, _, _ = internal::chunk_fsm_feed(fsm_bad1, "5;=val\r\nHello\r\n0\r\n\r\n");
-        sub.assert_eq(st_bad1, internal::ChunkFsmStatus.Error, "FSM rejects missing extension name");
+        var fsm_bad1 = http_internal::new_chunk_fsm_decoder();
+        let st_bad1, _, _ = http_internal::chunk_fsm_feed(fsm_bad1, "5;=val\r\nHello\r\n0\r\n\r\n");
+        sub.assert_eq(st_bad1, http_internal::ChunkFsmStatus.Error, "FSM rejects missing extension name");
 
         var dec_bad1 = wing::ChunkedStreamDecoder { .. };
         var out_bad1: u8[..64] = [];
@@ -591,9 +591,9 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         sub.assert_false(ok_bad1, "ChunkedStreamDecoder rejects missing extension name");
 
         // Vector 4: Unclosed quoted string in extension
-        var fsm_bad2 = internal::new_chunk_fsm_decoder();
-        let st_bad2, _, _ = internal::chunk_fsm_feed(fsm_bad2, "5;foo=\"unclosed\r\nHello\r\n0\r\n\r\n");
-        sub.assert_eq(st_bad2, internal::ChunkFsmStatus.Error, "FSM rejects unclosed quote in extension");
+        var fsm_bad2 = http_internal::new_chunk_fsm_decoder();
+        let st_bad2, _, _ = http_internal::chunk_fsm_feed(fsm_bad2, "5;foo=\"unclosed\r\nHello\r\n0\r\n\r\n");
+        sub.assert_eq(st_bad2, http_internal::ChunkFsmStatus.Error, "FSM rejects unclosed quote in extension");
 
         var body_bad2: u8[>..] = [];
         var tr_bad2 = wing::HeaderMap { .. };
@@ -601,16 +601,16 @@ fn test_curl_malformed_chunk_hex_sizes(t: lit::T&) {
         sub.assert_ne(err_bad2, wing::ChunkedDecodeError.None, "unclosed quote rejected by decoder");
 
         // Vector 5: Non-token char in extension name (5;foo@bar=1)
-        var fsm_bad3 = internal::new_chunk_fsm_decoder();
-        let st_bad3, _, _ = internal::chunk_fsm_feed(fsm_bad3, "5;foo@bar=1\r\nHello\r\n0\r\n\r\n");
-        sub.assert_eq(st_bad3, internal::ChunkFsmStatus.Error, "FSM rejects @ in extension name");
+        var fsm_bad3 = http_internal::new_chunk_fsm_decoder();
+        let st_bad3, _, _ = http_internal::chunk_fsm_feed(fsm_bad3, "5;foo@bar=1\r\nHello\r\n0\r\n\r\n");
+        sub.assert_eq(st_bad3, http_internal::ChunkFsmStatus.Error, "FSM rejects @ in extension name");
     };
 
     t.run("curl test 1941, 1936: missing CRLF after chunk data bytes rejected") { sub =>
         // Vector 1: Replaced CRLF with non-CRLF bytes (4\r\nWikiAB0\r\n\r\n)
-        var fsm1 = internal::new_chunk_fsm_decoder();
-        let st1, _, _ = internal::chunk_fsm_feed(fsm1, "4\r\nWikiAB0\r\n\r\n");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "FSM rejects missing CRLF after chunk data");
+        var fsm1 = http_internal::new_chunk_fsm_decoder();
+        let st1, _, _ = http_internal::chunk_fsm_feed(fsm1, "4\r\nWikiAB0\r\n\r\n");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.Error, "FSM rejects missing CRLF after chunk data");
 
         var dec1 = wing::ChunkedStreamDecoder { .. };
         var out1: u8[..64] = [];
@@ -704,11 +704,11 @@ fn test_curl_premature_close_truncated_body(t: lit::T&) {
         let err2, _ = wing::decode_chunked_body_with_trailers(mid_chunk, body2, trailers2);
         sub.assert_eq(err2, wing::ChunkedDecodeError.UnexpectedEof, "mid-chunk truncation rejected as UnexpectedEof");
 
-        var fsm_mid = internal::new_chunk_fsm_decoder();
-        let st_mid, _, chunk_mid = internal::chunk_fsm_feed(fsm_mid, mid_chunk);
-        sub.assert_eq(st_mid, internal::ChunkFsmStatus.YieldChunk, "FSM yields partial 3 bytes");
+        var fsm_mid = http_internal::new_chunk_fsm_decoder();
+        let st_mid, _, chunk_mid = http_internal::chunk_fsm_feed(fsm_mid, mid_chunk);
+        sub.assert_eq(st_mid, http_internal::ChunkFsmStatus.YieldChunk, "FSM yields partial 3 bytes");
         sub.assert_bytes_eq(chunk_mid, "Hel", "partial chunk slice emitted");
-        sub.assert_true((fsm_mid.state & internal::CHUNK_STATE_IS_CHUNKED) != 0, "FSM remains chunked waiting for remaining bytes");
+        sub.assert_true((fsm_mid.state & http_internal::CHUNK_STATE_IS_CHUNKED) != 0, "FSM remains chunked waiting for remaining bytes");
 
         // Vector 3: Truncated mid-trailer line
         let trunc_tr = "5\r\nHello\r\n0\r\nExpires: Wed, 21 Oct 2026";

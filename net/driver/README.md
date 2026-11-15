@@ -5,8 +5,8 @@ network I/O backends that power the `net/poller.goose` event multiplexer in
 `goose-wing`.
 
 ```goose
-var cfg = internal::auto_transport_driver_config();
-let ok = internal::init_transport_driver(cfg);
+var cfg = net_internal::auto_transport_driver_config();
+let ok = net_internal::init_transport_driver(cfg);
 ```
 
 ## Supported Drivers
@@ -21,7 +21,7 @@ let ok = internal::init_transport_driver(cfg);
 | **`Dpdk`** | `net/driver/dpdk.goose` | Linux user-space | Poll-Mode Driver (PMD) burst RX/TX queues and mbuf mempools |
 | **`SmartNicOffload`** | `net/driver/smartnic.goose` | Linux / Windows | ConnectX / BlueField hardware kTLS, QUIC AEAD, and TSO offload |
 
-## Driver API Reference (`namespace internal;`)
+## Driver API Reference (`namespace net_internal;`)
 
 ### 1. Core Driver Types & Probing (`net/driver/types.goose`, `net/driver/manager.goose`)
 

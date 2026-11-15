@@ -1481,20 +1481,6 @@ int64_t wing_aes_gcm_open_aead(wing_slice key, wing_slice iv, wing_slice src, wi
                                     dst.ptr);
 }
 
-int32_t wing_aes_gcm_decrypt(wing_slice key, wing_slice iv, wing_slice src, wing_slice dst) {
-    if (key.len != 16 || iv.len != 12 || src.len < 16 || src.ptr == NULL) {
-        return -1;
-    }
-    int64_t ct_len = src.len - 16;
-    if (dst.len < ct_len) {
-        return -1;
-    }
-    wing_slice ct = {src.ptr, ct_len};
-    wing_slice aad = {NULL, 0};
-    wing_slice tag = {src.ptr + ct_len, 16};
-    return (int32_t)wing_aes_gcm_open_aead(key, iv, ct, aad, tag, dst);
-}
-
 #define WING_AES_GCM_STATE_BYTES 320
 #define WING_AES_GCM_MODE_AESNI 1
 #define WING_AES_GCM_MODE_SCALAR 2

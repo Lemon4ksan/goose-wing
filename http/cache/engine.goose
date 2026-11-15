@@ -8,8 +8,8 @@ namespace wing;
 
 import std;
 import core from "../..";
-import client.request;
-import client.response;
+import http.request;
+import http.response;
 import http.headers;
 import http.novarysearch;
 import http.cache.cache_control;

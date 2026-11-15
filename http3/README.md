@@ -50,8 +50,8 @@ bytes each (`u8[..128][..16]`) per RFC 9412.
 
 ```goose
 let settings = wing::H3Settings { .. };
-var conn = internal::new_h3_client_connection(settings);
-let stream_id, ok = internal::open_request_stream(conn);
+var conn = h3_internal::new_h3_client_connection(settings);
+let stream_id, ok = h3_internal::open_request_stream(conn);
 ```
 
 ### QPACK Compression & Dynamic Table (`qpack.goose`, RFC 9204)

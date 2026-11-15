@@ -43,10 +43,10 @@ legacy RFC 7540 priority fields while rejecting self-dependent stream IDs (RFC
 | Settings | `SETTING_HEADER_TABLE_SIZE` (`0x01`), `SETTING_ENABLE_PUSH` (`0x02`), `SETTING_MAX_CONCURRENT_STREAMS` (`0x03`), `SETTING_INITIAL_WINDOW_SIZE` (`0x04`), `SETTING_MAX_FRAME_SIZE` (`0x05`), `SETTING_MAX_HEADER_LIST_SIZE` (`0x06`), `SETTING_ENABLE_CONNECT_PROTO` (`0x08`) |
 
 ```goose
-let hdr, err = internal::parse_frame_header(wire_buf);
+let hdr, err = h2_internal::parse_frame_header(wire_buf);
 if err == 0 {
-    var conn = internal::new_h2_connection();
-    let status = internal::on_ingress_frame_header(conn, hdr, 1000);
+    var conn = h2_internal::new_h2_connection();
+    let status = h2_internal::on_ingress_frame_header(conn, hdr, 1000);
 }
 ```
 
@@ -57,7 +57,6 @@ struct H2AltSvcFrame
 
 fn parse_origin_frame(payload: const u8[:], stream_id: u32, out_entries: const u8[:][..16]&) -> u32, u32
 fn encode_origin_frame<B>(out: B&, origins: const u8[:][..16]&) -> bool
-fn encode_origin_frame_single<B>(out: B&, origin: const u8[:]) -> bool
 fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> H2AltSvcFrame, u32
 fn encode_altsvc_frame<B>(out: B&, origin: const u8[:], alt_svc_val: const u8[:], stream_id: u32) -> bool
 ```

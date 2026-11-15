@@ -5,7 +5,7 @@
 // Compact 64-bit Single-Register FSM Chunked Transfer Coding Decoder (uWebSockets ChunkedEncoding.h).
 // Bit-packed streaming chunked decoder based on the uWebSockets design.
 // Encodes all parser sub-states and chunk size in a single u64 register (0 heap allocations).
-namespace internal;
+namespace http_internal;
 
 import std;
 import core from "../..";

@@ -12,8 +12,8 @@ import grpc.status;
 import grpc.connect;
 import grpc.health;
 import http.headers;
-import client.request;
-import client.response;
+import http.request;
+import http.response;
 import core from "..";
 
 // Inspects an incoming Request to determine if it is a gRPC or Connect GET call.
@@ -1473,14 +1473,14 @@ fn dispatch_grpc_bidi_streaming(
 // ---- Public Server Pipeline & Transport Integration ---------------------
 
 fn emit_grpc_h2_response_frames<B>(
-    hpack_enc: internal::DynamicTable&,
+    hpack_enc: h2_internal::DynamicTable&,
     stream_id: u32,
     res:       const Response&,
     out:       B&,
 ) {
     let end_hdr = res.body.len == 0 && res.trailers.entries.len == 0;
     let code_val = if res.status_code > 0 { res.status_code as i32 } else { 200 };
-    let status_pseudo = internal::H2PseudoHeaders {
+    let status_pseudo = h2_internal::H2PseudoHeaders {
         status:     code_val,
         has_status: true,
         ..
@@ -1506,7 +1506,7 @@ fn emit_grpc_h2_response_frames<B>(
     }
 
     if res.trailers.entries.len > 0 {
-        let tr_pseudo = internal::H2PseudoHeaders {
+        let tr_pseudo = h2_internal::H2PseudoHeaders {
             is_trailer: true,
             ..
         };
@@ -1552,7 +1552,7 @@ fn execute_grpc_server_unary<
 ) {
     server.pipeline.trust_proxy_headers = server.trust_proxy_headers;
     let now_ns = core::as_nanos(core::monotonic_now());
-    var future = internal::new_inline_handler_future(0);
+    var future = server_internal::new_inline_handler_future(0);
     let outcome = execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     if outcome == PipelineOutcome.RouteNotFound {
@@ -1656,8 +1656,8 @@ fn handle_grpc_h2_wire_frame<
     server:    HttpServer&,
     d:         const GrpcServerDispatcher&,
     client_ip: const u8[:],
-    hpack_dec: internal::DynamicTable&,
-    hpack_enc: internal::DynamicTable&,
+    hpack_dec: h2_internal::DynamicTable&,
+    hpack_enc: h2_internal::DynamicTable&,
     pending:   Request&,
     hdr:       const wire::WireFrameHeader&,
     payload:   const u8[:],
@@ -1681,10 +1681,10 @@ fn handle_grpc_h2_wire_frame<
         }
         let frag, ok_frag = slice_grpc_h2_headers_fragment(payload, hdr.flags, hdr.stream_id);
         guard ok_frag else { return false; }
-        var pseudo = internal::H2PseudoHeaders { .. };
+        var pseudo = h2_internal::H2PseudoHeaders { .. };
         reset_server_request_fast(pending);
         let _ = pending.method.try_set("POST");
-        let hpack_res = internal::decode_hpack_to_map(
+        let hpack_res = h2_internal::decode_hpack_to_map(
             hpack_dec, frag, pseudo, pending.headers, 8192, true,
         );
         guard hpack_res == rfc::H2_ERR_NO_ERROR
@@ -1751,8 +1751,8 @@ fn drain_grpc_h2_frames<
     server:    HttpServer&,
     d:         const GrpcServerDispatcher&,
     peer_ip:   const u8[:],
-    hpack_dec: internal::DynamicTable&,
-    hpack_enc: internal::DynamicTable&,
+    hpack_dec: h2_internal::DynamicTable&,
+    hpack_enc: h2_internal::DynamicTable&,
     pending:   Request&,
     in_buf:    u8[..65536]&,
     out_wire:  u8[..65536]&,
@@ -1791,8 +1791,8 @@ fn serve_grpc_h2_connection<
     var peer_ip: u8[..64] = [];
     tcp_get_peer_ip(conn_fd, peer_ip);
 
-    var hpack_dec = internal::new_dynamic_table(4096);
-    var hpack_enc = internal::new_dynamic_table(4096);
+    var hpack_dec = h2_internal::new_dynamic_table(4096);
+    var hpack_enc = h2_internal::new_dynamic_table(4096);
     var pending = new_request("POST", "");
 
     var in_buf:   u8[..65536] = [];

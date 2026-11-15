@@ -108,9 +108,9 @@ fn eval_mac_and_x25519_op<B>(op: const u8[:], key: const u8[:], msg: const u8[:]
             d_seed[i] = key[i];
             z_seed[i] = key[32 + i];
         }
-        let ek, dk = internal::mlkem768_keygen(d_seed, z_seed);
+        let ek, dk = tls_internal::mlkem768_keygen(d_seed, z_seed);
         var ss: u8[32] = [0; 32];
-        guard internal::mlkem768_decapsulate(msg, dk[..], ss[..]) else {
+        guard tls_internal::mlkem768_decapsulate(msg, dk[..], ss[..]) else {
             out_line.append("ERR");
             return true;
         }
@@ -128,7 +128,7 @@ fn eval_mac_and_x25519_op<B>(op: const u8[:], key: const u8[:], msg: const u8[:]
         var m_rand: u8[32]   = [0; 32];
         for i in 1184 { ek[i] = key[i]; }
         for i in 32 { m_rand[i] = msg[i]; }
-        let ct, ss, ok = internal::mlkem768_encapsulate(ek, m_rand);
+        let ct, ss, ok = tls_internal::mlkem768_encapsulate(ek, m_rand);
         guard ok else {
             out_line.append("ERR");
             return true;

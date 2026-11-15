@@ -605,26 +605,26 @@ fn test_rfc9110_proxy_hop_by_hop_sanitization(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
     t.run("HTTP/2 :path with absolute URL MUST be rejected (RFC 9113 Section 8.3.1 & Go #78762)") { sub =>
-        var dt_enc = internal::new_dynamic_table(4096);
+        var dt_enc = h2_internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", h2_internal::HpackIndexing.None, false);
 
-        var dt_dec = internal::new_dynamic_table(4096);
-        var pseudo = internal::H2PseudoHeaders { .. };
+        var dt_dec = h2_internal::new_dynamic_table(4096);
+        var pseudo = h2_internal::H2PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
     };
 
     t.run("HTTP/2 :path empty MUST be rejected") { sub =>
-        var dt_enc = internal::new_dynamic_table(4096);
+        var dt_enc = h2_internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "", internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "", h2_internal::HpackIndexing.None, false);
 
-        var dt_dec = internal::new_dynamic_table(4096);
-        var pseudo = internal::H2PseudoHeaders { .. };
+        var dt_dec = h2_internal::new_dynamic_table(4096);
+        var pseudo = h2_internal::H2PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
     };
 }
@@ -738,40 +738,40 @@ fn test_adversarial_http1_headers(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_adversarial_h2_h3_chopping(t: lit::T&) {
     t.run("AW-H2-01: HEADERS payload_len claims N but ingress delivers N-1 then never completes") { sub =>
-        var client_hpack = internal::DynamicTable { .. };
-        var sess = internal::new_h2_server_session("localhost");
+        var client_hpack = h2_internal::DynamicTable { .. };
+        var sess = server_internal::new_h2_server_session("localhost");
         var pipeline = wing::ServerPipelineConfig { .. };
-        var timer = internal::ConnectionTimer { .. };
+        var timer = server_internal::ConnectionTimer { .. };
 
         // Handshake: preface + empty SETTINGS
         var init_wire: u8[..64] = [];
         init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-        let set_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-        internal::encode_frame_header_to(set_hdr, init_wire);
+        let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+        h2_internal::encode_frame_header_to(set_hdr, init_wire);
         var server_out: u8[..1024] = [];
-        let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
+        let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
         sub.assert_true(ok_init, "handshake succeeds");
 
         // Build HEADERS frame for stream 1 with END_HEADERS|END_STREAM
         var full_req:    u8[..256] = [];
         var hpack_block: u8[..128] = [];
-        internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/chop", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/chop", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
 
-        let req_hdr = internal::FrameHeader {
+        let req_hdr = h2_internal::FrameHeader {
             length:     hpack_block.len as u32,
             frame_type: rfc::H2_FRAME_HEADERS,
             flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
-        internal::encode_frame_header_to(req_hdr, full_req);
+        h2_internal::encode_frame_header_to(req_hdr, full_req);
         full_req.append(hpack_block[..]);
 
         // Stage 1: Header only (9 bytes) -> consumed 0, ok true, no response
         server_out.clear();
-        let c1, ok1 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..9], 1001, server_out);
+        let c1, ok1 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..9], 1001, server_out);
         sub.assert_true(ok1, "header-only ingress ok");
         sub.assert_eq(c1, 0, "header-only consumed 0");
         sub.assert_eq(server_out.len, 0, "no response emitted on header-only");
@@ -779,57 +779,57 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         // Stage 2: N-1 payload bytes (last byte never sent) -> consumed 0, ok true, no response
         let partial_len = 9 + hpack_block.len - 1;
         server_out.clear();
-        let c2, ok2 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..partial_len], 1002, server_out);
+        let c2, ok2 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..partial_len], 1002, server_out);
         sub.assert_true(ok2, "N-1 payload ingress ok");
         sub.assert_eq(c2, 0, "N-1 payload consumed 0");
         sub.assert_eq(server_out.len, 0, "no response emitted on incomplete HEADERS");
     };
 
     t.run("AW-H2-02: DATA frame length exceeds remaining buffer across two calls") { sub =>
-        var client_hpack = internal::DynamicTable { .. };
-        var sess = internal::new_h2_server_session("localhost");
+        var client_hpack = h2_internal::DynamicTable { .. };
+        var sess = server_internal::new_h2_server_session("localhost");
         var pipeline = wing::ServerPipelineConfig { .. };
-        var timer = internal::ConnectionTimer { .. };
+        var timer = server_internal::ConnectionTimer { .. };
 
         // Handshake
         var init_wire: u8[..64] = [];
         init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-        let set_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-        internal::encode_frame_header_to(set_hdr, init_wire);
+        let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+        h2_internal::encode_frame_header_to(set_hdr, init_wire);
         var server_out: u8[..1024] = [];
-        let _, ok_init = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
+        let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
         sub.assert_true(ok_init, "handshake succeeds");
 
         // Complete HEADERS frame (END_HEADERS only, stream 1) so stream is established
         var full_req:    u8[..256] = [];
         var hpack_block: u8[..128] = [];
-        internal::encode_hpack_field(client_hpack, hpack_block, ":method", "POST", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/data", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", internal::HpackIndexing.Incremental, false);
-        internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/data", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
 
-        let req_hdr = internal::FrameHeader {
+        let req_hdr = h2_internal::FrameHeader {
             length:     hpack_block.len as u32,
             frame_type: rfc::H2_FRAME_HEADERS,
             flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
-        internal::encode_frame_header_to(req_hdr, full_req);
+        h2_internal::encode_frame_header_to(req_hdr, full_req);
         full_req.append(hpack_block[..]);
 
         server_out.clear();
-        let _, ok_req = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..], 1001, server_out);
+        let _, ok_req = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", full_req[..], 1001, server_out);
         sub.assert_true(ok_req, "HEADERS frame accepted");
 
         // Build DATA frame claiming length 100 but only provide 50 bytes of payload
         var data_wire: u8[..128] = [];
-        let data_hdr = internal::FrameHeader {
+        let data_hdr = h2_internal::FrameHeader {
             length:     100,
             frame_type: rfc::H2_FRAME_DATA,
             flags:      0,
             stream_id:  1,
         };
-        internal::encode_frame_header_to(data_hdr, data_wire);
+        h2_internal::encode_frame_header_to(data_hdr, data_wire);
         // Append only 50 bytes of the claimed 100-byte payload
         for i in 50 {
             data_wire.append([65]);
@@ -837,14 +837,14 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
 
         // Stage 1: DATA header only (9 bytes) -> consumed 0, ok true, no response
         server_out.clear();
-        let c_d1, ok_d1 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", data_wire[..9], 1002, server_out);
+        let c_d1, ok_d1 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", data_wire[..9], 1002, server_out);
         sub.assert_true(ok_d1, "DATA header-only ingress ok (no stream error)");
         sub.assert_eq(c_d1, 0, "DATA header-only consumed 0");
         sub.assert_eq(server_out.len, 0, "no response emitted on DATA header-only");
 
         // Stage 2: Header + partial payload (50 of 100 bytes) -> consumed 0, ok true, no response
         server_out.clear();
-        let c_d2, ok_d2 = internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", data_wire[..], 1003, server_out);
+        let c_d2, ok_d2 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", data_wire[..], 1003, server_out);
         sub.assert_true(ok_d2, "partial DATA ingress ok (no stream error)");
         sub.assert_eq(c_d2, 0, "partial DATA consumed 0");
         sub.assert_eq(server_out.len, 0, "no response emitted on incomplete DATA");
@@ -854,7 +854,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         // 2-byte varint length starts with 0x40|... prefix; feed only first byte
         // Frame type 0x00 (DATA) is 1-byte varint; length varint starts with 0x40 (2-byte prefix)
         let truncated: u8[2] = [0x00, 0x40];
-        let _, ok = internal::parse_h3_frame_header(truncated[..], 0);
+        let _, ok = h3_internal::parse_h3_frame_header(truncated[..], 0);
         sub.assert_false(ok, "truncated 2-byte length varint must not parse as valid frame header");
     };
 
@@ -877,7 +877,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         wire.append([0x43]);
         wire.append([0x44]);
 
-        let hdr, ok_hdr = internal::parse_h3_frame_header(wire[..], 0);
+        let hdr, ok_hdr = h3_internal::parse_h3_frame_header(wire[..], 0);
         sub.assert_true(ok_hdr, "frame header itself parses");
         sub.assert_eq(hdr.payload_len, 10, "payload_len claims 10");
     };
@@ -1164,12 +1164,12 @@ fn test_connect_tunnel_rejection_cve_2026_56866(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_http2_initial_window_flood_cve_2026_78669(t: lit::T&) {
     // CVE-2026-78669: Excessive SETTINGS INITIAL_WINDOW_SIZE changes must be throttled
-    var conn = internal::new_h2_connection(1000);
+    var conn = h2_internal::new_h2_connection(1000);
     for i in 16 {
-        let err = internal::apply_peer_initial_window_size_delta(conn, (65535 + (i % 2)) as u32);
+        let err = h2_internal::apply_peer_initial_window_size_delta(conn, (65535 + (i % 2)) as u32);
         t.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Initial updates <= 16 must succeed");
     }
-    let flood_err = internal::apply_peer_initial_window_size_delta(conn, 65536);
+    let flood_err = h2_internal::apply_peer_initial_window_size_delta(conn, 65536);
     t.assert_eq(flood_err, rfc::H2_ERR_ENHANCE_YOUR_CALM, "17th window change must return ERR_ENHANCE_YOUR_CALM");
 }
 

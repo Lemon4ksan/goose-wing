@@ -558,7 +558,7 @@ int32_t wing_fast_u32toa_hex(uint32_t value, wing_bytes_rw dst) {
 // 64-bit SWAR parallel ASCII lowercase converter (Alex Hultman / uWebSockets HttpParser.h)
 // Converts 8 ASCII bytes in parallel in 4 CPU cycles without branches.
 // For any byte in 'A' (0x41) .. 'Z' (0x5A), sets bit 5 (0x20).
-uint64_t wing_swar_to_lower_64(uint64_t v) {
+static inline uint64_t wing_swar_to_lower_64(uint64_t v) {
     uint64_t ascii = v & 0x7F7F7F7F7F7F7F7FULL;
     uint64_t not_high = ~v & 0x8080808080808080ULL;
     uint64_t is_upper = (ascii + 0x3F3F3F3F3F3F3F3FULL) & ~(ascii + 0x2525252525252525ULL) & not_high;
@@ -567,7 +567,7 @@ uint64_t wing_swar_to_lower_64(uint64_t v) {
 
 // 64-bit SWAR parallel ASCII uppercase converter
 // For any byte in 'a' (0x61) .. 'z' (0x7A), clears bit 5 (0x20).
-uint64_t wing_swar_to_upper_64(uint64_t v) {
+static inline uint64_t wing_swar_to_upper_64(uint64_t v) {
     uint64_t ascii = v & 0x7F7F7F7F7F7F7F7FULL;
     uint64_t not_high = ~v & 0x8080808080808080ULL;
     uint64_t is_lower = (ascii + 0x1F1F1F1F1F1F1F1FULL) & ~(ascii + 0x0505050505050505ULL) & not_high;

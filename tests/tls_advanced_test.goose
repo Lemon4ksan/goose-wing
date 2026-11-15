@@ -956,7 +956,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
     };
 
     t.run("Hybrid 1216-Byte Client Key Share Wire Codec") { sub =>
-        var share = internal::PostQuantumKeyShare {
+        var share = tls_internal::PostQuantumKeyShare {
             group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
@@ -968,7 +968,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         // group (2) + len (2) + 1216 = 1220 bytes total
         sub.assert_eq(wire.len, 1220, "Wire length is exactly 1220 bytes");
 
-        var parsed = internal::PostQuantumKeyShare { .. };
+        var parsed = tls_internal::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Hybrid key share parsed via UFCS");
         sub.assert_eq(parsed.group, rfc::GROUP_X25519_MLKEM768, "Group is 0x11EC");
@@ -984,7 +984,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         sub.assert_true(mlkem_match, "ML-KEM-768 1184-byte component matches verbatim");
 
         // Edge cases
-        var bad_parsed = internal::PostQuantumKeyShare { .. };
+        var bad_parsed = tls_internal::PostQuantumKeyShare { .. };
         sub.assert_false(bad_parsed.parse_hybrid_key_share(wire[..10]), "Truncated wire fails");
 
         var corrupt_wire: u8[>..] = [];
@@ -995,7 +995,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
     };
 
     t.run("Hybrid 1120-Byte Server Key Share Wire Codec") { sub =>
-        var server_share = internal::PostQuantumServerShare {
+        var server_share = tls_internal::PostQuantumServerShare {
             group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
@@ -1007,7 +1007,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         // group (2) + len (2) + 1120 = 1124 bytes total
         sub.assert_eq(wire.len, 1124, "Server wire length is exactly 1124 bytes");
 
-        var parsed_server = internal::PostQuantumServerShare { .. };
+        var parsed_server = tls_internal::PostQuantumServerShare { .. };
         let ok_parse = parsed_server.parse_hybrid_server_key_share(wire[..]);
         sub.assert_true(ok_parse, "Server hybrid key share parsed via UFCS");
         sub.assert_eq(parsed_server.group, rfc::GROUP_X25519_MLKEM768, "Server group is 0x11EC");
@@ -1023,7 +1023,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         sub.assert_true(ct_match, "ML-KEM-768 1088-byte ciphertext matches verbatim");
 
         // Edge case
-        var bad_parsed = internal::PostQuantumServerShare { .. };
+        var bad_parsed = tls_internal::PostQuantumServerShare { .. };
         sub.assert_false(bad_parsed.parse_hybrid_server_key_share(wire[..500]), "Truncated server wire fails");
     };
 
@@ -1037,7 +1037,7 @@ fn test_post_quantum_hybrid(t: lit::T&) {
             49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64,
         ];
 
-        let combined_secret = internal::derive_hybrid_shared_secret(classical_ss, pq_ss);
+        let combined_secret = tls_internal::derive_hybrid_shared_secret(classical_ss, pq_ss);
         var zero_cnt = 0;
         for b in combined_secret {
             if b == 0 { zero_cnt += 1; }
@@ -1834,15 +1834,15 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
             j += 1;
         }
 
-        // 3. CompressedCertificate (RFC 8879) malformed header & truncation checks via both wing::parse_compressed_certificate and internal::parse_compressed_certificate_msg
+        // 3. CompressedCertificate (RFC 8879) malformed header & truncation checks via both wing::parse_compressed_certificate and tls_internal::parse_compressed_certificate_msg
         let comp_bytes = "compressed_payload_bytes";
-        var cc_msg = internal::CompressedCertificate {
+        var cc_msg = tls_internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_ZSTD,
             uncompressed_length:            128,
             compressed_certificate_message: comp_bytes,
         };
         var cc_wire: u8[..128] = [];
-        sub.assert_true(internal::encode_compressed_certificate(cc_msg, cc_wire), "encode CompressedCertificate message");
+        sub.assert_true(tls_internal::encode_compressed_certificate(cc_msg, cc_wire), "encode CompressedCertificate message");
         var pub_cc_wire: u8[>..] = [];
         sub.assert_true(
             wing::encode_compressed_certificate_payload(pub_cc_wire, rfc::CERT_COMPRESSION_ZSTD, 128, comp_bytes),
@@ -1852,15 +1852,15 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
 
         var k: i64 = 0;
         while k < cc_wire.len {
-            var tmp_cc = internal::CompressedCertificate { .. };
-            let ok_cc_t = internal::parse_compressed_certificate_msg(cc_wire[..k], tmp_cc);
+            var tmp_cc = tls_internal::CompressedCertificate { .. };
+            let ok_cc_t = tls_internal::parse_compressed_certificate_msg(cc_wire[..k], tmp_cc);
             sub.assert_false(ok_cc_t, "truncated CompressedCertificate rejected by internal parser");
             let _, ok_pub_t = wing::parse_compressed_certificate(pub_cc_wire[..k]);
             sub.assert_false(ok_pub_t, "truncated CompressedCertificate rejected by public wing::parse_compressed_certificate");
             k += 1;
         }
-        var full_cc = internal::CompressedCertificate { .. };
-        sub.assert_true(internal::parse_compressed_certificate_msg(cc_wire[..], full_cc), "full CompressedCertificate parsed");
+        var full_cc = tls_internal::CompressedCertificate { .. };
+        sub.assert_true(tls_internal::parse_compressed_certificate_msg(cc_wire[..], full_cc), "full CompressedCertificate parsed");
         sub.assert_eq(full_cc.algorithm, rfc::CERT_COMPRESSION_ZSTD, "algorithm matches Zstd");
         sub.assert_eq(full_cc.uncompressed_length, 128, "uncompressed_length matches 128");
         let full_pub_cc, ok_full_pub = wing::parse_compressed_certificate(pub_cc_wire[..]);
@@ -1872,8 +1872,8 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
         bad_algo_wire.append(cc_wire[..]);
         bad_algo_wire[0] = 0x99;
         bad_algo_wire[1] = 0x99;
-        var bad_cc = internal::CompressedCertificate { .. };
-        sub.assert_false(internal::parse_compressed_certificate_msg(bad_algo_wire[..], bad_cc), "unknown compression algorithm 0x9999 rejected");
+        var bad_cc = tls_internal::CompressedCertificate { .. };
+        sub.assert_false(tls_internal::parse_compressed_certificate_msg(bad_algo_wire[..], bad_cc), "unknown compression algorithm 0x9999 rejected");
 
         // Zero uncompressed_len (0) rejected per RFC 8879 §4
         var zero_ulen_wire: u8[..128] = [];
@@ -1881,7 +1881,7 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
         zero_ulen_wire[2] = 0x00;
         zero_ulen_wire[3] = 0x00;
         zero_ulen_wire[4] = 0x00;
-        sub.assert_false(internal::parse_compressed_certificate_msg(zero_ulen_wire[..], bad_cc), "uncompressed_len == 0 rejected");
+        sub.assert_false(tls_internal::parse_compressed_certificate_msg(zero_ulen_wire[..], bad_cc), "uncompressed_len == 0 rejected");
     };
 
     t.run("RUSTLS-X509-01: SAN Exact Label Boundaries & Leap-Year ASN.1 Time Vectors") { sub =>

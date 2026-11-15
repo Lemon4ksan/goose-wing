@@ -47,7 +47,7 @@ fn transcript_update_msg(t: TlsTranscript&, msg_type: u8, body: const u8[:]) {
 
 fn transcript_current_hash(t: const TlsTranscript&, hash_id: u8, out_hash: u8[..48]&) {
     out_hash.clear();
-    if hash_id == internal::HASH_SHA384 {
+    if hash_id == tls_internal::HASH_SHA384 {
         var ctx = t.sha384_ctx;
         let h = core::sha384_final(ctx);
         out_hash.append(h[..]);
@@ -260,9 +260,9 @@ fn tls_init_cipher_slot_for_test(
     slot.cipher_suite = cipher_suite;
     slot.key_len = klen as u16;
     slot.hash_id = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
-        internal::HASH_SHA384
+        tls_internal::HASH_SHA384
     } else {
-        internal::HASH_SHA256
+        tls_internal::HASH_SHA256
     };
     slot.hash_len = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 { 48 } else { 32 };
     slot.ktls_tx_active = false;
@@ -278,25 +278,25 @@ fn tls_init_cipher_slot_for_test(
     for i in 12 { slot.rx_iv[i] = rx_iv[i]; }
 }
 
-fn tls_try_enable_ktls(slot_idx: u16, fd: i64) -> internal::SmartNicSession, bool {
+fn tls_try_enable_ktls(slot_idx: u16, fd: i64) -> net_internal::SmartNicSession, bool {
     guard fd > 0 && !is_virtual_pipe_fd(fd) else {
-        return internal::new_smartnic_session(fd), false;
+        return net_internal::new_smartnic_session(fd), false;
     }
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else {
-        return internal::new_smartnic_session(fd), false;
+        return net_internal::new_smartnic_session(fd), false;
     }
     let slot .= g_tls_cipher_slots[idx];
     guard slot.in_use && !slot.peer_closed && slot.rx_plain_pos >= slot.rx_plain_buf.len else {
-        return internal::new_smartnic_session(fd), false;
+        return net_internal::new_smartnic_session(fd), false;
     }
-    var nic_cipher = internal::SmartNicCipherSuite.AesGcm128;
+    var nic_cipher = net_internal::SmartNicCipherSuite.AesGcm128;
     if slot.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 {
-        nic_cipher = internal::SmartNicCipherSuite.AesGcm128;
+        nic_cipher = net_internal::SmartNicCipherSuite.AesGcm128;
     } else if slot.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
-        nic_cipher = internal::SmartNicCipherSuite.AesGcm256;
+        nic_cipher = net_internal::SmartNicCipherSuite.AesGcm256;
     } else {
-        return internal::new_smartnic_session(fd), false;
+        return net_internal::new_smartnic_session(fd), false;
     }
     let klen = slot.key_len as i64;
     var tx_seq_be: u8[8] = [0; 8];
@@ -306,7 +306,7 @@ fn tls_try_enable_ktls(slot_idx: u16, fd: i64) -> internal::SmartNicSession, boo
     defer core::secure_zeroize_slice(tx_seq_be[..]);
     defer core::secure_zeroize_slice(rx_seq_be[..]);
 
-    let sess, err = internal::smartnic_attach_hardware_tls(
+    let sess, err = net_internal::smartnic_attach_hardware_tls(
         fd,
         nic_cipher,
         slot.tx_key[..klen],
@@ -555,16 +555,16 @@ fn tls_session_export_keying_material(
     guard out_len > 0 && out_len <= out.cap else { return false; }
     let hlen = g_tls_cipher_slots[idx].hash_len as i64;
     guard hlen == 32 || hlen == 48 else { return false; }
-    var ks = internal::KeySchedule {
+    var ks = tls_internal::KeySchedule {
         hash_id:         g_tls_cipher_slots[idx].hash_id,
         hash_len:        g_tls_cipher_slots[idx].hash_len,
-        stage:           internal::KS_STAGE_MASTER,
+        stage:           tls_internal::KS_STAGE_MASTER,
         exporter_secret: g_tls_cipher_slots[idx].exporter_secret,
         ..
     };
-    defer internal::ks_zeroize(ks);
+    defer tls_internal::ks_zeroize(ks);
     while out.len < out_len { out.push(0); }
-    return internal::ks_export_keying_material(ks, label, context, length, out[..out_len]);
+    return tls_internal::ks_export_keying_material(ks, label, context, length, out[..out_len]);
 }
 
 // Reads exactly dst.len bytes from socket, returning false on error or clean EOF before full read.
@@ -702,19 +702,19 @@ fn tls_send_new_session_ticket(
     guard tls_send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_HANDSHAKE, hs_msg[..]) else { return false; }
 
     if ticket_lifetime > 0 && ticket.len > 0 && ticket.len <= 256 {
-        var ks_res = internal::KeySchedule {
+        var ks_res = tls_internal::KeySchedule {
             hash_id:           g_tls_cipher_slots[idx].hash_id,
             hash_len:          g_tls_cipher_slots[idx].hash_len,
-            stage:             internal::KS_STAGE_RESUMPTION,
+            stage:             tls_internal::KS_STAGE_RESUMPTION,
             resumption_secret: g_tls_cipher_slots[idx].resumption_secret,
             ..
         };
-        defer internal::ks_zeroize(ks_res);
+        defer tls_internal::ks_zeroize(ks_res);
         let h_len = g_tls_cipher_slots[idx].hash_len as i64;
         var psk_full: u8[48] = [0; 48];
         defer core::secure_zeroize_48(psk_full);
         if (h_len == 32 || h_len == 48) &&
-            internal::ks_derive_resumption_psk(ks_res, ticket_nonce, psk_full[..h_len]) {
+            tls_internal::ks_derive_resumption_psk(ks_res, ticket_nonce, psk_full[..h_len]) {
             let sni = if g_tls_cipher_slots[idx].server_name.len > 0 {
                 g_tls_cipher_slots[idx].server_name[..]
             } else {
@@ -751,12 +751,12 @@ fn tls_send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
     let h_id = g_tls_cipher_slots[idx].hash_id;
     let h_len = g_tls_cipher_slots[idx].hash_len;
     let k_len = g_tls_cipher_slots[idx].key_len;
-    internal::ks_update_traffic_secret(
+    tls_internal::ks_update_traffic_secret(
         h_id,
         h_len,
         g_tls_cipher_slots[idx].tx_traffic_secret[..h_len as i64],
     );
-    internal::ks_derive_key_iv(
+    tls_internal::ks_derive_key_iv(
         h_id,
         g_tls_cipher_slots[idx].tx_traffic_secret[..h_len as i64],
         k_len,
@@ -780,8 +780,8 @@ fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
     let h_len_i64 = h_len as i64;
     let k_len_i64 = k_len as i64;
 
-    internal::ks_update_traffic_secret(h_id, h_len, g_tls_cipher_slots[idx].rx_traffic_secret[..h_len_i64]);
-    internal::ks_derive_key_iv(
+    tls_internal::ks_update_traffic_secret(h_id, h_len, g_tls_cipher_slots[idx].rx_traffic_secret[..h_len_i64]);
+    tls_internal::ks_derive_key_iv(
         h_id,
         g_tls_cipher_slots[idx].rx_traffic_secret[..h_len_i64],
         k_len,
@@ -805,19 +805,19 @@ fn tls_process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
     guard parse_new_session_ticket(msg_body, nst) else { return false; }
     guard cache_session_ticket(g_tls_cipher_slots[idx].ticket_cache, nst) else { return false; }
     guard g_tls_cipher_slots[idx].server_name.len > 0 && nst.ticket_lifetime > 0 else { return true; }
-    var ks_res = internal::KeySchedule {
+    var ks_res = tls_internal::KeySchedule {
         hash_id:           g_tls_cipher_slots[idx].hash_id,
         hash_len:          g_tls_cipher_slots[idx].hash_len,
-        stage:             internal::KS_STAGE_RESUMPTION,
+        stage:             tls_internal::KS_STAGE_RESUMPTION,
         resumption_secret: g_tls_cipher_slots[idx].resumption_secret,
         ..
     };
-    defer internal::ks_zeroize(ks_res);
+    defer tls_internal::ks_zeroize(ks_res);
     let h_len = g_tls_cipher_slots[idx].hash_len as i64;
     var psk_full: u8[48] = [0; 48];
     defer core::secure_zeroize_48(psk_full);
     if (h_len == 32 || h_len == 48) &&
-        internal::ks_derive_resumption_psk(ks_res, nst.ticket_nonce[..], psk_full[..h_len]) {
+        tls_internal::ks_derive_resumption_psk(ks_res, nst.ticket_nonce[..], psk_full[..h_len]) {
         store_tls13_session_ticket(
             g_tls_cipher_slots[idx].server_name[..],
             nst.ticket[..],
@@ -966,7 +966,7 @@ fn tls_transport_close(fd: i64, slot_idx: u16) {
         if valid_slot {
             let alert_data: u8[2] = [1, 0];
             if g_tls_cipher_slots[idx].ktls_tx_active {
-                let _ = internal::smartnic_send_record(fd, alert_data[..], rfc::TLS_CONTENT_ALERT);
+                let _ = net_internal::smartnic_send_record(fd, alert_data[..], rfc::TLS_CONTENT_ALERT);
             } else {
                 tls_send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_ALERT, alert_data[..]);
             }
@@ -1379,23 +1379,23 @@ fn compute_tls13_psk_binder_for_hash(
     out_binder:   u8[..48]&,
 ) -> bool {
     out_binder.clear();
-    if hash_id == internal::HASH_SHA256 {
+    if hash_id == tls_internal::HASH_SHA256 {
         guard binder_key.len >= 32 else { return false; }
         let ch_hash = core::sha256(truncated_ch);
         var mac: u8[32] = [0; 32];
         defer core::secure_zeroize_32(mac);
-        guard internal::ks_compute_finished_verify_data(
-            internal::HASH_SHA256, 32, binder_key[..32], ch_hash[..], mac[..],
+        guard tls_internal::ks_compute_finished_verify_data(
+            tls_internal::HASH_SHA256, 32, binder_key[..32], ch_hash[..], mac[..],
         ) else { return false; }
         return out_binder.try_set(mac[..]);
     }
-    if hash_id == internal::HASH_SHA384 {
+    if hash_id == tls_internal::HASH_SHA384 {
         guard binder_key.len >= 48 else { return false; }
         let ch_hash = core::sha384(truncated_ch);
         var mac: u8[48] = [0; 48];
         defer core::secure_zeroize_48(mac);
-        guard internal::ks_compute_finished_verify_data(
-            internal::HASH_SHA384, 48, binder_key[..48], ch_hash[..], mac[..],
+        guard tls_internal::ks_compute_finished_verify_data(
+            tls_internal::HASH_SHA384, 48, binder_key[..48], ch_hash[..], mac[..],
         ) else { return false; }
         return out_binder.try_set(mac[..]);
     }
@@ -1410,7 +1410,7 @@ fn compute_tls13_psk_binder(
 ) -> bool {
     var full: u8[..48] = [];
     defer core::secure_zeroize_slice(full[..]);
-    guard compute_tls13_psk_binder_for_hash(internal::HASH_SHA256, binder_key[..], truncated_ch, full) &&
+    guard compute_tls13_psk_binder_for_hash(tls_internal::HASH_SHA256, binder_key[..], truncated_ch, full) &&
         full.len == 32 else {
         return false;
     }
@@ -1495,13 +1495,13 @@ fn build_tls13_client_hello_payload<B>(
 
     var shares: u8[..1280] = [];
     if enable_pq && pq_pub.len == rfc::MLKEM768_PUBLIC_LEN {
-        var pq_share = internal::PostQuantumKeyShare {
+        var pq_share = tls_internal::PostQuantumKeyShare {
             group:         rfc::GROUP_X25519_MLKEM768,
             x25519_public: client_pub,
             ..
         };
         core::ct_copy_bytes(pq_share.mlkem768_public[..], pq_pub);
-        internal::format_hybrid_key_share(pq_share, shares);
+        tls_internal::format_hybrid_key_share(pq_share, shares);
     }
     shares.append_u16_be(rfc::GROUP_X25519);
     shares.append_u16_be(32);
@@ -1917,7 +1917,7 @@ fn tls_client_process_server_flight<B>(
     cipher_suite:          u16,
     server_hs_key:         const u8[:],
     server_hs_iv:          const u8[12]&,
-    ks:                    const internal::KeySchedule&,
+    ks:                    const tls_internal::KeySchedule&,
     transcript:            TlsTranscript&,
     config:                const TlsClientHandshakeConfig&,
     psk_resumed:           bool,
@@ -2008,7 +2008,7 @@ fn tls_client_process_server_flight<B>(
     var h_to_cv: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, h_to_cv);
     var exp_srv_fin: u8[48] = [0; 48];
-    guard internal::ks_compute_finished_verify_data(
+    guard tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.server_hs_traffic[..hlen], h_to_cv[..], exp_srv_fin[..hlen],
     ) else { return false; }
     guard core::ct_eq_bytes(exp_srv_fin[..hlen], fin_body[..hlen]) else { return false; }
@@ -2079,7 +2079,7 @@ fn tls_client_send_client_cert(
     client_hs_key: const u8[:],
     client_hs_iv:  const u8[12]&,
     client_seq:    u64&,
-    ks:            const internal::KeySchedule&,
+    ks:            const tls_internal::KeySchedule&,
     transcript:    TlsTranscript&,
     config:        const TlsClientHandshakeConfig&,
     cert_req:      const CertificateRequestMsg&,
@@ -2134,7 +2134,7 @@ fn tls_client_send_finished(
     cipher_suite:      u16,
     client_hs_key:     const u8[:],
     client_hs_iv:      const u8[12]&,
-    ks:                const internal::KeySchedule&,
+    ks:                const tls_internal::KeySchedule&,
     transcript:        TlsTranscript&,
     config:            const TlsClientHandshakeConfig&,
     cert_req_received: bool,
@@ -2151,7 +2151,7 @@ fn tls_client_send_finished(
     transcript_current_hash(transcript, ks.hash_id, h_through_prev);
     var cli_fin_data: u8[48] = [0; 48];
     let hlen = ks.hash_len as i64;
-    guard internal::ks_compute_finished_verify_data(
+    guard tls_internal::ks_compute_finished_verify_data(
         ks.hash_id,
         ks.hash_len,
         ks.client_hs_traffic[..hlen],
@@ -2178,7 +2178,7 @@ fn tls_setup_client_cipher_slot(
     slot_idx:     u16,
     cipher_suite: u16,
     key_len_u16:  u16,
-    ks:           const internal::KeySchedule&,
+    ks:           const tls_internal::KeySchedule&,
     c_ap_key:     const u8[:],
     c_ap_iv:      const u8[12]&,
     s_ap_key:     const u8[:],
@@ -2218,12 +2218,12 @@ fn patch_client_hello_psk_binder<B>(ch_msg: B&, psk_secret: const u8[:], psk_sui
     } else {
         rfc::TLS_CIPHER_AES_128_GCM_SHA256
     };
-    var ks_early, ok_kse = internal::ks_init(suite);
-    defer internal::ks_zeroize(ks_early);
-    guard ok_kse && internal::ks_init_early_secret(ks_early, psk_secret) else { return; }
+    var ks_early, ok_kse = tls_internal::ks_init(suite);
+    defer tls_internal::ks_zeroize(ks_early);
+    guard ok_kse && tls_internal::ks_init_early_secret(ks_early, psk_secret) else { return; }
     let hlen = ks_early.hash_len;
     let entry_len: u16 = if hlen == 48 { 49 } else { 33 };
-    let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg[..], entry_len);
+    let trunc_ch, ok_tr = tls_internal::truncate_client_hello_for_binder(ch_msg[..], entry_len);
     var binder: u8[..48] = [];
     defer core::secure_zeroize_slice(binder[..]);
     guard ok_tr && compute_tls13_psk_binder_for_hash(
@@ -2302,7 +2302,7 @@ fn regenerate_client_hrr_keyshare(
     var pq_z = tls_random_bytes_32();
     defer core::secure_zeroize_32(pq_d);
     defer core::secure_zeroize_32(pq_z);
-    var ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
+    var ek, dk = tls_internal::mlkem768_keygen(pq_d, pq_z);
     defer core::secure_zeroize_slice(dk[..]);
     pq_priv = dk;
     pq_pub = ek;
@@ -2359,7 +2359,7 @@ fn handle_client_hrr_transition(
     guard ok_regen else { return false; }
 
     transcript_update(transcript, hrr_raw_msg);
-    var ks_hrr, ok_kshr = internal::ks_init(hrr_cipher);
+    var ks_hrr, ok_kshr = tls_internal::ks_init(hrr_cipher);
     guard ok_kshr && transcript_replace_with_message_hash(transcript, ks_hrr.hash_id, ks_hrr.hash_len) else {
         return false;
     }
@@ -2410,7 +2410,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
         var pq_z = tls_random_bytes_32();
         defer core::secure_zeroize_32(pq_d);
         defer core::secure_zeroize_32(pq_z);
-        var ek, dk = internal::mlkem768_keygen(pq_d, pq_z);
+        var ek, dk = tls_internal::mlkem768_keygen(pq_d, pq_z);
         defer core::secure_zeroize_slice(dk[..]);
         pq_priv = dk;
         pq_pub = ek;
@@ -2501,8 +2501,8 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
         srv_share_raw.append_u16_be(srv_group);
         srv_share_raw.append_u16_be(srv_share.len as u16);
         srv_share_raw.append(srv_share[..]);
-        var srv_pq_share = internal::PostQuantumServerShare { .. };
-        guard internal::parse_hybrid_server_key_share(srv_pq_share, srv_share_raw[..]) else {
+        var srv_pq_share = tls_internal::PostQuantumServerShare { .. };
+        guard tls_internal::parse_hybrid_server_key_share(srv_pq_share, srv_share_raw[..]) else {
             free_tls_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
@@ -2514,11 +2514,14 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
         }
         var pq_ss: u8[32] = [0; 32];
         defer core::secure_zeroize_32(pq_ss);
-        guard internal::mlkem768_decapsulate(srv_pq_share.mlkem768_ciphertext[..], pq_priv[..], pq_ss[..]) else {
+        guard tls_internal::mlkem768_decapsulate(srv_pq_share.mlkem768_ciphertext[..], pq_priv[..], pq_ss[..]) else {
             free_tls_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-        guard internal::derive_x25519_mlkem768_shared_secret_checked(classic_ss[..], pq_ss[..], ecdhe_secret[..]) else {
+        let ok_pq = tls_internal::derive_x25519_mlkem768_shared_secret_checked(
+            classic_ss[..], pq_ss[..], ecdhe_secret[..],
+        );
+        guard ok_pq else {
             free_tls_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
@@ -2537,12 +2540,12 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
         return 0xFFFF, false;
     }
 
-    var ks, ok_ks = internal::ks_init(cipher_suite);
-    defer internal::ks_zeroize(ks);
+    var ks, ok_ks = tls_internal::ks_init(cipher_suite);
+    defer tls_internal::ks_zeroize(ks);
     let early_ikm = if psk_resumed { psk_secret[..] } else { "" };
     let ok_ks_adv = ok_ks &&
-        internal::ks_init_early_secret(ks, early_ikm) &&
-        internal::ks_advance_to_handshake(ks, ecdhe_secret[..]);
+        tls_internal::ks_init_early_secret(ks, early_ikm) &&
+        tls_internal::ks_advance_to_handshake(ks, ecdhe_secret[..]);
     guard ok_ks_adv else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -2550,7 +2553,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
 
     var ch_sh_hash: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, ch_sh_hash);
-    guard internal::ks_derive_handshake_traffic(ks, ch_sh_hash[..]) else {
+    guard tls_internal::ks_derive_handshake_traffic(ks, ch_sh_hash[..]) else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -2564,7 +2567,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     let key_len_u16 = rfc::tls13_cipher_suite_key_len(cipher_suite);
     let klen = key_len_u16 as i64;
     let hlen = ks.hash_len as i64;
-    let ok_c_hs = internal::ks_derive_key_iv(
+    let ok_c_hs = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.client_hs_traffic[..hlen], key_len_u16,
         client_hs_key[..klen], client_hs_iv,
     );
@@ -2572,7 +2575,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
-    let ok_s_hs = internal::ks_derive_key_iv(
+    let ok_s_hs = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.server_hs_traffic[..hlen], key_len_u16,
         server_hs_key[..klen], server_hs_iv,
     );
@@ -2597,7 +2600,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
 
     var h_through_srv_fin: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, h_through_srv_fin);
-    guard internal::ks_advance_to_master(ks, h_through_srv_fin[..]) else {
+    guard tls_internal::ks_advance_to_master(ks, h_through_srv_fin[..]) else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -2612,7 +2615,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
 
     var h_through_cli_fin: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, h_through_cli_fin);
-    internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
+    tls_internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
 
     var client_ap_key: u8[32] = [0; 32];
     defer core::secure_zeroize_32(client_ap_key);
@@ -2620,7 +2623,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
     var server_ap_key: u8[32] = [0; 32];
     defer core::secure_zeroize_32(server_ap_key);
     var server_ap_iv: u8[12] = [0; 12];
-    let ok_c_ap = internal::ks_derive_key_iv(
+    let ok_c_ap = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.client_ap_traffic[..hlen], key_len_u16,
         client_ap_key[..klen], client_ap_iv,
     );
@@ -2628,7 +2631,7 @@ fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
-    let ok_s_ap = internal::ks_derive_key_iv(
+    let ok_s_ap = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.server_ap_traffic[..hlen], key_len_u16,
         server_ap_key[..klen], server_ap_iv,
     );
@@ -2702,15 +2705,15 @@ fn verify_single_psk_binder_full(
             return false;
         }
     }
-    var ks_early, ok_kse = internal::ks_init(suite);
-    defer internal::ks_zeroize(ks_early);
-    guard ok_kse && internal::ks_init_early_secret(ks_early, full_psk[..]) else { return false; }
+    var ks_early, ok_kse = tls_internal::ks_init(suite);
+    defer tls_internal::ks_zeroize(ks_early);
+    guard ok_kse && tls_internal::ks_init_early_secret(ks_early, full_psk[..]) else { return false; }
     let hlen = ks_early.hash_len as i64;
     guard binder_slice.len == hlen else { return false; }
 
-    let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg, binders_len);
+    let trunc_ch, ok_tr = tls_internal::truncate_client_hello_for_binder(ch_msg, binders_len);
     guard ok_tr else { return false; }
-    guard internal::verify_psk_binder(
+    guard tls_internal::verify_psk_binder(
         ks_early.hash_id, ks_early.hash_len, ks_early.binder_key[..hlen], trunc_ch, binder_slice,
     ) else { return false; }
     return out_psk.try_set(full_psk[..]);
@@ -3180,9 +3183,9 @@ fn tls_server_send_cv(
     cert_der:      const u8[:] = "",
 ) -> bool {
     let hash_id: u8 = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
-        internal::HASH_SHA384
+        tls_internal::HASH_SHA384
     } else {
-        internal::HASH_SHA256
+        tls_internal::HASH_SHA256
     };
     var h_to_cert: u8[..48] = [];
     transcript_current_hash(transcript, hash_id, h_to_cert);
@@ -3275,12 +3278,12 @@ fn build_compressed_cert_payload(
     guard uncompressed_len > 0 && uncompressed_len <= rfc::MAX_UNCOMPRESSED_CERT_SIZE else {
         return false;
     }
-    var comp_msg = internal::CompressedCertificate {
+    var comp_msg = tls_internal::CompressedCertificate {
         algorithm:                      algo,
         uncompressed_length:            uncomp_u32,
         compressed_certificate_message: compressed_data,
     };
-    return internal::encode_compressed_certificate(comp_msg, out_payload);
+    return tls_internal::encode_compressed_certificate(comp_msg, out_payload);
 }
 
 fn encode_server_cert_or_compressed_msg(
@@ -3316,7 +3319,7 @@ fn tls_server_send_flight(
     fd:                        i64,
     server_hs_key:             const u8[:],
     server_hs_iv:              const u8[12]&,
-    ks:                        const internal::KeySchedule&,
+    ks:                        const tls_internal::KeySchedule&,
     transcript:                TlsTranscript&,
     config:                    const TlsServerHandshakeConfig&,
     negotiated_alpn:           const u8[:],
@@ -3355,7 +3358,7 @@ fn tls_server_send_flight(
     transcript_current_hash(transcript, ks.hash_id, h_to_cv);
     var srv_fin_data: u8[48] = [0; 48];
     let hlen = ks.hash_len as i64;
-    let ok_fin_calc = internal::ks_compute_finished_verify_data(
+    let ok_fin_calc = tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.server_hs_traffic[..hlen],
         h_to_cv[..], srv_fin_data[..hlen],
     );
@@ -3378,7 +3381,7 @@ fn tls_setup_server_cipher_slot(
     slot_idx:     u16,
     cipher_suite: u16,
     key_len_u16:  u16,
-    ks:           const internal::KeySchedule&,
+    ks:           const tls_internal::KeySchedule&,
     s_ap_key:     const u8[:],
     s_ap_iv:      const u8[12]&,
     c_ap_key:     const u8[:],
@@ -3466,12 +3469,12 @@ fn tls_server_handshake_with_ch(
     tls_write_all(fd, ccs[..]);
     transcript_update(transcript, sh_msg[..]);
 
-    var ks, ok_ks = internal::ks_init(cipher_suite);
-    defer internal::ks_zeroize(ks);
+    var ks, ok_ks = tls_internal::ks_init(cipher_suite);
+    defer tls_internal::ks_zeroize(ks);
     let early_ikm = if psk_resumed { psk_secret[..] } else { "" };
     let ok_ks_adv = ok_ks &&
-        internal::ks_init_early_secret(ks, early_ikm) &&
-        internal::ks_advance_to_handshake(ks, ecdhe_secret[..]);
+        tls_internal::ks_init_early_secret(ks, early_ikm) &&
+        tls_internal::ks_advance_to_handshake(ks, ecdhe_secret[..]);
     guard ok_ks_adv else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -3479,7 +3482,7 @@ fn tls_server_handshake_with_ch(
 
     var ch_sh_hash: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, ch_sh_hash);
-    guard internal::ks_derive_handshake_traffic(ks, ch_sh_hash[..]) else {
+    guard tls_internal::ks_derive_handshake_traffic(ks, ch_sh_hash[..]) else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -3493,7 +3496,7 @@ fn tls_server_handshake_with_ch(
     var server_hs_key: u8[32] = [0; 32];
     defer core::secure_zeroize_32(server_hs_key);
     var server_hs_iv: u8[12] = [0; 12];
-    let ok_c_hs = internal::ks_derive_key_iv(
+    let ok_c_hs = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.client_hs_traffic[..hlen], key_len_u16,
         client_hs_key[..klen], client_hs_iv,
     );
@@ -3501,7 +3504,7 @@ fn tls_server_handshake_with_ch(
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
-    let ok_s_hs = internal::ks_derive_key_iv(
+    let ok_s_hs = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.server_hs_traffic[..hlen], key_len_u16,
         server_hs_key[..klen], server_hs_iv,
     );
@@ -3521,7 +3524,7 @@ fn tls_server_handshake_with_ch(
 
     var h_through_srv_fin: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, h_through_srv_fin);
-    guard internal::ks_advance_to_master(ks, h_through_srv_fin[..]) else {
+    guard tls_internal::ks_advance_to_master(ks, h_through_srv_fin[..]) else {
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -3543,7 +3546,7 @@ fn tls_server_handshake_with_ch(
     }
 
     var exp_cli_fin: u8[48] = [0; 48];
-    let ok_exp_fin = internal::ks_compute_finished_verify_data(
+    let ok_exp_fin = tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.client_hs_traffic[..hlen],
         h_through_srv_fin[..], exp_cli_fin[..hlen],
     );
@@ -3559,7 +3562,7 @@ fn tls_server_handshake_with_ch(
     transcript_update_msg(transcript, msg_fin, cli_fin_body[..hlen]);
     var h_through_cli_fin: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, h_through_cli_fin);
-    internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
+    tls_internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
 
     var client_ap_key: u8[32] = [0; 32];
     defer core::secure_zeroize_32(client_ap_key);
@@ -3567,7 +3570,7 @@ fn tls_server_handshake_with_ch(
     var server_ap_key: u8[32] = [0; 32];
     defer core::secure_zeroize_32(server_ap_key);
     var server_ap_iv: u8[12] = [0; 12];
-    let ok_c_ap = internal::ks_derive_key_iv(
+    let ok_c_ap = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.client_ap_traffic[..hlen], key_len_u16,
         client_ap_key[..klen], client_ap_iv,
     );
@@ -3575,7 +3578,7 @@ fn tls_server_handshake_with_ch(
         free_tls_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
-    let ok_s_ap = internal::ks_derive_key_iv(
+    let ok_s_ap = tls_internal::ks_derive_key_iv(
         ks.hash_id, ks.server_ap_traffic[..hlen], key_len_u16,
         server_ap_key[..klen], server_ap_iv,
     );

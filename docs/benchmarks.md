@@ -65,7 +65,7 @@ Verified on every CI run via
 | `core::fast_find_crlfcrlf` | RFC 9112 delimiter search | $\le 500$ ns | **18 ns** | 0 |
 | `wing::parse_tls_record_header` | RFC 8446 record layer | $\le 300$ ns | **12 ns** | 0 |
 | `wing::decode_grpc_lpm_slice` | gRPC Length-Prefixed Message | $\le 300$ ns | **14 ns** | 0 |
-| `internal::chunk_fsm_feed` | RFC 9112 chunk stream FSM | $\le 500$ ns | **38 ns** | 0 |
+| `http_internal::chunk_fsm_feed` | RFC 9112 chunk stream FSM | $\le 500$ ns | **38 ns** | 0 |
 | `wing::mask_websocket_payload` | RFC 6455 §5.3 payload masking | $\le 400$ ns | **24 ns** (128 B) | 0 |
 
 ## Reproducing benchmark results

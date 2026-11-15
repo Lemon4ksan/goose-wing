@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Internal Cookie storage limits, timing constants, and eviction quotas (RFC 6265bis, CHIPS).
-namespace internal;
+namespace cookie_internal;
 
 import std;
 

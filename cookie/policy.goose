@@ -12,6 +12,7 @@ import .constants;
 import .canonical;
 import .psl;
 import .parser;
+import http.request;
 
 // ---- http method & origin trust --------------------------------------------
 
@@ -63,7 +64,7 @@ fn validate_canonical_cookie_security(
     opts:       CookieSourceOptions = CookieSourceOptions { .. },
 ) -> bool {
     let cookie_name = cookie_val.name[..];
-    if core::add_sat_i64(cookie_name.len, cookie_val.value.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
+    if core::add_sat_i64(cookie_name.len, cookie_val.value.len) > cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return false;
     }
 
@@ -236,13 +237,6 @@ fn validate_security_cookie_prefixes(
 }
 
 // ---- site for cookies and navigation context -------------------------------
-
-struct SiteForCookies {
-    scheme:             u8[..16]  = [],
-    registrable_domain: u8[..256] = [],
-    schemefully_same:   bool      = true,
-    is_null:            bool      = false,
-}
 
 fn site_for_cookies_from_url(url: const u8[:]) -> SiteForCookies {
     let parsed = parse_canonical_cookie_url(url);

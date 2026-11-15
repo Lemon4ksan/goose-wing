@@ -268,8 +268,8 @@ fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: con
 fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool
 fn hpack_decode_int(src: const u8[:], offset: u64&, prefix_bits: u8) -> u64, bool
 fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool
-fn encode_hpack_from_map<B>(dt: internal::DynamicTable&, pseudo: const internal::H2PseudoHeaders&, headers: const wing::HeaderMap&, out: B&, use_huffman: bool = true) -> bool
-fn decode_hpack_to_map(dt: internal::DynamicTable&, src: const u8[:], out_pseudo: internal::H2PseudoHeaders&, out_headers: wing::HeaderMap&, max_header_list_size: u32 = 8192, validate_http2_rules: bool = true) -> u32
+fn encode_hpack_from_map<B>(dt: h2_internal::DynamicTable&, pseudo: const h2_internal::H2PseudoHeaders&, headers: const wing::HeaderMap&, out: B&, use_huffman: bool = true) -> bool
+fn decode_hpack_to_map(dt: h2_internal::DynamicTable&, src: const u8[:], out_pseudo: h2_internal::H2PseudoHeaders&, out_headers: wing::HeaderMap&, max_header_list_size: u32 = 8192, validate_http2_rules: bool = true) -> u32
 
 // HTTP/2 Frame Codec (wire/h2.goose, RFC 9113 & RFC 9218)
 struct WireH2FrameReader { src: const u8[:], cursor: i64 }
@@ -283,11 +283,11 @@ fn encode_rst_stream_frame<B>(stream_id: u32, error_code: u32, out: B&) -> bool
 fn encode_ping_frame<B>(payload: const u8[8], is_ack: bool, out: B&) -> bool
 fn encode_data_frame<B>(stream_id: u32, payload: const u8[:], end_stream: bool, out: B&) -> bool
 fn read_wire_h2_frame(raw: const u8[:], cursor: i64&) -> WireFrameHeader, const u8[:], bool
-fn encode_h2_headers_frame_from_map<B>(dt: internal::DynamicTable&, stream_id: u32, pseudo: const internal::H2PseudoHeaders&, headers: const wing::HeaderMap&, end_stream: bool, out: B&, max_frame_size: u32 = 16384) -> bool
+fn encode_h2_headers_frame_from_map<B>(dt: h2_internal::DynamicTable&, stream_id: u32, pseudo: const h2_internal::H2PseudoHeaders&, headers: const wing::HeaderMap&, end_stream: bool, out: B&, max_frame_size: u32 = 16384) -> bool
 
 // HTTP/3 & QPACK Frame Codec (wire/h3.goose, RFC 9114 & RFC 9204)
-fn encode_h3_headers_from_map<B1, B2>(tbl: internal::QpackTable&, stream_id: u64, pseudo: const internal::H3PseudoHeaders&, headers: const wing::HeaderMap&, out_enc_stream: B1&, out_frame: B2&) -> bool
-fn decode_h3_headers_to_map(tbl: internal::QpackTable&, stream_id: u64, qpack_payload: const u8[:], out_pseudo: internal::H3PseudoHeaders&, out_headers: wing::HeaderMap&, max_field_section: u64 = 16384) -> internal::QpackError
+fn encode_h3_headers_from_map<B1, B2>(tbl: h3_internal::QpackTable&, stream_id: u64, pseudo: const h3_internal::H3PseudoHeaders&, headers: const wing::HeaderMap&, out_enc_stream: B1&, out_frame: B2&) -> bool
+fn decode_h3_headers_to_map(tbl: h3_internal::QpackTable&, stream_id: u64, qpack_payload: const u8[:], out_pseudo: h3_internal::H3PseudoHeaders&, out_headers: wing::HeaderMap&, max_field_section: u64 = 16384) -> h3_internal::QpackError
 fn encode_h3_data_frame<B>(data: const u8[:], out: B&) -> bool
 ```
 

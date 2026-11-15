@@ -142,7 +142,7 @@ fn set_repr_digest(req: Request&, alg: const u8[:] = "sha-256") -> bool
 fn set_want_content_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10")
 fn set_want_repr_digest(req: Request&, want_algorithms: const u8[:] = "sha-256=10")
 fn set_response_content_digest(res: Response&, alg: const u8[:] = "sha-256") -> bool
-fn set_response_repr_digest(res: Response&, alg: const u8[:] = "sha-256") -> bool
+fn apply_response_digest_if_wanted(req: const Request&, res: Response&) -> bool
 fn verify_request_content_digest(req: const Request&) -> bool
 fn verify_request_repr_digest(req: const Request&) -> bool
 fn verify_response_content_digest(res: const Response&) -> bool

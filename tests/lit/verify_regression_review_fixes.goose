@@ -147,7 +147,7 @@ fn test_pipeline_64_slot_and_user_stages() {
     assert(wire::add_stage_binding(srv_cfg.wire_pipeline, wire::STAGE_ID_USER_1, 3));
 
     var srv_res = wing::Response { status_code: 200, .. };
-    var srv_ext = internal::RequestExtensions { .. };
+    var srv_ext = server_internal::RequestExtensions { .. };
     var srv_sctx = wing::ServerStageCtx { .. };
     var srv_chain = wire::chain_stages(ServerUserStageA { .. }, ServerUserStageB { .. });
 
@@ -186,12 +186,12 @@ fn test_server_time_methods_h2_and_memo() {
     assert(sec_1700m == 1700000000);
 
     // H2 server session ingress with now_ms = now_ns / 1_000_000
-    var h2_sess = internal::new_h2_server_session("example.com", 1000);
+    var h2_sess = server_internal::new_h2_server_session("example.com", 1000);
     var h2_cfg = wing::new_server_pipeline_config(
         "example.com",
         wing::GcraQuota { .. },
     );
-    var h2_timer = internal::ConnectionTimer { .. };
+    var h2_timer = server_internal::ConnectionTimer { .. };
     var h2_wire: u8[..128] = [];
     h2_wire.append("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
     let empty_settings: u8[9] = [0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -199,7 +199,7 @@ fn test_server_time_methods_h2_and_memo() {
     var h2_out: u8[..4096] = [];
     let now_ns_1: u64 = 1000000000;
     let now_ms_1: u64 = now_ns_1 / 1000000;
-    let h2_rc1, h2_ok1 = internal::handle_h2_server_ingress(
+    let h2_rc1, h2_ok1 = server_internal::handle_h2_server_ingress(
         h2_sess,
         h2_cfg,
         h2_timer,
@@ -218,7 +218,7 @@ fn test_server_time_methods_h2_and_memo() {
     let now_ns_2: u64 = 6000000000;
     let now_ms_2: u64 = now_ns_2 / 1000000;
     h2_out.clear();
-    let h2_rc2, h2_ok2 = internal::handle_h2_server_ingress(
+    let h2_rc2, h2_ok2 = server_internal::handle_h2_server_ingress(
         h2_sess,
         h2_cfg,
         h2_timer,
@@ -247,14 +247,14 @@ fn test_server_time_methods_h2_and_memo() {
     assert(wing::is_match_found(m_mkcol_ok));
 
     // 2c. H2StreamPhase enum transitions
-    var stream = internal::H2ServerStream { .. };
-    assert(stream.phase == internal::H2StreamPhase.Idle);
-    stream.phase = internal::H2StreamPhase.Open;
-    assert(stream.phase == internal::H2StreamPhase.Open);
-    stream.phase = internal::H2StreamPhase.HalfClosedRemote;
-    assert(stream.phase == internal::H2StreamPhase.HalfClosedRemote);
-    stream.phase = internal::H2StreamPhase.Closed;
-    assert(stream.phase == internal::H2StreamPhase.Closed);
+    var stream = server_internal::H2ServerStream { .. };
+    assert(stream.phase == server_internal::H2StreamPhase.Idle);
+    stream.phase = server_internal::H2StreamPhase.Open;
+    assert(stream.phase == server_internal::H2StreamPhase.Open);
+    stream.phase = server_internal::H2StreamPhase.HalfClosedRemote;
+    assert(stream.phase == server_internal::H2StreamPhase.HalfClosedRemote);
+    stream.phase = server_internal::H2StreamPhase.Closed;
+    assert(stream.phase == server_internal::H2StreamPhase.Closed);
 
     // 2d. Encapsulated ServerPipelineConfig.memo independence
     var cfg_a = wing::new_server_pipeline_config(
@@ -442,37 +442,37 @@ fn test_tls_crypto_x509_and_cipher_selection() {
     assert(!core::ct_eq_bytes(wing::g_tls_entropy_pool[..], r2[..]));
 
     // 4b. FIPS 202 / 203 SHA3-256, SHA3-512, SHAKE128, SHAKE256 & ML-KEM-768
-    let sha3_empty = internal::sha3_256("");
+    let sha3_empty = tls_internal::sha3_256("");
     var sha3_hex: u8[..64] = [];
     for b in sha3_empty {
         b.format_u8_hex(sha3_hex, false);
     }
     assert(sha3_hex[..] == "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a");
 
-    let sha3_512_empty = internal::sha3_512("");
+    let sha3_512_empty = tls_internal::sha3_512("");
     assert(sha3_512_empty[0] == 0xA6 && sha3_512_empty[1] == 0x9F);
 
     var shake128_out: u8[32] = [0; 32];
     var shake256_out: u8[32] = [0; 32];
-    internal::shake128_squeeze("fips203-test", shake128_out[..]);
-    internal::shake256_squeeze("fips203-test", shake256_out[..]);
+    tls_internal::shake128_squeeze("fips203-test", shake128_out[..]);
+    tls_internal::shake256_squeeze("fips203-test", shake256_out[..]);
     assert(!core::ct_eq_bytes(shake128_out[..], shake256_out[..]));
 
     var d_seed: u8[32] = [0x42; 32];
     var z_seed: u8[32] = [0x99; 32];
     var m_rand: u8[32] = [0x77; 32];
-    let ek, dk = internal::mlkem768_keygen(d_seed, z_seed);
-    let ct, ss_enc, ok_enc = internal::mlkem768_encapsulate(ek, m_rand);
+    let ek, dk = tls_internal::mlkem768_keygen(d_seed, z_seed);
+    let ct, ss_enc, ok_enc = tls_internal::mlkem768_encapsulate(ek, m_rand);
     assert(ok_enc);
 
     var ss_dec: u8[32] = [0; 32];
-    assert(internal::mlkem768_decapsulate(ct[..], dk[..], ss_dec[..]));
+    assert(tls_internal::mlkem768_decapsulate(ct[..], dk[..], ss_dec[..]));
     assert(core::ct_eq_bytes(ss_enc[..], ss_dec[..]));
 
     var ct_tampered = ct;
     ct_tampered[0] ^= 0x01;
     var ss_reject: u8[32] = [0; 32];
-    assert(internal::mlkem768_decapsulate(ct_tampered[..], dk[..], ss_reject[..]));
+    assert(tls_internal::mlkem768_decapsulate(ct_tampered[..], dk[..], ss_reject[..]));
     assert(!core::ct_eq_bytes(ss_enc[..], ss_reject[..]));
 
     // 4c. CRL 9..20 byte serial numbers (parse_asn1_serial_u64)

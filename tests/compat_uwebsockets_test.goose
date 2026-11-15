@@ -405,8 +405,8 @@ fn test_async_upgrade_and_aborted(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
     t.run("1. EventLoop Task Deferral (loop.defer)") { sub =>
-        var cfg = internal::auto_transport_driver_config();
-        cfg.active_kind = internal::TransportDriverKind.Standard;
+        var cfg = net_internal::auto_transport_driver_config();
+        cfg.active_kind = net_internal::TransportDriverKind.Standard;
 
         var el = wing::new_event_loop(cfg);
         sub.assert_false(el.has_deferred_tasks(), "No deferred tasks initially");
@@ -1045,21 +1045,21 @@ fn test_ws_unmask_shifted_header_overwrite(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunked_fsm_decoder(t: lit::T&) {
     t.run("1. 64-bit Register FSM Chunked Stream Decoding") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
 
         let raw = "4\r\nWiki\r\n7\r\npedia  \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\n\r\n";
         var total_body: u8[..128] = [];
         var cursor:     i64       = 0;
 
         while cursor < raw.len {
-            let st, consumed, chunk = internal::chunk_fsm_feed(dec, raw[cursor..]);
+            let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, raw[cursor..]);
             cursor += consumed;
 
-            if st == internal::ChunkFsmStatus.YieldChunk {
+            if st == http_internal::ChunkFsmStatus.YieldChunk {
                 total_body.append(chunk);
-            } else if st == internal::ChunkFsmStatus.Complete {
+            } else if st == http_internal::ChunkFsmStatus.Complete {
                 break;
-            } else if st == internal::ChunkFsmStatus.Error {
+            } else if st == http_internal::ChunkFsmStatus.Error {
                 sub.assert_true(false, "FSM decoder encountered unexpected error");
                 break;
             }
@@ -1068,26 +1068,26 @@ fn test_chunked_fsm_decoder(t: lit::T&) {
         sub.assert_bytes_eq(total_body[..], "Wikipedia  in \r\n\r\nchunks.", "Assembled chunked stream matches");
 
         // Chunk extensions
-        var dec_ext = internal::new_chunk_fsm_decoder();
+        var dec_ext = http_internal::new_chunk_fsm_decoder();
         let raw_ext = "5;token=val;foo=\"quoted;val\"\r\nHello\r\n0\r\n\r\n";
         var ext_body:   u8[..64] = [];
         var ext_cursor: i64      = 0;
 
         while ext_cursor < raw_ext.len {
-            let st, consumed, chunk = internal::chunk_fsm_feed(dec_ext, raw_ext[ext_cursor..]);
+            let st, consumed, chunk = http_internal::chunk_fsm_feed(dec_ext, raw_ext[ext_cursor..]);
             ext_cursor += consumed;
-            if st == internal::ChunkFsmStatus.YieldChunk {
+            if st == http_internal::ChunkFsmStatus.YieldChunk {
                 ext_body.append(chunk);
-            } else if st == internal::ChunkFsmStatus.Complete {
+            } else if st == http_internal::ChunkFsmStatus.Complete {
                 break;
             }
         }
         sub.assert_bytes_eq(ext_body[..], "Hello", "Chunk extension decoded properly");
 
         // Invalid hex chunk size
-        var dec_err = internal::new_chunk_fsm_decoder();
-        let st_err, _, _ = internal::chunk_fsm_feed(dec_err, "Z\r\n");
-        sub.assert_eq(st_err, internal::ChunkFsmStatus.Error, "Invalid hex digit returns Error");
+        var dec_err = http_internal::new_chunk_fsm_decoder();
+        let st_err, _, _ = http_internal::chunk_fsm_feed(dec_err, "Z\r\n");
+        sub.assert_eq(st_err, http_internal::ChunkFsmStatus.Error, "Invalid hex digit returns Error");
     };
 }
 

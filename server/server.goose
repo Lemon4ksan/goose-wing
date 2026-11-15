@@ -20,16 +20,9 @@ import .h1_codec;
 import .cork;
 import .stream_consumer;
 import .sni;
+import net.accel;
 
 // ---- 1. HttpServer Container and Route Registration -------------------------
-
-enum ReactorAccelMode {
-    Auto,
-    IoUring,
-    Rio,
-    Kqueue,
-    PollFallback,
-}
 
 struct WsRouteEntry {
     path:     u8[..128]  = [],
@@ -38,32 +31,32 @@ struct WsRouteEntry {
 }
 
 struct HttpServer {
-    pipeline:                  ServerPipelineConfig      = ServerPipelineConfig { .. },
-    host:                      u8[..256]                 = "127.0.0.1",
-    port:                      u16                       = 8080,
-    server_name:               u8[..64]                  = "goose-wing/1.0",
-    timer:                     internal::ConnectionTimer = internal::ConnectionTimer { .. },
-    is_running:                bool                      = false,
-    requests_processed:        u64                       = 0,
-    accept_proxy_protocol:     bool                      = false,
-    trust_proxy_headers:       bool                      = false,
-    topic_tree:                TopicTree                 = TopicTree { .. },
-    ws_routes:                 WsRouteEntry[..16]        = [WsRouteEntry { .. }; 16],
-    ws_route_count:            i32                       = 0,
-    shared_compressor:         SharedWsCompressor        = SharedWsCompressor { .. },
-    sni_registry:              SniRegistry               = SniRegistry { .. },
-    worker_ring:               core::SpscRing            = core::SpscRing { .. },
-    cached_date:               CachedHttpDate            = CachedHttpDate { .. },
-    fast_l0_last_headers:      u8[..256]                 = [],
-    fast_l0_last_host:         u8[..128]                 = [],
-    fast_l0_last_close:        bool                      = false,
-    enable_header_memoization: bool                      = false,
-    turn_in_use:               bool                      = false,
-    handle_os_signals:         bool                      = false,
-    honor_shutdown_flag:       bool                      = true,
-    shutdown_grace_ns:         u64                       = 2000000000,
-    accel_mode:                ReactorAccelMode          = ReactorAccelMode.Auto,
-    enable_ktls_offload:       bool                      = true,
+    pipeline:                  ServerPipelineConfig             = ServerPipelineConfig { .. },
+    host:                      u8[..256]                        = "127.0.0.1",
+    port:                      u16                              = 8080,
+    server_name:               u8[..64]                         = "goose-wing/1.0",
+    timer:                     server_internal::ConnectionTimer = server_internal::ConnectionTimer { .. },
+    is_running:                bool                             = false,
+    requests_processed:        u64                              = 0,
+    accept_proxy_protocol:     bool                             = false,
+    trust_proxy_headers:       bool                             = false,
+    topic_tree:                TopicTree                        = TopicTree { .. },
+    ws_routes:                 WsRouteEntry[..16]               = [WsRouteEntry { .. }; 16],
+    ws_route_count:            i32                              = 0,
+    shared_compressor:         SharedWsCompressor               = SharedWsCompressor { .. },
+    sni_registry:              SniRegistry                      = SniRegistry { .. },
+    worker_ring:               core::SpscRing                   = core::SpscRing { .. },
+    cached_date:               CachedHttpDate                   = CachedHttpDate { .. },
+    fast_l0_last_headers:      u8[..256]                        = [],
+    fast_l0_last_host:         u8[..128]                        = [],
+    fast_l0_last_close:        bool                             = false,
+    enable_header_memoization: bool                             = false,
+    turn_in_use:               bool                             = false,
+    handle_os_signals:         bool                             = false,
+    honor_shutdown_flag:       bool                             = true,
+    shutdown_grace_ns:         u64                              = 2000000000,
+    accel_mode:                ReactorAccelMode                 = ReactorAccelMode.Auto,
+    enable_ktls_offload:       bool                             = true,
 }
 
 // Enables or disables Keep-Alive HTTP/1.1 header block memoization (`g_h1_parse_cache`,
@@ -92,7 +85,7 @@ fn new_http_server(
     var server = HttpServer {
         pipeline:           new_default_server_pipeline_config(host_str),
         port:               port_num,
-        timer:              internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
+        timer:              server_internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
         is_running:         true,
         requests_processed: 0,
         ..
@@ -109,7 +102,7 @@ fn new_http_server_with_quota<Q>(
     var server = HttpServer {
         pipeline:           new_server_pipeline_config(host_str, quota),
         port:               port_num,
-        timer:              internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
+        timer:              server_internal::new_connection_timer(30000000000, 1000000000), // 30s timeout
         is_running:         true,
         requests_processed: 0,
         ..
@@ -568,7 +561,7 @@ fn finish_single_h1_wire_turn<Stage, B>(
         server.pipeline.trust_proxy_headers = true;
     }
 
-    var future = internal::new_inline_handler_future(0);
+    var future = server_internal::new_inline_handler_future(0);
     let out_outcome = if is_noop_server_stage(stage) {
         execute_pipeline(server.pipeline, server.timer, effective_ip, g_turn_req, now_ns, g_turn_res, future)
     } else {
@@ -617,7 +610,7 @@ fn execute_single_h1_wire_turn<Stage, B>(
     }
 
     reset_server_response_fast(res);
-    var future = internal::new_inline_handler_future(0);
+    var future = server_internal::new_inline_handler_future(0);
     let outcome = if is_noop_server_stage(stage) {
         execute_pipeline(server.pipeline, server.timer, effective_ip, req, now_ns, res, future)
     } else {
@@ -665,9 +658,9 @@ fn handle_connection_wire<Stage, B>(
             server.pipeline.trust_proxy_headers = true;
         }
         let now_ms = div_euclid(now_ns, 1000000);
-        var sess = internal::new_h2_server_session(server.server_name[..], now_ms);
-        defer internal::cleanup_h2_server_session(sess, server.pipeline);
-        let _, ok_h2 = internal::handle_h2_server_ingress(
+        var sess = server_internal::new_h2_server_session(server.server_name[..], now_ms);
+        defer server_internal::cleanup_h2_server_session(sess, server.pipeline);
+        let _, ok_h2 = server_internal::handle_h2_server_ingress(
             sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out, stage,
         );
         if ok_h2 {
@@ -926,7 +919,7 @@ fn dispatch_pipelined_request<Stage, B>(
     stage:     Stage&,
 ) -> bool {
     reset_server_response_fast(res);
-    var future = internal::new_inline_handler_future(0);
+    var future = server_internal::new_inline_handler_future(0);
     let _ = execute_server_pipeline_with_stage(
         server.pipeline, server.timer, client_ip, req, now_ns, res, future, stage,
     );
@@ -1511,7 +1504,7 @@ fn finish_single_pipeline_turn<Stage, B>(
         return;
     }
 
-    var future = internal::new_inline_handler_future(0);
+    var future = server_internal::new_inline_handler_future(0);
     let _ = execute_server_pipeline_with_stage(
         server.pipeline, server.timer, local_ip, g_turn_req, now_ns, g_turn_res, future, stage,
     );
@@ -1627,14 +1620,14 @@ inline fn handle_h2_pipe_ingress<Stage, B>(
     server:     HttpServer&,
     client_ip:  const u8[:],
     pipe:       core::PipeBuffer&,
-    h2_sess:    internal::H2ServerSession&,
+    h2_sess:    server_internal::H2ServerSession&,
     now_ns:     u64,
     unread_len: i64,
     wire_out:   B&,
     stage:      Stage&,
 ) -> i64, bool {
     let stream = pipe.readable_slice();
-    let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
+    let consumed_h2, ok_h2 = server_internal::handle_h2_server_ingress(
         h2_sess, server.pipeline, server.timer, client_ip, stream, now_ns / 1000000, wire_out, stage,
     );
     if ok_h2 {
@@ -1653,7 +1646,7 @@ fn handle_connection_pipe<Stage, B>(
     pipe:      core::PipeBuffer&,
     now_ns:    u64,
     wire_out:  B&,
-    h2_sess:   internal::H2ServerSession&,
+    h2_sess:   server_internal::H2ServerSession&,
     stage:     Stage&,
 ) -> i64, bool {
     g_h1_parse_cache.enabled = server.enable_header_memoization;
@@ -1709,7 +1702,7 @@ fn handle_connection_pipe<B>(
     pipe:      core::PipeBuffer&,
     now_ns:    u64,
     wire_out:  B&,
-    h2_sess:   internal::H2ServerSession&,
+    h2_sess:   server_internal::H2ServerSession&,
 ) -> i64, bool {
     var noop = wire::NoOpStage {};
     return handle_connection_pipe(server, client_ip, pipe, now_ns, wire_out, h2_sess, noop);
@@ -1762,7 +1755,7 @@ fn dispatch_server_request_with_stage<UserStage>(
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
-    var future = internal::new_inline_handler_future(0);
+    var future = server_internal::new_inline_handler_future(0);
     let outcome = execute_server_pipeline_with_stage(
         server.pipeline, server.timer, client_ip, req, now_ns, res, future, user_stage,
     );
@@ -1823,7 +1816,7 @@ inline fn step_h2_server_session_buf<InBuf, OutBuf>(
     out_wire: OutBuf&,
 ) -> bool {
     out_wire.clear();
-    let consumed, ok = internal::handle_h2_server_ingress(
+    let consumed, ok = server_internal::handle_h2_server_ingress(
         g_default_reactor.h2_sessions[h2_idx],
         server.pipeline,
         server.timer,
@@ -2598,7 +2591,7 @@ inline fn handle_page_ring_h2_preface<Stage, B>(
         return 0;
     }
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
-    let consumed_h2, ok_h2 = internal::handle_h2_server_ingress(
+    let consumed_h2, ok_h2 = server_internal::handle_h2_server_ingress(
         g_default_reactor.h2_sessions[h2_idx],
         server.pipeline,
         server.timer,

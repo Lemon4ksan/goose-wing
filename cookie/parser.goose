@@ -525,7 +525,7 @@ fn parse_cookie_payload_pair(
     let raw_val = if has_eq { rhs.trim_lws() } else { name_val_part.trim_lws() };
 
     guard raw_name.len > 0 || raw_val.len > 0 else { return "", false; }
-    if core::add_sat_i64(raw_name.len, raw_val.len) > internal::K_MAX_COOKIE_NAME_VAL_LEN {
+    if core::add_sat_i64(raw_name.len, raw_val.len) > cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN {
         return "", false;
     }
 
@@ -562,7 +562,7 @@ fn apply_parsed_cookie_attribute(
 
     if attr_name.eq_ascii_fold("domain") {
         cookie_ref.has_domain_attr = true;
-        if attr_val.len > internal::K_MAX_COOKIE_ATTR_VAL_LEN {
+        if attr_val.len > cookie_internal::K_MAX_COOKIE_ATTR_VAL_LEN {
             cookie_ref.domain.clear();
             cookie_ref.host_only = false;
             return;
@@ -571,7 +571,7 @@ fn apply_parsed_cookie_attribute(
         return;
     }
 
-    guard attr_val.len <= internal::K_MAX_COOKIE_ATTR_VAL_LEN else { return; }
+    guard attr_val.len <= cookie_internal::K_MAX_COOKIE_ATTR_VAL_LEN else { return; }
 
     if attr_name.eq_ascii_fold("httponly") {
         cookie_ref.httponly = true;
@@ -653,7 +653,7 @@ fn apply_parsed_max_age_attribute(
     } else if is_neg {
         -1
     } else {
-        internal::K_MAX_COOKIE_AGE_SEC
+        cookie_internal::K_MAX_COOKIE_AGE_SEC
     };
 
     has_max_age = true;
@@ -663,7 +663,7 @@ fn apply_parsed_max_age_attribute(
         return;
     }
 
-    let capped_sec = min(max_age_val, internal::K_MAX_COOKIE_AGE_SEC);
+    let capped_sec = min(max_age_val, cookie_internal::K_MAX_COOKIE_AGE_SEC);
     cookie_ref.expires_utc = core::add_sat_i64(now_us, core::mul_sat_i64(capped_sec, 1000000));
 }
 
@@ -679,7 +679,7 @@ fn apply_parsed_expires_attribute(
     guard expires_ok else { return; }
 
     cookie_ref.persistent = true;
-    cookie_ref.expires_utc = min(expires_us, core::add_sat_i64(now_us, internal::K_MAX_COOKIE_AGE_US));
+    cookie_ref.expires_utc = min(expires_us, core::add_sat_i64(now_us, cookie_internal::K_MAX_COOKIE_AGE_US));
 }
 
 inline fn try_fallback_exact_host_only(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {

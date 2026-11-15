@@ -4,7 +4,7 @@
 // QUIC ACK Framing, Optimistic ACK Defense, RTT Estimation & PTO Engine (RFC 9000, RFC 9002).
 // Implements ACK/ACK_ECN codec, OACK validation (ANRW 2025), RTT estimators,
 // packet/time threshold loss detection, and 5-priority PTO state machine.
-namespace internal;
+namespace quic_internal;
 
 import std;
 import core from "..";

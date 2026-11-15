@@ -100,9 +100,6 @@ typedef struct {
 #ifndef IORING_UNREGISTER_BUFFERS
 #define IORING_UNREGISTER_BUFFERS 1
 #endif
-#ifndef IORING_REGISTER_FILES
-#define IORING_REGISTER_FILES 2
-#endif
 #ifndef IORING_REGISTER_PBUF_RING
 #define IORING_REGISTER_PBUF_RING 22
 #endif
@@ -460,7 +457,7 @@ int32_t wing_uring_peek_cqe(int64_t ring_fd, uint64_t *user_data_out, int32_t *r
     return 0;
 }
 
-int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
+static int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
     long ret = syscall(__NR_io_uring_register, (int)ring_fd, opcode, arg, nr_args);
     if (ret < 0) {
         return -errno;
@@ -607,10 +604,6 @@ void wing_uring_recycle_pbuf(uint64_t handle, uint16_t bid) {
     __atomic_store_n(&hdr->tail, (uint16_t)(tail + 1), __ATOMIC_RELEASE);
 }
 
-int32_t wing_uring_register_files(int64_t ring_fd, const int32_t *fds, uint32_t nr_files) {
-    return wing_uring_register(ring_fd, IORING_REGISTER_FILES, fds, nr_files);
-}
-
 void wing_uring_close(int64_t ring_fd) {
     if (ring_fd >= 0) {
         for (int i = 0; i < WING_URING_MAX_PBUF_RINGS; i++) {
@@ -679,13 +672,6 @@ int32_t wing_uring_enter(int64_t ring_fd, uint32_t to_submit, uint32_t min_compl
     (void)flags;
     return -ENOSYS;
 }
-int32_t wing_uring_register(int64_t ring_fd, uint32_t opcode, const void *arg, uint32_t nr_args) {
-    (void)ring_fd;
-    (void)opcode;
-    (void)arg;
-    (void)nr_args;
-    return -ENOSYS;
-}
 int32_t wing_uring_register_buffers(int64_t ring_fd, wing_iovecs_ro iovecs) {
     (void)ring_fd;
     (void)iovecs;
@@ -726,12 +712,6 @@ int32_t wing_uring_read_pbuf(uint64_t handle, uint16_t bid, int32_t len, wing_ur
 void wing_uring_recycle_pbuf(uint64_t handle, uint16_t bid) {
     (void)handle;
     (void)bid;
-}
-int32_t wing_uring_register_files(int64_t ring_fd, const int32_t *fds, uint32_t nr_files) {
-    (void)ring_fd;
-    (void)fds;
-    (void)nr_files;
-    return -ENOSYS;
 }
 void wing_uring_close(int64_t ring_fd) { (void)ring_fd; }
 

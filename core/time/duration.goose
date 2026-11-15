@@ -77,7 +77,6 @@ fn hours(dur: Duration) -> f64 { return as_hours_f64(dur); }
 
 fn add(dur1: Duration, dur2: Duration) -> Duration { return dur1 + dur2; }
 fn sub(dur1: Duration, dur2: Duration) -> Duration { return dur1 - dur2; }
-fn mul(dur: Duration, factor: i64) -> Duration { return dur * factor; }
 fn div(dur: Duration, factor: i64) -> Duration { return dur / factor; }
 fn abs(dur: Duration) -> Duration {
     if dur.nanos == DURATION_MIN_NANOS { return Duration { nanos: DURATION_MAX_NANOS }; }

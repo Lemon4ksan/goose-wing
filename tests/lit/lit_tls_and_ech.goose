@@ -198,16 +198,16 @@ fn run_01_verify_tls_handshake_wire() {
     fake_pq_buf[1] = 0xEB; // GROUP_SECP256R1_MLKEM768
     fake_pq_buf[2] = 0x04;
     fake_pq_buf[3] = 0xC0; // len = 1216
-    var out_cli_pq = internal::PostQuantumKeyShare { .. };
-    let ok_fake_pq = internal::parse_hybrid_key_share(out_cli_pq, fake_pq_buf[..]);
+    var out_cli_pq = tls_internal::PostQuantumKeyShare { .. };
+    let ok_fake_pq = tls_internal::parse_hybrid_key_share(out_cli_pq, fake_pq_buf[..]);
     assert(!ok_fake_pq);
     var fake_srv_pq: u8[1124] = [0; 1124];
     fake_srv_pq[0] = 0x11;
     fake_srv_pq[1] = 0xEB; // GROUP_SECP256R1_MLKEM768
     fake_srv_pq[2] = 0x04;
     fake_srv_pq[3] = 0x60; // len = 1120
-    var out_srv_pq = internal::PostQuantumServerShare { .. };
-    let ok_fake_srv_pq = internal::parse_hybrid_server_key_share(out_srv_pq, fake_srv_pq[..]);
+    var out_srv_pq = tls_internal::PostQuantumServerShare { .. };
+    let ok_fake_srv_pq = tls_internal::parse_hybrid_server_key_share(out_srv_pq, fake_srv_pq[..]);
     assert(!ok_fake_srv_pq);
     print("PQ_WRONG_GROUP_REJECTED: OK");
 
@@ -260,24 +260,24 @@ fn run_01_verify_tls_handshake_wire() {
 
     // 14. Regression: PSK binder truncation must reject u16 binders_len overflow (65535 + 2 wrap)
     let dummy_ch_bytes: u8[10] = [0x01; 10];
-    let _, ok_trunc_wrap = internal::truncate_client_hello_for_binder(dummy_ch_bytes[..], 65535);
+    let _, ok_trunc_wrap = tls_internal::truncate_client_hello_for_binder(dummy_ch_bytes[..], 65535);
     assert(!ok_trunc_wrap);
     print("PSK_BINDER_OVERFLOW_REJECTED: OK");
 
     // 15. KeySchedule: 0-RTT early traffic secret derivation (RFC 8446 §7.1)
-    var ks_test, ok_kst = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    var ks_test, ok_kst = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
     assert(ok_kst);
     let dummy_psk: u8[32] = [0x55; 32];
-    assert(internal::ks_init_early_secret(ks_test, dummy_psk[..]));
+    assert(tls_internal::ks_init_early_secret(ks_test, dummy_psk[..]));
     let ch_dummy_hash: u8[32] = [0x42; 32];
-    assert(internal::ks_derive_early_traffic(ks_test, ch_dummy_hash[..]));
+    assert(tls_internal::ks_derive_early_traffic(ks_test, ch_dummy_hash[..]));
     print("KS_EARLY_TRAFFIC: OK");
 
     // 16. Regression (TLS-BUG-001): ks_update_traffic_secret must use HKDF-Expand-Label(secret, "traffic upd", "", L) per RFC 8446 §7.2
     var ts_upd:          u8[32] = [0x77; 32];
     var expected_ts_upd: u8[32] = [0; 32];
-    assert(internal::hkdf_expand_label(internal::HASH_SHA256, ts_upd[..], "traffic upd", [], 32, expected_ts_upd[..]));
-    assert(internal::ks_update_traffic_secret(internal::HASH_SHA256, 32, ts_upd[..]));
+    assert(tls_internal::hkdf_expand_label(tls_internal::HASH_SHA256, ts_upd[..], "traffic upd", [], 32, expected_ts_upd[..]));
+    assert(tls_internal::ks_update_traffic_secret(tls_internal::HASH_SHA256, 32, ts_upd[..]));
     assert(core::ct_eq_bytes(ts_upd[..], expected_ts_upd[..]));
     print("KS_UPDATE_TRAFFIC_RFC8446: OK");
 
@@ -324,10 +324,10 @@ fn run_01_verify_tls_handshake_wire() {
     };
     var hpke_ct: u8[..64] = [];
     assert(!wing::hpke_seal(hpke_ctx, "", "hello", hpke_ct));
-    var sreg = internal::strike_register_init(1000, 10000);
-    assert(internal::strike_register_check_and_insert(sreg, "init-epoch-10", 10000));
-    assert(internal::strike_register_check_and_insert(sreg, "ticket-prev-epoch", 9500));
-    assert(!internal::strike_register_check_and_insert(sreg, "ticket-prev-epoch", 11000));
+    var sreg = tls_internal::strike_register_init(1000, 10000);
+    assert(tls_internal::strike_register_check_and_insert(sreg, "init-epoch-10", 10000));
+    assert(tls_internal::strike_register_check_and_insert(sreg, "ticket-prev-epoch", 9500));
+    assert(!tls_internal::strike_register_check_and_insert(sreg, "ticket-prev-epoch", 11000));
     print("HPKE_AND_STRIKE_REGISTER_GUARDS: OK");
 
     // 21. Regression (TLS-BUG-010 & TLS-BUG-012): Header capacity guard & X.509 pathLenConstraint > 255 / duplicate extension rejection
@@ -723,41 +723,41 @@ fn verify_mlkem768_decapsulate() {
     }
 
     var ss_valid: u8[32] = [0; 32];
-    assert(internal::mlkem768_decapsulate(ct_valid[..], sk[..], ss_valid[..]));
+    assert(tls_internal::mlkem768_decapsulate(ct_valid[..], sk[..], ss_valid[..]));
 
     var ct_tampered = ct_valid;
     ct_tampered[0] ^= 0xFF;
     var ss_tampered: u8[32] = [0; 32];
-    assert(internal::mlkem768_decapsulate(ct_tampered[..], sk[..], ss_tampered[..]));
+    assert(tls_internal::mlkem768_decapsulate(ct_tampered[..], sk[..], ss_tampered[..]));
     assert(!core::ct_eq_bytes(ss_valid[..], ss_tampered[..]));
 
     let expected_k_bar = core::hmac_sha256(sk[2368..2400], ct_tampered[..]);
     assert(core::ct_eq_bytes(ss_tampered[..], expected_k_bar[..]));
 
     var tiny_ss: u8[16] = [0; 16];
-    if internal::mlkem768_decapsulate(ct_valid[..], sk[..], tiny_ss[..]) {
+    if tls_internal::mlkem768_decapsulate(ct_valid[..], sk[..], tiny_ss[..]) {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP");
     }
 
-    var p256_srv = internal::SecP256r1MLKEM768ServerShare { .. };
+    var p256_srv = tls_internal::SecP256r1MLKEM768ServerShare { .. };
     let sk256: u8[32] = [0x11; 32];
     p256_srv.secp256r1_public = core::ecdsa_p256_public_key(sk256);
     var p256_wire: u8[>..] = [];
-    internal::format_secp256r1_mlkem768_server_share(p256_srv, p256_wire);
-    var p256_parsed = internal::SecP256r1MLKEM768ServerShare { .. };
-    assert(internal::parse_secp256r1_mlkem768_server_share(p256_parsed, p256_wire[..]));
+    tls_internal::format_secp256r1_mlkem768_server_share(p256_srv, p256_wire);
+    var p256_parsed = tls_internal::SecP256r1MLKEM768ServerShare { .. };
+    assert(tls_internal::parse_secp256r1_mlkem768_server_share(p256_parsed, p256_wire[..]));
 
-    var p384_srv = internal::SecP384r1MLKEM1024ServerShare { .. };
+    var p384_srv = tls_internal::SecP384r1MLKEM1024ServerShare { .. };
     let sk384: u8[48] = [0x22; 48];
     p384_srv.secp384r1_public = core::ecdsa_p384_public_key(sk384);
     var p384_wire: u8[>..] = [];
-    internal::format_secp384r1_mlkem1024_server_share(p384_srv, p384_wire);
-    var p384_parsed = internal::SecP384r1MLKEM1024ServerShare { .. };
-    assert(internal::parse_secp384r1_mlkem1024_server_share(p384_parsed, p384_wire[..]));
+    tls_internal::format_secp384r1_mlkem1024_server_share(p384_srv, p384_wire);
+    var p384_parsed = tls_internal::SecP384r1MLKEM1024ServerShare { .. };
+    assert(tls_internal::parse_secp384r1_mlkem1024_server_share(p384_parsed, p384_wire[..]));
 
     let c48:  u8[48] = [1; 48];
     let pq32: u8[32] = [2; 32];
-    let comb48 = internal::derive_secp384r1_mlkem1024_shared_secret(c48, pq32);
+    let comb48 = tls_internal::derive_secp384r1_mlkem1024_shared_secret(c48, pq32);
     assert(comb48.len == 48);
     print("MLKEM768_DECAPS_OK: true");
 }
@@ -887,27 +887,27 @@ fn test_new_session_ticket_codec() {
 }
 
 fn test_strike_register_anti_replay() {
-    var reg = internal::strike_register_init(10000, 2000);
+    var reg = tls_internal::strike_register_init(10000, 2000);
     let ticket_id: const u8[:] = "unique_session_ticket_id_alpha";
 
     // First presentation at t = 1000 ms: MUST be accepted
-    let first_check = internal::strike_register_check_and_insert(reg, ticket_id, 1000);
+    let first_check = tls_internal::strike_register_check_and_insert(reg, ticket_id, 1000);
     assert(first_check);
     print("STRIKE_REG_FIRST_INSERT: OK");
 
     // Immediate replay of same ticket at t = 1050 ms: MUST be rejected
-    let replay_check = internal::strike_register_check_and_insert(reg, ticket_id, 1050);
+    let replay_check = tls_internal::strike_register_check_and_insert(reg, ticket_id, 1050);
     assert(!replay_check);
     print("STRIKE_REG_REPLAY_DETECTED: OK");
 
     // Advance time to next epoch (t = 12000 ms): ticket is in previous window, STILL REJECTED
-    let next_epoch_replay = internal::strike_register_check_and_insert(reg, ticket_id, 12000);
+    let next_epoch_replay = tls_internal::strike_register_check_and_insert(reg, ticket_id, 12000);
     assert(!next_epoch_replay);
     print("STRIKE_REG_PREV_EPOCH_REPLAY_DETECTED: OK");
 
     // Unrelated ticket in new epoch MUST be accepted
     let new_ticket: const u8[:] = "fresh_ticket_beta";
-    let new_check = internal::strike_register_check_and_insert(reg, new_ticket, 12000);
+    let new_check = tls_internal::strike_register_check_and_insert(reg, new_ticket, 12000);
     assert(new_check);
     print("STRIKE_REG_FRESH_TICKET_ACCEPTED: OK");
 }
@@ -918,12 +918,12 @@ fn test_ticket_age_validation() {
     let obfuscated_age: u32 = (actual_age_ms as u32) + ticket_age_add;
 
     // Expected age matches actual age within 2000ms tolerance
-    let ok_match = internal::validate_ticket_age(obfuscated_age, ticket_age_add, 5000, 2000);
+    let ok_match = tls_internal::validate_ticket_age(obfuscated_age, ticket_age_add, 5000, 2000);
     assert(ok_match);
     print("TICKET_AGE_VALID: OK");
 
     // Clock skew / delay exceeding tolerance (expected 1000ms vs actual 5000ms) -> MUST FAIL
-    let bad_skew = internal::validate_ticket_age(obfuscated_age, ticket_age_add, 1000, 2000);
+    let bad_skew = tls_internal::validate_ticket_age(obfuscated_age, ticket_age_add, 1000, 2000);
     assert(!bad_skew);
     print("TICKET_AGE_SKEW_REJECTED: OK");
 }
@@ -1050,11 +1050,11 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     let d_seed: u8[32] = [0x42; 32];
     let z_seed: u8[32] = [0x99; 32];
     let m_rand: u8[32] = [0x77; 32];
-    let ek, dk = internal::mlkem768_keygen(d_seed, z_seed);
-    let ct, ss_enc, ok_enc = internal::mlkem768_encapsulate(ek, m_rand);
+    let ek, dk = tls_internal::mlkem768_keygen(d_seed, z_seed);
+    let ct, ss_enc, ok_enc = tls_internal::mlkem768_encapsulate(ek, m_rand);
     assert(ok_enc);
     var ss_dec: u8[32] = [0; 32];
-    let ok_dec = internal::mlkem768_decapsulate(ct[..], dk[..], ss_dec[..]);
+    let ok_dec = tls_internal::mlkem768_decapsulate(ct[..], dk[..], ss_dec[..]);
     assert(ok_dec);
     assert(core::ct_eq_bytes(ss_enc[..], ss_dec[..]));
 
@@ -1062,7 +1062,7 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     var ct_bad = ct;
     ct_bad[0] ^= 0x55;
     var ss_rej: u8[32] = [0; 32];
-    assert(internal::mlkem768_decapsulate(ct_bad[..], dk[..], ss_rej[..]));
+    assert(tls_internal::mlkem768_decapsulate(ct_bad[..], dk[..], ss_rej[..]));
     assert(!core::ct_eq_bytes(ss_enc[..], ss_rej[..]));
 
     // Invalid encapsulation key (modulus >= 3329) fails closed
@@ -1070,7 +1070,7 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     bad_ek[0] = 0xFF;
     bad_ek[1] = 0xFF;
     bad_ek[2] = 0xFF;
-    let _, _, ok_bad_ek = internal::mlkem768_encapsulate(bad_ek, m_rand);
+    let _, _, ok_bad_ek = tls_internal::mlkem768_encapsulate(bad_ek, m_rand);
     assert(!ok_bad_ek);
     print("TLS_MLKEM768_ROUNDTRIP_OK: true");
 
@@ -1112,21 +1112,21 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     print("TLS_ECH_CONFIRMATION_OK: true");
 
     // ---- 6. RFC 8446 §7.5 Exporters: >255B Context & Early Exporter Secret (TLSMOD-005) ----
-    var ks, ok_ks = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    var ks, ok_ks = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
     assert(ok_ks);
     let psk_ikm: u8[32] = [0xAA; 32];
     let ch_hash: u8[32] = [0xBB; 32];
-    assert(internal::ks_init_early_secret(ks, psk_ikm[..]));
-    assert(internal::ks_derive_early_traffic(ks, ch_hash[..]));
+    assert(tls_internal::ks_init_early_secret(ks, psk_ikm[..]));
+    assert(tls_internal::ks_derive_early_traffic(ks, ch_hash[..]));
     assert(ks.early_exporter_secret.len == 32);
 
     let ecdhe_ss: u8[32] = [0xCC; 32];
-    assert(internal::ks_advance_to_handshake(ks, ecdhe_ss[..]));
-    assert(internal::ks_advance_to_master(ks, ch_hash[..]));
+    assert(tls_internal::ks_advance_to_handshake(ks, ecdhe_ss[..]));
+    assert(tls_internal::ks_advance_to_master(ks, ch_hash[..]));
 
     var large_ctx: u8[300] = [0x5A; 300];
     var exp_out:   u8[32]  = [0; 32];
-    assert(internal::ks_export_keying_material(ks, "EXPORTER-Channel-Binding", large_ctx[..], 32, exp_out[..]));
+    assert(tls_internal::ks_export_keying_material(ks, "EXPORTER-Channel-Binding", large_ctx[..], 32, exp_out[..]));
     print("TLS_EXPORTER_LARGE_CTX_OK: true");
 
     // ---- 7. ECDSA P-256 & P-384 Jacobian Projective & Shamir Dual-Scalar (TLSC-07) ----

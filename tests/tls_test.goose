@@ -501,7 +501,7 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
             0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
         ];
         var out_key: u8[16] = [0; 16];
-        let ok = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "key", [], 16, out_key[..]);
+        let ok = tls_internal::hkdf_expand_label(tls_internal::HASH_SHA256, prk[..], "key", [], 16, out_key[..]);
         sub.assert_true(ok, "hkdf_expand_label succeeds");
 
         // Verify non-zero derivation
@@ -514,74 +514,74 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
         // Info capacity test with large context (exceeding original 128-byte buffer limit)
         var large_ctx:    u8[200] = [0x5A; 200];
         var out_expanded: u8[32]  = [0; 32];
-        let ok_large = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "large_test", large_ctx[..], 32, out_expanded[..]);
+        let ok_large = tls_internal::hkdf_expand_label(tls_internal::HASH_SHA256, prk[..], "large_test", large_ctx[..], 32, out_expanded[..]);
         sub.assert_true(ok_large, "hkdf_expand_label handles large context (> 128 bytes) safely");
 
         // Secret length bound rejection
         let short_prk: u8[16] = [0x42; 16];
-        let ok_short = internal::hkdf_expand_label(internal::HASH_SHA256, short_prk[..], "key", [], 16, out_key[..]);
+        let ok_short = tls_internal::hkdf_expand_label(tls_internal::HASH_SHA256, short_prk[..], "key", [], 16, out_key[..]);
         sub.assert_false(ok_short, "hkdf_expand_label rejects secret shorter than hash length (32 bytes)");
 
         // Empty label rejected
-        let ok_empty_lbl = internal::hkdf_expand_label(internal::HASH_SHA256, prk[..], "", [], 16, out_key[..]);
+        let ok_empty_lbl = tls_internal::hkdf_expand_label(tls_internal::HASH_SHA256, prk[..], "", [], 16, out_key[..]);
         sub.assert_false(ok_empty_lbl, "empty label rejected");
     };
 
     t.run("TLS-11: Full Key Schedule Lifecycle: Early -> Handshake -> Master -> Resumption") { sub =>
-        let ks, ok_init = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+        let ks, ok_init = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
         sub.assert_true(ok_init, "ks_init succeeds for AES_128_GCM_SHA256");
-        sub.assert_eq(ks.hash_id, internal::HASH_SHA256, "hash_id is SHA256");
+        sub.assert_eq(ks.hash_id, tls_internal::HASH_SHA256, "hash_id is SHA256");
         sub.assert_eq(ks.hash_len, 32, "hash_len is 32");
 
         var sched = ks;
 
         // 1. Early Secret (zero PSK)
-        let ok_early = internal::ks_init_early_secret(sched, []);
+        let ok_early = tls_internal::ks_init_early_secret(sched, []);
         sub.assert_true(ok_early, "init early secret ok");
-        sub.assert_eq(sched.stage, internal::KS_STAGE_EARLY, "stage is early");
+        sub.assert_eq(sched.stage, tls_internal::KS_STAGE_EARLY, "stage is early");
 
         // All-zero ECDHE shared secret rejection (RFC 7748 §6.1 / RFC 8446 §4.2.8.2)
         let zero_ecdhe: u8[32] = [0x00; 32];
         var sched_fail = sched;
-        let ok_zero_hs = internal::ks_advance_to_handshake(sched_fail, zero_ecdhe[..]);
+        let ok_zero_hs = tls_internal::ks_advance_to_handshake(sched_fail, zero_ecdhe[..]);
         sub.assert_false(ok_zero_hs, "rejects all-zero (EC)DHE shared secret");
 
         // Empty ECDHE secret rejected
-        let ok_empty_hs = internal::ks_advance_to_handshake(sched_fail, []);
+        let ok_empty_hs = tls_internal::ks_advance_to_handshake(sched_fail, []);
         sub.assert_false(ok_empty_hs, "rejects empty (EC)DHE shared secret");
 
         // 2. Advance to Handshake with mock ECDHE secret (32 bytes)
         let ecdhe_secret: u8[32] = [0x42; 32];
-        let ok_hs = internal::ks_advance_to_handshake(sched, ecdhe_secret[..]);
+        let ok_hs = tls_internal::ks_advance_to_handshake(sched, ecdhe_secret[..]);
         sub.assert_true(ok_hs, "advance to handshake ok");
-        sub.assert_eq(sched.stage, internal::KS_STAGE_HANDSHAKE, "stage is handshake");
+        sub.assert_eq(sched.stage, tls_internal::KS_STAGE_HANDSHAKE, "stage is handshake");
 
         // Transcript hash length bound validation
         let bad_hash: u8[16] = [0x55; 16];
-        let ok_bad_hash = internal::ks_derive_handshake_traffic(sched, bad_hash[..]);
+        let ok_bad_hash = tls_internal::ks_derive_handshake_traffic(sched, bad_hash[..]);
         sub.assert_false(ok_bad_hash, "rejects mismatched handshake transcript hash length");
 
         // Derives handshake traffic secrets
         let ch_sh_hash: u8[32] = [0x55; 32];
-        let ok_hs_traffic = internal::ks_derive_handshake_traffic(sched, ch_sh_hash[..]);
+        let ok_hs_traffic = tls_internal::ks_derive_handshake_traffic(sched, ch_sh_hash[..]);
         sub.assert_true(ok_hs_traffic, "derive handshake traffic ok");
 
         // 3. Advance to Master Secret
         let transcript_hash: u8[32] = [0xAA; 32];
-        let ok_master = internal::ks_advance_to_master(sched, transcript_hash[..]);
+        let ok_master = tls_internal::ks_advance_to_master(sched, transcript_hash[..]);
         sub.assert_true(ok_master, "advance to master ok");
-        sub.assert_eq(sched.stage, internal::KS_STAGE_MASTER, "stage is master");
+        sub.assert_eq(sched.stage, tls_internal::KS_STAGE_MASTER, "stage is master");
 
         // 4. Advance to Resumption
         let fin_hash: u8[32] = [0xBB; 32];
-        let ok_res = internal::ks_advance_to_resumption(sched, fin_hash[..]);
+        let ok_res = tls_internal::ks_advance_to_resumption(sched, fin_hash[..]);
         sub.assert_true(ok_res, "advance to resumption ok");
-        sub.assert_eq(sched.stage, internal::KS_STAGE_RESUMPTION, "stage is resumption");
+        sub.assert_eq(sched.stage, tls_internal::KS_STAGE_RESUMPTION, "stage is resumption");
 
         // Derive key and IV from application traffic secret
         var app_key: u8[16] = [0; 16];
         var app_iv:  u8[12] = [0; 12];
-        let ok_kiv = internal::ks_derive_key_iv(
+        let ok_kiv = tls_internal::ks_derive_key_iv(
             sched.hash_id,
             sched.client_ap_traffic[..32],
             16,
@@ -592,12 +592,12 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
 
         // Derive QUIC HP Key
         var hp_key: u8[16] = [0; 16];
-        let ok_hp = internal::ks_derive_quic_hp_key(sched.hash_id, sched.client_ap_traffic[..32], 16, hp_key[..]);
+        let ok_hp = tls_internal::ks_derive_quic_hp_key(sched.hash_id, sched.client_ap_traffic[..32], 16, hp_key[..]);
         sub.assert_true(ok_hp, "derive quic hp key ok");
 
         // Finished verify_data computation
         var verify_data: u8[32] = [0; 32];
-        let ok_vd = internal::ks_compute_finished_verify_data(
+        let ok_vd = tls_internal::ks_compute_finished_verify_data(
             sched.hash_id,
             sched.hash_len,
             sched.client_hs_traffic[..32],
@@ -607,8 +607,8 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
         sub.assert_true(ok_vd, "finished verify data computed");
 
         // Key Schedule zeroization
-        internal::ks_zeroize(sched);
-        sub.assert_eq(sched.stage, internal::KS_STAGE_UNINIT, "stage is uninit after zeroize");
+        tls_internal::ks_zeroize(sched);
+        sub.assert_eq(sched.stage, tls_internal::KS_STAGE_UNINIT, "stage is uninit after zeroize");
         sub.assert_eq(sched.current_secret[0], 0, "current secret wiped");
     };
 
@@ -616,40 +616,40 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
         var traffic_secret: u8[32] = [0x77; 32];
         let orig_b0 = traffic_secret[0];
 
-        let ok_upd = internal::ks_update_traffic_secret(internal::HASH_SHA256, 32, traffic_secret[..]);
+        let ok_upd = tls_internal::ks_update_traffic_secret(tls_internal::HASH_SHA256, 32, traffic_secret[..]);
         sub.assert_true(ok_upd, "traffic secret update succeeds");
         sub.assert_false(traffic_secret[0] == orig_b0, "traffic secret successfully mutated");
     };
 
     t.run("TLS-33: TLS 1.3 Key Schedule Exporter Master Secret Derivation (RFC 8446 §7.5)") { sub =>
-        let ks, ok_init = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+        let ks, ok_init = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
         sub.assert_true(ok_init, "ks_init succeeds");
 
         var sched = ks;
-        internal::ks_init_early_secret(sched, []);
+        tls_internal::ks_init_early_secret(sched, []);
         let ecdhe_secret: u8[32] = [0x42; 32];
-        internal::ks_advance_to_handshake(sched, ecdhe_secret[..]);
+        tls_internal::ks_advance_to_handshake(sched, ecdhe_secret[..]);
         let ch_sh_hash: u8[32] = [0x55; 32];
-        internal::ks_derive_handshake_traffic(sched, ch_sh_hash[..]);
+        tls_internal::ks_derive_handshake_traffic(sched, ch_sh_hash[..]);
 
         // Exporter cannot be called before Master Secret stage
         var out_exp: u8[32] = [0; 32];
-        let ok_early_exp = internal::ks_export_keying_material(sched, "test-label", [], 32, out_exp[..]);
+        let ok_early_exp = tls_internal::ks_export_keying_material(sched, "test-label", [], 32, out_exp[..]);
         sub.assert_false(ok_early_exp, "calling exporter before master secret fails");
 
         // Advance to Master stage
         let transcript_hash: u8[32] = [0xAA; 32];
-        internal::ks_advance_to_master(sched, transcript_hash[..]);
-        sub.assert_eq(sched.stage, internal::KS_STAGE_MASTER, "stage is master");
+        tls_internal::ks_advance_to_master(sched, transcript_hash[..]);
+        sub.assert_eq(sched.stage, tls_internal::KS_STAGE_MASTER, "stage is master");
 
         // 1. Export with empty context ("") -> uses Hash("")
         var out_exp_empty: u8[32] = [0; 32];
-        let ok_empty = internal::ks_export_keying_material(sched, "test-label", [], 32, out_exp_empty[..]);
+        let ok_empty = tls_internal::ks_export_keying_material(sched, "test-label", [], 32, out_exp_empty[..]);
         sub.assert_true(ok_empty, "exporter with empty context succeeds");
 
         // 2. Export with non-empty context
         var out_exp_ctx: u8[32] = [0; 32];
-        let ok_ctx = internal::ks_export_keying_material(sched, "test-label", "channel-binding-context", 32, out_exp_ctx[..]);
+        let ok_ctx = tls_internal::ks_export_keying_material(sched, "test-label", "channel-binding-context", 32, out_exp_ctx[..]);
         sub.assert_true(ok_ctx, "exporter with custom context succeeds");
 
         // Different context MUST produce different exporter key material
@@ -661,33 +661,33 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
 
         // 3. Exporter context is hashed via Hash(context_value) (RFC 8446 §7.5), arbitrary length supported
         var long_ctx: u8[300] = [0x77; 300];
-        let ok_long_ctx = internal::ks_export_keying_material(sched, "test-label", long_ctx[..], 32, out_exp[..]);
+        let ok_long_ctx = tls_internal::ks_export_keying_material(sched, "test-label", long_ctx[..], 32, out_exp[..]);
         sub.assert_true(ok_long_ctx, "context > 255 bytes hashed and accepted (RFC 8446 §7.5)");
 
         // 4. Exporter label length bound (> 245 bytes) MUST be rejected
         var long_lbl: u8[246] = ['a'; 246];
-        let ok_long_lbl = internal::ks_export_keying_material(sched, long_lbl[..], [], 32, out_exp[..]);
+        let ok_long_lbl = tls_internal::ks_export_keying_material(sched, long_lbl[..], [], 32, out_exp[..]);
         sub.assert_false(ok_long_lbl, "label > 245 bytes rejected");
 
         // 5. Empty label MUST be rejected
-        let ok_no_lbl = internal::ks_export_keying_material(sched, "", [], 32, out_exp[..]);
+        let ok_no_lbl = tls_internal::ks_export_keying_material(sched, "", [], 32, out_exp[..]);
         sub.assert_false(ok_no_lbl, "empty exporter label rejected");
     };
 
     t.run("TLS-34: External PSK Early Secret & Resumption Ticket Nonce Derivation (RFC 8446 §7.1 & §4.6.1)") { sub =>
-        let ks, ok_init = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+        let ks, ok_init = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
         sub.assert_true(ok_init, "ks_init succeeds");
 
         // 1. External PSK generates "ext binder"
         var sched_ext = ks;
         let ext_psk: u8[32] = [0x88; 32];
-        let ok_ext = internal::ks_init_early_secret_with_mode(sched_ext, ext_psk[..], true);
+        let ok_ext = tls_internal::ks_init_early_secret_with_mode(sched_ext, ext_psk[..], true);
         sub.assert_true(ok_ext, "external PSK early secret initialized");
-        sub.assert_eq(sched_ext.stage, internal::KS_STAGE_EARLY, "stage is early");
+        sub.assert_eq(sched_ext.stage, tls_internal::KS_STAGE_EARLY, "stage is early");
 
         // Resumption PSK with same key generates "res binder"
         var sched_res = ks;
-        let ok_res = internal::ks_init_early_secret_with_mode(sched_res, ext_psk[..], false);
+        let ok_res = tls_internal::ks_init_early_secret_with_mode(sched_res, ext_psk[..], false);
         sub.assert_true(ok_res, "resumption PSK early secret initialized");
 
         // External binder key MUST differ from resumption binder key
@@ -702,14 +702,14 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
 
         // 2. Advance to Resumption stage
         let ecdhe_secret: u8[32] = [0x42; 32];
-        internal::ks_advance_to_handshake(sched_res, ecdhe_secret[..]);
+        tls_internal::ks_advance_to_handshake(sched_res, ecdhe_secret[..]);
         let ch_sh_hash: u8[32] = [0x55; 32];
-        internal::ks_derive_handshake_traffic(sched_res, ch_sh_hash[..]);
+        tls_internal::ks_derive_handshake_traffic(sched_res, ch_sh_hash[..]);
         let transcript_hash: u8[32] = [0xAA; 32];
-        internal::ks_advance_to_master(sched_res, transcript_hash[..]);
+        tls_internal::ks_advance_to_master(sched_res, transcript_hash[..]);
         let fin_hash: u8[32] = [0xBB; 32];
-        internal::ks_advance_to_resumption(sched_res, fin_hash[..]);
-        sub.assert_eq(sched_res.stage, internal::KS_STAGE_RESUMPTION, "stage is resumption");
+        tls_internal::ks_advance_to_resumption(sched_res, fin_hash[..]);
+        sub.assert_eq(sched_res.stage, tls_internal::KS_STAGE_RESUMPTION, "stage is resumption");
 
         // 3. Derive resumption PSK from ticket nonce (RFC 8446 §4.6.1)
         let ticket_nonce_1: u8[8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -717,9 +717,9 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
         var psk_out_1: u8[32] = [0; 32];
         var psk_out_2: u8[32] = [0; 32];
 
-        let ok_psk1 = internal::ks_derive_resumption_psk(sched_res, ticket_nonce_1[..], psk_out_1[..]);
+        let ok_psk1 = tls_internal::ks_derive_resumption_psk(sched_res, ticket_nonce_1[..], psk_out_1[..]);
         sub.assert_true(ok_psk1, "resumption psk 1 derived");
-        let ok_psk2 = internal::ks_derive_resumption_psk(sched_res, ticket_nonce_2[..], psk_out_2[..]);
+        let ok_psk2 = tls_internal::ks_derive_resumption_psk(sched_res, ticket_nonce_2[..], psk_out_2[..]);
         sub.assert_true(ok_psk2, "resumption psk 2 derived");
 
         // Distinct ticket nonces derive distinct resumption PSKs
@@ -732,7 +732,7 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
         // Ticket nonce > 255 bytes rejected
         var long_nonce: u8[256] = [0x01; 256];
         var psk_fail:   u8[32]  = [0; 32];
-        let ok_long_nonce = internal::ks_derive_resumption_psk(sched_res, long_nonce[..], psk_fail[..]);
+        let ok_long_nonce = tls_internal::ks_derive_resumption_psk(sched_res, long_nonce[..], psk_fail[..]);
         sub.assert_false(ok_long_nonce, "ticket nonce > 255 bytes rejected");
     };
 }
@@ -740,42 +740,42 @@ fn test_key_schedule_and_derivations(t: lit::T&) {
 // 5. Anti-Replay Strike Register & PSK Binders
 fn test_anti_replay_and_psk(t: lit::T&) {
     t.run("TLS-13: ZeroRttStrikeRegister Anti-Replay Detection & Epoch Rotation") { sub =>
-        var reg = internal::strike_register_init(10000, 2000); // 10s epoch, 2s tolerance
+        var reg = tls_internal::strike_register_init(10000, 2000); // 10s epoch, 2s tolerance
         let ticket_a: u8[16] = [0x01; 16];
         let ticket_b: u8[16] = [0x02; 16];
 
         // 1. Initial arrival of ticket A succeeds
-        let ok_a1 = internal::strike_register_check_and_insert(reg, ticket_a[..], 1000);
+        let ok_a1 = tls_internal::strike_register_check_and_insert(reg, ticket_a[..], 1000);
         sub.assert_true(ok_a1, "ticket A accepted in epoch 0");
 
         // 2. Immediate replay of ticket A in same epoch fails
-        let ok_a_replay = internal::strike_register_check_and_insert(reg, ticket_a[..], 1500);
+        let ok_a_replay = tls_internal::strike_register_check_and_insert(reg, ticket_a[..], 1500);
         sub.assert_false(ok_a_replay, "ticket A replay detected and rejected");
 
         // 3. Different ticket B in same epoch succeeds
-        let ok_b = internal::strike_register_check_and_insert(reg, ticket_b[..], 2000);
+        let ok_b = tls_internal::strike_register_check_and_insert(reg, ticket_b[..], 2000);
         sub.assert_true(ok_b, "ticket B accepted in epoch 0");
 
         // 4. Advance time to epoch 1 (11000ms): ticket A is in previous window, still rejected!
-        let ok_a_ep1 = internal::strike_register_check_and_insert(reg, ticket_a[..], 11000);
+        let ok_a_ep1 = tls_internal::strike_register_check_and_insert(reg, ticket_a[..], 11000);
         sub.assert_false(ok_a_ep1, "ticket A rejected across epoch boundary into previous window");
 
         // 5. Advance time by 2 epochs (> 25000ms): old epochs cleared, ticket A is accepted again
-        let ok_a_ep3 = internal::strike_register_check_and_insert(reg, ticket_a[..], 25000);
+        let ok_a_ep3 = tls_internal::strike_register_check_and_insert(reg, ticket_a[..], 25000);
         sub.assert_true(ok_a_ep3, "ticket A accepted after full 2-epoch retirement");
 
         // 6. Negative timestamp rejected
-        sub.assert_false(internal::strike_register_check_and_insert(reg, ticket_a[..], -1), "negative now_ms rejected");
+        sub.assert_false(tls_internal::strike_register_check_and_insert(reg, ticket_a[..], -1), "negative now_ms rejected");
 
         // 7. Empty ticket identifier rejected
         let empty_ticket: u8[0] = [];
-        sub.assert_false(internal::strike_register_check_and_insert(reg, empty_ticket[..], 26000), "empty ticket_id rejected");
+        sub.assert_false(tls_internal::strike_register_check_and_insert(reg, empty_ticket[..], 26000), "empty ticket_id rejected");
 
         // 8. Backward clock skew / ancient epoch rejected
-        var reg_skew = internal::strike_register_init(10000, 2000);
-        let ok_fwd = internal::strike_register_check_and_insert(reg_skew, ticket_a[..], 50000);
+        var reg_skew = tls_internal::strike_register_init(10000, 2000);
+        let ok_fwd = tls_internal::strike_register_check_and_insert(reg_skew, ticket_a[..], 50000);
         sub.assert_true(ok_fwd, "advance to epoch 5");
-        let ok_skew = internal::strike_register_check_and_insert(reg_skew, ticket_b[..], 10000);
+        let ok_skew = tls_internal::strike_register_check_and_insert(reg_skew, ticket_b[..], 10000);
         sub.assert_false(ok_skew, "ancient epoch rejected as clock skew / out of window");
     };
 
@@ -785,33 +785,33 @@ fn test_anti_replay_and_psk(t: lit::T&) {
         let tolerance_ms:    i64 = 1000;
 
         // Exact match: obfuscated = ticket_age_add + 5000 = 105000
-        let ok1 = internal::validate_ticket_age(105000, ticket_age_add, expected_age_ms, tolerance_ms);
+        let ok1 = tls_internal::validate_ticket_age(105000, ticket_age_add, expected_age_ms, tolerance_ms);
         sub.assert_true(ok1, "exact ticket age valid");
 
         // Within tolerance: 5500ms (diff = 500ms <= 1000ms)
-        let ok2 = internal::validate_ticket_age(105500, ticket_age_add, expected_age_ms, tolerance_ms);
+        let ok2 = tls_internal::validate_ticket_age(105500, ticket_age_add, expected_age_ms, tolerance_ms);
         sub.assert_true(ok2, "ticket age within tolerance valid");
 
         // Out of tolerance: 7000ms (diff = 2000ms > 1000ms)
-        let ok3 = internal::validate_ticket_age(107000, ticket_age_add, expected_age_ms, tolerance_ms);
+        let ok3 = tls_internal::validate_ticket_age(107000, ticket_age_add, expected_age_ms, tolerance_ms);
         sub.assert_false(ok3, "ticket age out of tolerance rejected");
 
         // Negative expected age rejected
-        let ok_neg_age = internal::validate_ticket_age(105000, ticket_age_add, -1, tolerance_ms);
+        let ok_neg_age = tls_internal::validate_ticket_age(105000, ticket_age_add, -1, tolerance_ms);
         sub.assert_false(ok_neg_age, "negative expected age rejected");
 
         // Negative tolerance rejected
-        let ok_neg_tol = internal::validate_ticket_age(105000, ticket_age_add, expected_age_ms, -1);
+        let ok_neg_tol = tls_internal::validate_ticket_age(105000, ticket_age_add, expected_age_ms, -1);
         sub.assert_false(ok_neg_tol, "negative tolerance rejected");
 
         // Exceeding 7-day maximum ticket lifetime (604800000 ms, RFC 8446 §4.6.1)
-        let ok_exp_max = internal::validate_ticket_age(ticket_age_add + 604800001, ticket_age_add, 604800001, tolerance_ms);
+        let ok_exp_max = tls_internal::validate_ticket_age(ticket_age_add + 604800001, ticket_age_add, 604800001, tolerance_ms);
         sub.assert_false(ok_exp_max, "age exceeding 7 days rejected");
 
         // Wrapping u32 subtraction when ticket_age_add causes uint32 overflow (RFC 8446 §4.2.11.1)
         let large_add: u32 = 0xFFFFFFFF;
         // If age = 5000ms, obfuscated = (0xFFFFFFFF + 5000) mod 2^32 = 4999
-        let ok_wrap = internal::validate_ticket_age(4999, large_add, 5000, 1000);
+        let ok_wrap = tls_internal::validate_ticket_age(4999, large_add, 5000, 1000);
         sub.assert_true(ok_wrap, "wrapping u32 ticket age calculation succeeds");
     };
 
@@ -821,18 +821,18 @@ fn test_anti_replay_and_psk(t: lit::T&) {
 
         // Derive true expected binder
         var finished_key: u8[32] = [0; 32];
-        internal::hkdf_expand_label(internal::HASH_SHA256, binder_key[..], "finished", [], 32, finished_key[..]);
+        tls_internal::hkdf_expand_label(tls_internal::HASH_SHA256, binder_key[..], "finished", [], 32, finished_key[..]);
         let ch_hash = core::sha256(truncated_ch[..]);
         let expected_binder = core::hmac_sha256(finished_key[..], ch_hash[..]);
 
         // Verification of genuine binder succeeds
-        let ok_v = internal::verify_psk_binder(internal::HASH_SHA256, 32, binder_key[..], truncated_ch[..], expected_binder[..]);
+        let ok_v = tls_internal::verify_psk_binder(tls_internal::HASH_SHA256, 32, binder_key[..], truncated_ch[..], expected_binder[..]);
         sub.assert_true(ok_v, "genuine PSK binder verified");
 
         // Tampered binder fails
         var tampered_binder = expected_binder;
         tampered_binder[0] ^= 0xFF;
-        let ok_bad = internal::verify_psk_binder(internal::HASH_SHA256, 32, binder_key[..], truncated_ch[..], tampered_binder[..]);
+        let ok_bad = tls_internal::verify_psk_binder(tls_internal::HASH_SHA256, 32, binder_key[..], truncated_ch[..], tampered_binder[..]);
         sub.assert_false(ok_bad, "tampered PSK binder rejected");
     };
 
@@ -842,25 +842,25 @@ fn test_anti_replay_and_psk(t: lit::T&) {
         // binders overhead = 2 (binders vector len) + 33 = 35 bytes
         // Expected truncated length = 60 - 35 = 25 bytes
         var ch_mock: u8[60] = [0x42; 60];
-        let trunc_ch, ok_trunc = internal::truncate_client_hello_for_binder(ch_mock[..], 33);
+        let trunc_ch, ok_trunc = tls_internal::truncate_client_hello_for_binder(ch_mock[..], 33);
         sub.assert_true(ok_trunc, "ClientHello truncated for binder");
         sub.assert_eq(trunc_ch.len, 25, "truncated length is 25 bytes");
 
         // 2. Underflow: binders length larger than ClientHello
-        let _, ok_underflow = internal::truncate_client_hello_for_binder(ch_mock[..], 60);
+        let _, ok_underflow = tls_internal::truncate_client_hello_for_binder(ch_mock[..], 60);
         sub.assert_false(ok_underflow, "binders longer than ClientHello rejected");
 
         // 3. Zero binders length rejected
-        let _, ok_zero = internal::truncate_client_hello_for_binder(ch_mock[..], 0);
+        let _, ok_zero = tls_internal::truncate_client_hello_for_binder(ch_mock[..], 0);
         sub.assert_false(ok_zero, "zero binders length rejected");
 
         // 4. Validate PSK identities and binders count (must match and be > 0)
-        sub.assert_true(internal::validate_psk_identities_and_binders_count(1, 1), "matching 1 identity and 1 binder valid");
-        sub.assert_true(internal::validate_psk_identities_and_binders_count(3, 3), "matching 3 identities and 3 binders valid");
-        sub.assert_false(internal::validate_psk_identities_and_binders_count(2, 1), "mismatched identities > binders rejected");
-        sub.assert_false(internal::validate_psk_identities_and_binders_count(1, 2), "mismatched identities < binders rejected");
-        sub.assert_false(internal::validate_psk_identities_and_binders_count(0, 0), "zero identities/binders rejected");
-        sub.assert_false(internal::validate_psk_identities_and_binders_count(-1, -1), "negative counts rejected");
+        sub.assert_true(tls_internal::validate_psk_identities_and_binders_count(1, 1), "matching 1 identity and 1 binder valid");
+        sub.assert_true(tls_internal::validate_psk_identities_and_binders_count(3, 3), "matching 3 identities and 3 binders valid");
+        sub.assert_false(tls_internal::validate_psk_identities_and_binders_count(2, 1), "mismatched identities > binders rejected");
+        sub.assert_false(tls_internal::validate_psk_identities_and_binders_count(1, 2), "mismatched identities < binders rejected");
+        sub.assert_false(tls_internal::validate_psk_identities_and_binders_count(0, 0), "zero identities/binders rejected");
+        sub.assert_false(tls_internal::validate_psk_identities_and_binders_count(-1, -1), "negative counts rejected");
     };
 }
 
@@ -2447,7 +2447,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
 // 8. Hybrid Post-Quantum Key Agreement (RFC 10024 & FIPS 203)
 fn test_post_quantum_hybrid_exchange(t: lit::T&) {
     t.run("TLS-25: Hybrid Key Share Entry Framing & Smuggling Defense") { sub =>
-        var client_share = internal::PostQuantumKeyShare {
+        var client_share = tls_internal::PostQuantumKeyShare {
             group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
@@ -2458,14 +2458,14 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         client_share.format_hybrid_key_share(wire);
         sub.assert_eq(wire.len, 1220, "Client KeyShareEntry wire length is 1220 bytes");
 
-        var parsed = internal::PostQuantumKeyShare { .. };
+        var parsed = tls_internal::PostQuantumKeyShare { .. };
         let ok_parse = parsed.parse_hybrid_key_share(wire[..]);
         sub.assert_true(ok_parse, "Client hybrid key share parsed");
         sub.assert_bytes_eq(wire[4..1188], client_share.mlkem768_public[..], "0x11EC wire starts with ML-KEM-768 public key (PQ || Classical)");
         sub.assert_bytes_eq(wire[1188..1220], client_share.x25519_public[..], "0x11EC wire ends with X25519 public key");
 
         // Draft 0x6399 (Classical || PQ) ordering verification
-        var draft_share = internal::PostQuantumKeyShare {
+        var draft_share = tls_internal::PostQuantumKeyShare {
             group: rfc::GROUP_X25519_KYBER768_DRAFT00,
             ..
         };
@@ -2476,7 +2476,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         sub.assert_eq(draft_wire.len, 1220, "Draft 0x6399 wire length 1220");
         sub.assert_bytes_eq(draft_wire[4..36], draft_share.x25519_public[..], "0x6399 starts with X25519 (Classical || PQ)");
         sub.assert_bytes_eq(draft_wire[36..1220], draft_share.mlkem768_public[..], "0x6399 ends with PQ key");
-        var parsed_draft = internal::PostQuantumKeyShare { .. };
+        var parsed_draft = tls_internal::PostQuantumKeyShare { .. };
         sub.assert_true(parsed_draft.parse_hybrid_key_share(draft_wire[..]), "Draft share parsed");
         sub.assert_eq(parsed_draft.group, rfc::GROUP_X25519_KYBER768_DRAFT00, "Draft group preserved");
         sub.assert_bytes_eq(parsed_draft.x25519_public[..], draft_share.x25519_public[..], "Draft x25519 matches");
@@ -2485,11 +2485,11 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         var smuggled_wire: u8[>..] = [];
         smuggled_wire.append(wire[..]);
         smuggled_wire.push(0xCC); // 1 extra byte
-        var bad_client = internal::PostQuantumKeyShare { .. };
+        var bad_client = tls_internal::PostQuantumKeyShare { .. };
         sub.assert_false(bad_client.parse_hybrid_key_share(smuggled_wire[..]), "rejects KeyShareEntry with trailing smuggled bytes");
 
         // Server Share framing test
-        var server_share = internal::PostQuantumServerShare {
+        var server_share = tls_internal::PostQuantumServerShare {
             group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
@@ -2500,7 +2500,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         server_share.format_hybrid_server_key_share(server_wire);
         sub.assert_eq(server_wire.len, 1124, "Server KeyShareEntry wire length is 1124 bytes");
 
-        var parsed_server = internal::PostQuantumServerShare { .. };
+        var parsed_server = tls_internal::PostQuantumServerShare { .. };
         sub.assert_true(parsed_server.parse_hybrid_server_key_share(server_wire[..]), "Server share parsed");
         sub.assert_bytes_eq(server_wire[4..1092], server_share.mlkem768_ciphertext[..], "0x11EC server wire starts with ML-KEM-768 ciphertext (PQ || Classical)");
         sub.assert_bytes_eq(server_wire[1092..1124], server_share.x25519_public[..], "0x11EC server wire ends with X25519 public key");
@@ -2508,7 +2508,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         var smuggled_server: u8[>..] = [];
         smuggled_server.append(server_wire[..]);
         smuggled_server.push(0xDD);
-        var bad_server = internal::PostQuantumServerShare { .. };
+        var bad_server = tls_internal::PostQuantumServerShare { .. };
         sub.assert_false(bad_server.parse_hybrid_server_key_share(smuggled_server[..]), "rejects server share with trailing smuggled bytes");
     };
 
@@ -2518,32 +2518,32 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         var out_secret: u8[32] = [0; 32];
 
         // Valid derivation succeeds
-        let ok_comb = internal::derive_hybrid_shared_secret_checked(classical_ss[..], pq_ss[..], out_secret[..]);
+        let ok_comb = tls_internal::derive_hybrid_shared_secret_checked(classical_ss[..], pq_ss[..], out_secret[..]);
         sub.assert_true(ok_comb, "valid hybrid shared secret derived");
 
         var out_x25519_mlkem: u8[32] = [0; 32];
-        let ok_mlkem_comb = internal::derive_x25519_mlkem768_shared_secret_checked(classical_ss[..], pq_ss[..], out_x25519_mlkem[..]);
+        let ok_mlkem_comb = tls_internal::derive_x25519_mlkem768_shared_secret_checked(classical_ss[..], pq_ss[..], out_x25519_mlkem[..]);
         sub.assert_true(ok_mlkem_comb, "valid x25519_mlkem768 shared secret derived (PQ || Classical)");
-        let direct_sec = internal::derive_x25519_mlkem768_shared_secret(classical_ss, pq_ss);
+        let direct_sec = tls_internal::derive_x25519_mlkem768_shared_secret(classical_ss, pq_ss);
         sub.assert_bytes_eq(out_x25519_mlkem[..], direct_sec[..], "direct derivation matches checked");
 
         // Contributory attack defense: all-zero classical X25519 secret rejected (RFC 7748 §6.1)
         let zero_classical: u8[32] = [0x00; 32];
-        let ok_bad_classical = internal::derive_hybrid_shared_secret_checked(zero_classical[..], pq_ss[..], out_secret[..]);
+        let ok_bad_classical = tls_internal::derive_hybrid_shared_secret_checked(zero_classical[..], pq_ss[..], out_secret[..]);
         sub.assert_false(ok_bad_classical, "rejects all-zero classical ECDH shared secret");
 
         // Degenerate ML-KEM secret: all-zero PQ secret rejected
         let zero_pq: u8[32] = [0x00; 32];
-        let ok_bad_pq = internal::derive_hybrid_shared_secret_checked(classical_ss[..], zero_pq[..], out_secret[..]);
+        let ok_bad_pq = tls_internal::derive_hybrid_shared_secret_checked(classical_ss[..], zero_pq[..], out_secret[..]);
         sub.assert_false(ok_bad_pq, "rejects all-zero post-quantum shared secret");
 
         // Short classical or PQ slice rejected
-        let ok_short = internal::derive_hybrid_shared_secret_checked(classical_ss[..16], pq_ss[..], out_secret[..]);
+        let ok_short = tls_internal::derive_hybrid_shared_secret_checked(classical_ss[..16], pq_ss[..], out_secret[..]);
         sub.assert_false(ok_short, "rejects truncated classical shared secret slice");
     };
 
     t.run("TLS-35: Post-Quantum ML-KEM-768 Decapsulation & FIPS 203 Implicit Rejection") { sub =>
-        var sk = internal::MLKEM768PrivateKey { .. };
+        var sk = tls_internal::MLKEM768PrivateKey { .. };
         // Implicit rejection seed z (32 bytes)
         for i in 32 { sk.z[i] = (i + 0x41) as u8; }
         // Private key (mock 1152 bytes)
@@ -2553,7 +2553,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         // 1. Valid ciphertext decapsulation
         var valid_ct: u8[1088] = [0xAA; 1088];
         var ss_valid: u8[32]   = [0; 32];
-        let is_rej_valid, ok_valid = internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_valid[..]);
+        let is_rej_valid, ok_valid = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_valid[..]);
         sub.assert_true(ok_valid, "valid ciphertext decapsulation succeeds");
         sub.assert_false(is_rej_valid, "valid ciphertext does NOT trigger implicit rejection");
 
@@ -2567,26 +2567,26 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         // 2. All-zero ciphertext (1088 bytes) MUST trigger deterministic implicit rejection (FIPS 203 §7.2)
         var zero_ct: u8[1088] = [0x00; 1088];
         var ss_zero: u8[32]   = [0; 32];
-        let is_rej_zero, ok_zero = internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero[..]);
+        let is_rej_zero, ok_zero = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero[..]);
         sub.assert_true(ok_zero, "all-zero ciphertext decapsulation succeeds via implicit rejection");
         sub.assert_true(is_rej_zero, "all-zero ciphertext triggers implicit rejection");
 
         // Verify that the implicit rejection key matches K_bar = HMAC-SHA256(z, c)
         var expected_k_bar: u8[32] = [0; 32];
-        let ok_k_bar = internal::mlkem768_compute_implicit_rejection(sk.z, zero_ct[..], expected_k_bar[..]);
+        let ok_k_bar = tls_internal::mlkem768_compute_implicit_rejection(sk.z, zero_ct[..], expected_k_bar[..]);
         sub.assert_true(ok_k_bar, "expected k_bar computed");
         sub.assert_bytes_eq(ss_zero[..], expected_k_bar[..], "implicit rejection key matches FIPS 203 derivation from seed z");
 
         // Determinism: decapsulating with same corrupt ciphertext produces identical shared key
         var ss_zero_again: u8[32] = [0; 32];
-        internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero_again[..]);
+        tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero_again[..]);
         sub.assert_bytes_eq(ss_zero[..], ss_zero_again[..], "implicit rejection is deterministic");
 
         // 3. Different rejection seed z produces different implicit rejection key
         var sk2 = sk;
         sk2.z[0] ^= 0xFF;
         var ss_diff_z: u8[32] = [0; 32];
-        internal::mlkem768_decapsulate_with_implicit_rejection(sk2, zero_ct[..], ss_diff_z[..]);
+        tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk2, zero_ct[..], ss_diff_z[..]);
         var diff_z_matches = true;
         for i in 32 {
             if ss_diff_z[i] != ss_zero[i] { diff_z_matches = false; break; }
@@ -2596,12 +2596,12 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         // 4. Truncated ciphertext (< 1088 bytes) rejected safely without panic or hang
         let short_ct: u8[500] = [0xAA; 500];
         var ss_short: u8[32] = [0; 32];
-        let _, ok_short = internal::mlkem768_decapsulate_with_implicit_rejection(sk, short_ct[..], ss_short[..]);
+        let _, ok_short = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, short_ct[..], ss_short[..]);
         sub.assert_false(ok_short, "truncated ciphertext fails safely");
 
         // 5. Short destination buffer (< 32 bytes) rejected safely
         var ss_tiny: u8[16] = [0; 16];
-        let _, ok_tiny = internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_tiny[..]);
+        let _, ok_tiny = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_tiny[..]);
         sub.assert_false(ok_tiny, "short output buffer fails safely");
     };
 
@@ -2627,36 +2627,36 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         sub.assert_eq(rfc::MLKEM1024_PUBLIC_LEN, 1568, "ML-KEM-1024 public key is 1568 bytes");
         sub.assert_eq(rfc::MLKEM1024_CIPHERTEXT_LEN, 1568, "ML-KEM-1024 ciphertext is 1568 bytes");
 
-        sub.assert_eq(internal::pq_hybrid_client_share_len(0x11EB), 1249, "SecP256r1+ML-KEM-768 client share 1249B");
-        sub.assert_eq(internal::pq_hybrid_server_share_len(0x11EB), 1153, "SecP256r1+ML-KEM-768 server share 1153B");
-        sub.assert_eq(internal::pq_hybrid_client_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 client share 1665B");
-        sub.assert_eq(internal::pq_hybrid_server_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 server share 1665B");
+        sub.assert_eq(tls_internal::pq_hybrid_client_share_len(0x11EB), 1249, "SecP256r1+ML-KEM-768 client share 1249B");
+        sub.assert_eq(tls_internal::pq_hybrid_server_share_len(0x11EB), 1153, "SecP256r1+ML-KEM-768 server share 1153B");
+        sub.assert_eq(tls_internal::pq_hybrid_client_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 client share 1665B");
+        sub.assert_eq(tls_internal::pq_hybrid_server_share_len(0x11ED), 1665, "SecP384r1+ML-KEM-1024 server share 1665B");
 
         // SecP256r1MLKEM768 (0x11EB) Codecs (RFC 10024 §4.1: valid P-256 point + canonical ML-KEM-768 ek)
-        var client_share = internal::SecP256r1MLKEM768KeyShare { .. };
+        var client_share = tls_internal::SecP256r1MLKEM768KeyShare { .. };
         let sk256: u8[32] = [0x11; 32];
         client_share.secp256r1_public = core::ecdsa_p256_public_key(sk256);
         for i in 1184 { client_share.mlkem768_public[i] = ((i * 7 + 1) & 0x07) as u8; }
 
         var wire: u8[>..] = [];
-        internal::format_secp256r1_mlkem768_key_share(client_share, wire);
+        tls_internal::format_secp256r1_mlkem768_key_share(client_share, wire);
         sub.assert_eq(wire.len, 4 + 1249, "Client key share wire length is exactly 1253 bytes");
 
-        var parsed_client = internal::SecP256r1MLKEM768KeyShare { .. };
-        let ok_parse = internal::parse_secp256r1_mlkem768_key_share(parsed_client, wire[..]);
+        var parsed_client = tls_internal::SecP256r1MLKEM768KeyShare { .. };
+        let ok_parse = tls_internal::parse_secp256r1_mlkem768_key_share(parsed_client, wire[..]);
         sub.assert_true(ok_parse, "Client key share parsed successfully");
         sub.assert_eq(parsed_client.group, rfc::GROUP_SECP256R1_MLKEM768, "Group is 0x11EB");
         sub.assert_bytes_eq(parsed_client.secp256r1_public[..], client_share.secp256r1_public[..], "P-256 point matches");
 
-        var bad_client = internal::SecP256r1MLKEM768KeyShare { .. };
-        sub.assert_false(internal::parse_secp256r1_mlkem768_key_share(bad_client, wire[..1000]), "Truncated client share fails");
+        var bad_client = tls_internal::SecP256r1MLKEM768KeyShare { .. };
+        sub.assert_false(tls_internal::parse_secp256r1_mlkem768_key_share(bad_client, wire[..1000]), "Truncated client share fails");
 
         // Off-curve P-256 point rejected per RFC 10024 §4.1 / NIST SP 800-56A
         var bad_curve_share = client_share;
         for i in 64 { bad_curve_share.secp256r1_public[1 + i] = 0xFF; }
         var bad_curve_wire: u8[>..] = [];
-        internal::format_secp256r1_mlkem768_key_share(bad_curve_share, bad_curve_wire);
-        sub.assert_false(internal::parse_secp256r1_mlkem768_key_share(bad_client, bad_curve_wire[..]), "Off-curve P-256 point rejected");
+        tls_internal::format_secp256r1_mlkem768_key_share(bad_curve_share, bad_curve_wire);
+        sub.assert_false(tls_internal::parse_secp256r1_mlkem768_key_share(bad_client, bad_curve_wire[..]), "Off-curve P-256 point rejected");
 
         // Non-canonical ML-KEM-768 encapsulation key (coeff 4095 >= 3329) rejected per FIPS 203 §7.2
         var bad_ek_share = client_share;
@@ -2664,21 +2664,21 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         bad_ek_share.mlkem768_public[1] = 0xFF;
         bad_ek_share.mlkem768_public[2] = 0xFF;
         var bad_ek_wire: u8[>..] = [];
-        internal::format_secp256r1_mlkem768_key_share(bad_ek_share, bad_ek_wire);
-        sub.assert_false(internal::parse_secp256r1_mlkem768_key_share(bad_client, bad_ek_wire[..]), "Non-canonical ML-KEM-768 ek rejected");
+        tls_internal::format_secp256r1_mlkem768_key_share(bad_ek_share, bad_ek_wire);
+        sub.assert_false(tls_internal::parse_secp256r1_mlkem768_key_share(bad_client, bad_ek_wire[..]), "Non-canonical ML-KEM-768 ek rejected");
 
         // SecP384r1MLKEM1024 (0x11ED) Codecs
-        var client_384 = internal::SecP384r1MLKEM1024KeyShare { .. };
+        var client_384 = tls_internal::SecP384r1MLKEM1024KeyShare { .. };
         let sk384: u8[48] = [0x22; 48];
         client_384.secp384r1_public = core::ecdsa_p384_public_key(sk384);
         for i in 1568 { client_384.mlkem1024_public[i] = ((i * 11 + 3) & 0x07) as u8; }
 
         var wire_384: u8[>..] = [];
-        internal::format_secp384r1_mlkem1024_key_share(client_384, wire_384);
+        tls_internal::format_secp384r1_mlkem1024_key_share(client_384, wire_384);
         sub.assert_eq(wire_384.len, 4 + 1665, "SecP384r1 client wire length is 1669 bytes");
 
-        var parsed_384 = internal::SecP384r1MLKEM1024KeyShare { .. };
-        let ok_p384 = internal::parse_secp384r1_mlkem1024_key_share(parsed_384, wire_384[..]);
+        var parsed_384 = tls_internal::SecP384r1MLKEM1024KeyShare { .. };
+        let ok_p384 = tls_internal::parse_secp384r1_mlkem1024_key_share(parsed_384, wire_384[..]);
         sub.assert_true(ok_p384, "SecP384r1 client share parsed");
         sub.assert_eq(parsed_384.group, rfc::GROUP_SECP384R1_MLKEM1024, "Group is 0x11ED");
 
@@ -2709,7 +2709,7 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         for i in 32 { ecdh256[i] = (i + 1) as u8; }
         var pq_ss: u8[32] = [0; 32];
         for i in 32 { pq_ss[i] = (i + 33) as u8; }
-        let ss256 = internal::derive_secp256r1_mlkem768_shared_secret(ecdh256, pq_ss);
+        let ss256 = tls_internal::derive_secp256r1_mlkem768_shared_secret(ecdh256, pq_ss);
         var nz_cnt = 0;
         for b in ss256 { if b != 0 { nz_cnt += 1; } }
         sub.assert_gt(nz_cnt, 28, "Combined SecP256r1 shared secret has high entropy");
@@ -4044,22 +4044,22 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         var decomp_zlib: u8[..4096] = [];
         var decomp_zstd: u8[..4096] = [];
 
-        var test_cert_msg = internal::CompressedCertificate {
+        var test_cert_msg = tls_internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_BROTLI,
             uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: compressed_data[..],
         };
 
         var wire: u8[..4096] = [];
-        let ok_enc = internal::encode_compressed_certificate(test_cert_msg, wire);
+        let ok_enc = tls_internal::encode_compressed_certificate(test_cert_msg, wire);
         sub.assert_true(ok_enc, "CompressedCertificate encoded");
         sub.assert_eq(wire.len, 8 + compressed_data.len, "Wire length matches 8 + compressed len");
         sub.assert_eq(wire[0], 0, "Algorithm high byte is 0");
         sub.assert_eq(wire[1], 2, "Algorithm low byte is 2 (Brotli)");
 
         {
-            var parsed = internal::CompressedCertificate { .. };
-            let ok_dec = internal::parse_compressed_certificate_msg(wire[..], parsed);
+            var parsed = tls_internal::CompressedCertificate { .. };
+            let ok_dec = tls_internal::parse_compressed_certificate_msg(wire[..], parsed);
             sub.assert_true(ok_dec, "CompressedCertificate parsed");
             sub.assert_eq(parsed.algorithm, rfc::CERT_COMPRESSION_BROTLI, "Parsed algorithm is Brotli");
             sub.assert_eq(parsed.uncompressed_length, cert_plaintext.len as u32, "Parsed length matches plaintext");
@@ -4067,12 +4067,12 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
 
             // Safe decompression via handler interface
             var decompressed: u8[..4096] = [];
-            let ok_decomp = internal::decompress_certificate_message(parsed, 10000, decompressed);
+            let ok_decomp = tls_internal::decompress_certificate_message(parsed, 10000, decompressed);
             sub.assert_true(ok_decomp, "Safe decompression succeeds");
             sub.assert_bytes_eq(decompressed[..], cert_plaintext, "Decompressed certificate matches original exactly");
         }
 
-        let ok_brotli = internal::decompress_certificate_brotli(compressed_data[..], cert_plaintext.len as u32, decomp2);
+        let ok_brotli = tls_internal::decompress_certificate_brotli(compressed_data[..], cert_plaintext.len as u32, decomp2);
         sub.assert_true(ok_brotli, "decompress_certificate_brotli succeeds");
         sub.assert_bytes_eq(decomp2[..], cert_plaintext, "decomp2 matches original exactly");
 
@@ -4088,12 +4088,12 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         let ok_zcomp = core::zlib_compress(cert_plaintext, zlib_comp);
         sub.assert_true(ok_zcomp, "zlib compression succeeds");
 
-        var zlib_msg = internal::CompressedCertificate {
+        var zlib_msg = tls_internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_ZLIB,
             uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: zlib_comp[..],
         };
-        let ok_zdecomp = internal::decompress_certificate_message(zlib_msg, 10000, decomp_zlib);
+        let ok_zdecomp = tls_internal::decompress_certificate_message(zlib_msg, 10000, decomp_zlib);
         sub.assert_true(ok_zdecomp, "zlib certificate decompression succeeds");
         sub.assert_bytes_eq(decomp_zlib[..], cert_plaintext, "decompressed zlib matches plaintext");
 
@@ -4101,35 +4101,35 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         var zstd_comp: u8[>..] = [];
         let ok_zstd_comp = core::zstd_compress(cert_plaintext, zstd_comp);
         sub.assert_true(ok_zstd_comp, "zstd compression succeeds");
-        var zstd_msg = internal::CompressedCertificate {
+        var zstd_msg = tls_internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_ZSTD,
             uncompressed_length:            cert_plaintext.len as u32,
             compressed_certificate_message: zstd_comp[..],
         };
-        let ok_zstd_decomp = internal::decompress_certificate_message(zstd_msg, 10000, decomp_zstd);
+        let ok_zstd_decomp = tls_internal::decompress_certificate_message(zstd_msg, 10000, decomp_zstd);
         sub.assert_true(ok_zstd_decomp, "zstd certificate decompression succeeds");
         sub.assert_bytes_eq(decomp_zstd[..], cert_plaintext, "decompressed zstd matches plaintext");
     };
 
     t.run("3. Enterprise Decompression Bomb and Boundary Protection") { sub =>
         // 1. Decompression bomb: uncompressed_length exceeds caller's max buffer ceiling
-        var bomb_msg = internal::CompressedCertificate {
+        var bomb_msg = tls_internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_BROTLI,
             uncompressed_length:            50000,
             compressed_certificate_message: "abc",
         };
         var out_sink: u8[..1024] = [];
-        let ok_b1 = internal::decompress_certificate_message(bomb_msg, 1024, out_sink);
+        let ok_b1 = tls_internal::decompress_certificate_message(bomb_msg, 1024, out_sink);
         sub.assert_false(ok_b1, "Decompression bomb exceeding max_allowed_len rejected");
 
         // 2. Uncompressed length exceeding global MAX_UNCOMPRESSED_CERT_SIZE (65536)
         bomb_msg.uncompressed_length = 70000;
-        let ok_b2 = internal::decompress_certificate_message(bomb_msg, 100000, out_sink);
+        let ok_b2 = tls_internal::decompress_certificate_message(bomb_msg, 100000, out_sink);
         sub.assert_false(ok_b2, "Length exceeding 64KB ceiling rejected");
 
         // 3. Zero uncompressed length rejected
         bomb_msg.uncompressed_length = 0;
-        let ok_b3 = internal::decompress_certificate_message(bomb_msg, 100000, out_sink);
+        let ok_b3 = tls_internal::decompress_certificate_message(bomb_msg, 100000, out_sink);
         sub.assert_false(ok_b3, "Zero uncompressed length rejected");
 
         // 4. Decompression bomb ratio sanity check (> 1024x expansion ratio)
@@ -4140,19 +4140,19 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
             0x00, 0x00, 0x02,       // compressed_length: 2 (uint24 vector prefix)
             tiny_comp[0], tiny_comp[1],
         ];
-        var parsed_bad = internal::CompressedCertificate { .. };
-        let ok_ratio = internal::parse_compressed_certificate_msg(bad_ratio_wire[..], parsed_bad);
+        var parsed_bad = tls_internal::CompressedCertificate { .. };
+        let ok_ratio = tls_internal::parse_compressed_certificate_msg(bad_ratio_wire[..], parsed_bad);
         sub.assert_false(ok_ratio, "Insane expansion ratio (>1024x) rejected by wire parser");
 
         // 5. Corrupted compressed payload
         let corrupt_payload: u8[10] = [0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66];
-        var corrupt_msg = internal::CompressedCertificate {
+        var corrupt_msg = tls_internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_BROTLI,
             uncompressed_length:            10,
             compressed_certificate_message: corrupt_payload[..],
         };
         var out_corrupt: u8[..1024] = [];
-        let ok_c_fail = internal::decompress_certificate_message(corrupt_msg, 1024, out_corrupt);
+        let ok_c_fail = tls_internal::decompress_certificate_message(corrupt_msg, 1024, out_corrupt);
         sub.assert_false(ok_c_fail, "Corrupted Brotli payload fails gracefully without crash");
     };
 }
@@ -4160,26 +4160,26 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
 // 13. CryptoShield Remediation Conformance
 fn test_remediation_post_quantum(t: lit::T&) {
     t.run("CryptoShield: FIPS 203 NTT/InvNTT Roundtrip & Polynomial Arithmetic") { sub =>
-        var p = internal::Poly256 {};
+        var p = tls_internal::Poly256 {};
         p.coeffs[0] = 1;
         p.coeffs[1] = 2;
         p.coeffs[2] = 3328;
         p.coeffs[255] = 17;
 
-        var p2 = internal::Poly256 {};
+        var p2 = tls_internal::Poly256 {};
         p2.coeffs[0] = 10;
         p2.coeffs[1] = 20;
 
-        let p_sum = internal::poly_add(p, p2);
+        let p_sum = tls_internal::poly_add(p, p2);
         sub.assert_eq(p_sum.coeffs[0], 11, "poly_add coeff 0");
         sub.assert_eq(p_sum.coeffs[1], 22, "poly_add coeff 1");
 
-        let p_diff = internal::poly_sub(p_sum, p2);
+        let p_diff = tls_internal::poly_sub(p_sum, p2);
         sub.assert_eq(p_diff.coeffs[0], p.coeffs[0], "poly_sub restores coeff 0");
         sub.assert_eq(p_diff.coeffs[1], p.coeffs[1], "poly_sub restores coeff 1");
 
-        let p_hat = internal::poly_ntt(p);
-        let p_rec = internal::poly_invntt(p_hat);
+        let p_hat = tls_internal::poly_ntt(p);
+        let p_rec = tls_internal::poly_invntt(p_hat);
         sub.assert_eq(p_rec.coeffs[0], p.coeffs[0], "NTT roundtrip coeff 0");
         sub.assert_eq(p_rec.coeffs[1], p.coeffs[1], "NTT roundtrip coeff 1");
         sub.assert_eq(p_rec.coeffs[2], p.coeffs[2], "NTT roundtrip coeff 2");
@@ -4431,11 +4431,11 @@ fn test_live_tls_transport_session(t: lit::T&) {
         core::append_u24_be(ch_msg, ch_payload.len as u32);
         ch_msg.append(ch_payload[..]);
 
-        var ks_early, ok_kse = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
-        sub.assert_true(ok_kse && internal::ks_init_early_secret(ks_early, out_psk[..]), "ks_init_early_secret succeeds");
+        var ks_early, ok_kse = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+        sub.assert_true(ok_kse && tls_internal::ks_init_early_secret(ks_early, out_psk[..]), "ks_init_early_secret succeeds");
         var b_key: u8[32] = [0; 32];
         for i in 32 { b_key[i] = ks_early.binder_key[i]; }
-        let trunc_ch, ok_tr = internal::truncate_client_hello_for_binder(ch_msg[..], 33);
+        let trunc_ch, ok_tr = tls_internal::truncate_client_hello_for_binder(ch_msg[..], 33);
         sub.assert_true(ok_tr, "truncate_client_hello_for_binder succeeds");
         var binder: u8[32] = [0; 32];
         sub.assert_true(wing::compute_tls13_psk_binder(b_key, trunc_ch, binder), "compute_tls13_psk_binder succeeds");

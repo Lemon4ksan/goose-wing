@@ -22,17 +22,17 @@ import http.headers;
 // and partition key isolation.
 struct CanonicalCookieJar {
     // Quotas and thresholds
-    max_cookies_per_domain:    i64 = internal::K_DOMAIN_MAX_COOKIES,    // 180
-    purge_cookies_per_domain:  i64 = internal::K_DOMAIN_PURGE_COOKIES,  // 30
-    target_cookies_per_domain: i64 = internal::K_DOMAIN_TARGET_COOKIES, // 150
+    max_cookies_per_domain:    i64 = cookie_internal::K_DOMAIN_MAX_COOKIES,    // 180
+    purge_cookies_per_domain:  i64 = cookie_internal::K_DOMAIN_PURGE_COOKIES,  // 30
+    target_cookies_per_domain: i64 = cookie_internal::K_DOMAIN_TARGET_COOKIES, // 150
 
-    quota_low:    i64 = internal::K_DOMAIN_COOKIES_QUOTA_LOW,           // 30
-    quota_medium: i64 = internal::K_DOMAIN_COOKIES_QUOTA_MEDIUM,        // 50
-    quota_high:   i64 = internal::K_DOMAIN_COOKIES_QUOTA_HIGH,          // 70
+    quota_low:    i64 = cookie_internal::K_DOMAIN_COOKIES_QUOTA_LOW,           // 30
+    quota_medium: i64 = cookie_internal::K_DOMAIN_COOKIES_QUOTA_MEDIUM,        // 50
+    quota_high:   i64 = cookie_internal::K_DOMAIN_COOKIES_QUOTA_HIGH,          // 70
 
-    max_cookies_global:    i64 = internal::K_MAX_COOKIES,               // 3300
-    purge_cookies_global:  i64 = internal::K_PURGE_COOKIES,             // 300
-    target_cookies_global: i64 = internal::K_GLOBAL_TARGET_COOKIES,     // 3000
+    max_cookies_global:    i64 = cookie_internal::K_MAX_COOKIES,               // 3300
+    purge_cookies_global:  i64 = cookie_internal::K_PURGE_COOKIES,             // 300
+    target_cookies_global: i64 = cookie_internal::K_GLOBAL_TARGET_COOKIES,     // 3000
 
     seq_counter: i64 = 1,
 
@@ -45,7 +45,7 @@ struct CanonicalCookieJar {
     expired_overwrite_count:    i64  = 0,
     rejected_security_count:    i64  = 0,
     strict_secure_cookies:      bool = false,
-    access_update_threshold_us: i64  = internal::K_ACCESS_UPDATE_THRESHOLD_US, // 60s
+    access_update_threshold_us: i64  = cookie_internal::K_ACCESS_UPDATE_THRESHOLD_US, // 60s
 
     cookies: CanonicalCookie[>..] = [],
 }
@@ -614,7 +614,7 @@ fn enforce_chips_quota(
     jar.gather_chips_candidates(partition_key, etld_plus_one, candidate_indices, total_bytes);
 
     var rem_count = candidate_indices.len;
-    let max_part_bytes = internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES;
+    let max_part_bytes = cookie_internal::K_PER_PARTITION_DOMAIN_MAX_COOKIE_BYTES;
     guard total_bytes > max_part_bytes || rem_count > jar.max_cookies_per_domain else {
         return 0;
     }
@@ -1007,7 +1007,7 @@ fn evict_global_non_immune_cookies(jar: CanonicalCookieJar&, need_to_evict: i64,
     var candidate_indices: i32[..3400] = [];
     for &cookie_val, idx in jar.cookies {
         let elapsed_us = core::sub_sat_i64(now_us, cookie_val.last_access_utc);
-        if elapsed_us >= internal::K_SAFE_FROM_GLOBAL_PURGE_US {
+        if elapsed_us >= cookie_internal::K_SAFE_FROM_GLOBAL_PURGE_US {
             guard candidate_indices.try_push(idx as i32) else { break; }
         }
     }
@@ -1039,7 +1039,7 @@ fn evict_global_lru_fallback_cookies(jar: CanonicalCookieJar&, need_to_evict: i6
         }
     }
     // Hard ceiling breach (K_MAX_COOKIES = 3300): must evict even secure/medium cookies to prevent memory breach
-    if candidate_indices.len == 0 && jar.cookies.len >= internal::K_MAX_COOKIES {
+    if candidate_indices.len == 0 && jar.cookies.len >= cookie_internal::K_MAX_COOKIES {
         for &cookie_val, idx in jar.cookies {
             guard candidate_indices.try_push(idx as i32) else { break; }
         }

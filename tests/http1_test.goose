@@ -509,14 +509,14 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
 
     t.run("RFC 9112 Section 7.1.2: Chunked FSM trailer syntax & colon enforcement") { sub =>
         // Missing colon in trailer line MUST be rejected by FSM
-        var dec1 = internal::new_chunk_fsm_decoder();
-        let st1, _, _ = internal::chunk_fsm_feed(dec1, "0\r\nTrailerWithoutColon\r\n\r\n");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "Trailer line without colon must return Error");
+        var dec1 = http_internal::new_chunk_fsm_decoder();
+        let st1, _, _ = http_internal::chunk_fsm_feed(dec1, "0\r\nTrailerWithoutColon\r\n\r\n");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.Error, "Trailer line without colon must return Error");
 
         // Whitespace before colon in trailer line MUST be rejected (RFC 9112 §5.1 / CVE-2019-16276)
-        var dec2 = internal::new_chunk_fsm_decoder();
-        let st2, _, _ = internal::chunk_fsm_feed(dec2, "0\r\nX-Trailer : val\r\n\r\n");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Whitespace before colon in trailer must return Error");
+        var dec2 = http_internal::new_chunk_fsm_decoder();
+        let st2, _, _ = http_internal::chunk_fsm_feed(dec2, "0\r\nX-Trailer : val\r\n\r\n");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "Whitespace before colon in trailer must return Error");
     };
 
     t.run("Trailer flood protection (> 16 fields or > 4096 bytes)") { sub =>
@@ -599,31 +599,31 @@ fn test_chunked_smuggling_defenses(t: lit::T&) {
     };
 
     t.run("RFC 9112 Section 7.1.1: Chunked FSM rejects trailing whitespace without extension") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         // Space between chunk-size and CRLF without ';'
-        let st_sp, _, _ = internal::chunk_fsm_feed(dec, "5 \r\nhello\r\n0\r\n\r\n");
-        sub.assert_eq(st_sp, internal::ChunkFsmStatus.Error, "Trailing space after chunk-size without extension rejected");
+        let st_sp, _, _ = http_internal::chunk_fsm_feed(dec, "5 \r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st_sp, http_internal::ChunkFsmStatus.Error, "Trailing space after chunk-size without extension rejected");
 
-        var dec_tab = internal::new_chunk_fsm_decoder();
+        var dec_tab = http_internal::new_chunk_fsm_decoder();
         // Tab between chunk-size and CRLF without ';'
-        let st_tab, _, _ = internal::chunk_fsm_feed(dec_tab, "5\t\r\nhello\r\n0\r\n\r\n");
-        sub.assert_eq(st_tab, internal::ChunkFsmStatus.Error, "Trailing tab after chunk-size without extension rejected");
+        let st_tab, _, _ = http_internal::chunk_fsm_feed(dec_tab, "5\t\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st_tab, http_internal::ChunkFsmStatus.Error, "Trailing tab after chunk-size without extension rejected");
 
         // Valid extension with leading space (BWS preceding ';') must still succeed
-        var dec_ok = internal::new_chunk_fsm_decoder();
-        let st_ok, _, slice = internal::chunk_fsm_feed(dec_ok, "5 ;ext=1\r\nhello\r\n0\r\n\r\n");
-        sub.assert_eq(st_ok, internal::ChunkFsmStatus.YieldChunk, "Space before semicolon in valid extension accepted");
+        var dec_ok = http_internal::new_chunk_fsm_decoder();
+        let st_ok, _, slice = http_internal::chunk_fsm_feed(dec_ok, "5 ;ext=1\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st_ok, http_internal::ChunkFsmStatus.YieldChunk, "Space before semicolon in valid extension accepted");
         sub.assert_bytes_eq(slice, "hello", "Payload correctly yielded");
     };
 
     t.run("RFC 9112 Section 7.1.1: Chunked FSM rejects unseparated tokens and post-quote tokens in extensions") { sub =>
-        var dec1 = internal::new_chunk_fsm_decoder();
-        let st1, _, _ = internal::chunk_fsm_feed(dec1, "5;ext=val1 val2\r\nhello\r\n0\r\n\r\n");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "Unseparated tokens after value must return Error");
+        var dec1 = http_internal::new_chunk_fsm_decoder();
+        let st1, _, _ = http_internal::chunk_fsm_feed(dec1, "5;ext=val1 val2\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.Error, "Unseparated tokens after value must return Error");
 
-        var dec2 = internal::new_chunk_fsm_decoder();
-        let st2, _, _ = internal::chunk_fsm_feed(dec2, "5;ext=\"quoted\"junk\r\nhello\r\n0\r\n\r\n");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Trailing junk after closing quote must return Error");
+        var dec2 = http_internal::new_chunk_fsm_decoder();
+        let st2, _, _ = http_internal::chunk_fsm_feed(dec2, "5;ext=\"quoted\"junk\r\nhello\r\n0\r\n\r\n");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "Trailing junk after closing quote must return Error");
     };
 }
 
@@ -1911,10 +1911,10 @@ fn test_f011_perfect_hash_and_chunked_trailers(t: lit::T&) {
     };
 
     t.run("chunk_fsm_feed rejects forbidden framing trailer Content-Length") { sub =>
-        var dec = internal::ChunkFsmDecoder { .. };
+        var dec = http_internal::ChunkFsmDecoder { .. };
         let wire = "0\r\nContent-Length: 100\r\n\r\n";
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, wire);
-        sub.assert_true(st == internal::ChunkFsmStatus.Error, "Forbidden Content-Length trailer in ChunkFsmDecoder MUST be rejected");
+        let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, wire);
+        sub.assert_true(st == http_internal::ChunkFsmStatus.Error, "Forbidden Content-Length trailer in ChunkFsmDecoder MUST be rejected");
     };
 
     t.run("decode_chunked_body_with_trailers clears out_body and out_trailers on mid-stream error") { sub =>
@@ -1999,9 +1999,9 @@ fn test_f017_f023_headers_chunked_forwarded(t: lit::T&) {
         sub.assert_eq(wing::parse_forwarded_header("for=1.2.3.4;for=5.6.7.8", elems), 0, "Duplicate for= in Forwarded element MUST fail per RFC 7239 §4");
         sub.assert_eq(wing::parse_forwarded_header("bad_elem, for=1.2.3.4", elems), 0, "Malformed Forwarded element MUST reject header");
 
-        var dec = internal::ChunkFsmDecoder { .. };
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, "4;ext =val\r\nWiki\r\n0\r\n\r\n");
-        sub.assert_false(st == internal::ChunkFsmStatus.Error, "BWS before '=' in chunk-ext MUST be accepted per RFC 9112 §7.1.1");
+        var dec = http_internal::ChunkFsmDecoder { .. };
+        let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, "4;ext =val\r\nWiki\r\n0\r\n\r\n");
+        sub.assert_false(st == http_internal::ChunkFsmStatus.Error, "BWS before '=' in chunk-ext MUST be accepted per RFC 9112 §7.1.1");
 
         sub.assert_false(wing::validate_transfer_encoding_value("gzip;===, chunked"), "Malformed transfer-parameter gzip;=== MUST be rejected");
     };
@@ -2324,17 +2324,17 @@ fn test_host_header_comma_separated_values_rejected(t: lit::T&) {
 fn test_chunked_fsm_bare_lf_rejection(t: lit::T&) {
     t.run("Chunk size terminated with bare LF MUST return Error") { sub =>
         // RFC 9112 Section 7.1 & Section 2.2: Bare LF on chunk size line is forbidden (HTTP Smuggling)
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         let raw = "5\nhello\r\n0\r\n\r\n";
-        let st, consumed, _ = internal::chunk_fsm_feed(dec, raw);
-        sub.assert_eq(st, internal::ChunkFsmStatus.Error, "Bare LF without preceding CR MUST return ChunkFsmStatus.Error");
+        let st, consumed, _ = http_internal::chunk_fsm_feed(dec, raw);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.Error, "Bare LF without preceding CR MUST return ChunkFsmStatus.Error");
     };
 
     t.run("Chunk extension terminated with bare LF MUST return Error") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         let raw = "5;ext=val\nhello\r\n0\r\n\r\n";
-        let st, consumed, _ = internal::chunk_fsm_feed(dec, raw);
-        sub.assert_eq(st, internal::ChunkFsmStatus.Error, "Bare LF in chunk extension MUST return ChunkFsmStatus.Error");
+        let st, consumed, _ = http_internal::chunk_fsm_feed(dec, raw);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.Error, "Bare LF in chunk extension MUST return ChunkFsmStatus.Error");
     };
 }
 
@@ -2345,19 +2345,19 @@ fn test_chunked_fsm_bws_preceding_semicolon(t: lit::T&) {
     t.run("Space preceding semicolon in chunk extension MUST be accepted") { sub =>
         // RFC 9112 Section 7.1.1: chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
         // BWS = *( SP / HTAB )
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         let raw = "5 ;ext=foo\r\nhello\r\n0\r\n\r\n";
         var total_body: u8[..64] = [];
         var cursor:     i64      = 0;
 
         while cursor < raw.len {
-            let st, consumed, chunk = internal::chunk_fsm_feed(dec, raw[cursor..]);
+            let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, raw[cursor..]);
             cursor += consumed;
-            if st == internal::ChunkFsmStatus.YieldChunk {
+            if st == http_internal::ChunkFsmStatus.YieldChunk {
                 total_body.append(chunk);
-            } else if st == internal::ChunkFsmStatus.Complete {
+            } else if st == http_internal::ChunkFsmStatus.Complete {
                 break;
-            } else if st == internal::ChunkFsmStatus.Error {
+            } else if st == http_internal::ChunkFsmStatus.Error {
                 sub.assert_true(false, "Chunked decoder must not error on BWS before semicolon");
                 break;
             }
@@ -2367,19 +2367,19 @@ fn test_chunked_fsm_bws_preceding_semicolon(t: lit::T&) {
     };
 
     t.run("HTAB preceding semicolon in chunk extension MUST be accepted") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         let raw = "5\t;ext=foo\r\nworld\r\n0\r\n\r\n";
         var total_body: u8[..64] = [];
         var cursor:     i64      = 0;
 
         while cursor < raw.len {
-            let st, consumed, chunk = internal::chunk_fsm_feed(dec, raw[cursor..]);
+            let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, raw[cursor..]);
             cursor += consumed;
-            if st == internal::ChunkFsmStatus.YieldChunk {
+            if st == http_internal::ChunkFsmStatus.YieldChunk {
                 total_body.append(chunk);
-            } else if st == internal::ChunkFsmStatus.Complete {
+            } else if st == http_internal::ChunkFsmStatus.Complete {
                 break;
-            } else if st == internal::ChunkFsmStatus.Error {
+            } else if st == http_internal::ChunkFsmStatus.Error {
                 sub.assert_true(false, "Chunked decoder must not error on HTAB before semicolon");
                 break;
             }
@@ -2586,15 +2586,15 @@ fn test_http_headers_obs_fold_capacity_safety(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunked_fsm_and_extensions_rfc9112(t: lit::T&) {
     t.run("Chunk extension with empty value (ext=) must return Error") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
-        let status, _, _ = internal::chunk_fsm_feed(dec, "5;ext=\r\nhello\r\n0\r\n\r\n");
-        sub.assert_true(status == internal::ChunkFsmStatus.Error, "ext= with empty value MUST return Error");
+        var dec = http_internal::new_chunk_fsm_decoder();
+        let status, _, _ = http_internal::chunk_fsm_feed(dec, "5;ext=\r\nhello\r\n0\r\n\r\n");
+        sub.assert_true(status == http_internal::ChunkFsmStatus.Error, "ext= with empty value MUST return Error");
     };
 
     t.run("Chunk extension with unclosed quote must return Error") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
-        let status, _, _ = internal::chunk_fsm_feed(dec, "5;ext=\"unclosed\r\nhello\r\n0\r\n\r\n");
-        sub.assert_true(status == internal::ChunkFsmStatus.Error, "Unclosed quote in chunk extension MUST return Error");
+        var dec = http_internal::new_chunk_fsm_decoder();
+        let status, _, _ = http_internal::chunk_fsm_feed(dec, "5;ext=\"unclosed\r\nhello\r\n0\r\n\r\n");
+        sub.assert_true(status == http_internal::ChunkFsmStatus.Error, "Unclosed quote in chunk extension MUST return Error");
     };
 
     t.run("parse_chunk_size_hex rejects DEL (0x7F)") { sub =>
@@ -2610,19 +2610,19 @@ fn test_chunked_fsm_and_extensions_rfc9112(t: lit::T&) {
     };
 
     t.run("Chunk FSM handles split trailing CRLF without infinite loop") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         // Feed chunk body + '\r'
-        let st1, off1, slice1 = internal::chunk_fsm_feed(dec, "5\r\nhello\r");
-        sub.assert_true(st1 == internal::ChunkFsmStatus.YieldChunk, "First feed yields chunk slice");
+        let st1, off1, slice1 = http_internal::chunk_fsm_feed(dec, "5\r\nhello\r");
+        sub.assert_true(st1 == http_internal::ChunkFsmStatus.YieldChunk, "First feed yields chunk slice");
         sub.assert_eq(slice1, "hello", "Body payload emitted");
 
         // Feed remaining '\n'
-        let st2, off2, slice2 = internal::chunk_fsm_feed(dec, "\n");
-        sub.assert_true(st2 == internal::ChunkFsmStatus.NeedMore, "Second feed consumes trailing LF and expects next chunk");
+        let st2, off2, slice2 = http_internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_true(st2 == http_internal::ChunkFsmStatus.NeedMore, "Second feed consumes trailing LF and expects next chunk");
 
         // Feed final chunk
-        let st3, off3, _ = internal::chunk_fsm_feed(dec, "0\r\n\r\n");
-        sub.assert_true(st3 == internal::ChunkFsmStatus.Complete, "Zero chunk terminates stream");
+        let st3, off3, _ = http_internal::chunk_fsm_feed(dec, "0\r\n\r\n");
+        sub.assert_true(st3 == http_internal::ChunkFsmStatus.Complete, "Zero chunk terminates stream");
     };
 }
 
@@ -2679,47 +2679,47 @@ fn test_http1_headers_cl_host_and_cookie_bounds(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunked_fsm_invariants(t: lit::T&) {
     t.run("chunk_fsm_feed error state is sticky and idempotent") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         // Malformed chunk size: '1', '2' consumed, 'Z' triggers Error
-        let st1, cons1, _ = internal::chunk_fsm_feed(dec, "12Z\r\n");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "First feed returns Error");
+        let st1, cons1, _ = http_internal::chunk_fsm_feed(dec, "12Z\r\n");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.Error, "First feed returns Error");
         sub.assert_eq(cons1, 2, "2 valid hex bytes consumed before error at byte 2");
 
         // Subsequent feed on poisoned decoder MUST immediately return Error with 0 bytes consumed
-        let st2, cons2, _ = internal::chunk_fsm_feed(dec, "4\r\nWiki\r\n0\r\n\r\n");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Poisoned decoder remains in Error");
+        let st2, cons2, _ = http_internal::chunk_fsm_feed(dec, "4\r\nWiki\r\n0\r\n\r\n");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "Poisoned decoder remains in Error");
         sub.assert_eq(cons2, 0, "Poisoned decoder consumes 0 bytes");
 
         // Reset restores usability
-        internal::chunk_fsm_reset(dec);
-        let st3, _, _ = internal::chunk_fsm_feed(dec, "4\r\nWiki\r\n0\r\n\r\n");
-        sub.assert_eq(st3, internal::ChunkFsmStatus.YieldChunk, "Reset decoder functions again");
+        http_internal::chunk_fsm_reset(dec);
+        let st3, _, _ = http_internal::chunk_fsm_feed(dec, "4\r\nWiki\r\n0\r\n\r\n");
+        sub.assert_eq(st3, http_internal::ChunkFsmStatus.YieldChunk, "Reset decoder functions again");
     };
 
     t.run("chunk_fsm_feed rejects bare CR in trailer lines (RFC 9112 §2.2)") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         // Trailer line has \r followed by 'X' instead of \n
         let raw = "0\r\nX-Trailer: val\rX-Next: 1\r\n\r\n";
-        let st, _, _ = internal::chunk_fsm_feed(dec, raw);
-        sub.assert_eq(st, internal::ChunkFsmStatus.Error, "Bare CR in trailer line rejected");
+        let st, _, _ = http_internal::chunk_fsm_feed(dec, raw);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.Error, "Bare CR in trailer line rejected");
     };
 
     t.run("chunk_fsm_feed rejects bare LF and obs-fold in trailer mode") { sub =>
-        var dec1 = internal::new_chunk_fsm_decoder();
-        let st1, _, _ = internal::chunk_fsm_feed(dec1, "0\r\n\n");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.Error, "Bare LF in trailer mode rejected");
+        var dec1 = http_internal::new_chunk_fsm_decoder();
+        let st1, _, _ = http_internal::chunk_fsm_feed(dec1, "0\r\n\n");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.Error, "Bare LF in trailer mode rejected");
 
-        var dec2 = internal::new_chunk_fsm_decoder();
+        var dec2 = http_internal::new_chunk_fsm_decoder();
         // obs-fold (space at start of trailer line)
-        let st2, _, _ = internal::chunk_fsm_feed(dec2, "0\r\n X-Fold: bad\r\n\r\n");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Obs-fold at start of trailer line rejected");
+        let st2, _, _ = http_internal::chunk_fsm_feed(dec2, "0\r\n X-Fold: bad\r\n\r\n");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "Obs-fold at start of trailer line rejected");
     };
 
     t.run("chunk_fsm_feed rejects NUL and CTL bytes in trailer line") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         var raw: u8[..32] = "0\r\nX-Bad: \0val\r\n\r\n";
-        let st, _, _ = internal::chunk_fsm_feed(dec, raw[..]);
-        sub.assert_eq(st, internal::ChunkFsmStatus.Error, "NUL byte in trailer rejected");
+        let st, _, _ = http_internal::chunk_fsm_feed(dec, raw[..]);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.Error, "NUL byte in trailer rejected");
     };
 }
 
@@ -2833,7 +2833,7 @@ fn test_http1_response_serialization_empty_status(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunk_fsm_extension_length_defense(t: lit::T&) {
     t.run("ChunkFsmDecoder rejects chunk extension exceeding 1024 bytes") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
 
         // Build chunk header with extension > 1024 bytes: "5;ext=" + 1025 'a's + "\r\nhello\r\n0\r\n\r\n"
         var raw: u8[>..] = [];
@@ -2843,16 +2843,16 @@ fn test_chunk_fsm_extension_length_defense(t: lit::T&) {
         }
         raw.append("\r\nhello\r\n0\r\n\r\n");
 
-        let st, consumed, _ = internal::chunk_fsm_feed(dec, raw[..]);
-        sub.assert_eq(st, internal::ChunkFsmStatus.Error, "Oversized chunk extension must trigger Error");
-        sub.assert_eq(dec.state, internal::CHUNK_STATE_IS_ERROR, "FSM state must transition to sticky Error");
+        let st, consumed, _ = http_internal::chunk_fsm_feed(dec, raw[..]);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.Error, "Oversized chunk extension must trigger Error");
+        sub.assert_eq(dec.state, http_internal::CHUNK_STATE_IS_ERROR, "FSM state must transition to sticky Error");
     };
 
     t.run("ChunkFsmDecoder accepts valid chunk extension <= 1024 bytes") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         let raw = "5;ext=valid\r\nhello\r\n0\r\n\r\n";
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, raw);
-        sub.assert_eq(st, internal::ChunkFsmStatus.YieldChunk, "Valid chunk extension accepted");
+        let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, raw);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.YieldChunk, "Valid chunk extension accepted");
         sub.assert_bytes_eq(chunk, "hello", "Chunk payload yielded correctly");
     };
 }
@@ -2862,7 +2862,7 @@ fn test_chunk_fsm_extension_length_defense(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_chunk_fsm_trailer_flood_defense(t: lit::T&) {
     t.run("ChunkFsmDecoder rejects total trailer bytes exceeding 4096 bytes") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
 
         // Stream final chunk "0\r\n", followed by oversized trailer line > 4096 bytes
         var raw: u8[>..] = [];
@@ -2872,16 +2872,16 @@ fn test_chunk_fsm_trailer_flood_defense(t: lit::T&) {
         }
         raw.append("\r\n\r\n");
 
-        let st, consumed, _ = internal::chunk_fsm_feed(dec, raw[..]);
-        sub.assert_eq(st, internal::ChunkFsmStatus.Error, "Oversized trailers > 4096 bytes must trigger Error");
-        sub.assert_eq(dec.state, internal::CHUNK_STATE_IS_ERROR, "FSM state must transition to sticky Error");
+        let st, consumed, _ = http_internal::chunk_fsm_feed(dec, raw[..]);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.Error, "Oversized trailers > 4096 bytes must trigger Error");
+        sub.assert_eq(dec.state, http_internal::CHUNK_STATE_IS_ERROR, "FSM state must transition to sticky Error");
     };
 
     t.run("ChunkFsmDecoder accepts legitimate trailers <= 4096 bytes") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
         let raw = "0\r\nX-Checksum: deadbeef\r\n\r\n";
-        let st, consumed, _ = internal::chunk_fsm_feed(dec, raw);
-        sub.assert_eq(st, internal::ChunkFsmStatus.Complete, "Legitimate trailers succeed with Complete");
+        let st, consumed, _ = http_internal::chunk_fsm_feed(dec, raw);
+        sub.assert_eq(st, http_internal::ChunkFsmStatus.Complete, "Legitimate trailers succeed with Complete");
     };
 }
 

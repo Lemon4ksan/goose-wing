@@ -4,7 +4,7 @@
 // HTTP/2 HPACK Header Compression and 256-State Huffman FSM (RFC 7541, RFC 9113 Section 8.2).
 // Implements 16 KiB L1-cache Huffman decoding FSM, zero-allocation ring-buffer dynamic table,
 // integer shift overflow protection (Trail of Bits FIND-401), and RFC 9113 header field validation.
-namespace internal;
+namespace h2_internal;
 
 import std;
 import core from "..";

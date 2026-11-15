@@ -626,7 +626,7 @@ Eviction order, as in Chromium:
 
 ### 12.2 Tako v2 connection pool (`server/pool.goose`)
 
-Isolated within `namespace internal;`:
+Isolated within `namespace server_internal;`:
 
 - `HeaderMapPool`: Reuses pre-allocated 8 KB flat-buffer header structures
   across keep-alive connections.

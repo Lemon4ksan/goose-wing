@@ -2095,7 +2095,7 @@ fn test_case_insensitive_prefix_enforcement(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_max_age_overflow_and_capping(t: lit::T&) {
     var clock = lit::new_mock_clock();
-    let expected_cap_us = clock.now_us + internal::K_MAX_COOKIE_AGE_US;
+    let expected_cap_us = clock.now_us + cookie_internal::K_MAX_COOKIE_AGE_US;
 
     t.run("MAXAGE-01: Large Max-Age (10000000000000) must clamp to 400 days in jar") { sub =>
         var jar = wing::CanonicalCookieJar { .. };

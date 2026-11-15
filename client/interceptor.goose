@@ -10,7 +10,7 @@ namespace wing;
 
 import std;
 import core from "..";
-import client.request;
+import http.request;
 import http.headers;
 import http.trace;
 

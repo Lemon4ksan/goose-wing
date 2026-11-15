@@ -85,6 +85,48 @@ def run_command(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]
         return -1, "", f"Command not found: {cmd[0]}"
 
 
+def default_worker_count() -> int:
+    cpu_cap = min(os.cpu_count() or 4, 8)
+    avail_mb = 0
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                avail_mb = int(min(stat.ullAvailPageFile, stat.ullAvailPhys + stat.ullAvailPageFile) // (1024 * 1024))
+        except Exception:
+            avail_mb = 0
+    elif Path("/proc/meminfo").exists():
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("MemAvailable:"):
+                    avail_mb = int(line.split()[1]) // 1024
+                    break
+        except Exception:
+            avail_mb = 0
+
+    if avail_mb > 0:
+        # Each full `goose check`/`goose build` on `wing` peaks near ~700-900 MB commit charge.
+        mem_cap = max(1, (avail_mb - 1024) // 950)
+        return max(1, min(cpu_cap, mem_cap))
+    return cpu_cap
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="goose-wing Cross-Platform Test Runner")
     parser.add_argument(
@@ -128,8 +170,8 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=min(os.cpu_count() or 4, 8),
-        help="Maximum parallel compilation/check worker threads (default: min(cores, 8))",
+        default=default_worker_count(),
+        help="Maximum parallel compilation/check worker threads (memory- and CPU-aware default)",
     )
     args = parser.parse_args()
 
@@ -137,10 +179,6 @@ def main() -> int:
     tests_dir = root_dir / "tests"
     examples_dir = root_dir / "examples"
 
-    if platform.system() == "Windows":
-        gcc_noavx = root_dir / "tools" / "gcc_noavx.cmd"
-        if gcc_noavx.exists():
-            os.environ.setdefault("GOOSE_CC", str(gcc_noavx))
     core_file = root_dir / "core.goose"
     rfc_file = root_dir / "rfc.goose"
     wing_file = root_dir / "wing.goose"

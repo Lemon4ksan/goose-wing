@@ -7,7 +7,7 @@ namespace wing;
 import std;
 import core from "../..";
 import client.redirect;
-import client.response;
+import http.response;
 import http.headers;
 import client.session.ssrf;
 

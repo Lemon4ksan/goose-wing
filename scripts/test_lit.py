@@ -47,11 +47,55 @@ def run_single_test(
     return test_file, proc.returncode, elapsed_ms, proc.stdout, proc.stderr
 
 
+def default_lit_jobs() -> int:
+    cpu_cap = min(os.cpu_count() or 4, 4)
+    avail_mb = 0
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                avail_mb = int(stat.ullAvailPageFile // (1024 * 1024))
+        except Exception:
+            avail_mb = 0
+    elif Path("/proc/meminfo").exists():
+        try:
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("MemAvailable:"):
+                    avail_mb = int(line.split()[1]) // 1024
+                    break
+        except Exception:
+            avail_mb = 0
+
+    if avail_mb > 0:
+        # `goose build -O2` (`gcc -O3`) on full `wing` peaks near ~1.8-2.2 GB commit charge per job.
+        mem_cap = max(1, (avail_mb - 1536) // 2200)
+        return max(1, min(cpu_cap, mem_cap))
+    return cpu_cap
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Goose-wing Native LIT Test Runner")
     parser.add_argument("pattern", nargs="?", default="*", help="File filter pattern")
     parser.add_argument("--pattern", dest="opt_pattern", default="", help="File filter pattern")
-    parser.add_argument("-j", "--jobs", type=int, default=4, help="Concurrency limit")
+    parser.add_argument(
+        "-j", "--jobs", type=int, default=default_lit_jobs(), help="Concurrency limit"
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--sequential", action="store_true", help="Run tests sequentially")
     args = parser.parse_args()

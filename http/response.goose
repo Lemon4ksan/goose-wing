@@ -7,7 +7,7 @@ namespace wing;
 import std;
 import core from "..";
 import json;
-import client.request;
+import .request;
 import http.compression_dict;
 import http.early_hints;
 import http.headers;

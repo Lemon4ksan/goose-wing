@@ -4,7 +4,7 @@
 // HTTP/3 and QPACK Field Compression Engine (RFC 9204, RFC 9114).
 // Implements RFC 9204 static table (99 entries), zero-allocation dynamic table ring,
 // modular RIC prefix codec, blocked streams manager, and Header Accordion DoS mitigations.
-namespace internal;
+namespace h3_internal;
 
 import std;
 import core from "..";
@@ -944,7 +944,7 @@ fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B
 
     let raw_slice = src[noff..noff + slen];
     if is_huff {
-        let ok_huff = internal::huff_decode_bytes(raw_slice, out);
+        let ok_huff = h2_internal::huff_decode_bytes(raw_slice, out);
         guard ok_huff else { return offset, false; }
     } else {
         guard out.try_append(raw_slice) else { return offset, false; }
@@ -1736,15 +1736,15 @@ fn try_encode_qpack_field<B>(
 
     let s_idx, exact_s = find_qpack_static_field(name, val);
     if exact_s {
-        guard internal::hpack_encode_int(out, s_idx, 6, 0xC0) else { return false; }
+        guard h2_internal::hpack_encode_int(out, s_idx, 6, 0xC0) else { return false; }
         committed = true;
         return true;
     }
 
     let s_idx_name, _ = find_qpack_static_field(name, "");
     if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE && name == QPACK_STATIC_TABLE[s_idx_name as i64].name {
-        guard internal::hpack_encode_int(out, s_idx_name, 4, 0x50) &&
-              internal::encode_hpack_string_literal(out, val, use_huffman) else {
+        guard h2_internal::hpack_encode_int(out, s_idx_name, 4, 0x50) &&
+              h2_internal::encode_hpack_string_literal(out, val, use_huffman) else {
             return false;
         }
         committed = true;
@@ -1752,20 +1752,20 @@ fn try_encode_qpack_field<B>(
     }
 
     if use_huffman {
-        let huff_len = internal::huff_encoded_byte_len(name);
+        let huff_len = h2_internal::huff_encoded_byte_len(name);
         if huff_len < (name.len as u64) {
-            guard internal::hpack_encode_int(out, huff_len, 3, 0x28) &&
-                  internal::huff_encode_bytes(name, out) &&
-                  internal::encode_hpack_string_literal(out, val, use_huffman) else {
+            guard h2_internal::hpack_encode_int(out, huff_len, 3, 0x28) &&
+                  h2_internal::huff_encode_bytes(name, out) &&
+                  h2_internal::encode_hpack_string_literal(out, val, use_huffman) else {
                 return false;
             }
             committed = true;
             return true;
         }
     }
-    guard internal::hpack_encode_int(out, name.len as u64, 3, 0x20) &&
+    guard h2_internal::hpack_encode_int(out, name.len as u64, 3, 0x20) &&
           out.try_append(name) &&
-          internal::encode_hpack_string_literal(out, val, use_huffman) else {
+          h2_internal::encode_hpack_string_literal(out, val, use_huffman) else {
         return false;
     }
     committed = true;
@@ -1817,7 +1817,7 @@ fn find_qpack_dynamic_field(
 fn encode_qpack_set_capacity<B>(tbl: QpackTable&, new_cap: u64, out_enc: B&) -> bool {
     guard new_cap <= tbl.max_capacity_bytes else { return false; }
     var enc_buf: u8[..16] = [];
-    guard internal::hpack_encode_int(enc_buf, new_cap, 5, 0x20) else { return false; }
+    guard h2_internal::hpack_encode_int(enc_buf, new_cap, 5, 0x20) else { return false; }
     let saved_len = out_enc.len;
     var committed = false;
     defer if !committed { out_enc.resize(saved_len); };
@@ -1843,21 +1843,21 @@ fn encode_qpack_dynamic_insert<B>(
 
     var ins_buf: u8[..4096] = [];
     if has_static_name {
-        let enc_ok = internal::hpack_encode_int(ins_buf, s_idx_name, 6, 0xC0) &&
-            internal::encode_hpack_string_literal(ins_buf, val, use_huffman);
+        let enc_ok = h2_internal::hpack_encode_int(ins_buf, s_idx_name, 6, 0xC0) &&
+            h2_internal::encode_hpack_string_literal(ins_buf, val, use_huffman);
         guard enc_ok else { return 0, false; }
     } else {
-        let huff_len = if use_huffman { internal::huff_encoded_byte_len(name) } else { name.len as u64 };
+        let huff_len = if use_huffman { h2_internal::huff_encoded_byte_len(name) } else { name.len as u64 };
         let is_huff = use_huffman && huff_len < (name.len as u64);
         var enc_ok = false;
         if is_huff {
-            enc_ok = internal::hpack_encode_int(ins_buf, huff_len, 5, 0x60);
-            enc_ok = enc_ok && internal::huff_encode_bytes(name, ins_buf);
+            enc_ok = h2_internal::hpack_encode_int(ins_buf, huff_len, 5, 0x60);
+            enc_ok = enc_ok && h2_internal::huff_encode_bytes(name, ins_buf);
         } else {
-            enc_ok = internal::hpack_encode_int(ins_buf, name.len as u64, 5, 0x40);
+            enc_ok = h2_internal::hpack_encode_int(ins_buf, name.len as u64, 5, 0x40);
             enc_ok = enc_ok && ins_buf.try_append(name);
         }
-        guard enc_ok && internal::encode_hpack_string_literal(ins_buf, val, use_huffman) else {
+        guard enc_ok && h2_internal::encode_hpack_string_literal(ins_buf, val, use_huffman) else {
             return 0, false;
         }
     }
@@ -1878,10 +1878,10 @@ fn encode_qpack_dynamic_insert<B>(
 inline fn encode_qpack_dyn_index_line<B>(out_section: B&, abs_idx: u64, base: u64) -> bool {
     if abs_idx < base {
         let rel_idx = base - abs_idx - 1;
-        return internal::hpack_encode_int(out_section, rel_idx, 6, 0x80);
+        return h2_internal::hpack_encode_int(out_section, rel_idx, 6, 0x80);
     }
     let post_idx = abs_idx - base;
-    return internal::hpack_encode_int(out_section, post_idx, 4, 0x10);
+    return h2_internal::hpack_encode_int(out_section, post_idx, 4, 0x10);
 }
 
 // RFC 9204 Section 3.2: Dynamic Table - Rolls back encoder and dynamic table state on field section overflow.
@@ -1913,7 +1913,7 @@ fn try_encode_qpack_field_dynamic<B1, B2>(
 
     let s_idx, exact_s = find_qpack_static_field(name, val);
     if exact_s {
-        guard internal::hpack_encode_int(out_section, s_idx, 6, 0xC0) else { return false; }
+        guard h2_internal::hpack_encode_int(out_section, s_idx, 6, 0xC0) else { return false; }
         committed = true;
         return true;
     }

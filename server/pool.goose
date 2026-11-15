@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Server state, connection timers, and pooled buffers for request processing.
-namespace internal;
+namespace server_internal;
 
 import std;
 import .router;
@@ -235,11 +235,18 @@ struct ReactorConnectionSlot {
 }
 
 struct ReactorConnectionPool {
-    slots: ReactorConnectionSlot[..4096] = [ReactorConnectionSlot { .. }; 4096],
+    slots: ReactorConnectionSlot[..4096] = [],
+}
+
+fn ensure_connection_pool_capacity(pool: ReactorConnectionPool&) {
+    if pool.slots.len < 4096 {
+        pool.slots.resize(4096, ReactorConnectionSlot { .. });
+    }
 }
 
 // Resets all slots in `pool` in place without allocating a temporary pool on the stack.
 fn reset_connection_pool_inplace(pool: ReactorConnectionPool&) {
+    ensure_connection_pool_capacity(pool);
     for idx in pool.slots.len {
         pool.slots[idx].fd = -1;
         pool.slots[idx].connected_at_ns = 0;
@@ -250,6 +257,7 @@ fn reset_connection_pool_inplace(pool: ReactorConnectionPool&) {
 
 // Allocates a connection slot from `pool` for `fd` at `now_ns`, returning the slot index or -1.
 fn alloc_connection_slot(pool: ReactorConnectionPool&, fd: i64, now_ns: i64) -> i32 {
+    ensure_connection_pool_capacity(pool);
     for idx in pool.slots.len {
         if fd >= 0 && !pool.slots[idx].in_use {
             pool.slots[idx].in_use = true;

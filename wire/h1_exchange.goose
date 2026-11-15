@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// client/session/h1_exchange.goose
+// wire/h1_exchange.goose
 // Zero-allocation HTTP/1.1 exchange engine over PooledConnection with
 // HeaderSpan zero-copy parsing and chunked transfer decoding.
 namespace wing;
 
 import std;
-import core from "../..";
-import client.client;
-import client.response;
-import client.request;
+import core from "..";
+import http.response;
+import http.request;
 import net.pool;
+import net.slowloris;
 import net.transport;
 import http.headers;
-import wire.h1;
+import .h1;
 
 // ---- 1. Exchange Protocol State Machine ------------------------------------
 
@@ -249,7 +249,7 @@ inline fn record_chunk_trailers(
 }
 
 fn feed_chunk_slice(
-    dec:         internal::ChunkFsmDecoder&,
+    dec:         http_internal::ChunkFsmDecoder&,
     buf:         const u8[:],
     resp:        Response&,
     trailer_buf: u8[..4096]&,
@@ -259,10 +259,10 @@ fn feed_chunk_slice(
     while out_cursor < buf.len {
         let is_tr = (dec.state & 0x1000000000000000) != 0;
         let remaining = buf[out_cursor..];
-        let st, consumed, chunk = internal::chunk_fsm_feed(dec, remaining);
+        let st, consumed, chunk = http_internal::chunk_fsm_feed(dec, remaining);
         if is_tr {
             guard record_chunk_trailers(true, consumed, remaining, trailer_buf) else { return true, false; }
-        } else if (dec.state & 0x1000000000000000) != 0 || st == internal::ChunkFsmStatus.Complete {
+        } else if (dec.state & 0x1000000000000000) != 0 || st == http_internal::ChunkFsmStatus.Complete {
             let nl = remaining[..consumed].index_of_byte('\n');
             if nl >= 0 && (nl + 1) < consumed {
                 let tr_slice = remaining[(nl + 1)..consumed];
@@ -273,7 +273,7 @@ fn feed_chunk_slice(
         if chunk.len > 0 {
             resp.body.append(chunk);
         }
-        if st == internal::ChunkFsmStatus.Complete {
+        if st == http_internal::ChunkFsmStatus.Complete {
             if trailer_buf.len > 0 {
                 var tr_cur: i64 = 0;
                 let tr_err = parse_chunked_trailers_with_out(trailer_buf[..], tr_cur, resp.trailers);
@@ -281,7 +281,7 @@ fn feed_chunk_slice(
             }
             return true, true;
         }
-        if st == internal::ChunkFsmStatus.Error {
+        if st == http_internal::ChunkFsmStatus.Error {
             return true, false;
         }
     }
@@ -290,7 +290,7 @@ fn feed_chunk_slice(
 
 fn pump_h1_chunked_body(
     conn:       PooledConnection&,
-    dec:        internal::ChunkFsmDecoder&,
+    dec:        http_internal::ChunkFsmDecoder&,
     leftover:   const u8[:],
     resp:       Response&,
     timeout_ms: u32,
@@ -361,15 +361,41 @@ fn send_h1_request(
     return true;
 }
 
-fn read_response_headers(conn: PooledConnection&, timeout_ms: u32) -> i64, bool {
-    var hdr_end_idx: i64      = core::fast_find_crlfcrlf(conn.rx_buf[..]);
-    var raw_recv:    u8[4096] = [0; 4096];
+inline fn feed_h1_header_guard(
+    guard_reader: HeaderReader&,
+    rx_buf:       const u8[:],
+    from_idx:     i64,
+    hdr_end_idx:  i64,
+    now_ns:       i64,
+) -> bool {
+    let inspect_end = if hdr_end_idx >= 0 { hdr_end_idx + 4 } else { rx_buf.len };
+    guard inspect_end > from_idx else { return true; }
+    return feed_header_bytes(guard_reader, rx_buf[from_idx..inspect_end], now_ns) == SlowlorisViolation.None;
+}
 
+fn read_response_headers(conn: PooledConnection&, timeout_ms: u32) -> i64, bool {
+    let start_ns = (core::as_nanos(core::monotonic_now()) & 0x7FFFFFFFFFFFFFFF) as i64;
+    let hdr_timeout_ns = max(10000000000, (timeout_ms as i64) * 1000000);
+    var guard_reader = new_header_reader(
+        SlowlorisDefenseConfig { response_header_timeout_ns: hdr_timeout_ns, .. },
+        start_ns,
+    );
+    var hdr_end_idx: i64 = core::fast_find_crlfcrlf(conn.rx_buf[..]);
+    guard feed_h1_header_guard(guard_reader, conn.rx_buf[..], 0, hdr_end_idx, start_ns) else {
+        return 0, false;
+    }
+
+    var raw_recv: u8[4096] = [0; 4096];
     while hdr_end_idx < 0 {
+        let prev_len = conn.rx_buf.len;
         let recvd = conn.transport.recv_slice(raw_recv[..], timeout_ms);
         guard recvd > 0 else { return 0, false; }
         guard conn.rx_buf.try_append(raw_recv[..recvd]) else { return 0, false; }
         hdr_end_idx = core::fast_find_crlfcrlf(conn.rx_buf[..]);
+        let now_ns = (core::as_nanos(core::monotonic_now()) & 0x7FFFFFFFFFFFFFFF) as i64;
+        guard feed_h1_header_guard(guard_reader, conn.rx_buf[..], prev_len, hdr_end_idx, now_ns) else {
+            return 0, false;
+        }
     }
     return hdr_end_idx, true;
 }
@@ -492,7 +518,7 @@ fn pump_response_body(
         let te_mode = classify_h1_transfer_encoding(te);
         guard te_mode != 0 else { return false, false; }
         if te_mode == 1 {
-            var dec = internal::new_chunk_fsm_decoder();
+            var dec = http_internal::new_chunk_fsm_decoder();
             let ok_chunk = pump_h1_chunked_body(conn, dec, leftover, resp, timeout_ms);
             if ok_chunk {
                 remove_header_by_name(resp.headers, "transfer-encoding");

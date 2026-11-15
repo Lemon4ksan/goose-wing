@@ -78,32 +78,32 @@ fn test_go_75557_content_disposition_crlf_injection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_http2_content_length_overflow_defense(t: lit::T&) {
     t.run("RFC 9113 & Go #81115: HTTP/2 Content-Length > 19 digits MUST be rejected as PROTOCOL_ERROR") { sub =>
-        var dt_enc = internal::new_dynamic_table(4096);
+        var dt_enc = h2_internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", internal::HpackIndexing.None, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", internal::HpackIndexing.None, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", internal::HpackIndexing.None, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", h2_internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", h2_internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", h2_internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", h2_internal::HpackIndexing.None, false);
 
-        var dt_dec = internal::new_dynamic_table(4096);
-        var pseudo = internal::H2PseudoHeaders { .. };
+        var dt_dec = h2_internal::new_dynamic_table(4096);
+        var pseudo = h2_internal::H2PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
     };
 
     t.run("Valid Content-Length in HTTP/2 is parsed correctly") { sub =>
-        var dt_enc = internal::new_dynamic_table(4096);
+        var dt_enc = h2_internal::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", internal::HpackIndexing.None, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", internal::HpackIndexing.None, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", internal::HpackIndexing.None, false);
-        internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", h2_internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", h2_internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", h2_internal::HpackIndexing.None, false);
+        h2_internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", h2_internal::HpackIndexing.None, false);
 
-        var dt_dec = internal::new_dynamic_table(4096);
-        var pseudo = internal::H2PseudoHeaders { .. };
+        var dt_dec = h2_internal::new_dynamic_table(4096);
+        var pseudo = h2_internal::H2PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Valid Content-Length must succeed");
         sub.assert_true(pseudo.has_content_length, "has_content_length set");
         sub.assert_eq(pseudo.content_length_val, 1048576, "parsed content-length matches");
@@ -389,27 +389,27 @@ fn test_cve_2026_42507_diagnostic_log_injection_defense(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_window_update_and_settings_cpu_limits(t: lit::T&) {
     t.run("RFC 9113 В§6.9.1 & Go #58456: WINDOW_UPDATE increment bounds and window overflow") { sub =>
-        var conn = internal::new_h2_connection(0, 8192, false);
+        var conn = h2_internal::new_h2_connection(0, 8192, false);
 
         // Increment > 2^31 - 1 is a PROTOCOL_ERROR
-        let err_proto = internal::apply_window_update(conn, 0, ((rfc::H2_MAX_WINDOW_SIZE as i64) as u32) + 1);
+        let err_proto = h2_internal::apply_window_update(conn, 0, ((rfc::H2_MAX_WINDOW_SIZE as i64) as u32) + 1);
         sub.assert_eq(err_proto, rfc::H2_ERR_PROTOCOL_ERROR, "Increment > 2^31 - 1 must trigger PROTOCOL_ERROR");
 
         // Increment pushing window past 2^31 - 1 is a FLOW_CONTROL_ERROR
-        let err_flow = internal::apply_window_update(conn, 0, (rfc::H2_MAX_WINDOW_SIZE as i64) as u32);
+        let err_flow = h2_internal::apply_window_update(conn, 0, (rfc::H2_MAX_WINDOW_SIZE as i64) as u32);
         sub.assert_eq(err_flow, rfc::H2_ERR_FLOW_CONTROL_ERROR, "Window accumulator exceeding 2^31 - 1 must trigger FLOW_CONTROL_ERROR");
     };
 
     t.run("CVE-2026-78669 & Go #81742: Excessive repeated INITIAL_WINDOW_SIZE changes throttled") { sub =>
-        var conn = internal::new_h2_connection(0, 8192, false);
+        var conn = h2_internal::new_h2_connection(0, 8192, false);
 
         for i in 16 {
-            let res = internal::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
+            let res = h2_internal::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
             sub.assert_eq(res, rfc::H2_ERR_NO_ERROR, "First 16 window updates succeed");
         }
 
         // 17th update triggers ENHANCE_YOUR_CALM defense
-        let res_17 = internal::apply_peer_initial_window_size_delta(conn, 65535);
+        let res_17 = h2_internal::apply_peer_initial_window_size_delta(conn, 65535);
         sub.assert_eq(res_17, rfc::H2_ERR_ENHANCE_YOUR_CALM, "Excessive repeated window changes must trigger ENHANCE_YOUR_CALM");
     };
 }
@@ -617,7 +617,7 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         }
 
         var out_small: u8[..256] = [];
-        let _, ok = internal::decode_hpack_string(raw_lit[..], 0, out_small);
+        let _, ok = h2_internal::decode_hpack_string(raw_lit[..], 0, out_small);
         sub.assert_false(ok, "Literal HPACK string of 300 bytes into 256-cap buffer MUST return false without abort");
     };
 
@@ -629,10 +629,10 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         }
 
         var huff_encoded: u8[..400] = [];
-        internal::huff_encode_bytes(uncomp[..], huff_encoded);
+        h2_internal::huff_encode_bytes(uncomp[..], huff_encoded);
 
         var out_small: u8[..64] = [];
-        let ok = internal::huff_decode_bytes(huff_encoded[..], out_small);
+        let ok = h2_internal::huff_decode_bytes(huff_encoded[..], out_small);
         sub.assert_false(ok, "Huffman decode exceeding buffer capacity MUST return false without abort");
     };
 
@@ -651,10 +651,10 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         raw_block.push(5);
         raw_block.append("value");
 
-        var dt = internal::new_dynamic_table(4096);
-        var pseudo = internal::H2PseudoHeaders { .. };
+        var dt = h2_internal::new_dynamic_table(4096);
+        var pseudo = h2_internal::H2PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out_list, 8192, false);
+        let err = h2_internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out_list, 8192, false);
         sub.assert_ne(err, rfc::H2_ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
     };
 }
@@ -1202,25 +1202,25 @@ fn test_pipe_lifecycle_slice_io_and_streaming_finality(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
     t.run("RFC 9113 §5.1 & §6.9: DATA frame on stream closed via RST_STREAM accounts for connection flow control") { sub =>
-        var conn = internal::new_h2_connection(0);
+        var conn = h2_internal::new_h2_connection(0);
         // Initial conn_recv_window = 65535
         sub.assert_eq(conn.conn_recv_window, 65535, "Initial connection receive window is 65535");
 
         // 1. Open stream 1 via HEADERS
-        let h_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
-        let err_h = internal::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
+        let err_h = h2_internal::on_ingress_frame_header(conn, h_hdr, 0);
         sub.assert_eq(err_h, rfc::H2_ERR_NO_ERROR, "HEADERS on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 1, "1 active stream");
 
         // 2. Client cancels stream 1 via RST_STREAM
-        let rst_hdr = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
-        let err_rst = internal::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = h2_internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        let err_rst = h2_internal::on_ingress_frame_header(conn, rst_hdr, 0);
         sub.assert_eq(err_rst, rfc::H2_ERR_NO_ERROR, "RST_STREAM on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 0, "Active stream count decremented to 0");
 
         // 3. In-flight DATA frame arrives on stream 1 (length = 1000)
-        let data_hdr = internal::FrameHeader { length: 1000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
-        let err_data = internal::on_data_frame_received(conn, data_hdr, 1000);
+        let data_hdr = h2_internal::FrameHeader { length: 1000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = h2_internal::on_data_frame_received(conn, data_hdr, 1000);
         // Must return ERR_STREAM_CLOSED (stream error) rather than connection error
         sub.assert_eq(err_data, rfc::H2_ERR_STREAM_CLOSED, "DATA on reset stream returns STREAM_CLOSED");
         // BUT connection receive window MUST be accounted (decremented by 1000) per RFC 9113 §5.1 / §6.9
@@ -1228,48 +1228,48 @@ fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
     };
 
     t.run("RFC 9113 §6.9: Oversized DATA frame exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR") { sub =>
-        var conn = internal::new_h2_connection(0);
+        var conn = h2_internal::new_h2_connection(0);
         // Set connection receive window to 500 bytes
         conn.conn_recv_window = 500;
 
         // Open stream 1
-        let h_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
-        internal::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
+        h2_internal::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 1
-        let rst_hdr = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
-        internal::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = h2_internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        h2_internal::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends DATA frame of 600 bytes on closed stream 1 (exceeding conn_recv_window = 500)
-        let data_hdr = internal::FrameHeader { length: 600, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
-        let err_data = internal::on_data_frame_received(conn, data_hdr, 600);
+        let data_hdr = h2_internal::FrameHeader { length: 600, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = h2_internal::on_data_frame_received(conn, data_hdr, 600);
         // RFC 9113 §6.9: Connection flow control violation MUST trigger FLOW_CONTROL_ERROR, NOT STREAM_CLOSED!
         sub.assert_eq(err_data, rfc::H2_ERR_FLOW_CONTROL_ERROR, "Exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR");
         sub.assert_true(conn.conn_recv_window < 0, "Connection receive window underflowed to negative value");
     };
 
     t.run("RFC 9113 §5.1 & §6.9: Multiple in-flight DATA frames after RST_STREAM prevent window lockup") { sub =>
-        var conn = internal::new_h2_connection(0);
+        var conn = h2_internal::new_h2_connection(0);
 
         // Open stream 3
-        let h_hdr = internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
-        internal::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
+        h2_internal::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 3
-        let rst_hdr = internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 3 };
-        internal::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = h2_internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 3 };
+        h2_internal::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends 4 in-flight DATA chunks of 10000 bytes each
         for i in 4 {
-            let data_chunk = internal::FrameHeader { length: 10000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 3 };
-            let err_c = internal::on_data_frame_received(conn, data_chunk, 10000);
+            let data_chunk = h2_internal::FrameHeader { length: 10000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 3 };
+            let err_c = h2_internal::on_data_frame_received(conn, data_chunk, 10000);
             sub.assert_eq(err_c, rfc::H2_ERR_STREAM_CLOSED, "Chunk returns STREAM_CLOSED");
         }
         // Total connection window consumed: 40000
         sub.assert_eq(conn.conn_recv_window, 25535, "Connection receive window accounted: 65535 - 40000 = 25535");
 
         // Replenish connection window via WINDOW_UPDATE (+40000)
-        let err_win = internal::apply_window_update(conn, 0, 40000);
+        let err_win = h2_internal::apply_window_update(conn, 0, 40000);
         sub.assert_eq(err_win, rfc::H2_ERR_NO_ERROR, "Connection WINDOW_UPDATE succeeds");
         sub.assert_eq(conn.conn_send_window, 105535, "Connection send window replenished without lockup");
     };
@@ -1482,40 +1482,40 @@ fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: lit::T&) {
 fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
     t.run("RFC 9204 §4.5.1.2: decode_base correctly computes Base when RIC == 0") { sub =>
         // 1. Valid: ric == 0, sign == 0, delta_base == 0 => Base == 0
-        let base0, err0 = internal::decode_base(0, 0, 0);
-        sub.assert_eq(err0, internal::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
+        let base0, err0 = h3_internal::decode_base(0, 0, 0);
+        sub.assert_eq(err0, h3_internal::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
         sub.assert_eq(base0, 0, "Base must be 0 when RIC is 0");
 
         // 2. Valid: ric == 0 with sign == 0 and delta_base > 0 produces non-negative Base
-        let base1, err_delta = internal::decode_base(0, 1, 0);
-        sub.assert_eq(err_delta, internal::QpackError.None, "ric=0 with delta_base=1 is valid");
+        let base1, err_delta = h3_internal::decode_base(0, 1, 0);
+        sub.assert_eq(err_delta, h3_internal::QpackError.None, "ric=0 with delta_base=1 is valid");
         sub.assert_eq(base1, 1, "Base must be 1");
 
-        let base5, err_delta5 = internal::decode_base(0, 5, 0);
-        sub.assert_eq(err_delta5, internal::QpackError.None, "ric=0 with delta_base=5 is valid");
+        let base5, err_delta5 = h3_internal::decode_base(0, 5, 0);
+        sub.assert_eq(err_delta5, h3_internal::QpackError.None, "ric=0 with delta_base=5 is valid");
         sub.assert_eq(base5, 5, "Base must be 5");
 
         // 3. Invalid: ric == 0 with sign == 1 MUST fail with DecompressionFailed
-        let _, err_sign = internal::decode_base(1, 0, 0);
-        sub.assert_eq(err_sign, internal::QpackError.DecompressionFailed, "ric=0 with sign=1 MUST fail");
+        let _, err_sign = h3_internal::decode_base(1, 0, 0);
+        sub.assert_eq(err_sign, h3_internal::QpackError.DecompressionFailed, "ric=0 with sign=1 MUST fail");
 
-        let _, err_sign_delta = internal::decode_base(1, 10, 0);
-        sub.assert_eq(err_sign_delta, internal::QpackError.DecompressionFailed, "ric=0 with sign=1 and delta_base=10 MUST fail");
+        let _, err_sign_delta = h3_internal::decode_base(1, 10, 0);
+        sub.assert_eq(err_sign_delta, h3_internal::QpackError.DecompressionFailed, "ric=0 with sign=1 and delta_base=10 MUST fail");
 
         // 4. Invalid: sign_bit > 1 MUST fail with DecompressionFailed
-        let _, err_bad_sign = internal::decode_base(2, 0, 0);
-        sub.assert_eq(err_bad_sign, internal::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
+        let _, err_bad_sign = h3_internal::decode_base(2, 0, 0);
+        sub.assert_eq(err_bad_sign, h3_internal::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
     };
 
     t.run("RFC 9204 §4.5.1.2: decode_qpack_section allows non-zero DeltaBase with Sign=0 when RIC==0") { sub =>
-        var tbl = internal::new_qpack_table(4096, 16);
-        var out_fields: internal::HeaderField[>..] = [];
+        var tbl = h3_internal::new_qpack_table(4096, 16);
+        var out_fields: h3_internal::HeaderField[>..] = [];
 
         // Valid header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 5 (0x05), Static :path="/" (0xC1)
         // RFC 9204 §4.5.1.2: Any non-negative Base is valid when dynamic table references are absent
         let valid_deltabase_block: u8[3] = [0x00, 0x05, 0xC1];
-        let err_db = internal::decode_qpack_section(tbl, valid_deltabase_block[..], out_fields, 4096);
-        sub.assert_eq(err_db, internal::QpackError.None, "Header block with RIC=0, Sign=0, DeltaBase=5 succeeds");
+        let err_db = h3_internal::decode_qpack_section(tbl, valid_deltabase_block[..], out_fields, 4096);
+        sub.assert_eq(err_db, h3_internal::QpackError.None, "Header block with RIC=0, Sign=0, DeltaBase=5 succeeds");
         sub.assert_eq(out_fields.len, 1, "One field decoded");
         sub.assert_eq(out_fields[0].name[..], ":path", "Decoded field name is :path");
         sub.assert_eq(out_fields[0].value[..], "/", "Decoded field value is /");
@@ -1523,28 +1523,28 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
         // Invalid header block: enc_ric = 0 (0x00), Sign = 1 & DeltaBase = 0 (0x80), Static :path="/" (0xC1)
         // Sign 1 yields negative Base when RIC=0, which MUST trigger DecompressionFailed
         let malformed_sign_block: u8[3] = [0x00, 0x80, 0xC1];
-        let err_sign = internal::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
-        sub.assert_eq(err_sign, internal::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
+        let err_sign = h3_internal::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
+        sub.assert_eq(err_sign, h3_internal::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
 
         // Valid header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 0 (0x00), Static :path="/" (0xC1)
         let valid_block: u8[3] = [0x00, 0x00, 0xC1];
-        let err_val = internal::decode_qpack_section(tbl, valid_block[..], out_fields, 4096);
-        sub.assert_eq(err_val, internal::QpackError.None, "Valid header block with RIC=0, Sign=0, DeltaBase=0 succeeds");
+        let err_val = h3_internal::decode_qpack_section(tbl, valid_block[..], out_fields, 4096);
+        sub.assert_eq(err_val, h3_internal::QpackError.None, "Valid header block with RIC=0, Sign=0, DeltaBase=0 succeeds");
         sub.assert_eq(out_fields.len, 1, "One field decoded");
         sub.assert_eq(out_fields[0].name[..], ":path", "Decoded field name is :path");
         sub.assert_eq(out_fields[0].value[..], "/", "Decoded field value is /");
     };
 
     t.run("RFC 9204 §4.5.1.1: decode_qpack_section uses MaxTableCapacity for RIC calculation after capacity shrinkage") { sub =>
-        var tbl = internal::new_qpack_table(4096, 16);
+        var tbl = h3_internal::new_qpack_table(4096, 16);
         // Insert a dynamic table entry (abs_idx = 0, cost = 51 bytes)
-        let ok_ins = internal::qpack_insert_literal(tbl, "x-trace-id", "trace-777");
+        let ok_ins = h3_internal::qpack_insert_literal(tbl, "x-trace-id", "trace-777");
         sub.assert_true(ok_ins, "Inserted dynamic entry into QPACK table");
         sub.assert_eq(tbl.insert_count, 1, "insert_count is 1");
 
         // Encoder shrinks current capacity to 2048 via Set Dynamic Table Capacity instruction.
         // Entry remains cached (51 <= 2048), but capacity_bytes (2048) != max_capacity_bytes (4096).
-        let ok_cap = internal::qpack_set_capacity(tbl, 2048);
+        let ok_cap = h3_internal::qpack_set_capacity(tbl, 2048);
         sub.assert_true(ok_cap, "Set capacity to 2048 succeeds");
         sub.assert_eq(tbl.capacity_bytes, 2048, "Current capacity_bytes is 2048");
         sub.assert_eq(tbl.max_capacity_bytes, 4096, "Decoder max_capacity_bytes remains 4096");
@@ -1556,9 +1556,9 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
         // Indexed field line, dynamic (T=0): 10xxxxxx => 0x80 | 0 = 0x80.
         let sec_wire: u8[3] = [0x02, 0x00, 0x80];
 
-        var out_fields: internal::HeaderField[>..] = [];
-        let err_dec = internal::decode_qpack_section(tbl, sec_wire[..], out_fields, 4096);
-        sub.assert_eq(err_dec, internal::QpackError.None, "Section successfully decodes using max_capacity_bytes despite capacity_bytes == 2048");
+        var out_fields: h3_internal::HeaderField[>..] = [];
+        let err_dec = h3_internal::decode_qpack_section(tbl, sec_wire[..], out_fields, 4096);
+        sub.assert_eq(err_dec, h3_internal::QpackError.None, "Section successfully decodes using max_capacity_bytes despite capacity_bytes == 2048");
         sub.assert_eq(out_fields.len, 1, "One dynamic field decoded");
         if out_fields.len > 0 {
             sub.assert_eq(out_fields[0].name[..], "x-trace-id", "Dynamic field name matches");
@@ -1872,93 +1872,93 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: lit::
 // ----------------------------------------------------------------------------
 fn test_rfc9112_chunk_fsm_split_crlf_terminator_validation(t: lit::T&) {
     t.run("RFC 9112 §7.1: Valid split CRLF after chunk body succeeds across packet boundaries") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
 
         // Packet 1: chunk size 5 and body "hello" (no trailing CRLF in this packet)
-        let st1, cons1, slice1 = internal::chunk_fsm_feed(dec, "5\r\nhello");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Emits chunk payload slice");
+        let st1, cons1, slice1 = http_internal::chunk_fsm_feed(dec, "5\r\nhello");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.YieldChunk, "Emits chunk payload slice");
         sub.assert_bytes_eq(slice1, "hello", "Payload matches 'hello'");
 
         // Packet 2: split CR ('\r')
-        let st2, cons2, _ = internal::chunk_fsm_feed(dec, "\r");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.NeedMore, "Consumes CR and expects LF");
+        let st2, cons2, _ = http_internal::chunk_fsm_feed(dec, "\r");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.NeedMore, "Consumes CR and expects LF");
 
         // Packet 3: split LF ('\n')
-        let st3, cons3, _ = internal::chunk_fsm_feed(dec, "\n");
-        sub.assert_eq(st3, internal::ChunkFsmStatus.NeedMore, "Completes chunk and expects next chunk");
+        let st3, cons3, _ = http_internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st3, http_internal::ChunkFsmStatus.NeedMore, "Completes chunk and expects next chunk");
 
         // Packet 4: final chunk 0
-        let st4, cons4, _ = internal::chunk_fsm_feed(dec, "0\r\n\r\n");
-        sub.assert_eq(st4, internal::ChunkFsmStatus.Complete, "Stream terminates cleanly with Complete");
+        let st4, cons4, _ = http_internal::chunk_fsm_feed(dec, "0\r\n\r\n");
+        sub.assert_eq(st4, http_internal::ChunkFsmStatus.Complete, "Stream terminates cleanly with Complete");
     };
 
     t.run("RFC 9112 §7.1 & §2.2: Malformed non-CR character 'X' in split terminator rejected") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
 
         // Packet 1: chunk size 5 and body "hello"
-        let st1, _, slice1 = internal::chunk_fsm_feed(dec, "5\r\nhello");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Emits body slice");
+        let st1, _, slice1 = http_internal::chunk_fsm_feed(dec, "5\r\nhello");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.YieldChunk, "Emits body slice");
 
         // Packet 2: Malicious non-CR character 'X' instead of '\r'
-        let st2, _, _ = internal::chunk_fsm_feed(dec, "X");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Non-CR byte in split chunk terminator MUST return Error");
+        let st2, _, _ = http_internal::chunk_fsm_feed(dec, "X");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "Non-CR byte in split chunk terminator MUST return Error");
 
         // Packet 3: Subsequent feed persists in sticky error state
-        let st3, _, _ = internal::chunk_fsm_feed(dec, "\n");
-        sub.assert_eq(st3, internal::ChunkFsmStatus.Error, "Sticky error persists on following bytes");
+        let st3, _, _ = http_internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st3, http_internal::ChunkFsmStatus.Error, "Sticky error persists on following bytes");
     };
 
     t.run("RFC 9112 §2.2: Bare LF in place of CR in split terminator rejected") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
 
         // Packet 1: chunk size 5 and body "hello"
-        let st1, _, _ = internal::chunk_fsm_feed(dec, "5\r\nhello");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Emits body slice");
+        let st1, _, _ = http_internal::chunk_fsm_feed(dec, "5\r\nhello");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.YieldChunk, "Emits body slice");
 
         // Packet 2: Bare LF '\n' instead of '\r' (bare LF attack)
-        let st2, _, _ = internal::chunk_fsm_feed(dec, "\n");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.Error, "Bare LF in split terminator MUST return Error");
+        let st2, _, _ = http_internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.Error, "Bare LF in split terminator MUST return Error");
     };
 
     t.run("RFC 9112 §7.1: NUL, whitespace, and control bytes in split terminator rejected") { sub =>
         // NUL byte attack
-        var dec_nul = internal::new_chunk_fsm_decoder();
-        internal::chunk_fsm_feed(dec_nul, "4\r\ntest");
+        var dec_nul = http_internal::new_chunk_fsm_decoder();
+        http_internal::chunk_fsm_feed(dec_nul, "4\r\ntest");
         let raw_nul: u8[1] = [0x00];
-        let st_nul, _, _ = internal::chunk_fsm_feed(dec_nul, raw_nul[..]);
-        sub.assert_eq(st_nul, internal::ChunkFsmStatus.Error, "NUL byte in split terminator MUST return Error");
+        let st_nul, _, _ = http_internal::chunk_fsm_feed(dec_nul, raw_nul[..]);
+        sub.assert_eq(st_nul, http_internal::ChunkFsmStatus.Error, "NUL byte in split terminator MUST return Error");
 
         // Horizontal tab attack
-        var dec_tab = internal::new_chunk_fsm_decoder();
-        internal::chunk_fsm_feed(dec_tab, "4\r\ntest");
-        let st_tab, _, _ = internal::chunk_fsm_feed(dec_tab, "\t");
-        sub.assert_eq(st_tab, internal::ChunkFsmStatus.Error, "Tab character in split terminator MUST return Error");
+        var dec_tab = http_internal::new_chunk_fsm_decoder();
+        http_internal::chunk_fsm_feed(dec_tab, "4\r\ntest");
+        let st_tab, _, _ = http_internal::chunk_fsm_feed(dec_tab, "\t");
+        sub.assert_eq(st_tab, http_internal::ChunkFsmStatus.Error, "Tab character in split terminator MUST return Error");
     };
 
     t.run("RFC 9112 §7.1: Multi-chunk streaming pipeline with split CRLFs on each chunk") { sub =>
-        var dec = internal::new_chunk_fsm_decoder();
+        var dec = http_internal::new_chunk_fsm_decoder();
 
         // Chunk 1: "3\r\nfoo" split across \r and \n
-        let st1, _, s1 = internal::chunk_fsm_feed(dec, "3\r\nfoo");
-        sub.assert_eq(st1, internal::ChunkFsmStatus.YieldChunk, "Chunk 1 yielded");
+        let st1, _, s1 = http_internal::chunk_fsm_feed(dec, "3\r\nfoo");
+        sub.assert_eq(st1, http_internal::ChunkFsmStatus.YieldChunk, "Chunk 1 yielded");
         sub.assert_bytes_eq(s1, "foo", "Chunk 1 is 'foo'");
-        let st1_cr, _, _ = internal::chunk_fsm_feed(dec, "\r");
-        sub.assert_eq(st1_cr, internal::ChunkFsmStatus.NeedMore, "Chunk 1 CR");
-        let st1_lf, _, _ = internal::chunk_fsm_feed(dec, "\n");
-        sub.assert_eq(st1_lf, internal::ChunkFsmStatus.NeedMore, "Chunk 1 LF");
+        let st1_cr, _, _ = http_internal::chunk_fsm_feed(dec, "\r");
+        sub.assert_eq(st1_cr, http_internal::ChunkFsmStatus.NeedMore, "Chunk 1 CR");
+        let st1_lf, _, _ = http_internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st1_lf, http_internal::ChunkFsmStatus.NeedMore, "Chunk 1 LF");
 
         // Chunk 2: "3\r\nbar" split across \r and \n
-        let st2, _, s2 = internal::chunk_fsm_feed(dec, "3\r\nbar");
-        sub.assert_eq(st2, internal::ChunkFsmStatus.YieldChunk, "Chunk 2 yielded");
+        let st2, _, s2 = http_internal::chunk_fsm_feed(dec, "3\r\nbar");
+        sub.assert_eq(st2, http_internal::ChunkFsmStatus.YieldChunk, "Chunk 2 yielded");
         sub.assert_bytes_eq(s2, "bar", "Chunk 2 is 'bar'");
-        let st2_cr, _, _ = internal::chunk_fsm_feed(dec, "\r");
-        sub.assert_eq(st2_cr, internal::ChunkFsmStatus.NeedMore, "Chunk 2 CR");
-        let st2_lf, _, _ = internal::chunk_fsm_feed(dec, "\n");
-        sub.assert_eq(st2_lf, internal::ChunkFsmStatus.NeedMore, "Chunk 2 LF");
+        let st2_cr, _, _ = http_internal::chunk_fsm_feed(dec, "\r");
+        sub.assert_eq(st2_cr, http_internal::ChunkFsmStatus.NeedMore, "Chunk 2 CR");
+        let st2_lf, _, _ = http_internal::chunk_fsm_feed(dec, "\n");
+        sub.assert_eq(st2_lf, http_internal::ChunkFsmStatus.NeedMore, "Chunk 2 LF");
 
         // Final chunk 0
-        let st_end, _, _ = internal::chunk_fsm_feed(dec, "0\r\n\r\n");
-        sub.assert_eq(st_end, internal::ChunkFsmStatus.Complete, "Pipeline completed cleanly");
+        let st_end, _, _ = http_internal::chunk_fsm_feed(dec, "0\r\n\r\n");
+        sub.assert_eq(st_end, http_internal::ChunkFsmStatus.Complete, "Pipeline completed cleanly");
     };
 }
 

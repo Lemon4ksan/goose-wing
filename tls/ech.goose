@@ -9,7 +9,7 @@ import std;
 import core from "..";
 import .record;
 import .key_schedule;
-import .hpke;
+import security.hpke;
 
 // ---- ECH Structures ------------------------------------------------------
 
@@ -538,8 +538,8 @@ fn compute_ech_accept_confirmation(
     var prk = core::hkdf_extract(zero_salt[..], inner_random[..]);
     defer core::secure_zeroize_32(prk);
     let label = if is_hrr { "hrr ech accept confirmation" } else { "ech accept confirmation" };
-    let ok = internal::hkdf_expand_label(
-        internal::HASH_SHA256,
+    let ok = tls_internal::hkdf_expand_label(
+        tls_internal::HASH_SHA256,
         prk[..],
         label,
         transcript_hash[..],

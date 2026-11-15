@@ -171,8 +171,8 @@ fn check_rfc8448_trace() {
     var sh: u8[>..] = [];
     build_rfc8448_ch_and_sh(ch, sh);
 
-    var ks, ok_ks = internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
-    assert(ok_ks && internal::ks_init_early_secret(ks, []));
+    var ks, ok_ks = tls_internal::ks_init(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    assert(ok_ks && tls_internal::ks_init_early_secret(ks, []));
     assert(core::ct_eq_bytes(
         ks.current_secret[..32],
         must_unhex("33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a")[..],
@@ -187,12 +187,12 @@ fn check_rfc8448_trace() {
         must_unhex("860c06edc07858ee8e78f0e7428c58edd6b43f2ca3e6e95f02ed063cf0e1cad8")[..],
     ));
 
-    assert(internal::ks_advance_to_handshake(ks, shared[..]));
+    assert(tls_internal::ks_advance_to_handshake(ks, shared[..]));
     assert(core::ct_eq_bytes(
         ks.current_secret[..32],
         must_unhex("1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac")[..],
     ));
-    assert(internal::ks_derive_handshake_traffic(ks, th_hello[..]));
+    assert(tls_internal::ks_derive_handshake_traffic(ks, th_hello[..]));
     assert(core::ct_eq_bytes(
         ks.client_hs_traffic[..32],
         must_unhex("b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21")[..],
@@ -206,11 +206,11 @@ fn check_rfc8448_trace() {
     var s_hs_iv:  u8[12] = [0; 12];
     var c_hs_key: u8[16] = [0; 16];
     var c_hs_iv:  u8[12] = [0; 12];
-    assert(internal::ks_derive_key_iv(
-        internal::HASH_SHA256, ks.server_hs_traffic[..32], 16, s_hs_key[..], s_hs_iv,
+    assert(tls_internal::ks_derive_key_iv(
+        tls_internal::HASH_SHA256, ks.server_hs_traffic[..32], 16, s_hs_key[..], s_hs_iv,
     ));
-    assert(internal::ks_derive_key_iv(
-        internal::HASH_SHA256, ks.client_hs_traffic[..32], 16, c_hs_key[..], c_hs_iv,
+    assert(tls_internal::ks_derive_key_iv(
+        tls_internal::HASH_SHA256, ks.client_hs_traffic[..32], 16, c_hs_key[..], c_hs_iv,
     ));
     assert(core::ct_eq_bytes(s_hs_key[..], must_unhex("3fce516009c21727d0f2e4e86ee403bc")[..]));
     assert(core::ct_eq_bytes(s_hs_iv[..], must_unhex("5d313eb2671276ee13000b30")[..]));
@@ -231,8 +231,8 @@ fn check_rfc8448_trace() {
     transcript.append(cv[..]);
     let th_cv = core::sha256(transcript[..]);
     var s_fin: u8[32] = [0; 32];
-    assert(internal::ks_compute_finished_verify_data(
-        internal::HASH_SHA256, 32, ks.server_hs_traffic[..32], th_cv[..], s_fin[..],
+    assert(tls_internal::ks_compute_finished_verify_data(
+        tls_internal::HASH_SHA256, 32, ks.server_hs_traffic[..32], th_cv[..], s_fin[..],
     ));
     assert(core::ct_eq_bytes(
         s_fin[..],
@@ -255,7 +255,7 @@ fn check_rfc8448_trace() {
         th_sf[..],
         must_unhex("9608102a0f1ccc6db6250b7b7e417b1a000eaada3daae4777a7686c9ff83df13")[..],
     ));
-    assert(internal::ks_advance_to_master(ks, th_sf[..]));
+    assert(tls_internal::ks_advance_to_master(ks, th_sf[..]));
     assert(core::ct_eq_bytes(
         ks.current_secret[..32],
         must_unhex("18df06843d13a08bf2a449844c5f8a478001bc4d4c627984d5a41da8d0402919")[..],
@@ -274,8 +274,8 @@ fn check_rfc8448_trace() {
     ));
 
     var c_fin: u8[32] = [0; 32];
-    assert(internal::ks_compute_finished_verify_data(
-        internal::HASH_SHA256, 32, ks.client_hs_traffic[..32], th_sf[..], c_fin[..],
+    assert(tls_internal::ks_compute_finished_verify_data(
+        tls_internal::HASH_SHA256, 32, ks.client_hs_traffic[..32], th_sf[..], c_fin[..],
     ));
     var c_fin_msg: u8[>..] = [];
     c_fin_msg.append([0x14, 0x00, 0x00, 0x20]);
@@ -289,14 +289,14 @@ fn check_rfc8448_trace() {
 
     transcript.append(c_fin_msg[..]);
     let th_cf = core::sha256(transcript[..]);
-    assert(internal::ks_advance_to_resumption(ks, th_cf[..]));
+    assert(tls_internal::ks_advance_to_resumption(ks, th_cf[..]));
     assert(core::ct_eq_bytes(
         ks.resumption_secret[..32],
         must_unhex("7df235f2031d2a051287d02b0241b0bfdaf86cc856231f2d5aba46c434ec196c")[..],
     ));
     var res_psk: u8[32] = [0; 32];
     let nonce0: u8[2] = [0, 0];
-    assert(internal::ks_derive_resumption_psk(ks, nonce0[..], res_psk[..]));
+    assert(tls_internal::ks_derive_resumption_psk(ks, nonce0[..], res_psk[..]));
     assert(core::ct_eq_bytes(
         res_psk[..],
         must_unhex("4ecd0eb6ec3b4d87f5d6028f922ca4c5851a277fd41311c9e62d2c9492e1c4f3")[..],
@@ -306,11 +306,11 @@ fn check_rfc8448_trace() {
     var s_ap_iv:  u8[12] = [0; 12];
     var c_ap_key: u8[16] = [0; 16];
     var c_ap_iv:  u8[12] = [0; 12];
-    assert(internal::ks_derive_key_iv(
-        internal::HASH_SHA256, ks.server_ap_traffic[..32], 16, s_ap_key[..], s_ap_iv,
+    assert(tls_internal::ks_derive_key_iv(
+        tls_internal::HASH_SHA256, ks.server_ap_traffic[..32], 16, s_ap_key[..], s_ap_iv,
     ));
-    assert(internal::ks_derive_key_iv(
-        internal::HASH_SHA256, ks.client_ap_traffic[..32], 16, c_ap_key[..], c_ap_iv,
+    assert(tls_internal::ks_derive_key_iv(
+        tls_internal::HASH_SHA256, ks.client_ap_traffic[..32], 16, c_ap_key[..], c_ap_iv,
     ));
     assert(core::ct_eq_bytes(s_ap_key[..], must_unhex("9f02283b6c9c07efc26bb9f2ac92e356")[..]));
     assert(core::ct_eq_bytes(s_ap_iv[..], must_unhex("cf782b88dd83549aadf1e984")[..]));

@@ -10,7 +10,7 @@ import core from "../..";
 import wing from "../..";
 import wing.wire.service;
 import wing.client.interceptor;
-import wing.client.request;
+import wing.http.request;
 import wing.http.headers;
 
 // Custom non-HTTP binary RPC request frame.

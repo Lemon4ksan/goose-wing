@@ -3,7 +3,7 @@
 
 // Zero-allocation Layer 2/3/4 Ethernet II + IPv4/IPv6 + UDP packet codec
 // for AF_XDP UMEM and DPDK mbuf kernel-bypass datapaths.
-namespace internal;
+namespace net_internal;
 
 import std;
 import core from "../..";

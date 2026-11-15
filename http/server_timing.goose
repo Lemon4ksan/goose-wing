@@ -8,7 +8,7 @@ import std;
 import core from "..";
 import rfc.http;
 import .headers;
-import client.response;
+import .response;
 
 struct ServerTimingSpan {
     name:     u8[..32] = [],

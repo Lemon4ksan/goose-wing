@@ -314,6 +314,9 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
     }
     wasm_virtual_socket_t *p = &g_wasm_sockets[peer];
     int64_t avail = WASM_SOCK_BUF_SIZE - (p->rx_tail - p->rx_head);
+    if (avail <= 0 && data.len > 0) {
+        return -2; // WouldBlock (peer rx buffer full)
+    }
     int64_t to_write = data.len < avail ? data.len : avail;
     for (int64_t i = 0; i < to_write; i++) {
         p->rx_buf[(p->rx_tail + i) % WASM_SOCK_BUF_SIZE] = data.data[i];
@@ -496,17 +499,11 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
 }
 void wing_epoll_close(int64_t epfd) { (void)epfd; }
 
-int64_t wing_udp_listen(wing_bytes_ro host, uint16_t port) { return wing_tcp_listen(host, port, 16); }
 int64_t wing_udp_bind(wing_bytes_ro host, uint16_t port) { return wing_tcp_listen(host, port, 16); }
-int64_t wing_udp_connect(wing_bytes_ro host, uint16_t port) { return wing_tcp_connect(host, port, 0); }
-int32_t wing_udp_send(int64_t sock_fd, wing_bytes_ro data) { return wing_tcp_send(sock_fd, data); }
 int32_t wing_udp_sendto(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro host, uint16_t port) {
     (void)host;
     (void)port;
     return wing_tcp_send(sock_fd, data);
-}
-int32_t wing_udp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
-    return wing_tcp_recv(sock_fd, buf, timeout_ms);
 }
 int32_t wing_udp_recvfrom(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms, uint32_t *peer_ip4,
                           uint16_t *peer_port) {
@@ -973,7 +970,8 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
         if (sent < 0) {
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK) {
-                return (int32_t)(data.len - remaining);
+                int32_t written = (int32_t)(data.len - remaining);
+                return written > 0 ? written : -2;
             }
             return (data.len - remaining) > 0 ? (int32_t)(data.len - remaining) : -1;
         }
@@ -981,7 +979,8 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
         ssize_t sent = send(s, ptr, remaining, MSG_NOSIGNAL);
         if (sent < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return (int32_t)(data.len - remaining);
+                int32_t written = (int32_t)(data.len - remaining);
+                return written > 0 ? written : -2;
             }
             return (data.len - remaining) > 0 ? (int32_t)(data.len - remaining) : -1;
         }
@@ -1314,32 +1313,6 @@ int64_t wing_tcp_get_readable_bytes(int64_t sock_fd) {
     }
 #endif
     return -1;
-}
-
-// Sends multiple slices via vectored I/O (WSASend on Windows, writev on POSIX).
-int32_t wing_tcp_sendv(int64_t sock_fd, const wing_bytes_ro *iov, int32_t iovcnt) {
-    if (sock_fd <= 0 || iov == NULL || iovcnt <= 0) return 0;
-#ifdef _WIN32
-    WSABUF bufs[16];
-    int count = iovcnt > 16 ? 16 : iovcnt;
-    for (int i = 0; i < count; i++) {
-        bufs[i].buf = (char *)iov[i].data;
-        bufs[i].len = (ULONG)iov[i].len;
-    }
-    DWORD sent = 0;
-    int res = WSASend((SOCKET)sock_fd, bufs, (DWORD)count, &sent, 0, NULL, NULL);
-    if (res == 0) return (int32_t)sent;
-    return -1;
-#else
-    struct iovec bufs[16];
-    int count = iovcnt > 16 ? 16 : iovcnt;
-    for (int i = 0; i < count; i++) {
-        bufs[i].iov_base = (void *)iov[i].data;
-        bufs[i].iov_len = (size_t)iov[i].len;
-    }
-    ssize_t sent = writev((int)sock_fd, bufs, count);
-    return (int32_t)sent;
-#endif
 }
 
 // Sends two slices (e.g. HTTP header and body) via vectored I/O in 1 syscall.
