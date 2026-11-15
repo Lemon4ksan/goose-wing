@@ -489,6 +489,59 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
     print("TASK7_CROSS_PLATFORM_E2E: OK");
 }
 
+fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: wing::HttpServer&) {
+    // 1. Important #1: millisecond-to-nanosecond conversion for io_uring / kqueue waits
+    assert(internal::timeout_ms_to_ns(-1) == -1);
+    assert(internal::timeout_ms_to_ns(0) == 0);
+    assert(internal::timeout_ms_to_ns(10) == 10000000);
+    assert(internal::timeout_ms_to_ns(250) == 250000000);
+
+    if internal::detect_target_platform() == internal::TargetPlatform.Linux {
+        let idle_cfg = internal::auto_transport_driver_config();
+        var p_idle = wing::new_poller(idle_cfg);
+        let _ = wing::enable_os_multiplexing(p_idle);
+        var evs: core::PollReadyEvent[..64] = [];
+        let t0 = core::monotonic_now().nanos;
+        let _ = wing::poll_events(p_idle, 20, t0, evs);
+        let elapsed = core::sub_sat_u64(core::monotonic_now().nanos, t0);
+        assert(elapsed >= 12000000);
+        wing::close_poller(p_idle);
+    }
+
+    // 2. Important #2: synchronous AcceptEx cancellation drain before handle close on Windows RIO
+    if internal::detect_target_platform() == internal::TargetPlatform.Windows &&
+        internal::native_rio_available() == 1 {
+        srv.accel_mode = wing::ReactorAccelMode.Rio;
+        let r_lfd = wing::reactor_listen_accelerated(srv, 16);
+        assert(r_lfd > 0);
+        assert(internal::native_rio_poll_accept(r_lfd, 0) == 0);
+        assert(internal::native_rio_cancel_accept(r_lfd) == 1);
+        assert(internal::native_rio_cancel_accept(r_lfd) == 0);
+        wing::tcp_close(r_lfd);
+    }
+
+    // 3. Important #3: kTLS post-handshake KeyUpdate disconnect + EAGAIN non-close + NewSessionTicket skip
+    let add_eagain, any_eagain, cls_eagain = wing::classify_ktls_recv_turn(-2, 0, "", 0);
+    assert(add_eagain == 0 && !any_eagain && !cls_eagain);
+
+    let nst_rec: u8[8] = [rfc::TLS_HS_NEW_SESSION_TICKET, 0, 0, 4, 0, 0, 0, 1];
+    let add_nst, any_nst, cls_nst = wing::classify_ktls_recv_turn(8, rfc::TLS_CONTENT_HANDSHAKE, nst_rec[..], 0);
+    assert(add_nst == 0 && !any_nst && !cls_nst);
+
+    let ku_rec: u8[5] = [rfc::TLS_HS_KEY_UPDATE, 0, 0, 1, 0];
+    let add_ku, any_ku, cls_ku = wing::classify_ktls_recv_turn(5, rfc::TLS_CONTENT_HANDSHAKE, ku_rec[..], 0);
+    assert(add_ku == 0 && !any_ku && cls_ku);
+
+    let al_rec: u8[2] = [1, 0];
+    let add_al, any_al, cls_al = wing::classify_ktls_recv_turn(2, rfc::TLS_CONTENT_ALERT, al_rec[..], 0);
+    assert(add_al == 0 && !any_al && cls_al);
+
+    let add_app, any_app, cls_app = wing::classify_ktls_recv_turn(4, rfc::TLS_CONTENT_APPLICATION_DATA, "PING", 0);
+    assert(add_app == 4 && any_app && !cls_app);
+
+    print("FINAL_REVIEW_FIXES: OK");
+}
+
 // CHECK: TASK1_DRIVER_ABIS: OK
 // CHECK: TASK2_TLS_SLICE_AND_KTLS: OK
 // CHECK: TASK3_POLLER_LIVE: OK
@@ -496,6 +549,7 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
 // CHECK: TASK5_L2_CODEC: OK
 // CHECK: TASK6_H3_BATCH_AND_L2: OK
 // CHECK: TASK7_CROSS_PLATFORM_E2E: OK
+// CHECK: FINAL_REVIEW_FIXES: OK
 fn main() {
     var srv = wing::new_http_server("127.0.0.1", 0);
     test_driver_slice_abis();
@@ -505,4 +559,5 @@ fn main() {
     test_l2_udp_codec_and_malformed_inputs();
     test_h3_batched_udp_and_l2_kernel_bypass(srv);
     test_cross_platform_live_batch_and_accelerators(srv);
+    test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv);
 }

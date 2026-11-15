@@ -159,7 +159,7 @@ fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
 
 fn reactor_close_accel(accel: ReactorAccelRuntime&) {
     if accel.rio_listener_fd > 0 {
-        internal::native_rio_cancel_accept(accel.rio_listener_fd);
+        let _ = internal::native_rio_cancel_accept(accel.rio_listener_fd);
         accel.rio_listener_fd = -1;
     }
     if accel.rio_buf_id != 0 {
@@ -765,17 +765,41 @@ inline fn reactor_request_slot_close(
     reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
 }
 
-fn reactor_read_ktls_slot(conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
-    guard chunk.len < 65536 else { return false, false; }
-    let recvd, rtype = internal::smartnic_recv_record(conn, chunk.bytes[chunk.len..]);
+// Classifies a single kTLS `smartnic_recv_record` outcome into `(app_bytes, any_recvd, should_close)`.
+fn classify_ktls_recv_turn(
+    recvd:        i32,
+    rtype:        u8,
+    rec_bytes:    const u8[:],
+    buffered_len: i64,
+) -> i64, bool, bool {
+    if recvd == -2 {
+        return 0, buffered_len > 0, false;
+    }
     if recvd <= 0 || rtype == rfc::TLS_CONTENT_ALERT {
-        return chunk.len > 0, chunk.len == 0;
+        return 0, buffered_len > 0, buffered_len == 0;
     }
     if rtype == rfc::TLS_CONTENT_APPLICATION_DATA {
-        chunk.len = core::add_sat_i64(chunk.len, recvd);
-        return true, false;
+        return recvd, true, false;
     }
-    return chunk.len > 0, false;
+    if rtype == rfc::TLS_CONTENT_HANDSHAKE {
+        let hs_len = min(recvd as i64, rec_bytes.len);
+        let ctl = inspect_unsealed_handshake_control(rec_bytes[..hs_len]);
+        return 0, buffered_len > 0, ctl != TlsSliceUnsealStatus.ControlHandled;
+    }
+    return 0, buffered_len > 0, false;
+}
+
+fn reactor_read_ktls_slot(conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
+    guard chunk.len < 65536 else { return false, false; }
+    let start = chunk.len;
+    let recvd, rtype = internal::smartnic_recv_record(conn, chunk.bytes[start..]);
+    let added, any_recvd, should_close = classify_ktls_recv_turn(
+        recvd, rtype, chunk.bytes[start..], start,
+    );
+    if added > 0 {
+        chunk.len = core::add_sat_i64(start, added);
+    }
+    return any_recvd, should_close;
 }
 
 fn reactor_read_slot_turns(table: const SoAConnTable&, slot: i64, conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
@@ -1026,7 +1050,8 @@ fn reactor_wait_readiness_events(
 ) -> i32 {
     if accel.mode == ReactorAccelMode.Kqueue && accel.kq_fd >= 0 {
         var kev_out: internal::Kevent[128] = [internal::Kevent { .. }; 128];
-        let n_kq = internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], kev_out[..], timeout_ms);
+        let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
+        let n_kq = internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], kev_out[..], timeout_ns);
         accel.kq_changes.clear();
         guard n_kq > 0 else { return 0; }
         let limit = min(min(n_kq as i64, 128), ready_udata.len);
@@ -1390,7 +1415,8 @@ fn reactor_step_uring_completions<Stage>(
     }
     var cqes: internal::UringCqe[64] = [internal::UringCqe { .. }; 64];
     let min_c: u32 = if timeout_ms > 0 { 1 } else { 0 };
-    let n = internal::uring_wait_cqes(g_default_reactor.accel.uring_fd, cqes[..], min_c, timeout_ms as i64);
+    let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
+    let n = internal::uring_wait_cqes(g_default_reactor.accel.uring_fd, cqes[..], min_c, timeout_ns);
     guard n > 0 else { return 0; }
     let limit = min(n as i64, 64);
     for i in limit {

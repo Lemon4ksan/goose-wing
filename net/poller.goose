@@ -769,7 +769,8 @@ fn poller_collect_kqueue_events(
     out_events: core::PollReadyEvent[..64]&,
 ) {
     var kev_out: internal::Kevent[64] = [internal::Kevent { .. }; 64];
-    let n = internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], kev_out[..], timeout_ms);
+    let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
+    let n = internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], kev_out[..], timeout_ns);
     p.kqueue_changes.clear();
     guard n > 0 else { return; }
 
@@ -810,7 +811,8 @@ fn poller_collect_uring_events(
 ) {
     var cqes: internal::UringCqe[64] = [internal::UringCqe { .. }; 64];
     let min_complete: u32 = if timeout_ms == 0 { 0 } else { 1 };
-    let n = internal::uring_wait_cqes(p.uring_ring_fd, cqes[..], min_complete, timeout_ms);
+    let timeout_ns = internal::timeout_ms_to_ns(timeout_ms);
+    let n = internal::uring_wait_cqes(p.uring_ring_fd, cqes[..], min_complete, timeout_ns);
     guard n > 0 else { return; }
 
     let limit = min(n as i64, 64);

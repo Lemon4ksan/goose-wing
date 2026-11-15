@@ -549,15 +549,15 @@ int32_t wing_rio_is_listener(int64_t sock_fd) {
     return 0;
 }
 
-static void cleanup_rio_accept_slot(wing_rio_accept_slot *slot, int cancel_io) {
+static int32_t cleanup_rio_accept_slot(wing_rio_accept_slot *slot, int cancel_io) {
     if (!slot || !slot->pending) {
-        return;
+        return 0;
     }
     if (cancel_io && slot->lsock != INVALID_SOCKET && slot->lsock != 0) {
         CancelIoEx((HANDLE)slot->lsock, &slot->ov);
         DWORD bytes = 0;
         DWORD flags = 0;
-        (void)WSAGetOverlappedResult(slot->lsock, &slot->ov, &bytes, FALSE, &flags);
+        (void)WSAGetOverlappedResult(slot->lsock, &slot->ov, &bytes, TRUE, &flags);
     }
     if (slot->ev != NULL) {
         CloseHandle(slot->ev);
@@ -569,21 +569,24 @@ static void cleanup_rio_accept_slot(wing_rio_accept_slot *slot, int cancel_io) {
     }
     slot->lsock = 0;
     slot->pending = 0;
+    return 1;
 }
 
-void wing_rio_cancel_accept(int64_t listen_fd) {
+int32_t wing_rio_cancel_accept(int64_t listen_fd) {
+    int32_t cancelled = 0;
     if (listen_fd <= 0) {
         for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
-            cleanup_rio_accept_slot(&g_rio_accept_slots[i], 1);
+            cancelled += cleanup_rio_accept_slot(&g_rio_accept_slots[i], 1);
         }
-        return;
+        return cancelled;
     }
     SOCKET lsock = (SOCKET)listen_fd;
     for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
         if (g_rio_accept_slots[i].pending && g_rio_accept_slots[i].lsock == lsock) {
-            cleanup_rio_accept_slot(&g_rio_accept_slots[i], 1);
+            cancelled += cleanup_rio_accept_slot(&g_rio_accept_slots[i], 1);
         }
     }
+    return cancelled;
 }
 
 static int64_t finalize_rio_accepted_socket(SOCKET lsock, SOCKET asock) {
@@ -783,6 +786,9 @@ int64_t wing_rio_poll_accept(int64_t listen_fd, int32_t timeout_ms) {
     (void)timeout_ms;
     return -ENOSYS;
 }
-void wing_rio_cancel_accept(int64_t listen_fd) { (void)listen_fd; }
+int32_t wing_rio_cancel_accept(int64_t listen_fd) {
+    (void)listen_fd;
+    return 0;
+}
 
 #endif

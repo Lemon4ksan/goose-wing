@@ -104,7 +104,7 @@ extern fn native_rio_close_cq(cq_id: u64)
 extern fn native_rio_create_rq_ctx(sock_fd: i64, max_recv: u32, max_send: u32, recv_cq: u64, send_cq: u64, sock_ctx: u64) -> u64
 extern fn native_rio_is_listener(sock_fd: i64) -> i32
 extern fn native_rio_poll_accept(listen_fd: i64, timeout_ms: i32) -> i64
-extern fn native_rio_cancel_accept(listen_fd: i64)
+extern fn native_rio_cancel_accept(listen_fd: i64) -> i32
 fn rio_listen(host: const u8[:], port: u16, backlog: i32 = 128) -> i64
 fn rio_accept(listen_fd: i64) -> i64
 fn rio_wait_cq(cq_id: u64, timeout_ms: i32) -> i32

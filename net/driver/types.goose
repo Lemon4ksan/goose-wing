@@ -62,6 +62,11 @@ fn driver_has_cap(caps: u32, cap: u32) -> bool {
     return (caps & cap) != 0;
 }
 
+// Converts a millisecond poll timeout (`< 0` = infinite) to nanoseconds with saturation.
+fn timeout_ms_to_ns(timeout_ms: i64) -> i64 {
+    return if timeout_ms < 0 { -1 } else { core::mul_sat_i64(timeout_ms, 1000000) };
+}
+
 // ---- Target Platform Probing --------------------------------------------
 
 enum TargetPlatform {
