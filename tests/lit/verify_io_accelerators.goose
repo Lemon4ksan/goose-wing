@@ -140,9 +140,65 @@ fn test_tls_slice_codecs_and_ktls_probe() {
     print("TASK2_TLS_SLICE_AND_KTLS: OK");
 }
 
+fn test_poller_live_socket_and_synthetic_fds() {
+    let cfg = internal::auto_transport_driver_config();
+    var p = wing::new_poller(cfg);
+
+    // Review Focus #2: synthetic FD 77 coexists with live sockets without POLLNVAL/EBADF failure
+    assert(wing::register_socket(p, 77, 7700, core::PollInterest.Read, core::PollTrigger.Edge));
+    assert(wing::simulate_read_ready(p, 77, 128));
+    var evs: core::PollReadyEvent[..64] = [];
+    let n_sim = wing::poll_events(p, 0, 1000, evs);
+    assert(n_sim == 1 && evs[0].tag == 7700 && (evs[0].events & core::POLL_READ) != 0);
+
+    // Real loopback TCP readiness through Poller without manual enable_os_multiplexing
+    let lfd = wing::tcp_listen("127.0.0.1", 0);
+    assert(lfd > 0);
+    let port = wing::tcp_getsockname_port(lfd);
+    let cfd = wing::tcp_connect("127.0.0.1", port);
+    let sfd = wing::tcp_accept(lfd);
+    assert(cfd > 0 && sfd > 0);
+    let _ = wing::tcp_set_nonblocking(sfd, true);
+
+    assert(wing::register_socket(p, sfd as i32, 9001, core::PollInterest.Read, core::PollTrigger.Level));
+    assert(wing::tcp_send(cfd, "HELLO_POLLER") == 12);
+    evs.clear();
+    let n_live = wing::poll_events(p, 500, 2000, evs);
+    assert(n_live == 1 && evs[0].tag == 9001 && (evs[0].events & core::POLL_READ) != 0);
+
+    var rx: u8[32] = [0; 32];
+    let nr = wing::tcp_recv_slice(sfd, rx[..]);
+    assert(nr == 12 && rx[..12] == "HELLO_POLLER");
+
+    // WireQueue batch submission with attached Poller readiness tag
+    var wq = wire::WireQueue { fd: cfd, is_connected: true, .. };
+    wire::queue_attach_poller(wq, 9002);
+    var cb1 = wire::WireCommandBuffer { state: wire::WireCommandBufferState.Executable, .. };
+    var cb2 = wire::WireCommandBuffer { state: wire::WireCommandBufferState.Executable, .. };
+    assert(cb1.buf.try_append("BATCH_"));
+    assert(cb2.buf.try_append("OK"));
+    let cbs: wire::WireCommandBuffer[2] = [cb1, cb2];
+    let s_info = wire::WireSubmitInfo { .. };
+    var fence = wire::WireFence { is_valid: true, status: wire::WireFenceStatus.Unsignaled, .. };
+    let b_sent, b_res = wire::queue_submit_batch(wq, cbs[..], s_info, fence);
+    assert(b_res == wire::WireResult.Success && b_sent == 8);
+    let nr2 = wing::tcp_recv_slice(sfd, rx[..]);
+    assert(nr2 == 8 && rx[..8] == "BATCH_OK");
+
+    assert(wing::deregister_socket(p, 77));
+    assert(wing::deregister_socket(p, sfd as i32));
+    wing::tcp_close(sfd);
+    wing::tcp_close(cfd);
+    wing::tcp_close(lfd);
+    wing::close_poller(p);
+    print("TASK3_POLLER_LIVE: OK");
+}
+
 // CHECK: TASK1_DRIVER_ABIS: OK
 // CHECK: TASK2_TLS_SLICE_AND_KTLS: OK
+// CHECK: TASK3_POLLER_LIVE: OK
 fn main() {
     test_driver_slice_abis();
     test_tls_slice_codecs_and_ktls_probe();
+    test_poller_live_socket_and_synthetic_fds();
 }

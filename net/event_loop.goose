@@ -176,12 +176,16 @@ fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
 }
 
 inline fn flush_socket_writes(fd: i32, buf: u8[..4096]&) -> i64 {
+    guard buf.len > 0 else { return 0; }
     guard fd >= 0 else {
         let count = buf.len;
         buf.clear();
         return count;
     }
-    let sent = tcp_send(fd, buf[..]);
+    let sent = tcp_send2(fd, buf[..], "");
+    if sent == -2 {
+        return 0;
+    }
     if sent <= 0 {
         let count = buf.len;
         buf.clear();
@@ -214,6 +218,13 @@ fn run_loop_once<HandlerFn: fn(u64, const core::PollReadyEvent&, EventLoop&)>(
 
     for i in events.len {
         let ev = events[i];
+        if (ev.events & core::POLL_WRITE) != 0 {
+            let b_idx = find_connection_buffer(ev_loop, ev.tag);
+            if b_idx >= 0 && ev_loop.buffers[b_idx].write_buf.len > 0 &&
+                is_live_os_socket_fd(ev_loop.buffers[b_idx].fd) {
+                let _ = flush_socket_writes(ev_loop.buffers[b_idx].fd, ev_loop.buffers[b_idx].write_buf);
+            }
+        }
         HandlerFn(ev.tag, ev, ev_loop);
         ev_loop.events_dispatched_total = core::add_sat_u64(ev_loop.events_dispatched_total, 1);
     }
@@ -225,6 +236,75 @@ fn run_loop_once<HandlerFn: fn(u64, const core::PollReadyEvent&, EventLoop&)>(
 fn wake_tag(ev_loop: EventLoop&, tag: u64) -> bool {
     guard ev_loop.state != LoopState.Stopped else { return false; }
     return wake_tag(ev_loop.poller, tag);
+}
+
+// Opts the loop's underlying poller into live OS socket multiplexing (epoll / WSAPoll).
+fn enable_os_multiplexing(ev_loop: EventLoop&) -> bool {
+    guard ev_loop.state != LoopState.Stopped else { return false; }
+    return enable_os_multiplexing(ev_loop.poller);
+}
+
+fn register_socket(
+    ev_loop:  EventLoop&,
+    fd:       i32,
+    tag:      u64,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger = core::PollTrigger.Level,
+) -> bool {
+    guard ev_loop.state != LoopState.Stopped else { return false; }
+    return register_socket(ev_loop.poller, fd, tag, interest, trigger);
+}
+
+fn modify_socket(
+    ev_loop:  EventLoop&,
+    fd:       i32,
+    tag:      u64,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger = core::PollTrigger.Level,
+) -> bool {
+    guard ev_loop.state != LoopState.Stopped else { return false; }
+    return modify_socket(ev_loop.poller, fd, tag, interest, trigger);
+}
+
+fn deregister_socket(ev_loop: EventLoop&, fd: i32) -> bool {
+    guard ev_loop.state != LoopState.Stopped else { return false; }
+    return deregister_socket(ev_loop.poller, fd);
+}
+
+fn add_timer(
+    ev_loop:  EventLoop&,
+    timer_id: u64,
+    delay_ms: u64,
+    tag:      u64,
+    periodic: bool = false,
+    now_ns:   u64  = 0,
+) -> bool {
+    guard ev_loop.state != LoopState.Stopped else { return false; }
+    return add_timer(ev_loop.poller, timer_id, delay_ms, tag, periodic, now_ns);
+}
+
+fn cancel_timer(ev_loop: EventLoop&, timer_id: u64) -> bool {
+    guard ev_loop.state != LoopState.Stopped else { return false; }
+    return cancel_timer(ev_loop.poller, timer_id);
+}
+
+fn poll_events(
+    ev_loop:    EventLoop&,
+    timeout_ms: i64,
+    now_ns:     u64,
+    out_events: core::PollReadyEvent[..64]&,
+) -> i32 {
+    guard ev_loop.state != LoopState.Stopped else {
+        out_events.clear();
+        return 0;
+    }
+    ev_loop.state = LoopState.Running;
+    ev_loop.iteration_count = core::add_sat_u64(ev_loop.iteration_count, 1);
+    let cnt = poll_events(ev_loop.poller, timeout_ms, now_ns, out_events);
+    if cnt > 0 {
+        ev_loop.events_dispatched_total = core::add_sat_u64(ev_loop.events_dispatched_total, cnt as u64);
+    }
+    return cnt;
 }
 
 // Defers execution of a task to the event loop thread (uWebSockets / uSockets loop->defer pattern)

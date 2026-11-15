@@ -8,6 +8,7 @@ namespace wing;
 
 import std;
 import net.driver;
+import .tcp;
 import core from "..";
 
 // Time conversion constants
@@ -72,6 +73,7 @@ struct Poller {
     tag_index:               core::FlatIndexBucket[1024]     = [core::FlatIndexBucket { .. }; 1024],
     timers:                  PollerTimer[..64]               = [PollerTimer { .. }; 64],
     wake_tags:               u64[..64]                       = [],
+    kqueue_changes:          internal::Kevent[..64]          = [],
     active_fd_count:         u32                             = 0,
     active_timer_count:      u32                             = 0,
     total_polls:             u64                             = 0,
@@ -81,6 +83,7 @@ struct Poller {
     kqueue_fd:               i64                             = -1,
     uring_ring_fd:           i64                             = -1,
     rio_cq_id:               u64                             = 0,
+    epoll_fd:                i64                             = -1,
     is_open:                 bool                            = false,
 }
 
@@ -91,31 +94,50 @@ fn new_poller(driver_cfg: const internal::TransportDriverConfig&) -> Poller {
         ..
     };
 
-    // Initialize native OS polling handles if available on platform
     let plat = internal::detect_target_platform();
     if driver_cfg.active_kind == internal::TransportDriverKind.WindowsRIO {
         if plat == internal::TargetPlatform.Windows && driver_cfg.enable_kernel_bypass {
-            let cq = internal::native_rio_create_cq(driver_cfg.ring_size);
-            p.rio_cq_id = cq;
+            p.rio_cq_id = internal::native_rio_create_cq(driver_cfg.ring_size);
         }
+        p.epoll_fd = epoll_create();
     } else if driver_cfg.active_kind == internal::TransportDriverKind.IoUring {
         if plat == internal::TargetPlatform.Linux {
-            let fd = internal::native_uring_create(driver_cfg.ring_size, 0);
-            p.uring_ring_fd = fd;
+            p.uring_ring_fd = internal::native_uring_create(driver_cfg.ring_size, 0);
+        }
+        if p.uring_ring_fd < 0 {
+            p.epoll_fd = epoll_create();
         }
     } else if driver_cfg.active_kind == internal::TransportDriverKind.Kqueue {
         if plat == internal::TargetPlatform.Darwin {
-            let fd = internal::native_kqueue_create();
-            p.kqueue_fd = fd;
+            p.kqueue_fd = internal::native_kqueue_create();
         }
+        if p.kqueue_fd < 0 {
+            p.epoll_fd = epoll_create();
+        }
+    } else {
+        p.epoll_fd = epoll_create();
     }
 
     return p;
 }
 
+// Opts a Poller into live OS socket multiplexing (Linux epoll / Windows WSAPoll).
+fn enable_os_multiplexing(p: Poller&) -> bool {
+    guard p.is_open else { return false; }
+    if p.epoll_fd >= 0 { return true; }
+    let ep = epoll_create();
+    guard ep >= 0 else { return false; }
+    p.epoll_fd = ep;
+    return true;
+}
+
 fn close_poller(p: Poller&) {
     if !p.is_open { return; }
 
+    if p.epoll_fd >= 0 {
+        epoll_close(p.epoll_fd);
+        p.epoll_fd = -1;
+    }
     if p.rio_cq_id != 0 {
         internal::native_rio_close_cq(p.rio_cq_id);
         p.rio_cq_id = 0;
@@ -138,6 +160,7 @@ fn close_poller(p: Poller&) {
         p.timers[i].active = false;
     }
     p.wake_tags.clear();
+    p.kqueue_changes.clear();
 
     p.active_fd_count = 0;
     p.active_timer_count = 0;
@@ -163,6 +186,77 @@ fn find_by_tag(p: const Poller&, tag: u64) -> i64 {
     return res.slot_idx;
 }
 
+const URING_INTERNAL_CANCEL_TAG: u64 = 0xFFFFFFFFFFFFFFFF;
+const URING_POLLIN_MASK:         u32 = 1;
+const URING_POLLOUT_MASK:        u32 = 4;
+const URING_POLLERR_MASK:        u32 = 8;
+const URING_POLLHUP_MASK:        u32 = 16;
+const KQUEUE_EV_ERROR_FLAG:      u16 = 0x4000;
+
+fn interest_to_epoll_flags(interest: core::PollInterest) -> u32 {
+    return match interest {
+        Read => EPOLL_READ,
+        Write => EPOLL_WRITE,
+        ReadWrite => EPOLL_READ | EPOLL_WRITE,
+        None => 0,
+    };
+}
+
+fn interest_to_uring_poll_mask(interest: core::PollInterest) -> u32 {
+    return match interest {
+        Read => URING_POLLIN_MASK,
+        Write => URING_POLLOUT_MASK,
+        ReadWrite => URING_POLLIN_MASK | URING_POLLOUT_MASK,
+        None => 0,
+    };
+}
+
+inline fn is_live_os_socket_fd(fd: i32) -> bool {
+    guard fd > 0 else { return false; }
+    if internal::detect_target_platform() == internal::TargetPlatform.Windows {
+        return native_tcp_get_readable_bytes(fd) >= 0;
+    }
+    return true;
+}
+
+inline fn poller_push_kqueue_change(p: Poller&, ev: internal::Kevent) {
+    if p.kqueue_changes.len >= p.kqueue_changes.cap {
+        var empty_out: internal::Kevent[1] = [internal::Kevent { .. }];
+        let _ = internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], empty_out[..0], 0);
+        p.kqueue_changes.clear();
+    }
+    let _ = p.kqueue_changes.try_push(ev);
+}
+
+inline fn poller_queue_kqueue_interest(
+    p:        Poller&,
+    fd:       i32,
+    tag:      u64,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger,
+) {
+    let edge = trigger == core::PollTrigger.Edge;
+    if interest == core::PollInterest.Read || interest == core::PollInterest.ReadWrite {
+        var ev_r = internal::Kevent { .. };
+        internal::kevent_prep_read(ev_r, fd, tag, edge);
+        poller_push_kqueue_change(p, ev_r);
+    }
+    if interest == core::PollInterest.Write || interest == core::PollInterest.ReadWrite {
+        var ev_w = internal::Kevent { .. };
+        internal::kevent_prep_write(ev_w, fd, tag, edge);
+        poller_push_kqueue_change(p, ev_w);
+    }
+}
+
+inline fn poller_submit_uring_poll_add(ring_fd: i64, fd: i32, interest: core::PollInterest, tag: u64) {
+    let mask = interest_to_uring_poll_mask(interest);
+    guard mask != 0 else { return; }
+    var sqe = internal::UringSqe { .. };
+    internal::uring_prep_poll_add(sqe, fd, mask, tag);
+    var batch: internal::UringSqe[1] = [sqe];
+    let _ = internal::uring_submit_sqes(ring_fd, batch[..]);
+}
+
 inline fn poller_bind_native_registration(
     p:        Poller&,
     fd:       i32,
@@ -170,20 +264,66 @@ inline fn poller_bind_native_registration(
     interest: core::PollInterest,
     trigger:  core::PollTrigger,
 ) {
+    if p.epoll_fd >= 0 && is_live_os_socket_fd(fd) {
+        let _ = epoll_add(p.epoll_fd, fd, interest_to_epoll_flags(interest), tag);
+    }
     if p.kqueue_fd >= 0 {
-        var ev = internal::Kevent { .. };
-        let edge = trigger == core::PollTrigger.Edge;
-        if interest == core::PollInterest.Read || interest == core::PollInterest.ReadWrite {
-            internal::kevent_prep_read(ev, fd, tag, edge);
-        } else if interest == core::PollInterest.Write {
-            internal::kevent_prep_write(ev, fd, tag, edge);
-        }
+        poller_queue_kqueue_interest(p, fd, tag, interest, trigger);
+    }
+    if p.uring_ring_fd >= 0 {
+        poller_submit_uring_poll_add(p.uring_ring_fd, fd, interest, tag);
     }
 }
 
-inline fn poller_bind_native_deregister(p: Poller&, fd: i32) {
+inline fn poller_mod_native_registration(
+    p:        Poller&,
+    fd:       i32,
+    old_tag:  u64,
+    tag:      u64,
+    interest: core::PollInterest,
+    trigger:  core::PollTrigger,
+) {
+    if p.epoll_fd >= 0 && is_live_os_socket_fd(fd) {
+        let flags = interest_to_epoll_flags(interest);
+        if !epoll_mod(p.epoll_fd, fd, flags, tag) {
+            let _ = epoll_add(p.epoll_fd, fd, flags, tag);
+        }
+    }
     if p.kqueue_fd >= 0 {
-        var ev = internal::Kevent { ident: fd as u64, filter: internal::EVFILT_READ, flags: internal::EV_DELETE, .. };
+        poller_push_kqueue_change(p, internal::Kevent {
+            ident: fd as u64, filter: internal::EVFILT_READ, flags: internal::EV_DELETE, ..
+        });
+        poller_push_kqueue_change(p, internal::Kevent {
+            ident: fd as u64, filter: internal::EVFILT_WRITE, flags: internal::EV_DELETE, ..
+        });
+        poller_queue_kqueue_interest(p, fd, tag, interest, trigger);
+    }
+    if p.uring_ring_fd >= 0 {
+        var rm_sqe = internal::UringSqe { .. };
+        internal::uring_prep_poll_remove(rm_sqe, old_tag, URING_INTERNAL_CANCEL_TAG);
+        var rm_batch: internal::UringSqe[1] = [rm_sqe];
+        let _ = internal::uring_submit_sqes(p.uring_ring_fd, rm_batch[..]);
+        poller_submit_uring_poll_add(p.uring_ring_fd, fd, interest, tag);
+    }
+}
+
+inline fn poller_bind_native_deregister(p: Poller&, fd: i32, old_tag: u64) {
+    if p.epoll_fd >= 0 {
+        let _ = epoll_del(p.epoll_fd, fd);
+    }
+    if p.kqueue_fd >= 0 {
+        poller_push_kqueue_change(p, internal::Kevent {
+            ident: fd as u64, filter: internal::EVFILT_READ, flags: internal::EV_DELETE, ..
+        });
+        poller_push_kqueue_change(p, internal::Kevent {
+            ident: fd as u64, filter: internal::EVFILT_WRITE, flags: internal::EV_DELETE, ..
+        });
+    }
+    if p.uring_ring_fd >= 0 {
+        var rm_sqe = internal::UringSqe { .. };
+        internal::uring_prep_poll_remove(rm_sqe, old_tag, URING_INTERNAL_CANCEL_TAG);
+        var rm_batch: internal::UringSqe[1] = [rm_sqe];
+        let _ = internal::uring_submit_sqes(p.uring_ring_fd, rm_batch[..]);
     }
 }
 
@@ -244,7 +384,7 @@ fn modify_socket(
     p.registrations[idx].tag = tag;
     p.registrations[idx].interest = interest;
     p.registrations[idx].trigger = trigger;
-    poller_bind_native_registration(p, fd, tag, interest, trigger);
+    poller_mod_native_registration(p, fd, old_tag, tag, interest, trigger);
     return true;
 }
 
@@ -264,7 +404,7 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool {
     if p.active_fd_count > 0 {
         p.active_fd_count -= 1;
     }
-    poller_bind_native_deregister(p, fd);
+    poller_bind_native_deregister(p, fd, old_tag);
     return true;
 }
 
@@ -526,17 +666,199 @@ fn rio_map_completions_to_events(
     return added;
 }
 
-inline fn poller_poll_native_drivers(p: Poller&, timeout_ms: i64, out_events: core::PollReadyEvent[..64]&) {
-    if p.kqueue_fd >= 0 {
-        internal::native_kqueue_kevent(p.kqueue_fd, 0, 0, 0, 64, timeout_ms * 1000000);
-    } else if p.uring_ring_fd >= 0 {
-        internal::native_uring_enter(p.uring_ring_fd, 0, 1, 0);
-    } else if p.rio_cq_id != 0 {
+fn has_pending_simulated_ready(p: const Poller&) -> bool {
+    guard p.active_fd_count > 0 else { return false; }
+    for i in p.registrations.len {
+        guard p.registrations[i].in_use else { continue; }
+        let mask = core::interest_to_poll_flags(p.registrations[i].interest) |
+            core::POLL_ERROR | core::POLL_HANGUP;
+        if (p.registrations[i].sim.ready & mask) != core::POLL_NONE {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Exact reciprocal ceil(2^64 / 1_000_000) for shift-free mulhi_u64 ns -> ms conversion.
+const NS_TO_MS_MULHI_RECIP: u64 = 0x10C6F7A0B5EE;
+const MAX_POLL_TIMEOUT_NS:  u64 = 2147483647000000;
+
+fn find_earliest_timer_deadline_ns(p: const Poller&) -> u64, bool {
+    guard p.active_timer_count > 0 else { return 0, false; }
+    var found = false;
+    var earliest_ns: u64 = 0xFFFFFFFFFFFFFFFF;
+    for i in p.timers.len {
+        guard p.timers[i].active else { continue; }
+        found = true;
+        earliest_ns = min(earliest_ns, p.timers[i].deadline_ns);
+    }
+    return earliest_ns, found;
+}
+
+fn clamp_timeout_to_timers(p: const Poller&, timeout_ms: i64, now_ns: u64) -> i64 {
+    let earliest_ns, has_timer = find_earliest_timer_deadline_ns(p);
+    let rem_ns = min(core::add_sat_u64(core::sub_sat_u64(earliest_ns, now_ns), 999999), MAX_POLL_TIMEOUT_NS);
+    let rem_ms_u64 = min(core::mulhi_u64(rem_ns, NS_TO_MS_MULHI_RECIP), 2147483647);
+    let rem_ms = (rem_ms_u64 as i32) as i64;
+    if timeout_ms == 0 || p.wake_tags.len > 0 || has_pending_simulated_ready(p) {
+        return 0;
+    }
+    guard has_timer else { return timeout_ms; }
+    if now_ns >= earliest_ns {
+        return 0;
+    }
+    if timeout_ms < 0 {
+        return rem_ms;
+    }
+    return min(timeout_ms, rem_ms);
+}
+
+fn poller_collect_epoll_events(
+    p:          Poller&,
+    timeout_ms: i64,
+    out_events: core::PollReadyEvent[..64]&,
+) {
+    var raw_fds:   i64[64] = [0; 64];
+    var raw_udata: u64[64] = [0; 64];
+    let t_clamped = min(max(timeout_ms, -1), 2147483647);
+    let n = epoll_wait_direct(p.epoll_fd, raw_fds[..], raw_udata[..], t_clamped as i32);
+    guard n > 0 else { return; }
+
+    let limit = min(n as i64, 64);
+    for k in limit {
+        let tag = raw_udata[k];
+        let reg_idx = find_by_tag(p, tag);
+        guard reg_idx >= 0 else { continue; }
+        let fd_val = p.registrations[reg_idx].fd;
+        let ev_flags = core::interest_to_poll_flags(p.registrations[reg_idx].interest);
+        let avail_raw = if (ev_flags & core::POLL_READ) != 0 {
+            native_tcp_get_readable_bytes(fd_val)
+        } else {
+            0
+        };
+        let ev = core::PollReadyEvent {
+            tag:             tag,
+            fd:              fd_val,
+            events:          if ev_flags != core::POLL_NONE { ev_flags } else { core::POLL_READ },
+            bytes_available: max(avail_raw, 0),
+            is_eof:          false,
+            is_timer:        false,
+        };
+        guard out_events.try_push(ev) else { break; }
+        p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
+    }
+}
+
+inline fn map_kevent_to_poll_flags(kev: const internal::Kevent&) -> u32, bool {
+    var flags: u32 = core::POLL_NONE;
+    if kev.filter == internal::EVFILT_READ {
+        flags |= core::POLL_READ;
+    } else if kev.filter == internal::EVFILT_WRITE {
+        flags |= core::POLL_WRITE;
+    }
+    let is_eof = (kev.flags & internal::EV_EOF) != 0;
+    if is_eof {
+        flags |= core::POLL_HANGUP;
+    }
+    return flags, is_eof;
+}
+
+fn poller_collect_kqueue_events(
+    p:          Poller&,
+    timeout_ms: i64,
+    out_events: core::PollReadyEvent[..64]&,
+) {
+    var kev_out: internal::Kevent[64] = [internal::Kevent { .. }; 64];
+    let n = internal::kqueue_poll_slice(p.kqueue_fd, p.kqueue_changes[..], kev_out[..], timeout_ms);
+    p.kqueue_changes.clear();
+    guard n > 0 else { return; }
+
+    let limit = min(n as i64, 64);
+    for k in limit {
+        let kev = kev_out[k];
+        guard (kev.flags & KQUEUE_EV_ERROR_FLAG) == 0 else { continue; }
+        let reg_idx = find_by_tag(p, kev.udata);
+        guard reg_idx >= 0 else { continue; }
+        let flags, is_eof = map_kevent_to_poll_flags(kev);
+        guard flags != core::POLL_NONE else { continue; }
+        let ev = core::PollReadyEvent {
+            tag:             kev.udata,
+            fd:              p.registrations[reg_idx].fd,
+            events:          flags,
+            bytes_available: max(kev.data, 0),
+            is_eof:          is_eof,
+            is_timer:        false,
+        };
+        guard out_events.try_push(ev) else { break; }
+        p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
+    }
+}
+
+inline fn map_uring_revents_to_poll_flags(revents: u32) -> u32 {
+    var flags: u32 = core::POLL_NONE;
+    if (revents & URING_POLLIN_MASK) != 0 { flags |= core::POLL_READ; }
+    if (revents & URING_POLLOUT_MASK) != 0 { flags |= core::POLL_WRITE; }
+    if (revents & URING_POLLERR_MASK) != 0 { flags |= core::POLL_ERROR; }
+    if (revents & URING_POLLHUP_MASK) != 0 { flags |= core::POLL_HANGUP; }
+    return flags;
+}
+
+fn poller_collect_uring_events(
+    p:          Poller&,
+    timeout_ms: i64,
+    out_events: core::PollReadyEvent[..64]&,
+) {
+    var cqes: internal::UringCqe[64] = [internal::UringCqe { .. }; 64];
+    let min_complete: u32 = if timeout_ms == 0 { 0 } else { 1 };
+    let n = internal::uring_wait_cqes(p.uring_ring_fd, cqes[..], min_complete, timeout_ms);
+    guard n > 0 else { return; }
+
+    let limit = min(n as i64, 64);
+    for k in limit {
+        let cqe = cqes[k];
+        guard cqe.user_data != URING_INTERNAL_CANCEL_TAG && cqe.res >= 0 else { continue; }
+        let reg_idx = find_by_tag(p, cqe.user_data);
+        guard reg_idx >= 0 else { continue; }
+        let flags = map_uring_revents_to_poll_flags(cqe.res as u32);
+        let fd_val = p.registrations[reg_idx].fd;
+        if p.registrations[reg_idx].trigger == core::PollTrigger.Level {
+            poller_submit_uring_poll_add(
+                p.uring_ring_fd, fd_val, p.registrations[reg_idx].interest, cqe.user_data,
+            );
+        }
+        guard flags != core::POLL_NONE else { continue; }
+        let ev = core::PollReadyEvent {
+            tag:             cqe.user_data,
+            fd:              fd_val,
+            events:          flags,
+            bytes_available: 0,
+            is_eof:          (flags & core::POLL_HANGUP) != 0,
+            is_timer:        false,
+        };
+        guard out_events.try_push(ev) else { break; }
+        p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
+    }
+}
+
+inline fn poller_poll_native_drivers(
+    p:          Poller&,
+    timeout_ms: i64,
+    out_events: core::PollReadyEvent[..64]&,
+) {
+    if p.rio_cq_id != 0 {
         var rio_results: internal::RioResult[..64] = [];
         let n = internal::rio_drain_completions(p.rio_cq_id, rio_results);
         if n > 0 {
             let _ = rio_map_completions_to_events(p, rio_results[..], out_events);
         }
+    }
+    let eff_timeout = if out_events.len > 0 { 0 } else { timeout_ms };
+    if p.uring_ring_fd >= 0 {
+        poller_collect_uring_events(p, eff_timeout, out_events);
+    } else if p.kqueue_fd >= 0 {
+        poller_collect_kqueue_events(p, eff_timeout, out_events);
+    } else if p.epoll_fd >= 0 {
+        poller_collect_epoll_events(p, eff_timeout, out_events);
     }
 }
 
@@ -550,7 +872,8 @@ fn poll_events(
 ) -> i32 {
     out_events.clear();
     p.total_polls = core::add_sat_u64(p.total_polls, 1);
-    poller_poll_native_drivers(p, timeout_ms, out_events);
+    let eff_timeout = clamp_timeout_to_timers(p, timeout_ms, now_ns);
+    poller_poll_native_drivers(p, eff_timeout, out_events);
     check_wake_events(p, out_events);
     check_expired_timers(p, now_ns, out_events);
     check_coarse_timeouts(p, now_ns, out_events);
