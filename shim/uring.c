@@ -10,12 +10,15 @@
 #endif
 #include <stdint.h>
 #include <stddef.h>
-#include <string.h>
 
 typedef struct {
     const void *data;
     int64_t len;
 } wing_iovecs_ro;
+
+uint64_t wing_uring_slice_addr(wing_iovecs_ro buf) {
+    return (uint64_t)(uintptr_t)buf.data;
+}
 
 typedef struct {
     uint8_t opcode;

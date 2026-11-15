@@ -58,6 +58,7 @@ extern fn native_uring_alloc_pbuf_ring(
 extern fn native_uring_free_pbuf_ring(handle: u64) = "wing_uring_free_pbuf_ring";
 extern fn native_uring_read_pbuf(handle: u64, bid: u16, len: i32, dst: u8[:]) -> i32 = "wing_uring_read_pbuf";
 extern fn native_uring_recycle_pbuf(handle: u64, bid: u16) = "wing_uring_recycle_pbuf";
+extern fn native_uring_slice_addr(buf: const u8[:]) -> u64 = "wing_uring_slice_addr";
 
 // Registered I/O vector for IORING_REGISTER_BUFFERS
 struct UringIovec {
@@ -250,6 +251,11 @@ fn uring_prep_poll_remove(sqe: UringSqe&, target_user_data: u64, user_data: u64)
     sqe.op_flags = 0;
     sqe.user_data = user_data;
     sqe.buf_index = 0;
+}
+
+// Prepares a `URING_OP_SEND` SQE referencing `buf` (which must remain pinned until CQE completion).
+fn uring_prep_send_slice(sqe: UringSqe&, fd: i32, buf: const u8[:], user_data: u64) {
+    uring_prep_send(sqe, fd, native_uring_slice_addr(buf), buf.len as u32, user_data, false);
 }
 
 // Submits a slice of SQEs into `ring_fd` via mmap SQ ring and `io_uring_enter`.

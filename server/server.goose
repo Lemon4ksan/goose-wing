@@ -23,6 +23,14 @@ import .sni;
 
 // ---- 1. HttpServer Container and Route Registration -------------------------
 
+enum ReactorAccelMode {
+    Auto,
+    IoUring,
+    Rio,
+    Kqueue,
+    PollFallback,
+}
+
 struct WsRouteEntry {
     path:     u8[..128]  = [],
     behavior: WsBehavior = WsBehavior { .. },
@@ -54,6 +62,8 @@ struct HttpServer {
     handle_os_signals:         bool                      = false,
     honor_shutdown_flag:       bool                      = true,
     shutdown_grace_ns:         u64                       = 2000000000,
+    accel_mode:                ReactorAccelMode          = ReactorAccelMode.Auto,
+    enable_ktls_offload:       bool                      = true,
 }
 
 // Enables or disables Keep-Alive HTTP/1.1 header block memoization (`g_h1_parse_cache`,

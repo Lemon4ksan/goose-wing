@@ -19,6 +19,21 @@ import .server;
 const REACTOR_LEFTOVER_CAP:    i64 = 8192;
 const REACTOR_MAX_H2_SESSIONS: i64 = 128;
 
+const REACTOR_ACCEL_SLOTS:      i64 = 64;
+const REACTOR_ACCEL_BUF_SIZE:   i64 = 4096;
+const REACTOR_ACCEL_SLAB_BYTES: i64 = 524288;
+
+const REACTOR_REQ_RX_TAG: u64 = 1;
+const REACTOR_REQ_TX_TAG: u64 = 2;
+
+const REACTOR_URING_TAG_ACCEPT:    u64 = 0x100000000;
+const REACTOR_URING_TAG_RECV:      u64 = 0x200000000;
+const REACTOR_URING_TAG_SEND:      u64 = 0x300000000;
+const REACTOR_URING_TAG_POLL:      u64 = 0x400000000;
+const REACTOR_URING_TAG_KIND_MASK: u64 = 0xF00000000;
+const REACTOR_URING_PBUF_BGID:     u16 = 1;
+const REACTOR_KQUEUE_EV_ERROR:     u16 = 0x4000;
+
 struct ReactorLeftoverBuf {
     bytes: u8[8192] = [0; 8192],
 }
@@ -26,6 +41,28 @@ struct ReactorLeftoverBuf {
 struct ReactorIngressBuf {
     bytes: u8[65536] = [0; 65536],
     len:   i64       = 0,
+}
+
+struct ReactorAccelRuntime {
+    mode:                ReactorAccelMode        = ReactorAccelMode.PollFallback,
+    epfd:                i64                     = -1,
+    kq_fd:               i64                     = -1,
+    kq_changes:          internal::Kevent[..256] = [],
+    uring_fd:            i64                     = -1,
+    uring_pbuf:          u64                     = 0,
+    rio_cq:              u64                     = 0,
+    rio_buf_id:          u64                     = 0,
+    rio_listener_fd:     i64                     = -1,
+    active_accel_slots:  i64                     = 0,
+    slot_accel:          bool[64]                = [false; 64],
+    slot_ktls_rx:        bool[64]                = [false; 64],
+    slot_rio_rq:         u64[64]                 = [0; 64],
+    slot_tx_inflight:    bool[64]                = [false; 64],
+    slot_close_after_tx: bool[64]                = [false; 64],
+    slab:                u8[..524288]            = [],
+    tls_ct_leftover:     u8[..16648][64]         = [[]; 64],
+    tls_plain_scratch:   u8[..32768]             = [],
+    tls_seal_scratch:    u8[..65536]             = [],
 }
 
 struct ReactorState {
@@ -37,9 +74,239 @@ struct ReactorState {
     cork:        u8[..65536]                     = [],
     free_slots:  FreeSlotStack                   = FreeSlotStack { .. },
     conn_pool:   internal::ReactorConnectionPool = internal::ReactorConnectionPool { .. },
+    accel:       ReactorAccelRuntime             = ReactorAccelRuntime { .. },
 }
 
 var g_default_reactor: ReactorState = ReactorState { .. };
+
+// Opens a listening TCP socket configured for OS completion accelerators when supported.
+fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 128) -> i64 {
+    let plat = internal::detect_target_platform();
+    let want_rio = server.accel_mode == ReactorAccelMode.Auto || server.accel_mode == ReactorAccelMode.Rio;
+    if plat == internal::TargetPlatform.Windows && want_rio && internal::native_rio_available() == 1 {
+        let fd = internal::rio_listen(server.host[..], server.port, backlog);
+        if fd > 0 {
+            return fd;
+        }
+    }
+    return tcp_listen(server.host[..], server.port);
+}
+
+fn reactor_queue_kq_change(accel: ReactorAccelRuntime&, fd: i64, flags: u16, udata: u64) {
+    guard accel.kq_fd >= 0 && fd > 0 else { return; }
+    let ev = internal::Kevent {
+        ident:  fd as u64,
+        filter: internal::EVFILT_READ,
+        flags:  flags,
+        fflags: 0,
+        data:   0,
+        udata:  udata,
+    };
+    if !accel.kq_changes.try_push(ev) {
+        var ignored: internal::Kevent[1] = [internal::Kevent { .. }];
+        let _ = internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], ignored[..], 0);
+        accel.kq_changes.clear();
+        let _ = accel.kq_changes.try_push(ev);
+    }
+}
+
+fn reactor_arm_uring_accept(accel: ReactorAccelRuntime&, listener_fd: i64) {
+    guard accel.uring_fd >= 0 && listener_fd > 0 else { return; }
+    var sqe = internal::UringSqe { .. };
+    internal::uring_prep_accept_multishot(sqe, listener_fd as i32, REACTOR_URING_TAG_ACCEPT);
+    var batch: internal::UringSqe[1] = [sqe];
+    let _ = internal::uring_submit_sqes(accel.uring_fd, batch[..]);
+}
+
+fn reactor_arm_uring_slot_rx(accel: ReactorAccelRuntime&, slot: i64, fd: i64) {
+    guard accel.uring_fd >= 0 && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && fd > 0 else { return; }
+    var sqe = internal::UringSqe { .. };
+    if accel.slot_ktls_rx[slot] {
+        internal::uring_prep_poll_add(sqe, fd as i32, 1, REACTOR_URING_TAG_POLL | (slot as u64));
+    } else {
+        internal::uring_prep_sqe_recv_multishot(
+            sqe, fd as i32, REACTOR_URING_PBUF_BGID, REACTOR_URING_TAG_RECV | (slot as u64),
+        );
+    }
+    var batch: internal::UringSqe[1] = [sqe];
+    let _ = internal::uring_submit_sqes(accel.uring_fd, batch[..]);
+}
+
+fn reactor_post_rio_slot_rx(accel: ReactorAccelRuntime&, slot: i64) -> bool {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
+    let rx_off = core::shl_sat_u64(slot as u64, 13) as u32;
+    return internal::native_rio_post_recv(
+        accel.slot_rio_rq[slot],
+        accel.rio_buf_id,
+        rx_off,
+        REACTOR_ACCEL_BUF_SIZE as u32,
+        REACTOR_REQ_RX_TAG,
+    ) == 0;
+}
+
+fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
+    if accel.slot_accel[slot] {
+        accel.active_accel_slots = max(core::sub_sat_i64(accel.active_accel_slots, 1), 0);
+    }
+    accel.slot_accel[slot] = false;
+    accel.slot_ktls_rx[slot] = false;
+    accel.slot_rio_rq[slot] = 0;
+    accel.slot_tx_inflight[slot] = false;
+    accel.slot_close_after_tx[slot] = false;
+    accel.tls_ct_leftover[slot].clear();
+}
+
+fn reactor_close_accel(accel: ReactorAccelRuntime&) {
+    if accel.rio_listener_fd > 0 {
+        internal::native_rio_cancel_accept(accel.rio_listener_fd);
+        accel.rio_listener_fd = -1;
+    }
+    if accel.rio_buf_id != 0 {
+        internal::native_rio_deregister_buffer(accel.rio_buf_id);
+        accel.rio_buf_id = 0;
+    }
+    if accel.rio_cq != 0 {
+        internal::native_rio_close_cq(accel.rio_cq);
+        accel.rio_cq = 0;
+    }
+    if accel.uring_pbuf != 0 {
+        internal::uring_free_pbuf_ring(accel.uring_pbuf);
+        accel.uring_pbuf = 0;
+    }
+    if accel.uring_fd >= 0 {
+        internal::native_uring_close(accel.uring_fd);
+        accel.uring_fd = -1;
+    }
+    if accel.kq_fd >= 0 {
+        internal::native_kqueue_close(accel.kq_fd);
+        accel.kq_fd = -1;
+    }
+    if accel.epfd >= 0 {
+        epoll_close(accel.epfd);
+        accel.epfd = -1;
+    }
+    accel.kq_changes.clear();
+    accel.active_accel_slots = 0;
+    accel.mode = ReactorAccelMode.PollFallback;
+}
+
+fn reactor_try_open_uring(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
+    let rfd = internal::native_uring_create(256, 0);
+    guard rfd >= 0 else { return false; }
+    let pbuf, ok_pb = internal::uring_alloc_pbuf_ring(rfd, REACTOR_URING_PBUF_BGID, 256, 4096);
+    if !ok_pb || pbuf == 0 {
+        internal::native_uring_close(rfd);
+        return false;
+    }
+    accel.mode = ReactorAccelMode.IoUring;
+    accel.uring_fd = rfd;
+    accel.uring_pbuf = pbuf;
+    if listener_fd > 0 {
+        tcp_set_nonblocking(listener_fd, true);
+        reactor_arm_uring_accept(accel, listener_fd);
+    }
+    return true;
+}
+
+fn reactor_try_open_rio(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
+    guard internal::native_rio_available() == 1 && accel.epfd >= 0 else { return false; }
+    let cq = internal::native_rio_create_cq(512);
+    guard cq != 0 else { return false; }
+    let bid = internal::native_rio_register_slice(accel.slab[..]);
+    if bid == 0 {
+        internal::native_rio_close_cq(cq);
+        return false;
+    }
+    accel.mode = ReactorAccelMode.Rio;
+    accel.rio_cq = cq;
+    accel.rio_buf_id = bid;
+    if listener_fd > 0 {
+        if internal::native_rio_is_listener(listener_fd) == 1 {
+            accel.rio_listener_fd = listener_fd;
+        } else {
+            tcp_set_nonblocking(listener_fd, true);
+            epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+        }
+    }
+    return true;
+}
+
+fn reactor_try_open_kqueue(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
+    let kq = internal::native_kqueue_create();
+    guard kq >= 0 else { return false; }
+    accel.mode = ReactorAccelMode.Kqueue;
+    accel.kq_fd = kq;
+    if listener_fd > 0 {
+        tcp_set_nonblocking(listener_fd, true);
+        reactor_queue_kq_change(accel, listener_fd, internal::EV_ADD | internal::EV_ENABLE, EPOLL_LISTENER_TAG);
+    }
+    return true;
+}
+
+fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, listener_fd: i64) -> bool {
+    reactor_close_accel(accel);
+    accel.slab.resize(REACTOR_ACCEL_SLAB_BYTES, 0);
+    for s in REACTOR_ACCEL_SLOTS {
+        reactor_reset_accel_slot(accel, s);
+    }
+    accel.epfd = epoll_create();
+    let plat = internal::detect_target_platform();
+
+    if plat == internal::TargetPlatform.Linux &&
+        (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.IoUring) &&
+        reactor_try_open_uring(accel, listener_fd) {
+        return true;
+    }
+    if plat == internal::TargetPlatform.Windows &&
+        (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.Rio) &&
+        reactor_try_open_rio(accel, listener_fd) {
+        return true;
+    }
+    if plat == internal::TargetPlatform.Darwin &&
+        (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.Kqueue) &&
+        reactor_try_open_kqueue(accel, listener_fd) {
+        return true;
+    }
+
+    guard accel.epfd >= 0 else {
+        reactor_close_accel(accel);
+        return false;
+    }
+    accel.mode = ReactorAccelMode.PollFallback;
+    if listener_fd > 0 {
+        tcp_set_nonblocking(listener_fd, true);
+        epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+    }
+    return true;
+}
+
+fn reactor_bind_slot_backend(accel: ReactorAccelRuntime&, slot: i64, client_fd: i64) {
+    if accel.mode == ReactorAccelMode.Rio && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && !accel.slot_ktls_rx[slot] {
+        let rq = internal::native_rio_create_rq_ctx(client_fd, 16, 16, accel.rio_cq, accel.rio_cq, slot as u64);
+        if rq != 0 {
+            accel.slot_rio_rq[slot] = rq;
+            accel.slot_accel[slot] = true;
+            if reactor_post_rio_slot_rx(accel, slot) {
+                accel.active_accel_slots = core::add_sat_i64(accel.active_accel_slots, 1);
+                return;
+            }
+            accel.slot_accel[slot] = false;
+            accel.slot_rio_rq[slot] = 0;
+        }
+    } else if accel.mode == ReactorAccelMode.IoUring && slot >= 0 && slot < REACTOR_ACCEL_SLOTS {
+        accel.slot_accel[slot] = true;
+        accel.active_accel_slots = core::add_sat_i64(accel.active_accel_slots, 1);
+        reactor_arm_uring_slot_rx(accel, slot, client_fd);
+        return;
+    } else if accel.mode == ReactorAccelMode.Kqueue && accel.kq_fd >= 0 {
+        reactor_queue_kq_change(accel, client_fd, internal::EV_ADD | internal::EV_ENABLE, slot as u64);
+        return;
+    }
+    if accel.epfd >= 0 {
+        epoll_add(accel.epfd, client_fd, EPOLL_READ, slot as u64);
+    }
+}
 
 fn alloc_reactor_h2_session(
     pipeline:    ServerPipelineConfig&,
@@ -110,7 +377,7 @@ fn slot_transport(table: const SoAConnTable&, slot: i64) -> Transport {
     return Transport.Tcp { fd: fd };
 }
 
-// Cleans up a connection slot, removes from epoll, closes transport, and returns slot to free stack.
+// Cleans up a connection slot, detaches driver state, closes transport, and returns slot to free stack.
 fn reactor_cleanup_slot(
     epfd:       i64,
     table:      SoAConnTable&,
@@ -119,7 +386,13 @@ fn reactor_cleanup_slot(
 ) {
     let fd = table.fds[slot_idx];
     if fd > 0 {
-        epoll_del(epfd, fd);
+        if g_default_reactor.accel.kq_fd >= 0 {
+            reactor_queue_kq_change(g_default_reactor.accel, fd, internal::EV_DELETE, slot_idx as u64);
+        }
+        if epfd >= 0 {
+            epoll_del(epfd, fd);
+        }
+        reactor_reset_accel_slot(g_default_reactor.accel, slot_idx);
         var tr = table.slot_transport(slot_idx);
         tr.close();
         if table.h2_slot_map[slot_idx] >= 0 {
@@ -130,6 +403,8 @@ fn reactor_cleanup_slot(
         }
         internal::free_connection_slot(g_default_reactor.conn_pool, slot_idx as i32);
         table.soa_table_free(slot_idx);
+    } else {
+        reactor_reset_accel_slot(g_default_reactor.accel, slot_idx);
     }
     push_free_slot(free_slots, slot_idx);
 }
@@ -155,7 +430,7 @@ fn reactor_sweep_timeouts(
     for i in n_expired {
         let slot = expired[i];
         reactor_cleanup_slot(epfd, table, slot, free_slots);
-        total_served++;
+        total_served = core::add_sat_i64(total_served, 1);
     }
 }
 
@@ -172,20 +447,19 @@ fn reactor_evict_stale_slot(
     if n > 0 {
         let slot = expired[0];
         reactor_cleanup_slot(epfd, table, slot, free_slots);
-        total_served++;
+        total_served = core::add_sat_i64(total_served, 1);
         return pop_free_slot(free_slots);
     }
     return -1;
 }
 
-// Registers an accepted non-blocking client connection into an allocated slot.
-inline fn reactor_register_client_slot(
-    epfd:        i64,
+inline fn reactor_init_slot_record(
     table:       SoAConnTable&,
     client_fd:   i64,
     slot:        i64,
     timer_wheel: core::TickTimerWheel&,
 ) {
+    reactor_reset_accel_slot(g_default_reactor.accel, slot);
     table.fds[slot] = client_fd;
     table.timeout_ticks[slot] = core::tick_timer_arm(timer_wheel, 15);
     table.leftover_lens[slot] = 0;
@@ -198,7 +472,19 @@ inline fn reactor_register_client_slot(
     table.peer_ips[slot].clear();
     table.count = advance_high_water_mark(table.count, slot);
     let _ = internal::alloc_connection_slot(g_default_reactor.conn_pool, client_fd, 0);
-    epoll_add(epfd, client_fd, EPOLL_READ, slot as u64);
+}
+
+// Registers an accepted non-blocking client connection into an allocated slot.
+inline fn reactor_register_client_slot(
+    epfd:        i64,
+    table:       SoAConnTable&,
+    client_fd:   i64,
+    slot:        i64,
+    timer_wheel: core::TickTimerWheel&,
+) {
+    let _ = epfd;
+    reactor_init_slot_record(table, client_fd, slot, timer_wheel);
+    reactor_bind_slot_backend(g_default_reactor.accel, slot, client_fd);
 }
 
 // Lazily resolves and caches the peer IP for a connection slot in SoAConnTable.
@@ -209,6 +495,25 @@ inline fn reactor_resolve_slot_peer_ip(table: SoAConnTable&, slot: i64, conn: i6
         table.soa_table_set_peer_ip(slot, resolved_ip[..]);
     }
     return table.soa_table_get_peer_ip(slot);
+}
+
+fn reactor_accept_plain_fd(
+    client_fd:    i64,
+    epfd:         i64,
+    table:        SoAConnTable&,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    total_served: i64&,
+) {
+    var slot = pop_free_slot(free_slots);
+    if slot < 0 {
+        slot = reactor_evict_stale_slot(epfd, table, free_slots, timer_wheel, total_served);
+    }
+    if slot >= 0 {
+        reactor_register_client_slot(epfd, table, client_fd, slot, timer_wheel);
+    } else {
+        tcp_close(client_fd);
+    }
 }
 
 // Drains non-blocking listener queue and accepts ready incoming connections into free slots.
@@ -223,16 +528,7 @@ fn reactor_drain_listener(
     loop {
         let client_fd = tcp_accept_nonblocking(listener_fd);
         if client_fd <= 0 { break; }
-
-        var slot = pop_free_slot(free_slots);
-        if slot < 0 {
-            slot = reactor_evict_stale_slot(epfd, table, free_slots, timer_wheel, total_served);
-        }
-        if slot >= 0 {
-            reactor_register_client_slot(epfd, table, client_fd, slot, timer_wheel);
-        } else {
-            tcp_close(client_fd);
-        }
+        reactor_accept_plain_fd(client_fd, epfd, table, free_slots, timer_wheel, total_served);
     }
 }
 
@@ -346,7 +642,56 @@ inline fn reactor_drain_cork_wire(conn: i64, wire: const u8[:]) -> bool {
     return true;
 }
 
-inline fn reactor_send_slot_wire(table: const SoAConnTable&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
+fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
+    if wire.len <= REACTOR_ACCEL_BUF_SIZE && !accel.slot_tx_inflight[slot] {
+        let tx_off_u32 = (core::shl_sat_u64(slot as u64, 13) as u32) | 4096;
+        let tx_off = tx_off_u32 as i64;
+        let tx_end = core::add_sat_i64(tx_off, wire.len);
+        for i in wire.len {
+            accel.slab[core::add_sat_i64(tx_off, i)] = wire[i];
+        }
+        if accel.mode == ReactorAccelMode.Rio && accel.slot_rio_rq[slot] != 0 {
+            let rc = internal::native_rio_post_send(
+                accel.slot_rio_rq[slot], accel.rio_buf_id, tx_off_u32, wire.len as u32, REACTOR_REQ_TX_TAG,
+            );
+            if rc == 0 {
+                accel.slot_tx_inflight[slot] = true;
+                return true;
+            }
+        } else if accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0 {
+            var sqe = internal::UringSqe { .. };
+            internal::uring_prep_send_slice(
+                sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | (slot as u64),
+            );
+            var batch: internal::UringSqe[1] = [sqe];
+            if internal::uring_submit_sqes(accel.uring_fd, batch[..]) > 0 {
+                accel.slot_tx_inflight[slot] = true;
+                return true;
+            }
+        }
+    }
+    return reactor_drain_cork_wire(conn, wire);
+}
+
+fn reactor_send_slot_wire(table: const SoAConnTable&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
+    let in_accel_range = slot >= 0 && slot < REACTOR_ACCEL_SLOTS;
+    if in_accel_range && g_default_reactor.accel.slot_ktls_rx[slot] {
+        return internal::smartnic_send_record(conn, wire, rfc::TLS_CONTENT_APPLICATION_DATA) > 0;
+    }
+    if in_accel_range && g_default_reactor.accel.slot_accel[slot] {
+        if table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
+            g_default_reactor.accel.tls_seal_scratch.clear();
+            if !tls_cipher_slot_seal_app_data(
+                table.tls_slots[slot], wire, g_default_reactor.accel.tls_seal_scratch,
+            ) {
+                return false;
+            }
+            return reactor_submit_accel_tx(
+                g_default_reactor.accel, slot, conn, g_default_reactor.accel.tls_seal_scratch[..],
+            );
+        }
+        return reactor_submit_accel_tx(g_default_reactor.accel, slot, conn, wire);
+    }
     if table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
         let tr = table.slot_transport(slot);
         return tr.send(wire) > 0;
@@ -383,7 +728,7 @@ fn reactor_handle_h2_ingress<Stage>(
         }
     }
     guard ok_h2 else { return false; }
-    server.requests_processed++;
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     if consumed_h2 < chunk.len {
         guard reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed_h2..chunk.len]) else {
             return false;
@@ -402,10 +747,41 @@ inline fn reactor_close_and_inc(
 ) {
     table.release_h2_session(slot, server.pipeline);
     reactor_cleanup_slot(epfd, table, slot, free_slots);
-    total_served++;
+    total_served = core::add_sat_i64(total_served, 1);
+}
+
+inline fn reactor_request_slot_close(
+    server:       HttpServer&,
+    epfd:         i64,
+    table:        SoAConnTable&,
+    slot:         i64,
+    free_slots:   FreeSlotStack&,
+    total_served: i64&,
+) {
+    if slot >= 0 && slot < REACTOR_ACCEL_SLOTS && g_default_reactor.accel.slot_tx_inflight[slot] {
+        g_default_reactor.accel.slot_close_after_tx[slot] = true;
+        return;
+    }
+    reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+}
+
+fn reactor_read_ktls_slot(conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
+    guard chunk.len < 65536 else { return false, false; }
+    let recvd, rtype = internal::smartnic_recv_record(conn, chunk.bytes[chunk.len..]);
+    if recvd <= 0 || rtype == rfc::TLS_CONTENT_ALERT {
+        return chunk.len > 0, chunk.len == 0;
+    }
+    if rtype == rfc::TLS_CONTENT_APPLICATION_DATA {
+        chunk.len = core::add_sat_i64(chunk.len, recvd);
+        return true, false;
+    }
+    return chunk.len > 0, false;
 }
 
 fn reactor_read_slot_turns(table: const SoAConnTable&, slot: i64, conn: i64, chunk: ReactorIngressBuf&) -> bool, bool {
+    if slot >= 0 && slot < REACTOR_ACCEL_SLOTS && g_default_reactor.accel.slot_ktls_rx[slot] {
+        return reactor_read_ktls_slot(conn, chunk);
+    }
     if table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
         let available = 65536 - chunk.len;
         guard available > 0 else { return false, false; }
@@ -421,6 +797,63 @@ fn reactor_read_slot_turns(table: const SoAConnTable&, slot: i64, conn: i64, chu
         return true, false;
     }
     return reactor_read_bounded_turns(conn, chunk);
+}
+
+fn reactor_select_slot_peer_ip(
+    server: const HttpServer&,
+    table:  SoAConnTable&,
+    slot:   i64,
+    conn:   i64,
+) -> const u8[:] {
+    if server.pipeline.enable_rate_limiter || server.trust_proxy_headers || server.pipeline.trust_proxy_headers {
+        return reactor_resolve_slot_peer_ip(table, slot, conn);
+    }
+    return "127.0.0.1";
+}
+
+fn reactor_process_slot_plaintext<Stage>(
+    server:       HttpServer&,
+    epfd:         i64,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    slot:         i64,
+    conn:         i64,
+    free_slots:   FreeSlotStack&,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) {
+    if table.is_h2[slot] || is_h2_client_preface(chunk.bytes[..chunk.len]) {
+        if !reactor_handle_h2_ingress(server, conn, table, leftovers, slot, now_ns, chunk, cork_wire, stage) {
+            reactor_request_slot_close(server, epfd, table, slot, free_slots, total_served);
+        }
+        return;
+    }
+    if is_partial_h2_client_preface(chunk.bytes[..chunk.len]) {
+        if !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[..chunk.len]) {
+            reactor_request_slot_close(server, epfd, table, slot, free_slots, total_served);
+        }
+        return;
+    }
+
+    let client_ip_slice = reactor_select_slot_peer_ip(server, table, slot, conn);
+    cork_wire.clear();
+    let _, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
+        server, client_ip_slice, chunk.bytes[..chunk.len], now_ns, cork_wire, stage,
+    );
+    if cork_wire.len > 0 && !reactor_send_slot_wire(table, slot, conn, cork_wire[..]) {
+        reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+        return;
+    }
+    if !ok || wants_close {
+        reactor_request_slot_close(server, epfd, table, slot, free_slots, total_served);
+        return;
+    }
+    if consumed < chunk.len && !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed..chunk.len]) {
+        reactor_request_slot_close(server, epfd, table, slot, free_slots, total_served);
+    }
 }
 
 // Processes non-blocking ingress traffic on a connection slot via bounded capacity-guarded read loop.
@@ -455,55 +888,87 @@ fn reactor_handle_ingress<Stage>(
     if !any_recvd && prev_len == 0 {
         return;
     }
-
-    if table.is_h2[slot] || is_h2_client_preface(chunk.bytes[..chunk.len]) {
-        let ok_h2 = reactor_handle_h2_ingress(server, conn, table, leftovers, slot, now_ns, chunk, cork_wire, stage);
-        if !ok_h2 {
-            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
-        }
-        return;
-    }
-    if is_partial_h2_client_preface(chunk.bytes[..chunk.len]) {
-        if !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[..chunk.len]) {
-            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
-        }
-        return;
-    }
-
-    let need_peer_ip = server.pipeline.enable_rate_limiter
-        || server.trust_proxy_headers
-        || server.pipeline.trust_proxy_headers;
-    let client_ip_slice: const u8[:] = if need_peer_ip {
-        reactor_resolve_slot_peer_ip(table, slot, conn)
-    } else {
-        "127.0.0.1"
-    };
-    cork_wire.clear();
-    let count, consumed, ok, wants_close = handle_connection_wire_pipelined_stream(
-        server, client_ip_slice, chunk.bytes[..chunk.len], now_ns, cork_wire, stage,
+    reactor_process_slot_plaintext(
+        server, epfd, table, leftovers, slot, conn, free_slots, now_ns, chunk, cork_wire, total_served, stage,
     );
+}
 
-    let should_close = !ok || wants_close;
-    if cork_wire.len > 0 {
-        if !reactor_send_slot_wire(table, slot, conn, cork_wire[..]) || should_close {
+fn reactor_append_chunk_bytes(chunk: ReactorIngressBuf&, src: const u8[:]) -> bool {
+    let end_len = core::add_sat_i64(chunk.len, src.len);
+    guard end_len <= 65536 else { return false; }
+    for i in src.len {
+        chunk.bytes[core::add_sat_i64(chunk.len, i)] = src[i];
+    }
+    chunk.len = end_len;
+    return true;
+}
+
+fn reactor_handle_completed_rx<Stage>(
+    server:       HttpServer&,
+    epfd:         i64,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    slot:         i64,
+    rx_raw:       const u8[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) {
+    let conn = table.fds[slot];
+    guard conn > 0 else { return; }
+    if server.pipeline.enable_slowloris_timer {
+        table.soa_table_touch(slot, core::tick_timer_arm(timer_wheel, 15));
+    }
+    chunk.len = 0;
+    reactor_load_leftover(table, leftovers[slot], slot, chunk);
+
+    if table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
+        guard g_default_reactor.accel.tls_ct_leftover[slot].try_append(rx_raw) else {
             reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
             return;
         }
-    }
-    if should_close {
-        reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+        g_default_reactor.accel.tls_plain_scratch.clear();
+        let cons, st = tls_cipher_slot_unseal_records(
+            table.tls_slots[slot],
+            g_default_reactor.accel.tls_ct_leftover[slot][..],
+            g_default_reactor.accel.tls_plain_scratch,
+        );
+        g_default_reactor.accel.tls_ct_leftover[slot].compact_wire_buffer(cons);
+        if st == TlsSliceUnsealStatus.Error {
+            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+            return;
+        }
+        if g_default_reactor.accel.tls_plain_scratch.len > 0 {
+            guard reactor_append_chunk_bytes(chunk, g_default_reactor.accel.tls_plain_scratch[..]) else {
+                reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+                return;
+            }
+            reactor_process_slot_plaintext(
+                server, epfd, table, leftovers, slot, conn, free_slots, now_ns, chunk, cork_wire, total_served, stage,
+            );
+        }
+        if st == TlsSliceUnsealStatus.Closed && table.fds[slot] > 0 {
+            reactor_request_slot_close(server, epfd, table, slot, free_slots, total_served);
+        }
         return;
     }
 
-    // Preserve unconsumed bytes for the next epoll turn
-    if consumed < chunk.len {
-        if !reactor_save_leftover(table, leftovers[slot], slot, chunk.bytes[consumed..chunk.len]) {
-            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
-        }
+    guard reactor_append_chunk_bytes(chunk, rx_raw) else {
+        reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+        return;
+    }
+    if chunk.len > 0 {
+        reactor_process_slot_plaintext(
+            server, epfd, table, leftovers, slot, conn, free_slots, now_ns, chunk, cork_wire, total_served, stage,
+        );
     }
 }
 
-// Dispatches ready epoll events for reactor connection slots with `<Stage>`.
+// Dispatches ready epoll/kqueue events for reactor connection slots with `<Stage>`.
 fn reactor_dispatch_events<Stage>(
     server:       HttpServer&,
     epfd:         i64,
@@ -548,10 +1013,393 @@ fn reactor_dispatch_events<Stage>(
     }
 }
 
-// Computes dynamic epoll wait timeout depending on worker ring state.
+// Computes dynamic wait timeout depending on worker ring state.
 inline fn reactor_epoll_timeout(ring: const core::SpscRing&) -> i32 {
     guard ring.is_open else { return 200; }
     return if ring.spsc_count() > 0 { 0 } else { 10 };
+}
+
+fn reactor_wait_readiness_events(
+    accel:       ReactorAccelRuntime&,
+    ready_udata: u64[:],
+    timeout_ms:  i32,
+) -> i32 {
+    if accel.mode == ReactorAccelMode.Kqueue && accel.kq_fd >= 0 {
+        var kev_out: internal::Kevent[128] = [internal::Kevent { .. }; 128];
+        let n_kq = internal::kqueue_poll_slice(accel.kq_fd, accel.kq_changes[..], kev_out[..], timeout_ms);
+        accel.kq_changes.clear();
+        guard n_kq > 0 else { return 0; }
+        let limit = min(min(n_kq as i64, 128), ready_udata.len);
+        var out_idx: i64 = 0;
+        for i in limit {
+            if (kev_out[i].flags & REACTOR_KQUEUE_EV_ERROR) == 0 {
+                ready_udata[out_idx] = kev_out[i].udata;
+                out_idx = core::add_sat_i64(out_idx, 1);
+            }
+        }
+        return out_idx as i32;
+    }
+
+    guard accel.epfd >= 0 else { return 0; }
+    var empty_fds: i64[0] = [];
+    let rio_has_work = accel.active_accel_slots > 0 || accel.rio_listener_fd > 0;
+    let eff_timeout = if accel.mode == ReactorAccelMode.IoUring ||
+        (accel.mode == ReactorAccelMode.Rio && rio_has_work) {
+        0
+    } else {
+        timeout_ms
+    };
+    return epoll_wait_direct(accel.epfd, empty_fds[..], ready_udata, eff_timeout);
+}
+
+fn reactor_dispatch_single_rio_result<Stage>(
+    server:       HttpServer&,
+    res:          const internal::RioResult&,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) {
+    let slot = res.socket_context as i64;
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && table.fds[slot] > 0 else { return; }
+    let epfd = g_default_reactor.accel.epfd;
+
+    if res.request_context == REACTOR_REQ_TX_TAG {
+        g_default_reactor.accel.slot_tx_inflight[slot] = false;
+        if res.status != 0 || g_default_reactor.accel.slot_close_after_tx[slot] {
+            reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+        }
+        return;
+    }
+    guard res.request_context == REACTOR_REQ_RX_TAG else { return; }
+    if res.status != 0 || res.bytes_transferred == 0 {
+        reactor_request_slot_close(server, epfd, table, slot, free_slots, total_served);
+        return;
+    }
+
+    let rx_len = min(res.bytes_transferred as i64, REACTOR_ACCEL_BUF_SIZE);
+    let rx_off = (core::shl_sat_u64(slot as u64, 13) as u32) as i64;
+    var local_rx: u8[4096] = [0; 4096];
+    for i in rx_len {
+        local_rx[i] = g_default_reactor.accel.slab[core::add_sat_i64(rx_off, i)];
+    }
+    reactor_handle_completed_rx(
+        server, epfd, table, leftovers, slot, local_rx[..rx_len],
+        free_slots, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+    );
+    if table.fds[slot] > 0 && !g_default_reactor.accel.slot_close_after_tx[slot] {
+        if !reactor_post_rio_slot_rx(g_default_reactor.accel, slot) {
+            reactor_request_slot_close(server, epfd, table, slot, free_slots, total_served);
+        }
+    }
+}
+
+fn reactor_poll_rio_listener(
+    server:       const HttpServer&,
+    draining:     bool,
+    tls_config:   const TlsServerHandshakeConfig&,
+    is_tls:       bool,
+    timeout_ms:   i32,
+    table:        SoAConnTable&,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    total_served: i64&,
+) {
+    let lfd = g_default_reactor.accel.rio_listener_fd;
+    guard !draining && lfd > 0 else { return; }
+    let wait_ms = if g_default_reactor.accel.active_accel_slots == 0 && timeout_ms > 0 {
+        min(timeout_ms, 5)
+    } else {
+        0
+    };
+    let cfd = internal::native_rio_poll_accept(lfd, wait_ms);
+    guard cfd > 0 else { return; }
+    let epfd = g_default_reactor.accel.epfd;
+    if is_tls {
+        reactor_accept_single_tls_fd(
+            server, cfd, epfd, table, free_slots, timer_wheel, tls_config, total_served,
+        );
+    } else {
+        reactor_accept_plain_fd(cfd, epfd, table, free_slots, timer_wheel, total_served);
+    }
+}
+
+fn reactor_step_rio_completions<Stage>(
+    server:       HttpServer&,
+    draining:     bool,
+    tls_config:   const TlsServerHandshakeConfig&,
+    is_tls:       bool,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    timeout_ms:   i32,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) -> u32 {
+    guard g_default_reactor.accel.mode == ReactorAccelMode.Rio &&
+        g_default_reactor.accel.rio_cq != 0 else {
+        return 0;
+    }
+    reactor_poll_rio_listener(
+        server, draining, tls_config, is_tls, timeout_ms, table, free_slots, timer_wheel, total_served,
+    );
+    guard g_default_reactor.accel.active_accel_slots > 0 else { return 0; }
+    var rio_results: internal::RioResult[..64] = [];
+    var n = internal::rio_drain_completions(g_default_reactor.accel.rio_cq, rio_results);
+    if n == 0 && timeout_ms > 0 {
+        let _ = internal::rio_wait_cq(g_default_reactor.accel.rio_cq, min(timeout_ms, 5));
+        n = internal::rio_drain_completions(g_default_reactor.accel.rio_cq, rio_results);
+    }
+    for i in rio_results.len {
+        reactor_dispatch_single_rio_result(
+            server, rio_results[i], table, leftovers, free_slots,
+            timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+    return n;
+}
+
+fn reactor_accept_single_tls_fd(
+    server:       const HttpServer&,
+    client_fd:    i64,
+    epfd:         i64,
+    table:        SoAConnTable&,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    tls_config:   const TlsServerHandshakeConfig&,
+    total_served: i64&,
+) {
+    let tls_slot, ok_hs = tls_server_handshake(client_fd, tls_config);
+    if !ok_hs {
+        tcp_close(client_fd);
+        total_served = core::add_sat_i64(total_served, 1);
+        return;
+    }
+    var slot = pop_free_slot(free_slots);
+    if slot < 0 {
+        slot = reactor_evict_stale_slot(epfd, table, free_slots, timer_wheel, total_served);
+    }
+    if slot >= 0 {
+        reactor_init_slot_record(table, client_fd, slot, timer_wheel);
+        table.has_tls[slot] = true;
+        table.tls_slots[slot] = tls_slot;
+        if server.enable_ktls_offload && slot < REACTOR_ACCEL_SLOTS {
+            let sess, ok_ktls = tls_try_enable_ktls(tls_slot, client_fd);
+            if ok_ktls && sess.rx_offloaded && sess.tx_offloaded {
+                g_default_reactor.accel.slot_ktls_rx[slot] = true;
+            }
+        }
+        reactor_bind_slot_backend(g_default_reactor.accel, slot, client_fd);
+    } else {
+        tls_transport_close(client_fd, tls_slot);
+        total_served = core::add_sat_i64(total_served, 1);
+    }
+}
+
+fn reactor_dispatch_uring_recv_cqe<Stage>(
+    server:       HttpServer&,
+    cqe:          const internal::UringCqe&,
+    slot:         i64,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) {
+    let has_buf = (cqe.flags & internal::URING_CQE_F_BUFFER) != 0;
+    let bid = ((cqe.flags >> 16) & 0xFFFF) as u16;
+    if cqe.res <= 0 {
+        if has_buf {
+            internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
+        }
+        if slot >= 0 && slot < REACTOR_ACCEL_SLOTS && table.fds[slot] > 0 {
+            reactor_request_slot_close(
+                server, g_default_reactor.accel.epfd, table, slot, free_slots, total_served,
+            );
+        }
+        return;
+    }
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && table.fds[slot] > 0 else {
+        if has_buf {
+            internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
+        }
+        return;
+    }
+
+    var rx_tmp: u8[4096] = [0; 4096];
+    var copied: i32      = 0;
+    if has_buf {
+        copied = internal::uring_read_pbuf(g_default_reactor.accel.uring_pbuf, bid, cqe.res, rx_tmp[..]);
+        internal::uring_recycle_pbuf(g_default_reactor.accel.uring_pbuf, bid);
+    }
+    if copied > 0 {
+        reactor_handle_completed_rx(
+            server, g_default_reactor.accel.epfd, table, leftovers, slot, rx_tmp[..copied],
+            free_slots, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+    if (cqe.flags & internal::URING_CQE_F_MORE) == 0 &&
+        table.fds[slot] > 0 &&
+        !g_default_reactor.accel.slot_close_after_tx[slot] {
+        reactor_arm_uring_slot_rx(g_default_reactor.accel, slot, table.fds[slot]);
+    }
+}
+
+fn reactor_dispatch_uring_accept_cqe(
+    server:       const HttpServer&,
+    listener_fd:  i64,
+    draining:     bool,
+    tls_config:   const TlsServerHandshakeConfig&,
+    is_tls:       bool,
+    cqe:          const internal::UringCqe&,
+    table:        SoAConnTable&,
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    total_served: i64&,
+) {
+    let epfd = g_default_reactor.accel.epfd;
+    if cqe.res > 0 {
+        let cfd = cqe.res as i64;
+        tcp_set_nonblocking(cfd, true);
+        if is_tls {
+            reactor_accept_single_tls_fd(
+                server, cfd, epfd, table, free_slots, timer_wheel, tls_config, total_served,
+            );
+        } else {
+            reactor_accept_plain_fd(cfd, epfd, table, free_slots, timer_wheel, total_served);
+        }
+    }
+    if (cqe.flags & internal::URING_CQE_F_MORE) == 0 && !draining && listener_fd > 0 {
+        reactor_arm_uring_accept(g_default_reactor.accel, listener_fd);
+    }
+}
+
+fn reactor_dispatch_uring_send_cqe(
+    server:       HttpServer&,
+    cqe:          const internal::UringCqe&,
+    slot:         i64,
+    table:        SoAConnTable&,
+    free_slots:   FreeSlotStack&,
+    total_served: i64&,
+) {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
+    g_default_reactor.accel.slot_tx_inflight[slot] = false;
+    if (cqe.res <= 0 || g_default_reactor.accel.slot_close_after_tx[slot]) && table.fds[slot] > 0 {
+        reactor_close_and_inc(server, g_default_reactor.accel.epfd, table, slot, free_slots, total_served);
+    }
+}
+
+fn reactor_dispatch_uring_poll_cqe<Stage>(
+    server:       HttpServer&,
+    cqe:          const internal::UringCqe&,
+    slot:         i64,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && table.fds[slot] > 0 else { return; }
+    let epfd = g_default_reactor.accel.epfd;
+    if cqe.res < 0 {
+        reactor_close_and_inc(server, epfd, table, slot, free_slots, total_served);
+        return;
+    }
+    reactor_handle_ingress(
+        server, epfd, table, leftovers, slot, free_slots,
+        timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+    );
+    if table.fds[slot] > 0 && !g_default_reactor.accel.slot_close_after_tx[slot] {
+        reactor_arm_uring_slot_rx(g_default_reactor.accel, slot, table.fds[slot]);
+    }
+}
+
+fn reactor_dispatch_single_uring_cqe<Stage>(
+    server:       HttpServer&,
+    listener_fd:  i64,
+    draining:     bool,
+    tls_config:   const TlsServerHandshakeConfig&,
+    is_tls:       bool,
+    cqe:          const internal::UringCqe&,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) {
+    let kind = cqe.user_data & REACTOR_URING_TAG_KIND_MASK;
+    let slot = (cqe.user_data & 0xFFFFFFFF) as i64;
+    if kind == REACTOR_URING_TAG_ACCEPT {
+        reactor_dispatch_uring_accept_cqe(
+            server, listener_fd, draining, tls_config, is_tls, cqe, table, free_slots, timer_wheel, total_served,
+        );
+    } else if kind == REACTOR_URING_TAG_SEND {
+        reactor_dispatch_uring_send_cqe(server, cqe, slot, table, free_slots, total_served);
+    } else if kind == REACTOR_URING_TAG_POLL {
+        reactor_dispatch_uring_poll_cqe(
+            server, cqe, slot, table, leftovers, free_slots, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    } else if kind == REACTOR_URING_TAG_RECV {
+        reactor_dispatch_uring_recv_cqe(
+            server, cqe, slot, table, leftovers, free_slots, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+}
+
+fn reactor_step_uring_completions<Stage>(
+    server:       HttpServer&,
+    listener_fd:  i64,
+    draining:     bool,
+    tls_config:   const TlsServerHandshakeConfig&,
+    is_tls:       bool,
+    timeout_ms:   i32,
+    table:        SoAConnTable&,
+    leftovers:    ReactorLeftoverBuf[:],
+    free_slots:   FreeSlotStack&,
+    timer_wheel:  core::TickTimerWheel&,
+    now_ns:       u64,
+    chunk:        ReactorIngressBuf&,
+    cork_wire:    u8[..65536]&,
+    total_served: i64&,
+    stage:        Stage&,
+) -> i32 {
+    guard g_default_reactor.accel.mode == ReactorAccelMode.IoUring &&
+        g_default_reactor.accel.uring_fd >= 0 else {
+        return 0;
+    }
+    var cqes: internal::UringCqe[64] = [internal::UringCqe { .. }; 64];
+    let min_c: u32 = if timeout_ms > 0 { 1 } else { 0 };
+    let n = internal::uring_wait_cqes(g_default_reactor.accel.uring_fd, cqes[..], min_c, timeout_ms as i64);
+    guard n > 0 else { return 0; }
+    let limit = min(n as i64, 64);
+    for i in limit {
+        reactor_dispatch_single_uring_cqe(
+            server, listener_fd, draining, tls_config, is_tls, cqes[i], table,
+            leftovers, free_slots, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+    return n;
 }
 
 inline fn reactor_emit_slot_goaway(table: const SoAConnTable&, slot: i64, cork_wire: u8[..65536]&) {
@@ -562,10 +1410,26 @@ inline fn reactor_emit_slot_goaway(table: const SoAConnTable&, slot: i64, cork_w
     cork_wire.clear();
     internal::initiate_graceful_shutdown(g_default_reactor.h2_sessions[h2_idx], cork_wire);
     guard cork_wire.len > 0 else { return; }
-    if table.has_tls[slot] {
-        let _ = tls_transport_send(fd, table.tls_slots[slot], cork_wire[..]);
-    } else {
-        let _ = tcp_send(fd, cork_wire[..]);
+    let _ = reactor_send_slot_wire(table, slot, fd, cork_wire[..]);
+}
+
+fn reactor_detach_listener(accel: ReactorAccelRuntime&, listener_fd: i64) {
+    guard listener_fd > 0 else { return; }
+    if accel.rio_listener_fd == listener_fd {
+        internal::native_rio_cancel_accept(listener_fd);
+        accel.rio_listener_fd = -1;
+    }
+    if accel.kq_fd >= 0 {
+        reactor_queue_kq_change(accel, listener_fd, internal::EV_DELETE, EPOLL_LISTENER_TAG);
+    }
+    if accel.uring_fd >= 0 {
+        var sqe = internal::UringSqe { .. };
+        internal::uring_prep_cancel(sqe, REACTOR_URING_TAG_ACCEPT);
+        var batch: internal::UringSqe[1] = [sqe];
+        let _ = internal::uring_submit_sqes(accel.uring_fd, batch[..]);
+    }
+    if accel.epfd >= 0 {
+        let _ = epoll_del(accel.epfd, listener_fd);
     }
 }
 
@@ -578,12 +1442,11 @@ fn reactor_step_drain_gate(
     draining:          bool&,
     drain_deadline_ns: u64&,
 ) -> bool {
+    let _ = epfd;
     if !draining && server_should_stop(server) {
         draining = true;
         server.is_running = false;
-        if listener_fd > 0 {
-            let _ = epoll_del(epfd, listener_fd);
-        }
+        reactor_detach_listener(g_default_reactor.accel, listener_fd);
         let limit = min(max(table.count, 0), SOA_TABLE_CAP);
         for s in limit {
             reactor_emit_slot_goaway(table, s, cork_wire);
@@ -635,16 +1498,16 @@ inline fn reset_reactor_state(state: ReactorState&) {
     init_free_slots(state.free_slots, SOA_TABLE_CAP);
 }
 
-inline fn reactor_prepare_loop(server: HttpServer&, epfd: i64, listener_fd: i64) {
-    if listener_fd > 0 {
-        tcp_set_nonblocking(listener_fd, true);
-        epoll_add(epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
-    }
+inline fn reactor_prepare_loop(server: HttpServer&, listener_fd: i64) -> bool {
     reset_reactor_state(g_default_reactor);
+    guard reactor_init_accel(g_default_reactor.accel, server.accel_mode, listener_fd) else {
+        return false;
+    }
     server_init_run_state(server);
+    return true;
 }
 
-// Executes a share-nothing reactor loop with epoll and a custom `<Stage>` hook.
+// Executes a share-nothing reactor loop with OS completion/readiness acceleration and a `<Stage>` hook.
 fn serve_reactor_with_stage<Stage>(
     server:          HttpServer&,
     listener_fd:     i64,
@@ -652,14 +1515,10 @@ fn serve_reactor_with_stage<Stage>(
     max_connections: i64 = 0,
 ) -> i64 {
     guard listener_fd > 0 || server.worker_ring.is_open else { return 0; }
+    guard reactor_prepare_loop(server, listener_fd) else { return 0; }
+    defer reactor_close_accel(g_default_reactor.accel);
 
-    let epfd = epoll_create();
-    guard epfd >= 0 else { return 0; }
-    defer epoll_close(epfd);
-
-    reactor_prepare_loop(server, epfd, listener_fd);
-
-    var empty_fds:    i64[0]    = [];
+    let dummy_tls_cfg = TlsServerHandshakeConfig { .. };
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
     var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
@@ -671,49 +1530,53 @@ fn serve_reactor_with_stage<Stage>(
     var drain_deadline_ns: u64  = 0;
 
     while max_connections == 0 || total_served < max_connections {
+        let epfd = g_default_reactor.accel.epfd;
         if reactor_step_drain_gate(
             server, epfd, listener_fd, g_default_reactor.table, g_default_reactor.cork, draining, drain_deadline_ns,
-        ) {
-            break;
-        }
+        ) { break; }
         if !draining && server.worker_ring.is_open {
             reactor_drain_worker_ring(
                 server.worker_ring, epfd, g_default_reactor.table,
                 g_default_reactor.free_slots, timer_wheel, total_served,
             );
         }
-
-        let epoll_timeout = reactor_epoll_timeout(server.worker_ring);
-        let n = epoll_wait_direct(epfd, empty_fds[..], ready_udata[..], epoll_timeout);
-
-        turn_counter++;
+        let wait_ms = reactor_epoll_timeout(server.worker_ring);
+        let n_ready = reactor_wait_readiness_events(g_default_reactor.accel, ready_udata[..], wait_ms);
+        turn_counter = core::add_sat_i64(turn_counter, 1);
         reactor_poll_sweep(
-            epfd, g_default_reactor.table, g_default_reactor.free_slots, timer_wheel, n, turn_counter,
-            last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
-            server.pipeline.enable_slowloris_timer,
+            epfd, g_default_reactor.table, g_default_reactor.free_slots, timer_wheel, n_ready, turn_counter,
+            last_sweep_sec, total_served, cached_now_ns, cached_now_sec, server.pipeline.enable_slowloris_timer,
         );
-
-        if n > 0 {
+        if n_ready > 0 {
             reactor_dispatch_events(
                 server, epfd, listener_fd, g_default_reactor.table, g_default_reactor.leftovers[..],
-                g_default_reactor.free_slots, timer_wheel, ready_udata[..n], cached_now_ns,
+                g_default_reactor.free_slots, timer_wheel, ready_udata[..n_ready], cached_now_ns,
                 g_default_reactor.chunk, g_default_reactor.cork, total_served, stage,
             );
         }
+        let _ = reactor_step_rio_completions(
+            server, draining, dummy_tls_cfg, false, g_default_reactor.table, g_default_reactor.leftovers[..],
+            g_default_reactor.free_slots, timer_wheel, wait_ms, cached_now_ns,
+            g_default_reactor.chunk, g_default_reactor.cork, total_served, stage,
+        );
+        let _ = reactor_step_uring_completions(
+            server, listener_fd, draining, dummy_tls_cfg, false, wait_ms, g_default_reactor.table,
+            g_default_reactor.leftovers[..], g_default_reactor.free_slots, timer_wheel, cached_now_ns,
+            g_default_reactor.chunk, g_default_reactor.cork, total_served, stage,
+        );
     }
-
-    reactor_cleanup_all(epfd, g_default_reactor.table, g_default_reactor.free_slots);
+    reactor_cleanup_all(g_default_reactor.accel.epfd, g_default_reactor.table, g_default_reactor.free_slots);
     return total_served;
 }
 
-// Executes a share-nothing reactor loop with epoll.
-// Multiplexes all accepted connections within 1 thread, maintaining ~3.1 MB RSS footprint.
+// Executes a share-nothing reactor loop with automatic OS accelerator selection.
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     var noop = wire::NoOpStage {};
     return serve_reactor_with_stage(server, listener_fd, noop, max_connections);
 }
 
 fn reactor_accept_tls_client(
+    server:       const HttpServer&,
     listener_fd:  i64,
     epfd:         i64,
     table:        SoAConnTable&,
@@ -725,24 +1588,9 @@ fn reactor_accept_tls_client(
     loop {
         let client_fd = tcp_accept_nonblocking(listener_fd);
         if client_fd <= 0 { break; }
-        let tls_slot, ok_hs = tls_server_handshake(client_fd, tls_config);
-        if !ok_hs {
-            tcp_close(client_fd);
-            total_served++;
-            continue;
-        }
-        var slot = pop_free_slot(free_slots);
-        if slot < 0 {
-            slot = reactor_evict_stale_slot(epfd, table, free_slots, timer_wheel, total_served);
-        }
-        if slot >= 0 {
-            reactor_register_client_slot(epfd, table, client_fd, slot, timer_wheel);
-            table.has_tls[slot] = true;
-            table.tls_slots[slot] = tls_slot;
-        } else {
-            tls_transport_close(client_fd, tls_slot);
-            total_served++;
-        }
+        reactor_accept_single_tls_fd(
+            server, client_fd, epfd, table, free_slots, timer_wheel, tls_config, total_served,
+        );
     }
 }
 
@@ -765,7 +1613,7 @@ fn reactor_dispatch_tls_events(
         let udata = ready_udata[i];
         if udata == EPOLL_LISTENER_TAG {
             reactor_accept_tls_client(
-                listener_fd, epfd, table, free_slots,
+                server, listener_fd, epfd, table, free_slots,
                 timer_wheel, tls_config, total_served,
             );
             continue;
@@ -781,7 +1629,7 @@ fn reactor_dispatch_tls_events(
     }
 }
 
-// Executes a non-blocking TLS 1.3 reactor loop with epoll (Section 4.3).
+// Executes a TLS 1.3 reactor loop with opportunistic kTLS and completion-ring cipher slots.
 fn serve_reactor_tls(
     server:          HttpServer&,
     listener_fd:     i64,
@@ -789,13 +1637,10 @@ fn serve_reactor_tls(
     max_connections: i64 = 0,
 ) -> i64 {
     guard listener_fd > 0 else { return 0; }
-    let epfd = epoll_create();
-    guard epfd >= 0 else { return 0; }
-    defer epoll_close(epfd);
+    guard reactor_prepare_loop(server, listener_fd) else { return 0; }
+    defer reactor_close_accel(g_default_reactor.accel);
 
-    reactor_prepare_loop(server, epfd, listener_fd);
-
-    var empty_fds:    i64[0]    = [];
+    var noop = wire::NoOpStage {};
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
     var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
@@ -807,27 +1652,39 @@ fn serve_reactor_tls(
     var drain_deadline_ns: u64  = 0;
 
     while max_connections == 0 || total_served < max_connections {
+        let epfd = g_default_reactor.accel.epfd;
         if reactor_step_drain_gate(
             server, epfd, listener_fd, g_default_reactor.table, g_default_reactor.cork, draining, drain_deadline_ns,
         ) {
             break;
         }
-        let n = epoll_wait_direct(epfd, empty_fds[..], ready_udata[..], 10);
-        turn_counter++;
+        let n_ready = reactor_wait_readiness_events(g_default_reactor.accel, ready_udata[..], 10);
+        turn_counter = core::add_sat_i64(turn_counter, 1);
         reactor_poll_sweep(
-            epfd, g_default_reactor.table, g_default_reactor.free_slots, timer_wheel, n, turn_counter,
+            epfd, g_default_reactor.table, g_default_reactor.free_slots, timer_wheel, n_ready, turn_counter,
             last_sweep_sec, total_served, cached_now_ns, cached_now_sec,
             server.pipeline.enable_slowloris_timer,
         );
-        if n > 0 {
+        if n_ready > 0 {
             reactor_dispatch_tls_events(
                 server, epfd, listener_fd, g_default_reactor.table, g_default_reactor.leftovers[..],
-                g_default_reactor.free_slots, timer_wheel, tls_config, ready_udata[..n as i64],
+                g_default_reactor.free_slots, timer_wheel, tls_config, ready_udata[..n_ready as i64],
                 cached_now_ns, g_default_reactor.chunk, g_default_reactor.cork, total_served,
             );
         }
+        let _ = reactor_step_rio_completions(
+            server, draining, tls_config, true, g_default_reactor.table, g_default_reactor.leftovers[..],
+            g_default_reactor.free_slots, timer_wheel, 10, cached_now_ns,
+            g_default_reactor.chunk, g_default_reactor.cork, total_served, noop,
+        );
+        let _ = reactor_step_uring_completions(
+            server, listener_fd, draining, tls_config, true, 10,
+            g_default_reactor.table, g_default_reactor.leftovers[..],
+            g_default_reactor.free_slots, timer_wheel, cached_now_ns,
+            g_default_reactor.chunk, g_default_reactor.cork, total_served, noop,
+        );
     }
-    reactor_cleanup_all(epfd, g_default_reactor.table, g_default_reactor.free_slots);
+    reactor_cleanup_all(g_default_reactor.accel.epfd, g_default_reactor.table, g_default_reactor.free_slots);
     return total_served;
 }
 

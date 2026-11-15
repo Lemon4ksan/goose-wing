@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
-// RUN: goose build -O2 -o %t.exe %s
-// RUN: %t.exe | %FileCheck %s
+// RUN: goose %s | %FileCheck %s
 
 import std;
 import core from "../..";
@@ -194,11 +193,73 @@ fn test_poller_live_socket_and_synthetic_fds() {
     print("TASK3_POLLER_LIVE: OK");
 }
 
+fn test_reactor_accelerated_and_fallback() {
+    var srv = wing::new_http_server("127.0.0.1", 0);
+    wing::add_static_get_route(srv, "/", "text/plain", "ACCEL_OK");
+
+    // 1. Accelerated listener (RIO on Windows, io_uring on Linux, kqueue on macOS)
+    let lfd1 = wing::reactor_listen_accelerated(srv, 32);
+    assert(lfd1 > 0);
+    let port1 = wing::tcp_getsockname_port(lfd1);
+    assert(port1 > 0);
+    let cfd1 = wing::tcp_connect("127.0.0.1", port1);
+    assert(cfd1 > 0);
+    assert(wing::tcp_send(cfd1, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+    let served1 = wing::serve_reactor(srv, lfd1, 1);
+    assert(served1 >= 1);
+    var resp: u8[512] = [0; 512];
+    let nr1 = wing::tcp_recv_slice(cfd1, resp[..]);
+    assert(nr1 > 0 && core::starts_with(resp[..nr1], "HTTP/1.1 200"));
+    assert(core::contains(resp[..nr1], "ACCEL_OK"));
+    wing::tcp_close(cfd1);
+    wing::tcp_close(lfd1);
+
+    // 2. Review Focus #1: Plain non-RIO tcp_listen socket passed to serve_reactor under Auto mode
+    let lfd2 = wing::tcp_listen("127.0.0.1", 0);
+    assert(lfd2 > 0);
+    let port2 = wing::tcp_getsockname_port(lfd2);
+    assert(port2 > 0);
+    let cfd2 = wing::tcp_connect("127.0.0.1", port2);
+    assert(cfd2 > 0);
+    assert(wing::tcp_send(cfd2, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+    let served2 = wing::serve_reactor(srv, lfd2, 1);
+    assert(served2 >= 1);
+    let nr2 = wing::tcp_recv_slice(cfd2, resp[..]);
+    assert(nr2 > 0 && core::starts_with(resp[..nr2], "HTTP/1.1 200"));
+    assert(core::contains(resp[..nr2], "ACCEL_OK"));
+    wing::tcp_close(cfd2);
+    wing::tcp_close(lfd2);
+
+    // 3. Explicit PollFallback mode
+    srv.accel_mode = wing::ReactorAccelMode.PollFallback;
+    let lfd3 = wing::reactor_listen_accelerated(srv, 16);
+    assert(lfd3 > 0);
+    let port3 = wing::tcp_getsockname_port(lfd3);
+    let cfd3 = wing::tcp_connect("127.0.0.1", port3);
+    assert(cfd3 > 0);
+    assert(wing::tcp_send(cfd3, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+    assert(wing::serve_reactor(srv, lfd3, 1) >= 1);
+    let nr3 = wing::tcp_recv_slice(cfd3, resp[..]);
+    assert(nr3 > 0 && core::contains(resp[..nr3], "ACCEL_OK"));
+    wing::tcp_close(cfd3);
+    wing::tcp_close(lfd3);
+
+    // 4. TLS reactor entrypoint guard + slice SQE helper smoke check
+    let tls_cfg = wing::TlsServerHandshakeConfig { .. };
+    assert(wing::serve_reactor_tls(srv, -1, tls_cfg, 1) == 0);
+    var send_sqe = internal::UringSqe { .. };
+    internal::uring_prep_send_slice(send_sqe, 9, resp[..8], 555);
+    assert(send_sqe.opcode == internal::URING_OP_SEND && send_sqe.len == 8 && send_sqe.addr != 0);
+    print("TASK4_REACTOR_ACCEL: OK");
+}
+
 // CHECK: TASK1_DRIVER_ABIS: OK
 // CHECK: TASK2_TLS_SLICE_AND_KTLS: OK
 // CHECK: TASK3_POLLER_LIVE: OK
+// CHECK: TASK4_REACTOR_ACCEL: OK
 fn main() {
     test_driver_slice_abis();
     test_tls_slice_codecs_and_ktls_probe();
     test_poller_live_socket_and_synthetic_fds();
+    test_reactor_accelerated_and_fallback();
 }
