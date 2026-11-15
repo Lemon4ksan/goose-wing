@@ -400,12 +400,102 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     print("TASK6_H3_BATCH_AND_L2: OK");
 }
 
+fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
+    wing::add_static_get_route(srv, "/", "text/plain", "ACCEL_OK");
+
+    // 1. Live multi-datagram UDP loopback batch through serve_h3 (recvmmsg + sendmmsg)
+    let udp_srv = wing::udp_bind("127.0.0.1", 0);
+    let udp_cli = wing::udp_bind("127.0.0.1", 0);
+    assert(udp_srv > 0 && udp_cli > 0);
+    let udp_port = wing::tcp_getsockname_port(udp_srv);
+    assert(udp_port > 0);
+
+    let h3_settings = wing::H3Settings { .. };
+    var h3_cli = internal::new_h3_client_connection(h3_settings);
+    let sid, ok_sid = internal::open_request_stream(h3_cli);
+    assert(ok_sid && sid == 0);
+    var extra = wing::HeaderMap { .. };
+    var req_wire: u8[..1024] = [];
+    assert(internal::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
+
+    for _ in 4 {
+        assert(wing::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
+    }
+    assert(wing::serve_h3(srv, udp_srv, 4) == 4);
+
+    var rx_batch = wing::UdpBatchQueue { .. };
+    var total_rx: i32 = 0;
+    for _ in 8 {
+        let got, ok_b = wing::batch_recv_messages(udp_cli as i32, rx_batch);
+        assert(ok_b);
+        if got > 0 {
+            for i in rx_batch.msgs.len {
+                var dec_cli = internal::new_h3_client_connection(h3_settings);
+                let d_sid, _ = internal::open_request_stream(dec_cli);
+                let rx_err = internal::handle_stream_data(dec_cli, d_sid, true, rx_batch.msgs[i].payload[..], true);
+                assert(rx_err == rfc::H3_ERR_NO_ERROR);
+                let sc, ok_sc = internal::get_status_code(dec_cli, d_sid);
+                assert(ok_sc && sc == 200);
+            }
+            total_rx += got;
+        }
+        if total_rx >= 4 { break; }
+    }
+    assert(total_rx == 4);
+
+    // 2. Verify UdpFallback path of serve_h3_l2 over live UDP socket
+    var dummy_xsk = internal::new_af_xdp_socket();
+    var h3_ep = wing::new_h3_server_endpoint();
+    let cfg_fb = wing::H3L2Config {
+        backend: wing::H3L2Backend.UdpFallback,
+        udp_fd:  udp_srv,
+        ..
+    };
+    assert(wing::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
+    assert(wing::serve_h3_l2(srv, h3_ep, cfg_fb, dummy_xsk, 1) == 1);
+    let got_fb, ok_fb = wing::batch_recv_messages(udp_cli as i32, rx_batch);
+    assert(ok_fb && got_fb == 1);
+
+    wing::tcp_close(udp_cli);
+    wing::tcp_close(udp_srv);
+
+    // 3. Live Linux io_uring pbuf_ring + completion reactor roundtrip when running on Linux
+    if internal::detect_target_platform() == internal::TargetPlatform.Linux {
+        let rfd = internal::native_uring_create(64, 0);
+        if rfd >= 0 {
+            let pbuf_h, ok_pbuf = internal::uring_alloc_pbuf_ring(rfd, 1, 16, 4096);
+            if ok_pbuf {
+                internal::uring_recycle_pbuf(pbuf_h, 0);
+                internal::uring_free_pbuf_ring(pbuf_h);
+            }
+            internal::native_uring_close(rfd);
+        }
+        srv.accel_mode = wing::ReactorAccelMode.IoUring;
+        let lfd = wing::reactor_listen_accelerated(srv, 16);
+        assert(lfd > 0);
+        let lport = wing::tcp_getsockname_port(lfd);
+        let cfd = wing::tcp_connect("127.0.0.1", lport);
+        assert(cfd > 0);
+        assert(wing::tcp_send(cfd, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+        assert(wing::serve_reactor(srv, lfd, 1) >= 1);
+        var resp: u8[..256] = [];
+        resp.resize(256, 0);
+        let nr = wing::tcp_recv_slice(cfd, resp[..]);
+        assert(nr > 0 && core::contains(resp[..nr], "ACCEL_OK"));
+        wing::tcp_close(cfd);
+        wing::tcp_close(lfd);
+    }
+
+    print("TASK7_CROSS_PLATFORM_E2E: OK");
+}
+
 // CHECK: TASK1_DRIVER_ABIS: OK
 // CHECK: TASK2_TLS_SLICE_AND_KTLS: OK
 // CHECK: TASK3_POLLER_LIVE: OK
 // CHECK: TASK4_REACTOR_ACCEL: OK
 // CHECK: TASK5_L2_CODEC: OK
 // CHECK: TASK6_H3_BATCH_AND_L2: OK
+// CHECK: TASK7_CROSS_PLATFORM_E2E: OK
 fn main() {
     var srv = wing::new_http_server("127.0.0.1", 0);
     test_driver_slice_abis();
@@ -414,4 +504,5 @@ fn main() {
     test_reactor_accelerated_and_fallback(srv);
     test_l2_udp_codec_and_malformed_inputs();
     test_h3_batched_udp_and_l2_kernel_bypass(srv);
+    test_cross_platform_live_batch_and_accelerators(srv);
 }

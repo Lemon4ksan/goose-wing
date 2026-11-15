@@ -243,6 +243,10 @@ int32_t wing_smartnic_recv_record(int64_t fd, wing_bytes_mut dst, wing_bytes_mut
         return 0;
     }
     uint8_t rt = 23;
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#endif
     for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
         if (cmsg->cmsg_level == SOL_TLS && cmsg->cmsg_type == TLS_GET_RECORD_TYPE &&
             cmsg->cmsg_len >= CMSG_LEN(sizeof(uint8_t))) {
@@ -250,6 +254,9 @@ int32_t wing_smartnic_recv_record(int64_t fd, wing_bytes_mut dst, wing_bytes_mut
             break;
         }
     }
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     if (out_rt.data != NULL && out_rt.len > 0) {
         out_rt.data[0] = rt;
     }
