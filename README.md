@@ -14,9 +14,8 @@ The reactor tracks 1,024 concurrent connections in a Structure-of-Arrays table,
 `SoAConnTable`, which separates 1-byte timeout ticks and 8-byte file descriptors
 from the 8 KB per-connection leftover buffers. During the 1-second Slowloris
 sweep, the reactor scans all 1,024 connection deadlines across 1 KB of L1D cache
-without touching payload memory. Outbound frames assemble in place inside 16 KB
-`WireCommandBuffer` regions carved from a 64 KB `WireCommandPool` arena and
-flush in batches over `io_uring`, `epoll`, `kqueue`, or Windows RIO.
+without touching payload memory. Outbound frames assemble inside bounded buffers
+and flush in batches over `io_uring`, `epoll`, `kqueue`, or Windows RIO.
 
 Protocol decoders read borrowed `const u8[:]` slices and write 9-byte
 `HeaderSpan` offsets and 16-byte `HeaderEntry` records that index directly into
@@ -32,7 +31,7 @@ protocol framing and L7 middleware into two composable tiers:
 
 - Tier 1 provides stateless slice-to-slice Sans-IO codecs for HTTP/1.1, HPACK,
   HTTP/2, and QPACK/HTTP/3, together with in-place 9-byte HTTP/2 frame header
-  backpatching in `WireCommandBuffer`.
+  backpatching.
 - Tier 2 drives client and server L7 execution through `WirePipeline`, selecting
   active stages via 64-bit `ingress_mask` and `egress_mask` bitsets and
   compile-time `StageChain` hooks returning `StageVerdict`.

@@ -137,8 +137,8 @@ role-scoped `ingress_mask` and `egress_mask`.
 
 ```goose
 enum PipelineOutcome {
-    Handled, RateLimited, CsrfRejected, CorsPreflight, MethodNotAllowed,
-    RouteNotFound, SlowlorisClosed, ExpectationFailed
+    Handled, Pending, RateLimited, CsrfRejected, CorsPreflight,
+    MethodNotAllowed, RouteNotFound, SlowlorisClosed, ExpectationFailed
 }
 struct ServerCompressAndEtagMemo {
     etag_src: u8[..512], etag_val: u8[..32],
@@ -165,6 +165,9 @@ fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelin
 fn validate_pipeline_expect_header(req: const Request&) -> bool
 fn execute_pipeline(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&) -> PipelineOutcome
 fn execute_server_pipeline_with_stage<UserStage>(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&, user_stage: UserStage&) -> PipelineOutcome
+fn execute_server_pipeline_async<UserStage>(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&, sctx: ServerStageCtx&, user_stage: UserStage&) -> PipelineOutcome
+fn suspend_server_request(sctx: ServerStageCtx&) -> bool
+fn resume_server_pipeline_egress<UserStage>(cfg: ServerPipelineConfig&, req: const Request&, now_ns: u64, sctx: ServerStageCtx&, res: Response&, user_stage: UserStage&) -> PipelineOutcome
 fn on_server_stage<First, Next>(chain: wire::StageChain<First, Next>&, phase: wire::ServerHookPhase, cfg: ServerPipelineConfig&, req: const Request&, ctx: ServerStageCtx&, res: Response&) -> wire::StageVerdict
 fn on_server_custom_slot<First, Next>(chain: wire::StageChain<First, Next>&, slot_id: u8, param_slot: u8, cfg: ServerPipelineConfig&, req: const Request&, sctx: ServerStageCtx&, res: Response&) -> wire::StageVerdict
 fn stage_server_slowloris(timer: server_internal::ConnectionTimer&, enabled: bool, now_ns: u64, res: Response&) -> wire::StageVerdict
@@ -191,10 +194,29 @@ public routes bypass unused CSRF, JWT, or rate-limit stages.
 `ServerPipelineConfig` owns per-instance `memo: ServerCompressAndEtagMemo`
 scratch state for ETag and compression memoization. User stages hook into
 lifecycle phases via `on_server_stage` (`wire::ServerHookPhase`: `PreRoute`,
-`PostAuth`, `BodyChunk`, `RouteHandler`, `PreSerialize`, `AfterResponse`,
-`OnError`) and into programmable custom stage bindings (`STAGE_ID_USER_0..3`,
-stage IDs `16..19` in `cfg.wire_pipeline.custom_bindings`) via
-`on_server_custom_slot`.
+`PostAuth`, `BodyChunk`, `RouteHandler`, `ResumeHandler`, `PreSerialize`,
+`AfterResponse`, `OnError`) and into programmable custom stage bindings
+(`STAGE_ID_USER_0..3`, stage IDs `16..19` in
+`cfg.wire_pipeline.custom_bindings`) via `on_server_custom_slot`.
+
+### 4b. Inversion-of-Control Async Server Reactor (`server/async_reactor.goose`)
+
+```goose
+root struct AsyncServerReactor { ... }
+struct StageDriverBridge<Stage, Driver> { stage: Stage, driver: Driver }
+fn async_reactor_listen_http(host: NetHost&, reactor: AsyncServerReactor&, addr: core::ConnectAddr, backlog: i32 = 128) -> bool
+fn async_reactor_register_client_link(reactor: AsyncServerReactor&, link: core::IoLink) -> i64
+fn async_reactor_step<App>(host: NetHost&, server: HttpServer&, reactor: AsyncServerReactor&, app: App&, timeout_ms: i64, now_ns: u64) -> i32
+fn serve_reactor_with_app<App>(host: NetHost&, server: HttpServer&, reactor: AsyncServerReactor&, addr: core::ConnectAddr, app: App&, backlog: i32 = 128, max_iters: i64 = 0, poll_timeout_ms: i64 = 10) -> bool
+fn serve_reactor_with_io<Stage, Driver>(host: NetHost&, server: HttpServer&, reactor: AsyncServerReactor&, addr: core::ConnectAddr, stage: Stage, driver: Driver, backlog: i32 = 128, max_iters: i64 = 0, poll_timeout_ms: i64 = 10) -> bool
+```
+
+`AsyncServerReactor` runs HTTP/1.1 and multiplexed HTTP/2 connections over
+`wing::NetHost` while sharing the same event loop with external protocol drivers
+(`pg` pools, caches, custom sockets). Handlers suspend via
+`suspend_server_request(sctx)` with generation-checked `core::WakeToken` keys
+and resume through `ResumeHandler` when `core::host_wake` fires, discarding
+stale wakes safely if the client socket disconnected mid-query.
 
 ### 5. L7 WAF Edge Filter (`server/edge_filter.goose`)
 

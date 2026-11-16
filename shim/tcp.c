@@ -16,6 +16,9 @@
 #include <stdio.h>
 
 #ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0602
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mstcpip.h>
@@ -204,6 +207,22 @@ int64_t wing_tcp_listen(wing_bytes_ro host, uint16_t port, int32_t backlog) {
 int64_t wing_tcp_listen_unix(wing_bytes_ro path, int32_t backlog) { return wing_tcp_listen(path, 0, backlog); }
 
 int64_t wing_tcp_connect_unix(wing_bytes_ro path) { return wing_tcp_connect(path, 0, 500); }
+
+int64_t wing_tcp_connect_begin(wing_bytes_ro host, uint16_t port, int32_t *out_state) {
+    int64_t fd = wing_tcp_connect(host, port, 0);
+    if (out_state) *out_state = (fd > 0) ? 0 : -1;
+    return fd;
+}
+
+int64_t wing_tcp_connect_unix_begin(wing_bytes_ro path, int32_t *out_state) {
+    int64_t fd = wing_tcp_connect_unix(path);
+    if (out_state) *out_state = (fd > 0) ? 0 : -1;
+    return fd;
+}
+
+int32_t wing_tcp_connect_finish(int64_t sock_fd) {
+    return (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) ? 0 : -1;
+}
 
 int64_t wing_adopt_socket(int64_t raw_fd) { return raw_fd > 0 ? raw_fd : -1; }
 
@@ -497,6 +516,15 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
     (void)timeout_ms;
     return 0;
 }
+int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
+                               wing_slice_u32 out_events, int32_t timeout_ms) {
+    (void)epfd;
+    (void)out_fds;
+    (void)out_udata;
+    (void)out_events;
+    (void)timeout_ms;
+    return 0;
+}
 void wing_epoll_close(int64_t epfd) { (void)epfd; }
 
 int64_t wing_udp_bind(wing_bytes_ro host, uint16_t port) { return wing_tcp_listen(host, port, 16); }
@@ -726,6 +754,62 @@ int64_t wing_tcp_connect_unix(wing_bytes_ro path) {
         return -1;
     }
 
+    return (int64_t)s;
+}
+
+// Begins a non-blocking AF_UNIX client connection.
+// Sets *out_state to: 0 = connected immediately, 1 = in progress (wait POLL_WRITE), -1 = failed.
+int64_t wing_tcp_connect_unix_begin(wing_bytes_ro path, int32_t *out_state) {
+    if (out_state) *out_state = -1;
+    wing_tcp_init();
+
+    struct sockaddr_un addr;
+    if (path.data == NULL || path.len <= 0 || (size_t)path.len >= sizeof(addr.sun_path)) {
+        return -1;
+    }
+    char path_str[108];
+    slice_to_cstr(path, path_str, sizeof(path_str));
+    if (path_str[0] == '\0') {
+        return -1;
+    }
+
+    SOCKET s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET) {
+        return -1;
+    }
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    u_long nonblocking = 1;
+    ioctlsocket(s, FIONBIO, &nonblocking);
+#else
+    int flags = fcntl(s, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(s, F_SETFL, flags | O_NONBLOCK);
+    }
+#endif
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path_str, sizeof(addr.sun_path) - 1);
+
+    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+#ifdef _WIN32
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
+            if (out_state) *out_state = 1;
+            return (int64_t)s;
+        }
+#else
+        if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (out_state) *out_state = 1;
+            return (int64_t)s;
+        }
+#endif
+        closesocket(s);
+        return -1;
+    }
+
+    if (out_state) *out_state = 0;
     return (int64_t)s;
 }
 
@@ -970,6 +1054,127 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
 #endif
 
     return (int64_t)s;
+}
+
+// Begins a non-blocking TCP client connection (IPv4, IPv6, or hostname).
+// Sets *out_state to: 0 = connected immediately, 1 = in progress (wait POLL_WRITE), -1 = failed.
+int64_t wing_tcp_connect_begin(wing_bytes_ro host, uint16_t port, int32_t *out_state) {
+    if (out_state) *out_state = -1;
+    if (host.data == NULL || host.len <= 0 || host.len >= 256 || port == 0) {
+        return -1;
+    }
+    wing_tcp_init();
+
+    char host_str[256];
+    slice_to_cstr(host, host_str, sizeof(host_str));
+
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof(ss));
+    int family = AF_INET;
+#ifdef _WIN32
+    int addr_len = 0;
+#else
+    socklen_t addr_len = 0;
+#endif
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    if (strcmp(host_str, "localhost") == 0) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr_len = (int)sizeof(struct sockaddr_in);
+    } else if (inet_pton(AF_INET, host_str, &addr4) == 1) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr = addr4;
+        addr_len = (int)sizeof(struct sockaddr_in);
+    } else if (inet_pton(AF_INET6, host_str, &addr6) == 1) {
+        family = AF_INET6;
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(port);
+        s6->sin6_addr = addr6;
+        addr_len = (int)sizeof(struct sockaddr_in6);
+    } else {
+        struct addrinfo hints;
+        struct addrinfo *res_info = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
+            return -1;
+        }
+        if (res_info->ai_family == AF_INET && res_info->ai_addrlen <= sizeof(ss)) {
+            memcpy(&ss, res_info->ai_addr, res_info->ai_addrlen);
+            ((struct sockaddr_in *)&ss)->sin_port = htons(port);
+            family = AF_INET;
+            addr_len = (int)sizeof(struct sockaddr_in);
+        } else if (res_info->ai_family == AF_INET6 && res_info->ai_addrlen <= sizeof(ss)) {
+            memcpy(&ss, res_info->ai_addr, res_info->ai_addrlen);
+            ((struct sockaddr_in6 *)&ss)->sin6_port = htons(port);
+            family = AF_INET6;
+            addr_len = (int)sizeof(struct sockaddr_in6);
+        } else {
+            freeaddrinfo(res_info);
+            return -1;
+        }
+        freeaddrinfo(res_info);
+    }
+
+    SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) {
+        return -1;
+    }
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    u_long nonblocking = 1;
+    ioctlsocket(s, FIONBIO, &nonblocking);
+#else
+    int flags = fcntl(s, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(s, F_SETFL, flags | O_NONBLOCK);
+    }
+#endif
+    int nodelay = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+
+    if (connect(s, (struct sockaddr *)&ss, addr_len) == SOCKET_ERROR) {
+#ifdef _WIN32
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
+            if (out_state) *out_state = 1;
+            return (int64_t)s;
+        }
+#else
+        if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (out_state) *out_state = 1;
+            return (int64_t)s;
+        }
+#endif
+        closesocket(s);
+        return -1;
+    }
+
+    if (out_state) *out_state = 0;
+    return (int64_t)s;
+}
+
+// Verifies completion of a non-blocking TCP/Unix connect via SO_ERROR.
+// Returns 0 on successful connection, or -1 if the handshake failed.
+int32_t wing_tcp_connect_finish(int64_t sock_fd) {
+    if (sock_fd <= 0) return -1;
+    int sock_err = 0;
+#ifdef _WIN32
+    int err_len = (int)sizeof(sock_err);
+#else
+    socklen_t err_len = (socklen_t)sizeof(sock_err);
+#endif
+    if (getsockopt((SOCKET)sock_fd, SOL_SOCKET, SO_ERROR, (char *)&sock_err, &err_len) != 0) {
+        return -1;
+    }
+    return sock_err == 0 ? 0 : -1;
 }
 
 // Sends bytes to socket, ensuring complete write across non-blocking transient buffers.
@@ -1544,6 +1749,37 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
     return n;
 }
 
+int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
+                               wing_slice_u32 out_events, int32_t timeout_ms) {
+    if (epfd < 0 || out_udata.data == NULL || out_udata.len <= 0 || out_events.data == NULL || out_events.len <= 0) {
+        return 0;
+    }
+    int max_ev = (int)(out_udata.len < out_events.len ? out_udata.len : out_events.len);
+    if (max_ev > 1024) max_ev = 1024;
+    struct epoll_event evs[1024];
+    int n = epoll_wait((int)epfd, evs, max_ev, timeout_ms);
+    if (n <= 0) return 0;
+    for (int i = 0; i < n; i++) {
+        if (out_fds.data != NULL && i < out_fds.len) {
+            out_fds.data[i] = (int64_t)(evs[i].data.u64 == 0xFFFFFFFFFFFFFFFFULL ? -1 : (int64_t)evs[i].data.u64);
+        }
+        out_udata.data[i] = evs[i].data.u64;
+        uint32_t mask = 0;
+        if (evs[i].events & EPOLLIN) mask |= 1U;
+        if (evs[i].events & EPOLLOUT) mask |= 2U;
+        if (evs[i].events & EPOLLERR) mask |= 4U;
+        if (evs[i].events & (EPOLLHUP
+#ifdef EPOLLRDHUP
+                             | EPOLLRDHUP
+#endif
+                             )) {
+            mask |= 8U;
+        }
+        out_events.data[i] = mask;
+    }
+    return n;
+}
+
 void wing_epoll_close(int64_t epfd) {
     if (epfd >= 0) close((int)epfd);
 }
@@ -1636,6 +1872,53 @@ int32_t wing_epoll_wait(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out
     }
     return ready;
 #else
+    return 0;
+#endif
+}
+
+int32_t wing_epoll_wait_events(int64_t epfd, wing_slice_i64 out_fds, wing_slice_u64 out_udata,
+                               wing_slice_u32 out_events, int32_t timeout_ms) {
+    wing_poll_ctx_t *ctx = (wing_poll_ctx_t *)(uintptr_t)epfd;
+    if (!ctx || ctx->count <= 0 || out_udata.data == NULL || out_udata.len <= 0 || out_events.data == NULL ||
+        out_events.len <= 0) {
+        return 0;
+    }
+    int limit = (int)(out_udata.len < out_events.len ? out_udata.len : out_events.len);
+    if (out_fds.data != NULL && out_fds.len > 0 && (int)out_fds.len < limit) {
+        limit = (int)out_fds.len;
+    }
+    if (limit <= 0) return 0;
+
+#ifdef _WIN32
+    WSAPOLLFD pfd[WING_MAX_POLL_FDS];
+    int count = ctx->count;
+    for (int i = 0; i < count; i++) {
+        pfd[i].fd = ctx->fds[i];
+        pfd[i].events = (SHORT)((ctx->events[i] & 1 ? POLLRDNORM : 0) | (ctx->events[i] & 4 ? POLLWRNORM : 0));
+        pfd[i].revents = 0;
+    }
+    int res = WSAPoll(pfd, (ULONG)count, timeout_ms);
+    if (res <= 0) return 0;
+
+    int ready = 0;
+    for (int i = 0; i < count && ready < limit; i++) {
+        if (pfd[i].revents != 0) {
+            if (out_fds.data != NULL && ready < (int)out_fds.len) {
+                out_fds.data[ready] = (int64_t)pfd[i].fd;
+            }
+            out_udata.data[ready] = ctx->udata[i];
+            uint32_t mask = 0;
+            if (pfd[i].revents & (POLLRDNORM | POLLRDBAND)) mask |= 1U;
+            if (pfd[i].revents & POLLWRNORM) mask |= 2U;
+            if (pfd[i].revents & (POLLERR | POLLNVAL)) mask |= 4U;
+            if (pfd[i].revents & POLLHUP) mask |= 8U;
+            out_events.data[ready] = mask;
+            ready++;
+        }
+    }
+    return ready;
+#else
+    (void)timeout_ms;
     return 0;
 #endif
 }

@@ -229,7 +229,14 @@ fn pinned_buffer_close(p: PinnedBuffer&)
 fn pinned_buffer_write(p: PinnedBuffer&, offset: i64, src: const u8[:]) -> bool
 fn pinned_buffer_read(p: const PinnedBuffer&, offset: i64, len: i64) -> const u8[:], bool
 
-// core/io/reactor.goose (Zero-shim async stream, dialer, and reactor contract)
+// core/io/reactor.goose & types.goose (Stream, Host Push/Completion, IoC Contract)
+enum ConnectAddr { Tcp { host: const u8[:], port: u16 }, Unix { path: const u8[:] } }
+enum ConnectStatus { Connected, InProgress, InvalidArgument, Failed }
+enum LinkEventKind { Accepted, Connected, Data, Writable, Eof, Closed, Timer, Wake, Pump }
+struct IoLink { raw: u64 = 0 }
+struct WakeToken { owner: u16, gen: u16, slot: u32, stream_id: u32, req_seq: u32 }
+struct LinkEvent { kind: LinkEventKind, link: IoLink, listener: IoLink, tag: u64, data: const u8[:], err: IoError, timer_id: u64, token: WakeToken }
+struct IoDriverChain<First, Next> { first: First, next: Next }
 fn stream_send<Io>(io: Io&, data: const u8[:]) -> i32
 fn stream_recv<Io>(io: Io&, dst: u8[:], timeout_ms: u32 = 5000) -> i32
 fn stream_close<Io>(io: Io&)
@@ -243,17 +250,29 @@ fn reactor_add_timer<R>(r: R&, timer_id: u64, delay_ms: u64, tag: u64, periodic:
 fn reactor_cancel_timer<R>(r: R&, timer_id: u64) -> bool
 fn reactor_wake<R>(r: R&, tag: u64) -> bool
 fn reactor_poll<R>(r: R&, timeout_ms: i64, now_ns: u64, out_events: PollReadyEvent[..64]&) -> i32
+fn host_listen<H>(host: H&, addr: ConnectAddr, owner: u16, tag: u64 = 0, backlog: i32 = 128) -> IoLink, IoError
+fn host_connect<H>(host: H&, addr: ConnectAddr, owner: u16, tag: u64 = 0) -> IoLink, ConnectStatus
+fn host_send<H>(host: H&, link: IoLink, data: const u8[:]) -> i32, IoError
+fn host_set_rx_paused<H>(host: H&, link: IoLink, paused: bool) -> bool
+fn host_shutdown_write<H>(host: H&, link: IoLink) -> bool
+fn host_close<H>(host: H&, link: IoLink) -> bool
+fn host_add_timer<H>(host: H&, timer_id: u64, delay_ms: u64, owner: u16, tag: u64, periodic: bool = false, now_ns: u64 = 0) -> bool
+fn host_cancel_timer<H>(host: H&, timer_id: u64) -> bool
+fn host_wake<H>(host: H&, token: WakeToken) -> bool
+fn host_step<H, D>(host: H&, driver: D&, timeout_ms: i64, now_ns: u64) -> i32
+fn chain_io_drivers<First, Next>(first: First, next: Next) -> IoDriverChain<First, Next>
 ```
 
 Implements circular queues (`core/io/ring.goose`, `core/io/types.goose`),
-zero-shim cross-framework UFCS stream and reactor contracts
-(`core/io/reactor.goose`), producer/consumer pipes (`core/io/pipe.goose`),
-write-combining frame coalescers (`core/io/cork.goose`), network-order wire
-cursors and length-prefixed builders (`core/io/cursor.goose`), scatter-gather
-vectors (`core/io/vec.goose`), OS virtual-memory mirrored ring buffers
-(`core/io/page_ring.goose`), and guard-paged arenas, memory-mapped files, and
-`mlock`-pinned secret buffers (`core/io/page_mem.goose`). `ByteCursor` getters
-leave the cursor unchanged when returning `false` on truncated input.
+zero-shim cross-framework UFCS stream, readiness, and host-owned push link
+contracts (`core/io/reactor.goose`), producer/consumer pipes
+(`core/io/pipe.goose`), write-combining frame coalescers (`core/io/cork.goose`),
+network-order wire cursors and length-prefixed builders
+(`core/io/cursor.goose`), scatter-gather vectors (`core/io/vec.goose`), OS
+virtual-memory mirrored ring buffers (`core/io/page_ring.goose`), and
+guard-paged arenas, memory-mapped files, and `mlock`-pinned secret buffers
+(`core/io/page_mem.goose`). `ByteCursor` getters leave the cursor unchanged when
+returning `false` on truncated input.
 
 ### `core/crypto/`: Constant-Time Cryptography
 

@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Vulkan-style Pipeline State Objects (PSO) and Tier 2 Composable L7 Stage Pipeline.
+// Tier 2 Composable L7 Stage Pipeline and stage bitmasks.
 namespace wire;
 
 import std;
 import core from "..";
-import .result;
-import .types;
-import .cmd;
-
-// Pipeline bind point distinguishing transmission from reception pipelines.
-enum WirePipelineBindPoint {
-    Transmit,
-    Receive,
-}
 
 // Pipeline role separating client and server stage bitmasks and stage slots.
 enum PipelineRole {
@@ -67,6 +58,7 @@ enum ServerHookPhase {
     PostAuth,
     BodyChunk,
     RouteHandler,
+    ResumeHandler,
     PreSerialize,
     OnError,
     AfterResponse,
@@ -231,40 +223,22 @@ inline fn is_valid_stage_id(stage_id: u8) -> bool {
     return stage_id < 64;
 }
 
-// Pipeline layout defining static protocol limits and push constants (VkPipelineLayout).
-struct WirePipelineLayout {
-    max_frame_size: u32      = 16384,
-    push_constants: u8[..64] = [],
-}
-
-// Pipeline creation parameters (VkGraphicsPipelineCreateInfo / VkComputePipelineCreateInfo).
-struct WirePipelineCreateInfo {
-    bind_point:   WirePipelineBindPoint = WirePipelineBindPoint.Transmit,
-    role:         PipelineRole          = PipelineRole.Client,
-    layout:       WirePipelineLayout    = WirePipelineLayout { .. },
-    ingress_mask: u64                   = STAGE_CLI_IN_DEFAULT_MASK,
-    egress_mask:  u64                   = STAGE_CLI_OUT_DEFAULT_MASK,
-    flags:        u32                   = 0,
-}
-
-// Vulkan-style descriptor slot binding associating a pipeline stage ID with a parameter slot (0..3).
+// Descriptor slot binding associating a pipeline stage ID with a parameter slot (0..3).
 struct StageBinding {
     stage_id:   u8 = 0,
     param_slot: u8 = 0,
 }
 
-// Declarative Pipeline State Object (VkPipeline) and Programmable Stage Conveyor.
+// Declarative L7 stage pipeline state and programmable stage conveyor.
 struct WirePipeline {
-    bind_point:       WirePipelineBindPoint = WirePipelineBindPoint.Transmit,
-    role:             PipelineRole          = PipelineRole.Client,
-    layout:           WirePipelineLayout    = WirePipelineLayout { .. },
-    ingress_stages:   u8[..64]              = [],
-    egress_stages:    u8[..64]              = [],
-    custom_bindings:  StageBinding[..64]    = [],
-    ingress_mask:     u64                   = STAGE_CLI_IN_DEFAULT_MASK,
-    egress_mask:      u64                   = STAGE_CLI_OUT_DEFAULT_MASK,
-    has_custom_order: bool                  = false,
-    is_valid:         bool                  = true,
+    role:             PipelineRole       = PipelineRole.Client,
+    ingress_stages:   u8[..64]           = [],
+    egress_stages:    u8[..64]           = [],
+    custom_bindings:  StageBinding[..64] = [],
+    ingress_mask:     u64                = STAGE_CLI_IN_DEFAULT_MASK,
+    egress_mask:      u64                = STAGE_CLI_OUT_DEFAULT_MASK,
+    has_custom_order: bool               = false,
+    is_valid:         bool               = true,
 }
 
 const MAX_PIPELINE_STAGES: i64 = 64;
@@ -314,30 +288,6 @@ const DEFAULT_SRV_OUT_STAGES: const u8[9] = [
     STAGE_ID_SRV_OUT_METRICS,
     STAGE_ID_SRV_OUT_ACCESS_LOG,
 ];
-
-// Returns true when every set bit in `sub` is also set in `sup`.
-inline fn stage_mask_subset_of(sub: u64, sup: u64) -> bool {
-    return (sub & (~sup)) == 0;
-}
-
-// Returns the number of active stage bits set within `VALID_STAGE_MASK`.
-inline fn count_enabled_stages(mask: u64) -> i64 {
-    return popcount(mask & VALID_STAGE_MASK);
-}
-
-// Invokes `F(stage_id)` for each enabled stage bit in `mask` in ascending slot order in O(popcount) steps.
-inline fn each_enabled_stage<F>(var mask: u64) {
-    while mask != 0 {
-        let stage_id = (ctz(mask) as u8);
-        F(stage_id);
-        mask = mask & core::sub_sat_u64(mask, 1);
-    }
-}
-
-// Validates that `mask` contains only defined stage slot bits within `VALID_STAGE_MASK` (`FlagBoundary.STRICT`).
-inline fn is_valid_stage_mask(mask: u64) -> bool {
-    return stage_mask_subset_of(mask, VALID_STAGE_MASK) && count_enabled_stages(mask) <= MAX_PIPELINE_STAGES;
-}
 
 // Appends a stage slot ID to `pipe.ingress_stages` and enables its corresponding bit in `pipe.ingress_mask`.
 fn add_ingress_stage(pipe: WirePipeline&, stage_id: u8) -> bool {
@@ -458,7 +408,6 @@ inline fn disable_egress_stage(pipe: WirePipeline&, stage_id: u8) {
 // Constructs the default Client `WirePipeline` with standard pre-hop and post-hop stages.
 fn default_client_pipeline() -> WirePipeline {
     var p = WirePipeline {
-        bind_point:   WirePipelineBindPoint.Transmit,
         role:         PipelineRole.Client,
         ingress_mask: STAGE_CLI_IN_DEFAULT_MASK,
         egress_mask:  STAGE_CLI_OUT_DEFAULT_MASK,
@@ -473,7 +422,6 @@ fn default_client_pipeline() -> WirePipeline {
 // Constructs the default Server `WirePipeline` with standard ingress and egress stages.
 fn default_server_pipeline() -> WirePipeline {
     var p = WirePipeline {
-        bind_point:   WirePipelineBindPoint.Receive,
         role:         PipelineRole.Server,
         ingress_mask: STAGE_SRV_IN_DEFAULT_MASK,
         egress_mask:  STAGE_SRV_OUT_DEFAULT_MASK,
@@ -483,53 +431,4 @@ fn default_server_pipeline() -> WirePipeline {
     let _ = p.ingress_stages.try_set(DEFAULT_SRV_IN_STAGES[..]);
     let _ = p.egress_stages.try_set(DEFAULT_SRV_OUT_STAGES[..]);
     return p;
-}
-
-// Creates an immutable Pipeline State Object (VkCreateGraphicsPipelines).
-fn create_wire_pipeline(
-    dev:  const WireDevice&,
-    info: const WirePipelineCreateInfo&,
-) -> WirePipeline, WireResult {
-    guard dev.is_active && is_valid_stage_mask(info.ingress_mask) && is_valid_stage_mask(info.egress_mask) else {
-        return WirePipeline { is_valid: false, .. }, WireResult.ErrorInitializationFailed;
-    }
-    var pipe = if info.role == PipelineRole.Server {
-        default_server_pipeline()
-    } else {
-        default_client_pipeline()
-    };
-    pipe.bind_point = info.bind_point;
-    pipe.layout = info.layout;
-    pipe.ingress_mask = info.ingress_mask;
-    pipe.egress_mask = info.egress_mask;
-    each_enabled_stage(info.ingress_mask) { stage_id =>
-        let _ = add_ingress_stage(pipe, stage_id);
-    };
-    each_enabled_stage(info.egress_mask) { stage_id =>
-        let _ = add_egress_stage(pipe, stage_id);
-    };
-    pipe.is_valid = true;
-    return pipe, WireResult.Success;
-}
-
-// Binds a Pipeline State Object to the command buffer (VkCmdBindPipeline).
-fn cmd_bind_pipeline(
-    cmd:        WireCommandBuffer&,
-    bind_point: WirePipelineBindPoint,
-    pipe:       const WirePipeline&,
-) -> WireResult {
-    guard cmd.state == WireCommandBufferState.Recording && !cmd.has_error else {
-        cmd.has_error = true;
-        return WireResult.ErrorCommandNotRecording;
-    }
-    guard pipe.is_valid && pipe.bind_point == bind_point else {
-        cmd.has_error = true;
-        return WireResult.ErrorInitializationFailed;
-    }
-    return WireResult.Success;
-}
-
-// Destroys a pipeline object and releases its configuration (VkDestroyPipeline).
-fn destroy_wire_pipeline(pipe: WirePipeline&) {
-    pipe.is_valid = false;
 }

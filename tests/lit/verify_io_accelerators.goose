@@ -177,21 +177,6 @@ fn test_poller_live_socket_and_synthetic_fds() {
     let nr = wing::tcp_recv_slice(sfd, rx[..]);
     assert(nr == 12 && rx[..12] == "HELLO_POLLER");
 
-    // WireQueue batch submission with attached Poller readiness tag
-    var wq = wire::WireQueue { fd: cfd, is_connected: true, .. };
-    wire::queue_attach_poller(wq, 9002);
-    var cb1 = wire::WireCommandBuffer { state: wire::WireCommandBufferState.Executable, .. };
-    var cb2 = wire::WireCommandBuffer { state: wire::WireCommandBufferState.Executable, .. };
-    assert(cb1.buf.try_append("BATCH_"));
-    assert(cb2.buf.try_append("OK"));
-    let cbs: wire::WireCommandBuffer[2] = [cb1, cb2];
-    let s_info = wire::WireSubmitInfo { .. };
-    var fence = wire::WireFence { is_valid: true, status: wire::WireFenceStatus.Unsignaled, .. };
-    let b_sent, b_res = wire::queue_submit_batch(wq, cbs[..], s_info, fence);
-    assert(b_res == wire::WireResult.Success && b_sent == 8);
-    let nr2 = wing::tcp_recv_slice(sfd, rx[..]);
-    assert(nr2 == 8 && rx[..8] == "BATCH_OK");
-
     assert(wing::deregister_socket(p, 77));
     assert(wing::deregister_socket(p, sfd as i32));
     wing::tcp_close(sfd);

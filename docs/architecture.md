@@ -73,12 +73,11 @@ forking `goose-wing`.
   Pass (RFC 9576–9578), Digest auth, PKCE, DPoP (RFC 9449), JWT, and JWKS.
 - `fingerprint/`: JA4 TLS client fingerprinting, p0f TCP signature analysis, and
   Akamai HTTP/2 fingerprint generation.
-- `wire/`: Two-tier Vulkan-style pipeline skeleton: Tier 1 Sans-IO wire framing
-  codecs (`wire/h1.goose`, `wire/hpack.goose`, `wire/h2.goose`, `wire/h3.goose`)
-  decoding directly into `HeaderMap`, `WireCommandBuffer` / `WireQueue`
-  transport submission (`wire/cmd.goose`, `wire/submit.goose`), and Tier 2
-  composable L7 `WirePipeline` stage bitmasks and `StageVerdict` combinators
-  (`wire/pipeline.goose`).
+- `wire/`: Two-tier framing and pipeline glue: Tier 1 Sans-IO wire framing
+  codecs (`wire/h1.goose`, `wire/h1_exchange.goose`, `wire/hpack.goose`,
+  `wire/h2.goose`, `wire/h3.goose`) decoding directly into `HeaderMap`, and Tier
+  2 composable L7 `WirePipeline` stage bitmasks (`wire/pipeline.goose`) and
+  `LayeredService` combinators (`wire/service.goose`).
 - `client/`: connection pool, redirect policy, 3-tier SSRF guard, replay
   protection, composable L7 client stages (`client/session/stages.goose`),
   request/response interceptors, and retry backoff.
@@ -100,7 +99,8 @@ cookie indices (`u16[..180]`), check `http/cache/engine.goose`, negotiate
 compression dictionaries, and acquire a socket from `net/pool.goose`. Outbound
 headers in `Request.headers: HeaderMap` are framed via `wire/` codecs
 (`wire::encode_h1_request`, `wire::encode_h2_headers_frame_from_map`,
-`wire::encode_h3_headers`) and flushed over `Transport` (`wire/submit.goose`).
+`wire::encode_h3_headers_from_map`) and flushed over `Transport`
+(`net/transport.goose`).
 
 On the server path, `net/poller.goose` dispatches readiness events from
 `io_uring`, `kqueue`, or Windows RIO to `server/server.goose` and

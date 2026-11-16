@@ -730,10 +730,11 @@ fn poller_collect_epoll_events(
     timeout_ms: i64,
     out_events: core::PollReadyEvent[..64]&,
 ) {
-    var raw_fds:   i64[64] = [0; 64];
-    var raw_udata: u64[64] = [0; 64];
+    var raw_fds:    i64[64] = [0; 64];
+    var raw_udata:  u64[64] = [0; 64];
+    var raw_events: u32[64] = [0; 64];
     let t_clamped = min(max(timeout_ms, -1), 2147483647);
-    let n = epoll_wait_direct(p.epoll_fd, raw_fds[..], raw_udata[..], t_clamped as i32);
+    let n = epoll_wait_events_direct(p.epoll_fd, raw_fds[..], raw_udata[..], raw_events[..], t_clamped as i32);
     guard n > 0 else { return; }
 
     let limit = min(n as i64, 64);
@@ -742,7 +743,8 @@ fn poller_collect_epoll_events(
         let reg_idx = find_by_tag(p, tag);
         guard reg_idx >= 0 else { continue; }
         let fd_val = p.registrations[reg_idx].fd;
-        let ev_flags = core::interest_to_poll_flags(p.registrations[reg_idx].interest);
+        let fallback_flags = core::interest_to_poll_flags(p.registrations[reg_idx].interest);
+        let ev_flags = if raw_events[k] != core::POLL_NONE { raw_events[k] } else { fallback_flags };
         let avail_raw = if (ev_flags & core::POLL_READ) != 0 {
             native_tcp_get_readable_bytes(fd_val)
         } else {
@@ -753,7 +755,7 @@ fn poller_collect_epoll_events(
             fd:              fd_val,
             events:          if ev_flags != core::POLL_NONE { ev_flags } else { core::POLL_READ },
             bytes_available: max(avail_raw, 0),
-            is_eof:          false,
+            is_eof:          (ev_flags & core::POLL_HANGUP) != 0,
             is_timer:        false,
         };
         guard out_events.try_push(ev) else { break; }

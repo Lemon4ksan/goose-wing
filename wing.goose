@@ -145,6 +145,7 @@ import net.driver;
 import net.accel;
 import net.poller;
 import net.event_loop;
+import net.io_host;
 
 // ---- tls 1.3, quic & http/3 (Layers 6-8) -----------------------------------
 
@@ -179,19 +180,13 @@ import http3.connection;
 
 // ---- wire subsystem (Layer 9) ----------------------------------------------
 
-import wire.result;
 import wire.types;
 import wire.h1;
 import wire.h1_exchange;
 import wire.hpack;
 import wire.h2;
 import wire.h3;
-import wire.tls;
-import wire.pool;
-import wire.cmd;
 import wire.pipeline;
-import wire.sync;
-import wire.submit;
 import wire.service;
 
 // ---- realtime & streaming (Layer 10) ---------------------------------------
@@ -231,6 +226,7 @@ import server.stream_consumer;
 import server.sni;
 import server.server;
 import server.reactor;
+import server.async_reactor;
 import server.h2_multiplexer;
 import server.soa_timer;
 import server.profiler;

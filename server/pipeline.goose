@@ -110,6 +110,7 @@ fn configure_tier_limiter(cfg: ServerPipelineConfig&, slot: u8, quota: GcraQuota
 
 enum PipelineOutcome {
     Handled,
+    Pending,
     RateLimited,
     CsrfRejected,
     CorsPreflight,
@@ -132,6 +133,15 @@ struct ServerStageCtx {
     hdr_scan_cursor: i64             = 0,
     last_valid_host: u8[..128]       = [],
     has_valid_host:  bool            = false,
+    wake_token:      core::WakeToken = core::WakeToken { .. },
+    is_pending:      bool            = false,
+}
+
+// Marks an in-flight route handler as parked until the caller's `sctx.wake_token` fires.
+fn suspend_server_request(sctx: ServerStageCtx&) -> bool {
+    guard core::wake_token_is_valid(sctx.wake_token) else { return false; }
+    sctx.is_pending = true;
+    return true;
 }
 
 // Extracts a route path parameter by name from the active request extension slot (`:id`, `*wildcard`).
@@ -1788,6 +1798,25 @@ fn dispatch_egress_pipeline(
     }
 }
 
+fn maybe_store_server_route_cache(
+    cfg:         ServerPipelineConfig&,
+    req:         const Request&,
+    now_ns:      u64,
+    res:         Response&,
+    handler_id:  i32,
+    egress_mask: u64,
+) {
+    let has_auth = (req.presence_mask & HDR_PRESENCE_AUTHORIZATION) != 0
+        || has_header(req.headers, rfc::HEADER_AUTHORIZATION);
+    guard (egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 &&
+          handler_id >= 0 && req.method[..] == "GET" && !has_auth else {
+        cfg.route_cache.is_updating = false;
+        return;
+    }
+    let now_ms, _ = core::div_rem_u64(now_ns, 1000000);
+    let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, handler_id, req.url[..]);
+}
+
 // Dispatches route payloads and headers registered in `cfg.router.static_payloads` for `handler_id`.
 fn apply_route_payload(cfg: const ServerPipelineConfig&, handler_id: i32, res: Response&) {
     let _ = get_static_route_payload(cfg.router, handler_id, res);
@@ -1829,6 +1858,7 @@ fn execute_found_route_handler<UserStage>(
     server_internal::poll_future(out_future);
 
     res.status_code = 0;
+    sctx.is_pending = false;
     let route_v = user_stage.on_server_stage(wire::ServerHookPhase.RouteHandler, cfg, req, sctx, res);
     match route_v {
         ShortCircuit sc => {
@@ -1844,18 +1874,18 @@ fn execute_found_route_handler<UserStage>(
         _ => {},
     };
 
+    if sctx.is_pending {
+        prof_leave(_prof_h);
+        cfg.route_cache.is_updating = false;
+        return PipelineOutcome.Pending;
+    }
+
     if res.status_code == 0 {
         res.status_code = 200;
         apply_route_payload(cfg, f.handler_id, res);
     }
     prof_leave(_prof_h);
-    let has_auth = (req.presence_mask & HDR_PRESENCE_AUTHORIZATION) != 0
-        || has_header(req.headers, rfc::HEADER_AUTHORIZATION);
-    if (f.egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 && req.method[..] == "GET" && !has_auth {
-        let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, f.handler_id, req.url[..]);
-    } else {
-        cfg.route_cache.is_updating = false;
-    }
+    maybe_store_server_route_cache(cfg, req, now_ns, res, f.handler_id, f.egress_mask);
     return PipelineOutcome.Handled;
 }
 
@@ -1997,6 +2027,44 @@ inline fn notify_pipeline_timer_end(timer_enabled: bool, timer: server_internal:
     }
 }
 
+fn complete_pipeline_egress_and_hooks<UserStage>(
+    cfg:           ServerPipelineConfig&,
+    req:           const Request&,
+    now_ns:        u64,
+    res:           Response&,
+    ext_slot_idx:  i32,
+    effective_pso: u64,
+    outcome:       PipelineOutcome,
+    sctx:          ServerStageCtx&,
+    user_stage:    UserStage&,
+) -> PipelineOutcome {
+    sctx.outcome = outcome;
+    if outcome != PipelineOutcome.Handled || res.status_code >= 400 {
+        let err_v = user_stage.on_server_stage(wire::ServerHookPhase.OnError, cfg, req, sctx, res);
+        match err_v {
+            ShortCircuit sc => {
+                res.status_code = if res.status_code != 0 { res.status_code } else { sc.status_code as i32 };
+            },
+            _ => {},
+        };
+    }
+
+    if outcome == PipelineOutcome.Handled {
+        dispatch_egress_pipeline(cfg, req, res, effective_pso, now_ns, ext_slot_idx);
+        let user_out_v = user_stage.on_server_stage(wire::ServerHookPhase.PreSerialize, cfg, req, sctx, res);
+        match user_out_v {
+            ShortCircuit sc => {
+                res.status_code = sc.status_code as i32;
+            },
+            _ => {},
+        };
+    }
+
+    handle_head_method_suppression(req.method[..], res);
+    let _ = user_stage.on_server_stage(wire::ServerHookPhase.AfterResponse, cfg, req, sctx, res);
+    return outcome;
+}
+
 fn finalize_post_auth_and_egress<UserStage>(
     cfg:           ServerPipelineConfig&,
     req:           const Request&,
@@ -2034,38 +2102,68 @@ fn finalize_post_auth_and_egress<UserStage>(
             cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, sctx, user_stage,
         );
     }
-    sctx.outcome = outcome;
-
-    if outcome != PipelineOutcome.Handled || res.status_code >= 400 {
-        let err_v = user_stage.on_server_stage(wire::ServerHookPhase.OnError, cfg, req, sctx, res);
-        match err_v {
-            ShortCircuit sc => {
-                res.status_code = if res.status_code != 0 { res.status_code } else { sc.status_code as i32 };
-            },
-            _ => {},
-        };
+    if outcome == PipelineOutcome.Pending {
+        sctx.outcome = PipelineOutcome.Pending;
+        return PipelineOutcome.Pending;
     }
 
-    if outcome == PipelineOutcome.Handled {
-        dispatch_egress_pipeline(cfg, req, res, effective_pso, now_ns, ext_slot_idx);
-        let user_out_v = user_stage.on_server_stage(wire::ServerHookPhase.PreSerialize, cfg, req, sctx, res);
-        match user_out_v {
-            ShortCircuit sc => {
+    return complete_pipeline_egress_and_hooks(
+        cfg, req, now_ns, res, ext_slot_idx, effective_pso, outcome, sctx, user_stage,
+    );
+}
+
+// Resumes a parked request after `Wake`, running `ResumeHandler`, error hooks, cache store, and egress stages.
+fn resume_server_pipeline_egress<UserStage>(
+    cfg:        ServerPipelineConfig&,
+    req:        const Request&,
+    now_ns:     u64,
+    sctx:       ServerStageCtx&,
+    res:        Response&,
+    user_stage: UserStage&,
+) -> PipelineOutcome {
+    sctx.is_pending = false;
+    sctx.ext_slot_idx = -1;
+    sctx.now_ns = now_ns;
+    res.status_code = 0;
+
+    var outcome = PipelineOutcome.Handled;
+    let resume_v = user_stage.on_server_stage(wire::ServerHookPhase.ResumeHandler, cfg, req, sctx, res);
+    match resume_v {
+        ShortCircuit sc => {
+            if res.status_code == 0 {
                 res.status_code = sc.status_code as i32;
-            },
-            _ => {},
-        };
+            }
+        },
+        Abort _ => {
+            outcome = PipelineOutcome.CsrfRejected;
+            if res.status_code == 0 {
+                res.status_code = 500;
+            }
+        },
+        _ => {},
+    };
+    guard outcome == PipelineOutcome.Handled else {
+        return complete_pipeline_egress_and_hooks(
+            cfg, req, now_ns, res, -1, sctx.pso_mask, outcome, sctx, user_stage,
+        );
     }
-
-    handle_head_method_suppression(req.method[..], res);
-    let _ = user_stage.on_server_stage(wire::ServerHookPhase.AfterResponse, cfg, req, sctx, res);
-    return outcome;
+    if res.status_code == 0 {
+        res.status_code = 200;
+        if sctx.handler_id >= 0 {
+            apply_route_payload(cfg, sctx.handler_id, res);
+        }
+    }
+    maybe_store_server_route_cache(cfg, req, now_ns, res, sctx.handler_id, sctx.egress_mask);
+    return complete_pipeline_egress_and_hooks(
+        cfg, req, now_ns, res, -1, sctx.pso_mask, outcome, sctx, user_stage,
+    );
 }
 
 // ---- 6. Top-Level Server Pipeline Entrypoints -------------------------------
 
-// Executes an incoming request through the configured pipeline stages with a compile-time `<UserStage>` hook.
-fn execute_server_pipeline_with_stage<UserStage>(
+// Executes an incoming request using a caller-owned `ServerStageCtx` carrying `wake_token`.
+// Returns `PipelineOutcome.Pending` if `suspend_server_request(sctx)` was called during handling.
+fn execute_server_pipeline_async<UserStage>(
     cfg:        ServerPipelineConfig&,
     conn_timer: server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
@@ -2073,6 +2171,7 @@ fn execute_server_pipeline_with_stage<UserStage>(
     now_ns:     u64,
     res:        Response&,
     out_future: server_internal::InlineHandlerFuture&,
+    sctx:       ServerStageCtx&,
     user_stage: UserStage&,
 ) -> PipelineOutcome {
     let eff_ip = extract_effective_client_ip(cfg.trust_proxy_headers, client_ip, req);
@@ -2092,6 +2191,7 @@ fn execute_server_pipeline_with_stage<UserStage>(
         return PipelineOutcome.RateLimited;
     }
     defer server_internal::release_extensions(cfg.ext_pool, ext_slot_idx);
+    defer sctx.ext_slot_idx = -1;
     defer notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
 
     let e_idx = ext_slot_idx as i64;
@@ -2099,15 +2199,15 @@ fn execute_server_pipeline_with_stage<UserStage>(
     cfg.ext_pool.slots[e_idx].canon_url.clear();
     cfg.ext_pool.slots[e_idx].start_time_ns = now_ns;
 
-    var sctx = ServerStageCtx {
-        ext_slot_idx: ext_slot_idx,
-        pso_mask:     cfg.server_pso_capabilities,
-        ingress_mask: cfg.wire_pipeline.ingress_mask,
-        egress_mask:  cfg.wire_pipeline.egress_mask,
-        now_ns:       now_ns,
-        outcome:      PipelineOutcome.Handled,
-        ..
-    };
+    sctx.ext_slot_idx = ext_slot_idx;
+    sctx.handler_id = -1;
+    sctx.entries_mask = 0;
+    sctx.pso_mask = cfg.server_pso_capabilities;
+    sctx.ingress_mask = cfg.wire_pipeline.ingress_mask;
+    sctx.egress_mask = cfg.wire_pipeline.egress_mask;
+    sctx.now_ns = now_ns;
+    sctx.outcome = PipelineOutcome.Handled;
+    sctx.is_pending = false;
 
     let pre_route_v = user_stage.on_server_stage(wire::ServerHookPhase.PreRoute, cfg, req, sctx, res);
     match pre_route_v {
@@ -2157,6 +2257,23 @@ fn execute_server_pipeline_with_stage<UserStage>(
 
     return finalize_post_auth_and_egress(
         cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, effective_pso, sctx, user_stage,
+    );
+}
+
+// Executes an incoming request through the configured pipeline stages with a compile-time `<UserStage>` hook.
+fn execute_server_pipeline_with_stage<UserStage>(
+    cfg:        ServerPipelineConfig&,
+    conn_timer: server_internal::ConnectionTimer&,
+    client_ip:  const u8[:],
+    req:        const Request&,
+    now_ns:     u64,
+    res:        Response&,
+    out_future: server_internal::InlineHandlerFuture&,
+    user_stage: UserStage&,
+) -> PipelineOutcome {
+    var sctx = ServerStageCtx { now_ns: now_ns, .. };
+    return execute_server_pipeline_async(
+        cfg, conn_timer, client_ip, req, now_ns, res, out_future, sctx, user_stage,
     );
 }
 

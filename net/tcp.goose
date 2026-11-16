@@ -15,11 +15,14 @@ extern fn native_tcp_cleanup() = "wing_tcp_cleanup";
 extern fn native_tcp_listen(host: const u8[:], port: u16, backlog: i32) -> i64 = "wing_tcp_listen";
 extern fn native_tcp_listen_unix(path: const u8[:], backlog: i32) -> i64 = "wing_tcp_listen_unix";
 extern fn native_tcp_connect_unix(path: const u8[:]) -> i64 = "wing_tcp_connect_unix";
+extern fn native_tcp_connect_unix_begin(path: const u8[:], out_state: i32&) -> i64 = "wing_tcp_connect_unix_begin";
 extern fn native_adopt_socket(raw_fd: i64) -> i64 = "wing_adopt_socket";
 extern fn native_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockname_port";
 extern fn native_tcp_get_peer_ip(sock_fd: i64, out_ip: u8[:]) -> i32 = "wing_tcp_get_peer_ip";
 extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
 extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
+extern fn native_tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 = "wing_tcp_connect_begin";
+extern fn native_tcp_connect_finish(sock_fd: i64) -> i32 = "wing_tcp_connect_finish";
 extern fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send";
 extern fn native_tcp_send2(sock_fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 = "wing_tcp_send2";
 extern fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32 = "wing_tcp_recv";
@@ -52,6 +55,13 @@ extern fn native_epoll_add(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> 
 extern fn native_epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32 = "wing_epoll_mod";
 extern fn native_epoll_del(epfd: i64, sock_fd: i64) -> i32 = "wing_epoll_del";
 extern fn native_epoll_wait(epfd: i64, out_fds: i64[:], out_udata: u64[:], timeout_ms: i32) -> i32 = "wing_epoll_wait";
+extern fn native_epoll_wait_events(
+    epfd:       i64,
+    out_fds:    i64[:],
+    out_udata:  u64[:],
+    out_events: u32[:],
+    timeout_ms: i32,
+) -> i32 = "wing_epoll_wait_events";
 extern fn native_epoll_close(epfd: i64) = "wing_epoll_close";
 extern fn native_fast_cork_append(
     conn:     i64,
@@ -139,6 +149,16 @@ fn tcp_connect_unix(path: const u8[:]) -> i64 {
     return native_tcp_connect_unix(path);
 }
 
+// Begins a non-blocking AF_UNIX client connect; out_state: 0=connected, 1=in_progress, -1=failed.
+fn tcp_connect_unix_begin(path: const u8[:], out_state: i32&) -> i64 {
+    guard path.len > 0 && path.len < 108 else {
+        out_state = -1;
+        return -1;
+    }
+    tcp_init();
+    return native_tcp_connect_unix_begin(path, out_state);
+}
+
 // Adopts an externally accepted or inherited socket descriptor (uWebSockets us_adopt_accepted_socket pattern).
 // Sets non-blocking mode, disables handle inheritance, and configures TCP_NODELAY & SO_KEEPALIVE.
 // Returns sanitized socket handle, or -1 on error.
@@ -174,6 +194,22 @@ fn tcp_accept(listener_fd: i64, timeout_ms: u32 = 0) -> i64 {
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64 {
     tcp_init();
     return native_tcp_connect(host, port, timeout_ms);
+}
+
+// Begins a non-blocking TCP connect; out_state: 0=connected, 1=in_progress, -1=failed.
+fn tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 {
+    guard host.len > 0 && port != 0 else {
+        out_state = -1;
+        return -1;
+    }
+    tcp_init();
+    return native_tcp_connect_begin(host, port, out_state);
+}
+
+// Checks SO_ERROR after POLL_WRITE / POLL_ERROR on an in-progress non-blocking connect.
+fn tcp_connect_finish(fd: i64) -> bool {
+    guard fd > 0 else { return false; }
+    return native_tcp_connect_finish(fd) == 0;
 }
 
 // Sends bytes over TCP socket.
@@ -895,6 +931,18 @@ fn epoll_del(epfd: i64, sock_fd: i64) -> bool {
 fn epoll_wait_direct(epfd: i64, raw_fds: i64[:], raw_udata: u64[:], timeout_ms: i32 = -1) -> i32 {
     guard epfd >= 0 && (raw_fds.len > 0 || raw_udata.len > 0) else { return 0; }
     return native_epoll_wait(epfd, raw_fds, raw_udata, timeout_ms);
+}
+
+// Waits for readiness events and returns translated core::POLL_* bitmasks in `raw_events`.
+fn epoll_wait_events_direct(
+    epfd:       i64,
+    raw_fds:    i64[:],
+    raw_udata:  u64[:],
+    raw_events: u32[:],
+    timeout_ms: i32 = -1,
+) -> i32 {
+    guard epfd >= 0 && raw_udata.len > 0 && raw_events.len > 0 else { return 0; }
+    return native_epoll_wait_events(epfd, raw_fds, raw_udata, raw_events, timeout_ms);
 }
 
 // Waits for I/O events on the epoll multiplexer.

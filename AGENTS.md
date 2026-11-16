@@ -19,8 +19,9 @@ form the two-part rulebook for `goose-wing`. Both are loaded into
   cryptographic transport, and protocol stack:
   - `rfc/*`: Shared RFC grammar helpers (`rfc9110`, `rfc8941` Structured Fields,
     `rfc9111` cache directives, `rfc6265` cookies).
-  - `wire/*`: Vulkan-style wire framing (`WireResult`, `WireFrame`,
-    `CommandBuffer`, `SubmissionRing`, `WireConnection`, `WireDevice`).
+  - `wire/*`: Sans-IO wire framing (`wire/h1`, `wire/h1_exchange`, `wire/h2`,
+    `wire/h3`, `wire/hpack`), `WirePipeline` stage masks (`wire/pipeline`), and
+    `LayeredService` combinators (`wire/service`).
   - `http/*`: HTTP/1.1 parser (`parser.goose`), `HeaderMap` with 64-bit Bloom
     filter (`headers.goose`), chunked framing, Range, Alt-Svc, Digest/Bearer,
     ETag, Problem Details (RFC 9457), Content-Digest (RFC 9530), WebSocket (RFC

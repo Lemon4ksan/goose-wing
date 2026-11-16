@@ -398,6 +398,14 @@ struct TcpDialer {
 }
 
 fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i64 {
+    if target.unix_path.len > 0 {
+        let ufd = tcp_connect_unix(target.unix_path);
+        guard ufd > 0 else { return -1; }
+        if target.non_blocking {
+            let _ = tcp_set_nonblocking(ufd, true);
+        }
+        return ufd;
+    }
     let timeout_ms: u32 = if target.timeout_ms > 0 { target.timeout_ms } else { d.default_timeout_ms };
     let fd = tcp_connect(target.host, target.port, timeout_ms);
     guard fd > 0 else { return -1; }

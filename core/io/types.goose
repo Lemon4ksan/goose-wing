@@ -6,6 +6,7 @@
 namespace core;
 
 import std;
+import core.math.arithmetic;
 
 enum IoError {
     None,
@@ -62,4 +63,102 @@ struct DialTarget {
     port:         u16         = 0,
     timeout_ms:   u32         = 5000,
     non_blocking: bool        = true,
+    unix_path:    const u8[:] = "",
+}
+
+const IO_OWNER_ANY:         u16 = 0;
+const IO_OWNER_HTTP_SERVER: u16 = 1;
+const IO_OWNER_USER_START:  u16 = 16;
+
+// Transport-independent endpoint address supporting TCP and Unix domain sockets.
+enum ConnectAddr {
+    Tcp { host: const u8[:], port: u16 },
+    Unix { path: const u8[:] },
+}
+
+inline fn is_valid_connect_addr(addr: ConnectAddr) -> bool {
+    return match addr {
+        Tcp t => t.host.len > 0 && t.port != 0,
+        Unix u => u.path.len > 0 && u.path.len < 108,
+    };
+}
+
+inline fn is_valid_listen_addr(addr: ConnectAddr) -> bool {
+    return match addr {
+        Tcp t => t.host.len > 0,
+        Unix u => u.path.len > 0 && u.path.len < 108,
+    };
+}
+
+enum ConnectStatus {
+    Connected,
+    InProgress,
+    InvalidArgument,
+    Failed,
+}
+
+// Opaque generation-checked connection handle shared across readiness,
+// completion (io_uring/RIO), and virtual pipe hosts.
+// Bit layout in `raw`: bits 0..31 = slot, bits 32..47 = gen (non-zero), bits 48..63 = owner.
+struct IoLink {
+    raw: u64 = 0,
+}
+
+inline fn make_io_link(owner: u16, gen: u16, slot: u32) -> IoLink {
+    let packed = shl_sat_u64(owner, 48) | shl_sat_u64(gen, 32) | slot;
+    return IoLink { raw: packed };
+}
+
+inline fn io_link_is_valid(link: IoLink) -> bool {
+    return link.raw != 0 && ((link.raw >> 32) & 0xFFFF) != 0;
+}
+
+inline fn io_link_slot(link: IoLink) -> i64 {
+    return (link.raw & 0xFFFFFFFF) as i64;
+}
+
+inline fn io_link_gen(link: IoLink) -> u16 {
+    return ((link.raw >> 32) & 0xFFFF) as u16;
+}
+
+inline fn io_link_owner(link: IoLink) -> u16 {
+    return ((link.raw >> 48) & 0xFFFF) as u16;
+}
+
+// Opaque generation-checked wakeup token handed to external async drivers (e.g. DB pools)
+// to resume a parked HTTP request or stream task on the host event loop.
+struct WakeToken {
+    owner:     u16 = 0,
+    gen:       u16 = 0,
+    slot:      u32 = 0,
+    stream_id: u32 = 0,
+    req_seq:   u32 = 0,
+}
+
+inline fn wake_token_is_valid(tok: WakeToken) -> bool {
+    return tok.owner != 0 && tok.gen != 0;
+}
+
+enum LinkEventKind {
+    Accepted,
+    Connected,
+    Data,
+    Writable,
+    Eof,
+    Closed,
+    Timer,
+    Wake,
+    Pump,
+}
+
+// Zero-copy push event delivered from an event-loop host into a protocol driver.
+struct LinkEvent {
+    kind:     LinkEventKind = LinkEventKind.Data,
+    link:     IoLink        = IoLink { .. },
+    listener: IoLink        = IoLink { .. },
+    tag:      u64           = 0,
+    data:     const u8[:]   = "",
+    err:      IoError       = IoError.None,
+    timer_id: u64           = 0,
+    token:    WakeToken     = WakeToken { .. },
 }

@@ -369,7 +369,6 @@ fn run_03_verify_l4_sockets() {
 // - Task #3: Windows RIO `RioAddressPool` O(1) free-list acquire/release and fail-closed exhaustion at 129th acquire
 // - Task #4: Upstream Pool (`UpstreamPool`) NIK partition isolation and `EPOLLRDHUP` (`0x2000`) idle closure eviction
 // - Task #5: Canonical HTTP/2 frame reader (`read_wire_h2_frame` over `const u8[:]` + `cursor: i64&`) with transactional cursor
-// - Task #6: `WireCommandPool` 64 KB arena zero-copy slice allocation and fail-closed capacity enforcement
 
 inline fn advance_test_loop_idx(idx: i32) -> i32 {
     return idx + 1;
@@ -533,58 +532,6 @@ fn verify_wire_h2_frame_slice_cursor() {
     print("WIRE_H2_SLICE_CURSOR: cursor=", cursor, "\n");
 }
 
-fn verify_wire_command_pool_arena() {
-    let inst = wire::WireInstance { .. };
-    var phys_devs: wire::WirePhysicalDevice[..4] = [];
-    assert(wire::is_success(wire::enumerate_physical_devices(inst, phys_devs)));
-    let dev_info = wire::WireDeviceCreateInfo {
-        config:           wire::WireDeviceConfig { .. },
-        enabled_features: wire::WirePhysicalDeviceFeatures { .. },
-    };
-    var dev, dev_res = wire::create_wire_device(phys_devs[0], dev_info);
-    assert(wire::is_success(dev_res));
-
-    let pool_info = wire::WireCommandPoolCreateInfo {
-        flags:              wire::WIRE_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        queue_family_index: 0,
-    };
-    var pool, pool_res = wire::create_command_pool(dev, pool_info);
-    assert(wire::is_success(pool_res));
-
-    // Allocate 4 command buffers (4 x 16384 = 65536 bytes of pool.arena)
-    var cmd1, r1 = wire::allocate_command_buffer(pool);
-    var cmd2, r2 = wire::allocate_command_buffer(pool);
-    var cmd3, r3 = wire::allocate_command_buffer(pool);
-    var cmd4, r4 = wire::allocate_command_buffer(pool);
-    assert(wire::is_success(r1) && wire::is_success(r2) && wire::is_success(r3) && wire::is_success(r4));
-    assert(pool.arena.len == 65536);
-
-    // 5th allocation must fail closed with ErrorOutOfDeviceMemory (Invariant 13)
-    var _, r5 = wire::allocate_command_buffer(pool);
-    if wire::is_success(r5) {
-        print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
-    }
-    assert(r5 == wire::WireResult.ErrorOutOfDeviceMemory);
-
-    // Record into cmd1 and commit directly into its carved pool.arena slice
-    let begin_info = wire::WireCommandBufferBeginInfo {
-        flags: wire::WIRE_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    };
-    assert(wire::is_success(wire::begin_command_buffer(cmd1, begin_info)));
-    assert(wire::write_h2_preface(cmd1));
-    assert(wire::is_success(wire::end_command_buffer(cmd1)));
-    let arena_slice, commit_ok = wire::commit_command_buffer_to_arena(pool, cmd1);
-    assert(commit_ok && arena_slice.len == 24);
-    print("WIRE_COMMAND_POOL_ARENA_SLICED: bytes=", arena_slice.len, " total_arena=", pool.arena.len, "\n");
-
-    wire::free_command_buffer(pool, cmd4);
-    wire::free_command_buffer(pool, cmd3);
-    wire::free_command_buffer(pool, cmd2);
-    wire::free_command_buffer(pool, cmd1);
-    wire::destroy_command_pool(pool);
-    wire::destroy_wire_device(dev);
-}
-
 fn run_04_verify_udp_batch() {
     // CHECK: WING_UDP_BATCH_INITIALIZED: capacity=32
     // CHECK-NOT: WING_BUFFER_OVERFLOW_SILENT_DROP
@@ -596,13 +543,11 @@ fn run_04_verify_udp_batch() {
     // CHECK: UPSTREAM_POOL_NIK_ISOLATION: OK
     // CHECK: UPSTREAM_POOL_EPOLLRDHUP_EVICTION: evicted=1
     // CHECK: WIRE_H2_SLICE_CURSOR: cursor=30
-    // CHECK: WIRE_COMMAND_POOL_ARENA_SLICED: bytes=24 total_arena=65536
     verify_udp_batch_engine();
     verify_uring_pbuf_ring();
     verify_rio_address_pool();
     verify_upstream_pool_nik_and_rdhup();
     verify_wire_h2_frame_slice_cursor();
-    verify_wire_command_pool_arena();
 }
 
 // ============================================================================

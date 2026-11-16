@@ -16,21 +16,7 @@ import net.transport;
 import http.headers;
 import .h1;
 
-// ---- 1. Exchange Protocol State Machine ------------------------------------
-
-enum H1ExchangeState {
-    Init,
-    SendingHeaders,
-    SendingBody,
-    RecvStatusLine,
-    RecvHeaders,
-    RecvFixedBody,
-    RecvChunkedBody,
-    Complete,
-    Failed,
-}
-
-// ---- 2. Request Serialization ----------------------------------------------
+// ---- 1. Request Serialization ----------------------------------------------
 
 fn format_request_target(
     req:     const Request&,

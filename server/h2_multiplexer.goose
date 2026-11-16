@@ -30,6 +30,7 @@ struct H2ServerStream {
     headers_sent:            bool            = false,
     response_sent:           bool            = false,
     pending_has_trailers:    bool            = false,
+    pending_async:           bool            = false,
     declared_content_length: i64             = -1,
     unclaimed_local_window:  i64             = 0,
     spill_slab_idx:          i32             = -1,
@@ -52,6 +53,7 @@ fn reset_server_stream(st: H2ServerStream&) {
     st.headers_sent = false;
     st.response_sent = false;
     st.pending_has_trailers = false;
+    st.pending_async = false;
     st.spill_slab_idx = -1;
     st.slab_lease_deadline_ns = 0;
     st.method.clear();
@@ -1649,43 +1651,14 @@ inline fn buffer_unsent_response_tail<B>(
     sess.streams[stream_idx].pending_has_trailers = has_trailers;
 }
 
-fn execute_ready_server_stream<Stage, B>(
-    sess:       H2ServerSession&,
-    stream_idx: i64,
-    pipeline:   wing::ServerPipelineConfig&,
-    timer:      server_internal::ConnectionTimer&,
-    client_ip:  const u8[:],
-    now_ms:     u64,
-    out_wire:   B&,
-    stage:      Stage&,
+fn emit_h2_stream_response<B>(
+    sess:             H2ServerSession&,
+    pipeline:         wing::ServerPipelineConfig&,
+    stream_idx:       i64,
+    target_stream_id: u32,
+    res:              const wing::Response&,
+    out_wire:         B&,
 ) {
-    let target_stream_id = sess.streams[stream_idx].stream_id;
-
-    // Construct Request
-    var req = wing::new_request(sess.streams[stream_idx].method[..], sess.streams[stream_idx].path[..]);
-    copy_stream_headers_and_trailers(sess.streams[stream_idx], req);
-    if sess.streams[stream_idx].spill_slab_idx >= 0 {
-        let s_slot = sess.streams[stream_idx].spill_slab_idx as i64;
-        guard s_slot >= 0 && s_slot < pipeline.slab_pool.slabs.len else { return; }
-        req.body.append(pipeline.slab_pool.slabs[s_slot].data[..]);
-        release_spill_slab(pipeline.slab_pool, sess.streams[stream_idx].spill_slab_idx);
-        sess.streams[stream_idx].spill_slab_idx = -1;
-    } else {
-        req.body.append(sess.streams[stream_idx].body[..]);
-        sess.streams[stream_idx].body.clear();
-    }
-
-    // Execute pipeline
-    var res = wing::Response { .. };
-    var future = server_internal::new_inline_handler_future(0);
-    let now_ns = (now_ms as u64) * 1000000;
-    wing::execute_server_pipeline_with_stage(pipeline, timer, client_ip, req, now_ns, res, future, stage);
-
-    if res.status_code <= 0 {
-        res.status_code = 500;
-    }
-
-    // Emit Response
     let has_body = res.body.len > 0 && !rfc::is_empty_body_status(res.status_code);
     let has_trailers = res.trailers.entries.len > 0;
     let end_headers = !has_body && !has_trailers;
@@ -1706,8 +1679,137 @@ fn execute_ready_server_stream<Stage, B>(
     if has_trailers {
         emit_response_trailers(sess, target_stream_id, res.trailers, out_wire);
     }
-
     complete_server_stream_response(sess, stream_idx, target_stream_id);
+}
+
+fn find_active_h2_stream_by_id(sess: const H2ServerSession&, target_stream_id: u32) -> i64 {
+    for i in sess.streams.len {
+        if sess.streams[i].active && sess.streams[i].stream_id == target_stream_id {
+            return i;
+        }
+    }
+    return -1;
+}
+
+fn next_ready_h2_stream(sess: const H2ServerSession&) -> i64 {
+    for i in sess.streams.len {
+        let st .= sess.streams[i];
+        if st.active && !st.response_sent && !st.headers_sent &&
+           !st.pending_async && st.headers_received && st.body_received {
+            return i;
+        }
+    }
+    return -1;
+}
+
+fn flush_h2_stream_tails<B>(
+    sess:     H2ServerSession&,
+    pipeline: wing::ServerPipelineConfig&,
+    out_wire: B&,
+) {
+    for i in sess.streams.len {
+        if sess.streams[i].active && !sess.streams[i].response_sent && sess.streams[i].headers_sent {
+            flush_pending_server_stream(sess, pipeline, i, out_wire);
+        }
+    }
+}
+
+fn execute_h2_stream_async<Stage, B>(
+    sess:       H2ServerSession&,
+    stream_idx: i64,
+    pipeline:   wing::ServerPipelineConfig&,
+    timer:      server_internal::ConnectionTimer&,
+    client_ip:  const u8[:],
+    now_ms:     u64,
+    wake_token: core::WakeToken,
+    out_req:    wing::Request&,
+    out_sctx:   wing::ServerStageCtx&,
+    out_wire:   B&,
+    stage:      Stage&,
+) -> wing::PipelineOutcome {
+    let target_stream_id = sess.streams[stream_idx].stream_id;
+    out_req = wing::new_request(sess.streams[stream_idx].method[..], sess.streams[stream_idx].path[..]);
+    copy_stream_headers_and_trailers(sess.streams[stream_idx], out_req);
+    if sess.streams[stream_idx].spill_slab_idx >= 0 {
+        let s_slot = sess.streams[stream_idx].spill_slab_idx as i64;
+        guard s_slot >= 0 && s_slot < pipeline.slab_pool.slabs.len else {
+            return wing::PipelineOutcome.RateLimited;
+        }
+        out_req.body.append(pipeline.slab_pool.slabs[s_slot].data[..]);
+        release_spill_slab(pipeline.slab_pool, sess.streams[stream_idx].spill_slab_idx);
+        sess.streams[stream_idx].spill_slab_idx = -1;
+    } else {
+        out_req.body.append(sess.streams[stream_idx].body[..]);
+        sess.streams[stream_idx].body.clear();
+    }
+
+    var res = wing::Response { .. };
+    var future = server_internal::new_inline_handler_future(0);
+    let now_ns = core::mul_sat_u64(now_ms, 1000000);
+    out_sctx = wing::ServerStageCtx { wake_token: wake_token, now_ns: now_ns, .. };
+    let outcome = wing::execute_server_pipeline_async(
+        pipeline, timer, client_ip, out_req, now_ns, res, future, out_sctx, stage,
+    );
+    if outcome == wing::PipelineOutcome.Pending {
+        sess.streams[stream_idx].pending_async = true;
+        return wing::PipelineOutcome.Pending;
+    }
+    if res.status_code <= 0 {
+        res.status_code = 500;
+    }
+    emit_h2_stream_response(sess, pipeline, stream_idx, target_stream_id, res, out_wire);
+    return outcome;
+}
+
+fn complete_pending_h2_stream_response<Stage, B>(
+    sess:             H2ServerSession&,
+    target_stream_id: u32,
+    pipeline:         wing::ServerPipelineConfig&,
+    now_ms:           u64,
+    req:              const wing::Request&,
+    sctx:             wing::ServerStageCtx&,
+    out_wire:         B&,
+    stage:            Stage&,
+) -> bool {
+    let stream_idx = find_active_h2_stream_by_id(sess, target_stream_id);
+    guard stream_idx >= 0 && sess.streams[stream_idx].pending_async else { return false; }
+    sess.streams[stream_idx].pending_async = false;
+
+    var res = wing::Response { .. };
+    let now_ns = core::mul_sat_u64(now_ms, 1000000);
+    let _ = wing::resume_server_pipeline_egress(pipeline, req, now_ns, sctx, res, stage);
+    if res.status_code <= 0 {
+        res.status_code = 500;
+    }
+    emit_h2_stream_response(sess, pipeline, stream_idx, target_stream_id, res, out_wire);
+    return true;
+}
+
+fn execute_ready_server_stream<Stage, B>(
+    sess:       H2ServerSession&,
+    stream_idx: i64,
+    pipeline:   wing::ServerPipelineConfig&,
+    timer:      server_internal::ConnectionTimer&,
+    client_ip:  const u8[:],
+    now_ms:     u64,
+    out_wire:   B&,
+    stage:      Stage&,
+) {
+    var req = wing::Request { .. };
+    var sctx = wing::ServerStageCtx { .. };
+    let _ = execute_h2_stream_async(
+        sess,
+        stream_idx,
+        pipeline,
+        timer,
+        client_ip,
+        now_ms,
+        core::WakeToken { .. },
+        req,
+        sctx,
+        out_wire,
+        stage,
+    );
 }
 
 fn dispatch_ready_server_streams<Stage, B>(
@@ -1725,6 +1827,7 @@ fn dispatch_ready_server_streams<Stage, B>(
             flush_pending_server_stream(sess, pipeline, i, out_wire);
             continue;
         }
+        guard !sess.streams[i].pending_async else { continue; }
         guard sess.streams[i].headers_received && sess.streams[i].body_received else { continue; }
         execute_ready_server_stream(sess, i, pipeline, timer, client_ip, now_ms, out_wire, stage);
     }
@@ -1953,17 +2056,18 @@ inline fn step_h2_server_ingress_frame<B>(
     return true;
 }
 
-// Processes incoming HTTP/2 wire data, executing complete streams through the server pipeline with `<Stage>`.
-// Returns (total_bytes_consumed, success)
-fn handle_h2_server_ingress<Stage, B>(
-    sess:      H2ServerSession&,
-    pipeline:  wing::ServerPipelineConfig&,
-    timer:     server_internal::ConnectionTimer&,
-    client_ip: const u8[:],
-    wire:      const u8[:],
-    now_ms:    u64,
-    out_wire:  B&,
-    stage:     Stage&,
+// Parses and dispatches all complete HTTP/2 frames in `wire` without executing ready streams yet.
+// Returns `(bytes_consumed, connection_ok)`.
+//
+// Example:
+//   wire = H2_CLIENT_PREFACE + SETTINGS_FRAME, offset = 0
+//   returns: consumed = 33, ok = true
+fn ingest_h2_server_frames<B>(
+    sess:     H2ServerSession&,
+    pipeline: wing::ServerPipelineConfig&,
+    wire:     const u8[:],
+    now_ms:   u64,
+    out_wire: B&,
 ) -> i64, bool {
     var offset: i64 = 0;
     var ok_conn = false;
@@ -1992,9 +2096,26 @@ fn handle_h2_server_ingress<Stage, B>(
         }
     }
 
-    dispatch_ready_server_streams(sess, pipeline, timer, client_ip, now_ms, out_wire, stage);
     flush_server_control_frames(sess);
     ok_conn = true;
+    return offset, true;
+}
+
+// Processes incoming HTTP/2 wire data, executing complete streams through the server pipeline with `<Stage>`.
+// Returns (total_bytes_consumed, success)
+fn handle_h2_server_ingress<Stage, B>(
+    sess:      H2ServerSession&,
+    pipeline:  wing::ServerPipelineConfig&,
+    timer:     server_internal::ConnectionTimer&,
+    client_ip: const u8[:],
+    wire:      const u8[:],
+    now_ms:    u64,
+    out_wire:  B&,
+    stage:     Stage&,
+) -> i64, bool {
+    let offset, ok_conn = ingest_h2_server_frames(sess, pipeline, wire, now_ms, out_wire);
+    guard ok_conn else { return offset, false; }
+    dispatch_ready_server_streams(sess, pipeline, timer, client_ip, now_ms, out_wire, stage);
     return offset, true;
 }
 

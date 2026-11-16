@@ -92,11 +92,12 @@ size (`gso_size`). When `enqueue_udp_datagram` reaches 32 buffered datagrams, it
 flushes the full batch via `batch_send_messages` before appending packet 33 so
 zero datagrams are silently dropped.
 
-### 4. Poller, Event Reactor & Driver Facade (`net/poller.goose`, `net/event_loop.goose`, `net/driver.goose`)
+### 4. Poller, Event Reactor, Push Host & Driver Facade (`net/poller.goose`, `net/event_loop.goose`, `net/io_host.goose`, `net/driver.goose`)
 
 ```goose
 struct Poller { ... }
 struct EventLoop { ... }
+root struct NetHost { ... }
 struct TcpDialer { default_timeout_ms: u32 = 5000 }
 fn new_poller(driver_cfg: const net_internal::TransportDriverConfig&) -> Poller
 fn enable_os_multiplexing(p: Poller&) -> bool
@@ -108,9 +109,28 @@ fn deregister_socket(p: Poller&, fd: i32) -> bool
 fn wake_tag(p: Poller&, tag: u64) -> bool
 fn poll_events(p: Poller&, timeout_ms: i64, now_ns: u64, out_events: core::PollReadyEvent[..64]&) -> i32
 fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i32
+fn new_net_host(driver_cfg: const net_internal::TransportDriverConfig&) -> NetHost
+fn close_net_host(host: NetHost&)
+fn link_listen(host: NetHost&, addr: core::ConnectAddr, owner: u16, tag: u64, backlog: i32) -> core::IoLink, core::IoError
+fn link_local_port(host: const NetHost&, link: core::IoLink) -> u16
+fn link_connect(host: NetHost&, addr: core::ConnectAddr, owner: u16, tag: u64) -> core::IoLink, core::ConnectStatus
+fn host_open_virtual_pair(host: NetHost&, owner_a: u16, owner_b: u16, tag_a: u64 = 0, tag_b: u64 = 0) -> core::IoLink, core::IoLink, bool
+fn link_send(host: NetHost&, link: core::IoLink, data: const u8[:]) -> i32, core::IoError
+fn link_set_rx_paused(host: NetHost&, link: core::IoLink, paused: bool) -> bool
+fn link_shutdown_write(host: NetHost&, link: core::IoLink) -> bool
+fn link_close(host: NetHost&, link: core::IoLink) -> bool
+fn link_abort(host: NetHost&, link: core::IoLink) -> bool
+fn link_add_timer(host: NetHost&, timer_id: u64, delay_ms: u64, owner: u16, tag: u64, periodic: bool, now_ns: u64) -> bool
+fn link_cancel_timer(host: NetHost&, timer_id: u64) -> bool
+fn link_wake(host: NetHost&, token: core::WakeToken) -> bool
+fn link_poll_dispatch<D>(host: NetHost&, driver: D&, timeout_ms: i64, now_ns: u64) -> i32
 ```
 
-Both `Poller` and `EventLoop` implement the shared `core::Poll*` and
+`NetHost` implements the `core::host_*` push/completion contract across Linux
+`epoll` & `io_uring` (`pbuf_ring`), Windows `WSAPoll` & `RIO`, macOS `kqueue`,
+and in-memory virtual pairs, delivering generation-checked `IoLink` and
+`WakeToken` events to passive protocol drivers (`core::on_link_event`). Both
+`Poller` and `EventLoop` implement the shared `core::Poll*` and
 `core::reactor_*` UFCS contract (`register_socket`, `modify_socket`,
 `deregister_socket`, `add_timer`, `cancel_timer`, `wake_tag`, and
 `poll_events`). Call `enable_os_multiplexing` to attach Linux `io_uring`

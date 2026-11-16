@@ -11,9 +11,9 @@ import wing from "../..";
 import wire_kit from ".";
 
 // ============================================================================
-// 1. verify_cross_protocol_differential (1/12)
+// 1. verify_cross_protocol_differential (1/11)
 // ============================================================================
-// CHECK: === [1/12] verify_cross_protocol_differential ===
+// CHECK: === [1/11] verify_cross_protocol_differential ===
 
 // tests/lit/verify_cross_protocol_differential.goose
 // Verification of Cross-Protocol Differential Defenses:
@@ -515,9 +515,9 @@ fn run_01_verify_cross_protocol_differential() {
 // CHECK-NEXT: === ALL_CROSS_PROTOCOL_TESTS_PASS ===
 
 // ============================================================================
-// 2. verify_live_e2e_workflows (2/12)
+// 2. verify_live_e2e_workflows (2/11)
 // ============================================================================
-// CHECK: === [2/12] verify_live_e2e_workflows ===
+// CHECK: === [2/11] verify_live_e2e_workflows ===
 
 // End-to-End Live Socket Verification Suite for High-Level Protocol Workflows:
 // 1. Live SOCKS5 (RFC 1928/1929) & HTTP CONNECT Proxy Tunnels (`wing::Client` -> Proxy -> `wing::HttpServer`).
@@ -1180,9 +1180,9 @@ fn run_02_verify_live_e2e_workflows() {
 // CHECK-NEXT: E2E_LIVE_REVERSE_PROXY_FAILOVER: OK
 
 // ============================================================================
-// 3. verify_module_seams_regress (3/12)
+// 3. verify_module_seams_regress (3/11)
 // ============================================================================
-// CHECK: === [3/12] verify_module_seams_regress ===
+// CHECK: === [3/11] verify_module_seams_regress ===
 
 // tests/lit/verify_module_seams_regress.goose
 // Regression test suite for cross-module integration seams (H2/H3 client/server bridges,
@@ -1730,9 +1730,9 @@ fn run_03_verify_module_seams_regress() {
 // CHECK-NEXT: SEAM_PROXY_CACHE_H2_EXT_CONNECT: OK
 
 // ============================================================================
-// 4. verify_readme_quickstart (4/12)
+// 4. verify_readme_quickstart (4/11)
 // ============================================================================
-// CHECK: === [4/12] verify_readme_quickstart ===
+// CHECK: === [4/11] verify_readme_quickstart ===
 
 // tests/lit/verify_readme_quickstart.goose
 // Verification suite ensuring all README.md Quick Start snippets compile and execute correctly.
@@ -1801,126 +1801,78 @@ fn run_04_verify_readme_quickstart() {
 }
 
 // ============================================================================
-// 5. verify_wire_api (5/12)
+// 5. verify_wire_api (5/11)
 // ============================================================================
-// CHECK: === [5/12] verify_wire_api ===
+// CHECK: === [5/11] verify_wire_api ===
 
 // tests/lit/verify_wire_api.goose
-// Verification of Vulkan-style zero-allocation wire command buffer recording,
-// back-patching, and frame stream demuxing via wing::wire.
+// Verification of Sans-IO HTTP/2 wire frame encoders, stream demuxing,
+// and HPACK primitives via wing::wire.
 //
 
 fn run_05_verify_wire_api() {
-    print("=== WIRE_VULKAN_API_VERIFICATION ===");
+    print("=== WIRE_SANS_IO_VERIFICATION ===");
 
-    // 1. Storage and Command Buffer Initialization
-    var cmd = wire::new_command_buffer();
-
-    assert(cmd.buf.len == 0);
-    assert(wire::available(cmd) == wire::WIRE_CMD_BUFFER_CAP);
-    assert(!cmd.has_error);
-    print("CMD_INIT: OK");
-
-    // 2. Client Preface
-    assert(wire::write_h2_preface(cmd));
-    assert(cmd.buf.len == 24);
-    print("CMD_PREFACE: OK");
-
-    // 3. SETTINGS Frame (Stream 0)
+    // 1. Direct Frame Encoders & WireH2FrameReader Demux Verification
     let s_list: wire::WireSetting[2] = [
         wire::h2_setting(rfc::H2_SETTING_ENABLE_PUSH, 0),
         wire::h2_setting(rfc::H2_SETTING_INITIAL_WINDOW_SIZE, 65535),
     ];
-    assert(wire::write_h2_settings(cmd, s_list[..]));
-    print("CMD_SETTINGS: OK");
-
-    // 4. WINDOW_UPDATE Frame (Stream 0)
-    assert(wire::write_h2_window_update(cmd, 0, 1048576));
-    print("CMD_WINDOW_UPDATE: OK");
-
-    // 5. Dynamic HEADERS Frame with HPACK Back-Patching
-    assert(wire::begin_h2_headers(cmd, 1, rfc::H2_FLAG_END_HEADERS));
-    assert(wire::hpack_indexed(cmd, 2)); // :method: GET
-    assert(wire::hpack_indexed(cmd, 7)); // :scheme: https
-    assert(wire::hpack_literal_without_indexing(cmd, ":path", "/healthz"));
-    assert(wire::hpack_literal_never_indexed(cmd, "x-api-key", "secret-test-token"));
-    assert(wire::end_h2_headers(cmd));
-    print("CMD_HEADERS_DYNAMIC: OK");
-
-    // 6. RST_STREAM, PING, and DATA Frames
-    assert(wire::write_h2_rst_stream(cmd, 3, 8)); // Cancel stream 3
     let ping_data: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
-    assert(wire::write_h2_ping(cmd, ping_data, false));
-
     let payload = "hello wire world";
-    assert(wire::write_h2_data(cmd, 1, payload, true));
-    print("CMD_DATA: OK");
 
-    // 7. Verify Frame Stream Demux with WireH2FrameReader
-    let wire_data = cmd.buf[..];
-    assert(wire_data.len > 24);
+    var wire_data: u8[..512] = [];
+    assert(wire::encode_settings_frame(s_list[..], wire_data));
+    assert(wire::encode_window_update_frame(0, 1048576, wire_data));
+    assert(wire::encode_rst_stream_frame(3, 8, wire_data));
+    assert(wire::encode_ping_frame(ping_data, false, wire_data));
+    assert(wire::encode_data_frame(1, payload, true, wire_data));
+    assert(wire::encode_priority_update_frame(1, 2, true, wire_data));
+    print("DIRECT_ENCODERS: OK");
 
-    let frames_data = wire_data[24..];
-    var reader = wire::new_wire_h2_frame_reader(frames_data);
+    var reader = wire::new_wire_h2_frame_reader(wire_data[..]);
 
-    // Frame 1: SETTINGS
     assert(wire::has_next(reader));
     let f1, p1, ok1 = wire::next_frame(reader);
     assert(ok1 && f1.frame_type == rfc::H2_FRAME_SETTINGS && f1.length == 12 && p1.len == 12);
 
-    // Frame 2: WINDOW_UPDATE
     assert(wire::has_next(reader));
     let f2, p2, ok2 = wire::next_frame(reader);
     assert(ok2 && f2.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && f2.length == 4 && p2.len == 4);
 
-    // Frame 3: HEADERS
     assert(wire::has_next(reader));
-    let f3, p3, ok3 = wire::next_frame(reader);
-    assert(ok3 && f3.frame_type == rfc::H2_FRAME_HEADERS && f3.stream_id == 1 && f3.flags == rfc::H2_FLAG_END_HEADERS);
-    assert(p3.len == (f3.length as i64));
+    let f3, _, ok3 = wire::next_frame(reader);
+    assert(ok3 && f3.frame_type == rfc::H2_FRAME_RST_STREAM && f3.stream_id == 3 && f3.length == 4);
 
-    // Frame 4: RST_STREAM
     assert(wire::has_next(reader));
     let f4, p4, ok4 = wire::next_frame(reader);
-    assert(ok4 && f4.frame_type == rfc::H2_FRAME_RST_STREAM && f4.stream_id == 3 && f4.length == 4);
+    assert(ok4 && f4.frame_type == rfc::H2_FRAME_PING && f4.length == 8 && p4.len == 8);
 
-    // Frame 5: PING
     assert(wire::has_next(reader));
     let f5, p5, ok5 = wire::next_frame(reader);
-    assert(ok5 && f5.frame_type == rfc::H2_FRAME_PING && f5.length == 8 && p5.len == 8);
+    assert(ok5 && f5.frame_type == rfc::H2_FRAME_DATA && f5.stream_id == 1 && f5.flags == rfc::H2_FLAG_END_STREAM);
+    assert(p5 == payload);
 
-    // Frame 6: DATA
     assert(wire::has_next(reader));
-    let f6, p6, ok6 = wire::next_frame(reader);
-    assert(ok6 && f6.frame_type == rfc::H2_FRAME_DATA && f6.stream_id == 1 && f6.flags == rfc::H2_FLAG_END_STREAM);
-    assert(p6 == payload);
+    let f6, _, ok6 = wire::next_frame(reader);
+    assert(ok6 && f6.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE);
 
-    // No further frames
     assert(!wire::has_next(reader));
     print("STREAM_DEMUX_VERIFIED: OK");
 
-    // 8. Direct Frame Encoders Verification
-    var direct_buf: u8[..512] = [];
-    assert(wire::encode_settings_frame(s_list[..], direct_buf));
-    assert(wire::encode_window_update_frame(0, 4096, direct_buf));
-    assert(wire::encode_priority_update_frame(1, 2, true, direct_buf));
-    assert(wire::encode_rst_stream_frame(1, 1, direct_buf));
-    assert(wire::encode_ping_frame(ping_data, true, direct_buf));
-    assert(wire::encode_data_frame(1, "test", false, direct_buf));
-    assert(direct_buf.len > 0);
-
-    var custom_cmd = wire::new_command_buffer();
+    // 2. Direct Header Frame Serialization
+    var hdr_buf: u8[..16] = [];
     let custom_hdr = wire::WireFrameHeader {
         length:     0,
         frame_type: rfc::H2_FRAME_PING,
         flags:      rfc::H2_FLAG_ACK,
         stream_id:  0,
     };
-    assert(wire::write_h2_frame_header(custom_cmd, custom_hdr));
-    assert(custom_cmd.buf.len == 9);
-    print("DIRECT_ENCODERS: OK");
+    assert(wire::encode_frame_header(custom_hdr, hdr_buf));
+    assert(hdr_buf.len == 9);
+    print("FRAME_HEADER_CODEC: OK");
 
-    // 9. Direct HPACK Encoders and String Decoder Verification
+    // 3. Direct HPACK Encoders and String Decoder Verification
     var hpack_raw: u8[..256] = [];
     assert(wire::hpack_encode_indexed(hpack_raw, 2));
     assert(wire::hpack_encode_literal_without_indexing(hpack_raw, "custom-header", "custom-val"));
@@ -1934,57 +1886,18 @@ fn run_05_verify_wire_api() {
     assert(wire::hpack_decode_string(str_sample[..], dec_offset, dec_out));
     assert(dec_out == "decoded_target");
     print("HPACK_CODECS: OK");
-
-    // 10. WireQueue Lifecycle and Invariants
-    let dev_cfg = wire::WireDeviceConfig { .. };
-    var queue = wire::new_wire_queue(dev_cfg);
-    assert(!queue.is_connected);
-    assert(queue.bytes_sent == 0);
-
-    // Unconnected queue rejects submission safely
-    let _, sub_slice_ok = wire::submit_slice(queue, "dummy");
-    assert(!sub_slice_ok);
-
-    var rx_dummy: u8[16] = [0; 16];
-    let _, poll_ok = wire::poll_recv(queue, rx_dummy[..]);
-    assert(!poll_ok);
-
-    let connect_ok = wire::connect_wire_queue(queue, "127.0.0.1", 1, 10);
-    assert(!connect_ok || queue.is_connected);
-    wire::close_wire_queue(queue);
-    assert(!queue.is_connected);
-    print("QUEUE_LIFECYCLE: OK");
-
-    // 11. Capacity Overflow Safety Guard Test
-    var of_cmd = wire::new_command_buffer();
-    var chunk: u8[1024] = [0; 1024];
-    for i in 0..16 {
-        assert(wire::write_raw(of_cmd, chunk[..]));
-    }
-    assert(of_cmd.buf.len == wire::WIRE_CMD_BUFFER_CAP);
-    // Writing beyond capacity triggers guard
-    assert(!wire::write_u8(of_cmd, 0xFF));
-    assert(of_cmd.has_error);
-    print("OVERFLOW_GUARD_TRIGGERED: OK");
 }
 
-// CHECK: === WIRE_VULKAN_API_VERIFICATION ===
-// CHECK: CMD_INIT: OK
-// CHECK: CMD_PREFACE: OK
-// CHECK: CMD_SETTINGS: OK
-// CHECK: CMD_WINDOW_UPDATE: OK
-// CHECK: CMD_HEADERS_DYNAMIC: OK
-// CHECK: CMD_DATA: OK
-// CHECK: STREAM_DEMUX_VERIFIED: OK
+// CHECK: === WIRE_SANS_IO_VERIFICATION ===
 // CHECK: DIRECT_ENCODERS: OK
+// CHECK: STREAM_DEMUX_VERIFIED: OK
+// CHECK: FRAME_HEADER_CODEC: OK
 // CHECK: HPACK_CODECS: OK
-// CHECK: QUEUE_LIFECYCLE: OK
-// CHECK: OVERFLOW_GUARD_TRIGGERED: OK
 
 // ============================================================================
-// 6. verify_wire_benchmarks (6/12)
+// 6. verify_wire_benchmarks (6/11)
 // ============================================================================
-// CHECK: === [6/12] verify_wire_benchmarks ===
+// CHECK: === [6/11] verify_wire_benchmarks ===
 
 // tests/lit/verify_wire_benchmarks.goose
 // Verification of Zero-Allocation Wire Primitives & Microbenchmark Latency Budgets.
@@ -2107,9 +2020,9 @@ fn run_06_verify_wire_benchmarks() {
 // CHECK: ZERO-ALLOC WIRE BENCHMARKS COMPLETE: ALL BUDGETS PASSED
 
 // ============================================================================
-// 7. verify_wire_bounds (7/12)
+// 7. verify_wire_bounds (7/11)
 // ============================================================================
-// CHECK: === [7/12] verify_wire_bounds ===
+// CHECK: === [7/11] verify_wire_bounds ===
 
 // Verification of HTTP/2 wire frame bounds and RFC invariants (RFC 9113, RFC 9218).
 
@@ -2249,46 +2162,14 @@ fn run_07_verify_wire_bounds() {
     print("HPACK_QPACK_MAP_BOUNDS: OK\n");
     // CHECK: HPACK_QPACK_MAP_BOUNDS: OK
 
-    // Case 10 (F-WIRE-006 & F-WIRE-007): Pool arena slot 0 protection, double-free guard, and submit state checks
-    let inst = wire::WireInstance { .. };
-    var phys: wire::WirePhysicalDevice[..4] = [];
-    let _ = wire::enumerate_physical_devices(inst, phys);
-    let dev_info = wire::WireDeviceCreateInfo { .. };
-    var dev, _ = wire::create_wire_device(phys[0], dev_info);
-    let pool_info = wire::WireCommandPoolCreateInfo { .. };
-    var pool, _ = wire::create_command_pool(dev, pool_info);
-    var pcmd1, _ = wire::allocate_command_buffer(pool);
-    var pcmd2, _ = wire::allocate_command_buffer(pool);
-    let begin_info = wire::WireCommandBufferBeginInfo { .. };
-    let _ = wire::begin_command_buffer(pcmd1, begin_info);
-    assert(wire::write_h2_preface(pcmd1));
-    let _ = wire::end_command_buffer(pcmd1);
-    let slice1, ok_c1 = wire::commit_command_buffer_to_arena(pool, pcmd1);
-    assert(ok_c1 && slice1 == rfc::H2_CLIENT_PREFACE);
-    var standalone = wire::new_command_buffer();
-    assert(wire::write_raw(standalone, "CORRUPT_SLOT_ZERO_______"));
-    let _, ok_standalone_commit = wire::commit_command_buffer_to_arena(pool, standalone);
-    assert(!ok_standalone_commit);
-    assert(pool.arena[..24] == rfc::H2_CLIENT_PREFACE);
-    wire::free_command_buffer(pool, pcmd2);
-    wire::free_command_buffer(pool, pcmd2); // double-free must not decrement allocated_count to 0
-    assert(pool.allocated_count == 1 && pool.arena.len >= 24);
-    var q = wire::get_device_queue(dev, 0, 0);
-    q.driver = wire::WireDriverKind.Mock;
-    q.is_connected = true;
-    let _, ok_sub_freed = wire::submit(q, pcmd2);
-    assert(!ok_sub_freed);
-    print("POOL_AND_SUBMIT_STATE_BOUNDS: OK\n");
-    // CHECK: POOL_AND_SUBMIT_STATE_BOUNDS: OK
-
     print("ALL_WIRE_BOUNDS_VERIFIED: OK\n");
     // CHECK: ALL_WIRE_BOUNDS_VERIFIED: OK
 }
 
 // ============================================================================
-// 8. verify_wire_framing (8/12)
+// 8. verify_wire_framing (8/11)
 // ============================================================================
-// CHECK: === [8/12] verify_wire_framing ===
+// CHECK: === [8/11] verify_wire_framing ===
 
 // tests/lit/verify_wire_framing.goose
 // Verification of wire framing primitives: gRPC LPM, TLS record headers, and SIMD CRLFCRLF scanning.
@@ -2398,282 +2279,9 @@ fn run_08_verify_wire_framing() {
 // CHECK: H1_WIRE_PARSERS: OK
 
 // ============================================================================
-// 9. verify_wire_hierarchy (9/12)
+// 9. verify_wire_loopback (9/11)
 // ============================================================================
-// CHECK: === [9/12] verify_wire_hierarchy ===
-
-fn test_wire_result() {
-    let ok_res = wire::WireResult.Success;
-    let err_res = wire::WireResult.ErrorDeviceLost;
-
-    if wire::is_success(ok_res) {
-        print("OK_RES_SUCCESS: 1\n");
-    }
-    if !wire::is_error(ok_res) {
-        print("OK_RES_NOT_ERROR: 1\n");
-    }
-    if wire::is_error(err_res) {
-        print("ERR_RES_IS_ERROR: 1\n");
-    }
-}
-
-fn test_device_hierarchy() {
-    let inst = wire::WireInstance { .. };
-    var phys_devs: wire::WirePhysicalDevice[..4] = [];
-    let enum_res = wire::enumerate_physical_devices(inst, phys_devs);
-    if wire::is_success(enum_res) && phys_devs.len == 1 {
-        print("ENUM_PHYSICAL_DEV_OK: 1\n");
-    }
-
-    let dev_info = wire::WireDeviceCreateInfo {
-        config: wire::WireDeviceConfig { .. },
-        enabled_features: wire::WirePhysicalDeviceFeatures {
-            hpack_compression: true,
-            tcp_zero_copy:     false,
-            hardware_tls:      false,
-            raw_frames:        true,
-        },
-    };
-
-    var dev, create_res = wire::create_wire_device(phys_devs[0], dev_info);
-    if wire::is_success(create_res) && dev.is_active {
-        print("CREATE_WIRE_DEVICE_OK: 1\n");
-    }
-
-    test_command_pool(dev);
-    test_pipeline(dev);
-    test_sync_primitives(dev);
-    test_queue_batch_submit(dev);
-
-    wire::destroy_wire_device(dev);
-    if !dev.is_active {
-        print("DESTROY_WIRE_DEVICE_OK: 1\n");
-    }
-}
-
-fn test_command_pool(dev: const wire::WireDevice&) {
-    let pool_info = wire::WireCommandPoolCreateInfo {
-        flags:              wire::WIRE_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        queue_family_index: 0,
-    };
-    var pool, pool_res = wire::create_command_pool(dev, pool_info);
-    if wire::is_success(pool_res) && pool.is_valid {
-        print("CREATE_COMMAND_POOL_OK: 1\n");
-    }
-
-    let reset_res = wire::reset_command_pool(pool, wire::WIRE_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
-    if wire::is_success(reset_res) {
-        print("RESET_COMMAND_POOL_OK: 1\n");
-    }
-
-    test_cmd_buffer_fsm(pool);
-
-    wire::trim_command_pool(pool);
-    print("TRIM_COMMAND_POOL_OK: 1\n");
-
-    wire::destroy_command_pool(pool);
-    if !pool.is_valid {
-        print("DESTROY_COMMAND_POOL_OK: 1\n");
-    }
-}
-
-fn test_cmd_buffer_fsm(pool: wire::WireCommandPool&) {
-    var cmd, alloc_res = wire::allocate_command_buffer(pool);
-    if wire::is_success(alloc_res) && cmd.state == wire::WireCommandBufferState.Initial {
-        print("ALLOC_CMD_BUF_OK: 1\n");
-    }
-
-    let begin_info = wire::WireCommandBufferBeginInfo {
-        flags: wire::WIRE_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    };
-    let begin_res = wire::begin_command_buffer(cmd, begin_info);
-    if wire::is_success(begin_res) && cmd.state == wire::WireCommandBufferState.Recording {
-        print("BEGIN_CMD_BUF_OK: 1\n");
-    }
-
-    // 24-bit overflow test (BUG-09)
-    let ovf_24 = wire::write_u24_be(cmd, 0x01000000);
-    if !ovf_24 && cmd.has_error {
-        print("U24_OVERFLOW_GUARD_OK: 1\n");
-    }
-
-    // Reset buffer for further clean recording
-    wire::reset_command_buffer(cmd, 0);
-    wire::begin_command_buffer(cmd, begin_info);
-
-    // Dynamic headers interleave protection (BUG-04 & BUG-17)
-    assert(wire::begin_h2_headers(cmd, 1, rfc::H2_FLAG_END_HEADERS));
-    assert(cmd.state == wire::WireCommandBufferState.RecordingHeaders);
-
-    // Attempting frame write inside headers block must fail (BUG-17)
-    let ping_data: u8[8] = [0; 8];
-    let interleave_res = wire::write_h2_ping(cmd, ping_data, false);
-    if !interleave_res && cmd.has_error {
-        print("HEADERS_INTERLEAVE_GUARD_OK: 1\n");
-    }
-
-    // Reset and complete clean recording
-    wire::reset_command_buffer(cmd, 0);
-    wire::begin_command_buffer(cmd, begin_info);
-    assert(wire::write_h2_preface(cmd));
-    let end_res = wire::end_command_buffer(cmd);
-    if wire::is_success(end_res) && cmd.state == wire::WireCommandBufferState.Executable {
-        print("END_CMD_BUF_OK: 1\n");
-    }
-
-    wire::free_command_buffer(pool, cmd);
-    if cmd.state == wire::WireCommandBufferState.Invalid {
-        print("FREE_CMD_BUF_OK: 1\n");
-    }
-}
-
-fn test_pipeline(dev: const wire::WireDevice&) {
-    let pipe_info = wire::WirePipelineCreateInfo {
-        bind_point: wire::WirePipelineBindPoint.Transmit,
-        layout: wire::WirePipelineLayout {
-            max_frame_size: 16384,
-            push_constants: [],
-        },
-        flags: 0,
-    };
-    var pipe, pipe_res = wire::create_wire_pipeline(dev, pipe_info);
-    if wire::is_success(pipe_res) && pipe.is_valid {
-        print("CREATE_WIRE_PIPELINE_OK: 1\n");
-    }
-
-    var cmd = wire::new_command_buffer();
-    let bind_res = wire::cmd_bind_pipeline(cmd, wire::WirePipelineBindPoint.Transmit, pipe);
-    if wire::is_success(bind_res) {
-        print("BIND_WIRE_PIPELINE_OK: 1\n");
-    }
-
-    wire::destroy_wire_pipeline(pipe);
-    if !pipe.is_valid {
-        print("DESTROY_WIRE_PIPELINE_OK: 1\n");
-    }
-}
-
-fn test_sync_primitives(dev: const wire::WireDevice&) {
-    // 1. Fence test
-    let fence_info = wire::WireFenceCreateInfo {
-        flags: wire::WIRE_FENCE_CREATE_SIGNALED_BIT,
-    };
-    var fence, f_res = wire::create_wire_fence(dev, fence_info);
-    if wire::is_success(f_res) && fence.is_valid {
-        print("CREATE_WIRE_FENCE_OK: 1\n");
-    }
-    let wait_res = wire::wait_for_wire_fence(fence, 1000);
-    if wire::is_success(wait_res) {
-        print("WAIT_WIRE_FENCE_OK: 1\n");
-    }
-    let status_res = wire::get_wire_fence_status(fence);
-    if wire::is_success(status_res) {
-        print("STATUS_WIRE_FENCE_OK: 1\n");
-    }
-    let reset_res = wire::reset_wire_fence(fence);
-    if wire::is_success(reset_res) && fence.status == wire::WireFenceStatus.Unsignaled {
-        print("RESET_WIRE_FENCE_OK: 1\n");
-    }
-    wire::destroy_wire_fence(fence);
-    if !fence.is_valid {
-        print("DESTROY_WIRE_FENCE_OK: 1\n");
-    }
-
-    // 2. Semaphore test
-    let sem_info = wire::WireSemaphoreCreateInfo {
-        semaphore_type: wire::WireSemaphoreType.Timeline,
-        initial_value:  0,
-    };
-    var sem, sem_res = wire::create_wire_semaphore(dev, sem_info);
-    if wire::is_success(sem_res) && sem.is_valid {
-        print("CREATE_WIRE_SEMAPHORE_OK: 1\n");
-    }
-    wire::signal_wire_semaphore(sem, 42);
-    let sem_wait = wire::wait_wire_semaphore(sem, 42);
-    if wire::is_success(sem_wait) {
-        print("WAIT_WIRE_SEMAPHORE_OK: 1\n");
-    }
-    wire::destroy_wire_semaphore(sem);
-    if !sem.is_valid {
-        print("DESTROY_WIRE_SEMAPHORE_OK: 1\n");
-    }
-}
-
-fn test_queue_batch_submit(dev: const wire::WireDevice&) {
-    var q = wire::get_device_queue(dev, 0, 0);
-    q.driver = wire::WireDriverKind.Mock;
-    q.is_connected = true;
-
-    var cmd1 = wire::new_command_buffer();
-    assert(wire::write_h2_preface(cmd1));
-
-    var cmd2 = wire::new_command_buffer();
-    let s_list: wire::WireSetting[1] = [
-        wire::h2_setting(rfc::H2_SETTING_ENABLE_PUSH, 0),
-    ];
-    assert(wire::write_h2_settings(cmd2, s_list[..]));
-
-    let batch: wire::WireCommandBuffer[2] = [cmd1, cmd2];
-    let submit_info = wire::WireSubmitInfo {
-        stage_mask:       wire::WIRE_PIPELINE_STAGE_ALL_COMMANDS,
-        wait_semaphore:   0,
-        signal_semaphore: 0,
-        bytes_submitted:  0,
-    };
-
-    let fence_info = wire::WireFenceCreateInfo { flags: 0 };
-    var fence, f_res = wire::create_wire_fence(dev, fence_info);
-    assert(wire::is_success(f_res));
-
-    let sent_bytes, sub_res = wire::queue_submit_batch(q, batch[..], submit_info, fence);
-    if wire::is_success(sub_res) && sent_bytes > 0 && fence.status == wire::WireFenceStatus.Signaled {
-        print("QUEUE_SUBMIT_BATCH_OK: 1\n");
-    }
-
-    wire::close_wire_queue(q);
-    if q.fd == -1 && !q.is_connected {
-        print("CLOSE_WIRE_QUEUE_FD_RESET_OK: 1\n");
-    }
-}
-
-fn run_09_verify_wire_hierarchy() {
-    // CHECK: OK_RES_SUCCESS: 1
-    // CHECK: OK_RES_NOT_ERROR: 1
-    // CHECK: ERR_RES_IS_ERROR: 1
-    // CHECK: ENUM_PHYSICAL_DEV_OK: 1
-    // CHECK: CREATE_WIRE_DEVICE_OK: 1
-    // CHECK: CREATE_COMMAND_POOL_OK: 1
-    // CHECK: RESET_COMMAND_POOL_OK: 1
-    // CHECK: ALLOC_CMD_BUF_OK: 1
-    // CHECK: BEGIN_CMD_BUF_OK: 1
-    // CHECK: U24_OVERFLOW_GUARD_OK: 1
-    // CHECK: HEADERS_INTERLEAVE_GUARD_OK: 1
-    // CHECK: END_CMD_BUF_OK: 1
-    // CHECK: FREE_CMD_BUF_OK: 1
-    // CHECK: TRIM_COMMAND_POOL_OK: 1
-    // CHECK: DESTROY_COMMAND_POOL_OK: 1
-    // CHECK: CREATE_WIRE_PIPELINE_OK: 1
-    // CHECK: BIND_WIRE_PIPELINE_OK: 1
-    // CHECK: DESTROY_WIRE_PIPELINE_OK: 1
-    // CHECK: CREATE_WIRE_FENCE_OK: 1
-    // CHECK: WAIT_WIRE_FENCE_OK: 1
-    // CHECK: STATUS_WIRE_FENCE_OK: 1
-    // CHECK: RESET_WIRE_FENCE_OK: 1
-    // CHECK: DESTROY_WIRE_FENCE_OK: 1
-    // CHECK: CREATE_WIRE_SEMAPHORE_OK: 1
-    // CHECK: WAIT_WIRE_SEMAPHORE_OK: 1
-    // CHECK: DESTROY_WIRE_SEMAPHORE_OK: 1
-    // CHECK: QUEUE_SUBMIT_BATCH_OK: 1
-    // CHECK: CLOSE_WIRE_QUEUE_FD_RESET_OK: 1
-    // CHECK: DESTROY_WIRE_DEVICE_OK: 1
-    test_wire_result();
-    test_device_hierarchy();
-}
-
-// ============================================================================
-// 10. verify_wire_loopback (10/12)
-// ============================================================================
-// CHECK: === [10/12] verify_wire_loopback ===
+// CHECK: === [9/11] verify_wire_loopback ===
 
 // tests/lit/verify_wire_loopback.goose
 // End-to-end in-memory wire loopback verification for HTTP/2, QUIC, and HTTP/3.
@@ -2875,7 +2483,7 @@ fn test_h3_wire_loopback() {
     print("H3_LOOPBACK: OK");
 }
 
-fn run_10_verify_wire_loopback() {
+fn run_09_verify_wire_loopback() {
     test_h2_wire_loopback();
     test_quic_wire_loopback();
     test_h3_wire_loopback();
@@ -2886,9 +2494,9 @@ fn run_10_verify_wire_loopback() {
 // CHECK-NEXT: H3_LOOPBACK: OK
 
 // ============================================================================
-// 11. verify_wire_rfc_seams_regress (11/12)
+// 10. verify_wire_rfc_seams_regress (10/11)
 // ============================================================================
-// CHECK: === [11/12] verify_wire_rfc_seams_regress ===
+// CHECK: === [10/11] verify_wire_rfc_seams_regress ===
 
 // Regression tests for cross-component seams and RFC edge cases in `wire` (F-WIRE-008..F-WIRE-013).
 
@@ -3077,278 +2685,34 @@ fn test_f_wire_011_h2_frame_and_settings_validation() {
     print("F_WIRE_011_H2_FRAME_AND_SETTINGS: OK\n");
 }
 
-// F-WIRE-012: reset_command_pool(pool, 0) reuse, out-of-order slot release, stale cmd rejection, and RecordingHeaders error state.
-fn test_f_wire_012_pool_and_cmd_fsm() {
-    let inst = wire::WireInstance { .. };
-    var phys: wire::WirePhysicalDevice[..4] = [];
-    let _ = wire::enumerate_physical_devices(inst, phys);
-    let dev_info = wire::WireDeviceCreateInfo { .. };
-    let pool_info = wire::WireCommandPoolCreateInfo { .. };
-    var dev, _ = wire::create_wire_device(phys[0], dev_info);
-    var pool, _ = wire::create_command_pool(dev, pool_info);
-
-    // Allocate all 4 command buffers, then reset pool with flags = 0 (without RELEASE_RESOURCES_BIT)
-    var c1, r1 = wire::allocate_command_buffer(pool);
-    var c2, r2 = wire::allocate_command_buffer(pool);
-    var c3, r3 = wire::allocate_command_buffer(pool);
-    var c4, r4 = wire::allocate_command_buffer(pool);
-    assert(wire::is_success(r1) && wire::is_success(r2) && wire::is_success(r3) && wire::is_success(r4));
-    assert(wire::is_success(wire::reset_command_pool(pool, 0)));
-
-    // Allocating after reset_command_pool(pool, 0) must succeed, and stale `c1` must not commit over `c5`
-    var c5, r5 = wire::allocate_command_buffer(pool);
-    assert(wire::is_success(r5));
-    let begin_info = wire::WireCommandBufferBeginInfo { .. };
-    let _ = wire::begin_command_buffer(c1, begin_info);
-    let _ = wire::write_h2_preface(c1);
-    let _ = wire::end_command_buffer(c1);
-    let _, stale_commit_ok = wire::commit_command_buffer_to_arena(pool, c1);
-    assert(!stale_commit_ok);
-
-    // Failed HPACK command inside RecordingHeaders must allow end_command_buffer to return ErrorCommandBufferLocked
-    let _ = wire::begin_command_buffer(c5, begin_info);
-    assert(wire::begin_h2_headers(c5, 1, rfc::H2_FLAG_END_HEADERS));
-    assert(!wire::hpack_indexed(c5, 0));
-    let end_err = wire::end_command_buffer(c5);
-    assert(end_err == wire::WireResult.ErrorCommandBufferLocked && c5.state == wire::WireCommandBufferState.Invalid);
-
-    print("F_WIRE_012_POOL_AND_CMD_FSM: OK\n");
-}
-
-// F-WIRE-013: submit_to_cork consumed-buffer reset, Timeline semaphore monotonicity, and idempotent add_*_stage.
-fn test_f_wire_013_cork_sync_and_pipeline() {
-    let inst = wire::WireInstance { .. };
-    var phys: wire::WirePhysicalDevice[..4] = [];
-    let _ = wire::enumerate_physical_devices(inst, phys);
-    let dev_info = wire::WireDeviceCreateInfo { .. };
-    var dev, _ = wire::create_wire_device(phys[0], dev_info);
-
-    // Timeline semaphore must reject non-monotonic backward values
-    let sem_info = wire::WireSemaphoreCreateInfo {
-        semaphore_type: wire::WireSemaphoreType.Timeline,
-        initial_value:  20,
-    };
-    var sem, _ = wire::create_wire_semaphore(dev, sem_info);
-    assert(!wire::is_success(wire::signal_wire_semaphore(sem, 10)));
-    assert(sem.value == 20);
-
+// F-WIRE-013: idempotent add_ingress_stage / add_egress_stage on WirePipeline.
+fn test_f_wire_013_pipeline_stages() {
     // add_ingress_stage / add_egress_stage must not append duplicate stage IDs
     var pipe = wire::default_server_pipeline();
     let initial_in_len = pipe.ingress_stages.len;
     assert(wire::add_ingress_stage(pipe, wire::STAGE_ID_SRV_IN_AUTH_JWT));
     assert(pipe.ingress_stages.len == initial_in_len);
 
-    print("F_WIRE_013_CORK_SYNC_AND_PIPELINE: OK\n");
+    print("F_WIRE_013_PIPELINE_STAGES: OK\n");
 }
 
-fn run_11_verify_wire_rfc_seams_regress() {
+fn run_10_verify_wire_rfc_seams_regress() {
     // CHECK: F_WIRE_008_TRANSACTIONAL_TABLES: OK
     // CHECK: F_WIRE_009_QPACK_SENSITIVE_AND_RFC: OK
     // CHECK: F_WIRE_010_H1_SYNC_AND_SMUGGLING: OK
     // CHECK: F_WIRE_011_H2_FRAME_AND_SETTINGS: OK
-    // CHECK: F_WIRE_012_POOL_AND_CMD_FSM: OK
-    // CHECK: F_WIRE_013_CORK_SYNC_AND_PIPELINE: OK
+    // CHECK: F_WIRE_013_PIPELINE_STAGES: OK
     test_f_wire_008_transactional_hpack_qpack_tables();
     test_f_wire_009_qpack_sensitive_and_rfc_headers();
     test_f_wire_010_h1_head_sync_and_smuggling();
     test_f_wire_011_h2_frame_and_settings_validation();
-    test_f_wire_012_pool_and_cmd_fsm();
-    test_f_wire_013_cork_sync_and_pipeline();
+    test_f_wire_013_pipeline_stages();
 }
 
 // ============================================================================
-// 12. verify_wire_vulkan_conformance (12/12)
+// 11. verify_wire_pipeline_conformance (11/11)
 // ============================================================================
-// CHECK: === [12/12] verify_wire_vulkan_conformance ===
-
-// Verification of the full 7-tier Vulkan-similarity API pipeline in wire subsystem.
-
-fn test_vulkan_wire_conformance() {
-    print("=== VULKAN_WIRE_CONFORMANCE_SUITE ===\n");
-
-    // Tier 1: Instance & Physical Device Enumeration
-    let inst = wire::WireInstance { .. };
-    assert(inst.api_version == 0x00400000);
-    print("VULKAN_INSTANCE: OK\n");
-
-    var phys_devs: wire::WirePhysicalDevice[..4] = [];
-    let enum_res = wire::enumerate_physical_devices(inst, phys_devs);
-    assert(wire::is_success(enum_res));
-    assert(phys_devs.len >= 1);
-    let phys = phys_devs[0];
-    assert(phys.properties.max_buffer_capacity == 16384);
-    print("PHYSICAL_DEVICE_ENUM: OK\n");
-
-    // Tier 2: Logical Device Creation
-    let dev_info = wire::WireDeviceCreateInfo {
-        config: wire::WireDeviceConfig { .. },
-        enabled_features: wire::WirePhysicalDeviceFeatures {
-            hpack_compression: true,
-            tcp_zero_copy:     false,
-            hardware_tls:      false,
-            raw_frames:        true,
-        },
-    };
-    var dev, create_dev_res = wire::create_wire_device(phys, dev_info);
-    assert(wire::is_success(create_dev_res) && dev.is_active);
-    print("LOGICAL_DEVICE_CREATED: OK\n");
-
-    // Tier 3: Command Pool Memory Allocator
-    let pool_info = wire::WireCommandPoolCreateInfo {
-        flags:              wire::WIRE_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        queue_family_index: 0,
-    };
-    var pool, pool_res = wire::create_command_pool(dev, pool_info);
-    assert(wire::is_success(pool_res) && pool.is_valid);
-
-    let reset_pool_res = wire::reset_command_pool(pool, wire::WIRE_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
-    assert(wire::is_success(reset_pool_res));
-    print("COMMAND_POOL_RECYCLED: OK\n");
-
-    // Tier 4: Pipeline State Object (PSO)
-    let pipe_info = wire::WirePipelineCreateInfo {
-        bind_point: wire::WirePipelineBindPoint.Transmit,
-        layout: wire::WirePipelineLayout {
-            max_frame_size: 16384,
-            push_constants: [],
-        },
-        flags: 0,
-    };
-    var pipe, pipe_res = wire::create_wire_pipeline(dev, pipe_info);
-    assert(wire::is_success(pipe_res) && pipe.is_valid);
-
-    // Tier 5: Command Buffer Lifecycle FSM & Frame Recording
-    var cmd, alloc_res = wire::allocate_command_buffer(pool);
-    assert(wire::is_success(alloc_res) && cmd.state == wire::WireCommandBufferState.Initial);
-
-    // Attempting to record before begin_command_buffer MUST fail
-    let premature_rec = wire::write_h2_preface(cmd);
-    assert(!premature_rec && cmd.has_error);
-
-    // Begin recording
-    let begin_info = wire::WireCommandBufferBeginInfo {
-        flags: wire::WIRE_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    };
-    let begin_res = wire::begin_command_buffer(cmd, begin_info);
-    assert(wire::is_success(begin_res) && cmd.state == wire::WireCommandBufferState.Recording);
-
-    // Bind Pipeline State Object
-    let bind_res = wire::cmd_bind_pipeline(cmd, wire::WirePipelineBindPoint.Transmit, pipe);
-    assert(wire::is_success(bind_res));
-    print("PIPELINE_STATE_BOUND: OK\n");
-
-    // Command 1: Preface
-    assert(wire::write_h2_preface(cmd));
-
-    // Command 2: SETTINGS
-    let s_list: wire::WireSetting[2] = [
-        wire::h2_setting(rfc::H2_SETTING_ENABLE_PUSH, 0),
-        wire::h2_setting(rfc::H2_SETTING_INITIAL_WINDOW_SIZE, 65535),
-    ];
-    assert(wire::write_h2_settings(cmd, s_list[..]));
-
-    // Command 3: Dynamic HEADERS Block with Interleave Protection
-    assert(wire::begin_h2_headers(cmd, 1, rfc::H2_FLAG_END_HEADERS));
-    assert(cmd.state == wire::WireCommandBufferState.RecordingHeaders);
-
-    // Interleave rejection: writing frame while in RecordingHeaders must fail
-    var interleave_cmd, i_res = wire::allocate_command_buffer(pool);
-    assert(wire::is_success(i_res));
-    wire::begin_command_buffer(interleave_cmd, begin_info);
-    assert(wire::begin_h2_headers(interleave_cmd, 1, rfc::H2_FLAG_END_HEADERS));
-    let ping_data: u8[8] = [0; 8];
-    assert(!wire::write_h2_ping(interleave_cmd, ping_data, false));
-    assert(interleave_cmd.has_error);
-    wire::free_command_buffer(pool, interleave_cmd);
-
-    //Valid HPACK entries on clean cmd (zero-staging in-place 9-byte frame header reservation)
-    let hdr_start = cmd.headers_frame_offset;
-    assert(hdr_start > 0);
-    assert(wire::hpack_indexed(cmd, 2));
-    assert(wire::hpack_indexed(cmd, 7));
-    assert(wire::hpack_literal_without_indexing(cmd, ":path", "/vulkan-wire"));
-    assert(wire::end_h2_headers(cmd));
-    assert(cmd.state == wire::WireCommandBufferState.Recording);
-
-    // Command 4: DATA Frame
-    assert(wire::write_h2_data(cmd, 1, "test-stream-body", true));
-
-    // End command buffer recording and commit to pool arena via core::ct_copy_bytes
-    let end_res = wire::end_command_buffer(cmd);
-    assert(wire::is_success(end_res) && cmd.state == wire::WireCommandBufferState.Executable);
-    let arena_slice, commit_ok = wire::commit_command_buffer_to_arena(pool, cmd);
-    assert(commit_ok && arena_slice.len == cmd.buf.len);
-    print("COMMAND_BUFFER_LIFECYCLE_FSM: OK\n");
-
-    // Verify wire::hpack_decode_string Huffman decoding (RFC 7541 Appendix C.4.1 "www.example.com")
-    let huff_wire: u8[13] = [0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff];
-    var huff_pos:     u64      = 0;
-    var decoded_huff: u8[..64] = [];
-    let huff_ok = wire::hpack_decode_string(huff_wire[..], huff_pos, decoded_huff);
-    assert(huff_ok && huff_pos == 13);
-    assert(core::ct_eq_bytes(decoded_huff[..], "www.example.com"));
-
-    // Verify rfc::status_phrase, rfc::status_line_h1, rfc::is_empty_body_status, rfc::is_redirect_status
-    assert(core::ct_eq_bytes(rfc::status_phrase(rfc::STATUS_OK), "OK"));
-    assert(core::ct_eq_bytes(rfc::status_line_h1(rfc::STATUS_NOT_FOUND), "HTTP/1.1 404 Not Found\r\n"));
-    assert(rfc::is_empty_body_status(rfc::STATUS_NO_CONTENT));
-    assert(!rfc::is_empty_body_status(rfc::STATUS_OK));
-    assert(rfc::is_redirect_status(rfc::STATUS_MOVED_PERMANENTLY));
-    assert(!rfc::is_redirect_status(rfc::STATUS_OK));
-    print("RFC_HELPERS_AND_HUFFMAN: OK\n");
-
-    // Tier 6: Queue Acquisition, Batch Submission & Synchronization2
-    var queue = wire::get_device_queue(dev, 0, 0);
-    queue.driver = wire::WireDriverKind.Mock;
-    queue.is_connected = true;
-
-    // Verify WireQueue submit_to_cork and submit_to_transport over ring buffers
-    var cork = core::CorkBuffer { .. };
-    let cork_ok = wire::submit_to_cork(cmd, cork);
-    assert(cork_ok && core::cork_pending(cork) == cmd.buf.len);
-    print("WIRE_QUEUE_TLS13: OK\n");
-
-    // Create Synchronization2 Fence and Semaphore
-    let fence_info = wire::WireFenceCreateInfo { flags: 0 };
-    var fence, f_res = wire::create_wire_fence(dev, fence_info);
-    assert(wire::is_success(f_res) && fence.status == wire::WireFenceStatus.Unsignaled);
-
-    let sem_info = wire::WireSemaphoreCreateInfo {
-        semaphore_type: wire::WireSemaphoreType.Timeline,
-        initial_value:  10,
-    };
-    var sem, sem_res = wire::create_wire_semaphore(dev, sem_info);
-    assert(wire::is_success(sem_res) && sem.value == 10);
-    print("SEMAPHORE_TIMELINE: OK\n");
-
-    // Batch Submission
-    let batch: wire::WireCommandBuffer[1] = [cmd];
-    let submit_info = wire::WireSubmitInfo {
-        stage_mask:       wire::WIRE_PIPELINE_STAGE_ALL_COMMANDS,
-        wait_semaphore:   10,
-        signal_semaphore: 20,
-        bytes_submitted:  0,
-    };
-
-    let sent_bytes, sub_res = wire::queue_submit_batch(queue, batch[..], submit_info, fence);
-    assert(wire::is_success(sub_res) && sent_bytes > 0);
-    assert(fence.status == wire::WireFenceStatus.Signaled);
-    print("FENCE_SIGNALED: OK\n");
-
-    // Tier 7: Queue Shutdown and Descriptor Reset Invariant
-    wire::close_wire_queue(queue);
-    assert(queue.fd == -1);
-    assert(!queue.is_connected);
-    print("SOCKET_FD_INVARIANT: OK\n");
-
-    // Resource Cleanup
-    wire::free_command_buffer(pool, cmd);
-    wire::destroy_command_pool(pool);
-    wire::destroy_wire_pipeline(pipe);
-    wire::destroy_wire_fence(fence);
-    wire::destroy_wire_semaphore(sem);
-    wire::destroy_wire_device(dev);
-}
+// CHECK: === [11/11] verify_wire_pipeline_conformance ===
 
 struct CustomAuditStage {
     pre_route_hits: i32 = 0,
@@ -3456,22 +2820,19 @@ fn test_tier1_and_tier2_pipeline_conformance() {
     assert(q_err == h3_internal::QpackError.None && q_pseudo.path[..] == "/h3");
     assert(wing::get_header(q_map, "x-h3-custom") == "val3");
 
-    // Verify WireCommandBuffer multi-protocol recording and H2 frame header decode
-    var multi_cmd = wire::new_command_buffer();
-    let begin_multi = wire::WireCommandBufferBeginInfo { flags: wire::WIRE_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
-    assert(wire::cmd_encode_h1_request(multi_cmd, "GET", "/ping", "example.com", req_hdrs, ""));
-    multi_cmd.reset();
-    assert(wire::is_success(wire::begin_command_buffer(multi_cmd, begin_multi)));
-    assert(wire::cmd_encode_h1_response(multi_cmd, 200, "OK", "wing", resp_hdrs, "ok", false));
-    multi_cmd.reset();
-    assert(wire::is_success(wire::begin_command_buffer(multi_cmd, begin_multi)));
-    assert(wire::cmd_encode_h2_headers_map(multi_cmd, dt, 1, enc_pseudo, h2_in_map, true));
-    let dec_hdr, dec_hdr_err = wire::decode_h2_frame_header(multi_cmd.buf[..]);
-    assert(dec_hdr_err == rfc::H2_ERR_NO_ERROR && dec_hdr.stream_id == 1);
-    multi_cmd.reset();
-    assert(wire::is_success(wire::begin_command_buffer(multi_cmd, begin_multi)));
-    assert(wire::cmd_encode_h3_headers_map(multi_cmd, qpack_enc, 0, q_in_pseudo, q_req_in, q_inst));
-    assert(multi_cmd.buf.len > 0);
+    // Verify wire::hpack_decode_string Huffman decoding and rfc::status_* helpers
+    let huff_wire: u8[13] = [0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff];
+    var huff_pos:     u64      = 0;
+    var decoded_huff: u8[..64] = [];
+    let huff_ok = wire::hpack_decode_string(huff_wire[..], huff_pos, decoded_huff);
+    assert(huff_ok && huff_pos == 13);
+    assert(core::ct_eq_bytes(decoded_huff[..], "www.example.com"));
+    assert(core::ct_eq_bytes(rfc::status_phrase(rfc::STATUS_OK), "OK"));
+    assert(core::ct_eq_bytes(rfc::status_line_h1(rfc::STATUS_NOT_FOUND), "HTTP/1.1 404 Not Found\r\n"));
+    assert(rfc::is_empty_body_status(rfc::STATUS_NO_CONTENT));
+    assert(!rfc::is_empty_body_status(rfc::STATUS_OK));
+    assert(rfc::is_redirect_status(rfc::STATUS_MOVED_PERMANENTLY));
+    assert(!rfc::is_redirect_status(rfc::STATUS_OK));
     print("TIER1_HPACK_QPACK_MAP: OK\n");
 
     // 3. Tier 2 PipelineState step combinator + Server Stage Bricks + <UserStage> hook
@@ -3512,49 +2873,34 @@ fn test_tier1_and_tier2_pipeline_conformance() {
     print("TIER2_STAGE_CONSTRUCTOR: OK\n");
 }
 
-fn run_12_verify_wire_vulkan_conformance() {
-    // CHECK: === VULKAN_WIRE_CONFORMANCE_SUITE ===
-    // CHECK: VULKAN_INSTANCE: OK
-    // CHECK: PHYSICAL_DEVICE_ENUM: OK
-    // CHECK: LOGICAL_DEVICE_CREATED: OK
-    // CHECK: COMMAND_POOL_RECYCLED: OK
-    // CHECK: PIPELINE_STATE_BOUND: OK
-    // CHECK: COMMAND_BUFFER_LIFECYCLE_FSM: OK
-    // CHECK: RFC_HELPERS_AND_HUFFMAN: OK
-    // CHECK: WIRE_QUEUE_TLS13: OK
-    // CHECK: SEMAPHORE_TIMELINE: OK
-    // CHECK: FENCE_SIGNALED: OK
-    // CHECK: SOCKET_FD_INVARIANT: OK
+fn run_11_verify_wire_pipeline_conformance() {
     // CHECK: TIER1_H1_CODEC: OK
     // CHECK: TIER1_HPACK_QPACK_MAP: OK
     // CHECK: TIER2_STAGE_CONSTRUCTOR: OK
-    test_vulkan_wire_conformance();
     test_tier1_and_tier2_pipeline_conformance();
 }
 
 fn main() {
-    print("\n=== [1/12] verify_cross_protocol_differential ===\n");
+    print("\n=== [1/11] verify_cross_protocol_differential ===\n");
     run_01_verify_cross_protocol_differential();
-    print("\n=== [2/12] verify_live_e2e_workflows ===\n");
+    print("\n=== [2/11] verify_live_e2e_workflows ===\n");
     run_02_verify_live_e2e_workflows();
-    print("\n=== [3/12] verify_module_seams_regress ===\n");
+    print("\n=== [3/11] verify_module_seams_regress ===\n");
     run_03_verify_module_seams_regress();
-    print("\n=== [4/12] verify_readme_quickstart ===\n");
+    print("\n=== [4/11] verify_readme_quickstart ===\n");
     run_04_verify_readme_quickstart();
-    print("\n=== [5/12] verify_wire_api ===\n");
+    print("\n=== [5/11] verify_wire_api ===\n");
     run_05_verify_wire_api();
-    print("\n=== [6/12] verify_wire_benchmarks ===\n");
+    print("\n=== [6/11] verify_wire_benchmarks ===\n");
     run_06_verify_wire_benchmarks();
-    print("\n=== [7/12] verify_wire_bounds ===\n");
+    print("\n=== [7/11] verify_wire_bounds ===\n");
     run_07_verify_wire_bounds();
-    print("\n=== [8/12] verify_wire_framing ===\n");
+    print("\n=== [8/11] verify_wire_framing ===\n");
     run_08_verify_wire_framing();
-    print("\n=== [9/12] verify_wire_hierarchy ===\n");
-    run_09_verify_wire_hierarchy();
-    print("\n=== [10/12] verify_wire_loopback ===\n");
-    run_10_verify_wire_loopback();
-    print("\n=== [11/12] verify_wire_rfc_seams_regress ===\n");
-    run_11_verify_wire_rfc_seams_regress();
-    print("\n=== [12/12] verify_wire_vulkan_conformance ===\n");
-    run_12_verify_wire_vulkan_conformance();
+    print("\n=== [9/11] verify_wire_loopback ===\n");
+    run_09_verify_wire_loopback();
+    print("\n=== [10/11] verify_wire_rfc_seams_regress ===\n");
+    run_10_verify_wire_rfc_seams_regress();
+    print("\n=== [11/11] verify_wire_pipeline_conformance ===\n");
+    run_11_verify_wire_pipeline_conformance();
 }
