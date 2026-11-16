@@ -32,6 +32,9 @@ const REACTOR_URING_TAG_RECV:      u64 = 0x200000000;
 const REACTOR_URING_TAG_SEND:      u64 = 0x300000000;
 const REACTOR_URING_TAG_POLL:      u64 = 0x400000000;
 const REACTOR_URING_TAG_KIND_MASK: u64 = 0xF00000000;
+const REACTOR_ACCEL_SLOT_MASK:     u64 = 0xFFFF;
+const REACTOR_ACCEL_GEN_SHIFT:     u32 = 16;
+const REACTOR_ACCEL_GEN_MASK:      u64 = 0xFFFF;
 const REACTOR_URING_PBUF_BGID:     u16 = 1;
 const REACTOR_KQUEUE_EV_ERROR:     u16 = 0x4000;
 
@@ -49,12 +52,25 @@ struct ReactorAccelRuntime {
     slot_accel:          bool[64]                    = [false; 64],
     slot_ktls_rx:        bool[64]                    = [false; 64],
     slot_rio_rq:         u64[64]                     = [0; 64],
+    slot_gen:            u16[64]                     = [1; 64],
     slot_tx_inflight:    bool[64]                    = [false; 64],
     slot_close_after_tx: bool[64]                    = [false; 64],
     slab:                u8[..524288]                = [],
     tls_ct_leftover:     u8[..16648][64]             = [[]; 64],
     tls_plain_scratch:   u8[..32768]                 = [],
     tls_seal_scratch:    u8[..65536]                 = [],
+}
+
+inline fn reactor_accel_slot_token(accel: const ReactorAccelRuntime&, slot: i64) -> u64 {
+    return core::shl_sat_u64(accel.slot_gen[slot], REACTOR_ACCEL_GEN_SHIFT) | (slot as u64);
+}
+
+inline fn reactor_accel_match_token(accel: const ReactorAccelRuntime&, token: u64) -> i64, bool {
+    let slot = (token & REACTOR_ACCEL_SLOT_MASK) as i64;
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_accel[slot] else { return -1, false; }
+    let gen = ((token >> REACTOR_ACCEL_GEN_SHIFT) & REACTOR_ACCEL_GEN_MASK) as u16;
+    guard gen != 0 && gen == accel.slot_gen[slot] else { return -1, false; }
+    return slot, true;
 }
 
 // Opens a listening TCP socket configured for OS completion accelerators when supported.
@@ -104,11 +120,12 @@ fn reactor_arm_uring_accept(accel: ReactorAccelRuntime&, listener_fd: i64) {
 fn reactor_arm_uring_slot_rx(accel: ReactorAccelRuntime&, slot: i64, fd: i64) {
     guard accel.uring_fd >= 0 && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && fd > 0 else { return; }
     var sqe = net_internal::UringSqe { .. };
+    let tok = reactor_accel_slot_token(accel, slot);
     if accel.slot_ktls_rx[slot] {
-        net_internal::uring_prep_poll_add(sqe, fd as i32, 1, REACTOR_URING_TAG_POLL | (slot as u64));
+        net_internal::uring_prep_poll_add(sqe, fd as i32, 1, REACTOR_URING_TAG_POLL | tok);
     } else {
         net_internal::uring_prep_sqe_recv_multishot(
-            sqe, fd as i32, REACTOR_URING_PBUF_BGID, REACTOR_URING_TAG_RECV | (slot as u64),
+            sqe, fd as i32, REACTOR_URING_PBUF_BGID, REACTOR_URING_TAG_RECV | tok,
         );
     }
     var batch: net_internal::UringSqe[1] = [sqe];
@@ -127,8 +144,29 @@ fn reactor_post_rio_slot_rx(accel: ReactorAccelRuntime&, slot: i64) -> bool {
     ) == 0;
 }
 
+inline fn reactor_cancel_uring_slot(accel: ReactorAccelRuntime&, slot: i64) {
+    guard accel.slot_accel[slot] && accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0 else { return; }
+    let tok = reactor_accel_slot_token(accel, slot);
+    let rx_tag = if accel.slot_ktls_rx[slot] {
+        REACTOR_URING_TAG_POLL | tok
+    } else {
+        REACTOR_URING_TAG_RECV | tok
+    };
+    var cancel_sqes: net_internal::UringSqe[..2] = [];
+    var rx_cancel = net_internal::UringSqe { .. };
+    net_internal::uring_prep_cancel(rx_cancel, rx_tag);
+    let _ = cancel_sqes.try_push(rx_cancel);
+    if accel.slot_tx_inflight[slot] {
+        var tx_cancel = net_internal::UringSqe { .. };
+        net_internal::uring_prep_cancel(tx_cancel, REACTOR_URING_TAG_SEND | tok);
+        let _ = cancel_sqes.try_push(tx_cancel);
+    }
+    let _ = net_internal::uring_submit_sqes(accel.uring_fd, cancel_sqes[..]);
+}
+
 fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
     guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
+    reactor_cancel_uring_slot(accel, slot);
     if accel.slot_accel[slot] {
         accel.active_accel_slots = max(core::sub_sat_i64(accel.active_accel_slots, 1), 0);
     }
@@ -138,6 +176,11 @@ fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
     accel.slot_tx_inflight[slot] = false;
     accel.slot_close_after_tx[slot] = false;
     accel.tls_ct_leftover[slot].clear();
+    accel.slot_gen[slot] = if accel.slot_gen[slot] >= 65535 {
+        1
+    } else {
+        core::add_sat_u64(accel.slot_gen[slot], 1) as u16
+    };
 }
 
 fn reactor_close_accel(accel: ReactorAccelRuntime&) {
@@ -266,7 +309,8 @@ fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, 
 
 fn reactor_bind_slot_backend(accel: ReactorAccelRuntime&, slot: i64, client_fd: i64) {
     if accel.mode == ReactorAccelMode.Rio && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && !accel.slot_ktls_rx[slot] {
-        let rq = net_internal::native_rio_create_rq_ctx(client_fd, 16, 16, accel.rio_cq, accel.rio_cq, slot as u64);
+        let tok = reactor_accel_slot_token(accel, slot);
+        let rq = net_internal::native_rio_create_rq_ctx(client_fd, 16, 16, accel.rio_cq, accel.rio_cq, tok);
         if rq != 0 {
             accel.slot_rio_rq[slot] = rq;
             accel.slot_accel[slot] = true;
@@ -320,8 +364,9 @@ fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wi
             }
         } else if accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0 {
             var sqe = net_internal::UringSqe { .. };
+            let tok = reactor_accel_slot_token(accel, slot);
             net_internal::uring_prep_send_slice(
-                sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | (slot as u64),
+                sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | tok,
             );
             var batch: net_internal::UringSqe[1] = [sqe];
             if net_internal::uring_submit_sqes(accel.uring_fd, batch[..]) > 0 {

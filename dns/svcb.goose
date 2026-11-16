@@ -71,7 +71,9 @@ fn parse_mandatory_svc_param(val: const u8[:]) -> bool, bool, bool {
     while m_off + 2 <= val.len {
         let req_key = ((val[m_off] as u16) << 8) | val[m_off + 1];
         let rk_i32 = req_key as i32;
-        guard req_key >= 1 && rk_i32 > last_m_key else { return false, false, false; }
+        guard req_key >= 1 && req_key != rfc::SVC_PARAM_NO_DEFAULT_ALPN && rk_i32 > last_m_key else {
+            return false, false, false;
+        }
         if req_key > rfc::SVC_PARAM_IPV6HINT {
             has_unsupported = true;
         } else if req_key == rfc::SVC_PARAM_ECH {

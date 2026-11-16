@@ -259,11 +259,32 @@ fn has_offered_ws_extension_name(offered: const u8[:], ext_name: const u8[:]) ->
     return false;
 }
 
+inline fn validate_single_response_ws_ext(
+    head:               const u8[:],
+    offered_extensions: const u8[:],
+    saw_pmd:            bool&,
+) -> bool {
+    let name_part, _, _ = head.split_once_unquoted_byte(';');
+    let ext_name = name_part.trim_lws();
+    guard has_offered_ws_extension_name(offered_extensions, ext_name) else {
+        return false;
+    }
+    if ext_name == rfc::WS_PMD_EXTENSION_NAME {
+        guard !saw_pmd else { return false; }
+        let default_pmd = PerMessageDeflateConfig { .. };
+        let _, ok_pmd = parse_single_pmd_offer(head, default_pmd);
+        guard ok_pmd else { return false; }
+        saw_pmd = true;
+    }
+    return true;
+}
+
 fn validate_response_ws_extensions(
     headers:            const HeaderMap&,
     raw_buf:            const u8[:],
     offered_extensions: const u8[:],
 ) -> bool {
+    var saw_pmd = false;
     for &e in headers.entries {
         if !resolve_hdr_entry_name(headers, raw_buf, e).eq_ascii_fold("sec-websocket-extensions") {
             continue;
@@ -273,8 +294,7 @@ fn validate_response_ws_extensions(
         guard rem.len > 0 else { return false; }
         while rem.len > 0 {
             let head, tail, has_comma = rem.split_once_unquoted_byte(',');
-            let name_part, _, _ = head.split_once_unquoted_byte(';');
-            guard has_offered_ws_extension_name(offered_extensions, name_part.trim_lws()) else {
+            guard validate_single_response_ws_ext(head, offered_extensions, saw_pmd) else {
                 return false;
             }
             if !has_comma { break; }

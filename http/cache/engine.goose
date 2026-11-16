@@ -1080,18 +1080,20 @@ fn on_response(
 
 // ---- invalidation cascade (rfc 9111 section 4.4) ---------------------------
 
-// Invalidates all cached entries whose URL matches target_url.
+// Invalidates all cached entries whose URL matches target_url (exact or No-Vary-Search equivalent).
 fn invalidate_matching_url(cache: HttpCache&, target_url: const u8[:]) -> i64 {
     var count: i64 = 0;
     let target_hash = hash_fnv1a(target_url);
     for &entry, idx in cache.entries {
-        if entry.is_valid &&
-           entry.url_hash == target_hash &&
-           entry.url[..] == target_url {
-            entry.is_valid = false;
-            entry.security_zeroed = true;
-            cache.lru_detach(idx as i32);
-            count++;
+        if entry.is_valid {
+            let exact = entry.url_hash == target_hash && entry.url[..] == target_url;
+            let nvs_eq = entry.nvs.is_valid && are_urls_nvs_equivalent(entry.url[..], target_url, entry.nvs);
+            if exact || nvs_eq {
+                entry.is_valid = false;
+                entry.security_zeroed = true;
+                cache.lru_detach(idx as i32);
+                count = core::add_sat_i64(count, 1);
+            }
         }
     }
     return count;
@@ -1387,6 +1389,82 @@ fn store_response(
     return upsert_scalable_cache_entry(cache, entry, req.headers);
 }
 
+fn invalidate_scalable_matching_url(cache: ScalableHttpCache&, target_url: const u8[:]) {
+    let target_hash = hash_fnv1a(target_url);
+    for i in cache.entries.len {
+        let entry .= cache.entries[i];
+        if entry.is_valid {
+            let exact = entry.url_hash == target_hash && entry.url[..] == target_url;
+            let nvs_eq = entry.nvs.is_valid && are_urls_nvs_equivalent(entry.url[..], target_url, entry.nvs);
+            if exact || nvs_eq {
+                entry.is_valid = false;
+                entry.security_zeroed = true;
+                detach_scalable_lru(cache, i as i32);
+            }
+        }
+    }
+}
+
+fn invalidate_scalable_on_unsafe(cache: ScalableHttpCache&, req: const Request&, resp: const Response&) {
+    invalidate_scalable_matching_url(cache, req.url[..]);
+    let base_url, err_b = core::parse_url(req.url[..]);
+    guard err_b == core::UrlParseError.None && base_url.valid else { return; }
+    let base_orig = core::origin_from_url(base_url);
+    let loc_hdr = resp.header("Location");
+    if loc_hdr.len > 0 {
+        let t_url, t_err = core::parse_url_with_base(loc_hdr, base_url);
+        let same_t = t_err == core::UrlParseError.None && t_url.valid &&
+            core::is_same_origin(core::origin_from_url(t_url), base_orig);
+        if same_t {
+            invalidate_scalable_matching_url(cache, core::href(t_url));
+        }
+    }
+    let cloc_hdr = resp.header("Content-Location");
+    if cloc_hdr.len > 0 {
+        let c_url, c_err = core::parse_url_with_base(cloc_hdr, base_url);
+        let same_c = c_err == core::UrlParseError.None && c_url.valid &&
+            core::is_same_origin(core::origin_from_url(c_url), base_orig);
+        if same_c {
+            invalidate_scalable_matching_url(cache, core::href(c_url));
+        }
+    }
+}
+
+inline fn freshen_scalable_304_entry(
+    cache:     ScalableHttpCache&,
+    req:       const Request&,
+    resp:      const Response&,
+    ts:        const CacheTimestamps&,
+    entry_idx: i64,
+    dec:       ResponseDecision&,
+) -> bool {
+    guard resp.status_code == 304 && entry_idx >= 0 && entry_idx < cache.entries.len else {
+        return false;
+    }
+    let entry .= cache.entries[entry_idx];
+    guard entry.is_valid && !entry.security_zeroed else { return false; }
+    let resp_304_headers = resp.response_headers_to_map();
+    entry.headers.merge_cached_headers_304(resp_304_headers);
+    entry.cc = parse_targeted_cache_control_headers(
+        entry.headers,
+        resolve_target_cache_name(cache.options),
+        CacheControlParseOptions { is_request: false, ignore_cargo_cult: cache.options.ignore_cargo_cult },
+    );
+    if !refresh_entry_vary_and_nvs(entry, req.headers) {
+        entry.is_valid = false;
+        detach_scalable_lru(cache, entry_idx as i32);
+    }
+    entry.timestamps = ts;
+    populate_entry_validators(entry);
+    if entry.is_valid {
+        touch_scalable_lru(cache, entry_idx as i32);
+    }
+    entry.entry_to_response(ts.response_sec, dec.response);
+    dec.kind = ResponseDecisionKind.FreshenAndReturn;
+    dec.entry_idx = entry_idx;
+    return true;
+}
+
 // Coordinates post-network response caching on `ScalableHttpCache` (compatible with `stage_client_cache_store<Cache>`).
 fn on_response(
     cache:                ScalableHttpCache&,
@@ -1399,19 +1477,16 @@ fn on_response(
     if cache.max_entries <= 0 || cache.max_body_cap <= 0 {
         init_scalable_http_cache(cache, cache.max_entries, cache.max_body_cap);
     }
-    if resp.status_code == 304 && revalidate_entry_idx >= 0 && revalidate_entry_idx < cache.entries.len {
-        let entry .= cache.entries[revalidate_entry_idx];
-        if entry.is_valid && !entry.security_zeroed {
-            let resp_304_headers = resp.response_headers_to_map();
-            entry.headers.merge_cached_headers_304(resp_304_headers);
-            entry.timestamps = ts;
-            populate_entry_validators(entry);
-            touch_scalable_lru(cache, revalidate_entry_idx as i32);
-            entry.entry_to_response(ts.response_sec, dec.response);
-            dec.kind = ResponseDecisionKind.FreshenAndReturn;
-            dec.entry_idx = revalidate_entry_idx;
-            return dec;
-        }
+    let m = req.method[..];
+    let is_unsafe = m.eq_ascii_fold("POST") || m.eq_ascii_fold("PUT") ||
+        m.eq_ascii_fold("DELETE") || m.eq_ascii_fold("PATCH");
+    if is_unsafe && resp.status_code >= 200 && resp.status_code < 400 {
+        invalidate_scalable_on_unsafe(cache, req, resp);
+        dec.kind = ResponseDecisionKind.PassThrough;
+        return dec;
+    }
+    if freshen_scalable_304_entry(cache, req, resp, ts, revalidate_entry_idx, dec) {
+        return dec;
     }
     if cache.store_response(req, resp, ts.response_sec) {
         dec.kind = ResponseDecisionKind.StoreAndReturn;

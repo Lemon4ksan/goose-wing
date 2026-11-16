@@ -112,6 +112,7 @@ const H3_ERR_MISSING_SETTINGS:           u64 = 0x010A;
 const H3_ERR_REQUEST_REJECTED:           u64 = 0x010B;
 const H3_ERR_REQUEST_CANCELLED:          u64 = 0x010C;
 const H3_ERR_REQUEST_INCOMPLETE:         u64 = 0x010D;
+const H3_ERR_MESSAGE_ERROR:              u64 = 0x010E;
 const H3_ERR_CONNECT_ERROR:              u64 = 0x010F;
 const H3_ERR_VERSION_FALLBACK:           u64 = 0x0110;
 const H3_ERR_QPACK_DECOMPRESSION_FAILED: u64 = 0x0200;

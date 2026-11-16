@@ -1652,30 +1652,33 @@ inline fn slice_grpc_h2_data_payload(payload: const u8[:], flags: u8) -> const u
 fn handle_grpc_h2_wire_frame<
     HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
 >(
-    conn:      i64,
-    server:    HttpServer&,
-    d:         const GrpcServerDispatcher&,
-    client_ip: const u8[:],
-    hpack_dec: h2_internal::DynamicTable&,
-    hpack_enc: h2_internal::DynamicTable&,
-    pending:   Request&,
-    hdr:       const wire::WireFrameHeader&,
-    payload:   const u8[:],
-    out_wire:  u8[..65536]&,
+    conn:              i64,
+    server:            HttpServer&,
+    d:                 const GrpcServerDispatcher&,
+    client_ip:         const u8[:],
+    hpack_dec:         h2_internal::DynamicTable&,
+    hpack_enc:         h2_internal::DynamicTable&,
+    pending:           Request&,
+    pending_stream_id: u32&,
+    hdr:               const wire::WireFrameHeader&,
+    payload:           const u8[:],
+    out_wire:          u8[..65536]&,
 ) -> bool {
     guard hdr.length <= rfc::H2_DEFAULT_MAX_FRAME_SIZE && payload.len == hdr.length else {
         return false;
     }
     if hdr.frame_type != rfc::H2_FRAME_HEADERS && hdr.frame_type != rfc::H2_FRAME_DATA {
         let ok_ctrl = handle_grpc_h2_control_frame(conn, hdr, payload);
-        if ok_ctrl && hdr.frame_type == rfc::H2_FRAME_RST_STREAM {
+        if ok_ctrl && hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.stream_id == pending_stream_id {
             reset_server_request_fast(pending);
+            pending_stream_id = 0;
         }
         return ok_ctrl;
     }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS {
         guard hdr.stream_id > 0 && (hdr.stream_id & 1) == 1
             && (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0
+            && pending_stream_id == 0
             && pending.headers.entries.len == 0 else {
             return false;
         }
@@ -1694,6 +1697,7 @@ fn handle_grpc_h2_wire_frame<
             reset_server_request_fast(pending);
             return false;
         }
+        pending_stream_id = hdr.stream_id;
         if pseudo.method.len > 0 {
             let _ = pending.method.try_set(pseudo.method[..]);
         }
@@ -1714,10 +1718,13 @@ fn handle_grpc_h2_wire_frame<
                 let _ = tcp_send(conn, out_wire[..]);
             }
             reset_server_request_fast(pending);
+            pending_stream_id = 0;
         }
         return true;
     }
-    guard hdr.stream_id > 0 && (hdr.stream_id & 1) == 1 && pending.headers.entries.len > 0 else {
+    guard hdr.stream_id > 0 &&
+        hdr.stream_id == pending_stream_id &&
+        pending.headers.entries.len > 0 else {
         return false;
     }
     let data_slice, ok_data = slice_grpc_h2_data_payload(payload, hdr.flags);
@@ -1728,6 +1735,7 @@ fn handle_grpc_h2_wire_frame<
     );
     guard core::add_sat_u64(pending.body.len as u64, data_slice.len as u64) <= max_body else {
         reset_server_request_fast(pending);
+        pending_stream_id = 0;
         return false;
     }
     pending.body.append(data_slice);
@@ -1740,6 +1748,7 @@ fn handle_grpc_h2_wire_frame<
             let _ = tcp_send(conn, out_wire[..]);
         }
         reset_server_request_fast(pending);
+        pending_stream_id = 0;
     }
     return true;
 }
@@ -1747,15 +1756,16 @@ fn handle_grpc_h2_wire_frame<
 fn drain_grpc_h2_frames<
     HandlerFn: fn(u16, GrpcServerContext&, const u8[:], u8[>..]&) -> GrpcStatus,
 >(
-    conn_fd:   i64,
-    server:    HttpServer&,
-    d:         const GrpcServerDispatcher&,
-    peer_ip:   const u8[:],
-    hpack_dec: h2_internal::DynamicTable&,
-    hpack_enc: h2_internal::DynamicTable&,
-    pending:   Request&,
-    in_buf:    u8[..65536]&,
-    out_wire:  u8[..65536]&,
+    conn_fd:           i64,
+    server:            HttpServer&,
+    d:                 const GrpcServerDispatcher&,
+    peer_ip:           const u8[:],
+    hpack_dec:         h2_internal::DynamicTable&,
+    hpack_enc:         h2_internal::DynamicTable&,
+    pending:           Request&,
+    pending_stream_id: u32&,
+    in_buf:            u8[..65536]&,
+    out_wire:          u8[..65536]&,
 ) -> bool {
     var cursor: i64 = 0;
     var is_running = true;
@@ -1765,7 +1775,18 @@ fn drain_grpc_h2_frames<
             break;
         }
         is_running = handle_grpc_h2_wire_frame(
-            conn_fd, server, d, peer_ip, hpack_dec, hpack_enc, pending, hdr, payload, out_wire, HandlerFn,
+            conn_fd,
+            server,
+            d,
+            peer_ip,
+            hpack_dec,
+            hpack_enc,
+            pending,
+            pending_stream_id,
+            hdr,
+            payload,
+            out_wire,
+            HandlerFn,
         );
     }
     if cursor > 0 {
@@ -1794,6 +1815,7 @@ fn serve_grpc_h2_connection<
     var hpack_dec = h2_internal::new_dynamic_table(4096);
     var hpack_enc = h2_internal::new_dynamic_table(4096);
     var pending = new_request("POST", "");
+    var pending_stream_id: u32 = 0;
 
     var in_buf:   u8[..65536] = [];
     var out_wire: u8[..65536] = [];
@@ -1806,7 +1828,17 @@ fn serve_grpc_h2_connection<
     var is_running = true;
     while is_running {
         is_running = drain_grpc_h2_frames(
-            conn_fd, server, d, peer_ip[..], hpack_dec, hpack_enc, pending, in_buf, out_wire, HandlerFn,
+            conn_fd,
+            server,
+            d,
+            peer_ip[..],
+            hpack_dec,
+            hpack_enc,
+            pending,
+            pending_stream_id,
+            in_buf,
+            out_wire,
+            HandlerFn,
         );
         if !is_running {
             break;

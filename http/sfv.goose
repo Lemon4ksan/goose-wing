@@ -120,6 +120,14 @@ fn sf_skip_ws(src: const u8[:], pos: i64) -> i64 {
     return p;
 }
 
+fn sf_skip_sp(src: const u8[:], pos: i64) -> i64 {
+    var p = pos;
+    while p < src.len && src[p] == ' ' {
+        p = core::add_sat_i64(p, 1);
+    }
+    return p;
+}
+
 fn sf_skip_ws_and_commas(src: const u8[:], pos: i64) -> i64 {
     var p = pos;
     while p < src.len {
@@ -225,16 +233,47 @@ fn sf_parse_binary(src: const u8[:], pos: i64, out_item: SfItem&, out_next: i64&
 }
 
 // Decodes the Base64 payload of an RFC 8941/9651 Binary (`SfType.Binary`) item into `out`.
+// RFC 8941 Section 4.2.7 permits non-zero padding bits in trailing `=` / `==` groups.
 //
 // Example:
 //   item = SfItem { kind: SfType.Binary, str_val: "aGVsbG8=" }, out = []
 //   returns: true, out = "hello"
 fn sf_decode_byte_sequence<B>(item: const SfItem&, out: B&) -> bool {
     out.clear();
-    guard item.kind == SfType.Binary && core::base64_decode(item.str_val, out) else {
-        out.clear();
-        return false;
+    let encoded = item.str_val;
+    guard item.kind == SfType.Binary && (encoded.len & 3) == 0 else { return false; }
+    var committed = false;
+    defer if !committed { out.clear(); };
+
+    var buf:  u64 = 0;
+    var bits: u64 = 0;
+    var idx:  i64 = 0;
+    while idx < encoded.len {
+        let ch = encoded[idx];
+        if ch == '=' {
+            guard bits == 4 || bits == 2 else { return false; }
+            let expected_pad: i64 = if bits == 4 { 2 } else { 1 };
+            guard core::sub_sat_i64(encoded.len, idx) == expected_pad else { return false; }
+            var p = idx;
+            while p < encoded.len {
+                guard encoded[p] == '=' else { return false; }
+                p = core::add_sat_i64(p, 1);
+            }
+            committed = true;
+            return true;
+        }
+        let v = core::base64_val(ch);
+        guard v >= 0 else { return false; }
+        buf = core::shl_sat_u64(buf & 0xFF, 6) | (v as u64);
+        bits = core::add_sat_u64(bits, 6);
+        if bits >= 8 {
+            bits = core::sub_sat_u64(bits, 8);
+            let byte_out = ((buf >> bits) & 0xFF) as u8;
+            guard out.try_push(byte_out) else { return false; }
+        }
+        idx = core::add_sat_i64(idx, 1);
     }
+    committed = true;
     return true;
 }
 
@@ -605,15 +644,11 @@ fn sf_parse_key(src: const u8[:], pos: i64) -> const u8[:], i64, bool {
     return src[start..p], p, true;
 }
 
-// Parses parameters: ;key=val;flag;key2=val2
+// Parses parameters: ;key=val;flag;key2=val2 (RFC 8941 Section 3.1.2: *( ";" *SP parameter ))
 fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&, out_next: i64&) -> bool {
     var p = pos;
-    while p < src.len {
-        let ws_p = sf_skip_ws(src, p);
-        if ws_p >= src.len || src[ws_p] != ';' {
-            break;
-        }
-        p = sf_skip_ws(src, ws_p + 1); // skip ';' and OWS
+    while p < src.len && src[p] == ';' {
+        p = sf_skip_sp(src, p + 1); // skip ';' and *SP
 
         let key, k_next, ok_k = sf_parse_key(src, p);
         if !ok_k {
@@ -660,7 +695,7 @@ fn sf_parse_parameters(src: const u8[:], pos: i64, out_params: SfParameter[..8]&
 //   returns: result with item kind Integer, value 123, ok = true
 fn parse_sf_item(input: const u8[:]) -> SfParameterizedItem, bool {
     var result = SfParameterizedItem { .. };
-    let trimmed = input.trim_ascii_space();
+    let trimmed = input.trim_lws();
     if trimmed.len == 0 {
         return result, false;
     }
@@ -816,7 +851,7 @@ fn upsert_sf_dict_entry(out_entries: SfDictEntry[..16]&, entry: SfDictEntry) -> 
 //   returns: true, out_entries has 2 dictionary entries
 fn parse_sf_dict(input: const u8[:], out_entries: SfDictEntry[..16]&) -> bool {
     out_entries.clear();
-    let trimmed = input.trim_ascii_space();
+    let trimmed = input.trim_lws();
     if trimmed.len == 0 {
         return true;
     }
@@ -873,7 +908,7 @@ fn sf_parse_single_list_entry(src: const u8[:], pos: i64, p_item: SfParameterize
 //   returns: true, out_items has 3 elements
 fn parse_sf_list(input: const u8[:], out_items: SfParameterizedItem[..16]&) -> bool {
     out_items.clear();
-    let trimmed = input.trim_ascii_space();
+    let trimmed = input.trim_lws();
     if trimmed.len == 0 {
         return true;
     }
@@ -986,7 +1021,7 @@ fn skip_sfv_parameters(raw: const u8[:], cursor: i64&) -> bool {
     defer if !committed { cursor = saved_cursor; };
 
     while cursor < raw.len && raw[cursor] == ';' {
-        cursor = sf_skip_ws(raw, core::add_sat_i64(cursor, 1));
+        cursor = sf_skip_sp(raw, core::add_sat_i64(cursor, 1));
         let _, next_key, ok_key = sf_parse_key(raw, cursor);
         guard ok_key else { return false; }
         cursor = next_key;
@@ -1013,7 +1048,7 @@ fn parse_sfv_parameters(raw: const u8[:], cursor: i64&, out_params: SfvParam[..1
     defer if !committed { cursor = saved_cursor; };
 
     while cursor < raw.len && raw[cursor] == ';' {
-        cursor = sf_skip_ws(raw, core::add_sat_i64(cursor, 1)); // skip ';' and OWS
+        cursor = sf_skip_sp(raw, core::add_sat_i64(cursor, 1)); // skip ';' and *SP
 
         var param_key: u8[..64] = [];
         guard parse_sfv_key(raw, cursor, param_key) else { return false; }
@@ -1065,7 +1100,7 @@ fn parse_sfv_inner_list(raw: const u8[:], cursor: i64&, member: SfvMember&) -> b
     cursor = core::add_sat_i64(cursor, 1); // skip '('
     var closed = false;
     while cursor < raw.len {
-        cursor = sf_skip_ws(raw, cursor);
+        cursor = sf_skip_sp(raw, cursor);
         if cursor < raw.len && raw[cursor] == ')' {
             cursor = core::add_sat_i64(cursor, 1);
             closed = true;

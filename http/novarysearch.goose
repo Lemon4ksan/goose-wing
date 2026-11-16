@@ -28,56 +28,166 @@ struct QueryParam {
 
 // ---- Header Parser ------------------------------------------------------
 
-fn copy_sfv_inner_string_list(items: const SfvItem[:], out: u8[..64][..16]&) -> bool {
-    out.clear();
-    var committed = false;
-    defer if !committed { out.clear(); };
-    for &item in items {
-        guard item.bare.kind == SfvType.String else { return false; }
-        var name: u8[..64] = [];
-        guard name.try_set(item.bare.text[..]) && out.try_push(name) else { return false; }
+struct NvsDictParseState {
+    nvs:               NoVarySearch   = NoVarySearch { is_valid: true, .. },
+    has_except:        bool           = false,
+    params_type_ok:    bool           = true,
+    except_type_ok:    bool           = true,
+    key_order_type_ok: bool           = true,
+    seen_keys:         u8[..64][..64] = [],
+}
+
+fn record_nvs_dict_key(seen_keys: u8[..64][..64]&, key: const u8[..64]&) -> bool {
+    for &existing in seen_keys {
+        if existing[..] == key[..] {
+            return true;
+        }
     }
+    return seen_keys.try_push(key);
+}
+
+inline fn append_nvs_string_item(
+    bare:        const SfvBareItem&,
+    out_strings: u8[..64][..16]&,
+    all_strings: bool&,
+) {
+    guard all_strings && bare.kind == SfvType.String else {
+        all_strings = false;
+        return;
+    }
+    var name: u8[..64] = [];
+    if !name.try_set(bare.text[..]) || !out_strings.try_push(name) {
+        all_strings = false;
+    }
+}
+
+// Parses an RFC 9651 inner list of string items without allocating a full SfvMember frame.
+// Leaves `cursor` and `out_strings` unchanged on syntax error.
+//
+// Example:
+//   raw = "(\"utm_source\" \"fbclid\");p=1", cursor = 0
+//   returns: ok = true, cursor = 27, out_strings = ["utm_source", "fbclid"], all_strings = true
+fn parse_nvs_inner_list(
+    raw:         const u8[:],
+    cursor:      i64&,
+    out_strings: u8[..64][..16]&,
+    all_strings: bool&,
+) -> bool {
+    let saved_cursor = cursor;
+    out_strings.clear();
+    all_strings = true;
+    var committed = false;
+    defer if !committed {
+        cursor = saved_cursor;
+        out_strings.clear();
+    };
+
+    cursor = core::add_sat_i64(cursor, 1); // skip '('
+    var closed = false;
+    var item_count: i64 = 0;
+    while cursor < raw.len {
+        cursor = sf_skip_sp(raw, cursor);
+        if cursor < raw.len && raw[cursor] == ')' {
+            cursor = core::add_sat_i64(cursor, 1);
+            closed = true;
+            break;
+        }
+        item_count = core::add_sat_i64(item_count, 1);
+        guard item_count <= 32 else { return false; }
+        var bare = SfvBareItem { .. };
+        guard parse_sfv_bare_item(raw, cursor, bare) && skip_sfv_parameters(raw, cursor) else { return false; }
+        append_nvs_string_item(bare, out_strings, all_strings);
+        guard cursor < raw.len && (raw[cursor] == ' ' || raw[cursor] == ')') else { return false; }
+    }
+    guard closed && skip_sfv_parameters(raw, cursor) else { return false; }
     committed = true;
     return true;
 }
 
-fn apply_nvs_params(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
-    if member.is_inner_list {
-        guard copy_sfv_inner_string_list(member.inner_list[..], nvs.params) else { return false; }
-        nvs.ignore_all_params = false;
-        return true;
-    }
-    guard member.item.bare.kind == SfvType.Boolean else { return false; }
-    nvs.ignore_all_params = member.item.bare.bool_val;
-    nvs.params.clear();
-    return true;
-}
-
-fn apply_nvs_except(nvs: NoVarySearch&, member: const SfvMember&, has_except: bool&) -> bool {
-    guard member.is_inner_list && copy_sfv_inner_string_list(member.inner_list[..], nvs.except_params) else {
-        return false;
-    }
-    has_except = true;
-    return true;
-}
-
-fn apply_nvs_key_order(nvs: NoVarySearch&, member: const SfvMember&) -> bool {
-    guard !member.is_inner_list && member.item.bare.kind == SfvType.Boolean else { return false; }
-    nvs.key_order_matters = !member.item.bare.bool_val;
-    return true;
-}
-
-fn apply_nvs_entry(nvs: NoVarySearch&, entry: const SfvDictEntry&, has_except: bool&) -> bool {
-    let key = entry.key[..];
+fn apply_nvs_inner_list_entry(
+    state:       NvsDictParseState&,
+    key:         const u8[:],
+    list_vals:   const u8[..64][..16]&,
+    all_strings: bool,
+) {
     if key == "params" {
-        return apply_nvs_params(nvs, entry.member);
+        state.params_type_ok = all_strings;
+        if all_strings {
+            state.nvs.params = list_vals;
+            state.nvs.ignore_all_params = false;
+        }
+        return;
     }
     if key == "except" {
-        return apply_nvs_except(nvs, entry.member, has_except);
+        state.has_except = true;
+        state.except_type_ok = all_strings;
+        if all_strings {
+            state.nvs.except_params = list_vals;
+        }
+        return;
     }
     if key == "key-order" {
-        return apply_nvs_key_order(nvs, entry.member);
+        state.key_order_type_ok = false;
     }
+}
+
+fn apply_nvs_bare_entry(state: NvsDictParseState&, key: const u8[:], bare: const SfvBareItem&) {
+    if key == "params" {
+        state.params_type_ok = (bare.kind == SfvType.Boolean);
+        if state.params_type_ok {
+            state.nvs.ignore_all_params = bare.bool_val;
+            state.nvs.params.clear();
+        }
+        return;
+    }
+    if key == "except" {
+        state.has_except = true;
+        state.except_type_ok = false;
+        return;
+    }
+    if key == "key-order" {
+        state.key_order_type_ok = (bare.kind == SfvType.Boolean);
+        if state.key_order_type_ok {
+            state.nvs.key_order_matters = !bare.bool_val;
+        }
+    }
+}
+
+// Parses one RFC 9651 dictionary member for No-Vary-Search and updates `state`.
+// Leaves `cursor` unchanged on syntax error.
+//
+// Example:
+//   raw = "params=(\"a\"), key-order", cursor = 0
+//   returns: ok = true, cursor = 12 (points to ',')
+fn parse_nvs_dict_member(raw: const u8[:], cursor: i64&, state: NvsDictParseState&) -> bool {
+    let saved_cursor = cursor;
+    var committed = false;
+    defer if !committed { cursor = saved_cursor; };
+
+    var key: u8[..64] = [];
+    guard parse_sfv_key(raw, cursor, key) && record_nvs_dict_key(state.seen_keys, key) else { return false; }
+
+    if cursor < raw.len && raw[cursor] == '=' {
+        cursor = core::add_sat_i64(cursor, 1);
+        if cursor < raw.len && raw[cursor] == '(' {
+            var list_vals: u8[..64][..16] = [];
+            var all_strings = false;
+            guard parse_nvs_inner_list(raw, cursor, list_vals, all_strings) else { return false; }
+            apply_nvs_inner_list_entry(state, key[..], list_vals, all_strings);
+            committed = true;
+            return true;
+        }
+        var bare = SfvBareItem { .. };
+        guard parse_sfv_bare_item(raw, cursor, bare) && skip_sfv_parameters(raw, cursor) else { return false; }
+        apply_nvs_bare_entry(state, key[..], bare);
+        committed = true;
+        return true;
+    }
+
+    guard skip_sfv_parameters(raw, cursor) else { return false; }
+    let true_item = SfvBareItem { kind: SfvType.Boolean, bool_val: true, .. };
+    apply_nvs_bare_entry(state, key[..], true_item);
+    committed = true;
     return true;
 }
 
@@ -87,21 +197,30 @@ fn apply_nvs_entry(nvs: NoVarySearch&, entry: const SfvDictEntry&, has_except: b
 //   raw = "params, key-order"
 //   returns: nvs with ignore_all_params=true, key_order_matters=false, ok = true
 fn parse_no_vary_search(raw: const u8[:]) -> NoVarySearch, bool {
-    var dict = SfvDict { .. };
-    guard parse_sfv_dict(raw, dict) else {
-        return NoVarySearch { .. }, false;
+    var cursor = sf_skip_ws(raw, 0);
+    var state = NvsDictParseState { .. };
+    if cursor == raw.len {
+        return state.nvs, true;
     }
-    var nvs = NoVarySearch { is_valid: true, .. };
-    var has_except = false;
-    for &entry in dict.entries {
-        guard apply_nvs_entry(nvs, entry, has_except) else {
+
+    while cursor < raw.len {
+        guard parse_nvs_dict_member(raw, cursor, state) else {
             return NoVarySearch { .. }, false;
         }
+        var has_more = false;
+        guard sfv_advance_comma(raw, cursor, has_more) else {
+            return NoVarySearch { .. }, false;
+        }
+        if !has_more { break; }
     }
-    guard !has_except || nvs.ignore_all_params else {
+
+    guard state.params_type_ok &&
+          state.except_type_ok &&
+          state.key_order_type_ok &&
+          (!state.has_except || state.nvs.ignore_all_params) else {
         return NoVarySearch { .. }, false;
     }
-    return nvs, true;
+    return state.nvs, true;
 }
 
 // ---- Query Parameter Filter & Normalizer --------------------------------

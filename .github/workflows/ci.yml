@@ -75,12 +75,12 @@ jobs:
 
       - name: Compile with gcc
         run: |
-          gcc -Wall -Wextra -Werror -c shim/simd.c shim/tcp.c shim/uring.c shim/af_xdp.c shim/smartnic.c
+          gcc -Wall -Wextra -Werror -c shim/simd.c shim/tcp.c shim/uring.c shim/rio.c shim/kqueue.c shim/af_xdp.c shim/smartnic.c
           rm -f *.o
 
       - name: Compile with clang
         run: |
-          clang -Wall -Wextra -Werror -c shim/simd.c shim/tcp.c shim/uring.c shim/af_xdp.c shim/smartnic.c
+          clang -Wall -Wextra -Werror -c shim/simd.c shim/tcp.c shim/uring.c shim/rio.c shim/kqueue.c shim/af_xdp.c shim/smartnic.c
           rm -f *.o
 
   lit-verification:

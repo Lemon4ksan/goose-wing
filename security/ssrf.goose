@@ -383,7 +383,7 @@ inline fn has_hex_prefix(host: const u8[:]) -> bool {
     let limit = core::sub_sat_i64(host.len, 1);
     for i in limit {
         let next_i = core::add_sat_i64(i, 1);
-        if host[i] == '0' && host[next_i] == 'x' { return true; }
+        if host[i] == '0' && (host[next_i] == 'x' || host[next_i] == 'X') { return true; }
     }
     return false;
 }
@@ -503,13 +503,33 @@ inline fn is_cloud_metadata_mapped_or_nat64_ipv6(eff_ip: const u8[:]) -> bool, b
     return false, false;
 }
 
+inline fn is_ipv6_link_local_prefix(eff_ip: const u8[:]) -> bool {
+    return starts_with(eff_ip, "fe8") || starts_with(eff_ip, "fe9") ||
+           starts_with(eff_ip, "fea") || starts_with(eff_ip, "feb");
+}
+
 fn is_cloud_metadata_or_reserved_ipv6(eff_ip: const u8[:]) -> bool {
-    if eff_ip == "::" || starts_with(eff_ip, "ff") || eff_ip == "fd00:ec2::254" {
+    if eff_ip == "::" || starts_with(eff_ip, "ff") || eff_ip == "fd00:ec2::254" ||
+       is_ipv6_link_local_prefix(eff_ip) {
         return true;
     }
     let matched_map, map_res = is_cloud_metadata_mapped_or_nat64_ipv6(eff_ip);
     if matched_map {
         return map_res;
+    }
+    if starts_with(eff_ip, "::") && !starts_with(eff_ip, "::ffff:") {
+        let suffix = eff_ip[2..];
+        if suffix.len > 0 && is_cloud_metadata_ipv4_suffix(suffix) {
+            return true;
+        }
+    }
+    if eff_ip.contains_byte('.') {
+        let last_colon = eff_ip.last_index_of_byte(':');
+        let next_col = core::add_sat_i64(last_colon, 1);
+        if last_colon >= 0 && next_col < eff_ip.len &&
+           is_cloud_metadata_ipv4_suffix(eff_ip[next_col..]) {
+            return true;
+        }
     }
     if starts_with(eff_ip, "2002:") {
         let rem = eff_ip[5..];

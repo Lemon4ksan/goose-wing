@@ -657,14 +657,26 @@ fn dispatch_flow_control_inbound(conn: QuicConnection&, frame: const QuicFrame&)
         return dispatch_max_stream_data_inbound(conn, frame);
     }
     if frame.frame_type == QuicFrameType.MaxStreamsBidi {
-        if frame.max_data > conn.stream_table.max_streams_bidi {
-            conn.stream_table.max_streams_bidi = frame.max_data;
+        let cur_lim = if conn.stream_table.has_remote_max_streams_bidi {
+            conn.stream_table.remote_max_streams_bidi
+        } else {
+            conn.stream_table.max_streams_bidi
+        };
+        if !conn.stream_table.has_remote_max_streams_bidi || frame.max_data > cur_lim {
+            conn.stream_table.remote_max_streams_bidi = frame.max_data;
+            conn.stream_table.has_remote_max_streams_bidi = true;
         }
         return true, true;
     }
     if frame.frame_type == QuicFrameType.MaxStreamsUni {
-        if frame.max_data > conn.stream_table.max_streams_uni {
-            conn.stream_table.max_streams_uni = frame.max_data;
+        let cur_lim = if conn.stream_table.has_remote_max_streams_uni {
+            conn.stream_table.remote_max_streams_uni
+        } else {
+            conn.stream_table.max_streams_uni
+        };
+        if !conn.stream_table.has_remote_max_streams_uni || frame.max_data > cur_lim {
+            conn.stream_table.remote_max_streams_uni = frame.max_data;
+            conn.stream_table.has_remote_max_streams_uni = true;
         }
         return true, true;
     }
@@ -1226,6 +1238,42 @@ inline fn get_rx_space_keys_installed(conn: const QuicConnection&, space_id: PnS
     return conn.app_space.keys_installed;
 }
 
+inline fn is_pn_already_received(ranges: const AckInterval[..64]&, pn: u64) -> bool {
+    for i in ranges.len {
+        let r = ranges[i];
+        if pn > r.largest {
+            return false;
+        }
+        if pn >= r.smallest {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Decodes an unmasked packet number from an unencrypted test packet slice.
+//
+// Example:
+//   pkt_slice = [0x40, 0x05], pn_offset = 1, pn_len = 1, space.largest_recv_pn = 4
+//   returns: 5, ok = true
+inline fn decode_unencrypted_test_pn(
+    space:     const PnSpaceState&,
+    pkt_slice: const u8[:],
+    pn_offset: u32,
+    pn_len:    u8,
+) -> u64, bool {
+    let off:  i64 = pn_offset;
+    let plen: i64 = pn_len;
+    guard off >= 0 && plen >= 1 && plen <= 4 && core::add_sat_i64(off, plen) <= pkt_slice.len else {
+        return 0, false;
+    }
+    var trunc_pn: u64 = 0;
+    for i in plen {
+        trunc_pn = core::shl_sat_u64(trunc_pn, 8) | pkt_slice[core::add_sat_i64(off, i)];
+    }
+    return decode_packet_number_checked(space.largest_recv_pn, trunc_pn, pn_len);
+}
+
 // Removes RFC 9001 Header Protection and AEAD-decrypts an inbound QUIC packet when space keys are installed.
 // Preserves `out_plaintext` with the unencrypted payload when `keys_installed` is false for unit test vectors.
 // Returns `(ok: bool, fatal_err: u64)`, where `fatal_err != 0` indicates a fatal protocol violation.
@@ -1245,6 +1293,12 @@ fn verify_and_decrypt_packet(
         out_plaintext.clear();
     };
     out_plaintext.clear();
+    var space .= conn.app_space;
+    if space_id == PnSpaceId.Initial {
+        space .= conn.initial_space;
+    } else if space_id == PnSpaceId.Handshake {
+        space .= conn.handshake_space;
+    }
     let keys_installed = get_rx_space_keys_installed(conn, space_id);
     if !keys_installed {
         guard conn.allow_unencrypted_test_packets else { return false, 0; }
@@ -1253,6 +1307,9 @@ fn verify_and_decrypt_packet(
             return false, rfc::QUIC_ERR_PROTOCOL_VIOLATION;
         }
         let pn_len = (pkt_slice[0] & 0x03) + 1;
+        let test_pn, test_pn_ok = decode_unencrypted_test_pn(space, pkt_slice[..pkt_wire_len], hdr.pn_offset, pn_len);
+        guard test_pn_ok && !is_pn_already_received(space.recv_ranges, test_pn) else { return false, 0; }
+        hdr.packet_number = test_pn;
         hdr.pn_length = pn_len;
         hdr.header_len = hdr.pn_offset + pn_len;
         let raw_pl = get_packet_payload(pkt_slice[..pkt_wire_len], hdr);
@@ -1268,13 +1325,6 @@ fn verify_and_decrypt_packet(
         guard dgram_len >= 1200 else { return false, 0; }
     }
     guard is_valid_inbound_dcid(conn, hdr) else { return false, 0; }
-
-    var space .= conn.app_space;
-    if space_id == PnSpaceId.Initial {
-        space .= conn.initial_space;
-    } else if space_id == PnSpaceId.Handshake {
-        space .= conn.handshake_space;
-    }
 
     var work_pkt: u8[..16512] = [];
     guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return false, 0; }
@@ -1293,7 +1343,8 @@ fn verify_and_decrypt_packet(
     }
 
     let full_pn, pn_ok = decode_packet_number_checked(space.largest_recv_pn, trunc_pn, pn_len);
-    guard pn_ok else { return false, 0; }
+    // RFC 9000 Section 12.3: Packet Numbers - Discard duplicate packets before payload processing.
+    guard pn_ok && !is_pn_already_received(space.recv_ranges, full_pn) else { return false, 0; }
     hdr.packet_number = full_pn;
     hdr.pn_length = pn_len;
     hdr.header_len = hdr.pn_offset + pn_len;

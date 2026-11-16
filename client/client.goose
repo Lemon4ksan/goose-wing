@@ -760,8 +760,9 @@ fn doh_query(
     guard ok(err) && res.status_code == rfc::STATUS_OK else { return false; }
 
     guard parse_dns_response(res.body[..], out_resp) else { return false; }
-    guard out_resp.rcode == rfc::DNS_RCODE_NOERROR else { return false; }
-    guard !session.doh.use_post || out_resp.tx_id == tx_id else { return false; }
+    guard out_resp.rcode == rfc::DNS_RCODE_NOERROR && out_resp.question_count == 1 else { return false; }
+    let expected_tx_id: u16 = if session.doh.use_post { tx_id } else { 0 };
+    guard out_resp.tx_id == expected_tx_id else { return false; }
     return true;
 }
 

@@ -2064,7 +2064,7 @@ fn test_rfc9218_and_client_h2_edge_cases() {
     var dec_dt = h2_internal::new_dynamic_table(4096);
     var resp = wing::Response { .. };
     var out_ctrl: u8[>..] = [];
-    var got_hdrs = true;
+    var st_d = wing::H2ClientRecvState { got_hdrs: true, .. };
     let pad_hdr = h2_internal::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_DATA,
@@ -2072,12 +2072,12 @@ fn test_rfc9218_and_client_h2_edge_cases() {
         stream_id:  1,
     };
     let pad_payload: u8[10] = [4, 'h', 'e', 'l', 'l', 'o', 0, 0, 0, 0];
-    let ok_d, end_d = wing::process_h2_response_frame(pad_hdr, pad_payload[..], 1, false, dec_dt, resp, got_hdrs, out_ctrl);
+    let ok_d, end_d = wing::process_h2_response_frame(pad_hdr, pad_payload[..], 1, false, dec_dt, resp, st_d, out_ctrl);
     assert(ok_d && end_d);
     assert(out_ctrl.len >= 13 && core::read_be_u32(out_ctrl[..], 9) == 10);
 
     // 3. Client H2 1xx informational response with END_STREAM must be rejected (RFC 9113 §8.1)
-    var got_hdrs_1xx = false;
+    var st_1xx = wing::H2ClientRecvState { .. };
     let hdr_100 = h2_internal::FrameHeader {
         length:     5,
         frame_type: rfc::H2_FRAME_HEADERS,
@@ -2085,7 +2085,7 @@ fn test_rfc9218_and_client_h2_edge_cases() {
         stream_id:  1,
     };
     let payload_100: u8[5] = [0x08, 0x03, '1', '0', '0']; // :status: 100
-    let ok_100, _ = wing::process_h2_response_frame(hdr_100, payload_100[..], 1, false, dec_dt, resp, got_hdrs_1xx, out_ctrl);
+    let ok_100, _ = wing::process_h2_response_frame(hdr_100, payload_100[..], 1, false, dec_dt, resp, st_1xx, out_ctrl);
     assert(!ok_100);
     print("TEST_5_6_RFC9218_AND_CLIENT_H2: OK\n");
 }

@@ -32,6 +32,7 @@ extern fn native_uring_submit_sqe(
     off:       u64,
     addr:      u64,
     len:       u32,
+    op_flags:  u32,
     user_data: u64,
     buf_index: u16,
 ) -> i32 = "wing_uring_submit_sqe";
@@ -141,10 +142,17 @@ fn uring_prep_send(sqe: UringSqe&, fd: i32, addr: u64, len: u32, tag: u64, zero_
 }
 
 // Prepares an SQE for receive (standard or multishot provided buffer)
-fn uring_prep_recv(sqe: UringSqe&, fd: i32, addr: u64, len: u32, tag: u64, multishot: bool) {
+fn uring_prep_recv(
+    sqe:       UringSqe&,
+    fd:        i32,
+    addr:      u64,
+    len:       u32,
+    tag:       u64,
+    multishot: bool,
+) {
     sqe.opcode = URING_OP_RECV;
     sqe.flags = if multishot { URING_SQE_BUFFER_SELECT } else { 0 };
-    sqe.ioprio = 0;
+    sqe.ioprio = if multishot { URING_RECV_MULTISHOT } else { 0 };
     sqe.fd = fd;
     sqe.off = 0;
     sqe.addr = addr;
@@ -444,7 +452,7 @@ inline fn uring_try_submit_mmap_sqe(state: RingQueueState&, sqe: const UringSqe&
     guard state.ring_fd >= 0 else { return false; }
     let rc = native_uring_submit_sqe(
         state.ring_fd, sqe.opcode, sqe.flags, sqe.ioprio,
-        sqe.fd, sqe.off, sqe.addr, sqe.len, sqe.user_data, sqe.buf_index,
+        sqe.fd, sqe.off, sqe.addr, sqe.len, sqe.op_flags, sqe.user_data, sqe.buf_index,
     );
     guard rc == 0 else { return false; }
     state.submissions_total += 1;

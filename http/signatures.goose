@@ -530,6 +530,9 @@ fn verify_crypto_signature(
         let default_e: const u8[3] = [0x01, 0x00, 0x01];
         return core::rsa_pkcs1_sha256_verify(key_bytes, default_e[..], sig_base, received_sig);
     } else if alg == rfc::SIG_ALG_RSA_PSS_SHA512 {
+        if key_bytes.len > 0 && key_bytes[0] == 0x30 {
+            return core::rsa_pss_sha512_verify_der(key_bytes, sig_base, received_sig);
+        }
         let default_e: const u8[3] = [0x01, 0x00, 0x01];
         return core::rsa_pss_sha512_verify(key_bytes, default_e[..], sig_base, received_sig);
     } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
@@ -661,17 +664,30 @@ fn sign_http_request(
 
 fn matches_signature_component(item: const SfItem&, exp_comp: const u8[:]) -> bool {
     guard item.kind == SfType.String else { return false; }
-    let has_req_param = sf_item_has_flag_param(item, "req");
-    if !has_req_param && item.str_val == exp_comp {
-        return true;
-    }
     let base_comp, exp_has_req = strip_req_component_suffix(exp_comp);
-    return has_req_param && exp_has_req && item.str_val == base_comp;
+    guard item.str_val == base_comp else { return false; }
+    var saw_req_flag = false;
+    for &p in item.params {
+        if p.key[..] == "req" {
+            guard exp_has_req && p.kind == SfType.Boolean && p.bool_val else {
+                return false;
+            }
+            saw_req_flag = true;
+        }
+    }
+    return !exp_has_req || saw_req_flag;
+}
+
+inline fn sf_f64_to_milliths(d: f64) -> i64 {
+    let scaled = d * 1000.0;
+    let adjusted = if scaled >= 0.0 { scaled + 0.5 } else { scaled - 0.5 };
+    return adjusted as i64;
 }
 
 fn append_wire_sf_bare<B>(
     kind:     SfType,
     int_val:  i64,
+    dec_val:  f64,
     str_val:  const u8[:],
     bool_val: bool,
     out:      B&,
@@ -695,7 +711,7 @@ fn append_wire_sf_bare<B>(
     }
     if kind == SfType.Decimal {
         var dbuf: u8[..32] = [];
-        serialize_sfv_decimal(int_val, dbuf);
+        serialize_sfv_decimal(sf_f64_to_milliths(dec_val), dbuf);
         return out.try_append(dbuf[..]);
     }
     if kind == SfType.Date {
@@ -714,7 +730,7 @@ fn append_wire_item_params<B>(params: const SfItemParam[:], out: B&) -> bool {
             continue;
         }
         guard out.try_push('=' as u8) &&
-              append_wire_sf_bare(p.kind, p.int_val, p.str_val[..], p.bool_val, out) else {
+              append_wire_sf_bare(p.kind, p.int_val, p.dec_val, p.str_val[..], p.bool_val, out) else {
             return false;
         }
     }
@@ -728,9 +744,11 @@ fn append_wire_dict_params<B>(params: const SfParameter[:], out: B&) -> bool {
             continue;
         }
         guard out.try_push('=' as u8) &&
-              append_wire_sf_bare(p.item.kind, p.item.int_val, p.item.str_val, p.item.bool_val, out) else {
-            return false;
-        }
+              append_wire_sf_bare(
+                  p.item.kind, p.item.int_val, p.item.dec_val, p.item.str_val, p.item.bool_val, out,
+              ) else {
+                  return false;
+              }
     }
     return true;
 }
@@ -743,7 +761,7 @@ fn serialize_wire_sig_params<B>(entry: const SfDictEntry&, out: B&) -> bool {
     for idx in entry.inner_items.len {
         if idx > 0 && !out.try_push(' ' as u8) { return false; }
         let it = &entry.inner_items[idx];
-        guard append_wire_sf_bare(it.kind, it.int_val, it.str_val, it.bool_val, out) &&
+        guard append_wire_sf_bare(it.kind, it.int_val, it.dec_val, it.str_val, it.bool_val, out) &&
               append_wire_item_params(it.params[..], out) else {
             return false;
         }

@@ -660,10 +660,19 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     let n_part = line[core::add_sat_i64(tab_positions[4], 1)..tab_positions[5]];
     let v_part = line[core::add_sat_i64(tab_positions[5], 1)..];
 
+    let clean_dom = if d_part.len > 0 && d_part[0] == '.' { d_part[1..] } else { d_part };
+    guard clean_dom.len > 0 && clean_dom[0] != '.' && is_valid_canonical_domain_attr(clean_dom) else {
+        return false;
+    }
+    guard is_valid_canonical_cookie_name(n_part) && is_valid_canonical_cookie_val(v_part) else {
+        return false;
+    }
+    guard core::add_sat_i64(n_part.len, v_part.len) <= cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN else { return false; }
+
+    cookie_ref = CanonicalCookie { .. };
     var committed = false;
     defer if !committed { cookie_ref = CanonicalCookie { .. }; };
 
-    guard core::add_sat_i64(n_part.len, v_part.len) <= cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN else { return false; }
     guard cookie_ref.domain.try_set(d_part)
         && cookie_ref.path.try_set(p_part)
         && cookie_ref.name.try_set(n_part)
@@ -672,18 +681,12 @@ fn try_parse_netscape_cookie_line(raw_line: const u8[:], cookie_ref: CanonicalCo
     }
 
     populate_netscape_cookie_fields(
-        cookie_ref,
-        d_part,
-        subdom_part,
-        p_part,
-        sec_part,
-        exp_part,
-        n_part,
-        v_part,
-        is_httponly,
+        cookie_ref, d_part, subdom_part, p_part, sec_part, exp_part, n_part, v_part, is_httponly,
     );
+    to_lower(cookie_ref.domain[..]);
 
-    if !cookie_ref.host_only && is_public_suffix_domain(cookie_ref.domain[..]) {
+    let psl_check_dom = if cookie_ref.domain[0] == '.' { cookie_ref.domain[1..] } else { cookie_ref.domain[..] };
+    if !cookie_ref.host_only && is_public_suffix_domain(psl_check_dom) {
         return false;
     }
     if core::add_sat_i64(cookie_ref.name.len, cookie_ref.value.len) > cookie_internal::K_MAX_COOKIE_NAME_VAL_LEN {

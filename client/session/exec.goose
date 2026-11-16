@@ -401,13 +401,14 @@ fn process_redirect_hop(
     }
     let eff_loc = if hsts_upgraded { upgraded_loc_buf[..] } else { loc_hdr };
 
-    let ref_policy_hdr = header(resp, "Referrer-Policy");
+    var combined_ref_policy: u8[..256] = [];
+    let _ = get_combined(resp.headers, "Referrer-Policy", combined_ref_policy, 256);
     var redirect_info = compute_redirect_info(
         resp.status_code,
         ctx.current_method[..],
         current_url,
         eff_loc,
-        ref_policy_hdr,
+        combined_ref_policy[..],
         ctx.current_referrer_policy,
         ctx.current_referrer[..],
         ctx.site_for_cookies,
@@ -1049,6 +1050,14 @@ inline fn verify_h2_response_content_length(resp: const Response&, is_head: bool
     return ok_cl && (resp.body.len as u64) == cl_val;
 }
 
+struct H2ClientRecvState {
+    got_hdrs:   bool                     = false,
+    saw_goaway: bool                     = false,
+    await_cont: bool                     = false,
+    cont_hdr:   h2_internal::FrameHeader = h2_internal::FrameHeader { .. },
+    cont_buf:   u8[..16384]              = [],
+}
+
 inline fn apply_initial_h2_response_headers(
     hdr:      const h2_internal::FrameHeader&,
     frag:     const u8[:],
@@ -1057,7 +1066,7 @@ inline fn apply_initial_h2_response_headers(
     got_hdrs: bool&,
 ) -> bool {
     var pseudo = h2_internal::H2PseudoHeaders { .. };
-    let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, false);
+    let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, true);
     guard d_err == rfc::H2_ERR_NO_ERROR && pseudo.has_status &&
         pseudo.status != rfc::STATUS_SWITCHING_PROTOCOLS else {
         return false;
@@ -1074,17 +1083,14 @@ inline fn apply_initial_h2_response_headers(
     return true;
 }
 
-fn process_h2_response_headers_frame(
+fn finish_h2_response_header_block(
     hdr:      const h2_internal::FrameHeader&,
-    payload:  const u8[:],
+    frag:     const u8[:],
     is_head:  bool,
     dec_dt:   h2_internal::DynamicTable&,
     resp:     Response&,
     got_hdrs: bool&,
 ) -> bool, bool {
-    guard (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 else { return false, false; }
-    let frag, f_err = h2_internal::extract_headers_frame_payload(hdr, payload);
-    guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
     if !got_hdrs {
         guard apply_initial_h2_response_headers(hdr, frag, dec_dt, resp, got_hdrs) else {
             return false, false;
@@ -1092,7 +1098,7 @@ fn process_h2_response_headers_frame(
     } else {
         guard (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 else { return false, false; }
         var pseudo = h2_internal::H2PseudoHeaders { is_trailer: true, .. };
-        let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, false);
+        let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, true);
         guard d_err == rfc::H2_ERR_NO_ERROR && !pseudo.has_status else { return false, false; }
     }
     let end_s = (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 ||
@@ -1103,6 +1109,48 @@ fn process_h2_response_headers_frame(
     return true, end_s;
 }
 
+fn process_h2_response_headers_frame(
+    hdr:     const h2_internal::FrameHeader&,
+    payload: const u8[:],
+    is_head: bool,
+    dec_dt:  h2_internal::DynamicTable&,
+    resp:    Response&,
+    state:   H2ClientRecvState&,
+) -> bool, bool {
+    let frag, f_err = h2_internal::extract_headers_frame_payload(hdr, payload);
+    guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
+        state.cont_buf.clear();
+        guard state.cont_buf.try_append(frag) else { return false, false; }
+        state.cont_hdr = hdr;
+        state.await_cont = true;
+        return true, false;
+    }
+    return finish_h2_response_header_block(hdr, frag, is_head, dec_dt, resp, state.got_hdrs);
+}
+
+fn process_h2_continuation_frame(
+    hdr:       const h2_internal::FrameHeader&,
+    payload:   const u8[:],
+    stream_id: u32,
+    is_head:   bool,
+    dec_dt:    h2_internal::DynamicTable&,
+    resp:      Response&,
+    state:     H2ClientRecvState&,
+) -> bool, bool {
+    guard state.await_cont && hdr.frame_type == rfc::H2_FRAME_CONTINUATION && hdr.stream_id == stream_id else {
+        return false, false;
+    }
+    guard state.cont_buf.try_append(payload) else { return false, false; }
+    if (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
+        return true, false;
+    }
+    state.await_cont = false;
+    return finish_h2_response_header_block(
+        state.cont_hdr, state.cont_buf[..], is_head, dec_dt, resp, state.got_hdrs,
+    );
+}
+
 fn process_h2_response_frame<B>(
     hdr:       const h2_internal::FrameHeader&,
     payload:   const u8[:],
@@ -1110,9 +1158,13 @@ fn process_h2_response_frame<B>(
     is_head:   bool,
     dec_dt:    h2_internal::DynamicTable&,
     resp:      Response&,
-    got_hdrs:  bool&,
+    state:     H2ClientRecvState&,
     out_ctrl:  B&,
 ) -> bool, bool {
+    if state.await_cont {
+        return process_h2_continuation_frame(hdr, payload, stream_id, is_head, dec_dt, resp, state);
+    }
+    guard hdr.frame_type != rfc::H2_FRAME_CONTINUATION else { return false, false; }
     if hdr.stream_id == 0 && (hdr.frame_type == rfc::H2_FRAME_SETTINGS || hdr.frame_type == rfc::H2_FRAME_PING) {
         process_h2_control_frame(hdr, payload, out_ctrl);
         return true, false;
@@ -1122,25 +1174,26 @@ fn process_h2_response_frame<B>(
         return false, false;
     }
     if hdr.frame_type == rfc::H2_FRAME_GOAWAY {
-        guard payload.len >= 8 && (core::read_be_u32(payload, 0) & 0x7FFFFFFF) >= stream_id else {
+        guard hdr.stream_id == 0 && payload.len >= 8 && (core::read_be_u32(payload, 0) & 0x7FFFFFFF) >= stream_id else {
             return false, false;
         }
+        state.saw_goaway = true;
         return true, false;
     }
     if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE { return true, false; }
     let saved_resp = copy(resp);
-    let saved_got = got_hdrs;
+    let saved_state = state;
     let saved_dt = copy(dec_dt);
     var committed = false;
-    defer if !committed { resp = copy(saved_resp); got_hdrs = saved_got; dec_dt = copy(saved_dt); };
+    defer if !committed { resp = copy(saved_resp); state = saved_state; dec_dt = copy(saved_dt); };
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && hdr.stream_id == stream_id {
-        let ok_h, end_s = process_h2_response_headers_frame(hdr, payload, is_head, dec_dt, resp, got_hdrs);
+        let ok_h, end_s = process_h2_response_headers_frame(hdr, payload, is_head, dec_dt, resp, state);
         guard ok_h else { return false, false; }
         committed = true;
         return true, end_s;
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
-        guard got_hdrs else { return false, false; }
+        guard state.got_hdrs else { return false, false; }
         let d_slice, d_err = h2_internal::extract_padded_frame_payload(hdr, payload);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         resp.body.append(d_slice);
@@ -1165,7 +1218,7 @@ fn drain_h2_response_frames<B1, B2>(
     is_head:   bool,
     dec_dt:    h2_internal::DynamicTable&,
     resp:      Response&,
-    got_hdrs:  bool&,
+    state:     H2ClientRecvState&,
     out_ctrl:  B2&,
 ) -> bool, bool {
     var consumed: i64 = 0;
@@ -1178,7 +1231,7 @@ fn drain_h2_response_frames<B1, B2>(
         let payload = rx_accum[consumed + 9..consumed + frame_total];
         consumed += frame_total;
         let ok_f, done = process_h2_response_frame(
-            hdr, payload, stream_id, is_head, dec_dt, resp, got_hdrs, out_ctrl,
+            hdr, payload, stream_id, is_head, dec_dt, resp, state, out_ctrl,
         );
         guard ok_f else {
             return false, false;
@@ -1201,36 +1254,53 @@ inline fn rollback_h2_response_preserving_rst(resp: Response&, saved_resp: const
 }
 
 fn recv_h2_response_loop(
-    tp:          Transport&,
+    conn:        PooledConnection&,
     stream_id:   u32,
     is_head:     bool,
-    dec_dt:      h2_internal::DynamicTable&,
     eff_timeout: u32,
     resp:        Response&,
 ) -> bool {
     let saved_resp = copy(resp);
-    let saved_dt = copy(dec_dt);
+    let saved_dt = copy(conn.hpack_dec);
     var committed = false;
     defer if !committed {
         rollback_h2_response_preserving_rst(resp, saved_resp);
-        dec_dt = copy(saved_dt);
+        conn.hpack_dec = copy(saved_dt);
     };
     var rx_accum: u8[..65536] = [];
-    var chunk:    u8[4096]    = [0; 4096];
-    var got_hdrs = false;
+    if conn.rx_buf.len > 0 {
+        guard rx_accum.try_append(conn.rx_buf[..]) else { return false; }
+        conn.rx_buf.clear();
+    }
+    var chunk: u8[4096] = [0; 4096];
+    var state = H2ClientRecvState { .. };
     var is_done = false;
     for step in 4096 {
-        let n = tp.recv_slice(chunk[..], eff_timeout);
+        if rx_accum.len >= 9 {
+            var pre_ctrl: u8[..4096] = [];
+            let ok_pre, done_pre = drain_h2_response_frames(
+                rx_accum, stream_id, is_head, conn.hpack_dec, resp, state, pre_ctrl,
+            );
+            guard ok_pre else { return false; }
+            if pre_ctrl.len > 0 {
+                let _ = send_all(conn.transport, pre_ctrl[..]);
+            }
+            if done_pre {
+                is_done = true;
+                break;
+            }
+        }
+        let n = conn.transport.recv_slice(chunk[..], eff_timeout);
         if n > 0 {
             guard rx_accum.try_append(chunk[..n]) else { return false; }
         }
         var ctrl_out: u8[..4096] = [];
         let ok_f, done = drain_h2_response_frames(
-            rx_accum, stream_id, is_head, dec_dt, resp, got_hdrs, ctrl_out,
+            rx_accum, stream_id, is_head, conn.hpack_dec, resp, state, ctrl_out,
         );
         guard ok_f else { return false; }
         if ctrl_out.len > 0 {
-            let _ = send_all(tp, ctrl_out[..]);
+            let _ = send_all(conn.transport, ctrl_out[..]);
         }
         if done {
             is_done = true;
@@ -1238,7 +1308,11 @@ fn recv_h2_response_loop(
         }
         if n <= 0 { break; }
     }
-    guard got_hdrs && is_done else { return false; }
+    guard state.got_hdrs && is_done && !state.await_cont else { return false; }
+    guard conn.rx_buf.try_set(rx_accum[..]) else { return false; }
+    if state.saw_goaway {
+        conn.no_new_exchanges = true;
+    }
     committed = true;
     return true;
 }
@@ -1287,10 +1361,9 @@ fn dispatch_pooled_h2_hop(
     let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
     let is_head = curr_method == "HEAD";
     let got_hdrs = recv_h2_response_loop(
-        conn.transport,
+        conn,
         stream_id,
         is_head,
-        conn.hpack_dec,
         eff_timeout,
         resp,
     );

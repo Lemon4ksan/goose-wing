@@ -245,6 +245,53 @@ fn fuzz_http1_auth_and_headers(data: const u8[:], sig: u64) -> u64 {
     return s;
 }
 
+fn fuzz_chunk_fsm_stream(data: const u8[:], step_mask: u8, out_body: u8[>..]&) -> http_internal::ChunkFsmStatus {
+    var fdp = new_fdp(data);
+    var fsm = http_internal::new_chunk_fsm_decoder();
+    var last_st = http_internal::ChunkFsmStatus.NeedMore;
+    while fdp_remaining(fdp) > 0 {
+        let step_len = ((fdp_consume_u8(fdp) & step_mask) as i64) | 1;
+        var rem = fdp_consume_bytes(fdp, step_len);
+        while rem.len > 0 {
+            let st, consumed, yielded = http_internal::chunk_fsm_feed(fsm, rem);
+            last_st = st;
+            if yielded.len > 0 {
+                out_body.append(yielded);
+            }
+            if st == http_internal::ChunkFsmStatus.Complete || st == http_internal::ChunkFsmStatus.Error {
+                return st;
+            }
+            if consumed <= 0 { break; }
+            rem = rem[consumed..];
+        }
+    }
+    return last_st;
+}
+
+fn verify_chunk_fsm_split_parity(data: const u8[:], oneshot_body: const u8[:], consumed_len: i64) {
+    guard consumed_len > 0 && consumed_len <= data.len && oneshot_body.len <= 8192 else { return; }
+    var fsm = http_internal::new_chunk_fsm_decoder();
+    var streamed: u8[>..] = [];
+    var pos:      i64     = 0;
+    let src = data[..consumed_len];
+    while pos < src.len {
+        let step = ((pos & 7) + 1);
+        let end = min(src.len, core::add_sat_i64(pos, step));
+        var sub = src[pos..end];
+        pos = end;
+        while sub.len > 0 {
+            let st, used, chunk = http_internal::chunk_fsm_feed(fsm, sub);
+            if chunk.len > 0 { streamed.append(chunk); }
+            if st == http_internal::ChunkFsmStatus.Complete {
+                assert(streamed[..] == oneshot_body);
+                return;
+            }
+            assert(st != http_internal::ChunkFsmStatus.Error);
+            if used <= 0 { break; }
+            sub = sub[used..];
+        }
+    }
+}
 // ---- Target 1: HTTP/1.1 Parser, Chunked FSM, Multipart, Cache & Auth -------
 // Ported from vendor/llhttp/test/fuzzers/fuzz_parser.c & oss-fuzz/projects/h2o/h2o-fuzzer-http1
 fn fuzz_target_http1(data: const u8[:]) -> u64 {
@@ -271,20 +318,15 @@ fn fuzz_target_http1(data: const u8[:]) -> u64 {
 
     var decoded_body: u8[>..] = [];
     var trailers = wing::HeaderMap { .. };
-    let err_chunk, _ = wing::decode_chunked_body_with_trailers(data, decoded_body, trailers);
-    if err_chunk == wing::ChunkedDecodeError.None { sig = fuzz_mix_state(sig, 0x1005 ^ (trailers.entries.len as u64)); }
+    let err_chunk, chunk_consumed = wing::decode_chunked_body_with_trailers(data, decoded_body, trailers);
+    if err_chunk == wing::ChunkedDecodeError.None {
+        sig = fuzz_mix_state(sig, 0x1005 ^ (trailers.entries.len as u64));
+        verify_chunk_fsm_split_parity(data, decoded_body[..], chunk_consumed);
+    }
 
-    var fdp = new_fdp(data);
-    var fsm = http_internal::new_chunk_fsm_decoder();
-    while fdp_remaining(fdp) > 0 {
-        let step_len = ((fdp_consume_u8(fdp) & 0x1F) as i64) | 1;
-        let chunk = fdp_consume_bytes(fdp, step_len);
-        let st, _, _ = http_internal::chunk_fsm_feed(fsm, chunk);
-        if st == http_internal::ChunkFsmStatus.Complete {
-            sig = fuzz_mix_state(sig, 0x1006);
-            break;
-        }
-        if st == http_internal::ChunkFsmStatus.Error { break; }
+    var fsm_body: u8[>..] = [];
+    if fuzz_chunk_fsm_stream(data, 0x1F, fsm_body) == http_internal::ChunkFsmStatus.Complete {
+        sig = fuzz_mix_state(sig, 0x1006 ^ (fsm_body.len as u64));
     }
 
     let mp_opts = wing::MultipartOptions { .. };
@@ -427,9 +469,9 @@ fn fuzz_target_http3_conn(data: const u8[:]) -> u64 {
         let is_uni = stream_sel < 3;
         let sid = stream_ids[stream_sel];
         let err_s = h3_internal::handle_stream_data(srv, sid, !is_uni, chunk, fin);
-        if err_s == 0 { sig = fuzz_mix_state(sig, 0x5010 ^ sid); }
+        if err_s == rfc::H3_ERR_NO_ERROR { sig = fuzz_mix_state(sig, 0x5010 ^ sid); }
         let err_c = h3_internal::handle_stream_data(cli, sid, !is_uni, chunk, fin);
-        if err_c == 0 { sig = fuzz_mix_state(sig, 0x5020 ^ sid); }
+        if err_c == rfc::H3_ERR_NO_ERROR { sig = fuzz_mix_state(sig, 0x5020 ^ sid); }
     }
     return sig;
 }
@@ -721,10 +763,45 @@ fn fuzz_masque_dns_proxy(data: const u8[:], sig: u64) -> u64 {
     return s;
 }
 
+fn drain_grpc_parser_messages(p: wing::GrpcStreamParser&, out_acc: u8[>..]&) -> i64 {
+    var count:   i64        = 0;
+    var msg_buf: u8[..4096] = [];
+    var comp = false;
+    while wing::next_message(p, msg_buf, comp) {
+        out_acc.push(if comp { 1 } else { 0 });
+        out_acc.append(msg_buf[..]);
+        count = core::add_sat_i64(count, 1);
+        if count >= 16 { break; }
+    }
+    return count;
+}
+
+fn verify_grpc_stream_split_parity(data: const u8[:]) {
+    guard data.len > 0 && data.len <= 8192 else { return; }
+    var p_full = wing::new_grpc_stream_parser(2048);
+    var acc_full: u8[>..] = [];
+    guard wing::feed(p_full, data) else { return; }
+    let cnt_full = drain_grpc_parser_messages(p_full, acc_full);
+    guard !p_full.has_error else { return; }
+
+    var p_split = wing::new_grpc_stream_parser(2048);
+    var acc_split: u8[>..] = [];
+    var cnt_split: i64     = 0;
+    var pos:       i64     = 0;
+    while pos < data.len && cnt_split < 16 {
+        let step = ((pos % 5) + 1);
+        let end = min(data.len, core::add_sat_i64(pos, step));
+        assert(wing::feed(p_split, data[pos..end]));
+        cnt_split = core::add_sat_i64(cnt_split, drain_grpc_parser_messages(p_split, acc_split));
+        pos = end;
+    }
+    assert(cnt_split == cnt_full && acc_split[..] == acc_full[..]);
+}
 // ---- Target 11: WebSocket, gRPC, MASQUE, DNS & HAProxy PROXY v1/v2 ---------
 // Ported from vendor/tungstenite/fuzz/fuzz_targets/{parse_frame_header.rs, read_message_server.rs}
 fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
     var sig: u64 = 0xB000;
+    verify_grpc_stream_split_parity(data);
     let hdr, ok_ws = wing::parse_ws_frame_header(data);
     let hlen = hdr.header_len as i64;
     if ok_ws {
@@ -859,6 +936,16 @@ fn fuzz_target_url_cookie_sfv_compress(data: const u8[:]) -> u64 {
     if wing::set_cookie_header(jar, "https://example.com/path", data, 1700000000000000, true) {
         sig = fuzz_mix_state(sig, 0xC010);
     }
+    var ns_cookie = wing::CanonicalCookie { .. };
+    if wing::try_parse_netscape_cookie_line(data, ns_cookie) {
+        assert(ns_cookie.domain.len > 0 && ns_cookie.domain[0] != '.');
+        let _ = wing::validate_canonical_cookie_security(ns_cookie);
+        sig = fuzz_mix_state(sig, 0xC011);
+    }
+    let _ = wing::is_private_or_reserved_ip(data);
+    let _ = wing::is_cloud_metadata_or_reserved_ip(data);
+    let _, ok_v6 = core::parse_ipv6_octets(data);
+    if ok_v6 { sig = fuzz_mix_state(sig, 0xC012); }
 
     let uview, _ = core::parse_url_view(data);
     if uview.valid { sig = fuzz_mix_state(sig, 0xC020 ^ (uview.host.len as u64)); }

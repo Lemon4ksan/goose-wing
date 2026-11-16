@@ -276,6 +276,13 @@ fn decode_h3_headers_to_map(
     if out_pseudo.has_status && wing::has_header(out_headers, "te") {
         return h3_internal::QpackError.MessageError;
     }
+    if !out_pseudo.is_trailer && !out_pseudo.has_status && out_pseudo.method[..] != "CONNECT" {
+        let is_http_scheme = out_pseudo.scheme[..].eq_ascii_fold("http")
+            || out_pseudo.scheme[..].eq_ascii_fold("https");
+        if is_http_scheme && !out_pseudo.has_authority && !wing::has_header(out_headers, "host") {
+            return h3_internal::QpackError.MessageError;
+        }
+    }
     guard coalesce_h2_cookie_headers(out_headers) else {
         return h3_internal::QpackError.MessageError;
     }

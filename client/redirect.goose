@@ -604,17 +604,20 @@ struct RedirectHopCacheTaint {
 // Aggregates `no-store` and `private` Cache-Control directives across intermediate redirect hops
 // so outer caches do not store a final 200 response under an uncacheable initial redirect key.
 fn record_redirect_hop_cache_headers(taint: RedirectHopCacheTaint&, hop_headers: const HeaderMap&) {
-    let cc = get_header(hop_headers, "Cache-Control");
-    guard cc.len > 0 else { return; }
-    each_split(cc, ',') { raw_dir =>
-        let d_name, _, _ = raw_dir.trim_lws().split_once_byte('=');
-        let token = d_name.trim_lws();
-        if token.eq_ascii_fold("no-store") {
-            taint.saw_no_store = true;
-        } else if token.eq_ascii_fold("private") {
-            taint.saw_private = true;
-        }
-    };
+    for &entry in hop_headers.entries {
+        guard entry_name(hop_headers, entry).eq_ascii_fold("cache-control") else { continue; }
+        let cc = entry_value(hop_headers, entry);
+        guard cc.len > 0 else { continue; }
+        each_split(cc, ',') { raw_dir =>
+            let d_name, _, _ = raw_dir.trim_lws().split_once_byte('=');
+            let token = d_name.trim_lws();
+            if token.eq_ascii_fold("no-store") {
+                taint.saw_no_store = true;
+            } else if token.eq_ascii_fold("private") {
+                taint.saw_private = true;
+            }
+        };
+    }
 }
 
 struct CustomRedirectStripPolicy {

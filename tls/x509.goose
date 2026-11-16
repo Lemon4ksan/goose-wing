@@ -140,7 +140,34 @@ fn read_tbs_validity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCer
     out.validity_not_after = na_time;
 
     // RFC 5280 §4.1.2.5: Validity period inversion check (notBefore <= notAfter)
-    guard out.validity_not_before <= out.validity_not_after else { return false; }
+    guard validity.cursor_len() == 0 && out.validity_not_before <= out.validity_not_after else { return false; }
+    return true;
+}
+
+fn validate_x509_spki_alg_params(
+    spki_oid:     const u8[:],
+    spki_alg:     ByteCursor&,
+    out_alg_span: Span16&,
+    raw_cert:     const u8[:],
+) -> bool {
+    if spki_oid == rfc::OID_EC_PUBLIC_KEY[..] {
+        var spki_curve = core::cursor_from(raw_cert[..0]);
+        guard get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_curve) && spki_alg.cursor_len() == 0 else {
+            return false;
+        }
+        out_alg_span = make_span(raw_cert, spki_curve.buf);
+        return true;
+    }
+    out_alg_span = make_span(raw_cert, spki_oid);
+    if spki_oid == rfc::OID_ED25519[..] {
+        return spki_alg.cursor_len() == 0;
+    }
+    if spki_oid == rfc::OID_RSA_ENCRYPTION[..] && spki_alg.cursor_len() > 0 {
+        var null_el = core::cursor_from(raw_cert[..0]);
+        return get_asn1_element(spki_alg, rfc::ASN1_TAG_NULL, null_el) &&
+            null_el.cursor_len() == 0 &&
+            spki_alg.cursor_len() == 0;
+    }
     return true;
 }
 
@@ -153,12 +180,8 @@ fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) 
     if !get_asn1_element(spki, rfc::ASN1_TAG_SEQUENCE, spki_alg) { return false; }
     var spki_oid = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_oid) { return false; }
-
-    var spki_curve = core::cursor_from(raw_cert[..0]);
-    if spki_oid.buf == rfc::OID_EC_PUBLIC_KEY[..] && get_asn1_element(spki_alg, rfc::ASN1_TAG_OID, spki_curve) {
-        out.spki_alg_oid = make_span(raw_cert, spki_curve.buf);
-    } else {
-        out.spki_alg_oid = make_span(raw_cert, spki_oid.buf);
+    guard validate_x509_spki_alg_params(spki_oid.buf, spki_alg, out.spki_alg_oid, raw_cert) else {
+        return false;
     }
 
     var spki_pubkey = core::cursor_from(raw_cert[..0]);
@@ -174,7 +197,39 @@ fn read_tbs_spki(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) 
     return true;
 }
 
-fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn read_tbs_optional_elem(
+    raw_cert:      const u8[:],
+    ext_tag:       u8,
+    ext_container: ByteCursor&,
+    tbs_ver:       u8,
+    last_ctx_tag:  i32&,
+    out:           ParsedCert&,
+) -> bool {
+    if ext_tag == 0x81 || ext_tag == 0x82 {
+        let cur_idx: i32 = if ext_tag == 0x81 { 1 } else { 2 };
+        guard tbs_ver >= 1 && last_ctx_tag < cur_idx && validate_asn1_bit_string(ext_container.buf) else {
+            return false;
+        }
+        last_ctx_tag = cur_idx;
+        return true;
+    }
+    guard ext_tag == 0xA3 && tbs_ver == 2 && last_ctx_tag < 3 else {
+        out.has_unsupported_critical = true;
+        return false;
+    }
+    last_ctx_tag = 3;
+    var ext_seq = core::cursor_from(raw_cert[..0]);
+    guard get_asn1_element(ext_container, rfc::ASN1_TAG_SEQUENCE, ext_seq) &&
+        ext_container.cursor_len() == 0 && ext_seq.cursor_len() > 0 else {
+        out.has_unsupported_critical = true;
+        return false;
+    }
+    out.extensions_raw = make_span(raw_cert, ext_seq.buf);
+    return read_cert_extensions(raw_cert, ext_seq, out);
+}
+
+fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, tbs_ver: u8, out: ParsedCert&) -> bool {
+    var last_ctx_tag: i32 = 0;
     while tbs_seq.cursor_len() > 0 {
         var ext_container = core::cursor_from(raw_cert[..0]);
         var ext_tag: u8 = 0;
@@ -182,17 +237,8 @@ fn read_tbs_extensions(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedC
             out.has_unsupported_critical = true;
             return false;
         }
-        if ext_tag == 0xA3 { // [3] EXPLICIT
-            var ext_seq = core::cursor_from(raw_cert[..0]);
-            guard get_asn1_element(ext_container, rfc::ASN1_TAG_SEQUENCE, ext_seq) &&
-                ext_container.cursor_len() == 0 && ext_seq.cursor_len() > 0 else {
-                out.has_unsupported_critical = true;
-                return false;
-            }
-            out.extensions_raw = make_span(raw_cert, ext_seq.buf);
-            if !read_cert_extensions(raw_cert, ext_seq, out) {
-                return false;
-            }
+        if !read_tbs_optional_elem(raw_cert, ext_tag, ext_container, tbs_ver, last_ctx_tag, out) {
+            return false;
         }
     }
     return true;
@@ -240,11 +286,12 @@ fn x509_read_tbs_components(
     tbs_seq:  ByteCursor&,
     out:      ParsedCert&,
 ) -> Span16, bool {
-    guard x509_skip_tbs_version(tbs_seq) else { return Span16 { .. }, false; }
+    var tbs_ver: u8 = 0;
+    guard x509_read_tbs_version(tbs_seq, tbs_ver) else { return Span16 { .. }, false; }
     if !read_tbs_serial(raw_cert, tbs_seq, out) { return Span16 { .. }, false; }
     let inner_span, ok_sig = read_tbs_sig_alg(raw_cert, tbs_seq, out);
     if !ok_sig { return Span16 { .. }, false; }
-    if !read_tbs_identity(raw_cert, tbs_seq, out) { return Span16 { .. }, false; }
+    if !read_tbs_identity(raw_cert, tbs_seq, tbs_ver, out) { return Span16 { .. }, false; }
     return inner_span, true;
 }
 
@@ -274,16 +321,21 @@ fn x509_read_outer_signature(
     return true;
 }
 
-fn x509_skip_tbs_version(tbs_seq: ByteCursor&) -> bool {
+fn x509_read_tbs_version(tbs_seq: ByteCursor&, out_ver: u8&) -> bool {
+    out_ver = 0;
     if tbs_seq.cursor_len() > 0 && tbs_seq.buf[0] == 0xA0 {
-        var maybe_version = core::cursor_from(tbs_seq.buf[..0]);
+        var ver_elem = core::cursor_from(tbs_seq.buf[..0]);
         var tag: u8 = 0;
-        return get_any_asn1_element(tbs_seq, tag, maybe_version);
+        guard get_any_asn1_element(tbs_seq, tag, ver_elem) else { return false; }
+        var ver_int: i64 = 0;
+        guard get_asn1_integer(ver_elem, ver_int) && ver_elem.cursor_len() == 0 else { return false; }
+        guard ver_int >= 1 && ver_int <= 2 else { return false; }
+        out_ver = ver_int as u8;
     }
     return true;
 }
 
-fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCert&) -> bool {
+fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, tbs_ver: u8, out: ParsedCert&) -> bool {
     var issuer = core::cursor_from(raw_cert[..0]);
     if !get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, issuer) { return false; }
     out.issuer_raw = make_span(raw_cert, issuer.buf);
@@ -296,14 +348,19 @@ fn read_tbs_identity(raw_cert: const u8[:], tbs_seq: ByteCursor&, out: ParsedCer
     out.subject_raw = make_span(raw_cert, subject.buf, subj_hint);
 
     if !read_tbs_spki(raw_cert, tbs_seq, out) { return false; }
-    return read_tbs_extensions(raw_cert, tbs_seq, out);
+    return read_tbs_extensions(raw_cert, tbs_seq, tbs_ver, out);
 }
 
 fn x509_parse_bc_ca_bool(bc_seq: ByteCursor&, cert: ParsedCert&) {
     guard bc_seq.cursor_len() > 0 && bc_seq.buf[0] == rfc::ASN1_TAG_BOOLEAN else { return; }
     var ca_bool = core::cursor_from(bc_seq.buf[..0]);
-    guard get_asn1_element(bc_seq, rfc::ASN1_TAG_BOOLEAN, ca_bool) else { return; }
-    if ca_bool.buf.len > 0 && ca_bool.buf[0] != 0 {
+    guard get_asn1_element(bc_seq, rfc::ASN1_TAG_BOOLEAN, ca_bool) &&
+        ca_bool.buf.len == 1 &&
+        (ca_bool.buf[0] == 0x00 || ca_bool.buf[0] == 0xFF) else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
+    if ca_bool.buf[0] == 0xFF {
         cert.is_ca = true;
     }
 }
@@ -332,7 +389,7 @@ fn x509_parse_basic_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     }
     cert.has_basic_constraints = true;
     var bc_seq = core::cursor_from(ext_val.buf[..0]);
-    guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, bc_seq) else {
+    guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, bc_seq) && ext_val.cursor_len() == 0 else {
         cert.has_unsupported_critical = true;
         return;
     }
@@ -350,7 +407,7 @@ fn x509_parse_key_usage_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     }
     cert.has_key_usage = true;
     var ku_bits = core::cursor_from(ext_val.buf[..0]);
-    guard get_asn1_element(ext_val, rfc::ASN1_TAG_BIT_STRING, ku_bits) else {
+    guard get_asn1_element(ext_val, rfc::ASN1_TAG_BIT_STRING, ku_bits) && ext_val.cursor_len() == 0 else {
         cert.has_unsupported_critical = true;
         return;
     }
@@ -372,7 +429,10 @@ fn x509_parse_akid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: Parsed
         return;
     }
     var akid_seq = core::cursor_from(ext_val.buf[..0]);
-    guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, akid_seq) else { return; }
+    guard get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, akid_seq) && ext_val.cursor_len() == 0 else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
     guard akid_seq.cursor_len() > 0 && akid_seq.buf[0] == 0x80 else { return; }
     var akid_key = core::cursor_from(akid_seq.buf[..0]);
     guard get_asn1_element(akid_seq, 0x80, akid_key) else { return; }
@@ -387,7 +447,10 @@ fn x509_parse_skid_ext(raw_cert: const u8[:], ext_val: ByteCursor&, cert: Parsed
         return;
     }
     var skid_oct = core::cursor_from(ext_val.buf[..0]);
-    guard get_asn1_element(ext_val, rfc::ASN1_TAG_OCTET_STRING, skid_oct) else { return; }
+    guard get_asn1_element(ext_val, rfc::ASN1_TAG_OCTET_STRING, skid_oct) && ext_val.cursor_len() == 0 else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
     guard skid_oct.buf.len > 0 && skid_oct.buf.len <= 64 else { return; }
     cert.has_skid = true;
     cert.skid_key_id = make_span(raw_cert, skid_oct.buf);
@@ -399,7 +462,9 @@ inline fn x509_check_policy_skip_certs(elem_buf: const u8[:]) -> bool {
 
 fn x509_parse_policy_constraints_ext(ext_val: ByteCursor&, cert: ParsedCert&) {
     var pc_seq = core::cursor_from(ext_val.buf[..0]);
-    if !get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, pc_seq) || pc_seq.cursor_len() == 0 {
+    if !get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, pc_seq) ||
+        ext_val.cursor_len() != 0 ||
+        pc_seq.cursor_len() == 0 {
         cert.has_malformed_policy_constraints = true;
         return;
     }
@@ -533,7 +598,7 @@ fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: ByteCursor&, cert: 
         x509_parse_policy_constraints_ext(ext_val, cert);
     } else if oid == rfc::OID_INHIBIT_ANY_POLICY[..] {
         var val: i64 = 0;
-        if !get_asn1_integer(ext_val, val) || val < 0 {
+        if !get_asn1_integer(ext_val, val) || ext_val.cursor_len() != 0 || val < 0 {
             cert.has_malformed_policy_constraints = true;
         }
     } else {
@@ -569,13 +634,17 @@ fn x509_dispatch_extension(raw_cert: const u8[:], oid: const u8[:], ext_val: Byt
     }
 }
 
-inline fn x509_check_ext_critical(single_ext: ByteCursor&) -> bool {
+inline fn x509_check_ext_critical(single_ext: ByteCursor&, out_ok: bool&) -> bool {
+    out_ok = true;
     guard single_ext.cursor_len() > 0 && single_ext.buf[0] == rfc::ASN1_TAG_BOOLEAN else { return false; }
     var maybe_crit = core::cursor_from(single_ext.buf[..0]);
-    if get_asn1_element(single_ext, rfc::ASN1_TAG_BOOLEAN, maybe_crit) {
-        return maybe_crit.buf.len > 0 && maybe_crit.buf[0] != 0;
+    guard get_asn1_element(single_ext, rfc::ASN1_TAG_BOOLEAN, maybe_crit) &&
+        maybe_crit.buf.len == 1 &&
+        (maybe_crit.buf[0] == 0x00 || maybe_crit.buf[0] == 0xFF) else {
+        out_ok = false;
+        return false;
     }
-    return false;
+    return maybe_crit.buf[0] == 0xFF;
 }
 
 fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCursor&, cert: ParsedCert&) -> bool {
@@ -585,7 +654,12 @@ fn x509_parse_single_cert_extension(raw_cert: const u8[:], single_ext: ByteCurso
         return false;
     }
 
-    let is_critical = x509_check_ext_critical(single_ext);
+    var crit_ok = true;
+    let is_critical = x509_check_ext_critical(single_ext, crit_ok);
+    if !crit_ok {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
 
     var ext_val = core::cursor_from(single_ext.buf[..0]);
     if !get_asn1_element(single_ext, rfc::ASN1_TAG_OCTET_STRING, ext_val) {
@@ -627,19 +701,22 @@ fn read_cert_extensions(raw_cert: const u8[:], ext_seq: ByteCursor&, cert: Parse
 // ---- Trust Anchors and RFC 5280 Verification -----------------------------
 
 struct TrustAnchor {
-    subject_dn_sha256:   u8[32]    = [0; 32],
-    spki_sha256:         u8[32]    = [0; 32],
-    subject_raw:         u8[..384] = [],
-    spki_pubkey:         u8[..600] = [],
-    skid_key_id:         u8[..64]  = [],
-    key_usage:           u16       = 0,
-    has_key_usage:       bool      = false,
-    has_skid:            bool      = false,
-    has_pub_material:    bool      = false,
-    validity_not_before: i64       = 0,
-    validity_not_after:  i64       = 0,
-    has_validity:        bool      = false,
-    is_valid:            bool      = false,
+    subject_dn_sha256:     u8[32]    = [0; 32],
+    spki_sha256:           u8[32]    = [0; 32],
+    subject_raw:           u8[..384] = [],
+    spki_pubkey:           u8[..600] = [],
+    skid_key_id:           u8[..64]  = [],
+    key_usage:             u16       = 0,
+    has_key_usage:         bool      = false,
+    has_basic_constraints: bool      = false,
+    is_ca:                 bool      = false,
+    path_len_constraint:   i32       = -1,
+    has_skid:              bool      = false,
+    has_pub_material:      bool      = false,
+    validity_not_before:   i64       = 0,
+    validity_not_after:    i64       = 0,
+    has_validity:          bool      = false,
+    is_valid:              bool      = false,
 }
 
 struct TrustAnchorStore {
@@ -697,14 +774,17 @@ fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]
     guard subj.len > 0 && spki.len > 0 else { return false; }
 
     var anchor = TrustAnchor {
-        subject_dn_sha256:   core::sha256(subj),
-        spki_sha256:         core::sha256(spki),
-        key_usage:           cert.key_usage,
-        has_key_usage:       cert.has_key_usage,
-        validity_not_before: cert.validity_not_before,
-        validity_not_after:  cert.validity_not_after,
-        has_validity:        true,
-        is_valid:            true,
+        subject_dn_sha256:     core::sha256(subj),
+        spki_sha256:           core::sha256(spki),
+        key_usage:             cert.key_usage,
+        has_key_usage:         cert.has_key_usage,
+        has_basic_constraints: cert.has_basic_constraints,
+        is_ca:                 cert.is_ca,
+        path_len_constraint:   cert.path_len_constraint,
+        validity_not_before:   cert.validity_not_before,
+        validity_not_after:    cert.validity_not_after,
+        has_validity:          true,
+        is_valid:              true,
     };
     var pk = span_slice(raw_cert_der, cert.spki_pubkey);
     if pk.len >= 2 && pk[0] == 0 {
@@ -780,7 +860,7 @@ fn validate_intermediate_ca_constraints(cert: const ParsedCert&, depth: i64) -> 
     if cert.has_key_usage && (cert.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) == 0 {
         return TlsAlert.UnsupportedCertificate;
     }
-    // pathLenConstraint gives max intermediate certs that may follow this cert
+    // RFC 5280 Section 4.2.1.9: Basic Constraints - max non-self-issued intermediate certs following this cert.
     if cert.path_len_constraint >= 0 && (depth - 1) > cert.path_len_constraint {
         return TlsAlert.BadCertificate;
     }
@@ -838,6 +918,7 @@ fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool {
     let pat = x509_strip_trailing_dot(san_pattern);
     let h = x509_strip_trailing_dot(host);
     guard pat.len > 0 && h.len > 0 else { return false; }
+    guard !x509_is_ip_literal(h) && !h.contains_byte(':') else { return false; }
 
     if pat.eq_ascii_fold(h) {
         return true;
@@ -957,6 +1038,18 @@ fn validate_san_dns_name(dns: const u8[:]) -> bool {
     return true;
 }
 
+inline fn x509_has_valid_uri_scheme(uri: const u8[:]) -> bool {
+    let colon_idx = uri.index_of_byte(':');
+    guard colon_idx > 0 else { return false; }
+    let first = uri[0];
+    guard (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') else { return false; }
+    for i in colon_idx {
+        let b = uri[i];
+        guard x509_is_dns_label_char(b) || b == '+' || b == '.' else { return false; }
+    }
+    return true;
+}
+
 inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanType&) -> bool {
     if tag_num == 1 { // rfc822Name [1] IA5String
         guard elem_buf.len > 0 && !elem_buf.contains_byte(0) else { return false; }
@@ -974,7 +1067,7 @@ inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type
         return true;
     }
     if tag_num == 6 { // uniformResourceIdentifier [6] IA5String
-        guard elem_buf.len > 0 else { return false; }
+        guard elem_buf.len > 0 && x509_has_valid_uri_scheme(elem_buf) else { return false; }
         guard !elem_buf.contains_byte('%') && !elem_buf.contains_byte(0) else { return false; }
         out_type = SanType.Uri;
         return true;
@@ -1032,23 +1125,31 @@ fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool {
     return true;
 }
 
-// Matches an IP SAN (binary 4 or 16 octets) against a target IP host (either decimal string or raw binary).
-fn match_ip_san(san_ip: const u8[:], host: const u8[:]) -> bool {
-    guard san_ip.len == 4 || san_ip.len == 16 else { return false; }
-
-    // Direct binary match
-    if host.len == san_ip.len && host == san_ip {
-        return true;
-    }
-
-    // Decimal IPv4 string match
+fn match_ip_san_text(san_ip: const u8[:], host: const u8[:]) -> bool {
+    guard (san_ip.len == 4 || san_ip.len == 16) && host.len > 0 else { return false; }
+    guard !host.contains_byte('%') && !host.contains_byte(0) else { return false; }
     if san_ip.len == 4 {
         var host_ip: u8[4] = [0; 4];
-        if parse_ipv4_literal(host, host_ip) {
-            return san_ip == host_ip[..];
-        }
+        return parse_ipv4_literal(host, host_ip) && san_ip == host_ip[..];
     }
-    return false;
+    var h6 = host;
+    let no_l, has_l = h6.strip_prefix("[");
+    if has_l {
+        let inner, has_r = no_l.strip_suffix("]");
+        guard has_r else { return false; }
+        h6 = inner;
+    }
+    let ip6_octets, ok_v6 = core::parse_ipv6_octets(h6);
+    return ok_v6 && san_ip == ip6_octets[..];
+}
+
+// Matches an IP SAN (binary 4 or 16 octets) against a target IP host (either text IPv4/IPv6 or raw binary).
+fn match_ip_san(san_ip: const u8[:], host: const u8[:]) -> bool {
+    guard san_ip.len == 4 || san_ip.len == 16 else { return false; }
+    if match_ip_san_text(san_ip, host) {
+        return true;
+    }
+    return host.len == san_ip.len && host == san_ip;
 }
 
 // Matches any single SAN entry against target hostname or IP address.
@@ -1056,9 +1157,9 @@ fn match_san(san: const SanEntry&, host: const u8[:]) -> bool {
     if san.san_type == SanType.Dns {
         return match_dns_san(san.val, host);
     } else if san.san_type == SanType.Ip {
-        return match_ip_san(san.val, host);
+        return match_ip_san_text(san.val, host);
     } else if san.san_type == SanType.Uri {
-        return match_uri_san(san.val, host);
+        return host.contains_byte(':') && x509_has_valid_uri_scheme(host) && match_uri_san(san.val, host);
     }
     return false;
 }
@@ -1468,7 +1569,29 @@ fn x509_is_cert_duplicate(
     let spki_j = span_slice(raw_j, cert_j.spki_raw);
     let s_k = span_slice(raw_k, cert_k.subject_raw);
     let spki_k = span_slice(raw_k, cert_k.spki_raw);
-    return (s_j.len > 0 && s_j == s_k) || (spki_j.len > 0 && spki_j == spki_k);
+    return s_j.len > 0 && s_j == s_k && spki_j.len > 0 && spki_j == spki_k;
+}
+
+inline fn x509_is_self_issued(cert: const ParsedCert&, raw_cert: const u8[:]) -> bool {
+    let iss = span_slice(raw_cert, cert.issuer_raw);
+    let sub = span_slice(raw_cert, cert.subject_raw);
+    return iss.len > 0 && iss == sub;
+}
+
+fn x509_count_non_self_issued_below(
+    chain_certs: const ParsedCert[..8]&,
+    raw_certs:   const u8[:][..8]&,
+    up_to_idx:   i64,
+) -> i64 {
+    var count: i64 = 0;
+    var j:     i64 = 1;
+    while j < up_to_idx {
+        if !x509_is_self_issued(chain_certs[j], raw_certs[j]) {
+            count = core::add_sat_i64(count, 1);
+        }
+        j = core::add_sat_i64(j, 1);
+    }
+    return count;
 }
 
 // RFC 5280 Certificate Chain Validation.
@@ -1488,6 +1611,7 @@ fn x509_validate_single_chain_cert(
     cert:                   const ParsedCert&,
     raw_cert:               const u8[:],
     i:                      i64,
+    non_self_issued_below:  i64,
     is_direct_trust_anchor: bool,
     now_unix:               i64,
 ) -> TlsAlert {
@@ -1515,7 +1639,7 @@ fn x509_validate_single_chain_cert(
     if i == 0 && !is_direct_trust_anchor {
         return validate_end_entity_constraints(cert);
     } else if i > 0 {
-        return validate_intermediate_ca_constraints(cert, i);
+        return validate_intermediate_ca_constraints(cert, core::add_sat_i64(non_self_issued_below, 1));
     }
     return TlsAlert.CloseNotify;
 }
@@ -1675,11 +1799,21 @@ fn x509_enforce_chain_name_constraints(
 }
 
 fn x509_verify_cert_against_anchor(
-    cert:     const ParsedCert&,
-    raw_cert: const u8[:],
-    anchor:   const TrustAnchor&,
-    now_unix: i64,
+    cert:                  const ParsedCert&,
+    raw_cert:              const u8[:],
+    anchor:                const TrustAnchor&,
+    non_self_issued_count: i64,
+    now_unix:              i64,
 ) -> TlsAlert {
+    if anchor.has_basic_constraints && !anchor.is_ca {
+        return TlsAlert.BadCertificate;
+    }
+    if anchor.has_key_usage && (anchor.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) == 0 {
+        return TlsAlert.UnsupportedCertificate;
+    }
+    if anchor.path_len_constraint >= 0 && non_self_issued_count > anchor.path_len_constraint {
+        return TlsAlert.BadCertificate;
+    }
     if anchor.has_validity {
         if anchor.validity_not_before > anchor.validity_not_after {
             return TlsAlert.BadCertificate;
@@ -1695,10 +1829,11 @@ fn x509_verify_cert_against_anchor(
 }
 
 fn x509_validate_trust_anchor_node(
-    cert:        const ParsedCert&,
-    raw_cert:    const u8[:],
-    trust_store: const TrustAnchorStore&,
-    now_unix:    i64,
+    cert:                  const ParsedCert&,
+    raw_cert:              const u8[:],
+    trust_store:           const TrustAnchorStore&,
+    non_self_issued_count: i64,
+    now_unix:              i64,
 ) -> TlsAlert {
     if matches_trust_anchor(trust_store, cert, raw_cert) {
         let issuer_slice = span_slice(raw_cert, cert.issuer_raw);
@@ -1724,7 +1859,7 @@ fn x509_validate_trust_anchor_node(
             guard span_slice(raw_cert, cert.akid_key_id) == anchor.skid_key_id[..] else { continue; }
         }
         saw_candidate = true;
-        let alert = x509_verify_cert_against_anchor(cert, raw_cert, anchor, now_unix);
+        let alert = x509_verify_cert_against_anchor(cert, raw_cert, anchor, non_self_issued_count, now_unix);
         if alert == TlsAlert.CloseNotify {
             return TlsAlert.CloseNotify;
         }
@@ -1742,12 +1877,16 @@ fn x509_validate_chain_nodes(
 ) -> TlsAlert {
     let n = min(chain_certs.len, raw_certs.len);
     for i in n {
+        let non_si_below = x509_count_non_self_issued_below(chain_certs, raw_certs, i);
         let cert_alert = x509_validate_single_chain_cert(
-            chain_certs[i], raw_certs[i], i, is_direct_trust_anchor, now_unix,
+            chain_certs[i], raw_certs[i], i, non_si_below, is_direct_trust_anchor, now_unix,
         );
         guard cert_alert == TlsAlert.CloseNotify else { return cert_alert; }
         if i + 1 == n {
-            let ta_alert = x509_validate_trust_anchor_node(chain_certs[i], raw_certs[i], trust_store, now_unix);
+            let total_non_si = x509_count_non_self_issued_below(chain_certs, raw_certs, n);
+            let ta_alert = x509_validate_trust_anchor_node(
+                chain_certs[i], raw_certs[i], trust_store, total_non_si, now_unix,
+            );
             guard ta_alert == TlsAlert.CloseNotify else { return ta_alert; }
         }
     }

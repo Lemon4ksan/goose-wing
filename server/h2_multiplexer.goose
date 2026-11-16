@@ -155,12 +155,15 @@ fn reset_h2_server_session_inplace(
     sess.conn.max_concurrent_streams = 16;
     sess.conn.active_stream_count = 0;
     sess.conn.last_peer_stream_id = 0;
+    sess.conn.last_local_stream_id = 0;
     sess.conn.is_server = true;
     sess.conn.enable_push = false;
     sess.conn.enable_connect_protocol = 1;
     sess.conn.unclaimed_recv_window = 0;
     sess.conn.coalesce_window_updates = false;
     sess.conn.streams.clear();
+    sess.conn.stream_index = [core::FlatIndexBucket { .. }; 256];
+    sess.conn.idle_priorities.clear();
     sess.conn.continuation_stream_id = 0;
     sess.conn.continuation_frames_cnt = 0;
     sess.conn.accumulated_header_size = 0;
@@ -968,6 +971,10 @@ fn process_ingress_headers<B>(
     }
     let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
     guard found else {
+        if (hdr.stream_id & 1) == 1 && hdr.stream_id > sess.conn.last_peer_stream_id
+            && !(sess.conn.goaway_received || sess.conn.goaway_sent) {
+            sess.conn.last_peer_stream_id = hdr.stream_id;
+        }
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
@@ -1086,6 +1093,10 @@ fn process_ingress_continuation<B>(
     }
     let s_idx, found = find_or_alloc_stream(sess, hdr.stream_id);
     guard found else {
+        if (hdr.stream_id & 1) == 1 && hdr.stream_id > sess.conn.last_peer_stream_id
+            && !(sess.conn.goaway_received || sess.conn.goaway_sent) {
+            sess.conn.last_peer_stream_id = hdr.stream_id;
+        }
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_REFUSED_STREAM, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
@@ -1261,9 +1272,12 @@ fn process_ingress_data<B>(
     let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
     if !found {
         if (hdr.stream_id & 1) == 1 && hdr.stream_id <= sess.conn.last_peer_stream_id {
-            // RFC 9113 §5.1: Closed stream receives DATA -> stream error STREAM_CLOSED
+            // RFC 9113 §5.1 & §6.9: Account connection window before emitting stream error STREAM_CLOSED
+            guard replenish_closed_stream_conn_window(sess, hdr.length, out_wire) else {
+                return false;
+            }
             emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
-            return replenish_closed_stream_conn_window(sess, hdr.length, out_wire);
+            return true;
         } else {
             // Idle stream receives DATA -> connection error PROTOCOL_ERROR (RFC 9113 §5.1)
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
@@ -1273,10 +1287,13 @@ fn process_ingress_data<B>(
 
     // Stream is found; check if stream is already half-closed (remote)
     if sess.streams[s_idx].body_received {
-        // RFC 9113 §5.1: Receiving DATA after END_STREAM is a stream error STREAM_CLOSED
-        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
+        // RFC 9113 §5.1 & §6.9: Receiving DATA after END_STREAM is a stream error STREAM_CLOSED
         terminate_server_stream(sess, pipeline, hdr.stream_id);
-        return replenish_closed_stream_conn_window(sess, hdr.length, out_wire);
+        guard replenish_closed_stream_conn_window(sess, hdr.length, out_wire) else {
+            return false;
+        }
+        emit_rst_stream(hdr.stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
+        return true;
     }
 
     var d_start: i64 = 0;
@@ -1530,9 +1547,11 @@ inline fn complete_server_stream_response(
     if c_found {
         sess.conn.streams[c_idx].state = h2_internal::H2StreamState.Closed;
         sess.conn.streams[c_idx].active = false;
+        let _ = core::flat_index_remove(sess.conn.stream_index[..], target_stream_id);
         if sess.conn.active_stream_count > 0 {
             sess.conn.active_stream_count--;
         }
+        h2_internal::sync_stream_urgency_node(sess.conn, c_idx);
     }
 }
 
@@ -1848,6 +1867,11 @@ fn handle_ingress_header_error<B>(
         guard decompress_rejected_headers_frame(sess, hdr, frame_payload, out_wire) else {
             return false;
         }
+    }
+    if hdr.frame_type == rfc::H2_FRAME_HEADERS && err == rfc::H2_ERR_REFUSED_STREAM
+        && (hdr.stream_id & 1) == 1 && hdr.stream_id > sess.conn.last_peer_stream_id
+        && !(sess.conn.goaway_received || sess.conn.goaway_sent) {
+        sess.conn.last_peer_stream_id = hdr.stream_id;
     }
     emit_rst_stream(hdr.stream_id, err, out_wire);
     terminate_server_stream(sess, pipeline, hdr.stream_id);

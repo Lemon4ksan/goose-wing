@@ -1380,9 +1380,9 @@ fn test_f006_h2_oversize_frame_and_rst_stream() {
     var rx_oversize: u8[..64] = [0x00, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
     var dec_dt = h2_internal::new_dynamic_table(4096);
     var resp = wing::Response { .. };
-    var got_hdrs = false;
+    var h2_state = wing::H2ClientRecvState { .. };
     var ctrl_out: u8[..256] = [];
-    let ok_f, _ = wing::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, got_hdrs, ctrl_out);
+    let ok_f, _ = wing::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, h2_state, ctrl_out);
     assert(!ok_f);
 
     let rst_hdr = h2_internal::FrameHeader {
@@ -1393,7 +1393,7 @@ fn test_f006_h2_oversize_frame_and_rst_stream() {
     };
     let rst_payload: u8[4] = [0x00, 0x00, 0x00, 0x08];
     let ok_rst, _ = wing::process_h2_response_frame(
-        rst_hdr, rst_payload[..], 1, false, dec_dt, resp, got_hdrs, ctrl_out,
+        rst_hdr, rst_payload[..], 1, false, dec_dt, resp, h2_state, ctrl_out,
     );
     assert(!ok_rst);
     print("F006_H2_FRAME_VALIDATION: OK");

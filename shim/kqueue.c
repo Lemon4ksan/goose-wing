@@ -2,11 +2,13 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Layer 4 macOS / Darwin / BSD kqueue Event Notification C Shim.
-// Implements kqueue() and kevent() batch event multiplexing with nanosecond timers,
-// explicit slice marshalling, and byte-accurate socket buffer accounting (struct kevent.data).
+// Implements kqueue() with FD_CLOEXEC, EV_RECEIPT chunked changelist flushing (mio/libuv pattern),
+// packed Goose slice marshalling, and nanosecond-resolution kevent() harvesting.
 #include <stdint.h>
 #include <stddef.h>
 
+// Goose emits all structs and slice headers under #pragma pack(push, 1).
+#pragma pack(push, 1)
 typedef struct {
     uint64_t ident;
     int16_t filter;
@@ -16,7 +18,7 @@ typedef struct {
     uint64_t udata;
 } WING_KEVENT;
 
-_Static_assert(sizeof(WING_KEVENT) == 32, "WING_KEVENT must match Goose Kevent (32B)");
+_Static_assert(sizeof(WING_KEVENT) == 32, "WING_KEVENT must match packed Goose Kevent (32B)");
 
 typedef struct {
     const WING_KEVENT *data;
@@ -27,13 +29,19 @@ typedef struct {
     WING_KEVENT *data;
     int64_t len;
 } wing_kevents_rw;
+#pragma pack(pop)
 
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
+
+#ifndef EV_RECEIPT
+#define EV_RECEIPT 0x0040
+#endif
 
 int32_t wing_kqueue_probe(void) {
     int kq = kqueue();
@@ -49,6 +57,11 @@ int64_t wing_kqueue_create(void) {
     if (kq < 0) {
         return -errno;
     }
+    if (fcntl(kq, F_SETFD, FD_CLOEXEC) < 0) {
+        int err = errno ? errno : EIO;
+        close(kq);
+        return -err;
+    }
     return (int64_t)kq;
 }
 
@@ -56,33 +69,67 @@ int32_t wing_kqueue_kevent_slice(int64_t kq_fd, wing_kevents_ro changes, wing_ke
     if (kq_fd < 0) {
         return -EBADF;
     }
-    struct kevent chg_buf[64];
-    struct kevent ev_buf[64];
 
-    int nchanges = 0;
+    // 1. Apply all queued changes in 64-entry EV_RECEIPT batches so:
+    //    - batches > 64 entries (e.g. ReactorAccelRuntime kq_changes[..256]) are never truncated,
+    //    - benign ENOENT/EBADF/EPIPE on EV_DELETE never abort subsequent EV_ADDs in the batch,
+    //    - receipt entries never consume caller's ready-event output slots.
     if (changes.data != NULL && changes.len > 0) {
-        nchanges = (changes.len > 64) ? 64 : (int)changes.len;
-        for (int i = 0; i < nchanges; i++) {
-            EV_SET(&chg_buf[i], (uintptr_t)changes.data[i].ident, changes.data[i].filter, changes.data[i].flags,
-                   changes.data[i].fflags, (intptr_t)changes.data[i].data, (void *)(uintptr_t)changes.data[i].udata);
+        struct kevent chg_buf[64];
+        struct kevent rcpt_buf[64];
+        int64_t off = 0;
+        while (off < changes.len) {
+            int chunk = (changes.len - off > 64) ? 64 : (int)(changes.len - off);
+            for (int i = 0; i < chunk; i++) {
+                const WING_KEVENT *src = &changes.data[off + i];
+#if defined(__NetBSD__)
+                intptr_t udata_val = (intptr_t)(uintptr_t)src->udata;
+#else
+                void *udata_val = (void *)(uintptr_t)src->udata;
+#endif
+                EV_SET(&chg_buf[i], (uintptr_t)src->ident, src->filter, (uint16_t)(src->flags | EV_RECEIPT),
+                       src->fflags, (intptr_t)src->data, udata_val);
+            }
+            int rc = kevent((int)kq_fd, chg_buf, chunk, rcpt_buf, chunk, NULL);
+            if (rc < 0) {
+                if (errno == EINTR) {
+                    off += chunk;
+                    continue;
+                }
+                return -errno;
+            }
+            for (int i = 0; i < rc; i++) {
+                if ((rcpt_buf[i].flags & EV_ERROR) != 0 && rcpt_buf[i].data != 0) {
+                    int err = (int)rcpt_buf[i].data;
+                    if (err != ENOENT && err != EBADF && err != EPIPE) {
+                        return -err;
+                    }
+                }
+            }
+            off += chunk;
         }
     }
 
-    int max_ev = 0;
-    if (events.data != NULL && events.len > 0) {
-        max_ev = (events.len > 64) ? 64 : (int)events.len;
+    if (events.data == NULL || events.len <= 0) {
+        return 0;
     }
+
+    struct kevent ev_buf[256];
+    int max_ev = (events.len > 256) ? 256 : (int)events.len;
 
     struct timespec ts;
     struct timespec *pts = NULL;
     if (timeout_ns >= 0) {
-        ts.tv_sec = timeout_ns / 1000000000LL;
-        ts.tv_nsec = timeout_ns % 1000000000LL;
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000LL);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000LL);
         pts = &ts;
     }
 
-    int ret = kevent((int)kq_fd, nchanges > 0 ? chg_buf : NULL, nchanges, max_ev > 0 ? ev_buf : NULL, max_ev, pts);
+    int ret = kevent((int)kq_fd, NULL, 0, ev_buf, max_ev, pts);
     if (ret < 0) {
+        if (errno == EINTR) {
+            return 0;
+        }
         return -errno;
     }
     for (int i = 0; i < ret; i++) {
@@ -108,7 +155,7 @@ void wing_kqueue_close(int64_t kq_fd) {
 #define ENOSYS 38
 #endif
 
-// Non-Darwin platform stubs
+// Non-Darwin/BSD platform stubs
 int32_t wing_kqueue_probe(void) { return -ENOSYS; }
 int64_t wing_kqueue_create(void) { return -ENOSYS; }
 int32_t wing_kqueue_kevent_slice(int64_t kq_fd, wing_kevents_ro changes, wing_kevents_rw events, int64_t timeout_ns) {

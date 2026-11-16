@@ -903,14 +903,52 @@ fn validate_fin_constraints(buf: const ReassemblyBuffer&, frag_end: u64) -> bool
     return true;
 }
 
-inline fn arena_write_payload(arena: SegmentedArena&, base_slab: i64, payload: const u8[:], payload_skip: i64) {
-    let copy_len = payload.len - payload_skip;
+inline fn arena_write_gap(
+    arena:        SegmentedArena&,
+    consumed_off: u64,
+    frag_offset:  u64,
+    payload:      const u8[:],
+    gap_start:    u64,
+    gap_end:      u64,
+) {
+    guard gap_start < gap_end else { return; }
+    let base_slab = core::sub_sat_u64(gap_start, consumed_off) as i64;
+    let payload_skip = core::sub_sat_u64(gap_start, frag_offset) as i64;
+    let copy_len = core::sub_sat_u64(gap_end, gap_start) as i64;
     for idx in copy_len {
-        arena.chunks[base_slab + idx] = payload[payload_skip + idx];
+        arena.chunks[core::add_sat_i64(base_slab, idx)] = payload[core::add_sat_i64(payload_skip, idx)];
     }
-    let write_end = base_slab + copy_len;
+    let write_end = core::add_sat_i64(base_slab, copy_len);
     if write_end > arena.data_len {
         arena.data_len = write_end;
+    }
+}
+
+inline fn arena_write_uncovered_gaps(
+    arena:        SegmentedArena&,
+    intervals:    const Interval[..64]&,
+    consumed_off: u64,
+    frag_offset:  u64,
+    payload:      const u8[:],
+    eff_start:    u64,
+    frag_end:     u64,
+) {
+    var cur = eff_start;
+    for i in intervals.len {
+        let it = intervals[i];
+        if it.end <= cur {
+            continue;
+        }
+        if it.start >= frag_end {
+            break;
+        }
+        if cur < it.start {
+            arena_write_gap(arena, consumed_off, frag_offset, payload, cur, it.start);
+        }
+        cur = max(cur, it.end);
+    }
+    if cur < frag_end {
+        arena_write_gap(arena, consumed_off, frag_offset, payload, cur, frag_end);
     }
 }
 
@@ -946,15 +984,16 @@ fn insert_fragment(
     }
 
     let eff_start = max(offset, buf.consumed_offset);
-    let payload_skip = (eff_start - offset) as i64;
     let needed_len = frag_end - buf.consumed_offset;
 
     guard needed_len <= ARENA_MAX_BYTES else { return false; }
-    guard merge_reassembly_interval(buf.intervals, eff_start, frag_end) else { return false; }
+    var next_intervals = buf.intervals;
+    guard merge_reassembly_interval(next_intervals, eff_start, frag_end) else { return false; }
     guard arena_ensure_bytes(buf.arena, needed_len) else { return false; }
 
-    let base_slab = (eff_start - buf.consumed_offset) as i64;
-    arena_write_payload(buf.arena, base_slab, payload, payload_skip);
+    // RFC 9000 Section 2.2: Sending and Receiving Data - Preserve already received stream bytes on overlap.
+    arena_write_uncovered_gaps(buf.arena, buf.intervals, buf.consumed_offset, offset, payload, eff_start, frag_end);
+    buf.intervals = next_intervals;
 
     if is_fin {
         buf.fin_received = true;

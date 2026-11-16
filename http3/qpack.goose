@@ -1364,7 +1364,8 @@ inline fn is_valid_h3_path_bytes(val: const u8[:]) -> bool {
         return false;
     }
     for b in val {
-        if b <= 0x20 || b == 0x7F || b == '#' {
+        if b <= 0x20 || b >= 0x7F || b == '#' || b == '<' || b == '>' || b == '"'
+            || b == '\\' || b == '^' || b == '{' || b == '|' || b == '}' {
             return false;
         }
     }
@@ -1438,13 +1439,19 @@ inline fn emit_qpack_field_to_map(
     }
 
     guard !is_forbidden_connection_header(name, val) else { return QpackError.MessageError; }
+    if out_pseudo.has_status && name == "te" {
+        return QpackError.MessageError;
+    }
     if out_pseudo.is_trailer {
-        guard name != "content-length" && name != "host" && name != "trailer" && name != "te" else {
+        guard name != "content-length" && name != "host" && name != "trailer" && name != "te"
+            && !rfc::is_disallowed_trailer_field(name) else {
             return QpackError.MessageError;
         }
     }
     if name == "host" {
-        guard is_valid_authority_or_host(val) else { return QpackError.MessageError; }
+        guard !wing::has_header(out_headers, "host") && is_valid_authority_or_host(val) else {
+            return QpackError.MessageError;
+        }
         if out_pseudo.has_authority && !out_pseudo.authority[..].eq_ascii_fold(val) {
             return QpackError.MessageError;
         }

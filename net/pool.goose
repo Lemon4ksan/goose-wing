@@ -13,6 +13,7 @@ import .proxy;
 import .transport;
 import .udp;
 import http2.hpack;
+import cookie.psl;
 
 // ---- pool key dimensions & enums ----------------------------------------
 
@@ -292,7 +293,9 @@ fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
         return false;
     }
     let suffix = pattern[2..];
-    guard !suffix.contains_byte('*') && suffix.contains_byte('.') else { return false; }
+    guard !suffix.contains_byte('*') && suffix.contains_byte('.') && !psl_is_public_suffix(suffix) else {
+        return false;
+    }
     let label, host_suffix, has_dot = host.split_once_byte('.');
     let _, tld, _ = host.rsplit_once_byte('.');
     let _, is_numeric_tld = core::parse_digits(tld);

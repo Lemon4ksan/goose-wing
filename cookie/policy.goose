@@ -68,11 +68,19 @@ fn validate_canonical_cookie_security(
         return false;
     }
 
-    // Reject control characters
+    // Reject control characters and invalid RFC 6265 name/value/domain syntax
     if has_prohibited_cookie_ctl(cookie_name) ||
        has_prohibited_cookie_ctl(cookie_val.value[..]) ||
        has_prohibited_cookie_ctl(cookie_val.domain[..]) ||
        has_prohibited_cookie_ctl(cookie_val.path[..]) {
+        return false;
+    }
+    if !is_valid_canonical_cookie_name(cookie_name) ||
+       !is_valid_canonical_cookie_val(cookie_val.value[..]) ||
+       (cookie_name.len == 0 && cookie_val.value[..].contains_byte('=')) {
+        return false;
+    }
+    if cookie_val.domain.len > 0 && !is_valid_canonical_domain_attr(cookie_val.domain[..]) {
         return false;
     }
 
@@ -159,7 +167,13 @@ fn is_cookie_sendable_for_samesite(
                 !access.had_cross_site_hop && is_in_lax_allowing_unsafe_window(cookie_val, now_us)
             }
         },
-        Unknown => false,
+        Unknown => {
+            if access.is_safe_method {
+                true
+            } else {
+                !access.had_cross_site_hop && is_in_lax_allowing_unsafe_window(cookie_val, now_us)
+            }
+        },
     };
 }
 

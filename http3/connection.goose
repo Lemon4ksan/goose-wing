@@ -57,6 +57,7 @@ struct H3StreamEntry {
     trailers:             wing::HeaderMap     = wing::HeaderMap { .. },
     received_body:        u8[..4096]          = [],
     blocked_wire:         u8[..4096]          = [],
+    rx_partial_buf:       u8[..4096]          = [],
 }
 
 struct PromisedPushRecord {
@@ -124,16 +125,23 @@ struct H3Connection {
     local_settings:            wing::H3Settings         = wing::H3Settings { .. },
     peer_settings:             wing::H3Settings         = wing::H3Settings { .. },
     encoder_stream_buf:        u8[..4096]               = [],
+    ctrl_partial_buf:          u8[..1024]               = [],
+    qpack_enc_partial_buf:     u8[..4224]               = [],
+    qpack_dec_partial_buf:     u8[..64]                 = [],
+    local_qpack_enc_activated: bool                     = false,
     streams:                   H3StreamEntry[..32]      = [],
-    qpack_table:               QpackTable               = QpackTable { .. }, // Resizable array must be final field
+    qpack_static_only_tbl:     QpackTable               = QpackTable { .. },
+    qpack_dec_table:           QpackTable               = QpackTable { .. },
+    qpack_table:               QpackTable               = QpackTable { .. },
 }
 
 fn new_h3_client_connection(settings: const wing::H3Settings&) -> H3Connection {
     let max_blk = min(settings.qpack_blocked_streams, 0xFFFFFFFF) as u32;
     return H3Connection {
-        role:           H3ConnRole.Client,
-        local_settings: settings,
-        qpack_table:    new_qpack_table(settings.qpack_max_table_capacity, max_blk, 0),
+        role:            H3ConnRole.Client,
+        local_settings:  settings,
+        qpack_dec_table: new_qpack_table(settings.qpack_max_table_capacity, max_blk, 0),
+        qpack_table:     new_qpack_table(settings.qpack_max_table_capacity, max_blk, 0),
         ..
     };
 }
@@ -141,9 +149,10 @@ fn new_h3_client_connection(settings: const wing::H3Settings&) -> H3Connection {
 fn new_h3_server_connection(settings: const wing::H3Settings&) -> H3Connection {
     let max_blk = min(settings.qpack_blocked_streams, 0xFFFFFFFF) as u32;
     return H3Connection {
-        role:           H3ConnRole.Server,
-        local_settings: settings,
-        qpack_table:    new_qpack_table(settings.qpack_max_table_capacity, max_blk, 0),
+        role:            H3ConnRole.Server,
+        local_settings:  settings,
+        qpack_dec_table: new_qpack_table(settings.qpack_max_table_capacity, max_blk, 0),
+        qpack_table:     new_qpack_table(settings.qpack_max_table_capacity, max_blk, 0),
         ..
     };
 }
@@ -361,35 +370,39 @@ fn send_request_headers<B>(
     guard found && s_idx >= 0 && s_idx < conn.streams.len else { return false; }
     guard !conn.streams[s_idx].headers_sent && !conn.streams[s_idx].fin_sent else { return false; }
 
+    var enc_tbl .= conn.qpack_static_only_tbl;
+    if conn.local_qpack_enc_activated {
+        enc_tbl .= conn.qpack_table;
+    }
     let saved_out_len = out.len;
     let saved_enc_len = conn.encoder_stream_buf.len;
-    let saved_tbl = conn.qpack_table;
+    let saved_tbl = enc_tbl;
     var committed = false;
     defer if !committed {
         out.resize(saved_out_len);
         conn.encoder_stream_buf.resize(saved_enc_len);
-        conn.qpack_table = saved_tbl;
+        enc_tbl = saved_tbl;
     };
 
-    let base = conn.qpack_table.insert_count;
+    let base = enc_tbl.insert_count;
     var max_dyn_abs: u64 = 0;
     var used_any_dyn = false;
     var body_fields: u8[..4096] = [];
 
     guard try_encode_qpack_field_dynamic(
-        conn.qpack_table, stream_id, base, ":method", method,
+        enc_tbl, stream_id, base, ":method", method,
         body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
     ) && try_encode_qpack_field_dynamic(
-        conn.qpack_table, stream_id, base, ":scheme", scheme,
+        enc_tbl, stream_id, base, ":scheme", scheme,
         body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
     ) && try_encode_qpack_field_dynamic(
-        conn.qpack_table, stream_id, base, ":authority", authority,
+        enc_tbl, stream_id, base, ":authority", authority,
         body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
     ) && try_encode_qpack_field_dynamic(
-        conn.qpack_table, stream_id, base, ":path", path,
+        enc_tbl, stream_id, base, ":path", path,
         body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, true,
     ) && encode_h3_extra_headers(
-        conn.qpack_table, stream_id, base, extra_headers,
+        enc_tbl, stream_id, base, extra_headers,
         body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn,
     ) else {
         return false;
@@ -397,7 +410,7 @@ fn send_request_headers<B>(
 
     var qpack_payload: u8[..4096] = [];
     guard try_prepend_qpack_section_prefix(
-        conn.qpack_table, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload,
+        enc_tbl, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload,
     ) && qpack_payload.try_append(body_fields[..]) &&
           encode_h3_headers_frame(out, qpack_payload[..]) else {
         return false;
@@ -420,6 +433,14 @@ fn send_request_headers<B>(
 // Configures local QPACK dynamic table capacity from peer SETTINGS_QPACK_MAX_TABLE_CAPACITY
 // and emits the Set Dynamic Table Capacity instruction onto `conn.encoder_stream_buf` (RFC 9204 Section 4.3.1).
 fn h3_activate_qpack_dynamic_table(conn: H3Connection&, new_cap: u64) -> bool {
+    if !conn.local_qpack_enc_activated {
+        if conn.peer_qpack_enc_opened {
+            conn.qpack_dec_table = conn.qpack_table;
+            let max_blk = min(conn.local_settings.qpack_blocked_streams, 0xFFFFFFFF) as u32;
+            conn.qpack_table = new_qpack_table(conn.local_settings.qpack_max_table_capacity, max_blk, 0);
+        }
+        conn.local_qpack_enc_activated = true;
+    }
     if new_cap > conn.qpack_table.max_capacity_bytes {
         conn.qpack_table.max_capacity_bytes = new_cap;
     }
@@ -755,27 +776,80 @@ fn process_peer_push_stream(conn: H3Connection&, data: const u8[:], start_offset
     return rfc::H3_ERR_NO_ERROR;
 }
 
-fn process_peer_control_stream(conn: H3Connection&, data: const u8[:], start_offset: u64) -> u64 {
-    var offset = start_offset;
-    while offset < (data.len as u64) {
-        let hdr, ok_hdr = parse_h3_frame_header(data, offset);
-        guard ok_hdr else {
+inline fn check_control_frame_header_bounds(conn: H3Connection&, hdr: const H3FrameHeader&) -> u64 {
+    if !conn.peer_settings_received {
+        if hdr.frame_type != rfc::H3_FRAME_SETTINGS {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_MISSING_SETTINGS;
+            return rfc::H3_ERR_MISSING_SETTINGS;
+        }
+    } else if !rfc::is_allowed_on_control_stream(hdr.frame_type) || hdr.frame_type == rfc::H3_FRAME_SETTINGS {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+        return rfc::H3_ERR_FRAME_UNEXPECTED;
+    }
+    if hdr.frame_type == rfc::H3_FRAME_GOAWAY
+        || hdr.frame_type == rfc::H3_FRAME_CANCEL_PUSH
+        || hdr.frame_type == rfc::H3_FRAME_MAX_PUSH_ID {
+        if hdr.payload_len == 0 || hdr.payload_len > 8 {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_FRAME_ERROR;
             return rfc::H3_ERR_FRAME_ERROR;
         }
+    } else if hdr.frame_type == rfc::H3_FRAME_SETTINGS && hdr.payload_len > H3_MAX_SETTINGS_PAYLOAD_SIZE {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
+        return rfc::H3_ERR_EXCESSIVE_LOAD;
+    } else if core::add_sat_u64(hdr.header_len, hdr.payload_len) > 1024 {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+        return rfc::H3_ERR_FRAME_ERROR;
+    }
+    return rfc::H3_ERR_NO_ERROR;
+}
 
-        offset += hdr.header_len;
-        guard (0xFFFFFFFFFFFFFFFF - offset) >= hdr.payload_len &&
-              (offset + hdr.payload_len) <= (data.len as u64) else {
+fn process_peer_control_stream(conn: H3Connection&, data: const u8[:], start_offset: u64) -> u64 {
+    let incoming = data[(start_offset as i64)..];
+    var work_buf: u8[..2048] = [];
+    if conn.ctrl_partial_buf.len > 0 {
+        guard work_buf.try_append(conn.ctrl_partial_buf[..]) && work_buf.try_append(incoming) else {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_FRAME_ERROR;
             return rfc::H3_ERR_FRAME_ERROR;
+        }
+        conn.ctrl_partial_buf.clear();
+    }
+    let buf = if work_buf.len > 0 { work_buf[..] } else { incoming };
+    var offset: u64 = 0;
+    while offset < (buf.len as u64) {
+        let frame_start = offset;
+        let hdr, ok_hdr = parse_h3_frame_header(buf, offset);
+        if !ok_hdr {
+            let rem = buf[(frame_start as i64)..];
+            guard rem.len < 16 && conn.ctrl_partial_buf.try_set(rem) else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+                return rfc::H3_ERR_FRAME_ERROR;
+            }
+            return rfc::H3_ERR_NO_ERROR;
+        }
+        let pre_err = check_control_frame_header_bounds(conn, hdr);
+        guard pre_err == rfc::H3_ERR_NO_ERROR else { return pre_err; }
+
+        offset += hdr.header_len;
+        if (0xFFFFFFFFFFFFFFFF - offset) < hdr.payload_len || (offset + hdr.payload_len) > (buf.len as u64) {
+            let rem = buf[(frame_start as i64)..];
+            guard conn.ctrl_partial_buf.try_set(rem) else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+                return rfc::H3_ERR_FRAME_ERROR;
+            }
+            return rfc::H3_ERR_NO_ERROR;
         }
 
         let p_start = offset as i64;
         let p_end = (offset + hdr.payload_len) as i64;
-        let payload = data[p_start..p_end];
+        let payload = buf[p_start..p_end];
         offset += hdr.payload_len;
 
         let c_err = handle_peer_control_frame(conn, hdr, payload);
@@ -814,7 +888,11 @@ fn check_bidi_stream_fin_complete(conn: H3Connection&, s_idx: i32) -> u64 {
 }
 
 fn drain_unblocked_bidi_stream(conn: H3Connection&, stream_id: u64) -> u64 {
-    if qpack_is_stream_blocked(conn.qpack_table, stream_id) {
+    var dec_tbl .= conn.qpack_table;
+    if conn.local_qpack_enc_activated {
+        dec_tbl .= conn.qpack_dec_table;
+    }
+    if qpack_is_stream_blocked(dec_tbl, stream_id) {
         return rfc::H3_ERR_NO_ERROR;
     }
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
@@ -825,20 +903,24 @@ fn drain_unblocked_bidi_stream(conn: H3Connection&, stream_id: u64) -> u64 {
         var pending: u8[..4096] = [];
         let _ = pending.try_set(conn.streams[s_idx].blocked_wire[..]);
         conn.streams[s_idx].blocked_wire.clear();
-        let f_err = handle_bidi_stream_frames(conn, s_idx, pending[..]);
+        let f_err = handle_bidi_stream_frames(conn, s_idx, pending[..], conn.streams[s_idx].fin_received);
         guard f_err == rfc::H3_ERR_NO_ERROR else { return f_err; }
     }
-    if conn.streams[s_idx].fin_received && !qpack_is_stream_blocked(conn.qpack_table, stream_id) {
+    if conn.streams[s_idx].fin_received && !qpack_is_stream_blocked(dec_tbl, stream_id) {
         return check_bidi_stream_fin_complete(conn, s_idx);
     }
     return rfc::H3_ERR_NO_ERROR;
 }
 
 fn resume_single_blocked_entry(conn: H3Connection&, entry: const BlockedStreamEntry&) -> u64 {
+    var dec_tbl .= conn.qpack_table;
+    if conn.local_qpack_enc_activated {
+        dec_tbl .= conn.qpack_dec_table;
+    }
     if entry.is_push_promise {
         var pp_fields: HeaderField[..128] = [];
         let q_err = decode_qpack_section(
-            conn.qpack_table,
+            dec_tbl,
             entry.encoded_data[..],
             pp_fields,
             conn.local_settings.max_field_section_size,
@@ -864,12 +946,153 @@ fn resume_single_blocked_entry(conn: H3Connection&, entry: const BlockedStreamEn
 
 fn resume_unblocked_qpack_streams(conn: H3Connection&) -> u64 {
     for _ in 128 {
-        let entry, ok_pop = pop_ready_blocked_qpack_stream(conn.qpack_table);
+        var dec_tbl .= conn.qpack_table;
+        if conn.local_qpack_enc_activated {
+            dec_tbl .= conn.qpack_dec_table;
+        }
+        let entry, ok_pop = pop_ready_blocked_qpack_stream(dec_tbl);
         guard ok_pop else {
             return rfc::H3_ERR_NO_ERROR;
         }
         let r_err = resume_single_blocked_entry(conn, entry);
         guard r_err == rfc::H3_ERR_NO_ERROR else { return r_err; }
+    }
+    return rfc::H3_ERR_NO_ERROR;
+}
+
+inline fn is_qpack_int_truncated(src: const u8[:], offset: u64, prefix_bits: u8) -> bool {
+    guard offset < (src.len as u64) else { return true; }
+    let mask = core::sub_sat_u64(core::shl_sat_u64(1, prefix_bits), 1) as u8;
+    if (src[offset] & mask) < mask {
+        return false;
+    }
+    let rem = core::sub_sat_u64(core::sub_sat_u64(src.len as u64, offset), 1);
+    guard rem < 9 else { return false; }
+    let base_idx = core::add_sat_i64(offset as i64, 1);
+    for i in (rem as i64) {
+        if (src[core::add_sat_i64(base_idx, i)] & 0x80) == 0 {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline fn is_qpack_str_truncated(src: const u8[:], offset: u64, prefix_bits: u8, max_len: u64) -> bool, u64 {
+    if is_qpack_int_truncated(src, offset, prefix_bits) {
+        return true, offset;
+    }
+    let slen, next_off, ok = qpack_decode_int(src, offset, prefix_bits);
+    guard ok && slen <= max_len else { return false, offset; }
+    let end_off = core::add_sat_u64(next_off, slen);
+    if end_off > (src.len as u64) {
+        return true, offset;
+    }
+    return false, end_off;
+}
+
+fn is_qpack_enc_instr_incomplete(cap_bytes: u64, src: const u8[:], offset: u64) -> bool {
+    guard offset < (src.len as u64) else { return false; }
+    let b = src[offset];
+    if (b & 0xE0) == 0x20 {
+        return is_qpack_int_truncated(src, offset, 5);
+    }
+    guard cap_bytes > 0 else { return false; }
+    if (b & 0xE0) == 0x00 {
+        return is_qpack_int_truncated(src, offset, 5);
+    }
+    if (b & 0x80) != 0 {
+        if is_qpack_int_truncated(src, offset, 6) {
+            return true;
+        }
+        let _, val_off, ok_idx = qpack_decode_int(src, offset, 6);
+        guard ok_idx else { return false; }
+        let trunc_v, _ = is_qpack_str_truncated(src, val_off, 7, 4096);
+        return trunc_v;
+    }
+    if (b & 0xC0) == 0x40 {
+        let trunc_n, val_start = is_qpack_str_truncated(src, offset, 5, 256);
+        if trunc_n {
+            return true;
+        }
+        guard val_start > offset else { return false; }
+        let trunc_v, _ = is_qpack_str_truncated(src, val_start, 7, 4096);
+        return trunc_v;
+    }
+    return false;
+}
+
+fn is_qpack_dec_instr_incomplete(src: const u8[:], offset: u64) -> bool {
+    guard offset < (src.len as u64) else { return false; }
+    let b = src[offset];
+    let pbits: u8 = if (b & 0x80) != 0 { 7 } else { 6 };
+    return is_qpack_int_truncated(src, offset, pbits);
+}
+
+fn process_peer_qpack_enc_bytes(conn: H3Connection&, incoming: const u8[:]) -> u64 {
+    var work_buf: u8[..8448] = [];
+    if conn.qpack_enc_partial_buf.len > 0 {
+        guard work_buf.try_append(conn.qpack_enc_partial_buf[..]) && work_buf.try_append(incoming) else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+            return rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+        }
+        conn.qpack_enc_partial_buf.clear();
+    }
+    let buf = if work_buf.len > 0 { work_buf[..] } else { incoming };
+    var offset: u64 = 0;
+    while offset < (buf.len as u64) {
+        var dec_tbl .= conn.qpack_table;
+        if conn.local_qpack_enc_activated {
+            dec_tbl .= conn.qpack_dec_table;
+        }
+        if is_qpack_enc_instr_incomplete(dec_tbl.capacity_bytes, buf, offset) {
+            guard conn.qpack_enc_partial_buf.try_set(buf[(offset as i64)..]) else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+                return rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+            }
+            return resume_unblocked_qpack_streams(conn);
+        }
+        let next_off, q_err = qpack_process_encoder_instruction(dec_tbl, buf, offset);
+        if q_err != QpackError.None {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+            return rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
+        }
+        offset = next_off;
+    }
+    return resume_unblocked_qpack_streams(conn);
+}
+
+fn process_peer_qpack_dec_bytes(conn: H3Connection&, incoming: const u8[:]) -> u64 {
+    var work_buf: u8[..128] = [];
+    if conn.qpack_dec_partial_buf.len > 0 {
+        guard work_buf.try_append(conn.qpack_dec_partial_buf[..]) && work_buf.try_append(incoming) else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
+            return rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
+        }
+        conn.qpack_dec_partial_buf.clear();
+    }
+    let buf = if work_buf.len > 0 { work_buf[..] } else { incoming };
+    var offset: u64 = 0;
+    while offset < (buf.len as u64) {
+        if is_qpack_dec_instr_incomplete(buf, offset) {
+            guard conn.qpack_dec_partial_buf.try_set(buf[(offset as i64)..]) else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
+                return rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
+            }
+            return rfc::H3_ERR_NO_ERROR;
+        }
+        var enc_tbl .= conn.qpack_table;
+        let next_off, q_err = qpack_process_decoder_instruction(enc_tbl, buf, offset);
+        if q_err != QpackError.None {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
+            return rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
+        }
+        offset = next_off;
     }
     return rfc::H3_ERR_NO_ERROR;
 }
@@ -880,30 +1103,12 @@ fn process_peer_qpack_stream(
     data:         const u8[:],
     start_offset: u64,
 ) -> u64 {
-    var offset = start_offset;
+    let incoming = data[(start_offset as i64)..];
     if stream_id == conn.peer_qpack_enc_stream_id {
-        while offset < (data.len as u64) {
-            let next_off, q_err = qpack_process_encoder_instruction(conn.qpack_table, data, offset);
-            if q_err != QpackError.None {
-                conn.state = H3ConnState.Closed;
-                conn.error_code = rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
-                return rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR;
-            }
-            offset = next_off;
-        }
-        return resume_unblocked_qpack_streams(conn);
+        return process_peer_qpack_enc_bytes(conn, incoming);
     }
     if stream_id == conn.peer_qpack_dec_stream_id {
-        while offset < (data.len as u64) {
-            let next_off, q_err = qpack_process_decoder_instruction(conn.qpack_table, data, offset);
-            if q_err != QpackError.None {
-                conn.state = H3ConnState.Closed;
-                conn.error_code = rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
-                return rfc::H3_ERR_QPACK_DECODER_STREAM_ERROR;
-            }
-            offset = next_off;
-        }
-        return rfc::H3_ERR_NO_ERROR;
+        return process_peer_qpack_dec_bytes(conn, incoming);
     }
     return rfc::H3_ERR_NO_ERROR;
 }
@@ -1094,7 +1299,9 @@ fn get_or_create_bidi_stream(conn: H3Connection&, stream_id: u64) -> i32, u64 {
 fn is_valid_authority_or_host(val: const u8[:]) -> bool {
     guard val.len > 0 && val.len <= 256 else { return false; }
     for b in val {
-        if b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',' {
+        if b <= 0x20 || b >= 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ','
+            || b == '\\' || b == '"' || b == '<' || b == '>' || b == '^' || b == '`'
+            || b == '{' || b == '|' || b == '}' {
             return false;
         }
     }
@@ -1136,11 +1343,13 @@ fn validate_h3_trailers<F>(conn: H3Connection&, fields: const F&) -> u64 {
         if fname.eq_ascii_fold("content-length") ||
            fname.eq_ascii_fold("host") ||
            fname.eq_ascii_fold("trailer") ||
+           fname.eq_ascii_fold("te") ||
            fname.eq_ascii_fold("transfer-encoding") ||
            fname.eq_ascii_fold("connection") ||
            fname.eq_ascii_fold("upgrade") ||
            fname.eq_ascii_fold("keep-alive") ||
-           fname.eq_ascii_fold("proxy-connection") {
+           fname.eq_ascii_fold("proxy-connection") ||
+           rfc::is_disallowed_trailer_field(fname) {
             conn.state = H3ConnState.Closed;
             conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
             return rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -1212,14 +1421,7 @@ fn validate_pseudo_authority(field: const HeaderField&, counts: H3HeaderCounts&,
 
 fn validate_pseudo_path(field: const HeaderField&, counts: H3HeaderCounts&) -> bool {
     counts.pseudo_path++;
-    guard counts.pseudo_path == 1 && field.value.len > 0 else { return false; }
-    let p0 = field.value[0];
-    guard p0 == '/' || (p0 == '*' && field.value.len == 1) else { return false; }
-    for b in field.value {
-        if b <= 0x20 || b == 0x7F || b == '#' {
-            return false;
-        }
-    }
+    guard counts.pseudo_path == 1 && is_valid_h3_path_bytes(field.value[..]) else { return false; }
     return true;
 }
 
@@ -1371,7 +1573,8 @@ fn validate_single_h3_header(
     }
 
     seen_regular = true;
-    if is_forbidden_connection_header(field.name[..], field.value[..]) {
+    if is_forbidden_connection_header(field.name[..], field.value[..])
+        || (conn.role == H3ConnRole.Client && field.name[..].eq_ascii_fold("te")) {
         conn.state = H3ConnState.Closed;
         conn.error_code = rfc::H3_ERR_GENERAL_PROTOCOL;
         return rfc::H3_ERR_GENERAL_PROTOCOL;
@@ -1583,9 +1786,13 @@ fn handle_bidi_push_promise(conn: H3Connection&, s_idx: i32, payload: const u8[:
         return rfc::H3_ERR_ID_ERROR;
     }
     let qpack_data = payload[(qpack_off as i64)..];
+    var dec_tbl .= conn.qpack_table;
+    if conn.local_qpack_enc_activated {
+        dec_tbl .= conn.qpack_dec_table;
+    }
     var decoded_fields: HeaderField[..128] = [];
     let q_err = decode_or_block_qpack_section(
-        conn.qpack_table,
+        dec_tbl,
         conn.streams[s_idx].stream_id,
         qpack_data,
         decoded_fields,
@@ -1623,9 +1830,13 @@ fn handle_bidi_headers(
         return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
 
+    var dec_tbl .= conn.qpack_table;
+    if conn.local_qpack_enc_activated {
+        dec_tbl .= conn.qpack_dec_table;
+    }
     var decoded_fields: HeaderField[..128] = [];
     let q_err = decode_or_block_qpack_section(
-        conn.qpack_table,
+        dec_tbl,
         conn.streams[s_idx].stream_id,
         payload,
         decoded_fields,
@@ -1764,43 +1975,74 @@ fn dispatch_bidi_stream_frame(
     return rfc::H3_ERR_NO_ERROR;
 }
 
+inline fn buffer_partial_bidi_frame(conn: H3Connection&, s_idx: i32, rem: const u8[:], fin: bool) -> u64 {
+    guard !fin && conn.streams[s_idx].rx_partial_buf.try_set(rem) else {
+        conn.state = H3ConnState.Closed;
+        conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+        return rfc::H3_ERR_FRAME_ERROR;
+    }
+    return rfc::H3_ERR_NO_ERROR;
+}
+
 // RFC 9204 Section 2.2.1: Blocked Decoding - Wait for Required Insert Count entries before processing remaining frames on the blocked stream.
 fn handle_bidi_stream_frames(
     conn:  H3Connection&,
     s_idx: i32,
     data:  const u8[:],
+    fin:   bool = true,
 ) -> u64 {
+    var work_buf: u8[..8192] = [];
+    if conn.streams[s_idx].rx_partial_buf.len > 0 {
+        guard work_buf.try_append(conn.streams[s_idx].rx_partial_buf[..]) && work_buf.try_append(data) else {
+            conn.state = H3ConnState.Closed;
+            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+            return rfc::H3_ERR_FRAME_ERROR;
+        }
+        conn.streams[s_idx].rx_partial_buf.clear();
+    }
+    let buf = if work_buf.len > 0 { work_buf[..] } else { data };
     var offset: u64 = 0;
-    while offset < (data.len as u64) {
-        if qpack_is_stream_blocked(conn.qpack_table, conn.streams[s_idx].stream_id) {
-            guard conn.streams[s_idx].blocked_wire.try_append(data[(offset as i64)..]) else {
+    while offset < (buf.len as u64) {
+        var dec_tbl .= conn.qpack_table;
+        if conn.local_qpack_enc_activated {
+            dec_tbl .= conn.qpack_dec_table;
+        }
+        if qpack_is_stream_blocked(dec_tbl, conn.streams[s_idx].stream_id) {
+            guard conn.streams[s_idx].blocked_wire.try_append(buf[(offset as i64)..]) else {
                 conn.state = H3ConnState.Closed;
                 conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
                 return rfc::H3_ERR_EXCESSIVE_LOAD;
             }
             return rfc::H3_ERR_NO_ERROR;
         }
-
-        let hdr, ok_hdr = parse_h3_frame_header(data, offset);
-        guard ok_hdr else {
-            conn.state = H3ConnState.Closed;
-            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
-            return rfc::H3_ERR_FRAME_ERROR;
+        let frame_start = offset;
+        let hdr, ok_hdr = parse_h3_frame_header(buf, offset);
+        if !ok_hdr {
+            let rem = buf[(frame_start as i64)..];
+            guard rem.len < 16 else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+                return rfc::H3_ERR_FRAME_ERROR;
+            }
+            return buffer_partial_bidi_frame(conn, s_idx, rem, fin);
         }
-
-        offset += hdr.header_len;
-        guard (0xFFFFFFFFFFFFFFFF - offset) >= hdr.payload_len &&
-              (offset + hdr.payload_len) <= (data.len as u64) else {
+        if !rfc::is_allowed_on_request_stream(hdr.frame_type) {
             conn.state = H3ConnState.Closed;
-            conn.error_code = rfc::H3_ERR_FRAME_ERROR;
-            return rfc::H3_ERR_FRAME_ERROR;
+            conn.error_code = rfc::H3_ERR_FRAME_UNEXPECTED;
+            return rfc::H3_ERR_FRAME_UNEXPECTED;
         }
-
-        let p_start = offset as i64;
-        let p_end = (offset + hdr.payload_len) as i64;
-        let payload = data[p_start..p_end];
-        offset += hdr.payload_len;
-
+        offset = core::add_sat_u64(offset, hdr.header_len);
+        let end_off = core::add_sat_u64(offset, hdr.payload_len);
+        if end_off > (buf.len as u64) {
+            guard core::add_sat_u64(hdr.header_len, hdr.payload_len) <= 4096 else {
+                conn.state = H3ConnState.Closed;
+                conn.error_code = rfc::H3_ERR_FRAME_ERROR;
+                return rfc::H3_ERR_FRAME_ERROR;
+            }
+            return buffer_partial_bidi_frame(conn, s_idx, buf[(frame_start as i64)..], fin);
+        }
+        let payload = buf[(offset as i64)..(end_off as i64)];
+        offset = end_off;
         let f_err = dispatch_bidi_stream_frame(conn, s_idx, hdr, payload);
         guard f_err == rfc::H3_ERR_NO_ERROR else { return f_err; }
     }
@@ -1841,7 +2083,7 @@ fn handle_stream_data(
         return rfc::H3_ERR_FRAME_UNEXPECTED;
     }
 
-    let f_err = handle_bidi_stream_frames(conn, s_idx, data);
+    let f_err = handle_bidi_stream_frames(conn, s_idx, data, fin);
     guard f_err == rfc::H3_ERR_NO_ERROR else { return f_err; }
 
     if fin {
@@ -1851,7 +2093,11 @@ fn handle_stream_data(
         } else {
             conn.streams[s_idx].state = H3StreamState.HalfClosedRemote;
         }
-        if !qpack_is_stream_blocked(conn.qpack_table, stream_id) {
+        var dec_tbl .= conn.qpack_table;
+        if conn.local_qpack_enc_activated {
+            dec_tbl .= conn.qpack_dec_table;
+        }
+        if !qpack_is_stream_blocked(dec_tbl, stream_id) {
             let fin_err = check_bidi_stream_fin_complete(conn, s_idx);
             guard fin_err == rfc::H3_ERR_NO_ERROR else { return fin_err; }
         }
@@ -1933,9 +2179,13 @@ fn send_response_headers_body_and_trailers<B>(
     let s_idx, found = find_h3_stream_idx(conn, stream_id);
     guard found else { return false; }
 
+    var enc_tbl .= conn.qpack_static_only_tbl;
+    if conn.local_qpack_enc_activated {
+        enc_tbl .= conn.qpack_table;
+    }
     let saved_out_len = out.len;
     let saved_enc_len = conn.encoder_stream_buf.len;
-    let saved_tbl = conn.qpack_table;
+    let saved_tbl = enc_tbl;
     let saved_headers_sent = conn.streams[s_idx].headers_sent;
     let saved_fin_sent = conn.streams[s_idx].fin_sent;
     let saved_state = conn.streams[s_idx].state;
@@ -1943,7 +2193,7 @@ fn send_response_headers_body_and_trailers<B>(
     defer if !committed {
         out.resize(saved_out_len);
         conn.encoder_stream_buf.resize(saved_enc_len);
-        conn.qpack_table = saved_tbl;
+        enc_tbl = saved_tbl;
         conn.streams[s_idx].headers_sent = saved_headers_sent;
         conn.streams[s_idx].fin_sent = saved_fin_sent;
         conn.streams[s_idx].state = saved_state;
@@ -1952,16 +2202,16 @@ fn send_response_headers_body_and_trailers<B>(
     var sc_str: u8[..16] = [];
     status_code.format_i64_dec(sc_str);
 
-    let base = conn.qpack_table.insert_count;
+    let base = enc_tbl.insert_count;
     var max_dyn_abs: u64 = 0;
     var used_any_dyn = false;
     var body_fields: u8[..4096] = [];
 
     guard try_encode_qpack_field_dynamic(
-        conn.qpack_table, stream_id, base, ":status", sc_str[..],
+        enc_tbl, stream_id, base, ":status", sc_str[..],
         body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn, false,
     ) && encode_h3_extra_headers(
-        conn.qpack_table, stream_id, base, extra_headers,
+        enc_tbl, stream_id, base, extra_headers,
         body_fields, conn.encoder_stream_buf, max_dyn_abs, used_any_dyn,
     ) else {
         return false;
@@ -1969,7 +2219,7 @@ fn send_response_headers_body_and_trailers<B>(
 
     var qpack_payload: u8[..4096] = [];
     guard try_prepend_qpack_section_prefix(
-        conn.qpack_table, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload,
+        enc_tbl, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload,
     ) && qpack_payload.try_append(body_fields[..]) &&
           encode_h3_headers_frame(out, qpack_payload[..]) else {
         return false;
@@ -1980,19 +2230,19 @@ fn send_response_headers_body_and_trailers<B>(
         guard encode_h3_data_frame(out, body) else { return false; }
     }
     if trailers.entries.len > 0 {
-        let tr_base = conn.qpack_table.insert_count;
+        let tr_base = enc_tbl.insert_count;
         var tr_max_dyn: u64 = 0;
         var tr_used_dyn = false;
         var tr_fields: u8[..4096] = [];
         guard encode_h3_extra_headers(
-            conn.qpack_table, stream_id, tr_base, trailers,
+            enc_tbl, stream_id, tr_base, trailers,
             tr_fields, conn.encoder_stream_buf, tr_max_dyn, tr_used_dyn,
         ) else {
             return false;
         }
         var tr_payload: u8[..4096] = [];
         guard try_prepend_qpack_section_prefix(
-            conn.qpack_table, stream_id, tr_base, tr_max_dyn, tr_used_dyn, tr_payload,
+            enc_tbl, stream_id, tr_base, tr_max_dyn, tr_used_dyn, tr_payload,
         ) && tr_payload.try_append(tr_fields[..]) &&
               encode_h3_headers_frame(out, tr_payload[..]) else {
             return false;

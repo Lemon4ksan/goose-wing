@@ -1222,16 +1222,16 @@ fn test_client_h2_trailers_and_incremental_drain() {
     // Feed chunk1 then chunk2 into rx_accum (simulating 2 socket reads in recv_h2_response_loop)
     var rx_accum: u8[..4096] = [];
     var resp = wing::Response { .. };
-    var got_hdrs = false;
+    var h2_state = wing::H2ClientRecvState { .. };
     var ctrl_out: u8[..256] = [];
 
     rx_accum.append(chunk1[..]);
-    let ok1, done1 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, got_hdrs, ctrl_out);
-    assert(ok1 && !done1 && got_hdrs);
+    let ok1, done1 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
+    assert(ok1 && !done1 && h2_state.got_hdrs);
     assert(rx_accum.len == 0); // Must drain consumed frame bytes so read 2 does not re-decode chunk1!
 
     rx_accum.append(chunk2[..]);
-    let ok2, done2 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, got_hdrs, ctrl_out);
+    let ok2, done2 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
     assert(ok2 && done2);
     assert(resp.status_code == 200);
     assert(wing::header(resp, "content-type") == "application/grpc");
@@ -1491,10 +1491,13 @@ fn test_h2_client_sliced_stream_recv_seam() {
         let _ = wing::native_udp_sendto(srv_fd, wire[i..i + 1], "127.0.0.1", cli_port);
     }
 
-    var tp: wing::Transport = wing::Transport.Udp { fd: cli_fd, peer_ip4: 0x7F000001, peer_port: 9999 };
-    var cli_dec = h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+    var conn = wing::PooledConnection {
+        transport: wing::Transport.Udp { fd: cli_fd, peer_ip4: 0x7F000001, peer_port: 9999 },
+        hpack_dec: h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
+        ..
+    };
     var resp = wing::Response { .. };
-    let ok_h2 = wing::recv_h2_response_loop(tp, 1, false, cli_dec, 200, resp);
+    let ok_h2 = wing::recv_h2_response_loop(conn, 1, false, 200, resp);
     wing::tcp_close(cli_fd);
     wing::tcp_close(srv_fd);
 
@@ -1616,16 +1619,17 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     var hdec = h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var henc = h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var pending = wing::Request { .. };
+    var pending_stream_id: u32 = 1;
     let _ = pending.method.try_set("POST");
     let _ = pending.url.try_set("/test.Echo/Unary");
     let _ = wing::append_header(pending.headers, "content-type", "application/grpc");
     var wire_out: u8[..65536] = [];
     let hdr_part1 = wire::WireFrameHeader { length: 5, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
     let lpm_prefix: u8[5] = [0, 0, 0, 0, 4];
-    assert(wing::handle_grpc_h2_wire_frame(-1, g_seam_server, disp, "127.0.0.1", hdec, henc, pending, hdr_part1, lpm_prefix[..], wire_out, seam_grpc_echo_handler));
+    assert(wing::handle_grpc_h2_wire_frame(-1, g_seam_server, disp, "127.0.0.1", hdec, henc, pending, pending_stream_id, hdr_part1, lpm_prefix[..], wire_out, seam_grpc_echo_handler));
     assert(wire_out.len == 0);
     let hdr_part2 = wire::WireFrameHeader { length: 4, frame_type: rfc::H2_FRAME_DATA, flags: rfc::H2_FLAG_END_STREAM, stream_id: 1 };
-    assert(wing::handle_grpc_h2_wire_frame(-1, g_seam_server, disp, "127.0.0.1", hdec, henc, pending, hdr_part2, "PING", wire_out, seam_grpc_echo_handler));
+    assert(wing::handle_grpc_h2_wire_frame(-1, g_seam_server, disp, "127.0.0.1", hdec, henc, pending, pending_stream_id, hdr_part2, "PING", wire_out, seam_grpc_echo_handler));
     assert(wire_out.len > 0);
 
     // Seam 18: `tls_send_encrypted_record` must allocate `payload.len + 22` bytes (5-byte header + 1-byte inner type + 16-byte tag)

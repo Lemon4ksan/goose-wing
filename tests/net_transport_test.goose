@@ -2440,6 +2440,79 @@ fn test_live_os_loopback_reactor_e2e(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 39. OS Shim Regression Guards (URING-5, KQUEUE-5, RIO-3/6, ACCEL-ABBA)
+// ----------------------------------------------------------------------------
+fn verify_live_windows_rio_guards(sub: lit::T&) {
+    let cq = net_internal::native_rio_create_cq(64);
+    sub.assert_true(cq != 0, "Create RIO CQ for timeout test");
+    guard cq != 0 else { return; }
+    defer net_internal::native_rio_close_cq(cq);
+
+    for _ in 3 {
+        let t0 = core::monotonic_now().nanos;
+        let w = net_internal::rio_wait_cq(cq, 12);
+        let elapsed = core::sub_sat_u64(core::monotonic_now().nanos, t0);
+        sub.assert_true(w == 0 && elapsed >= 4000000, "Repeated RIONotify timeouts sleep cleanly without WSAEINVAL spin");
+    }
+
+    let lfd_v6 = net_internal::rio_listen("::1", 0, 16);
+    sub.assert_gt(lfd_v6, 0, "RIO IPv6 ::1 listener opens");
+    sub.assert_gt(wing::tcp_getsockname_port(lfd_v6), 0, "IPv6 getsockname returns non-zero port");
+    sub.assert_eq(net_internal::native_rio_is_listener(lfd_v6), 1, "IPv6 RIO listener recognized");
+    wing::tcp_close(lfd_v6);
+}
+
+fn test_os_shim_regression_guards(t: lit::T&) {
+    t.run("Platform detection uses compile-time C host target") { sub =>
+        let plat = net_internal::detect_target_platform();
+        let code = net_internal::native_host_platform();
+        sub.assert_true(code >= 0 && code <= 3, "Host platform code valid");
+        if code == 0 { sub.assert_true(plat == net_internal::TargetPlatform.Windows, "Windows host"); }
+        if code == 1 { sub.assert_true(plat == net_internal::TargetPlatform.Linux, "Linux host"); }
+        if code == 2 { sub.assert_true(plat == net_internal::TargetPlatform.Darwin, "Darwin host"); }
+    };
+
+    t.run("URING-5 multishot ioprio and KQUEUE-5 EVFILT_WRITE / EV_EOF+fflags guards") { sub =>
+        var sqe = net_internal::UringSqe { .. };
+        net_internal::uring_prep_recv(sqe, 9, 0, 0, 42, true);
+        sub.assert_eq(sqe.ioprio, net_internal::URING_RECV_MULTISHOT, "multishot sets URING_RECV_MULTISHOT");
+
+        let kev_w = net_internal::Kevent {
+            ident: 1, filter: net_internal::EVFILT_WRITE, flags: 0, fflags: 0, data: 4096, udata: 1,
+        };
+        sub.assert_eq(net_internal::kevent_bytes_available(kev_w), 0, "EVFILT_WRITE bytes_available is 0");
+
+        let kev_eof_err = net_internal::Kevent {
+            ident: 1, filter: net_internal::EVFILT_READ, flags: net_internal::EV_EOF, fflags: 104, data: 0, udata: 1,
+        };
+        let fl, is_eof = wing::map_kevent_to_poll_flags(kev_eof_err);
+        sub.assert_true(is_eof && (fl & core::POLL_HANGUP) != 0 && (fl & core::POLL_ERROR) != 0, "EV_EOF+fflags sets POLL_ERROR");
+    };
+
+    t.run("ReactorAccelRuntime slot generation rejects stale tokens across slot reuse") { sub =>
+        var accel = wing::ReactorAccelRuntime { mode: wing::ReactorAccelMode.Rio, .. };
+        accel.slot_accel[2] = true;
+        let tok1 = wing::reactor_accel_slot_token(accel, 2);
+        let s1, ok1 = wing::reactor_accel_match_token(accel, tok1);
+        sub.assert_true(ok1 && s1 == 2, "Fresh token matches active slot");
+
+        wing::reactor_reset_accel_slot(accel, 2);
+        accel.slot_accel[2] = true;
+        let tok2 = wing::reactor_accel_slot_token(accel, 2);
+        let s2, ok2 = wing::reactor_accel_match_token(accel, tok2);
+        let _, ok_stale = wing::reactor_accel_match_token(accel, tok1);
+        sub.assert_true(ok2 && s2 == 2 && !ok_stale, "Stale generation token rejected after slot reuse");
+    };
+
+    t.run("Windows RIO repeated RIONotify timeout and IPv6 listener") { sub =>
+        if net_internal::detect_target_platform() == net_internal::TargetPlatform.Windows &&
+            net_internal::native_rio_available() == 1 {
+            verify_live_windows_rio_guards(sub);
+        }
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Network Transport Drivers, Connection Pool, and Poller Suite", lit::Verbosity.Verbose);
 
@@ -2481,6 +2554,7 @@ fn main() {
     lit::run_case(runner, "36. HEv3 HTTPS/SVCB Metadata Extraction & AddressFamilyCache", test_hev3_https_svcb_and_address_family_cache);
     lit::run_case(runner, "37. Core Cross-Framework UFCS Async Reactor & Backpressure Contract", test_core_reactor_and_wake_contract);
     lit::run_case(runner, "38. Live OS Loopback E2E & VirtualPipe Backpressure Parity", test_live_os_loopback_reactor_e2e);
+    lit::run_case(runner, "39. OS Shim Regression Guards (URING-5, KQUEUE-5, RIO-3/6, ACCEL-ABBA)", test_os_shim_regression_guards);
 
     let ok = lit::finish(runner);
     assert(ok);

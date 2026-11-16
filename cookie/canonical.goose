@@ -39,7 +39,7 @@ struct CanonicalCookie {
     value:           u8[..4096]         = [],
     encrypted_value: u8[..4096]         = [],
     domain:          u8[..256]          = [],
-    path:            u8[..256]          = "/",
+    path:            u8[..1024]         = "/",
     creation_utc:    i64                = 0, // Microsecond UTC timestamp (immutable across overwrites)
     last_access_utc: i64                = 0, // Microsecond UTC timestamp (Least Recently Accessed key)
     last_update_utc: i64                = 0, // Microsecond UTC timestamp
@@ -138,7 +138,9 @@ fn is_expired(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
 // Whether a cookie with default SameSite is within the 2-minute window allowing
 // unsafe top-level navigations (RFC 6265bis Lax-allowing-unsafe).
 fn is_in_lax_allowing_unsafe_window(cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
-    if cookie_val.same_site != CookieSameSite.Default { return false; }
+    if cookie_val.same_site != CookieSameSite.Default && cookie_val.same_site != CookieSameSite.Unknown {
+        return false;
+    }
     let elapsed_us = core::sub_sat_i64(now_us, cookie_val.creation_utc);
     return elapsed_us >= 0 && elapsed_us <= cookie_internal::K_LAX_ALLOWING_UNSAFE_WINDOW_US;
 }

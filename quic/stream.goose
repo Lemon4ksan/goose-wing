@@ -413,13 +413,18 @@ fn quic_stream_is_terminal(s: const QuicStream&, role: QuicRole) -> bool {
 // ---- Zero-Allocation Stream Table ----------------------------------------
 
 struct QuicStreamTable {
-    streams:            QuicStream[..128] = [],
-    evicted_closed_ids: u64[..64]         = [],
-    max_streams_bidi:   u64               = 100,
-    max_streams_uni:    u64               = 100,
-    next_local_bidi_id: u64               = 0,
-    next_local_uni_id:  u64               = 0,
-    role:               QuicRole          = QuicRole.Server,
+    streams:                     QuicStream[..128] = [],
+    evicted_closed_ids:          u64[..64]         = [],
+    retired_contiguous_ord:      u64[4]            = [0; 4],
+    max_streams_bidi:            u64               = 100,
+    max_streams_uni:             u64               = 100,
+    remote_max_streams_bidi:     u64               = 0,
+    remote_max_streams_uni:      u64               = 0,
+    has_remote_max_streams_bidi: bool              = false,
+    has_remote_max_streams_uni:  bool              = false,
+    next_local_bidi_id:          u64               = 0,
+    next_local_uni_id:           u64               = 0,
+    role:                        QuicRole          = QuicRole.Server,
 }
 
 fn new_quic_stream_table(role: QuicRole) -> QuicStreamTable {
@@ -473,8 +478,34 @@ inline fn quic_table_insert_stream(
     return new_idx;
 }
 
-// Records an evicted terminal stream ID in a bounded ring so late retransmissions cannot re-open it.
+inline fn sweep_retired_contiguous_ordinals(tbl: QuicStreamTable&, stype: i64) {
+    while true {
+        let target_id = core::shl_sat_u64(tbl.retired_contiguous_ord[stype], 2) | (stype as u64);
+        var found_idx: i64 = -1;
+        for i in tbl.evicted_closed_ids.len {
+            if tbl.evicted_closed_ids[i] == target_id {
+                found_idx = i;
+                break;
+            }
+        }
+        guard found_idx >= 0 else { return; }
+        tbl.evicted_closed_ids.remove_at(found_idx);
+        tbl.retired_contiguous_ord[stype] = core::add_sat_u64(tbl.retired_contiguous_ord[stype], 1);
+    }
+}
+
+// Records an evicted terminal stream ID so late retransmissions cannot re-open it even after >64 evictions.
 inline fn record_evicted_closed_stream(tbl: QuicStreamTable&, stream_id: u64) {
+    let stype = (stream_id & 3) as i64;
+    let ord = stream_id >> 2;
+    if ord < tbl.retired_contiguous_ord[stype] {
+        return;
+    }
+    if ord == tbl.retired_contiguous_ord[stype] {
+        tbl.retired_contiguous_ord[stype] = core::add_sat_u64(ord, 1);
+        sweep_retired_contiguous_ordinals(tbl, stype);
+        return;
+    }
     for i in tbl.evicted_closed_ids.len {
         if tbl.evicted_closed_ids[i] == stream_id {
             return;
@@ -488,6 +519,10 @@ inline fn record_evicted_closed_stream(tbl: QuicStreamTable&, stream_id: u64) {
 
 // Returns true if `stream_id` was previously closed in a terminal state and evicted from `tbl.streams`.
 fn quic_table_is_evicted_closed_stream(tbl: const QuicStreamTable&, stream_id: u64) -> bool {
+    let stype = (stream_id & 3) as i64;
+    if (stream_id >> 2) < tbl.retired_contiguous_ord[stype] {
+        return true;
+    }
     for i in tbl.evicted_closed_ids.len {
         if tbl.evicted_closed_ids[i] == stream_id {
             return true;
@@ -552,7 +587,11 @@ fn quic_table_open_local_stream(
     default_recv_flow: u64 = 65536,
 ) -> u64, i32, bool {
     let next_id = if is_bidi { tbl.next_local_bidi_id } else { tbl.next_local_uni_id };
-    let limit = if is_bidi { tbl.max_streams_bidi } else { tbl.max_streams_uni };
+    let limit = if is_bidi {
+        if tbl.has_remote_max_streams_bidi { tbl.remote_max_streams_bidi } else { tbl.max_streams_bidi }
+    } else {
+        if tbl.has_remote_max_streams_uni { tbl.remote_max_streams_uni } else { tbl.max_streams_uni }
+    };
     guard next_id <= rfc::QUIC_VARINT_MAX && (next_id >> 2) < limit else {
         return 0, 0, false;
     }

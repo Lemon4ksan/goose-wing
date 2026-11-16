@@ -758,16 +758,23 @@ int64_t wing_adopt_socket(int64_t raw_fd) {
     return (int64_t)s;
 }
 
-// Retrieves the locally bound port for a socket.
+// Retrieves the locally bound port for an IPv4 or IPv6 socket.
 uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
     if (sock_fd <= 0) return 0;
-    struct sockaddr_in addr;
-    int len = sizeof(addr);
-    memset(&addr, 0, sizeof(addr));
-    if (getsockname((SOCKET)sock_fd, (struct sockaddr *)&addr, &len) == SOCKET_ERROR) {
+    struct sockaddr_storage ss;
+#ifdef _WIN32
+    int len = (int)sizeof(ss);
+#else
+    socklen_t len = (socklen_t)sizeof(ss);
+#endif
+    memset(&ss, 0, sizeof(ss));
+    if (getsockname((SOCKET)sock_fd, (struct sockaddr *)&ss, &len) == SOCKET_ERROR) {
         return 0;
     }
-    return ntohs(addr.sin_port);
+    if (ss.ss_family == AF_INET6) {
+        return ntohs(((const struct sockaddr_in6 *)&ss)->sin6_port);
+    }
+    return ntohs(((const struct sockaddr_in *)&ss)->sin_port);
 }
 
 int32_t wing_tcp_get_peer_ip(int64_t sock_fd, wing_bytes_rw out_ip) {
@@ -817,8 +824,12 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
         }
     }
 
-    struct sockaddr_in client_addr;
-    int addr_len = sizeof(client_addr);
+    struct sockaddr_storage client_addr;
+#ifdef _WIN32
+    int addr_len = (int)sizeof(client_addr);
+#else
+    socklen_t addr_len = (socklen_t)sizeof(client_addr);
+#endif
     SOCKET client_sock = accept(l, (struct sockaddr *)&client_addr, &addr_len);
     if (client_sock == INVALID_SOCKET) {
         return -1;
@@ -938,7 +949,11 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
         }
 
         int sock_err = 0;
-        int err_len = sizeof(sock_err);
+#ifdef _WIN32
+        int err_len = (int)sizeof(sock_err);
+#else
+        socklen_t err_len = (socklen_t)sizeof(sock_err);
+#endif
         getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&sock_err, &err_len);
         if (sock_err != 0) {
             closesocket(s);
@@ -2027,4 +2042,20 @@ int32_t wing_consume_reload_signal(void) {
         return 1;
     }
     return 0;
+}
+
+// Compile-time host OS identifier matching Goose net_internal::TargetPlatform:
+// 0 = Windows, 1 = Linux, 2 = Darwin/BSD, 3 = Unknown/WASM.
+int32_t wing_host_platform(void) {
+#if defined(__wasm__)
+    return 3;
+#elif defined(_WIN32)
+    return 0;
+#elif defined(__linux__)
+    return 1;
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+    return 2;
+#else
+    return 3;
+#endif
 }

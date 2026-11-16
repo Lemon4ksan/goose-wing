@@ -56,16 +56,25 @@ enum ChunkFsmStatus {
 }
 
 struct ChunkFsmDecoder {
-    state:          u64      = 0,
-    ext_bytes:      u32      = 0,
-    trailer_bytes:  u32      = 0,
-    total_read:     i64      = 0,
-    total_overhead: i64      = 0,
-    trailer_name:   u8[..64] = [],
+    state:              u64      = 0,
+    ext_bytes:          u32      = 0,
+    trailer_bytes:      u32      = 0,
+    total_read:         i64      = 0,
+    total_overhead:     i64      = 0,
+    last_trailer_start: i64      = -1,
+    trailer_name:       u8[..64] = [],
 }
 
 fn new_chunk_fsm_decoder() -> ChunkFsmDecoder {
-    return ChunkFsmDecoder { state: 0, ext_bytes: 0, trailer_bytes: 0, total_read: 0, total_overhead: 0, .. };
+    return ChunkFsmDecoder {
+        state:              0,
+        ext_bytes:          0,
+        trailer_bytes:      0,
+        total_read:         0,
+        total_overhead:     0,
+        last_trailer_start: -1,
+        ..
+    };
 }
 
 fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
@@ -74,6 +83,7 @@ fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
     dec.trailer_bytes = 0;
     dec.total_read = 0;
     dec.total_overhead = 0;
+    dec.last_trailer_start = -1;
     dec.trailer_name.clear();
 }
 
@@ -511,6 +521,7 @@ fn chunk_fsm_feed(
     dec:  ChunkFsmDecoder&,
     data: const u8[:],
 ) -> ChunkFsmStatus, i64, const u8[:] {
+    dec.last_trailer_start = -1;
     if dec.state == CHUNK_STATE_IS_ERROR {
         return ChunkFsmStatus.Error, 0, data[..0];
     }
@@ -530,6 +541,7 @@ fn chunk_fsm_feed(
                 return ChunkFsmStatus.Error, offset, data[..0];
             }
             if (dec.state & CHUNK_STATE_TRAILER_MODE) != 0 {
+                dec.last_trailer_start = offset;
                 continue;
             }
             if !chunk_fsm_has_size(dec.state) {

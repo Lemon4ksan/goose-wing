@@ -645,6 +645,15 @@ fn ws_next_mask_key(ws: WebSocketSession&) -> u8[4] {
     ];
 }
 
+inline fn has_ws_header_ctl(s: const u8[:]) -> bool {
+    for b in s {
+        if b < 0x20 || b == 0x7F {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Formats outbound RFC 6455 Handshake HTTP/1.1 Upgrade Request
 fn build_handshake_request<B>(
     ws:         const WebSocketSession&,
@@ -655,6 +664,13 @@ fn build_handshake_request<B>(
 ) {
     // RFC 6455 §4.1 & RFC 9112 §3.2.1 & Go #76635: If path is empty, default to '/'
     let eff_path = if path.len > 0 { path } else { "/" };
+    guard !has_ws_header_ctl(host) &&
+        !has_ws_header_ctl(eff_path) &&
+        !eff_path.contains_byte(' ') &&
+        !has_ws_header_ctl(client_key) &&
+        !has_ws_header_ctl(ws.subprotocol[..]) else {
+        return;
+    }
     format(out, "GET ", eff_path, " HTTP/1.1\r\nHost: ", host);
     format(
         out,
@@ -1385,6 +1401,45 @@ inline fn ws_buf_cap(b: const u8[>..]&) -> i64 {
     return 0x7FFFFFFF;
 }
 
+fn dispatch_ws_data_turn<Stage, OutBuf, ReplyBuf>(
+    ws:        WebSocketSession&,
+    stage:     Stage&,
+    view:      const WsMessageView&,
+    pmd_comp:  SharedWsCompressor&,
+    pmd_plain: u8[..65536]&,
+    out_wire:  OutBuf&,
+    reply:     ReplyBuf&,
+) {
+    if !view.is_compressed {
+        out_wire.clear();
+        on_ws_message(stage, ws, view, out_wire);
+        return;
+    }
+    let max_pay = if ws.max_payload_length > 0 {
+        min(ws.max_payload_length, 65536) as i64
+    } else {
+        65536
+    };
+    let reset_win = ws_should_reset_decompressor(ws);
+    if !ws_inflate_message(pmd_comp, view.payload, pmd_plain, max_pay, reset_win) {
+        close(ws, rfc::WS_STATUS_PROTOCOL_ERROR, "invalid permessage-deflate stream", reply);
+        return;
+    }
+    if view.opcode == rfc::WS_OPCODE_TEXT && !pmd_plain[..].validate_utf8() {
+        close(ws, rfc::WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in compressed text frame", reply);
+        return;
+    }
+    let inflated_view = WsMessageView {
+        opcode:        view.opcode,
+        payload:       pmd_plain[..],
+        is_valid:      true,
+        is_compressed: false,
+        ..
+    };
+    out_wire.clear();
+    on_ws_message(stage, ws, inflated_view, out_wire);
+}
+
 // Consumes and dispatches all complete WebSocket frames currently buffered in `in_slice`.
 // Returns the total number of bytes consumed from `in_slice`.
 fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
@@ -1397,6 +1452,8 @@ fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
 ) -> i64 {
     var cursor: i64        = 0;
     var reply:  u8[..1024] = [];
+    var pmd_comp = SharedWsCompressor { .. };
+    var pmd_plain: u8[..65536] = [];
     while core::add_sat_i64(cursor, 2) <= in_slice.len && !ws.is_closed {
         reply.clear();
         let max_pay_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
@@ -1410,9 +1467,12 @@ fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
         cursor = core::add_sat_i64(cursor, consumed);
         flush_ws_wire(conn_fd, reply[..]);
         if is_ws_data_message(view) {
-            out_wire.clear();
-            on_ws_message(stage, ws, view, out_wire);
-            flush_ws_wire(conn_fd, out_wire[..]);
+            reply.clear();
+            dispatch_ws_data_turn(ws, stage, view, pmd_comp, pmd_plain, out_wire, reply);
+            flush_ws_wire(conn_fd, reply[..]);
+            if !ws.is_closed {
+                flush_ws_wire(conn_fd, out_wire[..]);
+            }
         }
         if ws.is_closed {
             ws_drain_and_close(conn_fd);

@@ -114,6 +114,8 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool {
         let label_len = b as i64;
         current_off += 1;
         guard current_off + label_len <= raw.len else { return false; }
+        let label_bytes = raw[current_off..current_off + label_len];
+        guard is_valid_dns_wire_label_bytes(label_bytes) else { return false; }
 
         if scratch.len > 0 {
             guard scratch.len + 1 + label_len <= 253 else { return false; }
@@ -121,7 +123,7 @@ fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool {
         } else {
             guard label_len <= 253 else { return false; }
         }
-        scratch.append(raw[current_off..current_off + label_len]);
+        scratch.append(label_bytes);
         current_off += label_len;
 
         if !advanced_original {
@@ -153,6 +155,8 @@ fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i
         let label_len = b as i64;
         current_off += 1;
         guard current_off + label_len <= max_offset else { return false; }
+        let label_bytes = raw[current_off..current_off + label_len];
+        guard is_valid_dns_wire_label_bytes(label_bytes) else { return false; }
 
         if scratch.len > 0 {
             guard scratch.len + 1 + label_len <= 253 else { return false; }
@@ -160,13 +164,20 @@ fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i
         } else {
             guard label_len <= 253 else { return false; }
         }
-        scratch.append(raw[current_off..current_off + label_len]);
+        scratch.append(label_bytes);
         current_off += label_len;
     }
     return false;
 }
 
-// ---- Query Builder ------------------------------------------------------
+inline fn is_valid_dns_wire_label_bytes(label: const u8[:]) -> bool {
+    for b in label {
+        if b <= 0x20 || b >= 0x7F || b == '.' {
+            return false;
+        }
+    }
+    return true;
+}
 
 fn serialize_dns_header<B>(tx_id: u16, qd_count: u16, flags: u16, out: B&) {
     let hdr: const u8[12] = [
@@ -285,6 +296,8 @@ fn parse_dns_questions(raw: const u8[:], off: i64&, count: u16, first_qname: u8[
         var qname: u8[..255] = [];
         guard dns_decode_name(raw, off, qname) else { return false; }
         guard off + 4 <= raw.len else { return false; }
+        let qclass = core::read_be_u16(raw, core::add_sat_i64(off, 2));
+        guard qclass == rfc::DNS_QCLASS_IN else { return false; }
         if q == 0 {
             guard first_qname.try_set(qname[..]) else { return false; }
         }

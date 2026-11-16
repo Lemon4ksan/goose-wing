@@ -323,6 +323,26 @@ fn scan_crlfcrlf_incremental(active_wire: const u8[:], hdr_scan_cursor: i64&) ->
     return core::add_sat_i64(scan_start, rel_idx);
 }
 
+// Validates that a Transfer-Encoding value uses only unparameterized `identity` before final
+// unparameterized `chunked` when no transfer-coding decompression layer is installed.
+fn validate_decodeable_chunked_te(val: const u8[:]) -> bool {
+    guard validate_transfer_encoding_value(val) else { return false; }
+    let trimmed = val.trim_lws();
+    var cursor: i64 = 0;
+    while cursor <= trimmed.len {
+        let comma_idx = core::add_sat_i64(cursor, trimmed[cursor..].find_unquoted_byte(','));
+        let piece = trimmed[cursor..comma_idx].trim_lws();
+        let semi_idx = piece.find_unquoted_byte(';');
+        guard semi_idx == piece.len else { return false; }
+        guard piece.eq_ascii_fold("identity") || piece.eq_ascii_fold("chunked") else { return false; }
+        if comma_idx == trimmed.len {
+            break;
+        }
+        cursor = core::add_sat_i64(comma_idx, 1);
+    }
+    return true;
+}
+
 fn validate_span_te_header(
     headers: const HeaderMap&,
     te_idx:  i16,
@@ -330,8 +350,7 @@ fn validate_span_te_header(
     let idx = te_idx as i64;
     guard idx >= 0 && idx < headers.entries.len else { return false; }
     let te_val = entry_value(headers, headers.entries[idx]);
-    guard validate_transfer_encoding_value(te_val) else { return false; }
-    return true;
+    return validate_decodeable_chunked_te(te_val);
 }
 
 inline fn clear_request_headers_state<Req>(req: Req&) {
@@ -847,15 +866,17 @@ inline fn purge_conflicting_cl_from_response<Res>(out_res: Res&) {
 //   status_line = "HTTP/1.1 200 OK"
 //   returns: true, out_res.status_code = 200
 fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) -> bool {
-    guard status_line.len >= 13 &&
+    guard status_line.len >= 12 &&
           status_line[..7] == "HTTP/1." &&
           (status_line[7] == '0' || status_line[7] == '1') &&
           status_line[8] == ' ' &&
-          status_line[12] == ' ' else {
+          (status_line.len == 12 || status_line[12] == ' ') else {
         return false;
     }
-    for b in status_line[13..] {
-        guard is_valid_header_value_byte(b) else { return false; }
+    if status_line.len > 13 {
+        for b in status_line[13..] {
+            guard is_valid_header_value_byte(b) else { return false; }
+        }
     }
 
     guard status_line[9] >= '1' && status_line[9] <= '5' &&
@@ -916,10 +937,11 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
 
     let is_empty_status = rfc::is_empty_body_status(out_res.status_code);
 
-    // RFC 9112 Section 6.1 & RFC 7230 §3.3.3: In responses, Transfer-Encoding overrides Content-Length.
-    // If Transfer-Encoding is present, it MUST be valid and chunked MUST be final; invalid TE must reject.
+    // RFC 9112 Section 6.1: Transfer-Encoding - reject Transfer-Encoding in HTTP/1.0 responses.
     if framing.has_te {
-        guard validate_transfer_encoding_value(framing.te_buf[..]) else { return false, 0; }
+        guard out_res.protocol[..] == "HTTP/1.1" && validate_decodeable_chunked_te(framing.te_buf[..]) else {
+            return false, 0;
+        }
         // RFC 9112 Section 6.1: An intermediary or recipient processing chunked MUST remove Content-Length
         if framing.has_cl {
             purge_conflicting_cl_from_response(out_res);

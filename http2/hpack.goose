@@ -1498,11 +1498,13 @@ fn decode_hpack_string<B>(src: const u8[:], offset: u64, out: B&) -> u64, bool {
 }
 
 inline fn is_forbidden_authority_byte(b: u8) -> bool {
-    return b <= 0x20 || b == 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ',';
+    return b <= 0x20 || b >= 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ','
+        || b == '\\' || b == '"' || b == '<' || b == '>' || b == '^' || b == '`'
+        || b == '{' || b == '|' || b == '}';
 }
 
 inline fn is_forbidden_path_byte(b: u8) -> bool {
-    return b <= 0x20 || b == 0x7F || b == '<' || b == '>' || b == '"'
+    return b <= 0x20 || b >= 0x7F || b == '#' || b == '<' || b == '>' || b == '"'
         || b == '\\' || b == '^' || b == '{' || b == '|' || b == '}';
 }
 

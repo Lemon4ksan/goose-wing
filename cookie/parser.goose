@@ -626,10 +626,16 @@ fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[
     if attr_val.len == 0 || attr_val[0] != '/' {
         cookie_ref.has_path_attr = false;
         guard default_path.len > 0 else { return; }
-        let _ = cookie_ref.path.try_set(default_path);
+        if !cookie_ref.path.try_set(default_path) {
+            let _ = cookie_ref.path.try_set("/");
+        }
         return;
     }
-    guard cookie_ref.path.try_set(attr_val) else { return; }
+    guard cookie_ref.path.try_set(attr_val) else {
+        cookie_ref.has_path_attr = false;
+        let _ = cookie_ref.path.try_set("/");
+        return;
+    }
     cookie_ref.has_path_attr = true;
 }
 

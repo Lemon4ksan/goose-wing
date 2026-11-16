@@ -1300,6 +1300,7 @@ fn stage_server_metrics_log(
 struct ServerBodyStreamState {
     sha256_ctx:      core::Sha256Ctx = core::Sha256Ctx { .. },
     expected_sha256: u8[..32]        = [],
+    compressed_buf:  u8[..16384]     = [],
     verify_digest:   bool            = false,
     decompress_gzip: bool            = false,
     decompress_zstd: bool            = false,
@@ -1389,6 +1390,21 @@ inline fn on_server_body_chunk<First, Next>(
     return p.verdict;
 }
 
+fn decompress_buffered_server_stream(state: ServerBodyStreamState&, decoded: u8[..16384]&) -> bool {
+    if state.compressed_buf.len == 0 {
+        return true;
+    }
+    let ok = if state.decompress_zstd {
+        let ok_z, _ = core::zstd_decompress_with_limit(state.compressed_buf[..], decoded, 16384);
+        ok_z
+    } else {
+        let ok_g, _ = core::gzip_decompress_with_limit(state.compressed_buf[..], decoded, 16384);
+        ok_g
+    };
+    state.compressed_buf.clear();
+    return ok;
+}
+
 // Processes a streaming body chunk through decompression, SHA-256 digest verification, and `<UserStage>`.
 fn feed_server_body_chunk_with_stage<UserStage>(
     cfg:        ServerPipelineConfig&,
@@ -1405,26 +1421,23 @@ fn feed_server_body_chunk_with_stage<UserStage>(
         return wire::StageVerdict.ShortCircuit { status_code: 400 };
     }
     var decoded: u8[..16384] = [];
-    if state.decompress_zstd && chunk.len > 0 {
-        let ok_z, _ = core::zstd_decompress_with_limit(chunk, decoded, 16384);
-        guard ok_z else {
+    let is_compressed = state.decompress_zstd || state.decompress_gzip;
+    if is_compressed {
+        guard state.compressed_buf.try_append(chunk) else {
             state.has_error = true;
-            res.status_code = 400;
-            return wire::StageVerdict.ShortCircuit { status_code: 400 };
+            res.status_code = 413;
+            return wire::StageVerdict.ShortCircuit { status_code: 413 };
         }
-    } else if state.decompress_gzip && chunk.len > 0 {
-        let ok_g, _ = core::gzip_decompress_with_limit(chunk, decoded, 16384);
-        guard ok_g else {
+        if !is_last {
+            return wire::StageVerdict.Continue;
+        }
+        guard decompress_buffered_server_stream(state, decoded) else {
             state.has_error = true;
             res.status_code = 400;
             return wire::StageVerdict.ShortCircuit { status_code: 400 };
         }
     }
-    let active_chunk = if (state.decompress_zstd || state.decompress_gzip) && chunk.len > 0 {
-        decoded[..]
-    } else {
-        chunk
-    };
+    let active_chunk = if is_compressed { decoded[..] } else { chunk };
     state.bytes_processed = core::add_sat_u64(state.bytes_processed, active_chunk.len as u64);
     if state.verify_digest {
         core::sha256_update(state.sha256_ctx, active_chunk);

@@ -34,10 +34,10 @@ fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardP
         return RedirectError.SsrfBlockedIp;
     }
     if policy.deny_local_network {
-        if is_private_or_reserved_ip(host_str) {
+        if is_forbidden_internal_host(host_str) {
             return RedirectError.SsrfBlockedIp;
         }
-    } else if is_cloud_metadata_or_reserved_ip(host_str) {
+    } else if is_cloud_metadata_or_reserved_ip(host_str) || is_non_canonical_ipv4(host_str) {
         return RedirectError.SsrfBlockedIp;
     }
 

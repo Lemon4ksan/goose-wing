@@ -247,24 +247,73 @@ inline fn extract_via_received_by(hop: const u8[:]) -> const u8[:] {
     }
     let after_proto = trimmed[idx..].trim_lws_start();
     var end_idx: i64 = 0;
-    while end_idx < after_proto.len && !core::is_lws(after_proto[end_idx]) {
+    while end_idx < after_proto.len && !core::is_lws(after_proto[end_idx]) && after_proto[end_idx] != '(' {
         end_idx = core::add_sat_i64(end_idx, 1);
     }
     return after_proto[..end_idx];
 }
 
+inline fn strip_via_port(received_by: const u8[:]) -> const u8[:] {
+    guard received_by.len > 0 else { return ""; }
+    if received_by[0] == '[' {
+        let close_idx = received_by.index_of_byte(']');
+        if close_idx > 0 {
+            return received_by[..core::add_sat_i64(close_idx, 1)];
+        }
+        return received_by;
+    }
+    let col = received_by.last_index_of_byte(':');
+    return if col > 0 { received_by[..col] } else { received_by };
+}
+
+inline fn matches_via_pseudonym(hop: const u8[:], pseudonym: const u8[:]) -> bool {
+    let received_by = extract_via_received_by(hop);
+    guard received_by.len > 0 else { return false; }
+    if received_by.eq_ascii_fold(pseudonym) {
+        return true;
+    }
+    return !pseudonym.contains_byte(':') && strip_via_port(received_by).eq_ascii_fold(pseudonym);
+}
+
+// Finds the next unparenthesized comma in an RFC 9110 Section 7.6.3 `Via` header value.
+//
+// Example:
+//   s = "1.1 edge (gw, 1.1 wing), 1.1 backend"
+//   returns: 23 (index of the comma after ')')
+fn find_next_via_comma(s: const u8[:]) -> i64 {
+    var i:           i64 = 0;
+    var paren_depth: i64 = 0;
+    while i < s.len {
+        let b = s[i];
+        if paren_depth > 0 && b == '\\' {
+            i = core::add_sat_i64(i, 2);
+            continue;
+        }
+        if b == '(' {
+            paren_depth = core::add_sat_i64(paren_depth, 1);
+        } else if b == ')' && paren_depth > 0 {
+            paren_depth = core::sub_sat_i64(paren_depth, 1);
+        } else if b == ',' && paren_depth == 0 {
+            return i;
+        }
+        i = core::add_sat_i64(i, 1);
+    }
+    return s.len;
+}
+
 fn has_via_pseudonym_loop(combined_via: const u8[:], pseudonym: const u8[:]) -> bool {
     guard combined_via.len > 0 && pseudonym.len > 0 else { return false; }
-    var tok = core::make_byte_tokenizer(combined_via, ',');
-    while true {
-        let hop, ok = core::token_next(tok);
-        if !ok {
-            break;
-        }
-        let received_by = extract_via_received_by(hop);
-        if received_by.len > 0 && received_by.eq_ascii_fold(pseudonym) {
+    var cursor: i64 = 0;
+    while cursor < combined_via.len {
+        let rel_comma = find_next_via_comma(combined_via[cursor..]);
+        let comma_idx = core::add_sat_i64(cursor, rel_comma);
+        if matches_via_pseudonym(combined_via[cursor..comma_idx], pseudonym) {
             return true;
         }
+        if comma_idx >= combined_via.len {
+            break;
+        }
+        cursor = core::add_sat_i64(comma_idx, 1);
     }
     return false;
 }
@@ -933,6 +982,12 @@ fn exchange_prepared_wire_on_conn_with_hints(
         guard ok_hdr && leftover_start >= 0 && leftover_start <= rx.len else { return false, false; }
         let is_interim = out_resp.status_code >= 100 && out_resp.status_code < 200 && out_resp.status_code != 101;
         if is_interim {
+            // RFC 9112 Section 6.3: Message Body Length - 1xx responses MUST NOT carry Transfer-Encoding or Content-Length.
+            guard !out_resp.had_te_cl_conflict &&
+                !has_header(out_resp.headers, "Transfer-Encoding") &&
+                !has_header(out_resp.headers, "Content-Length") else {
+                return false, false;
+            }
             if out_resp.status_code == 103 {
                 var up_tmp = UpstreamResponse { early_hints: out_early_hints, has_early_hints: has_early_hints, .. };
                 capture_upstream_early_hints(out_resp, up_tmp);
@@ -1234,8 +1289,8 @@ fn execute_proxy_exchange(
     let ok_ex, keep_alive = exchange_prepared_wire_on_conn(
         pool.conns[c_idx], method, wire_req[..], out_resp, timeout_ms,
     );
-    var headers_valid = ok_ex;
-    if ok_ex {
+    var headers_valid = ok_ex && !out_resp.had_te_cl_conflict;
+    if headers_valid {
         var filtered_hdrs = HeaderMap { .. };
         var loc_buf: u8[..512] = [];
         var accel = UpstreamAccelControl { .. };

@@ -3,7 +3,7 @@
 
 // Layer 4 Windows Registered I/O (RIO) Kernel-Bypass C Shim.
 // Queries the RIO Extension Function Table via SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER,
-// manages page-locked registered memory buffers, RIONotify events, and AcceptEx RIO sockets.
+// manages page-locked registered memory buffers, RIONotify events, and IPv4/IPv6 AcceptEx RIO sockets.
 #define WIN32_LEAN_AND_MEAN
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0602
@@ -13,6 +13,8 @@
 #include <stddef.h>
 #include <string.h>
 
+// Goose emits all structs and slice headers under #pragma pack(push, 1).
+#pragma pack(push, 1)
 typedef struct {
     int32_t status;
     uint32_t bytes_transferred;
@@ -36,6 +38,7 @@ typedef struct {
     WING_RIO_RESULT_SLICE_ITEM *data;
     int64_t len;
 } wing_rio_results_rw;
+#pragma pack(pop)
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -55,20 +58,24 @@ typedef struct {
 #define SO_UPDATE_ACCEPT_CONTEXT 0x700B
 #endif
 
+#ifndef IPV6_V6ONLY
+#define IPV6_V6ONLY 27
+#endif
+
 static const GUID k_rio_guid = {0x8509E081, 0x96DD, 0x4005, {0xB1, 0x65, 0x9E, 0x2E, 0xE8, 0xC7, 0x9E, 0x3F}};
 static const GUID k_acceptex_guid = {0xB5367DF1, 0xCBAC, 0x11CF, {0x95, 0xCA, 0x00, 0x80, 0x5F, 0x48, 0xA1, 0x92}};
 
 typedef void *WING_RIO_BUFFERID;
-#define WING_RIO_INVALID_BUFFERID ((WING_RIO_BUFFERID)(uintptr_t)0xFFFFFFFFUL)
-#ifndef RIO_INVALID_BUFFERID
-#define RIO_INVALID_BUFFERID ((void *)(uintptr_t)0xFFFFFFFFUL)
-#endif
+#define WING_RIO_INVALID_BUFFERID_32 ((uintptr_t)0xFFFFFFFFUL)
+#define WING_RIO_INVALID_BUFFERID_64 (~(uintptr_t)0)
 #ifndef RIO_INVALID_CQ
 #define RIO_INVALID_CQ ((void *)0)
 #endif
 #ifndef RIO_INVALID_RQ
 #define RIO_INVALID_RQ ((void *)0)
 #endif
+#define WING_RIO_CORRUPT_CQ 0xFFFFFFFFUL
+
 typedef void *WING_RIO_CQ;
 typedef void *WING_RIO_RQ;
 
@@ -132,11 +139,14 @@ typedef BOOL(PASCAL *WING_LPFN_ACCEPTEX)(SOCKET sListenSocket, SOCKET sAcceptSoc
                                          DWORD dwRemoteAddressLength, LPDWORD lpdwBytesReceived,
                                          LPOVERLAPPED lpOverlapped);
 
-#define WING_RIO_MAX_CQS 64
+#define WING_RIO_MAX_CQS 256
+#define WING_RIO_MAX_LISTENERS 64
+#define WING_RIO_ACCEPT_ADDR_LEN ((DWORD)(sizeof(struct sockaddr_storage) + 16))
 
 typedef struct {
     WING_RIO_CQ cq;
     HANDLE ev;
+    int armed;
 } wing_rio_cq_slot;
 
 static WING_RIO_EXTENSION_FUNCTION_TABLE g_rio;
@@ -144,6 +154,16 @@ static WING_LPFN_ACCEPTEX g_acceptex = NULL;
 static wing_rio_cq_slot g_rio_cqs[WING_RIO_MAX_CQS];
 static int g_rio_initialized = 0;
 static int g_rio_available = 0;
+
+static wing_rio_cq_slot *find_rio_cq_slot(WING_RIO_CQ cq) {
+    if (!cq) return NULL;
+    for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
+        if (g_rio_cqs[i].cq == cq) {
+            return &g_rio_cqs[i];
+        }
+    }
+    return NULL;
+}
 
 static int init_rio_table(void) {
     if (g_rio_initialized) {
@@ -212,10 +232,11 @@ static uint64_t wing_rio_register_buffer(void *buf, uint32_t len) {
         return 0;
     }
     WING_RIO_BUFFERID id = g_rio.RIORegisterBuffer((char *)buf, len);
-    if (id == NULL || id == WING_RIO_INVALID_BUFFERID || (uintptr_t)id == (uintptr_t)RIO_INVALID_BUFFERID) {
+    uintptr_t raw = (uintptr_t)id;
+    if (raw == 0 || raw == WING_RIO_INVALID_BUFFERID_32 || raw == WING_RIO_INVALID_BUFFERID_64) {
         return 0;
     }
-    return (uint64_t)(uintptr_t)id;
+    return (uint64_t)raw;
 }
 
 uint64_t wing_rio_register_slice(wing_rio_bytes_rw buf) {
@@ -226,8 +247,10 @@ uint64_t wing_rio_register_slice(wing_rio_bytes_rw buf) {
 }
 
 void wing_rio_deregister_buffer(uint64_t buf_id) {
-    if (g_rio_available && buf_id != 0 && g_rio.RIODeregisterBuffer) {
-        g_rio.RIODeregisterBuffer((WING_RIO_BUFFERID)(uintptr_t)buf_id);
+    uintptr_t raw = (uintptr_t)buf_id;
+    if (g_rio_available && raw != 0 && raw != WING_RIO_INVALID_BUFFERID_32 && raw != WING_RIO_INVALID_BUFFERID_64 &&
+        g_rio.RIODeregisterBuffer) {
+        g_rio.RIODeregisterBuffer((WING_RIO_BUFFERID)raw);
     }
 }
 
@@ -235,41 +258,43 @@ uint64_t wing_rio_create_cq(uint32_t queue_size) {
     if (!g_rio_available && init_rio_table() != 0) {
         return 0;
     }
-    if (!g_rio.RIOCreateCompletionQueue) {
+    if (queue_size == 0 || !g_rio.RIOCreateCompletionQueue) {
         return 0;
     }
 
-    HANDLE ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+    int slot_idx = -1;
+    for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
+        if (g_rio_cqs[i].cq == NULL) {
+            slot_idx = i;
+            break;
+        }
+    }
+    if (slot_idx < 0) {
+        return 0;
+    }
+
+    // Manual-reset event paired with NotifyReset = TRUE:
+    // RIODequeueCompletion atomically resets EventHandle when completions are drained.
+    HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (ev == NULL) {
+        return 0;
+    }
+
     WING_RIO_NOTIFICATION_COMPLETION notif;
     memset(&notif, 0, sizeof(notif));
-    void *notif_ptr = NULL;
-    if (ev != NULL) {
-        notif.Type = 1; // RIO_EVENT_COMPLETION
-        notif.Event.EventHandle = ev;
-        notif.Event.NotifyReset = TRUE;
-        notif_ptr = &notif;
-    }
+    notif.Type = 1; // RIO_EVENT_COMPLETION
+    notif.Event.EventHandle = ev;
+    notif.Event.NotifyReset = TRUE;
 
-    WING_RIO_CQ cq = g_rio.RIOCreateCompletionQueue(queue_size, notif_ptr);
+    WING_RIO_CQ cq = g_rio.RIOCreateCompletionQueue(queue_size, &notif);
     if (cq == NULL || (uintptr_t)cq == (uintptr_t)RIO_INVALID_CQ) {
-        if (ev != NULL) CloseHandle(ev);
+        CloseHandle(ev);
         return 0;
     }
 
-    if (ev != NULL) {
-        int stored = 0;
-        for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
-            if (g_rio_cqs[i].cq == NULL) {
-                g_rio_cqs[i].cq = cq;
-                g_rio_cqs[i].ev = ev;
-                stored = 1;
-                break;
-            }
-        }
-        if (!stored) {
-            CloseHandle(ev);
-        }
-    }
+    g_rio_cqs[slot_idx].cq = cq;
+    g_rio_cqs[slot_idx].ev = ev;
+    g_rio_cqs[slot_idx].armed = 0;
     return (uint64_t)(uintptr_t)cq;
 }
 
@@ -277,15 +302,14 @@ void wing_rio_close_cq(uint64_t cq_id) {
     if (g_rio_available && cq_id != 0 && g_rio.RIOCloseCompletionQueue) {
         WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
         g_rio.RIOCloseCompletionQueue(cq);
-        for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
-            if (g_rio_cqs[i].cq == cq) {
-                if (g_rio_cqs[i].ev != NULL) {
-                    CloseHandle(g_rio_cqs[i].ev);
-                }
-                g_rio_cqs[i].cq = NULL;
-                g_rio_cqs[i].ev = NULL;
-                break;
+        wing_rio_cq_slot *slot = find_rio_cq_slot(cq);
+        if (slot) {
+            if (slot->ev != NULL) {
+                CloseHandle(slot->ev);
             }
+            slot->cq = NULL;
+            slot->ev = NULL;
+            slot->armed = 0;
         }
     }
 }
@@ -295,28 +319,28 @@ int32_t wing_rio_wait_cq(uint64_t cq_id, int32_t timeout_ms) {
         return -1;
     }
     WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
-    HANDLE ev = NULL;
-    for (int i = 0; i < WING_RIO_MAX_CQS; i++) {
-        if (g_rio_cqs[i].cq == cq) {
-            ev = g_rio_cqs[i].ev;
-            break;
-        }
-    }
-    if (ev == NULL) {
-        return 0;
-    }
-    INT rc = g_rio.RIONotify(cq);
-    if (rc != ERROR_SUCCESS) {
+    wing_rio_cq_slot *slot = find_rio_cq_slot(cq);
+    if (!slot || slot->ev == NULL) {
         return -1;
     }
+    if (!slot->armed) {
+        INT rc = g_rio.RIONotify(cq);
+        if (rc == ERROR_SUCCESS || rc == WSAEINVAL) {
+            slot->armed = 1;
+        } else {
+            return -1;
+        }
+    }
     DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
-    DWORD w = WaitForSingleObject(ev, wait_ms);
+    DWORD w = WaitForSingleObject(slot->ev, wait_ms);
     if (w == WAIT_OBJECT_0) {
+        slot->armed = 0;
         return 1;
     }
     if (w == WAIT_TIMEOUT) {
         return 0;
     }
+    slot->armed = 0;
     return -1;
 }
 
@@ -327,12 +351,34 @@ int32_t wing_rio_dequeue_slice(uint64_t cq_id, wing_rio_results_rw dst) {
     if (!cq_id || !dst.data || dst.len <= 0 || !g_rio.RIODequeueCompletion) {
         return 0;
     }
-    ULONG cap = (dst.len > 1024) ? 1024 : (ULONG)dst.len;
-    ULONG n = g_rio.RIODequeueCompletion((WING_RIO_CQ)(uintptr_t)cq_id, (WING_RIO_RESULT *)dst.data, cap);
-    if (n == 0xFFFFFFFFUL) {
-        return -1;
+
+    WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
+    WING_RIO_RESULT aligned_batch[256];
+    int64_t total = 0;
+
+    while (total < dst.len) {
+        ULONG cap = (dst.len - total > 256) ? 256 : (ULONG)(dst.len - total);
+        ULONG n = g_rio.RIODequeueCompletion(cq, aligned_batch, cap);
+        if (n == WING_RIO_CORRUPT_CQ) {
+            return total > 0 ? (int32_t)total : -1;
+        }
+        if (n == 0) {
+            break;
+        }
+        memcpy(dst.data + total, aligned_batch, (size_t)n * sizeof(WING_RIO_RESULT));
+        total += (int64_t)n;
+        if (n < cap) {
+            break;
+        }
     }
-    return (int32_t)n;
+
+    if (total > 0) {
+        wing_rio_cq_slot *slot = find_rio_cq_slot(cq);
+        if (slot) {
+            slot->armed = 0;
+        }
+    }
+    return (int32_t)total;
 }
 
 uint64_t wing_rio_create_rq_ctx(int64_t sock_fd, uint32_t max_recv, uint32_t max_send, uint64_t recv_cq,
@@ -388,13 +434,6 @@ int64_t wing_rio_listen(wing_rio_str_ro host, uint16_t port, int32_t backlog) {
     if (init_rio_table() != 0) {
         return -1;
     }
-    SOCKET s = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED);
-    if (s == INVALID_SOCKET) {
-        return -1;
-    }
-    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
-    int opt = 1;
-    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
 
     char host_str[128];
     int64_t n = host.len < 127 ? host.len : 127;
@@ -405,19 +444,64 @@ int64_t wing_rio_listen(wing_rio_str_ro host, uint16_t port, int32_t backlog) {
         host_str[0] = '\0';
     }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (host_str[0] == '\0' || strcmp(host_str, "0.0.0.0") == 0) {
-        addr.sin_addr.s_addr = INADDR_ANY;
-    } else if (strcmp(host_str, "127.0.0.1") == 0 || strcmp(host_str, "localhost") == 0) {
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    } else {
-        addr.sin_addr.s_addr = inet_addr(host_str);
+    const char *h = host_str;
+    size_t hlen = strlen(h);
+    char stripped[128];
+    if (hlen >= 2 && h[0] == '[' && h[hlen - 1] == ']') {
+        memcpy(stripped, h + 1, hlen - 2);
+        stripped[hlen - 2] = '\0';
+        h = stripped;
     }
 
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof(ss));
+    int addr_len = 0;
+    int family = AF_INET;
+
+    struct in6_addr addr6;
+    struct in_addr addr4;
+    if (h[0] == '\0' || strcmp(h, "0.0.0.0") == 0) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr.s_addr = INADDR_ANY;
+        addr_len = (int)sizeof(struct sockaddr_in);
+    } else if (strcmp(h, "localhost") == 0) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr_len = (int)sizeof(struct sockaddr_in);
+    } else if (inet_pton(AF_INET, h, &addr4) == 1) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr = addr4;
+        addr_len = (int)sizeof(struct sockaddr_in);
+    } else if (inet_pton(AF_INET6, h, &addr6) == 1) {
+        family = AF_INET6;
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(port);
+        s6->sin6_addr = addr6;
+        addr_len = (int)sizeof(struct sockaddr_in6);
+    } else {
+        return -1;
+    }
+
+    SOCKET s = WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED);
+    if (s == INVALID_SOCKET) {
+        return -1;
+    }
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    int opt = 1;
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
+    if (family == AF_INET6) {
+        int v6only = 0;
+        (void)setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
+    }
+
+    if (bind(s, (struct sockaddr *)&ss, addr_len) == SOCKET_ERROR) {
         closesocket(s);
         return -1;
     }
@@ -428,57 +512,17 @@ int64_t wing_rio_listen(wing_rio_str_ro host, uint16_t port, int32_t backlog) {
     return (int64_t)s;
 }
 
-int64_t wing_rio_accept(int64_t listen_fd) {
-    if (init_rio_table() != 0 || listen_fd <= 0 || !g_acceptex) {
-        return -1;
+static int query_socket_family(SOCKET s) {
+    struct sockaddr_storage ss;
+    int len = (int)sizeof(ss);
+    memset(&ss, 0, sizeof(ss));
+    if (getsockname(s, (struct sockaddr *)&ss, &len) == 0 && (ss.ss_family == AF_INET || ss.ss_family == AF_INET6)) {
+        return (int)ss.ss_family;
     }
-    SOCKET lsock = (SOCKET)listen_fd;
+    return AF_INET;
+}
 
-    SOCKET asock = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED);
-    if (asock == INVALID_SOCKET) {
-        return -1;
-    }
-    SetHandleInformation((HANDLE)asock, HANDLE_FLAG_INHERIT, 0);
-
-    HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (ev == NULL) {
-        closesocket(asock);
-        return -1;
-    }
-
-    OVERLAPPED ov;
-    memset(&ov, 0, sizeof(ov));
-    ov.hEvent = ev;
-    uint8_t addr_buf[128];
-    memset(addr_buf, 0, sizeof(addr_buf));
-    DWORD bytes = 0;
-
-    BOOL ok = g_acceptex(lsock, asock, addr_buf, 0, 32, 32, &bytes, &ov);
-    if (!ok) {
-        int err = WSAGetLastError();
-        if (err != WSA_IO_PENDING) {
-            CloseHandle(ev);
-            closesocket(asock);
-            return -1;
-        }
-        DWORD w = WaitForSingleObject(ev, 50);
-        if (w != WAIT_OBJECT_0) {
-            CancelIoEx((HANDLE)lsock, &ov);
-            DWORD flags = 0;
-            (void)WSAGetOverlappedResult(lsock, &ov, &bytes, TRUE, &flags);
-            CloseHandle(ev);
-            closesocket(asock);
-            return -1;
-        }
-        DWORD flags = 0;
-        if (!WSAGetOverlappedResult(lsock, &ov, &bytes, FALSE, &flags)) {
-            CloseHandle(ev);
-            closesocket(asock);
-            return -1;
-        }
-    }
-
-    CloseHandle(ev);
+static int64_t finalize_rio_accepted_socket(SOCKET lsock, SOCKET asock) {
     (void)setsockopt(asock, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (const char *)&lsock, sizeof(lsock));
     int nodelay = 1;
     (void)setsockopt(asock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
@@ -487,16 +531,83 @@ int64_t wing_rio_accept(int64_t listen_fd) {
     return (int64_t)asock;
 }
 
+int64_t wing_rio_accept(int64_t listen_fd) {
+    if (init_rio_table() != 0 || listen_fd <= 0 || !g_acceptex) {
+        return -1;
+    }
+    SOCKET lsock = (SOCKET)listen_fd;
+    int family = query_socket_family(lsock);
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        SOCKET asock =
+            WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED);
+        if (asock == INVALID_SOCKET) {
+            return -1;
+        }
+        SetHandleInformation((HANDLE)asock, HANDLE_FLAG_INHERIT, 0);
+
+        HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (ev == NULL) {
+            closesocket(asock);
+            return -1;
+        }
+
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.hEvent = ev;
+        uint8_t addr_buf[WING_RIO_ACCEPT_ADDR_LEN * 2];
+        memset(addr_buf, 0, sizeof(addr_buf));
+        DWORD bytes = 0;
+
+        BOOL ok = g_acceptex(lsock, asock, addr_buf, 0, WING_RIO_ACCEPT_ADDR_LEN, WING_RIO_ACCEPT_ADDR_LEN, &bytes, &ov);
+        if (!ok) {
+            int err = WSAGetLastError();
+            if (err == WSAECONNRESET) {
+                CloseHandle(ev);
+                closesocket(asock);
+                continue;
+            }
+            if (err != WSA_IO_PENDING) {
+                CloseHandle(ev);
+                closesocket(asock);
+                return -1;
+            }
+            DWORD w = WaitForSingleObject(ev, 200);
+            if (w != WAIT_OBJECT_0) {
+                CancelIoEx((HANDLE)lsock, &ov);
+                DWORD flags = 0;
+                (void)WSAGetOverlappedResult(lsock, &ov, &bytes, TRUE, &flags);
+                CloseHandle(ev);
+                closesocket(asock);
+                return -1;
+            }
+            DWORD flags = 0;
+            if (!WSAGetOverlappedResult(lsock, &ov, &bytes, FALSE, &flags)) {
+                int oerr = WSAGetLastError();
+                CloseHandle(ev);
+                closesocket(asock);
+                if (oerr == WSAECONNRESET) {
+                    continue;
+                }
+                return -1;
+            }
+        }
+
+        CloseHandle(ev);
+        return finalize_rio_accepted_socket(lsock, asock);
+    }
+    return -1;
+}
+
 typedef struct {
     SOCKET lsock;
     SOCKET asock;
     HANDLE ev;
     OVERLAPPED ov;
-    uint8_t addr_buf[128];
+    uint8_t addr_buf[WING_RIO_ACCEPT_ADDR_LEN * 2];
     int pending;
 } wing_rio_accept_slot;
 
-#define WING_RIO_MAX_LISTENERS 8
 static wing_rio_accept_slot g_rio_accept_slots[WING_RIO_MAX_LISTENERS];
 
 int32_t wing_rio_is_listener(int64_t sock_fd) {
@@ -504,9 +615,14 @@ int32_t wing_rio_is_listener(int64_t sock_fd) {
         return 0;
     }
     SOCKET s = (SOCKET)sock_fd;
-    struct sockaddr_in addr;
-    int len = (int)sizeof(addr);
-    if (getsockname(s, (struct sockaddr *)&addr, &len) != 0) {
+    struct sockaddr_storage ss;
+    int len = (int)sizeof(ss);
+    if (getsockname(s, (struct sockaddr *)&ss, &len) != 0) {
+        return 0;
+    }
+    int accept_conn = 0;
+    int opt_len = (int)sizeof(accept_conn);
+    if (getsockopt(s, SOL_SOCKET, SO_ACCEPTCONN, (char *)&accept_conn, &opt_len) == 0 && !accept_conn) {
         return 0;
     }
     WSAPOLLFD pfd;
@@ -559,93 +675,101 @@ int32_t wing_rio_cancel_accept(int64_t listen_fd) {
     return cancelled;
 }
 
-static int64_t finalize_rio_accepted_socket(SOCKET lsock, SOCKET asock) {
-    (void)setsockopt(asock, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (const char *)&lsock, sizeof(lsock));
-    int nodelay = 1;
-    (void)setsockopt(asock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
-    u_long nonblock = 1;
-    (void)ioctlsocket(asock, FIONBIO, &nonblock);
-    return (int64_t)asock;
-}
-
 int64_t wing_rio_poll_accept(int64_t listen_fd, int32_t timeout_ms) {
     if (init_rio_table() != 0 || listen_fd <= 0 || !g_acceptex) {
         return -1;
     }
     SOCKET lsock = (SOCKET)listen_fd;
-    wing_rio_accept_slot *slot = NULL;
-    for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
-        if (g_rio_accept_slots[i].pending && g_rio_accept_slots[i].lsock == lsock) {
-            slot = &g_rio_accept_slots[i];
-            break;
-        }
-    }
-    if (!slot) {
+    int family = query_socket_family(lsock);
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        wing_rio_accept_slot *slot = NULL;
         for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
-            if (!g_rio_accept_slots[i].pending) {
+            if (g_rio_accept_slots[i].pending && g_rio_accept_slots[i].lsock == lsock) {
                 slot = &g_rio_accept_slots[i];
                 break;
             }
         }
         if (!slot) {
-            return -1;
-        }
-        SOCKET asock = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
-                                  WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED);
-        if (asock == INVALID_SOCKET) {
-            return -1;
-        }
-        SetHandleInformation((HANDLE)asock, HANDLE_FLAG_INHERIT, 0);
-        HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
-        if (ev == NULL) {
-            closesocket(asock);
-            return -1;
-        }
-        memset(slot, 0, sizeof(*slot));
-        slot->lsock = lsock;
-        slot->asock = asock;
-        slot->ev = ev;
-        slot->ov.hEvent = ev;
-        DWORD bytes = 0;
-        BOOL ok = g_acceptex(lsock, asock, slot->addr_buf, 0, 32, 32, &bytes, &slot->ov);
-        if (ok) {
-            CloseHandle(ev);
-            slot->ev = NULL;
-            slot->asock = INVALID_SOCKET;
-            slot->pending = 0;
-            return finalize_rio_accepted_socket(lsock, asock);
-        }
-        if (WSAGetLastError() != WSA_IO_PENDING) {
-            CloseHandle(ev);
-            closesocket(asock);
+            for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
+                if (!g_rio_accept_slots[i].pending) {
+                    slot = &g_rio_accept_slots[i];
+                    break;
+                }
+            }
+            if (!slot) {
+                return -1;
+            }
+            SOCKET asock =
+                WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED);
+            if (asock == INVALID_SOCKET) {
+                return -1;
+            }
+            SetHandleInformation((HANDLE)asock, HANDLE_FLAG_INHERIT, 0);
+            HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+            if (ev == NULL) {
+                closesocket(asock);
+                return -1;
+            }
             memset(slot, 0, sizeof(*slot));
+            slot->lsock = lsock;
+            slot->asock = asock;
+            slot->ev = ev;
+            slot->ov.hEvent = ev;
+            DWORD bytes = 0;
+            BOOL ok = g_acceptex(lsock, asock, slot->addr_buf, 0, WING_RIO_ACCEPT_ADDR_LEN, WING_RIO_ACCEPT_ADDR_LEN,
+                                 &bytes, &slot->ov);
+            if (ok) {
+                CloseHandle(ev);
+                slot->ev = NULL;
+                slot->asock = INVALID_SOCKET;
+                slot->pending = 0;
+                return finalize_rio_accepted_socket(lsock, asock);
+            }
+            int err = WSAGetLastError();
+            if (err == WSAECONNRESET) {
+                CloseHandle(ev);
+                closesocket(asock);
+                memset(slot, 0, sizeof(*slot));
+                continue;
+            }
+            if (err != WSA_IO_PENDING) {
+                CloseHandle(ev);
+                closesocket(asock);
+                memset(slot, 0, sizeof(*slot));
+                return -1;
+            }
+            slot->pending = 1;
+        }
+
+        DWORD wait_ms = (timeout_ms < 0) ? 0 : (DWORD)timeout_ms;
+        DWORD w = WaitForSingleObject(slot->ev, wait_ms);
+        if (w == WAIT_TIMEOUT) {
+            return 0;
+        }
+        if (w != WAIT_OBJECT_0) {
+            cleanup_rio_accept_slot(slot, 1);
             return -1;
         }
-        slot->pending = 1;
+        DWORD bytes = 0;
+        DWORD flags = 0;
+        if (!WSAGetOverlappedResult(lsock, &slot->ov, &bytes, FALSE, &flags)) {
+            int oerr = WSAGetLastError();
+            cleanup_rio_accept_slot(slot, 0);
+            if (oerr == WSAECONNRESET) {
+                continue;
+            }
+            return -1;
+        }
+        SOCKET accepted = slot->asock;
+        CloseHandle(slot->ev);
+        slot->ev = NULL;
+        slot->asock = INVALID_SOCKET;
+        slot->lsock = 0;
+        slot->pending = 0;
+        return finalize_rio_accepted_socket(lsock, accepted);
     }
-
-    DWORD wait_ms = (timeout_ms < 0) ? 0 : (DWORD)timeout_ms;
-    DWORD w = WaitForSingleObject(slot->ev, wait_ms);
-    if (w == WAIT_TIMEOUT) {
-        return 0;
-    }
-    if (w != WAIT_OBJECT_0) {
-        cleanup_rio_accept_slot(slot, 1);
-        return -1;
-    }
-    DWORD bytes = 0;
-    DWORD flags = 0;
-    if (!WSAGetOverlappedResult(lsock, &slot->ov, &bytes, FALSE, &flags)) {
-        cleanup_rio_accept_slot(slot, 0);
-        return -1;
-    }
-    SOCKET accepted = slot->asock;
-    CloseHandle(slot->ev);
-    slot->ev = NULL;
-    slot->asock = INVALID_SOCKET;
-    slot->lsock = 0;
-    slot->pending = 0;
-    return finalize_rio_accepted_socket(lsock, accepted);
+    return -1;
 }
 
 #else

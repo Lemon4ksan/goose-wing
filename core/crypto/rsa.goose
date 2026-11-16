@@ -594,6 +594,13 @@ fn rsa_pss_sha384_verify_der(spki_pubkey_der: const u8[:], message: const u8[:],
     return rsa_pss_sha384_verify(n_be, e_be, message, sig);
 }
 
+// Verifies an RSASSA-PSS SHA-512 signature against an ASN.1 DER `RSAPublicKey`.
+fn rsa_pss_sha512_verify_der(spki_pubkey_der: const u8[:], message: const u8[:], sig: const u8[:]) -> bool {
+    let n_be, e_be, ok = parse_rsa_public_key_der(spki_pubkey_der);
+    guard ok else { return false; }
+    return rsa_pss_sha512_verify(n_be, e_be, message, sig);
+}
+
 // Encodes an EMSA-PSS message block of length `em_len` using `m_hash` and `salt`.
 // crap:ignore
 fn encode_emsa_pss(

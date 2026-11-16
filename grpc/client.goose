@@ -167,17 +167,30 @@ fn build_grpc_http_request(
 
 // ---- Unary Response Parser ----------------------------------------------
 
+inline fn classify_grpc_gzip_error(gz_err: core::CompressError) -> GrpcStatusCode {
+    if gz_err == core::CompressError.OutputBufferOverflow {
+        return GrpcStatusCode.ResourceExhausted;
+    }
+    return GrpcStatusCode.Internal;
+}
+
 inline fn append_grpc_web_data_frame(frame_payload: const u8[:], is_comp: bool, out_resp: GrpcResponse&) -> bool {
     out_resp.is_compressed = is_comp;
     if !is_comp {
         let next_len = core::add_sat_i64(out_resp.payload.len, frame_payload.len);
-        guard next_len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else { return false; }
+        guard next_len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else {
+            out_resp.status = GrpcStatusCode.ResourceExhausted;
+            return false;
+        }
         out_resp.payload.append(frame_payload);
         return true;
     }
-    let ok_gz, _ = core::gzip_decompress_with_limit(
+    let ok_gz, gz_err = core::gzip_decompress_with_limit(
         frame_payload, out_resp.payload, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
     );
+    if !ok_gz {
+        out_resp.status = classify_grpc_gzip_error(gz_err);
+    }
     return ok_gz;
 }
 
@@ -356,6 +369,9 @@ fn parse_grpc_unary_response(
         var comp = false;
         let ok_lpm, consumed = decode_grpc_lpm(body, 0, out_resp.payload, comp);
         guard ok_lpm && consumed == body.len else {
+            if out_resp.status == GrpcStatusCode.Ok {
+                out_resp.status = GrpcStatusCode.Internal;
+            }
             out_resp.payload.clear();
             return false;
         }
@@ -369,10 +385,11 @@ fn parse_grpc_unary_response(
         }
         if comp {
             var decomp_buf: u8[>..] = [];
-            let ok_gz, _ = core::gzip_decompress_with_limit(
+            let ok_gz, gz_err = core::gzip_decompress_with_limit(
                 out_resp.payload[..], decomp_buf, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
             );
             guard ok_gz else {
+                out_resp.status = classify_grpc_gzip_error(gz_err);
                 out_resp.payload.clear();
                 return false;
             }
@@ -380,6 +397,7 @@ fn parse_grpc_unary_response(
             out_resp.payload.append(decomp_buf[..]);
         } else {
             guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else {
+                out_resp.status = GrpcStatusCode.ResourceExhausted;
                 out_resp.payload.clear();
                 return false;
             }
@@ -396,6 +414,9 @@ fn parse_grpc_unary_response(
         return true;
     }
 
+    if out_resp.status == GrpcStatusCode.Ok {
+        out_resp.status = GrpcStatusCode.Internal;
+    }
     return false;
 }
 
@@ -576,6 +597,9 @@ fn decode_client_native_unary_body(
         var comp = false;
         let ok_lpm, consumed = decode_grpc_lpm(res.body[..], 0, out_resp.payload, comp);
         guard ok_lpm && consumed == res.body.len else {
+            if out_resp.status == GrpcStatusCode.Ok {
+                out_resp.status = GrpcStatusCode.Internal;
+            }
             out_resp.payload.clear();
             return false;
         }
@@ -589,10 +613,11 @@ fn decode_client_native_unary_body(
         }
         if comp {
             var decomp_buf: u8[>..] = [];
-            let ok_gz, _ = core::gzip_decompress_with_limit(
+            let ok_gz, gz_err = core::gzip_decompress_with_limit(
                 out_resp.payload[..], decomp_buf, rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
             );
             guard ok_gz else {
+                out_resp.status = classify_grpc_gzip_error(gz_err);
                 out_resp.payload.clear();
                 return false;
             }
@@ -600,6 +625,7 @@ fn decode_client_native_unary_body(
             out_resp.payload.append(decomp_buf[..]);
         } else {
             guard out_resp.payload.len <= rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE else {
+                out_resp.status = GrpcStatusCode.ResourceExhausted;
                 out_resp.payload.clear();
                 return false;
             }
@@ -616,6 +642,9 @@ fn decode_client_native_unary_body(
         return true;
     }
 
+    if out_resp.status == GrpcStatusCode.Ok {
+        out_resp.status = GrpcStatusCode.Internal;
+    }
     return false;
 }
 

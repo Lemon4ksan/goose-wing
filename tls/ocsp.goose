@@ -109,32 +109,65 @@ fn x509_parse_ocsp_cert_status(single_resp: ByteCursor&, out_status: OcspCertSta
     guard (cert_status_tag & 0xC0) == 0x80 else { return false; }
     let cs_num = cert_status_tag & 0x1F;
     if cs_num == 0 {
+        guard cert_status_elem.cursor_len() == 0 else { return false; }
         out_status = OcspCertStatus.Good;
         return true;
     }
     if cs_num == 1 {
+        guard cert_status_elem.cursor_len() > 0 else { return false; }
         out_status = OcspCertStatus.Revoked;
         return true;
     }
     if cs_num == 2 {
+        guard cert_status_elem.cursor_len() == 0 else { return false; }
         out_status = OcspCertStatus.Unknown;
         return true;
     }
     return false;
 }
 
-fn x509_parse_ocsp_next_update(single_resp: ByteCursor&, out: ParsedOcspResponse&) -> bool {
-    guard single_resp.cursor_len() > 0 && single_resp.buf[0] == 0xA0 else { return true; }
-    var next_up_ctx = core::cursor_from(single_resp.buf[..0]);
-    guard get_asn1_element(single_resp, 0xA0, next_up_ctx) else { return false; }
-    var next_up_tag: u8 = 0;
-    var next_up_elem = core::cursor_from(next_up_ctx.buf[..0]);
-    guard get_any_asn1_element(next_up_ctx, next_up_tag, next_up_elem) else { return false; }
-    let next_time, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
-    guard ok_next else { return false; }
-    out.next_update = next_time;
-    out.has_next_update = true;
+fn x509_check_ocsp_ext_list(parent: ByteCursor&, ctx_tag: u8) -> bool {
+    guard parent.cursor_len() > 0 && parent.buf[0] == ctx_tag else {
+        return parent.cursor_len() == 0;
+    }
+    var ext_ctx = core::cursor_from(parent.buf[..0]);
+    var ext_seq = core::cursor_from(parent.buf[..0]);
+    guard get_asn1_element(parent, ctx_tag, ext_ctx) && parent.cursor_len() == 0 else { return false; }
+    guard get_asn1_element(ext_ctx, rfc::ASN1_TAG_SEQUENCE, ext_seq) &&
+        ext_ctx.cursor_len() == 0 && ext_seq.cursor_len() > 0 else {
+        return false;
+    }
+    while ext_seq.cursor_len() > 0 {
+        var single_ext = core::cursor_from(ext_seq.buf[..0]);
+        guard get_asn1_element(ext_seq, rfc::ASN1_TAG_SEQUENCE, single_ext) else { return false; }
+        var oid = core::cursor_from(single_ext.buf[..0]);
+        guard get_asn1_element(single_ext, rfc::ASN1_TAG_OID, oid) else { return false; }
+        var crit_ok = true;
+        let is_crit = x509_check_ext_critical(single_ext, crit_ok);
+        guard crit_ok && !is_crit else { return false; }
+        var ext_val = core::cursor_from(single_ext.buf[..0]);
+        guard get_asn1_element(single_ext, rfc::ASN1_TAG_OCTET_STRING, ext_val) &&
+            single_ext.cursor_len() == 0 else {
+            return false;
+        }
+    }
     return true;
+}
+
+fn x509_parse_ocsp_next_update(single_resp: ByteCursor&, out: ParsedOcspResponse&) -> bool {
+    if single_resp.cursor_len() > 0 && single_resp.buf[0] == 0xA0 {
+        var next_up_ctx = core::cursor_from(single_resp.buf[..0]);
+        guard get_asn1_element(single_resp, 0xA0, next_up_ctx) else { return false; }
+        var next_up_tag: u8 = 0;
+        var next_up_elem = core::cursor_from(next_up_ctx.buf[..0]);
+        guard get_any_asn1_element(next_up_ctx, next_up_tag, next_up_elem) &&
+            next_up_ctx.cursor_len() == 0 else { return false; }
+        let next_time, ok_next = parse_asn1_time(next_up_tag, next_up_elem.buf);
+        guard ok_next else { return false; }
+        out.next_update = next_time;
+        out.has_next_update = true;
+    }
+    return x509_check_ocsp_ext_list(single_resp, 0xA1);
 }
 
 fn x509_parse_ocsp_single_response(
@@ -157,6 +190,30 @@ fn x509_parse_ocsp_single_response(
     out.this_update = this_time;
 
     return x509_parse_ocsp_next_update(single_resp, out);
+}
+
+fn x509_parse_ocsp_responses_list(
+    responses_seq: ByteCursor&,
+    raw_ocsp:      const u8[:],
+    target_serial: const u8[:],
+    out:           ParsedOcspResponse&,
+) -> bool {
+    guard responses_seq.cursor_len() > 0 else { return false; }
+    var selected = false;
+    while responses_seq.cursor_len() > 0 {
+        var cand = ParsedOcspResponse {
+            status:  out.status,
+            tbs_raw: out.tbs_raw,
+        };
+        guard x509_parse_ocsp_single_response(responses_seq, raw_ocsp, cand) else { return false; }
+        let cand_serial = span_slice(raw_ocsp, cand.serial_number);
+        let matches = if target_serial.len > 0 { cand_serial == target_serial } else { !selected };
+        if matches && !selected {
+            out = cand;
+            selected = true;
+        }
+    }
+    return selected;
 }
 
 fn x509_skip_ocsp_version_and_id(tbs_resp_data: ByteCursor&) -> bool {
@@ -189,6 +246,7 @@ fn x509_ocsp_read_basic_sig(basic_seq: ByteCursor&, raw_ocsp: const u8[:], out: 
 fn x509_parse_ocsp_basic_response(
     resp_bytes_seq: ByteCursor&,
     raw_ocsp:       const u8[:],
+    target_serial:  const u8[:],
     out:            ParsedOcspResponse&,
 ) -> bool {
     var resp_type_oid = core::cursor_from(resp_bytes_seq.buf[..0]);
@@ -197,9 +255,11 @@ fn x509_parse_ocsp_basic_response(
 
     var resp_oct = core::cursor_from(resp_bytes_seq.buf[..0]);
     if !get_asn1_element(resp_bytes_seq, rfc::ASN1_TAG_OCTET_STRING, resp_oct) { return false; }
+    guard resp_bytes_seq.cursor_len() == 0 else { return false; }
 
     var basic_seq = core::cursor_from(resp_oct.buf[..0]);
     if !get_asn1_element(resp_oct, rfc::ASN1_TAG_SEQUENCE, basic_seq) { return false; }
+    guard resp_oct.cursor_len() == 0 else { return false; }
 
     let tbs_raw_start = basic_seq.buf;
     var tbs_resp_data = core::cursor_from(basic_seq.buf[..0]);
@@ -215,17 +275,22 @@ fn x509_parse_ocsp_basic_response(
     var responses_seq = core::cursor_from(tbs_resp_data.buf[..0]);
     if !get_asn1_element(tbs_resp_data, rfc::ASN1_TAG_SEQUENCE, responses_seq) { return false; }
 
-    guard x509_parse_ocsp_single_response(responses_seq, raw_ocsp, out) else { return false; }
+    guard x509_parse_ocsp_responses_list(responses_seq, raw_ocsp, target_serial, out) else { return false; }
+    guard x509_check_ocsp_ext_list(tbs_resp_data, 0xA1) else { return false; }
 
     return x509_ocsp_read_basic_sig(basic_seq, raw_ocsp, out);
 }
 
-// RFC 6960 Section 4.2.1: ASN.1 Specification of the OCSP Response - Parses DER OCSPResponse with rollback.
+// Parses a DER-encoded OCSPResponse and selects the SingleResponse matching `target_serial` (RFC 6960 Section 4.2.1).
 //
 // Example:
-//   raw_ocsp = 0x30 ... (DER encoded OCSPResponse)
-//   returns: ok = true, out filled with status and cert status
-fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
+//   raw_ocsp = 0x30 ... (DER encoded OCSPResponse), target_serial = "\x42"
+//   returns: ok = true, out filled with matching cert status
+fn parse_ocsp_response_for_serial(
+    raw_ocsp:      const u8[:],
+    target_serial: const u8[:],
+    out:           ParsedOcspResponse&,
+) -> bool {
     out = ParsedOcspResponse {};
     var committed = false;
     defer if !committed { out = ParsedOcspResponse {}; };
@@ -241,6 +306,7 @@ fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool 
 
     guard x509_parse_ocsp_status(status_oct.buf[0], out.status) else { return false; }
     if out.status != OcspResponseStatus.Successful {
+        guard ocsp_seq.cursor_len() == 0 else { return false; }
         committed = true;
         return true;
     }
@@ -248,13 +314,24 @@ fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool 
     guard ocsp_seq.cursor_len() > 0 else { return false; }
     var resp_bytes_ctx = core::cursor_from(ocsp_seq.buf[..0]);
     if !get_asn1_element(ocsp_seq, 0xA0, resp_bytes_ctx) { return false; }
+    guard ocsp_seq.cursor_len() == 0 else { return false; }
 
     var resp_bytes_seq = core::cursor_from(resp_bytes_ctx.buf[..0]);
     if !get_asn1_element(resp_bytes_ctx, rfc::ASN1_TAG_SEQUENCE, resp_bytes_seq) { return false; }
+    guard resp_bytes_ctx.cursor_len() == 0 else { return false; }
 
-    guard x509_parse_ocsp_basic_response(resp_bytes_seq, raw_ocsp, out) else { return false; }
+    guard x509_parse_ocsp_basic_response(resp_bytes_seq, raw_ocsp, target_serial, out) else { return false; }
     committed = true;
     return true;
+}
+
+// RFC 6960 Section 4.2.1: ASN.1 Specification of the OCSP Response - Parses DER OCSPResponse with rollback.
+//
+// Example:
+//   raw_ocsp = 0x30 ... (DER encoded OCSPResponse)
+//   returns: ok = true, out filled with status and cert status
+fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool {
+    return parse_ocsp_response_for_serial(raw_ocsp, "", out);
 }
 
 fn x509_validate_ocsp_temporal(resp: const ParsedOcspResponse&, now_unix: i64) -> TlsAlert {
@@ -356,8 +433,15 @@ fn validate_ocsp_stapling(
     now_unix:       i64,
     issuer_raw_der: const u8[:] = "",
 ) -> TlsAlert {
+    let leaf_serial = span_slice(leaf_raw, leaf_cert.serial_number);
+    guard leaf_serial.len > 0 else {
+        return TlsAlert.BadCertificateStatusResponse;
+    }
     var resp = ParsedOcspResponse {};
-    guard parse_ocsp_response(raw_ocsp, resp) && resp.status == OcspResponseStatus.Successful else {
+    guard parse_ocsp_response_for_serial(raw_ocsp, leaf_serial, resp) &&
+        resp.status == OcspResponseStatus.Successful &&
+        resp.signature.length > 0 &&
+        resp.sig_alg_oid.length > 0 else {
         return TlsAlert.BadCertificateStatusResponse;
     }
     if resp.cert_status == OcspCertStatus.Revoked {
@@ -368,7 +452,6 @@ fn validate_ocsp_stapling(
     }
 
     let ocsp_serial = span_slice(raw_ocsp, resp.serial_number);
-    let leaf_serial = span_slice(leaf_raw, leaf_cert.serial_number);
     guard ocsp_serial.len > 0 && ocsp_serial == leaf_serial else {
         return TlsAlert.BadCertificateStatusResponse;
     }

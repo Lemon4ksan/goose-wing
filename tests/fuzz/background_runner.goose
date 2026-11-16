@@ -88,7 +88,11 @@ fn main() {
     let iters_per_seed = if a.len >= 3 { parse_u64_or_default(a[2], 64) } else { 64 };
     let base_seed = if a.len >= 4 { parse_u64_or_default(a[3], 0xCAFEBABE12345678) } else { 0xCAFEBABE12345678 };
 
-    var rng = new_fuzz_rng(base_seed);
+    var rng = if a.len >= 4 && base_seed != 0 {
+        FuzzRng { state: base_seed }
+    } else {
+        new_fuzz_rng(base_seed)
+    };
     var raw_file:     u8[>..]          = [];
     var orig_buf:     u8[..4096]       = [];
     var mut_buf:      u8[..4096]       = [];

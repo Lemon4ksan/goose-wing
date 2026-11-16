@@ -112,8 +112,15 @@ fn test_tls_slice_codecs_and_ktls_probe() {
     assert(cons2 == wire_buf.len && st2 == wing::TlsSliceUnsealStatus.Ok);
     assert(plain_out[..] == "GET / HTTP/1.1\r\n\r\n");
 
-    // 2. Review Focus #4: Post-handshake NewSessionTicket (0x04 inside 0x16) skipped, close_notify (0x15) closes
-    var nst_msg: u8[8]  = [4, 0, 0, 4, 0, 0, 0, 1];
+    // 2. Review Focus #4: Post-handshake NewSessionTicket (0x04 inside 0x16) cached & skipped, close_notify (0x15) closes
+    var nst_msg: u8[20] = [
+        4, 0, 0, 16,
+        0, 0, 1, 0,
+        1, 2, 3, 4,
+        1, 0xAA,
+        0, 2, 't', 'k',
+        0, 0,
+    ];
     var nst_rec: u8[64] = [0; 64];
     let nst_len, _, ok_nst = wing::tls_record_seal_into(
         rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, 1, rfc::TLS_CONTENT_HANDSHAKE, nst_msg[..], nst_rec[..],

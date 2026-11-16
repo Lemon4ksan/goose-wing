@@ -87,29 +87,37 @@ fn decode_grpc_lpm<B>(wire: const u8[:], offset: u32, out_payload: B&, out_compr
 
 // Reassembles LPM messages arriving across fragmented HTTP/2 or HTTP/3 DATA chunks.
 struct GrpcStreamParser {
-    max_size: u32     = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
-    read_pos: i64     = 0,
-    buf:      u8[>..] = [],
+    max_size:  u32     = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE,
+    read_pos:  i64     = 0,
+    has_error: bool    = false,
+    buf:       u8[>..] = [],
 }
 
 fn new_grpc_stream_parser(max_msg_size: u32 = rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE) -> GrpcStreamParser {
     return GrpcStreamParser {
-        max_size: max_msg_size,
-        read_pos: 0,
-        buf:      [],
+        max_size:  max_msg_size,
+        read_pos:  0,
+        has_error: false,
+        buf:       [],
     };
 }
 
 fn reset(p: GrpcStreamParser&) {
     p.read_pos = 0;
+    p.has_error = false;
     p.buf.clear();
 }
 
 fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
+    guard !p.has_error else { return false; }
     let unread_len = core::sub_sat_i64(p.buf.len, p.read_pos) as u64;
     let cur_total = core::add_sat_u64(unread_len, chunk.len as u64);
     let max_wire = core::add_sat_u64(p.max_size, rfc::GRPC_LPM_HEADER_LEN);
-    guard cur_total <= max_wire else { return false; }
+    let max_buf_wire = max(core::mul_sat_u64(max_wire, 4), 65536);
+    guard cur_total <= max_buf_wire else {
+        p.has_error = true;
+        return false;
+    }
     if p.read_pos > 0 {
         if p.read_pos >= p.buf.len {
             p.buf.clear();
@@ -125,16 +133,24 @@ fn feed(p: GrpcStreamParser&, chunk: const u8[:]) -> bool {
 
 // Extracts the next available message. Returns true if a full message was consumed.
 fn next_message<B>(p: GrpcStreamParser&, out_payload: B&, out_compressed: bool&) -> bool {
+    guard !p.has_error else { return false; }
     let rem = core::sub_sat_i64(p.buf.len, p.read_pos);
     guard p.read_pos >= 0 && rem >= (rfc::GRPC_LPM_HEADER_LEN as i64) else { return false; }
 
     let pos = p.read_pos;
     let flag = p.buf[pos];
-    guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else { return false; }
+    guard (flag & ~rfc::GRPC_FLAG_COMPRESSED) == 0 else {
+        p.has_error = true;
+        return false;
+    }
 
     let len_val_i64 = (core::read_be_u32(p.buf[..], core::add_sat_i64(pos, 1))) as i64;
+    guard len_val_i64 <= (p.max_size as i64) else {
+        p.has_error = true;
+        return false;
+    }
     let total_len = core::add_sat_i64(rfc::GRPC_LPM_HEADER_LEN, len_val_i64);
-    guard len_val_i64 <= (p.max_size as i64) && rem >= total_len else { return false; }
+    guard rem >= total_len else { return false; }
 
     let payload_start = core::add_sat_i64(pos, rfc::GRPC_LPM_HEADER_LEN);
     let payload_end = core::add_sat_i64(pos, total_len);

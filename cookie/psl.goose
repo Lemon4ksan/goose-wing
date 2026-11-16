@@ -474,7 +474,9 @@ fn cookie_domain_match(host: const u8[:], cookie_domain: const u8[:]) -> bool {
     if clean_host.eq_ascii_fold(clean_domain) {
         return true;
     }
-    guard !core::is_ip_address_literal(clean_host) else { return false; }
+    guard !core::is_ip_address_literal(clean_host) && !core::is_ip_address_literal(clean_domain) else {
+        return false;
+    }
     return core::ends_with_dot_suffix(clean_host, clean_domain);
 }
 

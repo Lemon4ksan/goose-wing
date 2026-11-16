@@ -448,21 +448,31 @@ inline fn strip_required_proxy_preface<B>(
     return stripped, true;
 }
 
+fn headers_have_conn_token(headers: const HeaderMap&, token: const u8[:]) -> bool {
+    for &entry in headers.entries {
+        if entry_name(headers, entry).eq_ascii_fold("connection") {
+            if header_has_token(entry_value(headers, entry), token) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Checks whether request or response demands connection closure (RFC 9112 §9.3 & NGINX proxy_pass harmony).
 // Applies "Connection: close" to response headers if close is requested or for HTTP/1.0 without keep-alive.
 fn check_and_apply_connection_close(req: const Request&, res: Response&) -> bool {
     guard res.status_code != 101 else { return false; }
     let has_conn_hdr = has_header(req, "connection") ||
+        has_header(res, "connection") ||
         (res.presence_mask & RES_PRESENCE_CONNECTION) != 0;
     if !has_conn_hdr && !req.is_http10 && req.method[0] != 'C' {
         return false;
     }
-    let req_conn = header(req, "connection");
-    let res_conn = header(res, "connection");
     let wants_close = req.method[..] == "CONNECT" ||
-        req_conn.contains_fold("close") ||
-        (req.is_http10 && !req_conn.contains_fold("keep-alive")) ||
-        res_conn.contains_fold("close");
+        headers_have_conn_token(req.headers, "close") ||
+        (req.is_http10 && !headers_have_conn_token(req.headers, "keep-alive")) ||
+        headers_have_conn_token(res.headers, "close");
     if wants_close {
         set_header(res, "Connection", "close");
         return true;
@@ -817,22 +827,24 @@ fn handle_pipelined_parse_failure<B>(
     let is_valid_prefix = is_possible_http_method_prefix(stream);
 
     if hdr_end >= 0 && hdr_end + 4 <= 8192 && is_valid_prefix && req.headers.entries.len > 0 {
+        let has_te = has_header(req, "transfer-encoding");
+        let has_cl = has_header(req, "content-length");
         // If both TE and CL are present, reject immediately as smuggling attempt (RFC 9112 §6.1, §6.3)
-        let te_str = req.header("transfer-encoding");
-        let cl_str = req.header("content-length");
-        if te_str.len > 0 && cl_str.len > 0 {
+        if has_te && has_cl {
             serialize_bad_request_error(server_name, wire_out);
             out_keep_stream = false;
             return false;
         }
 
         // Headers are complete; check if Content-Length body is still incomplete
+        let cl_str = req.header("content-length");
         var cl_handled_keep = false;
-        if check_pipelined_content_length(stream, hdr_end, cl_str, server_name, wire_out, cl_handled_keep) {
+        if has_cl && check_pipelined_content_length(stream, hdr_end, cl_str, server_name, wire_out, cl_handled_keep) {
             out_keep_stream = cl_handled_keep;
             return cl_handled_keep;
         }
-        if te_str.contains_fold("chunked") {
+        let te_str = req.header("transfer-encoding");
+        if has_te && validate_decodeable_chunked_te(te_str) {
             return check_pipelined_chunked_head(stream, hdr_end, server_name, wire_out, out_keep_stream);
         }
     }
@@ -855,18 +867,19 @@ enum PipeStepResult {
     Error,
 }
 
-// Strips optional benign CRLFs between pipelined requests (RFC 9112 Section 2.2).
+// Strips at most one optional benign CRLF between pipelined requests (RFC 9112 Section 2.2).
 //
 // Example:
 //   stream = "\r\nGET / HTTP/1.1", consumed_crlf = 0
 //   returns: "GET / HTTP/1.1", consumed_crlf = 2
 inline fn strip_pipelined_crlf(stream: const u8[:], consumed_crlf: i64&) -> const u8[:] {
-    var s = stream;
-    while s.len > 0 && (s[0] == '\r' || s[0] == '\n') {
-        s = s[1..];
-        consumed_crlf++;
+    if stream.len >= 2 && stream[0] == '\r' && stream[1] == '\n' {
+        if stream.len == 2 || (stream[2] != '\r' && stream[2] != '\n') {
+            consumed_crlf = core::add_sat_i64(consumed_crlf, 2);
+            return stream[2..];
+        }
     }
-    return s;
+    return stream;
 }
 
 fn try_handle_pipelined_websocket<B>(

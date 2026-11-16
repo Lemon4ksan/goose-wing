@@ -5,8 +5,9 @@
 namespace net_internal;
 
 import std;
-import os;
 import core from "../..";
+
+extern fn native_host_platform() -> i32 = "wing_host_platform";
 
 // ---- Driver Kinds & Capabilities ----------------------------------------
 
@@ -85,26 +86,14 @@ fn platform_name(plat: TargetPlatform) -> u8[:] {
     };
 }
 
-var g_env_buf: u8[>..] = [];
-
-// Detects the underlying OS platform via system environment indicators
+// Detects the underlying OS platform via compile-time C host target macros.
 fn detect_target_platform() -> TargetPlatform {
-    g_env_buf.clear();
-    if env("WINDIR", g_env_buf) || env("OS", g_env_buf) {
-        return TargetPlatform.Windows;
-    }
-    g_env_buf.clear();
-    if env("__CFBundleIdentifier", g_env_buf) || env("TERM_PROGRAM", g_env_buf)
-        || env("Apple_PubSub_Socket_Render", g_env_buf) {
-        return TargetPlatform.Darwin;
-    }
-    g_env_buf.clear();
-    if env("OSTYPE", g_env_buf) {
-        if g_env_buf[..].starts_with("darwin") {
-            return TargetPlatform.Darwin;
-        }
-    }
-    return TargetPlatform.Linux;
+    return match native_host_platform() {
+        0 => TargetPlatform.Windows,
+        1 => TargetPlatform.Linux,
+        2 => TargetPlatform.Darwin,
+        _ => TargetPlatform.Unknown,
+    };
 }
 
 // Probe result for a transport driver

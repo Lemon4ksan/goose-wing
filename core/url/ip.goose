@@ -356,6 +356,38 @@ fn parse_and_compress_ipv6<B>(raw_ipv6: const u8[:], out: B&) -> bool {
     return out.try_append(formatted[..]);
 }
 
+// Parses a text IPv6 literal into 16 big-endian octets (RFC 4291 Section 2.2).
+//
+// Example:
+//   raw_ipv6 = "2001:db8::1"
+//   returns: [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], ok = true
+fn parse_ipv6_octets(raw_ipv6: const u8[:]) -> u8[16], bool {
+    var out: u8[16] = [0; 16];
+    guard raw_ipv6.len >= 2 && contains_byte(raw_ipv6, ':') && !contains_byte(raw_ipv6, '%') else {
+        return out, false;
+    }
+    var pieces:           u16[8] = [0, 0, 0, 0, 0, 0, 0, 0];
+    var piece_count:      i64    = 0;
+    var double_colon_pos: i64    = -1;
+
+    guard collect_ipv6_pieces(raw_ipv6, pieces, piece_count, double_colon_pos) else {
+        return out, false;
+    }
+    if double_colon_pos >= 0 {
+        guard expand_ipv6_double_colon(pieces, piece_count, double_colon_pos) else {
+            return out, false;
+        }
+    }
+    guard piece_count == 8 else { return out, false; }
+
+    for g in 8 {
+        let base = mul_sat_i64(g, 2);
+        out[base] = ((pieces[g] >> 8) & 0xFF) as u8;
+        out[add_sat_i64(base, 1)] = (pieces[g] & 0xFF) as u8;
+    }
+    return out, true;
+}
+
 fn format_ipv4_u32(ip4: u32, out: u8[..64]&) {
     out.clear();
     let b0 = ((ip4 >> 24) & 0xFF) as u64;
