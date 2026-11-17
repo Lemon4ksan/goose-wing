@@ -103,6 +103,10 @@ jobs:
         run: |
           python tools/test_runner.py --check-only
 
+      - name: Build and run full test suites
+        run: |
+          python tools/test_runner.py -f -j 2
+
       - name: Clone and build goose-lit
         run: |
           git clone https://github.com/Lemon4ksan/goose-lit.git ../goose-lit || true
@@ -111,6 +115,10 @@ jobs:
             goose build --cc gcc -O2 -o ../goose-lit/bin/goose-lit ../goose-lit/bin.goose
             sudo ln -s $(pwd)/../goose-lit/bin/goose-lit /usr/local/bin/goose-lit
           fi
+
+      - name: Verify constant-time assembly and Dudect
+        run: |
+          python scripts/verify_ct_asm.py
 
       - name: Run LIT verification suites
         run: |

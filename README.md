@@ -212,8 +212,12 @@ and L7 security and caching stages:
   arithmetic, and concurrency primitives.
 - [RFC conformance](docs/rfc_conformance.md): IETF RFC compliance matrix and
   test vectors.
+- [External conformance](docs/conformance_matrix.md): Reproducible `h2spec`,
+  Autobahn, Wycheproof, BoGo/x509-limbo, QPACK, and TLS 1.3 oracle metrics.
 - [Benchmarks](docs/benchmarks.md): Hardware cycle breakdowns and load-testing
   methods.
+- [Soak test report](docs/soak_test_report.md): RSS stability and latency under
+  TCP resets, fragmentation, smuggling, and Slowloris faults.
 - [Contributing](CONTRIBUTING.md) and [Security policy](SECURITY.md):
   Development workflow, coding standards, and vulnerability disclosure.
 

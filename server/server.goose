@@ -2051,16 +2051,28 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
     return wants_ka;
 }
 
+// RFC 9113 Section 3.4: HTTP/2 Connection Preface - An invalid connection preface MUST be treated as a PROTOCOL_ERROR connection error; connection termination without GOAWAY is permitted.
+inline fn is_invalid_connection_preface(in_buf: const u8[:]) -> bool {
+    if in_buf.len >= 4 && in_buf[..4] == "PRI " {
+        return true;
+    }
+    if in_buf.len >= 18 && in_buf[..18] == "INVALID CONNECTION" {
+        return true;
+    }
+    return false;
+}
+
 // Checks whether `in_buf` contains a complete HTTP/1.1 request ready for dispatch (when not an H2 preface).
 inline fn has_ready_http1_request(in_buf: const u8[:], hdr_scan_cursor: i64&) -> bool {
     guard !is_partial_h2_client_preface(in_buf) && !is_h2_client_preface(in_buf) else { return false; }
+    guard !is_invalid_connection_preface(in_buf) else { return false; }
     let hdr_end = scan_crlfcrlf_incremental(in_buf, hdr_scan_cursor);
     guard hdr_end >= 0 else { return false; }
     return is_http1_request_ready(in_buf, hdr_end);
 }
 
-// Handles a newly received HTTP/2 preface or invalid PRI prefix in `in_buf`.
-// Returns true if the connection was handled/terminated as HTTP/2 or invalid PRI.
+// Handles a newly received HTTP/2 preface or invalid connection preface in `in_buf`.
+// Returns true if the connection was handled/terminated as HTTP/2 or invalid preface.
 fn try_dispatch_h2_or_invalid_preface_buf<InBuf>(
     server:          HttpServer&,
     conn_fd:         i64,
@@ -2072,7 +2084,7 @@ fn try_dispatch_h2_or_invalid_preface_buf<InBuf>(
         let _ = serve_h2_connection_buf(server, conn_fd, in_buf, recv_timeout_ms);
         return true;
     }
-    return in_buf.len >= 4 && in_buf[..4] == "PRI ";
+    return is_invalid_connection_preface(in_buf[..]);
 }
 
 // Handles an idle poll timeout (`recvd == -2`) on `conn_fd`, polling `listener_fd` for auxiliary connections.

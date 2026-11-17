@@ -121,8 +121,8 @@ def default_worker_count() -> int:
             avail_mb = 0
 
     if avail_mb > 0:
-        # Each full `goose check`/`goose build` on `wing` peaks near ~700-900 MB commit charge.
-        mem_cap = max(1, (avail_mb - 1024) // 950)
+        # Full compilation on wing under MinGW GCC -O3 peaks near ~1800-2200 MB commit charge per worker.
+        mem_cap = max(1, (avail_mb - 2048) // 2200)
         return max(1, min(cpu_cap, mem_cap))
     return cpu_cap
 

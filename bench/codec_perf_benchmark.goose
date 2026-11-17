@@ -605,11 +605,10 @@ fn bench_url_parse_into(iters: i64) -> u64 {
         "https://auth.example.net:9443/oauth2/authorize?client_id=gw_app&response_type=code&scope=read",
     ];
 
-    var u = core::Url { valid: false, .. };
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
     for k in warmup {
-        let err = core::parse_url_into(urls[k & 3], u);
+        let u, err = core::parse_url(urls[k & 3]);
         assert(core::is_ok(err) && u.valid);
         checksum = core::add_sat_u64(checksum, u.href.len as u64);
     }
@@ -619,7 +618,7 @@ fn bench_url_parse_into(iters: i64) -> u64 {
     for k in iters {
         let raw = urls[k & 3];
         total_bytes = core::add_sat_u64(total_bytes, raw.len as u64);
-        let err = core::parse_url_into(raw, u);
+        let u, err = core::parse_url(raw);
         assert(core::is_ok(err) && u.valid);
         let path_len = core::sub_sat_i64(u.pathname_end, u.pathname_start) as u64;
         checksum = core::add_sat_u64(checksum, core::add_sat_u64(u.href.len as u64, path_len));
@@ -679,6 +678,209 @@ fn bench_aes_gcm_prepared(
     return checksum;
 }
 
+fn fill_compression_payload(buf: u8[1024]&) {
+    let parts: const u8[:][5] = [
+        "{\"status\":200,\"message\":\"ok\",\"service\":\"goose-wing-gateway\",\"timestamp\":1710000000,",
+        "\"user\":{\"id\":1001,\"username\":\"gopher_goose\",\"roles\":[\"admin\",\"operator\"],\"active\":true},",
+        "\"metrics\":{\"requests\":1054320,\"p99_latency_ms\":1.42,\"error_rate\":0.0001,\"cpu\":0.15},",
+        "\"config\":{\"max_connections\":4096,\"keepalive\":true,\"timeout_sec\":30,\"features\":[\"h2\",\"tls13\",\"zstd\",\"br\"]},",
+        "\"description\":\"Zero-allocation high performance network engine compression fixture.\"}\n",
+    ];
+    var idx = 0;
+    while idx < 1024 {
+        for part in parts {
+            let rem = 1024 - idx;
+            if rem <= 0 {
+                break;
+            }
+            let c_len = min(part.len, rem);
+            for j in c_len {
+                buf[idx + j] = part[j];
+            }
+            idx = idx + c_len;
+        }
+    }
+}
+
+fn bench_deflate_compress(
+    iters: i64,
+    pt:    const u8[1024]&,
+    level: i32,
+    name:  const u8[:],
+) -> u64 {
+    var comp: u8[..2048] = [];
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+
+    for _ in warmup {
+        comp.clear();
+        let ok = core::deflate(pt[..], comp, level);
+        assert(ok && comp.len > 0);
+        checksum = core::add_sat_u64(checksum, comp[0]);
+    }
+
+    let watch = core::stopwatch();
+    for _ in iters {
+        comp.clear();
+        let ok = core::deflate(pt[..], comp, level);
+        assert(ok && comp.len > 0);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(comp.len as u64, comp[0]));
+    }
+    let dt = core::elapsed(watch);
+    let total_bytes = core::mul_sat_u64(iters as u64, pt.len as u64);
+    report_bench(name, iters, dt.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
+fn bench_deflate_decompress(
+    iters:      i64,
+    compressed: const u8[:],
+    raw_len:    i64,
+    name:       const u8[:],
+) -> u64 {
+    var decomp: u8[..2048] = [];
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+
+    for _ in warmup {
+        decomp.clear();
+        let ok, err = core::inflate(compressed, decomp);
+        assert(ok && decomp.len == raw_len);
+        checksum = core::add_sat_u64(checksum, decomp[0]);
+    }
+
+    let watch = core::stopwatch();
+    for _ in iters {
+        decomp.clear();
+        let ok, err = core::inflate(compressed, decomp);
+        assert(ok && decomp.len == raw_len);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(decomp.len as u64, decomp[0]));
+    }
+    let dt = core::elapsed(watch);
+    let total_bytes = core::mul_sat_u64(iters as u64, raw_len as u64);
+    report_bench(name, iters, dt.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
+fn bench_zstd_compress(
+    iters: i64,
+    pt:    const u8[1024]&,
+    name:  const u8[:],
+) -> u64 {
+    var comp: u8[..2048] = [];
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+
+    for _ in warmup {
+        comp.clear();
+        let ok = core::zstd_compress(pt[..], comp, true);
+        assert(ok && comp.len > 0);
+        checksum = core::add_sat_u64(checksum, comp[0]);
+    }
+
+    let watch = core::stopwatch();
+    for _ in iters {
+        comp.clear();
+        let ok = core::zstd_compress(pt[..], comp, true);
+        assert(ok && comp.len > 0);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(comp.len as u64, comp[0]));
+    }
+    let dt = core::elapsed(watch);
+    let total_bytes = core::mul_sat_u64(iters as u64, pt.len as u64);
+    report_bench(name, iters, dt.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
+fn bench_zstd_decompress(
+    iters:      i64,
+    compressed: const u8[:],
+    raw_len:    i64,
+    name:       const u8[:],
+) -> u64 {
+    var decomp: u8[..2048] = [];
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+
+    for _ in warmup {
+        decomp.clear();
+        let ok, err = core::zstd_decompress(compressed, decomp);
+        assert(ok && decomp.len == raw_len);
+        checksum = core::add_sat_u64(checksum, decomp[0]);
+    }
+
+    let watch = core::stopwatch();
+    for _ in iters {
+        decomp.clear();
+        let ok, err = core::zstd_decompress(compressed, decomp);
+        assert(ok && decomp.len == raw_len);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(decomp.len as u64, decomp[0]));
+    }
+    let dt = core::elapsed(watch);
+    let total_bytes = core::mul_sat_u64(iters as u64, raw_len as u64);
+    report_bench(name, iters, dt.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
+fn bench_brotli_compress(
+    iters: i64,
+    pt:    const u8[1024]&,
+    level: i32,
+    name:  const u8[:],
+) -> u64 {
+    var comp: u8[..2048] = [];
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+
+    for _ in warmup {
+        comp.clear();
+        let ok = core::brotli_compress(pt[..], comp, level);
+        assert(ok && comp.len > 0);
+        checksum = core::add_sat_u64(checksum, comp[0]);
+    }
+
+    let watch = core::stopwatch();
+    for _ in iters {
+        comp.clear();
+        let ok = core::brotli_compress(pt[..], comp, level);
+        assert(ok && comp.len > 0);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(comp.len as u64, comp[0]));
+    }
+    let dt = core::elapsed(watch);
+    let total_bytes = core::mul_sat_u64(iters as u64, pt.len as u64);
+    report_bench(name, iters, dt.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
+fn bench_brotli_decompress(
+    iters:      i64,
+    compressed: const u8[:],
+    raw_len:    i64,
+    name:       const u8[:],
+) -> u64 {
+    var decomp: u8[..2048] = [];
+    let warmup = calc_warmup_iters(iters);
+    var checksum: u64 = 0;
+
+    for _ in warmup {
+        decomp.clear();
+        let ok, err = core::brotli_decompress(compressed, decomp);
+        assert(ok && decomp.len == raw_len);
+        checksum = core::add_sat_u64(checksum, decomp[0]);
+    }
+
+    let watch = core::stopwatch();
+    for _ in iters {
+        decomp.clear();
+        let ok, err = core::brotli_decompress(compressed, decomp);
+        assert(ok && decomp.len == raw_len);
+        checksum = core::add_sat_u64(checksum, core::add_sat_u64(decomp.len as u64, decomp[0]));
+    }
+    let dt = core::elapsed(watch);
+    let total_bytes = core::mul_sat_u64(iters as u64, raw_len as u64);
+    report_bench(name, iters, dt.as_nanos(), total_bytes, checksum);
+    return checksum;
+}
+
 fn main() {
     let argv = args();
     let iters = parse_iters_arg(argv[..]);
@@ -729,6 +931,63 @@ fn main() {
         ),
     );
     total_checksum = core::add_sat_u64(total_checksum, bench_chacha20_poly1305(iters, pt, aad, key32, nonce));
+
+    var comp_pt: u8[1024] = [0; 1024];
+    fill_compression_payload(comp_pt);
+
+    var def_l1_wire: u8[..2048] = [];
+    assert(core::deflate(comp_pt[..], def_l1_wire, 1));
+    var def_l6_wire: u8[..2048] = [];
+    assert(core::deflate(comp_pt[..], def_l6_wire, 6));
+
+    var zstd_wire: u8[..2048] = [];
+    assert(core::zstd_compress(comp_pt[..], zstd_wire, true));
+
+    var br_l0_wire: u8[..2048] = [];
+    assert(core::brotli_compress(comp_pt[..], br_l0_wire, 0));
+    var br_l1_wire: u8[..2048] = [];
+    assert(core::brotli_compress(comp_pt[..], br_l1_wire, 1));
+
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_deflate_compress(iters, comp_pt, 1, "deflate_l1_compress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_deflate_decompress(iters, def_l1_wire[..], 1024, "deflate_l1_decompress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_deflate_compress(iters, comp_pt, 6, "deflate_compress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_deflate_decompress(iters, def_l6_wire[..], 1024, "deflate_decompress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_zstd_compress(iters, comp_pt, "zstd_compress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_zstd_decompress(iters, zstd_wire[..], 1024, "zstd_decompress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_brotli_compress(iters, comp_pt, 0, "brotli_compress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_brotli_decompress(iters, br_l0_wire[..], 1024, "brotli_decompress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_brotli_compress(iters, comp_pt, 1, "brotli_l1_compress_1kb"),
+    );
+    total_checksum = core::add_sat_u64(
+        total_checksum,
+        bench_brotli_decompress(iters, br_l1_wire[..], 1024, "brotli_l1_decompress_1kb"),
+    );
 
     assert(total_checksum != 0);
     print("CODEC_BENCH_DONE total_checksum=", total_checksum);

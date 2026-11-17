@@ -103,6 +103,7 @@ fn new_h2_server_session(
     conn.enable_push = false;
     conn.max_concurrent_streams = 16;
     conn.local_initial_window_size = 8192;
+    conn.max_header_list_size = 16384;
     var sess = H2ServerSession {
         conn:                  conn,
         hpack_enc:             h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
@@ -153,7 +154,7 @@ fn reset_h2_server_session_inplace(
     sess.conn.local_initial_window_size = 8192;
     sess.conn.local_max_frame_size = 16384;
     sess.conn.peer_max_frame_size = 16384;
-    sess.conn.max_header_list_size = 8192;
+    sess.conn.max_header_list_size = 16384;
     sess.conn.max_concurrent_streams = 16;
     sess.conn.active_stream_count = 0;
     sess.conn.last_peer_stream_id = 0;
@@ -1033,6 +1034,7 @@ fn process_ingress_continuation<B>(
         let rej_err = sess.header_accum_rejected_err;
         sess.header_accum_rejected_err = 0;
         sess.header_accum_stream_id = 0;
+        sess.conn.continuation_stream_id = 0;
         sess.header_accumulator.clear();
         if dec_err == rfc::H2_ERR_COMPRESSION_ERROR {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_COMPRESSION_ERROR, out_wire);
@@ -1050,12 +1052,14 @@ fn process_ingress_continuation<B>(
         emit_rst_stream(hdr.stream_id, dec_err, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         sess.header_accum_stream_id = 0;
+        sess.conn.continuation_stream_id = 0;
         sess.header_accumulator.clear();
         return true;
     }
 
     if sess.header_accum_is_trailer {
         sess.header_accum_stream_id = 0;
+        sess.conn.continuation_stream_id = 0;
         sess.header_accumulator.clear();
         guard !is_cancelled else { return true; }
         let s_idx, found = find_server_stream_idx(sess, hdr.stream_id);
@@ -1083,11 +1087,13 @@ fn process_ingress_continuation<B>(
         emit_rst_stream(hdr.stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         sess.header_accum_stream_id = 0;
+        sess.conn.continuation_stream_id = 0;
         sess.header_accumulator.clear();
         return true;
     }
 
     sess.header_accum_stream_id = 0;
+    sess.conn.continuation_stream_id = 0;
     sess.header_accumulator.clear();
     guard !is_cancelled else {
         terminate_server_stream(sess, pipeline, hdr.stream_id);

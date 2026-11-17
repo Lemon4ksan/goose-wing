@@ -963,7 +963,7 @@ static void wing_chacha20_block_scalar(const uint32_t state[16], uint8_t out[64]
     wing_fusion_zeroize(x, sizeof(x));
 }
 
-#if (defined(__x86_64__) || defined(_M_X64)) && defined(__GNUC__)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(__GNUC__) && !(defined(__MINGW32__) && !defined(__clang__))
 
 #define WING_TARGET_AVX2 __attribute__((target("avx2")))
 
@@ -1113,7 +1113,7 @@ static void wing_chacha20_xor_stream(const uint8_t key[32], const uint8_t iv[12]
     st[14] = wing_load32_le(iv + 4);
     st[15] = wing_load32_le(iv + 8);
 
-#if (defined(__x86_64__) || defined(_M_X64)) && defined(__GNUC__)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(__GNUC__) && !(defined(__MINGW32__) && !defined(__clang__))
     if (len >= 512 && wing_cpu_has_avx2()) {
         wing_chacha20_xor_avx2(st, src, dst, len);
         wing_fusion_zeroize(st, sizeof(st));
