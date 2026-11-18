@@ -12,7 +12,7 @@ against [goose-wing](../README.md).
 | Autobahn WebSocket | RFC 6455 | 301 | 293 (5 non-strict, 3 info) | 0 | 100.0% | `python tools/autobahn.py` |
 | Project Wycheproof | RFC 8439, RFC 8446, NIST SP 800-38D | 5,761 vectors (6,829 oracle runs) | 5,761 | 0 | 100.0% (0 mismatches) | `python scripts/diff_fuzz.py --rounds 20` |
 | QPACK differential (nghttp3) | RFC 9204 | 185 (plus quiche check) | 185 | 0 | 100.0% | `python scripts/qpack_differential.py` |
-| H2 + TLS 1.3 differential (Go) | RFC 8446 / RFC 9113 | 13 Go/Wing (incl. 1-byte frag) | 13 | 0 | 100.0% (4 OpenSSL checks target Go h1) | `python scripts/h2_tls_differential.py -v` |
+| H2 + TLS 1.3 differential | RFC 8446 / RFC 9113 | 17 (13 Go/Wing + 4 OpenSSL/Wing) | 17 | 0 | 100.0% | `python scripts/h2_tls_differential.py -v` |
 | Curated BoGo & x509-limbo | RFC 8446, RFC 5280, RFC 6125 | 13 curated LIT checks | 13 | 0 | 100.0% of subset | `goose-lit tests/lit/verify_bogo_x509_limbo.goose` |
 
 ---
@@ -171,7 +171,10 @@ Verified security categories:
   [scripts/h2_tls_differential.py](../scripts/h2_tls_differential.py):
   - Wing client vs Go `net/http` / `net/http2` server: 13/13 passed, including
     live 1-byte TCP record fragmentation (`h2_1byte_frag`) across the proxy.
-  - Note on OpenSSL interactive scenarios: the 4 `openssl_*` checks now connect
-    `openssl s_client` to Go `h2oracle`'s `h1_port` rather than Wing's
-    `serve_tls` endpoint, so live OpenSSL server-side testing of Wing remains an
-    open follow-up item.
+  - OpenSSL 3.5.9 `s_client` vs Wing TLS 1.3 server
+    ([tests/fuzz/wing_tls_server.goose](../tests/fuzz/wing_tls_server.goose)):
+    4/4 interactive scenarios passed (`openssl_wing_1byte_frag` across the
+    1-byte proxy, `openssl_wing_keyupdate` bidirectional KeyUpdate plus
+    post-rotation HTTP/1.1 200 OK, `openssl_wing_resumption` 1-RTT
+    `NewSessionTicket` reuse, and `openssl_wing_psk_fallback` unknown-PSK ECDHE
+    fallback with verified Ed25519 certificate).

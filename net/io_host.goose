@@ -13,13 +13,15 @@ import net.driver;
 import .tcp;
 import .transport;
 
-const NET_HOST_MAX_LINKS:   i64 = 256;
+const NET_HOST_MAX_LINKS:   i64 = 1048576;
 const NET_HOST_ACCEL_SLOTS: i64 = 16;
 const NET_HOST_ACCEL_CHUNK: i64 = 4096;
 const NET_HOST_SLAB_BYTES:  i64 = 131072; // 16 slots * (4KB RX + 4KB TX)
-const NET_HOST_MAX_TIMERS:  i64 = 64;
-const NET_HOST_MAX_WAKES:   i64 = 64;
+const NET_HOST_MAX_TIMERS:  i64 = 256;
+const NET_HOST_MAX_WAKES:   i64 = 512;
 const NET_HOST_RX_CAP:      i64 = 16384;
+const HOST_EPFD_SHARD_CAP:  i64 = 4096; // Matches shim/tcp.c WING_MAX_POLL_FDS for WSAPoll
+const HOST_MAX_EPFD_SHARDS: i64 = 64;
 const NET_HOST_NANOS_MS:    u64 = 1000000;
 const NET_HOST_MAX_TMO_NS:  u64 = 2147483647000000;
 const NET_HOST_MULHI_RECIP: u64 = 0x10C6F7A0B5EE;
@@ -61,10 +63,14 @@ struct IoLinkSlot {
     fd:               i64           = -1,
     tag:              u64           = 0,
     rio_rq:           u64           = 0,
+    next_free:        i32           = -1,
+    virt_prev:        i32           = -1,
+    virt_next:        i32           = -1,
     virtual_pair:     i32           = -1,
     epoll_mask:       u32           = 0,
     gen:              u16           = 1,
     owner:            u16           = 0,
+    epfd_shard:       i16           = -1,
     state:            LinkSlotState = LinkSlotState.Free,
     kind:             LinkKind      = LinkKind.Tcp,
     in_use:           bool          = false,
@@ -84,29 +90,44 @@ struct HostTimer {
     tag:         u64  = 0,
     deadline_ns: u64  = 0,
     interval_ns: u64  = 0,
+    next_free:   i32  = -1,
     owner:       u16  = 0,
     active:      bool = false,
 }
 
+struct EpfdShard {
+    fd:    i64 = -1,
+    count: i32 = 0,
+}
+
 struct NetHost {
-    backend:       HostBackendKind                     = HostBackendKind.Standard,
-    driver_cfg:    net_internal::TransportDriverConfig = net_internal::TransportDriverConfig { .. },
-    links:         IoLinkSlot[256]                     = [IoLinkSlot { .. }; 256],
-    timers:        HostTimer[64]                       = [HostTimer { .. }; 64],
-    wake_queue:    core::WakeToken[..64]               = [],
-    kq_changes:    net_internal::Kevent[..64]          = [],
-    rx_scratch:    u8[16384]                           = [0; 16384],
-    accel_slab:    u8[..131072]                        = [],
-    epfd:          i64                                 = -1,
-    kq_fd:         i64                                 = -1,
-    uring_fd:      i64                                 = -1,
-    uring_pbuf:    u64                                 = 0,
-    rio_cq:        u64                                 = 0,
-    rio_buf_id:    u64                                 = 0,
-    active_links:  i64                                 = 0,
-    epfd_count:    i64                                 = 0,
-    active_timers: i64                                 = 0,
-    is_open:       bool                                = false,
+    backend:         HostBackendKind                     = HostBackendKind.Standard,
+    driver_cfg:      net_internal::TransportDriverConfig = net_internal::TransportDriverConfig { .. },
+    epfd_shards:     EpfdShard[..64]                     = [],
+    timers:          HostTimer[..256]                    = [],
+    wake_queue:      core::WakeToken[..512]              = [],
+    kq_changes:      net_internal::Kevent[..64]          = [],
+    accel_slab:      u8[]                                = [],
+    epfd:            i64                                 = -1,
+    kq_fd:           i64                                 = -1,
+    uring_fd:        i64                                 = -1,
+    uring_pbuf:      u64                                 = 0,
+    rio_cq:          u64                                 = 0,
+    rio_buf_id:      u64                                 = 0,
+    active_links:    i64                                 = 0,
+    epfd_count:      i64                                 = 0,
+    active_timers:   i64                                 = 0,
+    free_link_head:  i32                                 = -1,
+    virt_head:       i32                                 = -1,
+    free_timer_head: i32                                 = -1,
+    is_open:         bool                                = false,
+    links:           IoLinkSlot[>..]                     = [],
+}
+
+inline fn ensure_rx_scratch(rx_scratch: u8[>..]&) {
+    if rx_scratch.len < NET_HOST_RX_CAP {
+        push_n(rx_scratch, 0 as u8, core::sub_sat_i64(NET_HOST_RX_CAP, rx_scratch.len));
+    }
 }
 
 inline fn next_link_gen(cur: u16) -> u16 {
@@ -120,7 +141,7 @@ inline fn host_slot_link(host: const NetHost&, slot: i64) -> core::IoLink {
 inline fn host_match_link(host: const NetHost&, link: core::IoLink) -> i64, bool {
     guard host.is_open && core::io_link_is_valid(link) else { return -1, false; }
     let slot = core::io_link_slot(link);
-    guard slot >= 0 && slot < NET_HOST_MAX_LINKS else { return -1, false; }
+    guard slot >= 0 && slot < host.links.len else { return -1, false; }
     guard host.links[slot].in_use && host.links[slot].gen == core::io_link_gen(link) else {
         return -1, false;
     }
@@ -138,7 +159,7 @@ inline fn host_match_uring_tag(host: const NetHost&, user_data: u64) -> u64, i64
     let op = (user_data >> HOST_URING_OP_SHIFT) & 0xFFFF;
     let gen = ((user_data >> HOST_URING_GEN_SHIFT) & 0xFFFF) as u16;
     let slot = (user_data & 0xFFFFFFFF) as i64;
-    guard slot >= 0 && slot < NET_HOST_MAX_LINKS else { return 0, -1, false; }
+    guard slot >= 0 && slot < host.links.len else { return 0, -1, false; }
     guard host.links[slot].in_use && host.links[slot].gen == gen && gen != 0 else { return 0, -1, false; }
     return op, slot, true;
 }
@@ -154,12 +175,12 @@ inline fn host_rio_tx_offset(slot: i64) -> u32 {
 fn try_init_uring_backend(host: NetHost&, cfg: const net_internal::TransportDriverConfig&) -> bool {
     let plat = net_internal::detect_target_platform();
     guard cfg.active_kind == net_internal::TransportDriverKind.IoUring &&
-        plat == net_internal::TargetPlatform.Linux else { return false; }
+        plat == net_internal::TargetPlatform.Linux &&
+        host.accel_slab.len >= NET_HOST_SLAB_BYTES else { return false; }
     let rfd = net_internal::native_uring_create(256, 0);
     guard rfd >= 0 else { return false; }
     let pb, ok_pb = net_internal::uring_alloc_pbuf_ring(rfd, HOST_URING_PBUF_BGID, 256, 4096);
     if ok_pb && pb != 0 {
-        host.accel_slab.resize(NET_HOST_SLAB_BYTES, 0);
         host.uring_fd = rfd;
         host.uring_pbuf = pb;
         host.backend = HostBackendKind.IoUring;
@@ -173,10 +194,10 @@ fn try_init_rio_backend(host: NetHost&, cfg: const net_internal::TransportDriver
     let plat = net_internal::detect_target_platform();
     guard cfg.active_kind == net_internal::TransportDriverKind.WindowsRIO &&
         plat == net_internal::TargetPlatform.Windows &&
+        host.accel_slab.len >= NET_HOST_SLAB_BYTES &&
         net_internal::native_rio_available() == 1 else { return false; }
     let cq = net_internal::native_rio_create_cq(512);
     guard cq != 0 else { return false; }
-    host.accel_slab.resize(NET_HOST_SLAB_BYTES, 0);
     let bid = net_internal::native_rio_register_slice(host.accel_slab[..]);
     if bid != 0 {
         host.rio_cq = cq;
@@ -185,7 +206,6 @@ fn try_init_rio_backend(host: NetHost&, cfg: const net_internal::TransportDriver
         return true;
     }
     net_internal::native_rio_close_cq(cq);
-    host.accel_slab.clear();
     return false;
 }
 
@@ -200,12 +220,35 @@ fn try_init_kqueue_backend(host: NetHost&, cfg: const net_internal::TransportDri
     return true;
 }
 
+fn wants_host_accel_slab(cfg: const net_internal::TransportDriverConfig&) -> bool {
+    let plat = net_internal::detect_target_platform();
+    if cfg.active_kind == net_internal::TransportDriverKind.IoUring &&
+       plat == net_internal::TargetPlatform.Linux {
+        return true;
+    }
+    return cfg.active_kind == net_internal::TransportDriverKind.WindowsRIO &&
+        plat == net_internal::TargetPlatform.Windows &&
+        net_internal::native_rio_available() == 1;
+}
+
 fn init_host_backend(host: NetHost&, cfg: const net_internal::TransportDriverConfig&) {
-    host.epfd = epoll_create();
+    let efd = epoll_create();
+    host.epfd = efd;
+    if efd >= 0 {
+        let _ = host.epfd_shards.try_push(EpfdShard { fd: efd, count: 0 });
+    }
     if try_init_uring_backend(host, cfg) { return; }
     if try_init_rio_backend(host, cfg) { return; }
     if try_init_kqueue_backend(host, cfg) { return; }
     host.backend = HostBackendKind.Standard;
+}
+
+fn make_host_accel_slab(cfg: const net_internal::TransportDriverConfig&) -> u8[>..] {
+    var slab: u8[>..] = [];
+    if wants_host_accel_slab(cfg) {
+        push_n(slab, 0 as u8, NET_HOST_SLAB_BYTES);
+    }
+    return slab;
 }
 
 // Creates and initializes a `NetHost` using `driver_cfg` (with automatic OS fallback).
@@ -216,6 +259,7 @@ fn new_net_host(driver_cfg: const net_internal::TransportDriverConfig&) -> NetHo
     }
     var host = NetHost {
         driver_cfg: cfg,
+        accel_slab: make_host_accel_slab(cfg),
         is_open:    true,
         ..
     };
@@ -224,22 +268,30 @@ fn new_net_host(driver_cfg: const net_internal::TransportDriverConfig&) -> NetHo
 }
 
 fn alloc_host_slot(host: NetHost&, owner: u16, tag: u64, kind: LinkKind) -> i64 {
-    for i in NET_HOST_MAX_LINKS {
-        if !host.links[i].in_use {
-            let gen = host.links[i].gen;
-            host.links[i] = IoLinkSlot {
-                tag:    tag,
-                gen:    if gen == 0 { 1 } else { gen },
-                owner:  owner,
-                kind:   kind,
-                in_use: true,
-                ..
-            };
-            host.active_links = core::add_sat_i64(host.active_links, 1);
-            return i;
+    var slot: i64 = -1;
+    var gen:  u16 = 1;
+    if host.free_link_head >= 0 {
+        slot = host.free_link_head;
+        host.free_link_head = host.links[slot].next_free;
+        gen = host.links[slot].gen;
+        if gen == 0 {
+            gen = 1;
         }
+    } else {
+        guard host.links.len < NET_HOST_MAX_LINKS else { return -1; }
+        slot = host.links.len;
+        host.links.push(IoLinkSlot { .. });
     }
-    return -1;
+    host.links[slot] = IoLinkSlot {
+        tag:    tag,
+        gen:    gen,
+        owner:  owner,
+        kind:   kind,
+        in_use: true,
+        ..
+    };
+    host.active_links = core::add_sat_i64(host.active_links, 1);
+    return slot;
 }
 
 inline fn desired_poll_mask(slot: const IoLinkSlot&) -> u32 {
@@ -262,6 +314,15 @@ inline fn desired_poll_mask(slot: const IoLinkSlot&) -> u32 {
     return 0;
 }
 
+inline fn push_or_flush_kq_change(host: NetHost&, ev: const net_internal::Kevent&) {
+    if !host.kq_changes.try_push(ev) {
+        var ign: net_internal::Kevent[1] = [net_internal::Kevent { .. }];
+        let _ = net_internal::kqueue_poll_slice(host.kq_fd, host.kq_changes[..], ign[..0], 0);
+        host.kq_changes.clear();
+        let _ = host.kq_changes.try_push(ev);
+    }
+}
+
 inline fn queue_kq_diff(
     host:     NetHost&,
     fd:       i64,
@@ -280,12 +341,7 @@ inline fn queue_kq_diff(
                 ident: fd as u64, filter: net_internal::EVFILT_READ, flags: net_internal::EV_DELETE, ..
             };
         }
-        if !host.kq_changes.try_push(ev_r) {
-            var ign: net_internal::Kevent[1] = [net_internal::Kevent { .. }];
-            let _ = net_internal::kqueue_poll_slice(host.kq_fd, host.kq_changes[..], ign[..0], 0);
-            host.kq_changes.clear();
-            let _ = host.kq_changes.try_push(ev_r);
-        }
+        push_or_flush_kq_change(host, ev_r);
     }
     let want_w = (new_mask & EPOLL_WRITE) != 0;
     let had_w = (old_mask & EPOLL_WRITE) != 0;
@@ -298,12 +354,7 @@ inline fn queue_kq_diff(
                 ident: fd as u64, filter: net_internal::EVFILT_WRITE, flags: net_internal::EV_DELETE, ..
             };
         }
-        if !host.kq_changes.try_push(ev_w) {
-            var ign: net_internal::Kevent[1] = [net_internal::Kevent { .. }];
-            let _ = net_internal::kqueue_poll_slice(host.kq_fd, host.kq_changes[..], ign[..0], 0);
-            host.kq_changes.clear();
-            let _ = host.kq_changes.try_push(ev_w);
-        }
+        push_or_flush_kq_change(host, ev_w);
     }
 }
 
@@ -358,6 +409,48 @@ inline fn sync_uring_slot_interest(host: NetHost&, slot: i64, new_mask: u32) {
     host.links[slot].epoll_mask = new_mask;
 }
 
+inline fn host_epoll_shard_cap() -> i64 {
+    if net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux {
+        return NET_HOST_MAX_LINKS;
+    }
+    return HOST_EPFD_SHARD_CAP;
+}
+
+fn select_epoll_shard(host: NetHost&) -> i64 {
+    let cap = host_epoll_shard_cap();
+    for i in host.epfd_shards.len {
+        if host.epfd_shards[i].fd >= 0 && host.epfd_shards[i].count < cap {
+            return i;
+        }
+    }
+    guard host.epfd_shards.len < HOST_MAX_EPFD_SHARDS else { return -1; }
+    let nfd = epoll_create();
+    guard nfd >= 0 else { return -1; }
+    let idx = host.epfd_shards.len;
+    guard host.epfd_shards.try_push(EpfdShard { fd: nfd, count: 0 }) else {
+        epoll_close(nfd);
+        return -1;
+    }
+    return idx;
+}
+
+inline fn remove_slot_from_epoll_shard(host: NetHost&, slot: i64, fd: i64) {
+    let sh: i64 = host.links[slot].epfd_shard;
+    if sh >= 0 && sh < host.epfd_shards.len && host.epfd_shards[sh].fd >= 0 {
+        if fd > 0 {
+            let _ = epoll_del(host.epfd_shards[sh].fd, fd);
+        }
+        if host.epfd_shards[sh].count > 0 {
+            host.epfd_shards[sh].count = core::sub_sat_i64(host.epfd_shards[sh].count, 1) as i32;
+        }
+    }
+    host.links[slot].in_epfd = false;
+    host.links[slot].epfd_shard = -1;
+    if host.epfd_count > 0 {
+        host.epfd_count = core::sub_sat_i64(host.epfd_count, 1);
+    }
+}
+
 inline fn sync_epoll_slot_interest(
     host:     NetHost&,
     slot:     i64,
@@ -370,31 +463,36 @@ inline fn sync_epoll_slot_interest(
         (host.links[slot].state == LinkSlotState.Open && !host.links[slot].eof_received);
     if !want_epfd {
         if host.links[slot].in_epfd {
-            let _ = epoll_del(host.epfd, fd);
-            host.links[slot].in_epfd = false;
-            host.epfd_count = core::sub_sat_i64(host.epfd_count, 1);
+            remove_slot_from_epoll_shard(host, slot, fd);
         }
         host.links[slot].epoll_mask = 0;
         return;
     }
     let udata = host_slot_link(host, slot).raw;
     if !host.links[slot].in_epfd {
-        if epoll_add(host.epfd, fd, new_mask, udata) {
+        let sh = select_epoll_shard(host);
+        guard sh >= 0 else { return; }
+        if epoll_add(host.epfd_shards[sh].fd, fd, new_mask, udata) {
             host.links[slot].in_epfd = true;
+            host.links[slot].epfd_shard = sh as i16;
+            host.epfd_shards[sh].count = core::add_sat_i64(host.epfd_shards[sh].count, 1) as i32;
             host.epfd_count = core::add_sat_i64(host.epfd_count, 1);
             host.links[slot].epoll_mask = new_mask;
         }
         return;
     }
     guard old_mask != new_mask else { return; }
-    if !epoll_mod(host.epfd, fd, new_mask, udata) {
-        let _ = epoll_add(host.epfd, fd, new_mask, udata);
+    let sh: i64 = host.links[slot].epfd_shard;
+    guard sh >= 0 && sh < host.epfd_shards.len else { return; }
+    let sfd = host.epfd_shards[sh].fd;
+    if !epoll_mod(sfd, fd, new_mask, udata) {
+        let _ = epoll_add(sfd, fd, new_mask, udata);
     }
     host.links[slot].epoll_mask = new_mask;
 }
 
 fn sync_slot_interest(host: NetHost&, slot: i64) {
-    guard slot >= 0 && slot < NET_HOST_MAX_LINKS && host.links[slot].in_use else { return; }
+    guard slot >= 0 && slot < host.links.len && host.links[slot].in_use else { return; }
     guard host.links[slot].kind != LinkKind.Virtual && !host.links[slot].is_rio else { return; }
     let fd = host.links[slot].fd;
     guard fd > 0 else { return; }
@@ -414,16 +512,12 @@ fn sync_slot_interest(host: NetHost&, slot: i64) {
 
 fn release_os_link_resources(host: NetHost&, slot: i64) {
     let fd = host.links[slot].fd;
-    let was_epfd = host.links[slot].in_epfd && host.uring_fd < 0 && host.kq_fd < 0;
     if host.uring_fd >= 0 {
         sync_uring_slot_interest(host, slot, 0);
     } else if host.kq_fd >= 0 && fd > 0 {
         queue_kq_diff(host, fd, 0, host.links[slot].epoll_mask, 0);
-    } else if host.epfd >= 0 && fd > 0 && !host.links[slot].is_rio {
-        let _ = epoll_del(host.epfd, fd);
-    }
-    if was_epfd && host.epfd_count > 0 {
-        host.epfd_count = core::sub_sat_i64(host.epfd_count, 1);
+    } else if host.links[slot].in_epfd && !host.links[slot].is_rio {
+        remove_slot_from_epoll_shard(host, slot, fd);
     }
     if host.links[slot].is_rio && host.links[slot].state == LinkSlotState.Listening && fd > 0 {
         let _ = net_internal::native_rio_cancel_accept(fd);
@@ -433,9 +527,35 @@ fn release_os_link_resources(host: NetHost&, slot: i64) {
     }
 }
 
+inline fn virt_link_insert(host: NetHost&, slot: i64) {
+    let head = host.virt_head;
+    host.links[slot].virt_prev = -1;
+    host.links[slot].virt_next = head;
+    if head >= 0 && head < host.links.len {
+        host.links[head].virt_prev = slot as i32;
+    }
+    host.virt_head = slot as i32;
+}
+
+inline fn virt_link_remove(host: NetHost&, slot: i64) {
+    let prev = host.links[slot].virt_prev;
+    let next = host.links[slot].virt_next;
+    if prev >= 0 && prev < host.links.len {
+        host.links[prev].virt_next = next;
+    } else if host.virt_head == (slot as i32) {
+        host.virt_head = next;
+    }
+    if next >= 0 && next < host.links.len {
+        host.links[next].virt_prev = prev;
+    }
+    host.links[slot].virt_prev = -1;
+    host.links[slot].virt_next = -1;
+}
+
 fn release_host_slot(host: NetHost&, slot: i64) {
-    guard slot >= 0 && slot < NET_HOST_MAX_LINKS && host.links[slot].in_use else { return; }
+    guard slot >= 0 && slot < host.links.len && host.links[slot].in_use else { return; }
     if host.links[slot].kind == LinkKind.Virtual {
+        virt_link_remove(host, slot);
         if host.links[slot].virtual_pair >= 0 {
             virtual_pipe_close(host.links[slot].virtual_pair as u16, host.links[slot].is_b_end);
         }
@@ -443,7 +563,12 @@ fn release_host_slot(host: NetHost&, slot: i64) {
         release_os_link_resources(host, slot);
     }
     let next_gen = next_link_gen(host.links[slot].gen);
-    host.links[slot] = IoLinkSlot { gen: next_gen, .. };
+    host.links[slot] = IoLinkSlot {
+        next_free: host.free_link_head,
+        gen:       next_gen,
+        ..
+    };
+    host.free_link_head = slot as i32;
     if host.active_links > 0 {
         host.active_links = core::sub_sat_i64(host.active_links, 1);
     }
@@ -452,7 +577,7 @@ fn release_host_slot(host: NetHost&, slot: i64) {
 // Closes all active links and OS handles owned by `host`.
 fn close_net_host(host: NetHost&) {
     guard host.is_open else { return; }
-    for i in NET_HOST_MAX_LINKS {
+    for i in host.links.len {
         if host.links[i].in_use {
             release_host_slot(host, i);
         }
@@ -477,13 +602,21 @@ fn close_net_host(host: NetHost&) {
         net_internal::native_kqueue_close(host.kq_fd);
         host.kq_fd = -1;
     }
-    if host.epfd >= 0 {
-        epoll_close(host.epfd);
-        host.epfd = -1;
+    for i in host.epfd_shards.len {
+        if host.epfd_shards[i].fd >= 0 {
+            epoll_close(host.epfd_shards[i].fd);
+        }
     }
+    host.epfd_shards.clear();
+    host.epfd = -1;
+    host.links.clear();
+    host.timers.clear();
     host.wake_queue.clear();
     host.kq_changes.clear();
-    host.accel_slab.clear();
+    host.free_link_head = -1;
+    host.virt_head = -1;
+    host.free_timer_head = -1;
+    host.active_links = 0;
     host.epfd_count = 0;
     host.active_timers = 0;
     host.is_open = false;
@@ -619,9 +752,11 @@ fn host_open_virtual_pair(
     host.links[slot_a].virtual_pair = pipe_slot;
     host.links[slot_a].is_b_end = false;
     host.links[slot_a].state = LinkSlotState.Open;
+    virt_link_insert(host, slot_a);
     host.links[slot_b].virtual_pair = pipe_slot;
     host.links[slot_b].is_b_end = true;
     host.links[slot_b].state = LinkSlotState.Open;
+    virt_link_insert(host, slot_b);
     return host_slot_link(host, slot_a), host_slot_link(host, slot_b), true;
 }
 
@@ -749,39 +884,47 @@ fn link_add_timer(
     guard host.is_open && timer_id != 0 && owner != 0 else { return false; }
     let deadline = core::add_sat_u64(now_ns, core::mul_sat_u64(delay_ms, NET_HOST_NANOS_MS));
     let interval = if periodic { core::mul_sat_u64(delay_ms, NET_HOST_NANOS_MS) } else { 0 };
-    for i in NET_HOST_MAX_TIMERS {
-        if host.timers[i].active && host.timers[i].timer_id == timer_id {
-            host.timers[i].tag = tag;
-            host.timers[i].owner = owner;
-            host.timers[i].deadline_ns = deadline;
-            host.timers[i].interval_ns = interval;
-            return true;
+    if host.active_timers > 0 {
+        for i in host.timers.len {
+            if host.timers[i].active && host.timers[i].timer_id == timer_id {
+                host.timers[i].tag = tag;
+                host.timers[i].owner = owner;
+                host.timers[i].deadline_ns = deadline;
+                host.timers[i].interval_ns = interval;
+                return true;
+            }
         }
     }
-    for i in NET_HOST_MAX_TIMERS {
-        if !host.timers[i].active {
-            host.timers[i] = HostTimer {
-                timer_id:    timer_id,
-                tag:         tag,
-                deadline_ns: deadline,
-                interval_ns: interval,
-                owner:       owner,
-                active:      true,
-            };
-            host.active_timers = core::add_sat_i64(host.active_timers, 1);
-            return true;
-        }
+    var idx: i64 = -1;
+    if host.free_timer_head >= 0 {
+        idx = host.free_timer_head;
+        host.free_timer_head = host.timers[idx].next_free;
+    } else {
+        idx = host.timers.len;
+        guard host.timers.try_push(HostTimer { .. }) else { return false; }
     }
-    return false;
+    host.timers[idx] = HostTimer {
+        timer_id:    timer_id,
+        tag:         tag,
+        deadline_ns: deadline,
+        interval_ns: interval,
+        next_free:   -1,
+        owner:       owner,
+        active:      true,
+    };
+    host.active_timers = core::add_sat_i64(host.active_timers, 1);
+    return true;
 }
 
 // Cancels an active timer by ID (satisfies `core::host_cancel_timer`).
 fn link_cancel_timer(host: NetHost&, timer_id: u64) -> bool {
-    guard host.is_open && timer_id != 0 else { return false; }
-    for i in NET_HOST_MAX_TIMERS {
+    guard host.is_open && timer_id != 0 && host.active_timers > 0 else { return false; }
+    for i in host.timers.len {
         if host.timers[i].active && host.timers[i].timer_id == timer_id {
             host.timers[i].active = false;
             host.timers[i].timer_id = 0;
+            host.timers[i].next_free = host.free_timer_head;
+            host.free_timer_head = i as i32;
             if host.active_timers > 0 {
                 host.active_timers = core::sub_sat_i64(host.active_timers, 1);
             }
@@ -820,10 +963,12 @@ inline fn is_virtual_slot_ready(host: const NetHost&, slot: i64) -> bool {
 }
 
 inline fn has_pending_virtual_work(host: const NetHost&) -> bool {
-    for i in NET_HOST_MAX_LINKS {
-        if is_virtual_slot_ready(host, i) {
+    var cur: i64 = host.virt_head;
+    while cur >= 0 && cur < host.links.len {
+        if is_virtual_slot_ready(host, cur) {
             return true;
         }
+        cur = host.links[cur].virt_next;
     }
     return false;
 }
@@ -835,7 +980,7 @@ fn clamp_host_timeout(host: const NetHost&, timeout_ms: i64, now_ns: u64) -> i64
     guard host.active_timers > 0 else { return timeout_ms; }
     var earliest: u64  = 0xFFFFFFFFFFFFFFFF;
     var found:    bool = false;
-    for i in NET_HOST_MAX_TIMERS {
+    for i in host.timers.len {
         if host.timers[i].active {
             earliest = min(earliest, host.timers[i].deadline_ns);
             found = true;
@@ -883,13 +1028,9 @@ fn dispatch_host_wakes<D, CtxA, CtxB>(
 ) {
     let pending = host.wake_queue.len;
     guard pending > 0 else { return; }
-    var batch: core::WakeToken[..64] = [];
     for i in pending {
-        let _ = batch.try_push(host.wake_queue[i]);
-    }
-    host.wake_queue.clear();
-    for i in batch.len {
-        let tok = batch[i];
+        guard host.is_open && i < host.wake_queue.len else { break; }
+        let tok = host.wake_queue[i];
         let ev = core::LinkEvent {
             kind:  core::LinkEventKind.Wake,
             tag:   tok.slot,
@@ -898,6 +1039,16 @@ fn dispatch_host_wakes<D, CtxA, CtxB>(
         };
         emit_host_event(host, driver, arg_a, arg_b, ev, count);
     }
+    guard host.is_open else { return; }
+    if host.wake_queue.len <= pending {
+        host.wake_queue.clear();
+        return;
+    }
+    let rem = core::sub_sat_i64(host.wake_queue.len, pending);
+    for j in rem {
+        host.wake_queue[j] = host.wake_queue[core::add_sat_i64(pending, j)];
+    }
+    host.wake_queue.resize(rem);
 }
 
 fn dispatch_host_timers<D, CtxA, CtxB>(
@@ -909,7 +1060,9 @@ fn dispatch_host_timers<D, CtxA, CtxB>(
     count:  i32&,
 ) {
     guard host.active_timers > 0 else { return; }
-    for i in NET_HOST_MAX_TIMERS {
+    let n_timers = host.timers.len;
+    for i in n_timers {
+        guard host.is_open && i < host.timers.len else { break; }
         guard host.timers[i].active && now_ns >= host.timers[i].deadline_ns else { continue; }
         let tid = host.timers[i].timer_id;
         let tag = host.timers[i].tag;
@@ -918,6 +1071,9 @@ fn dispatch_host_timers<D, CtxA, CtxB>(
             host.timers[i].deadline_ns = core::add_sat_u64(now_ns, host.timers[i].interval_ns);
         } else {
             host.timers[i].active = false;
+            host.timers[i].timer_id = 0;
+            host.timers[i].next_free = host.free_timer_head;
+            host.free_timer_head = i as i32;
             if host.active_timers > 0 {
                 host.active_timers = core::sub_sat_i64(host.active_timers, 1);
             }
@@ -934,12 +1090,13 @@ fn dispatch_host_timers<D, CtxA, CtxB>(
 }
 
 fn drain_virtual_slot<D, CtxA, CtxB>(
-    host:   NetHost&,
-    driver: D&,
-    arg_a:  CtxA&,
-    arg_b:  CtxB&,
-    slot:   i64,
-    count:  i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    slot:       i64,
+    count:      i32&,
 ) {
     let gen = host.links[slot].gen;
     let link = host_slot_link(host, slot);
@@ -962,13 +1119,14 @@ fn drain_virtual_slot<D, CtxA, CtxB>(
         }
     }
     if !host.links[slot].rx_paused {
-        let rc = virtual_pipe_recv(pidx as u16, is_b, host.rx_scratch[..]);
+        ensure_rx_scratch(rx_scratch);
+        let rc = virtual_pipe_recv(pidx as u16, is_b, rx_scratch[..]);
         if rc > 0 {
             let ev = core::LinkEvent {
                 kind: core::LinkEventKind.Data,
                 link: link,
                 tag:  host.links[slot].tag,
-                data: host.rx_scratch[..rc],
+                data: rx_scratch[..rc],
                 ..
             };
             emit_host_event(host, driver, arg_a, arg_b, ev, count);
@@ -983,15 +1141,26 @@ fn drain_virtual_slot<D, CtxA, CtxB>(
 }
 
 fn dispatch_virtual_links<D, CtxA, CtxB>(
-    host:   NetHost&,
-    driver: D&,
-    arg_a:  CtxA&,
-    arg_b:  CtxB&,
-    count:  i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    count:      i32&,
 ) {
-    for i in NET_HOST_MAX_LINKS {
-        if host.links[i].in_use && host.links[i].kind == LinkKind.Virtual {
-            drain_virtual_slot(host, driver, arg_a, arg_b, i, count);
+    guard host.virt_head >= 0 else { return; }
+    var batch: i32[>..] = [];
+    var cur:   i64      = host.virt_head;
+    while cur >= 0 && cur < host.links.len {
+        batch.push(cur as i32);
+        cur = host.links[cur].virt_next;
+    }
+    for i in batch.len {
+        let slot: i64 = batch[i];
+        guard host.is_open else { break; }
+        if slot >= 0 && slot < host.links.len &&
+           host.links[slot].in_use && host.links[slot].kind == LinkKind.Virtual {
+            drain_virtual_slot(host, driver, arg_a, arg_b, rx_scratch, slot, count);
         }
     }
 }
@@ -1098,26 +1267,28 @@ fn finish_connecting_slot<D, CtxA, CtxB>(
 }
 
 fn step_socket_read<D, CtxA, CtxB>(
-    host:   NetHost&,
-    driver: D&,
-    arg_a:  CtxA&,
-    arg_b:  CtxB&,
-    slot:   i64,
-    gen:    u16,
-    count:  i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    slot:       i64,
+    gen:        u16,
+    count:      i32&,
 ) -> bool {
     guard host.links[slot].in_use && host.links[slot].gen == gen && !host.links[slot].rx_paused else {
         return false;
     }
     let link = host_slot_link(host, slot);
     let tag = host.links[slot].tag;
-    let recvd = tcp_recv_nonblocking_slice(host.links[slot].fd, host.rx_scratch[..]);
+    ensure_rx_scratch(rx_scratch);
+    let recvd = tcp_recv_nonblocking_slice(host.links[slot].fd, rx_scratch[..]);
     if recvd > 0 {
         let ev = core::LinkEvent {
             kind: core::LinkEventKind.Data,
             link: link,
             tag:  tag,
-            data: host.rx_scratch[..recvd],
+            data: rx_scratch[..recvd],
             ..
         };
         emit_host_event(host, driver, arg_a, arg_b, ev, count);
@@ -1140,30 +1311,32 @@ fn step_socket_read<D, CtxA, CtxB>(
 }
 
 fn drain_ready_socket_reads<D, CtxA, CtxB>(
-    host:   NetHost&,
-    driver: D&,
-    arg_a:  CtxA&,
-    arg_b:  CtxB&,
-    slot:   i64,
-    gen:    u16,
-    count:  i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    slot:       i64,
+    gen:        u16,
+    count:      i32&,
 ) {
     for _ in 4 {
-        if !step_socket_read(host, driver, arg_a, arg_b, slot, gen, count) {
+        if !step_socket_read(host, driver, arg_a, arg_b, rx_scratch, slot, gen, count) {
             break;
         }
     }
 }
 
 fn handle_readiness_slot_event<D, CtxA, CtxB>(
-    host:     NetHost&,
-    driver:   D&,
-    arg_a:    CtxA&,
-    arg_b:    CtxB&,
-    slot:     i64,
-    gen:      u16,
-    ev_flags: u32,
-    count:    i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    slot:       i64,
+    gen:        u16,
+    ev_flags:   u32,
+    count:      i32&,
 ) {
     if host.links[slot].state == LinkSlotState.Listening {
         accept_ready_listener(host, driver, arg_a, arg_b, slot, gen, count);
@@ -1200,8 +1373,36 @@ fn handle_readiness_slot_event<D, CtxA, CtxB>(
     }
     if (ev_flags & (core::POLL_READ | core::POLL_HANGUP | core::POLL_ERROR)) != 0 &&
        !host.links[slot].rx_paused && !host.links[slot].eof_received {
-        drain_ready_socket_reads(host, driver, arg_a, arg_b, slot, gen, count);
+        drain_ready_socket_reads(host, driver, arg_a, arg_b, rx_scratch, slot, gen, count);
     }
+}
+
+fn poll_single_epoll_shard<D, CtxA, CtxB>(
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    shard_fd:   i64,
+    timeout_ms: i64,
+    count:      i32&,
+) -> i32 {
+    var raw_fds:    i64[64] = [0; 64];
+    var raw_udata:  u64[64] = [0; 64];
+    var raw_events: u32[64] = [0; 64];
+    let t_clamped = min(max(timeout_ms, -1), 2147483647) as i32;
+    let n = epoll_wait_events_direct(shard_fd, raw_fds[..], raw_udata[..], raw_events[..], t_clamped);
+    guard n > 0 else { return 0; }
+    let limit = min(n as i64, 64);
+    for k in limit {
+        let link = core::IoLink { raw: raw_udata[k] };
+        let slot, ok = host_match_link(host, link);
+        guard ok else { continue; }
+        handle_readiness_slot_event(
+            host, driver, arg_a, arg_b, rx_scratch, slot, core::io_link_gen(link), raw_events[k], count,
+        );
+    }
+    return n;
 }
 
 fn poll_epoll_backend<D, CtxA, CtxB>(
@@ -1209,32 +1410,43 @@ fn poll_epoll_backend<D, CtxA, CtxB>(
     driver:     D&,
     arg_a:      CtxA&,
     arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
     timeout_ms: i64,
     count:      i32&,
 ) {
-    guard host.epfd >= 0 && host.epfd_count > 0 else { return; }
-    var raw_fds:    i64[64] = [0; 64];
-    var raw_udata:  u64[64] = [0; 64];
-    var raw_events: u32[64] = [0; 64];
-    let t_clamped = min(max(timeout_ms, -1), 2147483647) as i32;
-    let n = epoll_wait_events_direct(host.epfd, raw_fds[..], raw_udata[..], raw_events[..], t_clamped);
-    guard n > 0 else { return; }
-    let limit = min(n as i64, 64);
-    for k in limit {
-        let link = core::IoLink { raw: raw_udata[k] };
-        let slot, ok = host_match_link(host, link);
-        guard ok else { continue; }
-        handle_readiness_slot_event(host, driver, arg_a, arg_b, slot, core::io_link_gen(link), raw_events[k], count);
+    guard host.epfd_count > 0 && host.epfd_shards.len > 0 else { return; }
+    if host.epfd_shards.len == 1 {
+        let _ = poll_single_epoll_shard(
+            host, driver, arg_a, arg_b, rx_scratch, host.epfd_shards[0].fd, timeout_ms, count,
+        );
+        return;
+    }
+    var total_ready: i64 = 0;
+    let n_shards = host.epfd_shards.len;
+    for i in n_shards {
+        guard i < host.epfd_shards.len else { return; }
+        if host.epfd_shards[i].count > 0 {
+            let n = poll_single_epoll_shard(
+                host, driver, arg_a, arg_b, rx_scratch, host.epfd_shards[i].fd, 0, count,
+            );
+            total_ready = core::add_sat_i64(total_ready, n);
+        }
+    }
+    if total_ready == 0 && timeout_ms != 0 && host.epfd_shards.len > 0 {
+        let _ = poll_single_epoll_shard(
+            host, driver, arg_a, arg_b, rx_scratch, host.epfd_shards[0].fd, max(min(timeout_ms, 2), 1), count,
+        );
     }
 }
 
 fn dispatch_single_kevent<D, CtxA, CtxB>(
-    host:   NetHost&,
-    driver: D&,
-    arg_a:  CtxA&,
-    arg_b:  CtxB&,
-    kev:    const net_internal::Kevent&,
-    count:  i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    kev:        const net_internal::Kevent&,
+    count:      i32&,
 ) {
     guard (kev.flags & HOST_KQ_EV_ERROR) == 0 else { return; }
     let link = core::IoLink { raw: kev.udata };
@@ -1247,7 +1459,7 @@ fn dispatch_single_kevent<D, CtxA, CtxB>(
         flags |= core::POLL_HANGUP;
         if kev.fflags != 0 { flags |= core::POLL_ERROR; }
     }
-    handle_readiness_slot_event(host, driver, arg_a, arg_b, slot, core::io_link_gen(link), flags, count);
+    handle_readiness_slot_event(host, driver, arg_a, arg_b, rx_scratch, slot, core::io_link_gen(link), flags, count);
 }
 
 fn poll_kqueue_backend<D, CtxA, CtxB>(
@@ -1255,6 +1467,7 @@ fn poll_kqueue_backend<D, CtxA, CtxB>(
     driver:     D&,
     arg_a:      CtxA&,
     arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
     timeout_ms: i64,
     count:      i32&,
 ) {
@@ -1266,7 +1479,7 @@ fn poll_kqueue_backend<D, CtxA, CtxB>(
     guard n > 0 else { return; }
     let limit = min(n as i64, 64);
     for k in limit {
-        dispatch_single_kevent(host, driver, arg_a, arg_b, kev_out[k], count);
+        dispatch_single_kevent(host, driver, arg_a, arg_b, rx_scratch, kev_out[k], count);
     }
 }
 
@@ -1337,7 +1550,9 @@ fn poll_rio_backend<D, CtxA, CtxB>(
     count:      i32&,
 ) {
     guard host.rio_cq != 0 else { return; }
-    for i in NET_HOST_MAX_LINKS {
+    let n_links = host.links.len;
+    for i in n_links {
+        guard host.is_open && i < host.links.len else { break; }
         if host.links[i].in_use && host.links[i].is_rio && host.links[i].state == LinkSlotState.Listening {
             accept_ready_listener(host, driver, arg_a, arg_b, i, host.links[i].gen, count);
         }
@@ -1382,16 +1597,17 @@ fn dispatch_uring_send_cqe<D, CtxA, CtxB>(
 }
 
 fn dispatch_uring_recv_cqe<D, CtxA, CtxB>(
-    host:    NetHost&,
-    driver:  D&,
-    arg_a:   CtxA&,
-    arg_b:   CtxB&,
-    slot:    i64,
-    gen:     u16,
-    cqe:     const net_internal::UringCqe&,
-    has_buf: bool,
-    bid:     u16,
-    count:   i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    slot:       i64,
+    gen:        u16,
+    cqe:        const net_internal::UringCqe&,
+    has_buf:    bool,
+    bid:        u16,
+    count:      i32&,
 ) {
     let link = host_slot_link(host, slot);
     let tag = host.links[slot].tag;
@@ -1414,12 +1630,13 @@ fn dispatch_uring_recv_cqe<D, CtxA, CtxB>(
     }
     var copied: i32 = 0;
     if has_buf {
-        copied = net_internal::uring_read_pbuf(host.uring_pbuf, bid, cqe.res, host.rx_scratch[..]);
+        ensure_rx_scratch(rx_scratch);
+        copied = net_internal::uring_read_pbuf(host.uring_pbuf, bid, cqe.res, rx_scratch[..]);
         net_internal::uring_recycle_pbuf(host.uring_pbuf, bid);
     }
     if copied > 0 {
         let ev = core::LinkEvent {
-            kind: core::LinkEventKind.Data, link: link, tag: tag, data: host.rx_scratch[..copied], ..
+            kind: core::LinkEventKind.Data, link: link, tag: tag, data: rx_scratch[..copied], ..
         };
         emit_host_event(host, driver, arg_a, arg_b, ev, count);
     }
@@ -1453,12 +1670,13 @@ fn dispatch_uring_accept_cqe<D, CtxA, CtxB>(
 }
 
 fn dispatch_uring_cqe<D, CtxA, CtxB>(
-    host:   NetHost&,
-    driver: D&,
-    arg_a:  CtxA&,
-    arg_b:  CtxB&,
-    cqe:    const net_internal::UringCqe&,
-    count:  i32&,
+    host:       NetHost&,
+    driver:     D&,
+    arg_a:      CtxA&,
+    arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
+    cqe:        const net_internal::UringCqe&,
+    count:      i32&,
 ) {
     let has_buf = (cqe.flags & net_internal::URING_CQE_F_BUFFER) != 0;
     let bid = ((cqe.flags >> 16) & 0xFFFF) as u16;
@@ -1468,7 +1686,9 @@ fn dispatch_uring_cqe<D, CtxA, CtxB>(
         return;
     }
     if op == HOST_URING_OP_RECV {
-        dispatch_uring_recv_cqe(host, driver, arg_a, arg_b, slot, host.links[slot].gen, cqe, has_buf, bid, count);
+        dispatch_uring_recv_cqe(
+            host, driver, arg_a, arg_b, rx_scratch, slot, host.links[slot].gen, cqe, has_buf, bid, count,
+        );
         return;
     }
     if has_buf { net_internal::uring_recycle_pbuf(host.uring_pbuf, bid); }
@@ -1501,6 +1721,7 @@ fn poll_uring_backend<D, CtxA, CtxB>(
     driver:     D&,
     arg_a:      CtxA&,
     arg_b:      CtxB&,
+    rx_scratch: u8[>..]&,
     timeout_ms: i64,
     count:      i32&,
 ) {
@@ -1512,7 +1733,7 @@ fn poll_uring_backend<D, CtxA, CtxB>(
     guard n > 0 else { return; }
     let limit = min(n as i64, 64);
     for k in limit {
-        dispatch_uring_cqe(host, driver, arg_a, arg_b, cqes[k], count);
+        dispatch_uring_cqe(host, driver, arg_a, arg_b, rx_scratch, cqes[k], count);
     }
 }
 
@@ -1525,22 +1746,23 @@ fn link_poll_dispatch_ctx<D, CtxA, CtxB>(
     now_ns:     u64,
 ) -> i32 {
     guard host.is_open else { return 0; }
-    var count: i32 = 0;
+    var count:      i32     = 0;
+    var rx_scratch: u8[>..] = [];
     let eff_timeout = clamp_host_timeout(host, timeout_ms, now_ns);
 
     if host.uring_fd >= 0 {
-        poll_uring_backend(host, driver, arg_a, arg_b, eff_timeout, count);
+        poll_uring_backend(host, driver, arg_a, arg_b, rx_scratch, eff_timeout, count);
     } else if host.kq_fd >= 0 {
-        poll_kqueue_backend(host, driver, arg_a, arg_b, eff_timeout, count);
+        poll_kqueue_backend(host, driver, arg_a, arg_b, rx_scratch, eff_timeout, count);
     } else {
         if host.rio_cq != 0 {
             let rio_tmo = if host.epfd_count > 0 { 0 } else { eff_timeout };
             poll_rio_backend(host, driver, arg_a, arg_b, rio_tmo, count);
         }
         let ep_tmo = if count > 0 || host.wake_queue.len > 0 { 0 } else { eff_timeout };
-        poll_epoll_backend(host, driver, arg_a, arg_b, ep_tmo, count);
+        poll_epoll_backend(host, driver, arg_a, arg_b, rx_scratch, ep_tmo, count);
     }
-    dispatch_virtual_links(host, driver, arg_a, arg_b, count);
+    dispatch_virtual_links(host, driver, arg_a, arg_b, rx_scratch, count);
     dispatch_host_timers(host, driver, arg_a, arg_b, now_ns, count);
     dispatch_host_wakes(host, driver, arg_a, arg_b, count);
     return count;

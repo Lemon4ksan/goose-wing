@@ -115,7 +115,7 @@ fn tls_random_bytes_32() -> u8[32] {
     return out_bytes;
 }
 
-// ---- Global Static Cipher Slot Table (Zero-Allocation POD) ----------------
+// ---- Global Lazy Cipher Slot Table (Grow-on-Demand, Zero Startup Faults) ----
 
 const MAX_TLS_CIPHER_SLOTS: i64 = 256;
 
@@ -160,53 +160,77 @@ struct TlsCipherSlot {
     ticket_cache:       SessionTicketCache = SessionTicketCache { .. },
 }
 
-var g_tls_cipher_slots: TlsCipherSlot[256] = [TlsCipherSlot { .. }; 256];
+var g_tls_cipher_slots: TlsCipherSlot[>..] = [];
 
 // Returns the ALPN protocol negotiated on a cipher slot (empty if none).
 inline fn tls_session_alpn(slot_idx: u16) -> const u8[:] {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return ""; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return ""; }
     return g_tls_cipher_slots[idx].negotiated_alpn[..];
 }
 
 // Returns true if the TLS 1.3 session was established via PSK resumption.
 inline fn tls_session_is_resumed(slot_idx: u16) -> bool {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
     return g_tls_cipher_slots[idx].resumed;
 }
 
-// Allocates an unused slot from the global static cipher slot pool.
+// Wipes all cryptographic keys, IVs, traffic secrets, ticket cache material, and buffered
+// plaintext in `slot` and resets metadata fields to inactive defaults (Invariant 11).
+fn wipe_and_reset_tls_cipher_slot(slot: TlsCipherSlot&) {
+    core::secure_zeroize_32(slot.rx_key);
+    core::secure_zeroize_32(slot.tx_key);
+    core::zeroize_aes_gcm_key(slot.rx_aes_key);
+    core::zeroize_aes_gcm_key(slot.tx_aes_key);
+    core::secure_zeroize_slice(slot.rx_iv[..]);
+    core::secure_zeroize_slice(slot.tx_iv[..]);
+    core::secure_zeroize_48(slot.rx_traffic_secret);
+    core::secure_zeroize_48(slot.tx_traffic_secret);
+    core::secure_zeroize_48(slot.exporter_secret);
+    core::secure_zeroize_48(slot.resumption_secret);
+    core::secure_zeroize_slice(slot.rx_plain_buf[..]);
+    for &t in slot.ticket_cache.tickets {
+        core::secure_zeroize_slice(t.ticket_nonce[..]);
+        core::secure_zeroize_slice(t.ticket[..]);
+    }
+    slot.in_use = false;
+    slot.is_server = false;
+    slot.ktls_tx_active = false;
+    slot.ktls_rx_active = false;
+    slot.cipher_suite = 0;
+    slot.hash_id = 1;
+    slot.hash_len = 32;
+    slot.key_len = 16;
+    slot.rx_seq = 0;
+    slot.tx_seq = 0;
+    slot.peer_closed = false;
+    slot.resumed = false;
+    slot.negotiated_alpn.clear();
+    slot.server_name.clear();
+    slot.san_hosts.clear();
+    slot.rx_plain_buf.clear();
+    slot.rx_plain_pos = 0;
+    slot.bytes_sent = 0;
+    slot.key_update_tracker = KeyUpdateTracker { .. };
+    slot.ticket_cache = SessionTicketCache { .. };
+}
+
+// Allocates a cipher slot lazily: reuses an inactive slot first, otherwise grows `g_tls_cipher_slots`
+// up to `MAX_TLS_CIPHER_SLOTS`.
 fn alloc_tls_cipher_slot() -> u16 {
-    for i in MAX_TLS_CIPHER_SLOTS {
+    for i in g_tls_cipher_slots.len {
         let slot .= g_tls_cipher_slots[i];
         if !slot.in_use {
+            wipe_and_reset_tls_cipher_slot(slot);
             slot.in_use = true;
-            slot.is_server = false;
-            slot.ktls_tx_active = false;
-            slot.ktls_rx_active = false;
-            slot.cipher_suite = 0;
-            slot.hash_id = 1;
-            slot.hash_len = 32;
-            slot.key_len = 16;
-            slot.rx_seq = 0;
-            slot.tx_seq = 0;
-            slot.peer_closed = false;
-            slot.resumed = false;
-            slot.negotiated_alpn.clear();
-            slot.server_name.clear();
-            slot.san_hosts.clear();
-            slot.rx_plain_buf.clear();
-            slot.rx_plain_pos = 0;
-            slot.bytes_sent = 0;
-            slot.key_update_tracker = KeyUpdateTracker { .. };
-            slot.ticket_cache = SessionTicketCache { .. };
-            core::zeroize_aes_gcm_key(slot.rx_aes_key);
-            core::zeroize_aes_gcm_key(slot.tx_aes_key);
-            return i as u16;
+            return (i & 0xFFFF) as u16;
         }
     }
-    return 0xFFFF;
+    guard g_tls_cipher_slots.len < MAX_TLS_CIPHER_SLOTS else { return 0xFFFF; }
+    let new_idx = g_tls_cipher_slots.len;
+    g_tls_cipher_slots.push(TlsCipherSlot { in_use: true, .. });
+    return (new_idx & 0xFFFF) as u16;
 }
 
 inline fn tls_prepare_cipher_aes_key(cipher_suite: u16, key: const u8[:], ctx: core::AesGcmKey&) {
@@ -220,23 +244,8 @@ inline fn tls_prepare_cipher_aes_key(cipher_suite: u16, key: const u8[:], ctx: c
 // Releases a cipher slot and securely wipes all cryptographic key material.
 fn free_tls_cipher_slot(slot_idx: u16) {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return; }
-    core::secure_zeroize_32(g_tls_cipher_slots[idx].rx_key);
-    core::secure_zeroize_32(g_tls_cipher_slots[idx].tx_key);
-    core::zeroize_aes_gcm_key(g_tls_cipher_slots[idx].rx_aes_key);
-    core::zeroize_aes_gcm_key(g_tls_cipher_slots[idx].tx_aes_key);
-    core::secure_zeroize_slice(g_tls_cipher_slots[idx].rx_iv[..]);
-    core::secure_zeroize_slice(g_tls_cipher_slots[idx].tx_iv[..]);
-    core::secure_zeroize_48(g_tls_cipher_slots[idx].rx_traffic_secret);
-    core::secure_zeroize_48(g_tls_cipher_slots[idx].tx_traffic_secret);
-    core::secure_zeroize_48(g_tls_cipher_slots[idx].exporter_secret);
-    core::secure_zeroize_48(g_tls_cipher_slots[idx].resumption_secret);
-    g_tls_cipher_slots[idx].san_hosts.clear();
-    g_tls_cipher_slots[idx].rx_plain_buf.clear();
-    g_tls_cipher_slots[idx].rx_plain_pos = 0;
-    g_tls_cipher_slots[idx].ktls_tx_active = false;
-    g_tls_cipher_slots[idx].ktls_rx_active = false;
-    g_tls_cipher_slots[idx].in_use = false;
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else { return; }
+    wipe_and_reset_tls_cipher_slot(g_tls_cipher_slots[idx]);
 }
 
 fn tls_init_cipher_slot_for_test(
@@ -248,7 +257,7 @@ fn tls_init_cipher_slot_for_test(
     rx_iv:        const u8[12]&,
 ) {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return; }
     let slot .= g_tls_cipher_slots[idx];
     let klen: i64 = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 ||
         cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
@@ -270,6 +279,8 @@ fn tls_init_cipher_slot_for_test(
     slot.peer_closed = false;
     slot.tx_seq = 0;
     slot.rx_seq = 0;
+    core::secure_zeroize_32(slot.tx_key);
+    core::secure_zeroize_32(slot.rx_key);
     for i in klen { slot.tx_key[i] = tx_key[i]; }
     tls_prepare_cipher_aes_key(cipher_suite, tx_key[..klen], slot.tx_aes_key);
     for i in 12 { slot.tx_iv[i] = tx_iv[i]; }
@@ -283,7 +294,7 @@ fn tls_try_enable_ktls(slot_idx: u16, fd: i64) -> net_internal::SmartNicSession,
         return net_internal::new_smartnic_session(fd), false;
     }
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else {
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else {
         return net_internal::new_smartnic_session(fd), false;
     }
     let slot .= g_tls_cipher_slots[idx];
@@ -485,7 +496,7 @@ fn tls_cipher_slot_unseal_records<B>(
     out_plain: B&,
 ) -> i64, TlsSliceUnsealStatus {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else {
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else {
         return 0, TlsSliceUnsealStatus.Error;
     }
     let slot .= g_tls_cipher_slots[idx];
@@ -521,7 +532,7 @@ fn tls_cipher_slot_seal_app_data<B>(
     out_cipher: B&,
 ) -> bool {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else { return false; }
     let slot .= g_tls_cipher_slots[idx];
     guard slot.in_use && !slot.peer_closed else { return false; }
     if plain_in.len == 0 { return true; }
@@ -563,7 +574,7 @@ fn tls_cipher_slot_seal_app_data<B>(
 // Extracts DNS SubjectAltName entries from a DER X.509 certificate into `g_tls_cipher_slots[slot_idx].san_hosts`.
 fn tls_populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) -> bool {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
     var leaf_cert = ParsedCert { .. };
     guard parse_x509_certificate(cert_der, leaf_cert) else { return false; }
     var sans: SanEntry[..64] = [];
@@ -583,7 +594,7 @@ fn tls_populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) ->
 fn tls_copy_slot_san_hosts(slot_idx: u16, out_sans: u8[..128][..8]&) {
     out_sans.clear();
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return; }
     for &san in g_tls_cipher_slots[idx].san_hosts {
         let _ = out_sans.try_push(copy(san));
     }
@@ -600,7 +611,7 @@ fn tls_session_export_keying_material(
     out.clear();
     let idx = slot_idx as i64;
     let out_len = length as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
     guard out_len > 0 && out_len <= out.cap else { return false; }
     let hlen = g_tls_cipher_slots[idx].hash_len as i64;
     guard hlen == 32 || hlen == 48 else { return false; }
@@ -656,7 +667,7 @@ fn tls_send_encrypted_record(
     payload:    const u8[:],
 ) -> bool {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else { return false; }
     guard g_tls_cipher_slots[idx].in_use else { return false; }
 
     guard payload.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
@@ -701,7 +712,7 @@ fn tls_transport_send(fd: i64, slot_idx: u16, data: const u8[:]) -> i32 {
     let ret_len = (data.len & 0x7FFFFFFF) as i32;
     guard fd > 0 && data.len > 0 else { return 0; }
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return -1; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else { return -1; }
     guard g_tls_cipher_slots[idx].in_use && !g_tls_cipher_slots[idx].peer_closed else { return -1; }
 
     var offset: i64 = 0;
@@ -733,7 +744,7 @@ fn tls_send_new_session_ticket(
     max_early_data_size: u32 = 0,
 ) -> bool {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS && g_tls_cipher_slots[idx].in_use else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
 
     var nst_body: u8[..512] = [];
     guard encode_new_session_ticket(
@@ -785,7 +796,7 @@ fn tls_send_new_session_ticket(
 // Sends a post-handshake KeyUpdate message and rotates transmitter traffic keys (RFC 8446 §4.6.3).
 fn tls_send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else { return false; }
     guard g_tls_cipher_slots[idx].in_use else { return false; }
 
     var ku_body: u8[..4] = [];
@@ -823,6 +834,7 @@ fn tls_send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
 
 fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
     let idx = slot_idx as i64;
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return; }
     let h_id = g_tls_cipher_slots[idx].hash_id;
     let h_len = g_tls_cipher_slots[idx].hash_len;
     let k_len = g_tls_cipher_slots[idx].key_len;
@@ -849,6 +861,7 @@ fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
 }
 
 fn tls_process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
     guard !g_tls_cipher_slots[idx].is_server else { return false; }
     var nst = NewSessionTicketMsg { .. };
     guard parse_new_session_ticket(msg_body, nst) else { return false; }
@@ -882,7 +895,7 @@ fn tls_process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
 fn tls_dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:]) -> bool {
     guard hs_bytes.len >= 4 else { return false; }
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
     var c_hs = core::cursor_from(hs_bytes);
     while c_hs.cursor_len() > 0 {
         guard c_hs.cursor_len() >= 4 else { return false; }
@@ -911,22 +924,26 @@ fn tls_dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8
 }
 
 fn tls_drain_rx_buf(idx: i64, dst: u8[:]) -> i32 {
-    let rem_buf = g_tls_cipher_slots[idx].rx_plain_buf.len - g_tls_cipher_slots[idx].rx_plain_pos;
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return 0; }
+    let rem_buf = core::sub_sat_i64(g_tls_cipher_slots[idx].rx_plain_buf.len, g_tls_cipher_slots[idx].rx_plain_pos);
     if rem_buf <= 0 { return 0; }
     let to_copy = min(rem_buf, dst.len);
     let start = g_tls_cipher_slots[idx].rx_plain_pos;
     for i in to_copy {
-        dst[i] = g_tls_cipher_slots[idx].rx_plain_buf[start + i];
+        let src_idx = core::add_sat_i64(start, i);
+        dst[i] = g_tls_cipher_slots[idx].rx_plain_buf[src_idx];
     }
-    g_tls_cipher_slots[idx].rx_plain_pos += to_copy;
+    g_tls_cipher_slots[idx].rx_plain_pos = core::add_sat_i64(start, to_copy);
     if g_tls_cipher_slots[idx].rx_plain_pos >= g_tls_cipher_slots[idx].rx_plain_buf.len {
+        core::secure_zeroize_slice(g_tls_cipher_slots[idx].rx_plain_buf[..]);
         g_tls_cipher_slots[idx].rx_plain_buf.clear();
         g_tls_cipher_slots[idx].rx_plain_pos = 0;
     }
-    return to_copy as i32;
+    return (to_copy & 0x7FFFFFFF) as i32;
 }
 
 fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return -1; }
     var hdr_buf: u8[5] = [0; 5];
     let ok_hdr = tls_read_exact(fd, hdr_buf[..], timeout_ms);
     guard ok_hdr else { return 0; }
@@ -944,6 +961,7 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
     guard ct == rfc::TLS_CONTENT_APPLICATION_DATA else { return -1; }
 
     var plain_dec: u8[..16640] = [];
+    defer core::secure_zeroize_slice(plain_dec[..]);
     while plain_dec.len < payload_len { plain_dec.push(0); }
     let klen = g_tls_cipher_slots[idx].key_len as i64;
     let dec_len, inner_type, alert_dec, ok_dec = tls_record_decrypt_prepared_into(
@@ -994,7 +1012,7 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
 fn tls_transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 && dst.len > 0 else { return -1; }
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return -1; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else { return -1; }
     guard g_tls_cipher_slots[idx].in_use else { return -1; }
     if g_tls_cipher_slots[idx].peer_closed { return 0; }
 
@@ -1013,7 +1031,7 @@ fn tls_transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 
 fn tls_transport_close(fd: i64, slot_idx: u16) {
     if fd > 0 {
         let idx = slot_idx as i64;
-        let valid_slot = idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS &&
+        let valid_slot = idx >= 0 && idx < g_tls_cipher_slots.len &&
             g_tls_cipher_slots[idx].in_use && !g_tls_cipher_slots[idx].peer_closed;
         if valid_slot {
             let alert_data: u8[2] = [1, 0];
@@ -2260,7 +2278,7 @@ fn tls_setup_client_cipher_slot(
     psk_resumed:  bool,
 ) {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < MAX_TLS_CIPHER_SLOTS else { return; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return; }
     let _ = g_tls_cipher_slots[idx].server_name.try_set(server_name);
     let _ = g_tls_cipher_slots[idx].negotiated_alpn.try_set(neg_alpn);
     g_tls_cipher_slots[idx].resumed = psk_resumed;
@@ -3470,6 +3488,7 @@ fn tls_setup_server_cipher_slot(
     c_ap_iv:      const u8[12]&,
 ) {
     let idx = slot_idx as i64;
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return; }
     g_tls_cipher_slots[idx].cipher_suite = cipher_suite;
     g_tls_cipher_slots[idx].key_len = key_len_u16;
     g_tls_cipher_slots[idx].hash_id = ks.hash_id;

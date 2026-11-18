@@ -18,6 +18,9 @@ const OWNER_BP_B:         u16 = core::IO_OWNER_USER_START + 3;
 const OWNER_PG_SRV:       u16 = core::IO_OWNER_USER_START + 4;
 const OWNER_PG_CLI:       u16 = core::IO_OWNER_USER_START + 5;
 const OWNER_HTTP_CLI:     u16 = core::IO_OWNER_USER_START + 6;
+const OWNER_SCALE_CLI:    u16 = core::IO_OWNER_USER_START + 7;
+const SCALE_CONN_COUNT:   i64 = 320;
+const BIG_BODY_BYTES:     i64 = 12288;
 const TIMER_TEST_VALID:   u64 = 1001;
 const TIMER_TEST_CANCEL:  u64 = 1002;
 const TIMER_PG_SIM_DELAY: u64 = 2001;
@@ -687,6 +690,243 @@ fn test_http_plus_async_pg_full_integration() {
     print("TASK5_SERVE_REACTOR_WITH_IO: OK");
 }
 
+// ---- Test 6: 320+ Scale + Split Keep-Alive RX + Backpressured TX + Zero-Idle Buffers ----
+
+struct ScaleProbeApp {
+    cli_links:  core::IoLink[320] = [core::IoLink { .. }; 320],
+    cli_ready:  bool[320]         = [false; 320],
+    cli_resps:  i32[320]          = [0; 320],
+    bp_cli:     core::IoLink      = core::IoLink { .. },
+    bp_rx_len:  i64               = 0,
+    bp_z_count: i64               = 0,
+}
+
+fn wing::on_server_stage(
+    _app:  ScaleProbeApp&,
+    phase: wire::ServerHookPhase,
+    _cfg:  wing::ServerPipelineConfig&,
+    req:   const wing::Request&,
+    _sctx: wing::ServerStageCtx&,
+    res:   wing::Response&,
+) -> wire::StageVerdict {
+    guard phase == wire::ServerHookPhase.RouteHandler else {
+        return wire::StageVerdict.Continue;
+    }
+    if req.url[..] == "/scale" {
+        res.status_code = 200;
+        res.body.clear();
+        res.body.append("SCALE_OK");
+        return wire::StageVerdict.ShortCircuit { status_code: 200 };
+    }
+    if req.url[..] == "/big" {
+        res.status_code = 200;
+        res.body.clear();
+        push_n(res.body, 'Z' as u8, BIG_BODY_BYTES);
+        return wire::StageVerdict.ShortCircuit { status_code: 200 };
+    }
+    return wire::StageVerdict.Continue;
+}
+
+fn core::on_link_event(app: ScaleProbeApp&, _host: wing::NetHost&, ev: const core::LinkEvent&) {
+    guard core::io_link_owner(ev.link) == OWNER_SCALE_CLI else { return; }
+    if ev.link.raw == app.bp_cli.raw && ev.kind == core::LinkEventKind.Data {
+        app.bp_rx_len = core::add_sat_i64(app.bp_rx_len, ev.data.len);
+        app.bp_z_count = core::add_sat_i64(app.bp_z_count, ev.data.count_byte('Z'));
+        return;
+    }
+    let idx = ev.tag as i64;
+    guard idx >= 0 && idx < SCALE_CONN_COUNT && ev.link.raw == app.cli_links[idx].raw else { return; }
+    if ev.kind == core::LinkEventKind.Connected {
+        app.cli_ready[idx] = true;
+    } else if ev.kind == core::LinkEventKind.Data && core::contains(ev.data, "SCALE_OK") {
+        app.cli_resps[idx] += 1;
+    }
+}
+
+fn assert_all_reactor_conns_idle_zero_buf(reactor: const wing::AsyncServerReactor&, expected_open: i64) {
+    var open_count: i64 = 0;
+    for i in reactor.conns.len {
+        if reactor.conns[i].in_use {
+            open_count += 1;
+            assert(reactor.conns[i].rx_len == 0 && reactor.conns[i].rx_cap == 0);
+            assert(reactor.conns[i].tx_len == 0 && reactor.conns[i].tx_cap == 0);
+        }
+    }
+    assert(open_count == expected_open);
+    assert(reactor.buf_items.len == 0 && reactor.buf_free.len == 0);
+}
+
+fn open_scale_tcp_connections(
+    host:      wing::NetHost&,
+    reactor:   wing::AsyncServerReactor&,
+    app:       ScaleProbeApp&,
+    http_port: u16,
+    now_ns:    u64&,
+) {
+    for wave in 10 {
+        for j in 32 {
+            let idx = wave * 32 + j;
+            let lnk, st = core::host_connect(
+                host,
+                core::ConnectAddr.Tcp { host: "127.0.0.1", port: http_port },
+                OWNER_SCALE_CLI,
+                idx as u64,
+            );
+            assert(core::io_link_is_valid(lnk));
+            app.cli_links[idx] = lnk;
+            if st == core::ConnectStatus.Connected {
+                app.cli_ready[idx] = true;
+            }
+        }
+        for _ in 8 {
+            now_ns = core::add_sat_u64(now_ns, 1000000);
+            let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+        }
+    }
+    for _ in 60 {
+        var ready_cnt: i64 = 0;
+        for i in SCALE_CONN_COUNT {
+            if app.cli_ready[i] { ready_cnt += 1; }
+        }
+        if ready_cnt == SCALE_CONN_COUNT && reactor.conns.len >= SCALE_CONN_COUNT {
+            break;
+        }
+        now_ns = core::add_sat_u64(now_ns, 2000000);
+        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 5, now_ns);
+    }
+    assert(host.active_links >= SCALE_CONN_COUNT * 2 + 1);
+    assert(reactor.conns.len == SCALE_CONN_COUNT);
+    assert(reactor.link_to_conn.len > 256);
+    assert_all_reactor_conns_idle_zero_buf(reactor, SCALE_CONN_COUNT);
+}
+
+fn verify_split_h1_keepalive_scale(
+    host:    wing::NetHost&,
+    reactor: wing::AsyncServerReactor&,
+    app:     ScaleProbeApp&,
+    now_ns:  u64&,
+) {
+    let half_a = "GET /scale HTTP/1.1\r\n";
+    let half_b = "Host: localhost\r\n\r\n";
+    for i in SCALE_CONN_COUNT {
+        let sn, se = core::host_send(host, app.cli_links[i], half_a);
+        assert(sn == (half_a.len as i32) && se == core::IoError.None);
+    }
+    for _ in 20 {
+        now_ns = core::add_sat_u64(now_ns, 1000000);
+        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+    }
+    assert(reactor.buf_items.len >= SCALE_CONN_COUNT * 512);
+
+    for batch in 4 {
+        now_ns = core::add_sat_u64(now_ns, 250000000);
+        for k in 80 {
+            let idx = batch * 80 + k;
+            let sn, se = core::host_send(host, app.cli_links[idx], half_b);
+            assert(sn == (half_b.len as i32) && se == core::IoError.None);
+        }
+        for _ in 25 {
+            now_ns = core::add_sat_u64(now_ns, 2000000);
+            let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+        }
+    }
+    for _ in 40 {
+        var done_cnt: i64 = 0;
+        for i in SCALE_CONN_COUNT {
+            if app.cli_resps[i] >= 1 { done_cnt += 1; }
+        }
+        if done_cnt == SCALE_CONN_COUNT { break; }
+        now_ns = core::add_sat_u64(now_ns, 5000000);
+        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 5, now_ns);
+    }
+    for i in SCALE_CONN_COUNT {
+        assert(app.cli_resps[i] == 1);
+    }
+    assert_all_reactor_conns_idle_zero_buf(reactor, SCALE_CONN_COUNT);
+
+    // Second keep-alive roundtrip on high-slot connections (> 256 link index, > 128 conn index).
+    now_ns = core::add_sat_u64(now_ns, 250000000);
+    let full_req = "GET /scale HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    for i in 300..SCALE_CONN_COUNT {
+        let sn, se = core::host_send(host, app.cli_links[i], full_req);
+        assert(sn == (full_req.len as i32) && se == core::IoError.None);
+    }
+    for _ in 30 {
+        if app.cli_resps[319] >= 2 && app.cli_resps[300] >= 2 { break; }
+        now_ns = core::add_sat_u64(now_ns, 1000000);
+        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+    }
+    for i in 300..SCALE_CONN_COUNT {
+        assert(app.cli_resps[i] == 2);
+    }
+    assert_all_reactor_conns_idle_zero_buf(reactor, SCALE_CONN_COUNT);
+}
+
+fn verify_backpressured_tx_pool_lease_and_release(
+    host:    wing::NetHost&,
+    reactor: wing::AsyncServerReactor&,
+    app:     ScaleProbeApp&,
+    now_ns:  u64&,
+) {
+    let cli_end, srv_end, ok_pair = wing::host_open_virtual_pair(
+        host, OWNER_SCALE_CLI, core::IO_OWNER_HTTP_SERVER, 999, 0,
+    );
+    assert(ok_pair);
+    app.bp_cli = cli_end;
+    let v_idx = wing::async_reactor_register_client_link(reactor, srv_end);
+    assert(v_idx >= SCALE_CONN_COUNT);
+
+    assert(core::host_set_rx_paused(host, cli_end, true));
+    let req_big = "GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    let sn, se = core::host_send(host, cli_end, req_big);
+    assert(sn == (req_big.len as i32) && se == core::IoError.None);
+
+    now_ns = core::add_sat_u64(now_ns, 250000000);
+    let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 0, now_ns);
+    assert(reactor.conns[v_idx].rx_cap == 0 && reactor.conns[v_idx].rx_len == 0);
+    assert(reactor.conns[v_idx].tx_len > 8000 && reactor.conns[v_idx].tx_cap >= 8192);
+    assert(reactor.buf_items.len >= 8192);
+
+    assert(core::host_set_rx_paused(host, cli_end, false));
+    for _ in 12 {
+        now_ns = core::add_sat_u64(now_ns, 1000000);
+        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 0, now_ns);
+        if app.bp_z_count == BIG_BODY_BYTES && reactor.conns[v_idx].tx_len == 0 {
+            break;
+        }
+    }
+    assert(app.bp_z_count == BIG_BODY_BYTES && app.bp_rx_len > BIG_BODY_BYTES);
+    assert_all_reactor_conns_idle_zero_buf(reactor, SCALE_CONN_COUNT + 1);
+}
+
+fn test_scale_320_conns_and_zero_idle_buffers() {
+    var dcfg = net_internal::TransportDriverConfig {
+        active_kind: net_internal::TransportDriverKind.Standard,
+        is_probed:   true,
+        ..
+    };
+    var host = wing::new_net_host(dcfg);
+    defer wing::close_net_host(host);
+
+    g_async_http_server = wing::new_http_server("127.0.0.1", 0);
+    wing::add_get_route(g_async_http_server, "/scale", 20);
+    wing::add_get_route(g_async_http_server, "/big", 21);
+
+    var reactor = wing::AsyncServerReactor { .. };
+    assert(wing::async_reactor_listen_http(
+        host, reactor, core::ConnectAddr.Tcp { host: "127.0.0.1", port: 0 }, 128,
+    ));
+    let http_port = wing::link_local_port(host, reactor.listener_link);
+    assert(http_port > 0);
+
+    var app = ScaleProbeApp { .. };
+    var now_ns: u64 = 50000000000;
+    open_scale_tcp_connections(host, reactor, app, http_port, now_ns);
+    verify_split_h1_keepalive_scale(host, reactor, app, now_ns);
+    verify_backpressured_tx_pool_lease_and_release(host, reactor, app, now_ns);
+    print("TASK6_SCALE_320_ZERO_IDLE_BUF: OK");
+}
+
 fn main() {
     let cli_args = args();
     var uds_path: u8[..104] = [];
@@ -700,6 +940,7 @@ fn main() {
     test_af_unix_listen_connect_roundtrip(uds_path[..]);
     test_virtual_backpressure_and_driver_chain();
     test_http_plus_async_pg_full_integration();
+    test_scale_320_conns_and_zero_idle_buffers();
 }
 
 // CHECK: TASK1_TCP_NONBLOCKING_SO_ERROR: OK
@@ -709,3 +950,4 @@ fn main() {
 // CHECK: TASK4B_HTTP2_MULTIPLEX_PG_WAKE: OK
 // CHECK: TASK4C_STALE_WAKE_SAFETY: OK
 // CHECK: TASK5_SERVE_REACTOR_WITH_IO: OK
+// CHECK: TASK6_SCALE_320_ZERO_IDLE_BUF: OK

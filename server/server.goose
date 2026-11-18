@@ -2650,10 +2650,11 @@ fn handle_connection_page_ring<Stage, B>(
     }
     guard ring.count > 0 else { return 0, true; }
 
-    g_default_reactor.chunk.len = 0;
-    let peek_n = ring.page_ring_peek(g_default_reactor.chunk.bytes[..]);
+    ensure_reactor_ingress_buf(g_reactor_chunk);
+    g_reactor_chunk.len = 0;
+    let peek_n = ring.page_ring_peek(g_reactor_chunk.bytes[..]);
     guard peek_n > 0 else { return 0, true; }
-    let peek_slice = g_default_reactor.chunk.bytes[..peek_n];
+    let peek_slice = g_reactor_chunk.bytes[..peek_n];
 
     if is_partial_h2_client_preface(peek_slice) || is_h2_client_preface(peek_slice) {
         var h2_done = false;

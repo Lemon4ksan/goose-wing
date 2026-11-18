@@ -17,23 +17,30 @@ import .h1_codec;
 import .h2_multiplexer;
 import .server;
 
-const ASYNC_REACTOR_MAX_CONNS:    i64 = 128;
-const ASYNC_REACTOR_MAX_H2:       i64 = 64;
-const ASYNC_REACTOR_MAX_PARKED:   i64 = 256;
-const ASYNC_REACTOR_LINK_MAP_CAP: i64 = 256;
-const ASYNC_REACTOR_MAX_RX_CAP:   i64 = 16384;
+const ASYNC_REACTOR_MAX_CONNS:  i64 = 1048576;
+const ASYNC_REACTOR_MAX_H2:     i64 = 4096;
+const ASYNC_REACTOR_MAX_PARKED: i64 = 65536;
+const ASYNC_REACTOR_MAX_RX_CAP: i64 = 16384;
+const ASYNC_REACTOR_MAX_TX_CAP: i64 = 65536;
+const ASYNC_REACTOR_MIN_RX_CAP: i64 = 512;
+const ASYNC_REACTOR_MIN_TX_CAP: i64 = 1024;
 
 struct AsyncHttpConn {
-    in_use:          bool         = false,
     link:            core::IoLink = core::IoLink { .. },
-    is_h2:           bool         = false,
     h2_session_idx:  i32          = -1,
+    req_seq:         u32          = 1,
+    rx_off:          i32          = -1,
+    rx_cap:          i32          = 0,
+    rx_len:          i32          = 0,
+    tx_off:          i32          = -1,
+    tx_cap:          i32          = 0,
+    tx_len:          i32          = 0,
+    parked_count:    u16          = 0,
+    in_use:          bool         = false,
+    is_h2:           bool         = false,
     h2_init:         bool         = false,
     close_after_tx:  bool         = false,
     pending_h1_sync: bool         = false,
-    req_seq:         u32          = 1,
-    rx_buf:          u8[..16384]  = [],
-    tx_buf:          u8[..65536]  = [],
 }
 
 struct ParkedHttpRequest {
@@ -54,15 +61,24 @@ struct ParkedHttpRequest {
     sctx:          ServerStageCtx  = ServerStageCtx { .. },
 }
 
+struct PooledBufSpan {
+    off: i32 = 0,
+    cap: i32 = 0,
+}
+
 root struct AsyncServerReactor {
     listener_link:         core::IoLink                          = core::IoLink { .. },
     cur_now_ns:            u64                                   = 0,
     next_conn_seq:         u32                                   = 1,
-    link_to_conn:          i32[256]                              = [-1; 256],
+    buf_items:             u8[>..]                               = [],
+    buf_free:              PooledBufSpan[>..<]                   = [],
+    link_to_conn:          i32[>..]                              = [],
     conns:                 AsyncHttpConn[>..]                    = [],
+    free_conns:            i32[>..<]                             = [],
     h2_sessions:           server_internal::H2ServerSession[>..] = [],
-    h2_in_use:             bool[64]                              = [false; 64],
+    h2_in_use:             bool[>..]                             = [],
     parked:                ParkedHttpRequest[>..]                = [],
+    free_parked:           i32[>..<]                             = [],
     tx_scratch:            u8[..65536]                           = [],
     req_scratch:           Request                               = Request { .. },
     res_scratch:           Response                              = Response { .. },
@@ -106,11 +122,171 @@ inline fn next_non_zero_seq_u32(cur: u32) -> u32 {
     return if nxt == 0 { 1 } else { nxt };
 }
 
+inline fn pooled_buf_slice(items: const u8[:], off: i32, len: i32) -> const u8[:] {
+    let base_off: i64 = off;
+    let cur_len:  i64 = len;
+    guard base_off >= 0 && cur_len > 0 else { return ""; }
+    let end = core::add_sat_i64(base_off, cur_len);
+    guard end <= items.len else { return ""; }
+    return items[base_off..end];
+}
+
+fn coalesce_and_trim_buf_pool(items: u8[>..]&, free_spans: PooledBufSpan[>..<]&, pos: i64) {
+    let next_idx = core::add_sat_i64(pos, 1);
+    if next_idx < free_spans.len {
+        let cur_end = core::add_sat_i64(free_spans[pos].off, free_spans[pos].cap);
+        if cur_end == free_spans[next_idx].off {
+            free_spans[pos].cap = core::add_sat_i64(free_spans[pos].cap, free_spans[next_idx].cap) as i32;
+            let _ = remove_at(free_spans, next_idx);
+        }
+    }
+    if pos > 0 {
+        let prev = core::sub_sat_i64(pos, 1);
+        let prev_end = core::add_sat_i64(free_spans[prev].off, free_spans[prev].cap);
+        if prev_end == free_spans[pos].off {
+            free_spans[prev].cap = core::add_sat_i64(free_spans[prev].cap, free_spans[pos].cap) as i32;
+            let _ = remove_at(free_spans, pos);
+        }
+    }
+    if free_spans.len > 0 {
+        let last_idx = core::sub_sat_i64(free_spans.len, 1);
+        let tail_off: i64 = free_spans[last_idx].off;
+        if core::add_sat_i64(tail_off, free_spans[last_idx].cap) == items.len {
+            items.resize(tail_off);
+            free_spans.resize(last_idx);
+        }
+    }
+}
+
+fn pooled_buf_free(
+    items:      u8[>..]&,
+    free_spans: PooledBufSpan[>..<]&,
+    off:        i32&,
+    cap:        i32&,
+    len:        i32&,
+) {
+    let cur_off = off;
+    let cur_cap = cap;
+    off = -1;
+    cap = 0;
+    len = 0;
+    guard cur_off >= 0 && cur_cap > 0 else { return; }
+    var pos: i64 = 0;
+    while pos < free_spans.len && free_spans[pos].off < cur_off {
+        pos = core::add_sat_i64(pos, 1);
+    }
+    insert_at(free_spans, pos, PooledBufSpan { off: cur_off, cap: cur_cap });
+    coalesce_and_trim_buf_pool(items, free_spans, pos);
+}
+
+fn alloc_from_buf_pool(
+    items:      u8[>..]&,
+    free_spans: PooledBufSpan[>..<]&,
+    need_cap:   i64,
+) -> i32 {
+    for i in free_spans.len {
+        let span_cap: i64 = free_spans[i].cap;
+        if span_cap >= need_cap {
+            let out_off = free_spans[i].off;
+            let rem = core::sub_sat_i64(span_cap, need_cap);
+            if rem == 0 {
+                let _ = remove_at(free_spans, i);
+            } else {
+                free_spans[i].off = core::add_sat_i64(out_off, need_cap) as i32;
+                free_spans[i].cap = rem as i32;
+            }
+            return out_off;
+        }
+    }
+    let out_off = items.len as i32;
+    push_n(items, 0 as u8, need_cap);
+    return out_off;
+}
+
+fn grow_pooled_buf_cap(
+    items:      u8[>..]&,
+    free_spans: PooledBufSpan[>..<]&,
+    off:        i32&,
+    cap:        i32&,
+    used_len:   i64,
+    new_cap:    i64,
+) {
+    let cur_cap: i64 = cap;
+    if cur_cap <= 0 || off < 0 {
+        off = alloc_from_buf_pool(items, free_spans, new_cap);
+        cap = new_cap as i32;
+        return;
+    }
+    let old_off: i64 = off;
+    if core::add_sat_i64(old_off, cur_cap) == items.len {
+        push_n(items, 0 as u8, core::sub_sat_i64(new_cap, cur_cap));
+        cap = new_cap as i32;
+        return;
+    }
+    let new_off = alloc_from_buf_pool(items, free_spans, new_cap);
+    for i in used_len {
+        items[core::add_sat_i64(new_off, i)] = items[core::add_sat_i64(old_off, i)];
+    }
+    var unused_len: i32 = 0;
+    pooled_buf_free(items, free_spans, off, cap, unused_len);
+    off = new_off;
+    cap = new_cap as i32;
+}
+
+fn pooled_buf_append(
+    items:      u8[>..]&,
+    free_spans: PooledBufSpan[>..<]&,
+    off:        i32&,
+    cap:        i32&,
+    len:        i32&,
+    data:       const u8[:],
+    min_cap:    i64,
+    max_cap:    i64,
+) -> bool {
+    guard data.len > 0 else { return true; }
+    let cur_len: i64 = len;
+    let needed = core::add_sat_i64(cur_len, data.len);
+    guard needed <= max_cap else { return false; }
+    if needed > cap {
+        let new_cap = min(max(next_pow2(needed), min_cap), max_cap);
+        grow_pooled_buf_cap(items, free_spans, off, cap, cur_len, new_cap);
+    }
+    let write_off = core::add_sat_i64(off, cur_len);
+    for i in data.len {
+        items[core::add_sat_i64(write_off, i)] = data[i];
+    }
+    len = needed as i32;
+    return true;
+}
+
+fn pooled_buf_consume(
+    items:      u8[>..]&,
+    free_spans: PooledBufSpan[>..<]&,
+    off:        i32&,
+    cap:        i32&,
+    len:        i32&,
+    consumed:   i64,
+) {
+    guard consumed > 0 else { return; }
+    let cur_len: i64 = len;
+    if consumed >= cur_len {
+        pooled_buf_free(items, free_spans, off, cap, len);
+        return;
+    }
+    let rem = core::sub_sat_i64(cur_len, consumed);
+    let base_off: i64 = off;
+    let src_off = core::add_sat_i64(base_off, consumed);
+    for i in rem {
+        items[core::add_sat_i64(base_off, i)] = items[core::add_sat_i64(src_off, i)];
+    }
+    len = rem as i32;
+}
+
 fn find_conn_idx_by_link(reactor: const AsyncServerReactor&, link: core::IoLink) -> i64 {
     guard core::io_link_is_valid(link) else { return -1; }
     let lslot = core::io_link_slot(link);
-    guard lslot >= 0 && lslot < ASYNC_REACTOR_LINK_MAP_CAP else { return -1; }
-    let idx = reactor.link_to_conn[lslot] as i64;
+    guard lslot >= 0 && lslot < reactor.link_to_conn.len else { return -1; }
+    let idx: i64 = reactor.link_to_conn[lslot];
     guard idx >= 0 && idx < reactor.conns.len else { return -1; }
     guard reactor.conns[idx].in_use && reactor.conns[idx].link.raw == link.raw else { return -1; }
     return idx;
@@ -121,22 +297,24 @@ fn alloc_async_h2_session(
     server_name: const u8[:],
     now_ms:      u64,
 ) -> i32 {
-    for i in ASYNC_REACTOR_MAX_H2 {
+    for i in reactor.h2_in_use.len {
         if !reactor.h2_in_use[i] {
-            while reactor.h2_sessions.len <= i {
-                reactor.h2_sessions.push(server_internal::H2ServerSession { .. });
-            }
             server_internal::reset_h2_server_session_inplace(reactor.h2_sessions[i], server_name, now_ms);
             reactor.h2_in_use[i] = true;
             return i as i32;
         }
     }
-    return -1;
+    guard reactor.h2_in_use.len < ASYNC_REACTOR_MAX_H2 else { return -1; }
+    let idx = reactor.h2_in_use.len;
+    reactor.h2_sessions.push(server_internal::H2ServerSession { .. });
+    reactor.h2_in_use.push(true);
+    server_internal::reset_h2_server_session_inplace(reactor.h2_sessions[idx], server_name, now_ms);
+    return idx as i32;
 }
 
 fn free_async_h2_session(reactor: AsyncServerReactor&, server: HttpServer&, h2_idx: i32) {
-    let idx = h2_idx as i64;
-    guard idx >= 0 && idx < ASYNC_REACTOR_MAX_H2 && idx < reactor.h2_sessions.len else { return; }
+    let idx: i64 = h2_idx;
+    guard idx >= 0 && idx < reactor.h2_in_use.len && idx < reactor.h2_sessions.len else { return; }
     if reactor.h2_in_use[idx] {
         server_internal::cleanup_h2_server_session(reactor.h2_sessions[idx], server.pipeline);
         reactor.h2_in_use[idx] = false;
@@ -147,27 +325,29 @@ fn free_async_h2_session(reactor: AsyncServerReactor&, server: HttpServer&, h2_i
 fn async_reactor_register_client_link(reactor: AsyncServerReactor&, link: core::IoLink) -> i64 {
     guard core::io_link_is_valid(link) else { return -1; }
     let lslot = core::io_link_slot(link);
-    guard lslot >= 0 && lslot < ASYNC_REACTOR_LINK_MAP_CAP else { return -1; }
+    guard lslot >= 0 && lslot < NET_HOST_MAX_LINKS else { return -1; }
 
     var idx: i64 = -1;
-    for i in reactor.conns.len {
-        if !reactor.conns[i].in_use {
-            idx = i;
-            break;
-        }
-    }
-    if idx < 0 {
+    if reactor.free_conns.len > 0 {
+        let top = core::sub_sat_i64(reactor.free_conns.len, 1);
+        idx = reactor.free_conns[top];
+        reactor.free_conns.resize(top);
+    } else {
         guard reactor.conns.len < ASYNC_REACTOR_MAX_CONNS else { return -1; }
         idx = reactor.conns.len;
         reactor.conns.push(AsyncHttpConn { .. });
+    }
+    if lslot >= reactor.link_to_conn.len {
+        let need_map = core::sub_sat_i64(core::add_sat_i64(lslot, 1), reactor.link_to_conn.len);
+        push_n(reactor.link_to_conn, -1 as i32, need_map);
     }
 
     let seq = next_non_zero_seq_u32(reactor.next_conn_seq);
     reactor.next_conn_seq = seq;
     reactor.conns[idx] = AsyncHttpConn {
-        in_use:  true,
         link:    link,
         req_seq: seq,
+        in_use:  true,
         ..
     };
     reactor.link_to_conn[lslot] = idx as i32;
@@ -183,13 +363,28 @@ fn close_async_http_conn<H>(
     guard conn_idx >= 0 && conn_idx < reactor.conns.len && reactor.conns[conn_idx].in_use else { return; }
     let link = reactor.conns[conn_idx].link;
     let lslot = core::io_link_slot(link);
-    if lslot >= 0 && lslot < ASYNC_REACTOR_LINK_MAP_CAP && reactor.link_to_conn[lslot] == (conn_idx as i32) {
+    if lslot >= 0 && lslot < reactor.link_to_conn.len && reactor.link_to_conn[lslot] == (conn_idx as i32) {
         reactor.link_to_conn[lslot] = -1;
     }
+    pooled_buf_free(
+        reactor.buf_items,
+        reactor.buf_free,
+        reactor.conns[conn_idx].rx_off,
+        reactor.conns[conn_idx].rx_cap,
+        reactor.conns[conn_idx].rx_len,
+    );
+    pooled_buf_free(
+        reactor.buf_items,
+        reactor.buf_free,
+        reactor.conns[conn_idx].tx_off,
+        reactor.conns[conn_idx].tx_cap,
+        reactor.conns[conn_idx].tx_len,
+    );
     if reactor.conns[conn_idx].h2_session_idx >= 0 {
         free_async_h2_session(reactor, server, reactor.conns[conn_idx].h2_session_idx);
     }
     reactor.conns[conn_idx] = AsyncHttpConn { .. };
+    reactor.free_conns.push(conn_idx as i32);
     reactor.total_served = core::add_sat_i64(reactor.total_served, 1);
     let _ = core::host_close(host, link);
 }
@@ -201,13 +396,11 @@ fn reserve_parked_http_slot(
     stream_id: u32,
 ) -> i64, core::WakeToken {
     var slot: i64 = -1;
-    for i in reactor.parked.len {
-        if !reactor.parked[i].in_use {
-            slot = i;
-            break;
-        }
-    }
-    if slot < 0 {
+    if reactor.free_parked.len > 0 {
+        let top = core::sub_sat_i64(reactor.free_parked.len, 1);
+        slot = reactor.free_parked[top];
+        reactor.free_parked.resize(top);
+    } else {
         guard reactor.parked.len < ASYNC_REACTOR_MAX_PARKED else {
             return -1, core::WakeToken { .. };
         }
@@ -223,6 +416,7 @@ fn reserve_parked_http_slot(
     reactor.parked[slot].conn_seq = c_seq;
     reactor.parked[slot].is_h2 = is_h2;
     reactor.parked[slot].stream_id = stream_id;
+    reactor.conns[conn_idx].parked_count = core::add_sat_u64(reactor.conns[conn_idx].parked_count, 1) as u16;
     let tok = core::WakeToken {
         owner:     core::IO_OWNER_HTTP_SERVER,
         gen:       gen,
@@ -263,12 +457,22 @@ fn restore_parked_request(src: const ParkedHttpRequest&, dst: Request&) {
 }
 
 fn release_parked_http_slot(reactor: AsyncServerReactor&, slot: i64) {
-    guard slot >= 0 && slot < reactor.parked.len else { return; }
+    guard slot >= 0 && slot < reactor.parked.len && reactor.parked[slot].in_use else { return; }
+    let c_idx: i64 = reactor.parked[slot].conn_idx;
+    if c_idx >= 0 &&
+        c_idx < reactor.conns.len &&
+        reactor.conns[c_idx].in_use &&
+        reactor.conns[c_idx].link.raw == reactor.parked[slot].link.raw &&
+        reactor.conns[c_idx].req_seq == reactor.parked[slot].conn_seq &&
+        reactor.conns[c_idx].parked_count > 0 {
+        reactor.conns[c_idx].parked_count = core::sub_sat_u64(reactor.conns[c_idx].parked_count, 1) as u16;
+    }
     let next_gen = next_non_zero_gen_u16(reactor.parked[slot].gen);
     reactor.parked[slot].in_use = false;
     reactor.parked[slot].gen = next_gen;
     reactor.parked[slot].conn_idx = -1;
     reactor.parked[slot].link = core::IoLink { .. };
+    reactor.free_parked.push(slot as i32);
 }
 
 fn send_async_http_bytes<H>(
@@ -281,21 +485,41 @@ fn send_async_http_bytes<H>(
     guard conn_idx >= 0 && conn_idx < reactor.conns.len && reactor.conns[conn_idx].in_use else { return false; }
     guard bytes.len > 0 else { return true; }
     let conn .= reactor.conns[conn_idx];
-    if conn.tx_buf.len == 0 {
+    if conn.tx_len == 0 {
         let sent, err = core::host_send(host, conn.link, bytes);
         if err == core::IoError.None && (sent as i64) >= bytes.len {
             return true;
         }
         if err == core::IoError.WouldBlock || err == core::IoError.ShortWrite {
-            let off = max(sent as i64, 0);
-            if conn.tx_buf.try_append(bytes[off..]) {
+            let skip = max(sent as i64, 0);
+            let ok_buf = pooled_buf_append(
+                reactor.buf_items,
+                reactor.buf_free,
+                conn.tx_off,
+                conn.tx_cap,
+                conn.tx_len,
+                bytes[skip..],
+                ASYNC_REACTOR_MIN_TX_CAP,
+                ASYNC_REACTOR_MAX_TX_CAP,
+            );
+            if ok_buf {
                 return true;
             }
         }
         close_async_http_conn(host, server, reactor, conn_idx);
         return false;
     }
-    guard conn.tx_buf.try_append(bytes) else {
+    let ok_append = pooled_buf_append(
+        reactor.buf_items,
+        reactor.buf_free,
+        conn.tx_off,
+        conn.tx_cap,
+        conn.tx_len,
+        bytes,
+        ASYNC_REACTOR_MIN_TX_CAP,
+        ASYNC_REACTOR_MAX_TX_CAP,
+    );
+    guard ok_append else {
         close_async_http_conn(host, server, reactor, conn_idx);
         return false;
     }
@@ -310,16 +534,20 @@ fn flush_async_http_tx<H>(
 ) {
     guard conn_idx >= 0 && conn_idx < reactor.conns.len && reactor.conns[conn_idx].in_use else { return; }
     let conn .= reactor.conns[conn_idx];
-    if conn.tx_buf.len > 0 {
-        let sent, err = core::host_send(host, conn.link, conn.tx_buf[..]);
+    if conn.tx_len > 0 {
+        let sent, err = core::host_send(
+            host, conn.link, pooled_buf_slice(reactor.buf_items[..], conn.tx_off, conn.tx_len),
+        );
         if sent > 0 {
-            core::compact_wire_buffer(conn.tx_buf, sent as i64);
+            pooled_buf_consume(
+                reactor.buf_items, reactor.buf_free, conn.tx_off, conn.tx_cap, conn.tx_len, sent,
+            );
         } else if err != core::IoError.WouldBlock && err != core::IoError.ShortWrite && err != core::IoError.None {
             close_async_http_conn(host, server, reactor, conn_idx);
             return;
         }
     }
-    if conn.tx_buf.len == 0 && conn.close_after_tx {
+    if conn.tx_len == 0 && conn.close_after_tx {
         close_async_http_conn(host, server, reactor, conn_idx);
     }
 }
@@ -400,12 +628,14 @@ fn process_async_h2_conn<H, App>(
     let consumed, ok_h2 = server_internal::ingest_h2_server_frames(
         reactor.h2_sessions[h2_idx],
         server.pipeline,
-        conn.rx_buf[..],
+        pooled_buf_slice(reactor.buf_items[..], conn.rx_off, conn.rx_len),
         now_ms,
         reactor.tx_scratch,
     );
     if consumed > 0 {
-        core::compact_wire_buffer(conn.rx_buf, consumed);
+        pooled_buf_consume(
+            reactor.buf_items, reactor.buf_free, conn.rx_off, conn.rx_cap, conn.rx_len, consumed,
+        );
     }
     if reactor.tx_scratch.len > 0 {
         guard send_async_http_bytes(host, server, reactor, conn_idx, reactor.tx_scratch[..]) else {
@@ -445,7 +675,7 @@ fn send_async_h1_400_bad_request<H>(
     let _ = send_async_http_bytes(host, server, reactor, conn_idx, reactor.tx_scratch[..]);
     guard reactor.conns[conn_idx].in_use else { return; }
     reactor.conns[conn_idx].close_after_tx = true;
-    if reactor.conns[conn_idx].tx_buf.len == 0 {
+    if reactor.conns[conn_idx].tx_len == 0 {
         close_async_http_conn(host, server, reactor, conn_idx);
     }
 }
@@ -468,12 +698,12 @@ fn emit_h1_response_and_check_close<H>(
         reactor.conns[conn_idx].close_after_tx = true;
     }
     if reactor.conns[conn_idx].close_after_tx {
-        if reactor.conns[conn_idx].tx_buf.len == 0 && !reactor.conns[conn_idx].pending_h1_sync {
+        if reactor.conns[conn_idx].tx_len == 0 && !reactor.conns[conn_idx].pending_h1_sync {
             close_async_http_conn(host, server, reactor, conn_idx);
         }
         return false;
     }
-    return reactor.conns[conn_idx].in_use && reactor.conns[conn_idx].rx_buf.len > 0;
+    return reactor.conns[conn_idx].in_use && reactor.conns[conn_idx].rx_len > 0;
 }
 
 fn step_async_h1_request<H, App>(
@@ -484,28 +714,34 @@ fn step_async_h1_request<H, App>(
     conn_idx: i64,
 ) -> bool {
     let conn .= reactor.conns[conn_idx];
-    guard conn.rx_buf.len > 0 && !conn.pending_h1_sync && !conn.close_after_tx else { return false; }
+    guard conn.rx_len > 0 && !conn.pending_h1_sync && !conn.close_after_tx else { return false; }
 
-    let hdr_end = core::fast_find_crlfcrlf(conn.rx_buf[..]);
+    let hdr_end = core::fast_find_crlfcrlf(pooled_buf_slice(reactor.buf_items[..], conn.rx_off, conn.rx_len));
     if hdr_end < 0 {
-        if conn.rx_buf.len > 8192 {
+        if conn.rx_len > 8192 {
             close_async_http_conn(host, server, reactor, conn_idx);
         }
         return false;
     }
-    guard is_http1_request_ready(conn.rx_buf[..], hdr_end) else { return false; }
+    guard is_http1_request_ready(
+        pooled_buf_slice(reactor.buf_items[..], conn.rx_off, conn.rx_len), hdr_end,
+    ) else {
+        return false;
+    }
 
     let p_slot, tok = reserve_parked_http_slot(reactor, conn_idx, false, 0);
     guard p_slot >= 0 else { return false; }
     reset_server_request_fast(reactor.req_scratch);
-    let ok_parse, consumed = parse_http1_wire_request(conn.rx_buf[..], reactor.req_scratch);
+    let ok_parse, consumed = parse_http1_wire_request(
+        pooled_buf_slice(reactor.buf_items[..], conn.rx_off, conn.rx_len), reactor.req_scratch,
+    );
     if !ok_parse || consumed <= 0 {
         release_parked_http_slot(reactor, p_slot);
         send_async_h1_400_bad_request(host, server, reactor, conn_idx);
         return false;
     }
 
-    core::compact_wire_buffer(conn.rx_buf, consumed);
+    pooled_buf_consume(reactor.buf_items, reactor.buf_free, conn.rx_off, conn.rx_cap, conn.rx_len, consumed);
     reactor.res_scratch = Response { .. };
     var future = server_internal::new_inline_handler_future(0);
     reactor.parked[p_slot].sctx = ServerStageCtx {
@@ -562,18 +798,34 @@ fn handle_http_data_event<H, App>(
     let conn_idx = find_conn_idx_by_link(reactor, link);
     guard conn_idx >= 0 else { return; }
     let conn .= reactor.conns[conn_idx];
-    guard conn.rx_buf.try_append(data) else {
+    let ok_rx = pooled_buf_append(
+        reactor.buf_items,
+        reactor.buf_free,
+        conn.rx_off,
+        conn.rx_cap,
+        conn.rx_len,
+        data,
+        ASYNC_REACTOR_MIN_RX_CAP,
+        ASYNC_REACTOR_MAX_RX_CAP,
+    );
+    guard ok_rx else {
         close_async_http_conn(host, server, reactor, conn_idx);
         return;
     }
     if !conn.h2_init {
-        if conn.rx_buf.len < 24 && is_partial_h2_client_preface(conn.rx_buf[..]) {
+        if conn.rx_len < 24 && is_partial_h2_client_preface(
+            pooled_buf_slice(reactor.buf_items[..], conn.rx_off, conn.rx_len),
+        ) {
             return;
         }
-        if conn.rx_buf.len >= 24 && is_h2_client_preface(conn.rx_buf[..]) {
+        if conn.rx_len >= 24 && is_h2_client_preface(
+            pooled_buf_slice(reactor.buf_items[..], conn.rx_off, conn.rx_len),
+        ) {
             conn.is_h2 = true;
             conn.h2_init = true;
-        } else if core::fast_find_crlfcrlf(conn.rx_buf[..]) >= 0 {
+        } else if core::fast_find_crlfcrlf(
+            pooled_buf_slice(reactor.buf_items[..], conn.rx_off, conn.rx_len),
+        ) >= 0 {
             conn.h2_init = true;
         }
     }
@@ -634,7 +886,7 @@ fn resume_parked_h2_wake<H, App>(
     }
     if reactor.conns[c_idx].in_use &&
         reactor.conns[c_idx].close_after_tx &&
-        reactor.conns[c_idx].tx_buf.len == 0 &&
+        reactor.conns[c_idx].tx_len == 0 &&
         !has_parked_req_on_conn(reactor, c_idx) {
         close_async_http_conn(host, server, reactor, c_idx);
     }
@@ -714,7 +966,7 @@ fn handle_http_eof_event<H>(
     let idx = find_conn_idx_by_link(reactor, link);
     guard idx >= 0 else { return; }
     let has_pending = reactor.conns[idx].pending_h1_sync ||
-        reactor.conns[idx].tx_buf.len > 0 ||
+        reactor.conns[idx].tx_len > 0 ||
         has_parked_req_on_conn(reactor, idx);
     if has_pending {
         reactor.conns[idx].close_after_tx = true;
@@ -781,12 +1033,10 @@ fn handle_async_reactor_event<H, App>(
 }
 
 fn has_parked_req_on_conn(reactor: const AsyncServerReactor&, conn_idx: i64) -> bool {
-    for i in reactor.parked.len {
-        if reactor.parked[i].in_use && reactor.parked[i].conn_idx == conn_idx {
-            return true;
-        }
+    guard conn_idx >= 0 && conn_idx < reactor.conns.len && reactor.conns[conn_idx].in_use else {
+        return false;
     }
-    return false;
+    return reactor.conns[conn_idx].parked_count > 0;
 }
 
 inline fn dispatch_host_ctx_event<App>(

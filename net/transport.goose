@@ -22,7 +22,7 @@ struct VirtualPipeSlot {
     in_use:   bool             = false,
 }
 
-var g_virtual_pipes: VirtualPipeSlot[32] = [VirtualPipeSlot { .. }; 32];
+var g_virtual_pipes: VirtualPipeSlot[>..] = [];
 
 extern fn native_udp_bind(host: const u8[:], port: u16) -> i64 = "wing_udp_bind";
 extern fn native_udp_sendto(sock_fd: i64, data: const u8[:], host: const u8[:], port: u16) -> i32 = "wing_udp_sendto";
@@ -73,7 +73,7 @@ enum Transport {
 // ---- In-Memory Duplex Virtual Pipe Lifecycle & Descriptors -----------------
 
 fn alloc_virtual_pipe_slot() -> u16, bool {
-    for i in MAX_VIRTUAL_PIPES {
+    for i in g_virtual_pipes.len {
         let slot .= g_virtual_pipes[i];
         if !slot.in_use {
             core::clear(slot.a_to_b);
@@ -81,16 +81,23 @@ fn alloc_virtual_pipe_slot() -> u16, bool {
             slot.closed_a = false;
             slot.closed_b = false;
             slot.in_use = true;
-            return i as u16, true;
+            return (i & 0xFFFF) as u16, true;
         }
     }
-    return 0xFFFF, false;
+    guard g_virtual_pipes.len < MAX_VIRTUAL_PIPES else {
+        return 0xFFFF, false;
+    }
+    let new_idx = g_virtual_pipes.len;
+    g_virtual_pipes.push(VirtualPipeSlot { in_use: true, .. });
+    return (new_idx & 0xFFFF) as u16, true;
 }
 
 fn free_virtual_pipe_slot(pipe_slot: u16) {
     let idx = pipe_slot as i64;
-    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES else { return; }
+    guard idx >= 0 && idx < g_virtual_pipes.len else { return; }
     let slot .= g_virtual_pipes[idx];
+    core::secure_zeroize_slice(slot.a_to_b.storage[..]);
+    core::secure_zeroize_slice(slot.b_to_a.storage[..]);
     core::clear(slot.a_to_b);
     core::clear(slot.b_to_a);
     slot.closed_a = true;
@@ -128,22 +135,23 @@ inline fn is_virtual_pipe_fd(fd: i64) -> bool {
     return fd > 0 && (fd & VIRTUAL_FD_TAG) != 0;
 }
 
-// Decodes a tagged virtual pipe descriptor into `(pipe_slot, is_b_end, ok)`.
+// Decodes an allocated virtual pipe descriptor into `(pipe_slot, is_b_end, ok)`.
 //
 // Example:
-//   fd = 0x60000003
-//   returns: 3, true, true
+//   fd = 0x60000000 (when g_virtual_pipes.len >= 1)
+//   returns: 0, true, true
 fn decode_virtual_pipe_fd(fd: i64) -> u16, bool, bool {
     guard is_virtual_pipe_fd(fd) else { return 0xFFFF, false, false; }
     let slot_i64 = fd & 0xFFFF;
-    guard slot_i64 >= 0 && slot_i64 < MAX_VIRTUAL_PIPES else { return 0xFFFF, false, false; }
+    guard slot_i64 >= 0 && slot_i64 < g_virtual_pipes.len else { return 0xFFFF, false, false; }
     let is_b_end = (fd & VIRTUAL_FD_B_END_BIT) != 0;
-    return slot_i64 as u16, is_b_end, true;
+    return (slot_i64 & 0xFFFF) as u16, is_b_end, true;
 }
 
 fn virtual_pipe_send(pipe_slot: u16, is_b_end: bool, data: const u8[:]) -> i32 {
+    guard data.len > 0 else { return 0; }
     let idx = pipe_slot as i64;
-    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES && data.len > 0 else { return 0; }
+    guard idx >= 0 && idx < g_virtual_pipes.len else { return -1; }
     let slot .= g_virtual_pipes[idx];
     guard slot.in_use && !slot.closed_a && !slot.closed_b else { return -1; }
     var rb .= slot.a_to_b;
@@ -165,8 +173,9 @@ fn virtual_pipe_send(pipe_slot: u16, is_b_end: bool, data: const u8[:]) -> i32 {
 }
 
 fn virtual_pipe_recv(pipe_slot: u16, is_b_end: bool, dst: u8[:]) -> i32 {
+    guard dst.len > 0 else { return 0; }
     let idx = pipe_slot as i64;
-    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES && dst.len > 0 else { return 0; }
+    guard idx >= 0 && idx < g_virtual_pipes.len else { return -1; }
     let slot .= g_virtual_pipes[idx];
     guard slot.in_use else { return -1; }
     var rb .= slot.b_to_a;
@@ -197,7 +206,7 @@ fn virtual_pipe_recv(pipe_slot: u16, is_b_end: bool, dst: u8[:]) -> i32 {
 
 fn virtual_pipe_close(pipe_slot: u16, is_b_end: bool) {
     let idx = pipe_slot as i64;
-    guard idx >= 0 && idx < MAX_VIRTUAL_PIPES else { return; }
+    guard idx >= 0 && idx < g_virtual_pipes.len else { return; }
     let slot .= g_virtual_pipes[idx];
     guard slot.in_use else { return; }
     if is_b_end {

@@ -29,7 +29,8 @@ struct ServerCompressAndEtagMemo {
     etag_val:         u8[..32]   = [],
     gzip_src:         u8[..512]  = [],
     gzip_dst:         u8[..512]  = [],
-    compress_scratch: u8[..2048] = [],
+    gzip_level:       i32        = 0,
+    compress_scratch: u8[..8192] = [],
 }
 
 struct ServerPipelineConfig {
@@ -57,6 +58,7 @@ struct ServerPipelineConfig {
     memo:                    ServerCompressAndEtagMemo       = ServerCompressAndEtagMemo { .. },
     target_host:             u8[..256]                       = "example.com",
     deadline_ns:             u64                             = 30000000000, // 30s
+    gzip_level:              i32                             = 1,
     enable_rate_limiter:     bool                            = true,
     enable_csrf_guard:       bool                            = true,
     enable_cors:             bool                            = true,
@@ -86,6 +88,7 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
         slab_pool:               server_internal::SpillSlabPool { .. },
         target_host:             [],
         deadline_ns:             30000000000,
+        gzip_level:              1,
         trust_proxy_headers:     false,
         server_pso_capabilities: 0xFFFFFFFFFFFFFFFF,
         ..
@@ -1052,35 +1055,93 @@ inline fn finalize_compressed_response(res: Response&, encoding: const u8[:], su
     append_vary_accept_encoding(res);
 }
 
-inline fn select_dynamic_gzip_level(body_len: i64) -> i32 {
-    return if body_len < 128 { 0 } else { 6 };
+const COMPRESS_INLINE_BODY_MAX: i64 = 7680;
+
+inline fn select_dynamic_gzip_level(body_len: i64, configured_level: i32 = 1) -> i32 {
+    if body_len < 128 {
+        return 0;
+    }
+    if configured_level >= 1 && configured_level <= 9 {
+        return configured_level;
+    }
+    return 1;
 }
 
 fn try_compress_zstd(res: Response&, memo: ServerCompressAndEtagMemo&) -> bool {
-    memo.compress_scratch.clear();
-    guard core::zstd_compress(res.body[..], memo.compress_scratch) else { return false; }
-    let _ = res.body.try_set(memo.compress_scratch[..]);
+    if res.body.len <= COMPRESS_INLINE_BODY_MAX {
+        memo.compress_scratch.clear();
+        if core::zstd_compress(res.body[..], memo.compress_scratch) {
+            let _ = res.body.try_set(memo.compress_scratch[..]);
+            finalize_compressed_response(res, "zstd", "-zstd");
+            return true;
+        }
+    }
+    var large_scratch: u8[>..] = [];
+    guard core::zstd_compress(res.body[..], large_scratch) else { return false; }
+    let _ = res.body.try_set(large_scratch[..]);
     finalize_compressed_response(res, "zstd", "-zstd");
     return true;
 }
 
 fn try_compress_brotli(res: Response&, memo: ServerCompressAndEtagMemo&) -> bool {
-    memo.compress_scratch.clear();
-    guard core::brotli_compress(res.body[..], memo.compress_scratch, 1) else { return false; }
-    let _ = res.body.try_set(memo.compress_scratch[..]);
+    if res.body.len <= COMPRESS_INLINE_BODY_MAX {
+        memo.compress_scratch.clear();
+        if core::brotli_compress(res.body[..], memo.compress_scratch, 1) {
+            let _ = res.body.try_set(memo.compress_scratch[..]);
+            finalize_compressed_response(res, "br", "-br");
+            return true;
+        }
+    }
+    var large_scratch: u8[>..] = [];
+    guard core::brotli_compress(res.body[..], large_scratch, 1) else { return false; }
+    let _ = res.body.try_set(large_scratch[..]);
     finalize_compressed_response(res, "br", "-br");
     return true;
 }
 
-fn compress_gzip_uncached(res: Response&, memo: ServerCompressAndEtagMemo&) {
-    memo.compress_scratch.clear();
-    let gz_level = select_dynamic_gzip_level(res.body.len);
-    if core::gzip_compress(res.body[..], memo.compress_scratch, gz_level) {
-        if res.body.len <= 512 && memo.compress_scratch.len <= 512 {
-            let _ = memo.gzip_src.try_set(res.body[..]);
-            let _ = memo.gzip_dst.try_set(memo.compress_scratch[..]);
+inline fn maybe_store_gzip_memo(
+    src:        const u8[:],
+    compressed: const u8[:],
+    gz_level:   i32,
+    memo:       ServerCompressAndEtagMemo&,
+) {
+    if src.len <= 512 && compressed.len <= 512 {
+        let _ = memo.gzip_src.try_set(src);
+        let _ = memo.gzip_dst.try_set(compressed);
+        memo.gzip_level = gz_level;
+    }
+}
+
+inline fn try_apply_gzip_memo(
+    res:      Response&,
+    memo:     const ServerCompressAndEtagMemo&,
+    gz_level: i32,
+) -> bool {
+    guard res.body.len <= 512 && memo.gzip_src.len > 0 && memo.gzip_level == gz_level else {
+        return false;
+    }
+    guard res.body[..] == memo.gzip_src[..] else {
+        return false;
+    }
+    let _ = res.body.try_set(memo.gzip_dst[..]);
+    finalize_compressed_response(res, "gzip", "-gzip");
+    return true;
+}
+
+fn compress_gzip_uncached(res: Response&, memo: ServerCompressAndEtagMemo&, level: i32 = 1) {
+    let gz_level = select_dynamic_gzip_level(res.body.len, level);
+    if res.body.len <= COMPRESS_INLINE_BODY_MAX {
+        memo.compress_scratch.clear();
+        if core::gzip_compress(res.body[..], memo.compress_scratch, gz_level) {
+            maybe_store_gzip_memo(res.body[..], memo.compress_scratch[..], gz_level, memo);
+            let _ = res.body.try_set(memo.compress_scratch[..]);
+            finalize_compressed_response(res, "gzip", "-gzip");
+            return;
         }
-        let _ = res.body.try_set(memo.compress_scratch[..]);
+    }
+    var large_scratch: u8[>..] = [];
+    if core::gzip_compress(res.body[..], large_scratch, gz_level) {
+        let _ = res.body.try_set(large_scratch[..]);
         finalize_compressed_response(res, "gzip", "-gzip");
     }
 }
@@ -1115,10 +1176,11 @@ inline fn is_compressible_response(res: const Response&, min_bytes: i64 = 1) -> 
 
 // Stage 1..3 (Server Egress): Dynamic response compression (`zstd`, `br`, `gzip`) per `Accept-Encoding`.
 fn stage_server_compress(
-    req:  const Request&,
-    res:  Response&,
-    mask: u64,
-    memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. },
+    req:   const Request&,
+    res:   Response&,
+    mask:  u64,
+    memo:  ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. },
+    level: i32                        = 1,
 ) -> wire::StageVerdict {
     guard is_compressible_response(res) else {
         return wire::StageVerdict.Continue;
@@ -1139,12 +1201,10 @@ fn stage_server_compress(
         return wire::StageVerdict.Continue;
     }
     if allow_gzip && client_accepts_encoding(accept_enc, "gzip") {
-        if res.body.len <= 512 && memo.gzip_src.len > 0 && res.body[..] == memo.gzip_src[..] {
-            let _ = res.body.try_set(memo.gzip_dst[..]);
-            finalize_compressed_response(res, "gzip", "-gzip");
-            return wire::StageVerdict.Continue;
+        let gz_level = select_dynamic_gzip_level(res.body.len, level);
+        if !try_apply_gzip_memo(res, memo, gz_level) {
+            compress_gzip_uncached(res, memo, level);
         }
-        compress_gzip_uncached(res, memo);
     }
     return wire::StageVerdict.Continue;
 }
@@ -1777,7 +1837,7 @@ fn dispatch_egress_pipeline(
     let egress_mask = mask & 0xFFFFFFFF00000000;
     let compress_bits = STAGE_EGRESS_COMPRESS_GZIP | STAGE_EGRESS_COMPRESS_BROTLI | STAGE_EGRESS_COMPRESS_ZSTD;
     if (egress_mask & compress_bits) != 0 {
-        let _ = stage_server_compress(req, res, egress_mask, cfg.memo);
+        let _ = stage_server_compress(req, res, egress_mask, cfg.memo, cfg.gzip_level);
     }
     if header(req, rfc::HEADER_WANT_CONTENT_DIGEST).len > 0 && res.body.len > 0 {
         let _ = set_response_content_digest(res);

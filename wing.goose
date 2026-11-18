@@ -146,6 +146,7 @@ import net.accel;
 import net.poller;
 import net.event_loop;
 import net.io_host;
+import net.goose_io;
 
 // ---- tls 1.3, quic & http/3 (Layers 6-8) -----------------------------------
 

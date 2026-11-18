@@ -231,52 +231,63 @@ struct ReactorConnectionSlot {
     fd:              i64             = -1,
     connected_at_ns: i64             = 0,
     timer:           ConnectionTimer = ConnectionTimer { .. },
+    next_free:       i32             = -1,
     in_use:          bool            = false,
 }
 
 struct ReactorConnectionPool {
-    slots: ReactorConnectionSlot[..4096] = [],
+    free_head: i32                        = -1,
+    slots:     ReactorConnectionSlot[>..] = [],
 }
 
-fn ensure_connection_pool_capacity(pool: ReactorConnectionPool&) {
-    if pool.slots.len < 4096 {
-        pool.slots.resize(4096, ReactorConnectionSlot { .. });
-    }
-}
-
-// Resets all slots in `pool` in place without allocating a temporary pool on the stack.
+// Resets all materialized slots in `pool` in place without allocating upfront capacity.
 fn reset_connection_pool_inplace(pool: ReactorConnectionPool&) {
-    ensure_connection_pool_capacity(pool);
+    pool.free_head = -1;
     for idx in pool.slots.len {
         pool.slots[idx].fd = -1;
         pool.slots[idx].connected_at_ns = 0;
         pool.slots[idx].timer = ConnectionTimer { .. };
         pool.slots[idx].in_use = false;
+        pool.slots[idx].next_free = pool.free_head;
+        pool.free_head = idx as i32;
     }
 }
 
-// Allocates a connection slot from `pool` for `fd` at `now_ns`, returning the slot index or -1.
+// Allocates a connection slot from `pool` for `fd` at `now_ns`, growing lazily on demand.
 fn alloc_connection_slot(pool: ReactorConnectionPool&, fd: i64, now_ns: i64) -> i32 {
-    ensure_connection_pool_capacity(pool);
-    for idx in pool.slots.len {
-        if fd >= 0 && !pool.slots[idx].in_use {
-            pool.slots[idx].in_use = true;
-            pool.slots[idx].fd = fd;
-            pool.slots[idx].connected_at_ns = now_ns;
-            pool.slots[idx].timer = ConnectionTimer { .. };
-            return idx as i32;
-        }
+    guard fd >= 0 else { return -1; }
+    if pool.free_head >= 0 && pool.free_head < pool.slots.len {
+        let idx = pool.free_head as i64;
+        pool.free_head = pool.slots[idx].next_free;
+        pool.slots[idx].fd = fd;
+        pool.slots[idx].connected_at_ns = now_ns;
+        pool.slots[idx].timer = ConnectionTimer { .. };
+        pool.slots[idx].next_free = -1;
+        pool.slots[idx].in_use = true;
+        return idx as i32;
     }
-    return -1;
+    guard pool.slots.len < 1048576 else { return -1; }
+    let idx = pool.slots.len;
+    pool.slots.push(ReactorConnectionSlot {
+        fd:              fd,
+        connected_at_ns: now_ns,
+        timer:           ConnectionTimer { .. },
+        next_free:       -1,
+        in_use:          true,
+    });
+    return idx as i32;
 }
 
 // Releases a leased connection slot back to `pool` and clears its descriptor state.
 fn free_connection_slot(pool: ReactorConnectionPool&, slot_idx: i32) {
-    guard slot_idx >= 0 && slot_idx < pool.slots.len else { return; }
-    pool.slots[slot_idx].fd = -1;
-    pool.slots[slot_idx].connected_at_ns = 0;
-    pool.slots[slot_idx].timer = ConnectionTimer { .. };
-    pool.slots[slot_idx].in_use = false;
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < pool.slots.len && pool.slots[idx].in_use else { return; }
+    pool.slots[idx].fd = -1;
+    pool.slots[idx].connected_at_ns = 0;
+    pool.slots[idx].timer = ConnectionTimer { .. };
+    pool.slots[idx].in_use = false;
+    pool.slots[idx].next_free = pool.free_head;
+    pool.free_head = slot_idx;
 }
 
 // Acquires a connection slot from `pool`, invokes `F(pool.slots[slot_idx])`,

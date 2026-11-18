@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -113,16 +114,29 @@ def build_go_oracle(out_bin: Path) -> None:
         )
 
 
-def build_wing_verdict(goose_bin: str, out_bin: Path) -> None:
-    """Builds tests/fuzz/h2_tls_client_verdict.goose with stack headroom on Windows."""
+def build_wing_binary(goose_bin: str, src_rel: str, out_bin: Path) -> None:
+    """Builds a .goose test binary with stack headroom on Windows (with .lit cache)."""
+    src = REPO_ROOT / src_rel
+    cache_dir = REPO_ROOT / ".lit" / "cache" / "h2_diff"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / out_bin.name
+    newest_dep_mtime = max(
+        [src.stat().st_mtime]
+        + [p.stat().st_mtime for p in (REPO_ROOT / "shim").glob("*.c")]
+        + [p.stat().st_mtime for p in (REPO_ROOT / "tls").glob("*.goose")]
+        + [p.stat().st_mtime for p in (REPO_ROOT / "server").glob("*.goose")]
+    )
+    if cached.exists() and cached.stat().st_mtime >= newest_dep_mtime:
+        shutil.copy2(cached, out_bin)
+        return
+
     env = os.environ.copy()
     if sys.platform == "win32":
         stack_cc = REPO_ROOT / "tools" / "gcc_stack.bat"
         if stack_cc.exists():
             env["GOOSE_CC"] = str(stack_cc)
-    src = REPO_ROOT / "tests" / "fuzz" / "h2_tls_client_verdict.goose"
     res = subprocess.run(
-        [goose_bin, "build", "-O2", "-o", str(out_bin), str(src)],
+        [goose_bin, "build", "-O0", "-o", str(out_bin), str(src)],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
@@ -131,9 +145,47 @@ def build_wing_verdict(goose_bin: str, out_bin: Path) -> None:
     )
     if res.returncode != 0:
         raise RuntimeError(
-            f"goose build h2_tls_client_verdict failed (exit {res.returncode}):\n"
+            f"goose build {src_rel} failed (exit {res.returncode}):\n"
             f"{res.stderr}\n{res.stdout}"
         )
+    try:
+        shutil.copy2(out_bin, cached)
+    except Exception:
+        pass
+
+
+def start_wing_tls_server(wing_server_bin: Path, ca_out: Path) -> tuple[subprocess.Popen, int]:
+    """Starts tests/fuzz/wing_tls_server, writes its PEM cert to `ca_out`, returns (proc, port)."""
+    proc = subprocess.Popen(
+        [str(wing_server_bin)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        cwd=REPO_ROOT,
+    )
+    assert proc.stdout is not None
+    cert_hex = ""
+    port = 0
+    t_deadline = time.time() + 10.0
+    while time.time() < t_deadline:
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                break
+            continue
+        s = line.strip()
+        if s.startswith("CERT_HEX:"):
+            cert_hex = s.split(":", 1)[1].strip()
+        elif s.startswith("READY_PORT:"):
+            port = int(s.split(":", 1)[1].strip())
+            break
+    if not cert_hex or port <= 0:
+        err = proc.stderr.read() if proc.stderr else ""
+        proc.kill()
+        raise RuntimeError(f"wing_tls_server failed to start (port={port}): {err}")
+    ca_out.write_text(ssl.DER_cert_to_PEM_cert(bytes.fromhex(cert_hex)), encoding="utf-8")
+    return proc, port
 
 
 def encode_headers_hex(headers: dict[str, str] | None) -> str:
@@ -233,12 +285,12 @@ def compare_verdicts(
 
 
 def verify_openssl_1byte_frag(
-    h1_port: int,
+    wing_port: int,
     ca_path: Path,
     openssl_bin: str,
 ) -> tuple[bool, str]:
-    """Tests TLS 1.3 handshake reassembly through a 1-byte TCP segmenting proxy."""
-    proxy = OneByteFragmentProxy(h1_port)
+    """Tests Wing TLS 1.3 server handshake reassembly through a 1-byte TCP segmenting proxy."""
+    proxy = OneByteFragmentProxy(wing_port)
     try:
         proc = subprocess.Popen(
             [
@@ -249,6 +301,8 @@ def verify_openssl_1byte_frag(
                 "-CAfile",
                 str(ca_path),
                 "-tls1_3",
+                "-alpn",
+                "http/1.1",
                 "-servername",
                 "localhost",
                 "-quiet",
@@ -260,74 +314,104 @@ def verify_openssl_1byte_frag(
         time.sleep(0.5)
         proc.stdin.write(b"GET /h1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         proc.stdin.flush()
-        out, err = proc.communicate(timeout=10)
+        out, err = proc.communicate(timeout=15)
         out_text = out.decode("latin1", errors="replace")
         err_text = err.decode("latin1", errors="replace")
-        if "HTTP/1.1 200 OK" not in out_text or "hello-from-go-HTTP/1.1" not in out_text:
+        if "HTTP/1.1 200 OK" not in out_text or "hello-from-wing-TLS1.3" not in out_text:
             return False, f"missing 200 OK or body: out={out_text!r} err={err_text!r}"
-        return True, "1-byte proxy handshake + 200 OK"
+        return True, "Wing server 1-byte proxy handshake + HTTP/1.1 200 OK"
     finally:
         proxy.close()
 
 
 def verify_openssl_keyupdate(
-    h1_port: int,
+    wing_port: int,
     ca_path: Path,
     openssl_bin: str,
 ) -> tuple[bool, str]:
-    """Tests TLS 1.3 post-handshake KeyUpdate (requested and unrequested) over active wire."""
+    """Tests Wing TLS 1.3 post-handshake KeyUpdate and post-rotation app data over active wire."""
     proc = subprocess.Popen(
         [
             openssl_bin,
             "s_client",
             "-connect",
-            f"127.0.0.1:{h1_port}",
+            f"127.0.0.1:{wing_port}",
             "-CAfile",
             str(ca_path),
             "-tls1_3",
+            "-alpn",
+            "http/1.1",
             "-servername",
             "localhost",
             "-msg",
-            "-crlf",
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    out_chunks: list[bytes] = []
+    err_chunks: list[bytes] = []
+
+    def _drain(stream, acc: list[bytes]) -> None:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                break
+            acc.append(chunk)
+
+    t_out = threading.Thread(target=_drain, args=(proc.stdout, out_chunks), daemon=True)
+    t_err = threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    assert proc.stdin is not None
     time.sleep(0.3)
-    proc.stdin.write(b"K\r\n")
+    proc.stdin.write(b"K\n")
     proc.stdin.flush()
-    time.sleep(0.3)
-    out, err = proc.communicate(timeout=10)
-    combined = (out + err).decode("latin1", errors="replace")
+    time.sleep(0.4)
+    proc.stdin.write(b"GET /h1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    proc.stdin.flush()
+    time.sleep(0.8)
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    proc.wait(timeout=15)
+    t_out.join(timeout=2)
+    t_err.join(timeout=2)
+
+    combined = (b"".join(out_chunks) + b"".join(err_chunks)).decode("latin1", errors="replace")
     has_client_ku = ">>> TLS 1.3, Handshake [length 0005], KeyUpdate" in combined
     has_server_ku = "<<< TLS 1.3, Handshake [length 0005], KeyUpdate" in combined
     has_keyupdate_tag = "KEYUPDATE" in combined
-    if not (has_client_ku and has_server_ku and has_keyupdate_tag):
+    has_http_ok = "HTTP/1.1 200 OK" in combined and "hello-from-wing-TLS1.3" in combined
+    if not (has_client_ku and has_server_ku and has_keyupdate_tag and has_http_ok):
         return (
             False,
-            f"KeyUpdate missing: client={has_client_ku} server={has_server_ku} tag={has_keyupdate_tag}",
+            f"KeyUpdate failed: client={has_client_ku} server={has_server_ku} tag={has_keyupdate_tag} http={has_http_ok}\n{combined[-800:]}",
         )
-    return True, "bidirectional KeyUpdate (client req=1, server resp=0)"
+    return True, "Wing server bidirectional KeyUpdate + post-rotation 200 OK"
 
 
 def verify_openssl_resumption(
-    h1_port: int,
+    wing_port: int,
     ca_path: Path,
     openssl_bin: str,
     tmp_dir: Path,
 ) -> tuple[bool, str]:
-    """Tests TLS 1.3 NewSessionTicket capture and 1-RTT session resumption."""
+    """Tests Wing TLS 1.3 NewSessionTicket capture and 1-RTT session resumption."""
     sess_file = tmp_dir / "sess.pem"
     p1 = subprocess.Popen(
         [
             openssl_bin,
             "s_client",
             "-connect",
-            f"127.0.0.1:{h1_port}",
+            f"127.0.0.1:{wing_port}",
             "-CAfile",
             str(ca_path),
             "-tls1_3",
+            "-alpn",
+            "http/1.1",
             "-servername",
             "localhost",
             "-sess_out",
@@ -340,20 +424,23 @@ def verify_openssl_resumption(
     time.sleep(0.3)
     p1.stdin.write(b"GET /h1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
     p1.stdin.flush()
-    time.sleep(0.5)
-    p1.communicate(timeout=10)
+    time.sleep(0.3)
+    out1, err1 = p1.communicate(timeout=15)
+    combined1 = (out1 + err1).decode("latin1", errors="replace")
     if not sess_file.exists() or sess_file.stat().st_size == 0:
-        return False, "ticket file was not written"
+        return False, f"ticket file was not written: {combined1[:400]!r}"
 
     p2 = subprocess.Popen(
         [
             openssl_bin,
             "s_client",
             "-connect",
-            f"127.0.0.1:{h1_port}",
+            f"127.0.0.1:{wing_port}",
             "-CAfile",
             str(ca_path),
             "-tls1_3",
+            "-alpn",
+            "http/1.1",
             "-servername",
             "localhost",
             "-sess_in",
@@ -366,29 +453,31 @@ def verify_openssl_resumption(
     time.sleep(0.3)
     p2.stdin.write(b"GET /h1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
     p2.stdin.flush()
-    time.sleep(0.5)
-    out2, err2 = p2.communicate(timeout=10)
+    time.sleep(0.3)
+    out2, err2 = p2.communicate(timeout=15)
     combined2 = (out2 + err2).decode("latin1", errors="replace")
-    if "Reused, TLSv1.3" not in combined2:
-        return False, f"resumption failed: output={combined2[:300]!r}"
-    return True, "1-RTT resumption (Reused, TLSv1.3, Cipher is TLS_AES_128_GCM_SHA256)"
+    if "Reused, TLSv1.3" not in combined2 or "hello-from-wing-TLS1.3" not in combined2:
+        return False, f"resumption failed: output={combined2[:600]!r}"
+    return True, "Wing server 1-RTT resumption (Reused, TLSv1.3 + 200 OK)"
 
 
 def verify_openssl_psk_fallback(
-    h1_port: int,
+    wing_port: int,
     ca_path: Path,
     openssl_bin: str,
 ) -> tuple[bool, str]:
-    """Tests that an unknown PSK identity triggers clean fallback to ECDHE and cert auth."""
+    """Tests that unknown PSK identity triggers fallback to ECDHE and Wing cert auth."""
     proc = subprocess.Popen(
         [
             openssl_bin,
             "s_client",
             "-connect",
-            f"127.0.0.1:{h1_port}",
+            f"127.0.0.1:{wing_port}",
             "-CAfile",
             str(ca_path),
             "-tls1_3",
+            "-alpn",
+            "http/1.1",
             "-servername",
             "localhost",
             "-psk_identity",
@@ -403,16 +492,18 @@ def verify_openssl_psk_fallback(
     time.sleep(0.3)
     proc.stdin.write(b"GET /h1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
     proc.stdin.flush()
-    out, err = proc.communicate(timeout=10)
+    time.sleep(0.4)
+    out, err = proc.communicate(timeout=15)
     combined = (out + err).decode("latin1", errors="replace")
     has_new_tls = "New, TLSv1.3" in combined
     has_cert_ok = "Verification: OK" in combined or "verify return:1" in combined
-    if not (has_new_tls and has_cert_ok):
+    has_http_ok = "HTTP/1.1 200 OK" in combined and "hello-from-wing-TLS1.3" in combined
+    if not (has_new_tls and has_cert_ok and has_http_ok):
         return (
             False,
-            f"PSK fallback failed: new={has_new_tls} cert={has_cert_ok}",
+            f"PSK fallback failed: new={has_new_tls} cert={has_cert_ok} http={has_http_ok}\n{combined[-500:]}",
         )
-    return True, "PSK fallback to ECDHE (New, TLSv1.3, Verification: OK)"
+    return True, "Wing server PSK fallback to ECDHE (New, TLSv1.3, Verification: OK)"
 
 
 def run_differential(
@@ -427,14 +518,18 @@ def run_differential(
         tmp_dir = Path(tmp)
         oracle_bin = tmp_dir / f"h2oracle{exe_suffix}"
         wing_bin = tmp_dir / f"h2_tls_client_verdict{exe_suffix}"
+        wing_srv_bin = tmp_dir / f"wing_tls_server{exe_suffix}"
         manifest_path = tmp_dir / "manifest.json"
         ca_path = tmp_dir / "ca.pem"
+        wing_ca_path = tmp_dir / "wing_ca.pem"
         cases_path = tmp_dir / "cases.tsv"
 
         print("Building Go h2oracle...")
         build_go_oracle(oracle_bin)
         print("Building Wing h2_tls_client_verdict...")
-        build_wing_verdict(goose_bin, wing_bin)
+        build_wing_binary(goose_bin, "tests/fuzz/h2_tls_client_verdict.goose", wing_bin)
+        print("Building Wing wing_tls_server...")
+        build_wing_binary(goose_bin, "tests/fuzz/wing_tls_server.goose", wing_srv_bin)
 
         proc = subprocess.Popen(
             [str(oracle_bin), "-manifest", str(manifest_path)],
@@ -455,7 +550,6 @@ def run_differential(
 
             # Setup 1-byte fragment proxy for Wing client
             h2_port = manifest["ports"]["h2"]
-            h1_port = manifest["ports"]["h1"]
             wing_frag_proxy = OneByteFragmentProxy(h2_port)
             scenarios = list(manifest["scenarios"])
             scenarios.append(
@@ -499,39 +593,55 @@ def run_differential(
                     print(item)
                 return 1
 
-            # Run interactive live TLS 1.3 tests against OpenSSL
+            # Run interactive live TLS 1.3 tests: OpenSSL <-> Wing TLS 1.3 Server
             resolved_openssl = find_openssl(openssl_bin) if not skip_openssl else None
             openssl_count = 0
             if resolved_openssl:
-                print(f"Running OpenSSL 3.x interactive TLS 1.3 tests using {resolved_openssl}...")
-                openssl_tests = [
-                    (
-                        "openssl_1byte_frag",
-                        lambda: verify_openssl_1byte_frag(h1_port, ca_path, resolved_openssl),
-                    ),
-                    (
-                        "openssl_keyupdate",
-                        lambda: verify_openssl_keyupdate(h1_port, ca_path, resolved_openssl),
-                    ),
-                    (
-                        "openssl_resumption",
-                        lambda: verify_openssl_resumption(
-                            h1_port, ca_path, resolved_openssl, tmp_dir
+                print(
+                    f"Running OpenSSL 3.x interactive TLS 1.3 tests against Wing server using {resolved_openssl}..."
+                )
+                wing_srv_proc, wing_port = start_wing_tls_server(wing_srv_bin, wing_ca_path)
+                try:
+                    openssl_tests = [
+                        (
+                            "openssl_wing_1byte_frag",
+                            lambda: verify_openssl_1byte_frag(
+                                wing_port, wing_ca_path, resolved_openssl
+                            ),
                         ),
-                    ),
-                    (
-                        "openssl_psk_fallback",
-                        lambda: verify_openssl_psk_fallback(h1_port, ca_path, resolved_openssl),
-                    ),
-                ]
-                for test_name, test_fn in openssl_tests:
-                    ok, detail = test_fn()
-                    if not ok:
-                        print(f"[FAIL] {test_name}: {detail}")
-                        return 1
-                    openssl_count += 1
-                    if verbose:
-                        print(f"[PASS] {test_name}: {detail}")
+                        (
+                            "openssl_wing_keyupdate",
+                            lambda: verify_openssl_keyupdate(
+                                wing_port, wing_ca_path, resolved_openssl
+                            ),
+                        ),
+                        (
+                            "openssl_wing_resumption",
+                            lambda: verify_openssl_resumption(
+                                wing_port, wing_ca_path, resolved_openssl, tmp_dir
+                            ),
+                        ),
+                        (
+                            "openssl_wing_psk_fallback",
+                            lambda: verify_openssl_psk_fallback(
+                                wing_port, wing_ca_path, resolved_openssl
+                            ),
+                        ),
+                    ]
+                    for test_name, test_fn in openssl_tests:
+                        ok, detail = test_fn()
+                        if not ok:
+                            print(f"[FAIL] {test_name}: {detail}")
+                            return 1
+                        openssl_count += 1
+                        if verbose:
+                            print(f"[PASS] {test_name}: {detail}")
+                finally:
+                    try:
+                        wing_srv_proc.terminate()
+                        wing_srv_proc.wait(timeout=3)
+                    except Exception:
+                        wing_srv_proc.kill()
             elif not skip_openssl:
                 print("Notice: OpenSSL not detected on PATH; skipping OpenSSL interactive tests.")
 
