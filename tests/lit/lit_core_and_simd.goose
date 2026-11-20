@@ -698,7 +698,7 @@ fn test_h2_capacity_lifecycle() {
 // 2. HTTP/3 2x Capacity Lifecycle:
 // Capacity is 32 streams. Sequentially process 64 request streams.
 fn test_h3_capacity_lifecycle() {
-    let settings = wing::H3Settings {
+    let settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   65536,
         qpack_blocked_streams:    16,
@@ -938,7 +938,7 @@ fn test_pso_route_matching() {
 }
 
 fn test_pso_fast_path_and_ingress() {
-    let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+    let quota = security::new_gcra_quota(100, wing::secs(1), 10);
     var cfg = wing::new_server_pipeline_config("example.com", quota);
 
     // Register /healthz with pso_mask = 0
@@ -991,7 +991,7 @@ fn test_pso_fast_path_and_ingress() {
 }
 
 fn test_pso_egress_security_headers() {
-    let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+    let quota = security::new_gcra_quota(100, wing::secs(1), 10);
     var cfg = wing::new_server_pipeline_config("example.com", quota);
 
     let secure_pso: u64 = wing::STAGE_EGRESS_SECURITY_HEADERS;

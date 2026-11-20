@@ -46,10 +46,10 @@ fn verify_transport_and_framing_gates() {
 // CHECK-NEXT: PSL_DAFSA_MALFORMED: leading_dot=false, trailing_dot=false, empty_label=false, bad_utf8=false
 // CHECK-NEXT: PSL_ETLD_PLUS_ONE: sub.www.ck->www.ck, sub.bar.ck->sub.bar.ck, a.b.example.co.uk->example.co.uk
 fn verify_psl_dafsa_gate() {
-    let p_com = wing::psl_is_public_suffix("com");
-    let p_couk = wing::psl_is_public_suffix("CO.UK");
-    let p_foock = wing::psl_is_public_suffix("foo.ck");
-    let p_gh = wing::psl_is_public_suffix("github.io");
+    let p_com = cookie::is_public_suffix("com");
+    let p_couk = cookie::is_public_suffix("CO.UK");
+    let p_foock = cookie::is_public_suffix("foo.ck");
+    let p_gh = cookie::is_public_suffix("github.io");
     print(
         "PSL_DAFSA_POSITIVE: com=", p_com,
         ", co.uk=", p_couk,
@@ -57,20 +57,20 @@ fn verify_psl_dafsa_gate() {
         ", github.io=", p_gh,
     );
 
-    let e_wwwck = wing::psl_is_public_suffix("www.ck");
-    let e_kawa = wing::psl_is_public_suffix("city.kawasaki.jp");
-    let e_ex = wing::psl_is_public_suffix("example.com");
+    let e_wwwck = cookie::is_public_suffix("www.ck");
+    let e_kawa = cookie::is_public_suffix("city.kawasaki.jp");
+    let e_ex = cookie::is_public_suffix("example.com");
     print(
         "PSL_DAFSA_EXCEPTION: www.ck=", e_wwwck,
         ", city.kawasaki.jp=", e_kawa,
         ", example.com=", e_ex,
     );
 
-    let m_lead = wing::psl_is_public_suffix(".com");
-    let m_trail = wing::psl_is_public_suffix("com.");
-    let m_empty = wing::psl_is_public_suffix("co..uk");
+    let m_lead = cookie::is_public_suffix(".com");
+    let m_trail = cookie::is_public_suffix("com.");
+    let m_empty = cookie::is_public_suffix("co..uk");
     let bad_utf8: u8[4] = [0xFF, 0xFE, 0x2E, 0x63];
-    let m_utf8 = wing::psl_is_public_suffix(bad_utf8[..]);
+    let m_utf8 = cookie::is_public_suffix(bad_utf8[..]);
     print(
         "PSL_DAFSA_MALFORMED: leading_dot=", m_lead,
         ", trailing_dot=", m_trail,
@@ -78,13 +78,13 @@ fn verify_psl_dafsa_gate() {
         ", bad_utf8=", m_utf8,
     );
 
-    let db = wing::new_psl_database();
+    let db = cookie::new_psl_database();
     var etld1: u8[..64] = [];
     var etld2: u8[..64] = [];
     var etld3: u8[..64] = [];
-    wing::extract_etld_plus_one(db, "sub.www.ck", etld1);
-    wing::extract_etld_plus_one(db, "sub.bar.ck", etld2);
-    wing::extract_etld_plus_one(db, "a.b.example.co.uk", etld3);
+    cookie::extract_etld_plus_one(db, "sub.www.ck", etld1);
+    cookie::extract_etld_plus_one(db, "sub.bar.ck", etld2);
+    cookie::extract_etld_plus_one(db, "a.b.example.co.uk", etld3);
     print(
         "PSL_ETLD_PLUS_ONE: sub.www.ck->", etld1[..],
         ", sub.bar.ck->", etld2[..],
@@ -94,7 +94,7 @@ fn verify_psl_dafsa_gate() {
 
 // CHECK: COOKIE_LRU_FALLBACK: evicted=4, remaining=16, oldest_evicted=true
 fn verify_cookie_lru_fallback_gate() {
-    var jar = wing::CanonicalCookieJar {
+    var jar = cookie::CanonicalCookieJar {
         max_cookies_global:    18,
         purge_cookies_global:  3,
         target_cookies_global: 15,
@@ -109,7 +109,7 @@ fn verify_cookie_lru_fallback_gate() {
         var url: u8[..64] = [];
         format(url, "http://host", i, ".example.com/");
         let now_step = core::add_sat_i64(base_now, core::mul_sat_u64(i as u64, 1000) as i64);
-        wing::set_cookie_header(jar, url[..], "k=v; Priority=Low", now_step);
+        cookie::set_cookie_header(jar, url[..], "k=v; Priority=Low", now_step);
         i = core::add_sat_i64(i, 1);
     }
 
@@ -124,17 +124,17 @@ fn verify_cookie_lru_fallback_gate() {
 // CHECK: DIGEST_STALE_REFRESH: stale_true=true, nc_reset=1, new_nonce=fresh_nonce_v2
 // CHECK-NEXT: DIGEST_STALE_NEGATIVE: stale_false=false, empty_creds=false, header_ok=true
 fn verify_digest_stale_nonce_gate() {
-    var stored, ok_init = wing::parse_digest_challenge(
+    var stored, ok_init = auth::parse_digest_challenge(
         "Digest realm=\"vault@example.com\", nonce=\"old_nonce_v1\", qop=\"auth\", algorithm=SHA-256, opaque=\"op1\"",
     );
     guard ok_init else { return; }
 
-    var creds = wing::DigestCredentials { .. };
+    var creds = auth::DigestCredentials { .. };
     creds.username.append("admin");
     creds.password.append("hunter2");
 
     var nc: u32 = 9;
-    let refreshed = wing::refresh_digest_stale_nonce(
+    let refreshed = auth::refresh_digest_stale_nonce(
         stored,
         "Digest realm=\"vault@example.com\", nonce=\"fresh_nonce_v2\", qop=\"auth\", algorithm=SHA-256, stale=TRUE",
         creds,
@@ -147,14 +147,14 @@ fn verify_digest_stale_nonce_gate() {
     );
 
     var nc_stay: u32 = 4;
-    let not_stale = wing::refresh_digest_stale_nonce(
+    let not_stale = auth::refresh_digest_stale_nonce(
         stored,
         "Digest realm=\"vault@example.com\", nonce=\"other_nonce\", qop=\"auth\", algorithm=SHA-256, stale=false",
         creds,
         nc_stay,
     );
-    let empty_creds = wing::DigestCredentials { .. };
-    let no_creds_ok = wing::refresh_digest_stale_nonce(
+    let empty_creds = auth::DigestCredentials { .. };
+    let no_creds_ok = auth::refresh_digest_stale_nonce(
         stored,
         "Digest realm=\"vault@example.com\", nonce=\"other_nonce\", stale=true",
         empty_creds,
@@ -162,7 +162,7 @@ fn verify_digest_stale_nonce_gate() {
     );
 
     var auth_hdr: u8[..512] = [];
-    let hdr_ok = wing::compute_digest_response(
+    let hdr_ok = auth::compute_digest_response(
         stored,
         creds,
         "GET",

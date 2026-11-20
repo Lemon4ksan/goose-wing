@@ -293,7 +293,7 @@ fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
         return false;
     }
     let suffix = pattern[2..];
-    guard !suffix.contains_byte('*') && suffix.contains_byte('.') && !psl_is_public_suffix(suffix) else {
+    guard !suffix.contains_byte('*') && suffix.contains_byte('.') && !cookie::is_public_suffix(suffix) else {
         return false;
     }
     let label, host_suffix, has_dot = host.split_once_byte('.');

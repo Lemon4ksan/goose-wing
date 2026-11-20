@@ -2,11 +2,12 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Cross-Origin Resource Sharing (CORS) policy engine.
-namespace wing;
+namespace security;
 
 import std;
 import core from "..";
 import rfc.http;
+import .policy_internal;
 
 enum CorsResult {
     NoCors,
@@ -28,6 +29,11 @@ struct CorsPolicy {
     max_age_sec:                i64             = 86400, // 24 hours preflight cache
 }
 
+struct ClientCorsVerifyOptions {
+    tainted_origin:      bool = false,
+    include_credentials: bool = false,
+}
+
 // Appends an allowed origin pattern to the CORS policy.
 fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool {
     let trimmed = origin_pattern.trim_lws();
@@ -35,51 +41,6 @@ fn add_allowed_origin(policy: CorsPolicy&, origin_pattern: const u8[:]) -> bool 
     var entry: u8[..128] = [];
     guard entry.try_set(trimmed) else { return false; }
     return policy.allowed_origins.try_push(entry);
-}
-
-// Validates characters in a CORS subdomain label sequence (RFC 1035 / WHATWG Fetch §3.2).
-//
-// Example:
-//   sub = "stage.app"
-//   returns: true
-inline fn validate_cors_subdomain(sub: const u8[:]) -> bool {
-    var prev_dot = false;
-    let last_idx = core::sub_sat_i64(sub.len, 1);
-    for i in sub.len {
-        let b = sub[i];
-        if b == '.' {
-            if prev_dot || i == 0 || i == last_idx { return false; }
-            prev_dot = true;
-        } else if b == '-' {
-            if prev_dot || i == 0 || i == last_idx { return false; }
-            let next_idx = core::add_sat_i64(i, 1);
-            if next_idx < sub.len && sub[next_idx] == '.' { return false; }
-            prev_dot = false;
-        } else if core::is_ascii_alphanumeric(b) {
-            prev_dot = false;
-        } else {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Verifies whether candidate host matches wildcard domain suffix "*.domain.tld".
-//
-// Example:
-//   cand_rest = "api.example.com", pat_rest = "*.example.com"
-//   returns: true
-inline fn match_cors_wildcard_host(cand_rest: const u8[:], pat_rest: const u8[:]) -> bool {
-    guard pat_rest.starts_with_fold("*.") else { return false; }
-    let domain_suffix = pat_rest[2..];
-    guard domain_suffix.contains_byte('.') else { return false; }
-    guard cand_rest.len > domain_suffix.len && cand_rest.ends_with_fold(domain_suffix) else { return false; }
-    let prefix_len = core::sub_sat_i64(cand_rest.len, domain_suffix.len);
-    let dot_idx = core::sub_sat_i64(prefix_len, 1);
-    guard dot_idx > 0 && cand_rest[dot_idx] == '.' else { return false; }
-
-    let sub = cand_rest[..dot_idx];
-    return validate_cors_subdomain(sub);
 }
 
 // Matches origin against a pattern with strict scheme and subdomain enforcement:
@@ -109,7 +70,7 @@ fn match_cors_origin_pattern(candidate: const u8[:], pattern: const u8[:]) -> bo
     guard cand_ok && pat_ok else { return false; }
     guard cand_scheme.eq_ascii_fold(pat_scheme) else { return false; }
 
-    return match_cors_wildcard_host(cand_rest, pat_rest);
+    return security_internal::match_cors_wildcard_host(cand_rest, pat_rest);
 }
 
 // Validates whether the incoming Origin is permitted under policy.
@@ -122,9 +83,8 @@ fn is_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool
         return false;
     }
 
-    for idx in policy.allowed_origins.len {
-        let pat = policy.allowed_origins[idx][..].trim_lws();
-        // Wildcard origin is forbidden when credentials are enabled
+    for &orig in policy.allowed_origins {
+        let pat = orig[..].trim_lws();
         if policy.allow_credentials && pat == "*" {
             continue;
         }
@@ -135,163 +95,25 @@ fn is_origin_allowed(policy: const CorsPolicy&, origin_str: const u8[:]) -> bool
     return false;
 }
 
-// Returns true if the policy configures any wildcard '*' origins.
-fn has_wildcard_origin(policy: const CorsPolicy&) -> bool {
-    guard policy.allowed_origins.len > 0 else { return false; }
-    for idx in policy.allowed_origins.len {
-        if policy.allowed_origins[idx][..].trim_lws() == "*" {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Validates that a comma-separated CORS policy token list contains only valid RFC 9110 tokens.
-inline fn validate_cors_token_list(list: const u8[:], allow_wildcard: bool) -> bool {
-    guard list.trim_lws().len > 0 else { return true; }
-    var tok_iter = core::make_byte_tokenizer(list, ',');
-    loop {
-        let item, ok = core::token_next(tok_iter);
-        guard ok else { break; }
-        let trimmed = item.trim_lws();
-        if trimmed == "*" {
-            guard allow_wildcard else { return false; }
-            continue;
-        }
-        guard !trimmed.contains_byte('*') && is_valid_cors_token(trimmed) else { return false; }
-    }
-    return true;
-}
-
 // Validates policy configuration invariants (Fetch §3.2.2 forbids '*' or 'null' with allow_credentials).
 fn validate_cors_policy(policy: const CorsPolicy&) -> bool {
     guard policy.max_age_sec >= -1 else { return false; }
     if policy.allow_credentials {
-        for idx in policy.allowed_origins.len {
-            let pat = policy.allowed_origins[idx][..].trim_lws();
+        for &orig in policy.allowed_origins {
+            let pat = orig[..].trim_lws();
             if pat == "*" || pat.eq_ascii_fold("null") {
                 return false;
             }
         }
     }
     let allow_wild = !policy.allow_credentials;
-    return validate_cors_token_list(policy.allowed_methods[..], allow_wild) &&
-        validate_cors_token_list(policy.allowed_headers[..], allow_wild);
-}
-
-// Checks whether a comma-separated HTTP header value contains a specific token (case-insensitive, RFC 9110 §5.6.1).
-inline fn header_list_has_token(header_val: const u8[:], token: const u8[:], allow_wildcard: bool = true) -> bool {
-    var tok_iter = core::make_byte_tokenizer(header_val, ',');
-    loop {
-        let item, ok = core::token_next(tok_iter);
-        guard ok else { break; }
-        let trimmed = item.trim_lws();
-        if (allow_wildcard && trimmed == "*") || trimmed.eq_ascii_fold(token) {
-            return true;
-        }
-    }
-    return false;
-}
-
-inline fn is_valid_cors_token(tok: const u8[:]) -> bool {
-    guard tok.len > 0 else { return false; }
-    for b in tok {
-        guard core::is_tchar(b) else { return false; }
-    }
-    return true;
-}
-
-inline fn headers_vary_has_token<H>(headers: const H&, token: const u8[:]) -> bool {
-    for &e in headers.entries {
-        if entry_name(headers, e).eq_ascii_fold(rfc::HEADER_VARY) {
-            if header_list_has_token(entry_value(headers, e), token) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-inline fn headers_vary_has_all_tokens<H>(headers: const H&, required_list: const u8[:]) -> bool {
-    var tok_iter = core::make_byte_tokenizer(required_list, ',');
-    loop {
-        let item, ok = core::token_next(tok_iter);
-        guard ok else { break; }
-        let tok = item.trim_lws();
-        if tok.len > 0 && !headers_vary_has_token(headers, tok) {
-            return false;
-        }
-    }
-    return true;
-}
-
-inline fn append_missing_vary_tokens<H>(
-    headers:       const H&,
-    required_list: const u8[:],
-    merged:        u8[..2048]&,
-) -> bool {
-    var tok_iter = core::make_byte_tokenizer(required_list, ',');
-    loop {
-        let item, ok = core::token_next(tok_iter);
-        guard ok else { break; }
-        let tok = item.trim_lws();
-        if tok.len == 0 || headers_vary_has_token(headers, tok) {
-            continue;
-        }
-        if merged.len > 0 && !merged.try_append(", ") {
-            return false;
-        }
-        guard merged.try_append(tok) else { return false; }
-    }
-    return true;
-}
-
-// Merges `required_list` tokens across all existing `Vary` header lines (RFC 9110 Section 12.5.5).
-// Falls back to `Vary: *` if combined `Vary` value exceeds 2048 bytes.
-fn merge_response_vary_tokens<H>(headers: H&, required_list: const u8[:]) {
-    if headers_vary_has_all_tokens(headers, required_list) {
-        return;
-    }
-    var merged: u8[..2048] = [];
-    for &e in headers.entries {
-        guard entry_name(headers, e).eq_ascii_fold(rfc::HEADER_VARY) else { continue; }
-        let val = entry_value(headers, e).trim_lws();
-        guard val.len > 0 else { continue; }
-        if merged.len > 0 && !merged.try_append(", ") {
-            headers.set_header(rfc::HEADER_VARY, "*");
-            return;
-        }
-        if !merged.try_append(val) {
-            headers.set_header(rfc::HEADER_VARY, "*");
-            return;
-        }
-    }
-    if !append_missing_vary_tokens(headers, required_list, merged) {
-        headers.set_header(rfc::HEADER_VARY, "*");
-        return;
-    }
-    headers.set_header(rfc::HEADER_VARY, merged[..]);
+    return security_internal::validate_cors_token_list(policy.allowed_methods[..], allow_wild) &&
+        security_internal::validate_cors_token_list(policy.allowed_headers[..], allow_wild);
 }
 
 // Injects Vary: Origin header on dynamic CORS responses (RFC 9111 / WHATWG Fetch §3.2.4).
 inline fn apply_cors_vary_header<Res>(res: Res&) {
-    merge_response_vary_tokens(res.headers, rfc::HEADER_ORIGIN);
-}
-
-// Populates preflight response headers and sets 204 No Content status.
-fn apply_cors_preflight_headers<Res>(policy: const CorsPolicy&, res: Res&) {
-    if policy.allowed_methods.len > 0 {
-        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_METHODS, policy.allowed_methods[..]);
-    }
-    if policy.allowed_headers.len > 0 {
-        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_HEADERS, policy.allowed_headers[..]);
-    }
-    if policy.max_age_sec > 0 {
-        var age_str: u8[..32] = [];
-        policy.max_age_sec.format_i64_dec(age_str);
-        res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_MAX_AGE, age_str[..]);
-    }
-    res.status_code = rfc::STATUS_NO_CONTENT;
+    security_internal::merge_response_vary_tokens(res.headers, rfc::HEADER_ORIGIN);
 }
 
 // Checks whether all comma-separated tokens in `requested_list` are present in `allowed_list` (WHATWG Fetch §3.2.3).
@@ -306,35 +128,17 @@ fn are_cors_request_headers_allowed(
         let item, ok = core::token_next(tok_iter);
         guard ok else { break; }
         let tok = item.trim_lws();
-        guard is_valid_cors_token(tok) else { return false; }
+        guard security_internal::is_valid_cors_token(tok) else { return false; }
         saw_token = true;
         let safelisted = tok.eq_ascii_fold("accept") ||
             tok.eq_ascii_fold("accept-language") ||
             tok.eq_ascii_fold("content-language");
         let can_use_wildcard = allow_wildcard && !tok.eq_ascii_fold("authorization");
-        if !safelisted && !header_list_has_token(allowed_list, tok, can_use_wildcard) {
+        if !safelisted && !security_internal::header_list_has_token(allowed_list, tok, can_use_wildcard) {
             return false;
         }
     }
     return saw_token;
-}
-
-struct ClientCorsVerifyOptions {
-    tainted_origin:      bool = false,
-    include_credentials: bool = false,
-}
-
-inline fn find_unique_cors_header<H>(headers: const H&, target_name: const u8[:]) -> const u8[:], bool {
-    var val = headers.raw_buf[..0];
-    var seen = false;
-    for &e in headers.entries {
-        if entry_name(headers, e).eq_ascii_fold(target_name) {
-            guard !seen else { return headers.raw_buf[..0], false; }
-            val = entry_value(headers, e).trim_lws();
-            seen = true;
-        }
-    }
-    return val, true;
 }
 
 // Validates an inbound HTTP response against WHATWG Fetch §4.9 CORS protocol check on the client side.
@@ -343,13 +147,19 @@ fn verify_client_cors_response<H>(
     request_origin: const u8[:],
     opts:           ClientCorsVerifyOptions = ClientCorsVerifyOptions { .. },
 ) -> bool {
-    let acao, acao_unique = find_unique_cors_header(resp_headers, rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN);
+    let acao, acao_unique = security_internal::find_unique_cors_header(
+        resp_headers,
+        rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN,
+    );
     guard acao_unique && acao.len > 0 && !acao.contains_byte(',') else { return false; }
     let expected_origin = if opts.tainted_origin { "null" } else { request_origin.trim_lws() };
 
     if opts.include_credentials {
         guard acao != "*" && acao.eq_ascii_fold(expected_origin) else { return false; }
-        let acac, acac_unique = find_unique_cors_header(resp_headers, rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS);
+        let acac, acac_unique = security_internal::find_unique_cors_header(
+            resp_headers,
+            rfc::HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        );
         return acac_unique && acac == "true";
     }
 
@@ -363,26 +173,21 @@ fn verify_client_cors_response<H>(
 // Returns CorsResult indicating whether the request was allowed, preflighted, or rejected.
 // Wildcard '*' origin is disallowed when allow_credentials is true.
 fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&) -> CorsResult {
-    let origin, origin_unique = find_unique_cors_header(req.headers, rfc::HEADER_ORIGIN);
+    let origin, origin_unique = security_internal::find_unique_cors_header(req.headers, rfc::HEADER_ORIGIN);
     guard origin_unique else { return CorsResult.RejectedOrigin; }
     guard origin.len > 0 else { return CorsResult.NoCors; }
     guard !origin.contains_byte(',') else { return CorsResult.RejectedOrigin; }
 
     // Check configuration validity: allow_credentials == true with wildcard "*" origin is invalid (Fetch §3.2.2)
-    if !validate_cors_policy(policy) {
-        return CorsResult.InvalidConfig;
-    }
-
-    guard is_origin_allowed(policy, origin) else {
-        return CorsResult.RejectedOrigin;
-    }
+    guard validate_cors_policy(policy) else { return CorsResult.InvalidConfig; }
+    guard is_origin_allowed(policy, origin) else { return CorsResult.RejectedOrigin; }
 
     let req_method_hdr = req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).trim_lws();
     let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && req_method_hdr.len > 0;
     if is_preflight {
         let allow_wild = !policy.allow_credentials;
-        guard is_valid_cors_token(req_method_hdr) &&
-            header_list_has_token(policy.allowed_methods[..], req_method_hdr, allow_wild) else {
+        guard security_internal::is_valid_cors_token(req_method_hdr) &&
+            security_internal::header_list_has_token(policy.allowed_methods[..], req_method_hdr, allow_wild) else {
             return CorsResult.RejectedPreflightMethod;
         }
         let req_hdrs_raw = req.headers.find_header(rfc::HEADER_ACCESS_CONTROL_REQUEST_HEADERS);
@@ -392,7 +197,7 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
         }
     }
 
-    let is_wildcard_allow = !policy.allow_credentials && has_wildcard_origin(policy);
+    let is_wildcard_allow = !policy.allow_credentials && security_internal::has_wildcard_origin(policy);
     let allow_origin_val = if is_wildcard_allow { "*" } else { origin };
     res.headers.set_header(rfc::HEADER_ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin_val);
 
@@ -405,7 +210,7 @@ fn evaluate_cors<Req, Res>(policy: const CorsPolicy&, req: const Req&, res: Res&
     }
 
     if is_preflight {
-        apply_cors_preflight_headers(policy, res);
+        security_internal::apply_cors_preflight_headers(policy, res);
         return CorsResult.AllowedPreflight;
     }
 

@@ -99,7 +99,7 @@ fn encode_h3_push_promise<B>(out: B&, push_id: u64, qpack_field_section: const u
 // ---- SETTINGS Frame (RFC 9114 Section 7.2.4 & RFC 9204 Section 5) --------
 
 // Encodes a SETTINGS frame (Type 0x04).
-fn encode_h3_settings_frame<B>(out: B&, settings: const H3Settings&) -> bool {
+fn encode_h3_settings_frame<B>(out: B&, settings: const fingerprint::H3Settings&) -> bool {
     // RFC 9220 Section 3: WebSockets Upgrade over HTTP/3 - SETTINGS_ENABLE_CONNECT_PROTOCOL value MUST be 0 or 1.
     guard settings.enable_connect_protocol <= 1 &&
           settings.h3_datagram <= 1 &&
@@ -160,7 +160,7 @@ fn record_setting_identifier(seen: u64[..128]&, id: u64) -> bool {
     return seen.try_push(id);
 }
 
-inline fn apply_parsed_h3_setting(id: u64, val: u64, out_settings: H3Settings&) -> bool {
+inline fn apply_parsed_h3_setting(id: u64, val: u64, out_settings: fingerprint::H3Settings&) -> bool {
     if id == rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY {
         out_settings.qpack_max_table_capacity = val;
         return true;
@@ -202,9 +202,9 @@ inline fn apply_parsed_h3_setting(id: u64, val: u64, out_settings: H3Settings&) 
 // - H3_ERR_FRAME_ERROR (0x0106) on truncated payload.
 //
 // Example:
-//   payload = [0x06, 0x40, 0x00], out_settings = H3Settings { .. }
+//   payload = [0x06, 0x40, 0x00], out_settings = fingerprint::H3Settings { .. }
 //   returns: H3_ERR_NO_ERROR (0x0100), populates out_settings
-fn parse_h3_settings_frame(payload: const u8[:], out_settings: H3Settings&) -> u64 {
+fn parse_h3_settings_frame(payload: const u8[:], out_settings: fingerprint::H3Settings&) -> u64 {
     guard payload.len <= H3_MAX_SETTINGS_PAYLOAD_SIZE else {
         return rfc::H3_ERR_EXCESSIVE_LOAD;
     }

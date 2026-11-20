@@ -222,11 +222,11 @@ fn main() {
     let client_id = "109876543210-exampleappsuffix.apps.googleusercontent.com";
 
     // 1. Generate PKCE pair and CSRF state token
-    let pkce, ok_pkce = wing::create_pkce_pair("", "S256");
+    let pkce, ok_pkce = auth::create_pkce_pair("", "S256");
     assert(ok_pkce);
 
     var csrf_state: u8[..64] = [];
-    wing::generate_code_verifier(csrf_state, "");
+    auth::generate_code_verifier(csrf_state, "");
 
     print("[1] Generated PKCE Pair & State:");
     print("    Code Verifier Length: ", pkce.verifier.len, " bytes");

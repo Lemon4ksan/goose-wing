@@ -112,7 +112,7 @@ fn print_client_verbose_request(
 
     out.append(c_seq(ANSI_DIM, nc));
     out.append("* Profile: ");
-    out.append(sess.profile.profile_name());
+    out.append(sess.profile.name());
     out.append(" | JA4: ");
     out.append(ja4_fp[..]);
     out.append(" | Akamai-H2: ");

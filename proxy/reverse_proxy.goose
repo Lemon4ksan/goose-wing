@@ -482,22 +482,22 @@ fn serialize_upstream_request<B>(
 
 // Layer 7 Reverse Proxy Gateway instance managing an UpstreamCluster.
 struct ReverseProxy {
-    cluster:            UpstreamCluster      = UpstreamCluster { .. },
-    warm_upstreams:     UpstreamPool         = UpstreamPool { .. },
-    config:             ProxyConfig          = ProxyConfig { .. },
-    rate_limiter:       GatewayRateLimiter   = GatewayRateLimiter { .. },
-    health_checker:     ClusterHealthChecker = ClusterHealthChecker { .. },
-    total_forwarded:    u64                  = 0,
-    total_dropped:      u64                  = 0,
-    total_rate_limited: u64                  = 0,
-    total_overloaded:   u64                  = 0,
+    cluster:            UpstreamCluster              = UpstreamCluster { .. },
+    warm_upstreams:     UpstreamPool                 = UpstreamPool { .. },
+    config:             ProxyConfig                  = ProxyConfig { .. },
+    rate_limiter:       security::GatewayRateLimiter = security::GatewayRateLimiter { .. },
+    health_checker:     ClusterHealthChecker         = ClusterHealthChecker { .. },
+    total_forwarded:    u64                          = 0,
+    total_dropped:      u64                          = 0,
+    total_rate_limited: u64                          = 0,
+    total_overloaded:   u64                          = 0,
 }
 
 fn new_reverse_proxy(policy: LbPolicy = LbPolicy.RoundRobin) -> ReverseProxy {
     return ReverseProxy {
         cluster:      new_upstream_cluster(policy),
         config:       ProxyConfig { .. },
-        rate_limiter: new_gateway_rate_limiter(100, 20),
+        rate_limiter: security::new_gateway_rate_limiter(100, 20),
         ..
     };
 }
@@ -559,7 +559,7 @@ fn set_proxy_rate_limit(proxy: ReverseProxy&, rps: u64, burst: u64) {
     proxy.config.enable_rate_limiting = true;
     proxy.config.rate_limit_rps = rps;
     proxy.config.rate_limit_burst = burst;
-    proxy.rate_limiter.config = new_gcra_config(rps, burst);
+    proxy.rate_limiter.config = security::new_gcra_config(rps, burst);
 }
 
 // Formats upstream Host authority per RFC 9110 §7.2 and RFC 3986 §3.2.2,
@@ -664,7 +664,7 @@ fn prepare_proxy_request_at<B>(
 
     // 1. Rate limiter defense against client flooding and downstream backpressure
     if proxy.config.enable_rate_limiting && client_ip.len > 0 && effective_now > 0 {
-        let dec = check_gateway_rate_limit(proxy.rate_limiter, client_ip, 1, effective_now);
+        let dec = security::check_gateway_rate_limit(proxy.rate_limiter, client_ip, 1, effective_now);
         if !dec.allowed {
             record_proxy_rate_limited(proxy);
             record_proxy_dropped(proxy);
@@ -1356,13 +1356,6 @@ inline fn service_key(req: const Request&) -> const u8[:] {
         return req.url[..];
     }
     return req.header("Host");
-}
-
-// Evaluates GCRA rate-limit allowance for `key` at `now_ns` (UFCS hook for `wire::RateLimitService`).
-fn allow_service_key(limiter: GatewayRateLimiter&, key: const u8[:], now_ns: u64) -> bool {
-    guard key.len > 0 && now_ns > 0 else { return true; }
-    let dec = check_gateway_rate_limit(limiter, key, 1, now_ns);
-    return dec.allowed;
 }
 
 // Executes a single upstream proxy attempt and maps transport or 502/503 failures to `StageVerdict.Abort`.

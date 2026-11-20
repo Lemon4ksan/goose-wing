@@ -1,63 +1,57 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// JSON Web Key Set (JWKS / RFC 7517) container, key rotation indexing,
-// integrated JWT verification, and RFC 8725 §3.12 SSRF protection for remote JWKS URLs.
-namespace wing;
+// JSON Web Key Set (JWKS) key management, parsing, SSRF URL checks, and JWT verification (RFC 7517 / RFC 8725).
+namespace auth;
 
 import std;
 import json;
 import core from "..";
-import security.ssrf;
+import rfc.http;
+import .types;
+import .internal;
+import .jwk_internal;
+import .jwt_core;
+import .jwt_internal;
 import .jwt;
 import .jwk;
+import .jwks_internal;
 
-// ---- JWKS Key Set Container ----------------------------------------------
-
-struct Jwks {
-    keys: JwksKey[..16] = [],
-}
-
-// Registers an asymmetric Ed25519 public key in the key set
-fn add_ed25519_key(
-    jwks:    Jwks&,
-    kid:     const u8[:],
-    pub_key: const u8[32],
-) -> bool {
-    var key = JwksKey {
+// Appends an Ed25519 verification key to `jwks` (RFC 8037 Section 2).
+fn add_ed25519_key(jwks: Jwks&, kid: const u8[:], pub_key: const u8[32]) -> bool {
+    guard jwks.keys.len < 16 && kid.len <= 64 && auth_internal::has_nonzero_byte_32(pub_key) else {
+        return false;
+    }
+    var item = JwksKey {
         kty:        JwkKeyType.OKP,
         crv:        "Ed25519",
         alg:        JwtAlg.EdDSA,
-        use:        "sig",
         public_key: pub_key,
         valid:      true,
         ..
     };
-    guard key.kid.try_set(kid) else { return false; }
-    return jwks.keys.try_push(key);
+    if kid.len > 0 { item.kid.append(kid); }
+    return jwks.keys.try_push(item);
 }
 
-// Registers an asymmetric ECDSA P-256 public key in the key set (RFC 7518 §6.2).
-fn add_es256_key(
-    jwks: Jwks&,
-    kid:  const u8[:],
-    x:    const u8[:],
-    y:    const u8[:],
-) -> bool {
-    guard is_valid_jwk_ec_p256_coords(x, y) else { return false; }
-    var key = JwksKey {
+// Appends an ECDSA P-256 verification key to `jwks` (RFC 7518 Section 6.2).
+fn add_es256_key(jwks: Jwks&, kid: const u8[:], x: const u8[:], y: const u8[:]) -> bool {
+    guard jwks.keys.len < 16 && kid.len <= 64 else { return false; }
+    guard auth_internal::is_valid_jwk_ec_p256_coords(x, y) else { return false; }
+    var item = JwksKey {
         kty:   JwkKeyType.EC,
         crv:   "P-256",
         alg:   JwtAlg.ES256,
-        use:   "sig",
         valid: true,
         ..
     };
-    guard key.kid.try_set(kid) && key.ec_x.try_set(x) && key.ec_y.try_set(y) else { return false; }
-    return jwks.keys.try_push(key);
+    if kid.len > 0 { item.kid.append(kid); }
+    item.ec_x.append(x);
+    item.ec_y.append(y);
+    return jwks.keys.try_push(item);
 }
 
-// Registers an asymmetric RSA public key in the key set (RFC 7518 §6.3).
+// Appends an RSA public verification key (`RS256`, `PS256`, or `Unspecified`) to `jwks` (RFC 7518 §6.3).
 fn add_rsa_key(
     jwks: Jwks&,
     kid:  const u8[:],
@@ -65,301 +59,161 @@ fn add_rsa_key(
     n_be: const u8[:],
     e_be: const u8[:],
 ) -> bool {
-    guard is_canonical_jwk_rsa_params(n_be, e_be) else { return false; }
+    guard jwks.keys.len < 16 && kid.len <= 64 else { return false; }
     guard alg == JwtAlg.Unspecified || alg == JwtAlg.RS256 || alg == JwtAlg.PS256 else { return false; }
-    var key = JwksKey {
-        kty:   JwkKeyType.RSA,
-        alg:   alg,
-        use:   "sig",
-        valid: true,
-        ..
-    };
-    guard key.kid.try_set(kid) && key.rsa_n.try_set(n_be) && key.rsa_e.try_set(e_be) else { return false; }
-    return jwks.keys.try_push(key);
+    guard auth_internal::is_canonical_jwk_rsa_params(n_be, e_be) else { return false; }
+    var item = JwksKey { kty: JwkKeyType.RSA, alg: alg, valid: true, .. };
+    if kid.len > 0 { item.kid.append(kid); }
+    guard item.rsa_n.try_set(n_be) && item.rsa_e.try_set(e_be) else { return false; }
+    return jwks.keys.try_push(item);
 }
 
-// Registers a symmetric HMAC secret key in the key set
+// Appends an HMAC symmetric key (`HS256`/`HS384`/`HS512` or `Unspecified`) to `jwks` (RFC 7518 §3.2).
 fn add_symmetric_key(
     jwks:       Jwks&,
     kid:        const u8[:],
     alg:        JwtAlg,
     secret_key: const u8[:],
 ) -> bool {
-    // RFC 7518 Section 3.2: HMAC with SHA-2 Functions - key must be at least hash output length
-    let min_len = if alg == JwtAlg.Unspecified { rfc::HMAC_SHA256_MAC_LEN } else { hmac_min_key_len(alg) };
-    guard min_len > 0 && secret_key.len >= min_len && secret_key.len <= 128 else { return false; }
-    var key = JwksKey {
-        kty:   JwkKeyType.Oct,
-        crv:   "",
-        alg:   alg,
-        use:   "sig",
-        valid: true,
-        ..
+    let min_len = if alg == JwtAlg.Unspecified {
+        rfc::HMAC_SHA256_MAC_LEN
+    } else {
+        auth_internal::hmac_min_key_len(alg)
     };
-    guard key.kid.try_set(kid) && key.symmetric_key.try_set(secret_key) else { return false; }
-    return jwks.keys.try_push(key);
+    guard jwks.keys.len < 16 && kid.len <= 64 && min_len > 0 else { return false; }
+    guard secret_key.len >= min_len && secret_key.len <= 128 else { return false; }
+    var item = JwksKey { kty: JwkKeyType.Oct, alg: alg, valid: true, .. };
+    if kid.len > 0 { item.kid.append(kid); }
+    item.symmetric_key.append(secret_key);
+    return jwks.keys.try_push(item);
 }
 
-// Finds the index of a key by kid (-1 if not found)
-fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i32 {
+// Finds the index of the first valid JWK in `jwks` matching `kid`.
+fn find_key(jwks: const Jwks&, kid: const u8[:]) -> i64, bool {
     for i in jwks.keys.len {
         let k .= jwks.keys[i];
         if k.valid && k.kid[..] == kid {
-            return i as i32;
+            return i, true;
         }
     }
-    return -1;
+    return 0, false;
 }
 
-// ---- JWKS Serialization & Parsing (RFC 7517) ------------------------------
-
-// Serializes a JWKS struct into RFC 7517 JSON format: `{"keys": [ {...}, ... ]}`
-fn serialize_jwks<B>(jwks: const Jwks&, out: B&) {
-    out.append("{\"keys\":[");
-    var first = true;
-    for &k in jwks.keys {
-        if !k.valid { continue; }
-        if !first { out.push(','); }
-        first = false;
-        serialize_jwk_key(k, out);
+// Serializes `jwks` to RFC 7517 Section 5 JSON format appended to `out`.
+fn serialize_jwks<B>(jwks: const Jwks&, out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard out.try_append("{\"keys\":[") else { return false; }
+    for i in jwks.keys.len {
+        if i > 0 { guard out.try_push(',' as u8) else { return false; } }
+        guard auth_internal::serialize_jwk_key(jwks.keys[i], out) else { return false; }
     }
-    out.append("]}");
-}
-
-// RFC 7517 Section 5: JWK Set Format - parses a single JWK object from the "keys" JSON array
-//
-// Example:
-//   reader positioned at {"kty":"OKP", ...}
-//   appends validated key to out_jwks, returns: true
-fn parse_single_jwk_element(
-    reader:    json::Reader&,
-    out_jwks:  Jwks&,
-    had_error: bool&,
-) -> bool {
-    guard json::peek(reader) == '{' else {
-        had_error = true;
-        json::skip(reader);
-        return false;
-    }
-    var key_item = JwksKey { .. };
-    var mat = JwkRawMaterial { .. };
-    defer zeroize_jwks_key(key_item);
-    defer core::secure_zeroize_slice(mat.raw_k[..]);
-
-    parse_jwk_key_fields(reader, mat, key_item);
-    if key_item.has_invalid_type {
-        had_error = true;
-        return false;
-    }
-    guard finalize_jwk_key(mat, key_item) else { return false; }
-    if !out_jwks.keys.try_push(key_item) {
-        had_error = true;
-        return false;
-    }
+    guard out.try_append("]}") else { return false; }
+    committed = true;
     return true;
 }
 
-// Parses the top-level `"keys"` JSON array of an RFC 7517 §5 JWK Set document.
+// Parses a JSON Web Key Set (`{"keys":[...]}`) into `out_jwks`, zeroizing on error (RFC 7517 §5).
 //
 // Example:
-//   reader at "[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"...\"}]"
-//   sets: seen_keys_root = true, appends parsed keys to out_jwks.keys
-inline fn parse_jwks_keys_array(
-    reader:         json::Reader&,
-    out_jwks:       Jwks&,
-    seen_keys_root: bool&,
-    had_error:      bool&,
-) {
-    if seen_keys_root || json::peek(reader) != '[' {
-        had_error = true;
-        json::skip(reader);
-        return;
-    }
-    seen_keys_root = true;
-    json::each_element(reader) {
-        let _ = parse_single_jwk_element(reader, out_jwks, had_error);
-    };
-}
-
-// Parses an RFC 7517 JWKS JSON document into Jwks struct.
-//
-// Example:
-//   json_bytes = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"...\"}]}"
-//   returns: true, out_jwks.keys.len = 1
+//   json_bytes = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"...\"}]}"
+//   returns: true, out_jwks.keys populated
 fn parse_jwks_json(json_bytes: const u8[:], out_jwks: Jwks&) -> bool {
-    out_jwks.keys.clear();
-    guard json_bytes.validate_utf8() else {
-        zeroize_jwks(out_jwks);
-        return false;
-    }
+    zeroize_jwks(out_jwks);
+    guard json_bytes.validate_utf8() else { return false; }
     var reader = json::reader(json_bytes);
-    var seen_keys_root = false;
-    var seen_root_keys: SeenHeaderKey[..8] = [];
-    var had_error = false;
+    guard json::peek(reader) == '{' else { return false; }
 
+    var committed = false;
+    defer if !committed { zeroize_jwks(out_jwks); };
+
+    var seen_keys_root = false;
+    var seen_root: auth_internal::SeenHeaderKey[..8] = [];
+    var had_error = false;
     json::each_member(reader) { root_key =>
-        if root_key.contains('\\') || is_header_key_present(root_key, seen_root_keys[..]) {
+        var root_item = auth_internal::SeenHeaderKey { .. };
+        let valid_key = !root_key.contains('\\') &&
+            !auth_internal::is_header_key_present(root_key, seen_root[..]) &&
+            root_item.name.try_set(root_key) &&
+            seen_root.try_push(root_item);
+        if !valid_key {
             had_error = true;
             json::skip(reader);
         } else if root_key == "keys" {
-            parse_jwks_keys_array(reader, out_jwks, seen_keys_root, had_error);
+            auth_internal::parse_jwks_keys_array(reader, out_jwks, seen_keys_root, had_error);
         } else {
-            var item = SeenHeaderKey { .. };
-            if !item.name.try_set(root_key) || !seen_root_keys.try_push(item) {
-                had_error = true;
-            }
             json::skip(reader);
         }
     };
-
-    guard json::finish(reader) && !had_error && seen_keys_root && out_jwks.keys.len > 0 else {
-        zeroize_jwks(out_jwks);
-        return false;
-    }
+    guard json::finish(reader) && !had_error && seen_keys_root && out_jwks.keys.len > 0 else { return false; }
+    committed = true;
     return true;
 }
 
-// ---- Integrated JWKS JWT Verification -------------------------------------
-
-fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64 {
+// Resolves a verification key index in `jwks` by `kid`, allowing anonymous lookup only when single keyless JWK exists.
+fn resolve_jwks_key_index(jwks: const Jwks&, kid: const u8[:]) -> i64, bool {
     if kid.len > 0 {
         return find_key(jwks, kid);
     }
     if jwks.keys.len == 1 && jwks.keys[0].valid && jwks.keys[0].kid.len == 0 {
-        return 0;
+        return 0, true;
     }
-    return -1;
+    return 0, false;
 }
 
-fn is_kty_alg_compatible(kty: JwkKeyType, alg: JwtAlg) -> bool {
-    return match kty {
-        OKP => alg == JwtAlg.EdDSA,
-        Oct => (alg == JwtAlg.HS256 || alg == JwtAlg.HS384 || alg == JwtAlg.HS512),
-        EC => alg == JwtAlg.ES256,
-        RSA => (alg == JwtAlg.RS256 || alg == JwtAlg.PS256),
-        Unknown => false,
-    };
-}
-
-fn is_valid_key_use(use: const u8[:]) -> bool {
-    return use.len == 0 || use == "sig";
-}
-
-fn validate_jwks_key_compatibility(
-    key:        const JwksKey&,
-    header_alg: JwtAlg,
-    allow_none: bool,
-) -> JwtError {
-    guard is_valid_key_use(key.use[..]) else {
-        return JwtError.UnsupportedAlgorithm;
-    }
-    if key.key_ops != 0 && (key.key_ops & JWK_OP_VERIFY) == 0 {
-        return JwtError.UnsupportedAlgorithm;
-    }
-    if header_alg == JwtAlg.Unknown || header_alg == JwtAlg.None {
-        return JwtError.UnsupportedAlgorithm;
-    }
-    // RFC 8725 §3.2: Key Confusion Defense (Asymmetric vs Symmetric)
-    guard is_kty_alg_compatible(key.kty, header_alg) else {
-        return JwtError.AlgorithmMismatch;
-    }
-    if key.alg != JwtAlg.Unspecified && key.alg != header_alg {
-        return JwtError.AlgorithmMismatch;
-    }
-    return JwtError.None;
-}
-
-fn verify_jwks_ec_key(
-    token:        const u8[:],
-    key:          const JwksKey&,
-    options:      const JwtValidationOptions&,
-    now_unix_sec: i64,
-    out_header:   JwtHeader&,
-    out_claims:   JwtClaims&,
-) -> JwtError {
-    var pub_pt: u8[..65] = [];
-    pub_pt.push(0x04);
-    pub_pt.append(key.ec_x[..]);
-    pub_pt.append(key.ec_y[..]);
-    return verify_jwt_es256(token, pub_pt[..], options, now_unix_sec, out_header, out_claims);
-}
-
-fn dispatch_jwks_verification(
-    token:        const u8[:],
-    key:          const JwksKey&,
-    header_alg:   JwtAlg,
-    options:      const JwtValidationOptions&,
-    now_unix_sec: i64,
-    out_header:   JwtHeader&,
-    out_claims:   JwtClaims&,
-) -> JwtError {
-    let compat_err = validate_jwks_key_compatibility(key, header_alg, options.allow_none_alg);
-    guard compat_err == JwtError.None else { return compat_err; }
-
-    return match key.kty {
-        OKP => verify_jwt_eddsa(token, key.public_key, options, now_unix_sec, out_header, out_claims),
-        Oct => verify_jwt_hmac(token, key.symmetric_key[..], options, now_unix_sec, out_header, out_claims),
-        EC => verify_jwks_ec_key(token, key, options, now_unix_sec, out_header, out_claims),
-        RSA => verify_jwt_rsa(token, key.rsa_n[..], key.rsa_e[..], options, now_unix_sec, out_header, out_claims),
-        Unknown => JwtError.KeyNotFound,
-    };
-}
-
-// Verifies a JWT against a JWKS key set.
-// Uses the `kid` in the JWT header to locate the active key and performs signature & claims validation.
-fn verify(
-    token:        const u8[:],
+// Verifies a compact JWT against `jwks` using `kid` dispatch, preserving `out_header` on `KeyNotFound`.
+fn verify_jwt(
     jwks:         const Jwks&,
+    token:        const u8[:],
     options:      const JwtValidationOptions&,
     now_unix_sec: i64,
     out_header:   JwtHeader&,
     out_claims:   JwtClaims&,
 ) -> JwtError {
-    var temp_header = JwtHeader { .. };
-    let parse_err = parse_jwt_header_only(token, temp_header);
-    guard parse_err == JwtError.None else { return parse_err; }
+    var hdr = JwtHeader { .. };
+    let herr = parse_jwt_header_only(token, hdr);
+    guard herr == JwtError.None else { return herr; }
 
-    let key_idx = resolve_jwks_key_index(jwks, temp_header.kid[..]);
-    guard key_idx >= 0 && key_idx < jwks.keys.len else {
-        return JwtError.KeyNotFound;
-    }
+    let rerr = auth_internal::verify_jwt_header_rules(hdr, options);
+    guard rerr == JwtError.None else { return rerr; }
 
-    let matched_key .= jwks.keys[key_idx];
-    guard matched_key.valid else { return JwtError.KeyNotFound; }
+    let idx, found = resolve_jwks_key_index(jwks, hdr.kid[..]);
+    guard found else { return JwtError.KeyNotFound; }
 
-    return dispatch_jwks_verification(
-        token, matched_key, temp_header.alg, options, now_unix_sec, out_header, out_claims,
+    return auth_internal::dispatch_jwks_verification(
+        token,
+        jwks.keys[idx],
+        hdr.alg,
+        options,
+        now_unix_sec,
+        out_header,
+        out_claims,
     );
 }
 
-// Securely wipes all cryptographic keys in the JWKS set.
+// Zeroizes all keys inside `jwks` and clears the key array.
 fn zeroize_jwks(jwks: Jwks&) {
-    for i in jwks.keys.len {
-        zeroize_jwks_key(jwks.keys[i]);
+    for &k in jwks.keys {
+        zeroize_jwks_key(k);
     }
     jwks.keys.clear();
 }
 
-// ---- SSRF Protection for Remote JWKS & OIDC Discovery (RFC 8725 §3.12) --
-
-// Evaluates whether a remote JWKS URL is safe for network retrieval (RFC 8725 §3.12).
-// Defends against SSRF, internal network scanning, cloud metadata exfiltration, and credential leaks.
-//
-// Example:
-//   raw_url = "https://auth.example.com/.well-known/jwks.json"
-//   returns: true
+// RFC 8725 Section 3.12: Validates that a remote JWKS URL uses HTTPS and targets no internal/SSRF host.
 fn is_safe_remote_jwks_url(raw_url: const u8[:]) -> bool {
     guard raw_url.len > 0 && raw_url.len <= 2048 else { return false; }
     let view, err = core::parse_url_view(raw_url);
-    guard err == core::UrlParseError.None && view.valid else { return false; }
-    guard view.scheme == "https" else { return false; }
+    guard err == core::UrlParseError.None && view.valid && view.host.len > 0 && view.host.len <= 255 else {
+        return false;
+    }
+    guard view.scheme.eq_ascii_fold("https") else { return false; }
     guard view.username.len == 0 && view.password.len == 0 else { return false; }
     guard view.port < 0 || view.port == 443 else { return false; }
-    guard view.host.len > 0 && view.host.len <= 255 else { return false; }
 
     var norm_host: u8[..256] = [];
     view.host.to_lower_ascii(norm_host);
     let trimmed_host = norm_host[..].trim_end_byte('.');
     guard trimmed_host.len > 0 else { return false; }
-    return !is_forbidden_internal_host(trimmed_host);
+    return !security::is_forbidden_internal_host(trimmed_host);
 }

@@ -1960,8 +1960,8 @@ fn test_rfc9460_svcb_https_rdata(t: lit::T&) {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
         ]);
 
-        var rec = wing::HttpsRecord { .. };
-        let ok = wing::parse_https_svc_params(raw_params[..], rec);
+        var rec = dns::HttpsRecord { .. };
+        let ok = rec.parse_https_svc_params(raw_params[..]);
         sub.assert_true(ok, "parse_https_svc_params succeeds on well-formed ascending keys");
 
         sub.assert_eq(rec.alpns.len, 2, "Parsed 2 ALPN protocols");
@@ -1989,33 +1989,33 @@ fn test_rfc9460_svcb_https_rdata(t: lit::T&) {
         var out_of_order: u8[>..] = [];
         out_of_order.append([0x00, 0x04, 0x00, 0x04, 0xC0, 0x00, 0x02, 0x01]);
         out_of_order.append([0x00, 0x03, 0x00, 0x02, 0x01, 0xBB]);
-        var r1 = wing::HttpsRecord { .. };
-        sub.assert_false(wing::parse_https_svc_params(out_of_order[..], r1), "Out-of-order keys rejected");
+        var r1 = dns::HttpsRecord { .. };
+        sub.assert_false(r1.parse_https_svc_params(out_of_order[..]), "Out-of-order keys rejected");
 
         // Reject duplicate keys: Key 3 twice
         var duplicate_key: u8[>..] = [];
         duplicate_key.append([0x00, 0x03, 0x00, 0x02, 0x01, 0xBB]);
         duplicate_key.append([0x00, 0x03, 0x00, 0x02, 0x01, 0xBB]);
-        var r2 = wing::HttpsRecord { .. };
-        sub.assert_false(wing::parse_https_svc_params(duplicate_key[..], r2), "Duplicate keys rejected");
+        var r2 = dns::HttpsRecord { .. };
+        sub.assert_false(r2.parse_https_svc_params(duplicate_key[..]), "Duplicate keys rejected");
 
         // Reject bad port length: 1 byte
         var bad_port: u8[>..] = [];
         bad_port.append([0x00, 0x03, 0x00, 0x01, 0x50]);
-        var r3 = wing::HttpsRecord { .. };
-        sub.assert_false(wing::parse_https_svc_params(bad_port[..], r3), "Port length != 2 rejected");
+        var r3 = dns::HttpsRecord { .. };
+        sub.assert_false(r3.parse_https_svc_params(bad_port[..]), "Port length != 2 rejected");
 
         // Reject bad IPv4 length: 6 bytes (not multiple of 4)
         var bad_ip4: u8[>..] = [];
         bad_ip4.append([0x00, 0x04, 0x00, 0x06, 0xC0, 0x00, 0x02, 0x01, 0x00, 0x01]);
-        var r4 = wing::HttpsRecord { .. };
-        sub.assert_false(wing::parse_https_svc_params(bad_ip4[..], r4), "IPv4 hint length not multiple of 4 rejected");
+        var r4 = dns::HttpsRecord { .. };
+        sub.assert_false(r4.parse_https_svc_params(bad_ip4[..]), "IPv4 hint length not multiple of 4 rejected");
 
         // Reject truncated parameter value (stated length 4, actual bytes 2)
         var trunc_val: u8[>..] = [];
         trunc_val.append([0x00, 0x04, 0x00, 0x04, 0xC0, 0x00]);
-        var r5 = wing::HttpsRecord { .. };
-        sub.assert_false(wing::parse_https_svc_params(trunc_val[..], r5), "Truncated parameter value rejected");
+        var r5 = dns::HttpsRecord { .. };
+        sub.assert_false(r5.parse_https_svc_params(trunc_val[..]), "Truncated parameter value rejected");
     };
 }
 
@@ -2025,7 +2025,7 @@ fn test_rfc9460_svcb_https_rdata(t: lit::T&) {
 fn test_doh_query_generation(t: lit::T&) {
     t.run("1. DoH POST Body and GET URL Construction") { sub =>
         var post_body: u8[..512] = [];
-        let ok_post = wing::build_doh_post_body("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, post_body);
+        let ok_post = dns::build_doh_post_body("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, post_body);
         sub.assert_true(ok_post, "build_doh_post_body succeeds");
         sub.assert_true(post_body.len >= 12, "Post body at least DNS header size (12 bytes)");
 
@@ -2035,7 +2035,7 @@ fn test_doh_query_generation(t: lit::T&) {
 
         // GET URL with base64url query parameter
         var get_url: u8[..512] = [];
-        let ok_get = wing::build_doh_get_url("https://1.1.1.1/dns-query", "cloudflare.com", rfc::DNS_QTYPE_HTTPS, get_url);
+        let ok_get = dns::build_doh_get_url("https://1.1.1.1/dns-query", "cloudflare.com", rfc::DNS_QTYPE_HTTPS, get_url);
         sub.assert_true(ok_get, "build_doh_get_url succeeds");
         sub.assert_true(core::starts_with(get_url[..], "https://1.1.1.1/dns-query?dns="), "URL starts with endpoint and ?dns=");
     };
@@ -2046,9 +2046,9 @@ fn test_doh_query_generation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_dns_cache_lifecycle(t: lit::T&) {
     t.run("1. Freshness, Stale-While-Revalidate Window, and Expiration") { sub =>
-        var cache = wing::DnsCache { .. };
+        var cache = dns::Cache { .. };
 
-        var entry = wing::DnsCacheEntry { .. };
+        var entry = dns::CacheEntry { .. };
         entry.domain.append("api.example.com");
         entry.qtype = rfc::DNS_QTYPE_A;
         entry.ipv4_hints.push(0x7F000001); // 127.0.0.1
@@ -2057,36 +2057,38 @@ fn test_dns_cache_lifecycle(t: lit::T&) {
         entry.stale_ttl_sec = 300; // Stale window: 1060 .. 1360
         entry.valid = true;
 
-        wing::dns_cache_insert(cache, entry);
+        cache.insert(entry);
         sub.assert_eq(cache.entries.len, 1, "Cache holds 1 entry");
 
         // Lookup at t = 1030 (Fresh, elapsed 30 < 60)
-        var out1 = wing::DnsCacheEntry { .. };
-        let st1 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1030, out1);
-        sub.assert_eq(st1, wing::DnsCacheStatus.Fresh, "Lookup at t=1030 is Fresh");
-        sub.assert_eq(out1.ipv4_hints.len, 1, "Output holds 1 IP");
-        sub.assert_eq(out1.ipv4_hints[0], 0x7F000001, "IP matches");
+        let out1, st1 = cache.lookup("api.example.com", rfc::DNS_QTYPE_A, 1030);
+        sub.assert_eq(st1, dns::CacheStatus.Fresh, "Lookup at t=1030 is Fresh");
+        sub.assert_true(out1 != null, "Fresh lookup returns entry ref");
+        if out1 {
+            sub.assert_eq(out1.ipv4_hints.len, 1, "Output holds 1 IP");
+            sub.assert_eq(out1.ipv4_hints[0], 0x7F000001, "IP matches");
+        }
 
         // Lookup at t = 1100 (Stale, elapsed 100 >= 60 but < 360)
-        var out2 = wing::DnsCacheEntry { .. };
-        let st2 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1100, out2);
-        sub.assert_eq(st2, wing::DnsCacheStatus.Stale, "Lookup at t=1100 is Stale");
+        let out2, st2 = cache.lookup("api.example.com", rfc::DNS_QTYPE_A, 1100);
+        sub.assert_eq(st2, dns::CacheStatus.Stale, "Lookup at t=1100 is Stale");
+        sub.assert_true(out2 != null, "Stale lookup returns entry ref");
 
         // Lookup at t = 1400 (Expired, elapsed 400 >= 360)
-        var out3 = wing::DnsCacheEntry { .. };
-        let st3 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1400, out3);
-        sub.assert_eq(st3, wing::DnsCacheStatus.Expired, "Lookup at t=1400 is Expired");
+        let out3, st3 = cache.lookup("api.example.com", rfc::DNS_QTYPE_A, 1400);
+        sub.assert_eq(st3, dns::CacheStatus.Expired, "Lookup at t=1400 is Expired");
+        sub.assert_true(out3 == null, "Expired lookup returns null");
 
         // Overwrite existing entry with refreshed TTL
         var updated = entry;
         updated.inserted_at_sec = 1400;
         updated.ttl_sec = 120;
-        wing::dns_cache_insert(cache, updated);
+        cache.insert(updated);
         sub.assert_eq(cache.entries.len, 1, "Cache still holds 1 entry after update");
 
-        var out4 = wing::DnsCacheEntry { .. };
-        let st4 = wing::dns_cache_lookup(cache, "api.example.com", rfc::DNS_QTYPE_A, 1450, out4);
-        sub.assert_eq(st4, wing::DnsCacheStatus.Fresh, "Lookup after refresh is Fresh");
+        let out4, st4 = cache.lookup("api.example.com", rfc::DNS_QTYPE_A, 1450);
+        sub.assert_eq(st4, dns::CacheStatus.Fresh, "Lookup after refresh is Fresh");
+        sub.assert_true(out4 != null, "Refreshed lookup returns entry ref");
     };
 }
 
@@ -2106,8 +2108,8 @@ fn test_dns_decode_label_length_and_reserved_bits(t: lit::T&) {
 
         var out_name: u8[..256] = [];
         var off:      i64       = 0;
-        let ok = wing::dns_decode_name(wire[..], off, out_name);
-        sub.assert_false(ok, "dns_decode_name MUST reject label with length 70 (> 63)");
+        let ok = dns::decode_name(wire[..], off, out_name);
+        sub.assert_false(ok, "dns::decode_name MUST reject label with length 70 (> 63)");
     };
 
     t.run("DNS wire decode MUST reject reserved high-order label bits (0x40 or 0x80)") { sub =>
@@ -2116,8 +2118,8 @@ fn test_dns_decode_label_length_and_reserved_bits(t: lit::T&) {
         var wire:     u8[..16]  = [0x44, 't', 'e', 's', 't', 0x00]; // 0x44 has bits 01_000100
         var out_name: u8[..256] = [];
         var off:      i64       = 0;
-        let ok = wing::dns_decode_name(wire[..], off, out_name);
-        sub.assert_false(ok, "dns_decode_name MUST reject label starting with reserved bits 01 (0x40)");
+        let ok = dns::decode_name(wire[..], off, out_name);
+        sub.assert_false(ok, "dns::decode_name MUST reject label starting with reserved bits 01 (0x40)");
     };
 }
 
@@ -2163,8 +2165,7 @@ fn test_dns_name_length_overflow(t: lit::T&) {
         0x00, 0x01, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
     ];
-    var resp = wing::DnsResponse {};
-    let ok = wing::parse_dns_response(bad_dns[..], resp);
+    let _, ok = dns::parse_response(bad_dns[..]);
     t.assert_false(ok, "Truncated DNS packet must return false without panic");
 }
 
@@ -2229,7 +2230,7 @@ fn test_group_and_proxy_quotas_with_waiter_handoff(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_hev3_https_svcb_and_address_family_cache(t: lit::T&) {
     t.run("extract_https_svcb_metadata extracts ALPN, ECH, port override, and IPv4/IPv6 hints") { sub =>
-        var rec = wing::HttpsRecord {
+        var rec = dns::HttpsRecord {
             priority: 1,
             port:     8443,
             has_ech:  true,

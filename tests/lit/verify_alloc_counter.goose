@@ -126,7 +126,7 @@ fn test_zero_alloc_protocol_parsers() {
         assert(ok_http && consumed > 0);
 
         var cur: i64 = 0;
-        let span, ok_cookie = wing::next_cookie_span(cookie_str, cur);
+        let span, ok_cookie = cookie::next_span(cookie_str, cur);
         assert(ok_cookie && span.name_len > 0);
 
         let val, off, ok_q = quic_internal::quic_decode_varint(q_varint[..], 0);

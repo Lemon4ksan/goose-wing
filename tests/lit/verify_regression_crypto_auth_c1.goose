@@ -21,7 +21,7 @@ import wing from "../..";
 // CHECK: === CYCLE 1 CRYPTO AUTH BREAKER REGRESSION SUITE ===
 
 fn test_bug1_csrf_fetch_metadata_bypasses() {
-    var guard_cfg = wing::CrossOriginGuard { .. };
+    var guard_cfg = security::CrossOriginGuard { .. };
     guard_cfg.allow_same_site = false;
     guard_cfg.require_user_activation_on_sensitive_nav = true;
 
@@ -32,36 +32,36 @@ fn test_bug1_csrf_fetch_metadata_bypasses() {
     wing::set_header(req_sens, "Sec-Fetch-Mode", "navigate");
     wing::set_header(req_sens, "Sec-Fetch-Dest", "document");
 
-    let dec_req_sens = wing::evaluate_request_csrf(guard_cfg, req_sens, "app.example.com", true);
-    let ctx_sens = wing::extract_fetch_context(req_sens, "app.example.com", true);
-    let dec_ctx_sens = wing::evaluate_fetch_metadata(guard_cfg, ctx_sens);
+    let dec_req_sens = security::evaluate_request_csrf(guard_cfg, req_sens, "app.example.com", true);
+    let ctx_sens = security::extract_fetch_context(req_sens, "app.example.com", true);
+    let dec_ctx_sens = security::evaluate_fetch_metadata(guard_cfg, ctx_sens);
 
     // 1B. Same-site iframe embedding when allow_same_site = false must be rejected.
     var req_embed = wing::new_request("GET", "https://app.example.com/dashboard");
     wing::set_header(req_embed, "Sec-Fetch-Site", "same-site");
     wing::set_header(req_embed, "Sec-Fetch-Mode", "navigate");
     wing::set_header(req_embed, "Sec-Fetch-Dest", "iframe");
-    let dec_req_embed = wing::evaluate_request_csrf(guard_cfg, req_embed, "app.example.com", false);
+    let dec_req_embed = security::evaluate_request_csrf(guard_cfg, req_embed, "app.example.com", false);
 
     // 1C. Empty Sec-Fetch-Site header followed by same-origin duplicate must not smuggle SameOrigin.
     var req_smuggle = wing::new_request("POST", "https://app.example.com/transfer");
     wing::append_header(req_smuggle.headers, "Sec-Fetch-Site", "");
     wing::append_header(req_smuggle.headers, "Sec-Fetch-Site", "same-origin");
-    let ctx_smuggle = wing::extract_fetch_context(req_smuggle, "app.example.com", false);
-    let dec_smuggle = wing::evaluate_request_csrf(guard_cfg, req_smuggle, "app.example.com", false);
+    let ctx_smuggle = security::extract_fetch_context(req_smuggle, "app.example.com", false);
+    let dec_smuggle = security::evaluate_request_csrf(guard_cfg, req_smuggle, "app.example.com", false);
 
     // 1D. Duplicate conflicting Origin headers in fallback mode must fail closed.
     var req_dup_orig = wing::new_request("POST", "https://app.example.com/transfer");
     wing::append_header(req_dup_orig.headers, "Origin", "https://app.example.com");
     wing::append_header(req_dup_orig.headers, "Origin", "https://evil.attacker.example");
-    let dec_dup_orig = wing::evaluate_request_csrf(guard_cfg, req_dup_orig, "app.example.com", false);
+    let dec_dup_orig = security::evaluate_request_csrf(guard_cfg, req_dup_orig, "app.example.com", false);
 
-    let ok = !wing::is_allowed(dec_req_sens) &&
-             !wing::is_allowed(dec_ctx_sens) &&
-             !wing::is_allowed(dec_req_embed) &&
-             ctx_smuggle.site == wing::SecFetchSite.CrossSite &&
-             !wing::is_allowed(dec_smuggle) &&
-             !wing::is_allowed(dec_dup_orig);
+    let ok = !security::is_allowed(dec_req_sens) &&
+             !security::is_allowed(dec_ctx_sens) &&
+             !security::is_allowed(dec_req_embed) &&
+             ctx_smuggle.site == security::SecFetchSite.CrossSite &&
+             !security::is_allowed(dec_smuggle) &&
+             !security::is_allowed(dec_dup_orig);
     print("BUG1_CSRF_FETCH_METADATA_DEFENSE: ", ok, "\n");
     assert(ok);
 }
@@ -77,10 +77,10 @@ fn test_bug2_dpop_jwk_and_enterprise_token_buffers() {
         "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":\"not-an-object\"}";
 
     var out_alg: u8[..16] = [];
-    var out_jwk = wing::DPoPJwkInfo { .. };
-    let ok_parse_non_obj = wing::parse_dpop_header_jwk_info(single_non_obj_hdr, out_alg, out_jwk);
-    let ok_verify_non_obj = wing::verify_dpop_header(single_non_obj_hdr, "EdDSA");
-    let ok_verify_dup = wing::verify_dpop_header(dup_non_obj_hdr, "EdDSA");
+    var out_jwk = auth::DPoPJwkInfo { .. };
+    let ok_parse_non_obj = auth::parse_dpop_header_jwk_info(single_non_obj_hdr, out_alg, out_jwk);
+    let ok_verify_non_obj = auth::verify_dpop_header(single_non_obj_hdr, "EdDSA");
+    let ok_verify_dup = auth::verify_dpop_header(dup_non_obj_hdr, "EdDSA");
 
     // 2B. Enterprise-scale DPoP proof (3000 bytes) and access token (3000 bytes) up to 4096 bytes
     // (Invariant 17: MAX_AUTH_TOKEN_LEN = 4096) must be accepted by attach_dpop and encode_token_endpoint_form.
@@ -91,12 +91,12 @@ fn test_bug2_dpop_jwk_and_enterprise_token_buffers() {
         big_token.push('b');
     }
     var req = wing::Request { .. };
-    wing::attach_dpop(req, big_proof[..], big_token[..]);
+    auth::attach_dpop(req, big_proof[..], big_token[..]);
     let attached_dpop = wing::header(req, "DPoP");
     let attached_auth = wing::header(req, "Authorization");
 
     var form_out: u8[..8192] = [];
-    let ok_form = wing::encode_token_endpoint_form(big_token[..], wing::TokenTypeHint.AccessToken, form_out);
+    let ok_form = auth::encode_token_endpoint_form(big_token[..], auth::TokenTypeHint.AccessToken, form_out);
 
     let ok = !ok_parse_non_obj &&
              !out_jwk.valid &&
@@ -209,7 +209,7 @@ fn test_bug3_tls_crl_verification_and_tickets() {
 // CHECK: BUG3_TLS_CRL_AND_TICKETS: true
 
 fn test_bug4_digest_transactional_out_buffer() {
-    var chal = wing::DigestChallenge {
+    var chal = auth::DigestChallenge {
         valid:     true,
         algorithm: "SHA-256",
         qop:       "auth",
@@ -218,7 +218,7 @@ fn test_bug4_digest_transactional_out_buffer() {
     chal.realm.append("api@example.com");
     chal.nonce.append("dcd98b7102dd2f0e8b11d0f600bfb0c093");
 
-    var creds = wing::DigestCredentials { .. };
+    var creds = auth::DigestCredentials { .. };
     creds.username.append("Mufasa");
     creds.password.append("Circle Of Life");
 
@@ -226,13 +226,13 @@ fn test_bug4_digest_transactional_out_buffer() {
     out_header.append("Digest username=\"stale_admin\", response=\"deadbeef\"");
 
     // Failing call (nc == 0 when qop="auth") must clear pre-populated out_header (Invariant 18).
-    let ok_fail = wing::compute_digest_response(chal, creds, "GET", "/dir/index.html", 0, "0a4f113b", "", out_header);
+    let ok_fail = auth::compute_digest_response(chal, creds, "GET", "/dir/index.html", 0, "0a4f113b", "", out_header);
 
     // Failing HA1-sess without cnonce must return empty slice cleanly.
-    let ha1_bad_sess = wing::calculate_digest_ha1("SHA-256-sess", "Mufasa", "api@example.com", "secret", "nonce1", "");
+    let ha1_bad_sess = auth::calculate_digest_ha1("SHA-256-sess", "Mufasa", "api@example.com", "secret", "nonce1", "");
 
     var tiny_sink: u8[..48] = [];
-    let ok_tiny = wing::serialize_digest_auth(
+    let ok_tiny = auth::serialize_digest_auth(
         "Mufasa",
         "api@example.com",
         "dcd98b7102dd2f0e8b11d0f600bfb0c093",

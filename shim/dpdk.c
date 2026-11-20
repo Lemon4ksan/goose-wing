@@ -6,6 +6,7 @@
 // and provides a deterministic lock-free userspace ring fallback otherwise.
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
@@ -166,9 +167,16 @@ typedef struct {
     uint32_t pkt_count;
 } wing_dpdk_port_state;
 
-static wing_dpdk_port_state g_dpdk_ports[WING_DPDK_MAX_PORTS];
+static wing_dpdk_port_state *g_dpdk_ports = NULL;
 static int g_dpdk_eal_initialized = 0;
 static uint64_t g_dpdk_next_pool_handle = 0xD0001000ULL;
+
+static wing_dpdk_port_state *ensure_dpdk_ports(void) {
+    if (!g_dpdk_ports) {
+        g_dpdk_ports = (wing_dpdk_port_state *)calloc(WING_DPDK_MAX_PORTS, sizeof(wing_dpdk_port_state));
+    }
+    return g_dpdk_ports;
+}
 
 int32_t wing_dpdk_probe(void) {
 #if defined(__linux__)
@@ -204,7 +212,11 @@ int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16
     if (!g_dpdk_eal_initialized) {
         wing_dpdk_eal_init();
     }
-    wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
+    wing_dpdk_port_state *ports = ensure_dpdk_ports();
+    if (!ports) {
+        return -1;
+    }
+    wing_dpdk_port_state *st = &ports[port_id];
     memset(st, 0, sizeof(*st));
     st->rx_queues = rx_queues;
     st->tx_queues = tx_queues;
@@ -216,7 +228,7 @@ int32_t wing_dpdk_eth_dev_configure(uint16_t port_id, uint16_t rx_queues, uint16
 }
 
 int32_t wing_dpdk_eth_dev_start(uint16_t port_id) {
-    if (port_id >= WING_DPDK_MAX_PORTS || !g_dpdk_ports[port_id].configured) {
+    if (port_id >= WING_DPDK_MAX_PORTS || !g_dpdk_ports || !g_dpdk_ports[port_id].configured) {
         return -1;
     }
     g_dpdk_ports[port_id].started = 1;
@@ -224,7 +236,7 @@ int32_t wing_dpdk_eth_dev_start(uint16_t port_id) {
 }
 
 void wing_dpdk_eth_dev_stop(uint16_t port_id) {
-    if (port_id < WING_DPDK_MAX_PORTS) {
+    if (port_id < WING_DPDK_MAX_PORTS && g_dpdk_ports) {
         g_dpdk_ports[port_id].started = 0;
         g_dpdk_ports[port_id].configured = 0;
         g_dpdk_ports[port_id].head = 0;
@@ -238,7 +250,7 @@ void wing_dpdk_eth_dev_stop(uint16_t port_id) {
 
 uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t *pkts_in, uint16_t nb_pkts) {
     (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !pkts_in || nb_pkts == 0) {
+    if (port_id >= WING_DPDK_MAX_PORTS || !pkts_in || nb_pkts == 0 || !g_dpdk_ports) {
         return 0;
     }
     wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
@@ -257,7 +269,7 @@ uint16_t wing_dpdk_tx_burst(uint16_t port_id, uint16_t queue_id, const uint64_t 
 
 uint16_t wing_dpdk_rx_burst(uint16_t port_id, uint16_t queue_id, uint64_t *pkts_out, uint16_t nb_pkts) {
     (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !pkts_out || nb_pkts == 0) {
+    if (port_id >= WING_DPDK_MAX_PORTS || !pkts_out || nb_pkts == 0 || !g_dpdk_ports) {
         return 0;
     }
     wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
@@ -276,7 +288,8 @@ uint16_t wing_dpdk_rx_burst(uint16_t port_id, uint16_t queue_id, uint64_t *pkts_
 
 int32_t wing_dpdk_tx_packet_push(uint16_t port_id, uint16_t queue_id, wing_dpdk_ro_slice frame) {
     (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !frame.data || frame.len <= 0 || frame.len > WING_DPDK_MAX_FRAME_LEN) {
+    if (port_id >= WING_DPDK_MAX_PORTS || !frame.data || frame.len <= 0 || frame.len > WING_DPDK_MAX_FRAME_LEN ||
+        !g_dpdk_ports) {
         return 0;
     }
     wing_dpdk_port_state *st = &g_dpdk_ports[port_id];
@@ -293,7 +306,7 @@ int32_t wing_dpdk_tx_packet_push(uint16_t port_id, uint16_t queue_id, wing_dpdk_
 
 int32_t wing_dpdk_rx_burst_read_one(uint16_t port_id, uint16_t queue_id, wing_dpdk_rw_slice dst) {
     (void)queue_id;
-    if (port_id >= WING_DPDK_MAX_PORTS || !dst.data || dst.len <= 0) {
+    if (port_id >= WING_DPDK_MAX_PORTS || !dst.data || dst.len <= 0 || !g_dpdk_ports) {
         return -1;
     }
     wing_dpdk_port_state *st = &g_dpdk_ports[port_id];

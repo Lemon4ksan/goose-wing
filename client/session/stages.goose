@@ -8,6 +8,8 @@ import std;
 import core from "../..";
 import cookie.constants;
 import cookie.canonical;
+import cookie.psl;
+import cookie.parser;
 import cookie.policy;
 import cookie.engine;
 import fingerprint.profile;
@@ -31,6 +33,7 @@ import auth.dpop;
 import security.cors;
 import security.cross_origin_isolation;
 import security.privacypass;
+import security.ssrf;
 import client.replay_guard;
 import client.session.ssrf;
 import client.session.mock;
@@ -81,7 +84,7 @@ fn stage_client_url_hsts(
 fn stage_client_ssrf_guard(
     current_url: const core::Url&,
     https_only:  bool,
-    policy:      const SsrfGuardPolicy&,
+    policy:      const security::SsrfGuardPolicy&,
 ) -> wire::StageVerdict {
     if https_only && current_url.scheme() != "https" {
         return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_REQUEST };
@@ -155,7 +158,7 @@ fn apply_cache_revalidation_headers(cond_map: const HeaderMap&, headers: HeaderM
 fn stage_client_cookie_load<Jar>(
     headers:       HeaderMap&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     is_main_frame: bool,
     part_key:      const u8[:],
     safe_method:   bool,
@@ -164,18 +167,19 @@ fn stage_client_cookie_load<Jar>(
     enable_jar:    bool,
 ) -> wire::StageVerdict {
     guard enable_jar else { return wire::StageVerdict.Continue; }
-    let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
-    let is_top_nav = is_main_frame && samesite_eval.context_type != SameSiteContextType.CrossSite;
+    let is_sec_channel = current_url.is_secure_scheme() ||
+        cookie::is_trustworthy_non_crypto_host(current_url.hostname());
+    let is_top_nav = is_main_frame && samesite_eval.context_type != cookie::SameSiteContextType.CrossSite;
     let _ = jar.encode_cookie_header_to_map(
         current_url.hostname(),
         current_url.pathname(),
         current_url.scheme(),
         current_url.effective_port(),
-        CookieSourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
+        cookie::SourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
         part_key,
         now_us,
-        CookieAccessOptions {
-            is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
+        cookie::AccessOptions {
+            is_same_site:            samesite_eval.context_type == cookie::SameSiteContextType.SameSiteStrict,
             is_top_level_navigation: is_top_nav,
             is_safe_method:          safe_method,
             had_cross_site_hop:      samesite_eval.had_cross_site_hop,
@@ -228,7 +232,7 @@ fn stage_client_auth_header(
 fn stage_client_cookie_store<Jar>(
     resp_headers:  const HeaderMap&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     is_main_frame: bool,
     part_key:      const u8[:],
     now_us:        i64,
@@ -242,8 +246,8 @@ fn stage_client_cookie_store<Jar>(
         guard ename.eq_ascii_fold("set-cookie") else { continue; }
         let set_cookie_str = entry_value(resp_headers, e);
         var def_path: u8[..256] = [];
-        compute_default_cookie_path(current_url.pathname(), def_path);
-        var parsed_cookie, _, cookie_ok = parse_canonical_set_cookie(
+        cookie::compute_default_path(current_url.pathname(), def_path);
+        var parsed_cookie, _, cookie_ok = cookie::parse_canonical_set_cookie(
             set_cookie_str,
             current_url.hostname(),
             def_path[..],
@@ -251,12 +255,12 @@ fn stage_client_cookie_store<Jar>(
         );
         guard cookie_ok else { continue; }
         let is_sec_channel = current_url.is_secure_scheme() ||
-            is_trustworthy_non_crypto_host(current_url.hostname());
-        let opts = CookieInclusionOptions {
+            cookie::is_trustworthy_non_crypto_host(current_url.hostname());
+        let opts = cookie::InclusionOptions {
             is_main_frame:     is_main_frame,
             is_secure_channel: is_sec_channel,
         };
-        let can_write, _ = can_set_canonical_cookie_for_context(
+        let _, can_write = cookie::can_set_for_context(
             parsed_cookie,
             samesite_eval,
             opts,
@@ -401,7 +405,7 @@ fn try_handle_early_data_or_dpop_challenge(
     session:       Client&,
     ctx:           RequestExecutionContext&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     safe_method:   bool,
     resp:          const Response&,
 ) -> bool {
@@ -421,12 +425,12 @@ fn try_handle_early_data_or_dpop_challenge(
 
     let is_dpop_status = resp.status_code == rfc::STATUS_UNAUTHORIZED || resp.status_code == rfc::STATUS_BAD_REQUEST;
     guard session.dpop.has_key && is_dpop_status else { return false; }
-    guard extract_dpop_nonce(resp.headers, session.dpop.last_nonce) else { return false; }
+    guard auth::extract_dpop_nonce(resp.headers, session.dpop.last_nonce) else { return false; }
     let now_sec = div_euclid(session.virtual_clock_us, 1000000);
     let htu_no_q, _, _ = current_url.href[..].partition_byte('?');
     let htu_clean, _, _ = htu_no_q.partition_byte('#');
     var proof: u8[..2048] = [];
-    let ok_proof = create_dpop_proof(
+    let ok_proof = auth::create_dpop_proof(
         session.dpop.private_key[..],
         ctx.current_method[..],
         htu_clean,
@@ -460,7 +464,7 @@ fn stage_client_auth_challenge(
     session:       Client&,
     ctx:           RequestExecutionContext&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     safe_method:   bool,
     resp:          Response&,
 ) -> wire::StageVerdict {
@@ -504,9 +508,9 @@ fn validate_client_cors_and_corp_response(
 
     let corp_hdr = header(resp, "Cross-Origin-Resource-Policy");
     if corp_hdr.len > 0 {
-        var iso_ctx = CrossOriginIsolationContext { .. };
+        var iso_ctx = security::CrossOriginIsolationContext { .. };
         let _ = iso_ctx.document_origin.try_set(init_orig_str[..]);
-        if !is_subresource_allowed(iso_ctx, target_orig_str[..], corp_hdr) {
+        if !security::is_subresource_allowed(iso_ctx, target_orig_str[..], corp_hdr) {
             out_err = make_error(rfc::STATUS_FORBIDDEN, "corp", "ERR_BLOCKED_BY_RESPONSE: CORP violation");
             return false;
         }
@@ -518,11 +522,11 @@ fn validate_client_cors_and_corp_response(
         if req_orig.len > 0 {
             let include_creds = find_header(ctx.headers, "Cookie").len > 0 ||
                 find_header(ctx.headers, "Authorization").len > 0;
-            let cors_opts = ClientCorsVerifyOptions {
+            let cors_opts = security::ClientCorsVerifyOptions {
                 tainted_origin:      is_tainted,
                 include_credentials: include_creds,
             };
-            if !verify_client_cors_response(resp.headers, req_orig, cors_opts) {
+            if !security::verify_client_cors_response(resp.headers, req_orig, cors_opts) {
                 out_err = make_error(rfc::STATUS_FORBIDDEN, "cors", "ERR_FAILED: CORS response check failed");
                 return false;
             }
@@ -728,7 +732,7 @@ inline fn apply_client_early_data_and_dpop_headers(
     let htu_no_q, _, _ = current_url.href[..].partition_byte('?');
     let htu_clean, _, _ = htu_no_q.partition_byte('#');
     var proof: u8[..4096] = [];
-    guard create_dpop_proof(
+    guard auth::create_dpop_proof(
         session.dpop.private_key[..],
         ctx.current_method[..],
         htu_clean,
@@ -942,7 +946,7 @@ fn dispatch_client_ingress_stage(
     session:       Client&,
     ctx:           RequestExecutionContext&,
     current_url:   core::Url&,
-    samesite_eval: SameSiteCookieContext&,
+    samesite_eval: cookie::SameSiteCookieContext&,
     safe_method:   bool,
     now_sec:       i64,
     out_err:       Error&,
@@ -1026,7 +1030,7 @@ fn run_client_pre_hop_stages<UserStage>(
     session:       Client&,
     ctx:           RequestExecutionContext&,
     current_url:   core::Url&,
-    samesite_eval: SameSiteCookieContext&,
+    samesite_eval: cookie::SameSiteCookieContext&,
     safe_method:   bool,
     now_sec:       i64,
     out_resp:      Response&,
@@ -1337,7 +1341,7 @@ fn run_client_auth_retry_loop<UserStage>(
     ctx:           RequestExecutionContext&,
     req:           const Request&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     safe_method:   bool,
     cache_ts:      CacheTimestamps&,
     hop_reval_idx: i64,

@@ -1001,7 +1001,7 @@ fn parse_dns_question(buf: const u8[:]) -> i64 {
 
     var decode_off: i64       = 12;
     var name_out:   u8[..256] = [];
-    if !wing::dns_decode_name(buf, decode_off, name_out) {
+    if !dns::decode_name(buf, decode_off, name_out) {
         return -2;
     }
     if buf.len < decode_off + 4 { return -1; }

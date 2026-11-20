@@ -22,7 +22,7 @@ import wire_kit from ".";
 //
 
 fn run_01_rfc_repro_semantic_h3_connect_pseudo() {
-    var settings = wing::H3Settings { .. };
+    var settings = fingerprint::H3Settings { .. };
     var conn = h3_internal::new_h3_server_connection(settings);
     let s_idx, err_s = h3_internal::get_or_create_bidi_stream(conn, 0);
     assert(err_s == rfc::H3_ERR_NO_ERROR);
@@ -136,7 +136,7 @@ fn run_01_rfc_repro_semantic_h3_connect_pseudo() {
 // 7. Dynamic table index boundary against RIC in Case A and C (RFC 9204 §4.5.2, §4.5.4).
 //
 
-fn test_control_stream_forbidden_frames_precedence(conn: h3_internal::H3Connection&, settings: const wing::H3Settings&) {
+fn test_control_stream_forbidden_frames_precedence(conn: h3_internal::H3Connection&, settings: const fingerprint::H3Settings&) {
     conn = h3_internal::new_h3_server_connection(settings);
 
     // A. DATA frame sent on peer control stream before SETTINGS (RFC 9114 §6.2.1)
@@ -188,7 +188,7 @@ fn test_control_stream_forbidden_frames_precedence(conn: h3_internal::H3Connecti
 }
 
 fn test_duplicate_settings_rejection() {
-    var out_settings = wing::H3Settings { .. };
+    var out_settings = fingerprint::H3Settings { .. };
 
     // Duplicate unknown/GREASE setting ID (e.g. 0x21 sent twice)
     var wire_grease: u8[..64] = [];
@@ -220,7 +220,7 @@ fn test_duplicate_settings_rejection() {
     print("DUPLICATE_SETTINGS_REJECTION: OK");
 }
 
-fn test_push_stream_validation(conn: h3_internal::H3Connection&, settings: const wing::H3Settings&) {
+fn test_push_stream_validation(conn: h3_internal::H3Connection&, settings: const fingerprint::H3Settings&) {
     // 1. Server receives push stream from client -> H3_ERR_STREAM_CREATION (RFC 9114 §6.2.2)
     conn = h3_internal::new_h3_server_connection(settings);
     var push_wire: u8[..64] = [];
@@ -262,7 +262,7 @@ fn test_push_stream_validation(conn: h3_internal::H3Connection&, settings: const
     print("PUSH_STREAM_VALIDATION: OK");
 }
 
-fn test_server_initiated_bidi_stream_rejection(conn: h3_internal::H3Connection&, settings: const wing::H3Settings&) {
+fn test_server_initiated_bidi_stream_rejection(conn: h3_internal::H3Connection&, settings: const fingerprint::H3Settings&) {
     conn = h3_internal::new_h3_client_connection(settings);
     let err_bidi = h3_internal::handle_stream_data(conn, 1, true, "test", false);
     assert(err_bidi == rfc::H3_ERR_STREAM_CREATION);
@@ -272,7 +272,7 @@ fn test_server_initiated_bidi_stream_rejection(conn: h3_internal::H3Connection&,
 }
 
 fn test_initial_dynamic_table_capacity_zero(conn: h3_internal::H3Connection&) {
-    let settings = wing::H3Settings { qpack_max_table_capacity: 4096, .. };
+    let settings = fingerprint::H3Settings { qpack_max_table_capacity: 4096, .. };
     conn = h3_internal::new_h3_client_connection(settings);
     assert(conn.qpack_table.capacity_bytes == 0);
 
@@ -366,7 +366,7 @@ fn test_qpack_ric_boundary_cases_a_and_c() {
 }
 
 fn run_02_verify_h3_spec_invariants() {
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var conn = h3_internal::new_h3_server_connection(settings);
 
     test_control_stream_forbidden_frames_precedence(conn, settings);
@@ -459,7 +459,7 @@ fn test_h3_grease_and_h2_reserved() {
 }
 
 fn test_h3_settings_frame() {
-    var settings = wing::H3Settings {
+    var settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   16384,
         qpack_blocked_streams:    16,
@@ -475,7 +475,7 @@ fn test_h3_settings_frame() {
 
     // Parse settings payload
     let payload = wire_out[hdr.header_len..];
-    var parsed_settings = wing::H3Settings { .. };
+    var parsed_settings = fingerprint::H3Settings { .. };
     let err = h3_internal::parse_h3_settings_frame(payload, parsed_settings);
     assert(err == rfc::H3_ERR_NO_ERROR);
     assert(parsed_settings.qpack_max_table_capacity == 4096);
@@ -487,7 +487,7 @@ fn test_h3_settings_frame() {
     var bad_h2_setting: u8[..32] = [];
     quic_internal::quic_encode_varint(bad_h2_setting, 0x02);
     quic_internal::quic_encode_varint(bad_h2_setting, 0);
-    var bad_settings = wing::H3Settings { .. };
+    var bad_settings = fingerprint::H3Settings { .. };
     let err_h2 = h3_internal::parse_h3_settings_frame(bad_h2_setting[..], bad_settings);
     assert(err_h2 == rfc::H3_ERR_SETTINGS_ERROR);
 
@@ -560,7 +560,7 @@ fn test_quich3_origin_frame_and_coalescing() {
     assert(!h3_internal::parse_h3_origin_frame(trunc_entry[..], bad_out));
 
     // Client control stream stores peer_origins; Server ignores ORIGIN frame
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var cli_conn = h3_internal::new_h3_client_connection(settings);
     var ctrl_wire: u8[..256] = [];
     quic_internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
@@ -577,7 +577,7 @@ fn test_quich3_origin_frame_and_coalescing() {
 }
 
 fn test_quich3_priority_scheduler() {
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var conn = h3_internal::new_h3_client_connection(settings);
     let sid0, _ = h3_internal::open_request_stream(conn);
     let sid4, _ = h3_internal::open_request_stream(conn);
@@ -605,7 +605,7 @@ fn test_quich3_priority_scheduler() {
 }
 
 fn test_quich3_webtransport_settings_and_glitch() {
-    let wt_set = wing::H3Settings {
+    let wt_set = fingerprint::H3Settings {
         qpack_max_table_capacity:  4096,
         max_field_section_size:    16384,
         qpack_blocked_streams:     16,
@@ -618,7 +618,7 @@ fn test_quich3_webtransport_settings_and_glitch() {
     assert(h3_internal::encode_h3_settings_frame(out_buf, wt_set));
     let hdr, ok_hdr = h3_internal::parse_h3_frame_header(out_buf[..], 0);
     assert(ok_hdr);
-    var parsed = wing::H3Settings { .. };
+    var parsed = fingerprint::H3Settings { .. };
     assert(h3_internal::parse_h3_settings_frame(out_buf[hdr.header_len..], parsed) == rfc::H3_ERR_NO_ERROR);
     assert(parsed.h3_datagram == 1 && parsed.enable_webtransport == 1 && parsed.webtransport_max_sessions == 8);
 
@@ -685,7 +685,7 @@ fn run_03_verify_http3_framing() {
 //
 
 fn test_server_rejects_missing_authority_and_host() {
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var conn = h3_internal::new_h3_server_connection(settings);
 
     // Initialize peer control stream
@@ -757,7 +757,7 @@ fn test_qpack_never_index_flag_on_duplicate_header_name() {
 }
 
 fn test_server_rejects_goaway_with_non_client_bidi_stream_id() {
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var conn = h3_internal::new_h3_server_connection(settings);
 
     // Initialize peer control stream
@@ -811,7 +811,7 @@ fn test_qpack_dynamic_insert_transactional_failure() {
 }
 
 fn test_client_rejects_server_frames_on_unopened_bidi_stream() {
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var conn = h3_internal::new_h3_client_connection(settings);
 
     // Server sends DATA frame on stream 0, but client NEVER opened stream 0!
@@ -828,7 +828,7 @@ fn test_client_rejects_server_frames_on_unopened_bidi_stream() {
 
 // F001: Blocked QPACK HEADERS frame must unblock and validate when Encoder Stream delivers inserts (RFC 9204 §2.2.1)
 fn test_qpack_blocked_stream_unblocks_on_encoder_stream() {
-    let settings = wing::H3Settings {
+    let settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   65536,
         qpack_blocked_streams:    4,
@@ -878,7 +878,7 @@ fn test_qpack_blocked_stream_unblocks_on_encoder_stream() {
 
 // F002: Multiple field sections on one stream (HEADERS + trailers) must queue FIFO Section Acknowledgments (RFC 9204 §4.4.1)
 fn test_qpack_multi_section_fifo_ack() {
-    let settings = wing::H3Settings {
+    let settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   65536,
         qpack_blocked_streams:    4,
@@ -913,7 +913,7 @@ fn test_qpack_multi_section_fifo_ack() {
 
 // F003: HEAD 200 response with non-zero Content-Length and 0 DATA bytes succeeds; DATA on HEAD/204/304 rejected (RFC 9114 §4.1.2)
 fn test_head_and_no_content_response_framing() {
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var cli = h3_internal::new_h3_client_connection(settings);
     let sid, ok_open = h3_internal::open_request_stream(cli);
     assert(ok_open && sid == 0);
@@ -934,7 +934,7 @@ fn test_head_and_no_content_response_framing() {
 
 // F004: Client rejects CANCEL_PUSH before MAX_PUSH_ID and rejects malformed PUSH_PROMISE headers (RFC 9114 §4.6, §7.2.3, §7.2.5)
 fn test_cancel_push_and_goaway_push_promise() {
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var cli = h3_internal::new_h3_client_connection(settings);
     var init_ctrl: u8[..64] = [];
     quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
@@ -965,7 +965,7 @@ fn test_priority_update_rfc9218_edge_cases() {
     let sid, prio, ok_pu = h3_internal::parse_h3_priority_update_request(empty_pu[..]);
     assert(ok_pu && sid == 0 && prio.urgency == 3 && !prio.incremental);
 
-    let settings = wing::H3Settings { .. };
+    let settings = fingerprint::H3Settings { .. };
     var srv = h3_internal::new_h3_server_connection(settings);
     var init_ctrl: u8[..64] = [];
     quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
@@ -993,14 +993,14 @@ fn test_priority_update_rfc9218_edge_cases() {
 // F006, F007, F008: Settings narrowing / :protocol polarity, :method/:scheme lexical & wire map validation, 1xx Content-Length
 fn test_settings_and_lexical_and_1xx_regressions() {
     // F006: 62-bit qpack_blocked_streams must not panic on narrowing cast; client SETTINGS cannot enable :protocol on server
-    let huge_settings = wing::H3Settings {
+    let huge_settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 0,
         max_field_section_size:   65536,
         qpack_blocked_streams:    0x100000005,
         enable_connect_protocol:  0,
     };
     var srv = h3_internal::new_h3_server_connection(huge_settings);
-    let peer_set = wing::H3Settings { enable_connect_protocol: 1, .. };
+    let peer_set = fingerprint::H3Settings { enable_connect_protocol: 1, .. };
     var init_ctrl: u8[..64] = [];
     quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
     assert(h3_internal::encode_h3_settings_frame(init_ctrl, peer_set));

@@ -1581,96 +1581,96 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: lit::T&) {
     let ed_pub = core::ed25519_public_key(ed_seed);
 
     t.run("RFC 8725 §3.2: Asymmetric OKP key cannot verify symmetric HS256 token (Key Confusion Defense)") { sub =>
-        var jwks = wing::Jwks { .. };
-        wing::add_ed25519_key(jwks, "ed25519-pub-key-1", ed_pub);
+        var jwks = auth::Jwks { .. };
+        auth::add_ed25519_key(jwks, "ed25519-pub-key-1", ed_pub);
 
         // Attacker creates HS256 token signed with ed_pub as HMAC secret
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "ed25519-pub-key-1");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256, "ed25519-pub-key-1");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("attacker");
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, ed_pub[..], token);
+        auth::sign_jwt_hmac(hdr, clm, ed_pub[..], token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
 
-        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "Asymmetric OKP key must reject HS256 verification");
+        let err = auth::verify_jwt(jwks, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.AlgorithmMismatch, "Asymmetric OKP key must reject HS256 verification");
 
         // Verify direct compatibility check fails closed
-        let compat = wing::validate_jwks_key_compatibility(jwks.keys[0], wing::JwtAlg.HS256, false);
-        sub.assert_eq(compat, wing::JwtError.AlgorithmMismatch, "OKP key incompatible with HS256 alg");
+        let compat = auth::validate_jwks_key_compatibility(jwks.keys[0], auth::JwtAlg.HS256);
+        sub.assert_eq(compat, auth::JwtError.AlgorithmMismatch, "OKP key incompatible with HS256 alg");
     };
 
     t.run("RFC 8725 §3.2: Symmetric oct key with EdDSA token or EdDSA algorithm binding rejected") { sub =>
         // Oct key in JWKS claiming EdDSA algorithm MUST be rejected during JWKS finalization
         let jwk_bad = "{\"keys\":[{\"kty\":\"oct\",\"alg\":\"EdDSA\",\"k\":\"c2VjcmV0LWtleS0xNmJ5dGVzCg\",\"kid\":\"bad-oct-eddsa\"}]}";
-        var jwks_bad = wing::Jwks { .. };
-        let ok_parse = wing::parse_jwks_json(jwk_bad, jwks_bad);
+        var jwks_bad = auth::Jwks { .. };
+        let ok_parse = auth::parse_jwks_json(jwk_bad, jwks_bad);
         sub.assert_false(ok_parse, "JWKS containing exclusively invalid oct-EdDSA key returns false");
         sub.assert_eq(jwks_bad.keys.len, 0, "Oct key binding EdDSA algorithm MUST be rejected");
 
         // Direct check: Oct key cannot be used to verify EdDSA
-        var oct_key = wing::JwksKey { kty: wing::JwkKeyType.Oct, valid: true, .. };
-        let compat = wing::validate_jwks_key_compatibility(oct_key, wing::JwtAlg.EdDSA, false);
-        sub.assert_eq(compat, wing::JwtError.AlgorithmMismatch, "Oct key incompatible with EdDSA alg");
+        var oct_key = auth::JwksKey { kty: auth::JwkKeyType.Oct, valid: true, .. };
+        let compat = auth::validate_jwks_key_compatibility(oct_key, auth::JwtAlg.EdDSA);
+        sub.assert_eq(compat, auth::JwtError.AlgorithmMismatch, "Oct key incompatible with EdDSA alg");
     };
 
     t.run("RFC 8037 §2 & §3.1: OKP key with non-Ed25519 curve or omitted curve rejected") { sub =>
         // X25519 curve (ECDH key, invalid for EdDSA signing)
         let jwk_x25519 = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"X25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"x25519-key\"}]}";
-        var jwks_x = wing::Jwks { .. };
-        let ok_x = wing::parse_jwks_json(jwk_x25519, jwks_x);
+        var jwks_x = auth::Jwks { .. };
+        let ok_x = auth::parse_jwks_json(jwk_x25519, jwks_x);
         sub.assert_false(ok_x, "JWKS containing only non-Ed25519 curve returns false");
         sub.assert_eq(jwks_x.keys.len, 0, "OKP key with X25519 curve MUST be rejected");
 
         // Omitted curve
         let jwk_no_crv = "{\"keys\":[{\"kty\":\"OKP\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"no-crv-key\"}]}";
-        var jwks_nc = wing::Jwks { .. };
-        let ok_nc = wing::parse_jwks_json(jwk_no_crv, jwks_nc);
+        var jwks_nc = auth::Jwks { .. };
+        let ok_nc = auth::parse_jwks_json(jwk_no_crv, jwks_nc);
         sub.assert_false(ok_nc, "JWKS containing OKP key with omitted crv returns false");
         sub.assert_eq(jwks_nc.keys.len, 0, "OKP key omitting crv MUST be rejected");
     };
 
     t.run("RFC 7517 §4.4: Oct key in JWKS omitting optional alg parameter verifies HS256 token") { sub =>
         let jwk_sym = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\",\"kid\":\"sym-no-alg\"}]}";
-        var jwks_sym = wing::Jwks { .. };
-        let ok_sym = wing::parse_jwks_json(jwk_sym, jwks_sym);
+        var jwks_sym = auth::Jwks { .. };
+        let ok_sym = auth::parse_jwks_json(jwk_sym, jwks_sym);
         sub.assert_true(ok_sym, "JWKS parsed");
         sub.assert_eq(jwks_sym.keys.len, 1, "Oct key without alg parsed into key set");
-        sub.assert_eq(jwks_sym.keys[0].alg, wing::JwtAlg.Unspecified, "Default alg is Unspecified (compatible with HS256/384/512)");
+        sub.assert_eq(jwks_sym.keys[0].alg, auth::JwtAlg.Unspecified, "Default alg is Unspecified (compatible with HS256/384/512)");
 
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "sym-no-alg");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256, "sym-no-alg");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("user_bob");
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, "0123456789abcdef0123456789abcdef", token);
+        auth::sign_jwt_hmac(hdr, clm, "0123456789abcdef0123456789abcdef", token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
 
-        let err = wing::verify(token[..], jwks_sym, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "Token verified successfully with oct key lacking alg");
-        sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "user_bob", "Subject matches");
+        let err = auth::verify_jwt(jwks_sym, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "Token verified successfully with oct key lacking alg");
+        sub.assert_bytes_eq(auth::claim_str(out_c, "sub"), "user_bob", "Subject matches");
     };
 
     t.run("RFC 8725 §3.6 & RFC 7518 §3.2: Weak symmetric key under 128 bits rejected") { sub =>
         let jwk_weak = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2hvcnQ\",\"kid\":\"weak-sym-key\"}]}";
-        var jwks_weak = wing::Jwks { .. };
-        let ok_w = wing::parse_jwks_json(jwk_weak, jwks_weak);
+        var jwks_weak = auth::Jwks { .. };
+        let ok_w = auth::parse_jwks_json(jwk_weak, jwks_weak);
         sub.assert_false(ok_w, "JWKS containing weak key returns false");
         sub.assert_eq(jwks_weak.keys.len, 0, "Weak symmetric key < 16 bytes MUST be rejected");
 
         // Mixed JWKS: 1 valid Ed25519 key + 1 weak oct key -> only valid key is preserved
         let jwk_mixed = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"kid\":\"valid-ed\"},{\"kty\":\"oct\",\"k\":\"c2hvcnQ\",\"kid\":\"weak-oct\"}]}";
-        var jwks_mixed = wing::Jwks { .. };
-        let ok_m = wing::parse_jwks_json(jwk_mixed, jwks_mixed);
+        var jwks_mixed = auth::Jwks { .. };
+        let ok_m = auth::parse_jwks_json(jwk_mixed, jwks_mixed);
         sub.assert_true(ok_m, "Mixed JWKS parses successfully because valid key is present");
         sub.assert_eq(jwks_mixed.keys.len, 1, "Only 1 valid key retained");
         sub.assert_bytes_eq(jwks_mixed.keys[0].kid[..], "valid-ed", "Valid Ed25519 key retained");
@@ -1987,13 +1987,13 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: lit::T&) {
         token.push('.' as u8);
         token.append(sig_b64[..]);
 
-        let ok_no_jti = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", now_sec);
+        let ok_no_jti = auth::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", now_sec);
         sub.assert_false(ok_no_jti, "DPoP proof omitting jti claim MUST be rejected");
-        sub.assert_false(wing::verify_dpop_jti(c_no_jti), "verify_dpop_jti fails when jti missing");
+        sub.assert_false(auth::verify_dpop_jti(c_no_jti), "verify_dpop_jti fails when jti missing");
 
         // Proof with empty jti string
         let c_empty_jti = "{\"jti\":\"\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}";
-        sub.assert_false(wing::verify_dpop_jti(c_empty_jti), "verify_dpop_jti fails when jti is empty string");
+        sub.assert_false(auth::verify_dpop_jti(c_empty_jti), "verify_dpop_jti fails when jti is empty string");
     };
 
     t.run("RFC 9449 §4.3 & RFC 8725 §3.1: Strict asymmetric alg & JWK requirement (FINDING-SEC-01)") { sub =>
@@ -2016,61 +2016,61 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: lit::T&) {
         token.push('.' as u8);
         token.append(sig_b64[..]);
 
-        let ok_conf = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", now_sec);
+        let ok_conf = auth::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", now_sec);
         sub.assert_false(ok_conf, "DPoP proof without jwk rejected");
 
         // Direct header check: symmetric HMAC algorithms (HS256, HS384, HS512) MUST be rejected (RFC 9449 §4.3 Rule 3)
-        sub.assert_false(wing::verify_dpop_header(h_bad_alg, "EdDSA"), "header missing jwk rejected");
-        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"none\"}", "EdDSA"), "none alg rejected");
-        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS256\"}", "HS256"), "symmetric HS256 rejected per RFC 9449 §4.3");
-        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS384\"}", "HS384"), "symmetric HS384 rejected per RFC 9449 §4.3");
-        sub.assert_false(wing::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS512\"}", "HS512"), "symmetric HS512 rejected per RFC 9449 §4.3");
+        sub.assert_false(auth::verify_dpop_header(h_bad_alg, "EdDSA"), "header missing jwk rejected");
+        sub.assert_false(auth::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"none\"}", "EdDSA"), "none alg rejected");
+        sub.assert_false(auth::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS256\"}", "HS256"), "symmetric HS256 rejected per RFC 9449 §4.3");
+        sub.assert_false(auth::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS384\"}", "HS384"), "symmetric HS384 rejected per RFC 9449 §4.3");
+        sub.assert_false(auth::verify_dpop_header("{\"typ\":\"dpop+jwt\",\"alg\":\"HS512\"}", "HS512"), "symmetric HS512 rejected per RFC 9449 §4.3");
 
         // Mandatory JWK presence and rejection of private key parameters (RFC 9449 §4.3 Rule 4)
         let h_valid = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}}";
-        sub.assert_true(wing::verify_dpop_header(h_valid, "EdDSA"), "valid asymmetric header with jwk accepted");
+        sub.assert_true(auth::verify_dpop_header(h_valid, "EdDSA"), "valid asymmetric header with jwk accepted");
         let h_private = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"d\":\"secret_private_d\"}}";
-        sub.assert_false(wing::verify_dpop_header(h_private, "EdDSA"), "jwk with private key d rejected per RFC 9449 §4.3");
+        sub.assert_false(auth::verify_dpop_header(h_private, "EdDSA"), "jwk with private key d rejected per RFC 9449 §4.3");
         let h_oct = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"oct\",\"k\":\"symmetric_secret\"}}";
-        sub.assert_false(wing::verify_dpop_header(h_oct, "EdDSA"), "symmetric oct jwk rejected per RFC 9449 §4.3");
+        sub.assert_false(auth::verify_dpop_header(h_oct, "EdDSA"), "symmetric oct jwk rejected per RFC 9449 §4.3");
     };
 
     t.run("RFC 3986 §6.2.3 & RFC 9449 §4.3: URI Scheme & Userinfo Rejection in Target Normalization") { sub =>
         var norm: u8[..256] = [];
 
         // Non-http/https schemes MUST be rejected
-        sub.assert_false(wing::normalize_dpop_target_uri("ftp://api.example.com/resource", norm), "ftp scheme rejected");
-        sub.assert_false(wing::normalize_dpop_target_uri("javascript://evil.com/alert(1)", norm), "javascript scheme rejected");
-        sub.assert_false(wing::normalize_dpop_target_uri("file:///etc/passwd", norm), "file scheme rejected");
+        sub.assert_false(auth::normalize_dpop_target_uri("ftp://api.example.com/resource", norm), "ftp scheme rejected");
+        sub.assert_false(auth::normalize_dpop_target_uri("javascript://evil.com/alert(1)", norm), "javascript scheme rejected");
+        sub.assert_false(auth::normalize_dpop_target_uri("file:///etc/passwd", norm), "file scheme rejected");
 
         // Userinfo in authority MUST be rejected (RFC 3986 §3.2.1 / RFC 9449 §4.3)
-        sub.assert_false(wing::normalize_dpop_target_uri("https://admin:secret@api.example.com/data", norm), "Userinfo in authority rejected");
+        sub.assert_false(auth::normalize_dpop_target_uri("https://admin:secret@api.example.com/data", norm), "Userinfo in authority rejected");
 
         // Backslashes in path/authority MUST be rejected
-        sub.assert_false(wing::normalize_dpop_target_uri("https://api.example.com\\evil", norm), "Backslash in URI rejected");
+        sub.assert_false(auth::normalize_dpop_target_uri("https://api.example.com\\evil", norm), "Backslash in URI rejected");
 
         // Legitimate alternative ports ending in 443 (e.g. 8443) preserved, default ports normalized
         var norm_alt: u8[..256] = [];
-        sub.assert_true(wing::normalize_dpop_target_uri("https://api.example.com:8443/data", norm_alt), "Alternative port 8443 normalized");
+        sub.assert_true(auth::normalize_dpop_target_uri("https://api.example.com:8443/data", norm_alt), "Alternative port 8443 normalized");
         sub.assert_bytes_eq(norm_alt[..], "https://api.example.com:8443/data", "Alternative port 8443 is preserved without mutation");
 
         var norm_def: u8[..256] = [];
-        sub.assert_true(wing::normalize_dpop_target_uri("https://api.example.com:443/data", norm_def), "Default port 443 normalized");
+        sub.assert_true(auth::normalize_dpop_target_uri("https://api.example.com:443/data", norm_def), "Default port 443 normalized");
         sub.assert_bytes_eq(norm_def[..], "https://api.example.com/data", "Default port 443 removed");
     };
 
     t.run("RFC 9449 §4.3 Rule 8 & §4.2: Non-positive iat (0 or negative) MUST be rejected") { sub =>
         let c_zero_iat = "{\"jti\":\"jti-zero-01\",\"htm\":\"GET\",\"htu\":\"https://api.example.com/data\",\"iat\":0}";
-        sub.assert_false(wing::verify_dpop_iat(c_zero_iat, now_sec, 300, 60), "iat: 0 rejected");
+        sub.assert_false(auth::verify_dpop_iat(c_zero_iat, now_sec, 300, 60), "iat: 0 rejected");
 
         // Negative max_age or max_skew rejected
-        sub.assert_false(wing::verify_dpop_iat(c_zero_iat, now_sec, -1, 60), "Negative max_age rejected");
-        sub.assert_false(wing::verify_dpop_iat(c_zero_iat, now_sec, 300, -5), "Negative max_skew rejected");
+        sub.assert_false(auth::verify_dpop_iat(c_zero_iat, now_sec, -1, 60), "Negative max_age rejected");
+        sub.assert_false(auth::verify_dpop_iat(c_zero_iat, now_sec, 300, -5), "Negative max_skew rejected");
     };
 
     t.run("Valid RFC 9449 DPoP proof with mandatory jti, valid alg, and normalized URI verified") { sub =>
         var proof_jwt: u8[>..] = [];
-        let ok_gen = wing::create_dpop_proof(
+        let ok_gen = auth::create_dpop_proof(
             key,
             "GET",
             "https://api.example.com:443/items?page=1#top",
@@ -2082,7 +2082,7 @@ fn test_rfc9449_dpop_proof_validation_and_uri_normalization(t: lit::T&) {
         );
         sub.assert_true(ok_gen, "Valid DPoP proof generated");
 
-        let ok_ver = wing::verify_dpop_proof(
+        let ok_ver = auth::verify_dpop_proof(
             proof_jwt[..],
             key,
             "GET",

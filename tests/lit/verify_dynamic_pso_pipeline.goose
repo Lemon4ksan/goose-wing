@@ -54,11 +54,11 @@ fn wing::on_server_body_chunk(
 
 fn make_bearer_jwt(secret: const u8[:], sub_val: const u8[:], out_hdr: u8[..4096]&) -> bool {
     out_hdr.clear();
-    var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "k1");
-    var claims = wing::JwtClaims { exp: 2000000000, .. };
+    var hdr = auth::new_jwt_header(auth::JwtAlg.HS256, "k1");
+    var claims = auth::JwtClaims { exp: 2000000000, .. };
     let _ = claims.sub.try_set(sub_val);
     var tok: u8[..2048] = [];
-    guard wing::sign_jwt_hmac(hdr, claims, secret, tok) else { return false; }
+    guard auth::sign_jwt_hmac(hdr, claims, secret, tok) else { return false; }
     guard out_hdr.try_append("Bearer ") && out_hdr.try_append(tok[..]) else {
         out_hdr.clear();
         return false;
@@ -73,14 +73,14 @@ fn test_multi_limiter_and_xds_hot_swap() {
     let _ = wing::add_route(cfg.router, "GET", "/v1/orders", 1);
 
     let secret = "0123456789abcdef0123456789abcdef";
-    let _ = wing::add_symmetric_key(cfg.jwks, "k1", wing::JwtAlg.HS256, secret);
+    let _ = auth::add_symmetric_key(cfg.jwks, "k1", auth::JwtAlg.HS256, secret);
 
     // Slot 0: IP rate limiter (high burst 10)
     // Slot 1: Route rate limiter (medium burst 5)
     // Slot 2: Post-JWT Subject rate limiter (strict 1 req/60s, burst 0)
-    let ok_s0 = wing::configure_tier_limiter(cfg, 0, wing::new_gcra_quota(10, wing::secs(60), 10));
-    let ok_s1 = wing::configure_tier_limiter(cfg, 1, wing::new_gcra_quota(5, wing::secs(60), 5));
-    let ok_s2 = wing::configure_tier_limiter(cfg, 2, wing::new_gcra_quota(1, wing::secs(60), 0));
+    let ok_s0 = wing::configure_tier_limiter(cfg, 0, security::new_gcra_quota(10, wing::secs(60), 10));
+    let ok_s1 = wing::configure_tier_limiter(cfg, 1, security::new_gcra_quota(5, wing::secs(60), 5));
+    let ok_s2 = wing::configure_tier_limiter(cfg, 2, security::new_gcra_quota(1, wing::secs(60), 0));
     print("tier_limiters_init: ", ok_s0 && ok_s1 && ok_s2, " len: ", cfg.tier_limiters.len);
 
     wire::clear_stage_bindings(cfg.wire_pipeline);

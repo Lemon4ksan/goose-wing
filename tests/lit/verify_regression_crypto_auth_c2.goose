@@ -73,20 +73,20 @@ fn test_cab_c2_01_x509_chain_and_parser() {
 // and >128-byte registrable domain buffer safety.
 fn test_cab_c2_02_cookie_samesite_and_psl() {
     // 1. Empty hosts, invalid hosts, or bare public suffixes must NOT be schemefully same-site.
-    let empty_same = wing::is_schemeful_same_site("https", "", "https", "");
-    let dots_same = wing::is_schemeful_same_site("https", "...", "https", "...");
-    let psl_same1 = wing::is_schemeful_same_site("https", "github.io", "https", "github.io");
-    let psl_same2 = wing::is_schemeful_same_site("https", "co.uk", "https", "co.uk");
+    let empty_same = cookie::is_schemeful_same_site("https", "", "https", "");
+    let dots_same = cookie::is_schemeful_same_site("https", "...", "https", "...");
+    let psl_same1 = cookie::is_schemeful_same_site("https", "github.io", "https", "github.io");
+    let psl_same2 = cookie::is_schemeful_same_site("https", "co.uk", "https", "co.uk");
 
     // 2. site_for_cookies_from_url on opaque/empty/public-suffix URLs must produce is_null = true,
     // and compute_site_for_cookies_with_ancestors must reject uppercase DATA:/ABOUT:/javascript:/blob:.
-    let sfc_empty = wing::site_for_cookies_from_url("");
-    let sfc_psl = wing::site_for_cookies_from_url("https://github.io/login");
-    let sfc_data_upper = wing::compute_site_for_cookies_with_ancestors("DATA:text/html,hi", []);
-    let sfc_about_upper = wing::compute_site_for_cookies_with_ancestors("ABOUT:blank", []);
-    let sfc_js = wing::compute_site_for_cookies_with_ancestors("javascript:alert(1)", []);
+    let sfc_empty = cookie::site_for_cookies_from_url("");
+    let sfc_psl = cookie::site_for_cookies_from_url("https://github.io/login");
+    let sfc_data_upper = cookie::compute_site_for_cookies_with_ancestors("DATA:text/html,hi", []);
+    let sfc_about_upper = cookie::compute_site_for_cookies_with_ancestors("ABOUT:blank", []);
+    let sfc_js = cookie::compute_site_for_cookies_with_ancestors("javascript:alert(1)", []);
 
-    let psl_first_party = wing::is_first_party(sfc_psl, "https://github.io/api", true);
+    let psl_first_party = cookie::is_first_party(sfc_psl, "https://github.io/api", true);
 
     // 3. Long hostname (180 bytes > 128 bytes) must not panic in is_schemeful_same_site or site_for_cookies.
     var long_host: u8[..256] = [];
@@ -95,7 +95,7 @@ fn test_cab_c2_02_cookie_samesite_and_psl() {
         long_host.push('.');
     }
     long_host.append("com");
-    let long_same = wing::is_schemeful_same_site("https", long_host[..], "https", long_host[..]);
+    let long_same = cookie::is_schemeful_same_site("https", long_host[..], "https", long_host[..]);
 
     let ok = !empty_same && !dots_same && !psl_same1 && !psl_same2 &&
         sfc_empty.is_null && sfc_psl.is_null &&
@@ -108,49 +108,49 @@ fn test_cab_c2_02_cookie_samesite_and_psl() {
 // revoked KeySlot acceptance in add_key, and CORS wildcard credentials / Authorization preflight bypass.
 fn test_cab_c2_03_crypto_jar_and_cors() {
     // 1. Revoked KeySlot must be rejected by add_key.
-    var store = wing::KeyStore { max_age_sec: 60, clock_skew_tolerance_sec: 10, .. };
+    var store = security::KeyStore { max_age_sec: 60, clock_skew_tolerance_sec: 10, .. };
     let raw_key: u8[32] = [0x42; 32];
-    let active_slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
-    assert(wing::add_key(store, active_slot));
+    let active_slot = security::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
+    assert(security::add_key(store, active_slot));
 
-    var revoked_slot = wing::KeySlot { key_id: 99, master_key: raw_key, created_at_sec: 1700000000, .. };
+    var revoked_slot = security::KeySlot { key_id: 99, master_key: raw_key, created_at_sec: 1700000000, .. };
     revoked_slot.revoked = true;
-    let revoked_added = wing::add_key(store, revoked_slot);
+    let revoked_added = security::add_key(store, revoked_slot);
 
     // 2. Expired cookie in PrivateJar (both XChaCha20 and HKDF-AES) must NOT leave decrypted
     // plaintext in out_plaintext when private_jar_open / private_jar_open_binary returns false!
-    let pjar_x = wing::new_private_jar(store, false);
-    let pjar_aes = wing::new_private_jar(store, true);
+    let pjar_x = security::new_private_jar(store, false);
+    let pjar_aes = security::new_private_jar(store, true);
 
     var wire_x:   u8[..256] = [];
     var wire_aes: u8[..256] = [];
-    assert(wing::private_jar_seal_binary(pjar_x, "sid", "TOP_SECRET_COOKIE_VAL", 1700000000, 111, wire_x));
-    assert(wing::private_jar_seal_binary(pjar_aes, "sid", "TOP_SECRET_COOKIE_VAL", 1700000000, 222, wire_aes));
+    assert(security::seal_binary(pjar_x, "sid", "TOP_SECRET_COOKIE_VAL", 1700000000, 111, wire_x));
+    assert(security::seal_binary(pjar_aes, "sid", "TOP_SECRET_COOKIE_VAL", 1700000000, 222, wire_aes));
 
     var leaked_x:   u8[..256] = [];
     var leaked_aes: u8[..256] = [];
-    let open_exp_x = wing::private_jar_open_binary(pjar_x, "sid", wire_x[..], 1700001000, leaked_x);
-    let open_exp_aes = wing::private_jar_open_binary(pjar_aes, "sid", wire_aes[..], 1700001000, leaked_aes);
+    let open_exp_x = security::open_binary(pjar_x, "sid", wire_x[..], 1700001000, leaked_x);
+    let open_exp_aes = security::open_binary(pjar_aes, "sid", wire_aes[..], 1700001000, leaked_aes);
     let no_plaintext_leak = !open_exp_x && leaked_x.len == 0 && !open_exp_aes && leaked_aes.len == 0;
 
     // 3. CORS: wildcard "*" in allowed_headers must NOT cover "Authorization" without explicit listing,
     // and wildcard "*" in allowed_methods / allowed_headers must NOT match when allow_credentials = true.
-    let auth_wild_allowed = wing::are_cors_request_headers_allowed("*", "Authorization");
-    let empty_req_hdrs_allowed = wing::are_cors_request_headers_allowed("X-Custom", " , ");
+    let auth_wild_allowed = security::are_cors_request_headers_allowed("*", "Authorization");
+    let empty_req_hdrs_allowed = security::are_cors_request_headers_allowed("X-Custom", " , ");
 
-    var cred_cors = wing::CorsPolicy {
+    var cred_cors = security::CorsPolicy {
         allow_credentials: true,
         allowed_methods:   "*",
         allowed_headers:   "*",
         ..
     };
-    assert(wing::add_allowed_origin(cred_cors, "https://app.example.com"));
+    assert(security::add_allowed_origin(cred_cors, "https://app.example.com"));
     var pre_req = wing::new_request("OPTIONS", "/api/data");
     wing::set_header(pre_req, "Origin", "https://app.example.com");
     wing::set_header(pre_req, "Access-Control-Request-Method", "DELETE");
     var pre_res = wing::Response { .. };
-    let pre_res_code = wing::evaluate_cors(cred_cors, pre_req, pre_res);
-    let cred_wild_rejected = (pre_res_code != wing::CorsResult.AllowedPreflight);
+    let pre_res_code = security::evaluate_cors(cred_cors, pre_req, pre_res);
+    let cred_wild_rejected = (pre_res_code != security::CorsResult.AllowedPreflight);
 
     print("CAB_C2_03: ", !revoked_added && no_plaintext_leak && !auth_wild_allowed && !empty_req_hdrs_allowed && cred_wild_rejected);
 }
@@ -164,15 +164,15 @@ fn test_cab_c2_04_jwe_and_device_grant() {
     // 1. ConcatKDF with 300-byte PartyUInfo must not silently drop PartyVInfo or key_bits.
     var big_apu: u8[..320] = [];
     for _ in 300 { big_apu.push('U'); }
-    let kdf_bob = wing::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Bob", 256);
-    let kdf_mallory = wing::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Mallory", 256);
+    let kdf_bob = auth::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Bob", 256);
+    let kdf_mallory = auth::concat_kdf_sha256(z, "A256GCM", big_apu[..], "Mallory", 256);
     let kdf_no_collision = !core::ct_eq_tag32(kdf_bob, kdf_mallory);
 
     // 2. JWE must reject protected_b64 headers that are not valid JSON with alg="dir" and enc="A256GCM".
     // "eyJhbGciOiJub25lIiwiZW5jIjoiQTI1NkdDTSJ9" = {"alg":"none","enc":"A256GCM"}
     let bad_hdr_b64 = "eyJhbGciOiJub25lIiwiZW5jIjoiQTI1NkdDTSJ9";
     var bad_jwe: u8[..512] = [];
-    let sealed_bad_hdr = wing::jwe_seal_dir_a256gcm(bad_hdr_b64, kdf_bob, iv, "secret", bad_jwe);
+    let sealed_bad_hdr = auth::jwe_seal_dir_a256gcm(bad_hdr_b64, kdf_bob, iv, "secret", bad_jwe);
 
     // Also test opening a manually constructed JWE with {"alg":"none","enc":"A256GCM"} as AAD:
     var forged_ct: u8[64] = [0; 64];
@@ -188,14 +188,14 @@ fn test_cab_c2_04_jwe_and_device_grant() {
     core::base64url_encode(tag[..], forged_token);
 
     var out_plain: u8[..128] = [];
-    let opened_bad_hdr = wing::jwe_open_dir_a256gcm(forged_token[..], kdf_bob, out_plain);
+    let opened_bad_hdr = auth::jwe_open_dir_a256gcm(forged_token[..], kdf_bob, out_plain);
 
     // 3. OAuth Device Grant must reject javascript: verification_uri and duplicate JSON keys.
     let js_dev_json = "{\"device_code\":\"dc1\",\"user_code\":\"uc1\",\"verification_uri\":\"javascript:alert(1)\",\"expires_in\":600}";
-    let _, ok_js_dev = wing::parse_device_auth_response(js_dev_json);
+    let _, ok_js_dev = auth::parse_device_auth_response(js_dev_json);
 
     let dup_dev_json = "{\"device_code\":\"dc1\",\"device_code\":\"dc2\",\"user_code\":\"uc1\",\"verification_uri\":\"https://example.com/dev\",\"expires_in\":600}";
-    let _, ok_dup_dev = wing::parse_device_auth_response(dup_dev_json);
+    let _, ok_dup_dev = auth::parse_device_auth_response(dup_dev_json);
 
     print("CAB_C2_04: ", kdf_no_collision && !sealed_bad_hdr && !opened_bad_hdr && !ok_js_dev && !ok_dup_dev);
 }

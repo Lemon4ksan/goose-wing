@@ -403,7 +403,7 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
     let udp_port = wing::tcp_getsockname_port(udp_srv);
     assert(udp_port > 0);
 
-    let h3_settings = wing::H3Settings { .. };
+    let h3_settings = fingerprint::H3Settings { .. };
     var h3_cli = h3_internal::new_h3_client_connection(h3_settings);
     let sid, ok_sid = h3_internal::open_request_stream(h3_cli);
     assert(ok_sid && sid == 0);

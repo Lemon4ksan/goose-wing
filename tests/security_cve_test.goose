@@ -205,17 +205,17 @@ fn test_cve_port_change_and_representation_headers(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_cookie_url_and_query_ordering(t: lit::T&) {
     t.run("parse_canonical_cookie_url: Userinfo and Fragment Isolation") { sub =>
-        let u = wing::parse_canonical_cookie_url("https://user:pass@example.com:8443/a/b#section/1");
+        let u = cookie::parse_canonical_cookie_url("https://user:pass@example.com:8443/a/b#section/1");
         sub.assert_bytes_eq(u.host[..], "example.com", "host must not include userinfo");
         sub.assert_eq(u.port, 8443, "port must be 8443");
         sub.assert_bytes_eq(u.path[..], "/a/b", "path must not include fragment");
     };
 
     t.run("set_cookie_header: Normalizes Path Dot-Segments") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
         let clock = lit::new_mock_clock();
 
-        let ok = wing::set_cookie_header(jar, "https://example.com/admin/../public", "sid=xyz", clock.now_us);
+        let ok = cookie::set_cookie_header(jar, "https://example.com/admin/../public", "sid=xyz", clock.now_us);
         sub.assert_true(ok, "cookie accepted");
         sub.assert_eq(jar.cookies.len, 1);
         if jar.cookies.len > 0 {
@@ -241,22 +241,22 @@ fn test_cve_cookie_url_and_query_ordering(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_netscape_import_security(t: lit::T&) {
     t.run("Netscape Import: Public Suffix Domain Supercookie Must Be Rejected") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
         let clock = lit::new_mock_clock();
 
         let netscape_psl = "co.uk\tTRUE\t/\tFALSE\t0\tsupercookie\tevil\n";
-        let count = wing::import_netscape(jar, netscape_psl, clock.now_us);
+        let count = cookie::import_netscape(jar, netscape_psl, clock.now_us);
 
         sub.assert_eq(count, 0, "supercookie on public suffix co.uk must not be imported");
         sub.assert_eq(jar.cookies.len, 0, "jar must remain empty");
     };
 
     t.run("Netscape Import: CTL Character in Cookie Must Be Rejected") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
         let clock = lit::new_mock_clock();
 
         let netscape_ctl = "example.com\tTRUE\t/\tFALSE\t0\tbad\x01name\tval\n";
-        let count = wing::import_netscape(jar, netscape_ctl, clock.now_us);
+        let count = cookie::import_netscape(jar, netscape_ctl, clock.now_us);
 
         sub.assert_eq(count, 0, "cookie with CTL byte in name must not be imported");
         sub.assert_eq(jar.cookies.len, 0, "jar must remain empty");
@@ -643,8 +643,8 @@ fn test_cve_2025_58186_cookie_parsing_memory_exhaustion(t: lit::T&) {
             raw_hdr.append("; ");
         }
 
-        var out: wing::CanonicalCookie[>..] = [];
-        wing::parse_server_cookie_header(raw_hdr[..], out);
+        var out: cookie::CanonicalCookie[>..] = [];
+        cookie::parse_server_cookie_header(raw_hdr[..], out);
         sub.assert_eq(out.len, 100, "Server-side cookie parsing MUST be capped at 100 to prevent DoS (CVE-2025-58186)");
     };
 }
@@ -654,12 +654,12 @@ fn test_cve_2025_58186_cookie_parsing_memory_exhaustion(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc6055_fqdn_trailing_dot_cookie_matching(t: lit::T&) {
     t.run("Host-only cookie must match FQDN with trailing dot (RFC 6055 & Go #79944)") { sub =>
-        var c = wing::CanonicalCookie { host_only: true, .. };
+        var c = cookie::CanonicalCookie { host_only: true, .. };
         c.domain.append("example.com");
 
-        sub.assert_true(wing::matches_domain(c, "example.com"), "Matches exact host");
-        sub.assert_true(wing::matches_domain(c, "example.com."), "Must match FQDN with trailing dot");
-        sub.assert_false(wing::matches_domain(c, "evil.com"), "Must not match different domain");
+        sub.assert_true(cookie::matches_domain(c, "example.com"), "Matches exact host");
+        sub.assert_true(cookie::matches_domain(c, "example.com."), "Must match FQDN with trailing dot");
+        sub.assert_false(cookie::matches_domain(c, "evil.com"), "Must not match different domain");
     };
 }
 
@@ -989,15 +989,15 @@ fn test_adversarial_cookie_url(t: lit::T&) {
     let now_us = 1700000000000000;
 
     t.run("AW-CK-01: unterminated DQUOTE in cookie value rejected") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
-        let ok = wing::set_cookie_header(jar, "https://example.com/", "k=\"unterminated; Path=/", now_us, true);
+        var jar = cookie::CanonicalCookieJar { .. };
+        let ok = cookie::set_cookie_header(jar, "https://example.com/", "k=\"unterminated; Path=/", now_us, true);
         sub.assert_false(ok, "unterminated DQUOTE in cookie value must fail parse, not succeed");
         sub.assert_eq(jar.cookies.len, 0, "no cookie stored from the unclosed-quote pair");
     };
 
     t.run("AW-CK-02: missing '=' separator rejected") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
-        let ok = wing::set_cookie_header(jar, "https://example.com/", "justname; Path=/", now_us, true);
+        var jar = cookie::CanonicalCookieJar { .. };
+        let ok = cookie::set_cookie_header(jar, "https://example.com/", "justname; Path=/", now_us, true);
         // CURRENT behavior: RFC 6265bis §5.6 parses a pair lacking '=' as nameless (name="", value=pair).
         // Spec-compliant per RFC 6265bis §5.6 (pinned by LEX-10/11); no Vector B work required unless product wants stricter.
         sub.require_true(ok, "nameless pair accepted per RFC 6265bis §5.6");
@@ -1141,12 +1141,12 @@ fn test_chunked_cve_2019_16276(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_ipv6_mapped_ipv4_ssrf_cve_2024_24790(t: lit::T&) {
     // CVE-2024-24790: IPv4-mapped IPv6 loopback & private addresses must be detected
-    t.assert_true(wing::is_private_or_reserved_ip("::ffff:127.0.0.1"), "::ffff:127.0.0.1 must be private");
-    t.assert_true(wing::is_private_or_reserved_ip("0:0:0:0:0:ffff:10.0.0.1"), "0:0:0:0:0:ffff:10.0.0.1 must be private");
-    t.assert_true(wing::is_private_or_reserved_ip("::ffff:192.168.1.1"), "::ffff:192.168.1.1 must be private");
-    t.assert_true(wing::is_private_or_reserved_ip("::ffff:169.254.169.254"), "::ffff:169.254.169.254 must be private");
+    t.assert_true(security::is_private_or_reserved_ip("::ffff:127.0.0.1"), "::ffff:127.0.0.1 must be private");
+    t.assert_true(security::is_private_or_reserved_ip("0:0:0:0:0:ffff:10.0.0.1"), "0:0:0:0:0:ffff:10.0.0.1 must be private");
+    t.assert_true(security::is_private_or_reserved_ip("::ffff:192.168.1.1"), "::ffff:192.168.1.1 must be private");
+    t.assert_true(security::is_private_or_reserved_ip("::ffff:169.254.169.254"), "::ffff:169.254.169.254 must be private");
     // Public IP must not be flagged
-    t.assert_false(wing::is_private_or_reserved_ip("::ffff:8.8.8.8"), "::ffff:8.8.8.8 is public");
+    t.assert_false(security::is_private_or_reserved_ip("::ffff:8.8.8.8"), "::ffff:8.8.8.8 is public");
 }
 
 // ----------------------------------------------------------------------------

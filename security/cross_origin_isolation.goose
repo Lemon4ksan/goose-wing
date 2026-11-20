@@ -4,11 +4,12 @@
 // W3C Cross-Origin Isolation Engine (COOP, COEP, CORP).
 // Enforces HTML5 §7.2 Cross-Origin-Opener-Policy, Cross-Origin-Embedder-Policy,
 // and Cross-Origin-Resource-Policy for Spectre process sandboxing and secure context verification.
-namespace wing;
+namespace security;
 
 import std;
 import core from "..";
 import rfc.http;
+import .policy_internal;
 
 // ---- Policy Enumerations -------------------------------------------------
 
@@ -45,97 +46,17 @@ struct CrossOriginIsolationContext {
 
 // ---- Policy Parsers ------------------------------------------------------
 
-inline fn is_valid_sf_param_key(key: const u8[:]) -> bool {
-    guard key.len > 0 else { return false; }
-    let first = key[0];
-    guard (first >= 'a' && first <= 'z') || first == '*' else { return false; }
-    for b in key {
-        let ok = (b >= 'a' && b <= 'z') || core::is_ascii_digit(b) ||
-            b == '_' || b == '-' || b == '.' || b == '*';
-        guard ok else { return false; }
-    }
-    return true;
-}
-
-inline fn is_valid_sf_quoted_val(val: const u8[:]) -> bool {
-    guard val.len >= 2 && core::starts_with(val, "\"") && core::ends_with(val, "\"") else {
-        return false;
-    }
-    let end_idx = core::sub_sat_i64(val.len, 1);
-    let inner = val[1..end_idx];
-    var escaped = false;
-    for b in inner {
-        guard b >= 0x20 && b <= 0x7E else { return false; }
-        if escaped {
-            guard b == '"' || b == '\\' else { return false; }
-            escaped = false;
-        } else if b == '\\' {
-            escaped = true;
-        } else if b == '"' {
-            return false;
-        }
-    }
-    return !escaped;
-}
-
-inline fn is_valid_sf_param_val(val: const u8[:]) -> bool {
-    guard val.len > 0 else { return false; }
-    if val[0] == '"' {
-        return is_valid_sf_quoted_val(val);
-    }
-    for b in val {
-        guard b > 0x20 && b <= 0x7E && b != '"' && b != ';' && b != ',' else { return false; }
-    }
-    return true;
-}
-
-// Validates RFC 8941 Section 3.1.2 Structured Field parameters after `;`.
-inline fn is_valid_sf_param_tail(params: const u8[:]) -> bool {
-    var rem = params;
-    loop {
-        let seg, tail, has_more = rem.split_once_unquoted_byte(';');
-        let after_sp = seg.trim_start_byte(' ');
-        guard after_sp.len > 0 else { return false; }
-        let key, val_raw, has_eq = after_sp.split_once_byte('=');
-        guard is_valid_sf_param_key(key) else { return false; }
-        if has_eq {
-            guard is_valid_sf_param_val(val_raw) else { return false; }
-        }
-        guard has_more else { break; }
-        rem = tail;
-    }
-    return true;
-}
-
-// Extracts the primary token before any RFC 8941 structured field parameters (';').
-// Rejects unquoted commas (multi-item lists), leading semicolons, and malformed parameter syntax/CTLs.
-inline fn strip_sf_parameters(val: const u8[:]) -> const u8[:] {
-    let trimmed = val.trim_lws();
-    guard trimmed.find_unquoted_byte(',') == trimmed.len else { return ";"; }
-    let head, params, has_semi = trimmed.split_once_byte(';');
-    let clean = head.trim_lws();
-    if has_semi && (clean.len == 0 || !is_valid_sf_param_tail(params)) {
-        return ";";
-    }
-    return clean;
-}
-
-inline fn wire_token(v: CoopPolicy.Unknown) -> const u8[:] { return ""; }
-inline fn wire_token(v: CoopPolicy.UnsafeNone) -> const u8[:] { return "unsafe-none"; }
-inline fn wire_token(v: CoopPolicy.SameOriginAllowPopups) -> const u8[:] { return "same-origin-allow-popups"; }
-inline fn wire_token(v: CoopPolicy.SameOrigin) -> const u8[:] { return "same-origin"; }
-
 // Parses Cross-Origin-Opener-Policy header value (W3C HTML §7.2).
 //
 // Example:
 //   val = "same-origin; report-to=\"coop-ep\""
 //   returns: CoopPolicy.SameOrigin
 fn parse_coop(val: const u8[:]) -> CoopPolicy {
-    let clean = strip_sf_parameters(val);
+    let clean = security_internal::strip_sf_parameters(val);
     if clean.len == 0 { return CoopPolicy.UnsafeNone; }
     const for <N, V> in variants<CoopPolicy> {
         let v = default<V>();
-        let tok = wire_token(v);
+        let tok = security_internal::wire_token(v);
         if tok.len > 0 && clean == tok {
             let candidate: CoopPolicy = v;
             return candidate;
@@ -144,22 +65,17 @@ fn parse_coop(val: const u8[:]) -> CoopPolicy {
     return CoopPolicy.Unknown;
 }
 
-inline fn wire_token(v: CoepPolicy.Unknown) -> const u8[:] { return ""; }
-inline fn wire_token(v: CoepPolicy.UnsafeNone) -> const u8[:] { return "unsafe-none"; }
-inline fn wire_token(v: CoepPolicy.Credentialless) -> const u8[:] { return "credentialless"; }
-inline fn wire_token(v: CoepPolicy.RequireCorp) -> const u8[:] { return "require-corp"; }
-
 // Parses Cross-Origin-Embedder-Policy header value (W3C HTML §7.2).
 //
 // Example:
 //   val = "require-corp; report-to=\"coep-ep\""
 //   returns: CoepPolicy.RequireCorp
 fn parse_coep(val: const u8[:]) -> CoepPolicy {
-    let clean = strip_sf_parameters(val);
+    let clean = security_internal::strip_sf_parameters(val);
     if clean.len == 0 { return CoepPolicy.UnsafeNone; }
     const for <N, V> in variants<CoepPolicy> {
         let v = default<V>();
-        let tok = wire_token(v);
+        let tok = security_internal::wire_token(v);
         if tok.len > 0 && clean == tok {
             let candidate: CoepPolicy = v;
             return candidate;
@@ -168,55 +84,23 @@ fn parse_coep(val: const u8[:]) -> CoepPolicy {
     return CoepPolicy.Unknown;
 }
 
-inline fn wire_token(v: CorpPolicy.Unknown) -> const u8[:] { return ""; }
-inline fn wire_token(v: CorpPolicy.None) -> const u8[:] { return ""; }
-inline fn wire_token(v: CorpPolicy.SameOrigin) -> const u8[:] { return "same-origin"; }
-inline fn wire_token(v: CorpPolicy.SameSite) -> const u8[:] { return "same-site"; }
-inline fn wire_token(v: CorpPolicy.CrossOrigin) -> const u8[:] { return "cross-origin"; }
-
 // Parses Cross-Origin-Resource-Policy header value (W3C Fetch §4.5).
 //
 // Example:
 //   val = "same-origin"
 //   returns: CorpPolicy.SameOrigin
 fn parse_corp(val: const u8[:]) -> CorpPolicy {
-    let clean = strip_sf_parameters(val);
+    let clean = security_internal::strip_sf_parameters(val);
     if clean.len == 0 { return CorpPolicy.None; }
     const for <N, V> in variants<CorpPolicy> {
         let v = default<V>();
-        let tok = wire_token(v);
+        let tok = security_internal::wire_token(v);
         if tok.len > 0 && clean == tok {
             let candidate: CorpPolicy = v;
             return candidate;
         }
     }
     return CorpPolicy.Unknown;
-}
-
-// Validates that an origin port suffix is a decimal port in 1..65535 (RFC 6454 Section 6.1).
-inline fn is_valid_origin_port(port_str: const u8[:]) -> bool {
-    guard port_str.len > 0 && port_str.len <= 5 else { return false; }
-    let port, ok = port_str.parse_u32_dec();
-    return ok && port >= 1 && port <= 65535;
-}
-
-inline fn is_valid_ipv6_bracket_body(body: const u8[:]) -> bool {
-    guard body.len >= 2 && body.contains_byte(':') else { return false; }
-    for b in body {
-        guard core::is_ascii_hexdigit(b) || b == ':' || b == '.' else { return false; }
-    }
-    return true;
-}
-
-inline fn is_valid_reg_hostname(host: const u8[:]) -> bool {
-    guard host.len > 0 && !core::starts_with(host, ".") &&
-        !core::ends_with(host, ".") && !core::contains(host, "..") else {
-        return false;
-    }
-    for b in host {
-        guard core::is_ascii_alphanumeric(b) || b == '.' || b == '-' || b == '_' else { return false; }
-    }
-    return true;
 }
 
 // Extracts host from an origin or URL string (RFC 3986 §3.2.2).
@@ -240,9 +124,12 @@ fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
     if auth[0] == '[' {
         let close_idx = auth.index_of_byte(']');
         let end_bracket = core::add_sat_i64(close_idx, 1);
-        guard close_idx > 1 && is_valid_ipv6_bracket_body(auth[1..close_idx]) else { return ""; }
+        guard close_idx > 1 && security_internal::is_valid_ipv6_bracket_body(auth[1..close_idx]) else {
+            return "";
+        }
         if end_bracket < auth.len {
-            guard auth[end_bracket] == ':' && is_valid_origin_port(auth[core::add_sat_i64(end_bracket, 1)..]) else {
+            let port_part = auth[core::add_sat_i64(end_bracket, 1)..];
+            guard auth[end_bracket] == ':' && security_internal::is_valid_origin_port(port_part) else {
                 return "";
             }
         }
@@ -250,20 +137,19 @@ fn extract_hostname_from_origin(origin_or_url: const u8[:]) -> const u8[:] {
     }
     let colon_idx = auth.index_of_byte(':');
     if colon_idx >= 0 {
-        guard colon_idx > 0 && is_valid_origin_port(auth[core::add_sat_i64(colon_idx, 1)..]) else {
-            return "";
-        }
+        let port_part = auth[core::add_sat_i64(colon_idx, 1)..];
+        guard colon_idx > 0 && security_internal::is_valid_origin_port(port_part) else { return ""; }
         let host_part = auth[..colon_idx];
-        guard is_valid_reg_hostname(host_part) else { return ""; }
+        guard security_internal::is_valid_reg_hostname(host_part) else { return ""; }
         return host_part;
     }
-    guard is_valid_reg_hostname(auth) else { return ""; }
+    guard security_internal::is_valid_reg_hostname(auth) else { return ""; }
     return auth;
 }
 
 // ---- Context Lifecycle & Subresource Verification ------------------------
 
-// Updates isolation context from document response headers and computes crossOriginIsolated status
+// Updates isolation context from document response headers and computes crossOriginIsolated status.
 fn update_isolation_context(
     ctx:             CrossOriginIsolationContext&,
     coop_header:     const u8[:],
@@ -281,10 +167,10 @@ fn update_isolation_context(
     return true;
 }
 
-// Updates isolation context directly from a HeaderMap (RFC 9110 / W3C HTML §7.2)
-fn update_from_headers(
+// Updates isolation context directly from a HeaderMap (RFC 9110 / W3C HTML §7.2).
+fn update_from_headers<H>(
     ctx:             CrossOriginIsolationContext&,
-    headers:         const HeaderMap&,
+    headers:         const H&,
     document_origin: const u8[:],
 ) -> bool {
     let coop = headers.get_header(rfc::HEADER_CROSS_ORIGIN_OPENER_POLICY);
@@ -344,7 +230,16 @@ fn is_subresource_allowed(
 
 // Injects strict same-origin COOP, require-corp COEP, and same-origin CORP headers.
 fn apply_strict_cross_origin_isolation<Res>(res: Res&) {
-    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_OPENER_POLICY, wire_token(default<CoopPolicy.SameOrigin>()));
-    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY, wire_token(default<CoepPolicy.RequireCorp>()));
-    res.headers.set_header(rfc::HEADER_CROSS_ORIGIN_RESOURCE_POLICY, wire_token(default<CorpPolicy.SameOrigin>()));
+    res.headers.set_header(
+        rfc::HEADER_CROSS_ORIGIN_OPENER_POLICY,
+        security_internal::wire_token(default<CoopPolicy.SameOrigin>()),
+    );
+    res.headers.set_header(
+        rfc::HEADER_CROSS_ORIGIN_EMBEDDER_POLICY,
+        security_internal::wire_token(default<CoepPolicy.RequireCorp>()),
+    );
+    res.headers.set_header(
+        rfc::HEADER_CROSS_ORIGIN_RESOURCE_POLICY,
+        security_internal::wire_token(default<CorpPolicy.SameOrigin>()),
+    );
 }

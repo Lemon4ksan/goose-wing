@@ -99,7 +99,7 @@ fn run_01_rfc_repro_framer_h2_minsize() {
 
 fn test_h2_padded_data_and_overflow() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -656,7 +656,7 @@ fn scan_frames(wire: const u8[:]) -> bool, bool, u32 {
 
 fn test_idle_stream_window_update() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -683,7 +683,7 @@ fn test_idle_stream_window_update() {
 
 fn test_missing_mandatory_pseudo_headers() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -714,7 +714,7 @@ fn test_missing_mandatory_pseudo_headers() {
 
 fn test_content_length_end_stream_headers() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -747,7 +747,7 @@ fn test_content_length_end_stream_headers() {
 
 fn test_content_length_mismatch_data() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -786,7 +786,7 @@ fn test_content_length_mismatch_data() {
 
 fn test_stream_slot_reclamation_on_error() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -816,7 +816,7 @@ fn test_stream_slot_reclamation_on_error() {
 
 fn test_settings_max_frame_size_isolation() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -934,7 +934,7 @@ fn count_in_use_slabs(pool: const server_internal::SpillSlabPool&) -> i64 {
 
 fn test_inline_body_lifecycle() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/inline", 1);
 
@@ -971,7 +971,7 @@ fn test_inline_body_lifecycle() {
 
 fn test_dynamic_promotion_and_reassembly() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/large", 2);
 
@@ -1035,7 +1035,7 @@ fn test_dynamic_promotion_and_reassembly() {
 
 fn test_maximum_capacity_overflow() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/overflow", 3);
 
@@ -1086,7 +1086,7 @@ fn test_maximum_capacity_overflow() {
 
 fn test_pool_saturation_rejection() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/saturated", 4);
 
@@ -1814,7 +1814,7 @@ fn has_frame_on_wire(wire: const u8[:], frame_type: u8, stream_id: u32) -> bool 
 
 fn test_hpack_sync_across_stream_errors() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/ok", 1);
 
@@ -1903,7 +1903,7 @@ fn test_trailer_errors_and_disallowed_fields() {
 
     // 2. Trailer HEADERS without END_STREAM on open stream must emit RST_STREAM(PROTOCOL_ERROR), NOT GOAWAY
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/up", 2);
 
@@ -1955,7 +1955,7 @@ fn test_hpack_dyn_size_min_update_and_ring_cap() {
 
     // Part B: SETTINGS_HEADER_TABLE_SIZE 0 then 4096 must emit both 0 (0x20) and 4096 (0x3F 0xE1 0x1F)
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/ping", 1);
 
@@ -2026,7 +2026,7 @@ fn test_hpack_dyn_size_min_update_and_ring_cap() {
 fn test_rfc9218_and_client_h2_edge_cases() {
     // 1. RFC 9218 §2.1: SETTINGS_NO_RFC7540_PRIORITIES = 1 ignores self-dependency in HEADERS & PRIORITY
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/p", 1);
 

@@ -409,55 +409,55 @@ fn test_cookie_syntax_and_prefix_invariants() {
     let now_us: i64 = 1700000000000000;
 
     // 4.1 __Secure- requires Secure attribute
-    let _, _, ok_sec_no_sec = wing::parse_canonical_set_cookie("__Secure-id=123", "example.com", "/", now_us);
-    let _, _, ok_sec_with_sec = wing::parse_canonical_set_cookie("__Secure-id=123; Secure", "example.com", "/", now_us);
+    let _, _, ok_sec_no_sec = cookie::parse_canonical_set_cookie("__Secure-id=123", "example.com", "/", now_us);
+    let _, _, ok_sec_with_sec = cookie::parse_canonical_set_cookie("__Secure-id=123; Secure", "example.com", "/", now_us);
     print("SECURE_PREFIX: no_sec=", ok_sec_no_sec, " with_sec=", ok_sec_with_sec, "\n");
     // CHECK: SECURE_PREFIX: no_sec=false with_sec=true
 
     // 4.2 __Host- requires Secure attribute
-    let _, _, ok_host_no_sec = wing::parse_canonical_set_cookie("__Host-id=123; Path=/", "example.com", "/", now_us);
+    let _, _, ok_host_no_sec = cookie::parse_canonical_set_cookie("__Host-id=123; Path=/", "example.com", "/", now_us);
     print("HOST_NO_SEC: ok=", ok_host_no_sec, "\n");
     // CHECK: HOST_NO_SEC: ok=false
 
     // 4.3 __Host- MUST NOT have Domain attribute
-    let _, _, ok_host_dom = wing::parse_canonical_set_cookie("__Host-id=123; Secure; Path=/; Domain=example.com", "example.com", "/", now_us);
+    let _, _, ok_host_dom = cookie::parse_canonical_set_cookie("__Host-id=123; Secure; Path=/; Domain=example.com", "example.com", "/", now_us);
     print("HOST_WITH_DOMAIN: ok=", ok_host_dom, "\n");
     // CHECK: HOST_WITH_DOMAIN: ok=false
 
     // 4.4 __Host- MUST have Path attribute equal to '/'
     // Must fail when Path attribute is missing entirely, EVEN IF default_path is "/"
-    let _, _, ok_host_missing_path = wing::parse_canonical_set_cookie("__Host-id=123; Secure", "example.com", "/", now_us);
+    let _, _, ok_host_missing_path = cookie::parse_canonical_set_cookie("__Host-id=123; Secure", "example.com", "/", now_us);
     print("HOST_MISSING_PATH_ATTR: ok=", ok_host_missing_path, "\n");
     // CHECK: HOST_MISSING_PATH_ATTR: ok=false
 
     // Must fail when Path attribute is not '/'
-    let _, _, ok_host_sub_path = wing::parse_canonical_set_cookie("__Host-id=123; Secure; Path=/sub", "example.com", "/sub", now_us);
+    let _, _, ok_host_sub_path = cookie::parse_canonical_set_cookie("__Host-id=123; Secure; Path=/sub", "example.com", "/sub", now_us);
     print("HOST_NON_ROOT_PATH: ok=", ok_host_sub_path, "\n");
     // CHECK: HOST_NON_ROOT_PATH: ok=false
 
     // Must succeed when Secure, no Domain, and Path=/
-    let _, _, ok_host_valid = wing::parse_canonical_set_cookie("__Host-id=123; Secure; Path=/", "example.com", "/", now_us);
+    let _, _, ok_host_valid = cookie::parse_canonical_set_cookie("__Host-id=123; Secure; Path=/", "example.com", "/", now_us);
     print("HOST_VALID: ok=", ok_host_valid, "\n");
     // CHECK: HOST_VALID: ok=true
 
-    // 4.5 Cookie Name Syntax Validation (RFC 6265 В§4.1.1: cookie-name = token)
-    let _, _, ok_name_space = wing::parse_canonical_set_cookie("bad name=123", "example.com", "/", now_us);
-    let _, _, ok_name_at = wing::parse_canonical_set_cookie("bad@name=123", "example.com", "/", now_us);
-    let _, _, ok_name_comma = wing::parse_canonical_set_cookie("bad,name=123", "example.com", "/", now_us);
-    let _, _, ok_name_bracket = wing::parse_canonical_set_cookie("[bad]=123", "example.com", "/", now_us);
-    let _, _, ok_name_slash = wing::parse_canonical_set_cookie("bad/name=123", "example.com", "/", now_us);
-    let _, _, ok_name_paren = wing::parse_canonical_set_cookie("bad(name)=123", "example.com", "/", now_us);
+    // 4.5 Cookie Name Syntax Validation (RFC 6265 §4.1.1: cookie-name = token)
+    let _, _, ok_name_space = cookie::parse_canonical_set_cookie("bad name=123", "example.com", "/", now_us);
+    let _, _, ok_name_at = cookie::parse_canonical_set_cookie("bad@name=123", "example.com", "/", now_us);
+    let _, _, ok_name_comma = cookie::parse_canonical_set_cookie("bad,name=123", "example.com", "/", now_us);
+    let _, _, ok_name_bracket = cookie::parse_canonical_set_cookie("[bad]=123", "example.com", "/", now_us);
+    let _, _, ok_name_slash = cookie::parse_canonical_set_cookie("bad/name=123", "example.com", "/", now_us);
+    let _, _, ok_name_paren = cookie::parse_canonical_set_cookie("bad(name)=123", "example.com", "/", now_us);
     print("NAME_SYNTAX: sp=", ok_name_space, " at=", ok_name_at, " comma=", ok_name_comma, " brk=", ok_name_bracket, " slash=", ok_name_slash, " par=", ok_name_paren, "\n");
     // CHECK: NAME_SYNTAX: sp=false at=false comma=false brk=false slash=false par=false
 
-    // 4.6 Cookie Value Syntax Validation (RFC 6265 В§4.1.1: cookie-value = *cookie-octet / (DQUOTE *cookie-octet DQUOTE))
-    let _, _, ok_val_space = wing::parse_canonical_set_cookie("id=val ue", "example.com", "/", now_us);
-    let _, _, ok_val_comma = wing::parse_canonical_set_cookie("id=val,ue", "example.com", "/", now_us);
-    let _, _, ok_val_backslash = wing::parse_canonical_set_cookie("id=val\\ue", "example.com", "/", now_us);
-    let _, _, ok_val_unclosed = wing::parse_canonical_set_cookie("id=\"val", "example.com", "/", now_us);
-    let _, _, ok_val_unmatched = wing::parse_canonical_set_cookie("id=val\"", "example.com", "/", now_us);
-    let _, _, ok_val_good = wing::parse_canonical_set_cookie("id=valid_value", "example.com", "/", now_us);
-    let _, _, ok_val_good_quoted = wing::parse_canonical_set_cookie("id=\"valid_quoted_value\"", "example.com", "/", now_us);
+    // 4.6 Cookie Value Syntax Validation (RFC 6265 §4.1.1: cookie-value = *cookie-octet / (DQUOTE *cookie-octet DQUOTE))
+    let _, _, ok_val_space = cookie::parse_canonical_set_cookie("id=val ue", "example.com", "/", now_us);
+    let _, _, ok_val_comma = cookie::parse_canonical_set_cookie("id=val,ue", "example.com", "/", now_us);
+    let _, _, ok_val_backslash = cookie::parse_canonical_set_cookie("id=val\\ue", "example.com", "/", now_us);
+    let _, _, ok_val_unclosed = cookie::parse_canonical_set_cookie("id=\"val", "example.com", "/", now_us);
+    let _, _, ok_val_unmatched = cookie::parse_canonical_set_cookie("id=val\"", "example.com", "/", now_us);
+    let _, _, ok_val_good = cookie::parse_canonical_set_cookie("id=valid_value", "example.com", "/", now_us);
+    let _, _, ok_val_good_quoted = cookie::parse_canonical_set_cookie("id=\"valid_quoted_value\"", "example.com", "/", now_us);
     print("VAL_SYNTAX: sp=", ok_val_space, " comma=", ok_val_comma, " bslash=", ok_val_backslash, " unclosed=", ok_val_unclosed, " unmatched=", ok_val_unmatched, " good=", ok_val_good, " quoted=", ok_val_good_quoted, "\n");
     // CHECK: VAL_SYNTAX: sp=false comma=false bslash=false unclosed=false unmatched=false good=true quoted=true
 }

@@ -279,68 +279,68 @@ fn test_curl_redirect_guards_and_limits(t: lit::T&) {
 fn test_curl_cookie_path_matching_and_prefix_rules(t: lit::T&) {
     t.run("curl test172 & test1228: RFC 6265 path matching hierarchy") { sub =>
         // Path /sub matches exact /sub, child paths /sub/ and /sub/page
-        sub.assert_true(wing::cookie_path_match("/sub", "/sub"), "Exact match matches");
-        sub.assert_true(wing::cookie_path_match("/sub/", "/sub"), "Subpath with slash matches");
-        sub.assert_true(wing::cookie_path_match("/sub/page", "/sub"), "Nested child path matches");
+        sub.assert_true(cookie::path_match("/sub", "/sub"), "Exact match matches");
+        sub.assert_true(cookie::path_match("/sub/", "/sub"), "Subpath with slash matches");
+        sub.assert_true(cookie::path_match("/sub/page", "/sub"), "Nested child path matches");
 
         // Non-delimiter suffix /subprefix and unrelated paths must NOT match
-        sub.assert_false(wing::cookie_path_match("/subprefix", "/sub"), "Prefix without delimiter must NOT match");
-        sub.assert_false(wing::cookie_path_match("/other", "/sub"), "Unrelated path must NOT match");
-        sub.assert_false(wing::cookie_path_match("/dir", "/dir/page"), "Parent path cannot match child cookie path");
+        sub.assert_false(cookie::path_match("/subprefix", "/sub"), "Prefix without delimiter must NOT match");
+        sub.assert_false(cookie::path_match("/other", "/sub"), "Unrelated path must NOT match");
+        sub.assert_false(cookie::path_match("/dir", "/dir/page"), "Parent path cannot match child cookie path");
 
         // Request URL with query string: pathname is /sub, so cookie is sent
-        var jar = wing::CanonicalCookieJar { .. };
-        wing::set_cookie_header(jar, "https://example.com/sub", "sub_cookie=active; Path=/sub", 1000000);
+        var jar = cookie::CanonicalCookieJar { .. };
+        cookie::set_cookie_header(jar, "https://example.com/sub", "sub_cookie=active; Path=/sub", 1000000);
         var out_hdr: u8[..256] = [];
-        wing::build_cookie_header(jar, "https://example.com/sub?filter=active", out_hdr, 1000000);
+        cookie::build_cookie_header(jar, "https://example.com/sub?filter=active", 1000000, out_hdr);
         sub.assert_contains(out_hdr[..], "sub_cookie=active", "Cookie sent for URL with query string");
     };
 
     t.run("curl test1561 & test2311: __Secure- and __Host- security prefix rules (RFC 6265bis)") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         // 1. __Secure- rejected over insecure HTTP
-        let ok_sec_http = wing::set_cookie_header(jar, "http://example.com/", "__Secure-token=123", 1000000);
+        let ok_sec_http = cookie::set_cookie_header(jar, "http://example.com/", "__Secure-token=123", 1000000);
         sub.assert_false(ok_sec_http, "__Secure- on http:// must be rejected");
 
         // 2. __Secure- rejected over HTTPS if Secure attribute is omitted
-        let ok_sec_nosec = wing::set_cookie_header(jar, "https://example.com/", "__Secure-token=123", 1000000);
+        let ok_sec_nosec = cookie::set_cookie_header(jar, "https://example.com/", "__Secure-token=123", 1000000);
         sub.assert_false(ok_sec_nosec, "__Secure- without Secure attribute must be rejected");
 
         // 3. __Secure- accepted over HTTPS with Secure attribute
-        let ok_sec_valid = wing::set_cookie_header(jar, "https://example.com/", "__Secure-token=123; Secure", 1000000);
+        let ok_sec_valid = cookie::set_cookie_header(jar, "https://example.com/", "__Secure-token=123; Secure", 1000000);
         sub.assert_true(ok_sec_valid, "__Secure- with Secure over https:// accepted");
 
         // 4. __Host- rejected if Domain attribute is present
-        let ok_host_dom = wing::set_cookie_header(jar, "https://example.com/", "__Host-sid=abc; Secure; Domain=example.com; Path=/", 1000000);
+        let ok_host_dom = cookie::set_cookie_header(jar, "https://example.com/", "__Host-sid=abc; Secure; Domain=example.com; Path=/", 1000000);
         sub.assert_false(ok_host_dom, "__Host- with Domain attribute must be rejected");
 
         // 5. __Host- rejected if Path is not '/'
-        let ok_host_badpath = wing::set_cookie_header(jar, "https://example.com/app", "__Host-sid=abc; Secure; Path=/app", 1000000);
+        let ok_host_badpath = cookie::set_cookie_header(jar, "https://example.com/app", "__Host-sid=abc; Secure; Path=/app", 1000000);
         sub.assert_false(ok_host_badpath, "__Host- with non-root Path must be rejected");
 
         // 6. __Host- accepted with Secure, no Domain, and Path=/
-        let ok_host_valid = wing::set_cookie_header(jar, "https://example.com/", "__Host-sid=abc; Secure; Path=/", 1000000);
+        let ok_host_valid = cookie::set_cookie_header(jar, "https://example.com/", "__Host-sid=abc; Secure; Path=/", 1000000);
         sub.assert_true(ok_host_valid, "__Host- with Secure and Path=/ accepted");
 
         // 7. curl test1561: Insecure HTTP cannot overwrite Secure cookie
-        let ok_overwrite = wing::set_cookie_header(jar, "http://example.com/", "__Secure-token=corrupted", 2000000);
+        let ok_overwrite = cookie::set_cookie_header(jar, "http://example.com/", "__Secure-token=corrupted", 2000000);
         sub.assert_false(ok_overwrite, "insecure HTTP cannot overwrite pre-existing secure cookie");
     };
 
     t.run("curl test329 & test1415: Max-Age=0 cookie expiration") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         // Set valid session cookie
-        let ok_init = wing::set_cookie_header(jar, "https://example.com/", "session=active; Secure", 1000000);
+        let ok_init = cookie::set_cookie_header(jar, "https://example.com/", "session=active; Secure", 1000000);
         sub.assert_true(ok_init, "session cookie stored");
 
         // Overwrite with Max-Age=0 (immediate eviction per RFC 6265)
-        let ok_evict = wing::set_cookie_header(jar, "https://example.com/", "session=deleted; Max-Age=0; Secure", 1500000);
+        let ok_evict = cookie::set_cookie_header(jar, "https://example.com/", "session=deleted; Max-Age=0; Secure", 1500000);
         sub.assert_true(ok_evict, "Max-Age=0 processed");
 
         var out_hdr: u8[..256] = [];
-        wing::build_cookie_header(jar, "https://example.com/", out_hdr, 1500000);
+        cookie::build_cookie_header(jar, "https://example.com/", 1500000, out_hdr);
         sub.assert_not_contains(out_hdr[..], "session=", "expired cookie excluded from outgoing request");
     };
 }
@@ -356,8 +356,8 @@ fn test_curl_netscape_cookiejar_import(t: lit::T&) {
     t.run("curl test46 & test3104: Netscape cookies.txt format parser") { sub =>
         let netscape_data: const u8[:] = "# Netscape HTTP Cookie File\n# http://curl.se/rfc/cookie_spec.html\n.example.com\tTRUE\t/\tTRUE\t2147483647\tauth_token\tsecret_bearer_999\n#HttpOnly_.bank.com\tTRUE\t/account\tTRUE\t2147483647\tsession_id\tsess_safe_123\n";
 
-        var jar = wing::CanonicalCookieJar { .. };
-        let imported = wing::import_netscape(jar, netscape_data, 1000000);
+        var jar = cookie::CanonicalCookieJar { .. };
+        let imported = cookie::import_netscape(jar, netscape_data, 1000000);
 
         sub.assert_eq(imported, 2, "Both valid Netscape lines imported");
         sub.assert_eq(jar.cookies.len, 2, "CanonicalCookieJar contains 2 cookies");
@@ -454,7 +454,7 @@ fn test_curl_expect_100_continue(t: lit::T&) {
     };
 
     t.run("curl test357: unsupported Expect token rejected with 417 Expectation Failed") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
 
@@ -1007,7 +1007,7 @@ fn add_test_cookies<J>(jar: J&, count: i32, host: const u8[:], prefix: const u8[
 // curl test 427 & 443: Maximum Cookie header 8KB limit and boundary truncation.
 fn test_curl_427_cookie_header_8kb_limit(t: lit::T&) {
     t.run("curl test 427: Maximum Cookie header 8KB limit and boundary truncation") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         // Value of 3200 bytes (repeat 400 x 'abcdefgh' per curl test 427)
         var val_3200: u8[..3210] = [];
@@ -1027,7 +1027,7 @@ fn test_curl_427_cookie_header_8kb_limit(t: lit::T&) {
 
         // Header buffer bounded to 8192 bytes (Invariant 17)
         var out_hdr: u8[..8192] = [];
-        wing::build_cookie_header(jar, "https://example.com/", out_hdr, 1000000);
+        cookie::build_cookie_header(jar, "https://example.com/", 1000000, out_hdr);
 
         // long1 (~3206B) + long2 (~3208B) fits; long3 would exceed 8192, so formatting stops cleanly
         sub.assert_true(out_hdr.len <= 8192, "Cookie header bounded within 8192 bytes");
@@ -1044,7 +1044,7 @@ fn test_curl_427_cookie_header_8kb_limit(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_curl_443_many_large_cookies_truncation(t: lit::T&) {
     t.run("curl test 443: 20 large cookies (500B each) capped cleanly within 8KB") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         var val_500: u8[..512] = [];
         fill_repeated_pattern(val_500, 500, "a");
@@ -1053,7 +1053,7 @@ fn test_curl_443_many_large_cookies_truncation(t: lit::T&) {
         add_test_cookies(jar, 20, "attack.invalid", "huge-", val_500[..]);
 
         var out_hdr: u8[..8192] = [];
-        wing::build_cookie_header(jar, "https://attack.invalid/", out_hdr, 1000000);
+        cookie::build_cookie_header(jar, "https://attack.invalid/", 1000000, out_hdr);
 
         sub.assert_true(out_hdr.len <= 8192, "Cookie header bounded within 8192 bytes");
         sub.assert_contains(out_hdr[..], "huge-0=", "Initial cookies included");
@@ -1068,13 +1068,13 @@ fn test_curl_443_many_large_cookies_truncation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_curl_442_cookie_count_buffer_boundary(t: lit::T&) {
     t.run("curl test 442: high cookie count stops cleanly at buffer boundary") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         add_test_cookies(jar, 150, "example.org", "c", "v");
 
         // Enterprise-scale 8KB buffer per Invariant 17
         var enterprise_buf: u8[..8192] = [];
-        wing::build_cookie_header(jar, "https://example.org/", enterprise_buf, 1000000);
+        cookie::build_cookie_header(jar, "https://example.org/", 1000000, enterprise_buf);
         sub.assert_true(enterprise_buf.len <= 8192, "Bounded within 8192 bytes");
         sub.assert_contains(enterprise_buf[..], "c0=v", "Initial cookie present");
         sub.assert_contains(enterprise_buf[..], "c149=v", "High cookie count present");
@@ -1089,54 +1089,54 @@ fn test_curl_442_cookie_count_buffer_boundary(t: lit::T&) {
 // curl test 1216 & 1218: RFC 6265 Section 5.1.3 domain tailmatching and prefix defense.
 fn test_curl_domain_tailmatching_prefix_defense(t: lit::T&) {
     t.run("curl test 1216 & 1218: Subdomain match and prefix collision defense") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
-        let ok = wing::set_cookie_header(jar, "http://example.com/c/1216", "session=1; Domain=.example.com; Path=/", 1000000);
+        var jar = cookie::CanonicalCookieJar { .. };
+        let ok = cookie::set_cookie_header(jar, "http://example.com/c/1216", "session=1; Domain=.example.com; Path=/", 1000000);
         sub.assert_true(ok, "Domain cookie accepted");
 
         // Subdomain matches .example.com
         var h_sub: u8[..256] = [];
-        wing::build_cookie_header(jar, "http://sub.example.com/c/1216", h_sub, 1000000);
+        cookie::build_cookie_header(jar, "http://sub.example.com/c/1216", 1000000, h_sub);
         sub.assert_contains(h_sub[..], "session=1", "Matches subdomain");
 
         // Deep subdomain matches .example.com
         var h_deep: u8[..256] = [];
-        wing::build_cookie_header(jar, "http://deep.sub.example.com/c/1216", h_deep, 1000000);
+        cookie::build_cookie_header(jar, "http://deep.sub.example.com/c/1216", 1000000, h_deep);
         sub.assert_contains(h_deep[..], "session=1", "Matches deep subdomain");
 
         // Exact domain matches
         var h_exact: u8[..256] = [];
-        wing::build_cookie_header(jar, "http://example.com/c/1216", h_exact, 1000000);
+        cookie::build_cookie_header(jar, "http://example.com/c/1216", 1000000, h_exact);
         sub.assert_contains(h_exact[..], "session=1", "Matches exact domain");
 
         // Prefix collisions MUST NOT match (curl test 1216/1218: bexample.fake does not match example.fake)
         var h_bad: u8[..256] = [];
-        wing::build_cookie_header(jar, "http://badexample.com/c/1216", h_bad, 1000000);
+        cookie::build_cookie_header(jar, "http://badexample.com/c/1216", 1000000, h_bad);
         sub.assert_eq(h_bad.len, 0, "Prefix collision badexample.com must NOT match");
 
         var h_not: u8[..256] = [];
-        wing::build_cookie_header(jar, "http://not-example.com/c/1216", h_not, 1000000);
+        cookie::build_cookie_header(jar, "http://not-example.com/c/1216", 1000000, h_not);
         sub.assert_eq(h_not.len, 0, "Prefix collision not-example.com must NOT match");
     };
 
-    t.run("Direct predicate verification: wing::cookie_domain_match") { sub =>
-        sub.assert_true(wing::cookie_domain_match("sub.example.com", "example.com"), "Subdomain match");
-        sub.assert_true(wing::cookie_domain_match("deep.sub.example.com", "example.com"), "Deep subdomain match");
-        sub.assert_true(wing::cookie_domain_match("example.com", "example.com"), "Exact domain match");
-        sub.assert_false(wing::cookie_domain_match("badexample.com", "example.com"), "Prefix collision rejected");
-        sub.assert_false(wing::cookie_domain_match("not-example.com", "example.com"), "Hyphenated prefix rejected");
+    t.run("Direct predicate verification: cookie::domain_match") { sub =>
+        sub.assert_true(cookie::domain_match("sub.example.com", "example.com"), "Subdomain match");
+        sub.assert_true(cookie::domain_match("deep.sub.example.com", "example.com"), "Deep subdomain match");
+        sub.assert_true(cookie::domain_match("example.com", "example.com"), "Exact domain match");
+        sub.assert_false(cookie::domain_match("badexample.com", "example.com"), "Prefix collision rejected");
+        sub.assert_false(cookie::domain_match("not-example.com", "example.com"), "Hyphenated prefix rejected");
     };
 
     t.run("curl test 171: Dot prefixed domain normalized and matched") { sub =>
-        var jar171 = wing::CanonicalCookieJar { .. };
-        let ok171 = wing::set_cookie_header(jar171, "http://z.x.com/171", "XToken=xt; Domain=.z.x.com; Path=/", 1000000);
+        var jar171 = cookie::CanonicalCookieJar { .. };
+        let ok171 = cookie::set_cookie_header(jar171, "http://z.x.com/171", "XToken=xt; Domain=.z.x.com; Path=/", 1000000);
         sub.assert_true(ok171, "Leading dot normalized");
 
         var h171: u8[..256] = [];
-        wing::build_cookie_header(jar171, "http://z.x.com/171", h171, 1000000);
+        cookie::build_cookie_header(jar171, "http://z.x.com/171", 1000000, h171);
         sub.assert_contains(h171[..], "XToken=xt", "z.x.com matches .z.x.com cookie");
 
         var h171_sub: u8[..256] = [];
-        wing::build_cookie_header(jar171, "http://sub.z.x.com/171", h171_sub, 1000000);
+        cookie::build_cookie_header(jar171, "http://sub.z.x.com/171", 1000000, h171_sub);
         sub.assert_contains(h171_sub[..], "XToken=xt", "sub.z.x.com matches .z.x.com cookie");
     };
 }
@@ -1148,35 +1148,35 @@ fn test_curl_domain_tailmatching_prefix_defense(t: lit::T&) {
 // curl test 331 & RFC 6265 Section 5.1.3: Unqualified hostnames and IP literal exact equality.
 fn test_curl_single_label_and_ip_matching(t: lit::T&) {
     t.run("curl test 331: Single-label unqualified host 'moo'") { sub =>
-        var jar_moo = wing::CanonicalCookieJar { .. };
-        let ok_moo = wing::set_cookie_header(jar_moo, "http://moo/we/want/331", "moo=yes; Path=/", 1000000);
+        var jar_moo = cookie::CanonicalCookieJar { .. };
+        let ok_moo = cookie::set_cookie_header(jar_moo, "http://moo/we/want/331", "moo=yes; Path=/", 1000000);
         sub.assert_true(ok_moo, "Single-label host-only cookie accepted");
 
         var h_moo: u8[..256] = [];
-        wing::build_cookie_header(jar_moo, "http://moo/we/want/3310002", h_moo, 1000000);
+        cookie::build_cookie_header(jar_moo, "http://moo/we/want/3310002", 1000000, h_moo);
         sub.assert_contains(h_moo[..], "moo=yes", "Matches exact unqualified host moo");
 
         var h_badmoo: u8[..256] = [];
-        wing::build_cookie_header(jar_moo, "http://othermoo/we/want/3310002", h_badmoo, 1000000);
+        cookie::build_cookie_header(jar_moo, "http://othermoo/we/want/3310002", 1000000, h_badmoo);
         sub.assert_eq(h_badmoo.len, 0, "Does not match othermoo");
 
         var h_moocom: u8[..256] = [];
-        wing::build_cookie_header(jar_moo, "http://moo.com/we/want/3310002", h_moocom, 1000000);
+        cookie::build_cookie_header(jar_moo, "http://moo.com/we/want/3310002", 1000000, h_moocom);
         sub.assert_eq(h_moocom.len, 0, "Does not match moo.com");
     };
 
     t.run("RFC 6265 Section 5.1.3: IP Address literal requires exact equality") { sub =>
-        var c_ip = wing::new_canonical_cookie("ip_cookie", "ip_val");
+        var c_ip = cookie::new_canonical_cookie("ip_cookie", "ip_val");
         c_ip.with_domain("192.168.1.1", false);
 
         sub.assert_true(c_ip.matches_domain("192.168.1.1"), "Exact IP match succeeds");
         sub.assert_false(c_ip.matches_domain("192.168.1.100"), "192.168.1.100 must NOT match 192.168.1.1");
         sub.assert_false(c_ip.matches_domain("sub.192.168.1.1"), "Sub-domain of IP must NOT match");
         sub.assert_false(c_ip.matches_domain("192.168.1.1.com"), "FQDN suffix of IP must NOT match");
-        sub.assert_false(wing::cookie_domain_match("192.168.1.100", "192.168.1.1"), "Domain match rejects IP mismatch");
+        sub.assert_false(cookie::domain_match("192.168.1.100", "192.168.1.1"), "Domain match rejects IP mismatch");
 
         // IPv6 literal matching
-        var c_ipv6 = wing::new_canonical_cookie("ipv6_cookie", "v6");
+        var c_ipv6 = cookie::new_canonical_cookie("ipv6_cookie", "v6");
         c_ipv6.with_domain("2001:db8::1", true);
         sub.assert_true(c_ipv6.matches_domain("[2001:db8::1]"), "IPv6 with brackets matches");
         sub.assert_false(c_ipv6.matches_domain("[2001:db8::2]"), "Different IPv6 rejected");
@@ -1190,42 +1190,42 @@ fn test_curl_single_label_and_ip_matching(t: lit::T&) {
 // curl test 1136 & 1476: Supercookie prevention across ICANN and Private PSL boundaries.
 fn test_curl_psl_supercookie_rejection(t: lit::T&) {
     t.run("curl test 1476: TLD and ccTLD supercookies rejected (com, co.uk)") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         // ICANN generic TLD: Domain=com rejected
-        let ok_com = wing::set_cookie_header(jar, "https://app.example.com/", "sid=1; Domain=com; Path=/", 1000000);
+        let ok_com = cookie::set_cookie_header(jar, "https://app.example.com/", "sid=1; Domain=com; Path=/", 1000000);
         sub.assert_false(ok_com, "Domain=com must be rejected as ICANN public suffix");
 
         // ICANN multi-level ccTLD: Domain=co.uk rejected
-        let ok_couk = wing::set_cookie_header(jar, "https://curl.co.uk/", "super=oops; Domain=co.uk; Path=/", 1000000);
+        let ok_couk = cookie::set_cookie_header(jar, "https://curl.co.uk/", "super=oops; Domain=co.uk; Path=/", 1000000);
         sub.assert_false(ok_couk, "Domain=co.uk must be rejected as ICANN ccTLD public suffix");
 
         // Case-insensitivity: Domain=co.UK rejected (curl test 1476)
-        let ok_couk_case = wing::set_cookie_header(jar, "https://curl.co.uk/", "super=oops; Domain=co.UK; Path=/", 1000000);
+        let ok_couk_case = cookie::set_cookie_header(jar, "https://curl.co.uk/", "super=oops; Domain=co.UK; Path=/", 1000000);
         sub.assert_false(ok_couk_case, "Mixed-case Domain=co.UK must be rejected as public suffix");
 
         sub.assert_eq(jar.cookies.len, 0, "No supercookies stored in jar");
     };
 
     t.run("Private PSL section: github.io multi-tenant boundary protection") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         // Setting Domain=github.io from tenant.github.io must be rejected
-        let ok_gh = wing::set_cookie_header(jar, "https://alice.github.io/", "cross=bad; Domain=github.io; Path=/", 1000000);
+        let ok_gh = cookie::set_cookie_header(jar, "https://alice.github.io/", "cross=bad; Domain=github.io; Path=/", 1000000);
         sub.assert_false(ok_gh, "Domain=github.io must be rejected to prevent cross-tenant supercookie");
 
         // Setting Domain=api.github.io on https://api.github.io/ is accepted as eTLD+1
-        let ok_api = wing::set_cookie_header(jar, "https://api.github.io/", "auth=token123; Domain=api.github.io; Path=/", 1000000);
+        let ok_api = cookie::set_cookie_header(jar, "https://api.github.io/", "auth=token123; Domain=api.github.io; Path=/", 1000000);
         sub.assert_true(ok_api, "Setting Domain=api.github.io on api.github.io is accepted");
 
         // Outgoing request to https://api.github.io/v1 sends the cookie
         var h_api: u8[..256] = [];
-        wing::build_cookie_header(jar, "https://api.github.io/v1", h_api, 1000000);
+        cookie::build_cookie_header(jar, "https://api.github.io/v1", 1000000, h_api);
         sub.assert_contains(h_api[..], "auth=token123", "api.github.io cookie sent on subpath");
 
         // Different tenant https://other.github.io does NOT receive api.github.io cookie
         var h_other: u8[..256] = [];
-        wing::build_cookie_header(jar, "https://other.github.io/v1", h_other, 1000000);
+        cookie::build_cookie_header(jar, "https://other.github.io/v1", 1000000, h_other);
         sub.assert_eq(h_other.len, 0, "other.github.io must NOT receive api.github.io cookie");
     };
 }
@@ -1236,34 +1236,34 @@ fn test_curl_psl_supercookie_rejection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_curl_psl_wildcard_exception_and_case(t: lit::T&) {
     t.run("curl test 1476: Valid eTLD+1 accepted with mixed-case domain property") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         // curl.co.UK with Domain=CURL.CO.UK accepted per curl test 1476
-        let ok_curl = wing::set_cookie_header(jar, "http://curl.co.UK/", "fine=yesyes; Domain=CURL.CO.UK; Path=/", 1000000);
+        let ok_curl = cookie::set_cookie_header(jar, "http://curl.co.UK/", "fine=yesyes; Domain=CURL.CO.UK; Path=/", 1000000);
         sub.assert_true(ok_curl, "Valid eTLD+1 accepted with mixed-case domain property");
 
         var h_curl: u8[..256] = [];
-        wing::build_cookie_header(jar, "http://curl.co.UK/", h_curl, 1000000);
+        cookie::build_cookie_header(jar, "http://curl.co.UK/", 1000000, h_curl);
         sub.assert_contains(h_curl[..], "fine=yesyes", "curl.co.UK cookie sent on matching request");
     };
 
     t.run("curl test 1136: Wildcard (*.ck) and exception (!www.ck) rules") { sub =>
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
 
         // Wildcard rule *.ck: example.ck is a public suffix -> Domain=example.ck rejected
-        let ok_ck1 = wing::set_cookie_header(jar, "http://www.example.ck/", "test1=forbidden1; Domain=example.ck; Path=/", 1000000);
+        let ok_ck1 = cookie::set_cookie_header(jar, "http://www.example.ck/", "test1=forbidden1; Domain=example.ck; Path=/", 1000000);
         sub.assert_false(ok_ck1, "Domain=example.ck rejected under wildcard rule *.ck");
 
         // www.example.ck is valid eTLD+1 under *.ck -> accepted
-        let ok_ck2 = wing::set_cookie_header(jar, "http://www.example.ck/", "test2=allowed2; Domain=www.example.ck; Path=/", 1000000);
+        let ok_ck2 = cookie::set_cookie_header(jar, "http://www.example.ck/", "test2=allowed2; Domain=www.example.ck; Path=/", 1000000);
         sub.assert_true(ok_ck2, "Domain=www.example.ck accepted as eTLD+1");
 
         // Base domain ck is TLD public suffix -> rejected
-        let ok_ck3 = wing::set_cookie_header(jar, "http://www.ck/", "test3=forbidden3; Domain=ck; Path=/", 1000000);
+        let ok_ck3 = cookie::set_cookie_header(jar, "http://www.ck/", "test3=forbidden3; Domain=ck; Path=/", 1000000);
         sub.assert_false(ok_ck3, "Domain=ck rejected as TLD");
 
         // Exception rule !www.ck: www.ck is NOT a public suffix, it is a valid eTLD+1
-        let ok_ck4 = wing::set_cookie_header(jar, "http://www.ck/", "test4=allowed4; Domain=www.ck; Path=/", 1000000);
+        let ok_ck4 = cookie::set_cookie_header(jar, "http://www.ck/", "test4=allowed4; Domain=www.ck; Path=/", 1000000);
         sub.assert_true(ok_ck4, "Domain=www.ck accepted under exception rule !www.ck");
     };
 }

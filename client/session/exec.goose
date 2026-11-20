@@ -29,6 +29,7 @@ import auth.digest;
 import security.cors;
 import security.cross_origin_isolation;
 import security.privacypass;
+import security.ssrf;
 import realtime.websocket;
 import client.session.ssrf;
 import client.session.mock;
@@ -129,31 +130,32 @@ fn build_effective_url(
 // ---- 6-phase execution context & orchestration ------------------------------
 
 struct RequestExecutionContext {
-    url_chain:               core::Url[..16]     = [],
-    current_method:          u8[..16]            = [],
-    headers:                 HeaderMap           = HeaderMap { .. },
-    rewind_buf:              u8[..4096]          = [],
-    rewindable:              bool                = true,
-    body_consumed:           bool                = false,
-    initiator:               core::Origin        = core::Origin { .. },
-    has_initiator:           bool                = false,
-    top_frame_origin:        core::Origin        = core::Origin { .. },
-    site_for_cookies:        SiteForCookies      = SiteForCookies { .. },
-    first_party_policy:      FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
-    is_main_frame:           bool                = true,
-    is_reload:               bool                = false,
-    redirect_mode:           RedirectMode        = RedirectMode.Follow,
-    redirect_count:          i64                 = 0,
-    max_redirects:           i64                 = 10,
-    tainted_origin:          bool                = false,
-    had_cross_site_hop:      bool                = false,
-    cors_mode:               bool                = false,
-    auth_retried:            bool                = false,
-    early_data_disabled:     bool                = false,
-    current_referrer:        u8[..2048]          = [],
-    current_referrer_policy: ReferrerPolicy      = ReferrerPolicy.StrictOriginWhenCrossOrigin,
-    timeout_ms:              i64                 = 0,
-    body:                    u8[>..]             = [],
+    url_chain:           core::Url[..16]             = [],
+    current_method:      u8[..16]                    = [],
+    headers:             HeaderMap                   = HeaderMap { .. },
+    rewind_buf:          u8[..4096]                  = [],
+    rewindable:          bool                        = true,
+    body_consumed:       bool                        = false,
+    initiator:           core::Origin                = core::Origin { .. },
+    has_initiator:       bool                        = false,
+    top_frame_origin:    core::Origin                = core::Origin { .. },
+    site_for_cookies:    SiteForCookies              = SiteForCookies { .. },
+    first_party_policy:  cookie::FirstPartyURLPolicy = cookie::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
+    is_main_frame:       bool                        = true,
+    is_reload:           bool                        = false,
+    redirect_mode:       RedirectMode                = RedirectMode.Follow,
+    redirect_count:      i64                         = 0,
+    max_redirects:       i64                         = 10,
+    tainted_origin:      bool                        = false,
+    had_cross_site_hop:  bool                        = false,
+    cors_mode:           bool                        = false,
+    auth_retried:        bool                        = false,
+    early_data_disabled: bool                        = false,
+
+    current_referrer:        u8[..2048]     = [],
+    current_referrer_policy: ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
+    timeout_ms:              i64            = 0,
+    body:                    u8[>..]        = [],
 }
 
 fn validate_hop_prerequisites(session: const Session&, current_url: const core::Url&) -> Error {
@@ -201,7 +203,7 @@ fn apply_redirect_transition(
             ctx.tainted_origin = true;
         }
     }
-    if ctx.is_main_frame && ctx.first_party_policy == FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT {
+    if ctx.is_main_frame && ctx.first_party_policy == cookie::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT {
         ctx.top_frame_origin = core::origin_from_url(redirect_info.new_url);
     }
     ctx.site_for_cookies = redirect_info.new_site_for_cookies;
@@ -239,7 +241,7 @@ fn merge_session_and_request_headers(
     headers:         HeaderMap&,
     default_headers: const HeaderMap&,
     req_headers:     const HeaderMap&,
-    profile:         Profile,
+    profile:         fingerprint::Profile,
 ) {
     copy_headers(default_headers, headers);
     for &e in req_headers.entries {
@@ -247,7 +249,7 @@ fn merge_session_and_request_headers(
         remove_header_by_name(headers, name);
     }
     append_all_headers(req_headers, headers);
-    if profile != Profile.None {
+    if profile != fingerprint::Profile.None {
         let has_ae = find_header(headers, "accept-encoding").len > 0;
         if !has_ae {
             set_header(headers, "Accept-Encoding", "zstd, br, gzip");
@@ -311,7 +313,7 @@ fn init_execution_context(
     if req.has_site_for_cookies {
         ctx.site_for_cookies = copy(req.site_for_cookies);
     } else {
-        ctx.site_for_cookies = site_for_cookies_from_parsed_url(parsed_initial);
+        ctx.site_for_cookies = cookie::site_for_cookies_from_parsed_url(parsed_initial);
     }
 
     merge_session_and_request_headers(ctx.headers, session.default_headers, req.headers, session.profile);
@@ -681,8 +683,8 @@ fn resolve_hop_proxy_chain(session: const Session&) -> ProxyChain {
 }
 
 fn collect_ipv4_dns_candidates(
-    ssrf_guard: const SsrfGuardPolicy&,
-    a_entry:    const DnsCacheEntry&,
+    ssrf_guard: const security::SsrfGuardPolicy&,
+    a_entry:    const dns::CacheEntry&,
     port_num:   u16,
     out_list:   DnsCandidate[..8]&,
 ) -> bool {
@@ -690,7 +692,7 @@ fn collect_ipv4_dns_candidates(
     for ip4 in a_entry.ipv4_hints {
         core::format_ipv4_u32(ip4, ip4_buf);
         if ssrf_guard.enabled && ssrf_guard.deny_local_network {
-            guard !is_private_or_reserved_ip(ip4_buf[..]) else { return false; }
+            guard !security::is_private_or_reserved_ip(ip4_buf[..]) else { return false; }
         }
         let _ = out_list.try_push(new_dns_candidate(AddressFamily.IPv4, ip4_buf[..], port_num, L4Protocol.Tcp, 40));
     }
@@ -698,8 +700,8 @@ fn collect_ipv4_dns_candidates(
 }
 
 fn collect_ipv6_dns_candidates(
-    ssrf_guard: const SsrfGuardPolicy&,
-    aaaa_entry: const DnsCacheEntry&,
+    ssrf_guard: const security::SsrfGuardPolicy&,
+    aaaa_entry: const dns::CacheEntry&,
     port_num:   u16,
     out_list:   DnsCandidate[..8]&,
 ) -> bool {
@@ -707,7 +709,7 @@ fn collect_ipv6_dns_candidates(
     for &ip6 in aaaa_entry.ipv6_hints {
         core::format_ipv6_bytes(ip6, ip6_buf);
         if ssrf_guard.enabled && ssrf_guard.deny_local_network {
-            guard !is_private_or_reserved_ip(ip6_buf[..]) else { return false; }
+            guard !security::is_private_or_reserved_ip(ip6_buf[..]) else { return false; }
         }
         let _ = out_list.try_push(new_dns_candidate(AddressFamily.IPv6, ip6_buf[..], port_num, L4Protocol.Tcp, 50));
     }
@@ -715,7 +717,7 @@ fn collect_ipv6_dns_candidates(
 }
 
 fn append_svcb_hint_candidate(
-    ssrf_guard: const SsrfGuardPolicy&,
+    ssrf_guard: const security::SsrfGuardPolicy&,
     ip_str:     const u8[:],
     fam:        AddressFamily,
     eff_port:   u16,
@@ -723,14 +725,14 @@ fn append_svcb_hint_candidate(
     out_list:   DnsCandidate[..8]&,
 ) -> bool {
     if ssrf_guard.enabled && ssrf_guard.deny_local_network {
-        guard !is_private_or_reserved_ip(ip_str) else { return false; }
+        guard !security::is_private_or_reserved_ip(ip_str) else { return false; }
     }
     let _ = out_list.try_push(new_dns_candidate(fam, ip_str, eff_port, L4Protocol.Tcp, priority));
     return true;
 }
 
 fn collect_https_svcb_hint_candidates(
-    ssrf_guard: const SsrfGuardPolicy&,
+    ssrf_guard: const security::SsrfGuardPolicy&,
     meta:       const ConnectionEndpointMetadata&,
     eff_port:   u16,
     task:       DnsRaceTask&,
@@ -760,9 +762,10 @@ fn resolve_https_svcb_record(
     task:         DnsRaceTask&,
     out_ech_list: u8[..512]&,
 ) -> bool {
-    var https_entry = DnsCacheEntry { .. };
-    let h_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
-    guard h_stat != DnsCacheStatus.Expired && https_entry.https_records.len > 0 else { return true; }
+    let https_entry, h_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec);
+    guard https_entry && h_stat != dns::CacheStatus.Expired && https_entry.https_records.len > 0 else {
+        return true;
+    }
     let meta, eff_port = extract_https_svcb_metadata(https_entry.https_records[0], port_num);
     task.metadata = meta;
     task.https_status = DnsQueryStatus.Success;
@@ -773,15 +776,16 @@ fn resolve_https_svcb_record(
 }
 
 fn lookup_dns_https_h3_endpoint(
-    dns_cache:    const DnsCache&,
+    dns_cache:    const dns::Cache&,
     host_str:     const u8[:],
     default_port: u16,
     now_sec:      i64,
     out_ep:       AltSvcEndpoint&,
 ) -> bool {
-    var https_entry = DnsCacheEntry { .. };
-    let h_stat = dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec, https_entry);
-    guard h_stat != DnsCacheStatus.Expired && https_entry.https_records.len > 0 else { return false; }
+    let https_entry, h_stat = dns_cache.lookup(host_str, rfc::DNS_QTYPE_HTTPS, now_sec);
+    guard https_entry && h_stat != dns::CacheStatus.Expired && https_entry.https_records.len > 0 else {
+        return false;
+    }
     let meta, eff_port = extract_https_svcb_metadata(https_entry.https_records[0], default_port);
     guard meta.alpn_h3 else { return false; }
     out_ep = AltSvcEndpoint {
@@ -809,18 +813,16 @@ fn resolve_and_validate_live_host(
     let now_ms = core::mul_sat_i64(now_sec, 1000);
     var task = new_dns_race_task(port_num);
 
-    var a_entry = DnsCacheEntry { .. };
-    let a_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_A, now_sec, a_entry);
-    if a_stat != DnsCacheStatus.Expired {
+    let a_entry, a_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_A, now_sec);
+    if a_entry && a_stat != dns::CacheStatus.Expired {
         guard collect_ipv4_dns_candidates(session.ssrf_guard, a_entry, port_num, task.ipv4_candidates) else {
             return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
         }
         task.a_status = DnsQueryStatus.Success;
     }
 
-    var aaaa_entry = DnsCacheEntry { .. };
-    let aaaa_stat = session.dns_cache.dns_cache_lookup(host_str, rfc::DNS_QTYPE_AAAA, now_sec, aaaa_entry);
-    if aaaa_stat != DnsCacheStatus.Expired {
+    let aaaa_entry, aaaa_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_AAAA, now_sec);
+    if aaaa_entry && aaaa_stat != dns::CacheStatus.Expired {
         guard collect_ipv6_dns_candidates(session.ssrf_guard, aaaa_entry, port_num, task.ipv6_candidates) else {
             return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
         }
@@ -1431,14 +1433,14 @@ fn execute_live_h3_hop(
     let target_host = if h3_ep.host.len > 0 { h3_ep.host[..] } else { current_url.hostname() };
     let target_port = if h3_ep.port > 0 { h3_ep.port } else { current_url.effective_port() as u16 };
     if session.ssrf_guard.enabled && session.ssrf_guard.deny_local_network &&
-        (is_private_or_reserved_ip(target_host) || is_dangerous_service_port(target_port)) {
+        (security::is_private_or_reserved_ip(target_host) || security::is_dangerous_service_port(target_port)) {
         return false;
     }
     let udp_fd = udp_bind("0.0.0.0", 0);
     guard udp_fd > 0 else { return false; }
     defer tcp_close(udp_fd);
 
-    let h3_settings = H3Settings { .. };
+    let h3_settings = fingerprint::H3Settings { .. };
     var h3_conn = h3_internal::new_h3_client_connection(h3_settings);
     let sid, ok_s = h3_internal::open_request_stream(h3_conn);
     guard ok_s else { return false; }
@@ -1493,7 +1495,7 @@ fn execute_live_network_hop(
     let now_ms = session.virtual_clock_us / 1000;
     let host_str = current_url.hostname();
     if session.ssrf_guard.enabled {
-        if is_private_or_reserved_ip(host_str) {
+        if security::is_private_or_reserved_ip(host_str) {
             return make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: private IP blocked");
         }
     }
@@ -1714,7 +1716,7 @@ fn compute_401_auth_header(
 ) -> bool {
     auth_header_val.clear();
     if has_auth_scheme_prefix(www_auth, "Digest") {
-        let chal, ok_c = parse_digest_challenge(www_auth);
+        let chal, ok_c = auth::parse_digest_challenge(www_auth);
         guard ok_c else { return false; }
         guard !ctx.auth_retried || chal.stale else { return false; }
         let uri_path = current_url.pathname();
@@ -1728,13 +1730,13 @@ fn compute_401_auth_header(
         if uri_search.len > 0 {
             let _ = uri_target.try_append(uri_search);
         }
-        var c_creds = DigestCredentials { .. };
+        var c_creds = auth::DigestCredentials { .. };
         let _ = c_creds.username.try_set(session.creds.username[..]);
         let _ = c_creds.password.try_set(session.creds.password[..]);
 
         var active_chal = chal;
         if chal.stale && session.creds.last_digest.valid {
-            let _ = sync_digest_stale_challenge(
+            let _ = auth::sync_digest_stale_challenge(
                 session.creds.last_digest,
                 chal,
                 c_creds,
@@ -1745,7 +1747,7 @@ fn compute_401_auth_header(
             session.creds.last_digest = chal;
         }
 
-        let ok_d = compute_digest_response(
+        let ok_d = auth::compute_digest_response(
             active_chal,
             c_creds,
             ctx.current_method[..],
@@ -1761,17 +1763,14 @@ fn compute_401_auth_header(
         return true;
     }
     if has_auth_scheme_prefix(www_auth, rfc::SCHEME_PRIVATE_TOKEN) {
-        var chal = TokenChallenge { .. };
         var tok_key: u8[..512] = [];
-        var max_age: i64       = 0;
-        guard parse_private_token_challenge(www_auth, chal, tok_key, max_age) else { return false; }
-        var popped_tok = Token { .. };
+        let chal, _, ok_ch = security::parse_private_token_challenge(www_auth, tok_key);
+        guard ok_ch else { return false; }
         var raw_tok: u8[..512] = [];
         let now_sec = div_euclid(session.virtual_clock_us, 1000000);
-        guard get_private_token(session.private_token_cache, chal, now_sec, popped_tok, raw_tok) else {
-            return false;
-        }
-        format_private_token_authorization(raw_tok[..], auth_header_val);
+        let _, ok_tok = security::get_private_token(session.private_token_cache, chal, now_sec, raw_tok);
+        guard ok_tok else { return false; }
+        security::format_private_token_authorization(raw_tok[..], auth_header_val);
         return true;
     }
     if has_auth_scheme_prefix(www_auth, "Basic") {
@@ -1843,7 +1842,7 @@ inline fn prepare_auth_retry_hop(
     session:       Client&,
     ctx:           RequestExecutionContext&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     safe_method:   bool,
     resp:          const Response&,
     auth_val:      const u8[:],

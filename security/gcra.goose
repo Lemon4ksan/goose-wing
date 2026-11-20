@@ -5,16 +5,13 @@
 // Implements zero-allocation rate limiting with burst tolerance (tau),
 // emission interval (T), Theoretical Arrival Time (TAT) tracking,
 // and bounded multi-client tracking (RFC 7616 dual leaky-bucket).
-namespace wing;
+namespace security;
 
 import std;
 import core from "..";
+import .rate_limit_internal;
 
-// Maximum clock drift and backward NTP jump tolerance before clamping TAT
-const GATEWAY_GCRA_MAX_DRIFT_NS: u64 = 5000000000; // 5.0 seconds
-const GATEWAY_LIMITER_NONE:      i32 = -1;
-
-// Quota configuration specifying cell spacing (T) and burst headroom (tau)
+// Quota configuration specifying cell spacing (T) and burst headroom (tau).
 struct GcraConfig {
     emission_interval_ns: u64 = 1000000, // T: time increment per cell (ns)
     tau_ns:               u64 = 5000000, // tau: burst tolerance delay (ns)
@@ -22,39 +19,26 @@ struct GcraConfig {
     limit_window_ns:      u64 = 6000000, // tau + T (precalculated window)
 }
 
-// Zero-allocation binary division without arithmetic overflow operator hazards.
-fn fast_div_u64(n: u64, d: u64) -> u64 {
-    guard d > 0 else { return 0; }
-    guard n >= d else { return 0; }
+// Single TAT state cell (64-bit scalar).
+struct GcraCell {
+    tat_ns: u64 = 0,
+}
 
-    var cur_d = d;
-    var cur_q: u64 = 1;
-    let half_n = n >> 1;
-
-    while cur_d <= half_n {
-        cur_d = core::add_sat_u64(cur_d, cur_d);
-        cur_q = core::add_sat_u64(cur_q, cur_q);
-    }
-
-    var rem_n = n;
-    var quotient: u64 = 0;
-
-    while cur_q > 0 {
-        if rem_n >= cur_d {
-            rem_n = core::sub_sat_u64(rem_n, cur_d);
-            quotient = quotient | cur_q;
-        }
-        cur_d = cur_d >> 1;
-        cur_q = cur_q >> 1;
-    }
-
-    return quotient;
+// Result of a GCRA rate check.
+struct GcraDecision {
+    allowed:               bool = false,
+    remaining_burst:       u64  = 0,
+    retry_after_ns:        u64  = 0,
+    reset_after_ns:        u64  = 0,
+    wait_ns:               i64  = 0,
+    tat_ns:                u64  = 0,
+    insufficient_capacity: bool = false,
 }
 
 // Configures GCRA quota from sustained requests per second and burst capacity.
 fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
     let r = max(rate_per_sec, 1);
-    let t_raw = fast_div_u64(1000000000, r);
+    let t_raw = security_internal::fast_div_u64(1000000000, r);
     let t_ns = max(t_raw, 1);
     let tau_ns = core::mul_sat_u64(t_ns, burst_capacity);
     let win_ns = core::add_sat_u64(tau_ns, t_ns);
@@ -67,167 +51,47 @@ fn new_gcra_config(rate_per_sec: u64, burst_capacity: u64) -> GcraConfig {
     };
 }
 
-// Single TAT tracking cell
-struct GcraTatCell {
-    tat_ns: u64 = 0,
-}
-
-// Result of a GCRA rate check
-struct GcraDecision {
-    allowed:               bool = false,
-    remaining_burst:       u64  = 0,
-    retry_after_ns:        u64  = 0,
-    reset_after_ns:        u64  = 0,
-    wait_ns:               i64  = 0,
-    tat_ns:                u64  = 0,
-    insufficient_capacity: bool = false,
-}
-
-// Clamps TAT if system clock drifted or jumped backward into the past.
-inline fn clamp_clock_drift(tat_old: u64, now_ns: u64, limit_window: u64) -> u64 {
-    let drift_threshold = core::add_sat_u64(limit_window, GATEWAY_GCRA_MAX_DRIFT_NS);
-    let max_future = core::add_sat_u64(now_ns, drift_threshold);
-    guard tat_old > max_future else { return tat_old; }
-    return core::add_sat_u64(now_ns, limit_window);
-}
-
-// Calculates remaining burst allowance after admission without underflow or overflow hazards.
-fn calc_remaining_burst(tau_ns: u64, t_ns: u64, max_burst: u64, tat_new: u64, now_ns: u64) -> u64 {
-    let baseline = core::add_sat_u64(now_ns, t_ns);
-    guard tat_new > baseline else { return max_burst; }
-    let diff = core::sub_sat_u64(tat_new, baseline);
-    guard tau_ns > diff else { return 0; }
-    let rem_ns = core::sub_sat_u64(tau_ns, diff);
-    let rem_cells = fast_div_u64(rem_ns, t_ns);
-    return min(rem_cells, max_burst);
-}
-
 // Evaluates rate limit admission for cost units at now_ns and advances TAT on success.
-// Multi-cell burst guard: rejects requests with weights exceeding total burst window (tau + T)
-// before mutating Theoretical Arrival Time (TAT) state.
-fn gcra_check(config: const GcraConfig&, cell: GcraTatCell&, cost: u64, now_ns: u64) -> GcraDecision {
-    let t = config.emission_interval_ns;
-    let tau = config.tau_ns;
-    let limit_window = config.limit_window_ns;
-    let max_cells = core::add_sat_u64(config.max_burst, 1);
-    let delta = core::mul_sat_u64(cost, t);
-
-    guard cost <= max_cells && delta <= limit_window else {
-        let over_retry = max(core::sub_sat_u64(delta, limit_window), 1);
-        return GcraDecision {
-            allowed:         false,
-            remaining_burst: 0,
-            retry_after_ns:  over_retry,
-            reset_after_ns:  over_retry,
-            tat_ns:          cell.tat_ns,
-        };
-    }
-
-    let tat_old = clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
-    cell.tat_ns = tat_old;
-    let tat_base = core::ct_max_u64(now_ns, tat_old);
-    let tat_new = core::add_sat_u64(tat_base, delta);
-    let t_allow = core::sub_sat_u64(tat_new, limit_window);
-    let retry_after = core::sub_sat_u64(t_allow, now_ns);
-
-    guard now_ns >= t_allow else {
-        return GcraDecision {
-            allowed:         false,
-            remaining_burst: 0,
-            retry_after_ns:  retry_after,
-            reset_after_ns:  retry_after,
-            tat_ns:          tat_old,
-        };
-    }
-
-    cell.tat_ns = tat_new;
-    let rem = calc_remaining_burst(tau, t, config.max_burst, tat_new, now_ns);
-    let reset_after = core::sub_sat_u64(tat_new, now_ns);
-
-    return GcraDecision {
-        allowed:         true,
-        remaining_burst: rem,
-        retry_after_ns:  0,
-        reset_after_ns:  reset_after,
-        tat_ns:          tat_new,
-    };
+// Clamps backward NTP jumps on `cell.tat_ns` even on rejection to prevent permanent lockouts.
+fn gcra_check(config: const GcraConfig&, cell: GcraCell&, cost: u64, now_ns: u64) -> GcraDecision {
+    let dec, next_tat = security_internal::eval_gcra_config(config, cell.tat_ns, cost, now_ns);
+    cell.tat_ns = next_tat;
+    return dec;
 }
 
 // Evaluates rate limit admission without mutating TAT cell state.
-fn gcra_peek(config: const GcraConfig&, cell: const GcraTatCell&, cost: u64, now_ns: u64) -> GcraDecision {
-    let t = config.emission_interval_ns;
-    let tau = config.tau_ns;
-    let limit_window = config.limit_window_ns;
-    let max_cells = core::add_sat_u64(config.max_burst, 1);
-    let delta = core::mul_sat_u64(cost, t);
-
-    guard cost <= max_cells && delta <= limit_window else {
-        let over_retry = max(core::sub_sat_u64(delta, limit_window), 1);
-        return GcraDecision {
-            allowed:         false,
-            remaining_burst: 0,
-            retry_after_ns:  over_retry,
-            reset_after_ns:  over_retry,
-            tat_ns:          cell.tat_ns,
-        };
-    }
-
-    let tat_old = clamp_clock_drift(cell.tat_ns, now_ns, limit_window);
-    let tat_base = core::ct_max_u64(now_ns, tat_old);
-    let tat_new = core::add_sat_u64(tat_base, delta);
-    let t_allow = core::sub_sat_u64(tat_new, limit_window);
-    let retry_after = core::sub_sat_u64(t_allow, now_ns);
-
-    guard now_ns >= t_allow else {
-        return GcraDecision {
-            allowed:         false,
-            remaining_burst: 0,
-            retry_after_ns:  retry_after,
-            reset_after_ns:  retry_after,
-            tat_ns:          tat_old,
-        };
-    }
-
-    let rem = calc_remaining_burst(tau, t, config.max_burst, tat_new, now_ns);
-    let reset_after = core::sub_sat_u64(tat_new, now_ns);
-
-    return GcraDecision {
-        allowed:         true,
-        remaining_burst: rem,
-        retry_after_ns:  0,
-        reset_after_ns:  reset_after,
-        tat_ns:          tat_new,
-    };
+fn gcra_peek(config: const GcraConfig&, cell: const GcraCell&, cost: u64, now_ns: u64) -> GcraDecision {
+    let dec, _ = security_internal::eval_gcra_config(config, cell.tat_ns, cost, now_ns);
+    return dec;
 }
 
 // Applies penalty delay to TAT to rate-limit abusive clients or handle backpressure.
-fn gcra_penalize(config: const GcraConfig&, cell: GcraTatCell&, penalty_ns: u64, now_ns: u64) {
+fn gcra_penalize(config: const GcraConfig&, cell: GcraCell&, penalty_ns: u64, now_ns: u64) {
     guard penalty_ns > 0 else { return; }
-    let tat_old = clamp_clock_drift(cell.tat_ns, now_ns, config.limit_window_ns);
-    cell.tat_ns = tat_old;
+    let tat_old = security_internal::clamp_clock_drift(cell.tat_ns, now_ns, config.limit_window_ns);
     let tat_base = core::ct_max_u64(now_ns, tat_old);
     cell.tat_ns = core::add_sat_u64(tat_base, penalty_ns);
 }
 
 // Resets single TAT cell state to zero.
-fn gcra_reset(cell: GcraTatCell&) {
+fn gcra_reset(cell: GcraCell&) {
     cell.tat_ns = 0;
 }
 
 // ---- Bounded Multi-Client Gateway Rate Limiter -----------------------------
 
 struct GatewayClientEntry {
-    client_id:           u8[..64]    = [],
-    cell:                GcraTatCell = GcraTatCell { .. },
-    last_seen_ns:        u64         = 0,
-    consecutive_rejects: u32         = 0,
-    in_use:              bool        = false,
+    client_id:           u8[..64] = [],
+    cell:                GcraCell = GcraCell { .. },
+    last_seen_ns:        u64      = 0,
+    consecutive_rejects: u32      = 0,
+    in_use:              bool     = false,
 }
 
 struct GatewayRateLimiter {
     config:         GcraConfig               = GcraConfig { .. },
     entries:        GatewayClientEntry[..64] = [],
-    fallback_cell:  GcraTatCell              = GcraTatCell { .. },
+    fallback_cell:  GcraCell                 = GcraCell { .. },
     total_allowed:  u64                      = 0,
     total_rejected: u64                      = 0,
 }
@@ -240,101 +104,15 @@ fn new_gateway_rate_limiter(rate_per_sec: u64, burst_capacity: u64) -> GatewayRa
     };
 }
 
-// Finds entry index by client ID, or returns GATEWAY_LIMITER_NONE if absent.
-fn find_client_slot(limiter: const GatewayRateLimiter&, client_id: const u8[:]) -> i32 {
-    guard client_id.len <= 64 else { return GATEWAY_LIMITER_NONE; }
-    let n = limiter.entries.len as i32;
-    for i in n {
-        if limiter.entries[i].in_use && limiter.entries[i].client_id[..] == client_id {
-            return i;
+// Finds entry index by client ID, returning `(idx, true)` or `(0, false)` if absent.
+fn find_client_slot(limiter: const GatewayRateLimiter&, client_id: const u8[:]) -> i64, bool {
+    guard client_id.len <= 64 else { return 0, false; }
+    for &entry, i in limiter.entries {
+        if entry.in_use && entry.client_id[..] == client_id {
+            return i, true;
         }
     }
-    return GATEWAY_LIMITER_NONE;
-}
-
-// Finds an inactive slot or the oldest slot whose rate-limit debt has expired (`tat_ns <= now_ns`).
-// Returns `GATEWAY_LIMITER_NONE` when all slots hold active debt so overflow falls back to `fallback_cell`.
-fn find_idle_or_oldest_slot(limiter: const GatewayRateLimiter&, now_ns: u64) -> i32 {
-    let n = limiter.entries.len as i32;
-    for i in n {
-        if !limiter.entries[i].in_use {
-            return i;
-        }
-    }
-    var oldest_idx:  i32 = GATEWAY_LIMITER_NONE;
-    var oldest_seen: u64 = 0xFFFFFFFFFFFFFFFF;
-
-    for i in n {
-        if limiter.entries[i].cell.tat_ns <= now_ns && limiter.entries[i].last_seen_ns <= oldest_seen {
-            oldest_seen = limiter.entries[i].last_seen_ns;
-            oldest_idx = i;
-        }
-    }
-    return oldest_idx;
-}
-
-inline fn populate_entry(entry: GatewayClientEntry&, client_id: const u8[:], now_ns: u64) -> bool {
-    guard entry.client_id.try_set(client_id) else { return false; }
-    entry.cell.tat_ns = now_ns;
-    entry.last_seen_ns = now_ns;
-    entry.consecutive_rejects = 0;
-    entry.in_use = true;
-    return true;
-}
-
-inline fn push_new_client_slot(limiter: GatewayRateLimiter&, client_id: const u8[:], now_ns: u64) -> i32 {
-    guard client_id.len <= 64 else { return GATEWAY_LIMITER_NONE; }
-    var new_entry = GatewayClientEntry { in_use: false, .. };
-    guard populate_entry(new_entry, client_id, now_ns) else { return GATEWAY_LIMITER_NONE; }
-    guard limiter.entries.try_push(new_entry) else { return GATEWAY_LIMITER_NONE; }
-    let n = limiter.entries.len as i32;
-    return (core::sub_sat_u64(n as u64, 1)) as i32;
-}
-
-// Allocates or retrieves an existing entry slot in the bounded table.
-fn allocate_client_entry(limiter: GatewayRateLimiter&, client_id: const u8[:], now_ns: u64) -> i32 {
-    guard client_id.len <= 64 else { return GATEWAY_LIMITER_NONE; }
-    let existing_idx = find_client_slot(limiter, client_id);
-    guard existing_idx == GATEWAY_LIMITER_NONE else { return existing_idx; }
-
-    let n = limiter.entries.len as i32;
-    for i in n {
-        if !limiter.entries[i].in_use {
-            guard populate_entry(limiter.entries[i], client_id, now_ns) else { return GATEWAY_LIMITER_NONE; }
-            return i;
-        }
-    }
-
-    if limiter.entries.len < limiter.entries.cap {
-        return push_new_client_slot(limiter, client_id, now_ns);
-    }
-
-    let slot = find_idle_or_oldest_slot(limiter, now_ns);
-    guard slot != GATEWAY_LIMITER_NONE && slot < limiter.entries.len else { return GATEWAY_LIMITER_NONE; }
-
-    guard populate_entry(limiter.entries[slot], client_id, now_ns) else { return GATEWAY_LIMITER_NONE; }
-    return slot;
-}
-
-// Handles admission record tracking for an allocated client entry.
-inline fn record_client_admission(limiter: GatewayRateLimiter&, slot: i32, dec: const GcraDecision&) {
-    if dec.allowed {
-        limiter.total_allowed = core::add_sat_u64(limiter.total_allowed, 1);
-        limiter.entries[slot].consecutive_rejects = 0;
-    } else {
-        limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
-        let next_rej = core::add_sat_u64(limiter.entries[slot].consecutive_rejects, 1);
-        limiter.entries[slot].consecutive_rejects = next_rej as u32;
-    }
-}
-
-// Handles admission record tracking for table saturation fallback.
-inline fn record_fallback_admission(limiter: GatewayRateLimiter&, dec: const GcraDecision&) {
-    if dec.allowed {
-        limiter.total_allowed = core::add_sat_u64(limiter.total_allowed, 1);
-    } else {
-        limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
-    }
+    return 0, false;
 }
 
 // Checks and updates rate limit for a client ID in the gateway limiter.
@@ -344,16 +122,16 @@ fn check_gateway_rate_limit(
     cost:      u64,
     now_ns:    u64,
 ) -> GcraDecision {
-    let slot = allocate_client_entry(limiter, client_id, now_ns);
-    if slot >= 0 && slot < limiter.entries.len {
+    let slot, found = security_internal::allocate_client_entry(limiter, client_id, now_ns);
+    if found && slot >= 0 && slot < limiter.entries.len {
         limiter.entries[slot].last_seen_ns = now_ns;
         let dec = gcra_check(limiter.config, limiter.entries[slot].cell, cost, now_ns);
-        record_client_admission(limiter, slot, dec);
+        security_internal::record_client_admission(limiter, slot, dec);
         return dec;
     }
 
     let dec = gcra_check(limiter.config, limiter.fallback_cell, cost, now_ns);
-    record_fallback_admission(limiter, dec);
+    security_internal::record_fallback_admission(limiter, dec);
     return dec;
 }
 
@@ -364,8 +142,8 @@ fn penalize_gateway_client(
     penalty_ns: u64,
     now_ns:     u64,
 ) {
-    let slot = allocate_client_entry(limiter, client_id, now_ns);
-    if slot >= 0 && slot < limiter.entries.len {
+    let slot, found = security_internal::allocate_client_entry(limiter, client_id, now_ns);
+    if found && slot >= 0 && slot < limiter.entries.len {
         limiter.entries[slot].last_seen_ns = now_ns;
         gcra_penalize(limiter.config, limiter.entries[slot].cell, penalty_ns, now_ns);
         return;
@@ -373,49 +151,32 @@ fn penalize_gateway_client(
     gcra_penalize(limiter.config, limiter.fallback_cell, penalty_ns, now_ns);
 }
 
-inline fn should_evict_client(entry: const GatewayClientEntry&, max_idle_ns: u64, now_ns: u64) -> bool {
-    guard entry.in_use else { return false; }
-    let idle_time = core::sub_sat_u64(now_ns, entry.last_seen_ns);
-    return idle_time > max_idle_ns && entry.cell.tat_ns <= now_ns;
-}
-
-inline fn deactivate_client_slot(entry: GatewayClientEntry&) {
-    entry.in_use = false;
-    entry.client_id.clear();
-}
-
-inline fn inc_evicted_count(cnt: i32&) {
-    cnt = (core::add_sat_u64(cnt as u64, 1)) as i32;
-}
-
 // Evicts idle entries exceeding max_idle_ns that have no pending TAT delay.
 fn evict_idle_gateway_clients(limiter: GatewayRateLimiter&, max_idle_ns: u64, now_ns: u64) -> i32 {
-    var evicted: i32 = 0;
-    let n = limiter.entries.len as i32;
-    for i in n {
-        if should_evict_client(limiter.entries[i], max_idle_ns, now_ns) {
-            deactivate_client_slot(limiter.entries[i]);
-            inc_evicted_count(evicted);
+    var evicted: i64 = 0;
+    for &entry in limiter.entries {
+        if security_internal::should_evict_client(entry, max_idle_ns, now_ns) {
+            security_internal::deactivate_client_slot(entry);
+            evicted = core::add_sat_i64(evicted, 1);
         }
     }
-    return evicted;
-}
-
-inline fn reset_entry_slot(entry: GatewayClientEntry&) {
-    entry.in_use = false;
-    entry.cell.tat_ns = 0;
-    entry.consecutive_rejects = 0;
-    entry.client_id.clear();
+    return evicted as i32;
 }
 
 // Resets all client entries and global counters in the gateway limiter.
 fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&) {
-    let n = limiter.entries.len as i32;
-    for i in n {
-        reset_entry_slot(limiter.entries[i]);
+    for &entry in limiter.entries {
+        security_internal::reset_entry_slot(entry);
     }
     limiter.entries.clear();
     limiter.fallback_cell.tat_ns = 0;
     limiter.total_allowed = 0;
     limiter.total_rejected = 0;
+}
+
+// Evaluates GCRA rate-limit allowance for `key` at `now_ns` (UFCS hook for `wire::RateLimitService`).
+fn allow_service_key(limiter: GatewayRateLimiter&, key: const u8[:], now_ns: u64) -> bool {
+    guard key.len > 0 && now_ns > 0 else { return true; }
+    let dec = check_gateway_rate_limit(limiter, key, 1, now_ns);
+    return dec.allowed;
 }

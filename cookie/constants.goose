@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Cookie enumerations and attribute parsing (RFC 6265bis, CHIPS).
-namespace wing;
+namespace cookie;
 
 import std;
 import core from "..";
@@ -10,7 +10,7 @@ import core from "..";
 // ---- same-site enumeration -------------------------------------------------
 
 // RFC 6265bis SameSite mode.
-enum CookieSameSite {
+enum SameSite {
     Default, // Lax with Lax-allowing-unsafe 2-minute window
     Lax,     // Permitted for top-level safe navigations (GET/HEAD)
     Strict,  // Only sent in same-site contexts
@@ -19,34 +19,34 @@ enum CookieSameSite {
 }
 
 // Canonical string representation of same_site_mode.
-fn same_site_to_string(same_site_mode: CookieSameSite) -> const u8[:] {
-    const for <N, V> in variants<CookieSameSite> {
-        let v: CookieSameSite = default<V>();
+fn cookie_internal::same_site_to_string(same_site_mode: cookie::SameSite) -> const u8[:] {
+    const for <N, V> in variants<cookie::SameSite> {
+        let v: cookie::SameSite = default<V>();
         if same_site_mode == v { return N; }
     }
     return "Unknown";
 }
 
 // Parses a SameSite attribute value case-insensitively (RFC 6265bis Section 5.4.7).
-// Returns CookieSameSite.Unknown for unrecognized values.
+// Returns SameSite.Unknown for unrecognized values.
 //
 // Example:
 //   raw_val = "Strict"
-//   returns: CookieSameSite.Strict
-fn parse_cookie_same_site(raw_val: const u8[:]) -> CookieSameSite {
-    const for <N, V> in variants<CookieSameSite> {
-        let v: CookieSameSite = default<V>();
-        if v != CookieSameSite.Unknown && v != CookieSameSite.Default && raw_val.eq_ascii_fold(N) {
+//   returns: SameSite.Strict
+fn parse_same_site(raw_val: const u8[:]) -> SameSite {
+    const for <N, V> in variants<SameSite> {
+        let v: SameSite = default<V>();
+        if v != SameSite.Unknown && v != SameSite.Default && raw_val.eq_ascii_fold(N) {
             return v;
         }
     }
-    return CookieSameSite.Unknown;
+    return SameSite.Unknown;
 }
 
 // ---- priority enumeration --------------------------------------------------
 
 // Eviction priority levels during garbage collection.
-enum CookiePriority {
+enum Priority {
     Low,
     Medium, // Default priority (COOKIE_PRIORITY_DEFAULT)
     High,
@@ -54,34 +54,34 @@ enum CookiePriority {
 }
 
 // Canonical string representation of priority_level.
-fn priority_to_string(priority_level: CookiePriority) -> const u8[:] {
-    const for <N, V> in variants<CookiePriority> {
-        let v: CookiePriority = default<V>();
+fn cookie_internal::priority_to_string(priority_level: cookie::Priority) -> const u8[:] {
+    const for <N, V> in variants<cookie::Priority> {
+        let v: cookie::Priority = default<V>();
         if priority_level == v { return N; }
     }
     return "Unknown";
 }
 
 // Parses a Priority attribute value case-insensitively.
-// Returns CookiePriority.Unknown for unrecognized values.
+// Returns Priority.Unknown for unrecognized values.
 //
 // Example:
 //   raw_val = "high"
-//   returns: CookiePriority.High
-fn parse_cookie_priority(raw_val: const u8[:]) -> CookiePriority {
-    const for <N, V> in variants<CookiePriority> {
-        let v: CookiePriority = default<V>();
-        if v != CookiePriority.Unknown && raw_val.eq_ascii_fold(N) {
+//   returns: Priority.High
+fn parse_priority(raw_val: const u8[:]) -> Priority {
+    const for <N, V> in variants<Priority> {
+        let v: Priority = default<V>();
+        if v != Priority.Unknown && raw_val.eq_ascii_fold(N) {
             return v;
         }
     }
-    return CookiePriority.Unknown;
+    return Priority.Unknown;
 }
 
 // ---- source scheme enumeration ---------------------------------------------
 
 // Source scheme for origin-bound cookies.
-enum CookieSourceScheme {
+enum SourceScheme {
     Unset,
     NonSecure,
     Secure,
@@ -89,9 +89,9 @@ enum CookieSourceScheme {
 }
 
 // Canonical string representation of source_scheme.
-fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
-    const for <N, V> in variants<CookieSourceScheme> {
-        let v: CookieSourceScheme = default<V>();
+fn cookie_internal::source_scheme_to_string(source_scheme: cookie::SourceScheme) -> const u8[:] {
+    const for <N, V> in variants<cookie::SourceScheme> {
+        let v: cookie::SourceScheme = default<V>();
         if source_scheme == v { return N; }
     }
     return "Unknown";
@@ -101,21 +101,21 @@ fn source_scheme_to_string(source_scheme: CookieSourceScheme) -> const u8[:] {
 //
 // Example:
 //   raw_val = "secure"
-//   returns: CookieSourceScheme.Secure
-fn parse_cookie_source_scheme(raw_val: const u8[:]) -> CookieSourceScheme {
-    const for <N, V> in variants<CookieSourceScheme> {
-        let v: CookieSourceScheme = default<V>();
-        if v != CookieSourceScheme.Unknown && raw_val.eq_ascii_fold(N) {
+//   returns: cookie::SourceScheme.Secure
+fn cookie_internal::parse_source_scheme(raw_val: const u8[:]) -> cookie::SourceScheme {
+    const for <N, V> in variants<cookie::SourceScheme> {
+        let v: cookie::SourceScheme = default<V>();
+        if v != cookie::SourceScheme.Unknown && raw_val.eq_ascii_fold(N) {
             return v;
         }
     }
-    return CookieSourceScheme.Unknown;
+    return cookie::SourceScheme.Unknown;
 }
 
 // ---- deletion cause enumeration --------------------------------------------
 
 // Deletion reason for persistence and notifications.
-enum CookieDeleteCause {
+enum DeleteCause {
     UNKNOWN,
     EXPIRED,
     OVERWRITE,

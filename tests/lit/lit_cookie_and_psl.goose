@@ -22,9 +22,9 @@ import wing from "../..";
 fn test_f001_ipv6_bracket_cross_component() {
     let now_us: i64 = 1700000000000000;
     let u_v6 = core::new_url("http://[::1]:8080/api/v1/login");
-    let sfc = wing::site_for_cookies_from_parsed_url(u_v6);
-    assert(wing::is_first_party(sfc, "http://[::1]:8080/api/v1/login", true));
-    assert(wing::is_trustworthy_non_crypto_host(core::hostname(u_v6)));
+    let sfc = cookie::site_for_cookies_from_parsed_url(u_v6);
+    assert(cookie::is_first_party(sfc, "http://[::1]:8080/api/v1/login", true));
+    assert(cookie::is_trustworthy_non_crypto_host(core::hostname(u_v6)));
 
     var session = wing::new_session();
     session.virtual_clock_us = now_us;
@@ -34,7 +34,7 @@ fn test_f001_ipv6_bracket_cross_component() {
         ..
     };
     let ss_eval = wing::compute_hop_samesite_context(ctx, u_v6, true);
-    assert(ss_eval.context_type == wing::SameSiteContextType.SameSiteStrict);
+    assert(ss_eval.context_type == cookie::SameSiteContextType.SameSiteStrict);
 
     var resp_hdrs = wing::HeaderMap { .. };
     wing::set_header(resp_hdrs, "Set-Cookie", "__Host-v6=tok_v6; Secure; Path=/; SameSite=Strict");
@@ -55,36 +55,36 @@ fn test_f002_psl_dafsa_redirect_isolation() {
 
     var chain: core::Url[..4] = [];
     chain.push(u_a);
-    let sfc_a = wing::site_for_cookies_from_parsed_url(u_a);
+    let sfc_a = cookie::site_for_cookies_from_parsed_url(u_a);
     let r_info = wing::compute_redirect_info(
         302, "GET", u_a, "https://tenant-b.onrender.com/finish", "",
         wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "", sfc_a,
-        wing::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT, chain[..], orig_a,
+        cookie::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT, chain[..], orig_a,
         wing::RedirectOptions { has_initiator: true, is_main_frame: true, .. },
     );
     assert(r_info.is_cross_site_tainted);
-    assert(wing::is_first_party(r_info.new_site_for_cookies, "https://tenant-b.onrender.com/finish", true));
+    assert(cookie::is_first_party(r_info.new_site_for_cookies, "https://tenant-b.onrender.com/finish", true));
     print("F002_PSL_REDIRECT_ISOLATION: OK");
 }
 
-// F003: Cross-component SameSite navigation context & can_set_canonical_cookie_for_context.
+// F003: Cross-component SameSite navigation context & can_set_for_context.
 fn test_f003_samesite_context_and_set_guard() {
     let now_us: i64 = 1700000000000000;
-    let c_strict, _, ok_s = wing::parse_canonical_set_cookie("s=1; SameSite=Strict; Secure; Path=/", "bank.com", "/", now_us);
+    let c_strict, _, ok_s = cookie::parse_canonical_set_cookie("s=1; SameSite=Strict; Secure; Path=/", "bank.com", "/", now_us);
     assert(ok_s);
-    let cross_ctx = wing::SameSiteCookieContext {
-        context_type:       wing::SameSiteContextType.CrossSite,
+    let cross_ctx = cookie::SameSiteCookieContext {
+        context_type:       cookie::SameSiteContextType.CrossSite,
         schemefully_same:   false,
         is_reload:          false,
         had_cross_site_hop: true,
     };
-    let can_set_cross_main, _ = wing::can_set_canonical_cookie_for_context(
-        c_strict, cross_ctx, wing::CookieInclusionOptions { is_main_frame: true, is_secure_channel: true },
+    let _, can_set_cross_main = cookie::can_set_for_context(
+        c_strict, cross_ctx, cookie::InclusionOptions { is_main_frame: true, is_secure_channel: true },
     );
     assert(!can_set_cross_main);
 
-    var jar = wing::CanonicalCookieJar { .. };
-    assert(wing::set_cookie_header(jar, "https://bank.com/", "lax_sid=secret2; SameSite=Lax; Secure; Path=/", now_us));
+    var jar = cookie::CanonicalCookieJar { .. };
+    assert(cookie::set_cookie_header(jar, "https://bank.com/", "lax_sid=secret2; SameSite=Lax; Secure; Path=/", now_us));
     let u_bank = core::new_url("https://bank.com/dashboard");
     var hdrs = wing::HeaderMap { .. };
     let _ = wing::stage_client_cookie_load(hdrs, u_bank, cross_ctx, true, "", true, now_us, jar, true);
@@ -94,22 +94,22 @@ fn test_f003_samesite_context_and_set_guard() {
     let ctx_nav = wing::RequestExecutionContext {
         initiator:          core::origin_from_url(u_evil),
         has_initiator:      true,
-        site_for_cookies:   wing::site_for_cookies_from_url("https://bank.com/"),
-        first_party_policy: wing::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
+        site_for_cookies:   cookie::site_for_cookies_from_url("https://bank.com/"),
+        first_party_policy: cookie::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
         is_main_frame:      true,
         ..
     };
     let nav_eval = wing::compute_hop_samesite_context(ctx_nav, u_bank, true);
-    assert(nav_eval.context_type == wing::SameSiteContextType.SameSiteLax);
+    assert(nav_eval.context_type == cookie::SameSiteContextType.SameSiteLax);
 
     let ctx_null_sfc = wing::RequestExecutionContext {
         is_main_frame:      true,
         had_cross_site_hop: true,
-        site_for_cookies:   wing::null_site_for_cookies(),
+        site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
     let null_eval = wing::compute_hop_samesite_context(ctx_null_sfc, u_bank, true);
-    assert(null_eval.context_type == wing::SameSiteContextType.CrossSite);
+    assert(null_eval.context_type == cookie::SameSiteContextType.CrossSite);
     print("F003_SAMESITE_CONTEXT_BOUNDARY: OK");
 }
 
@@ -120,18 +120,18 @@ fn test_f004_domain_attribute_edge_cases() {
     big_dom_hdr.append("sid=1; Domain=sub.");
     for i in 260 { big_dom_hdr.push('a'); }
     big_dom_hdr.append(".evil.com");
-    let _, _, ok_big_dom = wing::parse_canonical_set_cookie(big_dom_hdr[..], "example.com", "/", now_us);
+    let _, _, ok_big_dom = cookie::parse_canonical_set_cookie(big_dom_hdr[..], "example.com", "/", now_us);
     assert(!ok_big_dom);
 
     // Earlier valid Domain=example.com followed by empty Domain= must reset to host-only on sub.example.com
-    let c_multi, _, ok_multi = wing::parse_canonical_set_cookie(
+    let c_multi, _, ok_multi = cookie::parse_canonical_set_cookie(
         "sid=2; Domain=example.com; Domain=", "sub.example.com", "/", now_us,
     );
     assert(ok_multi && c_multi.host_only && c_multi.domain[..] == "sub.example.com");
     print("F004_DOMAIN_ATTR_EDGE: OK");
 }
 
-// F005: Long request URL paths (>256B) in compute_default_cookie_path, parse_canonical_cookie_url, and partition_key bounds.
+// F005: Long request URL paths (>256B) in compute_default_path, parse_canonical_cookie_url, and partition_key bounds.
 fn test_f005_long_url_path_and_partition_bounds() {
     let now_us: i64 = 1700000000000000;
     var long_url: u8[..600] = [];
@@ -141,16 +141,16 @@ fn test_f005_long_url_path_and_partition_bounds() {
 
     var def_path: u8[..256] = [];
     let u_parsed = core::new_url(long_url[..]);
-    wing::compute_default_cookie_path(core::pathname(u_parsed), def_path);
+    cookie::compute_default_path(core::pathname(u_parsed), def_path);
     assert(def_path[..] == "/api");
 
-    var jar = wing::CanonicalCookieJar { .. };
-    assert(wing::set_cookie_header(jar, long_url[..], "k_long=v_long; Path=/api", now_us));
-    assert(wing::get(jar, long_url[..], "k_long", now_us) == "v_long");
+    var jar = cookie::CanonicalCookieJar { .. };
+    assert(cookie::set_cookie_header(jar, long_url[..], "k_long=v_long; Path=/api", now_us));
+    assert(cookie::get(jar, long_url[..], "k_long", now_us) == "v_long");
 
     var huge_part: u8[..300] = [];
     for i in 280 { huge_part.push('k'); }
-    assert(!wing::set_cookie_header(jar, "https://example.com/", "p=1; Secure; Partitioned", now_us, huge_part[..]));
+    assert(!cookie::set_cookie_header(jar, "https://example.com/", "p=1; Secure; Partitioned", now_us, huge_part[..]));
     print("F005_LONG_PATH_AND_BOUNDS: OK");
 }
 
@@ -158,34 +158,34 @@ fn test_f005_long_url_path_and_partition_bounds() {
 fn test_f006_store_lifecycle_and_netscape_collision() {
     let t1: i64 = 1700000000000000;
     let t2: i64 = t1 + 500000000;
-    var jar1 = wing::CanonicalCookieJar { .. };
-    assert(wing::set_cookie_header(jar1, "https://example.com/", "c_old=1; Secure; Path=/", t1));
+    var jar1 = cookie::CanonicalCookieJar { .. };
+    assert(cookie::set_cookie_header(jar1, "https://example.com/", "c_old=1; Secure; Path=/", t1));
     var json_buf: u8[>..] = [];
-    wing::export_json(jar1, json_buf);
+    cookie::export_json(jar1, json_buf);
 
-    var jar2 = wing::CanonicalCookieJar { .. };
-    assert(wing::import_json(jar2, json_buf[..], t2) == 1);
+    var jar2 = cookie::CanonicalCookieJar { .. };
+    assert(cookie::import_json(jar2, json_buf[..], t2) == 1);
     assert(jar2.cookies[0].creation_utc == t1);
 
     // Netscape imported .example.com cookie must be overwritten/deleted by Set-Cookie on Domain=.example.com
-    var jar_ns = wing::CanonicalCookieJar { .. };
-    assert(wing::import_netscape(jar_ns, ".example.com\tTRUE\t/\tTRUE\t2147483647\tauth_token\told_val\n", t1) == 1);
-    assert(wing::set_cookie_header(jar_ns, "https://app.example.com/", "auth_token=new_val; Domain=.example.com; Path=/; Secure", t2));
+    var jar_ns = cookie::CanonicalCookieJar { .. };
+    assert(cookie::import_netscape(jar_ns, ".example.com\tTRUE\t/\tTRUE\t2147483647\tauth_token\told_val\n", t1) == 1);
+    assert(cookie::set_cookie_header(jar_ns, "https://app.example.com/", "auth_token=new_val; Domain=.example.com; Path=/; Secure", t2));
     assert(jar_ns.cookies.len == 1 && jar_ns.cookies[0].value[..] == "new_val");
 
-    var del_filter = wing::CookieDeletionInfo { .. };
+    var del_filter = cookie::DeletionInfo { .. };
     del_filter.domain.append("example.com");
-    assert(wing::delete_matching(jar_ns, del_filter) == 1);
+    assert(cookie::delete_matching(jar_ns, del_filter) == 1);
     print("F006_STORE_LIFECYCLE_AND_NETSCAPE: OK");
 }
 
 // F007: RFC 6265 §5.1.1 cookie-date hms-time trailing non-digits ('10:18:14GMT') and invalid day-of-month ('32 Jan 25').
 fn test_f007_rfc6265_cookie_date_edge_cases() {
-    let _, ok_gmt_suffix = wing::parse_cookie_date_us("Wed, 09 Jun 2021 10:18:14GMT");
+    let _, ok_gmt_suffix = cookie::parse_date_us("Wed, 09 Jun 2021 10:18:14GMT");
     assert(ok_gmt_suffix);
-    let _, ok_three_digit_hr = wing::parse_cookie_date_us("Wed, 09 Jun 2021 010:18:14 GMT");
+    let _, ok_three_digit_hr = cookie::parse_date_us("Wed, 09 Jun 2021 010:18:14 GMT");
     assert(!ok_three_digit_hr);
-    let _, ok_bad_dom_2yr = wing::parse_cookie_date_us("32 Jan 25 00:00:00 GMT");
+    let _, ok_bad_dom_2yr = cookie::parse_date_us("32 Jan 25 00:00:00 GMT");
     assert(!ok_bad_dom_2yr);
     print("F007_RFC6265_COOKIE_DATE: OK");
 }
@@ -220,7 +220,7 @@ fn run_01_rfc_repro_cookie_cross_component() {
 //
 
 fn run_02_rfc_repro_cookie_domain_gc_truncation() {
-    var jar = wing::CanonicalCookieJar { .. };
+    var jar = cookie::CanonicalCookieJar { .. };
     var now_us: i64 = 1700000000000000;
 
     // 1. Insert 175 Host-Only cookies with older access times
@@ -228,7 +228,7 @@ fn run_02_rfc_repro_cookie_domain_gc_truncation() {
         var h: u8[..64] = [];
         format(h, "host_", i, "=1; Priority=Low");
         now_us += 10;
-        let ok = wing::set_cookie_header(jar, "http://example.com/", h[..], now_us);
+        let ok = cookie::set_cookie_header(jar, "http://example.com/", h[..], now_us);
         assert(ok);
     }
 
@@ -237,7 +237,7 @@ fn run_02_rfc_repro_cookie_domain_gc_truncation() {
         var h: u8[..64] = [];
         format(h, "dom_", i, "=1; Domain=example.com; Priority=Low");
         now_us += 100000000;
-        let ok = wing::set_cookie_header(jar, "http://example.com/", h[..], now_us);
+        let ok = cookie::set_cookie_header(jar, "http://example.com/", h[..], now_us);
         assert(ok);
     }
 
@@ -251,42 +251,42 @@ fn run_02_rfc_repro_cookie_domain_gc_truncation() {
     }
 
     // COOKIERL-01: Relaxed RFC 6265 §5.1.1 / Erratum 4148 date token suffixes and Sept prefix
-    let ts_rel1, ok_rel1 = wing::parse_cookie_date_us("Thu, 23rd-Sept-2026Z 10:18:14UTC");
+    let ts_rel1, ok_rel1 = cookie::parse_date_us("Thu, 23rd-Sept-2026Z 10:18:14UTC");
     assert(ok_rel1 && ts_rel1 > 0);
-    let ts_rel2, ok_rel2 = wing::parse_cookie_date_us("Wed, 09-Jun-026 10:18:14 GMT");
+    let ts_rel2, ok_rel2 = cookie::parse_date_us("Wed, 09-Jun-026 10:18:14 GMT");
     assert(ok_rel2 && ts_rel2 > 0);
 
     // COOKIERL-02 & COOKIERL-06: ServerCookieDeltaJar, make_removal, and percent encode/decode
-    var djar = wing::ServerCookieDeltaJar { .. };
-    var orig_c = wing::new_canonical_cookie("sid", "old_val");
-    orig_c = wing::with_value(orig_c, "old_val2");
-    orig_c = wing::with_partition_key(orig_c, "https://example.com");
-    orig_c = wing::with_source(orig_c, wing::CookieSourceScheme.Secure, 443);
-    assert(wing::add_original(djar, orig_c));
-    var add_c = wing::new_canonical_cookie("theme", "dark");
-    assert(wing::add(djar, add_c));
-    assert(wing::remove(djar, orig_c));
+    var djar = cookie::ServerCookieDeltaJar { .. };
+    var orig_c = cookie::new_canonical_cookie("sid", "old_val");
+    orig_c = cookie::with_value(orig_c, "old_val2");
+    orig_c = cookie::with_partition_key(orig_c, "https://example.com");
+    orig_c = cookie::with_source(orig_c, cookie::SourceScheme.Secure, 443);
+    assert(cookie::add_original(djar, orig_c));
+    var add_c = cookie::new_canonical_cookie("theme", "dark");
+    assert(cookie::add(djar, add_c));
+    assert(cookie::remove(djar, orig_c));
     var rem_fmt: u8[..256] = [];
-    wing::format(rem_fmt, djar.cookies[0]);
+    cookie::format(djar.cookies[0], rem_fmt);
     assert(core::ends_with(rem_fmt[..], "; Max-Age=0"));
-    assert(wing::remove(djar, add_c));
+    assert(cookie::remove(djar, add_c));
 
     var enc_buf: u8[..4096] = [];
     var dec_buf: u8[..4096] = [];
-    assert(wing::encode_cookie_percent("a b;c%d", enc_buf));
+    assert(cookie::encode_percent("a b;c%d", enc_buf));
     assert(enc_buf[..] == "a%20b%3Bc%25d");
-    assert(wing::decode_cookie_percent(enc_buf[..], dec_buf));
+    assert(cookie::decode_percent(enc_buf[..], dec_buf));
     assert(dec_buf[..] == "a b;c%d");
 
     // COOKIERL-03 & COOKIERL-04: Punycode normalization & is_known_public_suffix
     var ace_dom: u8[..256] = [];
     assert(core::punycode_encode_domain("Example.\xE4\xB8\xAD\xE5\x9B\xBD", ace_dom));
     assert(ace_dom[..] == "example.xn--fiqs8s");
-    var psl_db = wing::new_psl_database();
-    wing::add_psl_rule(psl_db, "custom.tld", wing::PslRuleType.Normal, wing::PslSection.Icann);
-    assert(wing::is_known_public_suffix(psl_db, "custom.tld"));
-    assert(wing::is_known_public_suffix(psl_db, "co.uk"));
-    assert(!wing::is_known_public_suffix(psl_db, "intranet"));
+    var psl_db = cookie::new_psl_database();
+    cookie::add_rule(psl_db, "custom.tld", cookie::PslRuleType.Normal, cookie::PslSection.Icann);
+    assert(cookie::is_known_public_suffix(psl_db, "custom.tld"));
+    assert(cookie::is_known_public_suffix(psl_db, "co.uk"));
+    assert(!cookie::is_known_public_suffix(psl_db, "intranet"));
 
     print("REMAINING_DOMAIN_COOKIES: ", remaining_domain_cookies, "\n");
 }
@@ -306,31 +306,31 @@ fn run_03_rfc_repro_cookie_edge() {
     let now_us: i64 = 1700000000000000;
 
     // 1. SameSite and Priority enum fallback (Rule 15: Unknown on invalid values)
-    let ss_invalid = wing::parse_cookie_same_site("invalid_samesite");
-    print("SS_INVALID: ", ss_invalid == wing::CookieSameSite.Unknown, "\n");
-    let prio_invalid = wing::parse_cookie_priority("invalid_priority");
-    print("PRIO_INVALID: ", prio_invalid == wing::CookiePriority.Unknown, "\n");
+    let ss_invalid = cookie::parse_same_site("invalid_samesite");
+    print("SS_INVALID: ", ss_invalid == cookie::SameSite.Unknown, "\n");
+    let prio_invalid = cookie::parse_priority("invalid_priority");
+    print("PRIO_INVALID: ", prio_invalid == cookie::Priority.Unknown, "\n");
 
     // 2. Capacity safety in with_domain, with_path, with_partition_key
-    var c = wing::new_canonical_cookie("sid", "val");
+    var c = cookie::new_canonical_cookie("sid", "val");
     var huge_path: u8[..300] = [];
     for i in 280 { huge_path.push('x'); }
     c.with_path(huge_path[..]);
     print("HUGE_PATH_SAFE: ", c.path[..] == "/", "\n");
 
     // 3. Calendar date validation: year > 9999 rejected
-    let _, date_valid_ok = wing::parse_cookie_date_us("Wed, 09 Jun 2021 10:18:14 GMT");
+    let _, date_valid_ok = cookie::parse_date_us("Wed, 09 Jun 2021 10:18:14 GMT");
     print("DATE_VALID: ", date_valid_ok, "\n");
-    let _, date_huge_yr_ok = wing::parse_cookie_date_us("Wed, 09 Jun 99999 10:18:14 GMT");
+    let _, date_huge_yr_ok = cookie::parse_date_us("Wed, 09 Jun 99999 10:18:14 GMT");
     print("DATE_HUGE_YR: ", date_huge_yr_ok, "\n");
 
     // 4. URL parsing bounds safety on long path
-    let url_long = wing::parse_canonical_cookie_url("https://example.com/api/test");
+    let url_long = cookie::parse_canonical_cookie_url("https://example.com/api/test");
     print("URL_HOST: ", url_long.host[..], "\n");
     print("URL_PATH: ", url_long.path[..], "\n");
 
     // 5. Saturating max-age calculation
-    var c_max = wing::new_canonical_cookie("tok", "123");
+    var c_max = cookie::new_canonical_cookie("tok", "123");
     c_max.with_max_age_seconds(999999999, now_us);
     print("CAPPED_PERSISTENT: ", c_max.persistent, "\n");
     print("EXPIRES_GREATER: ", c_max.expires_utc > now_us, "\n");
@@ -359,15 +359,15 @@ fn run_03_rfc_repro_cookie_edge() {
 fn run_04_rfc_repro_semantic_cookie_max_age() {
     let now_us: i64 = 1700000000000000;
 
-    var c_zero = wing::new_canonical_cookie("session", "abc");
+    var c_zero = cookie::new_canonical_cookie("session", "abc");
     c_zero.with_max_age_seconds(0, now_us);
     print("MAX_AGE_ZERO: ", c_zero.expires_utc, "\n");
 
-    var c_neg = wing::new_canonical_cookie("session", "abc");
+    var c_neg = cookie::new_canonical_cookie("session", "abc");
     c_neg.with_max_age_seconds(-60, now_us);
     print("MAX_AGE_NEG: ", c_neg.expires_utc, "\n");
 
-    var c_pos = wing::new_canonical_cookie("session", "abc");
+    var c_pos = cookie::new_canonical_cookie("session", "abc");
     c_pos.with_max_age_seconds(3600, now_us);
     print("MAX_AGE_POS_DELTA: ", c_pos.expires_utc - now_us, "\n");
 }
@@ -386,10 +386,10 @@ fn run_04_rfc_repro_semantic_cookie_max_age() {
 //
 
 fn test_chips_auto_partition_key() {
-    var jar = wing::CanonicalCookieJar { .. };
+    var jar = cookie::CanonicalCookieJar { .. };
     let now_us: i64 = 1700000000000000;
     // Partitioned cookie with no explicit partition_key passed
-    let ok = wing::set_cookie_header(jar, "https://auth.example.com/api", "sid=chips123; Path=/; Secure; Partitioned", now_us);
+    let ok = cookie::set_cookie_header(jar, "https://auth.example.com/api", "sid=chips123; Path=/; Secure; Partitioned", now_us);
     assert(ok);
     assert(jar.cookies.len == 1);
     assert(jar.cookies[0].partitioned);
@@ -399,17 +399,17 @@ fn test_chips_auto_partition_key() {
 }
 
 fn test_host_cookie_roundtrip() {
-    var jar1 = wing::CanonicalCookieJar { .. };
+    var jar1 = cookie::CanonicalCookieJar { .. };
     let now_us: i64 = 1700000000000000;
-    let ok = wing::set_cookie_header(jar1, "https://example.com/", "__Host-auth=token999; Path=/; Secure; HttpOnly", now_us);
+    let ok = cookie::set_cookie_header(jar1, "https://example.com/", "__Host-auth=token999; Path=/; Secure; HttpOnly", now_us);
     assert(ok);
     assert(jar1.cookies.len == 1);
 
     var json_buf: u8[>..] = [];
-    wing::export_json(jar1, json_buf);
+    cookie::export_json(jar1, json_buf);
 
-    var jar2 = wing::CanonicalCookieJar { .. };
-    let imported = wing::import_json(jar2, json_buf[..], now_us);
+    var jar2 = cookie::CanonicalCookieJar { .. };
+    let imported = cookie::import_json(jar2, json_buf[..], now_us);
     assert(imported == 1);
     assert(jar2.cookies.len == 1);
     assert(jar2.cookies[0].name[..] == "__Host-auth");
@@ -417,17 +417,17 @@ fn test_host_cookie_roundtrip() {
 }
 
 fn test_writeback_batcher_size() {
-    var batcher = wing::new_write_back_batcher(1000);
+    var batcher = cookie::new_write_back_batcher(1000);
     assert(batcher.max_batch_size <= batcher.ops.cap);
     print("CHECK_BATCHER_SIZE: OK");
 }
 
 fn test_global_gc_secure_medium() {
-    var jar = wing::CanonicalCookieJar { .. };
+    var jar = cookie::CanonicalCookieJar { .. };
     let now_us: i64 = 1700000000000000;
     // Set 3305 secure medium cookies (all accessed recently)
     for i in 3305 {
-        var c = wing::CanonicalCookie { .. };
+        var c = cookie::CanonicalCookie { .. };
         var n_buf: u8[..64] = [];
         n_buf.append("c_");
         format(n_buf, i);
@@ -436,23 +436,23 @@ fn test_global_gc_secure_medium() {
         c.domain.append("example.com");
         c.path.append("/");
         c.secure = true;
-        c.priority = wing::CookiePriority.Medium;
+        c.priority = cookie::Priority.Medium;
         c.last_access_utc = now_us - (i * 1000);
         c.creation_utc = now_us - (i * 1000);
         c.creation_seq = i;
         jar.cookies.push(c);
     }
     assert(jar.cookies.len == 3305);
-    let evicted = wing::garbage_collect_global(jar, now_us);
+    let evicted = cookie::garbage_collect_global(jar, now_us);
     assert(evicted >= 5);
     assert(jar.cookies.len <= jar.target_cookies_global);
     print("CHECK_GLOBAL_GC: OK");
 }
 
 fn test_format_cookie_header_bounds() {
-    var cookies: wing::CanonicalCookie[..4] = [];
+    var cookies: cookie::CanonicalCookie[..4] = [];
     for i in 4 {
-        var c = wing::CanonicalCookie { .. };
+        var c = cookie::CanonicalCookie { .. };
         c.name.append("key");
         // Each cookie value is 800 bytes -> 4 * 800 > 3000 bytes
         for j in 800 { c.value.push('x'); }
@@ -460,16 +460,16 @@ fn test_format_cookie_header_bounds() {
     }
     // Destination buffer is only 2048 bytes
     var out_buf: u8[..2048] = [];
-    wing::format_cookie_header_value(out_buf, cookies[..]);
+    cookie::format_cookie_header_value(cookies[..], out_buf);
     assert(out_buf.len <= out_buf.cap);
     assert(out_buf.len > 0);
     print("CHECK_COOKIE_HEADER_BOUNDS: OK");
 }
 
 fn test_dafsa_psl_cross_site() {
-    assert(!wing::is_schemeful_same_site("https", "a.onrender.com", "https", "b.onrender.com"));
-    assert(!wing::is_schemeful_same_site("https", "foo.github.io", "https", "bar.github.io"));
-    assert(wing::is_schemeful_same_site("https", "sub1.example.com", "https", "sub2.example.com"));
+    assert(!cookie::is_schemeful_same_site("https", "a.onrender.com", "https", "b.onrender.com"));
+    assert(!cookie::is_schemeful_same_site("https", "foo.github.io", "https", "bar.github.io"));
+    assert(cookie::is_schemeful_same_site("https", "sub1.example.com", "https", "sub2.example.com"));
     print("CHECK_DAFSA_PSL: OK");
 }
 

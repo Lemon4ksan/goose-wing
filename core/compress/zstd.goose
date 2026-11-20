@@ -304,10 +304,30 @@ struct FseEntry {
     extra_bits: u8  = 0,
 }
 
+const ZSTD_TBL_UNSET:   u8 = 0;
+const ZSTD_TBL_DEFAULT: u8 = 1;
+const ZSTD_TBL_RLE:     u8 = 2;
+const ZSTD_TBL_CUSTOM:  u8 = 3;
+
 struct FseTable {
     entries:    FseEntry[512] = [FseEntry {}; 512],
     table_log:  i32           = 0,
     is_defined: bool          = false,
+}
+
+root struct ZstdEntropyState {
+    rep:        u32[3]        = [1, 4, 8],
+    ll_kind:    u8            = 0,
+    of_kind:    u8            = 0,
+    ml_kind:    u8            = 0,
+    huf_loaded: bool          = false,
+    rle_ll:     FseEntry[1]   = [FseEntry {}; 1],
+    rle_of:     FseEntry[1]   = [FseEntry {}; 1],
+    rle_ml:     FseEntry[1]   = [FseEntry {}; 1],
+    huf_tabs:   HufTable[>..] = [],
+    ll_tabs:    FseTable[>..] = [],
+    of_tabs:    FseTable[>..] = [],
+    ml_tabs:    FseTable[>..] = [],
 }
 
 struct HufWeightEntry {
@@ -488,22 +508,6 @@ const DEFAULT_ML_ENTRIES: FseEntry[64] = [
     FseEntry { base_val: 2051, new_state: 0, nb_bits: 6, extra_bits: 11 },
     FseEntry { base_val: 1027, new_state: 0, nb_bits: 6, extra_bits: 10 },
 ];
-inline fn fse_init_default_ll(out_table: FseTable&) {
-    out_table.table_log = 6;
-    out_table.is_defined = true;
-    for i in 64 { out_table.entries[i] = DEFAULT_LL_ENTRIES[i]; }
-}
-inline fn fse_init_default_of(out_table: FseTable&) {
-    out_table.table_log = 5;
-    out_table.is_defined = true;
-    for i in 32 { out_table.entries[i] = DEFAULT_OF_ENTRIES[i]; }
-}
-inline fn fse_init_default_ml(out_table: FseTable&) {
-    out_table.table_log = 6;
-    out_table.is_defined = true;
-    for i in 64 { out_table.entries[i] = DEFAULT_ML_ENTRIES[i]; }
-}
-
 inline fn next_fse_pos(pos: i32, step: i32, mask: i32, high_threshold: i32) -> i32 {
     var p = (pos + step) & mask;
     while p > high_threshold {
@@ -1501,7 +1505,7 @@ fn decode_literals(
     offset:         i64&,
     block_end:      i64,
     lit_buf:        u8[>..]&,
-    huf_table:      HufTable&,
+    state:          ZstdEntropyState&,
     block_max_size: i64 = ZSTD_BLOCKSIZE_MAX,
 ) -> DecodedLiterals {
     guard offset < block_end else { return DecodedLiterals { ok: false }; }
@@ -1538,7 +1542,7 @@ fn decode_literals(
         return DecodedLiterals { ok: true, slice: lit_buf[..] };
     }
 
-    if lit_type == 3 && !huf_table.is_defined {
+    if lit_type == 3 && (!state.huf_loaded || state.huf_tabs.len == 0 || !state.huf_tabs[0].is_defined) {
         return DecodedLiterals { ok: false };
     }
 
@@ -1558,10 +1562,14 @@ fn decode_literals(
     guard offset + compressed_size <= block_end else { return DecodedLiterals { ok: false }; }
     let c_end = offset + compressed_size;
 
+    if state.huf_tabs.len == 0 {
+        state.huf_tabs.push(HufTable {});
+    }
     if lit_type == 2 {
-        guard huf_read_table(src[..c_end], offset, huf_table) && offset < c_end else {
+        guard huf_read_table(src[..c_end], offset, state.huf_tabs[0]) && offset < c_end else {
             return DecodedLiterals { ok: false };
         }
+        state.huf_loaded = true;
     }
 
     if lit_buf.len < regenerated_size {
@@ -1571,11 +1579,11 @@ fn decode_literals(
     if single_stream {
         let stream_slice = src[offset..c_end];
         var r = new_zstd_bit_reader(stream_slice);
-        guard huf_decode_stream_slice(r, huf_table, lit_buf[0..regenerated_size]) else {
+        guard huf_decode_stream_slice(r, state.huf_tabs[0], lit_buf[0..regenerated_size]) else {
             return DecodedLiterals { ok: false };
         }
     } else {
-        guard decode_huf_4streams_literals(src, offset, c_end, regenerated_size, lit_buf, huf_table) else {
+        guard decode_huf_4streams_literals(src, offset, c_end, regenerated_size, lit_buf, state.huf_tabs[0]) else {
             return DecodedLiterals { ok: false };
         }
     }
@@ -1791,26 +1799,36 @@ fn decode_fast_seq_params(
     let of_eb = of_entry.extra_bits as u32;
     let ml_eb = ml_entry.extra_bits as u32;
     let ll_eb = ll_entry.extra_bits as u32;
+    let total_eb = add_sat_u32(of_eb, add_sat_u32(ml_eb, ll_eb));
+    if add_sat_u32(bits_consumed, total_eb) > 64 {
+        refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+    }
 
     var of_extra: u32 = 0;
     var ml_extra: u32 = 0;
     var ll_extra: u32 = 0;
 
     if of_eb > 0 {
-        refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
-        guard add_sat_u32(bits_consumed, of_eb) <= 64 else { return 0, 0, 0, false; }
+        if add_sat_u32(bits_consumed, of_eb) > 64 {
+            refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+            guard add_sat_u32(bits_consumed, of_eb) <= 64 else { return 0, 0, 0, false; }
+        }
         of_extra = zstd_extract_bits(bit_container, bits_consumed, of_eb);
         bits_consumed = add_sat_u32(bits_consumed, of_eb);
     }
     if ml_eb > 0 {
-        refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
-        guard add_sat_u32(bits_consumed, ml_eb) <= 64 else { return 0, 0, 0, false; }
+        if add_sat_u32(bits_consumed, ml_eb) > 64 {
+            refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+            guard add_sat_u32(bits_consumed, ml_eb) <= 64 else { return 0, 0, 0, false; }
+        }
         ml_extra = zstd_extract_bits(bit_container, bits_consumed, ml_eb);
         bits_consumed = add_sat_u32(bits_consumed, ml_eb);
     }
     if ll_eb > 0 {
-        refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
-        guard add_sat_u32(bits_consumed, ll_eb) <= 64 else { return 0, 0, 0, false; }
+        if add_sat_u32(bits_consumed, ll_eb) > 64 {
+            refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
+            guard add_sat_u32(bits_consumed, ll_eb) <= 64 else { return 0, 0, 0, false; }
+        }
         ll_extra = zstd_extract_bits(bit_container, bits_consumed, ll_eb);
         bits_consumed = add_sat_u32(bits_consumed, ll_eb);
     }
@@ -1940,166 +1958,201 @@ struct SeqExecCtx {
     dict_content:     const u8[:] = "",
 }
 
-// Builds or updates literal lengths FSE table from src and advances offset.
-// Leaves `offset` unchanged when returning `false`.
+// Configures literal-length sequence state for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
+// Leaves `offset` unchanged on error.
 //
 // Example:
-//   src = [0x00], offset = 0, block_end = 1, ll_mode = 0
-//   returns: true, offset = 0
-fn build_sequence_ll_table(
+//   src = [0x01], offset = 0, block_end = 1, ll_mode = 1
+//   returns: true, offset = 1
+fn build_sequence_ll_state(
     src:       const u8[:],
     offset:    i64&,
     block_end: i64,
     ll_mode:   i32,
-    ll_table:  FseTable&,
+    state:     ZstdEntropyState&,
 ) -> bool {
     if ll_mode == 0 {
-        fse_init_default_ll(ll_table);
-    } else if ll_mode == 1 {
+        state.ll_kind = ZSTD_TBL_DEFAULT;
+        return true;
+    }
+    if ll_mode == 1 {
         guard offset < block_end else { return false; }
         let sym = src[offset];
         guard sym <= 35 else { return false; }
         offset++;
         let idx = sym as i64;
-        ll_table.table_log = 0;
-        ll_table.is_defined = true;
-        ll_table.entries[0] = FseEntry {
+        state.rle_ll[0] = FseEntry {
             base_val:   LL_BASE[idx],
             new_state:  0,
             nb_bits:    0,
             extra_bits: LL_EXTRA_BITS[idx],
         };
-    } else if ll_mode == 2 {
+        state.ll_kind = ZSTD_TBL_RLE;
+        return true;
+    }
+    if ll_mode == 2 {
         var counts:    i16[256] = [0; 256];
         var max_sym:   i32      = 0;
         var table_log: i32      = 0;
         let saved_offset = offset;
         guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
+            offset = saved_offset;
             return false;
         }
         guard offset <= block_end && max_sym <= 35 && table_log <= 9 else {
             offset = saved_offset;
             return false;
         }
-        guard fse_build_dtable(counts[..], max_sym, table_log, ll_table, 1) else {
+        if state.ll_tabs.len == 0 { state.ll_tabs.push(FseTable {}); }
+        guard fse_build_dtable(counts[..], max_sym, table_log, state.ll_tabs[0], 1) else {
             offset = saved_offset;
             return false;
         }
-    } else {
-        guard ll_table.is_defined else { return false; }
+        state.ll_kind = ZSTD_TBL_CUSTOM;
+        return true;
     }
-    return true;
+    return state.ll_kind != ZSTD_TBL_UNSET;
 }
 
-// Builds or updates offset FSE table from src and advances offset.
-// Leaves `offset` unchanged when returning `false`.
+// Configures offset sequence state for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
+// Leaves `offset` unchanged on error.
 //
 // Example:
-//   src = [0x00], offset = 0, block_end = 1, of_mode = 0
-//   returns: true, offset = 0
-fn build_sequence_of_table(
+//   src = [0x01], offset = 0, block_end = 1, of_mode = 1
+//   returns: true, offset = 1
+fn build_sequence_of_state(
     src:       const u8[:],
     offset:    i64&,
     block_end: i64,
     of_mode:   i32,
-    of_table:  FseTable&,
+    state:     ZstdEntropyState&,
 ) -> bool {
     if of_mode == 0 {
-        fse_init_default_of(of_table);
-    } else if of_mode == 1 {
+        state.of_kind = ZSTD_TBL_DEFAULT;
+        return true;
+    }
+    if of_mode == 1 {
         guard offset < block_end else { return false; }
         let sym = src[offset];
         guard sym <= 31 else { return false; }
         offset++;
         let sc = sym as u32;
-        of_table.table_log = 0;
-        of_table.is_defined = true;
-        of_table.entries[0] = FseEntry {
+        state.rle_of[0] = FseEntry {
             base_val:   (1 as u32) << sc,
             new_state:  0,
             nb_bits:    0,
             extra_bits: sc as u8,
         };
-    } else if of_mode == 2 {
+        state.of_kind = ZSTD_TBL_RLE;
+        return true;
+    }
+    if of_mode == 2 {
         var counts:    i16[256] = [0; 256];
         var max_sym:   i32      = 0;
         var table_log: i32      = 0;
         let saved_offset = offset;
         guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
+            offset = saved_offset;
             return false;
         }
         guard offset <= block_end && max_sym <= 31 && table_log <= 8 else {
             offset = saved_offset;
             return false;
         }
-        guard fse_build_dtable(counts[..], max_sym, table_log, of_table, 2) else {
+        if state.of_tabs.len == 0 { state.of_tabs.push(FseTable {}); }
+        guard fse_build_dtable(counts[..], max_sym, table_log, state.of_tabs[0], 2) else {
             offset = saved_offset;
             return false;
         }
-    } else {
-        guard of_table.is_defined else { return false; }
+        state.of_kind = ZSTD_TBL_CUSTOM;
+        return true;
     }
-    return true;
+    return state.of_kind != ZSTD_TBL_UNSET;
 }
 
-// Builds or updates match lengths FSE table from src and advances offset.
-// Leaves `offset` unchanged when returning `false`.
+// Configures match-length sequence state for mode 0..3 (RFC 8878 §3.1.1.3.2.1.1).
+// Leaves `offset` unchanged on error.
 //
 // Example:
-//   src = [0x00], offset = 0, block_end = 1, ml_mode = 0
-//   returns: true, offset = 0
-fn build_sequence_ml_table(
+//   src = [0x01], offset = 0, block_end = 1, ml_mode = 1
+//   returns: true, offset = 1
+fn build_sequence_ml_state(
     src:       const u8[:],
     offset:    i64&,
     block_end: i64,
     ml_mode:   i32,
-    ml_table:  FseTable&,
+    state:     ZstdEntropyState&,
 ) -> bool {
     if ml_mode == 0 {
-        fse_init_default_ml(ml_table);
-    } else if ml_mode == 1 {
+        state.ml_kind = ZSTD_TBL_DEFAULT;
+        return true;
+    }
+    if ml_mode == 1 {
         guard offset < block_end else { return false; }
         let sym = src[offset];
         guard sym <= 52 else { return false; }
         offset++;
         let idx = sym as i64;
-        ml_table.table_log = 0;
-        ml_table.is_defined = true;
-        ml_table.entries[0] = FseEntry {
+        state.rle_ml[0] = FseEntry {
             base_val:   ML_BASE[idx],
             new_state:  0,
             nb_bits:    0,
             extra_bits: ML_EXTRA_BITS[idx],
         };
-    } else if ml_mode == 2 {
+        state.ml_kind = ZSTD_TBL_RLE;
+        return true;
+    }
+    if ml_mode == 2 {
         var counts:    i16[256] = [0; 256];
         var max_sym:   i32      = 0;
         var table_log: i32      = 0;
         let saved_offset = offset;
         guard fse_read_ncount(src[..block_end], offset, counts[..], max_sym, table_log) else {
+            offset = saved_offset;
             return false;
         }
         guard offset <= block_end && max_sym <= 52 && table_log <= 9 else {
             offset = saved_offset;
             return false;
         }
-        guard fse_build_dtable(counts[..], max_sym, table_log, ml_table, 3) else {
+        if state.ml_tabs.len == 0 { state.ml_tabs.push(FseTable {}); }
+        guard fse_build_dtable(counts[..], max_sym, table_log, state.ml_tabs[0], 3) else {
             offset = saved_offset;
             return false;
         }
-    } else {
-        guard ml_table.is_defined else { return false; }
+        state.ml_kind = ZSTD_TBL_CUSTOM;
+        return true;
     }
-    return true;
+    return state.ml_kind != ZSTD_TBL_UNSET;
+}
+
+inline fn resolve_seq_table_view(
+    kind:       u8,
+    def_slices: const FseEntry[:],
+    def_log:    i32,
+    rle_slice:  const FseEntry[:],
+    customs:    const FseTable[:],
+) -> const FseEntry[:], i32, i64 {
+    if kind == ZSTD_TBL_DEFAULT {
+        return def_slices, def_log, ((1 as i64) << (def_log as u32)) - 1;
+    }
+    if kind == ZSTD_TBL_RLE {
+        return rle_slice, 0, 0;
+    }
+    let tl = customs[0].table_log;
+    return customs[0].entries[..], tl, ((1 as i64) << (tl as u32)) - 1;
 }
 
 fn decode_fast_seq_pair<B>(
     seq_bitstream: const u8[:],
     seq_i:         i64,
     nb_seq:        i64,
-    ll_table:      const FseTable&,
-    ml_table:      const FseTable&,
-    of_table:      const FseTable&,
+    ll_entries:    const FseEntry[:],
+    ll_mask:       i64,
+    ml_entries:    const FseEntry[:],
+    ml_mask:       i64,
+    of_entries:    const FseEntry[:],
+    of_mask:       i64,
     of_entry:      FseEntry&,
     ml_entry:      FseEntry&,
     ll_entry:      FseEntry&,
@@ -2129,9 +2182,9 @@ fn decode_fast_seq_pair<B>(
     ) else {
         return CompressError.CorruptedBitstream;
     }
-    of_entry = of_table.entries[state_of & 511];
-    ml_entry = ml_table.entries[state_ml & 511];
-    ll_entry = ll_table.entries[state_ll & 511];
+    of_entry = of_entries[state_of & of_mask];
+    ml_entry = ml_entries[state_ml & ml_mask];
+    ll_entry = ll_entries[state_ll & ll_mask];
 
     let err_A = execute_single_sequence(
         lit_A, mat_A, off_val_A, ctx.lit_buf, lit_ptr, out_buf,
@@ -2154,9 +2207,9 @@ fn decode_fast_seq_pair<B>(
         ) else {
             return CompressError.CorruptedBitstream;
         }
-        of_entry = of_table.entries[state_of & 511];
-        ml_entry = ml_table.entries[state_ml & 511];
-        ll_entry = ll_table.entries[state_ll & 511];
+        of_entry = of_entries[state_of & of_mask];
+        ml_entry = ml_entries[state_ml & ml_mask];
+        ll_entry = ll_entries[state_ll & ll_mask];
     }
 
     return execute_single_sequence(
@@ -2174,9 +2227,15 @@ fn decode_fast_seq_pair<B>(
 fn decode_fast_sequence_streams<B>(
     seq_bitstream: const u8[:],
     nb_seq:        i64,
-    ll_table:      const FseTable&,
-    ml_table:      const FseTable&,
-    of_table:      const FseTable&,
+    ll_entries:    const FseEntry[:],
+    ll_log:        i32,
+    ll_mask:       i64,
+    ml_entries:    const FseEntry[:],
+    ml_log:        i32,
+    ml_mask:       i64,
+    of_entries:    const FseEntry[:],
+    of_log:        i32,
+    of_mask:       i64,
     state_ll:      i64&,
     state_ml:      i64&,
     state_of:      i64&,
@@ -2190,14 +2249,15 @@ fn decode_fast_sequence_streams<B>(
     rep1:          u32&,
     rep2:          u32&,
 ) -> CompressError {
-    var of_entry = of_table.entries[state_of & 511];
-    var ml_entry = ml_table.entries[state_ml & 511];
-    var ll_entry = ll_table.entries[state_ll & 511];
+    var of_entry = of_entries[state_of & of_mask];
+    var ml_entry = ml_entries[state_ml & ml_mask];
+    var ll_entry = ll_entries[state_ll & ll_mask];
 
     var seq_i: i64 = 0;
     while seq_i + 1 < nb_seq {
         let err = decode_fast_seq_pair(
-            seq_bitstream, seq_i, nb_seq, ll_table, ml_table, of_table,
+            seq_bitstream, seq_i, nb_seq,
+            ll_entries, ll_mask, ml_entries, ml_mask, of_entries, of_mask,
             of_entry, ml_entry, ll_entry, state_ll, state_ml, state_of,
             ptr, bit_container, bits_consumed, ctx, lit_ptr, out_buf,
             rep0, rep1, rep2,
@@ -2223,7 +2283,7 @@ fn decode_fast_sequence_streams<B>(
 
     refill_huf_stream_container(seq_bitstream, ptr, bits_consumed, bit_container);
     guard bits_consumed <= 64 else { return CompressError.CorruptedBitstream; }
-    if (ll_table.table_log | of_table.table_log | ml_table.table_log) != 0 {
+    if (ll_log | of_log | ml_log) != 0 {
         guard ptr == 0 && bits_consumed == 64 else { return CompressError.CorruptedBitstream; }
     }
     return CompressError.None;
@@ -2235,24 +2295,30 @@ fn decode_fast_sequence_streams<B>(
 //   r = bit_reader, nb_seq = 1, lit_ptr = 0
 //   returns: CompressError.None
 fn decode_slow_sequence_streams<B>(
-    r:        ZstdBitReader&,
-    nb_seq:   i64,
-    ll_table: const FseTable&,
-    ml_table: const FseTable&,
-    of_table: const FseTable&,
-    state_ll: i64&,
-    state_ml: i64&,
-    state_of: i64&,
-    ctx:      const SeqExecCtx&,
-    lit_ptr:  i64&,
-    out_buf:  B&,
-    rep0:     u32&,
-    rep1:     u32&,
-    rep2:     u32&,
+    r:          ZstdBitReader&,
+    nb_seq:     i64,
+    ll_entries: const FseEntry[:],
+    ll_log:     i32,
+    ll_mask:    i64,
+    ml_entries: const FseEntry[:],
+    ml_log:     i32,
+    ml_mask:    i64,
+    of_entries: const FseEntry[:],
+    of_log:     i32,
+    of_mask:    i64,
+    state_ll:   i64&,
+    state_ml:   i64&,
+    state_of:   i64&,
+    ctx:        const SeqExecCtx&,
+    lit_ptr:    i64&,
+    out_buf:    B&,
+    rep0:       u32&,
+    rep1:       u32&,
+    rep2:       u32&,
 ) -> CompressError {
-    var of_entry = of_table.entries[state_of & 511];
-    var ml_entry = ml_table.entries[state_ml & 511];
-    var ll_entry = ll_table.entries[state_ll & 511];
+    var of_entry = of_entries[state_of & of_mask];
+    var ml_entry = ml_entries[state_ml & ml_mask];
+    var ll_entry = ll_entries[state_ll & ll_mask];
 
     var seq_i: i64 = 0;
     while seq_i < nb_seq {
@@ -2264,9 +2330,9 @@ fn decode_slow_sequence_streams<B>(
         if seq_i + 1 < nb_seq {
             update_slow_fse_states(r, of_entry, ml_entry, ll_entry, state_ll, state_ml, state_of);
             guard !r.underflow else { return CompressError.CorruptedBitstream; }
-            of_entry = of_table.entries[state_of & 511];
-            ml_entry = ml_table.entries[state_ml & 511];
-            ll_entry = ll_table.entries[state_ll & 511];
+            of_entry = of_entries[state_of & of_mask];
+            ml_entry = ml_entries[state_ml & ml_mask];
+            ll_entry = ll_entries[state_ll & ll_mask];
         }
 
         let err = execute_single_sequence(
@@ -2279,7 +2345,7 @@ fn decode_slow_sequence_streams<B>(
     }
 
     guard !r.underflow else { return CompressError.CorruptedBitstream; }
-    if (ll_table.table_log | of_table.table_log | ml_table.table_log) != 0 {
+    if (ll_log | of_log | ml_log) != 0 {
         guard r.bit_pos == 0 else { return CompressError.CorruptedBitstream; }
     }
     return CompressError.None;
@@ -2348,10 +2414,7 @@ fn decode_sequences<B>(
     block_end:        i64,
     lit_buf:          const u8[:],
     out_buf:          B&,
-    rep:              u32[3]&,
-    ll_table:         FseTable&,
-    ml_table:         FseTable&,
-    of_table:         FseTable&,
+    state:            ZstdEntropyState&,
     max_output_bytes: i64,
     frame_start_out:  i64         = 0,
     window_size:      i64         = 0,
@@ -2387,14 +2450,24 @@ fn decode_sequences<B>(
     let of_mode = ((comp_modes >> 4) & 3) as i32;
     let ml_mode = ((comp_modes >> 2) & 3) as i32;
 
-    guard build_sequence_ll_table(src, offset, block_end, ll_mode, ll_table) &&
-          build_sequence_of_table(src, offset, block_end, of_mode, of_table) &&
-          build_sequence_ml_table(src, offset, block_end, ml_mode, ml_table) else {
+    guard build_sequence_ll_state(src, offset, block_end, ll_mode, state) &&
+          build_sequence_of_state(src, offset, block_end, of_mode, state) &&
+          build_sequence_ml_state(src, offset, block_end, ml_mode, state) else {
         return CompressError.CorruptedBitstream;
     }
 
     guard offset < block_end else { return CompressError.CorruptedBitstream; }
     let seq_bitstream = src[offset..block_end];
+
+    let ll_entries, ll_log, ll_mask = resolve_seq_table_view(
+        state.ll_kind, DEFAULT_LL_ENTRIES[..], 6, state.rle_ll[..], state.ll_tabs[..],
+    );
+    let of_entries, of_log, of_mask = resolve_seq_table_view(
+        state.of_kind, DEFAULT_OF_ENTRIES[..], 5, state.rle_of[..], state.of_tabs[..],
+    );
+    let ml_entries, ml_log, ml_mask = resolve_seq_table_view(
+        state.ml_kind, DEFAULT_ML_ENTRIES[..], 6, state.rle_ml[..], state.ml_tabs[..],
+    );
 
     let ctx = SeqExecCtx {
         lit_buf:          lit_buf,
@@ -2405,9 +2478,9 @@ fn decode_sequences<B>(
         dict_content:     dict_content,
     };
     var lit_ptr: i64 = 0;
-    var rep0 = rep[0];
-    var rep1 = rep[1];
-    var rep2 = rep[2];
+    var rep0 = state.rep[0];
+    var rep1 = state.rep[1];
+    var rep2 = state.rep[2];
 
     if seq_bitstream.len >= 8 {
         var ptr:           i64 = 0;
@@ -2417,13 +2490,16 @@ fn decode_sequences<B>(
         var state_of:      i64 = 0;
         var state_ml:      i64 = 0;
         guard init_fast_seq_reader(
-            seq_bitstream, ll_table.table_log, of_table.table_log, ml_table.table_log,
+            seq_bitstream, ll_log, of_log, ml_log,
             ptr, bit_container, bits_consumed, state_ll, state_of, state_ml,
         ) else {
             return CompressError.CorruptedBitstream;
         }
         let err = decode_fast_sequence_streams(
-            seq_bitstream, nb_seq, ll_table, ml_table, of_table,
+            seq_bitstream, nb_seq,
+            ll_entries, ll_log, ll_mask,
+            ml_entries, ml_log, ml_mask,
+            of_entries, of_log, of_mask,
             state_ll, state_ml, state_of, ptr, bit_container, bits_consumed,
             ctx, lit_ptr, out_buf, rep0, rep1, rep2,
         );
@@ -2431,22 +2507,25 @@ fn decode_sequences<B>(
     } else {
         var r = new_zstd_bit_reader(seq_bitstream);
         guard !r.underflow else { return CompressError.CorruptedBitstream; }
-        var state_ll = zstd_read_bits(r, ll_table.table_log) as i64;
-        var state_of = zstd_read_bits(r, of_table.table_log) as i64;
-        var state_ml = zstd_read_bits(r, ml_table.table_log) as i64;
+        var state_ll = zstd_read_bits(r, ll_log) as i64;
+        var state_of = zstd_read_bits(r, of_log) as i64;
+        var state_ml = zstd_read_bits(r, ml_log) as i64;
         guard !r.underflow else { return CompressError.CorruptedBitstream; }
 
         let err = decode_slow_sequence_streams(
-            r, nb_seq, ll_table, ml_table, of_table,
+            r, nb_seq,
+            ll_entries, ll_log, ll_mask,
+            ml_entries, ml_log, ml_mask,
+            of_entries, of_log, of_mask,
             state_ll, state_ml, state_of,
             ctx, lit_ptr, out_buf, rep0, rep1, rep2,
         );
         guard err == CompressError.None else { return err; }
     }
 
-    rep[0] = rep0;
-    rep[1] = rep1;
-    rep[2] = rep2;
+    state.rep[0] = rep0;
+    state.rep[1] = rep1;
+    state.rep[2] = rep2;
 
     let trail_err = append_trailing_literals(lit_buf, lit_ptr, out_buf, initial_out_len, max_output_bytes);
     guard trail_err == CompressError.None else { return trail_err; }
@@ -2463,15 +2542,49 @@ fn decode_sequences<B>(
 // Example:
 //   src = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00], offset = 4
 //   returns: CompressError.None, window_size = 0, frame_content_size = 0, content_checksum_flag = 0
-struct ParsedZstdDict {
-    is_formatted:   bool     = false,
-    dict_id:        u32      = 0,
-    rep:            u32[3]   = [1, 4, 8],
-    huf_table:      HufTable = HufTable {},
-    ll_table:       FseTable = FseTable {},
-    ml_table:       FseTable = FseTable {},
-    of_table:       FseTable = FseTable {},
-    content_offset: i64      = 0,
+root struct ParsedZstdDict {
+    is_formatted:   bool          = false,
+    dict_id:        u32           = 0,
+    content_offset: i64           = 0,
+    rep:            u32[3]        = [1, 4, 8],
+    huf_tabs:       HufTable[>..] = [],
+    ll_tabs:        FseTable[>..] = [],
+    ml_tabs:        FseTable[>..] = [],
+    of_tabs:        FseTable[>..] = [],
+}
+
+fn reset_zstd_entropy_state(state: ZstdEntropyState&) {
+    state.rep = [1, 4, 8];
+    state.ll_kind = ZSTD_TBL_UNSET;
+    state.of_kind = ZSTD_TBL_UNSET;
+    state.ml_kind = ZSTD_TBL_UNSET;
+    state.huf_loaded = false;
+}
+
+fn copy_dict_fse_slot(dst: FseTable[>..]&, src: const FseTable[:], kind: u8&) {
+    if src.len > 0 && src[0].is_defined {
+        if dst.len == 0 { dst.push(src[0]); } else { dst[0] = src[0]; }
+        kind = ZSTD_TBL_CUSTOM;
+    }
+}
+
+fn init_zstd_state_from_dict(state: ZstdEntropyState&, parsed_dict: const ParsedZstdDict&) {
+    reset_zstd_entropy_state(state);
+    if !parsed_dict.is_formatted {
+        return;
+    }
+    state.rep = parsed_dict.rep;
+    if parsed_dict.huf_tabs.len > 0 && parsed_dict.huf_tabs[0].is_defined {
+        if state.huf_tabs.len == 0 {
+            state.huf_tabs.push(parsed_dict.huf_tabs[0]);
+        } else {
+            state.huf_tabs[0] = parsed_dict.huf_tabs[0];
+        }
+        state.huf_loaded = true;
+    }
+    copy_dict_fse_slot(state.ll_tabs, parsed_dict.ll_tabs[..], state.ll_kind);
+    copy_dict_fse_slot(state.of_tabs, parsed_dict.of_tabs[..], state.of_kind);
+    copy_dict_fse_slot(state.ml_tabs, parsed_dict.ml_tabs[..], state.ml_kind);
 }
 
 fn read_formatted_dict_fse_table(
@@ -2496,16 +2609,24 @@ fn read_formatted_dict_fse_table(
 //   dict = [0x37, 0xA4, 0x30, 0xEC, 0x01, 0x00, 0x00, 0x00, ...], start_pos = 8
 //   returns: true
 fn parse_formatted_zstd_tables(dict: const u8[:], start_pos: i64, out_dict: ParsedZstdDict&) -> bool {
-    var pos = start_pos;
-    var huf = HufTable {};
-    guard huf_read_table(dict, pos, huf) else { return false; }
+    var committed = false;
+    defer if !committed {
+        out_dict.huf_tabs.clear();
+        out_dict.of_tabs.clear();
+        out_dict.ml_tabs.clear();
+        out_dict.ll_tabs.clear();
+    };
 
-    var of_tbl = FseTable {};
-    var ml_tbl = FseTable {};
-    var ll_tbl = FseTable {};
-    guard read_formatted_dict_fse_table(dict, pos, 31, 8, 2, of_tbl) &&
-          read_formatted_dict_fse_table(dict, pos, 52, 9, 3, ml_tbl) &&
-          read_formatted_dict_fse_table(dict, pos, 35, 9, 1, ll_tbl) else {
+    var pos = start_pos;
+    if out_dict.huf_tabs.len == 0 { out_dict.huf_tabs.push(HufTable {}); }
+    guard huf_read_table(dict, pos, out_dict.huf_tabs[0]) else { return false; }
+
+    if out_dict.of_tabs.len == 0 { out_dict.of_tabs.push(FseTable {}); }
+    if out_dict.ml_tabs.len == 0 { out_dict.ml_tabs.push(FseTable {}); }
+    if out_dict.ll_tabs.len == 0 { out_dict.ll_tabs.push(FseTable {}); }
+    guard read_formatted_dict_fse_table(dict, pos, 31, 8, 2, out_dict.of_tabs[0]) &&
+          read_formatted_dict_fse_table(dict, pos, 52, 9, 3, out_dict.ml_tabs[0]) &&
+          read_formatted_dict_fse_table(dict, pos, 35, 9, 1, out_dict.ll_tabs[0]) else {
         return false;
     }
 
@@ -2521,11 +2642,8 @@ fn parse_formatted_zstd_tables(dict: const u8[:], start_pos: i64, out_dict: Pars
     }
 
     out_dict.rep = [r0, r1, r2];
-    out_dict.huf_table = huf;
-    out_dict.of_table = of_tbl;
-    out_dict.ml_table = ml_tbl;
-    out_dict.ll_table = ll_tbl;
     out_dict.content_offset = next_pos;
+    committed = true;
     return true;
 }
 
@@ -2535,7 +2653,14 @@ fn parse_formatted_zstd_tables(dict: const u8[:], start_pos: i64, out_dict: Pars
 //   dict = "raw-dict-bytes"
 //   returns: CompressError.None, out_dict.content_offset = 0
 fn parse_zstd_dictionary(dict: const u8[:], out_dict: ParsedZstdDict&) -> CompressError {
-    out_dict = ParsedZstdDict {};
+    out_dict.is_formatted = false;
+    out_dict.dict_id = 0;
+    out_dict.content_offset = 0;
+    out_dict.rep = [1, 4, 8];
+    out_dict.huf_tabs.clear();
+    out_dict.ll_tabs.clear();
+    out_dict.ml_tabs.clear();
+    out_dict.of_tabs.clear();
     if dict.len == 0 {
         return CompressError.None;
     }
@@ -2712,7 +2837,7 @@ fn parse_zstd_frame_header(
     );
 }
 
-// Decompresses a single Zstandard block and updates tables and output buffer (RFC 8878 §3.1.1.2).
+// Decompresses a single Zstandard block and updates entropy state and output buffer (RFC 8878 §3.1.1.2).
 // Leaves `offset` unchanged when returning an error.
 //
 // Example:
@@ -2724,11 +2849,7 @@ fn decompress_zstd_block<B>(
     last_block:       bool&,
     out_buf:          B&,
     lit_buf:          u8[>..]&,
-    rep:              u32[3]&,
-    huf_table:        HufTable&,
-    ll_table:         FseTable&,
-    ml_table:         FseTable&,
-    of_table:         FseTable&,
+    state:            ZstdEntropyState&,
     window_size:      i64,
     initial_out_len:  i64,
     frame_start_out:  i64,
@@ -2745,25 +2866,15 @@ fn decompress_zstd_block<B>(
     last_block = (header_val & 1) != 0;
     let block_type = (header_val >> 1) & 3;
     let block_size = (header_val >> 3) as i64;
+    if block_type == ZSTD_BLOCK_TYPE_RESERVED { return CompressError.InvalidBlockType; }
 
-    if block_type == ZSTD_BLOCK_TYPE_RESERVED {
-        return CompressError.InvalidBlockType;
-    }
-
-    let block_max_size = if window_size >= 0 && window_size < ZSTD_BLOCKSIZE_MAX {
-        window_size
-    } else {
-        ZSTD_BLOCKSIZE_MAX
-    };
-    if block_size > block_max_size {
-        return CompressError.CorruptedBitstream;
-    }
+    var block_max_size: i64 = ZSTD_BLOCKSIZE_MAX;
+    if window_size >= 0 && window_size < ZSTD_BLOCKSIZE_MAX { block_max_size = window_size; }
+    if block_size > block_max_size { return CompressError.CorruptedBitstream; }
     let produced_so_far = sub_sat_i64(out_buf.len, initial_out_len);
 
     if block_type == ZSTD_BLOCK_TYPE_RLE {
-        if offset + 1 > src.len {
-            return CompressError.InputBufferTruncated;
-        }
+        if offset + 1 > src.len { return CompressError.InputBufferTruncated; }
         if max_output_bytes >= 0 && add_sat_i64(produced_so_far, block_size) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
         }
@@ -2776,11 +2887,8 @@ fn decompress_zstd_block<B>(
         return CompressError.None;
     }
 
-    if offset + block_size > src.len {
-        return CompressError.InputBufferTruncated;
-    }
+    if offset + block_size > src.len { return CompressError.InputBufferTruncated; }
     let block_end = offset + block_size;
-
     if block_type == ZSTD_BLOCK_TYPE_RAW {
         if max_output_bytes >= 0 && add_sat_i64(produced_so_far, block_size) > max_output_bytes {
             return CompressError.OutputBufferOverflow;
@@ -2795,29 +2903,22 @@ fn decompress_zstd_block<B>(
 
     if block_type == ZSTD_BLOCK_TYPE_COMPRESSED {
         let block_out_start = out_buf.len;
-        let lits = decode_literals(src, offset, block_end, lit_buf, huf_table, block_max_size);
-        if !lits.ok {
-            return CompressError.CorruptedBitstream;
-        }
+        let lits = decode_literals(src, offset, block_end, lit_buf, state, block_max_size);
+        if !lits.ok { return CompressError.CorruptedBitstream; }
         let seq_err = decode_sequences(
             src,
             offset,
             block_end,
             lits.slice,
             out_buf,
-            rep,
-            ll_table,
-            ml_table,
-            of_table,
+            state,
             max_output_bytes,
             frame_start_out,
             window_size,
             initial_out_len,
             dict_content,
         );
-        if seq_err != CompressError.None {
-            return seq_err;
-        }
+        if seq_err != CompressError.None { return seq_err; }
         if (out_buf.len - block_out_start) > block_max_size {
             return CompressError.CorruptedBitstream;
         }
@@ -2837,19 +2938,13 @@ fn zstd_decompress_frame_blocks<B>(
     offset:             i64&,
     out_buf:            B&,
     lit_buf:            u8[>..]&,
+    state:              ZstdEntropyState&,
     window_size:        i64,
     frame_content_size: i64,
     initial_out_len:    i64,
     max_output_bytes:   i64,
-    parsed_dict:        const ParsedZstdDict&,
     dict_content:       const u8[:] = "",
 ) -> CompressError {
-    var rep = parsed_dict.rep;
-    var huf_table = parsed_dict.huf_table;
-    var ll_table = parsed_dict.ll_table;
-    var ml_table = parsed_dict.ml_table;
-    var of_table = parsed_dict.of_table;
-
     let frame_start_out = out_buf.len;
     var last_block = false;
 
@@ -2860,11 +2955,7 @@ fn zstd_decompress_frame_blocks<B>(
             last_block,
             out_buf,
             lit_buf,
-            rep,
-            huf_table,
-            ll_table,
-            ml_table,
-            of_table,
+            state,
             window_size,
             initial_out_len,
             frame_start_out,
@@ -2888,14 +2979,16 @@ fn zstd_decompress_frame_blocks<B>(
 //   src = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00], offset = 0
 //   returns: CompressError.None, offset = 6
 fn decompress_single_zstd_frame<B>(
-    src:              const u8[:],
-    offset:           i64&,
-    out_buf:          B&,
-    lit_buf:          u8[>..]&,
-    initial_out_len:  i64,
-    max_output_bytes: i64,
-    parsed_dict:      const ParsedZstdDict&,
-    dict_content:     const u8[:] = "",
+    src:               const u8[:],
+    offset:            i64&,
+    out_buf:           B&,
+    lit_buf:           u8[>..]&,
+    state:             ZstdEntropyState&,
+    initial_out_len:   i64,
+    max_output_bytes:  i64,
+    dict_is_formatted: bool        = false,
+    dict_id:           u32         = 0,
+    dict_content:      const u8[:] = "",
 ) -> CompressError {
     if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
     let magic = read_le_u32(src, offset);
@@ -2911,9 +3004,7 @@ fn decompress_single_zstd_frame<B>(
         return CompressError.None;
     }
 
-    if magic != ZSTD_MAGIC {
-        return CompressError.InvalidHeader;
-    }
+    if magic != ZSTD_MAGIC { return CompressError.InvalidHeader; }
 
     var window_size:           i64 = 0;
     var frame_content_size:    i64 = -1;
@@ -2922,15 +3013,13 @@ fn decompress_single_zstd_frame<B>(
     let hdr_err = parse_zstd_frame_header_ex(
         src, offset, window_size, frame_content_size, content_checksum_flag, frame_dict_id,
     );
-    if hdr_err != CompressError.None {
-        return hdr_err;
-    }
+    if hdr_err != CompressError.None { return hdr_err; }
 
     if frame_dict_id != 0 {
-        if !parsed_dict.is_formatted && dict_content.len == 0 {
+        if !dict_is_formatted && dict_content.len == 0 {
             return CompressError.NeedDictionary;
         }
-        if !parsed_dict.is_formatted || parsed_dict.dict_id != frame_dict_id {
+        if !dict_is_formatted || dict_id != frame_dict_id {
             return CompressError.DictionaryMismatch;
         }
     }
@@ -2948,31 +3037,39 @@ fn decompress_single_zstd_frame<B>(
         offset,
         out_buf,
         lit_buf,
+        state,
         window_size,
         frame_content_size,
         initial_out_len,
         max_output_bytes,
-        parsed_dict,
         dict_content,
     );
-    if blk_err != CompressError.None {
-        return blk_err;
-    }
+    if blk_err != CompressError.None { return blk_err; }
 
-    // Validate Content Checksum if present
     if content_checksum_flag != 0 {
         if offset + 4 > src.len { return CompressError.InputBufferTruncated; }
         let expected_chk = read_le_u32(src, offset);
         offset += 4;
-
         let decoded_slice = out_buf[frame_start_out..out_buf.len];
         let actual_chk = xxh64_digest_32(decoded_slice);
-        if actual_chk != expected_chk {
-            return CompressError.ChecksumMismatch;
-        }
+        if actual_chk != expected_chk { return CompressError.ChecksumMismatch; }
     }
 
     return CompressError.None;
+}
+
+fn prepare_zstd_dict_context(dict: const u8[:], parsed_dict: ParsedZstdDict&) -> const u8[:], CompressError {
+    if dict.len == 0 {
+        return "", CompressError.None;
+    }
+    let dict_err = parse_zstd_dictionary(dict, parsed_dict);
+    if dict_err != CompressError.None {
+        return "", dict_err;
+    }
+    if dict.len > parsed_dict.content_offset {
+        return dict[parsed_dict.content_offset..], CompressError.None;
+    }
+    return "", CompressError.None;
 }
 
 // Internal frame decompressor (RFC 8878 section 3.1.1) with output limit and dictionary support.
@@ -2984,13 +3081,9 @@ fn zstd_decompress_with_limit_impl<B>(
 ) -> CompressError {
     guard src.len > 0 else { return CompressError.InputBufferTruncated; }
     var parsed_dict = ParsedZstdDict {};
-    let dict_err = parse_zstd_dictionary(dict, parsed_dict);
+    let dict_content, dict_err = prepare_zstd_dict_context(dict, parsed_dict);
     if dict_err != CompressError.None {
         return dict_err;
-    }
-    var dict_buf: u8[>..] = [];
-    if dict.len > parsed_dict.content_offset {
-        dict_buf.append(dict[parsed_dict.content_offset..]);
     }
 
     let initial_out_len = out_buf.len;
@@ -2999,10 +3092,25 @@ fn zstd_decompress_with_limit_impl<B>(
 
     var offset:  i64     = 0;
     var lit_buf: u8[>..] = [];
+    var state = ZstdEntropyState {};
 
     while offset < src.len {
+        if parsed_dict.is_formatted {
+            init_zstd_state_from_dict(state, parsed_dict);
+        } else if offset > 0 {
+            reset_zstd_entropy_state(state);
+        }
         let err = decompress_single_zstd_frame(
-            src, offset, out_buf, lit_buf, initial_out_len, max_output_bytes, parsed_dict, dict_buf[..],
+            src,
+            offset,
+            out_buf,
+            lit_buf,
+            state,
+            initial_out_len,
+            max_output_bytes,
+            parsed_dict.is_formatted,
+            parsed_dict.dict_id,
+            dict_content,
         );
         if err != CompressError.None {
             return err;
@@ -3024,30 +3132,39 @@ fn zstd_decompress_frames_incremental<B>(
 ) -> i64, CompressError {
     guard src.len > 0 else { return 0, CompressError.InputBufferTruncated; }
     var parsed_dict = ParsedZstdDict {};
-    let dict_err = parse_zstd_dictionary(dict, parsed_dict);
+    let dict_content, dict_err = prepare_zstd_dict_context(dict, parsed_dict);
     if dict_err != CompressError.None {
         return 0, dict_err;
-    }
-    var dict_buf: u8[>..] = [];
-    if dict.len > parsed_dict.content_offset {
-        dict_buf.append(dict[parsed_dict.content_offset..]);
     }
 
     let initial_out_len = out_buf.len;
     var offset:  i64     = 0;
     var lit_buf: u8[>..] = [];
+    var state = ZstdEntropyState {};
 
     while offset < src.len {
+        if parsed_dict.is_formatted {
+            init_zstd_state_from_dict(state, parsed_dict);
+        } else if offset > 0 {
+            reset_zstd_entropy_state(state);
+        }
         let saved_offset = offset;
         let saved_out_len = out_buf.len;
         let err = decompress_single_zstd_frame(
-            src, offset, out_buf, lit_buf, initial_out_len, max_output_bytes, parsed_dict, dict_buf[..],
+            src,
+            offset,
+            out_buf,
+            lit_buf,
+            state,
+            initial_out_len,
+            max_output_bytes,
+            parsed_dict.is_formatted,
+            parsed_dict.dict_id,
+            dict_content,
         );
         if err == CompressError.InputBufferTruncated {
             out_buf.resize(saved_out_len);
-            if saved_offset > 0 {
-                return saved_offset, CompressError.None;
-            }
+            if saved_offset > 0 { return saved_offset, CompressError.None; }
             return 0, CompressError.InputBufferTruncated;
         }
         if err != CompressError.None {
@@ -3212,36 +3329,47 @@ struct ZstdSeq {
     offset:    u32 = 0,
 }
 
+const LL_CODE_TABLE: u8[64] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21,
+    22, 22, 22, 22, 22, 22, 22, 22, 23, 23, 23, 23, 23, 23, 23, 23,
+    24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24,
+];
+
+const ML_CODE_TABLE: u8[128] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    32, 32, 33, 33, 34, 34, 35, 35, 36, 36, 36, 36, 37, 37, 37, 37,
+    38, 38, 38, 38, 38, 38, 38, 38, 39, 39, 39, 39, 39, 39, 39, 39,
+    40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40,
+    41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41,
+    42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+    42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+];
+
 inline fn lit_len_to_code(lit_len: u32, code: u32&, extra: u32&, extra_bits: u32&) {
-    var i: u32 = 0;
-    while i < 35 {
-        if lit_len >= LL_BASE[i] && lit_len < LL_BASE[i + 1] {
-            code = i;
-            extra = lit_len - LL_BASE[i];
-            extra_bits = LL_EXTRA_BITS[i];
-            return;
-        }
-        i++;
+    var c: u32 = 35;
+    if lit_len < 64 {
+        c = LL_CODE_TABLE[lit_len];
+    } else {
+        c = min((zstd_high_bit(lit_len) + 19) as u32, 35);
     }
-    code = 35;
-    extra = lit_len - LL_BASE[35];
-    extra_bits = LL_EXTRA_BITS[35];
+    code = c;
+    extra = lit_len - LL_BASE[c];
+    extra_bits = LL_EXTRA_BITS[c];
 }
 
 inline fn match_len_to_code(match_len: u32, code: u32&, extra: u32&, extra_bits: u32&) {
-    var i: u32 = 0;
-    while i < 52 {
-        if match_len >= ML_BASE[i] && match_len < ML_BASE[i + 1] {
-            code = i;
-            extra = match_len - ML_BASE[i];
-            extra_bits = ML_EXTRA_BITS[i];
-            return;
-        }
-        i++;
+    let ml_m3 = match_len - 3;
+    var c: u32 = 52;
+    if ml_m3 < 128 {
+        c = ML_CODE_TABLE[ml_m3];
+    } else {
+        c = min((zstd_high_bit(ml_m3) + 36) as u32, 52);
     }
-    code = 52;
-    extra = match_len - ML_BASE[52];
-    extra_bits = ML_EXTRA_BITS[52];
+    code = c;
+    extra = match_len - ML_BASE[c];
+    extra_bits = ML_EXTRA_BITS[c];
 }
 
 inline fn offset_to_code(
@@ -3305,18 +3433,17 @@ struct CodedSeq {
     of_s: u32 = 0, of_ex: u32 = 0, of_eb: u32 = 0,
 }
 
-fn write_nb_seq_header(nb_seq: i64, out_buf: u8[>..]&) {
+fn write_nb_seq_header<B>(nb_seq: i64, out_buf: B&) -> bool {
     if nb_seq < 128 {
-        out_buf.push(nb_seq as u8);
-    } else if nb_seq < 0x7F00 {
-        out_buf.push(((nb_seq >> 8) + 128) as u8);
-        out_buf.push((nb_seq & 0xFF) as u8);
-    } else {
-        out_buf.push(255);
-        let rem = nb_seq - 0x7F00;
-        out_buf.push((rem & 0xFF) as u8);
-        out_buf.push(((rem >> 8) & 0xFF) as u8);
+        return comp_try_push(out_buf, nb_seq as u8);
     }
+    if nb_seq < 0x7F00 {
+        let pair: u8[2] = [((nb_seq >> 8) + 128) as u8, (nb_seq & 0xFF) as u8];
+        return comp_try_append(out_buf, pair[..]);
+    }
+    let rem = nb_seq - 0x7F00;
+    let triple: u8[3] = [255, (rem & 0xFF) as u8, ((rem >> 8) & 0xFF) as u8];
+    return comp_try_append(out_buf, triple[..]);
 }
 
 fn encode_sequences_backwards(
@@ -3388,13 +3515,20 @@ fn encode_sequences(seqs: const ZstdSeq[:], rep_initial: u32[3], out_buf: u8[>..
     bw_write_bits(bw, st_ll, 6);
     bw_finish(bw);
 
-    write_nb_seq_header(nb_seq, out_buf);
+    let _ = write_nb_seq_header(nb_seq, out_buf);
     out_buf.push(0); // Symbol_Compression_Modes: predefined FSE distributions
     out_buf.append(bw.buf[..]);
 }
 
 fn count_match_len(src: const u8[:], p: i64, curr: i64, n: i64) -> i64 {
     var m: i64 = 0;
+    while curr + m + 8 <= n {
+        let diff = read_le_u64(src, p + m) ^ read_le_u64(src, curr + m);
+        if diff != 0 {
+            return m + (ctz(diff) >> 3);
+        }
+        m += 8;
+    }
     while curr + m < n && src[p + m] == src[curr + m] {
         m++;
     }
@@ -3515,6 +3649,320 @@ fn emit_zstd_u24_le<B>(out_buf: B&, val: u32) -> bool {
     return comp_try_append(out_buf, hdr_bytes[..]);
 }
 
+fn emit_raw_literals_header<B>(n_lit: i64, out_buf: B&) -> bool {
+    if n_lit < 32 {
+        return comp_try_push(out_buf, (n_lit << 3) as u8);
+    }
+    if n_lit < 4096 {
+        let pair: u8[2] = [
+            ((1 << 2) | ((n_lit & 0xF) << 4)) as u8,
+            ((n_lit >> 4) & 0xFF) as u8,
+        ];
+        return comp_try_append(out_buf, pair[..]);
+    }
+    let triple: u8[3] = [
+        ((3 << 2) | ((n_lit & 0xF) << 4)) as u8,
+        ((n_lit >> 4) & 0xFF) as u8,
+        ((n_lit >> 12) & 0xFF) as u8,
+    ];
+    return comp_try_append(out_buf, triple[..]);
+}
+
+struct CodedSmallSeq {
+    lit_start: u16 = 0,
+    lit_len:   u16 = 0,
+    ll_ex:     u16 = 0,
+    ml_ex:     u16 = 0,
+    of_ex:     u16 = 0,
+    ll_s:      u8  = 0,
+    ll_eb:     u8  = 0,
+    ml_s:      u8  = 0,
+    ml_eb:     u8  = 0,
+    of_s:      u8  = 0,
+    of_eb:     u8  = 0,
+}
+
+inline fn record_small_seq(
+    seqs:      CodedSmallSeq[:],
+    nb_seq:    i64,
+    anchor:    i64,
+    curr:      i64,
+    match_len: i64,
+    offset:    u32,
+    rep:       u32[3]&,
+) {
+    let lit_len = (curr - anchor) as u32;
+    var ll_s:  u32 = 0;
+    var ll_ex: u32 = 0;
+    var ll_eb: u32 = 0;
+    var ml_s:  u32 = 0;
+    var ml_ex: u32 = 0;
+    var ml_eb: u32 = 0;
+    var of_s:  u32 = 0;
+    var of_ex: u32 = 0;
+    var of_eb: u32 = 0;
+    lit_len_to_code(lit_len, ll_s, ll_ex, ll_eb);
+    match_len_to_code(match_len as u32, ml_s, ml_ex, ml_eb);
+    offset_to_code(offset, lit_len, rep, of_s, of_ex, of_eb);
+    seqs[nb_seq] = CodedSmallSeq {
+        lit_start: anchor as u16,
+        lit_len:   lit_len as u16,
+        ll_ex:     ll_ex as u16,
+        ml_ex:     ml_ex as u16,
+        of_ex:     of_ex as u16,
+        ll_s:      ll_s as u8,
+        ll_eb:     ll_eb as u8,
+        ml_s:      ml_s as u8,
+        ml_eb:     ml_eb as u8,
+        of_s:      of_s as u8,
+        of_eb:     of_eb as u8,
+    };
+}
+
+inline fn probe_small_hash_match(
+    src:        const u8[:],
+    curr:       i64,
+    n:          i64,
+    v4:         u32,
+    hash_shift: u32,
+    hash_mask:  u32,
+    table:      u16[:],
+) -> i64, u32 {
+    let h = (((v4 * 2654435761) >> hash_shift) & hash_mask) as i64;
+    let pe = table[h];
+    table[h] = (curr + 1) as u16;
+    guard pe > 0 else { return 0, 0; }
+    let p = (pe as i64) - 1;
+    guard read_le_u32(src, p) == v4 else { return 0, 0; }
+    return count_match_len(src, p, curr, n), (curr - p) as u32;
+}
+
+fn find_matches_small(
+    src:      const u8[:],
+    rep:      u32[3]&,
+    level:    i32,
+    table:    u16[:],
+    seqs:     CodedSmallSeq[:],
+    n_lit:    i64&,
+    tail_pos: i64&,
+) -> i64 {
+    let n = src.len;
+    let hash_mask = (table.len - 1) as u32;
+    let hash_shift: u32 = if table.len == 1024 { 22 } else { 20 };
+    var nb_seq:  i64 = 0;
+    var lit_sum: i64 = 0;
+    var anchor:  i64 = 0;
+    var curr:    i64 = 0;
+    while curr + 4 <= n {
+        let v4 = read_le_u32(src, curr);
+        var match_len: i64 = 0;
+        var offset:    u32 = 0;
+        if level >= 3 {
+            let m, off = find_rep0_match(src, curr, n, rep[0], v4);
+            match_len = m;
+            offset = off;
+        }
+        if match_len == 0 {
+            let m, off = probe_small_hash_match(src, curr, n, v4, hash_shift, hash_mask, table);
+            match_len = m;
+            offset = off;
+        }
+        if match_len >= 4 {
+            lit_sum += curr - anchor;
+            record_small_seq(seqs, nb_seq, anchor, curr, match_len, offset, rep);
+            nb_seq++;
+            anchor = curr + match_len;
+            curr = anchor;
+        } else {
+            let step = if level <= 1 { 1 + ((curr - anchor) >> 8) } else { 1 };
+            curr += step;
+        }
+    }
+    n_lit = lit_sum + (n - anchor);
+    tail_pos = anchor;
+    return nb_seq;
+}
+
+inline fn bw_put_bits<B>(
+    container: u64&,
+    bit_count: u32&,
+    val:       u32,
+    nb:        u32,
+    out_buf:   B&,
+) -> bool {
+    container |= (val as u64) << bit_count;
+    bit_count += nb;
+    if bit_count >= 32 {
+        guard comp_try_write_le_u32(out_buf, (container & 0xFFFFFFFF) as u32) else {
+            return false;
+        }
+        container >>= 32;
+        bit_count -= 32;
+    }
+    return true;
+}
+
+fn bw_finish_direct<B>(container: u64&, bit_count: u32&, out_buf: B&) -> bool {
+    container |= (1 as u64) << bit_count;
+    bit_count += 1;
+    while bit_count >= 8 {
+        guard comp_try_push(out_buf, (container & 0xFF) as u8) else { return false; }
+        container >>= 8;
+        bit_count -= 8;
+    }
+    if bit_count > 0 {
+        guard comp_try_push(out_buf, (container & 0xFF) as u8) else { return false; }
+    }
+    return true;
+}
+
+fn encode_small_sequences_direct<B>(seqs: const CodedSmallSeq[:], nb_seq: i64, out_buf: B&) -> bool {
+    let last = seqs[nb_seq - 1];
+    var st_ll = G_CTABLES.ll_init[last.ll_s];
+    var st_ml = G_CTABLES.ml_init[last.ml_s];
+    var st_of = G_CTABLES.of_init[last.of_s];
+    var container: u64 = 0;
+    var bit_count: u32 = 0;
+
+    guard bw_put_bits(container, bit_count, last.ll_ex as u32, last.ll_eb as u32, out_buf) &&
+          bw_put_bits(container, bit_count, last.ml_ex as u32, last.ml_eb as u32, out_buf) &&
+          bw_put_bits(container, bit_count, last.of_ex as u32, last.of_eb as u32, out_buf) else {
+        return false;
+    }
+
+    var i = nb_seq - 2;
+    while i >= 0 {
+        let prev = seqs[i];
+        let tr_of = G_CTABLES.of_table[(st_of as i32) * 29 + (prev.of_s as i32)];
+        let tr_ml = G_CTABLES.ml_table[(st_ml as i32) * 53 + (prev.ml_s as i32)];
+        let tr_ll = G_CTABLES.ll_table[(st_ll as i32) * 36 + (prev.ll_s as i32)];
+        st_of = tr_of.next_state;
+        st_ml = tr_ml.next_state;
+        st_ll = tr_ll.next_state;
+        guard bw_put_bits(container, bit_count, tr_of.bits, tr_of.nb_bits, out_buf) &&
+              bw_put_bits(container, bit_count, tr_ml.bits, tr_ml.nb_bits, out_buf) &&
+              bw_put_bits(container, bit_count, tr_ll.bits, tr_ll.nb_bits, out_buf) &&
+              bw_put_bits(container, bit_count, prev.ll_ex as u32, prev.ll_eb as u32, out_buf) &&
+              bw_put_bits(container, bit_count, prev.ml_ex as u32, prev.ml_eb as u32, out_buf) &&
+              bw_put_bits(container, bit_count, prev.of_ex as u32, prev.of_eb as u32, out_buf) else {
+            return false;
+        }
+        i--;
+    }
+
+    guard bw_put_bits(container, bit_count, st_ml as u32, 6, out_buf) &&
+          bw_put_bits(container, bit_count, st_of as u32, 5, out_buf) &&
+          bw_put_bits(container, bit_count, st_ll as u32, 6, out_buf) else {
+        return false;
+    }
+    return bw_finish_direct(container, bit_count, out_buf);
+}
+
+fn emit_small_literals<B>(
+    chunk:    const u8[:],
+    seqs:     const CodedSmallSeq[:],
+    nb_seq:   i64,
+    tail_pos: i64,
+    out_buf:  B&,
+) -> bool {
+    var si: i64 = 0;
+    while si < nb_seq {
+        let ll = seqs[si].lit_len as i64;
+        if ll > 0 {
+            let ls = seqs[si].lit_start as i64;
+            guard comp_try_append(out_buf, chunk[ls..ls + ll]) else { return false; }
+        }
+        si++;
+    }
+    if tail_pos < chunk.len {
+        return comp_try_append(out_buf, chunk[tail_pos..chunk.len]);
+    }
+    return true;
+}
+
+fn emit_raw_zstd_block<B>(chunk: const u8[:], last_bit: u32, out_buf: B&) -> bool {
+    let raw_hdr = last_bit | ((chunk.len as u32) << 3);
+    return emit_zstd_u24_le(out_buf, raw_hdr) && comp_try_append(out_buf, chunk);
+}
+
+fn compress_block_with_scratch<B>(
+    chunk:   const u8[:],
+    rep:     u32[3]&,
+    is_last: bool,
+    level:   i32,
+    out_buf: B&,
+    table:   u16[:],
+    seqs:    CodedSmallSeq[:],
+) -> bool {
+    let hdr_pos = out_buf.len;
+    let saved_rep = rep;
+    var committed = false;
+    defer if !committed {
+        out_buf.resize(hdr_pos);
+        rep = saved_rep;
+    };
+
+    var n_lit:    i64 = 0;
+    var tail_pos: i64 = 0;
+    let nb_seq = find_matches_small(chunk, rep, level, table, seqs, n_lit, tail_pos);
+    let last_bit = if is_last { 1 as u32 } else { 0 as u32 };
+
+    if nb_seq == 0 {
+        guard emit_raw_zstd_block(chunk, last_bit, out_buf) else { return false; }
+        committed = true;
+        return true;
+    }
+
+    guard emit_zstd_u24_le(out_buf, 0) &&
+          emit_raw_literals_header(n_lit, out_buf) &&
+          emit_small_literals(chunk, seqs, nb_seq, tail_pos, out_buf) &&
+          write_nb_seq_header(nb_seq, out_buf) &&
+          comp_try_push(out_buf, 0 as u8) &&
+          encode_small_sequences_direct(seqs, nb_seq, out_buf) else {
+        return false;
+    }
+
+    let b_size = out_buf.len - (hdr_pos + 3);
+    if b_size >= chunk.len {
+        out_buf.resize(hdr_pos);
+        rep = saved_rep;
+        guard emit_raw_zstd_block(chunk, last_bit, out_buf) else { return false; }
+        committed = true;
+        return true;
+    }
+
+    let cmp_hdr = last_bit | (2 << 1) | ((b_size as u32) << 3);
+    out_buf[hdr_pos] = (cmp_hdr & 0xFF) as u8;
+    out_buf[hdr_pos + 1] = ((cmp_hdr >> 8) & 0xFF) as u8;
+    out_buf[hdr_pos + 2] = ((cmp_hdr >> 16) & 0xFF) as u8;
+    committed = true;
+    return true;
+}
+
+fn compress_block_tiny<B>(
+    chunk:   const u8[:],
+    rep:     u32[3]&,
+    is_last: bool,
+    level:   i32,
+    out_buf: B&,
+) -> bool {
+    var table: u16[1024]          = [0; 1024];
+    var seqs:  CodedSmallSeq[512] = [CodedSmallSeq {}; 512];
+    return compress_block_with_scratch(chunk, rep, is_last, level, out_buf, table[..], seqs[..]);
+}
+
+fn compress_block_medium<B>(
+    chunk:   const u8[:],
+    rep:     u32[3]&,
+    is_last: bool,
+    level:   i32,
+    out_buf: B&,
+) -> bool {
+    var table: u16[4096]           = [0; 4096];
+    var seqs:  CodedSmallSeq[4096] = [CodedSmallSeq {}; 4096];
+    return compress_block_with_scratch(chunk, rep, is_last, level, out_buf, table[..], seqs[..]);
+}
+
 fn compress_block<B>(
     chunk:   const u8[:],
     rep:     u32[3]&,
@@ -3522,23 +3970,19 @@ fn compress_block<B>(
     level:   i32,
     out_buf: B&,
 ) -> bool {
+    if chunk.len <= 2048 {
+        return compress_block_tiny(chunk, rep, is_last, level, out_buf);
+    }
+    if chunk.len <= 16384 {
+        return compress_block_medium(chunk, rep, is_last, level, out_buf);
+    }
     let saved_rep = rep;
     var seqs: ZstdSeq[>..] = [];
     var lits: u8[>..]      = [];
     find_matches(chunk, rep, seqs, lits, level);
 
     var lit_sec: u8[>..] = [];
-    let n_lit = lits.len;
-    if n_lit < 32 {
-        lit_sec.push(((n_lit << 3) | 0) as u8);
-    } else if n_lit < 4096 {
-        lit_sec.push((0 | (1 << 2) | ((n_lit & 0xF) << 4)) as u8);
-        lit_sec.push(((n_lit >> 4) & 0xFF) as u8);
-    } else {
-        lit_sec.push((0 | (3 << 2) | ((n_lit & 0xF) << 4)) as u8);
-        lit_sec.push(((n_lit >> 4) & 0xFF) as u8);
-        lit_sec.push(((n_lit >> 12) & 0xFF) as u8);
-    }
+    guard emit_raw_literals_header(lits.len, lit_sec) else { return false; }
     lit_sec.append(lits[..]);
 
     var seq_sec: u8[>..] = [];

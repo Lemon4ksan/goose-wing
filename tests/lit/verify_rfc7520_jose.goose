@@ -47,8 +47,8 @@ fn verify_rfc7520_rsa_and_pss() {
     var rs_sig: u8[>..] = [];
     assert(decode_b64u_fixed(rs_sig_b64[..], rs_sig));
     assert(
-        wing::verify_jwt_rsa_signature(
-            wing::JwtAlg.RS256,
+        auth::verify_jwt_rsa_signature(
+            auth::JwtAlg.RS256,
             n_bytes[..],
             e_bytes[..],
             rs_input[..],
@@ -57,8 +57,8 @@ fn verify_rfc7520_rsa_and_pss() {
     );
     rs_sig[0] ^= 0x01;
     assert(
-        !wing::verify_jwt_rsa_signature(
-            wing::JwtAlg.RS256,
+        !auth::verify_jwt_rsa_signature(
+            auth::JwtAlg.RS256,
             n_bytes[..],
             e_bytes[..],
             rs_input[..],
@@ -103,8 +103,8 @@ fn verify_hmac_unencoded_and_eddsa() {
     var hs_sig: u8[>..] = [];
     assert(decode_b64u_fixed("s0h6KThzkfBBBkLspW1h84VsJZFTsPPqMDA7g1Md7p0", hs_sig));
     assert(
-        wing::verify_jwt_hmac_signature(
-            wing::JwtAlg.HS256,
+        auth::verify_jwt_hmac_signature(
+            auth::JwtAlg.HS256,
             k_hs[..],
             hs_in[..],
             hs_sig[..],
@@ -112,8 +112,8 @@ fn verify_hmac_unencoded_and_eddsa() {
     );
     hs_sig[0] ^= 0x80;
     assert(
-        !wing::verify_jwt_hmac_signature(
-            wing::JwtAlg.HS256,
+        !auth::verify_jwt_hmac_signature(
+            auth::JwtAlg.HS256,
             k_hs[..],
             hs_in[..],
             hs_sig[..],
@@ -131,8 +131,8 @@ fn verify_hmac_unencoded_and_eddsa() {
     var sig_7797_nocrit: u8[>..] = [];
     assert(decode_b64u_fixed("GsyM6AQJbQHY8aQKCbZSPJHzMRWo3HKIlcDuXof7nqs", sig_7797_nocrit));
     assert(
-        wing::verify_jwt_hmac_signature(
-            wing::JwtAlg.HS256,
+        auth::verify_jwt_hmac_signature(
+            auth::JwtAlg.HS256,
             k_7797[..],
             "eyJhbGciOiJIUzI1NiIsImI2NCI6ZmFsc2V9.$.02",
             sig_7797_nocrit[..],
@@ -141,16 +141,16 @@ fn verify_hmac_unencoded_and_eddsa() {
     var tok_nocrit: u8[>..] = [];
     tok_nocrit.append("eyJhbGciOiJIUzI1NiIsImI2NCI6ZmFsc2V9.$.02.");
     tok_nocrit.append("GsyM6AQJbQHY8aQKCbZSPJHzMRWo3HKIlcDuXof7nqs");
-    assert(!wing::verify_jws_unencoded_hs256(tok_nocrit[..], k_7797[..]));
+    assert(!auth::verify_jws_unencoded_hs256(tok_nocrit[..], k_7797[..]));
 
     // Compact RFC 7797 token with "crit":["b64"] must pass verify_jws_unencoded_hs256
     var tok_7797: u8[>..] = [];
     tok_7797.append("eyJhbGciOiJIUzI1NiIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il19.");
     tok_7797.append("This is the payload string!.");
     tok_7797.append("ciks0B6Hs-amhOqxI5_iG6mPKnMDlWCb7J2Wu7mtIcg");
-    assert(wing::verify_jws_unencoded_hs256(tok_7797[..], k_7797[..]));
+    assert(auth::verify_jws_unencoded_hs256(tok_7797[..], k_7797[..]));
     tok_7797[tok_7797.len - 1] = 'A';
-    assert(!wing::verify_jws_unencoded_hs256(tok_7797[..], k_7797[..]));
+    assert(!auth::verify_jws_unencoded_hs256(tok_7797[..], k_7797[..]));
 
     // RFC 8037 Appendix A.4: Ed25519 JWS
     var ed_pk_vec: u8[>..] = [];
@@ -166,9 +166,9 @@ fn verify_hmac_unencoded_and_eddsa() {
     var ed_sig: u8[>..] = [];
     assert(decode_b64u_fixed(ed_sig_b64[..], ed_sig));
     let ed_input = "eyJhbGciOiJFZERTQSJ9.RXhhbXBsZSBvZiBFZDI1NTE5IHNpZ25pbmc";
-    assert(wing::verify_jwt_eddsa_signature(ed_pk, ed_input, ed_sig[..]));
+    assert(auth::verify_jwt_eddsa_signature(ed_pk, ed_input, ed_sig[..]));
     ed_sig[0] ^= 0x01;
-    assert(!wing::verify_jwt_eddsa_signature(ed_pk, ed_input, ed_sig[..]));
+    assert(!auth::verify_jwt_eddsa_signature(ed_pk, ed_input, ed_sig[..]));
     print("RFC7797_EDDSA_OK");
 }
 
@@ -228,10 +228,10 @@ fn verify_rfc7520_jwe_dir_gcm() {
     let hdr_b64 = "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0";
     var sealed: u8[>..] = [];
     assert(
-        wing::jwe_seal_dir_a256gcm(hdr_b64, cek256, iv_a256, pt_slice, sealed),
+        auth::jwe_seal_dir_a256gcm(hdr_b64, cek256, iv_a256, pt_slice, sealed),
     );
     var opened: u8[>..] = [];
-    assert(wing::jwe_open_dir_a256gcm(sealed[..], cek256, opened));
+    assert(auth::jwe_open_dir_a256gcm(sealed[..], cek256, opened));
     assert(opened[..] == pt_slice);
     print("RFC7520_JWE_OK");
 }

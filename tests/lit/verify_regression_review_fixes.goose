@@ -117,7 +117,7 @@ fn test_pipeline_64_slot_and_user_stages() {
     let _ = ctx.current_method.try_set("GET");
     var current_url, url_err = core::parse_url("https://example.com/api/v1/resource");
     assert(url_err == core::UrlParseError.None);
-    var samesite = wing::SameSiteCookieContext { .. };
+    var samesite = cookie::SameSiteCookieContext { .. };
     var out_resp = wing::Response { .. };
     var out_err = wing::Error { .. };
     var cli_chain = wire::chain_stages(ClientUserStageA { .. }, ClientUserStageB { .. });
@@ -140,7 +140,7 @@ fn test_pipeline_64_slot_and_user_stages() {
     // Server custom slot dispatch via StageChain at arbitrary custom_bindings positions
     var srv_cfg = wing::new_server_pipeline_config(
         "example.com",
-        wing::GcraQuota { .. },
+        security::GcraQuota { .. },
     );
     assert(wire::add_stage_binding(srv_cfg.wire_pipeline, wire::STAGE_ID_USER_0, 1));
     assert(wire::add_stage_binding(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_IN_EXPECT_100, 0));
@@ -189,7 +189,7 @@ fn test_server_time_methods_h2_and_memo() {
     var h2_sess = server_internal::new_h2_server_session("example.com", 1000);
     var h2_cfg = wing::new_server_pipeline_config(
         "example.com",
-        wing::GcraQuota { .. },
+        security::GcraQuota { .. },
     );
     var h2_timer = server_internal::ConnectionTimer { .. };
     var h2_wire: u8[..128] = [];
@@ -259,11 +259,11 @@ fn test_server_time_methods_h2_and_memo() {
     // 2d. Encapsulated ServerPipelineConfig.memo independence
     var cfg_a = wing::new_server_pipeline_config(
         "a.example.com",
-        wing::GcraQuota { .. },
+        security::GcraQuota { .. },
     );
     var cfg_b = wing::new_server_pipeline_config(
         "b.example.com",
-        wing::GcraQuota { .. },
+        security::GcraQuota { .. },
     );
     let req_etag = wing::new_request("GET", "https://a.example.com/data");
     var res_a = wing::Response { status_code: 200, .. };

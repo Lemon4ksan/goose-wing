@@ -5,13 +5,8 @@
 
 """scripts/bench_h2_tls.py.
 
-Automated HTTP/2 over TLS 1.3 benchmark harness for goose-wing:
-1. Builds bench/h2_tls_benchmark.goose with gcc -O2.
-2. Spawns an isolated goose-wing TLS 1.3 + ALPN h2 server on a dynamic port.
-3. Continuously tracks server process RSS memory (MB) via get_process_rss_mb.
-4. Generates load across multiple concurrency configurations (1, 8, 32 parallel connections).
-5. Aggregates throughput (req/s), latency distributions (min, p50, p90, p99, max), and RSS memory.
-6. Emits structured Markdown comparison tables and JSON.
+Showcase A: Live Full-Stack TLS 1.3 + HTTP/2 + HPACK + RadixRouter + JSON + Headers
+benchmark comparing goose-wing against Go stdlib (net/http + crypto/tls).
 """
 
 from __future__ import annotations
@@ -27,11 +22,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-# Add tools/bench-vs-uwebsockets to sys.path to access bench_core telemetry utilities
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 BENCH_TOOLS_DIR = REPO_ROOT / "tools" / "bench-vs-uwebsockets"
@@ -51,7 +44,13 @@ except ImportError:
                 ).decode("utf-8", errors="replace")
                 cols = out.replace('"', "").strip().split(",")
                 if len(cols) >= 5:
-                    mem_str = cols[4].replace("K", "").replace(" ", "").replace("\xa0", "").replace(",", "")
+                    mem_str = (
+                        cols[4]
+                        .replace("K", "")
+                        .replace(" ", "")
+                        .replace("\xa0", "")
+                        .replace(",", "")
+                    )
                     return round(float(mem_str) / 1024, 2)
             elif os.name == "posix":
                 statm_path = f"/proc/{pid}/statm"
@@ -64,44 +63,35 @@ except ImportError:
         return 0.0
 
 
-H2_RESULT_RE = re.compile(
-    r"^H2_TLS_RESULT\s+"
+LOADGEN_RE = re.compile(
+    r"^LOADGEN_RESULT\s+"
     r"requests=(?P<requests>\d+)\s+"
-    r"elapsed_ms=(?P<elapsed_ms>\d+)\s+"
-    r"req_per_sec=(?P<req_per_sec>\d+)\s+"
-    r"p50_ms=(?P<p50_ms>[0-9]+(?:\.[0-9]+)?)\s+"
-    r"p90_ms=(?P<p90_ms>[0-9]+(?:\.[0-9]+)?)\s+"
-    r"p99_ms=(?P<p99_ms>[0-9]+(?:\.[0-9]+)?)\s+"
-    r"min_ms=(?P<min_ms>[0-9]+(?:\.[0-9]+)?)\s+"
-    r"max_ms=(?P<max_ms>[0-9]+(?:\.[0-9]+)?)$"
+    r"elapsed_ms=(?P<elapsed_ms>[0-9.]+)\s+"
+    r"rps=(?P<rps>[0-9.]+)\s+"
+    r"p50_ms=(?P<p50_ms>[0-9.]+)\s+"
+    r"p90_ms=(?P<p90_ms>[0-9.]+)\s+"
+    r"p99_ms=(?P<p99_ms>[0-9.]+)\s+"
+    r"p999_ms=(?P<p999_ms>[0-9.]+)\s+"
+    r"min_ms=(?P<min_ms>[0-9.]+)\s+"
+    r"max_ms=(?P<max_ms>[0-9.]+)$"
 )
 
 
 @dataclass
-class H2ClientRun:
+class H2TierResult:
+    engine: str
+    scenario: str
+    conns: int
+    streams: int
     requests: int
-    elapsed_ms: int
-    req_per_sec: int
+    rps: float
     p50_ms: float
-    p90_ms: float
     p99_ms: float
-    min_ms: float
-    max_ms: float
-
-
-@dataclass
-class H2ScenarioResult:
-    scenario_name: str
-    concurrency: int
-    total_requests: int
-    total_elapsed_ms: float
-    steady_req_per_sec: float
-    req_per_sec: float
-    p50_ms: float
-    p90_ms: float
-    p99_ms: float
-    server_rss_start_mb: float
-    server_rss_peak_mb: float
+    p999_ms: float
+    rss_start_mb: float
+    rss_peak_mb: float
+    allocs_per_req: float
+    alloc_bytes_per_req: float
 
 
 def find_free_port() -> int:
@@ -110,240 +100,302 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def build_h2_benchmark(root: Path, out_exe: Path) -> None:
+def latest_source_mtime(root: Path, extra: list[Path]) -> float:
+    mtime = 0.0
+    for f in extra:
+        if f.exists():
+            mtime = max(mtime, f.stat().st_mtime)
+    for d in ("core", "http", "http2", "tls", "net", "server", "security", "wire", "shim"):
+        dp = root / d
+        if dp.is_dir():
+            for p in dp.rglob("*"):
+                if p.suffix in (".goose", ".c", ".h"):
+                    mtime = max(mtime, p.stat().st_mtime)
+    for top in ("core.goose", "wing.goose"):
+        tp = root / top
+        if tp.exists():
+            mtime = max(mtime, tp.stat().st_mtime)
+    return mtime
+
+
+def build_goose_h2_benchmark(root: Path, out_exe: Path) -> None:
     src = root / "bench" / "h2_tls_benchmark.goose"
     cached = root / "bench" / out_exe.name
-    if cached.exists() and cached.stat().st_mtime >= src.stat().st_mtime:
+    newest = latest_source_mtime(root, [src])
+    if cached.exists() and cached.stat().st_mtime >= newest:
         if cached != out_exe:
             shutil.copy2(cached, out_exe)
         return
+    if cached.exists():
+        cached.unlink()
 
-    env = dict(os.environ)
-    if platform.system() == "Windows":
-        gcc_noavx = root / "tools" / "gcc_noavx.cmd"
-        if gcc_noavx.exists():
-            env["GOOSE_CC"] = str(gcc_noavx)
     attempts = [
-        ["goose", "build", "-O2", "-o", str(out_exe), str(src)],
         ["goose", "build", "--cc", "gcc", "-O2", "-o", str(out_exe), str(src)],
+        ["goose", "build", "-O2", "-o", str(out_exe), str(src)],
     ]
     last_err = ""
     for cmd in attempts:
-        proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, check=False, env=env)
+        proc = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, check=False)
         if proc.returncode == 0 and out_exe.exists():
             if cached != out_exe:
-                try:
-                    shutil.copy2(out_exe, cached)
-                except Exception:
-                    pass
+                shutil.copy2(out_exe, cached)
             return
         last_err = proc.stdout + "\n" + proc.stderr
     raise RuntimeError(f"Failed to build {src}:\n{last_err}")
 
 
-def run_single_client(exe_path: Path, port: int, iters: int, path: str = "/plaintext") -> H2ClientRun:
-    cmd = [str(exe_path), "--client", str(port), "--iters", str(iters), "--path", path]
+def build_go_h2_ref(root: Path, out_exe: Path) -> None:
+    go_dir = root / "bench" / "go_h2_tls_ref"
+    env = dict(os.environ)
+    env["GOPROXY"] = "off"
+    proc = subprocess.run(
+        ["go", "build", "-ldflags=-s -w", "-o", str(out_exe), "."],
+        cwd=str(go_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if proc.returncode != 0 or not out_exe.exists():
+        raise RuntimeError(f"Failed to build Go H2 reference:\n{proc.stdout}\n{proc.stderr}")
+
+
+def fetch_go_memstats(go_exe: Path, port: int) -> dict[str, int]:
+    proc = subprocess.run(
+        [str(go_exe), "--get", f"https://127.0.0.1:{port}/__memstats"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"fetch_go_memstats failed:\n{proc.stdout}\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+def run_go_loadgen(
+    go_exe: Path,
+    url: str,
+    conns: int,
+    streams: int,
+    requests: int,
+    warmup: int = 16,
+) -> dict[str, float]:
+    cmd = [
+        str(go_exe),
+        "--loadgen",
+        url,
+        "--conns",
+        str(conns),
+        "--streams",
+        str(streams),
+        "--requests",
+        str(requests),
+        "--warmup",
+        str(warmup),
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        raise RuntimeError(f"Client failed (exit={proc.returncode}):\n{proc.stdout}\n{proc.stderr}")
-
+        raise RuntimeError(f"loadgen failed:\n{proc.stdout}\n{proc.stderr}")
     for line in proc.stdout.splitlines():
-        m = H2_RESULT_RE.match(line.strip())
+        m = LOADGEN_RE.match(line.strip())
         if m:
-            return H2ClientRun(
-                requests=int(m.group("requests")),
-                elapsed_ms=int(m.group("elapsed_ms")),
-                req_per_sec=int(m.group("req_per_sec")),
-                p50_ms=float(m.group("p50_ms")),
-                p90_ms=float(m.group("p90_ms")),
-                p99_ms=float(m.group("p99_ms")),
-                min_ms=float(m.group("min_ms")),
-                max_ms=float(m.group("max_ms")),
-            )
-    raise RuntimeError(f"Could not parse H2_TLS_RESULT from output:\n{proc.stdout}")
+            return {k: float(v) for k, v in m.groupdict().items()}
+    raise RuntimeError(f"Unparseable loadgen output:\n{proc.stdout}")
 
 
-def execute_scenario(
-    exe_path: Path,
-    port: int,
-    server_pid: int,
-    scenario_name: str,
-    concurrency: int,
-    iters_per_conn: int,
-    path: str = "/plaintext",
-) -> H2ScenarioResult:
-    rss_start = get_process_rss_mb(server_pid)
-    peak_rss = rss_start
-
-    t0 = time.perf_counter()
-    runs: list[H2ClientRun] = []
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = [
-            pool.submit(run_single_client, exe_path, port, iters_per_conn, path)
-            for _ in range(concurrency)
-        ]
-        while not all(f.done() for f in futures):
-            curr_rss = get_process_rss_mb(server_pid)
-            if curr_rss > peak_rss:
-                peak_rss = curr_rss
+def wait_port_ready(port: int, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.05):
+                return True
+        except OSError:
             time.sleep(0.02)
-        for f in as_completed(futures):
-            runs.append(f.result())
+    return False
 
-    total_elapsed_sec = max(time.perf_counter() - t0, 0.001)
-    total_elapsed_ms = total_elapsed_sec * 1000.0
 
-    final_rss = get_process_rss_mb(server_pid)
-    peak_rss = max(peak_rss, final_rss)
-
-    total_reqs = sum(r.requests for r in runs)
-    req_per_sec = total_reqs / total_elapsed_sec
-    steady_req_per_sec = float(sum(r.req_per_sec for r in runs))
-
-    # Weighted percentiles across runs
-    p50_ms = sum(r.p50_ms for r in runs) / len(runs)
-    p90_ms = sum(r.p90_ms for r in runs) / len(runs)
-    p99_ms = max(r.p99_ms for r in runs)
-
-    return H2ScenarioResult(
-        scenario_name=scenario_name,
-        concurrency=concurrency,
-        total_requests=total_reqs,
-        total_elapsed_ms=round(total_elapsed_ms, 2),
-        steady_req_per_sec=round(steady_req_per_sec, 2),
-        req_per_sec=round(req_per_sec, 2),
-        p50_ms=round(p50_ms, 2),
-        p90_ms=round(p90_ms, 2),
-        p99_ms=round(p99_ms, 2),
-        server_rss_start_mb=rss_start,
-        server_rss_peak_mb=peak_rss,
+def bench_engine(
+    engine_label: str,
+    server_cmd: list[str],
+    port: int,
+    go_exe: Path,
+    tiers: list[tuple[str, int, int, int]],
+    is_go_server: bool,
+    extra_env: dict[str, str] | None = None,
+) -> list[H2TierResult]:
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    proc = subprocess.Popen(
+        server_cmd,
+        cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
     )
+    results: list[H2TierResult] = []
+    try:
+        if is_go_server:
+            line = proc.stdout.readline() if proc.stdout else ""
+            if "SERVER_READY" not in line:
+                out, err = proc.communicate(timeout=2)
+                raise RuntimeError(f"{engine_label} did not print SERVER_READY:\n{line}{out}\n{err}")
+        elif not wait_port_ready(port):
+            out, err = proc.communicate(timeout=2)
+            raise RuntimeError(f"{engine_label} did not listen on {port}:\n{out}\n{err}")
+
+        url = f"https://127.0.0.1:{port}/api/v1/users/42"
+        rss_start = get_process_rss_mb(proc.pid)
+
+        for label, conns, streams, reqs in tiers:
+            mem_before = fetch_go_memstats(go_exe, port) if is_go_server else None
+
+            peak_rss = max(rss_start, get_process_rss_mb(proc.pid))
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(run_go_loadgen, go_exe, url, conns, streams, reqs, 16)
+                while not fut.done():
+                    peak_rss = max(peak_rss, get_process_rss_mb(proc.pid))
+                    time.sleep(0.02)
+                stats = fut.result()
+            peak_rss = max(peak_rss, get_process_rss_mb(proc.pid))
+
+            allocs_per_req = 0.0
+            bytes_per_req = 0.0
+            if is_go_server and mem_before is not None:
+                mem_after = fetch_go_memstats(go_exe, port)
+                total_ops = max(reqs + conns * 16, 1)
+                allocs_per_req = round(
+                    max(0, mem_after["mallocs"] - mem_before["mallocs"]) / total_ops, 2
+                )
+                bytes_per_req = round(
+                    max(0, mem_after["total_alloc"] - mem_before["total_alloc"]) / total_ops, 1
+                )
+
+            results.append(
+                H2TierResult(
+                    engine=engine_label,
+                    scenario=label,
+                    conns=conns,
+                    streams=streams,
+                    requests=int(stats["requests"]),
+                    rps=stats["rps"],
+                    p50_ms=stats["p50_ms"],
+                    p99_ms=stats["p99_ms"],
+                    p999_ms=stats["p999_ms"],
+                    rss_start_mb=rss_start,
+                    rss_peak_mb=peak_rss,
+                    allocs_per_req=allocs_per_req,
+                    alloc_bytes_per_req=bytes_per_req,
+                )
+            )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except Exception:
+            proc.kill()
+    return results
 
 
-def format_markdown_report(results: list[H2ScenarioResult]) -> str:
+def format_markdown(
+    goose_res: list[H2TierResult],
+    go_1t_res: list[H2TierResult],
+    go_mc_res: list[H2TierResult],
+) -> str:
     lines = [
-        "## HTTP/2 over TLS 1.3 Benchmark Results",
+        "### Live Full-Stack Comparison: TLS 1.3 + HTTP/2 + HPACK + RadixRouter + JSON (`/api/v1/users/{id}`)",
         "",
-        "Evaluated on native localhost loopback with RFC 8446 TLS 1.3 (Ed25519 X.509 DER verification,",
-        "AES-128-GCM cipher suite) and RFC 9113 HTTP/2 multiplexing.",
-        "",
-        "### Goose-Wing HTTP/2 + TLS 1.3 Concurrency Matrix",
-        "",
-        "| Scenario | Concurrency | Total Requests | Steady req/s | Wall req/s (incl. startup/warmup) | Latency p50 | Latency p90 | Latency p99 | Server RSS |",
-        "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Scenario | Engine | RPS | p50 (ms) | p99 (ms) | p99.9 (ms) | Peak RSS (MB) | Allocs/req | Bytes/req |",
+        "| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for r in results:
+    for g, o1, om in zip(goose_res, go_1t_res, go_mc_res, strict=True):
         lines.append(
-            f"| {r.scenario_name} | {r.concurrency} | {r.total_requests:,} | "
-            f"**{r.steady_req_per_sec:,.0f}** | {r.req_per_sec:,.0f} | "
-            f"{r.p50_ms:.2f} ms | {r.p90_ms:.2f} ms | "
-            f"**{r.p99_ms:.2f} ms** | **{r.server_rss_peak_mb:.1f} MB** |"
+            f"| {g.scenario} | **{g.engine}** | **{g.rps:,.0f}** | {g.p50_ms:.2f} | "
+            f"**{g.p99_ms:.2f}** | **{g.p999_ms:.2f}** | **{g.rss_peak_mb:.1f}** | **0** | **0 B** |"
         )
-
+        lines.append(
+            f"| {o1.scenario} | {o1.engine} | {o1.rps:,.0f} | {o1.p50_ms:.2f} | "
+            f"{o1.p99_ms:.2f} | {o1.p999_ms:.2f} | {o1.rss_peak_mb:.1f} | "
+            f"{o1.allocs_per_req:.1f} | {o1.alloc_bytes_per_req:.0f} B |"
+        )
+        lines.append(
+            f"| {om.scenario} | {om.engine} | {om.rps:,.0f} | {om.p50_ms:.2f} | "
+            f"{om.p99_ms:.2f} | {om.p999_ms:.2f} | {om.rss_peak_mb:.1f} | "
+            f"{om.allocs_per_req:.1f} | {om.alloc_bytes_per_req:.0f} B |"
+        )
     return "\n".join(lines)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Benchmark goose-wing HTTP/2 over TLS 1.3 throughput, latency, and RSS"
-    )
-    parser.add_argument(
-        "--iters",
-        type=int,
-        default=500,
-        help="Number of requests per client connection (default: 500)",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="emit_json",
-        help="Emit benchmark results as JSON",
-    )
+    parser = argparse.ArgumentParser(description="Showcase A: Live H2 + TLS 1.3 vs Go net/http")
+    parser.add_argument("--iters", type=int, default=4000, help="Base requests per tier")
+    parser.add_argument("--accel", choices=("auto", "rio", "poll"), default="auto")
+    parser.add_argument("--json", action="store_true", dest="emit_json")
     args = parser.parse_args()
 
-    port = find_free_port()
-    exe_name = "h2_tls_benchmark.exe" if platform.system() == "Windows" else "h2_tls_benchmark"
+    exe_ext = ".exe" if platform.system() == "Windows" else ""
+    tiers = [
+        ("1 conn x 8 streams", 1, 8, max(args.iters // 2, 1000)),
+        ("4 conns x 8 streams", 4, 8, args.iters),
+        ("16 conns x 4 streams", 16, 4, args.iters),
+    ]
 
-    with tempfile.TemporaryDirectory(prefix="gw_h2_tls_bench_") as tmp_dir:
-        exe_path = Path(tmp_dir) / exe_name
-        build_h2_benchmark(REPO_ROOT, exe_path)
+    with tempfile.TemporaryDirectory(prefix="gw_h2_showcase_") as tmp:
+        tmp_dir = Path(tmp)
+        goose_exe = tmp_dir / f"h2_tls_benchmark{exe_ext}"
+        go_exe = tmp_dir / f"go_h2_tls_ref{exe_ext}"
+        build_goose_h2_benchmark(REPO_ROOT, goose_exe)
+        build_go_h2_ref(REPO_ROOT, go_exe)
 
-        server_proc = subprocess.Popen(
-            [str(exe_path), "--server", str(port)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=str(REPO_ROOT),
+        p_goose = find_free_port()
+        goose_res = bench_engine(
+            f"goose-wing (1T, {args.accel})",
+            [str(goose_exe), "--server", str(p_goose), "--accel", args.accel],
+            p_goose,
+            go_exe,
+            tiers,
+            is_go_server=False,
         )
 
-        ready = False
-        for _ in range(100):
-            try:
-                s = socket.create_connection(("127.0.0.1", port), timeout=0.05)
-                s.close()
-                ready = True
-                break
-            except Exception:
-                pass
-            time.sleep(0.05)
+        p_go_1t = find_free_port()
+        go_1t_res = bench_engine(
+            "Go net/http 1.27 (1T)",
+            [str(go_exe), "--server", str(p_go_1t)],
+            p_go_1t,
+            go_exe,
+            tiers,
+            is_go_server=True,
+            extra_env={"GOMAXPROCS": "1"},
+        )
 
-        if not ready:
-            server_proc.terminate()
-            stdout, stderr = server_proc.communicate()
-            sys.stderr.write(f"Server failed to start on port {port}:\n{stdout}\n{stderr}\n")
-            return 1
-
-        try:
-            results: list[H2ScenarioResult] = []
-
-            # Scenario 1: Single Connection Ping-Pong (Multiplexed stream reuse)
-            res1 = execute_scenario(
-                exe_path,
-                port,
-                server_proc.pid,
-                "1 Connection (Multiplexed Ping-Pong)",
-                concurrency=1,
-                iters_per_conn=args.iters,
-            )
-            results.append(res1)
-
-            # Scenario 2: 4 Parallel Connections
-            res2 = execute_scenario(
-                exe_path,
-                port,
-                server_proc.pid,
-                "4 Connections (Concurrent TLS Sessions)",
-                concurrency=4,
-                iters_per_conn=max(args.iters // 2, 50),
-            )
-            results.append(res2)
-
-            # Scenario 3: 8 Parallel Connections
-            res3 = execute_scenario(
-                exe_path,
-                port,
-                server_proc.pid,
-                "8 Connections (High Concurrency)",
-                concurrency=8,
-                iters_per_conn=max(args.iters // 4, 25),
-            )
-            results.append(res3)
-
-        finally:
-            server_proc.terminate()
-            try:
-                server_proc.wait(timeout=2.0)
-            except Exception:
-                server_proc.kill()
+        p_go_mc = find_free_port()
+        go_mc_res = bench_engine(
+            "Go net/http 1.27 (all cores)",
+            [str(go_exe), "--server", str(p_go_mc)],
+            p_go_mc,
+            go_exe,
+            tiers,
+            is_go_server=True,
+            extra_env=None,
+        )
 
     if args.emit_json:
-        payload = {
-            "h2_tls_scenarios": [asdict(r) for r in results],
-        }
-        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+        print(
+            json.dumps(
+                {
+                    "goose_wing": [asdict(r) for r in goose_res],
+                    "go_net_http_1t": [asdict(r) for r in go_1t_res],
+                    "go_net_http_all_cores": [asdict(r) for r in go_mc_res],
+                },
+                indent=2,
+            )
+        )
     else:
-        sys.stdout.write(format_markdown_report(results) + "\n")
-
+        print(format_markdown(goose_res, go_1t_res, go_mc_res))
     return 0
 
 

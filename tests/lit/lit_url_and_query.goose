@@ -83,7 +83,7 @@ fn run_01_verify_http_query() {
     // CHECK: ALLOW_HEADER_CONTAINS_QUERY: 1
 
     // 5. Verify Server Pipeline Rejection when Content-Type is missing (RFC 10008 §2)
-    let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+    let quota = security::new_gcra_quota(100, wing::secs(1), 10);
     var cfg = wing::new_server_pipeline_config("example.com", quota);
     let ok_add_pipeline = wing::add_route(cfg.router, "QUERY", "/items/search", 42);
     assert(ok_add_pipeline);
@@ -115,7 +115,7 @@ fn run_01_verify_http_query() {
     // CHECK: QUERY_VALID_CT_STATUS: 200
 
     // 7. Verify CSRF Fetch Context Classification
-    let fetch_ctx = wing::extract_fetch_context(query_valid, "example.com");
+    let fetch_ctx = security::extract_fetch_context(query_valid, "example.com");
     assert(fetch_ctx.method_is_safe);
     print("CSRF_METHOD_SAFE: 1");
     // CHECK: CSRF_METHOD_SAFE: 1

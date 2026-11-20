@@ -316,7 +316,9 @@ fn reactor_cleanup_slot(
             reactor_queue_kq_change(g_reactor_accel, fd, net_internal::EV_DELETE, slot_idx as u64);
         }
         if epfd >= 0 {
-            epoll_del(epfd, fd);
+            if epoll_del(epfd, fd) {
+                g_reactor_accel.epfd_registered_count = max(0, g_reactor_accel.epfd_registered_count - 1);
+            }
         }
         reactor_reset_accel_slot(g_reactor_accel, slot_idx);
         var tr = table.slot_transport(slot_idx);
@@ -857,6 +859,69 @@ inline fn reactor_slot_tls_ct_view(
     return leftover_pool.items[ct_off..ct_end];
 }
 
+fn reactor_unseal_tls_slot_into_plain<B>(
+    table:         SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot:          i64,
+    rx_raw:        const u8[:],
+    plain_buf:     B&,
+) -> TlsSliceUnsealStatus, bool {
+    if slot < table.tls_ct_lens.len && table.tls_ct_lens[slot] == 0 {
+        let cons, st = tls_cipher_slot_unseal_records(table.tls_slots[slot], rx_raw, plain_buf);
+        if st != TlsSliceUnsealStatus.Error && st != TlsSliceUnsealStatus.Closed && cons < rx_raw.len {
+            return st, reactor_append_slot_tls_ct(table, leftover_pool, slot, rx_raw[cons..]);
+        }
+        return st, true;
+    }
+    guard reactor_append_slot_tls_ct(table, leftover_pool, slot, rx_raw) else {
+        return TlsSliceUnsealStatus.Error, false;
+    }
+    let cons, st = tls_cipher_slot_unseal_records(
+        table.tls_slots[slot],
+        reactor_slot_tls_ct_view(table, leftover_pool, slot),
+        plain_buf,
+    );
+    reactor_consume_slot_tls_ct(table, leftover_pool, slot, cons);
+    return st, true;
+}
+
+fn reactor_unseal_completed_tls_rx<Stage>(
+    server:        HttpServer&,
+    epfd:          i64,
+    table:         SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot:          i64,
+    conn:          i64,
+    rx_raw:        const u8[:],
+    slot_pool:     ReactorSlotPool&,
+    now_ns:        u64,
+    chunk:         ReactorIngressBuf&,
+    cork_wire:     u8[..65536]&,
+    total_served:  i64&,
+    stage:         Stage&,
+) {
+    let plain_buf .= reactor_tls_plain_scratch();
+    plain_buf.clear();
+    let st, ok = reactor_unseal_tls_slot_into_plain(table, leftover_pool, slot, rx_raw, plain_buf);
+    if !ok || st == TlsSliceUnsealStatus.Error {
+        reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        return;
+    }
+    if plain_buf.len > 0 {
+        guard reactor_append_chunk_bytes(chunk, plain_buf[..]) else {
+            reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+            return;
+        }
+        reactor_process_slot_plaintext(
+            server, epfd, table, leftover_pool, slot, conn, slot_pool,
+            now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+    if st == TlsSliceUnsealStatus.Closed && table.fds[slot] > 0 {
+        reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+    }
+}
+
 fn reactor_handle_completed_rx<Stage>(
     server:        HttpServer&,
     epfd:          i64,
@@ -883,35 +948,10 @@ fn reactor_handle_completed_rx<Stage>(
 
     if slot < table.has_tls.len && slot < table.tls_slots.len &&
         table.has_tls[slot] && table.tls_slots[slot] != 0xFFFF {
-        guard reactor_append_slot_tls_ct(table, leftover_pool, slot, rx_raw) else {
-            reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
-            return;
-        }
-        let plain_buf .= reactor_tls_plain_scratch();
-        plain_buf.clear();
-        let cons, st = tls_cipher_slot_unseal_records(
-            table.tls_slots[slot],
-            reactor_slot_tls_ct_view(table, leftover_pool, slot),
-            plain_buf,
+        reactor_unseal_completed_tls_rx(
+            server, epfd, table, leftover_pool, slot, conn, rx_raw, slot_pool,
+            now_ns, chunk, cork_wire, total_served, stage,
         );
-        reactor_consume_slot_tls_ct(table, leftover_pool, slot, cons);
-        if st == TlsSliceUnsealStatus.Error {
-            reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
-            return;
-        }
-        if plain_buf.len > 0 {
-            guard reactor_append_chunk_bytes(chunk, plain_buf[..]) else {
-                reactor_close_and_inc(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
-                return;
-            }
-            reactor_process_slot_plaintext(
-                server, epfd, table, leftover_pool, slot, conn, slot_pool,
-                now_ns, chunk, cork_wire, total_served, stage,
-            );
-        }
-        if st == TlsSliceUnsealStatus.Closed && table.fds[slot] > 0 {
-            reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
-        }
         return;
     }
 
@@ -1011,12 +1051,9 @@ fn reactor_dispatch_single_rio_result<Stage>(
 
     let rx_len = min(res.bytes_transferred as i64, REACTOR_ACCEL_BUF_SIZE);
     let rx_off = (core::shl_sat_u64(slot as u64, 13) as u32) as i64;
-    var local_rx: u8[4096] = [0; 4096];
-    for i in rx_len {
-        local_rx[i] = g_reactor_accel.slab[core::add_sat_i64(rx_off, i)];
-    }
+    let rx_end = core::add_sat_i64(rx_off, rx_len);
     reactor_handle_completed_rx(
-        server, epfd, table, leftover_pool, slot, local_rx[..rx_len],
+        server, epfd, table, leftover_pool, slot, g_reactor_accel.slab[rx_off..rx_end],
         slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
     );
     if table.is_active_slot(slot) && !g_reactor_accel.slot_close_after_tx[slot] {
@@ -1026,8 +1063,78 @@ fn reactor_dispatch_single_rio_result<Stage>(
     }
 }
 
-fn reactor_poll_rio_listener(
-    server:        const HttpServer&,
+fn reactor_accept_rio_tls_fd<Stage>(
+    server:        HttpServer&,
+    client_fd:     i64,
+    epfd:          i64,
+    table:         SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot_pool:     ReactorSlotPool&,
+    timer_wheel:   core::TickTimerWheel&,
+    tls_config:    const TlsServerHandshakeConfig&,
+    now_ns:        u64,
+    chunk:         ReactorIngressBuf&,
+    cork_wire:     u8[..65536]&,
+    total_served:  i64&,
+    stage:         Stage&,
+) {
+    var slot = alloc_reactor_conn_slot(slot_pool, table);
+    if slot < 0 {
+        slot = reactor_evict_stale_slot(epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
+    }
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else {
+        tcp_close(client_fd);
+        total_served = core::add_sat_i64(total_served, 1);
+        return;
+    }
+    reactor_init_slot_record(table, leftover_pool, client_fd, slot, timer_wheel);
+    ensure_reactor_accel_slab(g_reactor_accel);
+    let tok = reactor_accel_slot_token(g_reactor_accel, slot);
+    let rq = net_internal::native_rio_create_rq_ctx(
+        client_fd, 16, 16, g_reactor_accel.rio_cq, g_reactor_accel.rio_tx_cq, tok,
+    );
+    guard rq != 0 else {
+        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
+        total_served = core::add_sat_i64(total_served, 1);
+        return;
+    }
+    g_reactor_accel.slot_rio_rq[slot] = rq;
+    g_reactor_accel.slot_accel[slot] = true;
+    g_reactor_accel.active_accel_slots = core::add_sat_i64(g_reactor_accel.active_accel_slots, 1);
+
+    let rx_off = core::shl_sat_u64(slot as u64, 13) as u32;
+    let tx_off = rx_off | 4096;
+    net_internal::native_rio_hs_begin(
+        client_fd, rq, g_reactor_accel.rio_cq, g_reactor_accel.rio_tx_cq,
+        g_reactor_accel.rio_buf_id, g_reactor_accel.slab[..],
+        rx_off, tx_off, REACTOR_ACCEL_BUF_SIZE as u32, tok,
+    );
+    let tls_slot, ok_hs = tls_server_handshake(client_fd, tls_config);
+    var hs_leftover: u8[4096] = [0; 4096];
+    let hs_rem = net_internal::native_rio_hs_end(hs_leftover[..]);
+    guard ok_hs else {
+        reactor_cleanup_slot(epfd, table, leftover_pool, slot, slot_pool);
+        total_served = core::add_sat_i64(total_served, 1);
+        return;
+    }
+    table.has_tls[slot] = true;
+    table.tls_slots[slot] = tls_slot;
+    if hs_rem > 0 {
+        let rem_n = min(hs_rem as i64, 4096);
+        reactor_handle_completed_rx(
+            server, epfd, table, leftover_pool, slot, hs_leftover[..rem_n],
+            slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
+        );
+    }
+    if table.is_active_slot(slot) && !g_reactor_accel.slot_close_after_tx[slot] {
+        if !reactor_post_rio_slot_rx(g_reactor_accel, slot) {
+            reactor_request_slot_close(server, epfd, table, leftover_pool, slot, slot_pool, total_served);
+        }
+    }
+}
+
+fn reactor_poll_rio_listener<Stage>(
+    server:        HttpServer&,
     draining:      bool,
     tls_config:    const TlsServerHandshakeConfig&,
     is_tls:        bool,
@@ -1036,7 +1143,11 @@ fn reactor_poll_rio_listener(
     leftover_pool: slice_pool<u8>&,
     slot_pool:     ReactorSlotPool&,
     timer_wheel:   core::TickTimerWheel&,
+    now_ns:        u64,
+    chunk:         ReactorIngressBuf&,
+    cork_wire:     u8[..65536]&,
     total_served:  i64&,
+    stage:         Stage&,
 ) {
     let lfd = g_reactor_accel.rio_listener_fd;
     guard !draining && lfd > 0 else { return; }
@@ -1051,13 +1162,31 @@ fn reactor_poll_rio_listener(
         let cfd = net_internal::native_rio_poll_accept(lfd, wait_ms);
         if cfd <= 0 { break; }
         if is_tls {
-            reactor_accept_single_tls_fd(
-                server, cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, tls_config, total_served,
+            reactor_accept_rio_tls_fd(
+                server, cfd, epfd, table, leftover_pool, slot_pool, timer_wheel,
+                tls_config, now_ns, chunk, cork_wire, total_served, stage,
             );
         } else {
             reactor_accept_plain_fd(cfd, epfd, table, leftover_pool, slot_pool, timer_wheel, total_served);
         }
     }
+}
+
+fn reactor_flush_rio_tx_closes(
+    server:        HttpServer&,
+    table:         SoAConnTable&,
+    leftover_pool: slice_pool<u8>&,
+    slot_pool:     ReactorSlotPool&,
+    total_served:  i64&,
+) {
+    let epfd = g_reactor_accel.epfd;
+    for i in g_reactor_accel.rio_tx_close_queue.len {
+        let s = g_reactor_accel.rio_tx_close_queue[i];
+        if table.is_active_slot(s) {
+            reactor_close_and_inc(server, epfd, table, leftover_pool, s, slot_pool, total_served);
+        }
+    }
+    g_reactor_accel.rio_tx_close_queue.clear();
 }
 
 fn reactor_step_rio_completions<Stage>(
@@ -1082,12 +1211,14 @@ fn reactor_step_rio_completions<Stage>(
     }
     reactor_poll_rio_listener(
         server, draining, tls_config, is_tls, timeout_ms,
-        table, leftover_pool, slot_pool, timer_wheel, total_served,
+        table, leftover_pool, slot_pool, timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
     );
     guard g_reactor_accel.active_accel_slots > 0 else { return 0; }
+    let tx_n = reactor_drain_rio_tx_cq(g_reactor_accel);
+    reactor_flush_rio_tx_closes(server, table, leftover_pool, slot_pool, total_served);
     var rio_results: net_internal::RioResult[..64] = [];
     var n = net_internal::rio_drain_completions(g_reactor_accel.rio_cq, rio_results);
-    if n == 0 && timeout_ms > 0 {
+    if n == 0 && tx_n == 0 && timeout_ms > 0 {
         let _ = net_internal::rio_wait_cq(g_reactor_accel.rio_cq, min(timeout_ms, 5));
         n = net_internal::rio_drain_completions(g_reactor_accel.rio_cq, rio_results);
     }
@@ -1097,6 +1228,8 @@ fn reactor_step_rio_completions<Stage>(
             timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
         );
     }
+    let _ = reactor_drain_rio_tx_cq(g_reactor_accel);
+    reactor_flush_rio_tx_closes(server, table, leftover_pool, slot_pool, total_served);
     return n;
 }
 
@@ -1529,7 +1662,7 @@ fn reactor_accept_tls_client(
     }
 }
 
-fn reactor_dispatch_tls_events(
+fn reactor_dispatch_tls_events<Stage>(
     server:        HttpServer&,
     epfd:          i64,
     listener_fd:   i64,
@@ -1543,6 +1676,7 @@ fn reactor_dispatch_tls_events(
     chunk:         ReactorIngressBuf&,
     cork_wire:     u8[..65536]&,
     total_served:  i64&,
+    stage:         Stage&,
 ) {
     for i in ready_udata.len {
         let udata = ready_udata[i];
@@ -1555,20 +1689,20 @@ fn reactor_dispatch_tls_events(
         }
         let slot = udata as i64;
         if table.is_active_slot(slot) {
-            var noop = wire::NoOpStage {};
             reactor_handle_ingress(
                 server, epfd, table, leftover_pool, slot, slot_pool,
-                timer_wheel, now_ns, chunk, cork_wire, total_served, noop,
+                timer_wheel, now_ns, chunk, cork_wire, total_served, stage,
             );
         }
     }
 }
 
-// Executes a TLS 1.3 reactor loop with opportunistic kTLS and completion-ring cipher slots.
-fn serve_reactor_tls(
+// Executes a TLS 1.3 reactor loop with opportunistic kTLS, completion rings, and a `<Stage>` hook.
+fn serve_reactor_tls_with_stage<Stage>(
     server:          HttpServer&,
     listener_fd:     i64,
     tls_config:      const TlsServerHandshakeConfig&,
+    stage:           Stage&,
     max_connections: i64 = 0,
 ) -> i64 {
     guard listener_fd > 0 else { return 0; }
@@ -1579,7 +1713,6 @@ fn serve_reactor_tls(
     var slot_pool = ReactorSlotPool { .. };
     var leftover_pool = slice_pool<u8> {};
 
-    var noop = wire::NoOpStage {};
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
     var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
@@ -1608,23 +1741,34 @@ fn serve_reactor_tls(
             reactor_dispatch_tls_events(
                 server, epfd, listener_fd, table, leftover_pool,
                 slot_pool, timer_wheel, tls_config, ready_udata[..n_ready as i64],
-                cached_now_ns, g_reactor_chunk, g_reactor_cork_bufs[0], total_served,
+                cached_now_ns, g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
             );
         }
         let _ = reactor_step_rio_completions(
             server, draining, tls_config, true, table, leftover_pool,
             slot_pool, timer_wheel, 10, cached_now_ns,
-            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, noop,
+            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
         );
         let _ = reactor_step_uring_completions(
             server, listener_fd, draining, tls_config, true, 10,
             table, leftover_pool,
             slot_pool, timer_wheel, cached_now_ns,
-            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, noop,
+            g_reactor_chunk, g_reactor_cork_bufs[0], total_served, stage,
         );
     }
     reactor_cleanup_all(g_reactor_accel.epfd, table, leftover_pool, slot_pool);
     return total_served;
+}
+
+// Executes a TLS 1.3 reactor loop with opportunistic kTLS and completion-ring cipher slots.
+fn serve_reactor_tls(
+    server:          HttpServer&,
+    listener_fd:     i64,
+    tls_config:      const TlsServerHandshakeConfig&,
+    max_connections: i64 = 0,
+) -> i64 {
+    var noop = wire::NoOpStage {};
+    return serve_reactor_tls_with_stage(server, listener_fd, tls_config, noop, max_connections);
 }
 
 // Processes an incoming HTTP/3 request stream payload through `H3Connection` and `server.pipeline` (RFC 9114).
@@ -1726,7 +1870,7 @@ inline fn dispatch_h3_udp_datagram(
 // using batched `recvmmsg` / `sendmmsg` transitions up to 32 datagrams per syscall.
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
     guard udp_fd > 0 else { return 0; }
-    let h3_settings = H3Settings { .. };
+    let h3_settings = fingerprint::H3Settings { .. };
     var h3_conn = h3_internal::new_h3_server_connection(h3_settings);
     var rx_queue = UdpBatchQueue { .. };
     var tx_queue = UdpBatchQueue { .. };
@@ -1772,7 +1916,9 @@ struct H3ServerEndpoint {
     conn: h3_internal::H3Connection = h3_internal::H3Connection { .. },
 }
 
-fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerEndpoint {
+fn new_h3_server_endpoint(
+    settings: fingerprint::H3Settings = fingerprint::H3Settings { .. },
+) -> H3ServerEndpoint {
     var ep = H3ServerEndpoint {
         conn: h3_internal::new_h3_server_connection(settings),
     };

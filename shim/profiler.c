@@ -128,7 +128,7 @@ static uint8_t g_prof_calibrated = 0;
 static uint64_t g_rdtsc_overhead_cycles = 0;
 static double g_tsc_freq_ghz = 3.0;
 
-static wing_prof_stage_t g_prof_stages[WING_PROF_MAX_STAGES];
+static wing_prof_stage_t *g_prof_stages = NULL;
 static int32_t g_prof_dynamic_count = WING_PROF_LEGACY_STAGES;
 static wing_prof_ptr_cache_t g_ptr_cache[WING_PROF_PTR_CACHE_SZ];
 
@@ -177,7 +177,7 @@ static int64_t g_bench_last_peak_b = 0;
 static int64_t g_bench_last_allocs = 0;
 static int64_t g_bench_last_frees = 0;
 
-static wing_bench_result_t g_bench_results[WING_PROF_MAX_BENCHMARKS];
+static wing_bench_result_t *g_bench_results = NULL;
 static int32_t g_bench_result_count = 0;
 
 static const char *const k_legacy_stage_names[WING_PROF_LEGACY_STAGES] = {
@@ -261,7 +261,18 @@ static void wing_prof_ensure_stacks_bound(void) {
 
 void wing_prof_set_stack_query_fn(wing_prof_stack_query_fn_t fn) { g_stack_query_fn = fn; }
 
+static int wing_prof_ensure_buffers(void) {
+    if (!g_prof_stages) {
+        g_prof_stages = (wing_prof_stage_t *)calloc(WING_PROF_MAX_STAGES, sizeof(wing_prof_stage_t));
+    }
+    if (!g_bench_results) {
+        g_bench_results = (wing_bench_result_t *)calloc(WING_PROF_MAX_BENCHMARKS, sizeof(wing_bench_result_t));
+    }
+    return (g_prof_stages != NULL && g_bench_results != NULL);
+}
+
 static void wing_prof_init_stages_once(void) {
+    if (!wing_prof_ensure_buffers()) return;
     if (g_prof_calibrated) return;
     g_prof_calibrated = 1;
 
@@ -444,7 +455,9 @@ void wing_prof_leave(int64_t span_tok) {
 
     int32_t depth = (int32_t)((uint64_t)span_tok >> 32);
     int32_t stage_id = (int32_t)(span_tok & 0xFFFFFFFF);
-    if (__builtin_expect(depth < 0 || depth >= g_span_depth || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES, 0)) {
+    if (__builtin_expect(!g_prof_stages || depth < 0 || depth >= g_span_depth || stage_id < 0 ||
+                             stage_id >= WING_PROF_MAX_STAGES,
+                         0)) {
         return;
     }
 
@@ -577,7 +590,7 @@ void wing_prof_on_pool_free(void) {
 
 void wing_prof_record(int32_t stage_id, uint64_t cycles) {
     wing_prof_init_stages_once();
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return;
     wing_prof_stage_t *s = &g_prof_stages[stage_id];
     s->samples[s->count & (WING_PROF_SAMPLE_RING - 1)] = (cycles > UINT32_MAX) ? UINT32_MAX : (uint32_t)cycles;
     s->total_cycles += cycles;
@@ -589,32 +602,33 @@ void wing_prof_record(int32_t stage_id, uint64_t cycles) {
 }
 
 uint64_t wing_prof_total_cycles(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].total_cycles;
 }
 
 uint64_t wing_prof_sample_count(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].count;
 }
 
 uint64_t wing_prof_min_cycles(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].min_cycles == UINT64_MAX ? 0 : g_prof_stages[stage_id].min_cycles;
 }
 
 uint64_t wing_prof_max_cycles(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].max_cycles;
 }
 
 double wing_prof_avg_cycles(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0.0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0.0;
     if (g_prof_stages[stage_id].count == 0) return 0.0;
     return (double)g_prof_stages[stage_id].total_cycles / (double)g_prof_stages[stage_id].count;
 }
 
 int32_t wing_prof_stage_count(void) {
+    if (!g_prof_stages) return 0;
     int32_t cnt = 0;
     for (int32_t i = 0; i < g_prof_dynamic_count; i++) {
         if (i >= WING_PROF_LEGACY_STAGES ? g_prof_stages[i].active : (g_prof_stages[i].count > 0)) {
@@ -627,7 +641,7 @@ int32_t wing_prof_stage_count(void) {
 int32_t wing_prof_find_stage(wing_prof_str_t name) { return wing_prof_resolve_stage(name, 0); }
 
 uint64_t wing_prof_stage_self_cycles(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].self_cycles;
 }
 
@@ -638,7 +652,7 @@ static int wing_cmp_u32(const void *a, const void *b) {
 }
 
 static uint64_t wing_prof_stage_percentile(int32_t stage_id, int32_t pct_num, int32_t pct_den) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     wing_prof_stage_t *s = &g_prof_stages[stage_id];
     if (s->count == 0) return 0;
     size_t n = (s->count < WING_PROF_SAMPLE_RING) ? (size_t)s->count : WING_PROF_SAMPLE_RING;
@@ -655,27 +669,27 @@ uint64_t wing_prof_stage_p50_cycles(int32_t stage_id) { return wing_prof_stage_p
 uint64_t wing_prof_stage_p99_cycles(int32_t stage_id) { return wing_prof_stage_percentile(stage_id, 99, 100); }
 
 int64_t wing_prof_stage_net_bytes(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].net_bytes;
 }
 
 int64_t wing_prof_stage_scratch_bytes(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].scratch_bytes;
 }
 
 int64_t wing_prof_stage_peak_bytes(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].peak_bytes;
 }
 
 int64_t wing_prof_stage_pool_allocs(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].pool_allocs;
 }
 
 int64_t wing_prof_stage_pool_frees(int32_t stage_id) {
-    if (stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
+    if (!g_prof_stages || stage_id < 0 || stage_id >= WING_PROF_MAX_STAGES) return 0;
     return g_prof_stages[stage_id].pool_frees;
 }
 
@@ -863,6 +877,7 @@ int64_t wing_bench_end_pass(int32_t pass_idx, int64_t cur_n, int64_t target_ns) 
 }
 
 void wing_bench_commit(wing_prof_str_t bench_name, int64_t final_n, int64_t bytes_per_op) {
+    if (!wing_prof_ensure_buffers()) return;
     if (g_bench_result_count >= WING_PROF_MAX_BENCHMARKS) return;
     wing_bench_result_t *r = &g_bench_results[g_bench_result_count++];
     memset(r, 0, sizeof(*r));
@@ -1008,6 +1023,10 @@ void wing_bench_print_report(void) {
 }
 
 void wing_prof_print_summary(void) {
+    if (!g_prof_stages) {
+        printf("[PROFILER] No samples recorded.\n");
+        return;
+    }
     uint64_t grand_self = 0;
     for (int32_t i = 0; i < g_prof_dynamic_count; i++) {
         grand_self += g_prof_stages[i].self_cycles;

@@ -236,14 +236,14 @@ fn test_request_and_response_ufcs() {
 }
 
 fn test_cookie_deltas_and_contracts() {
-    var jar = wing::ServerCookieDeltaJar { .. };
-    let _ = wing::add_original(jar, wing::new_canonical_cookie("orig_only", "v0"));
-    let _ = wing::add_original(jar, wing::new_canonical_cookie("to_remove", "v1"));
-    let _ = wing::add(jar, wing::new_canonical_cookie("session_id", "s_new"));
-    let _ = wing::remove(jar, wing::new_canonical_cookie("to_remove", "v1"));
+    var jar = cookie::ServerCookieDeltaJar { .. };
+    let _ = cookie::add_original(jar, cookie::new_canonical_cookie("orig_only", "v0"));
+    let _ = cookie::add_original(jar, cookie::new_canonical_cookie("to_remove", "v1"));
+    let _ = cookie::add(jar, cookie::new_canonical_cookie("session_id", "s_new"));
+    let _ = cookie::remove(jar, cookie::new_canonical_cookie("to_remove", "v1"));
 
     var out_hdrs = wing::HeaderMap { .. };
-    let flush_ok = wing::flush_cookie_deltas(jar, out_hdrs);
+    let flush_ok = cookie::flush_deltas(jar, out_hdrs);
     print(
         "cookie_flush: ", flush_ok, " count=", out_hdrs.entries.len,
         " first=", wing::get_header(out_hdrs, "Set-Cookie"),

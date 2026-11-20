@@ -811,7 +811,7 @@ fn test_live_digest_auth_and_cookies() {
     let resp_auth, err_auth = wing::execute_request(g_e2e_client, req_auth);
     assert(wing::ok(err_auth) && resp_auth.status_code == 200);
     assert(resp_auth.body[..] == "DIGEST_AUTH_OK");
-    assert(wing::get(g_e2e_client.jar, "auth_step") == "challenged");
+    assert(cookie::get(g_e2e_client.jar, "auth_step") == "challenged");
 
     // Read both wire requests emitted by `wing::Client` over `s_fd` and replay the 2nd (authenticated) request
     // against `accept_and_serve_one_e2e` (`handle_digest_protected`)!
@@ -1252,7 +1252,7 @@ fn test_h3_query_and_trailers_seam() {
     ctx.body.append("REQ_DATA");
     wing::append_header(ctx.headers, "te", "trailers");
 
-    let h3_settings = wing::H3Settings { .. };
+    let h3_settings = fingerprint::H3Settings { .. };
     g_cli_h3 = h3_internal::new_h3_client_connection(h3_settings);
     let sid, ok_s = h3_internal::open_request_stream(g_cli_h3);
     assert(ok_s && sid == 0);
@@ -1302,7 +1302,7 @@ fn test_client_egress_pipeline_custom_order() {
     let resp, err = wing::execute_request(g_seam_session, req);
     assert(wing::ok(err) && resp.status_code == 200);
     // Because STAGE_ID_CLI_OUT_COOKIE_STORE was omitted from egress_stages, cookie must not be stored
-    assert(wing::get(g_seam_session.jar, "skipped_cookie") == "");
+    assert(cookie::get(g_seam_session.jar, "skipped_cookie") == "");
     print("SEAM_CLIENT_EGRESS_STAGES_ORDER: OK");
 }
 
@@ -1740,7 +1740,7 @@ fn run_03_verify_module_seams_regress() {
 
 fn test_snippet_1_http_client() {
     var sess = wing::new_session("https://api.example.com") { s =>
-        s.set_profile(wing::Profile.Wing);
+        s.set_profile(fingerprint::Profile.Wing);
         s.set_timeout_ms(5000);
         s.default_header("Accept", "application/json");
     };
@@ -2325,7 +2325,7 @@ fn encode_client_request_headers<B>(
 fn test_h2_wire_loopback() {
     var client_hpack = h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/api/ping", 200);
 
@@ -2425,7 +2425,7 @@ fn test_quic_wire_loopback() {
 // 3. HTTP/3 Wire Loopback:
 // Client formats Control Stream SETTINGS + Request Stream HEADERS with QPACK section -> Server parses and verifies
 fn test_h3_wire_loopback() {
-    let settings = wing::H3Settings {
+    let settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   65536,
         qpack_blocked_streams:    16,

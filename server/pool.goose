@@ -57,7 +57,7 @@ struct RequestExtensions {
     cors_origin:       u8[..128]             = [],
     auth_subject:      u8[..64]              = [],
     auth_scopes:       u64                   = 0,
-    jwt_claims:        wing::JwtClaims       = wing::JwtClaims { .. },
+    jwt_claims:        auth::JwtClaims       = auth::JwtClaims { .. },
     start_time_ns:     u64                   = 0,
     effective_pso:     u64                   = 0,
     populated_entries: u32                   = 0,
@@ -68,7 +68,7 @@ struct ExtensionsPool {
     slots: RequestExtensions[..16] = [RequestExtensions { .. }; 16],
 }
 
-fn reset_slot_jwt_claims(claims: wing::JwtClaims&) {
+fn reset_slot_jwt_claims(claims: auth::JwtClaims&) {
     claims.iss.clear();
     claims.sub.clear();
     claims.aud.clear();

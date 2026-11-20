@@ -141,6 +141,7 @@ typedef BOOL(PASCAL *WING_LPFN_ACCEPTEX)(SOCKET sListenSocket, SOCKET sAcceptSoc
 
 #define WING_RIO_MAX_CQS 256
 #define WING_RIO_MAX_LISTENERS 64
+#define WING_RIO_DEFER_CAP 256
 #define WING_RIO_ACCEPT_ADDR_LEN ((DWORD)(sizeof(struct sockaddr_storage) + 16))
 
 typedef struct {
@@ -149,11 +150,65 @@ typedef struct {
     int armed;
 } wing_rio_cq_slot;
 
+typedef struct {
+    int active;
+    SOCKET fd;
+    WING_RIO_RQ rq;
+    WING_RIO_CQ rx_cq;
+    WING_RIO_CQ tx_cq;
+    WING_RIO_BUFFERID buf_id;
+    uint8_t *slab;
+    int64_t slab_len;
+    uint32_t rx_off;
+    uint32_t tx_off;
+    uint32_t buf_size;
+    uint64_t sock_ctx;
+    uint8_t rx_stash[4096];
+    uint32_t rx_stash_pos;
+    uint32_t rx_stash_len;
+    int rx_inflight;
+    WING_RIO_CQ def_rx_cq;
+    WING_RIO_RESULT def_rx[WING_RIO_DEFER_CAP];
+    int def_rx_head;
+    int def_rx_count;
+    WING_RIO_CQ def_tx_cq;
+    WING_RIO_RESULT def_tx[WING_RIO_DEFER_CAP];
+    int def_tx_head;
+    int def_tx_count;
+} wing_rio_hs_ctx;
+
 static WING_RIO_EXTENSION_FUNCTION_TABLE g_rio;
 static WING_LPFN_ACCEPTEX g_acceptex = NULL;
 static wing_rio_cq_slot g_rio_cqs[WING_RIO_MAX_CQS];
+static wing_rio_hs_ctx g_rio_hs;
 static int g_rio_initialized = 0;
 static int g_rio_available = 0;
+
+static void defer_push_rx(WING_RIO_CQ cq, const WING_RIO_RESULT *r) {
+    if (g_rio_hs.def_rx_cq != cq) {
+        g_rio_hs.def_rx_cq = cq;
+        g_rio_hs.def_rx_head = 0;
+        g_rio_hs.def_rx_count = 0;
+    }
+    if (g_rio_hs.def_rx_count < WING_RIO_DEFER_CAP) {
+        int idx = (g_rio_hs.def_rx_head + g_rio_hs.def_rx_count) % WING_RIO_DEFER_CAP;
+        g_rio_hs.def_rx[idx] = *r;
+        g_rio_hs.def_rx_count++;
+    }
+}
+
+static void defer_push_tx(WING_RIO_CQ cq, const WING_RIO_RESULT *r) {
+    if (g_rio_hs.def_tx_cq != cq) {
+        g_rio_hs.def_tx_cq = cq;
+        g_rio_hs.def_tx_head = 0;
+        g_rio_hs.def_tx_count = 0;
+    }
+    if (g_rio_hs.def_tx_count < WING_RIO_DEFER_CAP) {
+        int idx = (g_rio_hs.def_tx_head + g_rio_hs.def_tx_count) % WING_RIO_DEFER_CAP;
+        g_rio_hs.def_tx[idx] = *r;
+        g_rio_hs.def_tx_count++;
+    }
+}
 
 static wing_rio_cq_slot *find_rio_cq_slot(WING_RIO_CQ cq) {
     if (!cq) return NULL;
@@ -301,6 +356,16 @@ uint64_t wing_rio_create_cq(uint32_t queue_size) {
 void wing_rio_close_cq(uint64_t cq_id) {
     if (g_rio_available && cq_id != 0 && g_rio.RIOCloseCompletionQueue) {
         WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
+        if (g_rio_hs.def_rx_cq == cq) {
+            g_rio_hs.def_rx_cq = NULL;
+            g_rio_hs.def_rx_head = 0;
+            g_rio_hs.def_rx_count = 0;
+        }
+        if (g_rio_hs.def_tx_cq == cq) {
+            g_rio_hs.def_tx_cq = NULL;
+            g_rio_hs.def_tx_head = 0;
+            g_rio_hs.def_tx_count = 0;
+        }
         g_rio.RIOCloseCompletionQueue(cq);
         wing_rio_cq_slot *slot = find_rio_cq_slot(cq);
         if (slot) {
@@ -355,6 +420,22 @@ int32_t wing_rio_dequeue_slice(uint64_t cq_id, wing_rio_results_rw dst) {
     WING_RIO_CQ cq = (WING_RIO_CQ)(uintptr_t)cq_id;
     WING_RIO_RESULT aligned_batch[256];
     int64_t total = 0;
+
+    if (cq == g_rio_hs.def_rx_cq && g_rio_hs.def_rx_count > 0) {
+        while (total < dst.len && g_rio_hs.def_rx_count > 0) {
+            memcpy(dst.data + total, &g_rio_hs.def_rx[g_rio_hs.def_rx_head], sizeof(WING_RIO_RESULT));
+            g_rio_hs.def_rx_head = (g_rio_hs.def_rx_head + 1) % WING_RIO_DEFER_CAP;
+            g_rio_hs.def_rx_count--;
+            total++;
+        }
+    } else if (cq == g_rio_hs.def_tx_cq && g_rio_hs.def_tx_count > 0) {
+        while (total < dst.len && g_rio_hs.def_tx_count > 0) {
+            memcpy(dst.data + total, &g_rio_hs.def_tx[g_rio_hs.def_tx_head], sizeof(WING_RIO_RESULT));
+            g_rio_hs.def_tx_head = (g_rio_hs.def_tx_head + 1) % WING_RIO_DEFER_CAP;
+            g_rio_hs.def_tx_count--;
+            total++;
+        }
+    }
 
     while (total < dst.len) {
         ULONG cap = (dst.len - total > 256) ? 256 : (ULONG)(dst.len - total);
@@ -428,6 +509,209 @@ int32_t wing_rio_post_recv(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uin
 
 int32_t wing_rio_post_send(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uint32_t length, uint64_t req_ctx) {
     return wing_rio_send(rq_id, buf_id, offset, length, req_ctx);
+}
+
+void wing_rio_hs_begin(int64_t sock_fd, uint64_t rq_id, uint64_t rx_cq, uint64_t tx_cq, uint64_t buf_id,
+                       wing_rio_bytes_rw slab, uint32_t rx_off, uint32_t tx_off, uint32_t buf_size,
+                       uint64_t sock_ctx) {
+    g_rio_hs.active = (sock_fd > 0 && rq_id != 0 && rx_cq != 0 && tx_cq != 0 && buf_id != 0 && slab.data != NULL);
+    g_rio_hs.fd = (SOCKET)sock_fd;
+    g_rio_hs.rq = (WING_RIO_RQ)(uintptr_t)rq_id;
+    g_rio_hs.rx_cq = (WING_RIO_CQ)(uintptr_t)rx_cq;
+    g_rio_hs.tx_cq = (WING_RIO_CQ)(uintptr_t)tx_cq;
+    g_rio_hs.buf_id = (WING_RIO_BUFFERID)(uintptr_t)buf_id;
+    g_rio_hs.slab = slab.data;
+    g_rio_hs.slab_len = slab.len;
+    g_rio_hs.rx_off = rx_off;
+    g_rio_hs.tx_off = tx_off;
+    g_rio_hs.buf_size = (buf_size > 4096) ? 4096 : buf_size;
+    g_rio_hs.sock_ctx = sock_ctx;
+    g_rio_hs.rx_stash_pos = 0;
+    g_rio_hs.rx_stash_len = 0;
+    g_rio_hs.rx_inflight = 0;
+}
+
+int32_t wing_rio_hs_end(wing_rio_bytes_rw out_leftover) {
+    int32_t rem = 0;
+    if (g_rio_hs.active && g_rio_hs.rx_stash_pos < g_rio_hs.rx_stash_len) {
+        uint32_t avail = g_rio_hs.rx_stash_len - g_rio_hs.rx_stash_pos;
+        if (out_leftover.data != NULL && out_leftover.len > 0) {
+            rem = (avail > (uint32_t)out_leftover.len) ? (int32_t)out_leftover.len : (int32_t)avail;
+            memcpy(out_leftover.data, g_rio_hs.rx_stash + g_rio_hs.rx_stash_pos, (size_t)rem);
+        }
+    }
+    g_rio_hs.active = 0;
+    g_rio_hs.fd = INVALID_SOCKET;
+    g_rio_hs.rx_stash_pos = 0;
+    g_rio_hs.rx_stash_len = 0;
+    g_rio_hs.rx_inflight = 0;
+    return rem;
+}
+
+int32_t wing_rio_hs_recv(int64_t sock_fd, uint8_t *dst, int64_t len, uint32_t timeout_ms) {
+    if (!g_rio_hs.active || (SOCKET)sock_fd != g_rio_hs.fd) {
+        return -99;
+    }
+    if (!dst || len <= 0 || !g_rio.RIOReceive || !g_rio.RIODequeueCompletion) {
+        return -1;
+    }
+    if (g_rio_hs.rx_stash_pos < g_rio_hs.rx_stash_len) {
+        uint32_t avail = g_rio_hs.rx_stash_len - g_rio_hs.rx_stash_pos;
+        uint32_t n = ((uint64_t)len < (uint64_t)avail) ? (uint32_t)len : avail;
+        memcpy(dst, g_rio_hs.rx_stash + g_rio_hs.rx_stash_pos, n);
+        g_rio_hs.rx_stash_pos += n;
+        return (int32_t)n;
+    }
+    if (!g_rio_hs.rx_inflight) {
+        WING_RIO_BUF buf;
+        buf.BufferId = g_rio_hs.buf_id;
+        buf.Offset = g_rio_hs.rx_off;
+        buf.Length = g_rio_hs.buf_size;
+        if (!g_rio.RIOReceive(g_rio_hs.rq, &buf, 1, 0, (PVOID)(uintptr_t)1)) {
+            return -1;
+        }
+        g_rio_hs.rx_inflight = 1;
+    }
+    ULONGLONG deadline = GetTickCount64() + (ULONGLONG)(timeout_ms > 0 ? timeout_ms : 5000);
+    WING_RIO_RESULT batch[64];
+    for (;;) {
+        ULONG n = g_rio.RIODequeueCompletion(g_rio_hs.rx_cq, batch, 64);
+        if (n == WING_RIO_CORRUPT_CQ) {
+            return -1;
+        }
+        if (n > 0) {
+            wing_rio_cq_slot *cq_slot = find_rio_cq_slot(g_rio_hs.rx_cq);
+            if (cq_slot) {
+                cq_slot->armed = 0;
+            }
+            int matched = 0;
+            WING_RIO_RESULT mres;
+            memset(&mres, 0, sizeof(mres));
+            for (ULONG i = 0; i < n; i++) {
+                if (!matched && batch[i].ConnectionCorrelation == g_rio_hs.sock_ctx) {
+                    matched = 1;
+                    mres = batch[i];
+                } else {
+                    defer_push_rx(g_rio_hs.rx_cq, &batch[i]);
+                }
+            }
+            if (matched) {
+                g_rio_hs.rx_inflight = 0;
+                if (mres.Status != 0 || mres.BytesTransferred == 0) {
+                    return 0;
+                }
+                uint32_t got = (mres.BytesTransferred > g_rio_hs.buf_size) ? g_rio_hs.buf_size : mres.BytesTransferred;
+                memcpy(g_rio_hs.rx_stash, g_rio_hs.slab + g_rio_hs.rx_off, got);
+                g_rio_hs.rx_stash_pos = 0;
+                g_rio_hs.rx_stash_len = got;
+                uint32_t n_copy = ((uint64_t)len < (uint64_t)got) ? (uint32_t)len : got;
+                memcpy(dst, g_rio_hs.rx_stash, n_copy);
+                g_rio_hs.rx_stash_pos = n_copy;
+                return (int32_t)n_copy;
+            }
+            continue;
+        }
+        ULONGLONG now = GetTickCount64();
+        if (now >= deadline) {
+            return -2;
+        }
+        int32_t rem = (int32_t)(deadline - now);
+        if (rem > 5) {
+            rem = 5;
+        }
+        (void)wing_rio_wait_cq((uint64_t)(uintptr_t)g_rio_hs.rx_cq, rem);
+    }
+}
+
+int32_t wing_rio_hs_send(int64_t sock_fd, const uint8_t *data, int64_t len) {
+    if (!g_rio_hs.active || (SOCKET)sock_fd != g_rio_hs.fd) {
+        return -99;
+    }
+    if (!data || len <= 0 || !g_rio.RIOSend || !g_rio.RIODequeueCompletion) {
+        return -1;
+    }
+    int64_t off = 0;
+    WING_RIO_RESULT batch[64];
+    while (off < len) {
+        int64_t rem_len = len - off;
+        uint32_t chunk = (rem_len > (int64_t)g_rio_hs.buf_size) ? g_rio_hs.buf_size : (uint32_t)rem_len;
+        memcpy(g_rio_hs.slab + g_rio_hs.tx_off, data + off, chunk);
+        WING_RIO_BUF buf;
+        buf.BufferId = g_rio_hs.buf_id;
+        buf.Offset = g_rio_hs.tx_off;
+        buf.Length = chunk;
+        if (!g_rio.RIOSend(g_rio_hs.rq, &buf, 1, 0, (PVOID)(uintptr_t)2)) {
+            return -1;
+        }
+        ULONGLONG deadline = GetTickCount64() + 5000ULL;
+        int done = 0;
+        while (!done) {
+            ULONG n = g_rio.RIODequeueCompletion(g_rio_hs.tx_cq, batch, 64);
+            if (n == WING_RIO_CORRUPT_CQ) {
+                return -1;
+            }
+            if (n > 0) {
+                wing_rio_cq_slot *cq_slot = find_rio_cq_slot(g_rio_hs.tx_cq);
+                if (cq_slot) {
+                    cq_slot->armed = 0;
+                }
+                for (ULONG i = 0; i < n; i++) {
+                    if (!done && batch[i].ConnectionCorrelation == g_rio_hs.sock_ctx) {
+                        if (batch[i].Status != 0) {
+                            return -1;
+                        }
+                        done = 1;
+                    } else {
+                        defer_push_tx(g_rio_hs.tx_cq, &batch[i]);
+                    }
+                }
+                continue;
+            }
+            ULONGLONG now = GetTickCount64();
+            if (now >= deadline) {
+                return -1;
+            }
+            (void)wing_rio_wait_cq((uint64_t)(uintptr_t)g_rio_hs.tx_cq, 2);
+        }
+        off += (int64_t)chunk;
+    }
+    return (int32_t)off;
+}
+
+typedef struct {
+    SOCKET lsock;
+    int family;
+    int active;
+} wing_rio_listener_entry;
+
+static wing_rio_listener_entry g_rio_listeners[WING_RIO_MAX_LISTENERS];
+
+static void record_rio_listener(SOCKET s, int family) {
+    int free_idx = -1;
+    for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
+        if (g_rio_listeners[i].active && g_rio_listeners[i].lsock == s) {
+            g_rio_listeners[i].family = family;
+            return;
+        }
+        if (!g_rio_listeners[i].active && free_idx < 0) {
+            free_idx = i;
+        }
+    }
+    if (free_idx >= 0) {
+        g_rio_listeners[free_idx].lsock = s;
+        g_rio_listeners[free_idx].family = family;
+        g_rio_listeners[free_idx].active = 1;
+    }
+}
+
+static void remove_rio_listener(SOCKET s) {
+    for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
+        if (g_rio_listeners[i].active && g_rio_listeners[i].lsock == s) {
+            g_rio_listeners[i].active = 0;
+            g_rio_listeners[i].lsock = 0;
+            g_rio_listeners[i].family = 0;
+        }
+    }
 }
 
 int64_t wing_rio_listen(wing_rio_str_ro host, uint16_t port, int32_t backlog) {
@@ -509,10 +793,16 @@ int64_t wing_rio_listen(wing_rio_str_ro host, uint16_t port, int32_t backlog) {
         closesocket(s);
         return -1;
     }
+    record_rio_listener(s, family);
     return (int64_t)s;
 }
 
 static int query_socket_family(SOCKET s) {
+    for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
+        if (g_rio_listeners[i].active && g_rio_listeners[i].lsock == s) {
+            return g_rio_listeners[i].family;
+        }
+    }
     struct sockaddr_storage ss;
     int len = (int)sizeof(ss);
     memset(&ss, 0, sizeof(ss));
@@ -618,11 +908,13 @@ int32_t wing_rio_is_listener(int64_t sock_fd) {
     struct sockaddr_storage ss;
     int len = (int)sizeof(ss);
     if (getsockname(s, (struct sockaddr *)&ss, &len) != 0) {
+        remove_rio_listener(s);
         return 0;
     }
     int accept_conn = 0;
     int opt_len = (int)sizeof(accept_conn);
     if (getsockopt(s, SOL_SOCKET, SO_ACCEPTCONN, (char *)&accept_conn, &opt_len) == 0 && !accept_conn) {
+        remove_rio_listener(s);
         return 0;
     }
     WSAPOLLFD pfd;
@@ -630,8 +922,10 @@ int32_t wing_rio_is_listener(int64_t sock_fd) {
     pfd.events = POLLRDNORM;
     pfd.revents = 0;
     if (WSAPoll(&pfd, 1, 0) == SOCKET_ERROR && WSAGetLastError() == WSAENOTSOCK) {
+        record_rio_listener(s, (ss.ss_family == AF_INET6) ? AF_INET6 : AF_INET);
         return 1;
     }
+    remove_rio_listener(s);
     return 0;
 }
 
@@ -663,10 +957,12 @@ int32_t wing_rio_cancel_accept(int64_t listen_fd) {
     if (listen_fd <= 0) {
         for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
             cancelled += cleanup_rio_accept_slot(&g_rio_accept_slots[i], 1);
+            g_rio_listeners[i].active = 0;
         }
         return cancelled;
     }
     SOCKET lsock = (SOCKET)listen_fd;
+    remove_rio_listener(lsock);
     for (int i = 0; i < WING_RIO_MAX_LISTENERS; i++) {
         if (g_rio_accept_slots[i].pending && g_rio_accept_slots[i].lsock == lsock) {
             cancelled += cleanup_rio_accept_slot(&g_rio_accept_slots[i], 1);
@@ -680,7 +976,7 @@ int64_t wing_rio_poll_accept(int64_t listen_fd, int32_t timeout_ms) {
         return -1;
     }
     SOCKET lsock = (SOCKET)listen_fd;
-    int family = query_socket_family(lsock);
+    int family = 0;
 
     for (int attempt = 0; attempt < 2; attempt++) {
         wing_rio_accept_slot *slot = NULL;
@@ -699,6 +995,9 @@ int64_t wing_rio_poll_accept(int64_t listen_fd, int32_t timeout_ms) {
             }
             if (!slot) {
                 return -1;
+            }
+            if (family == 0) {
+                family = query_socket_family(lsock);
             }
             SOCKET asock =
                 WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_REGISTERED_IO | WSA_FLAG_OVERLAPPED);
@@ -743,13 +1042,19 @@ int64_t wing_rio_poll_accept(int64_t listen_fd, int32_t timeout_ms) {
         }
 
         DWORD wait_ms = (timeout_ms < 0) ? 0 : (DWORD)timeout_ms;
-        DWORD w = WaitForSingleObject(slot->ev, wait_ms);
-        if (w == WAIT_TIMEOUT) {
-            return 0;
-        }
-        if (w != WAIT_OBJECT_0) {
-            cleanup_rio_accept_slot(slot, 1);
-            return -1;
+        if (wait_ms == 0) {
+            if (!HasOverlappedIoCompleted(&slot->ov)) {
+                return 0;
+            }
+        } else {
+            DWORD w = WaitForSingleObject(slot->ev, wait_ms);
+            if (w == WAIT_TIMEOUT) {
+                return 0;
+            }
+            if (w != WAIT_OBJECT_0) {
+                cleanup_rio_accept_slot(slot, 1);
+                return -1;
+            }
         }
         DWORD bytes = 0;
         DWORD flags = 0;
@@ -864,6 +1169,24 @@ int64_t wing_rio_poll_accept(int64_t listen_fd, int32_t timeout_ms) {
 }
 int32_t wing_rio_cancel_accept(int64_t listen_fd) {
     (void)listen_fd;
+    return 0;
+}
+void wing_rio_hs_begin(int64_t sock_fd, uint64_t rq_id, uint64_t rx_cq, uint64_t tx_cq, uint64_t buf_id,
+                       wing_rio_bytes_rw slab, uint32_t rx_off, uint32_t tx_off, uint32_t buf_size,
+                       uint64_t sock_ctx) {
+    (void)sock_fd;
+    (void)rq_id;
+    (void)rx_cq;
+    (void)tx_cq;
+    (void)buf_id;
+    (void)slab;
+    (void)rx_off;
+    (void)tx_off;
+    (void)buf_size;
+    (void)sock_ctx;
+}
+int32_t wing_rio_hs_end(wing_rio_bytes_rw out_leftover) {
+    (void)out_leftover;
     return 0;
 }
 

@@ -1451,16 +1451,16 @@ fn test_oauth21_strict_pkce(t: lit::T&) {
 
         // S256 is accepted
         var s256_challenge: u8[..128] = [];
-        let ok_s256 = wing::compute_code_challenge(verifier, "S256", s256_challenge);
+        let ok_s256 = auth::compute_code_challenge(verifier, "S256", s256_challenge);
         sub.assert_true(ok_s256, "S256 challenge computed");
-        sub.assert_true(wing::is_valid_code_challenge_strict(s256_challenge[..], "S256"), "S256 valid under strict rules");
-        sub.assert_true(wing::validate_code_challenge_strict(verifier, s256_challenge[..], "S256"), "S256 validates under strict rules");
+        sub.assert_true(auth::is_valid_code_challenge_strict(s256_challenge[..], "S256"), "S256 valid under strict rules");
+        sub.assert_true(auth::validate_code_challenge_strict(verifier, s256_challenge[..], "S256"), "S256 validates under strict rules");
 
         // plain is strictly rejected under OAuth 2.1 rules
         var plain_challenge: u8[..128] = [];
-        wing::compute_code_challenge(verifier, "plain", plain_challenge);
-        sub.assert_false(wing::is_valid_code_challenge_strict(plain_challenge[..], "plain"), "plain method rejected by strict challenge check");
-        sub.assert_false(wing::validate_code_challenge_strict(verifier, plain_challenge[..], "plain"), "plain method rejected by strict validation");
+        auth::compute_code_challenge(verifier, "plain", plain_challenge);
+        sub.assert_false(auth::is_valid_code_challenge_strict(plain_challenge[..], "plain"), "plain method rejected by strict challenge check");
+        sub.assert_false(auth::validate_code_challenge_strict(verifier, plain_challenge[..], "plain"), "plain method rejected by strict validation");
     };
 }
 

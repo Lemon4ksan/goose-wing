@@ -147,21 +147,21 @@ fn test_b8_range_416_unsatisfiable() {
 
 // B9 (F003): Inline -b cookies seeded into CanonicalCookieJar survive encode_cookie_header_to_map.
 fn test_b9_inline_cookies_preserved_in_jar() {
-    var jar = wing::CanonicalCookieJar { .. };
+    var jar = cookie::CanonicalCookieJar { .. };
     let now_us: i64 = 1750000000000000;
     seed_inline_cookies_to_jar(jar, "http://example.com/api", "sid=abc; theme=dark", now_us);
     var req = wing::new_request("GET", "http://example.com/api");
     wing::set_header(req, "Cookie", "sid=abc; theme=dark");
-    let _ = wing::encode_cookie_header_to_map(
+    let _ = cookie::encode_cookie_header_to_map(
         jar,
         "example.com",
         "/api",
         "http",
         80,
-        wing::CookieSourceOptions { is_http_api: true, url_is_secure: false },
+        cookie::SourceOptions { is_http_api: true, url_is_secure: false },
         "",
         now_us,
-        wing::CookieAccessOptions { is_same_site: true, is_top_level_navigation: true, is_safe_method: true, .. },
+        cookie::AccessOptions { is_same_site: true, is_top_level_navigation: true, is_safe_method: true, .. },
         req.headers,
     );
     let ck = req.header("Cookie");
@@ -468,11 +468,11 @@ fn run_02_rfc_repro_client_buffer_body() {
 // F001: set_profile(session, Profile.Custom) must reset profile_spec and clear default_headers.
 fn test_f001_set_profile_custom() {
     var session = wing::new_session();
-    wing::set_profile(session, wing::Profile.Wing);
+    wing::set_profile(session, fingerprint::Profile.Wing);
     assert(session.default_headers.entries.len > 0);
-    wing::set_profile(session, wing::Profile.Custom);
+    wing::set_profile(session, fingerprint::Profile.Custom);
     assert(session.default_headers.entries.len == 0);
-    assert(session.profile_spec.kind == wing::Profile.Custom);
+    assert(session.profile_spec.kind == fingerprint::Profile.Custom);
     print("F001_SET_PROFILE_CUSTOM: OK");
 }
 
@@ -480,13 +480,13 @@ fn test_f001_set_profile_custom() {
 fn test_f003_ech_stale_expiry_and_clear() {
     var session = wing::new_session();
     session.enable_ech = true;
-    var rec = wing::HttpsRecord {
+    var rec = dns::HttpsRecord {
         priority: 1,
         has_ech:  true,
         ..
     };
     rec.ech_config_list.append("ech-config-bytes");
-    var entry = wing::DnsCacheEntry {
+    var entry = dns::CacheEntry {
         qtype:           rfc::DNS_QTYPE_HTTPS,
         ttl_sec:         60,
         inserted_at_sec: 1000,
@@ -495,7 +495,7 @@ fn test_f003_ech_stale_expiry_and_clear() {
     };
     entry.domain.append("ech.example.com");
     entry.https_records.push(rec);
-    wing::dns_cache_insert(session.dns_cache, entry);
+    session.dns_cache.insert(entry);
 
     var out_ech: u8[..512] = [];
     out_ech.append("stale-prefix-");
@@ -604,12 +604,12 @@ fn test_f009_response_remove_header_presence_mask() {
 
 // F010: stage_client_cookie_load must not treat CrossSite context (when had_cross_site_hop is false) as top-level navigation even if is_main_frame is true.
 fn test_f010_samesite_cross_site_main_frame() {
-    var jar = wing::CanonicalCookieJar { .. };
+    var jar = cookie::CanonicalCookieJar { .. };
     let now_us: i64 = 1700000000000000;
-    assert(wing::set_cookie_header(jar, "https://target.example.com/", "lax_sid=secret; Path=/; Secure; SameSite=Lax", now_us));
+    assert(cookie::set_cookie_header(jar, "https://target.example.com/", "lax_sid=secret; Path=/; Secure; SameSite=Lax", now_us));
     let target_u = core::new_url("https://target.example.com/api");
-    let eval = wing::SameSiteCookieContext {
-        context_type:       wing::SameSiteContextType.CrossSite,
+    let eval = cookie::SameSiteCookieContext {
+        context_type:       cookie::SameSiteContextType.CrossSite,
         schemefully_same:   false,
         is_reload:          false,
         had_cross_site_hop: false,
@@ -636,9 +636,9 @@ fn test_f011_exec_bounds_and_auth_retry_cookie() {
     wing::build_effective_url(base_big[..], rel_big[..], q_items[..], out_url);
 
     var session = wing::new_session();
-    wing::set_cookie_header(session.jar, "https://auth.example.com/resource", "sid=initial_token; Path=/", session.virtual_clock_us);
+    cookie::set_cookie_header(session.jar, "https://auth.example.com/resource", "sid=initial_token; Path=/", session.virtual_clock_us);
     var ctx = wing::RequestExecutionContext {
-        site_for_cookies: wing::site_for_cookies_from_url("https://auth.example.com/resource"),
+        site_for_cookies: cookie::site_for_cookies_from_url("https://auth.example.com/resource"),
         is_main_frame:    true,
         ..
     };
@@ -678,9 +678,9 @@ fn test_f013_ssrf_oversized_and_siit() {
     for i in 260 {
         long_ip.push('0');
     }
-    assert(wing::is_private_or_reserved_ip(long_ip[..]));
-    assert(wing::is_private_or_reserved_ip("::ffff:0:0.0.0.1"));
-    assert(wing::is_private_or_reserved_ip("64:ff9b::0.0.0.1"));
+    assert(security::is_private_or_reserved_ip(long_ip[..]));
+    assert(security::is_private_or_reserved_ip("::ffff:0:0.0.0.1"));
+    assert(security::is_private_or_reserved_ip("64:ff9b::0.0.0.1"));
     print("F013_SSRF_OVERSIZED_AND_SIIT: OK");
 }
 
@@ -1088,7 +1088,7 @@ fn test_f020_f023_auth_retry_state_and_clear() {
     ctx.body.append("post-data");
 
     let u = core::new_url("https://example.com/api");
-    let samesite = wing::SameSiteCookieContext { .. };
+    let samesite = cookie::SameSiteCookieContext { .. };
     let resp = wing::Response { status_code: 401, .. };
 
     wing::prepare_auth_retry_hop(session, ctx, u, samesite, false, resp, "Basic dGVzdA==");
@@ -1130,15 +1130,15 @@ fn run_05_rfc_repro_client_round2_bug_hunter() {
 //
 
 fn test_ssrf_ipv6() {
-    assert(wing::is_private_or_reserved_ip("64:ff9b:1::"));
-    assert(wing::is_private_or_reserved_ip("64:ff9b:1::1"));
-    assert(wing::is_private_or_reserved_ip("64:ff9b:1:abcd::1"));
-    assert(wing::is_private_or_reserved_ip("64:ff9b:1::8.8.8.8"));
-    assert(!wing::is_private_or_reserved_ip("64:ff9b::8.8.8.8"));
+    assert(security::is_private_or_reserved_ip("64:ff9b:1::"));
+    assert(security::is_private_or_reserved_ip("64:ff9b:1::1"));
+    assert(security::is_private_or_reserved_ip("64:ff9b:1:abcd::1"));
+    assert(security::is_private_or_reserved_ip("64:ff9b:1::8.8.8.8"));
+    assert(!security::is_private_or_reserved_ip("64:ff9b::8.8.8.8"));
 
-    assert(wing::is_private_or_reserved_ip("2001:20::1"));
-    assert(wing::is_private_or_reserved_ip("2001:2f::1"));
-    assert(!wing::is_private_or_reserved_ip("2001:30::1"));
+    assert(security::is_private_or_reserved_ip("2001:20::1"));
+    assert(security::is_private_or_reserved_ip("2001:2f::1"));
+    assert(!security::is_private_or_reserved_ip("2001:30::1"));
     print("CHECK_SSRF_IPV6: OK");
 }
 
@@ -1266,7 +1266,7 @@ fn run_06_rfc_repro_client_round3_invariants() {
 // F001: Default (Lax-allowing-unsafe) cookies must be blocked on unsafe POST requests after a cross-site redirect (RFC 6265bis §5.3.7.1).
 fn test_f001_samesite_lax_after_cross_site_redirect() {
     var session = wing::new_session();
-    let ok_set = wing::set_cookie_header(
+    let ok_set = cookie::set_cookie_header(
         session.jar,
         "https://target.example.com/landing",
         "def_sid=abc123; Path=/; Secure",
@@ -1278,11 +1278,11 @@ fn test_f001_samesite_lax_after_cross_site_redirect() {
     var ctx = wing::RequestExecutionContext {
         is_main_frame:      true,
         had_cross_site_hop: true,
-        site_for_cookies:   wing::null_site_for_cookies(),
+        site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
     let samesite_eval = wing::compute_hop_samesite_context(ctx, curr_url, false);
-    assert(samesite_eval.context_type == wing::SameSiteContextType.CrossSite);
+    assert(samesite_eval.context_type == cookie::SameSiteContextType.CrossSite);
 
     let _ = wing::stage_client_cookie_load(
         ctx.headers,
@@ -1402,7 +1402,7 @@ fn test_f006_h2_oversize_frame_and_rst_stream() {
 // F007: execute_live_h3_hop must validate AltSvcEndpoint.host against session.ssrf_guard before sending UDP packets.
 fn test_f007_altsvc_h3_ssrf_guard() {
     var session = wing::new_session();
-    session.ssrf_guard = wing::new_ssrf_guard_policy();
+    session.ssrf_guard = security::new_ssrf_guard_policy();
     var ctx = wing::RequestExecutionContext { .. };
     ctx.current_method.append("GET");
     let curr_url = core::new_url("https://example.com/data");
@@ -1562,15 +1562,15 @@ fn test_multihop_no_resurrect() {
 
 fn test_ssrf_6to4_three_octet() {
     // 2002:c000:0200:: = 192.0.2.0 (TEST-NET-1)
-    assert(wing::is_private_or_reserved_ip("2002:c000:0200::1"));
+    assert(security::is_private_or_reserved_ip("2002:c000:0200::1"));
     // 2002:c633:6400:: = 198.51.100.0 (TEST-NET-2)
-    assert(wing::is_private_or_reserved_ip("2002:c633:6400::1"));
+    assert(security::is_private_or_reserved_ip("2002:c633:6400::1"));
     // 2002:cb00:7100:: = 203.0.113.0 (TEST-NET-3)
-    assert(wing::is_private_or_reserved_ip("2002:cb00:7100::1"));
+    assert(security::is_private_or_reserved_ip("2002:cb00:7100::1"));
     // 2002:c058:6300:: = 192.88.99.0 (6to4 Relay Anycast)
-    assert(wing::is_private_or_reserved_ip("2002:c058:6300::1"));
+    assert(security::is_private_or_reserved_ip("2002:c058:6300::1"));
     // Public IP via 6to4: 8.8.8.8 = 0808:0808
-    assert(!wing::is_private_or_reserved_ip("2002:0808:0808::1"));
+    assert(!security::is_private_or_reserved_ip("2002:0808:0808::1"));
     print("CHECK_SSRF_6TO4: OK");
 }
 

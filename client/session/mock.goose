@@ -9,6 +9,7 @@ import core from "../..";
 import client.redirect;
 import http.response;
 import http.headers;
+import security.ssrf;
 import client.session.ssrf;
 
 // ---- mock exchange model ---------------------------------------------------
@@ -47,7 +48,10 @@ fn set_mock_protocol(route: MockExchange&, proto: const u8[:]) {
 }
 
 // Validates resolved mock IPs against SSRF guard policy.
-fn validate_mock_route_dns(route: const MockExchange&, guard_config: const SsrfGuardPolicy&) -> RedirectError {
+fn validate_mock_route_dns(
+    route:        const MockExchange&,
+    guard_config: const security::SsrfGuardPolicy&,
+) -> RedirectError {
     if route.resolved_ips.len == 0 {
         return RedirectError.None;
     }

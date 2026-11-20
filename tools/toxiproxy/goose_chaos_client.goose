@@ -199,7 +199,7 @@ fn run_mode_digest_auth_and_cookies(port: u16) -> bool {
         print("FAIL:MODE9_DIGEST status=", r.status_code, " err=", err.message[..], " body=", r.body[..], "\n");
         return false;
     }
-    guard wing::get(s.jar, "auth_sid") == "dig_77" &&
+    guard cookie::get(s.jar, "auth_sid") == "dig_77" &&
           s.pool.conns.len == 1 && s.pool.conns[0].use_count >= 2 else {
         print("FAIL:MODE9_JAR_OR_POOL\n");
         return false;

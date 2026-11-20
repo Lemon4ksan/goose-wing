@@ -7,16 +7,16 @@ Stale-While-Revalidate caching for `goose-wing`.
 
 All parsers, serializers, and cache lookups operate without dynamic heap
 allocations on the hot path, using stack-bounded buffers (`u8[..N]`) and
-zero-copy byte slices (`const u8[:]`).
+zero-copy byte slices (`const u8[:]`). Internal-only wire and LRU helpers live
+in `namespace dns_internal`.
 
 ```goose
 import wing;
 
 var query: u8[..512] = [];
-let ok = wing::build_dns_query("example.com", 1, 0x1234, query);
+let ok = dns::build_query("example.com", 1, 0x1234, query);
 
-var resp = wing::DnsResponse { .. };
-let parsed = wing::parse_dns_response(query[..], resp);
+let resp, parsed = dns::parse_response(query[..]);
 ```
 
 ## Public API Reference
@@ -27,7 +27,7 @@ let parsed = wing::parse_dns_response(query[..], resp);
 struct HttpsRecord {
     priority:        u16           = 0,
     target_name:     u8[..255]     = [],
-    alpns:           u8[..16][..8] = [],
+    alpns:           u8[..64][..8] = [],
     port:            u16           = 443,
     no_default_alpn: bool          = false,
     ipv4_hints:      u32[..8]      = [],
@@ -36,22 +36,25 @@ struct HttpsRecord {
     has_ech:         bool          = false,
 }
 
-fn parse_alpn_svc_param(val: const u8[:], rec: HttpsRecord&) -> bool
-fn parse_mandatory_svc_param(val: const u8[:]) -> u32, bool
-fn parse_ipv4_hints(val: const u8[:], rec: HttpsRecord&) -> bool
-fn parse_ipv6_hints(val: const u8[:], rec: HttpsRecord&) -> bool
-fn parse_https_svc_params(rdata: const u8[:], rec: HttpsRecord&) -> bool
+struct MandatorySvcParams {
+    has_unsupported: bool = false,
+    has_ech:         bool = false,
+}
+
+fn parse_mandatory_svc_param(val: const u8[:]) -> MandatorySvcParams, bool
+fn parse_https_svc_params(rec: HttpsRecord&, rdata: const u8[:]) -> bool
 ```
 
 `HttpsRecord` models RFC 9460 Type 65 parameters for ALPN extraction (`h2`,
 `h3`), port overrides, IPv4/IPv6 address hints, and Encrypted Client Hello
-(`ech_config_list`). `parse_https_svc_params` validates strictly ascending
-`SvcParamKey` order and checks mandatory key masks.
+(`ech_config_list`). `rec.parse_https_svc_params(rdata)` validates strictly
+ascending `SvcParamKey` order, checks mandatory key lists, and rolls back `rec`
+on malformed or incompatible records.
 
 ### 2. RFC 1035 DNS Wire Codec (`dns/wire.goose`)
 
 ```goose
-struct DnsResponse {
+struct Response {
     tx_id:          u16              = 0,
     rcode:          u8               = rfc::DNS_RCODE_NOERROR,
     is_response:    bool             = false,
@@ -63,31 +66,24 @@ struct DnsResponse {
     min_ttl_sec:    u32              = 0,
 }
 
-fn dns_encode_name<B>(domain: const u8[:], out: B&) -> bool
-fn dns_decode_name<B>(raw: const u8[:], offset: i64&, domain: B&) -> bool
-fn dns_decode_uncompressed_name<B>(raw: const u8[:], offset: i64&, max_offset: i64, domain: B&) -> bool
-fn serialize_dns_header<B>(tx_id: u16, qd_count: u16, flags: u16, out: B&)
-fn serialize_dns_question<B>(domain: const u8[:], qtype: u16, qclass: u16, out: B&) -> bool
-fn build_dns_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool
-fn parse_dns_answer_record(raw: const u8[:], rtype: u16, rdlength: i64, rdata_start: i64, out: DnsResponse&) -> bool
-fn skip_dns_questions(raw: const u8[:], off: i64&, count: u16) -> bool
-fn parse_dns_answers(raw: const u8[:], off: i64&, out: DnsResponse&) -> bool
-fn parse_dns_response(raw: const u8[:], out: DnsResponse&) -> bool
+fn encode_name<B>(domain: const u8[:], out: B&) -> bool
+fn decode_name<B>(raw: const u8[:], idx: i64&, out: B&) -> bool
+fn build_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool
+fn parse_response(raw: const u8[:]) -> Response, bool
 ```
 
-`build_dns_query` constructs standard 12-byte header + question queries.
-`dns_decode_name` resolves RFC 1035 §4.1.4 compression pointers (`0xC0`) with
-loop detection (max 16 jumps) and backward-only verification.
-`dns_decode_uncompressed_name` enforces RFC 9460 §2.5.1 pointer prohibitions on
-HTTPS/SVCB `TargetName` fields. `parse_dns_response` rejects truncated packets
-and parses IN class A, AAAA, and HTTPS answers.
+`build_query` constructs standard 12-byte header + question queries.
+`decode_name` resolves RFC 1035 §4.1.4 compression pointers (`0xC0`) with loop
+detection (max 127 jumps) and backward-only verification. `parse_response`
+rejects truncated packets and returns `(Response, bool)` for IN-class A, AAAA,
+and HTTPS answers, enforcing RFC 9460 §2.5.1 uncompressed `TargetName` rules.
 
 ### 3. DNS Cache with TTL & Stale-While-Revalidate (`dns/cache.goose`)
 
 ```goose
-enum DnsCacheStatus { Fresh, Stale, Expired }
+enum CacheStatus { Fresh, Stale, Expired }
 
-struct DnsCacheEntry {
+struct CacheEntry {
     domain:          u8[..255]        = [],
     qtype:           u16              = rfc::DNS_QTYPE_A,
     ipv4_hints:      u32[..8]         = [],
@@ -101,23 +97,21 @@ struct DnsCacheEntry {
     lru_next:        i32              = -1,
 }
 
-struct DnsCache {
-    entries:  DnsCacheEntry[..64] = [],
-    lru_head: i32                 = -1,
-    lru_tail: i32                 = -1,
+struct Cache {
+    entries:  CacheEntry[..64] = [],
+    lru_head: i32              = -1,
+    lru_tail: i32              = -1,
 }
 
-fn detach_dns_lru(cache: DnsCache&, idx: i32)
-fn attach_dns_lru_tail(cache: DnsCache&, idx: i32)
-fn touch_dns_lru(cache: DnsCache&, idx: i32)
-fn dns_cache_lookup(cache: const DnsCache&, domain: const u8[:], qtype: u16, now_sec: i64, out_entry: DnsCacheEntry&) -> DnsCacheStatus
-fn dns_cache_insert(cache: DnsCache&, entry: const DnsCacheEntry&)
+fn lookup(cache: const Cache&, domain: const u8[:], qtype: u16, now_sec: i64) -> const CacheEntry?, CacheStatus
+fn insert(cache: Cache&, entry: const CacheEntry&)
 ```
 
-`DnsCache` provides fixed 64-entry LRU storage with RFC 5861
-Stale-While-Revalidate grace periods (default 24h). `dns_cache_lookup` returns
-`DnsCacheStatus.Fresh` when within TTL, `DnsCacheStatus.Stale` during the grace
-window, and `DnsCacheStatus.Expired` past expiration.
+`Cache` provides fixed 64-entry LRU storage with RFC 5861 Stale-While-Revalidate
+grace periods (default 24h). `cache.lookup` returns a zero-copy
+`const CacheEntry?` alongside `CacheStatus.Fresh` when within TTL,
+`CacheStatus.Stale` during the grace window, or `(null, CacheStatus.Expired)`
+past expiration.
 
 ### 4. DNS over HTTPS (DoH) Wire Helpers (`dns/doh.goose`)
 
@@ -127,8 +121,8 @@ struct DohResolver {
     use_post: bool      = true,
 }
 
-fn build_doh_post_body<B>(domain: const u8[:], qtype: u16, tx_id: u16, out_body: B&) -> bool
-fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16, out_url: B&) -> bool
+fn build_doh_post_body<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool
+fn build_doh_get_url<B>(server_url: const u8[:], domain: const u8[:], qtype: u16, out: B&) -> bool
 ```
 
 `build_doh_post_body` formats standard `application/dns-message` bodies.

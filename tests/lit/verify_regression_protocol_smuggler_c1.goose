@@ -11,7 +11,7 @@ import wing from "../..";
 // Bug 1: HTTP/3 PUSH_PROMISE QPACK stream-ID confusion, response smuggling on unblock,
 // missing promised push ID tracking, and non-transactional QPACK table/buffer operations.
 fn test_bug1_h3_push_promise_and_qpack() {
-    let settings = wing::H3Settings {
+    let settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   65536,
         qpack_blocked_streams:    4,

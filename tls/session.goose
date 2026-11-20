@@ -484,6 +484,38 @@ inline fn consume_next_ciphertext_record<B>(
     return total_rec, st;
 }
 
+fn tls_unseal_records_with_scratch<B>(
+    slot:      TlsCipherSlot&,
+    cipher_in: const u8[:],
+    scratch:   u8[:],
+    out_plain: B&,
+) -> i64, TlsSliceUnsealStatus {
+    let saved_len = out_plain.len;
+    var rem = cipher_in;
+    var consumed:    i64 = 0;
+    var max_touched: i64 = 0;
+    var final_status = TlsSliceUnsealStatus.ControlHandled;
+    defer if max_touched > 0 { core::secure_zeroize_slice(scratch[..max_touched]); };
+    while rem.len > 0 {
+        let total_rec, st = consume_next_ciphertext_record(slot, rem, scratch, out_plain);
+        if total_rec > rfc::TLS_RECORD_HEADER_LEN {
+            let body_len = min(core::sub_sat_i64(total_rec, rfc::TLS_RECORD_HEADER_LEN), scratch.len);
+            max_touched = max(max_touched, body_len);
+        }
+        if st == TlsSliceUnsealStatus.NeedMore { break; }
+        if st == TlsSliceUnsealStatus.Error {
+            out_plain.resize(saved_len);
+            return 0, TlsSliceUnsealStatus.Error;
+        }
+        consumed = core::add_sat_i64(consumed, total_rec);
+        rem = rem[total_rec..];
+        if st == TlsSliceUnsealStatus.Closed { return consumed, TlsSliceUnsealStatus.Closed; }
+        if st == TlsSliceUnsealStatus.Ok { final_status = TlsSliceUnsealStatus.Ok; }
+    }
+    if consumed == 0 { return 0, TlsSliceUnsealStatus.NeedMore; }
+    return consumed, final_status;
+}
+
 // Decrypts complete TLS 1.3 records from `cipher_in` into `out_plain` (RFC 8446 Section 5.2).
 // Leaves trailing incomplete record bytes unconsumed so reactor buffers can compact them.
 //
@@ -502,28 +534,51 @@ fn tls_cipher_slot_unseal_records<B>(
     let slot .= g_tls_cipher_slots[idx];
     if slot.peer_closed { return 0, TlsSliceUnsealStatus.Closed; }
 
-    let saved_len = out_plain.len;
-    var scratch: u8[16640] = [0; 16640];
-    defer core::secure_zeroize_slice(scratch[..]);
-
-    var rem = cipher_in;
-    var consumed: i64 = 0;
-    var final_status = TlsSliceUnsealStatus.ControlHandled;
-    while rem.len > 0 {
-        let total_rec, st = consume_next_ciphertext_record(slot, rem, scratch[..], out_plain);
-        if st == TlsSliceUnsealStatus.NeedMore { break; }
-        if st == TlsSliceUnsealStatus.Error {
-            out_plain.resize(saved_len);
-            return 0, TlsSliceUnsealStatus.Error;
-        }
-        consumed = core::add_sat_i64(consumed, total_rec);
-        rem = rem[total_rec..];
-        if st == TlsSliceUnsealStatus.Closed { return consumed, TlsSliceUnsealStatus.Closed; }
-        if st == TlsSliceUnsealStatus.Ok { final_status = TlsSliceUnsealStatus.Ok; }
+    if cipher_in.len <= 2048 {
+        var small_scratch: u8[2048] = [0; 2048];
+        return tls_unseal_records_with_scratch(slot, cipher_in, small_scratch[..], out_plain);
     }
+    var scratch: u8[16640] = [0; 16640];
+    return tls_unseal_records_with_scratch(slot, cipher_in, scratch[..], out_plain);
+}
 
-    if consumed == 0 { return 0, TlsSliceUnsealStatus.NeedMore; }
-    return consumed, final_status;
+fn tls_seal_app_data_with_buf<B>(
+    slot:       TlsCipherSlot&,
+    plain_in:   const u8[:],
+    rec_buf:    u8[:],
+    out_cipher: B&,
+) -> bool {
+    let saved_len = out_cipher.len;
+    let saved_seq = slot.tx_seq;
+    var committed = false;
+    defer if !committed {
+        out_cipher.resize(saved_len);
+        slot.tx_seq = saved_seq;
+    };
+
+    let klen = slot.key_len as i64;
+    var rem = plain_in;
+    while rem.len > 0 {
+        let chunk_len = min(rem.len, rfc::TLS_MAX_RECORD_PLAINTEXT_LEN);
+        let sealed_len, _, ok_seal = tls_record_seal_prepared_into(
+            slot.cipher_suite,
+            slot.tx_key[..klen],
+            slot.tx_aes_key,
+            slot.tx_iv,
+            slot.tx_seq,
+            rfc::TLS_CONTENT_APPLICATION_DATA,
+            rem[..chunk_len],
+            rec_buf,
+        );
+        guard ok_seal && sealed_len > 0 && out_cipher.try_append(rec_buf[..sealed_len]) else {
+            return false;
+        }
+        increment_record_seq_num(slot.tx_seq);
+        rem = rem[chunk_len..];
+    }
+    on_key_update_app_data(slot.key_update_tracker);
+    committed = true;
+    return true;
 }
 
 fn tls_cipher_slot_seal_app_data<B>(
@@ -537,38 +592,12 @@ fn tls_cipher_slot_seal_app_data<B>(
     guard slot.in_use && !slot.peer_closed else { return false; }
     if plain_in.len == 0 { return true; }
 
-    let saved_len = out_cipher.len;
-    let saved_seq = slot.tx_seq;
-    var committed = false;
-    defer if !committed {
-        out_cipher.resize(saved_len);
-        slot.tx_seq = saved_seq;
-    };
-
-    var rec_buf: u8[16645] = [0; 16645];
-    let klen = slot.key_len as i64;
-    var rem = plain_in;
-    while rem.len > 0 {
-        let chunk_len = min(rem.len, rfc::TLS_MAX_RECORD_PLAINTEXT_LEN);
-        let sealed_len, _, ok_seal = tls_record_seal_prepared_into(
-            slot.cipher_suite,
-            slot.tx_key[..klen],
-            slot.tx_aes_key,
-            slot.tx_iv,
-            slot.tx_seq,
-            rfc::TLS_CONTENT_APPLICATION_DATA,
-            rem[..chunk_len],
-            rec_buf[..],
-        );
-        guard ok_seal && sealed_len > 0 && out_cipher.try_append(rec_buf[..sealed_len]) else {
-            return false;
-        }
-        increment_record_seq_num(slot.tx_seq);
-        rem = rem[chunk_len..];
+    if plain_in.len <= 2000 {
+        var small_rec: u8[2048] = [0; 2048];
+        return tls_seal_app_data_with_buf(slot, plain_in, small_rec[..], out_cipher);
     }
-    on_key_update_app_data(slot.key_update_tracker);
-    committed = true;
-    return true;
+    var rec_buf: u8[16645] = [0; 16645];
+    return tls_seal_app_data_with_buf(slot, plain_in, rec_buf[..], out_cipher);
 }
 
 // Extracts DNS SubjectAltName entries from a DER X.509 certificate into `g_tls_cipher_slots[slot_idx].san_hosts`.
@@ -643,18 +672,27 @@ fn tls_read_exact(fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
     return true;
 }
 
-// Writes entire data buffer to socket, returning false on error or partial write failure.
+// Writes entire data buffer to socket, retrying transient WouldBlock (-2) on non-blocking FDs.
 fn tls_write_all(fd: i64, data: const u8[:]) -> bool {
     guard fd > 0 && data.len > 0 else { return false; }
     var total_sent: i64 = 0;
+    var retries:    i32 = 0;
     while total_sent < data.len {
         let sent = if is_virtual_pipe_fd(fd) {
             virtual_fd_send(fd, data[total_sent..])
         } else {
             tcp_send(fd, data[total_sent..])
         };
-        guard sent > 0 else { return false; }
-        total_sent = core::add_sat_i64(total_sent, sent);
+        if sent > 0 {
+            total_sent = core::add_sat_i64(total_sent, sent);
+            retries = 0;
+            continue;
+        }
+        guard sent == -2 && retries < 2000 else { return false; }
+        retries = core::add_sat_i64(retries, 1) as i32;
+        if retries > 64 {
+            sleep_ms(1);
+        }
     }
     return true;
 }

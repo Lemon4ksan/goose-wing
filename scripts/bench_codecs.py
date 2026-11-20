@@ -67,9 +67,25 @@ def find_goose_binary() -> str:
     return "goose"
 
 
+def latest_source_mtime(root: Path, src: Path) -> float:
+    mtime = src.stat().st_mtime
+    for rel in ("core", "http", "http2", "crypto", "shim", "core.goose", "wing.goose"):
+        target = root / rel
+        if not target.exists():
+            continue
+        if target.is_file():
+            mtime = max(mtime, target.stat().st_mtime)
+            continue
+        for ext in ("*.goose", "*.c", "*.h"):
+            for p in target.rglob(ext):
+                mtime = max(mtime, p.stat().st_mtime)
+    return mtime
+
+
 def build_benchmark(root: Path, src: Path, out_exe: Path) -> str:
     cached = root / "bench" / out_exe.name
-    if cached.exists() and cached.stat().st_mtime >= src.stat().st_mtime:
+    newest_src = latest_source_mtime(root, src)
+    if cached.exists() and cached.stat().st_mtime >= newest_src:
         if cached != out_exe:
             shutil.copy2(cached, out_exe)
         return "-O2 (cached)"

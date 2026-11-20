@@ -122,7 +122,7 @@ fn test_bug2_response_json_transactional_rollback() {
 // 3. Bug 3: HTTP/2 server SpillSlabPool leak when connection aborts with GOAWAY mid-stream
 fn test_bug3_h2_spill_slab_reclaimed_on_goaway() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/upload", 1);
 

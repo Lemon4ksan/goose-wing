@@ -395,8 +395,8 @@ fn test_hpke_export(t: lit::T&) {
         let info: const u8[:] = "message/bhttp request";
 
         var enc: u8[32] = [0; 32];
-        var ctx = wing::HpkeContext { .. };
-        let ok = wing::hpke_setup_base_s(
+        var ctx = security::HpkeContext { .. };
+        let ok = security::hpke_setup_base_s(
             pkR,
             info,
             rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
@@ -411,9 +411,9 @@ fn test_hpke_export(t: lit::T&) {
         var out1: u8[16] = [0; 16];
         var out2: u8[16] = [0; 16];
         var out3: u8[16] = [0; 16];
-        sub.assert_true(wing::hpke_export(ctx, "message/bhttp response", out1[..]), "export with response context");
-        sub.assert_true(wing::hpke_export(ctx, "message/bhttp response", out2[..]), "export repeated");
-        sub.assert_true(wing::hpke_export(ctx, "message/bhttp request", out3[..]), "export with different context");
+        sub.assert_true(security::hpke_export(ctx, "message/bhttp response", out1[..]), "export with response context");
+        sub.assert_true(security::hpke_export(ctx, "message/bhttp response", out2[..]), "export repeated");
+        sub.assert_true(security::hpke_export(ctx, "message/bhttp request", out3[..]), "export with different context");
         for i in 16 {
             sub.assert_eq(out1[i], out2[i], "export is deterministic for fixed inputs");
         }
@@ -496,7 +496,7 @@ fn test_ohttp_rfc9458_appendix_a(t: lit::T&) {
 
         // Exported secret from the gateway's receiver context (RFC 9458 Section 4.4 step 1).
         var secret: u8[16] = [0; 16];
-        sub.assert_true(wing::hpke_export(gw_session.ctx, "message/bhttp response", secret[..]), "export succeeds");
+        sub.assert_true(security::hpke_export(gw_session.ctx, "message/bhttp response", secret[..]), "export succeeds");
         let secret_expect: u8[16] = [
             0x62, 0xd8, 0x7a, 0x6b, 0xa5, 0x69, 0xee, 0x81, 0x01, 0x4c, 0x26, 0x41,
             0xf5, 0x2b, 0xea, 0x36,

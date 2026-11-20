@@ -11,6 +11,7 @@ import json;
 import http.priority;
 import http.incremental;
 import http.trace;
+import cookie.policy;
 import .response;
 
 // ---- request & query item models -------------------------------------------
@@ -28,29 +29,29 @@ struct QueryItem {
 }
 
 struct Request {
-    method:               u8[..16]            = "GET",
-    url:                  u8[..2048]          = [],
-    timeout:              i64                 = 0,
-    headers:              HeaderMap           = HeaderMap { .. },
-    presence_mask:        u32                 = 0,
-    trailers:             HeaderMap           = HeaderMap { .. },
-    query_params:         QueryItem[..16]     = [],
-    rewind_buf:           u8[..4096]          = [],
-    rewindable:           bool                = true,
-    body_consumed:        bool                = false,
-    cors_mode:            bool                = false,
-    tainted_origin:       bool                = false,
-    is_main_frame:        bool                = true,
-    is_reload:            bool                = false,
-    initiator:            core::Origin        = core::Origin { .. },
-    has_initiator:        bool                = false,
-    site_for_cookies:     SiteForCookies      = SiteForCookies { .. },
-    has_site_for_cookies: bool                = false,
-    first_party_policy:   FirstPartyURLPolicy = FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
-    is_http10:            bool                = false,
-    body_prechunked:      bool                = false,
-    disallow_early_data:  bool                = false,
-    body:                 u8[>..]             = [],
+    method:               u8[..16]                    = "GET",
+    url:                  u8[..2048]                  = [],
+    timeout:              i64                         = 0,
+    headers:              HeaderMap                   = HeaderMap { .. },
+    presence_mask:        u32                         = 0,
+    trailers:             HeaderMap                   = HeaderMap { .. },
+    query_params:         QueryItem[..16]             = [],
+    rewind_buf:           u8[..4096]                  = [],
+    rewindable:           bool                        = true,
+    body_consumed:        bool                        = false,
+    cors_mode:            bool                        = false,
+    tainted_origin:       bool                        = false,
+    is_main_frame:        bool                        = true,
+    is_reload:            bool                        = false,
+    initiator:            core::Origin                = core::Origin { .. },
+    has_initiator:        bool                        = false,
+    site_for_cookies:     SiteForCookies              = SiteForCookies { .. },
+    has_site_for_cookies: bool                        = false,
+    first_party_policy:   cookie::FirstPartyURLPolicy = cookie::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT,
+    is_http10:            bool                        = false,
+    body_prechunked:      bool                        = false,
+    disallow_early_data:  bool                        = false,
+    body:                 u8[>..]                     = [],
 }
 
 // ---- json reflection writers -----------------------------------------------

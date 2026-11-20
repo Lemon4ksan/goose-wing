@@ -156,7 +156,7 @@ fn compute_redirect_info(
     options:                 RedirectOptions = RedirectOptions { .. },
 ) -> RedirectInfo {
     let cur_u = core::new_url(current_url_str);
-    let sfc = site_for_cookies_from_url(current_url_str);
+    let sfc = cookie::site_for_cookies_from_url(current_url_str);
     var dummy_chain: core::Url[..1] = [];
     var dummy_orig = core::new_opaque_origin();
     return compute_redirect_info(
@@ -168,7 +168,7 @@ fn compute_redirect_info(
         current_referrer_policy,
         current_referrer,
         sfc,
-        FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL,
+        cookie::FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL,
         dummy_chain[..],
         dummy_orig,
         options,
@@ -229,38 +229,38 @@ fn inherit_target_fragment(
 fn compute_redirect_site_for_cookies(
     current_url:              const core::Url&,
     new_url:                  const core::Url&,
-    first_party_policy:       FirstPartyURLPolicy,
+    first_party_policy:       cookie::FirstPartyURLPolicy,
     current_site_for_cookies: const SiteForCookies&,
     url_chain:                const core::Url[:],
     initiator:                const core::Origin&,
     options:                  RedirectSiteOptions,
 ) -> SiteForCookies, bool {
-    let same_site_step = is_schemeful_same_site(
+    let same_site_step = cookie::is_schemeful_same_site(
         current_url.scheme(), current_url.hostname(),
         new_url.scheme(), new_url.hostname(),
     );
     let initiator_ok = !options.has_initiator || (
-        initiator.kind != core::OriginKind.Opaque && is_schemeful_same_site(
+        initiator.kind != core::OriginKind.Opaque && cookie::is_schemeful_same_site(
             initiator.scheme[..], initiator.host[..],
             new_url.scheme(), new_url.hostname(),
         )
     );
 
-    if first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
+    if first_party_policy == cookie::FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
         // Subresources / background requests: once tainted, remains null forever
-        let is_first_p = is_first_party(current_site_for_cookies, new_url.href[..], true);
+        let is_first_p = cookie::is_first_party(current_site_for_cookies, new_url.href[..], true);
 
         if options.had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
-            return null_site_for_cookies(), true;
+            return cookie::null_site_for_cookies(), true;
         }
         return copy(current_site_for_cookies), false;
     }
 
     // Main-frame top-level navigation: SiteForCookies updates to target
-    let new_site = site_for_cookies_from_parsed_url(new_url);
+    let new_site = cookie::site_for_cookies_from_parsed_url(new_url);
     var chain_tainted = options.had_cross_site_hop || !same_site_step || !initiator_ok;
     for &hop_url in url_chain {
-        if !is_schemeful_same_site(
+        if !cookie::is_schemeful_same_site(
             hop_url.scheme(), hop_url.hostname(),
             new_url.scheme(), new_url.hostname(),
         ) {
@@ -325,7 +325,7 @@ fn compute_redirect_info(
     current_referrer_policy:           ReferrerPolicy,
     current_referrer:                  const u8[:],
     current_site_for_cookies:          const SiteForCookies&,
-    first_party_policy:                FirstPartyURLPolicy,
+    first_party_policy:                cookie::FirstPartyURLPolicy,
     url_chain:                         const core::Url[:],
     initiator:                         const core::Origin&,
     options:                           RedirectOptions,
@@ -500,7 +500,7 @@ fn remove_payload_and_conditional_headers(headers: HeaderMap&) {
 // Strips `Sec-Fetch-*` and `Sec-CH-*` headers when redirecting onto an untrustworthy HTTP origin
 // (Chromium `MaybeRemoveSecHeaders`, `sec_header_helpers.cc:310-331`).
 fn remove_sec_headers_on_downgrade(headers: HeaderMap&, target_url: const core::Url&) {
-    if is_trustworthy_non_crypto_host(target_url.hostname()) {
+    if cookie::is_trustworthy_non_crypto_host(target_url.hostname()) {
         return;
     }
     var found = false;

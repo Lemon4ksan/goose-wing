@@ -12,7 +12,6 @@ import cookie.policy;
 import cookie.engine;
 import fingerprint.ja4;
 import fingerprint.profile;
-import fingerprint.profile;
 import http.request;
 import http.response;
 import client.redirect;
@@ -41,40 +40,41 @@ import wire.pipeline;
 import auth.digest;
 import auth.dpop;
 import security.privacypass;
+import security.ssrf;
 import client.replay_guard;
 import client.telemetry;
 
 // ---- 1. Configuration & State Structs --------------------------------------
 
 struct ClientConfig {
-    base_url:                const u8[:]  = "",
-    profile:                 Profile      = Profile.Wing,
-    proxy_url:               const u8[:]  = "",
-    timeout_ms:              i64          = 15000,
-    follow_redirects:        bool         = true,
-    cookie_jar:              bool         = true,
-    enable_cache:            bool         = false,
-    cache_options:           CacheOptions = CacheOptions { .. },
-    enable_altsvc:           bool         = true,
-    enable_protocol_racing:  bool         = true,
-    quic_race_delay_ms:      i64          = 200,
-    enable_compression_dict: bool         = true,
-    strict_content_decoding: bool         = false,
-    insecure_skip_verify:    bool         = false,
-    sig_key_id:              const u8[:]  = "",
-    sig_private_key:         const u8[:]  = "",
-    sig_public_key:          const u8[:]  = "",
+    base_url:                const u8[:]          = "",
+    profile:                 fingerprint::Profile = fingerprint::Profile.Wing,
+    proxy_url:               const u8[:]          = "",
+    timeout_ms:              i64                  = 15000,
+    follow_redirects:        bool                 = true,
+    cookie_jar:              bool                 = true,
+    enable_cache:            bool                 = false,
+    cache_options:           CacheOptions         = CacheOptions { .. },
+    enable_altsvc:           bool                 = true,
+    enable_protocol_racing:  bool                 = true,
+    quic_race_delay_ms:      i64                  = 200,
+    enable_compression_dict: bool                 = true,
+    strict_content_decoding: bool                 = false,
+    insecure_skip_verify:    bool                 = false,
+    sig_key_id:              const u8[:]          = "",
+    sig_private_key:         const u8[:]          = "",
+    sig_public_key:          const u8[:]          = "",
 }
 
 type SessionConfig = ClientConfig;
 
 struct ClientCredentials {
-    username:        u8[..128]       = [],
-    password:        u8[..128]       = [],
-    has_credentials: bool            = false,
-    nonce_counter:   u32             = 1,
-    cnonce:          u8[..32]        = "f2/IZUnWe0rEzWeA",
-    last_digest:     DigestChallenge = DigestChallenge { .. },
+    username:        u8[..128]             = [],
+    password:        u8[..128]             = [],
+    has_credentials: bool                  = false,
+    nonce_counter:   u32                   = 1,
+    cnonce:          u8[..32]              = "f2/IZUnWe0rEzWeA",
+    last_digest:     auth::DigestChallenge = auth::DigestChallenge { .. },
 }
 
 struct ClientDpopState {
@@ -85,33 +85,33 @@ struct ClientDpopState {
 }
 
 struct Client {
-    base_url:                u8[..256]         = [],
-    profile:                 Profile           = Profile.Wing,
-    profile_spec:            ClientProfile     = ClientProfile { .. },
-    proxy_url:               u8[..256]         = [],
-    timeout_ms:              i64               = 15000,
-    follow_redirects:        bool              = true,
-    redirect_mode:           RedirectMode      = RedirectMode.Follow,
-    max_redirects:           i64               = 10,
-    https_only:              bool              = false,
-    enable_referer:          bool              = true,
-    default_referrer_policy: ReferrerPolicy    = ReferrerPolicy.StrictOriginWhenCrossOrigin,
-    default_headers:         HeaderMap         = HeaderMap { .. },
-    ssrf_guard:              SsrfGuardPolicy   = SsrfGuardPolicy { .. },
-    virtual_clock_us:        i64               = 1700000000000000,
-    trusted_location_hosts:  u8[..128][..8]    = [],
-    mock_routes:             MockExchange[..8] = [],
+    base_url:                u8[..256]                  = [],
+    profile:                 fingerprint::Profile       = fingerprint::Profile.Wing,
+    profile_spec:            fingerprint::ClientProfile = fingerprint::ClientProfile { .. },
+    proxy_url:               u8[..256]                  = [],
+    timeout_ms:              i64                        = 15000,
+    follow_redirects:        bool                       = true,
+    redirect_mode:           RedirectMode               = RedirectMode.Follow,
+    max_redirects:           i64                        = 10,
+    https_only:              bool                       = false,
+    enable_referer:          bool                       = true,
+    default_referrer_policy: ReferrerPolicy             = ReferrerPolicy.StrictOriginWhenCrossOrigin,
+    default_headers:         HeaderMap                  = HeaderMap { .. },
+    ssrf_guard:              security::SsrfGuardPolicy  = security::SsrfGuardPolicy { .. },
+    virtual_clock_us:        i64                        = 1700000000000000,
+    trusted_location_hosts:  u8[..128][..8]             = [],
+    mock_routes:             MockExchange[..8]          = [],
 
     // RFC 9111 HTTP Cache Engine
     cache:        HttpCache = HttpCache { .. },
     enable_cache: bool      = false,
 
     // RFC 8484 DNS-over-HTTPS (DoH) & RFC 9460 Automated ECH Discovery
-    doh:                DohResolver = DohResolver { .. },
-    enable_doh:         bool        = false,
-    enable_ech:         bool        = false,
-    auto_ech_discovery: bool        = false,
-    dns_cache:          DnsCache    = DnsCache { .. },
+    doh:                dns::DohResolver = dns::DohResolver { .. },
+    enable_doh:         bool             = false,
+    enable_ech:         bool             = false,
+    auto_ech_discovery: bool             = false,
+    dns_cache:          dns::Cache       = dns::Cache { .. },
 
     // RFC 7838 Alt-Svc & Protocol Racing
     altsvc:                 AltSvcCache = AltSvcCache { .. },
@@ -128,8 +128,8 @@ struct Client {
     wire_pipeline: wire::WirePipeline  = wire::default_client_pipeline(),
 
     // RFC 7616 Digest & RFC 7617 Basic Authenticator
-    creds:               ClientCredentials = ClientCredentials { .. },
-    private_token_cache: PrivateTokenCache = PrivateTokenCache { .. },
+    creds:               ClientCredentials           = ClientCredentials { .. },
+    private_token_cache: security::PrivateTokenCache = security::PrivateTokenCache { .. },
 
     // RFC 6797 HTTP Strict Transport Security (HSTS)
     hsts:        HstsCache = HstsCache { .. },
@@ -157,7 +157,7 @@ struct Client {
     insecure_skip_verify:    bool                = false,
 
     // Resizable field must be final
-    jar: CanonicalCookieJar = CanonicalCookieJar { .. },
+    jar: cookie::CanonicalCookieJar = cookie::CanonicalCookieJar { .. },
 }
 
 type Session = Client;
@@ -166,8 +166,8 @@ type Session = Client;
 
 fn new_client() -> Client {
     var c = Client {
-        profile:                 Profile.Wing,
-        ssrf_guard:              SsrfGuardPolicy { .. },
+        profile:                 fingerprint::Profile.Wing,
+        ssrf_guard:              security::SsrfGuardPolicy { .. },
         cache:                   new_http_cache(),
         enable_cache:            false,
         altsvc:                  AltSvcCache { .. },
@@ -182,10 +182,10 @@ fn new_client() -> Client {
         enable_hsts:             true,
         pool:                    new_stream_pool(),
         enable_cookie_jar:       true,
-        jar:                     CanonicalCookieJar { .. },
+        jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
-    let def_p = wing_default_profile();
+    let def_p = fingerprint::wing_default_profile();
     apply_profile(c, def_p);
     return c;
 }
@@ -196,7 +196,7 @@ fn new_client(cfg: ClientConfig) -> Client {
         timeout_ms:              cfg.timeout_ms,
         follow_redirects:        cfg.follow_redirects,
         redirect_mode:           if cfg.follow_redirects { RedirectMode.Follow } else { RedirectMode.Manual },
-        ssrf_guard:              SsrfGuardPolicy { .. },
+        ssrf_guard:              security::SsrfGuardPolicy { .. },
         cache:                   new_http_cache(cfg.cache_options),
         enable_cache:            cfg.enable_cache,
         altsvc:                  AltSvcCache { .. },
@@ -213,12 +213,12 @@ fn new_client(cfg: ClientConfig) -> Client {
         enable_cookie_jar:       cfg.cookie_jar,
         strict_content_decoding: cfg.strict_content_decoding,
         insecure_skip_verify:    cfg.insecure_skip_verify,
-        jar:                     CanonicalCookieJar { .. },
+        jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
     client.base_url.append(cfg.base_url);
     client.proxy_url.append(cfg.proxy_url);
-    if cfg.profile != Profile.None {
+    if cfg.profile != fingerprint::Profile.None {
         set_profile(client, cfg.profile);
     }
     if cfg.sig_private_key.len > 0 || cfg.sig_public_key.len > 0 {
@@ -267,7 +267,7 @@ fn set_base_url(session: Session&, url: const u8[:]) {
     session.base_url.append(url[..n]);
 }
 
-fn apply_profile(client: Client&, profile: const ClientProfile&) {
+fn apply_profile(client: Client&, profile: const fingerprint::ClientProfile&) {
     client.profile = profile.kind;
     client.profile_spec = profile;
     client.default_headers.clear();
@@ -295,53 +295,53 @@ fn apply_profile(client: Client&, profile: const ClientProfile&) {
     }
 }
 
-fn set_profile(session: Session&, profile: Profile) {
+fn set_profile(session: Session&, profile: fingerprint::Profile) {
     session.profile = profile;
-    if profile == Profile.None {
-        session.profile_spec = none_profile();
+    if profile == fingerprint::Profile.None {
+        session.profile_spec = fingerprint::none_profile();
         session.default_headers.clear();
         return;
     }
-    if profile == Profile.Custom {
-        let p = custom_profile();
+    if profile == fingerprint::Profile.Custom {
+        let p = fingerprint::custom_profile();
         apply_profile(session, p);
         return;
     }
-    if profile == Profile.Wing {
-        let p = wing_default_profile();
+    if profile == fingerprint::Profile.Wing {
+        let p = fingerprint::wing_default_profile();
         apply_profile(session, p);
     }
 }
 
-fn set_profile(session: Session&, profile: const ClientProfile&) {
+fn set_profile(session: Session&, profile: const fingerprint::ClientProfile&) {
     apply_profile(session, profile);
 }
 
 fn set_user_agent(session: Session&, ua: const u8[:]) {
     set_header(session.default_headers, "User-Agent", ua);
-    set_user_agent(session.profile_spec, ua);
+    session.profile_spec.set_user_agent(ua);
 }
 
 fn user_agent(session: const Session&) -> const u8[:] {
     let ua = get_header(session.default_headers, "user-agent");
     if ua.len > 0 { return ua; }
-    return profile_user_agent(session.profile);
+    return session.profile.user_agent();
 }
 
 fn ja4(session: const Session&) -> u8[..64] {
-    return ja4(session.profile_spec);
+    return session.profile_spec.ja4();
 }
 
 fn p0f(session: const Session&) -> u8[..256] {
-    return p0f(session.profile_spec);
+    return session.profile_spec.format_p0f();
 }
 
 fn akamai(session: const Session&) -> u8[..640] {
-    return akamai(session.profile_spec);
+    return session.profile_spec.format_akamai();
 }
 
 fn akamai_hash(session: const Session&) -> u8[..32] {
-    return akamai_hash(session.profile_spec);
+    return session.profile_spec.akamai_hash();
 }
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {
@@ -739,7 +739,7 @@ fn doh_query(
     domain:   const u8[:],
     qtype:    u16,
     tx_id:    u16,
-    out_resp: DnsResponse&,
+    out_resp: dns::Response&,
 ) -> bool {
     var req = new_request(if session.doh.use_post { "POST" } else { "GET" }, "");
 
@@ -748,10 +748,10 @@ fn doh_query(
         set_header(req, "content-type", "application/dns-message");
         set_header(req, "accept", "application/dns-message");
         var wire_query: u8[..512] = [];
-        guard build_dns_query(domain, qtype, tx_id, wire_query) else { return false; }
+        guard dns::build_query(domain, qtype, tx_id, wire_query) else { return false; }
         req.body.append(wire_query[..]);
     } else {
-        guard build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else { return false; }
+        guard dns::build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else { return false; }
         set_header(req, "accept", "application/dns-message");
     }
 
@@ -759,7 +759,9 @@ fn doh_query(
     let res, err = do(doh_client, req);
     guard ok(err) && res.status_code == rfc::STATUS_OK else { return false; }
 
-    guard parse_dns_response(res.body[..], out_resp) else { return false; }
+    let parsed, ok_dns = dns::parse_response(res.body[..]);
+    guard ok_dns else { return false; }
+    out_resp = parsed;
     guard out_resp.rcode == rfc::DNS_RCODE_NOERROR && out_resp.question_count == 1 else { return false; }
     let expected_tx_id: u16 = if session.doh.use_post { tx_id } else { 0 };
     guard out_resp.tx_id == expected_tx_id else { return false; }
@@ -767,14 +769,13 @@ fn doh_query(
 }
 
 fn lookup_cached_ech_config(
-    dns_cache: const DnsCache&,
+    dns_cache: const dns::Cache&,
     domain:    const u8[:],
     now_sec:   i64,
     out_ech:   u8[..512]&,
 ) -> bool {
-    var cached = DnsCacheEntry { .. };
-    let cache_status = dns_cache_lookup(dns_cache, domain, rfc::DNS_QTYPE_HTTPS, now_sec, cached);
-    if cache_status == DnsCacheStatus.Fresh {
+    let cached, cache_status = dns_cache.lookup(domain, rfc::DNS_QTYPE_HTTPS, now_sec);
+    if cached && cache_status == dns::CacheStatus.Fresh {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
                 return out_ech.try_set(rec.ech_config_list[..]);
@@ -793,12 +794,12 @@ fn discover_and_cache_ech_config(
 ) -> bool {
     guard session.enable_doh && session.auto_ech_discovery else { return false; }
 
-    var dns_resp = DnsResponse { .. };
+    var dns_resp = dns::Response { .. };
     // RFC 8484 §4.1: DoH clients SHOULD set DNS ID to 0 for maximum HTTP cacheability
     guard doh_query(session, domain, rfc::DNS_QTYPE_HTTPS, 0, dns_resp) else { return false; }
 
     let eff_ttl = if dns_resp.min_ttl_sec > 0 { dns_resp.min_ttl_sec } else { 300 };
-    var cache_entry = DnsCacheEntry {
+    var cache_entry = dns::CacheEntry {
         qtype:           rfc::DNS_QTYPE_HTTPS,
         inserted_at_sec: now_sec,
         ttl_sec:         eff_ttl,
@@ -815,12 +816,12 @@ fn discover_and_cache_ech_config(
         }
     }
 
-    dns_cache_insert(session.dns_cache, cache_entry);
+    session.dns_cache.insert(cache_entry);
     return found_ech;
 }
 
 // Discovers or extracts ECHConfigList for a domain.
-// First checks local DnsCache; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
+// First checks local dns::Cache; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
 fn resolve_ech_config(
     session: Session&,
     domain:  const u8[:],
@@ -835,9 +836,8 @@ fn resolve_ech_config(
         return true;
     }
     // Fallback: If discovery failed, check if a stale entry is available
-    var cached = DnsCacheEntry { .. };
-    let stale_status = dns_cache_lookup(session.dns_cache, domain, rfc::DNS_QTYPE_HTTPS, now_sec, cached);
-    if stale_status == DnsCacheStatus.Fresh || stale_status == DnsCacheStatus.Stale {
+    let cached, stale_status = session.dns_cache.lookup(domain, rfc::DNS_QTYPE_HTTPS, now_sec);
+    if cached && (stale_status == dns::CacheStatus.Fresh || stale_status == dns::CacheStatus.Stale) {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
                 return out_ech.try_set(rec.ech_config_list[..]);

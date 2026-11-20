@@ -9,7 +9,7 @@ import core from "../..";
 import client.redirect;
 import security.ssrf;
 
-fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardPolicy&) -> RedirectError {
+fn validate_url_against_ssrf(url_val: const core::Url&, policy: const security::SsrfGuardPolicy&) -> RedirectError {
     guard policy.enabled else { return RedirectError.None; }
 
     if policy.https_only && url_val.scheme() != "https" {
@@ -25,36 +25,36 @@ fn validate_url_against_ssrf(url_val: const core::Url&, policy: const SsrfGuardP
         if !policy.allowed_ports.contains(port_val) {
             return RedirectError.SsrfBlockedUrl;
         }
-    } else if policy.deny_local_network && is_dangerous_service_port(port_val) {
+    } else if policy.deny_local_network && security::is_dangerous_service_port(port_val) {
         return RedirectError.SsrfBlockedUrl;
     }
 
     let host_str = url_val.hostname();
-    if is_cloud_metadata_domain(host_str) {
+    if security::is_cloud_metadata_domain(host_str) {
         return RedirectError.SsrfBlockedIp;
     }
     if policy.deny_local_network {
-        if is_forbidden_internal_host(host_str) {
+        if security::is_forbidden_internal_host(host_str) {
             return RedirectError.SsrfBlockedIp;
         }
-    } else if is_cloud_metadata_or_reserved_ip(host_str) || is_non_canonical_ipv4(host_str) {
+    } else if security::is_cloud_metadata_or_reserved_ip(host_str) || security::is_non_canonical_ipv4(host_str) {
         return RedirectError.SsrfBlockedIp;
     }
 
     return RedirectError.None;
 }
 
-fn validate_resolved_ips_against_ssrf(ips: const u8[:][:], policy: const SsrfGuardPolicy&) -> RedirectError {
+fn validate_resolved_ips_against_ssrf(ips: const u8[:][:], policy: const security::SsrfGuardPolicy&) -> RedirectError {
     guard policy.enabled else { return RedirectError.None; }
     guard ips.len > 0 else { return RedirectError.SsrfBlockedIp; }
     for ip in ips {
-        guard is_valid_resolved_ip_literal(ip) else {
+        guard security::is_valid_resolved_ip_literal(ip) else {
             return RedirectError.SsrfBlockedIp;
         }
         let blocked = if policy.deny_local_network {
-            is_private_or_reserved_ip(ip)
+            security::is_private_or_reserved_ip(ip)
         } else {
-            is_cloud_metadata_or_reserved_ip(ip)
+            security::is_cloud_metadata_or_reserved_ip(ip)
         };
         if blocked {
             return RedirectError.SsrfBlockedIp;

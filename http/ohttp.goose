@@ -33,9 +33,9 @@ struct OhttpKeyConfig {
 // which serves as the response KDF salt (RFC 9458 Section 4.3 step 4,
 // Section 4.4 step 3).
 struct OhttpSession {
-    ctx:     HpkeContext = HpkeContext { .. },
-    enc:     u8[..32]    = [],
-    enc_len: i32         = 0,
+    ctx:     security::HpkeContext = security::HpkeContext { .. },
+    enc:     u8[..32]              = [],
+    enc_len: i32                   = 0,
 }
 
 // ---- shared helpers ---------------------------------------------------------
@@ -93,7 +93,7 @@ fn ohttp_derive_response_aead(
     guard session.enc_len == 32 && session.enc.len == 32 else { return false; }
 
     var secret: u8[32] = [0; 32];
-    guard hpke_export(session.ctx, rfc::OHTTP_INFO_RESPONSE, secret[..exp_len]) else { return false; }
+    guard security::hpke_export(session.ctx, rfc::OHTTP_INFO_RESPONSE, secret[..exp_len]) else { return false; }
 
     var salt: u8[..64] = [];
     salt.append(session.enc[..]);
@@ -256,7 +256,7 @@ fn ohttp_seal_request(
     var pk: u8[32] = [0; 32];
     for i in 32 { pk[i] = cfg.public_key[i]; }
     var enc: u8[32] = [0; 32];
-    guard hpke_setup_base_s(
+    guard security::hpke_setup_base_s(
         pk,
         info[..],
         cfg.kem_id,
@@ -274,7 +274,7 @@ fn ohttp_seal_request(
     out.clear();
     out.append(hdr[..]);
     out.append(enc[..]);
-    guard hpke_seal(session.ctx, [], inner_bhttp, out) else {
+    guard security::hpke_seal(session.ctx, [], inner_bhttp, out) else {
         out.clear();
         return false;
     }
@@ -318,15 +318,15 @@ fn ohttp_open_request(
 
     var sk: u8[32] = [0; 32];
     for i in 32 { sk[i] = skR[i]; }
-    let ok_setup = hpke_setup_base_r(enc, sk, info[..], kem_id, kdf_id, aead_id, session.ctx);
+    let ok_setup = security::hpke_setup_base_r(enc, sk, info[..], kem_id, kdf_id, aead_id, session.ctx);
     core::secure_zeroize_32(sk);
     guard ok_setup else { return false; }
 
     out.clear();
-    guard hpke_open(session.ctx, [], ct, out) else {
+    guard security::hpke_open(session.ctx, [], ct, out) else {
         core::secure_zeroize_32(session.ctx.exporter_secret);
         core::secure_zeroize_32(session.ctx.key);
-        session.ctx = HpkeContext { .. };
+        session.ctx = security::HpkeContext { .. };
         return false;
     }
     let _ = session.enc.try_set(enc[..]);

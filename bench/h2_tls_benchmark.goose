@@ -34,27 +34,76 @@ fn build_benchmark_cert(out_der: u8[..2048]&) {
     assert(ok);
 }
 
-fn run_h2_tls_server(port: u16, max_conns: i64) {
-    var app = wing::new_http_server();
-    app.pipeline.enable_csrf_guard = false;
-    app.pipeline.enable_cors = false;
-    app.pipeline.enable_rate_limiter = false;
-    app.pipeline.enable_slowloris_timer = false;
+var g_bench_app: wing::HttpServer = wing::HttpServer { .. };
+
+struct UserApiStage {
+    _unused: i32 = 0,
+}
+
+fn wing::on_server_stage(
+    _stage: UserApiStage&,
+    phase:  wire::ServerHookPhase,
+    cfg:    wing::ServerPipelineConfig&,
+    req:    const wing::Request&,
+    ctx:    wing::ServerStageCtx&,
+    res:    wing::Response&,
+) -> wire::StageVerdict {
+    guard phase == wire::ServerHookPhase.RouteHandler && ctx.handler_id == 2001 else {
+        return wire::StageVerdict.Continue;
+    }
+    let uid = wing::route_param_or(cfg, ctx, "id", "0");
+    let raw_region = wing::header(req, "x-client-region");
+    let region = if raw_region.len > 0 { raw_region } else { "unknown" };
+    let authed = wing::header(req, "authorization").len > 0;
+
+    wing::set_header(res, "content-type", "application/json");
+    wing::set_header(res, "x-engine", "goose-wing");
+    wing::set_header(res, "cache-control", "no-store");
+
+    res.body.clear();
+    res.body.append("{\"id\":");
+    core::format_json_string(res.body, uid);
+    res.body.append(",\"region\":");
+    core::format_json_string(res.body, region);
+    if authed {
+        res.body.append(",\"authenticated\":true");
+    } else {
+        res.body.append(",\"authenticated\":false");
+    }
+    res.body.append(",\"engine\":\"goose-wing\",\"proto\":\"h2\"}");
+    res.status_code = 200;
+    return wire::StageVerdict.ShortCircuit { status_code: 200 };
+}
+
+fn run_h2_tls_server(port: u16, max_conns: i64, accel_str: const u8[:]) {
+    wing::init_http_server_inplace(g_bench_app, "127.0.0.1", port);
+    g_bench_app.pipeline.enable_csrf_guard = false;
+    g_bench_app.pipeline.enable_cors = false;
+    g_bench_app.pipeline.enable_rate_limiter = false;
+    g_bench_app.pipeline.enable_slowloris_timer = false;
+    if accel_str == "poll" {
+        g_bench_app.accel_mode = wing::ReactorAccelMode.PollFallback;
+    } else if accel_str == "rio" {
+        g_bench_app.accel_mode = wing::ReactorAccelMode.Rio;
+    } else {
+        g_bench_app.accel_mode = wing::ReactorAccelMode.Auto;
+    }
 
     assert(wing::add_static_route(
-        app.pipeline.router,
+        g_bench_app.pipeline.router,
         "GET",
         "/plaintext",
         "text/plain",
         "Hello, HTTP/2 over TLS 1.3!",
     ));
     assert(wing::add_static_route(
-        app.pipeline.router,
+        g_bench_app.pipeline.router,
         "GET",
         "/json",
         "application/json",
         "{\"status\":200,\"message\":\"ok\",\"engine\":\"goose-wing\",\"protocol\":\"h2\",\"tls\":\"1.3\"}",
     ));
+    wing::add_get_route(g_bench_app, "/api/v1/users/{id}", 2001);
 
     var cert_der: u8[..2048] = [];
     build_benchmark_cert(cert_der);
@@ -64,13 +113,18 @@ fn run_h2_tls_server(port: u16, max_conns: i64) {
     tls_cfg.priv_seed = [0x42; 32];
     assert(tls_cfg.alpn.try_set("h2,http/1.1"));
 
-    let listener = wing::tcp_listen("127.0.0.1", port, 1024);
+    let listener = if accel_str == "poll" {
+        wing::tcp_listen("127.0.0.1", port, 1024)
+    } else {
+        wing::reactor_listen_accelerated(g_bench_app, 1024)
+    };
     guard listener > 0 else {
         print("FATAL: Failed to bind listener on 127.0.0.1:", port);
         return;
     }
     print("SERVER_READY port=", port);
-    let _ = wing::serve_tls(app, listener, tls_cfg, max_conns);
+    var stage = UserApiStage {};
+    let _ = wing::serve_reactor_tls_with_stage(g_bench_app, listener, tls_cfg, stage, max_conns);
     wing::tcp_close(listener);
 }
 
@@ -155,6 +209,7 @@ fn main() {
     var iters:     i64         = 1000;
     var max_conns: i64         = 0;
     var path:      const u8[:] = "/plaintext";
+    var accel_str: const u8[:] = "auto";
 
     var i: u64 = 1;
     let argc = argv.len as u64;
@@ -194,16 +249,19 @@ fn main() {
         } else if arg == "--path" && next_i < argc {
             path = argv[next_i];
             i = next_i;
+        } else if arg == "--accel" && next_i < argc {
+            accel_str = argv[next_i];
+            i = next_i;
         }
         i = core::add_sat_u64(i, 1);
     }
 
     if is_server {
-        run_h2_tls_server(port, max_conns);
+        run_h2_tls_server(port, max_conns, accel_str);
     } else if is_client {
         run_h2_tls_client(port, iters, path);
     } else {
-        print("Usage: h2_tls_benchmark --server <port> [--conns <max_conns>]");
+        print("Usage: h2_tls_benchmark --server <port> [--conns <max_conns>] [--accel auto|rio|poll]");
         print("       h2_tls_benchmark --client <port> [--iters <N>] [--path <path>]");
     }
 }

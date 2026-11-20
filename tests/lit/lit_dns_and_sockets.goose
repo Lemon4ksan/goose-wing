@@ -23,8 +23,8 @@ import wire_kit from ".";
 // Wire bridge to RFC 9460 SvcParams decoder
 fn decode_svc_params_wire(buf: const u8[:]) -> i64 {
     if buf.len < 24 { return -1; }
-    var rec = wing::HttpsRecord { .. };
-    let ok = wing::parse_https_svc_params(buf, rec);
+    var rec = dns::HttpsRecord { .. };
+    let ok = rec.parse_https_svc_params(buf);
     if !ok { return -2; }
     return rec.port;
 }
@@ -34,8 +34,8 @@ fn test_valid_svc_params() {
     // Key 1 (ALPN, len 6: "h2", "h3"), Key 3 (Port, len 2: 8443), Key 4 (IPv4Hint, len 4: 192.0.2.1)
     assert(wire_kit::parse_hex("000100060268320268330003000220FB00040004C0000201", params_pkt));
 
-    var rec = wing::HttpsRecord { .. };
-    let ok = wing::parse_https_svc_params(params_pkt[..], rec);
+    var rec = dns::HttpsRecord { .. };
+    let ok = rec.parse_https_svc_params(params_pkt[..]);
     assert(ok);
     assert(rec.alpns.len == 2);
     assert(rec.alpns[0] == "h2");
@@ -53,32 +53,32 @@ fn test_invalid_svc_params() {
     // 1. Out of order keys: Key 3 (Port) followed by Key 1 (ALPN)
     var out_of_order: u8[>..] = [];
     assert(wire_kit::parse_hex("0003000201BB00010003026832", out_of_order));
-    var rec1 = wing::HttpsRecord { .. };
-    assert(!wing::parse_https_svc_params(out_of_order[..], rec1));
+    var rec1 = dns::HttpsRecord { .. };
+    assert(!rec1.parse_https_svc_params(out_of_order[..]));
 
     // 2. Duplicate key: Key 1 followed by Key 1
     var dup_keys: u8[>..] = [];
     assert(wire_kit::parse_hex("0001000302683200010003026833", dup_keys));
-    var rec2 = wing::HttpsRecord { .. };
-    assert(!wing::parse_https_svc_params(dup_keys[..], rec2));
+    var rec2 = dns::HttpsRecord { .. };
+    assert(!rec2.parse_https_svc_params(dup_keys[..]));
 
     // 3. Invalid port length: 3 bytes instead of 2
     var bad_port_len: u8[>..] = [];
     assert(wire_kit::parse_hex("0003000301BB00", bad_port_len));
-    var rec3 = wing::HttpsRecord { .. };
-    assert(!wing::parse_https_svc_params(bad_port_len[..], rec3));
+    var rec3 = dns::HttpsRecord { .. };
+    assert(!rec3.parse_https_svc_params(bad_port_len[..]));
 
     // 4. Invalid IPv4 hint length: 3 bytes (not multiple of 4)
     var bad_ip4_len: u8[>..] = [];
     assert(wire_kit::parse_hex("00040003C00002", bad_ip4_len));
-    var rec4 = wing::HttpsRecord { .. };
-    assert(!wing::parse_https_svc_params(bad_ip4_len[..], rec4));
+    var rec4 = dns::HttpsRecord { .. };
+    assert(!rec4.parse_https_svc_params(bad_ip4_len[..]));
 
     // 5. Invalid no_default_alpn length: 1 byte instead of 0
     var bad_no_default: u8[>..] = [];
     assert(wire_kit::parse_hex("0002000100", bad_no_default));
-    var rec5 = wing::HttpsRecord { .. };
-    assert(!wing::parse_https_svc_params(bad_no_default[..], rec5));
+    var rec5 = dns::HttpsRecord { .. };
+    assert(!rec5.parse_https_svc_params(bad_no_default[..]));
 
     print("SVC_PARAMS_INVALID_REJECTED: OK");
 }
@@ -92,8 +92,7 @@ fn test_full_dns_https_response() {
     var resp_pkt: u8[>..] = [];
     assert(wire_kit::parse_hex("567881800001000100000000076578616d706c6503636f6d0000410001C00C004100010000003C00090001000003000201BB", resp_pkt));
 
-    var resp = wing::DnsResponse { .. };
-    let ok = wing::parse_dns_response(resp_pkt[..], resp);
+    let resp, ok = dns::parse_response(resp_pkt[..]);
     assert(ok);
     assert(resp.https_records.len == 1);
     assert(resp.https_records[0].priority == 1);
@@ -103,8 +102,8 @@ fn test_full_dns_https_response() {
     // RFC 9460 §2.5.1: HTTPS TargetName containing compression pointer must be rejected
     var bad_https_wire: u8[>..] = [];
     assert(wire_kit::parse_hex("567881800001000100000000076578616d706c6503636f6d0000410001C00C004100010000003C00040001C00C", bad_https_wire));
-    var resp_bad = wing::DnsResponse { .. };
-    assert(!wing::parse_dns_response(bad_https_wire[..], resp_bad));
+    let _, ok_bad = dns::parse_response(bad_https_wire[..]);
+    assert(!ok_bad);
 
     print("DNS_HTTPS_RESPONSE: OK");
 }
@@ -142,7 +141,7 @@ fn wing_validate_masque_capsule_wire(buf: const u8[:]) -> i64 {
 fn wing_validate_dns_pointer_wire(buf: const u8[:], start_off: i64) -> i32 {
     var out: u8[..256] = [];
     var off = start_off;
-    let ok = wing::dns_decode_name(buf, off, out);
+    let ok = dns::decode_name(buf, off, out);
     if ok {
         return 0;
     }
@@ -809,8 +808,8 @@ fn run_05_verify_net_audit() {
 
     // Mandatory key 0x0003 (port) declared in Key 0, but Key 3 is missing from SvcParams
     let missing_mandatory_params: const u8[6] = [0x00, 0x00, 0x00, 0x02, 0x00, 0x03];
-    var h_rec = wing::HttpsRecord { .. };
-    let mand_ok = wing::parse_https_svc_params(missing_mandatory_params[..], h_rec);
+    var h_rec = dns::HttpsRecord { .. };
+    let mand_ok = h_rec.parse_https_svc_params(missing_mandatory_params[..]);
     assert(!mand_ok);
     print("F009_DNS_OK: ", if !mand_ok { 1 } else { 0 });
 
@@ -918,23 +917,22 @@ fn run_05_verify_net_audit() {
 
     // F013: DoH URL query separator (? vs &)
     var doh_query_url: u8[..256] = [];
-    assert(wing::build_doh_get_url("https://dns.google/dns-query?client=app", "example.com", 1, doh_query_url));
+    assert(dns::build_doh_get_url("https://dns.google/dns-query?client=app", "example.com", 1, doh_query_url));
     assert(find(doh_query_url[..], "?client=app&dns=") >= 0);
     print("F013_DOH_URL_SEP: 1");
 
     // F014: DNS cache lookup with negative elapsed time and saturated TTL addition
-    var dcache = wing::DnsCache { .. };
-    var dentry = wing::DnsCacheEntry {
+    var dcache = dns::Cache { .. };
+    var dentry = dns::CacheEntry {
         inserted_at_sec: 1000,
         ttl_sec:         300,
         stale_ttl_sec:   86400,
         ..
     };
     dentry.domain.append("example.com");
-    wing::dns_cache_insert(dcache, dentry);
-    var out_entry = wing::DnsCacheEntry { .. };
-    let skew_stat = wing::dns_cache_lookup(dcache, "example.com", 1, 500, out_entry);
-    assert(skew_stat == wing::DnsCacheStatus.Expired);
+    dcache.insert(dentry);
+    let out_entry, skew_stat = dcache.lookup("example.com", 1, 500);
+    assert(out_entry == null && skew_stat == dns::CacheStatus.Expired);
     print("F014_DNS_CACHE_SKEW: 1");
 
     // F015: bind_winner_attempt rejects Failed or Cancelled attempts
@@ -1000,13 +998,13 @@ fn run_05_verify_net_audit() {
 fn test_r001_dns_rfc_edge_cases() {
     // 1. RFC 9460 §7.1.1 & §2.4.3: no-default-alpn (key 2) without alpn (key 1) must be rejected
     let no_def_only: const u8[4] = [0x00, 0x02, 0x00, 0x00];
-    var rec_nodef = wing::HttpsRecord { .. };
-    assert(!wing::parse_https_svc_params(no_def_only[..], rec_nodef));
+    var rec_nodef = dns::HttpsRecord { .. };
+    assert(!rec_nodef.parse_https_svc_params(no_def_only[..]));
 
     // 2. RFC 9460: empty ech (key 5, len 0) must be rejected
     let empty_ech: const u8[4] = [0x00, 0x05, 0x00, 0x00];
-    var rec_ech = wing::HttpsRecord { .. };
-    assert(!wing::parse_https_svc_params(empty_ech[..], rec_ech));
+    var rec_ech = dns::HttpsRecord { .. };
+    assert(!rec_ech.parse_https_svc_params(empty_ech[..]));
 
     // 3. RFC 9460 §2.4.2: AliasMode (priority == 0) MUST ignore SvcParams
     let alias_wire: const u8[50] = [
@@ -1016,8 +1014,8 @@ fn test_r001_dns_rfc_edge_cases() {
         0xc0, 0x0c, 0x00, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x09,
         0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x02, 0x20, 0xfb,
     ];
-    var resp_alias = wing::DnsResponse { .. };
-    assert(wing::parse_dns_response(alias_wire[..], resp_alias));
+    let resp_alias, ok_alias = dns::parse_response(alias_wire[..]);
+    assert(ok_alias);
     assert(resp_alias.https_records.len == 1);
     assert(resp_alias.https_records[0].priority == 0);
     assert(resp_alias.https_records[0].port == 443);
@@ -1027,8 +1025,8 @@ fn test_r001_dns_rfc_edge_cases() {
     svcb_wire[31] = 0x00;
     svcb_wire[32] = 0x40;
     svcb_wire[41] = 0x01;
-    var resp_svcb = wing::DnsResponse { .. };
-    assert(wing::parse_dns_response(svcb_wire[..], resp_svcb));
+    let resp_svcb, ok_svcb = dns::parse_response(svcb_wire[..]);
+    assert(ok_svcb);
     assert(resp_svcb.https_records.len == 0);
 
     // 5. RFC 2181 §8: TTL with MSB set (0x80000001) must be treated as 0
@@ -1039,13 +1037,13 @@ fn test_r001_dns_rfc_edge_cases() {
         0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x80, 0x00, 0x00, 0x01, 0x00, 0x04,
         127, 0, 0, 1,
     ];
-    var resp_ttl = wing::DnsResponse { .. };
-    assert(wing::parse_dns_response(msb_ttl_wire[..], resp_ttl));
+    let resp_ttl, ok_ttl = dns::parse_response(msb_ttl_wire[..]);
+    assert(ok_ttl);
     assert(resp_ttl.min_ttl_sec == 0);
 
     // 6. RFC 1035 §3.2.1: ttl_sec == 0 must not be served Stale from DnsCache
-    var dcache = wing::DnsCache { .. };
-    var zero_ttl_entry = wing::DnsCacheEntry {
+    var dcache = dns::Cache { .. };
+    var zero_ttl_entry = dns::CacheEntry {
         qtype:           1,
         inserted_at_sec: 1000,
         ttl_sec:         0,
@@ -1053,9 +1051,9 @@ fn test_r001_dns_rfc_edge_cases() {
         ..
     };
     zero_ttl_entry.domain.append("zero.example.com");
-    wing::dns_cache_insert(dcache, zero_ttl_entry);
-    var out_zero = wing::DnsCacheEntry { .. };
-    assert(wing::dns_cache_lookup(dcache, "zero.example.com", 1, 1000, out_zero) == wing::DnsCacheStatus.Expired);
+    dcache.insert(zero_ttl_entry);
+    let out_zero, st_zero = dcache.lookup("zero.example.com", 1, 1000);
+    assert(out_zero == null && st_zero == dns::CacheStatus.Expired);
 
     // 7. RFC 5891 §4.2.3.1 & CVE-2026-39821 Punycode validation
     assert(!core::validate_idna_domain_bounds("xn--test-.example.com"));

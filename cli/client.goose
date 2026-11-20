@@ -17,7 +17,7 @@ fn apply_resolve_overrides(sess: wing::Client&, cfg: const CliConfig&) {
     for &r in cfg.resolves {
         let ip4, ok_ip = parse_ipv4_be_u32(r.ip[..]);
         if ok_ip {
-            var entry = wing::DnsCacheEntry {
+            var entry = dns::CacheEntry {
                 qtype:           1, // DNS_QTYPE_A
                 inserted_at_sec: now_sec,
                 ttl_sec:         3600,
@@ -26,7 +26,7 @@ fn apply_resolve_overrides(sess: wing::Client&, cfg: const CliConfig&) {
             };
             let _ = entry.domain.try_set(r.host[..]);
             let _ = entry.ipv4_hints.try_push(ip4);
-            sess.dns_cache.dns_cache_insert(entry);
+            sess.dns_cache.insert(entry);
         }
     }
 }
@@ -300,7 +300,7 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
     let eff_proxy = resolve_effective_proxy(cfg);
 
     var sess = wing::new_client(wing::ClientConfig {
-        profile:              if cfg.raw_profile { wing::Profile.None } else { wing::Profile.Wing },
+        profile:              if cfg.raw_profile { fingerprint::Profile.None } else { fingerprint::Profile.Wing },
         proxy_url:            eff_proxy[..],
         timeout_ms:           cfg.timeout_ms,
         follow_redirects:     cfg.follow_redirects,

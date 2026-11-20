@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Set-Cookie header parsing, date tokenization, and cookie URL models (RFC 6265bis).
-namespace wing;
+namespace cookie;
 
 import std;
 import core from "..";
@@ -13,16 +13,17 @@ import .psl;
 
 // ---- ingestion pipeline & set-cookie parser --------------------------------
 
-inline fn normalize_cookie_default_domain(default_domain: const u8[:], out: u8[..256]&) -> bool {
-    out.clear();
+fn cookie_internal::normalize_default_domain(default_domain: const u8[:]) -> u8[..256], bool {
+    var out: u8[..256] = [];
     let raw = default_domain.trim_byte('[').trim_byte(']');
-    guard raw.len > 0 else { return true; }
+    guard raw.len > 0 else { return out, true; }
     if !core::is_pure_ascii(raw) {
-        return core::punycode_encode_domain(raw, out);
+        let ok = core::punycode_encode_domain(raw, out);
+        return out, ok;
     }
-    guard out.try_set(raw) else { return false; }
+    guard out.try_set(raw) else { return out, false; }
     to_lower(out[..]);
-    return true;
+    return out, true;
 }
 
 // Parses a Set-Cookie header value into a CanonicalCookie (RFC 6265bis Section 5.5).
@@ -36,32 +37,32 @@ fn parse_canonical_set_cookie(
     default_domain: const u8[:],
     default_path:   const u8[:],
     now_us:         i64,
-) -> CanonicalCookie, CookieDeleteCause, bool {
+) -> CanonicalCookie, DeleteCause, bool {
     var parsed_cookie = CanonicalCookie { .. };
 
     guard header_val.len > 0 else {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        return parsed_cookie, DeleteCause.UNKNOWN, false;
     }
-    if has_prohibited_cookie_ctl(header_val) {
-        return parsed_cookie, CookieDeleteCause.CONTROL_CHAR, false;
+    if cookie_internal::has_prohibited_ctl(header_val) {
+        return parsed_cookie, DeleteCause.CONTROL_CHAR, false;
     }
 
-    let unparsed_attrs, payload_ok = parse_cookie_payload_pair(header_val, parsed_cookie);
+    let unparsed_attrs, payload_ok = cookie_internal::parse_payload_pair(header_val, parsed_cookie);
     guard payload_ok else {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        return parsed_cookie, DeleteCause.UNKNOWN, false;
     }
 
-    var def_dom_buf: u8[..256] = [];
-    guard normalize_cookie_default_domain(default_domain, def_dom_buf) else {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+    let def_dom_buf, dom_ok = cookie_internal::normalize_default_domain(default_domain);
+    guard dom_ok else {
+        return parsed_cookie, DeleteCause.UNKNOWN, false;
     }
     let clean_def_domain = def_dom_buf[..];
     guard parsed_cookie.domain.try_set(clean_def_domain) else {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        return parsed_cookie, DeleteCause.UNKNOWN, false;
     }
     let eff_default_path = if default_path.len > 0 && default_path[0] == '/' { default_path } else { "/" };
     guard parsed_cookie.path.try_set(eff_default_path) else {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+        return parsed_cookie, DeleteCause.UNKNOWN, false;
     }
     parsed_cookie.host_only = true;
     parsed_cookie.creation_utc = now_us;
@@ -74,100 +75,54 @@ fn parse_canonical_set_cookie(
         loop {
             let raw_attr, has_attr = core::token_next(tok);
             guard has_attr else { break; }
-            apply_parsed_cookie_attribute(
+            cookie_internal::apply_parsed_attribute(
                 parsed_cookie, raw_attr, has_max_age, clean_def_domain, eff_default_path, now_us,
             );
         }
     }
 
-    if !validate_parsed_cookie_domain(parsed_cookie, clean_def_domain) {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
+    guard cookie_internal::validate_parsed_domain(parsed_cookie, clean_def_domain)
+        && cookie_internal::has_valid_prefix_attributes(parsed_cookie, parsed_cookie.name[..]) else {
+        return parsed_cookie, DeleteCause.UNKNOWN, false;
     }
 
-    // RFC 6265bis Section 5.6: Cookie security prefixes
-    let cname = parsed_cookie.name[..];
-    if cname.starts_with_fold("__secure-") {
-        if !parsed_cookie.secure {
-            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
-        }
-    } else if cname.starts_with_fold("__host-http-") {
-        let bad = !parsed_cookie.secure || parsed_cookie.has_domain_attr;
-        let bad_path = !parsed_cookie.has_path_attr || parsed_cookie.path[..] != "/";
-        if bad || bad_path || !parsed_cookie.httponly {
-            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
-        }
-    } else if cname.starts_with_fold("__host-") {
-        let bad = !parsed_cookie.secure || parsed_cookie.has_domain_attr;
-        let bad_path = !parsed_cookie.has_path_attr || parsed_cookie.path[..] != "/";
-        if bad || bad_path {
-            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
-        }
-    } else if cname.starts_with_fold("__http-") {
-        if !parsed_cookie.secure || !parsed_cookie.httponly {
-            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
-        }
+    // RFC 6265bis Section 5.5.7 & CHIPS: SameSite=None and Partitioned require Secure
+    if (parsed_cookie.same_site == SameSite.None || parsed_cookie.partitioned) && !parsed_cookie.secure {
+        return parsed_cookie, DeleteCause.UNKNOWN, false;
     }
 
-    // Nameless cookies with security prefixes in value (RFC 6265bis §5.6.1)
-    if parsed_cookie.name.len == 0 {
-        let val = parsed_cookie.value[..];
-        if val.starts_with_fold("__host-") || val.starts_with_fold("__secure-")
-            || val.starts_with_fold("__http-") || val.starts_with_fold("__host-http-") {
-            return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
-        }
-    }
-
-    // RFC 6265bis Section 5.5.7: SameSite=None strictly requires Secure
-    if parsed_cookie.same_site == CookieSameSite.None && !parsed_cookie.secure {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
-    }
-
-    // RFC 6265bis / CHIPS: Partitioned cookies strictly require Secure
-    if parsed_cookie.partitioned && !parsed_cookie.secure {
-        return parsed_cookie, CookieDeleteCause.UNKNOWN, false;
-    }
-
-    return parsed_cookie, CookieDeleteCause.UNKNOWN, true;
-}
-
-// Whether s contains ASCII control characters (%x00-08, %x0A-1F, %x7F).
-// HTAB (%x09) is permitted (RFC 6265bis Section 5.5).
-fn has_prohibited_cookie_ctl(cookie_str: const u8[:]) -> bool {
-    for char_byte in cookie_str {
-        if (char_byte <= 0x08) || (char_byte >= 0x0A && char_byte <= 0x1F) || char_byte == 0x7F {
-            return true;
-        }
-    }
-    return false;
+    return parsed_cookie, DeleteCause.UNKNOWN, true;
 }
 
 // ---- date parser -----------------------------------------------------------
+
+struct cookie_internal::DateParts {
+    hour:   i64 = 0,
+    minute: i64 = 0,
+    second: i64 = 0,
+    day:    i64 = 0,
+    month:  i64 = 0,
+    year:   i64 = 0,
+}
 
 // Parses a cookie date string into a microsecond UTC timestamp (RFC 6265 Section 5.1.1).
 //
 // Example:
 //   raw = "Wed, 09 Jun 2021 10:18:14 GMT"
 //   returns: 1623233894000000, ok = true
-fn parse_cookie_date_us(raw: const u8[:]) -> i64, bool {
+fn parse_date_us(raw: const u8[:]) -> i64, bool {
     guard raw.len > 0 else { return 0, false; }
 
-    var hour:   i64 = 0;
-    var minute: i64 = 0;
-    var second: i64 = 0;
-    var day:    i64 = 0;
-    var month:  i64 = 0;
-    var year:   i64 = 0;
-
-    let scanned = scan_cookie_date_tokens(raw, hour, minute, second, day, month, year);
+    var parts, scanned = cookie_internal::scan_date_tokens(raw);
     guard scanned else { return 0, false; }
 
-    year = normalize_cookie_year(year);
-    guard is_valid_cookie_calendar_date(year, month, day, hour, minute, second) else { return 0, false; }
+    parts.year = cookie_internal::normalize_year(parts.year);
+    guard cookie_internal::is_valid_calendar_date(parts) else { return 0, false; }
 
-    let total_days = core::civil_to_days(year, month, day);
+    let total_days = core::civil_to_days(parts.year, parts.month, parts.day);
     let days_sec = core::mul_sat_i64(total_days, 86400);
-    let min_sec = core::add_sat_i64(core::mul_sat_i64(minute, 60), second);
-    let hms_sec = core::add_sat_i64(core::mul_sat_i64(hour, 3600), min_sec);
+    let min_sec = core::add_sat_i64(core::mul_sat_i64(parts.minute, 60), parts.second);
+    let hms_sec = core::add_sat_i64(core::mul_sat_i64(parts.hour, 3600), min_sec);
     let total_sec = core::add_sat_i64(days_sec, hms_sec);
     return core::mul_sat_i64(total_sec, 1000000), true; // Microseconds UTC
 }
@@ -236,9 +191,9 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
         return CanonicalCookieURL { .. };
     }
 
-    let host_part, path_part = split_url_host_and_path(rest_url);
+    let host_part, path_part = cookie_internal::split_url_host_and_path(rest_url);
     var port_val = parsed_url.port;
-    let host_slice = extract_url_host_and_port_slice(host_part, port_val);
+    let host_slice = cookie_internal::extract_url_host_and_port_slice(host_part, port_val);
     guard host_slice.len > 0 && parsed_url.host.try_set(host_slice) else {
         return CanonicalCookieURL { .. };
     }
@@ -252,7 +207,7 @@ fn parse_canonical_cookie_url(raw_url: const u8[:]) -> CanonicalCookieURL {
     return parsed_url;
 }
 
-fn split_url_host_and_path(rest_url: const u8[:]) -> const u8[:], const u8[:] {
+fn cookie_internal::split_url_host_and_path(rest_url: const u8[:]) -> const u8[:], const u8[:] {
     let slash_idx = core::find_byteset(rest_url, "/?#");
     let host_part = if slash_idx >= 0 { rest_url[..slash_idx] } else { rest_url };
     let path_part = if slash_idx >= 0 && rest_url[slash_idx] == '/' {
@@ -269,7 +224,7 @@ fn split_url_host_and_path(rest_url: const u8[:]) -> const u8[:], const u8[:] {
 // Example:
 //   host_part = "localhost:8080", port_out = 80
 //   returns: "localhost", port_out = 8080
-fn extract_url_host_and_port_slice(host_part: const u8[:], port_out: i32&) -> const u8[:] {
+fn cookie_internal::extract_url_host_and_port_slice(host_part: const u8[:], port_out: i32&) -> const u8[:] {
     guard host_part.len > 0 else { return ""; }
     if host_part[0] == '[' {
         let close_bracket = host_part.index_of_byte(']');
@@ -299,7 +254,7 @@ fn extract_url_host_and_port_slice(host_part: const u8[:], port_out: i32&) -> co
         port_parsed = port_val as i32;
     }
     let candidate = if has_colon { host_slice } else { host_part };
-    guard !is_domain_syntax_invalid(candidate) && !candidate.contains_byte('@') else {
+    guard !cookie_internal::is_domain_syntax_invalid(candidate) && !candidate.contains_byte('@') else {
         return "";
     }
     if has_colon {
@@ -314,12 +269,9 @@ fn extract_url_host_and_port_slice(host_part: const u8[:], port_out: i32&) -> co
 //
 // Example:
 //   raw = "Wed, 09 Jun 2021 10:18:14 GMT"
-//   returns: true
-fn scan_cookie_date_tokens(
-    raw:  const u8[:],
-    hour: i64&, minute: i64&, second: i64&,
-    day:  i64&, month: i64&, year: i64&,
-) -> bool {
+//   returns: DateParts{hour=10, minute=18, second=14, day=9, month=6, year=2021}, true
+fn cookie_internal::scan_date_tokens(raw: const u8[:]) -> cookie_internal::DateParts, bool {
+    var parts = cookie_internal::DateParts { .. };
     var found_time = false;
     var found_dom = false;
     var found_month = false;
@@ -327,46 +279,41 @@ fn scan_cookie_date_tokens(
 
     var scan_pos: i64 = 0;
     while scan_pos < raw.len {
-        while scan_pos < raw.len && is_cookie_date_delimiter(raw[scan_pos]) {
+        while scan_pos < raw.len && cookie_internal::is_date_delimiter(raw[scan_pos]) {
             scan_pos = core::add_sat_i64(scan_pos, 1);
         }
         if scan_pos >= raw.len { break; }
         let token_start = scan_pos;
-        while scan_pos < raw.len && !is_cookie_date_delimiter(raw[scan_pos]) {
+        while scan_pos < raw.len && !cookie_internal::is_date_delimiter(raw[scan_pos]) {
             scan_pos = core::add_sat_i64(scan_pos, 1);
         }
         let token = raw[token_start..scan_pos];
 
-        if !found_time && try_parse_cookie_time(token, hour, minute, second) {
+        if !found_time && cookie_internal::try_parse_time(token, parts.hour, parts.minute, parts.second) {
             found_time = true;
-        } else if !found_dom && try_parse_cookie_dom(token, day) {
+        } else if !found_dom && cookie_internal::try_parse_dom(token, parts.day) {
             found_dom = true;
-        } else if !found_month && try_parse_cookie_month(token, month) {
+        } else if !found_month && cookie_internal::try_parse_month(token, parts.month) {
             found_month = true;
-        } else if !found_year && try_parse_cookie_year(token, year) {
+        } else if !found_year && cookie_internal::try_parse_year(token, parts.year) {
             found_year = true;
         }
     }
 
-    return found_time && found_dom && found_month && found_year;
+    return parts, found_time && found_dom && found_month && found_year;
 }
 
-fn is_valid_cookie_calendar_date(
-    year:   i64,
-    month:  i64,
-    day:    i64,
-    hour:   i64,
-    minute: i64,
-    second: i64,
-) -> bool {
-    guard month >= 1 && month <= 12 else { return false; }
-    guard day >= 1 && day <= core::days_in_month(year, month) else { return false; }
-    guard year >= 1601 && year <= 9999 else { return false; }
-    guard hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59 else { return false; }
+fn cookie_internal::is_valid_calendar_date(parts: const cookie_internal::DateParts&) -> bool {
+    guard parts.month >= 1 && parts.month <= 12 else { return false; }
+    guard parts.day >= 1 && parts.day <= core::days_in_month(parts.year, parts.month) else { return false; }
+    guard parts.year >= 1601 && parts.year <= 9999 else { return false; }
+    guard parts.hour >= 0 && parts.hour <= 23
+        && parts.minute >= 0 && parts.minute <= 59
+        && parts.second >= 0 && parts.second <= 59 else { return false; }
     return true;
 }
 
-fn is_cookie_date_delimiter(char_byte: u8) -> bool {
+fn cookie_internal::is_date_delimiter(char_byte: u8) -> bool {
     return char_byte == 0x09 ||
            (char_byte >= 0x20 && char_byte <= 0x2F) ||
            (char_byte >= 0x3B && char_byte <= 0x40) ||
@@ -374,7 +321,11 @@ fn is_cookie_date_delimiter(char_byte: u8) -> bool {
            (char_byte >= 0x7B && char_byte <= 0x7E);
 }
 
-fn try_parse_cookie_time(token: const u8[:], hour: i64&, minute: i64&, second: i64&) -> bool {
+// Parses an RFC 6265 `time` token (`HH:MM:SS`) into hour, minute, and second.
+//
+// Example:
+//   token = "08:49:37" -> returns: true, hour = 8, minute = 49, second = 37
+fn cookie_internal::try_parse_time(token: const u8[:], hour: i64&, minute: i64&, second: i64&) -> bool {
     guard token.len >= 5 else { return false; }
     let colon_pos1 = token.index_of_byte(':');
     guard colon_pos1 == 1 || colon_pos1 == 2 else { return false; }
@@ -384,11 +335,13 @@ fn try_parse_cookie_time(token: const u8[:], hour: i64&, minute: i64&, second: i
     let sec_part = if min_len == 1 { after_h[2..] } else { after_h[3..] };
     guard sec_part.len >= 1 else { return false; }
 
-    let s1 = sec_part.len >= 2 && sec_part[1] >= '0' && sec_part[1] <= '9';
-    let s2 = sec_part.len >= 3 && sec_part[2] >= '0' && sec_part[2] <= '9';
+    let s1 = sec_part.len >= 2 && core::is_ascii_digit(sec_part[1]);
+    let s2 = sec_part.len >= 3 && core::is_ascii_digit(sec_part[2]);
     guard !s2 else { return false; }
     let sec_slice = if s1 { sec_part[..2] } else { sec_part[..1] };
-    guard token[0] >= '0' && after_h[0] >= '0' && sec_slice[0] >= '0' else { return false; }
+    guard core::is_ascii_digit(token[0])
+        && core::is_ascii_digit(after_h[0])
+        && core::is_ascii_digit(sec_slice[0]) else { return false; }
 
     let hour_val, hour_ok = token[..colon_pos1].parse_i64_dec();
     let minute_val, minute_ok = after_h[..min_len].parse_i64_dec();
@@ -401,20 +354,14 @@ fn try_parse_cookie_time(token: const u8[:], hour: i64&, minute: i64&, second: i
     return true;
 }
 
-fn try_parse_cookie_dom(token: const u8[:], day: i64&) -> bool {
-    guard token.len >= 1 else { return false; }
-    let b0 = token[0];
-    guard b0 >= '0' && b0 <= '9' else { return false; }
-    var d1 = false;
-    if token.len >= 2 {
-        let b1 = token[1];
-        d1 = b1 >= '0' && b1 <= '9';
-    }
-    var d2 = false;
-    if token.len >= 3 {
-        let b2 = token[2];
-        d2 = b2 >= '0' && b2 <= '9';
-    }
+// Parses a 1-2 digit day-of-month prefix from `token`.
+//
+// Example:
+//   token = "06" -> returns: true, day = 6
+fn cookie_internal::try_parse_dom(token: const u8[:], day: i64&) -> bool {
+    guard token.len >= 1 && core::is_ascii_digit(token[0]) else { return false; }
+    let d1 = token.len >= 2 && core::is_ascii_digit(token[1]);
+    let d2 = token.len >= 3 && core::is_ascii_digit(token[2]);
     guard !d2 else { return false; }
     let digits = if d1 { token[..2] } else { token[..1] };
     let day_val, day_ok = digits.parse_i64_dec();
@@ -423,18 +370,25 @@ fn try_parse_cookie_dom(token: const u8[:], day: i64&) -> bool {
     return true;
 }
 
-fn try_parse_cookie_month(token: const u8[:], month: i64&) -> bool {
-    let month_val = parse_cookie_month_name(token);
+// Parses a 3-letter month prefix into `month` (1..12).
+//
+// Example:
+//   token = "Nov" -> returns: true, month = 11
+fn cookie_internal::try_parse_month(token: const u8[:], month: i64&) -> bool {
+    let month_val = cookie_internal::parse_month_name(token);
     guard month_val > 0 else { return false; }
     month = month_val;
     return true;
 }
 
-fn try_parse_cookie_year(token: const u8[:], year: i64&) -> bool {
+// Parses a 2-4 digit year token and normalizes 2-digit years per RFC 6265 Section 5.1.1.
+//
+// Example:
+//   token = "94" -> returns: true, year = 1994
+fn cookie_internal::try_parse_year(token: const u8[:], year: i64&) -> bool {
     var digit_len: i64 = 0;
     while digit_len < token.len && digit_len < 5 {
-        let ch = token[digit_len];
-        if ch >= '0' && ch <= '9' {
+        if core::is_ascii_digit(token[digit_len]) {
             digit_len = core::add_sat_i64(digit_len, 1);
         } else {
             break;
@@ -443,24 +397,24 @@ fn try_parse_cookie_year(token: const u8[:], year: i64&) -> bool {
     guard digit_len >= 2 && digit_len <= 4 else { return false; }
     let year_val, year_ok = token[..digit_len].parse_i64_dec();
     guard year_ok else { return false; }
-    let norm_yr = normalize_cookie_year(year_val);
+    let norm_yr = cookie_internal::normalize_year(year_val);
     guard norm_yr >= 1601 else { return false; }
     year = norm_yr;
     return true;
 }
 
-fn normalize_cookie_year(year: i64) -> i64 {
+fn cookie_internal::normalize_year(year: i64) -> i64 {
     if year >= 70 && year <= 99 { return core::add_sat_i64(year, 1900); }
     if year >= 0 && year <= 69 { return core::add_sat_i64(year, 2000); }
     return year;
 }
 
-// Parses a three-letter, abbreviated, or full month name to 1-based month index (RFC 6265 §5.1.1).
+// Parses a three-letter, abbreviated, or full month name to 1-based month index (RFC 6265 Section 5.1.1).
 //
 // Example:
 //   token = "Sept"
 //   returns: 9
-fn parse_cookie_month_name(token: const u8[:]) -> i64 {
+fn cookie_internal::parse_month_name(token: const u8[:]) -> i64 {
     guard token.len >= 3 else { return 0; }
 
     if token.eq_ascii_fold("jan") || token.eq_ascii_fold("january") { return 1; }
@@ -479,45 +433,46 @@ fn parse_cookie_month_name(token: const u8[:]) -> i64 {
     return 0;
 }
 
-// RFC 6265 Section 4.1.1 cookie-octet validator (%x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E).
-fn is_cookie_octet(b: u8) -> bool {
-    guard core::is_ascii_vchar(b) else { return false; }
-    return b != '"' && b != ',' && b != ';' && b != '\\';
-}
+// Validates RFC 6265bis Section 5.6 cookie prefix attributes on `cookie_val`.
+fn cookie_internal::has_valid_prefix_attributes(
+    cookie_val:  const cookie::CanonicalCookie&,
+    cookie_name: const u8[:],
+) -> bool {
+    if cookie_name.len == 0 {
+        let cookie_value = cookie_val.value[..];
+        if cookie_value.starts_with_fold("__host-http-") ||
+           cookie_value.starts_with_fold("__host-") ||
+           cookie_value.starts_with_fold("__http-") ||
+           cookie_value.starts_with_fold("__secure-") {
+            return false;
+        }
+    }
 
-// RFC 6265 Section 4.1.1 cookie-value syntax validator: *cookie-octet / (DQUOTE *cookie-octet DQUOTE).
-fn is_valid_cookie_value(val: const u8[:]) -> bool {
-    let is_quoted = val.len >= 2 && val[0] == '"' && val[core::sub_sat_i64(val.len, 1)] == '"';
-    let target = if is_quoted { val[1..^1] } else { val };
-    for b in target {
-        guard is_cookie_octet(b) else { return false; }
+    if cookie_name.starts_with_fold("__host-http-") {
+        return cookie_val.secure && cookie_val.httponly && !cookie_val.has_domain_attr
+            && cookie_val.host_only && cookie_val.has_path_attr && cookie_val.path[..] == "/";
+    }
+    if cookie_name.starts_with_fold("__host-") {
+        return cookie_val.secure && !cookie_val.has_domain_attr
+            && cookie_val.host_only && cookie_val.has_path_attr && cookie_val.path[..] == "/";
+    }
+    if cookie_name.starts_with_fold("__http-") {
+        return cookie_val.secure && cookie_val.httponly;
+    }
+    if cookie_name.starts_with_fold("__secure-") {
+        return cookie_val.secure;
     }
     return true;
 }
 
-fn validate_cookie_name(name: const u8[:]) -> bool {
-    guard name.len > 0 else { return true; }
-    for b in name {
-        guard core::is_tchar(b) else { return false; }
-    }
-    return true;
-}
-
-fn validate_nameless_cookie_value(val: const u8[:]) -> bool {
-    for b in val {
-        guard b != '=' else { return false; }
-    }
-    return true;
-}
-
-// Parses the initial name=value pair of a Set-Cookie header (RFC 6265 §5.2).
+// Parses the initial name=value pair of a Set-Cookie header (RFC 6265 Section 5.2).
 //
 // Example:
 //   header_val = "session=xyz; Secure"
 //   returns: " Secure", ok = true
-fn parse_cookie_payload_pair(
+fn cookie_internal::parse_payload_pair(
     header_val: const u8[:],
-    cookie_ref: CanonicalCookie&,
+    cookie_ref: cookie::CanonicalCookie&,
 ) -> const u8[:], bool {
     let name_val_part, unparsed_attrs, _ = header_val.split_once_byte(';');
     let lhs, rhs, has_eq = name_val_part.split_once_byte('=');
@@ -529,9 +484,9 @@ fn parse_cookie_payload_pair(
         return "", false;
     }
 
-    guard validate_cookie_name(raw_name) else { return "", false; }
-    guard is_valid_cookie_value(raw_val) else { return "", false; }
-    guard raw_name.len > 0 || validate_nameless_cookie_value(raw_val) else { return "", false; }
+    guard cookie_internal::is_valid_cookie_name(raw_name) else { return "", false; }
+    guard cookie_internal::is_valid_cookie_val(raw_val) else { return "", false; }
+    guard raw_name.len > 0 || !raw_val.contains_byte('=') else { return "", false; }
 
     var committed = false;
     defer if !committed {
@@ -545,8 +500,8 @@ fn parse_cookie_payload_pair(
     return unparsed_attrs, true;
 }
 
-fn apply_parsed_cookie_attribute(
-    cookie_ref:     CanonicalCookie&,
+fn cookie_internal::apply_parsed_attribute(
+    cookie_ref:     cookie::CanonicalCookie&,
     raw_attr:       const u8[:],
     has_max_age:    bool&,
     default_domain: const u8[:],
@@ -567,7 +522,7 @@ fn apply_parsed_cookie_attribute(
             cookie_ref.host_only = false;
             return;
         }
-        apply_parsed_domain_attribute(cookie_ref, attr_val, default_domain);
+        cookie_internal::apply_parsed_domain_attribute(cookie_ref, attr_val, default_domain);
         return;
     }
 
@@ -580,19 +535,23 @@ fn apply_parsed_cookie_attribute(
     } else if attr_name.eq_ascii_fold("partitioned") {
         cookie_ref.partitioned = true;
     } else if attr_name.eq_ascii_fold("samesite") {
-        cookie_ref.same_site = parse_cookie_same_site(attr_val);
+        cookie_ref.same_site = cookie::parse_same_site(attr_val);
     } else if attr_name.eq_ascii_fold("priority") {
-        cookie_ref.priority = parse_cookie_priority(attr_val);
+        cookie_ref.priority = cookie::parse_priority(attr_val);
     } else if attr_name.eq_ascii_fold("path") {
-        apply_parsed_path_attribute(cookie_ref, attr_val, default_path);
+        cookie_ref.apply_parsed_path_attribute(attr_val, default_path);
     } else if attr_name.eq_ascii_fold("max-age") {
-        apply_parsed_max_age_attribute(cookie_ref, attr_val, has_max_age, now_us);
+        cookie_internal::apply_parsed_max_age_attribute(cookie_ref, attr_val, has_max_age, now_us);
     } else if attr_name.eq_ascii_fold("expires") {
-        apply_parsed_expires_attribute(cookie_ref, attr_val, has_max_age, now_us);
+        cookie_internal::apply_parsed_expires_attribute(cookie_ref, attr_val, has_max_age, now_us);
     }
 }
 
-fn apply_parsed_domain_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[:], default_domain: const u8[:]) {
+fn cookie_internal::apply_parsed_domain_attribute(
+    cookie_ref:     cookie::CanonicalCookie&,
+    attr_val:       const u8[:],
+    default_domain: const u8[:],
+) {
     if attr_val.len == 0 {
         cookie_ref.host_only = true;
         let _ = cookie_ref.domain.try_set(default_domain);
@@ -639,8 +598,8 @@ fn apply_parsed_path_attribute(cookie_ref: CanonicalCookie&, attr_val: const u8[
     cookie_ref.has_path_attr = true;
 }
 
-fn apply_parsed_max_age_attribute(
-    cookie_ref:  CanonicalCookie&,
+fn cookie_internal::apply_parsed_max_age_attribute(
+    cookie_ref:  cookie::CanonicalCookie&,
     attr_val:    const u8[:],
     has_max_age: bool&,
     now_us:      i64,
@@ -673,22 +632,25 @@ fn apply_parsed_max_age_attribute(
     cookie_ref.expires_utc = core::add_sat_i64(now_us, core::mul_sat_i64(capped_sec, 1000000));
 }
 
-fn apply_parsed_expires_attribute(
-    cookie_ref:  CanonicalCookie&,
+fn cookie_internal::apply_parsed_expires_attribute(
+    cookie_ref:  cookie::CanonicalCookie&,
     attr_val:    const u8[:],
     has_max_age: bool,
     now_us:      i64,
 ) {
     guard !has_max_age else { return; }
 
-    let expires_us, expires_ok = parse_cookie_date_us(attr_val);
+    let expires_us, expires_ok = cookie::parse_date_us(attr_val);
     guard expires_ok else { return; }
 
     cookie_ref.persistent = true;
     cookie_ref.expires_utc = min(expires_us, core::add_sat_i64(now_us, cookie_internal::K_MAX_COOKIE_AGE_US));
 }
 
-inline fn try_fallback_exact_host_only(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
+inline fn cookie_internal::try_fallback_exact_host_only(
+    cookie_ref:     cookie::CanonicalCookie&,
+    default_domain: const u8[:],
+) -> bool {
     if default_domain.len > 0 && cookie_ref.domain[..].eq_ascii_fold(default_domain) {
         cookie_ref.host_only = true;
         return true;
@@ -696,7 +658,7 @@ inline fn try_fallback_exact_host_only(cookie_ref: CanonicalCookie&, default_dom
     return false;
 }
 
-inline fn is_domain_syntax_invalid(domain: const u8[:]) -> bool {
+inline fn cookie_internal::is_domain_syntax_invalid(domain: const u8[:]) -> bool {
     if domain.len == 0 || domain[core::sub_sat_i64(domain.len, 1)] == '.' || core::contains(domain, "..") {
         return true;
     }
@@ -708,28 +670,31 @@ inline fn is_domain_syntax_invalid(domain: const u8[:]) -> bool {
     return false;
 }
 
-fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: const u8[:]) -> bool {
+fn cookie_internal::validate_parsed_domain(
+    cookie_ref:     cookie::CanonicalCookie&,
+    default_domain: const u8[:],
+) -> bool {
     guard !cookie_ref.host_only else { return true; }
 
-    if is_domain_syntax_invalid(cookie_ref.domain[..]) {
+    if cookie_internal::is_domain_syntax_invalid(cookie_ref.domain[..]) {
         return false;
     }
 
     if core::is_ip_address_literal(cookie_ref.domain[..])
         || (default_domain.len > 0 && core::is_ip_address_literal(default_domain)) {
-        return try_fallback_exact_host_only(cookie_ref, default_domain);
+        return cookie_internal::try_fallback_exact_host_only(cookie_ref, default_domain);
     }
 
-    if is_public_suffix_domain(cookie_ref.domain[..]) {
-        return try_fallback_exact_host_only(cookie_ref, default_domain);
+    if cookie::is_public_suffix_domain(cookie_ref.domain[..]) {
+        return cookie_internal::try_fallback_exact_host_only(cookie_ref, default_domain);
     }
 
     // Single-label hosts without dots cannot set domain cookies
     if cookie_ref.domain[..].count_byte('.') == 0 {
-        return try_fallback_exact_host_only(cookie_ref, default_domain);
+        return cookie_internal::try_fallback_exact_host_only(cookie_ref, default_domain);
     }
 
-    if default_domain.len > 0 && !cookie_domain_match(default_domain, cookie_ref.domain[..]) {
+    if default_domain.len > 0 && !cookie::domain_match(default_domain, cookie_ref.domain[..]) {
         return false;
     }
 
@@ -737,22 +702,22 @@ fn validate_parsed_cookie_domain(cookie_ref: CanonicalCookie&, default_domain: c
 }
 
 // Zero-allocation 8-byte span descriptor for a cookie name-value pair in a raw Cookie: header.
-struct CookieSpan {
+struct Span {
     name_pos: u16 = 0,
     name_len: u16 = 0,
     val_pos:  u16 = 0,
     val_len:  u16 = 0,
 }
 
-// Builds a CookieSpan from trimmed pair slice bounds.
+// Builds a Span from trimmed pair slice bounds.
 //
 // Example:
 //   raw = "sid=xyz", pair_start = 0, pair_end = 7
-//   returns: CookieSpan { name_pos: 0, name_len: 3, val_pos: 4, val_len: 3 }
-fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> CookieSpan {
+//   returns: Span { name_pos: 0, name_len: 3, val_pos: 4, val_len: 3 }
+fn parse_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Span {
     guard raw.len <= 65535 && pair_end <= 65535 && pair_start >= 0 && pair_start <= pair_end
         && pair_end <= raw.len else {
-        return CookieSpan { .. };
+        return Span { .. };
     }
 
     let raw_pair = raw[pair_start..pair_end];
@@ -767,7 +732,7 @@ fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Coo
         let val_clean = val_raw.trim_lws_start();
         let val_start = core::sub_sat_i64(end, val_clean.len);
 
-        return CookieSpan {
+        return Span {
             name_pos: start as u16,
             name_len: name_clean.len as u16,
             val_pos:  val_start as u16,
@@ -775,7 +740,7 @@ fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Coo
         };
     }
 
-    return CookieSpan {
+    return Span {
         name_pos: start as u16,
         name_len: pair_slice.len as u16,
         val_pos:  end as u16,
@@ -790,11 +755,11 @@ fn parse_cookie_kv_span(raw: const u8[:], pair_start: i64, pair_end: i64) -> Coo
 // Example:
 //   raw_header = "sid=xyz; theme=dark", cursor = 0
 //   returns: span{0, 3, 4, 3}, ok = true, cursor = 9 (points after ';')
-fn next_cookie_span(
+fn next_span(
     raw_header: const u8[:],
     cursor:     i64&,
-) -> CookieSpan, bool {
-    var empty_span = CookieSpan { .. };
+) -> Span, bool {
+    var empty_span = Span { .. };
     guard cursor >= 0 && cursor < raw_header.len && raw_header.len <= 65535 else {
         return empty_span, false;
     }
@@ -811,11 +776,11 @@ fn next_cookie_span(
     let pair_end = core::add_sat_i64(pair_start, pair_trimmed.len);
 
     cursor = next_cur;
-    return parse_cookie_kv_span(raw_header, pair_start, pair_end), true;
+    return parse_kv_span(raw_header, pair_start, pair_end), true;
 }
 
 // Extracts cookie value slice from raw wire header using span coordinates.
-inline fn cookie_value(raw: const u8[:], span: CookieSpan) -> const u8[:] {
+inline fn span_value(raw: const u8[:], span: Span) -> const u8[:] {
     let start: i64 = span.val_pos;
     let end:   i64 = core::add_sat_i64(start, span.val_len);
     guard end <= raw.len && start <= end else { return ""; }
@@ -823,7 +788,7 @@ inline fn cookie_value(raw: const u8[:], span: CookieSpan) -> const u8[:] {
 }
 
 // Extracts cookie name slice from raw wire header using span coordinates.
-inline fn cookie_name(raw: const u8[:], span: CookieSpan) -> const u8[:] {
+inline fn span_name(raw: const u8[:], span: Span) -> const u8[:] {
     let start: i64 = span.name_pos;
     let end:   i64 = core::add_sat_i64(start, span.name_len);
     guard end <= raw.len && start <= end else { return ""; }
@@ -839,11 +804,11 @@ inline fn cookie_name(raw: const u8[:], span: CookieSpan) -> const u8[:] {
 fn find_cookie_value(raw_header: const u8[:], name: const u8[:]) -> const u8[:], bool {
     var cursor: i64 = 0;
     while cursor < raw_header.len {
-        let span, ok = next_cookie_span(raw_header, cursor);
+        let span, ok = next_span(raw_header, cursor);
         guard ok else { break; }
-        let cname = cookie_name(raw_header, span);
+        let cname = span_name(raw_header, span);
         if cname == name {
-            return cookie_value(raw_header, span), true;
+            return span_value(raw_header, span), true;
         }
     }
     return "", false;
@@ -855,21 +820,15 @@ fn find_cookie_value(raw_header: const u8[:], name: const u8[:]) -> const u8[:],
 // Example:
 //   src = "hello%20world%21", out = []
 //   returns: true, out = "hello world!"
-fn decode_cookie_percent(src: const u8[:], out: u8[..4096]&) -> bool {
-    out.clear();
-    var committed = false;
-    defer if !committed { out.clear(); };
-    guard core::percent_decode(src, out) else {
+fn decode_percent<B>(src: const u8[:], out: B&) -> bool {
+    var tmp: u8[..4096] = [];
+    guard core::percent_decode(src, tmp) && tmp[..].validate_utf8() else {
         return false;
     }
-    guard out[..].validate_utf8() else {
-        return false;
-    }
-    committed = true;
-    return true;
+    return out.try_set(tmp[..]);
 }
 
-const COOKIE_UPPER_HEX: u8[16] = [
+const cookie_internal::UPPER_HEX: u8[16] = [
     '0', '1', '2', '3', '4', '5', '6', '7',
     '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
 ];
@@ -879,25 +838,20 @@ const COOKIE_UPPER_HEX: u8[16] = [
 // Example:
 //   src = "a b;c", out = []
 //   returns: true, out = "a%20b%3Bc"
-fn encode_cookie_percent(src: const u8[:], out: u8[..4096]&) -> bool {
-    out.clear();
-    var committed = false;
-    defer if !committed { out.clear(); };
+fn encode_percent<B>(src: const u8[:], out: B&) -> bool {
+    var tmp: u8[..12288] = [];
     for b in src {
-        if is_cookie_octet(b) && b != '%' {
-            guard out.try_push(b) else {
-                return false;
-            }
+        if cookie_internal::is_cookie_octet(b) && b != '%' {
+            guard tmp.try_push(b) else { return false; }
         } else {
             let hi = ((b >> 4) & 0x0F) as i64;
             let lo = (b & 0x0F) as i64;
-            let hi_ch = COOKIE_UPPER_HEX[hi];
-            let lo_ch = COOKIE_UPPER_HEX[lo];
-            guard out.try_push('%') && out.try_push(hi_ch) && out.try_push(lo_ch) else {
+            guard tmp.try_push('%')
+                && tmp.try_push(cookie_internal::UPPER_HEX[hi])
+                && tmp.try_push(cookie_internal::UPPER_HEX[lo]) else {
                 return false;
             }
         }
     }
-    committed = true;
-    return true;
+    return out.try_set(tmp[..]);
 }

@@ -3,12 +3,11 @@
 
 // Chromium / libpsl Deterministic Acyclic Finite State Automaton (DAFSA) binary graph
 // and zero-allocation bytecode interpreter for the Public Suffix List.
-namespace wing;
+namespace cookie_internal;
 
 import std;
 import core from "..";
 
-const PSL_DAFSA_NOT_FOUND:      i32 = -1;
 const PSL_DAFSA_FLAG_EXCEPTION: i32 = 1;
 const PSL_DAFSA_FLAG_WILDCARD:  i32 = 2;
 const PSL_DAFSA_FLAG_PRIVATE:   i32 = 8;
@@ -188,53 +187,52 @@ fn dafsa_consume_prefix_label(key: const u8[:], key_idx: i64&, node_pos: i64&, m
 }
 
 // Evaluates the terminal byte of a DAFSA node at `node_pos` after prefix characters have matched.
-// Returns `0` on mismatch, `1` when `out_ret` holds a final return value, or `2` to descend to `node_pos`.
+// Returns `(step, ret_val)`: `step == 0` on mismatch, `1` when `ret_val` holds a final return value,
+// or `2` to descend to `node_pos`.
 //
 // Example:
 //   key = "uk", key_idx = 1, node_pos = 197 ('k' | 0x80, 0x80)
-//   returns: 1, out_ret = 0, key_idx = 2, node_pos = 198
+//   returns: step = 1, ret_val = 0, key_idx = 2, node_pos = 198
 fn dafsa_eval_node_terminal(
     key:      const u8[:],
     key_idx:  i64&,
     node_pos: i64&,
     mb_mode:  bool&,
-    out_ret:  i32&,
-) -> i32 {
+) -> i32, i32 {
     guard dafsa_consume_prefix_label(key, key_idx, node_pos, mb_mode) && node_pos < PSL_DAFSA_LEN else {
-        return 0;
+        return 0, 0;
     }
     let term = PSL_DAFSA_GRAPH[node_pos];
     if !mb_mode && term >= DAFSA_RETURN_MIN && term <= DAFSA_RETURN_MAX {
         guard key_idx == key.len else {
-            return 0;
+            return 0, 0;
         }
         let v: i32 = term & DAFSA_RETURN_VAL_MASK;
-        out_ret = v;
-        return 1;
+        return 1, v;
     }
     guard term >= DAFSA_END_CHAR_MIN && key_idx < key.len else {
-        return 0;
+        return 0, 0;
     }
     let kb = key[key_idx];
     let term_char = if mb_mode { term } else { term & DAFSA_CHAR_MASK };
     guard dafsa_is_match(kb, mb_mode, term_char) else {
-        return 0;
+        return 0, 0;
     }
     key_idx = core::add_sat_i64(key_idx, 1);
     node_pos = core::add_sat_i64(node_pos, 1);
-    return 2;
+    return 2, 0;
 }
 
 // Evaluates the compiled Chromium/libpsl DAFSA for `key` in O(L) time with zero heap allocation.
-// Returns the 4-bit rule flag mask (`0..15`) on exact match, or `PSL_DAFSA_NOT_FOUND` (`-1`).
+// Returns `(flags, found)` where `flags` is the 4-bit rule flag mask (`0..15`) on exact match.
 //
 // Example:
-//   key = "co.uk"  -> returns 0 (standard ICANN suffix)
-//   key = "ck"     -> returns 2 (PSL_DAFSA_FLAG_WILDCARD)
-//   key = "www.ck" -> returns 1 (PSL_DAFSA_FLAG_EXCEPTION)
-fn dafsa_lookup_string(key: const u8[:]) -> i32 {
+//   key = "co.uk"  -> returns (0, true) (standard ICANN suffix)
+//   key = "ck"     -> returns (2, true) (PSL_DAFSA_FLAG_WILDCARD)
+//   key = "www.ck" -> returns (1, true) (PSL_DAFSA_FLAG_EXCEPTION)
+fn dafsa_lookup_string(key: const u8[:]) -> i32, bool {
     guard key.len > 0 else {
-        return PSL_DAFSA_NOT_FOUND;
+        return 0, false;
     }
     var pos:     i64  = 0;
     var offset:  i64  = 0;
@@ -245,10 +243,9 @@ fn dafsa_lookup_string(key: const u8[:]) -> i32 {
         var node_pos = offset;
         var saved_key_idx = key_idx;
         var saved_mb_mode = mb_mode;
-        var out_ret: i32 = PSL_DAFSA_NOT_FOUND;
-        let step = dafsa_eval_node_terminal(key, key_idx, node_pos, mb_mode, out_ret);
+        let step, ret_val = dafsa_eval_node_terminal(key, key_idx, node_pos, mb_mode);
         if step == 1 {
-            return out_ret;
+            return ret_val, true;
         }
         if step == 2 {
             pos = node_pos;
@@ -258,7 +255,7 @@ fn dafsa_lookup_string(key: const u8[:]) -> i32 {
             mb_mode = saved_mb_mode;
         }
     }
-    return PSL_DAFSA_NOT_FOUND;
+    return 0, false;
 }
 
 // Scans forward in `norm` from `start` to the next '.' delimiter (or `norm.len`).
@@ -275,28 +272,27 @@ fn dafsa_scan_to_next_dot(norm: const u8[:], start: i64) -> i64 {
 //
 // Example:
 //   norm = "sub.www.ck", idx = 4, prev_dot = 0, flags = 1 -> returns "ck", true, true
-fn dafsa_resolve_rule_flags(norm: const u8[:], idx: i64, prev_dot: i64, flags: i32) -> const u8[:], bool, bool, bool {
-    guard flags != PSL_DAFSA_NOT_FOUND else {
-        return norm[0..0], false, false, false;
-    }
+fn dafsa_resolve_rule_flags(
+    norm:     const u8[:],
+    idx:      i64,
+    prev_dot: i64,
+    flags:    i32,
+) -> const u8[:], bool, bool {
     let candidate = norm[idx..norm.len];
     let is_icann = (flags & PSL_DAFSA_FLAG_PRIVATE) == 0;
     let is_exception = (flags & PSL_DAFSA_FLAG_EXCEPTION) != 0;
     if is_exception {
         let next_start = core::add_sat_i64(dafsa_scan_to_next_dot(norm, idx), 1);
         if next_start < norm.len {
-            return norm[next_start..norm.len], true, is_icann, true;
+            return norm[next_start..norm.len], is_icann, true;
         }
-        return candidate, true, is_icann, true;
+        return candidate, is_icann, true;
     }
-    if (flags & PSL_DAFSA_FLAG_WILDCARD) != 0 {
-        if idx > 0 {
-            let wild_start = core::add_sat_i64(prev_dot, 1);
-            return norm[wild_start..norm.len], true, is_icann, false;
-        }
-        return candidate, true, is_icann, false;
+    if (flags & PSL_DAFSA_FLAG_WILDCARD) != 0 && idx > 0 {
+        let wild_start = core::add_sat_i64(prev_dot, 1);
+        return norm[wild_start..norm.len], is_icann, false;
     }
-    return candidate, true, is_icann, false;
+    return candidate, is_icann, false;
 }
 
 // Evaluates candidate suffixes of `norm` (a lowercase, leading/trailing-dot-free domain)
@@ -314,9 +310,9 @@ fn dafsa_find_public_suffix(norm: const u8[:]) -> const u8[:], bool, bool, bool 
     var idx:      i64 = 0;
     var prev_dot: i64 = -1;
     while idx < norm.len {
-        let flags = dafsa_lookup_string(norm[idx..norm.len]);
-        let suf, matched, is_icann, is_exc = dafsa_resolve_rule_flags(norm, idx, prev_dot, flags);
+        let flags, matched = dafsa_lookup_string(norm[idx..norm.len]);
         if matched {
+            let suf, is_icann, is_exc = dafsa_resolve_rule_flags(norm, idx, prev_dot, flags);
             return suf, true, is_icann, is_exc;
         }
         let next_dot = dafsa_scan_to_next_dot(norm, idx);

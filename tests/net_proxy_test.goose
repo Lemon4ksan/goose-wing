@@ -958,7 +958,7 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
         wing::add_upstream_target(proxy.cluster, "backend.internal:8080", 8080);
         proxy.config.enable_rate_limiting = true;
-        proxy.rate_limiter = wing::new_gateway_rate_limiter(10, 1); // 10 rps, burst 1
+        proxy.rate_limiter = security::new_gateway_rate_limiter(10, 1); // 10 rps, burst 1
 
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "test.example.com");
@@ -1079,34 +1079,34 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
 fn test_gcra_core_algorithm(t: lit::T&) {
     t.run("GCRA Quota and Single-Cell Conformance") { sub =>
         // 10 rps -> T = 100ms (100,000,000 ns), burst = 2 -> tau = 200ms (200,000,000 ns)
-        let cfg = wing::new_gcra_config(10, 2);
+        let cfg = security::new_gcra_config(10, 2);
         sub.assert_eq(cfg.emission_interval_ns, 100000000, "Emission interval T is 100ms");
         sub.assert_eq(cfg.tau_ns, 200000000, "Burst tolerance tau is 200ms");
         sub.assert_eq(cfg.max_burst, 2, "Max burst capacity is 2");
 
-        var cell = wing::GcraTatCell { tat_ns: 0 };
+        var cell = security::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 1000000000; // 1.0s
 
         // Cell 1: Initial arrival
-        let dec1 = wing::gcra_check(cfg, cell, 1, now_ns);
+        let dec1 = security::gcra_check(cfg, cell, 1, now_ns);
         sub.assert_true(dec1.allowed, "First cell is allowed");
         sub.assert_eq(dec1.remaining_burst, 2, "Burst capacity remains 2 on cold start");
         sub.assert_eq(cell.tat_ns, 1100000000, "TAT advanced to now + T");
 
         // Cell 2: Immediate burst arrival at same timestamp
-        let dec2 = wing::gcra_check(cfg, cell, 1, now_ns);
+        let dec2 = security::gcra_check(cfg, cell, 1, now_ns);
         sub.assert_true(dec2.allowed, "Burst cell 2 is allowed");
         sub.assert_eq(dec2.remaining_burst, 1, "Remaining burst decremented to 1");
         sub.assert_eq(cell.tat_ns, 1200000000, "TAT advanced to 1.2s");
 
         // Cell 3: Second burst arrival at same timestamp
-        let dec3 = wing::gcra_check(cfg, cell, 1, now_ns);
+        let dec3 = security::gcra_check(cfg, cell, 1, now_ns);
         sub.assert_true(dec3.allowed, "Burst cell 3 is allowed");
         sub.assert_eq(dec3.remaining_burst, 0, "Remaining burst exhausted (0)");
         sub.assert_eq(cell.tat_ns, 1300000000, "TAT advanced to 1.3s");
 
         // Cell 4: Over-burst arrival at same timestamp -> REJECT
-        let dec4 = wing::gcra_check(cfg, cell, 1, now_ns);
+        let dec4 = security::gcra_check(cfg, cell, 1, now_ns);
         sub.assert_true(!dec4.allowed, "Cell 4 rejected due to burst exhaustion");
         sub.assert_true(dec4.retry_after_ns > 0, "Retry-after is non-zero");
         sub.assert_eq(dec4.retry_after_ns, 100000000, "Retry-after is 100ms");
@@ -1114,52 +1114,52 @@ fn test_gcra_core_algorithm(t: lit::T&) {
 
         // Advance clock by 100ms -> Cell 5 admitted
         let now_later = now_ns + 100000000;
-        let dec5 = wing::gcra_check(cfg, cell, 1, now_later);
+        let dec5 = security::gcra_check(cfg, cell, 1, now_later);
         sub.assert_true(dec5.allowed, "Cell 5 admitted after 100ms delay");
         sub.assert_eq(dec5.remaining_burst, 0, "Remaining burst is 0");
     };
 
     t.run("GCRA Peek, Penalize, and Reset Semantics") { sub =>
-        let cfg = wing::new_gcra_config(5, 1); // 200ms per cell
-        var cell = wing::GcraTatCell { tat_ns: 0 };
+        let cfg = security::new_gcra_config(5, 1); // 200ms per cell
+        var cell = security::GcraCell { tat_ns: 0 };
         let now_ns: u64 = 5000000000;
 
         // Peek should not alter TAT
-        let peek_dec = wing::gcra_peek(cfg, cell, 1, now_ns);
+        let peek_dec = security::gcra_peek(cfg, cell, 1, now_ns);
         sub.assert_true(peek_dec.allowed, "Peek shows cell is allowed");
         sub.assert_eq(cell.tat_ns, 0, "Cell TAT remains untouched after peek");
 
         // Check mutates TAT
-        let check_dec = wing::gcra_check(cfg, cell, 1, now_ns);
+        let check_dec = security::gcra_check(cfg, cell, 1, now_ns);
         sub.assert_true(check_dec.allowed, "Check allows request");
         sub.assert_eq(cell.tat_ns, 5200000000, "Check advances TAT by 200ms");
 
         // Penalize pushes TAT further into future
-        wing::gcra_penalize(cfg, cell, 1000000000, now_ns); // +1s penalty
+        security::gcra_penalize(cfg, cell, 1000000000, now_ns); // +1s penalty
         sub.assert_eq(cell.tat_ns, 6200000000, "Penalize pushed TAT by 1.0s");
 
         // Subsequent check at 5.1s should fail due to penalty
-        let pen_check = wing::gcra_check(cfg, cell, 1, 5100000000);
+        let pen_check = security::gcra_check(cfg, cell, 1, 5100000000);
         sub.assert_true(!pen_check.allowed, "Request rejected under penalty delay");
 
         // Reset clears TAT
-        wing::gcra_reset(cell);
+        security::gcra_reset(cell);
         sub.assert_eq(cell.tat_ns, 0, "Reset restores cell TAT to 0");
     };
 
     t.run("BUG-04 Defense: NTP Backward Jump Clamping Updates cell.tat_ns") { sub =>
-        let cfg = wing::new_gcra_config(10, 2); // limit_window = 300ms
+        let cfg = security::new_gcra_config(10, 2); // limit_window = 300ms
         // Set TAT to distant future (50s in future due to corrupted clock)
-        var cell = wing::GcraTatCell { tat_ns: 50000000000 };
+        var cell = security::GcraCell { tat_ns: 50000000000 };
         let now_ns: u64 = 1000000000; // clock jumped back to 1.0s
 
         // BUG-04 fix verifies cell.tat_ns is clamped down even when request is rejected
-        let dec = wing::gcra_check(cfg, cell, 1, now_ns);
+        let dec = security::gcra_check(cfg, cell, 1, now_ns);
         sub.assert_true(!dec.allowed, "Rejected during clamped limit window");
         sub.assert_eq(cell.tat_ns, 1300000000, "TAT clamped to now + limit_window (1.3s)");
 
         // After limit window passes (at 1.4s), client recovers without permanent lockout
-        let dec_rec = wing::gcra_check(cfg, cell, 1, 1400000000);
+        let dec_rec = security::gcra_check(cfg, cell, 1, 1400000000);
         sub.assert_true(dec_rec.allowed, "Client successfully recovers after clamped window");
     };
 }
@@ -1169,23 +1169,23 @@ fn test_gcra_core_algorithm(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_gateway_rate_limiter(t: lit::T&) {
     t.run("Multi-Client Isolation and Limiting") { sub =>
-        var limiter = wing::new_gateway_rate_limiter(10, 2);
+        var limiter = security::new_gateway_rate_limiter(10, 2);
         let client_a: u8[..16] = "192.168.1.100";
         let client_b: u8[..16] = "10.0.0.1";
         let now_ns:   u64      = 1000000000;
 
         // Client A consumes all 3 burst tokens
-        let da1 = wing::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
-        let da2 = wing::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
-        let da3 = wing::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
+        let da1 = security::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
+        let da2 = security::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
+        let da3 = security::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
         sub.assert_true(da1.allowed && da2.allowed && da3.allowed, "Client A burst allowed");
 
         // 4th request from Client A rejected
-        let da4 = wing::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
+        let da4 = security::check_gateway_rate_limit(limiter, client_a[..], 1, now_ns);
         sub.assert_true(!da4.allowed, "Client A over-burst rejected");
 
         // Client B is isolated and has full capacity
-        let db1 = wing::check_gateway_rate_limit(limiter, client_b[..], 1, now_ns);
+        let db1 = security::check_gateway_rate_limit(limiter, client_b[..], 1, now_ns);
         sub.assert_true(db1.allowed, "Client B allowed independently of Client A");
 
         sub.assert_eq(limiter.total_allowed, 4, "Global allowed count is 4");
@@ -1193,20 +1193,20 @@ fn test_gateway_rate_limiter(t: lit::T&) {
     };
 
     t.run("Idle Client Eviction and Table Reset") { sub =>
-        var limiter = wing::new_gateway_rate_limiter(5, 1);
+        var limiter = security::new_gateway_rate_limiter(5, 1);
         let client_old: u8[..16] = "172.16.0.5";
         let now_ns:     u64      = 1000000000;
 
-        wing::check_gateway_rate_limit(limiter, client_old[..], 1, now_ns);
+        security::check_gateway_rate_limit(limiter, client_old[..], 1, now_ns);
         sub.assert_eq(limiter.entries.len, 1, "1 client slot registered");
 
         // Evict with 2s max_idle at now + 5s (idle time = 5s > 2s)
         let now_later = now_ns + 5000000000;
-        let evicted = wing::evict_idle_gateway_clients(limiter, 2000000000, now_later);
+        let evicted = security::evict_idle_gateway_clients(limiter, 2000000000, now_later);
         sub.assert_eq(evicted, 1, "1 idle client entry evicted");
 
         // Reset clears all counters
-        wing::reset_gateway_rate_limiter(limiter);
+        security::reset_gateway_rate_limiter(limiter);
         sub.assert_eq(limiter.total_allowed, 0, "Allowed reset to 0");
         sub.assert_eq(limiter.total_rejected, 0, "Rejected reset to 0");
     };
@@ -1221,31 +1221,31 @@ fn test_gateway_rate_limiter(t: lit::T&) {
 fn test_gcra_tat_and_burst(t: lit::T&) {
     t.run("Single-Cell Ingress & Burst Tolerance Exhaustion") { sub =>
         // Limit: 10 req/s (T = 100 ms), Burst: 2 (tau = 200 ms)
-        let quota = wing::new_gcra_quota(10, wing::secs(1), 2);
+        let quota = security::new_gcra_quota(10, wing::secs(1), 2);
         sub.assert_eq(quota.emission_interval_ns, 100000000, "T = 100ms");
         sub.assert_eq(quota.delay_tolerance_ns, 200000000, "tau = 200ms");
 
-        var cell = wing::GcraCell { tat_ns: 0 };
+        var cell = security::GcraCell { tat_ns: 0 };
         let t0: u64 = 1000000000; // t = 1.0s
 
         // Request 1 at t0: allowed, TAT becomes t0 + 100ms
-        let d1 = wing::gcra_check_n(quota, cell, 1, t0);
-        sub.assert_true(wing::is_allowed(d1), "req 1 allowed");
+        let d1 = security::gcra_check_n(quota, cell, 1, t0);
+        sub.assert_true(security::is_allowed(d1), "req 1 allowed");
         sub.assert_eq(cell.tat_ns, t0 + 100000000, "TAT advanced by T");
 
         // Request 2 at t0: allowed, TAT becomes t0 + 200ms
-        let d2 = wing::gcra_check_n(quota, cell, 1, t0);
-        sub.assert_true(wing::is_allowed(d2), "req 2 allowed");
+        let d2 = security::gcra_check_n(quota, cell, 1, t0);
+        sub.assert_true(security::is_allowed(d2), "req 2 allowed");
         sub.assert_eq(cell.tat_ns, t0 + 200000000, "TAT advanced to t0 + 200ms");
 
         // Request 3 at t0: allowed (burst limit = tau + T = 300ms)
-        let d3 = wing::gcra_check_n(quota, cell, 1, t0);
-        sub.assert_true(wing::is_allowed(d3), "req 3 allowed at burst threshold");
+        let d3 = security::gcra_check_n(quota, cell, 1, t0);
+        sub.assert_true(security::is_allowed(d3), "req 3 allowed at burst threshold");
         sub.assert_eq(cell.tat_ns, t0 + 300000000, "TAT at max window limit");
 
         // Request 4 at t0: REJECTED! TAT would exceed limit window
-        let d4 = wing::gcra_check_n(quota, cell, 1, t0);
-        sub.assert_false(wing::is_allowed(d4), "req 4 rejected (burst exceeded)");
+        let d4 = security::gcra_check_n(quota, cell, 1, t0);
+        sub.assert_false(security::is_allowed(d4), "req 4 rejected (burst exceeded)");
         let ok_rej = match d4 {
             Rejected r => r.retry_after_ns > 0,
             _ => false,
@@ -1255,8 +1255,8 @@ fn test_gcra_tat_and_burst(t: lit::T&) {
 
         // Advance clock by 100ms: quota for 1 cell recovers!
         let t1 = t0 + 100000000;
-        let d5 = wing::gcra_check_n(quota, cell, 1, t1);
-        sub.assert_true(wing::is_allowed(d5), "req 5 allowed after 100ms clock advance");
+        let d5 = security::gcra_check_n(quota, cell, 1, t1);
+        sub.assert_true(security::is_allowed(d5), "req 5 allowed after 100ms clock advance");
         sub.assert_eq(cell.tat_ns, t0 + 400000000, "TAT advanced to t0 + 400ms");
     };
 }
@@ -1267,18 +1267,18 @@ fn test_gcra_tat_and_burst(t: lit::T&) {
 fn test_anti_starvation_reservation(t: lit::T&) {
     t.run("Priority Reservation Preempts Small Subsequent Requests") { sub =>
         // Limit: 1 req/sec (T = 1s), Burst: 0 (tau = 0)
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 0);
-        var cell = wing::GcraCell { tat_ns: 0 };
+        let quota = security::new_gcra_quota(1, wing::secs(1), 0);
+        var cell = security::GcraCell { tat_ns: 0 };
         let now: u64 = 1000000000;
 
         // Ingress 1: cost 1 cell at now: allowed, TAT = now + 1s
-        let d1 = wing::gcra_check_n(quota, cell, 1, now);
-        sub.assert_true(wing::is_allowed(d1), "initial cell allowed");
+        let d1 = security::gcra_check_n(quota, cell, 1, now);
+        sub.assert_true(security::is_allowed(d1), "initial cell allowed");
         sub.assert_eq(cell.tat_ns, now + 1000000000, "TAT = now + 1s");
 
         // Heavy request requesting n=3 cells arrives immediately at now
         // Standard check would reject it. With gcra_reserve_n and max_wait = 5s:
-        let d_res = wing::gcra_reserve_n(quota, cell, 3, now, 5000000000);
+        let d_res = security::gcra_reserve_n(quota, cell, 3, now, 5000000000);
         let ok_res = match d_res {
             Reserved r => r.wait_ns == 3000000000 && r.new_tat_ns == now + 4000000000,
             _ => false,
@@ -1287,13 +1287,13 @@ fn test_anti_starvation_reservation(t: lit::T&) {
         sub.assert_eq(cell.tat_ns, now + 4000000000, "TAT advanced by 3 cells to 4s");
 
         // Subsequent lighter request (n=1) arriving at now + 500ms tries to steal:
-        let d_steal = wing::gcra_check_n(quota, cell, 1, now + 500000000);
-        sub.assert_false(wing::is_allowed(d_steal), "lighter request cannot steal reserved heavy slot");
+        let d_steal = security::gcra_check_n(quota, cell, 1, now + 500000000);
+        sub.assert_false(security::is_allowed(d_steal), "lighter request cannot steal reserved heavy slot");
 
         // Heavy request completes reservation wait time and executes cleanly
         let now_after_wait = now + 3000000000;
-        let d_after = wing::gcra_check_n(quota, cell, 1, now_after_wait + 1000000000);
-        sub.assert_true(wing::is_allowed(d_after), "pipeline resumes after reservation window");
+        let d_after = security::gcra_check_n(quota, cell, 1, now_after_wait + 1000000000);
+        sub.assert_true(security::is_allowed(d_after), "pipeline resumes after reservation window");
     };
 }
 
@@ -1303,27 +1303,27 @@ fn test_anti_starvation_reservation(t: lit::T&) {
 fn test_sharded_gcra_limiter(t: lit::T&) {
     t.run("Independent Client Quotas Across Shards") { sub =>
         // Limit: 2 req/s, Burst: 1 (allows 2 immediate requests at t0, 3rd rejected)
-        let quota = wing::new_gcra_quota(2, wing::secs(1), 1);
-        var limiter = wing::new_sharded_limiter(quota);
+        let quota = security::new_gcra_quota(2, wing::secs(1), 1);
+        var limiter = security::new_sharded_limiter(quota);
         let now: u64 = 2000000000;
 
         let ip_a = "192.168.1.10";
         let ip_b = "10.0.0.5";
 
         // IP A exhausts its quota (2 requests)
-        let d_a1 = wing::check_rate_limit(limiter, ip_a, 1, now);
-        let d_a2 = wing::check_rate_limit(limiter, ip_a, 1, now);
-        let d_a3 = wing::check_rate_limit(limiter, ip_a, 1, now);
+        let d_a1 = security::check_rate_limit(limiter, ip_a, 1, now);
+        let d_a2 = security::check_rate_limit(limiter, ip_a, 1, now);
+        let d_a3 = security::check_rate_limit(limiter, ip_a, 1, now);
 
-        sub.assert_true(wing::is_allowed(d_a1), "IP A req 1 allowed");
-        sub.assert_true(wing::is_allowed(d_a2), "IP A req 2 allowed");
-        sub.assert_false(wing::is_allowed(d_a3), "IP A req 3 rejected (exhausted)");
+        sub.assert_true(security::is_allowed(d_a1), "IP A req 1 allowed");
+        sub.assert_true(security::is_allowed(d_a2), "IP A req 2 allowed");
+        sub.assert_false(security::is_allowed(d_a3), "IP A req 3 rejected (exhausted)");
 
         // IP B must NOT be affected by IP A's exhaustion!
-        let d_b1 = wing::check_rate_limit(limiter, ip_b, 1, now);
-        let d_b2 = wing::check_rate_limit(limiter, ip_b, 1, now);
-        sub.assert_true(wing::is_allowed(d_b1), "IP B req 1 allowed independently");
-        sub.assert_true(wing::is_allowed(d_b2), "IP B req 2 allowed independently");
+        let d_b1 = security::check_rate_limit(limiter, ip_b, 1, now);
+        let d_b2 = security::check_rate_limit(limiter, ip_b, 1, now);
+        sub.assert_true(security::is_allowed(d_b1), "IP B req 1 allowed independently");
+        sub.assert_true(security::is_allowed(d_b2), "IP B req 2 allowed independently");
     };
 
     t.run("FNV-1a 256-Shard Uniform Key Distribution") { sub =>
@@ -1354,8 +1354,8 @@ fn test_sharded_gcra_limiter(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_probabilistic_ddos_mitigation(t: lit::T&) {
     t.run("5% Statistical Sampling Under Extreme Load") { sub =>
-        let quota = wing::new_gcra_quota(1000, wing::secs(1), 100);
-        var pgcra = wing::new_probabilistic_gcra(quota, 20); // 1-in-20 = 5%
+        let quota = security::new_gcra_quota(1000, wing::secs(1), 100);
+        var pgcra = security::new_probabilistic_gcra(quota, 20); // 1-in-20 = 5%
 
         var sampled_count = 0;
         var non_sampled_count = 0;
@@ -1364,7 +1364,7 @@ fn test_probabilistic_ddos_mitigation(t: lit::T&) {
         // Run 500 requests
         for i in 500 {
             let tat_before = pgcra.cell.tat_ns;
-            let dec = wing::check_rate_limit(pgcra, 1, now);
+            let dec = security::check_rate_limit(pgcra, 1, now);
             if pgcra.cell.tat_ns != tat_before {
                 sampled_count += 1;
             } else {
@@ -1383,15 +1383,15 @@ fn test_probabilistic_ddos_mitigation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_ietf_rate_limit_headers(t: lit::T&) {
     t.run("IETF Headers on Allowed Request") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
-        let dec: wing::RateLimitDecision = wing::RateLimitDecision.Allowed {
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
+        let dec: security::RateLimitDecision = security::RateLimitDecision.Allowed {
             remaining_burst: 8,
             new_tat_ns:      1200000000,
             reset_after_ns:  200000000,
         };
 
         var res = wing::Response { .. };
-        wing::apply_rate_limit_headers(res, quota, dec);
+        security::apply_rate_limit_headers(res, quota, dec);
 
         sub.assert_true(res.has_header("RateLimit-Limit"), "RateLimit-Limit emitted");
         sub.assert_eq(res.header("RateLimit-Limit"), "100", "RateLimit-Limit = 100");
@@ -1402,14 +1402,14 @@ fn test_ietf_rate_limit_headers(t: lit::T&) {
     };
 
     t.run("IETF Headers & 429 Status on Rejected Request") { sub =>
-        let quota = wing::new_gcra_quota(50, wing::secs(1), 0);
-        let dec: wing::RateLimitDecision = wing::RateLimitDecision.Rejected {
+        let quota = security::new_gcra_quota(50, wing::secs(1), 0);
+        let dec: security::RateLimitDecision = security::RateLimitDecision.Rejected {
             retry_after_ns: 2500000000, // 2.5 seconds
             current_tat_ns: 3500000000,
         };
 
         var res = wing::Response { .. };
-        wing::apply_rate_limit_headers(res, quota, dec);
+        security::apply_rate_limit_headers(res, quota, dec);
 
         sub.assert_eq(res.status_code, 429, "status set to 429 Too Many Requests");
 
@@ -1426,23 +1426,23 @@ fn test_ietf_rate_limit_headers(t: lit::T&) {
 fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     t.run("Zero Emission Interval Handling & Division by Zero") { sub =>
         // Limit 2,000,000 req per 1 ms (p_ns = 1,000,000, l = 2,000,000 -> p_ns / l = 0)
-        let quota = wing::new_gcra_quota(2000000, wing::millis(1), 10);
+        let quota = security::new_gcra_quota(2000000, wing::millis(1), 10);
         sub.assert_true(quota.emission_interval_ns >= 1, "emission interval floored to >= 1ns to prevent division by zero");
 
-        var cell = wing::GcraCell { tat_ns: 0 };
-        let dec = wing::gcra_check_n(quota, cell, 1, 1000000);
-        sub.assert_true(wing::is_allowed(dec), "admission succeeds without divide-by-zero panic");
+        var cell = security::GcraCell { tat_ns: 0 };
+        let dec = security::gcra_check_n(quota, cell, 1, 1000000);
+        sub.assert_true(security::is_allowed(dec), "admission succeeds without divide-by-zero panic");
     };
 
     t.run("Accurate Burst Remaining Calculation in Reservation") { sub =>
         // Limit: 1 req/s (T = 1s), Burst: 5 (tau = 5s)
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 5);
-        var cell = wing::GcraCell { tat_ns: 0 };
+        let quota = security::new_gcra_quota(1, wing::secs(1), 5);
+        var cell = security::GcraCell { tat_ns: 0 };
         let now: u64 = 1000000000;
 
         // Immediate reservation consuming 3 tokens
-        let dec = wing::gcra_reserve_n(quota, cell, 3, now, 10000000000);
-        sub.assert_true(wing::is_allowed(dec), "reservation allowed immediately");
+        let dec = security::gcra_reserve_n(quota, cell, 3, now, 10000000000);
+        sub.assert_true(security::is_allowed(dec), "reservation allowed immediately");
         let remaining = match dec {
             Allowed a => a.remaining_burst,
             _ => 999,
@@ -1453,13 +1453,13 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     };
 
     t.run("U64 Nanosecond Overflow In Burst Calculation") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 5); // T = 1s, tau = 5s
+        let quota = security::new_gcra_quota(1, wing::secs(1), 5); // T = 1s, tau = 5s
         let now: u64 = 18446744073709551615 - 30000000000; // 30s before u64::MAX
-        var cell = wing::GcraCell { tat_ns: now };
+        var cell = security::GcraCell { tat_ns: now };
 
         // Consuming 3 tokens near u64 limit:
-        let dec = wing::gcra_check_n(quota, cell, 3, now);
-        sub.assert_true(wing::is_allowed(dec), "admission succeeds near u64 boundaries");
+        let dec = security::gcra_check_n(quota, cell, 3, now);
+        sub.assert_true(security::is_allowed(dec), "admission succeeds near u64 boundaries");
         let remaining = match dec {
             Allowed a => a.remaining_burst,
             _ => 999,
@@ -1469,10 +1469,10 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     };
 
     t.run("Clock Drift & Backward NTP Jump Recovery") { sub =>
-        let quota = wing::new_gcra_quota(10, wing::secs(1), 2);
-        var cell = wing::GcraCell { tat_ns: 60000000000 }; // TAT at 60s
+        let quota = security::new_gcra_quota(10, wing::secs(1), 2);
+        var cell = security::GcraCell { tat_ns: 60000000000 }; // TAT at 60s
         let now_backward: u64 = 10000000000; // Clock jumped back to 10s (50s backward jump)
-        let dec = wing::gcra_check_n(quota, cell, 1, now_backward);
+        let dec = security::gcra_check_n(quota, cell, 1, now_backward);
         let retry_after = match dec {
             Rejected r => r.retry_after_ns,
             Allowed _ => 0,
@@ -1482,10 +1482,10 @@ fn test_gcra_arithmetic_and_overflow(t: lit::T&) {
     };
 
     t.run("Clock Drift & Backward NTP Jump Recovery in Reservation") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 0);
-        var cell = wing::GcraCell { tat_ns: 70000000000 }; // TAT at 70s
+        let quota = security::new_gcra_quota(1, wing::secs(1), 0);
+        var cell = security::GcraCell { tat_ns: 70000000000 }; // TAT at 70s
         let now_backward: u64 = 10000000000; // Clock jumped back to 10s
-        let dec = wing::gcra_reserve_n(quota, cell, 1, now_backward, 5000000000);
+        let dec = security::gcra_reserve_n(quota, cell, 1, now_backward, 5000000000);
         let wait_ns = match dec {
             Reserved r => r.wait_ns,
             Allowed _ => 0,
@@ -1868,8 +1868,7 @@ fn test_dns_pointer_security(t: lit::T&) {
         0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04,
         0x5d, 0xb8, 0xd8, 0x22,
     ];
-    var resp1 = wing::DnsResponse { .. };
-    let ok1 = wing::parse_dns_response(valid_wire[..], resp1);
+    let resp1, ok1 = dns::parse_response(valid_wire[..]);
     t.assert_true(ok1, "valid backward pointer must succeed");
     t.assert_eq(resp1.a_records.len, 1, "parsed 1 A record");
     t.assert_true(resp1.a_records[0] == 0x5db8d822, "IP address matches");
@@ -1879,16 +1878,14 @@ fn test_dns_pointer_security(t: lit::T&) {
     var fwd_wire = valid_wire;
     fwd_wire[29] = 0xc0;
     fwd_wire[30] = 0x23; // points to offset 35 > 29
-    var resp2 = wing::DnsResponse { .. };
-    let ok2 = wing::parse_dns_response(fwd_wire[..], resp2);
+    let _, ok2 = dns::parse_response(fwd_wire[..]);
     t.assert_false(ok2, "forward pointer must be rejected");
 
     // Pointer into header rejected (ptr_off < 12)
     var hdr_wire = valid_wire;
     hdr_wire[29] = 0xc0;
     hdr_wire[30] = 0x04; // points to offset 4 < 12
-    var resp3 = wing::DnsResponse { .. };
-    let ok3 = wing::parse_dns_response(hdr_wire[..], resp3);
+    let _, ok3 = dns::parse_response(hdr_wire[..]);
     t.assert_false(ok3, "pointer into header must be rejected");
 }
 
@@ -1904,8 +1901,7 @@ fn test_dns_record_bounds_and_https_target(t: lit::T&) {
         0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x03,
         0x5d, 0xb8, 0xd8,
     ];
-    var resp_a = wing::DnsResponse { .. };
-    let ok_a = wing::parse_dns_response(bad_a_wire[..], resp_a);
+    let _, ok_a = dns::parse_response(bad_a_wire[..]);
     t.assert_false(ok_a, "A record with rdlength != 4 must be rejected");
 
     // RFC 9460 §2.5.1: HTTPS TargetName containing compression pointer (0xC00C) must be rejected
@@ -1916,8 +1912,7 @@ fn test_dns_record_bounds_and_https_target(t: lit::T&) {
         0xc0, 0x0c, 0x00, 0x41, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04,
         0x00, 0x01, 0xc0, 0x0c,
     ];
-    var resp_h = wing::DnsResponse { .. };
-    let ok_h = wing::parse_dns_response(bad_https_wire[..], resp_h);
+    let _, ok_h = dns::parse_response(bad_https_wire[..]);
     t.assert_false(ok_h, "HTTPS TargetName with compression pointer must be rejected");
 }
 
@@ -2407,42 +2402,42 @@ fn test_gcra_rate_limiter(t: lit::T&) {
         // 10 req/sec -> T = 100,000,000 ns (100ms)
         // burst = 5 -> tau = 100ms * 5 = 500ms
         // window = tau + T = 600ms
-        let config = wing::new_gcra_config(10, 5);
+        let config = security::new_gcra_config(10, 5);
         sub.assert_eq(config.emission_interval_ns, 100000000, "T is 100ms");
         sub.assert_eq(config.tau_ns, 500000000, "tau is 500ms");
         sub.assert_eq(config.limit_window_ns, 600000000, "limit window is 600ms");
     };
 
     t.run("Multi-cell burst allowance at t=0") { sub =>
-        let config = wing::new_gcra_config(10, 2); // T=100ms, tau=200ms, burst=2
-        var cell = wing::GcraTatCell { tat_ns: 0 };
+        let config = security::new_gcra_config(10, 2); // T=100ms, tau=200ms, burst=2
+        var cell = security::GcraCell { tat_ns: 0 };
         let now: u64 = 1000000000; // t=1.0s
 
         // 1st request admitted
-        let d1 = wing::gcra_check(config, cell, 1, now);
+        let d1 = security::gcra_check(config, cell, 1, now);
         sub.assert_true(d1.allowed, "1st request allowed");
 
         // 2nd request admitted
-        let d2 = wing::gcra_check(config, cell, 1, now);
+        let d2 = security::gcra_check(config, cell, 1, now);
         sub.assert_true(d2.allowed, "2nd request allowed");
 
         // 3rd request admitted
-        let d3 = wing::gcra_check(config, cell, 1, now);
+        let d3 = security::gcra_check(config, cell, 1, now);
         sub.assert_true(d3.allowed, "3rd request allowed");
 
         // 4th request rejected (burst capacity 2 exhausted at instant t=1.0s)
-        let d4 = wing::gcra_check(config, cell, 1, now);
+        let d4 = security::gcra_check(config, cell, 1, now);
         sub.assert_false(d4.allowed, "4th request rejected");
     };
 
     t.run("Client ID overflow rejected without truncation") { sub =>
-        var limiter = wing::new_gateway_rate_limiter(10, 5);
+        var limiter = security::new_gateway_rate_limiter(10, 5);
         let oversized_key = "012345678901234567890123456789012345678901234567890123456789012345"; // 66 bytes
 
-        let slot = wing::find_client_slot(limiter, oversized_key);
-        sub.assert_eq(slot, wing::GATEWAY_LIMITER_NONE, "oversized client ID rejected by find_client_slot");
+        let _, found_slot = security::find_client_slot(limiter, oversized_key);
+        sub.assert_false(found_slot, "oversized client ID rejected by find_client_slot");
 
-        let dec = wing::check_gateway_rate_limit(limiter, oversized_key, 1, 1000000000);
+        let dec = security::check_gateway_rate_limit(limiter, oversized_key, 1, 1000000000);
         sub.assert_true(dec.allowed, "fallback admission handled");
         sub.assert_eq(limiter.entries.len, 0, "oversized key was NOT inserted into entries table");
     };
@@ -2660,8 +2655,8 @@ fn test_goose2rfc_net_audit_regressions(t: lit::T&) {
 
     // NET1_C08 & NET1_C10: Transactional rollback on parse_https_svc_params and parse_proxy_v2_ssl_tlv
     let bad_svc_rdata: const u8[10] = [0x00, 0x01, 0x00, 0x03, 0x02, 'h', '2', 0x00, 0x03, 0x00];
-    var svc_rec = wing::HttpsRecord { .. };
-    t.assert_false(wing::parse_https_svc_params(bad_svc_rdata[..], svc_rec), "truncated SvcParams rejected");
+    var svc_rec = dns::HttpsRecord { .. };
+    t.assert_false(svc_rec.parse_https_svc_params(bad_svc_rdata[..]), "truncated SvcParams rejected");
     t.assert_eq(svc_rec.alpns.len, 0, "HttpsRecord.alpns rolled back on error");
 
     let bad_ssl_tlv: const u8[7] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00];

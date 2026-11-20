@@ -565,7 +565,7 @@ fn seal_ech_inner<B>(
     info.push(0x00);
     guard info.try_append(config.raw_bytes[..]) else { return false; }
 
-    return hpke_seal_base(
+    return security::hpke_seal_base(
         config.public_key,
         info[..],
         outer_aad,

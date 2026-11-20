@@ -301,7 +301,7 @@ fn test_vendor_quic_pn_and_overlapping_reassembly(t: lit::T&) {
 // 7. HTTP/3 1-Byte Varint Fragmentation & Forbidden H2 Frames (nghttp3, quiche)
 fn test_vendor_h3_1byte_fragmentation(t: lit::T&) {
     t.run("nghttp3: 1-byte fragmented control stream & forbidden H2 PING frame 0x06") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var srv = h3_internal::new_h3_server_connection(settings);
 
         // Client control stream (uni stream 2): type 0x00 + SETTINGS frame (type 0x04, len 0)
@@ -528,21 +528,21 @@ fn test_vendor_ocsp_multicert_and_unsigned(t: lit::T&) {
 // 11. SSRF Perimeter & DNS / SVCB Wire Hardening (curl, chromium, RFC 9460)
 fn test_vendor_ssrf_and_dns_wire(t: lit::T&) {
     t.run("SSRF: uppercase 0X hex, .internal domain & ::169.254.169.254 metadata blocked") { sub =>
-        sub.assert_true(wing::is_non_canonical_ipv4("0X7f.0.0.1"), "uppercase 0X hex IPv4 flagged");
+        sub.assert_true(security::is_non_canonical_ipv4("0X7f.0.0.1"), "uppercase 0X hex IPv4 flagged");
         sub.assert_true(
-            wing::is_cloud_metadata_or_reserved_ip("[::169.254.169.254]"),
+            security::is_cloud_metadata_or_reserved_ip("[::169.254.169.254]"),
             "IPv4-compatible ::169.254.169.254 blocked",
         );
         sub.assert_true(
-            wing::is_cloud_metadata_or_reserved_ip("[::a9fe:a9fe]"),
+            security::is_cloud_metadata_or_reserved_ip("[::a9fe:a9fe]"),
             "hex ::a9fe:a9fe metadata IPv6 blocked",
         );
         sub.assert_true(
-            wing::is_cloud_metadata_or_reserved_ip("fe80::1"),
+            security::is_cloud_metadata_or_reserved_ip("fe80::1"),
             "link-local fe80::1 blocked in metadata guard",
         );
 
-        let policy = wing::SsrfGuardPolicy { enabled: true, deny_local_network: true, .. };
+        let policy = security::SsrfGuardPolicy { enabled: true, deny_local_network: true, .. };
         let u_int, err_u = core::parse_url("https://redis.prod.internal/keys");
         sub.assert_true(err_u == core::UrlParseError.None, "parsed .internal URL");
         let redir_err = wing::validate_url_against_ssrf(u_int, policy);
@@ -553,15 +553,15 @@ fn test_vendor_ssrf_and_dns_wire(t: lit::T&) {
         let bad_dot_name: u8[13] = [7, 'e', 'x', 'a', '.', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0];
         var off: i64       = 0;
         var out: u8[..255] = [];
-        sub.assert_false(wing::dns_decode_name(bad_dot_name[..], off, out), "embedded dot in DNS label rejected");
+        sub.assert_false(dns::decode_name(bad_dot_name[..], off, out), "embedded dot in DNS label rejected");
         sub.assert_eq(off, 0, "cursor rolled back on invalid DNS label");
 
         let bad_nul_name: u8[13] = [7, 'e', 'x', 'a', 0, 'p', 'l', 'e', 3, 'c', 'o', 'm', 0];
-        sub.assert_false(wing::dns_decode_name(bad_nul_name[..], off, out), "embedded NUL in DNS label rejected");
+        sub.assert_false(dns::decode_name(bad_nul_name[..], off, out), "embedded NUL in DNS label rejected");
 
         // RFC 9460 §7.1.2: key 2 (no-default-alpn) MUST NOT appear in mandatory list
         let mand_key2: u8[2] = [0x00, 0x02];
-        let _, _, ok_mand = wing::parse_mandatory_svc_param(mand_key2[..]);
+        let _, ok_mand = dns::parse_mandatory_svc_param(mand_key2[..]);
         sub.assert_false(ok_mand, "mandatory=no-default-alpn (key 2) rejected");
     };
 }
@@ -570,41 +570,41 @@ fn test_vendor_ssrf_and_dns_wire(t: lit::T&) {
 fn test_vendor_cookies_samesite_and_scoping(t: lit::T&) {
     t.run("chromium / RFC 6265bis: SameSite=Unknown falls back to Default Lax-allowing-unsafe") { sub =>
         let now_us: i64 = 1700000000000000;
-        var jar = wing::CanonicalCookieJar { .. };
+        var jar = cookie::CanonicalCookieJar { .. };
         sub.assert_true(
-            wing::set_cookie_header(
+            cookie::set_cookie_header(
                 jar, "https://app.example.com/login", "sid=xyz; SameSite=BogusValue; Path=/; Secure", now_us, true,
             ),
             "ingested cookie with unrecognized SameSite",
         );
         sub.assert_eq(jar.cookies.len, 1, "1 cookie stored");
         let c = jar.cookies[0];
-        sub.assert_true(c.same_site == wing::CookieSameSite.Unknown, "parsed as CookieSameSite.Unknown");
+        sub.assert_true(c.same_site == cookie::SameSite.Unknown, "parsed as SameSite.Unknown");
 
-        let top_get = wing::CookieAccessOptions {
+        let top_get = cookie::AccessOptions {
             is_same_site: false, is_top_level_navigation: true, is_safe_method: true, had_cross_site_hop: false,
         };
         sub.assert_true(
-            wing::is_cookie_sendable_for_samesite(c, top_get, now_us + 500000000),
+            cookie::is_sendable_for_samesite(c, top_get, now_us + 500000000),
             "SameSite=Unknown sent on cross-site top-level GET",
         );
 
-        let top_post_fresh = wing::CookieAccessOptions {
+        let top_post_fresh = cookie::AccessOptions {
             is_same_site: false, is_top_level_navigation: true, is_safe_method: false, had_cross_site_hop: false,
         };
         sub.assert_true(
-            wing::is_cookie_sendable_for_samesite(c, top_post_fresh, now_us + 30000000),
+            cookie::is_sendable_for_samesite(c, top_post_fresh, now_us + 30000000),
             "SameSite=Unknown sent on fresh (<120s) top-level POST",
         );
         sub.assert_false(
-            wing::is_cookie_sendable_for_samesite(c, top_post_fresh, now_us + 180000000),
+            cookie::is_sendable_for_samesite(c, top_post_fresh, now_us + 180000000),
             "SameSite=Unknown blocked on stale (>120s) cross-site POST",
         );
     };
 
     t.run("tough-cookie / cookie-rs: IP domain suffix mismatch, 600B path & raw security check") { sub =>
         sub.assert_false(
-            wing::cookie_domain_match("sub.127.0.0.1", "127.0.0.1"),
+            cookie::domain_match("sub.127.0.0.1", "127.0.0.1"),
             "IP literal cookie_domain never suffix-matches subdomain",
         );
 
@@ -614,36 +614,29 @@ fn test_vendor_cookies_samesite_and_scoping(t: lit::T&) {
         var hdr: u8[..800] = [];
         hdr.append("k=v; Secure; Path=");
         hdr.append(long_path[..]);
-        var jar_long = wing::CanonicalCookieJar { .. };
+        var jar_long = cookie::CanonicalCookieJar { .. };
         sub.assert_true(
-            wing::set_cookie_header(jar_long, "https://example.com/", hdr[..], 1000000, true),
+            cookie::set_cookie_header(jar_long, "https://example.com/", hdr[..], 1000000, true),
             "600B cookie path ingested into CanonicalCookieJar",
         );
         sub.assert_eq(jar_long.cookies[0].path.len, 600, "600B cookie path preserved without 256B truncation");
 
-        var raw_bad = wing::CanonicalCookie { .. };
+        var raw_bad = cookie::CanonicalCookie { .. };
         let _ = raw_bad.name.try_set("bad name");
         let _ = raw_bad.value.try_set("v");
         let _ = raw_bad.domain.try_set("example.com");
         sub.assert_false(
-            wing::validate_canonical_cookie_security(raw_bad),
-            "validate_canonical_cookie_security rejects space in raw cookie name",
+            cookie::validate_security(raw_bad),
+            "validate_security rejects space in raw cookie name",
         );
 
-        var ns = wing::CanonicalCookie { .. };
-        sub.assert_true(
-            wing::try_parse_netscape_cookie_line(".EXAMPLE.COM\tTRUE\t/\tTRUE\t2147483647\tk\tv", ns),
-            "parsed uppercase leading-dot Netscape cookie",
-        );
+        let ns, ok_ns1 = cookie::try_parse_netscape_cookie_line(".EXAMPLE.COM\tTRUE\t/\tTRUE\t2147483647\tk\tv");
+        sub.assert_true(ok_ns1, "parsed uppercase leading-dot Netscape cookie");
         sub.assert_bytes_eq(ns.domain[..], ".example.com", "Netscape domain preserved single leading dot & lowercased");
-        sub.assert_false(
-            wing::try_parse_netscape_cookie_line("..example.com\tTRUE\t/\tTRUE\t2147483647\tk\tv", ns),
-            "Netscape rejects double leading-dot domain",
-        );
-        sub.assert_false(
-            wing::try_parse_netscape_cookie_line(".com\tTRUE\t/\tTRUE\t2147483647\tk\tv", ns),
-            "Netscape rejects public suffix domain",
-        );
+        let _, ok_ns2 = cookie::try_parse_netscape_cookie_line("..example.com\tTRUE\t/\tTRUE\t2147483647\tk\tv");
+        sub.assert_false(ok_ns2, "Netscape rejects double leading-dot domain");
+        let _, ok_ns3 = cookie::try_parse_netscape_cookie_line(".com\tTRUE\t/\tTRUE\t2147483647\tk\tv");
+        sub.assert_false(ok_ns3, "Netscape rejects public suffix domain");
     };
 }
 

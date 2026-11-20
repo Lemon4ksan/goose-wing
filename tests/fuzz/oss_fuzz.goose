@@ -222,26 +222,26 @@ fn fuzz_http1_auth_and_headers(data: const u8[:], sig: u64) -> u64 {
     let _, ok_sig = wing::extract_signature_value(data, "sig1");
     if ok_sig { s = fuzz_mix_state(s, 0x1040); }
 
-    var dpop_claims = wing::DPoPClaims { .. };
-    if wing::parse_dpop_claims(data, dpop_claims) {
+    var dpop_claims = auth::DPoPClaims { .. };
+    if auth::parse_dpop_claims(data, dpop_claims) {
         assert(dpop_claims.jti.len > 0 && dpop_claims.htm.len > 0 && dpop_claims.htu.len > 0);
         s = fuzz_mix_state(s, 0x1050);
     }
-    let _ = wing::verify_dpop_proof(data, "", "GET", "https://example.com/ resource");
+    let _ = auth::verify_dpop_proof(data, "", "GET", "https://example.com/ resource");
 
-    var jwks = wing::Jwks { .. };
-    if wing::parse_jwks_json(data, jwks) {
+    var jwks = auth::Jwks { .. };
+    if auth::parse_jwks_json(data, jwks) {
         s = fuzz_mix_state(s, 0x1060 ^ (jwks.keys.len as u64));
-        wing::zeroize_jwks(jwks);
+        auth::zeroize_jwks(jwks);
     }
 
-    var jwt_hdr = wing::JwtHeader { .. };
-    if wing::parse_jwt_header_json(data, jwt_hdr) {
-        assert(jwt_hdr.alg != wing::JwtAlg.None);
+    var jwt_hdr = auth::JwtHeader { .. };
+    if auth::parse_jwt_header_json(data, jwt_hdr) {
+        assert(jwt_hdr.alg != auth::JwtAlg.None);
         s = fuzz_mix_state(s, 0x100A);
     }
-    var jwt_claims = wing::JwtClaims { .. };
-    if wing::parse_jwt_claims_json(data, jwt_claims) { s = fuzz_mix_state(s, 0x100B); }
+    var jwt_claims = auth::JwtClaims { .. };
+    if auth::parse_jwt_claims_json(data, jwt_claims) { s = fuzz_mix_state(s, 0x100B); }
     return s;
 }
 
@@ -338,7 +338,7 @@ fn fuzz_target_http1(data: const u8[:]) -> u64 {
 
     var cc = wing::CacheControl { .. };
     wing::parse_cache_control_str(data, cc, true);
-    let _, ok_dig = wing::parse_digest_challenge(data);
+    let _, ok_dig = auth::parse_digest_challenge(data);
     if ok_dig { sig = fuzz_mix_state(sig, 0x1009); }
 
     return fuzz_http1_auth_and_headers(data, sig);
@@ -453,7 +453,7 @@ fn fuzz_target_http3_qpack(data: const u8[:]) -> u64 {
 fn fuzz_target_http3_conn(data: const u8[:]) -> u64 {
     var sig: u64 = 0x5000;
     var fdp = new_fdp(data);
-    let h3_settings = wing::H3Settings { .. };
+    let h3_settings = fingerprint::H3Settings { .. };
     var srv = h3_internal::new_h3_server_connection(h3_settings);
     var cli = h3_internal::new_h3_client_connection(h3_settings);
     let stream_ids: u64[8] = [2, 6, 10, 0, 4, 8, 12, 16];
@@ -750,8 +750,8 @@ fn fuzz_masque_dns_proxy(data: const u8[:], sig: u64) -> u64 {
     let _, _, ok_udg = wing::parse_connect_udp_datagram(data);
     if ok_udg { s = fuzz_mix_state(s, 0xB080); }
 
-    var dns_res = wing::DnsResponse { .. };
-    if wing::parse_dns_response(data, dns_res) {
+    let dns_res, ok_dns = dns::parse_response(data);
+    if ok_dns {
         s = fuzz_mix_state(s, 0xB090 ^ (dns_res.a_records.len as u64) ^ (dns_res.https_records.len as u64));
     }
     let _ = core::validate_idna_domain_bounds(data);
@@ -896,17 +896,16 @@ fn fuzz_bhttp_ohttp_privacypass(data: const u8[:], sig: u64) -> u64 {
         s = fuzz_mix_state(s, 0xC080 ^ (ocount as u64));
     }
 
-    var chal = wing::TokenChallenge { .. };
-    if wing::unmarshal_token_challenge(data, chal) {
+    let chal, ok_c = security::unmarshal_token_challenge(data);
+    if ok_c {
         s = fuzz_mix_state(s, 0xC090 ^ (chal.token_type as u64));
         var enc_c: u8[..1024] = [];
-        wing::marshal_token_challenge(chal, enc_c);
-        var chal2 = wing::TokenChallenge { .. };
-        let ok_c2 = wing::unmarshal_token_challenge(enc_c[..], chal2);
+        security::marshal_token_challenge(chal, enc_c);
+        let chal2, ok_c2 = security::unmarshal_token_challenge(enc_c[..]);
         assert(ok_c2 && chal2.token_type == chal.token_type && chal2.issuer_name[..] == chal.issuer_name[..]);
     }
-    var ptok = wing::Token { .. };
-    if wing::unmarshal_token(data, 32, 64, ptok) {
+    let _, ok_ptok = security::unmarshal_token(data, 32, 64);
+    if ok_ptok {
         s = fuzz_mix_state(s, 0xC0A0);
     }
     return s;
@@ -932,18 +931,18 @@ fn fuzz_target_url_cookie_sfv_compress(data: const u8[:]) -> u64 {
     let _, ok_pri = wing::parse_http_priority(data, false);
     if ok_pri { sig = fuzz_mix_state(sig, 0xC004); }
 
-    var jar = wing::CanonicalCookieJar { .. };
-    if wing::set_cookie_header(jar, "https://example.com/path", data, 1700000000000000, true) {
+    var jar = cookie::CanonicalCookieJar { .. };
+    if cookie::set_cookie_header(jar, "https://example.com/path", data, 1700000000000000, true) {
         sig = fuzz_mix_state(sig, 0xC010);
     }
-    var ns_cookie = wing::CanonicalCookie { .. };
-    if wing::try_parse_netscape_cookie_line(data, ns_cookie) {
+    let ns_cookie, ns_ok = cookie::try_parse_netscape_cookie_line(data);
+    if ns_ok {
         assert(ns_cookie.domain.len > 0 && ns_cookie.domain[0] != '.');
-        let _ = wing::validate_canonical_cookie_security(ns_cookie);
+        let _ = cookie::validate_security(ns_cookie);
         sig = fuzz_mix_state(sig, 0xC011);
     }
-    let _ = wing::is_private_or_reserved_ip(data);
-    let _ = wing::is_cloud_metadata_or_reserved_ip(data);
+    let _ = security::is_private_or_reserved_ip(data);
+    let _ = security::is_cloud_metadata_or_reserved_ip(data);
     let _, ok_v6 = core::parse_ipv6_octets(data);
     if ok_v6 { sig = fuzz_mix_state(sig, 0xC012); }
 
@@ -1125,34 +1124,34 @@ fn fuzz_target_jose_jwt_jwe_oauth(data: const u8[:]) -> u64 {
     let body = fdp_consume_remaining(fdp);
 
     var jwe_plain: u8[..4096] = [];
-    if wing::jwe_open_dir_a256gcm(data, cek, jwe_plain) {
+    if auth::jwe_open_dir_a256gcm(data, cek, jwe_plain) {
         sig = fuzz_mix_state(sig, 0x11001 ^ (jwe_plain.len as u64));
     }
 
     let short_plain = body[..min(body.len, 128)];
     var compact_jwe: u8[..1024] = [];
-    if wing::jwe_seal_dir_a256gcm("eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0", cek, iv, short_plain, compact_jwe) {
+    if auth::jwe_seal_dir_a256gcm("eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0", cek, iv, short_plain, compact_jwe) {
         jwe_plain.clear();
-        let ok_open = wing::jwe_open_dir_a256gcm(compact_jwe[..], cek, jwe_plain);
+        let ok_open = auth::jwe_open_dir_a256gcm(compact_jwe[..], cek, jwe_plain);
         assert(ok_open && jwe_plain[..] == short_plain);
         sig = fuzz_mix_state(sig, 0x11002);
     }
 
-    var unv_hdr = wing::JwtHeader { .. };
-    var unv_clm = wing::JwtClaims { .. };
-    if wing::parse_jwt_unverified(data, unv_hdr, unv_clm) == wing::JwtError.None {
+    var unv_hdr = auth::JwtHeader { .. };
+    var unv_clm = auth::JwtClaims { .. };
+    if auth::parse_jwt_unverified(data, unv_hdr, unv_clm) == auth::JwtError.None {
         sig = fuzz_mix_state(sig, 0x11003);
     }
 
-    let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-    if wing::verify_jwt_hmac(data, cek[..], opts, 1700000000, unv_hdr, unv_clm) == wing::JwtError.None {
+    let opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+    if auth::verify_jwt_hmac(data, cek[..], opts, 1700000000, unv_hdr, unv_clm) == auth::JwtError.None {
         sig = fuzz_mix_state(sig, 0x11004);
     }
 
-    if wing::is_valid_code_verifier(data) {
+    if auth::is_valid_code_verifier(data) {
         var chal_buf: u8[..128] = [];
-        if wing::compute_code_challenge(data, "S256", chal_buf) {
-            assert(wing::validate_code_challenge_strict(data, chal_buf[..]));
+        if auth::compute_code_challenge(data, "S256", chal_buf) {
+            assert(auth::validate_code_challenge_strict(data, chal_buf[..]));
             sig = fuzz_mix_state(sig, 0x11005);
         }
     }

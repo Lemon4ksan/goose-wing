@@ -1116,8 +1116,8 @@ fn init_default_static_payloads(r: RadixRouter&) {
     let _ = set_static_route_payload(r, 1003, "application/json", DEFAULT_METRICS_PAYLOAD);
 }
 
-fn new_radix_router() -> RadixRouter {
-    var r = RadixRouter { .. };
+fn init_radix_router_inplace(r: RadixRouter&) {
+    r.trees.clear();
     // RFC 9110 Section 9.3 & RFC 10008 Section 2 standard HTTP methods + slot 8 custom extension bucket
     let methods: const u8[:][9] = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "QUERY", "*"];
     for m in methods {
@@ -1126,6 +1126,11 @@ fn new_radix_router() -> RadixRouter {
         r.trees.push(mt);
     }
     init_default_static_payloads(r);
+}
+
+fn new_radix_router() -> RadixRouter {
+    var r = RadixRouter { .. };
+    init_radix_router_inplace(r);
     return r;
 }
 

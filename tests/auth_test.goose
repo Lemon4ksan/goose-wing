@@ -20,13 +20,13 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 fn test_rfc7616_official_ietf_vector(t: lit::T&) {
     t.run("RFC 7616 Section 3.9.1 Official SHA-256 Test Vector") { sub =>
         let raw_challenge = "Digest realm=\"http-auth@example.org\", qop=\"auth, auth-int\", algorithm=SHA-256, nonce=\"7ypf/xlj9XXwfDPEoM4URrv/xwf94BcCAzFZH4GiTo0v\", opaque=\"FQhe/qaU925kual Rocco\"";
-        let chal, ok_c = wing::parse_digest_challenge(raw_challenge);
+        let chal, ok_c = auth::parse_digest_challenge(raw_challenge);
         sub.assert_true(ok_c, "parsed RFC 7616 challenge");
         sub.assert_bytes_eq(chal.realm[..], "http-auth@example.org", "realm matched");
         sub.assert_bytes_eq(chal.nonce[..], "7ypf/xlj9XXwfDPEoM4URrv/xwf94BcCAzFZH4GiTo0v", "nonce matched");
         sub.assert_bytes_eq(chal.algorithm[..], "SHA-256", "algorithm is SHA-256");
 
-        var creds = wing::DigestCredentials { .. };
+        var creds = auth::DigestCredentials { .. };
         creds.username.append("Mufasa");
         creds.password.append("Circle of Life");
 
@@ -36,7 +36,7 @@ fn test_rfc7616_official_ietf_vector(t: lit::T&) {
         let uri = "/dir/index.html";
 
         var auth_header: u8[..512] = [];
-        let ok_d = wing::compute_digest_response(chal, creds, method, uri, nc, cnonce, "", auth_header);
+        let ok_d = auth::compute_digest_response(chal, creds, method, uri, nc, cnonce, "", auth_header);
         sub.assert_true(ok_d, "digest response computed");
 
         // The expected response hash from RFC 7616 Section 3.9.1:
@@ -55,17 +55,17 @@ fn test_rfc7616_official_ietf_vector(t: lit::T&) {
 
     t.run("Official RFC 7616 Section 3.9.1 MD5 Vector") { sub =>
         let raw_chal = "Digest realm=\"http-auth@example.org\", nonce=\"7ypf/xlj9XXwfDPEoM4URrv/xwf94BcCAzFZH4GiTo0v\", algorithm=MD5, qop=\"auth\"";
-        let chal, ok_c = wing::parse_digest_challenge(raw_chal);
+        let chal, ok_c = auth::parse_digest_challenge(raw_chal);
         sub.assert_true(ok_c, "parsed MD5 challenge");
         sub.assert_bytes_eq(chal.algorithm[..], "MD5", "algorithm is MD5");
 
-        var creds = wing::DigestCredentials { .. };
+        var creds = auth::DigestCredentials { .. };
         creds.username.append("Mufasa");
         creds.password.append("Circle of Life");
 
         let cnonce = "f2/wE4q74E6zIJEtWaHKaf5wv/H5QzzpXusqGemxURZJ";
         var auth_header: u8[..512] = [];
-        let ok_d = wing::compute_digest_response(chal, creds, "GET", "/dir/index.html", 1, cnonce, "", auth_header);
+        let ok_d = auth::compute_digest_response(chal, creds, "GET", "/dir/index.html", 1, cnonce, "", auth_header);
         sub.assert_true(ok_d, "MD5 digest computed");
 
         let expected_md5 = "8ca523f5e9506fed4657c9700eebdbec";
@@ -149,16 +149,16 @@ fn test_401_authenticator_loop(t: lit::T&) {
 fn test_rfc7616_userhash_options(t: lit::T&) {
     t.run("RFC 7616 Section 3.4.4 userhash=true") { sub =>
         let raw_chal = "Digest realm=\"secure@example.com\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", userhash=true";
-        let chal, ok_chal = wing::parse_digest_challenge(raw_chal);
+        let chal, ok_chal = auth::parse_digest_challenge(raw_chal);
         sub.assert_true(ok_chal, "Challenge with userhash parsed");
         sub.assert_true(chal.userhash, "Challenge userhash flag set");
 
-        var creds = wing::DigestCredentials { .. };
+        var creds = auth::DigestCredentials { .. };
         creds.username.append("alice");
         creds.password.append("Secret123");
 
         var out_hdr: u8[..512] = [];
-        let ok_resp = wing::compute_digest_response(chal, creds, "GET", "/api/data", 1, "0a4f113b", "", out_hdr);
+        let ok_resp = auth::compute_digest_response(chal, creds, "GET", "/api/data", 1, "0a4f113b", "", out_hdr);
         sub.assert_true(ok_resp, "Digest response computed with userhash");
         sub.assert_true(core::contains(out_hdr[..], "userhash=true"), "Authorization contains userhash=true");
 
@@ -168,11 +168,11 @@ fn test_rfc7616_userhash_options(t: lit::T&) {
 
     t.run("Official RFC 7616 Section 3.9.2 SHA-512-256 Vector") { sub =>
         let raw_chal = "Digest realm=\"api@example.org\", qop=\"auth, auth-int\", algorithm=SHA-512-256, nonce=\"5TsQWLVdgBdmrQ0XsxbDODV+57QdFR34I9HAbC/RVvkK\", opaque=\"HRPCssKJSGjCrkzDg8OhwpzCiGPChXYjwrI2QmXDnsOS\", charset=UTF-8, userhash=true";
-        let chal, ok_chal = wing::parse_digest_challenge(raw_chal);
+        let chal, ok_chal = auth::parse_digest_challenge(raw_chal);
         sub.assert_true(ok_chal, "Parsed SHA-512-256 challenge");
         sub.assert_bytes_eq(chal.algorithm[..], "SHA-512-256", "Algorithm is SHA-512-256");
 
-        var creds = wing::DigestCredentials { .. };
+        var creds = auth::DigestCredentials { .. };
         creds.username.append("J\xc3\xa4s\xc3\xb8n Doe");
         creds.password.append("Secret, or not?");
 
@@ -181,7 +181,7 @@ fn test_rfc7616_userhash_options(t: lit::T&) {
         let uri = "/doe.json";
 
         var out_hdr: u8[..1024] = [];
-        let ok_resp = wing::compute_digest_response(chal, creds, method, uri, 1, cnonce, "", out_hdr);
+        let ok_resp = auth::compute_digest_response(chal, creds, method, uri, 1, cnonce, "", out_hdr);
         sub.assert_true(ok_resp, "Digest response computed for SHA-512-256");
 
         let expected_userhash = "488869477bf257147b804c45308cd62ac4e25eb717b12b298c79e62dcea254ec";
@@ -209,41 +209,41 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
     let now_sec: i64 = 1770000000;
 
     t.run("HS256 token generation and validation") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "key-hs256");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256, "key-hs256");
+        var clm = auth::JwtClaims { .. };
         clm.iss.try_set("https://auth.goose-wing.dev");
         clm.sub.try_set("user_42");
-        wing::set_audience(clm, "api.service.internal");
+        auth::set_audience(clm, "api.service.internal");
         clm.jti.try_set("jwt-uuid-001");
         clm.exp = now_sec + 3600;
         clm.iat = now_sec;
-        wing::set_claim(clm, "role", "admin");
-        wing::set_claim_int(clm, "tier", 5);
-        wing::set_claim_bool(clm, "verified", true);
+        auth::set_claim(clm, "role", "admin");
+        auth::set_claim_int(clm, "tier", 5);
+        auth::set_claim_bool(clm, "verified", true);
 
         var token: u8[>..] = [];
-        let ok_sign = wing::sign_jwt_hmac(hdr, clm, secret, token);
+        let ok_sign = auth::sign_jwt_hmac(hdr, clm, secret, token);
         sub.assert_true(ok_sign, "HS256 token signed");
         sub.assert_true(token.len > 80, "Token has valid length");
 
         // Verify token
-        var out_hdr = wing::new_jwt_header();
-        var out_clm = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_hdr = auth::new_jwt_header();
+        var out_clm = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.expected_issuer.append("https://auth.goose-wing.dev");
         opts.expected_audience.append("api.service.internal");
         opts.expected_subject.append("user_42");
 
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_hdr, out_clm);
-        sub.assert_eq(err, wing::JwtError.None, "Token verified cleanly");
-        sub.assert_eq(out_hdr.alg, wing::JwtAlg.HS256, "Alg is HS256");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_hdr, out_clm);
+        sub.assert_eq(err, auth::JwtError.None, "Token verified cleanly");
+        sub.assert_eq(out_hdr.alg, auth::JwtAlg.HS256, "Alg is HS256");
         sub.assert_bytes_eq(out_hdr.kid[..], "key-hs256", "kid matches");
-        sub.assert_bytes_eq(wing::claim_str(out_clm, "sub"), "user_42", "sub matches");
-        sub.assert_bytes_eq(wing::claim_str(out_clm, "role"), "admin", "custom role claim");
-        let tier, ok_tier = wing::claim_int(out_clm, "tier");
+        sub.assert_bytes_eq(auth::claim_str(out_clm, "sub"), "user_42", "sub matches");
+        sub.assert_bytes_eq(auth::claim_str(out_clm, "role"), "admin", "custom role claim");
+        let tier, ok_tier = auth::claim_int(out_clm, "tier");
         sub.assert_true(ok_tier, "tier claim present");
         sub.assert_eq(tier, 5, "tier is 5");
-        let verified, ok_ver = wing::claim_bool(out_clm, "verified");
+        let verified, ok_ver = auth::claim_bool(out_clm, "verified");
         sub.assert_true(ok_ver, "verified claim present");
         sub.assert_true(verified, "verified is true");
     };
@@ -253,64 +253,64 @@ fn test_symmetric_hmac_jwt(t: lit::T&) {
         let secret512 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
         // HS384
-        var hdr384 = wing::new_jwt_header(wing::JwtAlg.HS384);
-        var clm384 = wing::JwtClaims { .. };
+        var hdr384 = auth::new_jwt_header(auth::JwtAlg.HS384);
+        var clm384 = auth::JwtClaims { .. };
         clm384.sub.try_set("agent_384");
         clm384.exp = now_sec + 100;
 
         var token384: u8[>..] = [];
-        sub.assert_false(wing::sign_jwt_hmac(hdr384, clm384, secret, token384), "HS384 rejects < 48-byte key per RFC 7518 §3.2");
-        sub.assert_true(wing::sign_jwt_hmac(hdr384, clm384, secret384, token384), "HS384 signed");
+        sub.assert_false(auth::sign_jwt_hmac(hdr384, clm384, secret, token384), "HS384 rejects < 48-byte key per RFC 7518 §3.2");
+        sub.assert_true(auth::sign_jwt_hmac(hdr384, clm384, secret384, token384), "HS384 signed");
 
-        var out_hdr384 = wing::new_jwt_header();
-        var out_clm384 = wing::JwtClaims { .. };
-        var opts384 = wing::default_jwt_validation_options(wing::JwtAlg.HS384);
-        let err384 = wing::verify_jwt_hmac(token384[..], secret384, opts384, now_sec, out_hdr384, out_clm384);
-        sub.assert_eq(err384, wing::JwtError.None, "HS384 verified");
-        sub.assert_bytes_eq(wing::claim_str(out_clm384, "sub"), "agent_384", "HS384 sub");
+        var out_hdr384 = auth::new_jwt_header();
+        var out_clm384 = auth::JwtClaims { .. };
+        var opts384 = auth::default_jwt_validation_options(auth::JwtAlg.HS384);
+        let err384 = auth::verify_jwt_hmac(token384[..], secret384, opts384, now_sec, out_hdr384, out_clm384);
+        sub.assert_eq(err384, auth::JwtError.None, "HS384 verified");
+        sub.assert_bytes_eq(auth::claim_str(out_clm384, "sub"), "agent_384", "HS384 sub");
 
         // HS512
-        var hdr512 = wing::new_jwt_header(wing::JwtAlg.HS512);
-        var clm512 = wing::JwtClaims { .. };
+        var hdr512 = auth::new_jwt_header(auth::JwtAlg.HS512);
+        var clm512 = auth::JwtClaims { .. };
         clm512.sub.try_set("agent_512");
         clm512.exp = now_sec + 100;
 
         var token512: u8[>..] = [];
-        sub.assert_false(wing::sign_jwt_hmac(hdr512, clm512, secret384, token512), "HS512 rejects < 64-byte key per RFC 7518 §3.2");
-        sub.assert_true(wing::sign_jwt_hmac(hdr512, clm512, secret512, token512), "HS512 signed");
+        sub.assert_false(auth::sign_jwt_hmac(hdr512, clm512, secret384, token512), "HS512 rejects < 64-byte key per RFC 7518 §3.2");
+        sub.assert_true(auth::sign_jwt_hmac(hdr512, clm512, secret512, token512), "HS512 signed");
 
-        var out_hdr512 = wing::new_jwt_header();
-        var out_clm512 = wing::JwtClaims { .. };
-        var opts512 = wing::default_jwt_validation_options(wing::JwtAlg.HS512);
-        let err512 = wing::verify_jwt_hmac(token512[..], secret512, opts512, now_sec, out_hdr512, out_clm512);
-        sub.assert_eq(err512, wing::JwtError.None, "HS512 verified");
-        sub.assert_bytes_eq(wing::claim_str(out_clm512, "sub"), "agent_512", "HS512 sub");
+        var out_hdr512 = auth::new_jwt_header();
+        var out_clm512 = auth::JwtClaims { .. };
+        var opts512 = auth::default_jwt_validation_options(auth::JwtAlg.HS512);
+        let err512 = auth::verify_jwt_hmac(token512[..], secret512, opts512, now_sec, out_hdr512, out_clm512);
+        sub.assert_eq(err512, auth::JwtError.None, "HS512 verified");
+        sub.assert_bytes_eq(auth::claim_str(out_clm512, "sub"), "agent_512", "HS512 sub");
     };
 
     t.run("Tampered payload or signature rejected") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256);
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("original_user");
         clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, secret, token);
+        auth::sign_jwt_hmac(hdr, clm, secret, token);
 
         // Tamper with one byte in signature
         var tampered_sig: u8[>..] = [];
         tampered_sig.append(token[..]);
         tampered_sig[tampered_sig.len - 2] = if tampered_sig[tampered_sig.len - 2] == 'A' { 'B' } else { 'A' };
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts_sig = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err_sig = wing::verify_jwt_hmac(tampered_sig[..], secret, opts_sig, now_sec, out_h, out_c);
-        sub.assert_eq(err_sig, wing::JwtError.SignatureInvalid, "Tampered signature rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts_sig = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err_sig = auth::verify_jwt_hmac(tampered_sig[..], secret, opts_sig, now_sec, out_h, out_c);
+        sub.assert_eq(err_sig, auth::JwtError.SignatureInvalid, "Tampered signature rejected");
 
         // Wrong secret key
-        var opts_key = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err_key = wing::verify_jwt_hmac(token[..], "wrong-secret-key-32-bytes-long!!", opts_key, now_sec, out_h, out_c);
-        sub.assert_eq(err_key, wing::JwtError.SignatureInvalid, "Wrong secret rejected");
+        var opts_key = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err_key = auth::verify_jwt_hmac(token[..], "wrong-secret-key-32-bytes-long!!", opts_key, now_sec, out_h, out_c);
+        sub.assert_eq(err_key, auth::JwtError.SignatureInvalid, "Wrong secret rejected");
     };
 }
 
@@ -328,45 +328,45 @@ fn test_asymmetric_eddsa_jwt(t: lit::T&) {
     let now_sec: i64 = 1770000000;
 
     t.run("EdDSA token generation and validation") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "ed25519-root-key");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.EdDSA, "ed25519-root-key");
+        var clm = auth::JwtClaims { .. };
         clm.iss.try_set("https://id.goose.io");
         clm.sub.try_set("srv_identity_ed25519");
         clm.exp = now_sec + 1800;
-        wing::set_claim(clm, "scope", "cluster:admin");
+        auth::set_claim(clm, "scope", "cluster:admin");
 
         var token: u8[>..] = [];
-        let ok_sign = wing::sign_jwt_eddsa(hdr, clm, seed, token);
+        let ok_sign = auth::sign_jwt_eddsa(hdr, clm, seed, token);
         sub.assert_true(ok_sign, "EdDSA token signed");
 
-        var out_hdr = wing::new_jwt_header();
-        var out_clm = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
+        var out_hdr = auth::new_jwt_header();
+        var out_clm = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.EdDSA);
         opts.expected_issuer.append("https://id.goose.io");
 
-        let err = wing::verify_jwt_eddsa(token[..], public_key, opts, now_sec, out_hdr, out_clm);
-        sub.assert_eq(err, wing::JwtError.None, "EdDSA verified with public key");
-        sub.assert_eq(out_hdr.alg, wing::JwtAlg.EdDSA, "Alg is EdDSA");
+        let err = auth::verify_jwt_eddsa(token[..], public_key, opts, now_sec, out_hdr, out_clm);
+        sub.assert_eq(err, auth::JwtError.None, "EdDSA verified with public key");
+        sub.assert_eq(out_hdr.alg, auth::JwtAlg.EdDSA, "Alg is EdDSA");
         sub.assert_bytes_eq(out_hdr.kid[..], "ed25519-root-key", "kid is ed25519-root-key");
-        sub.assert_bytes_eq(wing::claim_str(out_clm, "scope"), "cluster:admin", "scope claim matches");
+        sub.assert_bytes_eq(auth::claim_str(out_clm, "scope"), "cluster:admin", "scope claim matches");
     };
 
     t.run("EdDSA signature tampering and wrong public key") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.EdDSA);
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("device_007");
         clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_eddsa(hdr, clm, seed, token);
+        auth::sign_jwt_eddsa(hdr, clm, seed, token);
 
         // Wrong public key (all zeros)
         let zero_pub: u8[32] = [0; 32];
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts_bad = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
-        let err_bad_key = wing::verify_jwt_eddsa(token[..], zero_pub, opts_bad, now_sec, out_h, out_c);
-        sub.assert_eq(err_bad_key, wing::JwtError.SignatureInvalid, "Invalid public key rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts_bad = auth::default_jwt_validation_options(auth::JwtAlg.EdDSA);
+        let err_bad_key = auth::verify_jwt_eddsa(token[..], zero_pub, opts_bad, now_sec, out_h, out_c);
+        sub.assert_eq(err_bad_key, auth::JwtError.SignatureInvalid, "Invalid public key rejected");
     };
 }
 
@@ -379,20 +379,20 @@ fn test_jwt_security_defenses(t: lit::T&) {
 
     t.run("Algorithm Confusion Defense (RFC 8725 Section 3.1)") { sub =>
         // Attacker creates HS256 token, but server expects EdDSA
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256);
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("victim");
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, secret, token);
+        auth::sign_jwt_hmac(hdr, clm, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
         let dummy_pub: u8[32] = [0x55; 32];
-        var opts_conf = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
-        let err = wing::verify_jwt_eddsa(token[..], dummy_pub, opts_conf, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "Algorithm confusion rejected");
+        var opts_conf = auth::default_jwt_validation_options(auth::JwtAlg.EdDSA);
+        let err = auth::verify_jwt_eddsa(token[..], dummy_pub, opts_conf, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.AlgorithmMismatch, "Algorithm confusion rejected");
     };
 
     t.run("Algorithm Confusion: EdDSA token rejected when HS256 expected (RFC 8725 Section 3.1)") { sub =>
@@ -403,103 +403,103 @@ fn test_jwt_security_defenses(t: lit::T&) {
             0xf3, 0x8f, 0x3c, 0xeb, 0x17, 0x1a, 0x8e, 0x1e,
         ];
         let public_key = core::ed25519_public_key(seed);
-        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.EdDSA);
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("victim");
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_eddsa(hdr, clm, seed, token);
+        auth::sign_jwt_eddsa(hdr, clm, seed, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts_conf = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_eddsa(token[..], public_key, opts_conf, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "EdDSA token rejected when HS256 expected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts_conf = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_eddsa(token[..], public_key, opts_conf, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.AlgorithmMismatch, "EdDSA token rejected when HS256 expected");
     };
 
     t.run("none Algorithm Rejection (CVE-2015-9235 Defense)") { sub =>
         // Attacker sends token with alg: "none" and empty signature: "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9."
         let none_token = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.";
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts_none = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(none_token, secret, opts_none, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.UnsupportedAlgorithm, "none algorithm rejected by default");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts_none = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(none_token, secret, opts_none, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.UnsupportedAlgorithm, "none algorithm rejected by default");
     };
 
     t.run("Expiration and Clock Skew Leeway (exp)") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256);
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("time_traveler");
         clm.exp = now_sec - 100; // Expired 100 seconds ago
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, secret, token);
+        auth::sign_jwt_hmac(hdr, clm, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
 
         // 1. With standard 60s leeway -> still expired (100 > 60)
-        var opts60 = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var opts60 = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts60.leeway_seconds = 60;
-        let err_exp = wing::verify_jwt_hmac(token[..], secret, opts60, now_sec, out_h, out_c);
-        sub.assert_eq(err_exp, wing::JwtError.TokenExpired, "Expired token rejected");
+        let err_exp = auth::verify_jwt_hmac(token[..], secret, opts60, now_sec, out_h, out_c);
+        sub.assert_eq(err_exp, auth::JwtError.TokenExpired, "Expired token rejected");
 
         // 2. With 120s leeway -> within leeway window -> accepted!
-        var opts120 = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var opts120 = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts120.leeway_seconds = 120;
-        let err_ok = wing::verify_jwt_hmac(token[..], secret, opts120, now_sec, out_h, out_c);
-        sub.assert_eq(err_ok, wing::JwtError.None, "Token within leeway window accepted");
+        let err_ok = auth::verify_jwt_hmac(token[..], secret, opts120, now_sec, out_h, out_c);
+        sub.assert_eq(err_ok, auth::JwtError.None, "Token within leeway window accepted");
     };
 
     t.run("Not Before check (nbf)") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256);
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("future_user");
         clm.nbf = now_sec + 200; // Valid only in 200 seconds
         clm.exp = now_sec + 1000;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, secret, token);
+        auth::sign_jwt_hmac(hdr, clm, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.leeway_seconds = 30;
 
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.TokenNotYetValid, "Token not yet valid rejected");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.TokenNotYetValid, "Token not yet valid rejected");
     };
 
     t.run("Issuer, Audience, Subject Mismatch Rejections") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256);
+        var clm = auth::JwtClaims { .. };
         clm.iss.try_set("auth.real.com");
-        wing::set_audience(clm, "app.real.com");
+        auth::set_audience(clm, "app.real.com");
         clm.sub.try_set("user.real");
         clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, secret, token);
+        auth::sign_jwt_hmac(hdr, clm, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
 
         // Mismatched Issuer
-        var opts_iss = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var opts_iss = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts_iss.expected_issuer.append("auth.fake.com");
-        sub.assert_eq(wing::verify_jwt_hmac(token[..], secret, opts_iss, now_sec, out_h, out_c), wing::JwtError.IssuerMismatch, "Issuer mismatch");
+        sub.assert_eq(auth::verify_jwt_hmac(token[..], secret, opts_iss, now_sec, out_h, out_c), auth::JwtError.IssuerMismatch, "Issuer mismatch");
 
         // Mismatched Audience
-        var opts_aud = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var opts_aud = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts_aud.expected_audience.append("app.fake.com");
-        sub.assert_eq(wing::verify_jwt_hmac(token[..], secret, opts_aud, now_sec, out_h, out_c), wing::JwtError.AudienceMismatch, "Audience mismatch");
+        sub.assert_eq(auth::verify_jwt_hmac(token[..], secret, opts_aud, now_sec, out_h, out_c), auth::JwtError.AudienceMismatch, "Audience mismatch");
 
         // Mismatched Subject
-        var opts_sub = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var opts_sub = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts_sub.expected_subject.append("user.fake");
-        sub.assert_eq(wing::verify_jwt_hmac(token[..], secret, opts_sub, now_sec, out_h, out_c), wing::JwtError.SubjectMismatch, "Subject mismatch");
+        sub.assert_eq(auth::verify_jwt_hmac(token[..], secret, opts_sub, now_sec, out_h, out_c), auth::JwtError.SubjectMismatch, "Subject mismatch");
     };
 }
 
@@ -508,7 +508,7 @@ fn test_jwt_security_defenses(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_jwks_serialization_and_parsing(t: lit::T&) {
     t.run("JWKS serialize and parse roundtrip") { sub =>
-        var jwks = wing::Jwks { .. };
+        var jwks = auth::Jwks { .. };
 
         // 1. Add Ed25519 public key
         let ed_pub: u8[32] = [
@@ -517,20 +517,23 @@ fn test_jwks_serialization_and_parsing(t: lit::T&) {
             0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
             0xcc, 0xdd, 0xee, 0xff, 0x12, 0x34, 0x56, 0x78,
         ];
-        wing::add_ed25519_key(jwks, "ed25519-key-2026", ed_pub);
+        auth::add_ed25519_key(jwks, "ed25519-key-2026", ed_pub);
 
         // 2. Add Symmetric HMAC key
         let hmac_sec = "secret-sym-key-32bytes-rfc7518!!";
-        wing::add_symmetric_key(jwks, "hmac-key-2026", wing::JwtAlg.HS256, hmac_sec);
+        auth::add_symmetric_key(jwks, "hmac-key-2026", auth::JwtAlg.HS256, hmac_sec);
 
         sub.assert_eq(jwks.keys.len, 2, "2 keys in JWKS");
-        sub.assert_eq(wing::find_key(jwks, "ed25519-key-2026"), 0, "Find ed key idx");
-        sub.assert_eq(wing::find_key(jwks, "hmac-key-2026"), 1, "Find hmac key idx");
-        sub.assert_eq(wing::find_key(jwks, "unknown-key"), -1, "Unknown key returns -1");
+        let k0_idx, ok_k0 = auth::find_key(jwks, "ed25519-key-2026");
+        let k1_idx, ok_k1 = auth::find_key(jwks, "hmac-key-2026");
+        let _, ok_unk = auth::find_key(jwks, "unknown-key");
+        sub.assert_true(ok_k0 && k0_idx == 0, "Find ed key idx");
+        sub.assert_true(ok_k1 && k1_idx == 1, "Find hmac key idx");
+        sub.assert_false(ok_unk, "Unknown key returns false");
 
         // Serialize to JSON
         var jwks_json: u8[>..] = [];
-        wing::serialize_jwks(jwks, jwks_json);
+        auth::serialize_jwks(jwks, jwks_json);
 
         sub.assert_contains(jwks_json[..], "\"keys\":[", "Contains keys array");
         sub.assert_contains(jwks_json[..], "\"kid\":\"ed25519-key-2026\"", "Contains ed kid");
@@ -539,18 +542,18 @@ fn test_jwks_serialization_and_parsing(t: lit::T&) {
         sub.assert_contains(jwks_json[..], "\"kid\":\"hmac-key-2026\"", "Contains hmac kid");
 
         // Parse back from JSON
-        var parsed_jwks = wing::Jwks { .. };
-        let ok_parse = wing::parse_jwks_json(jwks_json[..], parsed_jwks);
+        var parsed_jwks = auth::Jwks { .. };
+        let ok_parse = auth::parse_jwks_json(jwks_json[..], parsed_jwks);
         sub.assert_true(ok_parse, "JWKS parsed from JSON");
         sub.assert_eq(parsed_jwks.keys.len, 2, "2 parsed keys");
 
         let k0 = parsed_jwks.keys[0];
-        sub.assert_eq(k0.kty, wing::JwkKeyType.OKP, "k0 kty OKP");
+        sub.assert_eq(k0.kty, auth::JwkKeyType.OKP, "k0 kty OKP");
         sub.assert_bytes_eq(k0.kid[..], "ed25519-key-2026", "k0 kid");
         sub.assert_bytes_eq(k0.public_key[..], ed_pub[..], "k0 public key matches");
 
         let k1 = parsed_jwks.keys[1];
-        sub.assert_eq(k1.kty, wing::JwkKeyType.Oct, "k1 kty Oct");
+        sub.assert_eq(k1.kty, auth::JwkKeyType.Oct, "k1 kty Oct");
         sub.assert_bytes_eq(k1.kid[..], "hmac-key-2026", "k1 kid");
         sub.assert_bytes_eq(k1.symmetric_key[..], hmac_sec, "k1 symmetric key matches");
     };
@@ -558,39 +561,41 @@ fn test_jwks_serialization_and_parsing(t: lit::T&) {
     t.run("JWK Parser Defenses: Missing kty, unknown kty, invalid alg & overflows rejected") { sub =>
         // 1. Missing kty in JWK
         let jwk_no_kty = "{\"keys\":[{\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}]}";
-        var jwks1 = wing::Jwks { .. };
-        sub.assert_false(wing::parse_jwks_json(jwk_no_kty, jwks1), "Missing kty rejected");
+        var jwks1 = auth::Jwks { .. };
+        sub.assert_false(auth::parse_jwks_json(jwk_no_kty, jwks1), "Missing kty rejected");
 
         // 2. Unknown kty in JWK (e.g. RSA or EC)
         let jwk_rsa = "{\"keys\":[{\"kty\":\"RSA\",\"n\":\"...\",\"e\":\"AQAB\"}]}";
-        var jwks2 = wing::Jwks { .. };
-        sub.assert_false(wing::parse_jwks_json(jwk_rsa, jwks2), "Unknown kty RSA rejected");
+        var jwks2 = auth::Jwks { .. };
+        sub.assert_false(auth::parse_jwks_json(jwk_rsa, jwks2), "Unknown kty RSA rejected");
 
         // 3. Unsupported alg in JWK (e.g. RS256 or none)
         let jwk_bad_alg = "{\"keys\":[{\"kty\":\"oct\",\"alg\":\"RS256\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\"}]}";
-        var jwks3 = wing::Jwks { .. };
-        sub.assert_false(wing::parse_jwks_json(jwk_bad_alg, jwks3), "Unsupported alg RS256 rejected");
+        var jwks3 = auth::Jwks { .. };
+        sub.assert_false(auth::parse_jwks_json(jwk_bad_alg, jwks3), "Unsupported alg RS256 rejected");
 
         let jwk_none_alg = "{\"keys\":[{\"kty\":\"oct\",\"alg\":\"none\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\"}]}";
-        var jwks4 = wing::Jwks { .. };
-        sub.assert_false(wing::parse_jwks_json(jwk_none_alg, jwks4), "Explicit alg:none in JWK rejected");
+        var jwks4 = auth::Jwks { .. };
+        sub.assert_false(auth::parse_jwks_json(jwk_none_alg, jwks4), "Explicit alg:none in JWK rejected");
 
         // 4. Oversize kid (> 64 bytes)
         let jwk_long_kid = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"c2VjcmV0LXN5bS1rZXktMTZieXRlcw\",\"kid\":\"this-key-identifier-is-intentionally-crafted-to-exceed-the-sixty-four-byte-limit-enforced-by-jwks\"}]}";
-        var jwks5 = wing::Jwks { .. };
-        sub.assert_false(wing::parse_jwks_json(jwk_long_kid, jwks5), "Oversize kid rejected");
+        var jwks5 = auth::Jwks { .. };
+        sub.assert_false(auth::parse_jwks_json(jwk_long_kid, jwks5), "Oversize kid rejected");
 
         // 5. add_symmetric_key enforces >= hash output length (RFC 7518 §3.2: 32/48/64 bytes)
-        var jwks_api = wing::Jwks { .. };
-        sub.assert_false(wing::add_symmetric_key(jwks_api, "short-key", wing::JwtAlg.HS256, "1234567890123456"), "Key < 32 bytes rejected for HS256");
-        sub.assert_true(wing::add_symmetric_key(jwks_api, "valid-key", wing::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"), "Key == 32 bytes accepted for HS256");
+        var jwks_api = auth::Jwks { .. };
+        sub.assert_false(auth::add_symmetric_key(jwks_api, "short-key", auth::JwtAlg.HS256, "1234567890123456"), "Key < 32 bytes rejected for HS256");
+        sub.assert_true(auth::add_symmetric_key(jwks_api, "valid-key", auth::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"), "Key == 32 bytes accepted for HS256");
 
         // 6. resolve_jwks_key_index: empty kid token rejected when single JWK has configured non-empty kid
-        sub.assert_eq(wing::resolve_jwks_key_index(jwks_api, ""), -1, "Empty kid does not match key with explicit kid");
+        let _, ok_empty_kid = auth::resolve_jwks_key_index(jwks_api, "");
+        sub.assert_false(ok_empty_kid, "Empty kid does not match key with explicit kid");
 
-        var jwks_anon = wing::Jwks { .. };
-        sub.assert_true(wing::add_symmetric_key(jwks_anon, "", wing::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"), "Add anon key");
-        sub.assert_eq(wing::resolve_jwks_key_index(jwks_anon, ""), 0, "Empty kid matches anon single key");
+        var jwks_anon = auth::Jwks { .. };
+        sub.assert_true(auth::add_symmetric_key(jwks_anon, "", auth::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"), "Add anon key");
+        let anon_idx, ok_anon_kid = auth::resolve_jwks_key_index(jwks_anon, "");
+        sub.assert_true(ok_anon_kid && anon_idx == 0, "Empty kid matches anon single key");
     };
 }
 
@@ -609,89 +614,89 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
     let hmac_sec = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     // Setup active JWKS with multiple keys
-    var jwks = wing::Jwks { .. };
-    wing::add_ed25519_key(jwks, "auth-srv-v1", ed_pub);
-    wing::add_symmetric_key(jwks, "legacy-sym-v1", wing::JwtAlg.HS256, hmac_sec);
+    var jwks = auth::Jwks { .. };
+    auth::add_ed25519_key(jwks, "auth-srv-v1", ed_pub);
+    auth::add_symmetric_key(jwks, "legacy-sym-v1", auth::JwtAlg.HS256, hmac_sec);
 
     t.run("Verify EdDSA token using JWKS key lookup") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "auth-srv-v1");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.EdDSA, "auth-srv-v1");
+        var clm = auth::JwtClaims { .. };
         clm.iss.try_set("auth.corp.com");
         clm.sub.try_set("admin_alice");
         clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
+        auth::sign_jwt_eddsa(hdr, clm, ed_seed, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.EdDSA);
         opts.expected_issuer.append("auth.corp.com");
 
-        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "EdDSA token verified through JWKS");
+        let err = auth::verify_jwt(jwks, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "EdDSA token verified through JWKS");
         sub.assert_bytes_eq(out_h.kid[..], "auth-srv-v1", "kid resolved correctly");
-        sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "admin_alice", "Subject matches");
+        sub.assert_bytes_eq(auth::claim_str(out_c, "sub"), "admin_alice", "Subject matches");
     };
 
     t.run("Verify HMAC token using JWKS key lookup") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "legacy-sym-v1");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256, "legacy-sym-v1");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("service_worker");
         clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
+        auth::sign_jwt_hmac(hdr, clm, hmac_sec, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        let opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
 
-        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "HMAC token verified through JWKS");
+        let err = auth::verify_jwt(jwks, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "HMAC token verified through JWKS");
         sub.assert_bytes_eq(out_h.kid[..], "legacy-sym-v1", "kid resolved");
-        sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "service_worker", "Subject matches");
+        sub.assert_bytes_eq(auth::claim_str(out_c, "sub"), "service_worker", "Subject matches");
     };
 
     t.run("Unknown kid in token rejected with KeyNotFound") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "unregistered-kid-999");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256, "unregistered-kid-999");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("intruder");
         clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
+        auth::sign_jwt_hmac(hdr, clm, hmac_sec, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        let opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        let opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
 
-        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.KeyNotFound, "Unknown kid returned KeyNotFound");
+        let err = auth::verify_jwt(jwks, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.KeyNotFound, "Unknown kid returned KeyNotFound");
     };
 
     t.run("JWKS Algorithm Confusion: EdDSA token rejected when HS256 expected (RFC 8725 §3.1)") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "auth-srv-v1");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.EdDSA, "auth-srv-v1");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("victim");
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
+        auth::sign_jwt_eddsa(hdr, clm, ed_seed, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify(token[..], jwks, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "JWKS verify rejects EdDSA when HS256 expected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt(jwks, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.AlgorithmMismatch, "JWKS verify rejects EdDSA when HS256 expected");
     };
 
     t.run("JWKS Key Usage Constraint: enc key rejected for verification (RFC 7517 §4.2)") { sub =>
-        var jwks_enc = wing::Jwks { .. };
-        var key = wing::JwksKey {
-            kty:        wing::JwkKeyType.OKP,
+        var jwks_enc = auth::Jwks { .. };
+        var key = auth::JwksKey {
+            kty:        auth::JwkKeyType.OKP,
             crv:        "Ed25519",
-            alg:        wing::JwtAlg.EdDSA,
+            alg:        auth::JwtAlg.EdDSA,
             use:        "enc",
             public_key: ed_pub,
             valid:      true,
@@ -700,38 +705,38 @@ fn test_jwt_verification_against_jwks(t: lit::T&) {
         key.kid.append("enc-key-1");
         jwks_enc.keys.push(key);
 
-        var hdr = wing::new_jwt_header(wing::JwtAlg.EdDSA, "enc-key-1");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.EdDSA, "enc-key-1");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("victim");
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_eddsa(hdr, clm, ed_seed, token);
+        auth::sign_jwt_eddsa(hdr, clm, ed_seed, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.EdDSA);
-        let err = wing::verify(token[..], jwks_enc, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.UnsupportedAlgorithm, "enc key rejected for signature verification");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.EdDSA);
+        let err = auth::verify_jwt(jwks_enc, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.UnsupportedAlgorithm, "enc key rejected for signature verification");
     };
 
     t.run("JWKS Key Algorithm Constraint: mismatched alg rejected (RFC 7517 §4.4)") { sub =>
-        var jwks_alg = wing::Jwks { .. };
-        wing::add_symmetric_key(jwks_alg, "hs256-only-key", wing::JwtAlg.HS256, hmac_sec);
+        var jwks_alg = auth::Jwks { .. };
+        auth::add_symmetric_key(jwks_alg, "hs256-only-key", auth::JwtAlg.HS256, hmac_sec);
 
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS512, "hs256-only-key");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS512, "hs256-only-key");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("victim");
         clm.exp = now_sec + 300;
 
         var token: u8[>..] = [];
-        wing::sign_jwt_hmac(hdr, clm, hmac_sec, token);
+        auth::sign_jwt_hmac(hdr, clm, hmac_sec, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS512);
-        let err = wing::verify(token[..], jwks_alg, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.AlgorithmMismatch, "Mismatched key alg rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS512);
+        let err = auth::verify_jwt(jwks_alg, token[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.AlgorithmMismatch, "Mismatched key alg rejected");
     };
 }
 
@@ -765,11 +770,11 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate exp claim MUST be rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidClaimsJson, "Token with duplicate exp claim MUST be rejected");
     };
 
     t.run("Duplicate sub claim rejected with InvalidClaimsJson (RFC 7519 §4)") { sub =>
@@ -778,11 +783,11 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate sub claim MUST be rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidClaimsJson, "Token with duplicate sub claim MUST be rejected");
     };
 
     t.run("Duplicate custom claim rejected with InvalidClaimsJson (RFC 7519 §4)") { sub =>
@@ -791,11 +796,11 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Token with duplicate custom claim MUST be rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidClaimsJson, "Token with duplicate custom claim MUST be rejected");
     };
 
     t.run("Duplicate header alg rejected with InvalidHeaderJson (RFC 7515 §4 / RFC 8725 §2.2)") { sub =>
@@ -804,11 +809,11 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Header with duplicate alg MUST be rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidHeaderJson, "Header with duplicate alg MUST be rejected");
     };
 
     t.run("Negative timestamp in exp rejected with InvalidClaimsJson (RFC 7519 §2 NumericDate)") { sub =>
@@ -817,37 +822,37 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.require_exp = false; // Even if exp not required, invalid negative timestamp must be rejected
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidClaimsJson, "Negative timestamp MUST be rejected during claims parsing");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidClaimsJson, "Negative timestamp MUST be rejected during claims parsing");
     };
 
     t.run("Negative leeway rejected in expiration validation (RFC 8725 §2.5)") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256);
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256);
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("alice");
         clm.exp = 1000;
 
         var token: u8[..1024] = [];
-        wing::sign_jwt_hmac(hdr, clm, secret, token);
+        auth::sign_jwt_hmac(hdr, clm, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.leeway_seconds = -1; // Negative leeway must not trigger signed overflow
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, 1005, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.TokenExpired, "Negative leeway triggers TokenExpired, preventing signed overflow bypass");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, 1005, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.TokenExpired, "Negative leeway triggers TokenExpired, preventing signed overflow bypass");
     };
 
     t.run("RFC 7638 JWK Thumbprint calculation canonical JSON ordering (OKP / Ed25519 & Oct)") { sub =>
         // OKP Key (RFC 8037 §4): canonical order "crv", "kty", "x"
-        var okp_key = wing::JwksKey {
-            kty:   wing::JwkKeyType.OKP,
+        var okp_key = auth::JwksKey {
+            kty:   auth::JwkKeyType.OKP,
             crv:   "Ed25519",
-            alg:   wing::JwtAlg.EdDSA, // optional member - must be excluded from canonical JSON
+            alg:   auth::JwtAlg.EdDSA, // optional member - must be excluded from canonical JSON
             use:   "sig",           // optional member - must be excluded from canonical JSON
             valid: true,
             ..
@@ -858,7 +863,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         }
 
         var okp_canonical: u8[..256] = [];
-        let ok1 = wing::compute_canonical_jwk(okp_key, okp_canonical);
+        let ok1 = auth::compute_canonical_jwk(okp_key, okp_canonical);
         sub.assert_true(ok1, "OKP canonical JSON computed");
         // Lexicographical ordering: "crv", then "kty", then "x"
         sub.assert_true(core::starts_with(okp_canonical[..], "{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\""), "OKP canonical members ordered crv, kty, x");
@@ -867,21 +872,21 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         sub.assert_false(core::contains(okp_canonical[..], "kid"), "Canonical JSON excludes kid");
 
         var okp_thumbprint: u8[..64] = [];
-        let ok_tp1 = wing::compute_jwk_thumbprint(okp_key, okp_thumbprint);
+        let ok_tp1 = auth::compute_jwk_thumbprint(okp_key, okp_thumbprint);
         sub.assert_true(ok_tp1, "OKP thumbprint computed");
         sub.assert_eq(okp_thumbprint.len, 43, "Thumbprint is 43 chars (unpadded base64url of SHA-256)");
 
         // Oct Key (RFC 7638 §3.2): canonical order "k", "kty"
-        var oct_key = wing::JwksKey {
-            kty:   wing::JwkKeyType.Oct,
-            alg:   wing::JwtAlg.HS256,
+        var oct_key = auth::JwksKey {
+            kty:   auth::JwkKeyType.Oct,
+            alg:   auth::JwtAlg.HS256,
             valid: true,
             ..
         };
         oct_key.symmetric_key.append("test-secret-oct-32bytes-padding!");
 
         var oct_canonical: u8[..256] = [];
-        let ok2 = wing::compute_canonical_jwk(oct_key, oct_canonical);
+        let ok2 = auth::compute_canonical_jwk(oct_key, oct_canonical);
         sub.assert_true(ok2, "Oct canonical JSON computed");
         // Lexicographical ordering: "k" before "kty"
         sub.assert_true(core::starts_with(oct_canonical[..], "{\"k\":\""), "Oct canonical members start with k");
@@ -889,7 +894,7 @@ fn test_jwt_rfc7519_claims_and_thumbprint(t: lit::T&) {
         sub.assert_false(core::contains(oct_canonical[..], "alg"), "Oct canonical JSON excludes alg");
 
         var oct_thumbprint: u8[..64] = [];
-        let ok_tp2 = wing::compute_jwk_thumbprint(oct_key, oct_thumbprint);
+        let ok_tp2 = auth::compute_jwk_thumbprint(oct_key, oct_thumbprint);
         sub.assert_true(ok_tp2, "Oct thumbprint computed");
         sub.assert_eq(oct_thumbprint.len, 43, "Oct thumbprint is 43 chars");
     };
@@ -908,11 +913,11 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.CriticalHeaderUnsupported, "Unsupported crit parameter MUST fail verification");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.CriticalHeaderUnsupported, "Unsupported crit parameter MUST fail verification");
     };
 
     t.run("Critical Header (crit) accepted when explicitly supported (RFC 7515 §4.1.11)") { sub =>
@@ -921,12 +926,12 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        sub.assert_true(wing::add_supported_crit(opts, "custom_ext"), "Added supported crit parameter");
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "Supported crit parameter passes verification");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        sub.assert_true(auth::add_supported_crit(opts, "custom_ext"), "Added supported crit parameter");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "Supported crit parameter passes verification");
         sub.assert_eq(out_h.crit.len, 1, "Parsed crit header length is 1");
         sub.assert_bytes_eq(out_h.crit[0].name[..], "custom_ext", "Parsed crit name matches");
     };
@@ -938,11 +943,11 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Standard parameter 'alg' in crit array MUST be rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidHeaderJson, "Standard parameter 'alg' in crit array MUST be rejected");
     };
 
     t.run("Parameter listed in crit but missing from header rejected with InvalidHeaderJson (RFC 7515 §4.1.11)") { sub =>
@@ -952,11 +957,11 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Missing crit member in header MUST be rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidHeaderJson, "Missing crit member in header MUST be rejected");
     };
 
     t.run("Empty crit array rejected with InvalidHeaderJson (RFC 7515 §4.1.11)") { sub =>
@@ -965,11 +970,11 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.InvalidHeaderJson, "Empty crit array MUST be rejected");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.InvalidHeaderJson, "Empty crit array MUST be rejected");
     };
 
     t.run("Explicit JWT typ verification succeeds on exact match (RFC 8725 §3.11 & RFC 9068)") { sub =>
@@ -978,12 +983,12 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.expected_typ.try_set("at+jwt");
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "Expected typ 'at+jwt' matches token typ");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "Expected typ 'at+jwt' matches token typ");
         sub.assert_bytes_eq(out_h.typ[..], "at+jwt", "Parsed typ matches");
     };
 
@@ -993,21 +998,21 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.expected_typ.try_set("at+jwt"); // expected without prefix, header has prefix
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "'application/at+jwt' equivalent to 'at+jwt'");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "'application/at+jwt' equivalent to 'at+jwt'");
 
         // Inverse: expected with prefix, header without prefix
-        var opts2 = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var opts2 = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts2.expected_typ.try_set("application/at+jwt");
         let hdr_json2 = "{\"alg\":\"HS256\",\"typ\":\"at+jwt\"}";
         var token2: u8[..1024] = [];
         craft_raw_jwt(hdr_json2, clm_json, secret, token2);
-        let err2 = wing::verify_jwt_hmac(token2[..], secret, opts2, now_sec, out_h, out_c);
-        sub.assert_eq(err2, wing::JwtError.None, "'at+jwt' equivalent to 'application/at+jwt'");
+        let err2 = auth::verify_jwt_hmac(token2[..], secret, opts2, now_sec, out_h, out_c);
+        sub.assert_eq(err2, auth::JwtError.None, "'at+jwt' equivalent to 'application/at+jwt'");
     };
 
     t.run("Token type confusion attack rejected (RFC 8725 §3.11)") { sub =>
@@ -1017,12 +1022,12 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.expected_typ.try_set("at+jwt"); // expecting access token
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.TypeMismatch, "Type confusion between id+jwt and at+jwt rejected");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.TypeMismatch, "Type confusion between id+jwt and at+jwt rejected");
     };
 
     t.run("Case-insensitive typ verification (RFC 8725 §3.11)") { sub =>
@@ -1031,12 +1036,12 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.expected_typ.try_set("at+jwt");
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "Case-insensitive typ comparison succeeds");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "Case-insensitive typ comparison succeeds");
     };
 
     t.run("Multi-audience array claims parsing & verification (RFC 7519 §4.1.3)") { sub =>
@@ -1045,24 +1050,24 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         var token: u8[..1024] = [];
         craft_raw_jwt(hdr_json, clm_json, secret, token);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts.expected_audience.append("https://api.two.com");
-        let err = wing::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "Multi-audience array matches second audience");
+        let err = auth::verify_jwt_hmac(token[..], secret, opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "Multi-audience array matches second audience");
 
         // Fails when requesting unlisted audience
-        var opts_bad = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        var opts_bad = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         opts_bad.expected_audience.append("https://api.three.com");
-        let err_bad = wing::verify_jwt_hmac(token[..], secret, opts_bad, now_sec, out_h, out_c);
-        sub.assert_eq(err_bad, wing::JwtError.AudienceMismatch, "Unlisted audience fails validation");
+        let err_bad = auth::verify_jwt_hmac(token[..], secret, opts_bad, now_sec, out_h, out_c);
+        sub.assert_eq(err_bad, auth::JwtError.AudienceMismatch, "Unlisted audience fails validation");
     };
 
     t.run("JWKS oct key without alg rejects alg:none attack") { sub =>
-        var jwks = wing::Jwks { .. };
+        var jwks = auth::Jwks { .. };
         let key_json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\",\"kid\":\"k-sym-01\"}]}";
-        let ok_parse = wing::parse_jwks_json(key_json, jwks);
+        let ok_parse = auth::parse_jwks_json(key_json, jwks);
         sub.assert_true(ok_parse, "JWKS parsed");
 
         let hdr_none = "eyJhbGciOiJub25lIiwia2lkIjoiay1zeW0tMDEiLCJ0eXAiOiJKV1QifQ";
@@ -1073,159 +1078,158 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
         token_none.append(clm_none);
         token_none.push('.' as u8);
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.None);
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.None);
         opts.allow_none_alg = false;
-        let err = wing::verify(token_none[..], jwks, opts, now_sec, out_h, out_c);
-        sub.assert_true(err == wing::JwtError.UnsupportedAlgorithm || err == wing::JwtError.KeyNotFound, "alg:none against JWKS oct key rejected");
+        let err = auth::verify_jwt(jwks, token_none[..], opts, now_sec, out_h, out_c);
+        sub.assert_true(err == auth::JwtError.UnsupportedAlgorithm || err == auth::JwtError.KeyNotFound, "alg:none against JWKS oct key rejected");
     };
 
     t.run("Hardened RFC 7515/7519 edge cases and defenses") { sub =>
         // 1. audiences.clear() contract on repeated parsing
         let clm_json_auds = "{\"sub\":\"alice\",\"aud\":[\"aud-1\",\"aud-2\",\"aud-3\"],\"exp\":2000000000}";
-        var clm_repeated = wing::JwtClaims { .. };
-        sub.assert_true(wing::parse_jwt_claims_json(clm_json_auds, clm_repeated), "Claims parsed first time");
+        var clm_repeated = auth::JwtClaims { .. };
+        sub.assert_true(auth::parse_jwt_claims_json(clm_json_auds, clm_repeated), "Claims parsed first time");
         sub.assert_eq(clm_repeated.audiences.len, 3, "Exactly 3 audiences first time");
-        sub.assert_true(wing::parse_jwt_claims_json(clm_json_auds, clm_repeated), "Claims parsed second time (reused struct)");
+        sub.assert_true(auth::parse_jwt_claims_json(clm_json_auds, clm_repeated), "Claims parsed second time (reused struct)");
         sub.assert_eq(clm_repeated.audiences.len, 3, "audiences cleared on re-parsing (not 6!)");
 
         // 2. parse_aud_claim: empty array [] rejected per RFC 7519 §4.1.3
-        var clm_empty_aud = wing::JwtClaims { .. };
-        sub.assert_false(wing::parse_jwt_claims_json("{\"aud\":[]}", clm_empty_aud), "Empty aud array rejected");
+        var clm_empty_aud = auth::JwtClaims { .. };
+        sub.assert_false(auth::parse_jwt_claims_json("{\"aud\":[]}", clm_empty_aud), "Empty aud array rejected");
 
         // 2b. parse_aud_claim: non-string element in aud array rejected
-        var clm_num_aud = wing::JwtClaims { .. };
-        sub.assert_false(wing::parse_jwt_claims_json("{\"aud\":[123]}", clm_num_aud), "Non-string aud element rejected");
+        var clm_num_aud = auth::JwtClaims { .. };
+        sub.assert_false(auth::parse_jwt_claims_json("{\"aud\":[123]}", clm_num_aud), "Non-string aud element rejected");
 
         // 3. parse_jwt_alg: unknown alg parses as Unknown and rejects even with allow_none_alg = true
-        let alg_unk = wing::parse_jwt_alg("ES256K");
-        sub.assert_eq(alg_unk, wing::JwtAlg.Unknown, "ES256K parses as Unknown");
-        var opts_allow_none = wing::default_jwt_validation_options(wing::JwtAlg.None);
+        let alg_unk = auth::parse_jwt_alg("ES256K");
+        sub.assert_eq(alg_unk, auth::JwtAlg.Unknown, "ES256K parses as Unknown");
+        var opts_allow_none = auth::default_jwt_validation_options(auth::JwtAlg.None);
         opts_allow_none.allow_none_alg = true;
-        let err_unknown = wing::verify_jwt_algorithm(alg_unk, wing::JwtAlg.None, opts_allow_none.allow_none_alg);
-        sub.assert_eq(err_unknown, wing::JwtError.UnsupportedAlgorithm, "Unknown alg cannot bypass as none");
+        let err_unknown = auth::verify_jwt_algorithm(alg_unk, auth::JwtAlg.None, opts_allow_none.allow_none_alg);
+        sub.assert_eq(err_unknown, auth::JwtError.UnsupportedAlgorithm, "Unknown alg cannot bypass as none");
 
         // 4. claim_str ignores numeric/boolean claims, and set_claim_int clears val_str
-        var clm_types = wing::JwtClaims { .. };
-        wing::set_claim(clm_types, "tier", "gold");
-        sub.assert_bytes_eq(wing::claim_str(clm_types, "tier"), "gold", "tier is string 'gold'");
-        wing::set_claim_int(clm_types, "tier", 42);
-        sub.assert_bytes_eq(wing::claim_str(clm_types, "tier"), "", "claim_str returns empty for numeric claim");
-        let tier_val, ok_tier = wing::claim_int(clm_types, "tier");
+        var clm_types = auth::JwtClaims { .. };
+        auth::set_claim(clm_types, "tier", "gold");
+        sub.assert_bytes_eq(auth::claim_str(clm_types, "tier"), "gold", "tier is string 'gold'");
+        auth::set_claim_int(clm_types, "tier", 42);
+        sub.assert_bytes_eq(auth::claim_str(clm_types, "tier"), "", "claim_str returns empty for numeric claim");
+        let tier_val, ok_tier = auth::claim_int(clm_types, "tier");
         sub.assert_true(ok_tier, "tier is present as int");
         sub.assert_eq(tier_val, 42, "tier value is 42");
 
         // 5. Duplicate custom claim detection when initial value is skipped (array/object)
-        var clm_dup = wing::JwtClaims { .. };
+        var clm_dup = auth::JwtClaims { .. };
         let clm_dup_json = "{\"sub\":\"alice\",\"roles\":[\"admin\"],\"roles\":\"admin\"}";
-        sub.assert_false(wing::parse_jwt_claims_json(clm_dup_json, clm_dup), "Duplicate custom claim key with mixed types rejected");
+        sub.assert_false(auth::parse_jwt_claims_json(clm_dup_json, clm_dup), "Duplicate custom claim key with mixed types rejected");
 
         // 6. Duplicate crit parameter rejected per RFC 7515 §4.1.11
-        var hdr_crit_dup = wing::new_jwt_header();
+        var hdr_crit_dup = auth::new_jwt_header();
         let hdr_crit_dup_json = "{\"alg\":\"HS256\",\"crit\":[\"custom\",\"custom\"],\"custom\":\"value\"}";
-        sub.assert_false(wing::parse_jwt_header_json(hdr_crit_dup_json, hdr_crit_dup), "Duplicate parameter inside crit list rejected");
+        sub.assert_false(auth::parse_jwt_header_json(hdr_crit_dup_json, hdr_crit_dup), "Duplicate parameter inside crit list rejected");
 
         // 7. NumericDate: non-integer float timestamp support (RFC 7519 §2)
-        var clm_float = wing::JwtClaims { .. };
+        var clm_float = auth::JwtClaims { .. };
         let clm_float_json = "{\"sub\":\"alice\",\"iat\":1770000000.456,\"exp\":1770003600.789}";
-        sub.assert_true(wing::parse_jwt_claims_json(clm_float_json, clm_float), "Float NumericDate claims parsed successfully");
+        sub.assert_true(auth::parse_jwt_claims_json(clm_float_json, clm_float), "Float NumericDate claims parsed successfully");
         sub.assert_eq(clm_float.iat, 1770000000, "iat parsed and truncated to whole seconds");
         sub.assert_eq(clm_float.exp, 1770003600, "exp parsed and truncated to whole seconds");
 
         // 8. SSRF Protection on Remote JWKS URLs (RFC 8725 §3.12)
         sub.assert_true(
-            wing::is_safe_remote_jwks_url("https://auth.example.com/.well-known/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://auth.example.com/.well-known/jwks.json"),
             "Valid public HTTPS JWKS URL accepted",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("http://auth.example.com/jwks.json"),
+            auth::is_safe_remote_jwks_url("http://auth.example.com/jwks.json"),
             "Insecure HTTP scheme rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://127.0.0.1/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://127.0.0.1/jwks.json"),
             "Loopback 127.0.0.1 rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://localhost/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://localhost/jwks.json"),
             "Localhost rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://169.254.169.254/latest/meta-data/"),
+            auth::is_safe_remote_jwks_url("https://169.254.169.254/latest/meta-data/"),
             "Cloud metadata IP 169.254.169.254 rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://metadata.google.internal/computeMetadata/v1/"),
+            auth::is_safe_remote_jwks_url("https://metadata.google.internal/computeMetadata/v1/"),
             "Cloud metadata hostname rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://10.0.0.1/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://10.0.0.1/jwks.json"),
             "RFC 1918 10.0.0.0/8 rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://192.168.1.1/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://192.168.1.1/jwks.json"),
             "RFC 1918 192.168.0.0/16 rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://user:pass@example.com/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://user:pass@example.com/jwks.json"),
             "Embedded credentials in URL rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://example.com:8080/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://example.com:8080/jwks.json"),
             "Non-standard port 8080 rejected",
         );
         sub.assert_true(
-            wing::is_safe_remote_jwks_url("https://auth.example.com./jwks.json"),
+            auth::is_safe_remote_jwks_url("https://auth.example.com./jwks.json"),
             "Trailing dot on public domain accepted",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://localhost./jwks.json"),
+            auth::is_safe_remote_jwks_url("https://localhost./jwks.json"),
             "Trailing dot on localhost rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://[::ffff:127.0.0.1]/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://[::ffff:127.0.0.1]/jwks.json"),
             "IPv4-mapped IPv6 rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://[::1]/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://[::1]/jwks.json"),
             "IPv6 loopback [::1] rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://[0:0:0:0:0:0:0:1]/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://[0:0:0:0:0:0:0:1]/jwks.json"),
             "IPv6 loopback [0:0:0:0:0:0:0:1] rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://2130706433/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://2130706433/jwks.json"),
             "Integer IPv4 rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://0x7f000001/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://0x7f000001/jwks.json"),
             "Hex IPv4 rejected",
         );
         sub.assert_false(
-            wing::is_safe_remote_jwks_url("https://0177.0.0.1/jwks.json"),
+            auth::is_safe_remote_jwks_url("https://0177.0.0.1/jwks.json"),
             "Octal IPv4 rejected",
         );
 
         // 9. Oversized token DoS bounds
         var huge_token: u8[>..] = [];
         for i in 8200 { huge_token.push('a' as u8); }
-        var dot1: i64 = 0;
-        var dot2: i64 = 0;
+        let _, _, ok_huge = auth::split_jwt_parts(huge_token[..]);
         sub.assert_false(
-            wing::split_jwt_parts(huge_token[..], dot1, dot2),
+            ok_huge,
             "Token exceeding MAX_JWT_TOKEN_LEN (8192) rejected immediately",
         );
 
         // 10. Zeroization of secret keys in JWKS
-        var test_jwks = wing::Jwks { .. };
+        var test_jwks = auth::Jwks { .. };
         let sym_sec = "test_zeroize_secret_32bytes_long";
-        wing::add_symmetric_key(test_jwks, "zero-key", wing::JwtAlg.HS256, sym_sec);
+        auth::add_symmetric_key(test_jwks, "zero-key", auth::JwtAlg.HS256, sym_sec);
         sub.assert_eq(test_jwks.keys.len, 1, "Key added to JWKS");
         sub.assert_true(test_jwks.keys[0].valid, "Key is initially valid");
         sub.assert_eq(test_jwks.keys[0].symmetric_key.len, 32, "Symmetric key has 32 bytes");
 
-        wing::zeroize_jwks(test_jwks);
+        auth::zeroize_jwks(test_jwks);
         sub.assert_eq(test_jwks.keys.len, 0, "Keys cleared from JWKS after zeroize");
     };
 }
@@ -1246,96 +1250,96 @@ fn test_jwt_crit_and_typ_validation(t: lit::T&) {
 fn test_pkce_rfc7636(t: lit::T&) {
     t.run("PKCE Verifier Generation & Invariants") { sub =>
         var verifier: u8[..128] = [];
-        let ok = wing::generate_code_verifier(verifier);
+        let ok = auth::generate_code_verifier(verifier);
         sub.assert_true(ok, "Verifier generated");
         sub.assert_ge(verifier.len, 43, "Verifier length >= 43");
         sub.assert_le(verifier.len, 128, "Verifier length <= 128");
-        sub.assert_true(wing::is_valid_code_verifier(verifier[..]), "Verifier contains only unreserved chars");
+        sub.assert_true(auth::is_valid_code_verifier(verifier[..]), "Verifier contains only unreserved chars");
 
         // Edge case: too short / too long verifiers
-        sub.assert_false(wing::is_valid_code_verifier("short_verifier"), "Rejects length < 43");
+        sub.assert_false(auth::is_valid_code_verifier("short_verifier"), "Rejects length < 43");
         var huge_str: u8[..150] = [];
         for i in 140 { huge_str.push('a' as u8); }
-        sub.assert_false(wing::is_valid_code_verifier(huge_str[..]), "Rejects length > 128");
+        sub.assert_false(auth::is_valid_code_verifier(huge_str[..]), "Rejects length > 128");
 
         // Edge case: illegal characters (+ and / not allowed in PKCE verifiers)
         let invalid_chars = "dBjftJeZ4CVP+mB92K27uhbUJU1p1r/wW1gFWFOEjXk123";
-        sub.assert_false(wing::is_valid_code_verifier(invalid_chars), "Rejects + and / in verifier");
+        sub.assert_false(auth::is_valid_code_verifier(invalid_chars), "Rejects + and / in verifier");
     };
 
     t.run("PKCE Challenge Computation (S256 & Plain)") { sub =>
         // RFC 7636 Appendix B test vector
         let rfc_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         var challenge_s256: u8[..128] = [];
-        let ok_s256 = wing::compute_code_challenge(rfc_verifier, "S256", challenge_s256);
+        let ok_s256 = auth::compute_code_challenge(rfc_verifier, "S256", challenge_s256);
         sub.assert_true(ok_s256, "S256 challenge computed");
         sub.assert_bytes_eq(challenge_s256[..], "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "RFC 7636 Appendix B S256 vector matches exactly");
 
         // Plain method (RFC 7636 §4.2)
         var challenge_plain: u8[..128] = [];
-        let ok_plain = wing::compute_code_challenge(rfc_verifier, "plain", challenge_plain);
+        let ok_plain = auth::compute_code_challenge(rfc_verifier, "plain", challenge_plain);
         sub.assert_true(ok_plain, "Plain challenge computed");
         sub.assert_bytes_eq(challenge_plain[..], rfc_verifier, "Plain challenge matches verifier verbatim");
 
         // Validate API
-        sub.assert_true(wing::validate_code_challenge(rfc_verifier, challenge_s256[..], "S256"), "Validation succeeds for valid S256");
-        sub.assert_false(wing::validate_code_challenge(rfc_verifier, "invalid_challenge_hash_123456789012345678901", "S256"), "Validation fails for wrong challenge");
+        sub.assert_true(auth::validate_code_challenge(rfc_verifier, challenge_s256[..], "S256"), "Validation succeeds for valid S256");
+        sub.assert_false(auth::validate_code_challenge(rfc_verifier, "invalid_challenge_hash_123456789012345678901", "S256"), "Validation fails for wrong challenge");
 
         // RFC 7636 §4.3: code_challenge_method defaults to 'plain' when omitted
-        sub.assert_true(wing::validate_code_challenge(rfc_verifier, challenge_plain[..]), "Validation defaults to plain when method omitted");
-        sub.assert_true(wing::is_valid_code_challenge(challenge_plain[..]), "is_valid_code_challenge defaults to plain when method omitted");
+        sub.assert_true(auth::validate_code_challenge(rfc_verifier, challenge_plain[..]), "Validation defaults to plain when method omitted");
+        sub.assert_true(auth::is_valid_code_challenge(challenge_plain[..]), "is_valid_code_challenge defaults to plain when method omitted");
 
         // RFC 7636 §4.2: S256 challenge MUST be unpadded base64url (no '=' padding)
         let padded_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM=";
-        sub.assert_false(wing::is_valid_code_challenge(padded_challenge, "S256"), "Padded S256 challenge rejected by is_valid_code_challenge");
-        sub.assert_false(wing::validate_code_challenge(rfc_verifier, padded_challenge, "S256"), "Padded S256 challenge rejected by validate_code_challenge");
+        sub.assert_false(auth::is_valid_code_challenge(padded_challenge, "S256"), "Padded S256 challenge rejected by is_valid_code_challenge");
+        sub.assert_false(auth::validate_code_challenge(rfc_verifier, padded_challenge, "S256"), "Padded S256 challenge rejected by validate_code_challenge");
 
         // RFC 7636 §4.3: code_challenge_method is case-sensitive
-        sub.assert_false(wing::compute_code_challenge(rfc_verifier, "s256", challenge_s256), "Lowercase method s256 rejected");
-        sub.assert_false(wing::validate_code_challenge(rfc_verifier, challenge_s256[..], "s256"), "Validation rejects lowercase s256 method");
-        sub.assert_false(wing::validate_code_challenge(rfc_verifier, challenge_plain[..], "Plain"), "Validation rejects capitalized Plain method");
+        sub.assert_false(auth::compute_code_challenge(rfc_verifier, "s256", challenge_s256), "Lowercase method s256 rejected");
+        sub.assert_false(auth::validate_code_challenge(rfc_verifier, challenge_s256[..], "s256"), "Validation rejects lowercase s256 method");
+        sub.assert_false(auth::validate_code_challenge(rfc_verifier, challenge_plain[..], "Plain"), "Validation rejects capitalized Plain method");
 
         // Invalid challenge length and charset
-        sub.assert_false(wing::is_valid_code_challenge("too_short", "S256"), "Short S256 challenge rejected");
+        sub.assert_false(auth::is_valid_code_challenge("too_short", "S256"), "Short S256 challenge rejected");
         let illegal_char_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw+cM"; // '+' instead of '-'
-        sub.assert_false(wing::is_valid_code_challenge(illegal_char_challenge, "S256"), "Illegal char in S256 challenge rejected");
+        sub.assert_false(auth::is_valid_code_challenge(illegal_char_challenge, "S256"), "Illegal char in S256 challenge rejected");
 
         // RFC 7636 §4.2 / RFC 4648 §3.5: 43rd character MUST have zero padding bits (bits 1..0 == 00)
         // 'M' (001100) has bits 1..0 == 00 (valid). 'B' (000001) has bits 1..0 == 01 (invalid non-zero padding bits)
         let non_canonical_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cB";
-        sub.assert_false(wing::is_valid_code_challenge(non_canonical_challenge, "S256"), "Non-zero padding bits in 43rd char rejected");
+        sub.assert_false(auth::is_valid_code_challenge(non_canonical_challenge, "S256"), "Non-zero padding bits in 43rd char rejected");
     };
 
     t.run("PKCE Create Challenge Pair Helper & Security Invariants") { sub =>
         // 1. Valid pair generation with default dynamic entropy
-        let pair, ok_pair = wing::create_pkce_pair("", "S256");
+        let pair, ok_pair = auth::create_pkce_pair("", "S256");
         sub.assert_true(ok_pair, "PKCE pair created successfully");
         sub.assert_ge(pair.verifier.len, 43, "Pair verifier length >= 43");
         sub.assert_le(pair.verifier.len, 128, "Pair verifier length <= 128");
-        sub.assert_true(wing::validate_code_challenge(pair.verifier[..], pair.challenge[..], "S256"), "Pair challenge matches verifier");
+        sub.assert_true(auth::validate_code_challenge(pair.verifier[..], pair.challenge[..], "S256"), "Pair challenge matches verifier");
 
         // 2. Dynamic entropy prevents static replay when entropy is omitted (invariant 16)
         var v1: u8[..128] = [];
         var v2: u8[..128] = [];
-        sub.assert_true(wing::generate_code_verifier(v1), "Verifier 1 generated");
-        sub.assert_true(wing::generate_code_verifier(v2), "Verifier 2 generated");
+        sub.assert_true(auth::generate_code_verifier(v1), "Verifier 1 generated");
+        sub.assert_true(auth::generate_code_verifier(v2), "Verifier 2 generated");
         sub.assert_false(core::ct_eq_bytes(v1[..], v2[..]), "Consecutive verifiers with omitted entropy are distinct");
 
         // 3. Insufficient entropy (< 32 bytes) returns false (RFC 7636 §4.1)
         var v_short: u8[..128] = [];
-        sub.assert_false(wing::generate_code_verifier(v_short, "short_entropy_16b"), "Entropy < 32 bytes rejected");
-        let pair_bad_ent, ok_ent = wing::create_pkce_pair("short_entropy_16b", "S256");
+        sub.assert_false(auth::generate_code_verifier(v_short, "short_entropy_16b"), "Entropy < 32 bytes rejected");
+        let pair_bad_ent, ok_ent = auth::create_pkce_pair("short_entropy_16b", "S256");
         sub.assert_false(ok_ent, "create_pkce_pair rejects entropy < 32 bytes");
 
         // 4. Large entropy (> 96 bytes) properly caps at 128 chars without buffer overflow
         var large_entropy: u8[..150] = [];
         for i in 120 { large_entropy.push((i & 0xFF) as u8); }
         var v_large: u8[..128] = [];
-        sub.assert_true(wing::generate_code_verifier(v_large, large_entropy[..]), "Large entropy accepted");
+        sub.assert_true(auth::generate_code_verifier(v_large, large_entropy[..]), "Large entropy accepted");
         sub.assert_eq(v_large.len, 128, "Large entropy capped to exactly 128 characters");
 
         // 5. Invalid method returns false in create_pkce_pair
-        let pair_bad_m, ok_m = wing::create_pkce_pair("", "invalid_method");
+        let pair_bad_m, ok_m = auth::create_pkce_pair("", "invalid_method");
         sub.assert_false(ok_m, "create_pkce_pair rejects invalid method");
     };
 }
@@ -1392,27 +1396,27 @@ fn make_test_dpop_token<B>(
 fn test_dpop_rfc9449(t: lit::T&) {
     t.run("DPoP URI Normalization") { sub =>
         var norm: u8[..256] = [];
-        let ok1 = wing::normalize_dpop_target_uri("https://API.Example.COM/resource/items?page=1&limit=10#section", norm);
+        let ok1 = auth::normalize_dpop_target_uri("https://API.Example.COM/resource/items?page=1&limit=10#section", norm);
         sub.assert_true(ok1, "URI normalized");
         sub.assert_bytes_eq(norm[..], "https://api.example.com/resource/items", "Strips query and fragment, lowercases host");
 
         var norm2: u8[..256] = [];
-        wing::normalize_dpop_target_uri("http://myhost:8080/data", norm2);
+        auth::normalize_dpop_target_uri("http://myhost:8080/data", norm2);
         sub.assert_bytes_eq(norm2[..], "http://myhost:8080/data", "Preserves port in authority");
 
         var norm3: u8[..256] = [];
-        wing::normalize_dpop_target_uri("https://api.example.com:443/resource", norm3);
+        auth::normalize_dpop_target_uri("https://api.example.com:443/resource", norm3);
         sub.assert_bytes_eq(norm3[..], "https://api.example.com/resource", "Removes default HTTPS port 443 per RFC 3986 §6.2.3");
 
         var norm4: u8[..256] = [];
-        wing::normalize_dpop_target_uri("http://api.example.com:80/resource", norm4);
+        auth::normalize_dpop_target_uri("http://api.example.com:80/resource", norm4);
         sub.assert_bytes_eq(norm4[..], "http://api.example.com/resource", "Removes default HTTP port 80 per RFC 3986 §6.2.3");
     };
 
     t.run("DPoP ATH Access Token Hash") { sub =>
         let token = "K50_K72qJ101BgsoCIeQ21cmP5CQ3L80mgW85GLp16U";
         var ath: u8[..64] = [];
-        wing::compute_dpop_ath(token, ath);
+        auth::compute_dpop_ath(token, ath);
         sub.assert_true(ath.len > 0, "ATH generated");
         // Base64url encoded SHA-256 of token
         let expected_sha = core::sha256(token);
@@ -1431,12 +1435,12 @@ fn test_dpop_rfc9449(t: lit::T&) {
         let jti = "custom-unique-jti-001";
 
         var proof_jwt: u8[>..] = [];
-        let ok_gen = wing::create_dpop_proof(key, method, uri, token, nonce, now_sec, jti, proof_jwt);
+        let ok_gen = auth::create_dpop_proof(key, method, uri, token, nonce, now_sec, jti, proof_jwt);
         sub.assert_true(ok_gen, "DPoP proof generated");
         sub.assert_true(proof_jwt.len > 50, "JWT has substantial length");
 
         // Verify valid proof
-        let ok_ver = wing::verify_dpop_proof(
+        let ok_ver = auth::verify_dpop_proof(
             proof_jwt[..],
             key,
             "POST",
@@ -1448,7 +1452,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_true(ok_ver, "DPoP proof successfully verified");
 
         // Verify failure on mismatched method
-        let fail_method = wing::verify_dpop_proof(
+        let fail_method = auth::verify_dpop_proof(
             proof_jwt[..],
             key,
             "GET", // Expected GET but proof was for POST
@@ -1460,7 +1464,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_false(fail_method, "Verification fails on method mismatch");
 
         // Verify failure on wrong access token
-        let fail_token = wing::verify_dpop_proof(
+        let fail_token = auth::verify_dpop_proof(
             proof_jwt[..],
             key,
             "POST",
@@ -1472,7 +1476,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_false(fail_token, "Verification fails on ATH mismatch");
 
         // Verify failure on wrong nonce
-        let fail_nonce = wing::verify_dpop_proof(
+        let fail_nonce = auth::verify_dpop_proof(
             proof_jwt[..],
             key,
             "POST",
@@ -1484,7 +1488,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_false(fail_nonce, "Verification fails on nonce mismatch");
 
         // Verify failure on tampered signature / wrong key
-        let fail_key = wing::verify_dpop_proof(
+        let fail_key = auth::verify_dpop_proof(
             proof_jwt[..],
             "wrong_key_that_does_not_match!",
             "POST",
@@ -1498,7 +1502,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
 
     t.run("DPoP Request Header Attachment & Nonce Extraction") { sub =>
         var req = wing::Request { .. };
-        wing::attach_dpop(req, "eyJhbGciOi...", "token_xyz");
+        auth::attach_dpop(req, "eyJhbGciOi...", "token_xyz");
 
         sub.assert_true(req.has_header("DPoP"), "Request contains DPoP header");
         sub.assert_bytes_eq(req.header("DPoP"), "eyJhbGciOi...", "DPoP header value matches");
@@ -1511,7 +1515,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         wing::append_header(resp_headers, "DPoP-Nonce", "server_nonce_retry_456");
 
         var extracted_nonce: u8[..128] = [];
-        let ok_nonce = wing::extract_dpop_nonce(resp_headers, extracted_nonce);
+        let ok_nonce = auth::extract_dpop_nonce(resp_headers, extracted_nonce);
         sub.assert_true(ok_nonce, "DPoP-Nonce extracted");
         sub.assert_bytes_eq(extracted_nonce[..], "server_nonce_retry_456", "Extracted nonce matches header");
     };
@@ -1522,7 +1526,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var token: u8[..1024] = [];
         make_test_dpop_token(key, c_json, token);
 
-        let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
+        let ok = auth::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok, "Proof without iat MUST be rejected when now_sec > 0");
     };
 
@@ -1532,7 +1536,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var token: u8[..1024] = [];
         make_test_dpop_token(key, c_json, token);
 
-        let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "expected_srv_nonce_999", 1714000000);
+        let ok = auth::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", "", "expected_srv_nonce_999", 1714000000);
         sub.assert_false(ok, "Proof with nonce in jti instead of nonce claim MUST be rejected");
     };
 
@@ -1540,7 +1544,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         let key = "super_secret_dpop_key_32_bytes!!";
         let access_tok = "tok_victim_12345";
         var exp_ath: u8[..64] = [];
-        wing::compute_dpop_ath(access_tok, exp_ath);
+        auth::compute_dpop_ath(access_tok, exp_ath);
 
         var c_json: u8[..512] = [];
         c_json.append("{\"jti\":\"");
@@ -1550,7 +1554,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var token: u8[..1024] = [];
         make_test_dpop_token(key, c_json[..], token);
 
-        let ok = wing::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", access_tok, "", 1714000000);
+        let ok = auth::verify_dpop_proof(token[..], key, "GET", "https://api.example.com/data", access_tok, "", 1714000000);
         sub.assert_false(ok, "Proof with ath in jti instead of ath claim MUST be rejected");
     };
 
@@ -1582,14 +1586,14 @@ fn test_dpop_rfc9449(t: lit::T&) {
         make_test_dpop_token(key, c_json[..], token);
 
         // Direct claim verification
-        sub.assert_true(wing::verify_dpop_jkt(c_json[..], real_jkt[..]), "verify_dpop_jkt succeeds on matching thumbprint");
-        sub.assert_false(wing::verify_dpop_jkt(c_json[..], "wrong_thumbprint_value_12345678901234567890"), "verify_dpop_jkt fails on wrong thumbprint");
+        sub.assert_true(auth::verify_dpop_jkt(c_json[..], real_jkt[..]), "verify_dpop_jkt succeeds on matching thumbprint");
+        sub.assert_false(auth::verify_dpop_jkt(c_json[..], "wrong_thumbprint_value_12345678901234567890"), "verify_dpop_jkt fails on wrong thumbprint");
 
         // Proof verification with expected_jkt
-        let ok_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, real_jkt[..]);
+        let ok_proof = auth::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, real_jkt[..]);
         sub.assert_true(ok_proof, "verify_dpop_proof succeeds when jkt matches");
 
-        let fail_proof = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, "wrong_thumbprint_value_12345678901234567890");
+        let fail_proof = auth::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/token", "", "", 1714000000, 300, 60, "wrong_thumbprint_value_12345678901234567890");
         sub.assert_false(fail_proof, "verify_dpop_proof fails when jkt does not match");
     };
 
@@ -1597,35 +1601,35 @@ fn test_dpop_rfc9449(t: lit::T&) {
         let key = "super_secret_dpop_key_32_bytes!!";
 
         // Direct claims json method checks
-        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"post\"}", "POST"), "Lowercase htm in proof rejected against uppercase expected");
-        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"POST\"}", "post"), "Lowercase expected method rejected against uppercase htm");
-        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"GET\"}", "POST"), "Method mismatch rejected");
-        sub.assert_true(wing::verify_dpop_method("{\"htm\":\"POST\"}", "POST"), "Uppercase matching method accepted");
-        sub.assert_true(wing::verify_dpop_method("{\"htm\":\"Proppatch\"}", "Proppatch"), "Case-sensitive RFC 9110 token method accepted");
-        sub.assert_false(wing::verify_dpop_method("{\"htm\":\"Proppatch\"}", "PROPPATCH"), "Case-mismatched RFC 9110 token method rejected");
+        sub.assert_false(auth::verify_dpop_method("{\"htm\":\"post\"}", "POST"), "Lowercase htm in proof rejected against uppercase expected");
+        sub.assert_false(auth::verify_dpop_method("{\"htm\":\"POST\"}", "post"), "Lowercase expected method rejected against uppercase htm");
+        sub.assert_false(auth::verify_dpop_method("{\"htm\":\"GET\"}", "POST"), "Method mismatch rejected");
+        sub.assert_true(auth::verify_dpop_method("{\"htm\":\"POST\"}", "POST"), "Uppercase matching method accepted");
+        sub.assert_true(auth::verify_dpop_method("{\"htm\":\"Proppatch\"}", "Proppatch"), "Case-sensitive RFC 9110 token method accepted");
+        sub.assert_false(auth::verify_dpop_method("{\"htm\":\"Proppatch\"}", "PROPPATCH"), "Case-mismatched RFC 9110 token method rejected");
 
         // Proof with lowercase method MUST be rejected
         var token: u8[..1024] = [];
         make_test_dpop_token(key, "{\"jti\":\"jti-lc-method\",\"htm\":\"post\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}", token);
 
-        let fail_lc = wing::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        let fail_lc = auth::verify_dpop_proof(token[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(fail_lc, "Proof with lowercase htm MUST be rejected");
 
         // Header with alg:none or fake typ must be rejected (RFC 9449 §4.2)
         var tok_bad: u8[..1024] = [];
         make_test_dpop_token(key, "{\"jti\":\"jti-fake-typ\",\"htm\":\"POST\",\"htu\":\"https://api.example.com/data\",\"iat\":1714000000}", tok_bad, "{\"typ\":\"jwt\",\"alg\":\"EdDSA\",\"p\":\"dpop+jwt\"}");
-        let ok_fake_typ = wing::verify_dpop_proof(tok_bad[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        let ok_fake_typ = auth::verify_dpop_proof(tok_bad[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_fake_typ, "Proof with fake typ must be rejected even if dpop+jwt is in extra property");
     };
 
     t.run("DPoP JTI dynamic entropy fallback (RFC 9449 §4.2)") { sub =>
         var jti1: u8[..64] = [];
         var jti2: u8[..64] = [];
-        wing::generate_dpop_jti(jti1);
+        auth::generate_dpop_jti(jti1);
         for i in 100000 {
             // spin loop to advance nanosecond clock
         }
-        wing::generate_dpop_jti(jti2);
+        auth::generate_dpop_jti(jti2);
         sub.assert_eq(jti1.len, 22, "Fallback JTI length is 22");
         sub.assert_eq(jti2.len, 22, "Fallback JTI length is 22");
         let are_equal = (jti1[..] == jti2[..]);
@@ -1643,8 +1647,8 @@ fn test_dpop_rfc9449(t: lit::T&) {
 
     t.run("DPoP URI normalization rejects quotes and control characters") { sub =>
         var norm: u8[..256] = [];
-        sub.assert_false(wing::normalize_dpop_target_uri("https://example.com/api\"evil", norm), "Quote in URI rejected");
-        sub.assert_false(wing::normalize_dpop_target_uri("https://example.com/api space", norm), "Space in URI rejected");
+        sub.assert_false(auth::normalize_dpop_target_uri("https://example.com/api\"evil", norm), "Quote in URI rejected");
+        sub.assert_false(auth::normalize_dpop_target_uri("https://example.com/api space", norm), "Space in URI rejected");
     };
 
     t.run("DPoP Claims JSON Parser defends against duplicate keys & claim smuggling") { sub =>
@@ -1655,7 +1659,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var tok_dup: u8[..1024] = [];
         make_test_dpop_token(key, c_dup_htm, tok_dup);
 
-        let ok_dup = wing::verify_dpop_proof(tok_dup[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        let ok_dup = auth::verify_dpop_proof(tok_dup[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_dup, "Proof with duplicate htm claim MUST be rejected (JSON smuggling defense)");
 
         // Substring spoofing in custom claim value
@@ -1663,10 +1667,10 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var tok_spoof: u8[..1024] = [];
         make_test_dpop_token(key, c_spoof, tok_spoof);
 
-        let ok_spoof_get = wing::verify_dpop_proof(tok_spoof[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
+        let ok_spoof_get = auth::verify_dpop_proof(tok_spoof[..], key, "GET", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_false(ok_spoof_get, "Fake htm inside custom string value MUST NOT fool method verification");
 
-        let ok_spoof_post = wing::verify_dpop_proof(tok_spoof[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
+        let ok_spoof_post = auth::verify_dpop_proof(tok_spoof[..], key, "POST", "https://api.example.com/data", "", "", 1714000000);
         sub.assert_true(ok_spoof_post, "Real htm claim matches correctly despite custom field noise");
     };
 
@@ -1676,7 +1680,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         for i in 300 {
             token_bytes.push(('a' as u8) + ((i % 26) as u8));
         }
-        wing::attach_dpop(req, "proof_signature_sample", token_bytes[..]);
+        auth::attach_dpop(req, "proof_signature_sample", token_bytes[..]);
         sub.assert_true(req.has_header("Authorization"), "Authorization header attached with access token");
         sub.assert_ge(req.header("Authorization").len, 300, "Access token preserved without truncation");
     };
@@ -1684,10 +1688,10 @@ fn test_dpop_rfc9449(t: lit::T&) {
     t.run("DPoP Replay Cache & DoS Bounds (RFC 9449 §4.3 Rule 4)") { sub =>
         let key = "super_secret_dpop_key_32_bytes!!";
         let now_sec: i64 = 1714000000;
-        var cache = wing::DPoPReplayCache { .. };
+        var cache = auth::DPoPReplayCache { .. };
 
         var proof_valid: u8[..1024] = [];
-        let ok_create = wing::create_dpop_proof(
+        let ok_create = auth::create_dpop_proof(
             key,
             "POST",
             "https://api.example.com/data",
@@ -1700,37 +1704,37 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_true(ok_create, "DPoP proof generated");
 
         // First verification with replay cache succeeds and records jti
-        let ok_first = wing::verify_dpop_proof_with_replay_cache(
+        let ok_first = auth::verify_dpop_proof_with_replay_cache(
+            cache,
             proof_valid[..],
             key,
             "POST",
             "https://api.example.com/data",
             now_sec,
-            cache,
         );
         sub.assert_true(ok_first, "First verification succeeds and registers JTI");
 
         // Replay of the identical proof MUST be rejected
-        let ok_replay = wing::verify_dpop_proof_with_replay_cache(
+        let ok_replay = auth::verify_dpop_proof_with_replay_cache(
+            cache,
             proof_valid[..],
             key,
             "POST",
             "https://api.example.com/data",
             now_sec + 5,
-            cache,
         );
         sub.assert_false(ok_replay, "Replayed DPoP proof MUST be rejected by replay cache");
 
         // Different JTI succeeds
         var proof_diff: u8[..1024] = [];
-        wing::create_dpop_proof(key, "POST", "https://api.example.com/data", "", "", now_sec, "jti_test_2", proof_diff);
-        let ok_diff = wing::verify_dpop_proof_with_replay_cache(
+        auth::create_dpop_proof(key, "POST", "https://api.example.com/data", "", "", now_sec, "jti_test_2", proof_diff);
+        let ok_diff = auth::verify_dpop_proof_with_replay_cache(
+            cache,
             proof_diff[..],
             key,
             "POST",
             "https://api.example.com/data",
             now_sec + 6,
-            cache,
         );
         sub.assert_true(ok_diff, "Distinct JTI succeeds cleanly");
 
@@ -1738,7 +1742,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
         var huge_proof: u8[>..] = [];
         for i in 4100 { huge_proof.push('A' as u8); }
         sub.assert_false(
-            wing::verify_dpop_proof(huge_proof[..], key, "POST", "https://api.example.com/data"),
+            auth::verify_dpop_proof(huge_proof[..], key, "POST", "https://api.example.com/data"),
             "Oversized DPoP proof (> 4096) rejected without decoding",
         );
     };
@@ -1762,7 +1766,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_token_challenge_roundtrip(t: lit::T&) {
     t.run("TokenChallenge with 32-byte Redemption Context") { sub =>
-        var ch = wing::TokenChallenge {
+        var ch = security::TokenChallenge {
             token_type: rfc::TOKEN_TYPE_BLIND_RSA,
             ..
         };
@@ -1771,11 +1775,10 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
         ch.origin_info.append("origin.example.com");
 
         var wire: u8[>..] = [];
-        wing::marshal_token_challenge(ch, wire);
+        security::marshal_token_challenge(ch, wire);
         sub.assert_gt(wire.len, 7, "Wire length > 7");
 
-        var parsed = wing::TokenChallenge { .. };
-        let ok = wing::unmarshal_token_challenge(wire[..], parsed);
+        let parsed, ok = security::unmarshal_token_challenge(wire[..]);
         sub.assert_true(ok, "Unmarshal succeeded");
         sub.assert_eq(parsed.token_type, rfc::TOKEN_TYPE_BLIND_RSA, "Token type matches");
         sub.assert_bytes_eq(parsed.issuer_name[..], "issuer.example.com", "Issuer name matches");
@@ -1783,7 +1786,7 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
         sub.assert_bytes_eq(parsed.origin_info[..], "origin.example.com", "Origin info matches");
 
         // Challenge digest
-        let digest = wing::compute_challenge_digest(ch);
+        let digest = security::compute_challenge_digest(ch);
         var zero_cnt = 0;
         for b in digest {
             if b == 0 { zero_cnt += 1; }
@@ -1792,7 +1795,7 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
     };
 
     t.run("TokenChallenge with Empty Context and Multiple Origins") { sub =>
-        var ch = wing::TokenChallenge {
+        var ch = security::TokenChallenge {
             token_type: rfc::TOKEN_TYPE_PUBLICLY_VERIFIABLE,
             ..
         };
@@ -1800,10 +1803,9 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
         ch.origin_info.append("site1.com,site2.com,site3.com");
 
         var wire: u8[>..] = [];
-        wing::marshal_token_challenge(ch, wire);
+        security::marshal_token_challenge(ch, wire);
 
-        var parsed = wing::TokenChallenge { .. };
-        let ok = wing::unmarshal_token_challenge(wire[..], parsed);
+        let parsed, ok = security::unmarshal_token_challenge(wire[..]);
         sub.assert_true(ok, "Unmarshal succeeded");
         sub.assert_eq(parsed.token_type, rfc::TOKEN_TYPE_PUBLICLY_VERIFIABLE, "Token type matches");
         sub.assert_eq(parsed.redemption_context.len, 0, "Redemption context is empty");
@@ -1816,7 +1818,7 @@ fn test_token_challenge_roundtrip(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_token_wire_roundtrip(t: lit::T&) {
     t.run("Token Binary Wire Codec (RFC 9577 §2.2.1)") { sub =>
-        var tok = wing::Token {
+        var tok = security::Token {
             token_type: rfc::TOKEN_TYPE_BLIND_RSA,
             ..
         };
@@ -1826,12 +1828,11 @@ fn test_token_wire_roundtrip(t: lit::T&) {
         for i in 64 { tok.authenticator.push(0x99); }
 
         var wire: u8[>..] = [];
-        wing::marshal_token(tok, wire);
+        security::marshal_token(tok, wire);
         // 2 + 32 + 32 + 32 + 64 = 162 bytes
         sub.assert_eq(wire.len, 162, "Token wire is exactly 162 bytes");
 
-        var parsed = wing::Token { .. };
-        let ok = wing::unmarshal_token(wire[..], 32, 64, parsed);
+        let parsed, ok = security::unmarshal_token(wire[..], 32, 64);
         sub.assert_true(ok, "Token unmarshaled");
         sub.assert_eq(parsed.token_type, rfc::TOKEN_TYPE_BLIND_RSA, "Token type matches");
         sub.assert_bytes_eq(parsed.nonce[..], tok.nonce[..], "Nonce matches");
@@ -1847,7 +1848,7 @@ fn test_token_wire_roundtrip(t: lit::T&) {
 fn test_privacypass_headers_and_cache(t: lit::T&) {
     t.run("WWW-Authenticate PrivateToken Challenge Parsing") { sub =>
         // Construct challenge wire and base64url
-        var ch = wing::TokenChallenge {
+        var ch = security::TokenChallenge {
             token_type: rfc::TOKEN_TYPE_BLIND_RSA,
             ..
         };
@@ -1855,7 +1856,7 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
         ch.origin_info.append("origin.example.com");
 
         var ch_wire: u8[>..] = [];
-        wing::marshal_token_challenge(ch, ch_wire);
+        security::marshal_token_challenge(ch, ch_wire);
 
         var ch_b64: u8[..512] = [];
         core::base64url_encode(ch_wire[..], ch_b64);
@@ -1866,10 +1867,8 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
         header_val.append(ch_b64[..]);
         header_val.append("\", token-key=\"AQIDBA==\", max-age=3600");
 
-        var parsed_ch = wing::TokenChallenge { .. };
         var token_key: u8[..128] = [];
-        var max_age:   i64       = 0;
-        let ok = wing::parse_private_token_challenge(header_val[..], parsed_ch, token_key, max_age);
+        let parsed_ch, max_age, ok = security::parse_private_token_challenge(header_val[..], token_key);
         sub.assert_true(ok, "PrivateToken challenge header parsed");
         sub.assert_bytes_eq(parsed_ch.issuer_name[..], "issuer.example.com", "Issuer name parsed");
         sub.assert_bytes_eq(parsed_ch.origin_info[..], "origin.example.com", "Origin info parsed");
@@ -1879,49 +1878,47 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
     t.run("Authorization Header Formatting") { sub =>
         let raw_token = "mock_privacy_token_bytes_xyz_12345";
         var auth_hdr: u8[..512] = [];
-        wing::format_private_token_authorization(raw_token, auth_hdr);
+        security::format_private_token_authorization(raw_token, auth_hdr);
         sub.assert_true(core::eq_ascii_fold(auth_hdr[..19], "PrivateToken token="), "Starts with PrivateToken token=");
 
         var sec_hdr: u8[..512] = [];
-        wing::format_sec_private_state_token(raw_token, sec_hdr);
+        security::format_sec_private_state_token(raw_token, sec_hdr);
         sub.assert_gt(sec_hdr.len, 0, "Sec-Private-State-Token formatted");
     };
 
     t.run("PrivateTokenCache Storage and Single-Use Enforcement") { sub =>
-        var cache = wing::PrivateTokenCache { .. };
-        var ch = wing::TokenChallenge { .. };
+        var cache = security::PrivateTokenCache { .. };
+        var ch = security::TokenChallenge { .. };
         ch.issuer_name.append("issuer.example.com");
         ch.origin_info.append("example.com");
 
-        var tok = wing::Token { .. };
+        var tok = security::Token { .. };
         tok.token_key_id.append("key1");
         let raw = "raw_token_data_stream";
 
         let now_sec: i64 = 1714000000;
-        let put_ok = wing::put_private_token(cache, ch, tok, raw, 3600, now_sec);
+        let put_ok = security::put_private_token(cache, ch, tok, raw, 3600, now_sec);
         sub.assert_true(put_ok, "Token cached");
 
         // Spend token 1st time (should succeed)
-        var got_tok = wing::Token { .. };
         var got_raw: u8[..512] = [];
-        let get1_ok = wing::get_private_token(cache, ch, now_sec + 10, got_tok, got_raw);
+        let got_tok, get1_ok = security::get_private_token(cache, ch, now_sec + 10, got_raw);
         sub.assert_true(get1_ok, "1st spend succeeds");
         sub.assert_bytes_eq(got_raw[..], raw, "Got matching raw token");
 
         // Spend token 2nd time (should FAIL - RFC 9577 single-use spend)
-        var got_tok2 = wing::Token { .. };
         var got_raw2: u8[..512] = [];
-        let get2_ok = wing::get_private_token(cache, ch, now_sec + 20, got_tok2, got_raw2);
+        let got_tok2, get2_ok = security::get_private_token(cache, ch, now_sec + 20, got_raw2);
         sub.assert_false(get2_ok, "2nd spend fails (token already redeemed)");
     };
 
     t.run("Client Response Challenge Detection and GREASE Types") { sub =>
         var resp = wing::Response { status_code: 401, .. };
         wing::set_header(resp, "WWW-Authenticate", "PrivateToken challenge=\"abc\"");
-        sub.assert_true(wing::has_private_token_challenge(resp), "Detects 401 PrivateToken challenge");
+        sub.assert_true(security::has_private_token_challenge(resp), "Detects 401 PrivateToken challenge");
 
         var resp_200 = wing::Response { status_code: 200, .. };
-        sub.assert_false(wing::has_private_token_challenge(resp_200), "Rejects non-401 response");
+        sub.assert_false(security::has_private_token_challenge(resp_200), "Rejects non-401 response");
 
         // GREASE verification (RFC 9577 §6.2.1)
         sub.assert_true(rfc::is_grease_token_type(0x02AA), "0x02AA is GREASE");
@@ -2263,7 +2260,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
         var enc: u8[32]     = [0; 32];
         var ct:  u8[..1024] = [];
 
-        let ok_seal = wing::hpke_seal_base(
+        let ok_seal = security::hpke_seal_base(
             pkRm,
             info,
             aad,
@@ -2300,7 +2297,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
 
         // Test decryption roundtrip
         var decrypted: u8[>..] = [];
-        let ok_open = wing::hpke_open_base(
+        let ok_open = security::hpke_open_base(
             enc,
             skRm,
             info,
@@ -2318,7 +2315,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
         // Test tamper resistance
         ct[5] ^= 0x40;
         var dec_tampered: u8[>..] = [];
-        let ok_tamper = wing::hpke_open_base(
+        let ok_tamper = security::hpke_open_base(
             enc,
             skRm,
             info,
@@ -2352,7 +2349,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
         var enc: u8[32]     = [0; 32];
         var ct:  u8[..1024] = [];
 
-        let ok_seal = wing::hpke_seal_base(
+        let ok_seal = security::hpke_seal_base(
             bob_pk,
             info,
             aad,
@@ -2365,7 +2362,7 @@ fn test_hpke_rfc9180(t: lit::T&) {
         sub.assert_true(ok_seal, "ChaCha20Poly1305 seal succeeds");
 
         var decrypted: u8[>..] = [];
-        let ok_open = wing::hpke_open_base(
+        let ok_open = security::hpke_open_base(
             enc,
             bob_sk,
             info,
@@ -2396,7 +2393,7 @@ fn test_digest_challenge_buffer_bounds(t: lit::T&) {
     t.run("DIGEST-SEC-01: Algorithm Name Exceeding 32 Bytes Must Not Panic") { sub =>
         // 40-character algorithm string
         let long_algo = "Digest realm=\"api\", nonce=\"12345\", algorithm=SHA-256-SUPER-LONG-ALGORITHM-NAME-OVERFLOW";
-        let chal, ok = wing::parse_digest_challenge(long_algo);
+        let chal, ok = auth::parse_digest_challenge(long_algo);
         // Must either fail or safely reject the oversize algorithm without panicking
         sub.assert_true(true, "oversize algorithm handled without capacity panic");
         if ok {
@@ -2407,7 +2404,7 @@ fn test_digest_challenge_buffer_bounds(t: lit::T&) {
     t.run("DIGEST-SEC-02: QOP String Exceeding 32 Bytes Must Not Panic") { sub =>
         // 50-character qop string
         let long_qop = "Digest realm=\"api\", nonce=\"12345\", qop=\"auth,auth-int,super-long-unsupported-qop-value-overflow\"";
-        let chal, ok = wing::parse_digest_challenge(long_qop);
+        let chal, ok = auth::parse_digest_challenge(long_qop);
         sub.assert_true(true, "oversize qop handled without capacity panic");
         if ok {
             sub.assert_true(chal.qop.len <= 32, "qop capacity not exceeded");
@@ -2416,13 +2413,13 @@ fn test_digest_challenge_buffer_bounds(t: lit::T&) {
 
     t.run("DIGEST-SEC-03: Missing '=' Separator Must Be Rejected") { sub =>
         let missing_eq = "Digest realm \"test\", nonce=\"12345\"";
-        let _, ok = wing::parse_digest_challenge(missing_eq);
+        let _, ok = auth::parse_digest_challenge(missing_eq);
         sub.assert_false(ok, "missing '=' separator between parameter key and value must be rejected");
     };
 
     t.run("DIGEST-SEC-04: Unclosed Quoted Parameter Must Be Rejected") { sub =>
         let unclosed = "Digest realm=\"unclosed_realm, nonce=\"12345\"";
-        let _, ok = wing::parse_digest_challenge(unclosed);
+        let _, ok = auth::parse_digest_challenge(unclosed);
         sub.assert_false(ok, "unclosed quoted string in challenge must be rejected");
     };
 }
@@ -2443,7 +2440,7 @@ fn test_has_substr(haystack: const u8[:], needle: const u8[:]) -> bool {
 fn test_digest_auth_serialization_security(t: lit::T&) {
     t.run("DIGEST-SEC-05: Injected Quotes in Nonce Must Be Escaped") { sub =>
         var out_hdr: u8[..512] = [];
-        let ok = wing::serialize_digest_auth(
+        let ok = auth::serialize_digest_auth(
             "user", "realm", "nonce\"with\"quotes", "/api",
             "SHA-256", "0123456789abcdef", "auth",
             "00000001", "cnonce", "opaque", false,
@@ -2457,7 +2454,7 @@ fn test_digest_auth_serialization_security(t: lit::T&) {
 
     t.run("DIGEST-SEC-06: CRLF Injection in Realm or Nonce Must Be Rejected") { sub =>
         var out_hdr: u8[..512] = [];
-        let ok = wing::serialize_digest_auth(
+        let ok = auth::serialize_digest_auth(
             "user", "realm\r\nEvil: true", "nonce", "/api",
             "SHA-256", "0123456789abcdef", "auth",
             "00000001", "cnonce", "opaque", false,
@@ -2474,9 +2471,9 @@ fn test_digest_auth_serialization_security(t: lit::T&) {
 fn test_jwt_header_capacity_rejection(t: lit::T&) {
     t.run("JWT header unknown key overflow triggers parsing error") { sub =>
         var bad_jwt: u8[>..] = "{\"alg\":\"none\",\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9}";
-        var hdr = wing::JwtHeader { .. };
-        let err = wing::decode_jwt_header(bad_jwt[..], hdr);
-        sub.assert_true(err != wing::JwtError.None, "JWT header exceeding seen_others capacity MUST fail");
+        var hdr = auth::JwtHeader { .. };
+        let err = auth::decode_jwt_header(bad_jwt[..], hdr);
+        sub.assert_true(err != auth::JwtError.None, "JWT header exceeding seen_others capacity MUST fail");
     };
 }
 
@@ -2490,58 +2487,56 @@ fn test_acme_http01(t: lit::T&) {
     let path_tok = "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SC";
 
     t.run("RFC 8555 §8.3 HTTP-01 token validation") { sub =>
-        sub.assert_true(wing::acme_validate_token("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"), "RFC 8555 §8.3 example token accepted");
-        sub.assert_true(wing::acme_validate_token(tok), "22-char 128-bit entropy token accepted");
-        sub.assert_false(wing::acme_validate_token("short_21_char_token_1"), "< 128-bit (< 22 char) token rejected");
-        sub.assert_false(wing::acme_validate_token("../etc/passwd"), "path traversal rejected");
-        sub.assert_false(wing::acme_validate_token("a/b"), "slash rejected");
-        sub.assert_false(wing::acme_validate_token(""), "empty token rejected");
+        sub.assert_true(auth::validate_acme_token("LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"), "RFC 8555 §8.3 example token accepted");
+        sub.assert_true(auth::validate_acme_token(tok), "22-char 128-bit entropy token accepted");
+        sub.assert_false(auth::validate_acme_token("short_21_char_token_1"), "< 128-bit (< 22 char) token rejected");
+        sub.assert_false(auth::validate_acme_token("../etc/passwd"), "path traversal rejected");
+        sub.assert_false(auth::validate_acme_token("a/b"), "slash rejected");
+        sub.assert_false(auth::validate_acme_token(""), "empty token rejected");
     };
 
     t.run("RFC 8555 §8.1 key authorization concatenation") { sub =>
         var out: u8[..256] = [];
-        sub.assert_eq(wing::acme_key_authorization("tok", thumb, out), -1, "short token rejected");
-        sub.assert_eq(wing::acme_key_authorization(tok, "TP", out), -1, "non-43-char thumbprint rejected");
-        let n = wing::acme_key_authorization(tok, thumb, out);
-        sub.assert_eq(n, 66, "key authorization length");
+        sub.assert_false(auth::build_acme_key_authorization("tok", thumb, out), "short token rejected");
+        sub.assert_false(auth::build_acme_key_authorization(tok, "TP", out), "non-43-char thumbprint rejected");
+        sub.assert_true(auth::build_acme_key_authorization(tok, thumb, out), "key authorization succeeded");
+        sub.assert_eq(out.len, 66, "key authorization length");
         sub.assert_bytes_eq(out[..], ka, "token || '.' || thumbprint");
     };
 
     t.run("RFC 8555 §8.3 HTTP-01 path construction") { sub =>
         var out: u8[..128] = [];
-        let n = wing::acme_http01_path(tok, out);
-        sub.assert_eq(n, 50, "path length");
+        sub.assert_true(auth::build_acme_http01_path(tok, out), "path built");
+        sub.assert_eq(out.len, 50, "path length");
         sub.assert_bytes_eq(out[..], path_tok, "well-known acme-challenge path");
     };
 
     t.run("RFC 8555 §8.3 HTTP-01 path matching rejects traversal") { sub =>
-        sub.assert_true(wing::acme_match_http01(path_tok, tok), "exact match");
-        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/other_token_0123456789", tok), "different token");
-        sub.assert_false(wing::acme_match_http01("/.well-known/acme-challenge/../LoqXcYV8q5ONbJQxbmR7SC", tok), "dot-dot traversal");
+        sub.assert_true(auth::match_acme_http01(path_tok, tok), "exact match");
+        sub.assert_false(auth::match_acme_http01("/.well-known/acme-challenge/other_token_0123456789", tok), "different token");
+        sub.assert_false(auth::match_acme_http01("/.well-known/acme-challenge/../LoqXcYV8q5ONbJQxbmR7SC", tok), "dot-dot traversal");
     };
 
     t.run("HTTP-01 challenge responder table lookup") { sub =>
-        var table: wing::AcmeChallenge[..8] = [];
-        var ch = wing::AcmeChallenge {
-            token:        "LoqXcYV8q5ONbJQxbmR7SC",
-            key_auth:     "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
-            key_auth_len: 66,
+        var table: auth::AcmeChallenge[..8] = [];
+        var ch = auth::AcmeChallenge {
+            token:    "LoqXcYV8q5ONbJQxbmR7SC",
+            key_auth: "LoqXcYV8q5ONbJQxbmR7SC.NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
         };
         table.push(ch);
 
-        var body:     u8[..256] = [];
-        var body_len: i32       = 0;
+        var body: u8[..256] = [];
         sub.assert_true(
-            wing::acme_find_challenge(table, path_tok, body, body_len),
+            auth::find_acme_challenge(table, path_tok, body),
             "challenge found",
         );
-        sub.assert_eq(body_len, 66, "body length");
+        sub.assert_eq(body.len, 66, "body length");
         sub.assert_bytes_eq(body[..], ka, "key authorization body");
         sub.assert_false(
-            wing::acme_find_challenge(table, "/.well-known/acme-challenge/other_token_0123456789", body, body_len),
+            auth::find_acme_challenge(table, "/.well-known/acme-challenge/other_token_0123456789", body),
             "unknown path rejected",
         );
-        sub.assert_eq(body_len, 66, "out_len untouched on miss");
+        sub.assert_eq(body.len, 66, "out untouched on miss");
     };
 }
 
@@ -2559,36 +2554,36 @@ fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
     let ec_pub = core::ecdsa_p256_public_key(ec_priv);
 
     t.run("ES256 JWT Sign, Verify, and JWKS Integration") { sub =>
-        var hdr = wing::new_jwt_header(wing::JwtAlg.ES256, "es256-key-1");
-        var clm = wing::JwtClaims { .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.ES256, "es256-key-1");
+        var clm = auth::JwtClaims { .. };
         clm.sub.try_set("oidc_user_ec");
         clm.exp = now_sec + 600;
 
         var token: u8[>..] = [];
-        sub.assert_true(wing::sign_jwt_es256(hdr, clm, ec_priv, token), "ES256 JWT signed");
+        sub.assert_true(auth::sign_jwt_es256(hdr, clm, ec_priv, token), "ES256 JWT signed");
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts = wing::default_jwt_validation_options(wing::JwtAlg.ES256);
-        let err = wing::verify_jwt_es256(token[..], ec_pub[..], opts, now_sec, out_h, out_c);
-        sub.assert_eq(err, wing::JwtError.None, "ES256 JWT verified directly");
-        sub.assert_bytes_eq(wing::claim_str(out_c, "sub"), "oidc_user_ec", "sub claim matches");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts = auth::default_jwt_validation_options(auth::JwtAlg.ES256);
+        let err = auth::verify_jwt_es256(token[..], ec_pub[..], opts, now_sec, out_h, out_c);
+        sub.assert_eq(err, auth::JwtError.None, "ES256 JWT verified directly");
+        sub.assert_bytes_eq(auth::claim_str(out_c, "sub"), "oidc_user_ec", "sub claim matches");
 
-        var jwks = wing::Jwks { .. };
-        sub.assert_true(wing::add_es256_key(jwks, "es256-key-1", ec_pub[1..33], ec_pub[33..65]), "add_es256_key ok");
+        var jwks = auth::Jwks { .. };
+        sub.assert_true(auth::add_es256_key(jwks, "es256-key-1", ec_pub[1..33], ec_pub[33..65]), "add_es256_key ok");
 
         var jwks_json: u8[>..] = [];
-        wing::serialize_jwks(jwks, jwks_json);
-        var parsed_jwks = wing::Jwks { .. };
-        sub.assert_true(wing::parse_jwks_json(jwks_json[..], parsed_jwks), "EC JWKS parsed");
+        auth::serialize_jwks(jwks, jwks_json);
+        var parsed_jwks = auth::Jwks { .. };
+        sub.assert_true(auth::parse_jwks_json(jwks_json[..], parsed_jwks), "EC JWKS parsed");
 
-        var out_h2 = wing::new_jwt_header();
-        var out_c2 = wing::JwtClaims { .. };
-        let err_jwks = wing::verify(token[..], parsed_jwks, opts, now_sec, out_h2, out_c2);
-        sub.assert_eq(err_jwks, wing::JwtError.None, "ES256 JWT verified via parsed JWKS");
+        var out_h2 = auth::new_jwt_header();
+        var out_c2 = auth::JwtClaims { .. };
+        let err_jwks = auth::verify_jwt(parsed_jwks, token[..], opts, now_sec, out_h2, out_c2);
+        sub.assert_eq(err_jwks, auth::JwtError.None, "ES256 JWT verified via parsed JWKS");
 
         var ec_tp: u8[..64] = [];
-        sub.assert_true(wing::compute_jwk_thumbprint(parsed_jwks.keys[0], ec_tp), "EC RFC 7638 thumbprint computed");
+        sub.assert_true(auth::compute_jwk_thumbprint(parsed_jwks.keys[0], ec_tp), "EC RFC 7638 thumbprint computed");
         sub.assert_eq(ec_tp.len, 43, "EC thumbprint is 43 chars");
     };
 
@@ -2604,41 +2599,41 @@ fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
 
         var small_n: u8[128] = [0xFF; 128];
         small_n[127] = 0x4D;
-        var jwks_small = wing::Jwks { .. };
-        sub.assert_false(wing::add_rsa_key(jwks_small, "small-rsa", wing::JwtAlg.RS256, small_n[..], rsa_e[..]), "1024-bit RSA key rejected (RFC 7518 §3.3)");
+        var jwks_small = auth::Jwks { .. };
+        sub.assert_false(auth::add_rsa_key(jwks_small, "small-rsa", auth::JwtAlg.RS256, small_n[..], rsa_e[..]), "1024-bit RSA key rejected (RFC 7518 §3.3)");
 
-        var hdr_rs = wing::new_jwt_header(wing::JwtAlg.RS256, "rsa-key-1");
-        var clm_rs = wing::JwtClaims { .. };
+        var hdr_rs = auth::new_jwt_header(auth::JwtAlg.RS256, "rsa-key-1");
+        var clm_rs = auth::JwtClaims { .. };
         clm_rs.sub.try_set("oidc_user_rsa");
         clm_rs.exp = now_sec + 600;
 
         var tok_rs: u8[>..] = [];
-        sub.assert_true(wing::sign_jwt_rs256(hdr_rs, clm_rs, rsa_n[..], rsa_d[..], tok_rs), "RS256 JWT signed");
+        sub.assert_true(auth::sign_jwt_rs256(hdr_rs, clm_rs, rsa_n[..], rsa_d[..], tok_rs), "RS256 JWT signed");
 
-        var jwks = wing::Jwks { .. };
-        sub.assert_true(wing::add_rsa_key(jwks, "rsa-key-1", wing::JwtAlg.Unspecified, rsa_n[..], rsa_e[..]), "add_rsa_key ok");
+        var jwks = auth::Jwks { .. };
+        sub.assert_true(auth::add_rsa_key(jwks, "rsa-key-1", auth::JwtAlg.Unspecified, rsa_n[..], rsa_e[..]), "add_rsa_key ok");
 
-        var out_h = wing::new_jwt_header();
-        var out_c = wing::JwtClaims { .. };
-        var opts_rs = wing::default_jwt_validation_options(wing::JwtAlg.RS256);
-        sub.assert_eq(wing::verify(tok_rs[..], jwks, opts_rs, now_sec, out_h, out_c), wing::JwtError.None, "RS256 verified via JWKS");
+        var out_h = auth::new_jwt_header();
+        var out_c = auth::JwtClaims { .. };
+        var opts_rs = auth::default_jwt_validation_options(auth::JwtAlg.RS256);
+        sub.assert_eq(auth::verify_jwt(jwks, tok_rs[..], opts_rs, now_sec, out_h, out_c), auth::JwtError.None, "RS256 verified via JWKS");
 
-        var hdr_ps = wing::new_jwt_header(wing::JwtAlg.PS256, "rsa-key-1");
+        var hdr_ps = auth::new_jwt_header(auth::JwtAlg.PS256, "rsa-key-1");
         let salt32: u8[32] = [0x42; 32];
         var tok_ps: u8[>..] = [];
-        sub.assert_true(wing::sign_jwt_ps256(hdr_ps, clm_rs, rsa_n[..], rsa_d[..], salt32[..], tok_ps), "PS256 JWT signed");
-        var opts_ps = wing::default_jwt_validation_options(wing::JwtAlg.PS256);
-        sub.assert_eq(wing::verify(tok_ps[..], jwks, opts_ps, now_sec, out_h, out_c), wing::JwtError.None, "PS256 verified via JWKS");
+        sub.assert_true(auth::sign_jwt_ps256(hdr_ps, clm_rs, rsa_n[..], rsa_d[..], salt32[..], tok_ps), "PS256 JWT signed");
+        var opts_ps = auth::default_jwt_validation_options(auth::JwtAlg.PS256);
+        sub.assert_eq(auth::verify_jwt(jwks, tok_ps[..], opts_ps, now_sec, out_h, out_c), auth::JwtError.None, "PS256 verified via JWKS");
     };
 
     t.run("ES256 DPoP Proof Creation and Verification (RFC 9449)") { sub =>
         var proof: u8[..2048] = [];
-        let ok_create = wing::create_dpop_proof_es256(
+        let ok_create = auth::create_dpop_proof_es256(
             ec_priv, "POST", "https://api.example.com/resource", "access_tok_123", "nonce_abc", now_sec, "jti_es256_1", proof,
         );
         sub.assert_true(ok_create, "ES256 DPoP proof created");
 
-        let ok_verify = wing::verify_dpop_proof(
+        let ok_verify = auth::verify_dpop_proof(
             proof[..], ec_pub[..], "POST", "https://api.example.com/resource", "access_tok_123", "nonce_abc", now_sec, 300, 60, "", "ES256",
         );
         sub.assert_true(ok_verify, "ES256 DPoP proof verified");
@@ -2743,7 +2738,7 @@ fn test_dpop_proof_uri_prefix_collision(t: lit::T&) {
         // allowing a proof minted for 'https://example.com/user-restricted' or 'https://example.com/user.evil.com'
         // to authenticate requests to 'https://example.com/user'!
         let claims_with_extended_path: const u8[:] = "{\"htu\":\"https://example.com/user-restricted\",\"htm\":\"GET\"}";
-        let valid = wing::verify_dpop_uri(claims_with_extended_path, "https://example.com/user");
+        let valid = auth::verify_dpop_uri(claims_with_extended_path, "https://example.com/user");
         sub.assert_false(valid, "DPoP verify_dpop_uri must reject URI prefix mismatch (RFC 9449 §4.3)");
     };
 
@@ -2751,7 +2746,7 @@ fn test_dpop_proof_uri_prefix_collision(t: lit::T&) {
         // RFC 9449 Section 4.3:
         // "The htu claim MUST NOT contain a query or fragment. If present, the proof MUST be rejected."
         let claims_with_query: const u8[:] = "{\"htu\":\"https://example.com/user?leak=1\",\"htm\":\"GET\"}";
-        let valid = wing::verify_dpop_uri(claims_with_query, "https://example.com/user");
+        let valid = auth::verify_dpop_uri(claims_with_query, "https://example.com/user");
         sub.assert_false(valid, "DPoP proof with query in 'htu' must be rejected per RFC 9449 §4.3");
     };
 }
@@ -2766,7 +2761,7 @@ fn test_digest_param_overflow_safety(t: lit::T&) {
         for i in 150 { long_chal.push('a'); }
         long_chal.append("\", qop=\"auth\"");
 
-        let chal, ok = wing::parse_digest_challenge(long_chal[..]);
+        let chal, ok = auth::parse_digest_challenge(long_chal[..]);
         sub.assert_false(ok, "Digest challenge with nonce > 128B MUST return false and not truncate nonce");
     };
 }
@@ -2784,9 +2779,9 @@ fn test_jwt_oversized_fields_no_abort(t: lit::T&) {
         var b64_claims: u8[>..] = [];
         core::base64url_encode(long_iss[..], b64_claims);
 
-        var claims = wing::JwtClaims { .. };
-        let err = wing::decode_jwt_claims(b64_claims[..], claims);
-        sub.assert_true(err == wing::JwtError.InvalidClaimsJson, "JWT claims with iss > 128B must return InvalidClaimsJson");
+        var claims = auth::JwtClaims { .. };
+        let err = auth::decode_jwt_claims(b64_claims[..], claims);
+        sub.assert_true(err == auth::JwtError.InvalidClaimsJson, "JWT claims with iss > 128B must return InvalidClaimsJson");
     };
 }
 
@@ -2855,12 +2850,12 @@ fn test_auth_dpop_digest_privacypass(t: lit::T&) {
     t.run("verify_dpop_method requires exact method claim match, preventing substring bypass") { sub =>
         // Claims JSON has DELETE method, but URL contains 'GET'
         let claims = "{\"htm\":\"DELETE\",\"htu\":\"https://example.com/GET_resource\",\"iat\":1700000000}";
-        let matches_get = wing::verify_dpop_method(claims, "GET");
+        let matches_get = auth::verify_dpop_method(claims, "GET");
         sub.assert_false(matches_get, "DPoP verification for GET MUST NOT pass when claim is DELETE");
     };
 
     t.run("parse_digest_challenge rejects unclosed quotes") { sub =>
-        let chal, ok = wing::parse_digest_challenge("Digest realm=\"unclosed, nonce=\"12345\"");
+        let chal, ok = auth::parse_digest_challenge("Digest realm=\"unclosed, nonce=\"12345\"");
         sub.assert_false(ok, "Digest challenge with unclosed quote MUST return false");
     };
 
@@ -2870,7 +2865,7 @@ fn test_auth_dpop_digest_privacypass(t: lit::T&) {
         for i in 150 { raw_chal.push('a'); }
         raw_chal.append("\"");
 
-        let chal, ok = wing::parse_digest_challenge(raw_chal[..]);
+        let chal, ok = auth::parse_digest_challenge(raw_chal[..]);
         sub.assert_false(ok, "Digest challenge parameter > 128B MUST return false");
     };
 }
@@ -2879,14 +2874,14 @@ fn test_auth_dpop_digest_privacypass(t: lit::T&) {
 // 32. JWT Expiry Integer Overflow Defense
 // ----------------------------------------------------------------------------
 fn test_jwt_exp_overflow(t: lit::T&) {
-    var claims = wing::JwtClaims { .. };
+    var claims = auth::JwtClaims { .. };
     // Expiry near i64::MAX
     claims.exp = 9223372036854775800;
-    var opts = wing::JwtValidationOptions {};
+    var opts = auth::JwtValidationOptions {};
     opts.leeway_seconds = 60;
     // Current time 1000 should NOT consider this expired despite addition overflow
-    let err = wing::validate_jwt_claims_rules(claims, opts, 1000);
-    t.assert_eq(err, wing::JwtError.None, "Far future exp must not overflow to expired");
+    let err = auth::validate_jwt_claims_rules(claims, opts, 1000);
+    t.assert_eq(err, auth::JwtError.None, "Far future exp must not overflow to expired");
 }
 
 // ----------------------------------------------------------------------------
@@ -2894,85 +2889,85 @@ fn test_jwt_exp_overflow(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
     t.run("AUTH1-C08: decode_jwt_header/claims reject '=' padding & invalid UTF-8 JSON") { sub =>
-        var hdr = wing::JwtHeader { alg: wing::JwtAlg.HS256, kid: "dirty", .. };
-        let err_h = wing::decode_jwt_header("eyJhbGciOiJIUzI1NiJ9=", hdr);
-        sub.assert_eq(err_h, wing::JwtError.InvalidBase64, "padded header b64 rejected");
+        var hdr = auth::JwtHeader { alg: auth::JwtAlg.HS256, kid: "dirty", .. };
+        let err_h = auth::decode_jwt_header("eyJhbGciOiJIUzI1NiJ9=", hdr);
+        sub.assert_eq(err_h, auth::JwtError.InvalidBase64, "padded header b64 rejected");
         sub.assert_eq(hdr.kid.len, 0, "hdr cleared on InvalidBase64");
 
-        var clm = wing::JwtClaims { sub: "dirty", .. };
-        let err_c = wing::decode_jwt_claims("eyJzdWIiOiJ1MSJ9=", clm);
-        sub.assert_eq(err_c, wing::JwtError.InvalidBase64, "padded claims b64 rejected");
+        var clm = auth::JwtClaims { sub: "dirty", .. };
+        let err_c = auth::decode_jwt_claims("eyJzdWIiOiJ1MSJ9=", clm);
+        sub.assert_eq(err_c, auth::JwtError.InvalidBase64, "padded claims b64 rejected");
         sub.assert_eq(clm.sub.len, 0, "claims cleared on InvalidBase64");
 
         let bad_utf8_hdr = "{\"alg\":\"HS256\",\"kid\":\"\xff\xfe\"}";
-        sub.assert_false(wing::parse_jwt_header_json(bad_utf8_hdr, hdr), "invalid UTF-8 header JSON rejected");
+        sub.assert_false(auth::parse_jwt_header_json(bad_utf8_hdr, hdr), "invalid UTF-8 header JSON rejected");
         let bad_utf8_clm = "{\"sub\":\"\xff\xfe\"}";
-        sub.assert_false(wing::parse_jwt_claims_json(bad_utf8_clm, clm), "invalid UTF-8 claims JSON rejected");
+        sub.assert_false(auth::parse_jwt_claims_json(bad_utf8_clm, clm), "invalid UTF-8 claims JSON rejected");
     };
 
     t.run("AUTH1-C06/C07/C09: JWKS duplicate key_ops, x5c[1] Base64, and duplicate root member") { sub =>
-        var jwks = wing::Jwks { .. };
+        var jwks = auth::Jwks { .. };
         let dup_ops = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"key_ops\":[\"verify\",\"verify\"]}]}";
-        sub.assert_false(wing::parse_jwks_json(dup_ops, jwks), "duplicate key_ops rejected per RFC 7517 §4.3");
+        sub.assert_false(auth::parse_jwks_json(dup_ops, jwks), "duplicate key_ops rejected per RFC 7517 §4.3");
 
         let bad_x5c_ca = "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"x5c\":[\"MDEyMzQ1Njc4OWFiY2RlZg==\",\"!!!not_base64!!!\"]}]}";
-        sub.assert_false(wing::parse_jwks_json(bad_x5c_ca, jwks), "invalid Base64 in x5c[1] rejected per RFC 7517 §4.7");
+        sub.assert_false(auth::parse_jwks_json(bad_x5c_ca, jwks), "invalid Base64 in x5c[1] rejected per RFC 7517 §4.7");
 
         let dup_root = "{\"meta\":1,\"meta\":2,\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}]}";
-        sub.assert_false(wing::parse_jwks_json(dup_root, jwks), "duplicate top-level JWKS member rejected per RFC 7517 §5");
+        sub.assert_false(auth::parse_jwks_json(dup_root, jwks), "duplicate top-level JWKS member rejected per RFC 7517 §5");
     };
 
     t.run("AUTH2-C07/C08/C09: DPoP buffer reuse, JWK hygiene, and key_ops validation") { sub =>
         var claims_buf: u8[..256] = [];
         for i in 220 { claims_buf.push('x'); }
-        let ok_reuse = wing::build_dpop_claims_json("GET", "https://example.com/res", "", "", 1700000000, "jti-1", claims_buf);
+        let ok_reuse = auth::build_dpop_claims_json("GET", "https://example.com/res", "", "", 1700000000, "jti-1", claims_buf);
         sub.assert_true(ok_reuse, "build_dpop_claims_json reuses pre-filled out buffer after clear");
 
         let bad_ops_hdr = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"key_ops\":[\"sign\"],\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}}";
-        sub.assert_false(wing::verify_dpop_header(bad_ops_hdr, "EdDSA"), "DPoP JWK with private key_ops=['sign'] rejected");
+        sub.assert_false(auth::verify_dpop_header(bad_ops_hdr, "EdDSA"), "DPoP JWK with private key_ops=['sign'] rejected");
 
         let good_ops_hdr = "{\"typ\":\"dpop+jwt\",\"alg\":\"EdDSA\",\"jwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"key_ops\":[\"verify\"],\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}}";
-        sub.assert_true(wing::verify_dpop_header(good_ops_hdr, "EdDSA"), "DPoP JWK with key_ops=['verify'] accepted");
+        sub.assert_true(auth::verify_dpop_header(good_ops_hdr, "EdDSA"), "DPoP JWK with key_ops=['verify'] accepted");
 
         var out_alg: u8[..16] = [];
-        var out_jwk = wing::DPoPJwkInfo { .. };
-        sub.assert_false(wing::parse_dpop_header_jwk_info(bad_ops_hdr, out_alg, out_jwk), "invalid DPoP JWK rejected");
+        var out_jwk = auth::DPoPJwkInfo { .. };
+        sub.assert_false(auth::parse_dpop_header_jwk_info(bad_ops_hdr, out_alg, out_jwk), "invalid DPoP JWK rejected");
         sub.assert_eq(out_jwk.kty.len, 0, "out_jwk cleared on error");
     };
 
     t.run("AUTH3-C01/C03: Digest comma delimiter, unsupported qop, and parse_quoted_param hygiene") { sub =>
-        let _, ok_no_comma = wing::parse_digest_challenge("Digest realm=\"api\" nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\"");
+        let _, ok_no_comma = auth::parse_digest_challenge("Digest realm=\"api\" nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\"");
         sub.assert_false(ok_no_comma, "missing comma between Digest parameters rejected per RFC 7616 §3.3");
 
-        let _, ok_bad_qop = wing::parse_digest_challenge("Digest realm=\"api\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"unsupported\"");
+        let _, ok_bad_qop = auth::parse_digest_challenge("Digest realm=\"api\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"unsupported\"");
         sub.assert_false(ok_bad_qop, "Digest challenge with only unrecognized qop options rejected");
 
         var q_out: u8[..64] = "stale";
-        let _, ok_q = wing::parse_quoted_param("\"unclosed", q_out);
+        let _, ok_q = auth::parse_quoted_param("\"unclosed", q_out);
         sub.assert_false(ok_q, "unclosed quoted param rejected");
         sub.assert_eq(q_out.len, 0, "parse_quoted_param clears out_val on error");
     };
 
     t.run("AUTH3-C04/C05/C06/C09/C10: Introspection, Basic Auth CTL, PKCE, and Device Grant interval") { sub =>
-        let _, ok_dup_intro = wing::parse_introspection_response("{\"active\":true,\"sub\":\"u1\",\"sub\":\"u2\"}");
+        let _, ok_dup_intro = auth::parse_introspection_response("{\"active\":true,\"sub\":\"u1\",\"sub\":\"u2\"}");
         sub.assert_false(ok_dup_intro, "duplicate introspection claim rejected");
 
-        let _, ok_empty_aud = wing::parse_introspection_response("{\"active\":true,\"aud\":[]}");
+        let _, ok_empty_aud = auth::parse_introspection_response("{\"active\":true,\"aud\":[]}");
         sub.assert_false(ok_empty_aud, "empty introspection aud array rejected");
 
         var b_hdr: u8[..256] = [];
-        sub.assert_false(wing::encode_oauth2_basic_auth("id\x07", "sec", b_hdr), "CTL in encode_oauth2_basic_auth rejected");
+        sub.assert_false(auth::encode_oauth2_basic_auth("id\x07", "sec", b_hdr), "CTL in encode_oauth2_basic_auth rejected");
         // "id%07:sec" in Base64 is "aWQlMDc6c2Vj"
         var out_id:  u8[..256] = [];
         var out_sec: u8[..256] = [];
-        sub.assert_false(wing::decode_oauth2_basic_auth("Basic aWQlMDc6c2Vj", out_id, out_sec), "CTL %07 in decode_oauth2_basic_auth rejected");
+        sub.assert_false(auth::decode_oauth2_basic_auth("Basic aWQlMDc6c2Vj", out_id, out_sec), "CTL %07 in decode_oauth2_basic_auth rejected");
         sub.assert_eq(out_id.len, 0, "out_id cleared on CTL failure");
 
         var pkce_buf: u8[..128] = "dirty";
-        sub.assert_false(wing::encode_external_entropy("too_short", pkce_buf), "short entropy rejected");
+        sub.assert_false(auth::encode_external_entropy("too_short", pkce_buf), "short entropy rejected");
         sub.assert_eq(pkce_buf.len, 0, "pkce_buf cleared on error");
 
-        let _, ok_dev_zero = wing::parse_device_auth_response(
+        let _, ok_dev_zero = auth::parse_device_auth_response(
             "{\"device_code\":\"dc\",\"user_code\":\"uc\",\"verification_uri\":\"https://ex.com/dev\",\"expires_in\":600,\"interval\":0}",
         );
         sub.assert_false(ok_dev_zero, "interval=0 in device auth response rejected");
@@ -2980,69 +2975,68 @@ fn test_goose2rfc_auth_audit_regressions(t: lit::T&) {
         // DPoP proof verification with empty raw key when expected_jkt is provided (RFC 9449 §6.1)
         let dpop_seed: u8[32] = [0x22; 32];
         let dpop_pub = core::ed25519_public_key(dpop_seed);
-        var jwk_k = wing::JwksKey { kty: wing::JwkKeyType.OKP, public_key: dpop_pub, valid: true, .. };
+        var jwk_k = auth::JwksKey { kty: auth::JwkKeyType.OKP, public_key: dpop_pub, valid: true, .. };
         let _ = jwk_k.crv.try_set("Ed25519");
         var jkt_buf: u8[..64] = [];
-        sub.assert_true(wing::compute_jwk_thumbprint(jwk_k, jkt_buf), "compute_jwk_thumbprint ok");
+        sub.assert_true(auth::compute_jwk_thumbprint(jwk_k, jkt_buf), "compute_jwk_thumbprint ok");
         var dpop_tok: u8[..1024] = [];
-        sub.assert_true(wing::create_dpop_proof(dpop_seed[..], "GET", "https://ex.com/api", "", "", 1700000000, "jti-jkt-only", dpop_tok), "create_dpop_proof ok");
+        sub.assert_true(auth::create_dpop_proof(dpop_seed[..], "GET", "https://ex.com/api", "", "", 1700000000, "jti-jkt-only", dpop_tok), "create_dpop_proof ok");
         sub.assert_true(
-            wing::verify_dpop_proof(dpop_tok[..], "", "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, jkt_buf[..], "EdDSA"),
+            auth::verify_dpop_proof(dpop_tok[..], "", "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, jkt_buf[..], "EdDSA"),
             "verify_dpop_proof with empty key and valid expected_jkt succeeds",
         );
         sub.assert_false(
-            wing::verify_dpop_proof(dpop_tok[..], "", "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, "", "EdDSA"),
+            auth::verify_dpop_proof(dpop_tok[..], "", "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, "", "EdDSA"),
             "verify_dpop_proof with both empty key and empty expected_jkt rejected",
         );
     };
 
     t.run("AUTH-ROUND2: DPoP key binding, JWT b64/none, ACME slot, and Introspection CTL") { sub =>
         // 1. verify_dpop_key_binding with empty key validates expected_jkt directly
-        var jwk_info = wing::DPoPJwkInfo { kty: "OKP", crv: "Ed25519", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", valid: true, .. };
-        sub.assert_false(wing::verify_dpop_key_binding("", "wrong_jkt", "EdDSA", jwk_info), "empty key with mismatched expected_jkt rejected");
+        var jwk_info = auth::DPoPJwkInfo { kty: "OKP", crv: "Ed25519", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", valid: true, .. };
+        sub.assert_false(auth::verify_dpop_key_binding("", "wrong_jkt", "EdDSA", jwk_info), "empty key with mismatched expected_jkt rejected");
 
         // 2. ES256 verify_dpop_key_binding rejects 32-byte private scalar
         let ec_priv: u8[32] = [0x11; 32];
-        var ec_jwk = wing::DPoPJwkInfo { kty: "EC", crv: "P-256", valid: true, .. };
+        var ec_jwk = auth::DPoPJwkInfo { kty: "EC", crv: "P-256", valid: true, .. };
         let ec_pub = core::ecdsa_p256_public_key(ec_priv);
         core::base64url_encode(ec_pub[1..33], ec_jwk.x);
         core::base64url_encode(ec_pub[33..65], ec_jwk.y);
-        sub.assert_false(wing::verify_dpop_key_binding(ec_priv[..], "", "ES256", ec_jwk), "ES256 32-byte private key rejected in verify_dpop_key_binding");
-        sub.assert_true(wing::verify_dpop_key_binding(ec_pub[..], "", "ES256", ec_jwk), "ES256 65-byte public key accepted in verify_dpop_key_binding");
+        sub.assert_false(auth::verify_dpop_key_binding(ec_priv[..], "", "ES256", ec_jwk), "ES256 32-byte private key rejected in verify_dpop_key_binding");
+        sub.assert_true(auth::verify_dpop_key_binding(ec_pub[..], "", "ES256", ec_jwk), "ES256 65-byte public key accepted in verify_dpop_key_binding");
 
         // 3. verify_dpop_iat and check_and_record_dpop_jti reject now_sec == 0, float iat rejected
-        sub.assert_false(wing::verify_dpop_iat("{\"jti\":\"j1\",\"htm\":\"GET\",\"htu\":\"https://ex.com\",\"iat\":1700000000}", 0, 300, 60), "verify_dpop_iat rejects now_sec == 0");
-        var flt_claims = wing::DPoPClaims { .. };
-        sub.assert_false(wing::parse_dpop_claims("{\"jti\":\"j1\",\"htm\":\"GET\",\"htu\":\"https://ex.com\",\"iat\":1700000000.5}", flt_claims), "float iat in DPoP claims rejected");
-        var rcache = wing::DPoPReplayCache { .. };
-        sub.assert_false(wing::check_and_record_dpop_jti(rcache, "jti-1", 0, 300, 60), "check_and_record_dpop_jti rejects now_sec == 0");
+        sub.assert_false(auth::verify_dpop_iat("{\"jti\":\"j1\",\"htm\":\"GET\",\"htu\":\"https://ex.com\",\"iat\":1700000000}", 0, 300, 60), "verify_dpop_iat rejects now_sec == 0");
+        var flt_claims = auth::DPoPClaims { .. };
+        sub.assert_false(auth::parse_dpop_claims("{\"jti\":\"j1\",\"htm\":\"GET\",\"htu\":\"https://ex.com\",\"iat\":1700000000.5}", flt_claims), "float iat in DPoP claims rejected");
+        var rcache = auth::DPoPReplayCache { .. };
+        sub.assert_false(auth::check_and_record_dpop_jti(rcache, "jti-1", 0, 300, 60), "check_and_record_dpop_jti rejects now_sec == 0");
 
         // 4. verify_dpop_claims with non-empty expected_jkt rejects empty claims.jkt
-        var ok_claims = wing::DPoPClaims { jti: "j1", htm: "GET", htu: "https://ex.com/api", iat: 1700000000, has_iat: true, .. };
-        sub.assert_false(wing::verify_dpop_claims(ok_claims, "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, "expected-jkt-val"), "empty claims.jkt rejected when expected_jkt is set");
+        var ok_claims = auth::DPoPClaims { jti: "j1", htm: "GET", htu: "https://ex.com/api", iat: 1700000000, has_iat: true, .. };
+        sub.assert_false(auth::verify_dpop_claims(ok_claims, "GET", "https://ex.com/api", "", "", 1700000000, 300, 60, "expected-jkt-val"), "empty claims.jkt rejected when expected_jkt is set");
 
         // 5. parse_jwt_unverified rejects non-empty sig on alg=none and empty sig on alg=HS256
-        var uh = wing::JwtHeader { .. };
-        var uc = wing::JwtClaims { .. };
+        var uh = auth::JwtHeader { .. };
+        var uc = auth::JwtClaims { .. };
         let none_with_sig = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1MSJ9.c2ln";
-        sub.assert_eq(wing::parse_jwt_unverified(none_with_sig, uh, uc), wing::JwtError.MalformedToken, "alg=none with non-empty signature rejected");
+        sub.assert_eq(auth::parse_jwt_unverified(none_with_sig, uh, uc), auth::JwtError.MalformedToken, "alg=none with non-empty signature rejected");
         let hs256_empty_sig = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSJ9.";
-        sub.assert_eq(wing::parse_jwt_unverified(hs256_empty_sig, uh, uc), wing::JwtError.InvalidBase64, "alg=HS256 with empty signature rejected");
+        sub.assert_eq(auth::parse_jwt_unverified(hs256_empty_sig, uh, uc), auth::JwtError.InvalidBase64, "alg=HS256 with empty signature rejected");
 
         // 6. verify_jwt_algorithm with allow_none=true accepts JwtAlg.None, and exp < -1 rejected
-        sub.assert_eq(wing::verify_jwt_algorithm(wing::JwtAlg.None, wing::JwtAlg.HS256, true), wing::JwtError.None, "JwtAlg.None allowed when allow_none=true");
-        sub.assert_false(wing::validate_jwt_expiration(-5, false, 60, 1700000000), "exp < -1 rejected even when require_exp=false");
-        sub.assert_false(wing::validate_jwt_not_before(-5, false, 60, 1700000000), "nbf < -1 rejected even when require_nbf=false");
+        sub.assert_eq(auth::verify_jwt_algorithm(auth::JwtAlg.None, auth::JwtAlg.HS256, true), auth::JwtError.None, "JwtAlg.None allowed when allow_none=true");
+        sub.assert_false(auth::validate_jwt_expiration(-5, false, 60, 1700000000), "exp < -1 rejected even when require_exp=false");
+        sub.assert_false(auth::validate_jwt_not_before(-5, false, 60, 1700000000), "nbf < -1 rejected even when require_nbf=false");
 
         // 7. Digest non-"true" stale value treated as stale=false per RFC 7616 §3.3, ACME empty slot token, and Introspection CTL token
-        let chal_stale, ok_stale = wing::parse_digest_challenge("Digest realm=\"api\", nonce=\"abcd\", stale=invalid");
+        let chal_stale, ok_stale = auth::parse_digest_challenge("Digest realm=\"api\", nonce=\"abcd\", stale=invalid");
         sub.assert_true(ok_stale && !chal_stale.stale, "Digest challenge with stale=invalid treated as stale=false per RFC 7616 §3.3");
-        var bad_acme_table: wing::AcmeChallenge[..8] = [wing::AcmeChallenge { token: "", key_auth: ".TP", key_auth_len: 3 }];
+        var bad_acme_table: auth::AcmeChallenge[..8] = [auth::AcmeChallenge { token: "", key_auth: ".TP" }];
         var acme_body:      u8[..256]                = [];
-        var acme_len:       i32                      = 0;
-        sub.assert_false(wing::acme_find_challenge(bad_acme_table, "/.well-known/acme-challenge/", acme_body, acme_len), "ACME slot with empty token rejected");
+        sub.assert_false(auth::find_acme_challenge(bad_acme_table, "/.well-known/acme-challenge/", acme_body), "ACME slot with empty token rejected");
         var form_out: u8[..256] = [];
-        sub.assert_false(wing::encode_token_endpoint_form("tok\x07en", wing::TokenTypeHint.AccessToken, form_out), "CTL byte in encode_token_endpoint_form rejected");
+        sub.assert_false(auth::encode_token_endpoint_form("tok\x07en", auth::TokenTypeHint.AccessToken, form_out), "CTL byte in encode_token_endpoint_form rejected");
     };
 }
 

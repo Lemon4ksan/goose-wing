@@ -1177,9 +1177,18 @@ int32_t wing_tcp_connect_finish(int64_t sock_fd) {
     return sock_err == 0 ? 0 : -1;
 }
 
+#ifdef _WIN32
+extern int32_t wing_rio_hs_recv(int64_t sock_fd, uint8_t *dst, int64_t len, uint32_t timeout_ms);
+extern int32_t wing_rio_hs_send(int64_t sock_fd, const uint8_t *data, int64_t len);
+#endif
+
 // Sends bytes to socket, ensuring complete write across non-blocking transient buffers.
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
     if (sock_fd <= 0 || data.data == NULL || data.len <= 0) return 0;
+#ifdef _WIN32
+    int32_t rio_sent = wing_rio_hs_send(sock_fd, data.data, data.len);
+    if (rio_sent != -99) return rio_sent;
+#endif
     SOCKET s = (SOCKET)sock_fd;
     const char *ptr = (const char *)data.data;
     size_t remaining = (size_t)data.len;
@@ -1215,6 +1224,10 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
 // Receives bytes from socket into slice buffer.
 int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
     if (sock_fd <= 0 || buf.data == NULL || buf.len <= 0) return -1;
+#ifdef _WIN32
+    int32_t rio_got = wing_rio_hs_recv(sock_fd, buf.data, buf.len, timeout_ms);
+    if (rio_got != -99) return rio_got;
+#endif
     SOCKET s = (SOCKET)sock_fd;
 
     if (timeout_ms > 0) {

@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+
+// goose-wing program sidecar: links the runtime allocation counter shim.
+c_sources = ["../tests/lit/alloc_count.c"];

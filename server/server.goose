@@ -94,6 +94,24 @@ fn new_http_server(
     return server;
 }
 
+// Initializes an existing `HttpServer` in place without allocating a multi-megabyte stack temporary.
+fn init_http_server_inplace(
+    server:   HttpServer&,
+    host_str: const u8[:] = "127.0.0.1",
+    port_num: u16         = 8080,
+) {
+    init_server_pipeline_config_inplace(
+        server.pipeline,
+        host_str,
+        security::new_gcra_quota(1000, secs(1), 100),
+    );
+    server.port = port_num;
+    server.timer = server_internal::new_connection_timer(30000000000, 1000000000);
+    server.is_running = true;
+    server.requests_processed = 0;
+    let _ = server.host.try_set(host_str[..min(host_str.len, 256)]);
+}
+
 fn new_http_server_with_quota<Q>(
     host_str: const u8[:],
     port_num: u16,

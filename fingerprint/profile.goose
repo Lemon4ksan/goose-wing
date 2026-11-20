@@ -2,26 +2,22 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Wing Profile and Persona Engine.
-// Enforces Wing's authentic zero-heap identity by default, with complete user-level
-// control over headers, meta-headers, TLS parameters, and JA4 fingerprint generation.
-namespace wing;
+// Enforces Wing's authentic zero-heap identity by default, with user-level control
+// over headers, TLS parameters, Akamai HTTP/2, p0f v3, and JA4/JA4H generation.
+namespace fingerprint;
 
 import std;
 import core from "..";
 import http.headers;
-import fingerprint.ja4;
-import fingerprint.p0f;
-import fingerprint.akamai;
+import .types;
+import .ja4;
+import .p0f;
+import .akamai;
 
-// ---- client profiles -------------------------------------------------------
+// ---- Profile Metadata ------------------------------------------------------
 
-enum Profile {
-    Wing,   // Authentic Wing Zero-Heap Systems Engine identity (Default)
-    Custom, // User-controlled custom profile
-    None,   // Minimal raw client without default headers
-}
-
-fn profile_user_agent(profile: Profile) -> const u8[:] {
+// Returns the canonical User-Agent string associated with a `Profile` preset.
+fn user_agent(profile: Profile) -> const u8[:] {
     return match profile {
         Wing => "Wing/1.0 (Goose Zero-Heap Systems Engine) NetStack/7.0",
         Custom => "Wing/1.0 (Custom Profile)",
@@ -30,7 +26,8 @@ fn profile_user_agent(profile: Profile) -> const u8[:] {
     };
 }
 
-fn profile_name(profile: Profile) -> const u8[:] {
+// Returns the display name of a `Profile` preset.
+fn name(profile: Profile) -> const u8[:] {
     return match profile {
         Wing => "Wing",
         Custom => "Custom",
@@ -39,57 +36,9 @@ fn profile_name(profile: Profile) -> const u8[:] {
     };
 }
 
-// HTTP/2 protocol settings for the persona.
-struct H2Settings {
-    header_table_size:      u32 = 65536,
-    enable_push:            u32 = 0,
-    max_concurrent_streams: u32 = 100,
-    initial_window_size:    u32 = 6291456,
-    max_frame_size:         u32 = 16384,
-    max_header_list_size:   u32 = 262144,
-}
+// ---- Profile Constructors --------------------------------------------------
 
-// HTTP/3 protocol settings for the persona.
-struct H3Settings {
-    qpack_max_table_capacity:  u64 = 4096,
-    max_field_section_size:    u64 = 65536,
-    qpack_blocked_streams:     u64 = 16,
-    enable_connect_protocol:   u64 = 1,
-    h3_datagram:               u64 = 0,
-    enable_webtransport:       u64 = 0,
-    webtransport_max_sessions: u64 = 0,
-}
-
-// TLS ClientHello specification for JA4 fingerprinting and transport configuration.
-struct TlsFingerprintSpec {
-    ciphers:            u16[..32] = [],
-    extensions:         u16[..32] = [],
-    supported_versions: u16[..8]  = [],
-    sig_algorithms:     u16[..16] = [],
-    alpn:               u8[..16]  = [],
-}
-
-// Client profile specification governing outbound request appearance and wire fingerprint.
-struct ClientProfile {
-    kind:                      Profile            = Profile.Wing,
-    user_agent:                u8[..256]          = [],
-    accept:                    u8[..192]          = [],
-    accept_encoding:           u8[..64]           = [],
-    accept_language:           u8[..64]           = [],
-    upgrade_insecure_requests: u8[..8]            = [],
-    extra_headers:             HeaderMap          = HeaderMap { .. },
-    header_order:              u8[..32][..64]     = [],
-    h2:                        H2Settings         = H2Settings { .. },
-    h3:                        H3Settings         = H3Settings { .. },
-    tls:                       TlsFingerprintSpec = TlsFingerprintSpec { .. },
-    p0f:                       P0fSignature       = P0fSignature { .. },
-    akamai:                    AkamaiFingerprint  = AkamaiFingerprint { .. },
-}
-
-// ---- authentic wing default profile ----------------------------------------
-
-// Constructs the authentic Wing profile. It doesn't impersonate any existing
-// browser and presents a clean, recognizable systems stack fingerprint.
+// Constructs the authentic Wing profile with modern TLS 1.3/1.2 suites, HTTP/2, HTTP/3, and p0f specs.
 fn wing_default_profile() -> ClientProfile {
     var p = ClientProfile {
         kind:   Profile.Wing,
@@ -147,15 +96,6 @@ fn wing_default_profile() -> ClientProfile {
     p.tls.sig_algorithms.push(0x0601); // rsa_pkcs1_sha512
 
     p.tls.alpn.append("h2");
-
-    // Canonical Wing Header Ordering (for HTTP/1.1 & JA4H)
-    push_header_order(p, "host");
-    push_header_order(p, "user-agent");
-    push_header_order(p, "accept");
-    push_header_order(p, "accept-encoding");
-    push_header_order(p, "accept-language");
-    push_header_order(p, "upgrade-insecure-requests");
-
     return p;
 }
 
@@ -185,18 +125,7 @@ fn new_client_profile(kind: Profile) -> ClientProfile {
     return wing_default_profile();
 }
 
-// ---- profile manipulation & builder functions -------------------------------
-
-fn push_header_order(profile: ClientProfile&, header_name: const u8[:]) {
-    var entry: u8[..32] = [];
-    guard entry.try_set(header_name) else { return; }
-    let _ = profile.header_order.try_push(entry);
-}
-
-struct Ja4Options {
-    is_quic: bool = false,
-    sni:     bool = true,
-}
+// ---- Fingerprint Computation & Profile Mutators ----------------------------
 
 // Computes the FoxIO JA4 TLS fingerprint for this profile.
 fn ja4(profile: const ClientProfile&, opts: Ja4Options = Ja4Options { .. }) -> u8[..64] {
@@ -209,11 +138,6 @@ fn ja4(profile: const ClientProfile&, opts: Ja4Options = Ja4Options { .. }) -> u
         profile.tls.sig_algorithms[..],
         opts.is_quic,
     );
-}
-
-struct Ja4hOptions {
-    has_cookie:  bool = false,
-    has_referer: bool = false,
 }
 
 // Computes the FoxIO JA4H HTTP client fingerprint for this profile under given method and parameters.
@@ -233,7 +157,7 @@ fn ja4h(
     if profile.upgrade_insecure_requests.len > 0 { header_names.push("upgrade-insecure-requests"); }
 
     for &e in profile.extra_headers.entries {
-        header_names.push(entry_name(profile.extra_headers, e));
+        header_names.push(profile.extra_headers.entry_name(e));
     }
 
     return compute_ja4h(
@@ -269,7 +193,7 @@ fn set_header(profile: ClientProfile&, name: const u8[:], value: const u8[:]) {
         let _ = profile.upgrade_insecure_requests.try_set(value);
         return;
     }
-    set_header(profile.extra_headers, name, value);
+    profile.extra_headers.set_header(name, value);
 }
 
 // Sets a custom User-Agent in the profile.
@@ -298,7 +222,7 @@ fn set_p0f(profile: ClientProfile&, sig: const P0fSignature&) {
 }
 
 // Computes the p0f v3 format string for this profile.
-fn p0f(profile: const ClientProfile&) -> u8[..256] {
+fn format_p0f(profile: const ClientProfile&) -> u8[..256] {
     return format_p0f(profile.p0f);
 }
 
@@ -306,21 +230,21 @@ fn p0f(profile: const ClientProfile&) -> u8[..256] {
 fn set_akamai(profile: ClientProfile&, fp: const AkamaiFingerprint&) {
     profile.akamai = fp;
     for &s in fp.settings {
-        if s.id == 1 { profile.h2.header_table_size = s.val; }
-        else if s.id == 2 { profile.h2.enable_push = s.val; }
-        else if s.id == 3 { profile.h2.max_concurrent_streams = s.val; }
-        else if s.id == 4 { profile.h2.initial_window_size = s.val; }
-        else if s.id == 5 { profile.h2.max_frame_size = s.val; }
-        else if s.id == 6 { profile.h2.max_header_list_size = s.val; }
+        if s.id == rfc::H2_SETTING_HEADER_TABLE_SIZE { profile.h2.header_table_size = s.val; }
+        else if s.id == rfc::H2_SETTING_ENABLE_PUSH { profile.h2.enable_push = s.val; }
+        else if s.id == rfc::H2_SETTING_MAX_CONCURRENT_STREAMS { profile.h2.max_concurrent_streams = s.val; }
+        else if s.id == rfc::H2_SETTING_INITIAL_WINDOW_SIZE { profile.h2.initial_window_size = s.val; }
+        else if s.id == rfc::H2_SETTING_MAX_FRAME_SIZE { profile.h2.max_frame_size = s.val; }
+        else if s.id == rfc::H2_SETTING_MAX_HEADER_LIST_SIZE { profile.h2.max_header_list_size = s.val; }
     }
 }
 
 // Formats the Akamai HTTP/2 fingerprint string for this profile.
-fn akamai(profile: const ClientProfile&) -> u8[..640] {
-    return akamai_fingerprint_to_string(profile.akamai);
+fn format_akamai(profile: const ClientProfile&) -> u8[..640] {
+    return format_akamai(profile.akamai);
 }
 
 // Computes the 32-character hexadecimal MD5 Akamai hash for this profile.
 fn akamai_hash(profile: const ClientProfile&) -> u8[..32] {
-    return akamai_fingerprint_hash(profile.akamai);
+    return akamai_hash(profile.akamai);
 }

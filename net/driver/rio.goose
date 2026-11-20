@@ -56,6 +56,19 @@ extern fn native_rio_accept(listen_fd: i64) -> i64 = "wing_rio_accept";
 extern fn native_rio_is_listener(sock_fd: i64) -> i32 = "wing_rio_is_listener";
 extern fn native_rio_poll_accept(listen_fd: i64, timeout_ms: i32) -> i64 = "wing_rio_poll_accept";
 extern fn native_rio_cancel_accept(listen_fd: i64) -> i32 = "wing_rio_cancel_accept";
+extern fn native_rio_hs_begin(
+    sock_fd:  i64,
+    rq_id:    u64,
+    rx_cq:    u64,
+    tx_cq:    u64,
+    buf_id:   u64,
+    slab:     u8[:],
+    rx_off:   u32,
+    tx_off:   u32,
+    buf_size: u32,
+    sock_ctx: u64,
+) = "wing_rio_hs_begin";
+extern fn native_rio_hs_end(out_leftover: u8[:]) -> i32 = "wing_rio_hs_end";
 
 // Page-locked registered memory buffer slice descriptor for Windows RIO
 struct RioBufferDescriptor {

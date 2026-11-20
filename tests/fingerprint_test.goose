@@ -28,7 +28,7 @@ fn test_ja4_tls_fingerprint(t: lit::T&) {
         let supported_versions: u16[1] = [0x0304];
         let sig_algos:          u16[8] = [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601];
 
-        let ja4_result = wing::compute_ja4(
+        let ja4_result = fingerprint::compute_ja4(
             ciphers[..],
             extensions[..],
             supported_versions[..],
@@ -65,13 +65,13 @@ fn test_ja4_tls_fingerprint(t: lit::T&) {
         let base_sigs:      u16[2] = [0x0403, 0x0804];
         let grease_sigs:    u16[4] = [0x0a0a, 0x0403, 0x1a1a, 0x0804];
 
-        let fp_clean = wing::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, "h2", base_sigs[..]);
-        let fp_grease = wing::compute_ja4(grease_ciphers[..], grease_exts[..], vers[..], true, "h2", grease_sigs[..]);
+        let fp_clean = fingerprint::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, "h2", base_sigs[..]);
+        let fp_grease = fingerprint::compute_ja4(grease_ciphers[..], grease_exts[..], vers[..], true, "h2", grease_sigs[..]);
 
         sub.assert_bytes_eq(fp_clean[..], fp_grease[..], "JA4 must remain strictly invariant under GREASE injection in ciphers, exts, and sig_algorithms");
 
         // Non-alphanumeric ALPN character handling
-        let fp_alpn_custom = wing::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, " ", base_sigs[..]);
+        let fp_alpn_custom = fingerprint::compute_ja4(base_ciphers[..], base_exts[..], vers[..], true, " ", base_sigs[..]);
         sub.assert_bytes_eq(fp_alpn_custom[8..10], "20", "Non-alnum ALPN space byte (0x20) maps to '20'");
     };
 
@@ -80,7 +80,7 @@ fn test_ja4_tls_fingerprint(t: lit::T&) {
         let exts:    u16[2] = [0x0000, 0x002b];
         let vers:    u16[1] = [0x0304];
 
-        let ja4_quic = wing::compute_ja4(ciphers[..], exts[..], vers[..], true, "h3", [], true);
+        let ja4_quic = fingerprint::compute_ja4(ciphers[..], exts[..], vers[..], true, "h3", [], true);
         sub.assert_bytes_eq(ja4_quic[..11], "q13d0302h3_", "QUIC JA4 prefix (q=QUIC, 13=v1.3, d=SNI, 03 ciphers, 02 exts, h3 ALPN)");
     };
 }
@@ -94,11 +94,11 @@ fn test_ja4h_http_fingerprint(t: lit::T&) {
         let cookie_names:  const u8[:][2] = ["session_id", "csrf_token"];
         let cookie_values: const u8[:][2] = ["abc123xyz", "tok456"];
 
-        let ja4h_result = wing::compute_ja4h(
+        let ja4h_result = fingerprint::compute_ja4h(
             "GET",
             "HTTP/2",
             headers[..],
-            wing::Ja4hFlags { has_cookie: true, has_referer: false },
+            fingerprint::Ja4hFlags { has_cookie: true, has_referer: false },
             "en-US,en;q=0.9",
             cookie_names[..],
             cookie_values[..],
@@ -115,8 +115,8 @@ fn test_ja4h_http_fingerprint(t: lit::T&) {
         // Headers preserve wire transmission order in section b
         let h_order1: const u8[:][2] = ["Accept", "User-Agent"];
         let h_order2: const u8[:][2] = ["User-Agent", "Accept"];
-        let ja4h_1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], wing::Ja4hFlags { has_cookie: false, has_referer: false });
-        let ja4h_2 = wing::compute_ja4h("GET", "HTTP/2", h_order2[..], wing::Ja4hFlags { has_cookie: false, has_referer: false });
+        let ja4h_1 = fingerprint::compute_ja4h("GET", "HTTP/2", h_order1[..], fingerprint::Ja4hFlags { has_cookie: false, has_referer: false });
+        let ja4h_2 = fingerprint::compute_ja4h("GET", "HTTP/2", h_order2[..], fingerprint::Ja4hFlags { has_cookie: false, has_referer: false });
         sub.assert_false(ja4h_1[13..25] == ja4h_2[13..25], "Different header arrival order produces distinct JA4H_b hash");
 
         // Cookies are sorted alphabetically in section c & d regardless of arrival order
@@ -124,13 +124,13 @@ fn test_ja4h_http_fingerprint(t: lit::T&) {
         let c_vals1:  const u8[:][2] = ["z1", "a1"];
         let c_names2: const u8[:][2] = ["apple", "zebra"];
         let c_vals2:  const u8[:][2] = ["a1", "z1"];
-        let ja4h_c1 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], wing::Ja4hFlags { has_cookie: true, has_referer: false }, "", c_names1[..], c_vals1[..]);
-        let ja4h_c2 = wing::compute_ja4h("GET", "HTTP/2", h_order1[..], wing::Ja4hFlags { has_cookie: true, has_referer: false }, "", c_names2[..], c_vals2[..]);
+        let ja4h_c1 = fingerprint::compute_ja4h("GET", "HTTP/2", h_order1[..], fingerprint::Ja4hFlags { has_cookie: true, has_referer: false }, "", c_names1[..], c_vals1[..]);
+        let ja4h_c2 = fingerprint::compute_ja4h("GET", "HTTP/2", h_order1[..], fingerprint::Ja4hFlags { has_cookie: true, has_referer: false }, "", c_names2[..], c_vals2[..]);
         sub.assert_bytes_eq(ja4h_c1[26..38], ja4h_c2[26..38], "Cookie names hash JA4H_c is invariant under permutation");
         sub.assert_bytes_eq(ja4h_c1[39..51], ja4h_c2[39..51], "Cookie values hash JA4H_d is invariant under permutation");
 
         let mixed_headers: const u8[:][5] = ["User-Agent", "accept-language", "ACCEPT", "Cookie", "Referer"];
-        let ja4h = wing::compute_ja4h("POST", "HTTP/1.1", mixed_headers[..], wing::Ja4hFlags { has_cookie: true, has_referer: true }, "ru-RU", [], []);
+        let ja4h = fingerprint::compute_ja4h("POST", "HTTP/1.1", mixed_headers[..], fingerprint::Ja4hFlags { has_cookie: true, has_referer: true }, "ru-RU", [], []);
 
         // 3 headers counted (Cookie and Referer excluded from count), ruru language, c=cookie, r=referer
         sub.assert_bytes_eq(ja4h[..12], "po11cr03ruru", "PO=post, 11=HTTP/1.1, c=cookie, r=referer, 03 headers, ruru=lang");
@@ -142,25 +142,25 @@ fn test_ja4h_http_fingerprint(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_wing_profile_and_session(t: lit::T&) {
     t.run("1. Wing Authentic Default Profile Inspection") { sub =>
-        let p = wing::wing_default_profile();
-        sub.assert_eq(p.kind, wing::Profile.Wing, "Default profile kind is Wing");
+        let p = fingerprint::wing_default_profile();
+        sub.assert_eq(p.kind, fingerprint::Profile.Wing, "Default profile kind is Wing");
         sub.assert_contains(p.user_agent[..], "Wing/1.0", "Wing authentic UA string");
         sub.assert_contains(p.accept_encoding[..], "zstd", "Wing advertises native RFC 8878 Zstandard!");
         sub.assert_eq(p.upgrade_insecure_requests[..], "1", "Upgrade-Insecure-Requests is 1");
 
         // Inspect Wing JA4 TLS profile
-        let w_ja4 = wing::ja4(p);
+        let w_ja4 = p.ja4();
         sub.assert_eq(w_ja4.len, 36, "Wing JA4 length is 36 chars");
         sub.assert_bytes_eq(w_ja4[..11], "t13d0910h2_", "Wing JA4 prefix: 9 modern ciphers, 10 extensions, TLS 1.3, h2 ALPN");
 
         // Inspect Wing JA4H HTTP profile
-        let w_ja4h = wing::ja4h(p, "GET", "HTTP/2");
+        let w_ja4h = p.ja4h("GET", "HTTP/2");
         sub.assert_bytes_eq(w_ja4h[..12], "ge20nn05enus", "Wing JA4H: GET, H2, no-cookie, no-referer, 5 headers, enus");
     };
 
     t.run("2. Client Session Out-of-the-Box Identity") { sub =>
         var session = wing::new_client();
-        sub.assert_eq(session.profile, wing::Profile.Wing, "New client defaults to Profile.Wing");
+        sub.assert_eq(session.profile, fingerprint::Profile.Wing, "New client defaults to Profile.Wing");
         sub.assert_contains(wing::user_agent(session), "Wing/1.0", "Session defaults to Wing authentic User-Agent");
 
         // Default headers check
@@ -184,7 +184,7 @@ fn test_wing_profile_and_session(t: lit::T&) {
         sub.assert_bytes_eq(wing::user_agent(session), "CustomGooseBot/2.4 (Internal Systems)", "Custom user agent applied cleanly");
 
         // Caller can configure a completely custom ClientProfile
-        var custom = wing::custom_profile();
+        var custom = fingerprint::custom_profile();
         custom.set_user_agent("WingCustomWorker/3.1");
         custom.set_accept("application/json");
         custom.set_accept_encoding("zstd");
@@ -194,12 +194,12 @@ fn test_wing_profile_and_session(t: lit::T&) {
         session.set_profile(custom);
         sub.assert_bytes_eq(wing::user_agent(session), "WingCustomWorker/3.1", "Custom profile UA applied");
 
-        let custom_ja4h = wing::ja4h(custom, "POST", "HTTP/2");
+        let custom_ja4h = custom.ja4h("POST", "HTTP/2");
         sub.assert_bytes_eq(custom_ja4h[..12], "po20nn05dede", "Custom JA4H reflects custom profile headers (dede lang, 5 headers)");
 
         // set_header overrides standard headers without creating duplicates
-        var prof_ovr = wing::wing_default_profile();
-        wing::set_header(prof_ovr, "User-Agent", "UniqueUA/1.0");
+        var prof_ovr = fingerprint::wing_default_profile();
+        prof_ovr.set_header("User-Agent", "UniqueUA/1.0");
         sub.assert_bytes_eq(prof_ovr.user_agent[..], "UniqueUA/1.0", "set_header overrides user_agent field");
         sub.assert_eq(prof_ovr.extra_headers.entries.len, 0, "No duplicate in extra_headers");
     };
@@ -220,47 +220,47 @@ fn test_wing_profile_and_session(t: lit::T&) {
 fn test_akamai_presets_and_hashes(t: lit::T&) {
     t.run("Verify Wing Akamai fingerprint preset, custom builders, and MD5 hashes") { sub =>
         // 1. Wing Default Systems Engine Preset
-        let wing_fp = wing::akamai_wing_preset();
-        let wing_str = wing::akamai_fingerprint_to_string(wing_fp);
+        let wing_fp = fingerprint::akamai_wing_preset();
+        let wing_str = wing_fp.format_akamai();
         sub.assert_eq(wing_str[..], "1:65536;2:0;3:100;4:6291456;6:262144|15663105|0|m,a,s,p", "Wing fingerprint string format");
 
-        let wing_hash = wing::akamai_fingerprint_hash(wing_fp);
+        let wing_hash = wing_fp.akamai_hash();
         sub.assert_eq(wing_hash.len, 32, "Wing Akamai MD5 hash is 32 hex chars");
 
         // Verify hash determinism
         var wing_hash2: u8[..32] = [];
-        wing::compute_akamai_hash(wing_fp, wing_hash2);
+        wing_fp.compute_akamai_hash(wing_hash2);
         sub.assert_eq(wing_hash[..], wing_hash2[..], "Akamai hash is 100% deterministic");
 
         // 2. Custom Akamai Fingerprint Builder
-        var custom_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
-        sub.assert_true(wing::akamai_push_setting(custom_fp, 1, 65536), "Push setting 1");
-        sub.assert_true(wing::akamai_push_setting(custom_fp, 4, 131072), "Push setting 4");
-        sub.assert_true(wing::akamai_push_setting(custom_fp, 5, 16384), "Push setting 5");
-        let custom_str = wing::akamai_fingerprint_to_string(custom_fp);
+        var custom_fp = fingerprint::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        sub.assert_true(custom_fp.push_setting(1, 65536), "Push setting 1");
+        sub.assert_true(custom_fp.push_setting(4, 131072), "Push setting 4");
+        sub.assert_true(custom_fp.push_setting(5, 16384), "Push setting 5");
+        let custom_str = custom_fp.format_akamai();
         sub.assert_eq(custom_str[..], "1:65536;4:131072;5:16384|12517377|0|m,p,a,s", "Custom fingerprint string format");
 
         // 3. Custom Akamai Fingerprint with Priority & Updated Setting
-        var prio_fp = wing::custom_akamai_fingerprint(10485760, "m,s,a,p");
-        sub.assert_true(wing::akamai_push_setting(prio_fp, 2, 1), "Push setting 2");
-        sub.assert_true(wing::akamai_push_setting(prio_fp, 2, 0), "Update setting 2 in place");
-        sub.assert_true(wing::akamai_push_setting(prio_fp, 3, 100), "Push setting 3");
-        sub.assert_true(wing::akamai_push_setting(prio_fp, 4, 2097152), "Push setting 4");
-        sub.assert_true(wing::akamai_push_priority(prio_fp, 3, 0, 0, 201), "Push priority frame");
-        sub.assert_false(wing::akamai_push_priority(prio_fp, 0, 0, 0, 201), "Reject priority stream 0");
-        sub.assert_false(wing::akamai_push_priority(prio_fp, 3, 0, 3, 201), "Reject priority self-dep");
-        let prio_str = wing::akamai_fingerprint_to_string(prio_fp);
+        var prio_fp = fingerprint::custom_akamai_fingerprint(10485760, "m,s,a,p");
+        sub.assert_true(prio_fp.push_setting(2, 1), "Push setting 2");
+        sub.assert_true(prio_fp.push_setting(2, 0), "Update setting 2 in place");
+        sub.assert_true(prio_fp.push_setting(3, 100), "Push setting 3");
+        sub.assert_true(prio_fp.push_setting(4, 2097152), "Push setting 4");
+        sub.assert_true(prio_fp.push_priority(3, 0, 0, 201), "Push priority frame");
+        sub.assert_false(prio_fp.push_priority(0, 0, 0, 201), "Reject priority stream 0");
+        sub.assert_false(prio_fp.push_priority(3, 0, 3, 201), "Reject priority self-dep");
+        let prio_str = prio_fp.format_akamai();
         sub.assert_eq(prio_str[..], "2:0;3:100;4:2097152|10485760|3:0:0:201|m,s,a,p", "Custom priority fingerprint format");
 
-        // 4. Pseudo-header update via akamai_set_pseudo_headers
-        var minimal_fp = wing::custom_akamai_fingerprint(0, "m,a,s,p");
-        sub.assert_true(wing::akamai_push_setting(minimal_fp, 1, 4096), "Push setting 1");
-        sub.assert_true(wing::akamai_push_setting(minimal_fp, 2, 0), "Push setting 2");
-        sub.assert_true(wing::akamai_push_setting(minimal_fp, 3, 100), "Push setting 3");
-        sub.assert_true(wing::akamai_push_setting(minimal_fp, 4, 65535), "Push setting 4");
-        sub.assert_true(wing::akamai_set_pseudo_headers(minimal_fp, "m,a,p,s"), "Set pseudo-headers to m,a,p,s");
-        sub.assert_false(wing::akamai_set_pseudo_headers(minimal_fp, "m,m,a,s"), "Reject duplicate pseudo-headers");
-        let min_str = wing::akamai_fingerprint_to_string(minimal_fp);
+        // 4. Pseudo-header update via set_pseudo_headers
+        var minimal_fp = fingerprint::custom_akamai_fingerprint(0, "m,a,s,p");
+        sub.assert_true(minimal_fp.push_setting(1, 4096), "Push setting 1");
+        sub.assert_true(minimal_fp.push_setting(2, 0), "Push setting 2");
+        sub.assert_true(minimal_fp.push_setting(3, 100), "Push setting 3");
+        sub.assert_true(minimal_fp.push_setting(4, 65535), "Push setting 4");
+        sub.assert_true(minimal_fp.set_pseudo_headers("m,a,p,s"), "Set pseudo-headers to m,a,p,s");
+        sub.assert_false(minimal_fp.set_pseudo_headers("m,m,a,s"), "Reject duplicate pseudo-headers");
+        let min_str = minimal_fp.format_akamai();
         sub.assert_eq(min_str[..], "1:4096;2:0;3:100;4:65535|0|0|m,a,p,s", "Minimal custom fingerprint string format");
     };
 }
@@ -271,7 +271,7 @@ fn test_akamai_presets_and_hashes(t: lit::T&) {
 fn test_akamai_parsing_and_roundtrip(t: lit::T&) {
     t.run("Parse raw Akamai string and verify round-trip serialization") { sub =>
         let raw = "1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p";
-        let fp, ok = wing::parse_akamai_fingerprint(raw);
+        let fp, ok = fingerprint::parse_akamai_fingerprint(raw);
         sub.assert_true(ok, "Parsed valid Akamai fingerprint");
         sub.assert_eq(fp.settings.len, 4, "Parsed 4 settings");
         sub.assert_eq(fp.settings[0].id, 1, "Setting 0 id = 1");
@@ -292,12 +292,12 @@ fn test_akamai_parsing_and_roundtrip(t: lit::T&) {
         sub.assert_eq(fp.pseudo_headers[3], 'p', "Fourth is 'p'");
 
         // Roundtrip check
-        let roundtrip = wing::akamai_fingerprint_to_string(fp);
+        let roundtrip = fp.format_akamai();
         sub.assert_eq(roundtrip[..], raw, "Roundtrip serialization is identical to input");
 
         // Parse with priority tree
         let raw_prio = "1:65536|1048576|3:0:0:201,5:1:3:101|m,p,a,s";
-        let fp2, ok2 = wing::parse_akamai_fingerprint(raw_prio);
+        let fp2, ok2 = fingerprint::parse_akamai_fingerprint(raw_prio);
         sub.assert_true(ok2, "Parsed priority tree");
         sub.assert_eq(fp2.priority_frames.len, 2, "Parsed 2 priority frames");
         sub.assert_eq(fp2.priority_frames[0].stream_id, 3, "Stream 3");
@@ -310,23 +310,23 @@ fn test_akamai_parsing_and_roundtrip(t: lit::T&) {
         sub.assert_eq(fp2.priority_frames[1].dep_stream_id, 3, "Dep stream 3");
         sub.assert_eq(fp2.priority_frames[1].weight, 101, "Weight 101");
 
-        let roundtrip2 = wing::akamai_fingerprint_to_string(fp2);
+        let roundtrip2 = fp2.format_akamai();
         sub.assert_eq(roundtrip2[..], raw_prio, "Priority roundtrip identical");
 
         // Error cases
-        let _, bad1 = wing::parse_akamai_fingerprint("invalid_string_without_pipes");
+        let _, bad1 = fingerprint::parse_akamai_fingerprint("invalid_string_without_pipes");
         sub.assert_false(bad1, "Fails on missing pipes");
 
-        let _, bad2 = wing::parse_akamai_fingerprint("1:65536|1000|0|m,a,s,p|extra_pipe");
+        let _, bad2 = fingerprint::parse_akamai_fingerprint("1:65536|1000|0|m,a,s,p|extra_pipe");
         sub.assert_false(bad2, "Fails on extra pipe");
 
-        let _, bad3 = wing::parse_akamai_fingerprint("1:not_a_number|1000|0|m,a,s,p");
+        let _, bad3 = fingerprint::parse_akamai_fingerprint("1:not_a_number|1000|0|m,a,s,p");
         sub.assert_false(bad3, "Fails on non-numeric setting value");
 
-        let _, bad4 = wing::parse_akamai_fingerprint("1:65536|1000|3:0:0:0|m,a,s,p");
+        let _, bad4 = fingerprint::parse_akamai_fingerprint("1:65536|1000|3:0:0:0|m,a,s,p");
         sub.assert_false(bad4, "Fails on priority weight 0 (< 1)");
 
-        let _, bad5 = wing::parse_akamai_fingerprint("1:65536|1000|3:0:0:257|m,a,s,p");
+        let _, bad5 = fingerprint::parse_akamai_fingerprint("1:65536|1000|3:0:0:257|m,a,s,p");
         sub.assert_false(bad5, "Fails on priority weight 257 (> 256)");
     };
 }
@@ -336,19 +336,19 @@ fn test_akamai_parsing_and_roundtrip(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_akamai_matching_and_family(t: lit::T&) {
     t.run("Verify Akamai matching logic across Wing and custom fingerprints") { sub =>
-        let wing1 = wing::akamai_wing_preset();
-        let wing2 = wing::akamai_wing_preset();
-        var custom_mpas = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
-        let _ = wing::akamai_push_setting(custom_mpas, 1, 65536);
-        let _ = wing::akamai_push_setting(custom_mpas, 4, 131072);
+        let wing1 = fingerprint::akamai_wing_preset();
+        let wing2 = fingerprint::akamai_wing_preset();
+        var custom_mpas = fingerprint::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        let _ = custom_mpas.push_setting(1, 65536);
+        let _ = custom_mpas.push_setting(4, 131072);
 
-        var custom_msap = wing::custom_akamai_fingerprint(10485760, "m,s,a,p");
-        let _ = wing::akamai_push_setting(custom_msap, 2, 0);
-        let _ = wing::akamai_push_setting(custom_msap, 3, 100);
+        var custom_msap = fingerprint::custom_akamai_fingerprint(10485760, "m,s,a,p");
+        let _ = custom_msap.push_setting(2, 0);
+        let _ = custom_msap.push_setting(3, 100);
 
-        sub.assert_true(wing::match_akamai_fingerprints(wing1, wing2), "Identical Wing presets match");
-        sub.assert_false(wing::match_akamai_fingerprints(wing1, custom_mpas), "Wing does not match custom m,p,a,s profile");
-        sub.assert_false(wing::match_akamai_fingerprints(wing1, custom_msap), "Wing does not match custom m,s,a,p profile");
+        sub.assert_true(wing1.match_akamai(wing2), "Identical Wing presets match");
+        sub.assert_false(wing1.match_akamai(custom_mpas), "Wing does not match custom m,p,a,s profile");
+        sub.assert_false(wing1.match_akamai(custom_msap), "Wing does not match custom m,s,a,p profile");
     };
 }
 
@@ -357,34 +357,34 @@ fn test_akamai_matching_and_family(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_akamai_anomaly_detection(t: lit::T&) {
     t.run("Detect structural and profile anomalies against expected reference fingerprint") { sub =>
-        let wing_fp = wing::akamai_wing_preset();
+        let wing_fp = fingerprint::akamai_wing_preset();
 
         // 1. Authentic Wing fingerprint matches expected Wing preset
-        let a1, _ = wing::detect_akamai_anomaly(wing_fp, wing_fp);
-        sub.assert_true(a1 == wing::AkamaiAnomaly.None, "Authentic Wing profile passes");
+        let a1, _ = wing_fp.detect_akamai_anomaly(wing_fp);
+        sub.assert_true(a1 == fingerprint::AkamaiAnomaly.None, "Authentic Wing profile passes");
 
         // 2. Pseudo-header order mismatch against expected profile
-        var custom_order = wing::akamai_wing_preset();
-        let _ = wing::akamai_set_pseudo_headers(custom_order, "m,p,a,s");
-        let a2, _ = wing::detect_akamai_anomaly(custom_order, wing_fp);
-        sub.assert_true(a2 == wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Detects pseudo-header order mismatch");
+        var custom_order = fingerprint::akamai_wing_preset();
+        let _ = custom_order.set_pseudo_headers("m,p,a,s");
+        let a2, _ = custom_order.detect_akamai_anomaly(wing_fp);
+        sub.assert_true(a2 == fingerprint::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Detects pseudo-header order mismatch");
 
         // 3. Window update mismatch against expected profile
-        var zero_wu = wing::akamai_wing_preset();
+        var zero_wu = fingerprint::akamai_wing_preset();
         zero_wu.window_update = 0;
-        let a3, _ = wing::detect_akamai_anomaly(zero_wu, wing_fp);
-        sub.assert_true(a3 == wing::AkamaiAnomaly.WindowUpdateAnomaly, "Detects omitted window update");
+        let a3, _ = zero_wu.detect_akamai_anomaly(wing_fp);
+        sub.assert_true(a3 == fingerprint::AkamaiAnomaly.WindowUpdateAnomaly, "Detects omitted window update");
 
         // 4. Settings mismatch against expected profile
-        var bad_settings = wing::akamai_wing_preset();
-        let _ = wing::akamai_push_setting(bad_settings, 4, 131072);
-        let a4, _ = wing::detect_akamai_anomaly(bad_settings, wing_fp);
-        sub.assert_true(a4 == wing::AkamaiAnomaly.SettingsMismatch, "Detects modified SETTINGS parameter value");
+        var bad_settings = fingerprint::akamai_wing_preset();
+        let _ = bad_settings.push_setting(4, 131072);
+        let a4, _ = bad_settings.detect_akamai_anomaly(wing_fp);
+        sub.assert_true(a4 == fingerprint::AkamaiAnomaly.SettingsMismatch, "Detects modified SETTINGS parameter value");
 
         // 5. Missing pseudo-headers
-        var incomplete = wing::AkamaiFingerprint { .. };
-        let a5, _ = wing::detect_akamai_anomaly(incomplete, wing_fp);
-        sub.assert_true(a5 == wing::AkamaiAnomaly.MissingPseudoHeaders, "Detects missing pseudo-headers");
+        var incomplete = fingerprint::AkamaiFingerprint { .. };
+        let a5, _ = incomplete.detect_akamai_anomaly(wing_fp);
+        sub.assert_true(a5 == fingerprint::AkamaiAnomaly.MissingPseudoHeaders, "Detects missing pseudo-headers");
     };
 }
 
@@ -393,31 +393,37 @@ fn test_akamai_anomaly_detection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_akamai_wire_framing_roundtrip(t: lit::T&) {
     t.run("HTTP/2 binary framing: serialize to wire bytes and parse back identically") { sub =>
-        let wing_fp = wing::akamai_wing_preset();
+        let wing_fp = fingerprint::akamai_wing_preset();
 
         // 1. Serialize wire frames
         var wire_buf: u8[>..] = [];
         // Add HTTP/2 preface first
         wire_buf.append(rfc::H2_CLIENT_PREFACE[..]);
         // Encode handshake frames: SETTINGS + WINDOW_UPDATE
-        wing::encode_akamai_handshake_frames(wing_fp, wire_buf);
+        sub.assert_true(wing_fp.encode_akamai_handshake_frames(wire_buf), "Encode handshake frames");
 
         // Verify total length: 24 (preface) + 9 (SETTINGS hdr) + 30 (5*6 payload) + 9 (WU hdr) + 4 (payload) = 76 bytes
         sub.assert_eq(wire_buf.len, 76, "76 bytes wire frame stream");
 
+        // Verify capacity failure rolls back cleanly
+        var tiny_buf: u8[..16] = [];
+        tiny_buf.append("ABCD");
+        sub.assert_false(wing_fp.encode_akamai_handshake_frames(tiny_buf), "Rejects undersized output buffer");
+        sub.assert_bytes_eq(tiny_buf[..], "ABCD", "Rolls back undersized output buffer");
+
         // 2. Extract Akamai fingerprint from wire bytes
         let pseudos = "m,a,s,p";
-        let extracted_fp, ok = wing::extract_akamai_from_wire(wire_buf[..], pseudos);
+        let extracted_fp, ok = fingerprint::extract_akamai_from_wire(wire_buf[..], pseudos);
         sub.assert_true(ok, "Extracted fingerprint from raw HTTP/2 wire frames");
 
         // 3. Verify extracted fingerprint matches original Wing preset 100%
-        sub.assert_true(wing::match_akamai_fingerprints(extracted_fp, wing_fp), "Extracted wire fingerprint matches Wing preset exactly");
+        sub.assert_true(extracted_fp.match_akamai(wing_fp), "Extracted wire fingerprint matches Wing preset exactly");
         sub.assert_eq(extracted_fp.window_update, 15663105, "Extracted window update is 15663105");
         sub.assert_eq(extracted_fp.settings.len, 5, "Extracted 5 settings");
 
         // 4. Reject garbage / non-HTTP/2 input (e.g. plain HTTP/1.1 request)
         let http1_req = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        let _, ok_bad = wing::extract_akamai_from_wire(http1_req, pseudos);
+        let _, ok_bad = fingerprint::extract_akamai_from_wire(http1_req, pseudos);
         sub.assert_false(ok_bad, "Rejects plain HTTP/1.1 stream lacking valid HTTP/2 SETTINGS frame");
     };
 }
@@ -427,9 +433,9 @@ fn test_akamai_wire_framing_roundtrip(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_akamai_pseudo_header_ordering(t: lit::T&) {
     t.run("Order pseudo headers according to custom profile specification") { sub =>
-        let wing_fp = wing::akamai_wing_preset();
+        let wing_fp = fingerprint::akamai_wing_preset();
         var wing_ordered = wing::HeaderMap { .. };
-        wing::order_pseudo_headers(wing_fp, "GET", "api.example.com", "https", "/v1/data", wing_ordered);
+        sub.assert_true(wing_fp.order_pseudo_headers("GET", "api.example.com", "https", "/v1/data", wing_ordered), "Order Wing pseudo-headers");
 
         sub.assert_eq(wing_ordered.entries.len, 4, "4 ordered headers");
         sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[0]), ":method", "Wing 0 is :method");
@@ -437,18 +443,18 @@ fn test_akamai_pseudo_header_ordering(t: lit::T&) {
         sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[2]), ":scheme", "Wing 2 is :scheme");
         sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[3]), ":path", "Wing 3 is :path");
 
-        let mpas_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        let mpas_fp = fingerprint::custom_akamai_fingerprint(12517377, "m,p,a,s");
         var mpas_ordered = wing::HeaderMap { .. };
-        wing::order_pseudo_headers(mpas_fp, "GET", "api.example.com", "https", "/v1/data", mpas_ordered);
+        sub.assert_true(mpas_fp.order_pseudo_headers("GET", "api.example.com", "https", "/v1/data", mpas_ordered), "Order m,p,a,s pseudo-headers");
 
         sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[0]), ":method", "Custom m,p,a,s 0 is :method");
         sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[1]), ":path", "Custom m,p,a,s 1 is :path");
         sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[2]), ":authority", "Custom m,p,a,s 2 is :authority");
         sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[3]), ":scheme", "Custom m,p,a,s 3 is :scheme");
 
-        let msap_fp = wing::custom_akamai_fingerprint(10485760, "m,s,a,p");
+        let msap_fp = fingerprint::custom_akamai_fingerprint(10485760, "m,s,a,p");
         var msap_ordered = wing::HeaderMap { .. };
-        wing::order_pseudo_headers(msap_fp, "GET", "api.example.com", "https", "/v1/data", msap_ordered);
+        sub.assert_true(msap_fp.order_pseudo_headers("GET", "api.example.com", "https", "/v1/data", msap_ordered), "Order m,s,a,p pseudo-headers");
 
         sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[0]), ":method", "Custom m,s,a,p 0 is :method");
         sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[1]), ":scheme", "Custom m,s,a,p 1 is :scheme");
@@ -462,8 +468,8 @@ fn test_akamai_pseudo_header_ordering(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_akamai_browser_profiles(t: lit::T&) {
     t.run("ClientProfile exports authentic Wing Akamai fingerprint") { sub =>
-        let wp = wing::wing_default_profile();
-        let fp_str4 = wing::akamai(wp);
+        let wp = fingerprint::wing_default_profile();
+        let fp_str4 = wp.format_akamai();
         sub.assert_eq(fp_str4[..], "1:65536;2:0;3:100;4:6291456;6:262144|15663105|0|m,a,s,p", "Wing default profile has authentic Wing Akamai fingerprint");
 
         // Session integration
@@ -482,24 +488,24 @@ fn test_akamai_browser_profiles(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_wing_authentic_p0f(t: lit::T&) {
     t.run("1. Wing Authentic TCP SYN Identity Spec") { sub =>
-        let sig = wing::wing_p0f_signature();
+        let sig = fingerprint::wing_p0f_signature();
 
         sub.assert_eq(sig.ip_version as i64, 0, "Dual-stack wildcard IP version ('*')");
         sub.assert_eq(sig.ttl as i64, 64, "Initial TTL 64");
         sub.assert_false(sig.has_ttl_minus, "Default profile has exact initial TTL");
         sub.assert_eq(sig.ip_opt_len as i64, 0, "No archaic IP options");
         sub.assert_eq(sig.mss as i64, -1, "Wildcard MSS ('*') discovered via Path MTU");
-        sub.assert_eq(sig.window_type, wing::P0fWindowType.Mss, "Dynamic window based on MSS multiplier");
+        sub.assert_eq(sig.window_type, fingerprint::P0fWindowType.Mss, "Dynamic window based on MSS multiplier");
         sub.assert_eq(sig.window_size as i64, 20, "Window multiplier: mss*20");
         sub.assert_eq(sig.window_scale as i64, 10, "Window scale: 10 for multi-gigabit throughput");
 
         // Options layout
         sub.assert_eq(sig.options.len, 5, "5 standard RFC TCP options");
-        sub.assert_eq(sig.options[0], wing::P0fTcpOption.Mss, "Option 1: MSS");
-        sub.assert_eq(sig.options[1], wing::P0fTcpOption.Sok, "Option 2: SACK Permitted");
-        sub.assert_eq(sig.options[2], wing::P0fTcpOption.Ts, "Option 3: Timestamps");
-        sub.assert_eq(sig.options[3], wing::P0fTcpOption.Nop, "Option 4: NOP alignment");
-        sub.assert_eq(sig.options[4], wing::P0fTcpOption.Ws, "Option 5: Window Scale");
+        sub.assert_eq(sig.options[0], fingerprint::P0fTcpOption.Mss, "Option 1: MSS");
+        sub.assert_eq(sig.options[1], fingerprint::P0fTcpOption.Sok, "Option 2: SACK Permitted");
+        sub.assert_eq(sig.options[2], fingerprint::P0fTcpOption.Ts, "Option 3: Timestamps");
+        sub.assert_eq(sig.options[3], fingerprint::P0fTcpOption.Nop, "Option 4: NOP alignment");
+        sub.assert_eq(sig.options[4], fingerprint::P0fTcpOption.Ws, "Option 5: Window Scale");
 
         // Quirks
         sub.assert_true(sig.quirks.df, "Don't Fragment (DF) enabled for Path MTU Discovery");
@@ -507,7 +513,7 @@ fn test_wing_authentic_p0f(t: lit::T&) {
         sub.assert_false(sig.quirks.ecn, "ECN not set in default SYN");
 
         // Canonical format
-        let formatted = wing::format_p0f(sig);
+        let formatted = sig.format_p0f();
         sub.assert_bytes_eq(
             formatted[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",
@@ -516,16 +522,16 @@ fn test_wing_authentic_p0f(t: lit::T&) {
     };
 
     t.run("2. Socket Parameter Derivation & Client Integration") { sub =>
-        let sig = wing::wing_p0f_signature();
-        let sock_opts = wing::p0f_to_socket_opts(sig, 1460);
+        let sig = fingerprint::wing_p0f_signature();
+        let sock_opts = sig.to_socket_opts(1460);
 
         sub.assert_eq(sock_opts.ttl as i64, 64, "Socket TTL option is 64");
         sub.assert_true(sock_opts.dont_fragment, "Socket IP_DONTFRAGMENT is enabled");
         sub.assert_eq(sock_opts.receive_buffer_size as i64, 29200, "SO_RCVBUF is 1460 * 20 = 29200 bytes");
 
         // Profile default has wing_p0f_signature
-        let profile = wing::wing_default_profile();
-        let p_p0f = wing::p0f(profile);
+        let profile = fingerprint::wing_default_profile();
+        let p_p0f = profile.format_p0f();
         sub.assert_bytes_eq(
             p_p0f[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",
@@ -550,81 +556,81 @@ fn test_p0f_parser_and_roundtrip(t: lit::T&) {
     t.run("1. Standard p0f v3 Signatures Roundtrip") { sub =>
         // Vector 1: Wing Authentic Profile
         let raw1 = "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0";
-        let sig1, ok1 = wing::parse_p0f(raw1);
+        let sig1, ok1 = fingerprint::parse_p0f(raw1);
         sub.assert_true(ok1, "Must parse Wing signature");
-        sub.assert_bytes_eq(wing::format_p0f(sig1)[..], raw1, "Roundtrip 1 must be exact");
+        sub.assert_bytes_eq(sig1.format_p0f()[..], raw1, "Roundtrip 1 must be exact");
 
         // Vector 2: MTU multiplier window with IPv4
         let raw2 = "4:64:0:1460:mtu*4,0:mss,sok:df:0";
-        let sig2, ok2 = wing::parse_p0f(raw2);
+        let sig2, ok2 = fingerprint::parse_p0f(raw2);
         sub.assert_true(ok2, "Must parse MTU window signature");
         sub.assert_eq(sig2.ip_version as i64, 4, "IPv4");
         sub.assert_eq(sig2.mss as i64, 1460, "MSS 1460");
-        sub.assert_eq(sig2.window_type, wing::P0fWindowType.Mtu, "MTU multiplier");
+        sub.assert_eq(sig2.window_type, fingerprint::P0fWindowType.Mtu, "MTU multiplier");
         sub.assert_eq(sig2.window_size as i64, 4, "Window size 4");
         sub.assert_eq(sig2.window_scale as i64, 0, "Window scale 0");
-        sub.assert_bytes_eq(wing::format_p0f(sig2)[..], raw2, "Roundtrip 2 must be exact");
+        sub.assert_bytes_eq(sig2.format_p0f()[..], raw2, "Roundtrip 2 must be exact");
 
         // Vector 3: Exact / Normal window size with IPv6
         let raw3 = "6:128:0:1440:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0";
-        let sig3, ok3 = wing::parse_p0f(raw3);
+        let sig3, ok3 = fingerprint::parse_p0f(raw3);
         sub.assert_true(ok3, "Must parse exact window signature");
         sub.assert_eq(sig3.ip_version as i64, 6, "IPv6");
         sub.assert_eq(sig3.ttl as i64, 128, "TTL 128");
-        sub.assert_eq(sig3.window_type, wing::P0fWindowType.Normal, "Normal window");
+        sub.assert_eq(sig3.window_type, fingerprint::P0fWindowType.Normal, "Normal window");
         sub.assert_eq(sig3.window_size as i64, 65535, "Window size 65535");
         sub.assert_eq(sig3.window_scale as i64, 8, "Window scale 8");
-        sub.assert_bytes_eq(wing::format_p0f(sig3)[..], raw3, "Roundtrip 3 must be exact");
+        sub.assert_bytes_eq(sig3.format_p0f()[..], raw3, "Roundtrip 3 must be exact");
 
         // Vector 4: Wildcard window size (*,-1)
         let raw4 = "*:64:0:*:*,-1:mss,sok,ts,nop,ws:df,id+:0";
-        let sig4, ok4 = wing::parse_p0f(raw4);
+        let sig4, ok4 = fingerprint::parse_p0f(raw4);
         sub.assert_true(ok4, "Must parse wildcard window signature");
-        sub.assert_eq(sig4.window_type, wing::P0fWindowType.Any, "Any window type");
+        sub.assert_eq(sig4.window_type, fingerprint::P0fWindowType.Any, "Any window type");
         sub.assert_eq(sig4.window_size as i64, -1, "Wildcard window size");
         sub.assert_eq(sig4.window_scale as i64, -1, "Wildcard window scale");
-        sub.assert_bytes_eq(wing::format_p0f(sig4)[..], raw4, "Roundtrip 4 must be exact");
+        sub.assert_bytes_eq(sig4.format_p0f()[..], raw4, "Roundtrip 4 must be exact");
 
         // Vector 5: TTL minus wildcard (64-)
         let raw5 = "*:64-:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0";
-        let sig5, ok5 = wing::parse_p0f(raw5);
+        let sig5, ok5 = fingerprint::parse_p0f(raw5);
         sub.assert_true(ok5, "Must parse TTL minus signature");
         sub.assert_true(sig5.has_ttl_minus, "has_ttl_minus is true");
         sub.assert_eq(sig5.ttl as i64, 64, "Base TTL 64");
-        sub.assert_bytes_eq(wing::format_p0f(sig5)[..], raw5, "Roundtrip 5 must be exact");
+        sub.assert_bytes_eq(sig5.format_p0f()[..], raw5, "Roundtrip 5 must be exact");
     };
 
     t.run("2. Strong Parsing and Error Rejection") { sub =>
         // Too few fields
-        let _, err1 = wing::parse_p0f("too:few:parts");
+        let _, err1 = fingerprint::parse_p0f("too:few:parts");
         sub.assert_false(err1, "Rejects signature with < 8 fields");
 
         // Empty input
-        let _, err2 = wing::parse_p0f("");
+        let _, err2 = fingerprint::parse_p0f("");
         sub.assert_false(err2, "Rejects empty input");
 
         // Invalid IP version
-        let _, err3 = wing::parse_p0f("3:64:0:*:mss*20,10:mss:df:0");
+        let _, err3 = fingerprint::parse_p0f("3:64:0:*:mss*20,10:mss:df:0");
         sub.assert_false(err3, "Rejects invalid IP version '3'");
 
         // Invalid TTL
-        let _, err4 = wing::parse_p0f("*:invalid:0:*:mss*20,10:mss:df:0");
+        let _, err4 = fingerprint::parse_p0f("*:invalid:0:*:mss*20,10:mss:df:0");
         sub.assert_false(err4, "Rejects non-numeric TTL");
 
         // Missing window scale
-        let _, err5 = wing::parse_p0f("*:64:0:*:65535:mss:df:0");
+        let _, err5 = fingerprint::parse_p0f("*:64:0:*:65535:mss:df:0");
         sub.assert_false(err5, "Rejects window field without comma separator");
 
         // Payload buffer overflow (> 8 chars)
-        let _, err6 = wing::parse_p0f("*:64:0:*:65535,0:mss:df:excessive_payload_length");
+        let _, err6 = fingerprint::parse_p0f("*:64:0:*:65535,0:mss:df:excessive_payload_length");
         sub.assert_false(err6, "Rejects payload exceeding buffer capacity");
 
         // Apple Darwin/FreeBSD eol+1 TCP option parsing
         let apple_raw = "*:64:0:*:65535,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df,id+:0";
-        let sig_apple, ok_apple = wing::parse_p0f(apple_raw);
+        let sig_apple, ok_apple = fingerprint::parse_p0f(apple_raw);
         sub.assert_true(ok_apple, "Successfully parses Darwin/FreeBSD eol+1 option layout");
         sub.assert_eq(sig_apple.options.len, 8, "Darwin signature has 8 TCP options");
-        sub.assert_eq(sig_apple.options[7], wing::P0fTcpOption.Eol, "eol+1 maps to P0fTcpOption.Eol");
+        sub.assert_eq(sig_apple.options[7], fingerprint::P0fTcpOption.Eol, "eol+1 maps to P0fTcpOption.Eol");
     };
 }
 
@@ -633,62 +639,63 @@ fn test_p0f_parser_and_roundtrip(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_p0f_pattern_matching(t: lit::T&) {
     t.run("1. Exact and Self Matching") { sub =>
-        let sig = wing::wing_p0f_signature();
-        sub.assert_true(wing::match_p0f(sig, sig), "Signature matches itself");
+        let sig = fingerprint::wing_p0f_signature();
+        sub.assert_true(sig.match_p0f(sig), "Signature matches itself");
     };
 
     t.run("2. Hop Degradation Tolerance with TTL-minus") { sub =>
         let pattern_raw = "*:64-:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0";
-        let pattern, ok = wing::parse_p0f(pattern_raw);
+        let pattern, ok = fingerprint::parse_p0f(pattern_raw);
         sub.assert_true(ok, "Parsed pattern");
 
         // Packet arrived with TTL degraded from 64 to 52 (12 network hops)
-        var actual = wing::wing_p0f_signature();
+        var actual = fingerprint::wing_p0f_signature();
         actual.ttl = 52;
-        sub.assert_true(wing::match_p0f(actual, pattern), "Accepts TTL degraded within 35 hops");
+        sub.assert_true(actual.match_p0f(pattern), "Accepts TTL degraded within 35 hops");
 
         // Packet arrived with TTL degraded by > 35 hops (TTL 20)
         actual.ttl = 20;
-        sub.assert_false(wing::match_p0f(actual, pattern), "Rejects TTL degraded beyond 35 hops");
+        sub.assert_false(actual.match_p0f(pattern), "Rejects TTL degraded beyond 35 hops");
     };
 
     t.run("3. Option Layout and Quirk Discrimination") { sub =>
-        let base = wing::wing_p0f_signature();
+        let base = fingerprint::wing_p0f_signature();
 
         // Altered option layout (missing Timestamps)
         var altered_opts = base;
         altered_opts.options.clear();
-        altered_opts.options.push(wing::P0fTcpOption.Mss);
-        altered_opts.options.push(wing::P0fTcpOption.Sok);
-        altered_opts.options.push(wing::P0fTcpOption.Nop);
-        altered_opts.options.push(wing::P0fTcpOption.Ws);
-        sub.assert_false(wing::match_p0f(altered_opts, base), "Option layout mismatch fails matching");
+        altered_opts.options.push(fingerprint::P0fTcpOption.Mss);
+        altered_opts.options.push(fingerprint::P0fTcpOption.Sok);
+        altered_opts.options.push(fingerprint::P0fTcpOption.Nop);
+        altered_opts.options.push(fingerprint::P0fTcpOption.Ws);
+        sub.assert_false(altered_opts.match_p0f(base), "Option layout mismatch fails matching");
 
         // Altered quirks (DF disabled)
         var altered_quirks = base;
         altered_quirks.quirks.df = false;
-        sub.assert_false(wing::match_p0f(altered_quirks, base), "Missing required DF quirk fails matching");
+        sub.assert_false(altered_quirks.match_p0f(base), "Missing required DF quirk fails matching");
 
         // Payload mismatch
         var altered_payload = base;
         altered_payload.payload.clear();
         altered_payload.payload.append("+");
-        sub.assert_false(wing::match_p0f(altered_payload, base), "Unexpected non-zero payload fails matching");
+        sub.assert_false(altered_payload.match_p0f(base), "Unexpected non-zero payload fails matching");
     };
 
     t.run("4. Custom P0f Builder and Quirk Helpers") { sub =>
-        var custom = wing::custom_p0f_signature(4, 128, false, 1400, wing::P0fWindowType.Normal, 16384, 2);
-        wing::p0f_push_option(custom, wing::P0fTcpOption.Mss);
-        wing::p0f_push_option(custom, wing::P0fTcpOption.Ws);
-        wing::p0f_set_quirk(custom, "df", true);
-        wing::p0f_set_quirk(custom, "ecn", true);
+        var custom = fingerprint::custom_p0f_signature(4, 128, false, 1400, fingerprint::P0fWindowType.Normal, 16384, 2);
+        sub.assert_true(custom.push_option(fingerprint::P0fTcpOption.Mss), "Push MSS option");
+        sub.assert_true(custom.push_option(fingerprint::P0fTcpOption.Ws), "Push WS option");
+        sub.assert_true(custom.set_quirk("df", true), "Set quirk 'df'");
+        sub.assert_true(custom.set_quirk("ecn", true), "Set quirk 'ecn'");
+        sub.assert_false(custom.set_quirk("unknown_quirk", true), "Reject unknown quirk");
         custom.payload.append("0");
 
-        sub.assert_true(wing::p0f_has_quirk(custom, "df"), "Quirk 'df' is set");
-        sub.assert_true(wing::p0f_has_quirk(custom, "ecn"), "Quirk 'ecn' is set");
-        sub.assert_false(wing::p0f_has_quirk(custom, "id+"), "Quirk 'id+' is not set");
+        sub.assert_true(custom.has_quirk("df"), "Quirk 'df' is set");
+        sub.assert_true(custom.has_quirk("ecn"), "Quirk 'ecn' is set");
+        sub.assert_false(custom.has_quirk("id+"), "Quirk 'id+' is not set");
 
-        let formatted = wing::format_p0f(custom);
+        let formatted = custom.format_p0f();
         sub.assert_bytes_eq(
             formatted[..],
             "4:128:0:1400:16384,2:mss,ws:df,ecn:0",
@@ -696,9 +703,9 @@ fn test_p0f_pattern_matching(t: lit::T&) {
         );
 
         // Plug into BrowserProfile
-        var profile = wing::custom_profile();
-        wing::set_p0f(profile, custom);
-        let prof_str = wing::p0f(profile);
+        var profile = fingerprint::custom_profile();
+        profile.set_p0f(custom);
+        let prof_str = profile.format_p0f();
         sub.assert_bytes_eq(
             prof_str[..],
             "4:128:0:1400:16384,2:mss,ws:df,ecn:0",
@@ -712,56 +719,56 @@ fn test_p0f_pattern_matching(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_fingerprint_bug_regressions(t: lit::T&) {
     t.run("1. Akamai priority exclusive bounds rejection") { sub =>
-        let _, bad_excl = wing::parse_akamai_fingerprint("1:65536|1000|3:2:0:201|m,a,s,p");
+        let _, bad_excl = fingerprint::parse_akamai_fingerprint("1:65536|1000|3:2:0:201|m,a,s,p");
         sub.assert_false(bad_excl, "Must reject invalid priority exclusive flag value >= 2");
     };
 
     t.run("2. Akamai pseudo-headers character validation") { sub =>
-        let _, bad_pseudo = wing::parse_akamai_fingerprint("1:65536|1000|0|m,x,y,z");
+        let _, bad_pseudo = fingerprint::parse_akamai_fingerprint("1:65536|1000|0|m,x,y,z");
         sub.assert_false(bad_pseudo, "Must reject invalid pseudo-header characters");
     };
 
     t.run("3. Akamai pseudo-header order anomaly detection") { sub =>
-        let expected_wing = wing::akamai_wing_preset();
-        var mismatched_fp = wing::akamai_wing_preset();
-        let _ = wing::akamai_set_pseudo_headers(mismatched_fp, "m,a,p,s");
-        let anomaly, _ = wing::detect_akamai_anomaly(mismatched_fp, expected_wing);
-        sub.assert_eq(anomaly, wing::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Must detect pseudo-header mismatch against Wing profile");
+        let expected_wing = fingerprint::akamai_wing_preset();
+        var mismatched_fp = fingerprint::akamai_wing_preset();
+        let _ = mismatched_fp.set_pseudo_headers("m,a,p,s");
+        let anomaly, _ = mismatched_fp.detect_akamai_anomaly(expected_wing);
+        sub.assert_eq(anomaly, fingerprint::AkamaiAnomaly.PseudoHeaderOrderMismatch, "Must detect pseudo-header mismatch against Wing profile");
     };
 
     t.run("4. Akamai custom settings builder & match") { sub =>
-        var custom1 = wing::custom_akamai_fingerprint(0, "m,a,p,s");
-        let _ = wing::akamai_push_setting(custom1, 1, 8192);
-        let parsed, ok_p = wing::parse_akamai_fingerprint("1:8192|0|0|m,a,p,s");
+        var custom1 = fingerprint::custom_akamai_fingerprint(0, "m,a,p,s");
+        let _ = custom1.push_setting(1, 8192);
+        let parsed, ok_p = fingerprint::parse_akamai_fingerprint("1:8192|0|0|m,a,p,s");
         sub.assert_true(ok_p, "Parsed custom Akamai fingerprint");
-        sub.assert_true(wing::match_akamai_fingerprints(custom1, parsed), "Custom builder matches parsed string");
+        sub.assert_true(custom1.match_akamai(parsed), "Custom builder matches parsed string");
     };
 
     t.run("5. p0f options length and syntax validation") { sub =>
         let raw_too_many = "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop:df,id+:0";
-        let _, ok_too_many = wing::parse_p0f(raw_too_many);
+        let _, ok_too_many = fingerprint::parse_p0f(raw_too_many);
         sub.assert_false(ok_too_many, "Must reject signature with > 16 options");
 
         let raw_empty_opt = "*:64:0:*:mss*20,10:mss,,ws:df,id+:0";
-        let _, ok_empty_opt = wing::parse_p0f(raw_empty_opt);
+        let _, ok_empty_opt = fingerprint::parse_p0f(raw_empty_opt);
         sub.assert_false(ok_empty_opt, "Must reject empty option token");
     };
 
     t.run("6. p0f negative window size rejection") { sub =>
-        let _, ok_neg = wing::parse_p0f("*:64:0:*:mss*-20,10:mss,ws:df:0");
+        let _, ok_neg = fingerprint::parse_p0f("*:64:0:*:mss*-20,10:mss,ws:df:0");
         sub.assert_false(ok_neg, "Must reject negative window multiplier");
     };
 
     t.run("7. Akamai large fingerprint capacity safety") { sub =>
-        var fp = wing::AkamaiFingerprint {
+        var fp = fingerprint::AkamaiFingerprint {
             window_update: 15663105,
             ..
         };
         for i in 16 {
-            fp.settings.push(wing::AkamaiSetting { id: (i as u16) + 1, val: 6291456 });
+            fp.settings.push(fingerprint::AkamaiSetting { id: (i as u16) + 1, val: 6291456 });
         }
         for i in 8 {
-            fp.priority_frames.push(wing::AkamaiPriorityFrame {
+            fp.priority_frames.push(fingerprint::AkamaiPriorityFrame {
                 stream_id:     (i as u32) + 3,
                 exclusive:     0,
                 dep_stream_id: 0,
@@ -773,47 +780,47 @@ fn test_fingerprint_bug_regressions(t: lit::T&) {
         fp.pseudo_headers.push('s');
         fp.pseudo_headers.push('p');
 
-        let s = wing::akamai_fingerprint_to_string(fp);
+        let s = fp.format_akamai();
         sub.assert_true(s.len > 256, "Large Akamai fingerprint exceeds 256 bytes");
 
         var hash_buf: u8[..32] = [];
-        wing::compute_akamai_hash(fp, hash_buf);
+        fp.compute_akamai_hash(hash_buf);
         sub.assert_eq(hash_buf.len, 32, "MD5 hash computes cleanly on large fingerprint");
     };
 
     t.run("8. p0f dense signature formatting capacity safety") { sub =>
-        var sig = wing::wing_p0f_signature();
+        var sig = fingerprint::wing_p0f_signature();
         for i in 11 {
-            sig.options.push(wing::P0fTcpOption.Nop);
+            let _ = sig.push_option(fingerprint::P0fTcpOption.Nop);
         }
-        wing::p0f_set_quirk(sig, "df", true);
-        wing::p0f_set_quirk(sig, "id+", true);
-        wing::p0f_set_quirk(sig, "ecn", true);
-        wing::p0f_set_quirk(sig, "0+", true);
-        wing::p0f_set_quirk(sig, "flow", true);
-        wing::p0f_set_quirk(sig, "seq-", true);
-        wing::p0f_set_quirk(sig, "ack+", true);
-        wing::p0f_set_quirk(sig, "uptr+", true);
-        wing::p0f_set_quirk(sig, "urgf+", true);
-        wing::p0f_set_quirk(sig, "pushf+", true);
-        wing::p0f_set_quirk(sig, "ts1-", true);
-        wing::p0f_set_quirk(sig, "ts2+", true);
-        wing::p0f_set_quirk(sig, "opt+", true);
-        wing::p0f_set_quirk(sig, "expt", true);
-        wing::p0f_set_quirk(sig, "bad", true);
+        let _ = sig.set_quirk("df", true);
+        let _ = sig.set_quirk("id+", true);
+        let _ = sig.set_quirk("ecn", true);
+        let _ = sig.set_quirk("0+", true);
+        let _ = sig.set_quirk("flow", true);
+        let _ = sig.set_quirk("seq-", true);
+        let _ = sig.set_quirk("ack+", true);
+        let _ = sig.set_quirk("uptr+", true);
+        let _ = sig.set_quirk("urgf+", true);
+        let _ = sig.set_quirk("pushf+", true);
+        let _ = sig.set_quirk("ts1-", true);
+        let _ = sig.set_quirk("ts2+", true);
+        let _ = sig.set_quirk("opt+", true);
+        let _ = sig.set_quirk("expt", true);
+        let _ = sig.set_quirk("bad", true);
 
-        let formatted = wing::format_p0f(sig);
+        let formatted = sig.format_p0f();
         sub.assert_true(formatted.len > 100, "Formatted dense p0f signature exceeds 100 bytes");
     };
 
     t.run("9. Akamai max-width 514-byte capacity & RFC 9113 stream/window/pseudo invariants") { sub =>
-        var max_fp = wing::AkamaiFingerprint {};
+        var max_fp = fingerprint::AkamaiFingerprint {};
         for i in 16 {
-            max_fp.settings.push(wing::AkamaiSetting { id: (65500 + i) as u16, val: 4294967295 });
+            max_fp.settings.push(fingerprint::AkamaiSetting { id: (65500 + i) as u16, val: 4294967295 });
         }
         max_fp.window_update = 2147483647;
         for i in 8 {
-            max_fp.priority_frames.push(wing::AkamaiPriorityFrame {
+            max_fp.priority_frames.push(fingerprint::AkamaiPriorityFrame {
                 stream_id:     (2147483600 + i) as u32,
                 exclusive:     1,
                 dep_stream_id: (2147483500 + i) as u32,
@@ -825,34 +832,34 @@ fn test_fingerprint_bug_regressions(t: lit::T&) {
         max_fp.pseudo_headers.push('s');
         max_fp.pseudo_headers.push('p');
 
-        let max_str = wing::akamai_fingerprint_to_string(max_fp);
+        let max_str = max_fp.format_akamai();
         sub.assert_true(max_str.len > 512, "Max valid Akamai fingerprint exceeds 512 bytes without aborting");
         var max_hash: u8[..32] = [];
-        wing::compute_akamai_hash(max_fp, max_hash);
+        max_fp.compute_akamai_hash(max_hash);
         sub.assert_eq(max_hash.len, 32, "MD5 hash succeeds on >512-byte Akamai fingerprint");
 
-        let _, ok1 = wing::parse_akamai_fingerprint("1:65536||0|m,a,s,p");
+        let _, ok1 = fingerprint::parse_akamai_fingerprint("1:65536||0|m,a,s,p");
         sub.assert_false(ok1, "Empty window_update field must fail");
-        let _, ok2 = wing::parse_akamai_fingerprint("1:65536|2147483648|0|m,a,s,p");
+        let _, ok2 = fingerprint::parse_akamai_fingerprint("1:65536|2147483648|0|m,a,s,p");
         sub.assert_false(ok2, "32-bit window_update > 2^31-1 must fail");
-        let _, ok3 = wing::parse_akamai_fingerprint("1:65536;;2:0|0|0|m,a,s,p");
+        let _, ok3 = fingerprint::parse_akamai_fingerprint("1:65536;;2:0|0|0|m,a,s,p");
         sub.assert_false(ok3, "Empty settings token must fail");
-        let _, ok4 = wing::parse_akamai_fingerprint("1:65536|0|0:0:0:16|m,a,s,p");
+        let _, ok4 = fingerprint::parse_akamai_fingerprint("1:65536|0|0:0:0:16|m,a,s,p");
         sub.assert_false(ok4, "PRIORITY on stream 0 must fail");
-        let _, ok5 = wing::parse_akamai_fingerprint("1:65536|0|3:0:3:16|m,a,s,p");
+        let _, ok5 = fingerprint::parse_akamai_fingerprint("1:65536|0|3:0:3:16|m,a,s,p");
         sub.assert_false(ok5, "PRIORITY self-dependency must fail");
-        let _, ok6 = wing::parse_akamai_fingerprint("1:65536|0|2147483648:0:0:16|m,a,s,p");
+        let _, ok6 = fingerprint::parse_akamai_fingerprint("1:65536|0|2147483648:0:0:16|m,a,s,p");
         sub.assert_false(ok6, "PRIORITY 32-bit stream_id > 2^31-1 must fail");
-        let _, ok7 = wing::parse_akamai_fingerprint("1:65536|0|0|m,m,a,s");
+        let _, ok7 = fingerprint::parse_akamai_fingerprint("1:65536|0|0|m,m,a,s");
         sub.assert_false(ok7, "Duplicate pseudo-header must fail");
-        let _, ok8 = wing::parse_akamai_fingerprint("1:65536|0|0|,,,");
+        let _, ok8 = fingerprint::parse_akamai_fingerprint("1:65536|0|0|,,,");
         sub.assert_false(ok8, "Empty pseudo-header tokens must fail");
 
-        let expected_wing = wing::akamai_wing_preset();
-        var bad_wu = wing::akamai_wing_preset();
+        let expected_wing = fingerprint::akamai_wing_preset();
+        var bad_wu = fingerprint::akamai_wing_preset();
         bad_wu.window_update = 0;
-        let anom, _ = wing::detect_akamai_anomaly(bad_wu, expected_wing);
-        sub.assert_true(anom == wing::AkamaiAnomaly.WindowUpdateAnomaly, "Wing profile with 0 window_update must trigger anomaly");
+        let anom, _ = bad_wu.detect_akamai_anomaly(expected_wing);
+        sub.assert_true(anom == fingerprint::AkamaiAnomaly.WindowUpdateAnomaly, "Wing profile with 0 window_update must trigger anomaly");
     };
 
     t.run("10. JA4/JA4H & Profile cross-component protocol/language/pseudo-header invariants") { sub =>
@@ -861,38 +868,38 @@ fn test_fingerprint_bug_regressions(t: lit::T&) {
         let vers:    u16[2] = [0x0304, 0x7f1c];
         let sigs:    u16[1] = [0x0403];
 
-        let ja4_csv = wing::compute_ja4(ciphers[..], exts[..], vers[..], true, "h2,http/1.1", sigs[..], false);
+        let ja4_csv = fingerprint::compute_ja4(ciphers[..], exts[..], vers[..], true, "h2,http/1.1", sigs[..], false);
         sub.assert_bytes_eq(ja4_csv[..11], "t13d0202h2_", "JA4 parses first ALPN from CSV and ignores draft version 0x7f1c");
 
         let hdrs:    const u8[:][4] = [":method", ":path", "Host", "Accept-Language"];
         let cookies: const u8[:][1] = ["session_id"];
-        let ja4h_res = wing::compute_ja4h("GET", "h2", hdrs[..], wing::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..]);
+        let ja4h_res = fingerprint::compute_ja4h("GET", "h2", hdrs[..], fingerprint::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..]);
         sub.assert_bytes_eq(ja4h_res[..12], "ge20cn02en00", "JA4H maps h2->20, sets cookie flag, strips :pseudo, and stops language at ';'");
 
-        var prof = wing::new_client_profile(wing::Profile.Wing);
-        var custom_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
-        let _ = wing::akamai_push_setting(custom_fp, 1, 65536);
-        let _ = wing::akamai_push_setting(custom_fp, 4, 131072);
-        let _ = wing::akamai_push_setting(custom_fp, 5, 16384);
-        wing::set_akamai(prof, custom_fp);
+        var prof = fingerprint::new_client_profile(fingerprint::Profile.Wing);
+        var custom_fp = fingerprint::custom_akamai_fingerprint(12517377, "m,p,a,s");
+        let _ = custom_fp.push_setting(1, 65536);
+        let _ = custom_fp.push_setting(4, 131072);
+        let _ = custom_fp.push_setting(5, 16384);
+        prof.set_akamai(custom_fp);
         sub.assert_eq(prof.h2.initial_window_size as i64, 131072, "set_akamai syncs ClientProfile.h2 settings");
     };
 
     t.run("11. p0f wildcard scale round-trip, MTU match, and integer overflow defense") { sub =>
-        let p_any, ok_any = wing::parse_p0f("4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0");
+        let p_any, ok_any = fingerprint::parse_p0f("4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0");
         sub.assert_true(ok_any, "Wildcard window with scale 8 parses");
-        let fmt_any = wing::format_p0f(p_any);
+        let fmt_any = p_any.format_p0f();
         sub.assert_bytes_eq(fmt_any[..], "4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0", "Wildcard window preserves scale on format");
 
-        var target_mtu, ok_mtu = wing::parse_p0f("4:64-:0:*:mtu*4,7:mss,sok,ts,nop,ws:df:0");
+        var target_mtu, ok_mtu = fingerprint::parse_p0f("4:64-:0:*:mtu*4,7:mss,sok,ts,nop,ws:df:0");
         sub.assert_true(ok_mtu, "mtu*4 target parses");
-        var actual_pkt, ok_pkt = wing::parse_p0f("4:60:0:1460:6000,7:mss,sok,ts,nop,ws:df:0");
+        var actual_pkt, ok_pkt = fingerprint::parse_p0f("4:60:0:1460:6000,7:mss,sok,ts,nop,ws:df:0");
         sub.assert_true(ok_pkt, "actual packet with window 6000 = (1460+40)*4 parses");
-        sub.assert_true(wing::match_p0f(actual_pkt, target_mtu), "match_p0f matches Normal 6000 against mtu*4 with mss 1460");
+        sub.assert_true(actual_pkt.match_p0f(target_mtu), "match_p0f matches Normal 6000 against mtu*4 with mss 1460");
 
-        let _, ok_ovf = wing::parse_p0f("4:64:0:999999999999:65535,8:mss:df:0");
+        let _, ok_ovf = fingerprint::parse_p0f("4:64:0:999999999999:65535,8:mss:df:0");
         sub.assert_false(ok_ovf, "Out-of-range MSS > 65535 must return false without aborting");
-        let _, ok_bad_quirk = wing::parse_p0f("4:64:0:1460:65535,8:mss:df,unknown_quirk:0");
+        let _, ok_bad_quirk = fingerprint::parse_p0f("4:64:0:1460:65535,8:mss:df,unknown_quirk:0");
         sub.assert_false(ok_bad_quirk, "Unknown quirk token must return false");
     };
 }

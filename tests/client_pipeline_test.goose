@@ -77,59 +77,59 @@ fn test_psl_scoping_and_tenants(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_site_for_cookies_and_rfc6265bis(t: lit::T&) {
     t.run("SiteForCookies Creation & NetLog Formatting") { sub =>
-        let sfc = wing::site_for_cookies_from_url("https://login.example.com/");
+        let sfc = cookie::site_for_cookies_from_url("https://login.example.com/");
         sub.assert_false(sfc.is_null, "not null SFC");
         sub.assert_true(sfc.schemefully_same, "schemefully same");
         sub.assert_bytes_eq(sfc.scheme[..], "https", "scheme is https");
         sub.assert_bytes_eq(sfc.registrable_domain[..], "example.com", "registrable domain is example.com");
 
         var netlog: u8[..128] = [];
-        wing::format_site_for_cookies(netlog, sfc);
+        cookie::format_site_for_cookies(sfc, netlog);
         sub.assert_contains(netlog[..], "https://example.com", "netlog contains site");
         sub.assert_contains(netlog[..], "schemefully_same=true", "netlog indicates schemefully same");
 
-        let null_sfc = wing::null_site_for_cookies();
+        let null_sfc = cookie::null_site_for_cookies();
         sub.assert_true(null_sfc.is_null, "null SFC");
         var null_netlog: u8[..128] = [];
-        wing::format_site_for_cookies(null_netlog, null_sfc);
+        cookie::format_site_for_cookies(null_sfc, null_netlog);
         sub.assert_contains(null_netlog[..], "null; schemefully_same=false", "null SFC formats properly");
     };
 
     t.run("Schemeful First-Party Evaluation") { sub =>
-        let sfc = wing::site_for_cookies_from_url("https://example.com/");
+        let sfc = cookie::site_for_cookies_from_url("https://example.com/");
 
         // Same site, same scheme -> First-party
         sub.assert_true(
-            wing::is_first_party(sfc, "https://sub.example.com/api", true),
+            cookie::is_first_party(sfc, "https://sub.example.com/api", true),
             "https://sub.example.com is first-party to https://example.com",
         );
 
         // Same registrable domain, DIFFERENT scheme -> NOT first-party under schemeful same-site!
         sub.assert_false(
-            wing::is_first_party(sfc, "http://example.com/api", true),
+            cookie::is_first_party(sfc, "http://example.com/api", true),
             "http://example.com is NOT first-party to https://example.com (Schemeful Same-Site)",
         );
 
         // Different domain -> Cross-site
         sub.assert_false(
-            wing::is_first_party(sfc, "https://attacker.com/api", true),
+            cookie::is_first_party(sfc, "https://attacker.com/api", true),
             "attacker.com is cross-site",
         );
     };
 
     t.run("Ancestor Frame Hierarchy Traversal & Context Degradation") { sub =>
-        var sfc = wing::site_for_cookies_from_url("https://bank.com/account");
+        var sfc = cookie::site_for_cookies_from_url("https://bank.com/account");
 
         // Subframe on same site: preserves first-party context
-        wing::compare_with_frame_tree_site_and_revise(sfc, "https://sub.bank.com/iframe");
+        cookie::compare_with_frame_tree_site_and_revise(sfc, "https://sub.bank.com/iframe");
         sub.assert_false(sfc.is_null, "remains first-party with same-site subframe");
 
         // Nested subframe from cross-site third party: degrades SFC to null!
-        wing::compare_with_frame_tree_site_and_revise(sfc, "https://tracker.net/widget");
+        cookie::compare_with_frame_tree_site_and_revise(sfc, "https://tracker.net/widget");
         sub.assert_true(sfc.is_null, "degrades to null when ancestor chain contains cross-site frame");
 
         // Once null, further comparisons cannot restore it
-        wing::compare_with_frame_tree_site_and_revise(sfc, "https://bank.com/account");
+        cookie::compare_with_frame_tree_site_and_revise(sfc, "https://bank.com/account");
         sub.assert_true(sfc.is_null, "stays null once tainted");
     };
 }
@@ -304,14 +304,14 @@ fn test_oauth_flow(t: lit::T&) {
 
         // Verify Cookie Jar state: both cookies ingested with correct domain scoping
         sub.assert_eq(session.jar.cookies.len, 2, "both cookies ingested into jar");
-        let auth_cookie = wing::get(session.jar, "https://auth.idp.com/", "auth_session", 1700000000000000);
+        let auth_cookie = cookie::get(session.jar, "https://auth.idp.com/", "auth_session", 1700000000000000);
         sub.assert_bytes_eq(auth_cookie, "secret_token", "auth_session cookie found under idp.com");
 
-        let app_cookie = wing::get(session.jar, "https://app.client.com/callback", "app_user", 1700000000000000);
+        let app_cookie = cookie::get(session.jar, "https://app.client.com/callback", "app_user", 1700000000000000);
         sub.assert_bytes_eq(app_cookie, "alice", "app_user cookie found under client.com");
 
         // Cross-domain cookie isolation: client.com does NOT receive idp.com cookie!
-        let leaked = wing::get(session.jar, "https://app.client.com/", "auth_session", 1700000000000000);
+        let leaked = cookie::get(session.jar, "https://app.client.com/", "auth_session", 1700000000000000);
         sub.assert_bytes_eq(leaked, "", "client.com did NOT receive idp.com auth_session cookie");
     };
 }
@@ -538,7 +538,7 @@ fn test_network_pipeline_edge_invariants(t: lit::T&) {
         wing::mock_route(session, "GET", "https://bank.com/dashboard", 200, "ok");
         var req = wing::new_get("https://bank.com/dashboard");
         let _ = wing::set_initiator(req, "https://evil.com");
-        req.site_for_cookies = wing::site_for_cookies_from_url("https://evil.com/");
+        req.site_for_cookies = cookie::site_for_cookies_from_url("https://evil.com/");
         req.has_site_for_cookies = true;
 
         let resp, err = wing::execute_request(session, req);
@@ -570,11 +570,11 @@ fn test_network_pipeline_edge_invariants(t: lit::T&) {
 
     t.run("SSRF Case-Insensitive .LOCALHOST with Long Host") { sub =>
         let long_localhost = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.LOCALHOST";
-        sub.assert_true(wing::is_localhost_name(long_localhost), "uppercase .LOCALHOST recognized as localhost");
-        sub.assert_true(wing::is_private_or_reserved_ip(long_localhost), "long .LOCALHOST blocked by SSRF filter");
+        sub.assert_true(security::is_localhost_name(long_localhost), "uppercase .LOCALHOST recognized as localhost");
+        sub.assert_true(security::is_private_or_reserved_ip(long_localhost), "long .LOCALHOST blocked by SSRF filter");
 
         // RFC 6890 / RFC 3849 documentation prefix
-        sub.assert_true(wing::is_private_or_reserved_ip("2001:db8::1"), "2001:db8::/32 documentation blocked");
+        sub.assert_true(security::is_private_or_reserved_ip("2001:db8::1"), "2001:db8::/32 documentation blocked");
     };
 
     t.run("Header Override: Request Headers Replace Session Default Headers") { sub =>
@@ -1166,18 +1166,18 @@ fn test_vector_b_enhancements(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_client_round3_repro_vectors(t: lit::T&) {
     t.run("SSRF IPv6 NAT64 (64:ff9b:1::/48) and ORCHIDv2 (2001:20::/28) sweeps") { sub =>
-        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1::"), "NAT64 local prefix base");
-        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1::1"), "NAT64 local prefix with host");
-        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1:abcd::1"), "NAT64 local prefix with word 4");
-        sub.assert_true(wing::is_private_or_reserved_ip("64:ff9b:1::8.8.8.8"), "NAT64 local prefix is blocked even with public IPv4 suffix");
-        sub.assert_false(wing::is_private_or_reserved_ip("64:ff9b::8.8.8.8"), "well-known NAT64 64:ff9b::/96 with public IPv4 is routable");
+        sub.assert_true(security::is_private_or_reserved_ip("64:ff9b:1::"), "NAT64 local prefix base");
+        sub.assert_true(security::is_private_or_reserved_ip("64:ff9b:1::1"), "NAT64 local prefix with host");
+        sub.assert_true(security::is_private_or_reserved_ip("64:ff9b:1:abcd::1"), "NAT64 local prefix with word 4");
+        sub.assert_true(security::is_private_or_reserved_ip("64:ff9b:1::8.8.8.8"), "NAT64 local prefix is blocked even with public IPv4 suffix");
+        sub.assert_false(security::is_private_or_reserved_ip("64:ff9b::8.8.8.8"), "well-known NAT64 64:ff9b::/96 with public IPv4 is routable");
 
-        sub.assert_true(wing::is_private_or_reserved_ip("2001:20::1"), "ORCHIDv2 word 0x0020");
-        sub.assert_true(wing::is_private_or_reserved_ip("2001:2f::1"), "ORCHIDv2 word 0x002F");
-        sub.assert_false(wing::is_private_or_reserved_ip("2001:30::1"), "2001:30:: is outside ORCHIDv2 /28");
+        sub.assert_true(security::is_private_or_reserved_ip("2001:20::1"), "ORCHIDv2 word 0x0020");
+        sub.assert_true(security::is_private_or_reserved_ip("2001:2f::1"), "ORCHIDv2 word 0x002F");
+        sub.assert_false(security::is_private_or_reserved_ip("2001:30::1"), "2001:30:: is outside ORCHIDv2 /28");
 
-        sub.assert_false(wing::is_private_or_reserved_ip("2002:808::"), "6to4 8.8.0.0 is public not private");
-        sub.assert_true(wing::is_private_or_reserved_ip("2002:a00::"), "6to4 10.0.0.0/8 is private");
+        sub.assert_false(security::is_private_or_reserved_ip("2002:808::"), "6to4 8.8.0.0 is public not private");
+        sub.assert_true(security::is_private_or_reserved_ip("2002:a00::"), "6to4 10.0.0.0/8 is private");
     };
 
     t.run("RFC 8470 Section 5.2: 425 Too Early retry idempotency and rewind guards") { sub =>
@@ -1504,7 +1504,7 @@ fn test_dns_https_svcb_h3_protocol_racing(t: lit::T&) {
         var cli = wing::new_client();
         cli.enable_protocol_racing = true;
 
-        var https_rec = wing::HttpsRecord {
+        var https_rec = dns::HttpsRecord {
             priority: 1,
             port:     443,
             ..
@@ -1512,7 +1512,7 @@ fn test_dns_https_svcb_h3_protocol_racing(t: lit::T&) {
         https_rec.alpns.push("h3");
         https_rec.alpns.push("h2");
         let now_sec = cli.virtual_clock_us / 1000000;
-        var entry = wing::DnsCacheEntry {
+        var entry = dns::CacheEntry {
             qtype:           rfc::DNS_QTYPE_HTTPS,
             inserted_at_sec: now_sec,
             ttl_sec:         300,
@@ -1521,7 +1521,7 @@ fn test_dns_https_svcb_h3_protocol_racing(t: lit::T&) {
         };
         entry.domain.append("svcb-h3.example.com");
         entry.https_records.push(https_rec);
-        wing::dns_cache_insert(cli.dns_cache, entry);
+        cli.dns_cache.insert(entry);
 
         cli.mock_route("GET", "https://svcb-h3.example.com/data", 200, "h3-via-dns-https");
         let res, err = cli.get("https://svcb-h3.example.com/data");
@@ -1649,7 +1649,7 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         let echo_url = core::new_url("https://api.example.com/echo");
         var sub_req = wing::new_request("GET", "https://api.example.com/echo");
         sub_req.is_main_frame = false;
-        sub_req.site_for_cookies = wing::site_for_cookies_from_url("https://api.example.com/");
+        sub_req.site_for_cookies = cookie::site_for_cookies_from_url("https://api.example.com/");
         sub_req.has_site_for_cookies = true;
         let _ = wing::set_initiator(sub_req, "https://other.example.org/");
 
@@ -1660,24 +1660,24 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
             true,
         );
         sub.assert_true(
-            samesite_ctx.context_type == wing::SameSiteContextType.SameSiteLax,
+            samesite_ctx.context_type == cookie::SameSiteContextType.SameSiteLax,
             "Same-site subresource with cross-site initiator computes SameSiteLax context",
         );
 
         // Seed a PrivateToken into cli.private_token_cache and test 401 PrivateToken challenge redemption
-        var chal = wing::TokenChallenge {
+        var chal = security::TokenChallenge {
             issuer_name: "issuer.example.com",
             ..
         };
         chal.origin_info.append("api.example.com");
         var raw_chal: u8[..256] = [];
-        wing::marshal_token_challenge(chal, raw_chal);
+        security::marshal_token_challenge(chal, raw_chal);
         sub.assert_true(raw_chal.len > 0, "Marshaled TokenChallenge");
         var b64_chal: u8[..384] = [];
-        wing::encode_padded_base64url(raw_chal[..], b64_chal);
+        security::encode_padded_base64url(raw_chal[..], b64_chal);
 
-        var dummy_tok = wing::Token { .. };
-        let ok_put = wing::put_private_token(
+        var dummy_tok = security::Token { .. };
+        let ok_put = security::put_private_token(
             cli.private_token_cache,
             chal,
             dummy_tok,

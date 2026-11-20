@@ -666,7 +666,7 @@ fn eval_programmable_server_stage(
 //   req_url = "http://example.com/api", cookie_hdr = "a=1; b=2"
 //   seeds a=1 and b=2 into `jar` for host "example.com" with Path=/
 fn seed_inline_cookies_to_jar(
-    jar:        wing::CanonicalCookieJar&,
+    jar:        cookie::CanonicalCookieJar&,
     req_url:    const u8[:],
     cookie_hdr: const u8[:],
     now_us:     i64,

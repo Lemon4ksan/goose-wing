@@ -415,8 +415,8 @@ fn test_round3_quic_crypto_and_framing_invariants(t: lit::T&) {
 fn test_dns_and_https_rr(t: lit::T&) {
     t.run("DNS-01: Query Encoding and Name Compression Decoding") { sub =>
         var query: u8[..512] = [];
-        let ok_q = wing::build_dns_query("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, query);
-        sub.assert_true(ok_q, "build_dns_query succeeds");
+        let ok_q = dns::build_query("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1234, query);
+        sub.assert_true(ok_q, "build_query succeeds");
         sub.assert_gt(query.len, 12, "query has header and question");
         sub.assert_eq(query[0], 0x12, "tx_id hi matches");
         sub.assert_eq(query[1], 0x34, "tx_id lo matches");
@@ -443,7 +443,7 @@ fn test_dns_and_https_rr(t: lit::T&) {
         resp.push(0x00); resp.push(0x00);
 
         // Question section: cloudflare.com HTTPS IN
-        guard wing::dns_encode_name("cloudflare.com", resp) else { return; }
+        guard dns::encode_name("cloudflare.com", resp) else { return; }
         resp.push(0x00); resp.push(65); // QTYPE=HTTPS
         resp.push(0x00); resp.push(0x01); // QCLASS=IN
 
@@ -493,9 +493,8 @@ fn test_dns_and_https_rr(t: lit::T&) {
         resp.append(rdata[..]);
 
         // Parse DNS response
-        var dns_parsed = wing::DnsResponse { .. };
-        let ok_parse = wing::parse_dns_response(resp[..], dns_parsed);
-        sub.assert_true(ok_parse, "parse_dns_response succeeds");
+        let dns_parsed, ok_parse = dns::parse_response(resp[..]);
+        sub.assert_true(ok_parse, "parse_response succeeds");
         sub.assert_eq(dns_parsed.tx_id, 0xABCD, "tx_id matches");
         sub.assert_true(dns_parsed.is_response, "is_response is true");
         sub.assert_eq(dns_parsed.https_records.len, 1, "found 1 HTTPS record");
@@ -669,7 +668,7 @@ fn test_ech_protocol(t: lit::T&) {
         for i in config.raw_bytes.len { info.push(config.raw_bytes[i]); }
 
         var decrypted: u8[..512] = [];
-        let ok_open = wing::hpke_open_base(
+        let ok_open = security::hpke_open_base(
             enc,
             server_sk,
             info[..],
@@ -711,13 +710,13 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
     t.run("DoH-01: Wire Format Query Construction & URL Formatter") { sub =>
         // POST body
         var post_body: u8[>..] = [];
-        let ok_post = wing::build_doh_post_body("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1122, post_body);
+        let ok_post = dns::build_doh_post_body("cloudflare.com", rfc::DNS_QTYPE_HTTPS, 0x1122, post_body);
         sub.assert_true(ok_post, "build_doh_post_body succeeds");
         sub.assert_gt(post_body.len, 12, "DoH post body contains DNS header + question");
 
         // GET URL
         var get_url: u8[..512] = [];
-        let ok_get = wing::build_doh_get_url("https://cloudflare-dns.com/dns-query", "cloudflare.com", rfc::DNS_QTYPE_HTTPS, get_url);
+        let ok_get = dns::build_doh_get_url("https://cloudflare-dns.com/dns-query", "cloudflare.com", rfc::DNS_QTYPE_HTTPS, get_url);
         sub.assert_true(ok_get, "build_doh_get_url succeeds");
         let prefix = "https://cloudflare-dns.com/dns-query?dns=";
         sub.assert_true(get_url.len >= prefix.len, "GET URL length sufficient");
@@ -743,7 +742,7 @@ fn test_doh_and_automated_ech_discovery(t: lit::T&) {
         dns_resp_wire.push(0x00); dns_resp_wire.push(0x00);
 
         // Question: crypto.example.com HTTPS IN
-        guard wing::dns_encode_name("crypto.example.com", dns_resp_wire) else { return; }
+        guard dns::encode_name("crypto.example.com", dns_resp_wire) else { return; }
         dns_resp_wire.push(0x00); dns_resp_wire.push(65); // QTYPE=HTTPS
         dns_resp_wire.push(0x00); dns_resp_wire.push(0x01); // QCLASS=IN
 
@@ -1134,9 +1133,9 @@ fn test_tls_client_hello_fragmentation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_dns_cache_and_stale_revalidate(t: lit::T&) {
     t.run("1. DNS Cache TTL and Stale-While-Revalidate Lifecycle") { sub =>
-        var cache = wing::DnsCache { .. };
+        var cache = dns::Cache { .. };
 
-        var entry = wing::DnsCacheEntry {
+        var entry = dns::CacheEntry {
             qtype:           rfc::DNS_QTYPE_A,
             inserted_at_sec: 1000,
             ttl_sec:         300,  // 5 minutes
@@ -1146,29 +1145,33 @@ fn test_dns_cache_and_stale_revalidate(t: lit::T&) {
         entry.domain.append("example.com");
         entry.ipv4_hints.push(0x5DB8D822); // 93.184.216.34
 
-        wing::dns_cache_insert(cache, entry);
+        cache.insert(entry);
 
         // 1. Fresh lookup at t = 1100 (100s elapsed < 300s TTL)
-        var hit1 = wing::DnsCacheEntry { .. };
-        let status1 = wing::dns_cache_lookup(cache, "example.com", rfc::DNS_QTYPE_A, 1100, hit1);
-        sub.assert_eq(status1, wing::DnsCacheStatus.Fresh, "Lookup within TTL returns Fresh");
-        sub.assert_eq(hit1.ipv4_hints[0], 0x5DB8D822, "Cached IPv4 address preserved");
+        let hit1, status1 = cache.lookup("example.com", rfc::DNS_QTYPE_A, 1100);
+        sub.assert_eq(status1, dns::CacheStatus.Fresh, "Lookup within TTL returns Fresh");
+        sub.assert_true(hit1 != null, "Fresh lookup returns entry ref");
+        if hit1 {
+            sub.assert_eq(hit1.ipv4_hints[0], 0x5DB8D822, "Cached IPv4 address preserved");
+        }
 
         // 2. Stale lookup at t = 1500 (500s elapsed > 300s TTL, but < 3900s stale limit)
-        var hit2 = wing::DnsCacheEntry { .. };
-        let status2 = wing::dns_cache_lookup(cache, "example.com", rfc::DNS_QTYPE_A, 1500, hit2);
-        sub.assert_eq(status2, wing::DnsCacheStatus.Stale, "Lookup past TTL returns Stale (trigger background revalidation)");
-        sub.assert_eq(hit2.ipv4_hints[0], 0x5DB8D822, "Stale cache hit still provides IP for zero-latency connection");
+        let hit2, status2 = cache.lookup("example.com", rfc::DNS_QTYPE_A, 1500);
+        sub.assert_eq(status2, dns::CacheStatus.Stale, "Lookup past TTL returns Stale (trigger background revalidation)");
+        sub.assert_true(hit2 != null, "Stale lookup returns entry ref");
+        if hit2 {
+            sub.assert_eq(hit2.ipv4_hints[0], 0x5DB8D822, "Stale cache hit still provides IP for zero-latency connection");
+        }
 
         // 3. Expired lookup at t = 5000 (4000s elapsed > 3900s total limit)
-        var hit3 = wing::DnsCacheEntry { .. };
-        let status3 = wing::dns_cache_lookup(cache, "example.com", rfc::DNS_QTYPE_A, 5000, hit3);
-        sub.assert_eq(status3, wing::DnsCacheStatus.Expired, "Lookup beyond stale window returns Expired");
+        let hit3, status3 = cache.lookup("example.com", rfc::DNS_QTYPE_A, 5000);
+        sub.assert_eq(status3, dns::CacheStatus.Expired, "Lookup beyond stale window returns Expired");
+        sub.assert_true(hit3 == null, "Expired lookup returns null");
 
         // 4. Missing domain lookup
-        var hit4 = wing::DnsCacheEntry { .. };
-        let status4 = wing::dns_cache_lookup(cache, "notfound.org", rfc::DNS_QTYPE_A, 1100, hit4);
-        sub.assert_eq(status4, wing::DnsCacheStatus.Expired, "Missing domain returns Expired");
+        let hit4, status4 = cache.lookup("notfound.org", rfc::DNS_QTYPE_A, 1100);
+        sub.assert_eq(status4, dns::CacheStatus.Expired, "Missing domain returns Expired");
+        sub.assert_true(hit4 == null, "Missing domain returns null");
     };
 }
 
@@ -1617,91 +1620,91 @@ fn test_aead_ciphers(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_crypto_jar_container(t: lit::T&) {
     t.run("PrivateJar XChaCha20-Poly1305 (53B Overhead) & AAD Binding") { sub =>
-        var store = wing::KeyStore { .. };
+        var store = security::KeyStore { .. };
         let raw_key: u8[32] = [0x33; 32];
-        let slot = wing::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
-        wing::add_key(store, slot);
+        let slot = security::KeySlot { key_id: 1, master_key: raw_key, created_at_sec: 1700000000, .. };
+        security::add_key(store, slot);
 
-        var jar = wing::new_private_jar(store, false);
+        var jar = security::new_private_jar(store, false);
 
         var sealed_cookie: u8[..256] = [];
-        let ok_seal = wing::private_jar_seal_binary(jar, "session_jwt", "payload_data_123", 1700000010, 0x123456789ABCDEF0, sealed_cookie);
+        let ok_seal = security::seal_binary(jar, "session_jwt", "payload_data_123", 1700000010, 0x123456789ABCDEF0, sealed_cookie);
         sub.assert_true(ok_seal, "private jar binary seal succeeds");
         sub.assert_eq(sealed_cookie.len, 53 + "payload_data_123".len, "exact 53B wire overhead");
 
         // Authentic open
         var opened: u8[..256] = [];
-        let ok_open = wing::private_jar_open_binary(jar, "session_jwt", sealed_cookie[..], 1700000020, opened);
+        let ok_open = security::open_binary(jar, "session_jwt", sealed_cookie[..], 1700000020, opened);
         sub.assert_true(ok_open, "private jar opens authentic cookie");
         sub.assert_eq(opened[..], "payload_data_123", "cookie payload verified");
 
         // AAD Binding: Trying to open with different cookie name must fail!
         var opened_bad: u8[..256] = [];
-        let ok_bad_name = wing::private_jar_open_binary(jar, "other_cookie", sealed_cookie[..], 1700000020, opened_bad);
+        let ok_bad_name = security::open_binary(jar, "other_cookie", sealed_cookie[..], 1700000020, opened_bad);
         sub.assert_false(ok_bad_name, "AAD cookie name alteration rejected");
 
         // Expired cookie timestamp rejection
-        let ok_expired = wing::private_jar_open_binary(jar, "session_jwt", sealed_cookie[..], 1700000010 + 2592001, opened_bad);
+        let ok_expired = security::open_binary(jar, "session_jwt", sealed_cookie[..], 1700000010 + 2592001, opened_bad);
         sub.assert_false(ok_expired, "expired session cookie rejected");
     };
 
     t.run("PrivateJar HKDF-AES-GCM (65B Overhead)") { sub =>
-        var store = wing::KeyStore { .. };
+        var store = security::KeyStore { .. };
         let raw_key: u8[32] = [0x44; 32];
-        let slot = wing::KeySlot { key_id: 2, master_key: raw_key, created_at_sec: 1700000000, .. };
-        wing::add_key(store, slot);
+        let slot = security::KeySlot { key_id: 2, master_key: raw_key, created_at_sec: 1700000000, .. };
+        security::add_key(store, slot);
 
-        var jar = wing::new_private_jar(store, true);
+        var jar = security::new_private_jar(store, true);
 
         var sealed_cookie: u8[..256] = [];
-        let ok_seal = wing::private_jar_seal_binary(jar, "secure_sess", "secret_info", 1700000010, 0xFEDCBA9876543210, sealed_cookie);
+        let ok_seal = security::seal_binary(jar, "secure_sess", "secret_info", 1700000010, 0xFEDCBA9876543210, sealed_cookie);
         sub.assert_true(ok_seal, "HKDF AES-GCM seal succeeds");
         sub.assert_eq(sealed_cookie.len, 65 + "secret_info".len, "exact 65B wire overhead");
 
         var opened: u8[..256] = [];
-        let ok_open = wing::private_jar_open_binary(jar, "secure_sess", sealed_cookie[..], 1700000020, opened);
+        let ok_open = security::open_binary(jar, "secure_sess", sealed_cookie[..], 1700000020, opened);
         sub.assert_true(ok_open, "HKDF AES-GCM authentic cookie opens");
         sub.assert_eq(opened[..], "secret_info", "payload matches");
     };
 
     t.run("SignedJar HMAC-SHA256 (45B Overhead) & Forgery Resistance") { sub =>
-        var store = wing::KeyStore { .. };
+        var store = security::KeyStore { .. };
         let raw_key: u8[32] = [0x88; 32];
-        let slot = wing::KeySlot { key_id: 7, master_key: raw_key, created_at_sec: 1700000000, .. };
-        wing::add_key(store, slot);
+        let slot = security::KeySlot { key_id: 7, master_key: raw_key, created_at_sec: 1700000000, .. };
+        security::add_key(store, slot);
 
-        var jar = wing::new_signed_jar(store);
+        var jar = security::new_signed_jar(store);
 
         var signed_cookie: u8[>..] = [];
-        let ok_sign = wing::signed_jar_seal_binary(jar, "pref_cookie", "dark_mode=true", 1700000010, signed_cookie);
+        let ok_sign = security::seal_binary(jar, "pref_cookie", "dark_mode=true", 1700000010, signed_cookie);
         sub.assert_true(ok_sign, "signed jar seal succeeds");
         sub.assert_eq(signed_cookie.len, 45 + "dark_mode=true".len, "exact 45B wire overhead");
 
         var verified_val: u8[>..] = [];
-        let ok_verify = wing::signed_jar_open_binary(jar, "pref_cookie", signed_cookie[..], 1700000020, verified_val);
+        let ok_verify = security::open_binary(jar, "pref_cookie", signed_cookie[..], 1700000020, verified_val);
         sub.assert_true(ok_verify, "authentic signed cookie verified");
         sub.assert_eq(verified_val[..], "dark_mode=true", "verified payload matches");
 
         // Tamper with value byte
         signed_cookie[13] ^= 0x01;
         var bad_val: u8[>..] = [];
-        let ok_tamper = wing::signed_jar_open_binary(jar, "pref_cookie", signed_cookie[..], 1700000020, bad_val);
+        let ok_tamper = security::open_binary(jar, "pref_cookie", signed_cookie[..], 1700000020, bad_val);
         sub.assert_false(ok_tamper, "forged signature rejected");
     };
 
     t.run("KeyStore Proactive Key Rotation") { sub =>
-        var store = wing::KeyStore { .. };
+        var store = security::KeyStore { .. };
         let k1: u8[32] = [0x11; 32];
         let k2: u8[32] = [0x22; 32];
-        wing::add_key(store, wing::KeySlot { key_id: 10, master_key: k1, created_at_sec: 1700000000, .. });
-        wing::add_key(store, wing::KeySlot { key_id: 20, master_key: k2, created_at_sec: 1700086400, .. }); // 24h later
+        security::add_key(store, security::KeySlot { key_id: 10, master_key: k1, created_at_sec: 1700000000, .. });
+        security::add_key(store, security::KeySlot { key_id: 20, master_key: k2, created_at_sec: 1700086400, .. }); // 24h later
 
         // Rotate active key to key 20
-        sub.assert_true(wing::set_active_key_id(store, 20), "rotated active key to id 20");
+        sub.assert_true(security::set_active_key_id(store, 20), "rotated active key to id 20");
 
-        var jar = wing::new_signed_jar(store);
+        var jar = security::new_signed_jar(store);
         var cookie_k2: u8[>..] = [];
-        wing::signed_jar_seal_binary(jar, "sess", "user=alice", 1700086410, cookie_k2);
+        security::seal_binary(jar, "sess", "user=alice", 1700086410, cookie_k2);
 
         // Header must use key_id 20
         sub.assert_eq(cookie_k2[4], 20, "signed with new active key 20");
@@ -1709,16 +1712,16 @@ fn test_crypto_jar_container(t: lit::T&) {
         // Old key 10 can still verify existing cookies before revocation
         var cookie_k1: u8[>..] = [];
         jar.store.active_idx = 0; // temporarily sign with old key 10
-        wing::signed_jar_seal_binary(jar, "sess", "user=bob", 1700086410, cookie_k1);
+        security::seal_binary(jar, "sess", "user=bob", 1700086410, cookie_k1);
         jar.store.active_idx = 1; // restore active key 20
 
         var out_bob: u8[>..] = [];
-        let ok_old = wing::signed_jar_open_binary(jar, "sess", cookie_k1[..], 1700086420, out_bob);
+        let ok_old = security::open_binary(jar, "sess", cookie_k1[..], 1700086420, out_bob);
         sub.assert_true(ok_old, "old key 10 still verifies historical session");
 
         // Revoke key 10 directly on jar.store
-        sub.assert_true(wing::revoke_key(jar.store, 10), "revoked key 10");
-        let ok_after_revocation = wing::signed_jar_open_binary(jar, "sess", cookie_k1[..], 1700086420, out_bob);
+        sub.assert_true(security::revoke_key(jar.store, 10), "revoked key 10");
+        let ok_after_revocation = security::open_binary(jar, "sess", cookie_k1[..], 1700086420, out_bob);
         sub.assert_false(ok_after_revocation, "cookie signed with revoked key 10 is now rejected");
     };
 }
@@ -2049,12 +2052,12 @@ fn test_x509_critical_ext_server_connect_and_akamai(t: lit::T&) {
         }
         raw_fp.append("|15663105|0|m,a,s,p");
 
-        let fp, ok = wing::parse_akamai_fingerprint(raw_fp[..]);
+        let fp, ok = fingerprint::parse_akamai_fingerprint(raw_fp[..]);
         sub.assert_false(ok, "Akamai fingerprint with > 16 settings MUST return false rather than dropping settings");
     };
 
     t.run("order_pseudo_headers handles pseudo_headers > 4 chars without abort") { sub =>
-        var fp = wing::AkamaiFingerprint { .. };
+        var fp = fingerprint::AkamaiFingerprint { .. };
         fp.pseudo_headers.push('m');
         fp.pseudo_headers.push('a');
         fp.pseudo_headers.push('s');
@@ -2062,7 +2065,8 @@ fn test_x509_critical_ext_server_connect_and_akamai(t: lit::T&) {
         fp.pseudo_headers.push('x'); // 5th pseudo header
 
         var out_hdrs = wing::HeaderMap { .. };
-        wing::order_pseudo_headers(fp, "GET", "example.com", "https", "/", out_hdrs);
+        let ok_ord = fp.order_pseudo_headers("GET", "example.com", "https", "/", out_hdrs);
+        sub.assert_true(ok_ord, "order_pseudo_headers succeeds");
         sub.assert_eq(out_hdrs.entries.len, 4, "Bounded to 4 pseudo headers without abort");
     };
 }

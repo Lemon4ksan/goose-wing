@@ -122,8 +122,8 @@ struct H3Connection {
     sched_cycle:               u64                      = 0,
     peer_origins:              u8[..128][..16]          = [],
     error_code:                u64                      = rfc::H3_ERR_NO_ERROR,
-    local_settings:            wing::H3Settings         = wing::H3Settings { .. },
-    peer_settings:             wing::H3Settings         = wing::H3Settings { .. },
+    local_settings:            fingerprint::H3Settings  = fingerprint::H3Settings { .. },
+    peer_settings:             fingerprint::H3Settings  = fingerprint::H3Settings { .. },
     encoder_stream_buf:        u8[..4096]               = [],
     ctrl_partial_buf:          u8[..1024]               = [],
     qpack_enc_partial_buf:     u8[..4224]               = [],
@@ -135,7 +135,7 @@ struct H3Connection {
     qpack_table:               QpackTable               = QpackTable { .. },
 }
 
-fn new_h3_client_connection(settings: const wing::H3Settings&) -> H3Connection {
+fn new_h3_client_connection(settings: const fingerprint::H3Settings&) -> H3Connection {
     let max_blk = min(settings.qpack_blocked_streams, 0xFFFFFFFF) as u32;
     return H3Connection {
         role:            H3ConnRole.Client,
@@ -146,7 +146,7 @@ fn new_h3_client_connection(settings: const wing::H3Settings&) -> H3Connection {
     };
 }
 
-fn new_h3_server_connection(settings: const wing::H3Settings&) -> H3Connection {
+fn new_h3_server_connection(settings: const fingerprint::H3Settings&) -> H3Connection {
     let max_blk = min(settings.qpack_blocked_streams, 0xFFFFFFFF) as u32;
     return H3Connection {
         role:            H3ConnRole.Server,

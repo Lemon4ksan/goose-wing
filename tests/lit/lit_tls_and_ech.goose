@@ -216,27 +216,27 @@ fn run_01_verify_tls_handshake_wire() {
     let ok_info:   u8[1500] = [0x42; 1500];
     let big_info:  u8[4090] = [0x42; 4090];
     var hpke_out: u8[32] = [0; 32];
-    assert(wing::hpke_labeled_expand("HPKE\x00\x20\x00\x01\x00\x01", prk_zeros[..], "key", ok_info[..], 32, hpke_out[..]));
-    let ok_hpke_big = wing::hpke_labeled_expand("HPKE\x00\x20\x00\x01\x00\x01", prk_zeros[..], "key", big_info[..], 32, hpke_out[..]);
+    assert(security::hpke_labeled_expand("HPKE\x00\x20\x00\x01\x00\x01", prk_zeros[..], "key", ok_info[..], 32, hpke_out[..]));
+    let ok_hpke_big = security::hpke_labeled_expand("HPKE\x00\x20\x00\x01\x00\x01", prk_zeros[..], "key", big_info[..], 32, hpke_out[..]);
     assert(!ok_hpke_big);
     let exp_sk1: u8[32] = [0x21; 32];
     let exp_sk2: u8[32] = [0x22; 32];
     let exp_pk = core::x25519_base_scalarmult(exp_sk1);
     var exp_enc: u8[32] = [0; 32];
-    var exp_ctx = wing::HpkeContext { .. };
-    assert(wing::hpke_setup_base_s(
+    var exp_ctx = security::HpkeContext { .. };
+    assert(security::hpke_setup_base_s(
         exp_pk,
         "export-info",
         rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
         rfc::HPKE_KDF_HKDF_SHA256,
-        wing::HPKE_AEAD_EXPORT_ONLY,
+        security::HPKE_AEAD_EXPORT_ONLY,
         exp_sk2,
         exp_enc,
         exp_ctx,
     ));
-    assert(wing::hpke_export(exp_ctx, "tls-exporter", hpke_out[..]));
+    assert(security::hpke_export(exp_ctx, "tls-exporter", hpke_out[..]));
     var seal_ct: u8[..64] = [];
-    assert(!wing::hpke_seal(exp_ctx, "", "msg", seal_ct));
+    assert(!security::hpke_seal(exp_ctx, "", "msg", seal_ct));
     print("HPKE_OVERSIZED_INFO_REJECTED: OK");
 
     // 12. Regression: ECH outer extension rejects empty ciphertext (RFC 9849 §5)
@@ -317,13 +317,13 @@ fn run_01_verify_tls_handshake_wire() {
     print("ECH_AND_EARLY_DATA_GUARDS: OK");
 
     // 20. Regression (TLS-BUG-007 & TLS-BUG-008): HPKE sequence overflow / unknown aead_id & StrikeRegister previous-epoch replay
-    var hpke_ctx = wing::HpkeContext {
+    var hpke_ctx = security::HpkeContext {
         aead_id: rfc::HPKE_AEAD_AES_128_GCM,
         seq:     0xFFFFFFFFFFFFFFFF,
         ..
     };
     var hpke_ct: u8[..64] = [];
-    assert(!wing::hpke_seal(hpke_ctx, "", "hello", hpke_ct));
+    assert(!security::hpke_seal(hpke_ctx, "", "hello", hpke_ct));
     var sreg = tls_internal::strike_register_init(1000, 10000);
     assert(tls_internal::strike_register_check_and_insert(sreg, "init-epoch-10", 10000));
     assert(tls_internal::strike_register_check_and_insert(sreg, "ticket-prev-epoch", 9500));
@@ -1759,13 +1759,13 @@ fn run_06_rfc_repro_auth_tls_wire_edge() {
 
 fn test_akamai_regressions() {
     // F001: 514-byte max valid Akamai fingerprint formatting and hashing without capacity abort
-    var max_fp = wing::AkamaiFingerprint {};
+    var max_fp = fingerprint::AkamaiFingerprint {};
     for i in 16 {
-        max_fp.settings.push(wing::AkamaiSetting { id: (65500 + i) as u16, val: 4294967295 });
+        max_fp.settings.push(fingerprint::AkamaiSetting { id: (65500 + i) as u16, val: 4294967295 });
     }
     max_fp.window_update = 2147483647;
     for i in 8 {
-        max_fp.priority_frames.push(wing::AkamaiPriorityFrame {
+        max_fp.priority_frames.push(fingerprint::AkamaiPriorityFrame {
             stream_id:     (2147483600 + i) as u32,
             exclusive:     1,
             dep_stream_id: (2147483500 + i) as u32,
@@ -1777,44 +1777,44 @@ fn test_akamai_regressions() {
     max_fp.pseudo_headers.push('s');
     max_fp.pseudo_headers.push('p');
 
-    let max_str = wing::akamai_fingerprint_to_string(max_fp);
+    let max_str = max_fp.format_akamai();
     assert(max_str.len == 514);
     var max_hash: u8[..32] = [];
-    wing::compute_akamai_hash(max_fp, max_hash);
+    max_fp.compute_akamai_hash(max_hash);
     assert(max_hash.len == 32);
 
     // F002 & F003: RFC 9113 stream ID, window_update, settings, priority, and pseudo-header validation
-    let _, ok1 = wing::parse_akamai_fingerprint("1:65536||0|m,a,s,p");
+    let _, ok1 = fingerprint::parse_akamai_fingerprint("1:65536||0|m,a,s,p");
     assert(!ok1);
-    let _, ok2 = wing::parse_akamai_fingerprint("1:65536|2147483648|0|m,a,s,p");
+    let _, ok2 = fingerprint::parse_akamai_fingerprint("1:65536|2147483648|0|m,a,s,p");
     assert(!ok2);
-    let _, ok3 = wing::parse_akamai_fingerprint("1:65536;;2:0|0|0|m,a,s,p");
+    let _, ok3 = fingerprint::parse_akamai_fingerprint("1:65536;;2:0|0|0|m,a,s,p");
     assert(!ok3);
-    let _, ok4 = wing::parse_akamai_fingerprint("1:65536|0|0:0:0:16|m,a,s,p");
+    let _, ok4 = fingerprint::parse_akamai_fingerprint("1:65536|0|0:0:0:16|m,a,s,p");
     assert(!ok4);
-    let _, ok5 = wing::parse_akamai_fingerprint("1:65536|0|3:0:3:16|m,a,s,p");
+    let _, ok5 = fingerprint::parse_akamai_fingerprint("1:65536|0|3:0:3:16|m,a,s,p");
     assert(!ok5);
-    let _, ok6 = wing::parse_akamai_fingerprint("1:65536|0|2147483648:0:0:16|m,a,s,p");
+    let _, ok6 = fingerprint::parse_akamai_fingerprint("1:65536|0|2147483648:0:0:16|m,a,s,p");
     assert(!ok6);
-    let _, ok7 = wing::parse_akamai_fingerprint("1:65536|0|0|m,m,a,s");
+    let _, ok7 = fingerprint::parse_akamai_fingerprint("1:65536|0|0|m,m,a,s");
     assert(!ok7);
-    let _, ok8 = wing::parse_akamai_fingerprint("1:65536|0|0|,,,");
+    let _, ok8 = fingerprint::parse_akamai_fingerprint("1:65536|0|0|,,,");
     assert(!ok8);
 
     // F003: order_pseudo_headers deduplication & window_update=0 anomaly
-    var dup_fp = wing::akamai_wing_preset();
+    var dup_fp = fingerprint::akamai_wing_preset();
     dup_fp.pseudo_headers.clear();
     dup_fp.pseudo_headers.append("mmasp");
     var hmap = wing::HeaderMap { .. };
-    wing::order_pseudo_headers(dup_fp, "GET", "example.com", "https", "/index", hmap);
+    assert(dup_fp.order_pseudo_headers("GET", "example.com", "https", "/index", hmap));
     assert(hmap.entries.len == 4);
     assert(wing::get_header(hmap, ":path") == "/index");
 
-    let expected_wing = wing::akamai_wing_preset();
-    var bad_wu = wing::akamai_wing_preset();
+    let expected_wing = fingerprint::akamai_wing_preset();
+    var bad_wu = fingerprint::akamai_wing_preset();
     bad_wu.window_update = 0;
-    let anom, _ = wing::detect_akamai_anomaly(bad_wu, expected_wing);
-    assert(anom == wing::AkamaiAnomaly.WindowUpdateAnomaly);
+    let anom, _ = bad_wu.detect_akamai_anomaly(expected_wing);
+    assert(anom == fingerprint::AkamaiAnomaly.WindowUpdateAnomaly);
     print("AKAMAI_OK");
 }
 
@@ -1825,28 +1825,28 @@ fn test_ja4_and_profile_regressions() {
     let vers:    u16[2] = [0x0304, 0x7f1c];
     let sigs:    u16[1] = [0x0403];
 
-    let ja4_csv = wing::compute_ja4(ciphers[..], exts[..], vers[..], true, "h2,http/1.1", sigs[..], false);
+    let ja4_csv = fingerprint::compute_ja4(ciphers[..], exts[..], vers[..], true, "h2,http/1.1", sigs[..], false);
     assert(ja4_csv[..11] == "t13d0202h2_");
 
     let dtls_vers: u16[2] = [0xfefd, 0xfeff];
-    let ja4_dtls = wing::compute_ja4(ciphers[..], exts[..], dtls_vers[..], true, "h2", sigs[..], false);
+    let ja4_dtls = fingerprint::compute_ja4(ciphers[..], exts[..], dtls_vers[..], true, "h2", sigs[..], false);
     assert(ja4_dtls[..4] == "td2d");
 
     // F006 & F007: JA4H language ';' delimiter, HTTP/2 :pseudo stripping, "h2" version, and reusable buffer clear()
     let hdrs:    const u8[:][4] = [":method", ":path", "Host", "Accept-Language"];
     let cookies: const u8[:][1] = ["session_id"];
     var reusable_ja4h: u8[..64] = [];
-    wing::compute_ja4h("GET", "h2", hdrs[..], wing::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..], reusable_ja4h);
-    wing::compute_ja4h("GET", "h2", hdrs[..], wing::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..], reusable_ja4h);
+    fingerprint::compute_ja4h("GET", "h2", hdrs[..], fingerprint::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..], reusable_ja4h);
+    fingerprint::compute_ja4h("GET", "h2", hdrs[..], fingerprint::Ja4hFlags {}, "en;q=0.9,fr;q=0.8", cookies[..], cookies[..], reusable_ja4h);
     assert(reusable_ja4h[..12] == "ge20cn02en00");
 
     // F007: set_akamai syncs ClientProfile.h2
-    var prof = wing::new_client_profile(wing::Profile.Wing);
-    var custom_fp = wing::custom_akamai_fingerprint(12517377, "m,p,a,s");
-    let _ = wing::akamai_push_setting(custom_fp, 1, 65536);
-    let _ = wing::akamai_push_setting(custom_fp, 4, 131072);
-    let _ = wing::akamai_push_setting(custom_fp, 5, 16384);
-    wing::set_akamai(prof, custom_fp);
+    var prof = fingerprint::new_client_profile(fingerprint::Profile.Wing);
+    var custom_fp = fingerprint::custom_akamai_fingerprint(12517377, "m,p,a,s");
+    let _ = custom_fp.push_setting(1, 65536);
+    let _ = custom_fp.push_setting(4, 131072);
+    let _ = custom_fp.push_setting(5, 16384);
+    prof.set_akamai(custom_fp);
     assert(prof.h2.initial_window_size == 131072);
     assert(prof.h2.max_frame_size == 16384);
     print("JA4_PROFILE_OK");
@@ -1854,26 +1854,26 @@ fn test_ja4_and_profile_regressions() {
 
 fn test_p0f_regressions() {
     // F008 & F009: Wildcard window scale round-trip, MTU multiplier matching, and integer bounds
-    let p_any, ok_any = wing::parse_p0f("4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0");
+    let p_any, ok_any = fingerprint::parse_p0f("4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0");
     assert(ok_any);
-    let fmt_any = wing::format_p0f(p_any);
+    let fmt_any = p_any.format_p0f();
     assert(fmt_any[..] == "4:64:0:1460:*,8:mss,sok,ts,nop,ws:df,id+:0");
 
-    let target_mtu, ok_mtu = wing::parse_p0f("4:64-:0:*:mtu*4,7:mss,sok,ts,nop,ws:df:0");
+    let target_mtu, ok_mtu = fingerprint::parse_p0f("4:64-:0:*:mtu*4,7:mss,sok,ts,nop,ws:df:0");
     assert(ok_mtu);
-    let actual_pkt, ok_pkt = wing::parse_p0f("4:60:0:1460:6000,7:mss,sok,ts,nop,ws:df:0");
+    let actual_pkt, ok_pkt = fingerprint::parse_p0f("4:60:0:1460:6000,7:mss,sok,ts,nop,ws:df:0");
     assert(ok_pkt);
-    assert(wing::match_p0f(actual_pkt, target_mtu));
+    assert(actual_pkt.match_p0f(target_mtu));
 
-    let _, ok_ovf = wing::parse_p0f("4:64:0:999999999999:65535,8:mss:df:0");
+    let _, ok_ovf = fingerprint::parse_p0f("4:64:0:999999999999:65535,8:mss:df:0");
     assert(!ok_ovf);
-    let _, ok_ttl0 = wing::parse_p0f("4:0:0:1460:65535,8:mss:df:0");
+    let _, ok_ttl0 = fingerprint::parse_p0f("4:0:0:1460:65535,8:mss:df:0");
     assert(!ok_ttl0);
-    let _, ok_bad_quirk = wing::parse_p0f("4:64:0:1460:65535,8:mss:df,unknown_quirk:0");
+    let _, ok_bad_quirk = fingerprint::parse_p0f("4:64:0:1460:65535,8:mss:df,unknown_quirk:0");
     assert(!ok_bad_quirk);
-    let _, ok_bad_eol = wing::parse_p0f("4:64:0:1460:65535,8:mss,eol+abc:df:0");
+    let _, ok_bad_eol = fingerprint::parse_p0f("4:64:0:1460:65535,8:mss,eol+abc:df:0");
     assert(!ok_bad_eol);
-    let _, ok_empty_payload = wing::parse_p0f("4:64:0:1460:65535,8:mss:df:");
+    let _, ok_empty_payload = fingerprint::parse_p0f("4:64:0:1460:65535,8:mss:df:");
     assert(!ok_empty_payload);
     print("P0F_OK");
 }

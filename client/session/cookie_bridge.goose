@@ -8,6 +8,8 @@ import std;
 import core from "../..";
 import cookie.constants;
 import cookie.canonical;
+import cookie.psl;
+import cookie.parser;
 import cookie.policy;
 import cookie.engine;
 import client.session.ssrf;
@@ -19,48 +21,48 @@ fn compute_hop_samesite_context(
     ctx:         const RequestExecutionContext&,
     current_url: const core::Url&,
     safe_method: bool,
-) -> SameSiteCookieContext {
-    var samesite_ctx_type = SameSiteContextType.CrossSite;
+) -> cookie::SameSiteCookieContext {
+    var samesite_ctx_type = cookie::SameSiteContextType.CrossSite;
     let is_first_p = !ctx.site_for_cookies.is_null &&
-        is_first_party(ctx.site_for_cookies, current_url.href[..], true);
+        cookie::is_first_party(ctx.site_for_cookies, current_url.href[..], true);
     let init_same_site = !ctx.has_initiator || (
-        ctx.initiator.kind != core::OriginKind.Opaque && is_schemeful_same_site(
+        ctx.initiator.kind != core::OriginKind.Opaque && cookie::is_schemeful_same_site(
             ctx.initiator.scheme[..], ctx.initiator.host[..],
             current_url.scheme(), current_url.hostname(),
         )
     );
 
     if ctx.site_for_cookies.is_null {
-        samesite_ctx_type = SameSiteContextType.CrossSite;
+        samesite_ctx_type = cookie::SameSiteContextType.CrossSite;
     } else if ctx.is_main_frame {
-        if ctx.first_party_policy == FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL && !is_first_p {
-            samesite_ctx_type = SameSiteContextType.CrossSite;
+        if ctx.first_party_policy == cookie::FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL && !is_first_p {
+            samesite_ctx_type = cookie::SameSiteContextType.CrossSite;
         } else if ctx.had_cross_site_hop {
             samesite_ctx_type = if safe_method {
-                SameSiteContextType.SameSiteLax
+                cookie::SameSiteContextType.SameSiteLax
             } else {
-                SameSiteContextType.CrossSite
+                cookie::SameSiteContextType.CrossSite
             };
         } else if is_first_p && init_same_site {
-            samesite_ctx_type = SameSiteContextType.SameSiteStrict;
+            samesite_ctx_type = cookie::SameSiteContextType.SameSiteStrict;
         } else if safe_method {
-            samesite_ctx_type = SameSiteContextType.SameSiteLax;
+            samesite_ctx_type = cookie::SameSiteContextType.SameSiteLax;
         } else {
-            samesite_ctx_type = SameSiteContextType.SameSiteLaxMethodUnsafe;
+            samesite_ctx_type = cookie::SameSiteContextType.SameSiteLaxMethodUnsafe;
         }
     } else {
         if ctx.had_cross_site_hop || !is_first_p {
-            samesite_ctx_type = SameSiteContextType.CrossSite;
+            samesite_ctx_type = cookie::SameSiteContextType.CrossSite;
         } else if init_same_site {
-            samesite_ctx_type = SameSiteContextType.SameSiteStrict;
+            samesite_ctx_type = cookie::SameSiteContextType.SameSiteStrict;
         } else if safe_method {
-            samesite_ctx_type = SameSiteContextType.SameSiteLax;
+            samesite_ctx_type = cookie::SameSiteContextType.SameSiteLax;
         } else {
-            samesite_ctx_type = SameSiteContextType.SameSiteLaxMethodUnsafe;
+            samesite_ctx_type = cookie::SameSiteContextType.SameSiteLaxMethodUnsafe;
         }
     }
 
-    return SameSiteCookieContext {
+    return cookie::SameSiteCookieContext {
         context_type:       samesite_ctx_type,
         schemefully_same:   ctx.site_for_cookies.schemefully_same,
         is_reload:          ctx.is_reload,
@@ -75,13 +77,13 @@ fn compute_hop_samesite_context(
 fn compute_hop_samesite_context_for_response(
     ctx:               const RequestExecutionContext&,
     current_url:       const core::Url&,
-    req_samesite_eval: const SameSiteCookieContext&,
-) -> SameSiteCookieContext {
+    req_samesite_eval: const cookie::SameSiteCookieContext&,
+) -> cookie::SameSiteCookieContext {
     var resp_ctx = copy(req_samesite_eval);
     if ctx.is_main_frame && !ctx.site_for_cookies.is_null {
-        let is_first_p = is_first_party(ctx.site_for_cookies, current_url.href[..], true);
-        if is_first_p && resp_ctx.context_type == SameSiteContextType.CrossSite {
-            resp_ctx.context_type = SameSiteContextType.SameSiteLax;
+        let is_first_p = cookie::is_first_party(ctx.site_for_cookies, current_url.href[..], true);
+        if is_first_p && resp_ctx.context_type == cookie::SameSiteContextType.CrossSite {
+            resp_ctx.context_type = cookie::SameSiteContextType.SameSiteLax;
         }
     }
     return resp_ctx;
@@ -103,7 +105,7 @@ fn compute_hop_partition_key<B>(
         let top_sch = if ctx.top_frame_origin.scheme.len > 0 { ctx.top_frame_origin.scheme[..] } else { fallback_sch };
         guard top_sch.len > 0 else { return; }
         var top_etld: u8[..128] = [];
-        psl_extract_etld_plus_one(ctx.top_frame_origin.host[..], top_etld);
+        cookie::extract_etld_plus_one(ctx.top_frame_origin.host[..], top_etld);
         let site_host = if top_etld.len > 0 { top_etld[..] } else { ctx.top_frame_origin.host[..] };
         guard out.try_append(top_sch) && out.try_append("://") && out.try_append(site_host) else {
             out.clear();
@@ -120,7 +122,7 @@ fn compute_hop_partition_key<B>(
     } else {
         guard fallback_sch.len > 0 else { return; }
         var etld: u8[..128] = [];
-        psl_extract_etld_plus_one(current_url.hostname(), etld);
+        cookie::extract_etld_plus_one(current_url.hostname(), etld);
         let site_host = if etld.len > 0 { etld[..] } else { current_url.hostname() };
         guard out.try_append(fallback_sch) && out.try_append("://") && out.try_append(site_host) else {
             out.clear();
@@ -134,26 +136,27 @@ fn prepare_hop_cookie_header(
     session:       Session&,
     ctx:           RequestExecutionContext&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     safe_method:   bool,
 ) {
-    let is_sec_channel = current_url.is_secure_scheme() || is_trustworthy_non_crypto_host(current_url.hostname());
+    let is_sec_channel = current_url.is_secure_scheme() ||
+        cookie::is_trustworthy_non_crypto_host(current_url.hostname());
     var part_key: u8[..256] = [];
     compute_hop_partition_key(ctx, current_url, part_key);
-    let allow_lax = (ctx.is_main_frame && samesite_eval.context_type != SameSiteContextType.CrossSite) ||
-        samesite_eval.context_type == SameSiteContextType.SameSiteLax ||
-        samesite_eval.context_type == SameSiteContextType.SameSiteLaxMethodUnsafe;
-    let _ = encode_cookie_header_to_map(
+    let allow_lax = (ctx.is_main_frame && samesite_eval.context_type != cookie::SameSiteContextType.CrossSite) ||
+        samesite_eval.context_type == cookie::SameSiteContextType.SameSiteLax ||
+        samesite_eval.context_type == cookie::SameSiteContextType.SameSiteLaxMethodUnsafe;
+    let _ = cookie::encode_cookie_header_to_map(
         session.jar,
         current_url.hostname(),
         current_url.pathname(),
         current_url.scheme(),
         current_url.effective_port(),
-        CookieSourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
+        cookie::SourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
         part_key[..],
         session.virtual_clock_us,
-        CookieAccessOptions {
-            is_same_site:            samesite_eval.context_type == SameSiteContextType.SameSiteStrict,
+        cookie::AccessOptions {
+            is_same_site:            samesite_eval.context_type == cookie::SameSiteContextType.SameSiteStrict,
             is_top_level_navigation: allow_lax,
             is_safe_method:          safe_method,
             had_cross_site_hop:      samesite_eval.had_cross_site_hop,
@@ -167,7 +170,7 @@ fn ingest_hop_response_cookies(
     session:       Session&,
     ctx:           const RequestExecutionContext&,
     current_url:   const core::Url&,
-    samesite_eval: const SameSiteCookieContext&,
+    samesite_eval: const cookie::SameSiteCookieContext&,
     resp_headers:  const HeaderMap&,
 ) {
     let resp_samesite = compute_hop_samesite_context_for_response(ctx, current_url, samesite_eval);
@@ -177,8 +180,8 @@ fn ingest_hop_response_cookies(
         guard ename.eq_ascii_fold("set-cookie") else { continue; }
         let set_cookie_str = entry_value(resp_headers, e);
         var def_path: u8[..256] = [];
-        compute_default_cookie_path(current_url.pathname(), def_path);
-        var parsed_cookie, parse_cause, cookie_ok = parse_canonical_set_cookie(
+        cookie::compute_default_path(current_url.pathname(), def_path);
+        var parsed_cookie, parse_cause, cookie_ok = cookie::parse_canonical_set_cookie(
             set_cookie_str,
             current_url.hostname(),
             def_path[..],
@@ -188,12 +191,12 @@ fn ingest_hop_response_cookies(
             continue;
         }
         let is_sec_channel = current_url.is_secure_scheme() ||
-            is_trustworthy_non_crypto_host(current_url.hostname());
-        let opts = CookieInclusionOptions {
+            cookie::is_trustworthy_non_crypto_host(current_url.hostname());
+        let opts = cookie::InclusionOptions {
             is_main_frame:     ctx.is_main_frame,
             is_secure_channel: is_sec_channel,
         };
-        let can_write, code = can_set_canonical_cookie_for_context(
+        let _, can_write = cookie::can_set_for_context(
             parsed_cookie,
             resp_samesite,
             opts,

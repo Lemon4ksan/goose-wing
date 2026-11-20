@@ -266,7 +266,7 @@ fn test_tako_v2_pool_mechanisms(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_unified_server_pipeline(t: lit::T&) {
     t.run("End-to-End Handled Request Lifecycle") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/v1/users/{id}", 42);
 
@@ -291,7 +291,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
     };
 
     t.run("Pipeline Rate Limiting Defense (Stage 1)") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 0); // strictly 1 req/s
+        let quota = security::new_gcra_quota(1, wing::secs(1), 0); // strictly 1 req/s
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/health", 1);
 
@@ -313,7 +313,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
     };
 
     t.run("Pipeline CSRF Defense (Stage 2)") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/api/transfer", 99);
 
@@ -330,7 +330,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
     };
 
     t.run("Pipeline Routing & 405 Method Not Allowed (Stage 3)") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "GET", "/api/data", 10);
 
@@ -363,7 +363,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
     };
 
     t.run("Pipeline Expect Header Validation (Stage 0.5) (RFC 9110 Section 10.1.1)") { sub =>
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
         wing::add_route(cfg.router, "POST", "/upload", 42);
 
@@ -392,7 +392,7 @@ fn test_unified_server_pipeline(t: lit::T&) {
     };
 
     t.run("Pipeline Bitmask PSO Fast-Path Probe & Egress Headers") { sub =>
-        let quota = wing::new_gcra_quota(1, wing::secs(1), 0); // strictly 1 req/s
+        let quota = security::new_gcra_quota(1, wing::secs(1), 0); // strictly 1 req/s
         var cfg = wing::new_server_pipeline_config("example.com", quota);
 
         // Fast-path bypass route (pso_mask = 0)
@@ -627,7 +627,7 @@ var g_worker_react_app: wing::HttpServer = wing::HttpServer { .. };
 thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
     g_worker_sync_app.is_running = true;
     g_worker_sync_app.timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    g_worker_sync_app.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1000, wing::secs(1), 100));
+    g_worker_sync_app.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1000, wing::secs(1), 100));
     g_worker_sync_app.pipeline.router = wing::new_radix_router();
     let _ = g_worker_sync_app.pipeline.target_host.try_set("127.0.0.1");
     wing::add_get_route(g_worker_sync_app, "/ping", 100);
@@ -641,7 +641,7 @@ thread_fn serve_sync_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) 
 thread_fn serve_reactor_worker(listener_fd: i64, max_conns: i64, ring_handle: u64) {
     g_worker_react_app.is_running = true;
     g_worker_react_app.timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    g_worker_react_app.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1000, wing::secs(1), 100));
+    g_worker_react_app.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1000, wing::secs(1), 100));
     g_worker_react_app.pipeline.router = wing::new_radix_router();
     let _ = g_worker_react_app.pipeline.target_host.try_set("127.0.0.1");
     wing::add_get_route(g_worker_react_app, "/hello", 101);
@@ -888,7 +888,7 @@ fn test_nginx_harmony_invariants(t: lit::T&) {
     t.run("1. X-Real-IP extraction with loopback and trust_proxy_headers") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         server.pipeline.enable_rate_limiter = true;
-        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, wing::secs(1), 0));
+        server.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1, wing::secs(1), 0));
         wing::add_route(server.pipeline.router, "GET", "/ip-check", 1, 0);
 
         var req1: u8[..256] = [];
@@ -917,7 +917,7 @@ fn test_nginx_harmony_invariants(t: lit::T&) {
     t.run("2. X-Forwarded-For comma-separated list extraction") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         server.pipeline.enable_rate_limiter = true;
-        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, wing::secs(1), 0));
+        server.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1, wing::secs(1), 0));
         wing::add_route(server.pipeline.router, "GET", "/xff-check", 1, 0);
 
         var req1: u8[..256] = [];
@@ -936,7 +936,7 @@ fn test_nginx_harmony_invariants(t: lit::T&) {
     t.run("2b. RFC 7239 Forwarded header extraction and precedence") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
         server.pipeline.enable_rate_limiter = true;
-        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, wing::secs(1), 0));
+        server.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1, wing::secs(1), 0));
         wing::add_route(server.pipeline.router, "GET", "/fwd-check", 1, 0);
 
         var req1: u8[..256] = [];
@@ -962,7 +962,7 @@ fn test_nginx_harmony_invariants(t: lit::T&) {
         var server = wing::new_http_server("127.0.0.1", 8080);
         server.pipeline.enable_rate_limiter = true;
         server.pipeline.trust_proxy_headers = false;
-        server.pipeline.limiter = wing::new_sharded_limiter(wing::new_gcra_quota(1, wing::secs(1), 0));
+        server.pipeline.limiter = security::new_sharded_limiter(security::new_gcra_quota(1, wing::secs(1), 0));
         wing::add_route(server.pipeline.router, "GET", "/untrusted", 1, 0);
 
         var req1: u8[..256] = [];
@@ -1071,7 +1071,7 @@ fn test_server_audit_regressions(t: lit::T&) {
 
         // F012 & F013: copy_stream_headers_and_trailers must populate req.presence_mask so wing::header() works on HTTP/2 requests!
         // Test with HTTP/2 QUERY request which requires Content-Type in pipeline.goose
-        var pipeline = wing::new_server_pipeline_config("example.com", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("example.com", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "QUERY", "/search", 10);
 
@@ -1149,9 +1149,9 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_false(core::contains(head_out[..], "Content-Length: 0\r\n"), "HEAD response must NOT also emit Content-Length: 0");
 
         // F015: Rejected CORS preflight must short-circuit and NOT fall through to route handler
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
-        wing::add_allowed_origin(cfg.cors_policy, "https://trusted.example.com");
+        security::add_allowed_origin(cfg.cors_policy, "https://trusted.example.com");
         wing::add_route(cfg.router, "OPTIONS", "/cors-resource", 55);
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         var bad_preflight = wing::new_request("OPTIONS", "/cors-resource");
@@ -1272,7 +1272,7 @@ fn test_server_audit_regressions(t: lit::T&) {
         var server = wing::new_http_server("127.0.0.1", 8080);
         wing::add_get_route(server, "/h3-check", 2001);
 
-        let h3_settings = wing::H3Settings { .. };
+        let h3_settings = fingerprint::H3Settings { .. };
         var h3_cli = h3_internal::new_h3_client_connection(h3_settings);
         let sid, ok_sid = h3_internal::open_request_stream(h3_cli);
         sub.assert_true(ok_sid && sid == 0, "open client H3 stream 0");
@@ -1336,7 +1336,7 @@ fn wing::on_server_stage(
         } else if ctx.handler_id == 102 {
             let sub = cfg.auth_subject(ctx);
             let claims = cfg.auth_claims(ctx);
-            let tenant = wing::claim_str(claims, "tenant");
+            let tenant = auth::claim_str(claims, "tenant");
             let sess = cfg.session_data(ctx);
             var out_txt: u8[..128] = [];
             out_txt.append(sub);
@@ -1414,7 +1414,7 @@ fn test_route_handler_stage_and_ergonomics(t: lit::T&) {
         var server = wing::new_http_server("example.com", 8080);
         server.pipeline.enable_csrf_guard = false;
         server.pipeline.cors_policy.reject_non_matching_origin = true;
-        wing::add_allowed_origin(server.pipeline.cors_policy, "https://trusted.example.com");
+        security::add_allowed_origin(server.pipeline.cors_policy, "https://trusted.example.com");
         wing::add_get_route(server, "/protected", 102);
 
         var stage = PlodStyleStage { .. };
@@ -1429,8 +1429,8 @@ fn test_route_handler_stage_and_ergonomics(t: lit::T&) {
 
         // Verify JWT auth_claims and raw_payload preservation
         let secret = "0123456789abcdef0123456789abcdef";
-        let _ = wing::add_symmetric_key(server.pipeline.jwks, "k1", wing::JwtAlg.HS256, secret);
-        server.pipeline.jwt_options = wing::default_jwt_validation_options(wing::JwtAlg.HS256);
+        let _ = auth::add_symmetric_key(server.pipeline.jwks, "k1", auth::JwtAlg.HS256, secret);
+        server.pipeline.jwt_options = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
         server.pipeline.server_pso_capabilities |= wing::STAGE_INGRESS_AUTH_JWT;
         wing::add_route(
             server.pipeline.router,
@@ -1441,12 +1441,12 @@ fn test_route_handler_stage_and_ergonomics(t: lit::T&) {
             wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_INGRESS_AUTH_JWT,
         );
 
-        var hdr = wing::new_jwt_header(wing::JwtAlg.HS256, "k1");
-        var claims = wing::JwtClaims { exp: 2000000000, .. };
+        var hdr = auth::new_jwt_header(auth::JwtAlg.HS256, "k1");
+        var claims = auth::JwtClaims { exp: 2000000000, .. };
         let _ = claims.sub.try_set("alice");
-        let _ = wing::set_claim(claims, "tenant", "acme");
+        let _ = auth::set_claim(claims, "tenant", "acme");
         var token: u8[..512] = [];
-        let ok_sign = wing::sign_jwt_hmac(hdr, claims, secret, token);
+        let ok_sign = auth::sign_jwt_hmac(hdr, claims, secret, token);
         sub.assert_true(ok_sign, "signed HS256 token");
 
         var req_jwt = wing::new_get("/jwt-info");
@@ -1459,8 +1459,8 @@ fn test_route_handler_stage_and_ergonomics(t: lit::T&) {
         sub.assert_eq(res_jwt.status_code, 200, "200 OK from JWT route");
         sub.assert_eq(res_jwt.text(), "alice:acme:", "auth_subject and custom claim 'tenant' extracted");
 
-        var parsed_c = wing::JwtClaims { .. };
-        let ok_raw = wing::parse_jwt_claims_json("{\"sub\":\"bob\",\"nested\":{\"a\":1}}", parsed_c);
+        var parsed_c = auth::JwtClaims { .. };
+        let ok_raw = auth::parse_jwt_claims_json("{\"sub\":\"bob\",\"nested\":{\"a\":1}}", parsed_c);
         sub.assert_true(ok_raw, "parse_jwt_claims_json with nested object succeeds");
         sub.assert_contains(parsed_c.raw_payload[..], "\"nested\":{\"a\":1}", "raw_payload preserved on JwtClaims");
     };
@@ -1527,7 +1527,7 @@ fn test_srv_reg1_s2(t: lit::T&) {
         sub.assert_eq(sess.conn.max_concurrent_streams, 16, "H2ServerSession max_concurrent_streams is 16");
 
         // F012 & F013: copy_stream_headers_and_trailers must populate req.presence_mask so wing::header() works on HTTP/2 requests!
-        var pipeline = wing::new_server_pipeline_config("example.com", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("example.com", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "QUERY", "/search", 10);
 
@@ -1617,9 +1617,9 @@ fn test_srv_reg1_s3a(t: lit::T&) {
 fn test_srv_reg1_s3b(t: lit::T&) {
     t.run("3b. CORS/CSRF PSO & RFC 7239 Forwarded") { sub =>
         // F015: Rejected CORS preflight must short-circuit and NOT fall through to route handler
-        let quota = wing::new_gcra_quota(100, wing::secs(1), 10);
+        let quota = security::new_gcra_quota(100, wing::secs(1), 10);
         var cfg = wing::new_server_pipeline_config("example.com", quota);
-        wing::add_allowed_origin(cfg.cors_policy, "https://trusted.example.com");
+        security::add_allowed_origin(cfg.cors_policy, "https://trusted.example.com");
         wing::add_route(cfg.router, "OPTIONS", "/cors-resource", 55);
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         var bad_preflight = wing::new_request("OPTIONS", "/cors-resource");
@@ -1783,7 +1783,7 @@ fn srv_reg1_run_round2_part1a(t: lit::T&) {
         }
 
         // R2-F004 & R2-F005: 0-length DATA on closed stream does not emit WINDOW_UPDATE(0); self-dependent PRIORITY terminates stream
-        var pipeline = wing::new_server_pipeline_config("example.com", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("example.com", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/test", 10);
         var h2_wire: u8[>..] = [];
@@ -1945,7 +1945,7 @@ fn build_h2_frame<B>(out: B&, length: u32, frame_type: u8, flags: u8, stream_id:
 fn test_srv_reg2_r1_cache_and_edge_filter(t: lit::T&) {
     t.run("1. Cache route isolation, Content-Type preservation & EdgeFilter boundary") { sub =>
         // F001: Route A (/json) cache entry must not poison Route B (/plaintext), and must preserve Content-Type
-        var cfg = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var cfg = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         let in_cache = wire::STAGE_SRV_IN_DEFAULT_MASK | wire::STAGE_SRV_IN_CACHE_LOOKUP;
         let out_cache = wire::STAGE_SRV_OUT_DEFAULT_MASK | wire::STAGE_SRV_OUT_CACHE_STORE;
         wing::add_route_pso(cfg.router, "GET", "/json", 101, in_cache, out_cache);
@@ -1991,7 +1991,7 @@ fn test_srv_reg2_r1_cache_and_edge_filter(t: lit::T&) {
 fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
     t.run("2. H2 HPACK dyn table update, conn window replenish on RST, partial send body corruption") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "POST", "/echo", 1);
 
@@ -2073,7 +2073,7 @@ fn test_srv_reg2_r3_pipeline_and_router(t: lit::T&) {
         sub.assert_true(wing::client_accepts_encoding("gzip;q=0, br;q=0.8", "br"), "br;q=0.8 must be accepted");
 
         // F011 & F012: X-Matched-Route emitted in telemetry and HEAD ETag 304 Not Modified works
-        var cfg = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var cfg = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         let pso = wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_EGRESS_ETAG | wing::STAGE_EGRESS_METRICS | wing::STAGE_EGRESS_ACCESS_LOG;
         wing::add_route_pso(cfg.router, "GET", "/item", 201, pso);
         wing::set_static_route_payload(cfg.router, 201, "text/plain", "hello-etag-world");
@@ -2172,7 +2172,7 @@ fn test_srv_reg2_r4_server_wire(t: lit::T&) {
 fn test_srv_reg3_r1_cache_and_edge_filter(t: lit::T&) {
     t.run("1. Cache URL/query key isolation, SWR is_updating reset & EdgeFilter >512B Pass bypass") { sub =>
         // F001a: Same handler_id across parameterized/query URLs must not serve poisoned cached entry
-        var cfg = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var cfg = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         let in_cache = wire::STAGE_SRV_IN_DEFAULT_MASK | wire::STAGE_SRV_IN_CACHE_LOOKUP;
         let out_cache = wire::STAGE_SRV_OUT_DEFAULT_MASK | wire::STAGE_SRV_OUT_CACHE_STORE;
         wing::add_route_pso(cfg.router, "GET", "/items/{id}", 201, in_cache, out_cache);
@@ -2225,7 +2225,7 @@ fn test_srv_reg3_r1_cache_and_edge_filter(t: lit::T&) {
 fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
     t.run("2. Pipeline PSO mask collisions, CORS/405 preflight, compress CL/ETag, Cookie/Forwarded & Timer") { sub =>
         // F003: Enabling only STAGE_EGRESS_COMPRESS_GZIP alongside DEFAULT_ROUTE_PSO_MASK must not enable ZSTD/BR via low-bit collision
-        var cfg = wing::new_server_pipeline_config("example.com", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var cfg = wing::new_server_pipeline_config("example.com", security::new_gcra_quota(1000, wing::secs(1), 100));
         var req_c = wing::new_request("GET", "/data");
         wing::set_header(req_c, "Accept-Encoding", "zstd, gzip");
         var res_c = wing::Response { status_code: 200, .. };
@@ -2244,8 +2244,8 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
         sub.assert_true(wing::header(res_c, "etag") != "\"v1\"", "Strong ETag must be modified when Content-Encoding is applied");
 
         // F004: Unmatched route (404) or MethodNotAllowed (OPTIONS preflight to POST route) must not escalate PSO to require JWT auth
-        assert(wing::add_allowed_origin(cfg.cors_policy, "https://app.example.com"));
-        assert(wing::add_symmetric_key(cfg.jwks, "k1", wing::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"));
+        assert(security::add_allowed_origin(cfg.cors_policy, "https://app.example.com"));
+        assert(auth::add_symmetric_key(cfg.jwks, "k1", auth::JwtAlg.HS256, "0123456789abcdef0123456789abcdef"));
         wing::add_route_pso(cfg.router, "POST", "/api/submit", 301, wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_INGRESS_CORS_PREFLIGHT);
         var req_opt = wing::new_request("OPTIONS", "/api/submit");
         wing::set_header(req_opt, "Host", "example.com");
@@ -2263,9 +2263,9 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
             17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
         ];
-        assert(wing::add_key(cfg.private_jar.store, wing::KeySlot { key_id: 1, master_key: key, .. }));
+        assert(security::add_key(cfg.private_jar.store, security::KeySlot { key_id: 1, master_key: key, .. }));
         var sealed_val: u8[..256] = [];
-        assert(wing::private_jar_seal(cfg.private_jar, "session", "uid=42", 1, 999, sealed_val));
+        assert(security::seal(cfg.private_jar, "session", "uid=42", 1, 999, sealed_val));
         var hdr_cookie: u8[..320] = [];
         hdr_cookie.append("session=invalid_tossed; session=");
         hdr_cookie.append(sealed_val[..]);
@@ -2303,7 +2303,7 @@ fn test_srv_reg3_r3_h2_and_router(t: lit::T&) {
 
         // F007b: Self-dependent HEADERS (stream 1 depends on stream 1) with PRIORITY (0x20) + END_HEADERS (0x04)
         // must still decode HPACK incremental indexing so subsequent stream 3 referencing that dynamic entry succeeds!
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", wing::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
         wing::add_route(pipeline.router, "GET", "/ok", 10);
 

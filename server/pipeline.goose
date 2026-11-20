@@ -20,6 +20,10 @@ import http.problem;
 import http.negotiate;
 import http.server_timing;
 import auth.dpop;
+import security.cors;
+import security.crypto_jar;
+import security.csrf;
+import security.rate_limiter;
 import wire.pipeline;
 
 // ---- 1. Pipeline Configuration, Outcomes & Stage Context --------------------
@@ -34,54 +38,70 @@ struct ServerCompressAndEtagMemo {
 }
 
 struct ServerPipelineConfig {
-    limiter:                 ShardedGcraLimiter              = ShardedGcraLimiter { .. },
-    tier_limiters:           ShardedGcraLimiter[..4]         = [],
-    csrf_guard:              CrossOriginGuard                = CrossOriginGuard { .. },
-    cors_policy:             CorsPolicy                      = CorsPolicy { .. },
-    router:                  RadixRouter                     = RadixRouter { .. },
-    private_jar:             PrivateJar                      = PrivateJar { .. },
-    edge_filter:             EdgeFilter                      = EdgeFilter { .. },
-    route_cache:             HttpRouteCache                  = HttpRouteCache { .. },
-    jwks:                    Jwks                            = Jwks { .. },
-    jwt_options:             JwtValidationOptions            = JwtValidationOptions { .. },
-    security_txt:            SecurityTxt                     = SecurityTxt { .. },
-    dpop_replay_cache:       DPoPReplayCache                 = DPoPReplayCache { .. },
-    dpop_public_key:         u8[..64]                        = [],
-    sig_key_id:              u8[..64]                        = [],
-    sig_public_key:          u8[..64]                        = [],
-    verify_request_digest:   bool                            = false,
-    emit_problem_details:    bool                            = false,
-    wire_pipeline:           wire::WirePipeline              = wire::default_server_pipeline(),
-    header_pool:             server_internal::HeaderMapPool  = server_internal::HeaderMapPool { .. },
-    ext_pool:                server_internal::ExtensionsPool = server_internal::ExtensionsPool { .. },
-    slab_pool:               server_internal::SpillSlabPool  = server_internal::SpillSlabPool { .. },
-    memo:                    ServerCompressAndEtagMemo       = ServerCompressAndEtagMemo { .. },
-    target_host:             u8[..256]                       = "example.com",
-    deadline_ns:             u64                             = 30000000000, // 30s
-    gzip_level:              i32                             = 1,
-    enable_rate_limiter:     bool                            = true,
-    enable_csrf_guard:       bool                            = true,
-    enable_cors:             bool                            = true,
-    enable_slowloris_timer:  bool                            = true,
-    tls_enabled:             bool                            = true,
-    trust_proxy_headers:     bool                            = false,
-    server_pso_capabilities: u64                             = 0xFFFFFFFFFFFFFFFF,
-    hdr_scan_cursor:         i64                             = 0,
-    last_valid_host:         u8[..128]                       = [],
-    has_valid_host:          bool                            = false,
+    limiter:                 security::ShardedGcraLimiter      = security::ShardedGcraLimiter { .. },
+    tier_limiters:           security::ShardedGcraLimiter[..4] = [],
+    csrf_guard:              security::CrossOriginGuard        = security::CrossOriginGuard { .. },
+    cors_policy:             security::CorsPolicy              = security::CorsPolicy { .. },
+    router:                  RadixRouter                       = RadixRouter { .. },
+    private_jar:             security::PrivateJar              = security::PrivateJar { .. },
+    edge_filter:             EdgeFilter                        = EdgeFilter { .. },
+    route_cache:             HttpRouteCache                    = HttpRouteCache { .. },
+    jwks:                    auth::Jwks                        = auth::Jwks { .. },
+    jwt_options:             auth::JwtValidationOptions        = auth::JwtValidationOptions { .. },
+    security_txt:            SecurityTxt                       = SecurityTxt { .. },
+    dpop_replay_cache:       auth::DPoPReplayCache             = auth::DPoPReplayCache { .. },
+    dpop_public_key:         u8[..64]                          = [],
+    sig_key_id:              u8[..64]                          = [],
+    sig_public_key:          u8[..64]                          = [],
+    verify_request_digest:   bool                              = false,
+    emit_problem_details:    bool                              = false,
+    wire_pipeline:           wire::WirePipeline                = wire::default_server_pipeline(),
+    header_pool:             server_internal::HeaderMapPool    = server_internal::HeaderMapPool { .. },
+    ext_pool:                server_internal::ExtensionsPool   = server_internal::ExtensionsPool { .. },
+    slab_pool:               server_internal::SpillSlabPool    = server_internal::SpillSlabPool { .. },
+    memo:                    ServerCompressAndEtagMemo         = ServerCompressAndEtagMemo { .. },
+    target_host:             u8[..256]                         = "example.com",
+    deadline_ns:             u64                               = 30000000000, // 30s
+    gzip_level:              i32                               = 1,
+    enable_rate_limiter:     bool                              = true,
+    enable_csrf_guard:       bool                              = true,
+    enable_cors:             bool                              = true,
+    enable_slowloris_timer:  bool                              = true,
+    tls_enabled:             bool                              = true,
+    trust_proxy_headers:     bool                              = false,
+    server_pso_capabilities: u64                               = 0xFFFFFFFFFFFFFFFF,
+    hdr_scan_cursor:         i64                               = 0,
+    last_valid_host:         u8[..128]                         = [],
+    has_valid_host:          bool                              = false,
 }
 
-fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> ServerPipelineConfig {
+// Initializes an existing `ServerPipelineConfig` in place without allocating a stack temporary.
+fn init_server_pipeline_config_inplace(
+    cfg:         ServerPipelineConfig&,
+    target_host: const u8[:],
+    quota:       security::GcraQuota,
+) {
+    cfg.limiter.quota = quota;
+    init_radix_router_inplace(cfg.router);
+    cfg.wire_pipeline = wire::default_server_pipeline();
+    let _ = cfg.target_host.try_set(target_host);
+    cfg.deadline_ns = 30000000000;
+    cfg.gzip_level = 1;
+    cfg.trust_proxy_headers = false;
+    cfg.server_pso_capabilities = 0xFFFFFFFFFFFFFFFF;
+}
+
+fn new_server_pipeline_config(target_host: const u8[:], quota: security::GcraQuota) -> ServerPipelineConfig {
     var cfg = ServerPipelineConfig {
-        limiter:                 new_sharded_limiter(quota),
-        csrf_guard:              CrossOriginGuard { .. },
-        cors_policy:             CorsPolicy { .. },
+        limiter:                 security::new_sharded_limiter(quota),
+        csrf_guard:              security::CrossOriginGuard { .. },
+        cors_policy:             security::CorsPolicy { .. },
         router:                  new_radix_router(),
-        private_jar:             new_private_jar(KeyStore { .. }),
+        private_jar:             security::new_private_jar(security::KeyStore { .. }),
         edge_filter:             EdgeFilter { .. },
         route_cache:             HttpRouteCache { .. },
-        jwks:                    Jwks { .. },
-        jwt_options:             JwtValidationOptions { .. },
+        jwks:                    auth::Jwks { .. },
+        jwt_options:             auth::JwtValidationOptions { .. },
         wire_pipeline:           wire::default_server_pipeline(),
         header_pool:             server_internal::HeaderMapPool { .. },
         ext_pool:                server_internal::ExtensionsPool { .. },
@@ -98,16 +118,16 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: GcraQuota) -> Ser
 }
 
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig {
-    return new_server_pipeline_config(target_host, new_gcra_quota(1000, secs(1), 100));
+    return new_server_pipeline_config(target_host, security::new_gcra_quota(1000, secs(1), 100));
 }
 
 // Configures or updates a parameter-slot GCRA rate limiter (slot 0..3) in `cfg.tier_limiters`.
-fn configure_tier_limiter(cfg: ServerPipelineConfig&, slot: u8, quota: GcraQuota) -> bool {
+fn configure_tier_limiter(cfg: ServerPipelineConfig&, slot: u8, quota: security::GcraQuota) -> bool {
     guard slot < 4 else { return false; }
     while cfg.tier_limiters.len <= slot {
-        guard cfg.tier_limiters.try_push(ShardedGcraLimiter { .. }) else { return false; }
+        guard cfg.tier_limiters.try_push(security::ShardedGcraLimiter { .. }) else { return false; }
     }
-    cfg.tier_limiters[slot] = new_sharded_limiter(quota);
+    cfg.tier_limiters[slot] = security::new_sharded_limiter(quota);
     return true;
 }
 
@@ -184,7 +204,7 @@ fn auth_subject(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) ->
 }
 
 // Returns the verified `JwtClaims` populated by `stage_server_auth_jwt`.
-fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const JwtClaims& {
+fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const auth::JwtClaims& {
     let idx = if ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len {
         ctx.ext_slot_idx
     } else {
@@ -597,8 +617,8 @@ fn stage_server_ratelimit_ip<Limiter>(
     let _prof = prof_enter("stage.ratelimit_ip");
     defer prof_leave(_prof);
     let rl_decision = limiter.check_rate_limit(peer_ip, 1, now_ns);
-    apply_rate_limit_headers(res, limiter.quota, rl_decision);
-    guard is_allowed(rl_decision) else {
+    security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
+    guard rl_decision.is_allowed() else {
         return wire::StageVerdict.ShortCircuit { status_code: 429 };
     }
     return wire::StageVerdict.Continue;
@@ -649,8 +669,8 @@ fn stage_server_ratelimit_route<Limiter>(
     composite_key.push(':');
     composite_key.append(route_path[..min(route_path.len, 64)]);
     let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
-    apply_rate_limit_headers(res, limiter.quota, rl_decision);
-    guard is_allowed(rl_decision) else {
+    security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
+    guard rl_decision.is_allowed() else {
         return wire::StageVerdict.ShortCircuit { status_code: 429 };
     }
     return wire::StageVerdict.Continue;
@@ -671,8 +691,8 @@ fn stage_server_ratelimit_subject<Limiter>(
     composite_key.append("sub:");
     composite_key.append(subject[..min(subject.len, 96)]);
     let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
-    apply_rate_limit_headers(res, limiter.quota, rl_decision);
-    guard is_allowed(rl_decision) else {
+    security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
+    guard rl_decision.is_allowed() else {
         return wire::StageVerdict.ShortCircuit { status_code: 429 };
     }
     return wire::StageVerdict.Continue;
@@ -680,7 +700,7 @@ fn stage_server_ratelimit_subject<Limiter>(
 
 // Stage 6 (Server Ingress): W3C CORS preflight and origin validation.
 fn stage_server_cors(
-    cors_policy: const CorsPolicy&,
+    cors_policy: const security::CorsPolicy&,
     enabled:     bool,
     req:         const Request&,
     res:         Response&,
@@ -688,11 +708,11 @@ fn stage_server_cors(
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.cors");
     defer prof_leave(_prof);
-    let cors_res = evaluate_cors(cors_policy, req, res);
-    if cors_res == CorsResult.AllowedPreflight {
+    let cors_res = security::evaluate_cors(cors_policy, req, res);
+    if cors_res == security::CorsResult.AllowedPreflight {
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
     }
-    if cors_res == CorsResult.RejectedOrigin || cors_res == CorsResult.InvalidConfig {
+    if cors_res == security::CorsResult.RejectedOrigin || cors_res == security::CorsResult.InvalidConfig {
         let has_acrm = header(req, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).len > 0;
         let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && has_acrm;
         if is_preflight || cors_policy.reject_non_matching_origin {
@@ -705,18 +725,18 @@ fn stage_server_cors(
 
 // Stage 7 (Server Ingress): Fetch Metadata (`Sec-Fetch-*`) cross-origin isolation & CSRF guard.
 fn stage_server_csrf(
-    csrf_guard:    const CrossOriginGuard&,
+    csrf_guard:    const security::CrossOriginGuard&,
     enabled:       bool,
     target_host:   const u8[:],
     req:           const Request&,
     res:           Response&,
-    target_scheme: CsrfTargetScheme = CsrfTargetScheme.Https,
+    target_scheme: security::CsrfTargetScheme = security::CsrfTargetScheme.Https,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.csrf");
     defer prof_leave(_prof);
-    let csrf_res = evaluate_request_csrf(csrf_guard, req, target_host, false, target_scheme);
-    apply_isolation_headers(res);
+    let csrf_res = security::evaluate_request_csrf(csrf_guard, req, target_host, false, target_scheme);
+    security::apply_isolation_headers(res);
     return match csrf_res {
         RejectForbidden _ => {
             res.status_code = 403;
@@ -753,7 +773,7 @@ fn extract_session_cookie_value(cookie_hdr: const u8[:]) -> const u8[:] {
     return "";
 }
 
-// Stage 8 (Server Ingress): Authenticated session cookie decryption via UFCS `jar.private_jar_open(...)`.
+// Stage 8 (Server Ingress): Authenticated session cookie decryption via UFCS `jar.open(...)`.
 fn stage_server_auth_cookie<Jar>(
     jar:    const Jar&,
     req:    const Request&,
@@ -773,7 +793,7 @@ fn stage_server_auth_cookie<Jar>(
             let session_val = extract_session_cookie_value(rem);
             guard session_val.len > 0 else { break; }
             ext.session_data.clear();
-            if jar.private_jar_open("session", session_val, now_sec, ext.session_data) {
+            if jar.open("session", session_val, now_sec, ext.session_data) {
                 ext.populated_entries |= server_internal::ENTRY_COOKIES;
                 return wire::StageVerdict.Continue;
             }
@@ -817,8 +837,8 @@ fn extract_bearer_token(auth_hdr: const u8[:]) -> const u8[:] {
 
 // Stage 9 (Server Ingress): RFC 7519 / RFC 8725 JWT Bearer token verification against `Jwks`.
 fn stage_server_auth_jwt(
-    jwks:        const Jwks&,
-    jwt_options: const JwtValidationOptions&,
+    jwks:        const auth::Jwks&,
+    jwt_options: const auth::JwtValidationOptions&,
     req:         const Request&,
     ext:         server_internal::RequestExtensions&,
     now_ns:      u64,
@@ -834,11 +854,11 @@ fn stage_server_auth_jwt(
         set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer");
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
     }
-    var out_hdr = JwtHeader { .. };
-    var out_claims = JwtClaims { .. };
+    var out_hdr = auth::JwtHeader { .. };
+    var out_claims = auth::JwtClaims { .. };
     let now_sec = (now_ns / 1000000000) as i64;
-    let err = verify(token, jwks, jwt_options, now_sec, out_hdr, out_claims);
-    guard err == JwtError.None else {
+    let err = auth::verify_jwt(jwks, token, jwt_options, now_sec, out_hdr, out_claims);
+    guard err == auth::JwtError.None else {
         res.status_code = 401;
         set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"");
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
@@ -1281,7 +1301,7 @@ fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
         }
         return wire::StageVerdict.Continue;
     }
-    apply_isolation_headers(res);
+    security::apply_isolation_headers(res);
     return wire::StageVerdict.Continue;
 }
 
@@ -1565,7 +1585,11 @@ fn evaluate_pipeline_cors_and_csrf(
     }
 
     if (mask & (STAGE_INGRESS_FETCH_CSRF | wire::STAGE_SRV_IN_CSRF)) != 0 {
-        let scheme = if cfg.tls_enabled { CsrfTargetScheme.Https } else { CsrfTargetScheme.Http };
+        let scheme = if cfg.tls_enabled {
+            security::CsrfTargetScheme.Https
+        } else {
+            security::CsrfTargetScheme.Http
+        };
         let v_csrf = stage_server_csrf(
             cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res, scheme,
         );
@@ -1578,7 +1602,7 @@ fn evaluate_pipeline_cors_and_csrf(
     return PipelineOutcome.Handled, false;
 }
 
-inline fn select_stage_limiter(cfg: ServerPipelineConfig&, param_slot: u8) -> ShardedGcraLimiter& {
+inline fn select_stage_limiter(cfg: ServerPipelineConfig&, param_slot: u8) -> security::ShardedGcraLimiter& {
     if param_slot < cfg.tier_limiters.len {
         return cfg.tier_limiters[param_slot];
     }
@@ -1621,7 +1645,11 @@ fn execute_bound_ingress_stage_verdict<UserStage>(
         return stage_server_cors(cfg.cors_policy, cfg.enable_cors, req, res);
     }
     if b.stage_id == wire::STAGE_ID_SRV_IN_CSRF {
-        let scheme = if cfg.tls_enabled { CsrfTargetScheme.Https } else { CsrfTargetScheme.Http };
+        let scheme = if cfg.tls_enabled {
+            security::CsrfTargetScheme.Https
+        } else {
+            security::CsrfTargetScheme.Http
+        };
         return stage_server_csrf(
             cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res, scheme,
         );
@@ -1715,8 +1743,8 @@ fn evaluate_server_integrity_and_crypto(
     if cfg.dpop_public_key.len > 0 {
         let dpop_jwt = header(req, "DPoP");
         let now_sec = (now_ns / 1000000000) as i64;
-        let ok_dpop = dpop_jwt.len > 0 && verify_dpop_proof_with_replay_cache(
-            dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec, cfg.dpop_replay_cache,
+        let ok_dpop = dpop_jwt.len > 0 && auth::verify_dpop_proof_with_replay_cache(
+            cfg.dpop_replay_cache, dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec,
         );
         if !ok_dpop {
             res.status_code = 401;

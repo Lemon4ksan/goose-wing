@@ -51,13 +51,13 @@ fn main() {
     // Scenario 3: Canonical Cookie Jar with Security Scoping & Prefix Rules
     // ------------------------------------------------------------------------
     print("\n[3/11] RFC 6265bis Canonical Cookie Jar...\n");
-    var jar = wing::CanonicalCookieJar { .. };
+    var jar = cookie::CanonicalCookieJar { .. };
     var clock = lit::new_mock_clock();
 
     // 1. Host-only secure cookie
-    let set1 = wing::set_cookie_header(jar, "https://api.exchange.io/", "sid=session_token_xyz; Path=/; Secure; HttpOnly; SameSite=Strict", clock.now_us);
+    let set1 = cookie::set_cookie_header(jar, "https://api.exchange.io/", "sid=session_token_xyz; Path=/; Secure; HttpOnly; SameSite=Strict", clock.now_us);
     // 2. Partitioned CHIPS cookie
-    let set2 = wing::set_cookie_header(jar, "https://api.exchange.io/", "__Host-pref=dark; Path=/; Secure; SameSite=None; Partitioned", clock.now_us, "https://exchange.io");
+    let set2 = cookie::set_cookie_header(jar, "https://api.exchange.io/", "__Host-pref=dark; Path=/; Secure; SameSite=None; Partitioned", clock.now_us, "https://exchange.io");
     print("  Cookie 1 added: ", set1, "\n");
     print("  Cookie 2 added: ", set2, "\n");
     print("  Total cookies:  ", jar.cookies.len, "\n");

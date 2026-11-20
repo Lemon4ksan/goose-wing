@@ -67,7 +67,7 @@ fn test_h3_framing_and_grease(t: lit::T&) {
 // 2. SETTINGS Frame Conformance & Protocol Defenses
 fn test_h3_settings_conformance(t: lit::T&) {
     t.run("H3-03: SETTINGS Frame Encoding & Parsing") { sub =>
-        var set_out = wing::H3Settings {
+        var set_out = fingerprint::H3Settings {
             qpack_max_table_capacity: 4096,
             max_field_section_size:   32768,
             qpack_blocked_streams:    16,
@@ -84,7 +84,7 @@ fn test_h3_settings_conformance(t: lit::T&) {
         let p_start = hdr.header_len as i64;
         let p_end = (hdr.header_len + hdr.payload_len) as i64;
         let payload = frame_buf[p_start..p_end];
-        var set_in = wing::H3Settings { .. };
+        var set_in = fingerprint::H3Settings { .. };
         let err = h3_internal::parse_h3_settings_frame(payload, set_in);
         sub.assert_eq(err, rfc::H3_ERR_NO_ERROR, "settings parsed with NO_ERROR");
         sub.assert_eq(set_in.qpack_max_table_capacity, 4096, "table capacity 4096");
@@ -99,7 +99,7 @@ fn test_h3_settings_conformance(t: lit::T&) {
         quic_internal::quic_encode_varint(bad_payload, 0x02); // Forbidden H2 setting
         quic_internal::quic_encode_varint(bad_payload, 1);
 
-        var set_in = wing::H3Settings { .. };
+        var set_in = fingerprint::H3Settings { .. };
         let err = h3_internal::parse_h3_settings_frame(bad_payload[..], set_in);
         sub.assert_eq(err, rfc::H3_ERR_SETTINGS_ERROR, "forbidden H2 setting triggers H3_SETTINGS_ERROR (0x0109)");
 
@@ -119,7 +119,7 @@ fn test_h3_settings_conformance(t: lit::T&) {
         quic_internal::quic_encode_varint(dup_payload, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
         quic_internal::quic_encode_varint(dup_payload, 2048);
 
-        var set_in = wing::H3Settings { .. };
+        var set_in = fingerprint::H3Settings { .. };
         let err = h3_internal::parse_h3_settings_frame(dup_payload[..], set_in);
         sub.assert_eq(err, rfc::H3_ERR_SETTINGS_ERROR, "duplicate setting triggers H3_SETTINGS_ERROR (0x0109)");
     };
@@ -128,7 +128,7 @@ fn test_h3_settings_conformance(t: lit::T&) {
 // 3. Unidirectional Control and QPACK Streams
 fn test_h3_unidirectional_streams(t: lit::T&) {
     t.run("H3-06: Client Preambles for Control and QPACK Streams") { sub =>
-        let settings = wing::H3Settings {
+        let settings = fingerprint::H3Settings {
             qpack_max_table_capacity: 4096,
             max_field_section_size:   65536,
             qpack_blocked_streams:    16,
@@ -166,7 +166,7 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
     };
 
     t.run("H3-07: Inbound Control Stream Invariants & SETTINGS Rules") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         // Server control stream payload: Stream Type 0x00 || GOAWAY frame (NOT SETTINGS!)
@@ -203,7 +203,7 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
     };
 
     t.run("H3-08: Critical Stream Closure Defense") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         var good_ctrl: u8[..64] = [];
@@ -247,7 +247,7 @@ fn test_h3_unidirectional_streams(t: lit::T&) {
 // 4. Request Stream Lifecycle & Full Request-Response Multiplexing
 fn test_h3_request_streams(t: lit::T&) {
     t.run("H3-09: Client Request Header & Data Frame Generation") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         // Open request stream 0
@@ -289,7 +289,7 @@ fn test_h3_request_streams(t: lit::T&) {
     };
 
     t.run("H3-10: Inbound Server Response Processing (Status 200 & Body)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         let sid, _ = conn.open_request_stream();
@@ -326,7 +326,7 @@ fn test_h3_request_streams(t: lit::T&) {
     };
 
     t.run("H3-11: Protocol Error: DATA Before HEADERS on Request Stream") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         let sid, _ = conn.open_request_stream();
@@ -344,7 +344,7 @@ fn test_h3_request_streams(t: lit::T&) {
     };
 
     t.run("H3-12: GOAWAY Frame Handling & Stream Demultiplexing") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         // Open streams 0 and 4
@@ -369,7 +369,7 @@ fn test_h3_request_streams(t: lit::T&) {
     };
 
     t.run("H3-13: QPACK Dynamic Table Encoding & Encoder Stream Roundtrip") { sub =>
-        let settings = wing::H3Settings {
+        let settings = fingerprint::H3Settings {
             qpack_max_table_capacity: 4096,
             max_field_section_size:   16384,
             qpack_blocked_streams:    16,
@@ -603,7 +603,7 @@ fn test_qpack_table_and_codec(t: lit::T&) {
 // 6. HTTP/3 Extended Frames & Stream Edge-Cases
 fn test_h3_extended_frames(t: lit::T&) {
     t.run("H3-13: Extended Frame Encoding & Inbound Ingestion") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
 
         // Encode and parse CANCEL_PUSH frame
@@ -661,7 +661,7 @@ fn test_h3_extended_frames(t: lit::T&) {
     };
 
     t.run("H3-14: Send Request Data Edge Cases") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         let sid, _ = conn.open_request_stream();
@@ -733,7 +733,7 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
     };
 
     t.run("H3-R1-01: Frame Payload Length Integer Overflow Protection (RFC 9114 Section 7.1)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         // Control stream: valid SETTINGS frame first
@@ -765,7 +765,7 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
         }
 
         // Control stream with valid SETTINGS followed by reserved frame 0x02 -> H3_ERR_FRAME_UNEXPECTED
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn_res = h3_internal::new_h3_client_connection(settings);
         var ctrl_res: u8[..64] = [];
         quic_internal::quic_encode_varint(ctrl_res, rfc::H3_STREAM_CONTROL);
@@ -794,7 +794,7 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
     };
 
     t.run("H3-R1-03: Unknown Unidirectional Stream Persistence (RFC 9114 Section 6.2)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         var ctrl: u8[..64] = [];
@@ -829,7 +829,7 @@ fn test_round1_qpackstrike_suite(t: lit::T&) {
 // 8. Team QPackStrike Round 2 Protocol Audit Suite (RFC 9114, RFC 9204, RFC 9000)
 fn test_round2_qpackstrike_suite(t: lit::T&) {
     t.run("H3-R2-01: Control Stream Frame Sequence & Missing SETTINGS Precedence (RFC 9114 §6.2.1, §7.2.4)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
 
         // Test A: DATA frame (0x00) sent as first frame on control stream MUST trigger H3_ERR_MISSING_SETTINGS (0x010A)
         var conn1 = h3_internal::new_h3_client_connection(settings);
@@ -873,7 +873,7 @@ fn test_round2_qpackstrike_suite(t: lit::T&) {
     };
 
     t.run("H3-R2-02: GOAWAY Stream ID Monotonicity and Client-Bidi Validation (RFC 9114 §5.2, §7.2.6)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
 
         // Test A: Initial GOAWAY with non-client-bidi stream ID triggers H3_ERR_ID_ERROR (0x0108)
         // Stream ID 1: server-initiated bidirectional ((1 & 0x03) == 1)
@@ -1128,7 +1128,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
     };
 
     t.run("H3-R3-01: PUSH_PROMISE, CANCEL_PUSH, and MAX_PUSH_ID Invariants (RFC 9114 §7.2.5, §7.2.7)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
 
         // Test A: Server receiving PUSH_PROMISE frame on request stream MUST fail with H3_FRAME_UNEXPECTED
         var srv_conn = h3_internal::H3Connection {
@@ -1208,7 +1208,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
     };
 
     t.run("H3-R3-02: RFC 9114 & RFC 9204 Hardening (RIC, Stream Recycling, Role Checks, Pseudo-Headers)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
 
         // Test A: qpack_insert_literal rejects entry larger than table capacity (RFC 9204 §3.2.2)
         var tbl_small = h3_internal::new_qpack_table(40, 0); // capacity 40 bytes
@@ -1698,7 +1698,7 @@ fn test_webtransport_stream_demuxing(t: lit::T&) {
 // 16. HTTP/3 Bug Hunter Audit Regressions (F001-F006)
 fn test_h3_audit_regressions(t: lit::T&) {
     t.run("F001: Reject signed Content-Length (+5, -0) per RFC 9110 §8.6") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
         var qpack1: u8[..128] = [0x00, 0x00];
         h3_internal::encode_qpack_field(qpack1, ":method", "POST");
@@ -1723,7 +1723,7 @@ fn test_h3_audit_regressions(t: lit::T&) {
     };
 
     t.run("F002: 204/304 with non-zero Content-Length and 0 DATA bytes + FIN before headers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var c_conn = h3_internal::new_h3_client_connection(settings);
         let sid, _ = c_conn.open_request_stream();
         var out_hdr: u8[..256] = [];
@@ -1745,7 +1745,7 @@ fn test_h3_audit_regressions(t: lit::T&) {
     };
 
     t.run("F003: Reject oversized :method and bounded frame encoding overflow") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
         var qpack_m: u8[..128] = [0x00, 0x00];
         h3_internal::encode_qpack_field(qpack_m, ":method", "OVERSIZEDMETHOD17");
@@ -1763,7 +1763,7 @@ fn test_h3_audit_regressions(t: lit::T&) {
     };
 
     t.run("F004/F005: PUSH_PROMISE H3_ERR_ID_ERROR closes connection and Server GOAWAY Push ID check") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var c_conn = h3_internal::new_h3_client_connection(settings);
         let sid, _ = c_conn.open_request_stream();
         var out_hdr: u8[..256] = [];
@@ -1923,7 +1923,7 @@ fn test_nghttp3_vendor_conformance(t: lit::T&) {
 // 18. Ported Control Stream, SETTINGS, GOAWAY & Request Framing Semantics (vendor/nghttp3/tests/nghttp3_conn_test.c)
 fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
     t.run("NGHTTP3-CONN-02: Control Stream First-Frame SETTINGS & Reserved H2 Settings/Frames Rejection (test_nghttp3_conn_read_control)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
 
         // 1. Control stream starting with GOAWAY, CANCEL_PUSH, DATA, or HEADERS before SETTINGS -> H3_ERR_MISSING_SETTINGS
         let non_settings_first: u64[4] = [
@@ -1957,7 +1957,7 @@ fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
             var raw_set: u8[..16] = [];
             quic_internal::quic_encode_varint(raw_set, rsid);
             quic_internal::quic_encode_varint(raw_set, 1);
-            var parsed_s = wing::H3Settings { .. };
+            var parsed_s = fingerprint::H3Settings { .. };
             let err_rs = h3_internal::parse_h3_settings_frame(raw_set[..], parsed_s);
             sub.assert_eq(err_rs, rfc::H3_ERR_SETTINGS_ERROR, "reserved HTTP/2 setting ID rejected with H3_ERR_SETTINGS_ERROR");
         }
@@ -1976,7 +1976,7 @@ fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
     };
 
     t.run("NGHTTP3-CONN-03: GOAWAY Monotonicity & Request Stream Frame Ordering (test_nghttp3_conn_recv_goaway)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         var init_ctrl: u8[..64] = [];
@@ -2046,7 +2046,7 @@ fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
         sub.assert_false(h3_internal::validate_qpack_field_name(bad_name_utf[..]), "non-ASCII 0xFC in header name rejected");
 
         // 3. Server pseudo-header validation: OPTIONS * accepted vs GET * rejected (RFC 9114 §4.3.1)
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var cli_conn = h3_internal::new_h3_client_connection(settings);
         let sid_opt, _ = cli_conn.open_request_stream();
         let sid_bad, _ = cli_conn.open_request_stream();
@@ -2164,7 +2164,7 @@ fn test_qpack_uppercase_literal_field_name_rejection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_duplicate_control_stream_rejection(t: lit::T&) {
     t.run("Second H3_STREAM_CONTROL stream MUST be rejected with H3_ERR_STREAM_CREATION (0x0103)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         // First control stream: Stream ID 3 (unidirectional), Type 0x00 (H3_STREAM_CONTROL)
         var ctrl1_wire: u8[..16] = [];
@@ -2187,7 +2187,7 @@ fn test_h3_duplicate_control_stream_rejection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_pseudo_header_invariants(t: lit::T&) {
     t.run("Duplicate :status or pseudo-headers after regular headers MUST be rejected (RFC 9114 §4.3)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         // Open request stream
@@ -2227,7 +2227,7 @@ fn test_h3_pseudo_header_invariants(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_pseudo_header_unknown_and_ctl(t: lit::T&) {
     t.run("HTTP/3 request with unknown pseudo-header :custom MUST return error") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         let s_id, ok_open = conn.open_request_stream();
@@ -2248,7 +2248,7 @@ fn test_h3_pseudo_header_unknown_and_ctl(t: lit::T&) {
     };
 
     t.run("HTTP/3 header with CTL character MUST return error") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         let s_id, ok_open = conn.open_request_stream();
@@ -2295,7 +2295,7 @@ fn test_altsvc_oversized_capacity_safety(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_and_qpack_rfc9114_rfc9204(t: lit::T&) {
     t.run("H3 request stream accepts 103 Early Hints followed by 200 final response (Go #80687)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let sid, _ = h3_internal::open_request_stream(conn);
 
@@ -2325,7 +2325,7 @@ fn test_h3_and_qpack_rfc9114_rfc9204(t: lit::T&) {
     };
 
     t.run("H3 rejects :status 101 Switching Protocols (RFC 9114 §4.3.2)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let sid, _ = h3_internal::open_request_stream(conn);
 
@@ -2445,7 +2445,7 @@ fn test_h3_framing_and_settings_invariants(t: lit::T&) {
         quic_internal::quic_encode_varint(payload_00, 0x00); // Reserved identifier 0x00
         quic_internal::quic_encode_varint(payload_00, 100);
 
-        var st1 = wing::H3Settings { .. };
+        var st1 = fingerprint::H3Settings { .. };
         let err_00 = h3_internal::parse_h3_settings_frame(payload_00[..], st1);
         sub.assert_eq(err_00, rfc::H3_ERR_SETTINGS_ERROR, "Reserved setting 0x00 rejected with H3_SETTINGS_ERROR");
 
@@ -2456,7 +2456,7 @@ fn test_h3_framing_and_settings_invariants(t: lit::T&) {
         quic_internal::quic_encode_varint(payload_dup, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
         quic_internal::quic_encode_varint(payload_dup, 8192);
 
-        var st2 = wing::H3Settings { .. };
+        var st2 = fingerprint::H3Settings { .. };
         let err_dup = h3_internal::parse_h3_settings_frame(payload_dup[..], st2);
         sub.assert_eq(err_dup, rfc::H3_ERR_SETTINGS_ERROR, "Duplicate setting rejected with H3_SETTINGS_ERROR");
 
@@ -2465,7 +2465,7 @@ fn test_h3_framing_and_settings_invariants(t: lit::T&) {
         quic_internal::quic_encode_varint(payload_conn, rfc::H3_SETTING_ENABLE_CONNECT_PROTOCOL);
         quic_internal::quic_encode_varint(payload_conn, 2); // Invalid: only 0 or 1 allowed
 
-        var st3 = wing::H3Settings { .. };
+        var st3 = fingerprint::H3Settings { .. };
         let err_conn = h3_internal::parse_h3_settings_frame(payload_conn[..], st3);
         sub.assert_eq(err_conn, rfc::H3_ERR_SETTINGS_ERROR, "Invalid connect protocol val rejected with H3_SETTINGS_ERROR");
     };
@@ -2476,7 +2476,7 @@ fn test_h3_framing_and_settings_invariants(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
     t.run("handle_stream_data dispatches QPACK encoder stream instructions and catches errors") { sub =>
-        let settings = wing::H3Settings { qpack_max_table_capacity: 4096, .. };
+        let settings = fingerprint::H3Settings { qpack_max_table_capacity: 4096, .. };
         var conn = h3_internal::new_h3_client_connection(settings);
 
         // 1. Establish control stream first (Stream 2)
@@ -2504,7 +2504,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
     };
 
     t.run("handle_stream_data rejects second trailer section and DATA after trailers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let _s0, _ = conn.open_request_stream();
 
@@ -2559,7 +2559,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
     };
 
     t.run("handle_stream_data validates 3-digit status code and trailer disallowed headers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let _s0, _ = conn.open_request_stream();
 
@@ -2608,7 +2608,7 @@ fn test_h3_multiplexer_and_stream_defenses(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
     t.run("H3 request: reject conflicting :authority and host headers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
 
         // Establish control stream (Stream 2)
@@ -2633,7 +2633,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
     };
 
     t.run("H3 request: reject duplicate host headers and invalid host syntax") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
@@ -2689,7 +2689,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
     };
 
     t.run("H3 request: matching case-insensitive :authority and host succeed") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
@@ -2730,7 +2730,7 @@ fn test_h3_host_authority_conflict_and_syntax(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
     t.run("H3: reject DATA frame on stream with 204 No Content") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let _s0, _ = conn.open_request_stream();
 
@@ -2762,7 +2762,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
     };
 
     t.run("H3: reject DATA frame on stream with 304 Not Modified") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let _s0, _ = conn.open_request_stream();
         let _s4, _ = conn.open_request_stream();
@@ -2790,7 +2790,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
     };
 
     t.run("H3: reject DATA frame on stream with 103 Early Hints") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let _s0, _ = conn.open_request_stream();
         let _s4, _ = conn.open_request_stream();
@@ -2824,7 +2824,7 @@ fn test_h3_bodyless_status_data_rejection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
     t.run("H3: reject prohibited framing headers in trailers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let _s0, _ = conn.open_request_stream();
 
@@ -2937,7 +2937,7 @@ fn test_h3_prohibited_trailers_and_qpack_nul_rejection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_server_request_trailers_invariants(t: lit::T&) {
     t.run("H3 Server: reject pseudo-headers in request trailers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
 
         // Client control stream setup on stream 3 (unidirectional client stream)
@@ -2979,7 +2979,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
     };
 
     t.run("H3 Server: reject prohibited framing headers in request trailers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
@@ -3012,7 +3012,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
     };
 
     t.run("H3 Server: reject DATA frame or extra HEADERS after request trailers") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_server_connection(settings);
 
         var ctrl_wire: u8[..64] = [];
@@ -3067,7 +3067,7 @@ fn test_h3_server_request_trailers_invariants(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_empty_frame_flooding(t: lit::T&) {
     t.run("H3: reject flood of empty DATA frames (> 32 streak)") { sub =>
-        let settings = wing::H3Settings { .. };
+        let settings = fingerprint::H3Settings { .. };
         var conn = h3_internal::new_h3_client_connection(settings);
         let _s0, _ = conn.open_request_stream();
 

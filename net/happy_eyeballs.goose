@@ -67,7 +67,7 @@ struct ConnectionEndpointMetadata {
     ipv4_hints:         u8[..64][..4] = [],
 }
 
-fn populate_svcb_alpn_flags(rec: const HttpsRecord&, meta: ConnectionEndpointMetadata&) {
+fn populate_svcb_alpn_flags(rec: const dns::HttpsRecord&, meta: ConnectionEndpointMetadata&) {
     for &alpn_tok in rec.alpns {
         let tok = alpn_tok[..];
         if tok == "h3" || tok.starts_with("h3-") {
@@ -78,7 +78,7 @@ fn populate_svcb_alpn_flags(rec: const HttpsRecord&, meta: ConnectionEndpointMet
     }
 }
 
-fn populate_svcb_ip_hints(rec: const HttpsRecord&, meta: ConnectionEndpointMetadata&) {
+fn populate_svcb_ip_hints(rec: const dns::HttpsRecord&, meta: ConnectionEndpointMetadata&) {
     var ip6_buf: u8[..64] = [];
     for &ip6 in rec.ipv6_hints {
         core::format_ipv6_bytes(ip6, ip6_buf);
@@ -94,10 +94,10 @@ fn populate_svcb_ip_hints(rec: const HttpsRecord&, meta: ConnectionEndpointMetad
 // Extracts Happy Eyeballs v3 endpoint metadata and effective port from an RFC 9460 HTTPS/SVCB record.
 //
 // Example:
-//   rec = HttpsRecord { priority: 1, port: 8443, alpns: ["h3", "h2"], has_ech: true, .. }, default_port = 443
+//   rec = dns::HttpsRecord { priority: 1, port: 8443, alpns: ["h3", "h2"], has_ech: true, .. }, default_port = 443
 //   returns: meta = { mode: ServiceMode, alpn_h3: true, alpn_h2: true, ech_config_present: true, .. }, eff_port = 8443
 fn extract_https_svcb_metadata(
-    rec:          const HttpsRecord&,
+    rec:          const dns::HttpsRecord&,
     default_port: u16         = 443,
     owner_name:   const u8[:] = "",
 ) -> ConnectionEndpointMetadata, u16 {

@@ -40,23 +40,26 @@ const REACTOR_URING_PBUF_BGID:     u16 = 1;
 const REACTOR_KQUEUE_EV_ERROR:     u16 = 0x4000;
 
 struct ReactorAccelRuntime {
-    mode:                ReactorAccelMode           = ReactorAccelMode.PollFallback,
-    epfd:                i64                        = -1,
-    kq_fd:               i64                        = -1,
-    kq_changes:          net_internal::Kevent[..16] = [],
-    uring_fd:            i64                        = -1,
-    uring_pbuf:          u64                        = 0,
-    rio_cq:              u64                        = 0,
-    rio_buf_id:          u64                        = 0,
-    rio_listener_fd:     i64                        = -1,
-    active_accel_slots:  i64                        = 0,
-    slot_accel:          bool[64]                   = [false; 64],
-    slot_ktls_rx:        bool[64]                   = [false; 64],
-    slot_rio_rq:         u64[64]                    = [0; 64],
-    slot_gen:            u16[64]                    = [1; 64],
-    slot_tx_inflight:    bool[64]                   = [false; 64],
-    slot_close_after_tx: bool[64]                   = [false; 64],
-    slab:                u8[>..]                    = [],
+    mode:                  ReactorAccelMode           = ReactorAccelMode.PollFallback,
+    epfd:                  i64                        = -1,
+    kq_fd:                 i64                        = -1,
+    kq_changes:            net_internal::Kevent[..16] = [],
+    uring_fd:              i64                        = -1,
+    uring_pbuf:            u64                        = 0,
+    rio_cq:                u64                        = 0,
+    rio_tx_cq:             u64                        = 0,
+    rio_buf_id:            u64                        = 0,
+    rio_listener_fd:       i64                        = -1,
+    active_accel_slots:    i64                        = 0,
+    epfd_registered_count: i32                        = 0,
+    slot_accel:            bool[64]                   = [false; 64],
+    slot_ktls_rx:          bool[64]                   = [false; 64],
+    slot_rio_rq:           u64[64]                    = [0; 64],
+    slot_gen:              u16[64]                    = [1; 64],
+    slot_tx_inflight:      bool[64]                   = [false; 64],
+    slot_close_after_tx:   bool[64]                   = [false; 64],
+    rio_tx_close_queue:    i64[..64]                  = [],
+    slab:                  u8[>..]                    = [],
 }
 
 inline fn ensure_reactor_accel_slab(accel: ReactorAccelRuntime&) {
@@ -199,6 +202,11 @@ fn reactor_close_accel(accel: ReactorAccelRuntime&) {
         net_internal::native_rio_close_cq(accel.rio_cq);
         accel.rio_cq = 0;
     }
+    if accel.rio_tx_cq != 0 {
+        net_internal::native_rio_close_cq(accel.rio_tx_cq);
+        accel.rio_tx_cq = 0;
+    }
+    accel.rio_tx_close_queue.clear();
     if accel.uring_pbuf != 0 {
         net_internal::uring_free_pbuf_ring(accel.uring_pbuf);
         accel.uring_pbuf = 0;
@@ -217,6 +225,7 @@ fn reactor_close_accel(accel: ReactorAccelRuntime&) {
     }
     accel.kq_changes.clear();
     accel.active_accel_slots = 0;
+    accel.epfd_registered_count = 0;
     accel.mode = ReactorAccelMode.PollFallback;
 }
 
@@ -242,21 +251,30 @@ fn reactor_try_open_rio(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
     guard net_internal::native_rio_available() == 1 && accel.epfd >= 0 else { return false; }
     let cq = net_internal::native_rio_create_cq(512);
     guard cq != 0 else { return false; }
+    let tx_cq = net_internal::native_rio_create_cq(512);
+    if tx_cq == 0 {
+        net_internal::native_rio_close_cq(cq);
+        return false;
+    }
     ensure_reactor_accel_slab(accel);
     let bid = net_internal::native_rio_register_slice(accel.slab[..]);
     if bid == 0 {
+        net_internal::native_rio_close_cq(tx_cq);
         net_internal::native_rio_close_cq(cq);
         return false;
     }
     accel.mode = ReactorAccelMode.Rio;
     accel.rio_cq = cq;
+    accel.rio_tx_cq = tx_cq;
     accel.rio_buf_id = bid;
     if listener_fd > 0 {
         if net_internal::native_rio_is_listener(listener_fd) == 1 {
             accel.rio_listener_fd = listener_fd;
         } else {
             tcp_set_nonblocking(listener_fd, true);
-            epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+            if epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG) {
+                accel.epfd_registered_count = core::add_sat_i64(accel.epfd_registered_count, 1) as i32;
+            }
         }
     }
     return true;
@@ -306,7 +324,9 @@ fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, 
     accel.mode = ReactorAccelMode.PollFallback;
     if listener_fd > 0 {
         tcp_set_nonblocking(listener_fd, true);
-        epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG);
+        if epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG) {
+            accel.epfd_registered_count = core::add_sat_i64(accel.epfd_registered_count, 1) as i32;
+        }
     }
     return true;
 }
@@ -314,7 +334,7 @@ fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, 
 fn reactor_bind_slot_backend(accel: ReactorAccelRuntime&, slot: i64, client_fd: i64) {
     if accel.mode == ReactorAccelMode.Rio && slot >= 0 && slot < REACTOR_ACCEL_SLOTS && !accel.slot_ktls_rx[slot] {
         let tok = reactor_accel_slot_token(accel, slot);
-        let rq = net_internal::native_rio_create_rq_ctx(client_fd, 16, 16, accel.rio_cq, accel.rio_cq, tok);
+        let rq = net_internal::native_rio_create_rq_ctx(client_fd, 16, 16, accel.rio_cq, accel.rio_tx_cq, tok);
         if rq != 0 {
             accel.slot_rio_rq[slot] = rq;
             accel.slot_accel[slot] = true;
@@ -335,25 +355,95 @@ fn reactor_bind_slot_backend(accel: ReactorAccelRuntime&, slot: i64, client_fd: 
         return;
     }
     if accel.epfd >= 0 {
-        epoll_add(accel.epfd, client_fd, EPOLL_READ, slot as u64);
+        if epoll_add(accel.epfd, client_fd, EPOLL_READ, slot as u64) {
+            accel.epfd_registered_count = core::add_sat_i64(accel.epfd_registered_count, 1) as i32;
+        }
     }
 }
 
 // Flushes cork aggregation buffer to connection via bounded non-blocking send loop.
 inline fn reactor_drain_cork_wire(conn: i64, wire: const u8[:]) -> bool {
     var sent_total: i64 = 0;
+    var retries:    i32 = 0;
     while sent_total < wire.len {
         let sent = tcp_send(conn, wire[sent_total..]);
-        if sent <= 0 { return false; }
-        sent_total = core::add_sat_i64(sent_total, sent);
+        if sent > 0 {
+            sent_total = core::add_sat_i64(sent_total, sent);
+            retries = 0;
+            continue;
+        }
+        guard sent == -2 && retries < 2000 else { return false; }
+        retries = core::add_sat_i64(retries, 1) as i32;
+        if retries > 64 {
+            sleep_ms(1);
+        }
+    }
+    return true;
+}
+
+fn reactor_drain_rio_tx_cq(accel: ReactorAccelRuntime&) -> u32 {
+    guard accel.rio_tx_cq != 0 else { return 0; }
+    var tx_results: net_internal::RioResult[..64] = [];
+    let n = net_internal::rio_drain_completions(accel.rio_tx_cq, tx_results);
+    for i in tx_results.len {
+        let s, ok_tok = reactor_accel_match_token(accel, tx_results[i].socket_context);
+        if !ok_tok { continue; }
+        accel.slot_tx_inflight[s] = false;
+        if tx_results[i].status != 0 {
+            accel.slot_close_after_tx[s] = true;
+        }
+        if accel.slot_close_after_tx[s] {
+            let _ = accel.rio_tx_close_queue.try_push(s);
+        }
+    }
+    return n;
+}
+
+fn reactor_wait_rio_slot_tx(accel: ReactorAccelRuntime&, slot: i64) -> bool {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.rio_tx_cq != 0 else { return false; }
+    var spins: i32 = 0;
+    while accel.slot_tx_inflight[slot] && spins < 500 {
+        let _ = reactor_drain_rio_tx_cq(accel);
+        if !accel.slot_tx_inflight[slot] {
+            break;
+        }
+        let _ = net_internal::rio_wait_cq(accel.rio_tx_cq, 2);
+        spins = core::add_sat_i64(spins, 1) as i32;
+    }
+    return !accel.slot_tx_inflight[slot] && !accel.slot_close_after_tx[slot];
+}
+
+fn reactor_submit_rio_tx(accel: ReactorAccelRuntime&, slot: i64, wire: const u8[:]) -> bool {
+    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
+    ensure_reactor_accel_slab(accel);
+    let tx_off_u32 = (core::shl_sat_u64(slot as u64, 13) as u32) | 4096;
+    let tx_off = tx_off_u32 as i64;
+    var off: i64 = 0;
+    while off < wire.len {
+        if accel.slot_tx_inflight[slot] {
+            guard reactor_wait_rio_slot_tx(accel, slot) else { return false; }
+        }
+        let rem = core::sub_sat_i64(wire.len, off);
+        let chunk_len = min(rem, REACTOR_ACCEL_BUF_SIZE);
+        for i in chunk_len {
+            accel.slab[core::add_sat_i64(tx_off, i)] = wire[core::add_sat_i64(off, i)];
+        }
+        let rc = net_internal::native_rio_post_send(
+            accel.slot_rio_rq[slot], accel.rio_buf_id, tx_off_u32, chunk_len as u32, REACTOR_REQ_TX_TAG,
+        );
+        guard rc == 0 else { return false; }
+        accel.slot_tx_inflight[slot] = true;
+        off = core::add_sat_i64(off, chunk_len);
     }
     return true;
 }
 
 fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
-    let can_rio = accel.mode == ReactorAccelMode.Rio && accel.slot_rio_rq[slot] != 0;
+    if accel.mode == ReactorAccelMode.Rio && accel.slot_rio_rq[slot] != 0 {
+        return reactor_submit_rio_tx(accel, slot, wire);
+    }
     let can_uring = accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0;
-    if (can_rio || can_uring) && wire.len <= REACTOR_ACCEL_BUF_SIZE && !accel.slot_tx_inflight[slot] {
+    if can_uring && wire.len <= REACTOR_ACCEL_BUF_SIZE && !accel.slot_tx_inflight[slot] {
         ensure_reactor_accel_slab(accel);
         let tx_off_u32 = (core::shl_sat_u64(slot as u64, 13) as u32) | 4096;
         let tx_off = tx_off_u32 as i64;
@@ -361,25 +451,15 @@ fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wi
         for i in wire.len {
             accel.slab[core::add_sat_i64(tx_off, i)] = wire[i];
         }
-        if can_rio {
-            let rc = net_internal::native_rio_post_send(
-                accel.slot_rio_rq[slot], accel.rio_buf_id, tx_off_u32, wire.len as u32, REACTOR_REQ_TX_TAG,
-            );
-            if rc == 0 {
-                accel.slot_tx_inflight[slot] = true;
-                return true;
-            }
-        } else {
-            var sqe = net_internal::UringSqe { .. };
-            let tok = reactor_accel_slot_token(accel, slot);
-            net_internal::uring_prep_send_slice(
-                sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | tok,
-            );
-            var batch: net_internal::UringSqe[1] = [sqe];
-            if net_internal::uring_submit_sqes(accel.uring_fd, batch[..]) > 0 {
-                accel.slot_tx_inflight[slot] = true;
-                return true;
-            }
+        var sqe = net_internal::UringSqe { .. };
+        let tok = reactor_accel_slot_token(accel, slot);
+        net_internal::uring_prep_send_slice(
+            sqe, conn as i32, accel.slab[tx_off..tx_end], REACTOR_URING_TAG_SEND | tok,
+        );
+        var batch: net_internal::UringSqe[1] = [sqe];
+        if net_internal::uring_submit_sqes(accel.uring_fd, batch[..]) > 0 {
+            accel.slot_tx_inflight[slot] = true;
+            return true;
         }
     }
     return reactor_drain_cork_wire(conn, wire);
@@ -408,8 +488,12 @@ fn reactor_wait_readiness_events(
     }
 
     guard accel.epfd >= 0 else { return 0; }
-    var empty_fds: i64[0] = [];
     let rio_has_work = accel.active_accel_slots > 0 || accel.rio_listener_fd > 0;
+    if accel.epfd_registered_count == 0 &&
+        ((accel.mode == ReactorAccelMode.Rio && rio_has_work) || accel.mode == ReactorAccelMode.IoUring) {
+        return 0;
+    }
+    var empty_fds: i64[0] = [];
     let eff_timeout = if accel.mode == ReactorAccelMode.IoUring ||
         (accel.mode == ReactorAccelMode.Rio && rio_has_work) {
         0
@@ -435,6 +519,8 @@ fn reactor_detach_listener(accel: ReactorAccelRuntime&, listener_fd: i64) {
         let _ = net_internal::uring_submit_sqes(accel.uring_fd, batch[..]);
     }
     if accel.epfd >= 0 {
-        let _ = epoll_del(accel.epfd, listener_fd);
+        if epoll_del(accel.epfd, listener_fd) {
+            accel.epfd_registered_count = max(0, accel.epfd_registered_count - 1);
+        }
     }
 }

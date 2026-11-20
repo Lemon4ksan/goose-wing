@@ -87,7 +87,7 @@ fn main() {
     );
     let _ = wing::add_static_route(server.pipeline.router, "POST", "/echo", "text/plain", "H3_POST_ACK", 3);
 
-    let settings = wing::H3Settings {
+    let settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
         max_field_section_size:   65536,
         qpack_blocked_streams:    16,

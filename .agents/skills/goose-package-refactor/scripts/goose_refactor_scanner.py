@@ -501,7 +501,7 @@ def analyze_package(
                                     fname, {}
                                 ).get("test_or_example", set())
                                 f_in = in_pkg_counts.get(fname, 0)
-                                f_sigs: list[str] = []
+                                f_sigs.clear()
                                 if f_in <= 1 and not f_ext:
                                     f_sigs.append("UNUSED_FIELD")
                                 fields.append(
