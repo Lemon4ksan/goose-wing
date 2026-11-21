@@ -20,6 +20,8 @@ import .cork;
 import .stream_consumer;
 import .sni;
 import net.accel;
+import net.transport;
+import tls.backend;
 import .server_internal;
 import .h1_codec_internal;
 import .pipeline_internal;
@@ -59,6 +61,10 @@ struct HttpServer {
     shutdown_grace_ns:         u64                              = 2000000000,
     accel_mode:                net::ReactorAccelMode            = net::ReactorAccelMode.Auto,
     enable_ktls_offload:       bool                             = true,
+    tls_backend:               tls::TlsBackendKind              = tls::TlsBackendKind.PureGoose,
+    tls_min_version:           tls::TlsMinVersion               = tls::TlsMinVersion.Tls13,
+    tls_cert_pem_file:         u8[..256]                        = [],
+    tls_key_pem_file:          u8[..256]                        = [],
 }
 
 // Enables or disables Keep-Alive HTTP/1.1 header block memoization (`g_h1_parse_cache`,
@@ -996,6 +1002,67 @@ fn tls_flush_cork(fd: i64, slot_idx: u16, cork: core::CorkBuffer&) -> i32 {
     let sent = tls::transport_send(fd, slot_idx, slice);
     cork.cork_reset();
     return sent;
+}
+
+// Configures pluggable TLS backend settings on `srv` without partial mutation on error.
+fn configure_server_tls_backend(
+    srv:      HttpServer&,
+    kind:     tls::TlsBackendKind,
+    min_ver:  tls::TlsMinVersion = tls::TlsMinVersion.Tls13,
+    cert_pem: const u8[:]        = "",
+    key_pem:  const u8[:]        = "",
+) -> bool {
+    guard cert_pem.len <= srv.tls_cert_pem_file.cap && key_pem.len <= srv.tls_key_pem_file.cap else {
+        return false;
+    }
+    guard (cert_pem.len == 0) == (key_pem.len == 0) else {
+        return false;
+    }
+    var cert_buf: u8[..256] = [];
+    var key_buf:  u8[..256] = [];
+    guard cert_buf.try_set(cert_pem) && key_buf.try_set(key_pem) else {
+        return false;
+    }
+    srv.tls_backend = kind;
+    srv.tls_min_version = min_ver;
+    srv.tls_cert_pem_file = cert_buf;
+    srv.tls_key_pem_file = key_buf;
+    return true;
+}
+
+// Performs a server-side TLS handshake over `client_fd` using `srv`'s configured TLS backend.
+// Returns `(transport, negotiated_alpn, status)`; caller retains `client_fd` ownership on failure.
+fn accept_tls_backend_connection(
+    srv:        const HttpServer&,
+    client_fd:  i64,
+    alpn_wire:  const u8[:] = "",
+    timeout_ms: u32         = 5000,
+) -> net::Transport, u8[..64], tls::TlsBackendStatus {
+    var empty_alpn: u8[..64] = [];
+    guard client_fd > 0 && alpn_wire.len <= 64 else {
+        return net::Transport.Disconnected, empty_alpn, tls::TlsBackendStatus.Error;
+    }
+    var bcfg = tls::TlsBackendConfig {
+        kind:        srv.tls_backend,
+        min_version: srv.tls_min_version,
+        is_server:   true,
+        ..
+    };
+    guard bcfg.cert_pem_file.try_set(srv.tls_cert_pem_file[..]) &&
+        bcfg.key_pem_file.try_set(srv.tls_key_pem_file[..]) else {
+        return net::Transport.Disconnected, empty_alpn, tls::TlsBackendStatus.Error;
+    }
+    if alpn_wire.len > 0 {
+        let _ = bcfg.alpn_wire.try_set(alpn_wire);
+    } else {
+        let def_alpn: u8[12] = [2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
+        let _ = bcfg.alpn_wire.try_set(def_alpn[..]);
+    }
+    let ep_slot, neg_alpn, st = tls::endpoint_server_handshake_fd(client_fd, bcfg, timeout_ms);
+    guard st == tls::TlsBackendStatus.Ok && ep_slot >= 0 else {
+        return net::Transport.Disconnected, neg_alpn, st;
+    }
+    return net::Transport.TlsBackend { fd: client_fd, endpoint_slot: ep_slot }, neg_alpn, tls::TlsBackendStatus.Ok;
 }
 
 // Executes a live TLS 1.3 HTTPS accept and dispatch loop using PipeBuffer and TLS record AEAD.

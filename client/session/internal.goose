@@ -51,6 +51,7 @@ import net.transport;
 import net.masque;
 import tls.handshake;
 import tls.session;
+import tls.backend;
 import http2.framing;
 import http2.hpack;
 import wire.types;
@@ -1971,6 +1972,92 @@ fn dispatch_pooled_h2_hop(
     return true;
 }
 
+fn establish_backend_tls_connection(
+    session:                 const client::Session&,
+    sock:                    i64,
+    host_str:                const u8[:],
+    effective_insecure_skip: bool,
+    eff_timeout:             u32,
+) -> i64, u8[..64], http::Error {
+    var bcfg = tls::TlsBackendConfig {
+        kind:                 session.tls_backend,
+        min_version:          session.tls_min_version,
+        is_server:            false,
+        insecure_skip_verify: effective_insecure_skip,
+        trust_store:          session.trust_store,
+        ..
+    };
+    let _ = bcfg.server_name.try_set(host_str);
+    // RFC 7301 Section 3.1: ALPN wire protocol list (\x02h2\x08http/1.1)
+    let alpn_wire: u8[12] = [2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
+    let _ = bcfg.alpn_wire.try_set(alpn_wire[..]);
+    if session.tls_ca_file.len > 0 {
+        let _ = bcfg.ca_file.try_set(session.tls_ca_file[..]);
+    }
+    let ep_slot, neg_alpn, st = tls::endpoint_client_handshake_fd(sock, bcfg, eff_timeout);
+    if st == tls::TlsBackendStatus.Ok && ep_slot >= 0 {
+        return ep_slot, neg_alpn, http::Error { .. };
+    }
+    let msg = match st {
+        VerifyError => "TLS certificate verification failed",
+        Unavailable => "TLS backend unavailable",
+        _ => "TLS handshake failed",
+    };
+    return -1, neg_alpn, http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", msg);
+}
+
+fn establish_https_transport(
+    session:     const client::Session&,
+    sock:        i64,
+    host_str:    const u8[:],
+    ech_list:    const u8[:],
+    eff_timeout: u32,
+    now_sec:     i64,
+) -> net::Transport, net::NegotiatedProtocol, http::Error {
+    let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(host_str, now_sec);
+    let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
+    if session.tls_backend != tls::TlsBackendKind.PureGoose {
+        let ep_slot, neg_alpn, tls_err = establish_backend_tls_connection(
+            session, sock, host_str, effective_insecure_skip, eff_timeout,
+        );
+        guard http::ok(tls_err) else {
+            return net::Transport.Disconnected, net::NegotiatedProtocol.Http11, tls_err;
+        }
+        let neg_proto = if neg_alpn[..] == "h2" {
+            net::NegotiatedProtocol.Http2
+        } else {
+            net::NegotiatedProtocol.Http11
+        };
+        return net::Transport.TlsBackend { fd: sock, endpoint_slot: ep_slot }, neg_proto, http::Error { .. };
+    }
+
+    var tls_cfg = tls::ClientHandshakeConfig { .. };
+    let _ = tls_cfg.server_name.try_set(host_str);
+    let _ = tls_cfg.alpn.try_set("h2,http/1.1");
+    tls_cfg.trust_store = session.trust_store;
+    tls_cfg.insecure_skip_verify = effective_insecure_skip;
+    tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
+    if ech_list.len > 0 {
+        let _ = tls_cfg.ech_config_list.try_set(ech_list);
+    }
+
+    let slot_idx, ok_tls = tls::client_handshake(sock, tls_cfg);
+    guard ok_tls else {
+        return net::Transport.Disconnected,
+            net::NegotiatedProtocol.Http11,
+            http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS 1.3 handshake failed");
+    }
+    let neg_proto = if tls::session_alpn(slot_idx) == "h2" {
+        net::NegotiatedProtocol.Http2
+    } else {
+        net::NegotiatedProtocol.Http11
+    };
+    let t = net::Transport.Tls {
+        fd: sock, record_seq_rx: 0, record_seq_tx: 0, cipher_slot: slot_idx,
+    };
+    return t, neg_proto, http::Error { .. };
+}
+
 fn establish_pooled_connection(
     session:        client::Session&,
     pool_key:       const net::PoolKey&,
@@ -2000,30 +2087,15 @@ fn establish_pooled_connection(
     var t = net::Transport.Disconnected;
     var neg_proto = net::NegotiatedProtocol.Http11;
     if is_https {
-        let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(host_str, now_sec);
-        let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
-
-        var tls_cfg = tls::ClientHandshakeConfig { .. };
-        let _ = tls_cfg.server_name.try_set(host_str);
-        let _ = tls_cfg.alpn.try_set("h2,http/1.1");
-        tls_cfg.trust_store = session.trust_store;
-        tls_cfg.insecure_skip_verify = effective_insecure_skip;
-        tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
-        if ech_list.len > 0 {
-            let _ = tls_cfg.ech_config_list.try_set(ech_list);
-        }
-
-        let slot_idx, ok_tls = tls::client_handshake(sock, tls_cfg);
-        guard ok_tls else {
+        let https_t, https_proto, tls_err = establish_https_transport(
+            session, sock, host_str, ech_list, eff_timeout, now_sec,
+        );
+        guard http::ok(tls_err) else {
             net_internal::native_tcp_close(sock);
-            return -1, http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS 1.3 handshake failed");
+            return -1, tls_err;
         }
-        if tls::session_alpn(slot_idx) == "h2" {
-            neg_proto = net::NegotiatedProtocol.Http2;
-        }
-        t = net::Transport.Tls {
-            fd: sock, record_seq_rx: 0, record_seq_tx: 0, cipher_slot: slot_idx,
-        };
+        t = https_t;
+        neg_proto = https_proto;
     } else {
         if session.http2_prior_knowledge {
             neg_proto = net::NegotiatedProtocol.Http2;
@@ -2326,7 +2398,9 @@ fn prepare_ws_upgrade_request<B>(
     http::set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
-    let _ = native_crypto_random_bytes(nonce[..]);
+    if !core::sim_rng_fill(nonce[..]) {
+        let _ = native_crypto_random_bytes(nonce[..]);
+    }
     var seed: u64 = (session.virtual_clock_us as u64) ^ (session.creds.nonce_counter as u64) ^ 0x5DEECE66D;
     for &b in nonce {
         seed ^= core::shl_sat_u64(seed, 13);

@@ -15,9 +15,12 @@ import .handshake;
 import .handshake_internal;
 import .types;
 import .x509;
+import .pem;
 import .session_internal;
 import .session;
 import .handshake_io_internal;
+import net.tcp;
+import net.transport;
 
 // ---- Public Pluggable Backend Contract Types -------------------------------
 
@@ -844,30 +847,122 @@ fn pure_step_handshake_loop(slot: PureTlsSlot&) -> TlsBackendStatus {
     return if slot.stage == PureHsStage.Established { TlsBackendStatus.Ok } else { TlsBackendStatus.WantRead };
 }
 
-fn open_pure_endpoint(cfg: const TlsBackendConfig&) -> TlsEndpoint, TlsBackendStatus {
-    if cfg.is_server && cfg.cert_der.len == 0 {
+fn pure_load_server_pem_files(
+    cert_path: const u8[:],
+    key_path:  const u8[:],
+    slot:      PureTlsSlot&,
+) -> bool {
+    guard cert_path.len > 0 && key_path.len > 0 else { return false; }
+    var cert_pem: u8[>..] = [];
+    var key_pem:  u8[>..] = [];
+    defer core::secure_zeroize_slice(cert_pem[..]);
+    defer core::secure_zeroize_slice(key_pem[..]);
+    guard read_file(cert_path, cert_pem) && read_file(key_path, key_pem) else { return false; }
+    var srv_cfg = ServerHandshakeConfig { .. };
+    defer core::secure_zeroize_32(srv_cfg.priv_seed);
+    guard load_server_credentials_pem(cert_pem[..], key_pem[..], srv_cfg) else { return false; }
+    guard slot.cert_der.try_set(srv_cfg.cert_der[..]) else { return false; }
+    slot.priv_seed = srv_cfg.priv_seed;
+    return true;
+}
+
+fn pure_init_slot_credentials(
+    slot:      PureTlsSlot&,
+    cfg:       const TlsBackendConfig&,
+    is_server: bool,
+) -> TlsBackendStatus {
+    if is_server {
+        if cfg.cert_der.len > 0 {
+            let _ = slot.cert_der.try_set(cfg.cert_der[..]);
+            slot.priv_seed = cfg.priv_seed;
+            return TlsBackendStatus.Ok;
+        }
+        guard pure_load_server_pem_files(cfg.cert_pem_file[..], cfg.key_pem_file[..], slot) else {
+            return TlsBackendStatus.HandshakeError;
+        }
+        return TlsBackendStatus.Ok;
+    }
+    if cfg.cert_pem_file.len > 0 || cfg.key_pem_file.len > 0 {
+        return TlsBackendStatus.Unavailable;
+    }
+    slot.trust_store = cfg.trust_store;
+    let load_ca = !cfg.insecure_skip_verify && slot.trust_store.anchors.len == 0 && cfg.ca_file.len > 0;
+    if load_ca {
+        let _, ok_ca = load_trust_anchors_pem_file(slot.trust_store, cfg.ca_file[..]);
+        guard ok_ca else { return TlsBackendStatus.VerifyError; }
+    }
+    return TlsBackendStatus.Ok;
+}
+
+fn open_pure_endpoint(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpoint, TlsBackendStatus {
+    let has_pem = cfg.cert_pem_file.len > 0 && cfg.key_pem_file.len > 0;
+    if is_server && cfg.cert_der.len == 0 && !has_pem {
         return TlsEndpoint { .. }, TlsBackendStatus.HandshakeError;
     }
     let idx = alloc_pure_tls_slot();
     guard idx >= 0 else { return TlsEndpoint { .. }, TlsBackendStatus.Error; }
     let slot .= g_pure_tls_slots[idx as i64];
-    slot.is_server = cfg.is_server;
+    slot.is_server = is_server;
     slot.insecure_skip_verify = cfg.insecure_skip_verify;
-    slot.stage = if cfg.is_server { PureHsStage.ServerWaitClientHello } else { PureHsStage.ClientInit };
+    slot.stage = if is_server { PureHsStage.ServerWaitClientHello } else { PureHsStage.ClientInit };
     let _ = slot.server_name.try_set(cfg.server_name[..]);
     decode_alpn_wire_to_csv(cfg.alpn_wire[..], slot.alpn_csv);
-    let _ = slot.cert_der.try_set(cfg.cert_der[..]);
-    slot.priv_seed = cfg.priv_seed;
-    slot.trust_store = cfg.trust_store;
+    let cred_st = pure_init_slot_credentials(slot, cfg, is_server);
+    guard cred_st == TlsBackendStatus.Ok else {
+        reset_and_wipe_pure_slot(slot);
+        return TlsEndpoint { .. }, cred_st;
+    }
     return TlsEndpoint {
         kind:        cfg.kind,
         active_kind: TlsBackendKind.PureGoose,
-        is_server:   cfg.is_server,
+        is_server:   is_server,
         established: false,
         closed:      false,
         pure_slot:   idx,
         native_id:   -1,
     }, TlsBackendStatus.Ok;
+}
+
+fn open_endpoint_with_role(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpoint, TlsBackendStatus {
+    let pure_server_der = cfg.kind == TlsBackendKind.Auto && is_server &&
+        cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0;
+    let pure_client_custom_ca = cfg.kind == TlsBackendKind.Auto && !is_server &&
+        !cfg.insecure_skip_verify && (cfg.ca_file.len > 0 || cfg.trust_store.anchors.len > 0) &&
+        !tls_backend_available(TlsBackendKind.SystemOpenSsl);
+    if cfg.kind == TlsBackendKind.PureGoose || pure_server_der || pure_client_custom_ca {
+        return open_pure_endpoint(cfg, is_server);
+    }
+
+    var st_i32:     i32 = 0;
+    var active_i32: i32 = 0;
+    let nid = native_tls_backend_open(
+        kind_to_native_i32(cfg.kind),
+        if is_server { 1 } else { 0 },
+        if cfg.insecure_skip_verify { 1 } else { 0 },
+        min_version_to_native_i32(cfg.min_version),
+        cfg.server_name[..],
+        cfg.alpn_wire[..],
+        cfg.ca_file[..],
+        cfg.cert_pem_file[..],
+        cfg.key_pem_file[..],
+        st_i32,
+        active_i32,
+    );
+    if nid > 0 && st_i32 == 0 {
+        return TlsEndpoint {
+            kind:        cfg.kind,
+            active_kind: native_i32_to_kind(active_i32),
+            is_server:   is_server,
+            established: false,
+            closed:      false,
+            pure_slot:   -1,
+            native_id:   nid,
+        }, TlsBackendStatus.Ok;
+    }
+    if cfg.kind == TlsBackendKind.Auto {
+        return open_pure_endpoint(cfg, is_server);
+    }
+    return TlsEndpoint { .. }, native_i32_to_status(st_i32);
 }
 
 // ---- Public Sans-IO Pluggable TLS Endpoint API -----------------------------
@@ -883,46 +978,7 @@ fn tls_backend_available(kind: TlsBackendKind) -> bool {
 // Opens a sans-IO TLS endpoint using the configured backend (`PureGoose`, `SystemOpenSsl`,
 // `SystemSchannel`, or `Auto` with automatic fallback to `PureGoose`).
 fn tls_endpoint_open(cfg: const TlsBackendConfig&) -> TlsEndpoint, TlsBackendStatus {
-    let force_pure = cfg.kind == TlsBackendKind.PureGoose ||
-        (cfg.kind == TlsBackendKind.Auto && cfg.is_server && cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0);
-    if force_pure {
-        return open_pure_endpoint(cfg);
-    }
-
-    var st_i32:     i32 = 0;
-    var active_i32: i32 = 0;
-    let nid = native_tls_backend_open(
-        kind_to_native_i32(cfg.kind),
-        if cfg.is_server { 1 } else { 0 },
-        if cfg.insecure_skip_verify { 1 } else { 0 },
-        min_version_to_native_i32(cfg.min_version),
-        cfg.server_name[..],
-        cfg.alpn_wire[..],
-        cfg.ca_file[..],
-        cfg.cert_pem_file[..],
-        cfg.key_pem_file[..],
-        st_i32,
-        active_i32,
-    );
-    if nid > 0 && st_i32 == 0 {
-        return TlsEndpoint {
-            kind:        cfg.kind,
-            active_kind: native_i32_to_kind(active_i32),
-            is_server:   cfg.is_server,
-            established: false,
-            closed:      false,
-            pure_slot:   -1,
-            native_id:   nid,
-        }, TlsBackendStatus.Ok;
-    }
-    if cfg.kind == TlsBackendKind.Auto {
-        let requires_pem = cfg.cert_pem_file.len > 0 || cfg.key_pem_file.len > 0 ||
-            (cfg.ca_file.len > 0 && cfg.trust_store.anchors.len == 0);
-        if !requires_pem {
-            return open_pure_endpoint(cfg);
-        }
-    }
-    return TlsEndpoint { .. }, native_i32_to_status(st_i32);
+    return open_endpoint_with_role(cfg, cfg.is_server);
 }
 
 // Idempotently closes `ep`, zeroizing key material and freeing native handles.
@@ -1143,4 +1199,273 @@ fn tls_endpoint_shutdown(ep: TlsEndpoint&) -> TlsBackendStatus {
         return TlsBackendStatus.Error;
     }
     return TlsBackendStatus.Ok;
+}
+
+// ---- Socket-Bridged Transport Adapter (TCP & Virtual Pipe Descriptors) -----
+
+const MAX_BACKEND_TRANSPORT_SLOTS: i64 = 64;
+
+struct TlsBackendTransportSlot {
+    in_use:     bool        = false,
+    ep:         TlsEndpoint = TlsEndpoint { .. },
+    rx_pending: u8[..16640] = [],
+    rx_pos:     i64         = 0,
+}
+
+var g_backend_transport_slots: TlsBackendTransportSlot[>..] = [];
+
+fn alloc_backend_transport_slot(ep: TlsEndpoint) -> i64 {
+    for i in g_backend_transport_slots.len {
+        let slot .= g_backend_transport_slots[i];
+        if !slot.in_use {
+            slot.ep = ep;
+            slot.rx_pending.clear();
+            slot.rx_pos = 0;
+            slot.in_use = true;
+            return i;
+        }
+    }
+    guard g_backend_transport_slots.len < MAX_BACKEND_TRANSPORT_SLOTS else { return -1; }
+    let idx = g_backend_transport_slots.len;
+    g_backend_transport_slots.push(TlsBackendTransportSlot { in_use: true, ep: ep, .. });
+    return idx;
+}
+
+fn release_backend_transport_slot(slot_id: i64) {
+    guard slot_id >= 0 && slot_id < g_backend_transport_slots.len else { return; }
+    let slot .= g_backend_transport_slots[slot_id];
+    guard slot.in_use else { return; }
+    tls_endpoint_close(slot.ep);
+    core::secure_zeroize_slice(slot.rx_pending[..]);
+    slot.rx_pending.clear();
+    slot.rx_pos = 0;
+    slot.in_use = false;
+}
+
+fn endpoint_fd_send_all(fd: i64, data: const u8[:]) -> bool {
+    guard fd > 0 else { return false; }
+    var off: i64 = 0;
+    while off < data.len {
+        let sent = if net::is_virtual_pipe_fd(fd) {
+            net::virtual_fd_send(fd, data[off..])
+        } else {
+            net::tcp_send(fd, data[off..])
+        };
+        guard sent > 0 else { return false; }
+        off = core::add_sat_i64(off, sent);
+    }
+    return true;
+}
+
+inline fn endpoint_fd_recv(fd: i64, dst: u8[:], timeout_ms: u32) -> i32 {
+    if net::is_virtual_pipe_fd(fd) {
+        return net::virtual_fd_recv(fd, dst);
+    }
+    if timeout_ms == 0 {
+        return net::tcp_recv_nonblocking_slice(fd, dst);
+    }
+    return net::tcp_recv_slice(fd, dst, timeout_ms);
+}
+
+inline fn endpoint_fd_close_raw(fd: i64) {
+    guard fd > 0 else { return; }
+    if net::is_virtual_pipe_fd(fd) {
+        net::virtual_fd_close(fd);
+    } else {
+        net::tcp_close(fd);
+    }
+}
+
+fn endpoint_drain_to_fd(ep: TlsEndpoint&, fd: i64) -> bool {
+    var wire: u8[16640] = [0; 16640];
+    for _ in 64 {
+        let n, st = tls_endpoint_drain_wire(ep, wire[..]);
+        guard st == TlsBackendStatus.Ok else { return false; }
+        if n <= 0 { return true; }
+        guard n <= wire.len && endpoint_fd_send_all(fd, wire[..n]) else { return false; }
+    }
+    return true;
+}
+
+fn endpoint_feed_staged_rx(slot: TlsBackendTransportSlot&) -> i64, TlsBackendStatus {
+    let pos = slot.rx_pos;
+    let total = slot.rx_pending.len;
+    guard pos >= 0 && pos < total && total <= slot.rx_pending.cap else {
+        slot.rx_pending.clear();
+        slot.rx_pos = 0;
+        return 0, TlsBackendStatus.Ok;
+    }
+    let fed, fst = tls_endpoint_feed_wire(slot.ep, slot.rx_pending[pos..total]);
+    if fed > 0 {
+        let next_pos = core::add_sat_i64(pos, fed);
+        if next_pos >= total {
+            slot.rx_pending.clear();
+            slot.rx_pos = 0;
+        } else {
+            slot.rx_pos = next_pos;
+        }
+    }
+    return fed, fst;
+}
+
+fn endpoint_feed_slot_rx(slot: TlsBackendTransportSlot&, fd: i64, timeout_ms: u32) -> i32 {
+    if slot.rx_pos < slot.rx_pending.len {
+        let fed0, fst0 = endpoint_feed_staged_rx(slot);
+        guard fst0 == TlsBackendStatus.Ok || fst0 == TlsBackendStatus.WantWrite else { return -1; }
+        if fed0 > 0 || fst0 == TlsBackendStatus.WantWrite { return 1; }
+    }
+    var rx: u8[16640] = [0; 16640];
+    let recvd = endpoint_fd_recv(fd, rx[..], timeout_ms);
+    if recvd <= 0 { return recvd; }
+    guard recvd <= rx.len else { return -1; }
+    let fed, fst = tls_endpoint_feed_wire(slot.ep, rx[..recvd]);
+    guard fst == TlsBackendStatus.Ok || fst == TlsBackendStatus.WantWrite else { return -1; }
+    if fed >= 0 && fed < recvd {
+        let _ = slot.rx_pending.try_set(rx[fed..recvd]);
+        slot.rx_pos = 0;
+    }
+    return 1;
+}
+
+inline fn endpoint_slot_is_ready(slot_id: i64) -> bool {
+    guard slot_id >= 0 && slot_id < g_backend_transport_slots.len else { return false; }
+    let slot .= g_backend_transport_slots[slot_id];
+    return slot.in_use && !slot.ep.closed && tls_endpoint_is_established(slot.ep);
+}
+
+fn endpoint_try_read_buffered(slot: TlsBackendTransportSlot&, fd: i64, dst: u8[:]) -> i64, TlsBackendStatus {
+    for _ in 4 {
+        let nr, st = tls_endpoint_read_app(slot.ep, dst);
+        if nr > 0 { return nr, TlsBackendStatus.Ok; }
+        if st == TlsBackendStatus.WantWrite {
+            guard endpoint_drain_to_fd(slot.ep, fd) else { return 0, TlsBackendStatus.Error; }
+            continue;
+        }
+        if st != TlsBackendStatus.WantRead { return 0, st; }
+        if slot.rx_pos < slot.rx_pending.len {
+            let _, fst = endpoint_feed_staged_rx(slot);
+            guard fst == TlsBackendStatus.Ok || fst == TlsBackendStatus.WantWrite else {
+                return 0, fst;
+            }
+        }
+    }
+    return 0, TlsBackendStatus.WantRead;
+}
+
+fn endpoint_run_handshake_fd(
+    fd:         i64,
+    cfg:        const TlsBackendConfig&,
+    is_server:  bool,
+    timeout_ms: u32,
+) -> i64, u8[..64], TlsBackendStatus {
+    var alpn: u8[..64] = [];
+    guard fd > 0 else { return -1, alpn, TlsBackendStatus.Error; }
+    var ep, open_st = open_endpoint_with_role(cfg, is_server);
+    guard open_st == TlsBackendStatus.Ok else { return -1, alpn, open_st; }
+
+    let slot_id = alloc_backend_transport_slot(ep);
+    guard slot_id >= 0 else {
+        tls_endpoint_close(ep);
+        return -1, alpn, TlsBackendStatus.Error;
+    }
+    var committed = false;
+    defer if !committed { release_backend_transport_slot(slot_id); };
+
+    let slot .= g_backend_transport_slots[slot_id];
+    for _ in 64 {
+        let st = tls_endpoint_step_handshake(slot.ep);
+        let flushed = endpoint_drain_to_fd(slot.ep, fd);
+        if st == TlsBackendStatus.Ok {
+            guard flushed else { return -1, alpn, TlsBackendStatus.Error; }
+            alpn = tls_endpoint_selected_alpn(slot.ep);
+            committed = true;
+            return slot_id, alpn, TlsBackendStatus.Ok;
+        }
+        guard flushed else { return -1, alpn, TlsBackendStatus.Error; }
+        if st == TlsBackendStatus.WantWrite { continue; }
+        guard st == TlsBackendStatus.WantRead else { return -1, alpn, st; }
+        let fed = endpoint_feed_slot_rx(slot, fd, timeout_ms);
+        guard fed > 0 else { return -1, alpn, TlsBackendStatus.HandshakeError; }
+    }
+    return -1, alpn, TlsBackendStatus.HandshakeError;
+}
+
+// Drives a client-side TLS handshake over live TCP or virtual pipe `fd` using `cfg`.
+// Returns `(slot_id, negotiated_alpn, status)`; caller retains `fd` ownership on failure.
+fn endpoint_client_handshake_fd(
+    fd:         i64,
+    cfg:        const TlsBackendConfig&,
+    timeout_ms: u32 = 5000,
+) -> i64, u8[..64], TlsBackendStatus {
+    return endpoint_run_handshake_fd(fd, cfg, false, timeout_ms);
+}
+
+// Drives a server-side TLS handshake over live TCP or virtual pipe `fd` using `cfg`.
+// Returns `(slot_id, negotiated_alpn, status)`; caller retains `fd` ownership on failure.
+fn endpoint_server_handshake_fd(
+    fd:         i64,
+    cfg:        const TlsBackendConfig&,
+    timeout_ms: u32 = 5000,
+) -> i64, u8[..64], TlsBackendStatus {
+    return endpoint_run_handshake_fd(fd, cfg, true, timeout_ms);
+}
+
+// Encrypts `data` via the backend `TlsEndpoint` at `slot_id` and flushes ciphertext to `fd`.
+// Returns total plaintext bytes sent (> 0), 0 for empty slice, or -1 on error.
+fn endpoint_transport_send(fd: i64, slot_id: i64, data: const u8[:]) -> i32 {
+    guard data.len > 0 else { return 0; }
+    guard fd > 0 && endpoint_slot_is_ready(slot_id) else { return -1; }
+    let slot .= g_backend_transport_slots[slot_id];
+
+    var off:           i64 = 0;
+    var zero_progress: i32 = 0;
+    while off < data.len {
+        let nw, st = tls_endpoint_write_app(slot.ep, data[off..]);
+        guard endpoint_drain_to_fd(slot.ep, fd) else { return -1; }
+        if nw > 0 {
+            off = core::add_sat_i64(off, nw);
+            zero_progress = 0;
+            continue;
+        }
+        guard st == TlsBackendStatus.WantWrite && zero_progress < 8 else { return -1; }
+        zero_progress = core::add_sat_u32(zero_progress as u32, 1) as i32;
+    }
+    return (off & 0x7FFFFFFF) as i32;
+}
+
+// Decrypts plaintext from the backend `TlsEndpoint` at `slot_id` into `dst`, pulling
+// ciphertext from `fd` whenever the endpoint reports `WantRead`.
+// Returns plaintext bytes read (> 0), 0 on clean EOF/CloseNotify, -2 on timeout, or -1 on error.
+fn endpoint_transport_recv_slice(
+    fd:         i64,
+    slot_id:    i64,
+    dst:        u8[:],
+    timeout_ms: u32 = 5000,
+) -> i32 {
+    guard fd > 0 && dst.len > 0 && endpoint_slot_is_ready(slot_id) else { return -1; }
+    let slot .= g_backend_transport_slots[slot_id];
+
+    for _ in 64 {
+        let nr, st = endpoint_try_read_buffered(slot, fd, dst);
+        if nr > 0 { return (nr & 0x7FFFFFFF) as i32; }
+        if st == TlsBackendStatus.Closed { return 0; }
+        guard st == TlsBackendStatus.WantRead else { return -1; }
+
+        let rx_st = endpoint_feed_slot_rx(slot, fd, timeout_ms);
+        if rx_st <= 0 { return rx_st; }
+    }
+    return -1;
+}
+
+// Idempotently closes the backend endpoint slot and underlying socket/virtual pipe `fd`.
+fn endpoint_transport_close(fd: i64, slot_id: i64) {
+    if slot_id >= 0 && slot_id < g_backend_transport_slots.len {
+        let was_in_use = g_backend_transport_slots[slot_id].in_use;
+        if was_in_use {
+            release_backend_transport_slot(slot_id);
+            endpoint_fd_close_raw(fd);
+        }
+        return;
+    }
+    endpoint_fd_close_raw(fd);
 }

@@ -25,7 +25,10 @@ struct HttpServer {
     shared_compressor: realtime::SharedWsCompressor, sni_registry: SniRegistry,
     worker_ring: core::SpscRing, cached_date: CachedHttpDate,
     accel_mode: wing::ReactorAccelMode = wing::ReactorAccelMode.Auto,
-    enable_header_memoization: bool = false, ...
+    enable_header_memoization: bool = false,
+    tls_backend: tls::TlsBackendKind = tls::TlsBackendKind.PureGoose,
+    tls_min_version: tls::TlsMinVersion = tls::TlsMinVersion.Tls13,
+    tls_cert_pem_file: u8[..256] = [], tls_key_pem_file: u8[..256] = [], ...
 }
 fn new_http_server(host_str: const u8[:] = "127.0.0.1", port_num: u16 = 8080) -> HttpServer
 fn init_http_server_inplace(server: HttpServer&, host_str: const u8[:] = "127.0.0.1", port_num: u16 = 8080)
@@ -36,6 +39,8 @@ fn should_stop(server: const HttpServer&) -> bool
 fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 fn serve_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_connections: i64 = 0) -> i64
 fn serve_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const wing::TlsServerHandshakeConfig&, max_connections: i64 = 0) -> i64
+fn configure_server_tls_backend(srv: HttpServer&, kind: tls::TlsBackendKind, min_ver: tls::TlsMinVersion = tls::TlsMinVersion.Tls13, cert_pem: const u8[:] = "", key_pem: const u8[:] = "") -> bool
+fn accept_tls_backend_connection(srv: const HttpServer&, client_fd: i64, alpn_wire: const u8[:] = "", timeout_ms: u32 = 5000) -> net::Transport, u8[..64], tls::TlsBackendStatus
 fn handle_connection_wire<B>(server: HttpServer&, client_ip: const u8[:], wire_in: const u8[:], now_ns: u64, wire_out: B&) -> PipelineOutcome, bool
 fn subscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
 fn unsubscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
@@ -48,10 +53,12 @@ fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[
 
 `HttpServer` combines synchronous serving loops (`serve`, `serve_with_stage`,
 and TLS 1.3 `serve_tls` with `h2` / `http/1.1` ALPN and SNI certificate
-selection) with a Sans-IO wire processor (`handle_connection_wire`). By default,
-`enable_header_memoization` is `false` so every HTTP/1.1 request executes full
-64-bit SWAR header scanning without reusing cached Keep-Alive header blocks;
-call `set_header_memoization(server, true)` to opt in to Keep-Alive header
+selection), pluggable TLS backend configuration (`configure_server_tls_backend`
+and `accept_tls_backend_connection`), and a Sans-IO wire processor
+(`handle_connection_wire`). By default, `enable_header_memoization` is `false`
+so every HTTP/1.1 request executes full 64-bit SWAR header scanning without
+reusing cached Keep-Alive header blocks; call
+`set_header_memoization(server, true)` to opt in to Keep-Alive header
 memoization (`g_h1_parse_cache` and pipelined identical-request batching).
 Routing and middleware state live inside `server.pipeline`
 (`server.pipeline.router`, `server.pipeline.edge_filter`,

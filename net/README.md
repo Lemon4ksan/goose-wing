@@ -74,21 +74,32 @@ on POSIX to avoid `FD_SETSIZE` (`1024`) descriptor limits.
 ### 2. Unified Transport Handle (`net/transport.goose`)
 
 ```goose
-struct Transport { fd: i64, is_tls: bool }
+enum Transport {
+    Disconnected,
+    Tcp { fd: i64 },
+    Unix { fd: i64 },
+    Tls { fd: i64, record_seq_rx: u64, record_seq_tx: u64, cipher_slot: u16 },
+    TlsBackend { fd: i64, endpoint_slot: i64 },
+    Udp { fd: i64, peer_ip4: u32, peer_port: u16 },
+    Mock { route_idx: u16, cursor: u32 },
+    Virtual { pipe_slot: u16, is_b_end: bool },
+}
 fn udp_bind(host: const u8[:], port: u16 = 0) -> i64
-fn udp_recvfrom(fd: i64, buf: u8[:], out_ip: u8[..64]&, out_port: u16&) -> i64
-fn is_connected(t: const Transport&) -> bool
-fn send(t: Transport&, data: const u8[:]) -> i64
-fn recv_slice(t: Transport&, buf: u8[:]) -> i64
+fn udp_recvfrom(sock_fd: i64, buf: u8[:], timeout_ms: u32, peer_ip4: u32&, peer_port: u16&) -> i32
+fn is_connected(t: Transport) -> bool
+fn send(t: Transport, data: const u8[:]) -> i32
+fn recv_slice(t: Transport, dst: u8[:], timeout_ms: u32 = 5000) -> i32
 fn close(t: Transport&)
 fn virtual_pipe_inject_rst(pipe_slot: u16, is_b_end: bool) -> bool
 ```
 
-`Transport` wraps a raw socket descriptor (`fd >= 0` when connected) and tracks
-TLS session layering. `close` is idempotent: it closes the active descriptor and
-resets `t.fd = -1`. `udp_recvfrom` writes the formatted peer IP literal into the
-64-byte `out_ip` buffer and returns the received payload length or `-1` on
-error.
+`Transport` is a closed-polymorphism enum dispatching TCP, Unix domain, pure TLS
+1.3 (`Tls`), pluggable TLS backend (`TlsBackend`, backed by
+`tls::endpoint_transport_*`), UDP, mock, and in-memory virtual pipe I/O without
+vtable indirection. `close` is idempotent: it tears down the active descriptor
+or endpoint slot and resets `t` to `Transport.Disconnected`. `udp_recvfrom`
+writes the peer IPv4 address and port into `peer_ip4` and `peer_port`, returning
+the received payload length or `-1` on error.
 
 ### 3. Batch UDP Datagrams (`net/udp.goose`)
 

@@ -26,6 +26,7 @@ import dns.cache;
 import dns.doh;
 import tls.ech;
 import tls.pem;
+import tls.backend;
 import http.altsvc;
 import net.happy_eyeballs;
 import http.compression_dict;
@@ -64,6 +65,9 @@ struct Config {
     enable_compression_dict: bool                 = true,
     strict_content_decoding: bool                 = false,
     insecure_skip_verify:    bool                 = false,
+    tls_backend:             tls::TlsBackendKind  = tls::TlsBackendKind.PureGoose,
+    tls_min_version:         tls::TlsMinVersion   = tls::TlsMinVersion.Tls13,
+    tls_ca_file:             const u8[:]          = "",
     sig_key_id:              const u8[:]          = "",
     sig_private_key:         const u8[:]          = "",
     sig_public_key:          const u8[:]          = "",
@@ -158,6 +162,9 @@ struct Client {
     sig_public_key:          u8[..64]                 = [],
     trust_store:             tls::TrustAnchorStore    = tls::TrustAnchorStore { .. },
     insecure_skip_verify:    bool                     = false,
+    tls_backend:             tls::TlsBackendKind      = tls::TlsBackendKind.PureGoose,
+    tls_min_version:         tls::TlsMinVersion       = tls::TlsMinVersion.Tls13,
+    tls_ca_file:             u8[..256]                = [],
 
     // Resizable field must be final
     jar: cookie::CanonicalCookieJar = cookie::CanonicalCookieJar { .. },
@@ -195,10 +202,12 @@ fn new_client() -> Client {
 }
 
 fn new_client(cfg: Config) -> Client {
-    var base_buf:  u8[..256] = [];
-    var proxy_buf: u8[..256] = [];
+    var base_buf:    u8[..256] = [];
+    var proxy_buf:   u8[..256] = [];
+    var ca_file_buf: u8[..256] = [];
     let _ = base_buf.try_set(cfg.base_url);
     let _ = proxy_buf.try_set(cfg.proxy_url);
+    let _ = ca_file_buf.try_set(cfg.tls_ca_file);
 
     let prof_spec = client_internal::resolve_profile_spec(cfg.profile);
     let def_hdrs = client_internal::build_profile_headers(prof_spec);
@@ -246,6 +255,9 @@ fn new_client(cfg: Config) -> Client {
         sig_private_key:         sig_priv,
         sig_public_key:          sig_pub,
         insecure_skip_verify:    cfg.insecure_skip_verify,
+        tls_backend:             cfg.tls_backend,
+        tls_min_version:         cfg.tls_min_version,
+        tls_ca_file:             ca_file_buf,
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
@@ -611,6 +623,33 @@ fn configure_session_tls_ca_pem(
         sess.ssrf_guard.deny_local_network = false;
     }
     return count, true;
+}
+
+// Selects the pluggable TLS backend on `session` and drains pooled connections if changed.
+fn set_tls_backend(session: Session&, kind: tls::TlsBackendKind) {
+    if session.tls_backend != kind {
+        session.tls_backend = kind;
+        net::drain_stream_pool(session.pool);
+    }
+}
+
+// Configures the minimum TLS version floor on `session` and drains pooled connections if changed.
+fn set_tls_min_version(session: Session&, ver: tls::TlsMinVersion) {
+    if session.tls_min_version != ver {
+        session.tls_min_version = ver;
+        net::drain_stream_pool(session.pool);
+    }
+}
+
+// Configures a PEM CA bundle file path for pluggable TLS backends on `session`.
+// Enforces peer certificate verification when `path` is non-empty and drains pooled connections.
+fn set_tls_ca_file(session: Session&, path: const u8[:]) -> bool {
+    guard session.tls_ca_file.try_set(path) else { return false; }
+    if path.len > 0 {
+        session.insecure_skip_verify = false;
+    }
+    net::drain_stream_pool(session.pool);
+    return true;
 }
 
 // ---- mock route registration methods ---------------------------------------

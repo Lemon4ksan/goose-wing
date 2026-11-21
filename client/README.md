@@ -26,8 +26,9 @@ struct Config {
     enable_altsvc: bool, enable_protocol_racing: bool,
     quic_race_delay_ms: i64, enable_compression_dict: bool,
     strict_content_decoding: bool, insecure_skip_verify: bool,
-    sig_key_id: const u8[:], sig_private_key: const u8[:],
-    sig_public_key: const u8[:],
+    tls_backend: tls::TlsBackendKind, tls_min_version: tls::TlsMinVersion,
+    tls_ca_file: const u8[:], sig_key_id: const u8[:],
+    sig_private_key: const u8[:], sig_public_key: const u8[:],
 }
 type SessionConfig = Config;
 struct Credentials { ... }
@@ -60,6 +61,9 @@ fn set_dpop_credentials(session: Session&, private_key: const u8[32]&, token: co
 fn set_http_signature_keys(session: Session&, key_id: const u8[:], private_key: const u8[:], public_key: const u8[:] = "") -> bool
 fn load_trust_anchors_pem_file(sess: Session&, path: const u8[:]) -> i64, bool
 fn configure_session_tls_ca_pem(sess: Session&, pem_bundle: const u8[:], allow_loopback: bool = false) -> i64, bool
+fn set_tls_backend(session: Session&, kind: tls::TlsBackendKind)
+fn set_tls_min_version(session: Session&, ver: tls::TlsMinVersion)
+fn set_tls_ca_file(session: Session&, path: const u8[:]) -> bool
 fn lookup_cached_ech_config(dns_cache: const dns::Cache&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
 fn resolve_ech_config(session: Session&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
 fn attach_dictionary_request_headers(session: const Session&, origin: const u8[:], url_path: const u8[:], req: wing::Request&) -> bool
@@ -75,8 +79,12 @@ aligns the `User-Agent`, TLS 1.3 cipher/extension order (JA3/JA4), HTTP/2
 is active against a direct HTTP/3 UDP endpoint (`serve_h3`),
 `execute_live_h3_hop` does an unencrypted H3 over UDP (datagram direct) exchange
 using RFC 9114 framing and QPACK; full encrypted QUIC v1 + TLS 1.3 sessions use
-`quic::Connection` and `http3::Connection`. `close` is idempotent and drains all
-pooled transport descriptors.
+`quic::Connection` and `http3::Connection`. `tls_backend` defaults to
+`tls::TlsBackendKind.PureGoose` with `tls::TlsMinVersion.Tls13`, keeping the
+native TLS 1.3 fast path unchanged; selecting `SystemOpenSsl`, `SystemSchannel`,
+`SystemSecureTransport`, or `Auto` opens a `net::Transport.TlsBackend` channel
+with automatic `h2` / `http/1.1` ALPN dispatch. `close` is idempotent and drains
+all pooled transport descriptors.
 
 ### 2. Interceptors, redirects, backoff, and rate limiting (`client/interceptor.goose`, `client/redirect.goose`, `client/policy.goose`)
 

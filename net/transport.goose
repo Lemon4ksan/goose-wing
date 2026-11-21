@@ -52,6 +52,7 @@ enum Transport {
     Tcp { fd: i64 },
     Unix { fd: i64 },
     Tls { fd: i64, record_seq_rx: u64, record_seq_tx: u64, cipher_slot: u16 },
+    TlsBackend { fd: i64, endpoint_slot: i64 },
     Udp { fd: i64, peer_ip4: u32, peer_port: u16 },
     Mock { route_idx: u16, cursor: u32 },
     Virtual { pipe_slot: u16, is_b_end: bool },
@@ -276,6 +277,11 @@ fn send(t: Transport.Tls, data: const u8[:]) -> i32 {
     return tls::transport_send(t.fd, t.cipher_slot, data);
 }
 
+fn send(t: Transport.TlsBackend, data: const u8[:]) -> i32 {
+    guard t.fd > 0 && t.endpoint_slot >= 0 else { return 0; }
+    return tls::endpoint_transport_send(t.fd, t.endpoint_slot, data);
+}
+
 fn send(t: Transport.Udp, data: const u8[:]) -> i32 {
     guard t.fd > 0 else { return 0; }
     return net_internal::native_udp_sendto_ip4(t.fd, data, t.peer_ip4, t.peer_port);
@@ -296,6 +302,7 @@ fn send(t: Transport, data: const u8[:]) -> i32 {
         Tcp tcp => tcp.send(data),
         Unix u => u.send(data),
         Tls tls => tls.send(data),
+        TlsBackend tb => tb.send(data),
         Udp udp => udp.send(data),
         Mock m => m.send(data),
         Virtual v => v.send(data),
@@ -332,6 +339,12 @@ fn recv_slice(t: Transport.Tls, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     return tls::transport_recv_slice(t.fd, t.cipher_slot, dst, timeout_ms);
 }
 
+fn recv_slice(t: Transport.TlsBackend, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+    guard dst.len > 0 else { return 0; }
+    guard t.fd > 0 && t.endpoint_slot >= 0 else { return -1; }
+    return tls::endpoint_transport_recv_slice(t.fd, t.endpoint_slot, dst, timeout_ms);
+}
+
 fn recv_slice(t: Transport.Udp, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard dst.len > 0 else { return 0; }
     guard t.fd > 0 else { return -1; }
@@ -355,6 +368,7 @@ fn recv_slice(t: Transport, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
         Tcp tcp => tcp.recv_slice(dst, timeout_ms),
         Unix u => u.recv_slice(dst, timeout_ms),
         Tls tls => tls.recv_slice(dst, timeout_ms),
+        TlsBackend tb => tb.recv_slice(dst, timeout_ms),
         Udp udp => udp.recv_slice(dst, timeout_ms),
         Mock m => m.recv_slice(dst, timeout_ms),
         Virtual v => v.recv_slice(dst, timeout_ms),
@@ -382,6 +396,10 @@ fn close(t: Transport.Tls) {
     tls::transport_close(t.fd, t.cipher_slot);
 }
 
+fn close(t: Transport.TlsBackend) {
+    tls::endpoint_transport_close(t.fd, t.endpoint_slot);
+}
+
 fn close(t: Transport.Udp) {
     if t.fd > 0 {
         tcp_close(t.fd);
@@ -402,6 +420,7 @@ fn close(t: Transport&) {
         Tcp tcp => tcp.close(),
         Unix u => u.close(),
         Tls tls => tls.close(),
+        TlsBackend tb => tb.close(),
         Udp udp => udp.close(),
         Mock m => m.close(),
         Virtual v => v.close(),
