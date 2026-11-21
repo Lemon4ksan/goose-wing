@@ -692,11 +692,16 @@ NO_SANITIZE_COV static int run_complexity_gate(int32_t filter_tid, int need_warm
     int saved_abort = g_abort_on_slow_input;
     g_abort_on_slow_input = 0;
 
-    if (need_warmup) {
-        static const uint8_t kWarm[32] = "GET / HTTP/1.1\r\nHost: a\r\n\r\n";
-        for (int32_t tid = first_tid; tid <= last_tid; tid++) {
-            (void)run_target_timed(tid, kWarm, 27U);
-        }
+    /* Pre-fault each target's fixed data-stack working set at max 16 KB payload size before
+       recording sweep_base_rss so one-time OS demand paging is not misclassified as a leak. */
+    (void)need_warmup;
+    build_adversarial_pattern(0U, s_pat_16k, sizeof(s_pat_16k));
+    for (int32_t tid = first_tid; tid <= last_tid; tid++) {
+        (void)run_target_timed(tid, s_pat_16k, sizeof(s_pat_16k));
+    }
+    build_adversarial_pattern(4U, s_pat_16k, sizeof(s_pat_16k));
+    for (int32_t tid = first_tid; tid <= last_tid; tid++) {
+        (void)run_target_timed(tid, s_pat_16k, sizeof(s_pat_16k));
     }
 
     uint64_t sweep_base_rss = read_process_rss_bytes();
