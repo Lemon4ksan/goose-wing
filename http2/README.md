@@ -32,18 +32,18 @@ fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const win
 `FrameHeader` represents the 9-byte binary HTTP/2 frame prefix.
 `parse_frame_header` and `validate_frame_header_rules` mask the reserved stream
 ID bit, check `max_frame_size`, and enforce per-frame stream association rules
-per RFC 9113 §6, returning `ERR_NO_ERROR` (`0x00`) or an HTTP/2 error code.
-`extract_padded_frame_payload` strips optional `FLAG_PADDED` bytes from `DATA`,
-`HEADERS`, or `PUSH_PROMISE` frames, and `extract_headers_frame_payload` strips
-legacy RFC 7540 priority fields while rejecting self-dependent stream IDs (RFC
-9113 §5.3.1).
+per RFC 9113 §6, returning `rfc::H2_ERR_NO_ERROR` (`0x00`) or an HTTP/2 error
+code. `extract_padded_frame_payload` strips optional `rfc::H2_FLAG_PADDED` bytes
+from `DATA`, `HEADERS`, or `PUSH_PROMISE` frames, and
+`extract_headers_frame_payload` strips legacy RFC 7540 priority fields while
+rejecting self-dependent stream IDs (RFC 9113 §5.3.1).
 
 | Category | Constants |
 | :--- | :--- |
-| Frame Types | `FRAME_DATA` (`0x00`), `FRAME_HEADERS` (`0x01`), `FRAME_PRIORITY` (`0x02`), `FRAME_RST_STREAM` (`0x03`), `FRAME_SETTINGS` (`0x04`), `FRAME_PUSH_PROMISE` (`0x05`), `FRAME_PING` (`0x06`), `FRAME_GOAWAY` (`0x07`), `FRAME_WINDOW_UPDATE` (`0x08`), `FRAME_CONTINUATION` (`0x09`), `FRAME_PRIORITY_UPDATE` (`0x10`, RFC 9218) |
-| Frame Flags | `FLAG_END_STREAM` (`0x01`), `FLAG_ACK` (`0x01`), `FLAG_END_HEADERS` (`0x04`), `FLAG_PADDED` (`0x08`), `FLAG_PRIORITY` (`0x20`) |
-| Error Codes | `ERR_NO_ERROR` (`0x00`), `ERR_PROTOCOL_ERROR` (`0x01`), `ERR_INTERNAL_ERROR` (`0x02`), `ERR_FLOW_CONTROL_ERROR` (`0x03`), `ERR_SETTINGS_TIMEOUT` (`0x04`), `ERR_STREAM_CLOSED` (`0x05`), `ERR_FRAME_SIZE_ERROR` (`0x06`), `ERR_REFUSED_STREAM` (`0x07`), `ERR_CANCEL` (`0x08`), `ERR_COMPRESSION_ERROR` (`0x09`), `ERR_CONNECT_ERROR` (`0x0A`), `ERR_ENHANCE_YOUR_CALM` (`0x0B`) |
-| Settings | `SETTING_HEADER_TABLE_SIZE` (`0x01`), `SETTING_ENABLE_PUSH` (`0x02`), `SETTING_MAX_CONCURRENT_STREAMS` (`0x03`), `SETTING_INITIAL_WINDOW_SIZE` (`0x04`), `SETTING_MAX_FRAME_SIZE` (`0x05`), `SETTING_MAX_HEADER_LIST_SIZE` (`0x06`), `SETTING_ENABLE_CONNECT_PROTO` (`0x08`) |
+| Frame Types | `rfc::H2_FRAME_DATA` (`0x00`), `rfc::H2_FRAME_HEADERS` (`0x01`), `rfc::H2_FRAME_PRIORITY` (`0x02`), `rfc::H2_FRAME_RST_STREAM` (`0x03`), `rfc::H2_FRAME_SETTINGS` (`0x04`), `rfc::H2_FRAME_PUSH_PROMISE` (`0x05`), `rfc::H2_FRAME_PING` (`0x06`), `rfc::H2_FRAME_GOAWAY` (`0x07`), `rfc::H2_FRAME_WINDOW_UPDATE` (`0x08`), `rfc::H2_FRAME_CONTINUATION` (`0x09`), `rfc::H2_FRAME_PRIORITY_UPDATE` (`0x10`, RFC 9218) |
+| Frame Flags | `rfc::H2_FLAG_END_STREAM` (`0x01`), `rfc::H2_FLAG_ACK` (`0x01`), `rfc::H2_FLAG_END_HEADERS` (`0x04`), `rfc::H2_FLAG_PADDED` (`0x08`), `rfc::H2_FLAG_PRIORITY` (`0x20`) |
+| Error Codes | `rfc::H2_ERR_NO_ERROR` (`0x00`), `rfc::H2_ERR_PROTOCOL_ERROR` (`0x01`), `rfc::H2_ERR_INTERNAL_ERROR` (`0x02`), `rfc::H2_ERR_FLOW_CONTROL_ERROR` (`0x03`), `rfc::H2_ERR_SETTINGS_TIMEOUT` (`0x04`), `rfc::H2_ERR_STREAM_CLOSED` (`0x05`), `rfc::H2_ERR_FRAME_SIZE_ERROR` (`0x06`), `rfc::H2_ERR_REFUSED_STREAM` (`0x07`), `rfc::H2_ERR_CANCEL` (`0x08`), `rfc::H2_ERR_COMPRESSION_ERROR` (`0x09`), `rfc::H2_ERR_CONNECT_ERROR` (`0x0A`), `rfc::H2_ERR_ENHANCE_YOUR_CALM` (`0x0B`) |
+| Settings | `rfc::H2_SETTING_HEADER_TABLE_SIZE` (`0x01`), `rfc::H2_SETTING_ENABLE_PUSH` (`0x02`), `rfc::H2_SETTING_MAX_CONCURRENT_STREAMS` (`0x03`), `rfc::H2_SETTING_INITIAL_WINDOW_SIZE` (`0x04`), `rfc::H2_SETTING_MAX_FRAME_SIZE` (`0x05`), `rfc::H2_SETTING_MAX_HEADER_LIST_SIZE` (`0x06`), `rfc::H2_SETTING_ENABLE_CONNECT_PROTO` (`0x08`) |
 
 ```goose
 let hdr, err = http2::parse_frame_header(wire_buf);

@@ -218,19 +218,19 @@ fn get_client_stream_message(reader: const ClientStreamReader&, idx: i64) -> con
 fn write_stream_message(writer: ServerStreamWriter&, payload: const u8[:], compressed: bool = false)
 fn validate_recv_compression(is_compressed: bool, enc: const u8[:], is_server: bool) -> StatusCode
 fn handle_builtin_health_check(d: const ServerDispatcher&, req: const wing::Request&, ctx: const ServerContext&, res: wing::Response&) -> bool
-fn dispatch_unary<HandlerFn>(d: const ServerDispatcher&, req: const wing::Request&, now_mono_ns: u64, res: wing::Response&, req_start_mono_ns: u64 = 0) -> bool
+fn dispatch_unary<HandlerFn: fn(u16, ServerContext&, const u8[:], u8[>..]&) -> Status>(d: const ServerDispatcher&, req: const wing::Request&, now_mono_ns: u64, res: wing::Response&, req_start_mono_ns: u64 = 0) -> bool
 fn on_unary<B>(_stage: wire::NoOpStage&, _handler_id: u16, _ctx: ServerContext&, _req_bytes: const u8[:], _res_bytes: B&) -> Status
 fn dispatch_unary_stage<Stage>(d: const ServerDispatcher&, stage: Stage&, req: const wing::Request&, now_mono_ns: u64, res: wing::Response&, req_start_mono_ns: u64 = 0) -> bool
-fn dispatch_server_streaming<HandlerFn>(d: const ServerDispatcher&, req: const wing::Request&, now_mono_ns: u64, res: wing::Response&, req_start_mono_ns: u64 = 0) -> bool
-fn dispatch_client_streaming<HandlerFn>(d: const ServerDispatcher&, req: const wing::Request&, now_mono_ns: u64, res: wing::Response&, req_start_mono_ns: u64 = 0) -> bool
+fn dispatch_server_streaming<HandlerFn: fn(u16, ServerContext&, const u8[:], ServerStreamWriter&) -> Status>(d: const ServerDispatcher&, req: const wing::Request&, now_mono_ns: u64, res: wing::Response&, req_start_mono_ns: u64 = 0) -> bool
+fn dispatch_client_streaming<HandlerFn: fn(u16, ServerContext&, const ClientStreamReader&, u8[>..]&) -> Status>(d: const ServerDispatcher&, req: const wing::Request&, now_mono_ns: u64, res: wing::Response&, req_start_mono_ns: u64 = 0) -> bool
 fn feed_lpm_reader(reader: LpmReader&, raw: const u8[:]) -> bool
 fn read_next_lpm(reader: LpmReader&) -> const u8[:], bool
 fn write_lpm_frame(writer: LpmWriter&, payload: const u8[:], compressed: bool = false) -> bool
 fn dispatch_bidi_streaming(conn: H2Stream&, reader: LpmReader&, writer: LpmWriter&) -> bool
-fn emit_h2_response_frames<B>(hpack_enc: h2_internal::DynamicTable&, stream_id: u32, res: const wing::Response&, out: B&)
+fn emit_h2_response_frames<B>(hpack_enc: http2::DynamicTable&, stream_id: u32, res: const wing::Response&, out: B&)
 fn handle_h2_control_frame(conn: i64, hdr: const wire::WireFrameHeader&, payload: const u8[:]) -> bool
-fn handle_h2_wire_frame<HandlerFn>(conn: i64, server: wing::HttpServer&, d: const ServerDispatcher&, client_ip: const u8[:], hpack_dec: h2_internal::DynamicTable&, hpack_enc: h2_internal::DynamicTable&, pending: wing::Request&, pending_stream_id: u32&, hdr: const wire::WireFrameHeader&, payload: const u8[:], out_wire: u8[..65536]&) -> bool
-fn serve_listener<HandlerFn>(listener_fd: i64, server: wing::HttpServer&, d: const ServerDispatcher&)
+fn handle_h2_wire_frame<HandlerFn: fn(u16, ServerContext&, const u8[:], u8[>..]&) -> Status>(conn: i64, server: wing::HttpServer&, d: const ServerDispatcher&, client_ip: const u8[:], hpack_dec: http2::DynamicTable&, hpack_enc: http2::DynamicTable&, pending: wing::Request&, pending_stream_id: u32&, hdr: const wire::WireFrameHeader&, payload: const u8[:], out_wire: u8[..65536]&) -> bool
+fn serve_listener<HandlerFn: fn(u16, ServerContext&, const u8[:], u8[>..]&) -> Status>(listener_fd: i64, server: wing::HttpServer&, d: const ServerDispatcher&)
 ```
 
 `ServerDispatcher` routes up to 64 registered methods (`MethodEntry[..64]`) and

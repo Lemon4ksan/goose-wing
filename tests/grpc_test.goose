@@ -683,6 +683,72 @@ fn test_grpc_status_regressions(t: lit::T&) {
         grpc::encode_message(raw_msg[..], out_bounded, out_bounded.cap);
         sub.assert_true(out_bounded.len <= 256, "encode_grpc_message must not exceed out.cap (256)");
     };
+
+    t.run("Transactional error and capacity overflow hygiene in trailers, Connect, and status details") { sub =>
+        // 1. parse_web_trailers invalid input leaves out_status and out_message untouched
+        var wt_st = grpc::StatusCode.Unavailable;
+        var wt_msg: u8[..32] = "keep";
+        sub.assert_false(
+            grpc::parse_web_trailers("not-a-trailer\r\n", wt_st, wt_msg),
+            "parse_web_trailers rejects missing grpc-status",
+        );
+        sub.assert_eq(wt_st, grpc::StatusCode.Unavailable, "wt_st remains Unavailable on parse failure");
+        sub.assert_bytes_eq(wt_msg[..], "keep", "wt_msg remains untouched on parse failure");
+
+        // 2. parse_web_trailers out_message capacity overflow returns false with untouched outputs
+        var wt_st2 = grpc::StatusCode.Unavailable;
+        var wt_tiny: u8[..3] = "old";
+        sub.assert_false(
+            grpc::parse_web_trailers("grpc-status: 0\r\ngrpc-message: toolongmessage\r\n", wt_st2, wt_tiny),
+            "parse_web_trailers rejects out_message overflow",
+        );
+        sub.assert_eq(wt_st2, grpc::StatusCode.Unavailable, "wt_st2 remains Unavailable on overflow");
+        sub.assert_bytes_eq(wt_tiny[..], "old", "wt_tiny remains untouched on overflow");
+
+        // 3. parse_connect_end_stream out_message capacity overflow returns false with untouched outputs
+        var ce_st = grpc::StatusCode.Unavailable;
+        var ce_tiny: u8[..3] = "old";
+        var ce_tr = wing::HeaderMap { .. };
+        let _ = wing::append_header(ce_tr, "x-keep", "1");
+        let ce_json = "{\"error\":{\"code\":\"internal\",\"message\":\"toolongmessage\"}}";
+        sub.assert_false(
+            grpc::parse_connect_end_stream(ce_json, ce_st, ce_tiny, ce_tr),
+            "parse_connect_end_stream rejects out_message overflow",
+        );
+        sub.assert_eq(ce_st, grpc::StatusCode.Unavailable, "ce_st remains Unavailable on overflow");
+        sub.assert_bytes_eq(ce_tiny[..], "old", "ce_tiny remains untouched on overflow");
+        sub.assert_bytes_eq(wing::get_header(ce_tr, "x-keep"), "1", "ce_tr remains untouched on overflow");
+
+        // 4. decode_status_details out_msg capacity overflow returns false with untouched outputs
+        var status_pb: u8[..64] = [];
+        sub.assert_true(grpc::pb_write_varint_field(1, 3, status_pb), "write code");
+        sub.assert_true(grpc::pb_write_bytes_field(2, "toolongmessage", status_pb), "write msg");
+        var b64_buf: u8[..128] = [];
+        core::base64_encode(status_pb[..], b64_buf);
+
+        var ds_st = grpc::StatusCode.Unavailable;
+        var ds_tiny:    u8[..3]                = "old";
+        var ds_details: grpc::ErrorDetail[..4] = [];
+        var kept_detail = grpc::ErrorDetail { .. };
+        let _ = kept_detail.type_url.try_set("keep");
+        let _ = ds_details.try_push(kept_detail);
+
+        sub.assert_false(
+            grpc::decode_status_details(b64_buf[..], grpc::StatusCode.InvalidArgument, ds_st, ds_tiny, ds_details),
+            "decode_status_details rejects out_msg overflow on match",
+        );
+        sub.assert_eq(ds_st, grpc::StatusCode.Unavailable, "ds_st untouched on match overflow");
+        sub.assert_bytes_eq(ds_tiny[..], "old", "ds_tiny untouched on match overflow");
+        sub.assert_eq(ds_details.len, 1, "ds_details untouched on match overflow");
+
+        sub.assert_false(
+            grpc::decode_status_details(b64_buf[..], grpc::StatusCode.NotFound, ds_st, ds_tiny, ds_details),
+            "decode_status_details rejects out_msg overflow on mismatch",
+        );
+        sub.assert_eq(ds_st, grpc::StatusCode.Unavailable, "ds_st untouched on mismatch overflow");
+        sub.assert_bytes_eq(ds_tiny[..], "old", "ds_tiny untouched on mismatch overflow");
+        sub.assert_eq(ds_details.len, 1, "ds_details untouched on mismatch overflow");
+    };
 }
 // ----------------------------------------------------------------------------
 // 10. Server & Client Regressions

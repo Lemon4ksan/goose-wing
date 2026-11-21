@@ -14,11 +14,12 @@ import .types;
 // ---- Static Table Lookup (RFC 9204 Appendix A) -----------------------------
 
 // Returns static table entry at 0-based index (0..98).
-fn get_qpack_static_field(idx: u64) -> h3_internal::QpackStaticEntry, bool {
+fn get_qpack_static_field(idx: u64) -> QpackStaticEntry, bool {
     guard idx < rfc::QPACK_STATIC_TABLE_SIZE else {
-        return h3_internal::QpackStaticEntry { .. }, false;
+        return QpackStaticEntry { .. }, false;
     }
-    return h3_internal::QPACK_STATIC_TABLE[idx as i64], true;
+    let row = h3_internal::QPACK_STATIC_TABLE[idx as i64];
+    return QpackStaticEntry { name: row.name, val: row.val }, true;
 }
 
 // Searches static table for matching name and optional value via O(1) name-length bucket dispatch.

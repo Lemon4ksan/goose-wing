@@ -265,7 +265,7 @@ fn parse_web_trailers<B>(
     out_status:    StatusCode&,
     out_message:   B&,
 ) -> bool {
-    out_status = StatusCode.Ok;
+    var tmp_status = StatusCode.Ok;
 
     var cursor:             i64       = 0;
     var saw_status_key:     bool      = false;
@@ -282,7 +282,7 @@ fn parse_web_trailers<B>(
         }
         if line.len > 0 {
             guard grpc_internal::parse_web_trailer_line(
-                line, saw_status_key, found_valid_status, out_status, tmp_msg,
+                line, saw_status_key, found_valid_status, tmp_status, tmp_msg,
             ) else {
                 return false;
             }
@@ -291,7 +291,8 @@ fn parse_web_trailers<B>(
     }
 
     guard found_valid_status else { return false; }
-    let _ = out_message.try_set(tmp_msg[..]);
+    guard out_message.try_set(tmp_msg[..]) else { return false; }
+    out_status = tmp_status;
     return true;
 }
 

@@ -22,6 +22,11 @@ struct FrameHeader {
 
 // ---- QPACK Types -----------------------------------------------------------
 
+struct QpackStaticEntry {
+    name: const u8[:] = "",
+    val:  const u8[:] = "",
+}
+
 enum QpackError {
     None,
     StreamBlocked,           // Stream is blocked waiting for encoder stream

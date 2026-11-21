@@ -299,15 +299,17 @@ fn decode_status_details<B>(
     }
 
     if proto_code != status_to_code(expected_code) {
+        guard out_msg.try_set("grpc: status code mismatch in grpc-status-details-bin") else {
+            return false;
+        }
         out_status = StatusCode.Internal;
-        let _ = out_msg.try_set("grpc: status code mismatch in grpc-status-details-bin");
         out_details.clear();
         return true;
     }
-    out_status = expected_code;
     if tmp_msg.len > 0 {
-        let _ = out_msg.try_set(tmp_msg[..]);
+        guard out_msg.try_set(tmp_msg[..]) else { return false; }
     }
+    out_status = expected_code;
     out_details.clear();
     for &d in tmp_details {
         out_details.push(d);

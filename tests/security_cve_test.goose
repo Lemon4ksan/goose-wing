@@ -948,16 +948,14 @@ fn test_adversarial_grpc_web(t: lit::T&) {
         var msg_a: u8[..256] = [];
         let parsed_a = grpc::parse_web_trailers(payload_a[..], st_a, msg_a);
         sub.assert_false(parsed_a, "missing grpc-status must fail parse");
-        // Fail-open residue: parse_grpc_web_trailers leaves out_status=Ok on failure
-        // (grpc/framing.goose:237) — PARKED for Vector B hardening.
-        sub.assert_eq(st_a, grpc::StatusCode.Ok, "residue pin: failed parse leaves out_status=Ok (fail-open)");
+        sub.assert_eq(st_a, grpc::StatusCode.Unknown, "failed parse leaves out_status untouched (no fail-open Ok)");
 
         // Variant B: grpc-status field present but with an empty value.
         var st_b = grpc::StatusCode.Unknown;
         var msg_b: u8[..256] = [];
         let parsed_b = grpc::parse_web_trailers("grpc-status: \r\n", st_b, msg_b);
         sub.assert_false(parsed_b, "empty grpc-status value must fail parse");
-        sub.assert_eq(st_b, grpc::StatusCode.Ok, "residue pin: failed parse leaves out_status=Ok (fail-open)");
+        sub.assert_eq(st_b, grpc::StatusCode.Unknown, "failed parse leaves out_status untouched (no fail-open Ok)");
     };
 
     t.run("AW-GRPC-04: incomplete 5-byte LPM prefix in web frame payload") { sub =>

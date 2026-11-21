@@ -122,8 +122,8 @@ fn parse_connect_end_stream<B>(
     };
 
     guard json::finish(reader) && !had_error else { return false; }
+    guard out_message.try_set(tmp_msg[..]) else { return false; }
     out_status = tmp_status;
-    let _ = out_message.try_set(tmp_msg[..]);
     out_trailers = tmp_trailers;
     return true;
 }

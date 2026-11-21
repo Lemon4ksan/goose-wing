@@ -86,8 +86,8 @@ struct UpstreamTarget {
     total_requests: u64, ejected_until_ms: i64, has_explicit_thresholds: bool
 }
 struct UpstreamCluster {
-    targets: UpstreamTarget[..16], policy: LbPolicy,
-    circuit_open: bool, max_fails: i32
+    targets: UpstreamTarget[..16], policy: LbPolicy, rr_index: i32,
+    max_fails: i32, circuit_open: bool, rng_state: u64, ketama_ring: KetamaRing
 }
 struct KetamaPoint { hash: u32, backend_idx: u16 }
 struct KetamaRing { points: KetamaPoint[..1024] }

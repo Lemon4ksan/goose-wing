@@ -160,123 +160,123 @@ struct UnackedSection {
     ref_entries: u64[..32] = [],
 }
 
-struct QpackStaticEntry {
+struct QpackStaticRow {
     name: const u8[:] = "",
     val:  const u8[:] = "",
 }
 
-const QPACK_STATIC_TABLE: QpackStaticEntry[99] = [
-    QpackStaticEntry { name: ":authority", val: "" }, // 0
-    QpackStaticEntry { name: ":path", val: "/" }, // 1
-    QpackStaticEntry { name: "age", val: "0" }, // 2
-    QpackStaticEntry { name: "content-disposition", val: "" }, // 3
-    QpackStaticEntry { name: "content-length", val: "0" }, // 4
-    QpackStaticEntry { name: "cookie", val: "" }, // 5
-    QpackStaticEntry { name: "date", val: "" }, // 6
-    QpackStaticEntry { name: "etag", val: "" }, // 7
-    QpackStaticEntry { name: "if-modified-since", val: "" }, // 8
-    QpackStaticEntry { name: "if-none-match", val: "" }, // 9
-    QpackStaticEntry { name: "last-modified", val: "" }, // 10
-    QpackStaticEntry { name: "link", val: "" }, // 11
-    QpackStaticEntry { name: "location", val: "" }, // 12
-    QpackStaticEntry { name: "referer", val: "" }, // 13
-    QpackStaticEntry { name: "set-cookie", val: "" }, // 14
-    QpackStaticEntry { name: ":method", val: "CONNECT" }, // 15
-    QpackStaticEntry { name: ":method", val: "DELETE" }, // 16
-    QpackStaticEntry { name: ":method", val: "GET" }, // 17
-    QpackStaticEntry { name: ":method", val: "HEAD" }, // 18
-    QpackStaticEntry { name: ":method", val: "OPTIONS" }, // 19
-    QpackStaticEntry { name: ":method", val: "POST" }, // 20
-    QpackStaticEntry { name: ":method", val: "PUT" }, // 21
-    QpackStaticEntry { name: ":scheme", val: "http" }, // 22
-    QpackStaticEntry { name: ":scheme", val: "https" }, // 23
-    QpackStaticEntry { name: ":status", val: "103" }, // 24
-    QpackStaticEntry { name: ":status", val: "200" }, // 25
-    QpackStaticEntry { name: ":status", val: "304" }, // 26
-    QpackStaticEntry { name: ":status", val: "404" }, // 27
-    QpackStaticEntry { name: ":status", val: "503" }, // 28
-    QpackStaticEntry { name: "accept", val: "*/*" }, // 29
-    QpackStaticEntry { name: "accept", val: "application/dns-message" }, // 30
-    QpackStaticEntry { name: "accept-encoding", val: "gzip, deflate, br" }, // 31
-    QpackStaticEntry { name: "accept-ranges", val: "bytes" }, // 32
-    QpackStaticEntry { name: "access-control-allow-headers", val: "cache-control" }, // 33
-    QpackStaticEntry { name: "access-control-allow-headers", val: "content-type" }, // 34
-    QpackStaticEntry { name: "access-control-allow-origin", val: "*" }, // 35
-    QpackStaticEntry { name: "cache-control", val: "max-age=0" }, // 36
-    QpackStaticEntry { name: "cache-control", val: "max-age=2592000" }, // 37
-    QpackStaticEntry { name: "cache-control", val: "max-age=604800" }, // 38
-    QpackStaticEntry { name: "cache-control", val: "no-cache" }, // 39
-    QpackStaticEntry { name: "cache-control", val: "no-store" }, // 40
-    QpackStaticEntry { name: "cache-control", val: "public, max-age=31536000" }, // 41
-    QpackStaticEntry { name: "content-encoding", val: "br" }, // 42
-    QpackStaticEntry { name: "content-encoding", val: "gzip" }, // 43
-    QpackStaticEntry { name: "content-type", val: "application/dns-message" }, // 44
-    QpackStaticEntry { name: "content-type", val: "application/javascript" }, // 45
-    QpackStaticEntry { name: "content-type", val: "application/json" }, // 46
-    QpackStaticEntry { name: "content-type", val: "application/x-www-form-urlencoded" }, // 47
-    QpackStaticEntry { name: "content-type", val: "image/gif" }, // 48
-    QpackStaticEntry { name: "content-type", val: "image/jpeg" }, // 49
-    QpackStaticEntry { name: "content-type", val: "image/png" }, // 50
-    QpackStaticEntry { name: "content-type", val: "text/css" }, // 51
-    QpackStaticEntry { name: "content-type", val: "text/html; charset=utf-8" }, // 52
-    QpackStaticEntry { name: "content-type", val: "text/plain" }, // 53
-    QpackStaticEntry { name: "content-type", val: "text/plain;charset=utf-8" }, // 54
-    QpackStaticEntry { name: "range", val: "bytes=0-" }, // 55
-    QpackStaticEntry { name: "strict-transport-security", val: "max-age=31536000" }, // 56
+const QPACK_STATIC_TABLE: QpackStaticRow[99] = [
+    QpackStaticRow { name: ":authority", val: "" }, // 0
+    QpackStaticRow { name: ":path", val: "/" }, // 1
+    QpackStaticRow { name: "age", val: "0" }, // 2
+    QpackStaticRow { name: "content-disposition", val: "" }, // 3
+    QpackStaticRow { name: "content-length", val: "0" }, // 4
+    QpackStaticRow { name: "cookie", val: "" }, // 5
+    QpackStaticRow { name: "date", val: "" }, // 6
+    QpackStaticRow { name: "etag", val: "" }, // 7
+    QpackStaticRow { name: "if-modified-since", val: "" }, // 8
+    QpackStaticRow { name: "if-none-match", val: "" }, // 9
+    QpackStaticRow { name: "last-modified", val: "" }, // 10
+    QpackStaticRow { name: "link", val: "" }, // 11
+    QpackStaticRow { name: "location", val: "" }, // 12
+    QpackStaticRow { name: "referer", val: "" }, // 13
+    QpackStaticRow { name: "set-cookie", val: "" }, // 14
+    QpackStaticRow { name: ":method", val: "CONNECT" }, // 15
+    QpackStaticRow { name: ":method", val: "DELETE" }, // 16
+    QpackStaticRow { name: ":method", val: "GET" }, // 17
+    QpackStaticRow { name: ":method", val: "HEAD" }, // 18
+    QpackStaticRow { name: ":method", val: "OPTIONS" }, // 19
+    QpackStaticRow { name: ":method", val: "POST" }, // 20
+    QpackStaticRow { name: ":method", val: "PUT" }, // 21
+    QpackStaticRow { name: ":scheme", val: "http" }, // 22
+    QpackStaticRow { name: ":scheme", val: "https" }, // 23
+    QpackStaticRow { name: ":status", val: "103" }, // 24
+    QpackStaticRow { name: ":status", val: "200" }, // 25
+    QpackStaticRow { name: ":status", val: "304" }, // 26
+    QpackStaticRow { name: ":status", val: "404" }, // 27
+    QpackStaticRow { name: ":status", val: "503" }, // 28
+    QpackStaticRow { name: "accept", val: "*/*" }, // 29
+    QpackStaticRow { name: "accept", val: "application/dns-message" }, // 30
+    QpackStaticRow { name: "accept-encoding", val: "gzip, deflate, br" }, // 31
+    QpackStaticRow { name: "accept-ranges", val: "bytes" }, // 32
+    QpackStaticRow { name: "access-control-allow-headers", val: "cache-control" }, // 33
+    QpackStaticRow { name: "access-control-allow-headers", val: "content-type" }, // 34
+    QpackStaticRow { name: "access-control-allow-origin", val: "*" }, // 35
+    QpackStaticRow { name: "cache-control", val: "max-age=0" }, // 36
+    QpackStaticRow { name: "cache-control", val: "max-age=2592000" }, // 37
+    QpackStaticRow { name: "cache-control", val: "max-age=604800" }, // 38
+    QpackStaticRow { name: "cache-control", val: "no-cache" }, // 39
+    QpackStaticRow { name: "cache-control", val: "no-store" }, // 40
+    QpackStaticRow { name: "cache-control", val: "public, max-age=31536000" }, // 41
+    QpackStaticRow { name: "content-encoding", val: "br" }, // 42
+    QpackStaticRow { name: "content-encoding", val: "gzip" }, // 43
+    QpackStaticRow { name: "content-type", val: "application/dns-message" }, // 44
+    QpackStaticRow { name: "content-type", val: "application/javascript" }, // 45
+    QpackStaticRow { name: "content-type", val: "application/json" }, // 46
+    QpackStaticRow { name: "content-type", val: "application/x-www-form-urlencoded" }, // 47
+    QpackStaticRow { name: "content-type", val: "image/gif" }, // 48
+    QpackStaticRow { name: "content-type", val: "image/jpeg" }, // 49
+    QpackStaticRow { name: "content-type", val: "image/png" }, // 50
+    QpackStaticRow { name: "content-type", val: "text/css" }, // 51
+    QpackStaticRow { name: "content-type", val: "text/html; charset=utf-8" }, // 52
+    QpackStaticRow { name: "content-type", val: "text/plain" }, // 53
+    QpackStaticRow { name: "content-type", val: "text/plain;charset=utf-8" }, // 54
+    QpackStaticRow { name: "range", val: "bytes=0-" }, // 55
+    QpackStaticRow { name: "strict-transport-security", val: "max-age=31536000" }, // 56
     // 57
-    QpackStaticEntry {
+    QpackStaticRow {
         name: "strict-transport-security",
         val:  "max-age=31536000; includesubdomains",
     },
     // 58
-    QpackStaticEntry {
+    QpackStaticRow {
         name: "strict-transport-security",
         val:  "max-age=31536000; includesubdomains; preload",
     },
-    QpackStaticEntry { name: "vary", val: "accept-encoding" }, // 59
-    QpackStaticEntry { name: "vary", val: "origin" }, // 60
-    QpackStaticEntry { name: "x-content-type-options", val: "nosniff" }, // 61
-    QpackStaticEntry { name: "x-xss-protection", val: "1; mode=block" }, // 62
-    QpackStaticEntry { name: ":status", val: "100" }, // 63
-    QpackStaticEntry { name: ":status", val: "204" }, // 64
-    QpackStaticEntry { name: ":status", val: "206" }, // 65
-    QpackStaticEntry { name: ":status", val: "302" }, // 66
-    QpackStaticEntry { name: ":status", val: "400" }, // 67
-    QpackStaticEntry { name: ":status", val: "403" }, // 68
-    QpackStaticEntry { name: ":status", val: "421" }, // 69
-    QpackStaticEntry { name: ":status", val: "425" }, // 70
-    QpackStaticEntry { name: ":status", val: "500" }, // 71
-    QpackStaticEntry { name: "accept-language", val: "" }, // 72
-    QpackStaticEntry { name: "access-control-allow-credentials", val: "FALSE" }, // 73
-    QpackStaticEntry { name: "access-control-allow-credentials", val: "TRUE" }, // 74
-    QpackStaticEntry { name: "access-control-allow-headers", val: "*" }, // 75
-    QpackStaticEntry { name: "access-control-allow-methods", val: "get" }, // 76
-    QpackStaticEntry { name: "access-control-allow-methods", val: "get, post, options" }, // 77
-    QpackStaticEntry { name: "access-control-allow-methods", val: "options" }, // 78
-    QpackStaticEntry { name: "access-control-expose-headers", val: "content-length" }, // 79
-    QpackStaticEntry { name: "access-control-request-headers", val: "content-type" }, // 80
-    QpackStaticEntry { name: "access-control-request-method", val: "get" }, // 81
-    QpackStaticEntry { name: "access-control-request-method", val: "post" }, // 82
-    QpackStaticEntry { name: "alt-svc", val: "clear" }, // 83
-    QpackStaticEntry { name: "authorization", val: "" }, // 84
+    QpackStaticRow { name: "vary", val: "accept-encoding" }, // 59
+    QpackStaticRow { name: "vary", val: "origin" }, // 60
+    QpackStaticRow { name: "x-content-type-options", val: "nosniff" }, // 61
+    QpackStaticRow { name: "x-xss-protection", val: "1; mode=block" }, // 62
+    QpackStaticRow { name: ":status", val: "100" }, // 63
+    QpackStaticRow { name: ":status", val: "204" }, // 64
+    QpackStaticRow { name: ":status", val: "206" }, // 65
+    QpackStaticRow { name: ":status", val: "302" }, // 66
+    QpackStaticRow { name: ":status", val: "400" }, // 67
+    QpackStaticRow { name: ":status", val: "403" }, // 68
+    QpackStaticRow { name: ":status", val: "421" }, // 69
+    QpackStaticRow { name: ":status", val: "425" }, // 70
+    QpackStaticRow { name: ":status", val: "500" }, // 71
+    QpackStaticRow { name: "accept-language", val: "" }, // 72
+    QpackStaticRow { name: "access-control-allow-credentials", val: "FALSE" }, // 73
+    QpackStaticRow { name: "access-control-allow-credentials", val: "TRUE" }, // 74
+    QpackStaticRow { name: "access-control-allow-headers", val: "*" }, // 75
+    QpackStaticRow { name: "access-control-allow-methods", val: "get" }, // 76
+    QpackStaticRow { name: "access-control-allow-methods", val: "get, post, options" }, // 77
+    QpackStaticRow { name: "access-control-allow-methods", val: "options" }, // 78
+    QpackStaticRow { name: "access-control-expose-headers", val: "content-length" }, // 79
+    QpackStaticRow { name: "access-control-request-headers", val: "content-type" }, // 80
+    QpackStaticRow { name: "access-control-request-method", val: "get" }, // 81
+    QpackStaticRow { name: "access-control-request-method", val: "post" }, // 82
+    QpackStaticRow { name: "alt-svc", val: "clear" }, // 83
+    QpackStaticRow { name: "authorization", val: "" }, // 84
     // 85
-    QpackStaticEntry {
+    QpackStaticRow {
         name: "content-security-policy",
         val:  "script-src 'none'; object-src 'none'; base-uri 'none'",
     },
-    QpackStaticEntry { name: "early-data", val: "1" }, // 86
-    QpackStaticEntry { name: "expect-ct", val: "" }, // 87
-    QpackStaticEntry { name: "forwarded", val: "" }, // 88
-    QpackStaticEntry { name: "if-range", val: "" }, // 89
-    QpackStaticEntry { name: "origin", val: "" }, // 90
-    QpackStaticEntry { name: "purpose", val: "prefetch" }, // 91
-    QpackStaticEntry { name: "server", val: "" }, // 92
-    QpackStaticEntry { name: "timing-allow-origin", val: "*" }, // 93
-    QpackStaticEntry { name: "upgrade-insecure-requests", val: "1" }, // 94
-    QpackStaticEntry { name: "user-agent", val: "" }, // 95
-    QpackStaticEntry { name: "x-forwarded-for", val: "" }, // 96
-    QpackStaticEntry { name: "x-frame-options", val: "deny" }, // 97
-    QpackStaticEntry { name: "x-frame-options", val: "sameorigin" }, // 98
+    QpackStaticRow { name: "early-data", val: "1" }, // 86
+    QpackStaticRow { name: "expect-ct", val: "" }, // 87
+    QpackStaticRow { name: "forwarded", val: "" }, // 88
+    QpackStaticRow { name: "if-range", val: "" }, // 89
+    QpackStaticRow { name: "origin", val: "" }, // 90
+    QpackStaticRow { name: "purpose", val: "prefetch" }, // 91
+    QpackStaticRow { name: "server", val: "" }, // 92
+    QpackStaticRow { name: "timing-allow-origin", val: "*" }, // 93
+    QpackStaticRow { name: "upgrade-insecure-requests", val: "1" }, // 94
+    QpackStaticRow { name: "user-agent", val: "" }, // 95
+    QpackStaticRow { name: "x-forwarded-for", val: "" }, // 96
+    QpackStaticRow { name: "x-frame-options", val: "deny" }, // 97
+    QpackStaticRow { name: "x-frame-options", val: "sameorigin" }, // 98
 ];
 
 // Candidate index slices in `QPACK_LENGTH_CANDIDATES` grouped by header name length (0..32).

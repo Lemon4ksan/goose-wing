@@ -143,7 +143,7 @@ func runServer(port int) error {
 	return srv.ServeTLS(ln, "", "")
 }
 
-func runHttp1Server(port int) error {
+func runHTTP1Server(port int) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -367,7 +367,7 @@ func main() {
 		return
 	}
 	if *http1Port > 0 {
-		if err := runHttp1Server(*http1Port); err != nil {
+		if err := runHTTP1Server(*http1Port); err != nil {
 			fmt.Fprintf(os.Stderr, "http1 server error: %v\n", err)
 			os.Exit(1)
 		}

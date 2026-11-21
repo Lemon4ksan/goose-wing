@@ -81,7 +81,7 @@ fn test_ps_c2_01_grpc_smuggling_and_truncation() {
     assert(tiny_out.len == 0);
 
     // 1g. Duplicate/conflicting grpc-status lines in gRPC-Web trailers must be rejected
-    var st_dup = grpc::StatusCode.Ok;
+    var st_dup = grpc::StatusCode.Unknown;
     var msg_dup: u8[..256] = [];
     assert(!grpc::parse_web_trailers("grpc-status: 7\r\ngrpc-status: 0\r\n", st_dup, msg_dup));
     assert(st_dup == grpc::StatusCode.Unknown);
