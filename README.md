@@ -80,6 +80,8 @@ fn main() {
         s.set_profile(fingerprint::Profile.Wing);
         s.set_timeout_ms(5000);
         s.default_header("Accept", "application/json");
+        // Safer in production today: use audited OpenSSL instead of unaudited PureGoose TLS
+        // s.set_tls_backend(tls::TlsBackendKind.SystemOpenSsl);
     };
 
     let res, err = sess.get("/v1/status");
@@ -144,15 +146,20 @@ stays bit-for-bit deterministic under single-seed DST simulation
 (`net/dst.goose`). `PureGoose` implements **TLS 1.3 only** (RFC 8446) and does
 not support TLS 1.2.
 
+> **Security note**: `PureGoose` has not undergone an independent third-party
+> cryptographic audit yet. For production internet-facing services, switching to
+> `tls::TlsBackendKind.SystemOpenSsl` (OpenSSL 3 / BoringSSL) is the safer
+> option for now.
+
 By default (`min_version = tls::TlsMinVersion.Tls13`), all backends stop
 strictly at TLS 1.3 and never fall back to TLS 1.2. Falling back to TLS 1.2
 happens only when explicitly opted in via `min_version =
 tls::TlsMinVersion.Tls12` on one of the system C-shim backends below.
 
-If you prefer not to rely on a custom TLS implementation in production (or need
-opt-in TLS 1.2 interoperability), switch to an audited system TLS library
-through the optional C shim [`shim/tls_backend.c`](shim/tls_backend.c) without
-changing protocol or application code:
+Switch `client::Session`, `server::HttpServer`, or sans-IO `tls::TlsEndpoint` to
+an audited system TLS library through the optional C shim
+[`shim/tls_backend.c`](shim/tls_backend.c) without changing protocol or
+application code:
 
 - `tls::TlsBackendKind.SystemOpenSsl`: OpenSSL 3 / 1.1.1 / BoringSSL via sans-IO
   memory BIOs (strict TLS 1.3 by default; allows TLS 1.2 fallback only when
@@ -180,23 +187,35 @@ changing protocol or application code:
 ```goose
 import wing;
 
-fn open_audited_tls_client() -> tls::TlsEndpoint, tls::TlsBackendStatus {
-    var cfg = tls::TlsBackendConfig {
-        kind: tls::TlsBackendKind.SystemOpenSsl, // strict TLS 1.3 by default
-        // min_version: tls::TlsMinVersion.Tls12, // uncomment to allow TLS 1.2 fallback
+fn main() {
+    // 1. Client session backed by OpenSSL
+    var sess = client::new_client(client::Config {
+        base_url:        "https://api.example.com",
+        tls_backend:     tls::TlsBackendKind.SystemOpenSsl,
+        // tls_min_version: tls::TlsMinVersion.Tls12, // uncomment to allow TLS 1.2 fallback
+        // tls_ca_file:     "/etc/ssl/certs/ca-certificates.crt",
         ..
-    };
-    let _ = cfg.server_name.try_set("api.example.com");
-    let _ = cfg.alpn_wire.try_set("\x02h2\x08http/1.1");
-    return tls::tls_endpoint_open(cfg);
+    });
+    let _, _ = sess.get("/v1/status");
+
+    // 2. Server backed by OpenSSL with PEM certificate and private key
+    var srv = server::new_http_server("0.0.0.0", 8443);
+    let _ = srv.configure_server_tls_backend(
+        tls::TlsBackendKind.SystemOpenSsl,
+        tls::TlsMinVersion.Tls13,
+        "cert.pem",
+        "key.pem",
+    );
 }
 ```
 
-See [tls/README.md](tls/README.md) for full `TlsEndpoint` API details,
-[net/README.md](net/README.md) for single-seed Deterministic Simulation Testing
-(`DstWorld`), [wire/README.md](wire/README.md) for compile-time ingress RAM
-budgets (`wire/budget.goose`), and [server/README.md](server/README.md) for
-unified H1/H2/H3 streaming with flow-control backpressure (`ResponseStream`).
+For direct sans-IO usage without sockets, open `tls::TlsEndpoint` via
+`tls::tls_endpoint_open` with `kind: tls::TlsBackendKind.SystemOpenSsl` (see
+[tls/README.md](tls/README.md)). See also [net/README.md](net/README.md) for
+single-seed Deterministic Simulation Testing (`DstWorld`),
+[wire/README.md](wire/README.md) for compile-time ingress RAM budgets
+(`wire/budget.goose`), and [server/README.md](server/README.md) for unified
+H1/H2/H3 streaming with flow-control backpressure (`ResponseStream`).
 
 ## Build and test
 
