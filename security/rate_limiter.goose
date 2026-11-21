@@ -214,7 +214,7 @@ struct ProbabilisticGcra {
 
 fn new_probabilistic_gcra(quota: GcraQuota, sample_rate: u64 = 20) -> ProbabilisticGcra {
     let rate = if sample_rate > 0 { sample_rate } else { 20 as u64 };
-    var seed = (clock_ns() as u64) ^ 0x853c49e6748fea9b;
+    var seed = core::sim_entropy_u64() ^ 0x853c49e6748fea9b;
     let first_mix = core::splitmix64(seed);
     return ProbabilisticGcra {
         quota:         quota,

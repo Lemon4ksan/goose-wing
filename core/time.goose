@@ -9,6 +9,7 @@ import os;
 
 import core.time.duration;
 import core.time.calendar;
+import core.time.sim;
 import core.time.clock;
 import core.time.time;
 import core.time.format;

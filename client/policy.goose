@@ -61,7 +61,7 @@ fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {
         rate_per_sec:        rate_per_sec,
         burst_capacity:      capacity,
         tokens:              capacity,
-        last_update_mono_ns: clock_ns(),
+        last_update_mono_ns: core::sim_now_ns(),
     };
 }
 
@@ -83,5 +83,5 @@ fn allow(limiter: RateLimiter&, now_mono: i64) -> bool {
 
 // Attempts to consume one token using the current monotonic system clock.
 fn allow(limiter: RateLimiter&) -> bool {
-    return allow(limiter, clock_ns());
+    return allow(limiter, core::sim_now_ns());
 }

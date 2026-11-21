@@ -238,9 +238,12 @@ inline fn derive_pkce_seed(now_ns: u64, counter: u64) -> u8[32] {
 }
 
 inline fn generate_derived_verifier<B>(out: B&) -> bool {
-    g_pkce_entropy_counter = core::add_sat_i64(g_pkce_entropy_counter as i64, 1) as u64;
-    var raw_entropy = derive_pkce_seed(clock_ns() as u64, g_pkce_entropy_counter);
+    var raw_entropy: u8[32] = [0; 32];
     defer core::secure_zeroize_32(raw_entropy);
+    if !core::sim_rng_fill(raw_entropy[..]) {
+        g_pkce_entropy_counter = core::add_sat_i64(g_pkce_entropy_counter as i64, 1) as u64;
+        raw_entropy = derive_pkce_seed(core::sim_now_ns() as u64, g_pkce_entropy_counter);
+    }
     var encoded: u8[..64] = [];
     defer core::secure_zeroize_slice(encoded[..]);
     core::base64url_encode(raw_entropy[..], encoded);

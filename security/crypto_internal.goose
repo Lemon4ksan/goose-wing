@@ -107,13 +107,19 @@ fn generate_jar_entropy(
     cookie_name: const u8[:] = "",
     domain:      u64         = 0,
 ) -> u8[32] {
-    g_jar_nonce_counter = g_jar_nonce_counter + 1;
-    let now_ns = clock_ns() as u64;
+    let now_ns = core::sim_now_ns() as u64;
     let name_hash = core::fnv1a_64(cookie_name);
     var entropy_in: u8[64] = [0; 64];
-    let _ = jar_crypto_random_bytes(entropy_in[0..32]);
+    var seq:        u64    = 0;
+    if core::sim_rng_fill(entropy_in[0..32]) {
+        seq = core::sim_rng_next_u64();
+    } else {
+        g_jar_nonce_counter = core::add_sat_u64(g_jar_nonce_counter, 1);
+        seq = g_jar_nonce_counter;
+        let _ = jar_crypto_random_bytes(entropy_in[0..32]);
+    }
     core::write_le_u64_at(entropy_in[..], 32, seed ^ domain ^ name_hash);
-    core::write_le_u64_at(entropy_in[..], 40, g_jar_nonce_counter);
+    core::write_le_u64_at(entropy_in[..], 40, seq);
     core::write_le_u64_at(entropy_in[..], 48, now_ns);
     core::write_le_u64_at(entropy_in[..], 56, now_sec as u64);
     let out = core::sha256(entropy_in[..]);

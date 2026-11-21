@@ -284,7 +284,7 @@ fn try_encode_ws_frame<B>(
 // Generates cryptographically secure 4-byte masking key for client frames per RFC 6455 Section 5.3.
 fn ws_next_mask_key(ws: realtime::WebSocketSession&) -> u8[4] {
     var mask: u8[4] = [0; 4];
-    if native_crypto_random_bytes(mask[..]) == 0 {
+    if core::sim_rng_fill(mask[..]) || native_crypto_random_bytes(mask[..]) == 0 {
         return mask;
     }
     ws.mask_rng_state = ws.mask_rng_state * 1664525 + 1013904223;

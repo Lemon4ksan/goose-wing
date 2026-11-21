@@ -2,7 +2,8 @@
 
 Package `net` provides zero-allocation TCP and UDP socket primitives, I/O event
 multiplexing, Happy Eyeballs v3 racing, MASQUE tunneling, PROXY protocol
-framing, and connection pooling for `goose-wing`.
+framing, connection pooling, and single-seed Deterministic Simulation Testing
+(DST) for `goose-wing`.
 
 All parsers and serializers operate without dynamic heap allocations on the hot
 path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices
@@ -66,6 +67,7 @@ fn is_connected(t: const Transport&) -> bool
 fn send(t: Transport&, data: const u8[:]) -> i64
 fn recv_slice(t: Transport&, buf: u8[:]) -> i64
 fn close(t: Transport&)
+fn virtual_pipe_inject_rst(pipe_slot: u16, is_b_end: bool) -> bool
 ```
 
 `Transport` wraps a raw socket descriptor (`fd >= 0` when connected) and tracks
@@ -124,6 +126,7 @@ fn link_add_timer(host: Host&, timer_id: u64, delay_ms: u64, owner: u16, tag: u6
 fn link_cancel_timer(host: Host&, timer_id: u64) -> bool
 fn link_wake(host: Host&, token: core::WakeToken) -> bool
 fn link_poll_dispatch<D>(host: Host&, driver: D&, timeout_ms: i64, now_ns: u64) -> i32
+fn host_next_timer_ns(host: const Host&) -> u64, bool
 ```
 
 `Host` implements the `core::host_*` push/completion contract across Linux
@@ -377,3 +380,76 @@ fn format_partitioned_key<B>(nik: const NetworkIsolationKey&, target_url: const 
 `frame_url` into 128-byte buffers (`u8[..128]`) and formats partitioned
 `nik=<top>|<frame>|<cs>|url=<target>` cache lookup keys via
 `format_partitioned_key`.
+
+### 14. Deterministic simulation testing (`net/dst.goose`)
+
+```goose
+enum DstDir { AToB, BToA }
+enum DstFaultProfile { Clean, FragmentedTcp, MidStreamRst, LossyQuic, Chaos }
+enum DstEventKind { None, TcpData, TcpFin, TcpRst, UdpDatagram, Timer }
+struct DstFaultConfig { ... }
+struct DstEndpoint { ip4: u32, port: u16, clock_skew_ns: i64, in_use: bool }
+struct DstTcpLink { ... }
+struct DstUdpLink { ep_a: u16, ep_b: u16, faults: DstFaultConfig, in_use: bool }
+struct DstStats { ... }
+struct DstStepResult { ... }
+root struct DstWorld { ... }
+fn dst_fault_profile(profile: DstFaultProfile) -> DstFaultConfig
+fn dst_init(world: DstWorld&, seed: u64, start_ns: u64 = 1000000000)
+fn dst_shutdown(world: DstWorld&)
+fn dst_add_endpoint(world: DstWorld&, ip4: u32, port: u16, clock_skew_ns: i64 = 0) -> u16, bool
+fn dst_set_endpoint_skew(world: DstWorld&, ep_id: u16, skew_ns: i64) -> bool
+fn dst_endpoint_now_ns(world: const DstWorld&, ep_id: u16) -> u64
+fn dst_endpoint_now_sec(world: const DstWorld&, ep_id: u16) -> i64
+fn dst_jump_clock(world: DstWorld&, delta_ns: u64)
+fn dst_open_tcp_link(world: DstWorld&, ep_a: u16, ep_b: u16, faults: const DstFaultConfig&) -> u16, bool
+fn dst_attach_host_pair(world: DstWorld&, host: Host&, link_id: u16, owner_a: u16, owner_b: u16) -> core::IoLink, core::IoLink, bool
+fn dst_set_tcp_faults(world: DstWorld&, link_id: u16, faults: const DstFaultConfig&) -> bool
+fn dst_tcp_set_rx_window(world: DstWorld&, link_id: u16, dir: DstDir, window_bytes: i64) -> bool
+fn dst_tcp_set_rx_paused(world: DstWorld&, link_id: u16, dir: DstDir, paused: bool) -> bool
+fn dst_tcp_send(world: DstWorld&, link_id: u16, dir: DstDir, data: const u8[:]) -> i64, core::IoError
+fn dst_tcp_recv(world: DstWorld&, link_id: u16, dir: DstDir, dst: u8[:]) -> i32, core::IoError
+fn dst_tcp_shutdown_write(world: DstWorld&, link_id: u16, dir: DstDir) -> bool
+fn dst_tcp_inject_rst(world: DstWorld&, link_id: u16, dir: DstDir, delay_ns: u64 = 0) -> bool
+fn dst_open_udp_link(world: DstWorld&, ep_a: u16, ep_b: u16, faults: const DstFaultConfig&) -> u16, bool
+fn dst_udp_rebind_endpoint_port(world: DstWorld&, ep_id: u16, new_port: u16) -> bool
+fn dst_udp_send(world: DstWorld&, link_id: u16, dir: DstDir, data: const u8[:]) -> bool
+fn dst_udp_recv(world: DstWorld&, link_id: u16, dir: DstDir, dst: u8[:]) -> i32, u32, u16, bool
+fn dst_schedule_timer(world: DstWorld&, timer_id: u64, delay_ns: u64, owner: u16, tag: u64) -> bool
+fn dst_cancel_timer(world: DstWorld&, timer_id: u64) -> bool
+fn dst_next_event_ns(world: const DstWorld&) -> u64, bool
+fn dst_step(world: DstWorld&) -> DstStepResult
+fn dst_run_until(world: DstWorld&, max_ns: u64, max_steps: i64 = 100000) -> i64
+fn dst_step_host<D>(world: DstWorld&, host: Host&, driver: D&) -> i32
+```
+
+`DstWorld` drives single-seed deterministic simulation across virtual TCP
+streams, virtual UDP channels, timers, and `net::Host` virtual link pairs.
+`dst_init` activates the deterministic virtual clock and `WyRand` entropy
+override in `core/time/sim.goose`, and `dst_shutdown` restores live OS clock and
+CSPRNG behavior. `dst_step` and `dst_run_until` jump virtual time directly to
+the next scheduled event without wall-clock sleeps, maintaining a 64-bit running
+trace digest (`world.stats.trace_digest`) over all delivered, dropped,
+corrupted, and reset events for exact seed reproduction.
+
+TCP fault injection covers latency and jitter, byte-level fragmentation
+(`tcp_frag_min_bytes`..`tcp_frag_max_bytes`), receive-window backpressure,
+half-close FIN, and scheduled or probabilistic mid-stream RST. UDP fault
+injection adds packet drops, reordering spread, duplication, single-bit payload
+corruption, and NAT source-port rebinding for QUIC and HTTP/3 testing.
+Per-endpoint clock skew (`dst_set_endpoint_skew`) and instant clock jumps
+(`dst_jump_clock`) validate JWT, DPoP, rate-limiter, and cache TTL expiration.
+
+```goose
+var world = net::DstWorld { .. };
+net::dst_init(world, 0xC0FFEE_2026, 1700000000000000000);
+defer net::dst_shutdown(world);
+
+let cli, _ = net::dst_add_endpoint(world, 0x0A000001, 41000);
+let srv, _ = net::dst_add_endpoint(world, 0x0A000002, 443);
+let cfg = net::dst_fault_profile(net::DstFaultProfile.FragmentedTcp);
+let link, _ = net::dst_open_tcp_link(world, cli, srv, cfg);
+
+let _, _ = net::dst_tcp_send(world, link, net::DstDir.AToB, "GET / HTTP/1.1\r\n\r\n");
+let _ = net::dst_run_until(world, world.now_ns + 500000000);
+```

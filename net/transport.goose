@@ -20,6 +20,8 @@ struct VirtualPipeSlot {
     b_to_a:   core::RingBuffer = core::RingBuffer { .. },
     closed_a: bool             = false,
     closed_b: bool             = false,
+    rst_a:    bool             = false,
+    rst_b:    bool             = false,
     in_use:   bool             = false,
 }
 
@@ -65,6 +67,8 @@ fn alloc_virtual_pipe_slot() -> u16, bool {
             core::clear(slot.b_to_a);
             slot.closed_a = false;
             slot.closed_b = false;
+            slot.rst_a = false;
+            slot.rst_b = false;
             slot.in_use = true;
             return (i & 0xFFFF) as u16, true;
         }
@@ -87,6 +91,8 @@ fn free_virtual_pipe_slot(pipe_slot: u16) {
     core::clear(slot.b_to_a);
     slot.closed_a = true;
     slot.closed_b = true;
+    slot.rst_a = false;
+    slot.rst_b = false;
     slot.in_use = false;
 }
 
@@ -138,7 +144,7 @@ fn virtual_pipe_send(pipe_slot: u16, is_b_end: bool, data: const u8[:]) -> i32 {
     let idx = pipe_slot as i64;
     guard idx >= 0 && idx < g_virtual_pipes.len else { return -1; }
     let slot .= g_virtual_pipes[idx];
-    guard slot.in_use && !slot.closed_a && !slot.closed_b else { return -1; }
+    guard slot.in_use && !slot.closed_a && !slot.closed_b && !slot.rst_a && !slot.rst_b else { return -1; }
     var rb .= slot.a_to_b;
     if is_b_end {
         rb .= slot.b_to_a;
@@ -172,6 +178,10 @@ fn virtual_pipe_recv(pipe_slot: u16, is_b_end: bool, dst: u8[:]) -> i32 {
     }
     let readable = core::contiguous_readable_slice(rb);
     if readable.len == 0 {
+        let peer_rst = if is_b_end { slot.rst_a } else { slot.rst_b };
+        if peer_rst {
+            return -1;
+        }
         let peer_closed = if is_b_end { slot.closed_a } else { slot.closed_b };
         if peer_closed {
             return 0;
@@ -202,6 +212,20 @@ fn virtual_pipe_close(pipe_slot: u16, is_b_end: bool) {
     if slot.closed_a && slot.closed_b {
         free_virtual_pipe_slot(pipe_slot);
     }
+}
+
+// Marks a virtual pipe endpoint as abruptly reset (simulates TCP RST for peer reads/writes).
+fn virtual_pipe_inject_rst(pipe_slot: u16, is_b_end: bool) -> bool {
+    let idx = pipe_slot as i64;
+    guard idx >= 0 && idx < g_virtual_pipes.len else { return false; }
+    let slot .= g_virtual_pipes[idx];
+    guard slot.in_use else { return false; }
+    if is_b_end {
+        slot.rst_b = true;
+    } else {
+        slot.rst_a = true;
+    }
+    return true;
 }
 
 fn virtual_fd_send(fd: i64, data: const u8[:]) -> i32 {

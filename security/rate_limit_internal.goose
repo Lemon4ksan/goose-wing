@@ -301,7 +301,7 @@ fn admit_or_reject_new_rate_limit_slot(
 
 inline fn advance_probabilistic_sample_slot(pgcra: security::ProbabilisticGcra&, rate: u64) -> bool {
     if !pgcra.initialized || pgcra.rng_state == 0 {
-        pgcra.rng_state = (clock_ns() as u64) ^ 0x853c49e6748fea9b;
+        pgcra.rng_state = core::sim_entropy_u64() ^ 0x853c49e6748fea9b;
         let init_mix = core::splitmix64(pgcra.rng_state);
         pgcra.window_pos = 0;
         pgcra.window_target = core::fast_range_biased_u64(init_mix, rate);
@@ -410,7 +410,7 @@ fn sample_gcra_jitter_ns(jitter: const security::GcraJitter&, prng_state: u64&) 
     let min_val = max(jitter.min_ns, 0);
     guard jitter.max_ns > min_val else { return min_val; }
     if prng_state == 0 {
-        let seeded = (clock_ns() as u64) ^ 0x853c49e6748fea9b;
+        let seeded = core::sim_entropy_u64() ^ 0x853c49e6748fea9b;
         prng_state = if seeded != 0 { seeded } else { 0x853c49e6748fea9b };
     }
     let mixed = core::splitmix64(prng_state);

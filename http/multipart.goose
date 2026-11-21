@@ -171,8 +171,8 @@ struct MultipartWriter {
 fn generate_multipart_boundary() -> u8[..70] {
     g_multipart_boundary_counter += 1;
     var seed: u8[48] = [0; 48];
-    let _ = multipart_random_bytes(seed[0..32]);
-    core::write_le_u64_at(seed[..], 32, clock_ns() as u64);
+    if !core::sim_rng_fill(seed[0..32]) { let _ = multipart_random_bytes(seed[0..32]); }
+    core::write_le_u64_at(seed[..], 32, core::sim_now_ns() as u64);
     core::write_le_u64_at(seed[..], 40, g_multipart_boundary_counter);
     let digest = core::sha256(seed[..]);
     core::secure_zeroize_48(seed);

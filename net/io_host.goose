@@ -301,12 +301,14 @@ fn link_close(host: Host&, link: core::IoLink) -> bool {
     return true;
 }
 
-// Aborts `link` immediately via SO_LINGER(1, 0) RST on TCP sockets and releases its slot.
+// Aborts `link` immediately via SO_LINGER(1, 0) RST on TCP sockets (or virtual RST) and releases its slot.
 fn link_abort(host: Host&, link: core::IoLink) -> bool {
     let slot, ok = net_internal::host_match_link(host, link);
     guard ok else { return false; }
     if host.links[slot].kind == net_internal::LinkKind.Tcp && host.links[slot].fd > 0 {
         let _ = tcp_set_linger(host.links[slot].fd, true, 0);
+    } else if host.links[slot].kind == net_internal::LinkKind.Virtual && host.links[slot].virtual_pair >= 0 {
+        let _ = virtual_pipe_inject_rst(host.links[slot].virtual_pair as u16, host.links[slot].is_b_end);
     }
     net_internal::release_host_slot(host, slot);
     return true;
@@ -373,6 +375,20 @@ fn link_cancel_timer(host: Host&, timer_id: u64) -> bool {
         }
     }
     return false;
+}
+
+// Returns the earliest active timer deadline on `host` in nanoseconds, or `(0, false)`.
+fn host_next_timer_ns(host: const Host&) -> u64, bool {
+    guard host.is_open && host.active_timers > 0 else { return 0, false; }
+    var earliest: u64  = 0xFFFFFFFFFFFFFFFF;
+    var found:    bool = false;
+    for i in host.timers.len {
+        if host.timers[i].active {
+            earliest = min(earliest, host.timers[i].deadline_ns);
+            found = true;
+        }
+    }
+    return if found { earliest } else { 0 }, found;
 }
 
 // Queues a wakeup token for delivery on the next poll pass (satisfies `core::host_wake`).

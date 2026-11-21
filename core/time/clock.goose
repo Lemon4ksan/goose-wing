@@ -7,6 +7,7 @@ namespace core;
 import std;
 import os;
 import core.math.arithmetic;
+import core.time.sim;
 
 // ---- monotonic primitives: stopwatch & deadline ---------------------------
 
@@ -16,7 +17,7 @@ struct MonotonicInstant {
 }
 
 fn monotonic_now() -> MonotonicInstant {
-    let raw_ns = clock_ns();
+    let raw_ns = sim_now_ns();
     return MonotonicInstant { nanos: max(0, raw_ns) as u64 };
 }
 
@@ -40,15 +41,15 @@ struct Stopwatch {
 }
 
 fn stopwatch() -> Stopwatch {
-    return Stopwatch { start_ns: clock_ns() };
+    return Stopwatch { start_ns: sim_now_ns() };
 }
 
 fn elapsed(watch: const Stopwatch&) -> Duration {
-    return Duration { nanos: sub_sat_i64(clock_ns(), watch.start_ns) };
+    return Duration { nanos: sub_sat_i64(sim_now_ns(), watch.start_ns) };
 }
 
 fn restart(watch: Stopwatch&) -> Duration {
-    let now_ns = clock_ns();
+    let now_ns = sim_now_ns();
     let elapsed_dur = Duration { nanos: sub_sat_i64(now_ns, watch.start_ns) };
     watch.start_ns = now_ns;
     return elapsed_dur;
@@ -66,7 +67,7 @@ struct Deadline {
 }
 
 fn deadline_after(dur: Duration) -> Deadline {
-    let now_ns = max(0, clock_ns());
+    let now_ns = max(0, sim_now_ns());
     if dur.nanos <= 0 {
         return Deadline { target_mono_ns: now_ns, has_deadline: true };
     }
@@ -77,17 +78,21 @@ fn deadline_after(dur: Duration) -> Deadline {
 
 fn is_expired(deadline_val: const Deadline&) -> bool {
     if !deadline_val.has_deadline { return false; }
-    return max(0, clock_ns()) >= deadline_val.target_mono_ns;
+    return max(0, sim_now_ns()) >= deadline_val.target_mono_ns;
 }
 
 fn remaining(deadline_val: const Deadline&) -> Duration {
     if !deadline_val.has_deadline { return Duration { nanos: 9223372036854775807 }; }
-    let diff_ns = sub_sat_i64(deadline_val.target_mono_ns, max(0, clock_ns()));
+    let diff_ns = sub_sat_i64(deadline_val.target_mono_ns, max(0, sim_now_ns()));
     return Duration { nanos: max(0, diff_ns) };
 }
 
 fn sleep(dur: Duration) {
     if dur.nanos <= 0 { return; }
+    if g_sim_clock_active {
+        let _ = sim_clock_advance(dur.nanos);
+        return;
+    }
     let millis_val = dur.nanos / MILLISECOND;
     if millis_val > 0 {
         sleep_ms(millis_val);

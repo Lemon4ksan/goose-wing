@@ -584,16 +584,19 @@ inline fn is_virtual_slot_ready(host: const net::Host&, slot: i64) -> bool {
     var rx_len:   i64 = 0;
     var tx_avail: i64 = 0;
     var peer_shut = false;
+    var peer_rst = false;
     if host.links[slot].is_b_end {
         rx_len = net::g_virtual_pipes[pidx].a_to_b.count;
         tx_avail = core::available(net::g_virtual_pipes[pidx].b_to_a);
         peer_shut = net::g_virtual_pipes[pidx].closed_a;
+        peer_rst = net::g_virtual_pipes[pidx].rst_a;
     } else {
         rx_len = net::g_virtual_pipes[pidx].b_to_a.count;
         tx_avail = core::available(net::g_virtual_pipes[pidx].a_to_b);
         peer_shut = net::g_virtual_pipes[pidx].closed_b;
+        peer_rst = net::g_virtual_pipes[pidx].rst_b;
     }
-    if !host.links[slot].rx_paused && (rx_len > 0 || (peer_shut && !host.links[slot].virtual_eof_sent)) {
+    if !host.links[slot].rx_paused && (rx_len > 0 || peer_rst || (peer_shut && !host.links[slot].virtual_eof_sent)) {
         return true;
     }
     return host.links[slot].want_write && tx_avail > 0;
@@ -771,6 +774,17 @@ fn drain_virtual_slot<D, CtxA, CtxB>(
             host.links[slot].virtual_eof_sent = true;
             let ev = core::LinkEvent {
                 kind: core::LinkEventKind.Eof, link: link, tag: host.links[slot].tag, ..
+            };
+            emit_host_event(host, driver, arg_a, arg_b, ev, count);
+        } else if rc == -1 {
+            let tag = host.links[slot].tag;
+            release_host_slot(host, slot);
+            let ev = core::LinkEvent {
+                kind: core::LinkEventKind.Closed,
+                link: link,
+                tag:  tag,
+                err:  core::IoError.Closed,
+                ..
             };
             emit_host_event(host, driver, arg_a, arg_b, ev, count);
         }

@@ -17,8 +17,11 @@ var g_dpop_jti_seq: u64 = 0x853c49e6748fea9b;
 
 // RFC 9449 Section 4.2: DPoP Proof JWT Syntax - Stateful entropy mixer for negligible collision probability.
 inline fn next_dpop_entropy() -> u64 {
+    if core::sim_rng_is_active() {
+        return core::sim_rng_next_u64();
+    }
     g_dpop_jti_seq = g_dpop_jti_seq + 0x9e3779b97f4a7c15;
-    return (clock_ns() as u64) ^ g_dpop_jti_seq;
+    return (core::sim_now_ns() as u64) ^ g_dpop_jti_seq;
 }
 
 fn validate_dpop_jwk_params(info: const auth::DPoPJwkInfo&) -> bool {

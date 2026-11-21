@@ -27,7 +27,24 @@ import .pki_internal;
 import net.tcp;
 import net.transport;
 
-extern fn native_tls_csprng_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
+extern fn raw_tls_csprng_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
+
+var g_tls_sim_last_epoch: u64 = 0;
+
+// Fills `out` from deterministic simulation entropy when active, or OS CSPRNG otherwise.
+fn native_tls_csprng_bytes(out: u8[:]) -> i32 {
+    if core::sim_rng_is_active() {
+        let epoch = core::sim_rng_epoch();
+        if g_tls_sim_last_epoch != epoch {
+            g_tls_sim_last_epoch = epoch;
+            core::secure_zeroize_32(tls::g_tls_entropy_pool);
+            tls::g_tls_entropy_counter = 0;
+        }
+        let _ = core::sim_rng_fill(out);
+        return 0;
+    }
+    return raw_tls_csprng_bytes(out);
+}
 
 // Wipes all cryptographic keys, IVs, traffic secrets, ticket cache material, and buffered
 // plaintext in `slot` and resets metadata fields to inactive defaults (Invariant 11).
