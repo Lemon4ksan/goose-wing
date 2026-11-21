@@ -7,11 +7,13 @@
 
 Compiles tests/fuzz/c_fuzz_entry.goose and tests/fuzz/libfuzzer_driver.c with
 SanitizerCoverage (-fsanitize-coverage=trace-pc) or Clang libFuzzer
-(-fsanitize=fuzzer,address,undefined) and runs coverage-guided fuzzing.
+(-fsanitize=fuzzer,address,undefined) and runs coverage-guided fuzzing with
+constant-RAM RSS drift and O(n) time-budget enforcement.
 """
 
 import argparse
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -30,10 +32,17 @@ SHIM_SOURCES = [
     "shim/spsc.c",
     "shim/profiler.c",
     "shim/crypto_fusion.c",
+    "shim/tls_backend.c",
 ]
 
 
-def build_fuzzer(root: Path, cc: str, use_libfuzzer: bool, debug_no_bce: bool) -> Path:
+def build_fuzzer(
+    root: Path,
+    cc: str,
+    opt: str,
+    use_libfuzzer: bool,
+    debug_no_bce: bool,
+) -> Path:
     cache_dir = root / ".lit" / "cache" / "fuzz"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -56,7 +65,7 @@ def build_fuzzer(root: Path, cc: str, use_libfuzzer: bool, debug_no_bce: bool) -
     driver_c = root / "tests" / "fuzz" / "libfuzzer_driver.c"
     driver_obj = cache_dir / "libfuzzer_driver.o"
 
-    drv_cmd = [cc, "-O2", "-c", str(driver_c), "-o", str(driver_obj)]
+    drv_cmd = [cc, opt, "-Wall", "-Wextra", "-Werror", "-c", str(driver_c), "-o", str(driver_obj)]
     if use_libfuzzer:
         drv_cmd.append("-DLIBFUZZER_EXTERNAL_MAIN=1")
     res_drv = subprocess.run(drv_cmd, cwd=root, capture_output=True, text=True)
@@ -64,7 +73,10 @@ def build_fuzzer(root: Path, cc: str, use_libfuzzer: bool, debug_no_bce: bool) -
         sys.stderr.write(f"Driver compilation failed:\n{res_drv.stdout}\n{res_drv.stderr}\n")
         raise RuntimeError("Driver compilation failed")
 
-    cc_cmd = [cc, "-O2"]
+    cc_cmd = [cc, opt]
+    arch = platform.machine().lower()
+    if arch in ("x86_64", "amd64", "i386", "i686"):
+        cc_cmd.append("-mstackrealign")
     if use_libfuzzer:
         cc_cmd.extend(["-fsanitize=fuzzer,address,undefined", "-DLIBFUZZER_EXTERNAL_MAIN=1"])
     else:
@@ -75,7 +87,9 @@ def build_fuzzer(root: Path, cc: str, use_libfuzzer: bool, debug_no_bce: bool) -
         cc_cmd.append(str(root / shim))
 
     if os.name == "nt":
-        cc_cmd.extend(["-lws2_32", "-lbcrypt"])
+        cc_cmd.extend(["-lws2_32", "-lmswsock", "-lbcrypt"])
+    elif sys.platform.startswith("linux"):
+        cc_cmd.extend(["-lpthread", "-lm", "-ldl"])
     else:
         cc_cmd.extend(["-lpthread", "-lm"])
 
@@ -89,16 +103,63 @@ def build_fuzzer(root: Path, cc: str, use_libfuzzer: bool, debug_no_bce: bool) -
     return exe_out
 
 
+def normalize_argv(argv: list[str]) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--opt" and i + 1 < len(argv):
+            val = argv[i + 1]
+            if not val.startswith("-"):
+                val = f"-{val}" if val.startswith("O") else f"-O{val}"
+            out.append(f"--opt={val}")
+            i += 2
+            continue
+        out.append(argv[i])
+        i += 1
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Coverage-guided SanitizerCoverage / libFuzzer runner for goose-wing"
     )
     parser.add_argument("--cc", default="gcc", help="C compiler (gcc or clang)")
     parser.add_argument(
-        "--target", type=int, default=-1, help="Fuzz target ID (0..45, or -1 for all targets)"
+        "--opt",
+        default="-O2",
+        help="C compiler optimization flag (default: -O2; use -O0 for low-RAM hosts)",
+    )
+    parser.add_argument(
+        "--target",
+        type=int,
+        default=-1,
+        help="Fuzz target ID (0..N-1, or -1 for all targets)",
     )
     parser.add_argument("--execs", type=int, default=5000, help="Number of fuzzing executions")
-    parser.add_argument("--corpus", default="", help="Optional seed corpus directory")
+    parser.add_argument("--corpus", default="", help="Optional seed corpus directory or @manifest")
+    parser.add_argument(
+        "--max-rss-drift-kb",
+        type=int,
+        default=1024,
+        help="Max target-attributable RSS drift ceiling in KB (default: 1024)",
+    )
+    parser.add_argument(
+        "--max-input-ms",
+        type=int,
+        default=50,
+        help="Max per-input execution time ceiling in ms for <=16 KB inputs (default: 50)",
+    )
+    parser.add_argument(
+        "--check-complexity",
+        action="store_true",
+        help="Run deterministic 1KB/4KB/16KB O(n) anti-quadratic complexity sweep across targets",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional deterministic 64-bit PRNG seed for reproducible standalone runs",
+    )
     parser.add_argument(
         "--libfuzzer",
         action="store_true",
@@ -109,24 +170,44 @@ def main() -> int:
         action="store_true",
         help="Emit Goose C code with --debug --no-bce bounds traps enabled",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(normalize_argv(sys.argv[1:]))
 
     root = Path(__file__).resolve().parent.parent
     try:
-        exe_out = build_fuzzer(root, args.cc, args.libfuzzer, args.debug_no_bce)
+        exe_out = build_fuzzer(root, args.cc, args.opt, args.libfuzzer, args.debug_no_bce)
     except RuntimeError:
         return 1
+
+    env = os.environ.copy()
+    env["WING_FUZZ_MAX_RSS_DRIFT_KB"] = str(args.max_rss_drift_kb)
+    env["WING_FUZZ_MAX_INPUT_MS"] = str(args.max_input_ms)
+    if args.target >= 0:
+        env["WING_FUZZ_TARGET_ID"] = str(args.target)
+    if args.seed is not None:
+        env["WING_FUZZ_SEED"] = str(args.seed)
 
     if args.libfuzzer:
         run_cmd = [str(exe_out), f"-runs={args.execs}"]
         if args.corpus:
             run_cmd.append(args.corpus)
     else:
-        run_cmd = [str(exe_out), str(args.target), str(args.execs)]
+        run_cmd = [
+            str(exe_out),
+            str(args.target),
+            str(args.execs),
+            "--max-rss-drift-kb",
+            str(args.max_rss_drift_kb),
+            "--max-input-ms",
+            str(args.max_input_ms),
+        ]
+        if args.check_complexity:
+            run_cmd.append("--check-complexity")
+        if args.seed is not None:
+            run_cmd.extend(["--seed", str(args.seed)])
         if args.corpus:
             run_cmd.append(args.corpus)
 
-    res = subprocess.run(run_cmd, cwd=root)
+    res = subprocess.run(run_cmd, cwd=root, env=env)
     return res.returncode
 
 

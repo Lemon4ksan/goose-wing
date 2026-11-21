@@ -10,8 +10,26 @@ import std;
 import wing from "../..";
 import .oss_fuzz;
 
-// Executes a single fuzz input slice against a specific protocol target (`0..17`)
-// or fans out across a target selected by the first input byte when `target_id < 0`.
+// Returns the exact number of registered protocol fuzz targets (`0..count-1`).
+export fn wing_fuzz_target_count() -> i32 {
+    return FUZZ_TARGET_COUNT;
+}
+
+// Copies the canonical name of `target_id` into `dst` and returns bytes written (0 if invalid).
+export fn wing_fuzz_target_name(target_id: i32, dst: u8[:]) -> i32 {
+    guard target_id >= 0 && target_id < FUZZ_TARGET_COUNT && dst.len > 0 else {
+        return 0;
+    }
+    let name = FUZZ_TARGET_NAMES[target_id as i64];
+    let n = min(name.len, dst.len);
+    for i in n {
+        dst[i] = name[i];
+    }
+    return n as i32;
+}
+
+// Executes a single fuzz input slice against a specific protocol target (`0..count-1`)
+// or fans out across all targets when `target_id < 0`.
 // Returns a 64-bit state transition signature.
 //
 // Example:

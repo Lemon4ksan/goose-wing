@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Native Goose port of Google OSS-Fuzz / LLVM libFuzzer mutation engine,
-// FuzzedDataProvider (<fuzzer/FuzzedDataProvider.h>), and 12 protocol fuzz targets
+// FuzzedDataProvider (<fuzzer/FuzzedDataProvider.h>), and 23 protocol fuzz targets
 // ported from nghttp2, nghttp3, ngtcp2, quinn-proto, rustls, picotls, boringssl,
 // llhttp, tungstenite, cookie-rs, and sfparse.
 import std;
@@ -1249,6 +1249,433 @@ fn fuzz_target_http_ext_headers_trace(data: const u8[:]) -> u64 {
     return sig;
 }
 
+const FUZZ_MULTIPART_BOUNDARY: const u8[:] = "WingFuzzBoundary_9f3a7c1e5b2d8046";
+
+fn fuzz_multipart_hostile_parts(fdp: FuzzedDataProvider&, w: http::MultipartWriter&) -> u64 {
+    var sig:   u64 = 0;
+    var steps: i64 = 0;
+    while fdp_remaining(fdp) > 0 && steps < 8 {
+        steps = core::add_sat_i64(steps, 1);
+        let is_file = fdp_consume_bool(fdp);
+        let name_len = ((fdp_consume_u8(fdp) & 0x1F) as i64) | 1;
+        let name = fdp_consume_bytes(fdp, name_len);
+        let val_len = (fdp_consume_u16(fdp) as i64) & 0x01FF;
+        let val = fdp_consume_bytes(fdp, val_len);
+        let saved_len = w.body.len;
+        let saved_parts = w.part_count;
+        var ok = false;
+        if is_file {
+            let fn_len = ((fdp_consume_u8(fdp) & 0x1F) as i64) | 1;
+            let fname = fdp_consume_bytes(fdp, fn_len);
+            let ct_len = (fdp_consume_u8(fdp) & 0x1F) as i64;
+            let ct = fdp_consume_bytes(fdp, ct_len);
+            ok = w.write_file(name, fname, ct, val);
+        } else {
+            ok = w.write_field(name, val);
+        }
+        if !ok {
+            assert(w.body.len == saved_len && w.part_count == saved_parts);
+        } else {
+            sig = fuzz_mix_state(sig, 0x14010 ^ (w.part_count as u64));
+        }
+    }
+    return sig;
+}
+
+// ---- Target 19: MultipartWriter & parse_multipart Round-Trip / Hostile -----
+fn fuzz_target_multipart_writer(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x14000;
+    var fdp = new_fdp(data);
+    let bnd_len = ((fdp_consume_u8(fdp) & 0x3F) as i64) | 1;
+    let raw_bnd = fdp_consume_bytes(fdp, bnd_len);
+
+    var w_raw, ok_raw = http::new_multipart_writer(raw_bnd);
+    if ok_raw {
+        let ct_raw = http::multipart_content_type(w_raw);
+        assert(ct_raw.len > 0);
+        sig = fuzz_mix_state(sig, fuzz_multipart_hostile_parts(fdp, w_raw));
+        let ok_fin = w_raw.finish();
+        assert(ok_fin);
+        let body_after_fin = w_raw.body.len;
+        assert(w_raw.finish() && w_raw.body.len == body_after_fin);
+        assert(!w_raw.write_field("late", "v"));
+        let parsed_h, err_h = http::parse_multipart(w_raw.body[..], w_raw.boundary[..]);
+        if err_h == http::MultipartError.None {
+            sig = fuzz_mix_state(sig, 0x14001 ^ (parsed_h.parts.len as u64));
+        }
+    }
+
+    let mp_opts = http::MultipartOptions { .. };
+    let mp_raw, err_raw = http::parse_multipart(data, "boundary", mp_opts);
+    if err_raw == http::MultipartError.None {
+        sig = fuzz_mix_state(sig, 0x14002 ^ (mp_raw.parts.len as u64));
+    }
+
+    let payload = data[..min(data.len, 4096)];
+    var w_rt, ok_rt = http::new_multipart_writer(FUZZ_MULTIPART_BOUNDARY);
+    assert(ok_rt);
+    assert(w_rt.write_field("meta", "fuzz"));
+    assert(w_rt.write_file("upload", "blob.bin", "application/octet-stream", payload));
+    assert(w_rt.finish());
+    let parsed_rt, err_rt = http::parse_multipart(w_rt.body[..], w_rt.boundary[..], mp_opts);
+    if !core::contains(payload, FUZZ_MULTIPART_BOUNDARY) {
+        assert(err_rt == http::MultipartError.None && parsed_rt.parts.len == 2);
+        assert(parsed_rt.parts[1].data == payload);
+        sig = fuzz_mix_state(sig, 0x14003 ^ (parsed_rt.parts[1].data.len as u64));
+    }
+    return sig;
+}
+
+const FUZZ_TLS_PRIV_SEED: u8[32] = [0x5A; 32];
+const FUZZ_TLS_ALPN_WIRE: u8[12] = [2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
+var g_fuzz_tls_cert_der: u8[..2048] = [];
+
+fn ensure_fuzz_tls_cert() -> const u8[:] {
+    if g_fuzz_tls_cert_der.len == 0 {
+        let _ = tls::build_test_ed25519_cert_der(
+            FUZZ_TLS_PRIV_SEED, "localhost", "localhost", "127.0.0.1", g_fuzz_tls_cert_der,
+        );
+    }
+    return g_fuzz_tls_cert_der[..];
+}
+
+fn feed_and_step_tls_endpoint(ep: tls::TlsEndpoint&, data: const u8[:]) -> u64 {
+    var sig:     u64      = 0;
+    var scratch: u8[4096] = [0; 4096];
+    let _ = tls::tls_endpoint_step_handshake(ep);
+    let d0, _ = tls::tls_endpoint_drain_wire(ep, scratch[..]);
+    if d0 > 0 { sig = fuzz_mix_state(sig, 0x15001 ^ (d0 as u64)); }
+
+    let split = min(data.len, max(1, data.len / 2));
+    let n1, _ = tls::tls_endpoint_feed_wire(ep, data[..split]);
+    let st1 = tls::tls_endpoint_step_handshake(ep);
+    let d1, _ = tls::tls_endpoint_drain_wire(ep, scratch[..]);
+    sig = fuzz_mix_state(sig, (n1 as u64) ^ (d1 as u64));
+
+    if split < data.len && st1 == tls::TlsBackendStatus.WantRead {
+        let n2, _ = tls::tls_endpoint_feed_wire(ep, data[split..]);
+        let _ = tls::tls_endpoint_step_handshake(ep);
+        let d2, _ = tls::tls_endpoint_drain_wire(ep, scratch[..]);
+        sig = fuzz_mix_state(sig, 0x15002 ^ (n2 as u64) ^ (d2 as u64));
+    }
+
+    if tls::tls_endpoint_is_established(ep) {
+        let nr, _ = tls::tls_endpoint_read_app(ep, scratch[..]);
+        let alpn = tls::tls_endpoint_selected_alpn(ep);
+        sig = fuzz_mix_state(sig, 0x15003 ^ (nr as u64) ^ (alpn.len as u64));
+    }
+    return sig;
+}
+
+// ---- Target 20: PureGoose TlsEndpoint Sans-IO Wire Fuzzing -----------------
+fn fuzz_target_tls_endpoint(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x15000;
+    let cert_der = ensure_fuzz_tls_cert();
+
+    var srv_cfg = tls::TlsBackendConfig {
+        kind:      tls::TlsBackendKind.PureGoose,
+        is_server: true,
+        priv_seed: FUZZ_TLS_PRIV_SEED,
+        ..
+    };
+    let _ = srv_cfg.cert_der.try_set(cert_der);
+    let _ = srv_cfg.alpn_wire.try_set(FUZZ_TLS_ALPN_WIRE[..]);
+    var srv_ep, srv_st = tls::tls_endpoint_open(srv_cfg);
+    if srv_st == tls::TlsBackendStatus.Ok {
+        defer tls::tls_endpoint_close(srv_ep);
+        sig = fuzz_mix_state(sig, feed_and_step_tls_endpoint(srv_ep, data));
+        tls::tls_endpoint_close(srv_ep);
+        assert(!tls::tls_endpoint_is_established(srv_ep));
+    }
+
+    var cli_cfg = tls::TlsBackendConfig {
+        kind:                 tls::TlsBackendKind.PureGoose,
+        is_server:            false,
+        insecure_skip_verify: true,
+        ..
+    };
+    let _ = cli_cfg.server_name.try_set("localhost");
+    let _ = cli_cfg.alpn_wire.try_set(FUZZ_TLS_ALPN_WIRE[..]);
+    var cli_ep, cli_st = tls::tls_endpoint_open(cli_cfg);
+    if cli_st == tls::TlsBackendStatus.Ok {
+        defer tls::tls_endpoint_close(cli_ep);
+        sig = fuzz_mix_state(sig, feed_and_step_tls_endpoint(cli_ep, data));
+        tls::tls_endpoint_close(cli_ep);
+        assert(!tls::tls_endpoint_is_established(cli_ep));
+    }
+    return sig;
+}
+
+fn drain_stream_wire_all(stream: server::ResponseStream&, scratch: u8[:]) -> u64 {
+    var total: u64 = 0;
+    for _ in 16 {
+        let n = server::stream_drain_wire(stream, scratch);
+        if n <= 0 { break; }
+        total = core::add_sat_u64(total, n as u64);
+    }
+    return total;
+}
+
+fn step_stream_flow_control_op(
+    h2s:      server::ResponseStream&,
+    h3s:      server::ResponseStream&,
+    win2:     server::RequestStreamWindow&,
+    win3:     server::RequestStreamWindow&,
+    chunk:    const u8[:],
+    d_conn:   i64,
+    d_strm:   i64,
+    consume:  u64,
+    scratch:  u8[:],
+    upd_wire: u8[..128]&,
+) -> u64 {
+    var sig: u64 = 0;
+    let w2, _ = server::stream_write(h2s, chunk);
+    assert(h2s.h2_conn_send_window >= 0 && h2s.h2_stream_send_window >= 0);
+    let w3, _ = server::stream_write(h3s, chunk);
+    assert(h3s.quic_stream.bytes_sent <= h3s.quic_stream.send_max_data);
+    sig = fuzz_mix_state(sig, (w2 as u64) ^ (w3 as u64));
+
+    sig = fuzz_mix_state(sig, drain_stream_wire_all(h2s, scratch));
+    sig = fuzz_mix_state(sig, drain_stream_wire_all(h3s, scratch));
+    server::stream_on_window_update(h2s, d_conn, d_strm);
+    server::stream_on_window_update(h3s, d_conn, d_strm);
+
+    if server::request_window_on_ingress(win2, chunk.len as u64) {
+        assert(win2.bytes_received <= win2.advertised_stream_max);
+        assert(win2.conn_bytes_received <= win2.advertised_conn_max);
+    }
+    if server::request_window_on_ingress(win3, chunk.len as u64) {
+        assert(win3.bytes_received <= win3.advertised_stream_max);
+        assert(win3.conn_bytes_received <= win3.advertised_conn_max);
+    }
+
+    let rep2 = server::request_window_on_consume(win2, consume);
+    upd_wire.clear();
+    let _ = server::request_window_encode_h2_updates(win2, rep2, upd_wire);
+    let rep3 = server::request_window_on_consume(win3, consume);
+    upd_wire.clear();
+    let _ = server::request_window_encode_quic_updates(win3, rep3, upd_wire);
+    let avail = server::request_window_available(win2) ^ server::request_window_available(win3);
+    return fuzz_mix_state(sig, avail);
+}
+
+// ---- Target 21: ResponseStream & RequestStreamWindow Flow-Control Fuzzing --
+fn fuzz_target_stream_flow_control(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x16000;
+    var fdp = new_fdp(data);
+    let conn_win = max(((fdp_consume_u16(fdp) as i64) & 0x3FFF), 64);
+    let strm_win = max(((fdp_consume_u16(fdp) as i64) & 0x1FFF), 32);
+    let thresh = ((fdp_consume_u8(fdp) % 99) as u32) + 1;
+    let sid = (((fdp_consume_u16(fdp) as u32) & 0x03FF) << 1) | 1;
+
+    var h2s = server::make_http2_response_stream(sid, conn_win, strm_win, 16384, -1);
+    var h3s = server::make_http3_response_stream(sid, conn_win as u64, strm_win as u64, -1);
+    var res2 = http::Response { status_code: 200, .. };
+    var res3 = http::Response { status_code: 200, .. };
+    let _ = server::stream_begin(h2s, res2);
+    let _ = server::stream_begin(h3s, res3);
+
+    var win2 = server::make_request_stream_window(
+        server::WindowProtocol.Http2, sid, strm_win as u64, conn_win as u64, thresh,
+    );
+    var win3 = server::make_request_stream_window(
+        server::WindowProtocol.Http3, sid, strm_win as u64, conn_win as u64, thresh,
+    );
+
+    var scratch:  u8[4096]  = [0; 4096];
+    var upd_wire: u8[..128] = [];
+    sig = fuzz_mix_state(sig, drain_stream_wire_all(h2s, scratch[..]));
+    sig = fuzz_mix_state(sig, drain_stream_wire_all(h3s, scratch[..]));
+
+    var steps: i64 = 0;
+    while fdp_remaining(fdp) > 0 && steps < 32 {
+        steps = core::add_sat_i64(steps, 1);
+        let d_conn = (fdp_consume_u16(fdp) as i64) & 0x0FFF;
+        let d_strm = (fdp_consume_u16(fdp) as i64) & 0x0FFF;
+        let consume = (fdp_consume_u16(fdp) as u64) & 0x0FFF;
+        let chunk_len = min(max(64, fdp_remaining(fdp) / 4), 1024);
+        let chunk = fdp_consume_bytes(fdp, chunk_len);
+        sig = fuzz_mix_state(
+            sig,
+            step_stream_flow_control_op(
+                h2s, h3s, win2, win3, chunk, d_conn, d_strm, consume, scratch[..], upd_wire,
+            ),
+        );
+    }
+
+    let _ = drain_stream_wire_all(h2s, scratch[..]);
+    let _ = drain_stream_wire_all(h3s, scratch[..]);
+    let _ = server::stream_end(h2s);
+    let _ = server::stream_end(h2s);
+    let _ = server::stream_end(h3s);
+    let _ = server::stream_end(h3s);
+    if h2s.ended { assert(server::stream_can_write(h2s) == 0); }
+    if h3s.ended { assert(server::stream_can_write(h3s) == 0); }
+    return sig;
+}
+
+fn select_dst_fault_profile(sel: u8) -> net::DstFaultProfile {
+    let m = sel % 5;
+    if m == 0 { return net::DstFaultProfile.Clean; }
+    if m == 1 { return net::DstFaultProfile.ByteFragmented; }
+    if m == 2 { return net::DstFaultProfile.LossyQuic; }
+    if m == 3 { return net::DstFaultProfile.MidStreamRst; }
+    return net::DstFaultProfile.AdversarialChaos;
+}
+
+fn dispatch_dst_fuzz_op(
+    world:  net::DstWorld&,
+    ep_a:   u16,
+    tcp_id: u16,
+    udp_id: u16,
+    op:     u8,
+    dir:    net::DstDir,
+    arg:    u16,
+    chunk:  const u8[:],
+    rx_buf: u8[:],
+) {
+    if op == 0 {
+        let _, _ = net::dst_tcp_send(world, tcp_id, dir, chunk);
+        return;
+    }
+    if op == 1 {
+        let _ = net::dst_udp_send(world, udp_id, dir, chunk);
+        return;
+    }
+    if op == 2 {
+        let _ = net::dst_step(world);
+        let _, _ = net::dst_tcp_recv(world, tcp_id, dir, rx_buf);
+        let _, _, _, _ = net::dst_udp_recv(world, udp_id, dir, rx_buf);
+        return;
+    }
+    if op == 3 {
+        let tid = ((arg & 7) as u64) + 1;
+        let _ = net::dst_schedule_timer(world, tid, ((arg as u64) & 0x3FF) * 1000, ep_a, tid);
+        if (arg & 1) == 0 { let _ = net::dst_cancel_timer(world, tid); }
+        return;
+    }
+    if op == 4 {
+        net::dst_jump_clock(world, ((arg as u64) & 0x3FF) * 1000);
+        let skew = core::sub_sat_i64((arg as i64) & 0xFF, 128);
+        let _ = net::dst_set_endpoint_skew(world, ep_a, skew);
+        return;
+    }
+    if op == 5 {
+        let _ = net::dst_tcp_set_rx_window(world, tcp_id, dir, max(16, (arg as i64) & 0x3FF));
+        let _ = net::dst_tcp_set_rx_paused(world, tcp_id, dir, (arg & 1) != 0);
+        return;
+    }
+    if op == 6 {
+        let new_port = (1024 + ((arg as u32) % 60000)) as u16;
+        let _ = net::dst_udp_rebind_endpoint_port(world, ep_a, new_port);
+        return;
+    }
+    if (arg & 1) == 0 {
+        let _ = net::dst_tcp_shutdown_write(world, tcp_id, dir);
+    } else {
+        let _ = net::dst_tcp_inject_rst(world, tcp_id, dir, ((arg as u64) & 0xFF) * 1000);
+    }
+}
+
+fn run_dst_world_fuzz_pass(data: const u8[:], seed: u64) -> u64, u64, u64 {
+    var world = net::DstWorld { .. };
+    net::dst_init(world, seed, 1000000000);
+    defer net::dst_shutdown(world);
+
+    var fdp = new_fdp(data);
+    let ep_a, ok_a = net::dst_add_endpoint(world, 0x0A000001, 10001, 0);
+    let ep_b, ok_b = net::dst_add_endpoint(world, 0x0A000002, 443, 0);
+    assert(ok_a && ok_b);
+
+    let prof = select_dst_fault_profile(fdp_consume_u8(fdp));
+    let faults = net::dst_fault_profile(prof);
+    let tcp_id, ok_t = net::dst_open_tcp_link(world, ep_a, ep_b, faults);
+    let udp_id, ok_u = net::dst_open_udp_link(world, ep_a, ep_b, faults);
+    assert(ok_t && ok_u);
+
+    var rx_buf: u8[256] = [0; 256];
+    var steps:  i64     = 0;
+    while fdp_remaining(fdp) > 0 && steps < 16 {
+        steps = core::add_sat_i64(steps, 1);
+        let op = fdp_consume_u8(fdp) & 7;
+        let dir = if fdp_consume_bool(fdp) { net::DstDir.BToA } else { net::DstDir.AToB };
+        let arg = fdp_consume_u16(fdp);
+        let clen = ((fdp_consume_u8(fdp) & 0x1F) as i64) | 1;
+        let chunk = fdp_consume_bytes(fdp, clen);
+        dispatch_dst_fuzz_op(world, ep_a, tcp_id, udp_id, op, dir, arg, chunk, rx_buf[..]);
+    }
+
+    let _ = net::dst_run_until(world, core::add_sat_u64(world.now_ns, 50000000), 128);
+    let digest = world.trace_digest;
+    let ev_cnt = world.stats.events_dispatched;
+    let end_ns = world.now_ns;
+
+    net::dst_shutdown(world);
+    assert(!world.active && world.events.len == 0 && world.endpoints.len == 0);
+    assert(world.tcp_links.len == 0 && world.udp_links.len == 0 && world.udp_inbox.len == 0);
+    return digest, ev_cnt, end_ns;
+}
+
+// ---- Target 22: Deterministic Simulation World (DstWorld) Replay Fuzzing ---
+fn fuzz_target_dst_world(data: const u8[:]) -> u64 {
+    var seed: u64 = core::FNV1A_64_OFFSET;
+    for b in data {
+        seed = core::mul_sat_u64(seed ^ b, 0x100000001B3);
+    }
+    let d1, e1, n1 = run_dst_world_fuzz_pass(data, seed);
+    let d2, e2, n2 = run_dst_world_fuzz_pass(data, seed);
+    assert(d1 == d2 && e1 == e2 && n1 == n2);
+    return fuzz_mix_state(0x17000, d1 ^ e1 ^ n1);
+}
+
+// ---- Target 23: Wire Ingress RAM Budget & Wire H1/H2 Framing Bounds --------
+fn fuzz_target_ingress_budget(data: const u8[:]) -> u64 {
+    assert(wire::verify_ingress_budget_bounds());
+    let b_h1 = wire::h1_connection_ram_budget();
+    let b_h2 = wire::h2_connection_ram_budget();
+    let b_h3 = wire::h3_connection_ram_budget();
+    let b_tls = wire::tls_connection_ram_budget();
+    let b_dns = wire::dns_packet_ram_budget();
+    let budget_mix = b_h1.per_connection_bytes ^ b_h2.per_connection_bytes ^
+        b_h3.per_connection_bytes ^ b_tls.per_connection_bytes ^ b_dns.per_connection_bytes;
+    var sig: u64 = fuzz_mix_state(0x18000, budget_mix);
+
+    let fn_len, ok_fn = wire::scan_h1_wire_field_name(data);
+    if ok_fn {
+        assert(fn_len > 0 && fn_len < data.len);
+        sig = fuzz_mix_state(sig, 0x18001 ^ (fn_len as u64));
+    }
+
+    var status: u16 = 0;
+    var hmap = http::HeaderMap { .. };
+    let consumed, err_h1 = wire::decode_h1_response_head(data, status, hmap, false);
+    if err_h1 == http::HeaderParseError.None {
+        assert(consumed > 0 && consumed <= data.len && status >= 100 && status <= 599);
+        assert(hmap.entries.len <= hmap.entries.cap);
+        sig = fuzz_mix_state(sig, 0x18002 ^ (status as u64) ^ (hmap.entries.len as u64));
+    }
+
+    let ka = wing::parse_keep_alive_header(data);
+    if ka.has_timeout || ka.has_max_reqs {
+        sig = fuzz_mix_state(sig, 0x18003 ^ ka.timeout_sec ^ ka.max_reqs);
+    }
+
+    var cursor: i64 = 0;
+    var steps:  i64 = 0;
+    while cursor < data.len && steps < 32 {
+        let prev = cursor;
+        let fhdr, pay, ok_f = wire::read_wire_h2_frame(data, cursor);
+        steps = core::add_sat_i64(steps, 1);
+        if !ok_f {
+            assert(cursor == prev);
+            break;
+        }
+        assert(cursor > prev && fhdr.length == pay.len);
+        sig = fuzz_mix_state(sig, 0x18004 ^ (fhdr.frame_type as u64) ^ (pay.len as u64));
+    }
+    return sig;
+}
+
 // Runs all OSS-Fuzz targets on a single input slice `data` and returns the combined state signature.
 fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     var sig: u64 = 0xCBF29CE484222325;
@@ -1270,10 +1697,17 @@ fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     sig = fuzz_mix_state(sig, fuzz_target_jose_jwt_jwe_oauth(data));
     sig = fuzz_mix_state(sig, fuzz_target_idna_psl_url_ip(data));
     sig = fuzz_mix_state(sig, fuzz_target_http_ext_headers_trace(data));
+    sig = fuzz_mix_state(sig, fuzz_target_multipart_writer(data));
+    sig = fuzz_mix_state(sig, fuzz_target_tls_endpoint(data));
+    sig = fuzz_mix_state(sig, fuzz_target_stream_flow_control(data));
+    sig = fuzz_mix_state(sig, fuzz_target_dst_world(data));
+    sig = fuzz_mix_state(sig, fuzz_target_ingress_budget(data));
     return sig;
 }
 
-const FUZZ_TARGET_NAMES: const u8[:][18] = [
+const FUZZ_TARGET_COUNT: i32 = 23;
+
+const FUZZ_TARGET_NAMES: const u8[:][23] = [
     "http1",
     "h2_hpack",
     "h2_session",
@@ -1292,11 +1726,16 @@ const FUZZ_TARGET_NAMES: const u8[:][18] = [
     "jose_jwt_jwe_oauth",
     "idna_psl_url_ip",
     "http_ext_headers_trace",
+    "multipart_writer",
+    "tls_endpoint",
+    "stream_flow_control",
+    "dst_world",
+    "ingress_budget",
 ];
 
-// Resolves a target CLI name into a numeric target ID (-1 = all, 0..17 = individual protocol target).
+// Resolves a target CLI name into a numeric target ID (-1 = all, 0..22 = individual protocol target).
 fn parse_fuzz_target_id(target: const u8[:]) -> i32 {
-    for i in 18 {
+    for i in FUZZ_TARGET_NAMES.len {
         if target == FUZZ_TARGET_NAMES[i] {
             return (i as i32) | 0;
         }
@@ -1314,10 +1753,15 @@ fn oss_fuzz_run_extended_target_id(target_id: i32, data: const u8[:]) -> u64 {
     if target_id == 15 { return fuzz_target_jose_jwt_jwe_oauth(data); }
     if target_id == 16 { return fuzz_target_idna_psl_url_ip(data); }
     if target_id == 17 { return fuzz_target_http_ext_headers_trace(data); }
+    if target_id == 18 { return fuzz_target_multipart_writer(data); }
+    if target_id == 19 { return fuzz_target_tls_endpoint(data); }
+    if target_id == 20 { return fuzz_target_stream_flow_control(data); }
+    if target_id == 21 { return fuzz_target_dst_world(data); }
+    if target_id == 22 { return fuzz_target_ingress_budget(data); }
     return oss_fuzz_test_one_input(data);
 }
 
-// Dispatches `data` to a numeric OSS-Fuzz target ID (0..17) or all targets (-1) and returns state signature.
+// Dispatches `data` to a numeric OSS-Fuzz target ID (0..22) or all targets (-1) and returns state signature.
 fn oss_fuzz_run_target_id(target_id: i32, data: const u8[:]) -> u64 {
     if target_id == 0 { return fuzz_target_http1(data); }
     if target_id == 1 { return fuzz_target_http2_hpack_and_frames(data); }
