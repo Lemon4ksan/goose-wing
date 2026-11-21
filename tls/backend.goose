@@ -129,6 +129,10 @@ extern fn native_tls_backend_selected_alpn(handle: i64, dst: u8[:]) -> i64 = "wi
 
 extern fn native_tls_backend_is_established(handle: i64) -> i32 = "wing_tls_backend_is_established";
 
+extern fn native_tls_backend_pending_wire(handle: i64) -> i64 = "wing_tls_backend_pending_wire";
+
+extern fn native_tls_backend_shutdown(handle: i64) -> i32 = "wing_tls_backend_shutdown";
+
 inline fn kind_to_native_i32(kind: TlsBackendKind) -> i32 {
     return match kind {
         PureGoose => NATIVE_KIND_PURE,
@@ -912,7 +916,11 @@ fn tls_endpoint_open(cfg: const TlsBackendConfig&) -> TlsEndpoint, TlsBackendSta
         }, TlsBackendStatus.Ok;
     }
     if cfg.kind == TlsBackendKind.Auto {
-        return open_pure_endpoint(cfg);
+        let requires_pem = cfg.cert_pem_file.len > 0 || cfg.key_pem_file.len > 0 ||
+            (cfg.ca_file.len > 0 && cfg.trust_store.anchors.len == 0);
+        if !requires_pem {
+            return open_pure_endpoint(cfg);
+        }
     }
     return TlsEndpoint { .. }, native_i32_to_status(st_i32);
 }
@@ -1102,4 +1110,37 @@ fn tls_endpoint_is_established(ep: const TlsEndpoint&) -> bool {
     let idx = ep.pure_slot as i64;
     guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else { return false; }
     return ep.established && g_pure_tls_slots[idx].stage == PureHsStage.Established;
+}
+
+// Returns the number of outbound wire ciphertext bytes currently buffered in `ep`.
+fn tls_endpoint_pending_wire(ep: const TlsEndpoint&) -> i64 {
+    guard !ep.closed else { return 0; }
+    if ep.active_kind != TlsBackendKind.PureGoose {
+        return native_tls_backend_pending_wire(ep.native_id);
+    }
+    let idx = ep.pure_slot as i64;
+    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else { return 0; }
+    return g_pure_tls_slots[idx].wire_out.len;
+}
+
+// Queues an RFC 8446 Section 6.1 graceful CloseNotify alert into `ep`'s outbound wire queue.
+// Call `tls_endpoint_drain_wire` afterwards to flush the alert before closing the socket.
+fn tls_endpoint_shutdown(ep: TlsEndpoint&) -> TlsBackendStatus {
+    guard !ep.closed else { return TlsBackendStatus.Closed; }
+    guard ep.established else { return TlsBackendStatus.Ok; }
+    if ep.active_kind != TlsBackendKind.PureGoose {
+        return native_i32_to_status(native_tls_backend_shutdown(ep.native_id));
+    }
+    let idx = ep.pure_slot as i64;
+    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else {
+        return TlsBackendStatus.Closed;
+    }
+    let slot .= g_pure_tls_slots[idx];
+    guard slot.cipher_slot != 0xFFFF else { return TlsBackendStatus.Ok; }
+    let avail = core::sub_sat_i64(slot.wire_out.cap, slot.wire_out.len);
+    guard avail >= 64 else { return TlsBackendStatus.WantWrite; }
+    guard cipher_slot_seal_close_notify(slot.cipher_slot, slot.wire_out) else {
+        return TlsBackendStatus.Error;
+    }
+    return TlsBackendStatus.Ok;
 }

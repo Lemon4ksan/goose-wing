@@ -5,6 +5,7 @@
 namespace tls;
 
 import std;
+import os;
 import core;
 import rfc.tls;
 import .internal;
@@ -166,4 +167,110 @@ fn load_server_credentials_pem(
 
     committed = true;
     return true;
+}
+
+extern fn native_tls_system_roots_by_subject(
+    subject_der_tlv: const u8[:],
+    out_buf:         u8[:],
+    out_written:     i32&,
+) -> i32 = "wing_tls_system_roots_by_subject";
+
+const SYSTEM_PEM_BUNDLE_PATHS: const u8[:][4] = [
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+];
+
+fn try_add_matching_pem_cert(
+    store:      TrustAnchorStore&,
+    label:      const u8[:],
+    der:        const u8[:],
+    issuer_raw: const u8[:],
+    parsed:     ParsedCert&,
+) -> bool {
+    guard label == "CERTIFICATE" && parse_x509_certificate(der, parsed) else { return false; }
+    guard span_slice(der, parsed.subject_raw) == issuer_raw else { return false; }
+    return add_trust_anchor_cert_der(store, der);
+}
+
+// Scans a PEM CA bundle file and appends only certificates whose Subject DN equals `issuer_raw`.
+//
+// Example:
+//   load_matching_roots_from_pem_file(store, "/etc/ssl/cert.pem", issuer_dn_inner) -> 1
+fn load_matching_roots_from_pem_file(
+    store:      TrustAnchorStore&,
+    path:       const u8[:],
+    issuer_raw: const u8[:],
+) -> i64 {
+    guard path.len > 0 && issuer_raw.len > 0 else { return 0; }
+    var raw_pem: u8[>..] = [];
+    guard read_file(path, raw_pem) && raw_pem.len > 0 && raw_pem.len <= tls_internal::PEM_MAX_BUNDLE_BYTES else {
+        return 0;
+    }
+
+    var idx:   i64        = 0;
+    var added: i64        = 0;
+    var label: u8[..64]   = [];
+    var der:   u8[..4096] = [];
+    var parsed = ParsedCert { .. };
+    while idx < raw_pem.len && store.anchors.len < store.anchors.cap {
+        let rel = core::find(raw_pem[idx..], tls_internal::PEM_PRE_EB);
+        if rel < 0 { break; }
+        if !pem_next_block(raw_pem[..], idx, label, der) {
+            idx = core::add_sat_i64(idx, core::add_sat_i64(rel, tls_internal::PEM_PRE_EB.len));
+            continue;
+        }
+        if try_add_matching_pem_cert(store, label[..], der[..], issuer_raw, parsed) {
+            added = core::add_sat_i64(added, 1);
+        }
+    }
+    return added;
+}
+
+fn ingest_packed_der_roots(store: TrustAnchorStore&, packed: const u8[:]) -> i64 {
+    var cur = core::cursor_from(packed);
+    var added: i64 = 0;
+    while cur.buf.len >= 4 && store.anchors.len < store.anchors.cap {
+        let der_len, ok_l = cur.read_u32();
+        guard ok_l && der_len > 0 && der_len <= 4096 else { break; }
+        let der, ok_d = cur.read_bytes(der_len);
+        guard ok_d else { break; }
+        if add_trust_anchor_cert_der(store, der) {
+            added = core::add_sat_i64(added, 1);
+        }
+    }
+    return added;
+}
+
+// Loads matching root CAs from `SSL_CERT_FILE` (if set), else the OS trust store
+// (Windows Crypt32 ROOT store excluding Disallowed/non-ServerAuth roots, or Unix/macOS
+// standard PEM CA bundle paths) into `store` for `issuer_raw`.
+//
+// Example:
+//   load_system_roots_for_issuer(store, top_cert_issuer_inner) -> 1
+fn load_system_roots_for_issuer(store: TrustAnchorStore&, issuer_raw: const u8[:]) -> i64 {
+    guard issuer_raw.len > 0 && store.anchors.len < store.anchors.cap else { return 0; }
+
+    var env_path: u8[>..] = [];
+    if env("SSL_CERT_FILE", env_path) && env_path.len > 0 {
+        return load_matching_roots_from_pem_file(store, env_path[..], issuer_raw);
+    }
+
+    var issuer_tlv: u8[..1024] = [];
+    guard tls_internal::encode_der_name_tlv(issuer_raw, issuer_tlv) else { return 0; }
+
+    var packed:  u8[16384] = [0; 16384];
+    var written: i32       = 0;
+    let rc = native_tls_system_roots_by_subject(issuer_tlv[..], packed[..], written);
+    if rc >= 0 {
+        guard written > 0 && written <= packed.len else { return 0; }
+        return ingest_packed_der_roots(store, packed[..written]);
+    }
+
+    for path in SYSTEM_PEM_BUNDLE_PATHS {
+        let n = load_matching_roots_from_pem_file(store, path, issuer_raw);
+        if n > 0 { return n; }
+    }
+    return 0;
 }

@@ -795,12 +795,211 @@ fn test_pluggable_tls_backends() {
     // CHECK: native_schannel_ok=true native_openssl_clean=true st_strict_reject=true auto_ok=true
 }
 
+// ---- 6. Non-Blocking TlsStream, Pre-Connect TCP Options & mTLS Fail-Closed --
+
+fn test_tls_stream_mtls_and_tcp_opts() {
+    print("=== 6. Non-Blocking TlsStream, TCP Connect Options & mTLS Guards ===");
+    // CHECK: === 6. Non-Blocking TlsStream, TCP Connect Options & mTLS Guards ===
+
+    let seed: u8[32] = [0x6B; 32];
+    var cert_der: u8[..2048] = [];
+    assert(tls::build_test_ed25519_cert_der(seed, "localhost", "localhost", "127.0.0.1", cert_der));
+
+    var trust = tls::TrustAnchorStore { .. };
+    assert(tls::add_trust_anchor_cert_der(trust, cert_der[..]));
+
+    var cli_cfg = tls::TlsBackendConfig {
+        kind:                 tls::TlsBackendKind.PureGoose,
+        is_server:            false,
+        insecure_skip_verify: false,
+        trust_store:          trust,
+        ..
+    };
+    assert(cli_cfg.server_name.try_set("localhost"));
+
+    var srv_cfg = tls::TlsBackendConfig {
+        kind:      tls::TlsBackendKind.PureGoose,
+        is_server: true,
+        priv_seed: seed,
+        ..
+    };
+    assert(srv_cfg.cert_der.try_set(cert_der[..]));
+
+    // 6a. Virtual pipe non-blocking TlsStream + WantRead + graceful CloseNotify
+    let p_slot, p_ok = net::alloc_virtual_pipe_slot();
+    assert(p_ok);
+    let a_fd = net::virtual_pipe_to_fd(p_slot, false);
+    let b_fd = net::virtual_pipe_to_fd(p_slot, true);
+    var c_st, c_open = tls::tls_stream_open(a_fd, cli_cfg);
+    var s_st, s_open = tls::tls_stream_open(b_fd, srv_cfg);
+    assert(c_open == tls::TlsBackendStatus.Ok && s_open == tls::TlsBackendStatus.Ok);
+
+    for _ in 12 {
+        let cs = tls::tls_stream_step_handshake(c_st);
+        assert(cs == tls::TlsBackendStatus.Ok || cs == tls::TlsBackendStatus.WantRead ||
+            cs == tls::TlsBackendStatus.WantWrite);
+        let ss = tls::tls_stream_step_handshake(s_st);
+        assert(ss == tls::TlsBackendStatus.Ok || ss == tls::TlsBackendStatus.WantRead ||
+            ss == tls::TlsBackendStatus.WantWrite);
+        if tls::tls_endpoint_is_established(c_st.ep) && tls::tls_endpoint_is_established(s_st.ep) {
+            break;
+        }
+    }
+    let vp_est = tls::tls_endpoint_is_established(c_st.ep) && tls::tls_endpoint_is_established(s_st.ep);
+    var rx_tmp: u8[128] = [0; 128];
+    let n_empty, st_empty = tls::tls_stream_read(s_st, rx_tmp[..]);
+    let want_read_ok = (n_empty == 0) && (st_empty == tls::TlsBackendStatus.WantRead);
+
+    let w_msg = "hello-over-nonblocking-tls-stream";
+    let wn, wst = tls::tls_stream_write(c_st, w_msg);
+    assert(wn == w_msg.len && wst == tls::TlsBackendStatus.Ok);
+    let rn, rst = tls::tls_stream_read(s_st, rx_tmp[..]);
+    let data_ok = (rst == tls::TlsBackendStatus.Ok) && (rn == w_msg.len) && (rx_tmp[..rn] == w_msg);
+
+    let sh_st = tls::tls_stream_shutdown(c_st);
+    let _, peer_close_st = tls::tls_stream_read(s_st, rx_tmp[..]);
+    let close_notify_ok = (sh_st == tls::TlsBackendStatus.Ok) && (peer_close_st == tls::TlsBackendStatus.Closed);
+    let poll_mask_ok = (tls::tls_stream_poll_events(s_st) & net::EPOLL_READ) != 0;
+
+    tls::tls_stream_close(c_st);
+    tls::tls_stream_close(c_st);
+    tls::tls_stream_close(s_st);
+    net::virtual_fd_close(a_fd);
+    net::virtual_fd_close(b_fd);
+    print("vpipe_tls_stream_ok=", vp_est && want_read_ok && data_ok && close_notify_ok && poll_mask_ok);
+    // CHECK: vpipe_tls_stream_ok=true
+
+    // 6b. Live loopback TCP socket with net::tcp_connect_with_options + non-blocking TlsStream
+    let lfd = net::tcp_listen("127.0.0.1", 0, 16);
+    assert(lfd > 0);
+    let _ = net::tcp_set_nonblocking(lfd, true);
+    let lport = net::tcp_getsockname_port(lfd);
+    assert(lport > 0);
+
+    var cstate: i32 = -1;
+    var cerr:   i32 = -1;
+    let copts = net::TcpConnectOptions {
+        dst_ip:      "127.0.0.1",
+        dst_port:    lport,
+        ttl:         64,
+        mss:         1460,
+        rcvbuf:      65536,
+        tcp_nodelay: true,
+        ..
+    };
+    let cfd = net::tcp_connect_with_options(copts, cstate, cerr);
+    assert(cfd > 0 && (cstate == 0 || cstate == 1));
+    assert(net::tcp_set_rcvbuf(cfd, 65536) && !net::tcp_set_rcvbuf(cfd, 0));
+    assert(!net::tcp_set_mss(cfd, 100));
+    let _ = net::tcp_set_mss(cfd, 1460);
+
+    var sfd: i64 = -1;
+    for _ in 100 {
+        sfd = net::tcp_accept_nonblocking(lfd);
+        if sfd > 0 { break; }
+        sleep_ms(1);
+    }
+    assert(sfd > 0);
+    let _ = net::tcp_set_nonblocking(sfd, true);
+
+    var live_c, lco = tls::tls_stream_open(cfd, cli_cfg);
+    var live_s, lso = tls::tls_stream_open(sfd, srv_cfg);
+    assert(lco == tls::TlsBackendStatus.Ok && lso == tls::TlsBackendStatus.Ok);
+
+    for _ in 200 {
+        let _ = tls::tls_stream_step_handshake(live_c);
+        let _ = tls::tls_stream_step_handshake(live_s);
+        if tls::tls_endpoint_is_established(live_c.ep) && tls::tls_endpoint_is_established(live_s.ep) {
+            break;
+        }
+        sleep_ms(1);
+    }
+    let live_est = tls::tls_endpoint_is_established(live_c.ep) && tls::tls_endpoint_is_established(live_s.ep);
+    let ping = "tcp-opts-live-tls-ping";
+    let pw, pws = tls::tls_stream_write(live_c, ping);
+    assert(pw == ping.len && (pws == tls::TlsBackendStatus.Ok || pws == tls::TlsBackendStatus.WantWrite));
+    var live_rx:  u8[128] = [0; 128];
+    var got_live: i64     = 0;
+    for _ in 100 {
+        let _ = tls::tls_stream_flush_wire(live_c);
+        let r, rs = tls::tls_stream_read(live_s, live_rx[..]);
+        if r > 0 && rs == tls::TlsBackendStatus.Ok {
+            got_live = r;
+            break;
+        }
+        sleep_ms(1);
+    }
+    let live_ok = live_est && (got_live == ping.len) && (live_rx[..got_live] == ping);
+    tls::tls_stream_close(live_c);
+    tls::tls_stream_close(live_s);
+    net::tcp_close(cfd);
+    net::tcp_close(sfd);
+    net::tcp_close(lfd);
+    print("live_tcp_opts_tls_stream_ok=", live_ok);
+    // CHECK: live_tcp_opts_tls_stream_ok=true
+
+    // 6c. Legacy tls::transport_recv_slice must not spin on WouldBlock (-2) or peer EOF (0)
+    let vp2, vp2_ok = net::alloc_virtual_pipe_slot();
+    assert(vp2_ok);
+    let fd_r = net::virtual_pipe_to_fd(vp2, false);
+    let fd_w = net::virtual_pipe_to_fd(vp2, true);
+    let tslot = tls::alloc_cipher_slot();
+    assert(tslot != 0xFFFF);
+    let k16:  u8[16] = [0x11; 16];
+    let iv12: u8[12] = [0x22; 12];
+    tls::init_cipher_slot_for_test(tslot, rfc::TLS_CIPHER_AES_128_GCM_SHA256, k16[..], iv12, k16[..], iv12);
+    var leg_buf: u8[64] = [0; 64];
+    let leg_wb = tls::transport_recv_slice(fd_r, tslot, leg_buf[..], 0);
+    net::virtual_fd_close(fd_w);
+    let leg_eof = tls::transport_recv_slice(fd_r, tslot, leg_buf[..], 0);
+    tls::free_cipher_slot(tslot);
+    net::virtual_fd_close(fd_r);
+    print("legacy_recv_no_spin_ok=", (leg_wb == -2) && (leg_eof == 0));
+    // CHECK: legacy_recv_no_spin_ok=true
+
+    // 6d. Fail-closed mTLS / PEM config guards (never silently drop PEM credentials or custom CA in Auto)
+    var half_cfg = tls::TlsBackendConfig {
+        kind:                 tls::TlsBackendKind.Auto,
+        is_server:            false,
+        insecure_skip_verify: true,
+        ..
+    };
+    assert(half_cfg.cert_pem_file.try_set("nonexistent-client.pem"));
+    let _, half_st = tls::tls_endpoint_open(half_cfg);
+
+    var mtls_cfg = tls::TlsBackendConfig {
+        kind:                 tls::TlsBackendKind.Auto,
+        is_server:            false,
+        insecure_skip_verify: true,
+        ..
+    };
+    assert(mtls_cfg.cert_pem_file.try_set("nonexistent-client.pem"));
+    assert(mtls_cfg.key_pem_file.try_set("nonexistent-client.key"));
+    let _, mtls_st = tls::tls_endpoint_open(mtls_cfg);
+
+    var ca_cfg = tls::TlsBackendConfig {
+        kind:                 tls::TlsBackendKind.Auto,
+        is_server:            false,
+        insecure_skip_verify: false,
+        ..
+    };
+    assert(ca_cfg.ca_file.try_set("nonexistent-ca.pem"));
+    let _, ca_st = tls::tls_endpoint_open(ca_cfg);
+
+    let fail_closed_ok = (half_st != tls::TlsBackendStatus.Ok) &&
+        (mtls_st != tls::TlsBackendStatus.Ok) &&
+        (ca_st != tls::TlsBackendStatus.Ok);
+    print("mtls_fail_closed_ok=", fail_closed_ok);
+    // CHECK: mtls_fail_closed_ok=true
+}
+
 fn main() {
     test_http1_unified_streaming();
     test_http2_unified_streaming();
     test_http3_unified_streaming();
     test_request_and_client_backpressure();
     test_pluggable_tls_backends();
+    test_tls_stream_mtls_and_tcp_opts();
     print("=== ALL STREAMING AND PLUGGABLE TLS VERIFICATION PASSED ===");
     // CHECK: === ALL STREAMING AND PLUGGABLE TLS VERIFICATION PASSED ===
 }

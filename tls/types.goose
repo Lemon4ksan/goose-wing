@@ -404,6 +404,7 @@ struct ClientHandshakeConfig {
     server_name:          u8[..256]        = [],
     alpn:                 u8[..255]        = [],
     trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
+    use_system_roots:     bool             = true,
     insecure_skip_verify: bool             = false,
     virtual_clock_sec:    i64              = 0,
     client_cert_der:      u8[..4096]       = [],

@@ -765,6 +765,8 @@ fn tls_endpoint_write_app(ep: TlsEndpoint&, plaintext: const u8[:]) -> i64, TlsB
 fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus
 fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64]
 fn tls_endpoint_is_established(ep: const TlsEndpoint&) -> bool
+fn tls_endpoint_pending_wire(ep: const TlsEndpoint&) -> i64
+fn tls_endpoint_shutdown(ep: TlsEndpoint&) -> TlsBackendStatus
 ```
 
 `TlsEndpoint` defines a buffer-oriented, sans-IO TLS transport contract backed
@@ -777,12 +779,13 @@ by closed polymorphism across:
 - `SystemOpenSsl`: optional OpenSSL 3 / 1.1.1 / BoringSSL driver in
   `shim/tls_backend.c` using memory BIOs, strict TLS 1.3 floor by default
   (`TlsMinVersion.Tls13`) with opt-in TLS 1.2 fallback (`TlsMinVersion.Tls12`),
-  `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification, custom `ca_file`
-  and server `cert_pem_file` / `key_pem_file` PEM loading, and server/client
-  ALPN negotiation. Loaded dynamically via `dlopen` / `LoadLibraryA` with zero
-  compile-time OpenSSL dependency (override paths with `WING_OPENSSL_LIB` /
-  `WING_CRYPTO_LIB`, or link directly with `-DWING_TLS_LINK_OPENSSL -lssl
-  -lcrypto`).
+  `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification, custom
+  `ca_file`, bidirectional mTLS (`cert_pem_file` / `key_pem_file` on both
+  servers and clients, plus server `SSL_VERIFY_FAIL_IF_NO_PEER_CERT` when
+  `ca_file` is configured), and server/client ALPN negotiation. Loaded
+  dynamically via `dlopen` / `LoadLibraryA` with zero compile-time OpenSSL
+  dependency (override paths with `WING_OPENSSL_LIB` / `WING_CRYPTO_LIB`, or
+  link directly with `-DWING_TLS_LINK_OPENSSL -lssl -lcrypto`).
 - `SystemSchannel`: dynamically loaded Windows `secur32.dll` Schannel client
   context with zero third-party DLLs (`SCH_CREDENTIALS` v5 TLS 1.3-only for
   default `TlsMinVersion.Tls13`; TLS 1.2 + TLS 1.3 with v4 fallback on older
@@ -794,9 +797,44 @@ by closed polymorphism across:
 - `Auto`: selects `SystemOpenSsl` when available (Linux `libssl.so.3` /
   `libssl.so.1.1`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
   `libssl-3-x64.dll` / `libssl-3.dll`), then `SystemSchannel` on Windows client
-  endpoints, then `SystemSecureTransport` on macOS client endpoints only when
-  `min_version == TlsMinVersion.Tls12`, and falls back to `PureGoose` (TLS 1.3
-  only) otherwise.
+  endpoints or `SystemSecureTransport` on macOS client endpoints (only when no
+  PEM `ca_file` / `cert_pem_file` / `key_pem_file` paths were requested), and
+  falls back to `PureGoose` (TLS 1.3 only) otherwise. Fails closed when PEM
+  credentials or a PEM `ca_file` without an in-memory `trust_store` cannot be
+  satisfied.
 
-`tls_endpoint_close` is idempotent and wipes handshake and traffic keys on
-shutdown.
+`tls_endpoint_shutdown` queues a graceful RFC 8446 `close_notify` alert,
+`tls_endpoint_pending_wire` reports queued outbound ciphertext bytes for reactor
+`EPOLL_WRITE` arming, and `tls_endpoint_close` is idempotent and wipes handshake
+and traffic keys on shutdown.
+
+### Non-Blocking Reactor TLS Stream (`tls/stream.goose`)
+
+```goose
+struct TlsStream {
+    fd:            i64         = -1,
+    ep:            TlsEndpoint = TlsEndpoint { .. },
+    tx_wire:       u8[..16640] = [],
+    tx_wire_pos:   i64         = 0,
+    rx_wire:       u8[..16640] = [],
+    rx_wire_pos:   i64         = 0,
+    rx_eof:        bool        = false,
+    shutdown_sent: bool        = false,
+}
+
+fn tls_stream_open(fd: i64, cfg: const TlsBackendConfig&) -> TlsStream, TlsBackendStatus
+fn tls_stream_flush_wire(s: TlsStream&) -> i64, TlsBackendStatus
+fn tls_stream_pump_rx(s: TlsStream&) -> i64, TlsBackendStatus
+fn tls_stream_step_handshake(s: TlsStream&) -> TlsBackendStatus
+fn tls_stream_write(s: TlsStream&, plaintext: const u8[:]) -> i64, TlsBackendStatus
+fn tls_stream_read(s: TlsStream&, dst: u8[:]) -> i64, TlsBackendStatus
+fn tls_stream_poll_events(s: const TlsStream&) -> u32
+fn tls_stream_shutdown(s: TlsStream&) -> TlsBackendStatus
+fn tls_stream_close(s: TlsStream&)
+```
+
+`TlsStream` pairs a caller-owned non-blocking TCP socket or virtual DST pipe
+descriptor with `TlsEndpoint`, preserving strict FIFO order across partial
+socket writes (`WantWrite`), never dropping inbound ciphertext bytes, and
+computing the exact `EPOLL_READ` / `EPOLL_WRITE` readiness bitmask via
+`tls_stream_poll_events`.

@@ -16,6 +16,7 @@ import .asn1;
 import .types;
 import .sct;
 import .x509;
+import .pem;
 import .ocsp;
 import .crl;
 import .ticket;
@@ -67,6 +68,48 @@ fn read_plaintext_handshake_record(
     return out_payload.try_set(raw_msg[..]);
 }
 
+fn verify_chain_ocsp_and_crl(
+    chain_parsed: const tls::ParsedCert[..8]&,
+    chain_slices: const (const u8[:])[..8]&,
+    leaf_ocsp:    const u8[:],
+    config:       const tls::ClientHandshakeConfig&,
+    eff_clock:    i64,
+) -> bool {
+    if config.trust_store.anchors.len > 0 || !config.use_system_roots {
+        let alert = tls::verify_certificate_chain(chain_parsed, chain_slices, config.trust_store, eff_clock);
+        guard alert == tls::Alert.CloseNotify else { return false; }
+        guard verify_stapled_ocsp_for_chain(
+            leaf_ocsp, chain_parsed, chain_slices, eff_clock, config.trust_store,
+        ) else {
+            return false;
+        }
+        return verify_crl_for_chain_with_store(
+            config.crl_der[..], chain_parsed, chain_slices, eff_clock, config.trust_store,
+        );
+    }
+
+    guard chain_parsed.len > 0 && chain_slices.len == chain_parsed.len else { return false; }
+
+    var sys_store = tls::TrustAnchorStore { .. };
+    let top_idx = core::sub_sat_i64(chain_parsed.len, 1);
+    let top_issuer = tls::span_slice(chain_slices[top_idx], chain_parsed[top_idx].issuer_raw);
+    let _ = tls::load_system_roots_for_issuer(sys_store, top_issuer);
+    let top_subj = tls::span_slice(chain_slices[top_idx], chain_parsed[top_idx].subject_raw);
+    if top_subj != top_issuer {
+        let _ = tls::load_system_roots_for_issuer(sys_store, top_subj);
+    }
+    let alert = tls::verify_certificate_chain(chain_parsed, chain_slices, sys_store, eff_clock);
+    guard alert == tls::Alert.CloseNotify else { return false; }
+    guard verify_stapled_ocsp_for_chain(
+        leaf_ocsp, chain_parsed, chain_slices, eff_clock, sys_store,
+    ) else {
+        return false;
+    }
+    return verify_crl_for_chain_with_store(
+        config.crl_der[..], chain_parsed, chain_slices, eff_clock, sys_store,
+    );
+}
+
 // Validates server Certificate and CertificateVerify against trust anchor store and transcript (RFC 8446 §4.4).
 fn verify_server_cert_and_signature(
     cert_body:          const u8[:],
@@ -96,14 +139,9 @@ fn verify_server_cert_and_signature(
 
     if !config.insecure_skip_verify {
         let eff_clock = if config.virtual_clock_sec > 0 { config.virtual_clock_sec } else { core::now().wall_sec };
-        let alert = tls::verify_certificate_chain(chain_parsed, chain_slices, config.trust_store, eff_clock);
-        guard alert == tls::Alert.CloseNotify else { return false; }
-        guard verify_stapled_ocsp_for_chain(
-            leaf_ocsp, chain_parsed, chain_slices, eff_clock, config.trust_store,
-        ) else { return false; }
-        guard verify_crl_for_chain_with_store(
-            config.crl_der[..], chain_parsed, chain_slices, eff_clock, config.trust_store,
-        ) else { return false; }
+        guard verify_chain_ocsp_and_crl(chain_parsed, chain_slices, leaf_ocsp, config, eff_clock) else {
+            return false;
+        }
 
         if config.server_name.len > 0 {
             var sans: tls::SanEntry[..64] = [];

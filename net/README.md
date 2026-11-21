@@ -46,6 +46,16 @@ fn tcp_set_fastopen(fd: i64, enable: bool) -> bool
 fn tcp_send_fastopen(fd: i64, host: const u8[:], port: u16, syn_payload: const u8[:]) -> i64
 fn tcp_set_tos(fd: i64, dscp: u8, ecn: u8 = 0) -> bool
 fn tcp_set_ecn(fd: i64, ecn_bits: u8) -> bool
+struct TcpConnectOptions {
+    src_ip: const u8[:], dst_ip: const u8[:], dst_port: u16, so_mark: u32,
+    ttl: i32, mss: i32, rcvbuf: i32, tcp_nodelay: bool,
+    keepalive_idle_sec: i32, keepalive_intvl_sec: i32, keepalive_cnt: i32,
+    user_timeout_ms: u32
+}
+fn tcp_connect_with_options(opts: const TcpConnectOptions&, out_state: i32&, out_err: i32&) -> i64
+fn tcp_set_ttl(sock_fd: i64, ttl: i32, is_ipv6: bool = false) -> bool
+fn tcp_set_mss(sock_fd: i64, mss: i32) -> bool
+fn tcp_set_rcvbuf(sock_fd: i64, bytes: i32) -> bool
 ```
 
 `BackPressure` coalesces user-space writes until `pending.len` reaches
@@ -55,7 +65,11 @@ write, while `tcp_abort` forces an immediate RFC 1122 §4.2.2.13 RST teardown
 (`SO_LINGER` with timeout 0) without waiting for `TIME_WAIT`. TCP Fast Open
 (RFC 7413) attaches initial application bytes to the SYN packet via
 `tcp_send_fastopen`, and `tcp_set_ecn` updates IPv4/IPv6 ECN bits while
-preserving the active DSCP traffic class.
+preserving the active DSCP traffic class. `tcp_connect_with_options` applies
+`SO_MARK`, `IP_TTL` / `IPV6_UNICAST_HOPS`, `TCP_MAXSEG`, `SO_RCVBUF`,
+`TCP_NODELAY`, and optional source-IP bind before `connect()` so the initial SYN
+carries the configured OS profile. Blocking socket timeout waits use `poll(2)`
+on POSIX to avoid `FD_SETSIZE` (`1024`) descriptor limits.
 
 ### 2. Unified Transport Handle (`net/transport.goose`)
 

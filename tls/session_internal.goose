@@ -103,9 +103,13 @@ inline fn peek_ciphertext_record_len(rem: const u8[:]) -> i64, tls::SliceUnsealS
     return total_rec, tls::SliceUnsealStatus.Ok;
 }
 
-// Reads exactly dst.len bytes from socket, returning false on error or clean EOF before full read.
-fn tls_read_exact(fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
-    guard fd > 0 && dst.len > 0 else { return false; }
+// Reads exactly dst.len bytes from socket, returning:
+//    1 : full read succeeded
+//    0 : clean EOF before any byte was read
+//   -2 : timeout / WouldBlock before any byte was read
+//   -1 : socket error or mid-record truncation
+fn tls_read_exact_status(fd: i64, dst: u8[:], timeout_ms: u32) -> i32 {
+    guard fd > 0 && dst.len > 0 else { return -1; }
     var total_read: i64 = 0;
     while total_read < dst.len {
         let recvd = if net::is_virtual_pipe_fd(fd) {
@@ -113,10 +117,21 @@ fn tls_read_exact(fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
         } else {
             net::tcp_recv_slice(fd, dst[total_read..], timeout_ms)
         };
-        guard recvd > 0 else { return false; }
-        total_read = core::add_sat_i64(total_read, recvd);
+        if recvd > 0 {
+            total_read = core::add_sat_i64(total_read, recvd);
+            continue;
+        }
+        if total_read == 0 && (recvd == 0 || recvd == -2) {
+            return recvd;
+        }
+        return -1;
     }
-    return true;
+    return 1;
+}
+
+// Reads exactly dst.len bytes from socket, returning false on error, timeout, or EOF before full read.
+fn tls_read_exact(fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
+    return tls_read_exact_status(fd, dst, timeout_ms) == 1;
 }
 
 // Writes entire data buffer to socket, retrying transient WouldBlock (-2) on non-blocking FDs.

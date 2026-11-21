@@ -294,7 +294,16 @@ fn test_live_tls_interop_fixes() {
     let f12_ok = tls_internal::x509_verify_ocsp_issuer_name_hash(oid_sha1[..], h_tlv[..], dn_inner) &&
         !tls_internal::x509_verify_ocsp_issuer_name_hash(oid_sha1[..], h_raw[..], dn_inner);
 
-    print("tls_interop: ocsp_ext=", f9_ok, " ee_grp=", f10_ok, " zero_ser=", f11_ok, " ocsp_dn=", f12_ok);
+    // 5. Finding #13: On-demand OS root store lookup rejects empty/unknown issuer DNs cleanly
+    var empty_store = tls::TrustAnchorStore { .. };
+    let f13_ok = tls::load_system_roots_for_issuer(empty_store, "") == 0 &&
+        tls::load_system_roots_for_issuer(empty_store, dn_inner) == 0 &&
+        empty_store.anchors.len == 0;
+
+    print(
+        "tls_interop: ocsp_ext=", f9_ok, " ee_grp=", f10_ok,
+        " zero_ser=", f11_ok, " ocsp_dn=", f12_ok, " sys_roots=", f13_ok,
+    );
 }
 
 fn main() {
@@ -312,4 +321,4 @@ fn main() {
 // CHECK-NEXT: multipart: auto=true bad_b=true ct_q=true write=true rb=true ct_hdr=true rt=true
 // CHECK-NEXT: stack: srv=0 s1=true s2=https://example.org
 // CHECK-NEXT: refactored: zstd=true brotli=true deflate=true hdr=true hpack=true psl=true pool=true pipe=true
-// CHECK-NEXT: tls_interop: ocsp_ext=true ee_grp=true zero_ser=true ocsp_dn=true
+// CHECK-NEXT: tls_interop: ocsp_ext=true ee_grp=true zero_ser=true ocsp_dn=true sys_roots=true

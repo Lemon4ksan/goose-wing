@@ -489,6 +489,40 @@ fn cipher_slot_seal_app_data<B>(
     return tls_seal_app_data_with_buf(slot, plain_in, rec_buf[..], out_cipher);
 }
 
+// Seals an RFC 8446 Section 6.1 encrypted CloseNotify alert record into `out_cipher`.
+fn cipher_slot_seal_close_notify<B>(slot_idx: u16, out_cipher: B&) -> bool {
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < g_tls_cipher_slots.len else { return false; }
+    let slot .= g_tls_cipher_slots[idx];
+    guard slot.in_use else { return false; }
+    let saved_len = out_cipher.len;
+    let saved_seq = slot.tx_seq;
+    var committed = false;
+    defer if !committed {
+        out_cipher.resize(saved_len);
+        slot.tx_seq = saved_seq;
+    };
+    let alert_data: u8[2] = [1, 0];
+    var rec_buf: u8[64] = [0; 64];
+    let klen = slot.key_len as i64;
+    let sealed_len, _, ok_seal = tls_internal::record_seal_prepared_into(
+        slot.cipher_suite,
+        slot.tx_key[..klen],
+        slot.tx_aes_key,
+        slot.tx_iv,
+        slot.tx_seq,
+        rfc::TLS_CONTENT_ALERT,
+        alert_data[..],
+        rec_buf[..],
+    );
+    guard ok_seal && sealed_len > 0 && out_cipher.try_append(rec_buf[..sealed_len]) else {
+        return false;
+    }
+    increment_record_seq_num(slot.tx_seq);
+    committed = true;
+    return true;
+}
+
 // Extracts DNS SubjectAltName entries from a DER X.509 certificate into `g_tls_cipher_slots[slot_idx].san_hosts`.
 fn populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) -> bool {
     let idx = slot_idx as i64;
@@ -808,24 +842,25 @@ fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:])
 fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return -1; }
     var hdr_buf: u8[5] = [0; 5];
-    let ok_hdr = tls_internal::tls_read_exact(fd, hdr_buf[..], timeout_ms);
-    guard ok_hdr else { return 0; }
+    let hdr_st = tls_internal::tls_read_exact_status(fd, hdr_buf[..], timeout_ms);
+    if hdr_st == -2 { return -2; }
+    if hdr_st == 0 {
+        g_tls_cipher_slots[idx].peer_closed = true;
+        return 0;
+    }
+    guard hdr_st == 1 else { return -1; }
 
     let ct, ver, payload_len_u16, alert, ok_p = parse_record_header(hdr_buf[..]);
     guard ok_p else { return -1; }
     let payload_len = payload_len_u16 as i64;
     guard payload_len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else { return -1; }
 
-    var ct_payload: u8[..16640] = [];
-    while ct_payload.len < payload_len { ct_payload.push(0); }
+    var ct_payload: u8[16640] = [0; 16640];
     let ok_body = tls_internal::tls_read_exact(fd, ct_payload[..payload_len], timeout_ms);
-    guard ok_body else { return -1; }
+    guard ok_body && ct == rfc::TLS_CONTENT_APPLICATION_DATA else { return -1; }
 
-    guard ct == rfc::TLS_CONTENT_APPLICATION_DATA else { return -1; }
-
-    var plain_dec: u8[..16640] = [];
-    defer core::secure_zeroize_slice(plain_dec[..]);
-    while plain_dec.len < payload_len { plain_dec.push(0); }
+    var plain_dec: u8[16640] = [0; 16640];
+    defer core::secure_zeroize_slice(plain_dec[..payload_len]);
     let klen = g_tls_cipher_slots[idx].key_len as i64;
     let dec_len, inner_type, alert_dec, ok_dec = tls_internal::record_decrypt_prepared_into(
         g_tls_cipher_slots[idx].cipher_suite,
@@ -835,14 +870,14 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
         g_tls_cipher_slots[idx].rx_seq,
         hdr_buf[..],
         ct_payload[..payload_len],
-        plain_dec[..],
+        plain_dec[..payload_len],
     );
     guard ok_dec else { return -1; }
     increment_record_seq_num(g_tls_cipher_slots[idx].rx_seq);
 
     if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA {
         let to_user = min(dec_len, dst.len);
-        for i in to_user { dst[i] = plain_dec[i]; }
+        core::ct_copy_bytes(dst[..to_user], plain_dec[..to_user]);
         if dec_len > dst.len {
             let _ = g_tls_cipher_slots[idx].rx_plain_buf.try_set(plain_dec[dst.len..dec_len]);
             g_tls_cipher_slots[idx].rx_plain_pos = 0;
@@ -882,12 +917,12 @@ fn transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 = 50
     let drained = tls_internal::tls_drain_rx_buf(idx, dst);
     if drained > 0 { return drained; }
 
-    loop {
+    for _ in 16 {
         let res = tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
         if res != 0 { return res; }
         if g_tls_cipher_slots[idx].peer_closed { return 0; }
     }
-    return 0;
+    return -1;
 }
 
 // Sends a CloseNotify alert, wipes secrets, and closes socket (RFC 8446 §6.1).

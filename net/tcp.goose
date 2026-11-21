@@ -821,6 +821,54 @@ fn tcp_accept_info(
     );
 }
 
+// Pre-connect TCP socket options applied BEFORE connect() so the initial outbound SYN
+// carries the requested OS profile (TTL/hop-limit, MSS, RCVBUF, SO_MARK, source bind).
+struct TcpConnectOptions {
+    src_ip:              const u8[:] = "",
+    dst_ip:              const u8[:] = "",
+    dst_port:            u16         = 0,
+    so_mark:             u32         = 0,
+    ttl:                 i32         = 0,
+    mss:                 i32         = 0,
+    rcvbuf:              i32         = 0,
+    tcp_nodelay:         bool        = true,
+    keepalive_idle_sec:  i32         = 30,
+    keepalive_intvl_sec: i32         = 5,
+    keepalive_cnt:       i32         = 3,
+    user_timeout_ms:     u32         = 15000,
+}
+
+// Begins a non-blocking IPv4/IPv6 TCP connect with pre-connect SYN profile options.
+// Sets out_state (0 = connected, 1 = in progress, -1 = failed) and out_err (mapped errno).
+fn tcp_connect_with_options(
+    opts:      const TcpConnectOptions&,
+    out_state: i32&,
+    out_err:   i32&,
+) -> i64 {
+    guard opts.dst_ip.len > 0 && opts.dst_port != 0 else {
+        out_state = -1;
+        out_err = -1;
+        return -1;
+    }
+    let _ = tcp_init();
+    return net_internal::native_tcp_connect_opts_begin(
+        opts.src_ip,
+        opts.dst_ip,
+        opts.dst_port,
+        opts.so_mark,
+        opts.ttl,
+        opts.mss,
+        opts.rcvbuf,
+        if opts.tcp_nodelay { 1 } else { 0 },
+        opts.keepalive_idle_sec,
+        opts.keepalive_intvl_sec,
+        opts.keepalive_cnt,
+        opts.user_timeout_ms,
+        out_state,
+        out_err,
+    );
+}
+
 // Begins a non-blocking IPv4/IPv6 TCP connect optionally bound to `src_ip` with `so_mark`.
 // Sets out_state (0 = connected, 1 = in progress, -1 = failed) and out_err (mapped errno).
 fn tcp_connect_bound_begin(
@@ -856,6 +904,18 @@ fn tcp_recv_peek(sock_fd: i64, dst: u8[:]) -> i32 {
 fn tcp_set_ttl(sock_fd: i64, ttl: i32, is_ipv6: bool = false) -> bool {
     guard sock_fd > 0 && ttl >= 1 && ttl <= 255 else { return false; }
     return net_internal::native_tcp_set_ttl(sock_fd, ttl, if is_ipv6 { 1 } else { 0 }) == 0;
+}
+
+// Configures TCP_MAXSEG (MSS clamp) on a socket before connect() on POSIX/Linux.
+fn tcp_set_mss(sock_fd: i64, mss: i32) -> bool {
+    guard sock_fd > 0 && mss >= 536 && mss <= 65495 else { return false; }
+    return net_internal::native_tcp_set_mss(sock_fd, mss) == 0;
+}
+
+// Configures SO_RCVBUF (socket receive window buffer size) on a socket.
+fn tcp_set_rcvbuf(sock_fd: i64, bytes: i32) -> bool {
+    guard sock_fd > 0 && bytes > 0 else { return false; }
+    return net_internal::native_tcp_set_rcvbuf(sock_fd, bytes) == 0;
 }
 
 // Creates a non-blocking kernel pipe pair for splice(2) forwarding (Linux only).

@@ -28,6 +28,7 @@
 #include <windows.h>
 #include <security.h>
 #include <schannel.h>
+#include <wincrypt.h>
 #elif !defined(__wasm__)
 #include <dlfcn.h>
 #endif
@@ -137,6 +138,7 @@ static void tls_buf_free(tls_buf_t *b) {
 #define OSSL_SSL_ERROR_ZERO_RETURN      6
 #define OSSL_SSL_VERIFY_NONE            0
 #define OSSL_SSL_VERIFY_PEER            1
+#define OSSL_SSL_VERIFY_FAIL_IF_NO_PEER_CERT 2
 #define OSSL_CTRL_SET_SNI               55
 #define OSSL_CTRL_SET_MIN_PROTO_VERSION 123
 #define OSSL_TLS1_2_VERSION             0x0303
@@ -178,6 +180,7 @@ typedef struct {
     int (*SSL_do_handshake)(void *);
     int (*SSL_read)(void *, void *, int);
     int (*SSL_write)(void *, const void *, int);
+    int (*SSL_shutdown)(void *);
     int (*SSL_get_error)(const void *, int);
     long (*SSL_ctrl)(void *, int, long, void *);
     int (*SSL_set1_host)(void *, const char *);
@@ -272,6 +275,7 @@ static void lk_SSL_set_bio(void *s, void *r, void *w) { SSL_set_bio((SSL *)s, (B
 static int lk_SSL_do_handshake(void *s) { return SSL_do_handshake((SSL *)s); }
 static int lk_SSL_read(void *s, void *b, int n) { return SSL_read((SSL *)s, b, n); }
 static int lk_SSL_write(void *s, const void *b, int n) { return SSL_write((SSL *)s, b, n); }
+static int lk_SSL_shutdown(void *s) { return SSL_shutdown((SSL *)s); }
 static int lk_SSL_get_error(const void *s, int r) { return SSL_get_error((const SSL *)s, r); }
 static long lk_SSL_ctrl(void *s, int cmd, long larg, void *parg) { return SSL_ctrl((SSL *)s, cmd, larg, parg); }
 static int lk_SSL_set1_host(void *s, const char *h) { return SSL_set1_host((SSL *)s, h); }
@@ -312,6 +316,7 @@ static int ossl_probe(void) {
     g_ossl.SSL_do_handshake = lk_SSL_do_handshake;
     g_ossl.SSL_read = lk_SSL_read;
     g_ossl.SSL_write = lk_SSL_write;
+    g_ossl.SSL_shutdown = lk_SSL_shutdown;
     g_ossl.SSL_get_error = lk_SSL_get_error;
     g_ossl.SSL_ctrl = lk_SSL_ctrl;
     g_ossl.SSL_set1_host = lk_SSL_set1_host;
@@ -387,6 +392,7 @@ static int ossl_probe(void) {
     ok &= load_fn_sym(&g_ossl.SSL_do_handshake, dyn_sym(slib, "SSL_do_handshake"));
     ok &= load_fn_sym(&g_ossl.SSL_read, dyn_sym(slib, "SSL_read"));
     ok &= load_fn_sym(&g_ossl.SSL_write, dyn_sym(slib, "SSL_write"));
+    (void)load_fn_sym(&g_ossl.SSL_shutdown, dyn_sym(slib, "SSL_shutdown"));
     ok &= load_fn_sym(&g_ossl.SSL_get_error, dyn_sym(slib, "SSL_get_error"));
     ok &= load_fn_sym(&g_ossl.SSL_ctrl, dyn_sym(slib, "SSL_ctrl"));
     ok &= load_fn_sym(&g_ossl.SSL_set1_host, dyn_sym(slib, "SSL_set1_host"));
@@ -700,18 +706,33 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
         return WING_TLS_ST_ERR;
     }
 
-    if (ep->is_server) {
-        if (ep->cert_pem_file[0] != '\0' &&
-            g_ossl.SSL_CTX_use_certificate_chain_file(ep->ossl_ctx, ep->cert_pem_file) != 1) {
+    /* Load PEM certificate chain + private key for both server endpoints and mTLS clients. */
+    int has_cert = ep->cert_pem_file[0] != '\0';
+    int has_key = ep->key_pem_file[0] != '\0';
+    if (has_cert != has_key) {
+        ossl_cleanup_ep(ep);
+        return WING_TLS_ST_HS_ERR;
+    }
+    if (has_cert && has_key) {
+        if (g_ossl.SSL_CTX_use_certificate_chain_file(ep->ossl_ctx, ep->cert_pem_file) != 1 ||
+            g_ossl.SSL_CTX_use_PrivateKey_file(ep->ossl_ctx, ep->key_pem_file, OSSL_FILETYPE_PEM) != 1 ||
+            g_ossl.SSL_CTX_check_private_key(ep->ossl_ctx) != 1) {
             ossl_cleanup_ep(ep);
             return WING_TLS_ST_HS_ERR;
         }
-        if (ep->key_pem_file[0] != '\0') {
-            if (g_ossl.SSL_CTX_use_PrivateKey_file(ep->ossl_ctx, ep->key_pem_file, OSSL_FILETYPE_PEM) != 1 ||
-                g_ossl.SSL_CTX_check_private_key(ep->ossl_ctx) != 1) {
+    }
+
+    if (ep->is_server) {
+        if (!ep->insecure_skip_verify && ep->ca_file[0] != '\0') {
+            if (g_ossl.SSL_CTX_load_verify_locations(ep->ossl_ctx, ep->ca_file, NULL) != 1) {
                 ossl_cleanup_ep(ep);
-                return WING_TLS_ST_HS_ERR;
+                return WING_TLS_ST_VERIFY_ERR;
             }
+            g_ossl.SSL_CTX_set_verify(
+                ep->ossl_ctx,
+                OSSL_SSL_VERIFY_PEER | OSSL_SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                NULL
+            );
         }
         if (ep->alpn_wire_len > 0 && g_ossl.SSL_CTX_set_alpn_select_cb != NULL) {
             g_ossl.SSL_CTX_set_alpn_select_cb(ep->ossl_ctx, ossl_alpn_select_cb, ep);
@@ -1098,10 +1119,11 @@ int64_t wing_tls_backend_open(
     int32_t *out_active_kind
 ) {
     int resolved = kind;
+    int has_pem_files = (ca_file.len > 0) || (cert_pem_file.len > 0) || (key_pem_file.len > 0);
     if (kind == WING_TLS_KIND_AUTO) {
         if (ossl_probe()) resolved = WING_TLS_KIND_OPENSSL;
-        else if (!is_server && schannel_probe()) resolved = WING_TLS_KIND_SCHANNEL;
-        else if (!is_server && min_version == WING_TLS_MIN_TLS12 && secure_transport_probe()) {
+        else if (!is_server && !has_pem_files && schannel_probe()) resolved = WING_TLS_KIND_SCHANNEL;
+        else if (!is_server && !has_pem_files && min_version == WING_TLS_MIN_TLS12 && secure_transport_probe()) {
             resolved = WING_TLS_KIND_SECURE_TRANSPORT;
         } else {
             *out_status = WING_TLS_ST_UNAVAILABLE;
@@ -1321,4 +1343,184 @@ int64_t wing_tls_backend_selected_alpn(int64_t handle, wing_tls_rw dst) {
 int32_t wing_tls_backend_is_established(int64_t handle) {
     wing_tls_ep_t *ep = get_ep(handle);
     return (ep != NULL && !ep->closed && ep->established) ? 1 : 0;
+}
+
+int64_t wing_tls_backend_pending_wire(int64_t handle) {
+    wing_tls_ep_t *ep = get_ep(handle);
+    if (ep == NULL || ep->closed) return 0;
+    if (ep->kind == WING_TLS_KIND_OPENSSL) {
+        long pend = g_ossl.BIO_ctrl(ep->ossl_wbio, OSSL_BIO_CTRL_PENDING, 0, NULL);
+        return pend > 0 ? (int64_t)pend : 0;
+    }
+#ifdef _WIN32
+    if (ep->kind == WING_TLS_KIND_SCHANNEL) {
+        return (int64_t)ep->sch_out.len;
+    }
+#endif
+#ifdef __APPLE__
+    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        return (int64_t)ep->st_out.len;
+    }
+#endif
+    return 0;
+}
+
+int32_t wing_tls_backend_shutdown(int64_t handle) {
+    wing_tls_ep_t *ep = get_ep(handle);
+    if (ep == NULL || ep->closed) return WING_TLS_ST_CLOSED;
+    if (!ep->established) return WING_TLS_ST_OK;
+    if (ep->kind == WING_TLS_KIND_OPENSSL) {
+        if (g_ossl.SSL_shutdown == NULL) return WING_TLS_ST_OK;
+        int r = g_ossl.SSL_shutdown(ep->ossl_ssl);
+        if (r >= 0) return WING_TLS_ST_OK;
+        return ossl_map_err(ep, r, 0);
+    }
+    return WING_TLS_ST_OK;
+}
+
+/* ---- OS System Root CA Lookup (Windows Crypt32 dynamic loader) --------- */
+
+#ifdef _WIN32
+typedef HCERTSTORE (WINAPI *pfn_CertOpenSystemStoreA)(HCRYPTPROV_LEGACY, LPCSTR);
+typedef PCCERT_CONTEXT (WINAPI *pfn_CertEnumCertificatesInStore)(HCERTSTORE, PCCERT_CONTEXT);
+typedef BOOL (WINAPI *pfn_CertCloseStore)(HCERTSTORE, DWORD);
+typedef PCCERT_CONTEXT (WINAPI *pfn_CertFindCertificateInStore)(HCERTSTORE, DWORD, DWORD, DWORD, const void *, PCCERT_CONTEXT);
+typedef BOOL (WINAPI *pfn_CertFreeCertificateContext)(PCCERT_CONTEXT);
+typedef BOOL (WINAPI *pfn_CertGetEnhancedKeyUsage)(PCCERT_CONTEXT, DWORD, PCERT_ENHKEY_USAGE, DWORD *);
+
+typedef struct {
+    int available;
+    pfn_CertOpenSystemStoreA CertOpenSystemStoreA;
+    pfn_CertEnumCertificatesInStore CertEnumCertificatesInStore;
+    pfn_CertCloseStore CertCloseStore;
+    pfn_CertFindCertificateInStore CertFindCertificateInStore;
+    pfn_CertFreeCertificateContext CertFreeCertificateContext;
+    pfn_CertGetEnhancedKeyUsage CertGetEnhancedKeyUsage;
+} wing_crypt32_t;
+
+static INIT_ONCE g_crypt32_once = INIT_ONCE_STATIC_INIT;
+static wing_crypt32_t g_crypt32 = {0};
+
+static BOOL CALLBACK crypt32_init_once_cb(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
+    HMODULE h = LoadLibraryA("crypt32.dll");
+    if (h == NULL) return TRUE;
+    if (!load_fn_sym(&g_crypt32.CertOpenSystemStoreA, GetProcAddress(h, "CertOpenSystemStoreA")) ||
+        !load_fn_sym(&g_crypt32.CertEnumCertificatesInStore, GetProcAddress(h, "CertEnumCertificatesInStore")) ||
+        !load_fn_sym(&g_crypt32.CertCloseStore, GetProcAddress(h, "CertCloseStore")) ||
+        !load_fn_sym(&g_crypt32.CertFindCertificateInStore, GetProcAddress(h, "CertFindCertificateInStore")) ||
+        !load_fn_sym(&g_crypt32.CertFreeCertificateContext, GetProcAddress(h, "CertFreeCertificateContext")) ||
+        !load_fn_sym(&g_crypt32.CertGetEnhancedKeyUsage, GetProcAddress(h, "CertGetEnhancedKeyUsage"))) {
+        FreeLibrary(h);
+        return TRUE;
+    }
+    g_crypt32.available = 1;
+    return TRUE;
+}
+
+static int crypt32_ensure_loaded(void) {
+    InitOnceExecuteOnce(&g_crypt32_once, crypt32_init_once_cb, NULL, NULL);
+    return g_crypt32.available;
+}
+
+static int crypt32_allows_server_auth(PCCERT_CONTEXT ctx) {
+    DWORD cb = 0;
+    if (!g_crypt32.CertGetEnhancedKeyUsage(ctx, 0, NULL, &cb)) {
+        return GetLastError() == (DWORD)CRYPT_E_NOT_FOUND ? 1 : 0;
+    }
+    if (cb == 0) {
+        return GetLastError() == (DWORD)CRYPT_E_NOT_FOUND ? 1 : 0;
+    }
+    uint8_t stack_buf[1024];
+    uint8_t *buf = stack_buf;
+    if (cb > sizeof(stack_buf)) {
+        if (cb > 65536) return 0;
+        buf = (uint8_t *)malloc(cb);
+        if (buf == NULL) return 0;
+    }
+    int allowed = 0;
+    if (g_crypt32.CertGetEnhancedKeyUsage(ctx, 0, (PCERT_ENHKEY_USAGE)buf, &cb)) {
+        PCERT_ENHKEY_USAGE usage = (PCERT_ENHKEY_USAGE)buf;
+        if (usage->cUsageIdentifier == 0) {
+            allowed = (GetLastError() == (DWORD)CRYPT_E_NOT_FOUND) ? 1 : 0;
+        } else {
+            for (DWORD i = 0; i < usage->cUsageIdentifier; i++) {
+                const char *oid = usage->rgpszUsageIdentifier[i];
+                if (oid != NULL &&
+                    (strcmp(oid, "1.3.6.1.5.5.7.3.1") == 0 || strcmp(oid, "2.5.29.37.0") == 0)) {
+                    allowed = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (buf != stack_buf) free(buf);
+    return allowed;
+}
+#endif
+
+/* Looks up trusted root CA certificates in the OS root store whose DER Subject
+ * Name TLV equals `subject_der_tlv`, excluding certificates in Windows
+ * `"Disallowed"` or restricted away from TLS ServerAuth EKU. Packs matches as
+ * `[u32_be len][der]` into `out_buf` and stores bytes written in `*out_written`.
+ * Returns matched count (>= 0) on native OS stores, or -1 on Unix/macOS where
+ * Goose scans standard system PEM bundle paths instead. */
+int32_t wing_tls_system_roots_by_subject(
+    wing_tls_ro subject_der_tlv,
+    wing_tls_rw out_buf,
+    int32_t *out_written
+) {
+    if (out_written != NULL) *out_written = 0;
+    if (subject_der_tlv.data == NULL || subject_der_tlv.len <= 0 ||
+        out_buf.data == NULL || out_buf.len < 8) {
+        return 0;
+    }
+#ifdef _WIN32
+    if (!crypt32_ensure_loaded()) return -1;
+    HCERTSTORE hStore = g_crypt32.CertOpenSystemStoreA(0, "ROOT");
+    if (hStore == NULL) return -1;
+    HCERTSTORE hDisallowed = g_crypt32.CertOpenSystemStoreA(0, "Disallowed");
+
+    int32_t count = 0;
+    size_t pos = 0;
+    size_t cap = (size_t)out_buf.len;
+    size_t target_len = (size_t)subject_der_tlv.len;
+    PCCERT_CONTEXT ctx = NULL;
+    while ((ctx = g_crypt32.CertEnumCertificatesInStore(hStore, ctx)) != NULL) {
+        if (count >= 8) continue;
+        if ((ctx->dwCertEncodingType & X509_ASN_ENCODING) == 0 || ctx->pCertInfo == NULL) continue;
+        if (ctx->pCertInfo->Subject.pbData == NULL || ctx->pbCertEncoded == NULL) continue;
+        if ((size_t)ctx->pCertInfo->Subject.cbData != target_len) continue;
+        if (memcmp(ctx->pCertInfo->Subject.pbData, subject_der_tlv.data, target_len) != 0) continue;
+        if (hDisallowed != NULL) {
+            PCCERT_CONTEXT hit = g_crypt32.CertFindCertificateInStore(
+                hDisallowed, X509_ASN_ENCODING, 0, CERT_FIND_EXISTING, ctx, NULL
+            );
+            if (hit != NULL) {
+                g_crypt32.CertFreeCertificateContext(hit);
+                continue;
+            }
+        }
+        if (!crypt32_allows_server_auth(ctx)) continue;
+        size_t der_len = (size_t)ctx->cbCertEncoded;
+        if (der_len == 0 || der_len > 4096 || pos + 4 + der_len > cap) continue;
+        out_buf.data[pos + 0] = (uint8_t)((der_len >> 24) & 0xFF);
+        out_buf.data[pos + 1] = (uint8_t)((der_len >> 16) & 0xFF);
+        out_buf.data[pos + 2] = (uint8_t)((der_len >> 8) & 0xFF);
+        out_buf.data[pos + 3] = (uint8_t)(der_len & 0xFF);
+        memcpy(out_buf.data + pos + 4, ctx->pbCertEncoded, der_len);
+        pos += 4 + der_len;
+        count++;
+    }
+    if (hDisallowed != NULL) g_crypt32.CertCloseStore(hDisallowed, 0);
+    g_crypt32.CertCloseStore(hStore, 0);
+    if (out_written != NULL) *out_written = (int32_t)pos;
+    return count;
+#else
+    (void)subject_der_tlv;
+    (void)out_buf;
+    return -1;
+#endif
 }

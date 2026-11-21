@@ -196,6 +196,7 @@ import tls.handshake_io_internal;
 import tls.client_handshake;
 import tls.server_handshake;
 import tls.backend;
+import tls.stream;
 
 import quic.internal;
 import quic.packet_internal;

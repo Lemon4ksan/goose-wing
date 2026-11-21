@@ -41,6 +41,7 @@ typedef int SOCKET;
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <poll.h>
 #include <sys/statvfs.h>
 #include <sys/un.h>
 #include <sys/ioctl.h>
@@ -649,12 +650,27 @@ int64_t wing_tcp_accept_info(int64_t listener_fd, int32_t mode_flags, wing_bytes
     if (out_dst_port) *out_dst_port = wing_tcp_getsockname_port(c);
     return c;
 }
-int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
-                                     int32_t *out_state, int32_t *out_err) {
+int64_t wing_tcp_connect_opts_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
+                                    int32_t ttl, int32_t mss, int32_t rcvbuf, int32_t tcp_nodelay, int32_t ka_idle,
+                                    int32_t ka_intvl, int32_t ka_cnt, uint32_t user_timeout_ms, int32_t *out_state,
+                                    int32_t *out_err) {
     (void)src_ip;
     (void)so_mark;
+    (void)ttl;
+    (void)mss;
+    (void)rcvbuf;
+    (void)tcp_nodelay;
+    (void)ka_idle;
+    (void)ka_intvl;
+    (void)ka_cnt;
+    (void)user_timeout_ms;
     if (out_err) *out_err = 0;
     return wing_tcp_connect_begin(dst_ip, dst_port, out_state);
+}
+int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
+                                     int32_t *out_state, int32_t *out_err) {
+    return wing_tcp_connect_opts_begin(src_ip, dst_ip, dst_port, so_mark, 0, 0, 0, 1, 30, 5, 3, 15000, out_state,
+                                       out_err);
 }
 int32_t wing_tcp_connect_status(int64_t sock_fd) { return wing_tcp_connect_finish(sock_fd); }
 int32_t wing_tcp_recv_peek(int64_t sock_fd, wing_bytes_rw dst) {
@@ -666,6 +682,16 @@ int32_t wing_tcp_set_ttl(int64_t sock_fd, int32_t ttl, int32_t is_ipv6) {
     (void)sock_fd;
     (void)ttl;
     (void)is_ipv6;
+    return 0;
+}
+int32_t wing_tcp_set_mss(int64_t sock_fd, int32_t mss) {
+    (void)sock_fd;
+    (void)mss;
+    return 0;
+}
+int32_t wing_tcp_set_rcvbuf(int64_t sock_fd, int32_t bytes) {
+    (void)sock_fd;
+    (void)bytes;
     return 0;
 }
 int32_t wing_pipe_create(int64_t *out_read_fd, int64_t *out_write_fd) {
@@ -730,6 +756,45 @@ int64_t wing_fs_file_mtime(wing_bytes_ro path) {
 }
 
 #else
+
+// Waits for read (want_write == 0) or write (want_write != 0) readiness up to timeout_ms.
+// Uses poll(2) on POSIX to avoid FD_SETSIZE (1024) stack overflow UB at high connection counts.
+// Returns 1 if ready, 0 on timeout, or -1 on error (including Winsock exceptfds connect error).
+static int wing_wait_fd(SOCKET s, int want_write, uint32_t timeout_ms) {
+#ifdef _WIN32
+    fd_set rw_fds;
+    FD_ZERO(&rw_fds);
+    FD_SET(s, &rw_fds);
+    fd_set except_fds;
+    FD_ZERO(&except_fds);
+    if (want_write) FD_SET(s, &except_fds);
+
+    struct timeval tv;
+    tv.tv_sec = (long)(timeout_ms / 1000U);
+    tv.tv_usec = (long)((timeout_ms % 1000U) * 1000U);
+
+    int sel = select((int)(s + 1), want_write ? NULL : &rw_fds, want_write ? &rw_fds : NULL,
+                     want_write ? &except_fds : NULL, &tv);
+    if (sel <= 0) return sel;
+    if (want_write && FD_ISSET(s, &except_fds)) return -1;
+    return 1;
+#else
+    struct pollfd pfd;
+    pfd.fd = (int)s;
+    pfd.events = (short)(want_write ? POLLOUT : POLLIN);
+    pfd.revents = 0;
+    int ms = timeout_ms > 2147483647U ? 2147483647 : (int)timeout_ms;
+    int pr = 0;
+    do {
+        pr = poll(&pfd, 1, ms);
+    } while (pr < 0 && errno == EINTR);
+    if (pr <= 0) return pr;
+    if (want_write && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 && (pfd.revents & POLLOUT) == 0) {
+        return -1;
+    }
+    return 1;
+#endif
+}
 
 // Initializes socket subsystem (WSAStartup on Windows, ignore SIGPIPE on POSIX).
 int32_t wing_tcp_init(void) {
@@ -1031,15 +1096,7 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     SOCKET l = (SOCKET)listener_fd;
 
     if (timeout_ms > 0) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(l, &read_fds);
-
-        struct timeval tv;
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
-
-        int sel = select((int)(l + 1), &read_fds, NULL, NULL, &tv);
+        int sel = wing_wait_fd(l, 0, timeout_ms);
         if (sel <= 0) {
             return sel == 0 ? 0 : -1;
         }
@@ -1143,28 +1200,8 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
             return -1;
         }
 #endif
-        fd_set write_fds;
-        FD_ZERO(&write_fds);
-        FD_SET(s, &write_fds);
-
-        // uSockets #258 / #259 & Winsock2 spec:
-        // On Windows, connection failures (RST / ECONNREFUSED) are delivered via exceptfds, NOT writefds.
-        // Without exceptfds, select() ignores connection errors and freezes until the entire timeout expires.
-        fd_set except_fds;
-        FD_ZERO(&except_fds);
-        FD_SET(s, &except_fds);
-
-        struct timeval tv;
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
-
-        int sel = select((int)(s + 1), NULL, &write_fds, &except_fds, &tv);
+        int sel = wing_wait_fd(s, 1, timeout_ms);
         if (sel <= 0) {
-            closesocket(s);
-            return -1;
-        }
-
-        if (FD_ISSET(s, &except_fds)) {
             closesocket(s);
             return -1;
         }
@@ -1344,6 +1381,7 @@ int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
 #else
         ssize_t sent = send(s, ptr, remaining, MSG_NOSIGNAL);
         if (sent < 0) {
+            if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 int32_t written = (int32_t)(data.len - remaining);
                 return written > 0 ? written : -2;
@@ -1368,21 +1406,23 @@ int32_t wing_tcp_recv(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_ms) {
     SOCKET s = (SOCKET)sock_fd;
 
     if (timeout_ms > 0) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(s, &read_fds);
-
-        struct timeval tv;
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
-
-        int sel = select((int)(s + 1), &read_fds, NULL, NULL, &tv);
+        int sel = wing_wait_fd(s, 0, timeout_ms);
         if (sel == 0) return -2; // Timeout
         if (sel < 0) return -1;  // Error
     }
 
+#ifdef _WIN32
     int recvd = recv(s, (char *)buf.data, (int)buf.len, 0);
+    if (recvd < 0 && WSAGetLastError() == WSAEWOULDBLOCK) return -2;
     return (int32_t)recvd;
+#else
+    ssize_t recvd = 0;
+    do {
+        recvd = recv(s, (char *)buf.data, (size_t)buf.len, 0);
+    } while (recvd < 0 && errno == EINTR);
+    if (recvd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return -2;
+    return (int32_t)recvd;
+#endif
 }
 
 // Closes socket handle.
@@ -2291,15 +2331,7 @@ int32_t wing_udp_recvfrom(int64_t sock_fd, wing_bytes_rw buf, uint32_t timeout_m
     SOCKET s = (SOCKET)sock_fd;
 
     if (timeout_ms > 0) {
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(s, &readfds);
-
-        struct timeval tv;
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
-
-        int sel = select((int)s + 1, &readfds, NULL, NULL, &tv);
+        int sel = wing_wait_fd(s, 0, timeout_ms);
         if (sel == 0) {
             return -2; // Timeout
         }
@@ -2718,8 +2750,28 @@ int64_t wing_tcp_accept_info(int64_t listener_fd, int32_t mode_flags, wing_bytes
     return (int64_t)c;
 }
 
-int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
-                                     int32_t *out_state, int32_t *out_err) {
+int32_t wing_tcp_set_mss(int64_t sock_fd, int32_t mss) {
+    if (sock_fd <= 0 || mss < 536 || mss > 65495) return -1;
+#if defined(TCP_MAXSEG) && !defined(_WIN32)
+    int val = (int)mss;
+    return setsockopt((SOCKET)sock_fd, IPPROTO_TCP, TCP_MAXSEG, (const char *)&val, sizeof(val)) == 0 ? 0 : -1;
+#else
+    (void)sock_fd;
+    (void)mss;
+    return 0;
+#endif
+}
+
+int32_t wing_tcp_set_rcvbuf(int64_t sock_fd, int32_t bytes) {
+    if (sock_fd <= 0 || bytes <= 0) return -1;
+    int val = (int)bytes;
+    return setsockopt((SOCKET)sock_fd, SOL_SOCKET, SO_RCVBUF, (const char *)&val, sizeof(val)) == 0 ? 0 : -1;
+}
+
+int64_t wing_tcp_connect_opts_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
+                                    int32_t ttl, int32_t mss, int32_t rcvbuf, int32_t tcp_nodelay, int32_t ka_idle,
+                                    int32_t ka_intvl, int32_t ka_cnt, uint32_t user_timeout_ms, int32_t *out_state,
+                                    int32_t *out_err) {
     if (out_state) *out_state = -1;
     if (out_err) *out_err = -1;
     if (dst_ip.data == NULL || dst_ip.len <= 0 || dst_ip.len >= 128 || dst_port == 0) return -1;
@@ -2742,7 +2794,8 @@ int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip,
     wing_prepare_nonblocking_cloexec(s);
     int opt = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
-    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&opt, sizeof(opt));
+    int nd = tcp_nodelay ? 1 : 0;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nd, sizeof(nd));
 
 #ifdef __linux__
     if (so_mark != 0) {
@@ -2764,6 +2817,22 @@ int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip,
 #else
     (void)so_mark;
 #endif
+
+    // Apply pre-connect SYN profile options (TTL/hop-limit, MSS, RCVBUF) BEFORE connect().
+    if (ttl > 0 && ttl <= 255) {
+        int t = (int)ttl;
+        if (family == AF_INET6) {
+            (void)setsockopt(s, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (const char *)&t, sizeof(t));
+        } else {
+            (void)setsockopt(s, IPPROTO_IP, IP_TTL, (const char *)&t, sizeof(t));
+        }
+    }
+    if (mss >= 536 && mss <= 65495) {
+        (void)wing_tcp_set_mss((int64_t)s, mss);
+    }
+    if (rcvbuf > 0) {
+        (void)wing_tcp_set_rcvbuf((int64_t)s, rcvbuf);
+    }
 
     if (src_ip.data != NULL && src_ip.len > 0) {
         if (src_ip.len >= 128) {
@@ -2790,8 +2859,14 @@ int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip,
         }
     }
 
-    (void)wing_tcp_set_keepalive_params((int64_t)s, 30, 5, 3);
-    (void)wing_tcp_set_user_timeout((int64_t)s, 15000);
+    if (ka_idle > 0) {
+        int ki = ka_intvl > 0 ? ka_intvl : 5;
+        int kc = ka_cnt > 0 ? ka_cnt : 3;
+        (void)wing_tcp_set_keepalive_params((int64_t)s, ka_idle, ki, kc);
+    }
+    if (user_timeout_ms > 0) {
+        (void)wing_tcp_set_user_timeout((int64_t)s, user_timeout_ms);
+    }
 
 #ifdef _WIN32
     int rc = connect(s, (struct sockaddr *)&dst_ss, dst_len);
@@ -2818,6 +2893,12 @@ int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip,
     if (out_err) *out_err = wing_map_connect_errno(err);
     closesocket(s);
     return -1;
+}
+
+int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
+                                     int32_t *out_state, int32_t *out_err) {
+    return wing_tcp_connect_opts_begin(src_ip, dst_ip, dst_port, so_mark, 0, 0, 0, 1, 30, 5, 3, 15000, out_state,
+                                       out_err);
 }
 
 int32_t wing_tcp_connect_status(int64_t sock_fd) {
@@ -3128,14 +3209,7 @@ int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wi
         return -1;
     }
 
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(s, &rfds);
-    struct timeval tv;
-    tv.tv_sec = (long)(timeout_ms / 1000U);
-    tv.tv_usec = (long)((timeout_ms % 1000U) * 1000U);
-
-    int sel = select((int)s + 1, &rfds, NULL, NULL, &tv);
+    int sel = wing_wait_fd(s, 0, timeout_ms);
     if (sel <= 0) {
         closesocket(s);
         return sel == 0 ? -2 : -1;

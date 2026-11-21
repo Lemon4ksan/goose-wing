@@ -111,9 +111,27 @@ extern fn native_tcp_connect_bound_begin(
     out_state: i32&,
     out_err:   i32&,
 ) -> i64 = "wing_tcp_connect_bound_begin";
+extern fn native_tcp_connect_opts_begin(
+    src_ip:          const u8[:],
+    dst_ip:          const u8[:],
+    dst_port:        u16,
+    so_mark:         u32,
+    ttl:             i32,
+    mss:             i32,
+    rcvbuf:          i32,
+    tcp_nodelay:     i32,
+    ka_idle:         i32,
+    ka_intvl:        i32,
+    ka_cnt:          i32,
+    user_timeout_ms: u32,
+    out_state:       i32&,
+    out_err:         i32&,
+) -> i64 = "wing_tcp_connect_opts_begin";
 extern fn native_tcp_connect_status(sock_fd: i64) -> i32 = "wing_tcp_connect_status";
 extern fn native_tcp_recv_peek(sock_fd: i64, dst: u8[:]) -> i32 = "wing_tcp_recv_peek";
 extern fn native_tcp_set_ttl(sock_fd: i64, ttl: i32, is_ipv6: i32) -> i32 = "wing_tcp_set_ttl";
+extern fn native_tcp_set_mss(sock_fd: i64, mss: i32) -> i32 = "wing_tcp_set_mss";
+extern fn native_tcp_set_rcvbuf(sock_fd: i64, bytes: i32) -> i32 = "wing_tcp_set_rcvbuf";
 extern fn native_pipe_create(out_read_fd: i64&, out_write_fd: i64&) -> i32 = "wing_pipe_create";
 extern fn native_pipe_close(read_fd: i64, write_fd: i64) = "wing_pipe_close";
 extern fn native_tcp_splice_chunk(
