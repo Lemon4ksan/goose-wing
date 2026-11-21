@@ -45,6 +45,9 @@ struct TlsBackendConfig {
     server_name:          u8[..256]        = [],
     alpn_wire:            u8[..64]         = [],
     insecure_skip_verify: bool             = false,
+    ca_file:              u8[..256]        = [],
+    cert_pem_file:        u8[..256]        = [],
+    key_pem_file:         u8[..256]        = [],
     cert_der:             u8[..4096]       = [],
     priv_seed:            u8[32]           = [0; 32],
     trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
@@ -75,6 +78,9 @@ extern fn native_tls_backend_open(
     insecure_skip_verify: i32,
     server_name:          const u8[:],
     alpn_wire:            const u8[:],
+    ca_file:              const u8[:],
+    cert_pem_file:        const u8[:],
+    key_pem_file:         const u8[:],
     out_status:           i32&,
     out_active_kind:      i32&,
 ) -> i64 = "wing_tls_backend_open";
@@ -853,7 +859,7 @@ fn tls_backend_available(kind: TlsBackendKind) -> bool {
 // `SystemSchannel`, or `Auto` with automatic fallback to `PureGoose`).
 fn tls_endpoint_open(cfg: const TlsBackendConfig&) -> TlsEndpoint, TlsBackendStatus {
     let force_pure = cfg.kind == TlsBackendKind.PureGoose ||
-        (cfg.kind == TlsBackendKind.Auto && cfg.is_server && cfg.cert_der.len > 0);
+        (cfg.kind == TlsBackendKind.Auto && cfg.is_server && cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0);
     if force_pure {
         return open_pure_endpoint(cfg);
     }
@@ -866,6 +872,9 @@ fn tls_endpoint_open(cfg: const TlsBackendConfig&) -> TlsEndpoint, TlsBackendSta
         if cfg.insecure_skip_verify { 1 } else { 0 },
         cfg.server_name[..],
         cfg.alpn_wire[..],
+        cfg.ca_file[..],
+        cfg.cert_pem_file[..],
+        cfg.key_pem_file[..],
         st_i32,
         active_i32,
     );

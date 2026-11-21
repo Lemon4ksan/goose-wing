@@ -732,6 +732,9 @@ struct TlsBackendConfig {
     server_name:          u8[..256]        = [],
     alpn_wire:            u8[..64]         = [],
     insecure_skip_verify: bool             = false,
+    ca_file:              u8[..256]        = [],
+    cert_pem_file:        u8[..256]        = [],
+    key_pem_file:         u8[..256]        = [],
     cert_der:             u8[..4096]       = [],
     priv_seed:            u8[32]           = [0; 32],
     trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
@@ -760,11 +763,26 @@ fn tls_endpoint_is_established(ep: const TlsEndpoint&) -> bool
 ```
 
 `TlsEndpoint` defines a buffer-oriented, sans-IO TLS transport contract backed
-by closed polymorphism across `PureGoose` (native Goose TLS 1.3 handshake and
-record layer with zero external dependencies and full DST determinism),
-`SystemOpenSsl` (dynamically loaded OpenSSL/BoringSSL via `LoadLibraryA` /
-`dlopen` with memory BIOs in `shim/tls_backend.c`), `SystemSchannel`
-(dynamically loaded Windows `secur32.dll` Schannel context with zero third-party
-DLLs), and `Auto` (probes native system drivers and falls back to `PureGoose`).
+by closed polymorphism across:
+
+- `PureGoose`: native Goose TLS 1.3 handshake and record layer with zero
+  external dependencies and full single-seed DST determinism.
+- `SystemOpenSsl`: optional OpenSSL 3 / 1.1.1 / BoringSSL driver in
+  `shim/tls_backend.c` using memory BIOs, `TLS 1.2+` minimum version floor,
+  `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification, custom `ca_file`
+  and server `cert_pem_file` / `key_pem_file` PEM loading, and server/client
+  ALPN negotiation. Loaded dynamically via `dlopen` / `LoadLibraryA` with zero
+  compile-time OpenSSL dependency (override paths with `WING_OPENSSL_LIB` /
+  `WING_CRYPTO_LIB`, or link directly with `-DWING_TLS_LINK_OPENSSL -lssl
+  -lcrypto`).
+- `SystemSchannel`: dynamically loaded Windows `secur32.dll` Schannel client
+  context with zero third-party DLLs.
+- `Auto`: selects `SystemOpenSsl` when available (Linux `libssl.so.3` /
+  `libssl.so.1.1`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
+  `libssl-3-x64.dll` / `libssl-3.dll`), then `SystemSchannel` on Windows client
+  endpoints, and falls back to `PureGoose` TLS 1.3 otherwise (including macOS
+  without Homebrew OpenSSL, where Apple deprecated `SecureTransport` at TLS
+  1.2).
+
 `tls_endpoint_close` is idempotent and wipes handshake and traffic keys on
 shutdown.

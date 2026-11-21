@@ -136,6 +136,54 @@ fn main() {
 }
 ```
 
+### 4. Pluggable TLS backend (pure-Goose vs. optional OpenSSL / Schannel shim)
+
+By default `goose-wing` uses its self-contained pure-Goose TLS 1.3 engine
+(`tls::TlsBackendKind.PureGoose`), which has zero external dependencies and
+stays bit-for-bit deterministic under single-seed DST simulation
+(`net/dst.goose`).
+
+If you prefer not to rely on a custom TLS implementation in production, switch
+to an audited system TLS library through the optional C shim
+[`shim/tls_backend.c`](shim/tls_backend.c) without changing protocol or
+application code:
+
+- `tls::TlsBackendKind.SystemOpenSsl`: OpenSSL 3 / 1.1.1 / BoringSSL via sans-IO
+  memory BIOs (`TLS 1.2+` floor, `SSL_VERIFY_PEER` + `SSL_set1_host` hostname
+  verification, custom `ca_file`, server `cert_pem_file` / `key_pem_file`,
+  client and server ALPN). Loaded dynamically at runtime via `dlopen` /
+  `LoadLibraryA` with zero link-time OpenSSL dependency. Set `WING_OPENSSL_LIB`
+  / `WING_CRYPTO_LIB` to load a vendored library path, or compile with
+  `-DWING_TLS_LINK_OPENSSL` and link `-lssl -lcrypto` for direct linking.
+- `tls::TlsBackendKind.SystemSchannel`: Windows native `secur32.dll` Schannel
+  client context with zero third-party DLLs.
+- `tls::TlsBackendKind.Auto`: selects `SystemOpenSsl` if installed (Linux
+  `libssl.so.3`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
+  `libssl-3*.dll`), then `SystemSchannel` on Windows client endpoints, and falls
+  back to `PureGoose` TLS 1.3 otherwise (on macOS without Homebrew OpenSSL,
+  Apple's deprecated `SecureTransport` lacks TLS 1.3 so `Auto` uses
+  `PureGoose`).
+
+```goose
+import wing;
+
+fn open_audited_tls_client() -> tls::TlsEndpoint, tls::TlsBackendStatus {
+    var cfg = tls::TlsBackendConfig {
+        kind: tls::TlsBackendKind.SystemOpenSsl,
+        ..
+    };
+    let _ = cfg.server_name.try_set("api.example.com");
+    let _ = cfg.alpn_wire.try_set("\x02h2\x08http/1.1");
+    return tls::tls_endpoint_open(cfg);
+}
+```
+
+See [tls/README.md](tls/README.md) for full `TlsEndpoint` API details,
+[net/README.md](net/README.md) for single-seed Deterministic Simulation Testing
+(`DstWorld`), [wire/README.md](wire/README.md) for compile-time ingress RAM
+budgets (`wire/budget.goose`), and [server/README.md](server/README.md) for
+unified H1/H2/H3 streaming with flow-control backpressure (`ResponseStream`).
+
 ## Build and test
 
 Typecheck the core libraries, examples, and test suites, then run the native LIT
