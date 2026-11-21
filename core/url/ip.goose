@@ -418,3 +418,193 @@ fn format_ipv6_bytes(ip6: const u8[16]&, out: u8[..64]&) {
         out.push(hex_chars[(lo & 0x0F) as i64]);
     }
 }
+
+// ---- Unified IPv4/IPv6/CIDR model and matchers ------------------------------
+
+enum IpFamily {
+    Unknown,
+    V4,
+    V6,
+}
+
+struct IpAddr {
+    family: IpFamily = IpFamily.Unknown,
+    bytes:  u8[16]   = [0; 16],
+}
+
+struct IpCidr {
+    addr:       IpAddr = IpAddr { .. },
+    prefix_len: u8     = 0,
+}
+
+// Parses a canonical dotted-quad IPv4 literal into 4 network-order octets.
+// Rejects leading zeros, whitespace, ports, and out-of-range octets.
+//
+// Example:
+//   raw = "185.10.40.7"
+//   returns: [185, 10, 40, 7], true
+fn parse_ipv4_octets(raw: const u8[:]) -> u8[4], bool {
+    var out: u8[4] = [0; 4];
+    guard raw.len >= 7 && raw.len <= 15 else { return out, false; }
+    var rest = raw;
+    for i in 4 {
+        let part, rem, has_dot = split_once_byte(rest, '.');
+        if i < 3 {
+            guard has_dot else { return out, false; }
+        } else {
+            guard !has_dot else { return out, false; }
+        }
+        let val, ok_v = parse_ipv4_decimal_octet(part);
+        guard ok_v else { return out, false; }
+        out[i] = val as u8;
+        rest = rem;
+    }
+    return out, true;
+}
+
+// Parses a canonical dotted-quad IPv4 literal into a big-endian u32.
+//
+// Example:
+//   raw = "127.0.0.1"
+//   returns: 0x7F000001, true
+fn parse_ipv4_u32(raw: const u8[:]) -> u32, bool {
+    let octs, ok = parse_ipv4_octets(raw);
+    guard ok else { return 0, false; }
+    return read_be_u32(octs[..], 0), true;
+}
+
+// Parses a dotted-quad IPv4 literal into an IpAddr value.
+//
+// Example:
+//   raw = "185.10.40.7"
+//   returns: IpAddr { family: IpFamily.V4, .. }, true
+fn parse_ipv4_addr(raw: const u8[:]) -> IpAddr, bool {
+    var out = IpAddr { .. };
+    let octs, ok = parse_ipv4_octets(raw);
+    guard ok else { return out, false; }
+    out.family = IpFamily.V4;
+    for i in 4 {
+        out.bytes[i] = octs[i];
+    }
+    return out, true;
+}
+
+// Parses an IPv6 literal (without brackets or zone ID) into an IpAddr value.
+//
+// Example:
+//   raw = "2001:db8::1"
+//   returns: IpAddr { family: IpFamily.V6, .. }, true
+fn parse_ipv6_addr(raw: const u8[:]) -> IpAddr, bool {
+    let octs, ok = parse_ipv6_octets(raw);
+    guard ok else { return IpAddr { .. }, false; }
+    return IpAddr { family: IpFamily.V6, bytes: octs }, true;
+}
+
+// Parses a literal IPv4 or IPv6 address (strips optional brackets on IPv6).
+//
+// Example:
+//   raw = "[2001:db8::1]"
+//   returns: IpAddr { family: IpFamily.V6, .. }, true
+fn parse_ip_addr(raw: const u8[:]) -> IpAddr, bool {
+    guard raw.len > 0 else { return IpAddr { .. }, false; }
+    if contains_byte(raw, ':') {
+        var clean = raw;
+        if clean.len >= 2 && clean[0] == '[' && clean[sub_sat_i64(clean.len, 1)] == ']' {
+            clean = clean[1..^1];
+        }
+        return parse_ipv6_addr(clean);
+    }
+    return parse_ipv4_addr(raw);
+}
+
+// Parses an IPv4 or IPv6 CIDR ("10.0.0.0/8", "2001:db8::/64").
+//
+// Example:
+//   raw = "185.10.40.0/24"
+//   returns: IpCidr { addr: 185.10.40.0, prefix_len: 24 }, true
+fn parse_cidr(raw: const u8[:]) -> IpCidr, bool {
+    let ip_part, len_part, has_slash = split_once_byte(raw, '/');
+    guard has_slash && ip_part.len > 0 && len_part.len > 0 else { return IpCidr { .. }, false; }
+    let addr, ok_ip = parse_ip_addr(ip_part);
+    guard ok_ip else { return IpCidr { .. }, false; }
+    let pfx, ok_pfx = parse_u32_dec(len_part);
+    let max_pfx: u32 = if addr.family == IpFamily.V4 { 32 } else { 128 };
+    guard ok_pfx && pfx <= max_pfx else { return IpCidr { .. }, false; }
+    return IpCidr { addr: addr, prefix_len: pfx as u8 }, true;
+}
+
+fn ip_addr_equals(a: const IpAddr&, b: const IpAddr&) -> bool {
+    guard a.family == b.family && a.family != IpFamily.Unknown else { return false; }
+    let byte_cnt = if a.family == IpFamily.V4 { 4 } else { 16 };
+    for i in byte_cnt {
+        if a.bytes[i] != b.bytes[i] { return false; }
+    }
+    return true;
+}
+
+const CIDR_REM_MASKS: u8[8] = [0x00, 0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE];
+
+fn cidr_contains_ip(cidr: const IpCidr&, ip: const IpAddr&) -> bool {
+    guard cidr.addr.family == ip.family && ip.family != IpFamily.Unknown else { return false; }
+    let max_bits: i64 = if ip.family == IpFamily.V4 { 32 } else { 128 };
+    let pfx = cidr.prefix_len as i64;
+    guard pfx >= 0 && pfx <= max_bits else { return false; }
+    let full_bytes = ((pfx as u64) >> 3) as i64;
+    guard full_bytes >= 0 && full_bytes <= 16 else { return false; }
+    for i in full_bytes {
+        if cidr.addr.bytes[i] != ip.bytes[i] { return false; }
+    }
+    let rem_bits = ((pfx as u64) & 7) as i64;
+    if rem_bits > 0 && rem_bits < 8 && full_bytes < 16 {
+        let mask = CIDR_REM_MASKS[rem_bits];
+        if (cidr.addr.bytes[full_bytes] & mask) != (ip.bytes[full_bytes] & mask) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn cidr_contains_cidr(outer: const IpCidr&, inner: const IpCidr&) -> bool {
+    guard outer.addr.family == inner.addr.family && outer.addr.family != IpFamily.Unknown else {
+        return false;
+    }
+    guard outer.prefix_len <= inner.prefix_len else { return false; }
+    return cidr_contains_ip(outer, inner.addr);
+}
+
+fn format_ipv4_octets<B>(octs: const u8[4]&, out: B&) -> bool {
+    let packed = read_be_u32(octs[..], 0);
+    var tmp: u8[..64] = [];
+    format_ipv4_u32(packed, tmp);
+    guard out.try_set(tmp[..]) else {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+fn format_ipv6_compressed<B>(octs: const u8[16]&, out: B&) -> bool {
+    var pieces: u16[8] = [0; 8];
+    for g in 8 {
+        pieces[g] = read_be_u16(octs[..], mul_sat_i64(g, 2));
+    }
+    var tmp: u8[..64] = [];
+    format_compressed_ipv6(pieces, tmp);
+    guard out.try_set(tmp[..]) else {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+fn format_ip_addr<B>(ip: const IpAddr&, out: B&) -> bool {
+    if ip.family == IpFamily.V4 {
+        let octs: u8[4] = [ip.bytes[0], ip.bytes[1], ip.bytes[2], ip.bytes[3]];
+        return format_ipv4_octets(octs, out);
+    }
+    if ip.family == IpFamily.V6 {
+        return format_ipv6_compressed(ip.bytes, out);
+    }
+    out.clear();
+    return false;
+}

@@ -80,6 +80,67 @@ extern fn native_shutdown_requested() -> i32 = "wing_shutdown_requested";
 extern fn request_shutdown() = "wing_request_shutdown";
 extern fn reset_shutdown_signals() = "wing_reset_shutdown_signals";
 extern fn native_consume_reload_signal() -> i32 = "wing_consume_reload_signal";
+extern fn native_tcp_listen_dual(
+    host:    const u8[:],
+    port:    u16,
+    backlog: i32,
+    flags:   i32,
+) -> i64 = "wing_tcp_listen_dual";
+extern fn native_tcp_accept_info(
+    listener_fd:     i64,
+    mode_flags:      i32,
+    out_peer_ip:     u8[:],
+    out_peer_ip_len: i32&,
+    out_peer_port:   u16&,
+    out_dst_ip:      u8[:],
+    out_dst_ip_len:  i32&,
+    out_dst_port:    u16&,
+) -> i64 = "wing_tcp_accept_info";
+extern fn native_tcp_connect_bound_begin(
+    src_ip:    const u8[:],
+    dst_ip:    const u8[:],
+    dst_port:  u16,
+    so_mark:   u32,
+    out_state: i32&,
+    out_err:   i32&,
+) -> i64 = "wing_tcp_connect_bound_begin";
+extern fn native_tcp_connect_status(sock_fd: i64) -> i32 = "wing_tcp_connect_status";
+extern fn native_tcp_recv_peek(sock_fd: i64, dst: u8[:]) -> i32 = "wing_tcp_recv_peek";
+extern fn native_tcp_set_ttl(sock_fd: i64, ttl: i32, is_ipv6: i32) -> i32 = "wing_tcp_set_ttl";
+extern fn native_pipe_create(out_read_fd: i64&, out_write_fd: i64&) -> i32 = "wing_pipe_create";
+extern fn native_pipe_close(read_fd: i64, write_fd: i64) = "wing_pipe_close";
+extern fn native_tcp_splice_chunk(
+    src_fd:        i64,
+    dst_fd:        i64,
+    pipe_r:        i64,
+    pipe_w:        i64,
+    max_bytes:     i64,
+    in_pipe_bytes: i64&,
+) -> i64 = "wing_tcp_splice_chunk";
+extern fn native_net_get_local_ips(out_buf: u8[:]) -> i32 = "wing_net_get_local_ips";
+extern fn native_udp_open_dual(bind_ip: const u8[:], bind_port: u16, flags: i32) -> i64 = "wing_udp_open_dual";
+extern fn native_udp_sendto_dual(
+    sock_fd:  i64,
+    data:     const u8[:],
+    dst_ip:   const u8[:],
+    dst_port: u16,
+) -> i32 = "wing_udp_sendto_dual";
+extern fn native_udp_recvfrom_dual(
+    sock_fd:         i64,
+    out_buf:         u8[:],
+    out_peer_ip:     u8[:],
+    out_peer_ip_len: i32&,
+    out_peer_port:   u16&,
+) -> i32 = "wing_udp_recvfrom_dual";
+extern fn native_udp_exchange_dual(
+    server_ip:   const u8[:],
+    server_port: u16,
+    query:       const u8[:],
+    out_resp:    u8[:],
+    timeout_ms:  u32,
+) -> i32 = "wing_udp_exchange_dual";
+extern fn native_fs_disk_usage_percent(path: const u8[:]) -> i32 = "wing_fs_disk_usage_percent";
+extern fn native_fs_file_mtime(path: const u8[:]) -> i64 = "wing_fs_file_mtime";
 
 // Event flags for epoll multiplexer
 const EPOLL_READ:         u32 = 1;
@@ -1060,8 +1121,167 @@ fn drain_backpressure(bp: BackpressureSlot&, sock_fd: i64) -> i64, bool {
     let pending = bp.buf[bp.offset..bp.len];
     let sent = tcp_send(sock_fd, pending);
     guard sent > 0 else { return sent, false; }
-    bp.offset += sent;
+    bp.offset = core::add_sat_i64(bp.offset, sent);
     guard bp.offset >= bp.len else { return sent, false; }
     clear_backpressure_slot(bp);
     return sent, true;
+}
+
+// ---- Dual-stack TCP/UDP, transparent proxy, kernel splice, and host utils --
+
+// Listens on an IPv4 or IPv6 address (flags: bit 0 = IP_TRANSPARENT, bit 1 = force IPv6).
+fn tcp_listen_dual(
+    host:    const u8[:],
+    port:    u16,
+    backlog: i32 = 512,
+    flags:   i32 = 0,
+) -> i64 {
+    let _ = tcp_init();
+    return native_tcp_listen_dual(host, port, backlog, flags);
+}
+
+// Non-blockingly accepts a connection and extracts peer and local/original-dst endpoints.
+// mode_flags: 0 = direct, 1 = tproxy, 2 = redirect (SO_ORIGINAL_DST / IP6T_SO_ORIGINAL_DST).
+fn tcp_accept_info(
+    listener_fd:     i64,
+    mode_flags:      i32,
+    out_peer_ip:     u8[:],
+    out_peer_ip_len: i32&,
+    out_peer_port:   u16&,
+    out_dst_ip:      u8[:],
+    out_dst_ip_len:  i32&,
+    out_dst_port:    u16&,
+) -> i64 {
+    guard listener_fd > 0 else { return -1; }
+    return native_tcp_accept_info(
+        listener_fd,
+        mode_flags,
+        out_peer_ip,
+        out_peer_ip_len,
+        out_peer_port,
+        out_dst_ip,
+        out_dst_ip_len,
+        out_dst_port,
+    );
+}
+
+// Begins a non-blocking IPv4/IPv6 TCP connect optionally bound to `src_ip` with `so_mark`.
+// Sets out_state (0 = connected, 1 = in progress, -1 = failed) and out_err (mapped errno).
+fn tcp_connect_bound_begin(
+    src_ip:    const u8[:],
+    dst_ip:    const u8[:],
+    dst_port:  u16,
+    so_mark:   u32,
+    out_state: i32&,
+    out_err:   i32&,
+) -> i64 {
+    guard dst_ip.len > 0 && dst_port != 0 else {
+        out_state = -1;
+        out_err = -1;
+        return -1;
+    }
+    let _ = tcp_init();
+    return native_tcp_connect_bound_begin(src_ip, dst_ip, dst_port, so_mark, out_state, out_err);
+}
+
+// Reads async connect completion status via SO_ERROR (0 = ok, 1 = refused, 2 = unreach, 3 = timeout).
+fn tcp_connect_status(sock_fd: i64) -> i32 {
+    guard sock_fd > 0 else { return -1; }
+    return native_tcp_connect_status(sock_fd);
+}
+
+// Non-destructively peeks bytes from a socket using MSG_PEEK (-2 on WouldBlock).
+fn tcp_recv_peek(sock_fd: i64, dst: u8[:]) -> i32 {
+    guard sock_fd > 0 && dst.len > 0 else { return -1; }
+    return native_tcp_recv_peek(sock_fd, dst);
+}
+
+// Configures IP_TTL (or IPV6_UNICAST_HOPS) on an outbound socket.
+fn tcp_set_ttl(sock_fd: i64, ttl: i32, is_ipv6: bool = false) -> bool {
+    guard sock_fd > 0 && ttl >= 1 && ttl <= 255 else { return false; }
+    return native_tcp_set_ttl(sock_fd, ttl, if is_ipv6 { 1 } else { 0 }) == 0;
+}
+
+// Creates a non-blocking kernel pipe pair for splice(2) forwarding (Linux only).
+fn pipe_create(out_read_fd: i64&, out_write_fd: i64&) -> bool {
+    return native_pipe_create(out_read_fd, out_write_fd) == 0;
+}
+
+// Closes a kernel pipe pair created by pipe_create.
+fn pipe_close(read_fd: i64, write_fd: i64) {
+    native_pipe_close(read_fd, write_fd);
+}
+
+// Relays up to `max_bytes` from `src_fd` to `dst_fd` via a kernel pipe (Linux splice).
+// Returns bytes transferred (> 0), 0 on EOF, -2 on WouldBlock, or -1 if unsupported/error.
+fn tcp_splice_chunk(
+    src_fd:        i64,
+    dst_fd:        i64,
+    pipe_r:        i64,
+    pipe_w:        i64,
+    max_bytes:     i64,
+    in_pipe_bytes: i64&,
+) -> i64 {
+    guard src_fd > 0 && dst_fd > 0 && pipe_r >= 0 && pipe_w >= 0 && max_bytes > 0 else {
+        return -1;
+    }
+    return native_tcp_splice_chunk(src_fd, dst_fd, pipe_r, pipe_w, max_bytes, in_pipe_bytes);
+}
+
+// Writes newline-separated local host IPv4/IPv6 addresses into `out_buf`.
+fn net_get_local_ips(out_buf: u8[:]) -> i32 {
+    guard out_buf.len > 0 else { return -1; }
+    let _ = tcp_init();
+    return native_net_get_local_ips(out_buf);
+}
+
+// Opens a non-blocking dual-stack UDP socket (flags: bit 1 = force IPv6, bit 2 = IP_FREEBIND).
+fn udp_open_dual(bind_ip: const u8[:] = "", bind_port: u16 = 0, flags: i32 = 0) -> i64 {
+    let _ = tcp_init();
+    return native_udp_open_dual(bind_ip, bind_port, flags);
+}
+
+// Sends a non-blocking UDP datagram to an IPv4 or IPv6 literal (`-2` on WouldBlock).
+fn udp_sendto_dual(sock_fd: i64, data: const u8[:], dst_ip: const u8[:], dst_port: u16) -> i32 {
+    guard sock_fd > 0 && dst_ip.len > 0 && dst_port != 0 else { return -1; }
+    return native_udp_sendto_dual(sock_fd, data, dst_ip, dst_port);
+}
+
+// Non-blockingly receives a UDP datagram and extracts sender IP + port (`-2` on WouldBlock).
+fn udp_recvfrom_dual(
+    sock_fd:         i64,
+    out_buf:         u8[:],
+    out_peer_ip:     u8[:],
+    out_peer_ip_len: i32&,
+    out_peer_port:   u16&,
+) -> i32 {
+    guard sock_fd > 0 && out_buf.len > 0 else { return -1; }
+    return native_udp_recvfrom_dual(sock_fd, out_buf, out_peer_ip, out_peer_ip_len, out_peer_port);
+}
+
+// Executes a bounded-timeout synchronous UDP request/response to an IPv4 or IPv6 server.
+fn udp_exchange_dual(
+    server_ip:   const u8[:],
+    server_port: u16,
+    query:       const u8[:],
+    out_resp:    u8[:],
+    timeout_ms:  u32 = 1500,
+) -> i32 {
+    guard server_ip.len > 0 && server_port != 0 && query.len > 0 && out_resp.len > 0 else {
+        return -1;
+    }
+    let _ = tcp_init();
+    return native_udp_exchange_dual(server_ip, server_port, query, out_resp, timeout_ms);
+}
+
+// Returns filesystem disk usage percentage (0..100) for `path`, or -1 on error.
+fn fs_disk_usage_percent(path: const u8[:]) -> i32 {
+    guard path.len > 0 && path.len < 1024 else { return -1; }
+    return native_fs_disk_usage_percent(path);
+}
+
+// Returns last modification Unix timestamp in seconds for `path`, or -1 if missing.
+fn fs_file_mtime(path: const u8[:]) -> i64 {
+    guard path.len > 0 && path.len < 1024 else { return -1; }
+    return native_fs_file_mtime(path);
 }

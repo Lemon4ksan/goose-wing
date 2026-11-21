@@ -935,3 +935,153 @@ fn poll_events(
 
     return out_events.len as i32;
 }
+
+// ---- Dynamic io_uring Readiness Poller (unbounded fd scale for Linux) ------
+
+struct UringWatchSlot {
+    fd:     i32  = -1,
+    events: u32  = 0,
+    udata:  u64  = 0,
+    active: bool = false,
+}
+
+struct UringPoller {
+    ring_fd: i64                 = -1,
+    watches: UringWatchSlot[>..] = [],
+}
+
+// Probes whether the Linux kernel supports io_uring.
+fn uring_is_available() -> bool {
+    guard net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux else {
+        return false;
+    }
+    return net_internal::native_uring_probe() == 1;
+}
+
+fn uring_events_to_poll_mask(events: u32) -> u32 {
+    var mask: u32 = 0;
+    if (events & EPOLL_READ) != 0 { mask |= URING_POLLIN_MASK; }
+    if (events & EPOLL_WRITE) != 0 { mask |= URING_POLLOUT_MASK; }
+    return mask;
+}
+
+fn uring_poll_open(up: UringPoller&, entries: u32 = 1024) -> bool {
+    up.ring_fd = -1;
+    up.watches.clear();
+    guard uring_is_available() else { return false; }
+    let rfd = net_internal::native_uring_create(entries, 0);
+    guard rfd >= 0 else { return false; }
+    up.ring_fd = rfd;
+    return true;
+}
+
+fn uring_poll_close(up: UringPoller&) {
+    if up.ring_fd >= 0 {
+        net_internal::native_uring_close(up.ring_fd);
+        up.ring_fd = -1;
+    }
+    up.watches.clear();
+}
+
+inline fn uring_submit_fd_poll(ring_fd: i64, fd: i32, events: u32) {
+    let mask = uring_events_to_poll_mask(events);
+    guard mask != 0 else { return; }
+    var sqe = net_internal::UringSqe { .. };
+    net_internal::uring_prep_poll_add(sqe, fd, mask, fd as u64);
+    var batch: net_internal::UringSqe[1] = [sqe];
+    let _ = net_internal::uring_submit_sqes(ring_fd, batch[..]);
+}
+
+fn uring_poll_add(up: UringPoller&, fd: i64, events: u32, udata: u64) -> bool {
+    guard up.ring_fd >= 0 && fd >= 0 && fd < 1048576 else { return false; }
+    while up.watches.len <= fd {
+        up.watches.push(UringWatchSlot { .. });
+    }
+    up.watches[fd] = UringWatchSlot {
+        fd:     fd as i32,
+        events: events,
+        udata:  udata,
+        active: true,
+    };
+    uring_submit_fd_poll(up.ring_fd, fd as i32, events);
+    return true;
+}
+
+fn uring_poll_mod(up: UringPoller&, fd: i64, events: u32, udata: u64) -> bool {
+    guard up.ring_fd >= 0 && fd >= 0 && fd < up.watches.len && up.watches[fd].active else {
+        return uring_poll_add(up, fd, events, udata);
+    }
+    poller_submit_uring_poll_remove(up.ring_fd, fd as u64);
+    up.watches[fd].events = events;
+    up.watches[fd].udata = udata;
+    uring_submit_fd_poll(up.ring_fd, up.watches[fd].fd, events);
+    return true;
+}
+
+fn uring_poll_del(up: UringPoller&, fd: i64) -> bool {
+    guard up.ring_fd >= 0 && fd >= 0 && fd < up.watches.len else { return false; }
+    if up.watches[fd].active {
+        poller_submit_uring_poll_remove(up.ring_fd, fd as u64);
+        up.watches[fd].active = false;
+    }
+    return true;
+}
+
+fn uring_poll_mask_to_events(revents: u32) -> u32 {
+    var mask: u32 = 0;
+    if (revents & URING_POLLIN_MASK) != 0 { mask |= 1; }
+    if (revents & URING_POLLOUT_MASK) != 0 { mask |= 2; }
+    if (revents & URING_POLLERR_MASK) != 0 { mask |= 4; }
+    if (revents & URING_POLLHUP_MASK) != 0 { mask |= 8; }
+    return mask;
+}
+
+inline fn uring_consume_poll_cqe(
+    up:         UringPoller&,
+    cqe:        const net_internal::UringCqe&,
+    ready:      i64&,
+    out_fds:    i64[:],
+    out_udata:  u64[:],
+    out_events: u32[:],
+) {
+    guard cqe.user_data != URING_INTERNAL_CANCEL_TAG &&
+        cqe.res >= 0 &&
+        (cqe.flags & net_internal::URING_CQE_F_NOTIF) == 0 else { return; }
+    let fd = cqe.user_data as i64;
+    guard fd >= 0 && fd < up.watches.len && up.watches[fd].active else { return; }
+    guard ready >= 0 && ready < out_udata.len && ready < out_events.len else { return; }
+
+    let w = up.watches[fd];
+    uring_submit_fd_poll(up.ring_fd, w.fd, w.events);
+    let mask = uring_poll_mask_to_events(cqe.res as u32);
+    guard mask != 0 else { return; }
+
+    if ready < out_fds.len { out_fds[ready] = w.fd; }
+    out_udata[ready] = w.udata;
+    out_events[ready] = mask;
+    ready = core::add_sat_i64(ready, 1);
+}
+
+fn uring_poll_wait_events(
+    up:         UringPoller&,
+    out_fds:    i64[:],
+    out_udata:  u64[:],
+    out_events: u32[:],
+    timeout_ms: i32,
+) -> i32 {
+    guard up.ring_fd >= 0 && out_udata.len > 0 && out_events.len > 0 else { return 0; }
+    var cqes: net_internal::UringCqe[64] = [net_internal::UringCqe { .. }; 64];
+    let min_complete: u32 = if timeout_ms == 0 { 0 } else { 1 };
+    let timeout_ns = net_internal::timeout_ms_to_ns(timeout_ms);
+    let n = net_internal::uring_wait_cqes(up.ring_fd, cqes[..], min_complete, timeout_ns);
+    guard n > 0 else { return 0; }
+
+    var ready: i64 = 0;
+    let max_out = min(out_udata.len, out_events.len);
+    let limit = min(n, 64);
+    for k in limit {
+        guard ready < max_out else { break; }
+        uring_consume_poll_cqe(up, cqes[k], ready, out_fds, out_udata, out_events);
+    }
+    return ready as i32;
+}

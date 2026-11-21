@@ -166,3 +166,67 @@ inline fn is_valid_resolved_ip_literal(ip_str: const u8[:]) -> bool {
     var octets: u8[4] = [0, 0, 0, 0];
     return security_internal::parse_flexible_ipv4(clean_ip, octets);
 }
+
+// ---- Binary octet SSRF checks and proxy port policies --------------------
+
+// Returns true if 4 network-order IPv4 octets fall in private, loopback, CGNAT, link-local, or reserved ranges.
+fn is_reserved_ipv4_octets(octs: const u8[4]&) -> bool {
+    let b0 = octs[0];
+    let b1 = octs[1];
+    if b0 == 0 || b0 == 10 || b0 == 127 { return true; }
+    if b0 == 100 && (b1 & 0xC0) == 64 { return true; }
+    if b0 == 169 && b1 == 254 { return true; }
+    if b0 == 172 && b1 >= 16 && b1 <= 31 { return true; }
+    if b0 == 192 && b1 == 168 { return true; }
+    if b0 == 198 && (b1 == 18 || b1 == 19) { return true; }
+    return b0 >= 224;
+}
+
+// Returns true if 16 IPv6 octets use the IPv4-mapped prefix ::ffff:0:0/96.
+fn is_ipv4_mapped_v6_octets(octs: const u8[16]&) -> bool {
+    for i in 10 {
+        if octs[i] != 0 { return false; }
+    }
+    return octs[10] == 0xFF && octs[11] == 0xFF;
+}
+
+// Returns true if 16 network-order IPv6 octets are unspecified, loopback, ULA, link-local, or mapped v4.
+fn is_reserved_ipv6_octets(octs: const u8[16]&) -> bool {
+    var all_zero = true;
+    for i in 15 {
+        if octs[i] != 0 { all_zero = false; }
+    }
+    if all_zero && (octs[15] == 0 || octs[15] == 1) { return true; }
+    let b0 = octs[0];
+    let b1 = octs[1];
+    if (b0 & 0xFE) == 0xFC { return true; }
+    if b0 == 0xFE && (b1 & 0xC0) == 0x80 { return true; }
+    if b0 == 0xFF { return true; }
+    if is_ipv4_mapped_v6_octets(octs) {
+        let mapped: u8[4] = [octs[12], octs[13], octs[14], octs[15]];
+        return is_reserved_ipv4_octets(mapped);
+    }
+    return false;
+}
+
+// Returns true if a parsed binary IpAddr is reserved, private, loopback, link-local, or unknown.
+fn is_reserved_ip_addr(ip: const core::IpAddr&) -> bool {
+    if ip.family == core::IpFamily.V4 {
+        let octs: u8[4] = [ip.bytes[0], ip.bytes[1], ip.bytes[2], ip.bytes[3]];
+        return is_reserved_ipv4_octets(octs);
+    }
+    if ip.family == core::IpFamily.V6 {
+        return is_reserved_ipv6_octets(ip.bytes);
+    }
+    return true;
+}
+
+// Returns true for egress TCP/UDP destination ports banned on open proxies (0, SMTP 25/465/587, SMB 445).
+fn is_forbidden_proxy_port(port: u16) -> bool {
+    return port == 0 || port == 25 || port == 445 || port == 465 || port == 587;
+}
+
+// Returns true for UDP amplification/reflection risk ports (RPC 111, NTP 123, SSDP 1900, mDNS 5353).
+fn is_udp_amplification_port(port: u16) -> bool {
+    return port == 111 || port == 123 || port == 1900 || port == 5353;
+}

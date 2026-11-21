@@ -395,6 +395,7 @@ struct AttemptManager {
     winner_attempt_id:       i32                     = -1,
     has_winner:              bool                    = false,
     alt_svc_broken:          bool                    = false,
+    enable_nat64_synthesis:  bool                    = true,
     last_resort_armed:       bool                    = false,
     last_resort_deadline_ms: i64                     = 0,
     last_resort_triggered:   bool                    = false,
@@ -426,6 +427,23 @@ fn start_attempt_race(manager: AttemptManager&, candidates: const DnsCandidate[:
     launch_next_candidate_attempt(manager, now_ms);
 }
 
+inline fn maybe_arm_last_resort_nat64(manager: AttemptManager&, cand: const DnsCandidate&, now_ms: i64) {
+    guard manager.enable_nat64_synthesis && cand.family == AddressFamily.IPv6 && !manager.last_resort_armed else {
+        return;
+    }
+    var has_more_ipv6 = false;
+    for i in manager.current_attempt_idx..manager.pending_candidates.len {
+        if manager.pending_candidates[i].family == AddressFamily.IPv6 {
+            has_more_ipv6 = true;
+            break;
+        }
+    }
+    if !has_more_ipv6 {
+        manager.last_resort_armed = true;
+        manager.last_resort_deadline_ms = core::add_sat_i64(now_ms, rfc::HE_LAST_RESORT_SYNTHESIS_DELAY_MS);
+    }
+}
+
 // Launches next candidate and schedules CAD delay for subsequent candidate.
 fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool {
     guard manager.current_attempt_idx < manager.pending_candidates.len else { return false; }
@@ -449,17 +467,7 @@ fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool 
     manager.next_attempt_start_ms = now_ms + manager.effective_cad_ms;
 
     // Arm Last Resort Local Synthesis when the last IPv6 attempt is dispatched
-    var has_more_ipv6 = false;
-    for i in manager.current_attempt_idx..manager.pending_candidates.len {
-        if manager.pending_candidates[i].family == AddressFamily.IPv6 {
-            has_more_ipv6 = true;
-            break;
-        }
-    }
-    if cand.family == AddressFamily.IPv6 && !has_more_ipv6 && !manager.last_resort_armed {
-        manager.last_resort_armed = true;
-        manager.last_resort_deadline_ms = now_ms + rfc::HE_LAST_RESORT_SYNTHESIS_DELAY_MS;
-    }
+    maybe_arm_last_resort_nat64(manager, cand, now_ms);
 
     return true;
 }
@@ -517,7 +525,8 @@ fn tick_attempt_manager(manager: AttemptManager&, now_ms: i64) -> bool {
     if manager.has_winner { return false; }
 
     // Check if Last Resort Local Synthesis Delay expired (2000 ms)
-    if manager.last_resort_armed && !manager.last_resort_triggered && now_ms >= manager.last_resort_deadline_ms {
+    if manager.enable_nat64_synthesis && manager.last_resort_armed && !manager.last_resort_triggered &&
+        now_ms >= manager.last_resort_deadline_ms {
         manager.last_resort_triggered = true;
         synthesize_nat64_candidate(manager);
     }

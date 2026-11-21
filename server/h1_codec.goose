@@ -181,14 +181,49 @@ inline fn validate_connect_authority(target: const u8[:]) -> bool {
     return port_ok && port_num > 0;
 }
 
+// Controls whether parse_http1_request_line accepts forward-proxy absolute-form URIs (RFC 9112 §3.2.2).
+enum RequestTargetMode {
+    OriginOnly,
+    AllowAbsoluteForm,
+}
+
+enum RequestTargetVerb {
+    Regular,
+    Connect,
+    Options,
+}
+
+inline fn validate_http1_request_target_for_mode(
+    path_slice:  const u8[:],
+    verb:        RequestTargetVerb,
+    target_mode: RequestTargetMode,
+) -> bool {
+    if path_slice[0] == '/' {
+        return verb != RequestTargetVerb.Connect;
+    }
+    if path_slice.len == 1 && path_slice[0] == '*' {
+        return verb == RequestTargetVerb.Options;
+    }
+    if verb == RequestTargetVerb.Connect {
+        return validate_connect_authority(path_slice);
+    }
+    guard target_mode == RequestTargetMode.AllowAbsoluteForm && verb != RequestTargetVerb.Options else {
+        return false;
+    }
+    let uv, _ = core::parse_url_view(path_slice);
+    return uv.valid && uv.host.len > 0 &&
+        (uv.scheme.eq_ascii_fold("http") || uv.scheme.eq_ascii_fold("https"));
+}
+
 // Parses the HTTP/1.x request line (Method SP Request-URI SP HTTP-Version).
 //
 // Example:
 //   req_line = "GET /index.html HTTP/1.1"
 //   returns: true, out_req.method = "GET", out_req.url = "/index.html"
 fn parse_http1_request_line<Req>(
-    req_line: const u8[:],
-    out_req:  Req&,
+    req_line:    const u8[:],
+    out_req:     Req&,
+    target_mode: RequestTargetMode = RequestTargetMode.OriginOnly,
 ) -> bool {
     let _prof = prof_enter("http1.req_line");
     defer prof_leave(_prof);
@@ -196,20 +231,25 @@ fn parse_http1_request_line<Req>(
 
     let w0 = core::read_le_u64(req_line, 0);
     let m_len, _ = match_swar_method(w0);
-    var sp1:        i64  = m_len;
-    var is_connect: bool = false;
-    var is_options: bool = false;
+    var sp1:  i64               = m_len;
+    var verb: RequestTargetVerb = RequestTargetVerb.Regular;
 
     if m_len > 0 {
-        is_connect = (w0 == rfc::METHOD_CONNECT_U64);
-        is_options = (w0 == rfc::METHOD_OPTIONS_U64);
+        if w0 == rfc::METHOD_CONNECT_U64 {
+            verb = RequestTargetVerb.Connect;
+        } else if w0 == rfc::METHOD_OPTIONS_U64 {
+            verb = RequestTargetVerb.Options;
+        }
     } else {
         sp1 = swar_find_space(req_line, 0);
         guard sp1 > 0 && sp1 <= out_req.method.cap else { return false; }
         let custom_method = req_line[..sp1];
         guard is_valid_header_name(custom_method) else { return false; }
-        is_connect = (custom_method == "CONNECT");
-        is_options = (custom_method == "OPTIONS");
+        if custom_method == "CONNECT" {
+            verb = RequestTargetVerb.Connect;
+        } else if custom_method == "OPTIONS" {
+            verb = RequestTargetVerb.Options;
+        }
     }
 
     let sp2 = swar_find_space(req_line, sp1 + 1);
@@ -217,16 +257,7 @@ fn parse_http1_request_line<Req>(
     let path_slice = req_line[(sp1 + 1)..sp2];
     guard path_slice.len <= out_req.url.cap else { return false; }
     guard validate_request_target_chars(path_slice) else { return false; }
-
-    if path_slice[0] == '/' {
-        guard !is_connect else { return false; }
-    } else if path_slice.len == 1 && path_slice[0] == '*' {
-        guard is_options else { return false; }
-    } else if is_connect {
-        guard validate_connect_authority(path_slice) else { return false; }
-    } else {
-        return false;
-    }
+    guard validate_http1_request_target_for_mode(path_slice, verb, target_mode) else { return false; }
 
     guard req_line.len - (sp2 + 1) == 8 else { return false; }
     let proto_u64 = core::read_le_u64(req_line, sp2 + 1);

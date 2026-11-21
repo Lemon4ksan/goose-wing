@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
@@ -39,6 +40,8 @@ typedef int SOCKET;
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/statvfs.h>
 #include <sys/un.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
@@ -46,6 +49,7 @@ typedef int SOCKET;
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <ifaddrs.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/time.h>
@@ -54,6 +58,39 @@ typedef int SOCKET;
 #if defined(__linux__)
 #include <sched.h>
 #include <pthread.h>
+#ifndef SO_ORIGINAL_DST
+#define SO_ORIGINAL_DST 80
+#endif
+#ifndef IP6T_SO_ORIGINAL_DST
+#define IP6T_SO_ORIGINAL_DST 80
+#endif
+#ifndef IP_TRANSPARENT
+#define IP_TRANSPARENT 19
+#endif
+#ifndef IPV6_TRANSPARENT
+#define IPV6_TRANSPARENT 75
+#endif
+#ifndef IP_FREEBIND
+#define IP_FREEBIND 15
+#endif
+#ifndef IPV6_FREEBIND
+#define IPV6_FREEBIND 78
+#endif
+#ifndef IP_BIND_ADDRESS_NO_PORT
+#define IP_BIND_ADDRESS_NO_PORT 24
+#endif
+#ifndef SO_MARK
+#define SO_MARK 36
+#endif
+#ifndef F_SETPIPE_SZ
+#define F_SETPIPE_SZ 1031
+#endif
+#ifndef SPLICE_F_MOVE
+#define SPLICE_F_MOVE 1
+#endif
+#ifndef SPLICE_F_NONBLOCK
+#define SPLICE_F_NONBLOCK 2
+#endif
 #endif
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
@@ -590,6 +627,106 @@ int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i3
         recvd++;
     }
     return recvd;
+}
+
+int64_t wing_tcp_listen_dual(wing_bytes_ro host, uint16_t port, int32_t backlog, int32_t flags) {
+    (void)flags;
+    return wing_tcp_listen(host, port, backlog);
+}
+int64_t wing_tcp_accept_info(int64_t listener_fd, int32_t mode_flags, wing_bytes_rw out_peer_ip,
+                             int32_t *out_peer_ip_len, uint16_t *out_peer_port, wing_bytes_rw out_dst_ip,
+                             int32_t *out_dst_ip_len, uint16_t *out_dst_port) {
+    (void)mode_flags;
+    int64_t c = wing_tcp_accept_nonblocking(listener_fd);
+    if (c <= 0) return c;
+    int32_t plen = wing_tcp_get_peer_ip(c, out_peer_ip);
+    if (out_peer_ip_len) *out_peer_ip_len = plen;
+    if (out_peer_port) *out_peer_port = 0;
+    if (out_dst_ip.data && out_dst_ip.len >= 9) {
+        memcpy(out_dst_ip.data, "127.0.0.1", 9);
+        if (out_dst_ip_len) *out_dst_ip_len = 9;
+    }
+    if (out_dst_port) *out_dst_port = wing_tcp_getsockname_port(c);
+    return c;
+}
+int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
+                                     int32_t *out_state, int32_t *out_err) {
+    (void)src_ip;
+    (void)so_mark;
+    if (out_err) *out_err = 0;
+    return wing_tcp_connect_begin(dst_ip, dst_port, out_state);
+}
+int32_t wing_tcp_connect_status(int64_t sock_fd) { return wing_tcp_connect_finish(sock_fd); }
+int32_t wing_tcp_recv_peek(int64_t sock_fd, wing_bytes_rw dst) {
+    (void)sock_fd;
+    (void)dst;
+    return -2;
+}
+int32_t wing_tcp_set_ttl(int64_t sock_fd, int32_t ttl, int32_t is_ipv6) {
+    (void)sock_fd;
+    (void)ttl;
+    (void)is_ipv6;
+    return 0;
+}
+int32_t wing_pipe_create(int64_t *out_read_fd, int64_t *out_write_fd) {
+    if (out_read_fd) *out_read_fd = -1;
+    if (out_write_fd) *out_write_fd = -1;
+    return -1;
+}
+void wing_pipe_close(int64_t read_fd, int64_t write_fd) {
+    (void)read_fd;
+    (void)write_fd;
+}
+int64_t wing_tcp_splice_chunk(int64_t src_fd, int64_t dst_fd, int64_t pipe_r, int64_t pipe_w, int64_t max_bytes,
+                              int64_t *in_pipe_bytes) {
+    (void)src_fd;
+    (void)dst_fd;
+    (void)pipe_r;
+    (void)pipe_w;
+    (void)max_bytes;
+    (void)in_pipe_bytes;
+    return -1;
+}
+int32_t wing_net_get_local_ips(wing_bytes_rw out_buf) {
+    const char *ips = "127.0.0.1\n::1\n";
+    int64_t n = (int64_t)strlen(ips);
+    if (out_buf.data == NULL || out_buf.len < n) return -1;
+    memcpy(out_buf.data, ips, (size_t)n);
+    return (int32_t)n;
+}
+int64_t wing_udp_open_dual(wing_bytes_ro bind_ip, uint16_t bind_port, int32_t flags) {
+    (void)flags;
+    return wing_udp_bind(bind_ip, bind_port);
+}
+int32_t wing_udp_sendto_dual(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro dst_ip, uint16_t dst_port) {
+    return wing_udp_sendto(sock_fd, data, dst_ip, dst_port);
+}
+int32_t wing_udp_recvfrom_dual(int64_t sock_fd, wing_bytes_rw out_buf, wing_bytes_rw out_peer_ip,
+                               int32_t *out_peer_ip_len, uint16_t *out_peer_port) {
+    uint32_t ip4 = 0;
+    int32_t r = wing_udp_recvfrom(sock_fd, out_buf, 0, &ip4, out_peer_port);
+    if (r >= 0 && out_peer_ip.data && out_peer_ip.len >= 9) {
+        memcpy(out_peer_ip.data, "127.0.0.1", 9);
+        if (out_peer_ip_len) *out_peer_ip_len = 9;
+    }
+    return r;
+}
+int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wing_bytes_ro query,
+                               wing_bytes_rw out_resp, uint32_t timeout_ms) {
+    (void)server_ip;
+    (void)server_port;
+    (void)query;
+    (void)out_resp;
+    (void)timeout_ms;
+    return -1;
+}
+int32_t wing_fs_disk_usage_percent(wing_bytes_ro path) {
+    (void)path;
+    return -1;
+}
+int64_t wing_fs_file_mtime(wing_bytes_ro path) {
+    (void)path;
+    return -1;
 }
 
 #else
@@ -2247,6 +2384,736 @@ int32_t wing_udp_recvmmsg(int64_t sock_fd, wing_bytes_rw payloads, wing_slice_i3
         recvd++;
     }
     return recvd;
+#endif
+}
+
+// ---- Dual-Stack Proxy TCP, Pipe Splice, Local IPs, Dual-Stack UDP, and FS ----
+
+static void wing_prepare_nonblocking_cloexec(SOCKET s) {
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    u_long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);
+#else
+    int fd_flags = fcntl(s, F_GETFD, 0);
+    if (fd_flags >= 0) {
+        fcntl(s, F_SETFD, fd_flags | FD_CLOEXEC);
+    }
+    int fl = fcntl(s, F_GETFL, 0);
+    if (fl >= 0) {
+        fcntl(s, F_SETFL, fl | O_NONBLOCK);
+    }
+#endif
+}
+
+static int wing_parse_ip_sockaddr(const char *ip_str, uint16_t port, int force_family, struct sockaddr_storage *out_ss,
+                                  int *out_family, int *out_len) {
+    memset(out_ss, 0, sizeof(*out_ss));
+    if (ip_str[0] == '\0') {
+        if (force_family == AF_INET6) {
+            struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)out_ss;
+            s6->sin6_family = AF_INET6;
+            s6->sin6_port = htons(port);
+            s6->sin6_addr = in6addr_any;
+            *out_family = AF_INET6;
+            *out_len = (int)sizeof(*s6);
+            return 0;
+        }
+        struct sockaddr_in *s4 = (struct sockaddr_in *)out_ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr.s_addr = htonl(INADDR_ANY);
+        *out_family = AF_INET;
+        *out_len = (int)sizeof(*s4);
+        return 0;
+    }
+
+    struct in_addr a4;
+    if ((force_family == 0 || force_family == AF_INET) && inet_pton(AF_INET, ip_str, &a4) == 1) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)out_ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr = a4;
+        *out_family = AF_INET;
+        *out_len = (int)sizeof(*s4);
+        return 0;
+    }
+
+    struct in6_addr a6;
+    if ((force_family == 0 || force_family == AF_INET6) && inet_pton(AF_INET6, ip_str, &a6) == 1) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)out_ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(port);
+        s6->sin6_addr = a6;
+        *out_family = AF_INET6;
+        *out_len = (int)sizeof(*s6);
+        return 0;
+    }
+    return -1;
+}
+
+static int32_t wing_format_sockaddr_ip_port(const struct sockaddr_storage *ss, wing_bytes_rw out_ip, uint16_t *out_port) {
+    char buf[INET6_ADDRSTRLEN];
+    buf[0] = '\0';
+    uint16_t port = 0;
+
+    if (ss->ss_family == AF_INET) {
+        const struct sockaddr_in *s4 = (const struct sockaddr_in *)ss;
+        if (inet_ntop(AF_INET, &s4->sin_addr, buf, sizeof(buf)) == NULL) return -1;
+        port = ntohs(s4->sin_port);
+    } else if (ss->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)ss;
+        if (IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
+            struct in_addr mapped;
+            memcpy(&mapped, &s6->sin6_addr.s6_addr[12], 4);
+            if (inet_ntop(AF_INET, &mapped, buf, sizeof(buf)) == NULL) return -1;
+        } else if (inet_ntop(AF_INET6, &s6->sin6_addr, buf, sizeof(buf)) == NULL) {
+            return -1;
+        }
+        port = ntohs(s6->sin6_port);
+    } else {
+        return -1;
+    }
+
+    if (out_port != NULL) *out_port = port;
+    int64_t len = (int64_t)strlen(buf);
+    if (out_ip.data == NULL || out_ip.len <= 0 || len > out_ip.len) return -1;
+    memcpy(out_ip.data, buf, (size_t)len);
+    return (int32_t)len;
+}
+
+static int wing_last_sock_err(void) {
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+static int32_t wing_map_connect_errno(int err) {
+    if (err == 0) return 0;
+#ifdef _WIN32
+    if (err == WSAECONNREFUSED) return 1;
+    if (err == WSAENETUNREACH || err == WSAEHOSTUNREACH) return 2;
+    if (err == WSAETIMEDOUT) return 3;
+#else
+    if (err == ECONNREFUSED) return 1;
+    if (err == ENETUNREACH || err == EHOSTUNREACH) return 2;
+    if (err == ETIMEDOUT) return 3;
+#endif
+    return -1;
+}
+
+int64_t wing_tcp_listen_dual(wing_bytes_ro host, uint16_t port, int32_t backlog, int32_t flags) {
+    if (wing_tcp_init() != 0) return -1;
+
+    char host_str[128];
+    slice_to_cstr(host, host_str, sizeof(host_str));
+
+    int force_family = (flags & 2) ? AF_INET6 : 0;
+    if (host_str[0] != '\0') {
+        force_family = (strchr(host_str, ':') != NULL) ? AF_INET6 : AF_INET;
+    }
+
+    struct sockaddr_storage ss;
+    int family = AF_INET;
+    int addr_len = 0;
+    if (wing_parse_ip_sockaddr(host_str, port, force_family, &ss, &family, &addr_len) != 0) return -1;
+
+    SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return -1;
+
+    wing_prepare_nonblocking_cloexec(s);
+
+    int opt = 1;
+#ifdef _WIN32
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&opt, sizeof(opt));
+#else
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#ifdef SO_REUSEPORT
+    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+#endif
+#endif
+
+    if (family == AF_INET6) {
+        int v6only = 1;
+        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
+    }
+
+#ifdef __linux__
+    if (flags & 1) {
+        int transp = 1;
+        int rc_t = (family == AF_INET6) ? setsockopt(s, IPPROTO_IPV6, IPV6_TRANSPARENT, &transp, sizeof(transp))
+                                        : setsockopt(s, IPPROTO_IP, IP_TRANSPARENT, &transp, sizeof(transp));
+        if (rc_t != 0) {
+            closesocket(s);
+            return -1;
+        }
+    }
+#endif
+
+#ifdef _WIN32
+    if (bind(s, (struct sockaddr *)&ss, addr_len) != 0) {
+#else
+    if (bind(s, (struct sockaddr *)&ss, (socklen_t)addr_len) != 0) {
+#endif
+        closesocket(s);
+        return -1;
+    }
+
+    if (listen(s, backlog > 0 ? backlog : 512) != 0) {
+        closesocket(s);
+        return -1;
+    }
+
+    return (int64_t)s;
+}
+
+int64_t wing_tcp_accept_info(int64_t listener_fd, int32_t mode_flags, wing_bytes_rw out_peer_ip,
+                             int32_t *out_peer_ip_len, uint16_t *out_peer_port, wing_bytes_rw out_dst_ip,
+                             int32_t *out_dst_ip_len, uint16_t *out_dst_port) {
+    if (listener_fd <= 0) return -1;
+    if (out_peer_ip_len) *out_peer_ip_len = 0;
+    if (out_dst_ip_len) *out_dst_ip_len = 0;
+    if (out_peer_port) *out_peer_port = 0;
+    if (out_dst_port) *out_dst_port = 0;
+
+    struct sockaddr_storage peer_ss;
+    memset(&peer_ss, 0, sizeof(peer_ss));
+#ifdef _WIN32
+    int peer_len = (int)sizeof(peer_ss);
+    SOCKET c = accept((SOCKET)listener_fd, (struct sockaddr *)&peer_ss, &peer_len);
+    if (c == INVALID_SOCKET) {
+        return (WSAGetLastError() == WSAEWOULDBLOCK) ? 0 : -1;
+    }
+#else
+    socklen_t peer_len = (socklen_t)sizeof(peer_ss);
+#if defined(__linux__) && defined(SOCK_NONBLOCK) && defined(SOCK_CLOEXEC)
+    SOCKET c = accept4((int)listener_fd, (struct sockaddr *)&peer_ss, &peer_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+#else
+    SOCKET c = accept((int)listener_fd, (struct sockaddr *)&peer_ss, &peer_len);
+#endif
+    if (c == INVALID_SOCKET) {
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+    }
+#endif
+
+    wing_prepare_nonblocking_cloexec(c);
+    int nodelay = 1;
+    setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+
+    int32_t plen = wing_format_sockaddr_ip_port(&peer_ss, out_peer_ip, out_peer_port);
+    if (plen < 0) {
+        closesocket(c);
+        return -1;
+    }
+    if (out_peer_ip_len) *out_peer_ip_len = plen;
+
+    struct sockaddr_storage dst_ss;
+    memset(&dst_ss, 0, sizeof(dst_ss));
+    int dst_ok = 0;
+
+#ifdef __linux__
+    if (mode_flags == 2) {
+        socklen_t dlen = (socklen_t)sizeof(dst_ss);
+        if (peer_ss.ss_family == AF_INET6) {
+            if (getsockopt(c, IPPROTO_IPV6, IP6T_SO_ORIGINAL_DST, &dst_ss, &dlen) == 0) dst_ok = 1;
+        } else {
+            if (getsockopt(c, IPPROTO_IP, SO_ORIGINAL_DST, &dst_ss, &dlen) == 0) dst_ok = 1;
+        }
+        if (!dst_ok) {
+            closesocket(c);
+            return -1;
+        }
+    }
+#else
+    (void)mode_flags;
+#endif
+
+    if (!dst_ok) {
+#ifdef _WIN32
+        int dlen = (int)sizeof(dst_ss);
+#else
+        socklen_t dlen = (socklen_t)sizeof(dst_ss);
+#endif
+        if (getsockname(c, (struct sockaddr *)&dst_ss, &dlen) != 0) {
+            closesocket(c);
+            return -1;
+        }
+    }
+
+    int32_t dlen_str = wing_format_sockaddr_ip_port(&dst_ss, out_dst_ip, out_dst_port);
+    if (dlen_str < 0) {
+        closesocket(c);
+        return -1;
+    }
+    if (out_dst_ip_len) *out_dst_ip_len = dlen_str;
+
+    return (int64_t)c;
+}
+
+int64_t wing_tcp_connect_bound_begin(wing_bytes_ro src_ip, wing_bytes_ro dst_ip, uint16_t dst_port, uint32_t so_mark,
+                                     int32_t *out_state, int32_t *out_err) {
+    if (out_state) *out_state = -1;
+    if (out_err) *out_err = -1;
+    if (dst_ip.data == NULL || dst_ip.len <= 0 || dst_ip.len >= 128 || dst_port == 0) return -1;
+    if (wing_tcp_init() != 0) return -1;
+
+    char dst_str[128];
+    slice_to_cstr(dst_ip, dst_str, sizeof(dst_str));
+
+    struct sockaddr_storage dst_ss;
+    int family = AF_INET;
+    int dst_len = 0;
+    if (wing_parse_ip_sockaddr(dst_str, dst_port, 0, &dst_ss, &family, &dst_len) != 0) {
+        if (out_err) *out_err = 2;
+        return -1;
+    }
+
+    SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return -1;
+
+    wing_prepare_nonblocking_cloexec(s);
+    int opt = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&opt, sizeof(opt));
+
+#ifdef __linux__
+    if (so_mark != 0) {
+        uint32_t mk = so_mark;
+        if (setsockopt(s, SOL_SOCKET, SO_MARK, &mk, sizeof(mk)) != 0) {
+            closesocket(s);
+            return -1;
+        }
+    }
+    if (src_ip.data != NULL && src_ip.len > 0) {
+        int fb = 1;
+        if (family == AF_INET6) {
+            setsockopt(s, IPPROTO_IPV6, IPV6_FREEBIND, &fb, sizeof(fb));
+        } else {
+            setsockopt(s, IPPROTO_IP, IP_FREEBIND, &fb, sizeof(fb));
+            setsockopt(s, IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT, &fb, sizeof(fb));
+        }
+    }
+#else
+    (void)so_mark;
+#endif
+
+    if (src_ip.data != NULL && src_ip.len > 0) {
+        if (src_ip.len >= 128) {
+            closesocket(s);
+            return -1;
+        }
+        char src_str[128];
+        slice_to_cstr(src_ip, src_str, sizeof(src_str));
+        struct sockaddr_storage src_ss;
+        int src_family = 0;
+        int src_len = 0;
+        if (wing_parse_ip_sockaddr(src_str, 0, family, &src_ss, &src_family, &src_len) != 0) {
+            if (out_err) *out_err = 2;
+            closesocket(s);
+            return -1;
+        }
+#ifdef _WIN32
+        if (bind(s, (struct sockaddr *)&src_ss, src_len) != 0) {
+#else
+        if (bind(s, (struct sockaddr *)&src_ss, (socklen_t)src_len) != 0) {
+#endif
+            closesocket(s);
+            return -1;
+        }
+    }
+
+    (void)wing_tcp_set_keepalive_params((int64_t)s, 30, 5, 3);
+    (void)wing_tcp_set_user_timeout((int64_t)s, 15000);
+
+#ifdef _WIN32
+    int rc = connect(s, (struct sockaddr *)&dst_ss, dst_len);
+#else
+    int rc = connect(s, (struct sockaddr *)&dst_ss, (socklen_t)dst_len);
+#endif
+    if (rc == 0) {
+        if (out_state) *out_state = 0;
+        if (out_err) *out_err = 0;
+        return (int64_t)s;
+    }
+
+    int err = wing_last_sock_err();
+#ifdef _WIN32
+    if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
+#else
+    if (err == EINPROGRESS || err == EAGAIN || err == EWOULDBLOCK) {
+#endif
+        if (out_state) *out_state = 1;
+        if (out_err) *out_err = 0;
+        return (int64_t)s;
+    }
+
+    if (out_err) *out_err = wing_map_connect_errno(err);
+    closesocket(s);
+    return -1;
+}
+
+int32_t wing_tcp_connect_status(int64_t sock_fd) {
+    if (sock_fd <= 0) return -1;
+    int sock_err = 0;
+#ifdef _WIN32
+    int err_len = (int)sizeof(sock_err);
+#else
+    socklen_t err_len = (socklen_t)sizeof(sock_err);
+#endif
+    if (getsockopt((SOCKET)sock_fd, SOL_SOCKET, SO_ERROR, (char *)&sock_err, &err_len) != 0) return -1;
+    return wing_map_connect_errno(sock_err);
+}
+
+int32_t wing_tcp_recv_peek(int64_t sock_fd, wing_bytes_rw dst) {
+    if (sock_fd <= 0 || dst.data == NULL || dst.len <= 0) return -1;
+    int r = recv((SOCKET)sock_fd, (char *)dst.data, (int)dst.len, MSG_PEEK);
+    if (r >= 0) return (int32_t)r;
+    int err = wing_last_sock_err();
+#ifdef _WIN32
+    if (err == WSAEWOULDBLOCK) return -2;
+#else
+    if (err == EAGAIN || err == EWOULDBLOCK) return -2;
+#endif
+    return -1;
+}
+
+int32_t wing_tcp_set_ttl(int64_t sock_fd, int32_t ttl, int32_t is_ipv6) {
+    if (sock_fd <= 0 || ttl <= 0 || ttl > 255) return -1;
+    SOCKET s = (SOCKET)sock_fd;
+    if (is_ipv6) {
+        return setsockopt(s, IPPROTO_IPV6, IPV6_UNICAST_HOPS, (const char *)&ttl, sizeof(ttl)) == 0 ? 0 : -1;
+    }
+    return setsockopt(s, IPPROTO_IP, IP_TTL, (const char *)&ttl, sizeof(ttl)) == 0 ? 0 : -1;
+}
+
+int32_t wing_pipe_create(int64_t *out_read_fd, int64_t *out_write_fd) {
+    if (out_read_fd) *out_read_fd = -1;
+    if (out_write_fd) *out_write_fd = -1;
+#ifdef __linux__
+    int fds[2] = {-1, -1};
+    if (pipe2(fds, O_NONBLOCK | O_CLOEXEC) != 0) return -1;
+    (void)fcntl(fds[1], F_SETPIPE_SZ, 65536);
+    if (out_read_fd) *out_read_fd = (int64_t)fds[0];
+    if (out_write_fd) *out_write_fd = (int64_t)fds[1];
+    return 0;
+#else
+    return -1;
+#endif
+}
+
+void wing_pipe_close(int64_t read_fd, int64_t write_fd) {
+#if !defined(_WIN32)
+    if (read_fd >= 0) close((int)read_fd);
+    if (write_fd >= 0) close((int)write_fd);
+#else
+    (void)read_fd;
+    (void)write_fd;
+#endif
+}
+
+int64_t wing_tcp_splice_chunk(int64_t src_fd, int64_t dst_fd, int64_t pipe_r, int64_t pipe_w, int64_t max_bytes,
+                              int64_t *in_pipe_bytes) {
+#ifdef __linux__
+    if (src_fd <= 0 || dst_fd <= 0 || pipe_r < 0 || pipe_w < 0 || max_bytes <= 0 || in_pipe_bytes == NULL) return -1;
+    if (*in_pipe_bytes == 0) {
+        int64_t chunk = max_bytes < 65536 ? max_bytes : 65536;
+        ssize_t pulled = splice((int)src_fd, NULL, (int)pipe_w, NULL, (size_t)chunk, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+        if (pulled == 0) return 0;
+        if (pulled < 0) {
+            return (errno == EAGAIN || errno == EWOULDBLOCK) ? -2 : -1;
+        }
+        *in_pipe_bytes = (int64_t)pulled;
+    }
+    int64_t total_out = 0;
+    while (*in_pipe_bytes > 0) {
+        ssize_t pushed =
+            splice((int)pipe_r, NULL, (int)dst_fd, NULL, (size_t)(*in_pipe_bytes), SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+        if (pushed > 0) {
+            *in_pipe_bytes -= (int64_t)pushed;
+            total_out += (int64_t)pushed;
+            continue;
+        }
+        if (pushed < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return total_out > 0 ? total_out : -2;
+        }
+        return total_out > 0 ? total_out : -1;
+    }
+    return total_out;
+#else
+    (void)src_fd;
+    (void)dst_fd;
+    (void)pipe_r;
+    (void)pipe_w;
+    (void)max_bytes;
+    (void)in_pipe_bytes;
+    return -1;
+#endif
+}
+
+static void wing_append_ip_line(wing_bytes_rw out_buf, int64_t *pos, const char *ip_str) {
+    if (ip_str == NULL || ip_str[0] == '\0') return;
+    size_t slen = strlen(ip_str);
+    if (*pos + (int64_t)slen + 1 > out_buf.len) return;
+    memcpy(out_buf.data + *pos, ip_str, slen);
+    *pos += (int64_t)slen;
+    out_buf.data[*pos] = '\n';
+    *pos += 1;
+}
+
+int32_t wing_net_get_local_ips(wing_bytes_rw out_buf) {
+    if (out_buf.data == NULL || out_buf.len <= 0) return -1;
+    if (wing_tcp_init() != 0) return -1;
+    int64_t pos = 0;
+
+#ifdef _WIN32
+    wing_append_ip_line(out_buf, &pos, "127.0.0.1");
+    wing_append_ip_line(out_buf, &pos, "::1");
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) == 0) {
+        struct addrinfo hints;
+        struct addrinfo *res = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(hostname, NULL, &hints, &res) == 0 && res != NULL) {
+            for (struct addrinfo *p = res; p != NULL; p = p->ai_next) {
+                char ipbuf[INET6_ADDRSTRLEN];
+                ipbuf[0] = '\0';
+                if (p->ai_family == AF_INET) {
+                    const struct sockaddr_in *s4 = (const struct sockaddr_in *)p->ai_addr;
+                    if (inet_ntop(AF_INET, &s4->sin_addr, ipbuf, sizeof(ipbuf)) != NULL) {
+                        wing_append_ip_line(out_buf, &pos, ipbuf);
+                    }
+                } else if (p->ai_family == AF_INET6) {
+                    const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)p->ai_addr;
+                    if (s6->sin6_scope_id == 0 && inet_ntop(AF_INET6, &s6->sin6_addr, ipbuf, sizeof(ipbuf)) != NULL) {
+                        wing_append_ip_line(out_buf, &pos, ipbuf);
+                    }
+                }
+            }
+            freeaddrinfo(res);
+        }
+    }
+#else
+    struct ifaddrs *ifap = NULL;
+    if (getifaddrs(&ifap) == 0 && ifap != NULL) {
+        for (struct ifaddrs *ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL) continue;
+            char ipbuf[INET6_ADDRSTRLEN];
+            ipbuf[0] = '\0';
+            if (ifa->ifa_addr->sa_family == AF_INET) {
+                const struct sockaddr_in *s4 = (const struct sockaddr_in *)ifa->ifa_addr;
+                if (inet_ntop(AF_INET, &s4->sin_addr, ipbuf, sizeof(ipbuf)) != NULL) {
+                    wing_append_ip_line(out_buf, &pos, ipbuf);
+                }
+            } else if (ifa->ifa_addr->sa_family == AF_INET6) {
+                const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)ifa->ifa_addr;
+                if (s6->sin6_scope_id == 0 && inet_ntop(AF_INET6, &s6->sin6_addr, ipbuf, sizeof(ipbuf)) != NULL) {
+                    wing_append_ip_line(out_buf, &pos, ipbuf);
+                }
+            }
+        }
+        freeifaddrs(ifap);
+    } else {
+        wing_append_ip_line(out_buf, &pos, "127.0.0.1");
+        wing_append_ip_line(out_buf, &pos, "::1");
+    }
+#endif
+    return (int32_t)pos;
+}
+
+int64_t wing_udp_open_dual(wing_bytes_ro bind_ip, uint16_t bind_port, int32_t flags) {
+    if (wing_tcp_init() != 0) return -1;
+
+    char bind_str[128];
+    slice_to_cstr(bind_ip, bind_str, sizeof(bind_str));
+
+    int force_family = (flags & 2) ? AF_INET6 : AF_INET;
+    if (bind_str[0] != '\0') {
+        force_family = (strchr(bind_str, ':') != NULL) ? AF_INET6 : AF_INET;
+    }
+
+    struct sockaddr_storage ss;
+    int family = AF_INET;
+    int ss_len = 0;
+    if (wing_parse_ip_sockaddr(bind_str, bind_port, force_family, &ss, &family, &ss_len) != 0) return -1;
+
+    SOCKET s = socket(family, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return -1;
+
+    wing_prepare_nonblocking_cloexec(s);
+    int opt = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+    if (family == AF_INET6) {
+        int v6only = 1;
+        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6only, sizeof(v6only));
+    }
+#ifdef __linux__
+    if ((flags & 4) != 0) {
+        int fb = 1;
+        if (family == AF_INET6) {
+            setsockopt(s, IPPROTO_IPV6, IPV6_FREEBIND, &fb, sizeof(fb));
+        } else {
+            setsockopt(s, IPPROTO_IP, IP_FREEBIND, &fb, sizeof(fb));
+        }
+    }
+#endif
+
+    if (bind_str[0] != '\0' || bind_port != 0) {
+#ifdef _WIN32
+        if (bind(s, (struct sockaddr *)&ss, ss_len) != 0) {
+#else
+        if (bind(s, (struct sockaddr *)&ss, (socklen_t)ss_len) != 0) {
+#endif
+            closesocket(s);
+            return -1;
+        }
+    }
+    return (int64_t)s;
+}
+
+int32_t wing_udp_sendto_dual(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro dst_ip, uint16_t dst_port) {
+    if (sock_fd <= 0 || data.data == NULL || data.len < 0 || dst_ip.data == NULL || dst_ip.len <= 0 ||
+        dst_ip.len >= 128 || dst_port == 0) {
+        return -1;
+    }
+    char dst_str[128];
+    slice_to_cstr(dst_ip, dst_str, sizeof(dst_str));
+
+    struct sockaddr_storage ss;
+    int family = AF_INET;
+    int ss_len = 0;
+    if (wing_parse_ip_sockaddr(dst_str, dst_port, 0, &ss, &family, &ss_len) != 0) return -1;
+
+#ifdef _WIN32
+    int sent = sendto((SOCKET)sock_fd, (const char *)data.data, (int)data.len, 0, (struct sockaddr *)&ss, ss_len);
+#else
+    int sent = (int)sendto((int)sock_fd, data.data, (size_t)data.len, MSG_NOSIGNAL, (struct sockaddr *)&ss,
+                           (socklen_t)ss_len);
+#endif
+    if (sent >= 0) return (int32_t)sent;
+    int err = wing_last_sock_err();
+#ifdef _WIN32
+    if (err == WSAEWOULDBLOCK) return -2;
+#else
+    if (err == EAGAIN || err == EWOULDBLOCK) return -2;
+#endif
+    return -1;
+}
+
+int32_t wing_udp_recvfrom_dual(int64_t sock_fd, wing_bytes_rw out_buf, wing_bytes_rw out_peer_ip,
+                               int32_t *out_peer_ip_len, uint16_t *out_peer_port) {
+    if (out_peer_ip_len) *out_peer_ip_len = 0;
+    if (out_peer_port) *out_peer_port = 0;
+    if (sock_fd <= 0 || out_buf.data == NULL || out_buf.len <= 0) return -1;
+
+    struct sockaddr_storage peer_ss;
+    memset(&peer_ss, 0, sizeof(peer_ss));
+#ifdef _WIN32
+    int addr_len = (int)sizeof(peer_ss);
+#else
+    socklen_t addr_len = (socklen_t)sizeof(peer_ss);
+#endif
+    int got = recvfrom((SOCKET)sock_fd, (char *)out_buf.data, (int)out_buf.len, 0, (struct sockaddr *)&peer_ss,
+                       &addr_len);
+    if (got < 0) {
+        int err = wing_last_sock_err();
+#ifdef _WIN32
+        if (err == WSAEWOULDBLOCK) return -2;
+#else
+        if (err == EAGAIN || err == EWOULDBLOCK) return -2;
+#endif
+        return -1;
+    }
+    if (out_peer_ip.data != NULL && out_peer_ip.len > 0) {
+        int32_t plen = wing_format_sockaddr_ip_port(&peer_ss, out_peer_ip, out_peer_port);
+        if (out_peer_ip_len && plen > 0) *out_peer_ip_len = plen;
+    }
+    return (int32_t)got;
+}
+
+int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wing_bytes_ro query,
+                               wing_bytes_rw out_resp, uint32_t timeout_ms) {
+    if (server_ip.data == NULL || server_ip.len <= 0 || server_ip.len >= 128) return -1;
+    if (query.data == NULL || query.len <= 0 || out_resp.data == NULL || out_resp.len <= 0) return -1;
+    if (wing_tcp_init() != 0) return -1;
+
+    char srv_str[128];
+    slice_to_cstr(server_ip, srv_str, sizeof(srv_str));
+
+    struct sockaddr_storage ss;
+    int family = AF_INET;
+    int ss_len = 0;
+    if (wing_parse_ip_sockaddr(srv_str, server_port, 0, &ss, &family, &ss_len) != 0) return -1;
+
+    SOCKET s = socket(family, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return -1;
+
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+    int sent = sendto(s, (const char *)query.data, (int)query.len, 0, (struct sockaddr *)&ss, ss_len);
+#else
+    int sent = (int)sendto(s, query.data, (size_t)query.len, 0, (struct sockaddr *)&ss, (socklen_t)ss_len);
+#endif
+    if (sent != (int)query.len) {
+        closesocket(s);
+        return -1;
+    }
+
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(s, &rfds);
+    struct timeval tv;
+    tv.tv_sec = (long)(timeout_ms / 1000U);
+    tv.tv_usec = (long)((timeout_ms % 1000U) * 1000U);
+
+    int sel = select((int)s + 1, &rfds, NULL, NULL, &tv);
+    if (sel <= 0) {
+        closesocket(s);
+        return sel == 0 ? -2 : -1;
+    }
+
+    int got = recvfrom(s, (char *)out_resp.data, (int)out_resp.len, 0, NULL, NULL);
+    closesocket(s);
+    return (got > 0) ? (int32_t)got : -1;
+}
+
+int32_t wing_fs_disk_usage_percent(wing_bytes_ro path) {
+    if (path.data == NULL || path.len <= 0 || path.len >= 1024) return -1;
+    char pstr[1024];
+    slice_to_cstr(path, pstr, sizeof(pstr));
+#ifdef _WIN32
+    ULARGE_INTEGER avail_bytes, total_bytes, free_bytes;
+    if (!GetDiskFreeSpaceExA(pstr, &avail_bytes, &total_bytes, &free_bytes)) return -1;
+    if (total_bytes.QuadPart == 0) return 100;
+    uint64_t used = total_bytes.QuadPart - avail_bytes.QuadPart;
+    uint64_t pct = (used * 100ULL) / total_bytes.QuadPart;
+    return (int32_t)(pct > 100ULL ? 100ULL : pct);
+#else
+    struct statvfs sv;
+    if (statvfs(pstr, &sv) != 0) return -1;
+    uint64_t used_blocks = (uint64_t)(sv.f_blocks - sv.f_bfree);
+    uint64_t total_user = used_blocks + (uint64_t)sv.f_bavail;
+    if (total_user == 0) return 100;
+    uint64_t pct = (used_blocks * 100ULL) / total_user;
+    return (int32_t)(pct > 100ULL ? 100ULL : pct);
+#endif
+}
+
+int64_t wing_fs_file_mtime(wing_bytes_ro path) {
+    if (path.data == NULL || path.len <= 0 || path.len >= 1024) return -1;
+    char pstr[1024];
+    slice_to_cstr(path, pstr, sizeof(pstr));
+#ifdef _WIN32
+    struct _stat64 st;
+    if (_stat64(pstr, &st) != 0) return -1;
+    return (int64_t)st.st_mtime;
+#else
+    struct stat st;
+    if (stat(pstr, &st) != 0) return -1;
+    return (int64_t)st.st_mtime;
 #endif
 }
 

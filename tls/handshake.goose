@@ -1647,6 +1647,41 @@ fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: 
     return true;
 }
 
+// Encodes a single TLS 1.3 CertificateEntry (3-byte length + DER bytes + 0 extensions).
+inline fn encode_cert_chain_entry(b: core::ByteBuilder&, cert_der: const u8[:]) -> bool {
+    guard b.start_u24_prefix() else { return false; }
+    b.put_bytes(cert_der);
+    guard b.finish_u24_prefix() else { return false; }
+    b.put_u16(0);
+    return true;
+}
+
+// Encodes a client Certificate message (RFC 8446 §4.4.2) with leaf and optional intermediate certs.
+// When leaf_der is empty, an empty certificate_list is encoded.
+fn encode_client_certificate_chain<B>(
+    out:          B&,
+    cert_context: const u8[:],
+    leaf_der:     const u8[:],
+    chain_ders:   const u8[..4096][:],
+) -> bool {
+    guard cert_context.len <= 255 else { return false; }
+
+    var b = core::builder_init();
+    b.put_u8(cert_context.len as u8);
+    b.put_bytes(cert_context);
+    guard b.start_u24_prefix() else { return false; }
+    if leaf_der.len > 0 {
+        guard encode_cert_chain_entry(b, leaf_der) else { return false; }
+        for &icert in chain_ders {
+            guard icert.len > 0 else { continue; }
+            guard encode_cert_chain_entry(b, icert[..]) else { return false; }
+        }
+    }
+    guard b.finish_u24_prefix() else { return false; }
+    guard b.buf.len <= (rfc::MAX_HANDSHAKE_MSG_LEN as i64) else { return false; }
+    return out.try_append(b.buf[..]);
+}
+
 // Encodes a client Certificate message (RFC 8446 §4.4.2).
 // When cert_der is empty, an empty certificate_list is encoded.
 fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: const u8[:]) -> bool {

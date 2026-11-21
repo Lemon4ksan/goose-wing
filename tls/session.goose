@@ -1391,6 +1391,7 @@ struct TlsClientHandshakeConfig {
     insecure_skip_verify: bool             = false,
     virtual_clock_sec:    i64              = 0,
     client_cert_der:      u8[..4096]       = [],
+    client_chain_der:     u8[..4096][..3]  = [],
     client_priv_seed:     u8[32]           = [0; 32],
     enable_pq_hybrid:     bool             = false,
     ech_config_list:      u8[..512]        = [],
@@ -2212,11 +2213,16 @@ fn tls_client_send_client_cert(
     config:        const TlsClientHandshakeConfig&,
     cert_req:      const CertificateRequestMsg&,
 ) -> bool {
-    var cert_payload: u8[..4096] = [];
-    guard encode_client_certificate(cert_payload, cert_req.context[..], config.client_cert_der[..]) else {
+    var cert_payload: u8[..16384] = [];
+    guard encode_client_certificate_chain(
+        cert_payload,
+        cert_req.context[..],
+        config.client_cert_der[..],
+        config.client_chain_der[..],
+    ) else {
         return false;
     }
-    var cert_msg: u8[..4096] = [];
+    var cert_msg: u8[..16384] = [];
     cert_msg.push(rfc::TLS_HS_CERTIFICATE);
     cert_msg.append_u24_be(cert_payload.len as u32);
     cert_msg.append(cert_payload[..]);

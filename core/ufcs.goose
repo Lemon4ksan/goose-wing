@@ -129,6 +129,12 @@ fn ::try_push(arr: u8[>..]&, item: u8) -> bool {
     return true;
 }
 
+fn ::try_push(arr: u8[>..]&, item: i64) -> bool {
+    guard item >= 0 && item <= 255 else { return false; }
+    arr.push(item as u8);
+    return true;
+}
+
 fn ::try_append<A, S>(arr: A&, slice: S) -> bool {
     guard arr.len >= 0 && slice.len >= 0 && core::add_sat_i64(arr.len, slice.len) <= arr.cap else { return false; }
     arr.append(slice);
