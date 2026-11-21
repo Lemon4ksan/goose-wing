@@ -195,6 +195,7 @@ import tls.session;
 import tls.handshake_io_internal;
 import tls.client_handshake;
 import tls.server_handshake;
+import tls.backend;
 
 import quic.internal;
 import quic.packet_internal;
@@ -276,6 +277,7 @@ import server.pipeline;
 import server.h1_codec_internal;
 import server.h1_codec;
 import server.cork;
+import server.stream;
 import server.stream_consumer;
 import server.sni;
 import server.server_internal;

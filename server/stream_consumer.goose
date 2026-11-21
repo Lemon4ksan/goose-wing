@@ -7,9 +7,13 @@ namespace server;
 
 import std;
 import core;
+import rfc.h2;
+import rfc.h3_quic;
 import http.headers;
 import http.headers.lexical;
 import http.headers.chunked;
+import http2.framing;
+import quic.packet;
 import .h1_codec;
 import .internal;
 import .h1_codec_internal;
@@ -155,4 +159,225 @@ fn notify_socket_writable<Callback: fn(i64, u64, u64) -> bool>(
         ctx.is_backpressured = false;
     }
     return ok;
+}
+
+// ---- Request Body Streaming Backpressure (H1 / H2 / H3 Credit Control) ----
+
+enum WindowProtocol {
+    Http1,
+    Http2,
+    Http3,
+}
+
+struct WindowReplenishment {
+    should_update_stream: bool = false,
+    should_update_conn:   bool = false,
+    stream_increment:     u64  = 0,
+    conn_increment:       u64  = 0,
+}
+
+// Pull-rate flow-control tracker linking consumer consumption to HTTP/2 WINDOW_UPDATE
+// (RFC 9113 Section 6.9) and QUIC MAX_STREAM_DATA / MAX_DATA (RFC 9000 Section 4.1).
+// Credit is replenished strictly after application bytes are consumed, preventing buffer growth.
+struct RequestStreamWindow {
+    protocol:              WindowProtocol = WindowProtocol.Http2,
+    stream_id:             u64            = 0,
+    stream_window_size:    u64            = 65536,
+    conn_window_size:      u64            = 65536,
+    bytes_received:        u64            = 0,
+    bytes_consumed:        u64            = 0,
+    conn_bytes_received:   u64            = 0,
+    conn_bytes_consumed:   u64            = 0,
+    advertised_stream_max: u64            = 65536,
+    advertised_conn_max:   u64            = 65536,
+    unacked_stream_bytes:  u64            = 0,
+    unacked_conn_bytes:    u64            = 0,
+    update_threshold_pct:  u32            = 50,
+    is_backpressured:      bool           = false,
+}
+
+fn make_request_stream_window(
+    protocol:             WindowProtocol,
+    stream_id:            u64,
+    stream_window:        u64 = 65536,
+    conn_window:          u64 = 65536,
+    update_threshold_pct: u32 = 50,
+) -> RequestStreamWindow {
+    let eff_stream = max(stream_window, 1);
+    let eff_conn = max(conn_window, eff_stream);
+    let eff_pct = clamp(update_threshold_pct as i64, 1, 100) as u32;
+    return RequestStreamWindow {
+        protocol:              protocol,
+        stream_id:             stream_id,
+        stream_window_size:    eff_stream,
+        conn_window_size:      eff_conn,
+        advertised_stream_max: eff_stream,
+        advertised_conn_max:   eff_conn,
+        update_threshold_pct:  eff_pct,
+        ..
+    };
+}
+
+// Records inbound wire payload bytes against advertised receive windows without replenishing credit.
+// Returns `false` if the peer violated advertised connection or stream flow-control limits.
+fn request_window_on_ingress(win: RequestStreamWindow&, received_bytes: u64) -> bool {
+    guard received_bytes > 0 else { return true; }
+    let next_strm = core::add_sat_u64(win.bytes_received, received_bytes);
+    let next_conn = core::add_sat_u64(win.conn_bytes_received, received_bytes);
+    guard next_strm <= win.advertised_stream_max && next_conn <= win.advertised_conn_max else {
+        win.is_backpressured = true;
+        return false;
+    }
+    win.bytes_received = next_strm;
+    win.conn_bytes_received = next_conn;
+    let rem_strm = core::sub_sat_u64(win.advertised_stream_max, win.bytes_received);
+    let rem_conn = core::sub_sat_u64(win.advertised_conn_max, win.conn_bytes_received);
+    win.is_backpressured = (rem_strm == 0) || (rem_conn == 0);
+    return true;
+}
+
+// Returns remaining peer-sendable receive window credit (`min(stream_rem, conn_rem)`).
+fn request_window_available(win: const RequestStreamWindow&) -> u64 {
+    let rem_strm = core::sub_sat_u64(win.advertised_stream_max, win.bytes_received);
+    let rem_conn = core::sub_sat_u64(win.advertised_conn_max, win.conn_bytes_received);
+    return min(rem_strm, rem_conn);
+}
+
+inline fn calc_window_threshold(window_size: u64, pct: u32) -> u64 {
+    let scaled, _ = core::div_rem_u64(core::mul_sat_u64(window_size, pct), 100);
+    return max(scaled, 1);
+}
+
+fn replenish_single_window(
+    protocol:       WindowProtocol,
+    window_size:    u64,
+    threshold_pct:  u32,
+    unacked_bytes:  u64&,
+    advertised_max: u64&,
+) -> u64, bool {
+    let thresh = calc_window_threshold(window_size, threshold_pct);
+    guard unacked_bytes >= thresh else { return 0, false; }
+    let pending = unacked_bytes;
+    let delta = if protocol == WindowProtocol.Http2 {
+        min(pending, rfc::H2_MAX_WINDOW_SIZE)
+    } else {
+        pending
+    };
+    let next_max = min(core::add_sat_u64(advertised_max, delta), rfc::QUIC_VARINT_MAX);
+    guard next_max > advertised_max else { return 0, false; }
+    advertised_max = next_max;
+    unacked_bytes = core::sub_sat_u64(unacked_bytes, delta);
+    let reported = if protocol == WindowProtocol.Http3 { next_max } else { delta };
+    return reported, true;
+}
+
+// Records bytes pulled by the application consumer and emits replenishment commands once
+// consumed bytes cross the configured threshold (`update_threshold_pct`).
+fn request_window_on_consume(win: RequestStreamWindow&, consumed_bytes: u64) -> WindowReplenishment {
+    var rep = WindowReplenishment { .. };
+    guard consumed_bytes > 0 else { return rep; }
+    let unread_strm = core::sub_sat_u64(win.bytes_received, win.bytes_consumed);
+    let take = min(consumed_bytes, unread_strm);
+    guard take > 0 else { return rep; }
+
+    win.bytes_consumed = core::add_sat_u64(win.bytes_consumed, take);
+    win.conn_bytes_consumed = core::add_sat_u64(win.conn_bytes_consumed, take);
+    win.unacked_stream_bytes = core::add_sat_u64(win.unacked_stream_bytes, take);
+    win.unacked_conn_bytes = core::add_sat_u64(win.unacked_conn_bytes, take);
+
+    let strm_val, strm_ok = replenish_single_window(
+        win.protocol,
+        win.stream_window_size,
+        win.update_threshold_pct,
+        win.unacked_stream_bytes,
+        win.advertised_stream_max,
+    );
+    if strm_ok {
+        rep.should_update_stream = true;
+        rep.stream_increment = strm_val;
+    }
+
+    let conn_val, conn_ok = replenish_single_window(
+        win.protocol,
+        win.conn_window_size,
+        win.update_threshold_pct,
+        win.unacked_conn_bytes,
+        win.advertised_conn_max,
+    );
+    if conn_ok {
+        rep.should_update_conn = true;
+        rep.conn_increment = conn_val;
+    }
+
+    win.is_backpressured = request_window_available(win) == 0;
+    return rep;
+}
+
+// Encodes HTTP/2 connection (stream 0) and stream WINDOW_UPDATE frames (RFC 9113 Section 6.9).
+fn request_window_encode_h2_updates<B>(
+    win: const RequestStreamWindow&,
+    rep: const WindowReplenishment&,
+    out: B&,
+) -> bool {
+    let saved = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved); };
+    if rep.should_update_conn && rep.conn_increment > 0 {
+        let fhdr = http2::FrameHeader {
+            length:     4,
+            frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
+            flags:      0,
+            stream_id:  0,
+        };
+        var raw_hdr: u8[9] = [0; 9];
+        http2::encode_frame_header(fhdr, raw_hdr);
+        guard out.try_append(raw_hdr[..]) else { return false; }
+        let inc = (min(rep.conn_increment, rfc::H2_MAX_WINDOW_SIZE as u64) as u32) & 0x7FFFFFFF;
+        var inc_be: u8[4] = [0; 4];
+        core::write_be_u32_at(inc_be[..], 0, inc);
+        guard out.try_append(inc_be[..]) else { return false; }
+    }
+    if rep.should_update_stream && rep.stream_increment > 0 && win.stream_id > 0 {
+        let fhdr = http2::FrameHeader {
+            length:     4,
+            frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
+            flags:      0,
+            stream_id:  (win.stream_id as u32) & 0x7FFFFFFF,
+        };
+        var raw_hdr: u8[9] = [0; 9];
+        http2::encode_frame_header(fhdr, raw_hdr);
+        guard out.try_append(raw_hdr[..]) else { return false; }
+        let inc = (min(rep.stream_increment, rfc::H2_MAX_WINDOW_SIZE as u64) as u32) & 0x7FFFFFFF;
+        var inc_be: u8[4] = [0; 4];
+        core::write_be_u32_at(inc_be[..], 0, inc);
+        guard out.try_append(inc_be[..]) else { return false; }
+    }
+    committed = true;
+    return true;
+}
+
+// Encodes QUIC MAX_DATA (0x10) and MAX_STREAM_DATA (0x11) frames (RFC 9000 Sections 19.9 and 19.10).
+fn request_window_encode_quic_updates<B>(
+    win: const RequestStreamWindow&,
+    rep: const WindowReplenishment&,
+    out: B&,
+) -> bool {
+    let saved = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved); };
+    if rep.should_update_conn && rep.conn_increment > 0 {
+        guard quic::encode_varint(rfc::QUIC_FRAME_MAX_DATA, out) &&
+            quic::encode_varint(rep.conn_increment, out) else {
+            return false;
+        }
+    }
+    if rep.should_update_stream && rep.stream_increment > 0 {
+        guard quic::encode_varint(rfc::QUIC_FRAME_MAX_STREAM_DATA, out) &&
+            quic::encode_varint(win.stream_id, out) &&
+            quic::encode_varint(rep.stream_increment, out) else {
+            return false;
+        }
+    }
+    committed = true;
+    return true;
 }

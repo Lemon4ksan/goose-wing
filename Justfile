@@ -85,12 +85,12 @@ profile *args:
 # Compile C acceleration shims with strict warning flags
 [unix]
 shims:
-    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/profiler.c
+    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/profiler.c shim/tls_backend.c
     rm -f *.o
 
 [windows]
 shims:
-    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/profiler.c
+    gcc -Wall -Wextra -Werror -c shim/rio.c shim/uring.c shim/kqueue.c shim/simd.c shim/tcp.c shim/af_xdp.c shim/dpdk.c shim/smartnic.c shim/profiler.c shim/tls_backend.c
     Remove-Item -Force -ErrorAction SilentlyContinue *.o
 
 # Run Docker-based gRPC end-to-end verification

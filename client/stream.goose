@@ -354,3 +354,58 @@ fn stream_progress(reader: const StreamReader&) -> StreamProgress {
     }
     return p;
 }
+
+// ---- Client Pull-Rate Flow-Control Backpressure Window ---------------------
+
+// Tracks bounded ingress credit for streaming downloads so slow consumers pause reads
+// or defer H2 WINDOW_UPDATE / QUIC MAX_STREAM_DATA replenishment without growing buffers.
+struct ClientStreamWindow {
+    window_size:    u64 = 65536,
+    bytes_received: u64 = 0,
+    bytes_consumed: u64 = 0,
+    advertised_max: u64 = 65536,
+    unacked_bytes:  u64 = 0,
+    threshold_pct:  u32 = 50,
+}
+
+fn make_client_stream_window(window_size: u64 = 65536, threshold_pct: u32 = 50) -> ClientStreamWindow {
+    let eff_win = max(window_size, 1);
+    let eff_pct = clamp(threshold_pct as i64, 1, 100) as u32;
+    return ClientStreamWindow {
+        window_size:    eff_win,
+        advertised_max: eff_win,
+        threshold_pct:  eff_pct,
+        ..
+    };
+}
+
+// Records bytes arriving from the network without granting new peer send credit.
+fn client_window_on_ingress(win: ClientStreamWindow&, received: u64) -> bool {
+    guard received > 0 else { return true; }
+    let next_rx = core::add_sat_u64(win.bytes_received, received);
+    guard next_rx <= win.advertised_max else { return false; }
+    win.bytes_received = next_rx;
+    return true;
+}
+
+// Returns how many more bytes the peer may send before the client receive window closes.
+fn client_window_can_receive(win: const ClientStreamWindow&) -> u64 {
+    return core::sub_sat_u64(win.advertised_max, win.bytes_received);
+}
+
+// Records application bytes pulled from the stream and returns `(credit_delta, should_replenish)`.
+fn client_window_on_consume(win: ClientStreamWindow&, consumed: u64) -> u64, bool {
+    guard consumed > 0 else { return 0, false; }
+    let unread = core::sub_sat_u64(win.bytes_received, win.bytes_consumed);
+    let take = min(consumed, unread);
+    guard take > 0 else { return 0, false; }
+    win.bytes_consumed = core::add_sat_u64(win.bytes_consumed, take);
+    win.unacked_bytes = core::add_sat_u64(win.unacked_bytes, take);
+    let scaled, _ = core::div_rem_u64(core::mul_sat_u64(win.window_size, win.threshold_pct), 100);
+    let thresh = max(scaled, 1);
+    guard win.unacked_bytes >= thresh else { return 0, false; }
+    let delta = win.unacked_bytes;
+    win.advertised_max = core::add_sat_u64(win.advertised_max, delta);
+    win.unacked_bytes = 0;
+    return delta, true;
+}

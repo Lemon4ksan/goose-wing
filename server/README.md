@@ -348,3 +348,76 @@ into parallel arrays so `soa_table_sweep_expired` scans all 4096 slots in a
 linear L1D-friendly pass and outputs expired slot indices into `out_expired`
 (`i64[:]`). `server/profiler.goose` records hardware RDTSC cycle counts across 8
 pipeline stages (`PROF_STAGE_FRAMING` through `PROF_STAGE_MISC`).
+
+### 9. Unified zero-copy streaming and backpressure (`server/stream.goose`, `server/stream_consumer.goose`, `server/cork.goose`)
+
+```goose
+// Unified H1/H2/H3 response streaming (server/stream.goose)
+enum StreamProtocol { Http1, Http2, Http3 }
+enum StreamWriteStatus { Ok, WouldBlock, Closed, Error }
+struct ResponseStream {
+    protocol: StreamProtocol = StreamProtocol.Http1,
+    cork: ServerCork = new_server_cork(-1),
+    server_name: u8[..64] = "goose-wing",
+    headers_sent: bool = false,
+    ended: bool = false,
+    closed: bool = false,
+    body_bytes_sent: u64 = 0,
+    frames_emitted: u64 = 0,
+    ...
+}
+fn make_http1_response_stream(sock_fd: i64 = -1, server_name: const u8[:] = "goose-wing") -> ResponseStream
+fn make_http2_response_stream(stream_id: u32, conn_window: i64 = 65535, stream_window: i64 = 65535, max_frame_size: u32 = 16384, sock_fd: i64 = -1, server_name: const u8[:] = "goose-wing") -> ResponseStream
+fn make_http3_response_stream(stream_id: u64, conn_credit: u64 = 65536, stream_credit: u64 = 65536, sock_fd: i64 = -1, server_name: const u8[:] = "goose-wing") -> ResponseStream
+fn stream_begin(stream: ResponseStream&, res: http::Response&) -> StreamWriteStatus
+fn stream_write(stream: ResponseStream&, chunk: const u8[:]) -> i64, StreamWriteStatus
+fn stream_end(stream: ResponseStream&) -> StreamWriteStatus
+fn stream_flush(stream: ResponseStream&) -> StreamWriteStatus
+fn stream_drain_wire(stream: ResponseStream&, dst: u8[:]) -> i64
+fn stream_on_window_update(stream: ResponseStream&, conn_delta: i64, stream_delta: i64)
+fn stream_on_quic_max_data(stream: ResponseStream&, new_max_data: u64, new_max_stream_data: u64)
+fn stream_can_write(stream: const ResponseStream&) -> i64
+
+// Request pull-rate flow-control windows (server/stream_consumer.goose)
+enum WindowProtocol { Http1, Http2, Http3 }
+struct WindowReplenishment {
+    should_update_stream: bool = false,
+    should_update_conn: bool = false,
+    stream_increment: u64 = 0,
+    conn_increment: u64 = 0,
+}
+struct RequestStreamWindow {
+    protocol: WindowProtocol = WindowProtocol.Http2,
+    stream_id: u64 = 0,
+    stream_window_size: u64 = 65536,
+    conn_window_size: u64 = 65536,
+    is_backpressured: bool = false,
+    ...
+}
+fn make_request_stream_window(protocol: WindowProtocol, stream_id: u64, stream_window: u64 = 65536, conn_window: u64 = 65536, update_threshold_pct: u32 = 50) -> RequestStreamWindow
+fn request_window_on_ingress(win: RequestStreamWindow&, received_bytes: u64) -> bool
+fn request_window_available(win: const RequestStreamWindow&) -> u64
+fn request_window_on_consume(win: RequestStreamWindow&, consumed_bytes: u64) -> WindowReplenishment
+fn request_window_encode_h2_updates<B>(win: const RequestStreamWindow&, rep: const WindowReplenishment&, out: B&) -> bool
+fn request_window_encode_quic_updates<B>(win: const RequestStreamWindow&, rep: const WindowReplenishment&, out: B&) -> bool
+
+// Non-blocking cork and vectored raw send (server/cork.goose)
+const CORK_WOULD_BLOCK: i32 = -2;
+fn cork_send_raw(fd: i64, data: const u8[:]) -> i32
+fn cork_send_raw2(fd: i64, head: const u8[:], body: const u8[:]) -> i32
+```
+
+`ResponseStream` provides closed-polymorphism response streaming across
+HTTP/1.1, HTTP/2, and HTTP/3 with zero heap allocation and no 16 KB response
+body cap. Handlers call `stream_begin`, `stream_write`, and idempotent
+`stream_end` identically across protocols: HTTP/1.1 coalesces small chunks in
+`ServerCork`, bypasses buffer copies for chunks `>= CORK_BUFFER_CAP` via
+vectored `cork_send_raw2`, and surfaces non-blocking `CORK_WOULD_BLOCK` (`-2`)
+as `StreamWriteStatus.WouldBlock` with partial offset tracking; HTTP/2 clamps
+every `DATA` frame to `min(chunk.len, max_frame_size, conn_send_window,
+stream_send_window)` and resumes when `stream_on_window_update` replenishes
+credit; HTTP/3 clamps `H3_FRAME_DATA` frames to QUIC connection and stream
+credits and resumes on `stream_on_quic_max_data` or `stream_on_window_update`.
+`RequestStreamWindow` couples inbound pull rate to HTTP/2 `WINDOW_UPDATE` and
+QUIC `MAX_DATA` / `MAX_STREAM_DATA` emission so slow consumers exert real wire
+backpressure without growing buffers.

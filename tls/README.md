@@ -716,3 +716,55 @@ and enforces a maximum decompression expansion ratio before
 `decompress_certificate_payload` dispatches `zlib` (`0x0001`), `brotli`
 (`0x0002`), or `zstd` (`0x0003`) decompression and verifies that the
 decompressed output matches `uncompressed_length` to the byte.
+
+### Pluggable TLS Backend (`tls/backend.goose`, `shim/tls_backend.c`)
+
+```goose
+enum TlsBackendKind { PureGoose, SystemOpenSsl, SystemSchannel, Auto }
+
+enum TlsBackendStatus {
+    Ok, WantRead, WantWrite, Closed, Unavailable, HandshakeError, VerifyError, Error,
+}
+
+struct TlsBackendConfig {
+    kind:                 TlsBackendKind   = TlsBackendKind.PureGoose,
+    is_server:            bool             = false,
+    server_name:          u8[..256]        = [],
+    alpn_wire:            u8[..64]         = [],
+    insecure_skip_verify: bool             = false,
+    cert_der:             u8[..4096]       = [],
+    priv_seed:            u8[32]           = [0; 32],
+    trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
+}
+
+struct TlsEndpoint {
+    kind:        TlsBackendKind = TlsBackendKind.PureGoose,
+    active_kind: TlsBackendKind = TlsBackendKind.PureGoose,
+    is_server:   bool           = false,
+    established: bool           = false,
+    closed:      bool           = false,
+    pure_slot:   i32            = -1,
+    native_id:   i64            = -1,
+}
+
+fn tls_backend_available(kind: TlsBackendKind) -> bool
+fn tls_endpoint_open(cfg: const TlsBackendConfig&) -> TlsEndpoint, TlsBackendStatus
+fn tls_endpoint_close(ep: TlsEndpoint&)
+fn tls_endpoint_feed_wire(ep: TlsEndpoint&, ciphertext: const u8[:]) -> i64, TlsBackendStatus
+fn tls_endpoint_drain_wire(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus
+fn tls_endpoint_step_handshake(ep: TlsEndpoint&) -> TlsBackendStatus
+fn tls_endpoint_write_app(ep: TlsEndpoint&, plaintext: const u8[:]) -> i64, TlsBackendStatus
+fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus
+fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64]
+fn tls_endpoint_is_established(ep: const TlsEndpoint&) -> bool
+```
+
+`TlsEndpoint` defines a buffer-oriented, sans-IO TLS transport contract backed
+by closed polymorphism across `PureGoose` (native Goose TLS 1.3 handshake and
+record layer with zero external dependencies and full DST determinism),
+`SystemOpenSsl` (dynamically loaded OpenSSL/BoringSSL via `LoadLibraryA` /
+`dlopen` with memory BIOs in `shim/tls_backend.c`), `SystemSchannel`
+(dynamically loaded Windows `secur32.dll` Schannel context with zero third-party
+DLLs), and `Auto` (probes native system drivers and falls back to `PureGoose`).
+`tls_endpoint_close` is idempotent and wipes handshake and traffic keys on
+shutdown.
