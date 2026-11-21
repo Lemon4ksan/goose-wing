@@ -25,6 +25,7 @@ enum ChunkedDecodeError {
 }
 
 const CHUNK_OVERHEAD_MIN_BYTES: i64 = 102400;
+const MAX_CHUNKED_BODY_BYTES:   i64 = 10 * 1024 * 1024; // 10 MiB hard decoded chunked payload cap
 
 inline fn is_chunk_overhead_excessive(total_read: i64, total_overhead: i64) -> bool {
     return total_overhead >= CHUNK_OVERHEAD_MIN_BYTES &&
@@ -37,26 +38,26 @@ inline fn is_chunk_overhead_excessive(total_read: i64, total_overhead: i64) -> b
 // Example:
 //   s = "\";foo=\\\"bar\\\"\"", cursor = 5
 //   returns: true, cursor advances past quote
-fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
-    let saved_cursor = cursor;
-    var committed = false;
-    defer if !committed { cursor = saved_cursor; };
-    cursor++; // skip opening quote
-    while cursor < s.len {
-        let qc = s[cursor];
+checkfree fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
+    var pos = cursor;
+    guard pos >= 0 && pos < s.len else { return false; }
+    pos++; // skip opening quote
+    while pos < s.len {
+        let qc = s[pos];
         if qc == '\\' {
-            guard cursor + 1 < s.len else { return false; }
-            let esc = s[cursor + 1];
+            let tail = s[pos..];
+            guard tail.len >= 2 else { return false; }
+            let esc = tail[1];
             guard esc == '\t' || (esc >= 0x20 && esc <= 0x7E) || esc >= 0x80 else { return false; }
-            cursor += 2;
+            pos += 2;
             continue;
         }
         if qc == '"' {
-            cursor++;
-            committed = true;
+            pos++;
+            cursor = pos;
             return true;
         }
-        cursor++;
+        pos++;
     }
     return false;
 }
@@ -67,13 +68,14 @@ fn parse_chunk_ext_quoted_val(s: const u8[:], cursor: i64&) -> bool {
 // Example:
 //   s = ";ext1;ext2=val", cursor = 0
 //   returns: ChunkedDecodeError.None
-fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
+checkfree fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
     let saved_cursor = cursor;
     var committed = false;
     defer if !committed { cursor = saved_cursor; };
 
     http_internal::skip_bws(s, cursor);
-    guard cursor < s.len && s[cursor] == ';' else {
+    let pos = cursor;
+    guard pos >= 0 && pos < s.len && s[pos] == ';' else {
         return ChunkedDecodeError.InvalidChunkSizeHex;
     }
     while cursor < s.len {
@@ -89,7 +91,7 @@ fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError {
 // Example:
 //   chunk_size_line = "1a;ext=1"
 //   returns: 26, ChunkedDecodeError.None
-fn parse_chunk_size_hex(chunk_size_line: const u8[:]) -> u64, ChunkedDecodeError {
+checkfree fn parse_chunk_size_hex(chunk_size_line: const u8[:]) -> u64, ChunkedDecodeError {
     let char_err = http_internal::validate_chunk_size_line_chars(chunk_size_line);
     guard char_err == ChunkedDecodeError.None else { return 0, char_err; }
 
@@ -216,20 +218,27 @@ fn parse_chunked_trailers(raw: const u8[:], cursor: i64&) -> ChunkedDecodeError 
 // Example:
 //   raw = "4\r\nWiki\r\n", cursor = 0
 //   returns: 4, ChunkedDecodeError.None, cursor = 3
-fn read_chunk_size_line(raw: const u8[:], cursor: i64&) -> u64, ChunkedDecodeError {
-    let rel_nl = raw[cursor..].index_of_byte('\n');
+checkfree fn read_chunk_size_line(raw: const u8[:], cursor: i64&) -> u64, ChunkedDecodeError {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else { return 0, ChunkedDecodeError.UnexpectedEof; }
+    let tail = raw[pos..];
+    var rel_nl: i64 = -1;
+    for i in tail.len {
+        if tail[i] == '\n' {
+            rel_nl = i;
+            break;
+        }
+    }
     guard rel_nl >= 0 else { return 0, ChunkedDecodeError.UnexpectedEof; }
-    let line_end = cursor + rel_nl;
-
-    if line_end == cursor || raw[line_end - 1] != '\r' {
+    if rel_nl == 0 || tail[rel_nl - 1] != '\r' {
         return 0, ChunkedDecodeError.BareLfInChunkSize;
     }
 
-    let chunk_size_line = raw[cursor..line_end - 1];
+    let chunk_size_line = tail[..rel_nl - 1];
     let chunk_size, size_err = parse_chunk_size_hex(chunk_size_line);
     guard size_err == ChunkedDecodeError.None else { return 0, size_err; }
 
-    cursor = line_end + 1;
+    cursor = pos + rel_nl + 1;
     return chunk_size, ChunkedDecodeError.None;
 }
 

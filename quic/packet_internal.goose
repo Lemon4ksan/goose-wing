@@ -10,29 +10,64 @@ import .packet;
 
 // ---- Variable-Length Integer Bit Helpers (RFC 9000 Section 16) -----------
 
+checkfree inline fn quic_read_be_u16(s: const u8[:]) -> u16 {
+    if s.len < 2 { return 0; }
+    return ((s[0] as u16) << 8) | s[1];
+}
+
+checkfree inline fn quic_read_be_u32(s: const u8[:]) -> u32 {
+    if s.len < 4 { return 0; }
+    let hi = quic_read_be_u16(s) as u32;
+    let lo = quic_read_be_u16(s[2..]) as u32;
+    return (hi << 16) | lo;
+}
+
+checkfree inline fn quic_set_cid(dst: u8[..20]&, src: const u8[:]) -> bool {
+    if src.len < 0 || src.len > dst.cap { return false; }
+    dst.clear();
+    dst.append(src);
+    return true;
+}
+
+checkfree inline fn quic_append_token(dst: u8[..512]&, src: const u8[:]) -> bool {
+    let rem = dst.cap - dst.len;
+    if dst.len < 0 || src.len < 0 || src.len > rem { return false; }
+    dst.append(src);
+    return true;
+}
+
 // Returns the wire byte length (1, 2, 4, or 8) of a QUIC Variable-Length Integer from its first byte.
-inline fn quic_varint_len(first_byte: u8) -> u8 {
+checkfree inline fn quic_varint_len(first_byte: u8) -> u8 {
     let tag = (first_byte >> 6) & 0x03;
     return (1 as u8) << tag;
 }
 
-inline fn varint_read_2(src: const u8[:], idx: i64, first: u8) -> u64 {
+checkfree inline fn varint_read_2(src: const u8[:], idx: i64, first: u8) -> u64 {
+    if idx < 0 || idx > src.len { return 0; }
+    let tail = src[idx..];
+    if tail.len < 2 { return 0; }
     let hi: u64 = first & 0x3F;
-    return (hi << 8) | src[idx + 1];
+    return (hi << 8) | tail[1];
 }
 
-inline fn varint_read_4(src: const u8[:], idx: i64, first: u8) -> u64 {
-    let v1 = varint_read_2(src, idx, first);
-    let v2 = (v1 << 8) | src[idx + 2];
-    return (v2 << 8) | src[idx + 3];
+checkfree inline fn varint_read_4(src: const u8[:], idx: i64, first: u8) -> u64 {
+    if idx < 0 || idx > src.len { return 0; }
+    let tail = src[idx..];
+    if tail.len < 4 { return 0; }
+    let v1 = varint_read_2(tail, 0, first);
+    let v2 = (v1 << 8) | tail[2];
+    return (v2 << 8) | tail[3];
 }
 
-inline fn varint_read_8(src: const u8[:], idx: i64, first: u8) -> u64 {
-    let v3 = varint_read_4(src, idx, first);
-    let v4 = (v3 << 8) | src[idx + 4];
-    let v5 = (v4 << 8) | src[idx + 5];
-    let v6 = (v5 << 8) | src[idx + 6];
-    return (v6 << 8) | src[idx + 7];
+checkfree inline fn varint_read_8(src: const u8[:], idx: i64, first: u8) -> u64 {
+    if idx < 0 || idx > src.len { return 0; }
+    let tail = src[idx..];
+    if tail.len < 8 { return 0; }
+    let v3 = varint_read_4(tail, 0, first);
+    let v4 = (v3 << 8) | tail[4];
+    let v5 = (v4 << 8) | tail[5];
+    let v6 = (v5 << 8) | tail[6];
+    return (v6 << 8) | tail[7];
 }
 
 // ---- Packet Header Internal Parsers & Encoders (RFC 9000 Section 17) -----
@@ -47,27 +82,30 @@ struct QuicHeaderOptions {
 // Example:
 //   src = [0x80, 0x00, 0x00, 0x00, 0x00, 0x04, ...], in_hdr = initial header
 //   returns: QuicHeader { header_type: VersionNegotiation, version: 0 }, ok = true
-fn parse_quic_version_negotiation(src: const u8[:], in_hdr: quic::QuicHeader) -> quic::QuicHeader, bool {
+checkfree fn parse_quic_version_negotiation(src: const u8[:], in_hdr: quic::QuicHeader) -> quic::QuicHeader, bool {
     // RFC 9000 Section 17.2.1: Version Negotiation Packet - Header Form bit MUST be 1 and Version MUST be 0.
     guard src.len >= 7
         && (src[0] & 0x80) != 0
-        && core::read_be_u32(src, 1) == rfc::QUIC_VERSION_NEGOTIATION else {
+        && quic_read_be_u32(src[1..]) == rfc::QUIC_VERSION_NEGOTIATION else {
         return in_hdr, false;
     }
     let dlen: i64 = src[5];
     let d_end = 6 + dlen;
     let s_start = 7 + dlen;
-    guard dlen <= rfc::QUIC_MAX_CID_LEN && s_start <= src.len else { return in_hdr, false; }
+    guard dlen <= rfc::QUIC_MAX_CID_LEN && d_end >= 6 && d_end < src.len
+        && s_start >= 7 && s_start <= src.len else {
+        return in_hdr, false;
+    }
     let slen: i64 = src[d_end];
     let s_end = s_start + slen;
-    guard slen <= rfc::QUIC_MAX_CID_LEN && s_end <= src.len else { return in_hdr, false; }
+    guard slen <= rfc::QUIC_MAX_CID_LEN && s_end >= s_start && s_end <= src.len else { return in_hdr, false; }
 
     // RFC 9000 Section 17.2.1: Version Negotiation Packet - Must contain one or more 32-bit versions.
     let rem_versions = src.len - s_end;
     guard rem_versions >= 4 && (rem_versions & 3) == 0 else { return in_hdr, false; }
 
     var hdr = in_hdr;
-    guard hdr.dcid.try_set(src[6..d_end]) && hdr.scid.try_set(src[s_start..s_end]) else {
+    guard quic_set_cid(hdr.dcid, src[6..d_end]) && quic_set_cid(hdr.scid, src[s_start..s_end]) else {
         return in_hdr, false;
     }
     hdr.header_type = quic::QuicHeaderType.VersionNegotiation;
@@ -81,35 +119,31 @@ fn parse_quic_version_negotiation(src: const u8[:], in_hdr: quic::QuicHeader) ->
 // Example:
 //   src = [0x04, 1, 2, 3, 4, 0x00], idx = 0
 //   returns: true, idx = 6, dcid = [1, 2, 3, 4], scid = []
-fn parse_quic_long_cids(
+checkfree fn parse_quic_long_cids(
     src:  const u8[:],
     idx:  i64&,
     dcid: u8[..20]&,
     scid: u8[..20]&,
 ) -> bool {
     let initial_idx = idx;
-    guard idx < src.len else { return false; }
-    let dlen: i64 = src[idx];
-    let d_start = idx + 1;
+    guard initial_idx >= 0 && initial_idx < src.len else { return false; }
+    let dlen: i64 = src[initial_idx];
+    let d_start = initial_idx + 1;
     let d_end = d_start + dlen;
-    guard dlen <= rfc::QUIC_MAX_CID_LEN && d_end <= src.len else {
+    guard dlen <= rfc::QUIC_MAX_CID_LEN && d_start >= 0 && d_end >= d_start && d_end < src.len else {
         idx = initial_idx;
         return false;
     }
 
-    guard d_end < src.len else {
-        idx = initial_idx;
-        return false;
-    }
     let slen: i64 = src[d_end];
     let s_start = d_end + 1;
     let s_end = s_start + slen;
-    guard slen <= rfc::QUIC_MAX_CID_LEN && s_end <= src.len else {
+    guard slen <= rfc::QUIC_MAX_CID_LEN && s_start >= 0 && s_end >= s_start && s_end <= src.len else {
         idx = initial_idx;
         return false;
     }
 
-    guard dcid.try_set(src[d_start..d_end]) && scid.try_set(src[s_start..s_end]) else {
+    guard quic_set_cid(dcid, src[d_start..d_end]) && quic_set_cid(scid, src[s_start..s_end]) else {
         idx = initial_idx;
         return false;
     }
@@ -122,7 +156,7 @@ fn parse_quic_long_cids(
 // Example:
 //   src = [0x04, 't', 'o', 'k', 'n'], idx = 0
 //   returns: true, idx = 5, token = "tokn"
-fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> bool {
+checkfree fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> bool {
     let initial_idx = idx;
     let initial_len = token.len;
     var committed = false;
@@ -131,9 +165,12 @@ fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> b
         idx = initial_idx;
     };
     let tok_len, ok_tok = quic::decode_varint_cursor(src, idx);
+    let pos = idx;
     let itok = tok_len as i64;
-    let tok_end = idx + itok;
-    guard ok_tok && itok >= 0 && tok_end <= src.len && token.try_append(src[idx..tok_end]) else {
+    let tok_end = pos + itok;
+    guard ok_tok && pos >= 0 && pos <= src.len && itok >= 0 else { return false; }
+    let tail = src[pos..];
+    guard itok <= tail.len && quic_append_token(token, tail[..itok]) else {
         return false;
     }
     idx = tok_end;
@@ -150,7 +187,7 @@ fn parse_quic_initial_token(src: const u8[:], idx: i64&, token: u8[..512]&) -> b
 //   version = 0x00000001, two_bits = 0b00 -> Initial, true
 //   version = 0x6b3343cf, two_bits = 0b01 -> Initial, true
 //   version = 0x6b3343cf, two_bits = 0b00 -> Retry, true
-fn quic_long_header_type(version: u32, two_bits: u8) -> quic::QuicHeaderType, bool {
+checkfree fn quic_long_header_type(version: u32, two_bits: u8) -> quic::QuicHeaderType, bool {
     guard two_bits <= 0x03 else { return quic::QuicHeaderType.Retry, false; }
     if version == rfc::QUIC_VERSION_2 {
         if two_bits == 0x01 { return quic::QuicHeaderType.Initial, true; }
@@ -172,10 +209,13 @@ fn quic_long_header_type(version: u32, two_bits: u8) -> quic::QuicHeaderType, bo
 // Example:
 //   src = [0x01, 0x02], idx = 0, pn_len = 2
 //   returns: 0x0102
-inline fn decode_unmasked_pn(src: const u8[:], idx: i64, pn_len: i64) -> u64 {
+checkfree inline fn decode_unmasked_pn(src: const u8[:], idx: i64, pn_len: i64) -> u64 {
+    if idx < 0 || idx > src.len || pn_len < 0 { return 0; }
+    let tail = src[idx..];
+    if pn_len > tail.len { return 0; }
     var pn_val: u64 = 0;
     for i in pn_len {
-        pn_val = (pn_val << 8) | src[idx + i];
+        pn_val = (pn_val << 8) | tail[i];
     }
     return pn_val;
 }
@@ -185,14 +225,14 @@ inline fn decode_unmasked_pn(src: const u8[:], idx: i64, pn_len: i64) -> u64 {
 // Example:
 //   src = [0xC0, 0x00, 0x00, 0x00, 0x01, ...], first = 0xC0
 //   returns: QuicHeader { header_type: Initial, version: 1 }, ok = true
-fn parse_quic_long_header(
+checkfree fn parse_quic_long_header(
     src:   const u8[:],
     first: u8,
     opts:  QuicHeaderOptions = QuicHeaderOptions { .. },
 ) -> quic::QuicHeader, bool {
     var hdr = quic::QuicHeader {};
     guard src.len >= 5 else { return hdr, false; }
-    let ver = core::read_be_u32(src, 1);
+    let ver = quic_read_be_u32(src[1..]);
     hdr.version = ver;
 
     if ver == rfc::QUIC_VERSION_NEGOTIATION {
@@ -257,7 +297,7 @@ fn parse_quic_long_header(
 // Example:
 //   src = [0x40, 0x01, 0x02, 0x03, 0x04, 0x05], first = 0x40, dcid_len_short = 4
 //   returns: QuicHeader { header_type: OneRtt, dcid: [1, 2, 3, 4] }, ok = true
-fn parse_quic_short_header(
+checkfree fn parse_quic_short_header(
     src:            const u8[:],
     first:          u8,
     dcid_len_short: u8,
@@ -280,7 +320,7 @@ fn parse_quic_short_header(
     let dlen: i64 = dcid_len_short;
     var idx: i64 = 1;
     let d_end = idx + dlen;
-    guard d_end <= src.len else { return hdr, false; }
+    guard d_end >= 1 && d_end <= src.len else { return hdr, false; }
     if dlen > 0 {
         hdr.dcid.append(src[idx..d_end]);
         idx = d_end;
@@ -307,7 +347,7 @@ fn parse_quic_short_header(
 // Example:
 //   ht = QuicHeaderType.Initial, pn_bits = 0, version = 1
 //   returns: 0xC0, ok = true
-fn build_long_header_first_byte(
+checkfree fn build_long_header_first_byte(
     ht:      quic::QuicHeaderType,
     pn_bits: u8,
     version: u32 = rfc::QUIC_VERSION_1,
@@ -456,14 +496,16 @@ inline fn compute_batch_aes256_masks(
     return n;
 }
 
-inline fn toggle_first_byte_protection(pkt: u8[:], is_long: bool, m0: u8) {
+checkfree inline fn toggle_first_byte_protection(pkt: u8[:], is_long: bool, m0: u8) {
+    guard pkt.len > 0 else { return; }
     let mask = if is_long { m0 & 0x0F } else { m0 & 0x1F };
     pkt[0] = pkt[0] ^ mask;
 }
 
-inline fn xor_pn_byte_at(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&, i: i64) -> u8 {
+checkfree inline fn xor_pn_byte_at(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&, i: i64) -> u8 {
     let idx = pn_offset + i;
     let m_idx = 1 + i;
+    if idx < 0 || idx >= pkt.len || m_idx < 0 || m_idx >= 5 { return 0; }
     let unmasked = pkt[idx] ^ hp_mask[m_idx];
     pkt[idx] = unmasked;
     return unmasked;
@@ -478,7 +520,7 @@ const ARENA_MAX_BYTES:        u64 = 16384;
 
 // Allocates a single 1024-byte chunk inside the bounded 16-chunk arena.
 // Rejects allocation past 16 chunks (16384 bytes) per Invariant 13.
-fn arena_alloc_chunk(arena: quic::SegmentedArena&) -> bool {
+checkfree fn arena_alloc_chunk(arena: quic::SegmentedArena&) -> bool {
     guard arena.allocated_chunks < ARENA_MAX_CHUNKS else { return false; }
     let next_len = arena.chunks.len + ARENA_CHUNK_SIZE;
     guard next_len <= arena.chunks.cap else { return false; }
@@ -489,7 +531,7 @@ fn arena_alloc_chunk(arena: quic::SegmentedArena&) -> bool {
 
 // Ensures at least `needed_bytes` of chunk capacity are allocated in `arena`.
 // Rejects requests exceeding 16 chunks (16384 bytes) per Invariant 13.
-fn arena_ensure_bytes(arena: quic::SegmentedArena&, needed_bytes: u64) -> bool {
+checkfree fn arena_ensure_bytes(arena: quic::SegmentedArena&, needed_bytes: u64) -> bool {
     guard needed_bytes <= ARENA_MAX_BYTES else { return false; }
     while (arena.chunks.len as u64) < needed_bytes {
         guard arena_alloc_chunk(arena) else { return false; }
@@ -498,7 +540,7 @@ fn arena_ensure_bytes(arena: quic::SegmentedArena&, needed_bytes: u64) -> bool {
 }
 
 // Shifts out `consumed` bytes from the front of the segmented arena and updates `allocated_chunks`.
-fn arena_consume_front(arena: quic::SegmentedArena&, consumed: i64) {
+checkfree fn arena_consume_front(arena: quic::SegmentedArena&, consumed: i64) {
     guard consumed > 0 else { return; }
     if consumed >= arena.data_len {
         arena.chunks.clear();
@@ -507,8 +549,11 @@ fn arena_consume_front(arena: quic::SegmentedArena&, consumed: i64) {
         return;
     }
     let remaining = arena.data_len - consumed;
+    let clen = arena.chunks.len;
     for i in remaining {
-        arena.chunks[i] = arena.chunks[consumed + i];
+        let src_i = consumed + i;
+        if i >= clen || src_i < 0 || src_i >= clen { break; }
+        arena.chunks[i] = arena.chunks[src_i];
     }
     arena.data_len = remaining;
     if remaining == 0 {
@@ -548,15 +593,15 @@ fn merge_reassembly_interval(intervals: quic::Interval[..64]&, new_start: u64, n
     return intervals.try_push(quic::Interval { start: cur_s, end: cur_e });
 }
 
-fn validate_fin_constraints(buf: const quic::ReassemblyBuffer&, frag_end: u64) -> bool {
+checkfree fn validate_fin_constraints(buf: const quic::ReassemblyBuffer&, frag_end: u64) -> bool {
     if buf.fin_received && buf.final_size != frag_end {
         return false; // QUIC_ERR_FINAL_SIZE
     }
     if frag_end < buf.consumed_offset {
         return false; // QUIC_ERR_FINAL_SIZE
     }
-    for i in buf.intervals.len {
-        if buf.intervals[i].end > frag_end {
+    for &it in buf.intervals {
+        if it.end > frag_end {
             return false; // QUIC_ERR_FINAL_SIZE: data already buffered beyond declared final size
         }
     }

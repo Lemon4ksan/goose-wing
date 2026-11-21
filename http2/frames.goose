@@ -82,13 +82,13 @@ fn encode_origin_frame<B>(out: B&, origins: const u8[:][..16]&) -> bool {
 // Example:
 //   payload = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm', 'h', '3'], stream_id = 0
 //   returns: AltSvcFrame { origin: "ex.com", alt_svc_value: "h3" }, ERR_NO_ERROR
-fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> AltSvcFrame, u32 {
+checkfree fn parse_altsvc_frame(payload: const u8[:], stream_id: u32) -> AltSvcFrame, u32 {
     guard payload.len >= 2 else {
         return AltSvcFrame { .. }, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
-    let origin_len = core::read_be_u16(payload, 0) as i64;
+    let origin_len = h2_internal::h2_read_be_u16(payload) as i64;
     let origin_end = 2 + origin_len;
-    guard origin_end <= payload.len else {
+    guard origin_end >= 2 && origin_end <= payload.len else {
         return AltSvcFrame { .. }, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
     let valid_origin = if stream_id == 0 { origin_len > 0 } else { origin_len == 0 };

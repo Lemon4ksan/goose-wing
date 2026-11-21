@@ -451,7 +451,7 @@ fn encode_connection_close_frame<B>(
 // Example:
 //   c.buf = [0x01, 0x02, 0x40, 0x64, 0x03] (seq=1, threshold=2, max_delay=100, reorder=3)
 //   returns: QuicAckFrequencyFrame { seq: 1, ack_eliciting_threshold: 2, request_max_ack_delay_us: 100 }, ok = true
-fn decode_ack_frequency_frame(c: core::ByteCursor&) -> QuicAckFrequencyFrame, bool {
+checkfree fn decode_ack_frequency_frame(c: core::ByteCursor&) -> QuicAckFrequencyFrame, bool {
     var idx: i64 = 0;
     let seq, ok1 = decode_varint_cursor(c.buf, idx);
     guard ok1 else { return QuicAckFrequencyFrame { .. }, false; }
@@ -460,7 +460,7 @@ fn decode_ack_frequency_frame(c: core::ByteCursor&) -> QuicAckFrequencyFrame, bo
     let max_delay, ok3 = decode_varint_cursor(c.buf, idx);
     guard ok3 else { return QuicAckFrequencyFrame { .. }, false; }
     let reorder, ok4 = decode_varint_cursor(c.buf, idx);
-    guard ok4 else { return QuicAckFrequencyFrame { .. }, false; }
+    guard ok4 && idx >= 0 && idx <= c.buf.len else { return QuicAckFrequencyFrame { .. }, false; }
     c.buf = c.buf[idx..];
     return QuicAckFrequencyFrame {
         seq:                      seq,
@@ -531,9 +531,9 @@ fn decode_datagram_frame(
 // Example:
 //   src = [0x01, 0x06, 0x00, 0x02, 'o', 'k'], idx = 0
 //   returns: QuicFrame { frame_type: Ping }, ok = true, idx = 1
-fn decode_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
+checkfree fn decode_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
     let initial_idx = idx;
-    guard idx >= 0 && idx < src.len else { return QuicFrame { .. }, false; }
+    guard initial_idx >= 0 && initial_idx < src.len else { return QuicFrame { .. }, false; }
 
     let ftype, ok_type = decode_varint_cursor(src, idx);
     guard ok_type else {
@@ -576,7 +576,7 @@ fn decode_frame_cursor(src: const u8[:], idx: i64&) -> QuicFrame, bool {
 //   src = [0x01, 0x06, 0x00, 0x02, 'h', 'i'], offset = 0
 //   call 1: returns Ping frame, next_offset = 1, ok = true
 //   call 2 (offset = 1): returns Crypto frame ("hi"), next_offset = 6, ok = true
-fn decode_frame(src: const u8[:], offset: u64) -> QuicFrame, u64, bool {
+checkfree fn decode_frame(src: const u8[:], offset: u64) -> QuicFrame, u64, bool {
     guard offset < (src.len as u64) else {
         return QuicFrame { .. }, offset, false;
     }

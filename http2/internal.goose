@@ -16,16 +16,34 @@ import .connection;
 // RFC 8336 Section 2.1: Syntax - Reserved low-nibble flags (0x01..0x08) on ORIGIN frames.
 const H2_ORIGIN_RESERVED_FLAGS: u8 = 0x0F;
 
+checkfree inline fn h2_read_be_u16(s: const u8[:]) -> u16 {
+    if s.len < 2 { return 0; }
+    return ((s[0] as u16) << 8) | s[1];
+}
+
+checkfree inline fn h2_read_be_u24(s: const u8[:]) -> u32 {
+    if s.len < 3 { return 0; }
+    let hi = h2_read_be_u16(s) as u32;
+    return (hi << 8) | s[2];
+}
+
+checkfree inline fn h2_read_be_u32(s: const u8[:]) -> u32 {
+    if s.len < 4 { return 0; }
+    let hi = h2_read_be_u16(s) as u32;
+    let lo = h2_read_be_u16(s[2..]) as u32;
+    return (hi << 16) | lo;
+}
+
 // Decodes a single Origin Entry from slice without cursor mutation.
 //
 // Example:
 //   rem = [0x00, 0x06, 'e', 'x', '.', 'c', 'o', 'm']
 //   returns: "ex.com", total = 8, ok = true
-inline fn decode_origin_slice(rem: const u8[:]) -> const u8[:], i64, bool {
+checkfree inline fn decode_origin_slice(rem: const u8[:]) -> const u8[:], i64, bool {
     guard rem.len >= 2 else { return "", 0, false; }
-    let len = core::read_be_u16(rem, 0) as i64;
+    let len = h2_read_be_u16(rem) as i64;
     let total = 2 + len;
-    guard rem.len >= total else { return "", 0, false; }
+    guard total >= 2 && total <= rem.len else { return "", 0, false; }
     return rem[2..total], total, true;
 }
 
@@ -156,7 +174,7 @@ inline fn calc_altsvc_payload_len(origin_len: i64, alt_svc_len: i64, stream_id: 
 // ---- Binary Framing Validation Helper (RFC 9113 §4.2) --------------------
 
 // RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.
-fn validate_frame_type_length(hdr: const http2::FrameHeader&) -> u32 {
+checkfree fn validate_frame_type_length(hdr: const http2::FrameHeader&) -> u32 {
     if hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.length != 4 {
         return rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
@@ -800,8 +818,8 @@ struct HuffDecode {
     sym:    u8 = 0,
 }
 
-inline fn huff_decode_lookup(state: u8, nibble: u8) -> HuffDecode {
-    let idx = ((state as u32) << 4) | (nibble & 0x0F);
+checkfree inline fn huff_decode_lookup(state: u8, nibble: u8) -> HuffDecode {
+    let idx = (((state as u32) << 4) | (nibble & 0x0F)) & 0x0FFF;
     let packed = HUFF_DECODE_TABLE_PACKED[idx];
     return HuffDecode {
         fstate: (packed & 0xFF) as u8,
@@ -880,11 +898,15 @@ const HPACK_STATIC_TABLE: HpackStaticField[62] = [
     HpackStaticField { name: "www-authenticate", val: "" },
 ];
 
-fn get_hpack_static_field(idx: u64) -> HpackStaticField, bool {
+checkfree fn get_hpack_static_field(idx: u64) -> HpackStaticField, bool {
     guard idx >= 1 && idx <= rfc::HPACK_STATIC_TABLE_ENTRIES else {
         return HpackStaticField { .. }, false;
     }
-    return HPACK_STATIC_TABLE[idx as i64], true;
+    let idx_i = idx as i64;
+    guard idx_i >= 1 && idx_i < 62 else {
+        return HpackStaticField { .. }, false;
+    }
+    return HPACK_STATIC_TABLE[idx_i], true;
 }
 
 const HPACK_STATIC_NAMES: const u8[:][61] = [
@@ -914,12 +936,12 @@ const HPACK_STATIC_VALS: const u8[:][16] = [
 
 // Searches static table for matching name and optional value (RFC 7541 Appendix A).
 // Returns (1-based index, exact_value_match).
-fn find_hpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
+checkfree fn find_hpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
     guard name.len > 0 else { return 0, false; }
     var name_match_idx: u64 = 0;
     for i in 61 {
         let entry_name = HPACK_STATIC_NAMES[i];
-        guard entry_name.len == name.len && entry_name[0] == name[0] && entry_name == name else {
+        guard entry_name.len == name.len && entry_name.len > 0 && entry_name[0] == name[0] && entry_name == name else {
             continue;
         }
         let idx1 = (i + 1) as u64;
@@ -937,7 +959,7 @@ fn find_hpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
 // ---- HPACK Dynamic Table & Validation Helpers ----------------------------
 
 // Computes an 8-bit direct-mapped slot index (0..255) for an HPACK (name, val) pair.
-inline fn compute_hpack_hash_slot(name: const u8[:], val: const u8[:]) -> u8 {
+checkfree inline fn compute_hpack_hash_slot(name: const u8[:], val: const u8[:]) -> u8 {
     var h: u32 = core::FNV1A_32_OFFSET;
     for b in name {
         h = (h ^ b) * core::FNV1A_32_PRIME;
@@ -950,24 +972,28 @@ inline fn compute_hpack_hash_slot(name: const u8[:], val: const u8[:]) -> u8 {
 }
 
 // Advances the monotonic generation counter, skipping 0 (reserved for empty/invalidated slots).
-inline fn next_hpack_generation(dt: http2::DynamicTable&) -> u8 {
+checkfree inline fn next_hpack_generation(dt: http2::DynamicTable&) -> u8 {
     let g = dt.next_generation;
     let next_g: u8 = if g == 255 { 1 } else { g + 1 };
     dt.next_generation = next_g;
-    return max(g, 1);
+    return if g > 1 { g } else { 1 };
 }
 
 // Invalidates any hash table slot pointing to an evicted ring index & generation.
-inline fn invalidate_hpack_hash_entry(
+checkfree inline fn invalidate_hpack_hash_entry(
     dt:       http2::DynamicTable&,
     ring_idx: u64,
     entry:    const http2::HpackHeaderField&,
 ) {
-    let n_off = entry.name_off;
-    let n_len = entry.name_len as u32;
-    let v_off = entry.val_off;
-    let v_len = entry.val_len as u32;
-    let slot = compute_hpack_hash_slot(dt.arena[n_off..n_off + n_len], dt.arena[v_off..v_off + v_len]);
+    let n_off = entry.name_off as i64;
+    let n_len = entry.name_len as i64;
+    let v_off = entry.val_off as i64;
+    let v_len = entry.val_len as i64;
+    let n_end = n_off + n_len;
+    let v_end = v_off + v_len;
+    guard n_off >= 0 && n_off <= n_end && n_end <= 4096 else { return; }
+    guard v_off >= 0 && v_off <= v_end && v_end <= 4096 else { return; }
+    let slot = compute_hpack_hash_slot(dt.arena[n_off..n_end], dt.arena[v_off..v_end]);
     let encoded_ref = (ring_idx as u16) + 1;
     if dt.hash_table.slots[slot] == encoded_ref && dt.hash_table.generations[slot] == entry.generation {
         dt.hash_table.slots[slot] = 0;
@@ -976,27 +1002,39 @@ inline fn invalidate_hpack_hash_entry(
 }
 
 // Evicts the oldest entry from the dynamic table and updates arena_tail & hash generations.
-fn evict_oldest_entry(dt: http2::DynamicTable&) {
+checkfree fn evict_oldest_entry(dt: http2::DynamicTable&) {
     guard dt.count > 0 else { return; }
-    let oldest = dt.entries[dt.head];
-    invalidate_hpack_hash_entry(dt, dt.head, oldest);
+    let head_u = dt.head & HPACK_RING_MASK;
+    let head_i = head_u as i64;
+    guard head_i >= 0 && head_i < 128 else { return; }
+    let oldest = dt.entries[head_i];
+    invalidate_hpack_hash_entry(dt, head_u, oldest);
     dt.used_bytes -= oldest.meta_size;
-    dt.head = (dt.head + 1) & HPACK_RING_MASK;
+    let next_u = (head_u + 1) & HPACK_RING_MASK;
+    dt.head = next_u;
     dt.count--;
     if dt.count == 0 {
         dt.arena_head = 0;
         dt.arena_tail = 0;
         dt.arena_write_pos = 0;
     } else {
-        dt.arena_tail = dt.entries[dt.head].name_off;
+        let next_i = next_u as i64;
+        if next_i >= 0 && next_i < 128 {
+            dt.arena_tail = dt.entries[next_i].name_off;
+        }
     }
 }
 
-fn has_entry_overlapping_arena_range(dt: const http2::DynamicTable&, write_start: u32, write_end: u32) -> bool {
+checkfree fn has_entry_overlapping_arena_range(
+    dt:          const http2::DynamicTable&,
+    write_start: u32,
+    write_end:   u32,
+) -> bool {
     var i: u64 = 0;
     while i < dt.count {
-        let idx = (dt.head + i) & HPACK_RING_MASK;
-        let entry .= dt.entries[idx];
+        let idx_i = ((dt.head + i) & HPACK_RING_MASK) as i64;
+        if idx_i < 0 || idx_i >= 128 { return false; }
+        let entry .= dt.entries[idx_i];
         let old_start = entry.name_off;
         let old_end = entry.val_off + entry.val_len;
         if (old_start < write_end) && (old_end > write_start) {
@@ -1008,31 +1046,39 @@ fn has_entry_overlapping_arena_range(dt: const http2::DynamicTable&, write_start
 }
 
 // RFC 7541 Section 2.3.2: Dynamic Table - Linearized boundary wrap helper.
-fn evict_overlapping_arena_range(dt: http2::DynamicTable&, write_start: u32, write_end: u32) {
+checkfree fn evict_overlapping_arena_range(dt: http2::DynamicTable&, write_start: u32, write_end: u32) {
     while dt.count > 0 && has_entry_overlapping_arena_range(dt, write_start, write_end) {
         evict_oldest_entry(dt);
     }
 }
 
-inline fn pack_header_into_arena(dt: http2::DynamicTable&, name: const u8[:], val: const u8[:]) -> u32, u32 {
+checkfree inline fn pack_header_into_arena(dt: http2::DynamicTable&, name: const u8[:], val: const u8[:]) -> u32, u32 {
     let n_len = name.len;
     let v_len = val.len;
-    let name_off = dt.arena_write_pos;
+    let name_off = dt.arena_write_pos as i64;
+    let val_off = name_off + n_len;
+    let end_off = val_off + v_len;
+    guard name_off >= 0 && val_off >= name_off && end_off >= val_off && end_off <= 4096 else {
+        return 0, 0;
+    }
     for i in n_len {
-        dt.arena[name_off + (i as u32)] = name[i];
+        let dst_i = name_off + i;
+        guard dst_i >= 0 && dst_i < 4096 else { break; }
+        dt.arena[dst_i] = name[i];
     }
-    let val_off = name_off + (n_len as u32);
     for i in v_len {
-        dt.arena[val_off + (i as u32)] = val[i];
+        let dst_i = val_off + i;
+        guard dst_i >= 0 && dst_i < 4096 else { break; }
+        dt.arena[dst_i] = val[i];
     }
-    dt.arena_head = name_off;
-    dt.arena_write_pos = val_off + (v_len as u32);
-    return name_off, val_off;
+    dt.arena_head = name_off as u32;
+    dt.arena_write_pos = end_off as u32;
+    return name_off as u32, val_off as u32;
 }
 
 // RFC 7541 Section 2.3.2: Dynamic Table - Direct-mapped O(1) hash lookup on HpackHashTable.
 // Returns (slot_entry_ref, has_active_slot).
-fn hpack_hash_lookup(tbl: const http2::HpackHashTable&, name: const u8[:], val: const u8[:]) -> u16, bool {
+checkfree fn hpack_hash_lookup(tbl: const http2::HpackHashTable&, name: const u8[:], val: const u8[:]) -> u16, bool {
     let slot = compute_hpack_hash_slot(name, val);
     let entry_ref = tbl.slots[slot];
     let gen = tbl.generations[slot];
@@ -1072,17 +1118,18 @@ fn hpack_hash_lookup(dt: const http2::DynamicTable&, name: const u8[:], val: con
 }
 
 // Looks up an external dynamic index (idx >= 62).
-fn lookup_dynamic_index(dt: const http2::DynamicTable&, external_idx: u64) -> http2::HpackHeaderField, bool {
+checkfree fn lookup_dynamic_index(dt: const http2::DynamicTable&, external_idx: u64) -> http2::HpackHeaderField, bool {
     guard external_idx >= 62 else { return http2::HpackHeaderField { .. }, false; }
     let offset = external_idx - 62;
     guard offset < dt.count else { return http2::HpackHeaderField { .. }, false; }
 
-    let pos = (dt.head + dt.count - 1 - offset) & HPACK_RING_MASK;
+    let pos = ((dt.head + dt.count - 1 - offset) & HPACK_RING_MASK) as i64;
+    guard pos >= 0 && pos < 128 else { return http2::HpackHeaderField { .. }, false; }
     return dt.entries[pos], true;
 }
 
 // Fetches indexed header name slice directly without buffer copying.
-fn get_indexed_header_name_slice(dt: const http2::DynamicTable&, idx: u64) -> const u8[:], bool {
+checkfree fn get_indexed_header_name_slice(dt: const http2::DynamicTable&, idx: u64) -> const u8[:], bool {
     guard idx >= 1 else { return "", false; }
 
     if idx <= rfc::HPACK_STATIC_TABLE_ENTRIES {
@@ -1094,9 +1141,10 @@ fn get_indexed_header_name_slice(dt: const http2::DynamicTable&, idx: u64) -> co
     let entry, ok = lookup_dynamic_index(dt, idx);
     guard ok else { return "", false; }
 
-    let n_off = entry.name_off;
-    let n_len = entry.name_len as u32;
-    return dt.arena[n_off..n_off + n_len], true;
+    let n_off = entry.name_off as i64;
+    let n_end = n_off + entry.name_len;
+    guard n_off >= 0 && n_off <= n_end && n_end <= 4096 else { return "", false; }
+    return dt.arena[n_off..n_end], true;
 }
 
 fn validate_h2_field_name(name: const u8[:]) -> bool {
@@ -1133,13 +1181,13 @@ fn validate_h2_field_value(val: const u8[:]) -> bool {
     return true;
 }
 
-inline fn is_forbidden_authority_byte(b: u8) -> bool {
+checkfree inline fn is_forbidden_authority_byte(b: u8) -> bool {
     return b <= 0x20 || b >= 0x7F || b == '/' || b == '?' || b == '#' || b == '@' || b == ','
         || b == '\\' || b == '"' || b == '<' || b == '>' || b == '^' || b == '`'
         || b == '{' || b == '|' || b == '}';
 }
 
-inline fn is_forbidden_path_byte(b: u8) -> bool {
+checkfree inline fn is_forbidden_path_byte(b: u8) -> bool {
     return b <= 0x20 || b >= 0x7F || b == '#' || b == '<' || b == '>' || b == '"'
         || b == '\\' || b == '^' || b == '{' || b == '|' || b == '}';
 }
@@ -1164,7 +1212,7 @@ fn validate_pseudo_status_code(pseudo: const http2::PseudoHeaders&, val: const u
     return sc, rfc::H2_ERR_NO_ERROR;
 }
 
-fn validate_pseudo_path(val: const u8[:], pseudo: const http2::PseudoHeaders&) -> u32 {
+checkfree fn validate_pseudo_path(val: const u8[:], pseudo: const http2::PseudoHeaders&) -> u32 {
     guard http2::is_valid_path(val) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     if val.len == 1 && val[0] == '*' {
         guard !pseudo.has_method || pseudo.method[..] == "OPTIONS" else {
@@ -1346,7 +1394,7 @@ fn append_decoded_header_to_map(
     );
 }
 
-inline fn hpack_indexed_origin(idx: u64) -> http2::FieldOrigin {
+checkfree inline fn hpack_indexed_origin(idx: u64) -> http2::FieldOrigin {
     return if idx <= rfc::HPACK_STATIC_TABLE_ENTRIES {
         http2::FieldOrigin.StaticBoth
     } else {

@@ -24,18 +24,18 @@ struct HeaderSpan {
 }
 
 // Extracts zero-copy header name slice from backing buffer.
-inline fn name_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
+checkfree inline fn name_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
     let start: i64 = s.name_pos;
     let end:   i64 = start + s.name_len;
-    guard end <= raw.len else { return ""; }
+    if start < 0 || start > end || end > raw.len { return ""; }
     return raw[start..end];
 }
 
 // Extracts zero-copy header value slice from backing buffer.
-inline fn val_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
+checkfree inline fn val_slice(s: HeaderSpan, raw: const u8[:]) -> const u8[:] {
     let start: i64 = s.val_pos;
     let end:   i64 = start + s.val_len;
-    guard end <= raw.len else { return ""; }
+    if start < 0 || start > end || end > raw.len { return ""; }
     return raw[start..end];
 }
 
@@ -65,10 +65,11 @@ fn is_heuristic_sensitive_header(name: const u8[:]) -> bool {
 // Example:
 //   src = "header\r\nvalue\0", out = []
 //   out becomes "headervalue"
-fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
+checkfree fn sanitize_header_bytes<B>(src: const u8[:], out: B&) {
     for b in src {
         if b != '\r' && b != '\n' && b != 0 {
-            guard out.try_push(b) else { return; }
+            guard out.len < out.cap else { return; }
+            out.push(b);
         }
     }
 }
@@ -105,18 +106,18 @@ struct HeaderBloomFilter {
     bits: u64[4] = [0; 4],
 }
 
-fn clear(bf: HeaderBloomFilter&) {
+checkfree fn clear(bf: HeaderBloomFilter&) {
     bf.bits[0] = 0;
     bf.bits[1] = 0;
     bf.bits[2] = 0;
     bf.bits[3] = 0;
 }
 
-inline fn is_empty(bf: const HeaderBloomFilter&) -> bool {
+checkfree inline fn is_empty(bf: const HeaderBloomFilter&) -> bool {
     return bf.bits[0] == 0 && bf.bits[1] == 0 && bf.bits[2] == 0 && bf.bits[3] == 0;
 }
 
-fn add_header(bf: HeaderBloomFilter&, key: const u8[:]) {
+checkfree fn add_header(bf: HeaderBloomFilter&, key: const u8[:]) {
     guard key.len >= 2 else { return; }
     let h = http_internal::bloom_hash(key);
     let p0 = (h & 0xFF) as i64;
@@ -124,13 +125,13 @@ fn add_header(bf: HeaderBloomFilter&, key: const u8[:]) {
     let p2 = ((h >> 16) & 0xFF) as i64;
     let p3 = ((h >> 24) & 0xFF) as i64;
 
-    bf.bits[p0 >> 6] |= (1 as u64) << (p0 & 63);
-    bf.bits[p1 >> 6] |= (1 as u64) << (p1 & 63);
-    bf.bits[p2 >> 6] |= (1 as u64) << (p2 & 63);
-    bf.bits[p3 >> 6] |= (1 as u64) << (p3 & 63);
+    bf.bits[(p0 >> 6) & 3] |= (1 as u64) << (p0 & 63);
+    bf.bits[(p1 >> 6) & 3] |= (1 as u64) << (p1 & 63);
+    bf.bits[(p2 >> 6) & 3] |= (1 as u64) << (p2 & 63);
+    bf.bits[(p3 >> 6) & 3] |= (1 as u64) << (p3 & 63);
 }
 
-fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
+checkfree fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
     guard key.len >= 2 else { return true; }
     let h = http_internal::bloom_hash(key);
     let p0 = (h & 0xFF) as i64;
@@ -138,13 +139,13 @@ fn might_have_header(bf: const HeaderBloomFilter&, key: const u8[:]) -> bool {
     let p2 = ((h >> 16) & 0xFF) as i64;
     let p3 = ((h >> 24) & 0xFF) as i64;
 
-    let b0 = (bf.bits[p0 >> 6] & ((1 as u64) << (p0 & 63))) != 0;
+    let b0 = (bf.bits[(p0 >> 6) & 3] & ((1 as u64) << (p0 & 63))) != 0;
     guard b0 else { return false; }
-    let b1 = (bf.bits[p1 >> 6] & ((1 as u64) << (p1 & 63))) != 0;
+    let b1 = (bf.bits[(p1 >> 6) & 3] & ((1 as u64) << (p1 & 63))) != 0;
     guard b1 else { return false; }
-    let b2 = (bf.bits[p2 >> 6] & ((1 as u64) << (p2 & 63))) != 0;
+    let b2 = (bf.bits[(p2 >> 6) & 3] & ((1 as u64) << (p2 & 63))) != 0;
     guard b2 else { return false; }
-    let b3 = (bf.bits[p3 >> 6] & ((1 as u64) << (p3 & 63))) != 0;
+    let b3 = (bf.bits[(p3 >> 6) & 3] & ((1 as u64) << (p3 & 63))) != 0;
     return b3;
 }
 
@@ -168,6 +169,11 @@ const HEADER_FLAG_NON_CACHEABLE: u8 = 128;
 const HEADER_SRC_STACK: u8 = 0;
 const HEADER_SRC_ARENA: u8 = 1;
 
+// Hard ceilings for OverflowArena spill storage (prevents untrusted header/URL DoS).
+const MAX_OVERFLOW_RAW_BYTES:     i64 = 65535;
+const MAX_OVERFLOW_SPILL_ENTRIES: i64 = 512;
+const MAX_OVERFLOW_URL_BYTES:     i64 = 65535;
+
 // Storage root for oversized HTTP headers and URLs that exceed fixed stack limits.
 // Allocated once per connection/session driver on the data stack.
 root struct OverflowArena {
@@ -178,13 +184,16 @@ root struct OverflowArena {
 
 let EMPTY_OVERFLOW_ARENA: OverflowArena = OverflowArena { .. };
 
-// Parses an arbitrary-length URL using the arena's spill_url storage.
+// Parses an oversized URL up to MAX_OVERFLOW_URL_BYTES using the arena's spill_url storage.
 //
 // Example:
 //   raw_input = "https://example.com/long?token=...", arena = OverflowArena { .. }
 //   returns: view.host = "example.com", view.valid = true, err = None
 fn parse_url_with_overflow(raw_input: const u8[:], arena: OverflowArena&) -> core::UrlView, core::UrlParseError {
     arena.spill_url.clear();
+    guard raw_input.len <= MAX_OVERFLOW_URL_BYTES else {
+        return core::UrlView { .. }, core::UrlParseError.InputTooLong;
+    }
     arena.spill_url.append(raw_input);
     return core::parse_url_view(arena.spill_url[..]);
 }
@@ -211,7 +220,7 @@ enum HeaderParseError {
     InvalidContentLength,
 }
 
-fn is_ok(err: HeaderParseError) -> bool {
+checkfree fn is_ok(err: HeaderParseError) -> bool {
     return err == HeaderParseError.None;
 }
 
@@ -222,11 +231,12 @@ fn is_ok(err: HeaderParseError) -> bool {
 // Example:
 //   input = "bad\x00input\r\n", out = []
 //   out becomes "bad?input??"
-fn sanitize_untrusted_for_error<B>(input: const u8[:], out: B&) {
+checkfree fn sanitize_untrusted_for_error<B>(input: const u8[:], out: B&) {
     out.clear();
     for b in input {
         let ch: u8 = if b >= 0x20 && b <= 0x7E && b != '\\' && b != '"' { b } else { '?' };
-        guard out.try_push(ch) else { return; }
+        guard out.len < out.cap else { return; }
+        out.push(ch);
     }
 }
 
@@ -299,7 +309,7 @@ enum WellKnownHeader {
     Unknown,                        // 63
 }
 
-fn well_known_to_slot(id: WellKnownHeader) -> i64 {
+checkfree fn well_known_to_slot(id: WellKnownHeader) -> i64 {
     return match id {
         Host => 0,
         ContentType => 1,
@@ -449,27 +459,27 @@ struct HeaderEntry {
     name_hash:     u32 = 0,
 }
 
-fn is_continuation(entry: const HeaderEntry&) -> bool {
+checkfree fn is_continuation(entry: const HeaderEntry&) -> bool {
     return (entry.flags & HEADER_FLAG_CONTINUATION) != 0 || entry.name_begin == entry.name_end;
 }
 
-fn is_sensitive(entry: const HeaderEntry&) -> bool {
+checkfree fn is_sensitive(entry: const HeaderEntry&) -> bool {
     return (entry.flags & HEADER_FLAG_SENSITIVE) != 0;
 }
 
-fn is_cookie_state(entry: const HeaderEntry&) -> bool {
+checkfree fn is_cookie_state(entry: const HeaderEntry&) -> bool {
     return (entry.flags & HEADER_FLAG_COOKIE_STATE) != 0;
 }
 
-fn is_challenge(entry: const HeaderEntry&) -> bool {
+checkfree fn is_challenge(entry: const HeaderEntry&) -> bool {
     return (entry.flags & HEADER_FLAG_CHALLENGE) != 0;
 }
 
-fn is_security_state(entry: const HeaderEntry&) -> bool {
+checkfree fn is_security_state(entry: const HeaderEntry&) -> bool {
     return (entry.flags & HEADER_FLAG_SECURITY_STATE) != 0;
 }
 
-fn is_non_cacheable(entry: const HeaderEntry&) -> bool {
+checkfree fn is_non_cacheable(entry: const HeaderEntry&) -> bool {
     return (entry.flags & HEADER_FLAG_NON_CACHEABLE) != 0;
 }
 
@@ -486,11 +496,14 @@ struct HeaderMap {
     valid:                 bool               = true,
 }
 
-fn reset_for_keep_alive(map: HeaderMap&) {
+checkfree fn reset_for_keep_alive(map: HeaderMap&) {
     if map.entries.len > 0 && map.entries.len < 32 {
         for &e in map.entries {
             if e.well_known_id < 64 {
-                map.inline_slots[e.well_known_id as i64] = 0xFF;
+                let slot: i64 = e.well_known_id;
+                if slot >= 0 && slot < 64 {
+                    map.inline_slots[slot] = 0xFF;
+                }
             }
         }
     } else if map.entries.len >= 32 {
@@ -994,11 +1007,19 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
     return "";
 }
 
-fn resolve_entry_name(entry: const HeaderEntry&, map: const HeaderMap&, arena: const OverflowArena&) -> const u8[:] {
+checkfree fn resolve_entry_name(
+    entry: const HeaderEntry&,
+    map:   const HeaderMap&,
+    arena: const OverflowArena&,
+) -> const u8[:] {
+    let b: i64 = entry.name_begin;
+    let e: i64 = entry.name_end;
     if entry.reserved == HEADER_SRC_ARENA {
-        return arena.spill_raw[entry.name_begin..entry.name_end];
+        guard b >= 0 && b <= e && e <= arena.spill_raw.len else { return ""; }
+        return arena.spill_raw[b..e];
     }
-    return map.raw_buf[entry.name_begin..entry.name_end];
+    guard b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
+    return map.raw_buf[b..e];
 }
 
 // Case-insensitive header lookup resolving from either stack map or arena spill storage.
@@ -1042,13 +1063,19 @@ fn has_header_spill(map: const HeaderMap&, arena: const OverflowArena&, name: co
     return false;
 }
 
-fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[:] {
+checkfree fn get_inline(map: const HeaderMap&, id: WellKnownHeader) -> const u8[:] {
     guard id != WellKnownHeader.Unknown else { return ""; }
     let slot = well_known_to_slot(id);
+    guard slot >= 0 && slot < 64 else { return ""; }
     let idx = map.inline_slots[slot];
     if idx != 0xFF {
-        let entry = map.entries[idx as i64];
-        return map.raw_buf[entry.values_begin..entry.values_end];
+        let i: i64 = idx;
+        guard i >= 0 && i < map.entries.len else { return ""; }
+        let entry = map.entries[i];
+        let b: i64 = entry.values_begin;
+        let e: i64 = entry.values_end;
+        guard b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
+        return map.raw_buf[b..e];
     }
     return "";
 }
@@ -1163,17 +1190,21 @@ inline fn update_single_vary_value(map: HeaderMap&, new_val: const u8[:]) -> boo
     return true;
 }
 
-fn entry_name(map: const HeaderMap&, entry: const HeaderEntry&) -> const u8[:] {
-    guard entry.reserved == HEADER_SRC_STACK && entry.name_end <= map.raw_buf.len else { return ""; }
-    return map.raw_buf[entry.name_begin..entry.name_end];
+checkfree fn entry_name(map: const HeaderMap&, entry: const HeaderEntry&) -> const u8[:] {
+    let b: i64 = entry.name_begin;
+    let e: i64 = entry.name_end;
+    guard entry.reserved == HEADER_SRC_STACK && b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
+    return map.raw_buf[b..e];
 }
 
-fn entry_value(map: const HeaderMap&, entry: const HeaderEntry&) -> const u8[:] {
-    guard entry.reserved == HEADER_SRC_STACK && entry.values_end <= map.raw_buf.len else { return ""; }
-    return map.raw_buf[entry.values_begin..entry.values_end];
+checkfree fn entry_value(map: const HeaderMap&, entry: const HeaderEntry&) -> const u8[:] {
+    let b: i64 = entry.values_begin;
+    let e: i64 = entry.values_end;
+    guard entry.reserved == HEADER_SRC_STACK && b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
+    return map.raw_buf[b..e];
 }
 
-fn clear(map: HeaderMap&) {
+checkfree fn clear(map: HeaderMap&) {
     reset_for_keep_alive(map);
 }
 

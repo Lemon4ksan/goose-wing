@@ -222,6 +222,7 @@ import http3.connection;
 // ---- wire subsystem (Layer 9) ----------------------------------------------
 
 import wire.types;
+import wire.budget;
 import wire.h1;
 import wire.h1_exchange;
 import wire.hpack;

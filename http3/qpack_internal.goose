@@ -100,12 +100,12 @@ inline fn prepare_table_for_entry(tbl: http3::QpackTable&, cost: u64, raw_len: u
 }
 
 // RFC 9204 Section 4.5.4: Literal Field Line with Name Reference - Reads only the field name from the referenced dynamic table entry.
-fn qpack_lookup_name_absolute(tbl: const http3::QpackTable&, abs_idx: u64) -> const u8[:], bool {
+checkfree fn qpack_lookup_name_absolute(tbl: const http3::QpackTable&, abs_idx: u64) -> const u8[:], bool {
     for &e in tbl.entries {
         if e.abs_index == abs_idx {
             let n_start = e.name_off as i64;
             let n_end = n_start + e.name_len;
-            guard n_end <= 16384 else { return "", false; }
+            guard n_start >= 0 && n_start <= n_end && n_end <= 16384 else { return "", false; }
             return tbl.arena[n_start..n_end], true;
         }
     }
@@ -114,7 +114,7 @@ fn qpack_lookup_name_absolute(tbl: const http3::QpackTable&, abs_idx: u64) -> co
 
 // ---- Unacked Section & Blocked Stream Helpers ------------------------------
 
-inline fn find_unacked_stream_idx(tbl: const http3::QpackTable&, stream_id: u64) -> i64, bool {
+checkfree inline fn find_unacked_stream_idx(tbl: const http3::QpackTable&, stream_id: u64) -> i64, bool {
     for &sec, i in tbl.unacked_sections {
         if sec.stream_id == stream_id {
             return i, true;
@@ -154,7 +154,7 @@ fn qpack_count_blocked_streams(tbl: const http3::QpackTable&) -> u32 {
 
 // ---- Field Line Decoders & HeaderMap Emitter -------------------------------
 
-inline fn clear_h3_pseudo_headers(pseudo: http3::PseudoHeaders&, preserve_is_trailer: bool = true) {
+checkfree inline fn clear_h3_pseudo_headers(pseudo: http3::PseudoHeaders&, preserve_is_trailer: bool = true) {
     let keep_trailer = if preserve_is_trailer { pseudo.is_trailer } else { false };
     pseudo.method.clear();
     pseudo.scheme.clear();

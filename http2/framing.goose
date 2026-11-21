@@ -24,16 +24,16 @@ struct FrameHeader {
 // Example:
 //   buf = [0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01]
 //   returns: FrameHeader { length: 4, frame_type: 0, flags: 1, stream_id: 1 }, ERR_NO_ERROR
-fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHeader, u32 {
+checkfree fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHeader, u32 {
     var hdr = FrameHeader { .. };
     guard buf.len >= 9 else {
         return hdr, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
 
-    let length_val = core::read_be_u24(buf, 0);
+    let length_val = h2_internal::h2_read_be_u24(buf);
     let f_type = buf[3];
     let flags_val = buf[4];
-    let raw_stream = core::read_be_u32(buf, 5);
+    let raw_stream = h2_internal::h2_read_be_u32(buf[5..]);
     let stream_id_val = raw_stream & 0x7FFFFFFF;
 
     hdr.length = length_val;
@@ -48,14 +48,18 @@ fn parse_frame_header(buf: const u8[:], max_frame_size: u32 = 16384) -> FrameHea
 }
 
 // Serializes a 9-byte HTTP/2 binary frame header in big-endian wire format.
-fn encode_frame_header(hdr: const FrameHeader&, out: u8[9]&) {
+checkfree fn encode_frame_header(hdr: const FrameHeader&, out: u8[9]&) {
     let len_val = hdr.length & 0x00FFFFFF;
+    let sid = hdr.stream_id & 0x7FFFFFFF;
     out[0] = ((len_val >> 16) & 0xFF) as u8;
     out[1] = ((len_val >> 8) & 0xFF) as u8;
     out[2] = (len_val & 0xFF) as u8;
     out[3] = hdr.frame_type;
     out[4] = hdr.flags;
-    core::write_be_u32_at(out[..], 5, hdr.stream_id & 0x7FFFFFFF);
+    out[5] = ((sid >> 24) & 0xFF) as u8;
+    out[6] = ((sid >> 16) & 0xFF) as u8;
+    out[7] = ((sid >> 8) & 0xFF) as u8;
+    out[8] = (sid & 0xFF) as u8;
 }
 
 // Appends 9 serialized header bytes to any buffer.
@@ -86,7 +90,7 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
 // Example:
 //   hdr = FrameHeader { flags: FLAG_PADDED, length: 6 }, payload = [0x02, 'd', 'a', 't', 0x00, 0x00]
 //   returns: "dat", ERR_NO_ERROR
-fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -> const u8[:], u32 {
+checkfree fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -> const u8[:], u32 {
     if (hdr.flags & rfc::H2_FLAG_PADDED) == 0 {
         return payload, rfc::H2_ERR_NO_ERROR;
     }
@@ -98,7 +102,7 @@ fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -
         return payload, rfc::H2_ERR_PROTOCOL_ERROR;
     }
     let eff_end = payload.len - pad_len;
-    guard eff_end >= 1 else {
+    guard eff_end >= 1 && eff_end <= payload.len else {
         return payload, rfc::H2_ERR_PROTOCOL_ERROR;
     }
     return payload[1..eff_end], rfc::H2_ERR_NO_ERROR;
@@ -110,7 +114,7 @@ fn extract_padded_frame_payload(hdr: const FrameHeader&, payload: const u8[:]) -
 // Example:
 //   hdr = FrameHeader { flags: 0, length: 4 }, payload = [0x82, 0x86, 0x84, 0x41]
 //   returns: [0x82, 0x86, 0x84, 0x41], ERR_NO_ERROR
-fn extract_headers_frame_payload(
+checkfree fn extract_headers_frame_payload(
     hdr:                   const FrameHeader&,
     payload:               const u8[:],
     no_rfc7540_priorities: bool = true,
@@ -125,13 +129,14 @@ fn extract_headers_frame_payload(
 
     var raw = payload;
     if has_pad {
+        if raw.len < 1 { return raw, rfc::H2_ERR_FRAME_SIZE_ERROR; }
         let pad_len = raw[0] as i64;
         let min_hdr = 1 + prio_overhead;
         guard (min_hdr + pad_len) <= raw.len else {
             return raw, rfc::H2_ERR_PROTOCOL_ERROR;
         }
         let eff_end = raw.len - pad_len;
-        guard eff_end >= min_hdr else {
+        guard eff_end >= min_hdr && eff_end >= 1 && eff_end <= raw.len else {
             return raw, rfc::H2_ERR_PROTOCOL_ERROR;
         }
         raw = raw[1..eff_end];
@@ -143,7 +148,7 @@ fn extract_headers_frame_payload(
             return raw, rfc::H2_ERR_FRAME_SIZE_ERROR;
         }
         if !no_rfc7540_priorities {
-            let stream_dep = core::read_be_u32(raw, 0) & 0x7FFFFFFF;
+            let stream_dep = h2_internal::h2_read_be_u32(raw) & 0x7FFFFFFF;
             // RFC 7540 / RFC 9113: stream cannot depend on itself
             if stream_dep == hdr.stream_id {
                 return raw, rfc::H2_ERR_PROTOCOL_ERROR;
@@ -158,7 +163,7 @@ fn extract_headers_frame_payload(
 // ---- settings parameter validation --------------------------------------
 
 // Validates an HTTP/2 SETTINGS parameter bounds (RFC 9113 Section 6.5.2 & RFC 9218 Section 5.1).
-fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool = false) -> u32 {
+checkfree fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool = false) -> u32 {
     if param_id == rfc::H2_SETTING_ENABLE_PUSH {
         if val != 0 && val != 1 {
             return rfc::H2_ERR_PROTOCOL_ERROR;

@@ -41,7 +41,7 @@ enum Alert {
     NoApplicationProtocol,
 }
 
-inline fn alert_to_u8(alert: Alert) -> u8 {
+checkfree inline fn alert_to_u8(alert: Alert) -> u8 {
     return match alert {
         CloseNotify => rfc::TLS_ALERT_CLOSE_NOTIFY,
         UnexpectedMessage => rfc::TLS_ALERT_UNEXPECTED_MESSAGE,
@@ -73,7 +73,7 @@ inline fn alert_to_u8(alert: Alert) -> u8 {
     };
 }
 
-fn u8_to_alert(code: u8) -> Alert, bool {
+checkfree fn u8_to_alert(code: u8) -> Alert, bool {
     let alert = match code {
         rfc::TLS_ALERT_CLOSE_NOTIFY => Alert.CloseNotify,
         rfc::TLS_ALERT_UNEXPECTED_MESSAGE => Alert.UnexpectedMessage,
@@ -119,7 +119,7 @@ fn u8_to_alert(code: u8) -> Alert, bool {
 // Example:
 //   data = [0x02, 0x31] (fatal, decode_error)
 //   returns: level = 2, alert = Alert.DecodeError, is_fatal = true, ok = true
-fn parse_alert_message(data: const u8[:]) -> u8, Alert, bool, bool {
+checkfree fn parse_alert_message(data: const u8[:]) -> u8, Alert, bool, bool {
     guard data.len == 2 else {
         return 0, Alert.DecodeError, true, false;
     }
@@ -146,17 +146,36 @@ fn parse_alert_message(data: const u8[:]) -> u8, Alert, bool, bool {
 
 // ---- Zero-Copy Slice Cursor Helpers ---------------------------------------
 
+checkfree inline fn tls_be_u16_head(s: const u8[:]) -> u16 {
+    if s.len < 2 { return 0; }
+    return ((s[0] as u16) << 8) | s[1];
+}
+
+checkfree inline fn tls_be_u24_head(s: const u8[:]) -> u32 {
+    if s.len < 3 { return 0; }
+    let hi = tls_be_u16_head(s) as u32;
+    return (hi << 8) | s[2];
+}
+
+checkfree inline fn tls_be_u32_head(s: const u8[:]) -> u32 {
+    if s.len < 4 { return 0; }
+    let hi = tls_be_u16_head(s) as u32;
+    let lo = tls_be_u16_head(s[2..]) as u32;
+    return (hi << 16) | lo;
+}
+
 // Reads a single unsigned byte from `raw` at `cursor` and advances `cursor` by 1.
 //
 // Example:
 //   raw = [0x17, 0x03], cursor = 0
 //   returns: out = 0x17, ok = true, cursor = 1
-inline fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
-    guard cursor >= 0 && cursor < raw.len else {
+checkfree inline fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
+    let pos = cursor;
+    guard pos >= 0 && pos < raw.len else {
         return false;
     }
-    out = raw[cursor];
-    cursor += 1;
+    out = raw[pos];
+    cursor = pos + 1;
     return true;
 }
 
@@ -165,12 +184,13 @@ inline fn slice_get_u8(raw: const u8[:], cursor: i64&, out: u8&) -> bool {
 // Example:
 //   raw = [0x17, 0x03], cursor = 0
 //   returns: val = 0x17, ok = true, cursor = 1
-inline fn slice_read_u8(raw: const u8[:], cursor: i64&) -> u8, bool {
-    guard cursor >= 0 && cursor < raw.len else {
+checkfree inline fn slice_read_u8(raw: const u8[:], cursor: i64&) -> u8, bool {
+    let pos = cursor;
+    guard pos >= 0 && pos < raw.len else {
         return 0, false;
     }
-    let val = raw[cursor];
-    cursor += 1;
+    let val = raw[pos];
+    cursor = pos + 1;
     return val, true;
 }
 
@@ -179,12 +199,13 @@ inline fn slice_read_u8(raw: const u8[:], cursor: i64&) -> u8, bool {
 // Example:
 //   raw = [0x03, 0x03], cursor = 0
 //   returns: out = 0x0303, ok = true, cursor = 2
-inline fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
-    guard cursor >= 0 && cursor + 2 <= raw.len else {
-        return false;
-    }
-    out = core::read_be_u16(raw, cursor);
-    cursor += 2;
+checkfree inline fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else { return false; }
+    let tail = raw[pos..];
+    guard tail.len >= 2 else { return false; }
+    out = tls_be_u16_head(tail);
+    cursor = pos + 2;
     return true;
 }
 
@@ -193,12 +214,13 @@ inline fn slice_get_u16(raw: const u8[:], cursor: i64&, out: u16&) -> bool {
 // Example:
 //   raw = [0x03, 0x03], cursor = 0
 //   returns: val = 0x0303, ok = true, cursor = 2
-inline fn slice_read_u16(raw: const u8[:], cursor: i64&) -> u16, bool {
-    guard cursor >= 0 && cursor + 2 <= raw.len else {
-        return 0, false;
-    }
-    let val = core::read_be_u16(raw, cursor);
-    cursor += 2;
+checkfree inline fn slice_read_u16(raw: const u8[:], cursor: i64&) -> u16, bool {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else { return 0, false; }
+    let tail = raw[pos..];
+    guard tail.len >= 2 else { return 0, false; }
+    let val = tls_be_u16_head(tail);
+    cursor = pos + 2;
     return val, true;
 }
 
@@ -207,12 +229,13 @@ inline fn slice_read_u16(raw: const u8[:], cursor: i64&) -> u16, bool {
 // Example:
 //   raw = [0x00, 0x01, 0x02], cursor = 0
 //   returns: out = 0x000102, ok = true, cursor = 3
-inline fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
-    guard cursor >= 0 && cursor + 3 <= raw.len else {
-        return false;
-    }
-    out = core::read_be_u24(raw, cursor);
-    cursor += 3;
+checkfree inline fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else { return false; }
+    let tail = raw[pos..];
+    guard tail.len >= 3 else { return false; }
+    out = tls_be_u24_head(tail);
+    cursor = pos + 3;
     return true;
 }
 
@@ -221,12 +244,13 @@ inline fn slice_get_u24(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
 // Example:
 //   raw = [0x00, 0x01, 0x02], cursor = 0
 //   returns: val = 0x000102, ok = true, cursor = 3
-inline fn slice_read_u24(raw: const u8[:], cursor: i64&) -> u32, bool {
-    guard cursor >= 0 && cursor + 3 <= raw.len else {
-        return 0, false;
-    }
-    let val = core::read_be_u24(raw, cursor);
-    cursor += 3;
+checkfree inline fn slice_read_u24(raw: const u8[:], cursor: i64&) -> u32, bool {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else { return 0, false; }
+    let tail = raw[pos..];
+    guard tail.len >= 3 else { return 0, false; }
+    let val = tls_be_u24_head(tail);
+    cursor = pos + 3;
     return val, true;
 }
 
@@ -235,12 +259,13 @@ inline fn slice_read_u24(raw: const u8[:], cursor: i64&) -> u32, bool {
 // Example:
 //   raw = [0x01, 0x02, 0x03, 0x04], cursor = 0
 //   returns: out = 0x01020304, ok = true, cursor = 4
-inline fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
-    guard cursor >= 0 && cursor + 4 <= raw.len else {
-        return false;
-    }
-    out = core::read_be_u32(raw, cursor);
-    cursor += 4;
+checkfree inline fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else { return false; }
+    let tail = raw[pos..];
+    guard tail.len >= 4 else { return false; }
+    out = tls_be_u32_head(tail);
+    cursor = pos + 4;
     return true;
 }
 
@@ -249,12 +274,13 @@ inline fn slice_get_u32(raw: const u8[:], cursor: i64&, out: u32&) -> bool {
 // Example:
 //   raw = [0x01, 0x02, 0x03, 0x04], cursor = 0
 //   returns: val = 0x01020304, ok = true, cursor = 4
-inline fn slice_read_u32(raw: const u8[:], cursor: i64&) -> u32, bool {
-    guard cursor >= 0 && cursor + 4 <= raw.len else {
-        return 0, false;
-    }
-    let val = core::read_be_u32(raw, cursor);
-    cursor += 4;
+checkfree inline fn slice_read_u32(raw: const u8[:], cursor: i64&) -> u32, bool {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else { return 0, false; }
+    let tail = raw[pos..];
+    guard tail.len >= 4 else { return 0, false; }
+    let val = tls_be_u32_head(tail);
+    cursor = pos + 4;
     return val, true;
 }
 
@@ -263,12 +289,17 @@ inline fn slice_read_u32(raw: const u8[:], cursor: i64&) -> u32, bool {
 // Example:
 //   raw = "hello", cursor = 1, count = 3
 //   returns: sub = "ell", ok = true, cursor = 4
-inline fn slice_get_bytes(raw: const u8[:], cursor: i64&, count: i64) -> const u8[:], bool {
-    guard count >= 0 && cursor >= 0 && cursor + count <= raw.len else {
+checkfree inline fn slice_get_bytes(raw: const u8[:], cursor: i64&, count: i64) -> const u8[:], bool {
+    let pos = cursor;
+    guard count >= 0 && pos >= 0 && pos <= raw.len else {
         return raw[..0], false;
     }
-    let sub = raw[cursor..cursor + count];
-    cursor += count;
+    let tail = raw[pos..];
+    guard count <= tail.len else {
+        return raw[..0], false;
+    }
+    let sub = tail[..count];
+    cursor = pos + count;
     return sub, true;
 }
 
@@ -278,7 +309,7 @@ inline fn slice_get_bytes(raw: const u8[:], cursor: i64&, count: i64) -> const u
 // Example:
 //   raw = [0x02, 0xAA, 0xBB], cursor = 0
 //   returns: sub = [0xAA, 0xBB], ok = true, cursor = 3
-fn slice_get_u8_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
+checkfree fn slice_get_u8_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
     let saved = cursor;
     var length: u8 = 0;
     guard slice_get_u8(raw, cursor, length) else {
@@ -298,7 +329,7 @@ fn slice_get_u8_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], 
 // Example:
 //   raw = [0x00, 0x02, 0xAA, 0xBB], cursor = 0
 //   returns: sub = [0xAA, 0xBB], ok = true, cursor = 4
-fn slice_get_u16_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
+checkfree fn slice_get_u16_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
     let saved = cursor;
     var length: u16 = 0;
     guard slice_get_u16(raw, cursor, length) else {
@@ -318,7 +349,7 @@ fn slice_get_u16_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:],
 // Example:
 //   raw = [0x00, 0x00, 0x02, 0xAA, 0xBB], cursor = 0
 //   returns: sub = [0xAA, 0xBB], ok = true, cursor = 5
-fn slice_get_u24_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
+checkfree fn slice_get_u24_length_prefixed(raw: const u8[:], cursor: i64&) -> const u8[:], bool {
     let saved = cursor;
     var length: u32 = 0;
     guard slice_get_u24(raw, cursor, length) else {
@@ -341,7 +372,7 @@ const DYNAMIC_RESIZE_THRESHOLD_BYTES: u64 = 65536;
 
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))
 // Rejects 2^64 - 1 to prevent counter wraparound and nonce reuse (RFC 8446 Section 5.3).
-inline fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {
+checkfree inline fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {
     var nonce: u8[12] = [0; 12];
     if seq_num == 0xFFFFFFFFFFFFFFFF {
         return nonce, false;
@@ -359,7 +390,7 @@ inline fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool 
 }
 
 // Validates and increments 64-bit record sequence number; rejects 2^64 - 1 (RFC 8446 Section 5.3).
-inline fn increment_record_seq_num(seq_num: u64&) -> bool {
+checkfree inline fn increment_record_seq_num(seq_num: u64&) -> bool {
     if seq_num >= 0xFFFFFFFFFFFFFFFF {
         return false;
     }
@@ -374,7 +405,7 @@ inline fn increment_record_seq_num(seq_num: u64&) -> bool {
 // Example:
 //   decrypted = ['o', 'k', 0x17, 0x00, 0x00]
 //   returns: plain = "ok", content_type = 0x17, alert = Alert.CloseNotify
-fn unpack_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, Alert {
+checkfree fn unpack_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, Alert {
     guard decrypted.len > 0 else {
         return decrypted[..0], 0, Alert.UnexpectedMessage;
     }
@@ -382,36 +413,36 @@ fn unpack_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, Alert {
         return decrypted[..0], 0, Alert.RecordOverflow;
     }
 
-    var non_zero_len: i64 = 0;
-
-    // Backward scan to strip trailing zero padding without early breaks
-    for i in decrypted.len {
-        let idx = core::sub_sat_i64(core::sub_sat_i64(decrypted.len, 1), i);
-        if non_zero_len == 0 && decrypted[idx] != 0x00 {
-            non_zero_len = core::add_sat_i64(idx, 1);
+    var last_nz: i64  = 0;
+    var found:   bool = false;
+    // Constant-time full scan without early break to locate the last non-zero inner ContentType byte.
+    for b, i in decrypted {
+        if b != 0x00 {
+            last_nz = i;
+            found = true;
         }
     }
-
-    var c = core::cursor_from(decrypted[..non_zero_len]);
-    var content_type: u8 = 0;
-    guard core::get_last_u8(c, content_type) else {
+    guard found && last_nz >= 0 && last_nz < decrypted.len else {
         return decrypted[..0], 0, Alert.UnexpectedMessage;
     }
+
+    let content_type = decrypted[last_nz];
+    let plain = decrypted[..last_nz];
     guard content_type >= rfc::TLS_CONTENT_ALERT && content_type <= rfc::TLS_CONTENT_APPLICATION_DATA else {
         return decrypted[..0], 0, Alert.UnexpectedMessage;
     }
-    guard c.buf.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
+    guard plain.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return decrypted[..0], 0, Alert.RecordOverflow;
     }
-    guard c.buf.len > 0 || content_type == rfc::TLS_CONTENT_APPLICATION_DATA else {
+    guard plain.len > 0 || content_type == rfc::TLS_CONTENT_APPLICATION_DATA else {
         return decrypted[..0], 0, Alert.UnexpectedMessage;
     }
 
-    return c.buf, content_type, Alert.CloseNotify;
+    return plain, content_type, Alert.CloseNotify;
 }
 
 // Compares two 16-byte authentication tags in constant time (RFC 8446 §5.2).
-inline fn ct_compare_tag16(a: const u8[16]&, b: const u8[16]&) -> bool {
+checkfree inline fn ct_compare_tag16(a: const u8[16]&, b: const u8[16]&) -> bool {
     var diff: u8 = 0;
     for i in 16 {
         diff |= a[i] ^ b[i];
@@ -896,7 +927,7 @@ struct RecordFilterState {
     ccs_count:                i32 = 0,
 }
 
-fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> Alert {
+checkfree fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> Alert {
     guard payload_len >= 0 && payload_len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else {
         return Alert.RecordOverflow;
     }
@@ -948,7 +979,7 @@ inline fn encode_ciphertext_header<B>(out: B&, content_type: u8, ciphertext_len:
 // Example:
 //   hdr_bytes = [0x17, 0x03, 0x03, 0x00, 0x10]
 //   returns: content_type = 23, version = 0x0303, length = 16, alert = Alert.CloseNotify, ok = true
-fn parse_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, Alert, bool {
+checkfree fn parse_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, Alert, bool {
     var idx: i64 = 0;
     return parse_record_header_at(hdr_bytes, idx);
 }
@@ -959,7 +990,7 @@ fn parse_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, Alert, bool {
 // Example:
 //   raw = [0x17, 0x03, 0x03, 0x00, 0x10], idx = 0
 //   returns: content_type = 23, version = 0x0303, length = 16, alert = Alert.CloseNotify, ok = true, idx = 5
-fn parse_record_header_at(
+checkfree fn parse_record_header_at(
     raw: const u8[:],
     idx: i64&,
 ) -> u8, u16, u16, Alert, bool {
@@ -999,11 +1030,11 @@ fn parse_record_header_at(
 
 // Validates RFC 8446 Appendix D.4 Middlebox Compatibility Dummy ChangeCipherSpec record.
 // A CCS record MUST contain exactly one single byte of value 0x01.
-inline fn validate_change_cipher_spec_record(payload: const u8[:]) -> Alert {
+checkfree inline fn validate_change_cipher_spec_record(payload: const u8[:]) -> Alert {
     if payload.len != 1 {
         return Alert.DecodeError;
     }
-    if !rfc::is_valid_ccs_payload(payload) {
+    if payload[0] != 0x01 {
         return Alert.UnexpectedMessage;
     }
     return Alert.CloseNotify;
@@ -1013,7 +1044,7 @@ inline fn validate_change_cipher_spec_record(payload: const u8[:]) -> Alert {
 // 1. Must occur during active handshake (after ClientHello, before Finished).
 // 2. Flood protection (OpenSSL #10065 / CVE-2020-1967): at most 1 CCS record allowed during handshake.
 // 3. Payload must be exactly 1 byte of value 0x01.
-fn check_change_cipher_spec_record(
+checkfree fn check_change_cipher_spec_record(
     state:            RecordFilterState&,
     payload:          const u8[:],
     handshake_active: bool,
@@ -1063,21 +1094,25 @@ struct QuicCryptoStream {
 }
 
 // Extracts 16-byte Header Protection sample from QUIC packet at offset pn_offset + 4 (RFC 9001 Section 5.4.2).
-inline fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool {
+checkfree inline fn quic_extract_hp_sample(pkt: const u8[:], pn_offset: u32) -> const u8[:], bool {
     guard pn_offset > 0 else {
         return pkt[..0], false;
     }
     let sample_offset = (pn_offset as i64) + 4;
-    guard sample_offset + 16 <= pkt.len else {
+    guard sample_offset >= 0 && sample_offset <= pkt.len else {
         return pkt[..0], false;
     }
-    return pkt[sample_offset..sample_offset + 16], true;
+    let tail = pkt[sample_offset..];
+    guard tail.len >= 16 else {
+        return pkt[..0], false;
+    }
+    return tail[..16], true;
 }
 
 // Validates RFC 9001 invariants on incoming QUIC handshake bytes:
 // 1. Encryption level must match current read_level.
 // 2. CRYPTO frames cannot be empty (DecodeError) or exceed quota (RecordOverflow).
-fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: const u8[:]) -> Alert {
+checkfree fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: const u8[:]) -> Alert {
     guard level == conn.read_level else {
         return Alert.UnexpectedMessage;
     }
@@ -1090,9 +1125,18 @@ fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: co
     return Alert.CloseNotify;
 }
 
+checkfree inline fn quic_crypto_buf_append(buf: u8[..16384]&, src: const u8[:]) -> bool {
+    let rem = buf.cap - buf.len;
+    if buf.len < 0 || src.len < 0 || src.len > rem {
+        return false;
+    }
+    buf.append(src);
+    return true;
+}
+
 // Ingests a QUIC CRYPTO frame (RFC 9000 §19.6 / RFC 9001 §4), returning `(new_bytes, ok)`.
 // Enforces 64-bit varint bounds, buffer quota, gap rejection, duplicate drop, and overlap trimming.
-fn quic_crypto_stream_ingest(
+checkfree fn quic_crypto_stream_ingest(
     stream: QuicCryptoStream&,
     offset: u64,
     data:   const u8[:],
@@ -1114,10 +1158,11 @@ fn quic_crypto_stream_ingest(
 
     // 4. Overlapping data handling: trim already consumed prefix
     let skip = (stream.consumed_offset - offset) as i64;
+    guard skip >= 0 && skip <= data.len else { return 0, false; }
     let new_data = data[skip..];
 
     // 5. Buffer quota check
-    guard stream.buf.try_append(new_data) else {
+    guard quic_crypto_buf_append(stream.buf, new_data) else {
         return 0, false;
     }
     stream.consumed_offset += (new_data.len as u64);

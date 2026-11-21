@@ -398,7 +398,8 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
     }
 
     if framing.has_cl {
-        guard framing.cl_len >= 0 && framing.cl_len <= 0x7FFFFFFF && wire.len >= header_end_idx + framing.cl_len else {
+        guard framing.cl_len >= 0 && framing.cl_len <= MAX_SERVER_BODY_LIMIT &&
+              wire.len >= header_end_idx + framing.cl_len else {
             return false, 0;
         }
         if framing.cl_len > 0 {
@@ -408,9 +409,11 @@ fn parse_http1_wire_response<Res>(wire: const u8[:], out_res: Res&) -> bool, i64
         return true, header_end_idx + framing.cl_len;
     }
 
-    // Otherwise, consume remainder of stream until connection close
+    // Otherwise, consume remainder of stream up to MAX_SERVER_BODY_LIMIT
     if wire.len > header_end_idx {
-        out_res.body.append(wire[header_end_idx..]);
+        let rem_body = wire[header_end_idx..];
+        guard rem_body.len <= MAX_SERVER_BODY_LIMIT else { return false, 0; }
+        out_res.body.append(rem_body);
     }
     committed = true;
     return true, wire.len;
@@ -669,14 +672,14 @@ fn send_http1_end_without_body<Res, B>(
     return net::tcp_send(fd, wire_headers[..]);
 }
 
-fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
+checkfree fn is_h2_client_preface(raw_stream: const u8[:]) -> bool {
     return raw_stream.len >= 24 && raw_stream[..24] == rfc::H2_CLIENT_PREFACE[..];
 }
 
 // True while a short read is still a strict prefix of the 24-byte H2 preface.
 // The preface contains "\r\n\r\n" at offset 14, so a sliced first TCP segment
 // must not fall through to the HTTP/1.1 parser (found by Toxiproxy SlicerToxic).
-fn is_partial_h2_client_preface(raw_stream: const u8[:]) -> bool {
+checkfree fn is_partial_h2_client_preface(raw_stream: const u8[:]) -> bool {
     return raw_stream.len > 0 && raw_stream.len < 24 && raw_stream == rfc::H2_CLIENT_PREFACE[..raw_stream.len];
 }
 

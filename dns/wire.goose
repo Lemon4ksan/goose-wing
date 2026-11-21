@@ -44,7 +44,7 @@ fn encode_name<B>(domain: const u8[:], out: B&) -> bool {
 // Example:
 //   raw = "\x07example\x03com\x00", idx = 0
 //   returns: true, idx = 13, out = "example.com"
-fn decode_name<B>(raw: const u8[:], idx: i64&, out: B&) -> bool {
+checkfree fn decode_name<B>(raw: const u8[:], idx: i64&, out: B&) -> bool {
     guard idx >= 0 && idx < raw.len else { return false; }
     var jumps = 0;
     var current_off = idx;
@@ -52,19 +52,19 @@ fn decode_name<B>(raw: const u8[:], idx: i64&, out: B&) -> bool {
     var advanced_original = false;
     var scratch: u8[..255] = [];
 
-    while current_off < raw.len {
+    while current_off >= 0 && current_off < raw.len {
         let b = raw[current_off];
         if b == 0 {
             if !advanced_original {
                 final_off = current_off + 1;
             }
-            guard out.try_set(scratch[..]) else { return false; }
+            guard dns_internal::copy_dns_name_out(out, scratch[..]) else { return false; }
             idx = final_off;
             return true;
         }
 
         if (b & 0xC0) == 0xC0 {
-            guard current_off + 1 < raw.len else { return false; }
+            guard current_off < raw.len - 1 else { return false; }
             let ptr_off = (((b & 0x3F) as i64) << 8) | (raw[current_off + 1] as i64);
             // RFC 1035 Section 4.1.4: Message compression - pointers must point backwards past 12-byte header
             guard ptr_off < current_off && ptr_off >= 12 else { return false; }
@@ -109,9 +109,9 @@ fn build_query<B>(domain: const u8[:], qtype: u16, tx_id: u16, out: B&) -> bool 
 // Example:
 //   raw = "\x00\x01\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00..."
 //   returns: Response { rcode: 0, answer_count: 1, .. }, true
-fn parse_response(raw: const u8[:]) -> Response, bool {
+checkfree fn parse_response(raw: const u8[:]) -> Response, bool {
     guard raw.len >= 12 else { return Response { .. }, false; }
-    let flags = core::read_be_u16(raw, 2);
+    let flags = dns_internal::read_dns_u16(raw, 2);
     let is_resp = ((flags >> 15) & 1) == 1;
     // RFC 1035 Section 4.1.1: Header section format - OPCODE MUST be 0 (standard query) and TC bit 0
     guard is_resp && ((flags >> 11) & 0x0F) == 0 && (flags & 0x0200) == 0 else {
@@ -119,15 +119,15 @@ fn parse_response(raw: const u8[:]) -> Response, bool {
     }
 
     var resp = Response {
-        tx_id:          core::read_be_u16(raw, 0),
+        tx_id:          dns_internal::read_dns_u16(raw, 0),
         rcode:          (flags & 0x0F) as u8,
         is_response:    true,
-        question_count: core::read_be_u16(raw, 4),
-        answer_count:   core::read_be_u16(raw, 6),
+        question_count: dns_internal::read_dns_u16(raw, 4),
+        answer_count:   dns_internal::read_dns_u16(raw, 6),
         ..
     };
-    let ns_count = core::read_be_u16(raw, 8);
-    let ar_count = core::read_be_u16(raw, 10);
+    let ns_count = dns_internal::read_dns_u16(raw, 8);
+    let ar_count = dns_internal::read_dns_u16(raw, 10);
 
     var off: i64 = 12;
     if resp.rcode != rfc::DNS_RCODE_NOERROR {

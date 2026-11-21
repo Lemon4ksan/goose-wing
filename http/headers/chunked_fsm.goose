@@ -10,6 +10,7 @@ namespace http_internal;
 import std;
 import core;
 import http.headers.chunked;
+import http.headers.lexical;
 
 const CHUNK_STATE_HAS_SIZE:               u64 = 0x8000000000000000;
 const CHUNK_STATE_IS_CHUNKED:             u64 = 0x4000000000000000;
@@ -53,7 +54,7 @@ struct ChunkFsmDecoder {
     trailer_name:       u8[..64] = [],
 }
 
-fn new_chunk_fsm_decoder() -> ChunkFsmDecoder {
+checkfree fn new_chunk_fsm_decoder() -> ChunkFsmDecoder {
     return ChunkFsmDecoder {
         state:              0,
         ext_bytes:          0,
@@ -65,7 +66,7 @@ fn new_chunk_fsm_decoder() -> ChunkFsmDecoder {
     };
 }
 
-fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
+checkfree fn chunk_fsm_reset(dec: ChunkFsmDecoder&) {
     dec.state = 0;
     dec.ext_bytes = 0;
     dec.trailer_bytes = 0;
@@ -101,7 +102,7 @@ checkfree inline fn chunk_fsm_has_size(state: u64) -> bool {
     return (state & CHUNK_STATE_HAS_SIZE) != 0;
 }
 
-inline fn fail_chunk_trailer(dec: ChunkFsmDecoder&) -> ChunkFsmStatus {
+checkfree inline fn fail_chunk_trailer(dec: ChunkFsmDecoder&) -> ChunkFsmStatus {
     dec.state = CHUNK_STATE_IS_ERROR;
     return ChunkFsmStatus.Error;
 }
@@ -163,7 +164,7 @@ fn feed_chunk_trailer(
 }
 
 // Consumes a single character of chunk hex size or delimiter (RFC 9112 §7.1.1).
-fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
+checkfree fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
     dec.ext_bytes++;
     if dec.ext_bytes > 1024 {
         dec.state = CHUNK_STATE_IS_ERROR;
@@ -234,7 +235,7 @@ fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
     return true;
 }
 
-inline fn finish_chunk_ext_lf(dec: ChunkFsmDecoder&, done: bool&) -> bool {
+checkfree inline fn finish_chunk_ext_lf(dec: ChunkFsmDecoder&, done: bool&) -> bool {
     let cur_sz = dec.state & CHUNK_STATE_SIZE_MASK;
     guard cur_sz <= CHUNK_STATE_SIZE_MASK - 2 else {
         dec.state = CHUNK_STATE_IS_ERROR;
@@ -247,7 +248,7 @@ inline fn finish_chunk_ext_lf(dec: ChunkFsmDecoder&, done: bool&) -> bool {
 }
 
 // Consumes a single character of chunk extensions (RFC 9112 §7.1.1).
-fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
+checkfree fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
     dec.ext_bytes++;
     if dec.ext_bytes > 1024 {
         dec.state = CHUNK_STATE_IS_ERROR;
@@ -280,7 +281,7 @@ fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
         if c == ' ' || c == '\t' {
             return true; // BWS after ';'
         }
-        if !core::is_tchar(c) {
+        if !http::is_tchar(c) {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
@@ -295,7 +296,7 @@ fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
             dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
         } else if c == ' ' || c == '\t' {
             dec.state |= CHUNK_STATE_SEEN_BWS;
-        } else if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 || !core::is_tchar(c) {
+        } else if (dec.state & CHUNK_STATE_SEEN_BWS) != 0 || !http::is_tchar(c) {
             dec.state = CHUNK_STATE_IS_ERROR;
             return false;
         }
@@ -306,7 +307,7 @@ fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
         if c == '"' {
             dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
             dec.state |= CHUNK_STATE_EXTENSION_QUOTED;
-        } else if core::is_tchar(c) {
+        } else if http::is_tchar(c) {
             dec.state &= ~CHUNK_STATE_EXTENSION_EXPECTS_VAL;
         } else {
             dec.state = CHUNK_STATE_IS_ERROR;
@@ -338,7 +339,7 @@ fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
                 dec.state |= CHUNK_STATE_EXTENSION_EXPECTS_NAME;
             } else if c == ' ' || c == '\t' {
                 dec.state |= CHUNK_STATE_SEEN_BWS;
-            } else if !core::is_tchar(c) {
+            } else if !http::is_tchar(c) {
                 dec.state = CHUNK_STATE_IS_ERROR;
                 return false;
             }
@@ -358,29 +359,37 @@ fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
 // Example:
 //   data = "1A;ext=val\r\n", offset = 0
 //   returns: NeedMore (header ready), offset = 12
-fn feed_chunk_header(
+checkfree fn feed_chunk_header(
     dec:    ChunkFsmDecoder&,
     data:   const u8[:],
     offset: i64&,
 ) -> ChunkFsmStatus {
-    while offset < data.len {
-        let c = data[offset];
+    var pos = offset;
+    guard pos >= 0 else {
+        dec.state = CHUNK_STATE_IS_ERROR;
+        return ChunkFsmStatus.Error;
+    }
+    while pos < data.len {
+        let c = data[pos];
         if (dec.state & CHUNK_STATE_EXTENSION_MODE) == 0 {
             guard feed_chunk_hex_char(dec, c) else {
+                offset = pos;
                 return ChunkFsmStatus.Error;
             }
-            offset++;
+            pos++;
         } else {
             var done = false;
             guard feed_chunk_ext_char(dec, c, done) else {
+                offset = pos;
                 return ChunkFsmStatus.Error;
             }
-            offset++;
+            pos++;
             if done {
                 break;
             }
         }
     }
+    offset = pos;
 
     if dec.state == CHUNK_STATE_IS_ERROR {
         return ChunkFsmStatus.Error;
@@ -399,40 +408,51 @@ fn feed_chunk_header(
 // Example:
 //   data = "hello\r\n", offset = 0, size = 7
 //   returns: YieldChunk, chunk = "hello"
-fn feed_chunk_body_full(
+checkfree fn feed_chunk_body_full(
     dec:    ChunkFsmDecoder&,
     data:   const u8[:],
     offset: i64&,
     size:   u64,
 ) -> ChunkFsmStatus, const u8[:] {
+    let pos = offset;
+    guard pos >= 0 && pos <= data.len else {
+        dec.state = CHUNK_STATE_IS_ERROR;
+        return ChunkFsmStatus.Error, data[..0];
+    }
+    let tail = data[pos..];
     if size > 2 {
         let chunk_len = (size - 2) as i64;
-        if data[offset + chunk_len] != '\r' || data[offset + chunk_len + 1] != '\n' {
+        guard chunk_len >= 0 && chunk_len <= tail.len - 2 else {
             dec.state = CHUNK_STATE_IS_ERROR;
             return ChunkFsmStatus.Error, data[..0];
         }
-        let chunk_slice = data[offset..(offset + chunk_len)];
-        offset += size as i64;
+        let crlf = tail[chunk_len..];
+        if crlf.len < 2 || crlf[0] != '\r' || crlf[1] != '\n' {
+            dec.state = CHUNK_STATE_IS_ERROR;
+            return ChunkFsmStatus.Error, data[..0];
+        }
+        let chunk_slice = tail[..chunk_len];
+        offset = pos + (size as i64);
         dec.state = CHUNK_STATE_IS_CHUNKED;
         dec.ext_bytes = 0;
         return ChunkFsmStatus.YieldChunk, chunk_slice;
     }
     if size == 2 {
-        if data[offset] != '\r' || data[offset + 1] != '\n' {
+        if tail.len < 2 || tail[0] != '\r' || tail[1] != '\n' {
             dec.state = CHUNK_STATE_IS_ERROR;
             return ChunkFsmStatus.Error, data[..0];
         }
-        offset += 2;
+        offset = pos + 2;
         dec.state = CHUNK_STATE_IS_CHUNKED;
         dec.ext_bytes = 0;
         return ChunkFsmStatus.NeedMore, data[..0];
     }
     // Split CRLF: previously consumed body and '\r', expecting final '\n'
-    if data[offset] != '\n' {
+    if tail.len < 1 || tail[0] != '\n' {
         dec.state = CHUNK_STATE_IS_ERROR;
         return ChunkFsmStatus.Error, data[..0];
     }
-    offset += 1;
+    offset = pos + 1;
     dec.state = CHUNK_STATE_IS_CHUNKED;
     dec.ext_bytes = 0;
     return ChunkFsmStatus.NeedMore, data[..0];
@@ -443,28 +463,34 @@ fn feed_chunk_body_full(
 // Example:
 //   data = "hel", offset = 0, size = 7, rem_data = 3
 //   returns: YieldChunk, chunk = "hel"
-fn feed_chunk_body_partial(
+checkfree fn feed_chunk_body_partial(
     dec:      ChunkFsmDecoder&,
     data:     const u8[:],
     offset:   i64&,
     size:     u64,
     rem_data: i64,
 ) -> ChunkFsmStatus, const u8[:] {
+    let pos = offset;
+    guard pos >= 0 && pos <= data.len && rem_data >= 0 && (rem_data as u64) <= size else {
+        dec.state = CHUNK_STATE_IS_ERROR;
+        return ChunkFsmStatus.Error, data[..0];
+    }
+    let tail = data[pos..];
     var chunk_slice: const u8[:] = data[..0];
     if size > 2 {
         let max_app_emit = (size - 2) as i64;
-        if rem_data > max_app_emit {
-            if data[offset + max_app_emit] != '\r' {
+        if rem_data > max_app_emit && max_app_emit >= 0 && max_app_emit < tail.len {
+            if tail[max_app_emit] != '\r' {
                 dec.state = CHUNK_STATE_IS_ERROR;
                 return ChunkFsmStatus.Error, data[..0];
             }
-            chunk_slice = data[offset..(offset + max_app_emit)];
+            chunk_slice = tail[..max_app_emit];
         } else {
-            chunk_slice = data[offset..];
+            chunk_slice = tail;
         }
     } else if size == 2 {
         // RFC 9112 §7.1 & §2.2: Body already consumed; first byte of split CRLF terminator MUST be CR
-        if data[offset] != '\r' {
+        if tail.len < 1 || tail[0] != '\r' {
             dec.state = CHUNK_STATE_IS_ERROR;
             return ChunkFsmStatus.Error, data[..0];
         }
@@ -473,7 +499,7 @@ fn feed_chunk_body_partial(
     let consumed_bytes = rem_data as u64;
     dec.state = (dec.state & ~CHUNK_STATE_SIZE_MASK) | (size - consumed_bytes);
     dec.state |= CHUNK_STATE_IS_CHUNKED;
-    offset += rem_data;
+    offset = pos + rem_data;
     if chunk_slice.len > 0 {
         return ChunkFsmStatus.YieldChunk, chunk_slice;
     }
@@ -485,13 +511,18 @@ fn feed_chunk_body_partial(
 // Example:
 //   data = "hello\r\n", offset = 0, size = 7 (5 + 2)
 //   returns: YieldChunk, chunk = "hello", offset = 7
-fn feed_chunk_body(
+checkfree fn feed_chunk_body(
     dec:    ChunkFsmDecoder&,
     data:   const u8[:],
     offset: i64&,
 ) -> ChunkFsmStatus, const u8[:] {
+    let pos = offset;
+    if pos < 0 || pos > data.len {
+        dec.state = CHUNK_STATE_IS_ERROR;
+        return ChunkFsmStatus.Error, data[..0];
+    }
     let size = chunk_fsm_size(dec.state);
-    let rem_data = data.len - offset;
+    let rem_data = data.len - pos;
 
     if (rem_data as u64) >= size {
         return feed_chunk_body_full(dec, data, offset, size);

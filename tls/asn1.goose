@@ -11,14 +11,36 @@ import .internal;
 
 // ---- Strict Canonical ASN.1 DER Parser -----------------------------------
 
+// Decodes a 2-byte big-endian unsigned integer from the head of `buf` (X.690 §10.1).
+checkfree inline fn asn1_read_be_u16(buf: const u8[:]) -> u16 {
+    if buf.len < 2 { return 0; }
+    return ((buf[0] as u16) << 8) | buf[1];
+}
+
+// Decodes a 3-byte big-endian unsigned integer from the head of `buf` (X.690 §10.1).
+checkfree inline fn asn1_read_be_u24(buf: const u8[:]) -> u32 {
+    if buf.len < 3 { return 0; }
+    let hi = asn1_read_be_u16(buf) as u32;
+    return (hi << 8) | buf[2];
+}
+
+// Decodes a 4-byte big-endian unsigned integer from the head of `buf` (X.690 §10.1).
+checkfree inline fn asn1_read_be_u32(buf: const u8[:]) -> u32 {
+    if buf.len < 4 { return 0; }
+    let hi = asn1_read_be_u16(buf) as u32;
+    let lo = asn1_read_be_u16(buf[2..]) as u32;
+    return (hi << 16) | lo;
+}
+
 // Parses ASN.1 length field with canonical DER rules (X.690 Section 10.1):
 // - Short form: 0..127 (1 byte)
 // - Long form: byte 0 has bit 8 set, remaining 7 bits is length of length (1..4)
 // - Long form with length < 128, BER indefinite length (0x80), redundant leading zeros,
 //   and reserved initial octet 0xFF are strictly FORBIDDEN.
-fn get_asn1_length(c: core::ByteCursor&, out_len: i64&) -> bool {
-    var b0: u8 = 0;
-    if !c.get_u8(b0) { return false; }
+checkfree fn get_asn1_length(c: core::ByteCursor&, out_len: i64&) -> bool {
+    guard c.buf.len >= 1 else { return false; }
+    let b0 = c.buf[0];
+    c.buf = c.buf[1..];
 
     if (b0 & 0x80) == 0 {
         out_len = b0;
@@ -27,21 +49,40 @@ fn get_asn1_length(c: core::ByteCursor&, out_len: i64&) -> bool {
 
     guard b0 != 0x80 && b0 != 0xFF else { return false; }
     let num_bytes = (b0 & 0x7F) as i64;
-    guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
-    guard c.cursor_len() >= num_bytes else { return false; }
-    return tls_internal::read_asn1_long_length(c, num_bytes, out_len);
+    guard num_bytes >= 1 && num_bytes <= 4 && c.buf.len >= num_bytes else { return false; }
+    let len_bytes = c.buf[..num_bytes];
+    // X.690 Section 10.1: leading zero octet in long-form length is non-canonical DER.
+    guard len_bytes[0] != 0x00 else { return false; }
+
+    let length: i64 = match num_bytes {
+        1 => len_bytes[0],
+        2 => asn1_read_be_u16(len_bytes),
+        3 => asn1_read_be_u24(len_bytes),
+        4 => asn1_read_be_u32(len_bytes),
+        _ => 0,
+    };
+    guard length >= 128 && length <= 0x7FFFFFFF else { return false; }
+    c.buf = c.buf[num_bytes..];
+    out_len = length;
+    return true;
 }
 
 // Consumes any ASN.1 TLV element, returning tag and value cursor.
-fn get_any_asn1_element(c: core::ByteCursor&, out_tag: u8&, out_val: core::ByteCursor&) -> bool {
-    if !c.get_u8(out_tag) { return false; }
+checkfree fn get_any_asn1_element(c: core::ByteCursor&, out_tag: u8&, out_val: core::ByteCursor&) -> bool {
+    guard c.buf.len >= 1 else { return false; }
+    out_tag = c.buf[0];
+    c.buf = c.buf[1..];
     var length: i64 = 0;
     if !get_asn1_length(c, length) { return false; }
-    return c.get_bytes(out_val, length);
+    let rem = c.buf;
+    guard length >= 0 && length <= rem.len else { return false; }
+    out_val = core::ByteCursor { buf: rem[..length] };
+    c.buf = rem[length..];
+    return true;
 }
 
 // Consumes an ASN.1 element with an expected tag.
-fn get_asn1_element(c: core::ByteCursor&, expected_tag: u8, out_val: core::ByteCursor&) -> bool {
+checkfree fn get_asn1_element(c: core::ByteCursor&, expected_tag: u8, out_val: core::ByteCursor&) -> bool {
     var tag: u8 = 0;
     if !get_any_asn1_element(c, tag, out_val) { return false; }
     return tag == expected_tag;
@@ -51,10 +92,18 @@ fn get_asn1_element(c: core::ByteCursor&, expected_tag: u8, out_val: core::ByteC
 // - Length must be >= 1 (zero-length integer is forbidden).
 // - No redundant leading zero padding or negative sign extension.
 // - For X.509 serial numbers (RFC 5280 §4.1.2.2): MUST be positive (strictly > 0), max 20 octets.
-inline fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> bool {
-    guard tls_internal::asn1_check_der_integer_padding(val) else { return false; }
+checkfree inline fn validate_asn1_integer(val: const u8[:], is_serial_number: bool) -> bool {
+    guard val.len >= 1 else { return false; }
+    if val[0] == 0x00 && val.len > 1 {
+        if (val[1] & 0x80) == 0 { return false; }
+    } else if val[0] == 0xFF && val.len > 1 {
+        if (val[1] & 0x80) != 0 { return false; }
+    }
     if is_serial_number {
-        return tls_internal::asn1_check_serial_number_rules(val);
+        guard (val[0] & 0x80) == 0 else { return false; }
+        guard val.len != 1 || val[0] != 0x00 else { return false; }
+        let max_len = if val[0] == 0x00 { 21 } else { 20 };
+        return val.len <= max_len;
     }
     return true;
 }
@@ -65,7 +114,7 @@ fn get_asn1_integer(c: core::ByteCursor&, out_val: i64&) -> bool {
     var raw = core::cursor_from(c.buf[..0]);
     if !get_asn1_element(c, rfc::ASN1_TAG_INTEGER, raw) { return false; }
     guard raw.buf.len >= 1 && raw.buf.len <= 8 else { return false; }
-    guard tls_internal::asn1_check_der_integer_padding(raw.buf) else { return false; }
+    guard validate_asn1_integer(raw.buf, false) else { return false; }
 
     let is_neg = (raw.buf[0] & 0x80) != 0;
     var acc: i64 = 0;
@@ -80,7 +129,7 @@ fn get_asn1_integer(c: core::ByteCursor&, out_val: i64&) -> bool {
 // Validates canonical DER rules for ASN.1 BIT STRING (X.690 Section 8.4 & 10.2):
 // - Length must be >= 1, unused bits in 0..7, empty bit string has unused == 0,
 //   and trailing unused bits in the last data octet MUST be zero.
-inline fn validate_asn1_bit_string(val: const u8[:]) -> bool {
+checkfree inline fn validate_asn1_bit_string(val: const u8[:]) -> bool {
     guard val.len >= 1 else { return false; }
     let unused = val[0];
     guard unused <= 7 else { return false; }
@@ -88,17 +137,18 @@ inline fn validate_asn1_bit_string(val: const u8[:]) -> bool {
         return unused == 0;
     }
     guard unused > 0 else { return true; }
-    let last_idx = core::sub_sat_i64(val.len, 1);
-    let last_byte = val[last_idx];
+    let last_slice = val[^1..];
+    guard last_slice.len == 1 else { return false; }
+    let last_byte = last_slice[0];
     let mask = tls_internal::ASN1_UNUSED_BITS_MASK_LUT[unused as i64];
     return (last_byte & mask) == 0;
 }
 
 // Consumes an ASN.1 BIT STRING element, validating DER unused bits rules and extracting bit payload.
-fn get_asn1_bit_string(c: core::ByteCursor&, out_bits: core::ByteCursor&, out_unused: u8&) -> bool {
-    var raw = core::cursor_from(c.buf[..0]);
+checkfree fn get_asn1_bit_string(c: core::ByteCursor&, out_bits: core::ByteCursor&, out_unused: u8&) -> bool {
+    var raw = core::ByteCursor { buf: c.buf[..0] };
     if !get_asn1_element(c, rfc::ASN1_TAG_BIT_STRING, raw) { return false; }
-    guard validate_asn1_bit_string(raw.buf) else { return false; }
+    guard validate_asn1_bit_string(raw.buf) && raw.buf.len >= 1 else { return false; }
     out_unused = raw.buf[0];
     out_bits = core::ByteCursor { buf: raw.buf[1..] };
     return true;
@@ -189,11 +239,13 @@ struct Span16 {
     length: u16 = 0,
 }
 
-fn span_slice(raw: const u8[:], span: Span16) -> const u8[:] {
+checkfree fn span_slice(raw: const u8[:], span: Span16) -> const u8[:] {
     let start = span.offset as i64;
-    let end = core::add_sat_i64(start, span.length);
-    guard end <= raw.len else { return raw[..0]; }
-    return raw[start..end];
+    guard start >= 0 && start <= raw.len else { return raw[..0]; }
+    let tail = raw[start..];
+    let length = span.length as i64;
+    guard length >= 0 && length <= tail.len else { return raw[..0]; }
+    return tail[..length];
 }
 
 fn make_span(base: const u8[:], target: const u8[:], start_hint: i64 = 0) -> Span16 {

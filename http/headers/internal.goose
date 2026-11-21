@@ -13,10 +13,51 @@ import http.headers;
 
 // ---- http/headers/chunked.goose internal helpers ----
 
-fn skip_bws(s: const u8[:], cursor: i64&) {
-    while cursor < s.len && (s[cursor] == ' ' || s[cursor] == '\t') {
-        cursor++;
+const H1_HEX_NIBBLE_LUT: const i8[256] = [
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, -1, -1, -1, -1, -1,
+    -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+];
+
+checkfree inline fn h1_read_le_u16(s: const u8[:]) -> u16 {
+    if s.len < 2 { return 0; }
+    return s[0] | ((s[1] as u16) << 8);
+}
+
+checkfree inline fn h1_read_le_u32(s: const u8[:]) -> u32 {
+    if s.len < 4 { return 0; }
+    let lo: u32 = h1_read_le_u16(s);
+    let hi: u32 = h1_read_le_u16(s[2..]);
+    return lo | (hi << 16);
+}
+
+checkfree inline fn h1_read_le_u64(s: const u8[:]) -> u64 {
+    if s.len < 8 { return 0; }
+    let lo: u64 = h1_read_le_u32(s);
+    let hi: u64 = h1_read_le_u32(s[4..]);
+    return lo | (hi << 32);
+}
+
+checkfree fn skip_bws(s: const u8[:], cursor: i64&) {
+    var pos = cursor;
+    guard pos >= 0 else { return; }
+    while pos < s.len && (s[pos] == ' ' || s[pos] == '\t') {
+        pos++;
     }
+    cursor = pos;
 }
 
 // Parses a token name in a chunk extension.
@@ -25,12 +66,15 @@ fn skip_bws(s: const u8[:], cursor: i64&) {
 // Example:
 //   s = "ext_name=val", cursor = 0
 //   returns: true, cursor = 8
-fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
-    let name_start = cursor;
-    while cursor < s.len && http::is_tchar(s[cursor]) {
-        cursor++;
+checkfree fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
+    var pos = cursor;
+    guard pos >= 0 else { return false; }
+    let name_start = pos;
+    while pos < s.len && http::is_tchar(s[pos]) {
+        pos++;
     }
-    return cursor > name_start;
+    cursor = pos;
+    return pos > name_start;
 }
 
 // Parses a parameter value (token or quoted string) in a chunk extension.
@@ -38,19 +82,21 @@ fn parse_chunk_ext_name(s: const u8[:], cursor: i64&) -> bool {
 // Example:
 //   s = "token; next", cursor = 0
 //   returns: ChunkedDecodeError.None
-fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> http::ChunkedDecodeError {
-    guard cursor < s.len else { return http::ChunkedDecodeError.InvalidChunkExtension; }
-    if s[cursor] == '"' {
+checkfree fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> http::ChunkedDecodeError {
+    var pos = cursor;
+    guard pos >= 0 && pos < s.len else { return http::ChunkedDecodeError.InvalidChunkExtension; }
+    if s[pos] == '"' {
         guard http::parse_chunk_ext_quoted_val(s, cursor) else {
             return http::ChunkedDecodeError.InvalidChunkExtension;
         }
         return http::ChunkedDecodeError.None;
     }
-    let val_start = cursor;
-    while cursor < s.len && http::is_tchar(s[cursor]) {
-        cursor++;
+    let val_start = pos;
+    while pos < s.len && http::is_tchar(s[pos]) {
+        pos++;
     }
-    guard cursor > val_start else {
+    cursor = pos;
+    guard pos > val_start else {
         return http::ChunkedDecodeError.InvalidChunkExtension;
     }
     return http::ChunkedDecodeError.None;
@@ -62,15 +108,16 @@ fn parse_chunk_ext_param_val(s: const u8[:], cursor: i64&) -> http::ChunkedDecod
 // Example:
 //   s = ";name=val", cursor = 0
 //   returns: ChunkedDecodeError.None, cursor = 9
-fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> http::ChunkedDecodeError {
+checkfree fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> http::ChunkedDecodeError {
     let saved_cursor = cursor;
     var committed = false;
     defer if !committed { cursor = saved_cursor; };
 
-    guard cursor < s.len && s[cursor] == ';' else {
+    let pos0 = cursor;
+    guard pos0 >= 0 && pos0 < s.len && s[pos0] == ';' else {
         return http::ChunkedDecodeError.InvalidChunkExtension;
     }
-    cursor++; // skip ';'
+    cursor = pos0 + 1; // skip ';'
     skip_bws(s, cursor);
 
     guard parse_chunk_ext_name(s, cursor) else {
@@ -79,12 +126,13 @@ fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> http::ChunkedDecodeErr
     let after_name = cursor;
     skip_bws(s, cursor);
     // RFC 9112 Section 7.1.1: Chunk Extensions - Reject trailing BWS before CRLF
-    guard cursor == after_name || cursor < s.len else {
+    let pos1 = cursor;
+    guard pos1 == after_name || pos1 < s.len else {
         return http::ChunkedDecodeError.InvalidChunkExtension;
     }
 
-    if cursor < s.len && s[cursor] == '=' {
-        cursor++; // skip '='
+    if pos1 >= 0 && pos1 < s.len && s[pos1] == '=' {
+        cursor = pos1 + 1; // skip '='
         skip_bws(s, cursor);
         let val_err = parse_chunk_ext_param_val(s, cursor);
         guard val_err == http::ChunkedDecodeError.None else { return val_err; }
@@ -103,28 +151,31 @@ fn parse_chunk_ext_param(s: const u8[:], cursor: i64&) -> http::ChunkedDecodeErr
 // Example:
 //   chunk_size_line = "1a;ext", sig_start = 0, hex_len = 2
 //   returns: ChunkedDecodeError.None, out_size = 26
-fn parse_hex_chunk_value(
+checkfree fn parse_hex_chunk_value(
     chunk_size_line: const u8[:],
     sig_start:       i64,
     hex_len:         i64,
     out_size:        u64&,
 ) -> http::ChunkedDecodeError {
+    guard sig_start >= 0 && sig_start <= hex_len && hex_len <= chunk_size_line.len else {
+        return http::ChunkedDecodeError.InvalidChunkSizeHex;
+    }
     var chunk_size: u64 = 0;
     for b in chunk_size_line[sig_start..hex_len] {
-        let val = core::hex_digit_to_val(b);
+        let val = H1_HEX_NIBBLE_LUT[b];
         guard val >= 0 else {
             return http::ChunkedDecodeError.InvalidChunkSizeHex;
         }
         if chunk_size > 0x07FFFFFFFFFFFFFF {
             return http::ChunkedDecodeError.ChunkSizeOverflow;
         }
-        chunk_size = (chunk_size << 4) | (val as! u64);
+        chunk_size = (chunk_size << 4) | (val as u64);
     }
     out_size = chunk_size;
     return http::ChunkedDecodeError.None;
 }
 
-fn validate_chunk_size_line_chars(chunk_size_line: const u8[:]) -> http::ChunkedDecodeError {
+checkfree fn validate_chunk_size_line_chars(chunk_size_line: const u8[:]) -> http::ChunkedDecodeError {
     guard chunk_size_line.len > 0 else {
         return http::ChunkedDecodeError.InvalidChunkSizeHex;
     }
@@ -142,7 +193,7 @@ fn validate_chunk_size_line_chars(chunk_size_line: const u8[:]) -> http::Chunked
     return http::ChunkedDecodeError.None;
 }
 
-fn is_hex_char(b: u8) -> bool {
+checkfree fn is_hex_char(b: u8) -> bool {
     return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F');
 }
 
@@ -151,57 +202,69 @@ fn is_hex_char(b: u8) -> bool {
 // Example:
 //   s = "1a2b;ext", cursor = 0
 //   returns: 4, cursor = 4
-fn scan_hex_digits(s: const u8[:], cursor: i64&) -> i64 {
-    while cursor < s.len && is_hex_char(s[cursor]) {
-        cursor++;
+checkfree fn scan_hex_digits(s: const u8[:], cursor: i64&) -> i64 {
+    var pos = cursor;
+    guard pos >= 0 else { return pos; }
+    while pos < s.len && is_hex_char(s[pos]) {
+        pos++;
     }
-    return cursor;
+    cursor = pos;
+    return pos;
 }
 
-fn find_significant_hex_start(s: const u8[:], hex_len: i64) -> i64 {
-    var sig_start: i64 = 0;
-    while sig_start < hex_len && s[sig_start] == '0' {
-        sig_start++;
+checkfree fn find_significant_hex_start(s: const u8[:], hex_len: i64) -> i64 {
+    let limit = if hex_len < s.len { hex_len } else { s.len };
+    guard limit > 0 && limit <= s.len else { return 0; }
+    for i in limit {
+        if s[i] != '0' {
+            return i;
+        }
     }
-    return sig_start;
+    return limit;
 }
 
 // Consumes `chunk_size` data bytes plus trailing CRLF into `out_body`, advancing `cursor` (RFC 9112 §7.1).
-// Leaves `cursor` unchanged on error.
+// Enforces `http::MAX_CHUNKED_BODY_BYTES` before appending and leaves `cursor` unchanged on error.
 //
 // Example:
 //   raw = "Wiki\r\n", cursor = 0, chunk_size = 4, out_body = []
 //   returns: ChunkedDecodeError.None, cursor = 6, out_body = "Wiki"
-fn consume_chunk_data(
+checkfree fn consume_chunk_data(
     raw:        const u8[:],
     cursor:     i64&,
     chunk_size: u64,
     out_body:   u8[>..]&,
 ) -> http::ChunkedDecodeError {
-    guard chunk_size <= (raw.len as u64) else {
+    let pos = cursor;
+    guard pos >= 0 && pos <= raw.len else {
         return http::ChunkedDecodeError.UnexpectedEof;
     }
-    let csize = chunk_size as! i64;
-    guard csize <= raw.len - cursor else {
+    let tail = raw[pos..];
+    guard chunk_size <= (tail.len as u64) else {
         return http::ChunkedDecodeError.UnexpectedEof;
+    }
+    let csize = chunk_size as i64;
+    guard csize >= 0 && csize <= tail.len else {
+        return http::ChunkedDecodeError.UnexpectedEof;
+    }
+    guard out_body.len >= 0 && out_body.len <= http::MAX_CHUNKED_BODY_BYTES &&
+          csize <= http::MAX_CHUNKED_BODY_BYTES - out_body.len else {
+        return http::ChunkedDecodeError.ChunkSizeOverflow;
     }
 
-    let end_pos = cursor + csize;
-    if end_pos < raw.len && raw[end_pos] == '\n' {
+    let after = tail[csize..];
+    if after.len >= 1 && after[0] == '\n' {
         return http::ChunkedDecodeError.BareLfInChunkData;
     }
-
-    guard end_pos + 1 < raw.len else {
+    guard after.len >= 2 else {
         return http::ChunkedDecodeError.UnexpectedEof;
     }
-
-    guard raw[end_pos] == '\r' && raw[end_pos + 1] == '\n' else {
+    guard after[0] == '\r' && after[1] == '\n' else {
         return http::ChunkedDecodeError.MalformedChunkEnding;
     }
 
-    let chunk_data = raw[cursor..end_pos];
-    out_body.append(chunk_data);
-    cursor = end_pos + 2;
+    out_body.append(tail[..csize]);
+    cursor = pos + csize + 2;
     return http::ChunkedDecodeError.None;
 }
 
@@ -249,7 +312,7 @@ fn is_valid_rfc9110_quoted_string(v: const u8[:]) -> bool {
     return true;
 }
 
-fn is_line_whitespace_only(line: const u8[:]) -> bool {
+checkfree fn is_line_whitespace_only(line: const u8[:]) -> bool {
     for b in line {
         if b != ' ' && b != '\t' {
             return false;
@@ -260,24 +323,28 @@ fn is_line_whitespace_only(line: const u8[:]) -> bool {
 
 // ---- http/headers.goose internal helpers ----
 
-fn bloom_hash(key: const u8[:]) -> u32 {
+checkfree fn bloom_hash(key: const u8[:]) -> u32 {
     let len = key.len;
     guard len >= 2 else { return 0; }
-    let b0 = core::to_lower_ascii_byte(key[0]) as u32;
-    let b1 = core::to_lower_ascii_byte(key[len - 1]) as u32;
-    let b2 = core::to_lower_ascii_byte(key[len - 2]) as u32;
-    let b3 = core::to_lower_ascii_byte(key[len >> 1]) as u32;
+    let c0 = key[0];
+    let c1 = key[len - 1];
+    let c2 = key[len - 2];
+    let c3 = key[len >> 1];
+    let b0:       u32 = if c0 >= 'A' && c0 <= 'Z' { c0 | 0x20 } else { c0 };
+    let b1:       u32 = if c1 >= 'A' && c1 <= 'Z' { c1 | 0x20 } else { c1 };
+    let b2:       u32 = if c2 >= 'A' && c2 <= 'Z' { c2 | 0x20 } else { c2 };
+    let b3:       u32 = if c3 >= 'A' && c3 <= 'Z' { c3 | 0x20 } else { c3 };
     let features: u32 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
     return features * 1843993368;
 }
 
-fn reset_overflow_arena(arena: http::OverflowArena&) {
+checkfree fn reset_overflow_arena(arena: http::OverflowArena&) {
     arena.spill_raw.clear();
     arena.spill_entries.clear();
     arena.spill_url.clear();
 }
 
-fn well_known_header_name(id: http::WellKnownHeader) -> const u8[:] {
+checkfree fn well_known_header_name(id: http::WellKnownHeader) -> const u8[:] {
     return match id {
         Host => "host",
         ContentType => "content-type",
@@ -400,7 +467,7 @@ fn well_known_header_flags(id: http::WellKnownHeader, name: const u8[:]) -> u8 {
     return flags;
 }
 
-fn has_no_comma_fold(entry: const http::HeaderEntry&) -> bool {
+checkfree fn has_no_comma_fold(entry: const http::HeaderEntry&) -> bool {
     return (entry.flags & http::HEADER_FLAG_NO_COMMA_FOLD) != 0;
 }
 
@@ -760,6 +827,10 @@ fn parse_single_overflow_header_line(
         map.entries.push(new_entry);
         map.header_contains_comma.push(contains_comma);
     } else {
+        guard arena.spill_entries.len < http::MAX_OVERFLOW_SPILL_ENTRIES else {
+            map.valid = false;
+            return http::HeaderParseError.CapacityExceeded;
+        }
         arena.spill_entries.push(new_entry);
     }
     return http::HeaderParseError.None;
@@ -878,7 +949,7 @@ fn parse_overflow_headers_loop(
 // Parses an HTTP status line into major/minor versions and status code.
 //
 // RFC 9112 Section 4: Status Line - reason-phrase = 1*( HTAB / SP / VCHAR / obs-text )
-inline fn is_valid_reason_phrase(s: const u8[:]) -> bool {
+checkfree inline fn is_valid_reason_phrase(s: const u8[:]) -> bool {
     for b in s {
         guard http::is_valid_header_value_byte(b) else { return false; }
     }
@@ -969,7 +1040,7 @@ fn parse_http_status_line(
     return http::HeaderParseError.None;
 }
 
-inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
+checkfree inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
     if raw.len >= 2 && raw[0] == '\r' && raw[1] == '\n' {
         return 2;
     }
@@ -979,15 +1050,19 @@ inline fn skip_single_preamble_empty_line(raw: const u8[:]) -> i64 {
     return 0;
 }
 
-fn resolve_entry_value(
+checkfree fn resolve_entry_value(
     entry: const http::HeaderEntry&,
     map:   const http::HeaderMap&,
     arena: const http::OverflowArena&,
 ) -> const u8[:] {
+    let b: i64 = entry.values_begin;
+    let e: i64 = entry.values_end;
     if entry.reserved == http::HEADER_SRC_ARENA {
-        return arena.spill_raw[entry.values_begin..entry.values_end];
+        guard b >= 0 && b <= e && e <= arena.spill_raw.len else { return ""; }
+        return arena.spill_raw[b..e];
     }
-    return map.raw_buf[entry.values_begin..entry.values_end];
+    guard b >= 0 && b <= e && e <= map.raw_buf.len else { return ""; }
+    return map.raw_buf[b..e];
 }
 
 fn find_entry_in_entries(
@@ -1073,7 +1148,7 @@ fn try_overwrite_single_header_in_place(
     return true;
 }
 
-inline fn needs_header_byte_sanitization(s: const u8[:]) -> bool {
+checkfree inline fn needs_header_byte_sanitization(s: const u8[:]) -> bool {
     for b in s {
         if b == '\r' || b == '\n' || b == 0 {
             return true;

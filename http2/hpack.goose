@@ -15,6 +15,8 @@ import http.headers;
 // ---- hpack public constants ----------------------------------------------
 
 const HPACK_MAX_ARENA_BYTES: u64 = 4096;
+// RFC 7541 / DoS cap on cumulative decoded Huffman bytes appended into a `u8[>..]` sink.
+const HPACK_MAX_HUFF_OUT_BYTES: i64 = 65536;
 
 // ---- huffman codec primitives --------------------------------------------
 
@@ -23,7 +25,7 @@ struct HuffContext {
     flags:  u8 = 0x01, // HUFF_ACCEPTED at root
 }
 
-fn new_huff_context() -> HuffContext {
+checkfree fn new_huff_context() -> HuffContext {
     return HuffContext { fstate: 0, flags: h2_internal::HUFF_ACCEPTED };
 }
 
@@ -33,7 +35,7 @@ fn new_huff_context() -> HuffContext {
 // Example:
 //   src = [0x9C, 0xC5], dst_len = 0, is_final = true
 //   returns: written = 3, ok = true
-fn huff_decode_step(
+checkfree fn huff_decode_step(
     ctx:      HuffContext&,
     dst:      u8[:],
     dst_len:  u64,
@@ -43,25 +45,23 @@ fn huff_decode_step(
     var state = ctx.fstate;
     var flags = ctx.flags;
     var out_idx = dst_len;
-    var i: u64 = 0;
-    let src_len = src.len as u64;
     var last_sym_byte: i64 = -1;
+    let dst_cap = dst.len as u64;
 
-    while i < src_len {
-        let c = src[i];
-
+    for c, i in src {
         // Step 1: High nibble (bits 7..4)
         let t1 = h2_internal::huff_decode_lookup(state, c >> 4);
         if (t1.flags & h2_internal::HUFF_FAIL) != 0 {
             return out_idx, false;
         }
         if (t1.flags & h2_internal::HUFF_SYM) != 0 {
-            if out_idx >= (dst.len as u64) {
+            let w1 = out_idx as i64;
+            if out_idx >= dst_cap || w1 < 0 || w1 >= dst.len {
                 return out_idx, false;
             }
-            dst[out_idx] = t1.sym;
+            dst[w1] = t1.sym;
             out_idx++;
-            last_sym_byte = i as i64;
+            last_sym_byte = i;
         }
 
         // Step 2: Low nibble (bits 3..0)
@@ -70,17 +70,17 @@ fn huff_decode_step(
             return out_idx, false;
         }
         if (t2.flags & h2_internal::HUFF_SYM) != 0 {
-            if out_idx >= (dst.len as u64) {
+            let w2 = out_idx as i64;
+            if out_idx >= dst_cap || w2 < 0 || w2 >= dst.len {
                 return out_idx, false;
             }
-            dst[out_idx] = t2.sym;
+            dst[w2] = t2.sym;
             out_idx++;
-            last_sym_byte = i as i64;
+            last_sym_byte = i;
         }
 
         state = t2.fstate;
         flags = t2.flags;
-        i++;
     }
     ctx.fstate = state;
     ctx.flags = flags;
@@ -92,7 +92,7 @@ fn huff_decode_step(
         if (flags & h2_internal::HUFF_ACCEPTED) == 0 {
             return out_idx, false;
         }
-        if src_len > 0 && last_sym_byte != ((src_len as i64) - 1) {
+        if src.len > 0 && last_sym_byte != (src.len - 1) {
             return out_idx, false;
         }
     }
@@ -137,12 +137,14 @@ fn huff_decode_bytes(src: const u8[:], out: u8[>..]&) -> bool {
     if src.len == 0 {
         return true;
     }
-    if src.len > 16777216 {
-        return false;
-    }
     let start_len = out.len;
     let max_out = core::add_sat_i64(src.len, src.len);
-    out.resize(core::add_sat_i64(start_len, max_out), 0);
+    let max_src = HPACK_MAX_HUFF_OUT_BYTES >> 1;
+    let target_len = core::add_sat_i64(start_len, max_out);
+    guard src.len <= max_src && start_len >= 0 && target_len <= HPACK_MAX_HUFF_OUT_BYTES else {
+        return false;
+    }
+    out.resize(target_len, 0);
     let n = native_hpack_huff_decode(src, out[start_len..], h2_internal::HUFF_DECODE_TABLE_PACKED[..]);
     if n < 0 {
         out.resize(start_len);
@@ -153,7 +155,7 @@ fn huff_decode_bytes(src: const u8[:], out: u8[>..]&) -> bool {
 }
 
 // Calculates the exact Huffman-encoded byte length of an uncompressed string.
-fn huff_encoded_byte_len(src: const u8[:]) -> u64 {
+checkfree fn huff_encoded_byte_len(src: const u8[:]) -> u64 {
     var total_bits: u64 = 0;
     for b in src {
         total_bits += h2_internal::HUFF_SYM_LENS[b];
@@ -200,39 +202,40 @@ fn huff_encode_bytes<B>(src: const u8[:], out: B&) -> bool {
 // Example:
 //   src = [0x0A], offset = 0, prefix_bits = 5
 //   returns: val = 10, next_offset = 1, ok = true
-fn hpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64, bool {
-    guard offset < (src.len as u64) else { return 0, offset, false; }
+checkfree fn hpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64, bool {
+    let off_i = offset as i64;
+    guard off_i >= 0 && off_i < src.len else { return 0, offset, false; }
     guard prefix_bits >= 1 && prefix_bits <= 8 else { return 0, offset, false; }
 
     let mask = (((1 as u32) << prefix_bits) - 1) as u8;
-    var val = (src[offset] & mask) as u64;
-    var idx = offset + 1;
+    var val = (src[off_i] & mask) as u64;
+    var idx = off_i + 1;
 
     if val < mask {
-        return val, idx, true;
+        return val, idx as u64, true;
     }
 
     // Multibyte continuation
     var shift: u32 = 0;
-    while idx < (src.len as u64) {
+    while idx >= 0 && idx < src.len {
         let b = src[idx];
         let payload = (b & 0x7F) as u64;
 
         if shift >= h2_internal::HPACK_MAX_INT_SHIFT {
             if shift > 28 || payload > 0x0F {
-                return 0, idx, false;
+                return 0, idx as u64, false;
             }
         }
 
         let term = payload << shift;
         if (rfc::H2_MAX_WINDOW_SIZE - val) < term {
-            return 0, idx, false;
+            return 0, idx as u64, false;
         }
         val += term;
-        idx++;
+        idx += 1;
 
         if (b & 0x80) == 0 {
-            return val, idx, true;
+            return val, idx as u64, true;
         }
         shift += 7;
     }
@@ -295,7 +298,7 @@ struct DynamicTable {
     pending_min_table_size:  u64                   = 4096,
 }
 
-fn new_dynamic_table(max_allowed: u64 = 4096) -> DynamicTable {
+checkfree fn new_dynamic_table(max_allowed: u64 = 4096) -> DynamicTable {
     return DynamicTable {
         max_allowed_size:       max_allowed,
         current_max_size:       max_allowed,
@@ -305,7 +308,7 @@ fn new_dynamic_table(max_allowed: u64 = 4096) -> DynamicTable {
 }
 
 // Evicts oldest entries from head until used_bytes <= target_size.
-fn evict_until(dt: DynamicTable&, target_size: u64) {
+checkfree fn evict_until(dt: DynamicTable&, target_size: u64) {
     while dt.count > 0 && dt.used_bytes > target_size {
         h2_internal::evict_oldest_entry(dt);
     }
@@ -313,7 +316,7 @@ fn evict_until(dt: DynamicTable&, target_size: u64) {
 
 // Inserts a (name, val) pair into the dynamic table using the linearized boundary ring buffer
 // and O(1) direct-mapped hash table without heap allocations or O(N) compaction copies.
-fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:], never_index: bool = false) {
+checkfree fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:], never_index: bool = false) {
     let entry_weight = (name.len as u64) + (val.len as u64) + rfc::HPACK_ENTRY_OVERHEAD;
 
     // RFC 7541 Section 4.4: if entry exceeds current max size, table is emptied
@@ -339,10 +342,12 @@ fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:], never_i
         h2_internal::evict_oldest_entry(dt);
     }
 
-    let insert_idx = (dt.head + dt.count) & h2_internal::HPACK_RING_MASK;
+    let head_i = (dt.head & h2_internal::HPACK_RING_MASK) as i64;
+    let insert_i = ((dt.head + dt.count) & h2_internal::HPACK_RING_MASK) as i64;
+    guard head_i >= 0 && head_i < 128 && insert_i >= 0 && insert_i < 128 else { return; }
     let name_off, val_off = h2_internal::pack_header_into_arena(dt, name, val);
     let gen = h2_internal::next_hpack_generation(dt);
-    dt.entries[insert_idx] = HpackHeaderField {
+    dt.entries[insert_i] = HpackHeaderField {
         name_off:    name_off,
         name_len:    name.len as u16,
         val_off:     val_off,
@@ -353,15 +358,15 @@ fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:], never_i
     };
     dt.count += 1;
     dt.used_bytes += entry_weight;
-    dt.arena_tail = dt.entries[dt.head].name_off;
+    dt.arena_tail = dt.entries[head_i].name_off;
 
     let slot = h2_internal::compute_hpack_hash_slot(name, val);
-    dt.hash_table.slots[slot] = (insert_idx as u16) + 1;
+    dt.hash_table.slots[slot] = (insert_i as u16) + 1;
     dt.hash_table.generations[slot] = gen;
 }
 
 // Fetches indexed header name and value slices directly without buffer copying.
-fn get_indexed_header_slices(dt: const DynamicTable&, idx: u64) -> const u8[:], const u8[:], bool {
+checkfree fn get_indexed_header_slices(dt: const DynamicTable&, idx: u64) -> const u8[:], const u8[:], bool {
     guard idx >= 1 else { return "", "", false; } // Index 0 is invalid (RFC 7541 Section 6.1)
 
     if idx <= rfc::HPACK_STATIC_TABLE_ENTRIES {
@@ -373,12 +378,14 @@ fn get_indexed_header_slices(dt: const DynamicTable&, idx: u64) -> const u8[:], 
     let entry, ok = h2_internal::lookup_dynamic_index(dt, idx);
     guard ok else { return "", "", false; }
 
-    let n_off = entry.name_off;
-    let n_len = entry.name_len as u32;
-    let v_off = entry.val_off;
-    let v_len = entry.val_len as u32;
+    let n_off = entry.name_off as i64;
+    let n_end = n_off + entry.name_len;
+    let v_off = entry.val_off as i64;
+    let v_end = v_off + entry.val_len;
+    guard n_off >= 0 && n_off <= n_end && n_end <= 4096 else { return "", "", false; }
+    guard v_off >= 0 && v_off <= v_end && v_end <= 4096 else { return "", "", false; }
 
-    return dt.arena[n_off..n_off + n_len], dt.arena[v_off..v_off + v_len], true;
+    return dt.arena[n_off..n_end], dt.arena[v_off..v_end], true;
 }
 
 // Fetches an indexed header from Static Table (1..61) or Dynamic Table (>= 62).
@@ -392,7 +399,7 @@ fn get_indexed_header<B1, B2>(dt: const DynamicTable&, idx: u64, out_name: B1&, 
 }
 
 // Updates dynamic table maximum size per HPACK instruction (001xxxxx).
-fn update_dynamic_table_max_size(dt: DynamicTable&, new_max: u64) -> bool {
+checkfree fn update_dynamic_table_max_size(dt: DynamicTable&, new_max: u64) -> bool {
     guard new_max <= dt.max_allowed_size else { return false; }
     dt.current_max_size = new_max;
     evict_until(dt, new_max);
@@ -421,7 +428,7 @@ struct PseudoHeaders {
     wireframe_size:     u32        = 0,
 }
 
-fn clear_pseudo_headers(p: PseudoHeaders&, keep_trailer_flag: bool = true) {
+checkfree fn clear_pseudo_headers(p: PseudoHeaders&, keep_trailer_flag: bool = true) {
     let tr = if keep_trailer_flag { p.is_trailer } else { false };
     p.method.clear();
     p.scheme.clear();
@@ -464,7 +471,7 @@ fn decode_hpack_string<B>(src: const u8[:], offset: u64, out: B&) -> u64, bool {
     guard offset < (src.len as u64) else { return offset, false; }
     let is_huff = (src[offset] & 0x80) != 0;
     let str_len, next_off, ok_len = hpack_decode_int(src, offset, 7);
-    guard ok_len else { return offset, false; }
+    guard ok_len && str_len <= (HPACK_MAX_HUFF_OUT_BYTES as u64) else { return offset, false; }
 
     guard (next_off + str_len) <= (src.len as u64) else {
         return offset, false;
@@ -492,7 +499,7 @@ fn is_valid_scheme(val: const u8[:]) -> bool {
     return true;
 }
 
-fn is_valid_authority(val: const u8[:]) -> bool {
+checkfree fn is_valid_authority(val: const u8[:]) -> bool {
     guard val.len > 0 else { return false; }
     for b in val {
         guard !h2_internal::is_forbidden_authority_byte(b) else { return false; }
@@ -500,7 +507,7 @@ fn is_valid_authority(val: const u8[:]) -> bool {
     return true;
 }
 
-fn is_valid_path(val: const u8[:]) -> bool {
+checkfree fn is_valid_path(val: const u8[:]) -> bool {
     guard val.len > 0 else { return false; }
     if val == "*" { return true; }
     guard val[0] == '/' else { return false; }

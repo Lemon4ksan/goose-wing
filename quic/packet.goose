@@ -43,11 +43,12 @@ fn encode_varint<B>(val: u64, out: B&) -> bool {
 // Example:
 //   src = [0x40, 0x25], idx = 0
 //   returns: val = 37, ok = true, idx = 2
-fn decode_varint_cursor(src: const u8[:], idx: i64&) -> u64, bool {
-    guard idx >= 0 && idx < src.len else { return 0, false; }
-    let first = src[idx];
+checkfree fn decode_varint_cursor(src: const u8[:], idx: i64&) -> u64, bool {
+    let pos = idx;
+    guard pos >= 0 && pos < src.len else { return 0, false; }
+    let first = src[pos];
     let vlen = quic_internal::quic_varint_len(first) as i64;
-    let next_idx = idx + vlen;
+    let next_idx = pos + vlen;
     guard next_idx <= src.len else { return 0, false; }
 
     if vlen == 1 {
@@ -56,16 +57,16 @@ fn decode_varint_cursor(src: const u8[:], idx: i64&) -> u64, bool {
         return val, true;
     }
     if vlen == 2 {
-        let val = quic_internal::varint_read_2(src, idx, first);
+        let val = quic_internal::varint_read_2(src, pos, first);
         idx = next_idx;
         return val, true;
     }
     if vlen == 4 {
-        let val = quic_internal::varint_read_4(src, idx, first);
+        let val = quic_internal::varint_read_4(src, pos, first);
         idx = next_idx;
         return val, true;
     }
-    let val = quic_internal::varint_read_8(src, idx, first);
+    let val = quic_internal::varint_read_8(src, pos, first);
     idx = next_idx;
     return val, true;
 }
@@ -75,7 +76,7 @@ fn decode_varint_cursor(src: const u8[:], idx: i64&) -> u64, bool {
 // Example:
 //   src = [0x40, 0x25], offset = 0
 //   returns: val = 37, next_offset = 2, ok = true
-fn decode_varint(src: const u8[:], offset: u64) -> u64, u64, bool {
+checkfree fn decode_varint(src: const u8[:], offset: u64) -> u64, u64, bool {
     guard offset < (src.len as u64) else { return 0, offset, false; }
     var idx = offset as i64;
     let val, ok = decode_varint_cursor(src, idx);
@@ -84,10 +85,10 @@ fn decode_varint(src: const u8[:], offset: u64) -> u64, u64, bool {
 }
 
 // Stream identifier classification helpers (RFC 9000 Section 2.1)
-inline fn is_client_stream(id: u64) -> bool { return (id & 0x01) == 0; }
-inline fn is_server_stream(id: u64) -> bool { return (id & 0x01) != 0; }
-inline fn is_bidi_stream(id: u64) -> bool { return (id & 0x02) == 0; }
-inline fn is_uni_stream(id: u64) -> bool { return (id & 0x02) != 0; }
+checkfree inline fn is_client_stream(id: u64) -> bool { return (id & 0x01) == 0; }
+checkfree inline fn is_server_stream(id: u64) -> bool { return (id & 0x01) != 0; }
+checkfree inline fn is_bidi_stream(id: u64) -> bool { return (id & 0x02) == 0; }
+checkfree inline fn is_uni_stream(id: u64) -> bool { return (id & 0x02) != 0; }
 
 // ---- Packet Header Parsing & Formatting (RFC 9000 Section 17) ------------
 
@@ -120,7 +121,7 @@ struct QuicHeader {
 // Example:
 //   src = [0x40, 0x01, 0x02, 0x03, 0x04, 0x05], dcid_len_short = 4
 //   returns: QuicHeader { header_type: OneRtt, dcid: [1, 2, 3, 4] }, ok = true
-fn parse_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bool {
+checkfree fn parse_header(src: const u8[:], dcid_len_short: u8 = 0) -> QuicHeader, bool {
     guard src.len > 0 else { return QuicHeader { .. }, false; }
     let first = src[0];
     if (first & 0x80) != 0 {
@@ -203,7 +204,7 @@ fn compute_hp_masks_batch(
 }
 
 // Applies header protection mask to packet header and packet number field (RFC 9001 Section 5.4.1).
-fn apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: const u8[5]&) {
+checkfree fn apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: const u8[5]&) {
     guard pkt.len > 0 && pn_len >= 1 && pn_len <= 4 else { return; }
     let pn_end = (pn_offset as u64) + pn_len;
     guard pn_end <= (pkt.len as u64) else { return; }
@@ -215,7 +216,7 @@ fn apply_header_protection(pkt: u8[:], pn_offset: u32, pn_len: u8, hp_mask: cons
 }
 
 // Removes header protection mask in-place, returning true packet number length and truncated PN.
-fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -> u8, u64 {
+checkfree fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -> u8, u64 {
     guard pkt.len > 0 else { return 0, 0; }
     let is_long = (pkt[0] & 0x80) != 0;
     quic_internal::toggle_first_byte_protection(pkt, is_long, hp_mask[0]);
@@ -241,7 +242,7 @@ fn remove_header_protection(pkt: u8[:], pn_offset: u32, hp_mask: const u8[5]&) -
 // Example:
 //   largest_acked_pn = 100, truncated_pn = 101, pn_len = 1
 //   returns: 101, ok = true
-fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64, bool {
+checkfree fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64, bool {
     guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn, false; }
     guard largest_acked_pn <= rfc::QUIC_MAX_PN else { return 0, false; }
     guard truncated_pn <= rfc::QUIC_MAX_PN else { return 0, false; }
@@ -280,7 +281,7 @@ fn decode_packet_number_checked(largest_acked_pn: u64, truncated_pn: u64, pn_len
 // Example:
 //   largest_acked_pn = 100, truncated_pn = 101, pn_len = 1
 //   returns: 101
-fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64 {
+checkfree fn decode_packet_number(largest_acked_pn: u64, truncated_pn: u64, pn_len: u8) -> u64 {
     guard pn_len >= 1 && pn_len <= 4 else { return truncated_pn; }
     let pn, _ = decode_packet_number_checked(largest_acked_pn, truncated_pn, pn_len);
     return pn;
@@ -296,14 +297,14 @@ struct PathState {
     is_validated:   bool   = false,
 }
 
-fn new_path_state(ip: const u8[16]&, port: u16, validated: bool = false) -> PathState {
+checkfree fn new_path_state(ip: const u8[16]&, port: u16, validated: bool = false) -> PathState {
     var p = PathState { remote_port: port, is_validated: validated, .. };
     for i in 16 { p.remote_ip[i] = ip[i]; }
     return p;
 }
 
 // Validates whether server can send additional bytes on path under 3x Anti-Amplification rule.
-fn can_send(path: const PathState&, packet_bytes: u64) -> bool {
+checkfree fn can_send(path: const PathState&, packet_bytes: u64) -> bool {
     if path.is_validated {
         return true;
     }
@@ -327,7 +328,7 @@ fn on_bytes_sent(path: PathState&, bytes: u64) {
     path.bytes_sent = core::add_sat_u64(path.bytes_sent, bytes);
 }
 
-fn validate(path: PathState&) {
+checkfree fn validate(path: PathState&) {
     path.is_validated = true;
 }
 
@@ -353,7 +354,7 @@ struct ReassemblyBuffer {
     arena:           SegmentedArena = SegmentedArena { .. },
 }
 
-fn new_reassembly_buffer(max_flow_limit: u64 = 1048576) -> ReassemblyBuffer {
+checkfree fn new_reassembly_buffer(max_flow_limit: u64 = 1048576) -> ReassemblyBuffer {
     return ReassemblyBuffer { max_data_limit: max_flow_limit, .. };
 }
 

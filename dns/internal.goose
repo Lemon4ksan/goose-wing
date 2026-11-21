@@ -92,6 +92,24 @@ inline fn place_entry_at_tail(cache: dns::Cache&, idx: i32, entry: const dns::Ca
     init_slot_at_tail(cache, idx);
 }
 
+// Decodes a big-endian u16 from `s` at `off` after proving 2-byte wire bounds.
+checkfree inline fn read_dns_u16(s: const u8[:], off: i64) -> u16 {
+    if off < 0 || off > s.len { return 0; }
+    let tail = s[off..];
+    if tail.len < 2 { return 0; }
+    return ((tail[0] as u16) << 8) | tail[1];
+}
+
+// Decodes a big-endian u32 from `s` at `off` after proving 4-byte wire bounds.
+checkfree inline fn read_dns_u32(s: const u8[:], off: i64) -> u32 {
+    if off < 0 || off > s.len { return 0; }
+    let tail = s[off..];
+    if tail.len < 4 { return 0; }
+    let hi = read_dns_u16(tail, 0) as u32;
+    let lo = read_dns_u16(tail[2..], 0) as u32;
+    return (hi << 16) | lo;
+}
+
 // ---- RFC 9460 HTTPS/SVCB RDATA Helpers ----------------------------------
 
 // Extracts ALPN parameter tokens into HttpsRecord (RFC 9460 Section 7.1.1).
@@ -99,7 +117,7 @@ inline fn place_entry_at_tail(cache: dns::Cache&, idx: i32, entry: const dns::Ca
 // Example:
 //   val = "\x02h2\x05h3-29"
 //   returns: ok = true, rec.alpns contains ["h2", "h3-29"]
-fn parse_alpn_param(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
+checkfree fn parse_alpn_param(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
     let saved_len = rec.alpns.len;
     var committed = false;
     defer if !committed { rec.alpns.resize(saved_len); };
@@ -109,12 +127,17 @@ fn parse_alpn_param(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
     while alpn_off < val.len {
         let slen = val[alpn_off] as i64;
         alpn_off += 1;
-        guard slen > 0 && alpn_off + slen <= val.len else { return false; }
-        let s = val[alpn_off..alpn_off + slen];
+        let end = alpn_off + slen;
+        guard slen > 0 && end <= val.len else { return false; }
+        let s = val[alpn_off..end];
         if s.len <= 32 && rec.alpns.len < rec.alpns.cap {
-            guard entry.try_set(s) && rec.alpns.try_push(entry) else { return false; }
+            entry.clear();
+            entry.append(s);
+            rec.alpns.push(entry);
+        } else {
+            // RFC 9460 Section 7.1.1: skip ALPN tokens exceeding local storage slots or 32-byte limit.
         }
-        alpn_off += slen;
+        alpn_off = end;
     }
     committed = alpn_off == val.len;
     return committed;
@@ -125,14 +148,15 @@ fn parse_alpn_param(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
 // Example:
 //   val = [192, 0, 2, 1]
 //   returns: true
-fn parse_ipv4_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
+checkfree fn parse_ipv4_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
     let saved_len = rec.ipv4_hints.len;
     var committed = false;
     defer if !committed { rec.ipv4_hints.resize(saved_len); };
     guard val.len > 0 && (val.len & 3) == 0 else { return false; }
     var ip_off: i64 = 0;
     while ip_off + 4 <= val.len {
-        guard rec.ipv4_hints.try_push(core::read_be_u32(val, ip_off)) else { return false; }
+        guard rec.ipv4_hints.len < rec.ipv4_hints.cap else { return false; }
+        rec.ipv4_hints.push(read_dns_u32(val, ip_off));
         ip_off += 4;
     }
     committed = true;
@@ -144,16 +168,17 @@ fn parse_ipv4_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
 // Example:
 //   val = [0x20, 0x01, ..., 0x01] (16 bytes)
 //   returns: true
-fn parse_ipv6_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
+checkfree fn parse_ipv6_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
     let saved_len = rec.ipv6_hints.len;
     var committed = false;
     defer if !committed { rec.ipv6_hints.resize(saved_len); };
     guard val.len > 0 && (val.len & 15) == 0 else { return false; }
     var ip_off: i64    = 0;
     var ip6:    u8[16] = [0; 16];
-    while ip_off + 16 <= val.len {
+    while ip_off <= val.len - 16 {
         for i in 16 { ip6[i] = val[ip_off + i]; }
-        guard rec.ipv6_hints.try_push(ip6) else { return false; }
+        guard rec.ipv6_hints.len < rec.ipv6_hints.cap else { return false; }
+        rec.ipv6_hints.push(ip6);
         ip_off += 16;
     }
     committed = true;
@@ -165,12 +190,12 @@ fn parse_ipv6_hints(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
 // Example:
 //   rdata = "\x00\x03\x00\x02\x01\xbb"
 //   returns: true
-fn validate_svc_params_framing(rdata: const u8[:]) -> bool {
+checkfree fn validate_svc_params_framing(rdata: const u8[:]) -> bool {
     var off:      i64 = 0;
     var last_key: i32 = -1;
     while off + 4 <= rdata.len {
-        let key = core::read_be_u16(rdata, off) as i32;
-        let val_len = core::read_be_u16(rdata, off + 2) as i64;
+        let key = read_dns_u16(rdata, off) as i32;
+        let val_len = read_dns_u16(rdata, off + 2) as i64;
         off += 4;
         // RFC 9460 Section 2.2: RDATA Wire Format - SvcParamKeys MUST be in strictly increasing numeric order
         guard key > last_key && off + val_len <= rdata.len else { return false; }
@@ -180,7 +205,7 @@ fn validate_svc_params_framing(rdata: const u8[:]) -> bool {
     return off == rdata.len;
 }
 
-inline fn reset_svc_params(rec: dns::HttpsRecord&) {
+checkfree inline fn reset_svc_params(rec: dns::HttpsRecord&) {
     rec.alpns.clear();
     rec.port = 443;
     rec.no_default_alpn = false;
@@ -190,7 +215,7 @@ inline fn reset_svc_params(rec: dns::HttpsRecord&) {
     rec.has_ech = false;
 }
 
-inline fn apply_known_svc_param(
+checkfree inline fn apply_known_svc_param(
     rec:   dns::HttpsRecord&,
     key:   u16,
     val:   const u8[:],
@@ -208,14 +233,16 @@ inline fn apply_known_svc_param(
         rec.no_default_alpn = true;
     } else if key == rfc::SVC_PARAM_PORT {
         guard val.len == 2 else { return false; }
-        rec.port = core::read_be_u16(val, 0);
+        rec.port = read_dns_u16(val, 0);
     } else if key == rfc::SVC_PARAM_IPV4HINT {
         guard rec.parse_ipv4_hints(val) else { return false; }
     } else if key == rfc::SVC_PARAM_IPV6HINT {
         guard rec.parse_ipv6_hints(val) else { return false; }
     } else if key == rfc::SVC_PARAM_ECH {
         guard val.len > 0 else { return false; }
-        if rec.ech_config_list.try_set(val) {
+        if val.len <= rec.ech_config_list.cap {
+            rec.ech_config_list.clear();
+            rec.ech_config_list.append(val);
             rec.has_ech = true;
         } else {
             flags.ech_dropped = true;
@@ -229,7 +256,7 @@ inline fn apply_known_svc_param(
 // Example:
 //   rdata = "\x00\x01\x00\x03\x02h2"
 //   returns: SvcParamStatus.Ok, ok = true, rec.alpns = ["h2"]
-fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const u8[:]) -> SvcParamStatus, bool {
+checkfree fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const u8[:]) -> SvcParamStatus, bool {
     let saved_rec = rec;
     var committed = false;
     defer if !committed { rec = saved_rec; };
@@ -243,16 +270,17 @@ fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const u8[:]) -> 
     var flags = SvcParamParseFlags { .. };
 
     while off + 4 <= rdata.len {
-        let key = core::read_be_u16(rdata, off);
-        let val_len = core::read_be_u16(rdata, off + 2) as i64;
+        let key = read_dns_u16(rdata, off);
+        let val_len = read_dns_u16(rdata, off + 2) as i64;
         off += 4;
-        guard key > last_key && off + val_len <= rdata.len else {
+        let val_start = off;
+        let val_end = val_start + val_len;
+        guard key > last_key && val_start >= 0 && val_start <= val_end && val_end <= rdata.len else {
             return SvcParamStatus.Malformed, false;
         }
         last_key = key;
-        let val_start = off;
-        let val = rdata[val_start..val_start + val_len];
-        off += val_len;
+        let val = rdata[val_start..val_end];
+        off = val_end;
 
         if key == rfc::SVC_PARAM_MANDATORY {
             let mand, ok_m = dns::parse_mandatory_svc_param(val);
@@ -264,7 +292,7 @@ fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const u8[:]) -> 
             continue;
         }
         if mand_off + 2 <= mand_end {
-            let req_key = core::read_be_u16(rdata, mand_off);
+            let req_key = read_dns_u16(rdata, mand_off);
             guard key <= req_key else { return SvcParamStatus.Malformed, false; }
             if key == req_key { mand_off += 2; }
         }
@@ -284,14 +312,14 @@ fn parse_https_svc_params_status(rec: dns::HttpsRecord&, rdata: const u8[:]) -> 
 
 // ---- DNS Wire Helpers (RFC 1035 & RFC 2181) -----------------------------
 
-inline fn strip_trailing_dot(domain: const u8[:]) -> const u8[:] {
+checkfree inline fn strip_trailing_dot(domain: const u8[:]) -> const u8[:] {
     if domain.len > 1 && domain[domain.len - 1] == '.' {
         return domain[..^1];
     }
     return domain;
 }
 
-inline fn is_valid_wire_label(label: const u8[:]) -> bool {
+checkfree inline fn is_valid_wire_label(label: const u8[:]) -> bool {
     for b in label {
         if b <= 0x20 || b >= 0x7F || b == '.' {
             return false;
@@ -300,20 +328,47 @@ inline fn is_valid_wire_label(label: const u8[:]) -> bool {
     return true;
 }
 
-inline fn append_wire_label(
+checkfree inline fn copy_dns_name_out<B>(out: B&, src: const u8[:]) -> bool {
+    guard src.len >= 0 && src.len <= out.cap else { return false; }
+    out.clear();
+    out.append(src);
+    return true;
+}
+
+checkfree inline fn copy_dns_name_out(out: u8[>..]&, src: const u8[:]) -> bool {
+    guard src.len >= 0 && src.len <= 255 else { return false; }
+    out.clear();
+    out.append(src);
+    return true;
+}
+
+checkfree inline fn dns_names_eq_fold(a: const u8[:], b: const u8[:]) -> bool {
+    guard a.len == b.len else { return false; }
+    for i in a.len {
+        let ca = if a[i] >= 'A' && a[i] <= 'Z' { a[i] | 0x20 } else { a[i] };
+        let cb = if b[i] >= 'A' && b[i] <= 'Z' { b[i] | 0x20 } else { b[i] };
+        if ca != cb { return false; }
+    }
+    return true;
+}
+
+checkfree inline fn append_wire_label(
     raw:         const u8[:],
     current_off: i64&,
     max_off:     i64,
     scratch:     u8[..255]&,
 ) -> bool {
-    let b = raw[current_off];
+    let cur = current_off;
+    guard cur >= 0 && max_off <= raw.len && cur < max_off else { return false; }
+    let b = raw[cur];
     // RFC 1035 Section 2.3.4: Size limits - high 2 bits MUST be 00 and label length <= 63 octets
     guard (b & 0xC0) == 0 && b > 0 && b <= 63 else { return false; }
 
     let label_len = b as i64;
-    let start_off = current_off + 1;
-    guard start_off + label_len <= max_off else { return false; }
-    let label_bytes = raw[start_off..start_off + label_len];
+    let start_off = cur + 1;
+    let end_off = start_off + label_len;
+    guard start_off >= 0 && start_off <= end_off && end_off <= max_off else { return false; }
+    let label_bytes = raw[start_off..end_off];
     guard is_valid_wire_label(label_bytes) else { return false; }
 
     if scratch.len > 0 {
@@ -323,7 +378,7 @@ inline fn append_wire_label(
         guard label_len <= 253 else { return false; }
     }
     scratch.append(label_bytes);
-    current_off = start_off + label_len;
+    current_off = end_off;
     return true;
 }
 
@@ -355,13 +410,13 @@ fn encode_clean_name<B>(clean: const u8[:], out: B&) -> bool {
 // Example:
 //   raw = "\x07example\x03com\x00", idx = 0, max_off = 13
 //   returns: true, idx = 13, out = "example.com"
-fn decode_uncompressed_name<B>(raw: const u8[:], idx: i64&, max_off: i64, out: B&) -> bool {
+checkfree fn decode_uncompressed_name<B>(raw: const u8[:], idx: i64&, max_off: i64, out: B&) -> bool {
     guard idx >= 0 && max_off <= raw.len && idx < max_off else { return false; }
     var current_off = idx;
     var scratch: u8[..255] = [];
-    while current_off < max_off {
+    while current_off >= 0 && current_off < max_off {
         if raw[current_off] == 0 {
-            guard out.try_set(scratch[..]) else { return false; }
+            guard copy_dns_name_out(out, scratch[..]) else { return false; }
             idx = current_off + 1;
             return true;
         }
@@ -394,7 +449,7 @@ fn serialize_question<B>(clean: const u8[:], qtype: u16, qclass: u16, out: B&) -
     return true;
 }
 
-inline fn apply_https_svc_params_tail(
+checkfree inline fn apply_https_svc_params_tail(
     rec:        dns::HttpsRecord&,
     svc_params: const u8[:],
     keep_rec:   bool&,
@@ -418,37 +473,53 @@ inline fn apply_https_svc_params_tail(
 // Example:
 //   raw = "...", rtype = 1, rdlength = 4, rdata_start = 12
 //   returns: true, resp.a_records contains IPv4 address
-fn parse_answer_record(
+checkfree fn parse_answer_record(
     resp:        dns::Response&,
     raw:         const u8[:],
     rtype:       u16,
     rdlength:    i64,
     rdata_start: i64,
 ) -> bool {
-    let rdata = raw[rdata_start..rdata_start + rdlength];
+    let rdata_end = rdata_start + rdlength;
+    guard rdata_start >= 0 && rdlength >= 0 && rdata_start <= rdata_end && rdata_end <= raw.len else {
+        return false;
+    }
+    let rdata = raw[rdata_start..rdata_end];
     if rtype == rfc::DNS_QTYPE_A {
-        guard rdlength == 4 else { return false; }
-        let _ = resp.a_records.try_push(core::read_be_u32(rdata, 0));
+        guard rdata.len == 4 else { return false; }
+        let ip4 = read_dns_u32(rdata, 0);
+        if resp.a_records.len < resp.a_records.cap {
+            resp.a_records.push(ip4);
+        } else {
+            // Bounded to 8 A records per response; extra records are validated and ignored.
+        }
     } else if rtype == rfc::DNS_QTYPE_AAAA {
-        guard rdlength == 16 else { return false; }
+        guard rdata.len == 16 else { return false; }
         var ip6: u8[16] = [0; 16];
         for i in 16 { ip6[i] = rdata[i]; }
-        let _ = resp.aaaa_records.try_push(ip6);
+        if resp.aaaa_records.len < resp.aaaa_records.cap {
+            resp.aaaa_records.push(ip6);
+        } else {
+            // Bounded to 8 AAAA records per response; extra records are validated and ignored.
+        }
     } else if rtype == rfc::DNS_QTYPE_HTTPS {
-        guard rdlength >= 3 else { return false; }
-        var rec = dns::HttpsRecord { priority: core::read_be_u16(rdata, 0), .. };
+        guard rdata.len >= 3 else { return false; }
+        var rec = dns::HttpsRecord { priority: read_dns_u16(rdata, 0), .. };
         var target_off = rdata_start + 2;
-        let rdata_end = rdata_start + rdlength;
         guard decode_uncompressed_name(raw, target_off, rdata_end, rec.target_name) else {
             return false;
         }
-        guard target_off <= rdata_end else { return false; }
+        guard target_off >= 0 && target_off <= rdata_end else { return false; }
         var keep_rec = true;
         guard rec.apply_https_svc_params_tail(raw[target_off..rdata_end], keep_rec) else {
             return false;
         }
         if keep_rec {
-            let _ = resp.https_records.try_push(rec);
+            if resp.https_records.len < resp.https_records.cap {
+                resp.https_records.push(rec);
+            } else {
+                // Bounded to 4 HTTPS records per response; extra records are validated and ignored.
+            }
         }
     }
     return true;
@@ -460,7 +531,7 @@ fn parse_answer_record(
 // Example:
 //   raw = "\x07example\x03com\x00\x00\x01\x00\x01", idx = 0, count = 1
 //   returns: true, idx = 17
-fn skip_questions(raw: const u8[:], idx: i64&, count: u16) -> bool {
+checkfree fn skip_questions(raw: const u8[:], idx: i64&, count: u16) -> bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -480,7 +551,7 @@ fn skip_questions(raw: const u8[:], idx: i64&, count: u16) -> bool {
 // Example:
 //   raw = "\x07example\x03com\x00\x00\x01\x00\x01", idx = 0, count = 1
 //   returns: "example.com", true (idx = 17)
-fn parse_questions(raw: const u8[:], idx: i64&, count: u16) -> u8[..255], bool {
+checkfree fn parse_questions(raw: const u8[:], idx: i64&, count: u16) -> u8[..255], bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -488,11 +559,12 @@ fn parse_questions(raw: const u8[:], idx: i64&, count: u16) -> u8[..255], bool {
     var qname:       u8[..255] = [];
     for q in count {
         guard dns::decode_name(raw, idx, qname) else { return [], false; }
-        guard idx + 4 <= raw.len else { return [], false; }
-        let qclass = core::read_be_u16(raw, core::add_sat_i64(idx, 2));
+        let pos = idx;
+        guard pos >= 0 && pos <= raw.len && pos + 4 <= raw.len else { return [], false; }
+        let qclass = read_dns_u16(raw[pos..], 2);
         guard qclass == rfc::DNS_QCLASS_IN else { return [], false; }
         if q == 0 {
-            guard first_qname.try_set(qname[..]) else { return [], false; }
+            guard copy_dns_name_out(first_qname, qname[..]) else { return [], false; }
         }
         idx += 4;
     }
@@ -506,7 +578,7 @@ fn parse_questions(raw: const u8[:], idx: i64&, count: u16) -> u8[..255], bool {
 // Example:
 //   raw = "\x00\x00\x29\x10\x00\x00\x00\x00\x00\x00\x00", idx = 0, count = 1
 //   returns: true, idx = 11
-fn skip_records(raw: const u8[:], idx: i64&, count: u32) -> bool {
+checkfree fn skip_records(raw: const u8[:], idx: i64&, count: u32) -> bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -514,7 +586,7 @@ fn skip_records(raw: const u8[:], idx: i64&, count: u32) -> bool {
     for _ in count {
         guard dns::decode_name(raw, idx, rname) else { return false; }
         guard idx + 10 <= raw.len else { return false; }
-        let rdlength = core::read_be_u16(raw, idx + 8) as i64;
+        let rdlength = read_dns_u16(raw, idx + 8) as i64;
         idx += 10;
         guard idx + rdlength <= raw.len else { return false; }
         idx += rdlength;
@@ -523,7 +595,7 @@ fn skip_records(raw: const u8[:], idx: i64&, count: u32) -> bool {
     return true;
 }
 
-inline fn prune_service_mode_when_alias_present(records: dns::HttpsRecord[..4]&) {
+checkfree inline fn prune_service_mode_when_alias_present(records: dns::HttpsRecord[..4]&) {
     var has_alias = false;
     for &rec in records {
         if rec.priority == 0 {
@@ -534,9 +606,11 @@ inline fn prune_service_mode_when_alias_present(records: dns::HttpsRecord[..4]&)
     guard has_alias else { return; }
     // RFC 9460 Section 2.4.1: SvcPriority - ServiceMode RRs MUST be ignored if AliasMode RR is present
     var write_idx: i64 = 0;
-    for read_idx in records.len {
+    let total = records.len;
+    for read_idx in total {
+        guard read_idx < records.len else { break; }
         if records[read_idx].priority == 0 {
-            if write_idx != read_idx {
+            if write_idx != read_idx && write_idx < records.len {
                 records[write_idx] = records[read_idx];
             }
             write_idx += 1;
@@ -550,7 +624,7 @@ inline fn prune_service_mode_when_alias_present(records: dns::HttpsRecord[..4]&)
 // Example:
 //   raw = "\x03www\x07example\x03com\x00", rdata_off = 0, rdlength = 17
 //   returns: true, target = "www.example.com"
-inline fn decode_cname_rdata_target(
+checkfree inline fn decode_cname_rdata_target(
     raw:       const u8[:],
     rdata_off: i64,
     rdlength:  i64,
@@ -567,7 +641,7 @@ inline fn decode_cname_rdata_target(
 // Example:
 //   raw = dns_response_wire, idx = 12, resp = dns::Response { answer_count: 1 }
 //   returns: true, idx advanced past answer section
-fn parse_answers(
+checkfree fn parse_answers(
     resp:           dns::Response&,
     raw:            const u8[:],
     idx:            i64&,
@@ -576,7 +650,7 @@ fn parse_answers(
     var expected_owner: u8[..255] = [];
     let check_owner = resp.question_count > 0 && expected_qname.len > 0;
     if check_owner {
-        guard expected_owner.try_set(expected_qname) else { return false; }
+        guard copy_dns_name_out(expected_owner, expected_qname) else { return false; }
     }
 
     let saved_idx = idx;
@@ -590,14 +664,14 @@ fn parse_answers(
         guard dns::decode_name(raw, idx, aname) else { return false; }
         guard idx + 10 <= raw.len else { return false; }
 
-        let rtype = core::read_be_u16(raw, idx);
-        let rclass = core::read_be_u16(raw, idx + 2);
-        let raw_ttl = core::read_be_u32(raw, idx + 4);
-        let rdlength = core::read_be_u16(raw, idx + 8) as i64;
+        let rtype = read_dns_u16(raw, idx);
+        let rclass = read_dns_u16(raw, idx + 2);
+        let raw_ttl = read_dns_u32(raw, idx + 4);
+        let rdlength = read_dns_u16(raw, idx + 8) as i64;
         idx += 10;
         guard idx + rdlength <= raw.len else { return false; }
 
-        let owner_ok = !check_owner || aname[..].eq_ascii_fold(expected_owner[..]);
+        let owner_ok = !check_owner || dns_names_eq_fold(aname[..], expected_owner[..]);
         if rclass != rfc::DNS_QCLASS_IN || !owner_ok {
             idx += rdlength;
             continue;

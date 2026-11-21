@@ -11,6 +11,7 @@ import http.headers;
 import http.headers.lexical;
 import http.headers.chunked;
 import http.headers.perfect_hash;
+import http.headers.internal;
 import http.request;
 import http.response;
 import wire.h1;
@@ -35,11 +36,12 @@ fn append_te_header_value<B>(te_buf: B&, val: const u8[:]) -> bool {
 // Example:
 //   s = "/index.html HTTP/1.1", start = 0
 //   returns: 11
-fn swar_find_space(s: const u8[:], start: i64) -> i64 {
+checkfree fn swar_find_space(s: const u8[:], start: i64) -> i64 {
     var i: i64 = start;
+    if i < 0 { return -1; }
     let limit = s.len - 8;
     while i <= limit {
-        let w = core::read_le_u64(s, i);
+        let w = http_internal::h1_read_le_u64(s[i..]);
         let x = w ^ 0x2020202020202020;
         let zero_match = (x - 0x0101010101010101) & (~x) & 0x8080808080808080;
         if zero_match != 0 {
@@ -55,7 +57,7 @@ fn swar_find_space(s: const u8[:], start: i64) -> i64 {
 }
 
 // RFC 9112 Section 3.2: Request Target - visible ASCII excluding '#' fragment delimiter
-fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
+checkfree fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
     for b in path_slice {
         guard b >= 0x21 && b <= 0x7E && b != '#' else { return false; }
     }
@@ -69,7 +71,7 @@ fn validate_request_target_chars(path_slice: const u8[:]) -> bool {
 // Example:
 //   w0 = 0x20544547 ("GET ")
 //   returns: 3, "GET"
-inline fn match_swar_method(w0: u64) -> i64, const u8[:] {
+checkfree inline fn match_swar_method(w0: u64) -> i64, const u8[:] {
     let w0_32 = (w0 & 0xFFFFFFFF) as u32;
     if w0_32 == rfc::METHOD_GET_U32 {
         return 3, "GET";
@@ -126,7 +128,7 @@ inline fn validate_connect_authority(target: const u8[:]) -> bool {
 }
 
 // RFC 3986 Section 3.2.2: Host - reg-name characters and valid pct-encoded triplets
-fn validate_host_header_chars(host_val: const u8[:]) -> bool {
+checkfree fn validate_host_header_chars(host_val: const u8[:]) -> bool {
     for i in host_val.len {
         let b = host_val[i];
         guard b > 0x20 && b < 0x7F else { return false; }
@@ -138,8 +140,8 @@ fn validate_host_header_chars(host_val: const u8[:]) -> bool {
         if b == '%' {
             let rem = host_val[i..];
             guard rem.len >= 3
-                && core::is_ascii_hexdigit(rem[1])
-                && core::is_ascii_hexdigit(rem[2]) else {
+                && http_internal::is_hex_char(rem[1])
+                && http_internal::is_hex_char(rem[2]) else {
                 return false;
             }
         }
@@ -147,13 +149,13 @@ fn validate_host_header_chars(host_val: const u8[:]) -> bool {
     return true;
 }
 
-inline fn trim_header_value_bounds(slice: const u8[:]) -> i64, i64 {
+checkfree inline fn trim_header_value_bounds(slice: const u8[:]) -> i64, i64 {
     var start: i64 = 0;
-    while start < slice.len && (slice[start] == ' ' || slice[start] == '\t') {
+    while start >= 0 && start < slice.len && (slice[start] == ' ' || slice[start] == '\t') {
         start++;
     }
     var end_pos: i64 = slice.len;
-    while end_pos > start && (slice[end_pos - 1] == ' ' || slice[end_pos - 1] == '\t') {
+    while end_pos > start && end_pos <= slice.len && (slice[end_pos - 1] == ' ' || slice[end_pos - 1] == '\t') {
         end_pos--;
     }
     return start, end_pos;
@@ -201,12 +203,12 @@ fn validate_span_te_header(
     return validate_decodeable_chunked_te(te_val);
 }
 
-inline fn clear_request_headers_state<Req>(req: Req&) {
+checkfree inline fn clear_request_headers_state<Req>(req: Req&) {
     req.headers.clear();
     req.presence_mask = 0;
 }
 
-inline fn has_smuggling_conflict(mask: u32) -> bool {
+checkfree inline fn has_smuggling_conflict(mask: u32) -> bool {
     let both = http::HDR_PRESENCE_TRANSFER_ENCODING | http::HDR_PRESENCE_CONTENT_LENGTH;
     return (mask & both) == both;
 }
@@ -260,7 +262,7 @@ inline fn store_parsed_header_item<Req>(
     return http::append_header(out_req.headers, hname, hval);
 }
 
-inline fn advance_header_cursor(
+checkfree inline fn advance_header_cursor(
     cursor:   i64&,
     name_len: i64,
     val_len:  i64,
@@ -315,11 +317,11 @@ fn parse_http1_wire_header_line<Req>(
     return true;
 }
 
-inline fn verify_headers_terminator_consumed(cursor: i64, total_len: i64) -> bool {
+checkfree inline fn verify_headers_terminator_consumed(cursor: i64, total_len: i64) -> bool {
     return cursor + 2 == total_len;
 }
 
-inline fn is_headers_cache_already_loaded<Req>(out_req: const Req&) -> bool {
+checkfree inline fn is_headers_cache_already_loaded<Req>(out_req: const Req&) -> bool {
     guard out_req.headers.valid
         && out_req.headers.entries.len == server::g_h1_parse_cache.entries.len
         && out_req.headers.raw_buf.len == server::g_h1_parse_cache.raw_buf.len
@@ -601,7 +603,7 @@ inline fn purge_conflicting_cl_from_response<Res>(out_res: Res&) {
 // Example:
 //   status_line = "HTTP/1.1 200 OK"
 //   returns: true, out_res.status_code = 200
-fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) -> bool {
+checkfree fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) -> bool {
     guard status_line.len >= 12 &&
           status_line[..7] == "HTTP/1." &&
           (status_line[7] == '0' || status_line[7] == '1') &&
@@ -624,11 +626,13 @@ fn parse_http1_wire_status_line<Res>(status_line: const u8[:], out_res: Res&) ->
     let c1 = status_line[10] - '0';
     let c2 = status_line[11] - '0';
     out_res.status_code = c0 as i32 * 100 + c1 as i32 * 10 + c2;
-    let _ = out_res.protocol.try_set(status_line[..8]);
+    out_res.protocol.clear();
+    guard out_res.protocol.cap >= 8 else { return false; }
+    out_res.protocol.append(status_line[..8]);
     return true;
 }
 
-inline fn clear_parsed_wire_response<Res>(out_res: Res&) {
+checkfree inline fn clear_parsed_wire_response<Res>(out_res: Res&) {
     out_res.status_code = 0;
     out_res.protocol.clear();
     out_res.headers.clear();

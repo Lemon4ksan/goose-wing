@@ -27,7 +27,7 @@ const H3_SETTINGS_H3_DATAGRAM: u64 = rfc::H3_SETTING_H3_DATAGRAM; // RFC 9297 §
 // Example:
 //   src = [0x00, 0x05], offset = 0
 //   returns: FrameHeader { frame_type: 0, payload_len: 5, header_len: 2 }, true
-fn parse_frame_header(src: const u8[:], offset: u64) -> FrameHeader, bool {
+checkfree fn parse_frame_header(src: const u8[:], offset: u64) -> FrameHeader, bool {
     let ftype, off1, ok1 = quic::decode_varint(src, offset);
     guard ok1 else { return FrameHeader { .. }, false; }
 
@@ -187,7 +187,7 @@ fn encode_goaway_frame<B>(out: B&, stream_id: u64) -> bool {
 // Example:
 //   payload = [0x04]
 //   returns: stream_id = 4, true
-fn parse_goaway_frame(payload: const u8[:]) -> u64, bool {
+checkfree fn parse_goaway_frame(payload: const u8[:]) -> u64, bool {
     let stream_id, off, ok = quic::decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
     return stream_id, true;
@@ -207,7 +207,7 @@ fn encode_cancel_push<B>(out: B&, push_id: u64) -> bool {
 // Example:
 //   payload = [0x02]
 //   returns: push_id = 2, true
-fn parse_cancel_push(payload: const u8[:]) -> u64, bool {
+checkfree fn parse_cancel_push(payload: const u8[:]) -> u64, bool {
     let push_id, off, ok = quic::decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
     return push_id, true;
@@ -227,7 +227,7 @@ fn encode_max_push_id<B>(out: B&, push_id: u64) -> bool {
 // Example:
 //   payload = [0x08]
 //   returns: push_id = 8, true
-fn parse_max_push_id(payload: const u8[:]) -> u64, bool {
+checkfree fn parse_max_push_id(payload: const u8[:]) -> u64, bool {
     let push_id, off, ok = quic::decode_varint(payload, 0);
     guard ok && off == (payload.len as u64) else { return 0, false; }
     return push_id, true;

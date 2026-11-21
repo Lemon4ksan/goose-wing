@@ -14,11 +14,12 @@ import .types;
 // ---- Static Table Lookup (RFC 9204 Appendix A) -----------------------------
 
 // Returns static table entry at 0-based index (0..98).
-fn get_qpack_static_field(idx: u64) -> QpackStaticEntry, bool {
-    guard idx < rfc::QPACK_STATIC_TABLE_SIZE else {
+checkfree fn get_qpack_static_field(idx: u64) -> QpackStaticEntry, bool {
+    let idx_i = idx as i64;
+    guard idx < rfc::QPACK_STATIC_TABLE_SIZE && idx_i >= 0 && idx_i < 99 else {
         return QpackStaticEntry { .. }, false;
     }
-    let row = h3_internal::QPACK_STATIC_TABLE[idx as i64];
+    let row = h3_internal::QPACK_STATIC_TABLE[idx_i];
     return QpackStaticEntry { name: row.name, val: row.val }, true;
 }
 
@@ -55,38 +56,39 @@ fn find_qpack_static_field(name: const u8[:], val: const u8[:]) -> u64, bool {
 // Example:
 //   src = [0x0A], offset = 0, prefix_bits = 5
 //   returns: 10, 1, true
-fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64, bool {
-    guard offset < (src.len as u64) else { return 0, offset, false; }
+checkfree fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64, bool {
+    let off_i = offset as i64;
+    guard off_i >= 0 && off_i < src.len else { return 0, offset, false; }
     guard prefix_bits >= 1 && prefix_bits <= 8 else { return 0, offset, false; }
 
     let mask = (((1 as u32) << prefix_bits) - 1) as u8;
-    var val = (src[offset] & mask) as u64;
-    var idx = offset + 1;
+    var val = (src[off_i] & mask) as u64;
+    var idx = off_i + 1;
 
     if val < mask {
-        return val, idx, true;
+        return val, idx as u64, true;
     }
 
     // Multibyte continuation (RFC 7541 Section 5.1 & RFC 9204 Section 4.1.1)
     var shift: u32 = 0;
-    while idx < (src.len as u64) {
+    while idx >= 0 && idx < src.len {
         let b = src[idx];
         let payload = (b & 0x7F) as u64;
 
         // Up to 62 bits: maximum shift is 56
         if shift > 56 || (shift == 56 && (payload > 0x3F || (b & 0x80) != 0)) {
-            return 0, idx, false; // Exceeds 62 bits: RFC 9204 §4.1.1 overflow
+            return 0, idx as u64, false; // Exceeds 62 bits: RFC 9204 §4.1.1 overflow
         }
 
         let term = payload << shift;
         if (rfc::QUIC_VARINT_MAX - val) < term {
-            return 0, idx, false; // Overflow beyond 2^62 - 1
+            return 0, idx as u64, false; // Overflow beyond 2^62 - 1
         }
         val += term;
-        idx++;
+        idx += 1;
 
         if (b & 0x80) == 0 {
-            return val, idx, true;
+            return val, idx as u64, true;
         }
         shift += 7;
     }
@@ -99,7 +101,7 @@ fn qpack_decode_int(src: const u8[:], offset: u64, prefix_bits: u8) -> u64, u64,
 // Example:
 //   enc_ric = 0, total_inserts = 0, max_cap = 4096
 //   returns: 0, QpackError.None
-fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError {
+checkfree fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError {
     if enc_ric == 0 {
         return 0, QpackError.None;
     }
@@ -131,7 +133,7 @@ fn decode_ric(enc_ric: u64, total_inserts: u64, max_cap: u64) -> u64, QpackError
 }
 
 // Encodes Required Insert Count per RFC 9204 Section 4.5.1.1.
-fn encode_ric(ric: u64, max_cap: u64) -> u64 {
+checkfree fn encode_ric(ric: u64, max_cap: u64) -> u64 {
     if ric == 0 {
         return 0;
     }
@@ -150,7 +152,7 @@ fn encode_ric(ric: u64, max_cap: u64) -> u64 {
 // Example:
 //   sign_bit = 0, delta_base = 0, ric = 0
 //   returns: 0, QpackError.None
-fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
+checkfree fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
     guard sign_bit == 0 || sign_bit == 1 else {
         return 0, QpackError.DecompressionFailed;
     }
@@ -180,7 +182,7 @@ fn decode_base(sign_bit: u8, delta_base: u64, ric: u64) -> u64, QpackError {
 }
 
 // Encodes Base index relative to RIC into sign bit and DeltaBase.
-fn encode_base(base: u64, ric: u64) -> u8, u64 {
+checkfree fn encode_base(base: u64, ric: u64) -> u8, u64 {
     if ric == 0 {
         return 0, 0;
     }
@@ -217,7 +219,7 @@ fn decode_qpack_string<B>(src: const u8[:], offset: u64, prefix_bits: u8, out: B
 
 // ---- Field Syntax Validation & Dynamic Table Zero-Copy Lookup --------------
 
-fn validate_qpack_field_val(val: const u8[:]) -> bool {
+checkfree fn validate_qpack_field_val(val: const u8[:]) -> bool {
     for b in val {
         if (b < 0x20 && b != '\t') || b == 0x7F {
             return false;
@@ -248,14 +250,15 @@ fn validate_qpack_field_name(name: const u8[:]) -> bool {
 }
 
 // Looks up an entry by absolute index in dynamic table, returning zero-copy slices into `tbl.arena`.
-fn qpack_lookup_absolute(tbl: const QpackTable&, abs_idx: u64) -> const u8[:], const u8[:], bool {
+checkfree fn qpack_lookup_absolute(tbl: const QpackTable&, abs_idx: u64) -> const u8[:], const u8[:], bool {
     for &e in tbl.entries {
         if e.abs_index == abs_idx {
             let n_start = e.name_off as i64;
             let n_end = n_start + e.name_len;
             let v_start = e.val_off as i64;
             let v_end = v_start + e.val_len;
-            guard n_end <= 16384 && v_end <= 16384 else { return "", "", false; }
+            guard n_start >= 0 && n_start <= n_end && n_end <= 16384 else { return "", "", false; }
+            guard v_start >= 0 && v_start <= v_end && v_end <= 16384 else { return "", "", false; }
             return tbl.arena[n_start..n_end], tbl.arena[v_start..v_end], true;
         }
     }
@@ -267,6 +270,7 @@ inline fn try_push_header_field<F>(out_fields: F&, field: const HeaderField&) ->
 }
 
 inline fn try_push_header_field(out_fields: HeaderField[>..]&, field: const HeaderField&) -> bool {
+    guard out_fields.len < 128 else { return false; }
     out_fields.push(field);
     return true;
 }

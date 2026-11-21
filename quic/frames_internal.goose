@@ -12,7 +12,7 @@ import .frames;
 // ---- Helper Invariant Checkers (RFC 9000 Range Validation) ---------------
 
 // Validates that offset and length are valid 62-bit VarInts and sum <= 2^62 - 1.
-inline fn quic_valid_offset_len(offset: u64, len: u64) -> bool {
+checkfree inline fn quic_valid_offset_len(offset: u64, len: u64) -> bool {
     if offset > rfc::QUIC_VARINT_MAX { return false; }
     if len > rfc::QUIC_VARINT_MAX { return false; }
     let rem = rfc::QUIC_VARINT_MAX - offset;
@@ -24,7 +24,7 @@ inline fn quic_valid_offset_len(offset: u64, len: u64) -> bool {
 // Example:
 //   flags = QuicStreamFlags { fin: false, with_len: true, with_offset: true }
 //   returns: 0x0E (QUIC_FRAME_STREAM_BASE | LEN | OFF)
-inline fn build_stream_frame_type(flags: quic::QuicStreamFlags) -> u64 {
+checkfree inline fn build_stream_frame_type(flags: quic::QuicStreamFlags) -> u64 {
     var t: u64 = rfc::QUIC_FRAME_STREAM_BASE;
     if flags.with_offset { t = t | rfc::QUIC_STREAM_FLAG_OFF; }
     if flags.with_len { t = t | rfc::QUIC_STREAM_FLAG_LEN; }
@@ -71,7 +71,7 @@ fn encode_stream_frame_explicit<B>(
 // Example:
 //   src = [gap=0, rlen=2], idx = 0, range_cnt = 1, largest_acked = 10, first_range = 2
 //   returns: ok = true, idx = 2
-inline fn decode_ack_ranges(
+checkfree inline fn decode_ack_ranges(
     src:           const u8[:],
     idx:           i64&,
     range_cnt:     u64,
@@ -105,7 +105,7 @@ inline fn decode_ack_ranges(
 // Example:
 //   src = [ect0=0, ect1=0, ce=0], idx = 0
 //   returns: ok = true, idx = 3
-inline fn decode_ack_ecn_counts(src: const u8[:], idx: i64&) -> bool {
+checkfree inline fn decode_ack_ecn_counts(src: const u8[:], idx: i64&) -> bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -125,7 +125,7 @@ inline fn decode_ack_ecn_counts(src: const u8[:], idx: i64&) -> bool {
 // Example:
 //   src = [largest_acked=10, delay=0, range_count=0, first_range=5], idx = 0, is_ecn = false
 //   returns: QuicFrame { frame_type: Ack, offset: 10, length: 5 }, ok = true
-fn decode_ack_frame_cursor(
+checkfree fn decode_ack_frame_cursor(
     src:         const u8[:],
     idx:         i64&,
     is_ecn:      bool,
@@ -156,7 +156,12 @@ fn decode_ack_frame_cursor(
 
     let k = if is_ecn { quic::QuicFrameType.AckEcn } else { quic::QuicFrameType.Ack };
     let raw = if is_ecn { rfc::QUIC_FRAME_ACK_ECN } else { rfc::QUIC_FRAME_ACK };
-    let payload_slice = if frame_start >= 0 && frame_start <= idx { src[frame_start..idx] } else { src[..0] };
+    let end_pos = idx;
+    let payload_slice = if frame_start >= 0 && frame_start <= end_pos && end_pos <= src.len {
+        src[frame_start..end_pos]
+    } else {
+        src[..0]
+    };
     committed = true;
     return quic::QuicFrame {
         frame_type: k,
@@ -174,16 +179,18 @@ fn decode_ack_frame_cursor(
 // Example:
 //   src = [0x04, 't', 'o', 'k', 'n'], idx = 0
 //   returns: QuicFrame { frame_type: NewToken, length: 4, payload: "tokn" }, ok = true, idx = 5
-inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
+checkfree inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
     let tlen, ok_len = quic::decode_varint_cursor(src, idx);
-    guard ok_len && tlen > 0 else { return quic::QuicFrame { .. }, false; }
+    let pos = idx;
+    guard ok_len && tlen > 0 && pos >= 0 && pos <= src.len else { return quic::QuicFrame { .. }, false; }
     let ilen = tlen as i64;
-    guard ilen >= 0 && ilen <= src.len - idx else { return quic::QuicFrame { .. }, false; }
-    let token = src[idx..idx + ilen];
-    idx += ilen;
+    let tail = src[pos..];
+    guard ilen >= 0 && ilen <= tail.len else { return quic::QuicFrame { .. }, false; }
+    let token = tail[..ilen];
+    idx = pos + ilen;
     committed = true;
     return quic::QuicFrame {
         frame_type: quic::QuicFrameType.NewToken,
@@ -199,7 +206,7 @@ inline fn decode_new_token_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame
 // Example:
 //   src = [stream_id=4, error_code=0x10c, final_size=1024], idx = 0
 //   returns: QuicResetStreamFrame { stream_id: 4, error_code: 0x10c, final_size: 1024 }, ok = true
-inline fn decode_reset_stream_frame(src: const u8[:], idx: i64&) -> quic::QuicResetStreamFrame, bool {
+checkfree inline fn decode_reset_stream_frame(src: const u8[:], idx: i64&) -> quic::QuicResetStreamFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -226,7 +233,7 @@ inline fn decode_reset_stream_frame(src: const u8[:], idx: i64&) -> quic::QuicRe
 // Example:
 //   src = [stream_id=4, error_code=0x10c], idx = 0
 //   returns: QuicStopSendingFrame { stream_id: 4, error_code: 0x10c }, ok = true
-inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> quic::QuicStopSendingFrame, bool {
+checkfree inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> quic::QuicStopSendingFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -251,7 +258,7 @@ inline fn decode_stop_sending_frame(src: const u8[:], idx: i64&) -> quic::QuicSt
 //   returns: QuicCryptoFrame { offset: 0, data: "test" }, ok = true, idx = 6
 // crap:trusted
 // crap:trusted-bounds
-inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> quic::QuicCryptoFrame, bool {
+checkfree inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> quic::QuicCryptoFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -261,16 +268,18 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> quic::QuicCryptoFr
     let data_len, ok_len = quic::decode_varint_cursor(src, idx);
     guard ok_len else { return quic::QuicCryptoFrame { .. }, false; }
 
-    guard quic_valid_offset_len(offset, data_len) else {
+    let pos = idx;
+    guard quic_valid_offset_len(offset, data_len) && pos >= 0 && pos <= src.len else {
         return quic::QuicCryptoFrame { .. }, false;
     }
     let dlen = data_len as i64;
-    guard dlen >= 0 && dlen <= src.len - idx else {
+    let tail = src[pos..];
+    guard dlen >= 0 && dlen <= tail.len else {
         return quic::QuicCryptoFrame { .. }, false;
     }
 
-    let payload = src[idx..idx + dlen];
-    idx += dlen;
+    let payload = tail[..dlen];
+    idx = pos + dlen;
     committed = true;
 
     return quic::QuicCryptoFrame {
@@ -288,7 +297,7 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> quic::QuicCryptoFr
 //   returns: QuicStreamFrame { stream_id: 4, offset: 0, fin: true, data: "ok" }, ok = true, idx = 5
 //
 // crap:trusted-bounds
-fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicStreamFrame, bool {
+checkfree fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicStreamFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -320,16 +329,18 @@ fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicStr
         data_len = rem as u64;
     }
 
-    guard quic_valid_offset_len(offset, data_len) else {
+    let pos = idx;
+    guard quic_valid_offset_len(offset, data_len) && pos >= 0 && pos <= src.len else {
         return quic::QuicStreamFrame { .. }, false;
     }
     let dlen = data_len as i64;
-    guard dlen >= 0 && dlen <= src.len - idx else {
+    let tail = src[pos..];
+    guard dlen >= 0 && dlen <= tail.len else {
         return quic::QuicStreamFrame { .. }, false;
     }
 
-    let payload = src[idx..idx + dlen];
-    idx += dlen;
+    let payload = tail[..dlen];
+    idx = pos + dlen;
     committed = true;
 
     return quic::QuicStreamFrame {
@@ -346,7 +357,7 @@ fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicStr
 // Example:
 //   src = [0x50, 0x00], idx = 0 (varint 4096)
 //   returns: QuicMaxDataFrame { max_data: 4096 }, ok = true, idx = 2
-inline fn decode_max_data_frame(src: const u8[:], idx: i64&) -> quic::QuicMaxDataFrame, bool {
+checkfree inline fn decode_max_data_frame(src: const u8[:], idx: i64&) -> quic::QuicMaxDataFrame, bool {
     let saved_idx = idx;
     let max_data, ok = quic::decode_varint_cursor(src, idx);
     guard ok && max_data <= rfc::QUIC_VARINT_MAX else {
@@ -362,7 +373,7 @@ inline fn decode_max_data_frame(src: const u8[:], idx: i64&) -> quic::QuicMaxDat
 // Example:
 //   src = [0x04, 0x50, 0x00], idx = 0 (stream_id = 4, max_stream_data = 4096)
 //   returns: QuicMaxStreamDataFrame { stream_id: 4, max_stream_data: 4096 }, ok = true, idx = 3
-inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> quic::QuicMaxStreamDataFrame, bool {
+checkfree inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> quic::QuicMaxStreamDataFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -389,7 +400,7 @@ inline fn decode_max_stream_data_frame(src: const u8[:], idx: i64&) -> quic::Qui
 //   returns: QuicFrame { frame_type: NewConnectionId, stream_id: 1, offset: 0, length: 4 }, ok = true
 //
 // crap:trusted-bounds
-inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
+checkfree inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -397,13 +408,18 @@ inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> quic::QuicFra
     guard ok_seq else { return quic::QuicFrame { .. }, false; }
     let retire_prior, ok_ret = quic::decode_varint_cursor(src, idx);
     guard ok_ret && retire_prior <= seq else { return quic::QuicFrame { .. }, false; }
-    guard idx >= 0 && idx < src.len else { return quic::QuicFrame { .. }, false; }
-    let cid_len = src[idx] as i64;
-    idx += 1;
-    guard cid_len >= 1 && cid_len <= 20 else { return quic::QuicFrame { .. }, false; }
-    guard cid_len + 16 <= src.len - idx else { return quic::QuicFrame { .. }, false; }
-    let payload = src[idx..idx + cid_len + 16];
-    idx += cid_len + 16;
+    let pos = idx;
+    guard pos >= 0 && pos < src.len else { return quic::QuicFrame { .. }, false; }
+    let cid_len = src[pos] as i64;
+    let body_pos = pos + 1;
+    guard cid_len >= 1 && cid_len <= 20 && body_pos >= 0 && body_pos <= src.len else {
+        return quic::QuicFrame { .. }, false;
+    }
+    let tail = src[body_pos..];
+    let need = cid_len + 16;
+    guard need <= tail.len else { return quic::QuicFrame { .. }, false; }
+    let payload = tail[..need];
+    idx = body_pos + need;
     committed = true;
     return quic::QuicFrame {
         frame_type: quic::QuicFrameType.NewConnectionId,
@@ -421,7 +437,7 @@ inline fn decode_new_conn_id_frame(src: const u8[:], idx: i64&) -> quic::QuicFra
 // Example:
 //   src = [seq=2], idx = 0
 //   returns: QuicFrame { frame_type: RetireConnectionId, stream_id: 2 }, ok = true
-inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
+checkfree inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
     let saved_idx = idx;
     let seq, ok_seq = quic::decode_varint_cursor(src, idx);
     guard ok_seq else {
@@ -443,7 +459,7 @@ inline fn decode_retire_conn_id_frame(src: const u8[:], idx: i64&) -> quic::Quic
 //   returns: QuicFrame { frame_type: Datagram, length: 4, payload: "test" }, ok = true, idx = 5
 //
 // crap:trusted-bounds
-inline fn demux_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
+checkfree inline fn demux_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -451,9 +467,10 @@ inline fn demux_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic:
     guard ftype == rfc::QUIC_FRAME_DATAGRAM || ftype == rfc::QUIC_FRAME_DATAGRAM_LEN else {
         return quic::QuicFrame { .. }, false;
     }
-    guard idx >= 0 && idx <= src.len else { return quic::QuicFrame { .. }, false; }
+    let start_pos = idx;
+    guard start_pos >= 0 && start_pos <= src.len else { return quic::QuicFrame { .. }, false; }
     if ftype == rfc::QUIC_FRAME_DATAGRAM {
-        let payload = src[idx..src.len];
+        let payload = src[start_pos..];
         idx = src.len;
         committed = true;
         return quic::QuicFrame {
@@ -464,11 +481,13 @@ inline fn demux_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic:
         }, true;
     }
     let dlen, ok = quic::decode_varint_cursor(src, idx);
-    guard ok else { return quic::QuicFrame { .. }, false; }
+    let pos = idx;
+    guard ok && pos >= 0 && pos <= src.len else { return quic::QuicFrame { .. }, false; }
     let ilen = dlen as i64;
-    guard ilen >= 0 && ilen <= src.len - idx else { return quic::QuicFrame { .. }, false; }
-    let payload = src[idx..idx + ilen];
-    idx += ilen;
+    let tail = src[pos..];
+    guard ilen >= 0 && ilen <= tail.len else { return quic::QuicFrame { .. }, false; }
+    let payload = tail[..ilen];
+    idx = pos + ilen;
     committed = true;
     return quic::QuicFrame {
         frame_type: quic::QuicFrameType.Datagram,
@@ -486,13 +505,16 @@ inline fn demux_datagram_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic:
 //   returns: QuicPathFrame { data: [1, 2, 3, 4, 5, 6, 7, 8] }, ok = true, idx = 8
 //
 // crap:trusted-bounds
-inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> quic::QuicPathFrame, bool {
-    guard idx >= 0 && 8 <= src.len - idx else { return quic::QuicPathFrame { .. }, false; }
+checkfree inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> quic::QuicPathFrame, bool {
+    let pos = idx;
+    guard pos >= 0 && pos <= src.len else { return quic::QuicPathFrame { .. }, false; }
+    let tail = src[pos..];
+    guard tail.len >= 8 else { return quic::QuicPathFrame { .. }, false; }
     var frame = quic::QuicPathFrame { .. };
     for i in 8 {
-        frame.data[i] = src[idx + i];
+        frame.data[i] = tail[i];
     }
-    idx += 8;
+    idx = pos + 8;
     return frame, true;
 }
 
@@ -504,13 +526,16 @@ inline fn decode_path_challenge_frame(src: const u8[:], idx: i64&) -> quic::Quic
 //   returns: QuicPathFrame { data: [1, 2, 3, 4, 5, 6, 7, 8] }, ok = true, idx = 8
 //
 // crap:trusted-bounds
-inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> quic::QuicPathFrame, bool {
-    guard idx >= 0 && 8 <= src.len - idx else { return quic::QuicPathFrame { .. }, false; }
+checkfree inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> quic::QuicPathFrame, bool {
+    let pos = idx;
+    guard pos >= 0 && pos <= src.len else { return quic::QuicPathFrame { .. }, false; }
+    let tail = src[pos..];
+    guard tail.len >= 8 else { return quic::QuicPathFrame { .. }, false; }
     var frame = quic::QuicPathFrame { .. };
     for i in 8 {
-        frame.data[i] = src[idx + i];
+        frame.data[i] = tail[i];
     }
-    idx += 8;
+    idx = pos + 8;
     return frame, true;
 }
 
@@ -520,7 +545,7 @@ inline fn decode_path_response_frame(src: const u8[:], idx: i64&) -> quic::QuicP
 // Example:
 //   src = [0x01, 0x02, 0x40, 0x64, 0x03], idx = 0
 //   returns: QuicFrame { frame_type: AckFrequency, stream_id: 1, length: 2, max_data: 100, offset: 3 }, ok = true
-inline fn demux_ack_frequency_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
+checkfree inline fn demux_ack_frequency_frame(src: const u8[:], idx: i64&) -> quic::QuicFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -547,7 +572,7 @@ inline fn demux_ack_frequency_frame(src: const u8[:], idx: i64&) -> quic::QuicFr
 // Example:
 //   src = [max_data=1048576], idx = 0, ftype = 0x10
 //   returns: QuicFrame { frame_type: MaxData, max_data: 1048576 }, ok = true
-inline fn demux_flow_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
+checkfree inline fn demux_flow_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
     if ftype == rfc::QUIC_FRAME_MAX_DATA {
         let md, ok = decode_max_data_frame(src, idx);
         guard ok else { return quic::QuicFrame { .. }, false; }
@@ -572,7 +597,7 @@ inline fn demux_flow_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> qui
 // Example:
 //   src = [stream_id=4, error_code=0x10c, final_size=1024], idx = 0, ftype = 0x04
 //   returns: QuicFrame { frame_type: ResetStream, stream_id: 4, final_size: 1024 }, ok = true
-inline fn demux_stream_control_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
+checkfree inline fn demux_stream_control_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
     if ftype == rfc::QUIC_FRAME_RESET_STREAM {
         let rst, ok = decode_reset_stream_frame(src, idx);
         guard ok else { return quic::QuicFrame { .. }, false; }
@@ -599,7 +624,7 @@ inline fn demux_stream_control_frame(src: const u8[:], idx: i64&, ftype: u64) ->
 // Example:
 //   src = [0x00, ...], idx = 0, ftype = QUIC_FRAME_PING (0x01)
 //   returns: QuicFrame { frame_type: Ping, raw_type: 0x01 }, ok = true
-fn demux_core_frame(
+checkfree fn demux_core_frame(
     src:         const u8[:],
     idx:         i64&,
     ftype:       u64,
@@ -663,7 +688,7 @@ fn demux_core_frame(
 // Example:
 //   src = [varint(100)], idx = 0, ftype = QUIC_FRAME_MAX_STREAMS_BIDI (0x12)
 //   returns: QuicFrame { frame_type: MaxStreamsBidi, max_data: 100 }, ok = true
-fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
+checkfree fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -698,7 +723,7 @@ fn demux_streams_limit_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::Q
 // Example:
 //   src = [varint(5000)], idx = 0, ftype = QUIC_FRAME_DATA_BLOCKED (0x14)
 //   returns: QuicFrame { frame_type: DataBlocked, max_data: 5000 }, ok = true
-fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
+checkfree fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -731,7 +756,7 @@ fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFra
 //   returns: QuicFrame { frame_type: ConnectionClose, error_code: 0, payload: "bye" }, ok = true
 //
 // crap:trusted-bounds
-fn decode_connection_close_frame(
+checkfree fn decode_connection_close_frame(
     src:   const u8[:],
     idx:   i64&,
     ftype: u64,
@@ -752,11 +777,13 @@ fn decode_connection_close_frame(
         trigger_type = trg;
     }
     let rlen, ok_rlen = quic::decode_varint_cursor(src, idx);
-    guard ok_rlen else { return quic::QuicFrame { .. }, false; }
+    let pos = idx;
+    guard ok_rlen && pos >= 0 && pos <= src.len else { return quic::QuicFrame { .. }, false; }
     let ilen = rlen as i64;
-    guard ilen >= 0 && ilen <= src.len - idx else { return quic::QuicFrame { .. }, false; }
-    let reason = src[idx..idx + ilen];
-    idx += ilen;
+    let tail = src[pos..];
+    guard ilen >= 0 && ilen <= tail.len else { return quic::QuicFrame { .. }, false; }
+    let reason = tail[..ilen];
+    idx = pos + ilen;
     let k = if ftype == rfc::QUIC_FRAME_CONNECTION_CLOSE {
         quic::QuicFrameType.ConnectionClose
     } else {
@@ -778,11 +805,12 @@ fn decode_connection_close_frame(
 // Example:
 //   src = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], idx = 0, ftype = 0x1A
 //   returns: QuicFrame { length: 8 }, ok = true, idx = 8
-inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
+checkfree inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
     let cur = idx;
-    guard cur >= 0 && 8 <= src.len - cur else { return quic::QuicFrame { .. }, false; }
-    let end = cur + 8;
-    idx = end;
+    guard cur >= 0 && cur <= src.len else { return quic::QuicFrame { .. }, false; }
+    let tail = src[cur..];
+    guard tail.len >= 8 else { return quic::QuicFrame { .. }, false; }
+    idx = cur + 8;
     let k = if ftype == rfc::QUIC_FRAME_PATH_CHALLENGE {
         quic::QuicFrameType.PathChallenge
     } else {
@@ -792,7 +820,7 @@ inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::Qui
         frame_type: k,
         raw_type:   ftype,
         length:     8,
-        payload:    src[cur..end],
+        payload:    tail[..8],
     }, true;
 }
 
@@ -801,7 +829,7 @@ inline fn demux_path_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::Qui
 // Example:
 //   src = [], idx = 0, ftype = QUIC_FRAME_HANDSHAKE_DONE (0x1E)
 //   returns: QuicFrame { frame_type: HandshakeDone, raw_type: 0x1E }, ok = true
-fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
+checkfree fn demux_session_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFrame, bool {
     if ftype == rfc::QUIC_FRAME_HANDSHAKE_DONE {
         return quic::QuicFrame { frame_type: quic::QuicFrameType.HandshakeDone, raw_type: ftype }, true;
     }
@@ -1027,7 +1055,7 @@ fn encode_tp_cids_and_server<B>(
 // Example:
 //   val = [0x44, 0xB0] (varint 1200)
 //   returns: v = 1200, ok = true
-inline fn decode_tp_exact_varint(val: const u8[:]) -> u64, bool {
+checkfree inline fn decode_tp_exact_varint(val: const u8[:]) -> u64, bool {
     var v_idx: i64 = 0;
     let v, ok = quic::decode_varint_cursor(val, v_idx);
     guard ok && v_idx == val.len else { return 0, false; }
@@ -1144,7 +1172,7 @@ fn decode_tp_flow_param(id: u64, val: const u8[:], tp: quic::QuicTransportParams
 // Copies a 16-byte stateless reset token slice into `tp`.
 //
 // crap:trusted-bounds
-inline fn set_tp_stateless_reset_token(val: const u8[:], tp: quic::QuicTransportParams&) -> bool {
+checkfree inline fn set_tp_stateless_reset_token(val: const u8[:], tp: quic::QuicTransportParams&) -> bool {
     guard val.len == 16 else { return false; }
     for i in 16 {
         tp.stateless_reset_token[i] = val[i];

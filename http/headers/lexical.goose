@@ -23,7 +23,7 @@ extern fn native_swar_to_lower(slice: u8[:]) = "wing_swar_to_lower";
 
 // 64-bit SWAR parallel ASCII lowercase (Alex Hultman / uWebSockets HttpParser.h)
 // Evaluates 8 ASCII bytes in parallel, translating 'A'..'Z' to 'a'..'z' in 4 CPU cycles without branches.
-fn swar_to_lower_64(v: u64) -> u64 {
+checkfree fn swar_to_lower_64(v: u64) -> u64 {
     let ascii = v & 0x7F7F7F7F7F7F7F7F;
     let not_high = ~v & 0x8080808080808080;
     let is_upper = (ascii + 0x3F3F3F3F3F3F3F3F) & ~(ascii + 0x2525252525252525) & not_high;
@@ -37,7 +37,7 @@ fn swar_to_lower(slice: u8[:]) {
 }
 
 // Fast-path header field byte lowercasing matching uWebSockets isFieldNameByteFastLowercased
-inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
+checkfree inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
     if (b >= 'a' && b <= 'z') || b == '-' {
         return true;
     }
@@ -208,9 +208,9 @@ const HTTP_METHOD_PATC_LE:   u32 = 0x43544150; // "PATC"
 // Example:
 //   raw = "GET /index.html HTTP/1.1\r\n"
 //   returns: "GET", 4, true
-fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
+checkfree fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
     guard raw.len >= 4 else { return "", 0, false; }
-    let w = core::read_le_u32(raw, 0);
+    let w = http_internal::h1_read_le_u32(raw);
     if w == rfc::METHOD_GET_U32 || w == rfc::METHOD_PUT_U32 {
         return raw[0..3], 4, true;
     }
@@ -231,42 +231,51 @@ fn match_http_method_u32(raw: const u8[:]) -> const u8[:], i64, bool {
         return raw[0..6], 7, true;
     }
     if w == HTTP_METHOD_CONN_LE {
-        guard raw.len >= 8 && core::read_le_u32(raw, 4) == HTTP_METHOD_ECT_SP_LE else { return "", 0, false; }
+        guard raw.len >= 8 && http_internal::h1_read_le_u32(raw[4..]) == HTTP_METHOD_ECT_SP_LE else {
+            return "", 0, false;
+        }
         return raw[0..7], 8, true;
     }
     if w == HTTP_METHOD_OPTI_LE {
-        guard raw.len >= 8 && core::read_le_u32(raw, 4) == HTTP_METHOD_ONS_SP_LE else { return "", 0, false; }
+        guard raw.len >= 8 && http_internal::h1_read_le_u32(raw[4..]) == HTTP_METHOD_ONS_SP_LE else {
+            return "", 0, false;
+        }
         return raw[0..7], 8, true;
     }
     return "", 0, false;
 }
 
 // RFC 9110 Section 5.6.2: Tokens - Validates an 8-byte SWAR chunk of tchar bytes.
-inline fn is_valid_token_word_swar(src: const u8[:], i: i64) -> bool {
-    let w = core::read_le_u64(src, i);
-    guard !core::swar_has_ctl_or_del(w) && !core::swar_has_byte(w, ' ') && !core::swar_has_byte(w, ':') else {
+checkfree inline fn is_valid_token_word_swar(src: const u8[:], i: i64) -> bool {
+    guard i >= 0 && i <= src.len else { return false; }
+    let chunk = src[i..];
+    guard chunk.len >= 8 else { return false; }
+    let w = http_internal::h1_read_le_u64(chunk);
+    let sub = w - 0x2020202020202020;
+    let has_ctl = (sub & (~w) & 0x8080808080808080) != 0;
+    let xdel = w ^ 0x7F7F7F7F7F7F7F7F;
+    let has_del = ((xdel - 0x0101010101010101) & (~xdel) & 0x8080808080808080) != 0;
+    guard !has_ctl && !has_del else { return false; }
+    guard is_tchar(chunk[0]) && is_tchar(chunk[1]) && is_tchar(chunk[2]) && is_tchar(chunk[3]) else {
         return false;
     }
-    guard is_tchar(src[i]) && is_tchar(src[i + 1]) && is_tchar(src[i + 2]) && is_tchar(src[i + 3]) else {
-        return false;
-    }
-    guard is_tchar(src[i + 4]) && is_tchar(src[i + 5]) && is_tchar(src[i + 6]) && is_tchar(src[i + 7]) else {
+    guard is_tchar(chunk[4]) && is_tchar(chunk[5]) && is_tchar(chunk[6]) && is_tchar(chunk[7]) else {
         return false;
     }
     return true;
 }
 
 // RFC 9110 Section 5.6.2: Tokens - Validates an HTTP token using 8-byte SWAR chunks and TCHAR_LUT.
-fn is_valid_token_swar(src: const u8[:]) -> bool {
+checkfree fn is_valid_token_swar(src: const u8[:]) -> bool {
     guard src.len > 0 else { return false; }
     var i: i64 = 0;
-    while i + 8 <= src.len {
+    while i >= 0 && i <= src.len && i + 8 <= src.len {
         guard is_valid_token_word_swar(src, i) else { return false; }
         i += 8;
     }
-    while i < src.len {
-        guard is_tchar(src[i]) else { return false; }
-        i += 1;
+    guard i >= 0 && i <= src.len else { return false; }
+    for b in src[i..] {
+        guard is_tchar(b) else { return false; }
     }
     return true;
 }
@@ -276,42 +285,40 @@ fn is_valid_token_swar(src: const u8[:]) -> bool {
 // Example:
 //   src = "Content-Length: 42\r\n"
 //   returns: 14, true
-fn scan_token_swar(src: const u8[:]) -> i64, bool {
+checkfree fn scan_token_swar(src: const u8[:]) -> i64, bool {
     guard src.len > 0 else { return 0, false; }
     var i: i64 = 0;
-    while i + 8 <= src.len {
+    while i >= 0 && i <= src.len && i + 8 <= src.len {
         if !is_valid_token_word_swar(src, i) {
             break;
         }
         i += 8;
     }
-    while i < src.len && is_tchar(src[i]) {
+    while i >= 0 && i < src.len && is_tchar(src[i]) {
         i += 1;
     }
     guard i > 0 else { return 0, false; }
     return i, true;
 }
 
-fn is_valid_header_name(name: const u8[:]) -> bool {
+checkfree fn is_valid_header_name(name: const u8[:]) -> bool {
     guard name.len > 0 && name.len <= 8192 else { return false; }
     return is_valid_token_swar(name);
 }
 
 // RFC 9113 Section 8.2.1: Wire lowercase ASCII validation for HTTP/2 & HTTP/3 headers
-fn is_valid_header_name_h2(name: const u8[:]) -> bool {
+checkfree fn is_valid_header_name_h2(name: const u8[:]) -> bool {
     guard name.len > 0 else { return false; }
-    let is_pseudo = name[0] == ':';
-    let start_idx: i64 = if is_pseudo { 1 } else { 0 };
-    guard start_idx < name.len else { return false; }
-    for i in start_idx..name.len {
-        let b = name[i];
+    let body = if name[0] == ':' { name[1..] } else { name };
+    guard body.len > 0 else { return false; }
+    for b in body {
         if b >= 'A' && b <= 'Z' { return false; }
         guard is_tchar(b) else { return false; }
     }
     return true;
 }
 
-fn is_valid_header_value(val: const u8[:]) -> bool {
+checkfree fn is_valid_header_value(val: const u8[:]) -> bool {
     for b in val {
         guard is_valid_header_value_byte(b) else { return false; }
     }
@@ -456,10 +463,10 @@ fn validate_transfer_encoding_value(val: const u8[:]) -> bool {
 }
 
 // Fast header name hash (FNV-1a 32-bit case-folded)
-fn hash_header_name(name: const u8[:]) -> u32 {
+checkfree fn hash_header_name(name: const u8[:]) -> u32 {
     var h: u32 = core::FNV1A_32_OFFSET;
     for b in name {
-        let folded = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
+        let folded = if b >= 'A' && b <= 'Z' { b | 0x20 } else { b };
         h = (h ^ folded) * core::FNV1A_32_PRIME;
     }
     return h;
@@ -467,21 +474,24 @@ fn hash_header_name(name: const u8[:]) -> u32 {
 
 // ---- wire parser lexical helpers -------------------------------------------
 
-fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
+checkfree fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
     cursor = line_end;
-    let buf_len = buf.len;
-    if cursor == buf_len {
+    guard line_end >= 0 && line_end <= buf.len else {
+        return false;
+    }
+    let rem = buf[line_end..];
+    if rem.len == 0 {
         return true;
     }
-    if cursor < buf_len && buf[cursor] == '\r' {
-        guard cursor + 1 < buf_len && buf[cursor + 1] == '\n' else {
+    if rem[0] == '\r' {
+        guard rem.len >= 2 && rem[1] == '\n' else {
             return false;
         }
-        cursor += 2;
+        cursor = line_end + 2;
         return true;
     }
-    if cursor < buf_len && buf[cursor] == '\n' {
-        cursor++;
+    if rem[0] == '\n' {
+        cursor = line_end + 1;
         return true;
     }
     return false;
@@ -520,19 +530,24 @@ fn scan_header_field_name_swar(src: const u8[:]) -> i64, bool {
 // Example:
 //   src = "example.com\r\nNext: val"
 //   returns: 11, 2, ok = true
-fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
+checkfree fn scan_header_field_value_swar(src: const u8[:]) -> i64, i64, bool {
     var i: i64 = 0;
-    while i + 8 <= src.len {
-        let w = core::read_le_u64(src, i);
-        if core::swar_has_ctl_or_del(w) || core::swar_has_byte(w, '\r') || core::swar_has_byte(w, '\n') {
+    while i >= 0 && i <= src.len && i + 8 <= src.len {
+        let w = http_internal::h1_read_le_u64(src[i..]);
+        let sub = w - 0x2020202020202020;
+        let has_ctl = (sub & (~w) & 0x8080808080808080) != 0;
+        let xdel = w ^ 0x7F7F7F7F7F7F7F7F;
+        let has_del = ((xdel - 0x0101010101010101) & (~xdel) & 0x8080808080808080) != 0;
+        if has_ctl || has_del {
             break;
         }
         i += 8;
     }
-    while i < src.len {
+    while i >= 0 && i < src.len {
         let b = src[i];
         if b == '\r' {
-            guard i + 1 < src.len && src[i + 1] == '\n' else { return 0, 0, false; }
+            let tail = src[i..];
+            guard tail.len >= 2 && tail[1] == '\n' else { return 0, 0, false; }
             return i, 2, true;
         }
         if b == '\n' {

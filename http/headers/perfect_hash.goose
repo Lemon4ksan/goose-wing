@@ -29,7 +29,7 @@ enum KnownHeaderId {
 }
 
 // Converts a KnownHeaderId to a bit flag for 32-bit presence masks.
-inline fn header_id_to_bit(id: KnownHeaderId) -> u32 {
+checkfree inline fn header_id_to_bit(id: KnownHeaderId) -> u32 {
     return match id {
         Host => 0x0002,
         Date => 0x0004,

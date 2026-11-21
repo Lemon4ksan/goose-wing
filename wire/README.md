@@ -100,3 +100,30 @@ fn new_singleflight_service<Inner>(inner: Inner) -> SingleflightService<Inner>
 - `wire/h3.goose`: RFC 9114 and RFC 9204 HTTP/3 and QPACK `HeaderMap` codecs
   (`encode_h3_headers_from_map`, `decode_h3_headers_to_map`,
   `encode_h3_data_frame`).
+
+### 5. Ingress RAM budget ceilings (`wire/budget.goose`)
+
+```goose
+enum IngressProtocol { Http1, Http2, Http3Quic, Tls13, Dns }
+struct IngressRamBudget {
+    protocol: IngressProtocol, per_connection_bytes: u64,
+    per_request_bytes: u64, max_frame_or_record_len: u64,
+    max_header_block_bytes: u64, max_payload_bytes: u64,
+    max_concurrent_streams: u32
+}
+checkfree fn h1_connection_ram_budget() -> IngressRamBudget
+checkfree fn h2_connection_ram_budget() -> IngressRamBudget
+checkfree fn h3_connection_ram_budget() -> IngressRamBudget
+checkfree fn tls_connection_ram_budget() -> IngressRamBudget
+checkfree fn dns_packet_ram_budget() -> IngressRamBudget
+checkfree fn verify_ingress_budget_bounds() -> bool
+```
+
+`wire/budget.goose` publishes compile-time per-connection and per-request RAM
+ceilings for all five untrusted wire ingress parser families (HTTP/1.1, HTTP/2
+and HPACK, QUIC and HTTP/3 and QPACK, TLS 1.3 and ASN.1, and DNS).
+`verify_ingress_budget_bounds()` asserts at runtime that every budget stays
+inside its control-plane envelope and matches the live parser capacity constants
+(`http::MAX_OVERFLOW_*`, `http::MAX_CHUNKED_BODY_BYTES`,
+`http2::HPACK_MAX_HUFF_OUT_BYTES`, `rfc::H2_DEFAULT_MAX_FRAME_SIZE`, and
+`rfc::TLS_MAX_RECORD_*`).

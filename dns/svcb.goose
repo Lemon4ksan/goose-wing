@@ -35,14 +35,14 @@ struct MandatorySvcParams {
 // Example:
 //   val = "\x00\x01"
 //   returns: MandatorySvcParams { has_unsupported: false, has_ech: false }, true
-fn parse_mandatory_svc_param(val: const u8[:]) -> MandatorySvcParams, bool {
+checkfree fn parse_mandatory_svc_param(val: const u8[:]) -> MandatorySvcParams, bool {
     // RFC 9460 Section 8: ServiceMode RR Compatibility and Mandatory Keys - ascending 2-octet keys > 0
     guard val.len > 0 && (val.len & 1) == 0 else { return MandatorySvcParams { .. }, false; }
     var res = MandatorySvcParams { .. };
     var m_off:      i64 = 0;
     var last_m_key: i32 = -1;
     while m_off + 2 <= val.len {
-        let req_key = core::read_be_u16(val, m_off);
+        let req_key = dns_internal::read_dns_u16(val, m_off);
         let rk_i32 = req_key as i32;
         guard req_key >= 1 && req_key != rfc::SVC_PARAM_NO_DEFAULT_ALPN && rk_i32 > last_m_key else {
             return MandatorySvcParams { .. }, false;
@@ -64,7 +64,7 @@ fn parse_mandatory_svc_param(val: const u8[:]) -> MandatorySvcParams, bool {
 // Example:
 //   rdata = "\x00\x01\x00\x03\x02h2"
 //   returns: true, rec.alpns = ["h2"]
-fn parse_https_svc_params(rec: HttpsRecord&, rdata: const u8[:]) -> bool {
+checkfree fn parse_https_svc_params(rec: HttpsRecord&, rdata: const u8[:]) -> bool {
     let _, ok = dns_internal::parse_https_svc_params_status(rec, rdata);
     return ok;
 }
