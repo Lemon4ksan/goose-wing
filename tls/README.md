@@ -720,7 +720,11 @@ decompressed output matches `uncompressed_length` to the byte.
 ### Pluggable TLS Backend (`tls/backend.goose`, `shim/tls_backend.c`)
 
 ```goose
-enum TlsBackendKind { PureGoose, SystemOpenSsl, SystemSchannel, Auto }
+enum TlsBackendKind {
+    PureGoose, SystemOpenSsl, SystemSchannel, SystemSecureTransport, Auto,
+}
+
+enum TlsMinVersion { Tls13, Tls12 }
 
 enum TlsBackendStatus {
     Ok, WantRead, WantWrite, Closed, Unavailable, HandshakeError, VerifyError, Error,
@@ -728,6 +732,7 @@ enum TlsBackendStatus {
 
 struct TlsBackendConfig {
     kind:                 TlsBackendKind   = TlsBackendKind.PureGoose,
+    min_version:          TlsMinVersion    = TlsMinVersion.Tls13,
     is_server:            bool             = false,
     server_name:          u8[..256]        = [],
     alpn_wire:            u8[..64]         = [],
@@ -768,21 +773,28 @@ by closed polymorphism across:
 - `PureGoose`: native Goose TLS 1.3 handshake and record layer with zero
   external dependencies and full single-seed DST determinism.
 - `SystemOpenSsl`: optional OpenSSL 3 / 1.1.1 / BoringSSL driver in
-  `shim/tls_backend.c` using memory BIOs, `TLS 1.2+` minimum version floor,
-  `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification, custom `ca_file`
-  and server `cert_pem_file` / `key_pem_file` PEM loading, and server/client
-  ALPN negotiation. Loaded dynamically via `dlopen` / `LoadLibraryA` with zero
-  compile-time OpenSSL dependency (override paths with `WING_OPENSSL_LIB` /
-  `WING_CRYPTO_LIB`, or link directly with `-DWING_TLS_LINK_OPENSSL -lssl
-  -lcrypto`).
+  `shim/tls_backend.c` using memory BIOs, configurable minimum protocol floor
+  (`TlsMinVersion.Tls13` by default, or `TlsMinVersion.Tls12` for TLS 1.2
+  fallback), `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification,
+  custom `ca_file` and server `cert_pem_file` / `key_pem_file` PEM loading, and
+  server/client ALPN negotiation. Loaded dynamically via `dlopen` /
+  `LoadLibraryA` with zero compile-time OpenSSL dependency (override paths with
+  `WING_OPENSSL_LIB` / `WING_CRYPTO_LIB`, or link directly with
+  `-DWING_TLS_LINK_OPENSSL -lssl -lcrypto`).
 - `SystemSchannel`: dynamically loaded Windows `secur32.dll` Schannel client
-  context with zero third-party DLLs.
+  context with zero third-party DLLs (`SCH_CREDENTIALS` v5 TLS 1.3-only for
+  `TlsMinVersion.Tls13`; TLS 1.2 + TLS 1.3 with v4 fallback on older Windows 10
+  for `TlsMinVersion.Tls12`).
+- `SystemSecureTransport`: dynamically loaded macOS `Security.framework` client
+  driver (`dlopen`, zero `-framework Security` link flag). Requires explicit
+  `min_version = TlsMinVersion.Tls12` (returns `Unavailable` on `Tls13` so
+  callers never silently downgrade).
 - `Auto`: selects `SystemOpenSsl` when available (Linux `libssl.so.3` /
   `libssl.so.1.1`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
   `libssl-3-x64.dll` / `libssl-3.dll`), then `SystemSchannel` on Windows client
-  endpoints, and falls back to `PureGoose` TLS 1.3 otherwise (including macOS
-  without Homebrew OpenSSL, where Apple deprecated `SecureTransport` at TLS
-  1.2).
+  endpoints, then `SystemSecureTransport` on macOS client endpoints when
+  `min_version == TlsMinVersion.Tls12`, and falls back to `PureGoose` TLS 1.3
+  otherwise.
 
 `tls_endpoint_close` is idempotent and wipes handshake and traffic keys on
 shutdown.

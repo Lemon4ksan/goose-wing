@@ -25,7 +25,13 @@ enum TlsBackendKind {
     PureGoose,
     SystemOpenSsl,
     SystemSchannel,
+    SystemSecureTransport,
     Auto,
+}
+
+enum TlsMinVersion {
+    Tls13,
+    Tls12,
 }
 
 enum TlsBackendStatus {
@@ -41,6 +47,7 @@ enum TlsBackendStatus {
 
 struct TlsBackendConfig {
     kind:                 TlsBackendKind   = TlsBackendKind.PureGoose,
+    min_version:          TlsMinVersion    = TlsMinVersion.Tls13,
     is_server:            bool             = false,
     server_name:          u8[..256]        = [],
     alpn_wire:            u8[..64]         = [],
@@ -65,10 +72,14 @@ struct TlsEndpoint {
 
 // ---- Native C Shim FFI (shim/tls_backend.c) --------------------------------
 
-const NATIVE_KIND_PURE:     i32 = 0;
-const NATIVE_KIND_OPENSSL:  i32 = 1;
-const NATIVE_KIND_SCHANNEL: i32 = 2;
-const NATIVE_KIND_AUTO:     i32 = 3;
+const NATIVE_KIND_PURE:             i32 = 0;
+const NATIVE_KIND_OPENSSL:          i32 = 1;
+const NATIVE_KIND_SCHANNEL:         i32 = 2;
+const NATIVE_KIND_SECURE_TRANSPORT: i32 = 3;
+const NATIVE_KIND_AUTO:             i32 = 4;
+
+const NATIVE_MIN_TLS13: i32 = 0;
+const NATIVE_MIN_TLS12: i32 = 1;
 
 extern fn native_tls_backend_available(kind: i32) -> i32 = "wing_tls_backend_available";
 
@@ -76,6 +87,7 @@ extern fn native_tls_backend_open(
     kind:                 i32,
     is_server:            i32,
     insecure_skip_verify: i32,
+    min_version:          i32,
     server_name:          const u8[:],
     alpn_wire:            const u8[:],
     ca_file:              const u8[:],
@@ -122,13 +134,22 @@ inline fn kind_to_native_i32(kind: TlsBackendKind) -> i32 {
         PureGoose => NATIVE_KIND_PURE,
         SystemOpenSsl => NATIVE_KIND_OPENSSL,
         SystemSchannel => NATIVE_KIND_SCHANNEL,
+        SystemSecureTransport => NATIVE_KIND_SECURE_TRANSPORT,
         Auto => NATIVE_KIND_AUTO,
+    };
+}
+
+inline fn min_version_to_native_i32(min_ver: TlsMinVersion) -> i32 {
+    return match min_ver {
+        Tls13 => NATIVE_MIN_TLS13,
+        Tls12 => NATIVE_MIN_TLS12,
     };
 }
 
 inline fn native_i32_to_kind(code: i32) -> TlsBackendKind {
     if code == NATIVE_KIND_OPENSSL { return TlsBackendKind.SystemOpenSsl; }
     if code == NATIVE_KIND_SCHANNEL { return TlsBackendKind.SystemSchannel; }
+    if code == NATIVE_KIND_SECURE_TRANSPORT { return TlsBackendKind.SystemSecureTransport; }
     return TlsBackendKind.PureGoose;
 }
 
@@ -870,6 +891,7 @@ fn tls_endpoint_open(cfg: const TlsBackendConfig&) -> TlsEndpoint, TlsBackendSta
         kind_to_native_i32(cfg.kind),
         if cfg.is_server { 1 } else { 0 },
         if cfg.insecure_skip_verify { 1 } else { 0 },
+        min_version_to_native_i32(cfg.min_version),
         cfg.server_name[..],
         cfg.alpn_wire[..],
         cfg.ca_file[..],

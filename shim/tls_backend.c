@@ -32,10 +32,14 @@
 #include <dlfcn.h>
 #endif
 
-#define WING_TLS_KIND_PURE      0
-#define WING_TLS_KIND_OPENSSL   1
-#define WING_TLS_KIND_SCHANNEL  2
-#define WING_TLS_KIND_AUTO      3
+#define WING_TLS_KIND_PURE             0
+#define WING_TLS_KIND_OPENSSL          1
+#define WING_TLS_KIND_SCHANNEL         2
+#define WING_TLS_KIND_SECURE_TRANSPORT 3
+#define WING_TLS_KIND_AUTO             4
+
+#define WING_TLS_MIN_TLS13             0
+#define WING_TLS_MIN_TLS12             1
 
 #define WING_TLS_ST_OK          0
 #define WING_TLS_ST_WANT_READ   1
@@ -136,6 +140,7 @@ static void tls_buf_free(tls_buf_t *b) {
 #define OSSL_CTRL_SET_SNI               55
 #define OSSL_CTRL_SET_MIN_PROTO_VERSION 123
 #define OSSL_TLS1_2_VERSION             0x0303
+#define OSSL_TLS1_3_VERSION             0x0304
 #define OSSL_FILETYPE_PEM               1
 #define OSSL_BIO_CTRL_PENDING           10
 #define OSSL_TLSEXT_ERR_OK              0
@@ -415,6 +420,35 @@ static int ossl_probe(void) { return 0; }
 #ifndef SCH_USE_STRONG_CRYPTO
 #define SCH_USE_STRONG_CRYPTO 0x00400000
 #endif
+#ifndef SP_PROT_TLS1_2_CLIENT
+#define SP_PROT_TLS1_2_CLIENT 0x00000800
+#endif
+#ifndef SP_PROT_TLS1_3_CLIENT
+#define SP_PROT_TLS1_3_CLIENT 0x00002000
+#endif
+
+typedef struct {
+    DWORD cAlpnIds;
+    void *rgstrAlpnIds;
+    DWORD grbitDisabledProtocols;
+    DWORD cDisabledCrypto;
+    void *pDisabledCrypto;
+    DWORD dwFlags;
+} wing_sch_tls_params_t;
+
+typedef struct {
+    DWORD dwVersion;
+    DWORD dwCredFormat;
+    DWORD cCreds;
+    PCCERT_CONTEXT *paCred;
+    HCERTSTORE hRootStore;
+    DWORD cMappers;
+    void **aphMappers;
+    DWORD dwSessionLifespan;
+    DWORD dwFlags;
+    DWORD cTlsParameters;
+    wing_sch_tls_params_t *pTlsParameters;
+} wing_sch_cred_v5_t;
 
 typedef struct {
     int probed;
@@ -455,6 +489,81 @@ static int schannel_probe(void) {
 static int schannel_probe(void) { return 0; }
 #endif
 
+/* ---- macOS SecureTransport Dynamic Driver (TLS 1.2 opt-in fallback) ---- */
+
+#ifdef __APPLE__
+#define ST_SSL_CLIENT_SIDE              1
+#define ST_SSL_STREAM_TYPE              0
+#define ST_TLS_PROTOCOL_12              8
+#define ST_OPT_BREAK_ON_SERVER_AUTH     0
+#define ST_ERR_SUCCESS                  0
+#define ST_ERR_WOULD_BLOCK             (-9803)
+#define ST_ERR_CLOSED_GRACEFUL         (-9805)
+#define ST_ERR_XCERT_CHAIN_INVALID     (-9807)
+#define ST_ERR_UNKNOWN_ROOT_CERT       (-9812)
+#define ST_ERR_NO_ROOT_CERT            (-9813)
+#define ST_ERR_CERT_EXPIRED            (-9814)
+#define ST_ERR_CERT_NOT_YET_VALID      (-9815)
+#define ST_ERR_CLOSED_NO_NOTIFY        (-9816)
+#define ST_ERR_PEER_AUTH_COMPLETED     (-9841)
+#define ST_ERR_HOSTNAME_MISMATCH       (-9843)
+
+typedef int32_t st_osstatus_t;
+typedef st_osstatus_t (*st_read_fn_t)(const void *conn, void *data, size_t *data_len);
+typedef st_osstatus_t (*st_write_fn_t)(const void *conn, const void *data, size_t *data_len);
+
+typedef struct {
+    int probed;
+    int available;
+    void *(*SSLCreateContext)(void *, int, int);
+    st_osstatus_t (*SSLSetIOFuncs)(void *, st_read_fn_t, st_write_fn_t);
+    st_osstatus_t (*SSLSetConnection)(void *, const void *);
+    st_osstatus_t (*SSLSetPeerDomainName)(void *, const char *, size_t);
+    st_osstatus_t (*SSLSetProtocolVersionMin)(void *, int);
+    st_osstatus_t (*SSLSetSessionOption)(void *, int, uint8_t);
+    st_osstatus_t (*SSLHandshake)(void *);
+    st_osstatus_t (*SSLRead)(void *, void *, size_t, size_t *);
+    st_osstatus_t (*SSLWrite)(void *, const void *, size_t, size_t *);
+    st_osstatus_t (*SSLClose)(void *);
+    void (*CFRelease)(const void *);
+} secure_transport_api_t;
+
+static secure_transport_api_t g_st;
+
+static int secure_transport_probe(void) {
+    if (g_st.probed) return g_st.available;
+    g_st.probed = 1;
+    static const char *const sec_names[] = {
+        "/System/Library/Frameworks/Security.framework/Security",
+        "/System/Library/Frameworks/Security.framework/Versions/A/Security", NULL
+    };
+    static const char *const cf_names[] = {
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", NULL
+    };
+    void *slib = dyn_open_any(sec_names);
+    if (slib == NULL) return 0;
+    void *cflib = dyn_open_any(cf_names);
+    if (cflib == NULL) cflib = slib;
+
+    int ok = 1;
+    ok &= load_fn_sym(&g_st.SSLCreateContext, dyn_sym(slib, "SSLCreateContext"));
+    ok &= load_fn_sym(&g_st.SSLSetIOFuncs, dyn_sym(slib, "SSLSetIOFuncs"));
+    ok &= load_fn_sym(&g_st.SSLSetConnection, dyn_sym(slib, "SSLSetConnection"));
+    ok &= load_fn_sym(&g_st.SSLSetPeerDomainName, dyn_sym(slib, "SSLSetPeerDomainName"));
+    ok &= load_fn_sym(&g_st.SSLSetProtocolVersionMin, dyn_sym(slib, "SSLSetProtocolVersionMin"));
+    ok &= load_fn_sym(&g_st.SSLSetSessionOption, dyn_sym(slib, "SSLSetSessionOption"));
+    ok &= load_fn_sym(&g_st.SSLHandshake, dyn_sym(slib, "SSLHandshake"));
+    ok &= load_fn_sym(&g_st.SSLRead, dyn_sym(slib, "SSLRead"));
+    ok &= load_fn_sym(&g_st.SSLWrite, dyn_sym(slib, "SSLWrite"));
+    ok &= load_fn_sym(&g_st.SSLClose, dyn_sym(slib, "SSLClose"));
+    ok &= load_fn_sym(&g_st.CFRelease, dyn_sym(cflib, "CFRelease"));
+    g_st.available = ok;
+    return g_st.available;
+}
+#else
+static int secure_transport_probe(void) { return 0; }
+#endif
+
 /* ---- Unified Endpoint Handle Table ------------------------------------- */
 
 typedef struct {
@@ -462,6 +571,7 @@ typedef struct {
     int kind;
     int is_server;
     int insecure_skip_verify;
+    int min_version;
     int established;
     int closed;
     char sni[257];
@@ -487,6 +597,12 @@ typedef struct {
     tls_buf_t sch_in;
     tls_buf_t sch_out;
     tls_buf_t sch_app;
+#endif
+#ifdef __APPLE__
+    /* SecureTransport state */
+    void *st_ctx;
+    tls_buf_t st_in;
+    tls_buf_t st_out;
 #endif
 } wing_tls_ep_t;
 
@@ -576,9 +692,10 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
     ep->ossl_ctx = g_ossl.SSL_CTX_new(meth);
     if (ep->ossl_ctx == NULL) return WING_TLS_ST_ERR;
 
-    /* Enforce TLS 1.2+ floor (TLS 1.3 negotiated by default on OpenSSL 1.1.1+/3.x). */
+    /* Enforce configured minimum protocol floor (default TLS 1.3; opt-in TLS 1.2 fallback). */
+    long min_proto = (ep->min_version == WING_TLS_MIN_TLS12) ? OSSL_TLS1_2_VERSION : OSSL_TLS1_3_VERSION;
     if (g_ossl.SSL_CTX_ctrl != NULL &&
-        g_ossl.SSL_CTX_ctrl(ep->ossl_ctx, OSSL_CTRL_SET_MIN_PROTO_VERSION, OSSL_TLS1_2_VERSION, NULL) != 1) {
+        g_ossl.SSL_CTX_ctrl(ep->ossl_ctx, OSSL_CTRL_SET_MIN_PROTO_VERSION, min_proto, NULL) != 1) {
         ossl_cleanup_ep(ep);
         return WING_TLS_ST_ERR;
     }
@@ -644,17 +761,44 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
 static int schannel_open_ep(wing_tls_ep_t *ep) {
     if (!schannel_probe()) return WING_TLS_ST_UNAVAILABLE;
     if (ep->is_server) return WING_TLS_ST_UNAVAILABLE;
-    SCHANNEL_CRED cred;
-    memset(&cred, 0, sizeof(cred));
-    cred.dwVersion = SCHANNEL_CRED_VERSION;
-    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_USE_STRONG_CRYPTO;
-    cred.dwFlags |= ep->insecure_skip_verify
+    DWORD flags = SCH_CRED_NO_DEFAULT_CREDS | SCH_USE_STRONG_CRYPTO;
+    flags |= ep->insecure_skip_verify
         ? (SCH_CRED_MANUAL_CRED_VALIDATION | SCH_CRED_IGNORE_NO_REVOCATION_CHECK | SCH_CRED_IGNORE_REVOCATION_OFFLINE)
         : SCH_CRED_AUTO_CRED_VALIDATION;
+
+    wing_sch_tls_params_t tp;
+    memset(&tp, 0, sizeof(tp));
+    tp.grbitDisabledProtocols = (ep->min_version == WING_TLS_MIN_TLS12)
+        ? ~(DWORD)(SP_PROT_TLS1_2_CLIENT | SP_PROT_TLS1_3_CLIENT)
+        : ~(DWORD)SP_PROT_TLS1_3_CLIENT;
+    wing_sch_cred_v5_t cred5;
+    memset(&cred5, 0, sizeof(cred5));
+    cred5.dwVersion = 5;
+    cred5.dwFlags = flags;
+    cred5.cTlsParameters = 1;
+    cred5.pTlsParameters = &tp;
+
     TimeStamp ts;
     SECURITY_STATUS ss = g_sch.AcquireCredentialsHandleA(
-        NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &ep->cred, &ts);
-    if (ss != SEC_E_OK) return WING_TLS_ST_HS_ERR;
+        NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred5, NULL, NULL, &ep->cred, &ts);
+    if (ss != SEC_E_OK && ep->min_version == WING_TLS_MIN_TLS12) {
+        /* Fallback to SCHANNEL_CRED v4 on Windows 10 builds without SCH_CREDENTIALS v5. */
+        SCHANNEL_CRED cred4;
+        memset(&cred4, 0, sizeof(cred4));
+        cred4.dwVersion = SCHANNEL_CRED_VERSION;
+        cred4.dwFlags = flags;
+        cred4.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT | SP_PROT_TLS1_3_CLIENT;
+        ss = g_sch.AcquireCredentialsHandleA(
+            NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred4, NULL, NULL, &ep->cred, &ts);
+        if (ss != SEC_E_OK) {
+            cred4.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT;
+            ss = g_sch.AcquireCredentialsHandleA(
+                NULL, (SEC_CHAR *)UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred4, NULL, NULL, &ep->cred, &ts);
+        }
+    }
+    if (ss != SEC_E_OK) {
+        return (ep->min_version == WING_TLS_MIN_TLS13) ? WING_TLS_ST_UNAVAILABLE : WING_TLS_ST_HS_ERR;
+    }
     ep->has_cred = 1;
     return WING_TLS_ST_OK;
 }
@@ -825,12 +969,118 @@ static int64_t schannel_read_app(wing_tls_ep_t *ep, wing_tls_rw dst, int32_t *ou
 }
 #endif
 
+#ifdef __APPLE__
+static st_osstatus_t st_io_read(const void *conn, void *data, size_t *data_len) {
+    wing_tls_ep_t *ep = (wing_tls_ep_t *)(uintptr_t)conn;
+    size_t want = *data_len;
+    if (want == 0) return ST_ERR_SUCCESS;
+    if (ep == NULL || ep->st_in.len == 0) {
+        *data_len = 0;
+        return ST_ERR_WOULD_BLOCK;
+    }
+    size_t take = ep->st_in.len < want ? ep->st_in.len : want;
+    memcpy(data, ep->st_in.data, take);
+    tls_buf_consume(&ep->st_in, take);
+    *data_len = take;
+    return take < want ? ST_ERR_WOULD_BLOCK : ST_ERR_SUCCESS;
+}
+
+static st_osstatus_t st_io_write(const void *conn, const void *data, size_t *data_len) {
+    wing_tls_ep_t *ep = (wing_tls_ep_t *)(uintptr_t)conn;
+    size_t n = *data_len;
+    if (n == 0) return ST_ERR_SUCCESS;
+    if (ep == NULL || !tls_buf_append(&ep->st_out, (const uint8_t *)data, n)) {
+        *data_len = 0;
+        return ST_ERR_WOULD_BLOCK;
+    }
+    return ST_ERR_SUCCESS;
+}
+
+static int32_t st_map_err(st_osstatus_t st, int is_hs) {
+    if (st == ST_ERR_SUCCESS) return WING_TLS_ST_OK;
+    if (st == ST_ERR_WOULD_BLOCK) return WING_TLS_ST_WANT_READ;
+    if (st == ST_ERR_CLOSED_GRACEFUL || st == ST_ERR_CLOSED_NO_NOTIFY) return WING_TLS_ST_CLOSED;
+    if (st == ST_ERR_XCERT_CHAIN_INVALID || st == ST_ERR_UNKNOWN_ROOT_CERT ||
+        st == ST_ERR_NO_ROOT_CERT || st == ST_ERR_CERT_EXPIRED ||
+        st == ST_ERR_CERT_NOT_YET_VALID || st == ST_ERR_HOSTNAME_MISMATCH) {
+        return WING_TLS_ST_VERIFY_ERR;
+    }
+    return is_hs ? WING_TLS_ST_HS_ERR : WING_TLS_ST_ERR;
+}
+
+static void st_cleanup_ep(wing_tls_ep_t *ep) {
+    if (ep->st_ctx != NULL) {
+        (void)g_st.SSLClose(ep->st_ctx);
+        g_st.CFRelease(ep->st_ctx);
+        ep->st_ctx = NULL;
+    }
+    tls_buf_free(&ep->st_in);
+    tls_buf_free(&ep->st_out);
+}
+
+static int st_open_ep(wing_tls_ep_t *ep) {
+    if (!secure_transport_probe()) return WING_TLS_ST_UNAVAILABLE;
+    /* SecureTransport supports up to TLS 1.2 only: require explicit TlsMinVersion.Tls12 opt-in. */
+    if (ep->is_server || ep->min_version != WING_TLS_MIN_TLS12) return WING_TLS_ST_UNAVAILABLE;
+    ep->st_ctx = g_st.SSLCreateContext(NULL, ST_SSL_CLIENT_SIDE, ST_SSL_STREAM_TYPE);
+    if (ep->st_ctx == NULL) return WING_TLS_ST_ERR;
+    if (g_st.SSLSetIOFuncs(ep->st_ctx, st_io_read, st_io_write) != ST_ERR_SUCCESS ||
+        g_st.SSLSetConnection(ep->st_ctx, (const void *)ep) != ST_ERR_SUCCESS ||
+        g_st.SSLSetProtocolVersionMin(ep->st_ctx, ST_TLS_PROTOCOL_12) != ST_ERR_SUCCESS) {
+        st_cleanup_ep(ep);
+        return WING_TLS_ST_ERR;
+    }
+    if (ep->sni[0] != '\0') {
+        if (g_st.SSLSetPeerDomainName(ep->st_ctx, ep->sni, strlen(ep->sni)) != ST_ERR_SUCCESS) {
+            st_cleanup_ep(ep);
+            return WING_TLS_ST_ERR;
+        }
+    }
+    if (ep->insecure_skip_verify) {
+        (void)g_st.SSLSetSessionOption(ep->st_ctx, ST_OPT_BREAK_ON_SERVER_AUTH, 1);
+    }
+    return WING_TLS_ST_OK;
+}
+
+static int32_t st_step_hs(wing_tls_ep_t *ep) {
+    if (ep->established) return WING_TLS_ST_OK;
+    for (int i = 0; i < 4; i++) {
+        st_osstatus_t st = g_st.SSLHandshake(ep->st_ctx);
+        if (st == ST_ERR_PEER_AUTH_COMPLETED && ep->insecure_skip_verify) continue;
+        if (st == ST_ERR_SUCCESS) {
+            ep->established = 1;
+            return WING_TLS_ST_OK;
+        }
+        return st_map_err(st, 1);
+    }
+    return WING_TLS_ST_WANT_READ;
+}
+
+static int64_t st_write_app(wing_tls_ep_t *ep, wing_tls_ro plain, int32_t *out_st) {
+    size_t processed = 0;
+    st_osstatus_t st = g_st.SSLWrite(ep->st_ctx, plain.data, (size_t)plain.len, &processed);
+    if (processed > 0) { *out_st = WING_TLS_ST_OK; return (int64_t)processed; }
+    *out_st = st_map_err(st, 0);
+    return 0;
+}
+
+static int64_t st_read_app(wing_tls_ep_t *ep, wing_tls_rw dst, int32_t *out_st) {
+    size_t processed = 0;
+    st_osstatus_t st = g_st.SSLRead(ep->st_ctx, dst.data, (size_t)dst.len, &processed);
+    if (processed > 0) { *out_st = WING_TLS_ST_OK; return (int64_t)processed; }
+    if (st == ST_ERR_CLOSED_GRACEFUL || st == ST_ERR_CLOSED_NO_NOTIFY) ep->closed = 1;
+    *out_st = st_map_err(st, 0);
+    return 0;
+}
+#endif
+
 /* ---- Public Exported C ABI for tls/backend.goose ----------------------- */
 
 int32_t wing_tls_backend_available(int32_t kind) {
     if (kind == WING_TLS_KIND_PURE || kind == WING_TLS_KIND_AUTO) return 1;
     if (kind == WING_TLS_KIND_OPENSSL) return ossl_probe();
     if (kind == WING_TLS_KIND_SCHANNEL) return schannel_probe();
+    if (kind == WING_TLS_KIND_SECURE_TRANSPORT) return secure_transport_probe();
     return 0;
 }
 
@@ -838,6 +1088,7 @@ int64_t wing_tls_backend_open(
     int32_t kind,
     int32_t is_server,
     int32_t insecure_skip_verify,
+    int32_t min_version,
     wing_tls_ro server_name,
     wing_tls_ro alpn_wire,
     wing_tls_ro ca_file,
@@ -850,7 +1101,13 @@ int64_t wing_tls_backend_open(
     if (kind == WING_TLS_KIND_AUTO) {
         if (ossl_probe()) resolved = WING_TLS_KIND_OPENSSL;
         else if (!is_server && schannel_probe()) resolved = WING_TLS_KIND_SCHANNEL;
-        else { *out_status = WING_TLS_ST_UNAVAILABLE; *out_active_kind = WING_TLS_KIND_PURE; return -1; }
+        else if (!is_server && min_version == WING_TLS_MIN_TLS12 && secure_transport_probe()) {
+            resolved = WING_TLS_KIND_SECURE_TRANSPORT;
+        } else {
+            *out_status = WING_TLS_ST_UNAVAILABLE;
+            *out_active_kind = WING_TLS_KIND_PURE;
+            return -1;
+        }
     }
     int slot = -1;
     for (int i = 0; i < WING_TLS_MAX_HANDLES; i++) {
@@ -864,6 +1121,7 @@ int64_t wing_tls_backend_open(
     ep->kind = resolved;
     ep->is_server = is_server ? 1 : 0;
     ep->insecure_skip_verify = insecure_skip_verify ? 1 : 0;
+    ep->min_version = (min_version == WING_TLS_MIN_TLS12) ? WING_TLS_MIN_TLS12 : WING_TLS_MIN_TLS13;
     copy_cstr_ro(ep->sni, sizeof(ep->sni), server_name);
     copy_cstr_ro(ep->ca_file, sizeof(ep->ca_file), ca_file);
     copy_cstr_ro(ep->cert_pem_file, sizeof(ep->cert_pem_file), cert_pem_file);
@@ -878,6 +1136,9 @@ int64_t wing_tls_backend_open(
     if (resolved == WING_TLS_KIND_OPENSSL) st = ossl_open_ep(ep);
 #ifdef _WIN32
     else if (resolved == WING_TLS_KIND_SCHANNEL) st = schannel_open_ep(ep);
+#endif
+#ifdef __APPLE__
+    else if (resolved == WING_TLS_KIND_SECURE_TRANSPORT) st = st_open_ep(ep);
 #endif
     if (st != WING_TLS_ST_OK) {
         wing_tls_zeroize(ep, sizeof(*ep));
@@ -906,6 +1167,11 @@ void wing_tls_backend_close(int64_t handle) {
         tls_buf_free(&ep->sch_app);
     }
 #endif
+#ifdef __APPLE__
+    else if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        st_cleanup_ep(ep);
+    }
+#endif
     g_eps[handle - 1] = NULL;
     wing_tls_zeroize(ep, sizeof(*ep));
     free(ep);
@@ -923,6 +1189,13 @@ int64_t wing_tls_backend_feed_wire(int64_t handle, wing_tls_ro ct, int32_t *out_
 #ifdef _WIN32
     if (ep->kind == WING_TLS_KIND_SCHANNEL) {
         if (!tls_buf_append(&ep->sch_in, ct.data, (size_t)ct.len)) { *out_status = WING_TLS_ST_ERR; return 0; }
+        *out_status = WING_TLS_ST_OK;
+        return ct.len;
+    }
+#endif
+#ifdef __APPLE__
+    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        if (!tls_buf_append(&ep->st_in, ct.data, (size_t)ct.len)) { *out_status = WING_TLS_ST_ERR; return 0; }
         *out_status = WING_TLS_ST_OK;
         return ct.len;
     }
@@ -948,6 +1221,16 @@ int64_t wing_tls_backend_drain_wire(int64_t handle, wing_tls_rw dst, int32_t *ou
         size_t take = ep->sch_out.len < (size_t)dst.len ? ep->sch_out.len : (size_t)dst.len;
         memcpy(dst.data, ep->sch_out.data, take);
         tls_buf_consume(&ep->sch_out, take);
+        *out_status = WING_TLS_ST_OK;
+        return (int64_t)take;
+    }
+#endif
+#ifdef __APPLE__
+    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        if (ep->st_out.len == 0) { *out_status = WING_TLS_ST_OK; return 0; }
+        size_t take = ep->st_out.len < (size_t)dst.len ? ep->st_out.len : (size_t)dst.len;
+        memcpy(dst.data, ep->st_out.data, take);
+        tls_buf_consume(&ep->st_out, take);
         *out_status = WING_TLS_ST_OK;
         return (int64_t)take;
     }
@@ -979,6 +1262,9 @@ int32_t wing_tls_backend_step_handshake(int64_t handle) {
 #ifdef _WIN32
     if (ep->kind == WING_TLS_KIND_SCHANNEL) return schannel_step_hs(ep);
 #endif
+#ifdef __APPLE__
+    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) return st_step_hs(ep);
+#endif
     return WING_TLS_ST_UNAVAILABLE;
 }
 
@@ -995,6 +1281,9 @@ int64_t wing_tls_backend_write_app(int64_t handle, wing_tls_ro plain, int32_t *o
     }
 #ifdef _WIN32
     if (ep->kind == WING_TLS_KIND_SCHANNEL) return schannel_write_app(ep, plain, out_status);
+#endif
+#ifdef __APPLE__
+    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) return st_write_app(ep, plain, out_status);
 #endif
     *out_status = WING_TLS_ST_UNAVAILABLE;
     return 0;
@@ -1013,6 +1302,9 @@ int64_t wing_tls_backend_read_app(int64_t handle, wing_tls_rw dst, int32_t *out_
     }
 #ifdef _WIN32
     if (ep->kind == WING_TLS_KIND_SCHANNEL) return schannel_read_app(ep, dst, out_status);
+#endif
+#ifdef __APPLE__
+    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) return st_read_app(ep, dst, out_status);
 #endif
     *out_status = WING_TLS_ST_UNAVAILABLE;
     return 0;

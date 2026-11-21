@@ -149,27 +149,34 @@ to an audited system TLS library through the optional C shim
 application code:
 
 - `tls::TlsBackendKind.SystemOpenSsl`: OpenSSL 3 / 1.1.1 / BoringSSL via sans-IO
-  memory BIOs (`TLS 1.2+` floor, `SSL_VERIFY_PEER` + `SSL_set1_host` hostname
-  verification, custom `ca_file`, server `cert_pem_file` / `key_pem_file`,
-  client and server ALPN). Loaded dynamically at runtime via `dlopen` /
-  `LoadLibraryA` with zero link-time OpenSSL dependency. Set `WING_OPENSSL_LIB`
-  / `WING_CRYPTO_LIB` to load a vendored library path, or compile with
-  `-DWING_TLS_LINK_OPENSSL` and link `-lssl -lcrypto` for direct linking.
+  memory BIOs (`TlsMinVersion.Tls13` by default, or opt-in `TlsMinVersion.Tls12`
+  fallback, `SSL_VERIFY_PEER` + `SSL_set1_host` hostname verification, custom
+  `ca_file`, server `cert_pem_file` / `key_pem_file`, client and server ALPN).
+  Loaded dynamically at runtime via `dlopen` / `LoadLibraryA` with zero
+  link-time OpenSSL dependency. Set `WING_OPENSSL_LIB` / `WING_CRYPTO_LIB` to
+  load a vendored library path, or compile with `-DWING_TLS_LINK_OPENSSL` and
+  link `-lssl -lcrypto` for direct linking.
 - `tls::TlsBackendKind.SystemSchannel`: Windows native `secur32.dll` Schannel
-  client context with zero third-party DLLs.
+  client context with zero third-party DLLs (TLS 1.3-only via `SCH_CREDENTIALS`
+  v5 by default; TLS 1.2 + TLS 1.3 fallback when `min_version =
+  TlsMinVersion.Tls12`).
+- `tls::TlsBackendKind.SystemSecureTransport`: macOS native `Security.framework`
+  client context (`dlopen`, zero link flags), available when `min_version =
+  TlsMinVersion.Tls12` is explicitly enabled (rejected on `TlsMinVersion.Tls13`
+  to prevent silent downgrade).
 - `tls::TlsBackendKind.Auto`: selects `SystemOpenSsl` if installed (Linux
   `libssl.so.3`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
-  `libssl-3*.dll`), then `SystemSchannel` on Windows client endpoints, and falls
-  back to `PureGoose` TLS 1.3 otherwise (on macOS without Homebrew OpenSSL,
-  Apple's deprecated `SecureTransport` lacks TLS 1.3 so `Auto` uses
-  `PureGoose`).
+  `libssl-3*.dll`), then `SystemSchannel` on Windows client endpoints, then
+  `SystemSecureTransport` on macOS client endpoints when `min_version =
+  TlsMinVersion.Tls12`, and falls back to `PureGoose` TLS 1.3 otherwise.
 
 ```goose
 import wing;
 
 fn open_audited_tls_client() -> tls::TlsEndpoint, tls::TlsBackendStatus {
     var cfg = tls::TlsBackendConfig {
-        kind: tls::TlsBackendKind.SystemOpenSsl,
+        kind:        tls::TlsBackendKind.Auto,
+        min_version: tls::TlsMinVersion.Tls12, // opt-in TLS 1.2 fallback
         ..
     };
     let _ = cfg.server_name.try_set("api.example.com");

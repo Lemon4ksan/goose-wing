@@ -744,6 +744,7 @@ fn test_pluggable_tls_backends() {
 
     var auto_cfg = tls::TlsBackendConfig {
         kind:                 tls::TlsBackendKind.Auto,
+        min_version:          tls::TlsMinVersion.Tls12,
         is_server:            false,
         insecure_skip_verify: true,
         ..
@@ -758,8 +759,40 @@ fn test_pluggable_tls_backends() {
     tls::tls_endpoint_close(auto_ep);
     tls::tls_endpoint_close(auto_ep);
 
-    print("native_schannel_ok=", sch_ok, " native_openssl_clean=", ossl_clean, " auto_ok=", auto_ok);
-    // CHECK: native_schannel_ok=true native_openssl_clean=true auto_ok=true
+    // SecureTransport must reject TLS 1.3-only everywhere (no silent downgrade to TLS 1.2)
+    var st_strict_cfg = tls::TlsBackendConfig {
+        kind:        tls::TlsBackendKind.SystemSecureTransport,
+        min_version: tls::TlsMinVersion.Tls13,
+        ..
+    };
+    var st_strict_ep, st_strict_st = tls::tls_endpoint_open(st_strict_cfg);
+    let st_strict_rejected = st_strict_st == tls::TlsBackendStatus.Unavailable;
+    tls::tls_endpoint_close(st_strict_ep);
+
+    // Schannel with explicit TlsMinVersion.Tls12 fallback on Windows
+    var sch12_ok = !sch_avail;
+    if sch_avail {
+        var sch12_cfg = tls::TlsBackendConfig {
+            kind:                 tls::TlsBackendKind.SystemSchannel,
+            min_version:          tls::TlsMinVersion.Tls12,
+            is_server:            false,
+            insecure_skip_verify: true,
+            ..
+        };
+        assert(sch12_cfg.server_name.try_set("localhost"));
+        var sch12_ep, s12_st = tls::tls_endpoint_open(sch12_cfg);
+        assert(s12_st == tls::TlsBackendStatus.Ok);
+        let h12 = tls::tls_endpoint_step_handshake(sch12_ep);
+        assert(h12 == tls::TlsBackendStatus.WantRead);
+        var ch12: u8[2048] = [0; 2048];
+        let n12, d12 = tls::tls_endpoint_drain_wire(sch12_ep, ch12[..]);
+        sch12_ok = (d12 == tls::TlsBackendStatus.Ok) && (n12 > 40) && (ch12[0] == 0x16) && (ch12[1] == 0x03);
+        tls::tls_endpoint_close(sch12_ep);
+    }
+
+    print("native_schannel_ok=", sch_ok && sch12_ok, " native_openssl_clean=", ossl_clean,
+        " st_strict_reject=", st_strict_rejected, " auto_ok=", auto_ok);
+    // CHECK: native_schannel_ok=true native_openssl_clean=true st_strict_reject=true auto_ok=true
 }
 
 fn main() {
