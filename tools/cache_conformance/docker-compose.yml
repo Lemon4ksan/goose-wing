@@ -1,0 +1,25 @@
+services:
+  cache-origin:
+    build:
+      context: ../..
+      dockerfile: tools/cache_conformance/Dockerfile
+    container_name: goose-wing-cache-origin
+    entrypoint: ["python3", "/app/tools/cache_conformance/origin_server.py", "--host", "0.0.0.0", "--port", "8082"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health')\" || exit 1"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+      start_period: 1s
+    restart: "no"
+
+  cache-runner:
+    build:
+      context: ../..
+      dockerfile: tools/cache_conformance/Dockerfile
+    container_name: goose-wing-cache-runner
+    depends_on:
+      cache-origin:
+        condition: service_healthy
+    command: ["--local", "--origin", "cache-origin:8082"]
+    restart: "no"

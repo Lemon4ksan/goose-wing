@@ -8,8 +8,13 @@ against [goose-wing](../README.md).
 
 | Suite | Target standard | Total cases | Passed | Failed | Compliance | Driver command |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| h2spec | RFC 9113 / RFC 7540 | 145 (146 strict) | 145 (146 strict) | 0 | 100.0% | `python tools/h2spec.py all` |
+| h2spec + backpressure | RFC 9113 / RFC 7540 | 145 (146 strict) + 3 backpressure | 145 (146 strict) + 3 | 0 | 100.0% | `python tools/h2spec.py -S all` |
 | Autobahn WebSocket | RFC 6455 | 301 | 293 (5 non-strict, 3 info) | 0 | 100.0% | `python tools/autobahn.py` |
+| HTTP/1.1 smuggling wall | RFC 9112 (`wing` + `wing_h1`) | 34 (29 adversarial, 5 baseline) | 34 | 0 | 100.0% (0 parity diffs) | `python tools/smuggling.py --local` |
+| HTTP cache conformance | RFC 9111 / RFC 5861 / RFC 9875 | 29 (25 virtual-clock, 4 live origin) | 29 | 0 | 100.0% | `python tools/cache_conformance.py --local` |
+| TLS canary (offline CA + badssl) | RFC 8446 / RFC 5280 / RFC 6125 | 15 offline (Pure + OpenSSL + Schannel) | 15 | 0 | 100.0% | `python tools/badssl_canary.py --offline` |
+| TLS 1.3 + OpenSSL interop | RFC 8446 / RFC 6066 / RFC 7301 | 25 (incl. `openssl s_server` + negative attacks) | 25 | 0 | 100.0% | `python tools/tls.py` |
+| HTTP/3 & QUIC interop | RFC 9000 / RFC 9114 / RFC 9204 | 17 (incl. UDP faults, 2 MiB stream, migration) | 17 | 0 | 100.0% | `python tools/http3.py` |
 | Project Wycheproof | RFC 8439, RFC 8446, NIST SP 800-38D | 5,761 vectors (6,829 oracle runs) | 5,761 | 0 | 100.0% (0 mismatches) | `python scripts/diff_fuzz.py --rounds 20` |
 | QPACK differential (nghttp3) | RFC 9204 | 185 (plus quiche check) | 185 | 0 | 100.0% | `python scripts/qpack_differential.py` |
 | H2 + TLS 1.3 differential | RFC 8446 / RFC 9113 | 17 (13 Go/Wing + 4 OpenSSL/Wing) | 17 | 0 | 100.0% | `python scripts/h2_tls_differential.py -v` |
@@ -31,7 +36,11 @@ python tools/h2spec.py -S all
 
 - Standard test run: 145 tests, 145 passed, 0 skipped, 0 failed (100.0%).
 - Strict mode test run (`-S`): 146 tests, 146 passed, 0 skipped, 0 failed
-  (100.0%).
+  (100.0%). The runner enforces a zero-skip assertion on `h2spec` output.
+- Supplemental RFC 9113 §6.9 `WINDOW_UPDATE` backpressure checks: 3/3 passed
+  (ingress streaming `POST /echo` > 8 KiB connection + stream `WINDOW_UPDATE`
+  replenishment, connection `WINDOW_UPDATE` overflow `FLOW_CONTROL_ERROR`
+  `0x03`, and egress clamping under client `SETTINGS_INITIAL_WINDOW_SIZE = 8`).
 - Execution duration: ~0.53 seconds.
 
 Verified specification sections:
@@ -178,3 +187,81 @@ Verified security categories:
     post-rotation HTTP/1.1 200 OK, `openssl_wing_resumption` 1-RTT
     `NewSessionTicket` reuse, and `openssl_wing_psk_fallback` unknown-PSK ECDHE
     fallback with verified Ed25519 certificate).
+
+---
+
+## 6. HTTP/1.1 smuggling differential wall
+
+The `http-garden`-style differential wall executes
+[tools/smuggling.py](../tools/smuggling.py) against both full `wing`
+([tools/smuggling/wing_harness.goose](../tools/smuggling/wing_harness.goose))
+and modular `wing_h1`
+([tools/smuggling/wing_h1_harness.goose](../tools/smuggling/wing_h1_harness.goose)),
+comparing verdicts with an independent Python RFC 9112 parser in `--local` mode
+and live `nginx` + `haproxy` containers in `--docker` mode.
+
+```bash
+python tools/smuggling.py --local
+python tools/smuggling.py --docker
+```
+
+- Local run: 34/34 passed (29 adversarial smuggling/desync vectors, 5 RFC 9112
+  baselines), 0 smuggling acceptances, and 0 `wing` / `wing_h1` parity
+  mismatches.
+- Covered classes: CL.TE, TE.CL, TE.TE obfuscations (`xchunked`, space before
+  colon, leading tab/space names, dual TE headers, non-final `chunked`, HTTP/1.0
+  TE), duplicate differing / negative / `+` / hex `Content-Length`, bare LF/CR,
+  `obs-fold`, invalid HTTP versions, missing/duplicate `Host`, NUL injection,
+  chunk-size overflow with oversized extension, trailing non-CRLF garbage, and
+  pipelined split-frame boundaries.
+
+---
+
+## 7. HTTP cache conformance (RFC 9111, RFC 5861, RFC 9875)
+
+The `mnot/http-tests`-style caching conformance suite executes
+[tools/cache_conformance.py](../tools/cache_conformance.py) against
+[tools/cache_conformance/cache_harness.goose](../tools/cache_conformance/cache_harness.goose).
+
+```bash
+python tools/cache_conformance.py --local
+python tools/cache_conformance.py --docker
+```
+
+- Local run: 29/29 scenarios passed (25 deterministic virtual-clock scenarios
+  plus 4 live HTTP/1.1 loopback origin scenarios), 0 failed.
+- Verified behaviors: `no-store`, `private`, `no-cache`, `max-age=0`,
+  `s-maxage`, `must-revalidate`, `immutable` (RFC 8246), `Age` and `Expires`
+  freshness, 10% `Last-Modified` heuristic freshness, `Vary` and `Vary: *`,
+  `ETag` / `Last-Modified` 304 header freshening with `Content-Type` protection,
+  `POST` / `PUT` / `DELETE` invalidation on target URI, `Location`, and
+  `Content-Location` with cross-origin isolation, RFC 5861
+  `stale-while-revalidate` and `stale-if-error`, and RFC 9875 `Cache-Groups` /
+  `Cache-Group-Invalidation` targeted purges.
+
+---
+
+## 8. TLS interop canary, live OpenSSL, and HTTP/3 fault resilience
+
+- TLS canary via [tools/badssl_canary.py](../tools/badssl_canary.py) and
+  [tools/badssl_canary/canary.goose](../tools/badssl_canary/canary.goose):
+  - `--offline` local ECDSA P-256 CA matrix: 15/15 passed across `PureGoose`
+    (6/6), `SystemOpenSsl` (7/7), and `SystemSchannel` (2/2), covering valid
+    CA-signed certs + ALPN `h2`, expired certs (`VerifyError`), wrong hostnames
+    (`VerifyError`), self-signed and untrusted root certs (`VerifyError`),
+    default `TlsMinVersion.Tls13` rejection of TLS 1.2-only peers, and opt-in
+    `SystemOpenSsl` `TlsMinVersion.Tls12` acceptance.
+  - `--live` targets public `badssl.com` endpoints (`tls-v1-3`, `tls-v1-2`,
+    `expired`, `wrong.host`, `self-signed`, `untrusted-root`).
+- Expanded TLS interop via [tools/tls.py](../tools/tls.py): 25/25 passed, adding
+  live `openssl s_server -tls1_2` and `-tls1_3` interop for `PureGoose` and
+  `SystemOpenSsl` (ALPN `h2` + wrong-hostname `VerifyError`) plus negative
+  state-machine attacks (1-byte fragmented ClientHello, unexpected pre-handshake
+  CCS, post-handshake bad AEAD record MAC, unmatched ALPN alert 120, duplicate
+  extensions, TLS 1.2 rejection alert 70, and `DOWNGRD\x01` sentinel rejection).
+- Expanded HTTP/3 & QUIC interop via [tools/http3.py](../tools/http3.py): 17/17
+  passed, adding UDP fault-proxy resilience (packet loss retransmission, 2x
+  duplication idempotence, out-of-order datagram reordering), a live 2 MiB
+  streaming transfer with `MAX_DATA` / `MAX_STREAM_DATA` backpressure and
+  SHA-256 verification, and RFC 9000 §9 NAT port-rebinding connection migration
+  (`PATH_CHALLENGE` / `PATH_RESPONSE` plus tampered token rejection).

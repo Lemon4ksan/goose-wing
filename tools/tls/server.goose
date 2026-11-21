@@ -6,40 +6,98 @@
 import std;
 import wing from "../..";
 
+// RFC 8446 Section 6.2: Alert Descriptions used for fail-closed state-machine rejections.
+const TLS_ALERT_LEVEL_FATAL:        u8  = 2;
+const TLS_ALERT_UNEXPECTED_MESSAGE: u8  = 10;
+const TLS_ALERT_ILLEGAL_PARAMETER:  u8  = 47;
+const TLS_ALERT_DECODE_ERROR:       u8  = 50;
+const TLS_ALERT_PROTOCOL_VERSION:   u8  = 70;
+const TLS_ALERT_NO_APP_PROTOCOL:    u8  = 120;
+const TLS_EXT_SUPPORTED_VERSIONS:   u16 = 43;
+const TLS_VERSION_1_3_WIRE:         u16 = 0x0304;
+
+fn send_fatal_tls_alert(conn: i64, alert_desc: u8) {
+    let rec: u8[7] = [0x15, 0x03, 0x03, 0x00, 0x02, TLS_ALERT_LEVEL_FATAL, alert_desc];
+    let _ = net::tcp_send(conn, rec[..]);
+}
+
+// Verifies that a ClientHello `supported_versions` extension advertises TLS 1.3 (0x0304).
+//
+// Example:
+//   ext_raw = [0x02, 0x03, 0x04]
+//   returns: true
+fn supported_versions_has_tls13(ext_raw: const u8[:]) -> bool {
+    guard ext_raw.len >= 3 else { return false; }
+    let list_len = ext_raw[0] as i64;
+    guard list_len >= 2 && (list_len & 1) == 0 && ext_raw.len >= core::add_sat_i64(1, list_len) else {
+        return false;
+    }
+    var i: i64 = 1;
+    let end_idx = core::add_sat_i64(1, list_len);
+    while core::add_sat_i64(i, 2) <= end_idx {
+        let ver = core::read_be_u16(ext_raw, i);
+        if ver == TLS_VERSION_1_3_WIRE {
+            return true;
+        }
+        i = core::add_sat_i64(i, 2);
+    }
+    return false;
+}
+
+// Parses ClientHello extensions for SNI, ALPN, and RFC 8446 TLS 1.3 supported_versions.
+// Returns 0 on success or a fatal TLS Alert description code on protocol violation.
+//
+// Example:
+//   ch_payload = valid TLS 1.3 ClientHello body with SNI + ALPN + supported_versions(0x0304)
+//   returns: 0, sni_str populated, out_alpn negotiated
 fn parse_client_hello_sni_alpn(
     ch_payload: const u8[:],
     sni_str:    u8[..255]&,
     out_alpn:   tls::NegotiatedAlpn&,
-) {
-    guard ch_payload.len > 34 else { return; }
+) -> u8 {
+    guard ch_payload.len > 34 else { return TLS_ALERT_DECODE_ERROR; }
     let sess_id_len = ch_payload[34] as i64;
-    let mut_idx = 35 + sess_id_len;
-    guard ch_payload.len >= mut_idx + 2 else { return; }
+    let mut_idx = core::add_sat_i64(35, sess_id_len);
+    guard ch_payload.len >= core::add_sat_i64(mut_idx, 2) else { return TLS_ALERT_DECODE_ERROR; }
 
-    let cs_len = (((ch_payload[mut_idx] as u16) << 8) | ch_payload[mut_idx + 1]) as i64;
-    let comp_idx = mut_idx + 2 + cs_len;
-    guard ch_payload.len > comp_idx else { return; }
+    let cs_len = core::read_be_u16(ch_payload, mut_idx) as i64;
+    let comp_idx = core::add_sat_i64(core::add_sat_i64(mut_idx, 2), cs_len);
+    guard ch_payload.len > comp_idx else { return TLS_ALERT_DECODE_ERROR; }
 
     let comp_len = ch_payload[comp_idx] as i64;
-    let ext_start = comp_idx + 1 + comp_len;
-    guard ch_payload.len >= ext_start + 2 else { return; }
+    let ext_start = core::add_sat_i64(core::add_sat_i64(comp_idx, 1), comp_len);
+    guard ch_payload.len >= core::add_sat_i64(ext_start, 2) else { return TLS_ALERT_DECODE_ERROR; }
 
-    let ext_total_len = (((ch_payload[ext_start] as u16) << 8) | ch_payload[ext_start + 1]) as i64;
-    guard ch_payload.len >= ext_start + 2 + ext_total_len else { return; }
+    let ext_total_len = core::read_be_u16(ch_payload, ext_start) as i64;
+    let ext_end = core::add_sat_i64(core::add_sat_i64(ext_start, 2), ext_total_len);
+    guard ch_payload.len >= ext_end else { return TLS_ALERT_DECODE_ERROR; }
 
-    let exts_slice = ch_payload[ext_start..(ext_start + 2 + ext_total_len)];
+    let exts_slice = ch_payload[ext_start..ext_end];
     var entries: tls::ExtensionEntry[..32] = [];
-    guard tls::parse_extensions_block(exts_slice, entries) else { return; }
+    guard tls::parse_extensions_block(exts_slice, entries) else {
+        return TLS_ALERT_ILLEGAL_PARAMETER;
+    }
+
+    let sv_raw, has_sv = tls::find_extension(entries, TLS_EXT_SUPPORTED_VERSIONS);
+    guard has_sv && supported_versions_has_tls13(sv_raw) else {
+        return TLS_ALERT_PROTOCOL_VERSION;
+    }
 
     let sni_raw, has_sni = tls::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
     if has_sni {
-        let _ = tls::parse_sni_extension(sni_raw, sni_str);
+        guard tls::parse_sni_extension(sni_raw, sni_str) else {
+            return TLS_ALERT_DECODE_ERROR;
+        }
     }
 
     let alpn_raw, has_alpn = tls::find_extension(entries, rfc::TLS_EXT_ALPN);
     if has_alpn {
         out_alpn = tls::negotiate_alpn(alpn_raw, false);
+        guard out_alpn == tls::NegotiatedAlpn.H2 || out_alpn == tls::NegotiatedAlpn.Http11 else {
+            return TLS_ALERT_NO_APP_PROTOCOL;
+        }
     }
+    return 0;
 }
 
 fn send_tls13_server_hello(conn: i64) {
@@ -55,38 +113,29 @@ fn send_tls13_server_hello(conn: i64) {
     core::put_u8(sh_builder, 0);
 
     core::start_u16_prefix(sh_builder);
-    core::put_u16(sh_builder, 43); // EXT_SUPPORTED_VERSIONS
+    core::put_u16(sh_builder, TLS_EXT_SUPPORTED_VERSIONS);
     core::start_u16_prefix(sh_builder);
-    core::put_u16(sh_builder, 0x0304); // TLS 1.3
+    core::put_u16(sh_builder, TLS_VERSION_1_3_WIRE);
     core::finish_u16_prefix(sh_builder);
     core::finish_u16_prefix(sh_builder);
 
-    var hs_msg: u8[>..] = [];
-    hs_msg.push(rfc::TLS_HS_SERVER_HELLO);
-    let sh_len = sh_builder.buf.len as u32;
-    hs_msg.push(((sh_len >> 16) & 0xFF) as u8);
-    hs_msg.push(((sh_len >> 8) & 0xFF) as u8);
-    hs_msg.push((sh_len & 0xFF) as u8);
-    hs_msg.append(sh_builder.buf[..]);
+    var hs_msg: u8[..256] = [];
+    guard hs_msg.try_push(rfc::TLS_HS_SERVER_HELLO) else { return; }
+    hs_msg.append_u24_be(sh_builder.buf.len as u32);
+    guard hs_msg.try_append(sh_builder.buf[..]) else { return; }
 
-    var record_out: u8[>..] = [];
-    record_out.push(0x16); // Handshake
-    record_out.push(0x03);
-    record_out.push(0x03);
-    let rec_len = hs_msg.len as u16;
-    record_out.push(((rec_len >> 8) & 0xFF) as u8);
-    record_out.push((rec_len & 0xFF) as u8);
-    record_out.append(hs_msg[..]);
+    var record_out: u8[..300] = [];
+    guard record_out.try_push(0x16) &&
+          record_out.try_push(0x03) &&
+          record_out.try_push(0x03) else { return; }
+    record_out.append_u16_be(hs_msg.len as u16);
+    guard record_out.try_append(hs_msg[..]) else { return; }
 
     // Append ChangeCipherSpec (RFC 8446 Appendix D.4 compatibility)
-    record_out.push(0x14);
-    record_out.push(0x03);
-    record_out.push(0x03);
-    record_out.push(0x00);
-    record_out.push(0x01);
-    record_out.push(0x01);
+    let ccs: u8[6] = [0x14, 0x03, 0x03, 0x00, 0x01, 0x01];
+    guard record_out.try_append(ccs[..]) else { return; }
 
-    net::tcp_send(conn, record_out[..]);
+    let _ = net::tcp_send(conn, record_out[..]);
 }
 
 fn handle_tls_handshake_record(
@@ -94,22 +143,34 @@ fn handle_tls_handshake_record(
     server:         const server::HttpServer&,
     record_payload: const u8[:],
 ) {
-    guard record_payload.len >= 4 else { return; }
+    guard record_payload.len >= 4 else {
+        send_fatal_tls_alert(conn, TLS_ALERT_DECODE_ERROR);
+        return;
+    }
     let msg_type = record_payload[0];
-    let msg_len = ((record_payload[1] as u32) << 16) | ((record_payload[2] as u32) << 8) | record_payload[3];
-    guard msg_type == rfc::TLS_HS_CLIENT_HELLO && record_payload.len >= 4 + (msg_len as i64) else {
+    let msg_len = core::read_be_u24(record_payload, 1) as i64;
+    let body_end = core::add_sat_i64(4, msg_len);
+    guard msg_type == rfc::TLS_HS_CLIENT_HELLO && record_payload.len >= body_end else {
+        send_fatal_tls_alert(conn, TLS_ALERT_UNEXPECTED_MESSAGE);
         return;
     }
 
-    let ch_payload = record_payload[4..4 + (msg_len as i64)];
+    let ch_payload = record_payload[4..body_end];
     var sni_str: u8[..255] = [];
     var negotiated_alpn = tls::NegotiatedAlpn.None;
-    parse_client_hello_sni_alpn(ch_payload, sni_str, negotiated_alpn);
+    let alert_code = parse_client_hello_sni_alpn(ch_payload, sni_str, negotiated_alpn);
+    if alert_code != 0 {
+        send_fatal_tls_alert(conn, alert_code);
+        return;
+    }
     let _ = negotiated_alpn;
 
     if sni_str.len > 0 {
         let _, ok_sni = server::resolve_sni_credentials(server, sni_str[..]);
-        guard ok_sni else { return; }
+        guard ok_sni else {
+            send_fatal_tls_alert(conn, TLS_ALERT_ILLEGAL_PARAMETER);
+            return;
+        }
     }
 
     send_tls13_server_hello(conn);
@@ -130,7 +191,10 @@ fn serve_live_tls13_session(
     record_payload: const u8[:],
 ) {
     let slot_idx, ok_hs = tls::server_handshake_with_ch(conn, record_payload, tls_cfg);
-    guard ok_hs else { return; }
+    guard ok_hs else {
+        send_fatal_tls_alert(conn, TLS_ALERT_ILLEGAL_PARAMETER);
+        return;
+    }
 
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
@@ -164,6 +228,44 @@ fn serve_live_tls13_session(
     tls::free_cipher_slot(slot_idx);
 }
 
+fn dispatch_first_tls_record(
+    conn:           i64,
+    server:         server::HttpServer&,
+    tls_cfg:        const tls::ServerHandshakeConfig&,
+    content_type:   u8,
+    record_payload: const u8[:],
+) -> bool {
+    if content_type == 0x16 {
+        if is_synthetic_wire_client_hello(record_payload) {
+            handle_tls_handshake_record(conn, server, record_payload);
+            return false;
+        }
+        serve_live_tls13_session(conn, server, tls_cfg, record_payload);
+        return true;
+    }
+    if content_type == 0x15 {
+        return true;
+    }
+    // Unexpected ChangeCipherSpec (0x14), ApplicationData (0x17), or invalid record before handshake.
+    send_fatal_tls_alert(conn, TLS_ALERT_UNEXPECTED_MESSAGE);
+    return true;
+}
+
+fn try_handle_shutdown_request(
+    conn:     i64,
+    server:   server::HttpServer&,
+    in_buf:   const u8[:],
+    out_wire: u8[..256]&,
+) -> bool, bool {
+    guard in_buf.len >= 14 && in_buf[..14] == "GET /shutdown " else { return false, false; }
+    let hdr_end = core::fast_find_crlfcrlf(in_buf);
+    guard hdr_end >= 0 else { return true, false; }
+    out_wire.clear();
+    let _ = server::handle_connection_wire(server, "127.0.0.1", in_buf, 0, out_wire);
+    let _ = net::tcp_send(conn, out_wire[..]);
+    return true, true;
+}
+
 fn handle_tls_connection(
     conn:    i64,
     server:  server::HttpServer&,
@@ -177,47 +279,24 @@ fn handle_tls_connection(
     while true {
         chunk.clear();
         let recvd = net::tcp_recv(conn, chunk, 4096, 500);
-        if recvd == -2 {
-            continue;
-        }
-        if recvd <= 0 {
-            break;
-        }
+        if recvd == -2 { continue; }
+        if recvd <= 0 { break; }
         in_buf.append(chunk[..recvd]);
 
-        if in_buf.len >= 14 && in_buf[..14] == "GET /shutdown " {
-            let hdr_end = core::fast_find_crlfcrlf(in_buf[..]);
-            if hdr_end >= 0 {
-                out_wire.clear();
-                let _ = server::handle_connection_wire(server, "127.0.0.1", in_buf[..], 0, out_wire);
-                net::tcp_send(conn, out_wire[..]);
-                return false;
-            }
-            continue;
-        }
-
-        if in_buf.len < 5 {
-            continue;
-        }
+        let is_sd, sd_done = try_handle_shutdown_request(conn, server, in_buf[..], out_wire);
+        if sd_done { return false; }
+        if is_sd { continue; }
+        if in_buf.len < 5 { continue; }
 
         let content_type = in_buf[0];
-        let record_len = ((in_buf[3] as u16) << 8) | in_buf[4];
-        let total_record_len = 5 + (record_len as i64);
-        if in_buf.len < total_record_len {
-            continue;
-        }
+        let record_len = core::read_be_u16(in_buf[..], 3) as i64;
+        let total_record_len = core::add_sat_i64(5, record_len);
+        if in_buf.len < total_record_len { continue; }
 
-        let record_payload = in_buf[5..total_record_len];
-        if content_type == 0x16 {
-            if is_synthetic_wire_client_hello(record_payload) {
-                handle_tls_handshake_record(conn, server, record_payload);
-            } else {
-                serve_live_tls13_session(conn, server, tls_cfg, record_payload);
-                break;
-            }
-        } else if content_type == 0x15 {
-            break;
-        }
+        let should_break = dispatch_first_tls_record(
+            conn, server, tls_cfg, content_type, in_buf[5..total_record_len],
+        );
+        if should_break { break; }
 
         rem.clear();
         rem.append(in_buf[total_record_len..]);
@@ -259,10 +338,7 @@ fn main() {
     var is_running = true;
     while is_running {
         let conn = net::tcp_accept(listener, 200);
-        if conn <= 0 {
-            continue;
-        }
-
+        if conn <= 0 { continue; }
         is_running = handle_tls_connection(conn, server, tls_cfg);
         net::tcp_close(conn);
     }

@@ -1,0 +1,32 @@
+services:
+  nginx-ref:
+    image: nginx:1.27-alpine
+    container_name: goose-wing-smuggling-nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: "no"
+
+  haproxy-ref:
+    image: haproxy:3.0-alpine
+    container_name: goose-wing-smuggling-haproxy
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - nginx-ref
+    restart: "no"
+
+  smuggling-runner:
+    build:
+      context: ../..
+      dockerfile: tools/smuggling/Dockerfile
+    container_name: goose-wing-smuggling-runner
+    depends_on:
+      - nginx-ref
+      - haproxy-ref
+    command:
+      - "--local"
+      - "--nginx-addr"
+      - "nginx-ref:8080"
+      - "--haproxy-addr"
+      - "haproxy-ref:8081"
+    restart: "no"

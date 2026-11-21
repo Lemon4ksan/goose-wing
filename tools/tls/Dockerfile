@@ -3,12 +3,14 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Install toolchains, Python 3, and curl
+# 1. Install toolchains, OpenSSL (CLI + shared libs), Python 3, and curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     curl \
     ca-certificates \
+    openssl \
+    libssl3t64 \
     python3 \
     procps \
     && rm -rf /var/lib/apt/lists/*

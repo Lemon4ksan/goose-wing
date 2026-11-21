@@ -1,32 +1,32 @@
-# goose-wing HTTP/3 & QUIC Interop Verification Suite
+# goose-wing HTTP/3 and QUIC interop verification suite
 
-End-to-end verification suite testing `goose-wing`'s native RFC 9000 QUIC
-transport, RFC 9114 HTTP/3 framing, and RFC 9204 QPACK static/dynamic
-compression over live UDP datagrams.
+End-to-end verification suite testing `goose-wing`'s RFC 9000 QUIC transport,
+RFC 9114 HTTP/3 framing, RFC 9204 QPACK compression, UDP fault resilience
+(packet loss, duplication, reordering), 2 MiB flow-controlled streaming with
+`MAX_DATA` and `MAX_STREAM_DATA` backpressure, and RFC 9000 Section 9 connection
+migration over live UDP datagrams.
 
-## Quick Start
+## Quick start
 
-### Host Mode (Local Compiler)
+### Host mode (local compiler)
 
 ```bash
 python tools/http3.py
 ```
 
-### Docker Mode (Hermetic Container)
+### Docker mode (containerized suite)
 
 ```bash
 docker compose -f tools/http3/docker-compose.yml up --build --abort-on-container-exit
 ```
 
-## Verified Capabilities
+## Verified capabilities
 
-| Capability | Verification Details |
+| Capability | Verification details |
 | :--- | :--- |
-| RFC 9000 Section 17.2.1 Version Negotiation | Server handles unknown QUIC versions and returns valid Version Negotiation packet with supported version list (`QUIC_VERSION_1`). |
-| RFC 9000 Section 17.2.2 QUIC v1 Initial Datagram Ingestion | Parses Long Header Initial packets and validates 1200-byte datagram minimum anti-amplification bound. |
-| RFC 9114 Section 6.2.1 HTTP/3 Control Stream Preamble | Validates Unidirectional Control Stream (`0x00`) initialization with `SETTINGS` frame. |
-| RFC 9114 Section 7.2.4 SETTINGS Parameters Validation | Validates `QPACK_MAX_TABLE_CAPACITY`, `MAX_FIELD_SECTION_SIZE`, `QPACK_BLOCKED_STREAMS`, and `ENABLE_CONNECT_PROTOCOL`. |
-| RFC 9114 Section 7.2.8 GREASE Frame Conformance | Validates frame type tolerance for GREASE (`0x1F * N + 0x21`). |
-| Rejection of Forbidden HTTP/2 Settings | Enforces strict protocol boundary defense by rejecting forbidden HTTP/2 settings with `H3_ERR_SETTINGS_ERROR` (`0x0109`). |
-| RFC 9114 HEADERS & DATA Request/Response Roundtrip | Validates full bidirectional stream exchange with payload delivery over UDP. |
-| RFC 9204 QPACK Static Table Indexing | Validates static index 25 (`:status 200` = `0xD9`). |
+| RFC 9000 Version Negotiation and Initial | Unknown QUIC versions return Version Negotiation (`QUIC_VERSION_1`); Initial datagrams enforce the 1200-byte minimum bound. |
+| RFC 9114 Control Stream, SETTINGS, GREASE | Validates Control Stream (`0x00`), QPACK/section-size `SETTINGS`, GREASE (`0x21`) tolerance, and `H3_ERR_SETTINGS_ERROR` (`0x0109`) on forbidden HTTP/2 settings. |
+| RFC 9114 and RFC 9204 roundtrips | Validates HEADERS + DATA request/response exchanges, static index 25 (`:status 200` = `0xD9`), and native Goose Alt-Svc `h3` client promotion. |
+| UDP fault resilience (`quic-interop-runner`) | Deterministic local UDP fault proxy injects packet loss (retransmission recovery), 2x packet duplication, and out-of-order datagram reordering. |
+| 2 MiB streaming and backpressure | Streams 2,097,152 bytes over live UDP using `server::ResponseStream` with `MAX_DATA` (`0x10`) and `MAX_STREAM_DATA` (`0x11`) replenishment and SHA-256 verification. |
+| RFC 9000 Section 9 connection migration | Simulates NAT port rebinding across two UDP sockets, verifies `PATH_CHALLENGE` (`0x1A`) / `PATH_RESPONSE` (`0x1B`), rejects tampered tokens, and serves HTTP/3 on the migrated port. |

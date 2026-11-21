@@ -1,0 +1,8 @@
+services:
+  badssl-canary:
+    build:
+      context: ../..
+      dockerfile: tools/badssl_canary/Dockerfile
+    container_name: goose-wing-badssl-canary
+    command: ["--offline"]
+    restart: "no"

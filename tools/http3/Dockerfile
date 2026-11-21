@@ -3,12 +3,13 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Install toolchains, Python 3, and curl
+# 1. Install toolchains, iproute2 (for tc netem), Python 3, and curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     curl \
     ca-certificates \
+    iproute2 \
     python3 \
     procps \
     && rm -rf /var/lib/apt/lists/*
