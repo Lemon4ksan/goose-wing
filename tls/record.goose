@@ -1088,9 +1088,20 @@ struct QuicCryptoConn {
     events:      QuicOutputEvent[..8] = [],
 }
 
+const QUIC_CRYPTO_OOO_WINDOW_BYTES: i64 = 4096; // RFC 9000 Section 7.5 bounded OOO window
+const QUIC_CRYPTO_OOO_MASK:         u64 = 4095; // QUIC_CRYPTO_OOO_WINDOW_BYTES - 1
+const QUIC_CRYPTO_OOO_MAX_RANGES:   i64 = 16;   // Max disjoint out-of-order CRYPTO ranges
+
+struct QuicCryptoOooRange {
+    start: u64 = 0,
+    end:   u64 = 0,
+}
+
 struct QuicCryptoStream {
-    consumed_offset: u64         = 0,
-    buf:             u8[..16384] = [],
+    consumed_offset: u64                      = 0,
+    buf:             u8[..16384]              = [],
+    ooo_ring:        u8[4096]                 = [0; 4096],
+    ooo_ranges:      QuicCryptoOooRange[..16] = [],
 }
 
 // Extracts 16-byte Header Protection sample from QUIC packet at offset pn_offset + 4 (RFC 9001 Section 5.4.2).
@@ -1125,46 +1136,263 @@ checkfree fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel
     return Alert.CloseNotify;
 }
 
+// RFC 9000 Section 19.6: CRYPTO Frames - Validates 62-bit varint offset and computes end offset.
+checkfree inline fn quic_crypto_frame_end(offset: u64, data_len: i64) -> u64, bool {
+    if offset > rfc::QUIC_VARINT_MAX || data_len < 0 { return 0, false; }
+    let end_offset = offset + (data_len as u64);
+    if end_offset < offset || end_offset > rfc::QUIC_VARINT_MAX { return 0, false; }
+    return end_offset, true;
+}
+
+// Computes a validated non-negative stream offset span (`hi - lo`) for RFC 9000 Section 7.5 bounds.
+checkfree inline fn quic_crypto_offset_delta(hi: u64, lo: u64) -> u64, bool {
+    if hi < lo { return 0, false; }
+    return hi - lo, true;
+}
+
+// Computes remaining contiguous free capacity in `QuicCryptoStream.buf`.
+checkfree inline fn quic_crypto_buf_free_bytes(buf: const u8[..16384]&) -> u64 {
+    if buf.len < 0 || buf.len > buf.cap { return 0; }
+    return (buf.cap as u64) - (buf.len as u64);
+}
+
 checkfree inline fn quic_crypto_buf_append(buf: u8[..16384]&, src: const u8[:]) -> bool {
-    let rem = buf.cap - buf.len;
-    if buf.len < 0 || src.len < 0 || src.len > rem {
-        return false;
-    }
+    guard src.len >= 0 && (src.len as u64) <= quic_crypto_buf_free_bytes(buf) else { return false; }
     buf.append(src);
     return true;
 }
 
-// Ingests a QUIC CRYPTO frame (RFC 9000 §19.6 / RFC 9001 §4), returning `(new_bytes, ok)`.
-// Enforces 64-bit varint bounds, buffer quota, gap rejection, duplicate drop, and overlap trimming.
+checkfree fn quic_ooo_ring_write(ring: u8[4096]&, stream_off: u64, src: const u8[:]) -> bool {
+    guard src.len >= 0 && src.len <= QUIC_CRYPTO_OOO_WINDOW_BYTES else { return false; }
+    if src.len == 0 { return true; }
+    let start = (stream_off & QUIC_CRYPTO_OOO_MASK) as i64;
+    guard start >= 0 && start < ring.len else { return false; }
+    let dst1 = ring[start..];
+    let first = if src.len < dst1.len { src.len } else { dst1.len };
+    guard first >= 0 && first <= dst1.len && first <= src.len else { return false; }
+    for i in first {
+        dst1[i] = src[i];
+    }
+    let src2 = src[first..];
+    guard src2.len <= ring.len else { return false; }
+    for i in src2.len {
+        ring[i] = src2[i];
+    }
+    return true;
+}
+
+checkfree fn quic_ooo_ring_drain_to_buf(
+    ring:       const u8[4096]&,
+    stream_off: u64,
+    count:      i64,
+    buf:        u8[..16384]&,
+) -> bool {
+    guard count >= 0 && count <= QUIC_CRYPTO_OOO_WINDOW_BYTES else { return false; }
+    if count == 0 { return true; }
+    guard (count as u64) <= quic_crypto_buf_free_bytes(buf) else { return false; }
+    let start = (stream_off & QUIC_CRYPTO_OOO_MASK) as i64;
+    guard start >= 0 && start < ring.len else { return false; }
+    let part1 = ring[start..];
+    let first = if count < part1.len { count } else { part1.len };
+    guard first >= 0 && first <= part1.len else { return false; }
+    guard quic_crypto_buf_append(buf, part1[..first]) else { return false; }
+    let rest_u, ok_rest = quic_crypto_offset_delta(count as u64, first as u64);
+    let rest = rest_u as i64;
+    guard ok_rest && rest >= 0 && rest <= ring.len else { return false; }
+    if rest > 0 {
+        guard quic_crypto_buf_append(buf, ring[..rest]) else { return false; }
+    }
+    return true;
+}
+
+checkfree fn quic_ooo_write_subrange(
+    ring:         u8[4096]&,
+    frame_offset: u64,
+    data:         const u8[:],
+    seg_start:    u64,
+    seg_end:      u64,
+) -> bool {
+    if seg_start >= seg_end { return true; }
+    let off_u, ok_off = quic_crypto_offset_delta(seg_start, frame_offset);
+    let len_u, ok_len = quic_crypto_offset_delta(seg_end, seg_start);
+    let slice_off = off_u as i64;
+    let slice_len = len_u as i64;
+    guard ok_off && ok_len && slice_off >= 0 && slice_off <= data.len else { return false; }
+    let tail = data[slice_off..];
+    guard slice_len >= 0 && slice_len <= tail.len else { return false; }
+    return quic_ooo_ring_write(ring, seg_start, tail[..slice_len]);
+}
+
+checkfree fn quic_ooo_write_uncovered(
+    stream:     QuicCryptoStream&,
+    offset:     u64,
+    end_offset: u64,
+    data:       const u8[:],
+    first:      i64,
+    after:      i64,
+) -> bool {
+    let count = stream.ooo_ranges.len;
+    guard first >= 0 && first <= after && after <= count else { return false; }
+    var cur = offset;
+    for idx in first..after {
+        let r = stream.ooo_ranges[idx];
+        guard quic_ooo_write_subrange(stream.ooo_ring, offset, data, cur, r.start) else { return false; }
+        if r.end > cur { cur = r.end; }
+    }
+    return quic_ooo_write_subrange(stream.ooo_ring, offset, data, cur, end_offset);
+}
+
+checkfree fn quic_ooo_replace_ranges(
+    ranges: QuicCryptoOooRange[..16]&,
+    first:  i64,
+    after:  i64,
+    merged: QuicCryptoOooRange,
+) -> bool {
+    let count = ranges.len;
+    guard first >= 0 && first <= after && after <= count else { return false; }
+    var next: QuicCryptoOooRange[..16] = [];
+    for i in first {
+        guard next.len < next.cap else { return false; }
+        next.push(ranges[i]);
+    }
+    guard next.len < next.cap else { return false; }
+    next.push(merged);
+    for k in after..count {
+        guard next.len < next.cap else { return false; }
+        next.push(ranges[k]);
+    }
+    ranges = next;
+    return true;
+}
+
+checkfree fn quic_ooo_find_merge_span(
+    ranges:     const QuicCryptoOooRange[..16]&,
+    offset:     u64,
+    end_offset: u64,
+) -> i64, i64, QuicCryptoOooRange {
+    let count = ranges.len;
+    var first: i64 = count;
+    for i in count {
+        if ranges[i].end >= offset {
+            first = i;
+            break;
+        }
+    }
+    var after: i64 = count;
+    var merged = QuicCryptoOooRange { start: offset, end: end_offset };
+    for i in first..count {
+        let r = ranges[i];
+        if r.start > end_offset {
+            after = i;
+            break;
+        }
+        if r.start < merged.start { merged.start = r.start; }
+        if r.end > merged.end { merged.end = r.end; }
+    }
+    return first, after, merged;
+}
+
+// RFC 9000 Section 7.5: Cryptographic Message Buffering - Stages an out-of-order CRYPTO range
+// into `stream.ooo_ring` and merges touching/overlapping intervals in `stream.ooo_ranges`.
+checkfree fn quic_crypto_stage_ooo(
+    stream:     QuicCryptoStream&,
+    offset:     u64,
+    end_offset: u64,
+    data:       const u8[:],
+) -> bool {
+    let rel_end, ok_rel = quic_crypto_offset_delta(end_offset, stream.consumed_offset);
+    guard ok_rel && rel_end <= (QUIC_CRYPTO_OOO_WINDOW_BYTES as u64) else { return false; }
+    guard rel_end <= quic_crypto_buf_free_bytes(stream.buf) else { return false; }
+
+    let first, after, merged = quic_ooo_find_merge_span(stream.ooo_ranges, offset, end_offset);
+    guard stream.ooo_ranges.len < QUIC_CRYPTO_OOO_MAX_RANGES || after > first else { return false; }
+    guard quic_ooo_write_uncovered(stream, offset, end_offset, data, first, after) else { return false; }
+    return quic_ooo_replace_ranges(stream.ooo_ranges, first, after, merged);
+}
+
+// Drains all newly contiguous or overlapped staged OOO ranges into `stream.buf`.
+checkfree fn quic_crypto_drain_ooo(stream: QuicCryptoStream&) -> bool {
+    let count = stream.ooo_ranges.len;
+    if count == 0 { return true; }
+
+    var drop_count: i64 = count;
+    for i in count {
+        let r = stream.ooo_ranges[i];
+        if r.start > stream.consumed_offset {
+            drop_count = i;
+            break;
+        }
+        if r.end > stream.consumed_offset {
+            let take_u, ok_d = quic_crypto_offset_delta(r.end, stream.consumed_offset);
+            guard ok_d else { return false; }
+            let ok_drain = quic_ooo_ring_drain_to_buf(
+                stream.ooo_ring, stream.consumed_offset, take_u as i64, stream.buf,
+            );
+            guard ok_drain else { return false; }
+            stream.consumed_offset = r.end;
+        }
+    }
+    if drop_count == 0 { return true; }
+
+    var next: QuicCryptoOooRange[..16] = [];
+    for k in drop_count..count {
+        guard next.len < next.cap else { return false; }
+        next.push(stream.ooo_ranges[k]);
+    }
+    stream.ooo_ranges = next;
+    return true;
+}
+
+// Ingests a QUIC CRYPTO frame (RFC 9000 Section 7.5, Section 19.6 / RFC 9001 Section 4),
+// returning `(new_contiguous_bytes, ok)`. Buffers bounded out-of-order ranges up to
+// `QUIC_CRYPTO_OOO_WINDOW_BYTES` and drains contiguous bytes as gaps close.
+//
+// Example:
+//   stream.consumed_offset = 0, ingest(offset=4, "BBBB") -> (0, true) [staged]
+//   ingest(offset=0, "AAAA") -> (8, true), stream.buf = "AAAABBBB", consumed_offset = 8
 checkfree fn quic_crypto_stream_ingest(
     stream: QuicCryptoStream&,
     offset: u64,
     data:   const u8[:],
 ) -> i64, bool {
     // 1. Integer overflow check: offset + data.len must not wrap around u64 or exceed 2^62 - 1
-    guard offset <= rfc::QUIC_VARINT_MAX else { return 0, false; }
-    let end_offset = offset + (data.len as u64);
-    guard end_offset >= offset && end_offset <= rfc::QUIC_VARINT_MAX else { return 0, false; }
+    let end_offset, ok_end = quic_crypto_frame_end(offset, data.len);
+    guard ok_end else { return 0, false; }
 
-    // 2. If end_offset <= stream.consumed_offset, entirely duplicate data; safely drop 0 new bytes
+    // 2. Completely duplicate or zero-length frame at or before consumed_offset: safe no-op
     if end_offset <= stream.consumed_offset {
         return 0, true;
     }
 
-    // 3. Offset gap detection: we do not permit gaps (cannot skip handshake bytes)
-    guard offset <= stream.consumed_offset else {
-        return 0, false;
+    // 3. Out-of-order frame: stage within bounded OOO window (RFC 9000 Section 7.5)
+    if offset > stream.consumed_offset {
+        let rel_end, ok_rel = quic_crypto_offset_delta(end_offset, stream.consumed_offset);
+        guard ok_rel && rel_end <= (tls_internal::MAX_QUIC_CRYPTO_BUFFER_LEN as u64) else {
+            return 0, false;
+        }
+        if data.len == 0 { return 0, true; }
+        guard quic_crypto_stage_ooo(stream, offset, end_offset, data) else { return 0, false; }
+        return 0, true;
     }
 
-    // 4. Overlapping data handling: trim already consumed prefix
-    let skip = (stream.consumed_offset - offset) as i64;
-    guard skip >= 0 && skip <= data.len else { return 0, false; }
+    // 4. Overlapping or contiguous arrival: trim already-consumed prefix
+    let skip_u, ok_skip = quic_crypto_offset_delta(stream.consumed_offset, offset);
+    let skip = skip_u as i64;
+    guard ok_skip && skip >= 0 && skip <= data.len else { return 0, false; }
     let new_data = data[skip..];
 
-    // 5. Buffer quota check
-    guard quic_crypto_buf_append(stream.buf, new_data) else {
+    // 5. Append contiguous bytes and drain any newly reachable staged OOO ranges
+    let saved_buf_len = stream.buf.len;
+    let saved_offset = stream.consumed_offset;
+    guard quic_crypto_buf_append(stream.buf, new_data) else { return 0, false; }
+    stream.consumed_offset = end_offset;
+
+    guard quic_crypto_drain_ooo(stream) else {
+        stream.buf.resize(saved_buf_len);
+        stream.consumed_offset = saved_offset;
         return 0, false;
     }
-    stream.consumed_offset += (new_data.len as u64);
-    return new_data.len, true;
+    let total_u, ok_tot = quic_crypto_offset_delta(stream.consumed_offset, saved_offset);
+    guard ok_tot else { return 0, false; }
+    return total_u as i64, true;
 }

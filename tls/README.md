@@ -61,9 +61,16 @@ enum QuicOutputEvent {
     SendAlert        { level: QuicEncryptionLevel, alert: Alert },
 }
 
+struct QuicCryptoOooRange {
+    start: u64 = 0,
+    end:   u64 = 0,
+}
+
 struct QuicCryptoStream {
-    consumed_offset: u64         = 0,
-    buf:             u8[..16384] = [],
+    consumed_offset: u64                      = 0,
+    buf:             u8[..16384]              = [],
+    ooo_ring:        u8[4096]                 = [0; 4096],
+    ooo_ranges:      QuicCryptoOooRange[..16] = [],
 }
 
 struct QuicCryptoConn {
@@ -101,9 +108,10 @@ and §5.2 `TLSCiphertext` (`16,640` bytes) limits, returning
 `compute_record_nonce` XORs the 96-bit static IV with the 64-bit sequence number
 (`iv ^ seq_num`) and rejects `0xFFFFFFFFFFFFFFFF` so sequence numbers never
 wrap. `unpack_inner_plaintext` scans backward past zero padding to extract the
-inner `ContentType` byte. `quic_crypto_stream_ingest` reassembles contiguous
-QUIC `CRYPTO` frames per encryption epoch (`QuicEncryptionLevel`), returning
-`(new_bytes, ok)`.
+inner `ContentType` byte. `quic_crypto_stream_ingest` reassembles QUIC `CRYPTO`
+frames per encryption epoch (`QuicEncryptionLevel`) with bounded out-of-order
+staging (`4,096`-byte window, up to `16` disjoint ranges per RFC 9000 §7.5),
+returning `(new_bytes, ok)`.
 
 ### Key Schedule & 0-RTT Anti-Replay (`tls/key_schedule.goose`, `namespace tls_internal`, RFC 8446 §7, §8)
 

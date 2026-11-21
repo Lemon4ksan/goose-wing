@@ -477,14 +477,26 @@ fn test_quic_crypto_gateway(t: lit::T&) {
         sub.assert_eq(stream.buf[4], 0xEE, "stream byte 4 matches");
         sub.assert_eq(stream.buf[5], 0xFF, "stream byte 5 matches");
 
-        // 4. Out-of-order frame creating a gap at offset 10 (consumed is 6)
+        // 4. Out-of-order frame at offset 10 (consumed is 6): staged per RFC 9000 §7.5, drained on gap close
         let frame_gap: u8[2] = [0x11, 0x22];
         let n_gap, ok_gap = tls::quic_crypto_stream_ingest(stream, 10, frame_gap[..]);
-        sub.assert_false(ok_gap, "frame gap rejected");
-        sub.assert_eq(n_gap, 0, "0 bytes ingested on gap");
-        sub.assert_eq(stream.consumed_offset, 6, "consumed offset unchanged on gap");
+        sub.assert_true(ok_gap, "bounded out-of-order CRYPTO frame staged");
+        sub.assert_eq(n_gap, 0, "0 contiguous bytes ingested while gap remains");
+        sub.assert_eq(stream.consumed_offset, 6, "consumed offset unchanged until gap closes");
 
-        // 5. Overflow attack: offset close to 2^64 - 1
+        let frame_fill: u8[4] = [0x66, 0x77, 0x88, 0x99];
+        let n_fill, ok_fill = tls::quic_crypto_stream_ingest(stream, 6, frame_fill[..]);
+        sub.assert_true(ok_fill, "gap-closing CRYPTO frame ingested");
+        sub.assert_eq(n_fill, 6, "4 gap bytes plus 2 staged bytes drained contiguously");
+        sub.assert_eq(stream.consumed_offset, 12, "consumed offset advanced to 12");
+        sub.assert_eq(stream.buf[10], 0x11, "drained OOO byte 10 matches");
+        sub.assert_eq(stream.buf[11], 0x22, "drained OOO byte 11 matches");
+
+        // 5. Out-of-order frame exceeding staging window fails closed
+        let _, ok_ooo_ovf = tls::quic_crypto_stream_ingest(stream, 10000, frame_gap[..]);
+        sub.assert_false(ok_ooo_ovf, "out-of-order frame beyond staging window rejected");
+
+        // 6. Overflow attack: offset close to 2^64 - 1
         let _, ok_ovf = tls::quic_crypto_stream_ingest(stream, 0xFFFFFFFFFFFFFFFE, frame1[..]);
         sub.assert_false(ok_ovf, "u64 offset overflow rejected");
     };

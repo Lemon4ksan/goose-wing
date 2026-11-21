@@ -73,8 +73,14 @@ fn transcript_replace_with_message_hash(t: Transcript&, hash_id: u8, hash_len: u
 
 // Mixes OS kernel CSPRNG (`RtlGenRandom` / `getrandom`), hardware monotonic timer, wall clock,
 // entropy pool, and sequence counter using Fast-Key-Erasure / NIST SP 800-90A domain-separated
-// SHA-256 ratcheting (Invariant 16).
+// SHA-256 ratcheting (Invariant 16). Returns deterministic `core::sim_rng_fill` bytes directly
+// when DST simulation entropy is active so repeated seeded runs remain isolated.
 fn random_bytes_32() -> u8[32] {
+    if core::sim_rng_is_active() {
+        var sim_out: u8[32] = [0; 32];
+        let _ = core::sim_rng_fill(sim_out[..]);
+        return sim_out;
+    }
     var os_seed: u8[32] = [0; 32];
     if tls_internal::native_tls_csprng_bytes(os_seed[..]) == 0 {
         for i in 32 {

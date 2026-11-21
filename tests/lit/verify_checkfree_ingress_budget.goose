@@ -300,8 +300,10 @@ fn test_tls_asn1_adversarial_bounds() {
     assert(!hp_bad && !hp_short);
 
     var qcs = tls::QuicCryptoStream { .. };
-    let _, qcs_gap = tls::quic_crypto_stream_ingest(qcs, 10, "abc");
-    assert(!qcs_gap && qcs.buf.len == 0);
+    let qcs_ooo_n, qcs_ooo_ok = tls::quic_crypto_stream_ingest(qcs, 10, "abc");
+    assert(qcs_ooo_ok && qcs_ooo_n == 0 && qcs.buf.len == 0 && qcs.ooo_ranges.len == 1);
+    let _, qcs_ovf = tls::quic_crypto_stream_ingest(qcs, 20000, "abc");
+    assert(!qcs_ovf && qcs.buf.len == 0 && qcs.ooo_ranges.len == 1);
 
     // 2. ASN.1 DER length-of-length overflow, non-canonical forms, INTEGER, and BIT STRING
     let b_indef: const u8[2] = [0x30, 0x80];

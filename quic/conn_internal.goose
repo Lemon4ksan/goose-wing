@@ -651,6 +651,8 @@ fn dispatch_session_frame(conn: quic::QuicConnection&, frame: const quic::QuicFr
     return quic::ProcessResult { handled: false, needs_ack: false };
 }
 
+// RFC 9000 Section 7.5: Cryptographic Message Buffering - Stage out-of-order CRYPTO ranges per
+// epoch; close with CRYPTO_BUFFER_EXCEEDED only when buffering limits or offset bounds fail.
 fn dispatch_crypto_inbound(
     conn:  quic::QuicConnection&,
     frame: const quic::QuicFrame&,
@@ -659,18 +661,14 @@ fn dispatch_crypto_inbound(
     guard frame.payload.len > 0 else {
         return quic::ProcessResult { handled: true, needs_ack: true };
     }
-    var ok = false;
+    var stream .= conn.app_crypto;
     if htype == quic::QuicHeaderType.Initial {
-        let _, ingested = tls::quic_crypto_stream_ingest(conn.initial_crypto, frame.offset, frame.payload);
-        ok = ingested;
+        stream .= conn.initial_crypto;
     } else if htype == quic::QuicHeaderType.Handshake {
-        let _, ingested = tls::quic_crypto_stream_ingest(conn.handshake_crypto, frame.offset, frame.payload);
-        ok = ingested;
-    } else {
-        let _, ingested = tls::quic_crypto_stream_ingest(conn.app_crypto, frame.offset, frame.payload);
-        ok = ingested;
+        stream .= conn.handshake_crypto;
     }
-    guard ok else {
+    let _, ingested = tls::quic_crypto_stream_ingest(stream, frame.offset, frame.payload);
+    guard ingested else {
         quic::close(conn, rfc::QUIC_ERR_CRYPTO_BUFFER_EXCEEDED);
         return quic::ProcessResult { handled: false, needs_ack: false };
     }

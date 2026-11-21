@@ -8,6 +8,7 @@ import std;
 import os;
 import core.math.ct;
 import core.math.arithmetic;
+import core.time.sim;
 
 // ---- time: wall-clock instant & civil projection ---------------------------
 
@@ -20,6 +21,9 @@ struct Time {
 }
 
 fn now() -> Time {
+    if sim_clock_is_active() {
+        return unix_nano(sim_now_ns());
+    }
     return unix_nano(time_ns());
 }
 
