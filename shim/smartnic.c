@@ -320,18 +320,14 @@ int32_t wing_smartnic_probe(void) {
     return 0;
 }
 
-int32_t wing_smartnic_probe_ktls(void) {
-    return -1;
-}
+int32_t wing_smartnic_probe_ktls(void) { return -1; }
 
 int32_t wing_smartnic_enable_ktls(int64_t fd) {
     (void)fd;
     return -1;
 }
 
-void wing_smartnic_abort_ktls(int64_t fd) {
-    (void)fd;
-}
+void wing_smartnic_abort_ktls(int64_t fd) { (void)fd; }
 
 int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
                                           wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
@@ -385,9 +381,7 @@ int32_t wing_smartnic_enable_ktls(int64_t fd) {
     (void)fd;
     return -ENOSYS;
 }
-void wing_smartnic_abort_ktls(int64_t fd) {
-    (void)fd;
-}
+void wing_smartnic_abort_ktls(int64_t fd) { (void)fd; }
 int32_t wing_smartnic_set_hardware_tls_tx(int64_t fd, uint16_t version, uint16_t cipher_type, wing_bytes_ro key,
                                           wing_bytes_ro iv, wing_bytes_ro salt, wing_bytes_ro rec_seq) {
     (void)fd;

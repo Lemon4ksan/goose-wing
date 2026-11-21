@@ -1086,7 +1086,7 @@ int64_t wing_hpack_huff_decode(wing_bytes_ro src, wing_bytes_rw dst, wing_u32_ro
         uint32_t d1 = tbl[((uint32_t)state << 4) | (c >> 4)];
         uint8_t f1 = (uint8_t)(d1 >> 8);
         if (f1 & 0x04) return -1; // HUFF_FAIL
-        if (f1 & 0x02) { // HUFF_SYM
+        if (f1 & 0x02) {          // HUFF_SYM
             if (out_idx >= d_len) return -1;
             out[out_idx++] = (uint8_t)(d1 >> 16);
             last_sym_byte = next_i;
@@ -1096,7 +1096,7 @@ int64_t wing_hpack_huff_decode(wing_bytes_ro src, wing_bytes_rw dst, wing_u32_ro
         uint32_t d2 = tbl[((uint32_t)state << 4) | (c & 0x0F)];
         uint8_t f2 = (uint8_t)(d2 >> 8);
         if (f2 & 0x04) return -1; // HUFF_FAIL
-        if (f2 & 0x02) { // HUFF_SYM
+        if (f2 & 0x02) {          // HUFF_SYM
             if (out_idx >= d_len) return -1;
             out[out_idx++] = (uint8_t)(d2 >> 16);
             last_sym_byte = next_i;
@@ -1126,10 +1126,10 @@ int64_t wing_hpack_huff_decode(wing_bytes_ro src, wing_bytes_rw dst, wing_u32_ro
 #define WING_SIMD_TARGET_VPCLMUL
 #endif
 
-#define WING_CAP_SSSE3     (1 << 0)
-#define WING_CAP_PCLMUL    (1 << 1)
-#define WING_CAP_AVX2      (1 << 2)
-#define WING_CAP_VPCLMUL   (1 << 3)
+#define WING_CAP_SSSE3 (1 << 0)
+#define WING_CAP_PCLMUL (1 << 1)
+#define WING_CAP_AVX2 (1 << 2)
+#define WING_CAP_VPCLMUL (1 << 3)
 
 static inline int wing_compress_cpu_caps(void) {
 #if defined(__GNUC__) || defined(__clang__)
@@ -1187,17 +1187,17 @@ static inline int wing_compress_cpu_caps(void) {
 
 /* Reflected GF(2) folding constants for IEEE 802.3 CRC-32 (0xEDB88320):
  * P(x) = 0x104C11DB7, rk(n) = bit_reflect(x^n mod P(x), 33) */
-#define WING_CRC32_P_REFL     0x1db710641ULL
-#define WING_CRC32_MU_REFL    0x1f7011641ULL
-#define WING_CRC32_RK64       0x163cd6124ULL
-#define WING_CRC32_RK96       0x0ccaa009eULL
-#define WING_CRC32_RK160      0x1751997d0ULL
-#define WING_CRC32_RK224      0x15a546366ULL
-#define WING_CRC32_RK288      0x0f1da05aaULL
-#define WING_CRC32_RK480      0x1c6e41596ULL
-#define WING_CRC32_RK544      0x154442bd4ULL
-#define WING_CRC32_RK992      0x14a7fe880ULL
-#define WING_CRC32_RK1056     0x1e88ef372ULL
+#define WING_CRC32_P_REFL 0x1db710641ULL
+#define WING_CRC32_MU_REFL 0x1f7011641ULL
+#define WING_CRC32_RK64 0x163cd6124ULL
+#define WING_CRC32_RK96 0x0ccaa009eULL
+#define WING_CRC32_RK160 0x1751997d0ULL
+#define WING_CRC32_RK224 0x15a546366ULL
+#define WING_CRC32_RK288 0x0f1da05aaULL
+#define WING_CRC32_RK480 0x1c6e41596ULL
+#define WING_CRC32_RK544 0x154442bd4ULL
+#define WING_CRC32_RK992 0x14a7fe880ULL
+#define WING_CRC32_RK1056 0x1e88ef372ULL
 
 static uint32_t wing_crc32_tables[8][256];
 static int wing_crc32_tables_ready = 0;
@@ -1210,7 +1210,8 @@ static inline void wing_crc32_ensure_tables(void) {
 #endif
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t c = i;
-        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320U & -(c & 1U));
+        for (int k = 0; k < 8; k++)
+            c = (c >> 1) ^ (0xEDB88320U & -(c & 1U));
         wing_crc32_tables[0][i] = c;
     }
     for (uint32_t i = 0; i < 256; i++) {
@@ -1234,14 +1235,10 @@ static inline uint32_t wing_crc32_scalar_tail(uint32_t crc, const uint8_t *p, in
         memcpy(&lo, p, 4);
         memcpy(&hi, p + 4, 4);
         lo ^= crc;
-        crc = wing_crc32_tables[7][lo & 0xFFU]
-            ^ wing_crc32_tables[6][(lo >> 8) & 0xFFU]
-            ^ wing_crc32_tables[5][(lo >> 16) & 0xFFU]
-            ^ wing_crc32_tables[4][lo >> 24]
-            ^ wing_crc32_tables[3][hi & 0xFFU]
-            ^ wing_crc32_tables[2][(hi >> 8) & 0xFFU]
-            ^ wing_crc32_tables[1][(hi >> 16) & 0xFFU]
-            ^ wing_crc32_tables[0][hi >> 24];
+        crc = wing_crc32_tables[7][lo & 0xFFU] ^ wing_crc32_tables[6][(lo >> 8) & 0xFFU] ^
+              wing_crc32_tables[5][(lo >> 16) & 0xFFU] ^ wing_crc32_tables[4][lo >> 24] ^
+              wing_crc32_tables[3][hi & 0xFFU] ^ wing_crc32_tables[2][(hi >> 8) & 0xFFU] ^
+              wing_crc32_tables[1][(hi >> 16) & 0xFFU] ^ wing_crc32_tables[0][hi >> 24];
         p += 8;
         len -= 8;
     }
@@ -1287,22 +1284,30 @@ static uint32_t wing_crc32_pclmul(uint32_t initial, const uint8_t *p, int64_t le
             __m128i y2 = _mm_loadu_si128((const __m128i *)(p + 32));
             __m128i y3 = _mm_loadu_si128((const __m128i *)(p + 48));
 
-            x0 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x0, k512, 0x00), _mm_clmulepi64_si128(x0, k512, 0x11)), y0);
-            x1 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x1, k512, 0x00), _mm_clmulepi64_si128(x1, k512, 0x11)), y1);
-            x2 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x2, k512, 0x00), _mm_clmulepi64_si128(x2, k512, 0x11)), y2);
-            x3 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x3, k512, 0x00), _mm_clmulepi64_si128(x3, k512, 0x11)), y3);
+            x0 = _mm_xor_si128(
+                _mm_xor_si128(_mm_clmulepi64_si128(x0, k512, 0x00), _mm_clmulepi64_si128(x0, k512, 0x11)), y0);
+            x1 = _mm_xor_si128(
+                _mm_xor_si128(_mm_clmulepi64_si128(x1, k512, 0x00), _mm_clmulepi64_si128(x1, k512, 0x11)), y1);
+            x2 = _mm_xor_si128(
+                _mm_xor_si128(_mm_clmulepi64_si128(x2, k512, 0x00), _mm_clmulepi64_si128(x2, k512, 0x11)), y2);
+            x3 = _mm_xor_si128(
+                _mm_xor_si128(_mm_clmulepi64_si128(x3, k512, 0x00), _mm_clmulepi64_si128(x3, k512, 0x11)), y3);
             p += 64;
             len -= 64;
         }
 
         const __m128i k128 = _mm_set_epi64x((int64_t)WING_CRC32_RK96, (int64_t)WING_CRC32_RK160);
-        x1 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x0, k128, 0x00), _mm_clmulepi64_si128(x0, k128, 0x11)), x1);
-        x2 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x1, k128, 0x00), _mm_clmulepi64_si128(x1, k128, 0x11)), x2);
-        x3 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x2, k128, 0x00), _mm_clmulepi64_si128(x2, k128, 0x11)), x3);
+        x1 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x0, k128, 0x00), _mm_clmulepi64_si128(x0, k128, 0x11)),
+                           x1);
+        x2 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x1, k128, 0x00), _mm_clmulepi64_si128(x1, k128, 0x11)),
+                           x2);
+        x3 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x2, k128, 0x00), _mm_clmulepi64_si128(x2, k128, 0x11)),
+                           x3);
 
         while (len >= 16) {
             __m128i y = _mm_loadu_si128((const __m128i *)p);
-            x3 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x3, k128, 0x00), _mm_clmulepi64_si128(x3, k128, 0x11)), y);
+            x3 = _mm_xor_si128(
+                _mm_xor_si128(_mm_clmulepi64_si128(x3, k128, 0x00), _mm_clmulepi64_si128(x3, k128, 0x11)), y);
             p += 16;
             len -= 16;
         }
@@ -1315,7 +1320,8 @@ static uint32_t wing_crc32_pclmul(uint32_t initial, const uint8_t *p, int64_t le
         const __m128i k128 = _mm_set_epi64x((int64_t)WING_CRC32_RK96, (int64_t)WING_CRC32_RK160);
         while (len >= 16) {
             __m128i y = _mm_loadu_si128((const __m128i *)p);
-            x0 = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(x0, k128, 0x00), _mm_clmulepi64_si128(x0, k128, 0x11)), y);
+            x0 = _mm_xor_si128(
+                _mm_xor_si128(_mm_clmulepi64_si128(x0, k128, 0x00), _mm_clmulepi64_si128(x0, k128, 0x11)), y);
             p += 16;
             len -= 16;
         }
@@ -1340,40 +1346,42 @@ static uint32_t wing_crc32_vpclmul(uint32_t initial, const uint8_t *p, int64_t l
     p += 128;
     len -= 128;
 
-    const __m256i k1024 = _mm256_set_epi64x(
-        (int64_t)WING_CRC32_RK992, (int64_t)WING_CRC32_RK1056,
-        (int64_t)WING_CRC32_RK992, (int64_t)WING_CRC32_RK1056
-    );
+    const __m256i k1024 = _mm256_set_epi64x((int64_t)WING_CRC32_RK992, (int64_t)WING_CRC32_RK1056,
+                                            (int64_t)WING_CRC32_RK992, (int64_t)WING_CRC32_RK1056);
     while (len >= 128) {
         __m256i y0 = _mm256_loadu_si256((const __m256i *)(p));
         __m256i y1 = _mm256_loadu_si256((const __m256i *)(p + 32));
         __m256i y2 = _mm256_loadu_si256((const __m256i *)(p + 64));
         __m256i y3 = _mm256_loadu_si256((const __m256i *)(p + 96));
 
-        x0 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k1024, 0x00), _mm256_clmulepi64_epi128(x0, k1024, 0x11)), y0);
-        x1 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x1, k1024, 0x00), _mm256_clmulepi64_epi128(x1, k1024, 0x11)), y1);
-        x2 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x2, k1024, 0x00), _mm256_clmulepi64_epi128(x2, k1024, 0x11)), y2);
-        x3 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x3, k1024, 0x00), _mm256_clmulepi64_epi128(x3, k1024, 0x11)), y3);
+        x0 = _mm256_xor_si256(
+            _mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k1024, 0x00), _mm256_clmulepi64_epi128(x0, k1024, 0x11)), y0);
+        x1 = _mm256_xor_si256(
+            _mm256_xor_si256(_mm256_clmulepi64_epi128(x1, k1024, 0x00), _mm256_clmulepi64_epi128(x1, k1024, 0x11)), y1);
+        x2 = _mm256_xor_si256(
+            _mm256_xor_si256(_mm256_clmulepi64_epi128(x2, k1024, 0x00), _mm256_clmulepi64_epi128(x2, k1024, 0x11)), y2);
+        x3 = _mm256_xor_si256(
+            _mm256_xor_si256(_mm256_clmulepi64_epi128(x3, k1024, 0x00), _mm256_clmulepi64_epi128(x3, k1024, 0x11)), y3);
         p += 128;
         len -= 128;
     }
 
-    const __m256i k512 = _mm256_set_epi64x(
-        (int64_t)WING_CRC32_RK480, (int64_t)WING_CRC32_RK544,
-        (int64_t)WING_CRC32_RK480, (int64_t)WING_CRC32_RK544
-    );
-    x0 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k512, 0x00), _mm256_clmulepi64_epi128(x0, k512, 0x11)), x2);
-    x1 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x1, k512, 0x00), _mm256_clmulepi64_epi128(x1, k512, 0x11)), x3);
+    const __m256i k512 = _mm256_set_epi64x((int64_t)WING_CRC32_RK480, (int64_t)WING_CRC32_RK544,
+                                           (int64_t)WING_CRC32_RK480, (int64_t)WING_CRC32_RK544);
+    x0 = _mm256_xor_si256(
+        _mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k512, 0x00), _mm256_clmulepi64_epi128(x0, k512, 0x11)), x2);
+    x1 = _mm256_xor_si256(
+        _mm256_xor_si256(_mm256_clmulepi64_epi128(x1, k512, 0x00), _mm256_clmulepi64_epi128(x1, k512, 0x11)), x3);
 
-    const __m256i k256 = _mm256_set_epi64x(
-        (int64_t)WING_CRC32_RK224, (int64_t)WING_CRC32_RK288,
-        (int64_t)WING_CRC32_RK224, (int64_t)WING_CRC32_RK288
-    );
-    x0 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k256, 0x00), _mm256_clmulepi64_epi128(x0, k256, 0x11)), x1);
+    const __m256i k256 = _mm256_set_epi64x((int64_t)WING_CRC32_RK224, (int64_t)WING_CRC32_RK288,
+                                           (int64_t)WING_CRC32_RK224, (int64_t)WING_CRC32_RK288);
+    x0 = _mm256_xor_si256(
+        _mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k256, 0x00), _mm256_clmulepi64_epi128(x0, k256, 0x11)), x1);
 
     while (len >= 32) {
         __m256i y = _mm256_loadu_si256((const __m256i *)p);
-        x0 = _mm256_xor_si256(_mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k256, 0x00), _mm256_clmulepi64_epi128(x0, k256, 0x11)), y);
+        x0 = _mm256_xor_si256(
+            _mm256_xor_si256(_mm256_clmulepi64_epi128(x0, k256, 0x00), _mm256_clmulepi64_epi128(x0, k256, 0x11)), y);
         p += 32;
         len -= 32;
     }
@@ -1381,7 +1389,8 @@ static uint32_t wing_crc32_vpclmul(uint32_t initial, const uint8_t *p, int64_t l
     __m128i lo = _mm256_castsi256_si128(x0);
     __m128i hi = _mm256_extracti128_si256(x0, 1);
     const __m128i k128 = _mm_set_epi64x((int64_t)WING_CRC32_RK96, (int64_t)WING_CRC32_RK160);
-    __m128i s = _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(lo, k128, 0x00), _mm_clmulepi64_si128(lo, k128, 0x11)), hi);
+    __m128i s =
+        _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128(lo, k128, 0x00), _mm_clmulepi64_si128(lo, k128, 0x11)), hi);
 
     while (len >= 16) {
         __m128i y = _mm_loadu_si128((const __m128i *)p);
@@ -1402,9 +1411,7 @@ static uint32_t wing_adler32_ssse3(uint32_t initial, const uint8_t *p, int64_t l
 
     const __m128i zero = _mm_setzero_si128();
     const __m128i ones16 = _mm_set1_epi16(1);
-    const __m128i weights = _mm_set_epi8(
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
-    );
+    const __m128i weights = _mm_set_epi8(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
 
     while (len >= 16) {
         int64_t blocks = len >> 4;
@@ -1424,10 +1431,10 @@ static uint32_t wing_adler32_ssse3(uint32_t initial, const uint8_t *p, int64_t l
         }
         len -= blocks << 4;
 
-        uint64_t sum1 = (uint64_t)(uint32_t)_mm_cvtsi128_si32(vs1)
-                      + (uint64_t)(uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(vs1, 8));
-        uint64_t sum_prefix = (uint64_t)(uint32_t)_mm_cvtsi128_si32(vs2_prefix)
-                            + (uint64_t)(uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(vs2_prefix, 8));
+        uint64_t sum1 =
+            (uint64_t)(uint32_t)_mm_cvtsi128_si32(vs1) + (uint64_t)(uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(vs1, 8));
+        uint64_t sum_prefix = (uint64_t)(uint32_t)_mm_cvtsi128_si32(vs2_prefix) +
+                              (uint64_t)(uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(vs2_prefix, 8));
         __m128i w = _mm_add_epi32(vs2_w, _mm_srli_si128(vs2_w, 8));
         w = _mm_add_epi32(w, _mm_srli_si128(w, 4));
         uint64_t sum_w = (uint64_t)(uint32_t)_mm_cvtsi128_si32(w);
@@ -1455,10 +1462,8 @@ static uint32_t wing_adler32_avx2(uint32_t initial, const uint8_t *p, int64_t le
 
     const __m256i zero = _mm256_setzero_si256();
     const __m256i ones16 = _mm256_set1_epi16(1);
-    const __m256i weights = _mm256_set_epi8(
-         1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16,
-        17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
-    );
+    const __m256i weights = _mm256_set_epi8(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                                            22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32);
 
     while (len >= 32) {
         int64_t blocks = len >> 5;
@@ -1479,12 +1484,12 @@ static uint32_t wing_adler32_avx2(uint32_t initial, const uint8_t *p, int64_t le
         len -= blocks << 5;
 
         __m128i s1_128 = _mm_add_epi32(_mm256_castsi256_si128(vs1), _mm256_extracti128_si256(vs1, 1));
-        uint64_t sum1 = (uint64_t)(uint32_t)_mm_extract_epi32(s1_128, 0)
-                      + (uint64_t)(uint32_t)_mm_extract_epi32(s1_128, 2);
+        uint64_t sum1 =
+            (uint64_t)(uint32_t)_mm_extract_epi32(s1_128, 0) + (uint64_t)(uint32_t)_mm_extract_epi32(s1_128, 2);
 
         __m128i p_128 = _mm_add_epi32(_mm256_castsi256_si128(vs2_prefix), _mm256_extracti128_si256(vs2_prefix, 1));
-        uint64_t sum_prefix = (uint64_t)(uint32_t)_mm_extract_epi32(p_128, 0)
-                            + (uint64_t)(uint32_t)_mm_extract_epi32(p_128, 2);
+        uint64_t sum_prefix =
+            (uint64_t)(uint32_t)_mm_extract_epi32(p_128, 0) + (uint64_t)(uint32_t)_mm_extract_epi32(p_128, 2);
 
         __m128i w_128 = _mm_add_epi32(_mm256_castsi256_si128(vs2_w), _mm256_extracti128_si256(vs2_w, 1));
         w_128 = _mm_add_epi32(w_128, _mm_srli_si128(w_128, 8));
@@ -1539,7 +1544,10 @@ uint32_t wing_simd_adler32_update(uint32_t initial, wing_bytes_ro slice) {
         int64_t chunk = len > 5552 ? 5552 : len;
         len -= chunk;
         while (chunk >= 16) {
-            for (int k = 0; k < 16; k++) { s1 += p[k]; s2 += s1; }
+            for (int k = 0; k < 16; k++) {
+                s1 += p[k];
+                s2 += s1;
+            }
             p += 16;
             chunk -= 16;
         }
@@ -1570,8 +1578,8 @@ typedef struct {
 static uint16_t wing_fix_lit_pack[288];
 static uint32_t wing_fix_len_pack[259];
 static uint32_t wing_fix_dist_fast[513];
-static uint8_t  wing_rev5_lut[32];
-static int      wing_fix_enc_ready = 0;
+static uint8_t wing_rev5_lut[32];
+static int wing_fix_enc_ready = 0;
 
 static inline uint32_t wing_bitrev_u32(uint32_t v, int bits) {
     uint32_t r = 0;
@@ -1597,12 +1605,10 @@ static void wing_init_fix_enc_tables(void) {
     for (uint32_t s = 280; s <= 287; s++)
         wing_fix_lit_pack[s] = (uint16_t)((wing_bitrev_u32(0xC0U + (s - 280U), 8) << 4) | 8U);
 
-    static const uint16_t lbase[29] = {
-        3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258
-    };
-    static const uint8_t lextra[29] = {
-        0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0
-    };
+    static const uint16_t lbase[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                       31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+    static const uint8_t lextra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                       2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
     for (int idx = 0; idx < 29; idx++) {
         uint32_t sym = 257U + (uint32_t)idx;
         uint32_t p = wing_fix_lit_pack[sym];
@@ -1622,13 +1628,11 @@ static void wing_init_fix_enc_tables(void) {
         wing_rev5_lut[d] = (uint8_t)wing_bitrev_u32(d, 5);
     }
 
-    static const uint16_t dbase[30] = {
-        1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,
-        1025,1537,2049,3073,4097,6145,8193,12289,16385,24577
-    };
-    static const uint8_t dextra[30] = {
-        0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13
-    };
+    static const uint16_t dbase[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                                       33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                                       1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+    static const uint8_t dextra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                       6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
     for (int idx = 0; idx < 18; idx++) {
         uint32_t eb = dextra[idx];
         uint32_t cnt = 1U << eb;
@@ -1667,9 +1671,7 @@ static inline int wing_ctz_u64(uint64_t v) {
 #endif
 }
 
-static inline void wing_bw_put(
-    uint64_t *bits, int *bc, uint32_t val, int nb, uint8_t *dst, int64_t *out_idx
-) {
+static inline void wing_bw_put(uint64_t *bits, int *bc, uint32_t val, int nb, uint8_t *dst, int64_t *out_idx) {
     *bits |= ((uint64_t)val) << *bc;
     *bc += nb;
     if (*bc >= 32) {
@@ -1681,9 +1683,7 @@ static inline void wing_bw_put(
     }
 }
 
-static inline void wing_emit_dist_fast(
-    uint32_t dist, uint64_t *bits, int *bc, uint8_t *dst, int64_t *out_idx
-) {
+static inline void wing_emit_dist_fast(uint32_t dist, uint64_t *bits, int *bc, uint8_t *dst, int64_t *out_idx) {
     if (dist <= 512U) {
         uint32_t dp = wing_fix_dist_fast[dist];
         wing_bw_put(bits, bc, dp >> 5, (int)(dp & 31U), dst, out_idx);
@@ -1733,17 +1733,17 @@ static inline int32_t wing_extend_match_avx2(const uint8_t *p, const uint8_t *c,
         if (diff != 0) return (int32_t)(l + (wing_ctz_u64(diff) >> 3));
         l += 8;
     }
-    while (l < max_l && p[l] == c[l]) l++;
+    while (l < max_l && p[l] == c[l])
+        l++;
     return (int32_t)l;
 }
 
 #define WING_LZ_HASH_MUL 0x1E35A7BDU
 
 WING_SIMD_TARGET_AVX2_BMI
-static int64_t wing_deflate_l1_chunk_avx2(
-    const uint8_t *src, int64_t chunk_start, int64_t chunk_end, int is_final,
-    uint32_t *head, int64_t head_len, uint64_t *bit_state, uint8_t *dst, int64_t dst_cap
-) {
+static int64_t wing_deflate_l1_chunk_avx2(const uint8_t *src, int64_t chunk_start, int64_t chunk_end, int is_final,
+                                          uint32_t *head, int64_t head_len, uint64_t *bit_state, uint8_t *dst,
+                                          int64_t dst_cap) {
     int64_t chunk_len = chunk_end - chunk_start;
     if (chunk_len < 0 || chunk_len > 65535) return -1;
     uint64_t bits = bit_state[0];
@@ -1754,10 +1754,22 @@ static int64_t wing_deflate_l1_chunk_avx2(
 
     if (chunk_len == 0) {
         wing_bw_put(&bits, &bc, (uint32_t)(is_final ? 1U : 0U), 3, dst, &out_idx);
-        while (bc >= 8) { dst[out_idx++] = (uint8_t)bits; bits >>= 8; bc -= 8; }
-        if (bc > 0) { dst[out_idx++] = (uint8_t)bits; bits = 0; bc = 0; }
-        dst[out_idx++] = 0; dst[out_idx++] = 0; dst[out_idx++] = 0xFF; dst[out_idx++] = 0xFF;
-        bit_state[0] = bits; bit_state[1] = (uint64_t)bc;
+        while (bc >= 8) {
+            dst[out_idx++] = (uint8_t)bits;
+            bits >>= 8;
+            bc -= 8;
+        }
+        if (bc > 0) {
+            dst[out_idx++] = (uint8_t)bits;
+            bits = 0;
+            bc = 0;
+        }
+        dst[out_idx++] = 0;
+        dst[out_idx++] = 0;
+        dst[out_idx++] = 0xFF;
+        dst[out_idx++] = 0xFF;
+        bit_state[0] = bits;
+        bit_state[1] = (uint64_t)bc;
         return out_idx;
     }
 
@@ -1801,7 +1813,10 @@ static int64_t wing_deflate_l1_chunk_avx2(
                 continue;
             }
         }
-        if (matches == 0 && pos >= probe_mark) { bail_stored = 1; break; }
+        if (matches == 0 && pos >= probe_mark) {
+            bail_stored = 1;
+            break;
+        }
         miss++;
         int64_t step = (int64_t)(miss >> 5);
         int64_t stop = pos + step;
@@ -1818,7 +1833,11 @@ static int64_t wing_deflate_l1_chunk_avx2(
             wing_bw_put(&bits, &bc, lit_p >> 4, (int)(lit_p & 15U), dst, &out_idx);
         }
         wing_bw_put(&bits, &bc, 0U, 7, dst, &out_idx);
-        while (bc >= 8) { dst[out_idx++] = (uint8_t)bits; bits >>= 8; bc -= 8; }
+        while (bc >= 8) {
+            dst[out_idx++] = (uint8_t)bits;
+            bits >>= 8;
+            bc -= 8;
+        }
         int64_t emitted_bytes = out_idx + ((bc - saved_bc + 7) >> 3);
         if (emitted_bytes >= stored_bytes) bail_stored = 1;
     }
@@ -1828,8 +1847,16 @@ static int64_t wing_deflate_l1_chunk_avx2(
         bits = saved_bits;
         bc = saved_bc;
         wing_bw_put(&bits, &bc, (uint32_t)(is_final ? 1U : 0U), 3, dst, &out_idx);
-        while (bc >= 8) { dst[out_idx++] = (uint8_t)bits; bits >>= 8; bc -= 8; }
-        if (bc > 0) { dst[out_idx++] = (uint8_t)bits; bits = 0; bc = 0; }
+        while (bc >= 8) {
+            dst[out_idx++] = (uint8_t)bits;
+            bits >>= 8;
+            bc -= 8;
+        }
+        if (bc > 0) {
+            dst[out_idx++] = (uint8_t)bits;
+            bits = 0;
+            bc = 0;
+        }
         uint16_t blen = (uint16_t)chunk_len;
         uint16_t bnlen = (uint16_t)(~blen);
         memcpy(dst + out_idx, &blen, 2);
@@ -1849,10 +1876,8 @@ static int64_t wing_deflate_l1_chunk_avx2(
 }
 #endif
 
-int64_t wing_simd_deflate_l1_chunk(
-    wing_bytes_ro src, int64_t chunk_start, int64_t chunk_end, int32_t is_final,
-    wing_u32_rw head, wing_u64_rw bit_state, wing_bytes_rw dst
-) {
+int64_t wing_simd_deflate_l1_chunk(wing_bytes_ro src, int64_t chunk_start, int64_t chunk_end, int32_t is_final,
+                                   wing_u32_rw head, wing_u64_rw bit_state, wing_bytes_rw dst) {
     if (!head.data || head.len < 64 || (head.len & (head.len - 1)) != 0) return -1;
     if (!bit_state.data || bit_state.len < 2) return -1;
     if (!dst.data || dst.len <= 0) return -1;
@@ -1861,10 +1886,8 @@ int64_t wing_simd_deflate_l1_chunk(
 #if defined(__x86_64__) || defined(_M_X64)
     if (wing_compress_cpu_caps() & WING_CAP_AVX2) {
         wing_init_fix_enc_tables();
-        return wing_deflate_l1_chunk_avx2(
-            src.data, chunk_start, chunk_end, is_final,
-            head.data, head.len, bit_state.data, dst.data, dst.len
-        );
+        return wing_deflate_l1_chunk_avx2(src.data, chunk_start, chunk_end, is_final, head.data, head.len,
+                                          bit_state.data, dst.data, dst.len);
     }
 #endif
     return -2;

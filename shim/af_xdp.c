@@ -81,8 +81,8 @@ static wing_xsk_loopback_slot *find_loopback_slot(int64_t xsk_fd) {
     return &g_xsk_loopback[idx];
 }
 
-static int validate_umem_span(const uint8_t *base, uint64_t umem_len, uint32_t chunk_size,
-                              uint64_t addr, uint64_t span_len) {
+static int validate_umem_span(const uint8_t *base, uint64_t umem_len, uint32_t chunk_size, uint64_t addr,
+                              uint64_t span_len) {
     if (!base || umem_len == 0) {
         return 0;
     }
@@ -96,8 +96,8 @@ static int validate_umem_span(const uint8_t *base, uint64_t umem_len, uint32_t c
     return 1;
 }
 
-int64_t wing_af_xdp_open_loopback(uint32_t num_frames, uint32_t frame_size,
-                                  uint64_t *umem_addr_out, uint64_t *umem_len_out) {
+int64_t wing_af_xdp_open_loopback(uint32_t num_frames, uint32_t frame_size, uint64_t *umem_addr_out,
+                                  uint64_t *umem_len_out) {
     if (num_frames == 0 || num_frames > 4096 || frame_size == 0 || frame_size > 4096) {
         return -EINVAL;
     }

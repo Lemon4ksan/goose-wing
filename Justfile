@@ -82,6 +82,24 @@ bench scenario="pipelined" duration="5":
 profile *args:
     python tools/profile.py {{ args }}
 
+# Format all C shims and fuzz driver with clang-format
+[unix]
+c-fmt:
+    clang-format --style=file:shim/.clang-format -i shim/*.c shim/*.h tests/fuzz/libfuzzer_driver.c
+
+[windows]
+c-fmt:
+    Get-ChildItem shim\*.c, shim\*.h, tests\fuzz\libfuzzer_driver.c | ForEach-Object { clang-format --style=file:shim/.clang-format -i $_.FullName }
+
+# Verify C shim and fuzz driver formatting without modifying files
+[unix]
+c-fmt-check:
+    clang-format --style=file:shim/.clang-format --dry-run --Werror shim/*.c shim/*.h tests/fuzz/libfuzzer_driver.c
+
+[windows]
+c-fmt-check:
+    Get-ChildItem shim\*.c, shim\*.h, tests\fuzz\libfuzzer_driver.c | ForEach-Object { clang-format --style=file:shim/.clang-format --dry-run --Werror $_.FullName; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+
 # Compile C acceleration shims with strict warning flags
 [unix]
 shims:

@@ -71,9 +71,7 @@ typedef struct {
 } wing_cqes_rw;
 #pragma pack(pop)
 
-uint64_t wing_uring_slice_addr(wing_uring_bytes_ro buf) {
-    return (uint64_t)(uintptr_t)buf.data;
-}
+uint64_t wing_uring_slice_addr(wing_uring_bytes_ro buf) { return (uint64_t)(uintptr_t)buf.data; }
 
 #if defined(__linux__)
 #include <unistd.h>

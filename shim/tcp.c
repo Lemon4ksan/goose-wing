@@ -1530,7 +1530,8 @@ int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
     static volatile PVOID g_pfnBCryptGenRandom = NULL;
     static volatile PVOID g_pfnRtlGenRandom = NULL;
 
-    BCryptGenRandomFn pfnBCrypt = (BCryptGenRandomFn)InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, NULL, NULL);
+    BCryptGenRandomFn pfnBCrypt =
+        (BCryptGenRandomFn)InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, NULL, NULL);
     if (pfnBCrypt == NULL) {
         HMODULE hBCrypt = LoadLibraryA("bcrypt.dll");
         if (hBCrypt != NULL) {
@@ -2550,7 +2551,8 @@ static int wing_parse_ip_sockaddr(const char *ip_str, uint16_t port, int force_f
     return -1;
 }
 
-static int32_t wing_format_sockaddr_ip_port(const struct sockaddr_storage *ss, wing_bytes_rw out_ip, uint16_t *out_port) {
+static int32_t wing_format_sockaddr_ip_port(const struct sockaddr_storage *ss, wing_bytes_rw out_ip,
+                                            uint16_t *out_port) {
     char buf[INET6_ADDRSTRLEN];
     buf[0] = '\0';
     uint16_t port = 0;
@@ -3137,8 +3139,8 @@ int32_t wing_udp_sendto_dual(int64_t sock_fd, wing_bytes_ro data, wing_bytes_ro 
 #ifdef _WIN32
     int sent = sendto((SOCKET)sock_fd, (const char *)data.data, (int)data.len, 0, (struct sockaddr *)&ss, ss_len);
 #else
-    int sent = (int)sendto((int)sock_fd, data.data, (size_t)data.len, MSG_NOSIGNAL, (struct sockaddr *)&ss,
-                           (socklen_t)ss_len);
+    int sent =
+        (int)sendto((int)sock_fd, data.data, (size_t)data.len, MSG_NOSIGNAL, (struct sockaddr *)&ss, (socklen_t)ss_len);
 #endif
     if (sent >= 0) return (int32_t)sent;
     int err = wing_last_sock_err();
@@ -3163,8 +3165,8 @@ int32_t wing_udp_recvfrom_dual(int64_t sock_fd, wing_bytes_rw out_buf, wing_byte
 #else
     socklen_t addr_len = (socklen_t)sizeof(peer_ss);
 #endif
-    int got = recvfrom((SOCKET)sock_fd, (char *)out_buf.data, (int)out_buf.len, 0, (struct sockaddr *)&peer_ss,
-                       &addr_len);
+    int got =
+        recvfrom((SOCKET)sock_fd, (char *)out_buf.data, (int)out_buf.len, 0, (struct sockaddr *)&peer_ss, &addr_len);
     if (got < 0) {
         int err = wing_last_sock_err();
 #ifdef _WIN32
@@ -3269,14 +3271,14 @@ static void wing_win_crt_signal_handler(int sig) {
 
 static BOOL WINAPI wing_win_console_ctrl_handler(DWORD ctrl_type) {
     switch (ctrl_type) {
-        case CTRL_C_EVENT:
-        case CTRL_BREAK_EVENT:
-        case CTRL_CLOSE_EVENT:
-        case CTRL_SHUTDOWN_EVENT:
-            g_wing_stop_requested = 1;
-            return TRUE;
-        default:
-            return FALSE;
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        g_wing_stop_requested = 1;
+        return TRUE;
+    default:
+        return FALSE;
     }
 }
 
@@ -3290,9 +3292,7 @@ int32_t wing_install_shutdown_signals(void) {
     return 0;
 }
 #elif defined(__wasm__)
-int32_t wing_install_shutdown_signals(void) {
-    return 0;
-}
+int32_t wing_install_shutdown_signals(void) { return 0; }
 #else
 static void wing_posix_stop_handler(int sig) {
     (void)sig;
@@ -3326,13 +3326,9 @@ int32_t wing_install_shutdown_signals(void) {
 }
 #endif
 
-int32_t wing_shutdown_requested(void) {
-    return g_wing_stop_requested != 0 ? 1 : 0;
-}
+int32_t wing_shutdown_requested(void) { return g_wing_stop_requested != 0 ? 1 : 0; }
 
-void wing_request_shutdown(void) {
-    g_wing_stop_requested = 1;
-}
+void wing_request_shutdown(void) { g_wing_stop_requested = 1; }
 
 void wing_reset_shutdown_signals(void) {
     g_wing_stop_requested = 0;
@@ -3356,7 +3352,8 @@ int32_t wing_host_platform(void) {
     return 0;
 #elif defined(__linux__)
     return 1;
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) ||                     \
+    defined(__DragonFly__)
     return 2;
 #else
     return 3;

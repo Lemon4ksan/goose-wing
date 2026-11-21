@@ -30,6 +30,16 @@ if [ -n "$STAGED_MD_FILES" ] && { [ -f "$GML_BIN" ] || command -v "$GML_BIN" >/d
     fi
 fi
 
+# Find all staged C shim / fuzz driver files and check with clang-format if installed
+STAGED_C_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^(shim/.*\.[ch]|tests/fuzz/libfuzzer_driver\.c)$' || true)
+if [ -n "$STAGED_C_FILES" ] && command -v clang-format >/dev/null 2>&1 && [ -f "shim/.clang-format" ]; then
+    echo "[pre-commit] Checking C formatting with clang-format..."
+    if ! clang-format --style=file:shim/.clang-format --dry-run --Werror $STAGED_C_FILES; then
+        echo "[pre-commit] ERROR: C formatting check failed. Run: just c-fmt"
+        exit 1
+    fi
+fi
+
 # Find all staged .goose files
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.goose$' || true)
 

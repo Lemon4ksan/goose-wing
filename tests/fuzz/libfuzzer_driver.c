@@ -138,11 +138,7 @@ typedef struct {
     SIZE_T PeakPagefileUsage;
 } WingProcessMemoryCounters;
 
-typedef BOOL(WINAPI *WingGetProcessMemoryInfoFn)(
-    HANDLE,
-    WingProcessMemoryCounters *,
-    DWORD
-);
+typedef BOOL(WINAPI *WingGetProcessMemoryInfoFn)(HANDLE, WingProcessMemoryCounters *, DWORD);
 
 NO_SANITIZE_COV static WingGetProcessMemoryInfoFn resolve_win_mem_info(void) {
     static int s_probed = 0;
@@ -203,12 +199,7 @@ NO_SANITIZE_COV static uint64_t read_process_rss_bytes(void) {
 #elif defined(__APPLE__)
     struct mach_task_basic_info info;
     mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-    kern_return_t kr = task_info(
-        mach_task_self(),
-        MACH_TASK_BASIC_INFO,
-        (task_info_t)&info,
-        &count
-    );
+    kern_return_t kr = task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count);
     if (kr != KERN_SUCCESS) {
         return 0;
     }
@@ -241,11 +232,7 @@ NO_SANITIZE_COV static void fetch_target_name(int32_t tid, char *out, size_t out
     out[copy_n] = '\0';
 }
 
-NO_SANITIZE_COV static uint64_t run_target_timed(
-    int32_t tid,
-    const uint8_t *payload,
-    size_t payload_len
-) {
+NO_SANITIZE_COV static uint64_t run_target_timed(int32_t tid, const uint8_t *payload, size_t payload_len) {
     sl_u8 slice;
     slice.data = (uint8_t *)payload;
     slice.len = (int64_t)payload_len;
@@ -265,21 +252,13 @@ NO_SANITIZE_COV static uint64_t run_target_timed(
         }
     }
 
-    if (g_abort_on_slow_input &&
-        payload_len <= MAX_INPUT_LEN &&
-        g_max_input_ms > 0 &&
+    if (g_abort_on_slow_input && payload_len <= MAX_INPUT_LEN && g_max_input_ms > 0 &&
         elapsed_ns > g_max_input_ms * 1000000ULL) {
         char name[64];
         fetch_target_name(tid, name, sizeof(name));
-        fprintf(
-            stderr,
-            "FAIL INPUT_TIME_CEILING_EXCEEDED target=%d (%s) len=%zu elapsed_ms=%.3f limit_ms=%" PRIu64 " hex=",
-            (int)tid,
-            name,
-            payload_len,
-            (double)elapsed_ns / 1e6,
-            g_max_input_ms
-        );
+        fprintf(stderr,
+                "FAIL INPUT_TIME_CEILING_EXCEEDED target=%d (%s) len=%zu elapsed_ms=%.3f limit_ms=%" PRIu64 " hex=",
+                (int)tid, name, payload_len, (double)elapsed_ns / 1e6, g_max_input_ms);
         size_t hex_n = payload_len < 32U ? payload_len : 32U;
         for (size_t i = 0; i < hex_n; i++) {
             fprintf(stderr, "%02x", (unsigned)payload[i]);
@@ -332,7 +311,7 @@ NO_SANITIZE_COV int LLVMFuzzerInitialize(int *argc, char ***argv) {
 NO_SANITIZE_COV int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (!g_initialized) {
         int dummy_argc = 1;
-        char *dummy_argv_buf[] = { (char *)"wing_fuzzer", NULL };
+        char *dummy_argv_buf[] = {(char *)"wing_fuzzer", NULL};
         char **dummy_argv = dummy_argv_buf;
         LLVMFuzzerInitialize(&dummy_argc, &dummy_argv);
     }
@@ -379,18 +358,11 @@ NO_SANITIZE_COV static uint64_t xorshift64(uint64_t *state) {
     return x * 0x2545F4914F6CDD1DULL;
 }
 
-NO_SANITIZE_COV static int64_t compute_target_rss_drift_bytes(
-    uint64_t cur_rss,
-    uint64_t base_rss,
-    size_t cur_corpus,
-    size_t base_corpus
-) {
-    int64_t rss_delta = (cur_rss >= base_rss)
-        ? (int64_t)(cur_rss - base_rss)
-        : -(int64_t)(base_rss - cur_rss);
-    int64_t corpus_delta = (cur_corpus >= base_corpus)
-        ? (int64_t)(cur_corpus - base_corpus)
-        : -(int64_t)(base_corpus - cur_corpus);
+NO_SANITIZE_COV static int64_t compute_target_rss_drift_bytes(uint64_t cur_rss, uint64_t base_rss, size_t cur_corpus,
+                                                              size_t base_corpus) {
+    int64_t rss_delta = (cur_rss >= base_rss) ? (int64_t)(cur_rss - base_rss) : -(int64_t)(base_rss - cur_rss);
+    int64_t corpus_delta =
+        (cur_corpus >= base_corpus) ? (int64_t)(cur_corpus - base_corpus) : -(int64_t)(base_corpus - cur_corpus);
     int64_t drift = rss_delta - corpus_delta;
     return drift > 0 ? drift : 0;
 }
@@ -457,15 +429,18 @@ NO_SANITIZE_COV static size_t mutate_buffer(uint8_t *buf, size_t len, size_t max
         "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
         "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
         "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
-        ":method", ":path", ":authority", ":scheme", ":status",
+        ":method",
+        ":path",
+        ":authority",
+        ":scheme",
+        ":status",
         "__Host-sid=1; Secure; Path=/",
         "u=3, i=?0",
         "--boundary\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nv\r\n--boundary--\r\n",
         "\x16\x03\x03\x00\x35\x01\x00\x00\x31\x03\x03",
         "\xc3\x00\x00\x00\x01\x08\x83\x94\xc8\xf0\x3e\x51\x57\x08",
         "\x6b\x33\x43\xcf",
-        "\x30\x82\x01\x0a\x02\x82\x01\x01\x00"
-    };
+        "\x30\x82\x01\x0a\x02\x82\x01\x01\x00"};
     const size_t dict_len = sizeof(kDict) / sizeof(kDict[0]);
     if (len == 0) {
         const char *seed = kDict[xorshift64(rng) % dict_len];
@@ -566,8 +541,7 @@ NO_SANITIZE_COV static void bootstrap_default_corpus(void) {
         "--boundary\r\nContent-Disposition: form-data; name=\"k\"\r\n\r\nv\r\n--boundary--\r\n",
         "\x16\x03\x01\x00\x20\x01\x00\x00\x1c\x03\x03\x00\x01\x02\x03\x04",
         "\x30\x82\x00\x10\x02\x01\x01\x04\x04test",
-        "https://user:pass@example.com:8443/a/../b?k=v"
-    };
+        "https://user:pass@example.com:8443/a/../b?k=v"};
     const size_t n_seeds = sizeof(kSeeds) / sizeof(kSeeds[0]);
     uint8_t buf[256];
     for (int32_t tid = 0; tid < g_target_count; tid++) {
@@ -586,15 +560,7 @@ NO_SANITIZE_COV static void bootstrap_default_corpus(void) {
 
 NO_SANITIZE_COV static const char *complexity_pattern_name(uint32_t pat) {
     static const char *const kNames[COMPLEXITY_NUM_PATTERNS] = {
-        "hdr_colons",
-        "chunk_ext",
-        "url_pct20",
-        "asn1_3082",
-        "hpack_ff",
-        "mp_boundary",
-        "dns_c00c",
-        "quotes_slash"
-    };
+        "hdr_colons", "chunk_ext", "url_pct20", "asn1_3082", "hpack_ff", "mp_boundary", "dns_c00c", "quotes_slash"};
     return kNames[pat % COMPLEXITY_NUM_PATTERNS];
 }
 
@@ -683,10 +649,8 @@ NO_SANITIZE_COV static void build_adversarial_pattern(uint32_t pat_id, uint8_t *
         return;
     }
     if (pat_id == 6U) {
-        static const uint8_t kDnsHdr[12] = {
-            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00
-        };
-        static const uint8_t kPtr[2] = { 0xC0, 0x0C };
+        static const uint8_t kDnsHdr[12] = {0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00};
+        static const uint8_t kPtr[2] = {0xC0, 0x0C};
         if (len <= sizeof(kDnsHdr)) {
             memcpy(buf, kDnsHdr, len);
             return;
@@ -699,11 +663,7 @@ NO_SANITIZE_COV static void build_adversarial_pattern(uint32_t pat_id, uint8_t *
     fill_repeated(buf, len, (const uint8_t *)rep, strlen(rep));
 }
 
-NO_SANITIZE_COV static uint64_t measure_pattern_trimmed_ns(
-    int32_t tid,
-    const uint8_t *buf,
-    size_t len
-) {
+NO_SANITIZE_COV static uint64_t measure_pattern_trimmed_ns(int32_t tid, const uint8_t *buf, size_t len) {
     uint64_t samples[COMPLEXITY_REPS];
     for (uint32_t r = 0; r < COMPLEXITY_REPS; r++) {
         samples[r] = run_target_timed(tid, buf, len);
@@ -745,17 +705,11 @@ NO_SANITIZE_COV static int run_complexity_gate(int32_t filter_tid, int need_warm
     uint64_t max_rss_drift_bytes = g_max_rss_drift_kb * 1024ULL;
     uint64_t max_input_ns = g_max_input_ms * 1000000ULL;
 
-    printf(
-        "\n=== O(n) Complexity & Constant-RAM Gate (%d targets, max_16kb=%" PRIu64 "ms, max_ratio=%.1fx, max_rss=%" PRIu64 "KB) ===\n",
-        (int)(last_tid - first_tid + 1),
-        g_max_input_ms,
-        COMPLEXITY_MAX_RATIO,
-        g_max_rss_drift_kb
-    );
-    printf(
-        "%-3s %-24s %9s %9s %9s %7s %11s %-13s %s\n",
-        "ID", "TARGET", "1KB(us)", "4KB(us)", "16KB(us)", "RATIO", "RSS_DR(KB)", "WORST_PAT", "STATUS"
-    );
+    printf("\n=== O(n) Complexity & Constant-RAM Gate (%d targets, max_16kb=%" PRIu64
+           "ms, max_ratio=%.1fx, max_rss=%" PRIu64 "KB) ===\n",
+           (int)(last_tid - first_tid + 1), g_max_input_ms, COMPLEXITY_MAX_RATIO, g_max_rss_drift_kb);
+    printf("%-3s %-24s %9s %9s %9s %7s %11s %-13s %s\n", "ID", "TARGET", "1KB(us)", "4KB(us)", "16KB(us)", "RATIO",
+           "RSS_DR(KB)", "WORST_PAT", "STATUS");
 
     int failures = 0;
     int passed = 0;
@@ -801,9 +755,8 @@ NO_SANITIZE_COV static int run_complexity_gate(int32_t filter_tid, int need_warm
         if (cur_rss > sweep_peak_rss) {
             sweep_peak_rss = cur_rss;
         }
-        int64_t drift_bytes = compute_target_rss_drift_bytes(
-            cur_rss, sweep_base_rss, g_driver_corpus_bytes, sweep_base_corpus
-        );
+        int64_t drift_bytes =
+            compute_target_rss_drift_bytes(cur_rss, sweep_base_rss, g_driver_corpus_bytes, sweep_base_corpus);
         if (drift_bytes > global_max_drift_bytes) {
             global_max_drift_bytes = drift_bytes;
         }
@@ -826,27 +779,17 @@ NO_SANITIZE_COV static int run_complexity_gate(int32_t filter_tid, int need_warm
 
         char name[64];
         fetch_target_name(tid, name, sizeof(name));
-        printf(
-            "%-3d %-24s %9.1f %9.1f %9.1f %6.2fx %11.1f %-13s %s\n",
-            (int)tid,
-            name,
-            (double)rep_1k_ns / 1000.0,
-            (double)rep_4k_ns / 1000.0,
-            (double)rep_16k_ns / 1000.0,
-            worst_ratio,
-            (double)drift_bytes / 1024.0,
-            complexity_pattern_name(worst_pat),
-            ok ? "PASS" : "FAIL"
-        );
+        printf("%-3d %-24s %9.1f %9.1f %9.1f %6.2fx %11.1f %-13s %s\n", (int)tid, name, (double)rep_1k_ns / 1000.0,
+               (double)rep_4k_ns / 1000.0, (double)rep_16k_ns / 1000.0, worst_ratio, (double)drift_bytes / 1024.0,
+               complexity_pattern_name(worst_pat), ok ? "PASS" : "FAIL");
     }
 
     uint64_t final_rss = read_process_rss_bytes();
     if (final_rss > sweep_peak_rss) {
         sweep_peak_rss = final_rss;
     }
-    int64_t final_drift = compute_target_rss_drift_bytes(
-        final_rss, sweep_base_rss, g_driver_corpus_bytes, sweep_base_corpus
-    );
+    int64_t final_drift =
+        compute_target_rss_drift_bytes(final_rss, sweep_base_rss, g_driver_corpus_bytes, sweep_base_corpus);
     if (final_drift > global_max_drift_bytes) {
         global_max_drift_bytes = final_drift;
     }
@@ -857,39 +800,22 @@ NO_SANITIZE_COV static int run_complexity_gate(int32_t filter_tid, int need_warm
     g_abort_on_slow_input = saved_abort;
 
     if (failures > 0) {
-        fprintf(
-            stderr,
-            "FAIL COMPLEXITY_GATE passed=%d/%d max_ratio=%.2fx max_16kb_ms=%.3f baseline_rss=%" PRIu64
-            " peak_rss=%" PRIu64 " final_rss=%" PRIu64 " driver_corpus_bytes=%zu target_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
-            passed,
-            total,
-            global_max_ratio,
-            (double)global_max_16k_ns / 1e6,
-            sweep_base_rss,
-            sweep_peak_rss,
-            final_rss,
-            g_driver_corpus_bytes,
-            (double)global_max_drift_bytes / 1024.0,
-            g_max_rss_drift_kb
-        );
+        fprintf(stderr,
+                "FAIL COMPLEXITY_GATE passed=%d/%d max_ratio=%.2fx max_16kb_ms=%.3f baseline_rss=%" PRIu64
+                " peak_rss=%" PRIu64 " final_rss=%" PRIu64
+                " driver_corpus_bytes=%zu target_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
+                passed, total, global_max_ratio, (double)global_max_16k_ns / 1e6, sweep_base_rss, sweep_peak_rss,
+                final_rss, g_driver_corpus_bytes, (double)global_max_drift_bytes / 1024.0, g_max_rss_drift_kb);
         return 1;
     }
 
-    printf(
-        "OK COMPLEXITY_GATE passed=%d/%d max_ratio=%.2fx max_16kb_ms=%.3f rss_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
-        passed,
-        total,
-        global_max_ratio,
-        (double)global_max_16k_ns / 1e6,
-        (double)global_max_drift_bytes / 1024.0,
-        g_max_rss_drift_kb
-    );
+    printf("OK COMPLEXITY_GATE passed=%d/%d max_ratio=%.2fx max_16kb_ms=%.3f rss_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
+           passed, total, global_max_ratio, (double)global_max_16k_ns / 1e6, (double)global_max_drift_bytes / 1024.0,
+           g_max_rss_drift_kb);
     return 0;
 }
 
-NO_SANITIZE_COV static int is_flag_arg(const char *arg) {
-    return arg[0] == '-' && arg[1] == '-';
-}
+NO_SANITIZE_COV static int is_flag_arg(const char *arg) { return arg[0] == '-' && arg[1] == '-'; }
 
 NO_SANITIZE_COV int main(int argc, char **argv) {
     LLVMFuzzerInitialize(&argc, &argv);
@@ -939,9 +865,8 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
     }
 
     g_target_id = target_id;
-    g_rng_state = has_explicit_seed
-        ? (explicit_seed != 0 ? explicit_seed : 0xCAFEBABE98765432ULL)
-        : (0xCAFEBABE98765432ULL ^ (uint64_t)time(NULL));
+    g_rng_state = has_explicit_seed ? (explicit_seed != 0 ? explicit_seed : 0xCAFEBABE98765432ULL)
+                                    : (0xCAFEBABE98765432ULL ^ (uint64_t)time(NULL));
 
     for (size_t i = 0; i < seed_arg_count; i++) {
         if (seed_args[i][0] == '@') {
@@ -1008,26 +933,18 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
             if (cur_rss > peak_rss) {
                 peak_rss = cur_rss;
             }
-            int64_t drift = compute_target_rss_drift_bytes(
-                cur_rss, baseline_rss, g_driver_corpus_bytes, baseline_corpus_bytes
-            );
+            int64_t drift =
+                compute_target_rss_drift_bytes(cur_rss, baseline_rss, g_driver_corpus_bytes, baseline_corpus_bytes);
             if (drift > peak_drift_bytes) {
                 peak_drift_bytes = drift;
             }
             if ((uint64_t)drift > max_rss_drift_bytes) {
-                fprintf(
-                    stderr,
-                    "FAIL RSS_DRIFT_EXCEEDED iter=%" PRIu64 " baseline_rss=%" PRIu64
-                    " peak_rss=%" PRIu64 " final_rss=%" PRIu64 " driver_corpus_bytes=%zu"
-                    " target_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
-                    iter + 1ULL,
-                    baseline_rss,
-                    peak_rss,
-                    cur_rss,
-                    g_driver_corpus_bytes,
-                    (double)drift / 1024.0,
-                    g_max_rss_drift_kb
-                );
+                fprintf(stderr,
+                        "FAIL RSS_DRIFT_EXCEEDED iter=%" PRIu64 " baseline_rss=%" PRIu64 " peak_rss=%" PRIu64
+                        " final_rss=%" PRIu64 " driver_corpus_bytes=%zu"
+                        " target_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
+                        iter + 1ULL, baseline_rss, peak_rss, cur_rss, g_driver_corpus_bytes, (double)drift / 1024.0,
+                        g_max_rss_drift_kb);
                 return EXIT_FAILURE;
             }
         }
@@ -1038,24 +955,17 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
         if (final_rss > peak_rss) {
             peak_rss = final_rss;
         }
-        int64_t final_drift = compute_target_rss_drift_bytes(
-            final_rss, baseline_rss, g_driver_corpus_bytes, baseline_corpus_bytes
-        );
+        int64_t final_drift =
+            compute_target_rss_drift_bytes(final_rss, baseline_rss, g_driver_corpus_bytes, baseline_corpus_bytes);
         if (final_drift > peak_drift_bytes) {
             peak_drift_bytes = final_drift;
         }
         if ((uint64_t)peak_drift_bytes > max_rss_drift_bytes) {
-            fprintf(
-                stderr,
-                "FAIL RSS_DRIFT_EXCEEDED baseline_rss=%" PRIu64 " peak_rss=%" PRIu64
-                " final_rss=%" PRIu64 " driver_corpus_bytes=%zu target_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
-                baseline_rss,
-                peak_rss,
-                final_rss,
-                g_driver_corpus_bytes,
-                (double)peak_drift_bytes / 1024.0,
-                g_max_rss_drift_kb
-            );
+            fprintf(stderr,
+                    "FAIL RSS_DRIFT_EXCEEDED baseline_rss=%" PRIu64 " peak_rss=%" PRIu64 " final_rss=%" PRIu64
+                    " driver_corpus_bytes=%zu target_drift_kb=%.2f limit_kb=%" PRIu64 "\n",
+                    baseline_rss, peak_rss, final_rss, g_driver_corpus_bytes, (double)peak_drift_bytes / 1024.0,
+                    g_max_rss_drift_kb);
             return EXIT_FAILURE;
         }
     }
@@ -1071,20 +981,10 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
         }
     }
 
-    printf(
-        "OK SANCOV_EXECS: %" PRIu64 " TARGETS: %d/%d CORPUS: %zu (%zu B) EDGES: %zu NEW_COV: %zu"
-        " MAX_INPUT_MS: %.3f RSS_DRIFT_KB: %.2f/%.0f\n",
-        max_iters,
-        (int)targets_covered,
-        (int)g_target_count,
-        g_corpus_count,
-        g_driver_corpus_bytes,
-        total_edges,
-        new_cov_events,
-        (double)worst_input_ns / 1e6,
-        (double)peak_drift_bytes / 1024.0,
-        (double)g_max_rss_drift_kb
-    );
+    printf("OK SANCOV_EXECS: %" PRIu64 " TARGETS: %d/%d CORPUS: %zu (%zu B) EDGES: %zu NEW_COV: %zu"
+           " MAX_INPUT_MS: %.3f RSS_DRIFT_KB: %.2f/%.0f\n",
+           max_iters, (int)targets_covered, (int)g_target_count, g_corpus_count, g_driver_corpus_bytes, total_edges,
+           new_cov_events, (double)worst_input_ns / 1e6, (double)peak_drift_bytes / 1024.0, (double)g_max_rss_drift_kb);
 
     if (check_complexity) {
         int rc = run_complexity_gate(target_id, max_iters == 0);

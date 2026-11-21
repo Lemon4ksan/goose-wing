@@ -470,9 +470,9 @@ uint64_t wing_rio_create_rq_ctx(int64_t sock_fd, uint32_t max_recv, uint32_t max
     if (sock_fd <= 0 || recv_cq == 0 || send_cq == 0 || !g_rio.RIOCreateRequestQueue) {
         return 0;
     }
-    WING_RIO_RQ rq = g_rio.RIOCreateRequestQueue((SOCKET)sock_fd, max_recv, 1, max_send, 1,
-                                                 (WING_RIO_CQ)(uintptr_t)recv_cq, (WING_RIO_CQ)(uintptr_t)send_cq,
-                                                 (PVOID)(uintptr_t)sock_ctx);
+    WING_RIO_RQ rq =
+        g_rio.RIOCreateRequestQueue((SOCKET)sock_fd, max_recv, 1, max_send, 1, (WING_RIO_CQ)(uintptr_t)recv_cq,
+                                    (WING_RIO_CQ)(uintptr_t)send_cq, (PVOID)(uintptr_t)sock_ctx);
     if ((uintptr_t)rq == (uintptr_t)RIO_INVALID_RQ) {
         return 0;
     }
@@ -512,8 +512,7 @@ int32_t wing_rio_post_send(uint64_t rq_id, uint64_t buf_id, uint32_t offset, uin
 }
 
 void wing_rio_hs_begin(int64_t sock_fd, uint64_t rq_id, uint64_t rx_cq, uint64_t tx_cq, uint64_t buf_id,
-                       wing_rio_bytes_rw slab, uint32_t rx_off, uint32_t tx_off, uint32_t buf_size,
-                       uint64_t sock_ctx) {
+                       wing_rio_bytes_rw slab, uint32_t rx_off, uint32_t tx_off, uint32_t buf_size, uint64_t sock_ctx) {
     g_rio_hs.active = (sock_fd > 0 && rq_id != 0 && rx_cq != 0 && tx_cq != 0 && buf_id != 0 && slab.data != NULL);
     g_rio_hs.fd = (SOCKET)sock_fd;
     g_rio_hs.rq = (WING_RIO_RQ)(uintptr_t)rq_id;
@@ -849,7 +848,8 @@ int64_t wing_rio_accept(int64_t listen_fd) {
         memset(addr_buf, 0, sizeof(addr_buf));
         DWORD bytes = 0;
 
-        BOOL ok = g_acceptex(lsock, asock, addr_buf, 0, WING_RIO_ACCEPT_ADDR_LEN, WING_RIO_ACCEPT_ADDR_LEN, &bytes, &ov);
+        BOOL ok =
+            g_acceptex(lsock, asock, addr_buf, 0, WING_RIO_ACCEPT_ADDR_LEN, WING_RIO_ACCEPT_ADDR_LEN, &bytes, &ov);
         if (!ok) {
             int err = WSAGetLastError();
             if (err == WSAECONNRESET) {
@@ -1172,8 +1172,7 @@ int32_t wing_rio_cancel_accept(int64_t listen_fd) {
     return 0;
 }
 void wing_rio_hs_begin(int64_t sock_fd, uint64_t rq_id, uint64_t rx_cq, uint64_t tx_cq, uint64_t buf_id,
-                       wing_rio_bytes_rw slab, uint32_t rx_off, uint32_t tx_off, uint32_t buf_size,
-                       uint64_t sock_ctx) {
+                       wing_rio_bytes_rw slab, uint32_t rx_off, uint32_t tx_off, uint32_t buf_size, uint64_t sock_ctx) {
     (void)sock_fd;
     (void)rq_id;
     (void)rx_cq;
