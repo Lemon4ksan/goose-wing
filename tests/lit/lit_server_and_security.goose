@@ -78,7 +78,7 @@ fn scan_tls_inner_type(buf: const u8[:]) -> i32 {
     if inner_type == 23 {
         return 100;
     }
-    return inner_type as! i32;
+    return inner_type;
 }
 
 fn scan_ipv6_bracket_zone(buf: const u8[:]) -> i64 {
@@ -211,28 +211,28 @@ fn test_openssl_cve_2009_2408_uri_nul() {
 }
 
 fn test_uwebsockets_1876_backpressure_priority() {
-    var ws = wing::WebSocketSession { .. };
-    wing::set_max_backpressure(ws, 80, false);
+    var ws = realtime::WebSocketSession { .. };
+    realtime::set_max_backpressure(ws, 80, false);
 
     var out_wire: u8[>..] = [];
-    let _ = wing::send_text_with_status(ws, "Initial message filling backpressure quota", out_wire);
+    let _ = realtime::send_text_with_status(ws, "Initial message filling backpressure quota", out_wire);
     assert(ws.is_backpressured);
     print("WS_BACKPRESSURE_SATURATED: OK");
 
     var dropped_wire: u8[>..] = [];
-    let st2 = wing::send_text_with_status(ws, "Excessive payload dropped due to ceiling", dropped_wire);
-    assert(st2 == wing::WsSendStatus.Dropped);
+    let st2 = realtime::send_text_with_status(ws, "Excessive payload dropped due to ceiling", dropped_wire);
+    assert(st2 == realtime::WsSendStatus.Dropped);
     print("WS_DATA_DROPPED_UNDER_BACKPRESSURE: OK");
 
     // Control frame Ping MUST NOT be dropped
     var ping_wire: u8[>..] = [];
-    wing::send_ping(ws, "heartbeat", ping_wire);
+    realtime::send_ping(ws, "heartbeat", ping_wire);
     assert(ping_wire.len > 0);
     print("WS_PING_PRIORITY_RETAINED: OK");
 
     // Control frame Close MUST NOT be dropped
     var close_wire: u8[>..] = [];
-    wing::close(ws, rfc::WS_STATUS_NORMAL, "clean close", close_wire);
+    realtime::close(ws, rfc::WS_STATUS_NORMAL, "clean close", close_wire);
     assert(close_wire.len > 0);
     assert(ws.is_closed);
     print("WS_CLOSE_PRIORITY_RETAINED: OK");
@@ -535,13 +535,13 @@ fn test_h2_stream_progression() {
 
     // Open Stream 1, 3, 5 sequentially
     var stream_ids: const u32[3] = [1, 3, 5];
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
 
     for sid in stream_ids {
         var hdr_block: u8[>..] = [];
-        h2_internal::encode_hpack_field(dt, hdr_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, hdr_block, ":path", "/", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, hdr_block, ":method", "GET", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, hdr_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, hdr_block, ":path", "/", http2::HpackIndexing.Incremental, false);
 
         var h_frame: u8[>..] = [];
         let h_len = hdr_block.len as u32;
@@ -643,32 +643,34 @@ fn test_quic_role_polarity() {
     let scid: u8[4] = [0x10, 0x11, 0x12, 0x13];
 
     // Case A: Server receives HANDSHAKE_DONE
-    var server_conn = quic_internal::new_quic_server_connection(scid[..]);
+    var server_conn = quic::new_server_connection(scid[..]);
     server_conn.allow_unencrypted_test_packets = true;
     var dgram_serv: u8[..64] = [];
     dgram_serv.push(0x40); // 1-RTT Short Header
     dgram_serv.append(scid[..]);
     dgram_serv.push(0x01); // Packet number = 1
-    assert(quic_internal::encode_handshake_done_frame(dgram_serv));
+    assert(quic::encode_handshake_done_frame(dgram_serv));
 
-    var ack_out = quic_internal::AckFrame { .. };
-    let handled_s, _ = quic_internal::quic_conn_process_datagram(server_conn, dgram_serv[..], 1000, ack_out);
+    var ack_out = quic::AckFrame { .. };
+    let _pr_handled_s = quic::process_datagram(server_conn, dgram_serv[..], 1000, ack_out);
+    let handled_s = _pr_handled_s.handled;
     assert(!handled_s);
-    assert(server_conn.state == quic_internal::QuicConnState.Closing);
+    assert(server_conn.state == quic::QuicConnState.Closing);
     assert(server_conn.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // Case B: Client receives HANDSHAKE_DONE
-    var client_conn = quic_internal::new_quic_client_connection(scid[..], scid[..]);
+    var client_conn = quic::new_client_connection(scid[..], scid[..]);
     client_conn.allow_unencrypted_test_packets = true;
     var dgram_cli: u8[..64] = [];
     dgram_cli.push(0x40); // 1-RTT Short Header
     dgram_cli.append(scid[..]);
     dgram_cli.push(0x01); // Packet number = 1
-    assert(quic_internal::encode_handshake_done_frame(dgram_cli));
+    assert(quic::encode_handshake_done_frame(dgram_cli));
 
-    let handled_c, _ = quic_internal::quic_conn_process_datagram(client_conn, dgram_cli[..], 1000, ack_out);
+    let _pr_handled_c = quic::process_datagram(client_conn, dgram_cli[..], 1000, ack_out);
+    let handled_c = _pr_handled_c.handled;
     assert(handled_c);
-    assert(client_conn.state == quic_internal::QuicConnState.Established);
+    assert(client_conn.state == quic::QuicConnState.Established);
 
     print("QUIC_ROLE_POLARITY: OK");
 }
@@ -679,55 +681,55 @@ fn test_quic_role_polarity() {
 
 // Case A: Client receives PRIORITY_UPDATE_REQUEST on Control Stream (RFC 9218 §7)
 fn test_h3_role_polarity_case_a(settings: fingerprint::H3Settings) {
-    var client_conn = h3_internal::new_h3_client_connection(settings);
+    var client_conn = http3::new_client_connection(settings);
     // First, establish control stream with valid SETTINGS frame
     var ctrl_init: u8[..64] = [];
-    quic_internal::quic_encode_varint(ctrl_init, rfc::H3_STREAM_CONTROL);
-    h3_internal::encode_h3_settings_frame(ctrl_init, settings);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, ctrl_init);
+    http3::encode_settings_frame(ctrl_init, settings);
     let err_init = client_conn.handle_stream_data(3, false, ctrl_init[..], false);
     assert(err_init == rfc::H3_ERR_NO_ERROR);
 
     // Then client receives forbidden PRIORITY_UPDATE_REQUEST
     var prio_frame: u8[..64] = [];
     let prio = wing::PriorityParam { urgency: 1, incremental: false };
-    assert(h3_internal::encode_h3_priority_update_request(prio_frame, 0, prio));
+    assert(http3::encode_priority_update_request(prio_frame, 0, prio));
 
     let err_prio = client_conn.handle_stream_data(3, false, prio_frame[..], false);
     assert(err_prio == rfc::H3_ERR_FRAME_UNEXPECTED);
-    assert(client_conn.state == h3_internal::H3ConnState.Closed);
+    assert(client_conn.state == http3::ConnState.Closed);
 }
 
 // Case B: Client receives MAX_PUSH_ID on Control Stream (RFC 9114 §7.2.7)
 fn test_h3_role_polarity_case_b(settings: fingerprint::H3Settings) {
-    var client_conn2 = h3_internal::new_h3_client_connection(settings);
+    var client_conn2 = http3::new_client_connection(settings);
     // First, establish control stream with valid SETTINGS frame
     var ctrl_init2: u8[..64] = [];
-    quic_internal::quic_encode_varint(ctrl_init2, rfc::H3_STREAM_CONTROL);
-    h3_internal::encode_h3_settings_frame(ctrl_init2, settings);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, ctrl_init2);
+    http3::encode_settings_frame(ctrl_init2, settings);
     let err_init2 = client_conn2.handle_stream_data(3, false, ctrl_init2[..], false);
     assert(err_init2 == rfc::H3_ERR_NO_ERROR);
 
     // Then client receives forbidden MAX_PUSH_ID
     var max_push_frame: u8[..32] = [];
-    assert(h3_internal::encode_h3_max_push_id(max_push_frame, 10));
+    assert(http3::encode_max_push_id(max_push_frame, 10));
 
     let err_push = client_conn2.handle_stream_data(3, false, max_push_frame[..], false);
     assert(err_push == rfc::H3_ERR_FRAME_UNEXPECTED);
-    assert(client_conn2.state == h3_internal::H3ConnState.Closed);
+    assert(client_conn2.state == http3::ConnState.Closed);
 }
 
 // Case C: Server receives PUSH_PROMISE on Request Stream (RFC 9114 §7.2.5)
 fn test_h3_role_polarity_case_c(settings: fingerprint::H3Settings) {
-    var server_conn = h3_internal::new_h3_server_connection(settings);
+    var server_conn = http3::new_server_connection(settings);
     var push_promise_frame: u8[..32] = [];
-    assert(h3_internal::encode_h3_frame_header(push_promise_frame, rfc::H3_FRAME_PUSH_PROMISE, 3));
-    quic_internal::quic_encode_varint(push_promise_frame, 1); // Push ID = 1 (1 byte)
+    assert(http3::encode_frame_header(push_promise_frame, rfc::H3_FRAME_PUSH_PROMISE, 3));
+    quic::encode_varint(1, push_promise_frame); // Push ID = 1 (1 byte)
     push_promise_frame.push(0x00); // QPACK header block (2 bytes)
     push_promise_frame.push(0x00);
 
     let err_pp = server_conn.handle_stream_data(0, true, push_promise_frame[..], false);
     assert(err_pp == rfc::H3_ERR_FRAME_UNEXPECTED);
-    assert(server_conn.state == h3_internal::H3ConnState.Closed);
+    assert(server_conn.state == http3::ConnState.Closed);
 }
 
 fn test_h3_role_polarity() {
@@ -748,23 +750,23 @@ fn test_h3_role_polarity() {
 // 3. HTTP/2 State Transition & Role Rules (RFC 9113)
 fn test_h2_state_matrix() {
     // Case A: Stream 0 DATA Frame (RFC 9113 Section 5.1.1 & 6.1)
-    let data_hdr = h2_internal::FrameHeader {
+    let data_hdr = http2::FrameHeader {
         length:     5,
         frame_type: rfc::H2_FRAME_DATA,
         flags:      0,
         stream_id:  0, // Forbidden!
     };
-    let err_data = h2_internal::validate_frame_header_rules(data_hdr, 16384);
+    let err_data = http2::validate_frame_header_rules(data_hdr, 16384);
     assert(err_data == rfc::H2_ERR_PROTOCOL_ERROR);
 
     // Case B: SETTINGS with ACK and length != 0 (RFC 9113 Section 6.5)
-    let set_ack_hdr = h2_internal::FrameHeader {
+    let set_ack_hdr = http2::FrameHeader {
         length:     6, // Forbidden: ACK must be 0 length
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      rfc::H2_FLAG_ACK,
         stream_id:  0,
     };
-    let err_set = h2_internal::validate_frame_header_rules(set_ack_hdr, 16384);
+    let err_set = http2::validate_frame_header_rules(set_ack_hdr, 16384);
     assert(err_set == rfc::H2_ERR_FRAME_SIZE_ERROR);
 
     // Case C: Server receives PUSH_PROMISE (RFC 9113 Section 6.6)
@@ -773,15 +775,15 @@ fn test_h2_state_matrix() {
     var timer = server_internal::ConnectionTimer { .. };
     var handshake_wire: u8[..64] = [];
     handshake_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-    let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-    h2_internal::encode_frame_header_to(set_hdr, handshake_wire);
+    let set_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    http2::encode_frame_header_to(set_hdr, handshake_wire);
     var server_out: u8[..1024] = [];
     let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", handshake_wire[..], 1000, server_out);
     assert(ok_init);
 
     var pp_wire: u8[..64] = [];
-    let pp_hdr = h2_internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_PUSH_PROMISE, flags: 0, stream_id: 1 };
-    h2_internal::encode_frame_header_to(pp_hdr, pp_wire);
+    let pp_hdr = http2::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_PUSH_PROMISE, flags: 0, stream_id: 1 };
+    http2::encode_frame_header_to(pp_hdr, pp_wire);
     pp_wire.push(0x00);
     pp_wire.push(0x00);
     pp_wire.push(0x00);
@@ -791,7 +793,7 @@ fn test_h2_state_matrix() {
     assert(!ok_pp); // Rejected with GOAWAY
 
     // Verify GOAWAY emitted
-    let goaway_hdr, err_go = h2_internal::parse_frame_header(server_out[..9]);
+    let goaway_hdr, err_go = http2::parse_frame_header(server_out[..9]);
     assert(err_go == rfc::H2_ERR_NO_ERROR);
     assert(goaway_hdr.frame_type == rfc::H2_FRAME_GOAWAY);
 

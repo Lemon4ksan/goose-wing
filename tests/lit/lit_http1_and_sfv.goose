@@ -640,9 +640,9 @@ fn run_06_verify_smuggling_desync() {
     wing::append_header(in_proxy_te, "Transfer-Encoding", "chunked");
     wing::append_header(in_proxy_te, "Content-Length", "42");
     var out_proxy_te = wing::HeaderMap { .. };
-    var cfg = wing::ProxyConfig { .. };
+    var cfg = proxy::Config { .. };
     cfg.strip_hop_by_hop = false;
-    let ok_te_cl = wing::filter_and_forward_headers(in_proxy_te, out_proxy_te, "127.0.0.1", "http", "backend:80", cfg);
+    let ok_te_cl = proxy::filter_and_forward_headers(in_proxy_te, out_proxy_te, "127.0.0.1", "http", "backend:80", cfg);
     assert(!ok_te_cl);
     assert(!wing::has_header(out_proxy_te, "Content-Length"));
     print("PROXY_TE_CL_STRIP_CL: PASS");
@@ -653,7 +653,7 @@ fn run_06_verify_smuggling_desync() {
     wing::append_header(in_p_diff, "Content-Length", "10");
     wing::append_header(in_p_diff, "Content-Length", "20");
     var out_p_diff = wing::HeaderMap { .. };
-    let ok_p_diff = wing::filter_and_forward_headers(in_p_diff, out_p_diff, "127.0.0.1", "http", "backend:80", cfg);
+    let ok_p_diff = proxy::filter_and_forward_headers(in_p_diff, out_p_diff, "127.0.0.1", "http", "backend:80", cfg);
     assert(!ok_p_diff);
 
     var in_p_same = wing::HeaderMap { .. };
@@ -661,7 +661,7 @@ fn run_06_verify_smuggling_desync() {
     wing::append_header(in_p_same, "Content-Length", "42");
     wing::append_header(in_p_same, "Content-Length", "42");
     var out_p_same = wing::HeaderMap { .. };
-    let ok_p_same = wing::filter_and_forward_headers(in_p_same, out_p_same, "127.0.0.1", "http", "backend:80", cfg);
+    let ok_p_same = proxy::filter_and_forward_headers(in_p_same, out_p_same, "127.0.0.1", "http", "backend:80", cfg);
     assert(ok_p_same);
     var p_cl_count: i64 = 0;
     for i in out_p_same.entries.len {
@@ -678,21 +678,21 @@ fn run_06_verify_smuggling_desync() {
     wing::append_header(in_p_ws, "Transfer-Encoding", "   chunked  \t");
     wing::append_header(in_p_ws, "Content-Length", "10");
     var out_p_ws = wing::HeaderMap { .. };
-    assert(!wing::filter_and_forward_headers(in_p_ws, out_p_ws, "127.0.0.1", "http", "backend:80", cfg));
+    assert(!proxy::filter_and_forward_headers(in_p_ws, out_p_ws, "127.0.0.1", "http", "backend:80", cfg));
 
     var in_p_mc = wing::HeaderMap { .. };
     wing::append_header(in_p_mc, "Host", "example.com");
     wing::append_header(in_p_mc, "tRaNsFeR-eNcOdInG", "chunked");
     wing::append_header(in_p_mc, "cOnTeNt-LeNgTh", "10");
     var out_p_mc = wing::HeaderMap { .. };
-    assert(!wing::filter_and_forward_headers(in_p_mc, out_p_mc, "127.0.0.1", "http", "backend:80", cfg));
+    assert(!proxy::filter_and_forward_headers(in_p_mc, out_p_mc, "127.0.0.1", "http", "backend:80", cfg));
 
     var in_p_mte = wing::HeaderMap { .. };
     wing::append_header(in_p_mte, "Host", "example.com");
     wing::append_header(in_p_mte, "Transfer-Encoding", "chunked");
     wing::append_header(in_p_mte, "Transfer-Encoding", "gzip");
     var out_p_mte = wing::HeaderMap { .. };
-    assert(!wing::filter_and_forward_headers(in_p_mte, out_p_mte, "127.0.0.1", "http", "backend:80", cfg));
+    assert(!proxy::filter_and_forward_headers(in_p_mte, out_p_mte, "127.0.0.1", "http", "backend:80", cfg));
     print("PROXY_TE_CL_VARIATIONS: REJECTED");
 }
 
@@ -750,7 +750,7 @@ fn test_chunked_fsm_drip() {
 // Ingests partial frames through handle_h2_server_ingress, verifying safe postponement
 // until the complete 9-byte header and full payload are assembled in the buffer.
 fn test_h2_socket_drip() {
-    var client_hpack = h2_internal::DynamicTable { .. };
+    var client_hpack = http2::DynamicTable { .. };
     var sess = server_internal::new_h2_server_session("localhost");
     var pipeline = wing::ServerPipelineConfig { .. };
     var timer = server_internal::ConnectionTimer { .. };
@@ -758,8 +758,8 @@ fn test_h2_socket_drip() {
     // Handshake
     var init_wire: u8[..64] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-    let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-    h2_internal::encode_frame_header_to(set_hdr, init_wire);
+    let set_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    http2::encode_frame_header_to(set_hdr, init_wire);
     var server_out: u8[..1024] = [];
     let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
     assert(ok_init);
@@ -767,18 +767,18 @@ fn test_h2_socket_drip() {
     // Prepare complete HEADERS frame for stream 1
     var full_req:    u8[..256] = [];
     var hpack_block: u8[..128] = [];
-    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/drip", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_hpack, hpack_block, ":path", "/drip", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", http2::HpackIndexing.Incremental, false);
 
-    let req_hdr = h2_internal::FrameHeader {
+    let req_hdr = http2::FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  1,
     };
-    h2_internal::encode_frame_header_to(req_hdr, full_req);
+    http2::encode_frame_header_to(req_hdr, full_req);
     full_req.append(hpack_block[..]);
 
     // Stage 1: Partial 5 bytes of 9-byte header -> consumed must be 0, ok == true
@@ -806,11 +806,11 @@ fn test_h2_socket_drip() {
 // 3. Chaos Drip Test 3: gRPC Incremental LPM Parser (gRPC HTTP/2 Wire Protocol)
 // Streams a 5-byte header + 18-byte payload 1 byte at a time.
 fn test_grpc_lpm_drip() {
-    var parser = wing::new_grpc_stream_parser(65536);
+    var parser = grpc::new_stream_parser(65536);
     let payload = "CHAOS_GRPC_PAYLOAD";
 
     var full_wire: u8[..64] = [];
-    wing::encode_grpc_lpm(payload[..], full_wire, false);
+    grpc::encode_lpm(payload[..], full_wire, false);
     assert(full_wire.len == 5 + payload.len);
 
     var msg: u8[..64] = [];
@@ -818,16 +818,16 @@ fn test_grpc_lpm_drip() {
 
     // Drip byte by byte up to byte 21 (all must return ready == false)
     for i in (full_wire.len - 1) {
-        let ok_feed = wing::feed(parser, full_wire[i..i + 1]);
+        let ok_feed = grpc::feed(parser, full_wire[i..i + 1]);
         assert(ok_feed);
-        let ready = wing::next_message(parser, msg, is_comp);
+        let ready = grpc::next_message(parser, msg, is_comp);
         assert(!ready);
     }
 
     // Final byte completes the message
-    let ok_feed_final = wing::feed(parser, full_wire[full_wire.len - 1..]);
+    let ok_feed_final = grpc::feed(parser, full_wire[full_wire.len - 1..]);
     assert(ok_feed_final);
-    let ready_final = wing::next_message(parser, msg, is_comp);
+    let ready_final = grpc::next_message(parser, msg, is_comp);
     assert(ready_final);
     assert(msg[..] == "CHAOS_GRPC_PAYLOAD");
     assert(!is_comp);
@@ -844,12 +844,12 @@ fn test_quic_varint_drip() {
     // Drip 1..7 bytes: all must fail ok == false
     for len in 7 {
         let drip_len = (len + 1) as i64;
-        let _, _, ok = quic_internal::quic_decode_varint(full_8[..drip_len], 0);
+        let _, _, ok = quic::decode_varint(full_8[..drip_len], 0);
         assert(!ok);
     }
 
     // Full 8 bytes succeed
-    let val_8, off_8, ok_8 = quic_internal::quic_decode_varint(full_8[..], 0);
+    let val_8, off_8, ok_8 = quic::decode_varint(full_8[..], 0);
     assert(ok_8);
     assert(off_8 == 8);
     assert(val_8 == 0x3FFFFFFFFFFFFFFF);
@@ -1032,7 +1032,7 @@ fn parse_ws_extended_header(buf: const u8[:]) -> i64 {
     if masked { min_hdr += 4; }
     if buf.len < min_hdr { return -1; }
 
-    let hdr, ok = wing::parse_ws_frame_header(buf);
+    let hdr, ok = realtime::parse_ws_frame_header(buf);
     if !ok { return -2; }
     return hdr.payload_len as! i64;
 }
@@ -1076,9 +1076,9 @@ fn run_09_verify_chaos_fuzzing() {
 // Wire bridge to HTTP/2 frame header decoder and rule validator
 fn decode_h2_header(buf: const u8[:]) -> i64 {
     if buf.len < 9 { return -1; }
-    let hdr, err = h2_internal::parse_frame_header(buf, 16384);
+    let hdr, err = http2::parse_frame_header(buf, 16384);
     if err != rfc::H2_ERR_NO_ERROR { return -2; }
-    if h2_internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR { return -2; }
+    if http2::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR { return -2; }
     return hdr.length;
 }
 
@@ -1095,7 +1095,7 @@ fn validate_ws_frame(buf: const u8[:]) -> i64 {
     if masked { min_hdr += 4; }
     if buf.len < min_hdr { return -1; }
 
-    let hdr, ok = wing::parse_ws_frame_header(buf);
+    let hdr, ok = realtime::parse_ws_frame_header(buf);
     if !ok { return -2; }
     let total: i64 = hdr.header_len + (hdr.payload_len as! i64);
     if buf.len < total { return -1; }
@@ -1115,15 +1115,15 @@ fn run_10_verify_edge_and_fuzz() {
     assert(wire_kit::fuzz_payload(ws_pkt[..], 100, validate_ws_frame));
     print("EDGE_WS_FRAME: OK");
 
-    var hdr_orig = h2_internal::FrameHeader {
+    var hdr_orig = http2::FrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_STREAM | rfc::H2_FLAG_END_HEADERS,
         stream_id:  3,
     };
     var enc_hdr: u8[9] = [0; 9];
-    h2_internal::encode_frame_header(hdr_orig, enc_hdr);
-    let hdr_dec, err = h2_internal::parse_frame_header(enc_hdr[..]);
+    http2::encode_frame_header(hdr_orig, enc_hdr);
+    let hdr_dec, err = http2::parse_frame_header(enc_hdr[..]);
     assert(err == rfc::H2_ERR_NO_ERROR);
     assert(hdr_dec.length == 8);
     assert(hdr_dec.frame_type == rfc::H2_FRAME_HEADERS);

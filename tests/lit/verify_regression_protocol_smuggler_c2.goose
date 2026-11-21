@@ -25,41 +25,41 @@ fn test_ps_c2_01_grpc_smuggling_and_truncation() {
 
     // 1a. Smuggled Data frame (0x00) AFTER a Trailer frame (0x80) must be rejected
     var smuggled_after_trailer: u8[>..] = [];
-    wing::encode_grpc_web_trailers(wing::GrpcStatusCode.PermissionDenied, "denied", smuggled_after_trailer);
-    wing::encode_grpc_lpm("smuggled", smuggled_after_trailer, false);
+    grpc::encode_web_trailers(grpc::StatusCode.PermissionDenied, "denied", smuggled_after_trailer);
+    grpc::encode_lpm("smuggled", smuggled_after_trailer, false);
 
-    var resp1 = wing::GrpcResponse { .. };
-    assert(!wing::parse_grpc_unary_response(hdrs, trls, smuggled_after_trailer[..], true, resp1));
+    var resp1 = grpc::Response { .. };
+    assert(!grpc::parse_unary_response(hdrs, trls, smuggled_after_trailer[..], true, resp1));
     assert(resp1.payload.len == 0);
-    assert(!wing::process_grpc_web_response(smuggled_after_trailer[..], rfc::GRPC_WEB_CONTENT_TYPE, resp1));
+    assert(!grpc::process_web_response(smuggled_after_trailer[..], rfc::GRPC_WEB_CONTENT_TYPE, resp1));
 
     // 1b. Duplicate Trailer frame (0x80) overwriting earlier error status with Ok must be rejected
     var dup_trailers: u8[>..] = [];
-    wing::encode_grpc_lpm("ok", dup_trailers, false);
-    wing::encode_grpc_web_trailers(wing::GrpcStatusCode.PermissionDenied, "denied", dup_trailers);
-    wing::encode_grpc_web_trailers(wing::GrpcStatusCode.Ok, "bypassed", dup_trailers);
+    grpc::encode_lpm("ok", dup_trailers, false);
+    grpc::encode_web_trailers(grpc::StatusCode.PermissionDenied, "denied", dup_trailers);
+    grpc::encode_web_trailers(grpc::StatusCode.Ok, "bypassed", dup_trailers);
 
-    var resp2 = wing::GrpcResponse { .. };
-    assert(!wing::parse_grpc_unary_response(hdrs, trls, dup_trailers[..], true, resp2));
+    var resp2 = grpc::Response { .. };
+    assert(!grpc::parse_unary_response(hdrs, trls, dup_trailers[..], true, resp2));
     assert(resp2.payload.len == 0);
-    assert(!wing::process_grpc_web_response(dup_trailers[..], rfc::GRPC_WEB_CONTENT_TYPE, resp2));
+    assert(!grpc::process_web_response(dup_trailers[..], rfc::GRPC_WEB_CONTENT_TYPE, resp2));
 
     // 1c. Multiple Data frames (0x00) in a unary gRPC-Web response must be rejected
     var multi_data: u8[>..] = [];
-    wing::encode_grpc_lpm("msg1", multi_data, false);
-    wing::encode_grpc_lpm("msg2", multi_data, false);
-    wing::encode_grpc_web_trailers(wing::GrpcStatusCode.Ok, "", multi_data);
+    grpc::encode_lpm("msg1", multi_data, false);
+    grpc::encode_lpm("msg2", multi_data, false);
+    grpc::encode_web_trailers(grpc::StatusCode.Ok, "", multi_data);
 
-    var resp3 = wing::GrpcResponse { .. };
-    assert(!wing::parse_grpc_unary_response(hdrs, trls, multi_data[..], true, resp3));
+    var resp3 = grpc::Response { .. };
+    assert(!grpc::parse_unary_response(hdrs, trls, multi_data[..], true, resp3));
     assert(resp3.payload.len == 0);
-    assert(!wing::process_grpc_web_response(multi_data[..], rfc::GRPC_WEB_CONTENT_TYPE, resp3));
+    assert(!grpc::process_web_response(multi_data[..], rfc::GRPC_WEB_CONTENT_TYPE, resp3));
 
     // 1d. Truncated gRPC-Web unary body (Data frame with no Trailer frame and no HTTP grpc-status) must fail
     var no_trailer_body: u8[>..] = [];
-    wing::encode_grpc_lpm("truncated_stream", no_trailer_body, false);
-    var resp4 = wing::GrpcResponse { .. };
-    assert(!wing::parse_grpc_unary_response(hdrs, trls, no_trailer_body[..], true, resp4));
+    grpc::encode_lpm("truncated_stream", no_trailer_body, false);
+    var resp4 = grpc::Response { .. };
+    assert(!grpc::parse_unary_response(hdrs, trls, no_trailer_body[..], true, resp4));
     assert(resp4.payload.len == 0);
 
     // 1e. Native gRPC unary response with trailing garbage after LPM frame must clear out_resp.payload on failure
@@ -67,36 +67,36 @@ fn test_ps_c2_01_grpc_smuggling_and_truncation() {
     let _ = wing::append_header(native_hdrs, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     let _ = wing::append_header(native_hdrs, "grpc-status", "0");
     var body_with_extra: u8[>..] = [];
-    wing::encode_grpc_lpm("valid_msg", body_with_extra, false);
+    grpc::encode_lpm("valid_msg", body_with_extra, false);
     body_with_extra.push(0xAA);
-    var resp5 = wing::GrpcResponse { .. };
-    assert(!wing::parse_grpc_unary_response(native_hdrs, trls, body_with_extra[..], false, resp5));
+    var resp5 = grpc::Response { .. };
+    assert(!grpc::parse_unary_response(native_hdrs, trls, body_with_extra[..], false, resp5));
     assert(resp5.payload.len == 0);
 
     // 1f. Bounded encode_grpc_lpm and encode_grpc_web_trailers must roll back 5-byte header if payload overflows cap
     var tiny_out: u8[..8] = [];
-    wing::encode_grpc_lpm("123456", tiny_out, false);
+    grpc::encode_lpm("123456", tiny_out, false);
     assert(tiny_out.len == 0);
-    wing::encode_grpc_web_trailers(wing::GrpcStatusCode.Ok, "ok", tiny_out);
+    grpc::encode_web_trailers(grpc::StatusCode.Ok, "ok", tiny_out);
     assert(tiny_out.len == 0);
 
     // 1g. Duplicate/conflicting grpc-status lines in gRPC-Web trailers must be rejected
-    var st_dup = wing::GrpcStatusCode.Ok;
+    var st_dup = grpc::StatusCode.Ok;
     var msg_dup: u8[..256] = [];
-    assert(!wing::parse_grpc_web_trailers("grpc-status: 7\r\ngrpc-status: 0\r\n", st_dup, msg_dup));
-    assert(st_dup == wing::GrpcStatusCode.Unknown);
+    assert(!grpc::parse_web_trailers("grpc-status: 7\r\ngrpc-status: 0\r\n", st_dup, msg_dup));
+    assert(st_dup == grpc::StatusCode.Unknown);
 
     // 1h. 64-bit varint code (0x100000003) in google.rpc.Status must not truncate via `as u32` to 3
     // Field 1 (tag 0x08), varint 0x100000003 = [0x83, 0x80, 0x80, 0x80, 0x10]
     let spoofed_proto: u8[6] = [0x08, 0x83, 0x80, 0x80, 0x80, 0x10];
     var b64_buf: u8[..32] = [];
     core::base64_encode(spoofed_proto[..], b64_buf);
-    var st_out = wing::GrpcStatusCode.InvalidArgument;
-    var msg_out:     u8[..256]                  = [];
-    var details_out: wing::GrpcErrorDetail[..4] = [];
-    assert(!wing::decode_grpc_status_details(
+    var st_out = grpc::StatusCode.InvalidArgument;
+    var msg_out:     u8[..256]              = [];
+    var details_out: grpc::ErrorDetail[..4] = [];
+    assert(!grpc::decode_status_details(
         b64_buf[..],
-        wing::GrpcStatusCode.InvalidArgument,
+        grpc::StatusCode.InvalidArgument,
         st_out,
         msg_out,
         details_out,
@@ -111,66 +111,69 @@ fn test_ps_c2_01_grpc_smuggling_and_truncation() {
 // ---------------------------------------------------------------------------
 fn test_ps_c2_02_quic_stream_and_loss_integrity() {
     // 2a. Evicted closed stream must not be reopened by quic_table_get_or_open_stream (RFC 9000 Section 3.2)
-    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Server);
+    var tbl = quic::new_stream_table(quic::QuicRole.Server);
     tbl.max_streams_bidi = 300;
-    let idx0, ok0 = quic_internal::quic_table_get_or_open_stream(tbl, 0, 65536);
+    let idx0, ok0 = quic::get_or_open_stream(tbl, 0, 65536);
     assert(ok0 && idx0 == 0);
     // Drive stream 0 (ClientBidi) to terminal state in both directions
-    let ok_rx, _ = quic_internal::quic_stream_on_recv_stream_frame(tbl.streams[idx0], 0, 0, true);
+    let _, ok_rx = quic::on_recv_stream_frame(tbl.streams[idx0], 0, 0, true);
     assert(ok_rx);
-    let _ = quic_internal::quic_stream_on_app_read(tbl.streams[idx0], 0);
-    let ok_tx, _ = quic_internal::quic_stream_on_send_data(tbl.streams[idx0], 0, 0, true);
+    let _ = quic::on_app_read(tbl.streams[idx0], 0);
+    let _, ok_tx = quic::on_send_data(tbl.streams[idx0], 0, 0, true);
     assert(ok_tx);
-    assert(quic_internal::quic_stream_on_send_ack(tbl.streams[idx0], true));
-    assert(quic_internal::quic_stream_is_terminal(tbl.streams[idx0], quic_internal::QuicRole.Server));
+    assert(quic::on_send_ack(tbl.streams[idx0], true));
+    assert(quic::is_terminal(tbl.streams[idx0], quic::QuicRole.Server));
 
     // Fill remaining 127 slots and trigger eviction of stream 0 on the 129th stream
     var s_idx: u64 = 1;
     while s_idx <= 128 {
-        let _, ok_s = quic_internal::quic_table_get_or_open_stream(tbl, s_idx * 4, 65536);
+        let _, ok_s = quic::get_or_open_stream(tbl, s_idx * 4, 65536);
         assert(ok_s);
         s_idx += 1;
     }
-    assert(quic_internal::quic_table_is_evicted_closed_stream(tbl, 0));
-    let _, ok_reopen = quic_internal::quic_table_get_or_open_stream(tbl, 0, 65536);
+    assert(quic::is_evicted_closed_stream(tbl, 0));
+    let _, ok_reopen = quic::get_or_open_stream(tbl, 0, 65536);
     assert(!ok_reopen);
 
     // 2b. ImmediateAck (0x1f) and AckFrequency (0xaf) must be accepted in 1-RTT and rejected in 0-RTT
-    var conn = quic_internal::new_quic_server_connection("server_cid");
-    conn.state = quic_internal::QuicConnState.Established;
+    var conn = quic::new_server_connection("server_cid");
+    conn.state = quic::QuicConnState.Established;
     let imm_buf: u8[1] = [rfc::QUIC_FRAME_IMMEDIATE_ACK as u8];
-    let ok_1rtt, ack_el_1rtt = quic_internal::quic_conn_process_payload(
+    let _pr_ok_1rtt = quic::process_payload(
         conn,
         imm_buf[..],
-        quic_internal::QuicHeaderType.OneRtt,
+        quic::QuicHeaderType.OneRtt,
         100000,
     );
+    let ok_1rtt = _pr_ok_1rtt.handled;
+    let ack_el_1rtt = _pr_ok_1rtt.needs_ack;
     assert(ok_1rtt && ack_el_1rtt);
 
-    var conn_0rtt = quic_internal::new_quic_server_connection("server_cid");
-    let ok_0rtt, _ = quic_internal::quic_conn_process_payload(
+    var conn_0rtt = quic::new_server_connection("server_cid");
+    let _pr_ok_0rtt = quic::process_payload(
         conn_0rtt,
         imm_buf[..],
-        quic_internal::QuicHeaderType.ZeroRtt,
+        quic::QuicHeaderType.ZeroRtt,
         100000,
     );
+    let ok_0rtt = _pr_ok_0rtt.handled;
     assert(!ok_0rtt && conn_0rtt.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // 2c. detect_lost_packets must preserve uncollected packets without duplication when out_lost is full
-    var space = quic_internal::PnSpaceState {
+    var space = quic::PnSpaceState {
         has_acked_packets: true,
         largest_acked_pn:  10,
         ..
     };
     // p0 (lost), p1 (not lost, pn=9), p2 (lost), p3 (lost, overflows out_lost[..2])
-    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 1, time_sent_us: 1000, size_bytes: 100, .. });
-    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 9, time_sent_us: 90000, size_bytes: 100, .. });
-    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 2, time_sent_us: 1000, size_bytes: 100, .. });
-    space.sent_packets.push(quic_internal::SentPacketMeta { pn: 3, time_sent_us: 1000, size_bytes: 100, .. });
+    space.sent_packets.push(quic::SentPacketMeta { pn: 1, time_sent_us: 1000, size_bytes: 100, .. });
+    space.sent_packets.push(quic::SentPacketMeta { pn: 9, time_sent_us: 90000, size_bytes: 100, .. });
+    space.sent_packets.push(quic::SentPacketMeta { pn: 2, time_sent_us: 1000, size_bytes: 100, .. });
+    space.sent_packets.push(quic::SentPacketMeta { pn: 3, time_sent_us: 1000, size_bytes: 100, .. });
 
-    let rtt = quic_internal::RttState { smoothed_rtt_us: 10000, latest_rtt_us: 10000, .. };
-    var out_lost: quic_internal::SentPacketMeta[..2] = [];
-    let ok_loss = quic_internal::detect_lost_packets(space, rtt, 95000, out_lost);
+    let rtt = quic::RttState { smoothed_rtt_us: 10000, latest_rtt_us: 10000, .. };
+    var out_lost: quic::SentPacketMeta[..2] = [];
+    let ok_loss = quic::detect_lost_packets(space, rtt, 95000, out_lost);
     assert(!ok_loss);
     assert(out_lost.len == 2);
     // Remaining in sent_packets must be strictly [pn=9, pn=3] (2 packets, no duplicate pn=9 or already-removed pn=2)

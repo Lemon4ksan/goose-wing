@@ -21,59 +21,59 @@ import wire_kit from ".";
 
 fn dummy_unary_ok(
     _id:  u16,
-    _ctx: wing::GrpcServerContext&,
+    _ctx: grpc::ServerContext&,
     _req: const u8[:],
     res:  u8[>..]&,
-) -> wing::GrpcStatus {
+) -> grpc::Status {
     res.append("pong");
-    return wing::grpc_ok();
+    return grpc::ok();
 }
 
 fn test_f001_protobuf_tag_bounds() {
     // 1. Tag with (tag >> 3) == 0x100000001 (overflows u32 and > PB_MAX_FIELD_NUM):
     // tag = (0x100000001 << 3) | 0 = 0x800000008 -> varint [0x88, 0x80, 0x80, 0x80, 0x80, 0x01]
     let hi_varint: u8[7] = [0x88, 0x80, 0x80, 0x80, 0x80, 0x01, 0x2A];
-    let _, ok_v1 = wing::pb_read_varint_field(hi_varint[..], 1);
+    let _, ok_v1 = grpc::pb_read_varint_field(hi_varint[..], 1);
     assert(!ok_v1);
 
     let hi_bytes: u8[8] = [0x8A, 0x80, 0x80, 0x80, 0x80, 0x01, 0x01, 'x'];
-    let _, ok_b1 = wing::pb_read_bytes_field(hi_bytes[..], 1);
+    let _, ok_b1 = grpc::pb_read_bytes_field(hi_bytes[..], 1);
     assert(!ok_b1);
 
     // 2. Field number 0 (tag = 0x00, wire_type = 0) before valid field 1:
     let zero_fnum: u8[4] = [0x00, 0x01, 0x08, 0x2A];
-    let _, ok_v0 = wing::pb_read_varint_field(zero_fnum[..], 1);
+    let _, ok_v0 = grpc::pb_read_varint_field(zero_fnum[..], 1);
     assert(!ok_v0);
 
     let zero_fnum_b: u8[5] = [0x00, 0x01, 0x12, 0x01, 'a'];
-    let _, ok_b0 = wing::pb_read_bytes_field(zero_fnum_b[..], 1);
+    let _, ok_b0 = grpc::pb_read_bytes_field(zero_fnum_b[..], 1);
     assert(!ok_b0);
     print("F001_PB_TAG_BOUNDS: OK");
 }
 
 fn test_f002_grpc_web_trailer_injection() {
-    var ctx = wing::GrpcServerContext { .. };
+    var ctx = grpc::ServerContext { .. };
     // Reject CRLF in metadata/trailer value and reserved keys
-    assert(!wing::add_response_trailer(ctx, "x-custom", "val\r\ngrpc-status: 0"));
-    assert(!wing::add_response_trailer(ctx, "grpc-status", "0"));
-    assert(!wing::add_response_trailer(ctx, "grpc-message", "spoof"));
-    assert(!wing::add_response_metadata(ctx, "content-type", "text/plain"));
-    assert(!wing::add_response_metadata(ctx, "", "empty-key"));
+    assert(!grpc::add_response_trailer(ctx, "x-custom", "val\r\ngrpc-status: 0"));
+    assert(!grpc::add_response_trailer(ctx, "grpc-status", "0"));
+    assert(!grpc::add_response_trailer(ctx, "grpc-message", "spoof"));
+    assert(!grpc::add_response_metadata(ctx, "content-type", "text/plain"));
+    assert(!grpc::add_response_metadata(ctx, "", "empty-key"));
 
     // Direct encode_grpc_web_trailers_with_meta defense against spoofed extra_trailers
-    var spoofed: wing::GrpcMetadata[..16] = [];
-    var e1 = wing::GrpcMetadata { .. };
+    var spoofed: grpc::Metadata[..16] = [];
+    var e1 = grpc::Metadata { .. };
     let _ = e1.key.try_set("grpc-status");
     let _ = e1.value.try_set("0");
     spoofed.push(e1);
-    var e2 = wing::GrpcMetadata { .. };
+    var e2 = grpc::Metadata { .. };
     let _ = e2.key.try_set("x-inj");
     let _ = e2.value.try_set("v\r\ngrpc-status: 0");
     spoofed.push(e2);
 
     var frame: u8[>..] = [];
-    wing::encode_grpc_web_trailers_with_meta(
-        wing::GrpcStatusCode.PermissionDenied,
+    grpc::encode_web_trailers_with_meta(
+        grpc::StatusCode.PermissionDenied,
         "denied",
         spoofed[..],
         frame,
@@ -81,12 +81,12 @@ fn test_f002_grpc_web_trailer_injection() {
     var payload: u8[>..] = [];
     var is_tr = false;
     var is_comp = false;
-    let ok_dec, _ = wing::decode_grpc_web_frame(frame[..], 0, payload, is_tr, is_comp);
+    let _, ok_dec = grpc::decode_web_frame(frame[..], 0, payload, is_tr, is_comp);
     assert(ok_dec && is_tr);
-    var st = wing::GrpcStatusCode.Ok;
+    var st = grpc::StatusCode.Ok;
     var msg: u8[..256] = [];
-    assert(wing::parse_grpc_web_trailers(payload[..], st, msg));
-    assert(st == wing::GrpcStatusCode.PermissionDenied);
+    assert(grpc::parse_web_trailers(payload[..], st, msg));
+    assert(st == grpc::StatusCode.PermissionDenied);
     print("F002_TRAILER_INJECTION: OK");
 }
 
@@ -94,27 +94,27 @@ fn test_f003_grpc_web_text_multi_chunk() {
     // Frame 1: 5-byte empty LPM [0,0,0,0,0] -> Base64 "AAAAAAA="
     // Frame 2: Trailer frame for grpc-status: 0\r\n -> Base64
     var f1: u8[>..] = [];
-    wing::encode_grpc_lpm("", f1, false);
+    grpc::encode_lpm("", f1, false);
     var b64_1: u8[>..] = [];
-    wing::encode_grpc_web_text(f1[..], b64_1);
+    grpc::encode_web_text(f1[..], b64_1);
 
     var f2: u8[>..] = [];
-    wing::encode_grpc_web_trailers(wing::GrpcStatusCode.Ok, "done", f2);
+    grpc::encode_web_trailers(grpc::StatusCode.Ok, "done", f2);
     var b64_2: u8[>..] = [];
-    wing::encode_grpc_web_text(f2[..], b64_2);
+    grpc::encode_web_text(f2[..], b64_2);
 
     var stream_b64: u8[>..] = [];
     stream_b64.append(b64_1[..]);
     stream_b64.append(b64_2[..]);
 
     var decoded: u8[>..] = [];
-    assert(wing::decode_grpc_web_text(stream_b64[..], decoded));
+    assert(grpc::decode_web_text(stream_b64[..], decoded));
     assert(decoded.len == f1.len + f2.len);
 
     // Mid-quantum invalid padding must still be rejected
     var bad_out: u8[>..] = [];
-    assert(!wing::decode_grpc_web_text("AA=A", bad_out));
-    assert(!wing::decode_grpc_web_text("=A==", bad_out));
+    assert(!grpc::decode_web_text("AA=A", bad_out));
+    assert(!grpc::decode_web_text("=A==", bad_out));
     print("F003_WEB_TEXT_MULTICHUNK: OK");
 }
 
@@ -122,31 +122,31 @@ fn test_f004_bounded_buffers_and_stream_parser() {
     // 1. decode_grpc_message into u8[..64] with 100-byte input must not overflow cap 64
     var long_in:   u8[100]  = ['z'; 100];
     var small_out: u8[..64] = [];
-    wing::decode_grpc_message(long_in[..], small_out);
+    grpc::decode_message(long_in[..], small_out);
     assert(small_out.len == 64);
 
     // 2. encode_grpc_message with default max_out_len (-1) into u8[..64] with 40 '%' bytes
     var pct_in:    u8[40]   = ['%'; 40];
     var small_enc: u8[..64] = [];
-    wing::encode_grpc_message(pct_in[..], small_enc);
+    grpc::encode_message(pct_in[..], small_enc);
     assert(small_enc.len <= 64);
 
     // 3. decode_grpc_lpm into u8[..8] with 16-byte payload must fail cleanly without abort
     var lpm_16: u8[>..] = [];
-    wing::encode_grpc_lpm("0123456789abcdef", lpm_16, false);
+    grpc::encode_lpm("0123456789abcdef", lpm_16, false);
     var tiny_payload: u8[..8] = [];
     var is_comp = true;
-    let ok_lpm, consumed = wing::decode_grpc_lpm(lpm_16[..], 0, tiny_payload, is_comp);
+    let consumed, ok_lpm = grpc::decode_lpm(lpm_16[..], 0, tiny_payload, is_comp);
     assert(!ok_lpm && consumed == 0 && is_comp);
 
     // 4. GrpcStreamParser with max_size = 10 must accept a 10-byte payload (15 wire bytes)
-    var parser = wing::new_grpc_stream_parser(10);
+    var parser = grpc::new_stream_parser(10);
     var lpm_10: u8[>..] = [];
-    wing::encode_grpc_lpm("0123456789", lpm_10, false);
-    assert(wing::feed(parser, lpm_10[..]));
+    grpc::encode_lpm("0123456789", lpm_10, false);
+    assert(grpc::feed(parser, lpm_10[..]));
     var msg_out: u8[..16] = [];
     var msg_comp = false;
-    assert(wing::next_message(parser, msg_out, msg_comp));
+    assert(grpc::next_message(parser, msg_out, msg_comp));
     assert(msg_out[..] == "0123456789");
     print("F004_BOUNDED_BUFFERS: OK");
 }
@@ -155,19 +155,19 @@ fn test_f005_timeout_encoding_and_zero_deadline() {
     // 1. encode_grpc_timeout with 100_000_500 ms (>= 10^8, not divisible by 1000)
     // must emit <= 8 digits so parse_grpc_timeout accepts it.
     var to_buf: u8[..32] = [];
-    wing::encode_grpc_timeout(100000500, to_buf);
-    let parsed_ns, ok_to = wing::parse_grpc_timeout(to_buf[..]);
+    grpc::encode_timeout(100000500, to_buf);
+    let parsed_ns, ok_to = grpc::parse_timeout(to_buf[..]);
     assert(ok_to && parsed_ns > 0);
 
     // 2. grpc-timeout: 0S must immediately expire in dispatch_grpc_unary
-    var d = wing::new_grpc_server_dispatcher();
-    assert(wing::register_unary(d, "test.Svc", "Call", 1));
+    var d = grpc::new_server_dispatcher();
+    assert(grpc::register_unary(d, "test.Svc", "Call", 1));
     var req = wing::new_request("POST", "/test.Svc/Call");
     wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     wing::set_header(req, "grpc-timeout", "0S");
-    wing::encode_grpc_lpm("hi", req.body, false);
+    grpc::encode_lpm("hi", req.body, false);
     var res = wing::Response { .. };
-    assert(wing::dispatch_grpc_unary(d, req, 5000000, res, dummy_unary_ok));
+    assert(grpc::dispatch_unary(d, req, 5000000, res, dummy_unary_ok));
     assert(wing::header(res, rfc::HEADER_GRPC_STATUS) == "4");
     print("F005_TIMEOUT_AND_ZERO_DEADLINE: OK");
 }
@@ -179,21 +179,21 @@ fn test_f006_status_and_client_parsers() {
     let _ = wing::append_header(hdrs, rfc::HEADER_GRPC_STATUS, "0");
     var trs = wing::HeaderMap { .. };
     var msg: u8[..256] = [];
-    var st_503 = wing::GrpcStatusCode.Ok;
-    let _ = wing::extract_grpc_status(hdrs, trs, st_503, msg);
-    assert(st_503 == wing::GrpcStatusCode.Unavailable);
+    var st_503 = grpc::StatusCode.Ok;
+    let _ = grpc::extract_status(hdrs, trs, st_503, msg);
+    assert(st_503 == grpc::StatusCode.Unavailable);
 
     // 2. HTTP/2 :status pseudo-header ("503") when hdrs.status_code is left at default 200
     var hdrs2 = wing::HeaderMap { .. };
     let _ = wing::append_header(hdrs2, ":status", "503");
-    var st_pseudo = wing::GrpcStatusCode.Ok;
-    let _ = wing::extract_grpc_status(hdrs2, trs, st_pseudo, msg);
-    assert(st_pseudo == wing::GrpcStatusCode.Unavailable);
+    var st_pseudo = grpc::StatusCode.Ok;
+    let _ = grpc::extract_status(hdrs2, trs, st_pseudo, msg);
+    assert(st_pseudo == grpc::StatusCode.Unavailable);
 
     // 3. process_grpc_web_response must reject invalid Base64 and truncated frames
-    var resp = wing::GrpcResponse { .. };
-    assert(!wing::process_grpc_web_response("!!!not_base64!!!", rfc::GRPC_WEB_TEXT_CONTENT_TYPE, resp));
-    assert(!wing::process_grpc_web_response("\x00\x00\x00\x00\x05hi", rfc::GRPC_WEB_CONTENT_TYPE, resp));
+    var resp = grpc::Response { .. };
+    assert(!grpc::process_web_response("!!!not_base64!!!", rfc::GRPC_WEB_TEXT_CONTENT_TYPE, resp));
+    assert(!grpc::process_web_response("\x00\x00\x00\x00\x05hi", rfc::GRPC_WEB_CONTENT_TYPE, resp));
 
     // 4. process_grpc_web_response with trailer frame missing grpc-status must set Unknown
     var tr_no_status: u8[>..] = [];
@@ -205,15 +205,15 @@ fn test_f006_status_and_client_parsers() {
     tr_no_status.push(((tr_len >> 8) & 0xFF) as u8);
     tr_no_status.push((tr_len & 0xFF) as u8);
     tr_no_status.append(raw_tr);
-    var resp_no_st = wing::GrpcResponse { .. };
-    let _ = wing::process_grpc_web_response(tr_no_status[..], rfc::GRPC_WEB_CONTENT_TYPE, resp_no_st);
-    assert(resp_no_st.status == wing::GrpcStatusCode.Unknown);
+    var resp_no_st = grpc::Response { .. };
+    let _ = grpc::process_web_response(tr_no_status[..], rfc::GRPC_WEB_CONTENT_TYPE, resp_no_st);
+    assert(resp_no_st.status == grpc::StatusCode.Unknown);
     print("F006_CLIENT_AND_STATUS: OK");
 }
 
 fn test_f007_server_dispatch_and_encoding() {
-    var d = wing::new_grpc_server_dispatcher();
-    assert(wing::register_unary(d, "test.Svc", "Call", 1));
+    var d = grpc::new_server_dispatcher();
+    assert(grpc::register_unary(d, "test.Svc", "Call", 1));
 
     // 1. Compressed LPM (flag=1) with identity/missing grpc-encoding must be rejected (Internal=13)
     var req_comp = wing::new_request("POST", "/test.Svc/Call");
@@ -221,7 +221,7 @@ fn test_f007_server_dispatch_and_encoding() {
     req_comp.body.push(rfc::GRPC_FLAG_COMPRESSED);
     req_comp.body.append("\x00\x00\x00\x00");
     var res_comp = wing::Response { .. };
-    assert(wing::dispatch_grpc_unary(d, req_comp, 1000, res_comp, dummy_unary_ok));
+    assert(grpc::dispatch_unary(d, req_comp, 1000, res_comp, dummy_unary_ok));
     assert(wing::header(res_comp, rfc::HEADER_GRPC_STATUS) == "13");
 
     // 2. Unsupported grpc-encoding ("snappy") even with uncompressed LPM must return Unimplemented (12)
@@ -229,17 +229,17 @@ fn test_f007_server_dispatch_and_encoding() {
     var req_enc = wing::new_request("POST", "/test.Svc/Call");
     wing::set_header(req_enc, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     wing::set_header(req_enc, "grpc-encoding", "snappy");
-    wing::encode_grpc_lpm("hi", req_enc.body, false);
+    grpc::encode_lpm("hi", req_enc.body, false);
     var res_enc = wing::Response { .. };
-    assert(wing::dispatch_grpc_unary(d, req_enc, 1000, res_enc, dummy_unary_ok));
+    assert(grpc::dispatch_unary(d, req_enc, 1000, res_enc, dummy_unary_ok));
     assert(wing::header(res_enc, rfc::HEADER_GRPC_STATUS) == "12");
     assert(wing::header(res_enc, rfc::HEADER_GRPC_ACCEPT_ENCODING).len > 0);
 
     // 3. parse_grpc_path rejects extra slash or query string in method name
     var svc: u8[..64] = [];
     var mth: u8[..64] = [];
-    assert(!wing::parse_grpc_path("/test.Svc/Call/Extra", svc, mth));
-    assert(!wing::parse_grpc_path("/test.Svc/Call?foo=1", svc, mth));
+    assert(!grpc::parse_path("/test.Svc/Call/Extra", svc, mth));
+    assert(!grpc::parse_path("/test.Svc/Call?foo=1", svc, mth));
 
     // 4. handle_grpc_h2_control_frame rejects SETTINGS on non-zero stream_id
     let bad_hdr = wire::WireFrameHeader {
@@ -248,7 +248,7 @@ fn test_f007_server_dispatch_and_encoding() {
         flags:      0,
         stream_id:  1,
     };
-    assert(!wing::handle_grpc_h2_control_frame(-1, bad_hdr, ""));
+    assert(!grpc::handle_h2_control_frame(-1, bad_hdr, ""));
     print("F007_SERVER_DISPATCH: OK");
 }
 
@@ -459,32 +459,32 @@ fn test_gcra_long_key_normalization() {
 
 // crap:trusted-bounds
 fn test_proxy_health_check_flapping() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 3);
-    assert(wing::add_upstream_target(cluster, "10.0.1.1", 8080));
-    assert(wing::add_upstream_target(cluster, "10.0.1.2", 8080));
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 3);
+    assert(proxy::add_upstream_target(cluster, "10.0.1.1", 8080));
+    assert(proxy::add_upstream_target(cluster, "10.0.1.2", 8080));
 
     // Target 0 experiences flapping (alternating single failure and recovery)
-    wing::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
     assert(cluster.targets[0].is_healthy);
 
-    wing::record_upstream_success(cluster, 0);
+    proxy::record_upstream_success(cluster, 0);
     assert(cluster.targets[0].fails == 0);
 
-    wing::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
     assert(cluster.targets[0].is_healthy);
-    wing::record_upstream_success(cluster, 0);
+    proxy::record_upstream_success(cluster, 0);
     assert(cluster.targets[0].fails == 0);
 
     // Sustained 3 failures -> trips target 0 to unhealthy
-    wing::record_upstream_failure(cluster, 0);
-    wing::record_upstream_failure(cluster, 0);
-    wing::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
     assert(!cluster.targets[0].is_healthy);
     assert(!cluster.circuit_open);
 
     // Selection now exclusively routes to Target 1
-    let chosen1, ok1 = wing::select_upstream(cluster);
-    let chosen2, ok2 = wing::select_upstream(cluster);
+    let chosen1, ok1 = proxy::select_upstream(cluster);
+    let chosen2, ok2 = proxy::select_upstream(cluster);
     assert(ok1 && chosen1 == 1);
     assert(ok2 && chosen2 == 1);
 
@@ -495,30 +495,30 @@ fn test_proxy_health_check_flapping() {
 
 // crap:trusted-bounds
 fn test_proxy_circuit_breaker_full_trip() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
-    assert(wing::add_upstream_target(cluster, "srv-alpha", 80));
-    assert(wing::add_upstream_target(cluster, "srv-beta", 80));
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 2);
+    assert(proxy::add_upstream_target(cluster, "srv-alpha", 80));
+    assert(proxy::add_upstream_target(cluster, "srv-beta", 80));
 
     // Fail all targets to trip entire cluster circuit
-    wing::record_upstream_failure(cluster, 0);
-    wing::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
     assert(!cluster.targets[0].is_healthy);
 
-    wing::record_upstream_failure(cluster, 1);
-    wing::record_upstream_failure(cluster, 1);
+    proxy::record_upstream_failure(cluster, 1);
+    proxy::record_upstream_failure(cluster, 1);
     assert(!cluster.targets[1].is_healthy);
 
     // Entire cluster circuit is now open (all backends dead)
     assert(cluster.circuit_open);
-    let _, ok_trip = wing::select_upstream(cluster);
+    let _, ok_trip = proxy::select_upstream(cluster);
     assert(!ok_trip);
 
     // Active health probe returns success on srv-beta (Target 1)
-    wing::record_upstream_success(cluster, 1);
+    proxy::record_upstream_success(cluster, 1);
     assert(cluster.targets[1].is_healthy);
     assert(!cluster.circuit_open);
 
-    let chosen, ok_heal = wing::select_upstream(cluster);
+    let chosen, ok_heal = proxy::select_upstream(cluster);
     assert(ok_heal && chosen == 1);
 
     print("PROXY_CIRCUIT_BREAKER: full_trip_fast_fails=true self_healed_on_probe=true");
@@ -528,10 +528,10 @@ fn test_proxy_circuit_breaker_full_trip() {
 
 // crap:trusted-bounds
 fn test_proxy_lb_degraded_routing() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.LeastConnections, 2);
-    assert(wing::add_upstream_target(cluster, "node-1", 8080));
-    assert(wing::add_upstream_target(cluster, "node-2", 8080));
-    assert(wing::add_upstream_target(cluster, "node-3", 8080));
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.LeastConnections, 2);
+    assert(proxy::add_upstream_target(cluster, "node-1", 8080));
+    assert(proxy::add_upstream_target(cluster, "node-2", 8080));
+    assert(proxy::add_upstream_target(cluster, "node-3", 8080));
 
     // Node 1 has 5 active connections
     cluster.targets[0].active_conns = 5;
@@ -541,12 +541,12 @@ fn test_proxy_lb_degraded_routing() {
     cluster.targets[2].is_healthy = false;
 
     // Least-connections must skip node-3 (down) and choose node-2 (least active: 2 < 5)
-    let chosen, ok = wing::select_upstream(cluster);
+    let chosen, ok = proxy::select_upstream(cluster);
     assert(ok && chosen == 1);
     assert(cluster.targets[1].active_conns == 3);
 
     // Release connection
-    wing::release_upstream_connection(cluster, chosen);
+    proxy::release_upstream_connection(cluster, chosen);
     assert(cluster.targets[1].active_conns == 2);
 
     print("PROXY_LB_DEGRADED: unhealthy_skipped=true least_conn_chosen=true");
@@ -588,7 +588,7 @@ fn run_02_verify_gcra_proxy_chaos() {
 
 // Wire adapter for verify_split_stream and fuzzing using wing's real decode_grpc_lpm_slice
 fn wing_validate_grpc_lpm_wire(buf: const u8[:]) -> i64 {
-    let payload_slice, _, _, ok = wing::decode_grpc_lpm_slice(buf, 0);
+    let payload_slice, _, _, ok = grpc::decode_lpm_slice(buf, 0);
     if ok {
         return payload_slice.len;
     }
@@ -602,9 +602,9 @@ fn run_03_verify_grpc_lpm_edge() {
     var lpm_pkt: u8[>..] = [];
     assert(wire_kit::parse_hex("000000000568656C6C6F", lpm_pkt));
 
-    // Verify encode round-trip with wing::encode_grpc_lpm
+    // Verify encode round-trip with grpc::encode_lpm
     var encoded: u8[>..] = [];
-    wing::encode_grpc_lpm("hello", encoded, false);
+    grpc::encode_lpm("hello", encoded, false);
     assert(encoded[..] == lpm_pkt[..]);
 
     assert(wire_kit::verify_split_stream(lpm_pkt[..], -1, 5, wing_validate_grpc_lpm_wire));
@@ -640,57 +640,58 @@ fn run_03_verify_grpc_lpm_edge() {
 
 fn idempotent_echo_handler(
     handler_id:  u16,
-    ctx:         wing::GrpcServerContext&,
+    ctx:         grpc::ServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-) -> wing::GrpcStatus {
+) -> grpc::Status {
     let _ = handler_id;
     let _ = ctx;
     res_payload.append(req_payload);
-    return wing::grpc_ok();
+    return grpc::ok();
 }
 
 fn verify_connect_unary_get() {
-    var params = wing::ConnectUnaryGetParams { .. };
+    var params = grpc::ConnectUnaryGetParams { .. };
     var payload: u8[>..] = [];
-    let st = wing::parse_connect_get_query(
+    let st = grpc::parse_connect_get_query(
         "?connect=v1&encoding=proto&base64=1&message=cGluZw",
         params,
         payload,
     );
-    assert(st == wing::GrpcStatusCode.Ok);
+    assert(st == grpc::StatusCode.Ok);
     assert(params.has_version);
     assert(params.base64);
     assert(params.encoding[..] == "proto");
     assert(payload[..] == "ping");
 
     // Server dispatch of idempotent GET vs non-idempotent rejection
-    var disp = wing::GrpcServerDispatcher { .. };
-    assert(wing::register_unary(
+    var disp = grpc::ServerDispatcher { .. };
+    assert(grpc::register_unary(
         disp,
         "test.Echo",
         "GetPing",
         1,
-        wing::GrpcIdempotency.NoSideEffects,
+        grpc::Idempotency.NoSideEffects,
     ));
-    assert(wing::register_unary(
+    assert(grpc::register_unary(
         disp,
         "test.Echo",
         "Mutate",
         2,
     ));
-    assert(wing::register_bidi_streaming(disp, "test.Echo", "Chat", 3));
-    assert(wing::find_method_by_name(disp, "test.Echo", "Chat") >= 0);
+    assert(grpc::register_bidi_streaming(disp, "test.Echo", "Chat", 3));
+    let _, ok_chat = grpc::find_method_by_name(disp, "test.Echo", "Chat");
+    assert(ok_chat);
 
     var req = wing::new_request("GET", "/test.Echo/GetPing?connect=v1&encoding=proto&base64=1&message=cGluZw");
     var res = wing::Response { .. };
-    assert(wing::dispatch_grpc_unary(disp, req, 1000, res, 0, idempotent_echo_handler));
+    assert(grpc::dispatch_unary(disp, req, 1000, res, 0, idempotent_echo_handler));
     assert(res.status_code == 200);
     assert(res.body[..] == "ping");
 
     var req_mut = wing::new_request("GET", "/test.Echo/Mutate?connect=v1&encoding=proto&base64=1&message=cGluZw");
     var res_mut = wing::Response { .. };
-    assert(wing::dispatch_grpc_unary(disp, req_mut, 1000, res_mut, 0, idempotent_echo_handler));
+    assert(grpc::dispatch_unary(disp, req_mut, 1000, res_mut, 0, idempotent_echo_handler));
     assert(res_mut.status_code == 405);
     print("GRPCCLI_01_CONNECT_GET: OK");
 }
@@ -699,22 +700,22 @@ fn verify_connect_end_stream() {
     var tr = wing::HeaderMap { .. };
     let _ = wing::append_header(tr, "x-custom-meta", "val123");
     var wire: u8[..512] = [];
-    assert(wing::encode_connect_end_stream(
-        wing::GrpcStatusCode.Unauthenticated,
+    assert(grpc::encode_connect_end_stream(
+        grpc::StatusCode.Unauthenticated,
         "expired token",
         tr,
         wire,
     ));
-    assert(wire[0] == wing::CONNECT_FLAG_END_STREAM);
+    assert(wire[0] == grpc::CONNECT_FLAG_END_STREAM);
     let json_len = core::read_be_u32(wire[..], 1) as i64;
     let json_end = core::add_sat_i64(5, json_len);
     let json_slice = wire[5..json_end];
 
-    var out_status = wing::GrpcStatusCode.Ok;
+    var out_status = grpc::StatusCode.Ok;
     var out_msg: u8[..256] = [];
     var out_tr = wing::HeaderMap { .. };
-    assert(wing::parse_connect_end_stream(json_slice, out_status, out_msg, out_tr));
-    assert(out_status == wing::GrpcStatusCode.Unauthenticated);
+    assert(grpc::parse_connect_end_stream(json_slice, out_status, out_msg, out_tr));
+    assert(out_status == grpc::StatusCode.Unauthenticated);
     assert(out_msg[..] == "expired token");
     assert(wing::get_header(out_tr, "x-custom-meta") == "val123");
     print("GRPCCLI_02_CONNECT_END_STREAM: OK");
@@ -723,86 +724,86 @@ fn verify_connect_end_stream() {
 fn verify_grpc_status_details_and_health() {
     // Build a google.rpc.Status with code=3 (InvalidArgument), message="bad field", and 1 Any detail
     var any_pb: u8[..128] = [];
-    assert(wing::pb_write_bytes_field(1, "type.googleapis.com/BadRequest", any_pb));
-    assert(wing::pb_write_bytes_field(2, "field_x", any_pb));
+    assert(grpc::pb_write_bytes_field(1, "type.googleapis.com/BadRequest", any_pb));
+    assert(grpc::pb_write_bytes_field(2, "field_x", any_pb));
 
     var status_pb: u8[..256] = [];
-    assert(wing::pb_write_varint_field(1, 3, status_pb));
-    assert(wing::pb_write_bytes_field(2, "bad field", status_pb));
-    assert(wing::pb_write_bytes_field(3, any_pb[..], status_pb));
+    assert(grpc::pb_write_varint_field(1, 3, status_pb));
+    assert(grpc::pb_write_bytes_field(2, "bad field", status_pb));
+    assert(grpc::pb_write_bytes_field(3, any_pb[..], status_pb));
 
     var b64_buf: u8[..512] = [];
     core::base64_encode(status_pb[..], b64_buf);
 
-    var st_code = wing::GrpcStatusCode.Ok;
-    var st_msg:  u8[..256]                  = [];
-    var details: wing::GrpcErrorDetail[..4] = [];
-    assert(wing::decode_grpc_status_details(
+    var st_code = grpc::StatusCode.Ok;
+    var st_msg:  u8[..256]              = [];
+    var details: grpc::ErrorDetail[..4] = [];
+    assert(grpc::decode_status_details(
         b64_buf[..],
-        wing::GrpcStatusCode.InvalidArgument,
+        grpc::StatusCode.InvalidArgument,
         st_code,
         st_msg,
         details,
     ));
-    assert(st_code == wing::GrpcStatusCode.InvalidArgument);
+    assert(st_code == grpc::StatusCode.InvalidArgument);
     assert(st_msg[..] == "bad field");
     assert(details.len == 1);
     assert(details[0].type_url[..] == "type.googleapis.com/BadRequest");
     assert(details[0].value[..] == "field_x");
 
     // Code mismatch override -> Internal
-    assert(wing::decode_grpc_status_details(
+    assert(grpc::decode_status_details(
         b64_buf[..],
-        wing::GrpcStatusCode.NotFound,
+        grpc::StatusCode.NotFound,
         st_code,
         st_msg,
         details,
     ));
-    assert(st_code == wing::GrpcStatusCode.Internal);
+    assert(st_code == grpc::StatusCode.Internal);
     assert(details.len == 0);
     print("GRPCCLI_03_STATUS_DETAILS: OK");
 
     // Health check protocol (GRPCCLI-04)
-    var disp = wing::GrpcServerDispatcher { .. };
-    assert(wing::set_grpc_service_health(disp, "my.Service", wing::GrpcServingStatus.Serving));
+    var disp = grpc::ServerDispatcher { .. };
+    assert(grpc::set_service_health(disp, "my.Service", grpc::ServingStatus.Serving));
     var req_pb: u8[..64] = [];
-    assert(wing::pb_write_bytes_field(1, "my.Service", req_pb));
+    assert(grpc::pb_write_bytes_field(1, "my.Service", req_pb));
     var lpm_req: u8[>..] = [];
-    wing::encode_grpc_lpm(req_pb[..], lpm_req, false);
+    grpc::encode_lpm(req_pb[..], lpm_req, false);
 
     var h_req = wing::new_request("POST", "/grpc.health.v1.Health/Check");
     wing::set_header(h_req.headers, "content-type", "application/grpc");
     h_req.body.append(lpm_req[..]);
     var h_res = wing::Response { .. };
-    assert(wing::dispatch_grpc_unary(disp, h_req, 1000, h_res, 0, idempotent_echo_handler));
+    assert(grpc::dispatch_unary(disp, h_req, 1000, h_res, 0, idempotent_echo_handler));
     assert(wing::get_header(h_res.trailers, "grpc-status") == "0");
     print("GRPCCLI_04_HEALTH_CHECK: OK");
 }
 
 fn verify_compression_webtext_rst_altsvc_and_cursor() {
     // GRPCCLI-05: Compressed flag 0x01 with empty or "identity" encoding -> Internal
-    assert(wing::validate_recv_compression(true, "", true) == wing::GrpcStatusCode.Internal);
-    assert(wing::validate_recv_compression(true, "identity", false) == wing::GrpcStatusCode.Internal);
-    assert(wing::validate_recv_compression(true, "gzip", true) == wing::GrpcStatusCode.Ok);
-    assert(wing::validate_recv_compression(true, "br", true) == wing::GrpcStatusCode.Unimplemented);
+    assert(grpc::validate_recv_compression(true, "", true) == grpc::StatusCode.Internal);
+    assert(grpc::validate_recv_compression(true, "identity", false) == grpc::StatusCode.Internal);
+    assert(grpc::validate_recv_compression(true, "gzip", true) == grpc::StatusCode.Ok);
+    assert(grpc::validate_recv_compression(true, "br", true) == grpc::StatusCode.Unimplemented);
     print("GRPCCLI_05_COMPRESSION_FLAG: OK");
 
     // GRPCCLI-06: Accept: application/grpc-web-text negotiation
-    var cfg = wing::GrpcCallConfig { is_web_text: true, .. };
+    var cfg = grpc::CallConfig { is_web_text: true, .. };
     let _ = cfg.service.try_set("pkg.Svc");
     let _ = cfg.method.try_set("Call");
     var hdrs = wing::HeaderMap { .. };
-    wing::build_grpc_request_headers(cfg, "example.com", "https", hdrs);
+    grpc::build_request_headers(cfg, "example.com", "https", hdrs);
     assert(wing::get_header(hdrs, "accept") == "application/grpc-web-text+proto");
-    let ok_res = wing::GrpcResponse { status: wing::GrpcStatusCode.Ok, .. };
-    assert(wing::is_grpc_success(ok_res));
+    let ok_res = grpc::Response { status: grpc::StatusCode.Ok, .. };
+    assert(grpc::is_success(ok_res));
     print("GRPCCLI_06_WEB_TEXT_ACCEPT: OK");
 
     // GRPCCLI-07: H2 RST_STREAM to gRPC status mapping
-    assert(wing::h2_error_to_grpc_status(rfc::H2_ERR_CANCEL) == wing::GrpcStatusCode.Cancelled);
-    assert(wing::h2_error_to_grpc_status(rfc::H2_ERR_ENHANCE_YOUR_CALM) == wing::GrpcStatusCode.ResourceExhausted);
-    assert(wing::h2_error_to_grpc_status(rfc::H2_ERR_INADEQUATE_SECURITY) == wing::GrpcStatusCode.PermissionDenied);
-    assert(wing::h2_error_to_grpc_status(rfc::H2_ERR_REFUSED_STREAM) == wing::GrpcStatusCode.Unavailable);
+    assert(grpc::h2_error_to_status(rfc::H2_ERR_CANCEL) == grpc::StatusCode.Cancelled);
+    assert(grpc::h2_error_to_status(rfc::H2_ERR_ENHANCE_YOUR_CALM) == grpc::StatusCode.ResourceExhausted);
+    assert(grpc::h2_error_to_status(rfc::H2_ERR_INADEQUATE_SECURITY) == grpc::StatusCode.PermissionDenied);
+    assert(grpc::h2_error_to_status(rfc::H2_ERR_REFUSED_STREAM) == grpc::StatusCode.Unavailable);
     print("GRPCCLI_07_RST_STREAM_MAP: OK");
 
     // GRPCCLI-08: Alt-Svc IPv6 authority & ALPN %XX percent-decoding
@@ -819,19 +820,19 @@ fn verify_compression_webtext_rst_altsvc_and_cursor() {
     print("GRPCCLI_08_ALTSVC_IPV6_ALPN: OK");
 
     // GRPCCLI-09: GrpcStreamParser read_pos cursor without per-message shift
-    var parser = wing::new_grpc_stream_parser(1024);
+    var parser = grpc::new_stream_parser(1024);
     var stream_bytes: u8[>..] = [];
-    wing::encode_grpc_lpm("msg1", stream_bytes, false);
-    wing::encode_grpc_lpm("msg2", stream_bytes, false);
+    grpc::encode_lpm("msg1", stream_bytes, false);
+    grpc::encode_lpm("msg2", stream_bytes, false);
     assert(parser.feed(stream_bytes[..]));
     var out1: u8[>..] = [];
     var comp1 = false;
-    assert(wing::next_message(parser, out1, comp1));
+    assert(grpc::next_message(parser, out1, comp1));
     assert(out1[..] == "msg1");
     assert(parser.read_pos == 9);
     var out2: u8[>..] = [];
     var comp2 = false;
-    assert(wing::next_message(parser, out2, comp2));
+    assert(grpc::next_message(parser, out2, comp2));
     assert(out2[..] == "msg2");
     assert(parser.read_pos == 0);
     print("GRPCCLI_09_PARSER_READ_POS: OK");
@@ -865,11 +866,11 @@ fn run_04_verify_grpc_protocol() {
 //
 
 fn test_proxy_splice_and_userspace_streaming() {
-    let tcp_splice = wing::can_use_kernel_splice(wing::ProxyTransportKind.PlainTcp, false);
-    let connect_splice = wing::can_use_kernel_splice(wing::ProxyTransportKind.Http1Connect, false);
-    let tls_splice = wing::can_use_kernel_splice(wing::ProxyTransportKind.Tls, true);
-    let ws_splice = wing::can_use_kernel_splice(wing::ProxyTransportKind.WebSocket, false);
-    let wt_splice = wing::can_use_kernel_splice(wing::ProxyTransportKind.WebTransport, true);
+    let tcp_splice = proxy::can_use_kernel_splice(proxy::TransportKind.PlainTcp, false);
+    let connect_splice = proxy::can_use_kernel_splice(proxy::TransportKind.Http1Connect, false);
+    let tls_splice = proxy::can_use_kernel_splice(proxy::TransportKind.Tls, true);
+    let ws_splice = proxy::can_use_kernel_splice(proxy::TransportKind.WebSocket, false);
+    let wt_splice = proxy::can_use_kernel_splice(proxy::TransportKind.WebTransport, true);
 
     print(
         "PROXY_SPLICE_ELIGIBILITY: tcp=", tcp_splice,
@@ -881,76 +882,76 @@ fn test_proxy_splice_and_userspace_streaming() {
     // CHECK: PROXY_SPLICE_ELIGIBILITY: tcp=true connect=true tls=false ws=false wt=false
 
     // Userspace zero-copy ring-buffer streaming (incoming_slice / advance_read)
-    var src_ring = wing::ProxyStreamRing { .. };
-    var dst_ring = wing::ProxyStreamRing { .. };
+    var src_ring = proxy::StreamRing { .. };
+    var dst_ring = proxy::StreamRing { .. };
 
-    let ok_feed1 = wing::feed_stream_chunk(src_ring, "PING");
+    let ok_feed1 = proxy::feed_stream_chunk(src_ring, "PING");
     assert(ok_feed1);
-    let slice1 = wing::incoming_slice(src_ring);
+    let slice1 = proxy::incoming_slice(src_ring);
     assert(slice1 == "PING");
 
     // WebSocket RFC 6455 §5.3 XOR masking transfer
     let ws_mask: u8[4] = [0x11, 0x22, 0x33, 0x44];
-    let xfer_len, ok_xfer = wing::forward_userspace_stream_chunk(
+    let xfer_len, ok_xfer = proxy::forward_userspace_stream_chunk(
         src_ring,
         dst_ring,
-        wing::ProxyTransportKind.WebSocket,
+        proxy::TransportKind.WebSocket,
         ws_mask,
     );
     assert(ok_xfer && xfer_len == 4);
-    assert(wing::incoming_slice(src_ring).len == 0);
+    assert(proxy::incoming_slice(src_ring).len == 0);
 
-    let dst_view = wing::incoming_slice(dst_ring);
+    let dst_view = proxy::incoming_slice(dst_ring);
     assert(dst_view.len == 4);
     assert(dst_view[0] == ('P' ^ 0x11));
     assert(dst_view[1] == ('I' ^ 0x22));
     assert(dst_view[2] == ('N' ^ 0x33));
     assert(dst_view[3] == ('G' ^ 0x44));
-    assert(wing::advance_read(dst_ring, 4));
-    assert(wing::incoming_slice(dst_ring).len == 0);
+    assert(proxy::advance_read(dst_ring, 4));
+    assert(proxy::incoming_slice(dst_ring).len == 0);
 
     // Overflow rejection (Invariant 13): fill 16380 bytes, then attempt 8 bytes (exceeds 16384 cap)
-    var full_ring = wing::ProxyStreamRing { .. };
+    var full_ring = proxy::StreamRing { .. };
     var chunk_8k: u8[..8192] = [];
     for _ in 8190 {
         chunk_8k.push('A');
     }
-    assert(wing::feed_stream_chunk(full_ring, chunk_8k[..])); // 8190
-    assert(wing::feed_stream_chunk(full_ring, chunk_8k[..])); // 16380
-    let ok_overflow = wing::feed_stream_chunk(full_ring, "12345678");
+    assert(proxy::feed_stream_chunk(full_ring, chunk_8k[..])); // 8190
+    assert(proxy::feed_stream_chunk(full_ring, chunk_8k[..])); // 16380
+    let ok_overflow = proxy::feed_stream_chunk(full_ring, "12345678");
     if ok_overflow {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
     }
 
     print(
         "PROXY_RING_STREAMING: xfer_len=", xfer_len,
-        " drained=", (wing::incoming_slice(dst_ring).len == 0),
+        " drained=", (proxy::incoming_slice(dst_ring).len == 0),
         " overflow_rejected=", !ok_overflow, "\n",
     );
     // CHECK: PROXY_RING_STREAMING: xfer_len=4 drained=true overflow_rejected=true
 }
 
 fn test_load_balancer_flapping_and_gcra_burst_guard() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 0);
-    wing::add_upstream_target(cluster, "10.0.0.10", 8080);
-    wing::set_target_health_thresholds(cluster, 0, 2, 3);
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 0);
+    proxy::add_upstream_target(cluster, "10.0.0.10", 8080);
+    proxy::set_target_health_thresholds(cluster, 0, 2, 3);
 
     // 2 consecutive failures (< unhealthy_threshold=3) -> stays Up
-    let st_f1 = wing::record_probe_result(cluster.targets[0], false);
-    let st_f2 = wing::record_probe_result(cluster.targets[0], false);
-    let still_up = (st_f1 == wing::UpstreamHealthState.Up && st_f2 == wing::UpstreamHealthState.Up);
+    let st_f1 = proxy::record_probe_result(cluster.targets[0], false);
+    let st_f2 = proxy::record_probe_result(cluster.targets[0], false);
+    let still_up = (st_f1 == proxy::UpstreamHealthState.Up && st_f2 == proxy::UpstreamHealthState.Up);
 
     // 3rd consecutive failure -> trips to Down
-    let st_f3 = wing::record_probe_result(cluster.targets[0], false);
-    let tripped_down = (st_f3 == wing::UpstreamHealthState.Down && !cluster.targets[0].is_healthy);
+    let st_f3 = proxy::record_probe_result(cluster.targets[0], false);
+    let tripped_down = (st_f3 == proxy::UpstreamHealthState.Down && !cluster.targets[0].is_healthy);
 
     // 1st consecutive success in Down -> transitions to Probing (Half-Open), not yet healthy
-    let st_s1 = wing::record_probe_result(cluster.targets[0], true);
-    let in_probing = (st_s1 == wing::UpstreamHealthState.Probing && !cluster.targets[0].is_healthy);
+    let st_s1 = proxy::record_probe_result(cluster.targets[0], true);
+    let in_probing = (st_s1 == proxy::UpstreamHealthState.Probing && !cluster.targets[0].is_healthy);
 
     // 2nd consecutive success (reaches healthy_threshold=2) -> closes circuit to Up
-    let st_s2 = wing::record_probe_result(cluster.targets[0], true);
-    let recovered_up = (st_s2 == wing::UpstreamHealthState.Up && cluster.targets[0].is_healthy);
+    let st_s2 = proxy::record_probe_result(cluster.targets[0], true);
+    let recovered_up = (st_s2 == proxy::UpstreamHealthState.Up && cluster.targets[0].is_healthy);
 
     print(
         "LB_FLAP_HYSTERESIS: still_up_at_2=", still_up,
@@ -973,9 +974,9 @@ fn test_load_balancer_flapping_and_gcra_burst_guard() {
 }
 
 fn test_grpc_bidi_streaming_and_status_details() {
-    var stream = wing::H2Stream {
+    var stream = grpc::H2Stream {
         stream_id:   1,
-        state:       wing::H2StreamState.Open,
+        state:       grpc::H2StreamState.Open,
         send_window: 65535,
         recv_window: 65535,
         active:      true,
@@ -983,19 +984,19 @@ fn test_grpc_bidi_streaming_and_status_details() {
     };
 
     var raw_in: u8[..64] = [];
-    wing::encode_grpc_lpm("hello", raw_in, false);
-    wing::encode_grpc_lpm("world", raw_in, false);
+    grpc::encode_lpm("hello", raw_in, false);
+    grpc::encode_lpm("world", raw_in, false);
 
-    var reader = wing::GrpcLpmReader { .. };
-    var writer = wing::GrpcLpmWriter { .. };
+    var reader = grpc::LpmReader { .. };
+    var writer = grpc::LpmWriter { .. };
 
-    let ok_feed = wing::feed_grpc_lpm_reader(reader, raw_in[..]);
-    let ok_bidi = wing::dispatch_grpc_bidi_streaming(stream, reader, writer);
+    let ok_feed = grpc::feed_lpm_reader(reader, raw_in[..]);
+    let ok_bidi = grpc::dispatch_bidi_streaming(stream, reader, writer);
 
     // Verify truncated LPM frame is rejected
     let truncated: u8[7] = [0x00, 0x00, 0x00, 0x00, 0x05, 'a', 'b'];
-    var bad_reader = wing::GrpcLpmReader { .. };
-    let ok_trunc = wing::feed_grpc_lpm_reader(bad_reader, truncated[..]);
+    var bad_reader = grpc::LpmReader { .. };
+    let ok_trunc = grpc::feed_lpm_reader(bad_reader, truncated[..]);
 
     print(
         "GRPC_BIDI_LPM: feed_ok=", ok_feed,
@@ -1010,7 +1011,7 @@ fn test_grpc_bidi_streaming_and_status_details() {
     // code = 3 (INVALID_ARGUMENT) -> 0x08 0x03
     // msg = "bad" (len 3) -> 0x12 0x03 'b' 'a' 'd'
     var status_buf: u8[16] = [0; 16];
-    let written, ok_status = wing::build_grpc_status_details(3, "bad", status_buf[..]);
+    let written, ok_status = grpc::build_status_details(3, "bad", status_buf[..]);
     let wire_match = (written == 7 &&
         status_buf[0] == 0x08 &&
         status_buf[1] == 0x03 &&
@@ -1022,7 +1023,7 @@ fn test_grpc_bidi_streaming_and_status_details() {
 
     // Small buffer capacity overflow rejection (Invariant 13)
     var tiny_buf: u8[4] = [0; 4];
-    let tiny_written, ok_tiny = wing::build_grpc_status_details(3, "bad", tiny_buf[..]);
+    let tiny_written, ok_tiny = grpc::build_status_details(3, "bad", tiny_buf[..]);
     if ok_tiny {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
     }
@@ -1061,25 +1062,25 @@ fn run_05_verify_proxy_grpc() {
 
 // 1. Verify load balancer Down target recovery hysteresis
 fn test_lb_down_hysteresis() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 0);
-    assert(wing::add_upstream_target(cluster, "srv-1", 80, 1));
-    assert(wing::set_target_health_thresholds(cluster, 0, 2, 3));
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 0);
+    assert(proxy::add_upstream_target(cluster, "srv-1", 80, 1));
+    assert(proxy::set_target_health_thresholds(cluster, 0, 2, 3));
 
     // Force target 0 into Down state
-    cluster.targets[0].health_state = wing::UpstreamHealthState.Down;
+    cluster.targets[0].health_state = proxy::UpstreamHealthState.Down;
     cluster.targets[0].is_healthy = false;
     cluster.targets[0].successes = 0;
     cluster.targets[0].fails = 3;
 
     // First success on Down target with threshold 2: transitions to Probing!
-    wing::record_upstream_success(cluster, 0);
-    assert(cluster.targets[0].health_state == wing::UpstreamHealthState.Probing);
+    proxy::record_upstream_success(cluster, 0);
+    assert(cluster.targets[0].health_state == proxy::UpstreamHealthState.Probing);
     assert(!cluster.targets[0].is_healthy);
     assert(!cluster.circuit_open);
 
     // Second success: threshold 2 is met, now transitions to Up!
-    wing::record_upstream_success(cluster, 0);
-    assert(cluster.targets[0].health_state == wing::UpstreamHealthState.Up);
+    proxy::record_upstream_success(cluster, 0);
+    assert(cluster.targets[0].health_state == proxy::UpstreamHealthState.Up);
     assert(cluster.targets[0].is_healthy);
     assert(!cluster.circuit_open);
     print("LB_DOWN_HYSTERESIS: ok\n");
@@ -1087,24 +1088,24 @@ fn test_lb_down_hysteresis() {
 
 // 2. Verify health check OOB target_idx bounds protection
 fn test_health_check_bounds() {
-    var cfg = wing::new_health_check_config(1000, 500, 2, 3);
-    var checker = wing::new_cluster_health_checker(cfg);
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 3);
-    assert(wing::add_upstream_target(cluster, "srv-1", 80, 1));
-    assert(wing::register_target_for_probing(checker, 0));
+    var cfg = proxy::new_health_check_config(1000, 500, 2, 3);
+    var checker = proxy::new_cluster_health_checker(cfg);
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 3);
+    assert(proxy::add_upstream_target(cluster, "srv-1", 80, 1));
+    assert(proxy::register_target_for_probing(checker, 0));
 
     // target_idx 99 is out-of-bounds (cluster has only 1 target). Must return Down safely without panicking.
-    let s1 = wing::on_probe_success(checker, cluster, 99, 100);
-    assert(s1 == wing::HealthState.Down);
+    let s1 = proxy::on_probe_success(checker, cluster, 99, 100);
+    assert(s1 == proxy::HealthState.Down);
 
-    let s2 = wing::on_probe_failure(checker, cluster, 99);
-    assert(s2 == wing::HealthState.Down);
+    let s2 = proxy::on_probe_failure(checker, cluster, 99);
+    assert(s2 == proxy::HealthState.Down);
 
     // Corrupt a slot with invalid target_idx to test check_probe_timeouts bounds guard
     checker.slots[0].target_idx = 99;
     checker.slots[0].active_in_flight = true;
     checker.slots[0].probe_start_ms = 1000;
-    let timed_out = wing::check_probe_timeouts(checker, cluster, 2000);
+    let timed_out = proxy::check_probe_timeouts(checker, cluster, 2000);
     assert(timed_out == 0);
 
     print("HEALTH_CHECK_BOUNDS: ok\n");
@@ -1139,11 +1140,11 @@ fn test_reverse_proxy_via_dedup() {
     assert(wing::append_header(in_headers, "Via", "1.0 upstream-cache"));
 
     var out_headers = wing::HeaderMap { .. };
-    var cfg = wing::ProxyConfig { .. };
+    var cfg = proxy::Config { .. };
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-gw");
 
-    let ok = wing::filter_and_forward_headers(
+    let ok = proxy::filter_and_forward_headers(
         in_headers,
         out_headers,
         "192.0.2.1",
@@ -1174,12 +1175,12 @@ fn test_reverse_proxy_client_cert_safety() {
     assert(wing::append_header(in_headers, "Host", "api.example.com"));
 
     var out_headers = wing::HeaderMap { .. };
-    var cfg = wing::ProxyConfig { .. };
+    var cfg = proxy::Config { .. };
     cfg.forward_client_cert = true;
     cfg.client_cert_der_len = 100; // mismatch: client_cert_der has len 0!
 
     // Must not panic or crash
-    let ok = wing::filter_and_forward_headers(
+    let ok = proxy::filter_and_forward_headers(
         in_headers,
         out_headers,
         "192.0.2.1",
@@ -1193,52 +1194,52 @@ fn test_reverse_proxy_client_cert_safety() {
 
 // 6. Verify add_upstream_target rejects empty host
 fn test_add_target_empty_host() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 3);
-    assert(!wing::add_upstream_target(cluster, "", 80, 1));
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 3);
+    assert(!proxy::add_upstream_target(cluster, "", 80, 1));
     assert(cluster.targets.len == 0);
     print("ADD_TARGET_EMPTY_HOST: ok\n");
 }
 
 // 7. Verify probing slot sync when cluster target drops Down
 fn test_health_check_probing_sync() {
-    var slot = wing::TargetProbeSlot { .. };
-    slot.health.state = wing::HealthState.Probing;
+    var slot = proxy::TargetProbeSlot { .. };
+    slot.health.state = proxy::HealthState.Probing;
     slot.health.consecutive_successes = 1;
 
     // Cluster drops to Down: slot must sync to Down and clear successes!
-    wing::sync_slot_from_cluster(slot, wing::UpstreamHealthState.Down);
-    assert(slot.health.state == wing::HealthState.Down);
+    proxy::sync_slot_from_cluster(slot, proxy::UpstreamHealthState.Down);
+    assert(slot.health.state == proxy::HealthState.Down);
     assert(slot.health.consecutive_successes == 0);
     print("HEALTH_CHECK_PROBING_SYNC: ok\n");
 }
 
 // 8. F001: prepare_proxy_request_at must fail closed on wire buffer overflow, bad URI, or Content-Length mismatch
 fn test_f001_wire_serialization_and_cl_mismatch() {
-    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-    assert(wing::add_upstream_target(proxy.cluster, "backend.internal", 8080, 1));
+    var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+    assert(proxy::add_upstream_target(rp.cluster, "backend.internal", 8080, 1));
 
     var in_headers = wing::HeaderMap { .. };
     assert(wing::append_header(in_headers, "Host", "public.example.com"));
 
     //Tiny wire buffer that overflows during encode_h1_request
     var tiny_wire: u8[..16] = [];
-    let idx_over, ok_over = wing::prepare_proxy_request_at(
-        proxy, "GET", "/api/v1/resource", in_headers, "192.0.2.10", "https", "", tiny_wire, 1000000000,
+    let idx_over, ok_over = proxy::prepare_proxy_request_at(
+        rp, "GET", "/api/v1/resource", in_headers, "192.0.2.10", "https", "", tiny_wire, 1000000000,
     );
-    assert(!ok_over && idx_over == wing::PROXY_TARGET_NONE);
-    assert(proxy.cluster.targets[0].active_conns == 0);
-    assert(proxy.total_forwarded == 0 && proxy.total_dropped == 1);
+    assert(!ok_over && idx_over == proxy::TARGET_NONE);
+    assert(rp.cluster.targets[0].active_conns == 0);
+    assert(rp.total_forwarded == 0 && rp.total_dropped == 1);
 
     // Content-Length header in in_headers contradicting actual body length (RFC 9112 §6.2)
     var bad_cl_headers = wing::HeaderMap { .. };
     assert(wing::append_header(bad_cl_headers, "Host", "public.example.com"));
     assert(wing::append_header(bad_cl_headers, "Content-Length", "999"));
     var full_wire: u8[>..] = [];
-    let idx_cl, ok_cl = wing::prepare_proxy_request_at(
-        proxy, "POST", "/submit", bad_cl_headers, "192.0.2.10", "https", "hello", full_wire, 1000000000,
+    let idx_cl, ok_cl = proxy::prepare_proxy_request_at(
+        rp, "POST", "/submit", bad_cl_headers, "192.0.2.10", "https", "hello", full_wire, 1000000000,
     );
-    assert(!ok_cl && idx_cl == wing::PROXY_TARGET_NONE);
-    assert(proxy.cluster.targets[0].active_conns == 0);
+    assert(!ok_cl && idx_cl == proxy::TARGET_NONE);
+    assert(rp.cluster.targets[0].active_conns == 0);
     print("F001_WIRE_AND_CL_GUARD: ok\n");
 }
 
@@ -1250,11 +1251,11 @@ fn test_f002_multi_via_and_xff_overflow() {
     assert(wing::append_header(in_headers, "Via", "1.1 mesh-proxy"));
 
     var out_headers = wing::HeaderMap { .. };
-    var cfg = wing::ProxyConfig { .. };
+    var cfg = proxy::Config { .. };
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-gw");
 
-    assert(wing::filter_and_forward_headers(in_headers, out_headers, "192.0.2.1", "https", "backend:8080", cfg));
+    assert(proxy::filter_and_forward_headers(in_headers, out_headers, "192.0.2.1", "https", "backend:8080", cfg));
     let v = wing::get_header(out_headers, "Via");
     assert(v == "1.1 edge-proxy, 1.1 mesh-proxy, 1.1 wing-gw");
 
@@ -1268,7 +1269,7 @@ fn test_f002_multi_via_and_xff_overflow() {
     assert(wing::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
     cfg.trust_incoming_xff = true;
     var out_xff = wing::HeaderMap { .. };
-    let ok_xff = wing::filter_and_forward_headers(xff_headers, out_xff, "192.0.2.1", "https", "backend:8080", cfg);
+    let ok_xff = proxy::filter_and_forward_headers(xff_headers, out_xff, "192.0.2.1", "https", "backend:8080", cfg);
     assert(!ok_xff);
     print("F002_MULTI_VIA_AND_XFF_GUARD: ok\n");
 }
@@ -1280,15 +1281,15 @@ fn test_f003_connection_smuggle_and_ipv6_host() {
     assert(wing::append_header(smuggle_cl, "Connection", "keep-alive, content-length"));
     assert(wing::append_header(smuggle_cl, "Content-Length", "5"));
     var out_smuggle = wing::HeaderMap { .. };
-    var cfg = wing::ProxyConfig { .. };
-    assert(!wing::filter_and_forward_headers(smuggle_cl, out_smuggle, "192.0.2.1", "http", "backend:8080", cfg));
+    var cfg = proxy::Config { .. };
+    assert(!proxy::filter_and_forward_headers(smuggle_cl, out_smuggle, "192.0.2.1", "http", "backend:8080", cfg));
 
-    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-    assert(wing::add_upstream_target(proxy.cluster, "2001:db8::1", 8080, 1));
+    var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+    assert(proxy::add_upstream_target(rp.cluster, "2001:db8::1", 8080, 1));
     var in_hdr = wing::HeaderMap { .. };
     assert(wing::append_header(in_hdr, "Host", "edge.example.com"));
     var wire: u8[>..] = [];
-    let _, ok_v6 = wing::prepare_proxy_request_at(proxy, "GET", "/v6", in_hdr, "192.0.2.1", "http", "", wire, 1000000000);
+    let _, ok_v6 = proxy::prepare_proxy_request_at(rp, "GET", "/v6", in_hdr, "192.0.2.1", "http", "", wire, 1000000000);
     assert(ok_v6);
     assert(core::contains(wire[..], "Host: [2001:db8::1]:8080\r\n"));
     print("F003_CONN_SMUGGLE_AND_IPV6_HOST: ok\n");
@@ -1305,7 +1306,7 @@ fn test_f004_exchange_interim_and_rx_buf() {
     }
     conn_flood.rx_buf.append("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
     var resp_flood = wing::Response { .. };
-    let ok_flood, _ = wing::exchange_prepared_wire_on_conn(conn_flood, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_flood, 100);
+    let _, ok_flood = proxy::exchange_prepared_wire_on_conn(conn_flood, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_flood, 100);
     assert(!ok_flood);
 
     var conn_clean = wing::PooledConnection {
@@ -1315,8 +1316,8 @@ fn test_f004_exchange_interim_and_rx_buf() {
     conn_clean.rx_buf.append("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nPONG");
     var resp_clean = wing::Response { .. };
     resp_clean.body.append("STALE_BODY");
-    let ok_clean, ka = wing::exchange_prepared_wire_on_conn(conn_clean, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_clean, 100);
-    assert(ok_clean && ka);
+    let reuse_clean, ok_clean = proxy::exchange_prepared_wire_on_conn(conn_clean, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_clean, 100);
+    assert(ok_clean && reuse_clean == proxy::WireReuse.KeepAlive);
     assert(resp_clean.body[..] == "PONG");
     assert(conn_clean.rx_buf.len == 0);
     print("F004_EXCHANGE_1XX_AND_RX_BUF: ok\n");
@@ -1324,25 +1325,25 @@ fn test_f004_exchange_interim_and_rx_buf() {
 
 // 12. F005 & F006: Health check Probing/Up sync + status parser & GCRA slot reuse / penalty
 fn test_f005_and_f006_health_and_gcra() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
-    assert(wing::add_upstream_target(cluster, "10.0.0.1", 8080, 1));
-    var checker = wing::new_cluster_health_checker(wing::new_health_check_config(1000, 500, 2, 2));
-    assert(!wing::register_target_for_probing(checker, -1));
-    assert(wing::register_target_for_probing(checker, 0));
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 2);
+    assert(proxy::add_upstream_target(cluster, "10.0.0.1", 8080, 1));
+    var checker = proxy::new_cluster_health_checker(proxy::new_health_check_config(1000, 500, 2, 2));
+    assert(!proxy::register_target_for_probing(checker, -1));
+    assert(proxy::register_target_for_probing(checker, 0));
 
-    let _, ok_4digit = wing::parse_probe_status_code("HTTP/1.1 2000 OK\r\n\r\n");
+    let _, ok_4digit = proxy::parse_probe_status_code("HTTP/1.1 2000 OK\r\n\r\n");
     assert(!ok_4digit);
 
-    wing::on_probe_failure(checker, cluster, 0);
-    wing::on_probe_failure(checker, cluster, 0);
+    proxy::on_probe_failure(checker, cluster, 0);
+    proxy::on_probe_failure(checker, cluster, 0);
     assert(cluster.circuit_open);
     // 1st probe success enters Probing and must reopen circuit for trial traffic
-    wing::on_probe_success(checker, cluster, 0, 200);
+    proxy::on_probe_success(checker, cluster, 0, 200);
     assert(!cluster.circuit_open);
     // Passive recovery to Up must sync back to slot so next probe success keeps target Up
-    wing::record_upstream_success(cluster, 0);
+    proxy::record_upstream_success(cluster, 0);
     assert(cluster.targets[0].is_healthy);
-    wing::on_probe_success(checker, cluster, 0, 200);
+    proxy::on_probe_success(checker, cluster, 0, 200);
     assert(cluster.targets[0].is_healthy);
 
     var limiter = security::new_gateway_rate_limiter(10, 1);
@@ -1389,15 +1390,11 @@ fn test_srvproxy_01_02_early_hints_and_casper() {
         ..
     };
     conn_103.rx_buf.append("HTTP/1.1 103 Early Hints\r\nLink: </hero.webp>; rel=preload; as=image\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
-    var up_resp = wing::UpstreamResponse { .. };
-    var early_hints = wing::EarlyHintsResponse { .. };
-    var has_eh = false;
-    let ok_ex, ka_ex = wing::exchange_prepared_wire_on_conn_with_hints(
-        conn_103, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", up_resp.resp, early_hints, has_eh, 100,
+    var up_resp = proxy::UpstreamResponse { .. };
+    let reuse_ex, ok_ex = proxy::exchange_prepared_wire_on_conn_with_hints(
+        conn_103, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", up_resp, 100,
     );
-    up_resp.early_hints = early_hints;
-    up_resp.has_early_hints = has_eh;
-    assert(ok_ex && ka_ex);
+    assert(ok_ex && reuse_ex == proxy::WireReuse.KeepAlive);
     assert(up_resp.has_early_hints);
     assert(up_resp.early_hints.links.len == 1);
     assert(up_resp.early_hints.links[0].uri[..] == "/hero.webp");
@@ -1407,24 +1404,24 @@ fn test_srvproxy_01_02_early_hints_and_casper() {
 
 // 14. SRVPROXY-03 & SRVPROXY-04: Ketama consistent hashing ring & cache stampede AgeTimeout / GiveUp
 fn test_srvproxy_03_04_ketama_and_cache_lock() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.ConsistentHash, 3);
-    assert(wing::add_upstream_target(cluster, "10.0.0.1", 8080, 1));
-    assert(wing::add_upstream_target(cluster, "10.0.0.2", 8080, 2));
-    assert(wing::add_upstream_target(cluster, "10.0.0.3", 8080, 1));
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.ConsistentHash, 3);
+    assert(proxy::add_upstream_target(cluster, "10.0.0.1", 8080, 1));
+    assert(proxy::add_upstream_target(cluster, "10.0.0.2", 8080, 2));
+    assert(proxy::add_upstream_target(cluster, "10.0.0.3", 8080, 1));
 
-    var ring = wing::KetamaRing { .. };
-    wing::build_ketama_ring(cluster, ring);
+    var ring = proxy::KetamaRing { .. };
+    proxy::build_ketama_ring(cluster, ring);
     assert(ring.points.len > 0);
 
-    let idx1, ok1 = wing::select_consistent_backend(cluster, ring, "/users/42", 1000);
-    let idx2, ok2 = wing::select_consistent_backend(cluster, ring, "/users/42", 1000);
+    let idx1, ok1 = proxy::select_consistent_backend(cluster, ring, "/users/42", 1000);
+    let idx2, ok2 = proxy::select_consistent_backend(cluster, ring, "/users/42", 1000);
     assert(ok1 && ok2 && idx1 == idx2);
 
     cluster.targets[idx1].ejected_until_ms = 5000;
-    let idx_failover, ok_fo = wing::select_consistent_backend(cluster, ring, "/users/42", 2000);
+    let idx_failover, ok_fo = proxy::select_consistent_backend(cluster, ring, "/users/42", 2000);
     assert(ok_fo && idx_failover != idx1);
 
-    let idx_recovered, ok_rec = wing::select_consistent_backend(cluster, ring, "/users/42", 6000);
+    let idx_recovered, ok_rec = proxy::select_consistent_backend(cluster, ring, "/users/42", 6000);
     assert(ok_rec && idx_recovered == idx1);
 
     var writers = wing::CacheWriters { .. };
@@ -1453,8 +1450,8 @@ fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
 
     var client_hdrs = wing::HeaderMap { .. };
     var loc_buf: u8[..512] = [];
-    var accel = wing::UpstreamAccelControl { .. };
-    assert(wing::process_and_filter_upstream_response_headers(
+    var accel = proxy::UpstreamAccelControl { .. };
+    assert(proxy::process_and_filter_upstream_response_headers(
         up_hdrs, "http://10.0.0.1:8080/app", "https://example.com/public", client_hdrs, loc_buf, accel,
     ));
     assert(accel.disable_buffering && accel.has_accel_expires && accel.accel_expires_sec == 120);
@@ -1462,12 +1459,12 @@ fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
     assert(wing::get_header(client_hdrs, "X-Accel-Buffering") == "");
     assert(wing::get_header(client_hdrs, "Location") == "https://example.com/public/login");
 
-    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-    assert(wing::add_upstream_target(proxy.cluster, "backend.internal", 8080, 1));
+    var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+    assert(proxy::add_upstream_target(rp.cluster, "backend.internal", 8080, 1));
     var post_hdr = wing::HeaderMap { .. };
     assert(wing::append_header(post_hdr, "Host", "edge.example.com"));
     var post_wire: u8[>..] = [];
-    let _, ok_post = wing::prepare_proxy_request_at(proxy, "POST", "/empty", post_hdr, "192.0.2.1", "http", "", post_wire, 1000);
+    let _, ok_post = proxy::prepare_proxy_request_at(rp, "POST", "/empty", post_hdr, "192.0.2.1", "http", "", post_wire, 1000);
     assert(ok_post && core::contains(post_wire[..], "Content-Length: 0\r\n"));
 
     var res_304 = wing::Response { status_code: 304, .. };
@@ -1567,37 +1564,37 @@ fn run_06_verify_proxy_regressions() {
 // RFC 9110 §7.6: Layer 7 Reverse Proxy Hop-by-Hop Filter and Load Balancer Verification
 
 fn test_load_balancer_round_robin() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 3);
-    wing::add_upstream_target(cluster, "10.0.0.1", 8080);
-    wing::add_upstream_target(cluster, "10.0.0.2", 8080);
-    wing::add_upstream_target(cluster, "10.0.0.3", 8080);
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 3);
+    proxy::add_upstream_target(cluster, "10.0.0.1", 8080);
+    proxy::add_upstream_target(cluster, "10.0.0.2", 8080);
+    proxy::add_upstream_target(cluster, "10.0.0.3", 8080);
 
-    let idx1, ok1 = wing::select_upstream(cluster);
-    let idx2, ok2 = wing::select_upstream(cluster);
-    let idx3, ok3 = wing::select_upstream(cluster);
-    let idx4, ok4 = wing::select_upstream(cluster);
+    let idx1, ok1 = proxy::select_upstream(cluster);
+    let idx2, ok2 = proxy::select_upstream(cluster);
+    let idx3, ok3 = proxy::select_upstream(cluster);
+    let idx4, ok4 = proxy::select_upstream(cluster);
 
     print("LB_RR: ", ok1, " ", idx1, " -> ", ok2, " ", idx2, " -> ", ok3, " ", idx3, " -> ", ok4, " ", idx4, "\n");
     // CHECK: LB_RR: true 0 -> true 1 -> true 2 -> true 0
 }
 
 fn test_load_balancer_circuit_breaker() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
-    wing::add_upstream_target(cluster, "10.0.0.1", 8080);
-    wing::add_upstream_target(cluster, "10.0.0.2", 8080);
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 2);
+    proxy::add_upstream_target(cluster, "10.0.0.1", 8080);
+    proxy::add_upstream_target(cluster, "10.0.0.2", 8080);
 
     // Fail target 0 twice -> marks target 0 unhealthy
-    wing::record_upstream_failure(cluster, 0);
-    wing::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
+    proxy::record_upstream_failure(cluster, 0);
 
-    let idx1, ok1 = wing::select_upstream(cluster);
-    let idx2, ok2 = wing::select_upstream(cluster);
+    let idx1, ok1 = proxy::select_upstream(cluster);
+    let idx2, ok2 = proxy::select_upstream(cluster);
 
     // Fail target 1 twice -> trips circuit breaker
-    wing::record_upstream_failure(cluster, 1);
-    wing::record_upstream_failure(cluster, 1);
+    proxy::record_upstream_failure(cluster, 1);
+    proxy::record_upstream_failure(cluster, 1);
 
-    let idx3, ok3 = wing::select_upstream(cluster);
+    let idx3, ok3 = proxy::select_upstream(cluster);
 
     print(
         "LB_CB: t0_fail_routed_to_t1=", (idx1 == 1 && idx2 == 1),
@@ -1607,26 +1604,26 @@ fn test_load_balancer_circuit_breaker() {
     // CHECK: LB_CB: t0_fail_routed_to_t1=true circuit_open=true exhausted=true
 
     // Recover target 0
-    wing::record_upstream_success(cluster, 0);
-    let idx4, ok4 = wing::select_upstream(cluster);
+    proxy::record_upstream_success(cluster, 0);
+    let idx4, ok4 = proxy::select_upstream(cluster);
     print("LB_RECOVER: ok=", ok4, " target=", idx4, " circuit_open=", cluster.circuit_open, "\n");
     // CHECK: LB_RECOVER: ok=true target=0 circuit_open=false
 }
 
 fn test_load_balancer_least_connections() {
-    var cluster = wing::new_upstream_cluster(wing::LbPolicy.LeastConnections, 3);
-    wing::add_upstream_target(cluster, "srv-a", 80);
-    wing::add_upstream_target(cluster, "srv-b", 80);
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.LeastConnections, 3);
+    proxy::add_upstream_target(cluster, "srv-a", 80);
+    proxy::add_upstream_target(cluster, "srv-b", 80);
 
     // Target 0 has 5 active connections, target 1 has 1 active connection
     cluster.targets[0].active_conns = 5;
     cluster.targets[1].active_conns = 1;
 
-    let chosen, ok = wing::select_upstream(cluster);
+    let chosen, ok = proxy::select_upstream(cluster);
     print("LB_LEAST_CONN: chosen=", chosen, " active_conns=", cluster.targets[chosen].active_conns, "\n");
     // CHECK: LB_LEAST_CONN: chosen=1 active_conns=2
 
-    wing::release_upstream_connection(cluster, chosen);
+    proxy::release_upstream_connection(cluster, chosen);
     print("LB_RELEASE: conns_after_release=", cluster.targets[1].active_conns, "\n");
     // CHECK: LB_RELEASE: conns_after_release=1
 }
@@ -1644,12 +1641,12 @@ fn test_reverse_proxy_hop_by_hop_stripping() {
     wing::append_header(in_headers, "TE", "trailers");
 
     var out_headers = wing::HeaderMap { .. };
-    var cfg = wing::ProxyConfig { .. };
+    var cfg = proxy::Config { .. };
     cfg.preserve_host = false;
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-gw");
 
-    wing::filter_and_forward_headers(
+    proxy::filter_and_forward_headers(
         in_headers,
         out_headers,
         "203.0.113.195",
@@ -1697,10 +1694,10 @@ fn test_reverse_proxy_xff_chaining() {
     wing::append_header(in_headers, "X-Forwarded-For", "198.51.100.1, 10.0.0.1");
 
     var out_headers = wing::HeaderMap { .. };
-    var cfg = wing::ProxyConfig { .. };
+    var cfg = proxy::Config { .. };
     cfg.trust_incoming_xff = true;
 
-    wing::filter_and_forward_headers(
+    proxy::filter_and_forward_headers(
         in_headers,
         out_headers,
         "192.0.2.42",
@@ -1720,9 +1717,9 @@ fn test_reverse_proxy_xff_untrusted_perimeter() {
     wing::append_header(in_headers, "X-Forwarded-For", "127.0.0.1, 10.0.0.1");
 
     var out_headers = wing::HeaderMap { .. };
-    let cfg = wing::ProxyConfig { .. }; // trust_incoming_xff is false by default
+    let cfg = proxy::Config { .. }; // trust_incoming_xff is false by default
 
-    wing::filter_and_forward_headers(
+    proxy::filter_and_forward_headers(
         in_headers,
         out_headers,
         "192.0.2.42",
@@ -1737,8 +1734,8 @@ fn test_reverse_proxy_xff_untrusted_perimeter() {
 }
 
 fn test_upstream_request_wire_serialization() {
-    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-    wing::add_upstream_target(proxy.cluster, "upstream.local:9000", 9000);
+    var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+    proxy::add_upstream_target(rp.cluster, "upstream.local:9000", 9000);
 
     var in_headers = wing::HeaderMap { .. };
     wing::append_header(in_headers, "Host", "public.example.com");
@@ -1747,8 +1744,8 @@ fn test_upstream_request_wire_serialization() {
     var wire_out: u8[>..] = [];
     let body = "{\"event\":\"ping\"}";
 
-    let idx, ok = wing::prepare_proxy_request(
-        proxy,
+    let idx, ok = proxy::prepare_proxy_request(
+        rp,
         "POST",
         "/api/v2/events",
         in_headers,

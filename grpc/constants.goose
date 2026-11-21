@@ -3,16 +3,17 @@
 
 // gRPC wire framing constants, canonical status codes, and HTTP/2 / HTTP/3 content types.
 // Conforms to gRPC Over HTTP/2 Specification and gRPC-Web Specification.
-namespace wing;
+namespace grpc;
 
 import std;
 import core from "..";
 import rfc.h2;
 import rfc.grpc;
+import .internal;
 
 // ---- Canonical gRPC Status Codes (RFC / gRPC Core) ----------------------
 
-enum GrpcStatusCode {
+enum StatusCode {
     Ok,
     Cancelled,
     Unknown,
@@ -32,8 +33,8 @@ enum GrpcStatusCode {
     Unauthenticated,
 }
 
-// Converts a GrpcStatusCode to its standard string representation.
-fn grpc_status_name(code: GrpcStatusCode) -> const u8[:] {
+// Converts a StatusCode to its standard string representation.
+fn status_name(code: StatusCode) -> const u8[:] {
     return match code {
         Ok => "OK",
         Cancelled => "CANCELLED",
@@ -56,8 +57,8 @@ fn grpc_status_name(code: GrpcStatusCode) -> const u8[:] {
     };
 }
 
-// Converts a GrpcStatusCode enum value to its integer code (0..16).
-fn grpc_status_to_code(code: GrpcStatusCode) -> u32 {
+// Converts a StatusCode enum value to its integer code (0..16).
+fn status_to_code(code: StatusCode) -> u32 {
     return match code {
         Ok => 0,
         Cancelled => 1,
@@ -80,109 +81,85 @@ fn grpc_status_to_code(code: GrpcStatusCode) -> u32 {
     };
 }
 
-// Converts an integer code to its GrpcStatusCode enum value.
-fn grpc_status_from_code(code: u32) -> GrpcStatusCode {
+// Converts an integer code to its StatusCode enum value.
+fn status_from_code(code: u32) -> StatusCode {
     return match code {
-        0 => GrpcStatusCode.Ok,
-        1 => GrpcStatusCode.Cancelled,
-        2 => GrpcStatusCode.Unknown,
-        3 => GrpcStatusCode.InvalidArgument,
-        4 => GrpcStatusCode.DeadlineExceeded,
-        5 => GrpcStatusCode.NotFound,
-        6 => GrpcStatusCode.AlreadyExists,
-        7 => GrpcStatusCode.PermissionDenied,
-        8 => GrpcStatusCode.ResourceExhausted,
-        9 => GrpcStatusCode.FailedPrecondition,
-        10 => GrpcStatusCode.Aborted,
-        11 => GrpcStatusCode.OutOfRange,
-        12 => GrpcStatusCode.Unimplemented,
-        13 => GrpcStatusCode.Internal,
-        14 => GrpcStatusCode.Unavailable,
-        15 => GrpcStatusCode.DataLoss,
-        16 => GrpcStatusCode.Unauthenticated,
-        _ => GrpcStatusCode.Unknown,
+        0 => StatusCode.Ok,
+        1 => StatusCode.Cancelled,
+        2 => StatusCode.Unknown,
+        3 => StatusCode.InvalidArgument,
+        4 => StatusCode.DeadlineExceeded,
+        5 => StatusCode.NotFound,
+        6 => StatusCode.AlreadyExists,
+        7 => StatusCode.PermissionDenied,
+        8 => StatusCode.ResourceExhausted,
+        9 => StatusCode.FailedPrecondition,
+        10 => StatusCode.Aborted,
+        11 => StatusCode.OutOfRange,
+        12 => StatusCode.Unimplemented,
+        13 => StatusCode.Internal,
+        14 => StatusCode.Unavailable,
+        15 => StatusCode.DataLoss,
+        16 => StatusCode.Unauthenticated,
+        _ => StatusCode.Unknown,
     };
 }
 
 // Maps standard HTTP status codes to canonical gRPC status codes when grpc-status is missing.
 // Follows gRPC HTTP/2 transport mapping specifications:
 // HTTP 200 without grpc-status maps to Unknown (success requires explicit grpc-status: 0).
-fn grpc_status_from_http(http_status: i32) -> GrpcStatusCode {
+fn status_from_http(http_status: i32) -> StatusCode {
     return match http_status {
-        200 => GrpcStatusCode.Unknown,
-        400 => GrpcStatusCode.Internal,
-        401 => GrpcStatusCode.Unauthenticated,
-        403 => GrpcStatusCode.PermissionDenied,
-        404 => GrpcStatusCode.Unimplemented,
-        429 => GrpcStatusCode.ResourceExhausted,
-        502 => GrpcStatusCode.Unavailable,
-        503 => GrpcStatusCode.Unavailable,
-        504 => GrpcStatusCode.DeadlineExceeded,
-        _ => GrpcStatusCode.Unknown,
+        200 => StatusCode.Unknown,
+        400 => StatusCode.Internal,
+        401 => StatusCode.Unauthenticated,
+        403 => StatusCode.PermissionDenied,
+        404 => StatusCode.Unimplemented,
+        429 => StatusCode.ResourceExhausted,
+        502 => StatusCode.Unavailable,
+        503 => StatusCode.Unavailable,
+        504 => StatusCode.DeadlineExceeded,
+        _ => StatusCode.Unknown,
     };
 }
 
-inline fn matches_grpc_media_type(ct: const u8[:], prefix: const u8[:]) -> bool {
-    guard ct.starts_with_fold(prefix) else { return false; }
-    if ct.len == prefix.len { return true; }
-    let next_byte = ct[prefix.len];
-    let suffix_idx = core::add_sat_i64(prefix.len, 1);
-    if next_byte == '+' {
-        return ct.len > suffix_idx && core::is_tchar(ct[suffix_idx]);
-    }
-    return next_byte == ';' || next_byte == ' ' || next_byte == '\t';
-}
-
 // Returns true if Content-Type matches standard gRPC, gRPC-Web, or gRPC-Web-Text.
-fn is_grpc_content_type(ct: const u8[:]) -> bool {
+fn is_content_type(ct: const u8[:]) -> bool {
     let trimmed = ct.trim_lws();
-    return matches_grpc_media_type(trimmed, rfc::GRPC_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-}
-
-// Returns true if Content-Type indicates gRPC-Web (binary or text).
-fn is_grpc_web(ct: const u8[:]) -> bool {
-    let trimmed = ct.trim_lws();
-    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE) ||
-           matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
-}
-
-// Returns true if Content-Type is specifically gRPC-Web-Text (Base64 encoded).
-fn is_grpc_web_text(ct: const u8[:]) -> bool {
-    let trimmed = ct.trim_lws();
-    return matches_grpc_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
+    return grpc_internal::matches_media_type(trimmed, rfc::GRPC_CONTENT_TYPE)
+        || grpc_internal::matches_media_type(trimmed, rfc::GRPC_WEB_CONTENT_TYPE)
+        || grpc_internal::matches_media_type(trimmed, rfc::GRPC_WEB_TEXT_CONTENT_TYPE);
 }
 
 // Maps HTTP/2 RST_STREAM error codes (RFC 9113 §7) to canonical gRPC status codes.
-fn h2_error_to_grpc_status(h2_err: u32) -> GrpcStatusCode {
-    if h2_err == rfc::H2_ERR_REFUSED_STREAM { return GrpcStatusCode.Unavailable; }
-    if h2_err == rfc::H2_ERR_CANCEL { return GrpcStatusCode.Cancelled; }
-    if h2_err == rfc::H2_ERR_ENHANCE_YOUR_CALM { return GrpcStatusCode.ResourceExhausted; }
-    if h2_err == rfc::H2_ERR_INADEQUATE_SECURITY { return GrpcStatusCode.PermissionDenied; }
-    if h2_err <= rfc::H2_ERR_SETTINGS_TIMEOUT ||
-       h2_err == rfc::H2_ERR_FRAME_SIZE_ERROR ||
-       h2_err == rfc::H2_ERR_COMPRESSION_ERROR ||
-       h2_err == rfc::H2_ERR_CONNECT_ERROR {
-        return GrpcStatusCode.Internal;
+fn h2_error_to_status(h2_err: u32) -> StatusCode {
+    if h2_err == rfc::H2_ERR_REFUSED_STREAM { return StatusCode.Unavailable; }
+    if h2_err == rfc::H2_ERR_CANCEL { return StatusCode.Cancelled; }
+    if h2_err == rfc::H2_ERR_ENHANCE_YOUR_CALM { return StatusCode.ResourceExhausted; }
+    if h2_err == rfc::H2_ERR_INADEQUATE_SECURITY { return StatusCode.PermissionDenied; }
+    if h2_err <= rfc::H2_ERR_SETTINGS_TIMEOUT
+        || h2_err == rfc::H2_ERR_FRAME_SIZE_ERROR
+        || h2_err == rfc::H2_ERR_COMPRESSION_ERROR
+        || h2_err == rfc::H2_ERR_CONNECT_ERROR {
+        return StatusCode.Internal;
     }
-    return GrpcStatusCode.Unknown;
+    return StatusCode.Unknown;
 }
 
-struct GrpcMetadata {
+struct Metadata {
     key:   u8[..64]  = [],
     value: u8[..256] = [],
 }
 
 // Structured error detail extracted from `google.rpc.Status.details` (`google.protobuf.Any`).
-struct GrpcErrorDetail {
+struct ErrorDetail {
     type_url: u8[..128] = [],
     value:    u8[..256] = [],
 }
 
 // Value-returned gRPC status outcome for unary and streaming RPC handlers.
-struct GrpcStatus {
-    code:    GrpcStatusCode       = GrpcStatusCode.Ok,
-    message: u8[..256]            = [],
-    details: GrpcErrorDetail[..4] = [],
+struct Status {
+    code:    StatusCode       = StatusCode.Ok,
+    message: u8[..256]        = [],
+    details: ErrorDetail[..4] = [],
 }

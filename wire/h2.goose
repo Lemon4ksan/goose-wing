@@ -25,32 +25,6 @@ fn encode_frame_header<B>(hdr: const WireFrameHeader&, out: B&) -> bool {
     return true;
 }
 
-// Backpatches a 9-byte HTTP/2 binary frame header in-place into `buf` starting at `offset` (RFC 9113 Section 4.1).
-fn patch_frame_header_slice(
-    buf:        u8[:],
-    offset:     i64,
-    frame_type: u8,
-    flags:      u8,
-    stream_id:  u32,
-) -> bool {
-    let payload_start = core::add_sat_i64(offset, 9);
-    guard offset >= 0 && payload_start <= buf.len && stream_id <= 0x7FFFFFFF else {
-        return false;
-    }
-    let tail = buf[payload_start..];
-    let payload_len = tail.len as u32;
-    guard payload_len <= rfc::H2_MAX_FRAME_SIZE_LIMIT else {
-        return false;
-    }
-    var bytes: u8[..9] = [];
-    bytes.append_u24_be(payload_len);
-    bytes.push(frame_type);
-    bytes.push(flags);
-    bytes.append_u32_be(stream_id & 0x7FFFFFFF);
-    core::ct_copy_bytes(buf[offset..payload_start], bytes[..]);
-    return true;
-}
-
 // Parses a 9-byte HTTP/2 binary frame header (RFC 9113 Section 4.1).
 //
 // Example:
@@ -342,9 +316,9 @@ fn emit_h2_headers_chunks<B>(
 }
 
 fn encode_h2_headers_frame_from_map<B>(
-    dt:             h2_internal::DynamicTable&,
+    dt:             http2::DynamicTable&,
     stream_id:      u32,
-    pseudo:         const h2_internal::H2PseudoHeaders&,
+    pseudo:         const http2::PseudoHeaders&,
     headers:        const wing::HeaderMap&,
     end_stream:     bool,
     out:            B&,
@@ -422,11 +396,11 @@ fn decode_h2_frame_header(raw: const u8[:], max_frame_size: u32 = 16384) -> Wire
     guard ok else {
         return hdr, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
-    let f_hdr = h2_internal::FrameHeader {
+    let f_hdr = http2::FrameHeader {
         length:     hdr.length,
         frame_type: hdr.frame_type,
         flags:      hdr.flags,
         stream_id:  hdr.stream_id,
     };
-    return hdr, h2_internal::validate_frame_header_rules(f_hdr, max_frame_size);
+    return hdr, http2::validate_frame_header_rules(f_hdr, max_frame_size);
 }

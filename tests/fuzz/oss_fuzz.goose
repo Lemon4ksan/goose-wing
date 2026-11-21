@@ -353,10 +353,10 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
     let max_cap = max(cap_choice, 64);
     let rest = fdp_consume_remaining(fdp);
 
-    var dt = h2_internal::new_dynamic_table(max_cap);
+    var dt = http2::new_dynamic_table(max_cap);
     var hdrs = wing::HeaderMap { .. };
-    var pseudo = h2_internal::H2PseudoHeaders { .. };
-    let hpack_err = h2_internal::decode_hpack_to_map(dt, rest, pseudo, hdrs, 65536, true);
+    var pseudo = http2::PseudoHeaders { .. };
+    let hpack_err = http2::decode_hpack_to_map(dt, rest, pseudo, hdrs, 65536, true);
     assert(dt.used_bytes <= dt.current_max_size && dt.current_max_size <= dt.max_allowed_size && dt.count <= 128);
     if hpack_err == rfc::H2_ERR_NO_ERROR {
         sig = fuzz_mix_state(sig, 0x2001 ^ (hdrs.entries.len as u64));
@@ -366,7 +366,7 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
     var steps: i64 = 0;
     while core::add_sat_i64(cur, 9) <= data.len && steps < 32 {
         let hdr_end = core::add_sat_i64(cur, 9);
-        let fh, err_fh = h2_internal::parse_frame_header(data[cur..hdr_end]);
+        let fh, err_fh = http2::parse_frame_header(data[cur..hdr_end]);
         cur = hdr_end;
         steps = core::add_sat_i64(steps, 1);
         if err_fh != 0 { break; }
@@ -377,11 +377,11 @@ fn fuzz_target_http2_hpack_and_frames(data: const u8[:]) -> u64 {
         let payload = data[cur..pay_end];
         cur = pay_end;
 
-        let _, _ = h2_internal::extract_padded_frame_payload(fh, payload);
-        let _, _ = h2_internal::extract_headers_frame_payload(fh, payload);
-        let _, _, err_pri = h2_internal::parse_priority_update_payload(payload, false);
+        let _, _ = http2::extract_padded_frame_payload(fh, payload);
+        let _, _ = http2::extract_headers_frame_payload(fh, payload);
+        let _, _, err_pri = http2::parse_priority_update_payload(payload, false);
         if err_pri == 0 { sig = fuzz_mix_state(sig, 0x2020); }
-        let _ = h2_internal::parse_altsvc_frame(payload, fh.stream_id);
+        let _ = http2::parse_altsvc_frame(payload, fh.stream_id);
     }
     return sig;
 }
@@ -397,8 +397,8 @@ fn fuzz_target_http2_session(data: const u8[:]) -> u64 {
 
     var with_preface: u8[..4096] = [];
     with_preface.append(rfc::H2_CLIENT_PREFACE[..]);
-    let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-    h2_internal::encode_frame_header_to(set_hdr, with_preface);
+    let set_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    http2::encode_frame_header_to(set_hdr, with_preface);
     let rem_cap = core::sub_sat_i64(with_preface.cap, with_preface.len);
     let take = min(data.len, rem_cap);
     with_preface.append(data[..take]);
@@ -423,15 +423,15 @@ fn fuzz_target_http3_qpack(data: const u8[:]) -> u64 {
     let enc_bytes = fdp_consume_bytes(fdp, enc_len);
     let block_bytes = fdp_consume_remaining(fdp);
 
-    var tbl = h3_internal::new_qpack_table(cap, 16);
+    var tbl = http3::new_qpack_table(cap, 16);
     var off:   u64 = 0;
     var steps: i64 = 0;
     while off < (enc_bytes.len as u64) && steps < 32 {
-        let next_off, err = h3_internal::qpack_process_encoder_instruction(tbl, enc_bytes, off);
+        let next_off, err = http3::qpack_process_encoder_instruction(tbl, enc_bytes, off);
         assert(tbl.used_bytes <= tbl.capacity_bytes && tbl.capacity_bytes <= tbl.max_capacity_bytes);
         assert(tbl.draining_index <= tbl.insert_count);
         steps = core::add_sat_i64(steps, 1);
-        if err != h3_internal::QpackError.None || next_off <= off {
+        if err != http3::QpackError.None || next_off <= off {
             break;
         }
         off = next_off;
@@ -439,10 +439,10 @@ fn fuzz_target_http3_qpack(data: const u8[:]) -> u64 {
     }
 
     var map = wing::HeaderMap { .. };
-    var pseudo = h3_internal::H3PseudoHeaders { .. };
-    let qerr = h3_internal::decode_or_block_qpack_to_map(tbl, 0, block_bytes, pseudo, map, 65536);
+    var pseudo = http3::PseudoHeaders { .. };
+    let qerr = http3::decode_or_block_qpack_to_map(tbl, 0, block_bytes, pseudo, map, 65536);
     assert(tbl.used_bytes <= tbl.capacity_bytes && tbl.draining_index <= tbl.insert_count);
-    if qerr == h3_internal::QpackError.None {
+    if qerr == http3::QpackError.None {
         sig = fuzz_mix_state(sig, 0x4020 ^ (map.entries.len as u64));
     }
     return sig;
@@ -454,8 +454,8 @@ fn fuzz_target_http3_conn(data: const u8[:]) -> u64 {
     var sig: u64 = 0x5000;
     var fdp = new_fdp(data);
     let h3_settings = fingerprint::H3Settings { .. };
-    var srv = h3_internal::new_h3_server_connection(h3_settings);
-    var cli = h3_internal::new_h3_client_connection(h3_settings);
+    var srv = http3::new_server_connection(h3_settings);
+    var cli = http3::new_client_connection(h3_settings);
     let stream_ids: u64[8] = [2, 6, 10, 0, 4, 8, 12, 16];
 
     var steps: i64 = 0;
@@ -468,9 +468,9 @@ fn fuzz_target_http3_conn(data: const u8[:]) -> u64 {
 
         let is_uni = stream_sel < 3;
         let sid = stream_ids[stream_sel];
-        let err_s = h3_internal::handle_stream_data(srv, sid, !is_uni, chunk, fin);
+        let err_s = http3::handle_stream_data(srv, sid, !is_uni, chunk, fin);
         if err_s == rfc::H3_ERR_NO_ERROR { sig = fuzz_mix_state(sig, 0x5010 ^ sid); }
-        let err_c = h3_internal::handle_stream_data(cli, sid, !is_uni, chunk, fin);
+        let err_c = http3::handle_stream_data(cli, sid, !is_uni, chunk, fin);
         if err_c == rfc::H3_ERR_NO_ERROR { sig = fuzz_mix_state(sig, 0x5020 ^ sid); }
     }
     return sig;
@@ -482,7 +482,7 @@ fn fuzz_target_quic_packets_and_frames(data: const u8[:]) -> u64 {
     var sig: u64 = 0x6000;
     let cid_lens: u8[4] = [0, 4, 8, 20];
     for i in 4 {
-        let hdr, ok_qh = quic_internal::parse_quic_header(data, cid_lens[i]);
+        let hdr, ok_qh = quic::parse_header(data, cid_lens[i]);
         if ok_qh {
             sig = fuzz_mix_state(sig, 0x6010 ^ (hdr.version as u64));
         }
@@ -492,13 +492,13 @@ fn fuzz_target_quic_packets_and_frames(data: const u8[:]) -> u64 {
     var steps: i64 = 0;
     while cur < data.len && steps < 64 {
         let prev = cur;
-        let _, ok = quic_internal::decode_quic_frame_cursor(data, cur);
+        let _, ok = quic::decode_frame_cursor(data, cur);
         steps = core::add_sat_i64(steps, 1);
         if !ok || cur <= prev { break; }
         sig = fuzz_mix_state(sig, 0x6020 ^ (cur as u64));
     }
 
-    let ack_f, _, ok_ack = quic_internal::decode_ack_frame(data, 0);
+    let ack_f, _, ok_ack = quic::decode_ack_frame(data, 0);
     if ok_ack {
         assert(ack_f.largest_acked >= ack_f.first_ack_range);
         sig = fuzz_mix_state(sig, 0x6030);
@@ -507,7 +507,7 @@ fn fuzz_target_quic_packets_and_frames(data: const u8[:]) -> u64 {
 }
 
 fn dispatch_quic_stream_fuzz_op(
-    tbl:       quic_internal::QuicStreamTable&,
+    tbl:       quic::QuicStreamTable&,
     op:        u8,
     sid:       u64,
     offset:    u64,
@@ -515,18 +515,18 @@ fn dispatch_quic_stream_fuzz_op(
     fin:       bool,
 ) {
     if op == 0 {
-        let _, _, _ = quic_internal::quic_table_open_local_stream(tbl, fin);
+        let _, _, _ = quic::open_local_stream(tbl, fin);
         return;
     }
-    let idx, ok_s = quic_internal::quic_table_get_or_open_stream(tbl, sid);
+    let idx, ok_s = quic::get_or_open_stream(tbl, sid);
     guard ok_s && idx >= 0 else { return; }
     let s_idx = idx as i64;
     if op == 1 {
-        let _, _ = quic_internal::quic_stream_on_recv_stream_frame(tbl.streams[s_idx], offset, chunk_len, fin);
+        let _, _ = quic::on_recv_stream_frame(tbl.streams[s_idx], offset, chunk_len, fin);
     } else if op == 2 {
-        let _, _ = quic_internal::quic_stream_on_recv_reset(tbl.streams[s_idx], offset, offset);
+        let _, _ = quic::on_recv_reset(tbl.streams[s_idx], offset, offset);
     } else if op == 3 {
-        let _, _ = quic_internal::quic_stream_on_recv_stop_sending(tbl.streams[s_idx], offset, quic_internal::QuicRole.Server);
+        let _, _ = quic::on_recv_stop_sending(tbl.streams[s_idx], offset, quic::QuicRole.Server);
     }
     assert(tbl.streams[s_idx].bytes_recv <= tbl.streams[s_idx].recv_max_data);
     if tbl.streams[s_idx].has_recv_final_size {
@@ -539,9 +539,9 @@ fn dispatch_quic_stream_fuzz_op(
 fn fuzz_target_quic_rob_and_streams(data: const u8[:]) -> u64 {
     var sig: u64 = 0x7000;
     var fdp = new_fdp(data);
-    var rbuf = quic_internal::new_reassembly_buffer();
-    var ack_ranges: quic_internal::AckInterval[..64] = [];
-    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Server);
+    var rbuf = quic::new_reassembly_buffer();
+    var ack_ranges: quic::AckInterval[..64] = [];
+    var tbl = quic::new_stream_table(quic::QuicRole.Server);
 
     var steps: i64 = 0;
     while fdp_remaining(fdp) > 0 && steps < 32 {
@@ -553,15 +553,15 @@ fn fuzz_target_quic_rob_and_streams(data: const u8[:]) -> u64 {
         let chunk = fdp_consume_bytes(fdp, chunk_len);
 
         let prev_consumed = rbuf.consumed_offset;
-        if quic_internal::insert_fragment(rbuf, offset, chunk, fin) {
+        if quic::insert_fragment(rbuf, offset, chunk, fin) {
             sig = fuzz_mix_state(sig, 0x7010 ^ rbuf.consumed_offset);
         }
         var read_out: u8[..256] = [];
-        let n_read = quic_internal::read_contiguous(rbuf, read_out);
+        let n_read = quic::read_contiguous(rbuf, read_out);
         assert(rbuf.consumed_offset == core::add_sat_u64(prev_consumed, n_read));
 
-        quic_internal::record_received_pn(ack_ranges, offset);
-        let _, _ = quic_internal::build_ack_frame(ack_ranges, 10, true);
+        quic::record_received_pn(ack_ranges, offset);
+        let _, _ = quic::build_ack_frame(ack_ranges, 10, true);
 
         let sid = offset & 0x7C;
         dispatch_quic_stream_fuzz_op(tbl, op, sid, offset, chunk.len as u64, fin);
@@ -574,14 +574,16 @@ fn fuzz_target_quic_rob_and_streams(data: const u8[:]) -> u64 {
 fn fuzz_target_quic_conn(data: const u8[:]) -> u64 {
     var sig: u64 = 0x8000;
     let scid: u8[8] = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
-    var srv_plain = quic_internal::new_quic_server_connection(scid[..]);
-    var ack_out = quic_internal::AckFrame { .. };
-    let ok1, _ = quic_internal::quic_conn_process_datagram(srv_plain, data, 1000, ack_out);
+    var srv_plain = quic::new_server_connection(scid[..]);
+    var ack_out = quic::AckFrame { .. };
+    let _pr_ok1 = quic::process_datagram(srv_plain, data, 1000, ack_out);
+    let ok1 = _pr_ok1.handled;
     if ok1 { sig = fuzz_mix_state(sig, 0x8010); }
 
-    var srv_enc = quic_internal::new_quic_server_connection(scid[..]);
-    let _ = quic_internal::quic_conn_install_initial_keys(srv_enc, scid[..]);
-    let ok2, _ = quic_internal::quic_conn_process_datagram(srv_enc, data, 2000, ack_out);
+    var srv_enc = quic::new_server_connection(scid[..]);
+    let _ = quic::install_initial_keys(srv_enc, scid[..]);
+    let _pr_ok2 = quic::process_datagram(srv_enc, data, 2000, ack_out);
+    let ok2 = _pr_ok2.handled;
     if ok2 { sig = fuzz_mix_state(sig, 0x8020); }
     return sig;
 }
@@ -763,11 +765,11 @@ fn fuzz_masque_dns_proxy(data: const u8[:], sig: u64) -> u64 {
     return s;
 }
 
-fn drain_grpc_parser_messages(p: wing::GrpcStreamParser&, out_acc: u8[>..]&) -> i64 {
+fn drain_grpc_parser_messages(p: grpc::StreamParser&, out_acc: u8[>..]&) -> i64 {
     var count:   i64        = 0;
     var msg_buf: u8[..4096] = [];
     var comp = false;
-    while wing::next_message(p, msg_buf, comp) {
+    while grpc::next_message(p, msg_buf, comp) {
         out_acc.push(if comp { 1 } else { 0 });
         out_acc.append(msg_buf[..]);
         count = core::add_sat_i64(count, 1);
@@ -778,20 +780,20 @@ fn drain_grpc_parser_messages(p: wing::GrpcStreamParser&, out_acc: u8[>..]&) -> 
 
 fn verify_grpc_stream_split_parity(data: const u8[:]) {
     guard data.len > 0 && data.len <= 8192 else { return; }
-    var p_full = wing::new_grpc_stream_parser(2048);
+    var p_full = grpc::new_stream_parser(2048);
     var acc_full: u8[>..] = [];
-    guard wing::feed(p_full, data) else { return; }
+    guard grpc::feed(p_full, data) else { return; }
     let cnt_full = drain_grpc_parser_messages(p_full, acc_full);
     guard !p_full.has_error else { return; }
 
-    var p_split = wing::new_grpc_stream_parser(2048);
+    var p_split = grpc::new_stream_parser(2048);
     var acc_split: u8[>..] = [];
     var cnt_split: i64     = 0;
     var pos:       i64     = 0;
     while pos < data.len && cnt_split < 16 {
         let step = ((pos % 5) + 1);
         let end = min(data.len, core::add_sat_i64(pos, step));
-        assert(wing::feed(p_split, data[pos..end]));
+        assert(grpc::feed(p_split, data[pos..end]));
         cnt_split = core::add_sat_i64(cnt_split, drain_grpc_parser_messages(p_split, acc_split));
         pos = end;
     }
@@ -802,7 +804,7 @@ fn verify_grpc_stream_split_parity(data: const u8[:]) {
 fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
     var sig: u64 = 0xB000;
     verify_grpc_stream_split_parity(data);
-    let hdr, ok_ws = wing::parse_ws_frame_header(data);
+    let hdr, ok_ws = realtime::parse_ws_frame_header(data);
     let hlen = hdr.header_len as i64;
     if ok_ws {
         if hdr.opcode >= 8 {
@@ -810,24 +812,24 @@ fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
         }
         sig = fuzz_mix_state(sig, 0xB001 ^ (hdr.opcode as u64));
         if hdr.opcode == 8 && hlen <= data.len {
-            let _, reason_in, ok_ci = wing::parse_close_payload(data[hlen..data.len]);
+            let _, reason_in, ok_ci = realtime::parse_close_payload(data[hlen..data.len]);
             if ok_ci { assert(reason_in.len <= 123); }
         }
     }
-    let _, reason_cls, ok_cls = wing::parse_close_payload(data);
+    let _, reason_cls, ok_cls = realtime::parse_close_payload(data);
     if ok_cls {
         assert(reason_cls.len <= 123);
         let _ = core::validate_utf8(reason_cls);
         sig = fuzz_mix_state(sig, 0xB010);
     }
 
-    var ws_comp = wing::SharedWsCompressor { .. };
+    var ws_comp = realtime::SharedWsCompressor { .. };
     var decomp_ws: u8[..4096] = [];
-    if wing::ws_inflate_message(ws_comp, data, decomp_ws, 4096, true) {
+    if realtime::ws_inflate_message(ws_comp, data, decomp_ws, 4096, true) {
         sig = fuzz_mix_state(sig, 0xB020 ^ (decomp_ws.len as u64));
     }
 
-    let lpm_slice, _, lpm_consumed, ok_lpm = wing::decode_grpc_lpm_slice(data, 0);
+    let lpm_slice, _, lpm_consumed, ok_lpm = grpc::decode_lpm_slice(data, 0);
     if ok_lpm {
         assert(lpm_consumed >= 5 && lpm_consumed <= data.len && lpm_slice.len <= data.len);
         sig = fuzz_mix_state(sig, 0xB030);
@@ -835,9 +837,9 @@ fn fuzz_target_websocket_and_grpc(data: const u8[:]) -> u64 {
     var web_payload: u8[..2048] = [];
     var is_trailers = false;
     var is_comp = false;
-    let _, err_gw = wing::decode_grpc_web_frame(data, 0, web_payload, is_trailers, is_comp);
-    if err_gw == 0 { sig = fuzz_mix_state(sig, 0xB040); }
-    let _, _ = wing::parse_grpc_timeout(data);
+    let _, ok_gw = grpc::decode_web_frame(data, 0, web_payload, is_trailers, is_comp);
+    if !ok_gw { sig = fuzz_mix_state(sig, 0xB040); }
+    let _, _ = grpc::parse_timeout(data);
 
     return fuzz_masque_dns_proxy(data, sig);
 }

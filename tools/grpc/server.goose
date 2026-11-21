@@ -8,19 +8,19 @@ import core from "../..";
 import wing from "../..";
 
 fn handle_say_hello(
-    ctx:         wing::GrpcServerContext&,
+    ctx:         grpc::ServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-) -> wing::GrpcStatus {
-    let auth = wing::get_metadata(ctx, "authorization");
+) -> grpc::Status {
+    let auth = grpc::get_metadata(ctx, "authorization");
     if auth == "Bearer invalid-token" {
-        return wing::grpc_error(wing::GrpcStatusCode.Unauthenticated, "Invalid authorization token");
+        return grpc::error(grpc::StatusCode.Unauthenticated, "Invalid authorization token");
     }
 
-    wing::add_response_metadata(ctx, "x-server-version", "wing-grpc-v2");
-    wing::add_response_metadata(ctx, "x-grpc-engine", "goose-wing");
+    grpc::add_response_metadata(ctx, "x-server-version", "wing-grpc-v2");
+    grpc::add_response_metadata(ctx, "x-grpc-engine", "goose-wing");
 
-    let pb_name, is_pb = wing::pb_read_bytes_field(req_payload, 1);
+    let pb_name, is_pb = grpc::pb_read_bytes_field(req_payload, 1);
     let name_slice = if is_pb { pb_name } else { req_payload };
     var greeting: u8[..512] = [];
     greeting.append("Hello, ");
@@ -29,21 +29,21 @@ fn handle_say_hello(
 
     if is_pb {
         var pb_out: u8[..540] = [];
-        let _ = wing::pb_write_bytes_field(1, greeting[..], pb_out);
+        let _ = grpc::pb_write_bytes_field(1, greeting[..], pb_out);
         res_payload.append(pb_out[..]);
     } else {
         res_payload.append(greeting[..]);
     }
 
-    return wing::grpc_ok();
+    return grpc::ok();
 }
 
 fn grpc_test_unary_handler(
     handler_id:  u16,
-    ctx:         wing::GrpcServerContext&,
+    ctx:         grpc::ServerContext&,
     req_payload: const u8[:],
     res_payload: u8[>..]&,
-) -> wing::GrpcStatus {
+) -> grpc::Status {
     if handler_id == 1 {
         return handle_say_hello(ctx, req_payload, res_payload);
     }
@@ -51,13 +51,13 @@ fn grpc_test_unary_handler(
         for &m in ctx.metadata {
             let k = m.key[..];
             if core::starts_with_fold(k, "x-echo-") {
-                wing::add_response_metadata(ctx, k, m.value[..]);
+                grpc::add_response_metadata(ctx, k, m.value[..]);
             }
         }
         res_payload.append(req_payload);
-        return wing::grpc_ok();
+        return grpc::ok();
     }
-    return wing::grpc_error(wing::GrpcStatusCode.PermissionDenied, "Access denied by goose security policy");
+    return grpc::error(grpc::StatusCode.PermissionDenied, "Access denied by goose security policy");
 }
 
 fn main() {
@@ -69,10 +69,10 @@ fn main() {
     wing::add_post_route(server, "/echo.EchoService/Echo", 2);
     wing::add_post_route(server, "/echo.EchoService/Fail", 3);
 
-    var dispatcher = wing::new_grpc_server_dispatcher();
-    wing::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
-    wing::register_unary(dispatcher, "echo.EchoService", "Echo", 2);
-    wing::register_unary(dispatcher, "echo.EchoService", "Fail", 3);
+    var dispatcher = grpc::new_server_dispatcher();
+    grpc::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
+    grpc::register_unary(dispatcher, "echo.EchoService", "Echo", 2);
+    grpc::register_unary(dispatcher, "echo.EchoService", "Fail", 3);
 
     let listener = wing::tcp_listen("0.0.0.0", port_env, 128);
     if listener <= 0 {
@@ -82,6 +82,6 @@ fn main() {
     let port = wing::tcp_getsockname_port(listener);
     print("READY_PORT:", port, "\n");
 
-    wing::serve_grpc_listener(listener, server, dispatcher, grpc_test_unary_handler);
+    grpc::serve_listener(listener, server, dispatcher, grpc_test_unary_handler);
     wing::tcp_close(listener);
 }

@@ -705,56 +705,56 @@ fn test_proxy_server_integration(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_health_state_transitions(t: lit::T&) {
     t.run("Up -> Down on Consecutive Failures") { sub =>
-        let cfg = wing::new_health_check_config(5000, 2000, 2, 3);
-        var health = wing::UpstreamHealth { .. };
-        sub.assert_true(health.state == wing::HealthState.Up, "Initial state is Up");
+        let cfg = proxy::new_health_check_config(5000, 2000, 2, 3);
+        var health = proxy::UpstreamHealth { .. };
+        sub.assert_true(health.state == proxy::HealthState.Up, "Initial state is Up");
 
         // Fail 1 & 2: still Up
-        wing::record_probe_failure(health, cfg);
-        sub.assert_true(health.state == wing::HealthState.Up, "State remains Up after 1 failure");
+        proxy::record_probe_failure(health, cfg);
+        sub.assert_true(health.state == proxy::HealthState.Up, "State remains Up after 1 failure");
         sub.assert_eq(health.consecutive_failures, 1, "Consecutive failures = 1");
 
-        wing::record_probe_failure(health, cfg);
-        sub.assert_true(health.state == wing::HealthState.Up, "State remains Up after 2 failures");
+        proxy::record_probe_failure(health, cfg);
+        sub.assert_true(health.state == proxy::HealthState.Up, "State remains Up after 2 failures");
 
         // Fail 3: threshold reached -> transitions to Down
-        wing::record_probe_failure(health, cfg);
-        sub.assert_true(health.state == wing::HealthState.Down, "State transitioned to Down at 3 failures");
+        proxy::record_probe_failure(health, cfg);
+        sub.assert_true(health.state == proxy::HealthState.Down, "State transitioned to Down at 3 failures");
         sub.assert_eq(health.consecutive_failures, 3, "Consecutive failures = 3");
     };
 
     t.run("Down -> Probing -> Up on Consecutive Successes") { sub =>
-        let cfg = wing::new_health_check_config(5000, 2000, 2, 3);
-        var health = wing::UpstreamHealth { .. };
-        health.state = wing::HealthState.Down;
+        let cfg = proxy::new_health_check_config(5000, 2000, 2, 3);
+        var health = proxy::UpstreamHealth { .. };
+        health.state = proxy::HealthState.Down;
         health.consecutive_failures = 3;
 
         // Manual or probe entry to Probing
-        let entered = wing::enter_probing_state(health);
+        let entered = proxy::enter_probing_state(health);
         sub.assert_true(entered, "Successfully entered Probing state from Down");
-        sub.assert_true(health.state == wing::HealthState.Probing, "State is Probing");
+        sub.assert_true(health.state == proxy::HealthState.Probing, "State is Probing");
 
         // First success: not yet Up (threshold is 2)
-        wing::record_probe_success(health, 1500, cfg);
-        sub.assert_true(health.state == wing::HealthState.Probing, "Still Probing after 1 success");
+        proxy::record_probe_success(health, 1500, cfg);
+        sub.assert_true(health.state == proxy::HealthState.Probing, "Still Probing after 1 success");
         sub.assert_eq(health.consecutive_successes, 1, "Consecutive successes = 1");
         sub.assert_eq(health.consecutive_failures, 0, "Failures reset on success");
 
         // Second success: reaches threshold 2 -> transitions to Up
-        wing::record_probe_success(health, 1200, cfg);
-        sub.assert_true(health.state == wing::HealthState.Up, "State transitioned to Up at 2 successes");
+        proxy::record_probe_success(health, 1200, cfg);
+        sub.assert_true(health.state == proxy::HealthState.Up, "State transitioned to Up at 2 successes");
         sub.assert_eq(health.consecutive_successes, 2, "Consecutive successes = 2");
     };
 
     t.run("Probing Failure Demotes to Down") { sub =>
-        let cfg = wing::new_health_check_config(5000, 2000, 2, 1);
-        var health = wing::UpstreamHealth { .. };
-        health.state = wing::HealthState.Probing;
+        let cfg = proxy::new_health_check_config(5000, 2000, 2, 1);
+        var health = proxy::UpstreamHealth { .. };
+        health.state = proxy::HealthState.Probing;
         health.consecutive_successes = 1;
 
         // Failure during probing immediately drops back to Down
-        wing::record_probe_failure(health, cfg);
-        sub.assert_true(health.state == wing::HealthState.Down, "Failed probe in Probing drops to Down");
+        proxy::record_probe_failure(health, cfg);
+        sub.assert_true(health.state == proxy::HealthState.Down, "Failed probe in Probing drops to Down");
         sub.assert_eq(health.consecutive_successes, 0, "Successes reset to 0");
     };
 }
@@ -765,7 +765,7 @@ fn test_health_state_transitions(t: lit::T&) {
 fn test_probe_wire_and_response_parsing(t: lit::T&) {
     t.run("Format Health Probe HTTP/1.1 Request") { sub =>
         var wire: u8[>..] = [];
-        wing::format_health_probe_request("api.internal:8080", "/healthz", wire);
+        proxy::format_health_probe_request("api.internal:8080", "/healthz", wire);
 
         let s = wire[..];
         sub.assert_true(s.len > 0, "Wire buffer populated");
@@ -777,19 +777,19 @@ fn test_probe_wire_and_response_parsing(t: lit::T&) {
 
     t.run("Parse HTTP Status Code from Wire Response") { sub =>
         let resp_200: u8[..64] = "HTTP/1.1 200 OK\r\nContent-Len: 0\r\n";
-        let code200, ok200 = wing::parse_probe_status_code(resp_200[..]);
+        let code200, ok200 = proxy::parse_probe_status_code(resp_200[..]);
         sub.assert_true(ok200, "Parsed 200 response");
         sub.assert_eq(code200, 200, "Code is 200");
-        sub.assert_true(wing::evaluate_probe_response(resp_200[..], 200), "Evaluate 200 matches expected");
+        sub.assert_true(proxy::evaluate_probe_response(resp_200[..], 200), "Evaluate 200 matches expected");
 
         let resp_503: u8[..64] = "HTTP/1.1 503 Unavailable\r\n\r\n";
-        let code503, ok503 = wing::parse_probe_status_code(resp_503[..]);
+        let code503, ok503 = proxy::parse_probe_status_code(resp_503[..]);
         sub.assert_true(ok503, "Parsed 503 response");
         sub.assert_eq(code503, 503, "Code is 503");
-        sub.assert_true(!wing::evaluate_probe_response(resp_503[..], 200), "503 does not match 200");
+        sub.assert_true(!proxy::evaluate_probe_response(resp_503[..], 200), "503 does not match 200");
 
         let resp_bad: u8[..16] = "GARBAGE DATA";
-        let _, ok_bad = wing::parse_probe_status_code(resp_bad[..]);
+        let _, ok_bad = proxy::parse_probe_status_code(resp_bad[..]);
         sub.assert_true(!ok_bad, "Garbage data rejected cleanly");
     };
 }
@@ -799,71 +799,71 @@ fn test_probe_wire_and_response_parsing(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cluster_health_checker_integration(t: lit::T&) {
     t.run("Cluster Active Health Check Engine") { sub =>
-        var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
-        wing::add_upstream_target(cluster, "10.0.0.1", 8080);
-        wing::add_upstream_target(cluster, "10.0.0.2", 8080);
+        var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 2);
+        proxy::add_upstream_target(cluster, "10.0.0.1", 8080);
+        proxy::add_upstream_target(cluster, "10.0.0.2", 8080);
 
-        let cfg = wing::new_health_check_config(1000, 500, 2, 2);
-        var checker = wing::new_cluster_health_checker(cfg);
-        wing::register_target_for_probing(checker, 0);
-        wing::register_target_for_probing(checker, 1);
+        let cfg = proxy::new_health_check_config(1000, 500, 2, 2);
+        var checker = proxy::new_cluster_health_checker(cfg);
+        proxy::register_target_for_probing(checker, 0);
+        proxy::register_target_for_probing(checker, 1);
 
         // Fail target 0 via load balancer failures
-        wing::record_upstream_failure(cluster, 0);
-        wing::record_upstream_failure(cluster, 0);
+        proxy::record_upstream_failure(cluster, 0);
+        proxy::record_upstream_failure(cluster, 0);
         sub.assert_true(!cluster.targets[0].is_healthy, "Target 0 is marked unhealthy");
-        sub.assert_true(cluster.targets[0].health_state == wing::UpstreamHealthState.Down, "Target 0 state is Down");
+        sub.assert_true(cluster.targets[0].health_state == proxy::UpstreamHealthState.Down, "Target 0 state is Down");
 
         // Fail target 1 via health checker failure
-        let state1 = wing::on_probe_failure(checker, cluster, 1);
-        sub.assert_true(state1 == wing::HealthState.Up, "Target 1 remains Up on 1st fail");
-        let state2 = wing::on_probe_failure(checker, cluster, 1);
-        sub.assert_true(state2 == wing::HealthState.Down, "Target 1 Down on 2nd fail");
+        let state1 = proxy::on_probe_failure(checker, cluster, 1);
+        sub.assert_true(state1 == proxy::HealthState.Up, "Target 1 remains Up on 1st fail");
+        let state2 = proxy::on_probe_failure(checker, cluster, 1);
+        sub.assert_true(state2 == proxy::HealthState.Down, "Target 1 Down on 2nd fail");
         sub.assert_true(cluster.circuit_open, "Cluster circuit tripped open when all targets are Down");
 
         // Recover target 0 via active probe successes
-        wing::on_probe_success(checker, cluster, 0, 800);
-        sub.assert_true(cluster.targets[0].health_state == wing::UpstreamHealthState.Probing, "Target 0 enters Probing");
+        proxy::on_probe_success(checker, cluster, 0, 800);
+        sub.assert_true(cluster.targets[0].health_state == proxy::UpstreamHealthState.Probing, "Target 0 enters Probing");
 
-        wing::on_probe_success(checker, cluster, 0, 750);
-        sub.assert_true(cluster.targets[0].health_state == wing::UpstreamHealthState.Up, "Target 0 promoted to Up");
+        proxy::on_probe_success(checker, cluster, 0, 750);
+        sub.assert_true(cluster.targets[0].health_state == proxy::UpstreamHealthState.Up, "Target 0 promoted to Up");
         sub.assert_true(cluster.targets[0].is_healthy, "Target 0 is healthy again");
         sub.assert_true(!cluster.circuit_open, "Cluster circuit breaker restored");
 
         // Verify upstream dispatch now succeeds and selects target 0
-        let chosen, ok = wing::select_upstream(cluster);
+        let chosen, ok = proxy::select_upstream(cluster);
         sub.assert_true(ok, "Upstream selection succeeds");
         sub.assert_eq(chosen, 0, "Target 0 selected");
     };
 
     t.run("Probing State Hysteresis on Cluster Sync") { sub =>
-        var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
-        wing::add_upstream_target(cluster, "10.0.0.1", 8080);
+        var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 2);
+        proxy::add_upstream_target(cluster, "10.0.0.1", 8080);
 
-        let cfg = wing::new_health_check_config(1000, 500, 2, 2);
-        var checker = wing::new_cluster_health_checker(cfg);
-        wing::register_target_for_probing(checker, 0);
+        let cfg = proxy::new_health_check_config(1000, 500, 2, 2);
+        var checker = proxy::new_cluster_health_checker(cfg);
+        proxy::register_target_for_probing(checker, 0);
 
         // Fail target 0 via load balancer failures
-        wing::record_upstream_failure(cluster, 0);
-        wing::record_upstream_failure(cluster, 0);
-        sub.assert_true(cluster.targets[0].health_state == wing::UpstreamHealthState.Down, "Target 0 state is Down");
+        proxy::record_upstream_failure(cluster, 0);
+        proxy::record_upstream_failure(cluster, 0);
+        sub.assert_true(cluster.targets[0].health_state == proxy::UpstreamHealthState.Down, "Target 0 state is Down");
 
         // Manually place in Probing mode
-        wing::set_upstream_probing(cluster, 0);
-        sub.assert_true(cluster.targets[0].health_state == wing::UpstreamHealthState.Probing, "Target 0 in Probing");
+        proxy::set_upstream_probing(cluster, 0);
+        sub.assert_true(cluster.targets[0].health_state == proxy::UpstreamHealthState.Probing, "Target 0 in Probing");
 
         // Reset checker slot to Up to simulate desync prior to probe
-        checker.slots[0].health.state = wing::HealthState.Up;
+        checker.slots[0].health.state = proxy::HealthState.Up;
 
         // 1st probe success must NOT promote directly to Up; sync_slot_from_cluster must enforce Probing
-        let st1 = wing::on_probe_success(checker, cluster, 0, 500);
-        sub.assert_true(st1 == wing::HealthState.Probing, "Target 0 remains Probing after 1st success");
+        let st1 = proxy::on_probe_success(checker, cluster, 0, 500);
+        sub.assert_true(st1 == proxy::HealthState.Probing, "Target 0 remains Probing after 1st success");
         sub.assert_true(!cluster.targets[0].is_healthy, "Target 0 remains unhealthy in cluster during Probing");
 
         // 2nd probe success reaches healthy_threshold (2) -> promoted to Up
-        let st2 = wing::on_probe_success(checker, cluster, 0, 500);
-        sub.assert_true(st2 == wing::HealthState.Up, "Target 0 promoted to Up after 2nd success");
+        let st2 = proxy::on_probe_success(checker, cluster, 0, 500);
+        sub.assert_true(st2 == proxy::HealthState.Up, "Target 0 promoted to Up after 2nd success");
         sub.assert_true(cluster.targets[0].is_healthy, "Target 0 is healthy again");
     };
 }
@@ -873,65 +873,65 @@ fn test_cluster_health_checker_integration(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_reverse_proxy_hardening(t: lit::T&) {
     t.run("Connection Leak Defense and Lifecycle") { sub =>
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        wing::add_upstream_target(proxy.cluster, "upstream.local:8080", 8080);
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        proxy::add_upstream_target(rp.cluster, "upstream.local:8080", 8080);
 
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "frontend.test");
 
         var wire: u8[>..] = [];
-        let t_idx, ok = wing::prepare_proxy_request(proxy, "GET", "/api", in_headers, "127.0.0.1", "http", "", wire);
+        let t_idx, ok = proxy::prepare_proxy_request(rp, "GET", "/api", in_headers, "127.0.0.1", "http", "", wire);
         sub.assert_true(ok, "Proxy request prepared");
         sub.assert_eq(t_idx, 0, "Dispatched to target 0");
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 1, "Target 0 active_conns = 1");
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 1, "Target 0 active_conns = 1");
 
         // Complete successfully -> active_conns decremented
-        wing::finish_proxy_request(proxy, t_idx, true);
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 0, "Active conns decremented to 0 upon finish");
+        proxy::finish_proxy_request(rp, t_idx, true);
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 0, "Active conns decremented to 0 upon finish");
 
         // Dispatched second time, then aborted -> active_conns decremented cleanly
-        let t_idx2, ok2 = wing::prepare_proxy_request(proxy, "GET", "/api", in_headers, "127.0.0.1", "http", "", wire);
+        let t_idx2, ok2 = proxy::prepare_proxy_request(rp, "GET", "/api", in_headers, "127.0.0.1", "http", "", wire);
         sub.assert_true(ok2, "Second request prepared");
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 1, "Active conns is 1");
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 1, "Active conns is 1");
 
-        wing::abort_proxy_request(proxy, t_idx2);
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 0, "Active conns decremented to 0 upon abort");
+        proxy::abort_proxy_request(rp, t_idx2);
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 0, "Active conns decremented to 0 upon abort");
     };
 
     t.run("Concurrency Backpressure and Overload Defense") { sub =>
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        wing::add_upstream_target(proxy.cluster, "backend.srv:8080", 8080);
-        proxy.config.max_active_conns_per_target = 2;
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        proxy::add_upstream_target(rp.cluster, "backend.srv:8080", 8080);
+        rp.config.max_active_conns_per_target = 2;
 
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "test.example.com");
 
         var wire: u8[>..] = [];
-        let idx1, ok1 = wing::prepare_proxy_request(proxy, "GET", "/", in_headers, "10.0.0.1", "http", "", wire);
-        let idx2, ok2 = wing::prepare_proxy_request(proxy, "GET", "/", in_headers, "10.0.0.2", "http", "", wire);
+        let idx1, ok1 = proxy::prepare_proxy_request(rp, "GET", "/", in_headers, "10.0.0.1", "http", "", wire);
+        let idx2, ok2 = proxy::prepare_proxy_request(rp, "GET", "/", in_headers, "10.0.0.2", "http", "", wire);
         sub.assert_true(ok1 && ok2, "First 2 requests admitted up to concurrency ceiling");
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 2, "Active connections reached ceiling of 2");
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 2, "Active connections reached ceiling of 2");
 
         // 3rd request exceeds max_active_conns_per_target (2)
-        let idx3, ok3 = wing::prepare_proxy_request(proxy, "GET", "/", in_headers, "10.0.0.3", "http", "", wire);
+        let idx3, ok3 = proxy::prepare_proxy_request(rp, "GET", "/", in_headers, "10.0.0.3", "http", "", wire);
         sub.assert_true(!ok3, "3rd request rejected due to target concurrency overload");
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 2, "Active conns remains 2 (no connection leak!)");
-        sub.assert_eq(proxy.total_overloaded, 1, "total_overloaded recorded");
-        sub.assert_eq(proxy.total_dropped, 1, "total_dropped recorded");
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 2, "Active conns remains 2 (no connection leak!)");
+        sub.assert_eq(rp.total_overloaded, 1, "total_overloaded recorded");
+        sub.assert_eq(rp.total_dropped, 1, "total_dropped recorded");
 
         // Finishing request 1 frees slot
-        wing::finish_proxy_request(proxy, idx1, true);
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 1, "Active conns decreased to 1");
+        proxy::finish_proxy_request(rp, idx1, true);
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 1, "Active conns decreased to 1");
 
         // Now next request succeeds
-        let idx4, ok4 = wing::prepare_proxy_request(proxy, "GET", "/", in_headers, "10.0.0.4", "http", "", wire);
+        let idx4, ok4 = proxy::prepare_proxy_request(rp, "GET", "/", in_headers, "10.0.0.4", "http", "", wire);
         sub.assert_true(ok4, "Admitted after connection freed");
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 2, "Active conns is back to 2");
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 2, "Active conns is back to 2");
     };
 
     t.run("Hop-by-hop and Metadata Spoofing Defense") { sub =>
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        wing::add_upstream_target(proxy.cluster, "app.internal:80", 80);
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        proxy::add_upstream_target(rp.cluster, "app.internal:80", 80);
 
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "legit.example.com");
@@ -942,7 +942,7 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         wing::append_header(in_headers, "X-Forwarded-Ssl", "on");
 
         var wire: u8[>..] = [];
-        let _, ok = wing::prepare_proxy_request(proxy, "GET", "/secure", in_headers, "203.0.113.5", "https", "", wire);
+        let _, ok = proxy::prepare_proxy_request(rp, "GET", "/secure", in_headers, "203.0.113.5", "https", "", wire);
         sub.assert_true(ok, "Request prepared");
 
         let s = wire[..];
@@ -955,10 +955,10 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
     };
 
     t.run("GCRA Rate Limiting Shield") { sub =>
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        wing::add_upstream_target(proxy.cluster, "backend.internal:8080", 8080);
-        proxy.config.enable_rate_limiting = true;
-        proxy.rate_limiter = security::new_gateway_rate_limiter(10, 1); // 10 rps, burst 1
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        proxy::add_upstream_target(rp.cluster, "backend.internal:8080", 8080);
+        rp.config.enable_rate_limiting = true;
+        rp.rate_limiter = security::new_gateway_rate_limiter(10, 1); // 10 rps, burst 1
 
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "test.example.com");
@@ -967,23 +967,23 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         let client_ip: u8[..16] = "198.51.100.77";
         let now_ns:    u64      = 1000000000;
 
-        let _, ok1 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
-        let _, ok2 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        let _, ok1 = proxy::prepare_proxy_request_at(rp, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        let _, ok2 = proxy::prepare_proxy_request_at(rp, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
         sub.assert_true(ok1 && ok2, "Burst requests admitted");
 
         // 3rd request at same timestamp -> Rate limited!
-        let _, ok3 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        let _, ok3 = proxy::prepare_proxy_request_at(rp, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
         sub.assert_true(!ok3, "3rd request rejected by GCRA rate limit");
-        sub.assert_eq(proxy.total_rate_limited, 1, "total_rate_limited recorded");
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 2, "Upstream active conns untouched by rejected request");
+        sub.assert_eq(rp.total_rate_limited, 1, "total_rate_limited recorded");
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 2, "Upstream active conns untouched by rejected request");
     };
 
     t.run("P2C Resilient Fallback on Degraded Cluster") { sub =>
-        var cluster = wing::new_upstream_cluster(wing::LbPolicy.RandomTwoChoice, 2);
-        wing::add_upstream_target(cluster, "10.0.0.1", 8080);
-        wing::add_upstream_target(cluster, "10.0.0.2", 8080);
-        wing::add_upstream_target(cluster, "10.0.0.3", 8080);
-        wing::add_upstream_target(cluster, "10.0.0.4", 8080);
+        var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RandomTwoChoice, 2);
+        proxy::add_upstream_target(cluster, "10.0.0.1", 8080);
+        proxy::add_upstream_target(cluster, "10.0.0.2", 8080);
+        proxy::add_upstream_target(cluster, "10.0.0.3", 8080);
+        proxy::add_upstream_target(cluster, "10.0.0.4", 8080);
 
         // Mark nodes 1, 2, 3 as unhealthy; only node 0 remains UP
         cluster.targets[1].is_healthy = false;
@@ -992,16 +992,16 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
 
         // Select 20 times: all 20 must succeed and select node 0 via least-connections fallback
         for _ in 20 {
-            let chosen, ok = wing::select_upstream(cluster);
+            let chosen, ok = proxy::select_upstream(cluster);
             sub.assert_true(ok, "P2C gracefully falls back and finds healthy target");
             sub.assert_eq(chosen, 0, "Selected only healthy node 0");
-            wing::release_upstream_connection(cluster, chosen);
+            proxy::release_upstream_connection(cluster, chosen);
         }
     };
 
     t.run("X-Forwarded-For Edge Perimeter Spoofing vs Trust Chaining") { sub =>
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        wing::add_upstream_target(proxy.cluster, "app.internal:80", 80);
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        proxy::add_upstream_target(rp.cluster, "app.internal:80", 80);
 
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "api.example.com");
@@ -1009,8 +1009,8 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
 
         // 1. Default mode: trust_incoming_xff is false -> spoofed XFF dropped
         var wire_untrusted: u8[>..] = [];
-        let _, ok1 = wing::prepare_proxy_request(
-            proxy,
+        let _, ok1 = proxy::prepare_proxy_request(
+            rp,
             "GET",
             "/api",
             in_headers,
@@ -1025,10 +1025,10 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         sub.assert_true(core::contains(wire_untrusted[..], "X-Forwarded-For: 203.0.113.195"), "Real client IP injected");
 
         // 2. Internal proxy mode: trust_incoming_xff is true -> chained
-        proxy.config.trust_incoming_xff = true;
+        rp.config.trust_incoming_xff = true;
         var wire_trusted: u8[>..] = [];
-        let _, ok2 = wing::prepare_proxy_request(
-            proxy,
+        let _, ok2 = proxy::prepare_proxy_request(
+            rp,
             "GET",
             "/api",
             in_headers,
@@ -1042,14 +1042,14 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
     };
 
     t.run("Dynamic Rate Limiter Synchronization") { sub =>
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        wing::add_upstream_target(proxy.cluster, "backend.internal:8080", 8080);
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        proxy::add_upstream_target(rp.cluster, "backend.internal:8080", 8080);
 
         // Configure rate limit dynamically via helper
-        wing::set_proxy_rate_limit(proxy, 10, 1);
-        sub.assert_true(proxy.config.enable_rate_limiting, "Rate limit enabled");
-        sub.assert_eq(proxy.config.rate_limit_rps, 10, "Config RPS is 10");
-        sub.assert_eq(proxy.config.rate_limit_burst, 1, "Config burst is 1");
+        proxy::set_proxy_rate_limit(rp, 10, 1);
+        sub.assert_true(rp.config.enable_rate_limiting, "Rate limit enabled");
+        sub.assert_eq(rp.config.rate_limit_rps, 10, "Config RPS is 10");
+        sub.assert_eq(rp.config.rate_limit_burst, 1, "Config burst is 1");
 
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "test.example.com");
@@ -1058,12 +1058,12 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         let client_ip: u8[..16] = "198.51.100.88";
         let now_ns:    u64      = 2000000000;
 
-        let _, ok1 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
-        let _, ok2 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        let _, ok1 = proxy::prepare_proxy_request_at(rp, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        let _, ok2 = proxy::prepare_proxy_request_at(rp, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
         sub.assert_true(ok1 && ok2, "Initial burst requests admitted");
 
         // 3rd request rejected by dynamically synchronized limiter
-        let _, ok3 = wing::prepare_proxy_request_at(proxy, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
+        let _, ok3 = proxy::prepare_proxy_request_at(rp, "GET", "/", in_headers, client_ip[..], "http", "", wire, now_ns);
         sub.assert_true(!ok3, "3rd request rejected by synced GCRA rate limit");
     };
 }
@@ -1549,10 +1549,10 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
 
         // QUIC DATAGRAM frame (RFC 9221 Type 0x31 with length)
         var quic_frame_wire: u8[..256] = [];
-        let frame_ok = quic_internal::encode_quic_datagram_frame(quic_frame_wire, dgram_wire[..], true);
+        let frame_ok = quic::encode_datagram_frame(dgram_wire[..], quic_frame_wire, true);
         sub.assert_true(frame_ok, "encode_quic_datagram_frame ok");
 
-        let parsed_dgram, end_off, frame_dec_ok = quic_internal::decode_quic_datagram_frame(quic_frame_wire[..], 0);
+        let parsed_dgram, end_off, frame_dec_ok = quic::decode_datagram_frame(quic_frame_wire[..], 0);
         sub.assert_true(frame_dec_ok, "decode_quic_datagram_frame ok");
         sub.assert_bytes_eq(parsed_dgram, dgram_wire[..], "Datagram bytes match inside QUIC frame");
     };
@@ -2221,13 +2221,13 @@ fn test_client_cert_header(t: lit::T&) {
     };
 
     t.run("Spoofing strip via is_forwarded_metadata_header") { sub =>
-        sub.assert_true(wing::is_forwarded_metadata_header("client-cert"), "client-cert stripped");
-        sub.assert_true(wing::is_forwarded_metadata_header("Client-Cert-Chain"), "Client-Cert-Chain stripped");
-        sub.assert_true(wing::is_forwarded_metadata_header("CLIENT-CERT"), "CLIENT-CERT case-folded stripped");
+        sub.assert_true(proxy::is_forwarded_metadata_header("client-cert"), "client-cert stripped");
+        sub.assert_true(proxy::is_forwarded_metadata_header("Client-Cert-Chain"), "Client-Cert-Chain stripped");
+        sub.assert_true(proxy::is_forwarded_metadata_header("CLIENT-CERT"), "CLIENT-CERT case-folded stripped");
     };
 
     t.run("filter_and_forward_headers strips spoofed Client-Cert when injection disabled") { sub =>
-        var cfg = wing::ProxyConfig { .. };
+        var cfg = proxy::Config { .. };
         sub.assert_false(cfg.forward_client_cert, "forward_client_cert defaults to false");
 
         var in_headers = wing::HeaderMap { .. };
@@ -2235,7 +2235,7 @@ fn test_client_cert_header(t: lit::T&) {
         wing::append_header(in_headers, "Client-Cert", ":spoof:");
 
         var out_headers = wing::HeaderMap { .. };
-        let ok = wing::filter_and_forward_headers(
+        let ok = proxy::filter_and_forward_headers(
             in_headers,
             out_headers,
             "203.0.113.9",
@@ -2248,7 +2248,7 @@ fn test_client_cert_header(t: lit::T&) {
     };
 
     t.run("filter_and_forward_headers injects exactly one Client-Cert when enabled") { sub =>
-        var cfg = wing::ProxyConfig { .. };
+        var cfg = proxy::Config { .. };
         cfg.forward_client_cert = true;
         for i in 64 {
             cfg.client_cert_der.push((i as u8));
@@ -2260,7 +2260,7 @@ fn test_client_cert_header(t: lit::T&) {
         wing::append_header(in_headers, "Client-Cert", ":spoof:");
 
         var out_headers = wing::HeaderMap { .. };
-        let ok = wing::filter_and_forward_headers(
+        let ok = proxy::filter_and_forward_headers(
             in_headers,
             out_headers,
             "203.0.113.9",
@@ -2293,9 +2293,9 @@ fn test_client_cert_header(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_load_balancer(t: lit::T&) {
     t.run("LeastConnections respects upstream weights") { sub =>
-        var cluster = wing::new_upstream_cluster(wing::LbPolicy.LeastConnections, 3);
-        sub.assert_true(wing::add_upstream_target(cluster, "srv-weight-1", 80, 1), "add target 1");
-        sub.assert_true(wing::add_upstream_target(cluster, "srv-weight-2", 80, 2), "add target 2");
+        var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.LeastConnections, 3);
+        sub.assert_true(proxy::add_upstream_target(cluster, "srv-weight-1", 80, 1), "add target 1");
+        sub.assert_true(proxy::add_upstream_target(cluster, "srv-weight-2", 80, 2), "add target 2");
 
         // Both targets have 1 active connection.
         // Target 0 (weight 1): normalized load = 1 / 1 = 1.0
@@ -2303,26 +2303,26 @@ fn test_load_balancer(t: lit::T&) {
         cluster.targets[0].active_conns = 1;
         cluster.targets[1].active_conns = 1;
 
-        let chosen, ok = wing::select_upstream(cluster);
+        let chosen, ok = proxy::select_upstream(cluster);
         sub.assert_true(ok, "upstream selected");
         sub.assert_eq(chosen, 1, "target with weight 2 chosen over weight 1 with equal connections");
     };
 
     t.run("PowerOfTwoChoices respects target weights") { sub =>
-        var t1 = wing::UpstreamTarget { active_conns: 2, weight: 1, .. };
-        var t2 = wing::UpstreamTarget { active_conns: 3, weight: 2, .. };
+        var t1 = proxy::UpstreamTarget { active_conns: 2, weight: 1, .. };
+        var t2 = proxy::UpstreamTarget { active_conns: 3, weight: 2, .. };
 
         // t1: 2 conns * 2 weight2 = 4
         // t2: 3 conns * 1 weight1 = 3 -> t2 has lower weighted load
-        let chosen = wing::evaluate_two_choice(t1, 0, t2, 1);
+        let chosen = proxy::evaluate_two_choice(t1, 0, t2, 1);
         sub.assert_eq(chosen, 1, "P2C selects target 2 due to higher weight capacity");
     };
 
     t.run("PRNG preserves non-zero 64-bit entropy") { sub =>
         var state: u64 = 0x123456789abcdef0;
-        let r1 = wing::next_prng(state);
-        let r2 = wing::next_prng(state);
-        let r3 = wing::next_prng(state);
+        let r1 = proxy::next_prng(state);
+        let r2 = proxy::next_prng(state);
+        let r3 = proxy::next_prng(state);
 
         sub.assert_ne(r1, r2, "PRNG values differ across steps");
         sub.assert_ne(r2, r3, "PRNG sequence continues");
@@ -2330,12 +2330,12 @@ fn test_load_balancer(t: lit::T&) {
     };
 
     t.run("Probing target is selectable during recovery") { sub =>
-        var cluster = wing::new_upstream_cluster(wing::LbPolicy.RoundRobin, 2);
-        sub.assert_true(wing::add_upstream_target(cluster, "srv-probe", 80, 1), "add target");
+        var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 2);
+        sub.assert_true(proxy::add_upstream_target(cluster, "srv-probe", 80, 1), "add target");
         cluster.targets[0].is_healthy = false;
-        cluster.targets[0].health_state = wing::UpstreamHealthState.Probing;
+        cluster.targets[0].health_state = proxy::UpstreamHealthState.Probing;
 
-        let chosen, ok = wing::select_upstream(cluster);
+        let chosen, ok = proxy::select_upstream(cluster);
         sub.assert_true(ok, "probing target is selected for trial traffic");
         sub.assert_eq(chosen, 0, "target 0 selected");
     };
@@ -2346,51 +2346,51 @@ fn test_load_balancer(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_health_check(t: lit::T&) {
     t.run("Probing failure immediately trips to Down") { sub =>
-        let config = wing::new_health_check_config(5000, 2000, 2, 3);
-        var health = wing::UpstreamHealth {
-            state:                 wing::HealthState.Probing,
+        let config = proxy::new_health_check_config(5000, 2000, 2, 3);
+        var health = proxy::UpstreamHealth {
+            state:                 proxy::HealthState.Probing,
             consecutive_successes: 1,
             consecutive_failures:  0,
             ..
         };
 
-        let new_state = wing::record_probe_failure(health, config);
-        sub.assert_eq(new_state, wing::HealthState.Down, "failure during Probing immediately trips Down");
+        let new_state = proxy::record_probe_failure(health, config);
+        sub.assert_eq(new_state, proxy::HealthState.Down, "failure during Probing immediately trips Down");
         sub.assert_eq(health.consecutive_successes, 0, "success streak cleared on failure");
     };
 
     t.run("Consecutive successes transition Probing to Up") { sub =>
-        let config = wing::new_health_check_config(5000, 2000, 2, 3);
-        var health = wing::UpstreamHealth {
-            state:                 wing::HealthState.Down,
+        let config = proxy::new_health_check_config(5000, 2000, 2, 3);
+        var health = proxy::UpstreamHealth {
+            state:                 proxy::HealthState.Down,
             consecutive_successes: 0,
             consecutive_failures:  3,
             ..
         };
 
         // First success transitions Down -> Probing
-        let s1 = wing::record_probe_success(health, 500, config);
-        sub.assert_eq(s1, wing::HealthState.Probing, "first success enters Probing");
+        let s1 = proxy::record_probe_success(health, 500, config);
+        sub.assert_eq(s1, proxy::HealthState.Probing, "first success enters Probing");
 
         // Second success reaches healthy_threshold (2) -> transitions to Up
-        let s2 = wing::record_probe_success(health, 400, config);
-        sub.assert_eq(s2, wing::HealthState.Up, "second success reaches threshold and enters Up");
+        let s2 = proxy::record_probe_success(health, 400, config);
+        sub.assert_eq(s2, proxy::HealthState.Up, "second success reaches threshold and enters Up");
     };
 
     t.run("Probe HTTP status code parser") { sub =>
         let wire_200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-        let code_200, ok_200 = wing::parse_probe_status_code(wire_200);
+        let code_200, ok_200 = proxy::parse_probe_status_code(wire_200);
         sub.assert_true(ok_200, "parse 200 ok");
         sub.assert_eq(code_200, 200, "status 200");
 
         let wire_503 = "HTTP/1.1 503 Service Unavailable\r\n\r\n";
-        let code_503, ok_503 = wing::parse_probe_status_code(wire_503);
+        let code_503, ok_503 = proxy::parse_probe_status_code(wire_503);
         sub.assert_true(ok_503, "parse 503 ok");
         sub.assert_eq(code_503, 503, "status 503");
 
-        let config = wing::new_health_check_config(5000, 2000, 2, 3);
-        sub.assert_true(wing::evaluate_probe_response(wire_200, 200), "validate expected 200");
-        sub.assert_false(wing::evaluate_probe_response(wire_503, 200), "reject unexpected 503");
+        let config = proxy::new_health_check_config(5000, 2000, 2, 3);
+        sub.assert_true(proxy::evaluate_probe_response(wire_200, 200), "validate expected 200");
+        sub.assert_false(proxy::evaluate_probe_response(wire_503, 200), "reject unexpected 503");
     };
 }
 
@@ -2448,41 +2448,41 @@ fn test_gcra_rate_limiter(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_reverse_proxy_streaming(t: lit::T&) {
     t.run("Stream ring compacting and slice vending") { sub =>
-        var ring = wing::ProxyStreamRing { .. };
-        sub.assert_true(wing::feed_stream_chunk(ring, "Hello, World!"), "feed chunk");
+        var ring = proxy::StreamRing { .. };
+        sub.assert_true(proxy::feed_stream_chunk(ring, "Hello, World!"), "feed chunk");
         sub.assert_eq(ring.buf.len, 13, "buffered length");
 
-        let slice1 = wing::incoming_slice(ring);
+        let slice1 = proxy::incoming_slice(ring);
         sub.assert_eq(slice1, "Hello, World!", "incoming slice");
 
         // Consume 7 bytes ("Hello, ")
-        sub.assert_true(wing::advance_read(ring, 7), "advance read 7 bytes");
+        sub.assert_true(proxy::advance_read(ring, 7), "advance read 7 bytes");
         sub.assert_eq(ring.read_pos, 7, "read cursor at 7");
 
-        let slice2 = wing::incoming_slice(ring);
+        let slice2 = proxy::incoming_slice(ring);
         sub.assert_eq(slice2, "World!", "incoming slice after advance");
 
         // Compact ring
-        wing::compact_stream_ring(ring);
+        proxy::compact_stream_ring(ring);
         sub.assert_eq(ring.read_pos, 0, "read cursor reset to 0 after compaction");
         sub.assert_eq(ring.buf.len, 6, "compacted length is remaining 6 bytes");
 
-        let slice3 = wing::incoming_slice(ring);
+        let slice3 = proxy::incoming_slice(ring);
         sub.assert_eq(slice3, "World!", "incoming slice after compaction");
     };
 
     t.run("WebSocket userspace streaming masking") { sub =>
-        var src = wing::ProxyStreamRing { .. };
-        var dst = wing::ProxyStreamRing { .. };
+        var src = proxy::StreamRing { .. };
+        var dst = proxy::StreamRing { .. };
 
-        sub.assert_true(wing::feed_stream_chunk(src, "ping"), "feed plain payload");
+        sub.assert_true(proxy::feed_stream_chunk(src, "ping"), "feed plain payload");
 
         let mask: u8[4] = [0x12, 0x34, 0x56, 0x78];
-        let n, ok = wing::forward_userspace_stream_chunk(src, dst, wing::ProxyTransportKind.WebSocket, mask);
+        let n, ok = proxy::forward_userspace_stream_chunk(src, dst, proxy::TransportKind.WebSocket, mask);
         sub.assert_true(ok, "forward chunk ok");
         sub.assert_eq(n, 4, "forwarded 4 bytes");
 
-        let masked_slice = wing::incoming_slice(dst);
+        let masked_slice = proxy::incoming_slice(dst);
         sub.assert_eq(masked_slice[0], ('p' as u8) ^ 0x12, "byte 0 masked with key[0]");
         sub.assert_eq(masked_slice[1], ('i' as u8) ^ 0x34, "byte 1 masked with key[1]");
         sub.assert_eq(masked_slice[2], ('n' as u8) ^ 0x56, "byte 2 masked with key[2]");
@@ -2503,8 +2503,8 @@ fn test_reverse_proxy_streaming(t: lit::T&) {
         let canned_resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nUpstream Pong";
         let _ = wing::tcp_send(server_sock, canned_resp);
 
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        sub.assert_true(wing::add_upstream_target(proxy.cluster, "127.0.0.1", port, 1), "added upstream");
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        sub.assert_true(proxy::add_upstream_target(rp.cluster, "127.0.0.1", port, 1), "added upstream");
 
         var pool = wing::new_stream_pool();
         let pkey = wing::new_pool_key(
@@ -2523,14 +2523,14 @@ fn test_reverse_proxy_streaming(t: lit::T&) {
         var in_hdrs = wing::HeaderMap { .. };
         let _ = wing::append_header(in_hdrs, "Host", "edge.example.com");
         var resp = wing::Response { .. };
-        let ok_ex = wing::execute_proxy_exchange(
-            proxy, pool, "GET", "/v1/health", in_hdrs, "203.0.113.5", "https", "", resp, 2000, 2000,
+        let ok_ex = proxy::execute_proxy_exchange(
+            rp, pool, "GET", "/v1/health", in_hdrs, "203.0.113.5", "https", "", resp, 2000, 2000,
         );
         sub.assert_true(ok_ex, "execute_proxy_exchange succeeded");
         sub.assert_eq(resp.status_code, 200, "upstream status 200");
         sub.assert_bytes_eq(resp.body[..], "Upstream Pong", "upstream body forwarded");
-        sub.assert_eq(proxy.cluster.targets[0].active_conns, 0, "active conns released after exchange");
-        sub.assert_eq(proxy.cluster.targets[0].successes, 1, "upstream success recorded");
+        sub.assert_eq(rp.cluster.targets[0].active_conns, 0, "active conns released after exchange");
+        sub.assert_eq(rp.cluster.targets[0].successes, 1, "upstream success recorded");
 
         wing::tcp_close(server_sock);
         wing::tcp_close(listener);
@@ -2691,10 +2691,10 @@ fn test_warm_upstream_pool_and_slowloris_h1_guard(t: lit::T&) {
         let canned_resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok";
         sub.assert_eq(backend_end.send(canned_resp), canned_resp.len as i32, "seeded backend response");
 
-        var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-        wing::add_upstream_target(proxy.cluster, "backend.internal", 8080);
+        var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+        proxy::add_upstream_target(rp.cluster, "backend.internal", 8080);
         sub.assert_true(
-            wing::park_proxy_upstream_conn(proxy, fd_client, "backend.internal", 8080),
+            proxy::park_proxy_upstream_conn(rp, fd_client, "backend.internal", 8080),
             "parked warm upstream socket",
         );
 
@@ -2702,21 +2702,21 @@ fn test_warm_upstream_pool_and_slowloris_h1_guard(t: lit::T&) {
         var in_headers = wing::HeaderMap { .. };
         wing::append_header(in_headers, "Host", "edge.example.com");
         var out_resp = wing::Response { .. };
-        let ex_ok = wing::execute_proxy_exchange(
-            proxy, sp, "GET", "/ready", in_headers, "203.0.113.10", "https", "", out_resp, 1000, 1000000,
+        let ex_ok = proxy::execute_proxy_exchange(
+            rp, sp, "GET", "/ready", in_headers, "203.0.113.10", "https", "", out_resp, 1000, 1000000,
         );
         sub.assert_true(ex_ok, "execute_proxy_exchange reused warm upstream connection");
         sub.assert_eq(out_resp.status_code, 200, "received 200 OK from warm upstream");
         sub.assert_bytes_eq(out_resp.body[..], "ok", "received body from warm upstream");
-        sub.assert_false(proxy.warm_upstreams.entries[0].in_use, "warm socket returned to idle pool");
-        sub.assert_true(proxy.warm_upstreams.entries[0].healthy, "warm socket remains healthy");
+        sub.assert_false(rp.warm_upstreams.entries[0].in_use, "warm socket returned to idle pool");
+        sub.assert_true(rp.warm_upstreams.entries[0].healthy, "warm socket remains healthy");
 
         sub.assert_true(
-            wing::notify_upstream_epoll_events(proxy.warm_upstreams, fd_client, wing::EPOLLRDHUP),
+            wing::notify_upstream_epoll_events(rp.warm_upstreams, fd_client, wing::EPOLLRDHUP),
             "notified EPOLLRDHUP on warm socket",
         );
-        sub.assert_eq(proxy.warm_upstreams.evicted_rdhup, 1 as u64, "EPOLLRDHUP evicted idle warm socket");
-        sub.assert_false(proxy.warm_upstreams.entries[0].healthy, "warm socket marked unhealthy");
+        sub.assert_eq(rp.warm_upstreams.evicted_rdhup, 1 as u64, "EPOLLRDHUP evicted idle warm socket");
+        sub.assert_false(rp.warm_upstreams.entries[0].healthy, "warm socket marked unhealthy");
     };
 
     t.run("HTTP/1.1 read_response_headers Enforces Slowloris Header Line Cap") { sub =>

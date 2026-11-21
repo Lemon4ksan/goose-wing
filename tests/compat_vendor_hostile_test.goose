@@ -211,21 +211,21 @@ fn test_vendor_h2_chopped_ingress_and_hpack(t: lit::T&) {
         var wire_out: u8[..16384] = [];
 
         wire_in.append(rfc::H2_CLIENT_PREFACE[..]);
-        let set_hdr = h2_internal::FrameHeader {
+        let set_hdr = http2::FrameHeader {
             length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0,
         };
-        h2_internal::encode_frame_header_to(set_hdr, wire_in);
+        http2::encode_frame_header_to(set_hdr, wire_in);
         // HEADERS on stream 1 WITHOUT END_HEADERS (flags = 0x01 END_STREAM only), payload 0x82 (:method GET)
-        let hdr_incomplete = h2_internal::FrameHeader {
+        let hdr_incomplete = http2::FrameHeader {
             length: 1, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_STREAM, stream_id: 1,
         };
-        h2_internal::encode_frame_header_to(hdr_incomplete, wire_in);
+        http2::encode_frame_header_to(hdr_incomplete, wire_in);
         wire_in.push(0x82);
         // Illegal PING frame interleaved while CONTINUATION is required on stream 1
-        let bad_ping = h2_internal::FrameHeader {
+        let bad_ping = http2::FrameHeader {
             length: 8, frame_type: rfc::H2_FRAME_PING, flags: 0, stream_id: 0,
         };
-        h2_internal::encode_frame_header_to(bad_ping, wire_in);
+        http2::encode_frame_header_to(bad_ping, wire_in);
         for _ in 8 { wire_in.push(0); }
 
         var pending: u8[..512] = [];
@@ -251,12 +251,12 @@ fn test_vendor_h2_chopped_ingress_and_hpack(t: lit::T&) {
     };
 
     t.run("ls-hpack / h2: HPACK table size update exceeding allowed max rejected") { sub =>
-        var dt = h2_internal::new_dynamic_table(256);
+        var dt = http2::new_dynamic_table(256);
         var hdrs = wing::HeaderMap { .. };
-        var pseudo = h2_internal::H2PseudoHeaders { .. };
+        var pseudo = http2::PseudoHeaders { .. };
         // Dynamic table size update 0x3F 0xE2 0x01 => 31 + (0x62 + 128) = 287 > 256
         let oversize_update: u8[3] = [0x3F, 0xE2, 0x01];
-        let err = h2_internal::decode_hpack_to_map(dt, oversize_update[..], pseudo, hdrs, 8192, true);
+        let err = http2::decode_hpack_to_map(dt, oversize_update[..], pseudo, hdrs, 8192, true);
         sub.assert_ne(err as i64, rfc::H2_ERR_NO_ERROR as i64, "size update > max_allowed_size rejected");
     };
 }
@@ -264,7 +264,7 @@ fn test_vendor_h2_chopped_ingress_and_hpack(t: lit::T&) {
 // 6. QUIC Packet Number Wraparound, Large Header Offset & Overlapping Streams (ngtcp2, quiche)
 fn test_vendor_quic_pn_and_overlapping_reassembly(t: lit::T&) {
     t.run("RFC 9000 A.3 PN reconstruction & pn_offset > 255 header protection") { sub =>
-        let decoded_pn, ok_pn = quic_internal::decode_packet_number_checked(0xa82f30ea, 0x9b32, 2);
+        let decoded_pn, ok_pn = quic::decode_packet_number_checked(0xa82f30ea, 0x9b32, 2);
         sub.assert_true(ok_pn, "RFC 9000 Appendix A.3 vector valid");
         sub.assert_eq(decoded_pn as i64, 0xa82f9b32, "RFC 9000 A.3 reconstructed PN == 0xa82f9b32");
 
@@ -277,22 +277,22 @@ fn test_vendor_quic_pn_and_overlapping_reassembly(t: lit::T&) {
         for k in 20 { pkt.push((k + 1) as u8); }
 
         let mask: u8[5] = [0x0F, 0xA1, 0xB2, 0xC3, 0xD4];
-        quic_internal::apply_header_protection(pkt[..], 300, 4, mask);
-        let pn_len, trunc_pn = quic_internal::remove_header_protection(pkt[..], 300, mask);
+        quic::apply_header_protection(pkt[..], 300, 4, mask);
+        let pn_len, trunc_pn = quic::remove_header_protection(pkt[..], 300, mask);
         sub.assert_eq(pn_len as i64, 4, "pn_offset=300 recovers pn_len=4 without u8 truncation");
         sub.assert_eq(trunc_pn as i64, 0x12345678, "pn_offset=300 recovers exact 32-bit PN");
     };
 
     t.run("ngtcp2 / quiche: out-of-order overlapping STREAM chunks & final_size conflict") { sub =>
-        var rb = quic_internal::new_reassembly_buffer(64);
-        sub.assert_true(quic_internal::insert_fragment(rb, 6, "world!", false), "tail chunk at offset 6");
-        sub.assert_true(quic_internal::insert_fragment(rb, 0, "hello world", false), "overlapping prefix 0..11");
-        sub.assert_true(quic_internal::insert_fragment(rb, 12, "!", true), "FIN at offset 13");
+        var rb = quic::new_reassembly_buffer(64);
+        sub.assert_true(quic::insert_fragment(rb, 6, "world!", false), "tail chunk at offset 6");
+        sub.assert_true(quic::insert_fragment(rb, 0, "hello world", false), "overlapping prefix 0..11");
+        sub.assert_true(quic::insert_fragment(rb, 12, "!", true), "FIN at offset 13");
         // Conflicting FIN shrinking final size from 13 to 10 must fail
-        sub.assert_false(quic_internal::insert_fragment(rb, 10, "", true), "conflicting FIN offset rejected");
+        sub.assert_false(quic::insert_fragment(rb, 10, "", true), "conflicting FIN offset rejected");
 
         var out: u8[..64] = [];
-        let n = quic_internal::read_contiguous(rb, out);
+        let n = quic::read_contiguous(rb, out);
         sub.assert_eq(n as i64, 13, "13 contiguous bytes reassembled");
         sub.assert_bytes_eq(out[..], "hello world!!", "overlapping QUIC stream bytes intact");
     };
@@ -302,25 +302,25 @@ fn test_vendor_quic_pn_and_overlapping_reassembly(t: lit::T&) {
 fn test_vendor_h3_1byte_fragmentation(t: lit::T&) {
     t.run("nghttp3: 1-byte fragmented control stream & forbidden H2 PING frame 0x06") { sub =>
         let settings = fingerprint::H3Settings { .. };
-        var srv = h3_internal::new_h3_server_connection(settings);
+        var srv = http3::new_server_connection(settings);
 
         // Client control stream (uni stream 2): type 0x00 + SETTINGS frame (type 0x04, len 0)
         // followed by forbidden HTTP/2 PING frame (type 0x06, len 0)
         let ctrl_bytes: u8[4] = [0x00, 0x04, 0x00, 0x06];
-        let err0 = h3_internal::handle_stream_data(srv, 2, false, ctrl_bytes[0..1], false);
-        let err1 = h3_internal::handle_stream_data(srv, 2, false, ctrl_bytes[1..2], false);
-        let err2 = h3_internal::handle_stream_data(srv, 2, false, ctrl_bytes[2..3], false);
+        let err0 = http3::handle_stream_data(srv, 2, false, ctrl_bytes[0..1], false);
+        let err1 = http3::handle_stream_data(srv, 2, false, ctrl_bytes[1..2], false);
+        let err2 = http3::handle_stream_data(srv, 2, false, ctrl_bytes[2..3], false);
         sub.assert_eq(err0, rfc::H3_ERR_NO_ERROR, "1B control stream type accepted");
         sub.assert_eq(err1, rfc::H3_ERR_NO_ERROR, "1B SETTINGS type accepted");
         sub.assert_eq(err2, rfc::H3_ERR_NO_ERROR, "1B SETTINGS len=0 accepted");
 
         let bad_tail: u8[2] = [0x06, 0x00];
-        let err_bad = h3_internal::handle_stream_data(srv, 2, false, bad_tail[..], false);
+        let err_bad = http3::handle_stream_data(srv, 2, false, bad_tail[..], false);
         sub.assert_ne(err_bad, rfc::H3_ERR_NO_ERROR, "forbidden H2 frame 0x06 on H3 control stream rejected");
 
         // Duplicate client control stream on uni stream 6 must fail with H3_STREAM_CREATION_ERROR
         let dup_ctrl: u8[3] = [0x00, 0x04, 0x00];
-        let err_dup = h3_internal::handle_stream_data(srv, 6, false, dup_ctrl[..], false);
+        let err_dup = http3::handle_stream_data(srv, 6, false, dup_ctrl[..], false);
         sub.assert_ne(err_dup, rfc::H3_ERR_NO_ERROR, "second H3 control stream rejected");
     };
 }
@@ -681,33 +681,33 @@ fn test_vendor_ws_and_grpc_streaming(t: lit::T&) {
         let raw =
             "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=7\r\n\r\n";
         sub.assert_true(wing::parse_headers(raw, hdrs, false) == wing::HeaderParseError.None, "parsed 101 headers");
-        let _, err_pmd = wing::validate_client_upgrade_response(
+        let _, err_pmd = realtime::validate_client_upgrade_response(
             101, hdrs, raw, "dGhlIHNhbXBsZSBub25jZQ==", "", "permessage-deflate",
         );
-        sub.assert_true(err_pmd != wing::WsError.None, "window_bits=7 in 101 PMD response rejected");
+        sub.assert_true(err_pmd != realtime::WsError.None, "window_bits=7 in 101 PMD response rejected");
 
-        let ws = wing::new_websocket_session(true);
+        let ws = realtime::new_websocket_session(true);
         var hs_out: u8[..512] = [];
-        wing::build_handshake_request(ws, "evil.com\r\nX-Injected: 1", "/chat", "dGhlIHNhbXBsZSBub25jZQ==", hs_out);
+        realtime::build_handshake_request(ws, "evil.com\r\nX-Injected: 1", "/chat", "dGhlIHNhbXBsZSBub25jZQ==", hs_out);
         sub.assert_eq(hs_out.len, 0, "CRLF in WebSocket Host blocked");
     };
 
     t.run("Autobahn 12.x / RFC 7692: compressed WS_OPCODE_TEXT with invalid UTF-8 closes 1007") { sub =>
-        var comp = wing::SharedWsCompressor { .. };
+        var comp = realtime::SharedWsCompressor { .. };
         let invalid_utf8: u8[4] = [0xFF, 0xFE, 0xC0, 0xAF];
-        let comp_slice, ok_c = wing::ws_deflate_message_slice(comp, invalid_utf8[..], true);
+        let comp_slice, ok_c = realtime::ws_deflate_message_slice(comp, invalid_utf8[..], true);
         sub.assert_true(ok_c, "deflated invalid UTF-8 bytes");
 
         var wire_frame: u8[..128] = [];
         let mask: u8[4] = [0x12, 0x34, 0x56, 0x78];
-        wing::encode_ws_frame_compressed(wire_frame, rfc::WS_OPCODE_TEXT, comp_slice, true, mask, true);
+        realtime::encode_ws_frame_compressed(wire_frame, rfc::WS_OPCODE_TEXT, comp_slice, true, mask, true);
 
-        var srv_ws = wing::new_websocket_session(false);
+        var srv_ws = realtime::new_websocket_session(false);
         srv_ws.permessage_deflate = true;
         var stage = wire::NoOpStage {};
         var frag_buf: u8[..4096] = [];
         var out_wire: u8[..4096] = [];
-        let _ = wing::drain_ws_session_frames(-1, srv_ws, stage, wire_frame[..], frag_buf, out_wire);
+        let _ = realtime::drain_ws_session_frames(-1, srv_ws, stage, wire_frame[..], frag_buf, out_wire);
         sub.assert_true(srv_ws.is_closed, "server session closed on invalid UTF-8 after inflate");
         sub.assert_eq(
             srv_ws.close_code as i64, rfc::WS_STATUS_INVALID_PAYLOAD as i64,
@@ -716,27 +716,27 @@ fn test_vendor_ws_and_grpc_streaming(t: lit::T&) {
     };
 
     t.run("grpc-go / tonic: multi-message chunk > max_size+5, sticky error & ResourceExhausted") { sub =>
-        var p = wing::new_grpc_stream_parser(16);
+        var p = grpc::new_stream_parser(16);
         var batch: u8[..64] = [];
-        wing::encode_grpc_lpm("hello-msg-01", batch, false); // 17 bytes
-        wing::encode_grpc_lpm("hello-msg-02", batch, false); // 17 bytes => 34 bytes > 16 + 5
-        sub.assert_true(wing::feed(p, batch[..]), "multi-message TCP chunk accepted when each msg <= max_size");
+        grpc::encode_lpm("hello-msg-01", batch, false); // 17 bytes
+        grpc::encode_lpm("hello-msg-02", batch, false); // 17 bytes => 34 bytes > 16 + 5
+        sub.assert_true(grpc::feed(p, batch[..]), "multi-message TCP chunk accepted when each msg <= max_size");
 
         var msg: u8[..32] = [];
         var comp = false;
-        sub.assert_true(wing::next_message(p, msg, comp), "extracted message 1");
+        sub.assert_true(grpc::next_message(p, msg, comp), "extracted message 1");
         sub.assert_bytes_eq(msg[..], "hello-msg-01", "message 1 payload");
-        sub.assert_true(wing::next_message(p, msg, comp), "extracted message 2");
+        sub.assert_true(grpc::next_message(p, msg, comp), "extracted message 2");
         sub.assert_bytes_eq(msg[..], "hello-msg-02", "message 2 payload");
 
         // Feed reserved flag 0x02 -> sets sticky has_error until reset()
         let bad_hdr: u8[5] = [0x02, 0, 0, 0, 0];
-        sub.assert_true(wing::feed(p, bad_hdr[..]), "buffered 5B header");
-        sub.assert_false(wing::next_message(p, msg, comp), "reserved flag 0x02 rejected");
+        sub.assert_true(grpc::feed(p, bad_hdr[..]), "buffered 5B header");
+        sub.assert_false(grpc::next_message(p, msg, comp), "reserved flag 0x02 rejected");
         sub.assert_true(p.has_error, "sticky has_error latched");
-        sub.assert_false(wing::feed(p, batch[..17]), "subsequent feed rejected while has_error");
-        wing::reset(p);
-        sub.assert_true(wing::feed(p, batch[..17]), "feed works again after reset()");
+        sub.assert_false(grpc::feed(p, batch[..17]), "subsequent feed rejected while has_error");
+        grpc::reset(p);
+        sub.assert_true(grpc::feed(p, batch[..17]), "feed works again after reset()");
 
         // Truncated LPM with grpc-status: 0 trailer must set Internal, not Ok
         var hmap = wing::HeaderMap { .. };
@@ -744,13 +744,13 @@ fn test_vendor_ws_and_grpc_streaming(t: lit::T&) {
         let _ = wing::append_header(hmap, "content-type", "application/grpc");
         let _ = wing::append_header(tmap, "grpc-status", "0");
         let trunc_body: u8[6] = [0x00, 0x00, 0x00, 0x00, 0x0A, 'x'];
-        var g_resp = wing::GrpcResponse { .. };
+        var g_resp = grpc::Response { .. };
         sub.assert_false(
-            wing::parse_grpc_unary_response(hmap, tmap, trunc_body[..], false, g_resp),
+            grpc::parse_unary_response(hmap, tmap, trunc_body[..], false, g_resp),
             "truncated LPM body rejected",
         );
         sub.assert_true(
-            g_resp.status == wing::GrpcStatusCode.Internal,
+            g_resp.status == grpc::StatusCode.Internal,
             "truncated LPM overrides grpc-status: 0 with GrpcStatusCode.Internal",
         );
     };

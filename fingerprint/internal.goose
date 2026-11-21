@@ -506,7 +506,7 @@ inline fn has_all_four_pseudo_headers(pseudos: const u8[:]) -> bool {
 }
 
 fn process_akamai_settings_frame(
-    hdr:     const h2_internal::FrameHeader&,
+    hdr:     const http2::FrameHeader&,
     payload: const u8[:],
     fp:      fingerprint::AkamaiFingerprint&,
 ) -> bool {
@@ -534,7 +534,7 @@ fn process_akamai_settings_frame(
 }
 
 fn process_akamai_priority_frame(
-    hdr:     const h2_internal::FrameHeader&,
+    hdr:     const http2::FrameHeader&,
     payload: const u8[:],
     fp:      fingerprint::AkamaiFingerprint&,
 ) -> bool {
@@ -560,7 +560,7 @@ fn process_akamai_priority_frame(
 }
 
 fn process_akamai_wire_frame(
-    hdr:            const h2_internal::FrameHeader&,
+    hdr:            const http2::FrameHeader&,
     payload:        const u8[:],
     fp:             fingerprint::AkamaiFingerprint&,
     found_settings: bool&,
@@ -595,8 +595,8 @@ fn step_akamai_wire_frame(
     fp:             fingerprint::AkamaiFingerprint&,
     found_settings: bool&,
 ) -> AkamaiWireStep {
-    let hdr, err = h2_internal::parse_frame_header(cur.buf);
-    if err != rfc::H2_ERR_NO_ERROR || h2_internal::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR {
+    let hdr, err = http2::parse_frame_header(cur.buf);
+    if err != rfc::H2_ERR_NO_ERROR || http2::validate_frame_header_rules(hdr) != rfc::H2_ERR_NO_ERROR {
         return AkamaiWireStep.Invalid;
     }
     if hdr.frame_type == rfc::H2_FRAME_HEADERS || hdr.frame_type == rfc::H2_FRAME_DATA {
@@ -614,12 +614,12 @@ fn step_akamai_wire_frame(
 }
 
 inline fn is_valid_akamai_wire_setting(s: const fingerprint::AkamaiSetting&) -> bool {
-    return h2_internal::validate_settings_parameter(s.id, s.val, false) == rfc::H2_ERR_NO_ERROR;
+    return http2::validate_settings_parameter(s.id, s.val, false) == rfc::H2_ERR_NO_ERROR;
 }
 
-inline fn try_append_frame_header<B>(hdr: const h2_internal::FrameHeader&, out: B&) -> bool {
+inline fn try_append_frame_header<B>(hdr: const http2::FrameHeader&, out: B&) -> bool {
     var raw: u8[9] = [0; 9];
-    h2_internal::encode_frame_header(hdr, raw);
+    http2::encode_frame_header(hdr, raw);
     return out.try_append(raw[..]);
 }
 
@@ -641,7 +641,7 @@ fn try_encode_akamai_settings_frame<B>(settings: const fingerprint::AkamaiSettin
             valid_settings = core::add_sat_u64(valid_settings, 1);
         }
     }
-    let settings_hdr = h2_internal::FrameHeader {
+    let settings_hdr = http2::FrameHeader {
         length:     core::mul_sat_u64(valid_settings, 6) as u32,
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
@@ -662,7 +662,7 @@ fn try_append_priority_frame<B>(p: const fingerprint::AkamaiPriorityFrame&, out:
     if sid == 0 || sid == dep_id {
         return true;
     }
-    let p_hdr = h2_internal::FrameHeader {
+    let p_hdr = http2::FrameHeader {
         length:     5,
         frame_type: rfc::H2_FRAME_PRIORITY,
         flags:      0,

@@ -24,55 +24,55 @@ fn run_01_rfc_repro_framer_h2_minsize() {
     print("=== RFC 9113 FRAME_SIZE_ERROR REPRO ===");
 
     // Case 1: HEADERS with FLAG_PRIORITY (0x20) and length = 4 (needs at least 5 bytes: Exclusive + Stream Dep + Weight)
-    let hdr_prio = h2_internal::FrameHeader {
+    let hdr_prio = http2::FrameHeader {
         length:     4,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_PRIORITY | rfc::H2_FLAG_END_HEADERS,
         stream_id:  1,
     };
-    let err_prio = h2_internal::validate_frame_header_rules(hdr_prio);
+    let err_prio = http2::validate_frame_header_rules(hdr_prio);
     assert(err_prio == rfc::H2_ERR_FRAME_SIZE_ERROR);
     print("HEADERS_PRIO_UNDERFLOW: FRAME_SIZE_ERROR");
 
     // Case 2: HEADERS with FLAG_PADDED (0x08) and length = 0 (needs at least 1 byte Pad Length)
-    let hdr_pad = h2_internal::FrameHeader {
+    let hdr_pad = http2::FrameHeader {
         length:     0,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_PADDED | rfc::H2_FLAG_END_HEADERS,
         stream_id:  1,
     };
-    let err_pad = h2_internal::validate_frame_header_rules(hdr_pad);
+    let err_pad = http2::validate_frame_header_rules(hdr_pad);
     assert(err_pad == rfc::H2_ERR_FRAME_SIZE_ERROR);
     print("HEADERS_PAD_UNDERFLOW: FRAME_SIZE_ERROR");
 
     // Case 3: HEADERS with FLAG_PADDED | FLAG_PRIORITY (0x28) and length = 5 (needs at least 6 bytes: 1 Pad Length + 5 Priority)
-    let hdr_both = h2_internal::FrameHeader {
+    let hdr_both = http2::FrameHeader {
         length:     5,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_PADDED | rfc::H2_FLAG_PRIORITY | rfc::H2_FLAG_END_HEADERS,
         stream_id:  1,
     };
-    let err_both = h2_internal::validate_frame_header_rules(hdr_both);
+    let err_both = http2::validate_frame_header_rules(hdr_both);
     assert(err_both == rfc::H2_ERR_FRAME_SIZE_ERROR);
     print("HEADERS_BOTH_UNDERFLOW: FRAME_SIZE_ERROR");
 
     // Case 4: DATA with FLAG_PADDED (0x08) and length = 0 (needs at least 1 byte Pad Length)
-    let hdr_data = h2_internal::FrameHeader {
+    let hdr_data = http2::FrameHeader {
         length:     0,
         frame_type: rfc::H2_FRAME_DATA,
         flags:      rfc::H2_FLAG_PADDED,
         stream_id:  1,
     };
-    let err_data = h2_internal::validate_frame_header_rules(hdr_data);
+    let err_data = http2::validate_frame_header_rules(hdr_data);
     assert(err_data == rfc::H2_ERR_FRAME_SIZE_ERROR);
     print("DATA_PAD_UNDERFLOW: FRAME_SIZE_ERROR");
 
     // Case 5: on_ingress_frame_header MUST reject undersized HEADERS and NOT open a new stream
-    var conn = h2_internal::new_h2_connection(0);
-    let ingress_err = h2_internal::on_ingress_frame_header(conn, hdr_prio, 0);
+    var conn = http2::new_h2_connection(0);
+    let ingress_err = http2::on_ingress_frame_header(conn, hdr_prio, 0);
     assert(ingress_err == rfc::H2_ERR_FRAME_SIZE_ERROR);
     assert(conn.active_stream_count == 0);
-    let s_idx, found = h2_internal::find_h2_stream_idx(conn, 1);
+    let s_idx, found = http2::find_stream_idx(conn, 1);
     assert(!found);
     print("CONN_INGRESS_UNDERFLOW_BLOCKED: FRAME_SIZE_ERROR");
 
@@ -114,12 +114,12 @@ fn test_h2_padded_data_and_overflow() {
 
     // 2. Stream 1: HEADERS with :method=POST, :scheme=https, :path=/echo, content-length=5
     // Encode via HPACK
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var hdr_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, hdr_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hdr_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hdr_block, ":path", "/echo", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hdr_block, "content-length", "5", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hdr_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hdr_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hdr_block, ":path", "/echo", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hdr_block, "content-length", "5", http2::HpackIndexing.Incremental, false);
 
     // Frame header for HEADERS on stream 1 with END_HEADERS (flags 0x04)
     var h1_frame: u8[>..] = [];
@@ -153,10 +153,10 @@ fn test_h2_padded_data_and_overflow() {
 
     // 4. Stream 3: Content-length overflow isolation test (RFC 9113 §8.1.2)
     var h3_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h3_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h3_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h3_block, ":path", "/test", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h3_block, "content-length", "4", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h3_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h3_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h3_block, ":path", "/test", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h3_block, "content-length", "4", http2::HpackIndexing.Incremental, false);
 
     var h3_frame: u8[>..] = [];
     let h3_len = h3_block.len as u32;
@@ -240,82 +240,82 @@ fn run_02_verify_h2_and_chunk_edge() {
 
 fn parse_h2_hdr_step(buf: const u8[:]) -> i64 {
     guard buf.len >= 9 else { return -1; }
-    let hdr, err = h2_internal::parse_frame_header(buf);
-    guard err == rfc::H2_ERR_NO_ERROR else { return err as! i64; }
-    let val_err = h2_internal::validate_frame_header_rules(hdr);
-    guard val_err == rfc::H2_ERR_NO_ERROR else { return val_err as! i64; }
+    let hdr, err = http2::parse_frame_header(buf);
+    guard err == rfc::H2_ERR_NO_ERROR else { return err; }
+    let val_err = http2::validate_frame_header_rules(hdr);
+    guard val_err == rfc::H2_ERR_NO_ERROR else { return val_err; }
     guard buf.len >= 9 + (hdr.length as i64) else { return -1; }
-    return hdr.stream_id as! i64;
+    return hdr.stream_id;
 }
 
 fn run_03_verify_h2_continuation_fsm() {
     print("=== H2_CONTINUATION_AND_FSM_VERIFICATION ===");
 
     // 1. Initial HEADERS frame without END_HEADERS (flags = 0x00)
-    var conn = h2_internal::new_h2_connection(0);
-    let h_hdr = h2_internal::FrameHeader {
+    var conn = http2::new_h2_connection(0);
+    let h_hdr = http2::FrameHeader {
         length:     120,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      0, // No END_HEADERS
         stream_id:  1,
     };
-    let err_h = h2_internal::on_ingress_frame_header(conn, h_hdr, 0);
+    let err_h = http2::on_ingress_frame_header(conn, h_hdr, 0);
     assert(err_h == rfc::H2_ERR_NO_ERROR);
     assert(conn.continuation_stream_id == 1);
     print("STATE: IngressHeaders -> ExpectContinuation(stream=1)");
 
     // 2. Interleaved PING frame on stream 0 during continuation sequence -> PROTOCOL_ERROR
-    let ping_hdr = h2_internal::FrameHeader {
+    let ping_hdr = http2::FrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_PING,
         flags:      0,
         stream_id:  0,
     };
-    let err_ping = h2_internal::on_ingress_frame_header(conn, ping_hdr, 0);
+    let err_ping = http2::on_ingress_frame_header(conn, ping_hdr, 0);
     assert(err_ping == rfc::H2_ERR_PROTOCOL_ERROR);
     print("INTERLEAVED_PING_BAN: PROTOCOL_ERROR");
 
     // 3. Interleaved DATA frame during continuation sequence -> PROTOCOL_ERROR
-    let data_hdr = h2_internal::FrameHeader {
+    let data_hdr = http2::FrameHeader {
         length:     50,
         frame_type: rfc::H2_FRAME_DATA,
         flags:      0,
         stream_id:  1,
     };
-    let err_data = h2_internal::on_ingress_frame_header(conn, data_hdr, 0);
+    let err_data = http2::on_ingress_frame_header(conn, data_hdr, 0);
     assert(err_data == rfc::H2_ERR_PROTOCOL_ERROR);
     print("INTERLEAVED_DATA_BAN: PROTOCOL_ERROR");
 
     // 4. CONTINUATION frame on wrong stream ID (stream 3 instead of 1) -> PROTOCOL_ERROR
-    let cont_bad_sid = h2_internal::FrameHeader {
+    let cont_bad_sid = http2::FrameHeader {
         length:     64,
         frame_type: rfc::H2_FRAME_CONTINUATION,
         flags:      rfc::H2_FLAG_END_HEADERS,
         stream_id:  3,
     };
-    let err_cont_bad = h2_internal::on_ingress_frame_header(conn, cont_bad_sid, 0);
+    let err_cont_bad = http2::on_ingress_frame_header(conn, cont_bad_sid, 0);
     assert(err_cont_bad == rfc::H2_ERR_PROTOCOL_ERROR);
     print("MISMATCHED_STREAM_CONTINUATION: PROTOCOL_ERROR");
 
     // 5. Valid CONTINUATION frame on stream 1 with END_HEADERS
-    let cont_ok = h2_internal::FrameHeader {
+    let cont_ok = http2::FrameHeader {
         length:     64,
         frame_type: rfc::H2_FRAME_CONTINUATION,
         flags:      rfc::H2_FLAG_END_HEADERS,
         stream_id:  1,
     };
-    let err_cont_ok = h2_internal::on_ingress_frame_header(conn, cont_ok, 0);
+    let err_cont_ok = http2::on_ingress_frame_header(conn, cont_ok, 0);
     assert(err_cont_ok == rfc::H2_ERR_NO_ERROR);
     assert(conn.continuation_stream_id == 0);
     print("STATE: ContinuationEnd -> Normal");
 
     // 6. Flow control: WINDOW_UPDATE increment 0 is illegal
-    let err_zero_win = h2_internal::apply_window_update(conn, 0, 0);
+    let err_zero_win = http2::apply_window_update(conn, 0, 0);
     assert(err_zero_win == rfc::H2_ERR_PROTOCOL_ERROR);
     print("ZERO_WINDOW_UPDATE: PROTOCOL_ERROR");
 
     // 7. Flow control: Window overflow beyond 2^31 - 1
-    let err_ovf_win = h2_internal::apply_window_update(conn, 0, 0x7FFFFFFF);
+    let err_ovf_win = http2::apply_window_update(conn, 0, 0x7FFFFFFF);
     assert(err_ovf_win == rfc::H2_ERR_FLOW_CONTROL_ERROR);
     print("WINDOW_OVERFLOW: FLOW_CONTROL_ERROR");
 
@@ -349,10 +349,10 @@ fn run_03_verify_h2_continuation_fsm() {
 // Wire adapter for verify_split_stream and fuzzing using wing's real HTTP/2 framer
 fn wing_validate_h2_ctrl_frame_wire(buf: const u8[:]) -> i64 {
     guard buf.len >= 9 else { return -1; }
-    let hdr, err_hdr = h2_internal::parse_frame_header(buf);
-    guard err_hdr == rfc::H2_ERR_NO_ERROR else { return err_hdr as! i64; }
-    let err_rules = h2_internal::validate_frame_header_rules(hdr);
-    guard err_rules == rfc::H2_ERR_NO_ERROR else { return err_rules as! i64; }
+    let hdr, err_hdr = http2::parse_frame_header(buf);
+    guard err_hdr == rfc::H2_ERR_NO_ERROR else { return err_hdr; }
+    let err_rules = http2::validate_frame_header_rules(hdr);
+    guard err_rules == rfc::H2_ERR_NO_ERROR else { return err_rules; }
     guard buf.len >= 9 + (hdr.length as i64) else { return -1; }
     return 0;
 }
@@ -442,20 +442,20 @@ fn bench_h2_frame_roundtrip() {
     opaque_barrier(live);
 
     for _ in iters {
-        let parsed, err = h2_internal::parse_frame_header(live[..]);
+        let parsed, err = http2::parse_frame_header(live[..]);
         assert(err == 0 && parsed.frame_type == 1);
         var out: u8[9] = [0; 9];
-        h2_internal::encode_frame_header(parsed, out);
+        http2::encode_frame_header(parsed, out);
         echo_stream_byte(live, out);
     }
 
     let t0 = core::monotonic_now();
     for _ in iters {
-        let parsed, err = h2_internal::parse_frame_header(live[..]);
+        let parsed, err = http2::parse_frame_header(live[..]);
         assert(err == 0);
         assert(parsed.length == 4 && parsed.frame_type == 1);
         var out: u8[9] = [0; 9];
-        h2_internal::encode_frame_header(parsed, out);
+        http2::encode_frame_header(parsed, out);
         echo_stream_byte(live, out);
     }
     let t1 = core::monotonic_now();
@@ -474,13 +474,13 @@ fn bench_h2_hpack_encode() {
     let iters: u64         = 5000;
 
     var val: u8[8] = ['9', 'f', '3', 'd', '2', 'a', '1', 'b'];
-    var dt = h2_internal::new_dynamic_table();
+    var dt = http2::new_dynamic_table();
     var enc: u8[>..] = [];
     opaque_barrier(enc);
 
     for _ in iters {
         enc.clear();
-        let ok = h2_internal::encode_hpack_field(dt, enc, name, val[..], h2_internal::HpackIndexing.None, true);
+        let ok = http2::encode_hpack_field(dt, enc, name, val[..], http2::HpackIndexing.None, true);
         assert(ok && enc.len > 0);
         echo_value_byte(val, enc);
     }
@@ -488,7 +488,7 @@ fn bench_h2_hpack_encode() {
     let t0 = core::monotonic_now();
     for _ in iters {
         enc.clear();
-        let ok = h2_internal::encode_hpack_field(dt, enc, name, val[..], h2_internal::HpackIndexing.None, true);
+        let ok = http2::encode_hpack_field(dt, enc, name, val[..], http2::HpackIndexing.None, true);
         assert(ok && enc.len > 0);
         echo_value_byte(val, enc);
     }
@@ -505,17 +505,17 @@ fn bench_h2_hpack_decode() {
     let hblock: u8[3] = [0x82, 0x87, 0x84];
     let iters:  u64   = 5000;
 
-    var dt = h2_internal::new_dynamic_table();
-    var pseudo = h2_internal::H2PseudoHeaders { .. };
+    var dt = http2::new_dynamic_table();
+    var pseudo = http2::PseudoHeaders { .. };
     var out = wing::HeaderMap { .. };
     for _ in iters {
-        let err = h2_internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+        let err = http2::decode_hpack_to_map(dt, hblock[..], pseudo, out);
         assert(err == 0 && pseudo.has_method && pseudo.has_scheme && pseudo.has_path);
     }
 
     let t0 = core::monotonic_now();
     for _ in iters {
-        let err = h2_internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+        let err = http2::decode_hpack_to_map(dt, hblock[..], pseudo, out);
         assert(err == 0 && pseudo.has_method && pseudo.has_scheme && pseudo.has_path);
     }
     let t1 = core::monotonic_now();
@@ -559,10 +559,10 @@ fn wing_verify_h2_preface(buf: const u8[:]) -> i32 {
 
 fn wing_parse_and_validate_h2_frame(buf: const u8[:], is_client: bool) -> i32 {
     guard buf.len >= 9 else { return -1; }
-    let hdr, err_hdr = h2_internal::parse_frame_header(buf);
+    let hdr, err_hdr = http2::parse_frame_header(buf);
     guard err_hdr == rfc::H2_ERR_NO_ERROR else { return err_hdr as! i32; }
 
-    let err_rules = h2_internal::validate_frame_header_rules(hdr);
+    let err_rules = http2::validate_frame_header_rules(hdr);
     guard err_rules == rfc::H2_ERR_NO_ERROR else { return err_rules as! i32; }
 
     // Client-initiated streams must be odd-numbered (RFC 9113 Section 5.1.1)
@@ -693,10 +693,10 @@ fn test_missing_mandatory_pseudo_headers() {
     server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
     // Request missing :path (only :method and :scheme provided)
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     m07_build_frame_header(h_frame, h_block.len as u32, 0x01, 0x05, 1); // HEADERS + END_STREAM | END_HEADERS
@@ -724,12 +724,12 @@ fn test_content_length_end_stream_headers() {
     server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
     // HEADERS with END_STREAM but content-length: 10
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, "content-length", "10", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, "content-length", "10", http2::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     m07_build_frame_header(h_frame, h_block.len as u32, 0x01, 0x05, 1); // HEADERS + END_STREAM | END_HEADERS
@@ -757,12 +757,12 @@ fn test_content_length_mismatch_data() {
     server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
     // HEADERS with content-length: 10, but NO END_STREAM
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/post", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, "content-length", "10", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/post", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, "content-length", "10", http2::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     m07_build_frame_header(h_frame, h_block.len as u32, 0x01, 0x04, 1); // HEADERS + END_HEADERS (no END_STREAM)
@@ -796,12 +796,12 @@ fn test_stream_slot_reclamation_on_error() {
     server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
     // Send HEADERS with invalid uppercase field name (RFC 9113 §8.2.1)
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, "Custom-Upper", "val", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, "Custom-Upper", "val", http2::HpackIndexing.Incremental, false);
 
     var h_frame: u8[>..] = [];
     m07_build_frame_header(h_frame, h_block.len as u32, 0x01, 0x05, 1);
@@ -945,12 +945,12 @@ fn test_inline_body_lifecycle() {
     server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
     // Send HEADERS for stream 1
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/inline", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, "content-length", "4096", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/inline", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, "content-length", "4096", http2::HpackIndexing.Incremental, false);
 
     var req_wire: u8[>..] = [];
     m08_build_frame_header(req_wire, h_block.len as u32, 0x01, 0x04, 1); // HEADERS + END_HEADERS
@@ -982,12 +982,12 @@ fn test_dynamic_promotion_and_reassembly() {
     server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
     // Send HEADERS for stream 1
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/large", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, "content-length", "32768", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/large", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, "content-length", "32768", http2::HpackIndexing.Incremental, false);
 
     var h_wire: u8[>..] = [];
     m08_build_frame_header(h_wire, h_block.len as u32, 0x01, 0x04, 1); // HEADERS + END_HEADERS
@@ -1045,11 +1045,11 @@ fn test_maximum_capacity_overflow() {
     var wire_out: u8[>..] = [];
     server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
 
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/overflow", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/overflow", http2::HpackIndexing.Incremental, false);
 
     var h_wire: u8[>..] = [];
     m08_build_frame_header(h_wire, h_block.len as u32, 0x01, 0x04, 1);
@@ -1067,7 +1067,7 @@ fn test_maximum_capacity_overflow() {
     }
 
     // Grant stream window credit for the 65537th byte so slab capacity check (not flow control) fires
-    let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, 1);
+    let c_idx, c_found = http2::find_stream_idx(sess.conn, 1);
     if c_found { sess.conn.streams[c_idx].recv_window += 4096; }
 
     // Now send 1 extra byte (65537 > 65536 max slab capacity)
@@ -1104,11 +1104,11 @@ fn test_pool_saturation_rejection() {
     print("ALL_SLABS_ACQUIRED: ", if count_in_use_slabs(pipeline.slab_pool) == 16 { "YES" } else { "NO" });
 
     // Stream 1 sends headers
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/saturated", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/saturated", http2::HpackIndexing.Incremental, false);
 
     var h_wire: u8[>..] = [];
     m08_build_frame_header(h_wire, h_block.len as u32, 0x01, 0x04, 1);
@@ -1179,7 +1179,7 @@ fn run_08_verify_h2_spill_lane() {
 // Wire adapter for verify_split_stream and fuzzing using wing's real hpack_decode_int
 fn wing_decode_hpack_int_5(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let val, new_off, ok = h2_internal::hpack_decode_int(buf, 0, 5);
+    let val, new_off, ok = http2::hpack_decode_int(buf, 0, 5);
     if ok {
         return val as! i64;
     }
@@ -1237,32 +1237,32 @@ fn run_09_verify_hpack_edge() {
 // Verification of HPACK & QPACK integer prefix decoding, string framing, and Huffman codec via wing.
 //
 
-// Wire adapter for verify_split_stream and fuzzing using h2_internal::hpack_decode_int (5-bit prefix)
+// Wire adapter for verify_split_stream and fuzzing using http2::hpack_decode_int (5-bit prefix)
 fn wing_decode_varint_5(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let val, new_off, ok = h2_internal::hpack_decode_int(buf, 0, 5);
+    let val, new_off, ok = http2::hpack_decode_int(buf, 0, 5);
     if ok { return val as! i64; }
     if new_off == 0 { return -1; }
     return -2;
 }
 
-// Wire adapter for verify_split_stream and fuzzing using h2_internal::hpack_decode_int (7-bit prefix)
+// Wire adapter for verify_split_stream and fuzzing using http2::hpack_decode_int (7-bit prefix)
 fn wing_decode_varint_7(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let val, new_off, ok = h2_internal::hpack_decode_int(buf, 0, 7);
+    let val, new_off, ok = http2::hpack_decode_int(buf, 0, 7);
     if ok { return val as! i64; }
     if new_off == 0 { return -1; }
     return -2;
 }
 
-// Wire adapter for verify_split_stream and fuzzing using h2_internal::decode_hpack_string
+// Wire adapter for verify_split_stream and fuzzing using http2::decode_hpack_string
 fn wing_parse_hpack_string_frame(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
     var out: u8[..4096] = [];
-    let next_off, ok = h2_internal::decode_hpack_string(buf, 0, out);
+    let next_off, ok = http2::decode_hpack_string(buf, 0, out);
     if ok {
         let is_huff = (buf[0] & 0x80) != 0;
-        let str_len, _, _ = h2_internal::hpack_decode_int(buf, 0, 7);
+        let str_len, _, _ = http2::hpack_decode_int(buf, 0, 7);
         return if is_huff { 0 - (str_len as i64) } else { str_len as i64 };
     }
     return -1;
@@ -1315,24 +1315,24 @@ fn run_10_verify_hpack_qpack() {
     // Verify O(1) QPACK static table bucket lookup across all 99 entries + non-matching headers
     var q_idx: u64 = 0;
     while q_idx < 99 {
-        let entry, ok = h3_internal::get_qpack_static_field(q_idx);
+        let entry, ok = http3::get_qpack_static_field(q_idx);
         assert(ok);
-        let found_idx, exact = h3_internal::find_qpack_static_field(entry.name, entry.val);
+        let found_idx, exact = http3::find_qpack_static_field(entry.name, entry.val);
         assert(exact);
         assert(found_idx == q_idx);
 
-        let name_idx, exact_miss = h3_internal::find_qpack_static_field(entry.name, "__nonexistent_val__");
+        let name_idx, exact_miss = http3::find_qpack_static_field(entry.name, "__nonexistent_val__");
         assert(!exact_miss);
-        let first_entry, ok_first = h3_internal::get_qpack_static_field(name_idx);
+        let first_entry, ok_first = http3::get_qpack_static_field(name_idx);
         assert(ok_first);
         assert(first_entry.name == entry.name);
         q_idx++;
     }
-    let miss_short, ex_short = h3_internal::find_qpack_static_field("x", "1");
+    let miss_short, ex_short = http3::find_qpack_static_field("x", "1");
     assert(!ex_short && miss_short == 0);
-    let miss_long, ex_long = h3_internal::find_qpack_static_field("x-custom-very-long-header-name-35ch", "1");
+    let miss_long, ex_long = http3::find_qpack_static_field("x-custom-very-long-header-name-35ch", "1");
     assert(!ex_long && miss_long == 0);
-    let miss_mid, ex_mid = h3_internal::find_qpack_static_field("x-custom-hdr", "1");
+    let miss_mid, ex_mid = http3::find_qpack_static_field("x-custom-hdr", "1");
     assert(!ex_mid && miss_mid == 0);
     print("QPACK_STATIC_BUCKET_LOOKUP: OK");
 
@@ -1356,15 +1356,15 @@ fn run_10_verify_hpack_qpack() {
 // with 16-frame burst quantum yield, and RFC 9842 Compression Dictionary Transport (DCZ/DCB).
 //
 
-var g_dt_rfc:     h2_internal::DynamicTable    = h2_internal::DynamicTable { .. };
-var g_dt_wrap:    h2_internal::DynamicTable    = h2_internal::DynamicTable { .. };
-var g_out_pseudo: h2_internal::H2PseudoHeaders = h2_internal::H2PseudoHeaders { .. };
-var g_out_list:   wing::HeaderMap              = wing::HeaderMap { .. };
-var g_conn:       h2_internal::H2Connection    = h2_internal::H2Connection { .. };
-var g_client:     wing::Client                 = wing::Client { .. };
-var g_server_res: wing::Response               = wing::Response { .. };
-var g_dcz_res:    wing::Response               = wing::Response { .. };
-var g_req:        wing::Request                = wing::Request { .. };
+var g_dt_rfc:     http2::DynamicTable  = http2::DynamicTable { .. };
+var g_dt_wrap:    http2::DynamicTable  = http2::DynamicTable { .. };
+var g_out_pseudo: http2::PseudoHeaders = http2::PseudoHeaders { .. };
+var g_out_list:   wing::HeaderMap      = wing::HeaderMap { .. };
+var g_conn:       http2::Connection    = http2::Connection { .. };
+var g_client:     wing::Client         = wing::Client { .. };
+var g_server_res: wing::Response       = wing::Response { .. };
+var g_dcz_res:    wing::Response       = wing::Response { .. };
+var g_req:        wing::Request        = wing::Request { .. };
 
 fn verify_incremental_http1_scan() {
     let raw = "GET /api/v1/items HTTP/1.1\r\nHost: example.com\r\nUser-Agent: wing/1.0\r\n\r\n{\"ok\":true}";
@@ -1416,7 +1416,7 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
         0x40, 0x0a, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d, 0x6b, 0x65, 0x79,
         0x0d, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d, 0x68, 0x65, 0x61, 0x64, 0x65, 0x72,
     ];
-    let err_c21 = h2_internal::decode_hpack_to_map(g_dt_rfc, c21_wire[..], g_out_pseudo, g_out_list, 8192, false);
+    let err_c21 = http2::decode_hpack_to_map(g_dt_rfc, c21_wire[..], g_out_pseudo, g_out_list, 8192, false);
     assert(err_c21 == rfc::H2_ERR_NO_ERROR);
     assert(g_out_list.entries.len == 1);
     assert(wing::entry_name(g_out_list, g_out_list.entries[0]) == "custom-key");
@@ -1436,9 +1436,9 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
     }
 
     // Entry 0 at [0..128)
-    h2_internal::insert_header(g_dt_wrap, "x-wrap-0", pad120[..], false);
+    http2::insert_header(g_dt_wrap, "x-wrap-0", pad120[..], false);
     // Entry 1 at [128..256)
-    h2_internal::insert_header(g_dt_wrap, "x-wrap-1", pad120[..], false);
+    http2::insert_header(g_dt_wrap, "x-wrap-1", pad120[..], false);
     // Move arena_write_pos to 4020 to simulate arena boundary approach while Entry 0 & Entry 1 live at 0 and 128
     g_dt_wrap.arena_write_pos = 4020;
     // Insert a 100-byte raw header (4020 + 100 = 4120 > 4096 -> wraps to 0, evicts Entry 0 at [0..128),
@@ -1447,7 +1447,7 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
     for _ in 92 {
         val92.push('z');
     }
-    h2_internal::insert_header(g_dt_wrap, "x-wrap-2", val92[..], false);
+    http2::insert_header(g_dt_wrap, "x-wrap-2", val92[..], false);
     assert(g_dt_wrap.arena_head == 0 && g_dt_wrap.arena_tail == 128);
     print("WING_HPACK_RING_LINEARIZED: head=", g_dt_wrap.arena_head, ", tail=", g_dt_wrap.arena_tail);
 
@@ -1459,9 +1459,9 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
     print("WING_HPACK_HASH_HIT: slot=42, match=", hit_match);
 }
 
-fn schedule_sixteen_urgency_zero_frames(conn: h2_internal::H2Connection&) -> u32 {
+fn schedule_sixteen_urgency_zero_frames(conn: http2::Connection&) -> u32 {
     for _ in 16 {
-        let sid, ok_sched = h2_internal::schedule_next_write(conn);
+        let sid, ok_sched = http2::schedule_next_write(conn);
         assert(ok_sched && sid == 1);
     }
     return conn.urgency_streak_count;
@@ -1472,28 +1472,28 @@ fn verify_h2_priority_scheduler_and_burst_cap() {
     g_conn.peer_max_frame_size = 1024;
 
     // Open stream 1 (urgency 0) and stream 3 (urgency 3)
-    h2_internal::open_new_session_stream(g_conn, 1, false);
-    h2_internal::open_new_session_stream(g_conn, 3, false);
+    http2::open_stream(g_conn, 1, false);
+    http2::open_stream(g_conn, 3, false);
 
     let prio_u0 = wing::PriorityParam { urgency: 0, incremental: false };
     let prio_u3 = wing::PriorityParam { urgency: 3, incremental: true };
-    h2_internal::apply_priority_update(g_conn, 1, prio_u0);
-    h2_internal::apply_priority_update(g_conn, 3, prio_u3);
+    http2::apply_priority_update(g_conn, 1, prio_u0);
+    http2::apply_priority_update(g_conn, 3, prio_u3);
 
     // Enqueue data on stream 1 (urgency 0) first -> active_urgency_mask == 0x01
-    let ok_q1 = h2_internal::enqueue_stream_send_bytes(g_conn, 1, 32768);
+    let ok_q1 = http2::enqueue_stream_send_bytes(g_conn, 1, 32768);
     assert(ok_q1 && g_conn.active_urgency_mask == 0x01);
     print("WING_SCHEDULER_ACTIVE_MASK: 0x01");
 
     // Also enqueue data on stream 3 (urgency 3) -> active_urgency_mask == 0x09
-    let ok_q3 = h2_internal::enqueue_stream_send_bytes(g_conn, 3, 4096);
+    let ok_q3 = http2::enqueue_stream_send_bytes(g_conn, 3, 4096);
     assert(ok_q3 && g_conn.active_urgency_mask == 0x09);
 
     // Schedule 16 consecutive frames: all 16 should come from urgency 0 (stream 1)
     let u0_frames = schedule_sixteen_urgency_zero_frames(g_conn);
 
     // 17th frame must yield to urgency 3 (stream 3) due to 16-frame burst quantum cap!
-    let yielded_sid, ok_yield = h2_internal::schedule_next_write(g_conn);
+    let yielded_sid, ok_yield = http2::schedule_next_write(g_conn);
     assert(ok_yield && yielded_sid == 3);
     print("WING_BURST_QUANTUM_YIELD: urgency=0, frames=", u0_frames);
 }
@@ -1593,7 +1593,7 @@ fn run_11_verify_hpack_ring() {
 fn test_priority_update_empty_field() {
     // 4-byte payload: prioritized_stream_id = 3, empty field value
     let payload4: u8[4] = [0x00, 0x00, 0x00, 0x03];
-    let stream_id, prio, err = h2_internal::parse_priority_update_payload(payload4[..], false);
+    let stream_id, prio, err = http2::parse_priority_update_payload(payload4[..], false);
     assert(stream_id == 3);
     assert(err == rfc::H2_ERR_NO_ERROR);
     assert(prio.urgency == 3);
@@ -1603,19 +1603,19 @@ fn test_priority_update_empty_field() {
 
 fn test_settings_enable_connect_proto_server() {
     // Server receives SETTINGS_ENABLE_CONNECT_PROTOCOL from client: MUST reject with PROTOCOL_ERROR
-    let err_srv = h2_internal::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 1, false);
+    let err_srv = http2::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 1, false);
     assert(err_srv == rfc::H2_ERR_PROTOCOL_ERROR);
 
     // Client receives SETTINGS_ENABLE_CONNECT_PROTOCOL=1 from server: valid
-    let err_cli = h2_internal::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 1, true);
+    let err_cli = http2::validate_settings_parameter(rfc::H2_SETTING_ENABLE_CONNECT_PROTO, 1, true);
     assert(err_cli == rfc::H2_ERR_NO_ERROR);
     print("TEST_SETTINGS_CONNECT: OK\n");
 }
 
 fn test_headers_closed_stream_recycled_slot() {
-    var conn = h2_internal::new_h2_connection(0);
+    var conn = http2::new_h2_connection(0);
     // 1. Open stream 1 with END_STREAM so it transitions to HalfClosedRemote
-    let hdr1 = h2_internal::FrameHeader {
+    let hdr1 = http2::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
@@ -1625,10 +1625,10 @@ fn test_headers_closed_stream_recycled_slot() {
     assert(r1 == rfc::H2_ERR_NO_ERROR);
 
     // Close local half so stream 1 is fully Closed and inactive
-    h2_internal::close_local_stream(conn, 1);
+    http2::close_local_stream(conn, 1);
 
     // 2. Open stream 3 (which reuses slot 0 previously used by stream 1)
-    let hdr3 = h2_internal::FrameHeader {
+    let hdr3 = http2::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
@@ -1639,7 +1639,7 @@ fn test_headers_closed_stream_recycled_slot() {
 
     // 3. Client sends another HEADERS frame on stream 1.
     // Must return STREAM_CLOSED, NOT PROTOCOL_ERROR!
-    let hdr1_late = h2_internal::FrameHeader {
+    let hdr1_late = http2::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS,
@@ -1651,10 +1651,10 @@ fn test_headers_closed_stream_recycled_slot() {
 }
 
 fn test_goaway_invalid_parity() {
-    var srv_conn = h2_internal::new_h2_connection(0);
+    var srv_conn = http2::new_h2_connection(0);
     srv_conn.is_server = true;
     // Client sending GOAWAY with odd stream ID 1 (acknowledging client's own stream) is invalid
-    let err_ga = h2_internal::apply_goaway(srv_conn, 1, rfc::H2_ERR_NO_ERROR);
+    let err_ga = http2::apply_goaway(srv_conn, 1, rfc::H2_ERR_NO_ERROR);
     assert(err_ga == rfc::H2_ERR_PROTOCOL_ERROR);
     print("TEST_GOAWAY_PARITY: OK\n");
 }
@@ -1664,29 +1664,29 @@ fn test_hpack_huffman_and_indexing_policy() {
     var dec_out: u8[..64] = [];
     dec_out.append("prefix:");
     let bad_huff: u8[2] = [0xFF, 0xFF]; // Invalid EOS padding (> 7 bits)
-    assert(!h2_internal::huff_decode_bytes(bad_huff[..], dec_out));
+    assert(!http2::huff_decode_bytes(bad_huff[..], dec_out));
     assert(dec_out[..] == "prefix:");
 
     var enc_out: u8[..128] = [];
-    assert(h2_internal::encode_hpack_string_literal(enc_out, "www.example.com", true));
+    assert(http2::encode_hpack_string_literal(enc_out, "www.example.com", true));
     assert((enc_out[0] & 0x80) != 0); // Huffman flag set
     var rt_out: u8[..128] = [];
-    let next_off, ok_str = h2_internal::decode_hpack_string(enc_out[..], 0, rt_out);
+    let next_off, ok_str = http2::decode_hpack_string(enc_out[..], 0, rt_out);
     assert(ok_str && next_off == (enc_out.len as u64) && rt_out[..] == "www.example.com");
 
     // Incompressible short string falls back to raw octets
     var raw_out: u8[..64] = [];
-    assert(h2_internal::encode_hpack_string_literal(raw_out, "\x00\x01", true));
+    assert(http2::encode_hpack_string_literal(raw_out, "\x00\x01", true));
     assert((raw_out[0] & 0x80) == 0 && raw_out[0] == 2);
 
     // H2HPACK-03: Adaptive Header Indexing Policy
-    assert(h2_internal::select_hpack_indexing("authorization", "Bearer secret-token-value", 4096) == h2_internal::HpackIndexing.NeverIndexed);
-    assert(h2_internal::select_hpack_indexing("cookie", "sid=123", 4096) == h2_internal::HpackIndexing.NeverIndexed);
-    assert(h2_internal::select_hpack_indexing("cookie", "session_id=0123456789abcdef0123456789", 4096) == h2_internal::HpackIndexing.Incremental);
-    assert(h2_internal::select_hpack_indexing("content-length", "42", 4096) == h2_internal::HpackIndexing.None);
-    assert(h2_internal::select_hpack_indexing("etag", "\"v1\"", 4096) == h2_internal::HpackIndexing.None);
-    assert(h2_internal::select_hpack_indexing("x-large", "012345678901234567890123456789", 48) == h2_internal::HpackIndexing.None);
-    assert(h2_internal::select_hpack_indexing("x-custom", "ok", 4096) == h2_internal::HpackIndexing.Incremental);
+    assert(http2::select_hpack_indexing("authorization", "Bearer secret-token-value", 4096) == http2::HpackIndexing.NeverIndexed);
+    assert(http2::select_hpack_indexing("cookie", "sid=123", 4096) == http2::HpackIndexing.NeverIndexed);
+    assert(http2::select_hpack_indexing("cookie", "session_id=0123456789abcdef0123456789", 4096) == http2::HpackIndexing.Incremental);
+    assert(http2::select_hpack_indexing("content-length", "42", 4096) == http2::HpackIndexing.None);
+    assert(http2::select_hpack_indexing("etag", "\"v1\"", 4096) == http2::HpackIndexing.None);
+    assert(http2::select_hpack_indexing("x-large", "012345678901234567890123456789", 48) == http2::HpackIndexing.None);
+    assert(http2::select_hpack_indexing("x-custom", "ok", 4096) == http2::HpackIndexing.Incremental);
     print("TEST_HPACK_HUFF_AND_POLICY: OK\n");
 }
 
@@ -1699,7 +1699,7 @@ fn test_graceful_shutdown_and_protocol_guards() {
     assert(out_wire.len == 34); // 17-byte GOAWAY(2^31-1) + 17-byte PING
 
     // Client echoes PING ACK with matching shutdown_ping_opaque
-    let ping_ack_hdr = h2_internal::FrameHeader {
+    let ping_ack_hdr = http2::FrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_PING,
         flags:      rfc::H2_FLAG_ACK,
@@ -1713,15 +1713,15 @@ fn test_graceful_shutdown_and_protocol_guards() {
 
     // H2HPACK-06: Explicit PRIORITY_UPDATE prevents Priority request header override
     var sess2 = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    let hdr_s1 = h2_internal::FrameHeader {
+    let hdr_s1 = http2::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS,
         stream_id:  1,
     };
     assert(h2_internal::handle_h2_headers_frame_header(sess2.conn, hdr_s1, 0) == rfc::H2_ERR_NO_ERROR);
-    let _, p_exp, _ = h2_internal::parse_priority_update_payload("\x00\x00\x00\x01u=1, i", false);
-    assert(h2_internal::apply_priority_update(sess2.conn, 1, p_exp) == rfc::H2_ERR_NO_ERROR);
+    let _, p_exp, _ = http2::parse_priority_update_payload("\x00\x00\x00\x01u=1, i", false);
+    assert(http2::apply_priority_update(sess2.conn, 1, p_exp) == rfc::H2_ERR_NO_ERROR);
     assert(sess2.conn.streams[0].has_explicit_priority_update);
     var hdr_map = wing::HeaderMap { .. };
     wing::set_header(hdr_map, "priority", "u=6");
@@ -1730,7 +1730,7 @@ fn test_graceful_shutdown_and_protocol_guards() {
 
     // H2HPACK-08: Extended CONNECT :protocol rejected when enable_connect_protocol == 0
     sess.conn.enable_connect_protocol = 0;
-    var p_ext = h2_internal::H2PseudoHeaders {
+    var p_ext = http2::PseudoHeaders {
         has_method:    true,
         has_scheme:    true,
         has_path:      true,
@@ -1757,10 +1757,10 @@ fn test_graceful_shutdown_and_protocol_guards() {
     assert(wu_wire.len == 26 && sess2.conn.unclaimed_recv_window == 0 && sess2.streams[s_slot].unclaimed_local_window == 0);
 
     // Exercise HuffContext / huff_decode_step & has_lower_urgency_ready
-    var hctx = h2_internal::new_huff_context();
+    var hctx = http2::new_huff_context();
     var hdst: u8[8] = [0; 8];
     let hsrc: u8[2] = [0x9C, 0xC5];
-    let hlen, hok = h2_internal::huff_decode_step(hctx, hdst[..], 0, hsrc[..], true);
+    let hlen, hok = http2::huff_decode_step(hctx, hdst[..], 0, hsrc[..], true);
     assert(hok && hlen == 3);
     assert(!h2_internal::has_lower_urgency_ready(sess2.conn));
     print("TEST_SHUTDOWN_AND_GUARDS: OK\n");
@@ -1802,7 +1802,7 @@ fn run_12_verify_http2_audit_regressions() {
 fn has_frame_on_wire(wire: const u8[:], frame_type: u8, stream_id: u32) -> bool {
     var off: i64 = 0;
     while off + 9 <= wire.len {
-        let hdr, err = h2_internal::parse_frame_header(wire[off..off + 9]);
+        let hdr, err = http2::parse_frame_header(wire[off..off + 9]);
         guard err == rfc::H2_ERR_NO_ERROR else { break; }
         if hdr.frame_type == frame_type && (stream_id == 0 || hdr.stream_id == stream_id) {
             return true;
@@ -1818,26 +1818,26 @@ fn test_hpack_sync_across_stream_errors() {
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/ok", 1);
 
-    var client_dt = h2_internal::new_dynamic_table(4096);
+    var client_dt = http2::new_dynamic_table(4096);
     var wire1: u8[>..] = [];
     wire1.append(rfc::H2_CLIENT_PREFACE[..]);
 
     // Stream 1: valid pseudo-headers + incrementally indexed authority + invalid uppercase header + trailing custom header
     var hb1: u8[>..] = [];
-    h2_internal::encode_hpack_field(client_dt, hb1, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb1, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb1, ":path", "/ok", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb1, ":authority", "sync.example.com", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb1, "Bad-Upper", "v1", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb1, "x-after-err", "v2", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, ":path", "/ok", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, ":authority", "sync.example.com", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, "Bad-Upper", "v1", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, "x-after-err", "v2", http2::HpackIndexing.Incremental, false);
 
-    let f1 = h2_internal::FrameHeader {
+    let f1 = http2::FrameHeader {
         length:     hb1.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  1,
     };
-    h2_internal::encode_frame_header_to(f1, wire1);
+    http2::encode_frame_header_to(f1, wire1);
     wire1.append(hb1[..]);
 
     var out1: u8[>..] = [];
@@ -1849,19 +1849,19 @@ fn test_hpack_sync_across_stream_errors() {
     var hb3_bad: u8[>..] = [];
     hb3_bad.push(0x00); hb3_bad.push(0x00); hb3_bad.push(0x00); hb3_bad.push(0x03); // dep_raw = 3 (self-dependency)
     hb3_bad.push(16); // weight
-    h2_internal::encode_hpack_field(client_dt, hb3_bad, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb3_bad, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb3_bad, ":path", "/ok", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb3_bad, "x-self-dep", "indexed", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb3_bad, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb3_bad, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb3_bad, ":path", "/ok", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb3_bad, "x-self-dep", "indexed", http2::HpackIndexing.Incremental, false);
 
     var wire3: u8[>..] = [];
-    let f3 = h2_internal::FrameHeader {
+    let f3 = http2::FrameHeader {
         length:     hb3_bad.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM | rfc::H2_FLAG_PRIORITY,
         stream_id:  3,
     };
-    h2_internal::encode_frame_header_to(f3, wire3);
+    http2::encode_frame_header_to(f3, wire3);
     wire3.append(hb3_bad[..]);
     var out3: u8[>..] = [];
     let _, ok3 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire3[..], 1000, out3);
@@ -1870,19 +1870,19 @@ fn test_hpack_sync_across_stream_errors() {
 
     // Now Stream 5 references ":authority: sync.example.com" from client_dt (shifted by Bad-Upper, x-after-err, x-self-dep)
     var hb5: u8[>..] = [];
-    h2_internal::encode_hpack_field(client_dt, hb5, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb5, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb5, ":path", "/ok", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb5, ":authority", "sync.example.com", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb5, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb5, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb5, ":path", "/ok", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb5, ":authority", "sync.example.com", http2::HpackIndexing.Incremental, false);
 
     var wire5: u8[>..] = [];
-    let f5 = h2_internal::FrameHeader {
+    let f5 = http2::FrameHeader {
         length:     hb5.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  5,
     };
-    h2_internal::encode_frame_header_to(f5, wire5);
+    http2::encode_frame_header_to(f5, wire5);
     wire5.append(hb5[..]);
     var out5: u8[>..] = [];
     let _, ok5 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire5[..], 1000, out5);
@@ -1893,12 +1893,12 @@ fn test_hpack_sync_across_stream_errors() {
 
 fn test_trailer_errors_and_disallowed_fields() {
     // 1. Disallowed RFC 9110 §6.5.1 trailer fields (authorization, cookie, content-type) must fail decode_hpack_to_map
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var t_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, t_block, "authorization", "Bearer tok", h2_internal::HpackIndexing.None, false);
-    var pseudo = h2_internal::H2PseudoHeaders { is_trailer: true, .. };
+    http2::encode_hpack_field(dt, t_block, "authorization", "Bearer tok", http2::HpackIndexing.None, false);
+    var pseudo = http2::PseudoHeaders { is_trailer: true, .. };
     var out_map = wing::HeaderMap { .. };
-    let err_auth = h2_internal::decode_hpack_to_map(dt, t_block[..], pseudo, out_map);
+    let err_auth = http2::decode_hpack_to_map(dt, t_block[..], pseudo, out_map);
     assert(err_auth == rfc::H2_ERR_PROTOCOL_ERROR);
 
     // 2. Trailer HEADERS without END_STREAM on open stream must emit RST_STREAM(PROTOCOL_ERROR), NOT GOAWAY
@@ -1907,32 +1907,32 @@ fn test_trailer_errors_and_disallowed_fields() {
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "POST", "/up", 2);
 
-    var client_dt = h2_internal::new_dynamic_table(4096);
+    var client_dt = http2::new_dynamic_table(4096);
     var wire: u8[>..] = [];
     wire.append(rfc::H2_CLIENT_PREFACE[..]);
     var hb1: u8[>..] = [];
-    h2_internal::encode_hpack_field(client_dt, hb1, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb1, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb1, ":path", "/up", h2_internal::HpackIndexing.Incremental, false);
-    let f1 = h2_internal::FrameHeader {
+    http2::encode_hpack_field(client_dt, hb1, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb1, ":path", "/up", http2::HpackIndexing.Incremental, false);
+    let f1 = http2::FrameHeader {
         length:     hb1.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS,
         stream_id:  1,
     };
-    h2_internal::encode_frame_header_to(f1, wire);
+    http2::encode_frame_header_to(f1, wire);
     wire.append(hb1[..]);
 
     // Trailer HEADERS on stream 1 WITHOUT END_STREAM
     var hb_tr: u8[>..] = [];
-    h2_internal::encode_hpack_field(client_dt, hb_tr, "x-checksum", "abc", h2_internal::HpackIndexing.Incremental, false);
-    let f_tr = h2_internal::FrameHeader {
+    http2::encode_hpack_field(client_dt, hb_tr, "x-checksum", "abc", http2::HpackIndexing.Incremental, false);
+    let f_tr = http2::FrameHeader {
         length:     hb_tr.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS, // missing END_STREAM!
         stream_id:  1,
     };
-    h2_internal::encode_frame_header_to(f_tr, wire);
+    http2::encode_frame_header_to(f_tr, wire);
     wire.append(hb_tr[..]);
 
     var out: u8[>..] = [];
@@ -1945,12 +1945,12 @@ fn test_trailer_errors_and_disallowed_fields() {
 
 fn test_hpack_dyn_size_min_update_and_ring_cap() {
     // Part A: Ring buffer cap at 128 entries even when max_allowed > 4096
-    var big_dt = h2_internal::new_dynamic_table(8192);
+    var big_dt = http2::new_dynamic_table(8192);
     for i in 135 {
-        h2_internal::insert_header(big_dt, "k", "v", false);
+        http2::insert_header(big_dt, "k", "v", false);
     }
     assert(big_dt.count == 128);
-    h2_internal::evict_until(big_dt, 0);
+    http2::evict_until(big_dt, 0);
     assert(big_dt.count == 0 && big_dt.used_bytes == 0);
 
     // Part B: SETTINGS_HEADER_TABLE_SIZE 0 then 4096 must emit both 0 (0x20) and 4096 (0x3F 0xE1 0x1F)
@@ -1959,66 +1959,66 @@ fn test_hpack_dyn_size_min_update_and_ring_cap() {
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     wing::add_route(pipeline.router, "GET", "/ping", 1);
 
-    var client_enc = h2_internal::new_dynamic_table(4096);
-    var client_dec = h2_internal::new_dynamic_table(4096);
+    var client_enc = http2::new_dynamic_table(4096);
+    var client_dec = http2::new_dynamic_table(4096);
     var wire1: u8[>..] = [];
     wire1.append(rfc::H2_CLIENT_PREFACE[..]);
     var hb1: u8[>..] = [];
-    h2_internal::encode_hpack_field(client_enc, hb1, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_enc, hb1, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_enc, hb1, ":path", "/ping", h2_internal::HpackIndexing.Incremental, false);
-    let f1 = h2_internal::FrameHeader {
+    http2::encode_hpack_field(client_enc, hb1, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_enc, hb1, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_enc, hb1, ":path", "/ping", http2::HpackIndexing.Incremental, false);
+    let f1 = http2::FrameHeader {
         length:     hb1.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  1,
     };
-    h2_internal::encode_frame_header_to(f1, wire1);
+    http2::encode_frame_header_to(f1, wire1);
     wire1.append(hb1[..]);
     var out1: u8[>..] = [];
     let _, ok1 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire1[..], 1000, out1);
     assert(ok1);
 
     // Decode stream 1 response headers into client_dec (populates server & content-length in client_dec)
-    let resp1_hdr, _ = h2_internal::parse_frame_header(out1[33..42]);
-    var p1 = h2_internal::H2PseudoHeaders { .. };
+    let resp1_hdr, _ = http2::parse_frame_header(out1[33..42]);
+    var p1 = http2::PseudoHeaders { .. };
     var m1 = wing::HeaderMap { .. };
-    assert(h2_internal::decode_hpack_to_map(client_dec, out1[42..42 + resp1_hdr.length], p1, m1) == rfc::H2_ERR_NO_ERROR);
+    assert(http2::decode_hpack_to_map(client_dec, out1[42..42 + resp1_hdr.length], p1, m1) == rfc::H2_ERR_NO_ERROR);
     assert(client_dec.count > 0);
 
     // Client sends SETTINGS with HEADER_TABLE_SIZE = 0 followed by HEADER_TABLE_SIZE = 4096, then Stream 3
     var wire2: u8[>..] = [];
-    let s_hdr = h2_internal::FrameHeader { length: 12, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-    h2_internal::encode_frame_header_to(s_hdr, wire2);
+    let s_hdr = http2::FrameHeader { length: 12, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    http2::encode_frame_header_to(s_hdr, wire2);
     core::append_u16_be(wire2, rfc::H2_SETTING_HEADER_TABLE_SIZE);
     core::append_u32_be(wire2, 0);
     core::append_u16_be(wire2, rfc::H2_SETTING_HEADER_TABLE_SIZE);
     core::append_u32_be(wire2, 4096);
 
     var hb3: u8[>..] = [];
-    h2_internal::encode_hpack_field(client_enc, hb3, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_enc, hb3, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_enc, hb3, ":path", "/ping", h2_internal::HpackIndexing.Incremental, false);
-    let f3 = h2_internal::FrameHeader {
+    http2::encode_hpack_field(client_enc, hb3, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_enc, hb3, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_enc, hb3, ":path", "/ping", http2::HpackIndexing.Incremental, false);
+    let f3 = http2::FrameHeader {
         length:     hb3.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  3,
     };
-    h2_internal::encode_frame_header_to(f3, wire2);
+    http2::encode_frame_header_to(f3, wire2);
     wire2.append(hb3[..]);
 
     var out2: u8[>..] = [];
     let _, ok2 = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire2[..], 1000, out2);
     assert(ok2);
     // out2 starts with 9-byte SETTINGS ACK, followed by Stream 3 response HEADERS frame
-    let resp3_hdr, _ = h2_internal::parse_frame_header(out2[9..18]);
+    let resp3_hdr, _ = http2::parse_frame_header(out2[9..18]);
     let resp3_hpack = out2[18..18 + resp3_hdr.length];
     // First byte of resp3_hpack MUST be 0x20 (Dynamic Table Size Update to 0)
     assert(resp3_hpack.len > 0 && resp3_hpack[0] == 0x20);
-    var p3 = h2_internal::H2PseudoHeaders { .. };
+    var p3 = http2::PseudoHeaders { .. };
     var m3 = wing::HeaderMap { .. };
-    assert(h2_internal::decode_hpack_to_map(client_dec, resp3_hpack, p3, m3) == rfc::H2_ERR_NO_ERROR);
+    assert(http2::decode_hpack_to_map(client_dec, resp3_hpack, p3, m3) == rfc::H2_ERR_NO_ERROR);
     assert(client_dec.count == sess.hpack_enc.count);
     print("TEST_4_HPACK_DYN_MIN_SIZE_AND_RING_CAP: OK\n");
 }
@@ -2032,40 +2032,40 @@ fn test_rfc9218_and_client_h2_edge_cases() {
 
     var wire: u8[>..] = [];
     wire.append(rfc::H2_CLIENT_PREFACE[..]);
-    let s_hdr = h2_internal::FrameHeader { length: 6, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-    h2_internal::encode_frame_header_to(s_hdr, wire);
+    let s_hdr = http2::FrameHeader { length: 6, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+    http2::encode_frame_header_to(s_hdr, wire);
     core::append_u16_be(wire, rfc::H2_SETTING_NO_RFC7540_PRIORITIES);
     core::append_u32_be(wire, 1);
 
-    var client_dt = h2_internal::new_dynamic_table(4096);
+    var client_dt = http2::new_dynamic_table(4096);
     var hb: u8[>..] = [];
     hb.push(0x00); hb.push(0x00); hb.push(0x00); hb.push(0x01); hb.push(16); // self-dep = 1
-    h2_internal::encode_hpack_field(client_dt, hb, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb, ":path", "/p", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(client_dt, hb, "priority", "u=1, i", h2_internal::HpackIndexing.None, false);
-    let f_hdr = h2_internal::FrameHeader {
+    http2::encode_hpack_field(client_dt, hb, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb, ":path", "/p", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(client_dt, hb, "priority", "u=1, i", http2::HpackIndexing.None, false);
+    let f_hdr = http2::FrameHeader {
         length:     hb.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_PRIORITY,
         stream_id:  1,
     };
-    h2_internal::encode_frame_header_to(f_hdr, wire);
+    http2::encode_frame_header_to(f_hdr, wire);
     wire.append(hb[..]);
 
     var out: u8[>..] = [];
     let _, ok = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", wire[..], 1000, out);
     assert(ok);
     assert(!has_frame_on_wire(out[..], rfc::H2_FRAME_RST_STREAM, 1));
-    let s_idx, found = h2_internal::find_session_stream_idx(sess.conn, 1);
+    let s_idx, found = http2::find_stream_idx(sess.conn, 1);
     assert(found && sess.conn.streams[s_idx].priority.urgency == 1 && sess.conn.streams[s_idx].priority.incremental);
 
     // 2. Client H2 padded DATA frame WINDOW_UPDATE must credit full hdr.length (10), not unpadded len (5)
-    var dec_dt = h2_internal::new_dynamic_table(4096);
+    var dec_dt = http2::new_dynamic_table(4096);
     var resp = wing::Response { .. };
     var out_ctrl: u8[>..] = [];
     var st_d = wing::H2ClientRecvState { got_hdrs: true, .. };
-    let pad_hdr = h2_internal::FrameHeader {
+    let pad_hdr = http2::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_DATA,
         flags:      rfc::H2_FLAG_PADDED | rfc::H2_FLAG_END_STREAM,
@@ -2078,7 +2078,7 @@ fn test_rfc9218_and_client_h2_edge_cases() {
 
     // 3. Client H2 1xx informational response with END_STREAM must be rejected (RFC 9113 §8.1)
     var st_1xx = wing::H2ClientRecvState { .. };
-    let hdr_100 = h2_internal::FrameHeader {
+    let hdr_100 = http2::FrameHeader {
         length:     5,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
@@ -2155,7 +2155,7 @@ fn run_14_verify_wire_hpack_overflow() {
     // Case 5: HPACK decode string with truncated Huffman stream
     let huff_trunc: const u8[3] = [0x85, 0x11, 0x22];
     out_str.clear();
-    let huff_next, huff_ok = h2_internal::decode_hpack_string(huff_trunc[..], 0, out_str);
+    let huff_next, huff_ok = http2::decode_hpack_string(huff_trunc[..], 0, out_str);
     assert(!huff_ok);
     assert(huff_next == 0);
     print("HPACK_HUFFMAN_TRUNCATED: OK\n");
@@ -2163,14 +2163,14 @@ fn run_14_verify_wire_hpack_overflow() {
     // Case 6: HPACK decode string with invalid padding bits (RFC 7541 §5.2)
     let huff_bad_pad: const u8[2] = [0x81, 0x00];
     out_str.clear();
-    let pad_next, pad_ok = h2_internal::decode_hpack_string(huff_bad_pad[..], 0, out_str);
+    let pad_next, pad_ok = http2::decode_hpack_string(huff_bad_pad[..], 0, out_str);
     assert(!pad_ok);
     assert(pad_next == 0);
     print("HPACK_HUFFMAN_BAD_PADDING: OK\n");
 
     // Case 7: QPACK decode int with truncated multibyte continuation
     let qp_trunc: const u8[2] = [0x3F, 0x80];
-    let _, qp_off, qp_ok = h3_internal::qpack_decode_int(qp_trunc[..], 0, 6);
+    let _, qp_off, qp_ok = http3::qpack_decode_int(qp_trunc[..], 0, 6);
     assert(!qp_ok);
     assert(qp_off == 0);
     print("QPACK_INT_TRUNCATED: OK\n");
@@ -2178,7 +2178,7 @@ fn run_14_verify_wire_hpack_overflow() {
     // Case 8: QPACK decode string with truncated payload
     let qp_str_trunc: const u8[4] = [0x8A, 0x11, 0x22, 0x33];
     out_str.clear();
-    let qp_s_off, qp_s_ok = h3_internal::decode_qpack_string(qp_str_trunc[..], 0, 7, out_str);
+    let qp_s_off, qp_s_ok = http3::decode_qpack_string(qp_str_trunc[..], 0, 7, out_str);
     assert(!qp_s_ok);
     assert(qp_s_off == 0);
     print("QPACK_STRING_TRUNCATED: OK\n");

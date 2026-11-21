@@ -80,8 +80,8 @@ fn test_zero_alloc_hot_paths() {
     let name:   const u8[:] = "x-request-id";
     let val:    const u8[:] = "9f3d2a1b";
 
-    var dt = h2_internal::new_dynamic_table();
-    var pseudo = h2_internal::H2PseudoHeaders { .. };
+    var dt = http2::new_dynamic_table();
+    var pseudo = http2::PseudoHeaders { .. };
     var out = wing::HeaderMap { .. };
     var enc:   u8[..256] = [];
     var probe: u8[>..]   = [];
@@ -93,14 +93,14 @@ fn test_zero_alloc_hot_paths() {
         let off = core::fast_find_crlfcrlf(req);
         assert(off > 0);
 
-        let hdr, err = h2_internal::parse_frame_header(raw[..]);
+        let hdr, err = http2::parse_frame_header(raw[..]);
         assert(err == 0 && hdr.stream_id == 1);
 
-        let derr = h2_internal::decode_hpack_to_map(dt, hblock[..], pseudo, out);
+        let derr = http2::decode_hpack_to_map(dt, hblock[..], pseudo, out);
         assert(derr == 0 && pseudo.has_method && pseudo.has_scheme && pseudo.has_path);
 
         enc.clear();
-        let ok = h2_internal::encode_hpack_field(dt, enc, name, val, h2_internal::HpackIndexing.None, true);
+        let ok = http2::encode_hpack_field(dt, enc, name, val, http2::HpackIndexing.None, true);
         assert(ok && enc.len > 0);
     }
 
@@ -129,7 +129,7 @@ fn test_zero_alloc_protocol_parsers() {
         let span, ok_cookie = cookie::next_span(cookie_str, cur);
         assert(ok_cookie && span.name_len > 0);
 
-        let val, off, ok_q = quic_internal::quic_decode_varint(q_varint[..], 0);
+        let val, off, ok_q = quic::decode_varint(q_varint[..], 0);
         assert(ok_q && val == 494878333 && off == 4);
     }
 

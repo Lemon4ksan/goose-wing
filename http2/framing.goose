@@ -3,10 +3,11 @@
 
 // HTTP/2 binary framing layer and RFC 9218 extensible prioritization (RFC 9113, RFC 9218).
 // Zero-allocation frame header parsing, stream ID validation, and Structured Field priority codecs.
-namespace h2_internal;
+namespace http2;
 
 import std;
 import core from "..";
+import .internal;
 
 // ---- 9-byte frame header -------------------------------------------------
 
@@ -64,60 +65,6 @@ fn encode_frame_header_to<B>(hdr: const FrameHeader&, out: B&) {
     let _ = out.try_append(raw[..]);
 }
 
-// RFC 9113 Section 4.2: Frame Size - An endpoint MUST send an error code of FRAME_SIZE_ERROR if a frame exceeds the size defined in SETTINGS_MAX_FRAME_SIZE, exceeds any limit defined for the frame type, or is too small to contain mandatory frame data.
-inline fn validate_frame_type_length(hdr: const FrameHeader&) -> u32 {
-    if hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.length != 4 {
-        return rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_PING && hdr.length != 8 {
-        return rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_SETTINGS {
-        if (hdr.flags & rfc::H2_FLAG_ACK) != 0 && hdr.length != 0 {
-            return rfc::H2_ERR_FRAME_SIZE_ERROR;
-        }
-        if (hdr.flags & rfc::H2_FLAG_ACK) == 0 && (hdr.length % 6) != 0 {
-            return rfc::H2_ERR_FRAME_SIZE_ERROR;
-        }
-    }
-    if hdr.frame_type == rfc::H2_FRAME_PRIORITY && hdr.length != 5 {
-        return rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE && hdr.length != 4 {
-        return rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_GOAWAY && hdr.length < 8 {
-        return rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE && hdr.length < 4 {
-        return rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_ALTSVC && hdr.length < 2 {
-        return rfc::H2_ERR_FRAME_SIZE_ERROR;
-    }
-    if hdr.frame_type == rfc::H2_FRAME_PUSH_PROMISE {
-        let min_len: u32 = if (hdr.flags & rfc::H2_FLAG_PADDED) != 0 { 5 } else { 4 };
-        if hdr.length < min_len {
-            return rfc::H2_ERR_FRAME_SIZE_ERROR;
-        }
-    }
-    if hdr.frame_type == rfc::H2_FRAME_DATA {
-        let min_len: u32 = if (hdr.flags & rfc::H2_FLAG_PADDED) != 0 { 1 } else { 0 };
-        if hdr.length < min_len {
-            return rfc::H2_ERR_FRAME_SIZE_ERROR;
-        }
-    }
-    if hdr.frame_type == rfc::H2_FRAME_HEADERS {
-        let min_pad:  u32 = if (hdr.flags & rfc::H2_FLAG_PADDED) != 0 { 1 } else { 0 };
-        let min_prio: u32 = if (hdr.flags & rfc::H2_FLAG_PRIORITY) != 0 { 5 } else { 0 };
-        let min_len = min_pad + min_prio;
-        if hdr.length < min_len {
-            return rfc::H2_ERR_FRAME_SIZE_ERROR;
-        }
-    }
-    return rfc::H2_ERR_NO_ERROR;
-}
-
 // Validates frame header invariants against stream 0 / non-zero stream rules and lengths.
 fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16384) -> u32 {
     guard hdr.length <= max_frame_size else {
@@ -129,7 +76,7 @@ fn validate_frame_header_rules(hdr: const FrameHeader&, max_frame_size: u32 = 16
         return stream_err;
     }
 
-    return validate_frame_type_length(hdr);
+    return h2_internal::validate_frame_type_length(hdr);
 }
 
 // ---- payload extractors & padding validation ----------------------------

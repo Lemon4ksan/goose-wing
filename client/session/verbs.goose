@@ -17,6 +17,8 @@ import client.session.mock;
 import client.client;
 import client.session.exec;
 
+extern fn native_crypto_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
+
 // ---- high-level dispatch entry points --------------------------------------
 
 fn do(session: Session&, req: const Request&) -> Response, Error {
@@ -207,15 +209,15 @@ fn ws_perform_handshake(
     session:    Session&,
     req:        Request&,
     client_key: const u8[:],
-) -> WebSocketSession, Response, Error {
+) -> realtime::WebSocketSession, Response, Error {
     let resp, err = do(session, req);
     guard ok(err) else {
-        return new_websocket_session(true), resp, err;
+        return realtime::new_websocket_session(true), resp, err;
     }
 
     // Validate 101 Switching Protocols (RFC 6455 Section 4.2.2, RFC 9931 Section 3)
     if resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS {
-        return new_websocket_session(true), resp, make_error(
+        return realtime::new_websocket_session(true), resp, make_error(
             resp.status_code,
             "websocket_handshake",
             "server did not return 101 Switching Protocols",
@@ -225,7 +227,7 @@ fn ws_perform_handshake(
     // Validate Upgrade: websocket (RFC 6455 §4.2.2)
     let upg = header(resp, "Upgrade");
     if !header_has_token(upg, "websocket") {
-        return new_websocket_session(true), resp, make_error(
+        return realtime::new_websocket_session(true), resp, make_error(
             rfc::STATUS_BAD_REQUEST,
             "websocket_handshake",
             "missing or invalid Upgrade header in server response",
@@ -235,7 +237,7 @@ fn ws_perform_handshake(
     // Validate Connection header contains Upgrade
     let conn = header(resp, "Connection");
     if !header_has_token(conn, "upgrade") {
-        return new_websocket_session(true), resp, make_error(
+        return realtime::new_websocket_session(true), resp, make_error(
             rfc::STATUS_BAD_REQUEST,
             "websocket_handshake",
             "missing Connection: Upgrade header in server response",
@@ -244,24 +246,24 @@ fn ws_perform_handshake(
 
     // Validate Sec-WebSocket-Accept
     let server_accept = header(resp, "Sec-WebSocket-Accept");
-    if !validate_websocket_accept(client_key, server_accept) {
-        return new_websocket_session(true), resp, make_error(
+    if !realtime::validate_websocket_accept(client_key, server_accept) {
+        return realtime::new_websocket_session(true), resp, make_error(
             rfc::STATUS_BAD_REQUEST,
             "websocket_handshake",
             "invalid Sec-WebSocket-Accept key in server response",
         );
     }
 
-    var ws_sess = new_websocket_session(true);
+    var ws_sess = realtime::new_websocket_session(true);
     let proto = header(resp, "Sec-WebSocket-Protocol");
     if proto.len > 0 {
         let req_proto = header(req, "Sec-WebSocket-Protocol");
         let valid_proto = req_proto.len > 0 &&
             !proto.contains_byte(',') &&
-            has_subprotocol_token(req_proto, proto) &&
+            realtime::has_subprotocol_token(req_proto, proto) &&
             ws_sess.subprotocol.try_set(proto);
         if !valid_proto {
-            return new_websocket_session(true), resp, make_error(
+            return realtime::new_websocket_session(true), resp, make_error(
                 rfc::STATUS_BAD_REQUEST,
                 "websocket_handshake",
                 "server returned Sec-WebSocket-Protocol not offered by client",
@@ -273,7 +275,7 @@ fn ws_perform_handshake(
 }
 
 // Initiates a WebSocket connection with automatic RFC 6455 handshake negotiation
-fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error {
+fn ws(session: Session&, url: const u8[:]) -> realtime::WebSocketSession, Response, Error {
     var eff_url: u8[..2048] = [];
     normalize_realtime_url(url, eff_url);
 
@@ -293,14 +295,14 @@ fn ws(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error 
     }
     session.creds.nonce_counter = core::add_sat_u64(session.creds.nonce_counter, 1) as u32;
     var client_key: u8[..32] = [];
-    generate_websocket_key(nonce, client_key);
+    realtime::generate_websocket_key(nonce, client_key);
     set_header(req, "Sec-WebSocket-Key", client_key[..]);
 
     return ws_perform_handshake(session, req, client_key[..]);
 }
 
 // Initiates a WebSocket connection with custom request configuration
-fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession, Response, Error {
+fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> realtime::WebSocketSession, Response, Error {
     var eff_url: u8[..2048] = [];
     normalize_realtime_url(url, eff_url);
 
@@ -320,7 +322,7 @@ fn ws<F: fn(Request&)>(session: Session&, url: const u8[:]) -> WebSocketSession,
     }
     session.creds.nonce_counter = core::add_sat_u64(session.creds.nonce_counter, 1) as u32;
     var client_key: u8[..32] = [];
-    generate_websocket_key(nonce, client_key);
+    realtime::generate_websocket_key(nonce, client_key);
     set_header(req, "Sec-WebSocket-Key", client_key[..]);
 
     F(&req);
@@ -337,9 +339,9 @@ fn is_sse_content_type(ct: const u8[:]) -> bool {
 
 fn sse_perform_connect(
     session: Session&,
-    sub:     SseSubscription,
+    sub:     realtime::SseSubscription,
     req:     Request&,
-) -> SseSubscription, Response, Error {
+) -> realtime::SseSubscription, Response, Error {
     var eff_sub = sub;
     let resp, err = do(session, req);
     guard ok(err) else {
@@ -368,16 +370,16 @@ fn sse_perform_connect(
 }
 
 // Initiates a Server-Sent Events (SSE) stream subscription per W3C EventSource
-fn sse(session: Session&, url: const u8[:]) -> SseSubscription, Response, Error {
-    var sub = new_sse_subscription(url);
+fn sse(session: Session&, url: const u8[:]) -> realtime::SseSubscription, Response, Error {
+    var sub = realtime::new_sse_subscription(url);
     var req = new_request("GET", url);
     sub.prepare_request(req);
     return sse_perform_connect(session, sub, req);
 }
 
 // Initiates an SSE stream subscription with custom request configuration
-fn sse<F: fn(Request&)>(session: Session&, url: const u8[:]) -> SseSubscription, Response, Error {
-    var sub = new_sse_subscription(url);
+fn sse<F: fn(Request&)>(session: Session&, url: const u8[:]) -> realtime::SseSubscription, Response, Error {
+    var sub = realtime::new_sse_subscription(url);
     var req = new_request("GET", url);
     sub.prepare_request(req);
     F(&req);
@@ -385,9 +387,8 @@ fn sse<F: fn(Request&)>(session: Session&, url: const u8[:]) -> SseSubscription,
 }
 
 // Reconnects an existing SSE subscription with Last-Event-ID
-fn sse_reconnect(session: Session&, sub: SseSubscription&) -> Response, Error {
-    var dummy_events: SseEvent[..1] = [];
-    sse_flush(sub.parser, dummy_events);
+fn sse_reconnect(session: Session&, sub: realtime::SseSubscription&) -> Response, Error {
+    sub.parser.sse_flush();
     let eff_url = if sub.url.len > 0 { sub.url[..] } else { "" };
     var req = new_request("GET", eff_url);
     sub.prepare_request(req);

@@ -116,15 +116,15 @@ fn main() {
     // Scenario 6: RFC 9113 HTTP/2 Multiplexed Framing & Stream Control
     // ------------------------------------------------------------------------
     print("\n[6/11] RFC 9113 HTTP/2 Framing & Stream Demux...\n");
-    let h2_hdr = h2_internal::FrameHeader {
+    let h2_hdr = http2::FrameHeader {
         length:     24,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  101,
     };
     var h2_wire: u8[9] = [0; 9];
-    h2_internal::encode_frame_header(h2_hdr, h2_wire);
-    let parsed_h2, err_h2 = h2_internal::parse_frame_header(h2_wire[..]);
+    http2::encode_frame_header(h2_hdr, h2_wire);
+    let parsed_h2, err_h2 = http2::parse_frame_header(h2_wire[..]);
     print("  H2 Parse Err:        ", err_h2, "\n");
     print("  H2 Frame Type:       ", parsed_h2.frame_type as i64, " (FRAME_HEADERS)\n");
     print("  H2 Stream ID:        ", parsed_h2.stream_id as i64, "\n");
@@ -208,19 +208,19 @@ fn main() {
     // Scenario 9: RFC 7541 HTTP/2 HPACK Dynamic Table & Huffman Compression
     // ------------------------------------------------------------------------
     print("\n[9/11] RFC 7541 HPACK Dynamic Table & Huffman Coding...\n");
-    var dt_enc = h2_internal::new_dynamic_table(4096);
-    var dt_dec = h2_internal::new_dynamic_table(4096);
+    var dt_enc = http2::new_dynamic_table(4096);
+    var dt_dec = http2::new_dynamic_table(4096);
     var hpack_wire: u8[>..] = [];
 
-    h2_internal::encode_hpack_field(dt_enc, hpack_wire, ":method", "GET", h2_internal::HpackIndexing.Incremental, true);
-    h2_internal::encode_hpack_field(dt_enc, hpack_wire, ":path", "/api/v2/market/stream", h2_internal::HpackIndexing.Incremental, true);
-    h2_internal::encode_hpack_field(dt_enc, hpack_wire, ":scheme", "https", h2_internal::HpackIndexing.Incremental, true);
-    h2_internal::encode_hpack_field(dt_enc, hpack_wire, "custom-header", "wasm-edge-flight", h2_internal::HpackIndexing.Incremental, true);
+    http2::encode_hpack_field(dt_enc, hpack_wire, ":method", "GET", http2::HpackIndexing.Incremental, true);
+    http2::encode_hpack_field(dt_enc, hpack_wire, ":path", "/api/v2/market/stream", http2::HpackIndexing.Incremental, true);
+    http2::encode_hpack_field(dt_enc, hpack_wire, ":scheme", "https", http2::HpackIndexing.Incremental, true);
+    http2::encode_hpack_field(dt_enc, hpack_wire, "custom-header", "wasm-edge-flight", http2::HpackIndexing.Incremental, true);
     print("  HPACK Encoded Bytes: ", hpack_wire.len, "\n");
 
-    var decoded_pseudo = h2_internal::H2PseudoHeaders { .. };
+    var decoded_pseudo = http2::PseudoHeaders { .. };
     var decoded_headers = wing::HeaderMap { .. };
-    let hpack_dec_err = h2_internal::decode_hpack_to_map(dt_dec, hpack_wire[..], decoded_pseudo, decoded_headers);
+    let hpack_dec_err = http2::decode_hpack_to_map(dt_dec, hpack_wire[..], decoded_pseudo, decoded_headers);
     print("  HPACK Decode Err:    ", hpack_dec_err, " (0 == OK)\n");
     print("  Decoded Headers:     ", decoded_headers.entries.len + 3, "\n");
     print("    [0] :method = ", decoded_pseudo.method[..], "\n");
@@ -271,23 +271,23 @@ fn main() {
     var v4_wire: u8[..16] = [];
     var v8_wire: u8[..16] = [];
 
-    quic_internal::quic_encode_varint(v1_wire, 37);
-    quic_internal::quic_encode_varint(v2_wire, 15293);
-    quic_internal::quic_encode_varint(v4_wire, 49487296);
-    quic_internal::quic_encode_varint(v8_wire, 0x123456789ABCDEF0);
+    quic::encode_varint(37, v1_wire);
+    quic::encode_varint(15293, v2_wire);
+    quic::encode_varint(49487296, v4_wire);
+    quic::encode_varint(0x123456789ABCDEF0, v8_wire);
 
-    let dec_v1, _, ok_v1 = quic_internal::quic_decode_varint(v1_wire[..], 0);
-    let dec_v2, _, ok_v2 = quic_internal::quic_decode_varint(v2_wire[..], 0);
-    let dec_v4, _, ok_v4 = quic_internal::quic_decode_varint(v4_wire[..], 0);
-    let dec_v8, _, ok_v8 = quic_internal::quic_decode_varint(v8_wire[..], 0);
+    let dec_v1, _, ok_v1 = quic::decode_varint(v1_wire[..], 0);
+    let dec_v2, _, ok_v2 = quic::decode_varint(v2_wire[..], 0);
+    let dec_v4, _, ok_v4 = quic::decode_varint(v4_wire[..], 0);
+    let dec_v8, _, ok_v8 = quic::decode_varint(v8_wire[..], 0);
 
     print("  QUIC Varint 1B: ", dec_v1, " (ok: ", ok_v1, ", len: ", v1_wire.len, ")\n");
     print("  QUIC Varint 2B: ", dec_v2, " (ok: ", ok_v2, ", len: ", v2_wire.len, ")\n");
     print("  QUIC Varint 4B: ", dec_v4, " (ok: ", ok_v4, ", len: ", v4_wire.len, ")\n");
     print("  QUIC Varint 8B: ", dec_v8, " (ok: ", ok_v8, ", len: ", v8_wire.len, ")\n");
 
-    var quic_hdr = quic_internal::QuicHeader {
-        header_type:    quic_internal::QuicHeaderType.Initial,
+    var quic_hdr = quic::QuicHeader {
+        header_type:    quic::QuicHeaderType.Initial,
         version:        rfc::QUIC_VERSION_1,
         payload_length: 1280,
         packet_number:  99,
@@ -297,8 +297,8 @@ fn main() {
     quic_hdr.scid.append([0xCA, 0xFE, 0xBA, 0xBE]);
 
     var quic_wire: u8[..128] = [];
-    let ok_qhdr = quic_internal::encode_quic_header(quic_wire, quic_hdr, 2);
-    let parsed_qhdr, ok_qdec = quic_internal::parse_quic_header(quic_wire[..], 0);
+    let ok_qhdr = quic::encode_header(quic_hdr, 2, quic_wire);
+    let parsed_qhdr, ok_qdec = quic::parse_header(quic_wire[..], 0);
     print("  QUIC Initial Header Encoded: ", ok_qhdr, " (", quic_wire.len, " bytes)\n");
     print("  QUIC Initial Header Decoded: ", ok_qdec, "\n");
     print("  QUIC Version:                0x", parsed_qhdr.version, "\n");

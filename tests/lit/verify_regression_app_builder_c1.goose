@@ -135,11 +135,11 @@ fn test_bug3_h2_spill_slab_reclaimed_on_goaway() {
     );
     assert(ok_init);
 
-    var dt = h2_internal::new_dynamic_table(4096);
+    var dt = http2::new_dynamic_table(4096);
     var h_block: u8[>..] = [];
-    h2_internal::encode_hpack_field(dt, h_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, h_block, ":path", "/upload", h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, h_block, ":path", "/upload", http2::HpackIndexing.Incremental, false);
 
     var stream_wire: u8[>..] = [];
     build_h2_frame_hdr(stream_wire, h_block.len as u32, rfc::H2_FRAME_HEADERS, rfc::H2_FLAG_END_HEADERS, 1);
@@ -178,37 +178,37 @@ fn test_bug3_h2_spill_slab_reclaimed_on_goaway() {
 
 // 4. Bug 4: ReverseProxy & ClusterHealthChecker sync_cluster_target_health counter preservation
 fn test_bug4_proxy_health_sync_counters() {
-    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-    proxy.cluster.max_fails = 0;
-    assert(wing::add_upstream_target(proxy.cluster, "10.0.0.1", 8080, 1));
-    assert(wing::set_target_health_thresholds(proxy.cluster, 0, 3, 3));
-    proxy.health_checker = wing::new_cluster_health_checker(wing::new_health_check_config(1000, 500, 3, 3));
-    assert(wing::register_target_for_probing(proxy.health_checker, 0));
+    var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+    rp.cluster.max_fails = 0;
+    assert(rp.cluster.add_upstream_target("10.0.0.1", 8080, 1));
+    assert(rp.cluster.set_target_health_thresholds(0, 3, 3));
+    rp.health_checker = proxy::new_cluster_health_checker(proxy::new_health_check_config(1000, 500, 3, 3));
+    assert(rp.health_checker.register_target_for_probing(0));
 
     // 4a. Single failed upstream exchange (502) while Up (unhealthy_threshold = 3) must NOT reset fails to 0
-    proxy.cluster.targets[0].active_conns = 1;
-    wing::complete_upstream_exchange(proxy, 0, 502, true);
-    let fails_preserved = proxy.cluster.targets[0].fails == 1 && proxy.cluster.targets[0].is_healthy;
+    rp.cluster.targets[0].active_conns = 1;
+    rp.complete_upstream_exchange(0, 502, true);
+    let fails_preserved = rp.cluster.targets[0].fails == 1 && rp.cluster.targets[0].is_healthy;
 
     // Trip to Down with 2 more failures
-    proxy.cluster.targets[0].active_conns = 1;
-    wing::complete_upstream_exchange(proxy, 0, 502, true);
-    proxy.cluster.targets[0].active_conns = 1;
-    wing::complete_upstream_exchange(proxy, 0, 502, true);
-    let tripped_down = proxy.cluster.targets[0].health_state == wing::UpstreamHealthState.Down;
+    rp.cluster.targets[0].active_conns = 1;
+    rp.complete_upstream_exchange(0, 502, true);
+    rp.cluster.targets[0].active_conns = 1;
+    rp.complete_upstream_exchange(0, 502, true);
+    let tripped_down = rp.cluster.targets[0].health_state == proxy::UpstreamHealthState.Down;
 
     // 4b. Two probe successes with healthy_threshold = 3 must record successes = 2 in Probing (not hardcode 1)
-    let st1 = wing::on_probe_success(proxy.health_checker, proxy.cluster, 0, 150);
-    let st2 = wing::on_probe_success(proxy.health_checker, proxy.cluster, 0, 150);
-    let probing_count_two = st1 == wing::HealthState.Probing &&
-        st2 == wing::HealthState.Probing &&
-        proxy.cluster.targets[0].successes == 2 &&
-        !proxy.cluster.targets[0].is_healthy;
+    let st1 = rp.health_checker.on_probe_success(rp.cluster, 0, 150);
+    let st2 = rp.health_checker.on_probe_success(rp.cluster, 0, 150);
+    let probing_count_two = st1 == proxy::HealthState.Probing &&
+        st2 == proxy::HealthState.Probing &&
+        rp.cluster.targets[0].successes == 2 &&
+        !rp.cluster.targets[0].is_healthy;
 
     // 3rd success via passive upstream success reaches healthy_threshold = 3 -> transitions to Up!
-    wing::record_upstream_success(proxy.cluster, 0);
-    let recovered_at_three = proxy.cluster.targets[0].health_state == wing::UpstreamHealthState.Up &&
-        proxy.cluster.targets[0].is_healthy;
+    rp.cluster.record_upstream_success(0);
+    let recovered_at_three = rp.cluster.targets[0].health_state == proxy::UpstreamHealthState.Up &&
+        rp.cluster.targets[0].is_healthy;
 
     print(
         "BUG4_PROXY_HEALTH_SYNC: fails_preserved=", fails_preserved,

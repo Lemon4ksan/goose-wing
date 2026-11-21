@@ -3,10 +3,12 @@
 
 // RFC 7692 Compression Extensions for WebSocket (`permessage-deflate`) negotiation,
 // shared reactor-level compressor, and dedicated sliding-window compressor/decompressor.
-namespace wing;
+namespace realtime;
 
 import std;
 import core from "..";
+import rfc.ws;
+import .internal;
 import .websocket;
 
 // Compression options matching uWebSockets CompressOptions
@@ -24,17 +26,6 @@ struct SharedWsCompressor {
     total_uncompressed: u64         = 0,
     total_decompressed: u64         = 0,
     reset_window:       bool        = true,
-}
-
-// Strips the 4-byte RFC 7692 §7.2.1 sync-flush tail (`0x00 0x00 0xFF 0xFF`) if present.
-inline fn strip_pmd_sync_flush_tail(buf: const u8[:]) -> i64 {
-    let eff_len = buf.len;
-    guard eff_len >= 4 else { return eff_len; }
-    let base_idx = core::sub_sat_i64(eff_len, 4);
-    if core::read_be_u32(buf, base_idx) == 0x0000FFFF {
-        return base_idx;
-    }
-    return eff_len;
 }
 
 // Compresses raw payload using raw Deflate (RFC 1951) and strips trailing 0x00 0x00 0xFF 0xFF (RFC 7692 §7.2.1).
@@ -59,14 +50,14 @@ fn ws_deflate_message_slice(
         return "", false;
     }
 
-    let eff_len = strip_pmd_sync_flush_tail(shared.compress_buf[..]);
+    let eff_len = realtime_internal::strip_pmd_sync_flush_tail(shared.compress_buf[..]);
     shared.total_compressed = core::add_sat_u64(shared.total_compressed, eff_len as u64);
     shared.total_uncompressed = core::add_sat_u64(shared.total_uncompressed, raw.len as u64);
 
     return shared.compress_buf[..eff_len], true;
 }
 
-// Appends compressed message to caller-supplied buffer out_wire
+// Appends compressed message to caller-supplied buffer out_wire.
 fn ws_deflate_message<B>(
     shared:       SharedWsCompressor&,
     raw:          const u8[:],
@@ -74,7 +65,7 @@ fn ws_deflate_message<B>(
     reset_window: bool = true,
 ) -> bool {
     let comp_slice, ok = ws_deflate_message_slice(shared, raw, reset_window);
-    guard ok && core::add_sat_i64(out_wire.len, comp_slice.len) <= ws_buf_cap(out_wire) else {
+    guard ok && core::add_sat_i64(out_wire.len, comp_slice.len) <= realtime_internal::ws_buf_cap(out_wire) else {
         return false;
     }
     out_wire.append(comp_slice);
@@ -90,9 +81,12 @@ fn ws_inflate_message<B>(
     max_payload:  i64  = 65536,
     reset_window: bool = true,
 ) -> bool {
+    let eff_limit = min(max_payload, realtime_internal::ws_buf_cap(out_plain));
+    guard compressed.len > 0 && eff_limit > 0 else {
+        out_plain.clear();
+        return false;
+    }
     out_plain.clear();
-    let eff_limit = min(max_payload, ws_buf_cap(out_plain));
-    guard compressed.len > 0 && eff_limit > 0 else { return false; }
 
     var committed = false;
     defer if !committed {
@@ -147,31 +141,6 @@ fn new_dedicated_ws_compressor(window_kb: i64 = 32) -> DedicatedWsCompressor {
     };
 }
 
-// Updates the sliding dictionary window with new uncompressed bytes up to `window_kb * 1024` (max 32 KB).
-fn update_dedicated_history(dedicated: DedicatedWsCompressor&, raw: const u8[:]) {
-    let win_bytes = if dedicated.window_kb > 0 { core::mul_sat_i64(dedicated.window_kb, 1024) } else { 32768 };
-    let max_win = min(win_bytes, min(32768, dedicated.history.cap));
-    guard max_win > 0 && raw.len > 0 else { return; }
-
-    if raw.len >= max_win {
-        let tail_start = core::sub_sat_i64(raw.len, max_win);
-        let _ = dedicated.history.try_set(raw[tail_start..]);
-        return;
-    }
-
-    let total = core::add_sat_i64(dedicated.history.len, raw.len);
-    if total > max_win {
-        let drop_len = core::sub_sat_i64(total, max_win);
-        let keep_len = core::sub_sat_i64(dedicated.history.len, drop_len);
-        for i in keep_len {
-            let src_idx = core::add_sat_i64(drop_len, i);
-            dedicated.history[i] = dedicated.history[src_idx];
-        }
-        dedicated.history.resize(keep_len);
-    }
-    dedicated.history.append(raw);
-}
-
 fn deflate_message_dedicated<B>(
     dedicated:    DedicatedWsCompressor&,
     raw:          const u8[:],
@@ -187,8 +156,10 @@ fn deflate_message_dedicated<B>(
     let ok = core::deflate_with_dict(raw, dedicated.compress_buf, 6, dict);
     guard ok && dedicated.compress_buf.len > 0 else { return false; }
 
-    let eff_len = strip_pmd_sync_flush_tail(dedicated.compress_buf[..]);
-    guard core::add_sat_i64(out_wire.len, eff_len) <= ws_buf_cap(out_wire) else { return false; }
+    let eff_len = realtime_internal::strip_pmd_sync_flush_tail(dedicated.compress_buf[..]);
+    guard core::add_sat_i64(out_wire.len, eff_len) <= realtime_internal::ws_buf_cap(out_wire) else {
+        return false;
+    }
     out_wire.append(dedicated.compress_buf[..eff_len]);
     dedicated.total_compressed = core::add_sat_u64(dedicated.total_compressed, eff_len as u64);
     dedicated.total_uncompressed = core::add_sat_u64(dedicated.total_uncompressed, raw.len as u64);
@@ -197,7 +168,7 @@ fn deflate_message_dedicated<B>(
         dedicated.history.clear();
         dedicated.compress_buf.clear();
     } else {
-        update_dedicated_history(dedicated, raw);
+        realtime_internal::update_dedicated_history(dedicated, raw);
     }
     committed = true;
     return true;
@@ -210,9 +181,12 @@ fn inflate_message_dedicated<B>(
     max_payload:  i64  = 65536,
     reset_window: bool = false,
 ) -> bool {
+    let eff_limit = min(max_payload, realtime_internal::ws_buf_cap(out_plain));
+    guard compressed.len > 0 && eff_limit > 0 else {
+        out_plain.clear();
+        return false;
+    }
     out_plain.clear();
-    let eff_limit = min(max_payload, ws_buf_cap(out_plain));
-    guard compressed.len > 0 && eff_limit > 0 else { return false; }
 
     var committed = false;
     defer if !committed {
@@ -239,7 +213,7 @@ fn inflate_message_dedicated<B>(
         dedicated.history.clear();
         dedicated.decompress_buf.clear();
     } else {
-        update_dedicated_history(dedicated, out_plain[..]);
+        realtime_internal::update_dedicated_history(dedicated, out_plain[..]);
     }
     committed = true;
     return true;
@@ -272,7 +246,7 @@ fn encode_ws_frame_compressed<B>(
         ..
     };
     let saved_len = out.len;
-    guard try_encode_ws_header(hdr, out) else { return; }
+    guard realtime_internal::try_encode_ws_header(hdr, out) else { return; }
     let payload_start = out.len;
     guard out.try_append(eff_payload) else {
         out.resize(saved_len);
@@ -286,7 +260,7 @@ fn encode_ws_frame_compressed<B>(
 // Detects Safari 15.0 - 15.3 user-agents with broken permessage-deflate implementations (uWebSockets #1347).
 fn ws_has_broken_compression(user_agent: const u8[:]) -> bool {
     let marker = " Version/15.";
-    let pos = find(user_agent, marker);
+    let pos = core::find(user_agent, marker);
     guard pos >= 0 else { return false; }
 
     var idx = core::add_sat_i64(pos, marker.len);
@@ -294,8 +268,8 @@ fn ws_has_broken_compression(user_agent: const u8[:]) -> bool {
 
     var minor: u32 = 0;
     var has_digits = false;
-    while idx < user_agent.len && user_agent[idx] >= '0' && user_agent[idx] <= '9' {
-        let digit = core::hex_digit_to_val(user_agent[idx]) as u32;
+    while idx < user_agent.len && core::is_ascii_digit(user_agent[idx]) {
+        let digit = (user_agent[idx] - '0') as u32;
         minor = core::add_sat_u32(core::mul_sat_u32(minor, 10), digit);
         guard minor <= 3 else { return false; }
         has_digits = true;
@@ -304,7 +278,7 @@ fn ws_has_broken_compression(user_agent: const u8[:]) -> bool {
     guard has_digits && idx < user_agent.len && user_agent[idx] == ' ' else { return false; }
 
     let safari_marker = " Safari/";
-    let safari_pos = find(user_agent[idx..], safari_marker);
+    let safari_pos = core::find(user_agent[idx..], safari_marker);
     return safari_pos >= 0;
 }
 
@@ -322,161 +296,6 @@ struct PerMessageDeflateConfig {
     client_no_context_takeover: bool = false,
 }
 
-const PMD_SEEN_SERVER_NO_CTX:  u8 = 1;
-const PMD_SEEN_CLIENT_NO_CTX:  u8 = 2;
-const PMD_SEEN_SERVER_MAX_WIN: u8 = 4;
-const PMD_SEEN_CLIENT_MAX_WIN: u8 = 8;
-
-// Unescapes an RFC 6455 Section 9.1 quoted extension parameter value into `out`.
-//
-// Example:
-//   quoted = "\"\\1\\2\"", out = []
-//   returns: true, out = "12"
-fn unescape_pmd_quoted_val(quoted: const u8[:], out: u8[..8]&) -> bool {
-    guard quoted.len >= 2 && quoted[0] == '"' && quoted[quoted.len - 1] == '"' else {
-        return false;
-    }
-    let inner = quoted[1..^1];
-    var i: i64 = 0;
-    while i < inner.len {
-        let b = inner[i];
-        if b == '\\' {
-            let esc_idx = core::add_sat_i64(i, 1);
-            guard esc_idx < inner.len else { return false; }
-            let esc = inner[esc_idx];
-            guard core::is_tchar(esc) && out.try_push(esc) else { return false; }
-            i = core::add_sat_i64(i, 2);
-            continue;
-        }
-        guard b != '"' && core::is_tchar(b) && out.try_push(b) else { return false; }
-        i = core::add_sat_i64(i, 1);
-    }
-    return true;
-}
-
-// Parses a strict RFC 7692 §7.1 window_bits value (base-10 integer in 8..15, no leading '0' or '+').
-// Clamps window_bits == 8 to 9 for raw deflate compatibility (uWebSockets / libwebsockets pattern).
-//
-// Example:
-//   raw = "\"12\""
-//   returns: bits = 12, ok = true
-fn parse_pmd_window_bits(raw: const u8[:]) -> u8, bool {
-    let trimmed = raw.trim_lws();
-    var unescaped: u8[..8] = [];
-    if trimmed.len > 0 && trimmed[0] == '"' {
-        guard unescape_pmd_quoted_val(trimmed, unescaped) else { return 0, false; }
-    } else {
-        guard !trimmed.contains_byte('"') && !trimmed.contains_byte('\\') else { return 0, false; }
-        guard unescaped.try_set(trimmed) else { return 0, false; }
-    }
-    if unescaped.len == 1 {
-        let b0 = unescaped[0];
-        guard b0 == '8' || b0 == '9' else { return 0, false; }
-        return 9, true;
-    }
-    guard unescaped.len == 2 else { return 0, false; }
-    let b0 = unescaped[0];
-    let b1 = unescaped[1];
-    guard b0 == '1' && b1 >= '0' && b1 <= '5' else { return 0, false; }
-    return (core::add_sat_i64(10, core::sub_sat_i64(b1, '0'))) as u8, true;
-}
-
-inline fn apply_pmd_window_param(
-    key:        const u8[:],
-    val:        const u8[:],
-    has_eq:     bool,
-    server_cfg: const PerMessageDeflateConfig&,
-    seen_mask:  u8&,
-    out_cfg:    PerMessageDeflateConfig&,
-) -> bool {
-    if key == "server_max_window_bits" {
-        guard has_eq && (seen_mask & PMD_SEEN_SERVER_MAX_WIN) == 0 else { return false; }
-        let bits, ok_b = parse_pmd_window_bits(val);
-        guard ok_b else { return false; }
-        seen_mask |= PMD_SEEN_SERVER_MAX_WIN;
-        out_cfg.server_max_window_bits = min(out_cfg.server_max_window_bits, bits);
-        return true;
-    }
-    if key == "client_max_window_bits" {
-        guard (seen_mask & PMD_SEEN_CLIENT_MAX_WIN) == 0 else { return false; }
-        if has_eq {
-            let bits, ok_b = parse_pmd_window_bits(val);
-            guard ok_b else { return false; }
-            seen_mask |= PMD_SEEN_CLIENT_MAX_WIN;
-            out_cfg.client_max_window_bits = min(server_cfg.client_max_window_bits, bits);
-        } else {
-            seen_mask |= PMD_SEEN_CLIENT_MAX_WIN;
-            let capped = min(server_cfg.client_max_window_bits, rfc::WS_PMD_MAX_WINDOW_BITS);
-            out_cfg.client_max_window_bits = max(9, capped);
-        }
-        return true;
-    }
-    return false;
-}
-
-inline fn apply_pmd_param(
-    key:        const u8[:],
-    val:        const u8[:],
-    has_eq:     bool,
-    server_cfg: const PerMessageDeflateConfig&,
-    seen_mask:  u8&,
-    out_cfg:    PerMessageDeflateConfig&,
-) -> bool {
-    guard key.len > 0 else { return false; }
-    if key == "server_no_context_takeover" {
-        guard !has_eq && (seen_mask & PMD_SEEN_SERVER_NO_CTX) == 0 else { return false; }
-        seen_mask |= PMD_SEEN_SERVER_NO_CTX;
-        out_cfg.server_no_context_takeover = true;
-        return true;
-    }
-    if key == "client_no_context_takeover" {
-        guard !has_eq && (seen_mask & PMD_SEEN_CLIENT_NO_CTX) == 0 else { return false; }
-        seen_mask |= PMD_SEEN_CLIENT_NO_CTX;
-        out_cfg.client_no_context_takeover = true;
-        return true;
-    }
-    return apply_pmd_window_param(key, val, has_eq, server_cfg, seen_mask, out_cfg);
-}
-
-// Parses a single RFC 7692 `permessage-deflate` extension offer and its `;`-delimited parameters.
-//
-// Example:
-//   offer_raw = "permessage-deflate; server_no_context_takeover", server_cfg = PerMessageDeflateConfig { .. }
-//   returns: PerMessageDeflateConfig { server_no_context_takeover: true, .. }, ok = true
-inline fn parse_single_pmd_offer(
-    offer_raw:  const u8[:],
-    server_cfg: const PerMessageDeflateConfig&,
-) -> PerMessageDeflateConfig, bool {
-    let offer = offer_raw.trim_lws();
-    let ext_name, rest_params, has_params = offer.split_once_unquoted_byte(';');
-    guard ext_name.trim_lws() == rfc::WS_PMD_EXTENSION_NAME else {
-        return PerMessageDeflateConfig { .. }, false;
-    }
-
-    var cfg = PerMessageDeflateConfig {
-        server_max_window_bits:     max(9, min(server_cfg.server_max_window_bits, rfc::WS_PMD_MAX_WINDOW_BITS)),
-        client_max_window_bits:     rfc::WS_PMD_MAX_WINDOW_BITS,
-        server_no_context_takeover: server_cfg.server_no_context_takeover,
-        client_no_context_takeover: server_cfg.client_no_context_takeover,
-    };
-
-    var seen_mask: u8 = 0;
-    var rem = rest_params;
-    var more = has_params;
-    while more {
-        let param_raw, next_rem, has_next = rem.split_once_unquoted_byte(';');
-        let param = param_raw.trim_lws();
-        guard param.len > 0 else { return PerMessageDeflateConfig { .. }, false; }
-        let k_raw, v_raw, has_eq = param.split_once_unquoted_byte('=');
-        guard apply_pmd_param(k_raw.trim_lws(), v_raw.trim_lws(), has_eq, server_cfg, seen_mask, cfg) else {
-            return PerMessageDeflateConfig { .. }, false;
-        }
-        rem = next_rem;
-        more = has_next;
-    }
-    return cfg, true;
-}
-
 // Negotiates RFC 7692 `permessage-deflate` from a `Sec-WebSocket-Extensions` header.
 // Evaluates comma-separated extension offers in preference order and returns the first valid offer.
 fn negotiate_permessage_deflate(
@@ -490,7 +309,7 @@ fn negotiate_permessage_deflate(
     var more = true;
     while more {
         let offer_raw, next_rem, has_next = rem.split_once_unquoted_byte(',');
-        let cfg, ok = parse_single_pmd_offer(offer_raw, server_cfg);
+        let cfg, ok = realtime_internal::parse_single_pmd_offer(offer_raw, server_cfg);
         if ok {
             return cfg, true;
         }

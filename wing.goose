@@ -102,6 +102,7 @@ import cookie.policy;
 import cookie.engine;
 import cookie.store;
 
+import http2.internal;
 import http2.framing;
 import http2.frames;
 import http2.hpack;
@@ -165,7 +166,10 @@ import tls.cert_compression;
 import tls.session;
 import tls.pem;
 
+import quic.internal;
+import quic.packet_internal;
 import quic.packet;
+import quic.frames_internal;
 import quic.frames;
 import quic.migration;
 import quic.dplpmtud;
@@ -173,10 +177,16 @@ import quic.stream;
 import quic.flow_control;
 import quic.AckFrame;
 import quic.bbr;
+import quic.conn_internal;
 import quic.connection;
 
-import http3.qpack;
+import http3.internal;
+import http3.types;
 import http3.framing;
+import http3.qpack_codec;
+import http3.qpack_internal;
+import http3.qpack;
+import http3.connection_internal;
 import http3.connection;
 
 // ---- wire subsystem (Layer 9) ----------------------------------------------
@@ -192,6 +202,7 @@ import wire.service;
 
 // ---- realtime & streaming (Layer 10) ---------------------------------------
 
+import realtime.internal;
 import realtime.ws_deflate;
 import realtime.ws_handshake;
 import realtime.websocket;
@@ -234,14 +245,17 @@ import server.profiler;
 
 // ---- grpc & reverse proxy gateways (Layer 12) ------------------------------
 
+import grpc.internal;
 import grpc.constants;
 import grpc.framing;
 import grpc.status;
 import grpc.connect;
 import grpc.health;
 import grpc.client;
+import grpc.server_internal;
 import grpc.server;
 
+import proxy.internal;
 import proxy.health_check;
 import proxy.load_balancer;
 import proxy.reverse_proxy;

@@ -448,11 +448,11 @@ fn test_cve_2023_24538_mime_param_escaped_quotes(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc6455_websocket_security_invariants(t: lit::T&) {
     t.run("RSV1/RSV2/RSV3 bit injection MUST trigger 1002 Protocol Error") { sub =>
-        var client_ws = wing::new_websocket_session(true);
+        var client_ws = realtime::new_websocket_session(true);
 
         // Frame with RSV1 = 1 (0x40)
         let rsv1_frame: u8[2] = [0xC1, 0x00]; // FIN=1, RSV1=1, Opcode=1 (Text), Length=0
-        var msg = wing::WsMessage { .. };
+        var msg = realtime::WsMessage { .. };
         var reply: u8[>..] = [];
         let handled = client_ws.receive(rsv1_frame[..], msg, reply);
         sub.assert_true(client_ws.is_closed, "Connection closed on non-zero RSV bit");
@@ -460,14 +460,14 @@ fn test_rfc6455_websocket_security_invariants(t: lit::T&) {
     };
 
     t.run("Client receiving masked frame MUST trigger 1002 Protocol Error (RFC 6455 Section 5.1)") { sub =>
-        var client_ws = wing::new_websocket_session(true);
+        var client_ws = realtime::new_websocket_session(true);
 
         // Masked server frame sent to client
         let mask: u8[4] = [1, 2, 3, 4];
         var masked_frame: u8[>..] = [];
-        wing::encode_ws_frame(masked_frame, rfc::WS_OPCODE_TEXT, "hello", true, mask, true);
+        realtime::encode_ws_frame(masked_frame, rfc::WS_OPCODE_TEXT, "hello", true, mask, true);
 
-        var msg = wing::WsMessage { .. };
+        var msg = realtime::WsMessage { .. };
         var reply: u8[>..] = [];
         client_ws.receive(masked_frame[..], msg, reply);
         sub.assert_true(client_ws.is_closed, "Client MUST fail connection on masked frame from server");
@@ -475,14 +475,14 @@ fn test_rfc6455_websocket_security_invariants(t: lit::T&) {
     };
 
     t.run("Server receiving unmasked frame MUST trigger 1002 Protocol Error (RFC 6455 Section 5.1)") { sub =>
-        var server_ws = wing::new_websocket_session(false); // is_client = false
+        var server_ws = realtime::new_websocket_session(false); // is_client = false
 
         // Unmasked client frame sent to server
         let no_mask: u8[4] = [0, 0, 0, 0];
         var unmasked_frame: u8[>..] = [];
-        wing::encode_ws_frame(unmasked_frame, rfc::WS_OPCODE_TEXT, "hello", false, no_mask, true);
+        realtime::encode_ws_frame(unmasked_frame, rfc::WS_OPCODE_TEXT, "hello", false, no_mask, true);
 
-        var msg = wing::WsMessage { .. };
+        var msg = realtime::WsMessage { .. };
         var reply: u8[>..] = [];
         server_ws.receive(unmasked_frame[..], msg, reply);
         sub.assert_true(server_ws.is_closed, "Server MUST fail connection on unmasked frame from client");
@@ -605,26 +605,26 @@ fn test_rfc9110_proxy_hop_by_hop_sanitization(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
     t.run("HTTP/2 :path with absolute URL MUST be rejected (RFC 9113 Section 8.3.1 & Go #78762)") { sub =>
-        var dt_enc = h2_internal::new_dynamic_table(4096);
+        var dt_enc = http2::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", h2_internal::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":path", "http://evil.com/admin", http2::HpackIndexing.None, false);
 
-        var dt_dec = h2_internal::new_dynamic_table(4096);
-        var pseudo = h2_internal::H2PseudoHeaders { .. };
+        var dt_dec = http2::new_dynamic_table(4096);
+        var pseudo = http2::PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
     };
 
     t.run("HTTP/2 :path empty MUST be rejected") { sub =>
-        var dt_enc = h2_internal::new_dynamic_table(4096);
+        var dt_enc = http2::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "", h2_internal::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":path", "", http2::HpackIndexing.None, false);
 
-        var dt_dec = h2_internal::new_dynamic_table(4096);
-        var pseudo = h2_internal::H2PseudoHeaders { .. };
+        var dt_dec = http2::new_dynamic_table(4096);
+        var pseudo = http2::PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
     };
 }
@@ -738,7 +738,7 @@ fn test_adversarial_http1_headers(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_adversarial_h2_h3_chopping(t: lit::T&) {
     t.run("AW-H2-01: HEADERS payload_len claims N but ingress delivers N-1 then never completes") { sub =>
-        var client_hpack = h2_internal::DynamicTable { .. };
+        var client_hpack = http2::DynamicTable { .. };
         var sess = server_internal::new_h2_server_session("localhost");
         var pipeline = wing::ServerPipelineConfig { .. };
         var timer = server_internal::ConnectionTimer { .. };
@@ -746,8 +746,8 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         // Handshake: preface + empty SETTINGS
         var init_wire: u8[..64] = [];
         init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-        let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-        h2_internal::encode_frame_header_to(set_hdr, init_wire);
+        let set_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+        http2::encode_frame_header_to(set_hdr, init_wire);
         var server_out: u8[..1024] = [];
         let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
         sub.assert_true(ok_init, "handshake succeeds");
@@ -755,18 +755,18 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         // Build HEADERS frame for stream 1 with END_HEADERS|END_STREAM
         var full_req:    u8[..256] = [];
         var hpack_block: u8[..128] = [];
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/chop", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":method", "GET", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":path", "/chop", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", http2::HpackIndexing.Incremental, false);
 
-        let req_hdr = h2_internal::FrameHeader {
+        let req_hdr = http2::FrameHeader {
             length:     hpack_block.len as u32,
             frame_type: rfc::H2_FRAME_HEADERS,
             flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
             stream_id:  1,
         };
-        h2_internal::encode_frame_header_to(req_hdr, full_req);
+        http2::encode_frame_header_to(req_hdr, full_req);
         full_req.append(hpack_block[..]);
 
         // Stage 1: Header only (9 bytes) -> consumed 0, ok true, no response
@@ -786,7 +786,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
     };
 
     t.run("AW-H2-02: DATA frame length exceeds remaining buffer across two calls") { sub =>
-        var client_hpack = h2_internal::DynamicTable { .. };
+        var client_hpack = http2::DynamicTable { .. };
         var sess = server_internal::new_h2_server_session("localhost");
         var pipeline = wing::ServerPipelineConfig { .. };
         var timer = server_internal::ConnectionTimer { .. };
@@ -794,8 +794,8 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         // Handshake
         var init_wire: u8[..64] = [];
         init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-        let set_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
-        h2_internal::encode_frame_header_to(set_hdr, init_wire);
+        let set_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_SETTINGS, flags: 0, stream_id: 0 };
+        http2::encode_frame_header_to(set_hdr, init_wire);
         var server_out: u8[..1024] = [];
         let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out);
         sub.assert_true(ok_init, "handshake succeeds");
@@ -803,18 +803,18 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         // Complete HEADERS frame (END_HEADERS only, stream 1) so stream is established
         var full_req:    u8[..256] = [];
         var hpack_block: u8[..128] = [];
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":path", "/data", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":method", "POST", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":path", "/data", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(client_hpack, hpack_block, ":authority", "example.com", http2::HpackIndexing.Incremental, false);
 
-        let req_hdr = h2_internal::FrameHeader {
+        let req_hdr = http2::FrameHeader {
             length:     hpack_block.len as u32,
             frame_type: rfc::H2_FRAME_HEADERS,
             flags:      rfc::H2_FLAG_END_HEADERS,
             stream_id:  1,
         };
-        h2_internal::encode_frame_header_to(req_hdr, full_req);
+        http2::encode_frame_header_to(req_hdr, full_req);
         full_req.append(hpack_block[..]);
 
         server_out.clear();
@@ -823,13 +823,13 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
 
         // Build DATA frame claiming length 100 but only provide 50 bytes of payload
         var data_wire: u8[..128] = [];
-        let data_hdr = h2_internal::FrameHeader {
+        let data_hdr = http2::FrameHeader {
             length:     100,
             frame_type: rfc::H2_FRAME_DATA,
             flags:      0,
             stream_id:  1,
         };
-        h2_internal::encode_frame_header_to(data_hdr, data_wire);
+        http2::encode_frame_header_to(data_hdr, data_wire);
         // Append only 50 bytes of the claimed 100-byte payload
         for i in 50 {
             data_wire.append([65]);
@@ -854,7 +854,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         // 2-byte varint length starts with 0x40|... prefix; feed only first byte
         // Frame type 0x00 (DATA) is 1-byte varint; length varint starts with 0x40 (2-byte prefix)
         let truncated: u8[2] = [0x00, 0x40];
-        let _, ok = h3_internal::parse_h3_frame_header(truncated[..], 0);
+        let _, ok = http3::parse_frame_header(truncated[..], 0);
         sub.assert_false(ok, "truncated 2-byte length varint must not parse as valid frame header");
     };
 
@@ -877,7 +877,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
         wire.append([0x43]);
         wire.append([0x44]);
 
-        let hdr, ok_hdr = h3_internal::parse_h3_frame_header(wire[..], 0);
+        let hdr, ok_hdr = http3::parse_frame_header(wire[..], 0);
         sub.assert_true(ok_hdr, "frame header itself parses");
         sub.assert_eq(hdr.payload_len, 10, "payload_len claims 10");
     };
@@ -889,46 +889,46 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
 fn test_adversarial_grpc_web(t: lit::T&) {
     t.run("AW-GRPC-01: invalid base64 alphabet rejected") { sub =>
         var ctrl_out: u8[>..] = [];
-        sub.assert_true(wing::decode_grpc_web_text("QUJD", ctrl_out), "control: valid base64 text decodes");
+        sub.assert_true(grpc::decode_web_text("QUJD", ctrl_out), "control: valid base64 text decodes");
 
         var bang_out: u8[>..] = [];
-        sub.assert_false(wing::decode_grpc_web_text("QU!D", bang_out), "'!' outside the base64 alphabet rejected");
+        sub.assert_false(grpc::decode_web_text("QU!D", bang_out), "'!' outside the base64 alphabet rejected");
 
         var at_out: u8[>..] = [];
-        sub.assert_false(wing::decode_grpc_web_text("QU@D", at_out), "'@' outside the base64 alphabet rejected");
+        sub.assert_false(grpc::decode_web_text("QU@D", at_out), "'@' outside the base64 alphabet rejected");
 
         var spc_out: u8[>..] = [];
-        sub.assert_false(wing::decode_grpc_web_text("QU D", spc_out), "space outside the base64 alphabet rejected");
+        sub.assert_false(grpc::decode_web_text("QU D", spc_out), "space outside the base64 alphabet rejected");
     };
 
     t.run("AW-GRPC-02: bad padding rejected") { sub =>
         var rem1_out: u8[>..] = [];
-        sub.assert_false(wing::decode_grpc_web_text("AAAAA", rem1_out), "length % 4 == 1 stream rejected");
+        sub.assert_false(grpc::decode_web_text("AAAAA", rem1_out), "length % 4 == 1 stream rejected");
 
         var lone_out: u8[>..] = [];
-        sub.assert_false(wing::decode_grpc_web_text("A", lone_out), "lone 6-bit char rejected");
+        sub.assert_false(grpc::decode_web_text("A", lone_out), "lone 6-bit char rejected");
 
         var lead_out: u8[>..] = [];
-        sub.assert_false(wing::decode_grpc_web_text("=A==", lead_out), "padding before payload rejected");
+        sub.assert_false(grpc::decode_web_text("=A==", lead_out), "padding before payload rejected");
 
         var mid_out: u8[>..] = [];
-        sub.assert_false(wing::decode_grpc_web_text("AA=A", mid_out), "padding in the middle rejected");
+        sub.assert_false(grpc::decode_web_text("AA=A", mid_out), "padding in the middle rejected");
     };
 
     t.run("AW-GRPC-03: trailer frame without grpc-status is not OK") { sub =>
         // Control: OK surfaces only because a well-formed grpc-status field carries it.
         var ctrl_frame: u8[>..] = [];
-        wing::encode_grpc_web_trailers(wing::GrpcStatusCode.Ok, "OK", ctrl_frame);
+        grpc::encode_web_trailers(grpc::StatusCode.Ok, "OK", ctrl_frame);
         var ctrl_payload: u8[>..] = [];
         var ctrl_is_trailers = false;
         var ctrl_comp = false;
-        let ok_ctrl, _ = wing::decode_grpc_web_frame(ctrl_frame[..], 0, ctrl_payload, ctrl_is_trailers, ctrl_comp);
+        let _, ok_ctrl = grpc::decode_web_frame(ctrl_frame[..], 0, ctrl_payload, ctrl_is_trailers, ctrl_comp);
         sub.assert_true(ok_ctrl, "control trailers frame decodes");
-        var st_ctrl = wing::GrpcStatusCode.Unknown;
+        var st_ctrl = grpc::StatusCode.Unknown;
         var msg_ctrl: u8[..256] = [];
-        let parsed_ctrl = wing::parse_grpc_web_trailers(ctrl_payload[..], st_ctrl, msg_ctrl);
+        let parsed_ctrl = grpc::parse_web_trailers(ctrl_payload[..], st_ctrl, msg_ctrl);
         sub.assert_true(parsed_ctrl, "control trailers parse");
-        sub.assert_eq(st_ctrl, wing::GrpcStatusCode.Ok, "control surfaces OK via its grpc-status field");
+        sub.assert_eq(st_ctrl, grpc::StatusCode.Ok, "control surfaces OK via its grpc-status field");
 
         // Variant A: trailers frame body carries grpc-message but no grpc-status.
         var body_a: u8[..64] = [];
@@ -941,23 +941,23 @@ fn test_adversarial_grpc_web(t: lit::T&) {
         var payload_a: u8[>..] = [];
         var is_trailers_a = false;
         var comp_a = false;
-        let ok_a, _ = wing::decode_grpc_web_frame(frame_a[..], 0, payload_a, is_trailers_a, comp_a);
+        let _, ok_a = grpc::decode_web_frame(frame_a[..], 0, payload_a, is_trailers_a, comp_a);
         sub.assert_true(ok_a, "trailers frame without grpc-status is structurally decodable");
         sub.assert_true(is_trailers_a, "flag 0x80 marks the frame as trailers");
-        var st_a = wing::GrpcStatusCode.Unknown;
+        var st_a = grpc::StatusCode.Unknown;
         var msg_a: u8[..256] = [];
-        let parsed_a = wing::parse_grpc_web_trailers(payload_a[..], st_a, msg_a);
+        let parsed_a = grpc::parse_web_trailers(payload_a[..], st_a, msg_a);
         sub.assert_false(parsed_a, "missing grpc-status must fail parse");
         // Fail-open residue: parse_grpc_web_trailers leaves out_status=Ok on failure
         // (grpc/framing.goose:237) — PARKED for Vector B hardening.
-        sub.assert_eq(st_a, wing::GrpcStatusCode.Ok, "residue pin: failed parse leaves out_status=Ok (fail-open)");
+        sub.assert_eq(st_a, grpc::StatusCode.Ok, "residue pin: failed parse leaves out_status=Ok (fail-open)");
 
         // Variant B: grpc-status field present but with an empty value.
-        var st_b = wing::GrpcStatusCode.Unknown;
+        var st_b = grpc::StatusCode.Unknown;
         var msg_b: u8[..256] = [];
-        let parsed_b = wing::parse_grpc_web_trailers("grpc-status: \r\n", st_b, msg_b);
+        let parsed_b = grpc::parse_web_trailers("grpc-status: \r\n", st_b, msg_b);
         sub.assert_false(parsed_b, "empty grpc-status value must fail parse");
-        sub.assert_eq(st_b, wing::GrpcStatusCode.Ok, "residue pin: failed parse leaves out_status=Ok (fail-open)");
+        sub.assert_eq(st_b, grpc::StatusCode.Ok, "residue pin: failed parse leaves out_status=Ok (fail-open)");
     };
 
     t.run("AW-GRPC-04: incomplete 5-byte LPM prefix in web frame payload") { sub =>
@@ -967,17 +967,17 @@ fn test_adversarial_grpc_web(t: lit::T&) {
         var payload: u8[>..] = [];
         var is_trailers = false;
         var is_comp = false;
-        let ok_frame, _ = wing::decode_grpc_web_frame(frame[..], 0, payload, is_trailers, is_comp);
+        let _, ok_frame = grpc::decode_web_frame(frame[..], 0, payload, is_trailers, is_comp);
         sub.assert_true(ok_frame, "web frame wrapping the fragment is complete");
         sub.assert_false(is_trailers, "data frame, not trailers");
         sub.assert_eq(payload.len, 3, "frame payload is the 3-byte LPM fragment");
 
         var msg: u8[>..] = [];
         var comp = false;
-        let ok_lpm, _ = wing::decode_grpc_lpm(payload[..], 0, msg, comp);
+        let _, ok_lpm = grpc::decode_lpm(payload[..], 0, msg, comp);
         sub.assert_false(ok_lpm, "3-byte fragment cannot satisfy the 5-byte LPM prefix");
 
-        let _, _, _, ok_slice = wing::decode_grpc_lpm_slice(payload[..], 0);
+        let _, _, _, ok_slice = grpc::decode_lpm_slice(payload[..], 0);
         sub.assert_false(ok_slice, "zero-copy slice decoder rejects the truncated prefix too");
     };
 }
@@ -1034,7 +1034,7 @@ fn test_cursor_transactionality(t: lit::T&) {
         let trunc: u8[3] = [0x00, 0x00, 0x00];
         var trunc_snap: u8[..3] = [];
         trunc_snap.append(trunc[..]);
-        let p_a, _, c_a, ok_a = wing::decode_grpc_lpm_slice(trunc[..], 0);
+        let p_a, _, c_a, ok_a = grpc::decode_lpm_slice(trunc[..], 0);
         sub.assert_false(ok_a, "truncated LPM prefix must not decode");
         sub.assert_eq(c_a, 0, "failure consumed is 0 (non-advancing)");
         sub.assert_eq(p_a.len, 0, "failure payload slice is empty");
@@ -1044,7 +1044,7 @@ fn test_cursor_transactionality(t: lit::T&) {
         let bad_flag: u8[6] = [0x02, 0x00, 0x00, 0x00, 0x01, 0x41];
         var flag_snap: u8[..6] = [];
         flag_snap.append(bad_flag[..]);
-        let p_b, _, c_b, ok_b = wing::decode_grpc_lpm_slice(bad_flag[..], 0);
+        let p_b, _, c_b, ok_b = grpc::decode_lpm_slice(bad_flag[..], 0);
         sub.assert_false(ok_b, "reserved flag bits must not decode");
         sub.assert_eq(c_b, 0, "failure consumed is 0 (non-advancing)");
         sub.assert_eq(p_b.len, 0, "failure payload slice is empty");
@@ -1055,7 +1055,7 @@ fn test_cursor_transactionality(t: lit::T&) {
         let over: u8[6] = [0x00, 0x00, 0x00, 0x10, 0x00, 0x41];
         var over_snap: u8[..6] = [];
         over_snap.append(over[..]);
-        let p_c, _, c_c, ok_c = wing::decode_grpc_lpm_slice(over[..], 0);
+        let p_c, _, c_c, ok_c = grpc::decode_lpm_slice(over[..], 0);
         sub.assert_false(ok_c, "claimed length beyond buffer must not decode");
         sub.assert_eq(c_c, 0, "failure consumed is 0 (non-advancing)");
         sub.assert_eq(p_c.len, 0, "failure payload slice is empty");
@@ -1063,7 +1063,7 @@ fn test_cursor_transactionality(t: lit::T&) {
 
         // Bad offset: start past the end of an otherwise well-formed wire.
         let good: u8[6] = [0x00, 0x00, 0x00, 0x00, 0x01, 0x41];
-        let p_d, _, c_d, ok_d = wing::decode_grpc_lpm_slice(good[..], 7);
+        let p_d, _, c_d, ok_d = grpc::decode_lpm_slice(good[..], 7);
         sub.assert_false(ok_d, "offset past end must not decode");
         sub.assert_eq(c_d, 0, "failure consumed is 0 (non-advancing)");
         sub.assert_eq(p_d.len, 0, "failure payload slice is empty");
@@ -1074,7 +1074,7 @@ fn test_cursor_transactionality(t: lit::T&) {
         let one: u8[1] = [0x81];
         var one_snap: u8[..1] = [];
         one_snap.append(one[..]);
-        let hdr_a, ok_a = wing::parse_ws_frame_header(one[..]);
+        let hdr_a, ok_a = realtime::parse_ws_frame_header(one[..]);
         sub.assert_false(ok_a, "1-byte buffer cannot contain a frame header");
         sub.assert_eq(hdr_a.payload_len, 0, "no payload length claimed on failure");
         sub.assert_eq(hdr_a.header_len, 0, "no header length claimed on failure");
@@ -1082,7 +1082,7 @@ fn test_cursor_transactionality(t: lit::T&) {
 
         // Truncated extended-length header: 16-bit length prefix byte present but length bytes missing.
         let trunc16: u8[2] = [0x81, 0x7E];
-        let hdr_b, ok_b = wing::parse_ws_frame_header(trunc16[..]);
+        let hdr_b, ok_b = realtime::parse_ws_frame_header(trunc16[..]);
         sub.assert_false(ok_b, "truncated 16-bit extended length must not parse");
         sub.assert_eq(hdr_b.payload_len, 0, "no payload length claimed on failure");
         sub.assert_eq(hdr_b.header_len, 0, "no header length claimed on failure");
@@ -1164,12 +1164,12 @@ fn test_connect_tunnel_rejection_cve_2026_56866(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_http2_initial_window_flood_cve_2026_78669(t: lit::T&) {
     // CVE-2026-78669: Excessive SETTINGS INITIAL_WINDOW_SIZE changes must be throttled
-    var conn = h2_internal::new_h2_connection(1000);
+    var conn = http2::new_h2_connection(1000);
     for i in 16 {
-        let err = h2_internal::apply_peer_initial_window_size_delta(conn, (65535 + (i % 2)) as u32);
+        let err = http2::apply_peer_initial_window_size_delta(conn, (65535 + (i % 2)) as u32);
         t.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Initial updates <= 16 must succeed");
     }
-    let flood_err = h2_internal::apply_peer_initial_window_size_delta(conn, 65536);
+    let flood_err = http2::apply_peer_initial_window_size_delta(conn, 65536);
     t.assert_eq(flood_err, rfc::H2_ERR_ENHANCE_YOUR_CALM, "17th window change must return ERR_ENHANCE_YOUR_CALM");
 }
 

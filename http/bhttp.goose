@@ -56,7 +56,7 @@ fn bhttp_varint_size(v: u64) -> u64 {
 fn bhttp_put_len_bytes(out: u8[..8192]&, val: const u8[:]) -> bool {
     let need = bhttp_varint_size(val.len as u64) + (val.len as u64);
     guard out.len + (need as i64) <= out.cap else { return false; }
-    guard quic_internal::quic_encode_varint(out, val.len as u64) else { return false; }
+    guard quic::encode_varint(val.len as u64, out) else { return false; }
     out.append(val);
     return true;
 }
@@ -69,7 +69,7 @@ fn bhttp_put_len_bytes(out: u8[..8192]&, val: const u8[:]) -> bool {
 //   returns: value = "GET", ok = true, idx = 4
 fn bhttp_read_len_bytes(raw: const u8[:], idx: i64&) -> const u8[:], bool {
     var scan = idx;
-    let n, ok = quic_internal::quic_decode_varint_cursor(raw, scan);
+    let n, ok = quic::decode_varint_cursor(raw, scan);
     guard ok else { return "", false; }
     guard n <= ((raw.len - scan) as u64) else { return "", false; }
     let end = scan + (n as i64);
@@ -104,7 +104,7 @@ fn bhttp_encode_tail(map: const HeaderMap&, body: const u8[:], out: u8[..8192]&)
     // Pre-validate total capacity (section + content + 1-byte empty trailers)
     // so no partial write can occur on overflow.
     guard out.len + (section_need as i64) + (content_need as i64) + 1 <= out.cap else { return false; }
-    guard quic_internal::quic_encode_varint(out, section_len) else { return false; }
+    guard quic::encode_varint(section_len, out) else { return false; }
     for &entry in map.entries {
         let name = map.raw_buf[entry.name_begin..entry.name_end];
         if name.len == 0 {
@@ -135,13 +135,13 @@ fn bhttp_decode_field_line(
     seen_regular: bool&,
 ) -> bool {
     var scan = idx;
-    let name_len, ok1 = quic_internal::quic_decode_varint_cursor(sec, scan);
+    let name_len, ok1 = quic::decode_varint_cursor(sec, scan);
     guard ok1 && name_len >= 1 && name_len <= ((sec.len - scan) as u64) else { return false; }
     let name_end = scan + (name_len as i64);
     let name = sec[scan..name_end];
     scan = name_end;
 
-    let val_len, ok2 = quic_internal::quic_decode_varint_cursor(sec, scan);
+    let val_len, ok2 = quic::decode_varint_cursor(sec, scan);
     guard ok2 && val_len <= ((sec.len - scan) as u64) else { return false; }
     let val_end = scan + (val_len as i64);
     let val = sec[scan..val_end];
@@ -167,13 +167,13 @@ fn bhttp_decode_field_line(
 //   returns: true, idx = 8 (consumed 8 bytes)
 fn bhttp_decode_trailer_line(sec: const u8[:], idx: i64&) -> bool {
     var scan = idx;
-    let name_len, ok1 = quic_internal::quic_decode_varint_cursor(sec, scan);
+    let name_len, ok1 = quic::decode_varint_cursor(sec, scan);
     guard ok1 && name_len >= 1 && name_len <= ((sec.len - scan) as u64) else { return false; }
     let name_end = scan + (name_len as i64);
     let name = sec[scan..name_end];
     scan = name_end;
 
-    let val_len, ok2 = quic_internal::quic_decode_varint_cursor(sec, scan);
+    let val_len, ok2 = quic::decode_varint_cursor(sec, scan);
     guard ok2 && val_len <= ((sec.len - scan) as u64) else { return false; }
     let val_end = scan + (val_len as i64);
     let val = sec[scan..val_end];
@@ -202,7 +202,7 @@ fn bhttp_decode_tail(
 ) -> bool {
     var scan = idx;
     if scan < raw.len {
-        let sec_len, ok = quic_internal::quic_decode_varint_cursor(raw, scan);
+        let sec_len, ok = quic::decode_varint_cursor(raw, scan);
         guard ok && sec_len <= ((raw.len - scan) as u64) else { return false; }
         let sec_end = scan + (sec_len as i64);
         let sec = raw[scan..sec_end];
@@ -215,7 +215,7 @@ fn bhttp_decode_tail(
     }
 
     if scan < raw.len {
-        let clen, ok = quic_internal::quic_decode_varint_cursor(raw, scan);
+        let clen, ok = quic::decode_varint_cursor(raw, scan);
         guard ok && clen <= ((raw.len - scan) as u64) else { return false; }
         let cend = scan + (clen as i64);
         guard body.try_set(raw[scan..cend]) else { return false; }
@@ -224,7 +224,7 @@ fn bhttp_decode_tail(
     }
 
     if scan < raw.len {
-        let tlen, ok = quic_internal::quic_decode_varint_cursor(raw, scan);
+        let tlen, ok = quic::decode_varint_cursor(raw, scan);
         guard ok && tlen <= ((raw.len - scan) as u64) else { return false; }
         let tend = scan + (tlen as i64);
         let trailers = raw[scan..tend];
@@ -380,7 +380,7 @@ fn bhttp_decode_request(raw: const u8[:], out: BhttpRequest&) -> bool {
     reset_bhttp_request(out);
 
     var idx: i64 = 0;
-    let frame, ok0 = quic_internal::quic_decode_varint_cursor(raw, idx);
+    let frame, ok0 = quic::decode_varint_cursor(raw, idx);
     guard ok0 && frame == rfc::BHTTP_FRAME_KNOWN_LEN_REQUEST else { return false; }
 
     let method, ok1 = bhttp_read_len_bytes(raw, idx);
@@ -423,7 +423,7 @@ fn bhttp_encode_response(res: const BhttpResponse&, out: u8[..8192]&) -> i32 {
     defer if !committed { out.clear(); };
 
     out.push(rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE);
-    guard quic_internal::quic_encode_varint(out, res.status as u64) else { return -1; }
+    guard quic::encode_varint(res.status as u64, out) else { return -1; }
     let blen = res.body_len as i64;
     guard bhttp_encode_tail(res.headers, res.body[..blen], out) else { return -1; }
     committed = true;
@@ -443,17 +443,17 @@ fn bhttp_decode_response(raw: const u8[:], out: BhttpResponse&) -> bool {
     out.body_len = 0;
 
     var idx: i64 = 0;
-    let frame, ok0 = quic_internal::quic_decode_varint_cursor(raw, idx);
+    let frame, ok0 = quic::decode_varint_cursor(raw, idx);
     guard ok0 && frame == rfc::BHTTP_FRAME_KNOWN_LEN_RESPONSE else { return false; }
 
     var status: u64 = 0;
     loop {
-        let st, ok1 = quic_internal::quic_decode_varint_cursor(raw, idx);
+        let st, ok1 = quic::decode_varint_cursor(raw, idx);
         guard ok1 && st >= 100 && st <= 599 else { return false; }
         status = st;
         guard status < 200 else { break; }
         guard idx < raw.len else { return false; }
-        let sec_len, ok_sec = quic_internal::quic_decode_varint_cursor(raw, idx);
+        let sec_len, ok_sec = quic::decode_varint_cursor(raw, idx);
         guard ok_sec && sec_len <= ((raw.len - idx) as u64) else { return false; }
         let sec_end = idx + (sec_len as i64);
         let sec = raw[idx..sec_end];

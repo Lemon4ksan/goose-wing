@@ -93,14 +93,6 @@ inline fn reset_soa_slot_fields(table: SoAConnTable&, slot: i64, fd: i64, timeou
     table.peer_ips[slot].clear();
 }
 
-// Resets all materialized slots in a SoAConnTable in place without allocating upfront capacity.
-fn reset_soa_table_inplace(table: SoAConnTable&) {
-    for i in table.fds.len {
-        reset_soa_slot_fields(table, i, SOA_INVALID_FD, SOA_INVALID_TICK);
-    }
-    table.count = 0;
-}
-
 // Allocates an active connection slot in the SoA table, growing lazily up to `table.max_slots`.
 fn soa_table_alloc(table: SoAConnTable&, fd: i64, timeout_tick: u8) -> i64 {
     guard fd > 0 else { return SOA_INVALID_FD; }

@@ -144,15 +144,15 @@ fn test_retry_redirect_and_balancer() {
     let _ = wing::append_header(redir_hdrs, "X-Internal-Auth", "secret");
     wing::apply_custom_redirect_strip(redir_hdrs, true, custom_pol);
 
-    var bal = wing::DynamicWeightBalancer { error_penalty: 20, max_weight_per_server: 100, .. };
-    let _ = bal.entries.try_push(wing::DynamicWeightEntry { effective_weight: 100, .. });
-    let _ = bal.entries.try_push(wing::DynamicWeightEntry { effective_weight: 100, .. });
-    wing::recompute_balancer_ratios(bal);
-    wing::penalize_upstream_weight(bal, 0);
+    var bal = proxy::DynamicWeightBalancer { error_penalty: 20, max_weight_per_server: 100, .. };
+    let _ = bal.entries.try_push(proxy::DynamicWeightEntry { effective_weight: 100, .. });
+    let _ = bal.entries.try_push(proxy::DynamicWeightEntry { effective_weight: 100, .. });
+    bal.recompute_balancer_ratios();
+    bal.penalize_upstream_weight(0);
     let w_after_pen = bal.entries[0].effective_weight;
     let gcd_after_pen = bal.weight_gcd;
-    let sel0, sel_ok = wing::select_weighted_upstream(bal);
-    wing::reward_upstream_weight(bal, 0);
+    let sel0, sel_ok = bal.select_weighted_upstream();
+    bal.reward_upstream_weight(0);
     let w_after_rew = bal.entries[0].effective_weight;
 
     print("etag:", strong_ok, " ", weak_ok, " resume:", built_ok, " range:", wing::get_header(req_hdrs, "Range"), " if_match:", wing::get_header(req_hdrs, "If-Match"));

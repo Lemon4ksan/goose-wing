@@ -1774,7 +1774,7 @@ fn serve_reactor_tls(
 // Processes an incoming HTTP/3 request stream payload through `H3Connection` and `server.pipeline` (RFC 9114).
 fn handle_h3_server_datagram<B>(
     server:    HttpServer&,
-    h3_conn:   h3_internal::H3Connection&,
+    h3_conn:   http3::Connection&,
     stream_id: u64,
     client_ip: const u8[:],
     rx_wire:   const u8[:],
@@ -1785,10 +1785,10 @@ fn handle_h3_server_datagram<B>(
     if server.trust_proxy_headers {
         server.pipeline.trust_proxy_headers = true;
     }
-    let h_err = h3_internal::handle_stream_data(h3_conn, stream_id, true, rx_wire, true);
+    let h_err = http3::handle_stream_data(h3_conn, stream_id, true, rx_wire, true);
     guard h_err == rfc::H3_ERR_NO_ERROR else { return false; }
 
-    let s_idx, found = h3_internal::find_h3_stream_idx(h3_conn, stream_id);
+    let s_idx, found = http3::find_stream_idx(h3_conn, stream_id);
     guard found && s_idx >= 0 && s_idx < h3_conn.streams.len else { return false; }
     guard h3_conn.streams[s_idx].headers_received else { return false; }
 
@@ -1799,12 +1799,12 @@ fn handle_h3_server_datagram<B>(
         let _ = append_header(req.headers, "host", h3_conn.streams[s_idx].req_authority[..]);
         req.presence_mask |= HDR_PRESENCE_HOST;
     }
-    let _ = h3_internal::copy_stream_headers(h3_conn, stream_id, req.headers);
+    let _ = http3::copy_stream_headers(h3_conn, stream_id, req.headers);
     for &e in req.headers.entries {
         let known_id = identify_known_header(entry_name(req.headers, e));
         req.presence_mask |= header_id_to_bit(known_id);
     }
-    let _ = h3_internal::copy_stream_trailers(h3_conn, stream_id, req.trailers);
+    let _ = http3::copy_stream_trailers(h3_conn, stream_id, req.trailers);
     if h3_conn.streams[s_idx].received_body.len > 0 {
         req.body.append(h3_conn.streams[s_idx].received_body[..]);
     }
@@ -1823,7 +1823,7 @@ fn handle_h3_server_datagram<B>(
         hdr_name.to_lower_ascii(lname);
         let _ = extra_map.append_header(lname[..], hdr_val);
     }
-    return h3_internal::send_response_headers_body_and_trailers(
+    return http3::send_response_headers_body_and_trailers(
         h3_conn, stream_id, res.status_code, extra_map, res.body[..], res.trailers, tx_wire,
     );
 }
@@ -1831,7 +1831,7 @@ fn handle_h3_server_datagram<B>(
 inline fn dispatch_h3_udp_datagram(
     server:    HttpServer&,
     udp_fd:    i64,
-    h3_conn:   h3_internal::H3Connection&,
+    h3_conn:   http3::Connection&,
     served:    i64,
     peer_ip4:  u32,
     peer_port: u16,
@@ -1843,7 +1843,7 @@ inline fn dispatch_h3_udp_datagram(
     let stream_id = core::shl_sat_u64((served & 15) as u64, 2);
     for st_i in h3_conn.streams.len {
         if h3_conn.streams[st_i].stream_id == stream_id {
-            h3_conn.streams[st_i] = h3_internal::H3StreamEntry { stream_id: stream_id, .. };
+            h3_conn.streams[st_i] = http3::StreamEntry { stream_id: stream_id, .. };
         }
     }
     var peer_ip_str: u8[..32] = [];
@@ -1871,7 +1871,7 @@ inline fn dispatch_h3_udp_datagram(
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
     guard udp_fd > 0 else { return 0; }
     let h3_settings = fingerprint::H3Settings { .. };
-    var h3_conn = h3_internal::new_h3_server_connection(h3_settings);
+    var h3_conn = http3::new_server_connection(h3_settings);
     var rx_queue = UdpBatchQueue { .. };
     var tx_queue = UdpBatchQueue { .. };
     var tx_wire:    u8[..1472] = [];
@@ -1913,14 +1913,14 @@ fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64 {
 // Public HTTP/3 and QUIC server endpoint state (RFC 9000, RFC 9114, RFC 9204).
 // Encapsulates HTTP/3 connection state, QPACK tables, and QUIC handshake framing.
 struct H3ServerEndpoint {
-    conn: h3_internal::H3Connection = h3_internal::H3Connection { .. },
+    conn: http3::Connection = http3::Connection { .. },
 }
 
 fn new_h3_server_endpoint(
     settings: fingerprint::H3Settings = fingerprint::H3Settings { .. },
 ) -> H3ServerEndpoint {
     var ep = H3ServerEndpoint {
-        conn: h3_internal::new_h3_server_connection(settings),
+        conn: http3::new_server_connection(settings),
     };
     ep.conn.qpack_table.capacity_bytes = 0;
     return ep;
@@ -1928,22 +1928,22 @@ fn new_h3_server_endpoint(
 
 fn encode_h3_connection_close<B>(err_code: u64, out_wire: B&) {
     out_wire.clear();
-    quic_internal::quic_encode_varint(out_wire, 0x1D);
-    quic_internal::quic_encode_varint(out_wire, err_code);
-    quic_internal::quic_encode_varint(out_wire, 0);
+    quic::encode_varint(0x1D, out_wire);
+    quic::encode_varint(err_code, out_wire);
+    quic::encode_varint(0, out_wire);
 }
 
-inline fn is_h3_wire_frame_bounded(datagram: const u8[:], hdr: const h3_internal::H3FrameHeader&) -> bool {
+inline fn is_h3_wire_frame_bounded(datagram: const u8[:], hdr: const http3::FrameHeader&) -> bool {
     return ((hdr.header_len + hdr.payload_len) as i64) <= datagram.len;
 }
 
 fn handle_h3_endpoint_settings<B>(
     ep:       H3ServerEndpoint&,
-    hdr:      const h3_internal::H3FrameHeader&,
+    hdr:      const http3::FrameHeader&,
     payload:  const u8[:],
     out_wire: B&,
 ) -> bool {
-    let err = h3_internal::handle_peer_control_frame(ep.conn, hdr, payload);
+    let err = http3::handle_peer_control_frame(ep.conn, hdr, payload);
     guard err == rfc::H3_ERR_NO_ERROR else {
         encode_h3_connection_close(err, out_wire);
         return true;
@@ -1964,10 +1964,10 @@ fn handle_h3_endpoint_request<B>(
 ) -> bool {
     for st_i in ep.conn.streams.len {
         if ep.conn.streams[st_i].stream_id == 0 {
-            ep.conn.streams[st_i] = h3_internal::H3StreamEntry { stream_id: 0, .. };
+            ep.conn.streams[st_i] = http3::StreamEntry { stream_id: 0, .. };
         }
     }
-    ep.conn.state = h3_internal::H3ConnState.Active;
+    ep.conn.state = http3::ConnState.Active;
     ep.conn.error_code = rfc::H3_ERR_NO_ERROR;
 
     let ok = handle_h3_server_datagram(server, ep.conn, 0, client_ip, datagram, now_ns, out_wire);
@@ -1991,7 +1991,7 @@ fn handle_h3_endpoint_frame<B>(
     now_ns:    u64,
     out_wire:  B&,
 ) -> bool {
-    let hdr, ok_hdr = h3_internal::parse_h3_frame_header(datagram, 0);
+    let hdr, ok_hdr = http3::parse_frame_header(datagram, 0);
     guard ok_hdr && is_h3_wire_frame_bounded(datagram, hdr) else { return false; }
 
     let start = hdr.header_len as i64;
@@ -2007,7 +2007,7 @@ fn handle_h3_endpoint_frame<B>(
     return false;
 }
 
-fn encode_quic_version_negotiation<B>(hdr: const quic_internal::QuicHeader&, out_wire: B&) {
+fn encode_quic_version_negotiation<B>(hdr: const quic::QuicHeader&, out_wire: B&) {
     out_wire.clear();
     out_wire.push(0xC0);
     out_wire.append_u32_be(rfc::QUIC_VERSION_NEGOTIATION);
@@ -2020,7 +2020,7 @@ fn encode_quic_version_negotiation<B>(hdr: const quic_internal::QuicHeader&, out
 
 fn encode_quic_server_initial<B>(
     ep:       const H3ServerEndpoint&,
-    hdr:      const quic_internal::QuicHeader&,
+    hdr:      const quic::QuicHeader&,
     out_wire: B&,
 ) {
     out_wire.clear();
@@ -2034,12 +2034,12 @@ fn encode_quic_server_initial<B>(
     out_wire.push(0);
 
     var h3_ctrl: u8[..128] = [];
-    quic_internal::quic_encode_varint(h3_ctrl, rfc::H3_STREAM_CONTROL);
-    h3_internal::encode_h3_settings_frame(h3_ctrl, ep.conn.local_settings);
-    h3_internal::encode_h3_frame_header(h3_ctrl, 0x21, 0);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, h3_ctrl);
+    http3::encode_settings_frame(h3_ctrl, ep.conn.local_settings);
+    http3::encode_frame_header(h3_ctrl, 0x21, 0);
 
     let payload_len = (2 + h3_ctrl.len) as u64;
-    quic_internal::quic_encode_varint(out_wire, payload_len);
+    quic::encode_varint(payload_len, out_wire);
     out_wire.append_u16_be(1);
     out_wire.append(h3_ctrl[..]);
 }
@@ -2065,7 +2065,7 @@ fn handle_h3_quic_datagram<B>(
         }
     }
 
-    let quic_hdr, ok_qhdr = quic_internal::parse_quic_header(datagram);
+    let quic_hdr, ok_qhdr = quic::parse_header(datagram);
     guard ok_qhdr else { return false; }
 
     if quic_hdr.version != rfc::QUIC_VERSION_1 && quic_hdr.version != rfc::QUIC_VERSION_NEGOTIATION {
@@ -2073,7 +2073,7 @@ fn handle_h3_quic_datagram<B>(
         return out_wire.len > 0;
     }
 
-    if quic_hdr.header_type == quic_internal::QuicHeaderType.Initial {
+    if quic_hdr.header_type == quic::QuicHeaderType.Initial {
         // RFC 9000 Section 14.1: Initial Datagram Size - server MUST discard client Initial < 1200 bytes
         guard datagram.len >= (rfc::QUIC_MIN_INITIAL_DATAGRAM_LEN as i64) else {
             return false;

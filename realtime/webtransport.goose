@@ -6,20 +6,16 @@
 // Implements extended CONNECT session bootstrapping (:protocol = webtransport),
 // HTTP/3 settings negotiation, unidirectional (0x54) and bidirectional (0x41) stream framing,
 // unreliable datagram framing, HTTP/3 error code translation, and session capsules (draft-16 Section 8).
-namespace wing;
+namespace realtime;
 
 import std;
 import core from "..";
-import fingerprint.profile;
+import rfc.h3_quic;
 import http.request;
 import http.response;
+import .internal;
 
-// ---- WebTransport & RFC 9221 Constants (draft-16) -------------------------
-
-// CAPSULE_WT_RESET_STREAM (0x190B4D39), CAPSULE_WT_STOP_SENDING (0x190B4D3A),
-// CAPSULE_CLOSE_WEBTRANSPORT (0x2843), CAPSULE_DRAIN_WEBTRANSPORT (0x78AE).
-
-// HTTP/3 Error Code Mapping bounds (draft-16 Section 4.3)
+// ---- WebTransport Session & Framing Types (draft-16) ---------------------
 
 struct WebTransportSession {
     session_id:        u64        = 0,
@@ -61,31 +57,7 @@ struct WebTransportStreamStopSending {
     error_code: u32 = 0,
 }
 
-// ---- Varint Helper (RFC 9000 Section 16) ---------------------------------
-
-fn write_varint<B>(out: B&, val: u64) {
-    guard val <= 0x3FFFFFFFFFFFFFFF else { return; }
-    if val <= 63 {
-        out.push(val as u8);
-    } else if val <= 16383 {
-        out.push((0x40 | ((val >> 8) & 0x3F)) as u8);
-        out.push((val & 0xFF) as u8);
-    } else if val <= 1073741823 {
-        out.push((0x80 | ((val >> 24) & 0x3F)) as u8);
-        out.push(((val >> 16) & 0xFF) as u8);
-        out.push(((val >> 8) & 0xFF) as u8);
-        out.push((val & 0xFF) as u8);
-    } else {
-        out.push((0xC0 | ((val >> 56) & 0x3F)) as u8);
-        out.push(((val >> 48) & 0xFF) as u8);
-        out.push(((val >> 40) & 0xFF) as u8);
-        out.push(((val >> 32) & 0xFF) as u8);
-        out.push(((val >> 24) & 0xFF) as u8);
-        out.push(((val >> 16) & 0xFF) as u8);
-        out.push(((val >> 8) & 0xFF) as u8);
-        out.push((val & 0xFF) as u8);
-    }
-}
+// ---- Varint Reader (RFC 9000 Section 16) ---------------------------------
 
 // Reads a variable-length integer (RFC 9000 Section 16).
 // Advances `idx` past the consumed integer bytes; leaves `idx` unchanged on error.
@@ -112,9 +84,9 @@ fn read_varint(wire: const u8[:], idx: i64&) -> u64, bool {
 
 // ---- Session Initiation (Extended CONNECT :protocol = webtransport) ------
 
-// Formats an HTTP/3 Extended CONNECT request to open a WebTransport session
+// Formats an HTTP/3 Extended CONNECT request to open a WebTransport session.
 fn format_webtransport_connect_request(
-    req:        Request&,
+    req:        wing::Request&,
     url_target: const u8[:],
 ) {
     let _ = req.method.try_set("CONNECT");
@@ -123,12 +95,12 @@ fn format_webtransport_connect_request(
 
     // RFC 8441 / RFC 9220 / WebTransport draft-16:
     // :protocol = webtransport
-    set_header(req, ":protocol", rfc::WEBTRANSPORT_PROTOCOL);
-    set_header(req, "sec-webtransport-http3-draft", "draft16");
+    wing::set_header(req, ":protocol", rfc::WEBTRANSPORT_PROTOCOL);
+    wing::set_header(req, "sec-webtransport-http3-draft", "draft16");
 }
 
-// Validates whether an incoming HTTP request is an Extended CONNECT WebTransport request
-fn is_webtransport_connect_request(req: const Request&) -> bool {
+// Validates whether an incoming HTTP request is an Extended CONNECT WebTransport request.
+fn is_webtransport_connect_request(req: const wing::Request&) -> bool {
     if req.method[..] != "CONNECT" { return false; }
     if !req.has_header(":protocol") { return false; }
     if req.header(":protocol") != rfc::WEBTRANSPORT_PROTOCOL { return false; }
@@ -137,25 +109,20 @@ fn is_webtransport_connect_request(req: const Request&) -> bool {
     return view.scheme.eq_ascii_fold("https") && view.host.len > 0 && view.pathname.len > 0;
 }
 
-// Formats an HTTP/3 response accepting a WebTransport session
-fn format_webtransport_connect_response(res: Response&) {
+// Formats an HTTP/3 response accepting a WebTransport session.
+fn format_webtransport_connect_response(res: wing::Response&) {
     res.status_code = 200;
-    set_header(res, "sec-webtransport-http3-draft", "draft16");
+    wing::set_header(res, "sec-webtransport-http3-draft", "draft16");
 }
 
-// RFC 9000 Section 2.1: Stream Types and Identifiers - Client-initiated bidirectional stream IDs have low bits 0x00.
-inline fn is_valid_webtransport_session_id(session_id: u64) -> bool {
-    return session_id <= rfc::QUIC_VARINT_MAX && (session_id & 0x03) == 0;
-}
-
-// Validates whether server response accepts the WebTransport session
-fn handle_webtransport_response(res: const Response&, session: WebTransportSession&) -> bool {
+// Validates whether server response accepts the WebTransport session.
+fn handle_webtransport_response(session: WebTransportSession&, res: const wing::Response&) -> bool {
     let status_ok = res.status_code >= 200 && res.status_code < 300 &&
         res.status_code != 204 && res.status_code != 205 && res.status_code != 206;
     let hdrs_ok = !res.has_header("content-length") &&
         !res.has_header("content-type") &&
         !res.has_header("transfer-encoding");
-    guard is_valid_webtransport_session_id(session.session_id) && status_ok && hdrs_ok else {
+    guard realtime_internal::is_valid_webtransport_session_id(session.session_id) && status_ok && hdrs_ok else {
         session.is_active = false;
         return false;
     }
@@ -174,30 +141,31 @@ fn encode_webtransport_uni_stream_header<B>(
     session_id: u64,
     out:        B&,
 ) {
-    guard is_valid_webtransport_session_id(session_id) else { return; }
-    write_varint(out, rfc::STREAM_TYPE_WEBTRANSPORT);
-    write_varint(out, session_id);
+    guard realtime_internal::is_valid_webtransport_session_id(session_id) else { return; }
+    realtime_internal::write_varint(out, rfc::STREAM_TYPE_WEBTRANSPORT);
+    realtime_internal::write_varint(out, session_id);
 }
 
 // Decodes a WebTransport unidirectional stream header from wire bytes.
 //
 // Example:
 //   wire = [0x40, 0x54, 0x04]
-//   returns: true, out.session_id = 4
+//   returns: WebTransportUniStreamHeader { session_id: 4, header_len: 3 }, ok = true
 fn decode_webtransport_uni_stream_header(
     wire: const u8[:],
-    out:  WebTransportUniStreamHeader&,
-) -> bool {
+) -> WebTransportUniStreamHeader, bool {
     var idx: i64 = 0;
     let stype, ok1 = read_varint(wire, idx);
-    guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else { return false; }
+    guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else {
+        return WebTransportUniStreamHeader { .. }, false;
+    }
 
     let sid, ok2 = read_varint(wire, idx);
-    guard ok2 && is_valid_webtransport_session_id(sid) else { return false; }
+    guard ok2 && realtime_internal::is_valid_webtransport_session_id(sid) else {
+        return WebTransportUniStreamHeader { .. }, false;
+    }
 
-    out.session_id = sid;
-    out.header_len = idx;
-    return true;
+    return WebTransportUniStreamHeader { session_id: sid, header_len: idx }, true;
 }
 
 // Encodes a WebTransport bidirectional stream opening header:
@@ -206,30 +174,31 @@ fn encode_webtransport_bidi_stream_header<B>(
     session_id: u64,
     out:        B&,
 ) {
-    guard is_valid_webtransport_session_id(session_id) else { return; }
-    write_varint(out, rfc::WEBTRANSPORT_BIDI_SIGNAL);
-    write_varint(out, session_id);
+    guard realtime_internal::is_valid_webtransport_session_id(session_id) else { return; }
+    realtime_internal::write_varint(out, rfc::WEBTRANSPORT_BIDI_SIGNAL);
+    realtime_internal::write_varint(out, session_id);
 }
 
 // Decodes a WebTransport bidirectional stream opening header from wire bytes.
 //
 // Example:
 //   wire = [0x40, 0x41, 0x04]
-//   returns: true, out.session_id = 4
+//   returns: WebTransportBidiStreamHeader { session_id: 4, header_len: 3 }, ok = true
 fn decode_webtransport_bidi_stream_header(
     wire: const u8[:],
-    out:  WebTransportBidiStreamHeader&,
-) -> bool {
+) -> WebTransportBidiStreamHeader, bool {
     var idx: i64 = 0;
     let signal, ok1 = read_varint(wire, idx);
-    guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else { return false; }
+    guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else {
+        return WebTransportBidiStreamHeader { .. }, false;
+    }
 
     let sid, ok2 = read_varint(wire, idx);
-    guard ok2 && is_valid_webtransport_session_id(sid) else { return false; }
+    guard ok2 && realtime_internal::is_valid_webtransport_session_id(sid) else {
+        return WebTransportBidiStreamHeader { .. }, false;
+    }
 
-    out.session_id = sid;
-    out.header_len = idx;
-    return true;
+    return WebTransportBidiStreamHeader { session_id: sid, header_len: idx }, true;
 }
 
 // ---- Datagram Framing (draft-16 Section 5 & RFC 9221) ---------------------
@@ -241,9 +210,9 @@ fn encode_webtransport_datagram<B>(
     payload:    const u8[:],
     out:        B&,
 ) {
-    guard is_valid_webtransport_session_id(session_id) else { return; }
-    write_varint(out, session_id >> 2);
-    write_varint(out, 0);
+    guard realtime_internal::is_valid_webtransport_session_id(session_id) else { return; }
+    realtime_internal::write_varint(out, session_id >> 2);
+    realtime_internal::write_varint(out, 0);
     out.append(payload);
 }
 
@@ -267,13 +236,13 @@ fn decode_webtransport_datagram(
     return true;
 }
 
-// Encodes an RFC 9221 QUIC DATAGRAM frame (Type 0x31 with varint length)
+// Encodes an RFC 9221 QUIC DATAGRAM frame (Type 0x31 with varint length).
 fn encode_quic_datagram_frame<B>(
     datagram_payload: const u8[:],
     out:              B&,
 ) {
-    write_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN);
-    write_varint(out, datagram_payload.len as u64);
+    realtime_internal::write_varint(out, rfc::QUIC_FRAME_DATAGRAM_LEN);
+    realtime_internal::write_varint(out, datagram_payload.len as u64);
     out.append(datagram_payload);
 }
 
@@ -304,7 +273,9 @@ fn decode_quic_datagram_frame<B>(
         payload_end = core::add_sat_i64(idx, len as i64);
     }
 
-    guard core::sub_sat_i64(payload_end, idx) <= ws_buf_cap(out_payload) else { return false; }
+    guard core::sub_sat_i64(payload_end, idx) <= realtime_internal::ws_buf_cap(out_payload) else {
+        return false;
+    }
     out_payload.clear();
     out_payload.append(wire[idx..payload_end]);
     return true;
@@ -349,9 +320,9 @@ fn encode_webtransport_close_session<B>(
     }
     let eff_reason = if eff_len > 0 && reason[..eff_len].validate_utf8() { reason[..eff_len] } else { "" };
 
-    write_varint(out, rfc::CAPSULE_CLOSE_WEBTRANSPORT);
+    realtime_internal::write_varint(out, rfc::CAPSULE_CLOSE_WEBTRANSPORT);
     let payload_len = core::add_sat_i64(4, eff_reason.len);
-    write_varint(out, payload_len as u64);
+    realtime_internal::write_varint(out, payload_len as u64);
 
     out.append_u32_be(error_code);
     out.append(eff_reason);
@@ -378,8 +349,8 @@ fn decode_webtransport_close_session(
 // Encodes a DRAIN_WEBTRANSPORT_SESSION capsule:
 // Capsule Type (varint 0x78AE) || Length (varint 0)
 fn encode_webtransport_drain_session<B>(out: B&) {
-    write_varint(out, rfc::CAPSULE_DRAIN_WEBTRANSPORT);
-    write_varint(out, 0);
+    realtime_internal::write_varint(out, rfc::CAPSULE_DRAIN_WEBTRANSPORT);
+    realtime_internal::write_varint(out, 0);
 }
 
 // Validates a DRAIN_WEBTRANSPORT_SESSION capsule payload (length must be 0).
@@ -398,12 +369,12 @@ fn encode_webtransport_reset_stream<B>(
     error_code: u32,
     out:        B&,
 ) {
-    write_varint(out, rfc::CAPSULE_WT_RESET_STREAM);
+    realtime_internal::write_varint(out, rfc::CAPSULE_WT_RESET_STREAM);
     var tmp_body: u8[..32] = [];
-    write_varint(tmp_body, stream_id);
-    write_varint(tmp_body, error_code as u64);
+    realtime_internal::write_varint(tmp_body, stream_id);
+    realtime_internal::write_varint(tmp_body, error_code as u64);
 
-    write_varint(out, tmp_body.len as u64);
+    realtime_internal::write_varint(out, tmp_body.len as u64);
     out.append(tmp_body[..]);
 }
 
@@ -411,21 +382,20 @@ fn encode_webtransport_reset_stream<B>(
 //
 // Example:
 //   payload = [0x01, 0x00]
-//   returns: true, out.stream_id = 1, out.error_code = 0
+//   returns: WebTransportStreamReset { stream_id: 1, error_code: 0 }, ok = true
 fn decode_webtransport_reset_stream(
     payload: const u8[:],
-    out:     WebTransportStreamReset&,
-) -> bool {
+) -> WebTransportStreamReset, bool {
     var idx: i64 = 0;
     let sid, ok1 = read_varint(payload, idx);
-    guard ok1 else { return false; }
+    guard ok1 else { return WebTransportStreamReset { .. }, false; }
 
     let code, ok2 = read_varint(payload, idx);
-    guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else { return false; }
+    guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else {
+        return WebTransportStreamReset { .. }, false;
+    }
 
-    out.stream_id = sid;
-    out.error_code = code as u32;
-    return true;
+    return WebTransportStreamReset { stream_id: sid, error_code: code as u32 }, true;
 }
 
 // Encodes a WT_STOP_SENDING capsule (draft-ietf-webtrans-http3-16 / draft-ietf-webtrans-http2):
@@ -435,12 +405,12 @@ fn encode_webtransport_stop_sending<B>(
     error_code: u32,
     out:        B&,
 ) {
-    write_varint(out, rfc::CAPSULE_WT_STOP_SENDING);
+    realtime_internal::write_varint(out, rfc::CAPSULE_WT_STOP_SENDING);
     var tmp_body: u8[..32] = [];
-    write_varint(tmp_body, stream_id);
-    write_varint(tmp_body, error_code as u64);
+    realtime_internal::write_varint(tmp_body, stream_id);
+    realtime_internal::write_varint(tmp_body, error_code as u64);
 
-    write_varint(out, tmp_body.len as u64);
+    realtime_internal::write_varint(out, tmp_body.len as u64);
     out.append(tmp_body[..]);
 }
 
@@ -448,21 +418,20 @@ fn encode_webtransport_stop_sending<B>(
 //
 // Example:
 //   payload = [0x01, 0x00]
-//   returns: true, out.stream_id = 1, out.error_code = 0
+//   returns: WebTransportStreamStopSending { stream_id: 1, error_code: 0 }, ok = true
 fn decode_webtransport_stop_sending(
     payload: const u8[:],
-    out:     WebTransportStreamStopSending&,
-) -> bool {
+) -> WebTransportStreamStopSending, bool {
     var idx: i64 = 0;
     let sid, ok1 = read_varint(payload, idx);
-    guard ok1 else { return false; }
+    guard ok1 else { return WebTransportStreamStopSending { .. }, false; }
 
     let code, ok2 = read_varint(payload, idx);
-    guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else { return false; }
+    guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else {
+        return WebTransportStreamStopSending { .. }, false;
+    }
 
-    out.stream_id = sid;
-    out.error_code = code as u32;
-    return true;
+    return WebTransportStreamStopSending { stream_id: sid, error_code: code as u32 }, true;
 }
 
 // ---- Session State Management --------------------------------------------
@@ -495,12 +464,6 @@ enum WebTransportSessionState {
     Connecting,
     Active,
     Draining,
-}
-
-struct WebTransportDemuxHeader {
-    kind:       WebTransportStreamKind = WebTransportStreamKind.Unknown,
-    session_id: u64                    = 0,
-    header_len: i64                    = 0,
 }
 
 struct WebTransportStreamPayload {
@@ -547,8 +510,8 @@ struct WebTransportDemuxer {
 fn demux_webtransport_bidi_stream(
     wire: const u8[:],
 ) -> u64, const u8[:], bool {
-    var hdr = WebTransportBidiStreamHeader { .. };
-    guard decode_webtransport_bidi_stream_header(wire, hdr) else { return 0, wire[..0], false; }
+    let hdr, ok = decode_webtransport_bidi_stream_header(wire);
+    guard ok else { return 0, wire[..0], false; }
     return hdr.session_id, wire[hdr.header_len..], true;
 }
 
@@ -562,270 +525,87 @@ fn demux_webtransport_bidi_stream(
 fn demux_webtransport_uni_stream(
     wire: const u8[:],
 ) -> u64, const u8[:], bool {
-    var hdr = WebTransportUniStreamHeader { .. };
-    guard decode_webtransport_uni_stream_header(wire, hdr) else { return 0, wire[..0], false; }
+    let hdr, ok = decode_webtransport_uni_stream_header(wire);
+    guard ok else { return 0, wire[..0], false; }
     return hdr.session_id, wire[hdr.header_len..], true;
 }
 
-// draft-ietf-webtrans-overview Section 4.2: Bidirectional Streams - WebTransport Stream Header Demux
-// Demuxes a WebTransport stream header from incoming QUIC stream wire bytes.
-//
-// Example:
-//   wire = [0x40, 0x54, 0x10], is_bidi = false
-//   returns: ok = true, out.kind = Unidirectional, out.session_id = 16, out.header_len = 3
-fn demux_webtransport_stream_header(
-    wire:    const u8[:],
-    is_bidi: bool,
-    out:     WebTransportDemuxHeader&,
-) -> bool {
-    if is_bidi {
-        var bidi = WebTransportBidiStreamHeader { .. };
-        guard decode_webtransport_bidi_stream_header(wire, bidi) else { return false; }
-        out.kind = WebTransportStreamKind.Bidirectional;
-        out.session_id = bidi.session_id;
-        out.header_len = bidi.header_len;
-        return true;
-    }
-
-    var uni = WebTransportUniStreamHeader { .. };
-    guard decode_webtransport_uni_stream_header(wire, uni) else { return false; }
-    out.kind = WebTransportStreamKind.Unidirectional;
-    out.session_id = uni.session_id;
-    out.header_len = uni.header_len;
-    return true;
-}
-
-fn find_stream_route_index(demuxer: const WebTransportDemuxer&, stream_id: u64) -> i64, bool {
-    for i in demuxer.streams.len {
-        if demuxer.streams[i].stream_id == stream_id && demuxer.streams[i].is_open {
-            return i, true;
-        }
-    }
-    return -1, false;
-}
-
-fn find_session_entry_index(demuxer: const WebTransportDemuxer&, session_id: u64) -> i64, bool {
-    for i in demuxer.sessions.len {
-        if demuxer.sessions[i].session_id == session_id {
-            return i, true;
-        }
-    }
-    return -1, false;
-}
-
-fn close_session_streams(demuxer: WebTransportDemuxer&, session_id: u64) {
-    for i in demuxer.streams.len {
-        if demuxer.streams[i].session_id == session_id {
-            demuxer.streams[i].is_open = false;
-        }
-    }
-}
-
-// Registers a new active session into the demuxer, reusing closed session slots if full
+// Registers a new active session into the demuxer, reusing closed session slots if full.
 fn register_webtransport_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
-    guard is_valid_webtransport_session_id(session_id) else { return false; }
+    guard realtime_internal::is_valid_webtransport_session_id(session_id) else { return false; }
     let entry = WebTransportSessionEntry {
         session_id: session_id,
         state:      WebTransportSessionState.Active,
         ..
     };
-    for i in demuxer.sessions.len {
-        if demuxer.sessions[i].session_id == session_id {
-            demuxer.sessions[i] = entry;
-            close_session_streams(demuxer, session_id);
+    for &s in demuxer.sessions {
+        if s.session_id == session_id {
+            s = entry;
+            realtime_internal::close_session_streams(demuxer, session_id);
             return true;
         }
     }
     if demuxer.sessions.try_push(entry) {
-        close_session_streams(demuxer, session_id);
+        realtime_internal::close_session_streams(demuxer, session_id);
         return true;
     }
-    for i in demuxer.sessions.len {
-        if demuxer.sessions[i].state == WebTransportSessionState.Closed {
-            let old_sid = demuxer.sessions[i].session_id;
-            close_session_streams(demuxer, old_sid);
-            close_session_streams(demuxer, session_id);
-            demuxer.sessions[i] = entry;
+    for &s in demuxer.sessions {
+        if s.state == WebTransportSessionState.Closed {
+            let old_sid = s.session_id;
+            realtime_internal::close_session_streams(demuxer, old_sid);
+            realtime_internal::close_session_streams(demuxer, session_id);
+            s = entry;
             return true;
         }
     }
     return false;
 }
 
-// Updates session state (Connecting, Active, Draining, Closed)
+// Updates session state (Connecting, Active, Draining, Closed).
 fn set_webtransport_session_state(
     demuxer:    WebTransportDemuxer&,
     session_id: u64,
     state:      WebTransportSessionState,
 ) -> bool {
-    let s_idx, has_s = find_session_entry_index(demuxer, session_id);
+    let s_idx, has_s = realtime_internal::find_session_entry_index(demuxer, session_id);
     guard has_s else { return false; }
     demuxer.sessions[s_idx].state = state;
     if state == WebTransportSessionState.Closed {
-        close_session_streams(demuxer, session_id);
+        realtime_internal::close_session_streams(demuxer, session_id);
     }
     return true;
 }
 
-// Queries current session state
+// Queries current session state.
 fn get_webtransport_session_state(
     demuxer:    const WebTransportDemuxer&,
     session_id: u64,
 ) -> WebTransportSessionState, bool {
-    let s_idx, has_s = find_session_entry_index(demuxer, session_id);
+    let s_idx, has_s = realtime_internal::find_session_entry_index(demuxer, session_id);
     guard has_s else { return WebTransportSessionState.Closed, false; }
     return demuxer.sessions[s_idx].state, true;
 }
 
-// Drains an active session (rejects new streams, drains existing)
+// Drains an active session (rejects new streams, drains existing).
 fn drain_webtransport_demuxer_session(demuxer: WebTransportDemuxer&, session_id: u64) -> bool {
     return set_webtransport_session_state(demuxer, session_id, WebTransportSessionState.Draining);
 }
 
-// Closes a session with error code and reason, and closes all associated open stream routes
+// Closes a session with error code and reason, and closes all associated open stream routes.
 fn close_webtransport_demuxer_session(
     demuxer:    WebTransportDemuxer&,
     session_id: u64,
     code:       u32,
     reason:     const u8[:],
 ) -> bool {
-    let s_idx, has_s = find_session_entry_index(demuxer, session_id);
+    let s_idx, has_s = realtime_internal::find_session_entry_index(demuxer, session_id);
     guard has_s else { return false; }
-    demuxer.sessions[s_idx].state = WebTransportSessionState.Closed;
-    demuxer.sessions[s_idx].close_code = code;
-    let copy_len = min(reason.len, demuxer.sessions[s_idx].close_reason.cap);
-    let _ = demuxer.sessions[s_idx].close_reason.try_set(reason[..copy_len]);
-    for i in demuxer.streams.len {
-        if demuxer.streams[i].session_id == session_id {
-            demuxer.streams[i].is_open = false;
-        }
-    }
-    return true;
-}
-
-inline fn is_session_routable(state: WebTransportSessionState) -> bool {
-    return state == WebTransportSessionState.Active || state == WebTransportSessionState.Draining;
-}
-
-// Allocates or reuses a closed stream route slot in `demuxer.streams`.
-fn record_new_stream_route(
-    demuxer:         WebTransportDemuxer&,
-    stream_id:       u64,
-    session_id:      u64,
-    kind:            WebTransportStreamKind,
-    bytes_delivered: u64,
-) -> bool {
-    let route = WebTransportStreamRoute {
-        stream_id:       stream_id,
-        session_id:      session_id,
-        kind:            kind,
-        is_open:         true,
-        bytes_delivered: bytes_delivered,
-    };
-    for i in demuxer.streams.len {
-        if !demuxer.streams[i].is_open {
-            demuxer.streams[i] = route;
-            return true;
-        }
-    }
-    return demuxer.streams.try_push(route);
-}
-
-// Routes incoming data chunks to an existing open WebTransport stream.
-fn route_existing_stream(
-    demuxer:   WebTransportDemuxer&,
-    route_idx: i64,
-    wire:      const u8[:],
-    fin:       bool,
-    out:       WebTransportStreamPayload&,
-) -> bool {
-    guard route_idx >= 0 && route_idx < demuxer.streams.len else { return false; }
-    let sid = demuxer.streams[route_idx].session_id;
-
-    let s_idx, has_session = find_session_entry_index(demuxer, sid);
-    guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
-        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
-        return false;
-    }
-
-    guard is_session_routable(demuxer.sessions[s_idx].state) else {
-        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
-        return false;
-    }
-
-    demuxer.sessions[s_idx].frames_received = core::add_sat_u64(demuxer.sessions[s_idx].frames_received, 1);
-    if fin {
-        demuxer.streams[route_idx].is_open = false;
-    }
-
-    out.kind = demuxer.streams[route_idx].kind;
-    out.stream_id = demuxer.streams[route_idx].stream_id;
-    out.session_id = sid;
-    out.payload = wire;
-    out.fin = fin;
-
-    demuxer.sessions[s_idx].bytes_received = core::add_sat_u64(
-        demuxer.sessions[s_idx].bytes_received,
-        wire.len as u64,
-    );
-    demuxer.streams[route_idx].bytes_delivered = core::add_sat_u64(
-        demuxer.streams[route_idx].bytes_delivered,
-        wire.len as u64,
-    );
-    demuxer.total_dispatched = core::add_sat_u64(demuxer.total_dispatched, 1);
-    return true;
-}
-
-// Demuxes stream header and routes a new WebTransport stream.
-fn route_new_stream(
-    demuxer:   WebTransportDemuxer&,
-    stream_id: u64,
-    wire:      const u8[:],
-    fin:       bool,
-    out:       WebTransportStreamPayload&,
-) -> bool {
-    let is_bidi = (stream_id & 0x02) == 0;
-    var hdr = WebTransportDemuxHeader { .. };
-    guard demux_webtransport_stream_header(wire, is_bidi, hdr) else {
-        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
-        return false;
-    }
-
-    let s_idx, has_session = find_session_entry_index(demuxer, hdr.session_id);
-    guard has_session && s_idx >= 0 && s_idx < demuxer.sessions.len else {
-        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
-        return false;
-    }
-
-    guard demuxer.sessions[s_idx].state == WebTransportSessionState.Active else {
-        demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
-        return false;
-    }
-
-    guard hdr.header_len >= 0 && hdr.header_len <= wire.len else { return false; }
-    let payload = wire[hdr.header_len..];
-
-    if !fin {
-        guard record_new_stream_route(demuxer, stream_id, hdr.session_id, hdr.kind, payload.len as u64) else {
-            demuxer.dropped_frames = core::add_sat_u64(demuxer.dropped_frames, 1);
-            return false;
-        }
-    }
-
-    demuxer.sessions[s_idx].streams_count = core::add_sat_u32(demuxer.sessions[s_idx].streams_count, 1);
-    demuxer.sessions[s_idx].frames_received = core::add_sat_u64(demuxer.sessions[s_idx].frames_received, 1);
-    demuxer.sessions[s_idx].bytes_received = core::add_sat_u64(
-        demuxer.sessions[s_idx].bytes_received,
-        payload.len as u64,
-    );
-
-    out.kind = hdr.kind;
-    out.stream_id = stream_id;
-    out.session_id = hdr.session_id;
-    out.payload = payload;
-    out.fin = fin;
-
-    demuxer.total_dispatched = core::add_sat_u64(demuxer.total_dispatched, 1);
+    let sess .= demuxer.sessions[s_idx];
+    sess.state = WebTransportSessionState.Closed;
+    sess.close_code = code;
+    let copy_len = min(reason.len, sess.close_reason.cap);
+    let _ = sess.close_reason.try_set(reason[..copy_len]);
+    realtime_internal::close_session_streams(demuxer, session_id);
     return true;
 }
 
@@ -842,10 +622,10 @@ fn demux_webtransport_stream(
     fin:       bool,
     out:       WebTransportStreamPayload&,
 ) -> bool {
-    let route_idx, has_route = find_stream_route_index(demuxer, stream_id);
+    let route_idx, has_route = realtime_internal::find_stream_route_index(demuxer, stream_id);
     if has_route {
-        return route_existing_stream(demuxer, route_idx, wire, fin, out);
+        return realtime_internal::route_existing_stream(demuxer, route_idx, wire, fin, out);
     }
 
-    return route_new_stream(demuxer, stream_id, wire, fin, out);
+    return realtime_internal::route_new_stream(demuxer, stream_id, wire, fin, out);
 }

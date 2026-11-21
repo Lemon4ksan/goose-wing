@@ -78,32 +78,32 @@ fn test_go_75557_content_disposition_crlf_injection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_http2_content_length_overflow_defense(t: lit::T&) {
     t.run("RFC 9113 & Go #81115: HTTP/2 Content-Length > 19 digits MUST be rejected as PROTOCOL_ERROR") { sub =>
-        var dt_enc = h2_internal::new_dynamic_table(4096);
+        var dt_enc = http2::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", h2_internal::HpackIndexing.None, false);
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", h2_internal::HpackIndexing.None, false);
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", h2_internal::HpackIndexing.None, false);
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", h2_internal::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", http2::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", http2::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", http2::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, "content-length", "999999999999999999999999999999", http2::HpackIndexing.None, false);
 
-        var dt_dec = h2_internal::new_dynamic_table(4096);
-        var pseudo = h2_internal::H2PseudoHeaders { .. };
+        var dt_dec = http2::new_dynamic_table(4096);
+        var pseudo = http2::PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
     };
 
     t.run("Valid Content-Length in HTTP/2 is parsed correctly") { sub =>
-        var dt_enc = h2_internal::new_dynamic_table(4096);
+        var dt_enc = http2::new_dynamic_table(4096);
         var raw_bytes: u8[>..] = [];
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", h2_internal::HpackIndexing.None, false);
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", h2_internal::HpackIndexing.None, false);
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", h2_internal::HpackIndexing.None, false);
-        h2_internal::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", h2_internal::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":method", "POST", http2::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":scheme", "https", http2::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, ":path", "/upload", http2::HpackIndexing.None, false);
+        http2::encode_hpack_field(dt_enc, raw_bytes, "content-length", "1048576", http2::HpackIndexing.None, false);
 
-        var dt_dec = h2_internal::new_dynamic_table(4096);
-        var pseudo = h2_internal::H2PseudoHeaders { .. };
+        var dt_dec = http2::new_dynamic_table(4096);
+        var pseudo = http2::PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = h2_internal::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
+        let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Valid Content-Length must succeed");
         sub.assert_true(pseudo.has_content_length, "has_content_length set");
         sub.assert_eq(pseudo.content_length_val, 1048576, "parsed content-length matches");
@@ -155,28 +155,28 @@ fn test_openssl_31392_uri_name_constraints_nul(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_uwebsockets_1876_control_priority_under_backpressure(t: lit::T&) {
     t.run("uWebSockets #1876: Control frames MUST NOT be dropped when backpressure threshold is reached") { sub =>
-        var ws = wing::WebSocketSession { .. };
-        wing::set_max_backpressure(ws, 100, false); // 100 bytes max backpressure
+        var ws = realtime::WebSocketSession { .. };
+        realtime::set_max_backpressure(ws, 100, false); // 100 bytes max backpressure
 
         var out_wire: u8[>..] = [];
         // Saturate backpressure buffer
-        let st1 = wing::send_text_with_status(ws, "Initial message filling backpressure quota", out_wire);
-        sub.assert_true(st1 == wing::WsSendStatus.Backpressure || st1 == wing::WsSendStatus.Success, "Initial send succeeds or backpressures");
+        let st1 = realtime::send_text_with_status(ws, "Initial message filling backpressure quota", out_wire);
+        sub.assert_true(st1 == realtime::WsSendStatus.Backpressure || st1 == realtime::WsSendStatus.Success, "Initial send succeeds or backpressures");
         sub.assert_true(ws.is_backpressured, "Socket is backpressured");
 
         // Subsequent data message exceeding threshold is dropped
         var dropped_wire: u8[>..] = [];
-        let st2 = wing::send_text_with_status(ws, "Excessive payload that must be dropped due to backpressure ceiling", dropped_wire);
-        sub.assert_eq(st2, wing::WsSendStatus.Dropped, "Data frame must be dropped under pressure");
+        let st2 = realtime::send_text_with_status(ws, "Excessive payload that must be dropped due to backpressure ceiling", dropped_wire);
+        sub.assert_eq(st2, realtime::WsSendStatus.Dropped, "Data frame must be dropped under pressure");
 
         // Control frame (Ping) must NOT be dropped!
         var ping_wire: u8[>..] = [];
-        wing::send_ping(ws, "heartbeat", ping_wire);
+        realtime::send_ping(ws, "heartbeat", ping_wire);
         sub.assert_true(ping_wire.len > 0, "Ping frame must be written even when socket is backpressured");
 
         // Control frame (Close) must NOT be dropped!
         var close_wire: u8[>..] = [];
-        wing::close(ws, rfc::WS_STATUS_NORMAL, "clean close", close_wire);
+        realtime::close(ws, rfc::WS_STATUS_NORMAL, "clean close", close_wire);
         sub.assert_true(close_wire.len > 0, "Close frame must be written even when socket is backpressured");
         sub.assert_true(ws.is_closed, "Session marked closed");
     };
@@ -389,27 +389,27 @@ fn test_cve_2026_42507_diagnostic_log_injection_defense(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_window_update_and_settings_cpu_limits(t: lit::T&) {
     t.run("RFC 9113 В§6.9.1 & Go #58456: WINDOW_UPDATE increment bounds and window overflow") { sub =>
-        var conn = h2_internal::new_h2_connection(0, 8192, false);
+        var conn = http2::new_h2_connection(0, 8192, false);
 
         // Increment > 2^31 - 1 is a PROTOCOL_ERROR
-        let err_proto = h2_internal::apply_window_update(conn, 0, ((rfc::H2_MAX_WINDOW_SIZE as i64) as u32) + 1);
+        let err_proto = http2::apply_window_update(conn, 0, ((rfc::H2_MAX_WINDOW_SIZE as i64) as u32) + 1);
         sub.assert_eq(err_proto, rfc::H2_ERR_PROTOCOL_ERROR, "Increment > 2^31 - 1 must trigger PROTOCOL_ERROR");
 
         // Increment pushing window past 2^31 - 1 is a FLOW_CONTROL_ERROR
-        let err_flow = h2_internal::apply_window_update(conn, 0, (rfc::H2_MAX_WINDOW_SIZE as i64) as u32);
+        let err_flow = http2::apply_window_update(conn, 0, (rfc::H2_MAX_WINDOW_SIZE as i64) as u32);
         sub.assert_eq(err_flow, rfc::H2_ERR_FLOW_CONTROL_ERROR, "Window accumulator exceeding 2^31 - 1 must trigger FLOW_CONTROL_ERROR");
     };
 
     t.run("CVE-2026-78669 & Go #81742: Excessive repeated INITIAL_WINDOW_SIZE changes throttled") { sub =>
-        var conn = h2_internal::new_h2_connection(0, 8192, false);
+        var conn = http2::new_h2_connection(0, 8192, false);
 
         for i in 16 {
-            let res = h2_internal::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
+            let res = http2::apply_peer_initial_window_size_delta(conn, 32768 + (i as u32));
             sub.assert_eq(res, rfc::H2_ERR_NO_ERROR, "First 16 window updates succeed");
         }
 
         // 17th update triggers ENHANCE_YOUR_CALM defense
-        let res_17 = h2_internal::apply_peer_initial_window_size_delta(conn, 65535);
+        let res_17 = http2::apply_peer_initial_window_size_delta(conn, 65535);
         sub.assert_eq(res_17, rfc::H2_ERR_ENHANCE_YOUR_CALM, "Excessive repeated window changes must trigger ENHANCE_YOUR_CALM");
     };
 }
@@ -617,7 +617,7 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         }
 
         var out_small: u8[..256] = [];
-        let _, ok = h2_internal::decode_hpack_string(raw_lit[..], 0, out_small);
+        let _, ok = http2::decode_hpack_string(raw_lit[..], 0, out_small);
         sub.assert_false(ok, "Literal HPACK string of 300 bytes into 256-cap buffer MUST return false without abort");
     };
 
@@ -629,10 +629,10 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         }
 
         var huff_encoded: u8[..400] = [];
-        h2_internal::huff_encode_bytes(uncomp[..], huff_encoded);
+        http2::huff_encode_bytes(uncomp[..], huff_encoded);
 
         var out_small: u8[..64] = [];
-        let ok = h2_internal::huff_decode_bytes(huff_encoded[..], out_small);
+        let ok = http2::huff_decode_bytes(huff_encoded[..], out_small);
         sub.assert_false(ok, "Huffman decode exceeding buffer capacity MUST return false without abort");
     };
 
@@ -651,10 +651,10 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
         raw_block.push(5);
         raw_block.append("value");
 
-        var dt = h2_internal::new_dynamic_table(4096);
-        var pseudo = h2_internal::H2PseudoHeaders { .. };
+        var dt = http2::new_dynamic_table(4096);
+        var pseudo = http2::PseudoHeaders { .. };
         var out_list = wing::HeaderMap { .. };
-        let err = h2_internal::decode_hpack_to_map(dt, raw_block[..], pseudo, out_list, 8192, false);
+        let err = http2::decode_hpack_to_map(dt, raw_block[..], pseudo, out_list, 8192, false);
         sub.assert_ne(err, rfc::H2_ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
     };
 }
@@ -1202,25 +1202,25 @@ fn test_pipe_lifecycle_slice_io_and_streaming_finality(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
     t.run("RFC 9113 §5.1 & §6.9: DATA frame on stream closed via RST_STREAM accounts for connection flow control") { sub =>
-        var conn = h2_internal::new_h2_connection(0);
+        var conn = http2::new_h2_connection(0);
         // Initial conn_recv_window = 65535
         sub.assert_eq(conn.conn_recv_window, 65535, "Initial connection receive window is 65535");
 
         // 1. Open stream 1 via HEADERS
-        let h_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
-        let err_h = h2_internal::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
+        let err_h = http2::on_ingress_frame_header(conn, h_hdr, 0);
         sub.assert_eq(err_h, rfc::H2_ERR_NO_ERROR, "HEADERS on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 1, "1 active stream");
 
         // 2. Client cancels stream 1 via RST_STREAM
-        let rst_hdr = h2_internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
-        let err_rst = h2_internal::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = http2::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        let err_rst = http2::on_ingress_frame_header(conn, rst_hdr, 0);
         sub.assert_eq(err_rst, rfc::H2_ERR_NO_ERROR, "RST_STREAM on stream 1 accepted");
         sub.assert_eq(conn.active_stream_count, 0, "Active stream count decremented to 0");
 
         // 3. In-flight DATA frame arrives on stream 1 (length = 1000)
-        let data_hdr = h2_internal::FrameHeader { length: 1000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
-        let err_data = h2_internal::on_data_frame_received(conn, data_hdr, 1000);
+        let data_hdr = http2::FrameHeader { length: 1000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = http2::on_data_frame_received(conn, data_hdr, 1000);
         // Must return ERR_STREAM_CLOSED (stream error) rather than connection error
         sub.assert_eq(err_data, rfc::H2_ERR_STREAM_CLOSED, "DATA on reset stream returns STREAM_CLOSED");
         // BUT connection receive window MUST be accounted (decremented by 1000) per RFC 9113 §5.1 / §6.9
@@ -1228,48 +1228,48 @@ fn test_h2_rst_stream_data_flow_control_invariants(t: lit::T&) {
     };
 
     t.run("RFC 9113 §6.9: Oversized DATA frame exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR") { sub =>
-        var conn = h2_internal::new_h2_connection(0);
+        var conn = http2::new_h2_connection(0);
         // Set connection receive window to 500 bytes
         conn.conn_recv_window = 500;
 
         // Open stream 1
-        let h_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
-        h2_internal::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
+        http2::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 1
-        let rst_hdr = h2_internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
-        h2_internal::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = http2::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 1 };
+        http2::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends DATA frame of 600 bytes on closed stream 1 (exceeding conn_recv_window = 500)
-        let data_hdr = h2_internal::FrameHeader { length: 600, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
-        let err_data = h2_internal::on_data_frame_received(conn, data_hdr, 600);
+        let data_hdr = http2::FrameHeader { length: 600, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
+        let err_data = http2::on_data_frame_received(conn, data_hdr, 600);
         // RFC 9113 §6.9: Connection flow control violation MUST trigger FLOW_CONTROL_ERROR, NOT STREAM_CLOSED!
         sub.assert_eq(err_data, rfc::H2_ERR_FLOW_CONTROL_ERROR, "Exceeding connection window on closed stream triggers FLOW_CONTROL_ERROR");
         sub.assert_true(conn.conn_recv_window < 0, "Connection receive window underflowed to negative value");
     };
 
     t.run("RFC 9113 §5.1 & §6.9: Multiple in-flight DATA frames after RST_STREAM prevent window lockup") { sub =>
-        var conn = h2_internal::new_h2_connection(0);
+        var conn = http2::new_h2_connection(0);
 
         // Open stream 3
-        let h_hdr = h2_internal::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
-        h2_internal::on_ingress_frame_header(conn, h_hdr, 0);
+        let h_hdr = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
+        http2::on_ingress_frame_header(conn, h_hdr, 0);
 
         // Reset stream 3
-        let rst_hdr = h2_internal::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 3 };
-        h2_internal::on_ingress_frame_header(conn, rst_hdr, 0);
+        let rst_hdr = http2::FrameHeader { length: 4, frame_type: rfc::H2_FRAME_RST_STREAM, flags: 0, stream_id: 3 };
+        http2::on_ingress_frame_header(conn, rst_hdr, 0);
 
         // Peer sends 4 in-flight DATA chunks of 10000 bytes each
         for i in 4 {
-            let data_chunk = h2_internal::FrameHeader { length: 10000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 3 };
-            let err_c = h2_internal::on_data_frame_received(conn, data_chunk, 10000);
+            let data_chunk = http2::FrameHeader { length: 10000, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 3 };
+            let err_c = http2::on_data_frame_received(conn, data_chunk, 10000);
             sub.assert_eq(err_c, rfc::H2_ERR_STREAM_CLOSED, "Chunk returns STREAM_CLOSED");
         }
         // Total connection window consumed: 40000
         sub.assert_eq(conn.conn_recv_window, 25535, "Connection receive window accounted: 65535 - 40000 = 25535");
 
         // Replenish connection window via WINDOW_UPDATE (+40000)
-        let err_win = h2_internal::apply_window_update(conn, 0, 40000);
+        let err_win = http2::apply_window_update(conn, 0, 40000);
         sub.assert_eq(err_win, rfc::H2_ERR_NO_ERROR, "Connection WINDOW_UPDATE succeeds");
         sub.assert_eq(conn.conn_send_window, 105535, "Connection send window replenished without lockup");
     };
@@ -1482,40 +1482,40 @@ fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: lit::T&) {
 fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
     t.run("RFC 9204 §4.5.1.2: decode_base correctly computes Base when RIC == 0") { sub =>
         // 1. Valid: ric == 0, sign == 0, delta_base == 0 => Base == 0
-        let base0, err0 = h3_internal::decode_base(0, 0, 0);
-        sub.assert_eq(err0, h3_internal::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
+        let base0, err0 = http3::decode_base(0, 0, 0);
+        sub.assert_eq(err0, http3::QpackError.None, "ric=0, sign=0, delta_base=0 returns None");
         sub.assert_eq(base0, 0, "Base must be 0 when RIC is 0");
 
         // 2. Valid: ric == 0 with sign == 0 and delta_base > 0 produces non-negative Base
-        let base1, err_delta = h3_internal::decode_base(0, 1, 0);
-        sub.assert_eq(err_delta, h3_internal::QpackError.None, "ric=0 with delta_base=1 is valid");
+        let base1, err_delta = http3::decode_base(0, 1, 0);
+        sub.assert_eq(err_delta, http3::QpackError.None, "ric=0 with delta_base=1 is valid");
         sub.assert_eq(base1, 1, "Base must be 1");
 
-        let base5, err_delta5 = h3_internal::decode_base(0, 5, 0);
-        sub.assert_eq(err_delta5, h3_internal::QpackError.None, "ric=0 with delta_base=5 is valid");
+        let base5, err_delta5 = http3::decode_base(0, 5, 0);
+        sub.assert_eq(err_delta5, http3::QpackError.None, "ric=0 with delta_base=5 is valid");
         sub.assert_eq(base5, 5, "Base must be 5");
 
         // 3. Invalid: ric == 0 with sign == 1 MUST fail with DecompressionFailed
-        let _, err_sign = h3_internal::decode_base(1, 0, 0);
-        sub.assert_eq(err_sign, h3_internal::QpackError.DecompressionFailed, "ric=0 with sign=1 MUST fail");
+        let _, err_sign = http3::decode_base(1, 0, 0);
+        sub.assert_eq(err_sign, http3::QpackError.DecompressionFailed, "ric=0 with sign=1 MUST fail");
 
-        let _, err_sign_delta = h3_internal::decode_base(1, 10, 0);
-        sub.assert_eq(err_sign_delta, h3_internal::QpackError.DecompressionFailed, "ric=0 with sign=1 and delta_base=10 MUST fail");
+        let _, err_sign_delta = http3::decode_base(1, 10, 0);
+        sub.assert_eq(err_sign_delta, http3::QpackError.DecompressionFailed, "ric=0 with sign=1 and delta_base=10 MUST fail");
 
         // 4. Invalid: sign_bit > 1 MUST fail with DecompressionFailed
-        let _, err_bad_sign = h3_internal::decode_base(2, 0, 0);
-        sub.assert_eq(err_bad_sign, h3_internal::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
+        let _, err_bad_sign = http3::decode_base(2, 0, 0);
+        sub.assert_eq(err_bad_sign, http3::QpackError.DecompressionFailed, "Invalid sign_bit=2 MUST fail");
     };
 
     t.run("RFC 9204 §4.5.1.2: decode_qpack_section allows non-zero DeltaBase with Sign=0 when RIC==0") { sub =>
-        var tbl = h3_internal::new_qpack_table(4096, 16);
-        var out_fields: h3_internal::HeaderField[>..] = [];
+        var tbl = http3::new_qpack_table(4096, 16);
+        var out_fields: http3::HeaderField[>..] = [];
 
         // Valid header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 5 (0x05), Static :path="/" (0xC1)
         // RFC 9204 §4.5.1.2: Any non-negative Base is valid when dynamic table references are absent
         let valid_deltabase_block: u8[3] = [0x00, 0x05, 0xC1];
-        let err_db = h3_internal::decode_qpack_section(tbl, valid_deltabase_block[..], out_fields, 4096);
-        sub.assert_eq(err_db, h3_internal::QpackError.None, "Header block with RIC=0, Sign=0, DeltaBase=5 succeeds");
+        let err_db = http3::decode_qpack_section(tbl, valid_deltabase_block[..], out_fields, 4096);
+        sub.assert_eq(err_db, http3::QpackError.None, "Header block with RIC=0, Sign=0, DeltaBase=5 succeeds");
         sub.assert_eq(out_fields.len, 1, "One field decoded");
         sub.assert_eq(out_fields[0].name[..], ":path", "Decoded field name is :path");
         sub.assert_eq(out_fields[0].value[..], "/", "Decoded field value is /");
@@ -1523,28 +1523,28 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
         // Invalid header block: enc_ric = 0 (0x00), Sign = 1 & DeltaBase = 0 (0x80), Static :path="/" (0xC1)
         // Sign 1 yields negative Base when RIC=0, which MUST trigger DecompressionFailed
         let malformed_sign_block: u8[3] = [0x00, 0x80, 0xC1];
-        let err_sign = h3_internal::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
-        sub.assert_eq(err_sign, h3_internal::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
+        let err_sign = http3::decode_qpack_section(tbl, malformed_sign_block[..], out_fields, 4096);
+        sub.assert_eq(err_sign, http3::QpackError.DecompressionFailed, "Header block with RIC=0 and Sign=1 MUST trigger DecompressionFailed");
 
         // Valid header block: enc_ric = 0 (0x00), Sign = 0 & DeltaBase = 0 (0x00), Static :path="/" (0xC1)
         let valid_block: u8[3] = [0x00, 0x00, 0xC1];
-        let err_val = h3_internal::decode_qpack_section(tbl, valid_block[..], out_fields, 4096);
-        sub.assert_eq(err_val, h3_internal::QpackError.None, "Valid header block with RIC=0, Sign=0, DeltaBase=0 succeeds");
+        let err_val = http3::decode_qpack_section(tbl, valid_block[..], out_fields, 4096);
+        sub.assert_eq(err_val, http3::QpackError.None, "Valid header block with RIC=0, Sign=0, DeltaBase=0 succeeds");
         sub.assert_eq(out_fields.len, 1, "One field decoded");
         sub.assert_eq(out_fields[0].name[..], ":path", "Decoded field name is :path");
         sub.assert_eq(out_fields[0].value[..], "/", "Decoded field value is /");
     };
 
     t.run("RFC 9204 §4.5.1.1: decode_qpack_section uses MaxTableCapacity for RIC calculation after capacity shrinkage") { sub =>
-        var tbl = h3_internal::new_qpack_table(4096, 16);
+        var tbl = http3::new_qpack_table(4096, 16);
         // Insert a dynamic table entry (abs_idx = 0, cost = 51 bytes)
-        let ok_ins = h3_internal::qpack_insert_literal(tbl, "x-trace-id", "trace-777");
+        let ok_ins = http3::qpack_insert_literal(tbl, "x-trace-id", "trace-777");
         sub.assert_true(ok_ins, "Inserted dynamic entry into QPACK table");
         sub.assert_eq(tbl.insert_count, 1, "insert_count is 1");
 
         // Encoder shrinks current capacity to 2048 via Set Dynamic Table Capacity instruction.
         // Entry remains cached (51 <= 2048), but capacity_bytes (2048) != max_capacity_bytes (4096).
-        let ok_cap = h3_internal::qpack_set_capacity(tbl, 2048);
+        let ok_cap = http3::qpack_set_capacity(tbl, 2048);
         sub.assert_true(ok_cap, "Set capacity to 2048 succeeds");
         sub.assert_eq(tbl.capacity_bytes, 2048, "Current capacity_bytes is 2048");
         sub.assert_eq(tbl.max_capacity_bytes, 4096, "Decoder max_capacity_bytes remains 4096");
@@ -1556,9 +1556,9 @@ fn test_rfc9204_qpack_zero_ric_base_invariants_and_capacity_bound(t: lit::T&) {
         // Indexed field line, dynamic (T=0): 10xxxxxx => 0x80 | 0 = 0x80.
         let sec_wire: u8[3] = [0x02, 0x00, 0x80];
 
-        var out_fields: h3_internal::HeaderField[>..] = [];
-        let err_dec = h3_internal::decode_qpack_section(tbl, sec_wire[..], out_fields, 4096);
-        sub.assert_eq(err_dec, h3_internal::QpackError.None, "Section successfully decodes using max_capacity_bytes despite capacity_bytes == 2048");
+        var out_fields: http3::HeaderField[>..] = [];
+        let err_dec = http3::decode_qpack_section(tbl, sec_wire[..], out_fields, 4096);
+        sub.assert_eq(err_dec, http3::QpackError.None, "Section successfully decodes using max_capacity_bytes despite capacity_bytes == 2048");
         sub.assert_eq(out_fields.len, 1, "One dynamic field decoded");
         if out_fields.len > 0 {
             sub.assert_eq(out_fields[0].name[..], "x-trace-id", "Dynamic field name matches");

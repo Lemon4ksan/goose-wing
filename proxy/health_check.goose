@@ -5,13 +5,12 @@
 // Implements active background health probing, HTTP wire probe generation,
 // response status code validation, consecutive success/failure thresholds,
 // and state machine transitions: UP, DOWN, PROBING (RFC 9110).
-namespace wing;
+namespace proxy;
 
 import std;
 import core from "..";
-import proxy.load_balancer;
-
-const HEALTH_SLOT_NONE: i32 = -1;
+import .load_balancer;
+import .internal;
 
 enum HealthState {
     Up,
@@ -55,19 +54,6 @@ struct UpstreamHealth {
     failed_probes:         u64         = 0,
 }
 
-inline fn handle_probing_success(health: UpstreamHealth&, successes: u32, threshold: u32) {
-    if successes >= threshold {
-        health.state = HealthState.Up;
-    }
-}
-
-inline fn handle_down_success(health: UpstreamHealth&, successes: u32, threshold: u32) {
-    health.state = HealthState.Probing;
-    if successes >= threshold {
-        health.state = HealthState.Up;
-    }
-}
-
 // Transitions target state upon probe or request success.
 fn record_probe_success(health: UpstreamHealth&, rtt_us: u32, config: const HealthCheckConfig&) -> HealthState {
     health.consecutive_failures = 0;
@@ -77,9 +63,9 @@ fn record_probe_success(health: UpstreamHealth&, rtt_us: u32, config: const Heal
     health.last_rtt_us = rtt_us;
 
     if health.state == HealthState.Probing {
-        handle_probing_success(health, successes, config.healthy_threshold);
+        proxy_internal::handle_probing_success(health, successes, config.healthy_threshold);
     } else if health.state == HealthState.Down {
-        handle_down_success(health, successes, config.healthy_threshold);
+        proxy_internal::handle_down_success(health, successes, config.healthy_threshold);
     }
 
     return health.state;
@@ -108,31 +94,21 @@ fn enter_probing_state(health: UpstreamHealth&) -> bool {
     return true;
 }
 
-inline fn is_valid_probe_path(path: const u8[:]) -> bool {
-    guard path.len > 0 && path[0] == '/' else { return false; }
-    for b in path {
-        guard b > 0x20 && b < 0x7F else { return false; }
+// Serializes HTTP/1.1 GET health probe request into `out`.
+fn format_health_probe_request<B>(host: const u8[:], path: const u8[:], out: B&) -> bool {
+    let safe_path = if proxy_internal::is_valid_probe_path(path) { path } else { "/healthz" };
+    let safe_host = if proxy_internal::is_valid_upstream_host(host) { host } else { "localhost" };
+    guard out.try_set("GET ") else { return false; }
+    var committed = false;
+    defer if !committed { out.clear(); };
+    guard out.try_append(safe_path) else { return false; }
+    guard out.try_append(" HTTP/1.1\r\nHost: ") else { return false; }
+    guard out.try_append(safe_host) else { return false; }
+    guard out.try_append("\r\nUser-Agent: wing-health-probe\r\nConnection: close\r\nAccept: */*\r\n\r\n") else {
+        return false;
     }
+    committed = true;
     return true;
-}
-
-inline fn is_valid_probe_reason_phrase(reason: const u8[:]) -> bool {
-    for b in reason {
-        guard (b >= 0x20 && b <= 0x7E) || b >= 0x80 || b == '\t' else { return false; }
-    }
-    return true;
-}
-
-// Serializes HTTP/1.1 GET health probe request wire buffer.
-fn format_health_probe_request(host: const u8[:], path: const u8[:], out: u8[>..]&) {
-    let safe_path = if is_valid_probe_path(path) { path } else { "/healthz" };
-    let safe_host = if is_valid_upstream_host(host) { host } else { "localhost" };
-    out.clear();
-    out.append("GET ");
-    out.append(safe_path);
-    out.append(" HTTP/1.1\r\nHost: ");
-    out.append(safe_host);
-    out.append("\r\nUser-Agent: wing-health-probe\r\nConnection: close\r\nAccept: */*\r\n\r\n");
 }
 
 // Extracts 3-digit HTTP status code from HTTP/1.x response wire buffer without allocations.
@@ -146,7 +122,7 @@ fn parse_probe_status_code(wire: const u8[:]) -> u16, bool {
     guard has_crlf && status_line.len >= 13 else { return 0, false; }
     let ok_ver = status_line[..8] == "HTTP/1.1" || status_line[..8] == "HTTP/1.0";
     guard ok_ver && status_line[8] == ' ' && status_line[12] == ' ' else { return 0, false; }
-    guard is_valid_probe_reason_phrase(status_line[13..]) else { return 0, false; }
+    guard proxy_internal::is_valid_probe_reason_phrase(status_line[13..]) else { return 0, false; }
 
     let status_u32, ok = status_line[9..12].parse_u32_dec();
     guard ok && status_u32 >= 100 && status_u32 <= 599 else { return 0, false; }
@@ -160,9 +136,9 @@ fn evaluate_probe_response(wire: const u8[:], expected_status: u16) -> bool {
     return status == expected_status;
 }
 
-// Active background prober managing up to 16 upstream cluster targets
+// Active background prober managing up to 16 upstream cluster targets.
 struct TargetProbeSlot {
-    target_idx:       i32            = HEALTH_SLOT_NONE,
+    target_idx:       i32            = proxy_internal::HEALTH_SLOT_NONE,
     health:           UpstreamHealth = UpstreamHealth { .. },
     active_in_flight: bool           = false,
     probe_start_ms:   u64            = 0,
@@ -175,77 +151,23 @@ struct ClusterHealthChecker {
     total_checks_dispatched: u64                   = 0,
 }
 
-fn new_cluster_health_checker(config: HealthCheckConfig) -> ClusterHealthChecker {
+fn new_cluster_health_checker(
+    config: HealthCheckConfig = HealthCheckConfig { .. },
+) -> ClusterHealthChecker {
     return ClusterHealthChecker {
         config: config,
         ..
     };
 }
 
-fn find_probe_slot(checker: const ClusterHealthChecker&, target_idx: i32) -> i32 {
-    guard target_idx >= 0 else { return HEALTH_SLOT_NONE; }
-    let n = checker.slots.len as i32;
-    for i in n {
-        if checker.slots[i].in_use && checker.slots[i].target_idx == target_idx {
-            return i;
-        }
-    }
-    return HEALTH_SLOT_NONE;
-}
-
-inline fn init_probe_slot(slot: TargetProbeSlot&, target_idx: i32) {
-    slot.target_idx = target_idx;
-    slot.health = UpstreamHealth { .. };
-    slot.active_in_flight = false;
-    slot.probe_start_ms = 0;
-    slot.in_use = true;
-}
-
 fn register_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32) -> bool {
     guard target_idx >= 0 && target_idx < 16 else { return false; }
-    let existing = find_probe_slot(checker, target_idx);
-    guard existing == HEALTH_SLOT_NONE else { return true; }
+    let existing = proxy_internal::find_probe_slot(checker, target_idx);
+    guard existing == proxy_internal::HEALTH_SLOT_NONE else { return true; }
 
     var new_slot = TargetProbeSlot { .. };
-    init_probe_slot(new_slot, target_idx);
+    proxy_internal::init_probe_slot(new_slot, target_idx);
     return checker.slots.try_push(new_slot);
-}
-
-inline fn clear_in_flight(slot: TargetProbeSlot&) {
-    slot.active_in_flight = false;
-    slot.probe_start_ms = 0;
-}
-
-// Synchronizes target health with UpstreamCluster
-inline fn sync_cluster_target_health(
-    cluster:    UpstreamCluster&,
-    target_idx: i32,
-    health:     const UpstreamHealth&,
-    new_state:  HealthState,
-) {
-    guard target_idx >= 0 && target_idx < cluster.targets.len else { return; }
-    let is_up = (new_state == HealthState.Up);
-    cluster.targets[target_idx].is_healthy = is_up;
-    if is_up {
-        if health.consecutive_failures == 0 {
-            cluster.targets[target_idx].fails = 0;
-        } else {
-            cluster.targets[target_idx].fails = max(
-                cluster.targets[target_idx].fails,
-                health.consecutive_failures as i32,
-            );
-        }
-        cluster.targets[target_idx].health_state = UpstreamHealthState.Up;
-        cluster.circuit_open = false;
-    } else if new_state == HealthState.Probing {
-        cluster.targets[target_idx].health_state = UpstreamHealthState.Probing;
-        cluster.targets[target_idx].successes = max(health.consecutive_successes as i32, 1);
-        cluster.circuit_open = false;
-    } else {
-        cluster.targets[target_idx].fails = max(cluster.max_fails, health.consecutive_failures as i32);
-        cluster.targets[target_idx].health_state = UpstreamHealthState.Down;
-        update_cluster_circuit_state(cluster);
-    }
 }
 
 inline fn sync_slot_from_cluster(slot: TargetProbeSlot&, cluster_state: UpstreamHealthState) {
@@ -273,15 +195,16 @@ fn on_probe_success(
     guard target_idx >= 0 && target_idx < cluster.targets.len else {
         return HealthState.Down;
     }
-    let slot_idx = find_probe_slot(checker, target_idx);
-    guard slot_idx != HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
+    let slot_idx = proxy_internal::find_probe_slot(checker, target_idx);
+    guard slot_idx != proxy_internal::HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
         return HealthState.Down;
     }
 
-    sync_slot_from_cluster(checker.slots[slot_idx], cluster.targets[target_idx].health_state);
-    clear_in_flight(checker.slots[slot_idx]);
-    let new_state = record_probe_success(checker.slots[slot_idx].health, rtt_us, checker.config);
-    sync_cluster_target_health(cluster, target_idx, checker.slots[slot_idx].health, new_state);
+    let slot .= checker.slots[slot_idx];
+    sync_slot_from_cluster(slot, cluster.targets[target_idx].health_state);
+    proxy_internal::clear_in_flight(slot);
+    let new_state = record_probe_success(slot.health, rtt_us, checker.config);
+    proxy_internal::sync_cluster_target_health(cluster, target_idx, slot.health, new_state);
     return new_state;
 }
 
@@ -294,20 +217,17 @@ fn on_probe_failure(
     guard target_idx >= 0 && target_idx < cluster.targets.len else {
         return HealthState.Down;
     }
-    let slot_idx = find_probe_slot(checker, target_idx);
-    guard slot_idx != HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
+    let slot_idx = proxy_internal::find_probe_slot(checker, target_idx);
+    guard slot_idx != proxy_internal::HEALTH_SLOT_NONE && slot_idx < checker.slots.len else {
         return HealthState.Down;
     }
 
-    sync_slot_from_cluster(checker.slots[slot_idx], cluster.targets[target_idx].health_state);
-    clear_in_flight(checker.slots[slot_idx]);
-    let new_state = record_probe_failure(checker.slots[slot_idx].health, checker.config);
-    sync_cluster_target_health(cluster, target_idx, checker.slots[slot_idx].health, new_state);
+    let slot .= checker.slots[slot_idx];
+    sync_slot_from_cluster(slot, cluster.targets[target_idx].health_state);
+    proxy_internal::clear_in_flight(slot);
+    let new_state = record_probe_failure(slot.health, checker.config);
+    proxy_internal::sync_cluster_target_health(cluster, target_idx, slot.health, new_state);
     return new_state;
-}
-
-inline fn inc_timeouts_count(cnt: i32&) {
-    cnt = (core::add_sat_u64(cnt as u64, 1)) as i32;
 }
 
 // Checks for probe timeouts in flight.
@@ -317,22 +237,21 @@ fn check_probe_timeouts(
     now_ms:  u64,
 ) -> i32 {
     var timed_out_count: i32 = 0;
-    let n = checker.slots.len as i32;
 
-    for i in n {
-        guard checker.slots[i].in_use && checker.slots[i].active_in_flight else { continue; }
-        let elapsed = core::sub_sat_u64(now_ms, checker.slots[i].probe_start_ms);
+    for &slot in checker.slots {
+        guard slot.in_use && slot.active_in_flight else { continue; }
+        let elapsed = core::sub_sat_u64(now_ms, slot.probe_start_ms);
         guard elapsed >= checker.config.timeout_ms else { continue; }
-        let t_idx = checker.slots[i].target_idx;
+        let t_idx = slot.target_idx;
         guard t_idx >= 0 && t_idx < cluster.targets.len else {
-            clear_in_flight(checker.slots[i]);
+            proxy_internal::clear_in_flight(slot);
             continue;
         }
-        sync_slot_from_cluster(checker.slots[i], cluster.targets[t_idx].health_state);
-        clear_in_flight(checker.slots[i]);
-        let new_state = record_probe_failure(checker.slots[i].health, checker.config);
-        sync_cluster_target_health(cluster, t_idx, checker.slots[i].health, new_state);
-        inc_timeouts_count(timed_out_count);
+        sync_slot_from_cluster(slot, cluster.targets[t_idx].health_state);
+        proxy_internal::clear_in_flight(slot);
+        let new_state = record_probe_failure(slot.health, checker.config);
+        proxy_internal::sync_cluster_target_health(cluster, t_idx, slot.health, new_state);
+        proxy_internal::inc_timeouts_count(timed_out_count);
     }
     return timed_out_count;
 }

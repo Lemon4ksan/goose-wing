@@ -765,12 +765,12 @@ fn test_topic_tree_live_broadcast_and_batch_drain(t: lit::T&) {
         defer wing::tcp_close(s2);
         defer wing::tcp_close(s3);
 
-        var tree = wing::TopicTree { .. };
-        sub.assert_true(wing::subscribe(tree, s1, "chat/general"), "s1 subscribed to chat/general");
-        sub.assert_true(wing::subscribe(tree, s2, "chat/general"), "s2 subscribed to chat/general");
-        sub.assert_true(wing::subscribe(tree, s3, "alerts/#"), "s3 subscribed to alerts/#");
+        var tree = realtime::TopicTree { .. };
+        sub.assert_true(realtime::subscribe(tree, s1, "chat/general"), "s1 subscribed to chat/general");
+        sub.assert_true(realtime::subscribe(tree, s2, "chat/general"), "s2 subscribed to chat/general");
+        sub.assert_true(realtime::subscribe(tree, s3, "alerts/#"), "s3 subscribed to alerts/#");
 
-        let sent_count = wing::publish_text(tree, "chat/general", "ROOM_MSG");
+        let sent_count = realtime::publish_text(tree, "chat/general", "ROOM_MSG");
         sub.assert_eq(sent_count, 2, "Dispatched to both subscribers s1 and s2");
 
         var buf1: u8[..256] = [];
@@ -783,13 +783,13 @@ fn test_topic_tree_live_broadcast_and_batch_drain(t: lit::T&) {
         sub.assert_gt(r2, 0, "Client 2 received frame");
         sub.assert_true(find(buf2[..], "ROOM_MSG") >= 0, "Frame contains ROOM_MSG");
 
-        let queued = wing::publish_batch(tree, "alerts/fire", "EVACUATE");
+        let queued = realtime::publish_batch(tree, "alerts/fire", "EVACUATE");
         sub.assert_eq(queued, 1, "Queued to 1 subscriber matching wildcard alerts/#");
-        sub.assert_gt(wing::drainable_count(tree), 0, "Drainable subscribers pending");
+        sub.assert_gt(realtime::drainable_count(tree), 0, "Drainable subscribers pending");
 
-        let drained = wing::drain(tree);
+        let drained = realtime::drain(tree);
         sub.assert_eq(drained, 1, "Drained 1 batched message to wire");
-        sub.assert_eq(wing::drainable_count(tree), 0, "Zero drainable subscribers remaining");
+        sub.assert_eq(realtime::drainable_count(tree), 0, "Zero drainable subscribers remaining");
 
         var buf3: u8[..256] = [];
         let r3 = wing::tcp_recv(c3, buf3, 256, 1000);
@@ -1018,7 +1018,7 @@ fn test_nginx_harmony_invariants(t: lit::T&) {
 
     t.run("7. SSE init_response sets X-Accel-Buffering: no") { sub =>
         var res = wing::Response { .. };
-        wing::init_response(res);
+        realtime::init_response(res);
         sub.assert_eq(res.status_code, 200, "status code 200");
         sub.assert_eq(wing::header(res, "Content-Type"), "text/event-stream", "Content-Type is text/event-stream");
         sub.assert_eq(wing::header(res, "X-Accel-Buffering"), "no", "X-Accel-Buffering is no");
@@ -1082,15 +1082,15 @@ fn test_server_audit_regressions(t: lit::T&) {
         let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
         sub.assert_true(ok_init, "H2 preface and SETTINGS handled");
 
-        var dt = h2_internal::new_dynamic_table(4096);
+        var dt = http2::new_dynamic_table(4096);
         var h_block: u8[>..] = [];
-        h2_internal::encode_hpack_field(dt, h_block, ":method", "QUERY", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, ":path", "/search", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, "content-type", "application/json", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, "content-length", "2", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":method", "QUERY", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":authority", "example.com", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":path", "/search", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, "content-type", "application/json", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, "content-length", "2", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", http2::HpackIndexing.Incremental, false);
 
         var req_wire: u8[>..] = [];
         build_h2_test_frame_header(req_wire, h_block.len as u32, 0x01, 0x04, 1); // HEADERS + END_HEADERS
@@ -1109,11 +1109,11 @@ fn test_server_audit_regressions(t: lit::T&) {
         sub.assert_gt(wire_out.len, 0, "Stream 1 was NOT falsely cancelled by incomplete tail RST_STREAM");
 
         // Decode response HEADERS frame from wire_out (starts at offset 13 after one 13-byte conn WINDOW_UPDATE frame)
-        var resp_dt = h2_internal::new_dynamic_table(4096);
-        var resp_pseudo = h2_internal::H2PseudoHeaders { .. };
+        var resp_dt = http2::new_dynamic_table(4096);
+        var resp_pseudo = http2::PseudoHeaders { .. };
         var resp_list = wing::HeaderMap { .. };
         let h_len = ((wire_out[13] as i64) << 16) | ((wire_out[14] as i64) << 8) | (wire_out[15] as i64);
-        let dec_err = h2_internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
+        let dec_err = http2::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
         sub.assert_true(resp_pseudo.has_status, "First response field is :status");
         sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
@@ -1273,26 +1273,26 @@ fn test_server_audit_regressions(t: lit::T&) {
         wing::add_get_route(server, "/h3-check", 2001);
 
         let h3_settings = fingerprint::H3Settings { .. };
-        var h3_cli = h3_internal::new_h3_client_connection(h3_settings);
-        let sid, ok_sid = h3_internal::open_request_stream(h3_cli);
+        var h3_cli = http3::new_client_connection(h3_settings);
+        let sid, ok_sid = http3::open_request_stream(h3_cli);
         sub.assert_true(ok_sid && sid == 0, "open client H3 stream 0");
         var extra = wing::HeaderMap { .. };
         var req_wire: u8[..1024] = [];
-        let ok_send = h3_internal::send_request_headers(
+        let ok_send = http3::send_request_headers(
             h3_cli, sid, "GET", "https", "127.0.0.1", "/h3-check", extra, true, req_wire,
         );
         sub.assert_true(ok_send, "encode H3 request");
 
-        var h3_srv = h3_internal::new_h3_server_connection(h3_settings);
+        var h3_srv = http3::new_server_connection(h3_settings);
         var tx_wire: u8[..1024] = [];
         let ok_h3 = wing::handle_h3_server_datagram(
             server, h3_srv, sid, "127.0.0.1", req_wire[..], 1000000000, tx_wire,
         );
         sub.assert_true(ok_h3 && tx_wire.len > 0, "handle_h3_server_datagram produced response");
 
-        let rx_err = h3_internal::handle_stream_data(h3_cli, sid, true, tx_wire[..], true);
+        let rx_err = http3::handle_stream_data(h3_cli, sid, true, tx_wire[..], true);
         sub.assert_eq(rx_err, rfc::H3_ERR_NO_ERROR, "client decoded H3 server response");
-        let sc, ok_sc = h3_internal::get_status_code(h3_cli, sid);
+        let sc, ok_sc = http3::get_status_code(h3_cli, sid);
         sub.assert_true(ok_sc && sc == 200, "H3 server response status is 200");
 
         let tls_cfg = wing::TlsServerHandshakeConfig { .. };
@@ -1538,15 +1538,15 @@ fn test_srv_reg1_s2(t: lit::T&) {
         let _, ok_init = server_internal::handle_h2_server_ingress(sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, wire_out);
         sub.assert_true(ok_init, "H2 preface and SETTINGS handled");
 
-        var dt = h2_internal::new_dynamic_table(4096);
+        var dt = http2::new_dynamic_table(4096);
         var h_block: u8[>..] = [];
-        h2_internal::encode_hpack_field(dt, h_block, ":method", "QUERY", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, ":authority", "example.com", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, ":path", "/search", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, "content-type", "application/json", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, "content-length", "2", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":method", "QUERY", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":authority", "example.com", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, ":path", "/search", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, "content-type", "application/json", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, "content-length", "2", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h_block, "sec-fetch-site", "same-origin", http2::HpackIndexing.Incremental, false);
 
         var req_wire: u8[>..] = [];
         build_h2_test_frame_header(req_wire, h_block.len as u32, 0x01, 0x04, 1);
@@ -1564,11 +1564,11 @@ fn test_srv_reg1_s2(t: lit::T&) {
         sub.assert_gt(wire_out.len, 0, "Stream 1 was NOT falsely cancelled by incomplete tail RST_STREAM");
 
         if wire_out.len >= 22 {
-            var resp_dt = h2_internal::new_dynamic_table(4096);
-            var resp_pseudo = h2_internal::H2PseudoHeaders { .. };
+            var resp_dt = http2::new_dynamic_table(4096);
+            var resp_pseudo = http2::PseudoHeaders { .. };
             var resp_list = wing::HeaderMap { .. };
             let h_len = ((wire_out[13] as i64) << 16) | ((wire_out[14] as i64) << 8) | (wire_out[15] as i64);
-            let dec_err = h2_internal::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
+            let dec_err = http2::decode_hpack_to_map(resp_dt, wire_out[22..(22 + h_len)], resp_pseudo, resp_list);
             sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Response HPACK decoded");
             sub.assert_true(resp_pseudo.has_status, "First response field is :status");
             sub.assert_eq(resp_pseudo.status, 200, "HTTP/2 QUERY with Content-Type returned 200 OK (presence_mask populated)");
@@ -1881,7 +1881,7 @@ fn srv_reg1_run_round2_part2(t: lit::T&) {
 
         // R2-F019 & R2-F020: WebSocket route matching with query string, SNI >4096B guard and trailing dot exact match
         var srv = wing::new_http_server("127.0.0.1", 8080);
-        let ws_b = wing::WsBehavior { .. };
+        let ws_b = realtime::WsBehavior { .. };
         sub.assert_true(wing::add_ws_route(srv, "/ws/live", ws_b), "Registered /ws/live");
         sub.assert_ge(wing::find_ws_route(srv, "/ws/live?token=abc"), 0, "find_ws_route matches request URL with query string");
 
@@ -2009,13 +2009,13 @@ fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
 
         // F006: Stream 1 sends Content-Length: 5, then sends 10-byte DATA frame -> stream error PROTOCOL_ERROR,
         // but conn_recv_window MUST remain 65535 (replenished via conn WINDOW_UPDATE)!
-        var dt = h2_internal::new_dynamic_table(4096);
+        var dt = http2::new_dynamic_table(4096);
         var h1: u8[..512] = [];
-        h2_internal::encode_hpack_field(dt, h1, ":method", "POST", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1, ":path", "/echo", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1, "content-length", "5", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1, ":method", "POST", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1, ":authority", "127.0.0.1", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1, ":path", "/echo", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1, "content-length", "5", http2::HpackIndexing.Incremental, false);
         var w1: u8[..1024] = [];
         build_h2_frame(w1, h1.len as u32, 0x01, 0x04, 1);
         w1.append(h1[..]);
@@ -2035,10 +2035,10 @@ fn test_srv_reg2_r2_h2_multiplexer(t: lit::T&) {
         let in_cache = wire::STAGE_SRV_IN_DEFAULT_MASK | wire::STAGE_SRV_IN_CACHE_LOOKUP;
         wing::add_route_pso(pipeline.router, "GET", "/cached-big", 55, in_cache, wire::STAGE_SRV_OUT_DEFAULT_MASK);
         var h5: u8[..512] = [];
-        h2_internal::encode_hpack_field(dt, h5, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h5, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h5, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h5, ":path", "/cached-big", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h5, ":method", "GET", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h5, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h5, ":authority", "127.0.0.1", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h5, ":path", "/cached-big", http2::HpackIndexing.Incremental, false);
         var w5: u8[..1024] = [];
         build_h2_frame(w5, h5.len as u32, 0x01, 0x04, 5);
         w5.append(h5[..]);
@@ -2311,25 +2311,25 @@ fn test_srv_reg3_r3_h2_and_router(t: lit::T&) {
         wire_in.append(rfc::H2_CLIENT_PREFACE);
         build_h2_frame(wire_in, 0, 0x04, 0x00, 0);
 
-        var dt = h2_internal::new_dynamic_table(4096);
+        var dt = http2::new_dynamic_table(4096);
         var h1_pri: u8[..512] = [];
         // 5-byte PRIORITY header: dep = stream 1 (self-dependency -> RST_STREAM(PROTOCOL_ERROR)), weight = 15
         h1_pri.push(0x00); h1_pri.push(0x00); h1_pri.push(0x00); h1_pri.push(0x01); h1_pri.push(15);
-        h2_internal::encode_hpack_field(dt, h1_pri, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1_pri, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1_pri, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1_pri, ":path", "/ok", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h1_pri, "x-shared-dyn", "dyn-value-123", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1_pri, ":method", "GET", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1_pri, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1_pri, ":authority", "127.0.0.1", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1_pri, ":path", "/ok", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h1_pri, "x-shared-dyn", "dyn-value-123", http2::HpackIndexing.Incremental, false);
         build_h2_frame(wire_in, h1_pri.len as u32, 0x01, 0x25, 1); // END_STREAM(0x01) | END_HEADERS(0x04) | PRIORITY(0x20)
         wire_in.append(h1_pri[..]);
 
         // Stream 3 references the newly indexed dynamic table entry ("x-shared-dyn: dyn-value-123")
         var h3: u8[..512] = [];
-        h2_internal::encode_hpack_field(dt, h3, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h3, ":scheme", "https", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h3, ":authority", "127.0.0.1", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h3, ":path", "/ok", h2_internal::HpackIndexing.Incremental, false);
-        h2_internal::encode_hpack_field(dt, h3, "x-shared-dyn", "dyn-value-123", h2_internal::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h3, ":method", "GET", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h3, ":scheme", "https", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h3, ":authority", "127.0.0.1", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h3, ":path", "/ok", http2::HpackIndexing.Incremental, false);
+        http2::encode_hpack_field(dt, h3, "x-shared-dyn", "dyn-value-123", http2::HpackIndexing.Incremental, false);
         build_h2_frame(wire_in, h3.len as u32, 0x01, 0x05, 3);
         wire_in.append(h3[..]);
 
@@ -2459,7 +2459,7 @@ fn test_goose2rfc_server_audit_regressions(t: lit::T&) {
         var sess = server_internal::H2ServerSession { .. };
         sess.conn.is_server = true;
         var out_wire: u8[..256] = [];
-        let ga_hdr = h2_internal::FrameHeader {
+        let ga_hdr = http2::FrameHeader {
             length:     8,
             frame_type: rfc::H2_FRAME_GOAWAY,
             flags:      0,

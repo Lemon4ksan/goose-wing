@@ -28,7 +28,7 @@ fn run_h2_say_hello(s: wing::Client&) -> bool {
     let resp, err = wing::post(s, "/helloworld.Greeter/SayHello") { req =>
         wing::set_header(req, "content-type", "application/grpc");
         wing::set_header(req, "te", "trailers");
-        wing::encode_grpc_lpm("GooseNativeH2", req.body, false);
+        grpc::encode_lpm("GooseNativeH2", req.body, false);
     };
     guard wing::ok(err) && resp.status_code == 200 && resp.protocol[..] == "HTTP/2" else {
         return false;
@@ -37,7 +37,7 @@ fn run_h2_say_hello(s: wing::Client&) -> bool {
     guard resp.header("x-grpc-engine") == "goose-wing" else { return false; }
     guard wing::get_header(resp.trailers, "grpc-status") == "0" else { return false; }
 
-    let msg, is_comp, _, ok_lpm = wing::decode_grpc_lpm_slice(resp.body[..], 0);
+    let msg, is_comp, _, ok_lpm = grpc::decode_lpm_slice(resp.body[..], 0);
     return ok_lpm && !is_comp && msg == "Hello, GooseNativeH2!";
 }
 
@@ -46,7 +46,7 @@ fn run_h2_metadata_echo(s: wing::Client&) -> bool {
         wing::set_header(req, "content-type", "application/grpc");
         wing::set_header(req, "te", "trailers");
         wing::set_header(req, "x-echo-trace-id", "h2-native-trace-777");
-        wing::encode_grpc_lpm("NativeH2EchoPayload", req.body, false);
+        grpc::encode_lpm("NativeH2EchoPayload", req.body, false);
     };
     guard wing::ok(err) && resp.status_code == 200 && resp.protocol[..] == "HTTP/2" else {
         return false;
@@ -54,7 +54,7 @@ fn run_h2_metadata_echo(s: wing::Client&) -> bool {
     guard resp.header("x-echo-trace-id") == "h2-native-trace-777" else { return false; }
     guard wing::get_header(resp.trailers, "grpc-status") == "0" else { return false; }
 
-    let msg, _, _, ok_lpm = wing::decode_grpc_lpm_slice(resp.body[..], 0);
+    let msg, _, _, ok_lpm = grpc::decode_lpm_slice(resp.body[..], 0);
     return ok_lpm && msg == "NativeH2EchoPayload";
 }
 
@@ -63,34 +63,34 @@ fn run_h2_unauthenticated(s: wing::Client&) -> bool {
         wing::set_header(req, "content-type", "application/grpc");
         wing::set_header(req, "te", "trailers");
         wing::set_header(req, "authorization", "Bearer invalid-token");
-        wing::encode_grpc_lpm("Mallory", req.body, false);
+        grpc::encode_lpm("Mallory", req.body, false);
     };
     guard wing::ok(err) && resp.status_code == 200 && resp.protocol[..] == "HTTP/2" else {
         return false;
     }
-    var st = wing::GrpcStatusCode.Ok;
+    var st = grpc::StatusCode.Ok;
     var msg: u8[..256] = [];
-    guard wing::extract_grpc_status(resp.headers, resp.trailers, st, msg) else {
+    guard grpc::extract_status(resp.headers, resp.trailers, st, msg) else {
         return false;
     }
-    return st == wing::GrpcStatusCode.Unauthenticated && core::contains(msg[..], "Invalid authorization token");
+    return st == grpc::StatusCode.Unauthenticated && core::contains(msg[..], "Invalid authorization token");
 }
 
 fn run_h2_permission_denied(s: wing::Client&) -> bool {
     let resp, err = wing::post(s, "/echo.EchoService/Fail") { req =>
         wing::set_header(req, "content-type", "application/grpc");
         wing::set_header(req, "te", "trailers");
-        wing::encode_grpc_lpm("", req.body, false);
+        grpc::encode_lpm("", req.body, false);
     };
     guard wing::ok(err) && resp.status_code == 200 && resp.protocol[..] == "HTTP/2" else {
         return false;
     }
-    var st = wing::GrpcStatusCode.Ok;
+    var st = grpc::StatusCode.Ok;
     var msg: u8[..256] = [];
-    guard wing::extract_grpc_status(resp.headers, resp.trailers, st, msg) else {
+    guard grpc::extract_status(resp.headers, resp.trailers, st, msg) else {
         return false;
     }
-    return st == wing::GrpcStatusCode.PermissionDenied && core::contains(msg[..], "Access denied");
+    return st == grpc::StatusCode.PermissionDenied && core::contains(msg[..], "Access denied");
 }
 
 fn run_h2_large_32kb_payload(s: wing::Client&) -> bool {
@@ -102,14 +102,14 @@ fn run_h2_large_32kb_payload(s: wing::Client&) -> bool {
     let resp, err = wing::post(s, "/echo.EchoService/Echo") { req =>
         wing::set_header(req, "content-type", "application/grpc");
         wing::set_header(req, "te", "trailers");
-        wing::encode_grpc_lpm(big_in[..], req.body, false);
+        grpc::encode_lpm(big_in[..], req.body, false);
     };
     guard wing::ok(err) && resp.status_code == 200 && resp.protocol[..] == "HTTP/2" else {
         return false;
     }
     guard wing::get_header(resp.trailers, "grpc-status") == "0" else { return false; }
 
-    let msg, _, _, ok_lpm = wing::decode_grpc_lpm_slice(resp.body[..], 0);
+    let msg, _, _, ok_lpm = grpc::decode_lpm_slice(resp.body[..], 0);
     return ok_lpm && msg.len == 32768 && msg == big_in[..];
 }
 

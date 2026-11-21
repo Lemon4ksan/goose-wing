@@ -12,18 +12,18 @@ fn main() {
     print("goose-wing Layer 7 Reverse Proxy & API Gateway\n");
 
     // 1. Initialize Reverse Proxy with Round-Robin upstream cluster
-    var proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
-    proxy.config.via_pseudonym.clear();
-    proxy.config.via_pseudonym.append("wing-gateway/2.0");
+    var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
+    rp.config.via_pseudonym.clear();
+    rp.config.via_pseudonym.append("wing-gateway/2.0");
 
     // Add three upstream backend microservices
-    wing::add_upstream_target(proxy.cluster, "10.0.1.10:8080", 8080);
-    wing::add_upstream_target(proxy.cluster, "10.0.1.11:8080", 8080);
-    wing::add_upstream_target(proxy.cluster, "10.0.1.12:8080", 8080);
+    rp.cluster.add_upstream_target("10.0.1.10:8080", 8080);
+    rp.cluster.add_upstream_target("10.0.1.11:8080", 8080);
+    rp.cluster.add_upstream_target("10.0.1.12:8080", 8080);
 
-    print("[1] Reverse Proxy initialized with ", proxy.cluster.targets.len, " upstream targets");
-    for i in proxy.cluster.targets.len {
-        print("    Target [", i, "]: ", proxy.cluster.targets[i].host, ":", proxy.cluster.targets[i].port);
+    print("[1] Reverse Proxy initialized with ", rp.cluster.targets.len, " upstream targets");
+    for i in rp.cluster.targets.len {
+        print("    Target [", i, "]: ", rp.cluster.targets[i].host, ":", rp.cluster.targets[i].port);
     }
 
     // 2. Prepare incoming client request headers
@@ -47,8 +47,7 @@ fn main() {
         upstream_wire.clear();
         let body = "{\"action\":\"query\",\"id\":42}";
 
-        let target_idx, ok = wing::prepare_proxy_request(
-            proxy,
+        let target_idx, ok = rp.prepare_proxy_request(
             "POST",
             "/api/v1/resource",
             client_headers,
@@ -59,9 +58,9 @@ fn main() {
         );
 
         if ok {
-            print("\n[3.", req_num + 1, "] Request Routed to Upstream Target [", target_idx, "] (", proxy.cluster.targets[target_idx].host, "):");
+            print("\n[3.", req_num + 1, "] Request Routed to Upstream Target [", target_idx, "] (", rp.cluster.targets[target_idx].host, "):");
             print("    Serialized Upstream Wire Bytes: ", upstream_wire.len, " bytes");
-            wing::release_upstream_connection(proxy.cluster, target_idx);
+            rp.cluster.release_upstream_connection(target_idx);
         } else {
             print("\n[3.", req_num + 1, "] Upstream routing failed (cluster circuit open or exhausted)");
         }
@@ -69,16 +68,16 @@ fn main() {
 
     // 4. Demonstrate Circuit Breaker tripping and recovery
     print("\n[4] Simulating upstream failure on Target [0]:");
-    wing::record_upstream_failure(proxy.cluster, 0);
-    wing::record_upstream_failure(proxy.cluster, 0);
-    wing::record_upstream_failure(proxy.cluster, 0); // trips target 0 health
+    rp.cluster.record_upstream_failure(0);
+    rp.cluster.record_upstream_failure(0);
+    rp.cluster.record_upstream_failure(0); // trips target 0 health
 
-    print("    Target [0] healthy status: ", proxy.cluster.targets[0].is_healthy);
-    let next_target, next_ok = wing::select_upstream(proxy.cluster);
-    print("    Next routed target (avoiding unhealthy Target 0): Target [", next_target, "] (", proxy.cluster.targets[next_target].host, ")");
-    wing::release_upstream_connection(proxy.cluster, next_target);
+    print("    Target [0] healthy status: ", rp.cluster.targets[0].is_healthy);
+    let next_target, next_ok = rp.cluster.select_upstream();
+    print("    Next routed target (avoiding unhealthy Target 0): Target [", next_target, "] (", rp.cluster.targets[next_target].host, ")");
+    rp.cluster.release_upstream_connection(next_target);
 
     print("\n[5] Gateway Summary:");
-    print("    Total Requests Forwarded: ", proxy.total_forwarded);
-    print("    Total Requests Dropped: ", proxy.total_dropped);
+    print("    Total Requests Forwarded: ", rp.total_forwarded);
+    print("    Total Requests Dropped: ", rp.total_dropped);
 }

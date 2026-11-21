@@ -23,95 +23,95 @@ import wire_kit from ".";
 
 fn run_01_rfc_repro_semantic_h3_connect_pseudo() {
     var settings = fingerprint::H3Settings { .. };
-    var conn = h3_internal::new_h3_server_connection(settings);
-    let s_idx, err_s = h3_internal::get_or_create_bidi_stream(conn, 0);
+    var conn = http3::new_server_connection(settings);
+    let s_idx, err_s = http3::get_or_create_bidi_stream(conn, 0);
     assert(err_s == rfc::H3_ERR_NO_ERROR);
 
     // 1. Valid RFC 9114 CONNECT: :method = CONNECT, :authority = host:port (omitted :scheme and :path)
-    var valid_connect_fields: h3_internal::HeaderField[>..] = [];
-    var f1 = h3_internal::HeaderField { .. };
+    var valid_connect_fields: http3::HeaderField[>..] = [];
+    var f1 = http3::HeaderField { .. };
     f1.name.append(":method");
     f1.value.append("CONNECT");
     valid_connect_fields.push(f1);
 
-    var f2 = h3_internal::HeaderField { .. };
+    var f2 = http3::HeaderField { .. };
     f2.name.append(":authority");
     f2.value.append("example.com:443");
     valid_connect_fields.push(f2);
 
-    let err_valid = h3_internal::validate_h3_headers(conn, s_idx, valid_connect_fields);
+    let err_valid = http3::validate_h3_headers(conn, s_idx, valid_connect_fields);
     print("VALID_CONNECT: ", err_valid == rfc::H3_ERR_NO_ERROR, "\n");
 
     // 2. Malformed RFC 9114 CONNECT: :scheme and :path must be omitted for CONNECT
-    conn = h3_internal::new_h3_server_connection(settings);
-    let s_idx2, err_s2 = h3_internal::get_or_create_bidi_stream(conn, 0);
+    conn = http3::new_server_connection(settings);
+    let s_idx2, err_s2 = http3::get_or_create_bidi_stream(conn, 0);
     assert(err_s2 == rfc::H3_ERR_NO_ERROR);
 
-    var malformed_connect_fields: h3_internal::HeaderField[>..] = [];
-    var m1 = h3_internal::HeaderField { .. };
+    var malformed_connect_fields: http3::HeaderField[>..] = [];
+    var m1 = http3::HeaderField { .. };
     m1.name.append(":method");
     m1.value.append("CONNECT");
     malformed_connect_fields.push(m1);
 
-    var m2 = h3_internal::HeaderField { .. };
+    var m2 = http3::HeaderField { .. };
     m2.name.append(":scheme");
     m2.value.append("https");
     malformed_connect_fields.push(m2);
 
-    var m3 = h3_internal::HeaderField { .. };
+    var m3 = http3::HeaderField { .. };
     m3.name.append(":path");
     m3.value.append("/");
     malformed_connect_fields.push(m3);
 
-    var m4 = h3_internal::HeaderField { .. };
+    var m4 = http3::HeaderField { .. };
     m4.name.append(":authority");
     m4.value.append("example.com:443");
     malformed_connect_fields.push(m4);
 
-    let err_malformed = h3_internal::validate_h3_headers(conn, s_idx2, malformed_connect_fields);
+    let err_malformed = http3::validate_h3_headers(conn, s_idx2, malformed_connect_fields);
     print("MALFORMED_CONNECT_SCHEME_PATH: ", err_malformed == rfc::H3_ERR_GENERAL_PROTOCOL, "\n");
 
     // 3. Malformed RFC 9114 CONNECT: missing :authority
-    conn = h3_internal::new_h3_server_connection(settings);
-    let s_idx3, err_s3 = h3_internal::get_or_create_bidi_stream(conn, 0);
+    conn = http3::new_server_connection(settings);
+    let s_idx3, err_s3 = http3::get_or_create_bidi_stream(conn, 0);
     assert(err_s3 == rfc::H3_ERR_NO_ERROR);
 
-    var no_auth_fields: h3_internal::HeaderField[>..] = [];
-    var a1 = h3_internal::HeaderField { .. };
+    var no_auth_fields: http3::HeaderField[>..] = [];
+    var a1 = http3::HeaderField { .. };
     a1.name.append(":method");
     a1.value.append("CONNECT");
     no_auth_fields.push(a1);
 
-    let err_no_auth = h3_internal::validate_h3_headers(conn, s_idx3, no_auth_fields);
+    let err_no_auth = http3::validate_h3_headers(conn, s_idx3, no_auth_fields);
     print("MALFORMED_CONNECT_NO_AUTH: ", err_no_auth == rfc::H3_ERR_GENERAL_PROTOCOL, "\n");
 
     // 4. Standard valid GET request
-    conn = h3_internal::new_h3_server_connection(settings);
-    let s_idx4, err_s4 = h3_internal::get_or_create_bidi_stream(conn, 0);
+    conn = http3::new_server_connection(settings);
+    let s_idx4, err_s4 = http3::get_or_create_bidi_stream(conn, 0);
     assert(err_s4 == rfc::H3_ERR_NO_ERROR);
 
-    var get_fields: h3_internal::HeaderField[>..] = [];
-    var g1 = h3_internal::HeaderField { .. };
+    var get_fields: http3::HeaderField[>..] = [];
+    var g1 = http3::HeaderField { .. };
     g1.name.append(":method");
     g1.value.append("GET");
     get_fields.push(g1);
 
-    var g2 = h3_internal::HeaderField { .. };
+    var g2 = http3::HeaderField { .. };
     g2.name.append(":scheme");
     g2.value.append("https");
     get_fields.push(g2);
 
-    var g3 = h3_internal::HeaderField { .. };
+    var g3 = http3::HeaderField { .. };
     g3.name.append(":path");
     g3.value.append("/");
     get_fields.push(g3);
 
-    var g4 = h3_internal::HeaderField { .. };
+    var g4 = http3::HeaderField { .. };
     g4.name.append(":authority");
     g4.value.append("example.com");
     get_fields.push(g4);
 
-    let err_get = h3_internal::validate_h3_headers(conn, s_idx4, get_fields);
+    let err_get = http3::validate_h3_headers(conn, s_idx4, get_fields);
     print("VALID_GET: ", err_get == rfc::H3_ERR_NO_ERROR, "\n");
 }
 
@@ -136,161 +136,159 @@ fn run_01_rfc_repro_semantic_h3_connect_pseudo() {
 // 7. Dynamic table index boundary against RIC in Case A and C (RFC 9204 §4.5.2, §4.5.4).
 //
 
-fn test_control_stream_forbidden_frames_precedence(conn: h3_internal::H3Connection&, settings: const fingerprint::H3Settings&) {
-    conn = h3_internal::new_h3_server_connection(settings);
+fn test_control_stream_forbidden_frames_precedence(conn: http3::Connection&, settings: const fingerprint::H3Settings&) {
+    conn = http3::new_server_connection(settings);
 
     // A. DATA frame sent on peer control stream before SETTINGS (RFC 9114 §6.2.1)
     // If the first frame is any other frame type, connection error H3_MISSING_SETTINGS (0x010A)
     var data_wire: u8[..64] = [];
-    quic_internal::quic_encode_varint(data_wire, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_data_frame(data_wire, "test"));
-    let err_data = h3_internal::handle_stream_data(conn, 2, false, data_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, data_wire);
+    assert(http3::encode_data_frame(data_wire, "test"));
+    let err_data = http3::handle_stream_data(conn, 2, false, data_wire[..], false);
     assert(err_data == rfc::H3_ERR_MISSING_SETTINGS);
 
     // B. HEADERS frame sent on peer control stream before SETTINGS (RFC 9114 §6.2.1)
-    conn = h3_internal::new_h3_server_connection(settings);
+    conn = http3::new_server_connection(settings);
     var headers_wire: u8[..64] = [];
-    quic_internal::quic_encode_varint(headers_wire, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_headers_frame(headers_wire, "head"));
-    let err_hdr = h3_internal::handle_stream_data(conn, 2, false, headers_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, headers_wire);
+    assert(http3::encode_headers_frame(headers_wire, "head"));
+    let err_hdr = http3::handle_stream_data(conn, 2, false, headers_wire[..], false);
     assert(err_hdr == rfc::H3_ERR_MISSING_SETTINGS);
 
     // C. HTTP/2 reserved frame (0x02 PRIORITY) sent on control stream before SETTINGS (RFC 9114 §6.2.1)
-    conn = h3_internal::new_h3_server_connection(settings);
+    conn = http3::new_server_connection(settings);
     var h2_wire: u8[..64] = [];
-    quic_internal::quic_encode_varint(h2_wire, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_frame_header(h2_wire, 0x02, 0));
-    let err_h2 = h3_internal::handle_stream_data(conn, 2, false, h2_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, h2_wire);
+    assert(http3::encode_frame_header(h2_wire, 0x02, 0));
+    let err_h2 = http3::handle_stream_data(conn, 2, false, h2_wire[..], false);
     assert(err_h2 == rfc::H3_ERR_MISSING_SETTINGS);
 
     // D. GOAWAY frame (allowed on control stream) sent before SETTINGS -> H3_ERR_MISSING_SETTINGS (RFC 9114 §6.2.1)
-    conn = h3_internal::new_h3_server_connection(settings);
+    conn = http3::new_server_connection(settings);
     var ga_wire: u8[..64] = [];
-    quic_internal::quic_encode_varint(ga_wire, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_goaway_frame(ga_wire, 0));
-    let err_ga = h3_internal::handle_stream_data(conn, 2, false, ga_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, ga_wire);
+    assert(http3::encode_goaway_frame(ga_wire, 0));
+    let err_ga = http3::handle_stream_data(conn, 2, false, ga_wire[..], false);
     assert(err_ga == rfc::H3_ERR_MISSING_SETTINGS);
 
     // E. DATA frame sent on peer control stream after SETTINGS -> H3_ERR_FRAME_UNEXPECTED (RFC 9114 §7.2.1)
-    conn = h3_internal::new_h3_server_connection(settings);
+    conn = http3::new_server_connection(settings);
     var init_wire: u8[..64] = [];
-    quic_internal::quic_encode_varint(init_wire, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_settings_frame(init_wire, settings));
-    let err_init = h3_internal::handle_stream_data(conn, 2, false, init_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, init_wire);
+    assert(http3::encode_settings_frame(init_wire, settings));
+    let err_init = http3::handle_stream_data(conn, 2, false, init_wire[..], false);
     assert(err_init == rfc::H3_ERR_NO_ERROR);
 
     var post_data: u8[..64] = [];
-    assert(h3_internal::encode_h3_data_frame(post_data, "bad"));
-    let err_post = h3_internal::handle_stream_data(conn, 2, false, post_data[..], false);
+    assert(http3::encode_data_frame(post_data, "bad"));
+    let err_post = http3::handle_stream_data(conn, 2, false, post_data[..], false);
     assert(err_post == rfc::H3_ERR_FRAME_UNEXPECTED);
 
     print("CONTROL_STREAM_FORBIDDEN_PRECEDENCE: OK");
 }
 
 fn test_duplicate_settings_rejection() {
-    var out_settings = fingerprint::H3Settings { .. };
-
     // Duplicate unknown/GREASE setting ID (e.g. 0x21 sent twice)
     var wire_grease: u8[..64] = [];
-    quic_internal::quic_encode_varint(wire_grease, 0x21);
-    quic_internal::quic_encode_varint(wire_grease, 100);
-    quic_internal::quic_encode_varint(wire_grease, 0x21); // Duplicate!
-    quic_internal::quic_encode_varint(wire_grease, 200);
-    let err_grease = h3_internal::parse_h3_settings_frame(wire_grease[..], out_settings);
+    quic::encode_varint(0x21, wire_grease);
+    quic::encode_varint(100, wire_grease);
+    quic::encode_varint(0x21, wire_grease); // Duplicate!
+    quic::encode_varint(200, wire_grease);
+    let _, err_grease = http3::parse_settings_frame(wire_grease[..]);
     assert(err_grease == rfc::H3_ERR_SETTINGS_ERROR);
 
     // Duplicate unknown setting ID (e.g. 0x1F sent twice)
     var wire_unknown: u8[..64] = [];
-    quic_internal::quic_encode_varint(wire_unknown, 0x1F);
-    quic_internal::quic_encode_varint(wire_unknown, 1);
-    quic_internal::quic_encode_varint(wire_unknown, 0x1F); // Duplicate!
-    quic_internal::quic_encode_varint(wire_unknown, 2);
-    let err_unknown = h3_internal::parse_h3_settings_frame(wire_unknown[..], out_settings);
+    quic::encode_varint(0x1F, wire_unknown);
+    quic::encode_varint(1, wire_unknown);
+    quic::encode_varint(0x1F, wire_unknown); // Duplicate!
+    quic::encode_varint(2, wire_unknown);
+    let _, err_unknown = http3::parse_settings_frame(wire_unknown[..]);
     assert(err_unknown == rfc::H3_ERR_SETTINGS_ERROR);
 
     // Valid distinct settings pass
     var wire_valid: u8[..64] = [];
-    quic_internal::quic_encode_varint(wire_valid, 0x21);
-    quic_internal::quic_encode_varint(wire_valid, 100);
-    quic_internal::quic_encode_varint(wire_valid, 0x40);
-    quic_internal::quic_encode_varint(wire_valid, 200);
-    let err_valid = h3_internal::parse_h3_settings_frame(wire_valid[..], out_settings);
+    quic::encode_varint(0x21, wire_valid);
+    quic::encode_varint(100, wire_valid);
+    quic::encode_varint(0x40, wire_valid);
+    quic::encode_varint(200, wire_valid);
+    let _, err_valid = http3::parse_settings_frame(wire_valid[..]);
     assert(err_valid == rfc::H3_ERR_NO_ERROR);
 
     print("DUPLICATE_SETTINGS_REJECTION: OK");
 }
 
-fn test_push_stream_validation(conn: h3_internal::H3Connection&, settings: const fingerprint::H3Settings&) {
+fn test_push_stream_validation(conn: http3::Connection&, settings: const fingerprint::H3Settings&) {
     // 1. Server receives push stream from client -> H3_ERR_STREAM_CREATION (RFC 9114 §6.2.2)
-    conn = h3_internal::new_h3_server_connection(settings);
+    conn = http3::new_server_connection(settings);
     var push_wire: u8[..64] = [];
-    quic_internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
-    quic_internal::quic_encode_varint(push_wire, 0);
-    let s_err = h3_internal::handle_stream_data(conn, 2, false, push_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_PUSH, push_wire);
+    quic::encode_varint(0, push_wire);
+    let s_err = http3::handle_stream_data(conn, 2, false, push_wire[..], false);
     assert(s_err == rfc::H3_ERR_STREAM_CREATION);
-    assert(conn.state == h3_internal::H3ConnState.Closed);
+    assert(conn.state == http3::ConnState.Closed);
 
     // 2. Client receives push stream without having sent MAX_PUSH_ID -> H3_ERR_ID_ERROR (RFC 9114 §4.6)
-    conn = h3_internal::new_h3_client_connection(settings);
+    conn = http3::new_client_connection(settings);
     push_wire.clear();
-    quic_internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
-    quic_internal::quic_encode_varint(push_wire, 0);
-    let c_err = h3_internal::handle_stream_data(conn, 3, false, push_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_PUSH, push_wire);
+    quic::encode_varint(0, push_wire);
+    let c_err = http3::handle_stream_data(conn, 3, false, push_wire[..], false);
     assert(c_err == rfc::H3_ERR_ID_ERROR);
-    assert(conn.state == h3_internal::H3ConnState.Closed);
+    assert(conn.state == http3::ConnState.Closed);
 
     // 3. Client receives push stream with push_id > max_push_id_advertised -> H3_ERR_ID_ERROR
-    conn = h3_internal::new_h3_client_connection(settings);
+    conn = http3::new_client_connection(settings);
     var dummy_out: u8[..64] = [];
-    assert(h3_internal::send_max_push_id(conn, 5, dummy_out));
+    assert(http3::send_max_push_id(conn, 5, dummy_out));
     push_wire.clear();
-    quic_internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
-    quic_internal::quic_encode_varint(push_wire, 6);
-    let c_err_excess = h3_internal::handle_stream_data(conn, 3, false, push_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_PUSH, push_wire);
+    quic::encode_varint(6, push_wire);
+    let c_err_excess = http3::handle_stream_data(conn, 3, false, push_wire[..], false);
     assert(c_err_excess == rfc::H3_ERR_ID_ERROR);
 
     // 4. Client receives push stream with push_id <= max_push_id_advertised -> H3_ERR_NO_ERROR
-    conn = h3_internal::new_h3_client_connection(settings);
+    conn = http3::new_client_connection(settings);
     dummy_out.clear();
-    assert(h3_internal::send_max_push_id(conn, 5, dummy_out));
+    assert(http3::send_max_push_id(conn, 5, dummy_out));
     push_wire.clear();
-    quic_internal::quic_encode_varint(push_wire, rfc::H3_STREAM_PUSH);
-    quic_internal::quic_encode_varint(push_wire, 4);
-    let c_err_ok = h3_internal::handle_stream_data(conn, 3, false, push_wire[..], false);
+    quic::encode_varint(rfc::H3_STREAM_PUSH, push_wire);
+    quic::encode_varint(4, push_wire);
+    let c_err_ok = http3::handle_stream_data(conn, 3, false, push_wire[..], false);
     assert(c_err_ok == rfc::H3_ERR_NO_ERROR);
 
     print("PUSH_STREAM_VALIDATION: OK");
 }
 
-fn test_server_initiated_bidi_stream_rejection(conn: h3_internal::H3Connection&, settings: const fingerprint::H3Settings&) {
-    conn = h3_internal::new_h3_client_connection(settings);
-    let err_bidi = h3_internal::handle_stream_data(conn, 1, true, "test", false);
+fn test_server_initiated_bidi_stream_rejection(conn: http3::Connection&, settings: const fingerprint::H3Settings&) {
+    conn = http3::new_client_connection(settings);
+    let err_bidi = http3::handle_stream_data(conn, 1, true, "test", false);
     assert(err_bidi == rfc::H3_ERR_STREAM_CREATION);
-    assert(conn.state == h3_internal::H3ConnState.Closed);
+    assert(conn.state == http3::ConnState.Closed);
 
     print("SERVER_INITIATED_BIDI_REJECTION: OK");
 }
 
-fn test_initial_dynamic_table_capacity_zero(conn: h3_internal::H3Connection&) {
+fn test_initial_dynamic_table_capacity_zero(conn: http3::Connection&) {
     let settings = fingerprint::H3Settings { qpack_max_table_capacity: 4096, .. };
-    conn = h3_internal::new_h3_client_connection(settings);
+    conn = http3::new_client_connection(settings);
     assert(conn.qpack_table.capacity_bytes == 0);
 
     var enc_stream_data: u8[..64] = [];
-    quic_internal::quic_encode_varint(enc_stream_data, rfc::H3_STREAM_QPACK_ENCODER);
+    quic::encode_varint(rfc::H3_STREAM_QPACK_ENCODER, enc_stream_data);
     enc_stream_data.push(0x44); // 0100 0100 (Insert literal name len 4)
     enc_stream_data.append("test");
     enc_stream_data.push(0x03); // Val len 3
     enc_stream_data.append("val");
 
-    let err = h3_internal::handle_stream_data(conn, 3, false, enc_stream_data[..], false);
+    let err = http3::handle_stream_data(conn, 3, false, enc_stream_data[..], false);
     assert(err == rfc::H3_ERR_QPACK_ENCODER_STREAM_ERROR);
-    assert(conn.state == h3_internal::H3ConnState.Closed);
+    assert(conn.state == http3::ConnState.Closed);
 
     // Now test with Set Dynamic Table Capacity instruction first
-    conn = h3_internal::new_h3_client_connection(settings);
+    conn = http3::new_client_connection(settings);
     var enc_stream_valid: u8[..64] = [];
-    quic_internal::quic_encode_varint(enc_stream_valid, rfc::H3_STREAM_QPACK_ENCODER);
+    quic::encode_varint(rfc::H3_STREAM_QPACK_ENCODER, enc_stream_valid);
     enc_stream_valid.push(0x3F); // 0x20 | 0x1F
     enc_stream_valid.push(0xE1); // Capacity 4096
     enc_stream_valid.push(0x1F);
@@ -299,7 +297,7 @@ fn test_initial_dynamic_table_capacity_zero(conn: h3_internal::H3Connection&) {
     enc_stream_valid.push(0x03); // Val len 3
     enc_stream_valid.append("val");
 
-    let err2 = h3_internal::handle_stream_data(conn, 3, false, enc_stream_valid[..], false);
+    let err2 = http3::handle_stream_data(conn, 3, false, enc_stream_valid[..], false);
     assert(err2 == rfc::H3_ERR_NO_ERROR);
     assert(conn.qpack_table.insert_count == 1);
 
@@ -314,7 +312,7 @@ fn test_qpack_int_62bit_boundary() {
         0x80, // shift 56 with continuation bit set -> indicates byte 10 (> 62 bits)
         0x01,
     ];
-    let val, next_off, ok = h3_internal::qpack_decode_int(buf_overflow[..], 0, 8);
+    let val, next_off, ok = http3::qpack_decode_int(buf_overflow[..], 0, 8);
     assert(!ok);
 
     // Shift 56 with payload > 0x3F (e.g. 0x40)
@@ -323,16 +321,16 @@ fn test_qpack_int_62bit_boundary() {
         0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
         0x40,
     ];
-    let val2, next_off2, ok2 = h3_internal::qpack_decode_int(buf_overflow2[..], 0, 8);
+    let val2, next_off2, ok2 = http3::qpack_decode_int(buf_overflow2[..], 0, 8);
     assert(!ok2);
 
     print("QPACK_INT_62BIT_BOUNDARY: OK");
 }
 
 fn test_qpack_ric_boundary_cases_a_and_c() {
-    var tbl = h3_internal::new_qpack_table(4096, 16);
-    assert(h3_internal::qpack_insert_literal(tbl, "x-key-0", "val-0")); // Abs idx 0
-    assert(h3_internal::qpack_insert_literal(tbl, "x-key-1", "val-1")); // Abs idx 1
+    var tbl = http3::new_qpack_table(4096, 16);
+    assert(http3::qpack_insert_literal(tbl, "x-key-0", "val-0")); // Abs idx 0
+    assert(http3::qpack_insert_literal(tbl, "x-key-1", "val-1")); // Abs idx 1
 
     // Encoded section with:
     // Encoded RIC = 2 (decoded ric = 1)
@@ -344,9 +342,9 @@ fn test_qpack_ric_boundary_cases_a_and_c() {
         0x01, // Sign=0, DeltaBase=1 -> Base = 2
         0x80, // Case A: 10xxxxxx, Index = 0 -> abs_idx = 1 == ric
     ];
-    var fields_a: h3_internal::HeaderField[>..] = [];
-    let err_a = h3_internal::decode_qpack_section(tbl, wire_case_a[..], fields_a, 8192);
-    assert(err_a == h3_internal::QpackError.DecompressionFailed);
+    var fields_a: http3::HeaderField[>..] = [];
+    let err_a = http3::decode_qpack_section(tbl, wire_case_a[..], fields_a, 8192);
+    assert(err_a == http3::QpackError.DecompressionFailed);
 
     // Case C: Literal with dynamic name reference
     // Name Index = 0 -> abs_idx = 2 - 0 - 1 = 1 == ric!
@@ -358,16 +356,16 @@ fn test_qpack_ric_boundary_cases_a_and_c() {
         0x03, // Value len 3
         'v', 'a', 'l',
     ];
-    var fields_c: h3_internal::HeaderField[>..] = [];
-    let err_c = h3_internal::decode_qpack_section(tbl, wire_case_c[..], fields_c, 8192);
-    assert(err_c == h3_internal::QpackError.DecompressionFailed);
+    var fields_c: http3::HeaderField[>..] = [];
+    let err_c = http3::decode_qpack_section(tbl, wire_case_c[..], fields_c, 8192);
+    assert(err_c == http3::QpackError.DecompressionFailed);
 
     print("QPACK_RIC_BOUNDARY_CASES_A_AND_C: OK");
 }
 
 fn run_02_verify_h3_spec_invariants() {
     let settings = fingerprint::H3Settings { .. };
-    var conn = h3_internal::new_h3_server_connection(settings);
+    var conn = http3::new_server_connection(settings);
 
     test_control_stream_forbidden_frames_precedence(conn, settings);
     test_duplicate_settings_rejection();
@@ -401,7 +399,7 @@ fn run_02_verify_h3_spec_invariants() {
 
 // Wire bridge to HTTP/3 frame decoder
 fn decode_h3_frame_wire(buf: const u8[:]) -> i64 {
-    let hdr, ok = h3_internal::parse_h3_frame_header(buf, 0);
+    let hdr, ok = http3::parse_frame_header(buf, 0);
     if !ok { return -1; }
     let total = (hdr.header_len as! i64) + (hdr.payload_len as! i64);
     if buf.len < total { return -1; }
@@ -414,7 +412,7 @@ fn test_h3_frame_headers() {
     // VarInt type 0 = 0x00, VarInt len 8 = 0x08, Payload = "HELLO123"
     assert(wire_kit::parse_hex("000848454C4C4F313233", data_pkt));
 
-    let hdr, ok = h3_internal::parse_h3_frame_header(data_pkt[..], 0);
+    let hdr, ok = http3::parse_frame_header(data_pkt[..], 0);
     assert(ok);
     assert(hdr.frame_type == rfc::H3_FRAME_DATA);
     assert(hdr.payload_len == 8);
@@ -466,17 +464,16 @@ fn test_h3_settings_frame() {
         enable_connect_protocol:  1,
     };
     var wire_out: u8[..128] = [];
-    assert(h3_internal::encode_h3_settings_frame(wire_out, settings));
+    assert(http3::encode_settings_frame(wire_out, settings));
 
     // First decode frame header
-    let hdr, ok_hdr = h3_internal::parse_h3_frame_header(wire_out[..], 0);
+    let hdr, ok_hdr = http3::parse_frame_header(wire_out[..], 0);
     assert(ok_hdr);
     assert(hdr.frame_type == rfc::H3_FRAME_SETTINGS);
 
     // Parse settings payload
     let payload = wire_out[hdr.header_len..];
-    var parsed_settings = fingerprint::H3Settings { .. };
-    let err = h3_internal::parse_h3_settings_frame(payload, parsed_settings);
+    let parsed_settings, err = http3::parse_settings_frame(payload);
     assert(err == rfc::H3_ERR_NO_ERROR);
     assert(parsed_settings.qpack_max_table_capacity == 4096);
     assert(parsed_settings.max_field_section_size == 16384);
@@ -485,19 +482,18 @@ fn test_h3_settings_frame() {
 
     // Test rejection of forbidden HTTP/2 settings (e.g. 0x02 = SETTINGS_ENABLE_PUSH)
     var bad_h2_setting: u8[..32] = [];
-    quic_internal::quic_encode_varint(bad_h2_setting, 0x02);
-    quic_internal::quic_encode_varint(bad_h2_setting, 0);
-    var bad_settings = fingerprint::H3Settings { .. };
-    let err_h2 = h3_internal::parse_h3_settings_frame(bad_h2_setting[..], bad_settings);
+    quic::encode_varint(0x02, bad_h2_setting);
+    quic::encode_varint(0, bad_h2_setting);
+    let _, err_h2 = http3::parse_settings_frame(bad_h2_setting[..]);
     assert(err_h2 == rfc::H3_ERR_SETTINGS_ERROR);
 
     // Test rejection of duplicate settings
     var dup_setting: u8[..32] = [];
-    quic_internal::quic_encode_varint(dup_setting, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
-    quic_internal::quic_encode_varint(dup_setting, 1024);
-    quic_internal::quic_encode_varint(dup_setting, rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY);
-    quic_internal::quic_encode_varint(dup_setting, 2048);
-    let err_dup = h3_internal::parse_h3_settings_frame(dup_setting[..], bad_settings);
+    quic::encode_varint(rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY, dup_setting);
+    quic::encode_varint(1024, dup_setting);
+    quic::encode_varint(rfc::H3_SETTING_QPACK_MAX_TABLE_CAPACITY, dup_setting);
+    quic::encode_varint(2048, dup_setting);
+    let _, err_dup = http3::parse_settings_frame(dup_setting[..]);
     assert(err_dup == rfc::H3_ERR_SETTINGS_ERROR);
 
     print("H3_SETTINGS_CONFORMANCE: OK");
@@ -506,31 +502,31 @@ fn test_h3_settings_frame() {
 fn test_h3_control_frames_roundtrip() {
     // 1. GOAWAY
     var goaway_buf: u8[..32] = [];
-    assert(h3_internal::encode_h3_goaway_frame(goaway_buf, 42));
-    let gw_hdr, gw_ok = h3_internal::parse_h3_frame_header(goaway_buf[..], 0);
+    assert(http3::encode_goaway_frame(goaway_buf, 42));
+    let gw_hdr, gw_ok = http3::parse_frame_header(goaway_buf[..], 0);
     assert(gw_ok);
     assert(gw_hdr.frame_type == rfc::H3_FRAME_GOAWAY);
-    let gw_id, gw_parsed = h3_internal::parse_h3_goaway_frame(goaway_buf[gw_hdr.header_len..]);
+    let gw_id, gw_parsed = http3::parse_goaway_frame(goaway_buf[gw_hdr.header_len..]);
     assert(gw_parsed);
     assert(gw_id == 42);
 
     // 2. CANCEL_PUSH
     var cancel_buf: u8[..32] = [];
-    assert(h3_internal::encode_h3_cancel_push(cancel_buf, 7));
-    let cp_hdr, cp_ok = h3_internal::parse_h3_frame_header(cancel_buf[..], 0);
+    assert(http3::encode_cancel_push(cancel_buf, 7));
+    let cp_hdr, cp_ok = http3::parse_frame_header(cancel_buf[..], 0);
     assert(cp_ok);
     assert(cp_hdr.frame_type == rfc::H3_FRAME_CANCEL_PUSH);
-    let cp_id, cp_parsed = h3_internal::parse_h3_cancel_push(cancel_buf[cp_hdr.header_len..]);
+    let cp_id, cp_parsed = http3::parse_cancel_push(cancel_buf[cp_hdr.header_len..]);
     assert(cp_parsed);
     assert(cp_id == 7);
 
     // 3. MAX_PUSH_ID
     var max_buf: u8[..32] = [];
-    assert(h3_internal::encode_h3_max_push_id(max_buf, 99));
-    let mp_hdr, mp_ok = h3_internal::parse_h3_frame_header(max_buf[..], 0);
+    assert(http3::encode_max_push_id(max_buf, 99));
+    let mp_hdr, mp_ok = http3::parse_frame_header(max_buf[..], 0);
     assert(mp_ok);
     assert(mp_hdr.frame_type == rfc::H3_FRAME_MAX_PUSH_ID);
-    let mp_id, mp_parsed = h3_internal::parse_h3_max_push_id(max_buf[mp_hdr.header_len..]);
+    let mp_id, mp_parsed = http3::parse_max_push_id(max_buf[mp_hdr.header_len..]);
     assert(mp_parsed);
     assert(mp_id == 99);
 
@@ -540,14 +536,14 @@ fn test_h3_control_frames_roundtrip() {
 fn test_quich3_origin_frame_and_coalescing() {
     let origins: (const u8[:])[2] = ["https://example.com", "https://api.example.com:8443"];
     var wire: u8[..128] = [];
-    assert(h3_internal::encode_h3_origin_frame(wire, origins[..]));
+    assert(http3::encode_origin_frame(wire, origins[..]));
 
-    let hdr, ok_hdr = h3_internal::parse_h3_frame_header(wire[..], 0);
+    let hdr, ok_hdr = http3::parse_frame_header(wire[..], 0);
     assert(ok_hdr);
-    assert(hdr.frame_type == h3_internal::H3_FRAME_ORIGIN);
+    assert(hdr.frame_type == http3::H3_FRAME_ORIGIN);
 
     var parsed: u8[..128][..16] = [];
-    assert(h3_internal::parse_h3_origin_frame(wire[hdr.header_len..], parsed));
+    assert(http3::parse_origin_frame(wire[hdr.header_len..], parsed));
     assert(parsed.len == 2);
     assert(parsed[0][..] == "https://example.com");
     assert(parsed[1][..] == "https://api.example.com:8443");
@@ -555,33 +551,33 @@ fn test_quich3_origin_frame_and_coalescing() {
     // Reject zero-length origin entry and truncated length
     let zero_entry: u8[2] = [0x00, 0x00];
     var bad_out: u8[..128][..16] = [];
-    assert(!h3_internal::parse_h3_origin_frame(zero_entry[..], bad_out));
+    assert(!http3::parse_origin_frame(zero_entry[..], bad_out));
     let trunc_entry: u8[3] = [0x00, 0x05, 'a'];
-    assert(!h3_internal::parse_h3_origin_frame(trunc_entry[..], bad_out));
+    assert(!http3::parse_origin_frame(trunc_entry[..], bad_out));
 
     // Client control stream stores peer_origins; Server ignores ORIGIN frame
     let settings = fingerprint::H3Settings { .. };
-    var cli_conn = h3_internal::new_h3_client_connection(settings);
+    var cli_conn = http3::new_client_connection(settings);
     var ctrl_wire: u8[..256] = [];
-    quic_internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
-    h3_internal::encode_h3_settings_frame(ctrl_wire, settings);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, ctrl_wire);
+    http3::encode_settings_frame(ctrl_wire, settings);
     ctrl_wire.append(wire[..]);
-    assert(h3_internal::handle_stream_data(cli_conn, 3, false, ctrl_wire[..], false) == rfc::H3_ERR_NO_ERROR);
+    assert(http3::handle_stream_data(cli_conn, 3, false, ctrl_wire[..], false) == rfc::H3_ERR_NO_ERROR);
     assert(cli_conn.peer_origins.len == 2);
     assert(cli_conn.peer_origins[0][..] == "https://example.com");
 
-    var srv_conn = h3_internal::new_h3_server_connection(settings);
-    assert(h3_internal::handle_stream_data(srv_conn, 2, false, ctrl_wire[..], false) == rfc::H3_ERR_NO_ERROR);
+    var srv_conn = http3::new_server_connection(settings);
+    assert(http3::handle_stream_data(srv_conn, 2, false, ctrl_wire[..], false) == rfc::H3_ERR_NO_ERROR);
     assert(srv_conn.peer_origins.len == 0);
     print("H3_ORIGIN_FRAME: OK");
 }
 
 fn test_quich3_priority_scheduler() {
     let settings = fingerprint::H3Settings { .. };
-    var conn = h3_internal::new_h3_client_connection(settings);
-    let sid0, _ = h3_internal::open_request_stream(conn);
-    let sid4, _ = h3_internal::open_request_stream(conn);
-    let sid8, _ = h3_internal::open_request_stream(conn);
+    var conn = http3::new_client_connection(settings);
+    let sid0, _ = http3::open_request_stream(conn);
+    let sid4, _ = http3::open_request_stream(conn);
+    let sid8, _ = http3::open_request_stream(conn);
 
     conn.streams[0].tx_pending_bytes = 512;
     conn.streams[0].priority = wing::PriorityParam { urgency: 4, incremental: false };
@@ -590,16 +586,16 @@ fn test_quich3_priority_scheduler() {
     conn.streams[2].tx_pending_bytes = 512;
     conn.streams[2].priority = wing::PriorityParam { urgency: 1, incremental: true };
 
-    let next1, ok1 = h3_internal::select_next_h3_tx_stream(conn);
+    let next1, ok1 = http3::select_next_tx_stream(conn);
     assert(ok1 && next1 == sid4);
-    let next2, ok2 = h3_internal::select_next_h3_tx_stream(conn);
+    let next2, ok2 = http3::select_next_tx_stream(conn);
     assert(ok2 && next2 == sid8);
-    let next3, ok3 = h3_internal::select_next_h3_tx_stream(conn);
+    let next3, ok3 = http3::select_next_tx_stream(conn);
     assert(ok3 && next3 == sid4);
 
     conn.streams[1].tx_pending_bytes = 0;
     conn.streams[2].tx_pending_bytes = 0;
-    let next4, ok4 = h3_internal::select_next_h3_tx_stream(conn);
+    let next4, ok4 = http3::select_next_tx_stream(conn);
     assert(ok4 && next4 == sid0);
     print("H3_PRIORITY_SCHEDULER: OK");
 }
@@ -615,38 +611,40 @@ fn test_quich3_webtransport_settings_and_glitch() {
         webtransport_max_sessions: 8,
     };
     var out_buf: u8[..128] = [];
-    assert(h3_internal::encode_h3_settings_frame(out_buf, wt_set));
-    let hdr, ok_hdr = h3_internal::parse_h3_frame_header(out_buf[..], 0);
+    assert(http3::encode_settings_frame(out_buf, wt_set));
+    let hdr, ok_hdr = http3::parse_frame_header(out_buf[..], 0);
     assert(ok_hdr);
-    var parsed = fingerprint::H3Settings { .. };
-    assert(h3_internal::parse_h3_settings_frame(out_buf[hdr.header_len..], parsed) == rfc::H3_ERR_NO_ERROR);
+    let parsed, err_parsed = http3::parse_settings_frame(out_buf[hdr.header_len..]);
+    assert(err_parsed == rfc::H3_ERR_NO_ERROR);
     assert(parsed.h3_datagram == 1 && parsed.enable_webtransport == 1 && parsed.webtransport_max_sessions == 8);
 
     // Reject boolean setting > 1 and oversized SETTINGS > 256B
     var bad_bool: u8[..16] = [];
-    quic_internal::quic_encode_varint(bad_bool, h3_internal::H3_SETTINGS_H3_DATAGRAM);
-    quic_internal::quic_encode_varint(bad_bool, 2);
-    assert(h3_internal::parse_h3_settings_frame(bad_bool[..], parsed) == rfc::H3_ERR_SETTINGS_ERROR);
+    quic::encode_varint(http3::H3_SETTINGS_H3_DATAGRAM, bad_bool);
+    quic::encode_varint(2, bad_bool);
+    let _, err_bool = http3::parse_settings_frame(bad_bool[..]);
+    assert(err_bool == rfc::H3_ERR_SETTINGS_ERROR);
 
     var huge_set: u8[300] = [0; 300];
-    assert(h3_internal::parse_h3_settings_frame(huge_set[..], parsed) == rfc::H3_ERR_EXCESSIVE_LOAD);
+    let _, err_huge = http3::parse_settings_frame(huge_set[..]);
+    assert(err_huge == rfc::H3_ERR_EXCESSIVE_LOAD);
 
     // WebTransport connect request validation & control glitch limiter
     var wt_req = wing::Request { .. };
-    wing::format_webtransport_connect_request(wt_req, "https://wt.example.com/session");
-    assert(wing::is_webtransport_connect_request(wt_req));
-    wing::format_webtransport_connect_request(wt_req, "http://wt.example.com/session");
-    assert(!wing::is_webtransport_connect_request(wt_req));
+    realtime::format_webtransport_connect_request(wt_req, "https://wt.example.com/session");
+    assert(realtime::is_webtransport_connect_request(wt_req));
+    realtime::format_webtransport_connect_request(wt_req, "http://wt.example.com/session");
+    assert(!realtime::is_webtransport_connect_request(wt_req));
 
-    var conn = h3_internal::new_h3_client_connection(wt_set);
+    var conn = http3::new_client_connection(wt_set);
     conn.max_control_glitches = 2;
     var ctrl: u8[..128] = [];
-    quic_internal::quic_encode_varint(ctrl, rfc::H3_STREAM_CONTROL);
-    h3_internal::encode_h3_settings_frame(ctrl, wt_set);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, ctrl);
+    http3::encode_settings_frame(ctrl, wt_set);
     for _ in 3 {
-        h3_internal::encode_h3_frame_header(ctrl, 0x21, 0);
+        http3::encode_frame_header(ctrl, 0x21, 0);
     }
-    assert(h3_internal::handle_stream_data(conn, 3, false, ctrl[..], false) == rfc::H3_ERR_EXCESSIVE_LOAD);
+    assert(http3::handle_stream_data(conn, 3, false, ctrl[..], false) == rfc::H3_ERR_EXCESSIVE_LOAD);
     print("H3_WT_SETTINGS_AND_GLITCH: OK");
 }
 
@@ -686,13 +684,13 @@ fn run_03_verify_http3_framing() {
 
 fn test_server_rejects_missing_authority_and_host() {
     let settings = fingerprint::H3Settings { .. };
-    var conn = h3_internal::new_h3_server_connection(settings);
+    var conn = http3::new_server_connection(settings);
 
     // Initialize peer control stream
     var init_ctrl: u8[..64] = [];
-    quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_settings_frame(init_ctrl, settings));
-    let err_init = h3_internal::handle_stream_data(conn, 2, false, init_ctrl[..], false);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, init_ctrl);
+    assert(http3::encode_settings_frame(init_ctrl, settings));
+    let err_init = http3::handle_stream_data(conn, 2, false, init_ctrl[..], false);
     assert(err_init == rfc::H3_ERR_NO_ERROR);
 
     // Encode a request HEADERS frame with :method, :scheme, :path, but NO :authority and NO Host
@@ -707,17 +705,17 @@ fn test_server_rejects_missing_authority_and_host() {
     qpack_payload.push(0xD7);
 
     var req_frame: u8[..256] = [];
-    assert(h3_internal::encode_h3_headers_frame(req_frame, qpack_payload[..]));
+    assert(http3::encode_headers_frame(req_frame, qpack_payload[..]));
 
-    let err = h3_internal::handle_stream_data(conn, 0, true, req_frame[..], true);
+    let err = http3::handle_stream_data(conn, 0, true, req_frame[..], true);
     // RFC 9114 §4.3.1: Must be rejected with H3_ERR_GENERAL_PROTOCOL
     assert(err == rfc::H3_ERR_GENERAL_PROTOCOL);
     print("REGRESS_MISSING_AUTHORITY: OK");
 }
 
 fn test_qpack_never_index_flag_on_duplicate_header_name() {
-    let tbl = h3_internal::new_qpack_table(4096, 16);
-    var pseudo = h3_internal::H3PseudoHeaders { .. };
+    let tbl = http3::new_qpack_table(4096, 16);
+    var pseudo = http3::PseudoHeaders { .. };
     var headers = wing::HeaderMap { .. };
 
     // QPACK section with two "set-cookie" headers:
@@ -743,8 +741,8 @@ fn test_qpack_never_index_flag_on_duplicate_header_name() {
     wire.push(0x0E); // val len 14
     wire.append("session=secret");
 
-    let err = h3_internal::decode_qpack_to_map(tbl, wire[..], pseudo, headers, 8192);
-    assert(err == h3_internal::QpackError.None);
+    let err = http3::decode_qpack_to_map(tbl, wire[..], pseudo, headers, 8192);
+    assert(err == http3::QpackError.None);
     assert(headers.entries.len == 2);
 
     let flag0 = (headers.entries[0].flags & wing::HEADER_FLAG_SENSITIVE) != 0;
@@ -758,36 +756,36 @@ fn test_qpack_never_index_flag_on_duplicate_header_name() {
 
 fn test_server_rejects_goaway_with_non_client_bidi_stream_id() {
     let settings = fingerprint::H3Settings { .. };
-    var conn = h3_internal::new_h3_server_connection(settings);
+    var conn = http3::new_server_connection(settings);
 
     // Initialize peer control stream
     var init_ctrl: u8[..64] = [];
-    quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_settings_frame(init_ctrl, settings));
-    let err_init = h3_internal::handle_stream_data(conn, 2, false, init_ctrl[..], false);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, init_ctrl);
+    assert(http3::encode_settings_frame(init_ctrl, settings));
+    let err_init = http3::handle_stream_data(conn, 2, false, init_ctrl[..], false);
     assert(err_init == rfc::H3_ERR_NO_ERROR);
 
     // Client sends GOAWAY with stream ID 1 (server-initiated bidirectional -> invalid in GOAWAY)
     var ga_wire: u8[..64] = [];
-    assert(h3_internal::encode_h3_goaway_frame(ga_wire, 1));
-    let err_ga1 = h3_internal::handle_stream_data(conn, 2, false, ga_wire[..], false);
+    assert(http3::encode_goaway_frame(ga_wire, 1));
+    let err_ga1 = http3::handle_stream_data(conn, 2, false, ga_wire[..], false);
     // RFC 9114 §7.2.6: Must be rejected with H3_ERR_ID_ERROR
     assert(err_ga1 == rfc::H3_ERR_ID_ERROR);
 
     // Client sends GOAWAY with stream ID 2 (client-initiated unidirectional -> invalid in GOAWAY)
-    conn = h3_internal::new_h3_server_connection(settings);
-    h3_internal::handle_stream_data(conn, 2, false, init_ctrl[..], false);
+    conn = http3::new_server_connection(settings);
+    http3::handle_stream_data(conn, 2, false, init_ctrl[..], false);
     ga_wire.clear();
-    assert(h3_internal::encode_h3_goaway_frame(ga_wire, 2));
-    let err_ga2 = h3_internal::handle_stream_data(conn, 2, false, ga_wire[..], false);
+    assert(http3::encode_goaway_frame(ga_wire, 2));
+    let err_ga2 = http3::handle_stream_data(conn, 2, false, ga_wire[..], false);
     assert(err_ga2 == rfc::H3_ERR_ID_ERROR);
 
     print("REGRESS_GOAWAY_INVALID_ID: OK");
 }
 
 fn test_qpack_dynamic_insert_transactional_failure() {
-    var tbl = h3_internal::new_qpack_table(4096, 16);
-    assert(h3_internal::qpack_set_capacity(tbl, 4096));
+    var tbl = http3::new_qpack_table(4096, 16);
+    assert(http3::qpack_set_capacity(tbl, 4096));
 
     // Create a constrained encoder stream buffer that cannot fit the insert instruction
     var tiny_enc: u8[..2]   = [];
@@ -797,7 +795,7 @@ fn test_qpack_dynamic_insert_transactional_failure() {
 
     let prev_ic = tbl.insert_count;
     // Attempt dynamic field encoding when enc_stream is full
-    h3_internal::encode_qpack_field_dynamic(
+    http3::encode_qpack_field_dynamic(
         tbl, 4, 0, "x-custom-key", "custom-val",
         out_sec, tiny_enc, max_dyn, used_dyn, false,
     );
@@ -812,16 +810,16 @@ fn test_qpack_dynamic_insert_transactional_failure() {
 
 fn test_client_rejects_server_frames_on_unopened_bidi_stream() {
     let settings = fingerprint::H3Settings { .. };
-    var conn = h3_internal::new_h3_client_connection(settings);
+    var conn = http3::new_client_connection(settings);
 
     // Server sends DATA frame on stream 0, but client NEVER opened stream 0!
     var data_frame: u8[..64] = [];
-    assert(h3_internal::encode_h3_data_frame(data_frame, "hello"));
-    let err = h3_internal::handle_stream_data(conn, 0, true, data_frame[..], false);
+    assert(http3::encode_data_frame(data_frame, "hello"));
+    let err = http3::handle_stream_data(conn, 0, true, data_frame[..], false);
 
     // RFC 9114 §4.1 / §6.1: Must be rejected with H3_ERR_STREAM_CREATION
     assert(err == rfc::H3_ERR_STREAM_CREATION);
-    assert(conn.state == h3_internal::H3ConnState.Closed);
+    assert(conn.state == http3::ConnState.Closed);
 
     print("REGRESS_CLIENT_UNOPENED_BIDI_REJECTED: OK");
 }
@@ -834,44 +832,44 @@ fn test_qpack_blocked_stream_unblocks_on_encoder_stream() {
         qpack_blocked_streams:    4,
         enable_connect_protocol:  0,
     };
-    var srv = h3_internal::new_h3_server_connection(settings);
-    assert(h3_internal::qpack_set_capacity(srv.qpack_table, 4096));
+    var srv = http3::new_server_connection(settings);
+    assert(http3::qpack_set_capacity(srv.qpack_table, 4096));
 
     // Build a request HEADERS frame with RIC=1 (EncodedRIC=2, Base=1 -> [0x02, 0x00]) referencing dynamic abs_idx 0
     var qpack_sec: u8[..128] = [0x02, 0x00];
-    h3_internal::encode_qpack_field(qpack_sec, ":method", "POST");
-    h3_internal::encode_qpack_field(qpack_sec, ":scheme", "https");
-    h3_internal::encode_qpack_field(qpack_sec, ":authority", "example.com");
-    h3_internal::encode_qpack_field(qpack_sec, ":path", "/upload");
+    http3::encode_qpack_field(qpack_sec, ":method", "POST");
+    http3::encode_qpack_field(qpack_sec, ":scheme", "https");
+    http3::encode_qpack_field(qpack_sec, ":authority", "example.com");
+    http3::encode_qpack_field(qpack_sec, ":path", "/upload");
     qpack_sec.push(0x80); // Dynamic indexed rel_idx 0 (abs_idx 0)
     var hdr_frame: u8[..160] = [];
-    assert(h3_internal::encode_h3_headers_frame(hdr_frame, qpack_sec[..]));
+    assert(http3::encode_headers_frame(hdr_frame, qpack_sec[..]));
 
     // 1. Arrive before encoder stream: stream 0 becomes QPACK-blocked
-    let err_hdr = h3_internal::handle_stream_data(srv, 0, true, hdr_frame[..], false);
+    let err_hdr = http3::handle_stream_data(srv, 0, true, hdr_frame[..], false);
     assert(err_hdr == rfc::H3_ERR_NO_ERROR);
-    assert(h3_internal::qpack_is_stream_blocked(srv.qpack_table, 0));
+    assert(http3::qpack_is_stream_blocked(srv.qpack_table, 0));
 
     // 2. Peer sends QPACK encoder stream (uni stream 6) with type 0x02 + Insert Literal ("content-length", "5")
-    var peer_enc_tbl = h3_internal::new_qpack_table(4096, 4);
-    assert(h3_internal::qpack_set_capacity(peer_enc_tbl, 4096));
+    var peer_enc_tbl = http3::new_qpack_table(4096, 4);
+    assert(http3::qpack_set_capacity(peer_enc_tbl, 4096));
     var enc_wire: u8[..64] = [];
-    assert(quic_internal::quic_encode_varint(enc_wire, rfc::H3_STREAM_QPACK_ENCODER));
-    let _, ok_ins = h3_internal::encode_qpack_dynamic_insert(peer_enc_tbl, "content-length", "5", enc_wire, false);
+    assert(quic::encode_varint(rfc::H3_STREAM_QPACK_ENCODER, enc_wire));
+    let _, ok_ins = http3::encode_qpack_dynamic_insert(peer_enc_tbl, "content-length", "5", enc_wire, false);
     assert(ok_ins);
-    let err_enc = h3_internal::handle_stream_data(srv, 6, false, enc_wire[..], false);
+    let err_enc = http3::handle_stream_data(srv, 6, false, enc_wire[..], false);
     assert(err_enc == rfc::H3_ERR_NO_ERROR);
 
     // Stream 0 must now be unblocked and its headers_received must be true!
-    assert(!h3_internal::qpack_is_stream_blocked(srv.qpack_table, 0));
-    let s_idx, found = h3_internal::find_h3_stream_idx(srv, 0);
+    assert(!http3::qpack_is_stream_blocked(srv.qpack_table, 0));
+    let s_idx, found = http3::find_stream_idx(srv, 0);
     assert(found && s_idx >= 0 && srv.streams[s_idx].headers_received);
     assert(srv.streams[s_idx].content_length == 5);
 
     // 3. Subsequent DATA frame ("hello", 5 bytes) with FIN must succeed!
     var data_frame: u8[..32] = [];
-    assert(h3_internal::encode_h3_data_frame(data_frame, "hello"));
-    let err_data = h3_internal::handle_stream_data(srv, 0, true, data_frame[..], true);
+    assert(http3::encode_data_frame(data_frame, "hello"));
+    let err_data = http3::handle_stream_data(srv, 0, true, data_frame[..], true);
     assert(err_data == rfc::H3_ERR_NO_ERROR);
     print("REGRESS_F001_BLOCKED_UNBLOCK: OK");
 }
@@ -884,50 +882,50 @@ fn test_qpack_multi_section_fifo_ack() {
         qpack_blocked_streams:    4,
         enable_connect_protocol:  0,
     };
-    var srv = h3_internal::new_h3_server_connection(settings);
-    assert(h3_internal::h3_activate_qpack_dynamic_table(srv, 4096));
+    var srv = http3::new_server_connection(settings);
+    assert(http3::activate_qpack_dynamic_table(srv, 4096));
     // Open stream 0 on server by receiving a minimal GET request
     var req_qpack: u8[..128] = [0x00, 0x00];
-    h3_internal::encode_qpack_field(req_qpack, ":method", "GET");
-    h3_internal::encode_qpack_field(req_qpack, ":scheme", "https");
-    h3_internal::encode_qpack_field(req_qpack, ":authority", "example.com");
-    h3_internal::encode_qpack_field(req_qpack, ":path", "/");
+    http3::encode_qpack_field(req_qpack, ":method", "GET");
+    http3::encode_qpack_field(req_qpack, ":scheme", "https");
+    http3::encode_qpack_field(req_qpack, ":authority", "example.com");
+    http3::encode_qpack_field(req_qpack, ":path", "/");
     var req_frame: u8[..160] = [];
-    assert(h3_internal::encode_h3_headers_frame(req_frame, req_qpack[..]));
-    assert(h3_internal::handle_stream_data(srv, 0, true, req_frame[..], true) == rfc::H3_ERR_NO_ERROR);
+    assert(http3::encode_headers_frame(req_frame, req_qpack[..]));
+    assert(http3::handle_stream_data(srv, 0, true, req_frame[..], true) == rfc::H3_ERR_NO_ERROR);
 
     var hdrs = wing::HeaderMap { .. };
     wing::set_header(hdrs, "x-resp-hdr", "v1");
     var trls = wing::HeaderMap { .. };
     wing::set_header(trls, "x-trailer", "t1");
     var out_wire: u8[..512] = [];
-    assert(h3_internal::send_response_headers_body_and_trailers(srv, 0, 200, hdrs, "body", trls, out_wire));
+    assert(http3::send_response_headers_body_and_trailers(srv, 0, 200, hdrs, "body", trls, out_wire));
 
     // Both HEADERS and trailers referenced dynamic entries on stream 0; two Section Acknowledgments must succeed in FIFO order
-    assert(h3_internal::qpack_ack_section(srv.qpack_table, 0) == h3_internal::QpackError.None);
-    assert(h3_internal::qpack_ack_section(srv.qpack_table, 0) == h3_internal::QpackError.None);
+    assert(http3::qpack_ack_section(srv.qpack_table, 0) == http3::QpackError.None);
+    assert(http3::qpack_ack_section(srv.qpack_table, 0) == http3::QpackError.None);
     // A third Section Acknowledgment on stream 0 must fail
-    assert(h3_internal::qpack_ack_section(srv.qpack_table, 0) == h3_internal::QpackError.DecoderStreamError);
+    assert(http3::qpack_ack_section(srv.qpack_table, 0) == http3::QpackError.DecoderStreamError);
     print("REGRESS_F002_MULTI_SECTION_ACK: OK");
 }
 
 // F003: HEAD 200 response with non-zero Content-Length and 0 DATA bytes succeeds; DATA on HEAD/204/304 rejected (RFC 9114 §4.1.2)
 fn test_head_and_no_content_response_framing() {
     let settings = fingerprint::H3Settings { .. };
-    var cli = h3_internal::new_h3_client_connection(settings);
-    let sid, ok_open = h3_internal::open_request_stream(cli);
+    var cli = http3::new_client_connection(settings);
+    let sid, ok_open = http3::open_request_stream(cli);
     assert(ok_open && sid == 0);
     var req_out: u8[..256] = [];
     var empty_h = wing::HeaderMap { .. };
-    assert(h3_internal::send_request_headers(cli, sid, "HEAD", "https", "example.com", "/file", empty_h, true, req_out));
+    assert(http3::send_request_headers(cli, sid, "HEAD", "https", "example.com", "/file", empty_h, true, req_out));
 
     var resp_qpack: u8[..128] = [0x00, 0x00];
-    h3_internal::encode_qpack_field(resp_qpack, ":status", "200");
-    h3_internal::encode_qpack_field(resp_qpack, "content-length", "500");
+    http3::encode_qpack_field(resp_qpack, ":status", "200");
+    http3::encode_qpack_field(resp_qpack, "content-length", "500");
     var resp_frame: u8[..160] = [];
-    assert(h3_internal::encode_h3_headers_frame(resp_frame, resp_qpack[..]));
+    assert(http3::encode_headers_frame(resp_frame, resp_qpack[..]));
     // FIN with 0 DATA bytes on HEAD response with CL=500 must succeed!
-    let err_head = h3_internal::handle_stream_data(cli, sid, true, resp_frame[..], true);
+    let err_head = http3::handle_stream_data(cli, sid, true, resp_frame[..], true);
     assert(err_head == rfc::H3_ERR_NO_ERROR);
     print("REGRESS_F003_HEAD_FRAMING: OK");
 }
@@ -935,58 +933,58 @@ fn test_head_and_no_content_response_framing() {
 // F004: Client rejects CANCEL_PUSH before MAX_PUSH_ID and rejects malformed PUSH_PROMISE headers (RFC 9114 §4.6, §7.2.3, §7.2.5)
 fn test_cancel_push_and_goaway_push_promise() {
     let settings = fingerprint::H3Settings { .. };
-    var cli = h3_internal::new_h3_client_connection(settings);
+    var cli = http3::new_client_connection(settings);
     var init_ctrl: u8[..64] = [];
-    quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_settings_frame(init_ctrl, settings));
-    assert(h3_internal::handle_stream_data(cli, 3, false, init_ctrl[..], false) == rfc::H3_ERR_NO_ERROR);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, init_ctrl);
+    assert(http3::encode_settings_frame(init_ctrl, settings));
+    assert(http3::handle_stream_data(cli, 3, false, init_ctrl[..], false) == rfc::H3_ERR_NO_ERROR);
 
     var cp_wire: u8[..32] = [];
-    assert(h3_internal::encode_h3_cancel_push(cp_wire, 0));
+    assert(http3::encode_cancel_push(cp_wire, 0));
     // Client has NEVER sent MAX_PUSH_ID -> CANCEL_PUSH(0) must fail with H3_ERR_ID_ERROR
-    assert(h3_internal::handle_stream_data(cli, 3, false, cp_wire[..], false) == rfc::H3_ERR_ID_ERROR);
+    assert(http3::handle_stream_data(cli, 3, false, cp_wire[..], false) == rfc::H3_ERR_ID_ERROR);
 
     // Client receives PUSH_PROMISE with invalid request headers (e.g. :status instead of request pseudo-headers) -> H3_ERR_GENERAL_PROTOCOL
-    var cli2 = h3_internal::new_h3_client_connection(settings);
-    let sid, _ = h3_internal::open_request_stream(cli2);
+    var cli2 = http3::new_client_connection(settings);
+    let sid, _ = http3::open_request_stream(cli2);
     cli2.max_push_id_sent = true;
     cli2.max_push_id_advertised = 5;
     var bad_pp_qpack: u8[..64] = [0x00, 0x00];
-    h3_internal::encode_qpack_field(bad_pp_qpack, ":status", "200");
+    http3::encode_qpack_field(bad_pp_qpack, ":status", "200");
     var bad_pp_frame: u8[..96] = [];
-    assert(h3_internal::encode_h3_push_promise(bad_pp_frame, 0, bad_pp_qpack[..]));
-    assert(h3_internal::handle_stream_data(cli2, sid, true, bad_pp_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
+    assert(http3::encode_push_promise(bad_pp_frame, 0, bad_pp_qpack[..]));
+    assert(http3::handle_stream_data(cli2, sid, true, bad_pp_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
     print("REGRESS_F004_PUSH_INVARIANTS: OK");
 }
 
 // F005: PRIORITY_UPDATE empty field value, pre-stream buffering, and unpromised push_id rejection (RFC 9218 §7, §7.2)
 fn test_priority_update_rfc9218_edge_cases() {
     var empty_pu: u8[..16] = [0x00]; // stream_id = 0, field_value = ""
-    let sid, prio, ok_pu = h3_internal::parse_h3_priority_update_request(empty_pu[..]);
+    let sid, prio, ok_pu = http3::parse_priority_update_request(empty_pu[..]);
     assert(ok_pu && sid == 0 && prio.urgency == 3 && !prio.incremental);
 
     let settings = fingerprint::H3Settings { .. };
-    var srv = h3_internal::new_h3_server_connection(settings);
+    var srv = http3::new_server_connection(settings);
     var init_ctrl: u8[..64] = [];
-    quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_settings_frame(init_ctrl, settings));
-    assert(h3_internal::handle_stream_data(srv, 2, false, init_ctrl[..], false) == rfc::H3_ERR_NO_ERROR);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, init_ctrl);
+    assert(http3::encode_settings_frame(init_ctrl, settings));
+    assert(http3::handle_stream_data(srv, 2, false, init_ctrl[..], false) == rfc::H3_ERR_NO_ERROR);
 
     // Send PRIORITY_UPDATE(stream 0, u=1, i) BEFORE stream 0 is opened
     var pu_wire: u8[..32] = [];
     let p_target = wing::PriorityParam { urgency: 1, incremental: true };
-    assert(h3_internal::encode_h3_priority_update_request(pu_wire, 0, p_target));
-    assert(h3_internal::handle_stream_data(srv, 2, false, pu_wire[..], false) == rfc::H3_ERR_NO_ERROR);
-    let idx0, found0 = h3_internal::find_h3_stream_idx(srv, 0);
+    assert(http3::encode_priority_update_request(pu_wire, 0, p_target));
+    assert(http3::handle_stream_data(srv, 2, false, pu_wire[..], false) == rfc::H3_ERR_NO_ERROR);
+    let idx0, found0 = http3::find_stream_idx(srv, 0);
     assert(found0 && idx0 >= 0 && srv.streams[idx0].priority.urgency == 1 && srv.streams[idx0].priority.incremental);
 
     // Unpromised push_id in H3_FRAME_PRIORITY_UPDATE_PUSH must return H3_ERR_ID_ERROR
     var mp_wire: u8[..32] = [];
-    assert(h3_internal::encode_h3_max_push_id(mp_wire, 10));
-    assert(h3_internal::handle_stream_data(srv, 2, false, mp_wire[..], false) == rfc::H3_ERR_NO_ERROR);
+    assert(http3::encode_max_push_id(mp_wire, 10));
+    assert(http3::handle_stream_data(srv, 2, false, mp_wire[..], false) == rfc::H3_ERR_NO_ERROR);
     var pup_wire: u8[..32] = [];
-    assert(h3_internal::encode_h3_priority_update_push(pup_wire, 3, p_target));
-    assert(h3_internal::handle_stream_data(srv, 2, false, pup_wire[..], false) == rfc::H3_ERR_ID_ERROR);
+    assert(http3::encode_priority_update_push(pup_wire, 3, p_target));
+    assert(http3::handle_stream_data(srv, 2, false, pup_wire[..], false) == rfc::H3_ERR_ID_ERROR);
     print("REGRESS_F005_PRIORITY_UPDATE: OK");
 }
 
@@ -999,43 +997,43 @@ fn test_settings_and_lexical_and_1xx_regressions() {
         qpack_blocked_streams:    0x100000005,
         enable_connect_protocol:  0,
     };
-    var srv = h3_internal::new_h3_server_connection(huge_settings);
+    var srv = http3::new_server_connection(huge_settings);
     let peer_set = fingerprint::H3Settings { enable_connect_protocol: 1, .. };
     var init_ctrl: u8[..64] = [];
-    quic_internal::quic_encode_varint(init_ctrl, rfc::H3_STREAM_CONTROL);
-    assert(h3_internal::encode_h3_settings_frame(init_ctrl, peer_set));
-    assert(h3_internal::handle_stream_data(srv, 2, false, init_ctrl[..], false) == rfc::H3_ERR_NO_ERROR);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, init_ctrl);
+    assert(http3::encode_settings_frame(init_ctrl, peer_set));
+    assert(http3::handle_stream_data(srv, 2, false, init_ctrl[..], false) == rfc::H3_ERR_NO_ERROR);
 
     var proto_qpack: u8[..128] = [0x00, 0x00];
-    h3_internal::encode_qpack_field(proto_qpack, ":method", "CONNECT");
-    h3_internal::encode_qpack_field(proto_qpack, ":protocol", "websocket");
-    h3_internal::encode_qpack_field(proto_qpack, ":scheme", "https");
-    h3_internal::encode_qpack_field(proto_qpack, ":authority", "example.com");
-    h3_internal::encode_qpack_field(proto_qpack, ":path", "/chat");
+    http3::encode_qpack_field(proto_qpack, ":method", "CONNECT");
+    http3::encode_qpack_field(proto_qpack, ":protocol", "websocket");
+    http3::encode_qpack_field(proto_qpack, ":scheme", "https");
+    http3::encode_qpack_field(proto_qpack, ":authority", "example.com");
+    http3::encode_qpack_field(proto_qpack, ":path", "/chat");
     var proto_frame: u8[..160] = [];
-    assert(h3_internal::encode_h3_headers_frame(proto_frame, proto_qpack[..]));
-    assert(h3_internal::handle_stream_data(srv, 0, true, proto_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
+    assert(http3::encode_headers_frame(proto_frame, proto_qpack[..]));
+    assert(http3::handle_stream_data(srv, 0, true, proto_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
 
     // F007: :method with space or :scheme starting with digit rejected; emit_qpack_field_to_map rejects connection header
-    var bad_m_srv = h3_internal::new_h3_server_connection(huge_settings);
+    var bad_m_srv = http3::new_server_connection(huge_settings);
     var bad_m_qpack: u8[..128] = [0x00, 0x00];
-    h3_internal::encode_qpack_field(bad_m_qpack, ":method", "GET /admin");
-    h3_internal::encode_qpack_field(bad_m_qpack, ":scheme", "https");
-    h3_internal::encode_qpack_field(bad_m_qpack, ":authority", "example.com");
-    h3_internal::encode_qpack_field(bad_m_qpack, ":path", "/");
+    http3::encode_qpack_field(bad_m_qpack, ":method", "GET /admin");
+    http3::encode_qpack_field(bad_m_qpack, ":scheme", "https");
+    http3::encode_qpack_field(bad_m_qpack, ":authority", "example.com");
+    http3::encode_qpack_field(bad_m_qpack, ":path", "/");
     var bad_m_frame: u8[..160] = [];
-    assert(h3_internal::encode_h3_headers_frame(bad_m_frame, bad_m_qpack[..]));
-    assert(h3_internal::handle_stream_data(bad_m_srv, 0, true, bad_m_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
+    assert(http3::encode_headers_frame(bad_m_frame, bad_m_qpack[..]));
+    assert(http3::handle_stream_data(bad_m_srv, 0, true, bad_m_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
 
     // F008: 1xx informational response with Content-Length rejected (RFC 9110 §8.6)
-    var cli = h3_internal::new_h3_client_connection(huge_settings);
-    let sid, _ = h3_internal::open_request_stream(cli);
+    var cli = http3::new_client_connection(huge_settings);
+    let sid, _ = http3::open_request_stream(cli);
     var info_qpack: u8[..128] = [0x00, 0x00];
-    h3_internal::encode_qpack_field(info_qpack, ":status", "103");
-    h3_internal::encode_qpack_field(info_qpack, "content-length", "99");
+    http3::encode_qpack_field(info_qpack, ":status", "103");
+    http3::encode_qpack_field(info_qpack, "content-length", "99");
     var info_frame: u8[..160] = [];
-    assert(h3_internal::encode_h3_headers_frame(info_frame, info_qpack[..]));
-    assert(h3_internal::handle_stream_data(cli, sid, true, info_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
+    assert(http3::encode_headers_frame(info_frame, info_qpack[..]));
+    assert(http3::handle_stream_data(cli, sid, true, info_frame[..], false) == rfc::H3_ERR_GENERAL_PROTOCOL);
     print("REGRESS_F006_F007_F008: OK");
 }
 
@@ -1080,57 +1078,57 @@ fn run_04_verify_http3_regressions() {
 
 fn test_qpack_blocking_limit() {
     // Create QpackTable with max_capacity = 4096 and max_blocked = 2
-    var tbl = h3_internal::new_qpack_table(4096, 2);
-    assert(h3_internal::qpack_can_block_stream(tbl));
+    var tbl = http3::new_qpack_table(4096, 2);
+    assert(http3::qpack_can_block_stream(tbl));
     print("CAN_BLOCK_INIT: true");
 
     // Block stream 4 waiting for RIC 5
     let payload4: const u8[:] = "req4_wire";
-    let ok1 = h3_internal::qpack_block_stream(tbl, 4, 5, payload4);
+    let ok1 = http3::qpack_block_stream(tbl, 4, 5, payload4);
     assert(ok1);
-    assert(h3_internal::qpack_is_stream_blocked(tbl, 4));
+    assert(http3::qpack_is_stream_blocked(tbl, 4));
     print("STREAM_4_BLOCKED: true");
 
     // Block stream 8 waiting for RIC 6
     let payload8: const u8[:] = "req8_wire";
-    let ok2 = h3_internal::qpack_block_stream(tbl, 8, 6, payload8);
+    let ok2 = http3::qpack_block_stream(tbl, 8, 6, payload8);
     assert(ok2);
-    assert(h3_internal::qpack_is_stream_blocked(tbl, 8));
+    assert(http3::qpack_is_stream_blocked(tbl, 8));
     print("STREAM_8_BLOCKED: true");
 
     // Table now has 2 blocked streams == max_blocked (2)
     // Next attempt to block stream 12 MUST be rejected per RFC 9204 §2.1.2
-    assert(!h3_internal::qpack_can_block_stream(tbl));
+    assert(!http3::qpack_can_block_stream(tbl));
     let payload12: const u8[:] = "req12_wire";
-    let ok3 = h3_internal::qpack_block_stream(tbl, 12, 7, payload12);
+    let ok3 = http3::qpack_block_stream(tbl, 12, 7, payload12);
     assert(!ok3);
     print("STREAM_12_EXHAUSTED_REJECTED: true");
 }
 
 fn test_qpack_unblocking_progression() {
-    var tbl = h3_internal::new_qpack_table(4096, 4);
+    var tbl = http3::new_qpack_table(4096, 4);
 
     let payload: const u8[:] = "data";
-    assert(h3_internal::qpack_block_stream(tbl, 100, 1, payload));
-    assert(h3_internal::qpack_block_stream(tbl, 101, 2, payload));
+    assert(http3::qpack_block_stream(tbl, 100, 1, payload));
+    assert(http3::qpack_block_stream(tbl, 101, 2, payload));
     assert(tbl.blocked_streams.len == 2);
     print("BLOCKED_COUNT_INIT: 2");
 
     // Unblock stream 100
-    let unblocked100 = h3_internal::qpack_unblock_stream(tbl, 100);
+    let unblocked100 = http3::qpack_unblock_stream(tbl, 100);
     assert(unblocked100);
-    assert(!h3_internal::qpack_is_stream_blocked(tbl, 100));
-    assert(h3_internal::qpack_is_stream_blocked(tbl, 101));
+    assert(!http3::qpack_is_stream_blocked(tbl, 100));
+    assert(http3::qpack_is_stream_blocked(tbl, 101));
     assert(tbl.blocked_streams.len == 1);
     print("STREAM_100_UNBLOCKED: true");
 
     // Unblocking an unblocked or unknown stream returns false
-    let unblocked_again = h3_internal::qpack_unblock_stream(tbl, 100);
+    let unblocked_again = http3::qpack_unblock_stream(tbl, 100);
     assert(!unblocked_again);
     print("STREAM_100_DOUBLE_UNBLOCK_REJECTED: true");
 
     // Unblock stream 101
-    let unblocked101 = h3_internal::qpack_unblock_stream(tbl, 101);
+    let unblocked101 = http3::qpack_unblock_stream(tbl, 101);
     assert(unblocked101);
     assert(tbl.blocked_streams.len == 0);
     print("ALL_STREAMS_UNBLOCKED: true");
@@ -1230,8 +1228,8 @@ fn test_quic_vn_boundaries() {
     vn_1.append("SCID");
     core::append_u32_be(vn_1, rfc::QUIC_VERSION_1); // 1 Supported Version (4 bytes)
 
-    let hdr_1, ok_vn_1 = quic_internal::parse_quic_header(vn_1[..], 0);
-    let type_str_1 = if hdr_1.header_type == quic_internal::QuicHeaderType.VersionNegotiation { "VN" } else { "OTHER" };
+    let hdr_1, ok_vn_1 = quic::parse_header(vn_1[..], 0);
+    let type_str_1 = if hdr_1.header_type == quic::QuicHeaderType.VersionNegotiation { "VN" } else { "OTHER" };
     print("QUIC_VN_1_VER: ", if ok_vn_1 { "OK" } else { "FAIL" }, " type=", type_str_1);
 
     // 2. Valid Version Negotiation with 2 versions (8 bytes)
@@ -1245,8 +1243,8 @@ fn test_quic_vn_boundaries() {
     core::append_u32_be(vn_2, rfc::QUIC_VERSION_1);
     core::append_u32_be(vn_2, 0xFACEB00C); // Second version
 
-    let hdr_2, ok_vn_2 = quic_internal::parse_quic_header(vn_2[..], 0);
-    let type_str_2 = if hdr_2.header_type == quic_internal::QuicHeaderType.VersionNegotiation { "VN" } else { "OTHER" };
+    let hdr_2, ok_vn_2 = quic::parse_header(vn_2[..], 0);
+    let type_str_2 = if hdr_2.header_type == quic::QuicHeaderType.VersionNegotiation { "VN" } else { "OTHER" };
     print("QUIC_VN_2_VER: ", if ok_vn_2 { "OK" } else { "FAIL" }, " type=", type_str_2);
 
     // 3. Malformed Version Negotiation with 0 versions (RFC 9000 §17.2.1: MUST have >= 1 version)
@@ -1259,7 +1257,7 @@ fn test_quic_vn_boundaries() {
     vn_empty.append("SCID");
     // No versions follow!
 
-    let _, ok_vn_empty = quic_internal::parse_quic_header(vn_empty[..], 0);
+    let _, ok_vn_empty = quic::parse_header(vn_empty[..], 0);
     print("QUIC_VN_EMPTY: ", if !ok_vn_empty { "REJECTED" } else { "ACCEPTED" });
 
     // 4. Malformed Version Negotiation with truncated 3-byte version
@@ -1272,7 +1270,7 @@ fn test_quic_vn_boundaries() {
     vn_trunc.append("SCID");
     vn_trunc.append([0x00, 0x00, 0x01]); // 3 bytes (not a multiple of 4!)
 
-    let _, ok_vn_trunc = quic_internal::parse_quic_header(vn_trunc[..], 0);
+    let _, ok_vn_trunc = quic::parse_header(vn_trunc[..], 0);
     print("QUIC_VN_TRUNC: ", if !ok_vn_trunc { "REJECTED" } else { "ACCEPTED" });
 
     // 5. Malformed Version Negotiation with 5 bytes (1 version + 1 dangling byte)
@@ -1286,12 +1284,12 @@ fn test_quic_vn_boundaries() {
     core::append_u32_be(vn_dangling, rfc::QUIC_VERSION_1);
     vn_dangling.push(0xFF); // 1 extra byte
 
-    let _, ok_vn_dangling = quic_internal::parse_quic_header(vn_dangling[..], 0);
+    let _, ok_vn_dangling = quic::parse_header(vn_dangling[..], 0);
     print("QUIC_VN_DANGLING: ", if !ok_vn_dangling { "REJECTED" } else { "ACCEPTED" });
 }
 
 fn test_quic_ack_offset_chaining() {
-    var ack1 = quic_internal::AckFrame {
+    var ack1 = quic::AckFrame {
         is_ecn:          false,
         largest_acked:   200,
         ack_delay:       15,
@@ -1302,11 +1300,11 @@ fn test_quic_ack_offset_chaining() {
     // Prefix wire with 3 padding bytes (PING or PADDING frames)
     wire.append([0x00, 0x00, 0x01]);
 
-    let ok_enc = quic_internal::encode_ack_frame(wire, ack1);
+    let ok_enc = quic::encode_ack_frame(ack1, wire);
     assert(ok_enc);
 
     let prefix_off: u64 = 3;
-    let dec_ack, next_off, ok_dec = quic_internal::decode_ack_frame(wire[..], prefix_off);
+    let dec_ack, next_off, ok_dec = quic::decode_ack_frame(wire[..], prefix_off);
     print("QUIC_ACK_CHAIN_DECODE: ", if ok_dec { "OK" } else { "FAIL" });
     assert(ok_dec);
     assert(dec_ack.largest_acked == 200);
@@ -1315,7 +1313,7 @@ fn test_quic_ack_offset_chaining() {
     print("QUIC_ACK_CHAIN_OFFSET: start=", prefix_off, " next=", next_off, " total=", wire.len);
 
     // Decoding beyond wire boundary returns original offset and false
-    let _, err_off, ok_bad = quic_internal::decode_ack_frame(wire[..], next_off + 1);
+    let _, err_off, ok_bad = quic::decode_ack_frame(wire[..], next_off + 1);
     print("QUIC_ACK_CHAIN_EOF: ", if !ok_bad && err_off == next_off + 1 { "OK" } else { "FAIL" });
 }
 

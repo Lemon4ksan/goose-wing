@@ -8,8 +8,8 @@ import std;
 import core from "../..";
 import wing from "../..";
 
-var g_chaos_proxy: wing::ReverseProxy = wing::ReverseProxy { .. };
-var g_chaos_pool:  wing::StreamPool   = wing::StreamPool { .. };
+var g_chaos_proxy: proxy::ReverseProxy = proxy::ReverseProxy { .. };
+var g_chaos_pool:  wing::StreamPool    = wing::StreamPool { .. };
 
 fn make_chaos_client(port: u16) -> wing::Client {
     var base: u8[..128] = [];
@@ -289,10 +289,10 @@ fn run_mode_reverse_proxy_failover(port: u16) -> bool {
     let dead_port = wing::tcp_getsockname_port(dead_lfd);
     wing::tcp_close(dead_lfd);
 
-    g_chaos_proxy = wing::new_reverse_proxy(wing::LbPolicy.RoundRobin);
+    g_chaos_proxy = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
     g_chaos_proxy.cluster.max_fails = 1;
-    let _ = wing::add_upstream_target(g_chaos_proxy.cluster, "127.0.0.1", dead_port, 1);
-    let _ = wing::add_upstream_target(g_chaos_proxy.cluster, "127.0.0.1", port, 1);
+    let _ = g_chaos_proxy.cluster.add_upstream_target("127.0.0.1", dead_port, 1);
+    let _ = g_chaos_proxy.cluster.add_upstream_target("127.0.0.1", port, 1);
     g_chaos_proxy.cluster.targets[0].unhealthy_threshold = 1;
     g_chaos_pool = wing::StreamPool { .. };
 
@@ -302,16 +302,16 @@ fn run_mode_reverse_proxy_failover(port: u16) -> bool {
     let _ = wing::append_header(in_hdrs, "X-Hop-Drop", "secret-internal");
 
     var out1 = wing::Response { .. };
-    let ok1 = wing::execute_proxy_exchange(
-        g_chaos_proxy, g_chaos_pool, "GET", "/proxy-up", in_hdrs, "203.0.113.9", "http", "", out1, 200, 1000,
+    let ok1 = g_chaos_proxy.execute_proxy_exchange(
+        g_chaos_pool, "GET", "/proxy-up", in_hdrs, "203.0.113.9", "http", "", out1, 200, 1000,
     );
     guard !ok1 && !g_chaos_proxy.cluster.targets[0].is_healthy else {
         print("FAIL:MODE13_DEAD_TARGET_NOT_MARKED\n");
         return false;
     }
     var out2 = wing::Response { .. };
-    let ok2 = wing::execute_proxy_exchange(
-        g_chaos_proxy, g_chaos_pool, "GET", "/proxy-up", in_hdrs, "203.0.113.9", "http", "", out2, 2000, 2000,
+    let ok2 = g_chaos_proxy.execute_proxy_exchange(
+        g_chaos_pool, "GET", "/proxy-up", in_hdrs, "203.0.113.9", "http", "", out2, 2000, 2000,
     );
     guard ok2 && out2.status_code == 200 && out2.body[..] == "PROXY_FAILOVER_OK" else {
         print("FAIL:MODE13_FAILOVER status=", out2.status_code, " body=", out2.body[..], "\n");
@@ -334,20 +334,20 @@ fn recv_all_chaos_socket(fd: i64, out: u8[..2048]&) {
 
 // Mode 14: Native W3C SSE (`SseSubscription`) under 1..4B SlicerToxic + Last-Event-ID reconnect
 fn run_mode_sse_sliced_reconnect(port: u16) -> bool {
-    var sub = wing::new_sse_subscription();
+    var sub = realtime::new_sse_subscription();
     var host_hdr: u8[..64] = [];
     host_hdr.append("127.0.0.1:");
     core::format_u64_dec(port, host_hdr);
 
     var wire1: u8[..512] = [];
-    wing::sse_build_request_headers(sub, host_hdr[..], "/sse-chaos", wire1);
+    sub.sse_build_request_headers(host_hdr[..], "/sse-chaos", wire1);
     let c1 = wing::tcp_connect("127.0.0.1", port, 500);
     guard c1 > 0 && wing::tcp_send(c1, wire1[..]) == wire1.len else { return false; }
     var rx1: u8[..2048] = [];
     recv_all_chaos_socket(c1, rx1);
     wing::tcp_close(c1);
-    var ev1: wing::SseEvent[..8] = [];
-    wing::consume(sub, rx1[..], ev1);
+    var ev1: realtime::SseEvent[..8] = [];
+    sub.consume(rx1[..], ev1);
     guard ev1.len == 1 && ev1[0].id[..] == "ev-chaos-1" && ev1[0].data[..] == "line1\nline2" &&
           sub.parser.last_event_id[..] == "ev-chaos-1" else {
         print("FAIL:MODE14_SSE_FIRST len=", ev1.len, "\n");
@@ -355,14 +355,14 @@ fn run_mode_sse_sliced_reconnect(port: u16) -> bool {
     }
 
     var wire2: u8[..512] = [];
-    wing::sse_build_request_headers(sub, host_hdr[..], "/sse-chaos", wire2);
+    sub.sse_build_request_headers(host_hdr[..], "/sse-chaos", wire2);
     let c2 = wing::tcp_connect("127.0.0.1", port, 500);
     guard c2 > 0 && wing::tcp_send(c2, wire2[..]) == wire2.len else { return false; }
     var rx2: u8[..2048] = [];
     recv_all_chaos_socket(c2, rx2);
     wing::tcp_close(c2);
-    var ev2: wing::SseEvent[..8] = [];
-    wing::consume(sub, rx2[..], ev2);
+    var ev2: realtime::SseEvent[..8] = [];
+    sub.consume(rx2[..], ev2);
     guard ev2.len == 1 && ev2[0].id[..] == "ev-chaos-2" && ev2[0].data[..] == "resumed-part" else {
         print("FAIL:MODE14_SSE_RESUME len=", ev2.len, "\n");
         return false;

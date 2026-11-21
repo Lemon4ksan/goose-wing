@@ -4,12 +4,11 @@
 // QUIC Connection Migration and Path Validation FSM (RFC 9000 Section 9 & Section 8.2).
 // Implements zero-allocation path validation state machine, unpredictable challenge token generation,
 // constant-time response verification, anti-amplification limits, and address migration.
-namespace quic_internal;
+namespace quic;
 
 import std;
 import core from "..";
-import .packet;
-import .frames;
+import .internal;
 
 // ---- Path Validation States & Endpoint Representation -------------------
 
@@ -28,7 +27,7 @@ struct QuicEndpointAddr {
 }
 
 // RFC 9000 Section 9: Connection Migration - Constructs an endpoint address from IP slice and port
-fn new_quic_endpoint_addr(ip: const u8[:], port: u16) -> QuicEndpointAddr {
+fn new_endpoint_addr(ip: const u8[:], port: u16) -> QuicEndpointAddr {
     var addr = QuicEndpointAddr { port: port, .. };
     if ip.len > 0 {
         let take = min(ip.len, addr.ip.cap);
@@ -38,7 +37,7 @@ fn new_quic_endpoint_addr(ip: const u8[:], port: u16) -> QuicEndpointAddr {
 }
 
 // RFC 9000 Section 9: Connection Migration - Compares two endpoint addresses for equality
-fn quic_endpoint_addr_eq(a: const QuicEndpointAddr&, b: const QuicEndpointAddr&) -> bool {
+fn addr_eq(a: const QuicEndpointAddr&, b: const QuicEndpointAddr&) -> bool {
     return a.port == b.port && a.ip[..] == b.ip[..];
 }
 
@@ -79,16 +78,16 @@ struct QuicPreferredAddress {
 //
 // Example:
 //   src = [192, 0, 2, 1, 0x01, 0xBB, ...16B ipv6..., 0x00, 0x00, 4, 1, 2, 3, 4, ...16B token...]
-//   returns: true, out.ipv4 = [192, 0, 2, 1], out.ipv4_port = 443, out.cid = [1, 2, 3, 4]
+//   returns: QuicPreferredAddress { ipv4: [192, 0, 2, 1], ipv4_port: 443, cid: [1, 2, 3, 4] }, ok = true
 //
 // crap:trusted-bounds
-fn decode_preferred_address(src: const u8[:], out: QuicPreferredAddress&) -> bool {
+fn decode_preferred_address(src: const u8[:]) -> QuicPreferredAddress, bool {
     var cur = core::cursor_from(src);
     let v4_slice, ok_v4 = cur.read_bytes(4);
     let v4_port, ok_p4 = cur.read_u16();
     let v6_slice, ok_v6 = cur.read_bytes(16);
     let v6_port, ok_p6 = cur.read_u16();
-    guard ok_v4 && ok_p4 && ok_v6 && ok_p6 else { return false; }
+    guard ok_v4 && ok_p4 && ok_v6 && ok_p6 else { return QuicPreferredAddress { .. }, false; }
 
     let has_v4 = (v4_slice[0] | v4_slice[1] | v4_slice[2] | v4_slice[3]) != 0;
     var v6_bits: u8 = 0;
@@ -96,14 +95,18 @@ fn decode_preferred_address(src: const u8[:], out: QuicPreferredAddress&) -> boo
     let has_v6 = v6_bits != 0;
 
     // Both cannot have port != 0 while IP is 0, or IP != 0 while port is 0 (RFC 9000 §18.2)
-    guard (has_v4 == (v4_port != 0)) && (has_v6 == (v6_port != 0)) else { return false; }
+    guard (has_v4 == (v4_port != 0)) && (has_v6 == (v6_port != 0)) else {
+        return QuicPreferredAddress { .. }, false;
+    }
     // Must contain at least one valid address
-    guard has_v4 || has_v6 else { return false; }
+    guard has_v4 || has_v6 else { return QuicPreferredAddress { .. }, false; }
 
     let cid_slice, ok_cid = cur.read_u8_prefixed();
-    guard ok_cid && cid_slice.len >= 1 && cid_slice.len <= 20 else { return false; }
+    guard ok_cid && cid_slice.len >= 1 && cid_slice.len <= 20 else {
+        return QuicPreferredAddress { .. }, false;
+    }
     let tok_slice, ok_tok = cur.read_bytes(16);
-    guard ok_tok && cur.buf.len == 0 else { return false; }
+    guard ok_tok && cur.buf.len == 0 else { return QuicPreferredAddress { .. }, false; }
 
     var parsed = QuicPreferredAddress {
         ipv4_port: v4_port,
@@ -118,12 +121,11 @@ fn decode_preferred_address(src: const u8[:], out: QuicPreferredAddress&) -> boo
         parsed.stateless_reset_token[i] = tok_slice[i];
     }
     parsed.cid.append(cid_slice);
-    out = parsed;
-    return true;
+    return parsed, true;
 }
 
 // RFC 9000 Section 9: Connection Migration - Creates a new migration manager with initial active path
-fn new_quic_migration_manager(initial_addr: const QuicEndpointAddr&) -> QuicMigrationManager {
+fn new_migration_manager(initial_addr: const QuicEndpointAddr&) -> QuicMigrationManager {
     return QuicMigrationManager {
         active_path: QuicPath {
             remote_addr: initial_addr,
@@ -137,23 +139,15 @@ fn new_quic_migration_manager(initial_addr: const QuicEndpointAddr&) -> QuicMigr
 
 // ---- Anti-Amplification Budget (RFC 9000 Section 8.1 & Section 9.3) -----
 
-// RFC 9000 Section 8.1: Address Validation during Connection Initiation - 3x anti-amplification budget
-inline fn path_amplification_limit(rx: u64) -> u64 {
-    if rx > (0xFFFFFFFFFFFFFFFF / 3) {
-        return 0xFFFFFFFFFFFFFFFF;
-    }
-    return rx * 3;
-}
-
 // RFC 9000 Section 9.3: Responding to Connection Migration - Anti-amplification limit enforcement
-fn path_can_send(path: const QuicPath&, bytes_to_send: u64) -> bool {
+fn can_send(path: const QuicPath&, bytes_to_send: u64) -> bool {
     guard path.state != PathValidationState.Validated else {
         return true;
     }
     guard 0xFFFFFFFFFFFFFFFF - path.bytes_sent >= bytes_to_send else {
         return false;
     }
-    let limit = path_amplification_limit(path.bytes_received);
+    let limit = quic_internal::path_amplification_limit(path.bytes_received);
     return (path.bytes_sent + bytes_to_send) <= limit;
 }
 
@@ -178,7 +172,7 @@ fn verify_path_response_token(expected: const u8[8]&, received: const u8[:]) -> 
 // ---- Migration State Machine Transitions (RFC 9000 Section 9) -----------
 
 // RFC 9000 Section 9.1: Probing a New Path - Initiates path validation toward candidate address
-fn quic_migration_start_probing(
+fn start_probing(
     mgr:      QuicMigrationManager&,
     new_addr: const QuicEndpointAddr&,
     token:    const u8[8]&,
@@ -196,7 +190,7 @@ fn quic_migration_start_probing(
 }
 
 // RFC 9000 Section 9.6: Server's Preferred Address - Initiates client probing toward server preferred address
-fn quic_migration_probe_preferred_address(
+fn probe_preferred_address(
     mgr:         QuicMigrationManager&,
     pref:        const QuicPreferredAddress&,
     prefer_ipv6: bool,
@@ -210,16 +204,16 @@ fn quic_migration_probe_preferred_address(
 
     let use_v6 = if prefer_ipv6 && has_v6 { true } else { !has_v4 };
     let target = if use_v6 {
-        new_quic_endpoint_addr(pref.ipv6[..], pref.ipv6_port)
+        new_endpoint_addr(pref.ipv6[..], pref.ipv6_port)
     } else {
-        new_quic_endpoint_addr(pref.ipv4[..], pref.ipv4_port)
+        new_endpoint_addr(pref.ipv4[..], pref.ipv4_port)
     };
-    quic_migration_start_probing(mgr, target, token);
+    start_probing(mgr, target, token);
     return true;
 }
 
 // RFC 9000 Section 8.2.2: Path Validation Responses - Handles received PATH_RESPONSE frame
-fn quic_migration_on_path_response(
+fn on_path_response(
     mgr:           QuicMigrationManager&,
     response_data: const u8[:],
 ) -> bool {
@@ -235,7 +229,7 @@ fn quic_migration_on_path_response(
 }
 
 // RFC 9000 Section 9.2: Initiating Connection Migration - Completes migration to validated path
-fn quic_migration_complete(mgr: QuicMigrationManager&) -> bool {
+fn complete(mgr: QuicMigrationManager&) -> bool {
     guard mgr.has_probing_path && mgr.probing_path.state == PathValidationState.Validated else {
         return false;
     }
@@ -245,7 +239,7 @@ fn quic_migration_complete(mgr: QuicMigrationManager&) -> bool {
 }
 
 // RFC 9000 Section 8.2.4: Failed Path Handling - Aborts candidate path on validation failure
-fn quic_migration_fail_probing(mgr: QuicMigrationManager&) {
+fn fail_probing(mgr: QuicMigrationManager&) {
     if mgr.has_probing_path {
         mgr.probing_path.state = PathValidationState.Failed;
         mgr.has_probing_path = false;
@@ -253,7 +247,7 @@ fn quic_migration_fail_probing(mgr: QuicMigrationManager&) {
 }
 
 // RFC 9000 Section 8.2.4: Failed Path Handling - Retransmits challenge or transitions to Failed
-fn quic_migration_retry_probe(mgr: QuicMigrationManager&) -> bool {
+fn retry_probe(mgr: QuicMigrationManager&) -> bool {
     guard mgr.has_probing_path && mgr.probing_path.state == PathValidationState.Validating else {
         return false;
     }

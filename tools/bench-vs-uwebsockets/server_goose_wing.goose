@@ -34,7 +34,7 @@ fn run_server_reactor(port: u16, worker_id: i64) {
         1003,
     );
 
-    var ws_b = wing::new_ws_behavior(1004);
+    var ws_b = realtime::new_ws_behavior(1004);
     wing::add_ws_route(app, "/ws", ws_b);
 
     let listener = wing::tcp_listen("0.0.0.0", port, 8192);

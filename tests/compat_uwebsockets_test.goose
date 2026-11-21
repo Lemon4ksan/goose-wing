@@ -24,9 +24,9 @@ fn test_declarative_ws_routing(t: lit::T&) {
     t.run("1. Declarative add_ws_route & 101 Switching Protocols Handshake") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
 
-        var ws_cfg = wing::new_ws_behavior(101);
+        var ws_cfg = realtime::new_ws_behavior(101);
         ws_cfg.subprotocol.append("chat.v2");
-        ws_cfg.compression = wing::WS_COMPRESS_SHARED_COMPRESSOR;
+        ws_cfg.compression = realtime::WS_COMPRESS_SHARED_COMPRESSOR;
         ws_cfg.max_backpressure = 1048576;
 
         let ok_add = server.add_ws_route("/ws/live", ws_cfg);
@@ -55,7 +55,7 @@ fn test_declarative_ws_routing(t: lit::T&) {
 
     t.run("2. WS Request to Unregistered Route Falls Back to 404") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
-        let ws_cfg = wing::new_ws_behavior(101);
+        let ws_cfg = realtime::new_ws_behavior(101);
         server.add_ws_route("/ws/valid", ws_cfg);
 
         let unreg_wire: const u8[:] = "GET /ws/unknown HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
@@ -68,7 +68,7 @@ fn test_declarative_ws_routing(t: lit::T&) {
 
     t.run("3. Connection Wire WS Upgrade") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
-        let ws_cfg = wing::new_ws_behavior(200);
+        let ws_cfg = realtime::new_ws_behavior(200);
         server.add_ws_route("/ws/fast", ws_cfg);
 
         let fast_wire: const u8[:] = "GET /ws/fast HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
@@ -85,7 +85,7 @@ fn test_declarative_ws_routing(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_per_socket_user_data(t: lit::T&) {
     t.run("1. Zero-Alloc Inline UserData & UserTag") { sub =>
-        var ws = wing::new_websocket_session(false);
+        var ws = realtime::new_websocket_session(false);
 
         // User tag (64-bit integer handle)
         ws.set_user_tag(0xFEEDFACEDEADBEEF);
@@ -109,7 +109,7 @@ fn test_per_socket_user_data(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_backpressure_and_drain(t: lit::T&) {
     t.run("1. Backpressure Watermark Tracking & Drain Event") { sub =>
-        var ws = wing::new_websocket_session(false);
+        var ws = realtime::new_websocket_session(false);
         ws.set_max_backpressure(500, false);
         sub.assert_eq(ws.buffered_amount, 0, "Initial buffered amount is 0");
         sub.assert_false(ws.is_backpressured, "Initially not backpressured");
@@ -117,7 +117,7 @@ fn test_backpressure_and_drain(t: lit::T&) {
         var out: u8[..1024] = [];
         // Send small message (40 bytes payload + 2 bytes server frame header = 42 bytes)
         let st1 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
-        sub.assert_true(st1 == wing::WsSendStatus.Backpressure, "Status is Backpressure when queued bytes > 0");
+        sub.assert_true(st1 == realtime::WsSendStatus.Backpressure, "Status is Backpressure when queued bytes > 0");
         sub.assert_eq(ws.buffered_amount, 42, "42 bytes buffered");
         sub.assert_true(ws.is_backpressured, "Marked as backpressured");
 
@@ -139,41 +139,41 @@ fn test_backpressure_and_drain(t: lit::T&) {
     };
 
     t.run("2. Backpressure Drop Policy When max_backpressure Exceeded") { sub =>
-        var ws = wing::new_websocket_session(false);
+        var ws = realtime::new_websocket_session(false);
         ws.set_max_backpressure(60, false); // Limit 60 bytes, close_on_limit = false
 
         var out: u8[..1024] = [];
         // 1st message: 40 + 2 = 42 bytes <= 60
         let st1 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
-        sub.assert_true(st1 == wing::WsSendStatus.Backpressure, "First send accepted");
+        sub.assert_true(st1 == realtime::WsSendStatus.Backpressure, "First send accepted");
         sub.assert_eq(ws.buffered_amount, 42, "42 bytes buffered");
         let initial_out_len = out.len;
 
         // 2nd message: 42 + 42 = 84 > 60 -> Must be DROPPED
         let st2 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
-        sub.assert_true(st2 == wing::WsSendStatus.Dropped, "Status is Dropped when limit exceeded");
+        sub.assert_true(st2 == realtime::WsSendStatus.Dropped, "Status is Dropped when limit exceeded");
         sub.assert_eq(ws.dropped_messages_count, 1, "Dropped message counter incremented");
         sub.assert_eq(out.len, initial_out_len, "Dropped message was NOT serialized to wire buffer");
         sub.assert_false(ws.is_closed, "Socket remains open when close_on_limit is false");
     };
 
     t.run("3. Backpressure Close Policy (Slowloris Defense)") { sub =>
-        var ws = wing::new_websocket_session(false);
+        var ws = realtime::new_websocket_session(false);
         ws.set_max_backpressure(60, true); // Limit 60 bytes, close_on_limit = true
 
         var out: u8[..1024] = [];
         let st1 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
-        sub.assert_true(st1 == wing::WsSendStatus.Backpressure, "First send accepted");
+        sub.assert_true(st1 == realtime::WsSendStatus.Backpressure, "First send accepted");
 
         // 2nd send exceeds limit -> connection closed with 1008 Policy Violation
         let st2 = ws.send_text_with_status("1234567890123456789012345678901234567890", out);
-        sub.assert_true(st2 == wing::WsSendStatus.Closed, "Status is Closed when limit exceeded and close_on_limit=true");
+        sub.assert_true(st2 == realtime::WsSendStatus.Closed, "Status is Closed when limit exceeded and close_on_limit=true");
         sub.assert_true(ws.is_closed, "WebSocket is marked closed");
         sub.assert_eq(ws.close_code, rfc::WS_STATUS_POLICY_VIOLATION, "Close code 1008 Policy Violation");
 
         // Subsequent sends on closed socket return Closed
         let st3 = ws.send_text_with_status("after close", out);
-        sub.assert_true(st3 == wing::WsSendStatus.Closed, "Send on closed socket returns Closed");
+        sub.assert_true(st3 == realtime::WsSendStatus.Closed, "Send on closed socket returns Closed");
     };
 }
 
@@ -182,30 +182,30 @@ fn test_backpressure_and_drain(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_selective_compression(t: lit::T&) {
     t.run("1. Selective Compression Flag Toggle") { sub =>
-        var ws = wing::new_websocket_session(false);
-        wing::enable_permessage_deflate(ws, wing::WS_COMPRESS_SHARED_COMPRESSOR);
-        var comp = wing::SharedWsCompressor { .. };
+        var ws = realtime::new_websocket_session(false);
+        realtime::enable_permessage_deflate(ws, realtime::WS_COMPRESS_SHARED_COMPRESSOR);
+        var comp = realtime::SharedWsCompressor { .. };
 
         let repetitive_text = "{\"event\":\"trade\",\"ticker\":\"BTC-USDT\",\"price\":65432.10,\"volume\":1.54321,\"timestamp\":1700000000}";
 
         // 1. Send with compress = true
         var out_comp: u8[..1024] = [];
         let st_c = ws.send_text_compressed_with_status(repetitive_text, comp, out_comp, true);
-        sub.assert_true(st_c == wing::WsSendStatus.Backpressure, "Compressed send succeeded");
+        sub.assert_true(st_c == realtime::WsSendStatus.Backpressure, "Compressed send succeeded");
 
-        let hdr_comp, ok_c = wing::parse_ws_frame_header(out_comp[..]);
+        let hdr_comp, ok_c = realtime::parse_ws_frame_header(out_comp[..]);
         sub.assert_true(ok_c, "Parsed compressed frame header");
         sub.assert_true(hdr_comp.rsv1, "RSV1 bit set (frame is compressed)");
 
         // 2. Send with compress = false (selective uncompressed bypass)
-        var ws2 = wing::new_websocket_session(false);
-        wing::enable_permessage_deflate(ws2, wing::WS_COMPRESS_SHARED_COMPRESSOR);
+        var ws2 = realtime::new_websocket_session(false);
+        realtime::enable_permessage_deflate(ws2, realtime::WS_COMPRESS_SHARED_COMPRESSOR);
 
         var out_plain: u8[..1024] = [];
         let st_p = ws2.send_text_compressed_with_status(repetitive_text, comp, out_plain, false);
-        sub.assert_true(st_p == wing::WsSendStatus.Backpressure, "Uncompressed send succeeded");
+        sub.assert_true(st_p == realtime::WsSendStatus.Backpressure, "Uncompressed send succeeded");
 
-        let hdr_plain, ok_p = wing::parse_ws_frame_header(out_plain[..]);
+        let hdr_plain, ok_p = realtime::parse_ws_frame_header(out_plain[..]);
         sub.assert_true(ok_p, "Parsed uncompressed frame header");
         sub.assert_false(hdr_plain.rsv1, "RSV1 bit cleared (frame sent raw uncompressed)");
         sub.assert_eq(hdr_plain.payload_len as i64, repetitive_text.len, "Payload length matches uncompressed raw length");
@@ -227,46 +227,46 @@ fn test_selective_compression(t: lit::T&) {
 fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
     t.run("1. Auto-Ping Generation & Idle Timeout Reaper") { sub =>
         var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
-        var ws = wing::new_websocket_session(false);
+        var ws = realtime::new_websocket_session(false);
         ws.idle_timeout_s = 10;
         ws.send_pings_automatically = true;
         ws.arm_heartbeat(wheel);
 
         sub.assert_false(ws.is_closed, "Session initially open");
-        sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "No action at tick 0");
+        sub.assert_true(ws.check_heartbeat(wheel) == realtime::WsHeartbeatAction.None, "No action at tick 0");
 
         // Advance 5 seconds: half of idle timeout triggers ping
         core::tick_timer_advance(wheel, 5);
-        sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.SendPing, "Ping action triggered at 5s");
+        sub.assert_true(ws.check_heartbeat(wheel) == realtime::WsHeartbeatAction.SendPing, "Ping action triggered at 5s");
 
         var wire_ping: u8[..256] = [];
         let act = ws.tick_heartbeat(wheel, wire_ping);
-        sub.assert_true(act == wing::WsHeartbeatAction.SendPing, "tick_heartbeat executed SendPing");
+        sub.assert_true(act == realtime::WsHeartbeatAction.SendPing, "tick_heartbeat executed SendPing");
         sub.assert_gt(wire_ping.len, 0, "Ping frame serialized to wire");
         sub.assert_eq(ws.pings_sent, 1, "pings_sent incremented");
 
-        let hdr, ok_h = wing::parse_ws_frame_header(wire_ping[..]);
+        let hdr, ok_h = realtime::parse_ws_frame_header(wire_ping[..]);
         sub.assert_true(ok_h, "Parsed generated ping header");
         sub.assert_eq(hdr.opcode, rfc::WS_OPCODE_PING, "Frame opcode is Ping (0x9)");
 
         // Advance another 5 seconds without touching: idle timeout (10s) expires
         core::tick_timer_advance(wheel, 5);
-        sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.CloseIdle, "CloseIdle action triggered at 10s");
+        sub.assert_true(ws.check_heartbeat(wheel) == realtime::WsHeartbeatAction.CloseIdle, "CloseIdle action triggered at 10s");
 
         var wire_close: u8[..256] = [];
         let act_close = ws.tick_heartbeat(wheel, wire_close);
-        sub.assert_true(act_close == wing::WsHeartbeatAction.CloseIdle, "tick_heartbeat executed CloseIdle");
+        sub.assert_true(act_close == realtime::WsHeartbeatAction.CloseIdle, "tick_heartbeat executed CloseIdle");
         sub.assert_true(ws.is_closed, "Session marked closed");
         sub.assert_eq(ws.close_code, rfc::WS_STATUS_NORMAL, "Close status is 1000");
 
-        let hdr_c, ok_c = wing::parse_ws_frame_header(wire_close[..]);
+        let hdr_c, ok_c = realtime::parse_ws_frame_header(wire_close[..]);
         sub.assert_true(ok_c, "Parsed generated close header");
         sub.assert_eq(hdr_c.opcode, rfc::WS_OPCODE_CLOSE, "Frame opcode is Close (0x8)");
     };
 
     t.run("2. Touch Resets Idle Timeout") { sub =>
         var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
-        var ws = wing::new_websocket_session(false);
+        var ws = realtime::new_websocket_session(false);
         ws.idle_timeout_s = 10;
         ws.arm_heartbeat(wheel);
 
@@ -276,7 +276,7 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
 
         // Advance 2 more seconds: total 10 ticks, but touched at tick 8 so not expired yet
         core::tick_timer_advance(wheel, 2);
-        sub.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "Idle timer was reset by touch");
+        sub.assert_true(ws.check_heartbeat(wheel) == realtime::WsHeartbeatAction.None, "Idle timer was reset by touch");
         sub.assert_false(ws.is_closed, "Session remains open");
     };
 }
@@ -342,7 +342,7 @@ fn test_subscription_counts_and_topics(t: lit::T&) {
 fn test_async_upgrade_and_aborted(t: lit::T&) {
     t.run("1. Asynchronous Upgrade with UserData & UserTag") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
-        var ws_cfg = wing::new_ws_behavior(50);
+        var ws_cfg = realtime::new_ws_behavior(50);
         ws_cfg.subprotocol.append("v1.stream");
         server.add_ws_route("/ws/stream", ws_cfg);
 
@@ -378,7 +378,7 @@ fn test_async_upgrade_and_aborted(t: lit::T&) {
 
     t.run("2. Asynchronous Upgrade Aborted by Client Disconnect") { sub =>
         var server = wing::new_http_server("127.0.0.1", 8080);
-        var ws_cfg = wing::new_ws_behavior(50);
+        var ws_cfg = realtime::new_ws_behavior(50);
         server.add_ws_route("/ws/abortable", ws_cfg);
 
         var req = wing::new_request("GET", "/ws/abortable");
@@ -431,7 +431,7 @@ fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
     };
 
     t.run("2. Dedicated Sliding-Window Compressor") { sub =>
-        var ded = wing::new_dedicated_ws_compressor(32);
+        var ded = realtime::new_dedicated_ws_compressor(32);
         let sample = "Dedicated compressor stream message with repetitive patterns pattern pattern pattern";
 
         var wire_comp: u8[..1024] = [];
@@ -517,13 +517,13 @@ fn test_fast_serialization(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_zero_copy_websocket_view(t: lit::T&) {
     t.run("1. Zero-Copy Ingress via WsMessageView") { sub =>
-        var ws = wing::new_websocket_session(false); // server session
+        var ws = realtime::new_websocket_session(false); // server session
         let mask: u8[4] = [0x11, 0x22, 0x33, 0x44];
 
         var wire_frame: u8[>..] = [];
-        wing::encode_ws_frame(wire_frame, rfc::WS_OPCODE_TEXT, "Zero-Copy Ingress Payload", true, mask, true);
+        realtime::encode_ws_frame(wire_frame, rfc::WS_OPCODE_TEXT, "Zero-Copy Ingress Payload", true, mask, true);
 
-        var view = wing::WsMessageView { .. };
+        var view = realtime::WsMessageView { .. };
         var reply: u8[>..] = [];
 
         // Receive directly into non-owning view
@@ -535,9 +535,9 @@ fn test_zero_copy_websocket_view(t: lit::T&) {
 
         // Ping auto-reply via view
         var ping_wire: u8[>..] = [];
-        wing::encode_ws_frame(ping_wire, rfc::WS_OPCODE_PING, "heartbeat", true, mask, true);
+        realtime::encode_ws_frame(ping_wire, rfc::WS_OPCODE_PING, "heartbeat", true, mask, true);
 
-        var ping_view = wing::WsMessageView { .. };
+        var ping_view = realtime::WsMessageView { .. };
         var pong_out: u8[>..] = [];
         let ok_ping = ws.receive_view(ping_wire[..], ping_view, pong_out);
         sub.assert_true(ok_ping, "Ping processed");
@@ -583,7 +583,7 @@ fn test_shared_tcp_buffer(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_topic_tree_pubsub(t: lit::T&) {
     t.run("1. Exact and Wildcard MQTT Pattern Matching") { sub =>
-        var tree = wing::TopicTree { .. };
+        var tree = realtime::TopicTree { .. };
 
         // Register subscribers with distinct socket descriptors
         sub.assert_true(tree.subscribe(101, "chat/general"), "Sub 101 to exact chat/general");
@@ -615,7 +615,7 @@ fn test_topic_tree_pubsub(t: lit::T&) {
     };
 
     t.run("2. Subscriber Deduplication across Overlapping Patterns") { sub =>
-        var tree = wing::TopicTree { .. };
+        var tree = realtime::TopicTree { .. };
 
         // Socket 200 subscribes to multiple overlapping wildcard topics
         tree.subscribe(200, "market/#");
@@ -629,7 +629,7 @@ fn test_topic_tree_pubsub(t: lit::T&) {
     };
 
     t.run("3. Unsubscribe and Complete Connection Teardown") { sub =>
-        var tree = wing::TopicTree { .. };
+        var tree = realtime::TopicTree { .. };
 
         tree.subscribe(301, "news/sport");
         tree.subscribe(301, "news/weather");
@@ -763,12 +763,12 @@ fn test_handshake_and_date_and_swar_utf8(t: lit::T&) {
     t.run("1. Unrolled 2-Block WebSocket Handshake Accept Key") { sub =>
         let test_key = "dGhlIHNhbXBsZSBub25jZQ==";
         var accept_key: u8[..64] = [];
-        wing::compute_websocket_accept(test_key, accept_key);
+        realtime::compute_websocket_accept(test_key, accept_key);
         sub.assert_eq(accept_key[..], "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "Exact RFC 6455 accept key generated via 2-block SHA-1");
 
         // Validate acceptance helper
-        sub.assert_true(wing::validate_websocket_accept(test_key, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "Validation succeeds");
-        sub.assert_false(wing::validate_websocket_accept(test_key, "invalid_accept_key"), "Validation rejects mismatch");
+        sub.assert_true(realtime::validate_websocket_accept(test_key, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "Validation succeeds");
+        sub.assert_false(realtime::validate_websocket_accept(test_key, "invalid_accept_key"), "Validation rejects mismatch");
     };
 
     t.run("2. Cached RFC 7231 Date Header Generation") { sub =>
@@ -1017,15 +1017,15 @@ fn test_ws_unmask_shifted_header_overwrite(t: lit::T&) {
 
         // Build a masked client frame: 6-byte header + payload
         var frame: u8[..256] = [];
-        wing::encode_ws_frame(frame, rfc::WS_OPCODE_TEXT, original_msg, true, mask, true);
+        realtime::encode_ws_frame(frame, rfc::WS_OPCODE_TEXT, original_msg, true, mask, true);
 
-        let hdr, ok_hdr = wing::parse_ws_frame_header(frame[..]);
+        let hdr, ok_hdr = realtime::parse_ws_frame_header(frame[..]);
         sub.assert_true(ok_hdr, "Frame header parsed");
         sub.assert_eq(hdr.header_len, 6, "Header length is 6 bytes");
         sub.assert_eq(hdr.payload_len as i64, original_msg.len, "Payload length matches");
 
         // Shift unmask directly over frame header
-        let unmasked = wing::unmask_websocket_shifted(
+        let unmasked = realtime::unmask_websocket_shifted(
             frame[..],
             hdr.header_len as i64,
             hdr.payload_len as i64,
@@ -1315,8 +1315,8 @@ fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
     // Malformed control frames (payload > 125, fragmented control frame with FIN=0)
     // MUST trigger WS_STATUS_PROTOCOL_ERROR (1002) and close the WebSocket connection.
 
-    var ws = wing::new_websocket_session(false); // Server-side session
-    var msg = wing::WsMessage {};
+    var ws = realtime::new_websocket_session(false); // Server-side session
+    var msg = realtime::WsMessage {};
     var reply: u8[..256] = [];
 
     // 1. Fragmented Ping frame (FIN = 0, opcode = 0x09) with 4-byte mask
@@ -1325,13 +1325,13 @@ fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
         0x80, // Masked, len=0
         0x01, 0x02, 0x03, 0x04, // Mask key
     ];
-    let ok1 = wing::receive(ws, frag_ping[..], msg, reply);
+    let ok1 = realtime::receive(ws, frag_ping[..], msg, reply);
     t.assert_true(ok1, "receive must handle protocol error");
     t.assert_true(ws.is_closed, "WebSocket must be marked closed on fragmented control frame");
     t.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
 
     // 2. Control frame with payload length > 125 (len = 126)
-    var ws2 = wing::new_websocket_session(false);
+    var ws2 = realtime::new_websocket_session(false);
     var reply2: u8[..256] = [];
     let oversize_ping: u8[8] = [
         0x89, // FIN=1, opcode=Ping
@@ -1339,7 +1339,7 @@ fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
         0x00, 0x7E, // 126 bytes extended length
         0x01, 0x02, 0x03, 0x04, // Mask key
     ];
-    let ok2 = wing::receive(ws2, oversize_ping[..], msg, reply2);
+    let ok2 = realtime::receive(ws2, oversize_ping[..], msg, reply2);
     t.assert_true(ok2, "receive must handle protocol error");
     t.assert_true(ws2.is_closed, "WebSocket must be closed on oversized control frame");
     t.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with WS_STATUS_PROTOCOL_ERROR (1002)");
@@ -1351,43 +1351,43 @@ fn test_uweb_1407_control_frame_protocol_error(t: lit::T&) {
 fn test_uweb_1933_topictree_trailing_wildcard(t: lit::T&) {
     // Issue #1933 & OASIS MQTT v5.0 §4.7.1.3:
     // 'sport/+' MUST match 'sport/' (trailing slash level), but 'sport' MUST NOT match 'sport/'.
-    t.assert_true(wing::match_topic("sport/+", "sport/"), "'sport/+' must match 'sport/' with trailing slash");
-    t.assert_false(wing::match_topic("sport/+", "sport/a/"), "'sport/+' must NOT match 'sport/a/' (two trailing levels)");
-    t.assert_false(wing::match_topic("sport", "sport/"), "'sport' must NOT match 'sport/'");
-    t.assert_false(wing::match_topic("sport/", "sport"), "'sport/' must NOT match 'sport'");
-    t.assert_true(wing::match_topic("sport/#", "sport/"), "'sport/#' must match 'sport/'");
-    t.assert_true(wing::match_topic("sport/#", "sport"), "'sport/#' must match 'sport'");
+    t.assert_true(realtime::match_topic("sport/+", "sport/"), "'sport/+' must match 'sport/' with trailing slash");
+    t.assert_false(realtime::match_topic("sport/+", "sport/a/"), "'sport/+' must NOT match 'sport/a/' (two trailing levels)");
+    t.assert_false(realtime::match_topic("sport", "sport/"), "'sport' must NOT match 'sport/'");
+    t.assert_false(realtime::match_topic("sport/", "sport"), "'sport/' must NOT match 'sport'");
+    t.assert_true(realtime::match_topic("sport/#", "sport/"), "'sport/#' must match 'sport/'");
+    t.assert_true(realtime::match_topic("sport/#", "sport"), "'sport/#' must match 'sport'");
 
     // OASIS MQTT v5.0 §4.7.2: Topics starting with '$' must not match root '+' or '#'
-    t.assert_false(wing::match_topic("#", "$SYS/stats"), "'#' must NOT match '$SYS/stats'");
-    t.assert_false(wing::match_topic("+/stats", "$SYS/stats"), "'+/stats' must NOT match '$SYS/stats'");
-    t.assert_true(wing::match_topic("$SYS/#", "$SYS/stats"), "'$SYS/#' must match '$SYS/stats'");
+    t.assert_false(realtime::match_topic("#", "$SYS/stats"), "'#' must NOT match '$SYS/stats'");
+    t.assert_false(realtime::match_topic("+/stats", "$SYS/stats"), "'+/stats' must NOT match '$SYS/stats'");
+    t.assert_true(realtime::match_topic("$SYS/#", "$SYS/stats"), "'$SYS/#' must match '$SYS/stats'");
 
     // Issue #1924 / #1933:
     // Publishing to empty TopicTree or querying non-existent topic must return 0 without panicking.
-    var tree = wing::TopicTree { .. };
-    t.assert_eq(wing::subscriber_count(tree, "non/existent"), 0, "Subscriber count on non-existent topic must be 0");
+    var tree = realtime::TopicTree { .. };
+    t.assert_eq(realtime::subscriber_count(tree, "non/existent"), 0, "Subscriber count on non-existent topic must be 0");
     var out_fds: i64[..512] = [];
-    let count = wing::find_subscribers(tree, "test/topic", out_fds);
+    let count = realtime::find_subscribers(tree, "test/topic", out_fds);
     t.assert_eq(count, 0, "Finding subscribers in empty tree must return 0");
 
     // Batch publish deduplication across overlapping wildcard buckets
-    t.assert_true(wing::subscribe(tree, 77, "chat/+"), "Sub 77 to chat/+");
-    t.assert_true(wing::subscribe(tree, 77, "chat/#"), "Sub 77 to chat/#");
-    let queued = wing::publish_batch(tree, "chat/room1", "hello");
+    t.assert_true(realtime::subscribe(tree, 77, "chat/+"), "Sub 77 to chat/+");
+    t.assert_true(realtime::subscribe(tree, 77, "chat/#"), "Sub 77 to chat/#");
+    let queued = realtime::publish_batch(tree, "chat/room1", "hello");
     t.assert_eq(queued, 1, "publish_batch must queue message once per distinct socket across overlapping buckets");
-    t.assert_true(wing::subscriber_needs_drain(tree, 77), "Socket 77 needs drain");
-    t.assert_eq(wing::subscriber_queued_messages(tree, 77), 1, "Socket 77 has exactly 1 queued message");
+    t.assert_true(realtime::subscriber_needs_drain(tree, 77), "Socket 77 needs drain");
+    t.assert_eq(realtime::subscriber_queued_messages(tree, 77), 1, "Socket 77 has exactly 1 queued message");
 
     // Queue up to 32 messages without resetting palette_len mid-broadcast
     for i in 31 {
-        wing::publish_batch(tree, "chat/room1", "msg");
+        realtime::publish_batch(tree, "chat/room1", "msg");
     }
-    t.assert_eq(wing::subscriber_queued_messages(tree, 77), 32, "Socket 77 has 32 queued messages");
+    t.assert_eq(realtime::subscriber_queued_messages(tree, 77), 32, "Socket 77 has 32 queued messages");
     t.assert_eq(tree.palette_len, 32, "Palette length is 32");
 
     // 33rd message triggers drain_subscriber inside publish_batch
-    wing::publish_batch(tree, "chat/room1", "msg33");
+    realtime::publish_batch(tree, "chat/room1", "msg33");
     t.assert_eq(tree.palette_len, 33, "Palette length must NOT be wiped by drain_subscriber mid-broadcast");
 }
 
@@ -1487,11 +1487,11 @@ fn test_rfc_6455_1005_empty_close_payload(t: lit::T&) {
     // and MUST NOT be serialized onto the wire in a Close frame!
     // A close with WS_STATUS_NO_STATUS must produce an empty 0-byte payload.
 
-    var ws = wing::new_websocket_session(false);
+    var ws = realtime::new_websocket_session(false);
     var wire_out: u8[..256] = [];
-    wing::close(ws, rfc::WS_STATUS_NO_STATUS, "", wire_out);
+    realtime::close(ws, rfc::WS_STATUS_NO_STATUS, "", wire_out);
 
-    let hdr, ok = wing::parse_ws_frame_header(wire_out[..]);
+    let hdr, ok = realtime::parse_ws_frame_header(wire_out[..]);
     t.assert_true(ok, "Close frame must parse");
     t.assert_eq(hdr.opcode, rfc::WS_OPCODE_CLOSE, "Opcode is Close");
     t.assert_eq(hdr.payload_len, 0, "1005 close frame payload length must be 0 bytes on wire");
@@ -1527,19 +1527,19 @@ fn test_uweb_1932_ws_send_blocked_when_closed(t: lit::T&) {
     // Issue #1932 / RFC 6455 Section 5.5.1:
     // Once a WebSocket session is closed (or closing after backpressure/close frame),
     // all subsequent sends (text, binary, ping) MUST be dropped without writing frames.
-    var ws = wing::new_websocket_session(false);
+    var ws = realtime::new_websocket_session(false);
     var close_wire: u8[..128] = [];
-    wing::close(ws, rfc::WS_STATUS_NORMAL, "bye", close_wire);
+    realtime::close(ws, rfc::WS_STATUS_NORMAL, "bye", close_wire);
     t.assert_true(ws.is_closed, "Session is closed");
 
     var wire_out: u8[..256] = [];
-    wing::send_text(ws, "should be dropped", wire_out);
+    realtime::send_text(ws, "should be dropped", wire_out);
     t.assert_eq(wire_out.len, 0, "send_text must emit 0 bytes after session is closed");
 
-    wing::send_binary(ws, "binary drop", wire_out);
+    realtime::send_binary(ws, "binary drop", wire_out);
     t.assert_eq(wire_out.len, 0, "send_binary must emit 0 bytes after session is closed");
 
-    wing::send_ping(ws, "ping drop", wire_out);
+    realtime::send_ping(ws, "ping drop", wire_out);
     t.assert_eq(wire_out.len, 0, "send_ping must emit 0 bytes after session is closed");
 }
 
@@ -1551,14 +1551,14 @@ fn test_mqtt_invalid_multilevel_wildcard_rejection(t: lit::T&) {
     // Multi-level wildcard '#' MUST be the last character in the topic pattern,
     // and MUST be either alone ("#") or preceded by '/' ("sport/#").
     // Patterns like "sport/#/tennis" or "sport#" or "sport+foo" are syntactically illegal!
-    var tree = wing::TopicTree { .. };
+    var tree = realtime::TopicTree { .. };
 
-    t.assert_false(wing::subscribe(tree, 10, "sport/#/tennis"), "'#' in middle of topic pattern must be rejected");
-    t.assert_false(wing::subscribe(tree, 10, "sport#"), "'#' not preceded by '/' must be rejected");
-    t.assert_false(wing::subscribe(tree, 10, "sport+"), "'+' not occupying entire segment must be rejected");
-    t.assert_true(wing::subscribe(tree, 10, "sport/#"), "Valid 'sport/#' must be accepted");
-    t.assert_true(wing::subscribe(tree, 10, "#"), "Valid '#' must be accepted");
-    t.assert_true(wing::subscribe(tree, 10, "sport/+/tennis"), "Valid 'sport/+/tennis' must be accepted");
+    t.assert_false(realtime::subscribe(tree, 10, "sport/#/tennis"), "'#' in middle of topic pattern must be rejected");
+    t.assert_false(realtime::subscribe(tree, 10, "sport#"), "'#' not preceded by '/' must be rejected");
+    t.assert_false(realtime::subscribe(tree, 10, "sport+"), "'+' not occupying entire segment must be rejected");
+    t.assert_true(realtime::subscribe(tree, 10, "sport/#"), "Valid 'sport/#' must be accepted");
+    t.assert_true(realtime::subscribe(tree, 10, "#"), "Valid '#' must be accepted");
+    t.assert_true(realtime::subscribe(tree, 10, "sport/+/tennis"), "Valid 'sport/+/tennis' must be accepted");
 }
 
 // ----------------------------------------------------------------------------
@@ -1568,25 +1568,25 @@ fn test_uweb_1090_mqtt_wildcard_publish_rejection(t: lit::T&) {
     // Issue #1090 / OASIS MQTT v5.0 §3.3.2.1:
     // "The Topic Name in the PUBLISH packet MUST NOT contain wildcard characters [MQTT-3.3.2-1]."
     // Publishing to wildcard topics ("sport/+", "sport/#", "+", "#") is illegal and MUST be rejected.
-    var tree = wing::TopicTree { .. };
-    t.assert_true(wing::subscribe(tree, 10, "sport/+"), "Subscribe to 'sport/+'");
-    t.assert_true(wing::subscribe(tree, 20, "sport/#"), "Subscribe to 'sport/#'");
+    var tree = realtime::TopicTree { .. };
+    t.assert_true(realtime::subscribe(tree, 10, "sport/+"), "Subscribe to 'sport/+'");
+    t.assert_true(realtime::subscribe(tree, 20, "sport/#"), "Subscribe to 'sport/#'");
 
     var fds: i64[..512] = [];
     // Legitimate publish to concrete topic: matches both
-    let count1 = wing::find_subscribers(tree, "sport/tennis", fds);
+    let count1 = realtime::find_subscribers(tree, "sport/tennis", fds);
     t.assert_eq(count1, 2, "Concrete topic 'sport/tennis' matches 2 subscribers");
 
     // Illegal publish containing '+' wildcard: must return 0
-    let count2 = wing::find_subscribers(tree, "sport/+", fds);
+    let count2 = realtime::find_subscribers(tree, "sport/+", fds);
     t.assert_eq(count2, 0, "Publish to wildcard topic 'sport/+' MUST be rejected (0 subscribers)");
 
     // Illegal publish containing '#' wildcard: must return 0
-    let count3 = wing::find_subscribers(tree, "sport/#", fds);
+    let count3 = realtime::find_subscribers(tree, "sport/#", fds);
     t.assert_eq(count3, 0, "Publish to wildcard topic 'sport/#' MUST be rejected (0 subscribers)");
 
     // Standalone wildcard publish: must return 0
-    let count4 = wing::find_subscribers(tree, "#", fds);
+    let count4 = realtime::find_subscribers(tree, "#", fds);
     t.assert_eq(count4, 0, "Publish to wildcard topic '#' MUST be rejected (0 subscribers)");
 }
 
@@ -1645,9 +1645,9 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: lit::T&) {
     // RFC 6455 §5.2 & Autobahn Cases 3.1, 3.2, 3.3, 3.4 / #1407:
     // Non-minimal length encodings (e.g. 16-bit length < 126 or 64-bit length <= 65535)
     // and high-bit violations in 64-bit length MUST fail the connection with Protocol Error (1002).
-    var ws = wing::new_websocket_session(false); // server session
+    var ws = realtime::new_websocket_session(false); // server session
     var reply: u8[..256] = [];
-    var view = wing::WsMessageView { .. };
+    var view = realtime::WsMessageView { .. };
 
     // 1. Non-minimal 16-bit encoding: raw_len = 126, but length is 10 (< 126).
     // Wire: 0x81 (FIN+text), 0xFE (Masked + 126), 0x00, 0x0A (len=10), mask: 4 bytes, payload: 10 bytes
@@ -1656,18 +1656,18 @@ fn test_rfc_6455_non_minimal_length_protocol_error(t: lit::T&) {
         0x11, 0x22, 0x33, 0x44,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
-    let handled1 = wing::receive_view(ws, wire_non_minimal_16[..], view, reply);
+    let handled1 = realtime::receive_view(ws, wire_non_minimal_16[..], view, reply);
     t.assert_true(handled1, "Handled non-minimal 16-bit length frame");
     t.assert_true(ws.is_closed, "Session must be closed on non-minimal length");
     t.assert_eq(ws.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
 
     // 2. High-bit set in 64-bit length: byte 2 has 0x80 set
-    var ws2 = wing::new_websocket_session(false);
+    var ws2 = realtime::new_websocket_session(false);
     var wire_high_bit_64: u8[..32] = [
         0x81, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
         0x11, 0x22, 0x33, 0x44,
     ];
-    let handled2 = wing::receive_view(ws2, wire_high_bit_64[..], view, reply);
+    let handled2 = realtime::receive_view(ws2, wire_high_bit_64[..], view, reply);
     t.assert_true(handled2, "Handled high-bit 64-bit length frame");
     t.assert_true(ws2.is_closed, "Session must be closed on high-bit in 64-bit length");
     t.assert_eq(ws2.close_code, rfc::WS_STATUS_PROTOCOL_ERROR, "Must close with 1002 (PROTOCOL_ERROR)");
@@ -1731,7 +1731,7 @@ fn test_rfc_6455_sec_websocket_key_validation(t: lit::T&) {
     wing::set_header(req_bad, "Sec-WebSocket-Key", "short_invalid_key");
 
     var res_bad = wing::Response { .. };
-    let sess_bad, ok_bad = wing::ws_upgrade_request(req_bad, res_bad);
+    let sess_bad, ok_bad = realtime::ws_upgrade_request(req_bad, res_bad);
     t.assert_false(ok_bad, "Upgrade with non-16-byte key must fail");
     t.assert_eq(res_bad.status_code, 400, "Must return HTTP 400 Bad Request for malformed Sec-WebSocket-Key");
 
@@ -1744,7 +1744,7 @@ fn test_rfc_6455_sec_websocket_key_validation(t: lit::T&) {
     wing::set_header(req_good, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
     var res_good = wing::Response { .. };
-    let sess_good, ok_good = wing::ws_upgrade_request(req_good, res_good);
+    let sess_good, ok_good = realtime::ws_upgrade_request(req_good, res_good);
     t.assert_true(ok_good, "Upgrade with valid Sec-WebSocket-Key must succeed");
     t.assert_eq(res_good.status_code, 101, "Must return HTTP 101 Switching Protocols");
     let accept_val = wing::header(res_good, "Sec-WebSocket-Accept");
@@ -1928,34 +1928,34 @@ fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: lit::T&) {
 // 50. PreparedMessage & publishPrepared
 // ----------------------------------------------------------------------------
 fn test_uweb_prepared_message(t: lit::T&) {
-    var tree = wing::TopicTree { .. };
-    wing::subscribe(tree, 101, "broadcast/tickers");
-    wing::subscribe(tree, 102, "broadcast/+");
+    var tree = realtime::TopicTree { .. };
+    realtime::subscribe(tree, 101, "broadcast/tickers");
+    realtime::subscribe(tree, 102, "broadcast/+");
 
-    var msg = wing::PreparedMessage { .. };
-    let ok_prep = wing::prepare_message(msg, "{\"ticker\":\"BTC\",\"price\":92500}", rfc::WS_OPCODE_TEXT);
+    var msg = realtime::PreparedMessage { .. };
+    let ok_prep = realtime::prepare_message(msg, "{\"ticker\":\"BTC\",\"price\":92500}", rfc::WS_OPCODE_TEXT);
     t.assert_true(ok_prep, "prepare_message succeeded");
     t.assert_gt(msg.wire.len, 0, "Wire frame encoded");
     t.assert_false(msg.has_compressed, "Raw prepared message has_compressed is false");
 
     // Header validation
-    let hdr, ok_h = wing::parse_ws_frame_header(msg.wire[..]);
+    let hdr, ok_h = realtime::parse_ws_frame_header(msg.wire[..]);
     t.assert_true(ok_h, "Parsed prepared frame header");
     t.assert_eq(hdr.opcode, rfc::WS_OPCODE_TEXT, "Opcode is TEXT");
     t.assert_true(hdr.fin, "FIN bit set");
     t.assert_false(hdr.masked, "Server frame unmasked per RFC 6455");
 
     // Prepared message with compression
-    var comp_msg = wing::PreparedMessage { .. };
-    var shared_comp = wing::SharedWsCompressor { .. };
+    var comp_msg = realtime::PreparedMessage { .. };
+    var shared_comp = realtime::SharedWsCompressor { .. };
     let long_payload = "REPEAT_KEY_DATA_FIELD_VALUE_12345_REPEAT_KEY_DATA_FIELD_VALUE_12345_REPEAT_KEY_DATA_FIELD_VALUE_12345";
-    let ok_c = wing::prepare_message_compressed(comp_msg, long_payload, shared_comp, rfc::WS_OPCODE_TEXT);
+    let ok_c = realtime::prepare_message_compressed(comp_msg, long_payload, shared_comp, rfc::WS_OPCODE_TEXT);
     t.assert_true(ok_c, "prepare_message_compressed succeeded");
     t.assert_true(comp_msg.has_compressed, "Compressible payload marked has_compressed");
     t.assert_lt(comp_msg.compressed_wire.len, comp_msg.wire.len, "Compressed wire smaller than uncompressed");
 
     // Verify compressed header has RSV1
-    let c_hdr, ok_ch = wing::parse_ws_frame_header(comp_msg.compressed_wire[..]);
+    let c_hdr, ok_ch = realtime::parse_ws_frame_header(comp_msg.compressed_wire[..]);
     t.assert_true(ok_ch, "Parsed compressed frame header");
     t.assert_true(c_hdr.rsv1, "RSV1 bit set on compressed frame per RFC 7692");
 
@@ -1965,7 +1965,7 @@ fn test_uweb_prepared_message(t: lit::T&) {
     t.assert_eq(count, 2, "2 subscribers match broadcast/tickers");
 
     // Dispatches pre-encoded message to topic subscribers
-    let pub_count = wing::publish_prepared(tree, "broadcast/tickers", msg);
+    let pub_count = realtime::publish_prepared(tree, "broadcast/tickers", msg);
     t.assert_eq(pub_count, 0, "No bytes sent to offline test fds");
     t.assert_eq(tree.total_publishes, 1, "TopicTree total_publishes tracked");
 }
@@ -1976,37 +1976,37 @@ fn test_uweb_prepared_message(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
     var wheel = core::TickTimerWheel { idle_timeout_sec: 10, .. };
-    var ws = wing::new_websocket_session(false);
+    var ws = realtime::new_websocket_session(false);
     ws.idle_timeout_s = 10;
     ws.max_lifetime_s = 20; // 20 seconds maximum lifetime
     ws.arm_heartbeat(wheel);
 
     // Advance 8s, then touch (client active)
     core::tick_timer_advance(wheel, 8);
-    wing::ws_advance_lifetime(ws, 8);
+    realtime::ws_advance_lifetime(ws, 8);
     ws.touch(wheel);
 
-    t.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "No expiry after touch at 8s");
+    t.assert_true(ws.check_heartbeat(wheel) == realtime::WsHeartbeatAction.None, "No expiry after touch at 8s");
 
     // Advance another 8s, touch again (total 16s lifetime, idle was reset)
     core::tick_timer_advance(wheel, 8);
-    wing::ws_advance_lifetime(ws, 8);
+    realtime::ws_advance_lifetime(ws, 8);
     ws.touch(wheel);
 
-    t.assert_true(ws.check_heartbeat(wheel) == wing::WsHeartbeatAction.None, "No expiry after touch at 16s");
+    t.assert_true(ws.check_heartbeat(wheel) == realtime::WsHeartbeatAction.None, "No expiry after touch at 16s");
     t.assert_false(ws.is_closed, "Session still open at 16s");
 
     // Advance another 5s (total 21s, exceeds max_lifetime_s = 20)
     core::tick_timer_advance(wheel, 5);
-    wing::ws_advance_lifetime(ws, 5);
+    realtime::ws_advance_lifetime(ws, 5);
 
     // Despite being touched at 16s (idle would not expire until 26s), maxLifetime forces CloseMaxLifetime
     let act = ws.check_heartbeat(wheel);
-    t.assert_true(act == wing::WsHeartbeatAction.CloseMaxLifetime, "CloseMaxLifetime action triggered");
+    t.assert_true(act == realtime::WsHeartbeatAction.CloseMaxLifetime, "CloseMaxLifetime action triggered");
 
     var wire_close: u8[..256] = [];
     let act_tick = ws.tick_heartbeat(wheel, wire_close);
-    t.assert_true(act_tick == wing::WsHeartbeatAction.CloseMaxLifetime, "tick_heartbeat executed CloseMaxLifetime");
+    t.assert_true(act_tick == realtime::WsHeartbeatAction.CloseMaxLifetime, "tick_heartbeat executed CloseMaxLifetime");
     t.assert_true(ws.is_closed, "Session closed by maxLifetime");
     t.assert_eq(ws.close_code, rfc::WS_STATUS_NORMAL, "Close status code 1000");
 }
@@ -2018,34 +2018,34 @@ fn test_uweb_max_lifetime_sweeper(t: lit::T&) {
 fn test_uweb_safari_15_broken_compression(t: lit::T&) {
     // Safari 15.0..15.3 should return true
     let ua_15_0 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15";
-    t.assert_true(wing::ws_has_broken_compression(ua_15_0), "Safari 15.0 detected as broken");
+    t.assert_true(realtime::ws_has_broken_compression(ua_15_0), "Safari 15.0 detected as broken");
 
     let ua_15_1 = "Mozilla/5.0 (iPhone; CPU iPhone OS 15_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Mobile/15E148 Safari/604.1";
-    t.assert_true(wing::ws_has_broken_compression(ua_15_1), "Safari 15.1 detected as broken");
+    t.assert_true(realtime::ws_has_broken_compression(ua_15_1), "Safari 15.1 detected as broken");
 
     let ua_15_2 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Safari/605.1.15";
-    t.assert_true(wing::ws_has_broken_compression(ua_15_2), "Safari 15.2 detected as broken");
+    t.assert_true(realtime::ws_has_broken_compression(ua_15_2), "Safari 15.2 detected as broken");
 
     let ua_15_3 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15";
-    t.assert_true(wing::ws_has_broken_compression(ua_15_3), "Safari 15.3 detected as broken");
+    t.assert_true(realtime::ws_has_broken_compression(ua_15_3), "Safari 15.3 detected as broken");
 
     // Safari 15.4+ fixed the bug
     let ua_15_4 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15";
-    t.assert_false(wing::ws_has_broken_compression(ua_15_4), "Safari 15.4 NOT broken");
+    t.assert_false(realtime::ws_has_broken_compression(ua_15_4), "Safari 15.4 NOT broken");
 
     let ua_16_0 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15";
-    t.assert_false(wing::ws_has_broken_compression(ua_16_0), "Safari 16.0 NOT broken");
+    t.assert_false(realtime::ws_has_broken_compression(ua_16_0), "Safari 16.0 NOT broken");
 
     // Chrome and Firefox
     let ua_chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    t.assert_false(wing::ws_has_broken_compression(ua_chrome), "Chrome NOT broken");
+    t.assert_false(realtime::ws_has_broken_compression(ua_chrome), "Chrome NOT broken");
 
     let ua_firefox = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0";
-    t.assert_false(wing::ws_has_broken_compression(ua_firefox), "Firefox NOT broken");
+    t.assert_false(realtime::ws_has_broken_compression(ua_firefox), "Firefox NOT broken");
 
     // Edge cases / empty
-    t.assert_false(wing::ws_has_broken_compression(""), "Empty UA NOT broken");
-    t.assert_false(wing::ws_has_broken_compression("curl/7.88.1"), "curl NOT broken");
+    t.assert_false(realtime::ws_has_broken_compression(""), "Empty UA NOT broken");
+    t.assert_false(realtime::ws_has_broken_compression("curl/7.88.1"), "curl NOT broken");
 }
 
 // Global test state for streaming chunk capture

@@ -24,32 +24,34 @@ import wire_kit from ".";
 
 fn test_empty_payload_packet_rejected() {
     let scid: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
-    var srv = quic_internal::new_quic_server_connection(scid[..]);
-    srv.state = quic_internal::QuicConnState.Established;
+    var srv = quic::new_server_connection(scid[..]);
+    srv.state = quic::QuicConnState.Established;
 
     // RFC 9000 Section 12.4: Frames and Frame Types - An endpoint MUST treat receipt of a packet containing no frames as a connection error of type PROTOCOL_VIOLATION.
     let empty_payload: const u8[:] = "";
-    let handled, _ = quic_internal::quic_conn_process_payload(srv, empty_payload, quic_internal::QuicHeaderType.OneRtt);
+    let _pr_handled = quic::process_payload(srv, empty_payload, quic::QuicHeaderType.OneRtt);
+    let handled = _pr_handled.handled;
     assert(!handled);
     assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
-    assert(srv.state == quic_internal::QuicConnState.Closing);
+    assert(srv.state == quic::QuicConnState.Closing);
 
     print("QUIC_EMPTY_PAYLOAD_REJECTED: OK");
 }
 
 fn test_retire_conn_id_on_zero_length_scid_rejected() {
     // Server provides zero-length Connection ID to peer (scid is empty)
-    var srv = quic_internal::new_quic_server_connection("");
-    srv.state = quic_internal::QuicConnState.Established;
+    var srv = quic::new_server_connection("");
+    srv.state = quic::QuicConnState.Established;
 
     var rcid_payload: u8[..32] = [];
-    assert(quic_internal::encode_retire_conn_id_frame(rcid_payload, 1));
+    assert(quic::encode_retire_conn_id_frame(1, rcid_payload));
 
     // RFC 9000 Section 19.16: RETIRE_CONNECTION_ID Frames - An endpoint that provides a zero-length connection ID MUST treat receipt of a RETIRE_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
-    let handled, _ = quic_internal::quic_conn_process_payload(srv, rcid_payload[..], quic_internal::QuicHeaderType.OneRtt);
+    let _pr_handled = quic::process_payload(srv, rcid_payload[..], quic::QuicHeaderType.OneRtt);
+    let handled = _pr_handled.handled;
     assert(!handled);
     assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
-    assert(srv.state == quic_internal::QuicConnState.Closing);
+    assert(srv.state == quic::QuicConnState.Closing);
 
     print("QUIC_RETIRE_CONN_ID_ZERO_SCID_REJECTED: OK");
 }
@@ -57,19 +59,20 @@ fn test_retire_conn_id_on_zero_length_scid_rejected() {
 fn test_new_conn_id_on_zero_length_dcid_rejected() {
     // Client sends packets with zero-length Destination Connection ID (dcid is empty)
     let scid: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
-    var client = quic_internal::new_quic_client_connection("", scid[..]);
-    client.state = quic_internal::QuicConnState.Established;
+    var client = quic::new_client_connection("", scid[..]);
+    client.state = quic::QuicConnState.Established;
 
     var ncid_payload: u8[..64] = [];
     let reset_tok: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let new_cid:   u8[4]  = [0xAA, 0xBB, 0xCC, 0xDD];
-    assert(quic_internal::encode_new_conn_id_frame(ncid_payload, 1, 0, new_cid[..], reset_tok));
+    assert(quic::encode_new_conn_id_frame(1, 0, new_cid[..], reset_tok, ncid_payload));
 
     // RFC 9000 Section 19.15: NEW_CONNECTION_ID Frames - An endpoint that is sending packets with a zero-length Destination Connection ID MUST treat receipt of a NEW_CONNECTION_ID frame as a connection error of type PROTOCOL_VIOLATION.
-    let handled, _ = quic_internal::quic_conn_process_payload(client, ncid_payload[..], quic_internal::QuicHeaderType.OneRtt);
+    let _pr_handled = quic::process_payload(client, ncid_payload[..], quic::QuicHeaderType.OneRtt);
+    let handled = _pr_handled.handled;
     assert(!handled);
     assert(client.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
-    assert(client.state == quic_internal::QuicConnState.Closing);
+    assert(client.state == quic::QuicConnState.Closing);
 
     print("QUIC_NEW_CONN_ID_ZERO_DCID_REJECTED: OK");
 }
@@ -98,20 +101,20 @@ fn run_01_rfc_repro_framer_quic_invariants() {
 // Wire adapter for verify_split_stream and fuzzing using wing's real decode_ack_frame
 fn wing_validate_quic_ack_wire(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    let ack, consumed, ok = quic_internal::decode_ack_frame(buf, 0);
+    let ack, consumed, ok = quic::decode_ack_frame(buf, 0);
     if ok {
         return (ack.largest_acked - ack.first_ack_range) as! i64;
     }
     let ftype = buf[0];
     guard ftype == 2 || ftype == 3 else { return -2; }
     if buf.len >= 5 {
-        let largest, off1, ok1 = quic_internal::quic_decode_varint(buf, 1);
+        let largest, off1, ok1 = quic::decode_varint(buf, 1);
         if ok1 {
-            let _, off2, ok2 = quic_internal::quic_decode_varint(buf, off1);
+            let _, off2, ok2 = quic::decode_varint(buf, off1);
             if ok2 {
-                let _, off3, ok3 = quic_internal::quic_decode_varint(buf, off2);
+                let _, off3, ok3 = quic::decode_varint(buf, off2);
                 if ok3 {
-                    let first_r, _, ok4 = quic_internal::quic_decode_varint(buf, off3);
+                    let first_r, _, ok4 = quic::decode_varint(buf, off3);
                     if ok4 && largest < first_r {
                         return -3;
                     }
@@ -170,40 +173,40 @@ fn run_02_verify_quic_ack_edge() {
 // fail-closed capacity enforcement with MQTT wildcard matching.
 
 fn test_quic_conn_bbr_ack_integration() {
-    var conn = quic_internal::new_quic_server_connection("srv_bbr_01");
-    conn.state = quic_internal::QuicConnState.Established;
+    var conn = quic::new_server_connection("srv_bbr_01");
+    conn.state = quic::QuicConnState.Established;
     conn.validated_address = true;
 
     // Record and acknowledge 4 in-flight ApplicationData packets across sequential rounds
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.ApplicationData, 1, 1200, true, 10000);
-    let ack1 = quic_internal::AckFrame {
+    quic::record_sent(conn, quic::PnSpaceId.ApplicationData, 1, 1200, true, 10000);
+    let ack1 = quic::AckFrame {
         largest_acked:   1,
         ack_delay:       0,
         first_ack_range: 0,
         ..
     };
-    let ok1 = quic_internal::quic_conn_on_ack(conn, ack1, 30000, quic_internal::PnSpaceId.ApplicationData);
+    let ok1 = quic::on_ack(conn, ack1, 30000, quic::PnSpaceId.ApplicationData);
 
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.ApplicationData, 2, 1200, true, 20000);
-    let ack2 = quic_internal::AckFrame {
+    quic::record_sent(conn, quic::PnSpaceId.ApplicationData, 2, 1200, true, 20000);
+    let ack2 = quic::AckFrame {
         largest_acked:   2,
         ack_delay:       0,
         first_ack_range: 0,
         ..
     };
-    let ok2 = quic_internal::quic_conn_on_ack(conn, ack2, 45000, quic_internal::PnSpaceId.ApplicationData);
+    let ok2 = quic::on_ack(conn, ack2, 45000, quic::PnSpaceId.ApplicationData);
 
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.ApplicationData, 3, 1200, true, 30000);
-    let ack3 = quic_internal::AckFrame {
+    quic::record_sent(conn, quic::PnSpaceId.ApplicationData, 3, 1200, true, 30000);
+    let ack3 = quic::AckFrame {
         largest_acked:   3,
         ack_delay:       0,
         first_ack_range: 0,
         ..
     };
-    let ok3 = quic_internal::quic_conn_on_ack(conn, ack3, 60000, quic_internal::PnSpaceId.ApplicationData);
+    let ok3 = quic::on_ack(conn, ack3, 60000, quic::PnSpaceId.ApplicationData);
 
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.ApplicationData, 4, 1200, true, 40000);
-    let ack4 = quic_internal::AckFrame {
+    quic::record_sent(conn, quic::PnSpaceId.ApplicationData, 4, 1200, true, 40000);
+    let ack4 = quic::AckFrame {
         is_ecn:          true,
         largest_acked:   4,
         ack_delay:       0,
@@ -211,18 +214,18 @@ fn test_quic_conn_bbr_ack_integration() {
         ecn_ce_count:    1,
         ..
     };
-    let ok4 = quic_internal::quic_conn_on_ack(conn, ack4, 75000, quic_internal::PnSpaceId.ApplicationData);
+    let ok4 = quic::on_ack(conn, ack4, 75000, quic::PnSpaceId.ApplicationData);
 
     // Negative test: acknowledging unsent packet number 999 must fail closed
-    let bad_ack = quic_internal::AckFrame {
+    let bad_ack = quic::AckFrame {
         largest_acked:   999,
         ack_delay:       0,
         first_ack_range: 0,
         ..
     };
-    let ok_bad = quic_internal::quic_conn_on_ack(conn, bad_ack, 80000, quic_internal::PnSpaceId.ApplicationData);
+    let ok_bad = quic::on_ack(conn, bad_ack, 80000, quic::PnSpaceId.ApplicationData);
 
-    let is_refill = conn.bbr.mode == quic_internal::BbrMode.ProbeBwRefill;
+    let is_refill = conn.bbr.mode == quic::BbrMode.ProbeBwRefill;
     let ecn_tracked = conn.bbr.ecn_alpha_scaled > 0;
     let bw_pos = conn.bbr.bw_hi_bps > 0;
     let pacing_synced = conn.pacer.pacing_rate_bps == conn.bbr.pacer.pacing_rate_bps && conn.pacer.pacing_rate_bps > 0;
@@ -239,14 +242,14 @@ fn test_quic_conn_bbr_ack_integration() {
 fn test_coalesced_quic_datagram_demux() {
     let srv_cid = "12345678";
     let cli_cid = "87654321";
-    var srv = quic_internal::new_quic_server_connection(srv_cid);
+    var srv = quic::new_server_connection(srv_cid);
     srv.allow_unencrypted_test_packets = true;
 
     var coalesced_dgram: u8[..256] = [];
 
     // Packet 1: Initial packet (Long Header) with PING frame (0x01)
-    var init_hdr = quic_internal::QuicHeader {
-        header_type:    quic_internal::QuicHeaderType.Initial,
+    var init_hdr = quic::QuicHeader {
+        header_type:    quic::QuicHeaderType.Initial,
         version:        rfc::QUIC_VERSION_1,
         payload_length: 2, // 1 byte PN + 1 byte PING frame
         packet_number:  0,
@@ -254,12 +257,12 @@ fn test_coalesced_quic_datagram_demux() {
     };
     init_hdr.dcid.append(srv_cid);
     init_hdr.scid.append(cli_cid);
-    let ok_enc1 = quic_internal::encode_quic_header(coalesced_dgram, init_hdr, 1);
+    let ok_enc1 = quic::encode_header(init_hdr, 1, coalesced_dgram);
     coalesced_dgram.push(0x01); // PING frame
 
     // Packet 2: Handshake packet (Long Header) with PING frame (0x01)
-    var hs_hdr = quic_internal::QuicHeader {
-        header_type:    quic_internal::QuicHeaderType.Handshake,
+    var hs_hdr = quic::QuicHeader {
+        header_type:    quic::QuicHeaderType.Handshake,
         version:        rfc::QUIC_VERSION_1,
         payload_length: 2, // 1 byte PN + 1 byte PING frame
         packet_number:  0,
@@ -267,27 +270,29 @@ fn test_coalesced_quic_datagram_demux() {
     };
     hs_hdr.dcid.append(srv_cid);
     hs_hdr.scid.append(cli_cid);
-    let ok_enc2 = quic_internal::encode_quic_header(coalesced_dgram, hs_hdr, 1);
+    let ok_enc2 = quic::encode_header(hs_hdr, 1, coalesced_dgram);
     coalesced_dgram.push(0x01); // PING frame
 
     // Packet 3: 1-RTT Short Header packet with STREAM frame on client-initiated bidi stream 0
-    var app_hdr = quic_internal::QuicHeader {
-        header_type:   quic_internal::QuicHeaderType.OneRtt,
+    var app_hdr = quic::QuicHeader {
+        header_type:   quic::QuicHeaderType.OneRtt,
         packet_number: 0,
         ..
     };
     app_hdr.dcid.append(srv_cid);
-    let ok_enc3 = quic_internal::encode_quic_header(coalesced_dgram, app_hdr, 1);
-    let sf_flags = quic_internal::QuicStreamFlags { with_len: true, fin: true, .. };
-    let ok_sf = quic_internal::encode_stream_frame(coalesced_dgram, 0, 0, "hello", sf_flags);
+    let ok_enc3 = quic::encode_header(app_hdr, 1, coalesced_dgram);
+    let sf_flags = quic::QuicStreamFlags { with_len: true, fin: true, .. };
+    let ok_sf = quic::encode_stream_frame(0, 0, "hello", coalesced_dgram, sf_flags);
 
-    var out_ack = quic_internal::AckFrame { .. };
-    let handled, needs_ack = quic_internal::quic_conn_process_datagram(srv, coalesced_dgram[..], 50000, out_ack);
+    var out_ack = quic::AckFrame { .. };
+    let _pr_handled = quic::process_datagram(srv, coalesced_dgram[..], 50000, out_ack);
+    let handled = _pr_handled.handled;
+    let needs_ack = _pr_handled.needs_ack;
 
     let init_rx = srv.initial_space.has_recv_packets;
     let hs_rx = srv.handshake_space.has_recv_packets;
     let app_rx = srv.app_space.has_recv_packets;
-    let is_est = srv.state == quic_internal::QuicConnState.Established;
+    let is_est = srv.state == quic::QuicConnState.Established;
 
     // CHECK: COALESCED_ENCODED: true true true true
     print("COALESCED_ENCODED: ", ok_enc1, " ", ok_enc2, " ", ok_enc3, " ", ok_sf, "\n");
@@ -298,7 +303,7 @@ fn test_coalesced_quic_datagram_demux() {
 }
 
 fn test_segmented_arena_bounds() {
-    var arena = quic_internal::SegmentedArena { .. };
+    var arena = quic::SegmentedArena { .. };
 
     // Allocate all 16 chunks of 1024 bytes (16,384 bytes total)
     var all_16_ok = true;
@@ -312,9 +317,9 @@ fn test_segmented_arena_bounds() {
     let chunk_17_ok = quic_internal::arena_alloc_chunk(arena);
 
     // Also verify through ReassemblyBuffer insert_fragment past 16,384 bytes
-    var rbuf = quic_internal::new_reassembly_buffer(65536);
-    let ok_within = quic_internal::insert_fragment(rbuf, 16380, "abcd", false);
-    let ok_exceed = quic_internal::insert_fragment(rbuf, 16380, "abcde", false);
+    var rbuf = quic::new_reassembly_buffer(65536);
+    let ok_within = quic::insert_fragment(rbuf, 16380, "abcd", false);
+    let ok_exceed = quic::insert_fragment(rbuf, 16380, "abcde", false);
 
     // CHECK: ARENA_16_CHUNKS: ok=true allocated=16 bytes=16384
     print("ARENA_16_CHUNKS: ok=", all_16_ok, " allocated=", arena.allocated_chunks, " bytes=", arena.chunks.len, "\n");
@@ -329,13 +334,13 @@ inline fn index_to_sub_id(idx: i64) -> u32 {
 }
 
 fn test_topic_tree_512_limit_and_mqtt_wildcards() {
-    var tree = wing::TopicTree { .. };
+    var tree = realtime::TopicTree { .. };
 
     var all_512_ok = true;
     var last_cnt: i32 = 0;
     for i in 512 {
         let sub_id = index_to_sub_id(i);
-        let cnt, ok = wing::add_distinct_subscriber(tree, "sensors/+/temp", sub_id);
+        let cnt, ok = realtime::add_distinct_subscriber(tree, "sensors/+/temp", sub_id);
         if !ok {
             all_512_ok = false;
             print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
@@ -344,28 +349,28 @@ fn test_topic_tree_512_limit_and_mqtt_wildcards() {
     }
 
     // Re-adding an existing subscriber within 512 is idempotent and returns true
-    let dup_cnt, dup_ok = wing::add_distinct_subscriber(tree, "sensors/+/temp", 1);
+    let dup_cnt, dup_ok = realtime::add_distinct_subscriber(tree, "sensors/+/temp", 1);
 
     // Adding 513th distinct subscriber MUST fail closed (ok == false)
-    let over_cnt, over_ok = wing::add_distinct_subscriber(tree, "sensors/+/temp", 513);
+    let over_cnt, over_ok = realtime::add_distinct_subscriber(tree, "sensors/+/temp", 513);
     if over_ok {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
     }
 
     // Verify MQTT + and # wildcard matching (vendor/mosquitto vectors)
     var matched_fds: i64[..512] = [];
-    let matched_plus, find_ok = wing::find_subscribers_checked(tree, "sensors/rack1/temp", matched_fds);
+    let matched_plus, find_ok = realtime::find_subscribers_checked(tree, "sensors/rack1/temp", matched_fds);
 
-    let hash_sub_cnt, hash_sub_ok = wing::add_distinct_subscriber(tree, "telemetry/#", 900);
+    let hash_sub_cnt, hash_sub_ok = realtime::add_distinct_subscriber(tree, "telemetry/#", 900);
     var hash_fds: i64[..512] = [];
-    let matched_hash, hash_find_ok = wing::find_subscribers_checked(tree, "telemetry/eu/node1/cpu", hash_fds);
+    let matched_hash, hash_find_ok = realtime::find_subscribers_checked(tree, "telemetry/eu/node1/cpu", hash_fds);
 
     // Also verify accumulator overload directly at 512 boundary
     var mask: u64[4] = [0, 0, 0, 0];
     for k in matched_fds {
-        let _, _ = wing::add_distinct_subscriber(matched_fds, mask, k);
+        let _, _ = realtime::add_distinct_subscriber(matched_fds, mask, k);
     }
-    let _, accum_513_ok = wing::add_distinct_subscriber(matched_fds, mask, 9999);
+    let _, accum_513_ok = realtime::add_distinct_subscriber(matched_fds, mask, 9999);
 
     // CHECK-NOT: WING_BUFFER_OVERFLOW_SILENT_DROP
     // CHECK: TOPIC_512_SUBSCRIBERS: all_ok=true count=512 dup_ok=true dup_count=512
@@ -406,35 +411,35 @@ fn run_03_verify_quic_bbr() {
 //
 
 fn test_fc_recv_reset_smaller_than_bytes_recv() {
-    var fc = quic_internal::new_quic_flow_control(100000, 100000);
-    var s = quic_internal::new_quic_stream(0, 50000);
+    var fc = quic::new_flow_control(100000, 100000);
+    var s = quic::new_stream(0, 50000);
     s.bytes_recv = 100;
 
     // RFC 9000 §4.5: RESET_STREAM with final_size < bytes_recv MUST trigger FINAL_SIZE_ERROR.
-    let ok, err = quic_internal::quic_fc_record_recv_reset(fc, s, 50);
+    let err, ok = quic::record_recv_reset(fc, s, 50);
     assert(!ok);
     assert(err == rfc::QUIC_ERR_FINAL_SIZE);
     print("REGRESS_FC_RESET_FINAL_SIZE: OK");
 }
 
 fn test_fc_credit_renewal_threshold_and_bounds() {
-    var fc = quic_internal::new_quic_flow_control(100000, 100000);
-    var s = quic_internal::new_quic_stream(0, 100000);
+    var fc = quic::new_flow_control(100000, 100000);
+    var s = quic::new_stream(0, 100000);
 
     // Initial check: no update needed when window is fresh
-    let need_init, _ = quic_internal::quic_fc_check_conn_window_update(fc);
+    let _, need_init = quic::check_conn_window_update(fc);
     assert(!need_init);
 
     // Receive 20,000 wire bytes (below 50,000 threshold): no update needed
-    let ok_recv, _ = quic_internal::quic_fc_record_recv_stream(fc, s, 0, 20000);
+    let _, ok_recv = quic::record_recv_stream(fc, s, 0, 20000);
     assert(ok_recv);
-    let need_below, _ = quic_internal::quic_fc_check_conn_window_update(fc);
+    let _, need_below = quic::check_conn_window_update(fc);
     assert(!need_below);
 
     // Receive another 40,000 wire bytes (total 60,000, exceeds 50,000 threshold): update triggers
-    let ok_recv2, _ = quic_internal::quic_fc_record_recv_stream(fc, s, 20000, 40000);
+    let _, ok_recv2 = quic::record_recv_stream(fc, s, 20000, 40000);
     assert(ok_recv2);
-    let need_above, new_conn_max = quic_internal::quic_fc_check_conn_window_update(fc);
+    let new_conn_max, need_above = quic::check_conn_window_update(fc);
     assert(need_above);
     assert(new_conn_max == 160000);
 
@@ -442,30 +447,30 @@ fn test_fc_credit_renewal_threshold_and_bounds() {
 }
 
 fn test_stream_recv_frame_offset_wrap() {
-    var s = quic_internal::new_quic_stream(0, 100000);
+    var s = quic::new_stream(0, 100000);
 
     // 1. 64-bit integer wrap: 0xFFFFFFFFFFFFFFFE + 10 wraps to 8.
-    let ok_wrap, _ = quic_internal::quic_stream_on_recv_stream_frame(s, 0xFFFFFFFFFFFFFFFE, 10, false);
+    let _, ok_wrap = quic::on_recv_stream_frame(s, 0xFFFFFFFFFFFFFFFE, 10, false);
     assert(!ok_wrap);
 
     // 2. Offsets exceeding 62-bit VarInt ceiling (RFC 9000 §4.5).
-    let ok_varint, _ = quic_internal::quic_stream_on_recv_stream_frame(s, rfc::QUIC_VARINT_MAX, 1, false);
+    let _, ok_varint = quic::on_recv_stream_frame(s, rfc::QUIC_VARINT_MAX, 1, false);
     assert(!ok_varint);
 
     print("REGRESS_STREAM_OFFSET_WRAP: OK");
 }
 
 fn test_stream_recv_reset_after_datarecvd_final_size_mismatch() {
-    var s = quic_internal::new_quic_stream(0, 100000);
+    var s = quic::new_stream(0, 100000);
 
     // Receive 100 bytes with FIN -> transitions to DataRecvd with final_size = 100.
-    let ok_frame, _ = quic_internal::quic_stream_on_recv_stream_frame(s, 0, 100, true);
+    let _, ok_frame = quic::on_recv_stream_frame(s, 0, 100, true);
     assert(ok_frame);
-    assert(s.recv_state == quic_internal::QuicRecvState.DataRecvd);
+    assert(s.recv_state == quic::QuicRecvState.DataRecvd);
     assert(s.recv_final_size == 100);
 
     // RFC 9000 §4.5: RESET_STREAM with final_size != recv_final_size MUST fail with FINAL_SIZE_ERROR.
-    let ok_rst, err_rst = quic_internal::quic_stream_on_recv_reset(s, 0, 50);
+    let err_rst, ok_rst = quic::on_recv_reset(s, 0, 50);
     assert(!ok_rst);
     assert(err_rst == rfc::QUIC_ERR_FINAL_SIZE);
 
@@ -473,32 +478,32 @@ fn test_stream_recv_reset_after_datarecvd_final_size_mismatch() {
 }
 
 fn test_stream_table_peer_cannot_open_local_stream() {
-    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Server);
+    var tbl = quic::new_stream_table(quic::QuicRole.Server);
 
     // Server-initiated bidi stream ID is 1 (init_bit == 1, role == Server).
     // An uncreated locally-initiated stream MUST NOT be opened by ingress frame (RFC 9000 §3.1).
-    let _, ok = quic_internal::quic_table_get_or_open_stream(tbl, 1, 65536);
+    let _, ok = quic::get_or_open_stream(tbl, 1, 65536);
     assert(!ok);
 
     print("REGRESS_STREAM_TABLE_LOCAL_OPEN_REJECT: OK");
 }
 
 fn test_packet_read_contiguous_capacity_safety() {
-    var buf = quic_internal::new_reassembly_buffer(65536);
+    var buf = quic::new_reassembly_buffer(65536);
     var raw_data: u8[100] = [65; 100];
-    let ok_ins = quic_internal::insert_fragment(buf, 0, raw_data[..], false);
+    let ok_ins = quic::insert_fragment(buf, 0, raw_data[..], false);
     assert(ok_ins);
 
     // Read with small buffer of capacity 32 passing bounded headroom.
     var out_small: u8[..32] = [];
-    let read_bytes = quic_internal::read_contiguous(buf, out_small, out_small.cap - out_small.len);
+    let read_bytes = quic::read_contiguous(buf, out_small, out_small.cap - out_small.len);
     assert(read_bytes == 32);
     assert(out_small.len == 32);
     assert(buf.consumed_offset == 32);
 
     // Remaining 68 bytes MUST still be intact and readable!
     var out_rem: u8[..100] = [];
-    let read_rem = quic_internal::read_contiguous(buf, out_rem);
+    let read_rem = quic::read_contiguous(buf, out_rem);
     assert(read_rem == 68);
     assert(out_rem.len == 68);
     assert(buf.consumed_offset == 100);
@@ -507,11 +512,11 @@ fn test_packet_read_contiguous_capacity_safety() {
 }
 
 fn test_packet_insert_fragment_fin_transactional_rollback() {
-    var buf = quic_internal::new_reassembly_buffer(64);
+    var buf = quic::new_reassembly_buffer(64);
 
     // Try to insert a 200-byte fragment with FIN into a buffer with 64-byte max limit.
     var large_payload: u8[200] = [66; 200];
-    let ok_ins = quic_internal::insert_fragment(buf, 0, large_payload[..], true);
+    let ok_ins = quic::insert_fragment(buf, 0, large_payload[..], true);
     assert(!ok_ins);
 
     // FIN state MUST NOT be latched if fragment insertion failed!
@@ -522,70 +527,70 @@ fn test_packet_insert_fragment_fin_transactional_rollback() {
 }
 
 fn test_migration_path_can_send_arithmetic_overflow() {
-    var path = quic_internal::QuicPath {
-        state:          quic_internal::PathValidationState.Validating,
+    var path = quic::QuicPath {
+        state:          quic::PathValidationState.Validating,
         bytes_received: 1000,
         bytes_sent:     0xFFFFFFFFFFFFFFFE,
         ..
     };
 
     // 0xFFFFFFFFFFFFFFFE + 10 would overflow to 8 without wrap protection.
-    let can_send = quic_internal::path_can_send(path, 10);
+    let can_send = quic::can_send(path, 10);
     assert(!can_send);
 
     print("REGRESS_MIGRATION_OVERFLOW_GUARD: OK");
 }
 
 fn test_dplpmtud_probe_payload_size_overhead_bound() {
-    let payload_size = quic_internal::calc_dplpmtud_probe_payload_size(40, 49);
+    let payload_size = quic::calc_dplpmtud_probe_payload_size(40, 49);
     assert(payload_size == 0);
 
-    let payload_size_eq = quic_internal::calc_dplpmtud_probe_payload_size(49, 49);
+    let payload_size_eq = quic::calc_dplpmtud_probe_payload_size(49, 49);
     assert(payload_size_eq == 0);
 
     print("REGRESS_DPLPMTUD_OVERHEAD_BOUND: OK");
 }
 
 fn test_bbr_on_congestion_signal_cwnd_floor() {
-    var bbr = quic_internal::new_bbr_state();
+    var bbr = quic::BbrState { .. };
     bbr.cwnd_bytes = 5000;
 
     for _ in 50 {
-        quic_internal::bbr_on_congestion_signal(bbr, 5000, 0, 5000, 10, 10);
+        quic::on_congestion_signal(bbr, 5000, 0, 5000, 10, 10);
     }
-    assert(bbr.cwnd_bytes >= quic_internal::BBR_MIN_CWND_BYTES);
+    assert(bbr.cwnd_bytes >= quic::BBR_MIN_CWND_BYTES);
 
     print("REGRESS_BBR_CWND_FLOOR: OK");
 }
 
 fn test_bbr_check_probe_rtt_clock_underflow() {
-    var bbr = quic_internal::new_bbr_state();
-    bbr.mode = quic_internal::BbrMode.ProbeBwCruise;
+    var bbr = quic::BbrState { .. };
+    bbr.mode = quic::BbrMode.ProbeBwCruise;
     bbr.min_rtt_stamp_us = 1000000;
 
     // now_us is in the past (clock jitter / non-monotonic timestamp).
-    quic_internal::bbr_check_probe_rtt(bbr, 900000, 20000);
-    assert(bbr.mode == quic_internal::BbrMode.ProbeBwCruise);
+    quic::check_probe_rtt(bbr, 900000, 20000);
+    assert(bbr.mode == quic::BbrMode.ProbeBwCruise);
 
     print("REGRESS_BBR_CLOCK_UNDERFLOW: OK");
 }
 
 fn test_ack_transactional_intervals_clear_on_error() {
-    var space = quic_internal::PnSpaceState {
+    var space = quic::PnSpaceState {
         has_sent_packets: true,
         largest_sent_pn:  100,
         ..
     };
 
-    var bad_ack = quic_internal::AckFrame {
+    var bad_ack = quic::AckFrame {
         largest_acked:   10,
         first_ack_range: 2,
         ..
     };
-    bad_ack.ranges.push(quic_internal::AckRange { gap: 100, ack_range: 5 });
+    bad_ack.ranges.push(quic::AckRange { gap: 100, ack_range: 5 });
 
-    var out_intervals: quic_internal::AckInterval[..64] = [];
-    let ok = quic_internal::parse_and_validate_ack(space, bad_ack, out_intervals);
+    var out_intervals: quic::AckInterval[..64] = [];
+    let ok = quic::parse_and_validate_ack(space, bad_ack, out_intervals);
     assert(!ok);
     assert(out_intervals.len == 0);
 
@@ -593,12 +598,12 @@ fn test_ack_transactional_intervals_clear_on_error() {
 }
 
 fn test_connection_inbound_ack_for_unsent_space() {
-    var conn = quic_internal::new_quic_server_connection("test_conn");
-    conn.state = quic_internal::QuicConnState.Established;
+    var conn = quic::new_server_connection("test_conn");
+    conn.state = quic::QuicConnState.Established;
     conn.app_space.has_sent_packets = false;
 
-    let ack_frame = quic_internal::QuicFrame {
-        frame_type: quic_internal::QuicFrameType.Ack,
+    let ack_frame = quic::QuicFrame {
+        frame_type: quic::QuicFrameType.Ack,
         offset:     5,
         max_data:   0,
         length:     0,
@@ -608,7 +613,7 @@ fn test_connection_inbound_ack_for_unsent_space() {
     let ok_ack = quic_internal::dispatch_inbound_ack_frame(
         conn,
         ack_frame,
-        quic_internal::QuicHeaderType.OneRtt,
+        quic::QuicHeaderType.OneRtt,
         10000,
     );
     // RFC 9000 §13.1: Receipt of ACK acknowledging unsent packets MUST be rejected (PROTOCOL_VIOLATION).
@@ -618,10 +623,10 @@ fn test_connection_inbound_ack_for_unsent_space() {
 }
 
 fn test_f001_rx_pn_reconstruction_and_transactional_coalesced() {
-    var server = quic_internal::new_quic_server_connection("srv_scid");
-    var client = quic_internal::new_quic_client_connection("srv_scid", "cli_scid");
-    assert(quic_internal::quic_conn_install_initial_keys(server, "srv_scid"));
-    assert(quic_internal::quic_conn_install_initial_keys(client, "srv_scid"));
+    var server = quic::new_server_connection("srv_scid");
+    var client = quic::new_client_connection("srv_scid", "cli_scid");
+    assert(quic::install_initial_keys(server, "srv_scid"));
+    assert(quic::install_initial_keys(client, "srv_scid"));
 
     // Simulate receiving PNs up to 200 on server initial_space while largest_acked_pn remains 0 (no TX ACKs).
     server.initial_space.has_recv_packets = true;
@@ -629,11 +634,11 @@ fn test_f001_rx_pn_reconstruction_and_transactional_coalesced() {
     server.initial_space.largest_acked_pn = 0;
 
     var payload: u8[..1200] = [];
-    assert(quic_internal::encode_ping_frame(payload));
-    assert(quic_internal::encode_padding_frame(payload, 1199));
+    assert(quic::encode_ping_frame(payload));
+    assert(quic::encode_padding_frame(payload, 1199));
 
-    var hdr = quic_internal::QuicHeader {
-        header_type:   quic_internal::QuicHeaderType.Initial,
+    var hdr = quic::QuicHeader {
+        header_type:   quic::QuicHeaderType.Initial,
         version:       rfc::QUIC_VERSION_1,
         packet_number: 201,
         ..
@@ -642,25 +647,26 @@ fn test_f001_rx_pn_reconstruction_and_transactional_coalesced() {
     hdr.scid.append("cli_scid");
 
     var wire_pkt: u8[..1400] = [];
-    assert(quic_internal::quic_seal_packet(client.tx_initial_space, hdr, 1, payload[..], wire_pkt));
+    assert(quic::seal_packet(client.tx_initial_space, hdr, 1, payload[..], wire_pkt));
 
-    var out_ack = quic_internal::AckFrame { .. };
-    let ok_dgram, _ = quic_internal::quic_conn_process_datagram(server, wire_pkt[..], 10000, out_ack);
+    var out_ack = quic::AckFrame { .. };
+    let _pr_ok_dgram = quic::process_datagram(server, wire_pkt[..], 10000, out_ack);
+    let ok_dgram = _pr_ok_dgram.handled;
     assert(ok_dgram);
     assert(server.initial_space.largest_recv_pn == 201);
 
     // Part B: Unauthenticated Retry must not bind server CIDs or increment server initial CID latch
-    var srv2 = quic_internal::new_quic_server_connection("srv2_scid");
-    var retry_hdr = quic_internal::QuicHeader {
-        header_type: quic_internal::QuicHeaderType.Retry,
+    var srv2 = quic::new_server_connection("srv2_scid");
+    var retry_hdr = quic::QuicHeader {
+        header_type: quic::QuicHeaderType.Retry,
         version:     rfc::QUIC_VERSION_1,
         ..
     };
     retry_hdr.dcid.append("spoof_dcid");
     retry_hdr.scid.append("spoof_scid");
     var retry_wire: u8[..64] = [];
-    assert(quic_internal::encode_quic_header(retry_wire, retry_hdr, 1));
-    let _, _ = quic_internal::quic_conn_process_datagram(srv2, retry_wire[..], 10000, out_ack);
+    assert(quic::encode_header(retry_hdr, 1, retry_wire));
+    let _pr_res = quic::process_datagram(srv2, retry_wire[..], 10000, out_ack);
     assert(srv2.dcid.len == 0);
 
     print("REGRESS_F001_PN_RECONSTRUCT_AND_TX_STATE: OK");
@@ -668,76 +674,76 @@ fn test_f001_rx_pn_reconstruction_and_transactional_coalesced() {
 
 fn test_f002_f003_f004_ack_and_pto_invariants() {
     // F002: 64 additional ACK ranges (via quic_conn_on_ack) must succeed
-    var conn_ack = quic_internal::new_quic_server_connection("srv_ack");
+    var conn_ack = quic::new_server_connection("srv_ack");
     conn_ack.app_space.has_sent_packets = true;
     conn_ack.app_space.largest_sent_pn = 500;
-    var ack64 = quic_internal::AckFrame {
+    var ack64 = quic::AckFrame {
         largest_acked:   200,
         first_ack_range: 0,
         ..
     };
     for _ in 64 {
-        ack64.ranges.push(quic_internal::AckRange { gap: 0, ack_range: 0 });
+        ack64.ranges.push(quic::AckRange { gap: 0, ack_range: 0 });
     }
-    assert(quic_internal::quic_conn_on_ack(conn_ack, ack64, 10000));
+    assert(quic::on_ack(conn_ack, ack64, 10000));
 
     // F003: process_space_ack must handle >64 lost packets without leaving loss_time_us == 0
-    var conn_loss = quic_internal::new_quic_server_connection("srv_loss");
+    var conn_loss = quic::new_server_connection("srv_loss");
     for p in 70 {
-        quic_internal::quic_conn_record_sent(conn_loss, quic_internal::PnSpaceId.ApplicationData, p as u64, 100, true, 1000);
+        quic::record_sent(conn_loss, quic::PnSpaceId.ApplicationData, p as u64, 100, true, 1000);
     }
-    quic_internal::quic_conn_record_sent(conn_loss, quic_internal::PnSpaceId.ApplicationData, 100, 100, true, 2000);
-    var ack_top = quic_internal::AckFrame {
+    quic::record_sent(conn_loss, quic::PnSpaceId.ApplicationData, 100, 100, true, 2000);
+    var ack_top = quic::AckFrame {
         largest_acked:   100,
         first_ack_range: 0,
         ..
     };
-    assert(quic_internal::quic_conn_on_ack(conn_loss, ack_top, 3000));
+    assert(quic::on_ack(conn_loss, ack_top, 3000));
     assert(conn_loss.app_space.sent_packets.len == 0);
 
     // F004: evaluate_pto_timer client AntiDeadlock when AppData has 1 packet before handshake_confirmed
-    var rtt = quic_internal::RttState { .. };
-    var spaces: quic_internal::PnSpaceState[3] = [
-        quic_internal::PnSpaceState { space_id: quic_internal::PnSpaceId.Initial, .. },
-        quic_internal::PnSpaceState { space_id: quic_internal::PnSpaceId.Handshake, .. },
-        quic_internal::PnSpaceState { space_id: quic_internal::PnSpaceId.ApplicationData, .. },
+    var rtt = quic::RttState { .. };
+    var spaces: quic::PnSpaceState[3] = [
+        quic::PnSpaceState { space_id: quic::PnSpaceId.Initial, .. },
+        quic::PnSpaceState { space_id: quic::PnSpaceId.Handshake, .. },
+        quic::PnSpaceState { space_id: quic::PnSpaceId.ApplicationData, .. },
     ];
-    spaces[2].sent_packets.push(quic_internal::SentPacketMeta {
+    spaces[2].sent_packets.push(quic::SentPacketMeta {
         pn:            1,
         time_sent_us:  1000,
         size_bytes:    100,
         ack_eliciting: true,
         in_flight:     true,
     });
-    let ctx = quic_internal::PtoContext {
+    let ctx = quic::PtoContext {
         is_server:                      false,
         is_amplification_limited:       false,
         peer_completed_addr_validation: false,
         handshake_confirmed:            false,
     };
-    let dec = quic_internal::evaluate_pto_timer(spaces, rtt, 0, 5000, ctx);
-    assert(dec.mode == quic_internal::PtoTimerMode.AntiDeadlock);
+    let dec = quic::evaluate_pto_timer(spaces, rtt, 0, 5000, ctx);
+    assert(dec.mode == quic::PtoTimerMode.AntiDeadlock);
 
     print("REGRESS_F002_F003_F004_ACK_PTO: OK");
 }
 
 fn test_f005_f006_f007_bbr_and_cubic_math() {
     // F005: pacer_can_send zero rate and non-monotonic clock
-    var pacer = quic_internal::Pacer { pacing_rate_bps: 0, .. };
-    let ok1, _ = quic_internal::pacer_can_send(pacer, 1000000, 1200);
+    var pacer = quic::Pacer { pacing_rate_bps: 0, .. };
+    let _, ok1 = quic::can_send(pacer, 1000000, 1200);
     assert(ok1);
-    let _, _ = quic_internal::pacer_can_send(pacer, 900000, 1200);
+    let _, _ = quic::can_send(pacer, 900000, 1200);
     assert(pacer.last_pacing_time_us == 1000000);
 
     // F006: bbr_bdp high BDP saturation instead of u64 wrap to 0
-    let bdp = quic_internal::bbr_bdp(40000000000000, 500000);
+    let bdp = quic::bbr_bdp(40000000000000, 500000);
     assert(bdp > 1000000000);
 
     // F007: cubic_on_ack app-limited before first epoch must not skip k_ms initialization
-    var cubic = quic_internal::CubicState { cwnd_segments: 10, w_max_segments: 20, .. };
-    let _ = quic_internal::cubic_on_ack(cubic, 1000000, 40000, 1200, 1200);
-    let _ = quic_internal::cubic_on_ack(cubic, 2000000, 40000, 1200, 1200);
-    let _ = quic_internal::cubic_on_ack(cubic, 2100000, 40000, 10000, 1200);
+    var cubic = quic::CubicState { cwnd_segments: 10, w_max_segments: 20, .. };
+    let _ = quic::on_ack(cubic, 1000000, 40000, 1200, 1200);
+    let _ = quic::on_ack(cubic, 2000000, 40000, 1200, 1200);
+    let _ = quic::on_ack(cubic, 2100000, 40000, 10000, 1200);
     assert(cubic.k_ms > 0);
     assert(cubic.epoch_start_us == 2100000);
 
@@ -746,9 +752,9 @@ fn test_f005_f006_f007_bbr_and_cubic_math() {
 
 fn test_f008_to_f012_conn_and_dplpmtud() {
     // F008: record_space_sent_packet must not advance largest_sent_pn when sent_packets[..128] is full
-    var sp = quic_internal::PnSpaceState { .. };
+    var sp = quic::PnSpaceState { .. };
     for i in 128 {
-        let m = quic_internal::SentPacketMeta {
+        let m = quic::SentPacketMeta {
             pn:            i as u64,
             time_sent_us:  1000,
             size_bytes:    100,
@@ -757,7 +763,7 @@ fn test_f008_to_f012_conn_and_dplpmtud() {
         };
         quic_internal::record_space_sent_packet(sp, m);
     }
-    let m_overflow = quic_internal::SentPacketMeta {
+    let m_overflow = quic::SentPacketMeta {
         pn:            500,
         time_sent_us:  2000,
         size_bytes:    100,
@@ -768,20 +774,20 @@ fn test_f008_to_f012_conn_and_dplpmtud() {
     assert(sp.largest_sent_pn == 127);
 
     // F009: quic_is_frame_allowed_in_packet rejects Unknown and Retry/VersionNegotiation
-    assert(!quic_internal::quic_is_frame_allowed_in_packet(
-        quic_internal::QuicFrameType.Unknown,
-        quic_internal::QuicHeaderType.OneRtt,
+    assert(!quic::is_frame_allowed_in_packet(
+        quic::QuicFrameType.Unknown,
+        quic::QuicHeaderType.OneRtt,
     ));
-    assert(!quic_internal::quic_is_frame_allowed_in_packet(
-        quic_internal::QuicFrameType.Ping,
-        quic_internal::QuicHeaderType.Retry,
+    assert(!quic::is_frame_allowed_in_packet(
+        quic::QuicFrameType.Ping,
+        quic::QuicHeaderType.Retry,
     ));
 
     // F011: quic_seal_packet with 200-byte Initial token and bounded out_pkt overflow rejection
-    var cli = quic_internal::new_quic_client_connection("srv_scid", "cli_scid");
-    assert(quic_internal::quic_conn_install_initial_keys(cli, "srv_scid"));
-    var hdr_tok = quic_internal::QuicHeader {
-        header_type:   quic_internal::QuicHeaderType.Initial,
+    var cli = quic::new_client_connection("srv_scid", "cli_scid");
+    assert(quic::install_initial_keys(cli, "srv_scid"));
+    var hdr_tok = quic::QuicHeader {
+        header_type:   quic::QuicHeaderType.Initial,
         version:       rfc::QUIC_VERSION_1,
         packet_number: 1,
         ..
@@ -791,21 +797,21 @@ fn test_f008_to_f012_conn_and_dplpmtud() {
     var tok200: u8[200] = [0xAA; 200];
     hdr_tok.token.append(tok200[..]);
     var out_big: u8[..512] = [];
-    assert(quic_internal::quic_seal_packet(cli.tx_initial_space, hdr_tok, 2, "ping", out_big));
+    assert(quic::seal_packet(cli.tx_initial_space, hdr_tok, 2, "ping", out_big));
     var out_tiny: u8[..16] = [];
-    assert(!quic_internal::quic_seal_packet(cli.tx_initial_space, hdr_tok, 2, "ping", out_tiny));
+    assert(!quic::seal_packet(cli.tx_initial_space, hdr_tok, 2, "ping", out_tiny));
 
     // F012: DPLPMTUD probe buffer capacity check and search timer not downgrading confirmed 1500 PMTU
     var small_probe: u8[..32] = [];
-    assert(!quic_internal::generate_ping_probe(small_probe, 1200));
-    var d = quic_internal::Dplpmtud { .. };
-    assert(quic_internal::dplpmtud_on_probe_acked(d, 1200));
-    assert(quic_internal::dplpmtud_on_probe_acked(d, 1280));
-    assert(quic_internal::dplpmtud_on_probe_acked(d, 1420));
-    assert(quic_internal::dplpmtud_on_probe_acked(d, 1500));
-    assert(d.state == quic_internal::DplpmtudState.SearchComplete);
+    assert(!quic::generate_ping_probe(1200, small_probe));
+    var d = quic::Dplpmtud { .. };
+    assert(quic::on_probe_acked(d, 1200));
+    assert(quic::on_probe_acked(d, 1280));
+    assert(quic::on_probe_acked(d, 1420));
+    assert(quic::on_probe_acked(d, 1500));
+    assert(d.state == quic::DplpmtudState.SearchComplete);
     assert(d.current_pmtu == 1500);
-    quic_internal::dplpmtud_on_search_timer(d, 700000);
+    quic::on_search_timer(d, 700000);
     assert(d.current_pmtu == 1500);
 
     print("REGRESS_F008_TO_F012_CONN_DPLPMTUD: OK");
@@ -814,9 +820,9 @@ fn test_f008_to_f012_conn_and_dplpmtud() {
 fn test_f013_to_f022_frames_migration_packet() {
     // F013: Frame encoders must reject when out buffer lacks capacity without leaving partial bytes
     var tiny_buf: u8[..4] = [];
-    assert(!quic_internal::encode_padding_frame(tiny_buf, 10));
+    assert(!quic::encode_padding_frame(tiny_buf, 10));
     assert(tiny_buf.len == 0);
-    assert(!quic_internal::encode_crypto_frame(tiny_buf, 0, "0123456789"));
+    assert(!quic::encode_crypto_frame(0, "0123456789", tiny_buf));
     assert(tiny_buf.len == 0);
 
     // F014: Frame decoders reject negative idx
@@ -826,46 +832,46 @@ fn test_f013_to_f022_frames_migration_packet() {
 
     // F015: new_quic_endpoint_addr safely handles >64 byte slice without crash
     var long_ip: u8[80] = [65; 80];
-    let ep = quic_internal::new_quic_endpoint_addr(long_ip[..], 443);
+    let ep = quic::new_endpoint_addr(long_ip[..], 443);
     assert(ep.ip.len <= 64);
 
     // F016: build_long_header_first_byte rejects pn_bits > 3 and unknown version
-    let _, ok_pnbits = quic_internal::build_long_header_first_byte(quic_internal::QuicHeaderType.Initial, 0x0C, rfc::QUIC_VERSION_1);
+    let _, ok_pnbits = quic_internal::build_long_header_first_byte(quic::QuicHeaderType.Initial, 0x0C, rfc::QUIC_VERSION_1);
     assert(!ok_pnbits);
-    let _, ok_ver = quic_internal::build_long_header_first_byte(quic_internal::QuicHeaderType.Initial, 0, 0xDEADBEEF);
+    let _, ok_ver = quic_internal::build_long_header_first_byte(quic::QuicHeaderType.Initial, 0, 0xDEADBEEF);
     assert(!ok_ver);
 
     // F018: decode_packet_number_checked rejects truncated_pn >= (1 << (pn_len * 8))
-    let _, ok_trunc = quic_internal::decode_packet_number_checked(100, 0x1FF, 1);
+    let _, ok_trunc = quic::decode_packet_number_checked(100, 0x1FF, 1);
     assert(!ok_trunc);
 
     // F019: on_path_bytes_sent saturates instead of wrapping around u64::MAX
-    var pstate = quic_internal::PathState { bytes_received: 1000, bytes_sent: 0xFFFFFFFFFFFFFFF0, .. };
-    quic_internal::on_path_bytes_sent(pstate, 0x20);
-    assert(!quic_internal::can_send_on_path(pstate, 1));
+    var pstate = quic::PathState { bytes_received: 1000, bytes_sent: 0xFFFFFFFFFFFFFFF0, .. };
+    quic::on_bytes_sent(pstate, 0x20);
+    assert(!quic::can_send(pstate, 1));
 
     // F020: insert_fragment does not corrupt arena when intervals[..64] is full
-    var rbuf = quic_internal::new_reassembly_buffer(65536);
+    var rbuf = quic::new_reassembly_buffer(65536);
     var cur_off: u64 = 0;
     for _ in 64 {
-        assert(quic_internal::insert_fragment(rbuf, cur_off, "A", false));
+        assert(quic::insert_fragment(rbuf, cur_off, "A", false));
         cur_off = core::add_sat_u64(cur_off, 2);
     }
     let prev_data_len = rbuf.arena.data_len;
-    assert(!quic_internal::insert_fragment(rbuf, 200, "B", false));
+    assert(!quic::insert_fragment(rbuf, 200, "B", false));
     assert(rbuf.arena.data_len == prev_data_len);
 
     // F021: read_contiguous with default max_bytes = -1 clamps to out.cap - out.len
-    var rbuf2 = quic_internal::new_reassembly_buffer(65536);
+    var rbuf2 = quic::new_reassembly_buffer(65536);
     var blk64: u8[64] = [90; 64];
-    assert(quic_internal::insert_fragment(rbuf2, 0, blk64[..], false));
+    assert(quic::insert_fragment(rbuf2, 0, blk64[..], false));
     var out16: u8[..16] = [];
-    let n16 = quic_internal::read_contiguous(rbuf2, out16);
+    let n16 = quic::read_contiguous(rbuf2, out16);
     assert(n16 == 16);
     assert(rbuf2.consumed_offset == 16);
 
     // F022: decode_quic_datagram_frame rejects packet_end > src.len
-    let _, _, ok_dgram_end = quic_internal::decode_quic_datagram_frame("\x30abc", 0, 100);
+    let _, _, ok_dgram_end = quic::decode_datagram_frame("\x30abc", 0, 100);
     assert(!ok_dgram_end);
 
     print("REGRESS_F013_TO_F022_FRAMES_PACKET: OK");
@@ -873,44 +879,44 @@ fn test_f013_to_f022_frames_migration_packet() {
 
 fn test_f023_to_f027_stream_invariants() {
     // F023: quic_stream_on_send_data rejects FIN at end_offset < s.bytes_sent
-    var s_tx = quic_internal::new_quic_stream(0, 65536);
+    var s_tx = quic::new_stream(0, 65536);
     s_tx.send_max_data = 65536;
-    let ok_s1, _ = quic_internal::quic_stream_on_send_data(s_tx, 0, 100, false);
+    let _, ok_s1 = quic::on_send_data(s_tx, 0, 100, false);
     assert(ok_s1);
-    let ok_s2, err_s2 = quic_internal::quic_stream_on_send_data(s_tx, 0, 50, true);
+    let err_s2, ok_s2 = quic::on_send_data(s_tx, 0, 50, true);
     assert(!ok_s2);
     assert(err_s2 == rfc::QUIC_ERR_FINAL_SIZE);
 
     // F024: quic_stream_on_recv_stream_frame does not silently drop intervals
-    var s_rx = quic_internal::new_quic_stream(0, 65536);
+    var s_rx = quic::new_stream(0, 65536);
     var rx_off: u64 = 2;
     for _ in 17 {
-        let ok_r, _ = quic_internal::quic_stream_on_recv_stream_frame(s_rx, rx_off, 1, false);
+        let _, ok_r = quic::on_recv_stream_frame(s_rx, rx_off, 1, false);
         assert(ok_r);
         rx_off = core::add_sat_u64(rx_off, 2);
     }
     assert(s_rx.recv_ranges.len == 17);
 
     // F025: duplicate RESET_STREAM in ResetRecvd does not overwrite recv_error_code
-    var s_rst = quic_internal::new_quic_stream(0, 65536);
-    let ok_r1, _ = quic_internal::quic_stream_on_recv_reset(s_rst, 0x101, 100);
+    var s_rst = quic::new_stream(0, 65536);
+    let _, ok_r1 = quic::on_recv_reset(s_rst, 0x101, 100);
     assert(ok_r1);
-    let ok_r2, _ = quic_internal::quic_stream_on_recv_reset(s_rst, 0x999, 100);
+    let _, ok_r2 = quic::on_recv_reset(s_rst, 0x999, 100);
     assert(ok_r2);
     assert(s_rst.recv_error_code == 0x101);
 
     // F026: quic_stream_on_app_read rejects reading past contiguous_recv_bytes
-    var s_read = quic_internal::new_quic_stream(0, 65536);
-    let _, _ = quic_internal::quic_stream_on_recv_stream_frame(s_read, 0, 50, true);
-    assert(!quic_internal::quic_stream_on_app_read(s_read, 100));
+    var s_read = quic::new_stream(0, 65536);
+    let _, _ = quic::on_recv_stream_frame(s_read, 0, 50, true);
+    assert(!quic::on_app_read(s_read, 100));
     assert(s_read.recv_consumed == 0);
 
     // F027: quic_table_open_local_stream enforces max_streams_bidi / max_streams_uni
-    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Client);
+    var tbl = quic::new_stream_table(quic::QuicRole.Client);
     tbl.max_streams_bidi = 1;
-    let _, _, ok_open1 = quic_internal::quic_table_open_local_stream(tbl, true);
+    let _, _, ok_open1 = quic::open_local_stream(tbl, true);
     assert(ok_open1);
-    let _, _, ok_open2 = quic_internal::quic_table_open_local_stream(tbl, true);
+    let _, _, ok_open2 = quic::open_local_stream(tbl, true);
     assert(!ok_open2);
 
     print("REGRESS_F023_TO_F027_STREAM: OK");
@@ -918,51 +924,55 @@ fn test_f023_to_f027_stream_invariants() {
 
 fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
     // F028: Non-ACK-eliciting packet (PADDING-only) MUST NOT set needs_ack = true (RFC 9000 §13.2.1)
-    var conn_pad = quic_internal::new_quic_server_connection("scid");
+    var conn_pad = quic::new_server_connection("scid");
     conn_pad.allow_unencrypted_test_packets = true;
     var pad_pkt: u8[..64] = [];
-    var hdr_pad = quic_internal::QuicHeader {
-        header_type:   quic_internal::QuicHeaderType.OneRtt,
+    var hdr_pad = quic::QuicHeader {
+        header_type:   quic::QuicHeaderType.OneRtt,
         packet_number: 0,
         pn_length:     1,
         ..
     };
     hdr_pad.dcid.append("scid");
-    assert(quic_internal::encode_quic_header(pad_pkt, hdr_pad, 1));
+    assert(quic::encode_header(hdr_pad, 1, pad_pkt));
     pad_pkt.push(0x00); // PADDING frame only
-    var out_ack_pad = quic_internal::AckFrame { .. };
-    let handled_pad, needs_ack_pad = quic_internal::quic_conn_process_datagram(conn_pad, pad_pkt[..], 1000, out_ack_pad);
+    var out_ack_pad = quic::AckFrame { .. };
+    let _pr_handled_pad = quic::process_datagram(conn_pad, pad_pkt[..], 1000, out_ack_pad);
+    let handled_pad = _pr_handled_pad.handled;
+    let needs_ack_pad = _pr_handled_pad.needs_ack;
     assert(handled_pad);
     assert(!needs_ack_pad);
 
     // F029a: RTT sample generated when largest_acked is non-ack-eliciting if batch has ack-eliciting (RFC 9002 §5.1)
-    var conn_rtt = quic_internal::new_quic_client_connection("scid", "dcid");
+    var conn_rtt = quic::new_client_connection("scid", "dcid");
     conn_rtt.allow_unencrypted_test_packets = true;
-    conn_rtt.state = quic_internal::QuicConnState.Handshake;
+    conn_rtt.state = quic::QuicConnState.Handshake;
     conn_rtt.rtt.first_sample_time_us = 1;
     conn_rtt.rtt.min_rtt_us = 10000;
     conn_rtt.rtt.smoothed_rtt_us = 22000;
-    quic_internal::quic_conn_record_sent(conn_rtt, quic_internal::PnSpaceId.ApplicationData, 0, 1200, true, 10000);
-    quic_internal::quic_conn_record_sent(conn_rtt, quic_internal::PnSpaceId.ApplicationData, 1, 64, false, 20000);
+    quic::record_sent(conn_rtt, quic::PnSpaceId.ApplicationData, 0, 1200, true, 10000);
+    quic::record_sent(conn_rtt, quic::PnSpaceId.ApplicationData, 1, 64, false, 20000);
     // Inbound OneRtt packet carrying ACK for [0..1] with ack_delay = 1000 (8000 us)
     var pkt_ack: u8[..64] = [];
-    var hdr_ack = quic_internal::QuicHeader {
-        header_type:   quic_internal::QuicHeaderType.OneRtt,
+    var hdr_ack = quic::QuicHeader {
+        header_type:   quic::QuicHeaderType.OneRtt,
         packet_number: 0,
         pn_length:     1,
         ..
     };
     hdr_ack.dcid.append("scid");
-    assert(quic_internal::encode_quic_header(pkt_ack, hdr_ack, 1));
-    let ack_f = quic_internal::AckFrame {
+    assert(quic::encode_header(hdr_ack, 1, pkt_ack));
+    let ack_f = quic::AckFrame {
         largest_acked:   1,
         ack_delay:       1000,
         first_ack_range: 1,
         ..
     };
-    assert(quic_internal::encode_ack_frame(pkt_ack, ack_f));
-    var out_ack_rtt = quic_internal::AckFrame { .. };
-    let handled_ack, needs_ack_ack = quic_internal::quic_conn_process_datagram(conn_rtt, pkt_ack[..], 50000, out_ack_rtt);
+    assert(quic::encode_ack_frame(ack_f, pkt_ack));
+    var out_ack_rtt = quic::AckFrame { .. };
+    let _pr_handled_ack = quic::process_datagram(conn_rtt, pkt_ack[..], 50000, out_ack_rtt);
+    let handled_ack = _pr_handled_ack.handled;
+    let needs_ack_ack = _pr_handled_ack.needs_ack;
     assert(handled_ack);
     assert(!needs_ack_ack);
     // latest_rtt = 50000 - 20000 = 30000; OneRtt transitions conn to Established before ACK processing,
@@ -971,19 +981,19 @@ fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
     assert(conn_rtt.rtt.smoothed_rtt_us == 22000);
 
     // F029b: Huge ack_delay (0x3FFFFFFFFFFFFFFF) must not wrap u64 on << 3
-    quic_internal::quic_conn_record_sent(conn_rtt, quic_internal::PnSpaceId.ApplicationData, 2, 1200, true, 60000);
-    let ack_huge = quic_internal::AckFrame {
+    quic::record_sent(conn_rtt, quic::PnSpaceId.ApplicationData, 2, 1200, true, 60000);
+    let ack_huge = quic::AckFrame {
         largest_acked:   2,
         ack_delay:       0x3FFFFFFFFFFFFFFF,
         first_ack_range: 0,
         ..
     };
-    assert(quic_internal::quic_conn_on_ack(conn_rtt, ack_huge, 100000, quic_internal::PnSpaceId.ApplicationData));
+    assert(quic::on_ack(conn_rtt, ack_huge, 100000, quic::PnSpaceId.ApplicationData));
 
     // F030: BBR ECN-CE surge saturation (ecn_ce_count > new_acked_packets and 2^54 overflow)
-    var bbr = quic_internal::new_bbr_state();
+    var bbr = quic::BbrState { .. };
     let init_cwnd = bbr.cwnd_bytes;
-    quic_internal::bbr_on_congestion_signal(bbr, init_cwnd, 0, 1200, 0x0040000000000000, 1);
+    quic::on_congestion_signal(bbr, init_cwnd, 0, 1200, 0x0040000000000000, 1);
     assert(bbr.ecn_alpha_scaled <= 1024);
     assert(bbr.ecn_alpha_scaled > 0);
     assert(bbr.cwnd_bytes < init_cwnd);
@@ -993,49 +1003,55 @@ fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
 
 fn test_f031_to_f033_cross_component_stream_fc_packet() {
     // F031a: STREAM_DATA_BLOCKED on unopened locally-initiated stream -> STREAM_STATE_ERROR (RFC 9000 §19.13)
-    var conn1 = quic_internal::new_quic_server_connection("scid");
+    var conn1 = quic::new_server_connection("scid");
     var buf1: u8[..32] = [0x15, 0x01, 0x44, 0x00];
-    let ok1, _ = quic_internal::quic_conn_process_payload(conn1, buf1[..]);
+    let _pr_ok1 = quic::process_payload(conn1, buf1[..]);
+    let ok1 = _pr_ok1.handled;
     assert(!ok1);
     assert(conn1.close_code == rfc::QUIC_ERR_STREAM_STATE);
 
     // F031b: MAX_STREAM_DATA on peer-initiated stream exceeding max_streams_bidi -> STREAM_LIMIT_ERROR (RFC 9000 §19.10)
-    var conn2 = quic_internal::new_quic_server_connection("scid");
+    var conn2 = quic::new_server_connection("scid");
     conn2.stream_table.max_streams_bidi = 1;
     var buf2: u8[..32] = [];
-    assert(quic_internal::encode_max_stream_data_frame(buf2, 4, 8192));
-    let ok2, _ = quic_internal::quic_conn_process_payload(conn2, buf2[..]);
+    assert(quic::encode_max_stream_data_frame(4, 8192, buf2));
+    let _pr_ok2 = quic::process_payload(conn2, buf2[..]);
+    let ok2 = _pr_ok2.handled;
     assert(!ok2);
     assert(conn2.close_code == rfc::QUIC_ERR_STREAM_LIMIT);
 
     // F032: Reusing a terminal stream table slot MUST NOT allow retransmitted frames on the closed stream
     // to re-open it as a new stream and double-charge connection flow control (RFC 9000 §3.2, §4.1)
-    var conn3 = quic_internal::new_quic_server_connection("scid");
+    var conn3 = quic::new_server_connection("scid");
     var s0_buf: u8[..32] = [];
-    assert(quic_internal::encode_stream_frame(s0_buf, 0, 0, "hello", quic_internal::QuicStreamFlags { fin: true, .. }));
-    let ok_s0, _ = quic_internal::quic_conn_process_payload(conn3, s0_buf[..]);
+    assert(quic::encode_stream_frame(0, 0, "hello", s0_buf, quic::QuicStreamFlags { fin: true, .. }));
+    let _pr_ok_s0 = quic::process_payload(conn3, s0_buf[..]);
+    let ok_s0 = _pr_ok_s0.handled;
     assert(ok_s0);
     assert(conn3.flow_ctrl.bytes_recv_total == 5);
     // Transition stream 0 to terminal (recv DataRead + send DataRecvd)
-    assert(quic_internal::quic_stream_on_app_read(conn3.stream_table.streams[0], 5));
-    conn3.stream_table.streams[0].send_state = quic_internal::QuicSendState.DataRecvd;
-    assert(quic_internal::quic_stream_is_terminal(conn3.stream_table.streams[0], quic_internal::QuicRole.Server));
+    assert(quic::on_app_read(conn3.stream_table.streams[0], 5));
+    conn3.stream_table.streams[0].send_state = quic::QuicSendState.DataRecvd;
+    assert(quic::is_terminal(conn3.stream_table.streams[0], quic::QuicRole.Server));
     // Open stream 4, which reuses slot 0
     var s4_buf: u8[..32] = [];
-    assert(quic_internal::encode_stream_frame(s4_buf, 4, 0, "abc", quic_internal::QuicStreamFlags { fin: false, .. }));
-    let ok_s4, _ = quic_internal::quic_conn_process_payload(conn3, s4_buf[..]);
+    assert(quic::encode_stream_frame(4, 0, "abc", s4_buf, quic::QuicStreamFlags { fin: false, .. }));
+    let _pr_ok_s4 = quic::process_payload(conn3, s4_buf[..]);
+    let ok_s4 = _pr_ok_s4.handled;
     assert(ok_s4);
     assert(conn3.flow_ctrl.bytes_recv_total == 8);
     // Late retransmission of stream 0 arrives: must NOT double-charge conn3.flow_ctrl.bytes_recv_total!
-    let ok_s0_dup, _ = quic_internal::quic_conn_process_payload(conn3, s0_buf[..]);
+    let _pr_ok_s0_dup = quic::process_payload(conn3, s0_buf[..]);
+    let ok_s0_dup = _pr_ok_s0_dup.handled;
     assert(ok_s0_dup);
     assert(conn3.flow_ctrl.bytes_recv_total == 8);
 
     // F033: Long header packet with unsupported QUIC version (0xBAADF00D) must be rejected by connection
-    var conn4 = quic_internal::new_quic_server_connection("scid");
+    var conn4 = quic::new_server_connection("scid");
     var unk_ver_pkt: u8[..32] = [0xC0, 0xBA, 0xAD, 0xF0, 0x0D, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01];
-    var out_ack4 = quic_internal::AckFrame { .. };
-    let handled4, _ = quic_internal::quic_conn_process_datagram(conn4, unk_ver_pkt[..], 1000, out_ack4);
+    var out_ack4 = quic::AckFrame { .. };
+    let _pr_handled4 = quic::process_datagram(conn4, unk_ver_pkt[..], 1000, out_ack4);
+    let handled4 = _pr_handled4.handled;
     assert(!handled4);
 
     print("REGRESS_F031_TO_F033_STREAM_FC_PKT: OK");
@@ -1118,8 +1134,8 @@ fn test_regress_long_header_zero_payload_bounded() {
     var dgram: u8[32] = [0; 32];
     for i in 32 { dgram[i] = (i + 1) as u8; }
 
-    var hdr = quic_internal::QuicHeader {
-        header_type:    quic_internal::QuicHeaderType.Initial,
+    var hdr = quic::QuicHeader {
+        header_type:    quic::QuicHeaderType.Initial,
         header_len:     10,
         pn_length:      2,
         payload_length: 2, // plen == pn_length -> 0 bytes payload!
@@ -1131,11 +1147,11 @@ fn test_regress_long_header_zero_payload_bounded() {
 }
 
 fn test_regress_ecn_ce_cumulative_and_bbr_cycle() {
-    var conn = quic_internal::new_quic_server_connection("scid");
-    conn.state = quic_internal::QuicConnState.Established;
+    var conn = quic::new_server_connection("scid");
+    conn.state = quic::QuicConnState.Established;
 
     // Send packet 0 in ApplicationData space
-    let m0 = quic_internal::SentPacketMeta {
+    let m0 = quic::SentPacketMeta {
         pn:            0,
         time_sent_us:  1000,
         size_bytes:    1200,
@@ -1145,7 +1161,7 @@ fn test_regress_ecn_ce_cumulative_and_bbr_cycle() {
     quic_internal::record_space_sent_packet(conn.app_space, m0);
 
     // First ACK with ECN-CE = 1 acknowledges packet 0, round is done
-    var ack1 = quic_internal::AckFrame {
+    var ack1 = quic::AckFrame {
         is_ecn:          true,
         largest_acked:   0,
         ack_delay:       0,
@@ -1153,11 +1169,11 @@ fn test_regress_ecn_ce_cumulative_and_bbr_cycle() {
         ecn_ce_count:    1,
         ..
     };
-    let ok1 = quic_internal::quic_conn_on_ack(conn, ack1, 100000, quic_internal::PnSpaceId.ApplicationData);
+    let ok1 = quic::on_ack(conn, ack1, 100000, quic::PnSpaceId.ApplicationData);
     assert(ok1);
 
     // Send packet 1
-    let m1 = quic_internal::SentPacketMeta {
+    let m1 = quic::SentPacketMeta {
         pn:            1,
         time_sent_us:  2000,
         size_bytes:    1200,
@@ -1167,7 +1183,7 @@ fn test_regress_ecn_ce_cumulative_and_bbr_cycle() {
     quic_internal::record_space_sent_packet(conn.app_space, m1);
 
     // Second ACK with same cumulative ECN-CE = 1 acknowledges packet 1, round is done
-    var ack2 = quic_internal::AckFrame {
+    var ack2 = quic::AckFrame {
         is_ecn:          true,
         largest_acked:   1,
         ack_delay:       0,
@@ -1175,26 +1191,26 @@ fn test_regress_ecn_ce_cumulative_and_bbr_cycle() {
         ecn_ce_count:    1,
         ..
     };
-    let ok2 = quic_internal::quic_conn_on_ack(conn, ack2, 110000, quic_internal::PnSpaceId.ApplicationData);
+    let ok2 = quic::on_ack(conn, ack2, 110000, quic::PnSpaceId.ApplicationData);
     assert(ok2);
 
     // When no NEW ECN marks arrive, BBR should advance its cycle (Startup -> Drain).
-    assert(conn.bbr.mode != quic_internal::BbrMode.Startup);
+    assert(conn.bbr.mode != quic::BbrMode.Startup);
     print("REGRESS_ECN_CE_CYCLE_ADVANCE: OK");
 }
 
 fn test_regress_conn_traffic_counter_saturation() {
-    var conn = quic_internal::new_quic_server_connection("scid");
+    var conn = quic::new_server_connection("scid");
     conn.bytes_received = 0xFFFFFFFFFFFFFFF0;
     var dgram: u8[32] = [0; 32];
-    var ack = quic_internal::AckFrame { .. };
-    let _ = quic_internal::quic_conn_process_datagram(conn, dgram[..], 1000, ack);
+    var ack = quic::AckFrame { .. };
+    let _ = quic::process_datagram(conn, dgram[..], 1000, ack);
     assert(conn.bytes_received >= 0xFFFFFFFFFFFFFFF0);
     print("REGRESS_COUNTER_SATURATION: OK");
 }
 
 fn test_grease_quic_bit_rfc9287() {
-    var conn = quic_internal::new_quic_server_connection("scid");
+    var conn = quic::new_server_connection("scid");
     conn.allow_unencrypted_test_packets = true;
     // Short header with Fixed Bit (0x40) cleared: 0x00, DCID="scid", PN=0x01, PING frame (0x01)
     let greased_pkt: u8[7] = [0x00, 's', 'c', 'i', 'd', 0x01, 0x01];
@@ -1203,30 +1219,33 @@ fn test_grease_quic_bit_rfc9287() {
 
     conn.allow_grease_quic_bit = true;
     let hdr_enabled, ok_enabled = quic_internal::parse_quic_packet_pre_hp(conn, greased_pkt[..], 4);
-    assert(ok_enabled && hdr_enabled.header_type == quic_internal::QuicHeaderType.OneRtt);
+    assert(ok_enabled && hdr_enabled.header_type == quic::QuicHeaderType.OneRtt);
 
-    var out_ack = quic_internal::AckFrame { .. };
-    let handled, needs_ack = quic_internal::quic_conn_process_datagram(conn, greased_pkt[..], 2000, out_ack);
+    var out_ack = quic::AckFrame { .. };
+    let _pr_handled = quic::process_datagram(conn, greased_pkt[..], 2000, out_ack);
+    let handled = _pr_handled.handled;
+    let needs_ack = _pr_handled.needs_ack;
     assert(handled && needs_ack);
     print("GREASE_QUIC_BIT: OK");
 }
 
 fn test_stateless_reset_codec_and_detection() {
-    var conn = quic_internal::new_quic_client_connection("dcid", "scid");
-    conn.state = quic_internal::QuicConnState.Established;
+    var conn = quic::new_client_connection("dcid", "scid");
+    conn.state = quic::QuicConnState.Established;
     let token: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
     var ncid_buf: u8[..64] = [];
-    assert(quic_internal::encode_new_conn_id_frame(ncid_buf, 1, 0, "ncid", token));
-    let ok_pl, _ = quic_internal::quic_conn_process_payload(conn, ncid_buf[..], quic_internal::QuicHeaderType.OneRtt, 1000);
+    assert(quic::encode_new_conn_id_frame(1, 0, "ncid", token, ncid_buf));
+    let _pr_ok_pl = quic::process_payload(conn, ncid_buf[..], quic::QuicHeaderType.OneRtt, 1000);
+    let ok_pl = _pr_ok_pl.handled;
     assert(ok_pl && conn.peer_reset_tokens.len == 1);
 
     var sr_pkt: u8[..64] = [];
     let short_rand: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
-    assert(!quic_internal::encode_stateless_reset_packet(sr_pkt, short_rand[..], token));
+    assert(!quic::encode_stateless_reset_packet(short_rand[..], token, sr_pkt));
 
     let rand_bytes: u8[6] = [0xFF, 0x11, 0x22, 0x33, 0x44, 0x55];
-    assert(quic_internal::encode_stateless_reset_packet(sr_pkt, rand_bytes[..], token));
+    assert(quic::encode_stateless_reset_packet(rand_bytes[..], token, sr_pkt));
     assert(sr_pkt.len == 22 && (sr_pkt[0] & 0xC0) == 0x40);
     assert(quic_internal::is_stateless_reset_datagram(conn, sr_pkt[..]));
 
@@ -1234,18 +1253,19 @@ fn test_stateless_reset_codec_and_detection() {
     let dummy_hp:  u8[16] = [0x11; 16];
     let dummy_key: u8[16] = [0x22; 16];
     let dummy_iv:  u8[12] = [0x33; 12];
-    assert(quic_internal::quic_install_pn_space_keys(conn.app_space, dummy_hp[..], dummy_key[..], dummy_iv[..], 0x1301));
+    assert(quic::install_keys(conn.app_space, dummy_hp[..], dummy_key[..], dummy_iv[..], 0x1301));
 
-    var out_ack = quic_internal::AckFrame { .. };
-    let handled, _ = quic_internal::quic_conn_process_datagram(conn, sr_pkt[..], 3000, out_ack);
-    assert(!handled && conn.state == quic_internal::QuicConnState.Closed);
-    let _ = quic_internal::quic_conn_on_probe_lost(conn, 1400);
+    var out_ack = quic::AckFrame { .. };
+    let _pr_handled = quic::process_datagram(conn, sr_pkt[..], 3000, out_ack);
+    let handled = _pr_handled.handled;
+    assert(!handled && conn.state == quic::QuicConnState.Closed);
+    let _ = quic::on_probe_lost(conn, 1400);
     print("STATELESS_RESET_DETECTION: OK");
 }
 
 fn test_ecn_validation_and_blackhole_detection() {
-    var space = quic_internal::PnSpaceState { space_id: quic_internal::PnSpaceId.ApplicationData, .. };
-    let p0 = quic_internal::SentPacketMeta {
+    var space = quic::PnSpaceState { space_id: quic::PnSpaceId.ApplicationData, .. };
+    let p0 = quic::SentPacketMeta {
         pn:            0,
         time_sent_us:  1000,
         size_bytes:    1200,
@@ -1253,7 +1273,7 @@ fn test_ecn_validation_and_blackhole_detection() {
         in_flight:     true,
         ecn_marked:    true,
     };
-    let p1 = quic_internal::SentPacketMeta {
+    let p1 = quic::SentPacketMeta {
         pn:            1,
         time_sent_us:  2000,
         size_bytes:    1200,
@@ -1265,21 +1285,21 @@ fn test_ecn_validation_and_blackhole_detection() {
     quic_internal::record_space_sent_packet(space, p1);
     assert(space.tx_ect0_sent == 2);
 
-    var valid_ack = quic_internal::AckFrame { is_ecn: true, largest_acked: 0, ect0_count: 1, ect1_count: 0, ecn_ce_count: 0, .. };
-    let ok1, ce1 = quic_internal::validate_space_ecn(space, valid_ack, 1);
-    assert(ok1 && ce1 == 0 && space.ecn_state == quic_internal::QuicEcnState.Capable);
+    var valid_ack = quic::AckFrame { is_ecn: true, largest_acked: 0, ect0_count: 1, ect1_count: 0, ecn_ce_count: 0, .. };
+    let ce1, ok1 = quic::validate_ecn(space, valid_ack, 1);
+    assert(ok1 && ce1 == 0 && space.ecn_state == quic::QuicEcnState.Capable);
 
     // Bleaching attack: ECN-marked packet 1 acknowledged by non-ECN ACK frame
-    var bleached_ack = quic_internal::AckFrame { is_ecn: false, largest_acked: 1, .. };
-    let ok2, _ = quic_internal::validate_space_ecn(space, bleached_ack, 1);
-    assert(!ok2 && space.ecn_state == quic_internal::QuicEcnState.Failed);
+    var bleached_ack = quic::AckFrame { is_ecn: false, largest_acked: 1, .. };
+    let _, ok2 = quic::validate_ecn(space, bleached_ack, 1);
+    assert(!ok2 && space.ecn_state == quic::QuicEcnState.Failed);
     print("ECN_VALIDATION_STATE_MACHINE: OK");
 }
 
 fn test_two_pointer_ack_sweep_and_loss_compaction() {
-    var space = quic_internal::PnSpaceState { space_id: quic_internal::PnSpaceId.ApplicationData, .. };
+    var space = quic::PnSpaceState { space_id: quic::PnSpaceId.ApplicationData, .. };
     for pn in 6 {
-        let pkt = quic_internal::SentPacketMeta {
+        let pkt = quic::SentPacketMeta {
             pn:            pn as u64,
             time_sent_us:  1000 + (pn as u64) * 100,
             size_bytes:    1000,
@@ -1289,15 +1309,15 @@ fn test_two_pointer_ack_sweep_and_loss_compaction() {
         };
         quic_internal::record_space_sent_packet(space, pkt);
     }
-    var ranges: quic_internal::AckInterval[..65] = [];
-    ranges.push(quic_internal::AckInterval { smallest: 4, largest: 5 });
-    ranges.push(quic_internal::AckInterval { smallest: 1, largest: 2 });
+    var ranges: quic::AckInterval[..65] = [];
+    ranges.push(quic::AckInterval { smallest: 4, largest: 5 });
+    ranges.push(quic::AckInterval { smallest: 1, largest: 2 });
     let acked_b, _, inflight_b, acked_cnt, ecn_cnt = quic_internal::mark_acked_packets_in_space(space, ranges, 5000);
     assert(acked_cnt == 4 && ecn_cnt == 2 && acked_b == 4000 && inflight_b == 2000 && space.sent_packets.len == 2);
 
-    var lost: quic_internal::SentPacketMeta[..128] = [];
-    let rtt = quic_internal::RttState { latest_rtt_us: 10000, smoothed_rtt_us: 10000, .. };
-    assert(quic_internal::detect_lost_packets(space, rtt, 5000, lost));
+    var lost: quic::SentPacketMeta[..128] = [];
+    let rtt = quic::RttState { latest_rtt_us: 10000, smoothed_rtt_us: 10000, .. };
+    assert(quic::detect_lost_packets(space, rtt, 5000, lost));
     // PN 0 (5 >= 0 + 3) and PN 3 (5 < 3 + 3, not lost by pkt threshold if time < lost_send_time)
     assert(lost.len == 1 && lost[0].pn == 0 && space.sent_packets.len == 1 && space.sent_packets[0].pn == 3);
     print("TWO_POINTER_ACK_AND_LOSS: OK");
@@ -1307,7 +1327,7 @@ fn test_batch_hp_masks() {
     let hp_key: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     var samples:   u8[16][2] = [[0xAA; 16], [0x55; 16]];
     var out_masks: u8[5][2]  = [[0; 5], [0; 5]];
-    let count = quic_internal::compute_quic_hp_masks_batch(rfc::TLS_CIPHER_AES_128_GCM_SHA256, hp_key[..], samples[..], out_masks[..]);
+    let count = quic::compute_hp_masks_batch(rfc::TLS_CIPHER_AES_128_GCM_SHA256, hp_key[..], samples[..], out_masks[..]);
     let single0 = quic_internal::aes128_header_protect_mask(hp_key, samples[0]);
     let single1 = quic_internal::aes128_header_protect_mask(hp_key, samples[1]);
     assert(count == 2 && out_masks[0][..] == single0[..] && out_masks[1][..] == single1[..]);
@@ -1344,46 +1364,46 @@ fn run_05_verify_quic_ecn_and_amplification_regress() {
 // RFC 9000 / RFC 9002: QUIC Connection State Machine, Anti-Amplification, and Packet Space Dispatcher
 
 fn test_quic_anti_amplification() {
-    var server = quic_internal::new_quic_server_connection("server_cid_01");
+    var server = quic::new_server_connection("server_cid_01");
 
     // Server has received 0 bytes: cannot send anything
-    let can_send_0 = quic_internal::quic_conn_can_send(server, 1200);
+    let can_send_0 = quic::can_send(server, 1200);
     print("AA_INIT: can_send_1200=", can_send_0, "\n");
     // CHECK: AA_INIT: can_send_1200=false
 
     // Simulate receiving 1200-byte client datagram (RFC 9000 §8.1: budget = 3 * 1200 = 3600)
     server.bytes_received = 1200;
-    let can_send_3600 = quic_internal::quic_conn_can_send(server, 3600);
-    let can_send_3601 = quic_internal::quic_conn_can_send(server, 3601);
+    let can_send_3600 = quic::can_send(server, 3600);
+    let can_send_3601 = quic::can_send(server, 3601);
     print("AA_BUDGET: can_3600=", can_send_3600, " can_3601=", can_send_3601, "\n");
     // CHECK: AA_BUDGET: can_3600=true can_3601=false
 
     // Send 3000 bytes: remaining budget is 600
     server.bytes_sent = 3000;
-    let can_send_600 = quic_internal::quic_conn_can_send(server, 600);
-    let can_send_601 = quic_internal::quic_conn_can_send(server, 601);
+    let can_send_600 = quic::can_send(server, 600);
+    let can_send_601 = quic::can_send(server, 601);
     print("AA_CONSUMED: can_600=", can_send_600, " can_601=", can_send_601, "\n");
     // CHECK: AA_CONSUMED: can_600=true can_601=false
 
     // Address validated: limit lifted
     server.validated_address = true;
-    let can_send_unlimited = quic_internal::quic_conn_can_send(server, 100000);
+    let can_send_unlimited = quic::can_send(server, 100000);
     print("AA_VALIDATED: can_unlimited=", can_send_unlimited, "\n");
     // CHECK: AA_VALIDATED: can_unlimited=true
 }
 
 fn test_quic_pn_space_segregation() {
-    var conn = quic_internal::new_quic_server_connection("scid_123");
+    var conn = quic::new_server_connection("scid_123");
 
     // Send in Initial space
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.Initial, 0, 1200, true, 1000);
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.Initial, 1, 1200, true, 1050);
+    quic::record_sent(conn, quic::PnSpaceId.Initial, 0, 1200, true, 1000);
+    quic::record_sent(conn, quic::PnSpaceId.Initial, 1, 1200, true, 1050);
 
     // Send in Handshake space
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.Handshake, 0, 800, true, 1100);
+    quic::record_sent(conn, quic::PnSpaceId.Handshake, 0, 800, true, 1100);
 
     // Send in ApplicationData space
-    quic_internal::quic_conn_record_sent(conn, quic_internal::PnSpaceId.ApplicationData, 0, 1400, true, 1200);
+    quic::record_sent(conn, quic::PnSpaceId.ApplicationData, 0, 1400, true, 1200);
 
     print("PN_SPACES: init_largest=", conn.initial_space.largest_sent_pn,
           " hs_largest=", conn.handshake_space.largest_sent_pn,
@@ -1394,7 +1414,7 @@ fn test_quic_pn_space_segregation() {
 }
 
 fn test_quic_datagram_ack_generation() {
-    var conn = quic_internal::new_quic_server_connection("server_cid_01");
+    var conn = quic::new_server_connection("server_cid_01");
     conn.allow_unencrypted_test_packets = true;
 
     // Construct valid wire Initial packet
@@ -1419,23 +1439,25 @@ fn test_quic_datagram_ack_generation() {
     initial_pkt.push(0x00);
     initial_pkt.push(0x00);
 
-    var ack_frame = quic_internal::AckFrame { .. };
-    let handled, needs_ack = quic_internal::quic_conn_process_datagram(conn, initial_pkt[..], 2000, ack_frame);
+    var ack_frame = quic::AckFrame { .. };
+    let _pr_handled = quic::process_datagram(conn, initial_pkt[..], 2000, ack_frame);
+    let handled = _pr_handled.handled;
+    let needs_ack = _pr_handled.needs_ack;
 
     print("DGRAM_INIT: handled=", handled, " needs_ack=", needs_ack, " largest_acked=", ack_frame.largest_acked, "\n");
     // CHECK: DGRAM_INIT: handled=true needs_ack=true largest_acked=0
 }
 
 fn test_quic_connection_close() {
-    var conn = quic_internal::new_quic_server_connection("scid_close");
-    quic_internal::quic_conn_advance_state(conn, quic_internal::QuicConnState.Established);
+    var conn = quic::new_server_connection("scid_close");
+    quic::advance_state(conn, quic::QuicConnState.Established);
 
-    print("CONN_ESTABLISHED: state=", conn.state == quic_internal::QuicConnState.Established, "\n");
+    print("CONN_ESTABLISHED: state=", conn.state == quic::QuicConnState.Established, "\n");
     // CHECK: CONN_ESTABLISHED: state=true
 
     // Trigger connection close with APPLICATION_ERROR
-    quic_internal::quic_conn_close(conn, rfc::QUIC_ERR_APPLICATION_ERROR);
-    print("CONN_CLOSED: state=", conn.state == quic_internal::QuicConnState.Closing, " code=", conn.close_code, "\n");
+    quic::close(conn, rfc::QUIC_ERR_APPLICATION_ERROR);
+    print("CONN_CLOSED: state=", conn.state == quic::QuicConnState.Closing, " code=", conn.close_code, "\n");
     // CHECK: CONN_CLOSED: state=true code=12
 }
 
@@ -1458,16 +1480,16 @@ fn run_06_verify_quic_engine() {
 //
 
 fn test_recv_stream_arithmetic_wrap() {
-    var fc = quic_internal::new_quic_flow_control(100000, 100000);
-    var s = quic_internal::new_quic_stream(0, 50000);
+    var fc = quic::new_flow_control(100000, 100000);
+    var s = quic::new_stream(0, 50000);
 
     // 1. Crafted 64-bit integer overflow wrapping to 8 (0xFFFFFFFFFFFFFFFE + 10 = 8)
-    let ok_wrap, err_wrap = quic_internal::quic_fc_record_recv_stream(fc, s, 0xFFFFFFFFFFFFFFFE, 10);
+    let err_wrap, ok_wrap = quic::record_recv_stream(fc, s, 0xFFFFFFFFFFFFFFFE, 10);
     assert(!ok_wrap);
     assert(err_wrap == rfc::QUIC_ERR_FLOW_CONTROL);
 
     // 2. Offsets exceeding 62-bit VarInt ceiling (RFC 9000 §4.1, §4.5, §19.8)
-    let ok_varint_overflow, err_varint_overflow = quic_internal::quic_fc_record_recv_stream(
+    let err_varint_overflow, ok_varint_overflow = quic::record_recv_stream(
         fc, s, rfc::QUIC_VARINT_MAX, 1,
     );
     assert(!ok_varint_overflow);
@@ -1477,36 +1499,37 @@ fn test_recv_stream_arithmetic_wrap() {
 }
 
 fn test_send_arithmetic_wrap() {
-    var fc = quic_internal::new_quic_flow_control(100000, 100000);
-    var s = quic_internal::new_quic_stream(0, 50000);
+    var fc = quic::new_flow_control(100000, 100000);
+    var s = quic::new_stream(0, 50000);
     s.send_max_data = 50000;
 
     // 1. quic_fc_can_send with wrapped offset + len
-    let can_send, _, _ = quic_internal::quic_fc_can_send(fc, s, 0xFFFFFFFFFFFFFFFF, 1);
+    let _fc_can_send = quic::can_send(fc, s, 0xFFFFFFFFFFFFFFFF, 1);
+    let can_send = _fc_can_send.allowed;
     assert(!can_send);
 
     // 2. quic_fc_record_send with wrapped offset + len
-    let ok_send = quic_internal::quic_fc_record_send(fc, s, 0xFFFFFFFFFFFFFFFF, 1);
+    let ok_send = quic::record_send(fc, s, 0xFFFFFFFFFFFFFFFF, 1);
     assert(!ok_send);
 
     print("FC_SEND_WRAP_PREVENTION: OK");
 }
 
 fn test_limit_ceiling_and_reset() {
-    var fc = quic_internal::new_quic_flow_control(100000, 100000);
-    var s = quic_internal::new_quic_stream(0, 50000);
+    var fc = quic::new_flow_control(100000, 100000);
+    var s = quic::new_stream(0, 50000);
 
     // 1. Disallow MAX_DATA limit updates above QUIC_VARINT_MAX (RFC 9000 §4.2, §19.9)
-    let ok_max_data = quic_internal::quic_fc_update_remote_max_data(fc, 0x4000000000000000);
+    let ok_max_data = quic::update_remote_max_data(fc, 0x4000000000000000);
     assert(!ok_max_data);
 
     // 2. Disallow MAX_STREAM_DATA limit updates above QUIC_VARINT_MAX (RFC 9000 §4.2, §19.10)
-    let ok_stream_max = quic_internal::quic_fc_update_stream_send_max_data(s, 0x4000000000000000);
+    let ok_stream_max = quic::update_send_max_data(s, 0x4000000000000000);
     assert(!ok_stream_max);
 
     // 3. RESET_STREAM final size exceeding QUIC_VARINT_MAX (RFC 9000 §4.5)
     s.recv_max_data = 0x7FFFFFFFFFFFFFFF;
-    let ok_rst, err_rst = quic_internal::quic_fc_record_recv_reset(fc, s, 0x4000000000000000);
+    let err_rst, ok_rst = quic::record_recv_reset(fc, s, 0x4000000000000000);
     assert(!ok_rst);
     assert(err_rst == rfc::QUIC_ERR_FLOW_CONTROL);
 
@@ -1515,19 +1538,19 @@ fn test_limit_ceiling_and_reset() {
 
 fn test_window_update_underflow_and_clamp() {
     // 1. Underflow resilience when bytes_read_total exceeds max_data_local
-    var fc = quic_internal::new_quic_flow_control(100000, 50000);
+    var fc = quic::new_flow_control(100000, 50000);
     fc.bytes_read_total = 60000;
-    let need_update, new_max = quic_internal::quic_fc_check_conn_window_update(fc);
+    let new_max, need_update = quic::check_conn_window_update(fc);
     assert(need_update);
     assert(new_max == 110000);
 
     // 2. Candidate ceiling clamped to QUIC_VARINT_MAX
-    var fc_near_max = quic_internal::new_quic_flow_control(100000, 100000);
+    var fc_near_max = quic::new_flow_control(100000, 100000);
     fc_near_max.bytes_read_total = rfc::QUIC_VARINT_MAX - 1000;
     fc_near_max.local_window_size = 5000;
     fc_near_max.max_data_local = rfc::QUIC_VARINT_MAX - 1000;
     fc_near_max.last_advertised_max_data = rfc::QUIC_VARINT_MAX - 1000;
-    let need_update2, new_max2 = quic_internal::quic_fc_check_conn_window_update(fc_near_max);
+    let new_max2, need_update2 = quic::check_conn_window_update(fc_near_max);
     assert(need_update2);
     assert(new_max2 == rfc::QUIC_VARINT_MAX);
 
@@ -1579,7 +1602,7 @@ fn parse_quic_stream_header(
     var cur = offset;
     guard cur < limit else { return 0, 0, 0, false, false, offset, false; }
 
-    let ftype, next_cur, ok_type = quic_internal::quic_decode_varint(src, cur);
+    let ftype, next_cur, ok_type = quic::decode_varint(src, cur);
     guard ok_type && ftype >= 0x08 && ftype <= 0x0F else {
         return 0, 0, 0, false, false, offset, false;
     }
@@ -1589,13 +1612,13 @@ fn parse_quic_stream_header(
     let has_len = (ftype & 0x02) != 0;
     let is_fin = (ftype & 0x01) != 0;
 
-    let stream_id, cur_sid, ok_sid = quic_internal::quic_decode_varint(src, cur);
+    let stream_id, cur_sid, ok_sid = quic::decode_varint(src, cur);
     guard ok_sid else { return 0, 0, 0, false, false, offset, false; }
     cur = cur_sid;
 
     var stream_off: u64 = 0;
     if has_off {
-        let off_val, cur_off, ok_off = quic_internal::quic_decode_varint(src, cur);
+        let off_val, cur_off, ok_off = quic::decode_varint(src, cur);
         guard ok_off else { return 0, 0, 0, false, false, offset, false; }
         stream_off = off_val;
         cur = cur_off;
@@ -1603,7 +1626,7 @@ fn parse_quic_stream_header(
 
     var data_len: u64 = 0;
     if has_len {
-        let len_val, cur_len, ok_len = quic_internal::quic_decode_varint(src, cur);
+        let len_val, cur_len, ok_len = quic::decode_varint(src, cur);
         guard ok_len else { return 0, 0, 0, false, false, offset, false; }
         data_len = len_val;
         cur = cur_len;
@@ -1663,13 +1686,13 @@ fn encode_quic_stream_frame<B>(
     payload:   const u8[:],
 ) -> bool {
     let ftype: u64 = 0x08 | ((flags & 0x07) as u64);
-    guard quic_internal::quic_encode_varint(out, ftype) else { return false; }
-    guard quic_internal::quic_encode_varint(out, stream_id) else { return false; }
+    guard quic::encode_varint(ftype, out) else { return false; }
+    guard quic::encode_varint(stream_id, out) else { return false; }
     if (flags & 0x04) != 0 {
-        guard quic_internal::quic_encode_varint(out, offset) else { return false; }
+        guard quic::encode_varint(offset, out) else { return false; }
     }
     if (flags & 0x02) != 0 {
-        guard quic_internal::quic_encode_varint(out, payload.len as u64) else { return false; }
+        guard quic::encode_varint(payload.len as u64, out) else { return false; }
     }
     out.append(payload);
     return true;
@@ -1692,56 +1715,56 @@ fn test_quic_varint_pathological() {
     // 1. Minimum and Maximum RFC 9000 VarInt values across all 4 encodings
     // 1-byte: 0, 63
     var buf1: u8[..16] = [];
-    assert(quic_internal::quic_encode_varint(buf1, 0));
-    assert(quic_internal::quic_encode_varint(buf1, 63));
+    assert(quic::encode_varint(0, buf1));
+    assert(quic::encode_varint(63, buf1));
     assert(buf1.len == 2);
-    let v0, o1, ok0 = quic_internal::quic_decode_varint(buf1[..], 0);
-    let v63, o2, ok63 = quic_internal::quic_decode_varint(buf1[..], o1);
+    let v0, o1, ok0 = quic::decode_varint(buf1[..], 0);
+    let v63, o2, ok63 = quic::decode_varint(buf1[..], o1);
     assert(ok0 && v0 == 0 && ok63 && v63 == 63 && o2 == 2);
 
     // 2-byte: 64, 16383
     var buf2: u8[..16] = [];
-    assert(quic_internal::quic_encode_varint(buf2, 64));
-    assert(quic_internal::quic_encode_varint(buf2, 16383));
+    assert(quic::encode_varint(64, buf2));
+    assert(quic::encode_varint(16383, buf2));
     assert(buf2.len == 4);
-    let v64, o3, ok64 = quic_internal::quic_decode_varint(buf2[..], 0);
-    let v16k, o4, ok16k = quic_internal::quic_decode_varint(buf2[..], o3);
+    let v64, o3, ok64 = quic::decode_varint(buf2[..], 0);
+    let v16k, o4, ok16k = quic::decode_varint(buf2[..], o3);
     assert(ok64 && v64 == 64 && ok16k && v16k == 16383 && o4 == 4);
 
     // 4-byte: 16384, 1073741823
     var buf4: u8[..16] = [];
-    assert(quic_internal::quic_encode_varint(buf4, 16384));
-    assert(quic_internal::quic_encode_varint(buf4, 1073741823));
+    assert(quic::encode_varint(16384, buf4));
+    assert(quic::encode_varint(1073741823, buf4));
     assert(buf4.len == 8);
-    let v164, o5, ok164 = quic_internal::quic_decode_varint(buf4[..], 0);
-    let v1g, o6, ok1g = quic_internal::quic_decode_varint(buf4[..], o5);
+    let v164, o5, ok164 = quic::decode_varint(buf4[..], 0);
+    let v1g, o6, ok1g = quic::decode_varint(buf4[..], o5);
     assert(ok164 && v164 == 16384 && ok1g && v1g == 1073741823 && o6 == 8);
 
     // 8-byte: 1073741824, 0x3FFFFFFFFFFFFFFF (2^62 - 1)
     var buf8: u8[..32] = [];
-    assert(quic_internal::quic_encode_varint(buf8, 1073741824));
-    assert(quic_internal::quic_encode_varint(buf8, 0x3FFFFFFFFFFFFFFF));
+    assert(quic::encode_varint(1073741824, buf8));
+    assert(quic::encode_varint(0x3FFFFFFFFFFFFFFF, buf8));
     assert(buf8.len == 16);
-    let v1g1, o7, ok1g1 = quic_internal::quic_decode_varint(buf8[..], 0);
-    let vmax, o8, okmax = quic_internal::quic_decode_varint(buf8[..], o7);
+    let v1g1, o7, ok1g1 = quic::decode_varint(buf8[..], 0);
+    let vmax, o8, okmax = quic::decode_varint(buf8[..], o7);
     assert(ok1g1 && v1g1 == 1073741824 && okmax && vmax == 0x3FFFFFFFFFFFFFFF && o8 == 16);
 
     // 2. Reject integer exceeding 62-bit RFC 9000 limit
     var buf_ovf: u8[..16] = [];
-    let ok_ovf = quic_internal::quic_encode_varint(buf_ovf, 0x4000000000000000);
+    let ok_ovf = quic::encode_varint(0x4000000000000000, buf_ovf);
     assert(!ok_ovf);
 
     // 3. Truncated VarInt byte streams (Buffer underrun defense)
     let trunc_2byte: const u8[1] = [0x40];
-    let _, _, ok_tr2 = quic_internal::quic_decode_varint(trunc_2byte[..], 0);
+    let _, _, ok_tr2 = quic::decode_varint(trunc_2byte[..], 0);
     assert(!ok_tr2);
 
     let trunc_4byte: const u8[2] = [0x80, 0x01];
-    let _, _, ok_tr4 = quic_internal::quic_decode_varint(trunc_4byte[..], 0);
+    let _, _, ok_tr4 = quic::decode_varint(trunc_4byte[..], 0);
     assert(!ok_tr4);
 
     let trunc_8byte: const u8[5] = [0xC0, 0x01, 0x02, 0x03, 0x04];
-    let _, _, ok_tr8 = quic_internal::quic_decode_varint(trunc_8byte[..], 0);
+    let _, _, ok_tr8 = quic::decode_varint(trunc_8byte[..], 0);
     assert(!ok_tr8);
 
     print("VARINT_BOUNDS: OK max_62bit=4611686018427387903 trunc_rejected=true");
@@ -1807,10 +1830,10 @@ fn test_quic_stream_zero_length() {
     assert(f_off_fin.is_fin);
 
     // 4. Stream ID Classification (RFC 9000 §2.1)
-    let s0_bidi_c = quic_internal::quic_is_client_stream(0) && quic_internal::quic_is_bidi_stream(0);
-    let s1_bidi_s = quic_internal::quic_is_server_stream(1) && quic_internal::quic_is_bidi_stream(1);
-    let s2_uni_c = quic_internal::quic_is_client_stream(2) && quic_internal::quic_is_uni_stream(2);
-    let s3_uni_s = quic_internal::quic_is_server_stream(3) && quic_internal::quic_is_uni_stream(3);
+    let s0_bidi_c = quic::is_client_stream(0) && quic::is_bidi_stream(0);
+    let s1_bidi_s = quic::is_server_stream(1) && quic::is_bidi_stream(1);
+    let s2_uni_c = quic::is_client_stream(2) && quic::is_uni_stream(2);
+    let s3_uni_s = quic::is_server_stream(3) && quic::is_uni_stream(3);
     assert(s0_bidi_c && s1_bidi_s && s2_uni_c && s3_uni_s);
 
     print("STREAM_ZERO_LENGTH: empty_ok=", ok_empty, " fin_ok=", ok_fin, " off_fin_ok=", ok_off_fin, " stream_ids_ok=true");
@@ -1822,19 +1845,19 @@ fn test_quic_stream_zero_length() {
 fn test_quic_stream_truncation_attacks() {
     // 1. Truncation attack: Length field claims 100 bytes, but wire only holds 10 bytes
     var wire_trunc: u8[..64] = [];
-    assert(quic_internal::quic_encode_varint(wire_trunc, 0x0A));
-    assert(quic_internal::quic_encode_varint(wire_trunc, 4));
-    assert(quic_internal::quic_encode_varint(wire_trunc, 100));
+    assert(quic::encode_varint(0x0A, wire_trunc));
+    assert(quic::encode_varint(4, wire_trunc));
+    assert(quic::encode_varint(100, wire_trunc));
     wire_trunc.append("0123456789");
     let _, _, ok_trunc = parse_quic_stream_frame(wire_trunc[..], 0);
     assert(!ok_trunc);
 
     // 2. Stream offset + length overflow (> 2^62 - 1)
     var wire_ovf: u8[..64] = [];
-    assert(quic_internal::quic_encode_varint(wire_ovf, 0x0E));
-    assert(quic_internal::quic_encode_varint(wire_ovf, 4));
-    assert(quic_internal::quic_encode_varint(wire_ovf, 0x3FFFFFFFFFFFFFF0));
-    assert(quic_internal::quic_encode_varint(wire_ovf, 32));
+    assert(quic::encode_varint(0x0E, wire_ovf));
+    assert(quic::encode_varint(4, wire_ovf));
+    assert(quic::encode_varint(0x3FFFFFFFFFFFFFF0, wire_ovf));
+    assert(quic::encode_varint(32, wire_ovf));
     wire_ovf.resize((wire_ovf.len + 32) as i64, 0);
     let _, _, ok_ovf = parse_quic_stream_frame(wire_ovf[..], 0);
     assert(!ok_ovf);
@@ -1853,51 +1876,51 @@ fn test_quic_stream_truncation_attacks() {
 
 // crap:trusted-bounds
 fn test_quic_stream_reassembly_chaos() {
-    var r_buf = quic_internal::new_reassembly_buffer(1048576);
+    var r_buf = quic::new_reassembly_buffer(1048576);
 
     // 1. In-order arrival: [0, 5) -> "HELLO"
-    let ok1 = quic_internal::insert_fragment(r_buf, 0, "HELLO", false);
+    let ok1 = quic::insert_fragment(r_buf, 0, "HELLO", false);
     assert(ok1);
 
     // 2. Out-of-order gap: [10, 15) -> "QUIC!" with FIN
-    let ok2 = quic_internal::insert_fragment(r_buf, 10, "QUIC!", true);
+    let ok2 = quic::insert_fragment(r_buf, 10, "QUIC!", true);
     assert(ok2);
     assert(r_buf.fin_received);
     assert(r_buf.final_size == 15);
 
     // 3. Contiguous read from head: should only yield first 5 bytes due to gap at [5, 10)
     var out1: u8[..32] = [];
-    let r1 = quic_internal::read_contiguous(r_buf, out1);
+    let r1 = quic::read_contiguous(r_buf, out1);
     assert(r1 == 5);
     assert(out1[..] == "HELLO");
     assert(r_buf.consumed_offset == 5);
 
     // 4. Final Size Violation attack 1: Inject data exceeding established final size 15
-    let ok_bad_data = quic_internal::insert_fragment(r_buf, 12, "OVERFLOW_AFTER_FIN", false);
+    let ok_bad_data = quic::insert_fragment(r_buf, 12, "OVERFLOW_AFTER_FIN", false);
     assert(!ok_bad_data);
 
     // 5. Final Size Violation attack 2: Re-declare differing FIN at offset 20 != 15
-    let ok_diff_fin = quic_internal::insert_fragment(r_buf, 10, "DIFFERENT_FINAL_SZ", true);
+    let ok_diff_fin = quic::insert_fragment(r_buf, 10, "DIFFERENT_FINAL_SZ", true);
     assert(!ok_diff_fin);
 
     // 6. Fill the missing gap: [5, 10) -> " RFC "
-    let ok3 = quic_internal::insert_fragment(r_buf, 5, " RFC ", false);
+    let ok3 = quic::insert_fragment(r_buf, 5, " RFC ", false);
     assert(ok3);
 
     // 7. Contiguous read tail: reads remaining 10 bytes up to final size 15
     var out2: u8[..32] = [];
-    let r2 = quic_internal::read_contiguous(r_buf, out2);
+    let r2 = quic::read_contiguous(r_buf, out2);
     assert(r2 == 10);
     assert(out2[..] == " RFC QUIC!");
     assert(r_buf.consumed_offset == 15);
 
     // 8. Reassembly interval overlap and duplicates
-    var r_buf2 = quic_internal::new_reassembly_buffer(1048576);
-    assert(quic_internal::insert_fragment(r_buf2, 0, "ABCDEF", false));
-    assert(quic_internal::insert_fragment(r_buf2, 3, "DEFGHI", false));
-    assert(quic_internal::insert_fragment(r_buf2, 0, "ABC", false));
+    var r_buf2 = quic::new_reassembly_buffer(1048576);
+    assert(quic::insert_fragment(r_buf2, 0, "ABCDEF", false));
+    assert(quic::insert_fragment(r_buf2, 3, "DEFGHI", false));
+    assert(quic::insert_fragment(r_buf2, 0, "ABC", false));
     var out_ovl: u8[..32] = [];
-    let r_ovl = quic_internal::read_contiguous(r_buf2, out_ovl);
+    let r_ovl = quic::read_contiguous(r_buf2, out_ovl);
     assert(r_ovl == 9);
     assert(out_ovl[..] == "ABCDEFGHI");
 
@@ -1909,19 +1932,19 @@ fn test_quic_stream_reassembly_chaos() {
 // crap:trusted-bounds
 fn demux_stream_mgmt_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool {
     if ftype == rfc::QUIC_FRAME_RESET_STREAM {
-        let _, cur1, ok1 = quic_internal::quic_decode_varint(src, cur);
+        let _, cur1, ok1 = quic::decode_varint(src, cur);
         guard ok1 else { return cur, false; }
-        let _, cur2, ok2 = quic_internal::quic_decode_varint(src, cur1);
+        let _, cur2, ok2 = quic::decode_varint(src, cur1);
         guard ok2 else { return cur, false; }
-        let _, cur3, ok3 = quic_internal::quic_decode_varint(src, cur2);
+        let _, cur3, ok3 = quic::decode_varint(src, cur2);
         guard ok3 else { return cur, false; }
         return cur3, true;
     }
 
     if ftype == rfc::QUIC_FRAME_STOP_SENDING {
-        let _, cur1, ok1 = quic_internal::quic_decode_varint(src, cur);
+        let _, cur1, ok1 = quic::decode_varint(src, cur);
         guard ok1 else { return cur, false; }
-        let _, cur2, ok2 = quic_internal::quic_decode_varint(src, cur1);
+        let _, cur2, ok2 = quic::decode_varint(src, cur1);
         guard ok2 else { return cur, false; }
         return cur2, true;
     }
@@ -1932,15 +1955,15 @@ fn demux_stream_mgmt_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool 
 // crap:trusted-bounds
 fn demux_flow_frame(ftype: u64, src: const u8[:], cur: u64) -> u64, bool {
     if ftype == rfc::QUIC_FRAME_MAX_DATA {
-        let _, cur1, ok1 = quic_internal::quic_decode_varint(src, cur);
+        let _, cur1, ok1 = quic::decode_varint(src, cur);
         guard ok1 else { return cur, false; }
         return cur1, true;
     }
 
     if ftype == rfc::QUIC_FRAME_MAX_STREAM_DATA {
-        let _, cur1, ok1 = quic_internal::quic_decode_varint(src, cur);
+        let _, cur1, ok1 = quic::decode_varint(src, cur);
         guard ok1 else { return cur, false; }
-        let _, cur2, ok2 = quic_internal::quic_decode_varint(src, cur1);
+        let _, cur2, ok2 = quic::decode_varint(src, cur1);
         guard ok2 else { return cur, false; }
         return cur2, true;
     }
@@ -1954,7 +1977,7 @@ fn demux_control_frame(src: const u8[:], offset: u64) -> u64, u64, bool {
     var cur = offset;
     guard cur < (src.len as u64) else { return 0, offset, false; }
 
-    let ftype, next_cur, ok_type = quic_internal::quic_decode_varint(src, cur);
+    let ftype, next_cur, ok_type = quic::decode_varint(src, cur);
     guard ok_type else { return 0, offset, false; }
     cur = next_cur;
 
@@ -1986,24 +2009,24 @@ fn test_quic_control_frames_demux() {
     packet.push(0x01);
 
     // 3. RESET_STREAM (0x04, stream_id=12, err=0x42, final_size=1024)
-    assert(quic_internal::quic_encode_varint(packet, rfc::QUIC_FRAME_RESET_STREAM));
-    assert(quic_internal::quic_encode_varint(packet, 12));
-    assert(quic_internal::quic_encode_varint(packet, 0x42));
-    assert(quic_internal::quic_encode_varint(packet, 1024));
+    assert(quic::encode_varint(rfc::QUIC_FRAME_RESET_STREAM, packet));
+    assert(quic::encode_varint(12, packet));
+    assert(quic::encode_varint(0x42, packet));
+    assert(quic::encode_varint(1024, packet));
 
     // 4. STOP_SENDING (0x05, stream_id=12, err=0x19)
-    assert(quic_internal::quic_encode_varint(packet, rfc::QUIC_FRAME_STOP_SENDING));
-    assert(quic_internal::quic_encode_varint(packet, 12));
-    assert(quic_internal::quic_encode_varint(packet, 0x19));
+    assert(quic::encode_varint(rfc::QUIC_FRAME_STOP_SENDING, packet));
+    assert(quic::encode_varint(12, packet));
+    assert(quic::encode_varint(0x19, packet));
 
     // 5. MAX_DATA (0x10, max_data=65536)
-    assert(quic_internal::quic_encode_varint(packet, rfc::QUIC_FRAME_MAX_DATA));
-    assert(quic_internal::quic_encode_varint(packet, 65536));
+    assert(quic::encode_varint(rfc::QUIC_FRAME_MAX_DATA, packet));
+    assert(quic::encode_varint(65536, packet));
 
     // 6. MAX_STREAM_DATA (0x11, stream_id=12, max_data=32768)
-    assert(quic_internal::quic_encode_varint(packet, rfc::QUIC_FRAME_MAX_STREAM_DATA));
-    assert(quic_internal::quic_encode_varint(packet, 12));
-    assert(quic_internal::quic_encode_varint(packet, 32768));
+    assert(quic::encode_varint(rfc::QUIC_FRAME_MAX_STREAM_DATA, packet));
+    assert(quic::encode_varint(12, packet));
+    assert(quic::encode_varint(32768, packet));
 
     // Demux the multi-frame packet
     var cur_off: u64 = 0;
@@ -2041,7 +2064,7 @@ fn test_quic_stream_mutation_fuzzing() {
 
 // crap:trusted-bounds
 fn test_quic_transport_params_rfc9000() {
-    var tp = quic_internal::QuicTransportParams {
+    var tp = quic::QuicTransportParams {
         max_idle_timeout:                    30000,
         has_stateless_reset_token:           true,
         max_udp_payload_size:                1452,
@@ -2070,14 +2093,14 @@ fn test_quic_transport_params_rfc9000() {
 
     // Client cannot encode server-only parameters
     var bad_cli_buf: u8[..256] = [];
-    assert(!quic_internal::encode_quic_transport_params(bad_cli_buf, tp, false));
+    assert(!quic::encode_transport_params(tp, false, bad_cli_buf));
 
     // Server encodes full transport parameters
     var srv_buf: u8[..256] = [];
-    assert(quic_internal::encode_quic_transport_params(srv_buf, tp, true));
+    assert(quic::encode_transport_params(tp, true, srv_buf));
 
-    var dec_tp = quic_internal::QuicTransportParams { .. };
-    assert(quic_internal::decode_quic_transport_params(srv_buf[..], true, dec_tp));
+    let dec_tp, tp_ok = quic::decode_transport_params(srv_buf[..], true);
+    assert(tp_ok);
     assert(dec_tp.max_idle_timeout == 30000 && dec_tp.max_udp_payload_size == 1452);
     assert(dec_tp.ack_delay_exponent == 4 && dec_tp.max_ack_delay == 20);
     assert(dec_tp.disable_active_migration && dec_tp.grease_quic_bit);
@@ -2087,20 +2110,25 @@ fn test_quic_transport_params_rfc9000() {
     assert(dec_tp.has_stateless_reset_token && dec_tp.stateless_reset_token[0] == 0xA0);
 
     // Reject server-only parameters when decoded with is_server = false
-    var bad_dec = quic_internal::QuicTransportParams { .. };
-    assert(!quic_internal::decode_quic_transport_params(srv_buf[..], false, bad_dec));
+    let _bd1, bad_ok1 = quic::decode_transport_params(srv_buf[..], false);
+    assert(!bad_ok1);
 
     // Reject boundary violations: ack_delay_exponent > 20, max_ack_delay >= 16384, max_udp_payload_size < 1200, active_cid_limit < 2
     let bad_ade: const u8[3] = [0x0A, 0x01, 21];
-    assert(!quic_internal::decode_quic_transport_params(bad_ade[..], true, bad_dec));
+    let _bd2, bad_ok2 = quic::decode_transport_params(bad_ade[..], true);
+    assert(!bad_ok2);
     let bad_mad: const u8[4] = [0x0B, 0x02, 0x80, 0x00];
-    assert(!quic_internal::decode_quic_transport_params(bad_mad[..], true, bad_dec));
+    let _bd3, bad_ok3 = quic::decode_transport_params(bad_mad[..], true);
+    assert(!bad_ok3);
     let bad_mtu: const u8[4] = [0x03, 0x02, 0x44, 0xAF]; // 1199 < 1200
-    assert(!quic_internal::decode_quic_transport_params(bad_mtu[..], true, bad_dec));
+    let _bd4, bad_ok4 = quic::decode_transport_params(bad_mtu[..], true);
+    assert(!bad_ok4);
     let bad_cid_lim: const u8[3] = [0x0E, 0x01, 1];
-    assert(!quic_internal::decode_quic_transport_params(bad_cid_lim[..], true, bad_dec));
+    let _bd5, bad_ok5 = quic::decode_transport_params(bad_cid_lim[..], true);
+    assert(!bad_ok5);
     let bad_ver: const u8[6] = [0x11, 0x04, 0x00, 0x00, 0x00, 0x00]; // chosen_version == 0
-    assert(!quic_internal::decode_quic_transport_params(bad_ver[..], true, bad_dec));
+    let _bd6, bad_ok6 = quic::decode_transport_params(bad_ver[..], true);
+    assert(!bad_ok6);
 
     print("QUICC_01_TP: srv_roundtrip=true bounds_enforced=true version_info_ok=true");
 }
@@ -2120,41 +2148,42 @@ fn test_quic_preferred_address_migration() {
     // 16-byte stateless reset token
     for i in 16 { raw_pref.push((0x10 + i) as u8); }
 
-    var pref = quic_internal::QuicPreferredAddress { .. };
-    assert(quic_internal::decode_preferred_address(raw_pref[..], pref));
+    let pref, pref_ok = quic::decode_preferred_address(raw_pref[..]);
+    assert(pref_ok);
     assert(pref.ipv4[0] == 198 && pref.ipv4_port == 8443);
     assert(pref.ipv6[0] == 0x20 && pref.ipv6_port == 9443);
     assert(pref.cid.len == 4 && pref.cid[0] == 0xAA);
     assert(pref.stateless_reset_token[0] == 0x10);
 
     // Reject truncated or zero-length CID preferred_address
-    var bad_pref = quic_internal::QuicPreferredAddress { .. };
-    assert(!quic_internal::decode_preferred_address(raw_pref[..40], bad_pref));
+    let _bp1, bad_pref_ok1 = quic::decode_preferred_address(raw_pref[..40]);
+    assert(!bad_pref_ok1);
 
     // Reject preferred address with all zero IPs and ports
     var zero_pref_buf: u8[..64] = [];
     for i in 24 { zero_pref_buf.push(0); }
     zero_pref_buf.append([4, 1, 2, 3, 4]);
     for i in 16 { zero_pref_buf.push(0x20 as u8); }
-    assert(!quic_internal::decode_preferred_address(zero_pref_buf[..], bad_pref));
+    let _bp2, bad_pref_ok2 = quic::decode_preferred_address(zero_pref_buf[..]);
+    assert(!bad_pref_ok2);
 
-    let init_addr = quic_internal::new_quic_endpoint_addr([192, 0, 2, 1], 443);
-    var mgr = quic_internal::new_quic_migration_manager(init_addr);
+    let init_addr = quic::new_endpoint_addr([192, 0, 2, 1], 443);
+    var mgr = quic::new_migration_manager(init_addr);
     let tok: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
     // Probe IPv6 preferred address
-    assert(quic_internal::quic_migration_probe_preferred_address(mgr, pref, true, tok));
+    assert(quic::probe_preferred_address(mgr, pref, true, tok));
     assert(mgr.has_probing_path && mgr.probing_path.remote_addr.port == 9443);
 
     // Probe IPv4 preferred address
-    assert(quic_internal::quic_migration_probe_preferred_address(mgr, pref, false, tok));
+    assert(quic::probe_preferred_address(mgr, pref, false, tok));
     assert(mgr.has_probing_path && mgr.probing_path.remote_addr.port == 8443);
-    quic_internal::quic_migration_fail_probing(mgr);
+    quic::fail_probing(mgr);
     assert(!mgr.has_probing_path);
 
     // When migration_disabled is true, probing is rejected
     mgr.migration_disabled = true;
-    assert(!quic_internal::quic_migration_probe_preferred_address(mgr, pref, true, tok));
+    assert(!quic::probe_preferred_address(mgr, pref, true, tok));
 
     print("QUICC_05_PREF_ADDR: decoded=true v6_probe=true v4_probe=true disable_mig_honored=true");
 }
@@ -2164,48 +2193,48 @@ fn test_quic_preferred_address_migration() {
 // crap:trusted-bounds
 fn test_quic_ack_frequency_frames() {
     var flow_pkt: u8[..64] = [];
-    assert(quic_internal::encode_max_streams_frame(flow_pkt, 100, true));
-    assert(quic_internal::encode_data_blocked_frame(flow_pkt, 65536));
-    assert(quic_internal::encode_streams_blocked_frame(flow_pkt, 50, false));
+    assert(quic::encode_max_streams_frame(100, true, flow_pkt));
+    assert(quic::encode_data_blocked_frame(65536, flow_pkt));
+    assert(quic::encode_streams_blocked_frame(50, false, flow_pkt));
     var f_idx: i64 = 0;
-    let mf1, mok1 = quic_internal::decode_quic_frame_cursor(flow_pkt[..], f_idx);
-    let mf2, mok2 = quic_internal::decode_quic_frame_cursor(flow_pkt[..], f_idx);
-    let mf3, mok3 = quic_internal::decode_quic_frame_cursor(flow_pkt[..], f_idx);
-    assert(mok1 && mf1.frame_type == quic_internal::QuicFrameType.MaxStreamsBidi);
-    assert(mok2 && mf2.frame_type == quic_internal::QuicFrameType.DataBlocked);
-    assert(mok3 && mf3.frame_type == quic_internal::QuicFrameType.StreamsBlockedUni);
+    let mf1, mok1 = quic::decode_frame_cursor(flow_pkt[..], f_idx);
+    let mf2, mok2 = quic::decode_frame_cursor(flow_pkt[..], f_idx);
+    let mf3, mok3 = quic::decode_frame_cursor(flow_pkt[..], f_idx);
+    assert(mok1 && mf1.frame_type == quic::QuicFrameType.MaxStreamsBidi);
+    assert(mok2 && mf2.frame_type == quic::QuicFrameType.DataBlocked);
+    assert(mok3 && mf3.frame_type == quic::QuicFrameType.StreamsBlockedUni);
 
     var pkt: u8[..64] = [];
     // 1. IMMEDIATE_ACK (0x1F)
     pkt.push(0x1F);
     // 2. ACK_FREQUENCY (0xAF)
-    let af_in = quic_internal::QuicAckFrequencyFrame {
+    let af_in = quic::QuicAckFrequencyFrame {
         seq:                      7,
         ack_eliciting_threshold:  10,
         request_max_ack_delay_us: 15000,
         reordering_threshold:     3,
     };
-    assert(quic_internal::encode_ack_frequency_frame(pkt, af_in));
+    assert(quic::encode_ack_frequency_frame(af_in, pkt));
 
     var idx: i64 = 0;
-    let f1, ok1 = quic_internal::decode_quic_frame_cursor(pkt[..], idx);
-    assert(ok1 && f1.frame_type == quic_internal::QuicFrameType.ImmediateAck);
+    let f1, ok1 = quic::decode_frame_cursor(pkt[..], idx);
+    assert(ok1 && f1.frame_type == quic::QuicFrameType.ImmediateAck);
     assert(idx == 1);
 
-    let f2, ok2 = quic_internal::decode_quic_frame_cursor(pkt[..], idx);
-    assert(ok2 && f2.frame_type == quic_internal::QuicFrameType.AckFrequency);
+    let f2, ok2 = quic::decode_frame_cursor(pkt[..], idx);
+    assert(ok2 && f2.frame_type == quic::QuicFrameType.AckFrequency);
     assert(f2.stream_id == 7 && f2.length == 10 && f2.max_data == 15000 && f2.offset == 3);
     assert(idx == pkt.len);
 
     // Reject ack_eliciting_threshold == 0 in both encoder and decoder
-    let bad_af = quic_internal::QuicAckFrequencyFrame { seq: 1, ack_eliciting_threshold: 0, .. };
+    let bad_af = quic::QuicAckFrequencyFrame { seq: 1, ack_eliciting_threshold: 0, .. };
     var bad_out: u8[..32] = [];
-    assert(!quic_internal::encode_ack_frequency_frame(bad_out, bad_af));
+    assert(!quic::encode_ack_frequency_frame(bad_af, bad_out));
 
     let bad_wire: const u8[4] = [0x01, 0x00, 0x10, 0x01]; // threshold = 0
     var cur = core::cursor_from(bad_wire[..]);
-    var af_out = quic_internal::QuicAckFrequencyFrame { .. };
-    assert(!quic_internal::decode_ack_frequency_frame(cur, af_out));
+    let _af_out, af_ok = quic::decode_ack_frequency_frame(cur);
+    assert(!af_ok);
 
     print("QUICC_06_ACK_FREQ: immediate_ack=true ack_freq_roundtrip=true zero_thresh_rejected=true");
 }
@@ -2249,35 +2278,35 @@ fn run_08_verify_quic_frames_rfc9000() {
 //
 
 fn test_rtt_estimator_invariants() {
-    var rtt = quic_internal::RttState { .. };
+    var rtt = quic::RttState { .. };
     assert(rtt.smoothed_rtt_us == 333000);
     print("INIT_RTT: 333000");
 
     // First sample: 100ms (100,000 us)
-    quic_internal::update_rtt(rtt, 100000, 0, true, 1000);
+    quic::update_rtt(rtt, 100000, 0, true, 1000);
     assert(rtt.smoothed_rtt_us == 100000 && rtt.min_rtt_us == 100000);
     print("SAMPLE1: smoothed=100000 min=100000");
 
     // Second sample: 80ms (80,000 us), min_rtt drops
-    quic_internal::update_rtt(rtt, 80000, 0, true, 2000);
+    quic::update_rtt(rtt, 80000, 0, true, 2000);
     assert(rtt.min_rtt_us == 80000);
     print("SAMPLE2_MIN_DROPPED: true");
 
     // Ack delay capping: peer reports 50ms delay, but max_ack_delay is 25ms
-    quic_internal::update_rtt(rtt, 120000, 50000, true, 3000);
+    quic::update_rtt(rtt, 120000, 50000, true, 3000);
     assert(rtt.latest_rtt_us == 120000);
     print("SAMPLE3_DELAY_CAPPED: true");
 }
 
 fn test_quic_loss_detection_thresholds() {
-    var space = quic_internal::PnSpaceState { space_id: quic_internal::PnSpaceId.ApplicationData, .. };
-    var rtt = quic_internal::RttState { smoothed_rtt_us: 100000, latest_rtt_us: 100000, .. };
+    var space = quic::PnSpaceState { space_id: quic::PnSpaceId.ApplicationData, .. };
+    var rtt = quic::RttState { smoothed_rtt_us: 100000, latest_rtt_us: 100000, .. };
 
     // Record sent packets 0, 1, 2, 3, 4 at t = 10000 us
     space.has_sent_packets = true;
     space.largest_sent_pn = 4;
     for pn in 5 {
-        space.sent_packets.push(quic_internal::SentPacketMeta {
+        space.sent_packets.push(quic::SentPacketMeta {
             pn:            pn as u64,
             time_sent_us:  10000,
             size_bytes:    1200,
@@ -2291,8 +2320,8 @@ fn test_quic_loss_detection_thresholds() {
     space.has_acked_packets = true;
     space.largest_acked_pn = 4;
 
-    var lost: quic_internal::SentPacketMeta[..64] = [];
-    quic_internal::detect_lost_packets(space, rtt, 15000, lost);
+    var lost: quic::SentPacketMeta[..64] = [];
+    quic::detect_lost_packets(space, rtt, 15000, lost);
 
     assert(lost.len == 2);
     print("LOST_COUNT_PACKET_THRESHOLD: 2");
@@ -2308,35 +2337,35 @@ fn test_quic_loss_detection_thresholds() {
 }
 
 fn test_optimistic_ack_rejection() {
-    var space = quic_internal::PnSpaceState {
-        space_id:         quic_internal::PnSpaceId.ApplicationData,
+    var space = quic::PnSpaceState {
+        space_id:         quic::PnSpaceId.ApplicationData,
         has_sent_packets: true,
         largest_sent_pn:  10,
         ..
     };
 
     // Attack 1: Peer ACKs packet 15 (ahead of sent 10) -> MUST FAIL
-    var bad_ack1 = quic_internal::AckFrame { largest_acked: 15, first_ack_range: 0, .. };
-    var intervals: quic_internal::AckInterval[..64] = [];
-    let ok1 = quic_internal::parse_and_validate_ack(space, bad_ack1, intervals);
+    var bad_ack1 = quic::AckFrame { largest_acked: 15, first_ack_range: 0, .. };
+    var intervals: quic::AckInterval[..64] = [];
+    let ok1 = quic::parse_and_validate_ack(space, bad_ack1, intervals);
     assert(!ok1);
     print("OACK_FORWARD_REJECTED: true");
 
     // Attack 2: first_ack_range > largest_acked (underflow) -> MUST FAIL
-    var bad_ack2 = quic_internal::AckFrame { largest_acked: 5, first_ack_range: 10, .. };
-    let ok2 = quic_internal::parse_and_validate_ack(space, bad_ack2, intervals);
+    var bad_ack2 = quic::AckFrame { largest_acked: 5, first_ack_range: 10, .. };
+    let ok2 = quic::parse_and_validate_ack(space, bad_ack2, intervals);
     assert(!ok2);
     print("OACK_UNDERFLOW_REJECTED: true");
 
     // Valid ACK: largest_acked = 10, first_ack_range = 2 -> interval [8, 10]
-    var good_ack = quic_internal::AckFrame { largest_acked: 10, first_ack_range: 2, .. };
-    let ok3 = quic_internal::parse_and_validate_ack(space, good_ack, intervals);
+    var good_ack = quic::AckFrame { largest_acked: 10, first_ack_range: 2, .. };
+    let ok3 = quic::parse_and_validate_ack(space, good_ack, intervals);
     assert(ok3 && intervals.len == 1 && intervals[0].smallest == 8 && intervals[0].largest == 10);
     print("VALID_ACK_INTERVAL: true");
 }
 
 fn test_pto_backoff_calculations() {
-    var rtt = quic_internal::RttState {
+    var rtt = quic::RttState {
         smoothed_rtt_us:  100000,
         rttvar_us:        20000,
         max_ack_delay_us: 25000,
@@ -2344,17 +2373,17 @@ fn test_pto_backoff_calculations() {
     };
 
     // pto_count = 0: smoothed_rtt + 4 * rttvar + max_ack_delay = 100k + 80k + 25k = 205k
-    let pto0 = quic_internal::compute_pto_duration(rtt, 0, true);
+    let pto0 = quic::compute_pto_duration(rtt, 0, true);
     assert(pto0 == 205000);
     print("PTO_COUNT_0: 205000");
 
     // pto_count = 1: 205k * 2 = 410k
-    let pto1 = quic_internal::compute_pto_duration(rtt, 1, true);
+    let pto1 = quic::compute_pto_duration(rtt, 1, true);
     assert(pto1 == 410000);
     print("PTO_COUNT_1: 410000");
 
     // pto_count = 2: 205k * 4 = 820k
-    let pto2 = quic_internal::compute_pto_duration(rtt, 2, true);
+    let pto2 = quic::compute_pto_duration(rtt, 2, true);
     assert(pto2 == 820000);
     print("PTO_COUNT_2: 820000");
 }
@@ -2401,15 +2430,15 @@ fn run_09_verify_quic_loss_recovery() {
 fn test_new_token_empty_rejected() {
     var vEmptyToken: u8[>..] = [];
     assert(wire_kit::parse_hex("0700", vEmptyToken)); // Type 0x07 (NEW_TOKEN), Length 0
-    let _, _, ok = quic_internal::decode_quic_frame(vEmptyToken[..], 0);
+    let _, _, ok = quic::decode_frame(vEmptyToken[..], 0);
     assert(!ok); // RFC 9000 §19.7: Token MUST NOT be empty -> FRAME_ENCODING_ERROR
 
     var vValidToken: u8[>..] = [];
     assert(wire_kit::parse_hex("070474657374", vValidToken)); // Type 0x07, Length 4, "test"
-    let frame, next_off, ok_val = quic_internal::decode_quic_frame(vValidToken[..], 0);
+    let frame, next_off, ok_val = quic::decode_frame(vValidToken[..], 0);
     assert(ok_val);
     assert(next_off == 6);
-    assert(frame.frame_type == quic_internal::QuicFrameType.NewToken);
+    assert(frame.frame_type == quic::QuicFrameType.NewToken);
     assert(frame.payload == "test");
     print("QUIC_NEW_TOKEN_INVARIANTS: OK");
 }
@@ -2418,20 +2447,20 @@ fn test_max_streams_boundary_2_60() {
     // 2^60 is 0x1000000000000000. Encoded as 8-byte varint: 0xD0 0x00 0x00 0x00 0x00 0x00 0x00 0x00
     var vMaxStreamsValid: u8[>..] = [];
     assert(wire_kit::parse_hex("12D000000000000000", vMaxStreamsValid));
-    let frame_val, _, ok_val = quic_internal::decode_quic_frame(vMaxStreamsValid[..], 0);
+    let frame_val, _, ok_val = quic::decode_frame(vMaxStreamsValid[..], 0);
     assert(ok_val);
     assert(frame_val.max_data == (1 as u64) << 60);
 
     // 2^60 + 1: 0xD0 0x00 0x00 0x00 0x00 0x00 0x00 0x01 -> MUST be rejected (RFC 9000 §19.11)
     var vMaxStreamsOvf: u8[>..] = [];
     assert(wire_kit::parse_hex("12D000000000000001", vMaxStreamsOvf));
-    let _, _, ok_ovf = quic_internal::decode_quic_frame(vMaxStreamsOvf[..], 0);
+    let _, _, ok_ovf = quic::decode_frame(vMaxStreamsOvf[..], 0);
     assert(!ok_ovf);
 
     // Test uni variant (0x13)
     var vMaxStreamsUniOvf: u8[>..] = [];
     assert(wire_kit::parse_hex("13D000000000000001", vMaxStreamsUniOvf));
-    let _, _, ok_uni_ovf = quic_internal::decode_quic_frame(vMaxStreamsUniOvf[..], 0);
+    let _, _, ok_uni_ovf = quic::decode_frame(vMaxStreamsUniOvf[..], 0);
     assert(!ok_uni_ovf);
 
     print("QUIC_MAX_STREAMS_2_60_CEILING: OK");
@@ -2441,20 +2470,20 @@ fn test_streams_blocked_boundary_2_60() {
     // 2^60 is valid: 0xD0 0x00 0x00 0x00 0x00 0x00 0x00 0x00
     var vSbValid: u8[>..] = [];
     assert(wire_kit::parse_hex("16D000000000000000", vSbValid));
-    let frame_val, _, ok_val = quic_internal::decode_quic_frame(vSbValid[..], 0);
+    let frame_val, _, ok_val = quic::decode_frame(vSbValid[..], 0);
     assert(ok_val);
     assert(frame_val.max_data == (1 as u64) << 60);
 
     // 2^60 + 1 MUST be rejected (RFC 9000 §19.14)
     var vSbOvf: u8[>..] = [];
     assert(wire_kit::parse_hex("16D000000000000001", vSbOvf));
-    let _, _, ok_ovf = quic_internal::decode_quic_frame(vSbOvf[..], 0);
+    let _, _, ok_ovf = quic::decode_frame(vSbOvf[..], 0);
     assert(!ok_ovf);
 
     // Test uni variant (0x17)
     var vSbUniOvf: u8[>..] = [];
     assert(wire_kit::parse_hex("17D000000000000001", vSbUniOvf));
-    let _, _, ok_uni_ovf = quic_internal::decode_quic_frame(vSbUniOvf[..], 0);
+    let _, _, ok_uni_ovf = quic::decode_frame(vSbUniOvf[..], 0);
     assert(!ok_uni_ovf);
 
     print("QUIC_STREAMS_BLOCKED_2_60_CEILING: OK");
@@ -2462,37 +2491,41 @@ fn test_streams_blocked_boundary_2_60() {
 
 fn test_packet_number_space_frame_matrix() {
     let scid: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
-    var srv = quic_internal::new_quic_server_connection(scid[..]);
+    var srv = quic::new_server_connection(scid[..]);
 
     // Initial packet containing STREAM frame (0x08) -> MUST trigger PROTOCOL_VIOLATION (RFC 9000 §12.5)
     var stream_payload: u8[>..] = [];
     assert(wire_kit::parse_hex("0804026869", stream_payload)); // STREAM id=4 len=2 "hi"
 
-    let handled, _ = quic_internal::quic_conn_process_payload(srv, stream_payload[..], quic_internal::QuicHeaderType.Initial);
+    let _pr_handled = quic::process_payload(srv, stream_payload[..], quic::QuicHeaderType.Initial);
+    let handled = _pr_handled.handled;
     assert(!handled);
     assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // Reset connection
-    var srv2 = quic_internal::new_quic_server_connection(scid[..]);
+    var srv2 = quic::new_server_connection(scid[..]);
     // Initial packet containing HANDSHAKE_DONE (0x1E) -> MUST trigger PROTOCOL_VIOLATION
     var hd_payload: u8[>..] = [];
     hd_payload.push(0x1E);
-    let handled2, _ = quic_internal::quic_conn_process_payload(srv2, hd_payload[..], quic_internal::QuicHeaderType.Initial);
+    let _pr_handled2 = quic::process_payload(srv2, hd_payload[..], quic::QuicHeaderType.Initial);
+    let handled2 = _pr_handled2.handled;
     assert(!handled2);
     assert(srv2.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // Initial packet containing CONNECTION_CLOSE_APP (0x1D) -> MUST trigger PROTOCOL_VIOLATION
-    var srv3 = quic_internal::new_quic_server_connection(scid[..]);
+    var srv3 = quic::new_server_connection(scid[..]);
     var cc_app_payload: u8[>..] = [];
     assert(wire_kit::parse_hex("1D0000", cc_app_payload)); // CONNECTION_CLOSE_APP code=0 len=0
-    let handled3, _ = quic_internal::quic_conn_process_payload(srv3, cc_app_payload[..], quic_internal::QuicHeaderType.Initial);
+    let _pr_handled3 = quic::process_payload(srv3, cc_app_payload[..], quic::QuicHeaderType.Initial);
+    let handled3 = _pr_handled3.handled;
     assert(!handled3);
     assert(srv3.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
     // 1-RTT packet containing legitimate STREAM frame -> MUST succeed
-    var srv4 = quic_internal::new_quic_server_connection(scid[..]);
-    srv4.state = quic_internal::QuicConnState.Established;
-    let handled4, _ = quic_internal::quic_conn_process_payload(srv4, stream_payload[..], quic_internal::QuicHeaderType.OneRtt);
+    var srv4 = quic::new_server_connection(scid[..]);
+    srv4.state = quic::QuicConnState.Established;
+    let _pr_handled4 = quic::process_payload(srv4, stream_payload[..], quic::QuicHeaderType.OneRtt);
+    let handled4 = _pr_handled4.handled;
     assert(handled4);
     assert(srv4.close_code == 0);
 
@@ -2501,13 +2534,14 @@ fn test_packet_number_space_frame_matrix() {
 
 fn test_server_receiving_new_token() {
     let scid: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
-    var srv = quic_internal::new_quic_server_connection(scid[..]);
-    srv.state = quic_internal::QuicConnState.Established;
+    var srv = quic::new_server_connection(scid[..]);
+    srv.state = quic::QuicConnState.Established;
 
     // Server receiving NEW_TOKEN (0x07) in 1-RTT packet -> MUST trigger PROTOCOL_VIOLATION (RFC 9000 §19.7)
     var tok_payload: u8[>..] = [];
     assert(wire_kit::parse_hex("070474657374", tok_payload));
-    let handled, _ = quic_internal::quic_conn_process_payload(srv, tok_payload[..], quic_internal::QuicHeaderType.OneRtt);
+    let _pr_handled = quic::process_payload(srv, tok_payload[..], quic::QuicHeaderType.OneRtt);
+    let handled = _pr_handled.handled;
     assert(!handled);
     assert(srv.close_code == rfc::QUIC_ERR_PROTOCOL_VIOLATION);
 
@@ -2516,8 +2550,8 @@ fn test_server_receiving_new_token() {
 
 fn test_stream_data_blocked_send_only() {
     let scid: u8[8] = [1, 2, 3, 4, 5, 6, 7, 8];
-    var srv = quic_internal::new_quic_server_connection(scid[..]);
-    srv.state = quic_internal::QuicConnState.Established;
+    var srv = quic::new_server_connection(scid[..]);
+    srv.state = quic::QuicConnState.Established;
 
     // Server receives STREAM_DATA_BLOCKED on stream 3 (ServerUni: client can only receive, cannot send).
     // Stream 3 for Server is send-only. Peer (client) is receive-only.
@@ -2525,7 +2559,8 @@ fn test_stream_data_blocked_send_only() {
     // MUST terminate the connection with error STREAM_STATE_ERROR."
     var sdb_payload: u8[>..] = [];
     assert(wire_kit::parse_hex("15034000", sdb_payload)); // STREAM_DATA_BLOCKED stream=3 limit=0
-    let handled, _ = quic_internal::quic_conn_process_payload(srv, sdb_payload[..], quic_internal::QuicHeaderType.OneRtt);
+    let _pr_handled = quic::process_payload(srv, sdb_payload[..], quic::QuicHeaderType.OneRtt);
+    let handled = _pr_handled.handled;
     assert(!handled);
     assert(srv.close_code == rfc::QUIC_ERR_STREAM_STATE);
 
@@ -2534,28 +2569,28 @@ fn test_stream_data_blocked_send_only() {
 
 fn test_frame_encoders() {
     var out_tok: u8[..64] = [];
-    assert(!quic_internal::encode_new_token_frame(out_tok, "")); // empty token rejected
-    assert(quic_internal::encode_new_token_frame(out_tok, "valid_token"));
-    let f_tok, _, ok_tok = quic_internal::decode_quic_frame(out_tok[..], 0);
+    assert(!quic::encode_new_token_frame("", out_tok)); // empty token rejected
+    assert(quic::encode_new_token_frame("valid_token", out_tok));
+    let f_tok, _, ok_tok = quic::decode_frame(out_tok[..], 0);
     assert(ok_tok);
-    assert(f_tok.frame_type == quic_internal::QuicFrameType.NewToken);
+    assert(f_tok.frame_type == quic::QuicFrameType.NewToken);
     assert(f_tok.payload == "valid_token");
 
     var out_ncid: u8[..64] = [];
     let reset_tok: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let cid:       u8[4]  = [0xAA, 0xBB, 0xCC, 0xDD];
-    assert(quic_internal::encode_new_conn_id_frame(out_ncid, 1, 0, cid[..], reset_tok));
-    let f_ncid, _, ok_ncid = quic_internal::decode_quic_frame(out_ncid[..], 0);
+    assert(quic::encode_new_conn_id_frame(1, 0, cid[..], reset_tok, out_ncid));
+    let f_ncid, _, ok_ncid = quic::decode_frame(out_ncid[..], 0);
     assert(ok_ncid);
-    assert(f_ncid.frame_type == quic_internal::QuicFrameType.NewConnectionId);
+    assert(f_ncid.frame_type == quic::QuicFrameType.NewConnectionId);
     assert(f_ncid.stream_id == 1);
     assert(f_ncid.offset == 0);
 
     var out_rcid: u8[..32] = [];
-    assert(quic_internal::encode_retire_conn_id_frame(out_rcid, 2));
-    let f_rcid, _, ok_rcid = quic_internal::decode_quic_frame(out_rcid[..], 0);
+    assert(quic::encode_retire_conn_id_frame(2, out_rcid));
+    let f_rcid, _, ok_rcid = quic::decode_frame(out_rcid[..], 0);
     assert(ok_rcid);
-    assert(f_rcid.frame_type == quic_internal::QuicFrameType.RetireConnectionId);
+    assert(f_rcid.frame_type == quic::QuicFrameType.RetireConnectionId);
     assert(f_rcid.stream_id == 2);
 
     print("QUIC_FRAME_ENCODERS: OK");

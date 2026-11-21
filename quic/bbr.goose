@@ -5,32 +5,11 @@
 // Implements 7-state BBR FSM (draft-ietf-ccwg-bbr-06), dual-envelope [inflight_lo, inflight_hi],
 // 2% loss threshold, DCTCP/L4S ECN, 5s ProbeRTT, RFC 9438 CUBIC with app-limited freeze,
 // and picoquic-style user-space leaky-bucket pacing.
-namespace quic_internal;
+namespace quic;
 
 import std;
 import core from "..";
-
-// ---- integer math helpers & cube root ------------------------------------
-
-// Computes floor(cbrt(val)) using integer binary search up to 2,642,245.
-fn int_cbrt(val: u64) -> u64 {
-    guard val > 0 else { return 0; }
-    var low:  u64 = 1;
-    var high: u64 = 2642245; // 2_642_245^3 = 18_446_742_000_000_000_000 <= u64::MAX
-    var ans:  u64 = 1;
-
-    while low <= high {
-        let mid = (low + high) / 2;
-        let sq = mid * mid;
-        if sq <= (0xFFFFFFFFFFFFFFFF / mid) && (sq * mid) <= val {
-            ans = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-    return ans;
-}
+import .internal;
 
 // ---- user-space leaky bucket pacer (picoquic model) ----------------------
 
@@ -48,13 +27,9 @@ fn new_pacer(initial_rate_bps: u64 = 10000000) -> Pacer {
     };
 }
 
-// Sets current pacing rate, enforcing a 64 kbps safety floor.
-fn pacer_set_rate(pacer: Pacer&, rate_bps: u64) {
-    pacer.pacing_rate_bps = max(rate_bps, 64000);
-}
-
 // Queries whether pacer permits transmitting packet_bytes at now_us, updating token bucket.
-fn pacer_can_send(pacer: Pacer&, now_us: u64, packet_bytes: u64) -> bool, u64 {
+// Returns `(delay_us, allowed)`.
+fn can_send(pacer: Pacer&, now_us: u64, packet_bytes: u64) -> u64, bool {
     let rate = max(pacer.pacing_rate_bps, 64000);
     pacer.pacing_rate_bps = rate;
     let dur_u64 = min(core::mul_sat_u64(packet_bytes, 8000000) / rate, 1000000000);
@@ -62,7 +37,7 @@ fn pacer_can_send(pacer: Pacer&, now_us: u64, packet_bytes: u64) -> bool, u64 {
     if pacer.last_pacing_time_us == 0 {
         pacer.last_pacing_time_us = now_us;
         pacer.bucket_balance_us = -dur_us;
-        return true, 0;
+        return 0, true;
     }
 
     var elapsed: i64 = 0;
@@ -74,11 +49,11 @@ fn pacer_can_send(pacer: Pacer&, now_us: u64, packet_bytes: u64) -> bool, u64 {
 
     if pacer.bucket_balance_us >= 0 {
         pacer.bucket_balance_us = core::sub_sat_i64(pacer.bucket_balance_us, dur_us);
-        return true, 0;
+        return 0, true;
     }
 
     let delay_us = (-pacer.bucket_balance_us) as u64;
-    return false, delay_us;
+    return delay_us, false;
 }
 
 // ---- bbrv2 / bbrv3 state machine (draft-ietf-ccwg-bbr-06) ----------------
@@ -93,8 +68,6 @@ enum BbrMode {
     ProbeRtt,
 }
 
-const BBR_BETA_NUM:       u64 = 70; // 0.7 inflight reduction on congestion
-const BBR_BETA_DENOM:     u64 = 100;
 const BBR_MIN_CWND_BYTES: u64 = 4 * 1200; // 4 * MSS
 
 struct BbrState {
@@ -114,13 +87,6 @@ struct BbrState {
     app_limited:             bool    = false,
 }
 
-fn new_bbr_state() -> BbrState {
-    return BbrState {
-        pacer: new_pacer(10000000),
-        ..
-    };
-}
-
 // Computes Bandwidth-Delay Product (BDP) in bytes.
 fn bbr_bdp(bw_bps: u64, min_rtt_us: u64) -> u64 {
     guard min_rtt_us > 0 && min_rtt_us != 0xFFFFFFFFFFFFFFFF else { return 10 * 1200; }
@@ -129,7 +95,7 @@ fn bbr_bdp(bw_bps: u64, min_rtt_us: u64) -> u64 {
 }
 
 // Updates min_rtt tracking and triggers 5-second ProbeRTT transition.
-fn bbr_check_probe_rtt(bbr: BbrState&, now_us: u64, rtt_sample_us: u64) {
+fn check_probe_rtt(bbr: BbrState&, now_us: u64, rtt_sample_us: u64) {
     if rtt_sample_us < bbr.min_rtt_us {
         bbr.min_rtt_us = rtt_sample_us;
         bbr.min_rtt_stamp_us = now_us;
@@ -139,7 +105,7 @@ fn bbr_check_probe_rtt(bbr: BbrState&, now_us: u64, rtt_sample_us: u64) {
         if bbr.probe_rtt_done_stamp_us != 0 && now_us >= bbr.probe_rtt_done_stamp_us {
             bbr.min_rtt_stamp_us = now_us;
             bbr.mode = BbrMode.ProbeBwCruise;
-            bbr_update_pacing_and_cwnd(bbr);
+            update_pacing_and_cwnd(bbr);
         }
         return;
     }
@@ -155,7 +121,7 @@ fn bbr_check_probe_rtt(bbr: BbrState&, now_us: u64, rtt_sample_us: u64) {
 }
 
 // Updates pacing rate and cwnd according to active BBR state.
-fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
+fn update_pacing_and_cwnd(bbr: BbrState&) {
     let eff_bw = if bbr.bw_hi_bps > 0 { bbr.bw_hi_bps } else { 10000000 };
     var gain_num:   u64 = 1000;
     var gain_denom: u64 = 1000;
@@ -193,7 +159,7 @@ fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
     }
 
     let pacing_bps = core::mul_sat_u64(eff_bw, gain_num) / gain_denom;
-    pacer_set_rate(bbr.pacer, pacing_bps);
+    quic_internal::pacer_set_rate(bbr.pacer, pacing_bps);
 
     if bbr.mode != BbrMode.ProbeRtt {
         let bdp = bbr_bdp(eff_bw, bbr.min_rtt_us);
@@ -207,7 +173,7 @@ fn bbr_update_pacing_and_cwnd(bbr: BbrState&) {
 }
 
 // Handles packet loss (> 2%) and DCTCP/L4S ECN congestion signals.
-fn bbr_on_congestion_signal(
+fn on_congestion_signal(
     bbr:               BbrState&,
     bytes_in_flight:   u64,
     loss_bytes:        u64,
@@ -234,8 +200,10 @@ fn bbr_on_congestion_signal(
     }
 
     if has_loss_signal {
-        bbr.inflight_hi_bytes = core::mul_sat_u64(bytes_in_flight, BBR_BETA_NUM) / BBR_BETA_DENOM;
-        bbr.bw_lo_bps = core::mul_sat_u64(bbr.bw_hi_bps, BBR_BETA_NUM) / BBR_BETA_DENOM;
+        bbr.inflight_hi_bytes = core::mul_sat_u64(bytes_in_flight, quic_internal::BBR_BETA_NUM)
+            / quic_internal::BBR_BETA_DENOM;
+        bbr.bw_lo_bps = core::mul_sat_u64(bbr.bw_hi_bps, quic_internal::BBR_BETA_NUM)
+            / quic_internal::BBR_BETA_DENOM;
         if bbr.mode == BbrMode.ProbeBwCruise || bbr.mode == BbrMode.ProbeBwUp {
             bbr.mode = BbrMode.ProbeBwDown;
         }
@@ -243,7 +211,7 @@ fn bbr_on_congestion_signal(
 }
 
 // Advances BBR cycle phase transitions.
-fn bbr_advance_cycle(bbr: BbrState&, round_done: bool) {
+fn advance_cycle(bbr: BbrState&, round_done: bool) {
     guard round_done else { return; }
     match bbr.mode {
         Startup => {
@@ -266,7 +234,7 @@ fn bbr_advance_cycle(bbr: BbrState&, round_done: bool) {
         },
         _ => {},
     }
-    bbr_update_pacing_and_cwnd(bbr);
+    update_pacing_and_cwnd(bbr);
 }
 
 // ---- cubic congestion control (rfc 9438) & app-limited freeze -------------
@@ -281,16 +249,8 @@ struct CubicState {
     recovery_start_us: u64  = 0,
 }
 
-// Computes K = cbrt(w_max * beta / C) in milliseconds (RFC 9438 Section 4.1).
-fn cubic_compute_k(w_max: u64) -> u64 {
-    // K = cbrt((w_max * (1 - 0.7)) / 0.4) = cbrt((w_max * 3) / 4)
-    // Multiplied by 10^9 before cbrt to obtain millisecond precision
-    let w_diff = core::mul_sat_u64(w_max, 3) / 4;
-    return int_cbrt(core::mul_sat_u64(w_diff, 1000000000));
-}
-
 // Updates CUBIC window with app-limited freeze (draft-ietf-ccwg-ratelimited-increase-11).
-fn cubic_on_ack(
+fn on_ack(
     cubic:           CubicState&,
     now_us:          u64,
     rtt_us:          u64,
@@ -312,7 +272,7 @@ fn cubic_on_ack(
 
     if cubic.epoch_start_us == 0 {
         cubic.epoch_start_us = max(now_us, 1);
-        cubic.k_ms = cubic_compute_k(cubic.w_max_segments);
+        cubic.k_ms = quic_internal::cubic_compute_k(cubic.w_max_segments);
     }
 
     let t_ms = if now_us > cubic.epoch_start_us { (now_us - cubic.epoch_start_us) / 1000 } else { 0 };
@@ -351,7 +311,7 @@ fn cubic_on_ack(
 
 // RFC 9002 Section 7.3.2: Recovery - Enter congestion recovery at most once per round trip.
 // RFC 9438 Section 4.6: Multiplicative Decrease - Multiplicative decrease upon congestion signal.
-fn cubic_on_loss(cubic: CubicState&, now_us: u64, pkt_sent_us: u64 = 0) {
+fn on_loss(cubic: CubicState&, now_us: u64, pkt_sent_us: u64 = 0) {
     if cubic.recovery_start_us > 0 {
         let sent_in_prior_epoch = if pkt_sent_us > 0 {
             pkt_sent_us <= cubic.recovery_start_us
@@ -364,6 +324,6 @@ fn cubic_on_loss(cubic: CubicState&, now_us: u64, pkt_sent_us: u64 = 0) {
     cubic.w_max_segments = cubic.cwnd_segments;
     cubic.cwnd_segments = max((cubic.cwnd_segments * 7) / 10, 2); // beta = 0.7
     cubic.epoch_start_us = now_us;
-    cubic.k_ms = cubic_compute_k(cubic.w_max_segments);
+    cubic.k_ms = quic_internal::cubic_compute_k(cubic.w_max_segments);
     cubic.last_update_us = now_us;
 }

@@ -522,23 +522,23 @@ fn core::on_link_event(app: PgHttpApp&, host: wing::NetHost&, ev: const core::Li
 }
 
 fn encode_test_h2_get_frame<B>(
-    dt:        h2_internal::DynamicTable&,
+    dt:        http2::DynamicTable&,
     stream_id: u32,
     path:      const u8[:],
     out:       B&,
 ) {
     var hblk: u8[..256] = [];
-    h2_internal::encode_hpack_field(dt, hblk, ":method", "GET", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hblk, ":path", path, h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hblk, ":scheme", "http", h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hblk, ":authority", "localhost", h2_internal::HpackIndexing.Incremental, false);
-    let fh = h2_internal::FrameHeader {
+    http2::encode_hpack_field(dt, hblk, ":method", "GET", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hblk, ":path", path, http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hblk, ":scheme", "http", http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hblk, ":authority", "localhost", http2::HpackIndexing.Incremental, false);
+    let fh = http2::FrameHeader {
         length:     hblk.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  stream_id,
     };
-    h2_internal::encode_frame_header_to(fh, out);
+    http2::encode_frame_header_to(fh, out);
     let _ = out.try_append(hblk[..]);
 }
 
@@ -616,7 +616,7 @@ fn test_http_plus_async_pg_full_integration() {
         app.now_ns = core::add_sat_u64(app.now_ns, 2000000);
         let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 10, app.now_ns);
         if app.h2_connected && !sent_h2 {
-            var cli_hpack = h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
+            var cli_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
             var h2_req: u8[..1024] = [];
             let _ = h2_req.try_append(rfc::H2_CLIENT_PREFACE[..]);
             encode_test_h2_get_frame(cli_hpack, 1, "/db", h2_req);

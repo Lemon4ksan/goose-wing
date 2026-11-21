@@ -17,10 +17,10 @@ inline fn is_valid_h3_request_stream_id(stream_id: u64) -> bool {
     return stream_id <= rfc::QUIC_VARINT_MAX && (stream_id & 0x03) == 0;
 }
 
-fn is_valid_h3_request_pseudo_fields(pseudo: const h3_internal::H3PseudoHeaders&) -> bool {
+fn is_valid_h3_request_pseudo_fields(pseudo: const http3::PseudoHeaders&) -> bool {
     guard pseudo.has_method && wing::is_valid_token_swar(pseudo.method[..]) else { return false; }
     if pseudo.has_authority {
-        guard h2_internal::is_valid_h2_authority(pseudo.authority[..]) else { return false; }
+        guard http2::is_valid_authority(pseudo.authority[..]) else { return false; }
     }
     if pseudo.has_protocol {
         // RFC 9220 Section 3: WebSockets Upgrade over HTTP/3 - Extended CONNECT requires :authority and token :protocol.
@@ -33,15 +33,15 @@ fn is_valid_h3_request_pseudo_fields(pseudo: const h3_internal::H3PseudoHeaders&
     if is_classic_connect {
         return pseudo.has_authority && !pseudo.has_scheme && !pseudo.has_path;
     }
-    guard pseudo.has_scheme && h2_internal::is_valid_h2_scheme(pseudo.scheme[..]) else { return false; }
-    guard pseudo.has_path && h2_internal::is_valid_h2_path(pseudo.path[..]) else { return false; }
+    guard pseudo.has_scheme && http2::is_valid_scheme(pseudo.scheme[..]) else { return false; }
+    guard pseudo.has_path && http2::is_valid_path(pseudo.path[..]) else { return false; }
     if pseudo.path[..] == "*" {
         return pseudo.method[..] == "OPTIONS";
     }
     return true;
 }
 
-fn is_valid_h3_pseudo_fields(pseudo: const h3_internal::H3PseudoHeaders&) -> bool {
+fn is_valid_h3_pseudo_fields(pseudo: const http3::PseudoHeaders&) -> bool {
     let has_req_pseudo = pseudo.has_method || pseudo.has_scheme || pseudo.has_path
         || pseudo.has_authority || pseudo.has_protocol;
     if pseudo.is_trailer {
@@ -55,19 +55,19 @@ fn is_valid_h3_pseudo_fields(pseudo: const h3_internal::H3PseudoHeaders&) -> boo
 
 fn encode_qpack_sensitive_field<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
     let start_len = out.len;
-    let s_idx_name, _ = h3_internal::find_qpack_static_field(name, "");
-    if s_idx_name < rfc::QPACK_STATIC_TABLE_SIZE
-        && name == h3_internal::QPACK_STATIC_TABLE[s_idx_name as i64].name {
-        guard h2_internal::hpack_encode_int(out, s_idx_name, 4, 0x70)
-            && h2_internal::encode_hpack_string_literal(out, val, false) else {
+    let s_idx_name, _ = http3::find_qpack_static_field(name, "");
+    let s_ent, ok_s = http3::get_qpack_static_field(s_idx_name);
+    if ok_s && name == s_ent.name {
+        guard http2::hpack_encode_int(out, s_idx_name, 4, 0x70)
+            && http2::encode_hpack_string_literal(out, val, false) else {
             out.resize(start_len);
             return false;
         }
         return true;
     }
-    guard h2_internal::hpack_encode_int(out, name.len as u64, 3, 0x30)
+    guard http2::hpack_encode_int(out, name.len as u64, 3, 0x30)
         && out.try_append(name)
-        && h2_internal::encode_hpack_string_literal(out, val, false) else {
+        && http2::encode_hpack_string_literal(out, val, false) else {
         out.resize(start_len);
         return false;
     }
@@ -75,10 +75,10 @@ fn encode_qpack_sensitive_field<B>(out: B&, name: const u8[:], val: const u8[:])
 }
 
 fn encode_h3_pseudo_fields<B1, B2>(
-    tbl:            h3_internal::QpackTable&,
+    tbl:            http3::QpackTable&,
     stream_id:      u64,
     base:           u64,
-    pseudo:         const h3_internal::H3PseudoHeaders&,
+    pseudo:         const http3::PseudoHeaders&,
     body_fields:    B1&,
     out_enc_stream: B2&,
     max_dyn_abs:    u64&,
@@ -90,7 +90,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
         var st_buf: u8[..16] = [];
         pseudo.status.format_i64_dec(st_buf);
         let prev_len = body_fields.len;
-        h3_internal::encode_qpack_field_dynamic(
+        http3::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":status", st_buf[..],
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, true,
         );
@@ -98,7 +98,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
     }
     if pseudo.has_method {
         let prev_len = body_fields.len;
-        h3_internal::encode_qpack_field_dynamic(
+        http3::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":method", pseudo.method[..],
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, true,
         );
@@ -106,7 +106,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
     }
     if pseudo.has_scheme {
         let prev_len = body_fields.len;
-        h3_internal::encode_qpack_field_dynamic(
+        http3::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":scheme", pseudo.scheme[..],
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, true,
         );
@@ -114,7 +114,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
     }
     if pseudo.has_authority {
         let prev_len = body_fields.len;
-        h3_internal::encode_qpack_field_dynamic(
+        http3::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":authority", pseudo.authority[..],
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, true,
         );
@@ -122,7 +122,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
     }
     if pseudo.has_path {
         let prev_len = body_fields.len;
-        h3_internal::encode_qpack_field_dynamic(
+        http3::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":path", pseudo.path[..],
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, true,
         );
@@ -130,7 +130,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
     }
     if pseudo.has_protocol {
         let prev_len = body_fields.len;
-        h3_internal::encode_qpack_field_dynamic(
+        http3::encode_qpack_field_dynamic(
             tbl, stream_id, base, ":protocol", pseudo.protocol[..],
             body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, true,
         );
@@ -140,7 +140,7 @@ fn encode_h3_pseudo_fields<B1, B2>(
 }
 
 fn encode_single_h3_map_entry<B1, B2>(
-    tbl:            h3_internal::QpackTable&,
+    tbl:            http3::QpackTable&,
     stream_id:      u64,
     base:           u64,
     headers:        const wing::HeaderMap&,
@@ -163,12 +163,12 @@ fn encode_single_h3_map_entry<B1, B2>(
         return false;
     }
     let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
-    guard h2_internal::validate_h2_field_syntax(lower_name[..], eff_val) else { return false; }
+    guard http2::validate_field_syntax(lower_name[..], eff_val) else { return false; }
     if wing::is_sensitive(e) {
         return encode_qpack_sensitive_field(body_fields, lower_name[..], eff_val);
     }
     let prev_body = body_fields.len;
-    h3_internal::encode_qpack_field_dynamic(
+    http3::encode_qpack_field_dynamic(
         tbl, stream_id, base, lower_name[..], eff_val,
         body_fields, out_enc_stream, max_dyn_abs, used_any_dyn, false,
     );
@@ -182,9 +182,9 @@ fn encode_single_h3_map_entry<B1, B2>(
 //   encode_h3_headers_from_map(tbl, 0, pseudo, headers, enc_stream, out)
 //   returns: true, out contains HTTP/3 HEADERS frame octets
 fn encode_h3_headers_from_map<B1, B2>(
-    tbl:            h3_internal::QpackTable&,
+    tbl:            http3::QpackTable&,
     stream_id:      u64,
-    pseudo:         const h3_internal::H3PseudoHeaders&,
+    pseudo:         const http3::PseudoHeaders&,
     headers:        const wing::HeaderMap&,
     out_enc_stream: B1&,
     out_frame:      B2&,
@@ -230,9 +230,9 @@ fn encode_h3_headers_from_map<B1, B2>(
     }
 
     var qpack_payload: u8[..16384] = [];
-    h3_internal::prepend_qpack_section_prefix(tbl, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload);
-    guard qpack_payload.try_append(body_fields[..]) &&
-          h3_internal::encode_h3_headers_frame(out_frame, qpack_payload[..]) else {
+    guard http3::prepend_qpack_section_prefix(tbl, stream_id, base, max_dyn_abs, used_any_dyn, qpack_payload) &&
+          qpack_payload.try_append(body_fields[..]) &&
+          http3::encode_headers_frame(out_frame, qpack_payload[..]) else {
         return false;
     }
     committed = true;
@@ -243,25 +243,25 @@ fn encode_h3_headers_from_map<B1, B2>(
 //
 // Example:
 //   qpack_payload = [0x00, 0x00, 0xD1], decode_h3_headers_to_map(tbl, 0, qpack_payload, out_pseudo, out_headers)
-//   returns: h3_internal::QpackError.None, out_pseudo.method = "GET"
+//   returns: http3::QpackError.None, out_pseudo.method = "GET"
 fn decode_h3_headers_to_map(
-    tbl:               h3_internal::QpackTable&,
+    tbl:               http3::QpackTable&,
     stream_id:         u64,
     qpack_payload:     const u8[:],
-    out_pseudo:        h3_internal::H3PseudoHeaders&,
+    out_pseudo:        http3::PseudoHeaders&,
     out_headers:       wing::HeaderMap&,
     max_field_section: u64 = 16384,
-) -> h3_internal::QpackError {
+) -> http3::QpackError {
     let was_trailer = out_pseudo.is_trailer;
     var committed = false;
     defer if !committed {
-        out_pseudo = h3_internal::H3PseudoHeaders { is_trailer: was_trailer, .. };
+        out_pseudo = http3::PseudoHeaders { is_trailer: was_trailer, .. };
         out_headers.clear();
     };
     guard is_valid_h3_request_stream_id(stream_id) else {
-        return h3_internal::QpackError.MessageError;
+        return http3::QpackError.MessageError;
     }
-    let err = h3_internal::decode_or_block_qpack_to_map(
+    let err = http3::decode_or_block_qpack_to_map(
         tbl,
         stream_id,
         qpack_payload,
@@ -269,25 +269,25 @@ fn decode_h3_headers_to_map(
         out_headers,
         max_field_section,
     );
-    guard err == h3_internal::QpackError.None else { return err; }
+    guard err == http3::QpackError.None else { return err; }
     guard is_valid_h3_pseudo_fields(out_pseudo) else {
-        return h3_internal::QpackError.MessageError;
+        return http3::QpackError.MessageError;
     }
     if out_pseudo.has_status && wing::has_header(out_headers, "te") {
-        return h3_internal::QpackError.MessageError;
+        return http3::QpackError.MessageError;
     }
     if !out_pseudo.is_trailer && !out_pseudo.has_status && out_pseudo.method[..] != "CONNECT" {
         let is_http_scheme = out_pseudo.scheme[..].eq_ascii_fold("http")
             || out_pseudo.scheme[..].eq_ascii_fold("https");
         if is_http_scheme && !out_pseudo.has_authority && !wing::has_header(out_headers, "host") {
-            return h3_internal::QpackError.MessageError;
+            return http3::QpackError.MessageError;
         }
     }
     guard coalesce_h2_cookie_headers(out_headers) else {
-        return h3_internal::QpackError.MessageError;
+        return http3::QpackError.MessageError;
     }
     committed = true;
-    return h3_internal::QpackError.None;
+    return http3::QpackError.None;
 }
 
 // Encodes an HTTP/3 DATA frame (Type 0x00) into `out` (RFC 9114 §7.2.1).
@@ -296,5 +296,5 @@ fn decode_h3_headers_to_map(
 //   data = "hello", encode_h3_data_frame(data, out)
 //   returns: true, out = [0x00, 0x05, 'h', 'e', 'l', 'l', 'o']
 fn encode_h3_data_frame<B>(data: const u8[:], out: B&) -> bool {
-    return h3_internal::encode_h3_data_frame(out, data);
+    return http3::encode_data_frame(out, data);
 }

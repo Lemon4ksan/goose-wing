@@ -29,10 +29,10 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
     var c = HttpCapsule { payload: src[..0], .. };
     guard src.len > 0 else { return c, false; }
 
-    let ctype, off1, ok1 = quic_internal::quic_decode_varint(src, 0);
+    let ctype, off1, ok1 = quic::decode_varint(src, 0);
     guard ok1 else { return c, false; }
 
-    let clen, off2, ok2 = quic_internal::quic_decode_varint(src, off1);
+    let clen, off2, ok2 = quic::decode_varint(src, off1);
     guard ok2 else { return c, false; }
 
     // Prevent u64 addition overflow
@@ -50,8 +50,8 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
 // Encodes an HTTP Capsule into buffer: Type (VarInt) || Length (VarInt) || Value
 fn encode_http_capsule<B>(out: B&, capsule_type: u64, payload: const u8[:]) -> bool {
     var hdr: u8[..16] = [];
-    guard quic_internal::quic_encode_varint(hdr, capsule_type) else { return false; }
-    guard quic_internal::quic_encode_varint(hdr, payload.len as u64) else { return false; }
+    guard quic::encode_varint(capsule_type, hdr) else { return false; }
+    guard quic::encode_varint(payload.len as u64, hdr) else { return false; }
     guard out.len + hdr.len + payload.len <= out.cap else { return false; }
     out.append(hdr[..]);
     out.append(payload);
@@ -80,8 +80,8 @@ fn has_capsule_protocol(headers: const HeaderMap&) -> bool {
 fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, payload: const u8[:]) -> bool {
     var hdr: u8[..16] = [];
     guard quarter_stream_id <= 0x0FFFFFFFFFFFFFFF &&
-          quic_internal::quic_encode_varint(hdr, quarter_stream_id) else { return false; }
-    guard quic_internal::quic_encode_varint(hdr, context_id) else { return false; }
+          quic::encode_varint(quarter_stream_id, hdr) else { return false; }
+    guard quic::encode_varint(context_id, hdr) else { return false; }
     guard out.len + hdr.len + payload.len <= out.cap else { return false; }
     out.append(hdr[..]);
     out.append(payload);
@@ -96,9 +96,9 @@ fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, pay
 //   returns: quarter_stream_id = 0, context_id = 0, payload = "data", ok = true
 fn decode_http_datagram(wire: const u8[:]) -> u64, u64, const u8[:], bool {
     guard wire.len > 0 else { return 0, 0, wire[..0], false; }
-    let q_id, off1, ok1 = quic_internal::quic_decode_varint(wire, 0);
+    let q_id, off1, ok1 = quic::decode_varint(wire, 0);
     guard ok1 && q_id <= 0x0FFFFFFFFFFFFFFF else { return 0, 0, wire[..0], false; }
-    let ctx_id, off2, ok2 = quic_internal::quic_decode_varint(wire, off1);
+    let ctx_id, off2, ok2 = quic::decode_varint(wire, off1);
     guard ok2 else { return 0, 0, wire[..0], false; }
     let payload = wire[(off2 as i64)..];
     return q_id, ctx_id, payload, true;
@@ -198,7 +198,7 @@ const MAX_CONNECT_UDP_PAYLOAD_LEN: i64 = 65527; // RFC 9298 §5
 
 fn assemble_datagram_body(body: u8[..2048]&, context_id: u64, udp_packet: const u8[:]) -> bool {
     guard context_id != 0 || udp_packet.len <= MAX_CONNECT_UDP_PAYLOAD_LEN else { return false; }
-    guard quic_internal::quic_encode_varint(body, context_id) else { return false; }
+    guard quic::encode_varint(context_id, body) else { return false; }
     return body.try_append(udp_packet);
 }
 
@@ -217,7 +217,7 @@ fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: 
 //   returns: context_id = 0, packet = "dns-wire-bytes", ok = true
 fn parse_connect_udp_datagram(capsule_payload: const u8[:]) -> u64, const u8[:], bool {
     guard capsule_payload.len > 0 else { return 0, capsule_payload[..0], false; }
-    let context_id, off, ok = quic_internal::quic_decode_varint(capsule_payload, 0);
+    let context_id, off, ok = quic::decode_varint(capsule_payload, 0);
     guard ok else { return 0, capsule_payload[..0], false; }
     let start_idx = off as i64;
     let packet = capsule_payload[start_idx..];
@@ -281,7 +281,7 @@ fn has_zero_host_bits(ip: const u8[:], prefix_len: u8) -> bool {
 fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> bool {
     guard req.request_id != 0 else { return false; }
     var body: u8[..128] = [];
-    guard quic_internal::quic_encode_varint(body, req.request_id) else { return false; }
+    guard quic::encode_varint(req.request_id, body) else { return false; }
     body.push(req.ip_version);
     if req.ip_version == 4 {
         guard req.prefix_len <= 32 else { return false; }
@@ -318,7 +318,7 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
 //   payload = [0x01, 4, 10, 0, 0, 1, 32], cur = 0
 //   returns: true, cur = 7
 fn decode_address_request_entry(payload: const u8[:], cur: i64&, out_req: IpAddressRequest&) -> bool {
-    let req_id, off, ok = quic_internal::quic_decode_varint(payload, cur as u64);
+    let req_id, off, ok = quic::decode_varint(payload, cur as u64);
     guard ok && req_id != 0 && (off as i64) < payload.len else { return false; }
     let ver_idx = off as i64;
     let ip_ver = payload[ver_idx];
@@ -374,7 +374,7 @@ fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, boo
 // Format: Request ID (VarInt) || IP Version (u8) || Assigned IP (4 or 16 bytes) || Prefix Len (u8)
 fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> bool {
     var body: u8[..128] = [];
-    guard quic_internal::quic_encode_varint(body, assign.request_id) else { return false; }
+    guard quic::encode_varint(assign.request_id, body) else { return false; }
     body.push(assign.ip_version);
     if assign.ip_version == 4 {
         guard assign.prefix_len <= 32 && assign.assigned_ip.len == 4 else { return false; }
@@ -397,7 +397,7 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
 //   payload = [0x01, 4, 10, 0, 0, 2, 32], cur = 0
 //   returns: true, cur = 7
 fn decode_address_assign_entry(payload: const u8[:], cur: i64&, out_assign: IpAddressAssign&) -> bool {
-    let req_id, off, ok = quic_internal::quic_decode_varint(payload, cur as u64);
+    let req_id, off, ok = quic::decode_varint(payload, cur as u64);
     guard ok && (off as i64) < payload.len else { return false; }
     let ver_idx = off as i64;
     let ip_ver = payload[ver_idx];
@@ -667,7 +667,7 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
     if tunnel.config.use_quic_datagrams {
         var dgram_body: u8[..2048] = [];
         guard encode_http_datagram(dgram_body, tunnel.quarter_stream_id, 0, packet) else { return false; }
-        ok = quic_internal::encode_quic_datagram_frame(out_wire, dgram_body[..], true);
+        ok = quic::encode_datagram_frame(dgram_body[..], out_wire, true);
     } else {
         ok = encode_connect_udp_datagram_capsule(out_wire, 0, packet);
     }

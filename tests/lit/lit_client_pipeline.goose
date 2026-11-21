@@ -1378,14 +1378,14 @@ fn test_f005_serialize_h1_request_overflow_rejected() {
 // F006: drain_h2_response_frames must fail immediately on H2_ERR_FRAME_SIZE_ERROR and process_h2_response_frame must reject RST_STREAM.
 fn test_f006_h2_oversize_frame_and_rst_stream() {
     var rx_oversize: u8[..64] = [0x00, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-    var dec_dt = h2_internal::new_dynamic_table(4096);
+    var dec_dt = http2::new_dynamic_table(4096);
     var resp = wing::Response { .. };
     var h2_state = wing::H2ClientRecvState { .. };
     var ctrl_out: u8[..256] = [];
     let ok_f, _ = wing::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, h2_state, ctrl_out);
     assert(!ok_f);
 
-    let rst_hdr = h2_internal::FrameHeader {
+    let rst_hdr = http2::FrameHeader {
         length:     4,
         frame_type: rfc::H2_FRAME_RST_STREAM,
         flags:      0,

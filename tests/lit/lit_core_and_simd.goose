@@ -121,9 +121,9 @@ fn run_02_verify_simd_scanners() {
     payload.append("Hello Goose Wing");
     let key: u8[4] = [0xAA, 0xBB, 0xCC, 0xDD];
 
-    wing::apply_mask_in_place(payload[..], key);
+    realtime::apply_mask_in_place(payload[..], key);
     // Double mask restores original plaintext
-    wing::apply_mask_in_place(payload[..], key);
+    realtime::apply_mask_in_place(payload[..], key);
 
     assert(payload[0] == 72); // 'H'
     assert(payload[1] == 101); // 'e'
@@ -627,7 +627,7 @@ fn run_06_verify_overflow_fallback() {
 //
 
 fn encode_client_h2_request<B>(
-    dt:        h2_internal::DynamicTable&,
+    dt:        http2::DynamicTable&,
     stream_id: u32,
     method:    const u8[:],
     path:      const u8[:],
@@ -636,25 +636,25 @@ fn encode_client_h2_request<B>(
     out:       B&,
 ) {
     var hpack_block: u8[..512] = [];
-    h2_internal::encode_hpack_field(dt, hpack_block, ":method", method, h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hpack_block, ":path", path, h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hpack_block, ":scheme", scheme, h2_internal::HpackIndexing.Incremental, false);
-    h2_internal::encode_hpack_field(dt, hpack_block, ":authority", authority, h2_internal::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hpack_block, ":method", method, http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hpack_block, ":path", path, http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hpack_block, ":scheme", scheme, http2::HpackIndexing.Incremental, false);
+    http2::encode_hpack_field(dt, hpack_block, ":authority", authority, http2::HpackIndexing.Incremental, false);
 
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  stream_id,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
     out.append(hpack_block[..]);
 }
 
 // 1. HTTP/2 2x Capacity Lifecycle:
 // Capacity is 16 streams. Sequentially open and close 32 request streams.
 fn test_h2_capacity_lifecycle() {
-    var client_hpack = h2_internal::DynamicTable { .. };
+    var client_hpack = http2::DynamicTable { .. };
     var sess = server_internal::new_h2_server_session("localhost");
     var pipeline = wing::ServerPipelineConfig { .. };
     var timer = server_internal::ConnectionTimer { .. };
@@ -662,13 +662,13 @@ fn test_h2_capacity_lifecycle() {
     // Handshake
     var init_wire: u8[..64] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE[..]);
-    let set_hdr = h2_internal::FrameHeader {
+    let set_hdr = http2::FrameHeader {
         length:     0,
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
         stream_id:  0,
     };
-    h2_internal::encode_frame_header_to(set_hdr, init_wire);
+    http2::encode_frame_header_to(set_hdr, init_wire);
     var server_out: u8[..4096] = [];
     let _, ok_init = server_internal::handle_h2_server_ingress(
         sess, pipeline, timer, "127.0.0.1", init_wire[..], 1000, server_out,
@@ -704,12 +704,12 @@ fn test_h3_capacity_lifecycle() {
         qpack_blocked_streams:    16,
         enable_connect_protocol:  1,
     };
-    var server_conn = h3_internal::new_h3_server_connection(settings);
+    var server_conn = http3::new_server_connection(settings);
 
     // Ingest Control Stream with SETTINGS
     var ctrl_wire: u8[..128] = [];
-    quic_internal::quic_encode_varint(ctrl_wire, rfc::H3_STREAM_CONTROL);
-    h3_internal::encode_h3_settings_frame(ctrl_wire, settings);
+    quic::encode_varint(rfc::H3_STREAM_CONTROL, ctrl_wire);
+    http3::encode_settings_frame(ctrl_wire, settings);
     let err_ctrl = server_conn.handle_stream_data(3, false, ctrl_wire[..], false);
     assert(err_ctrl == rfc::H3_ERR_NO_ERROR);
 
@@ -719,12 +719,12 @@ fn test_h3_capacity_lifecycle() {
         'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
     ];
     var req_wire: u8[..64] = [];
-    assert(h3_internal::encode_h3_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
+    assert(http3::encode_frame_header(req_wire, rfc::H3_FRAME_HEADERS, qpack_sec.len as u64));
     req_wire.append(qpack_sec[..]);
 
     let body = "PING";
     var data_wire: u8[..64] = [];
-    assert(h3_internal::encode_h3_frame_header(data_wire, rfc::H3_FRAME_DATA, body.len as u64));
+    assert(http3::encode_frame_header(data_wire, rfc::H3_FRAME_DATA, body.len as u64));
     data_wire.append(body);
 
     for i in 64 {
@@ -735,10 +735,10 @@ fn test_h3_capacity_lifecycle() {
         let err_d = server_conn.handle_stream_data(stream_id, true, data_wire[..], true);
         assert(err_d == rfc::H3_ERR_NO_ERROR);
 
-        let s_idx, found = h3_internal::find_h3_stream_idx(server_conn, stream_id);
+        let s_idx, found = http3::find_stream_idx(server_conn, stream_id);
         assert(found);
         // Mark stream closed on server side to reclaim slot
-        server_conn.streams[s_idx].state = h3_internal::H3StreamState.Closed;
+        server_conn.streams[s_idx].state = http3::StreamState.Closed;
 
         assert(server_conn.streams.len <= 32);
     }
@@ -749,22 +749,22 @@ fn test_h3_capacity_lifecycle() {
 // 3. QUIC Stream Table 2x Capacity Lifecycle:
 // Capacity is 128 streams. Sequentially process 256 streams.
 fn test_quic_capacity_lifecycle() {
-    var tbl = quic_internal::new_quic_stream_table(quic_internal::QuicRole.Server);
+    var tbl = quic::new_stream_table(quic::QuicRole.Server);
     tbl.max_streams_bidi = 1000;
 
     for i in 256 {
         let stream_id = (i * 4) as u64; // Peer-initiated Client Bidi streams: 0, 4, 8...
-        let idx, ok = quic_internal::quic_table_get_or_open_stream(tbl, stream_id, 65536);
+        let idx, ok = quic::get_or_open_stream(tbl, stream_id, 65536);
         assert(ok);
         assert(idx >= 0);
 
         // Transition stream to terminal
-        let ok_send, _ = quic_internal::quic_stream_on_send_data(tbl.streams[idx as i64], 0, 10, true);
+        let _, ok_send = quic::on_send_data(tbl.streams[idx as i64], 0, 10, true);
         assert(ok_send);
-        assert(quic_internal::quic_stream_on_send_ack(tbl.streams[idx as i64], true));
+        assert(quic::on_send_ack(tbl.streams[idx as i64], true));
 
-        tbl.streams[idx as i64].recv_state = quic_internal::QuicRecvState.DataRead;
-        assert(quic_internal::quic_stream_is_terminal(tbl.streams[idx as i64], tbl.role));
+        tbl.streams[idx as i64].recv_state = quic::QuicRecvState.DataRead;
+        assert(quic::is_terminal(tbl.streams[idx as i64], tbl.role));
 
         assert(tbl.streams.len <= 128);
     }

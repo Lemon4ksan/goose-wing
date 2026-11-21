@@ -71,7 +71,7 @@ fn hpack_encode_string<B>(out: B&, str: const u8[:]) -> bool {
 
 // Encodes a literal header field without indexing (RFC 7541 Section 6.2.2).
 fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
-    guard h2_internal::validate_h2_field_syntax(name, val) else { return false; }
+    guard http2::validate_field_syntax(name, val) else { return false; }
     let start_len = out.len;
     guard out.try_push(0x00 as u8) &&
           hpack_encode_string(out, name) &&
@@ -84,7 +84,7 @@ fn hpack_encode_literal_without_indexing<B>(out: B&, name: const u8[:], val: con
 
 // Encodes a literal header field never indexed (RFC 7541 Section 6.2.3).
 fn hpack_encode_literal_never_indexed<B>(out: B&, name: const u8[:], val: const u8[:]) -> bool {
-    guard h2_internal::validate_h2_field_syntax(name, val) else { return false; }
+    guard http2::validate_field_syntax(name, val) else { return false; }
     let start_len = out.len;
     guard out.try_push(0x10 as u8) &&
           hpack_encode_string(out, name) &&
@@ -161,7 +161,7 @@ fn hpack_decode_string<B>(src: const u8[:], offset: u64&, out: B&) -> bool {
     let end = offset + str_len;
     let raw_slice = src[offset..end];
     if is_huffman {
-        guard h2_internal::huff_decode_bytes(raw_slice, out) else { return false; }
+        guard http2::huff_decode_bytes(raw_slice, out) else { return false; }
     } else {
         guard out.try_append(raw_slice) else { return false; }
     }
@@ -185,10 +185,10 @@ enum WireHeaderSectionKind {
     Trailer,
 }
 
-fn is_valid_h2_request_pseudo_fields(pseudo: const h2_internal::H2PseudoHeaders&) -> bool {
+fn is_valid_h2_request_pseudo_fields(pseudo: const http2::PseudoHeaders&) -> bool {
     guard pseudo.has_method && wing::is_valid_token_swar(pseudo.method[..]) else { return false; }
     if pseudo.has_authority {
-        guard h2_internal::is_valid_h2_authority(pseudo.authority[..]) else { return false; }
+        guard http2::is_valid_authority(pseudo.authority[..]) else { return false; }
     }
     if pseudo.has_protocol {
         // RFC 8441 Section 4: The Extended CONNECT Method - requires :scheme, :path, :authority, and token :protocol.
@@ -201,8 +201,8 @@ fn is_valid_h2_request_pseudo_fields(pseudo: const h2_internal::H2PseudoHeaders&
     if is_classic_connect {
         return pseudo.has_authority && !pseudo.has_scheme && !pseudo.has_path;
     }
-    guard pseudo.has_scheme && h2_internal::is_valid_h2_scheme(pseudo.scheme[..]) else { return false; }
-    guard pseudo.has_path && h2_internal::is_valid_h2_path(pseudo.path[..]) else { return false; }
+    guard pseudo.has_scheme && http2::is_valid_scheme(pseudo.scheme[..]) else { return false; }
+    guard pseudo.has_path && http2::is_valid_path(pseudo.path[..]) else { return false; }
     if pseudo.path[..] == "*" {
         return pseudo.method[..] == "OPTIONS";
     }
@@ -210,8 +210,8 @@ fn is_valid_h2_request_pseudo_fields(pseudo: const h2_internal::H2PseudoHeaders&
 }
 
 fn encode_hpack_pseudo_fields<B>(
-    dt:          h2_internal::DynamicTable&,
-    pseudo:      const h2_internal::H2PseudoHeaders&,
+    dt:          http2::DynamicTable&,
+    pseudo:      const http2::PseudoHeaders&,
     out:         B&,
     use_huffman: bool,
 ) -> bool {
@@ -220,38 +220,38 @@ fn encode_hpack_pseudo_fields<B>(
     if pseudo.is_trailer {
         return !pseudo.has_status && !has_req_pseudo;
     }
-    let inc = h2_internal::HpackIndexing.Incremental;
+    let inc = http2::HpackIndexing.Incremental;
     if pseudo.has_status {
         guard !has_req_pseudo && pseudo.status >= 100 && pseudo.status <= 599 && pseudo.status != 101 else {
             return false;
         }
         var st_buf: u8[..16] = [];
         pseudo.status.format_i64_dec(st_buf);
-        return h2_internal::encode_hpack_field(dt, out, ":status", st_buf[..], inc, use_huffman);
+        return http2::encode_hpack_field(dt, out, ":status", st_buf[..], inc, use_huffman);
     }
     guard is_valid_h2_request_pseudo_fields(pseudo) else { return false; }
     if pseudo.has_method {
-        guard h2_internal::encode_hpack_field(dt, out, ":method", pseudo.method[..], inc, use_huffman) else {
+        guard http2::encode_hpack_field(dt, out, ":method", pseudo.method[..], inc, use_huffman) else {
             return false;
         }
     }
     if pseudo.has_protocol {
-        guard h2_internal::encode_hpack_field(dt, out, ":protocol", pseudo.protocol[..], inc, use_huffman) else {
+        guard http2::encode_hpack_field(dt, out, ":protocol", pseudo.protocol[..], inc, use_huffman) else {
             return false;
         }
     }
     if pseudo.has_scheme {
-        guard h2_internal::encode_hpack_field(dt, out, ":scheme", pseudo.scheme[..], inc, use_huffman) else {
+        guard http2::encode_hpack_field(dt, out, ":scheme", pseudo.scheme[..], inc, use_huffman) else {
             return false;
         }
     }
     if pseudo.has_authority {
-        guard h2_internal::encode_hpack_field(dt, out, ":authority", pseudo.authority[..], inc, use_huffman) else {
+        guard http2::encode_hpack_field(dt, out, ":authority", pseudo.authority[..], inc, use_huffman) else {
             return false;
         }
     }
     if pseudo.has_path {
-        guard h2_internal::encode_hpack_field(dt, out, ":path", pseudo.path[..], inc, use_huffman) else {
+        guard http2::encode_hpack_field(dt, out, ":path", pseudo.path[..], inc, use_huffman) else {
             return false;
         }
     }
@@ -289,7 +289,7 @@ inline fn is_forbidden_h2_trailer_field(lower_name: const u8[:]) -> bool {
 }
 
 fn encode_single_hpack_map_entry<B>(
-    dt:          h2_internal::DynamicTable&,
+    dt:          http2::DynamicTable&,
     headers:     const wing::HeaderMap&,
     e:           const wing::HeaderEntry&,
     kind:        WireHeaderSectionKind,
@@ -308,14 +308,14 @@ fn encode_single_hpack_map_entry<B>(
         return false;
     }
     let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
-    guard h2_internal::validate_h2_field_syntax(lower_name[..], eff_val) else { return false; }
+    guard http2::validate_field_syntax(lower_name[..], eff_val) else { return false; }
     let is_sens = wing::is_sensitive(e);
     let idx_mode = if is_sens {
-        h2_internal::HpackIndexing.NeverIndexed
+        http2::HpackIndexing.NeverIndexed
     } else {
-        h2_internal::HpackIndexing.Incremental
+        http2::HpackIndexing.Incremental
     };
-    return h2_internal::encode_hpack_field(dt, out, lower_name[..], eff_val, idx_mode, use_huffman);
+    return http2::encode_hpack_field(dt, out, lower_name[..], eff_val, idx_mode, use_huffman);
 }
 
 // Encodes HTTP/2 pseudo-headers and regular headers from `headers: const wing::HeaderMap&`
@@ -326,8 +326,8 @@ fn encode_single_hpack_map_entry<B>(
 //   encode_hpack_from_map(dt, pseudo, headers, out, true)
 //   returns: true, out contains encoded HPACK octets
 fn encode_hpack_from_map<B>(
-    dt:          h2_internal::DynamicTable&,
-    pseudo:      const h2_internal::H2PseudoHeaders&,
+    dt:          http2::DynamicTable&,
+    pseudo:      const http2::PseudoHeaders&,
     headers:     const wing::HeaderMap&,
     out:         B&,
     use_huffman: bool = true,
@@ -385,9 +385,9 @@ fn coalesce_h2_cookie_headers(map: wing::HeaderMap&) -> bool {
 //   src = [0x82, 0x86, 0x84], decode_hpack_to_map(dt, src, out_pseudo, out_headers)
 //   returns: rfc::H2_ERR_NO_ERROR, out_pseudo.method = "GET"
 fn decode_hpack_to_map(
-    dt:                   h2_internal::DynamicTable&,
+    dt:                   http2::DynamicTable&,
     src:                  const u8[:],
-    out_pseudo:           h2_internal::H2PseudoHeaders&,
+    out_pseudo:           http2::PseudoHeaders&,
     out_headers:          wing::HeaderMap&,
     max_header_list_size: u32  = 8192,
     validate_http2_rules: bool = true,
@@ -399,15 +399,15 @@ fn decode_hpack_to_map(
     var first_err:    u32 = rfc::H2_ERR_NO_ERROR;
     var committed = false;
 
-    h2_internal::clear_h2_pseudo_headers(out_pseudo, true);
+    http2::clear_pseudo_headers(out_pseudo, true);
     out_headers.clear();
     defer if !committed {
-        h2_internal::clear_h2_pseudo_headers(out_pseudo, true);
+        http2::clear_pseudo_headers(out_pseudo, true);
         out_headers.clear();
     };
 
     while offset < src_len {
-        let next_off, err = h2_internal::decode_hpack_field_step_to_map(
+        let next_off, err = http2::decode_hpack_field_step_to_map(
             dt,
             src,
             offset,
@@ -430,7 +430,7 @@ fn decode_hpack_to_map(
     guard first_err == rfc::H2_ERR_NO_ERROR else { return first_err; }
 
     if validate_http2_rules && !out_pseudo.is_trailer {
-        let v_err = h2_internal::validate_mandatory_pseudo_headers(out_pseudo);
+        let v_err = http2::validate_mandatory_pseudo_headers(out_pseudo);
         guard v_err == rfc::H2_ERR_NO_ERROR else { return v_err; }
         if out_pseudo.has_status && wing::has_header(out_headers, "te") {
             return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -466,14 +466,14 @@ struct WireH2PseudoHeaders {
 }
 
 // Stateful public HPACK codec context bundling a dynamic table and accounting
-// counters/limits without exposing `h2_internal::DynamicTable` to callers.
+// counters/limits without exposing `http2::DynamicTable` to callers.
 struct WireHpackState {
-    table:                h2_internal::DynamicTable = h2_internal::DynamicTable {},
-    max_header_list_size: u32                       = 8192,
-    blocks_encoded:       u64                       = 0,
-    blocks_decoded:       u64                       = 0,
-    bytes_encoded:        u64                       = 0,
-    bytes_decoded:        u64                       = 0,
+    table:                http2::DynamicTable = http2::DynamicTable {},
+    max_header_list_size: u32                 = 8192,
+    blocks_encoded:       u64                 = 0,
+    blocks_decoded:       u64                 = 0,
+    bytes_encoded:        u64                 = 0,
+    bytes_decoded:        u64                 = 0,
 }
 
 // Initializes a bounded stateful HPACK codec context (`max_table_size <= 4096`
@@ -486,11 +486,11 @@ fn init_hpack_state(
     max_table_size:       u64 = 4096,
     max_header_list_size: u32 = 8192,
 ) -> WireHpackState, bool {
-    guard max_table_size <= h2_internal::HPACK_MAX_ARENA_BYTES && max_header_list_size > 0 else {
+    guard max_table_size <= http2::HPACK_MAX_ARENA_BYTES && max_header_list_size > 0 else {
         return WireHpackState {}, false;
     }
     return WireHpackState {
-        table:                h2_internal::new_dynamic_table(max_table_size),
+        table:                http2::new_dynamic_table(max_table_size),
         max_header_list_size: max_header_list_size,
         ..
     }, true;
@@ -504,10 +504,10 @@ fn init_hpack_state(
 //   returns: true if within bounds, false otherwise
 fn hpack_reset_table_size(state: WireHpackState&, new_max_size: u64) -> bool {
     guard new_max_size <= state.table.max_allowed_size &&
-          new_max_size <= h2_internal::HPACK_MAX_ARENA_BYTES else {
+          new_max_size <= http2::HPACK_MAX_ARENA_BYTES else {
         return false;
     }
-    h2_internal::update_dynamic_table_max_size(state.table, new_max_size);
+    http2::update_dynamic_table_max_size(state.table, new_max_size);
     return true;
 }
 
@@ -528,20 +528,20 @@ fn make_h2_request_pseudo(
     for b in method {
         guard core::is_tchar(b) else { return WireH2PseudoHeaders {}, false; }
     }
-    guard h2_internal::is_valid_h2_scheme(scheme) && p.scheme.try_set(scheme) else {
+    guard http2::is_valid_scheme(scheme) && p.scheme.try_set(scheme) else {
         return WireH2PseudoHeaders {}, false;
     }
     p.has_method = true;
     p.has_scheme = true;
 
     if authority.len > 0 {
-        guard h2_internal::is_valid_h2_authority(authority) && p.authority.try_set(authority) else {
+        guard http2::is_valid_authority(authority) && p.authority.try_set(authority) else {
             return WireH2PseudoHeaders {}, false;
         }
         p.has_authority = true;
     }
     if path.len > 0 {
-        guard h2_internal::is_valid_h2_path(path) && p.path.try_set(path) else {
+        guard http2::is_valid_path(path) && p.path.try_set(path) else {
             return WireH2PseudoHeaders {}, false;
         }
         p.has_path = true;
@@ -560,8 +560,8 @@ fn make_h2_response_pseudo(status: i32) -> WireH2PseudoHeaders, bool {
     return WireH2PseudoHeaders { status: status, has_status: true, .. }, true;
 }
 
-fn to_internal_h2_pseudo(src: const WireH2PseudoHeaders&) -> h2_internal::H2PseudoHeaders {
-    var dst = h2_internal::H2PseudoHeaders {
+fn to_internal_h2_pseudo(src: const WireH2PseudoHeaders&) -> http2::PseudoHeaders {
+    var dst = http2::PseudoHeaders {
         status:             src.status,
         has_method:         src.has_method,
         has_scheme:         src.has_scheme,
@@ -584,7 +584,7 @@ fn to_internal_h2_pseudo(src: const WireH2PseudoHeaders&) -> h2_internal::H2Pseu
     return dst;
 }
 
-fn from_internal_h2_pseudo(src: const h2_internal::H2PseudoHeaders&) -> WireH2PseudoHeaders {
+fn from_internal_h2_pseudo(src: const http2::PseudoHeaders&) -> WireH2PseudoHeaders {
     var dst = WireH2PseudoHeaders {
         status:             src.status,
         has_method:         src.has_method,
@@ -657,7 +657,7 @@ fn hpack_decode_block(
 ) -> u32 {
     let saved_table = state.table;
     let was_trailer = out_pseudo.is_trailer;
-    var int_pseudo = h2_internal::H2PseudoHeaders { is_trailer: was_trailer, .. };
+    var int_pseudo = http2::PseudoHeaders { is_trailer: was_trailer, .. };
 
     let err = decode_hpack_to_map(
         state.table,

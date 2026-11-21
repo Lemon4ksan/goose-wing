@@ -65,14 +65,14 @@ fn append_field_line(out: u8[>..]&, name: const u8[:], val: const u8[:]) {
 //   data = [0x3f, 0x01], offset = 0
 //   returns: true (capacity updated)
 fn apply_encoder_instructions(
-    tbl:  h3_internal::QpackTable&,
+    tbl:  http3::QpackTable&,
     data: const u8[:],
 ) -> bool {
     var off: u64 = 0;
     let total = data.len as u64;
     while off < total {
-        let next_off, err = h3_internal::qpack_process_encoder_instruction(tbl, data, off);
-        guard err == h3_internal::QpackError.None && next_off > off else {
+        let next_off, err = http3::qpack_process_encoder_instruction(tbl, data, off);
+        guard err == http3::QpackError.None && next_off > off else {
             return false;
         }
         off = next_off;
@@ -82,11 +82,11 @@ fn apply_encoder_instructions(
 
 fn handle_decode_line(
     line:       const u8[:],
-    tbl:        h3_internal::QpackTable&,
+    tbl:        http3::QpackTable&,
     cur_stream: u64&,
     raw_buf:    u8[>..]&,
     fields_out: u8[>..]&,
-    decoded:    h3_internal::HeaderField[>..]&,
+    decoded:    http3::HeaderField[>..]&,
 ) {
     let cmd, arg, ok = line.split_once_byte(' ');
     guard ok else { return; }
@@ -99,7 +99,7 @@ fn handle_decode_line(
             blk, ok_b = blk_s.parse_u64_dec();
         }
         if ok_c && ok_b {
-            tbl = h3_internal::new_qpack_table(cap, blk as u32, cap);
+            tbl = http3::new_qpack_table(cap, blk as u32, cap);
         }
         return;
     }
@@ -129,8 +129,8 @@ fn handle_decode_line(
             return;
         }
         decoded.clear();
-        let err = h3_internal::decode_qpack_section(tbl, raw_buf[..], decoded, 16384);
-        if err == h3_internal::QpackError.None {
+        let err = http3::decode_qpack_section(tbl, raw_buf[..], decoded, 16384);
+        if err == http3::QpackError.None {
             print("ok");
             fields_out.clear();
             for f in decoded {
@@ -146,12 +146,12 @@ fn handle_decode_line(
 }
 
 fn run_decode_batch(raw_batch: const u8[:]) {
-    var tbl = h3_internal::new_qpack_table(4096, 16, 4096);
-    var cur_stream: u64                           = 0;
-    var raw_buf:    u8[>..]                       = [];
-    var fields_out: u8[>..]                       = [];
-    var decoded:    h3_internal::HeaderField[>..] = [];
-    var pos:        i64                           = 0;
+    var tbl = http3::new_qpack_table(4096, 16, 4096);
+    var cur_stream: u64                     = 0;
+    var raw_buf:    u8[>..]                 = [];
+    var fields_out: u8[>..]                 = [];
+    var decoded:    http3::HeaderField[>..] = [];
+    var pos:        i64                     = 0;
     let total = raw_batch.len;
     while pos < total {
         var end = pos;
@@ -167,7 +167,7 @@ fn run_decode_batch(raw_batch: const u8[:]) {
 }
 
 fn emit_encoded_block(
-    tbl:        h3_internal::QpackTable&,
+    tbl:        http3::QpackTable&,
     cur_stream: u64,
     items:      FieldItem[>..]&,
     use_huff:   bool,
@@ -184,7 +184,7 @@ fn emit_encoded_block(
     let base = tbl.insert_count;
 
     for &item in items {
-        h3_internal::encode_qpack_field_dynamic(
+        http3::encode_qpack_field_dynamic(
             tbl, cur_stream, base, item.name[..], item.val[..],
             sec_out, enc_out, max_dyn_abs, used_any_dyn, use_huff,
         );
@@ -192,13 +192,13 @@ fn emit_encoded_block(
 
     if used_any_dyn {
         let ric = max_dyn_abs + 1;
-        let _ = h3_internal::qpack_track_unacked_stream(tbl, cur_stream, ric);
-        let _ = h3_internal::qpack_ack_section(tbl, cur_stream, ric);
-        let enc_ric = h3_internal::encode_ric(ric, tbl.max_capacity_bytes);
-        let _ = h2_internal::hpack_encode_int(full_blk, enc_ric, 8, 0x00);
-        let sign_bit, delta_base = h3_internal::encode_base(base, ric);
+        let _ = http3::qpack_track_unacked_stream(tbl, cur_stream, ric);
+        let _ = http3::qpack_ack_section(tbl, cur_stream, ric);
+        let enc_ric = http3::encode_ric(ric, tbl.max_capacity_bytes);
+        let _ = http2::hpack_encode_int(full_blk, enc_ric, 8, 0x00);
+        let sign_bit, delta_base = http3::encode_base(base, ric);
         let sign_mask: u8 = if sign_bit != 0 { 0x80 } else { 0x00 };
-        let _ = h2_internal::hpack_encode_int(full_blk, delta_base, 7, sign_mask);
+        let _ = http2::hpack_encode_int(full_blk, delta_base, 7, sign_mask);
     } else {
         full_blk.push(0x00);
         full_blk.push(0x00);
@@ -222,7 +222,7 @@ fn emit_encoded_block(
 
 fn handle_encode_line(
     line:       const u8[:],
-    tbl:        h3_internal::QpackTable&,
+    tbl:        http3::QpackTable&,
     cur_stream: u64&,
     items:      FieldItem[>..]&,
     use_huff:   bool,
@@ -248,7 +248,7 @@ fn handle_encode_line(
             blk, ok_b = blk_s.parse_u64_dec();
         }
         if ok_c && ok_b {
-            tbl = h3_internal::new_qpack_table(cap, blk as u32, cap);
+            tbl = http3::new_qpack_table(cap, blk as u32, cap);
             items.clear();
             print(line);
         }
@@ -273,7 +273,7 @@ fn handle_encode_line(
 }
 
 fn run_encode_batch(raw_batch: const u8[:], use_huff: bool) {
-    var tbl = h3_internal::new_qpack_table(4096, 16, 4096);
+    var tbl = http3::new_qpack_table(4096, 16, 4096);
     var cur_stream: u64            = 0;
     var items:      FieldItem[>..] = [];
     var sec_out:    u8[>..]        = [];

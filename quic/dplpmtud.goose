@@ -4,12 +4,13 @@
 // Datagram Packetization Layer PMTU Discovery (DPLPMTUD, RFC 8899) Engine for QUIC.
 // Implements zero-allocation state machine (Search, Base, SearchComplete, Error),
 // padded probe frame generation, probe acknowledgement tracking, and search interval timers.
-namespace quic_internal;
+namespace quic;
 
 import std;
 import core from "..";
 import .packet;
 import .frames;
+import .internal;
 
 // ---- PMTU Constants & Discovery State Enum (RFC 8899 Section 5.1) -------
 
@@ -35,16 +36,6 @@ inline fn calc_dplpmtud_probe_payload_size(target_mtu: u32, overhead_bytes: u32)
     return 0;
 }
 
-const CANDIDATE_PMTU_COUNT: u32 = 4;
-
-// RFC 8899 Section 5.1.2: The Searching State - Table of candidate PMTU probe sizes
-inline fn get_candidate_pmtu(idx: u32) -> u32 {
-    if idx == 0 { return rfc::PMTU_BASE; }
-    if idx == 1 { return rfc::PMTU_IPV6_MIN; }
-    if idx == 2 { return rfc::PMTU_INTERMEDIATE; }
-    return rfc::PMTU_ETHERNET;
-}
-
 // ---- Probe Frame Generators (RFC 8899 Section 3) ------------------------
 
 // RFC 8899 Section 3: Probe Packets - Generates padded PING probe frame
@@ -52,7 +43,7 @@ inline fn get_candidate_pmtu(idx: u32) -> u32 {
 // Example:
 //   target_size = 1200
 //   out: appends 1 byte PING (0x01) followed by 1199 bytes PADDING (0x00)
-fn generate_ping_probe<B>(out: B&, target_size: u32) -> bool {
+fn generate_ping_probe<B>(target_size: u32, out: B&) -> bool {
     guard target_size >= 1 else { return false; }
     guard out.cap - out.len >= (target_size as i64) else { return false; }
     guard encode_ping_frame(out) else { return false; }
@@ -65,10 +56,10 @@ fn generate_ping_probe<B>(out: B&, target_size: u32) -> bool {
 // Example:
 //   data = [1, 2, 3, 4, 5, 6, 7, 8], target_size = 1200
 //   out: appends 9 bytes PATH_CHALLENGE followed by 1191 bytes PADDING
-fn generate_path_challenge_probe<B>(out: B&, data: const u8[8]&, target_size: u32) -> bool {
+fn generate_path_challenge_probe<B>(data: const u8[8]&, target_size: u32, out: B&) -> bool {
     guard target_size >= 9 else { return false; }
     guard out.cap - out.len >= (target_size as i64) else { return false; }
-    guard encode_path_challenge_frame(out, data) else { return false; }
+    guard encode_path_challenge_frame(data, out) else { return false; }
     let pad_count = (target_size - 9) as u64;
     return encode_padding_frame(out, pad_count);
 }
@@ -92,7 +83,7 @@ struct Dplpmtud {
 }
 
 // RFC 8899 Section 5.1.2: The Searching State - Handles acknowledgement of probe
-fn dplpmtud_on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
+fn on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
     guard acked_size == d.probed_size else { return false; }
     d.current_pmtu = max(d.current_pmtu, acked_size);
     d.probe_count = 0;
@@ -100,14 +91,14 @@ fn dplpmtud_on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
     if d.state == DplpmtudState.Base {
         d.state = DplpmtudState.Search;
         d.probe_idx = 1;
-        d.probed_size = get_candidate_pmtu(1);
+        d.probed_size = quic_internal::get_candidate_pmtu(1);
         return true;
     }
 
     if d.state == DplpmtudState.Search {
         d.probe_idx += 1;
-        if d.probe_idx < CANDIDATE_PMTU_COUNT {
-            d.probed_size = get_candidate_pmtu(d.probe_idx);
+        if d.probe_idx < quic_internal::CANDIDATE_PMTU_COUNT {
+            d.probed_size = quic_internal::get_candidate_pmtu(d.probe_idx);
         } else {
             d.state = DplpmtudState.SearchComplete;
             d.search_timer_ms = d.pmtu_raise_timer_ms;
@@ -119,7 +110,7 @@ fn dplpmtud_on_probe_acked(d: Dplpmtud&, acked_size: u32) -> bool {
 }
 
 // RFC 8899 Section 5.1.4: The Error State - Handles loss / timeout of probe packet
-fn dplpmtud_on_probe_lost(d: Dplpmtud&, lost_size: u32) -> bool {
+fn on_probe_lost(d: Dplpmtud&, lost_size: u32) -> bool {
     guard lost_size == d.probed_size else { return false; }
     d.probe_count += 1;
 
@@ -138,7 +129,7 @@ fn dplpmtud_on_probe_lost(d: Dplpmtud&, lost_size: u32) -> bool {
 }
 
 // RFC 8899 Section 5.2: Timers and Counters - Periodic search timer expiry
-fn dplpmtud_on_search_timer(d: Dplpmtud&, now_ms: u64) {
+fn on_search_timer(d: Dplpmtud&, now_ms: u64) {
     guard d.state == DplpmtudState.SearchComplete else { return; }
     if now_ms >= d.search_timer_ms {
         d.search_timer_ms = core::add_sat_u64(now_ms, d.pmtu_raise_timer_ms);
@@ -152,6 +143,6 @@ fn dplpmtud_on_search_timer(d: Dplpmtud&, now_ms: u64) {
         d.state = DplpmtudState.Search;
         d.probe_idx = next_idx;
         d.probe_count = 0;
-        d.probed_size = get_candidate_pmtu(next_idx);
+        d.probed_size = quic_internal::get_candidate_pmtu(next_idx);
     }
 }

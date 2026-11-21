@@ -262,7 +262,7 @@ fn encode_akamai_handshake_frames<B>(fp: const AkamaiFingerprint&, out: B&) -> b
 
     let wu_inc = fp.window_update & fingerprint_internal::H2_MAX_STREAM_ID;
     if wu_inc > 0 {
-        let wu_hdr = h2_internal::FrameHeader {
+        let wu_hdr = http2::FrameHeader {
             length:     4,
             frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
             flags:      0,

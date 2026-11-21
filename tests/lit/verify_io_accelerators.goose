@@ -404,12 +404,12 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
     assert(udp_port > 0);
 
     let h3_settings = fingerprint::H3Settings { .. };
-    var h3_cli = h3_internal::new_h3_client_connection(h3_settings);
-    let sid, ok_sid = h3_internal::open_request_stream(h3_cli);
+    var h3_cli = http3::new_client_connection(h3_settings);
+    let sid, ok_sid = http3::open_request_stream(h3_cli);
     assert(ok_sid && sid == 0);
     var extra = wing::HeaderMap { .. };
     var req_wire: u8[..1024] = [];
-    assert(h3_internal::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
+    assert(http3::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
 
     for _ in 4 {
         assert(wing::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
@@ -423,11 +423,11 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
         assert(ok_b);
         if got > 0 {
             for i in rx_batch.msgs.len {
-                var dec_cli = h3_internal::new_h3_client_connection(h3_settings);
-                let d_sid, _ = h3_internal::open_request_stream(dec_cli);
-                let rx_err = h3_internal::handle_stream_data(dec_cli, d_sid, true, rx_batch.msgs[i].payload[..], true);
+                var dec_cli = http3::new_client_connection(h3_settings);
+                let d_sid, _ = http3::open_request_stream(dec_cli);
+                let rx_err = http3::handle_stream_data(dec_cli, d_sid, true, rx_batch.msgs[i].payload[..], true);
                 assert(rx_err == rfc::H3_ERR_NO_ERROR);
-                let sc, ok_sc = h3_internal::get_status_code(dec_cli, d_sid);
+                let sc, ok_sc = http3::get_status_code(dec_cli, d_sid);
                 assert(ok_sc && sc == 200);
             }
             total_rx += got;

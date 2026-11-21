@@ -25,9 +25,9 @@ import net.accel;
 // ---- 1. HttpServer Container and Route Registration -------------------------
 
 struct WsRouteEntry {
-    path:     u8[..128]  = [],
-    behavior: WsBehavior = WsBehavior { .. },
-    in_use:   bool       = false,
+    path:     u8[..128]            = [],
+    behavior: realtime::WsBehavior = realtime::WsBehavior { .. },
+    in_use:   bool                 = false,
 }
 
 struct HttpServer {
@@ -40,10 +40,10 @@ struct HttpServer {
     requests_processed:        u64                              = 0,
     accept_proxy_protocol:     bool                             = false,
     trust_proxy_headers:       bool                             = false,
-    topic_tree:                TopicTree                        = TopicTree { .. },
+    topic_tree:                realtime::TopicTree              = realtime::TopicTree { .. },
     ws_routes:                 WsRouteEntry[..16]               = [WsRouteEntry { .. }; 16],
     ws_route_count:            i32                              = 0,
-    shared_compressor:         SharedWsCompressor               = SharedWsCompressor { .. },
+    shared_compressor:         realtime::SharedWsCompressor     = realtime::SharedWsCompressor { .. },
     sni_registry:              SniRegistry                      = SniRegistry { .. },
     worker_ring:               core::SpscRing                   = core::SpscRing { .. },
     cached_date:               CachedHttpDate                   = CachedHttpDate { .. },
@@ -158,7 +158,11 @@ fn add_delete_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
 }
 
 // Registers a declarative WebSocket route on the server instance (uWebSockets app.ws pattern)
-fn add_ws_route(server: HttpServer&, path: const u8[:], behavior: const WsBehavior& = WsBehavior { .. }) -> bool {
+fn add_ws_route(
+    server:   HttpServer&,
+    path:     const u8[:],
+    behavior: const realtime::WsBehavior& = realtime::WsBehavior { .. },
+) -> bool {
     guard path.len > 0 && path.len <= 128 else { return false; }
     var canon_path: u8[..128] = [];
     guard canonicalize_route_path(path, canon_path) else { return false; }
@@ -197,31 +201,31 @@ fn find_ws_route(server: const HttpServer&, path: const u8[:]) -> i32 {
 // ---- 2. Server Pub/Sub Broadcast Engine (uWebSockets TopicTree) -------------
 
 fn publish(server: HttpServer&, topic: const u8[:], message: const u8[:], opcode: u8 = rfc::WS_OPCODE_TEXT) -> i64 {
-    return publish(server.topic_tree, topic, message, opcode);
+    return server.topic_tree.publish(topic, message, opcode);
 }
 
 fn publish_text(server: HttpServer&, topic: const u8[:], text: const u8[:]) -> i64 {
-    return publish_text(server.topic_tree, topic, text);
+    return server.topic_tree.publish_text(topic, text);
 }
 
 fn publish_binary(server: HttpServer&, topic: const u8[:], data: const u8[:]) -> i64 {
-    return publish_binary(server.topic_tree, topic, data);
+    return server.topic_tree.publish_binary(topic, data);
 }
 
 fn subscribe(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
-    return subscribe(server.topic_tree, sock_fd, topic_pattern);
+    return server.topic_tree.subscribe(sock_fd, topic_pattern);
 }
 
 fn unsubscribe(server: HttpServer&, sock_fd: i64, topic_pattern: const u8[:]) -> bool {
-    return unsubscribe(server.topic_tree, sock_fd, topic_pattern);
+    return server.topic_tree.unsubscribe(sock_fd, topic_pattern);
 }
 
 fn unsubscribe_all(server: HttpServer&, sock_fd: i64) -> i32 {
-    return unsubscribe_all(server.topic_tree, sock_fd);
+    return server.topic_tree.unsubscribe_all(sock_fd);
 }
 
 fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[..512]&) -> i64 {
-    return find_subscribers(server.topic_tree, topic, out_fds);
+    return server.topic_tree.find_subscribers(topic, out_fds);
 }
 
 fn subscribe_ex(
@@ -231,7 +235,10 @@ fn subscribe_ex(
     out_old:       i32&,
     out_new:       i32&,
 ) -> bool {
-    return subscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
+    let old_cnt, new_cnt, ok = server.topic_tree.subscribe_ex(sock_fd, topic_pattern);
+    out_old = old_cnt;
+    out_new = new_cnt;
+    return ok;
 }
 
 fn unsubscribe_ex(
@@ -241,7 +248,10 @@ fn unsubscribe_ex(
     out_old:       i32&,
     out_new:       i32&,
 ) -> bool {
-    return unsubscribe_ex(server.topic_tree, sock_fd, topic_pattern, out_old, out_new);
+    let old_cnt, new_cnt, ok = server.topic_tree.unsubscribe_ex(sock_fd, topic_pattern);
+    out_old = old_cnt;
+    out_new = new_cnt;
+    return ok;
 }
 
 fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
@@ -249,7 +259,7 @@ fn subscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
     sock_fd:       i64,
     topic_pattern: const u8[:],
 ) -> bool {
-    return subscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
+    return realtime::subscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
 }
 
 fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
@@ -257,23 +267,23 @@ fn unsubscribe_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(
     sock_fd:       i64,
     topic_pattern: const u8[:],
 ) -> bool {
-    return unsubscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
+    return realtime::unsubscribe_with_hook<HookFn>(server.topic_tree, sock_fd, topic_pattern);
 }
 
 fn unsubscribe_all_with_hook<HookFn: fn(const u8[:], i32, i32, i64)>(server: HttpServer&, sock_fd: i64) -> i32 {
-    return unsubscribe_all_with_hook<HookFn>(server.topic_tree, sock_fd);
+    return realtime::unsubscribe_all_with_hook<HookFn>(server.topic_tree, sock_fd);
 }
 
 fn get_socket_topic_count(server: const HttpServer&, sock_fd: i64) -> i32 {
-    return socket_subscription_count(server.topic_tree, sock_fd);
+    return server.topic_tree.socket_subscription_count(sock_fd);
 }
 
 fn get_socket_topics(server: const HttpServer&, sock_fd: i64, out_topics: u8[..64][..32]&) -> i32 {
-    return get_socket_topics(server.topic_tree, sock_fd, out_topics);
+    return server.topic_tree.get_socket_topics(sock_fd, out_topics);
 }
 
 fn iterate_socket_topics<IterFn: fn(const u8[:])>(server: const HttpServer&, sock_fd: i64) -> i32 {
-    return iterate_socket_topics<IterFn>(server.topic_tree, sock_fd);
+    return realtime::iterate_socket_topics<IterFn>(server.topic_tree, sock_fd);
 }
 
 // ---- 3. WebSocket Upgrade Handshake & Framing -------------------------------
@@ -283,25 +293,25 @@ fn defer_ws_upgrade(
     server:  const HttpServer&,
     req:     const Request&,
     sock_fd: i64,
-) -> WsPendingUpgrade, bool {
-    guard is_websocket_upgrade_request(req) else {
-        return WsPendingUpgrade { .. }, false;
+) -> realtime::WsPendingUpgrade, bool {
+    guard realtime::is_websocket_upgrade_request(req) else {
+        return realtime::WsPendingUpgrade { .. }, false;
     }
     let r_idx = find_ws_route(server, req.url[..]);
     guard r_idx >= 0 else {
-        return WsPendingUpgrade { .. }, false;
+        return realtime::WsPendingUpgrade { .. }, false;
     }
     let client_key = req.headers.find_header("Sec-WebSocket-Key");
-    guard is_valid_websocket_key(client_key) else {
-        return WsPendingUpgrade { .. }, false;
+    guard realtime::is_valid_websocket_key(client_key) else {
+        return realtime::WsPendingUpgrade { .. }, false;
     }
     let subprotocol = req.headers.find_header("Sec-WebSocket-Protocol");
     let extensions = req.headers.find_header("Sec-WebSocket-Extensions");
     guard subprotocol.len <= 64 && extensions.len <= 256 else {
-        return WsPendingUpgrade { .. }, false;
+        return realtime::WsPendingUpgrade { .. }, false;
     }
 
-    var pending = new_ws_pending_upgrade(sock_fd, client_key, r_idx, subprotocol, extensions);
+    var pending = realtime::new_ws_pending_upgrade(sock_fd, client_key, r_idx, subprotocol, extensions);
     return pending, true;
 }
 
@@ -311,18 +321,18 @@ const WS_PERMESSAGE_DEFLATE_HDR: const u8[:] = "Sec-WebSocket-Extensions: permes
 const WS_HDR_CRLF:               const u8[:] = "\r\n";
 
 inline fn serialize_and_init_ws_upgrade<B>(
-    route_behavior: const WsBehavior&,
-    pending:        WsPendingUpgrade&,
+    route_behavior: const realtime::WsBehavior&,
+    pending:        realtime::WsPendingUpgrade&,
     subproto:       const u8[:],
     out_wire:       B&,
-) -> WebSocketSession, bool {
-    var session = new_websocket_session(false);
+) -> realtime::WebSocketSession, bool {
+    var session = realtime::new_websocket_session(false);
     guard subproto.len <= session.subprotocol.cap && pending.user_data.len <= session.user_data.cap else {
-        return WebSocketSession { .. }, false;
+        return realtime::WebSocketSession { .. }, false;
     }
 
     var accept_key: u8[..64] = [];
-    compute_websocket_accept(pending.client_key[..], accept_key);
+    realtime::compute_websocket_accept(pending.client_key[..], accept_key);
 
     let prev_out_len = out_wire.len;
     out_wire.append(WS_UPGRADE_PREFIX);
@@ -344,7 +354,7 @@ inline fn serialize_and_init_ws_upgrade<B>(
         expected_add = core::add_sat_i64(expected_add, sub_add);
     }
 
-    let compress_active = route_behavior.compression != WS_COMPRESS_DISABLED
+    let compress_active = route_behavior.compression != realtime::WS_COMPRESS_DISABLED
         && pending.extensions[..].contains_fold("permessage-deflate");
     if compress_active {
         out_wire.append(WS_PERMESSAGE_DEFLATE_HDR);
@@ -354,7 +364,7 @@ inline fn serialize_and_init_ws_upgrade<B>(
     out_wire.append(WS_HDR_CRLF);
     expected_add = core::add_sat_i64(expected_add, WS_HDR_CRLF.len);
     guard out_wire.len == core::add_sat_i64(prev_out_len, expected_add) else {
-        return WebSocketSession { .. }, false;
+        return realtime::WebSocketSession { .. }, false;
     }
 
     session.compress_mode = route_behavior.compression;
@@ -381,22 +391,22 @@ inline fn serialize_and_init_ws_upgrade<B>(
 
 fn complete_ws_upgrade<B>(
     server:   HttpServer&,
-    pending:  WsPendingUpgrade&,
+    pending:  realtime::WsPendingUpgrade&,
     out_wire: B&,
-) -> WebSocketSession, bool {
+) -> realtime::WebSocketSession, bool {
     guard pending.in_use && !pending.is_aborted else {
-        return WebSocketSession { .. }, false;
+        return realtime::WebSocketSession { .. }, false;
     }
 
     let route_behavior = if pending.route_idx >= 0 && pending.route_idx < server.ws_routes.len as i32 {
         server.ws_routes[pending.route_idx as i64].behavior
     } else {
-        WsBehavior { .. }
+        realtime::WsBehavior { .. }
     };
 
     let has_subproto = route_behavior.subprotocol.len > 0
         && pending.subprotocol.len > 0
-        && has_subprotocol_token(pending.subprotocol[..], route_behavior.subprotocol[..]);
+        && realtime::has_subprotocol_token(pending.subprotocol[..], route_behavior.subprotocol[..]);
     let subproto = if has_subproto {
         route_behavior.subprotocol[..]
     } else {
@@ -414,7 +424,7 @@ fn complete_ws_upgrade<Req, B>(
 ) -> bool {
     let subproto = entry.behavior.subprotocol[..];
     var ws_res = Response { .. };
-    var sess, ok_upg = ws_upgrade_request(req, ws_res, subproto);
+    var sess, ok_upg = realtime::ws_upgrade_request(req, ws_res, subproto);
     guard ok_upg else { return false; }
 
     sess.max_payload_length = entry.behavior.max_payload_length;
@@ -426,13 +436,13 @@ fn complete_ws_upgrade<Req, B>(
     sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
 
     let ua_upg = req.header("user-agent");
-    let allow_comp = entry.behavior.compression != WS_COMPRESS_DISABLED
-        && !ws_has_broken_compression(ua_upg);
+    let allow_comp = entry.behavior.compression != realtime::WS_COMPRESS_DISABLED
+        && !realtime::ws_has_broken_compression(ua_upg);
     if allow_comp {
         let client_ext = req.header("sec-websocket-extensions");
         if client_ext.contains_fold("permessage-deflate") {
             ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-            enable_permessage_deflate(sess, entry.behavior.compression);
+            sess.enable_permessage_deflate(entry.behavior.compression);
         }
     }
     serialize_http1_response(ws_res, server.server_name[..], wire_out);
@@ -578,7 +588,7 @@ fn finish_single_h1_wire_turn<Stage, B>(
     defer release_turn_scratch(server);
     if server.ws_route_count > 0
         && (g_turn_req.presence_mask & HDR_PRESENCE_UPGRADE) != 0
-        && is_websocket_upgrade_request(g_turn_req) {
+        && realtime::is_websocket_upgrade_request(g_turn_req) {
         let ws_idx = find_ws_route(server, g_turn_req.url[..]);
         if ws_idx >= 0 && complete_ws_upgrade(server, g_turn_req, server.ws_routes[ws_idx as i64], wire_out) {
             return PipelineOutcome.Handled;
@@ -626,7 +636,7 @@ fn execute_single_h1_wire_turn<Stage, B>(
     // WebSocket Upgrade Interception (uWebSockets app.ws pattern)
     if server.ws_route_count > 0
         && (req.presence_mask & HDR_PRESENCE_UPGRADE) != 0
-        && is_websocket_upgrade_request(req) {
+        && realtime::is_websocket_upgrade_request(req) {
         let ws_idx = find_ws_route(server, req.url[..]);
         if ws_idx >= 0 && complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
             return PipelineOutcome.Handled, true;
@@ -906,7 +916,7 @@ fn try_handle_pipelined_websocket<B>(
     wire_out: B&,
 ) -> bool {
     guard server.ws_route_count > 0 && (req.presence_mask & HDR_PRESENCE_UPGRADE) != 0 else { return false; }
-    guard is_websocket_upgrade_request(req) else { return false; }
+    guard realtime::is_websocket_upgrade_request(req) else { return false; }
     let ws_idx = find_ws_route(server, req.url[..]);
     guard ws_idx >= 0 else { return false; }
     return complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out);
@@ -1933,7 +1943,7 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     guard r_idx >= 0 else { return false; }
     let behavior = server.ws_routes[r_idx as i64].behavior;
     var ws_res = Response { .. };
-    var ws, ok_ws = ws_upgrade_request(req, ws_res, behavior.subprotocol[..]);
+    var ws, ok_ws = realtime::ws_upgrade_request(req, ws_res, behavior.subprotocol[..]);
     guard ok_ws else { return false; }
     ws.max_payload_length = behavior.max_payload_length;
     ws.max_backpressure = behavior.max_backpressure;
@@ -1943,11 +1953,11 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     ws.send_pings_automatically = behavior.send_pings_automatically;
     ws.reset_idle_timeout_on_send = behavior.reset_idle_timeout_on_send;
     let ua_upg = req.header("user-agent");
-    if behavior.compression != WS_COMPRESS_DISABLED && !ws_has_broken_compression(ua_upg) {
+    if behavior.compression != realtime::WS_COMPRESS_DISABLED && !realtime::ws_has_broken_compression(ua_upg) {
         let client_ext = req.header("sec-websocket-extensions");
         if client_ext.contains_fold("permessage-deflate") {
             ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-            enable_permessage_deflate(ws, behavior.compression);
+            ws.enable_permessage_deflate(behavior.compression);
         }
     }
     out_wire.clear();
@@ -1955,7 +1965,7 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     let _ = tcp_send(conn_fd, out_wire[..]);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     in_buf.compact_wire_buffer(consumed);
-    serve_ws_session_buf(conn_fd, ws, stage, in_buf, ws_frag_buf, out_wire);
+    realtime::serve_ws_session_buf(conn_fd, ws, stage, in_buf, ws_frag_buf, out_wire);
     return true;
 }
 
@@ -2058,7 +2068,7 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
         flush_http1_cork_buf(conn_fd, out_wire);
         return false;
     }
-    if is_websocket_upgrade_request(req) {
+    if realtime::is_websocket_upgrade_request(req) {
         flush_http1_cork_buf(conn_fd, out_wire);
         if serve_http1_upgraded_ws(conn_fd, server, req, consumed, stage, in_buf, ws_frag_buf, out_wire) {
             return false;

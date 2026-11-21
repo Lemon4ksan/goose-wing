@@ -11,7 +11,7 @@ fn main() {
     print("goose-wing Realtime WebSocket & Pub/Sub Engine Demo\n");
 
     // 1. Initialize Zero-Heap TopicTree (OASIS MQTT / uWebSockets architecture)
-    var tree = wing::TopicTree { .. };
+    var tree = realtime::TopicTree { .. };
 
     // 2. Subscribe simulated client sockets to topic channels
     let client1_fd: i64 = 101;
@@ -19,11 +19,11 @@ fn main() {
     let monitor_fd: i64 = 999;
 
     // Direct room subscriptions
-    wing::subscribe(tree, client1_fd, "chat/crypto/general");
-    wing::subscribe(tree, client2_fd, "chat/crypto/general");
+    tree.subscribe(client1_fd, "chat/crypto/general");
+    tree.subscribe(client2_fd, "chat/crypto/general");
 
     // Wildcard subscription (# matches all sub-levels)
-    wing::subscribe(tree, monitor_fd, "chat/#");
+    tree.subscribe(monitor_fd, "chat/#");
 
     print("[1] Topic Subscriptions Registered:");
     print("    Client 101 -> chat/crypto/general");
@@ -34,7 +34,7 @@ fn main() {
 
     // 3. Match subscribers for a broadcast on "chat/crypto/general"
     var matched_fds: i64[..512] = [];
-    wing::find_subscribers(tree, "chat/crypto/general", matched_fds);
+    tree.find_subscribers("chat/crypto/general", matched_fds);
 
     print("\n[2] Routing Message on topic 'chat/crypto/general':");
     print("    Matched subscriber count: ", matched_fds.len);
@@ -45,7 +45,7 @@ fn main() {
     // 4. Encode an outbound WebSocket RFC 6455 Text Frame
     let chat_json = "{\"sender\":\"alice\",\"text\":\"Goose Wing WebSocket streaming!\"}";
     var frame_out: u8[..256] = [];
-    wing::encode_ws_frame(frame_out, rfc::WS_OPCODE_TEXT, chat_json, false);
+    realtime::encode_ws_frame(frame_out, rfc::WS_OPCODE_TEXT, chat_json, false);
 
     print("\n[3] WebSocket RFC 6455 Frame Encoded:");
     print("    Payload Length: ", chat_json.len, " bytes");
@@ -57,9 +57,9 @@ fn main() {
     var masked_wire: u8[..256] = [];
 
     // Client-to-server frames MUST be masked
-    wing::encode_ws_frame(masked_wire, rfc::WS_OPCODE_TEXT, chat_json, true, mask_key);
+    realtime::encode_ws_frame(masked_wire, rfc::WS_OPCODE_TEXT, chat_json, true, mask_key);
 
-    let parsed_header, hdr_ok = wing::parse_ws_frame_header(masked_wire[..]);
+    let parsed_header, hdr_ok = realtime::parse_ws_frame_header(masked_wire[..]);
 
     print("\n[4] Inbound Client Masked Frame Processing:");
     print("    Mask Key: [0x1A, 0x2B, 0x3C, 0x4D]");
@@ -73,7 +73,7 @@ fn main() {
     var unmasked_payload: u8[..256] = [];
     let payload_bytes = masked_wire[(parsed_header.header_len as i64)..];
     unmasked_payload.append(payload_bytes);
-    wing::mask_websocket_payload(unmasked_payload[..], parsed_header.mask_key);
+    realtime::mask_websocket_payload(unmasked_payload[..], parsed_header.mask_key);
 
     print("    Recovered Text: ", unmasked_payload[..]);
 }

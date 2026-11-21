@@ -588,7 +588,7 @@ fn try_match_mock_route(
             let sent_key = find_header(ctx.headers, "sec-websocket-key");
             if sent_key.len > 0 && out_resp.header("sec-websocket-accept").len == 0 {
                 var accept_buf: u8[..64] = [];
-                compute_websocket_accept(sent_key, accept_buf);
+                realtime::compute_websocket_accept(sent_key, accept_buf);
                 out_resp.set_header("Sec-WebSocket-Accept", accept_buf[..]);
             }
         }
@@ -944,12 +944,12 @@ fn build_h2_request_pseudo_headers(
     current_url: const core::Url&,
     is_https:    bool,
     headers:     const HeaderMap&,
-    out_pseudo:  h2_internal::H2PseudoHeaders&,
+    out_pseudo:  http2::PseudoHeaders&,
 ) -> bool {
     let auth_str = current_url.host();
     let proto_hdr = find_header(headers, ":protocol");
     if curr_method.eq_ascii_fold("CONNECT") && proto_hdr.len == 0 {
-        out_pseudo = h2_internal::H2PseudoHeaders {
+        out_pseudo = http2::PseudoHeaders {
             has_method: true, has_authority: true, ..
         };
         return out_pseudo.method.try_set("CONNECT") && out_pseudo.authority.try_set(auth_str);
@@ -958,7 +958,7 @@ fn build_h2_request_pseudo_headers(
     var path_buf: u8[..2048] = [];
     guard format_h2_request_target_path(current_url, path_buf) else { return false; }
 
-    out_pseudo = h2_internal::H2PseudoHeaders {
+    out_pseudo = http2::PseudoHeaders {
         has_method: true, has_scheme: true, has_authority: true, has_path: true, ..
     };
     guard out_pseudo.method.try_set(curr_method) &&
@@ -979,7 +979,7 @@ fn encode_h2_client_request<B>(
     current_url:  const core::Url&,
     is_https:     bool,
     ctx:          const RequestExecutionContext&,
-    enc_dt:       h2_internal::DynamicTable&,
+    enc_dt:       http2::DynamicTable&,
     stream_id:    u32,
     send_preface: bool,
     out_wire:     B&,
@@ -991,7 +991,7 @@ fn encode_h2_client_request<B>(
     guard ctx.body.len <= (rfc::H2_DEFAULT_WINDOW_SIZE as i64) else { return false; }
     out_wire.clear();
 
-    var pseudo = h2_internal::H2PseudoHeaders { .. };
+    var pseudo = http2::PseudoHeaders { .. };
     guard build_h2_request_pseudo_headers(curr_method, current_url, is_https, ctx.headers, pseudo) else {
         return false;
     }
@@ -1016,7 +1016,7 @@ fn encode_h2_client_request<B>(
 }
 
 fn process_h2_control_frame<B>(
-    hdr:     const h2_internal::FrameHeader&,
+    hdr:     const http2::FrameHeader&,
     payload: const u8[:],
     out:     B&,
 ) {
@@ -1053,21 +1053,21 @@ inline fn verify_h2_response_content_length(resp: const Response&, is_head: bool
 }
 
 struct H2ClientRecvState {
-    got_hdrs:   bool                     = false,
-    saw_goaway: bool                     = false,
-    await_cont: bool                     = false,
-    cont_hdr:   h2_internal::FrameHeader = h2_internal::FrameHeader { .. },
-    cont_buf:   u8[..16384]              = [],
+    got_hdrs:   bool               = false,
+    saw_goaway: bool               = false,
+    await_cont: bool               = false,
+    cont_hdr:   http2::FrameHeader = http2::FrameHeader { .. },
+    cont_buf:   u8[..16384]        = [],
 }
 
 inline fn apply_initial_h2_response_headers(
-    hdr:      const h2_internal::FrameHeader&,
+    hdr:      const http2::FrameHeader&,
     frag:     const u8[:],
-    dec_dt:   h2_internal::DynamicTable&,
+    dec_dt:   http2::DynamicTable&,
     resp:     Response&,
     got_hdrs: bool&,
 ) -> bool {
-    var pseudo = h2_internal::H2PseudoHeaders { .. };
+    var pseudo = http2::PseudoHeaders { .. };
     let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.headers, 8192, true);
     guard d_err == rfc::H2_ERR_NO_ERROR && pseudo.has_status &&
         pseudo.status != rfc::STATUS_SWITCHING_PROTOCOLS else {
@@ -1086,10 +1086,10 @@ inline fn apply_initial_h2_response_headers(
 }
 
 fn finish_h2_response_header_block(
-    hdr:      const h2_internal::FrameHeader&,
+    hdr:      const http2::FrameHeader&,
     frag:     const u8[:],
     is_head:  bool,
-    dec_dt:   h2_internal::DynamicTable&,
+    dec_dt:   http2::DynamicTable&,
     resp:     Response&,
     got_hdrs: bool&,
 ) -> bool, bool {
@@ -1099,7 +1099,7 @@ fn finish_h2_response_header_block(
         }
     } else {
         guard (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 else { return false, false; }
-        var pseudo = h2_internal::H2PseudoHeaders { is_trailer: true, .. };
+        var pseudo = http2::PseudoHeaders { is_trailer: true, .. };
         let d_err = wire::decode_hpack_to_map(dec_dt, frag, pseudo, resp.trailers, 8192, true);
         guard d_err == rfc::H2_ERR_NO_ERROR && !pseudo.has_status else { return false, false; }
     }
@@ -1112,14 +1112,14 @@ fn finish_h2_response_header_block(
 }
 
 fn process_h2_response_headers_frame(
-    hdr:     const h2_internal::FrameHeader&,
+    hdr:     const http2::FrameHeader&,
     payload: const u8[:],
     is_head: bool,
-    dec_dt:  h2_internal::DynamicTable&,
+    dec_dt:  http2::DynamicTable&,
     resp:    Response&,
     state:   H2ClientRecvState&,
 ) -> bool, bool {
-    let frag, f_err = h2_internal::extract_headers_frame_payload(hdr, payload);
+    let frag, f_err = http2::extract_headers_frame_payload(hdr, payload);
     guard f_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
     if (hdr.flags & rfc::H2_FLAG_END_HEADERS) == 0 {
         state.cont_buf.clear();
@@ -1132,11 +1132,11 @@ fn process_h2_response_headers_frame(
 }
 
 fn process_h2_continuation_frame(
-    hdr:       const h2_internal::FrameHeader&,
+    hdr:       const http2::FrameHeader&,
     payload:   const u8[:],
     stream_id: u32,
     is_head:   bool,
-    dec_dt:    h2_internal::DynamicTable&,
+    dec_dt:    http2::DynamicTable&,
     resp:      Response&,
     state:     H2ClientRecvState&,
 ) -> bool, bool {
@@ -1154,11 +1154,11 @@ fn process_h2_continuation_frame(
 }
 
 fn process_h2_response_frame<B>(
-    hdr:       const h2_internal::FrameHeader&,
+    hdr:       const http2::FrameHeader&,
     payload:   const u8[:],
     stream_id: u32,
     is_head:   bool,
-    dec_dt:    h2_internal::DynamicTable&,
+    dec_dt:    http2::DynamicTable&,
     resp:      Response&,
     state:     H2ClientRecvState&,
     out_ctrl:  B&,
@@ -1196,7 +1196,7 @@ fn process_h2_response_frame<B>(
     }
     if hdr.frame_type == rfc::H2_FRAME_DATA && hdr.stream_id == stream_id {
         guard state.got_hdrs else { return false, false; }
-        let d_slice, d_err = h2_internal::extract_padded_frame_payload(hdr, payload);
+        let d_slice, d_err = http2::extract_padded_frame_payload(hdr, payload);
         guard d_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         resp.body.append(d_slice);
         if hdr.length > 0 {
@@ -1218,7 +1218,7 @@ fn drain_h2_response_frames<B1, B2>(
     rx_accum:  B1&,
     stream_id: u32,
     is_head:   bool,
-    dec_dt:    h2_internal::DynamicTable&,
+    dec_dt:    http2::DynamicTable&,
     resp:      Response&,
     state:     H2ClientRecvState&,
     out_ctrl:  B2&,
@@ -1226,7 +1226,7 @@ fn drain_h2_response_frames<B1, B2>(
     var consumed: i64 = 0;
     defer rx_accum.compact_wire_buffer(consumed);
     while rx_accum.len - consumed >= 9 {
-        let hdr, h_err = h2_internal::parse_frame_header(rx_accum[consumed..], 16384);
+        let hdr, h_err = http2::parse_frame_header(rx_accum[consumed..], 16384);
         guard h_err == rfc::H2_ERR_NO_ERROR else { return false, false; }
         let frame_total = 9 + (hdr.length as i64);
         guard rx_accum.len - consumed >= frame_total else { break; }
@@ -1379,7 +1379,7 @@ fn dispatch_pooled_h2_hop(
 }
 
 fn encode_h3_client_request<B>(
-    h3_conn:     h3_internal::H3Connection&,
+    h3_conn:     http3::Connection&,
     sid:         u64,
     ctx:         const RequestExecutionContext&,
     current_url: const core::Url&,
@@ -1404,13 +1404,13 @@ fn encode_h3_client_request<B>(
     guard path_buf.len <= 1024 else { return false; }
 
     let has_body = ctx.body.len > 0;
-    guard h3_internal::send_request_headers(
+    guard http3::send_request_headers(
         h3_conn, sid, ctx.current_method[..], "https", current_url.host(),
         path_buf[..], ctx.headers, !has_body, out_wire,
     ) else { return false; }
 
     if has_body {
-        guard h3_internal::send_request_data(h3_conn, sid, ctx.body[..], true, out_wire) else {
+        guard http3::send_request_data(h3_conn, sid, ctx.body[..], true, out_wire) else {
             return false;
         }
     }
@@ -1441,8 +1441,8 @@ fn execute_live_h3_hop(
     defer tcp_close(udp_fd);
 
     let h3_settings = fingerprint::H3Settings { .. };
-    var h3_conn = h3_internal::new_h3_client_connection(h3_settings);
-    let sid, ok_s = h3_internal::open_request_stream(h3_conn);
+    var h3_conn = http3::new_client_connection(h3_settings);
+    let sid, ok_s = http3::open_request_stream(h3_conn);
     guard ok_s else { return false; }
     var req_wire: u8[..4096] = [];
     guard encode_h3_client_request(h3_conn, sid, ctx, current_url, req_wire) else { return false; }
@@ -1456,20 +1456,20 @@ fn execute_live_h3_hop(
     let recvd = udp_recvfrom(udp_fd, rx_buf[..], min(eff_timeout, 250), peer_ip4, peer_port);
     guard recvd > 0 else { return false; }
 
-    let h_err = h3_internal::handle_stream_data(h3_conn, sid, true, rx_buf[..recvd], true);
+    let h_err = http3::handle_stream_data(h3_conn, sid, true, rx_buf[..recvd], true);
     guard h_err == rfc::H3_ERR_NO_ERROR else { return false; }
-    let sc, ok_sc = h3_internal::get_status_code(h3_conn, sid);
+    let sc, ok_sc = http3::get_status_code(h3_conn, sid);
     guard ok_sc else { return false; }
 
     reset_response(resp);
     resp.status_code = sc;
     let _ = resp.protocol.try_set("HTTP/3");
-    let _ = h3_internal::copy_stream_headers(h3_conn, sid, resp.headers);
+    let _ = http3::copy_stream_headers(h3_conn, sid, resp.headers);
     for &e in resp.headers.entries {
         update_response_presence(resp, entry_name(resp.headers, e));
     }
-    let _ = h3_internal::copy_stream_trailers(h3_conn, sid, resp.trailers);
-    let body_slice, ok_b = h3_internal::get_response_body(h3_conn, sid);
+    let _ = http3::copy_stream_trailers(h3_conn, sid, resp.trailers);
+    let body_slice, ok_b = http3::get_response_body(h3_conn, sid);
     if ok_b { resp.body.append(body_slice); }
     resp.effective_url = copy(current_url.href);
     copy_headers(ctx.headers, resp.sent_headers);

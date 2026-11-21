@@ -18,7 +18,7 @@ fn main() {
 
     var server = wing::new_http_server("0.0.0.0", port);
     let _ = server.server_name.try_set("goose-autobahn/1.0");
-    let ws_behavior = wing::WsBehavior {
+    let ws_behavior = realtime::WsBehavior {
         max_payload_length: 16777216,
         idle_timeout_s:     30,
         ..

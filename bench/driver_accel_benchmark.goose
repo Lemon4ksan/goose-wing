@@ -257,12 +257,12 @@ fn bench_udp_fallback_l2(h3_ep: wing::H3ServerEndpoint&, xsk: net_internal::AfXd
     let udp_port = wing::tcp_getsockname_port(udp_srv);
 
     let h3_settings = fingerprint::H3Settings { .. };
-    var h3_cli = h3_internal::new_h3_client_connection(h3_settings);
-    let sid, ok_sid = h3_internal::open_request_stream(h3_cli);
+    var h3_cli = http3::new_client_connection(h3_settings);
+    let sid, ok_sid = http3::open_request_stream(h3_cli);
     assert(ok_sid);
     var extra = wing::HeaderMap { .. };
     var req_wire: u8[..1024] = [];
-    assert(h3_internal::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
+    assert(http3::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
 
     let cfg_fb = wing::H3L2Config { backend: wing::H3L2Backend.UdpFallback, udp_fd: udp_srv, .. };
     var rx_batch = wing::UdpBatchQueue { .. };

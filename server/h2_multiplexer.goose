@@ -70,27 +70,27 @@ fn reset_server_stream(st: H2ServerStream&) {
 // ---- Server Connection Session -------------------------------------------
 
 struct H2ServerSession {
-    conn:                      h2_internal::H2Connection = h2_internal::H2Connection { .. },
-    hpack_enc:                 h2_internal::DynamicTable = h2_internal::DynamicTable { .. },
-    streams:                   H2ServerStream[..16]      = [],
-    preface_handled:           bool                      = false,
-    server_settings_sent:      bool                      = false,
-    client_settings_acked:     bool                      = false,
-    pending_settings_ack:      bool                      = false,
-    pending_dyn_size_update:   bool                      = false,
-    pending_min_dyn_size:      u64                       = 4096,
-    min_pending_max_size:      i64                       = 4096,
-    server_name:               u8[..64]                  = "goose-wing/1.0",
-    header_accumulator:        u8[..16384]               = [],
-    header_accum_stream_id:    u32                       = 0,
-    header_accum_rejected_err: u32                       = 0,
-    header_accum_end_stream:   bool                      = false,
-    header_accum_is_trailer:   bool                      = false,
+    conn:                      http2::Connection    = http2::Connection { .. },
+    hpack_enc:                 http2::DynamicTable  = http2::DynamicTable { .. },
+    streams:                   H2ServerStream[..16] = [],
+    preface_handled:           bool                 = false,
+    server_settings_sent:      bool                 = false,
+    client_settings_acked:     bool                 = false,
+    pending_settings_ack:      bool                 = false,
+    pending_dyn_size_update:   bool                 = false,
+    pending_min_dyn_size:      u64                  = 4096,
+    min_pending_max_size:      i64                  = 4096,
+    server_name:               u8[..64]             = "goose-wing/1.0",
+    header_accumulator:        u8[..16384]          = [],
+    header_accum_stream_id:    u32                  = 0,
+    header_accum_rejected_err: u32                  = 0,
+    header_accum_end_stream:   bool                 = false,
+    header_accum_is_trailer:   bool                 = false,
 }
 
 fn flush_server_control_frames(sess: H2ServerSession&) {
     while sess.conn.pending_control_frames > 0 {
-        h2_internal::ack_control_frame_flushed(sess.conn);
+        http2::ack_control_frame_flushed(sess.conn);
     }
 }
 
@@ -98,7 +98,7 @@ fn new_h2_server_session(
     server_name_str: const u8[:] = "goose-wing/1.0",
     now_ms:          u64         = 0,
 ) -> H2ServerSession {
-    var conn = h2_internal::new_h2_connection(now_ms);
+    var conn = http2::new_h2_connection(now_ms);
     conn.is_server = true;
     conn.enable_push = false;
     conn.max_concurrent_streams = 16;
@@ -106,7 +106,7 @@ fn new_h2_server_session(
     conn.max_header_list_size = 16384;
     var sess = H2ServerSession {
         conn:                  conn,
-        hpack_enc:             h2_internal::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
+        hpack_enc:             http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
         preface_handled:       false,
         server_settings_sent:  false,
         client_settings_acked: false,
@@ -118,7 +118,7 @@ fn new_h2_server_session(
     return sess;
 }
 
-inline fn reset_hpack_dyn_table_inplace(dt: h2_internal::DynamicTable&) {
+inline fn reset_hpack_dyn_table_inplace(dt: http2::DynamicTable&) {
     dt.head = 0;
     dt.count = 0;
     dt.arena_write_pos = 0;
@@ -134,7 +134,7 @@ inline fn reset_hpack_dyn_table_inplace(dt: h2_internal::DynamicTable&) {
     }
 }
 
-inline fn reset_h2_stream_nodes_inplace(conn: h2_internal::H2Connection&) {
+inline fn reset_h2_stream_nodes_inplace(conn: http2::Connection&) {
     for n_i in 128 {
         conn.stream_nodes[n_i].stream_id = 0;
         conn.stream_nodes[n_i].next = -1;
@@ -259,13 +259,13 @@ fn find_or_alloc_stream(sess: H2ServerSession&, stream_id: u32) -> i32, bool {
 
 // Emits the server's initial SETTINGS frame (RFC 9113 Section 6.5)
 fn emit_server_settings<B>(out: B&) {
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     24, // 4 settings * 6 bytes
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      0,
         stream_id:  0,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
 
     out.append_u16_be(rfc::H2_SETTING_MAX_CONCURRENT_STREAMS);
     out.append_u32_be(16);
@@ -282,24 +282,24 @@ fn emit_server_settings<B>(out: B&) {
 
 // Emits a SETTINGS ACK frame
 fn emit_settings_ack<B>(out: B&) {
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     0,
         frame_type: rfc::H2_FRAME_SETTINGS,
         flags:      rfc::H2_FLAG_ACK,
         stream_id:  0,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
 }
 
 // Emits a PING ACK frame echoing the client's 8-byte opaque payload
 fn emit_ping_ack<B>(opaque: const u8[8]&, out: B&) {
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_PING,
         flags:      rfc::H2_FLAG_ACK,
         stream_id:  0,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
     for b in opaque {
         out.push(b);
     }
@@ -307,37 +307,37 @@ fn emit_ping_ack<B>(opaque: const u8[8]&, out: B&) {
 
 // Emits a WINDOW_UPDATE frame
 fn emit_window_update<B>(stream_id: u32, increment: u32, out: B&) {
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     4,
         frame_type: rfc::H2_FRAME_WINDOW_UPDATE,
         flags:      0,
         stream_id:  stream_id,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
     out.append_u32_be(increment & 0x7FFFFFFF);
 }
 
 // Emits a RST_STREAM frame
 fn emit_rst_stream<B>(stream_id: u32, error_code: u32, out: B&) {
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     4,
         frame_type: rfc::H2_FRAME_RST_STREAM,
         flags:      0,
         stream_id:  stream_id,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
     out.append_u32_be(error_code);
 }
 
 // Emits a GOAWAY frame
 fn emit_goaway<B>(last_stream_id: u32, error_code: u32, out: B&) {
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_GOAWAY,
         flags:      0,
         stream_id:  0,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
     out.append_u32_be(last_stream_id & 0x7FFFFFFF);
     out.append_u32_be(error_code);
 }
@@ -355,13 +355,13 @@ fn emit_goaway<B>(sess: H2ServerSession&, error_code: u32, out: B&) {
 fn initiate_graceful_shutdown<B>(sess: H2ServerSession&, out: B&) {
     guard !sess.conn.shutdown_notice_sent && !sess.conn.goaway_sent else { return; }
     emit_goaway(0x7FFFFFFF, rfc::H2_ERR_NO_ERROR, out);
-    let ping_hdr = h2_internal::FrameHeader {
+    let ping_hdr = http2::FrameHeader {
         length:     8,
         frame_type: rfc::H2_FRAME_PING,
         flags:      0,
         stream_id:  0,
     };
-    h2_internal::encode_frame_header_to(ping_hdr, out);
+    http2::encode_frame_header_to(ping_hdr, out);
     out.append_u64_be(sess.conn.shutdown_ping_opaque);
     sess.conn.shutdown_notice_sent = true;
 }
@@ -383,9 +383,9 @@ inline fn emit_pending_dyn_size_updates<B>(sess: H2ServerSession&, hpack_block: 
         sess.pending_min_dyn_size
     };
     if min_sz < sess.hpack_enc.current_max_size {
-        let _ = h2_internal::hpack_encode_int(hpack_block, min_sz, 5, 0x20);
+        let _ = http2::hpack_encode_int(hpack_block, min_sz, 5, 0x20);
     }
-    let _ = h2_internal::hpack_encode_int(hpack_block, sess.hpack_enc.current_max_size, 5, 0x20);
+    let _ = http2::hpack_encode_int(hpack_block, sess.hpack_enc.current_max_size, 5, 0x20);
     sess.pending_dyn_size_update = false;
     sess.pending_min_dyn_size = sess.hpack_enc.current_max_size;
     sess.min_pending_max_size = sess.hpack_enc.current_max_size as i64;
@@ -405,12 +405,12 @@ fn emit_response_headers<B>(
 
     var status_buf: u8[..16] = [];
     format(status_buf, res.status_code as i64);
-    let st_idx_mode = h2_internal::select_hpack_indexing(":status", status_buf[..], max_tbl);
-    h2_internal::encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], st_idx_mode, true);
+    let st_idx_mode = http2::select_hpack_indexing(":status", status_buf[..], max_tbl);
+    http2::encode_hpack_field(sess.hpack_enc, hpack_block, ":status", status_buf[..], st_idx_mode, true);
 
     if sess.server_name.len > 0 && !res.has_header("server") {
-        let srv_idx_mode = h2_internal::select_hpack_indexing("server", sess.server_name[..], max_tbl);
-        h2_internal::encode_hpack_field(
+        let srv_idx_mode = http2::select_hpack_indexing("server", sess.server_name[..], max_tbl);
+        http2::encode_hpack_field(
             sess.hpack_enc, hpack_block, "server", sess.server_name[..], srv_idx_mode, true,
         );
     }
@@ -420,8 +420,8 @@ fn emit_response_headers<B>(
     if !is_grpc && !has_cl && res.status_code >= 200 && res.status_code != 204 && res.status_code != 304 {
         var cl_buf: u8[..32] = [];
         format(cl_buf, res.body.len);
-        let cl_idx_mode = h2_internal::select_hpack_indexing("content-length", cl_buf[..], max_tbl);
-        h2_internal::encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], cl_idx_mode, true);
+        let cl_idx_mode = http2::select_hpack_indexing("content-length", cl_buf[..], max_tbl);
+        http2::encode_hpack_field(sess.hpack_enc, hpack_block, "content-length", cl_buf[..], cl_idx_mode, true);
     }
 
     for &e in res.headers.entries {
@@ -431,26 +431,26 @@ fn emit_response_headers<B>(
         var lower_name: u8[..256] = [];
         guard name_slice.len <= lower_name.cap else { continue; }
         name_slice.to_lower_ascii(lower_name);
-        let hdr_idx_mode = h2_internal::select_hpack_indexing(lower_name[..], val_slice, max_tbl);
-        h2_internal::encode_hpack_field(
+        let hdr_idx_mode = http2::select_hpack_indexing(lower_name[..], val_slice, max_tbl);
+        http2::encode_hpack_field(
             sess.hpack_enc, hpack_block, lower_name[..], val_slice, hdr_idx_mode, true,
         );
     }
 
     var flags: u8 = rfc::H2_FLAG_END_HEADERS;
     if end_stream { flags |= rfc::H2_FLAG_END_STREAM; }
-    let frame_hdr = h2_internal::FrameHeader {
+    let frame_hdr = http2::FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      flags,
         stream_id:  stream_id,
     };
-    h2_internal::encode_frame_header_to(frame_hdr, out);
+    http2::encode_frame_header_to(frame_hdr, out);
     out.append(hpack_block[..]);
 }
 
 inline fn deduct_send_windows(
-    conn:     h2_internal::H2Connection&,
+    conn:     http2::Connection&,
     c_idx:    i64,
     found:    bool,
     send_len: i64,
@@ -482,13 +482,13 @@ fn emit_one_data_frame<B>(
     let chunk_size = calc_data_chunk_size(rem, limit, quota);
     let is_last = (offset + chunk_size >= body.len);
     let flags: u8 = if is_last && end_stream { rfc::H2_FLAG_END_STREAM } else { 0 };
-    let hdr = h2_internal::FrameHeader {
+    let hdr = http2::FrameHeader {
         length:     chunk_size as u32,
         frame_type: rfc::H2_FRAME_DATA,
         flags:      flags,
         stream_id:  stream_id,
     };
-    h2_internal::encode_frame_header_to(hdr, out);
+    http2::encode_frame_header_to(hdr, out);
     out.append(body[offset..offset + chunk_size]);
     deduct_send_windows(sess.conn, c_idx, found, chunk_size);
     return chunk_size;
@@ -507,10 +507,10 @@ fn emit_response_data<B>(
 
     var offset: i64 = 0;
     let limit = max(max_frame_size as i64, 16384);
-    let c_idx, found = h2_internal::find_session_stream_idx(sess.conn, stream_id);
+    let c_idx, found = http2::find_stream_idx(sess.conn, stream_id);
 
     while offset < body.len {
-        let quota = h2_internal::compute_stream_send_quota(sess.conn, stream_id);
+        let quota = http2::compute_stream_send_quota(sess.conn, stream_id);
         if quota <= 0 {
             break;
         }
@@ -552,34 +552,34 @@ fn emit_response_trailers<B>(
             if sess.pending_dyn_size_update && hpack_block.len == 0 {
                 emit_pending_dyn_size_updates(sess, hpack_block);
             }
-            h2_internal::encode_hpack_field(
-                sess.hpack_enc, hpack_block, lower_name[..], val_slice, h2_internal::HpackIndexing.Incremental, false,
+            http2::encode_hpack_field(
+                sess.hpack_enc, hpack_block, lower_name[..], val_slice, http2::HpackIndexing.Incremental, false,
             );
         }
     }
 
     if hpack_block.len == 0 {
-        let empty_data = h2_internal::FrameHeader {
+        let empty_data = http2::FrameHeader {
             length:     0,
             frame_type: rfc::H2_FRAME_DATA,
             flags:      rfc::H2_FLAG_END_STREAM,
             stream_id:  stream_id,
         };
-        h2_internal::encode_frame_header_to(empty_data, out);
+        http2::encode_frame_header_to(empty_data, out);
         return;
     }
 
-    let frame_hdr = h2_internal::FrameHeader {
+    let frame_hdr = http2::FrameHeader {
         length:     hpack_block.len as u32,
         frame_type: rfc::H2_FRAME_HEADERS,
         flags:      rfc::H2_FLAG_END_HEADERS | rfc::H2_FLAG_END_STREAM,
         stream_id:  stream_id,
     };
-    h2_internal::encode_frame_header_to(frame_hdr, out);
+    http2::encode_frame_header_to(frame_hdr, out);
     out.append(hpack_block[..]);
 }
 
-fn apply_decoded_pseudo_to_stream(st: H2ServerStream&, pseudo: const h2_internal::H2PseudoHeaders&) -> bool {
+fn apply_decoded_pseudo_to_stream(st: H2ServerStream&, pseudo: const http2::PseudoHeaders&) -> bool {
     if pseudo.has_method {
         guard st.method.try_set(pseudo.method[..]) else { return false; }
     }
@@ -623,7 +623,7 @@ inline fn terminate_server_stream(
     pipeline:  wing::ServerPipelineConfig&,
     stream_id: u32,
 ) {
-    h2_internal::reset_session_stream(sess.conn, stream_id);
+    http2::reset_stream(sess.conn, stream_id);
     if sess.conn.continuation_stream_id == stream_id {
         sess.conn.continuation_stream_id = 0;
     }
@@ -650,7 +650,7 @@ fn cleanup_h2_server_session(sess: H2ServerSession&, pipeline: wing::ServerPipel
 }
 
 inline fn validate_request_pseudo_headers(
-    pseudo:                  const h2_internal::H2PseudoHeaders&,
+    pseudo:                  const http2::PseudoHeaders&,
     end_stream:              bool,
     enable_connect_protocol: u32 = 1,
 ) -> bool {
@@ -678,7 +678,7 @@ inline fn validate_request_pseudo_headers(
 fn process_ingress_window_update<B>(
     sess:          H2ServerSession&,
     pipeline:      wing::ServerPipelineConfig&,
-    hdr:           const h2_internal::FrameHeader&,
+    hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
@@ -691,9 +691,9 @@ fn process_ingress_window_update<B>(
         emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_PROTOCOL_ERROR, out_wire);
         return false;
     }
-    let wu_err = h2_internal::apply_window_update(sess.conn, hdr.stream_id, inc);
+    let wu_err = http2::apply_window_update(sess.conn, hdr.stream_id, inc);
     guard wu_err != rfc::H2_ERR_NO_ERROR else { return true; }
-    if hdr.stream_id == 0 || h2_internal::is_conn_error_on_window_update(sess.conn, hdr.stream_id) {
+    if hdr.stream_id == 0 || http2::is_conn_error_on_window_update(sess.conn, hdr.stream_id) {
         emit_goaway(sess.conn.last_peer_stream_id, wu_err, out_wire);
         return false;
     }
@@ -703,7 +703,7 @@ fn process_ingress_window_update<B>(
 }
 
 inline fn apply_header_table_size_setting(sess: H2ServerSession&, param_val: u32) {
-    let allowed_max = min(param_val as u64, h2_internal::HPACK_MAX_ARENA_BYTES);
+    let allowed_max = min(param_val as u64, http2::HPACK_MAX_ARENA_BYTES);
     let clamped_i64 = allowed_max as i64;
     sess.hpack_enc.max_allowed_size = allowed_max;
     if !sess.pending_dyn_size_update || allowed_max < sess.pending_min_dyn_size {
@@ -714,20 +714,20 @@ inline fn apply_header_table_size_setting(sess: H2ServerSession&, param_val: u32
     }
     if sess.hpack_enc.current_max_size != allowed_max {
         sess.hpack_enc.current_max_size = allowed_max;
-        h2_internal::evict_until(sess.hpack_enc, allowed_max);
+        http2::evict_until(sess.hpack_enc, allowed_max);
         sess.pending_dyn_size_update = true;
     }
 }
 
 inline fn active_streams_fit_window_delta(
-    conn:         const h2_internal::H2Connection&,
+    conn:         const http2::Connection&,
     cur_init_win: i64,
     new_init_win: i64,
 ) -> bool {
     guard new_init_win <= rfc::H2_MAX_WINDOW_SIZE else { return false; }
     let delta = core::sub_sat_i64(new_init_win, cur_init_win);
     for &stream in conn.streams {
-        if stream.active && stream.state != h2_internal::H2StreamState.Closed {
+        if stream.active && stream.state != http2::StreamState.Closed {
             guard core::add_sat_i64(stream.send_window, delta) <= rfc::H2_MAX_WINDOW_SIZE else {
                 return false;
             }
@@ -747,7 +747,7 @@ fn check_ingress_settings_frame(sess: const H2ServerSession&, frame_payload: con
         let param_id = core::read_be_u16(rem, 0);
         let param_val = core::read_be_u32(rem, 2);
         rem = rem[6..];
-        let val_err = h2_internal::validate_settings_parameter(param_id, param_val, false);
+        let val_err = http2::validate_settings_parameter(param_id, param_val, false);
         guard val_err == rfc::H2_ERR_NO_ERROR else { return val_err; }
         if param_id == rfc::H2_SETTING_INITIAL_WINDOW_SIZE {
             guard active_streams_fit_window_delta(sess.conn, sim_peer_win, param_val) else {
@@ -771,7 +771,7 @@ fn check_ingress_settings_frame(sess: const H2ServerSession&, frame_payload: con
 
 fn process_ingress_settings<B>(
     sess:          H2ServerSession&,
-    hdr:           const h2_internal::FrameHeader&,
+    hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
@@ -786,7 +786,7 @@ fn process_ingress_settings<B>(
         }
         sess.pending_settings_ack = false;
         sess.client_settings_acked = true;
-        h2_internal::ack_control_frame_flushed(sess.conn);
+        http2::ack_control_frame_flushed(sess.conn);
         return true;
     }
 
@@ -801,7 +801,7 @@ fn process_ingress_settings<B>(
         let param_val = core::read_be_u32(frame_payload, off + 2);
         off += 6;
         if param_id == rfc::H2_SETTING_INITIAL_WINDOW_SIZE {
-            let _ = h2_internal::apply_peer_initial_window_size_delta(sess.conn, param_val);
+            let _ = http2::apply_peer_initial_window_size_delta(sess.conn, param_val);
         } else if param_id == rfc::H2_SETTING_MAX_FRAME_SIZE {
             sess.conn.peer_max_frame_size = param_val;
         } else if param_id == rfc::H2_SETTING_HEADER_TABLE_SIZE {
@@ -817,11 +817,11 @@ fn process_ingress_settings<B>(
 }
 
 inline fn apply_request_priority_header(
-    conn:      h2_internal::H2Connection&,
+    conn:      http2::Connection&,
     stream_id: u32,
     headers:   const wing::HeaderMap&,
 ) {
-    let s_idx, found = h2_internal::find_session_stream_idx(conn, stream_id);
+    let s_idx, found = http2::find_stream_idx(conn, stream_id);
     if found && conn.streams[s_idx].has_explicit_priority_update {
         return;
     }
@@ -829,14 +829,14 @@ inline fn apply_request_priority_header(
     guard prio_hdr.len > 0 else { return; }
     let parsed_prio, ok_prio = wing::parse_http_priority(prio_hdr, false);
     if ok_prio {
-        let _ = h2_internal::apply_priority_update(conn, stream_id, parsed_prio);
+        let _ = http2::apply_priority_update(conn, stream_id, parsed_prio);
     }
 }
 
 fn process_ingress_headers<B>(
     sess:              H2ServerSession&,
     pipeline:          wing::ServerPipelineConfig&,
-    hdr:               const h2_internal::FrameHeader&,
+    hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
     out_wire:          B&,
@@ -908,9 +908,9 @@ fn process_ingress_headers<B>(
         return false;
     }
 
-    var pseudo = h2_internal::H2PseudoHeaders { is_trailer: is_trailer, .. };
+    var pseudo = http2::PseudoHeaders { is_trailer: is_trailer, .. };
     var dec_headers = wing::HeaderMap { .. };
-    let dec_err = h2_internal::decode_hpack_to_map(
+    let dec_err = http2::decode_hpack_to_map(
         sess.conn.hpack_dec,
         fragment,
         pseudo,
@@ -950,10 +950,10 @@ fn process_ingress_headers<B>(
             wing::append_all_headers(dec_headers, sess.streams[s_exist_idx].trailers);
             sess.streams[s_exist_idx].body_received = true;
             sess.streams[s_exist_idx].phase = H2StreamPhase.HalfClosedRemote;
-            let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, hdr.stream_id);
+            let c_idx, c_found = http2::find_stream_idx(sess.conn, hdr.stream_id);
             if c_found {
                 sess.conn.streams[c_idx].trailers_received = true;
-                sess.conn.streams[c_idx].state = h2_internal::H2StreamState.HalfClosedRemote;
+                sess.conn.streams[c_idx].state = http2::StreamState.HalfClosedRemote;
             }
         }
         return true;
@@ -992,7 +992,7 @@ fn process_ingress_headers<B>(
     apply_request_priority_header(sess.conn, hdr.stream_id, dec_headers);
     if pseudo.has_content_length {
         sess.streams[s_idx].declared_content_length = pseudo.content_length_val;
-        let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, hdr.stream_id);
+        let c_idx, c_found = http2::find_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].declared_content_length = pseudo.content_length_val;
         }
@@ -1007,7 +1007,7 @@ fn process_ingress_headers<B>(
 fn process_ingress_continuation<B>(
     sess:              H2ServerSession&,
     pipeline:          wing::ServerPipelineConfig&,
-    hdr:               const h2_internal::FrameHeader&,
+    hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
     out_wire:          B&,
@@ -1020,9 +1020,9 @@ fn process_ingress_continuation<B>(
     }
     guard (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 else { return true; }
 
-    var pseudo = h2_internal::H2PseudoHeaders { is_trailer: sess.header_accum_is_trailer, .. };
+    var pseudo = http2::PseudoHeaders { is_trailer: sess.header_accum_is_trailer, .. };
     var dec_headers = wing::HeaderMap { .. };
-    let dec_err = h2_internal::decode_hpack_to_map(
+    let dec_err = http2::decode_hpack_to_map(
         sess.conn.hpack_dec,
         sess.header_accumulator[..],
         pseudo,
@@ -1072,10 +1072,10 @@ fn process_ingress_continuation<B>(
         wing::append_all_headers(dec_headers, sess.streams[s_idx].trailers);
         sess.streams[s_idx].body_received = true;
         sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
-        let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, hdr.stream_id);
+        let c_idx, c_found = http2::find_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].trailers_received = true;
-            sess.conn.streams[c_idx].state = h2_internal::H2StreamState.HalfClosedRemote;
+            sess.conn.streams[c_idx].state = http2::StreamState.HalfClosedRemote;
         }
         return true;
     }
@@ -1119,7 +1119,7 @@ fn process_ingress_continuation<B>(
     apply_request_priority_header(sess.conn, hdr.stream_id, dec_headers);
     if pseudo.has_content_length {
         sess.streams[s_idx].declared_content_length = pseudo.content_length_val;
-        let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, hdr.stream_id);
+        let c_idx, c_found = http2::find_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].declared_content_length = pseudo.content_length_val;
         }
@@ -1247,7 +1247,7 @@ inline fn replenish_ingress_data_windows<B>(
     let st_inc = sess.streams[st_idx].unclaimed_local_window;
     emit_window_update(stream_id, st_inc as u32, out_wire);
     sess.streams[st_idx].unclaimed_local_window = 0;
-    let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, stream_id);
+    let c_idx, c_found = http2::find_stream_idx(sess.conn, stream_id);
     guard c_found else { return; }
     let c_slot = c_idx as i64;
     if c_slot >= 0 && c_slot < sess.conn.streams.len {
@@ -1260,7 +1260,7 @@ inline fn replenish_ingress_data_windows<B>(
 fn process_ingress_data<B>(
     sess:          H2ServerSession&,
     pipeline:      wing::ServerPipelineConfig&,
-    hdr:           const h2_internal::FrameHeader&,
+    hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
@@ -1317,7 +1317,7 @@ fn process_ingress_data<B>(
 
     if sess.streams[s_idx].spill_slab_idx < 0 &&
        core::add_sat_i64(sess.streams[s_idx].body.len, d_len) > 8192 {
-        let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, hdr.stream_id);
+        let c_idx, c_found = http2::find_stream_idx(sess.conn, hdr.stream_id);
         if c_found {
             sess.conn.streams[c_idx].recv_window = core::add_sat_i64(
                 sess.conn.streams[c_idx].recv_window, H2_SLAB_WINDOW_INCREMENT as i64,
@@ -1327,7 +1327,7 @@ fn process_ingress_data<B>(
 
     // RFC 9113 §8.1.1 & §8.1.2: Pass application data length (d_len) for Content-Length validation,
     // while connection and stream flow-control windows account for the full frame payload (hdr.length).
-    let flow_err = h2_internal::on_data_frame_received(sess.conn, hdr, d_len as u32);
+    let flow_err = http2::on_data_frame_received(sess.conn, hdr, d_len as u32);
     if flow_err != rfc::H2_ERR_NO_ERROR {
         if flow_err == rfc::H2_ERR_STREAM_CLOSED || flow_err == rfc::H2_ERR_PROTOCOL_ERROR {
             // RFC 9113 §8.1.2: Content-Length mismatch is a stream error of type PROTOCOL_ERROR
@@ -1403,7 +1403,7 @@ fn collect_cancelled_streams(
 ) {
     var p_scan = offset;
     while p_scan + 9 <= wire.len {
-        let sc_hdr, sc_err = h2_internal::parse_frame_header(wire[p_scan..p_scan + 9], sess.conn.local_max_frame_size);
+        let sc_hdr, sc_err = http2::parse_frame_header(wire[p_scan..p_scan + 9], sess.conn.local_max_frame_size);
         if sc_err != rfc::H2_ERR_NO_ERROR {
             break;
         }
@@ -1418,7 +1418,7 @@ fn collect_cancelled_streams(
 
 fn process_ingress_goaway<B>(
     sess:          H2ServerSession&,
-    hdr:           const h2_internal::FrameHeader&,
+    hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
@@ -1433,7 +1433,7 @@ fn process_ingress_goaway<B>(
     let last_stream_id = core::read_be_u32(frame_payload, 0) & 0x7FFFFFFF;
     let err_code = core::read_be_u32(frame_payload, 4);
     sess.conn.is_server = true;
-    let ga_err = h2_internal::apply_goaway(sess.conn, last_stream_id, err_code);
+    let ga_err = http2::apply_goaway(sess.conn, last_stream_id, err_code);
     guard ga_err == rfc::H2_ERR_NO_ERROR else {
         emit_goaway(sess.conn.last_peer_stream_id, ga_err, out_wire);
         return false;
@@ -1444,7 +1444,7 @@ fn process_ingress_goaway<B>(
 inline fn process_ingress_priority<B>(
     sess:          H2ServerSession&,
     pipeline:      wing::ServerPipelineConfig&,
-    hdr:           const h2_internal::FrameHeader&,
+    hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
@@ -1465,7 +1465,7 @@ inline fn process_ingress_priority<B>(
 
 inline fn process_ingress_ping<B>(
     sess:          H2ServerSession&,
-    hdr:           const h2_internal::FrameHeader&,
+    hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
 ) {
@@ -1485,7 +1485,7 @@ inline fn process_ingress_ping<B>(
 fn dispatch_ingress_frame<B>(
     sess:              H2ServerSession&,
     pipeline:          wing::ServerPipelineConfig&,
-    hdr:               const h2_internal::FrameHeader&,
+    hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
     out_wire:          B&,
@@ -1499,13 +1499,13 @@ fn dispatch_ingress_frame<B>(
     } else if hdr.frame_type == rfc::H2_FRAME_PRIORITY {
         return process_ingress_priority(sess, pipeline, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_PRIORITY_UPDATE {
-        let prio_stream_id, prio_param, prio_err = h2_internal::parse_priority_update_payload(frame_payload, false);
+        let prio_stream_id, prio_param, prio_err = http2::parse_priority_update_payload(frame_payload, false);
         if prio_err != rfc::H2_ERR_NO_ERROR || (prio_stream_id & 1) == 0 {
             let final_err = if prio_err != rfc::H2_ERR_NO_ERROR { prio_err } else { rfc::H2_ERR_PROTOCOL_ERROR };
             emit_goaway(sess.conn.last_peer_stream_id, final_err, out_wire);
             return false;
         }
-        h2_internal::apply_priority_update(sess.conn, prio_stream_id, prio_param);
+        http2::apply_priority_update(sess.conn, prio_stream_id, prio_param);
     } else if hdr.frame_type == rfc::H2_FRAME_WINDOW_UPDATE {
         return process_ingress_window_update(sess, pipeline, hdr, frame_payload, out_wire);
     } else if hdr.frame_type == rfc::H2_FRAME_RST_STREAM {
@@ -1551,15 +1551,15 @@ inline fn complete_server_stream_response(
     sess.streams[stream_idx].phase = H2StreamPhase.Closed;
     sess.streams[stream_idx].active = false;
 
-    let c_idx, c_found = h2_internal::find_session_stream_idx(sess.conn, target_stream_id);
+    let c_idx, c_found = http2::find_stream_idx(sess.conn, target_stream_id);
     if c_found {
-        sess.conn.streams[c_idx].state = h2_internal::H2StreamState.Closed;
+        sess.conn.streams[c_idx].state = http2::StreamState.Closed;
         sess.conn.streams[c_idx].active = false;
         let _ = core::flat_index_remove(sess.conn.stream_index[..], target_stream_id);
         if sess.conn.active_stream_count > 0 {
             sess.conn.active_stream_count--;
         }
-        h2_internal::sync_stream_urgency_node(sess.conn, c_idx);
+        http2::sync_stream_urgency_node(sess.conn, c_idx);
     }
 }
 
@@ -1570,7 +1570,7 @@ fn flush_pending_server_stream<B>(
     out_wire:   B&,
 ) {
     let target_stream_id = sess.streams[stream_idx].stream_id;
-    let quota = h2_internal::compute_stream_send_quota(sess.conn, target_stream_id);
+    let quota = http2::compute_stream_send_quota(sess.conn, target_stream_id);
     guard quota > 0 else { return; }
 
     let has_trailers = sess.streams[stream_idx].pending_has_trailers;
@@ -1858,7 +1858,7 @@ fn check_ingress_preface<B>(sess: H2ServerSession&, wire: const u8[:], offset: i
     return true;
 }
 
-inline fn validate_continuation_boundary(sess: const H2ServerSession&, hdr: const h2_internal::FrameHeader&) -> bool {
+inline fn validate_continuation_boundary(sess: const H2ServerSession&, hdr: const http2::FrameHeader&) -> bool {
     if sess.header_accum_stream_id != 0 {
         return hdr.frame_type == rfc::H2_FRAME_CONTINUATION && hdr.stream_id == sess.header_accum_stream_id;
     }
@@ -1873,7 +1873,7 @@ inline fn validate_continuation_boundary(sess: const H2ServerSession&, hdr: cons
 //   returns: true, offset = 12
 inline fn accumulate_rejected_headers_block<B>(
     sess:            H2ServerSession&,
-    hdr:             const h2_internal::FrameHeader&,
+    hdr:             const http2::FrameHeader&,
     frame_payload:   const u8[:],
     err:             u32,
     total_frame_len: i64,
@@ -1917,18 +1917,18 @@ inline fn accumulate_rejected_headers_block<B>(
 
 inline fn decompress_rejected_headers_frame<B>(
     sess:          H2ServerSession&,
-    hdr:           const h2_internal::FrameHeader&,
+    hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
 ) -> bool {
-    let frag, f_err = h2_internal::extract_headers_frame_payload(hdr, frame_payload, true);
+    let frag, f_err = http2::extract_headers_frame_payload(hdr, frame_payload, true);
     guard f_err == rfc::H2_ERR_NO_ERROR else {
         emit_goaway(sess.conn.last_peer_stream_id, f_err, out_wire);
         return false;
     }
-    var dummy_pseudo = h2_internal::H2PseudoHeaders { .. };
+    var dummy_pseudo = http2::PseudoHeaders { .. };
     var dummy_headers = wing::HeaderMap { .. };
-    let dec_err = h2_internal::decode_hpack_to_map(
+    let dec_err = http2::decode_hpack_to_map(
         sess.conn.hpack_dec, frag, dummy_pseudo, dummy_headers, sess.conn.max_header_list_size, false,
     );
     guard dec_err != rfc::H2_ERR_COMPRESSION_ERROR else {
@@ -1942,7 +1942,7 @@ inline fn decompress_rejected_headers_frame<B>(
 fn handle_ingress_header_error<B>(
     sess:            H2ServerSession&,
     pipeline:        wing::ServerPipelineConfig&,
-    hdr:             const h2_internal::FrameHeader&,
+    hdr:             const http2::FrameHeader&,
     frame_payload:   const u8[:],
     err:             u32,
     total_frame_len: i64,
@@ -1951,7 +1951,7 @@ fn handle_ingress_header_error<B>(
     out_wire:        B&,
 ) -> bool {
     if hdr.frame_type == rfc::H2_FRAME_HEADERS && err == rfc::H2_ERR_STREAM_CLOSED {
-        let c_idx, c_closed = h2_internal::find_closed_h2_stream_idx(sess.conn, hdr.stream_id);
+        let c_idx, c_closed = http2::find_closed_stream_idx(sess.conn, hdr.stream_id);
         if c_closed && !sess.conn.streams[c_idx].closed_by_rst {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_STREAM_CLOSED, out_wire);
             return false;
@@ -1992,7 +1992,7 @@ fn handle_ingress_header_error<B>(
 // RFC 8336 Section 2.2: Processing ORIGIN Frames - server ignores client ORIGIN frames
 inline fn skip_server_ignored_extension_frame<B>(
     sess:     H2ServerSession&,
-    hdr:      const h2_internal::FrameHeader&,
+    hdr:      const http2::FrameHeader&,
     out_wire: B&,
 ) -> bool, bool {
     guard hdr.frame_type == rfc::H2_FRAME_ALTSVC || hdr.frame_type == rfc::H2_FRAME_ORIGIN else {
@@ -2004,7 +2004,7 @@ inline fn skip_server_ignored_extension_frame<B>(
     }
     if hdr.length == 0 {
         sess.conn.empty_frame_streak = core::add_sat_u32(sess.conn.empty_frame_streak, 1);
-        if sess.conn.empty_frame_streak > h2_internal::MAX_EMPTY_FRAME_STREAK {
+        if sess.conn.empty_frame_streak > http2::MAX_EMPTY_FRAME_STREAK {
             emit_goaway(sess.conn.last_peer_stream_id, rfc::H2_ERR_ENHANCE_YOUR_CALM, out_wire);
             return true, false;
         }
@@ -2023,7 +2023,7 @@ inline fn skip_server_ignored_extension_frame<B>(
 inline fn step_h2_server_ingress_frame<B>(
     sess:              H2ServerSession&,
     pipeline:          wing::ServerPipelineConfig&,
-    hdr:               const h2_internal::FrameHeader&,
+    hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     total_frame_len:   i64,
     next_offset:       i64,
@@ -2044,7 +2044,7 @@ inline fn step_h2_server_ingress_frame<B>(
         return ok_ext;
     }
 
-    let err = h2_internal::on_ingress_frame_header(sess.conn, hdr, now_ms);
+    let err = http2::on_ingress_frame_header(sess.conn, hdr, now_ms);
     if err != rfc::H2_ERR_NO_ERROR {
         return handle_ingress_header_error(
             sess, pipeline, hdr, frame_payload, err, total_frame_len, now_ms, offset, out_wire,
@@ -2085,7 +2085,7 @@ fn ingest_h2_server_frames<B>(
 
     while core::add_sat_i64(offset, 9) <= wire.len {
         let hdr_end = core::add_sat_i64(offset, 9);
-        let hdr, err_hdr = h2_internal::parse_frame_header(wire[offset..hdr_end], sess.conn.local_max_frame_size);
+        let hdr, err_hdr = http2::parse_frame_header(wire[offset..hdr_end], sess.conn.local_max_frame_size);
         guard err_hdr == rfc::H2_ERR_NO_ERROR else {
             emit_goaway(sess.conn.last_peer_stream_id, err_hdr, out_wire);
             return offset, false;
