@@ -118,18 +118,19 @@ enum OcspCertStatus {
 }
 
 struct ParsedOcspResponse {
-    status:           OcspResponseStatus = OcspResponseStatus.Unknown,
-    cert_status:      OcspCertStatus     = OcspCertStatus.Unknown,
-    serial_number:    Span16             = Span16 { offset: 0, length: 0 },
-    issuer_name_hash: Span16             = Span16 { offset: 0, length: 0 },
-    issuer_key_hash:  Span16             = Span16 { offset: 0, length: 0 },
-    hash_alg_oid:     Span16             = Span16 { offset: 0, length: 0 },
-    tbs_raw:          Span16             = Span16 { offset: 0, length: 0 },
-    sig_alg_oid:      Span16             = Span16 { offset: 0, length: 0 },
-    signature:        Span16             = Span16 { offset: 0, length: 0 },
-    this_update:      i64                = 0,
-    next_update:      i64                = 0,
-    has_next_update:  bool               = false,
+    status:             OcspResponseStatus = OcspResponseStatus.Unknown,
+    cert_status:        OcspCertStatus     = OcspCertStatus.Unknown,
+    serial_number:      Span16             = Span16 { offset: 0, length: 0 },
+    issuer_name_hash:   Span16             = Span16 { offset: 0, length: 0 },
+    issuer_key_hash:    Span16             = Span16 { offset: 0, length: 0 },
+    hash_alg_oid:       Span16             = Span16 { offset: 0, length: 0 },
+    tbs_raw:            Span16             = Span16 { offset: 0, length: 0 },
+    sig_alg_oid:        Span16             = Span16 { offset: 0, length: 0 },
+    signature:          Span16             = Span16 { offset: 0, length: 0 },
+    responder_cert_der: Span16             = Span16 { offset: 0, length: 0 },
+    this_update:        i64                = 0,
+    next_update:        i64                = 0,
+    has_next_update:    bool               = false,
 }
 
 // Parsed X.509 Certificate Revocation List (RFC 5280 Section 5.1) with sorted

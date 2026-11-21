@@ -231,12 +231,79 @@ fn test_refactored_subsystems() {
     );
 }
 
+fn test_live_tls_interop_fixes() {
+    // 1. Finding #9: CertificateEntry.extensions with stapled OCSP (no double u16 prefix)
+    let cert_msg: u8[23] = [
+        0x00,                   // request_context_len = 0
+        0x00, 0x00, 0x13,       // certificate_list_len = 19
+        0x00, 0x00, 0x04,       // cert_data len = 4
+        'C', 'E', 'R', 'T',
+        0x00, 0x0A,             // extensions_len = 10
+        0x00, 0x05, 0x00, 0x06, // ext status_request (5), ext_len = 6
+        0x01, 0x00, 0x00, 0x02, // status_type = ocsp (1), ocsp_len = 2
+        0x30, 0x00,
+    ];
+    var certs: const u8[:][..8] = [];
+    let ocsp_der, ok_chain = tls::parse_certificate_chain_and_ocsp(cert_msg[..], certs);
+    let f9_ok = ok_chain && certs.len == 1 && certs[0] == "CERT" &&
+        ocsp_der.len == 2 && ocsp_der[0] == 0x30 && ocsp_der[1] == 0x00;
+
+    // 2. Finding #10: EncryptedExtensions with RFC 8446 §4.2.7 supported_groups (0x000a)
+    let ee_ok_wire: u8[23] = [
+        0x00, 0x15,             // total ext len = 21
+        0x00, 0x00, 0x00, 0x00, // server_name (0)
+        0x00, 0x0A, 0x00, 0x04, // supported_groups (10), len = 4
+        0x00, 0x02, 0x00, 0x1D, // NamedGroupList len = 2, x25519
+        0x00, 0x10, 0x00, 0x05, // alpn (16), len = 5
+        0x00, 0x03, 0x02, 'h', '2',
+    ];
+    let ee_bad_grp: u8[10] = [
+        0x00, 0x08,
+        0x00, 0x0A, 0x00, 0x04,
+        0x00, 0x03, 0x00, 0x1D, // invalid odd NamedGroupList length
+    ];
+    var neg_alpn: u8[..32] = [];
+    let ok_ee1 = tls::parse_encrypted_extensions_alpn(ee_ok_wire[..], neg_alpn, "h2,http/1.1");
+    let ee1_alpn_ok = ok_ee1 && neg_alpn[..] == "h2";
+    let ok_ee2 = tls::parse_encrypted_extensions_alpn(ee_bad_grp[..], neg_alpn, "h2,http/1.1");
+    let f10_ok = ee1_alpn_ok && !ok_ee2;
+
+    // 3. Finding #11: Legacy zero serial [0x00] accepted in X.509 TBS parser, strict validate_asn1_integer unchanged
+    let ser_zero_tlv: u8[3] = [0x02, 0x01, 0x00];
+    let ser_neg_tlv:  u8[3] = [0x02, 0x01, 0x80];
+    let ser_pad_tlv:  u8[4] = [0x02, 0x02, 0x00, 0x01];
+    var c_z = core::cursor_from(ser_zero_tlv[..]);
+    var c_n = core::cursor_from(ser_neg_tlv[..]);
+    var c_p = core::cursor_from(ser_pad_tlv[..]);
+    var dummy_cert = tls::ParsedCert { .. };
+    let zero_arr: u8[1] = [0x00];
+    let f11_ok = tls_internal::read_tbs_serial(ser_zero_tlv[..], c_z, dummy_cert) &&
+        !tls_internal::read_tbs_serial(ser_neg_tlv[..], c_n, dummy_cert) &&
+        !tls_internal::read_tbs_serial(ser_pad_tlv[..], c_p, dummy_cert) &&
+        !tls::validate_asn1_integer(zero_arr[..], true);
+
+    // 4. Finding #12: RFC 6960 §4.1.1 issuerNameHash hashes DER SEQUENCE TLV of Name
+    let dn_inner: const u8[:] = "\x31\x0B\x30\x09\x06\x03\x55\x04\x03\x0C\x02CA";
+    var dn_tlv: u8[..64] = [];
+    dn_tlv.push(0x30);
+    dn_tlv.push(dn_inner.len as u8);
+    dn_tlv.append(dn_inner);
+    let h_tlv = core::sha1(dn_tlv[..]);
+    let h_raw = core::sha1(dn_inner);
+    let oid_sha1: const u8[5] = [0x2B, 0x0E, 0x03, 0x02, 0x1A];
+    let f12_ok = tls_internal::x509_verify_ocsp_issuer_name_hash(oid_sha1[..], h_tlv[..], dn_inner) &&
+        !tls_internal::x509_verify_ocsp_issuer_name_hash(oid_sha1[..], h_raw[..], dn_inner);
+
+    print("tls_interop: ocsp_ext=", f9_ok, " ee_grp=", f10_ok, " zero_ser=", f11_ok, " ocsp_dn=", f12_ok);
+}
+
 fn main() {
     test_csprng_windows_and_posix();
     test_query_helpers();
     test_multipart_writer_and_roundtrip();
     test_stack_footprint();
     test_refactored_subsystems();
+    test_live_tls_interop_fixes();
 }
 
 // CHECK: csprng: rc=0,0 nz=true,true distinct=true
@@ -245,3 +312,4 @@ fn main() {
 // CHECK-NEXT: multipart: auto=true bad_b=true ct_q=true write=true rb=true ct_hdr=true rt=true
 // CHECK-NEXT: stack: srv=0 s1=true s2=https://example.org
 // CHECK-NEXT: refactored: zstd=true brotli=true deflate=true hdr=true hpack=true psl=true pool=true pipe=true
+// CHECK-NEXT: tls_interop: ocsp_ext=true ee_grp=true zero_ser=true ocsp_dn=true

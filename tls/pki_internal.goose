@@ -36,7 +36,9 @@ inline fn is_known_extension_oid(oid: const u8[:]) -> bool {
 fn read_tbs_serial(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls::ParsedCert&) -> bool {
     var serial = core::cursor_from(raw_cert[..0]);
     if !tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_INTEGER, serial) { return false; }
-    if !tls::validate_asn1_integer(serial.buf, true) { return false; }
+    // RFC 5280 Section 4.1.2.2: Serial Number - Accept legacy serial 0 (e.g. GoDaddy Root G2) per interop note.
+    let is_zero_serial = serial.buf.len == 1 && serial.buf[0] == 0x00;
+    if !is_zero_serial && !tls::validate_asn1_integer(serial.buf, true) { return false; }
     out.serial_number = tls::make_span(raw_cert, serial.buf);
     return true;
 }
@@ -1353,6 +1355,26 @@ fn x509_ocsp_read_basic_sig(
     guard tls::get_asn1_bit_string(basic_seq, sig_bits, unused_bits) &&
         unused_bits == 0 && sig_bits.buf.len > 0 else { return false; }
     out.signature = tls::make_span(raw_ocsp, sig_bits.buf);
+
+    // RFC 6960 Section 4.2.1: BasicOCSPResponse - Optional `certs [0] EXPLICIT SEQUENCE OF Certificate`.
+    if basic_seq.cursor_len() > 0 && basic_seq.buf[0] == 0xA0 {
+        var certs_ctx = core::cursor_from(basic_seq.buf[..0]);
+        guard tls::get_asn1_element(basic_seq, 0xA0, certs_ctx) && basic_seq.cursor_len() == 0 else {
+            return false;
+        }
+        var certs_seq = core::cursor_from(certs_ctx.buf[..0]);
+        guard tls::get_asn1_element(certs_ctx, rfc::ASN1_TAG_SEQUENCE, certs_seq) &&
+            certs_ctx.cursor_len() == 0 else {
+            return false;
+        }
+        if certs_seq.cursor_len() > 0 {
+            let cert_tlv_start = certs_seq.buf;
+            var cert_body = core::cursor_from(certs_seq.buf[..0]);
+            guard tls::get_asn1_element(certs_seq, rfc::ASN1_TAG_SEQUENCE, cert_body) else { return false; }
+            let cert_tlv_len = core::sub_sat_i64(cert_tlv_start.len, certs_seq.buf.len);
+            out.responder_cert_der = tls::make_span(raw_ocsp, cert_tlv_start[..cert_tlv_len]);
+        }
+    }
     return true;
 }
 
@@ -1465,17 +1487,39 @@ inline fn x509_validate_ocsp_cert_id_alg(resp: const tls::ParsedOcspResponse&, r
     return false;
 }
 
+// Wraps inner X.509 `Name` RDNSequence bytes in their canonical DER `SEQUENCE` TLV (`0x30 <len> || body`)
+// as required for RFC 6960 Section 4.1.1 `issuerNameHash` computation.
+fn encode_der_name_tlv(dn_inner: const u8[:], out: u8[..1024]&) -> bool {
+    out.clear();
+    guard dn_inner.len > 0 && dn_inner.len <= 1020 else { return false; }
+    guard out.try_push(rfc::ASN1_TAG_SEQUENCE) else { return false; }
+    if dn_inner.len < 128 {
+        guard out.try_push(dn_inner.len as u8) else { return false; }
+    } else if dn_inner.len < 256 {
+        guard out.try_push(0x81) && out.try_push(dn_inner.len as u8) else { return false; }
+    } else {
+        guard out.try_push(0x82) &&
+            out.try_push(((dn_inner.len >> 8) & 0xFF) as u8) &&
+            out.try_push((dn_inner.len & 0xFF) as u8) else {
+            return false;
+        }
+    }
+    return out.try_append(dn_inner);
+}
+
 inline fn x509_verify_ocsp_issuer_name_hash(
     alg_oid:   const u8[:],
     ocsp_nh:   const u8[:],
     issuer_dn: const u8[:],
 ) -> bool {
+    var dn_tlv: u8[..1024] = [];
+    guard encode_der_name_tlv(issuer_dn, dn_tlv) else { return false; }
     if alg_oid == OID_OCSP_SHA256[..] && ocsp_nh.len == 32 {
-        let h = core::sha256(issuer_dn);
+        let h = core::sha256(dn_tlv[..]);
         return core::ct_eq_bytes(ocsp_nh, h[..]);
     }
     if alg_oid == OID_OCSP_SHA1[..] && ocsp_nh.len == 20 {
-        let h = core::sha1(issuer_dn);
+        let h = core::sha1(dn_tlv[..]);
         return core::ct_eq_bytes(ocsp_nh, h[..]);
     }
     return false;
@@ -1489,18 +1533,20 @@ fn x509_verify_ocsp_cert_id_material(
     issuer_pubkey_val: const u8[:],
 ) -> bool {
     guard issuer_subject_dn.len > 0 && issuer_pubkey_val.len > 0 else { return false; }
+    var dn_tlv: u8[..1024] = [];
+    guard encode_der_name_tlv(issuer_subject_dn, dn_tlv) else { return false; }
     let alg_oid = tls::span_slice(raw_ocsp, resp.hash_alg_oid);
     let ocsp_nh = tls::span_slice(raw_ocsp, resp.issuer_name_hash);
     let ocsp_kh = tls::span_slice(raw_ocsp, resp.issuer_key_hash);
     if alg_oid == OID_OCSP_SHA256[..] {
         guard ocsp_nh.len == 32 && ocsp_kh.len == 32 else { return false; }
-        let nh = core::sha256(issuer_subject_dn);
+        let nh = core::sha256(dn_tlv[..]);
         let kh = core::sha256(issuer_pubkey_val);
         return core::ct_eq_bytes(ocsp_nh, nh[..]) && core::ct_eq_bytes(ocsp_kh, kh[..]);
     }
     if alg_oid == OID_OCSP_SHA1[..] {
         guard ocsp_nh.len == 20 && ocsp_kh.len == 20 else { return false; }
-        let nh = core::sha1(issuer_subject_dn);
+        let nh = core::sha1(dn_tlv[..]);
         let kh = core::sha1(issuer_pubkey_val);
         return core::ct_eq_bytes(ocsp_nh, nh[..]) && core::ct_eq_bytes(ocsp_kh, kh[..]);
     }

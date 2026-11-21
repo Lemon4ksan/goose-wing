@@ -377,6 +377,13 @@ fn validate_ee_solicited_extensions(
     for &e in entries {
         if e.ext_type == rfc::TLS_EXT_SERVER_NAME {
             guard sni_state == tls::SniOfferState.Offered && e.data.len == 0 else { return false; }
+        } else if e.ext_type == rfc::TLS_EXT_SUPPORTED_GROUPS {
+            // RFC 8446 Section 4.2.7: Supported Groups - Server may echo NamedGroupList in EncryptedExtensions.
+            guard e.data.len >= 4 else { return false; }
+            let list_len = core::read_be_u16(e.data, 0) as i64;
+            guard list_len >= 2 && (list_len & 1) == 0 && core::add_sat_i64(list_len, 2) == e.data.len else {
+                return false;
+            }
         } else if e.ext_type == rfc::TLS_EXT_ALPN {
             guard offered_alpn_csv.len > 0 else { return false; }
         } else if e.ext_type == rfc::EXT_ENCRYPTED_CLIENT_HELLO {

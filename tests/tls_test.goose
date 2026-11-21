@@ -2208,7 +2208,9 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         sub.assert_true(tls::parse_x509_certificate(issuer_der[..], issuer_cert), "parse OCSP issuer cert");
         let iss_dn = tls::span_slice(issuer_der[..], issuer_cert.subject_raw);
         let iss_pk = tls::span_slice(issuer_der[..], issuer_cert.spki_pubkey)[1..];
-        let iss_nh = core::sha256(iss_dn);
+        var b_iss_dn_tlv = core::builder_init();
+        put_der_tlv(b_iss_dn_tlv, 0x30, iss_dn);
+        let iss_nh = core::sha256(b_iss_dn_tlv.buf[..]);
         let iss_kh = core::sha256(iss_pk);
 
         var b_cert_id_body = core::builder_init();

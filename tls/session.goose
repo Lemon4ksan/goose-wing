@@ -1103,10 +1103,13 @@ fn build_test_ed25519_cert_der(
 //   returns: [0x30, 0x00], ok = true
 fn extract_leaf_ocsp_extension(ext_bytes: const u8[:]) -> const u8[:], bool {
     var entries: ExtensionEntry[..32] = [];
-    guard parse_extensions_block(ext_bytes, entries) else { return "", false; }
-    for &e in entries {
-        guard e.ext_type == rfc::TLS_EXT_STATUS_REQUEST ||
-            e.ext_type == rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP else {
+    var cursor = core::cursor_from(ext_bytes);
+    while cursor.cursor_len() > 0 {
+        let ext_type, ok_t = cursor.read_u16();
+        let ext_data, ok_d = cursor.read_u16_sub_cursor();
+        guard ok_t && ok_d &&
+            (ext_type == rfc::TLS_EXT_STATUS_REQUEST || ext_type == rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP) &&
+            tls_internal::check_and_add_extension(entries, ext_type, ext_data.buf) else {
             return "", false;
         }
     }
