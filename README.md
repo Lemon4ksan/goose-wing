@@ -141,42 +141,49 @@ fn main() {
 By default `goose-wing` uses its self-contained pure-Goose TLS 1.3 engine
 (`tls::TlsBackendKind.PureGoose`), which has zero external dependencies and
 stays bit-for-bit deterministic under single-seed DST simulation
-(`net/dst.goose`).
+(`net/dst.goose`). `PureGoose` implements **TLS 1.3 only** (RFC 8446) and does
+not support TLS 1.2.
 
-If you prefer not to rely on a custom TLS implementation in production, switch
-to an audited system TLS library through the optional C shim
-[`shim/tls_backend.c`](shim/tls_backend.c) without changing protocol or
-application code:
+By default (`min_version = tls::TlsMinVersion.Tls13`), all backends stop
+strictly at TLS 1.3 and never fall back to TLS 1.2. Falling back to TLS 1.2
+happens only when explicitly opted in via `min_version =
+tls::TlsMinVersion.Tls12` on one of the system C-shim backends below.
+
+If you prefer not to rely on a custom TLS implementation in production (or need
+opt-in TLS 1.2 interoperability), switch to an audited system TLS library
+through the optional C shim [`shim/tls_backend.c`](shim/tls_backend.c) without
+changing protocol or application code:
 
 - `tls::TlsBackendKind.SystemOpenSsl`: OpenSSL 3 / 1.1.1 / BoringSSL via sans-IO
-  memory BIOs (`TlsMinVersion.Tls13` by default, or opt-in `TlsMinVersion.Tls12`
-  fallback, `SSL_VERIFY_PEER` + `SSL_set1_host` hostname verification, custom
-  `ca_file`, server `cert_pem_file` / `key_pem_file`, client and server ALPN).
-  Loaded dynamically at runtime via `dlopen` / `LoadLibraryA` with zero
-  link-time OpenSSL dependency. Set `WING_OPENSSL_LIB` / `WING_CRYPTO_LIB` to
-  load a vendored library path, or compile with `-DWING_TLS_LINK_OPENSSL` and
-  link `-lssl -lcrypto` for direct linking.
+  memory BIOs (strict TLS 1.3 by default; allows TLS 1.2 fallback only when
+  `min_version = TlsMinVersion.Tls12`, `SSL_VERIFY_PEER` + `SSL_set1_host`
+  hostname verification, custom `ca_file`, server `cert_pem_file` /
+  `key_pem_file`, client and server ALPN). Loaded dynamically at runtime via
+  `dlopen` / `LoadLibraryA` with zero link-time OpenSSL dependency. Set
+  `WING_OPENSSL_LIB` / `WING_CRYPTO_LIB` to load a vendored library path, or
+  compile with `-DWING_TLS_LINK_OPENSSL` and link `-lssl -lcrypto` for direct
+  linking.
 - `tls::TlsBackendKind.SystemSchannel`: Windows native `secur32.dll` Schannel
   client context with zero third-party DLLs (TLS 1.3-only via `SCH_CREDENTIALS`
-  v5 by default; TLS 1.2 + TLS 1.3 fallback when `min_version =
+  v5 by default; TLS 1.2 + TLS 1.3 fallback only when `min_version =
   TlsMinVersion.Tls12`).
 - `tls::TlsBackendKind.SystemSecureTransport`: macOS native `Security.framework`
-  client context (`dlopen`, zero link flags), available when `min_version =
-  TlsMinVersion.Tls12` is explicitly enabled (rejected on `TlsMinVersion.Tls13`
-  to prevent silent downgrade).
+  client context (`dlopen`, zero link flags), available only when `min_version =
+  TlsMinVersion.Tls12` is explicitly set (rejected on default
+  `TlsMinVersion.Tls13` so callers never silently downgrade).
 - `tls::TlsBackendKind.Auto`: selects `SystemOpenSsl` if installed (Linux
   `libssl.so.3`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
   `libssl-3*.dll`), then `SystemSchannel` on Windows client endpoints, then
-  `SystemSecureTransport` on macOS client endpoints when `min_version =
-  TlsMinVersion.Tls12`, and falls back to `PureGoose` TLS 1.3 otherwise.
+  `SystemSecureTransport` on macOS client endpoints only when `min_version =
+  TlsMinVersion.Tls12`, and falls back to `PureGoose` (TLS 1.3 only) otherwise.
 
 ```goose
 import wing;
 
 fn open_audited_tls_client() -> tls::TlsEndpoint, tls::TlsBackendStatus {
     var cfg = tls::TlsBackendConfig {
-        kind:        tls::TlsBackendKind.Auto,
-        min_version: tls::TlsMinVersion.Tls12, // opt-in TLS 1.2 fallback
+        kind: tls::TlsBackendKind.SystemOpenSsl, // strict TLS 1.3 by default
+        // min_version: tls::TlsMinVersion.Tls12, // uncomment to allow TLS 1.2 fallback
         ..
     };
     let _ = cfg.server_name.try_set("api.example.com");

@@ -771,30 +771,32 @@ fn tls_endpoint_is_established(ep: const TlsEndpoint&) -> bool
 by closed polymorphism across:
 
 - `PureGoose`: native Goose TLS 1.3 handshake and record layer with zero
-  external dependencies and full single-seed DST determinism.
+  external dependencies and full single-seed DST determinism. Implements **TLS
+  1.3 only** (RFC 8446) and does not support TLS 1.2 even when
+  `min_version = TlsMinVersion.Tls12` is configured.
 - `SystemOpenSsl`: optional OpenSSL 3 / 1.1.1 / BoringSSL driver in
-  `shim/tls_backend.c` using memory BIOs, configurable minimum protocol floor
-  (`TlsMinVersion.Tls13` by default, or `TlsMinVersion.Tls12` for TLS 1.2
-  fallback), `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification,
-  custom `ca_file` and server `cert_pem_file` / `key_pem_file` PEM loading, and
-  server/client ALPN negotiation. Loaded dynamically via `dlopen` /
-  `LoadLibraryA` with zero compile-time OpenSSL dependency (override paths with
-  `WING_OPENSSL_LIB` / `WING_CRYPTO_LIB`, or link directly with
-  `-DWING_TLS_LINK_OPENSSL -lssl -lcrypto`).
+  `shim/tls_backend.c` using memory BIOs, strict TLS 1.3 floor by default
+  (`TlsMinVersion.Tls13`) with opt-in TLS 1.2 fallback (`TlsMinVersion.Tls12`),
+  `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification, custom `ca_file`
+  and server `cert_pem_file` / `key_pem_file` PEM loading, and server/client
+  ALPN negotiation. Loaded dynamically via `dlopen` / `LoadLibraryA` with zero
+  compile-time OpenSSL dependency (override paths with `WING_OPENSSL_LIB` /
+  `WING_CRYPTO_LIB`, or link directly with `-DWING_TLS_LINK_OPENSSL -lssl
+  -lcrypto`).
 - `SystemSchannel`: dynamically loaded Windows `secur32.dll` Schannel client
   context with zero third-party DLLs (`SCH_CREDENTIALS` v5 TLS 1.3-only for
-  `TlsMinVersion.Tls13`; TLS 1.2 + TLS 1.3 with v4 fallback on older Windows 10
-  for `TlsMinVersion.Tls12`).
+  default `TlsMinVersion.Tls13`; TLS 1.2 + TLS 1.3 with v4 fallback on older
+  Windows 10 only when `min_version = TlsMinVersion.Tls12`).
 - `SystemSecureTransport`: dynamically loaded macOS `Security.framework` client
   driver (`dlopen`, zero `-framework Security` link flag). Requires explicit
-  `min_version = TlsMinVersion.Tls12` (returns `Unavailable` on `Tls13` so
-  callers never silently downgrade).
+  `min_version = TlsMinVersion.Tls12` (returns `Unavailable` on default `Tls13`
+  so callers never silently downgrade).
 - `Auto`: selects `SystemOpenSsl` when available (Linux `libssl.so.3` /
   `libssl.so.1.1`, macOS Homebrew/MacPorts `libssl.3.dylib`, Windows
   `libssl-3-x64.dll` / `libssl-3.dll`), then `SystemSchannel` on Windows client
-  endpoints, then `SystemSecureTransport` on macOS client endpoints when
-  `min_version == TlsMinVersion.Tls12`, and falls back to `PureGoose` TLS 1.3
-  otherwise.
+  endpoints, then `SystemSecureTransport` on macOS client endpoints only when
+  `min_version == TlsMinVersion.Tls12`, and falls back to `PureGoose` (TLS 1.3
+  only) otherwise.
 
 `tls_endpoint_close` is idempotent and wipes handshake and traffic keys on
 shutdown.
