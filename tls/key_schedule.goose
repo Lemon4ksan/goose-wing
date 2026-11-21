@@ -604,7 +604,7 @@ inline fn strike_reg_hash_bit(data: const u8[:], seed: u32) -> u32 {
     for b in data {
         h = (h ^ b) * 16777619;
     }
-    return h % 4096;
+    return h & 4095;
 }
 
 // Rotates epoch bitmaps when epoch_window_ms has elapsed.
@@ -630,8 +630,8 @@ fn strike_register_rotate(reg: ZeroRttStrikeRegister&, now_ms: i64) {
 fn strike_register_insert_bits(bitmap: u64[64]&, ticket_id: const u8[:], seeds: const u32[4]&) {
     for i in 4 {
         let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
-        let word_idx = (bit / 64) as i64;
-        let bit_mask: u64 = (1 as u64) << (bit % 64);
+        let word_idx = ((bit >> 6) & 63) as i64;
+        let bit_mask: u64 = (1 as u64) << (bit & 63);
         bitmap[word_idx] |= bit_mask;
     }
 }
@@ -654,8 +654,8 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
 
     for i in 4 {
         let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
-        let word_idx = (bit / 64) as i64;
-        let bit_mask: u64 = (1 as u64) << (bit % 64);
+        let word_idx = ((bit >> 6) & 63) as i64;
+        let bit_mask: u64 = (1 as u64) << (bit & 63);
 
         if (reg.bitmap_current[word_idx] & bit_mask) == 0 {
             in_current = false;

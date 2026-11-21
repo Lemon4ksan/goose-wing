@@ -3,15 +3,15 @@
 
 // RFC 9111 Section 5.2: Cache-Control and Pragma zero-heap parser.
 // Compresses directives into a 16-bit bitmask and handles delta-seconds overflow clamping.
-namespace wing;
+namespace http;
 
 import std;
 import core from "../..";
 import http.headers;
+import http.cache.internal;
 
 // ---- cache-control bitmask flags -------------------------------------------
 
-const CC_FLAG_NONE:              u32 = 0x0000;
 const CC_NO_STORE:               u32 = 0x0001;  // no-store
 const CC_NO_CACHE:               u32 = 0x0002;  // no-cache (unqualified or qualified)
 const CC_MUST_REVALIDATE:        u32 = 0x0004;  // must-revalidate
@@ -182,178 +182,6 @@ fn parse_delta_seconds(raw_val: const u8[:]) -> i32, bool {
     return acc as i32, true;
 }
 
-// Extracts comma-separated or quoted field names into an inline fixed-capacity array.
-//
-// Example:
-//   raw_val = "\"Set-Cookie\", \"Private-Token\""
-//   appends names to out_fields, sets overflow=false
-fn parse_field_names(raw_val: const u8[:], out_fields: u8[..64][..16]&, overflow: bool&) {
-    let s = raw_val.trim_lws().trim_byte('"').trim_lws();
-    guard s.len > 0 else {
-        overflow = true;
-        return;
-    }
-
-    var added_any = false;
-    var tok = core::make_byte_tokenizer(s, ',');
-    loop {
-        let name_tok, ok = tok.token_next();
-        guard ok else { break; }
-        let trimmed_name = name_tok.trim_lws();
-        if trimmed_name.len == 0 {
-            continue;
-        }
-        if !is_valid_header_name(trimmed_name) {
-            overflow = true;
-            return;
-        }
-        var buf: u8[..64] = [];
-        if !buf.try_set(trimmed_name) || !out_fields.try_push(buf) {
-            overflow = true;
-        }
-        added_any = true;
-    }
-    if !added_any {
-        overflow = true;
-    }
-}
-
-// ---- directive dispatcher helpers ------------------------------------------
-
-// Applies boolean or field-list Cache-Control directives.
-fn apply_cache_control_boolean(name: const u8[:], val: const u8[:], cc: CacheControl&) -> bool {
-    if name.eq_ascii_fold("no-store") {
-        if val != "?0" {
-            cc.flags |= CC_NO_STORE;
-        }
-        return true;
-    }
-    if name.eq_ascii_fold("no-cache") {
-        if val == "?0" { return true; }
-        cc.flags |= CC_NO_CACHE;
-        if val.len > 0 && val != "?1" {
-            let v_trim = val.trim_lws();
-            if v_trim[0] == '"' && (v_trim.len < 2 || v_trim[v_trim.len - 1] != '"') {
-                cc.no_cache_overflow = true;
-                return true;
-            }
-            let s = v_trim.trim_byte('"').trim_lws();
-            if s.len > 0 {
-                parse_field_names(val, cc.no_cache_fields, cc.no_cache_overflow);
-            } else {
-                cc.no_cache_overflow = true;
-            }
-        } else {
-            cc.no_cache_overflow = true;
-        }
-        return true;
-    }
-    if name.eq_ascii_fold("must-revalidate") {
-        if val != "?0" { cc.flags |= CC_MUST_REVALIDATE; }
-        return true;
-    }
-    if name.eq_ascii_fold("proxy-revalidate") {
-        if val != "?0" { cc.flags |= CC_PROXY_REVALIDATE; }
-        return true;
-    }
-    if name.eq_ascii_fold("must-understand") {
-        if val != "?0" { cc.flags |= CC_MUST_UNDERSTAND; }
-        return true;
-    }
-    if name.eq_ascii_fold("public") {
-        if val != "?0" { cc.flags |= CC_PUBLIC; }
-        return true;
-    }
-    if name.eq_ascii_fold("private") {
-        if val == "?0" { return true; }
-        cc.flags |= CC_PRIVATE;
-        if val.len > 0 && val != "?1" {
-            let v_trim = val.trim_lws();
-            if v_trim[0] == '"' && (v_trim.len < 2 || v_trim[v_trim.len - 1] != '"') {
-                cc.private_overflow = true;
-                return true;
-            }
-            let s = v_trim.trim_byte('"').trim_lws();
-            if s.len > 0 {
-                parse_field_names(val, cc.private_fields, cc.private_overflow);
-            } else {
-                cc.private_overflow = true;
-            }
-        } else {
-            cc.private_overflow = true;
-        }
-        return true;
-    }
-    if name.eq_ascii_fold("immutable") {
-        if val != "?0" { cc.flags |= CC_IMMUTABLE; }
-        return true;
-    }
-    if name.eq_ascii_fold("only-if-cached") {
-        if val != "?0" { cc.flags |= CC_ONLY_IF_CACHED; }
-        return true;
-    }
-    if name.eq_ascii_fold("no-transform") {
-        if val != "?0" { cc.flags |= CC_NO_TRANSFORM; }
-        return true;
-    }
-    return false;
-}
-
-// Applies delta-seconds numeric Cache-Control directives.
-fn apply_cache_control_numeric(name: const u8[:], val: const u8[:], cc: CacheControl&) -> bool {
-    if name.eq_ascii_fold("max-age") {
-        let secs, ok = parse_delta_seconds(val);
-        if ok { cc.flags |= CC_HAS_MAX_AGE; cc.max_age = secs; }
-        else { cc.flags |= CC_INVALID_FRESHNESS; }
-        return true;
-    }
-    if name.eq_ascii_fold("s-maxage") {
-        let secs, ok = parse_delta_seconds(val);
-        if ok { cc.flags |= CC_HAS_S_MAXAGE; cc.s_maxage = secs; }
-        else { cc.flags |= CC_INVALID_FRESHNESS; }
-        return true;
-    }
-    if name.eq_ascii_fold("max-stale") {
-        if val.len > 0 {
-            let secs, ok = parse_delta_seconds(val);
-            if ok {
-                cc.flags |= CC_HAS_MAX_STALE;
-                cc.max_stale = secs;
-            }
-        } else {
-            cc.flags |= CC_HAS_MAX_STALE;
-            cc.max_stale = -1;
-        }
-        return true;
-    }
-    if name.eq_ascii_fold("min-fresh") {
-        let secs, ok = parse_delta_seconds(val);
-        if ok { cc.flags |= CC_HAS_MIN_FRESH; cc.min_fresh = secs; }
-        else { cc.flags |= CC_INVALID_FRESHNESS; }
-        return true;
-    }
-    if name.eq_ascii_fold("stale-while-revalidate") {
-        let secs, ok = parse_delta_seconds(val);
-        if ok { cc.flags |= CC_STALE_WHILE_REVALIDATE; cc.stale_while_revalidate = secs; }
-        return true;
-    }
-    if name.eq_ascii_fold("stale-if-error") {
-        let secs, ok = parse_delta_seconds(val);
-        if ok { cc.flags |= CC_STALE_IF_ERROR; cc.stale_if_error = secs; }
-        return true;
-    }
-    return false;
-}
-
-// Dispatches a single name[=value] directive token.
-fn apply_directive(name: const u8[:], val: const u8[:], cc: CacheControl&, ignore_cargo_cult: bool) {
-    if apply_cache_control_boolean(name, val, cc) { return; }
-    if apply_cache_control_numeric(name, val, cc) { return; }
-    if ignore_cargo_cult && (name.eq_ascii_fold("pre-check") || name.eq_ascii_fold("post-check")) {
-        // Legacy IE directives safely ignored
-    }
-}
-
 // ---- cache-control string parser -------------------------------------------
 
 // Parses a single Cache-Control header line or comma-separated token stream.
@@ -382,7 +210,7 @@ fn parse_cache_control_str(raw: const u8[:], cc: CacheControl&, ignore_cargo_cul
         let name = name_raw.trim_lws();
         let val = if has_eq { val_raw.trim_lws() } else { "" };
 
-        apply_directive(name, val, cc, ignore_cargo_cult);
+        http_internal::apply_directive(name, val, cc, ignore_cargo_cult);
     }
 }
 

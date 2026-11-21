@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Buffered connection event loop and deferred task queue over Poller.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
 import .driver;
 import .poller;
 import .tcp;
+import .internal;
 
 const EVENT_LOOP_MAX_BUFFERS: i64 = 64;
 const CONNECTION_BUFFER_CAP:  i64 = 4096;
@@ -175,33 +176,12 @@ fn consume_read<B>(ev_loop: EventLoop&, tag: u64, out: B&) -> i64 {
     return to_copy;
 }
 
-inline fn flush_socket_writes(fd: i32, buf: u8[..4096]&) -> i64 {
-    guard buf.len > 0 else { return 0; }
-    guard fd >= 0 else {
-        let count = buf.len;
-        buf.clear();
-        return count;
-    }
-    let sent = tcp_send2(fd, buf[..], "");
-    if sent == -2 {
-        return 0;
-    }
-    if sent <= 0 {
-        let count = buf.len;
-        buf.clear();
-        return count;
-    }
-    let sent_i64 = sent as i64;
-    buf.compact_wire_buffer(sent_i64);
-    return sent_i64;
-}
-
 // Flushes outgoing queued write buffer
 fn flush_writes(ev_loop: EventLoop&, tag: u64) -> i64 {
     let b_idx = find_connection_buffer(ev_loop, tag);
     guard b_idx >= 0 else { return 0; }
     ev_loop.buffers[b_idx].write_offset = 0;
-    return flush_socket_writes(ev_loop.buffers[b_idx].fd, ev_loop.buffers[b_idx].write_buf);
+    return net_internal::flush_socket_writes(ev_loop.buffers[b_idx].fd, ev_loop.buffers[b_idx].write_buf);
 }
 
 // Runs a single non-blocking event loop iteration, dispatching harvested events to handler
@@ -221,8 +201,8 @@ fn run_loop_once<HandlerFn: fn(u64, const core::PollReadyEvent&, EventLoop&)>(
         if (ev.events & core::POLL_WRITE) != 0 {
             let b_idx = find_connection_buffer(ev_loop, ev.tag);
             if b_idx >= 0 && ev_loop.buffers[b_idx].write_buf.len > 0 &&
-                is_live_os_socket_fd(ev_loop.buffers[b_idx].fd) {
-                let _ = flush_socket_writes(ev_loop.buffers[b_idx].fd, ev_loop.buffers[b_idx].write_buf);
+                net_internal::is_live_os_socket_fd(ev_loop.buffers[b_idx].fd) {
+                let _ = net_internal::flush_socket_writes(ev_loop.buffers[b_idx].fd, ev_loop.buffers[b_idx].write_buf);
             }
         }
         HandlerFn(ev.tag, ev, ev_loop);

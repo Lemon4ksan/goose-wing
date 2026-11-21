@@ -615,7 +615,7 @@ fn scan_request_sec_fetch_site<Req>(req: const Req&) -> security::SecFetchSite {
 }
 
 fn append_known_isolation_header(
-    map:            wing::HeaderMap&,
+    map:            http::HeaderMap&,
     name:           const u8[:],
     val:            const u8[:],
     slot:           u8,
@@ -634,7 +634,7 @@ fn append_known_isolation_header(
     let v_end = map.raw_buf.len as u16;
     let new_idx = map.entries.len as u8;
     map.inline_slots[slot as i64] = new_idx;
-    map.entries.push(wing::HeaderEntry {
+    map.entries.push(http::HeaderEntry {
         name_begin:    n_begin,
         name_end:      n_end,
         values_begin:  n_end,

@@ -61,27 +61,27 @@ fn grpc_test_unary_handler(
 }
 
 fn main() {
-    let port_env = wing::get_env_port(0);
-    var server = wing::new_http_server("0.0.0.0", port_env);
+    let port_env = net::get_env_port(0);
+    var server = server::new_http_server("0.0.0.0", port_env);
     let _ = server.server_name.try_set("goose-grpc-web/1.0");
-    wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
-    wing::add_post_route(server, "/helloworld.Greeter/SayHello", 1);
-    wing::add_post_route(server, "/echo.EchoService/Echo", 2);
-    wing::add_post_route(server, "/echo.EchoService/Fail", 3);
+    server::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
+    server::add_post_route(server, "/helloworld.Greeter/SayHello", 1);
+    server::add_post_route(server, "/echo.EchoService/Echo", 2);
+    server::add_post_route(server, "/echo.EchoService/Fail", 3);
 
     var dispatcher = grpc::new_server_dispatcher();
     grpc::register_unary(dispatcher, "helloworld.Greeter", "SayHello", 1);
     grpc::register_unary(dispatcher, "echo.EchoService", "Echo", 2);
     grpc::register_unary(dispatcher, "echo.EchoService", "Fail", 3);
 
-    let listener = wing::tcp_listen("0.0.0.0", port_env, 128);
+    let listener = net::tcp_listen("0.0.0.0", port_env, 128);
     if listener <= 0 {
         print("ERROR_FAILED_TO_LISTEN\n");
         return;
     }
-    let port = wing::tcp_getsockname_port(listener);
+    let port = net::tcp_getsockname_port(listener);
     print("READY_PORT:", port, "\n");
 
     grpc::serve_listener(listener, server, dispatcher, grpc_test_unary_handler);
-    wing::tcp_close(listener);
+    net::tcp_close(listener);
 }

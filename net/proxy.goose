@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Module: ProxyChain — proxy scheme, node specification, and ordered forwarding chain.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";

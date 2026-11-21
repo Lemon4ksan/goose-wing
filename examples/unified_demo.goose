@@ -20,7 +20,7 @@ struct OrderConfirmation {
 }
 
 fn main() {
-    var session = wing::new_session("https://api.exchange.io") { sess =>
+    var session = client::new_session("https://api.exchange.io") { sess =>
         sess.set_profile(fingerprint::Profile.Wing);
         sess.set_proxy("socks5://127.0.0.1:1080");
         sess.set_timeout_ms(10000);
@@ -54,14 +54,14 @@ fn main() {
         print("id=", conf1.id, " status=", conf1.status, " ok=", conf1.ok);
     }
 
-    var req2 = wing::new_request("POST", "/v2/settlement") { req =>
+    var req2 = http::new_request("POST", "/v2/settlement") { req =>
         req.bearer(session.cookie("session_id"));
         req.timeout_ms(5000);
         req.json(order_payload);
     };
 
-    wing::enrich_tracing(req2, "trace-7741-wing");
-    wing::sign_hmac_sha256(req2, "sk_live_secret_key");
+    http::enrich_tracing(req2, "trace-7741-wing");
+    http::sign_hmac_sha256(req2, "sk_live_secret_key");
 
     let res2, err2 = session.do(req2);
     guard err2.ok() else { return; }

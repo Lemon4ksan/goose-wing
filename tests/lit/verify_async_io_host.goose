@@ -45,7 +45,7 @@ struct RoundtripProbeDriver {
     reply_msg:       const u8[:]  = "",
 }
 
-fn core::on_link_event(drv: RoundtripProbeDriver&, host: wing::NetHost&, ev: const core::LinkEvent&) {
+fn core::on_link_event(drv: RoundtripProbeDriver&, host: net::Host&, ev: const core::LinkEvent&) {
     if ev.kind == core::LinkEventKind.Timer {
         if ev.timer_id == TIMER_TEST_VALID { drv.valid_timer_ok = true; }
         if ev.timer_id == TIMER_TEST_CANCEL { drv.cancel_timer_ok = false; }
@@ -95,8 +95,8 @@ fn test_tcp_nonblocking_connect_and_refused() {
         is_probed:   true,
         ..
     };
-    var host = wing::new_net_host(dcfg);
-    defer wing::close_net_host(host);
+    var host = net::new_host(dcfg);
+    defer net::close_host(host);
 
     // Invalid connect port == 0 rejected; valid listen port == 0 binds ephemeral OS port.
     let _, bad_st = core::host_connect(host, core::ConnectAddr.Tcp { host: "127.0.0.1", port: 0 }, OWNER_TCP_TEST, 1);
@@ -104,13 +104,13 @@ fn test_tcp_nonblocking_connect_and_refused() {
 
     let l_link, l_err = core::host_listen(host, core::ConnectAddr.Tcp { host: "127.0.0.1", port: 0 }, OWNER_TCP_TEST, 10, 16);
     assert(l_err == core::IoError.None && core::io_link_is_valid(l_link));
-    let port = wing::link_local_port(host, l_link);
+    let port = net::link_local_port(host, l_link);
     assert(port > 0);
 
     // Prepare a refused port by opening and immediately closing a second ephemeral listener.
     let dead_listen, dead_err = core::host_listen(host, core::ConnectAddr.Tcp { host: "127.0.0.1", port: 0 }, OWNER_TCP_TEST, 11, 4);
     assert(dead_err == core::IoError.None);
-    let dead_port = wing::link_local_port(host, dead_listen);
+    let dead_port = net::link_local_port(host, dead_listen);
     assert(dead_port > 0);
     assert(core::host_close(host, dead_listen));
 
@@ -174,8 +174,8 @@ fn test_af_unix_listen_connect_roundtrip(uds_path: const u8[:]) {
         is_probed:   true,
         ..
     };
-    var host = wing::new_net_host(dcfg);
-    defer wing::close_net_host(host);
+    var host = net::new_host(dcfg);
+    defer net::close_host(host);
 
     let l_link, l_err = core::host_listen(host, core::ConnectAddr.Unix { path: uds_path }, OWNER_UDS_TEST, 30, 8);
     assert(l_err == core::IoError.None && core::io_link_is_valid(l_link));
@@ -225,7 +225,7 @@ struct BackpressureDriver {
     last_rx_slice: u8[..64]     = [],
 }
 
-fn core::on_link_event(drv: BackpressureDriver&, _host: wing::NetHost&, ev: const core::LinkEvent&) {
+fn core::on_link_event(drv: BackpressureDriver&, _host: net::Host&, ev: const core::LinkEvent&) {
     if ev.link.raw == drv.link_b.raw && ev.kind == core::LinkEventKind.Data {
         drv.rx_b_bytes = core::add_sat_i64(drv.rx_b_bytes, ev.data.len);
         if drv.last_rx_slice.len == 0 {
@@ -245,10 +245,10 @@ fn test_virtual_backpressure_and_driver_chain() {
         is_probed:   true,
         ..
     };
-    var host = wing::new_net_host(dcfg);
-    defer wing::close_net_host(host);
+    var host = net::new_host(dcfg);
+    defer net::close_host(host);
 
-    let la, lb, ok_pair = wing::host_open_virtual_pair(host, OWNER_BP_A, OWNER_BP_B, 1, 2);
+    let la, lb, ok_pair = net::open_virtual_pair(host, OWNER_BP_A, OWNER_BP_B, 1, 2);
     assert(ok_pair && core::io_link_is_valid(la) && core::io_link_is_valid(lb));
 
     var chained = core::chain_io_drivers(
@@ -354,19 +354,19 @@ fn pg_enqueue_query(app: PgHttpApp&, tok: core::WakeToken, key: const u8[:]) -> 
     return false;
 }
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     app:   PgHttpApp&,
     phase: wire::ServerHookPhase,
-    _cfg:  wing::ServerPipelineConfig&,
-    req:   const wing::Request&,
-    sctx:  wing::ServerStageCtx&,
-    res:   wing::Response&,
+    _cfg:  server::ServerPipelineConfig&,
+    req:   const http::Request&,
+    sctx:  server::ServerStageCtx&,
+    res:   http::Response&,
 ) -> wire::StageVerdict {
     if phase == wire::ServerHookPhase.RouteHandler {
         if req.url[..] == "/db" || req.url[..] == "/db_drop" {
             let key: const u8[:] = if req.url[..] == "/db" { "row42" } else { "drop99" };
             assert(pg_enqueue_query(app, sctx.wake_token, key));
-            assert(wing::suspend_server_request(sctx));
+            assert(server::suspend_server_request(sctx));
             return wire::StageVerdict.Continue;
         }
         if req.url[..] == "/fast" {
@@ -395,7 +395,7 @@ fn wing::on_server_stage(
     return wire::StageVerdict.Continue;
 }
 
-fn pg_pump_outbound(app: PgHttpApp&, host: wing::NetHost&) {
+fn pg_pump_outbound(app: PgHttpApp&, host: net::Host&) {
     var pending_idx: i64 = -1;
     for i in 16 {
         if app.slots[i].in_use && !app.slots[i].sent_wire {
@@ -428,7 +428,7 @@ fn pg_pump_outbound(app: PgHttpApp&, host: wing::NetHost&) {
     }
 }
 
-fn pg_handle_srv_event(app: PgHttpApp&, host: wing::NetHost&, ev: const core::LinkEvent&) {
+fn pg_handle_srv_event(app: PgHttpApp&, host: net::Host&, ev: const core::LinkEvent&) {
     if ev.kind == core::LinkEventKind.Accepted {
         app.pg_srv_conn = ev.link;
         return;
@@ -450,7 +450,7 @@ fn pg_handle_srv_event(app: PgHttpApp&, host: wing::NetHost&, ev: const core::Li
     }
 }
 
-fn pg_handle_cli_event(app: PgHttpApp&, host: wing::NetHost&, ev: const core::LinkEvent&) {
+fn pg_handle_cli_event(app: PgHttpApp&, host: net::Host&, ev: const core::LinkEvent&) {
     if ev.kind == core::LinkEventKind.Connected && ev.link.raw == app.pg_cli_link.raw {
         app.pg_state = PgConnState.Ready;
         pg_pump_outbound(app, host);
@@ -490,7 +490,7 @@ fn pg_handle_test_client_event(app: PgHttpApp&, ev: const core::LinkEvent&) {
     }
 }
 
-fn core::on_link_event(app: PgHttpApp&, host: wing::NetHost&, ev: const core::LinkEvent&) {
+fn core::on_link_event(app: PgHttpApp&, host: net::Host&, ev: const core::LinkEvent&) {
     if ev.kind == core::LinkEventKind.Pump {
         pg_pump_outbound(app, host);
         return;
@@ -542,7 +542,7 @@ fn encode_test_h2_get_frame<B>(
     let _ = out.try_append(hblk[..]);
 }
 
-var g_async_http_server: wing::HttpServer = wing::new_http_server("127.0.0.1", 0);
+var g_async_http_server: server::HttpServer = server::new_http_server("127.0.0.1", 0);
 
 fn test_http_plus_async_pg_full_integration() {
     var dcfg = net_internal::TransportDriverConfig {
@@ -550,19 +550,19 @@ fn test_http_plus_async_pg_full_integration() {
         is_probed:   true,
         ..
     };
-    var host = wing::new_net_host(dcfg);
-    defer wing::close_net_host(host);
+    var host = net::new_host(dcfg);
+    defer net::close_host(host);
 
-    g_async_http_server = wing::new_http_server("127.0.0.1", 0);
-    var reactor = wing::AsyncServerReactor { .. };
-    wing::add_get_route(g_async_http_server, "/db", 10);
-    wing::add_get_route(g_async_http_server, "/db_drop", 11);
-    wing::add_get_route(g_async_http_server, "/fast", 12);
+    g_async_http_server = server::new_http_server("127.0.0.1", 0);
+    var reactor = server::AsyncServerReactor { .. };
+    server::add_get_route(g_async_http_server, "/db", 10);
+    server::add_get_route(g_async_http_server, "/db_drop", 11);
+    server::add_get_route(g_async_http_server, "/fast", 12);
 
-    assert(wing::async_reactor_listen_http(
+    assert(server::async_reactor_listen_http(
         host, reactor, core::ConnectAddr.Tcp { host: "127.0.0.1", port: 0 }, 32,
     ));
-    let http_port = wing::link_local_port(host, reactor.listener_link);
+    let http_port = net::link_local_port(host, reactor.listener_link);
     assert(http_port > 0);
 
     var app = PgHttpApp { .. };
@@ -570,7 +570,7 @@ fn test_http_plus_async_pg_full_integration() {
         host, core::ConnectAddr.Tcp { host: "127.0.0.1", port: 0 }, OWNER_PG_SRV, 1, 16,
     );
     assert(pg_err == core::IoError.None && core::io_link_is_valid(pg_l));
-    let pg_port = wing::link_local_port(host, pg_l);
+    let pg_port = net::link_local_port(host, pg_l);
     assert(pg_port > 0);
     app.pg_srv_listen = pg_l;
     app.pg_addr = core::ConnectAddr.Tcp { host: "127.0.0.1", port: pg_port };
@@ -586,7 +586,7 @@ fn test_http_plus_async_pg_full_integration() {
     var sent_h1 = false;
     for _ in 120 {
         app.now_ns = core::add_sat_u64(app.now_ns, 2000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 10, app.now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 10, app.now_ns);
         if app.h1_connected && !sent_h1 {
             let wire_h1 = "GET /db HTTP/1.1\r\nHost: localhost\r\n\r\nGET /fast HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
             let sn, se = core::host_send(host, app.h1_cli, wire_h1);
@@ -614,7 +614,7 @@ fn test_http_plus_async_pg_full_integration() {
     var stream3_before_stream1 = false;
     for _ in 120 {
         app.now_ns = core::add_sat_u64(app.now_ns, 2000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 10, app.now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 10, app.now_ns);
         if app.h2_connected && !sent_h2 {
             var cli_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
             var h2_req: u8[..1024] = [];
@@ -651,7 +651,7 @@ fn test_http_plus_async_pg_full_integration() {
     var closed_cli_early = false;
     for _ in 120 {
         app.now_ns = core::add_sat_u64(app.now_ns, 2000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 10, app.now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 10, app.now_ns);
         if app.disc_cond && !sent_drop {
             let req_drop = "GET /db_drop HTTP/1.1\r\nHost: localhost\r\n\r\n";
             let sn3, se3 = core::host_send(host, app.disc_cli, req_drop);
@@ -659,7 +659,7 @@ fn test_http_plus_async_pg_full_integration() {
             sent_drop = true;
         }
         if sent_drop && !closed_cli_early && app.slots_cleaned == 2 && app.pg_srv_job.active {
-            assert(wing::link_abort(host, app.disc_cli));
+            assert(net::link_abort(host, app.disc_cli));
             closed_cli_early = true;
         }
         if reactor.total_stale_wakes >= 1 {
@@ -672,10 +672,10 @@ fn test_http_plus_async_pg_full_integration() {
     assert(app.slots_cleaned == 3);
     print("TASK4C_STALE_WAKE_SAFETY: OK");
 
-    var loop_host = wing::new_net_host(dcfg);
-    defer wing::close_net_host(loop_host);
-    var loop_reactor = wing::AsyncServerReactor { .. };
-    assert(wing::serve_reactor_with_io(
+    var loop_host = net::new_host(dcfg);
+    defer net::close_host(loop_host);
+    var loop_reactor = server::AsyncServerReactor { .. };
+    assert(server::serve_reactor_with_io(
         loop_host,
         g_async_http_server,
         loop_reactor,
@@ -701,13 +701,13 @@ struct ScaleProbeApp {
     bp_z_count: i64               = 0,
 }
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     _app:  ScaleProbeApp&,
     phase: wire::ServerHookPhase,
-    _cfg:  wing::ServerPipelineConfig&,
-    req:   const wing::Request&,
-    _sctx: wing::ServerStageCtx&,
-    res:   wing::Response&,
+    _cfg:  server::ServerPipelineConfig&,
+    req:   const http::Request&,
+    _sctx: server::ServerStageCtx&,
+    res:   http::Response&,
 ) -> wire::StageVerdict {
     guard phase == wire::ServerHookPhase.RouteHandler else {
         return wire::StageVerdict.Continue;
@@ -727,7 +727,7 @@ fn wing::on_server_stage(
     return wire::StageVerdict.Continue;
 }
 
-fn core::on_link_event(app: ScaleProbeApp&, _host: wing::NetHost&, ev: const core::LinkEvent&) {
+fn core::on_link_event(app: ScaleProbeApp&, _host: net::Host&, ev: const core::LinkEvent&) {
     guard core::io_link_owner(ev.link) == OWNER_SCALE_CLI else { return; }
     if ev.link.raw == app.bp_cli.raw && ev.kind == core::LinkEventKind.Data {
         app.bp_rx_len = core::add_sat_i64(app.bp_rx_len, ev.data.len);
@@ -743,7 +743,7 @@ fn core::on_link_event(app: ScaleProbeApp&, _host: wing::NetHost&, ev: const cor
     }
 }
 
-fn assert_all_reactor_conns_idle_zero_buf(reactor: const wing::AsyncServerReactor&, expected_open: i64) {
+fn assert_all_reactor_conns_idle_zero_buf(reactor: const server::AsyncServerReactor&, expected_open: i64) {
     var open_count: i64 = 0;
     for i in reactor.conns.len {
         if reactor.conns[i].in_use {
@@ -757,8 +757,8 @@ fn assert_all_reactor_conns_idle_zero_buf(reactor: const wing::AsyncServerReacto
 }
 
 fn open_scale_tcp_connections(
-    host:      wing::NetHost&,
-    reactor:   wing::AsyncServerReactor&,
+    host:      net::Host&,
+    reactor:   server::AsyncServerReactor&,
     app:       ScaleProbeApp&,
     http_port: u16,
     now_ns:    u64&,
@@ -780,7 +780,7 @@ fn open_scale_tcp_connections(
         }
         for _ in 8 {
             now_ns = core::add_sat_u64(now_ns, 1000000);
-            let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+            let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
         }
     }
     for _ in 60 {
@@ -792,7 +792,7 @@ fn open_scale_tcp_connections(
             break;
         }
         now_ns = core::add_sat_u64(now_ns, 2000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 5, now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 5, now_ns);
     }
     assert(host.active_links >= SCALE_CONN_COUNT * 2 + 1);
     assert(reactor.conns.len == SCALE_CONN_COUNT);
@@ -801,8 +801,8 @@ fn open_scale_tcp_connections(
 }
 
 fn verify_split_h1_keepalive_scale(
-    host:    wing::NetHost&,
-    reactor: wing::AsyncServerReactor&,
+    host:    net::Host&,
+    reactor: server::AsyncServerReactor&,
     app:     ScaleProbeApp&,
     now_ns:  u64&,
 ) {
@@ -814,7 +814,7 @@ fn verify_split_h1_keepalive_scale(
     }
     for _ in 20 {
         now_ns = core::add_sat_u64(now_ns, 1000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
     }
     assert(reactor.buf_items.len >= SCALE_CONN_COUNT * 512);
 
@@ -827,7 +827,7 @@ fn verify_split_h1_keepalive_scale(
         }
         for _ in 25 {
             now_ns = core::add_sat_u64(now_ns, 2000000);
-            let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+            let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
         }
     }
     for _ in 40 {
@@ -837,7 +837,7 @@ fn verify_split_h1_keepalive_scale(
         }
         if done_cnt == SCALE_CONN_COUNT { break; }
         now_ns = core::add_sat_u64(now_ns, 5000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 5, now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 5, now_ns);
     }
     for i in SCALE_CONN_COUNT {
         assert(app.cli_resps[i] == 1);
@@ -854,7 +854,7 @@ fn verify_split_h1_keepalive_scale(
     for _ in 30 {
         if app.cli_resps[319] >= 2 && app.cli_resps[300] >= 2 { break; }
         now_ns = core::add_sat_u64(now_ns, 1000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 2, now_ns);
     }
     for i in 300..SCALE_CONN_COUNT {
         assert(app.cli_resps[i] == 2);
@@ -863,17 +863,17 @@ fn verify_split_h1_keepalive_scale(
 }
 
 fn verify_backpressured_tx_pool_lease_and_release(
-    host:    wing::NetHost&,
-    reactor: wing::AsyncServerReactor&,
+    host:    net::Host&,
+    reactor: server::AsyncServerReactor&,
     app:     ScaleProbeApp&,
     now_ns:  u64&,
 ) {
-    let cli_end, srv_end, ok_pair = wing::host_open_virtual_pair(
+    let cli_end, srv_end, ok_pair = net::open_virtual_pair(
         host, OWNER_SCALE_CLI, core::IO_OWNER_HTTP_SERVER, 999, 0,
     );
     assert(ok_pair);
     app.bp_cli = cli_end;
-    let v_idx = wing::async_reactor_register_client_link(reactor, srv_end);
+    let v_idx = server::async_reactor_register_client_link(reactor, srv_end);
     assert(v_idx >= SCALE_CONN_COUNT);
 
     assert(core::host_set_rx_paused(host, cli_end, true));
@@ -882,7 +882,7 @@ fn verify_backpressured_tx_pool_lease_and_release(
     assert(sn == (req_big.len as i32) && se == core::IoError.None);
 
     now_ns = core::add_sat_u64(now_ns, 250000000);
-    let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 0, now_ns);
+    let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 0, now_ns);
     assert(reactor.conns[v_idx].rx_cap == 0 && reactor.conns[v_idx].rx_len == 0);
     assert(reactor.conns[v_idx].tx_len > 8000 && reactor.conns[v_idx].tx_cap >= 8192);
     assert(reactor.buf_items.len >= 8192);
@@ -890,7 +890,7 @@ fn verify_backpressured_tx_pool_lease_and_release(
     assert(core::host_set_rx_paused(host, cli_end, false));
     for _ in 12 {
         now_ns = core::add_sat_u64(now_ns, 1000000);
-        let _ = wing::async_reactor_step(host, g_async_http_server, reactor, app, 0, now_ns);
+        let _ = server::async_reactor_step(host, g_async_http_server, reactor, app, 0, now_ns);
         if app.bp_z_count == BIG_BODY_BYTES && reactor.conns[v_idx].tx_len == 0 {
             break;
         }
@@ -905,18 +905,18 @@ fn test_scale_320_conns_and_zero_idle_buffers() {
         is_probed:   true,
         ..
     };
-    var host = wing::new_net_host(dcfg);
-    defer wing::close_net_host(host);
+    var host = net::new_host(dcfg);
+    defer net::close_host(host);
 
-    g_async_http_server = wing::new_http_server("127.0.0.1", 0);
-    wing::add_get_route(g_async_http_server, "/scale", 20);
-    wing::add_get_route(g_async_http_server, "/big", 21);
+    g_async_http_server = server::new_http_server("127.0.0.1", 0);
+    server::add_get_route(g_async_http_server, "/scale", 20);
+    server::add_get_route(g_async_http_server, "/big", 21);
 
-    var reactor = wing::AsyncServerReactor { .. };
-    assert(wing::async_reactor_listen_http(
+    var reactor = server::AsyncServerReactor { .. };
+    assert(server::async_reactor_listen_http(
         host, reactor, core::ConnectAddr.Tcp { host: "127.0.0.1", port: 0 }, 128,
     ));
-    let http_port = wing::link_local_port(host, reactor.listener_link);
+    let http_port = net::link_local_port(host, reactor.listener_link);
     assert(http_port > 0);
 
     var app = ScaleProbeApp { .. };

@@ -17,51 +17,51 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // ----------------------------------------------------------------------------
 fn test_tcp_loopback_echo(t: lit::T&) {
     // 1. Listen on ephemeral port
-    let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+    let listener = net::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener socket must be created successfully");
-    defer wing::tcp_close(listener);
+    defer net::tcp_close(listener);
 
-    let port = wing::tcp_getsockname_port(listener);
+    let port = net::tcp_getsockname_port(listener);
     t.assert_true(port > 0, "Bound port must be non-zero ephemeral port");
 
     // 2. Connect client
-    let client = wing::tcp_connect("127.0.0.1", port, 2000);
+    let client = net::tcp_connect("127.0.0.1", port, 2000);
     t.assert_true(client > 0, "Client must connect to loopback listener");
-    defer wing::tcp_close(client);
+    defer net::tcp_close(client);
 
     // 3. Accept connection on server
-    let server_conn = wing::tcp_accept(listener, 2000);
+    let server_conn = net::tcp_accept(listener, 2000);
     t.assert_true(server_conn > 0, "Server must accept connection");
-    defer wing::tcp_close(server_conn);
+    defer net::tcp_close(server_conn);
 
     // 4. Send HTTP request from client
     let req_bytes: const u8[:] = "GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    let sent = wing::tcp_send(client, req_bytes);
+    let sent = net::tcp_send(client, req_bytes);
     t.assert_eq(sent, req_bytes.len as i32, "Client sent all bytes");
 
     // 5. Server receives and parses wire request
     var srv_buf: u8[..1024] = [];
-    let recvd = wing::tcp_recv(server_conn, srv_buf, 1024, 2000);
+    let recvd = net::tcp_recv(server_conn, srv_buf, 1024, 2000);
     t.assert_true(recvd > 0, "Server received request bytes");
 
-    var req = wing::Request {};
-    let ok_req, consumed = wing::parse_http1_wire_request(srv_buf[..], req);
+    var req = http::Request {};
+    let ok_req, consumed = server::parse_http1_wire_request(srv_buf[..], req);
     t.assert_true(ok_req, "Server successfully parsed HTTP/1.1 request");
     t.assert_eq(req.method[..], "GET", "Method is GET");
     t.assert_eq(req.url[..], "/status", "Path is /status");
 
     // 6. Server sends HTTP/1.1 200 OK response
     let resp_bytes: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nHELLO";
-    let resp_sent = wing::tcp_send(server_conn, resp_bytes);
+    let resp_sent = net::tcp_send(server_conn, resp_bytes);
     t.assert_eq(resp_sent, resp_bytes.len as i32, "Server sent response");
 
     // 7. Client receives response
     var cli_buf: u8[..1024] = [];
-    let cli_recvd = wing::tcp_recv(client, cli_buf, 1024, 2000);
+    let cli_recvd = net::tcp_recv(client, cli_buf, 1024, 2000);
     t.assert_true(cli_recvd > 0, "Client received response");
 
-    var resp = wing::Response {};
-    let ok_resp, resp_consumed = wing::parse_http1_wire_response(cli_buf[..], resp);
+    var resp = http::Response {};
+    let ok_resp, resp_consumed = server::parse_http1_wire_response(cli_buf[..], resp);
     t.assert_true(ok_resp, "Client parsed HTTP/1.1 response");
     t.assert_eq(resp.status_code, 200, "Status is 200");
     t.assert_eq(resp.body[..], "HELLO", "Body is HELLO");
@@ -79,29 +79,29 @@ fn test_tcp_loopback_echo(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
     t.run("Case 1: FIFO Stream Order Preservation on Uncork with Active Backpressure") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
         sub.assert_gt(port as i64, 0, "Valid port");
 
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
         var cork = core::new_cork_buffer();
-        var bp = wing::BackPressure { .. };
+        var bp = net::BackPressure { .. };
 
         // Simulate active backpressure: PART 1 was previously queued in backpressure
         let part1: const u8[:] = "PART1_PREFIX_DATA_";
-        let append_ok = wing::backpressure_append(bp, part1);
+        let append_ok = net::backpressure_append(bp, part1);
         sub.assert_true(append_ok, "Backpressure contains part 1");
-        sub.assert_eq(wing::backpressure_len(bp), part1.len as i64, "Backpressure length matches part 1");
+        sub.assert_eq(net::backpressure_len(bp), part1.len as i64, "Backpressure length matches part 1");
 
         // Now, subsequent data is buffered into cork
         let part2: const u8[:] = "PART2_SUFFIX_DATA!";
@@ -110,11 +110,11 @@ fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
 
         // Uncork the socket: Flawed implementation sends part 2 directly to the wire first,
         // violating TCP stream FIFO ordering and returning needs_poll=false!
-        let written, needs_poll = wing::async_socket_uncork(client, cork, bp);
+        let written, needs_poll = net::async_socket_uncork(client, cork, bp);
 
         // Server reads what was transmitted on the wire so far
         var recv_wire: u8[..1024] = [];
-        let r1 = wing::tcp_recv(server_conn, recv_wire, 1024, 500);
+        let r1 = net::tcp_recv(server_conn, recv_wire, 1024, 500);
 
         // If any bytes were sent on wire, they MUST start with PART 1, never PART 2!
         if r1 > 0 {
@@ -123,8 +123,8 @@ fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
         }
 
         // Drain any remaining backpressure
-        while wing::backpressure_len(bp) > 0 {
-            let drained, empty = wing::async_socket_drain(client, bp);
+        while net::backpressure_len(bp) > 0 {
+            let drained, empty = net::async_socket_drain(client, bp);
             if drained <= 0 {
                 break;
             }
@@ -133,7 +133,7 @@ fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
         // Read all remaining bytes from server
         loop {
             var tmp: u8[..1024] = [];
-            let r = wing::tcp_recv(server_conn, tmp, 1024, 200);
+            let r = net::tcp_recv(server_conn, tmp, 1024, 200);
             if r <= 0 {
                 break;
             }
@@ -151,32 +151,32 @@ fn test_uncork_backpressure_fifo_ordering(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_uncork_empty_cork_with_backpressure(t: lit::T&) {
     t.run("Case 2: Uncork Empty Cork Reports Needs-Poll when Backpressure Pending") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
-        defer wing::tcp_close(client);
-        let server_conn = wing::tcp_accept(listener, 2000);
-        defer wing::tcp_close(server_conn);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
+        defer net::tcp_close(client);
+        let server_conn = net::tcp_accept(listener, 2000);
+        defer net::tcp_close(server_conn);
 
         var cork = core::new_cork_buffer();
-        var bp = wing::BackPressure { .. };
+        var bp = net::BackPressure { .. };
 
         // Set pending backpressure
         let data: const u8[:] = "STALLED_BACKPRESSURE_CHUNK";
-        wing::backpressure_append(bp, data);
+        net::backpressure_append(bp, data);
 
         // Cork is empty (cork_pending == 0)
         sub.assert_eq(cork.cork_pending(), 0, "Cork is empty");
 
         // In flawed implementation: guard pending > 0 returns (0, false),
         // telling the event loop no poll is needed and causing permanent stall!
-        let written, needs_poll = wing::async_socket_uncork(client, cork, bp);
+        let written, needs_poll = net::async_socket_uncork(client, cork, bp);
 
         // If backpressure is still pending, needs_poll MUST be true!
-        if wing::backpressure_len(bp) > 0 {
+        if net::backpressure_len(bp) > 0 {
             sub.assert_true(needs_poll, "Uncorking with pending backpressure MUST return needs_poll=true");
         }
     };
@@ -191,51 +191,51 @@ fn test_uncork_empty_cork_with_backpressure(t: lit::T&) {
 // 4. Live TCP H1 Chunked Roundtrip
 // ----------------------------------------------------------------------------
 fn test_live_h1_roundtrip(t: lit::T&) {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+    let listener = net::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener started");
-    let srv_port = wing::tcp_getsockname_port(listener);
+    let srv_port = net::tcp_getsockname_port(listener);
     t.assert_true(srv_port > 0, "Got bound port");
 
-    let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
+    let client = net::tcp_connect("127.0.0.1", srv_port, 2000);
     t.assert_true(client > 0, "Client connected");
 
-    let server_conn = wing::tcp_accept(listener, 2000);
+    let server_conn = net::tcp_accept(listener, 2000);
     t.assert_true(server_conn > 0, "Server accepted");
 
     // Client sends chunked request
     let req_wire: const u8[:] = "POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHELLO\r\n0\r\n\r\n";
-    let sent = wing::tcp_send(client, req_wire);
+    let sent = net::tcp_send(client, req_wire);
     t.assert_eq(sent, req_wire.len as i32, "Sent chunked request");
 
     // Server reads wire and parses request
     var srv_buf: u8[..2048] = [];
-    let recvd = wing::tcp_recv(server_conn, srv_buf, 2048, 2000);
+    let recvd = net::tcp_recv(server_conn, srv_buf, 2048, 2000);
     t.assert_true(recvd > 0, "Server read bytes");
 
-    var req = wing::Request {};
-    let ok_req, consumed = wing::parse_http1_wire_request(srv_buf[..], req);
+    var req = http::Request {};
+    let ok_req, consumed = server::parse_http1_wire_request(srv_buf[..], req);
     t.assert_true(ok_req, "Parsed request");
     t.assert_eq(req.method[..], "POST", "Method is POST");
     t.assert_eq(req.body[..], "HELLO", "Body unchunked to HELLO");
 
     // Server sends response
     let resp_wire: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
-    wing::tcp_send(server_conn, resp_wire);
+    net::tcp_send(server_conn, resp_wire);
 
     // Client receives response
     var cli_buf: u8[..1024] = [];
-    let cli_recvd = wing::tcp_recv(client, cli_buf, 1024, 2000);
+    let cli_recvd = net::tcp_recv(client, cli_buf, 1024, 2000);
     t.assert_true(cli_recvd > 0, "Client read response");
 
-    var resp = wing::Response {};
-    let ok_resp, _ = wing::parse_http1_wire_response(cli_buf[..], resp);
+    var resp = http::Response {};
+    let ok_resp, _ = server::parse_http1_wire_response(cli_buf[..], resp);
     t.assert_true(ok_resp, "Parsed response");
     t.assert_eq(resp.status_code, 200, "Status is 200");
     t.assert_eq(resp.body[..], "OK", "Body is OK");
 
-    wing::tcp_close(client);
-    wing::tcp_close(server_conn);
-    wing::tcp_close(listener);
+    net::tcp_close(client);
+    net::tcp_close(server_conn);
+    net::tcp_close(listener);
 }
 
 // Verifies server rejects malformed space-before-colon request (CVE-2019-16276)
@@ -243,25 +243,25 @@ fn test_live_h1_roundtrip(t: lit::T&) {
 // 5. Live TCP CVE-2019-16276 Space-Before-Colon Rejection
 // ----------------------------------------------------------------------------
 fn test_live_h1_space_before_colon_rejected(t: lit::T&) {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 16);
-    let srv_port = wing::tcp_getsockname_port(listener);
-    let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
-    let server_conn = wing::tcp_accept(listener, 2000);
+    let listener = net::tcp_listen("127.0.0.1", 0, 16);
+    let srv_port = net::tcp_getsockname_port(listener);
+    let client = net::tcp_connect("127.0.0.1", srv_port, 2000);
+    let server_conn = net::tcp_accept(listener, 2000);
 
     // Smuggled header with space before colon
     let evil_req: const u8[:] = "GET /test HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding : chunked\r\n\r\n";
-    wing::tcp_send(client, evil_req);
+    net::tcp_send(client, evil_req);
 
     var srv_buf: u8[..1024] = [];
-    wing::tcp_recv(server_conn, srv_buf, 1024, 2000);
+    net::tcp_recv(server_conn, srv_buf, 1024, 2000);
 
-    var req = wing::Request {};
-    let ok_req, _ = wing::parse_http1_wire_request(srv_buf[..], req);
+    var req = http::Request {};
+    let ok_req, _ = server::parse_http1_wire_request(srv_buf[..], req);
     t.assert_false(ok_req, "Space before colon request MUST be rejected by wire parser");
 
-    wing::tcp_close(client);
-    wing::tcp_close(server_conn);
-    wing::tcp_close(listener);
+    net::tcp_close(client);
+    net::tcp_close(server_conn);
+    net::tcp_close(listener);
 }
 
 // Verifies server rejects conflicting Content-Length headers over live TCP
@@ -269,24 +269,24 @@ fn test_live_h1_space_before_colon_rejected(t: lit::T&) {
 // 6. Live TCP Conflicting Content-Length Rejection
 // ----------------------------------------------------------------------------
 fn test_live_h1_conflicting_content_length(t: lit::T&) {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 16);
-    let srv_port = wing::tcp_getsockname_port(listener);
-    let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
-    let server_conn = wing::tcp_accept(listener, 2000);
+    let listener = net::tcp_listen("127.0.0.1", 0, 16);
+    let srv_port = net::tcp_getsockname_port(listener);
+    let client = net::tcp_connect("127.0.0.1", srv_port, 2000);
+    let server_conn = net::tcp_accept(listener, 2000);
 
     let evil_req: const u8[:] = "POST /test HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nHELLO";
-    wing::tcp_send(client, evil_req);
+    net::tcp_send(client, evil_req);
 
     var srv_buf: u8[..1024] = [];
-    wing::tcp_recv(server_conn, srv_buf, 1024, 2000);
+    net::tcp_recv(server_conn, srv_buf, 1024, 2000);
 
-    var req = wing::Request {};
-    let ok_req, _ = wing::parse_http1_wire_request(srv_buf[..], req);
+    var req = http::Request {};
+    let ok_req, _ = server::parse_http1_wire_request(srv_buf[..], req);
     t.assert_false(ok_req, "Conflicting Content-Length headers MUST be rejected");
 
-    wing::tcp_close(client);
-    wing::tcp_close(server_conn);
-    wing::tcp_close(listener);
+    net::tcp_close(client);
+    net::tcp_close(server_conn);
+    net::tcp_close(listener);
 }
 
 // Verifies server detects connection reset / EOF cleanly
@@ -294,21 +294,21 @@ fn test_live_h1_conflicting_content_length(t: lit::T&) {
 // 7. Live TCP Abrupt Disconnect / EOF Handling
 // ----------------------------------------------------------------------------
 fn test_live_h1_abrupt_disconnect(t: lit::T&) {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 16);
-    let srv_port = wing::tcp_getsockname_port(listener);
-    let client = wing::tcp_connect("127.0.0.1", srv_port, 2000);
-    let server_conn = wing::tcp_accept(listener, 2000);
+    let listener = net::tcp_listen("127.0.0.1", 0, 16);
+    let srv_port = net::tcp_getsockname_port(listener);
+    let client = net::tcp_connect("127.0.0.1", srv_port, 2000);
+    let server_conn = net::tcp_accept(listener, 2000);
 
     // Client closes socket immediately without sending full headers
-    wing::tcp_close(client);
+    net::tcp_close(client);
 
     var srv_buf: u8[..1024] = [];
-    let recvd = wing::tcp_recv(server_conn, srv_buf, 1024, 1000);
+    let recvd = net::tcp_recv(server_conn, srv_buf, 1024, 1000);
     // recvd == 0 indicates clean peer FIN, or negative on error
     t.assert_true(recvd <= 0, "Server detects disconnect/EOF cleanly");
 
-    wing::tcp_close(server_conn);
-    wing::tcp_close(listener);
+    net::tcp_close(server_conn);
+    net::tcp_close(listener);
 }
 
 // --- Component: net_tcp_rst_abort ---
@@ -324,35 +324,35 @@ fn test_live_h1_abrupt_disconnect(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_abrupt_rst_on_unread_receive_data(t: lit::T&) {
     t.run("Case 1: RFC 1122 §4.2.2.13 Abortive RST on Unread Receive Data") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
 
         // 1. Client sends data to server
         let wire_msg: const u8[:] = "UNREAD_TRANSACTION_PAYLOAD_MUST_TRIGGER_RST";
-        let sent = wing::tcp_send(client, wire_msg);
+        let sent = net::tcp_send(client, wire_msg);
         sub.assert_eq(sent, wire_msg.len as i32, "Client sent payload");
 
         // Give the OS kernel time to buffer incoming data in server socket receive queue
         core::sleep(core::millis(50));
 
         // Verify unread data is present in server receive queue
-        let readable = wing::tcp_get_readable_bytes(server_conn);
+        let readable = net::tcp_get_readable_bytes(server_conn);
         sub.assert_gt(readable, 0, "Server socket has unread bytes in receive buffer");
 
         // 2. Server closes socket via async_socket_close while unread data is still pending:
         // RFC 1122 §4.2.2.13 mandates that closing with unread data MUST issue an abortive RST,
         // never a graceful FIN!
-        var srv_bp = wing::BackPressure { .. };
-        let close_ok = wing::async_socket_close(server_conn, srv_bp);
+        var srv_bp = net::BackPressure { .. };
+        let close_ok = net::async_socket_close(server_conn, srv_bp);
         sub.assert_true(close_ok, "async_socket_close executed");
 
         // Give OS time to deliver RST packet
@@ -362,7 +362,7 @@ fn test_abrupt_rst_on_unread_receive_data(t: lit::T&) {
         // Because server issued RST (not FIN), client MUST receive an error (-1 / WSAECONNRESET / ECONNRESET),
         // NOT a clean EOF (0)!
         var probe_buf: u8[..64] = [];
-        let r = wing::tcp_recv(client, probe_buf, 64, 1000);
+        let r = net::tcp_recv(client, probe_buf, 64, 1000);
         sub.assert_eq(r, -1, "Client must observe connection reset (-1) from abortive RST, not clean EOF (0)");
     };
 }
@@ -372,28 +372,28 @@ fn test_abrupt_rst_on_unread_receive_data(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_explicit_socket_abort(t: lit::T&) {
     t.run("Case 2: Explicit tcp_abort and async_socket_abort RST Teardown") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
-        let server_conn = wing::tcp_accept(listener, 2000);
-        defer wing::tcp_close(listener);
-        defer wing::tcp_close(client);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
+        defer net::tcp_close(listener);
+        defer net::tcp_close(client);
 
-        var srv_bp = wing::BackPressure { .. };
-        wing::backpressure_append(srv_bp, "PENDING_DIRTY_DATA_TO_BE_DISCARDED");
-        sub.assert_gt(wing::backpressure_len(srv_bp), 0, "Server backpressure holds pending data");
+        var srv_bp = net::BackPressure { .. };
+        net::backpressure_append(srv_bp, "PENDING_DIRTY_DATA_TO_BE_DISCARDED");
+        sub.assert_gt(net::backpressure_len(srv_bp), 0, "Server backpressure holds pending data");
 
         // Explicit abort: discard backpressure and send immediate RST
-        let abort_ok = wing::async_socket_abort(server_conn, srv_bp);
+        let abort_ok = net::async_socket_abort(server_conn, srv_bp);
         sub.assert_true(abort_ok, "async_socket_abort returned true");
-        sub.assert_eq(wing::backpressure_len(srv_bp), 0, "Backpressure cleared on abort");
+        sub.assert_eq(net::backpressure_len(srv_bp), 0, "Backpressure cleared on abort");
         sub.assert_true(srv_bp.write_shut, "write_shut is true");
 
         core::sleep(core::millis(50));
 
         // Client observes connection reset (-1)
         var probe_buf: u8[..64] = [];
-        let r = wing::tcp_recv(client, probe_buf, 64, 1000);
+        let r = net::tcp_recv(client, probe_buf, 64, 1000);
         sub.assert_eq(r, -1, "Client observes connection reset (-1) from explicit abort");
     };
 }
@@ -403,24 +403,24 @@ fn test_explicit_socket_abort(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_keepalive_boundary_validation(t: lit::T&) {
     t.run("Case 3: TCP Keepalive Boundary Validation (RFC 1122 §4.2.3.6)") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
         // Valid configurations
-        sub.assert_true(wing::tcp_set_keepalive(listener, 1, 11, 3), "Valid keepalive (1, 11, 3) accepted");
-        sub.assert_true(wing::tcp_set_keepalive(listener, 60, 10, 5), "Valid keepalive (60, 10, 5) accepted");
-        sub.assert_true(wing::tcp_set_keepalive(listener, 7200, 75, 9), "RFC 1122 standard 2-hour keepalive accepted");
+        sub.assert_true(net::tcp_set_keepalive(listener, 1, 11, 3), "Valid keepalive (1, 11, 3) accepted");
+        sub.assert_true(net::tcp_set_keepalive(listener, 60, 10, 5), "Valid keepalive (60, 10, 5) accepted");
+        sub.assert_true(net::tcp_set_keepalive(listener, 7200, 75, 9), "RFC 1122 standard 2-hour keepalive accepted");
 
         // Invalid configurations must be rejected with false
-        sub.assert_false(wing::tcp_set_keepalive(listener, 0, 10, 5), "idle_sec=0 must be rejected");
-        sub.assert_false(wing::tcp_set_keepalive(listener, -1, 10, 5), "negative idle_sec must be rejected");
-        sub.assert_false(wing::tcp_set_keepalive(listener, 60, 0, 5), "intvl_sec=0 must be rejected");
-        sub.assert_false(wing::tcp_set_keepalive(listener, 60, -5, 5), "negative intvl_sec must be rejected");
-        sub.assert_false(wing::tcp_set_keepalive(listener, 60, 10, 0), "cnt=0 must be rejected");
-        sub.assert_false(wing::tcp_set_keepalive(listener, 60, 10, -2), "negative cnt must be rejected");
-        sub.assert_false(wing::tcp_set_keepalive(listener, 60, 10, 200), "excessive cnt (> 127) must be rejected");
-        sub.assert_false(wing::tcp_set_keepalive(listener, 86400, 10, 5), "idle_sec > 7200 must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, 0, 10, 5), "idle_sec=0 must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, -1, 10, 5), "negative idle_sec must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, 60, 0, 5), "intvl_sec=0 must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, 60, -5, 5), "negative intvl_sec must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, 60, 10, 0), "cnt=0 must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, 60, 10, -2), "negative cnt must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, 60, 10, 200), "excessive cnt (> 127) must be rejected");
+        sub.assert_false(net::tcp_set_keepalive(listener, 86400, 10, 5), "idle_sec > 7200 must be rejected");
     };
 }
 
@@ -429,30 +429,30 @@ fn test_keepalive_boundary_validation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_flow_control_state_tracking(t: lit::T&) {
     t.run("Case 4: Backpressure Flow Control State Tracking") { sub =>
-        var bp = wing::BackPressure { .. };
-        sub.assert_false(wing::tcp_is_flow_controlled(bp), "Empty backpressure is not flow controlled");
+        var bp = net::BackPressure { .. };
+        sub.assert_false(net::tcp_is_flow_controlled(bp), "Empty backpressure is not flow controlled");
 
-        wing::backpressure_append(bp, "FLOW_CONTROLLED_PAYLOAD");
-        sub.assert_true(wing::tcp_is_flow_controlled(bp), "Backpressure with pending data is flow controlled");
+        net::backpressure_append(bp, "FLOW_CONTROLLED_PAYLOAD");
+        sub.assert_true(net::tcp_is_flow_controlled(bp), "Backpressure with pending data is flow controlled");
 
-        wing::backpressure_clear(bp);
-        sub.assert_false(wing::tcp_is_flow_controlled(bp), "Cleared backpressure is not flow controlled");
+        net::backpressure_clear(bp);
+        sub.assert_false(net::tcp_is_flow_controlled(bp), "Cleared backpressure is not flow controlled");
 
         // Bounded capacity: when backpressure reaches 65536 bytes, backpressure_append returns false
-        var bp_full = wing::BackPressure { .. };
+        var bp_full = net::BackPressure { .. };
         var big_chunk: u8[4096] = ['B'; 4096];
         for i in 16 {
-            wing::backpressure_append(bp_full, big_chunk[..]);
+            net::backpressure_append(bp_full, big_chunk[..]);
         }
-        sub.assert_eq(wing::backpressure_len(bp_full), 65536, "Backpressure at max capacity 65536");
-        let ok_append = wing::backpressure_append(bp_full, "OVERFLOW");
+        sub.assert_eq(net::backpressure_len(bp_full), 65536, "Backpressure at max capacity 65536");
+        let ok_append = net::backpressure_append(bp_full, "OVERFLOW");
         sub.assert_false(ok_append, "Appending to full backpressure returns false");
         sub.assert_eq(bp_full.drop_count, 1, "Drop count incremented on overflow");
 
         // uncork_spill_to_bp preserves cork buffer when backpressure is full
         var cork = core::new_cork_buffer();
         core::cork_write_exact(cork, "SAVED_IN_CORK");
-        wing::uncork_spill_to_bp(cork, bp_full);
+        net::uncork_spill_to_bp(cork, bp_full);
         sub.assert_eq(core::cork_pending(cork), 13, "Cork data preserved when backpressure full");
     };
 }
@@ -472,32 +472,32 @@ fn test_flow_control_state_tracking(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_half_close_deferred_shutdown(t: lit::T&) {
     t.run("Case 1: Deferred Shutdown on Active Backpressure & Re-entrant Send Block") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
         var cork = core::new_cork_buffer();
-        var bp = wing::BackPressure { .. };
+        var bp = net::BackPressure { .. };
 
         // 1. Simulate active backpressure: data is buffered in BackPressure queue
         let payload: const u8[:] = "CRITICAL_TRANSACTION_PAYLOAD_BEFORE_SHUTDOWN";
-        let append_ok = wing::backpressure_append(bp, payload);
+        let append_ok = net::backpressure_append(bp, payload);
         sub.assert_true(append_ok, "Backpressure contains payload");
-        sub.assert_gt(wing::backpressure_len(bp), 0, "Backpressure length > 0");
+        sub.assert_gt(net::backpressure_len(bp), 0, "Backpressure length > 0");
 
         // 2. Initiate graceful shutdown while backpressure is active:
         // Must NOT shut down wire immediately (which drops unsent data or causes RST),
         // but must DEFER shutdown until backpressure drains completely.
-        let did_shut, is_deferred = wing::async_socket_shutdown(client, bp, cork);
+        let did_shut, is_deferred = net::async_socket_shutdown(client, bp, cork);
         sub.assert_false(did_shut, "Immediate shutdown must NOT execute while backpressure is pending");
         sub.assert_true(is_deferred, "Shutdown must be marked deferred");
         sub.assert_true(bp.shutdown_pending, "bp.shutdown_pending must be true");
@@ -505,14 +505,14 @@ fn test_half_close_deferred_shutdown(t: lit::T&) {
 
         // 3. uWebSockets #1932: Block subsequent writes once shutdown is pending
         let extra_data: const u8[:] = "SHOULD_BE_DROPPED_AFTER_SHUTDOWN";
-        let wr_sent, wr_poll = wing::async_socket_write(client, cork, bp, extra_data);
+        let wr_sent, wr_poll = net::async_socket_write(client, cork, bp, extra_data);
         sub.assert_eq(wr_sent, 0, "Writes must be rejected after shutdown initiated");
         sub.assert_false(wr_poll, "No writable poll needed for rejected write");
 
         // 4. Drain backpressure: on final drain, deferred shutdown must trigger automatically
         var total_drained: i32 = 0;
-        while wing::backpressure_len(bp) > 0 {
-            let drained, empty = wing::async_socket_drain(client, bp);
+        while net::backpressure_len(bp) > 0 {
+            let drained, empty = net::async_socket_drain(client, bp);
             if drained > 0 {
                 total_drained += drained;
             }
@@ -522,19 +522,19 @@ fn test_half_close_deferred_shutdown(t: lit::T&) {
         }
 
         sub.assert_eq(total_drained, payload.len as i32, "All queued payload drained to wire");
-        sub.assert_eq(wing::backpressure_len(bp), 0, "Backpressure is completely empty");
+        sub.assert_eq(net::backpressure_len(bp), 0, "Backpressure is completely empty");
         sub.assert_false(bp.shutdown_pending, "Deferred shutdown is no longer pending");
         sub.assert_true(bp.write_shut, "Write side is now cleanly shut down");
 
         // 5. Server reads the full payload and then receives EOF (FIN from client)
         var srv_buf: u8[..1024] = [];
-        let recvd = wing::tcp_recv(server_conn, srv_buf, 1024, 2000);
+        let recvd = net::tcp_recv(server_conn, srv_buf, 1024, 2000);
         sub.assert_eq(recvd, payload.len as i32, "Server received complete queued payload");
         sub.assert_eq(srv_buf[..recvd], payload, "Payload content matches wire byte-for-byte");
 
         // Server receives EOF (clean FIN from SHUT_WR)
         var eof_buf: u8[..64] = [];
-        let eof = wing::tcp_recv(server_conn, eof_buf, 64, 1000);
+        let eof = net::tcp_recv(server_conn, eof_buf, 64, 1000);
         sub.assert_eq(eof, 0, "Server observed EOF (FIN) after payload drained");
     };
 }
@@ -544,48 +544,48 @@ fn test_half_close_deferred_shutdown(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_peer_fin_half_closed_response(t: lit::T&) {
     t.run("Case 2: Peer FIN Handling & Server Response in CLOSE_WAIT State") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
-        let server_conn = wing::tcp_accept(listener, 2000);
-        defer wing::tcp_close(listener);
-        defer wing::tcp_close(client);
-        defer wing::tcp_close(server_conn);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
+        defer net::tcp_close(listener);
+        defer net::tcp_close(client);
+        defer net::tcp_close(server_conn);
 
         // 1. Client sends request
         let req_data: const u8[:] = "GET /fast-close HTTP/1.1\r\n\r\n";
-        wing::tcp_send(client, req_data);
+        net::tcp_send(client, req_data);
 
         // Client immediately shuts down its writing side (half-close / FIN, Go #18527)
-        let shut_ok = wing::tcp_shutdown(client, wing::SHUT_WR);
+        let shut_ok = net::tcp_shutdown(client, net::SHUT_WR);
         sub.assert_true(shut_ok, "Client tcp_shutdown(SHUT_WR) succeeded");
 
         // 2. Server reads request followed by EOF (peer FIN)
         var srv_req: u8[..1024] = [];
-        let r1 = wing::tcp_recv(server_conn, srv_req, 1024, 2000);
+        let r1 = net::tcp_recv(server_conn, srv_req, 1024, 2000);
         sub.assert_eq(r1, req_data.len as i32, "Server read request");
 
         var eof_probe: u8[..16] = [];
-        let eof = wing::tcp_recv(server_conn, eof_probe, 16, 500);
+        let eof = net::tcp_recv(server_conn, eof_probe, 16, 500);
         sub.assert_eq(eof, 0, "Server detected peer FIN (EOF on read)");
 
         // 3. Server marks peer FIN
-        var server_bp = wing::BackPressure { .. };
-        wing::async_socket_on_peer_fin(server_conn, server_bp);
+        var server_bp = net::BackPressure { .. };
+        net::async_socket_on_peer_fin(server_conn, server_bp);
         sub.assert_true(server_bp.peer_fin_received, "Server registered peer FIN in backpressure state");
 
         // 4. Server can STILL write response back to client (RFC 9293 full-duplex half-close)
         var server_cork = core::new_cork_buffer();
         let resp_data: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHALF_CLOSE_OK";
-        let wr_bytes, _ = wing::async_socket_write(server_conn, server_cork, server_bp, resp_data);
+        let wr_bytes, _ = net::async_socket_write(server_conn, server_cork, server_bp, resp_data);
         sub.assert_gt(wr_bytes, 0, "Server successfully wrote response despite peer half-close");
 
         // Uncork server response
-        wing::async_socket_uncork(server_conn, server_cork, server_bp);
+        net::async_socket_uncork(server_conn, server_cork, server_bp);
 
         // 5. Client can still read the entire server response even after having shut down its write side!
         var cli_resp: u8[..1024] = [];
-        let r2 = wing::tcp_recv(client, cli_resp, 1024, 2000);
+        let r2 = net::tcp_recv(client, cli_resp, 1024, 2000);
         sub.assert_eq(r2, resp_data.len as i32, "Client received full response from half-closed peer");
         sub.assert_eq(cli_resp[..r2], resp_data, "Response matches wire bytes");
     };
@@ -596,36 +596,36 @@ fn test_peer_fin_half_closed_response(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_socket_options_tuning(t: lit::T&) {
     t.run("Case 3: Live OS Socket Options (SO_LINGER, TCP_NODELAY, SO_REUSEADDR)") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
         // 1. TCP_NODELAY toggle
-        let nd_on = wing::tcp_set_nodelay(client, true);
+        let nd_on = net::tcp_set_nodelay(client, true);
         sub.assert_true(nd_on, "tcp_set_nodelay(true) succeeded");
-        let nd_off = wing::tcp_set_nodelay(client, false);
+        let nd_off = net::tcp_set_nodelay(client, false);
         sub.assert_true(nd_off, "tcp_set_nodelay(false) succeeded");
 
         // 2. SO_LINGER tuning (RFC 1122 Section 4.2.2.13)
         // Reset linger: onoff=true, timeout_sec=0 -> RST on close (used in RST abort toxics)
-        let linger_rst = wing::tcp_set_linger(client, true, 0);
+        let linger_rst = net::tcp_set_linger(client, true, 0);
         sub.assert_true(linger_rst, "tcp_set_linger(true, 0) succeeded");
 
         // Graceful linger: onoff=true, timeout_sec=5
-        let linger_graceful = wing::tcp_set_linger(client, true, 5);
+        let linger_graceful = net::tcp_set_linger(client, true, 5);
         sub.assert_true(linger_graceful, "tcp_set_linger(true, 5) succeeded");
 
         // Disable linger: onoff=false
-        let linger_off = wing::tcp_set_linger(client, false, 0);
+        let linger_off = net::tcp_set_linger(client, false, 0);
         sub.assert_true(linger_off, "tcp_set_linger(false, 0) succeeded");
 
         // 3. SO_REUSEADDR tuning
-        let reuse_ok = wing::tcp_set_reuseaddr(listener, true);
+        let reuse_ok = net::tcp_set_reuseaddr(listener, true);
         sub.assert_true(reuse_ok, "tcp_set_reuseaddr(true) succeeded");
     };
 }
@@ -646,24 +646,24 @@ fn test_socket_options_tuning(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_nonblocking_empty_wouldblock(t: lit::T&) {
     t.run("Case 1: Non-blocking Socket Empty Read Returns WouldBlock (-2)") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
-        let nb_ok = wing::tcp_set_nonblocking(client, true);
+        let nb_ok = net::tcp_set_nonblocking(client, true);
         sub.assert_true(nb_ok, "Client set to non-blocking");
 
         var cli_buf: u8[..256] = [];
-        let r1 = wing::tcp_recv_nonblocking(client, cli_buf);
+        let r1 = net::tcp_recv_nonblocking(client, cli_buf);
         sub.assert_eq(r1, -2, "Empty non-blocking read returns -2 (WouldBlock)");
         sub.assert_eq(cli_buf.len, 0, "No bytes buffered on WouldBlock");
     };
@@ -674,34 +674,34 @@ fn test_nonblocking_empty_wouldblock(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_nonblocking_data_exchange(t: lit::T&) {
     t.run("Case 2: Non-blocking Socket Data Reception & Return to WouldBlock") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
-        wing::tcp_set_nonblocking(client, true);
+        net::tcp_set_nonblocking(client, true);
 
         let payload: const u8[:] = "NONBLOCKING_BURST_DATA";
-        let sent = wing::tcp_send(server_conn, payload);
+        let sent = net::tcp_send(server_conn, payload);
         sub.assert_eq(sent, payload.len as i32, "Server sent payload");
 
         core::sleep(core::millis(30));
 
         var cli_buf: u8[..256] = [];
-        let r2 = wing::tcp_recv_nonblocking(client, cli_buf);
+        let r2 = net::tcp_recv_nonblocking(client, cli_buf);
         sub.assert_eq(r2, payload.len as i32, "Client received all bytes non-blocking");
         sub.assert_eq(cli_buf[..], payload, "Received content matches wire bytes");
 
         cli_buf.clear();
-        let r3 = wing::tcp_recv_nonblocking(client, cli_buf);
+        let r3 = net::tcp_recv_nonblocking(client, cli_buf);
         sub.assert_eq(r3, -2, "Subsequent empty non-blocking read returns -2");
     };
 }
@@ -711,14 +711,14 @@ fn test_nonblocking_data_exchange(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_connect_refused_immediate_failure(t: lit::T&) {
     t.run("Case 3: Connection Refusal on Closed Port Returns Immediate Error") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Temporary listener created");
-        let closed_port = wing::tcp_getsockname_port(listener);
+        let closed_port = net::tcp_getsockname_port(listener);
         sub.assert_gt(closed_port, 0, "Got ephemeral port");
-        wing::tcp_close(listener);
+        net::tcp_close(listener);
 
         let t_start = core::monotonic_now();
-        let conn = wing::tcp_connect("127.0.0.1", closed_port, 300);
+        let conn = net::tcp_connect("127.0.0.1", closed_port, 300);
         let t_now = core::monotonic_now();
         let t_elapsed_ms = core::as_millis(core::duration_since(t_now, t_start));
 
@@ -728,20 +728,20 @@ fn test_connect_refused_immediate_failure(t: lit::T&) {
 }
 
 fn execute_single_burst_exchange(listener: i64, port: u16) -> bool {
-    let client = wing::tcp_connect("127.0.0.1", port, 2000);
+    let client = net::tcp_connect("127.0.0.1", port, 2000);
     guard client > 0 else { return false; }
-    defer wing::tcp_close(client);
+    defer net::tcp_close(client);
 
-    let server_conn = wing::tcp_accept(listener, 2000);
+    let server_conn = net::tcp_accept(listener, 2000);
     guard server_conn > 0 else { return false; }
-    defer wing::tcp_close(server_conn);
+    defer net::tcp_close(server_conn);
 
     let msg: const u8[:] = "BURST_PING";
-    let sent = wing::tcp_send(client, msg);
+    let sent = net::tcp_send(client, msg);
     guard sent == msg.len as i32 else { return false; }
 
     var srv_buf: u8[..64] = [];
-    let recvd = wing::tcp_recv(server_conn, srv_buf, 64, 1000);
+    let recvd = net::tcp_recv(server_conn, srv_buf, 64, 1000);
     guard recvd == msg.len as i32 else { return false; }
 
     return true;
@@ -752,11 +752,11 @@ fn execute_single_burst_exchange(listener: i64, port: u16) -> bool {
 // ----------------------------------------------------------------------------
 fn test_rapid_connection_burst(t: lit::T&) {
     t.run("Case 4: Rapid Connection Burst Lifecycle & Zero Descriptor Leaks") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 32);
+        let listener = net::tcp_listen("127.0.0.1", 0, 32);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
         for i in 25 {
             let ok = execute_single_burst_exchange(listener, port);
             sub.assert_true(ok, "Loopback connection exchange completed cleanly");
@@ -769,41 +769,41 @@ fn test_rapid_connection_burst(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_vectored_send2_edge_cases(t: lit::T&) {
     t.run("Case 5: Vectored I/O (tcp_send2) Edge Cases with Empty Slices") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
         let p_only: const u8[:] = "PAYLOAD_ONLY_CONTENT";
-        let sent1 = wing::tcp_send2(client, "", p_only);
+        let sent1 = net::tcp_send2(client, "", p_only);
         sub.assert_eq(sent1, p_only.len as i32, "tcp_send2 sent with empty header");
 
         var buf1: u8[..128] = [];
-        let r1 = wing::tcp_recv(server_conn, buf1, 128, 2000);
+        let r1 = net::tcp_recv(server_conn, buf1, 128, 2000);
         sub.assert_eq(r1, p_only.len as i32, "Server received payload-only bytes");
         sub.assert_eq(buf1[..], p_only, "Payload-only content verified");
 
         let h_only: const u8[:] = "HEADER_ONLY_CONTENT";
-        let sent2 = wing::tcp_send2(client, h_only, "");
+        let sent2 = net::tcp_send2(client, h_only, "");
         sub.assert_eq(sent2, h_only.len as i32, "tcp_send2 sent with empty payload");
 
         var buf2: u8[..128] = [];
-        let r2 = wing::tcp_recv(server_conn, buf2, 128, 2000);
+        let r2 = net::tcp_recv(server_conn, buf2, 128, 2000);
         sub.assert_eq(r2, h_only.len as i32, "Server received header-only bytes");
         sub.assert_eq(buf2[..], h_only, "Header-only content verified");
 
-        let sent0 = wing::tcp_send2(client, "", "");
+        let sent0 = net::tcp_send2(client, "", "");
         sub.assert_eq(sent0, 0, "tcp_send2 with both empty slices returns 0");
 
-        let sent_inv = wing::tcp_send2(-1, "A", "B");
+        let sent_inv = net::tcp_send2(-1, "A", "B");
         sub.assert_eq(sent_inv, 0, "tcp_send2 on invalid FD returns 0");
     };
 }
@@ -813,24 +813,24 @@ fn test_vectored_send2_edge_cases(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_shared_buffer_recv(t: lit::T&) {
     t.run("Case 6: Zero-Copy Shared Buffer Recv (tcp_recv_shared)") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
         let msg1: const u8[:] = "SHARED_BUFFER_TEST_PAYLOAD";
-        wing::tcp_send(client, msg1);
+        net::tcp_send(client, msg1);
 
         var shared_buf: u8[..65536] = [];
-        let recvd1, slice1 = wing::tcp_recv_shared(server_conn, shared_buf, 4096, 2000);
+        let recvd1, slice1 = net::tcp_recv_shared(server_conn, shared_buf, 4096, 2000);
         sub.assert_eq(recvd1, msg1.len as i32, "tcp_recv_shared returned byte count");
         sub.assert_eq(slice1, msg1, "tcp_recv_shared slice matches message");
     };
@@ -841,24 +841,24 @@ fn test_shared_buffer_recv(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_direct_slice_recv(t: lit::T&) {
     t.run("Case 7: Direct Destination Slice Recv (tcp_recv_slice)") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
         let msg2: const u8[:] = "DIRECT_SLICE_TEST_PAYLOAD";
-        wing::tcp_send(client, msg2);
+        net::tcp_send(client, msg2);
 
         var slice_buf: u8[64] = [0; 64];
-        let recvd2 = wing::tcp_recv_slice(server_conn, slice_buf[..msg2.len], 2000);
+        let recvd2 = net::tcp_recv_slice(server_conn, slice_buf[..msg2.len], 2000);
         sub.assert_eq(recvd2, msg2.len as i32, "tcp_recv_slice returned byte count");
         sub.assert_eq(slice_buf[..recvd2], msg2, "tcp_recv_slice buffer matches message");
     };
@@ -869,25 +869,25 @@ fn test_direct_slice_recv(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_peer_abort_propagation(t: lit::T&) {
     t.run("Case 8: Peer tcp_abort Discard & Immediate Reset Propagation") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
 
-        let abort_ok = wing::tcp_abort(server_conn);
+        let abort_ok = net::tcp_abort(server_conn);
         sub.assert_true(abort_ok, "tcp_abort returned true");
 
         core::sleep(core::millis(40));
 
         var probe: u8[..32] = [];
-        let r = wing::tcp_recv(client, probe, 32, 1000);
+        let r = net::tcp_recv(client, probe, 32, 1000);
         sub.assert_eq(r, -1, "Client received -1 error on socket reset by peer RST");
     };
 }
@@ -984,55 +984,55 @@ fn test_socket_invariant_validation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_live_socket_options(t: lit::T&) {
     t.run("OS Socket Option Tuning & Telemetry") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener socket created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
         sub.assert_gt(port as i64, 0, "Bound to valid ephemeral port");
 
         // TCP_DEFER_ACCEPT (Linux / FreeBSD)
-        let ok_defer = wing::tcp_set_defer_accept(listener, 1);
+        let ok_defer = net::tcp_set_defer_accept(listener, 1);
         sub.assert_true(ok_defer, "tcp_set_defer_accept returns success");
 
         // TCP_USER_TIMEOUT
-        let ok_ut = wing::tcp_set_user_timeout(listener, 5000);
+        let ok_ut = net::tcp_set_user_timeout(listener, 5000);
         sub.assert_true(ok_ut, "tcp_set_user_timeout returns success");
 
         // Aggressive SO_KEEPALIVE
-        let ok_keep = wing::tcp_set_keepalive(listener, 1, 11, 3);
+        let ok_keep = net::tcp_set_keepalive(listener, 1, 11, 3);
         sub.assert_true(ok_keep, "tcp_set_keepalive returns success");
 
         // TCP_SYNCNT
-        let ok_syn = wing::tcp_set_syn_retries(listener, 3);
+        let ok_syn = net::tcp_set_syn_retries(listener, 3);
         sub.assert_true(ok_syn, "tcp_set_syn_retries returns success");
 
         // Queue telemetry
-        let notsent = wing::tcp_get_notsent_bytes(listener);
+        let notsent = net::tcp_get_notsent_bytes(listener);
         sub.assert_ge(notsent, 0, "notsent_bytes >= 0");
 
-        let readable = wing::tcp_get_readable_bytes(listener);
+        let readable = net::tcp_get_readable_bytes(listener);
         sub.assert_ge(readable, 0, "readable_bytes >= 0");
 
         // End-to-end CorkBuffer -> tcp_flush_cork -> tcp_recv_pipe into PipeBuffer
-        let client_sock = wing::tcp_connect("127.0.0.1", port, 2000);
+        let client_sock = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client_sock, 0, "Client connected to listener");
-        defer wing::tcp_close(client_sock);
+        defer net::tcp_close(client_sock);
 
-        let accepted_sock = wing::tcp_accept(listener, 2000);
+        let accepted_sock = net::tcp_accept(listener, 2000);
         sub.assert_gt(accepted_sock, 0, "Accepted incoming connection");
-        defer wing::tcp_close(accepted_sock);
+        defer net::tcp_close(accepted_sock);
 
         var cork = core::new_cork_buffer();
         cork.cork_write("WING_PIPE_STREAM_PAYLOAD");
         sub.assert_eq(cork.cork_pending(), 24, "Cork has 24 bytes pending");
 
-        let flushed = wing::tcp_flush_cork(client_sock, cork);
+        let flushed = net::tcp_flush_cork(client_sock, cork);
         sub.assert_eq(flushed, 24, "Flushed all 24 bytes via tcp_flush_cork");
         sub.assert_eq(cork.cork_pending(), 0, "Cork drained to 0");
 
         var pipe = core::new_pipe_buffer();
-        let recvd = wing::tcp_recv_pipe(accepted_sock, pipe, 1024, 2000);
+        let recvd = net::tcp_recv_pipe(accepted_sock, pipe, 1024, 2000);
         sub.assert_eq(recvd, 24, "tcp_recv_pipe read directly into pipe storage");
         sub.assert_eq(pipe.readable_len(), 24, "PipeBuffer has 24 readable bytes");
         sub.assert_eq(pipe.readable_slice(), "WING_PIPE_STREAM_PAYLOAD", "Direct pipe slice matches wire payload");
@@ -1158,18 +1158,18 @@ fn test_iovec_consumption_and_compact(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_tcp_sendv_socket(t: lit::T&) {
     t.run("Kernel TCP Transmission via tcp_sendv") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener bound");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_fd = wing::tcp_accept(listener);
+        let server_fd = net::tcp_accept(listener);
         sub.assert_gt(server_fd, 0, "Server accepted client");
-        defer wing::tcp_close(server_fd);
+        defer net::tcp_close(server_fd);
 
         // Prepare 3 scatter/gather chunks
         var arr = core::new_iovec_array();
@@ -1178,13 +1178,13 @@ fn test_tcp_sendv_socket(t: lit::T&) {
         core::iovec_push(arr, "LLO");
 
         let total_to_send = core::iovec_total_bytes(arr) as i32;
-        let sent = wing::tcp_sendv(client, arr);
+        let sent = net::tcp_sendv(client, arr);
         sub.assert_eq(sent, total_to_send, "All vectorized bytes sent");
         sub.assert_true(core::iovec_is_empty(arr), "IoVecArray fully consumed by sendv");
 
         // Read back on server socket
         var recv_buf: u8[128] = [0; 128];
-        let n_recv = wing::tcp_recv_slice(server_fd, recv_buf[..], 2000);
+        let n_recv = net::tcp_recv_slice(server_fd, recv_buf[..], 2000);
         sub.assert_eq(n_recv, total_to_send, "Server received exact total bytes");
         sub.assert_eq(recv_buf[..n_recv as i64], "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHELLO", "Wire payload reconstructed cleanly");
     };
@@ -1197,12 +1197,12 @@ fn test_tcp_sendv_socket(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_tcp_fastopen_and_ecn(t: lit::T&) {
     t.run("TCP-01: TCP Fast Open constants and option flags") { sub =>
-        sub.assert_eq(wing::TCP_FASTOPEN_DEFAULT_QLEN, 512, "default TFO queue length is 512");
-        sub.assert_eq(wing::MSG_FASTOPEN, 0x20000000, "MSG_FASTOPEN flag is 0x20000000");
+        sub.assert_eq(net::TCP_FASTOPEN_DEFAULT_QLEN, 512, "default TFO queue length is 512");
+        sub.assert_eq(net::MSG_FASTOPEN, 0x20000000, "MSG_FASTOPEN flag is 0x20000000");
 
         // Invalid fd (-1) must fail safely
-        sub.assert_false(wing::tcp_set_fastopen(-1), "set_fastopen on -1 returns false");
-        sub.assert_eq(wing::tcp_send_fastopen(-1, "test"), 0, "send_fastopen on -1 returns 0");
+        sub.assert_false(net::tcp_set_fastopen(-1), "set_fastopen on -1 returns false");
+        sub.assert_eq(net::tcp_send_fastopen(-1, "test"), 0, "send_fastopen on -1 returns 0");
     };
 
     t.run("TCP-02: ECN codepoint decoding and classification (RFC 3168)") { sub =>
@@ -1212,30 +1212,30 @@ fn test_tcp_fastopen_and_ecn(t: lit::T&) {
         sub.assert_eq(rfc::ECN_CE, 0x03 as u8, "rfc::ECN_CE is 3");
 
         // Pure ECN bytes
-        sub.assert_eq(wing::ecn_from_tos(0x00 as u8), rfc::ECN_NOT_ECT, "tos 0 is NOT_ECT");
-        sub.assert_eq(wing::ecn_from_tos(0x01 as u8), rfc::ECN_ECT_1, "tos 1 is ECT_1");
-        sub.assert_eq(wing::ecn_from_tos(0x02 as u8), rfc::ECN_ECT_0, "tos 2 is ECT_0");
-        sub.assert_eq(wing::ecn_from_tos(0x03 as u8), rfc::ECN_CE, "tos 3 is CE");
+        sub.assert_eq(net::ecn_from_tos(0x00 as u8), rfc::ECN_NOT_ECT, "tos 0 is NOT_ECT");
+        sub.assert_eq(net::ecn_from_tos(0x01 as u8), rfc::ECN_ECT_1, "tos 1 is ECT_1");
+        sub.assert_eq(net::ecn_from_tos(0x02 as u8), rfc::ECN_ECT_0, "tos 2 is ECT_0");
+        sub.assert_eq(net::ecn_from_tos(0x03 as u8), rfc::ECN_CE, "tos 3 is CE");
 
         // TOS with DSCP bits (e.g. DSCP CS5 = 0x28, shifted = 0xA0)
         let dscp_base: u8 = 0xA0;
-        sub.assert_eq(wing::ecn_from_tos(dscp_base | rfc::ECN_ECT_0), rfc::ECN_ECT_0, "masked ECT_0 with DSCP");
-        sub.assert_eq(wing::ecn_from_tos(dscp_base | rfc::ECN_CE), rfc::ECN_CE, "masked CE with DSCP");
+        sub.assert_eq(net::ecn_from_tos(dscp_base | rfc::ECN_ECT_0), rfc::ECN_ECT_0, "masked ECT_0 with DSCP");
+        sub.assert_eq(net::ecn_from_tos(dscp_base | rfc::ECN_CE), rfc::ECN_CE, "masked CE with DSCP");
 
         // ECN capabilities
-        sub.assert_false(wing::ecn_is_capable(rfc::ECN_NOT_ECT), "NOT_ECT is not capable");
-        sub.assert_true(wing::ecn_is_capable(rfc::ECN_ECT_0), "ECT_0 is capable");
-        sub.assert_true(wing::ecn_is_capable(rfc::ECN_ECT_1), "ECT_1 is capable");
-        sub.assert_false(wing::ecn_is_capable(rfc::ECN_CE), "CE is not capable alone");
+        sub.assert_false(net::ecn_is_capable(rfc::ECN_NOT_ECT), "NOT_ECT is not capable");
+        sub.assert_true(net::ecn_is_capable(rfc::ECN_ECT_0), "ECT_0 is capable");
+        sub.assert_true(net::ecn_is_capable(rfc::ECN_ECT_1), "ECT_1 is capable");
+        sub.assert_false(net::ecn_is_capable(rfc::ECN_CE), "CE is not capable alone");
 
         // Congestion experienced
-        sub.assert_true(wing::ecn_is_congestion_experienced(rfc::ECN_CE), "CE flagged");
-        sub.assert_false(wing::ecn_is_congestion_experienced(rfc::ECN_ECT_0), "ECT_0 not CE");
+        sub.assert_true(net::ecn_is_congestion_experienced(rfc::ECN_CE), "CE flagged");
+        sub.assert_false(net::ecn_is_congestion_experienced(rfc::ECN_ECT_0), "ECT_0 not CE");
 
         // Invalid fd (-1) safe handling
-        sub.assert_false(wing::tcp_set_tos(-1, 0x02 as u8), "set_tos on -1 returns false");
-        sub.assert_false(wing::tcp_set_ecn(-1, rfc::ECN_ECT_0), "set_ecn on -1 returns false");
-        sub.assert_false(wing::tcp_set_ipv6_tclass(-1, 0x02 as u8), "set_ipv6_tclass on -1 returns false");
+        sub.assert_false(net::tcp_set_tos(-1, 0x02 as u8), "set_tos on -1 returns false");
+        sub.assert_false(net::tcp_set_ecn(-1, rfc::ECN_ECT_0), "set_ecn on -1 returns false");
+        sub.assert_false(net::tcp_set_ipv6_tclass(-1, 0x02 as u8), "set_ipv6_tclass on -1 returns false");
     };
 }
 

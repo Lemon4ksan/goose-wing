@@ -3,7 +3,7 @@
 
 // Server request execution pipeline with Tier 2 L7 stage bricks, UFCS-replaceable subsystems,
 // rate limiting, CORS/CSRF evaluation, routing, JWT/cookie auth, route caching, and pooling.
-namespace wing;
+namespace server;
 
 import std;
 import core from "..";
@@ -25,8 +25,10 @@ import security.crypto_jar;
 import security.csrf;
 import security.rate_limiter;
 import wire.pipeline;
-
-// ---- 1. Pipeline Configuration, Outcomes & Stage Context --------------------
+import .pipeline_internal;
+import .h1_codec;
+import .h1_codec_internal;
+import .router_internal;
 
 struct ServerCompressAndEtagMemo {
     etag_src:         u8[..512]  = [],
@@ -48,7 +50,7 @@ struct ServerPipelineConfig {
     route_cache:             HttpRouteCache                    = HttpRouteCache { .. },
     jwks:                    auth::Jwks                        = auth::Jwks { .. },
     jwt_options:             auth::JwtValidationOptions        = auth::JwtValidationOptions { .. },
-    security_txt:            SecurityTxt                       = SecurityTxt { .. },
+    security_txt:            http::SecurityTxt                 = http::SecurityTxt { .. },
     dpop_replay_cache:       auth::DPoPReplayCache             = auth::DPoPReplayCache { .. },
     dpop_public_key:         u8[..64]                          = [],
     sig_key_id:              u8[..64]                          = [],
@@ -118,7 +120,7 @@ fn new_server_pipeline_config(target_host: const u8[:], quota: security::GcraQuo
 }
 
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig {
-    return new_server_pipeline_config(target_host, security::new_gcra_quota(1000, secs(1), 100));
+    return new_server_pipeline_config(target_host, security::new_gcra_quota(1000, wing::secs(1), 100));
 }
 
 // Configures or updates a parameter-slot GCRA rate limiter (slot 0..3) in `cfg.tier_limiters`.
@@ -177,7 +179,7 @@ fn route_param(
         return "", false;
     }
     let idx = ctx.ext_slot_idx;
-    return param_by_name(cfg.ext_pool.slots[idx].params, name, cfg.ext_pool.slots[idx].canon_url[..]);
+    return http::param_by_name(cfg.ext_pool.slots[idx].params, name, cfg.ext_pool.slots[idx].canon_url[..]);
 }
 
 // Extracts a route path parameter by name, returning `default_val` if absent.
@@ -221,8 +223,11 @@ fn session_data(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) ->
 
 // Programmable user stage slot identifiers (slots 16..19 in `WirePipeline.custom_bindings`).
 const STAGE_ID_USER_0: u8 = 16;
+
 const STAGE_ID_USER_1: u8 = 17;
+
 const STAGE_ID_USER_2: u8 = 18;
+
 const STAGE_ID_USER_3: u8 = 19;
 
 // Default zero-cost no-op custom slot hook implementation for `wire::NoOpStage`.
@@ -231,9 +236,9 @@ inline fn on_server_custom_slot(
     _slot_id:    u8,
     _param_slot: u8,
     _cfg:        ServerPipelineConfig&,
-    _req:        const Request&,
+    _req:        const http::Request&,
     _sctx:       ServerStageCtx&,
-    _res:        Response&,
+    _res:        http::Response&,
 ) -> wire::StageVerdict {
     return wire::StageVerdict.Continue;
 }
@@ -244,9 +249,9 @@ inline fn on_server_custom_slot<First, Next>(
     slot_id:    u8,
     param_slot: u8,
     cfg:        ServerPipelineConfig&,
-    req:        const Request&,
+    req:        const http::Request&,
     sctx:       ServerStageCtx&,
-    res:        Response&,
+    res:        http::Response&,
 ) -> wire::StageVerdict {
     var p = wire::begin_pipeline();
     if p.step(chain.first.on_server_custom_slot(slot_id, param_slot, cfg, req, sctx, res)) {
@@ -261,9 +266,9 @@ inline fn on_server_custom_slot<Stage>(
     _slot_id:    i64,
     _param_slot: u8,
     _cfg:        ServerPipelineConfig&,
-    _req:        const Request&,
+    _req:        const http::Request&,
     _sctx:       ServerStageCtx&,
-    _res:        Response&,
+    _res:        http::Response&,
 ) -> wire::StageVerdict {
     return wire::StageVerdict.Continue;
 }
@@ -273,9 +278,9 @@ inline fn on_server_stage(
     _stage: wire::NoOpStage&,
     _phase: wire::ServerHookPhase,
     _cfg:   ServerPipelineConfig&,
-    _req:   const Request&,
+    _req:   const http::Request&,
     _ctx:   ServerStageCtx&,
-    _res:   Response&,
+    _res:   http::Response&,
 ) -> wire::StageVerdict {
     return wire::StageVerdict.Continue;
 }
@@ -286,9 +291,9 @@ inline fn on_server_stage<First, Next>(
     chain: wire::StageChain<First, Next>&,
     phase: wire::ServerHookPhase,
     cfg:   ServerPipelineConfig&,
-    req:   const Request&,
+    req:   const http::Request&,
     ctx:   ServerStageCtx&,
-    res:   Response&,
+    res:   http::Response&,
 ) -> wire::StageVerdict {
     var p = wire::begin_pipeline();
     if p.step(chain.first.on_server_stage(phase, cfg, req, ctx, res)) {
@@ -307,20 +312,20 @@ inline fn on_server_stage<Inner>(
     guard_stage: ProblemErrorGuardStage<Inner>&,
     phase:       wire::ServerHookPhase,
     cfg:         ServerPipelineConfig&,
-    req:         const Request&,
+    req:         const http::Request&,
     ctx:         ServerStageCtx&,
-    res:         Response&,
+    res:         http::Response&,
 ) -> wire::StageVerdict {
     let v = guard_stage.inner.on_server_stage(phase, cfg, req, ctx, res);
     match v {
         ShortCircuit sc => {
             if sc.status_code >= 400 && res.body.len == 0 {
-                respond_problem(res, sc.status_code as i32, "Request Rejected");
+                http::respond_problem(res, sc.status_code as i32, "Request Rejected");
             }
         },
         _ => {
             if phase == wire::ServerHookPhase.OnError && res.status_code >= 400 && res.body.len == 0 {
-                respond_problem(res, res.status_code, "Request Rejected");
+                http::respond_problem(res, res.status_code, "Request Rejected");
             }
         },
     };
@@ -329,140 +334,19 @@ inline fn on_server_stage<Inner>(
 
 // Validates Expect header compliance per RFC 9110 Section 10.1.1.
 // Returns true if valid or absent; false if unsupported expectation requested.
-fn validate_pipeline_expect_header(req: const Request&) -> bool {
-    if req.presence_mask != 0 && (req.presence_mask & HDR_PRESENCE_EXPECT) == 0 {
+fn validate_pipeline_expect_header(req: const http::Request&) -> bool {
+    if req.presence_mask != 0 && (req.presence_mask & http::HDR_PRESENCE_EXPECT) == 0 {
         return true;
     }
     for &e in req.headers.entries {
-        if entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_EXPECT) {
-            let exp_val = entry_value(req.headers, e);
+        if http::entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_EXPECT) {
+            let exp_val = http::entry_value(req.headers, e);
             if !exp_val.eq_ascii_fold(rfc::EXPECT_100_CONTINUE) {
                 return false;
             }
         }
     }
     return true;
-}
-
-// ---- 2. RFC 7239 Forwarded & Client IP Resolution Helpers -------------------
-
-inline fn is_valid_forwarded_quoted_body(inner: const u8[:]) -> bool {
-    var rem = inner;
-    while rem.len > 0 {
-        let b = rem[0];
-        if b == '\\' {
-            guard rem.len >= 2 else { return false; }
-            let esc = rem[1];
-            guard esc == ' ' || esc == '\t' || (esc >= 0x21 && esc != 0x7F) else { return false; }
-            rem = rem[2..];
-            continue;
-        }
-        guard b != '"' && (b == ' ' || b == '\t' || (b >= 0x21 && b != 0x7F)) else { return false; }
-        rem = rem[1..];
-    }
-    return true;
-}
-
-inline fn is_valid_forwarded_port(port_str: const u8[:]) -> bool {
-    guard port_str.len > 0 else { return false; }
-    if port_str[0] == '_' {
-        guard port_str.len >= 2 else { return false; }
-        for b in port_str[1..] {
-            let ok = core::is_ascii_alphanumeric(b) || b == '.' || b == '_' || b == '-';
-            guard ok else { return false; }
-        }
-        return true;
-    }
-    let port_num, ok_port = core::parse_port_number(port_str);
-    return ok_port && port_num > 0;
-}
-
-inline fn is_valid_ipv4_address_slice(ip: const u8[:]) -> bool {
-    var rest = ip;
-    for _ in 3 {
-        let head, tail, ok_dot = rest.split_once_byte('.');
-        guard ok_dot && head.len > 0 else { return false; }
-        let _, ok_oct = core::parse_ipv4_decimal_octet(head);
-        guard ok_oct else { return false; }
-        rest = tail;
-    }
-    let _, ok_last = core::parse_ipv4_decimal_octet(rest);
-    return ok_last;
-}
-
-inline fn normalize_forwarded_bracket_ipv6(val: const u8[:]) -> const u8[:] {
-    let after_open = val[1..];
-    let v6_body, after_close, has_close = after_open.split_once_byte(']');
-    var ipv6_buf: u8[..64] = [];
-    guard has_close && v6_body.len > 0 && core::parse_and_compress_ipv6(v6_body, ipv6_buf) else {
-        return "";
-    }
-    if after_close.len > 0 {
-        guard after_close[0] == ':' && is_valid_forwarded_port(after_close[1..]) else {
-            return "";
-        }
-    }
-    return v6_body;
-}
-
-// RFC 7239 Section 6: Node Identifiers - normalizes a forwarded IP value, rejecting `unknown` and `_obfnode`.
-//
-// Example:
-//   raw_val = "\"[2001:db8:cafe::17]:4711\""
-//   returns: "2001:db8:cafe::17"
-fn normalize_forwarded_ip(raw_val: const u8[:]) -> const u8[:] {
-    guard raw_val.len > 0 else { return ""; }
-    var val = raw_val;
-    if val[0] == '"' {
-        let after_q, ok_l = val.strip_prefix("\"");
-        let inner_q, ok_r = after_q.strip_suffix("\"");
-        guard ok_l && ok_r && is_valid_forwarded_quoted_body(inner_q) else { return ""; }
-        val = inner_q;
-    } else if val.contains_byte('"') {
-        return "";
-    }
-    guard val.len > 0 && !val.eq_ascii_fold("unknown") && val[0] != '_' else { return ""; }
-    if val[0] == '[' {
-        return normalize_forwarded_bracket_ipv6(val);
-    }
-
-    let host_part, after_col1, has_col1 = val.split_once_byte(':');
-    if !has_col1 {
-        return if is_valid_ipv4_address_slice(val) { val } else { "" };
-    }
-    if after_col1.contains_byte(':') {
-        var ipv6_buf: u8[..64] = [];
-        return if core::parse_and_compress_ipv6(val, ipv6_buf) { val } else { "" };
-    }
-    guard host_part.len > 0 && is_valid_forwarded_port(after_col1) && is_valid_ipv4_address_slice(host_part) else {
-        return "";
-    }
-    return host_part;
-}
-
-// RFC 7239 Section 4: Forwarded HTTP Header Field - parses a `for=` parameter pair without BWS around `=`.
-//
-// Example:
-//   pair = "for=\"192.0.2.60:4711\""
-//   returns: "192.0.2.60"
-fn parse_forwarded_pair(pair: const u8[:]) -> const u8[:] {
-    let trimmed = pair.trim_lws();
-    let key, raw_val, has_eq = trimmed.split_once_byte('=');
-    guard has_eq && key.eq_ascii_fold("for") && raw_val.len > 0 else { return ""; }
-    if raw_val[0] == '"' {
-        let after_q, ok_l = raw_val.strip_prefix("\"");
-        let inner, ok_r = after_q.strip_suffix("\"");
-        guard ok_l && ok_r && inner.len > 0 && is_valid_forwarded_quoted_body(inner) else { return ""; }
-        let _, after_c1, has_c1 = inner.split_once_byte(':');
-        if inner[0] != '[' && has_c1 && after_c1.contains_byte(':') {
-            return "";
-        }
-        return normalize_forwarded_ip(inner);
-    }
-    for b in raw_val {
-        guard core::is_tchar(b) else { return ""; }
-    }
-    return normalize_forwarded_ip(raw_val);
 }
 
 // Extracts the client IP from the first element of an RFC 7239 Forwarded header.
@@ -483,26 +367,13 @@ fn extract_rfc7239_forwarded_for(fwd: const u8[:]) -> const u8[:] {
             let pair = elem_rem[..sc];
             elem_rem = if sc < elem_rem.len { elem_rem[core::add_sat_i64(sc, 1)..] } else { "" };
 
-            let ip = parse_forwarded_pair(pair);
+            let ip = server_internal::parse_forwarded_pair(pair);
             if ip.len > 0 {
                 return ip;
             }
         }
     }
     return "";
-}
-
-inline fn is_trusted_proxy_peer(trust_proxy_headers: bool, client_ip: const u8[:]) -> bool {
-    return trust_proxy_headers || client_ip == "127.0.0.1" || client_ip == "::1";
-}
-
-fn has_custom_forwarding_header(map: const HeaderMap&) -> bool {
-    for &e in map.entries {
-        if e.well_known_id == 0xFF {
-            return true;
-        }
-    }
-    return false;
 }
 
 // Extracts the effective client IP, checking proxy forwarding headers if trusted or local.
@@ -514,24 +385,24 @@ fn has_custom_forwarding_header(map: const HeaderMap&) -> bool {
 fn extract_effective_client_ip(
     trust_proxy_headers: bool,
     client_ip:           const u8[:],
-    req:                 const Request&,
+    req:                 const http::Request&,
 ) -> const u8[:] {
-    guard is_trusted_proxy_peer(trust_proxy_headers, client_ip) &&
-        has_custom_forwarding_header(req.headers) else {
+    guard server_internal::is_trusted_proxy_peer(trust_proxy_headers, client_ip) &&
+        server_internal::has_custom_forwarding_header(req.headers) else {
         return client_ip;
     }
-    let fwd = header(req, rfc::HEADER_FORWARDED);
+    let fwd = http::header(req, rfc::HEADER_FORWARDED);
     if fwd.len > 0 {
         let fwd_ip = extract_rfc7239_forwarded_for(fwd);
         if fwd_ip.len > 0 && fwd_ip.len <= 48 {
             return fwd_ip;
         }
     }
-    let real_ip = normalize_forwarded_ip(header(req, rfc::HEADER_X_REAL_IP).trim_lws());
+    let real_ip = server_internal::normalize_forwarded_ip(http::header(req, rfc::HEADER_X_REAL_IP).trim_lws());
     if real_ip.len > 0 && real_ip.len <= 48 {
         return real_ip;
     }
-    let xff = header(req, rfc::HEADER_X_FORWARDED_FOR);
+    let xff = http::header(req, rfc::HEADER_X_FORWARDED_FOR);
     if xff.len > 0 {
         let comma_idx = xff.index_of_byte(',');
         let raw_first = if comma_idx >= 0 {
@@ -539,7 +410,7 @@ fn extract_effective_client_ip(
         } else {
             xff.trim_lws()
         };
-        let first_ip = normalize_forwarded_ip(raw_first);
+        let first_ip = server_internal::normalize_forwarded_ip(raw_first);
         if first_ip.len > 0 && first_ip.len <= 48 {
             return first_ip;
         }
@@ -547,14 +418,12 @@ fn extract_effective_client_ip(
     return client_ip;
 }
 
-// ---- 3. Narrow-Input Autonomous Server Stage Bricks -------------------------
-
 // Stage 0 (Server Ingress): Connection liveliness / Slowloris defense.
 fn stage_server_slowloris(
     timer:   server_internal::ConnectionTimer&,
     enabled: bool,
     now_ns:  u64,
-    res:     Response&,
+    res:     http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.slowloris");
@@ -568,7 +437,7 @@ fn stage_server_slowloris(
 }
 
 // Stage 1 (Server Ingress): RFC 9110 §10.1.1 `Expect: 100-continue` validation.
-fn stage_server_expect_100(req: const Request&, res: Response&) -> wire::StageVerdict {
+fn stage_server_expect_100(req: const http::Request&, res: http::Response&) -> wire::StageVerdict {
     let _prof = prof_enter("stage.expect_100");
     defer prof_leave(_prof);
     guard validate_pipeline_expect_header(req) else {
@@ -581,8 +450,8 @@ fn stage_server_expect_100(req: const Request&, res: Response&) -> wire::StageVe
 // Stage 2 (Server Ingress): Zero-allocation L7 `EdgeFilter` rule inspection.
 fn stage_server_edge_filter(
     filter: EdgeFilter&,
-    req:    const Request&,
-    res:    Response&,
+    req:    const http::Request&,
+    res:    http::Response&,
 ) -> wire::StageVerdict {
     guard filter.enabled && filter.rules.len > 0 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.edge_filter");
@@ -611,7 +480,7 @@ fn stage_server_ratelimit_ip<Limiter>(
     enabled: bool,
     peer_ip: const u8[:],
     now_ns:  u64,
-    res:     Response&,
+    res:     http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.ratelimit_ip");
@@ -627,10 +496,10 @@ fn stage_server_ratelimit_ip<Limiter>(
 // Stage 4 (Server Ingress): L0 SIMD / Radix trie route matching via UFCS `router.match_route(...)`.
 fn stage_server_route_match<Router>(
     router:    const Router&,
-    req:       const Request&,
+    req:       const http::Request&,
     ext:       server_internal::RequestExtensions&,
     out_match: RouteMatchResult&,
-    res:       Response&,
+    res:       http::Response&,
 ) -> wire::StageVerdict {
     let _prof = prof_enter("stage.route_match");
     defer prof_leave(_prof);
@@ -642,7 +511,7 @@ fn stage_server_route_match<Router>(
         },
         MethodNotAllowed mna => {
             res.status_code = 405;
-            set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
+            http::set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
             wire::StageVerdict.ShortCircuit { status_code: 405 }
         },
         Found _ => {
@@ -659,7 +528,7 @@ fn stage_server_ratelimit_route<Limiter>(
     peer_ip:    const u8[:],
     route_path: const u8[:],
     now_ns:     u64,
-    res:        Response&,
+    res:        http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.ratelimit_route");
@@ -676,34 +545,12 @@ fn stage_server_ratelimit_route<Limiter>(
     return wire::StageVerdict.Continue;
 }
 
-// Stage 13 (Server Ingress): Post-auth GCRA rate limiting keyed on verified JWT `sub:<subject>`.
-fn stage_server_ratelimit_subject<Limiter>(
-    limiter: Limiter&,
-    enabled: bool,
-    subject: const u8[:],
-    now_ns:  u64,
-    res:     Response&,
-) -> wire::StageVerdict {
-    guard enabled && subject.len > 0 else { return wire::StageVerdict.Continue; }
-    let _prof = prof_enter("stage.ratelimit_subject");
-    defer prof_leave(_prof);
-    var composite_key: u8[..128] = [];
-    composite_key.append("sub:");
-    composite_key.append(subject[..min(subject.len, 96)]);
-    let rl_decision = limiter.check_rate_limit(composite_key[..], 1, now_ns);
-    security::apply_rate_limit_headers(res, limiter.quota, rl_decision);
-    guard rl_decision.is_allowed() else {
-        return wire::StageVerdict.ShortCircuit { status_code: 429 };
-    }
-    return wire::StageVerdict.Continue;
-}
-
 // Stage 6 (Server Ingress): W3C CORS preflight and origin validation.
 fn stage_server_cors(
     cors_policy: const security::CorsPolicy&,
     enabled:     bool,
-    req:         const Request&,
-    res:         Response&,
+    req:         const http::Request&,
+    res:         http::Response&,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.cors");
@@ -713,7 +560,7 @@ fn stage_server_cors(
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
     }
     if cors_res == security::CorsResult.RejectedOrigin || cors_res == security::CorsResult.InvalidConfig {
-        let has_acrm = header(req, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).len > 0;
+        let has_acrm = http::header(req, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).len > 0;
         let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && has_acrm;
         if is_preflight || cors_policy.reject_non_matching_origin {
             res.status_code = 403;
@@ -728,8 +575,8 @@ fn stage_server_csrf(
     csrf_guard:    const security::CrossOriginGuard&,
     enabled:       bool,
     target_host:   const u8[:],
-    req:           const Request&,
-    res:           Response&,
+    req:           const http::Request&,
+    res:           http::Response&,
     target_scheme: security::CsrfTargetScheme = security::CsrfTargetScheme.Https,
 ) -> wire::StageVerdict {
     guard enabled else { return wire::StageVerdict.Continue; }
@@ -746,51 +593,24 @@ fn stage_server_csrf(
     };
 }
 
-// RFC 6265 Section 4.2.1: Syntax - Extracts value of session cookie parameter.
-//
-// Example:
-//   cookie_hdr = "id=123; session=abc456; theme=dark"
-//   returns: "abc456"
-fn extract_session_cookie_value(cookie_hdr: const u8[:]) -> const u8[:] {
-    var pos = 0;
-    while pos < cookie_hdr.len {
-        while pos < cookie_hdr.len && (cookie_hdr[pos] == ' ' || cookie_hdr[pos] == '\t') {
-            pos++;
-        }
-        let pair_start = pos;
-        while pos < cookie_hdr.len && cookie_hdr[pos] != ';' {
-            pos++;
-        }
-        let pair = cookie_hdr[pair_start..pos];
-        if pos < cookie_hdr.len && cookie_hdr[pos] == ';' {
-            pos++;
-        }
-        let eq_idx = pair.index_of_byte('=');
-        if eq_idx > 0 && pair[..eq_idx].trim_lws() == "session" {
-            return pair[(eq_idx + 1)..].trim_lws();
-        }
-    }
-    return "";
-}
-
 // Stage 8 (Server Ingress): Authenticated session cookie decryption via UFCS `jar.open(...)`.
 fn stage_server_auth_cookie<Jar>(
     jar:    const Jar&,
-    req:    const Request&,
+    req:    const http::Request&,
     ext:    server_internal::RequestExtensions&,
     now_ns: u64,
 ) -> wire::StageVerdict {
-    if req.presence_mask != 0 && (req.presence_mask & HDR_PRESENCE_COOKIE) == 0 {
+    if req.presence_mask != 0 && (req.presence_mask & http::HDR_PRESENCE_COOKIE) == 0 {
         return wire::StageVerdict.Continue;
     }
     let _prof = prof_enter("stage.auth_cookie");
     defer prof_leave(_prof);
     let now_sec = (now_ns / 1000000000) as i64;
     for &e in req.headers.entries {
-        guard entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_COOKIE) else { continue; }
-        var rem = entry_value(req.headers, e);
+        guard http::entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_COOKIE) else { continue; }
+        var rem = http::entry_value(req.headers, e);
         while rem.len > 0 {
-            let session_val = extract_session_cookie_value(rem);
+            let session_val = server_internal::extract_session_cookie_value(rem);
             guard session_val.len > 0 else { break; }
             ext.session_data.clear();
             if jar.open("session", session_val, now_sec, ext.session_data) {
@@ -805,53 +625,23 @@ fn stage_server_auth_cookie<Jar>(
     return wire::StageVerdict.Continue;
 }
 
-// RFC 6750 Section 2.1: Authorization Request Header Field - "Bearer" 1*SP b64token
-fn is_b64token_slice(tok: const u8[:]) -> bool {
-    guard tok.len > 0 && tok[0] != '=' else { return false; }
-    var seen_pad = false;
-    for b in tok {
-        if b == '=' {
-            seen_pad = true;
-        } else {
-            let ok_ch = core::is_ascii_alphanumeric(b)
-                || b == '-' || b == '.' || b == '_' || b == '~' || b == '+' || b == '/';
-            guard !seen_pad && ok_ch else { return false; }
-        }
-    }
-    return true;
-}
-
-// Extracts Bearer token from an Authorization header value (RFC 6750 §2.1).
-//
-// Example:
-//   auth_hdr = "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig"
-//   returns: "eyJhbGciOiJIUzI1NiJ9.e30.sig"
-fn extract_bearer_token(auth_hdr: const u8[:]) -> const u8[:] {
-    let trimmed = auth_hdr.trim_lws();
-    let rest, ok_pfx = trimmed.strip_prefix_fold("Bearer ");
-    guard ok_pfx else { return ""; }
-    let tok = rest.trim_start_byte(' ');
-    guard is_b64token_slice(tok) else { return ""; }
-    return tok;
-}
-
 // Stage 9 (Server Ingress): RFC 7519 / RFC 8725 JWT Bearer token verification against `Jwks`.
 fn stage_server_auth_jwt(
     jwks:        const auth::Jwks&,
     jwt_options: const auth::JwtValidationOptions&,
-    req:         const Request&,
+    req:         const http::Request&,
     ext:         server_internal::RequestExtensions&,
     now_ns:      u64,
-    res:         Response&,
+    res:         http::Response&,
 ) -> wire::StageVerdict {
     guard jwks.keys.len > 0 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.auth_jwt");
     defer prof_leave(_prof);
-    let auth_val = header(req, rfc::HEADER_AUTHORIZATION);
-    let token = extract_bearer_token(auth_val);
+    let auth_val = http::header(req, rfc::HEADER_AUTHORIZATION);
+    let token = server_internal::extract_bearer_token(auth_val);
     guard token.len > 0 else {
         res.status_code = 401;
-        set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer");
+        http::set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer");
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
     }
     var out_hdr = auth::JwtHeader { .. };
@@ -860,7 +650,7 @@ fn stage_server_auth_jwt(
     let err = auth::verify_jwt(jwks, token, jwt_options, now_sec, out_hdr, out_claims);
     guard err == auth::JwtError.None else {
         res.status_code = 401;
-        set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"");
+        http::set_header(res, rfc::HEADER_WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"");
         return wire::StageVerdict.ShortCircuit { status_code: 401 };
     }
     let _ = ext.auth_subject.try_set(out_claims.sub[..min(out_claims.sub.len, 64)]);
@@ -869,48 +659,17 @@ fn stage_server_auth_jwt(
     return wire::StageVerdict.Continue;
 }
 
-inline fn populate_cached_response(cache: const HttpRouteCache&, res: Response&) -> wire::StageVerdict {
-    res.status_code = 200;
-    let _ = res.body.try_set(cache.wire[..]);
-    if cache.content_type.len > 0 {
-        if !res.headers.append_known_pipeline_header(
-            rfc::HEADER_CONTENT_TYPE,
-            cache.content_type[..],
-            SLOT_CONTENT_TYPE,
-            0,
-            HASH_HDR_CONTENT_TYPE,
-            false,
-        ) {
-            let _ = append_header(res.headers, rfc::HEADER_CONTENT_TYPE, cache.content_type[..]);
-        }
-        res.presence_mask |= RES_PRESENCE_CONTENT_TYPE;
-    }
-    if cache.etag.len > 0 {
-        if !res.headers.append_known_pipeline_header(
-            rfc::HEADER_ETAG,
-            cache.etag[..],
-            SLOT_ETAG,
-            0,
-            HASH_HDR_ETAG,
-            false,
-        ) {
-            let _ = append_header(res.headers, rfc::HEADER_ETAG, cache.etag[..]);
-        }
-    }
-    return wire::StageVerdict.ShortCircuit { status_code: 200 };
-}
-
 // Stage 10 (Server Ingress): Coalescing route cache lookup via UFCS `cache.cache_lookup(now_ms)`.
 fn stage_server_cache_lookup(
     cache:      HttpRouteCache&,
-    req:        const Request&,
+    req:        const http::Request&,
     now_ms:     u64,
-    res:        Response&,
+    res:        http::Response&,
     handler_id: i32 = -1,
 ) -> wire::StageVerdict {
     // RFC 9111 Section 3.5: Storing Responses to Authenticated Requests - bypass shared route cache on Authorization
-    let has_auth = (req.presence_mask & HDR_PRESENCE_AUTHORIZATION) != 0
-        || has_header(req.headers, rfc::HEADER_AUTHORIZATION);
+    let has_auth = (req.presence_mask & http::HDR_PRESENCE_AUTHORIZATION) != 0
+        || http::has_header(req.headers, rfc::HEADER_AUTHORIZATION);
     guard !has_auth && (req.method[..] == "GET" || req.method[..] == "HEAD") else {
         return wire::StageVerdict.Continue;
     }
@@ -918,72 +677,37 @@ fn stage_server_cache_lookup(
     defer prof_leave(_prof);
     let lookup = cache.cache_lookup(now_ms, handler_id, req.url[..]);
     return match lookup {
-        HitFresh => populate_cached_response(cache, res),
+        HitFresh => server_internal::populate_cached_response(cache, res),
         HitStaleNeedsUpdate => {
             if !cache.is_updating {
                 cache.is_updating = true;
                 wire::StageVerdict.Continue
             } else {
-                populate_cached_response(cache, res)
+                server_internal::populate_cached_response(cache, res)
             }
         },
         Miss => wire::StageVerdict.Continue,
     };
 }
 
-inline fn populate_missing_response_etag(res: Response&, memo: ServerCompressAndEtagMemo&) {
-    if res.body.len <= 512 && memo.etag_src.len > 0 && res.body[..] == memo.etag_src[..] {
-        if !res.headers.append_known_pipeline_header(
-            rfc::HEADER_ETAG,
-            memo.etag_val[..],
-            SLOT_ETAG,
-            0,
-            HASH_HDR_ETAG,
-            false,
-        ) {
-            let _ = append_header(res.headers, rfc::HEADER_ETAG, memo.etag_val[..]);
-        }
-        return;
-    }
-    var etag_hdr: u8[..32] = [];
-    etag_hdr.push('"');
-    let body_hash = core::xxh64(res.body[..], 0);
-    body_hash.format_u64_hex(etag_hdr);
-    etag_hdr.push('"');
-    if res.body.len <= 512 {
-        let _ = memo.etag_src.try_set(res.body[..]);
-        let _ = memo.etag_val.try_set(etag_hdr[..]);
-    }
-    if !res.headers.append_known_pipeline_header(
-        rfc::HEADER_ETAG,
-        etag_hdr[..],
-        SLOT_ETAG,
-        0,
-        HASH_HDR_ETAG,
-        false,
-    ) {
-        let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_hdr[..]);
-    }
-}
-
 // Stage 0 (Server Egress): RFC 9110 §8.8.3 ETag generation & §13.1.2 `If-None-Match` 304 evaluation.
 fn stage_server_etag(
-    req:  const Request&,
-    res:  Response&,
+    req:  const http::Request&,
+    res:  http::Response&,
     memo: ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. },
 ) -> wire::StageVerdict {
     guard res.status_code == 200 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.etag");
     defer prof_leave(_prof);
-    if get_inline(res.headers, WellKnownHeader.ETag).len == 0 && res.body.len > 0 {
-        populate_missing_response_etag(res, memo);
+    if http::get_inline(res.headers, http::WellKnownHeader.ETag).len == 0 && res.body.len > 0 {
+        server_internal::populate_missing_response_etag(res, memo);
     }
-    let etag_slice = get_inline(res.headers, WellKnownHeader.ETag);
+    let etag_slice = http::get_inline(res.headers, http::WellKnownHeader.ETag);
     guard etag_slice.len > 0 else { return wire::StageVerdict.Continue; }
-    let inm = get_inline(req.headers, WellKnownHeader.IfNoneMatch);
+    let inm = http::get_inline(req.headers, http::WellKnownHeader.IfNoneMatch);
     if inm.len > 0 && (req.method[..] == "GET" || req.method[..] == "HEAD") {
-        let parsed = parse_etag(etag_slice);
-        if match_if_none_match(inm, parsed) {
+        let parsed = http::parse_etag(etag_slice);
+        if http::match_if_none_match(inm, parsed) {
             res.status_code = 304;
             res.body.clear();
             return wire::StageVerdict.ShortCircuit { status_code: 304 };
@@ -1013,7 +737,7 @@ fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool 
             trimmed
         };
         let params = if semi >= 0 { trimmed[semi + 1..] } else { "" };
-        if coding.eq_ascii_fold(token) && !is_zero_qvalue(params) {
+        if coding.eq_ascii_fold(token) && !http::is_zero_qvalue(params) {
             return true;
         }
         if comma < 0 { break; }
@@ -1021,61 +745,6 @@ fn client_accepts_encoding(accept_enc: const u8[:], token: const u8[:]) -> bool 
     }
     return false;
 }
-
-inline fn append_vary_accept_encoding(res: Response&) {
-    let cur = get_inline(res.headers, WellKnownHeader.Vary);
-    if cur.len == 0 {
-        if !res.headers.append_known_pipeline_header(
-            rfc::HEADER_VARY,
-            rfc::HEADER_ACCEPT_ENCODING,
-            SLOT_VARY,
-            0,
-            rfc::HASH_HDR_VARY,
-            false,
-        ) {
-            let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::HEADER_ACCEPT_ENCODING);
-        }
-    } else if cur == rfc::FETCH_METADATA_VARY_VALUE {
-        let combined = "Sec-Fetch-Dest, Sec-Fetch-Mode, Sec-Fetch-Site, Origin, Accept-Encoding";
-        if !res.headers.update_single_vary_value(combined) {
-            let _ = set_or_replace(res.headers, rfc::HEADER_VARY, combined, false);
-        }
-    } else if !cur.contains_fold(rfc::HEADER_ACCEPT_ENCODING) {
-        var vbuf: u8[..128] = [];
-        guard vbuf.try_set(cur) && vbuf.try_append(", Accept-Encoding") else { return; }
-        if !res.headers.update_single_vary_value(vbuf[..]) {
-            let _ = set_or_replace(res.headers, rfc::HEADER_VARY, vbuf[..], false);
-        }
-    }
-}
-
-inline fn finalize_compressed_response(res: Response&, encoding: const u8[:], suffix: const u8[:]) {
-    if !res.headers.append_known_pipeline_header(
-        rfc::HEADER_CONTENT_ENCODING,
-        encoding,
-        SLOT_CONTENT_ENCODING,
-        0,
-        HASH_HDR_CONTENT_ENCODING,
-        false,
-    ) {
-        let _ = set_or_replace(res.headers, rfc::HEADER_CONTENT_ENCODING, encoding, false);
-    }
-    if get_inline(res.headers, WellKnownHeader.ContentLength).len > 0 {
-        remove_header(res, rfc::HEADER_CONTENT_LENGTH);
-    }
-    let etag = get_inline(res.headers, WellKnownHeader.ETag);
-    let last_idx = core::sub_sat_i64(etag.len, 1);
-    if etag.len >= 2 && etag[last_idx] == '"' && core::add_sat_i64(etag.len, suffix.len) <= 64 {
-        var new_etag: u8[..64] = [];
-        new_etag.append(etag[..last_idx]);
-        new_etag.append(suffix);
-        new_etag.push('"');
-        let _ = set_or_replace(res.headers, rfc::HEADER_ETAG, new_etag[..], false);
-    }
-    append_vary_accept_encoding(res);
-}
-
-const COMPRESS_INLINE_BODY_MAX: i64 = 7680;
 
 inline fn select_dynamic_gzip_level(body_len: i64, configured_level: i32 = 1) -> i32 {
     if body_len < 128 {
@@ -1087,88 +756,9 @@ inline fn select_dynamic_gzip_level(body_len: i64, configured_level: i32 = 1) ->
     return 1;
 }
 
-fn try_compress_zstd(res: Response&, memo: ServerCompressAndEtagMemo&) -> bool {
-    if res.body.len <= COMPRESS_INLINE_BODY_MAX {
-        memo.compress_scratch.clear();
-        if core::zstd_compress(res.body[..], memo.compress_scratch) {
-            let _ = res.body.try_set(memo.compress_scratch[..]);
-            finalize_compressed_response(res, "zstd", "-zstd");
-            return true;
-        }
-    }
-    var large_scratch: u8[>..] = [];
-    guard core::zstd_compress(res.body[..], large_scratch) else { return false; }
-    let _ = res.body.try_set(large_scratch[..]);
-    finalize_compressed_response(res, "zstd", "-zstd");
-    return true;
-}
-
-fn try_compress_brotli(res: Response&, memo: ServerCompressAndEtagMemo&) -> bool {
-    if res.body.len <= COMPRESS_INLINE_BODY_MAX {
-        memo.compress_scratch.clear();
-        if core::brotli_compress(res.body[..], memo.compress_scratch, 1) {
-            let _ = res.body.try_set(memo.compress_scratch[..]);
-            finalize_compressed_response(res, "br", "-br");
-            return true;
-        }
-    }
-    var large_scratch: u8[>..] = [];
-    guard core::brotli_compress(res.body[..], large_scratch, 1) else { return false; }
-    let _ = res.body.try_set(large_scratch[..]);
-    finalize_compressed_response(res, "br", "-br");
-    return true;
-}
-
-inline fn maybe_store_gzip_memo(
-    src:        const u8[:],
-    compressed: const u8[:],
-    gz_level:   i32,
-    memo:       ServerCompressAndEtagMemo&,
-) {
-    if src.len <= 512 && compressed.len <= 512 {
-        let _ = memo.gzip_src.try_set(src);
-        let _ = memo.gzip_dst.try_set(compressed);
-        memo.gzip_level = gz_level;
-    }
-}
-
-inline fn try_apply_gzip_memo(
-    res:      Response&,
-    memo:     const ServerCompressAndEtagMemo&,
-    gz_level: i32,
-) -> bool {
-    guard res.body.len <= 512 && memo.gzip_src.len > 0 && memo.gzip_level == gz_level else {
-        return false;
-    }
-    guard res.body[..] == memo.gzip_src[..] else {
-        return false;
-    }
-    let _ = res.body.try_set(memo.gzip_dst[..]);
-    finalize_compressed_response(res, "gzip", "-gzip");
-    return true;
-}
-
-fn compress_gzip_uncached(res: Response&, memo: ServerCompressAndEtagMemo&, level: i32 = 1) {
-    let gz_level = select_dynamic_gzip_level(res.body.len, level);
-    if res.body.len <= COMPRESS_INLINE_BODY_MAX {
-        memo.compress_scratch.clear();
-        if core::gzip_compress(res.body[..], memo.compress_scratch, gz_level) {
-            maybe_store_gzip_memo(res.body[..], memo.compress_scratch[..], gz_level, memo);
-            let _ = res.body.try_set(memo.compress_scratch[..]);
-            finalize_compressed_response(res, "gzip", "-gzip");
-            return;
-        }
-    }
-    var large_scratch: u8[>..] = [];
-    if core::gzip_compress(res.body[..], large_scratch, gz_level) {
-        let _ = res.body.try_set(large_scratch[..]);
-        finalize_compressed_response(res, "gzip", "-gzip");
-    }
-}
-
 // RFC 9111 Section 5.2.2.6: no-transform - Returns true if Cache-Control contains the no-transform directive.
-fn has_cache_no_transform(headers: const HeaderMap&) -> bool {
-    let cc = get_inline(headers, WellKnownHeader.CacheControl);
+fn has_cache_no_transform(headers: const http::HeaderMap&) -> bool {
+    let cc = http::get_inline(headers, http::WellKnownHeader.CacheControl);
     guard cc.len > 0 else { return false; }
     var tok = core::make_byte_tokenizer(cc, ',');
     while true {
@@ -1183,12 +773,12 @@ fn has_cache_no_transform(headers: const HeaderMap&) -> bool {
 }
 
 // Guard predicate for `stage_server_compress` before invoking zstd/brotli/gzip encoders.
-inline fn is_compressible_response(res: const Response&, min_bytes: i64 = 1) -> bool {
+inline fn is_compressible_response(res: const http::Response&, min_bytes: i64 = 1) -> bool {
     guard res.body.len >= min_bytes else { return false; }
     guard res.status_code != 204 && res.status_code != 206 && res.status_code != 304 else {
         return false;
     }
-    guard get_inline(res.headers, WellKnownHeader.ContentEncoding).len == 0 else {
+    guard http::get_inline(res.headers, http::WellKnownHeader.ContentEncoding).len == 0 else {
         return false;
     }
     return !has_cache_no_transform(res.headers);
@@ -1196,8 +786,8 @@ inline fn is_compressible_response(res: const Response&, min_bytes: i64 = 1) -> 
 
 // Stage 1..3 (Server Egress): Dynamic response compression (`zstd`, `br`, `gzip`) per `Accept-Encoding`.
 fn stage_server_compress(
-    req:   const Request&,
-    res:   Response&,
+    req:   const http::Request&,
+    res:   http::Response&,
     mask:  u64,
     memo:  ServerCompressAndEtagMemo& = ServerCompressAndEtagMemo { .. },
     level: i32                        = 1,
@@ -1205,7 +795,7 @@ fn stage_server_compress(
     guard is_compressible_response(res) else {
         return wire::StageVerdict.Continue;
     }
-    let accept_enc = get_inline(req.headers, WellKnownHeader.AcceptEncoding);
+    let accept_enc = http::get_inline(req.headers, http::WellKnownHeader.AcceptEncoding);
     guard accept_enc.len > 0 else { return wire::StageVerdict.Continue; }
     let _prof = prof_enter("stage.compress");
     defer prof_leave(_prof);
@@ -1214,16 +804,16 @@ fn stage_server_compress(
     let allow_br = (mask & (STAGE_EGRESS_COMPRESS_BROTLI | wire::STAGE_SRV_OUT_COMPRESS_BR)) != 0;
     let allow_gzip = (mask & (STAGE_EGRESS_COMPRESS_GZIP | wire::STAGE_SRV_OUT_COMPRESS_GZIP)) != 0;
 
-    if allow_zstd && client_accepts_encoding(accept_enc, "zstd") && try_compress_zstd(res, memo) {
+    if allow_zstd && client_accepts_encoding(accept_enc, "zstd") && server_internal::try_compress_zstd(res, memo) {
         return wire::StageVerdict.Continue;
     }
-    if allow_br && client_accepts_encoding(accept_enc, "br") && try_compress_brotli(res, memo) {
+    if allow_br && client_accepts_encoding(accept_enc, "br") && server_internal::try_compress_brotli(res, memo) {
         return wire::StageVerdict.Continue;
     }
     if allow_gzip && client_accepts_encoding(accept_enc, "gzip") {
         let gz_level = select_dynamic_gzip_level(res.body.len, level);
-        if !try_apply_gzip_memo(res, memo, gz_level) {
-            compress_gzip_uncached(res, memo, level);
+        if !server_internal::try_apply_gzip_memo(res, memo, gz_level) {
+            server_internal::compress_gzip_uncached(res, memo, level);
         }
     }
     return wire::StageVerdict.Continue;
@@ -1233,16 +823,16 @@ fn stage_server_compress(
 fn stage_server_cache_store(
     cache:      HttpRouteCache&,
     now_ms:     u64,
-    res:        Response&,
+    res:        http::Response&,
     handler_id: i32         = -1,
     url_key:    const u8[:] = "",
 ) -> wire::StageVerdict {
     let _prof = prof_enter("stage.cache_store");
     defer prof_leave(_prof);
     // RFC 9111 Section 4.1: Calculating Cache Keys with the Vary Header Field - skip unkeyed Vary responses
-    if res.status_code == 200 && res.body.len > 0 && !has_header(res.headers, rfc::HEADER_VARY) {
-        let ctype = get_inline(res.headers, WellKnownHeader.ContentType);
-        let existing_etag = get_inline(res.headers, WellKnownHeader.ETag);
+    if res.status_code == 200 && res.body.len > 0 && !http::has_header(res.headers, rfc::HEADER_VARY) {
+        let ctype = http::get_inline(res.headers, http::WellKnownHeader.ContentType);
+        let existing_etag = http::get_inline(res.headers, http::WellKnownHeader.ETag);
         if existing_etag.len > 0 {
             let _ = cache.cache_store(now_ms, res.body[..], handler_id, ctype, url_key, existing_etag);
         } else {
@@ -1254,12 +844,12 @@ fn stage_server_cache_store(
             if !res.headers.append_known_pipeline_header(
                 rfc::HEADER_ETAG,
                 etag_buf[..],
-                SLOT_ETAG,
+                http::SLOT_ETAG,
                 0,
-                HASH_HDR_ETAG,
+                http::HASH_HDR_ETAG,
                 false,
             ) {
-                let _ = append_header(res.headers, rfc::HEADER_ETAG, etag_buf[..]);
+                let _ = http::append_header(res.headers, rfc::HEADER_ETAG, etag_buf[..]);
             }
             let _ = cache.cache_store(now_ms, res.body[..], handler_id, ctype, url_key, etag_buf[..]);
         }
@@ -1270,11 +860,11 @@ fn stage_server_cache_store(
 }
 
 // Stage 5 (Server Egress): Cross-origin isolation and HSTS security headers.
-fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
+fn stage_server_security_headers(res: http::Response&) -> wire::StageVerdict {
     let _prof = prof_enter("stage.security_headers");
     defer prof_leave(_prof);
-    let existing_vary = get_inline(res.headers, WellKnownHeader.Vary);
-    let existing_hsts = get_inline(res.headers, WellKnownHeader.StrictTransportSecurity);
+    let existing_vary = http::get_inline(res.headers, http::WellKnownHeader.Vary);
+    let existing_hsts = http::get_inline(res.headers, http::WellKnownHeader.StrictTransportSecurity);
     if existing_hsts.len > 0 && core::starts_with(existing_vary, rfc::FETCH_METADATA_VARY_VALUE) {
         return wire::StageVerdict.Continue;
     }
@@ -1282,22 +872,22 @@ fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
         if !res.headers.append_known_pipeline_header(
             rfc::HEADER_VARY,
             rfc::FETCH_METADATA_VARY_VALUE,
-            SLOT_VARY,
-            HEADER_FLAG_CONTAINS_COMMA,
+            http::SLOT_VARY,
+            http::HEADER_FLAG_CONTAINS_COMMA,
             rfc::HASH_HDR_VARY,
             true,
         ) {
-            let _ = append_header(res.headers, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
+            let _ = http::append_header(res.headers, rfc::HEADER_VARY, rfc::FETCH_METADATA_VARY_VALUE);
         }
         if !res.headers.append_known_pipeline_header(
             rfc::HEADER_STRICT_TRANSPORT_SECURITY,
             rfc::HSTS_DEFAULT_VALUE,
-            SLOT_HSTS,
-            HEADER_FLAG_SECURITY_STATE,
+            http::SLOT_HSTS,
+            http::HEADER_FLAG_SECURITY_STATE,
             rfc::HASH_HDR_STRICT_TRANSPORT_SECURITY,
             false,
         ) {
-            let _ = append_header(res.headers, rfc::HEADER_STRICT_TRANSPORT_SECURITY, rfc::HSTS_DEFAULT_VALUE);
+            let _ = http::append_header(res.headers, rfc::HEADER_STRICT_TRANSPORT_SECURITY, rfc::HSTS_DEFAULT_VALUE);
         }
         return wire::StageVerdict.Continue;
     }
@@ -1305,51 +895,10 @@ fn stage_server_security_headers(res: Response&) -> wire::StageVerdict {
     return wire::StageVerdict.Continue;
 }
 
-fn has_custom_header_hash(map: const HeaderMap&, name: const u8[:], hname: u32) -> bool {
-    for &e in map.entries {
-        if e.name_hash == hname && entry_name(map, e).eq_ascii_fold(name) {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn is_clean_header_bytes(src: const u8[:]) -> bool {
-    for b in src {
-        if b == '\r' || b == '\n' || b == 0 {
-            return false;
-        }
-    }
-    return true;
-}
-
-fn append_matched_route_log_header(map: HeaderMap&, route_slice: const u8[:]) {
-    if is_clean_header_bytes(route_slice) {
-        let has_comma = route_slice.contains_byte(',');
-        let flags = if has_comma { HEADER_FLAG_CONTAINS_COMMA } else { 0 };
-        if !map.append_known_pipeline_header(
-            "X-Matched-Route",
-            route_slice,
-            0xFF,
-            flags,
-            HASH_HDR_X_MATCHED_ROUTE,
-            has_comma,
-        ) {
-            let _ = append_header(map, "X-Matched-Route", route_slice);
-        }
-        return;
-    }
-    var clean_route: u8[..256] = [];
-    sanitize_header_bytes(route_slice, clean_route);
-    if clean_route.len > 0 {
-        let _ = append_header(map, "X-Matched-Route", clean_route[..]);
-    }
-}
-
 // Stage 7..8 (Server Egress): RFC 9218 / Server-Timing metrics and access log emission.
 fn stage_server_metrics_log(
     ext:    const server_internal::RequestExtensions&,
-    res:    Response&,
+    res:    http::Response&,
     mask:   u64,
     now_ns: u64,
 ) -> wire::StageVerdict {
@@ -1357,7 +906,12 @@ fn stage_server_metrics_log(
     defer prof_leave(_prof);
     let want_metrics = (mask & (STAGE_EGRESS_METRICS | wire::STAGE_SRV_OUT_METRICS)) != 0;
     let want_log = (mask & (STAGE_EGRESS_ACCESS_LOG | wire::STAGE_SRV_OUT_ACCESS_LOG)) != 0;
-    if want_metrics && !has_custom_header_hash(res.headers, rfc::HEADER_SERVER_TIMING, HASH_HDR_SERVER_TIMING) {
+    let has_timing = server_internal::has_custom_header_hash(
+        res.headers,
+        rfc::HEADER_SERVER_TIMING,
+        http::HASH_HDR_SERVER_TIMING,
+    );
+    if want_metrics && !has_timing {
         let dur_ns = if now_ns >= ext.start_time_ns && ext.start_time_ns > 0 {
             core::sub_sat_u64(now_ns, ext.start_time_ns)
         } else {
@@ -1365,27 +919,25 @@ fn stage_server_metrics_log(
         };
         var timing_buf: u8[..64] = [];
         timing_buf.append("wing;dur=");
-        let _ = format_dur_ms_tenths(dur_ns, timing_buf);
+        let _ = http::format_dur_ms_tenths(dur_ns, timing_buf);
         if !res.headers.append_known_pipeline_header(
             rfc::HEADER_SERVER_TIMING,
             timing_buf[..],
             0xFF,
             0,
-            HASH_HDR_SERVER_TIMING,
+            http::HASH_HDR_SERVER_TIMING,
             false,
         ) {
-            let _ = append_header(res.headers, rfc::HEADER_SERVER_TIMING, timing_buf[..]);
+            let _ = http::append_header(res.headers, rfc::HEADER_SERVER_TIMING, timing_buf[..]);
         }
     }
     if want_log
         && ext.matched_route.len > 0
-        && !has_custom_header_hash(res.headers, "X-Matched-Route", HASH_HDR_X_MATCHED_ROUTE) {
-        append_matched_route_log_header(res.headers, ext.matched_route[..]);
+        && !server_internal::has_custom_header_hash(res.headers, "X-Matched-Route", http::HASH_HDR_X_MATCHED_ROUTE) {
+        server_internal::append_matched_route_log_header(res.headers, ext.matched_route[..]);
     }
     return wire::StageVerdict.Continue;
 }
-
-// ---- 4. Streaming L7 Body Chunk Pipeline (RFC 9530) -------------------------
 
 struct ServerBodyStreamState {
     sha256_ctx:      core::Sha256Ctx = core::Sha256Ctx { .. },
@@ -1398,34 +950,13 @@ struct ServerBodyStreamState {
     has_error:       bool            = false,
 }
 
-// Extracts and decodes the 32-byte SHA-256 digest from an RFC 9530 Content-Digest header.
-//
-// Example:
-//   hdr = "sha-256=:uU0nuZNNPgilLlLX2n2r+sSE7+N6U4DukIj3rOLvzek=:"
-//   returns: [185, 77, 39, 185, ...], true
-fn extract_sha256_content_digest(hdr: const u8[:]) -> u8[..32], bool {
-    var out_sha256: u8[..32]          = [];
-    var entries:    SfDictEntry[..16] = [];
-    guard parse_sf_dict(hdr, entries) else { return out_sha256, false; }
-    for &e in entries {
-        guard e.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256) else { continue; }
-        guard e.item.kind == SfType.Binary else { return out_sha256, false; }
-        guard core::base64_decode(e.item.str_val[..], out_sha256) && out_sha256.len == 32 else {
-            out_sha256.clear();
-            return out_sha256, false;
-        }
-        return out_sha256, true;
-    }
-    return out_sha256, false;
-}
-
 // Initializes streaming body verification (`Content-Digest`) and decompression (`Content-Encoding`) state.
-fn begin_server_body_stream(req: const Request&, ingress_mask: u64) -> ServerBodyStreamState, bool {
+fn begin_server_body_stream(req: const http::Request&, ingress_mask: u64) -> ServerBodyStreamState, bool {
     var state = ServerBodyStreamState { .. };
     if (ingress_mask & wire::STAGE_SRV_IN_CONTENT_DIGEST) != 0 {
-        let cd_hdr = header(req, rfc::HEADER_CONTENT_DIGEST);
+        let cd_hdr = http::header(req, rfc::HEADER_CONTENT_DIGEST);
         if cd_hdr.len > 0 {
-            let dig, ok_dig = extract_sha256_content_digest(cd_hdr);
+            let dig, ok_dig = server_internal::extract_sha256_content_digest(cd_hdr);
             guard ok_dig else {
                 state.has_error = true;
                 return state, false;
@@ -1435,7 +966,7 @@ fn begin_server_body_stream(req: const Request&, ingress_mask: u64) -> ServerBod
         }
     }
     if (ingress_mask & wire::STAGE_SRV_IN_DECOMPRESS) != 0 {
-        let ce_hdr = header(req, rfc::HEADER_CONTENT_ENCODING).trim_lws();
+        let ce_hdr = http::header(req, rfc::HEADER_CONTENT_ENCODING).trim_lws();
         if ce_hdr.len > 0 {
             if ce_hdr.eq_ascii_fold("gzip") || ce_hdr.eq_ascii_fold("x-gzip") {
                 state.decompress_gzip = true;
@@ -1454,11 +985,11 @@ fn begin_server_body_stream(req: const Request&, ingress_mask: u64) -> ServerBod
 inline fn on_server_body_chunk(
     _stage:   wire::NoOpStage&,
     _cfg:     ServerPipelineConfig&,
-    _req:     const Request&,
+    _req:     const http::Request&,
     _ctx:     ServerStageCtx&,
     _chunk:   const u8[:],
     _is_last: bool,
-    _res:     Response&,
+    _res:     http::Response&,
 ) -> wire::StageVerdict {
     return wire::StageVerdict.Continue;
 }
@@ -1467,11 +998,11 @@ inline fn on_server_body_chunk(
 inline fn on_server_body_chunk<First, Next>(
     chain:   wire::StageChain<First, Next>&,
     cfg:     ServerPipelineConfig&,
-    req:     const Request&,
+    req:     const http::Request&,
     ctx:     ServerStageCtx&,
     chunk:   const u8[:],
     is_last: bool,
-    res:     Response&,
+    res:     http::Response&,
 ) -> wire::StageVerdict {
     var p = wire::begin_pipeline();
     if p.step(chain.first.on_server_body_chunk(cfg, req, ctx, chunk, is_last, res)) {
@@ -1480,30 +1011,15 @@ inline fn on_server_body_chunk<First, Next>(
     return p.verdict;
 }
 
-fn decompress_buffered_server_stream(state: ServerBodyStreamState&, decoded: u8[..16384]&) -> bool {
-    if state.compressed_buf.len == 0 {
-        return true;
-    }
-    let ok = if state.decompress_zstd {
-        let ok_z, _ = core::zstd_decompress_with_limit(state.compressed_buf[..], decoded, 16384);
-        ok_z
-    } else {
-        let ok_g, _ = core::gzip_decompress_with_limit(state.compressed_buf[..], decoded, 16384);
-        ok_g
-    };
-    state.compressed_buf.clear();
-    return ok;
-}
-
 // Processes a streaming body chunk through decompression, SHA-256 digest verification, and `<UserStage>`.
 fn feed_server_body_chunk_with_stage<UserStage>(
     cfg:        ServerPipelineConfig&,
     state:      ServerBodyStreamState&,
-    req:        const Request&,
+    req:        const http::Request&,
     sctx:       ServerStageCtx&,
     chunk:      const u8[:],
     is_last:    bool,
-    res:        Response&,
+    res:        http::Response&,
     user_stage: UserStage&,
 ) -> wire::StageVerdict {
     guard !state.has_error else {
@@ -1521,7 +1037,7 @@ fn feed_server_body_chunk_with_stage<UserStage>(
         if !is_last {
             return wire::StageVerdict.Continue;
         }
-        guard decompress_buffered_server_stream(state, decoded) else {
+        guard server_internal::decompress_buffered_server_stream(state, decoded) else {
             state.has_error = true;
             res.status_code = 400;
             return wire::StageVerdict.ShortCircuit { status_code: 400 };
@@ -1543,321 +1059,30 @@ fn feed_server_body_chunk_with_stage<UserStage>(
     return user_stage.on_server_body_chunk(cfg, req, sctx, active_chunk, is_last, res);
 }
 
-// Processes a streaming body chunk through decompression and SHA-256 digest verification with `wire::NoOpStage`.
-fn feed_server_body_chunk(
-    cfg:     ServerPipelineConfig&,
-    state:   ServerBodyStreamState&,
-    req:     const Request&,
-    sctx:    ServerStageCtx&,
-    chunk:   const u8[:],
-    is_last: bool,
-    res:     Response&,
-) -> wire::StageVerdict {
-    var noop = wire::NoOpStage {};
-    return feed_server_body_chunk_with_stage(cfg, state, req, sctx, chunk, is_last, res, noop);
-}
-
-// ---- 5. Ingress/Egress Stage Dispatchers & Route Execution ------------------
-
-inline fn cors_short_circuit_outcome(status_code: u16) -> PipelineOutcome {
-    if status_code == 403 {
-        return PipelineOutcome.CsrfRejected;
-    }
-    return PipelineOutcome.CorsPreflight;
-}
-
-// Evaluates CORS policies and Sec-Fetch-* cross-origin isolation metadata.
-// Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
-fn evaluate_pipeline_cors_and_csrf(
-    cfg:  ServerPipelineConfig&,
-    req:  const Request&,
-    res:  Response&,
-    mask: u64 = STAGE_INGRESS_CORS_PREFLIGHT | STAGE_INGRESS_FETCH_CSRF,
-) -> PipelineOutcome, bool {
-    if (mask & (STAGE_INGRESS_CORS_PREFLIGHT | wire::STAGE_SRV_IN_CORS)) != 0 {
-        let v_cors = stage_server_cors(cfg.cors_policy, cfg.enable_cors, req, res);
-        match v_cors {
-            ShortCircuit sc => {
-                return cors_short_circuit_outcome(sc.status_code), true;
-            },
-            _ => {},
-        };
-    }
-
-    if (mask & (STAGE_INGRESS_FETCH_CSRF | wire::STAGE_SRV_IN_CSRF)) != 0 {
-        let scheme = if cfg.tls_enabled {
-            security::CsrfTargetScheme.Https
-        } else {
-            security::CsrfTargetScheme.Http
-        };
-        let v_csrf = stage_server_csrf(
-            cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res, scheme,
-        );
-        match v_csrf {
-            ShortCircuit _ => { return PipelineOutcome.CsrfRejected, true; },
-            _ => {},
-        };
-    }
-
-    return PipelineOutcome.Handled, false;
-}
-
-inline fn select_stage_limiter(cfg: ServerPipelineConfig&, param_slot: u8) -> security::ShardedGcraLimiter& {
-    if param_slot < cfg.tier_limiters.len {
-        return cfg.tier_limiters[param_slot];
-    }
-    return cfg.limiter;
-}
-
-fn execute_bound_ingress_stage_verdict<UserStage>(
-    cfg:        ServerPipelineConfig&,
-    b:          const wire::StageBinding&,
-    req:        const Request&,
-    res:        Response&,
-    ext:        server_internal::RequestExtensions&,
-    now_ns:     u64,
-    sctx:       ServerStageCtx&,
-    user_stage: UserStage&,
-) -> wire::StageVerdict {
-    if b.stage_id >= STAGE_ID_USER_0 && b.stage_id <= STAGE_ID_USER_3 {
-        return user_stage.on_server_custom_slot(b.stage_id, b.param_slot, cfg, req, sctx, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_EXPECT_100 {
-        return stage_server_expect_100(req, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_EDGE_FILTER {
-        return stage_server_edge_filter(cfg.edge_filter, req, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_RATELIMIT_IP {
-        let lim .= select_stage_limiter(cfg, b.param_slot);
-        return stage_server_ratelimit_ip(lim, cfg.enable_rate_limiter, ext.peer_ip[..], now_ns, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_ROUTE_MATCH {
-        var dummy_match = RouteMatchResult.NotFound;
-        return stage_server_route_match(cfg.router, req, ext, dummy_match, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_RATELIMIT_ROUTE {
-        let lim .= select_stage_limiter(cfg, b.param_slot);
-        let rpath = if ext.canon_url.len > 0 { ext.canon_url[..] } else { req.url[..] };
-        return stage_server_ratelimit_route(lim, cfg.enable_rate_limiter, ext.peer_ip[..], rpath, now_ns, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_CORS {
-        return stage_server_cors(cfg.cors_policy, cfg.enable_cors, req, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_CSRF {
-        let scheme = if cfg.tls_enabled {
-            security::CsrfTargetScheme.Https
-        } else {
-            security::CsrfTargetScheme.Http
-        };
-        return stage_server_csrf(
-            cfg.csrf_guard, cfg.enable_csrf_guard, cfg.target_host[..], req, res, scheme,
-        );
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_AUTH_COOKIE {
-        return stage_server_auth_cookie(cfg.private_jar, req, ext, now_ns);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_AUTH_JWT {
-        return stage_server_auth_jwt(cfg.jwks, cfg.jwt_options, req, ext, now_ns, res);
-    }
-    if b.stage_id == wire::STAGE_ID_SRV_IN_RATELIMIT_SUBJECT {
-        let lim .= select_stage_limiter(cfg, b.param_slot);
-        return stage_server_ratelimit_subject(lim, cfg.enable_rate_limiter, ext.auth_subject[..], now_ns, res);
-    }
-    return wire::StageVerdict.Continue;
-}
-
-inline fn map_bound_stage_verdict(stage_id: u8, v: wire::StageVerdict, res: Response&) -> PipelineOutcome, bool {
-    match v {
-        Continue => { return PipelineOutcome.Handled, false; },
-        ShortCircuit sc => {
-            if res.status_code == 0 || (res.status_code == 200 && sc.status_code != 200) {
-                res.status_code = sc.status_code;
-            }
-            if stage_id == wire::STAGE_ID_SRV_IN_EXPECT_100 {
-                return PipelineOutcome.ExpectationFailed, true;
-            }
-            if stage_id == wire::STAGE_ID_SRV_IN_CORS {
-                return cors_short_circuit_outcome(sc.status_code), true;
-            }
-            if sc.status_code == 404 {
-                return PipelineOutcome.RouteNotFound, true;
-            }
-            if sc.status_code == 405 {
-                return PipelineOutcome.MethodNotAllowed, true;
-            }
-            if sc.status_code == 429 {
-                return PipelineOutcome.RateLimited, true;
-            }
-            return PipelineOutcome.CsrfRejected, true;
-        },
-        _ => { return PipelineOutcome.CsrfRejected, true; },
-    };
-}
-
 // Executes ordered `StageBinding` entries in `cfg.wire_pipeline.custom_bindings`.
 // Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
 fn dispatch_custom_stage_bindings<UserStage>(
     cfg:        ServerPipelineConfig&,
-    req:        const Request&,
-    res:        Response&,
+    req:        const http::Request&,
+    res:        http::Response&,
     ext:        server_internal::RequestExtensions&,
     now_ns:     u64,
     sctx:       ServerStageCtx&,
     user_stage: UserStage&,
 ) -> PipelineOutcome, bool {
     for &b in cfg.wire_pipeline.custom_bindings {
-        let v = execute_bound_ingress_stage_verdict(cfg, b, req, res, ext, now_ns, sctx, user_stage);
-        let outcome, is_term = map_bound_stage_verdict(b.stage_id, v, res);
+        let v = server_internal::execute_bound_ingress_stage_verdict(cfg, b, req, res, ext, now_ns, sctx, user_stage);
+        let outcome, is_term = server_internal::map_bound_stage_verdict(b.stage_id, v, res);
         guard !is_term else { return outcome, true; }
     }
-    return PipelineOutcome.Handled, false;
-}
-
-fn evaluate_server_integrity_and_crypto(
-    cfg:    ServerPipelineConfig&,
-    req:    const Request&,
-    now_ns: u64,
-    res:    Response&,
-) -> bool {
-    if cfg.verify_request_digest
-        && header(req, rfc::HEADER_CONTENT_DIGEST).len > 0
-        && !verify_request_content_digest(req) {
-        if cfg.emit_problem_details {
-            respond_problem(res, 400, "Bad Request", "Content-Digest verification failed");
-        } else {
-            res.status_code = 400;
-        }
-        return false;
-    }
-    if cfg.verify_request_digest
-        && header(req, rfc::HEADER_REPR_DIGEST).len > 0
-        && !verify_request_repr_digest(req) {
-        if cfg.emit_problem_details {
-            respond_problem(res, 400, "Bad Request", "Repr-Digest verification failed");
-        } else {
-            res.status_code = 400;
-        }
-        return false;
-    }
-    if cfg.dpop_public_key.len > 0 {
-        let dpop_jwt = header(req, "DPoP");
-        let now_sec = (now_ns / 1000000000) as i64;
-        let ok_dpop = dpop_jwt.len > 0 && auth::verify_dpop_proof_with_replay_cache(
-            cfg.dpop_replay_cache, dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec,
-        );
-        if !ok_dpop {
-            res.status_code = 401;
-            return false;
-        }
-    }
-    if cfg.sig_public_key.len > 0 {
-        if !verify_request_ed25519(req, cfg.sig_key_id[..], cfg.sig_public_key[..]) {
-            res.status_code = 401;
-            return false;
-        }
-    }
-    return true;
-}
-
-// Executes pre-handler ingress stages matching the effective PSO or server ingress mask.
-// Returns (outcome, is_terminal): if is_terminal is true, the request must not proceed further.
-fn dispatch_ingress_pipeline<UserStage>(
-    cfg:        ServerPipelineConfig&,
-    req:        const Request&,
-    res:        Response&,
-    ext:        server_internal::RequestExtensions&,
-    mask:       u64,
-    now_ns:     u64,
-    sctx:       ServerStageCtx&,
-    user_stage: UserStage&,
-) -> PipelineOutcome, bool {
-    if cfg.wire_pipeline.has_custom_order {
-        let custom_out, is_term = dispatch_custom_stage_bindings(
-            cfg, req, res, ext, now_ns, sctx, user_stage,
-        );
-        guard !is_term else { return custom_out, true; }
-        if !evaluate_server_integrity_and_crypto(cfg, req, now_ns, res) {
-            return PipelineOutcome.CsrfRejected, true;
-        }
-        return PipelineOutcome.Handled, false;
-    }
-
-    // Stage: Expect 100-continue validation (RFC 9110 Section 10.1.1)
-    if (mask & STAGE_INGRESS_EXPECT_100) != 0 {
-        match stage_server_expect_100(req, res) {
-            ShortCircuit _ => { return PipelineOutcome.ExpectationFailed, true; },
-            _ => {},
-        };
-    }
-
-    // Stage: EdgeFilter L7 inspection
-    match stage_server_edge_filter(cfg.edge_filter, req, res) {
-        ShortCircuit sc => {
-            if sc.status_code == 429 {
-                return PipelineOutcome.RateLimited, true;
-            }
-            return PipelineOutcome.CsrfRejected, true;
-        },
-        Abort _ => { return PipelineOutcome.CsrfRejected, true; },
-        _ => {},
-    };
-
-    // Stage: Global GCRA IP rate limiter
-    if (mask & STAGE_INGRESS_IP_RATELIMIT) != 0 {
-        match stage_server_ratelimit_ip(cfg.limiter, cfg.enable_rate_limiter, ext.peer_ip[..], now_ns, res) {
-            ShortCircuit _ => { return PipelineOutcome.RateLimited, true; },
-            _ => {},
-        };
-    }
-
-    // Stage: Per-route GCRA rate limiter
-    if (mask & STAGE_INGRESS_ROUTE_RATELIMIT) != 0 {
-        match stage_server_ratelimit_route(
-            cfg.limiter,
-            cfg.enable_rate_limiter,
-            ext.peer_ip[..],
-            ext.canon_url[..],
-            now_ns,
-            res,
-        ) {
-            ShortCircuit _ => { return PipelineOutcome.RateLimited, true; },
-            _ => {},
-        };
-    }
-
-    // Stage: CORS preflight and Fetch Metadata CSRF isolation
-    let cors_csrf_mask = mask & (STAGE_INGRESS_CORS_PREFLIGHT | STAGE_INGRESS_FETCH_CSRF);
-    if cors_csrf_mask != 0 && (cfg.enable_cors || cfg.enable_csrf_guard) {
-        let sec_outcome, is_term = evaluate_pipeline_cors_and_csrf(cfg, req, res, cors_csrf_mask);
-        guard !is_term else { return sec_outcome, true; }
-    }
-
-    // Stage: Authenticated session cookie decryption
-    if (mask & STAGE_INGRESS_AUTH_COOKIE) != 0 {
-        let _ = stage_server_auth_cookie(cfg.private_jar, req, ext, now_ns);
-    }
-
-    // Stage: JWT Bearer token verification
-    if (mask & STAGE_INGRESS_AUTH_JWT) != 0 {
-        match stage_server_auth_jwt(cfg.jwks, cfg.jwt_options, req, ext, now_ns, res) {
-            ShortCircuit _ => { return PipelineOutcome.CsrfRejected, true; },
-            _ => {},
-        };
-    }
-
-    if !evaluate_server_integrity_and_crypto(cfg, req, now_ns, res) {
-        return PipelineOutcome.CsrfRejected, true;
-    }
-
     return PipelineOutcome.Handled, false;
 }
 
 // Executes post-handler egress stages matching the effective PSO or server egress mask.
 fn dispatch_egress_pipeline(
     cfg:          ServerPipelineConfig&,
-    req:          const Request&,
-    res:          Response&,
+    req:          const http::Request&,
+    res:          http::Response&,
     mask:         u64,
     now_ns:       u64 = 0,
     ext_slot_idx: i32 = -1,
@@ -1867,8 +1092,8 @@ fn dispatch_egress_pipeline(
     if (egress_mask & compress_bits) != 0 {
         let _ = stage_server_compress(req, res, egress_mask, cfg.memo, cfg.gzip_level);
     }
-    if header(req, rfc::HEADER_WANT_CONTENT_DIGEST).len > 0 && res.body.len > 0 {
-        let _ = set_response_content_digest(res);
+    if http::header(req, rfc::HEADER_WANT_CONTENT_DIGEST).len > 0 && res.body.len > 0 {
+        let _ = http::set_response_content_digest(res);
     }
     if (egress_mask & STAGE_EGRESS_ETAG) != 0 {
         let _ = stage_server_etag(req, res, cfg.memo);
@@ -1886,327 +1111,13 @@ fn dispatch_egress_pipeline(
     }
 }
 
-fn maybe_store_server_route_cache(
-    cfg:         ServerPipelineConfig&,
-    req:         const Request&,
-    now_ns:      u64,
-    res:         Response&,
-    handler_id:  i32,
-    egress_mask: u64,
-) {
-    let has_auth = (req.presence_mask & HDR_PRESENCE_AUTHORIZATION) != 0
-        || has_header(req.headers, rfc::HEADER_AUTHORIZATION);
-    guard (egress_mask & wire::STAGE_SRV_OUT_CACHE_STORE) != 0 &&
-          handler_id >= 0 && req.method[..] == "GET" && !has_auth else {
-        cfg.route_cache.is_updating = false;
-        return;
-    }
-    let now_ms, _ = core::div_rem_u64(now_ns, 1000000);
-    let _ = stage_server_cache_store(cfg.route_cache, now_ms, res, handler_id, req.url[..]);
-}
-
-// Dispatches route payloads and headers registered in `cfg.router.static_payloads` for `handler_id`.
-fn apply_route_payload(cfg: const ServerPipelineConfig&, handler_id: i32, res: Response&) {
-    let _ = get_static_route_payload(cfg.router, handler_id, res);
-}
-
-fn execute_found_route_handler<UserStage>(
-    cfg:          ServerPipelineConfig&,
-    req:          const Request&,
-    now_ns:       u64,
-    res:          Response&,
-    out_future:   server_internal::InlineHandlerFuture&,
-    f:            const RouteMatchFound&,
-    ext_slot_idx: i32,
-    sctx:         ServerStageCtx&,
-    user_stage:   UserStage&,
-) -> PipelineOutcome {
-    if req.method[..] == rfc::METHOD_QUERY && header(req, rfc::HEADER_CONTENT_TYPE).len == 0 {
-        res.status_code = 400; // Bad Request
-        return PipelineOutcome.Handled;
-    }
-
-    let wants_cookie = (f.entries_mask & server_internal::ENTRY_COOKIES) != 0;
-    let cookie_unpopulated = (cfg.ext_pool.slots[ext_slot_idx].populated_entries & server_internal::ENTRY_COOKIES) == 0;
-    if wants_cookie && cookie_unpopulated {
-        let _ = stage_server_auth_cookie(cfg.private_jar, req, cfg.ext_pool.slots[ext_slot_idx], now_ns);
-    }
-
-    let now_ms = now_ns / 1000000;
-    if (f.ingress_mask & wire::STAGE_SRV_IN_CACHE_LOOKUP) != 0 {
-        let c_v = stage_server_cache_lookup(cfg.route_cache, req, now_ms, res, f.handler_id);
-        let is_cached = match c_v { ShortCircuit _ => true, _ => false };
-        if is_cached {
-            return PipelineOutcome.Handled;
-        }
-    }
-
-    let _prof_h = prof_enter("stage.handler");
-    out_future = server_internal::new_inline_handler_future(f.handler_id as u16);
-    server_internal::poll_future(out_future);
-
-    res.status_code = 0;
-    sctx.is_pending = false;
-    let route_v = user_stage.on_server_stage(wire::ServerHookPhase.RouteHandler, cfg, req, sctx, res);
-    match route_v {
-        ShortCircuit sc => {
-            if res.status_code == 0 {
-                res.status_code = sc.status_code as i32;
-            }
-        },
-        Abort _ => {
-            prof_leave(_prof_h);
-            cfg.route_cache.is_updating = false;
-            return PipelineOutcome.CsrfRejected;
-        },
-        _ => {},
-    };
-
-    if sctx.is_pending {
-        prof_leave(_prof_h);
-        cfg.route_cache.is_updating = false;
-        return PipelineOutcome.Pending;
-    }
-
-    if res.status_code == 0 {
-        res.status_code = 200;
-        apply_route_payload(cfg, f.handler_id, res);
-    }
-    prof_leave(_prof_h);
-    maybe_store_server_route_cache(cfg, req, now_ns, res, f.handler_id, f.egress_mask);
-    return PipelineOutcome.Handled;
-}
-
-fn dispatch_matched_route<UserStage>(
-    cfg:          ServerPipelineConfig&,
-    req:          const Request&,
-    now_ns:       u64,
-    res:          Response&,
-    out_future:   server_internal::InlineHandlerFuture&,
-    match_res:    RouteMatchResult,
-    ext_slot_idx: i32,
-    sctx:         ServerStageCtx&,
-    user_stage:   UserStage&,
-) -> PipelineOutcome {
-    match match_res {
-        NotFound => {
-            if cfg.emit_problem_details {
-                respond_problem(res, 404, "Not Found", "The requested resource was not found");
-            } else {
-                res.status_code = 404; // Not Found
-            }
-            return PipelineOutcome.RouteNotFound;
-        },
-        MethodNotAllowed mna => {
-            if cfg.emit_problem_details {
-                respond_problem(res, 405, "Method Not Allowed", "The HTTP method is not allowed");
-            } else {
-                res.status_code = 405; // Method Not Allowed
-            }
-            set_header(res, rfc::HEADER_ALLOW, mna.allow_header[..]);
-            return PipelineOutcome.MethodNotAllowed;
-        },
-        Found f => {
-            return execute_found_route_handler(
-                cfg, req, now_ns, res, out_future, f, ext_slot_idx, sctx, user_stage,
-            );
-        },
-    };
-}
-
-// RFC 9110 Section 9.3.2: HEAD - Suppress body for HEAD requests while preserving Content-Length.
-fn handle_head_method_suppression(req_method: const u8[:], res: Response&) {
-    guard req_method == rfc::METHOD_HEAD else { return; }
-    if header(res, rfc::HEADER_CONTENT_LENGTH).len == 0 && res.body.len > 0 {
-        var cl_buf: u8[..32] = [];
-        res.body.len.format_i64_dec(cl_buf);
-        set_header(res, rfc::HEADER_CONTENT_LENGTH, cl_buf[..]);
-    }
-    res.body.clear();
-}
-
-// Resolves the effective pipeline mask from route match result and server capabilities.
-inline fn resolve_route_effective_pso(res: RouteMatchResult, caps: u64) -> u64 {
-    return match res {
-        Found f => f.pso_mask & caps,
-        _ => (DEFAULT_ROUTE_PSO_MASK | STAGE_INGRESS_CORS_PREFLIGHT) & caps,
-    };
-}
-
-// Updates `sctx` fields (`handler_id`, `entries_mask`, `ingress_mask`, `egress_mask`) from `match_res`.
-inline fn sync_stage_ctx_with_route(sctx: ServerStageCtx&, match_res: RouteMatchResult) {
-    let stream_bits = sctx.ingress_mask & (wire::STAGE_SRV_IN_CONTENT_DIGEST | wire::STAGE_SRV_IN_DECOMPRESS);
-    match match_res {
-        Found f => {
-            sctx.handler_id = f.handler_id;
-            sctx.entries_mask = f.entries_mask;
-            sctx.ingress_mask = f.ingress_mask | stream_bits;
-            sctx.egress_mask = f.egress_mask;
-        },
-        _ => {},
-    };
-}
-
-fn resolve_pipeline_route_match(
-    cfg:  ServerPipelineConfig&,
-    req:  const Request&,
-    ext:  server_internal::RequestExtensions&,
-    sctx: ServerStageCtx&,
-    res:  Response&,
-) -> RouteMatchResult {
-    var match_res = RouteMatchResult.NotFound;
-    let saved_status = res.status_code;
-    let rm_v = stage_server_route_match(cfg.router, req, ext, match_res, res);
-    match rm_v {
-        ShortCircuit sc => {
-            res.status_code = saved_status;
-            if sc.status_code == 405 {
-                remove_header(res, rfc::HEADER_ALLOW);
-            }
-        },
-        _ => {},
-    };
-    sync_stage_ctx_with_route(sctx, match_res);
-    return match_res;
-}
-
-fn verify_pipeline_body_stream<UserStage>(
-    cfg:        ServerPipelineConfig&,
-    req:        const Request&,
-    sctx:       ServerStageCtx&,
-    res:        Response&,
-    user_stage: UserStage&,
-) -> bool {
-    let stream_bits = wire::STAGE_SRV_IN_CONTENT_DIGEST | wire::STAGE_SRV_IN_DECOMPRESS;
-    guard req.body.len > 0 && (sctx.ingress_mask & stream_bits) != 0 else {
-        return true;
-    }
-    var body_stream, ok_bs = begin_server_body_stream(req, sctx.ingress_mask);
-    guard ok_bs else {
-        res.status_code = 400;
-        return false;
-    }
-    let chunk_v = feed_server_body_chunk(cfg, body_stream, req, sctx, req.body[..], true, res);
-    match chunk_v {
-        Continue => {},
-        _ => {
-            if res.status_code < 400 {
-                res.status_code = 400;
-            }
-            return false;
-        },
-    };
-    let hook_v = user_stage.on_server_stage(wire::ServerHookPhase.BodyChunk, cfg, req, sctx, res);
-    return match hook_v {
-        Continue => true,
-        _ => {
-            if res.status_code < 400 {
-                res.status_code = 400;
-            }
-            false
-        },
-    };
-}
-
-// Finalizes slowloris request lifecycle tracking.
-inline fn notify_pipeline_timer_end(timer_enabled: bool, timer: server_internal::ConnectionTimer&) {
-    if timer_enabled {
-        server_internal::notify_request_end(timer);
-    }
-}
-
-fn complete_pipeline_egress_and_hooks<UserStage>(
-    cfg:           ServerPipelineConfig&,
-    req:           const Request&,
-    now_ns:        u64,
-    res:           Response&,
-    ext_slot_idx:  i32,
-    effective_pso: u64,
-    outcome:       PipelineOutcome,
-    sctx:          ServerStageCtx&,
-    user_stage:    UserStage&,
-) -> PipelineOutcome {
-    sctx.outcome = outcome;
-    if outcome != PipelineOutcome.Handled || res.status_code >= 400 {
-        let err_v = user_stage.on_server_stage(wire::ServerHookPhase.OnError, cfg, req, sctx, res);
-        match err_v {
-            ShortCircuit sc => {
-                res.status_code = if res.status_code != 0 { res.status_code } else { sc.status_code as i32 };
-            },
-            _ => {},
-        };
-    }
-
-    if outcome == PipelineOutcome.Handled {
-        dispatch_egress_pipeline(cfg, req, res, effective_pso, now_ns, ext_slot_idx);
-        let user_out_v = user_stage.on_server_stage(wire::ServerHookPhase.PreSerialize, cfg, req, sctx, res);
-        match user_out_v {
-            ShortCircuit sc => {
-                res.status_code = sc.status_code as i32;
-            },
-            _ => {},
-        };
-    }
-
-    handle_head_method_suppression(req.method[..], res);
-    let _ = user_stage.on_server_stage(wire::ServerHookPhase.AfterResponse, cfg, req, sctx, res);
-    return outcome;
-}
-
-fn finalize_post_auth_and_egress<UserStage>(
-    cfg:           ServerPipelineConfig&,
-    req:           const Request&,
-    now_ns:        u64,
-    res:           Response&,
-    out_future:    server_internal::InlineHandlerFuture&,
-    match_res:     RouteMatchResult,
-    ext_slot_idx:  i32,
-    effective_pso: u64,
-    sctx:          ServerStageCtx&,
-    user_stage:    UserStage&,
-) -> PipelineOutcome {
-    guard verify_pipeline_body_stream(cfg, req, sctx, res, user_stage) else {
-        return PipelineOutcome.CsrfRejected;
-    }
-    var outcome = PipelineOutcome.Handled;
-    var skip_route = false;
-    let user_in_v = user_stage.on_server_stage(wire::ServerHookPhase.PostAuth, cfg, req, sctx, res);
-    match user_in_v {
-        ShortCircuit sc => {
-            if res.status_code == 0 {
-                res.status_code = sc.status_code as i32;
-            }
-            skip_route = true;
-        },
-        Abort _ => {
-            outcome = PipelineOutcome.CsrfRejected;
-            skip_route = true;
-        },
-        _ => {},
-    };
-
-    if !skip_route {
-        outcome = dispatch_matched_route(
-            cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, sctx, user_stage,
-        );
-    }
-    if outcome == PipelineOutcome.Pending {
-        sctx.outcome = PipelineOutcome.Pending;
-        return PipelineOutcome.Pending;
-    }
-
-    return complete_pipeline_egress_and_hooks(
-        cfg, req, now_ns, res, ext_slot_idx, effective_pso, outcome, sctx, user_stage,
-    );
-}
-
 // Resumes a parked request after `Wake`, running `ResumeHandler`, error hooks, cache store, and egress stages.
 fn resume_server_pipeline_egress<UserStage>(
     cfg:        ServerPipelineConfig&,
-    req:        const Request&,
+    req:        const http::Request&,
     now_ns:     u64,
     sctx:       ServerStageCtx&,
-    res:        Response&,
+    res:        http::Response&,
     user_stage: UserStage&,
 ) -> PipelineOutcome {
     sctx.is_pending = false;
@@ -2231,23 +1142,21 @@ fn resume_server_pipeline_egress<UserStage>(
         _ => {},
     };
     guard outcome == PipelineOutcome.Handled else {
-        return complete_pipeline_egress_and_hooks(
+        return server_internal::complete_pipeline_egress_and_hooks(
             cfg, req, now_ns, res, -1, sctx.pso_mask, outcome, sctx, user_stage,
         );
     }
     if res.status_code == 0 {
         res.status_code = 200;
         if sctx.handler_id >= 0 {
-            apply_route_payload(cfg, sctx.handler_id, res);
+            server_internal::apply_route_payload(cfg, sctx.handler_id, res);
         }
     }
-    maybe_store_server_route_cache(cfg, req, now_ns, res, sctx.handler_id, sctx.egress_mask);
-    return complete_pipeline_egress_and_hooks(
+    server_internal::maybe_store_server_route_cache(cfg, req, now_ns, res, sctx.handler_id, sctx.egress_mask);
+    return server_internal::complete_pipeline_egress_and_hooks(
         cfg, req, now_ns, res, -1, sctx.pso_mask, outcome, sctx, user_stage,
     );
 }
-
-// ---- 6. Top-Level Server Pipeline Entrypoints -------------------------------
 
 // Executes an incoming request using a caller-owned `ServerStageCtx` carrying `wake_token`.
 // Returns `PipelineOutcome.Pending` if `suspend_server_request(sctx)` was called during handling.
@@ -2255,9 +1164,9 @@ fn execute_server_pipeline_async<UserStage>(
     cfg:        ServerPipelineConfig&,
     conn_timer: server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
-    req:        const Request&,
+    req:        const http::Request&,
     now_ns:     u64,
-    res:        Response&,
+    res:        http::Response&,
     out_future: server_internal::InlineHandlerFuture&,
     sctx:       ServerStageCtx&,
     user_stage: UserStage&,
@@ -2274,13 +1183,13 @@ fn execute_server_pipeline_async<UserStage>(
     // Acquire request extensions from pool
     let ext_slot_idx = server_internal::acquire_extensions(cfg.ext_pool);
     guard ext_slot_idx >= 0 else {
-        notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
+        server_internal::notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
         res.status_code = 503; // Service Unavailable / Pool Exhausted
         return PipelineOutcome.RateLimited;
     }
     defer server_internal::release_extensions(cfg.ext_pool, ext_slot_idx);
     defer sctx.ext_slot_idx = -1;
-    defer notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
+    defer server_internal::notify_pipeline_timer_end(cfg.enable_slowloris_timer, conn_timer);
 
     let e_idx = ext_slot_idx as i64;
     let _ = cfg.ext_pool.slots[e_idx].peer_ip.try_set(eff_ip[..min(eff_ip.len, 48)]);
@@ -2311,24 +1220,24 @@ fn execute_server_pipeline_async<UserStage>(
         _ => {},
     };
 
-    if cfg.security_txt.is_valid && is_security_txt_path(req.url[..]) &&
+    if cfg.security_txt.is_valid && http::is_security_txt_path(req.url[..]) &&
        (req.method[..] == "GET" || req.method[..] == "HEAD") {
         res.status_code = 200;
-        set_header(res, "Content-Type", "text/plain; charset=utf-8");
+        http::set_header(res, "Content-Type", "text/plain; charset=utf-8");
         res.body.clear();
-        format_security_txt(cfg.security_txt, res.body);
-        handle_head_method_suppression(req.method[..], res);
+        http::format_security_txt(cfg.security_txt, res.body);
+        server_internal::handle_head_method_suppression(req.method[..], res);
         return PipelineOutcome.Handled;
     }
 
-    let match_res = resolve_pipeline_route_match(cfg, req, cfg.ext_pool.slots[e_idx], sctx, res);
+    let match_res = server_internal::resolve_pipeline_route_match(cfg, req, cfg.ext_pool.slots[e_idx], sctx, res);
 
-    let effective_pso = resolve_route_effective_pso(match_res, cfg.server_pso_capabilities);
+    let effective_pso = server_internal::resolve_route_effective_pso(match_res, cfg.server_pso_capabilities);
     cfg.ext_pool.slots[e_idx].effective_pso = effective_pso;
     sctx.pso_mask = effective_pso;
 
     if effective_pso != 0 {
-        let ingress_outcome, is_terminal = dispatch_ingress_pipeline(
+        let ingress_outcome, is_terminal = server_internal::dispatch_ingress_pipeline(
             cfg,
             req,
             res,
@@ -2343,7 +1252,7 @@ fn execute_server_pipeline_async<UserStage>(
         }
     }
 
-    return finalize_post_auth_and_egress(
+    return server_internal::finalize_post_auth_and_egress(
         cfg, req, now_ns, res, out_future, match_res, ext_slot_idx, effective_pso, sctx, user_stage,
     );
 }
@@ -2353,9 +1262,9 @@ fn execute_server_pipeline_with_stage<UserStage>(
     cfg:        ServerPipelineConfig&,
     conn_timer: server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
-    req:        const Request&,
+    req:        const http::Request&,
     now_ns:     u64,
-    res:        Response&,
+    res:        http::Response&,
     out_future: server_internal::InlineHandlerFuture&,
     user_stage: UserStage&,
 ) -> PipelineOutcome {
@@ -2377,9 +1286,9 @@ fn execute_pipeline(
     cfg:        ServerPipelineConfig&,
     conn_timer: server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
-    req:        const Request&,
+    req:        const http::Request&,
     now_ns:     u64,
-    res:        Response&,
+    res:        http::Response&,
     out_future: server_internal::InlineHandlerFuture&,
 ) -> PipelineOutcome {
     var noop = wire::NoOpStage {};

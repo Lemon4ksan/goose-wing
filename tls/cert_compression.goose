@@ -75,7 +75,7 @@ fn parse_compressed_certificate_msg(
 // RFC 8879 Section 4: Compressed Certificate Message - Safe Decompression Handler
 // Verifies uncompressed size against maximum buffer bound and prevents decompression bombs.
 fn decompress_certificate_message<B>(
-    msg:             CompressedCertificate,
+    msg:             const CompressedCertificate&,
     max_allowed_len: u32,
     out_cert:        B&,
 ) -> bool {

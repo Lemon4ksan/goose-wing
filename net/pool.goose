@@ -3,7 +3,7 @@
 
 // Resilient connection pooling, 5-dimensional PoolKey partitioning,
 // two-slice WantQueue, liveness health checks, and HTTP/2 IP coalescing.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
@@ -12,6 +12,7 @@ import .want_queue;
 import .proxy;
 import .transport;
 import .udp;
+import .internal;
 import http2.hpack;
 import cookie.psl;
 
@@ -47,16 +48,9 @@ struct OriginEndpoint {
     overflowed: bool      = false,
 }
 
-// Copies and normalizes an ASCII hostname or site identifier to lowercase in-place.
-inline fn set_canonical_host<B>(dst: B&, raw_host: const u8[:]) -> bool {
-    guard dst.try_set(raw_host) else { return false; }
-    to_lower(dst[..]);
-    return true;
-}
-
 fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint {
     var ep = OriginEndpoint { port: port_num, .. };
-    if !ep.host.set_canonical_host(host_str) {
+    if !net_internal::set_canonical_host(ep.host, host_str) {
         ep.overflowed = true;
     }
     return ep;
@@ -132,36 +126,20 @@ fn pool_key_equals(a: const PoolKey&, b: const PoolKey&) -> bool {
     return true;
 }
 
-fn pool_scheme_to_u64(s: PoolScheme) -> u64 {
-    return match s {
-        Http => 1,
-        Https => 2,
-        Ws => 3,
-        Wss => 4,
-        H2c => 5,
-    };
-}
-
-inline fn wyhash64_ascii_fold(data: const u8[:], seed: u64) -> u64 {
-    var folded: u8[..256] = [];
-    for b in data {
-        let ch = if b >= 'A' && b <= 'Z' { b + 32 } else { b };
-        guard folded.try_push(ch) else { break; }
-    }
-    return core::wyhash64(folded[..], seed);
-}
-
 // Computes 64-bit WyHash composite hash for PoolKey partitioning and socket grouping.
 fn pool_key_hash(k: const PoolKey&) -> u64 {
-    var h: u64 = wyhash64_ascii_fold(k.origin_endpoint.host[..], k.origin_endpoint.port);
-    h = core::hash_combine_u64(h, pool_scheme_to_u64(k.scheme));
+    var h: u64 = net_internal::wyhash64_ascii_fold(k.origin_endpoint.host[..], k.origin_endpoint.port);
+    h = core::hash_combine_u64(h, net_internal::pool_scheme_to_u64(k.scheme));
     h = core::hash_combine_u64(h, k.proxy_chain.servers.len as u64);
     for &srv in k.proxy_chain.servers {
-        let sh = wyhash64_ascii_fold(srv.host[..], srv.port);
+        let sh = net_internal::wyhash64_ascii_fold(srv.host[..], srv.port);
         h = core::hash_combine_u64(h, sh);
     }
     h = core::hash_combine_u64(h, k.partition_key.nonce);
-    let part_h = wyhash64_ascii_fold(k.partition_key.top_frame_site[..], k.partition_key.network_isolation_partition);
+    let part_h = net_internal::wyhash64_ascii_fold(
+        k.partition_key.top_frame_site[..],
+        k.partition_key.network_isolation_partition,
+    );
     h = core::hash_combine_u64(h, part_h);
     h = core::hash_combine_u64(h, k.tls_and_dns_policy.target_network_id);
     return h;
@@ -227,7 +205,7 @@ fn is_connection_healthy(
         return true;
     }
 
-    let idle_duration_ns = core::ct_max_i64(0, now_ns - conn.idle_at_ns);
+    let idle_duration_ns = core::ct_max_i64(0, core::sub_sat_i64(now_ns, conn.idle_at_ns));
 
     if max_idle_ns > 0 && idle_duration_ns > max_idle_ns {
         conn.transport.close();
@@ -251,27 +229,6 @@ fn is_connection_healthy(
     return true;
 }
 
-inline fn has_empty_dns_label(name: const u8[:]) -> bool {
-    if name.len == 0 || name.starts_with(".") || name.ends_with(".") {
-        return true;
-    }
-    return core::contains(name, "..");
-}
-
-inline fn is_all_numeric_dot_host(host: const u8[:]) -> bool {
-    var saw_digit = false;
-    for b in host {
-        if b == '.' {
-            continue;
-        }
-        if !core::is_ascii_digit(b) {
-            return false;
-        }
-        saw_digit = true;
-    }
-    return saw_digit;
-}
-
 // Checks if a candidate host matches an active TLS Subject Alternative Name (SAN).
 fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
     // RFC 6125 Section 6.4.3: Checking of Wildcard Certificates - SAN DNSName MUST NOT end with trailing dot
@@ -281,7 +238,9 @@ fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
     } else {
         target_host
     };
-    guard !host.contains_byte('*') && !has_empty_dns_label(host) && !has_empty_dns_label(pattern) else {
+    guard !host.contains_byte('*') &&
+          !net_internal::has_empty_dns_label(host) &&
+          !net_internal::has_empty_dns_label(pattern) else {
         return false;
     }
 
@@ -289,7 +248,9 @@ fn matches_san_pattern(pattern: const u8[:], target_host: const u8[:]) -> bool {
         return true;
     }
     // RFC 6125 Section 1.7.2: Out of Scope - wildcards MUST NOT match IPv4 or IPv6 literals
-    guard pattern.starts_with("*.") && !host.contains_byte(':') && !is_all_numeric_dot_host(host) else {
+    guard pattern.starts_with("*.") &&
+          !host.contains_byte(':') &&
+          !net_internal::is_all_numeric_dot_host(host) else {
         return false;
     }
     let suffix = pattern[2..];
@@ -446,67 +407,11 @@ fn find_or_create_group(pool: StreamPool&, key: const PoolKey&) -> i32 {
     return new_idx as i32;
 }
 
-// Scans for a closed connection slot that can be reclaimed.
-fn find_closed_connection_slot(pool: const StreamPool&) -> i32 {
-    for &c, idx in pool.conns {
-        if c.closed {
-            return idx as i32;
-        }
-    }
-    return -1;
-}
-
-// Reclaims an available or evicted connection slot, preventing capacity starvation (RFC 9110 §9.3.1).
-fn acquire_connection_slot(pool: StreamPool&, now_ns: i64) -> i32 {
-    guard pool.conns.len >= 64 else { return -1; }
-    let closed_idx = find_closed_connection_slot(pool);
-    if closed_idx >= 0 {
-        return closed_idx;
-    }
-    guard pool.evict_oldest_idle_connection(now_ns) else { return -2; }
-    return find_closed_connection_slot(pool);
-}
-
-fn group_record_closed(pool: StreamPool&, key: const PoolKey&, active: bool) {
-    let grp_idx = pool.find_group_index(key);
-    guard grp_idx >= 0 else { return; }
-    let grp .= pool.groups[grp_idx];
-    if active {
-        if grp.active_conns > 0 {
-            grp.active_conns -= 1;
-        }
-    } else {
-        if grp.idle_conns > 0 {
-            grp.idle_conns -= 1;
-        }
-    }
-}
-
-fn group_record_acquired(pool: StreamPool&, key: const PoolKey&) {
-    let grp_idx = pool.find_group_index(key);
-    guard grp_idx >= 0 else { return; }
-    let grp .= pool.groups[grp_idx];
-    grp.active_conns += 1;
-    if grp.idle_conns > 0 {
-        grp.idle_conns -= 1;
-    }
-}
-
-fn group_record_released(pool: StreamPool&, key: const PoolKey&) {
-    let grp_idx = pool.find_group_index(key);
-    guard grp_idx >= 0 else { return; }
-    let grp .= pool.groups[grp_idx];
-    if grp.active_conns > 0 {
-        grp.active_conns -= 1;
-    }
-    grp.idle_conns += 1;
-}
-
 // Marks a pooled connection as closed, freeing it for slot reclamation.
 fn close_pooled_connection(pool: StreamPool&, conn_id: i32) -> bool {
     for &c in pool.conns {
         if c.conn_id == conn_id && !c.closed {
-            group_record_closed(pool, c.key, c.active_allocations > 0);
+            net_internal::group_record_closed(pool, c.key, c.active_allocations > 0);
             c.transport.close();
             c.rx_buf.clear();
             c.closed = true;
@@ -518,119 +423,6 @@ fn close_pooled_connection(pool: StreamPool&, conn_id: i32) -> bool {
     return false;
 }
 
-// Evicts the oldest idle connection in the pool when soft cap is reached.
-fn evict_oldest_idle_connection(pool: StreamPool&, now_ns: i64) -> bool {
-    var oldest_idx = -1;
-    var oldest_idle_ns: i64 = 0;
-
-    for &c, idx in pool.conns {
-        if !c.closed && c.active_allocations == 0 {
-            if oldest_idx == -1 || c.idle_at_ns < oldest_idle_ns {
-                oldest_idx = idx as i32;
-                oldest_idle_ns = c.idle_at_ns;
-            }
-        }
-    }
-
-    if oldest_idx >= 0 {
-        let victim .= pool.conns[oldest_idx];
-        group_record_closed(pool, victim.key, false);
-        victim.transport.close();
-        victim.rx_buf.clear();
-        victim.closed = true;
-        victim.no_new_exchanges = true;
-        return true;
-    }
-    return false;
-}
-
-// Evicts the oldest idle connection belonging to a specific PoolKey group.
-fn evict_oldest_idle_in_group(pool: StreamPool&, key: const PoolKey&) -> bool {
-    var oldest_idx = -1;
-    var oldest_idle_ns: i64 = 0;
-
-    for &c, idx in pool.conns {
-        if !c.closed && c.active_allocations == 0 && c.key.pool_key_equals(key) {
-            if oldest_idx == -1 || c.idle_at_ns < oldest_idle_ns {
-                oldest_idx = idx as i32;
-                oldest_idle_ns = c.idle_at_ns;
-            }
-        }
-    }
-
-    guard oldest_idx >= 0 else { return false; }
-    let victim .= pool.conns[oldest_idx];
-    group_record_closed(pool, victim.key, false);
-    victim.transport.close();
-    victim.rx_buf.clear();
-    victim.closed = true;
-    victim.no_new_exchanges = true;
-    return true;
-}
-
-// Counts active and idle sockets currently open across a given proxy chain.
-fn count_proxy_chain_sockets(pool: const StreamPool&, proxy_chain: const ProxyChain&) -> i64, i64 {
-    var active: i64 = 0;
-    var idle:   i64 = 0;
-    for &c in pool.conns {
-        if !c.closed && c.key.proxy_chain.proxy_chain_equals(proxy_chain) {
-            if c.active_allocations > 0 {
-                active = core::add_sat_i64(active, 1);
-            } else {
-                idle = core::add_sat_i64(idle, 1);
-            }
-        }
-    }
-    return active, idle;
-}
-
-// Evicts the oldest idle connection sharing the specified proxy chain.
-fn evict_oldest_idle_for_proxy(pool: StreamPool&, proxy_chain: const ProxyChain&) -> bool {
-    var oldest_idx = -1;
-    var oldest_idle_ns: i64 = 0;
-
-    for &c, idx in pool.conns {
-        if !c.closed && c.active_allocations == 0 && c.key.proxy_chain.proxy_chain_equals(proxy_chain) {
-            if oldest_idx == -1 || c.idle_at_ns < oldest_idle_ns {
-                oldest_idx = idx as i32;
-                oldest_idle_ns = c.idle_at_ns;
-            }
-        }
-    }
-
-    guard oldest_idx >= 0 else { return false; }
-    let victim .= pool.conns[oldest_idx];
-    group_record_closed(pool, victim.key, false);
-    victim.transport.close();
-    victim.rx_buf.clear();
-    victim.closed = true;
-    victim.no_new_exchanges = true;
-    return true;
-}
-
-fn enforce_group_socket_quota(pool: StreamPool&, key: const PoolKey&) -> bool {
-    let grp_idx = pool.find_group_index(key);
-    guard grp_idx >= 0 && pool.max_sockets_per_group > 0 else { return true; }
-    let grp .= pool.groups[grp_idx];
-    let total_grp = core::add_sat_i64(grp.active_conns, grp.idle_conns);
-    guard total_grp >= pool.max_sockets_per_group else { return true; }
-    if grp.idle_conns > 0 {
-        let _ = evict_oldest_idle_in_group(pool, key);
-    }
-    return grp.active_conns < pool.max_sockets_per_group;
-}
-
-fn enforce_proxy_chain_socket_quota(pool: StreamPool&, key: const PoolKey&) -> bool {
-    guard !key.proxy_chain.is_direct && pool.max_sockets_per_proxy > 0 else { return true; }
-    let p_active, p_idle = count_proxy_chain_sockets(pool, key.proxy_chain);
-    let total_proxy = core::add_sat_i64(p_active, p_idle);
-    guard total_proxy >= pool.max_sockets_per_proxy else { return true; }
-    if p_idle > 0 {
-        let _ = evict_oldest_idle_for_proxy(pool, key.proxy_chain);
-    }
-    return p_active < pool.max_sockets_per_proxy;
-}
-
 // Verifies per-group (`max_sockets_per_group`) and per-proxy (`max_sockets_per_proxy`) limits,
 // evicting idle sockets in the group or proxy chain before rejecting saturated active groups.
 fn can_allocate_group_socket(
@@ -639,8 +431,8 @@ fn can_allocate_group_socket(
     respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> bool {
     guard respect_limits == RespectLimits.Enabled else { return true; }
-    guard enforce_group_socket_quota(pool, key) else { return false; }
-    return enforce_proxy_chain_socket_quota(pool, key);
+    guard net_internal::enforce_group_socket_quota(pool, key) else { return false; }
+    return net_internal::enforce_proxy_chain_socket_quota(pool, key);
 }
 
 // Closes and evicts all connections from the stream pool, resetting buffers.
@@ -648,7 +440,7 @@ fn drain_stream_pool(pool: StreamPool&) {
     for i in pool.conns.len {
         let c .= pool.conns[i];
         if !c.closed {
-            group_record_closed(pool, c.key, c.active_allocations > 0);
+            net_internal::group_record_closed(pool, c.key, c.active_allocations > 0);
             c.transport.close();
             c.rx_buf.clear();
             c.closed = true;
@@ -656,86 +448,6 @@ fn drain_stream_pool(pool: StreamPool&) {
             c.active_allocations = 0;
         }
     }
-}
-
-inline fn mark_multiplexed_acquired(c: PooledConnection&) {
-    c.active_allocations += 1;
-    c.use_count += 1;
-}
-
-inline fn try_acquire_direct_conn(
-    pool:                StreamPool&,
-    c:                   PooledConnection&,
-    key:                 const PoolKey&,
-    now_ns:              i64,
-    do_extensive_checks: bool,
-) -> i32, bool {
-    guard !c.closed && c.key.pool_key_equals(key) else { return -1, false; }
-    let was_idle = c.active_allocations == 0;
-    let is_h2_h3 = c.protocol == NegotiatedProtocol.Http2 || c.protocol == NegotiatedProtocol.Http3Quic;
-    if is_h2_h3 {
-        guard c.active_allocations < c.max_concurrent_streams else { return -1, false; }
-        let healthy = c.is_connection_healthy(
-            now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
-        );
-        if !healthy {
-            if c.closed {
-                group_record_closed(pool, c.key, !was_idle);
-            }
-            return -1, false;
-        }
-        mark_multiplexed_acquired(c);
-        if was_idle {
-            group_record_acquired(pool, c.key);
-        }
-        return c.conn_id, true;
-    }
-
-    guard was_idle else { return -1, false; }
-    let healthy = c.is_connection_healthy(
-        now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
-    );
-    if !healthy {
-        if c.closed {
-            group_record_closed(pool, c.key, false);
-        }
-        return -1, false;
-    }
-    c.active_allocations = 1;
-    c.use_count += 1;
-    group_record_acquired(pool, c.key);
-    return c.conn_id, true;
-}
-
-inline fn try_acquire_coalesced_conn(
-    pool:                StreamPool&,
-    c:                   PooledConnection&,
-    key:                 const PoolKey&,
-    target_resolved_ip:  const u8[:],
-    now_ns:              i64,
-    do_extensive_checks: bool,
-) -> i32, bool {
-    guard !c.closed && c.active_allocations < c.max_concurrent_streams else { return -1, false; }
-    let can_coalesce, is_negative = c.can_coalesce_h2_connection(key, target_resolved_ip);
-    if is_negative {
-        pool.negative_ip_pool_result_count += 1;
-    }
-    guard can_coalesce else { return -1, false; }
-    let was_idle = c.active_allocations == 0;
-    let healthy = c.is_connection_healthy(
-        now_ns, do_extensive_checks, IDLE_CONNECTION_HEALTHY_NS, pool.idle_timeout_ns,
-    );
-    if !healthy {
-        if c.closed {
-            group_record_closed(pool, c.key, !was_idle);
-        }
-        return -1, false;
-    }
-    mark_multiplexed_acquired(c);
-    if was_idle {
-        group_record_acquired(pool, c.key);
-    }
-    return c.conn_id, true;
 }
 
 // OkHttp RealRoutePlanner priority rule: always prefer reusing an already-bound
@@ -749,7 +461,7 @@ fn acquire_pooled_connection(
 ) -> i32, bool {
     // 1. Direct pool match for exact key
     for i in pool.conns.len {
-        let cid, ok = try_acquire_direct_conn(pool, pool.conns[i], key, now_ns, do_extensive_checks);
+        let cid, ok = net_internal::try_acquire_direct_conn(pool, pool.conns[i], key, now_ns, do_extensive_checks);
         if ok {
             return cid, true;
         }
@@ -758,7 +470,7 @@ fn acquire_pooled_connection(
     // 2. HTTP/2 IP coalescing match across origins
     if pool.enable_ip_coalescing_h2 && key.scheme == PoolScheme.Https && target_resolved_ip.len > 0 {
         for i in pool.conns.len {
-            let cid, ok = try_acquire_coalesced_conn(
+            let cid, ok = net_internal::try_acquire_coalesced_conn(
                 pool, pool.conns[i], key, target_resolved_ip, now_ns, do_extensive_checks,
             );
             if ok {
@@ -785,10 +497,10 @@ fn register_connection(
     guard pool.find_group_index(key) >= 0 || pool.groups.len < pool.groups.cap else { return -1; }
     guard can_allocate_group_socket(pool, key, respect_limits) else { return -1; }
     if respect_limits == RespectLimits.Enabled && pool.conns.len >= pool.socket_soft_cap {
-        pool.evict_oldest_idle_connection(now_ns);
+        let _ = net_internal::evict_oldest_idle_connection(pool, now_ns);
     }
 
-    let slot_idx = acquire_connection_slot(pool, now_ns);
+    let slot_idx = net_internal::acquire_connection_slot(pool, now_ns);
     guard slot_idx != -2 else { return -1; }
 
     let grp_idx = pool.find_or_create_group(key);
@@ -848,7 +560,7 @@ fn register_connection(
         let conn .= pool.conns[idx];
         conn.transport = t;
         match t {
-            Tls tl => tls_copy_slot_san_hosts(tl.cipher_slot, conn.san_hosts),
+            Tls tl => tls::copy_slot_san_hosts(tl.cipher_slot, conn.san_hosts),
             _ => {},
         };
         return cid;
@@ -873,37 +585,6 @@ fn enqueue_group_waiter(pool: StreamPool&, key: const PoolKey&, req_id: u64) -> 
     return pool.groups[grp_idx].wait_queue.push_want(w);
 }
 
-fn try_handoff_to_group_waiter(
-    pool:       StreamPool&,
-    c:          PooledConnection&,
-    out_waiter: WantConn&,
-) -> bool {
-    guard !c.no_new_exchanges && !c.remote_rst && !c.source_exhausted else { return false; }
-    let grp_idx = pool.find_group_index(c.key);
-    guard grp_idx >= 0 && !pool.groups[grp_idx].wait_queue.is_queue_empty() else { return false; }
-    let w_item, ok_w = pool.groups[grp_idx].wait_queue.pop_want();
-    guard ok_w else { return false; }
-    c.use_count = core::add_sat_i64(c.use_count, 1);
-    out_waiter = w_item;
-    out_waiter.ready = true;
-    out_waiter.assigned_conn_id = c.conn_id;
-    out_waiter.reused = true;
-    return true;
-}
-
-fn finalize_idle_or_draining_conn(pool: StreamPool&, c: PooledConnection&, now_ns: i64) {
-    if c.no_new_exchanges || c.remote_rst || c.source_exhausted {
-        group_record_closed(pool, c.key, true);
-        c.transport.close();
-        c.rx_buf.clear();
-        c.closed = true;
-        c.no_new_exchanges = true;
-        return;
-    }
-    c.idle_at_ns = now_ns;
-    group_record_released(pool, c.key);
-}
-
 // Releases an active allocation back to the pool, or immediately hands the connection off
 // to the next queued `WantConn` waiter in the group if one is pending.
 fn release_connection_or_handoff(
@@ -916,12 +597,12 @@ fn release_connection_or_handoff(
         if c.conn_id == conn_id && !c.closed {
             guard c.active_allocations > 0 else { return false, false; }
             out_waiter = WantConn { .. };
-            if try_handoff_to_group_waiter(pool, c, out_waiter) {
+            if net_internal::try_handoff_to_group_waiter(pool, c, out_waiter) {
                 return true, true;
             }
             c.active_allocations = core::sub_sat_i64(c.active_allocations, 1) as i32;
             if c.active_allocations == 0 {
-                finalize_idle_or_draining_conn(pool, c, now_ns);
+                net_internal::finalize_idle_or_draining_conn(pool, c, now_ns);
             }
             return true, false;
         }
@@ -936,9 +617,6 @@ fn release_connection(pool: StreamPool&, conn_id: i32, now_ns: i64) -> bool {
     return ok_rel;
 }
 
-// ---- Warm Upstream Connection Pool with NIK Isolation & EPOLLRDHUP Eviction --
-
-// Linux epoll half-closed peer hangup bitmask (EPOLLRDHUP = 0x2000).
 // ---- HTTPS ALPN Probe Gate & Connection Lifecycle Guards -------------------
 
 // Evaluates whether a new parallel dial to an HTTPS origin should wait in `WantQueue`
@@ -1024,20 +702,13 @@ fn should_retire_connection(
     return false;
 }
 
-inline fn is_origin_group_unused(grp: const ConnectionGroup&) -> bool {
-    return grp.active_conns <= 0 &&
-           grp.idle_conns <= 0 &&
-           grp.dials_in_progress <= 0 &&
-           grp.wait_queue.is_queue_empty();
-}
-
 // Evicts unused ConnectionGroup entries (zero active/idle/dialing sockets and empty WantQueue)
 // so multi-origin dispatchers do not exhaust the fixed group table ceiling.
 fn reclaim_idle_origin_groups(pool: StreamPool&) -> i32 {
     var kept:      ConnectionGroup[..32] = [];
     var reclaimed: i64                   = 0;
     for &grp in pool.groups {
-        if is_origin_group_unused(grp) {
+        if net_internal::is_origin_group_unused(grp) {
             reclaimed = core::add_sat_i64(reclaimed, 1);
         } else {
             let _ = kept.try_push(copy(grp));

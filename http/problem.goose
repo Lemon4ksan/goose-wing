@@ -3,13 +3,14 @@
 
 // RFC 9457: Problem Details for HTTP APIs (obsoleting RFC 7807).
 // Standardized machine-readable JSON representation for HTTP error responses.
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
 import json;
 import .response;
 import .headers;
+import http.internal;
 
 // RFC 9457 Section 3: The Problem Details JSON Object.
 struct ProblemDetails {
@@ -50,74 +51,6 @@ fn serialize_problem_details<B>(problem: const ProblemDetails&, out: B&) {
     out.push('}');
 }
 
-// RFC 9457 Section 3.1: Members of a Problem Details Object - Ignore members whose JSON type does not match.
-fn read_problem_string_member<B>(reader: json::Reader&, dst: B&, out_err: bool&) {
-    if json::peek(reader) != '"' {
-        json::skip(reader);
-        return;
-    }
-    if !core::read_json_string_into(reader, dst) {
-        out_err = true;
-    }
-}
-
-// Parses core status and type fields from JSON reader (RFC 9457 Section 3.1).
-//
-// Example:
-//   key = "status", reader has integer 404
-//   stores: out.status = 404, returns: true
-fn parse_problem_core_fields(
-    key:     const u8[:],
-    reader:  json::Reader&,
-    out:     ProblemDetails&,
-    out_err: bool&,
-) -> bool {
-    if key == "status" {
-        let ch = json::peek(reader);
-        if (ch >= '0' && ch <= '9') || ch == '-' {
-            let num = json::read_number(reader);
-            let code = num as i32;
-            if num >= 100.0 && num <= 599.0 && code == num {
-                out.status = code;
-            }
-        } else {
-            json::skip(reader);
-        }
-        return true;
-    }
-    if key == "type" {
-        read_problem_string_member(reader, out.type_uri, out_err);
-        return true;
-    }
-    return false;
-}
-
-// Parses descriptive title, detail, and instance fields from JSON reader (RFC 9457 Section 3.1).
-//
-// Example:
-//   key = "title", reader has string "Not Found"
-//   stores: out.title = "Not Found", returns: true
-fn parse_problem_descriptive_fields(
-    key:     const u8[:],
-    reader:  json::Reader&,
-    out:     ProblemDetails&,
-    out_err: bool&,
-) -> bool {
-    if key == "title" {
-        read_problem_string_member(reader, out.title, out_err);
-        return true;
-    }
-    if key == "detail" {
-        read_problem_string_member(reader, out.detail, out_err);
-        return true;
-    }
-    if key == "instance" {
-        read_problem_string_member(reader, out.instance, out_err);
-        return true;
-    }
-    return false;
-}
-
 // Parses an RFC 9457 JSON problem details document into a typed ProblemDetails struct.
 // Defends against duplicate keys and injection via canonical streaming JSON reader.
 //
@@ -134,8 +67,8 @@ fn parse_problem_details(json_src: const u8[:], out: ProblemDetails&) -> bool {
     var field_err = false;
 
     json::each_member(reader) { key =>
-        if !parse_problem_core_fields(key, reader, out, field_err) &&
-           !parse_problem_descriptive_fields(key, reader, out, field_err) {
+        if !http_internal::parse_problem_core_fields(key, reader, out, field_err) &&
+           !http_internal::parse_problem_descriptive_fields(key, reader, out, field_err) {
             json::skip(reader);
         }
     };
@@ -221,28 +154,6 @@ enum ValidationDetailMode {
     Redacted,
 }
 
-// Appends a sanitized field-level validation failure to `vp.errors`.
-// Sets `vp.overflowed = true` and returns `false` if the bounded 16-entry error array is full.
-fn record_field_error(
-    vp:       ValidationProblem&,
-    on:       ValidationLocation,
-    property: const u8[:],
-    summary:  const u8[:],
-    code:     const u8[:] = "invalid_field",
-) -> bool {
-    var item = FieldValidationError { on: on, .. };
-    sanitize_untrusted_for_error(property, item.property);
-    let code_len = min(code.len, item.code.cap);
-    item.code.append(code[..code_len]);
-    let sum_len = min(summary.len, item.summary.cap);
-    item.summary.append(summary[..sum_len]);
-    guard vp.errors.try_push(item) else {
-        vp.overflowed = true;
-        return false;
-    }
-    return true;
-}
-
 // Evaluates predicate `ok`; when `false`, records a field error in `vp` and returns `false`.
 fn check_field(
     vp:       ValidationProblem&,
@@ -253,7 +164,7 @@ fn check_field(
     summary:  const u8[:],
 ) -> bool {
     if ok { return true; }
-    let _ = record_field_error(vp, on, property, summary, code);
+    let _ = http_internal::record_field_error(vp, on, property, summary, code);
     return false;
 }
 

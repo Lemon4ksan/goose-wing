@@ -4,11 +4,12 @@
 // Zero-allocation polymorphic transport representation and case functions.
 // Provides closed polymorphism over live L4 TCP sockets, Unix domain sockets,
 // TLS record channels, and synthetic mock exchanges without vtable indirection.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
 import .tcp;
+import .internal;
 
 const VIRTUAL_FD_TAG:       i64 = 0x40000000;
 const VIRTUAL_FD_B_END_BIT: i64 = 0x20000000;
@@ -24,27 +25,11 @@ struct VirtualPipeSlot {
 
 var g_virtual_pipes: VirtualPipeSlot[>..] = [];
 
-extern fn native_udp_bind(host: const u8[:], port: u16) -> i64 = "wing_udp_bind";
-extern fn native_udp_sendto(sock_fd: i64, data: const u8[:], host: const u8[:], port: u16) -> i32 = "wing_udp_sendto";
-extern fn native_udp_sendto_ip4(
-    sock_fd:   i64,
-    data:      const u8[:],
-    peer_ip4:  u32,
-    peer_port: u16,
-) -> i32 = "wing_udp_sendto_ip4";
-extern fn native_udp_recvfrom(
-    sock_fd:    i64,
-    buf:        u8[:],
-    timeout_ms: u32,
-    peer_ip4:   u32&,
-    peer_port:  u16&,
-) -> i32 = "wing_udp_recvfrom";
-
 // Binds a UDP socket on `host:port` after initializing the platform socket subsystem.
 // If `port` is 0, the OS allocates an ephemeral UDP port (retrieve with `tcp_getsockname_port`).
 fn udp_bind(host: const u8[:], port: u16 = 0) -> i64 {
     tcp_init();
-    return native_udp_bind(host, port);
+    return net_internal::native_udp_bind(host, port);
 }
 
 // Receives a UDP datagram into `buf` with `timeout_ms` timeout, populating `peer_ip4` and `peer_port`.
@@ -56,7 +41,7 @@ fn udp_recvfrom(
     peer_port:  u16&,
 ) -> i32 {
     guard sock_fd > 0 && buf.len > 0 else { return -1; }
-    return native_udp_recvfrom(sock_fd, buf, timeout_ms, peer_ip4, peer_port);
+    return net_internal::native_udp_recvfrom(sock_fd, buf, timeout_ms, peer_ip4, peer_port);
 }
 
 // Closed polymorphism for L4 and security transports (24 bytes inline POD).
@@ -264,12 +249,12 @@ fn send(t: Transport.Unix, data: const u8[:]) -> i32 {
 
 fn send(t: Transport.Tls, data: const u8[:]) -> i32 {
     guard t.fd > 0 else { return 0; }
-    return tls_transport_send(t.fd, t.cipher_slot, data);
+    return tls::transport_send(t.fd, t.cipher_slot, data);
 }
 
 fn send(t: Transport.Udp, data: const u8[:]) -> i32 {
     guard t.fd > 0 else { return 0; }
-    return native_udp_sendto_ip4(t.fd, data, t.peer_ip4, t.peer_port);
+    return net_internal::native_udp_sendto_ip4(t.fd, data, t.peer_ip4, t.peer_port);
 }
 
 fn send(t: Transport.Mock, data: const u8[:]) -> i32 {
@@ -320,7 +305,7 @@ fn recv_slice(t: Transport.Unix, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
 fn recv_slice(t: Transport.Tls, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard dst.len > 0 else { return 0; }
     guard t.fd > 0 else { return -1; }
-    return tls_transport_recv_slice(t.fd, t.cipher_slot, dst, timeout_ms);
+    return tls::transport_recv_slice(t.fd, t.cipher_slot, dst, timeout_ms);
 }
 
 fn recv_slice(t: Transport.Udp, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
@@ -370,7 +355,7 @@ fn close(t: Transport.Unix) {
 }
 
 fn close(t: Transport.Tls) {
-    tls_transport_close(t.fd, t.cipher_slot);
+    tls::transport_close(t.fd, t.cipher_slot);
 }
 
 fn close(t: Transport.Udp) {

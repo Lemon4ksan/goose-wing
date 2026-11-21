@@ -29,7 +29,7 @@ fn issue_session_ticket(conn: i64, slot_idx: u16, seq: u64) {
     let _ = ticket_buf.try_append("wing-nst-");
     seq.format_u64_dec(ticket_buf);
 
-    let _ = wing::tls_send_new_session_ticket(
+    let _ = tls::send_new_session_ticket(
         conn,
         slot_idx,
         NST_LIFETIME_SEC,
@@ -41,53 +41,53 @@ fn issue_session_ticket(conn: i64, slot_idx: u16, seq: u64) {
 fn run_session_io(
     conn:     i64,
     slot_idx: u16,
-    server:   wing::HttpServer&,
+    server:   server::HttpServer&,
     pipe:     core::PipeBuffer&,
     cork:     core::CorkBuffer&,
 ) {
-    defer wing::tls_transport_close(conn, slot_idx);
+    defer tls::transport_close(conn, slot_idx);
     pipe.pipe_reset();
     cork.cork_reset();
 
-    let h2_idx = wing::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
-    guard h2_idx >= 0 && h2_idx < wing::REACTOR_MAX_H2_SESSIONS else { return; }
-    defer wing::free_reactor_h2_session(h2_idx as i16, server.pipeline);
+    let h2_idx = server::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+    guard h2_idx >= 0 && h2_idx < server::REACTOR_MAX_H2_SESSIONS else { return; }
+    defer server::free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
     loop {
-        let recvd = wing::tls_recv_pipe(conn, slot_idx, pipe, RECV_BUF_BYTES, RECV_TIMEOUT_MS);
+        let recvd = server::tls_recv_pipe(conn, slot_idx, pipe, RECV_BUF_BYTES, RECV_TIMEOUT_MS);
         if recvd <= 0 { break; }
 
         let now_ns = core::monotonic_now().as_nanos();
-        let _, ok = wing::handle_connection_pipe(
+        let _, ok = server::handle_connection_pipe(
             server,
             "127.0.0.1",
             pipe,
             now_ns,
             cork,
-            wing::g_default_reactor.h2_sessions[h2_idx],
+            server::g_default_reactor.h2_sessions[h2_idx],
         );
-        let should_close = !ok || wing::response_wire_has_connection_close(cork.cork_as_slice());
+        let should_close = !ok || server::response_wire_has_connection_close(cork.cork_as_slice());
         if cork.cork_pending() > 0 {
-            let sent = wing::tls_flush_cork(conn, slot_idx, cork);
+            let sent = server::tls_flush_cork(conn, slot_idx, cork);
             if sent <= 0 { break; }
         }
         if !ok || should_close { break; }
     }
 }
 
-fn setup_tls_server(port: u16, out_cert: u8[..2048]&) -> wing::HttpServer, wing::TlsServerHandshakeConfig {
-    var server = wing::new_http_server("127.0.0.1", port);
+fn setup_tls_server(port: u16, out_cert: u8[..2048]&) -> server::HttpServer, tls::ServerHandshakeConfig {
+    var server = server::new_http_server("127.0.0.1", port);
     server.pipeline.enable_rate_limiter = false;
     server.pipeline.enable_slowloris_timer = false;
     let _ = server.server_name.try_set("localhost");
-    assert(wing::add_static_route(
+    assert(server::add_static_route(
         server.pipeline.router,
         "GET",
         "/h1",
         "text/plain",
         "hello-from-wing-TLS1.3",
     ));
-    assert(wing::add_static_route(
+    assert(server::add_static_route(
         server.pipeline.router,
         "GET",
         "/ping",
@@ -96,23 +96,23 @@ fn setup_tls_server(port: u16, out_cert: u8[..2048]&) -> wing::HttpServer, wing:
     ));
 
     let seed: u8[32] = [0x42; 32];
-    assert(wing::build_test_ed25519_cert_der(seed, "localhost", "localhost", "127.0.0.1", out_cert));
+    assert(tls::build_test_ed25519_cert_der(seed, "localhost", "localhost", "127.0.0.1", out_cert));
 
-    var tls_cfg = wing::TlsServerHandshakeConfig { priv_seed: seed, .. };
+    var tls_cfg = tls::ServerHandshakeConfig { priv_seed: seed, .. };
     assert(tls_cfg.cert_der.try_set(out_cert[..]));
     assert(tls_cfg.alpn.try_set("http/1.1,h2"));
     return server, tls_cfg;
 }
 
 fn main() {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 128);
+    let listener = net::tcp_listen("127.0.0.1", 0, 128);
     guard listener > 0 else {
         print("FATAL: listen failed");
         return;
     }
-    defer wing::tcp_close(listener);
+    defer net::tcp_close(listener);
 
-    let port = wing::tcp_getsockname_port(listener);
+    let port = net::tcp_getsockname_port(listener);
     var cert_der: u8[..2048] = [];
     var server, tls_cfg = setup_tls_server(port, cert_der);
 
@@ -124,12 +124,12 @@ fn main() {
     var ticket_seq: u64 = 0;
 
     while true {
-        let conn = wing::tcp_accept(listener, ACCEPT_POLL_MS);
+        let conn = net::tcp_accept(listener, ACCEPT_POLL_MS);
         if conn <= 0 { continue; }
 
-        let slot_idx, ok_hs = wing::tls_server_handshake(conn, tls_cfg);
+        let slot_idx, ok_hs = tls::server_handshake(conn, tls_cfg);
         if !ok_hs {
-            wing::tcp_close(conn);
+            net::tcp_close(conn);
             continue;
         }
         ticket_seq = core::add_sat_u64(ticket_seq, 1);

@@ -252,8 +252,8 @@ fn test_h3_request_streams(t: lit::T&) {
         sub.assert_true(ok_sid, "open request stream succeeds");
         sub.assert_eq(sid, 0, "first client stream id is 0");
 
-        var extra_hdrs = wing::HeaderMap { .. };
-        wing::append_header(extra_hdrs, "user-agent", "GooseWing/1.0");
+        var extra_hdrs = http::HeaderMap { .. };
+        http::append_header(extra_hdrs, "user-agent", "GooseWing/1.0");
 
         var req_buf: u8[..512] = [];
         let ok_send = conn.send_request_headers(
@@ -381,8 +381,8 @@ fn test_h3_request_streams(t: lit::T&) {
         let sid0, ok0 = client_conn.open_request_stream();
         sub.assert_true(ok0, "open stream 0");
 
-        var extra = wing::HeaderMap { .. };
-        wing::append_header(extra, "x-custom-token", "secret-val-123");
+        var extra = http::HeaderMap { .. };
+        http::append_header(extra, "x-custom-token", "secret-val-123");
 
         var req_frame0: u8[..512] = [];
         sub.assert_true(
@@ -621,7 +621,7 @@ fn test_h3_extended_frames(t: lit::T&) {
 
         // Encode and parse PRIORITY_UPDATE frame for Request Stream
         var pu_buf: u8[..64] = [];
-        let p_req = wing::PriorityParam { urgency: 3, incremental: true };
+        let p_req = http::PriorityParam { urgency: 3, incremental: true };
         sub.assert_true(http3::encode_priority_update_request(pu_buf, 0, p_req), "encode PRIORITY_UPDATE req");
         let pu_hdr, ok_pu_hdr = http3::parse_frame_header(pu_buf[..], 0);
         sub.assert_true(ok_pu_hdr, "parse PRIORITY_UPDATE req header");
@@ -633,7 +633,7 @@ fn test_h3_extended_frames(t: lit::T&) {
 
         // Encode and parse PRIORITY_UPDATE frame for Push Stream
         var pp_buf: u8[..64] = [];
-        let p_push = wing::PriorityParam { urgency: 5, incremental: false };
+        let p_push = http::PriorityParam { urgency: 5, incremental: false };
         sub.assert_true(http3::encode_priority_update_push(pp_buf, 1, p_push), "encode PRIORITY_UPDATE push");
         let pp_hdr, ok_pp_hdr = http3::parse_frame_header(pp_buf[..], 0);
         sub.assert_true(ok_pp_hdr, "parse PRIORITY_UPDATE push header");
@@ -663,7 +663,7 @@ fn test_h3_extended_frames(t: lit::T&) {
 
         // Send headers
         var req_buf: u8[..256] = [];
-        var hdrs = wing::HeaderMap { .. };
+        var hdrs = http::HeaderMap { .. };
         conn.send_request_headers(sid, "GET", "https", "example.com", "/", hdrs, false, req_buf);
 
         // Send data without end_stream
@@ -1222,7 +1222,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
 
         // Test C: Stream slot reuse allows > 8 requests on same connection
         var cli_reuse = http3::new_client_connection(settings);
-        let empty_headers = wing::HeaderMap { .. };
+        let empty_headers = http::HeaderMap { .. };
         for i in 12 {
             let sid, ok_open = cli_reuse.open_request_stream();
             sub.assert_true(ok_open, "open request stream in loop");
@@ -1255,7 +1255,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
         cli_prio.handle_stream_data(3, false, init_ctrl_d[..], false);
 
         var bad_prio_wire: u8[..64] = [];
-        let bad_prio = wing::PriorityParam { urgency: 2, incremental: false };
+        let bad_prio = http::PriorityParam { urgency: 2, incremental: false };
         http3::encode_priority_update_request(bad_prio_wire, 0, bad_prio);
         let err_cli_prio = cli_prio.handle_stream_data(3, false, bad_prio_wire[..], false);
         sub.assert_eq(err_cli_prio, rfc::H3_ERR_FRAME_UNEXPECTED, "Server sending PRIORITY_UPDATE to client rejected");
@@ -1300,7 +1300,7 @@ fn test_round3_qpackstrike_suite(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_webtransport_session_and_datagrams(t: lit::T&) {
     t.run("Extended CONNECT Initiation (draft-16)") { sub =>
-        var req = wing::Request { .. };
+        var req = http::Request { .. };
         realtime::format_webtransport_connect_request(req, "https://chat.example.com/wt-feed");
 
         sub.assert_bytes_eq(req.method[..], "CONNECT", "Method is CONNECT");
@@ -1313,11 +1313,11 @@ fn test_webtransport_session_and_datagrams(t: lit::T&) {
 
         sub.assert_true(realtime::is_webtransport_connect_request(req), "is_webtransport_connect_request returns true");
 
-        var bad_req = wing::Request { .. };
+        var bad_req = http::Request { .. };
         sub.assert_false(realtime::is_webtransport_connect_request(bad_req), "Non-CONNECT request is rejected");
 
         var session = realtime::WebTransportSession { session_id: 104, .. };
-        var resp_200 = wing::Response { status_code: 200, .. };
+        var resp_200 = http::Response { status_code: 200, .. };
         realtime::format_webtransport_connect_response(resp_200);
         sub.assert_bytes_eq(resp_200.header("sec-webtransport-http3-draft"), "draft16", "Response draft header is draft16");
 
@@ -1325,7 +1325,7 @@ fn test_webtransport_session_and_datagrams(t: lit::T&) {
         sub.assert_true(ok, "Session activated on 200 OK");
         sub.assert_true(session.is_active, "Session is active");
 
-        var resp_500 = wing::Response { status_code: 500, .. };
+        var resp_500 = http::Response { status_code: 500, .. };
         let fail = session.handle_webtransport_response(resp_500);
         sub.assert_false(fail, "Session rejected on 500 Error");
         sub.assert_false(session.is_active, "Session deactivated");
@@ -1475,7 +1475,7 @@ fn test_webtransport_capsules(t: lit::T&) {
         var wire: u8[..256] = [];
         realtime::encode_webtransport_close_session(err_code, reason, wire);
 
-        var c, ok_c = wing::parse_http_capsule(wire[..]);
+        var c, ok_c = net::parse_http_capsule(wire[..]);
         sub.assert_true(ok_c, "HTTP Capsule parsed from wire");
         sub.assert_eq(c.capsule_type, rfc::CAPSULE_CLOSE_WEBTRANSPORT, "Capsule type is CLOSE_WEBTRANSPORT");
 
@@ -1490,7 +1490,7 @@ fn test_webtransport_capsules(t: lit::T&) {
         var wire: u8[..64] = [];
         realtime::encode_webtransport_drain_session(wire);
 
-        var c, ok_c = wing::parse_http_capsule(wire[..]);
+        var c, ok_c = net::parse_http_capsule(wire[..]);
         sub.assert_true(ok_c, "Drain capsule parsed");
         sub.assert_eq(c.capsule_type, rfc::CAPSULE_DRAIN_WEBTRANSPORT, "Capsule type is DRAIN_WEBTRANSPORT");
         sub.assert_true(realtime::decode_webtransport_drain_session(c.payload), "Drain payload is valid (0-length)");
@@ -1503,7 +1503,7 @@ fn test_webtransport_capsules(t: lit::T&) {
         // WT_RESET_STREAM
         var r_wire: u8[..64] = [];
         realtime::encode_webtransport_reset_stream(12, 503, r_wire);
-        var c_r, ok_cr = wing::parse_http_capsule(r_wire[..]);
+        var c_r, ok_cr = net::parse_http_capsule(r_wire[..]);
         sub.assert_true(ok_cr, "Reset stream capsule parsed");
         sub.assert_eq(c_r.capsule_type, rfc::CAPSULE_WT_RESET_STREAM, "Capsule type is WT_RESET_STREAM");
 
@@ -1515,7 +1515,7 @@ fn test_webtransport_capsules(t: lit::T&) {
         // WT_STOP_SENDING
         var s_wire: u8[..64] = [];
         realtime::encode_webtransport_stop_sending(18, 499, s_wire);
-        var c_s, ok_cs = wing::parse_http_capsule(s_wire[..]);
+        var c_s, ok_cs = net::parse_http_capsule(s_wire[..]);
         sub.assert_true(ok_cs, "Stop sending capsule parsed");
         sub.assert_eq(c_s.capsule_type, rfc::CAPSULE_WT_STOP_SENDING, "Capsule type is WT_STOP_SENDING");
 
@@ -1610,7 +1610,7 @@ fn test_webtransport_stream_demuxing(t: lit::T&) {
         // Negative check: non-4*N session ID registration and response activation rejected
         sub.assert_false(realtime::register_webtransport_session(demuxer, 26), "Rejected non-4*N session 26 registration");
         var bad_sess = realtime::WebTransportSession { session_id: 42, .. };
-        var ok_resp = wing::Response { status_code: 200, .. };
+        var ok_resp = http::Response { status_code: 200, .. };
         realtime::format_webtransport_connect_response(ok_resp);
         sub.assert_false(bad_sess.handle_webtransport_response(ok_resp), "Rejected non-4*N session 42 response");
 
@@ -1721,7 +1721,7 @@ fn test_h3_audit_regressions(t: lit::T&) {
         var c_conn = http3::new_client_connection(settings);
         let sid, _ = c_conn.open_request_stream();
         var out_hdr: u8[..256] = [];
-        var extra = wing::HeaderMap { .. };
+        var extra = http::HeaderMap { .. };
         let _ = c_conn.send_request_headers(sid, "GET", "https", "example.com", "/res", extra, true, out_hdr);
 
         var resp_qpack: u8[..128] = [0x00, 0x00];
@@ -1761,7 +1761,7 @@ fn test_h3_audit_regressions(t: lit::T&) {
         var c_conn = http3::new_client_connection(settings);
         let sid, _ = c_conn.open_request_stream();
         var out_hdr: u8[..256] = [];
-        var extra = wing::HeaderMap { .. };
+        var extra = http::HeaderMap { .. };
         let _ = c_conn.send_request_headers(sid, "GET", "https", "example.com", "/", extra, false, out_hdr);
         var pp_frame: u8[..64] = [];
         let _ = http3::encode_push_promise(pp_frame, 0, [0x00, 0x00]);
@@ -1858,24 +1858,24 @@ fn test_nghttp3_vendor_conformance(t: lit::T&) {
         let good31 = "0123456789abcdef0123456789abcde";
         let good32 = "0123456789abcdef0123456789abcdef";
         let good64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        sub.assert_true(wing::is_valid_header_value(good31), "31-byte printable value valid");
-        sub.assert_true(wing::is_valid_header_value(good32), "32-byte printable value valid");
-        sub.assert_true(wing::is_valid_header_value(good64), "64-byte printable value valid");
-        sub.assert_true(wing::is_valid_header_value(""), "empty header value valid");
+        sub.assert_true(http::is_valid_header_value(good31), "31-byte printable value valid");
+        sub.assert_true(http::is_valid_header_value(good32), "32-byte printable value valid");
+        sub.assert_true(http::is_valid_header_value(good64), "64-byte printable value valid");
+        sub.assert_true(http::is_valid_header_value(""), "empty header value valid");
 
         // Control chars (0x00..0x08, 0x0A..0x1F, 0x7F) at index 31 (end of 32-byte block) MUST fail
         let bad_ctl_bytes: u8[6] = [0x00, 0x07, 0x0A, 0x0D, 0x1F, 0x7F];
         for k in 6 {
             var buf32: u8[32] = ['a'; 32];
             buf32[31] = bad_ctl_bytes[k];
-            sub.assert_false(wing::is_valid_header_value(buf32[..]), "control char at byte 31 rejected");
+            sub.assert_false(http::is_valid_header_value(buf32[..]), "control char at byte 31 rejected");
         }
 
         // Horizontal tab (0x09) and space (0x20) inside header value are valid
         var tab_mid: u8[32] = ['a'; 32];
         tab_mid[15] = '\t';
         tab_mid[16] = ' ';
-        sub.assert_true(wing::is_valid_header_value(tab_mid[..]), "interior HTAB and SP valid in header value");
+        sub.assert_true(http::is_valid_header_value(tab_mid[..]), "interior HTAB and SP valid in header value");
     };
 
     t.run("NGHTTP3-CONN-01: Decoder Stream Cancellation & Encoder Dynamic Table Sync") { sub =>
@@ -2043,7 +2043,7 @@ fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
         var cli_conn = http3::new_client_connection(settings);
         let sid_opt, _ = cli_conn.open_request_stream();
         let sid_bad, _ = cli_conn.open_request_stream();
-        let empty_extra = wing::HeaderMap { .. };
+        let empty_extra = http::HeaderMap { .. };
 
         var opt_frame: u8[..128] = [];
         sub.assert_true(
@@ -2075,37 +2075,37 @@ fn test_nghttp3_conn_and_http_semantics(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_f009_altsvc_slot_prioritization_and_backoff_saturation(t: lit::T&) {
     t.run("parse_altsvc_header retains h3 when preceded by 4 draft/legacy protocols") { sub =>
-        var cache = wing::AltSvcCache { .. };
+        var cache = http::AltSvcCache { .. };
         let origin = "example.com:443";
         let raw = "h3-Q050=\":443\", h3-Q046=\":443\", h3-27=\":443\", h3-29=\":443\", h3=\":8443\"; ma=3600";
-        wing::update(cache, origin, raw, 1000);
+        http::update(cache, origin, raw, 1000);
 
-        var ep = wing::AltSvcEndpoint { .. };
-        let found = wing::lookup_h3(cache, origin, 1050, ep);
+        var ep = http::AltSvcEndpoint { .. };
+        let found = http::lookup_h3(cache, origin, 1050, ep);
         sub.assert_true(found, "5th h3 endpoint MUST NOT be dropped by 4 preceding draft protocols");
         sub.assert_eq(ep.port as i64, 8443, "Promoted h3 port must be 8443");
     };
 
     t.run("record_failure saturates failed_attempts without wrapping u8 to 0") { sub =>
-        var cache = wing::AltSvcCache { .. };
+        var cache = http::AltSvcCache { .. };
         let origin = "backoff.example.com:443";
-        wing::update(cache, origin, "h3=\":443\"; ma=86400", 1000);
+        http::update(cache, origin, "h3=\":443\"; ma=86400", 1000);
 
         for i in 256 {
-            wing::record_failure(cache, origin, 1000);
+            http::record_failure(cache, origin, 1000);
         }
-        let attempts = wing::failed_attempts(cache, origin);
+        let attempts = http::failed_attempts(cache, origin);
         sub.assert_true(attempts > 0, "failed_attempts MUST saturate (> 0) after 256 failures instead of wrapping to 0");
-        sub.assert_true(wing::is_broken(cache, origin, 1150), "Origin must remain in 160s max backoff at t=1150");
+        sub.assert_true(http::is_broken(cache, origin, 1150), "Origin must remain in 160s max backoff at t=1150");
     };
 
     t.run("lookup_h3 rejects negative elapsed time on backward clock jump") { sub =>
-        var cache = wing::AltSvcCache { .. };
+        var cache = http::AltSvcCache { .. };
         let origin = "clock.example.com:443";
-        wing::update(cache, origin, "h3=\":443\"; ma=60", 1000);
+        http::update(cache, origin, "h3=\":443\"; ma=60", 1000);
 
-        var ep = wing::AltSvcEndpoint { .. };
-        let found = wing::lookup_h3(cache, origin, 900, ep);
+        var ep = http::AltSvcEndpoint { .. };
+        let found = http::lookup_h3(cache, origin, 900, ep);
         sub.assert_false(found, "Negative elapsed time (now_sec < inserted_at_sec) MUST NOT match as fresh");
     };
 }
@@ -2267,18 +2267,18 @@ fn test_h3_pseudo_header_unknown_and_ctl(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_altsvc_oversized_capacity_safety(t: lit::T&) {
     t.run("Alt-Svc with > 4 endpoints MUST NOT abort on fixed array overflow") { sub =>
-        var endpoints: wing::AltSvcEndpoint[..4] = [];
+        var endpoints: http::AltSvcEndpoint[..4] = [];
         // Header with 5 endpoints
         let raw = "h3=\":443\", h2=\":443\", h3-29=\":443\", h3-Q050=\":443\", h3-Q046=\":443\"";
-        let ok, is_clear = wing::parse_altsvc_header(raw, endpoints);
+        let ok, is_clear = http::parse_altsvc_header(raw, endpoints);
         sub.assert_true(ok, "Alt-Svc with 5 endpoints parsed without aborting");
         sub.assert_eq(endpoints.len, 4, "Capacity clamped cleanly at 4 without crash");
     };
 
     t.run("Alt-Svc with proto > 16 bytes MUST NOT abort") { sub =>
-        var endpoints: wing::AltSvcEndpoint[..4] = [];
+        var endpoints: http::AltSvcEndpoint[..4] = [];
         let raw = "superlongprotonamethatexceeds16bytes=\":443\"";
-        let ok, is_clear = wing::parse_altsvc_header(raw, endpoints);
+        let ok, is_clear = http::parse_altsvc_header(raw, endpoints);
         sub.assert_true(ok, "Alt-Svc with long proto parsed without aborting");
     };
 }

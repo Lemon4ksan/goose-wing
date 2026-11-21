@@ -4,11 +4,12 @@
 // RFC 9218 Extensible HTTP Priority.
 // Defines structured priority parameters (urgency 0..7 and incremental boolean flag),
 // structured field parsing/serialization, and priority update frame handling.
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
 import .sfv;
+import http.meta_internal;
 
 // ---- Urgency Constants & Model -------------------------------------------
 
@@ -35,20 +36,6 @@ fn is_valid_urgency(u: i64) -> bool {
     return u >= 0 && u <= 7;
 }
 
-fn urgency_to_ascii(u: u8) -> u8 {
-    match u {
-        0 => '0',
-        1 => '1',
-        2 => '2',
-        3 => '3',
-        4 => '4',
-        5 => '5',
-        6 => '6',
-        7 => '7',
-        _ => '3',
-    }
-}
-
 // ---- RFC 9218 Structured Field Parser ------------------------------------
 
 // RFC 9218 Section 4: Priority Parameters - Parse SF Dictionary once and ignore out-of-range or unknown keys.
@@ -56,7 +43,7 @@ fn urgency_to_ascii(u: u8) -> u8 {
 // Example:
 //   raw = "u=0, i"
 //   returns: p with urgency=0, incremental=true, ok = true
-fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool {
+fn parse_priority(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool {
     var p = priority_default(default_incremental);
     let trimmed = raw.trim_ascii_space();
     guard trimmed.len > 0 else { return p, false; }
@@ -81,9 +68,9 @@ fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> P
 // ---- RFC 9218 Structured Field Serializer --------------------------------
 
 // Writes RFC 9218 Priority header value: e.g. "u=3", "u=0, i".
-fn serialize_http_priority<B>(prio: const PriorityParam&, out: B&) {
+fn serialize_priority<B>(prio: const PriorityParam&, out: B&) {
     out.append("u=");
-    out.push(urgency_to_ascii(prio.urgency));
+    out.push(http_internal::urgency_to_ascii(prio.urgency));
     if prio.incremental {
         out.append(", i");
     }

@@ -25,7 +25,7 @@ import .health;
 import .internal;
 import .server;
 
-inline fn is_request(req: const wing::Request&) -> bool {
+inline fn is_request(req: const http::Request&) -> bool {
     let ct = req.header("content-type");
     if ct.len > 0 && grpc::is_content_type(ct) {
         return true;
@@ -67,7 +67,7 @@ fn register_method(
 
 // ---- Wire Response Builders ---------------------------------------------
 
-fn append_metadata_headers(target: wing::HeaderMap&, metadata: const grpc::Metadata[:]) {
+fn append_metadata_headers(target: http::HeaderMap&, metadata: const grpc::Metadata[:]) {
     for &m in metadata {
         if is_valid_custom_metadata(m.key[..], m.value[..]) {
             let _ = target.append_header(m.key[..], m.value[..]);
@@ -79,7 +79,7 @@ fn build_trailers_only_response(
     status:  grpc::StatusCode,
     message: const u8[:],
     ctx:     const grpc::ServerContext&,
-    res:     wing::Response&,
+    res:     http::Response&,
 ) {
     res.status_code = rfc::STATUS_OK;
     res.headers.clear();
@@ -130,7 +130,7 @@ fn build_wire_response(
     message:      const u8[:],
     raw_lpm_body: const u8[:],
     ctx:          const grpc::ServerContext&,
-    res:          wing::Response&,
+    res:          http::Response&,
 ) {
     res.status_code = rfc::STATUS_OK;
     res.headers.clear();
@@ -287,7 +287,7 @@ inline fn process_request_header(
     return grpc::StatusCode.Ok;
 }
 
-inline fn init_context_transport(req: const wing::Request&, ctx: grpc::ServerContext&) {
+inline fn init_context_transport(req: const http::Request&, ctx: grpc::ServerContext&) {
     let ct = req.header("content-type");
     ctx.is_web = is_web(ct);
     ctx.is_web_text = is_web_text(ct);
@@ -312,7 +312,7 @@ inline fn reset_server_context(ctx: grpc::ServerContext&) {
 //   req.url = "/echo.Echo/Ping", req.headers = [content-type: application/grpc]
 //   returns: grpc::StatusCode.Ok, ctx.service = "echo.Echo", ctx.method = "Ping"
 fn extract_server_context_status(
-    req:               const wing::Request&,
+    req:               const http::Request&,
     ctx:               grpc::ServerContext&,
     now_mono_ns:       u64 = 0,
     req_start_mono_ns: u64 = 0,
@@ -334,8 +334,8 @@ fn extract_server_context_status(
 
     for &e in req.headers.entries {
         let hdr_st = process_request_header(
-            wing::entry_name(req.headers, e),
-            wing::entry_value(req.headers, e),
+            http::entry_name(req.headers, e),
+            http::entry_value(req.headers, e),
             ctx,
             now_mono_ns,
             req_start_mono_ns,
@@ -360,9 +360,9 @@ inline fn is_supported_encoding(enc: const u8[:]) -> bool {
 //   returns: true, req_payload = "ping"
 fn decode_and_validate_single_lpm(
     d:           const grpc::ServerDispatcher&,
-    req:         const wing::Request&,
+    req:         const http::Request&,
     ctx:         const grpc::ServerContext&,
-    res:         wing::Response&,
+    res:         http::Response&,
     req_payload: u8[>..]&,
 ) -> bool {
     let enc = grpc::get_metadata(ctx, rfc::HEADER_GRPC_ENCODING).trim_lws();
@@ -442,7 +442,7 @@ fn build_connect_unary_get_response(
     res_payload: const u8[:],
     encoding:    const u8[:],
     ctx:         const grpc::ServerContext&,
-    res:         wing::Response&,
+    res:         http::Response&,
 ) {
     res.headers.clear();
     res.trailers.clear();
@@ -465,11 +465,11 @@ fn build_connect_unary_get_response(
 
 fn dispatch_connect_unary_get<HandlerFn: fn(u16, grpc::ServerContext&, const u8[:], u8[>..]&) -> grpc::Status>(
     d:           const grpc::ServerDispatcher&,
-    req:         const wing::Request&,
+    req:         const http::Request&,
     entry:       const grpc::MethodEntry&,
     now_mono_ns: u64,
     ctx:         grpc::ServerContext&,
-    res:         wing::Response&,
+    res:         http::Response&,
 ) -> bool {
     if entry.idempotency != grpc::Idempotency.NoSideEffects {
         res.status_code = rfc::STATUS_METHOD_NOT_ALLOWED;
@@ -504,12 +504,12 @@ fn dispatch_connect_unary_get<HandlerFn: fn(u16, grpc::ServerContext&, const u8[
 
 fn prepare_method_dispatch(
     d:                 const grpc::ServerDispatcher&,
-    req:               const wing::Request&,
+    req:               const http::Request&,
     expected_type:     grpc::MethodType,
     now_mono_ns:       u64,
     req_start_mono_ns: u64,
     ctx:               grpc::ServerContext&,
-    res:               wing::Response&,
+    res:               http::Response&,
 ) -> i64, bool {
     init_context_transport(req, ctx);
     if !req.method[..].eq_ascii_fold("POST") {
@@ -562,7 +562,7 @@ fn append_decompressed_stream_span(
     span:      grpc::MessageSpan,
     max_size:  u32,
     ctx:       const grpc::ServerContext&,
-    res:       wing::Response&,
+    res:       http::Response&,
     new_wire:  u8[>..]&,
     new_spans: grpc::MessageSpan[..32]&,
 ) -> bool {
@@ -592,7 +592,7 @@ fn validate_and_decompress_client_stream(
     reader:   grpc::ClientStreamReader&,
     max_size: u32,
     ctx:      const grpc::ServerContext&,
-    res:      wing::Response&,
+    res:      http::Response&,
 ) -> bool {
     let enc = grpc::get_metadata(ctx, rfc::HEADER_GRPC_ENCODING).trim_lws();
     guard is_supported_encoding(enc) else {
@@ -663,18 +663,18 @@ fn slice_h2_headers_fragment(
 fn execute_server_unary<
     HandlerFn: fn(u16, grpc::ServerContext&, const u8[:], u8[>..]&) -> grpc::Status,
 >(
-    server:    wing::HttpServer&,
+    server:    server::HttpServer&,
     d:         const grpc::ServerDispatcher&,
     client_ip: const u8[:],
-    req:       const wing::Request&,
-    res:       wing::Response&,
+    req:       const http::Request&,
+    res:       http::Response&,
 ) {
     server.pipeline.trust_proxy_headers = server.trust_proxy_headers;
     let now_ns = core::as_nanos(core::monotonic_now());
     var future = server_internal::new_inline_handler_future(0);
-    let outcome = wing::execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
+    let outcome = server::execute_pipeline(server.pipeline, server.timer, client_ip, req, now_ns, res, future);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
-    if outcome == wing::PipelineOutcome.RouteNotFound {
+    if outcome == server::PipelineOutcome.RouteNotFound {
         let _ = grpc::dispatch_unary(d, req, now_ns, res, HandlerFn);
     }
 }
@@ -717,12 +717,12 @@ fn drain_h2_frames<
     HandlerFn: fn(u16, grpc::ServerContext&, const u8[:], u8[>..]&) -> grpc::Status,
 >(
     conn_fd:           i64,
-    server:            wing::HttpServer&,
+    server:            server::HttpServer&,
     d:                 const grpc::ServerDispatcher&,
     peer_ip:           const u8[:],
     hpack_dec:         http2::DynamicTable&,
     hpack_enc:         http2::DynamicTable&,
-    pending:           wing::Request&,
+    pending:           http::Request&,
     pending_stream_id: u32&,
     in_buf:            u8[..65536]&,
     out_wire:          u8[..65536]&,
@@ -758,7 +758,7 @@ fn drain_h2_frames<
 fn serve_h2_connection<
     HandlerFn: fn(u16, grpc::ServerContext&, const u8[:], u8[>..]&) -> grpc::Status,
 >(
-    server:      wing::HttpServer&,
+    server:      server::HttpServer&,
     d:           const grpc::ServerDispatcher&,
     conn_fd:     i64,
     initial_buf: const u8[:],
@@ -766,14 +766,14 @@ fn serve_h2_connection<
     let empty_settings: wire::WireSetting[0] = [];
     var srv_set_wire: u8[..16] = [];
     let _ = wire::encode_settings_frame(empty_settings[..], srv_set_wire);
-    let _ = wing::tcp_send(conn_fd, srv_set_wire[..]);
+    let _ = net::tcp_send(conn_fd, srv_set_wire[..]);
 
     var peer_ip: u8[..64] = [];
-    wing::tcp_get_peer_ip(conn_fd, peer_ip);
+    net::tcp_get_peer_ip(conn_fd, peer_ip);
 
     var hpack_dec = http2::new_dynamic_table(4096);
     var hpack_enc = http2::new_dynamic_table(4096);
-    var pending = wing::new_request("POST", "");
+    var pending = http::new_request("POST", "");
     var pending_stream_id: u32 = 0;
 
     var in_buf:   u8[..65536] = [];
@@ -804,12 +804,12 @@ fn serve_h2_connection<
         }
 
         chunk.clear();
-        let recvd = wing::tcp_recv(conn_fd, chunk, 4096, 50);
+        let recvd = net::tcp_recv(conn_fd, chunk, 4096, 50);
         if recvd == -2 {
             continue;
         }
         let next_in = core::add_sat_i64(in_buf.len, recvd as i64);
-        guard next_in <= in_buf.cap && wing::try_append_recv_chunk(recvd, chunk, in_buf) else {
+        guard next_in <= in_buf.cap && server::try_append_recv_chunk(recvd, chunk, in_buf) else {
             break;
         }
     }
@@ -818,53 +818,53 @@ fn serve_h2_connection<
 fn serve_web_http1<
     HandlerFn: fn(u16, grpc::ServerContext&, const u8[:], u8[>..]&) -> grpc::Status,
 >(
-    server:  wing::HttpServer&,
+    server:  server::HttpServer&,
     d:       const grpc::ServerDispatcher&,
     conn_fd: i64,
     req_raw: const u8[:],
 ) {
     var out_wire: u8[..65536] = [];
-    var req = wing::new_request("GET", "");
-    let ok_parse, _ = wing::parse_http1_wire_request(req_raw, req);
+    var req = http::new_request("GET", "");
+    let ok_parse, _ = server::parse_http1_wire_request(req_raw, req);
     guard ok_parse else {
-        wing::serialize_bad_request_error(server.server_name[..], out_wire);
-        let _ = wing::tcp_send(conn_fd, out_wire[..]);
+        server::serialize_bad_request_error(server.server_name[..], out_wire);
+        let _ = net::tcp_send(conn_fd, out_wire[..]);
         return;
     }
 
     var peer_ip: u8[..64] = [];
-    wing::tcp_get_peer_ip(conn_fd, peer_ip);
+    net::tcp_get_peer_ip(conn_fd, peer_ip);
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     execute_server_unary(server, d, peer_ip[..], req, res, HandlerFn);
 
-    wing::serialize_http1_response(res, server.server_name[..], out_wire);
-    let _ = wing::tcp_send(conn_fd, out_wire[..]);
+    server::serialize_http1_response(res, server.server_name[..], out_wire);
+    let _ = net::tcp_send(conn_fd, out_wire[..]);
 }
 
 fn try_dispatch_connection_turn<
     HandlerFn: fn(u16, grpc::ServerContext&, const u8[:], u8[>..]&) -> grpc::Status,
 >(
-    server:  wing::HttpServer&,
+    server:  server::HttpServer&,
     d:       const grpc::ServerDispatcher&,
     conn_fd: i64,
     in_buf:  const u8[:],
 ) -> bool {
-    guard !wing::is_partial_h2_client_preface(in_buf) else {
+    guard !server::is_partial_h2_client_preface(in_buf) else {
         return false;
     }
-    if wing::is_h2_client_preface(in_buf) {
+    if server::is_h2_client_preface(in_buf) {
         serve_h2_connection(server, d, conn_fd, in_buf, HandlerFn);
         return true;
     }
     var hdr_scan_cursor: i64 = 0;
-    guard wing::has_ready_http1_request(in_buf, hdr_scan_cursor) else {
+    guard server::has_ready_http1_request(in_buf, hdr_scan_cursor) else {
         return false;
     }
     if core::starts_with(in_buf, "GET /shutdown") {
         var out_wire: u8[..4096] = [];
-        let _, _ = wing::handle_connection_wire(server, "127.0.0.1", in_buf, 0, out_wire);
-        let _ = wing::tcp_send(conn_fd, out_wire[..]);
+        let _, _ = server::handle_connection_wire(server, "127.0.0.1", in_buf, 0, out_wire);
+        let _ = net::tcp_send(conn_fd, out_wire[..]);
         server.is_running = false;
         return true;
     }
@@ -875,7 +875,7 @@ fn try_dispatch_connection_turn<
 fn serve_connection<
     HandlerFn: fn(u16, grpc::ServerContext&, const u8[:], u8[>..]&) -> grpc::Status,
 >(
-    server:  wing::HttpServer&,
+    server:  server::HttpServer&,
     d:       const grpc::ServerDispatcher&,
     conn_fd: i64,
 ) {
@@ -885,13 +885,13 @@ fn serve_connection<
 
     while wait_ticks < 20 {
         chunk.clear();
-        let recvd = wing::tcp_recv(conn_fd, chunk, 4096, 100);
+        let recvd = net::tcp_recv(conn_fd, chunk, 4096, 100);
         if recvd == -2 {
             wait_ticks = core::add_sat_u64(wait_ticks, 1);
             continue;
         }
         let next_in = core::add_sat_i64(in_buf.len, recvd as i64);
-        guard next_in <= in_buf.cap && wing::try_append_recv_chunk(recvd, chunk, in_buf) else {
+        guard next_in <= in_buf.cap && server::try_append_recv_chunk(recvd, chunk, in_buf) else {
             break;
         }
         wait_ticks = 0;

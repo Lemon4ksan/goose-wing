@@ -3,7 +3,7 @@
 
 // HTTP request representation with headers, query parameters, body rewind,
 // and security context metadata (RFC 9110).
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
@@ -13,6 +13,7 @@ import http.incremental;
 import http.trace;
 import cookie.policy;
 import .response;
+import http.internal;
 
 // ---- request & query item models -------------------------------------------
 
@@ -55,26 +56,6 @@ struct Request {
 }
 
 // ---- json reflection writers -----------------------------------------------
-
-fn write_json_field(out: u8[>..]&, val_str: const u8[:]) {
-    json::format_string(out, val_str);
-}
-
-fn write_json_field(out: u8[>..]&, val_i64: i64) {
-    json::format_int(out, val_i64);
-}
-
-fn write_json_field(out: u8[>..]&, val_i32: i32) {
-    json::format_int(out, val_i32);
-}
-
-fn write_json_field(out: u8[>..]&, val_f64: f64) {
-    json::format_number(out, val_f64);
-}
-
-fn write_json_field(out: u8[>..]&, val_bool: bool) {
-    json::format_bool(out, val_bool);
-}
 
 // ---- request factories -----------------------------------------------------
 
@@ -171,26 +152,17 @@ fn add_trailer(req: Request&, name: const u8[:], value: const u8[:]) {
 
 // ---- ufcs request mutators -------------------------------------------------
 
-fn sync_request_header_presence(req: Request&, name: const u8[:]) {
-    if has_header(req.headers, name) {
-        let known_id = identify_known_header(name);
-        if known_id != KnownHeaderId.Unknown {
-            req.presence_mask |= header_id_to_bit(known_id);
-        }
-    }
-}
-
 // Sets an HTTP header marked sensitive so it is purged on cross-origin redirects.
 fn sensitive_header(req: Request&, name: const u8[:], value: const u8[:]) {
     set_header(req.headers, name, value, true);
-    sync_request_header_presence(req, name);
+    http_internal::sync_request_header_presence(req, name);
 }
 
 // Sets a header on the request. Matches existing headers case-insensitively,
 // drops control characters, and marks credential headers sensitive.
 fn set_header(req: Request&, name: const u8[:], value: const u8[:]) {
     set_header(req.headers, name, value, false);
-    sync_request_header_presence(req, name);
+    http_internal::sync_request_header_presence(req, name);
 }
 
 fn remove_header(req: Request&, name: const u8[:]) -> bool {
@@ -252,7 +224,7 @@ fn json<T>(req: Request&, payload: const T&) {
         if !first { req.body.push(','); }
         first = false;
         json::format_key(req.body, Name);
-        write_json_field(req.body, payload.Acc);
+        http_internal::write_json_field(req.body, payload.Acc);
     }
     req.body.push('}');
     req.rewind_buf.clear();
@@ -288,7 +260,7 @@ fn set_priority(req: Request&, urgency: i32, incremental: bool = false) {
     let u: u8 = if urgency >= 0 && urgency <= 7 { urgency as u8 } else { rfc::PRIORITY_URGENCY_DEFAULT };
     var p = PriorityParam { urgency: u, incremental: incremental };
     var wire_val: u8[..32] = [];
-    serialize_http_priority(p, wire_val);
+    serialize_priority(p, wire_val);
     set_header(req, "priority", wire_val[..]);
     if incremental {
         let _ = append_incremental_header(req.headers, true);
@@ -331,34 +303,6 @@ fn sign_hmac_sha256(req: Request&, secret_key: const u8[:]) {
 
 // ---- ergonomic request inspectors & decoders -------------------------------
 
-inline fn is_rfc3986_scheme(s: const u8[:]) -> bool {
-    guard s.len > 0 && core::is_ascii_alpha(s[0]) else { return false; }
-    for b in s[1..] {
-        let ok = core::is_ascii_alphanumeric(b) || b == '+' || b == '-' || b == '.';
-        guard ok else { return false; }
-    }
-    return true;
-}
-
-// Extracts the zero-copy path component from an origin-form or absolute-form request URL.
-//
-// Example:
-//   raw_url = "https://api.example.com/v1/users?page=2#top"
-//   returns: "/v1/users"
-fn extract_request_path(raw_url: const u8[:]) -> const u8[:] {
-    let before_frag, _, _ = raw_url.partition_byte('#');
-    let before_query, _, _ = before_frag.partition_byte('?');
-    if before_query.len == 0 { return "/"; }
-    if before_query[0] == '/' || before_query == "*" { return before_query; }
-    let scheme_part, after_scheme, has_scheme = before_query.split_once("://");
-    if has_scheme && is_rfc3986_scheme(scheme_part) {
-        let slash_idx = after_scheme.index_of_byte('/');
-        if slash_idx < 0 { return "/"; }
-        return after_scheme[slash_idx..];
-    }
-    return before_query;
-}
-
 // Extracts the raw query component (excluding `?` and `#fragment`) from a request URL.
 //
 // Example:
@@ -373,7 +317,7 @@ fn extract_request_query(raw_url: const u8[:]) -> const u8[:] {
 
 // Returns the zero-copy path slice of `req.url`.
 fn path_slice(req: const Request&) -> const u8[:] {
-    return extract_request_path(req.url[..]);
+    return http_internal::extract_request_path(req.url[..]);
 }
 
 // Looks up query parameter `key` in `req.query_params` or the URL query string of `req.url` into `out`.
@@ -433,7 +377,7 @@ fn decode_json_body<T>(req: const Request&, out: T&) -> Error {
         var matched = false;
         const for <Name, Acc> in fields<T> {
             if !matched && key == Name {
-                read_json_field(reader, out.Acc);
+                http_internal::read_json_field(reader, out.Acc);
                 matched = true;
             }
         }

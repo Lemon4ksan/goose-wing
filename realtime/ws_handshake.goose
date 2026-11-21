@@ -118,7 +118,7 @@ enum WsError {
 // Returns `(negotiated_subprotocol, WsError.None)` on success.
 fn validate_client_upgrade_response(
     status_code:        u16,
-    headers:            const wing::HeaderMap&,
+    headers:            const http::HeaderMap&,
     raw_buf:            const u8[:],
     client_key:         const u8[:],
     offered_protocols:  const u8[:],
@@ -162,8 +162,8 @@ fn validate_client_upgrade_response(
 
 // Server-side WebSocket upgrade handler (RFC 6455). Validates client request and populates 101 response.
 fn ws_upgrade_request(
-    req:         const wing::Request&,
-    out_resp:    wing::Response&,
+    req:         const http::Request&,
+    out_resp:    http::Response&,
     subprotocol: const u8[:] = "",
 ) -> WebSocketSession, bool {
     guard req.method[..] == "GET" else {
@@ -205,12 +205,12 @@ fn ws_upgrade_request(
 }
 
 // Inspects an incoming HTTP Request to determine if it is an RFC 6455 WebSocket Upgrade request.
-fn is_websocket_upgrade_request(req: const wing::Request&) -> bool {
+fn is_websocket_upgrade_request(req: const http::Request&) -> bool {
     guard req.method[..] == "GET" && !req.is_http10 else { return false; }
-    let ws_mask = wing::HDR_PRESENCE_HOST |
-                  wing::HDR_PRESENCE_UPGRADE |
-                  wing::HDR_PRESENCE_CONNECTION |
-                  wing::HDR_PRESENCE_SEC_WEBSOCKET_KEY;
+    let ws_mask = http::HDR_PRESENCE_HOST |
+                  http::HDR_PRESENCE_UPGRADE |
+                  http::HDR_PRESENCE_CONNECTION |
+                  http::HDR_PRESENCE_SEC_WEBSOCKET_KEY;
     if req.presence_mask != 0 {
         guard (req.presence_mask & ws_mask) == ws_mask else { return false; }
     }
@@ -232,7 +232,7 @@ fn is_websocket_upgrade_request(req: const wing::Request&) -> bool {
 // ---- Bootstrapping WebSockets with HTTP/2 (RFC 8441) ---------------------
 
 // Inspects an incoming HTTP Request to determine if it is an RFC 8441 WebSocket Extended CONNECT request.
-fn is_h2_websocket_request(req: const wing::Request&) -> bool {
+fn is_h2_websocket_request(req: const http::Request&) -> bool {
     guard req.method[..] == "CONNECT" else { return false; }
     let proto = req.headers.find_header(":protocol");
     guard proto.eq_ascii_fold("websocket") else { return false; }
@@ -248,7 +248,7 @@ fn is_h2_websocket_request(req: const wing::Request&) -> bool {
 // - :path and :authority MUST be present
 // - sec-websocket-version MUST be 13
 // - MUST NOT contain connection, upgrade, keep-alive, transfer-encoding, proxy-connection, or sec-websocket-key
-fn validate_h2_websocket_request(req: const wing::Request&) -> bool {
+fn validate_h2_websocket_request(req: const http::Request&) -> bool {
     guard is_h2_websocket_request(req) else { return false; }
 
     let scheme = req.headers.find_header(":scheme");
@@ -260,7 +260,7 @@ fn validate_h2_websocket_request(req: const wing::Request&) -> bool {
 
     // RFC 8441 §4: Connection-specific headers and Sec-WebSocket-Key MUST NOT be present
     for &e in req.headers.entries {
-        if realtime_internal::is_forbidden_h2_ws_header(wing::entry_name(req.headers, e)) {
+        if realtime_internal::is_forbidden_h2_ws_header(http::entry_name(req.headers, e)) {
             return false;
         }
     }
@@ -269,30 +269,30 @@ fn validate_h2_websocket_request(req: const wing::Request&) -> bool {
 
 // Formats an outbound RFC 8441 WebSocket Extended CONNECT Request for HTTP/2.
 fn format_h2_websocket_request(
-    req:         wing::Request&,
+    req:         http::Request&,
     path:        const u8[:],
     authority:   const u8[:],
     scheme:      const u8[:] = "https",
     subprotocol: const u8[:] = "",
 ) {
-    req = wing::new_request("CONNECT", path);
-    wing::set_header(req, ":method", "CONNECT");
-    wing::set_header(req, ":protocol", "websocket");
-    wing::set_header(req, ":scheme", scheme);
-    wing::set_header(req, ":authority", authority);
-    wing::set_header(req, ":path", path);
-    wing::set_header(req, "sec-websocket-version", rfc::WS_RFC6455_VERSION);
+    req = http::new_request("CONNECT", path);
+    http::set_header(req, ":method", "CONNECT");
+    http::set_header(req, ":protocol", "websocket");
+    http::set_header(req, ":scheme", scheme);
+    http::set_header(req, ":authority", authority);
+    http::set_header(req, ":path", path);
+    http::set_header(req, "sec-websocket-version", rfc::WS_RFC6455_VERSION);
 
     if subprotocol.len > 0 {
-        wing::set_header(req, "sec-websocket-protocol", subprotocol);
+        http::set_header(req, "sec-websocket-protocol", subprotocol);
     }
 }
 
 // Server-side RFC 8441 WebSocket Extended CONNECT upgrade handler.
 // Validates client request and populates 200 OK response (NOT 101 per RFC 8441 §5).
 fn ws_h2_upgrade_request(
-    req:         const wing::Request&,
-    out_resp:    wing::Response&,
+    req:         const http::Request&,
+    out_resp:    http::Response&,
     subprotocol: const u8[:] = "",
 ) -> WebSocketSession, bool {
     guard validate_h2_websocket_request(req) else {
@@ -319,7 +319,7 @@ fn ws_h2_upgrade_request(
 }
 
 // Inspects an HTTP/2 Response to determine if it accepted an RFC 8441 WebSocket session.
-fn is_h2_websocket_response(res: const wing::Response&) -> bool {
+fn is_h2_websocket_response(res: const http::Response&) -> bool {
     return res.status_code == rfc::STATUS_OK;
 }
 
@@ -327,7 +327,7 @@ fn is_h2_websocket_response(res: const wing::Response&) -> bool {
 
 // Formats an outbound RFC 9220 WebSocket Extended CONNECT Request for HTTP/3.
 fn format_h3_websocket_request(
-    req:         wing::Request&,
+    req:         http::Request&,
     path:        const u8[:],
     authority:   const u8[:],
     scheme:      const u8[:] = "https",
@@ -339,15 +339,15 @@ fn format_h3_websocket_request(
 
 // Validates an RFC 9220 WebSocket Extended CONNECT request over HTTP/3.
 // Follows exact same validation rules as RFC 8441 per RFC 9220 Section 3.
-fn validate_h3_websocket_request(req: const wing::Request&) -> bool {
+fn validate_h3_websocket_request(req: const http::Request&) -> bool {
     guard req.method == "CONNECT" else { return false; }
     return validate_h2_websocket_request(req);
 }
 
 // Server-side RFC 9220 WebSocket Extended CONNECT upgrade handler for HTTP/3.
 fn ws_h3_upgrade_request(
-    req:         const wing::Request&,
-    out_resp:    wing::Response&,
+    req:         const http::Request&,
+    out_resp:    http::Response&,
     subprotocol: const u8[:] = "",
 ) -> WebSocketSession, bool {
     guard validate_h3_websocket_request(req) else {
@@ -358,19 +358,19 @@ fn ws_h3_upgrade_request(
 }
 
 // Formats an HTTP/3 response accepting an RFC 9220 WebSocket session (200 OK).
-fn format_h3_websocket_response(res: wing::Response&, subprotocol: const u8[:] = "") {
+fn format_h3_websocket_response(res: http::Response&, subprotocol: const u8[:] = "") {
     res.status_code = rfc::STATUS_OK;
     realtime_internal::format_h2_websocket_response(res, subprotocol);
 }
 
 // Inspects an HTTP/3 Response to determine if it accepted an RFC 9220 WebSocket session.
-fn is_h3_websocket_response(res: const wing::Response&) -> bool {
+fn is_h3_websocket_response(res: const http::Response&) -> bool {
     guard res.status_code == rfc::STATUS_OK else { return false; }
     return is_h2_websocket_response(res);
 }
 
 // Checks if an arbitrary HTTP request is an RFC 8441 / RFC 9220 Extended CONNECT request.
-fn is_extended_connect_request(req: const wing::Request&) -> bool {
+fn is_extended_connect_request(req: const http::Request&) -> bool {
     guard req.method == "CONNECT" else { return false; }
     let proto = req.headers.find_header(":protocol");
     return proto.len > 0;

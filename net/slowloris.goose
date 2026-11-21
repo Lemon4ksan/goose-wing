@@ -3,10 +3,11 @@
 
 // 4-tier Slowloris and Reverse-Slowloris tarpit defense.
 // Tracks cumulative header deadlines, byte ceilings, minimum ingress rates, and line counts.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
+import .internal;
 
 enum SlowlorisViolation {
     None,
@@ -43,43 +44,6 @@ fn new_header_reader(cfg: SlowlorisDefenseConfig, start_mono_ns: i64) -> HeaderR
     };
 }
 
-fn check_slowloris_deadlines(reader: HeaderReader&, elapsed_ns: i64) -> SlowlorisViolation {
-    if elapsed_ns >= reader.config.response_header_timeout_ns {
-        reader.poison_connection = true;
-        return SlowlorisViolation.HeaderTimeoutExpired;
-    }
-    return SlowlorisViolation.None;
-}
-
-inline fn detect_header_end_across_chunks(reader: HeaderReader&, chunk: const u8[:]) -> bool {
-    if core::find(chunk, "\r\n\r\n") >= 0 {
-        return true;
-    }
-    var window: u8[..6] = [];
-    window.append(reader.tail_bytes[..]);
-    let take_head = min(chunk.len, 3);
-    if take_head > 0 {
-        window.append(chunk[..take_head]);
-    }
-    if core::find(window[..], "\r\n\r\n") >= 0 {
-        return true;
-    }
-    var combined: u8[..6] = [];
-    combined.append(reader.tail_bytes[..]);
-    if chunk.len >= 3 {
-        let _ = combined.try_set(chunk[^3..]);
-    } else if chunk.len > 0 {
-        combined.append(chunk);
-    }
-    let keep = min(combined.len, 3);
-    if keep > 0 {
-        let _ = reader.tail_bytes.try_set(combined[^keep..]);
-    } else {
-        reader.tail_bytes.clear();
-    }
-    return false;
-}
-
 // Feeds incoming header chunk and verifies all 4 Slowloris defense invariants.
 fn feed_header_bytes(
     reader:      HeaderReader&,
@@ -90,7 +54,7 @@ fn feed_header_bytes(
 
     let elapsed_ns = core::ct_max_i64(0, core::sub_sat_i64(now_mono_ns, reader.header_read_start_ns));
 
-    let v_deadline = check_slowloris_deadlines(reader, elapsed_ns);
+    let v_deadline = net_internal::check_slowloris_deadlines(reader, elapsed_ns);
     if v_deadline != SlowlorisViolation.None {
         return v_deadline;
     }
@@ -123,7 +87,7 @@ fn feed_header_bytes(
         }
     }
 
-    if detect_header_end_across_chunks(reader, chunk) {
+    if net_internal::detect_header_end_across_chunks(reader, chunk) {
         reader.headers_complete = true;
     }
 

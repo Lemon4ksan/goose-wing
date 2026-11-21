@@ -5,20 +5,27 @@ X.509 PKI certificate validator (RFC 5280), Encrypted Client Hello (ECH, RFC
 9849), Hybrid Post-Quantum Key Exchange (RFC 10024 and FIPS 203 ML-KEM-768), and
 certificate compression (RFC 8879).
 
+Public types, constants, and functions live in `namespace tls;`. Low-level
+internal helpers (`key_schedule.goose`, `post_quantum.goose`,
+`cert_compression.goose`, `internal.goose`, `record_internal.goose`,
+`ticket_internal.goose`, `pki_internal.goose`, `x509_chain_internal.goose`,
+`handshake_internal.goose`, `session_internal.goose`,
+`handshake_io_internal.goose`) live in `namespace tls_internal;`.
+
 ```goose
 import wing;
 
-let cfg = wing::TlsClientHandshakeConfig {
+let cfg = tls::ClientHandshakeConfig {
     server_name: "example.com",
     alpn:        "h2",
     ..
 };
-let slot_idx, ok = wing::tls_client_handshake(fd, cfg);
+let slot_idx, ok = tls::client_handshake(fd, cfg);
 if ok {
-    let _ = wing::tls_transport_send(fd, slot_idx, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    let _ = tls::transport_send(fd, slot_idx, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
     var rx_buf: u8[4096] = [0; 4096];
-    let n = wing::tls_transport_recv_slice(fd, slot_idx, rx_buf[..], 5000);
-    wing::tls_transport_close(fd, slot_idx);
+    let n = tls::transport_recv_slice(fd, slot_idx, rx_buf[..], 5000);
+    tls::transport_close(fd, slot_idx);
 }
 ```
 
@@ -27,7 +34,7 @@ if ok {
 ### TLS Record Layer, Alert Protocol & QUIC Crypto Streams (`tls/record.goose`, RFC 8446 §5, RFC 9001)
 
 ```goose
-enum TlsAlert {
+enum Alert {
     CloseNotify, UnexpectedMessage, BadRecordMac, RecordOverflow, HandshakeFailure,
     BadCertificate, UnsupportedCertificate, CertificateRevoked, CertificateExpired,
     CertificateUnknown, IllegalParameter, UnknownCa, AccessDenied, DecodeError,
@@ -47,11 +54,11 @@ enum QuicEncryptionLevel { Initial, EarlyData, Handshake, Application }
 
 enum QuicOutputEvent {
     None,
-    SetReadSecret    { level: QuicEncryptionLevel = QuicEncryptionLevel.Initial, cipher_id: u16 = 0, secret: u8[..48] = [], secret_len: u8 = 0 },
-    SetWriteSecret   { level: QuicEncryptionLevel = QuicEncryptionLevel.Initial, cipher_id: u16 = 0, secret: u8[..48] = [], secret_len: u8 = 0 },
-    AddHandshakeData { level: QuicEncryptionLevel = QuicEncryptionLevel.Initial, data: const u8[:] = [] },
+    SetReadSecret    { level: QuicEncryptionLevel, cipher_id: u16, secret: u8[..48] = [], secret_len: u8 = 0 },
+    SetWriteSecret   { level: QuicEncryptionLevel, cipher_id: u16, secret: u8[..48] = [], secret_len: u8 = 0 },
+    AddHandshakeData { level: QuicEncryptionLevel, data: const u8[:] = [] },
     FlushFlight,
-    SendAlert        { level: QuicEncryptionLevel = QuicEncryptionLevel.Initial, alert: TlsAlert = TlsAlert.CloseNotify },
+    SendAlert        { level: QuicEncryptionLevel, alert: Alert },
 }
 
 struct QuicCryptoStream {
@@ -60,63 +67,62 @@ struct QuicCryptoStream {
 }
 
 struct QuicCryptoConn {
-    read_level:  QuicEncryptionLevel   = QuicEncryptionLevel.Initial,
-    write_level: QuicEncryptionLevel   = QuicEncryptionLevel.Initial,
-    events:      QuicOutputEvent[..8]  = [],
+    read_level:  QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
+    write_level: QuicEncryptionLevel  = QuicEncryptionLevel.Initial,
+    events:      QuicOutputEvent[..8] = [],
 }
 
-fn tls_alert_to_u8(alert: TlsAlert) -> u8
-fn u8_to_tls_alert(code: u8) -> TlsAlert, bool
-fn parse_tls_alert_message(data: const u8[:]) -> u8, TlsAlert, bool, bool
+fn alert_to_u8(alert: Alert) -> u8
+fn u8_to_alert(code: u8) -> Alert, bool
+fn parse_alert_message(data: const u8[:]) -> u8, Alert, bool, bool
 fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool
 fn increment_record_seq_num(seq_num: u64&) -> bool
-fn parse_tls_record_header(raw: const u8[:]) -> u8, u16, u16, TlsAlert, bool
-fn parse_tls_record_header_at(raw: const u8[:], cursor: i64&) -> u8, u16, u16, TlsAlert, bool
-fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> TlsAlert
-fn check_change_cipher_spec_record(state: RecordFilterState&, payload: const u8[:], handshake_active: bool) -> TlsAlert
-fn unpack_tls_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, TlsAlert
-fn tls_record_seal_into(cipher_suite: u16, key: const u8[:], iv: const u8[12]&, seq_num: u64, inner_content_type: u8, plaintext: const u8[:], out_record: u8[:]) -> i64, TlsAlert, bool
-fn tls_record_decrypt_into(cipher_suite: u16, key: const u8[:], iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, TlsAlert, bool
-fn tls_record_seal_aes128_gcm_into(key: const u8[16]&, iv: const u8[12]&, seq_num: u64, inner_content_type: u8, plaintext: const u8[:], out_record: u8[:]) -> i64, TlsAlert, bool
-fn tls_record_decrypt_aes128_gcm_into(key: const u8[16]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, TlsAlert, bool
-fn tls_record_decrypt_aes128_gcm(key: const u8[16]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[>..]&) -> u8, TlsAlert
-fn tls_record_seal_aes256_gcm_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, inner_content_type: u8, plaintext: const u8[:], out_record: u8[:]) -> i64, TlsAlert, bool
-fn tls_record_decrypt_aes256_gcm_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, TlsAlert, bool
-fn tls_record_seal_chacha20_poly1305_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, inner_content_type: u8, plaintext: const u8[:], out_record: u8[:]) -> i64, TlsAlert, bool
-fn tls_record_decrypt_chacha20_poly1305_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, TlsAlert, bool
-fn new_quic_crypto_conn() -> QuicCryptoConn
-fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: const u8[:]) -> TlsAlert
-fn new_quic_crypto_stream() -> QuicCryptoStream
-fn quic_crypto_stream_ingest(stream: QuicCryptoStream&, offset: u64, data: const u8[:]) -> bool, i64
+fn parse_record_header(hdr_bytes: const u8[:]) -> u8, u16, u16, Alert, bool
+fn parse_record_header_at(raw: const u8[:], idx: i64&) -> u8, u16, u16, Alert, bool
+fn check_record_payload_length(state: RecordFilterState&, payload_len: i64, is_early_data: bool) -> Alert
+fn check_change_cipher_spec_record(state: RecordFilterState&, payload: const u8[:], handshake_active: bool) -> Alert
+fn unpack_inner_plaintext(decrypted: const u8[:]) -> const u8[:], u8, Alert
+fn record_seal_into(cipher_suite: u16, key: const u8[:], iv: const u8[12]&, seq_num: u64, inner_type: u8, plaintext: const u8[:], out_ciphertext: u8[:]) -> i64, Alert, bool
+fn record_decrypt_into(cipher_suite: u16, key: const u8[:], iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, Alert, bool
+fn record_seal_aes128_gcm_into(key: const u8[16]&, iv: const u8[12]&, seq_num: u64, inner_type: u8, plaintext: const u8[:], out_ciphertext: u8[:]) -> i64, Alert, bool
+fn record_decrypt_aes128_gcm_into(key: const u8[16]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, Alert, bool
+fn record_decrypt_aes128_gcm(key: const u8[16]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[>..]&) -> u8, Alert
+fn record_seal_aes256_gcm_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, inner_type: u8, plaintext: const u8[:], out_ciphertext: u8[:]) -> i64, Alert, bool
+fn record_decrypt_aes256_gcm_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, Alert, bool
+fn record_seal_chacha20_poly1305_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, inner_type: u8, plaintext: const u8[:], out_ciphertext: u8[:]) -> i64, Alert, bool
+fn record_decrypt_chacha20_poly1305_into(key: const u8[32]&, iv: const u8[12]&, seq_num: u64, record_header: const u8[:], record_payload: const u8[:], out_plaintext: u8[:]) -> i64, u8, Alert, bool
+fn provide_quic_data(conn: QuicCryptoConn&, level: QuicEncryptionLevel, data: const u8[:]) -> Alert
+fn quic_crypto_stream_ingest(stream: QuicCryptoStream&, offset: u64, data: const u8[:]) -> i64, bool
 ```
 
 `check_record_payload_length` enforces RFC 8446 §5.1 plaintext (`16,384` bytes)
 and §5.2 `TLSCiphertext` (`16,640` bytes) limits, returning
-`TlsAlert.RecordOverflow` on violation and `TlsAlert.CloseNotify` when valid.
+`Alert.RecordOverflow` on violation and `Alert.CloseNotify` when valid.
 `compute_record_nonce` XORs the 96-bit static IV with the 64-bit sequence number
 (`iv ^ seq_num`) and rejects `0xFFFFFFFFFFFFFFFF` so sequence numbers never
-wrap. `unpack_tls_inner_plaintext` scans backward past zero padding to extract
-the inner `ContentType` byte. `quic_crypto_stream_ingest` reassembles contiguous
-QUIC `CRYPTO` frames per encryption epoch (`QuicEncryptionLevel`).
+wrap. `unpack_inner_plaintext` scans backward past zero padding to extract the
+inner `ContentType` byte. `quic_crypto_stream_ingest` reassembles contiguous
+QUIC `CRYPTO` frames per encryption epoch (`QuicEncryptionLevel`), returning
+`(new_bytes, ok)`.
 
-### Key Schedule & 0-RTT Anti-Replay (`tls/key_schedule.goose`, RFC 8446 §7, §8)
+### Key Schedule & 0-RTT Anti-Replay (`tls/key_schedule.goose`, `namespace tls_internal`, RFC 8446 §7, §8)
 
 ```goose
 struct KeySchedule {
-    cipher_suite:          u16       = 0,
-    hash_id:               u8        = 1,
-    hash_len:              u8        = 32,
-    stage:                 u8        = 0,
-    current_secret:        u8[48]    = [0; 48],
-    client_early_traffic:  u8[48]    = [0; 48],
-    early_exporter_secret: u8[..48]  = [],
-    client_hs_traffic:     u8[48]    = [0; 48],
-    server_hs_traffic:     u8[48]    = [0; 48],
-    client_ap_traffic:     u8[48]    = [0; 48],
-    server_ap_traffic:     u8[48]    = [0; 48],
-    exporter_secret:       u8[48]    = [0; 48],
-    resumption_secret:     u8[48]    = [0; 48],
-    binder_key:            u8[48]    = [0; 48],
+    cipher_suite:          u16      = 0,
+    hash_id:               u8       = 1,
+    hash_len:              u8       = 32,
+    stage:                 u8       = 0,
+    current_secret:        u8[48]   = [0; 48],
+    client_early_traffic:  u8[48]   = [0; 48],
+    early_exporter_secret: u8[..48] = [],
+    client_hs_traffic:     u8[48]   = [0; 48],
+    server_hs_traffic:     u8[48]   = [0; 48],
+    client_ap_traffic:     u8[48]   = [0; 48],
+    server_ap_traffic:     u8[48]   = [0; 48],
+    exporter_secret:       u8[48]   = [0; 48],
+    resumption_secret:     u8[48]   = [0; 48],
+    binder_key:            u8[48]   = [0; 48],
 }
 
 struct ZeroRttStrikeRegister {
@@ -160,7 +166,7 @@ binder HMAC in constant time. For 0-RTT early data (RFC 8446 §8),
 clock skew window, and `strike_register_check_and_insert` tracks ticket IDs in a
 two-epoch Bloom filter to reject replayed 0-RTT flight attempts.
 
-### TLS 1.3 Handshake State Machine (`tls/handshake.goose`, RFC 8446 §4)
+### TLS 1.3 Handshake State Machine (`tls/handshake.goose`, `tls/types.goose`, RFC 8446 §4)
 
 ```goose
 enum HandshakeMode { Full, Psk }
@@ -176,9 +182,9 @@ enum EarlyDataAccepted { Rejected, Accepted }
 enum NegotiatedAlpn { None, H3, H2, Http11, Other }
 enum EarlyDataState { None, Offered, Accepted, Rejected }
 
-struct TlsExtensionEntry {
-    ext_type: u16          = 0,
-    data:     const u8[:]  = [],
+struct ExtensionEntry {
+    ext_type: u16         = 0,
+    data:     const u8[:] = [],
 }
 
 struct CompressedCertMsg {
@@ -188,12 +194,13 @@ struct CompressedCertMsg {
 }
 
 struct ParsedServerHello {
-    cipher_suite:   u16        = 0,
-    is_hrr:         bool       = false,
-    selected_group: u16        = 0,
-    server_share:   u8[..2048] = [],
-    hrr_cookie:     u8[..256]  = [],
-    psk_resumed:    bool       = false,
+    cipher_suite:    u16        = 0,
+    is_hrr:          bool       = false,
+    selected_group:  u16        = 0,
+    server_share:    u8[..2048] = [],
+    hrr_cookie:      u8[..256]  = [],
+    psk_resumed:     bool       = false,
+    session_id_echo: u8[..32]   = [],
 }
 
 struct NewSessionTicketMsg {
@@ -217,7 +224,7 @@ struct KeyUpdateTracker {
 }
 
 struct CertificateRequestMsg {
-    context:                  u8[..32]  = [],
+    context:                  u8[..255] = [],
     has_signature_algorithms: bool      = false,
     sig_algorithms:           u16[..64] = [],
 }
@@ -242,8 +249,10 @@ fn build_synthetic_message_hash(raw_ch1: const u8[:], hash_len: u8, out: u8[:]) 
 fn validate_server_random_downgrade(server_random: const u8[32]&, negotiated_version: u16, client_supports_tls13: bool) -> bool
 fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool
 fn negotiate_alpn(alpn_ext_bytes: const u8[:], is_quic: bool) -> NegotiatedAlpn
-fn parse_extensions_block(ext_block_bytes: const u8[:], entries: TlsExtensionEntry[..32]&) -> bool
-fn find_extension(entries: const TlsExtensionEntry[..32]&, ext_type: u16) -> const u8[:], bool
+fn parse_cookie_extension<B>(ext_bytes: const u8[:], out_cookie: B&) -> bool
+fn serialize_cookie_extension<B>(out: B&, cookie: const u8[:]) -> bool
+fn parse_extensions_block(ext_block_bytes: const u8[:], entries: ExtensionEntry[..32]&) -> bool
+fn find_extension(entries: const ExtensionEntry[..32]&, ext_type: u16) -> const u8[:], bool
 fn parse_client_supported_versions(ext_bytes: const u8[:]) -> bool, bool
 fn parse_server_supported_versions(ext_bytes: const u8[:]) -> u16, bool
 fn parse_live_server_hello(payload: const u8[:], out: ParsedServerHello&) -> bool
@@ -258,7 +267,7 @@ fn encode_certificate_request<B>(out: B&, context: const u8[:], sig_algorithms: 
 fn encode_client_certificate<B>(out: B&, cert_context: const u8[:], cert_der: const u8[:]) -> bool
 fn encode_client_certificate_verify<B>(out: B&, sig_scheme: u16, signature: const u8[:]) -> bool
 fn parse_certificate_verify(payload: const u8[:]) -> u16, const u8[:], bool
-fn verify_tls13_certificate_verify_sig(sig_scheme: u16, signature: const u8[:], pubkey: const u8[:], msg: const u8[:]) -> bool
+fn verify_certificate_verify_sig(sig_scheme: u16, signature: const u8[:], pubkey: const u8[:], msg: const u8[:]) -> bool
 fn verify_client_certificate_verify(sig_scheme: u16, signature: const u8[:], client_pubkey: const u8[:], transcript_hash: const u8[:]) -> bool
 ```
 
@@ -272,20 +281,25 @@ RFC 8446 §4.1.3 SHA-256("HelloRetryRequest") sentinel, and
 `compress_hrr_transcript` replaces `ClientHello1` with the
 `[254, 0, 0, hash_len, Hash(CH1)]` synthetic `message_hash` construct.
 
-### TLS 1.3 Live Transport & Session Tickets (`tls/session.goose`, `tls/ticket.goose`)
+### TLS 1.3 Live Transport, Handshakes & Session Tickets (`tls/session.goose`, `tls/client_handshake.goose`, `tls/server_handshake.goose`, `tls/ticket.goose`)
 
 ```goose
 const STEK_TICKET_PLAINTEXT_LEN: i64 = 63;
 const STEK_TICKET_WIRE_LEN:      i64 = 95;
+const MAX_CIPHER_SLOTS:          i64 = 256;
 
-struct TlsTranscript {
+struct Transcript {
     sha256_ctx: core::Sha256Ctx = core::Sha256Ctx { .. },
     sha384_ctx: core::Sha384Ctx = core::Sha384Ctx { .. },
 }
 
-struct TlsCipherSlot {
+enum SliceUnsealStatus { Ok, NeedMore, Closed, ControlHandled, Error }
+
+struct CipherSlot {
     in_use:             bool               = false,
     is_server:          bool               = false,
+    ktls_tx_active:     bool               = false,
+    ktls_rx_active:     bool               = false,
     cipher_suite:       u16                = 0,
     hash_id:            u8                 = 1,
     hash_len:           u8                 = 32,
@@ -294,6 +308,8 @@ struct TlsCipherSlot {
     tx_seq:             u64                = 0,
     rx_key:             u8[32]             = [0; 32],
     tx_key:             u8[32]             = [0; 32],
+    rx_aes_key:         core::AesGcmKey    = core::AesGcmKey { .. },
+    tx_aes_key:         core::AesGcmKey    = core::AesGcmKey { .. },
     rx_iv:              u8[12]             = [0; 12],
     tx_iv:              u8[12]             = [0; 12],
     rx_traffic_secret:  u8[48]             = [0; 48],
@@ -302,7 +318,7 @@ struct TlsCipherSlot {
     resumption_secret:  u8[48]             = [0; 48],
     peer_closed:        bool               = false,
     resumed:            bool               = false,
-    negotiated_alpn:    u8[..32]           = [],
+    negotiated_alpn:    u8[..255]          = [],
     server_name:        u8[..256]          = [],
     san_hosts:          u8[..128][..8]     = [],
     rx_plain_buf:       u8[..16384]        = [],
@@ -312,18 +328,18 @@ struct TlsCipherSlot {
     ticket_cache:       SessionTicketCache = SessionTicketCache { .. },
 }
 
-struct Tls13CachedSessionTicket {
-    in_use:       bool      = false,
-    server_name:  u8[..256] = [],
-    ticket:       u8[..256] = [],
-    psk:          u8[..48]  = [],
-    age_add:      u32       = 0,
-    lifetime:     u32       = 0,
-    cipher_suite: u16       = 0,
-    issued_at_ms: i64       = 0,
+struct CachedSessionTicket {
+    in_use:       bool       = false,
+    server_name:  u8[..256]  = [],
+    ticket:       u8[..1024] = [],
+    psk:          u8[..48]   = [],
+    age_add:      u32        = 0,
+    lifetime:     u32        = 0,
+    cipher_suite: u16        = 0,
+    issued_at_ms: i64        = 0,
 }
 
-struct TlsTicketStek {
+struct TicketStek {
     key_name:     u8[4]  = [0; 4],
     aead_key:     u8[32] = [0; 32],
     created_sec:  i64    = 0,
@@ -331,20 +347,21 @@ struct TlsTicketStek {
     active:       bool   = false,
 }
 
-struct TlsTicketKeyRing {
-    keys:        TlsTicketStek[2] = [TlsTicketStek { .. }; 2],
-    current_idx: u8               = 0,
+struct TicketKeyRing {
+    keys:        TicketStek[2] = [TicketStek { .. }; 2],
+    current_idx: u8            = 0,
 }
 
 struct HandshakeRecordReader {
     current_record_plain: u8[..32768] = [],
     current_offset:       i64         = 0,
     seq_num:              u64         = 0,
+    ccs_count:            u32         = 0,
 }
 
-struct TlsClientHandshakeConfig {
+struct ClientHandshakeConfig {
     server_name:          u8[..256]        = [],
-    alpn:                 u8[..32]         = [],
+    alpn:                 u8[..255]        = [],
     trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
     insecure_skip_verify: bool             = false,
     virtual_clock_sec:    i64              = 0,
@@ -355,51 +372,53 @@ struct TlsClientHandshakeConfig {
     crl_der:              u8[..4096]       = [],
 }
 
-struct TlsServerHandshakeConfig {
+struct ServerHandshakeConfig {
     cert_der:             u8[..4096] = [],
     priv_seed:            u8[32]     = [0; 32],
-    alpn:                 u8[..32]   = [],
+    alpn:                 u8[..255]  = [],
     compressed_cert_algo: u16        = 0,
     compressed_cert_data: u8[..4096] = [],
 }
 
-fn transcript_update(t: TlsTranscript&, data: const u8[:])
-fn transcript_update_msg(t: TlsTranscript&, msg_type: u8, body: const u8[:])
-fn transcript_current_hash(t: const TlsTranscript&, hash_id: u8, out_hash: u8[..48]&)
-fn transcript_replace_with_message_hash(t: TlsTranscript&, hash_id: u8, hash_len: u8) -> bool
-fn seal_stateless_tls13_ticket<B>(ring: const TlsTicketKeyRing&, psk: const u8[..48]&, cipher_suite: u16, issued_at_ms: i64, nonce_iv: const u8[12]&, out_ticket: B&) -> bool
-fn open_stateless_tls13_ticket(ring: const TlsTicketKeyRing&, raw_ticket: const u8[:], now_ms: i64) -> Tls13CachedSessionTicket, bool
-fn store_tls13_session_ticket(server_name: const u8[:], ticket: const u8[:], psk: const u8[:], age_add: u32, lifetime: u32, cipher_suite: u16 = rfc::TLS_CIPHER_AES_128_GCM_SHA256)
-fn lookup_tls13_session_ticket_full<B1, B2>(server_name: const u8[:], out_ticket: B1&, out_psk: B2&, out_age_add: u32&, out_cipher_suite: u16&) -> bool
-fn lookup_tls13_session_ticket<B>(server_name: const u8[:], out_ticket: B&, out_psk: u8[32]&, out_age_add: u32&) -> bool
-fn clear_tls13_session_tickets()
-fn alloc_tls_cipher_slot() -> u16
-fn free_tls_cipher_slot(slot_idx: u16)
-fn tls_session_alpn(slot_idx: u16) -> const u8[:]
-fn tls_session_is_resumed(slot_idx: u16) -> bool
-fn tls_session_export_keying_material(slot_idx: u16, label: const u8[:], context: const u8[:], length: u16, out: u8[..256]&) -> bool
-fn tls_client_handshake(fd: i64, config: const TlsClientHandshakeConfig&) -> u16, bool
-fn tls_server_handshake(fd: i64, config: const TlsServerHandshakeConfig&) -> u16, bool
-fn tls_server_handshake_with_ch(fd: i64, ch_msg: const u8[:], config: const TlsServerHandshakeConfig&) -> u16, bool
-fn tls_transport_send(fd: i64, slot_idx: u16, data: const u8[:]) -> i32
-fn tls_transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 = 5000) -> i32
-fn tls_transport_close(fd: i64, slot_idx: u16)
-fn tls_send_new_session_ticket(fd: i64, slot_idx: u16, ticket_lifetime: u32, ticket_nonce: const u8[:], ticket: const u8[:], max_early_data_size: u32 = 0) -> bool
-fn tls_send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool
+fn transcript_update(t: Transcript&, data: const u8[:])
+fn transcript_update_msg(t: Transcript&, msg_type: u8, body: const u8[:])
+fn transcript_current_hash(t: const Transcript&, hash_id: u8, out_hash: u8[..48]&)
+fn transcript_replace_with_message_hash(t: Transcript&, hash_id: u8, hash_len: u8) -> bool
+fn seal_stateless_ticket<B>(ring: const TicketKeyRing&, psk: const u8[..48]&, cipher_suite: u16, issued_at_ms: i64, nonce_iv: const u8[12]&, out_ticket: B&) -> bool
+fn open_stateless_ticket(ring: const TicketKeyRing&, raw_ticket: const u8[:], now_ms: i64) -> CachedSessionTicket, bool
+fn store_session_ticket(server_name: const u8[:], ticket: const u8[:], psk: const u8[:], age_add: u32, lifetime: u32, cipher_suite: u16 = rfc::TLS_CIPHER_AES_128_GCM_SHA256, issued_at_ms: i64 = 0)
+fn lookup_session_ticket_full<B>(server_name: const u8[:], out_ticket: B&, out_psk: u8[..48]&, out_age_add: u32&, out_cipher_suite: u16&, now_ms: i64 = 0) -> bool
+fn lookup_session_ticket<B>(server_name: const u8[:], out_ticket: B&, out_psk: u8[32]&, out_age_add: u32&, now_ms: i64 = 0) -> bool
+fn clear_session_tickets()
+fn random_bytes_32() -> u8[32]
+fn alloc_cipher_slot() -> u16
+fn free_cipher_slot(slot_idx: u16)
+fn session_alpn(slot_idx: u16) -> const u8[:]
+fn session_is_resumed(slot_idx: u16) -> bool
+fn session_export_keying_material(slot_idx: u16, label: const u8[:], context: const u8[:], length: u16, out: u8[..256]&) -> bool
+fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool
+fn server_handshake(fd: i64, config: const ServerHandshakeConfig&) -> u16, bool
+fn server_handshake_with_ch(fd: i64, ch_msg: const u8[:], config: const ServerHandshakeConfig&) -> u16, bool
+fn transport_send(fd: i64, slot_idx: u16, data: const u8[:]) -> i32
+fn transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 = 5000) -> i32
+fn transport_close(fd: i64, slot_idx: u16)
+fn send_new_session_ticket(fd: i64, slot_idx: u16, ticket_lifetime: u32, ticket_nonce: const u8[:], ticket: const u8[:], max_early_data_size: u32 = 0) -> bool
+fn send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool
 fn build_test_ed25519_cert_der(seed: const u8[32]&, common_name: const u8[:], dns_san: const u8[:], ip_san: const u8[:], out_der: u8[..2048]&) -> bool
 ```
 
-Manages up to 64 concurrent `TlsCipherSlot` sessions (`alloc_tls_cipher_slot` /
-`free_tls_cipher_slot`). `seal_stateless_tls13_ticket` and
-`open_stateless_tls13_ticket` (`tls/ticket.goose`) encrypt and authenticate
-95-byte stateless server session tickets (`STEK_TICKET_WIRE_LEN = 95`,
-`STEK_TICKET_PLAINTEXT_LEN = 63`) with `AES-256-GCM` (`core::aes256_gcm_seal` /
-`core::aes256_gcm_open`) using a 4-byte `key_name` (`u8[4]`) and 12-byte IV
-prefix looked up across active and previous slots in `TlsTicketKeyRing`.
-`tls_transport_recv_slice` processes post-handshake `NewSessionTicket` and
-`KeyUpdate` messages while delivering decrypted application data slices.
+Manages up to 256 concurrent `CipherSlot` sessions (`alloc_cipher_slot` /
+`free_cipher_slot`) via grow-on-demand lazy slot storage.
+`seal_stateless_ticket` and `open_stateless_ticket` (`tls/ticket.goose`) encrypt
+and authenticate 95-byte stateless server session tickets (`STEK_TICKET_WIRE_LEN
+= 95`, `STEK_TICKET_PLAINTEXT_LEN = 63`) with `AES-256-GCM`
+(`core::aes256_gcm_seal` / `core::aes256_gcm_open`) using a 4-byte `key_name`
+(`u8[4]`) and 12-byte IV prefix looked up across active and previous slots in
+`TicketKeyRing`. `transport_recv_slice` processes post-handshake
+`NewSessionTicket` and `KeyUpdate` messages while delivering decrypted
+application data slices.
 
-### X.509 PKI, SAN, OCSP & CRL Verification (`tls/x509.goose`, `tls/asn1.goose`, `tls/ocsp.goose`, `tls/crl.goose`, `tls/sct.goose`)
+### X.509 PKI, SAN, OCSP, CRL & PEM (`tls/x509.goose`, `tls/x509_san.goose`, `tls/asn1.goose`, `tls/ocsp.goose`, `tls/crl.goose`, `tls/sct.goose`, `tls/pem.goose`)
 
 ```goose
 struct Span16 { offset: u16 = 0, length: u16 = 0 }
@@ -456,6 +475,7 @@ struct ParsedSct {
     timestamp_ms: u64    = 0,
     hash_alg:     u8     = 0,
     sig_alg:      u8     = 0,
+    extensions:   Span16 = Span16 { offset: 0, length: 0 },
     signature:    Span16 = Span16 { offset: 0, length: 0 },
 }
 
@@ -490,48 +510,57 @@ struct ParsedCrl {
     signature:    Span16      = Span16 { offset: 0, length: 0 },
 }
 
+enum PrivateKeyKind { Unknown, Ed25519, EcdsaP256 }
+
 fn span_slice(raw: const u8[:], span: Span16) -> const u8[:]
 fn make_span(base: const u8[:], target: const u8[:], start_hint: i64 = 0) -> Span16
 fn parse_x509_certificate(raw_cert: const u8[:], out: ParsedCert&) -> bool
 fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw: const u8[:]) -> bool
 fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]) -> bool
 fn matches_trust_anchor(store: const TrustAnchorStore&, cert: const ParsedCert&, raw_cert: const u8[:]) -> bool
-fn verify_certificate_chain(chain_certs: const ParsedCert[..8]&, raw_certs: const u8[:][..8]&, trust_store: const TrustAnchorStore&, now_unix: i64) -> TlsAlert
-fn x509_verify_cert_signature(child_cert: const ParsedCert&, child_raw: const u8[:], parent_cert: const ParsedCert&, parent_raw: const u8[:]) -> TlsAlert
-fn parse_san_extension(san_der: const u8[:], out_sans: SanEntry[..16]&) -> bool
-fn get_cert_san_extension(cert: const ParsedCert&, raw_cert: const u8[:], out_sans: SanEntry[..16]&) -> bool
+fn verify_certificate_chain(chain_certs: const ParsedCert[..8]&, raw_certs: const u8[:][..8]&, trust_store: const TrustAnchorStore&, now_unix: i64) -> Alert
+fn x509_verify_cert_signature(child_cert: const ParsedCert&, child_raw: const u8[:], parent_cert: const ParsedCert&, parent_raw: const u8[:]) -> Alert
+fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool
+fn get_cert_san_extension<S>(cert: const ParsedCert&, raw_cert: const u8[:], out_sans: S&) -> bool
 fn match_dns_san(san_pattern: const u8[:], host: const u8[:]) -> bool
 fn match_ip_san(san_ip: const u8[:], host: const u8[:]) -> bool
 fn match_uri_san(san_uri_host: const u8[:], request_host: const u8[:]) -> bool
 fn match_san(san: const SanEntry&, host: const u8[:]) -> bool
-fn match_any_san(sans: const SanEntry[..16]&, host: const u8[:]) -> bool
+fn match_any_san<S>(sans: const S&, host: const u8[:]) -> bool
 fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEntry[..16]&) -> bool
 fn check_name_constraints(constraints: const NameConstraintEntry[..16]&, san: const SanEntry&) -> bool
 fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool
 fn parse_sct_list(raw_list: const u8[:], out_scts: ParsedSct[..8]&) -> bool
 fn parse_ocsp_response(raw_ocsp: const u8[:], out: ParsedOcspResponse&) -> bool
-fn x509_verify_ocsp_signature(resp: const ParsedOcspResponse&, raw_ocsp: const u8[:], issuer_cert: const ParsedCert&, issuer_raw: const u8[:]) -> TlsAlert
-fn validate_ocsp_stapling(raw_ocsp: const u8[:], leaf_cert: const ParsedCert&, leaf_raw: const u8[:], now_unix: i64) -> TlsAlert
+fn x509_verify_ocsp_signature(resp: const ParsedOcspResponse&, raw_ocsp: const u8[:], issuer_cert: const ParsedCert&, issuer_raw: const u8[:]) -> Alert
+fn validate_ocsp_stapling(raw_ocsp: const u8[:], leaf_cert: const ParsedCert&, leaf_raw: const u8[:], now_unix: i64, issuer_raw_der: const u8[:] = "") -> Alert
+fn unwrap_ocsp_response(ext_data: const u8[:]) -> const u8[:], bool
 fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool
 fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool
 fn crl_insert_serial(crl: ParsedCrl&, serial: u64) -> bool
 fn crl_is_revoked(crl: const ParsedCrl&, serial: u64) -> bool
-fn x509_verify_crl_signature(crl: const ParsedCrl&, raw_crl: const u8[:], issuer_cert: const ParsedCert&, issuer_raw: const u8[:]) -> TlsAlert
+fn x509_verify_crl_signature(crl: const ParsedCrl&, raw_crl: const u8[:], issuer_cert: const ParsedCert&, issuer_raw: const u8[:]) -> Alert
 fn verify_signature_scheme_curve_binding(sig_scheme: u16, spki_oid: const u8[:]) -> bool
 fn build_certificate_verify_message(is_server: bool, transcript_hash: const u8[:], out: u8[:]) -> i64, bool
+fn pem_next_block(raw: const u8[:], idx: i64&, out_label: u8[..64]&, out_der: u8[..4096]&) -> bool
+fn add_trust_anchors_pem(store: TrustAnchorStore&, pem_bundle: const u8[:]) -> i64, bool
+fn load_trust_anchors_pem_file(store: TrustAnchorStore&, path: const u8[:]) -> i64, bool
+fn parse_private_key_pem(pem: const u8[:], out_key: u8[32]&) -> PrivateKeyKind, bool
+fn load_server_credentials_pem(cert_pem: const u8[:], key_pem: const u8[:], out_cfg: ServerHandshakeConfig&) -> bool
 ```
 
 `parse_x509_certificate` enforces X.690 canonical DER length and integer padding
 rules (forbidding BER indefinite lengths and non-minimal encodings) and records
 16-bit `Span16` offsets into the caller's DER buffer without copying, using
 `make_span` with `start_hint` so `subject_raw` resolves past `issuer_raw` on
-self-signed certificates. `parse_asn1_serial_u64` maps 1..8 byte DER serials to
-their exact big-endian `u64` value and 9..20 byte serials (RFC 5280 §4.1.2.2) to
-a 64-bit FNV-1a digest with bit 63 set for O(log N) binary-search lookup in
-`ParsedCrl.serials`. `verify_certificate_chain` validates up to 8 certificates
-against `TrustAnchorStore`, returning `TlsAlert.CloseNotify` on valid chains.
+self-signed certificates. `parse_asn1_serial_u64` maps 1..7 significant-byte DER
+serials to their exact big-endian `u64` value and 8..20 byte serials (RFC 5280
+§4.1.2.2) to a 64-bit FNV-1a digest with bit 63 set for O(log N) binary-search
+lookup in `ParsedCrl.serials`. `verify_certificate_chain` validates up to 8
+certificates against `TrustAnchorStore`, returning `Alert.CloseNotify` on valid
+chains.
 
-### Hybrid Post-Quantum Key Exchange (`tls/post_quantum.goose`, RFC 10024 / FIPS 203)
+### Hybrid Post-Quantum Key Exchange (`tls/post_quantum.goose`, `namespace tls_internal`, RFC 10024 / FIPS 203)
 
 ```goose
 struct PostQuantumKeyShare {
@@ -625,20 +654,10 @@ struct EchConfig {
     cipher_suites:       EchCipherSuite[..4] = [],
     maximum_name_length: u8                  = 0,
     public_name:         u8[..255]           = [],
-    raw_bytes:           u8[..512]           = [],
+    raw_bytes:           u8[..2048]          = [],
 }
 
 struct EchConfigList { configs: EchConfig[..4] = [] }
-
-struct EchClientState {
-    enabled:         bool           = false,
-    selected_config: EchConfig      = EchConfig { .. },
-    selected_cipher: EchCipherSuite = EchCipherSuite { .. },
-    inner_sni:       u8[..255]      = [],
-    outer_sni:       u8[..255]      = [],
-    enc:             u8[32]         = [0; 32],
-    retry_configs:   u8[..512]      = [],
-}
 
 enum EchHandshakeMode { Disabled, Offered, Accepted, RejectedWithRetry, Bypassed }
 enum EchServerHelloType { ServerHello, HelloRetryRequest }
@@ -648,18 +667,6 @@ struct EchFsm {
     mode:              EchHandshakeMode = EchHandshakeMode.Disabled,
     has_hrr:           bool             = false,
     offered_config_id: u8               = 0,
-}
-
-struct HpkeContext {
-    key:             u8[32] = [0; 32],
-    base_nonce:      u8[12] = [0; 12],
-    seq:             u64    = 0,
-    exporter_secret: u8[32] = [0; 32],
-    aead_id:         u16    = rfc::HPKE_AEAD_AES_128_GCM,
-    kem_id:          u16    = rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-    kdf_id:          u16    = rfc::HPKE_KDF_HKDF_SHA256,
-    key_len:         u16    = 16,
-    nonce_len:       u16    = 12,
 }
 
 fn parse_ech_config(raw: const u8[:], out: EchConfig&) -> bool
@@ -674,7 +681,7 @@ fn build_ech_outer_extension<B>(config_id: u8, cs: const EchCipherSuite&, enc: c
 fn compute_ech_accept_confirmation(inner_random: const u8[32]&, ch_inner_bytes: const u8[:], sh_msg_with_hdr: const u8[:], is_hrr: bool) -> u8[8], bool
 fn verify_ech_acceptance_confirmation(ext_data: const u8[:], expected_confirmation: const u8[8]&) -> bool
 fn parse_and_validate_ech_retry_configs(ext_data: const u8[:], out_config_list: EchConfigList&) -> bool
-fn ech_fsm_on_server_hello(fsm: EchFsm&, sh_type: EchServerHelloType, has_ech_ext: bool, ech_ext_data: const u8[:], expected_confirm: const u8[8]&, out_retry_configs: EchConfigList&) -> bool
+fn ech_fsm_on_server_hello(fsm: EchFsm&, sh_type: EchServerHelloType, has_ech_ext: bool, sh_confirm_or_ext: const u8[:], expected_confirm: const u8[8]&, out_retry_configs: EchConfigList&) -> bool
 fn validate_ech_alpn_negotiation(is_ech_accepted: bool, selected_alpn: const u8[:], inner_alpn: const u8[:], outer_alpn: const u8[:]) -> bool
 ```
 
@@ -686,7 +693,7 @@ mode (`security/hpke.goose`, `"tls ech\0"` info label).
 `verify_ech_acceptance_confirmation` checks the 8-byte confirmation signal in
 constant time.
 
-### Certificate Compression (`tls/cert_compression.goose`, RFC 8879)
+### Certificate Compression (`tls/cert_compression.goose`, `namespace tls_internal`, RFC 8879)
 
 ```goose
 struct CompressedCertificate {
@@ -697,7 +704,7 @@ struct CompressedCertificate {
 
 fn encode_compressed_certificate<B>(msg: const CompressedCertificate&, out: B&) -> bool
 fn parse_compressed_certificate_msg(raw: const u8[:], out: CompressedCertificate&) -> bool
-fn decompress_certificate_message<B>(msg: CompressedCertificate, max_allowed_len: u32, out_cert: B&) -> bool
+fn decompress_certificate_message<B>(msg: const CompressedCertificate&, max_allowed_len: u32, out_cert: B&) -> bool
 fn decompress_certificate_payload<B>(comp_data: const u8[:], algo: u16, expected_len: u32, out_cert: B&) -> bool
 fn decompress_certificate_brotli<B>(compressed_data: const u8[:], uncompressed_len: u32, out_cert: B&) -> bool
 fn decompress_certificate_zlib<B>(compressed_data: const u8[:], uncompressed_len: u32, out_cert: B&) -> bool

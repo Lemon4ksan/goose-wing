@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Dynamic Runtime SNI Multi-Certificate Registry & Wildcard Matcher (RFC 6066 §3, RFC 6125 §6.4.3).
-namespace wing;
+namespace server;
 
 import std;
 import core from "..";
@@ -10,6 +10,7 @@ import http.headers;
 import tls.x509;
 import tls.session;
 import tls.pem;
+import .internal;
 
 // RFC 6066 Section 3: Server Name Indication - DNS HostName up to 253 ASCII bytes
 const MAX_SNI_HOSTNAME_LEN: i64 = 253;
@@ -34,35 +35,21 @@ struct SniCredentials {
     key_pem:  const u8[:] = "",
 }
 
-inline fn is_valid_sni_pattern(p_norm: const u8[:]) -> bool {
-    guard p_norm.len > 0 && p_norm.len <= MAX_SNI_HOSTNAME_LEN && p_norm != "*" else { return false; }
-    guard !x509_is_ip_literal(p_norm) && !p_norm.contains_byte(':') else { return false; }
-    if p_norm[0] == '*' {
-        guard p_norm.len >= 3 && p_norm[1] == '.' && p_norm[2..].contains_byte('.') else {
-            return false;
-        }
-    }
-    return validate_san_dns_name(p_norm);
-}
-
-inline fn is_valid_sni_hostname(h_norm: const u8[:]) -> bool {
-    guard h_norm.len > 0 && !h_norm.contains_byte('*') else { return false; }
-    guard !x509_is_ip_literal(h_norm) && !h_norm.contains_byte(':') else { return false; }
-    return validate_san_dns_name(h_norm);
-}
-
 // Matches a hostname against an SNI domain pattern (RFC 6125 §6.4.3 & uWebSockets pattern).
 // Supports exact domains ("example.com") and wildcard patterns ("*.example.com").
 // Case-insensitive.
 fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
-    let p_norm = x509_strip_trailing_dot(pattern);
-    let h_norm = x509_strip_trailing_dot(hostname);
-    guard is_valid_sni_pattern(p_norm) && is_valid_sni_hostname(h_norm) else { return false; }
+    let p_norm = tls::x509_strip_trailing_dot(pattern);
+    let h_norm = tls::x509_strip_trailing_dot(hostname);
+    guard server_internal::is_valid_sni_pattern(p_norm)
+        && server_internal::is_valid_sni_hostname(h_norm) else {
+        return false;
+    }
     if p_norm.eq_ascii_fold(h_norm) {
         return true;
     }
     if p_norm.len >= 3 && p_norm[0] == '*' && p_norm[1] == '.' {
-        return match_dns_san(p_norm, h_norm);
+        return tls::match_dns_san(p_norm, h_norm);
     }
     return false;
 }
@@ -75,19 +62,20 @@ fn add_server_name<S>(
     cert_pem: const u8[:],
     key_pem:  const u8[:],
 ) -> bool {
-    let p_norm = x509_strip_trailing_dot(pattern);
-    guard is_valid_sni_pattern(p_norm) else { return false; }
+    let p_norm = tls::x509_strip_trailing_dot(pattern);
+    guard server_internal::is_valid_sni_pattern(p_norm) else { return false; }
     guard cert_pem.len > 0 && cert_pem.len <= 4096 && key_pem.len > 0 && key_pem.len <= 4096 else {
         return false;
     }
 
     // Check if pattern already registered: update in place
     for i in server.sni_registry.entries.len {
-        let entry_pat = x509_strip_trailing_dot(server.sni_registry.entries[i].pattern[..]);
-        if server.sni_registry.entries[i].in_use && entry_pat.eq_ascii_fold(p_norm) {
-            core::secure_zeroize_slice(server.sni_registry.entries[i].key_pem[..]);
-            let _ = server.sni_registry.entries[i].cert_pem.try_set(cert_pem);
-            let _ = server.sni_registry.entries[i].key_pem.try_set(key_pem);
+        let entry .= server.sni_registry.entries[i];
+        let entry_pat = tls::x509_strip_trailing_dot(entry.pattern[..]);
+        if entry.in_use && entry_pat.eq_ascii_fold(p_norm) {
+            core::secure_zeroize_slice(entry.key_pem[..]);
+            let _ = entry.cert_pem.try_set(cert_pem);
+            let _ = entry.key_pem.try_set(key_pem);
             return true;
         }
     }
@@ -95,11 +83,12 @@ fn add_server_name<S>(
     // Find first empty slot
     guard server.sni_registry.count < server.sni_registry.entries.len as i32 else { return false; }
     for i in server.sni_registry.entries.len {
-        if !server.sni_registry.entries[i].in_use {
-            let _ = server.sni_registry.entries[i].pattern.try_set(p_norm);
-            let _ = server.sni_registry.entries[i].cert_pem.try_set(cert_pem);
-            let _ = server.sni_registry.entries[i].key_pem.try_set(key_pem);
-            server.sni_registry.entries[i].in_use = true;
+        let entry .= server.sni_registry.entries[i];
+        if !entry.in_use {
+            let _ = entry.pattern.try_set(p_norm);
+            let _ = entry.cert_pem.try_set(cert_pem);
+            let _ = entry.key_pem.try_set(key_pem);
+            entry.in_use = true;
             server.sni_registry.count = core::add_sat_i64(server.sni_registry.count, 1) as i32;
             return true;
         }
@@ -109,11 +98,11 @@ fn add_server_name<S>(
 
 // Removes a previously registered SNI domain pattern (uWebSockets app.removeServerName).
 fn remove_server_name<S>(server: S&, pattern: const u8[:]) -> bool {
-    let p_norm = x509_strip_trailing_dot(pattern);
+    let p_norm = tls::x509_strip_trailing_dot(pattern);
     guard p_norm.len > 0 && server.sni_registry.count > 0 else { return false; }
     for i in server.sni_registry.entries.len {
         let entry = &server.sni_registry.entries[i];
-        if entry.in_use && x509_strip_trailing_dot(entry.pattern[..]).eq_ascii_fold(p_norm) {
+        if entry.in_use && tls::x509_strip_trailing_dot(entry.pattern[..]).eq_ascii_fold(p_norm) {
             entry.in_use = false;
             entry.pattern.clear();
             entry.cert_pem.clear();
@@ -132,15 +121,15 @@ fn resolve_sni_credentials<S>(
     server:       const S&,
     sni_hostname: const u8[:],
 ) -> SniCredentials, bool {
-    let h_norm = x509_strip_trailing_dot(sni_hostname);
-    guard server.sni_registry.count > 0 && is_valid_sni_hostname(h_norm) else {
+    let h_norm = tls::x509_strip_trailing_dot(sni_hostname);
+    guard server.sni_registry.count > 0 && server_internal::is_valid_sni_hostname(h_norm) else {
         return SniCredentials { .. }, false;
     }
 
     // Phase 1: Exact match priority
     for i in server.sni_registry.entries.len {
         let entry = &server.sni_registry.entries[i];
-        if entry.in_use && x509_strip_trailing_dot(entry.pattern[..]).eq_ascii_fold(h_norm) {
+        if entry.in_use && tls::x509_strip_trailing_dot(entry.pattern[..]).eq_ascii_fold(h_norm) {
             return SniCredentials {
                 cert_pem: entry.cert_pem[..],
                 key_pem:  entry.key_pem[..],
@@ -152,9 +141,9 @@ fn resolve_sni_credentials<S>(
     for i in server.sni_registry.entries.len {
         let entry = &server.sni_registry.entries[i];
         guard entry.in_use else { continue; }
-        let pat = x509_strip_trailing_dot(entry.pattern[..]);
+        let pat = tls::x509_strip_trailing_dot(entry.pattern[..]);
         guard pat.len >= 3 && pat[0] == '*' && pat[1] == '.' else { continue; }
-        if match_dns_san(pat, h_norm) {
+        if tls::match_dns_san(pat, h_norm) {
             return SniCredentials {
                 cert_pem: entry.cert_pem[..],
                 key_pem:  entry.key_pem[..],
@@ -183,7 +172,7 @@ fn resolve_sni_credentials_with_fallback<S, Fallback: fn(const u8[:]) -> SniCred
 // Decodes PEM certificate and private key from resolved SNI credentials into a TLS server config.
 fn sni_credentials_to_tls_config(
     creds:   const SniCredentials&,
-    out_cfg: TlsServerHandshakeConfig&,
+    out_cfg: tls::ServerHandshakeConfig&,
 ) -> bool {
-    return load_tls_server_credentials_pem(creds.cert_pem, creds.key_pem, out_cfg);
+    return tls::load_server_credentials_pem(creds.cert_pem, creds.key_pem, out_cfg);
 }

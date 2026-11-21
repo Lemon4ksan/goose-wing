@@ -162,30 +162,30 @@ fn test_f005_timeout_encoding_and_zero_deadline() {
     // 2. grpc-timeout: 0S must immediately expire in dispatch_grpc_unary
     var d = grpc::new_server_dispatcher();
     assert(grpc::register_unary(d, "test.Svc", "Call", 1));
-    var req = wing::new_request("POST", "/test.Svc/Call");
-    wing::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
-    wing::set_header(req, "grpc-timeout", "0S");
+    var req = http::new_request("POST", "/test.Svc/Call");
+    http::set_header(req, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+    http::set_header(req, "grpc-timeout", "0S");
     grpc::encode_lpm("hi", req.body, false);
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     assert(grpc::dispatch_unary(d, req, 5000000, res, dummy_unary_ok));
-    assert(wing::header(res, rfc::HEADER_GRPC_STATUS) == "4");
+    assert(http::header(res, rfc::HEADER_GRPC_STATUS) == "4");
     print("F005_TIMEOUT_AND_ZERO_DEADLINE: OK");
 }
 
 fn test_f006_status_and_client_parsers() {
     // 1. Non-200 HTTP status (503) with grpc-status: 0 must map to Unavailable, not Ok
-    var hdrs = wing::HeaderMap { .. };
+    var hdrs = http::HeaderMap { .. };
     hdrs.status_code = 503;
-    let _ = wing::append_header(hdrs, rfc::HEADER_GRPC_STATUS, "0");
-    var trs = wing::HeaderMap { .. };
+    let _ = http::append_header(hdrs, rfc::HEADER_GRPC_STATUS, "0");
+    var trs = http::HeaderMap { .. };
     var msg: u8[..256] = [];
     var st_503 = grpc::StatusCode.Ok;
     let _ = grpc::extract_status(hdrs, trs, st_503, msg);
     assert(st_503 == grpc::StatusCode.Unavailable);
 
     // 2. HTTP/2 :status pseudo-header ("503") when hdrs.status_code is left at default 200
-    var hdrs2 = wing::HeaderMap { .. };
-    let _ = wing::append_header(hdrs2, ":status", "503");
+    var hdrs2 = http::HeaderMap { .. };
+    let _ = http::append_header(hdrs2, ":status", "503");
     var st_pseudo = grpc::StatusCode.Ok;
     let _ = grpc::extract_status(hdrs2, trs, st_pseudo, msg);
     assert(st_pseudo == grpc::StatusCode.Unavailable);
@@ -216,24 +216,24 @@ fn test_f007_server_dispatch_and_encoding() {
     assert(grpc::register_unary(d, "test.Svc", "Call", 1));
 
     // 1. Compressed LPM (flag=1) with identity/missing grpc-encoding must be rejected (Internal=13)
-    var req_comp = wing::new_request("POST", "/test.Svc/Call");
-    wing::set_header(req_comp, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+    var req_comp = http::new_request("POST", "/test.Svc/Call");
+    http::set_header(req_comp, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     req_comp.body.push(rfc::GRPC_FLAG_COMPRESSED);
     req_comp.body.append("\x00\x00\x00\x00");
-    var res_comp = wing::Response { .. };
+    var res_comp = http::Response { .. };
     assert(grpc::dispatch_unary(d, req_comp, 1000, res_comp, dummy_unary_ok));
-    assert(wing::header(res_comp, rfc::HEADER_GRPC_STATUS) == "13");
+    assert(http::header(res_comp, rfc::HEADER_GRPC_STATUS) == "13");
 
     // 2. Unsupported grpc-encoding ("snappy") even with uncompressed LPM must return Unimplemented (12)
     // and include grpc-accept-encoding header
-    var req_enc = wing::new_request("POST", "/test.Svc/Call");
-    wing::set_header(req_enc, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
-    wing::set_header(req_enc, "grpc-encoding", "snappy");
+    var req_enc = http::new_request("POST", "/test.Svc/Call");
+    http::set_header(req_enc, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+    http::set_header(req_enc, "grpc-encoding", "snappy");
     grpc::encode_lpm("hi", req_enc.body, false);
-    var res_enc = wing::Response { .. };
+    var res_enc = http::Response { .. };
     assert(grpc::dispatch_unary(d, req_enc, 1000, res_enc, dummy_unary_ok));
-    assert(wing::header(res_enc, rfc::HEADER_GRPC_STATUS) == "12");
-    assert(wing::header(res_enc, rfc::HEADER_GRPC_ACCEPT_ENCODING).len > 0);
+    assert(http::header(res_enc, rfc::HEADER_GRPC_STATUS) == "12");
+    assert(http::header(res_enc, rfc::HEADER_GRPC_ACCEPT_ENCODING).len > 0);
 
     // 3. parse_grpc_path rejects extra slash or query string in method name
     var svc: u8[..64] = [];
@@ -683,22 +683,22 @@ fn verify_connect_unary_get() {
     let _, ok_chat = grpc::find_method_by_name(disp, "test.Echo", "Chat");
     assert(ok_chat);
 
-    var req = wing::new_request("GET", "/test.Echo/GetPing?connect=v1&encoding=proto&base64=1&message=cGluZw");
-    var res = wing::Response { .. };
+    var req = http::new_request("GET", "/test.Echo/GetPing?connect=v1&encoding=proto&base64=1&message=cGluZw");
+    var res = http::Response { .. };
     assert(grpc::dispatch_unary(disp, req, 1000, res, 0, idempotent_echo_handler));
     assert(res.status_code == 200);
     assert(res.body[..] == "ping");
 
-    var req_mut = wing::new_request("GET", "/test.Echo/Mutate?connect=v1&encoding=proto&base64=1&message=cGluZw");
-    var res_mut = wing::Response { .. };
+    var req_mut = http::new_request("GET", "/test.Echo/Mutate?connect=v1&encoding=proto&base64=1&message=cGluZw");
+    var res_mut = http::Response { .. };
     assert(grpc::dispatch_unary(disp, req_mut, 1000, res_mut, 0, idempotent_echo_handler));
     assert(res_mut.status_code == 405);
     print("GRPCCLI_01_CONNECT_GET: OK");
 }
 
 fn verify_connect_end_stream() {
-    var tr = wing::HeaderMap { .. };
-    let _ = wing::append_header(tr, "x-custom-meta", "val123");
+    var tr = http::HeaderMap { .. };
+    let _ = http::append_header(tr, "x-custom-meta", "val123");
     var wire: u8[..512] = [];
     assert(grpc::encode_connect_end_stream(
         grpc::StatusCode.Unauthenticated,
@@ -713,11 +713,11 @@ fn verify_connect_end_stream() {
 
     var out_status = grpc::StatusCode.Ok;
     var out_msg: u8[..256] = [];
-    var out_tr = wing::HeaderMap { .. };
+    var out_tr = http::HeaderMap { .. };
     assert(grpc::parse_connect_end_stream(json_slice, out_status, out_msg, out_tr));
     assert(out_status == grpc::StatusCode.Unauthenticated);
     assert(out_msg[..] == "expired token");
-    assert(wing::get_header(out_tr, "x-custom-meta") == "val123");
+    assert(http::get_header(out_tr, "x-custom-meta") == "val123");
     print("GRPCCLI_02_CONNECT_END_STREAM: OK");
 }
 
@@ -771,12 +771,12 @@ fn verify_grpc_status_details_and_health() {
     var lpm_req: u8[>..] = [];
     grpc::encode_lpm(req_pb[..], lpm_req, false);
 
-    var h_req = wing::new_request("POST", "/grpc.health.v1.Health/Check");
-    wing::set_header(h_req.headers, "content-type", "application/grpc");
+    var h_req = http::new_request("POST", "/grpc.health.v1.Health/Check");
+    http::set_header(h_req.headers, "content-type", "application/grpc");
     h_req.body.append(lpm_req[..]);
-    var h_res = wing::Response { .. };
+    var h_res = http::Response { .. };
     assert(grpc::dispatch_unary(disp, h_req, 1000, h_res, 0, idempotent_echo_handler));
-    assert(wing::get_header(h_res.trailers, "grpc-status") == "0");
+    assert(http::get_header(h_res.trailers, "grpc-status") == "0");
     print("GRPCCLI_04_HEALTH_CHECK: OK");
 }
 
@@ -792,9 +792,9 @@ fn verify_compression_webtext_rst_altsvc_and_cursor() {
     var cfg = grpc::CallConfig { is_web_text: true, .. };
     let _ = cfg.service.try_set("pkg.Svc");
     let _ = cfg.method.try_set("Call");
-    var hdrs = wing::HeaderMap { .. };
+    var hdrs = http::HeaderMap { .. };
     grpc::build_request_headers(cfg, "example.com", "https", hdrs);
-    assert(wing::get_header(hdrs, "accept") == "application/grpc-web-text+proto");
+    assert(http::get_header(hdrs, "accept") == "application/grpc-web-text+proto");
     let ok_res = grpc::Response { status: grpc::StatusCode.Ok, .. };
     assert(grpc::is_success(ok_res));
     print("GRPCCLI_06_WEB_TEXT_ACCEPT: OK");
@@ -807,8 +807,8 @@ fn verify_compression_webtext_rst_altsvc_and_cursor() {
     print("GRPCCLI_07_RST_STREAM_MAP: OK");
 
     // GRPCCLI-08: Alt-Svc IPv6 authority & ALPN %XX percent-decoding
-    var altsvc_list: wing::AltSvcEndpoint[..4] = [];
-    let ok_alt, is_clear = wing::parse_altsvc_header(
+    var altsvc_list: http::AltSvcEndpoint[..4] = [];
+    let ok_alt, is_clear = http::parse_altsvc_header(
         "h3%2D29=\"[2001:db8::1]:443\"; ma=60",
         altsvc_list,
     );
@@ -1135,11 +1135,11 @@ fn test_gcra_oversized_client_id() {
 
 // 4. Verify ReverseProxy does not duplicate Via header on forwarding
 fn test_reverse_proxy_via_dedup() {
-    var in_headers = wing::HeaderMap { .. };
-    assert(wing::append_header(in_headers, "Host", "api.example.com"));
-    assert(wing::append_header(in_headers, "Via", "1.0 upstream-cache"));
+    var in_headers = http::HeaderMap { .. };
+    assert(http::append_header(in_headers, "Host", "api.example.com"));
+    assert(http::append_header(in_headers, "Via", "1.0 upstream-cache"));
 
-    var out_headers = wing::HeaderMap { .. };
+    var out_headers = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-gw");
@@ -1164,17 +1164,17 @@ fn test_reverse_proxy_via_dedup() {
         }
     }
     assert(via_count == 1);
-    let v = wing::get_header(out_headers, "Via");
+    let v = http::get_header(out_headers, "Via");
     assert(v == "1.0 upstream-cache, 1.1 wing-gw");
 
     print("REVERSE_PROXY_VIA_DEDUP: ok\n");
 }
 // 5. Verify client cert DER length mismatch does not abort
 fn test_reverse_proxy_client_cert_safety() {
-    var in_headers = wing::HeaderMap { .. };
-    assert(wing::append_header(in_headers, "Host", "api.example.com"));
+    var in_headers = http::HeaderMap { .. };
+    assert(http::append_header(in_headers, "Host", "api.example.com"));
 
-    var out_headers = wing::HeaderMap { .. };
+    var out_headers = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.forward_client_cert = true;
     cfg.client_cert_der_len = 100; // mismatch: client_cert_der has len 0!
@@ -1218,8 +1218,8 @@ fn test_f001_wire_serialization_and_cl_mismatch() {
     var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
     assert(proxy::add_upstream_target(rp.cluster, "backend.internal", 8080, 1));
 
-    var in_headers = wing::HeaderMap { .. };
-    assert(wing::append_header(in_headers, "Host", "public.example.com"));
+    var in_headers = http::HeaderMap { .. };
+    assert(http::append_header(in_headers, "Host", "public.example.com"));
 
     //Tiny wire buffer that overflows during encode_h1_request
     var tiny_wire: u8[..16] = [];
@@ -1231,9 +1231,9 @@ fn test_f001_wire_serialization_and_cl_mismatch() {
     assert(rp.total_forwarded == 0 && rp.total_dropped == 1);
 
     // Content-Length header in in_headers contradicting actual body length (RFC 9112 §6.2)
-    var bad_cl_headers = wing::HeaderMap { .. };
-    assert(wing::append_header(bad_cl_headers, "Host", "public.example.com"));
-    assert(wing::append_header(bad_cl_headers, "Content-Length", "999"));
+    var bad_cl_headers = http::HeaderMap { .. };
+    assert(http::append_header(bad_cl_headers, "Host", "public.example.com"));
+    assert(http::append_header(bad_cl_headers, "Content-Length", "999"));
     var full_wire: u8[>..] = [];
     let idx_cl, ok_cl = proxy::prepare_proxy_request_at(
         rp, "POST", "/submit", bad_cl_headers, "192.0.2.10", "https", "hello", full_wire, 1000000000,
@@ -1245,30 +1245,30 @@ fn test_f001_wire_serialization_and_cl_mismatch() {
 
 // 9. F002: Multi-header Via preservation (RFC 9110 §7.6.3) and XFF overflow fail-closed
 fn test_f002_multi_via_and_xff_overflow() {
-    var in_headers = wing::HeaderMap { .. };
-    assert(wing::append_header(in_headers, "Host", "api.example.com"));
-    assert(wing::append_header(in_headers, "Via", "1.1 edge-proxy"));
-    assert(wing::append_header(in_headers, "Via", "1.1 mesh-proxy"));
+    var in_headers = http::HeaderMap { .. };
+    assert(http::append_header(in_headers, "Host", "api.example.com"));
+    assert(http::append_header(in_headers, "Via", "1.1 edge-proxy"));
+    assert(http::append_header(in_headers, "Via", "1.1 mesh-proxy"));
 
-    var out_headers = wing::HeaderMap { .. };
+    var out_headers = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.via_pseudonym.clear();
     cfg.via_pseudonym.append("wing-gw");
 
     assert(proxy::filter_and_forward_headers(in_headers, out_headers, "192.0.2.1", "https", "backend:8080", cfg));
-    let v = wing::get_header(out_headers, "Via");
+    let v = http::get_header(out_headers, "Via");
     assert(v == "1.1 edge-proxy, 1.1 mesh-proxy, 1.1 wing-gw");
 
     // Multi-header XFF exceeding 1024 bytes when trust_incoming_xff = true must fail closed (not panic or drop hops)
-    var xff_headers = wing::HeaderMap { .. };
-    assert(wing::append_header(xff_headers, "Host", "api.example.com"));
-    assert(wing::append_header(xff_headers, "X-Forwarded-For", "10.0.0.1"));
+    var xff_headers = http::HeaderMap { .. };
+    assert(http::append_header(xff_headers, "Host", "api.example.com"));
+    assert(http::append_header(xff_headers, "X-Forwarded-For", "10.0.0.1"));
     var big_xff: u8[..600] = [];
     for _ in 550 { big_xff.push('1'); }
-    assert(wing::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
-    assert(wing::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
+    assert(http::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
+    assert(http::append_header(xff_headers, "X-Forwarded-For", big_xff[..]));
     cfg.trust_incoming_xff = true;
-    var out_xff = wing::HeaderMap { .. };
+    var out_xff = http::HeaderMap { .. };
     let ok_xff = proxy::filter_and_forward_headers(xff_headers, out_xff, "192.0.2.1", "https", "backend:8080", cfg);
     assert(!ok_xff);
     print("F002_MULTI_VIA_AND_XFF_GUARD: ok\n");
@@ -1276,18 +1276,18 @@ fn test_f002_multi_via_and_xff_overflow() {
 
 // 10. F003: Reject Connection: content-length / host and format bare IPv6 / pre-ported upstream Host cleanly
 fn test_f003_connection_smuggle_and_ipv6_host() {
-    var smuggle_cl = wing::HeaderMap { .. };
-    assert(wing::append_header(smuggle_cl, "Host", "api.example.com"));
-    assert(wing::append_header(smuggle_cl, "Connection", "keep-alive, content-length"));
-    assert(wing::append_header(smuggle_cl, "Content-Length", "5"));
-    var out_smuggle = wing::HeaderMap { .. };
+    var smuggle_cl = http::HeaderMap { .. };
+    assert(http::append_header(smuggle_cl, "Host", "api.example.com"));
+    assert(http::append_header(smuggle_cl, "Connection", "keep-alive, content-length"));
+    assert(http::append_header(smuggle_cl, "Content-Length", "5"));
+    var out_smuggle = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     assert(!proxy::filter_and_forward_headers(smuggle_cl, out_smuggle, "192.0.2.1", "http", "backend:8080", cfg));
 
     var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
     assert(proxy::add_upstream_target(rp.cluster, "2001:db8::1", 8080, 1));
-    var in_hdr = wing::HeaderMap { .. };
-    assert(wing::append_header(in_hdr, "Host", "edge.example.com"));
+    var in_hdr = http::HeaderMap { .. };
+    assert(http::append_header(in_hdr, "Host", "edge.example.com"));
     var wire: u8[>..] = [];
     let _, ok_v6 = proxy::prepare_proxy_request_at(rp, "GET", "/v6", in_hdr, "192.0.2.1", "http", "", wire, 1000000000);
     assert(ok_v6);
@@ -1297,24 +1297,24 @@ fn test_f003_connection_smuggle_and_ipv6_host() {
 
 // 11. F004: exchange_prepared_wire_on_conn caps 1xx responses (RFC 9110 §15.2) and drains conn.rx_buf
 fn test_f004_exchange_interim_and_rx_buf() {
-    var conn_flood = wing::PooledConnection {
-        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+    var conn_flood = net::PooledConnection {
+        transport: net::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
     for _ in 7 {
         conn_flood.rx_buf.append("HTTP/1.1 100 Continue\r\n\r\n");
     }
     conn_flood.rx_buf.append("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
-    var resp_flood = wing::Response { .. };
+    var resp_flood = http::Response { .. };
     let _, ok_flood = proxy::exchange_prepared_wire_on_conn(conn_flood, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_flood, 100);
     assert(!ok_flood);
 
-    var conn_clean = wing::PooledConnection {
-        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+    var conn_clean = net::PooledConnection {
+        transport: net::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
     conn_clean.rx_buf.append("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nPONG");
-    var resp_clean = wing::Response { .. };
+    var resp_clean = http::Response { .. };
     resp_clean.body.append("STALE_BODY");
     let reuse_clean, ok_clean = proxy::exchange_prepared_wire_on_conn(conn_clean, "GET", "GET / HTTP/1.1\r\nHost: a\r\n\r\n", resp_clean, 100);
     assert(ok_clean && reuse_clean == proxy::WireReuse.KeepAlive);
@@ -1360,33 +1360,33 @@ fn test_f005_and_f006_health_and_gcra() {
 
 // 13. SRVPROXY-01 & SRVPROXY-02: 103 Early Hints serializer, no-early-hints: 1 suppression, CASPer cookie & proxy 103 capture
 fn test_srvproxy_01_02_early_hints_and_casper() {
-    let hints, ok_hints = wing::parse_early_hints(
+    let hints, ok_hints = http::parse_early_hints(
         103, "</style.css>; rel=preload; as=style; crossorigin, </app.js>; rel=preload; as=script",
     );
     assert(ok_hints && hints.links.len == 2);
 
     var out_103: u8[..512] = [];
-    assert(!wing::format_early_hints_http1(hints, "1", out_103));
+    assert(!http::format_early_hints_http1(hints, "1", out_103));
     assert(out_103.len == 0);
-    assert(wing::format_early_hints_http1(hints, "", out_103));
+    assert(http::format_early_hints_http1(hints, "", out_103));
     assert(core::contains(out_103[..], "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload; as=style; crossorigin\r\n"));
 
-    var cset = wing::CasperSet { .. };
-    assert(!wing::casper_lookup_and_insert(cset, "/style.css", "v1"));
-    assert(wing::casper_lookup_and_insert(cset, "/style.css", "v1"));
-    assert(!wing::casper_lookup_and_insert(cset, "/app.js", "v2"));
+    var cset = http::CasperSet { .. };
+    assert(!http::casper_lookup_and_insert(cset, "/style.css", "v1"));
+    assert(http::casper_lookup_and_insert(cset, "/style.css", "v1"));
+    assert(!http::casper_lookup_and_insert(cset, "/app.js", "v2"));
 
     var cookie_buf: u8[..128] = [];
-    assert(wing::encode_casper_cookie(cset, cookie_buf));
+    assert(http::encode_casper_cookie(cset, cookie_buf));
     assert(cookie_buf.len > 0);
 
-    var decoded_set = wing::CasperSet { .. };
-    assert(wing::decode_casper_cookie(cookie_buf[..], decoded_set));
+    var decoded_set = http::CasperSet { .. };
+    assert(http::decode_casper_cookie(cookie_buf[..], decoded_set));
     assert(decoded_set.keys.len == cset.keys.len);
-    assert(wing::casper_lookup_and_insert(decoded_set, "/style.css", "v1"));
+    assert(http::casper_lookup_and_insert(decoded_set, "/style.css", "v1"));
 
-    var conn_103 = wing::PooledConnection {
-        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+    var conn_103 = net::PooledConnection {
+        transport: net::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
     conn_103.rx_buf.append("HTTP/1.1 103 Early Hints\r\nLink: </hero.webp>; rel=preload; as=image\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
@@ -1424,31 +1424,31 @@ fn test_srvproxy_03_04_ketama_and_cache_lock() {
     let idx_recovered, ok_rec = proxy::select_consistent_backend(cluster, ring, "/users/42", 6000);
     assert(ok_rec && idx_recovered == idx1);
 
-    var writers = wing::CacheWriters { .. };
-    let is_ldr, fl_idx = wing::start_writer_or_join(writers, "/asset");
+    var writers = http::CacheWriters { .. };
+    let fl_idx, is_ldr = http::start_writer_or_join(writers, "/asset");
     assert(is_ldr && fl_idx >= 0);
-    wing::abort_writer(writers, fl_idx);
-    assert(wing::acquire_at(writers, 0xABCD, 1000, 5000));
-    assert(!wing::acquire_at(writers, 0xABCD, 3000, 5000));
+    http::abort_writer(writers, fl_idx);
+    assert(http::acquire_at(writers, 0xABCD, 1000, 5000));
+    assert(!http::acquire_at(writers, 0xABCD, 3000, 5000));
     // Preempt expired lock after age_timeout_ms (1000 + 5000 <= 6000)
-    assert(wing::acquire_at(writers, 0xABCD, 6000, 5000));
-    wing::release_with_status(writers, 0xABCD, wing::CacheLockStatus.GiveUp);
-    assert(wing::acquire(writers, 0xABCD));
-    wing::release_with_status(writers, 0xABCD, wing::CacheLockStatus.Done);
+    assert(http::acquire_at(writers, 0xABCD, 6000, 5000));
+    http::release_with_status(writers, 0xABCD, http::CacheLockStatus.GiveUp);
+    assert(http::acquire(writers, 0xABCD));
+    http::release_with_status(writers, 0xABCD, http::CacheLockStatus.Done);
     print("SRVPROXY_03_04_KETAMA_CACHE_LOCK: ok\n");
 }
 
 // 15. SRVPROXY-05..08: X-Accel-* filtering, Location rewrite, empty POST CL:0, 304 CL, PROXYv2 CRC32C & FastHTTP Host/CRLF
 fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
-    var up_hdrs = wing::HeaderMap { .. };
-    assert(wing::append_header(up_hdrs, "X-Accel-Buffering", "no"));
-    assert(wing::append_header(up_hdrs, "X-Accel-Expires", "120"));
-    assert(wing::append_header(up_hdrs, "X-Accel-Limit-Rate", "65536"));
-    assert(wing::append_header(up_hdrs, "X-Accel-Redirect", "/internal/files/a.bin"));
-    assert(wing::append_header(up_hdrs, "Location", "http://10.0.0.1:8080/app/login"));
-    assert(wing::append_header(up_hdrs, "Content-Type", "text/plain"));
+    var up_hdrs = http::HeaderMap { .. };
+    assert(http::append_header(up_hdrs, "X-Accel-Buffering", "no"));
+    assert(http::append_header(up_hdrs, "X-Accel-Expires", "120"));
+    assert(http::append_header(up_hdrs, "X-Accel-Limit-Rate", "65536"));
+    assert(http::append_header(up_hdrs, "X-Accel-Redirect", "/internal/files/a.bin"));
+    assert(http::append_header(up_hdrs, "Location", "http://10.0.0.1:8080/app/login"));
+    assert(http::append_header(up_hdrs, "Content-Type", "text/plain"));
 
-    var client_hdrs = wing::HeaderMap { .. };
+    var client_hdrs = http::HeaderMap { .. };
     var loc_buf: u8[..512] = [];
     var accel = proxy::UpstreamAccelControl { .. };
     assert(proxy::process_and_filter_upstream_response_headers(
@@ -1456,28 +1456,28 @@ fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
     ));
     assert(accel.disable_buffering && accel.has_accel_expires && accel.accel_expires_sec == 120);
     assert(accel.limit_rate_bps == 65536 && accel.accel_redirect[..] == "/internal/files/a.bin");
-    assert(wing::get_header(client_hdrs, "X-Accel-Buffering") == "");
-    assert(wing::get_header(client_hdrs, "Location") == "https://example.com/public/login");
+    assert(http::get_header(client_hdrs, "X-Accel-Buffering") == "");
+    assert(http::get_header(client_hdrs, "Location") == "https://example.com/public/login");
 
     var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
     assert(proxy::add_upstream_target(rp.cluster, "backend.internal", 8080, 1));
-    var post_hdr = wing::HeaderMap { .. };
-    assert(wing::append_header(post_hdr, "Host", "edge.example.com"));
+    var post_hdr = http::HeaderMap { .. };
+    assert(http::append_header(post_hdr, "Host", "edge.example.com"));
     var post_wire: u8[>..] = [];
     let _, ok_post = proxy::prepare_proxy_request_at(rp, "POST", "/empty", post_hdr, "192.0.2.1", "http", "", post_wire, 1000);
     assert(ok_post && core::contains(post_wire[..], "Content-Length: 0\r\n"));
 
-    var res_304 = wing::Response { status_code: 304, .. };
+    var res_304 = http::Response { status_code: 304, .. };
     res_304.set_header("Content-Length", "4096");
     res_304.set_header("ETag", "\"v1\"");
     var wire_304: u8[..512] = [];
-    wing::serialize_http1_response(res_304, "wing", wire_304);
+    server::serialize_http1_response(res_304, "wing", wire_304);
     assert(core::contains(wire_304[..], "Content-Length: 4096\r\n"));
 
-    var pp2_hdr = wing::ProxyHeader {
-        version:  wing::ProxyProtocolVersion.V2,
-        command:  wing::ProxyCommand.Proxy,
-        family:   wing::ProxyAddressFamily.Inet4,
+    var pp2_hdr = net::ProxyHeader {
+        version:  net::ProxyProtocolVersion.V2,
+        command:  net::ProxyCommand.Proxy,
+        family:   net::ProxyAddressFamily.Inet4,
         src_ipv4: [192, 0, 2, 10],
         dst_ipv4: [198, 51, 100, 1],
         src_port: 54321,
@@ -1485,39 +1485,39 @@ fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
         ..
     };
     var pp2_wire: u8[..128] = [];
-    assert(wing::format_proxy_v2(pp2_hdr, pp2_wire));
-    assert(wing::append_proxy_v2_crc32c(pp2_wire));
-    let parsed_pp2, consumed_pp2, ok_pp2 = wing::parse_proxy_v2(pp2_wire[..]);
+    assert(net::format_proxy_v2(pp2_hdr, pp2_wire));
+    assert(net::append_proxy_v2_crc32c(pp2_wire));
+    let parsed_pp2, consumed_pp2, ok_pp2 = net::parse_proxy_v2(pp2_wire[..]);
     assert(ok_pp2 && consumed_pp2 == pp2_wire.len && parsed_pp2.src_port == 54321);
     pp2_wire[pp2_wire.len - 1] = pp2_wire[pp2_wire.len - 1] ^ 0xFF;
-    let _, _, ok_bad = wing::parse_proxy_v2(pp2_wire[..]);
+    let _, _, ok_bad = net::parse_proxy_v2(pp2_wire[..]);
     assert(!ok_bad);
 
     var last_host: u8[..128] = [];
     var has_host = false;
-    assert(wing::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
+    assert(server::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
     assert(has_host && last_host[..] == "edge.example.com");
-    assert(wing::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
+    assert(server::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
 
     var scan_cur: i64 = 0;
     let partial_req = "GET / HTTP/1.1\r\nHost: edge.example.com\r\n";
-    assert(wing::scan_crlfcrlf_incremental(partial_req, scan_cur) == -1 && scan_cur == partial_req.len);
+    assert(server::scan_crlfcrlf_incremental(partial_req, scan_cur) == -1 && scan_cur == partial_req.len);
     let full_req = "GET / HTTP/1.1\r\nHost: edge.example.com\r\n\r\n";
-    assert(wing::scan_crlfcrlf_incremental(full_req, scan_cur) == 38 && scan_cur == 0);
+    assert(server::scan_crlfcrlf_incremental(full_req, scan_cur) == 38 && scan_cur == 0);
 
     var date_buf: u8[..64] = [];
-    wing::format_local_http_date(date_buf, 1700000000);
-    var srv = wing::new_http_server_with_quota("127.0.0.1", 8080, security::new_gcra_quota(100, wing::secs(1), 10));
-    wing::refresh_http_server_date(srv, 1700000000);
-    wing::add_put_route(srv, "/put", 1);
-    wing::add_delete_route(srv, "/del", 2);
-    var stg_req = wing::new_request("PUT", "/put");
-    var stg_match = wing::RouteMatchResult.NotFound;
-    let _ = wing::stage_server_route_match(srv.pipeline.router, stg_req, srv.pipeline.ext_pool.slots[0], stg_match, res_304);
+    server::format_local_http_date(date_buf, 1700000000);
+    var srv = server::new_http_server_with_quota("127.0.0.1", 8080, security::new_gcra_quota(100, wing::secs(1), 10));
+    server::refresh_http_server_date(srv, 1700000000);
+    server::add_put_route(srv, "/put", 1);
+    server::add_delete_route(srv, "/del", 2);
+    var stg_req = http::new_request("PUT", "/put");
+    var stg_match = server::RouteMatchResult.NotFound;
+    let _ = server::stage_server_route_match(srv.pipeline.router, stg_req, srv.pipeline.ext_pool.slots[0], stg_match, res_304);
     var te_buf: u8[..64] = [];
-    let _ = wing::collect_transfer_encoding_headers(stg_req.headers, te_buf);
-    assert(wing::serve_page_ring(srv, -1, 0) == 0);
-    assert(!wing::send_static_mmap_file(-1, "/nonexistent", "text/plain"));
+    let _ = server::collect_transfer_encoding_headers(stg_req.headers, te_buf);
+    assert(server::serve_page_ring(srv, -1, 0) == 0);
+    assert(!server::send_static_mmap_file(-1, "/nonexistent", "text/plain"));
     print("SRVPROXY_05_06_07_08_ALL: ok\n");
 }
 
@@ -1629,18 +1629,18 @@ fn test_load_balancer_least_connections() {
 }
 
 fn test_reverse_proxy_hop_by_hop_stripping() {
-    var in_headers = wing::HeaderMap { .. };
-    wing::append_header(in_headers, "Host", "frontend.example.com");
-    wing::append_header(in_headers, "User-Agent", "curl/8.0");
-    wing::append_header(in_headers, "Connection", "keep-alive, X-Foo-Internal");
-    wing::append_header(in_headers, "Keep-Alive", "timeout=5");
-    wing::append_header(in_headers, "Upgrade", "websocket");
-    wing::append_header(in_headers, "Transfer-Encoding", "chunked");
-    wing::append_header(in_headers, "X-Foo-Internal", "secret-token");
-    wing::append_header(in_headers, "X-Custom-Data", "retained-value");
-    wing::append_header(in_headers, "TE", "trailers");
+    var in_headers = http::HeaderMap { .. };
+    http::append_header(in_headers, "Host", "frontend.example.com");
+    http::append_header(in_headers, "User-Agent", "curl/8.0");
+    http::append_header(in_headers, "Connection", "keep-alive, X-Foo-Internal");
+    http::append_header(in_headers, "Keep-Alive", "timeout=5");
+    http::append_header(in_headers, "Upgrade", "websocket");
+    http::append_header(in_headers, "Transfer-Encoding", "chunked");
+    http::append_header(in_headers, "X-Foo-Internal", "secret-token");
+    http::append_header(in_headers, "X-Custom-Data", "retained-value");
+    http::append_header(in_headers, "TE", "trailers");
 
-    var out_headers = wing::HeaderMap { .. };
+    var out_headers = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.preserve_host = false;
     cfg.via_pseudonym.clear();
@@ -1655,18 +1655,18 @@ fn test_reverse_proxy_hop_by_hop_stripping() {
         cfg,
     );
 
-    let h_host = wing::get_header(out_headers, "Host");
-    let h_ua = wing::get_header(out_headers, "User-Agent");
-    let h_conn = wing::get_header(out_headers, "Connection");
-    let h_ka = wing::get_header(out_headers, "Keep-Alive");
-    let h_upg = wing::get_header(out_headers, "Upgrade");
-    let h_te = wing::get_header(out_headers, "TE");
-    let h_internal = wing::get_header(out_headers, "X-Foo-Internal");
-    let h_data = wing::get_header(out_headers, "X-Custom-Data");
-    let h_xff = wing::get_header(out_headers, "X-Forwarded-For");
-    let h_proto = wing::get_header(out_headers, "X-Forwarded-Proto");
-    let h_xfh = wing::get_header(out_headers, "X-Forwarded-Host");
-    let h_via = wing::get_header(out_headers, "Via");
+    let h_host = http::get_header(out_headers, "Host");
+    let h_ua = http::get_header(out_headers, "User-Agent");
+    let h_conn = http::get_header(out_headers, "Connection");
+    let h_ka = http::get_header(out_headers, "Keep-Alive");
+    let h_upg = http::get_header(out_headers, "Upgrade");
+    let h_te = http::get_header(out_headers, "TE");
+    let h_internal = http::get_header(out_headers, "X-Foo-Internal");
+    let h_data = http::get_header(out_headers, "X-Custom-Data");
+    let h_xff = http::get_header(out_headers, "X-Forwarded-For");
+    let h_proto = http::get_header(out_headers, "X-Forwarded-Proto");
+    let h_xfh = http::get_header(out_headers, "X-Forwarded-Host");
+    let h_via = http::get_header(out_headers, "Via");
 
     print("H_HOST: ", h_host, "\n");
     // CHECK: H_HOST: backend.internal:8080
@@ -1689,11 +1689,11 @@ fn test_reverse_proxy_hop_by_hop_stripping() {
 }
 
 fn test_reverse_proxy_xff_chaining() {
-    var in_headers = wing::HeaderMap { .. };
-    wing::append_header(in_headers, "Host", "api.example.com");
-    wing::append_header(in_headers, "X-Forwarded-For", "198.51.100.1, 10.0.0.1");
+    var in_headers = http::HeaderMap { .. };
+    http::append_header(in_headers, "Host", "api.example.com");
+    http::append_header(in_headers, "X-Forwarded-For", "198.51.100.1, 10.0.0.1");
 
-    var out_headers = wing::HeaderMap { .. };
+    var out_headers = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.trust_incoming_xff = true;
 
@@ -1706,17 +1706,17 @@ fn test_reverse_proxy_xff_chaining() {
         cfg,
     );
 
-    let chained_xff = wing::get_header(out_headers, "X-Forwarded-For");
+    let chained_xff = http::get_header(out_headers, "X-Forwarded-For");
     print("XFF_CHAINED: ", chained_xff, "\n");
     // CHECK: XFF_CHAINED: 198.51.100.1, 10.0.0.1, 192.0.2.42
 }
 
 fn test_reverse_proxy_xff_untrusted_perimeter() {
-    var in_headers = wing::HeaderMap { .. };
-    wing::append_header(in_headers, "Host", "api.example.com");
-    wing::append_header(in_headers, "X-Forwarded-For", "127.0.0.1, 10.0.0.1");
+    var in_headers = http::HeaderMap { .. };
+    http::append_header(in_headers, "Host", "api.example.com");
+    http::append_header(in_headers, "X-Forwarded-For", "127.0.0.1, 10.0.0.1");
 
-    var out_headers = wing::HeaderMap { .. };
+    var out_headers = http::HeaderMap { .. };
     let cfg = proxy::Config { .. }; // trust_incoming_xff is false by default
 
     proxy::filter_and_forward_headers(
@@ -1728,7 +1728,7 @@ fn test_reverse_proxy_xff_untrusted_perimeter() {
         cfg,
     );
 
-    let perimeter_xff = wing::get_header(out_headers, "X-Forwarded-For");
+    let perimeter_xff = http::get_header(out_headers, "X-Forwarded-For");
     print("XFF_PERIMETER: ", perimeter_xff, "\n");
     // CHECK: XFF_PERIMETER: 192.0.2.42
 }
@@ -1737,9 +1737,9 @@ fn test_upstream_request_wire_serialization() {
     var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
     proxy::add_upstream_target(rp.cluster, "upstream.local:9000", 9000);
 
-    var in_headers = wing::HeaderMap { .. };
-    wing::append_header(in_headers, "Host", "public.example.com");
-    wing::append_header(in_headers, "Accept", "application/json");
+    var in_headers = http::HeaderMap { .. };
+    http::append_header(in_headers, "Host", "public.example.com");
+    http::append_header(in_headers, "Accept", "application/json");
 
     var wire_out: u8[>..] = [];
     let body = "{\"event\":\"ping\"}";

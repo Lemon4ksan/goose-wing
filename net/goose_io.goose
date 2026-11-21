@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Zero-allocation `goose-io` v0.1 contract adapter over `wing::NetHost`.
+// Zero-allocation `goose-io` v0.1 contract adapter over `net::Host`.
 // Enables standalone `goose-io` protocol libraries (HTTP servers, database wire
 // clients, RPC engines) to compose side-by-side on a single `goose-wing` event loop.
 namespace goose_io;
@@ -422,7 +422,7 @@ root struct PollBatch {
     bytes:  u8[>..]           = [],
 }
 
-fn core::on_link_event(batch: goose_io::PollBatch&, _host: wing::NetHost&, ev: const core::LinkEvent&) {
+fn core::on_link_event(batch: goose_io::PollBatch&, _host: net::Host&, ev: const core::LinkEvent&) {
     if ev.kind == core::LinkEventKind.Timer || ev.kind == core::LinkEventKind.Wake ||
        ev.kind == core::LinkEventKind.Pump {
         return;
@@ -450,7 +450,7 @@ const DEFAULT_HOST_LOOP_DRIVER_CFG: net_internal::TransportDriverConfig = net_in
 };
 
 root struct HostLoop {
-    host:                  wing::NetHost      = wing::new_net_host(DEFAULT_HOST_LOOP_DRIVER_CFG),
+    host:                  net::Host          = net::new_host(DEFAULT_HOST_LOOP_DRIVER_CFG),
     out_bytes:             u8[>..]            = [],
     out_free_runs:         FreeByteRun[>..<]  = [],
     slots:                 AdapterSlot[>..]   = [],
@@ -641,7 +641,7 @@ fn free_slot_buffers(io: HostLoop&, idx: i64) {
 fn finalize_closed_slot(io: HostLoop&, idx: i64) {
     guard idx >= 0 && idx < io.slots.len && io.slots[idx].in_use else { return; }
     if core::io_link_is_valid(io.slots[idx].host_link) {
-        let _ = wing::link_close(io.host, io.slots[idx].host_link);
+        let _ = net::link_close(io.host, io.slots[idx].host_link);
     }
     unbind_host_link(io, idx);
     free_slot_buffers(io, idx);
@@ -660,7 +660,7 @@ fn reset_loop_session(io: HostLoop&) {
         }
     }
     stop_all_active_listeners(io);
-    let _ = wing::link_cancel_timer(io.host, HOST_LOOP_TIMER_ID);
+    let _ = net::link_cancel_timer(io.host, HOST_LOOP_TIMER_ID);
     io.out_bytes.clear();
     io.out_free_runs.clear();
     io.active_slot_count = 0;
@@ -673,7 +673,7 @@ fn reset_loop_session(io: HostLoop&) {
 fn close_host_loop(io: HostLoop&) {
     reset_loop_session(io);
     if io.host.is_open {
-        wing::close_net_host(io.host);
+        net::close_host(io.host);
     }
 }
 
@@ -754,7 +754,7 @@ fn enqueue_slot_tx(io: HostLoop&, idx: i64, data: const u8[:]) {
 
 fn mark_broken_pipe_close(io: HostLoop&, idx: i64) {
     if core::io_link_is_valid(io.slots[idx].host_link) {
-        let _ = wing::link_close(io.host, io.slots[idx].host_link);
+        let _ = net::link_close(io.host, io.slots[idx].host_link);
     }
     unbind_host_link(io, idx);
     free_slot_buffers(io, idx);
@@ -778,7 +778,7 @@ fn flush_slot_tx(io: HostLoop&, idx: i64) -> bool {
         let base = io.slots[idx].tx_off as i64;
         let abs_head = core::add_sat_i64(base, io.slots[idx].tx_head);
         let abs_end = core::add_sat_i64(base, io.slots[idx].tx_len);
-        let sent, err = wing::link_send(io.host, h_link, io.out_bytes[abs_head..abs_end]);
+        let sent, err = net::link_send(io.host, h_link, io.out_bytes[abs_head..abs_end]);
         if sent > 0 {
             io.slots[idx].tx_head = core::add_sat_i64(io.slots[idx].tx_head, sent);
         }
@@ -807,7 +807,7 @@ fn send_immediate_or_queue(io: HostLoop&, idx: i64, chunk: const u8[:]) -> bool 
         enqueue_slot_tx(io, idx, chunk);
         return true;
     }
-    let sent, err = wing::link_send(io.host, io.slots[idx].host_link, chunk);
+    let sent, err = net::link_send(io.host, io.slots[idx].host_link, chunk);
     if err == core::IoError.Closed || err == core::IoError.InvalidArgument {
         mark_broken_pipe_close(io, idx);
         return false;
@@ -884,7 +884,7 @@ fn listen(io: HostLoop&, address: const u8[:], tag: u16) -> Listener, ListenErro
         return Listener { .. }, ListenError { kind: ListenErrorKind.AddressInUse, code: 0 };
     }
     let id = if io.next_listener_id == 0 { 1 as u32 } else { io.next_listener_id };
-    let h_link, err = wing::link_listen(
+    let h_link, err = net::link_listen(
         io.host,
         core::ConnectAddr.Tcp { host: ep.host[..], port: ep.port },
         HOST_LOOP_OWNER_ID,
@@ -895,7 +895,7 @@ fn listen(io: HostLoop&, address: const u8[:], tag: u16) -> Listener, ListenErro
         return Listener { .. }, classify_listen_failure(ep, err);
     }
     io.next_listener_id = core::add_sat_u64(id, 1) as u32;
-    let bound_port = wing::link_local_port(io.host, h_link);
+    let bound_port = net::link_local_port(io.host, h_link);
     let final_port = if bound_port != 0 { bound_port } else { ep.port };
     var entry = ListenerEntry {
         host_link: h_link,
@@ -926,7 +926,7 @@ fn stop_listening(io: HostLoop&, listener: Listener) {
     for i in io.listeners.len {
         if io.listeners[i].id == listener.id && io.listeners[i].active {
             if core::io_link_is_valid(io.listeners[i].host_link) {
-                let _ = wing::link_close(io.host, io.listeners[i].host_link);
+                let _ = net::link_close(io.host, io.listeners[i].host_link);
             }
             io.listeners[i].active = false;
             io.listeners[i].host_link = core::IoLink { .. };
@@ -953,7 +953,7 @@ fn dial(io: HostLoop&, address: const u8[:], tag: u16, connect_ms: i64) -> Link 
     if io.run_state == LoopRunState.Draining || !io.host.is_open {
         return queue_deferred_connect_fail(io, idx, ConnectFailure.Other);
     }
-    let h_link, st = wing::link_connect(
+    let h_link, st = net::link_connect(
         io.host,
         core::ConnectAddr.Tcp { host: ep.host[..], port: ep.port },
         HOST_LOOP_OWNER_ID,
@@ -968,7 +968,7 @@ fn dial(io: HostLoop&, address: const u8[:], tag: u16, connect_ms: i64) -> Link 
     }
     bind_host_link(io, idx, h_link);
     if st == core::ConnectStatus.Connected {
-        let _ = wing::link_set_rx_paused(io.host, h_link, true);
+        let _ = net::link_set_rx_paused(io.host, h_link, true);
         io.slots[idx].rx_held_for_open = true;
         io.slots[idx].pending_opened = true;
         io.slots[idx].ready_pass = core::add_sat_u64(io.pass_seq, 1);
@@ -985,7 +985,7 @@ fn open_virtual_pair(io: HostLoop&, tag_a: u16, tag_b: u16) -> Link, Link, bool 
         return Link { .. }, Link { .. }, false;
     }
     let _ = now_ms(io);
-    let ha, hb, ok = wing::host_open_virtual_pair(
+    let ha, hb, ok = net::open_virtual_pair(
         io.host, HOST_LOOP_OWNER_ID, HOST_LOOP_OWNER_ID, 0, 0,
     );
     guard ok else { return Link { .. }, Link { .. }, false; }
@@ -993,8 +993,8 @@ fn open_virtual_pair(io: HostLoop&, tag_a: u16, tag_b: u16) -> Link, Link, bool 
     let idx_b = alloc_adapter_slot(io, tag_b, AdapterSlotState.Connecting);
     bind_host_link(io, idx_a, ha);
     bind_host_link(io, idx_b, hb);
-    let _ = wing::link_set_rx_paused(io.host, ha, true);
-    let _ = wing::link_set_rx_paused(io.host, hb, true);
+    let _ = net::link_set_rx_paused(io.host, ha, true);
+    let _ = net::link_set_rx_paused(io.host, hb, true);
     let next_p = core::add_sat_u64(io.pass_seq, 1);
     io.slots[idx_a].rx_held_for_open = true;
     io.slots[idx_a].pending_opened = true;
@@ -1074,13 +1074,13 @@ fn pause_reading(io: HostLoop&, link: Link, paused: bool) {
     let h_link = io.slots[idx].host_link;
     if paused {
         if core::io_link_is_valid(h_link) {
-            let _ = wing::link_set_rx_paused(io.host, h_link, true);
+            let _ = net::link_set_rx_paused(io.host, h_link, true);
         }
         return;
     }
     if st == AdapterSlotState.Open && !io.slots[idx].rx_held_for_open &&
        !io.slots[idx].paused_eof_pending && core::io_link_is_valid(h_link) {
-        let _ = wing::link_set_rx_paused(io.host, h_link, false);
+        let _ = net::link_set_rx_paused(io.host, h_link, false);
     }
     if io.slots[idx].has_paused_rx || io.slots[idx].paused_eof_pending {
         io.slots[idx].unpause_pass = core::add_sat_u64(io.pass_seq, 1);
@@ -1098,12 +1098,12 @@ fn set_keep_open_on_eof(io: HostLoop&, link: Link, keep_open: bool) {
 fn complete_write_shutdown(io: HostLoop&, idx: i64, pass_target: u64) {
     let h_link = io.slots[idx].host_link;
     if core::io_link_is_valid(h_link) && !io.slots[idx].write_shut_sent {
-        let _ = wing::link_shutdown_write(io.host, h_link);
+        let _ = net::link_shutdown_write(io.host, h_link);
         io.slots[idx].write_shut_sent = true;
     }
     if io.slots[idx].peer_eof_seen && io.slots[idx].state == AdapterSlotState.Open {
         if core::io_link_is_valid(h_link) {
-            let _ = wing::link_close(io.host, h_link);
+            let _ = net::link_close(io.host, h_link);
         }
         unbind_host_link(io, idx);
         io.slots[idx].state = AdapterSlotState.Closing;
@@ -1145,7 +1145,7 @@ fn begin_graceful_slot_close(io: HostLoop&, idx: i64, why: CloseReason, pass_tar
     let h_link = io.slots[idx].host_link;
     if prev_state != AdapterSlotState.Open {
         if core::io_link_is_valid(h_link) {
-            let _ = wing::link_close(io.host, h_link);
+            let _ = net::link_close(io.host, h_link);
         }
         unbind_host_link(io, idx);
         io.slots[idx].ready_to_close = true;
@@ -1153,11 +1153,11 @@ fn begin_graceful_slot_close(io: HostLoop&, idx: i64, why: CloseReason, pass_tar
         return;
     }
     if core::io_link_is_valid(h_link) {
-        let _ = wing::link_set_rx_paused(io.host, h_link, true);
+        let _ = net::link_set_rx_paused(io.host, h_link, true);
     }
     if flush_slot_tx(io, idx) {
         if core::io_link_is_valid(io.slots[idx].host_link) {
-            let _ = wing::link_close(io.host, io.slots[idx].host_link);
+            let _ = net::link_close(io.host, io.slots[idx].host_link);
         }
         unbind_host_link(io, idx);
         io.slots[idx].ready_to_close = true;
@@ -1182,7 +1182,7 @@ fn reset(io: HostLoop&, link: Link) {
     }
     let h_link = io.slots[idx].host_link;
     if core::io_link_is_valid(h_link) {
-        let _ = wing::link_abort(io.host, h_link);
+        let _ = net::link_abort(io.host, h_link);
     }
     unbind_host_link(io, idx);
     free_slot_buffers(io, idx);
@@ -1226,7 +1226,7 @@ fn stop_all_active_listeners(io: HostLoop&) {
     for i in io.listeners.len {
         if io.listeners[i].active {
             if core::io_link_is_valid(io.listeners[i].host_link) {
-                let _ = wing::link_close(io.host, io.listeners[i].host_link);
+                let _ = net::link_close(io.host, io.listeners[i].host_link);
             }
             io.listeners[i].active = false;
             io.listeners[i].host_link = core::IoLink { .. };
@@ -1295,18 +1295,18 @@ fn compute_next_deadline_ms(io: const HostLoop&, cur_ms: i64) -> i64 {
 fn compute_pass_timeout_ms(io: HostLoop&, cur_ms: i64, next_pass: u64) -> i64 {
     for i in io.slots.len {
         if slot_has_ready_work(io.slots[i], next_pass) {
-            let _ = wing::link_cancel_timer(io.host, HOST_LOOP_TIMER_ID);
+            let _ = net::link_cancel_timer(io.host, HOST_LOOP_TIMER_ID);
             return 0;
         }
     }
     let deadline = compute_next_deadline_ms(io, cur_ms);
     let wait_ms = min(HOST_LOOP_TICK_PERIOD_MS, max(0, core::sub_sat_i64(deadline, cur_ms)));
     if wait_ms > 0 {
-        let _ = wing::link_add_timer(
+        let _ = net::link_add_timer(
             io.host, HOST_LOOP_TIMER_ID, wait_ms as u64, HOST_LOOP_OWNER_ID, 0, false, io.last_now_ns,
         );
     } else {
-        let _ = wing::link_cancel_timer(io.host, HOST_LOOP_TIMER_ID);
+        let _ = net::link_cancel_timer(io.host, HOST_LOOP_TIMER_ID);
     }
     return wait_ms;
 }
@@ -1319,7 +1319,7 @@ fn abort_all_for_grace_expiry(io: HostLoop&) {
             continue;
         }
         if core::io_link_is_valid(io.slots[i].host_link) {
-            let _ = wing::link_abort(io.host, io.slots[i].host_link);
+            let _ = net::link_abort(io.host, io.slots[i].host_link);
         }
         unbind_host_link(io, i);
         free_slot_buffers(io, i);
@@ -1348,7 +1348,7 @@ fn sweep_pass_deadlines(io: HostLoop&, cur_ms: i64) {
                   io.slots[i].has_connect_tmo &&
                   cur_ms >= io.slots[i].connect_deadline_ms {
             if core::io_link_is_valid(io.slots[i].host_link) {
-                let _ = wing::link_close(io.host, io.slots[i].host_link);
+                let _ = net::link_close(io.host, io.slots[i].host_link);
             }
             unbind_host_link(io, i);
             io.slots[i].pending_opened = false;
@@ -1407,7 +1407,7 @@ fn step_deferred_slot_open(io: HostLoop&, idx: i64, cur: PassCursor&) -> Event, 
     if io.slots[idx].rx_held_for_open {
         io.slots[idx].rx_held_for_open = false;
         if !io.slots[idx].user_rx_paused && core::io_link_is_valid(io.slots[idx].host_link) {
-            let _ = wing::link_set_rx_paused(io.host, io.slots[idx].host_link, false);
+            let _ = net::link_set_rx_paused(io.host, io.slots[idx].host_link, false);
         }
     }
     cur.link_delivered = core::add_sat_i64(cur.link_delivered, 1);
@@ -1533,12 +1533,12 @@ fn next_deferred_slot_event(io: HostLoop&, batch: PollBatch&, cur: PassCursor&) 
 
 fn step_raw_accepted(io: HostLoop&, raw: const RawHostEvent&, cur: PassCursor&) -> Event, bool {
     if io.run_state == LoopRunState.Draining {
-        let _ = wing::link_close(io.host, raw.link);
+        let _ = net::link_close(io.host, raw.link);
         return Event.PassEnd, false;
     }
     let l_idx, ok = find_active_listener_by_host(io, raw.listener);
     guard ok else {
-        let _ = wing::link_close(io.host, raw.link);
+        let _ = net::link_close(io.host, raw.link);
         return Event.PassEnd, false;
     }
     let tag = io.listeners[l_idx].tag;
@@ -1565,7 +1565,7 @@ fn step_raw_writable(io: HostLoop&, idx: i64, cur: PassCursor&) -> Event, bool {
     if io.slots[idx].state == AdapterSlotState.Closing {
         if empty && !io.slots[idx].ready_to_close {
             if core::io_link_is_valid(io.slots[idx].host_link) {
-                let _ = wing::link_close(io.host, io.slots[idx].host_link);
+                let _ = net::link_close(io.host, io.slots[idx].host_link);
             }
             unbind_host_link(io, idx);
             io.slots[idx].ready_to_close = true;
@@ -1807,7 +1807,7 @@ fn begin_pass(io: HostLoop&, batch: PollBatch&, cur: PassCursor&) {
     let timeout_ms = compute_pass_timeout_ms(io, pre_ms, next_pass);
     batch.events.clear();
     batch.bytes.clear();
-    let _ = wing::link_poll_dispatch(io.host, batch, timeout_ms, io.last_now_ns);
+    let _ = net::link_poll_dispatch(io.host, batch, timeout_ms, io.last_now_ns);
     io.pass_seq = next_pass;
     let cur_ms = now_ms(io);
     sweep_pass_deadlines(io, cur_ms);

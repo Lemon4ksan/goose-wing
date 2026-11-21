@@ -15,8 +15,8 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
 fn test_pipeline_http_ingestion_benchmark(t: lit::T&) {
     t.run("HTTP Ingress Pipeline: PipeBuffer vs PageRingBuffer") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
-        wing::add_get_route(server, "/greet", 1);
+        var server = server::new_http_server("127.0.0.1", 8080);
+        server::add_get_route(server, "/greet", 1);
 
         let req_template:     const u8[:] = "GET /greet HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: same-origin\r\n\r\n";
         let batch_size:       i64         = 10;
@@ -34,7 +34,7 @@ fn test_pipeline_http_ingestion_benchmark(t: lit::T&) {
                 let _, w_err = core::write(pipe, req_template);
                 sub.assert_eq(w_err, core::IoError.None);
             }
-            let n, ok = wing::handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, pipe_out);
+            let n, ok = server::handle_connection_pipe(server, "127.0.0.1", pipe, now_ns, pipe_out);
             sub.assert_true(ok);
             pipe_requests_handled = pipe_requests_handled + n;
             core::cork_consume(pipe_out, pipe_out.cork_pending());
@@ -58,7 +58,7 @@ fn test_pipeline_http_ingestion_benchmark(t: lit::T&) {
                 sub.assert_eq(w_err, core::IoError.None);
                 sub.assert_eq(written, req_template.len);
             }
-            let n, ok = wing::handle_connection_page_ring(server, "127.0.0.1", ring, now_ns, ring_out);
+            let n, ok = server::handle_connection_page_ring(server, "127.0.0.1", ring, now_ns, ring_out);
             sub.assert_true(ok);
             ring_requests_handled = ring_requests_handled + n;
             core::cork_consume(ring_out, ring_out.cork_pending());
@@ -132,7 +132,7 @@ fn test_static_file_mmap_serving_benchmark(t: lit::T&) {
         var wire_out = core::new_cork_buffer();
         let watch_mmap = core::stopwatch();
         for _ in iters {
-            let ok = wing::serve_static_mmap_file(file_path, "text/plain", wire_out);
+            let ok = server::serve_static_mmap_file(file_path, "text/plain", wire_out);
             sub.assert_true(ok);
             core::cork_consume(wire_out, wire_out.cork_pending());
         }

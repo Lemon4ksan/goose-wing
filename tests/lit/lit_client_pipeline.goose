@@ -69,16 +69,16 @@ fn test_b4_oversized_route_body_rejected() {
 // B5: httpbin user-agent and cookies reflection must escape quotes in JSON.
 fn test_b5_httpbin_reflection_escaping() {
     var stage = ProgrammableServerStage { .. };
-    var req = wing::new_request("GET", "/user-agent");
-    wing::set_header(req, "User-Agent", "Mozilla/5.0 (\"TestBot\")");
-    var res = wing::Response { .. };
+    var req = http::new_request("GET", "/user-agent");
+    http::set_header(req, "User-Agent", "Mozilla/5.0 (\"TestBot\")");
+    var res = http::Response { .. };
     let ok = handle_builtin_httpbin(stage, req, "127.0.0.1", res);
     assert(ok);
     assert(core::contains(res.body[..], "\\\"TestBot\\\""));
 
-    var req2 = wing::new_request("GET", "/cookies");
-    wing::set_header(req2, "Cookie", "user=\"alice\"; session=\"xyz\"");
-    var res2 = wing::Response { .. };
+    var req2 = http::new_request("GET", "/cookies");
+    http::set_header(req2, "Cookie", "user=\"alice\"; session=\"xyz\"");
+    var res2 = http::Response { .. };
     let ok2 = handle_builtin_httpbin(stage, req2, "127.0.0.1", res2);
     assert(ok2);
     assert(core::contains(res2.body[..], "\\\"alice\\\""));
@@ -105,8 +105,8 @@ fn test_b7_server_stage_head_and_max_reqs() {
     assert(parse_route_rule_line("GET /hello -> 200 \"world\"", r));
     stage.rules.push(r);
 
-    var req_head = wing::new_request("HEAD", "/hello");
-    var res_head = wing::Response { .. };
+    var req_head = http::new_request("HEAD", "/hello");
+    var res_head = http::Response { .. };
     var note1: u8[..64] = [];
     let v1 = eval_programmable_server_stage(stage, wire::ServerHookPhase.PreRoute, req_head, res_head, note1);
     match v1 {
@@ -118,8 +118,8 @@ fn test_b7_server_stage_head_and_max_reqs() {
     assert(res_head.body.len == 0);
     assert(res_head.header("Connection") == "");
 
-    var req_404 = wing::new_request("GET", "/bad\"path");
-    var res_404 = wing::Response { .. };
+    var req_404 = http::new_request("GET", "/bad\"path");
+    var res_404 = http::Response { .. };
     var note2: u8[..64] = [];
     let v2 = eval_programmable_server_stage(stage, wire::ServerHookPhase.PreRoute, req_404, res_404, note2);
     match v2 {
@@ -135,9 +135,9 @@ fn test_b7_server_stage_head_and_max_reqs() {
 // B8 (F002): Unsatisfiable Range on /range/:n and /bytes/:n must return 416 Range Not Satisfiable (RFC 9110 §15.5.17).
 fn test_b8_range_416_unsatisfiable() {
     var stage = ProgrammableServerStage { .. };
-    var req = wing::new_request("GET", "/range/100");
-    wing::set_header(req, "Range", "bytes=100-");
-    var res = wing::Response { .. };
+    var req = http::new_request("GET", "/range/100");
+    http::set_header(req, "Range", "bytes=100-");
+    var res = http::Response { .. };
     assert(handle_builtin_httpbin(stage, req, "127.0.0.1", res));
     assert(res.status_code == 416);
     assert(res.header("Content-Range") == "bytes */100");
@@ -150,8 +150,8 @@ fn test_b9_inline_cookies_preserved_in_jar() {
     var jar = cookie::CanonicalCookieJar { .. };
     let now_us: i64 = 1750000000000000;
     seed_inline_cookies_to_jar(jar, "http://example.com/api", "sid=abc; theme=dark", now_us);
-    var req = wing::new_request("GET", "http://example.com/api");
-    wing::set_header(req, "Cookie", "sid=abc; theme=dark");
+    var req = http::new_request("GET", "http://example.com/api");
+    http::set_header(req, "Cookie", "sid=abc; theme=dark");
     let _ = cookie::encode_cookie_header_to_map(
         jar,
         "example.com",
@@ -213,21 +213,21 @@ fn test_b11_uri_and_query_mode_edges() {
 // B12 (F006 & F007): /headers JSON escaping, /basic-auth case-insensitive scheme, /bearer OWS trim, header/resolve/noproxy/-C validation.
 fn test_b12_httpbin_and_validator_edges() {
     var stage = ProgrammableServerStage { .. };
-    var req_h = wing::new_request("GET", "/headers");
-    wing::set_header(req_h, "X-Test", "quoted \"val\"");
-    var res_h = wing::Response { .. };
+    var req_h = http::new_request("GET", "/headers");
+    http::set_header(req_h, "X-Test", "quoted \"val\"");
+    var res_h = http::Response { .. };
     assert(handle_builtin_httpbin(stage, req_h, "127.0.0.1", res_h));
     assert(core::contains(res_h.body[..], "\\\"val\\\""));
 
-    var req_ba = wing::new_request("GET", "/basic-auth/user/pass");
-    wing::set_header(req_ba, "Authorization", "basic dXNlcjpwYXNz");
-    var res_ba = wing::Response { .. };
+    var req_ba = http::new_request("GET", "/basic-auth/user/pass");
+    http::set_header(req_ba, "Authorization", "basic dXNlcjpwYXNz");
+    var res_ba = http::Response { .. };
     assert(handle_builtin_httpbin(stage, req_ba, "127.0.0.1", res_ba));
     assert(res_ba.status_code == 200);
 
-    var req_br = wing::new_request("GET", "/bearer");
-    wing::set_header(req_br, "Authorization", "Bearer   my_tok  ");
-    var res_br = wing::Response { .. };
+    var req_br = http::new_request("GET", "/bearer");
+    http::set_header(req_br, "Authorization", "Bearer   my_tok  ");
+    var res_br = http::Response { .. };
     assert(handle_builtin_httpbin(stage, req_br, "127.0.0.1", res_br));
     assert(res_br.status_code == 200);
     assert(core::contains(res_br.body[..], "\"token\": \"my_tok\""));
@@ -282,95 +282,95 @@ fn run_01_cli_bug_hunter_regression() {
 //
 
 fn test_large_bearer_token() {
-    var pipe = wing::InterceptorPipeline { .. };
+    var pipe = client::InterceptorPipeline { .. };
     var tok_buf: u8[..2000] = [];
     for i in 1500 {
         tok_buf.push('a');
     }
-    let ok_add = wing::add_bearer_auth(pipe, tok_buf[..]);
+    let ok_add = client::add_bearer_auth(pipe, tok_buf[..]);
     assert(ok_add);
     assert(pipe.bearer_token.len == 1507);
 
-    var req = wing::new_get("http://example.invalid/api");
-    wing::apply_app_interceptors_request(pipe, req, 1000);
-    let auth = wing::header(req, "Authorization");
+    var req = http::new_get("http://example.invalid/api");
+    client::apply_app_interceptors_request(pipe, req, 1000);
+    let auth = http::header(req, "Authorization");
     assert(auth.len == 1507);
     assert(core::starts_with(auth, "Bearer aaaaa"));
     print("CHECK_BEARER_LARGE: OK");
 }
 
 fn test_body_rewind_overflow() {
-    var req_small = wing::new_post("http://example.invalid");
+    var req_small = http::new_post("http://example.invalid");
     var small_body: u8[..500] = [];
     for i in 500 { small_body.push('x'); }
-    wing::text(req_small, small_body[..]);
+    http::text(req_small, small_body[..]);
     assert(req_small.rewindable);
     assert(req_small.rewind_buf.len == 500);
 
-    var req_large = wing::new_post("http://example.invalid");
+    var req_large = http::new_post("http://example.invalid");
     var large_body: u8[>..] = [];
     for i in 5000 { large_body.push('y'); }
-    wing::text(req_large, large_body[..]);
+    http::text(req_large, large_body[..]);
     assert(!req_large.rewindable);
     assert(req_large.rewind_buf.len == 0);
     assert(req_large.body.len == 5000);
 
-    var session = wing::new_session();
-    var ctx = wing::RequestExecutionContext { .. };
+    var session = client::new_session();
+    var ctx = client::RequestExecutionContext { .. };
     ctx.body.append(req_large.body[..]);
     ctx.rewindable = req_large.rewindable;
     ctx.body_consumed = true;
 
-    var red_info = wing::RedirectInfo { .. };
+    var red_info = client::RedirectInfo { .. };
     red_info.new_method.append("POST");
     red_info.clear_body = false;
 
-    let red_err = wing::apply_redirect_transition(session, ctx, red_info);
-    assert(!wing::ok(red_err));
+    let red_err = client::apply_redirect_transition(session, ctx, red_info);
+    assert(!http::ok(red_err));
     assert(red_err.code == rfc::STATUS_BAD_REQUEST);
     print("CHECK_REWIND_OVERFLOW: OK");
 }
 
 fn test_materialize_presence_mask() {
-    var req = wing::Request { .. };
+    var req = http::Request { .. };
     let wire = "Host: test.example.com\r\nAuthorization: Bearer mysecret\r\n\r\n";
-    let err = wing::parse_headers(wire, req.headers);
-    assert(err == wing::HeaderParseError.None);
+    let err = http::parse_headers(wire, req.headers);
+    assert(err == http::HeaderParseError.None);
     assert(req.headers.entries.len == 2);
-    assert(wing::has_header(req, "Host"));
-    assert(wing::has_header(req, "Authorization"));
-    assert(wing::header(req, "Host") == "test.example.com");
-    assert(wing::header(req, "Authorization") == "Bearer mysecret");
+    assert(http::has_header(req, "Host"));
+    assert(http::has_header(req, "Authorization"));
+    assert(http::header(req, "Host") == "test.example.com");
+    assert(http::header(req, "Authorization") == "Bearer mysecret");
 
-    let ok_rem_host = wing::remove_header(req, "Host");
+    let ok_rem_host = http::remove_header(req, "Host");
     assert(ok_rem_host);
-    assert(wing::header(req, "Host") == "");
-    assert(!wing::has_header(req, "Host"));
+    assert(http::header(req, "Host") == "");
+    assert(!http::has_header(req, "Host"));
     print("CHECK_MATERIALIZE_PRESENCE: OK");
 }
 
 fn test_response_spans_invalidation() {
-    var res = wing::Response { .. };
-    wing::append_header(res.headers, "content-encoding", "gzip");
-    wing::append_header(res.headers, "content-length", "128");
-    wing::append_header(res.headers, "content-type", "text/plain");
+    var res = http::Response { .. };
+    http::append_header(res.headers, "content-encoding", "gzip");
+    http::append_header(res.headers, "content-length", "128");
+    http::append_header(res.headers, "content-type", "text/plain");
 
-    assert(wing::header(res, "content-encoding") == "gzip");
-    wing::clear_decompressed_headers(res);
+    assert(http::header(res, "content-encoding") == "gzip");
+    http::clear_decompressed_headers(res);
 
-    assert(wing::header(res, "content-encoding") == "");
-    assert(!wing::has_header(res, "content-encoding"));
-    assert(wing::header(res, "content-length") == "");
-    assert(!wing::has_header(res, "content-length"));
-    assert(wing::header(res, "content-type") == "text/plain");
+    assert(http::header(res, "content-encoding") == "");
+    assert(!http::has_header(res, "content-encoding"));
+    assert(http::header(res, "content-length") == "");
+    assert(!http::has_header(res, "content-length"));
+    assert(http::header(res, "content-type") == "text/plain");
 
-    wing::set_header(res, "content-type", "application/json");
-    assert(wing::header(res, "content-type") == "application/json");
+    http::set_header(res, "content-type", "application/json");
+    assert(http::header(res, "content-type") == "application/json");
 
-    let ok_rem = wing::remove_header(res, "content-type");
+    let ok_rem = http::remove_header(res, "content-type");
     assert(ok_rem);
-    assert(wing::header(res, "content-type") == "");
-    assert(!wing::has_header(res, "content-type"));
+    assert(http::header(res, "content-type") == "");
+    assert(!http::has_header(res, "content-type"));
     print("CHECK_RESP_SPANS_INVALIDATION: OK");
 }
 
@@ -380,60 +380,60 @@ struct JsonItemModel {
 }
 
 fn test_cl_parsing() {
-    let v0, ok0 = wing::parse_content_length_value("0");
+    let v0, ok0 = client::parse_content_length_value("0");
     assert(ok0 && v0 == 0);
 
-    let v1, ok1 = wing::parse_content_length_value("4096");
+    let v1, ok1 = client::parse_content_length_value("4096");
     assert(ok1 && v1 == 4096);
 
-    let v_sp, ok_sp = wing::parse_content_length_value("  1024  ");
+    let v_sp, ok_sp = client::parse_content_length_value("  1024  ");
     assert(ok_sp && v_sp == 1024);
 
-    let v_max, ok_max = wing::parse_content_length_value("9223372036854775807");
+    let v_max, ok_max = client::parse_content_length_value("9223372036854775807");
     assert(ok_max && v_max == 9223372036854775807);
 
-    let _, bad_empty = wing::parse_content_length_value("");
+    let _, bad_empty = client::parse_content_length_value("");
     assert(!bad_empty);
 
-    let v_lead, ok_lead = wing::parse_content_length_value(" 100");
+    let v_lead, ok_lead = client::parse_content_length_value(" 100");
     assert(ok_lead && v_lead == 100);
 
-    let _, bad_inner_sp = wing::parse_content_length_value("10 0");
+    let _, bad_inner_sp = client::parse_content_length_value("10 0");
     assert(!bad_inner_sp);
 
-    let _, bad_only_sp = wing::parse_content_length_value("   ");
+    let _, bad_only_sp = client::parse_content_length_value("   ");
     assert(!bad_only_sp);
 
-    let _, bad_alpha = wing::parse_content_length_value("10a20");
+    let _, bad_alpha = client::parse_content_length_value("10a20");
     assert(!bad_alpha);
 
-    let _, bad_neg = wing::parse_content_length_value("-1");
+    let _, bad_neg = client::parse_content_length_value("-1");
     assert(!bad_neg);
 
-    let _, bad_pos = wing::parse_content_length_value("+1");
+    let _, bad_pos = client::parse_content_length_value("+1");
     assert(!bad_pos);
 
-    let _, bad_oflow = wing::parse_content_length_value("9223372036854775808");
+    let _, bad_oflow = client::parse_content_length_value("9223372036854775808");
     assert(!bad_oflow);
 
-    let _, bad_huge = wing::parse_content_length_value("99999999999999999999");
+    let _, bad_huge = client::parse_content_length_value("99999999999999999999");
     assert(!bad_huge);
 
     print("CHECK_CL_PARSER: OK");
 }
 
 fn test_json_decode_bounds() {
-    var res_overflow = wing::Response { .. };
+    var res_overflow = http::Response { .. };
     res_overflow.body.append("{\"id\":3000000000,\"name\":\"a_very_long_name_exceeding_capacity\"}");
-    let item_overflow, err_overflow = wing::decode_json<JsonItemModel>(res_overflow);
-    assert(!wing::ok(err_overflow));
+    let item_overflow, err_overflow = http::decode_json<JsonItemModel>(res_overflow);
+    assert(!http::ok(err_overflow));
     assert(item_overflow.id == 0);
     assert(item_overflow.name.len == 0);
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     res.body.append("{\"id\":3000000000,\"name\":\"a_very_long_name\"}");
-    let item, err = wing::decode_json<JsonItemModel>(res);
-    assert(wing::ok(err));
+    let item, err = http::decode_json<JsonItemModel>(res);
+    assert(http::ok(err));
     assert(item.id == 2147483647);
     assert(item.name.len == 16);
     assert(core::starts_with(item.name[..], "a_very_long_name"));
@@ -467,10 +467,10 @@ fn run_02_rfc_repro_client_buffer_body() {
 
 // F001: set_profile(session, Profile.Custom) must reset profile_spec and clear default_headers.
 fn test_f001_set_profile_custom() {
-    var session = wing::new_session();
-    wing::set_profile(session, fingerprint::Profile.Wing);
+    var session = client::new_session();
+    client::set_profile(session, fingerprint::Profile.Wing);
     assert(session.default_headers.entries.len > 0);
-    wing::set_profile(session, fingerprint::Profile.Custom);
+    client::set_profile(session, fingerprint::Profile.Custom);
     assert(session.default_headers.entries.len == 0);
     assert(session.profile_spec.kind == fingerprint::Profile.Custom);
     print("F001_SET_PROFILE_CUSTOM: OK");
@@ -478,7 +478,7 @@ fn test_f001_set_profile_custom() {
 
 // F003: resolve_ech_config stale fallback must pass now_sec (not 0) to dns_cache_lookup, and lookup_cached_ech_config must clear out_ech.
 fn test_f003_ech_stale_expiry_and_clear() {
-    var session = wing::new_session();
+    var session = client::new_session();
     session.enable_ech = true;
     var rec = dns::HttpsRecord {
         priority: 1,
@@ -497,43 +497,40 @@ fn test_f003_ech_stale_expiry_and_clear() {
     entry.https_records.push(rec);
     session.dns_cache.insert(entry);
 
-    var out_ech: u8[..512] = [];
-    out_ech.append("stale-prefix-");
-    let ok_fresh = wing::lookup_cached_ech_config(session.dns_cache, "ech.example.com", 1010, out_ech);
+    let out_ech, ok_fresh = client::lookup_cached_ech_config(session.dns_cache, "ech.example.com", 1010);
     assert(ok_fresh);
     assert(out_ech[..] == "ech-config-bytes");
 
     // 1000 + 60 + 86400 (stale_ttl_sec) + 100 = 87560 -> completely expired!
-    var out_expired: u8[..512] = [];
-    let ok_expired = wing::resolve_ech_config(session, "ech.example.com", 90000, out_expired);
+    let _, ok_expired = client::resolve_ech_config(session, "ech.example.com", 90000);
     assert(!ok_expired);
     print("F003_ECH_STALE_EXPIRY: OK");
 }
 
 // F004: add_mock_sse must reject sample_events > 1024 bytes without panicking, and set_cookie must handle 2048..4096 byte cookies safely.
 fn test_f004_mock_sse_and_set_cookie_bounds() {
-    var session = wing::new_session();
+    var session = client::new_session();
     var big_sse: u8[..1500] = [];
     for i in 1400 {
         big_sse.push('a');
     }
-    wing::add_mock_sse(session, "https://example.com/events", big_sse[..]);
+    client::add_mock_sse(session, "https://example.com/events", big_sse[..]);
     assert(session.mock_routes.len == 0);
 
     var big_cookie_val: u8[..2500] = [];
     for i in 2400 {
         big_cookie_val.push('v');
     }
-    wing::set_cookie(session, "big_c", big_cookie_val[..]);
-    assert(wing::cookie(session, "big_c").len == 2400);
+    client::set_cookie(session, "big_c", big_cookie_val[..]);
+    assert(client::cookie(session, "big_c").len == 2400);
     print("F004_MOCK_SSE_AND_COOKIE_BOUNDS: OK");
 }
 
 // F005: process_dictionary_response must store the decompressed representation in dict_cache (RFC 9842 §2.1) and not cache corrupt dcz/dcb bodies.
 fn test_f005_dictionary_response_order() {
-    var session = wing::new_session();
+    var session = client::new_session();
     var out_dec: u8[..1024] = [];
-    let ok_corrupt = wing::process_dictionary_response(
+    let ok_corrupt = client::process_dictionary_response(
         session,
         "https://example.com",
         "match=\"/app/*\"",
@@ -548,22 +545,22 @@ fn test_f005_dictionary_response_order() {
 
 // F006: add_interceptor(AuthBearer) must prepend "Bearer ", and log_interceptor_request must clamp >128-byte lines and redact sensitive headers.
 fn test_f006_interceptor_bearer_and_log_bounds() {
-    var pipe = wing::InterceptorPipeline { .. };
-    var entry = wing::InterceptorEntry {
-        scope: wing::InterceptorScope.Application,
-        kind:  wing::InterceptorKind.AuthBearer,
+    var pipe = client::InterceptorPipeline { .. };
+    var entry = client::InterceptorEntry {
+        scope: client::InterceptorScope.Application,
+        kind:  client::InterceptorKind.AuthBearer,
         ..
     };
     entry.header_val.append("raw-jwt-token");
-    assert(wing::add_interceptor(pipe, entry));
+    assert(client::add_interceptor(pipe, entry));
     assert(pipe.bearer_token[..] == "Bearer raw-jwt-token");
 
-    assert(!wing::add_traceparent(pipe, "zz"));
+    assert(!client::add_traceparent(pipe, "zz"));
 
-    assert(wing::add_logging(pipe, wing::InterceptorScope.Application, wing::LogLevel.Headers));
-    var req = wing::new_get("https://example.com/very/long/path/that/exceeds/one/hundred/and/twenty/eight/bytes/when/formatted/into/log/entry/buffer/without/clamping/check");
-    wing::sensitive_header(req, "Authorization", "Bearer super-secret-jwt-value-that-must-not-appear-in-logs");
-    wing::apply_app_interceptors_request(pipe, req, 1);
+    assert(client::add_logging(pipe, client::InterceptorScope.Application, client::LogLevel.Headers));
+    var req = http::new_get("https://example.com/very/long/path/that/exceeds/one/hundred/and/twenty/eight/bytes/when/formatted/into/log/entry/buffer/without/clamping/check");
+    http::sensitive_header(req, "Authorization", "Bearer super-secret-jwt-value-that-must-not-appear-in-logs");
+    client::apply_app_interceptors_request(pipe, req, 1);
     for i in pipe.log_entries.len {
         assert(!core::contains(pipe.log_entries[i][..], "super-secret-jwt-value"));
     }
@@ -572,33 +569,33 @@ fn test_f006_interceptor_bearer_and_log_bounds() {
 
 // F007 & F008: Backoff.delay / RateLimiter.allow must guard invalid params, and evaluate_early_data_request must fold method case.
 fn test_f007_f008_policy_and_early_data() {
-    let b = wing::Backoff {
+    let b = client::Backoff {
         base_ns: -100,
         max_ns:  -50,
         factor:  0.5,
     };
-    assert(wing::delay(b, 2) >= 0);
+    assert(client::delay(b, 2) >= 0);
 
-    var lim = wing::RateLimiter {
+    var lim = client::RateLimiter {
         rate_per_sec:        -5.0,
         burst_capacity:      10.0,
         tokens:              1.0,
         last_update_mono_ns: 100,
     };
-    assert(!wing::allow(lim, 200));
+    assert(!client::allow(lim, 200));
 
-    let d = wing::evaluate_early_data_request("get", false);
-    assert(d == wing::EarlyDataDecision.Allow);
+    let d = client::evaluate_early_data_request("get", false);
+    assert(d == client::EarlyDataDecision.Allow);
     print("F007_F008_POLICY_AND_EARLY_DATA: OK");
 }
 
 // F009: Response.remove_header must clear res.presence_mask bit.
 fn test_f009_response_remove_header_presence_mask() {
-    var res = wing::Response { .. };
-    wing::set_header(res, "Location", "https://example.com/next");
-    assert(wing::has_header(res, "Location"));
-    assert(wing::remove_header(res, "Location"));
-    assert(!wing::has_header(res, "Location"));
+    var res = http::Response { .. };
+    http::set_header(res, "Location", "https://example.com/next");
+    assert(http::has_header(res, "Location"));
+    assert(http::remove_header(res, "Location"));
+    assert(!http::has_header(res, "Location"));
     print("F009_RESPONSE_REMOVE_HEADER_MASK: OK");
 }
 
@@ -614,9 +611,9 @@ fn test_f010_samesite_cross_site_main_frame() {
         is_reload:          false,
         had_cross_site_hop: false,
     };
-    var hdrs = wing::HeaderMap { .. };
-    let _ = wing::stage_client_cookie_load(hdrs, target_u, eval, true, "", true, now_us, jar, true);
-    assert(!core::contains(wing::find_header(hdrs, "Cookie"), "lax_sid=secret"));
+    var hdrs = http::HeaderMap { .. };
+    let _ = client::stage_cookie_load(hdrs, target_u, eval, true, "", true, now_us, jar, true);
+    assert(!core::contains(http::find_header(hdrs, "Cookie"), "lax_sid=secret"));
     print("F010_SAMESITE_CROSS_SITE_MAIN_FRAME: OK");
 }
 
@@ -631,39 +628,39 @@ fn test_f011_exec_bounds_and_auth_retry_cookie() {
     for i in 800 {
         rel_big.push('b');
     }
-    var q_items: wing::QueryItem[..1] = [];
+    var q_items: http::QueryItem[..1] = [];
     var out_url: u8[..2048]           = [];
-    wing::build_effective_url(base_big[..], rel_big[..], q_items[..], out_url);
+    client::build_effective_url(base_big[..], rel_big[..], q_items[..], out_url);
 
-    var session = wing::new_session();
+    var session = client::new_session();
     cookie::set_cookie_header(session.jar, "https://auth.example.com/resource", "sid=initial_token; Path=/", session.virtual_clock_us);
-    var ctx = wing::RequestExecutionContext {
+    var ctx = client::RequestExecutionContext {
         site_for_cookies: cookie::site_for_cookies_from_url("https://auth.example.com/resource"),
         is_main_frame:    true,
         ..
     };
     ctx.current_method.append("GET");
     let curr_u = core::new_url("https://auth.example.com/resource");
-    let ss_eval = wing::compute_hop_samesite_context(ctx, curr_u, true);
-    wing::prepare_hop_cookie_header(session, ctx, curr_u, ss_eval, true);
-    assert(core::contains(wing::find_header(ctx.headers, "Cookie"), "sid=initial_token"));
+    let ss_eval = client::compute_hop_samesite_context(ctx, curr_u, true);
+    client::prepare_hop_cookie_header(session, ctx, curr_u, ss_eval, true);
+    assert(core::contains(http::find_header(ctx.headers, "Cookie"), "sid=initial_token"));
 
-    var resp_401 = wing::Response { status_code: 401, .. };
-    wing::set_header(resp_401, "WWW-Authenticate", "Basic realm=\"api\"");
-    wing::set_header(resp_401, "Set-Cookie", "sid=; Path=/; Max-Age=0");
-    wing::prepare_auth_retry_hop(session, ctx, curr_u, ss_eval, true, resp_401, "Basic YWxpY2U6c2VjcmV0");
-    assert(!core::contains(wing::find_header(ctx.headers, "Cookie"), "sid=initial_token"));
+    var resp_401 = http::Response { status_code: 401, .. };
+    http::set_header(resp_401, "WWW-Authenticate", "Basic realm=\"api\"");
+    http::set_header(resp_401, "Set-Cookie", "sid=; Path=/; Max-Age=0");
+    client::prepare_auth_retry_hop(session, ctx, curr_u, ss_eval, true, resp_401, "Basic YWxpY2U6c2VjcmV0");
+    assert(!core::contains(http::find_header(ctx.headers, "Cookie"), "sid=initial_token"));
     print("F011_EXEC_BOUNDS_AND_AUTH_COOKIE: OK");
 }
 
 // F012: pump_response_body must treat 101 Switching Protocols as having an empty HTTP message body.
 fn test_f012_h1_101_empty_body() {
-    var conn = wing::PooledConnection {
-        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+    var conn = net::PooledConnection {
+        transport: net::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
-    let req = wing::new_get("http://example.com/ws");
-    var resp = wing::Response { status_code: 101, .. };
+    let req = http::new_get("http://example.com/ws");
+    var resp = http::Response { status_code: 101, .. };
     let ok_101, keep = wing::pump_response_body(conn, req, resp, "upgraded-protocol-bytes", 100);
     assert(ok_101 && keep);
     assert(resp.body.len == 0);
@@ -686,24 +683,24 @@ fn test_f013_ssrf_oversized_and_siit() {
 
 // F015 & F016: connect_udp IPv6 percent-encoding and StreamReader chunked token & Content-Length clamping.
 fn test_f015_f016_masque_ipv6_and_stream_reader() {
-    var session = wing::new_session();
-    let _ = wing::mock_route(session, "CONNECT", "https://proxy.example.com/.well-known/masque/udp/2001%3Adb8%3A%3A1/443/", rfc::STATUS_OK, "");
-    wing::add_mock_header(session, "Capsule-Protocol", "?1");
-    let tun, _, err_m = wing::connect_udp(session, "https://proxy.example.com", "[2001:db8::1]", 443);
-    assert(wing::ok(err_m) && tun.state == wing::MasqueTunnelState.Established);
+    var session = client::new_session();
+    let _ = client::mock_route(session, "CONNECT", "https://proxy.example.com/.well-known/masque/udp/2001%3Adb8%3A%3A1/443/", rfc::STATUS_OK, "");
+    client::add_mock_header(session, "Capsule-Protocol", "?1");
+    let tun, _, err_m = client::connect_udp(session, "https://proxy.example.com", "[2001:db8::1]", 443);
+    assert(http::ok(err_m) && tun.state == net::MasqueTunnelState.Established);
 
-    var resp_chunk = wing::Response { status_code: 200, .. };
-    wing::set_header(resp_chunk, "Transfer-Encoding", "gzip, chunked");
+    var resp_chunk = http::Response { status_code: 200, .. };
+    http::set_header(resp_chunk, "Transfer-Encoding", "gzip, chunked");
     resp_chunk.body.append("4\r\nWiki\r\n0\r\n\r\n");
-    let sr_chunk = wing::new_stream_reader(resp_chunk);
+    let sr_chunk = client::new_stream_reader(resp_chunk);
     assert(sr_chunk.is_chunked);
 
-    var resp_cl = wing::Response { status_code: 200, .. };
-    wing::set_header(resp_cl, "Content-Length", "4");
+    var resp_cl = http::Response { status_code: 200, .. };
+    http::set_header(resp_cl, "Content-Length", "4");
     resp_cl.body.append("WikiEXTRA_TRAILING");
-    var sr_cl = wing::new_stream_reader(resp_cl);
+    var sr_cl = client::new_stream_reader(resp_cl);
     var out_all: u8[..64] = [];
-    let read_n = wing::read_all(sr_cl, out_all);
+    let read_n = client::read_all(sr_cl, out_all);
     assert(read_n == 4);
     assert(out_all[..] == "Wiki");
     print("F015_F016_MASQUE_AND_STREAM_READER: OK");
@@ -749,41 +746,41 @@ fn run_03_rfc_repro_client_bug_hunter() {
 // (instead of spinning in an infinite loop in `read_chunk` / `download_stream`) and
 // roll back partial output in `read_all`.
 fn test_f001_truncated_chunked_stream_terminates() {
-    var resp = wing::Response { status_code: 200, .. };
-    wing::set_header(resp.headers, "Transfer-Encoding", "chunked");
-    wing::update_response_presence(resp, "Transfer-Encoding");
+    var resp = http::Response { status_code: 200, .. };
+    http::set_header(resp.headers, "Transfer-Encoding", "chunked");
+    http::update_response_presence(resp, "Transfer-Encoding");
     // Missing terminating "0\r\n\r\n" chunk
     resp.body.append("5\r\nhello\r\n");
 
-    var reader = wing::new_stream_reader(resp);
+    var reader = client::new_stream_reader(resp);
     var chunk_buf: u8[>..] = [];
-    let st1, eof1 = wing::read_chunk(reader, 16, chunk_buf);
-    assert(st1 == wing::StreamReadStatus.Data);
+    let st1, eof1 = client::read_chunk(reader, 16, chunk_buf);
+    assert(st1 == client::StreamReadStatus.Data);
     assert(chunk_buf[..] == "hello");
     assert(!eof1);
 
     // Next read_chunk sees cursor at end of raw_data while chunk decoder is still in ChunkSize state.
-    let st2, _ = wing::read_chunk(reader, 16, chunk_buf);
-    assert(st2 == wing::StreamReadStatus.Error);
+    let st2, _ = client::read_chunk(reader, 16, chunk_buf);
+    assert(st2 == client::StreamReadStatus.Error);
     assert(reader.finished);
 
     // Also verify `download_stream` terminates with ErrorKind.Stream instead of hanging
-    var c = wing::new_client();
-    wing::mock_route(c, "GET", "https://example.com/trunc-chunked", 200, "5\r\nhello\r\n");
-    wing::add_mock_header(c, "Transfer-Encoding", "chunked");
+    var c = client::new_client();
+    client::mock_route(c, "GET", "https://example.com/trunc-chunked", 200, "5\r\nhello\r\n");
+    client::add_mock_header(c, "Transfer-Encoding", "chunked");
     var downloaded: u8[>..] = [];
-    let _, dl_err = wing::download_stream(c, "https://example.com/trunc-chunked", 16, downloaded) {};
-    assert(!wing::ok(dl_err));
-    assert(dl_err.kind == wing::ErrorKind.Stream);
+    let _, dl_err = client::download_stream(c, "https://example.com/trunc-chunked", 16, downloaded) {};
+    assert(!http::ok(dl_err));
+    assert(dl_err.kind == http::ErrorKind.Stream);
     assert(downloaded.len == 0);
 
     // Also verify `read_all` rejects truncated chunked stream and rolls back `out`
-    var reader2 = wing::new_stream_reader(resp);
+    var reader2 = client::new_stream_reader(resp);
     var all_out: u8[>..] = [];
-    let emitted = wing::read_all(reader2, all_out);
+    let emitted = client::read_all(reader2, all_out);
     assert(emitted == 0);
     assert(all_out.len == 0);
-    assert(wing::has_error(reader2.chunk_decoder));
+    assert(client::has_error(reader2.chunk_decoder));
     print("PASS: F001 truncated chunked stream terminates with Error");
 }
 
@@ -792,41 +789,41 @@ fn test_f001_truncated_chunked_stream_terminates() {
 // the current response with the previous dictionary before updating `dict_cache`, and
 // `stage_client_dict_negotiate` must send `Dictionary-ID` when the stored dictionary has `id`.
 fn test_f002_compression_dict_id_and_delta_replace() {
-    var c = wing::new_client();
-    wing::enable_compression_dict(c, true);
-    wing::set_clock_us(c, 1000000000);
+    var c = client::new_client();
+    client::enable_compression_dict(c, true);
+    client::set_clock_us(c, 1000000000);
 
     // Step 1: Seed initial dictionary v1 with id="dict-v1"
     let dict_v1: const u8[:] = "shared_dictionary_prefix_v1_0123456789abcdef";
-    wing::mock_route(c, "GET", "https://cdn.example.com/app/v1.js", 200, dict_v1);
-    wing::add_mock_header(c, "Use-As-Dictionary", "match=\"/app/*\", id=\"dict-v1\", ttl=3600");
-    let r1, e1 = wing::get(c, "https://cdn.example.com/app/v1.js");
-    assert(wing::ok(e1));
-    assert(wing::text(r1) == dict_v1);
+    client::mock_route(c, "GET", "https://cdn.example.com/app/v1.js", 200, dict_v1);
+    client::add_mock_header(c, "Use-As-Dictionary", "match=\"/app/*\", id=\"dict-v1\", ttl=3600");
+    let r1, e1 = client::get(c, "https://cdn.example.com/app/v1.js");
+    assert(http::ok(e1));
+    assert(http::text(r1) == dict_v1);
 
     // Step 2: Build a dcz-compressed v2 response using dict_v1 that ALSO carries Use-As-Dictionary
     // for the same match="/app/*" pattern (delta update to dict_v2).
     let dict_v2: const u8[:] = "shared_dictionary_prefix_v1_0123456789abcdef_UPDATED_V2";
     var dcz_wire: u8[..512] = [];
-    assert(wing::encode_dcz_response(dcz_wire, c.dict_cache.entries[0].sha256_hash, dict_v2));
+    assert(http::encode_dcz_response(dcz_wire, c.dict_cache.entries[0].sha256_hash, dict_v2));
 
-    wing::mock_route(c, "GET", "https://cdn.example.com/app/v2.js", 200, dcz_wire[..]);
-    wing::add_mock_header(c, "Content-Encoding", "dcz");
-    wing::add_mock_header(c, "Use-As-Dictionary", "match=\"/app/*\", id=\"dict-v2\", ttl=3600");
+    client::mock_route(c, "GET", "https://cdn.example.com/app/v2.js", 200, dcz_wire[..]);
+    client::add_mock_header(c, "Content-Encoding", "dcz");
+    client::add_mock_header(c, "Use-As-Dictionary", "match=\"/app/*\", id=\"dict-v2\", ttl=3600");
 
-    let r2, e2 = wing::get(c, "https://cdn.example.com/app/v2.js");
-    assert(wing::ok(e2));
+    let r2, e2 = client::get(c, "https://cdn.example.com/app/v2.js");
+    assert(http::ok(e2));
     // RFC 9842 §2.3: Request for v2.js MUST carry Dictionary-ID: "dict-v1"
-    assert(wing::sent_header(r2, "Dictionary-ID") == "\"dict-v1\"");
+    assert(http::sent_header(r2, "Dictionary-ID") == "\"dict-v1\"");
     // Response v2.js MUST be decompressed to dict_v2 before Use-As-Dictionary overwrites dict_v1!
-    assert(wing::text(r2) == dict_v2);
-    assert(wing::header(r2, "Content-Encoding") == "");
+    assert(http::text(r2) == dict_v2);
+    assert(http::header(r2, "Content-Encoding") == "");
 
     // Step 3: Next request to /app/v3.js must advertise Dictionary-ID: "dict-v2"
-    wing::mock_route(c, "GET", "https://cdn.example.com/app/v3.js", 200, "v3-plain");
-    let r3, e3 = wing::get(c, "https://cdn.example.com/app/v3.js");
-    assert(wing::ok(e3));
-    assert(wing::sent_header(r3, "Dictionary-ID") == "\"dict-v2\"");
+    client::mock_route(c, "GET", "https://cdn.example.com/app/v3.js", 200, "v3-plain");
+    let r3, e3 = client::get(c, "https://cdn.example.com/app/v3.js");
+    assert(http::ok(e3));
+    assert(http::sent_header(r3, "Dictionary-ID") == "\"dict-v2\"");
     print("PASS: F002 compression dict Dictionary-ID and delta replacement");
 }
 
@@ -835,39 +832,39 @@ fn test_f002_compression_dict_id_and_delta_replace() {
 // including `Cookie` from `session.jar`) rather than bare `req.headers`, and populate
 // `resp.presence_mask` on cache hits so `has_header(resp, ...)` works on cached responses.
 fn test_f003_cache_vary_cookie_and_presence_mask() {
-    var c = wing::new_client();
+    var c = client::new_client();
     c.enable_cache = true;
-    wing::set_clock_us(c, 1000000000);
+    client::set_clock_us(c, 1000000000);
 
     // Seed cookie for Alice in session.jar
     c.jar.set_cookie_header("https://api.example.com/profile", "session_user=alice; Path=/; Secure", c.virtual_clock_us);
 
-    wing::mock_route(c, "GET", "https://api.example.com/profile", 200, "profile:alice");
-    wing::add_mock_header(c, "Cache-Control", "max-age=60");
-    wing::add_mock_header(c, "Vary", "Cookie");
-    wing::add_mock_header(c, "Content-Type", "text/plain");
-    wing::add_mock_header(c, "ETag", "\"v1-alice\"");
+    client::mock_route(c, "GET", "https://api.example.com/profile", 200, "profile:alice");
+    client::add_mock_header(c, "Cache-Control", "max-age=60");
+    client::add_mock_header(c, "Vary", "Cookie");
+    client::add_mock_header(c, "Content-Type", "text/plain");
+    client::add_mock_header(c, "ETag", "\"v1-alice\"");
 
-    let r1, e1 = wing::get(c, "https://api.example.com/profile");
-    assert(wing::ok(e1));
-    assert(wing::text(r1) == "profile:alice");
+    let r1, e1 = client::get(c, "https://api.example.com/profile");
+    assert(http::ok(e1));
+    assert(http::text(r1) == "profile:alice");
 
     // Same cookie -> cache hit; `has_header(r_hit, "Content-Type")` must be true!
     c.mock_routes.clear();
-    let r_hit, e_hit = wing::get(c, "https://api.example.com/profile");
-    assert(wing::ok(e_hit));
-    assert(wing::text(r_hit) == "profile:alice");
-    assert(wing::has_header(r_hit, "Content-Type"));
-    assert(wing::has_header(r_hit, "ETag"));
+    let r_hit, e_hit = client::get(c, "https://api.example.com/profile");
+    assert(http::ok(e_hit));
+    assert(http::text(r_hit) == "profile:alice");
+    assert(http::has_header(r_hit, "Content-Type"));
+    assert(http::has_header(r_hit, "ETag"));
 
     // Change cookie in jar to Bob -> `Vary: Cookie` MUST miss cache and fetch from origin!
     c.jar.set_cookie_header("https://api.example.com/profile", "session_user=bob; Path=/; Secure", c.virtual_clock_us);
-    wing::mock_route(c, "GET", "https://api.example.com/profile", 200, "profile:bob");
-    wing::add_mock_header(c, "Cache-Control", "max-age=60");
-    wing::add_mock_header(c, "Vary", "Cookie");
-    let r_bob, e_bob = wing::get(c, "https://api.example.com/profile");
-    assert(wing::ok(e_bob));
-    assert(wing::text(r_bob) == "profile:bob");
+    client::mock_route(c, "GET", "https://api.example.com/profile", 200, "profile:bob");
+    client::add_mock_header(c, "Cache-Control", "max-age=60");
+    client::add_mock_header(c, "Vary", "Cookie");
+    let r_bob, e_bob = client::get(c, "https://api.example.com/profile");
+    assert(http::ok(e_bob));
+    assert(http::text(r_bob) == "profile:bob");
     print("PASS: F003 HttpCache Vary: Cookie and cached response presence_mask");
 }
 
@@ -875,35 +872,35 @@ fn test_f003_cache_vary_cookie_and_presence_mask() {
 // host must upgrade to `https://` BEFORE computing scheme-downgrade / cross-origin / SameSite
 // transitions, and conflicting multiple `Location` headers must be rejected.
 fn test_f004_redirect_hsts_pre_upgrade_and_multiple_location() {
-    var c = wing::new_client();
-    wing::set_clock_us(c, 1000000000);
+    var c = client::new_client();
+    client::set_clock_us(c, 1000000000);
     c.jar.set_cookie_header("https://secure.example.com/", "strict_sid=s1; Path=/; Secure; SameSite=Strict", c.virtual_clock_us);
 
     // Hop 0 sets HSTS and redirects to http://secure.example.com/step2
-    wing::mock_route(c, "GET", "https://secure.example.com/step1", 302, "");
-    wing::add_mock_header(c, "Strict-Transport-Security", "max-age=31536000");
-    wing::add_mock_header(c, "Location", "http://secure.example.com/step2");
+    client::mock_route(c, "GET", "https://secure.example.com/step1", 302, "");
+    client::add_mock_header(c, "Strict-Transport-Security", "max-age=31536000");
+    client::add_mock_header(c, "Location", "http://secure.example.com/step2");
 
-    wing::mock_route(c, "GET", "https://secure.example.com/step2", 200, "ok-hsts-redirect");
+    client::mock_route(c, "GET", "https://secure.example.com/step2", 200, "ok-hsts-redirect");
 
-    var req = wing::new_request("GET", "https://secure.example.com/step1");
-    wing::bearer(req, "same-origin-secret");
-    let r1, e1 = wing::do(c, req);
-    assert(wing::ok(e1));
-    assert(wing::text(r1) == "ok-hsts-redirect");
+    var req = http::new_request("GET", "https://secure.example.com/step1");
+    http::bearer(req, "same-origin-secret");
+    let r1, e1 = client::do(c, req);
+    assert(http::ok(e1));
+    assert(http::text(r1) == "ok-hsts-redirect");
     // Because HSTS upgraded http://secure.example.com/step2 -> https://secure.example.com/step2
     // prior to redirect policy evaluation (RFC 6797 §8.3), it is NOT a scheme downgrade or cross-origin hop:
-    assert(wing::sent_header(r1, "Referer") == "https://secure.example.com/step1");
-    assert(wing::sent_header(r1, "Authorization") == "Bearer same-origin-secret");
-    assert(wing::sent_header(r1, "Cookie") == "strict_sid=s1");
+    assert(http::sent_header(r1, "Referer") == "https://secure.example.com/step1");
+    assert(http::sent_header(r1, "Authorization") == "Bearer same-origin-secret");
+    assert(http::sent_header(r1, "Cookie") == "strict_sid=s1");
 
     // Conflicting multiple Location headers on 302 must be rejected (RedirectError.MultipleLocationHeaders)
-    var c2 = wing::new_client();
-    wing::mock_route(c2, "GET", "https://example.com/multi-loc", 302, "");
-    wing::add_mock_header(c2, "Location", "https://example.com/dest-a");
-    wing::add_mock_header(c2, "Location", "https://evil.example/dest-b");
-    let _, e2 = wing::get(c2, "https://example.com/multi-loc");
-    assert(!wing::ok(e2));
+    var c2 = client::new_client();
+    client::mock_route(c2, "GET", "https://example.com/multi-loc", 302, "");
+    client::add_mock_header(c2, "Location", "https://example.com/dest-a");
+    client::add_mock_header(c2, "Location", "https://evil.example/dest-b");
+    let _, e2 = client::get(c2, "https://example.com/multi-loc");
+    assert(!http::ok(e2));
     print("PASS: F004 HSTS pre-redirect upgrade and conflicting Location rejection");
 }
 
@@ -911,35 +908,35 @@ fn test_f004_redirect_hsts_pre_upgrade_and_multiple_location() {
 // 128-byte username + 128-byte password capacity, reject non-Basic prefix schemes like
 // `BasicCustom`, and allow 401 authentication on a redirect target after an earlier hop.
 fn test_f005_auth_401_bounds_scheme_boundary_and_redirect_reset() {
-    var c = wing::new_client();
+    var c = client::new_client();
     let long_user: const u8[:] = "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu"; // 80B
     let long_pass: const u8[:] = "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"; // 80B
-    assert(wing::set_credentials(c, long_user, long_pass));
+    assert(client::set_credentials(c, long_user, long_pass));
 
     // 1. Non-Basic scheme `BasicCustom` must NOT trigger Basic credential transmission
-    wing::mock_route(c, "GET", "https://example.com/custom-scheme", 401, "unauth");
-    wing::add_mock_header(c, "WWW-Authenticate", "BasicCustom realm=\"app\"");
-    let r_custom, _ = wing::get(c, "https://example.com/custom-scheme");
+    client::mock_route(c, "GET", "https://example.com/custom-scheme", 401, "unauth");
+    client::add_mock_header(c, "WWW-Authenticate", "BasicCustom realm=\"app\"");
+    let r_custom, _ = client::get(c, "https://example.com/custom-scheme");
     assert(r_custom.status_code == 401);
-    assert(wing::sent_header(r_custom, "Authorization") == "");
+    assert(http::sent_header(r_custom, "Authorization") == "");
 
     // 2. Valid `Basic realm="app"` with 80B+80B (161B > old 140B buffer) must succeed on retry
-    wing::mock_route(c, "GET", "https://example.com/long-basic", 401, "");
-    wing::add_mock_header(c, "WWW-Authenticate", "Basic realm=\"app\"");
-    let r_basic, e_basic = wing::get(c, "https://example.com/long-basic");
-    assert(wing::ok(e_basic));
-    assert(core::starts_with_fold(wing::sent_header(r_basic, "Authorization"), "Basic "));
+    client::mock_route(c, "GET", "https://example.com/long-basic", 401, "");
+    client::add_mock_header(c, "WWW-Authenticate", "Basic realm=\"app\"");
+    let r_basic, e_basic = client::get(c, "https://example.com/long-basic");
+    assert(http::ok(e_basic));
+    assert(core::starts_with_fold(http::sent_header(r_basic, "Authorization"), "Basic "));
 
     // 3. Redirect target that challenges with 401 after an earlier hop must also be allowed to retry auth
-    var c_red = wing::new_client();
-    assert(wing::set_credentials(c_red, "admin", "secret"));
-    wing::mock_route(c_red, "GET", "https://example.com/entry", 302, "");
-    wing::add_mock_header(c_red, "Location", "https://other.example.com/protected");
-    wing::mock_route(c_red, "GET", "https://other.example.com/protected", 401, "");
-    wing::add_mock_header(c_red, "WWW-Authenticate", "Basic realm=\"other\"");
-    let r_red, e_red = wing::get(c_red, "https://example.com/entry");
-    assert(wing::ok(e_red));
-    assert(core::starts_with_fold(wing::sent_header(r_red, "Authorization"), "Basic "));
+    var c_red = client::new_client();
+    assert(client::set_credentials(c_red, "admin", "secret"));
+    client::mock_route(c_red, "GET", "https://example.com/entry", 302, "");
+    client::add_mock_header(c_red, "Location", "https://other.example.com/protected");
+    client::mock_route(c_red, "GET", "https://other.example.com/protected", 401, "");
+    client::add_mock_header(c_red, "WWW-Authenticate", "Basic realm=\"other\"");
+    let r_red, e_red = client::get(c_red, "https://example.com/entry");
+    assert(http::ok(e_red));
+    assert(core::starts_with_fold(http::sent_header(r_red, "Authorization"), "Basic "));
     print("PASS: F005 401 Basic capacity, scheme token boundary, and redirect auth");
 }
 
@@ -969,13 +966,13 @@ fn run_04_rfc_repro_client_cross_rfc() {
 
 // F019: set_credentials must support up to 128 bytes and guard against capacity overflow.
 fn test_f019_credentials_capacity() {
-    var session = wing::new_session();
+    var session = client::new_session();
     var long_pass: u8[..128] = [];
     for i in 100 {
         long_pass.push('k');
     }
     // Length 100 exceeds old 64-byte capacity but fits in 128-byte DigestCredentials
-    let ok = wing::set_credentials(session, "admin_user", long_pass[..]);
+    let ok = client::set_credentials(session, "admin_user", long_pass[..]);
     assert(ok);
     assert(session.creds.has_credentials);
     assert(session.creds.password.len == 100);
@@ -985,20 +982,20 @@ fn test_f019_credentials_capacity() {
     for i in 150 {
         too_long.push('x');
     }
-    let ok_overflow = wing::set_credentials(session, "admin_user", too_long[..]);
+    let ok_overflow = client::set_credentials(session, "admin_user", too_long[..]);
     assert(!ok_overflow);
     print("F019_CREDENTIALS_CAPACITY: OK");
 }
 
 // F021: encode_chunk_trailer must filter out disallowed trailer fields (RFC 9112 §7.1.2).
 fn test_f021_chunked_disallowed_trailers() {
-    var trailers = wing::HeaderMap { .. };
-    wing::set_header(trailers, "X-Checksum", "abcdef");
-    wing::set_header(trailers, "Content-Length", "42");
-    wing::set_header(trailers, "Transfer-Encoding", "chunked");
+    var trailers = http::HeaderMap { .. };
+    http::set_header(trailers, "X-Checksum", "abcdef");
+    http::set_header(trailers, "Content-Length", "42");
+    http::set_header(trailers, "Transfer-Encoding", "chunked");
 
     var wire_out: u8[>..] = [];
-    wing::encode_chunked_payload("hello", trailers, 4096, wire_out);
+    client::encode_chunked_payload("hello", trailers, 4096, wire_out);
     let wire_str = wire_out[..];
 
     assert(find(wire_str, "X-Checksum: abcdef") >= 0);
@@ -1009,33 +1006,33 @@ fn test_f021_chunked_disallowed_trailers() {
 
 // F022: session mutator bounds clamping and deduplication.
 fn test_f022_session_mutators_bounds_and_dedup() {
-    var session = wing::new_session();
+    var session = client::new_session();
     var huge_url: u8[..300] = [];
     for i in 280 {
         huge_url.push('h');
     }
 
     // Must not panic on URLs > 256
-    wing::set_base_url(session, huge_url[..]);
+    client::set_base_url(session, huge_url[..]);
     assert(session.base_url.len <= 256);
 
-    wing::set_proxy(session, huge_url[..]);
+    client::set_proxy(session, huge_url[..]);
     assert(session.proxy_url.len <= 256);
 
-    wing::enable_doh(session, huge_url[..]);
+    client::enable_doh(session, huge_url[..]);
     assert(session.doh.endpoint.len <= 256);
 
     // Ports and hosts deduplication
-    wing::allow_port(session, 8080);
-    wing::allow_port(session, 8080);
+    client::allow_port(session, 8080);
+    client::allow_port(session, 8080);
     assert(session.ssrf_guard.allowed_ports.len == 1);
 
-    wing::deny_port(session, 22);
-    wing::deny_port(session, 22);
+    client::deny_port(session, 22);
+    client::deny_port(session, 22);
     assert(session.ssrf_guard.denied_ports.len == 1);
 
-    wing::trust_location_host(session, "cdn.example.com");
-    wing::trust_location_host(session, "CDN.EXAMPLE.COM");
+    client::trust_location_host(session, "cdn.example.com");
+    client::trust_location_host(session, "CDN.EXAMPLE.COM");
     assert(session.trusted_location_hosts.len == 1);
     print("F022_SESSION_MUTATORS_BOUNDS_AND_DEDUP: OK");
 }
@@ -1043,26 +1040,26 @@ fn test_f022_session_mutators_bounds_and_dedup() {
 // F017: stage_client_alt_svc / ingest_compression_dict_header must decode body
 // and must NOT cache invalid/corrupted dictionary representations.
 fn test_f017_stage_dictionary_compression_handling() {
-    var session = wing::new_session();
-    var dict_cache = wing::DictionaryCache { .. };
-    var resp = wing::Response {
+    var session = client::new_session();
+    var dict_cache = http::DictionaryCache { .. };
+    var resp = http::Response {
         status_code: 200,
         ..
     };
-    wing::set_header(resp, "Use-As-Dictionary", "match=\"/api/*\"");
-    wing::set_header(resp, "Content-Encoding", "dcz");
+    http::set_header(resp, "Use-As-Dictionary", "match=\"/api/*\"");
+    http::set_header(resp, "Content-Encoding", "dcz");
     resp.body.append("corrupt-dcz-payload");
 
     // Must not cache corrupted dictionary body
-    wing::ingest_compression_dict_header(dict_cache, "example.com:443", "/api/item", 1000, resp);
+    client::ingest_compression_dict_header(dict_cache, "example.com:443", "/api/item", 1000, resp);
     assert(dict_cache.entries.len == 0);
     print("F017_STAGE_DICT_COMPRESSION_HANDLING: OK");
 }
 
 // F018: 101 Switching Protocols connection must not be released into HTTP idle pool (RFC 9112 §6.3, RFC 6455 §4.1).
 fn test_f018_h1_101_no_pool_reuse() {
-    var session = wing::new_session();
-    var conn = wing::PooledConnection {
+    var session = client::new_session();
+    var conn = net::PooledConnection {
         conn_id: 42,
         ..
     };
@@ -1077,9 +1074,9 @@ fn test_f018_h1_101_no_pool_reuse() {
 
 // F020 & F023: prepare_auth_retry_hop must reset body_consumed, and compute_401_auth_header must clear dirty header buf.
 fn test_f020_f023_auth_retry_state_and_clear() {
-    var session = wing::new_client();
-    wing::set_credentials(session, "alice", "secret123");
-    var ctx = wing::RequestExecutionContext {
+    var session = client::new_client();
+    client::set_credentials(session, "alice", "secret123");
+    var ctx = client::RequestExecutionContext {
         rewindable:    true,
         body_consumed: true,
         ..
@@ -1089,15 +1086,15 @@ fn test_f020_f023_auth_retry_state_and_clear() {
 
     let u = core::new_url("https://example.com/api");
     let samesite = cookie::SameSiteCookieContext { .. };
-    let resp = wing::Response { status_code: 401, .. };
+    let resp = http::Response { status_code: 401, .. };
 
-    wing::prepare_auth_retry_hop(session, ctx, u, samesite, false, resp, "Basic dGVzdA==");
+    client::prepare_auth_retry_hop(session, ctx, u, samesite, false, resp, "Basic dGVzdA==");
     assert(!ctx.body_consumed);
     assert(ctx.auth_retried);
 
     var dirty_header: u8[..4096] = [];
     dirty_header.append("STALE-DIRTY-PREFIX-");
-    let ok_auth = wing::compute_401_auth_header(session, ctx, u, "Basic realm=\"api\"", dirty_header);
+    let ok_auth = client::compute_401_auth_header(session, ctx, u, "Basic realm=\"api\"", dirty_header);
     assert(ok_auth);
     assert(!core::starts_with(dirty_header[..], "STALE-DIRTY-PREFIX-"));
     assert(core::starts_with(dirty_header[..], "Basic "));
@@ -1143,57 +1140,57 @@ fn test_ssrf_ipv6() {
 }
 
 fn test_rfc8470_425() {
-    var req_post = wing::new_post("https://example.com/api");
+    var req_post = http::new_post("https://example.com/api");
     req_post.body.append("payload");
-    assert(!wing::should_retry_request(rfc::STATUS_TOO_EARLY, wing::Error { .. }, "POST", req_post, 0, false, 0, false));
+    assert(!client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_post, 0, false, 0, false));
 
-    var req_get = wing::new_get("https://example.com/api");
-    assert(wing::should_retry_request(rfc::STATUS_TOO_EARLY, wing::Error { .. }, "GET", req_get, 0, false, 0, false));
+    var req_get = http::new_get("https://example.com/api");
+    assert(client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "GET", req_get, 0, false, 0, false));
 
-    var req_idem = wing::new_post("https://example.com/api");
+    var req_idem = http::new_post("https://example.com/api");
     req_idem.body.append("payload");
-    wing::set_header(req_idem, "Idempotency-Key", "uuid-abc");
-    assert(wing::should_retry_request(rfc::STATUS_TOO_EARLY, wing::Error { .. }, "POST", req_idem, 0, false, 0, false));
+    http::set_header(req_idem, "Idempotency-Key", "uuid-abc");
+    assert(client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_idem, 0, false, 0, false));
 
     req_idem.rewindable = false;
-    assert(!wing::should_retry_request(rfc::STATUS_TOO_EARLY, wing::Error { .. }, "POST", req_idem, 0, false, 0, false));
+    assert(!client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_idem, 0, false, 0, false));
     print("CHECK_RFC8470_425: OK");
 }
 
 fn test_missing_location() {
-    var session = wing::new_session();
+    var session = client::new_session();
     session.enable_cookie_jar = false;
-    wing::mock_route(session, "GET", "https://redirect.invalid/missing-loc", rfc::STATUS_FOUND, "302 without location");
-    var req_bad_red = wing::new_get("https://redirect.invalid/missing-loc");
-    let resp_red, err_red = wing::execute_request(session, req_bad_red);
-    assert(!wing::ok(err_red));
+    client::mock_route(session, "GET", "https://redirect.invalid/missing-loc", rfc::STATUS_FOUND, "302 without location");
+    var req_bad_red = http::new_get("https://redirect.invalid/missing-loc");
+    let resp_red, err_red = client::execute_request(session, req_bad_red);
+    assert(!http::ok(err_red));
     assert(err_red.code == rfc::STATUS_BAD_REQUEST);
     print("CHECK_MISSING_LOCATION: OK");
 }
 
 fn test_traceparent_nonzero() {
-    var pipe = wing::InterceptorPipeline { .. };
-    assert(wing::add_interceptor(
+    var pipe = client::InterceptorPipeline { .. };
+    assert(client::add_interceptor(
         pipe,
-        wing::InterceptorEntry {
-            scope:   wing::InterceptorScope.Application,
-            kind:    wing::InterceptorKind.Traceparent,
+        client::InterceptorEntry {
+            scope:   client::InterceptorScope.Application,
+            kind:    client::InterceptorKind.Traceparent,
             prefix:  "00",
             counter: 0,
         },
     ));
-    var req_trace = wing::new_get("http://example.invalid");
-    wing::apply_app_interceptors_request(pipe, req_trace, 1000);
-    let tp = wing::header(req_trace, "traceparent");
+    var req_trace = http::new_get("http://example.invalid");
+    client::apply_app_interceptors_request(pipe, req_trace, 1000);
+    let tp = http::header(req_trace, "traceparent");
     assert(tp.len > 0);
     assert(!core::ends_with(tp, "-0000000000000000-00"));
     print("CHECK_TRACEPARENT_NONZERO: OK");
 }
 
 fn test_chunked_no_cl() {
-    var req_chunked = wing::new_post("http://example.invalid");
+    var req_chunked = http::new_post("http://example.invalid");
     req_chunked.body.append("body");
-    wing::set_header(req_chunked, "Transfer-Encoding", "chunked");
+    http::set_header(req_chunked, "Transfer-Encoding", "chunked");
     let u = core::new_url("http://example.invalid");
     var hdr_buf: u8[..4096] = [];
     wing::serialize_h1_request(req_chunked, u, hdr_buf);
@@ -1203,10 +1200,10 @@ fn test_chunked_no_cl() {
 }
 
 fn test_limiter_monotonic() {
-    var limiter = wing::new_rate_limiter(10.0, 10);
+    var limiter = client::new_rate_limiter(10.0, 10);
     let t0 = limiter.last_update_mono_ns;
-    assert(wing::allow(limiter, t0 + 1000000));
-    assert(!wing::allow(limiter, t0));
+    assert(client::allow(limiter, t0 + 1000000));
+    assert(!client::allow(limiter, t0));
     print("CHECK_LIMITER_MONOTONIC: OK");
 }
 
@@ -1216,21 +1213,21 @@ fn test_long_fragment() {
     for i in 600 {
         url_buf.push('z');
     }
-    var qitems: wing::QueryItem[..1] = [];
-    var qi = wing::QueryItem { .. };
+    var qitems: http::QueryItem[..1] = [];
+    var qi = http::QueryItem { .. };
     qi.key.append("p");
     qi.value.append("1");
     qitems.push(qi);
-    wing::append_query_params_preserving_fragment(url_buf, qitems[..]);
+    client::append_query_params_preserving_fragment(url_buf, qitems[..]);
     assert(core::contains(url_buf[..], "?p=1#"));
     assert(url_buf.len > 600);
     print("CHECK_LONG_FRAGMENT: OK");
 }
 
 fn test_ws_subprotocol() {
-    assert(wing::header_has_token("chat, binary", "chat"));
-    assert(wing::header_has_token("chat, binary", "binary"));
-    assert(!wing::header_has_token("chat, binary", "admin"));
+    assert(client::header_has_token("chat, binary", "chat"));
+    assert(client::header_has_token("chat, binary", "binary"));
+    assert(!client::header_has_token("chat, binary", "admin"));
     print("CHECK_WS_SUBPROTOCOL: OK");
 }
 
@@ -1265,7 +1262,7 @@ fn run_06_rfc_repro_client_round3_invariants() {
 
 // F001: Default (Lax-allowing-unsafe) cookies must be blocked on unsafe POST requests after a cross-site redirect (RFC 6265bis §5.3.7.1).
 fn test_f001_samesite_lax_after_cross_site_redirect() {
-    var session = wing::new_session();
+    var session = client::new_session();
     let ok_set = cookie::set_cookie_header(
         session.jar,
         "https://target.example.com/landing",
@@ -1275,16 +1272,16 @@ fn test_f001_samesite_lax_after_cross_site_redirect() {
     assert(ok_set);
 
     let curr_url = core::new_url("https://target.example.com/landing");
-    var ctx = wing::RequestExecutionContext {
+    var ctx = client::RequestExecutionContext {
         is_main_frame:      true,
         had_cross_site_hop: true,
         site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
-    let samesite_eval = wing::compute_hop_samesite_context(ctx, curr_url, false);
+    let samesite_eval = client::compute_hop_samesite_context(ctx, curr_url, false);
     assert(samesite_eval.context_type == cookie::SameSiteContextType.CrossSite);
 
-    let _ = wing::stage_client_cookie_load(
+    let _ = client::stage_cookie_load(
         ctx.headers,
         curr_url,
         samesite_eval,
@@ -1295,15 +1292,15 @@ fn test_f001_samesite_lax_after_cross_site_redirect() {
         session.jar,
         true,
     );
-    let cookie_hdr = wing::find_header(ctx.headers, "Cookie");
+    let cookie_hdr = http::find_header(ctx.headers, "Cookie");
     assert(!core::contains(cookie_hdr, "def_sid=abc123"));
     print("F001_SAMESITE_LAX_REDIRECT: OK");
 }
 
 // F002: execute_h1_exchange must bound consecutive 1xx informational responses (RFC 9110 §15.2 / Go #65035).
 fn test_f002_h1_1xx_loop_bounded() {
-    var conn = wing::PooledConnection {
-        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+    var conn = net::PooledConnection {
+        transport: net::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
     for i in 8 {
@@ -1311,9 +1308,9 @@ fn test_f002_h1_1xx_loop_bounded() {
     }
     conn.rx_buf.append("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
 
-    let req = wing::new_get("http://example.com/");
+    let req = http::new_get("http://example.com/");
     let u = core::new_url("http://example.com/");
-    var resp = wing::Response { .. };
+    var resp = http::Response { .. };
     let ok_ex, _ = wing::execute_h1_exchange(conn, req, u, resp, 100);
     assert(!ok_ex);
     print("F002_H1_1XX_BOUNDED: OK");
@@ -1321,15 +1318,15 @@ fn test_f002_h1_1xx_loop_bounded() {
 
 // F003: parse_h1_header_block must reject malformed lines without ':', whitespace before ':', and conflicting Content-Length (RFC 9112 §5.1, §6.3).
 fn test_f003_h1_header_strict_rfc9112() {
-    var resp1 = wing::Response { .. };
+    var resp1 = http::Response { .. };
     let ok_garbage = wing::parse_h1_header_block("GarbageLineWithoutColon\r\nContent-Length: 0\r\n", resp1);
     assert(!ok_garbage);
 
-    var resp2 = wing::Response { .. };
+    var resp2 = http::Response { .. };
     let ok_ws_colon = wing::parse_h1_header_block("Content-Length : 0\r\n", resp2);
     assert(!ok_ws_colon);
 
-    var resp3 = wing::Response { .. };
+    var resp3 = http::Response { .. };
     let ok_conflicting_cl = wing::parse_h1_header_block("Content-Length: 5\r\nContent-Length: 10\r\n", resp3);
     assert(!ok_conflicting_cl);
     print("F003_H1_HEADER_STRICT: OK");
@@ -1338,7 +1335,7 @@ fn test_f003_h1_header_strict_rfc9112() {
 // F004: feed_chunk_slice must reject malformed chunked trailers and pump_h1_chunked_body must preserve leftover pipelined bytes.
 fn test_f004_chunked_trailers_and_leftover() {
     var dec = http_internal::new_chunk_fsm_decoder();
-    var resp = wing::Response { .. };
+    var resp = http::Response { .. };
     var trailer_buf: u8[..4096] = [];
     var cur_idx:     i64        = 0;
     // Disallowed trailer field Content-Length in chunked trailer section (RFC 9112 §7.1.2)
@@ -1346,12 +1343,12 @@ fn test_f004_chunked_trailers_and_leftover() {
     let done, ok = wing::feed_chunk_slice(dec, raw_bad_tr, resp, trailer_buf, cur_idx);
     assert(done && !ok);
 
-    var conn = wing::PooledConnection {
-        transport: wing::Transport.Mock { route_idx: 0, cursor: 0 },
+    var conn = net::PooledConnection {
+        transport: net::Transport.Mock { route_idx: 0, cursor: 0 },
         ..
     };
     var dec2 = http_internal::new_chunk_fsm_decoder();
-    var resp2 = wing::Response { .. };
+    var resp2 = http::Response { .. };
     let coalesced = "4\r\nWiki\r\n0\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
     let ok_chunk = wing::pump_h1_chunked_body(conn, dec2, coalesced, resp2, 100);
     assert(ok_chunk);
@@ -1361,13 +1358,13 @@ fn test_f004_chunked_trailers_and_leftover() {
 
 // F005: serialize_h1_request must reject requests whose serialized head exceeds the 4096-byte buffer instead of silently truncating.
 fn test_f005_serialize_h1_request_overflow_rejected() {
-    var req = wing::new_get("http://example.com/api");
+    var req = http::new_get("http://example.com/api");
     var big_val: u8[..3500] = [];
     for i in 3500 {
         big_val.push('a');
     }
-    wing::set_header(req, "X-Large-A", big_val[..]);
-    wing::set_header(req, "X-Large-B", big_val[..]);
+    http::set_header(req, "X-Large-A", big_val[..]);
+    http::set_header(req, "X-Large-B", big_val[..]);
     let u = core::new_url("http://example.com/api");
     var out: u8[..4096] = [];
     let ok_ser = wing::serialize_h1_request(req, u, out);
@@ -1379,11 +1376,11 @@ fn test_f005_serialize_h1_request_overflow_rejected() {
 fn test_f006_h2_oversize_frame_and_rst_stream() {
     var rx_oversize: u8[..64] = [0x00, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
     var dec_dt = http2::new_dynamic_table(4096);
-    var resp = wing::Response { .. };
-    var h2_state = wing::H2ClientRecvState { .. };
+    var resp = http::Response { .. };
+    var h2_state = client::H2RecvState { .. };
     var ctrl_out: u8[..256] = [];
-    let ok_f, _ = wing::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, h2_state, ctrl_out);
-    assert(!ok_f);
+    let st_f = client::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, h2_state, ctrl_out);
+    assert(st_f == client::H2RecvStatus.Error);
 
     let rst_hdr = http2::FrameHeader {
         length:     4,
@@ -1392,63 +1389,63 @@ fn test_f006_h2_oversize_frame_and_rst_stream() {
         stream_id:  1,
     };
     let rst_payload: u8[4] = [0x00, 0x00, 0x00, 0x08];
-    let ok_rst, _ = wing::process_h2_response_frame(
+    let st_rst = client::process_h2_response_frame(
         rst_hdr, rst_payload[..], 1, false, dec_dt, resp, h2_state, ctrl_out,
     );
-    assert(!ok_rst);
+    assert(st_rst == client::H2RecvStatus.Error);
     print("F006_H2_FRAME_VALIDATION: OK");
 }
 
 // F007: execute_live_h3_hop must validate AltSvcEndpoint.host against session.ssrf_guard before sending UDP packets.
 fn test_f007_altsvc_h3_ssrf_guard() {
-    var session = wing::new_session();
+    var session = client::new_session();
     session.ssrf_guard = security::new_ssrf_guard_policy();
-    var ctx = wing::RequestExecutionContext { .. };
+    var ctx = client::RequestExecutionContext { .. };
     ctx.current_method.append("GET");
     let curr_url = core::new_url("https://example.com/data");
-    var bad_ep = wing::AltSvcEndpoint {
+    var bad_ep = http::AltSvcEndpoint {
         port: 6379,
         ..
     };
     bad_ep.host.append("127.0.0.1");
     bad_ep.proto.append("h3");
-    var resp = wing::Response { .. };
-    let ok_h3 = wing::execute_live_h3_hop(session, ctx, curr_url, "https://example.com:443", bad_ep, 1000, resp);
+    var resp = http::Response { .. };
+    let ok_h3 = client::execute_live_h3_hop(session, ctx, curr_url, "https://example.com:443", bad_ep, 1000, resp);
     assert(!ok_h3);
     print("F007_ALTSVC_H3_SSRF: OK");
 }
 
 // F008: ws() must generate unique Sec-WebSocket-Key nonces across calls, and ws_perform_handshake must enforce case-sensitive single-token subprotocol matching (RFC 6455 §4.1, §4.2.2).
 fn test_f008_ws_nonce_and_subprotocol() {
-    var session = wing::new_session();
-    let _ = wing::mock_route(session, "GET", "http://ws.example.com/chat", rfc::STATUS_SWITCHING_PROTOCOLS, "");
-    wing::add_mock_header(session, "Upgrade", "websocket");
-    wing::add_mock_header(session, "Connection", "Upgrade");
-    wing::add_mock_header(session, "Sec-WebSocket-Protocol", "CHAT");
-    let _, resp1, _ = wing::ws(session, "ws://ws.example.com/chat");
-    let _, resp2, _ = wing::ws(session, "ws://ws.example.com/chat");
-    let k1 = wing::sent_header(resp1, "Sec-WebSocket-Key");
-    let k2 = wing::sent_header(resp2, "Sec-WebSocket-Key");
+    var session = client::new_session();
+    let _ = client::mock_route(session, "GET", "http://ws.example.com/chat", rfc::STATUS_SWITCHING_PROTOCOLS, "");
+    client::add_mock_header(session, "Upgrade", "websocket");
+    client::add_mock_header(session, "Connection", "Upgrade");
+    client::add_mock_header(session, "Sec-WebSocket-Protocol", "CHAT");
+    let _, resp1, _ = client::ws(session, "ws://ws.example.com/chat");
+    let _, resp2, _ = client::ws(session, "ws://ws.example.com/chat");
+    let k1 = http::sent_header(resp1, "Sec-WebSocket-Key");
+    let k2 = http::sent_header(resp2, "Sec-WebSocket-Key");
     assert(k1.len > 0 && k2.len > 0 && k1 != k2);
 
     // Case-mismatch subprotocol ("chat" offered, "CHAT" returned) must be rejected per RFC 6455 §4.2.2
-    let _, _, err_proto = wing::ws(session, "ws://ws.example.com/chat") { req =>
-        wing::set_header(req, "Sec-WebSocket-Protocol", "chat, superchat");
+    let _, _, err_proto = client::ws(session, "ws://ws.example.com/chat") { req =>
+        http::set_header(req, "Sec-WebSocket-Protocol", "chat, superchat");
     };
-    assert(!wing::ok(err_proto));
+    assert(!http::ok(err_proto));
     print("F008_WS_NONCE_AND_SUBPROTO: OK");
 }
 
 // F009: put_chunked must set rewindable=false when body exceeds rewind_buf.cap (4096), and connect_udp must reject oversized target_host (>128 bytes).
 fn test_f009_chunked_rewind_and_masque_bounds() {
-    var session = wing::new_session();
+    var session = client::new_session();
     var long_host: u8[..160] = [];
     for i in 140 {
         long_host.push('a');
     }
     long_host.append(".example.com");
-    let _, _, err_masque = wing::connect_udp(session, "https://proxy.example.com", long_host[..], 443);
-    assert(!wing::ok(err_masque));
+    let _, _, err_masque = client::connect_udp(session, "https://proxy.example.com", long_host[..], 443);
+    assert(!http::ok(err_masque));
     assert(err_masque.code == rfc::STATUS_BAD_REQUEST);
     print("F009_MASQUE_AND_CHUNKED_BOUNDS: OK");
 }
@@ -1496,39 +1493,39 @@ fn test_1xx_empty_body_status() {
 }
 
 fn test_sse_content_type_validation() {
-    assert(wing::is_sse_content_type("text/event-stream"));
-    assert(wing::is_sse_content_type("text/event-stream; charset=utf-8"));
-    assert(wing::is_sse_content_type("Text/Event-Stream; boundary=something"));
-    assert(wing::is_sse_content_type("text/event-stream \t"));
-    assert(!wing::is_sse_content_type("text/event-stream-custom"));
-    assert(!wing::is_sse_content_type("application/json"));
-    assert(!wing::is_sse_content_type(""));
+    assert(client::is_sse_content_type("text/event-stream"));
+    assert(client::is_sse_content_type("text/event-stream; charset=utf-8"));
+    assert(client::is_sse_content_type("Text/Event-Stream; boundary=something"));
+    assert(client::is_sse_content_type("text/event-stream \t"));
+    assert(!client::is_sse_content_type("text/event-stream-custom"));
+    assert(!client::is_sse_content_type("application/json"));
+    assert(!client::is_sse_content_type(""));
     print("CHECK_SSE_CONTENT_TYPE: OK");
 }
 
 fn test_ws_header_tokens() {
-    assert(wing::header_has_token("websocket, upgrade", "websocket"));
-    assert(wing::header_has_token("keep-alive, upgrade", "upgrade"));
-    assert(wing::header_has_token("Upgrade", "upgrade"));
-    assert(!wing::header_has_token("non-upgrade", "upgrade"));
-    assert(!wing::header_has_token("websocket-stream", "websocket"));
+    assert(client::header_has_token("websocket, upgrade", "websocket"));
+    assert(client::header_has_token("keep-alive, upgrade", "upgrade"));
+    assert(client::header_has_token("Upgrade", "upgrade"));
+    assert(!client::header_has_token("non-upgrade", "upgrade"));
+    assert(!client::header_has_token("websocket-stream", "websocket"));
     print("CHECK_WS_TOKENS: OK");
 }
 
 fn test_multihop_redirect_body_clear() {
-    var session = wing::new_session();
-    var ctx = wing::RequestExecutionContext { .. };
+    var session = client::new_session();
+    var ctx = client::RequestExecutionContext { .. };
     ctx.body.append("initial_body");
     ctx.rewind_buf.append("initial_body");
     ctx.rewindable = true;
 
     // Hop 1: 303 See Other (must clear body and rewind buffer)
-    var red_303 = wing::RedirectInfo { .. };
+    var red_303 = client::RedirectInfo { .. };
     red_303.new_method.append("GET");
     red_303.clear_body = true;
 
-    let err_303 = wing::apply_redirect_transition(session, ctx, red_303);
-    assert(wing::ok(err_303));
+    let err_303 = client::apply_redirect_transition(session, ctx, red_303);
+    assert(http::ok(err_303));
     assert(ctx.body.len == 0);
     assert(ctx.rewind_buf.len == 0);
     assert(!ctx.rewindable);
@@ -1536,26 +1533,26 @@ fn test_multihop_redirect_body_clear() {
 }
 
 fn test_multihop_no_resurrect() {
-    var session = wing::new_session();
-    var ctx = wing::RequestExecutionContext { .. };
+    var session = client::new_session();
+    var ctx = client::RequestExecutionContext { .. };
     ctx.body.append("initial_payload");
     ctx.rewind_buf.append("initial_payload");
     ctx.rewindable = true;
 
     // Hop 1: 303 See Other
-    var red_303 = wing::RedirectInfo { .. };
+    var red_303 = client::RedirectInfo { .. };
     red_303.new_method.append("GET");
     red_303.clear_body = true;
-    let _ = wing::apply_redirect_transition(session, ctx, red_303);
+    let _ = client::apply_redirect_transition(session, ctx, red_303);
 
     // Hop 2: 307 Temporary Redirect with body_consumed = true
     ctx.body_consumed = true;
-    var red_307 = wing::RedirectInfo { .. };
+    var red_307 = client::RedirectInfo { .. };
     red_307.new_method.append("GET");
     red_307.clear_body = false;
 
-    let err_307 = wing::apply_redirect_transition(session, ctx, red_307);
-    assert(!wing::ok(err_307));
+    let err_307 = client::apply_redirect_transition(session, ctx, red_307);
+    assert(!http::ok(err_307));
     assert(err_307.code == rfc::STATUS_BAD_REQUEST);
     print("CHECK_MULTIHOP_NO_RESURRECT: OK");
 }
@@ -1610,18 +1607,18 @@ fn run_08_rfc_repro_client_session_protocol() {
 //
 
 fn run_09_verify_request_response_reset() {
-    var req = wing::new_request("POST", "https://example.com/api");
+    var req = http::new_request("POST", "https://example.com/api");
     req.url.append("?token=xyz");
     req.timeout = 5000;
     req.body_consumed = true;
     req.is_http10 = true;
-    wing::set_header(req, "X-Custom-Header", "Value123");
+    http::set_header(req, "X-Custom-Header", "Value123");
 
     assert(req.headers.entries.len == 1);
     assert(req.url.len > 0);
     assert(req.timeout == 5000);
 
-    wing::reset_request(req);
+    http::reset_request(req);
 
     assert(req.method[..] == "GET");
     assert(req.url.len == 0);
@@ -1633,13 +1630,13 @@ fn run_09_verify_request_response_reset() {
     assert(!req.body_consumed);
     assert(!req.is_http10);
 
-    var res = wing::Response { status_code: 404, .. };
-    wing::set_header(res, "Content-Type", "application/json");
+    var res = http::Response { status_code: 404, .. };
+    http::set_header(res, "Content-Type", "application/json");
 
     assert(res.status_code == 404);
     assert(res.headers.entries.len == 1);
 
-    wing::reset_response(res);
+    http::reset_response(res);
 
     assert(res.status_code == 200);
     assert(res.headers.entries.len == 0);

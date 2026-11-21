@@ -158,31 +158,31 @@ fn run_02_verify_simd_scanners() {
 fn run_03_verify_swar_headers() {
     // 1. Valid header name scanning
     let valid_raw = "Content-Length: 42\r\n";
-    let name_len, ok_name = wing::scan_header_field_name_swar(valid_raw);
+    let name_len, ok_name = http::scan_header_field_name_swar(valid_raw);
     assert(ok_name);
     assert(name_len == 14);
     assert(valid_raw[..name_len] == "Content-Length");
 
     // 2. Valid header value scanning
     let val_slice = valid_raw[(name_len + 1)..]; // Skip ':'
-    let val_len, crlf_len, ok_val = wing::scan_header_field_value_swar(val_slice);
+    let val_len, crlf_len, ok_val = http::scan_header_field_value_swar(val_slice);
     assert(ok_val);
     assert(crlf_len == 2);
     assert(core::trim_lws(val_slice[..val_len]) == "42");
 
     // 3. Header name with space before colon (RFC 9112 Section 5.1 violation)
     let bad_space_name = "Host : example.com\r\n";
-    let _, ok_bad_name = wing::scan_header_field_name_swar(bad_space_name);
+    let _, ok_bad_name = http::scan_header_field_name_swar(bad_space_name);
     assert(!ok_bad_name);
 
     // 4. Header value with embedded NUL (rejected)
     let bad_val_raw = "bad\x00val\r\n";
-    let _, _, ok_bad_val = wing::scan_header_field_value_swar(bad_val_raw);
+    let _, _, ok_bad_val = http::scan_header_field_value_swar(bad_val_raw);
     assert(!ok_bad_val);
 
     // 5. Header value with tab (allowed per RFC 9110)
     let tab_val_raw = "text/plain;\tcharset=utf-8\r\n";
-    let tab_len, tab_crlf, ok_tab = wing::scan_header_field_value_swar(tab_val_raw);
+    let tab_len, tab_crlf, ok_tab = http::scan_header_field_value_swar(tab_val_raw);
     assert(ok_tab);
     assert(tab_crlf == 2);
     assert(tab_len == 25);
@@ -202,15 +202,15 @@ fn run_03_verify_swar_headers() {
 //
 
 fn run_04_verify_slot_stack() {
-    var stack = wing::FreeSlotStack { .. };
-    wing::init_free_slots(stack, 4);
+    var stack = net::FreeSlotStack { .. };
+    net::init_free_slots(stack, 4);
 
     // Initial pop order should be deterministic 0, 1, 2, 3
-    let s0 = wing::pop_free_slot(stack);
-    let s1 = wing::pop_free_slot(stack);
-    let s2 = wing::pop_free_slot(stack);
-    let s3 = wing::pop_free_slot(stack);
-    let s4 = wing::pop_free_slot(stack);
+    let s0 = net::pop_free_slot(stack);
+    let s1 = net::pop_free_slot(stack);
+    let s2 = net::pop_free_slot(stack);
+    let s3 = net::pop_free_slot(stack);
+    let s4 = net::pop_free_slot(stack);
 
     assert(s0 == 0);
     assert(s1 == 1);
@@ -219,13 +219,13 @@ fn run_04_verify_slot_stack() {
     assert(s4 == -1); // Empty stack returns -1
 
     // Push slot 2 back, pop returns 2
-    assert(wing::push_free_slot(stack, 2));
-    assert(wing::pop_free_slot(stack) == 2);
-    assert(wing::pop_free_slot(stack) == -1);
+    assert(net::push_free_slot(stack, 2));
+    assert(net::pop_free_slot(stack) == 2);
+    assert(net::pop_free_slot(stack) == -1);
 
     // Out of bounds rejection
-    assert(!wing::push_free_slot(stack, -1));
-    assert(!wing::push_free_slot(stack, 2048));
+    assert(!net::push_free_slot(stack, -1));
+    assert(!net::push_free_slot(stack, 2048));
 
     print("FREE_SLOT_STACK: OK");
 }
@@ -245,11 +245,11 @@ fn run_04_verify_slot_stack() {
 
 fn test_transport_polymorphism() {
     print("=== Transport Polymorphism ===");
-    var t_disc = wing::Transport.Disconnected;
+    var t_disc = net::Transport.Disconnected;
     print(if t_disc.is_connected() { "disc_connected" } else { "disc_disconnected" });
     // CHECK: disc_disconnected
 
-    var t_mock: wing::Transport = wing::Transport.Mock { route_idx: 1, cursor: 0 };
+    var t_mock: net::Transport = net::Transport.Mock { route_idx: 1, cursor: 0 };
     print(if t_mock.is_connected() { "mock_connected" } else { "mock_disconnected" });
     // CHECK: mock_connected
 
@@ -264,21 +264,21 @@ fn test_transport_polymorphism() {
 
 fn test_pool_and_connection() {
     print("=== Pool and Connection ===");
-    var pool = wing::new_stream_pool();
-    let key = wing::new_pool_key(
-        wing::PoolScheme.Http,
+    var pool = net::new_stream_pool();
+    let key = net::new_pool_key(
+        net::PoolScheme.Http,
         "api.example.com",
         80,
-        wing::new_direct_proxy_chain(),
-        wing::new_network_anonymization_key("api.example.com"),
-        wing::TlsAndDnsPolicy { .. },
+        net::new_direct_proxy_chain(),
+        net::new_network_anonymization_key("api.example.com"),
+        net::TlsAndDnsPolicy { .. },
     );
 
-    let t = wing::Transport.Mock { route_idx: 42, cursor: 100 };
-    let cid = wing::register_connection(
+    let t = net::Transport.Mock { route_idx: 42, cursor: 100 };
+    let cid = net::register_connection(
         pool,
         key,
-        wing::NegotiatedProtocol.Http11,
+        net::NegotiatedProtocol.Http11,
         t,
         "127.0.0.1",
         1,
@@ -304,7 +304,7 @@ fn test_pool_and_connection() {
 fn test_span_headers_and_parsing() {
     print("=== Span Headers and Parsing ===");
     let raw_resp: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nServer: wing-vulkan\r\n\r\n";
-    var resp = wing::Response { .. };
+    var resp = http::Response { .. };
 
     let ok_status = wing::parse_h1_status_line("HTTP/1.1 200 OK", resp);
     print(if ok_status && resp.status_code == 200 { "status_200_ok" } else { "status_fail" });
@@ -328,10 +328,10 @@ fn test_push_sink_chunked_streaming() {
     print("=== Push-Sink Chunked Streaming ===");
     let chunked_wire: const u8[:] = "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
     var dec = http_internal::new_chunk_fsm_decoder();
-    var sink = wing::ArenaSink { max_bytes: 65536 };
+    var sink = http::ArenaSink { max_bytes: 65536 };
     var out_body: u8[>..] = [];
 
-    let st, consumed = wing::pump_chunk_fsm(dec, chunked_wire, sink, out_body);
+    let st, consumed = http::pump_chunk_fsm(dec, chunked_wire, sink, out_body);
     print(if st == http_internal::ChunkFsmStatus.Complete { "chunk_complete" } else { "chunk_incomplete" });
     // CHECK: chunk_complete
 
@@ -341,8 +341,8 @@ fn test_push_sink_chunked_streaming() {
 
 fn test_soa_slot_encapsulation() {
     print("=== SoAConnTable Zero-Cost UFCS Encapsulation ===");
-    var table = wing::SoAConnTable { .. };
-    var pipeline = wing::ServerPipelineConfig { .. };
+    var table = server::SoAConnTable { .. };
+    var pipeline = server::ServerPipelineConfig { .. };
 
     let slot = table.soa_table_alloc(42, 10);
     print(if slot == 0 { "soa_alloc_0" } else { "soa_alloc_fail" });
@@ -384,33 +384,33 @@ fn run_05_verify_zero_cost_oop() {
 //
 
 fn test_stack_fast_path() {
-    var map = wing::HeaderMap { .. };
-    var arena = wing::OverflowArena { .. };
+    var map = http::HeaderMap { .. };
+    var arena = http::OverflowArena { .. };
 
     let raw: const u8[:] = "Host: api.example.com\r\nUser-Agent: wing/1.0\r\nAccept: */*\r\n\r\n";
-    let err = wing::parse_headers_with_overflow(raw, map, arena);
+    let err = http::parse_headers_with_overflow(raw, map, arena);
 
-    assert(wing::is_ok(err));
+    assert(http::is_ok(err));
     assert(map.raw_buf.len > 0);
     assert(arena.spill_raw.len == 0); // Fast path: 0 B in spill arena
     assert(arena.spill_entries.len == 0);
 
-    assert(wing::has_header_spill(map, arena, "Host"));
-    let host = wing::get_header_spill(map, arena, "Host");
+    assert(http::has_header_spill(map, arena, "Host"));
+    let host = http::get_header_spill(map, arena, "Host");
     assert(host == "api.example.com");
 
-    assert(wing::has_header_spill(map, arena, "User-Agent"));
-    let ua = wing::get_header_spill(map, arena, "User-Agent");
+    assert(http::has_header_spill(map, arena, "User-Agent"));
+    let ua = http::get_header_spill(map, arena, "User-Agent");
     assert(ua == "wing/1.0");
 
-    assert(!wing::has_header_spill(map, arena, "Non-Existent"));
+    assert(!http::has_header_spill(map, arena, "Non-Existent"));
 
     print("STACK_FAST_PATH: OK");
 }
 
 fn test_oversized_header_block() {
-    var map = wing::HeaderMap { .. };
-    var arena = wing::OverflowArena { .. };
+    var map = http::HeaderMap { .. };
+    var arena = http::OverflowArena { .. };
 
     // Build ~10 KB headers block
     var huge_raw: u8[>..] = [];
@@ -427,29 +427,29 @@ fn test_oversized_header_block() {
     assert(huge_raw.len > 9000);
 
     // Standard parse_headers must fail with CapacityExceeded (> 8192 bytes)
-    let std_err = wing::parse_headers(huge_raw[..], map);
-    assert(std_err == wing::HeaderParseError.CapacityExceeded);
+    let std_err = http::parse_headers(huge_raw[..], map);
+    assert(std_err == http::HeaderParseError.CapacityExceeded);
 
     // parse_headers_with_overflow must succeed using arena
-    let of_err = wing::parse_headers_with_overflow(huge_raw[..], map, arena);
-    assert(wing::is_ok(of_err));
+    let of_err = http::parse_headers_with_overflow(huge_raw[..], map, arena);
+    assert(http::is_ok(of_err));
     assert(arena.spill_raw.len > 9000);
 
-    let host = wing::get_header_spill(map, arena, "Host");
+    let host = http::get_header_spill(map, arena, "Host");
     assert(host == "api.example.com");
 
-    let marker = wing::get_header_spill(map, arena, "X-Final-Marker");
+    let marker = http::get_header_spill(map, arena, "X-Final-Marker");
     assert(marker == "verified_payload");
 
-    let pad42 = wing::get_header_spill(map, arena, "X-Custom-Data-Padding-42");
+    let pad42 = http::get_header_spill(map, arena, "X-Custom-Data-Padding-42");
     assert(pad42.len == 100);
 
     print("OVERSIZED_HEADER_BLOCK: OK");
 }
 
 fn test_high_header_count_overflow() {
-    var map = wing::HeaderMap { .. };
-    var arena = wing::OverflowArena { .. };
+    var map = http::HeaderMap { .. };
+    var arena = http::OverflowArena { .. };
 
     // Build 150 short headers (exceeds 128 entries limit)
     var many_headers: u8[>..] = [];
@@ -463,26 +463,26 @@ fn test_high_header_count_overflow() {
     }
     many_headers.append("X-Overflow-Tail: tail_value\r\n\r\n");
 
-    let std_err = wing::parse_headers(many_headers[..], map);
-    assert(std_err == wing::HeaderParseError.CapacityExceeded);
+    let std_err = http::parse_headers(many_headers[..], map);
+    assert(std_err == http::HeaderParseError.CapacityExceeded);
 
-    let of_err = wing::parse_headers_with_overflow(many_headers[..], map, arena);
-    assert(wing::is_ok(of_err));
+    let of_err = http::parse_headers_with_overflow(many_headers[..], map, arena);
+    assert(http::is_ok(of_err));
 
     assert(map.entries.len == 128);       // 128 entries stored in stack map
     assert(arena.spill_entries.len > 20); // Overflow entries stored in arena
 
-    let host = wing::get_header_spill(map, arena, "Host");
+    let host = http::get_header_spill(map, arena, "Host");
     assert(host == "example.org");
 
-    let tail_val = wing::get_header_spill(map, arena, "X-Overflow-Tail");
+    let tail_val = http::get_header_spill(map, arena, "X-Overflow-Tail");
     assert(tail_val == "tail_value");
 
     print("HIGH_HEADER_COUNT_OVERFLOW: OK");
 }
 
 fn test_oversized_url_overflow() {
-    var arena = wing::OverflowArena { .. };
+    var arena = http::OverflowArena { .. };
 
     var huge_url: u8[>..] = [];
     huge_url.append("https://auth.example.com/oauth/authorize?response_type=code&client_id=123456&state=active&huge_jwt=");
@@ -497,7 +497,7 @@ fn test_oversized_url_overflow() {
     assert(std_url_err == core::UrlParseError.InputTooLong);
 
     // parse_url_with_overflow succeeds without allocation using arena
-    let view, of_url_err = wing::parse_url_with_overflow(huge_url[..], arena);
+    let view, of_url_err = http::parse_url_with_overflow(huge_url[..], arena);
     assert(of_url_err == core::UrlParseError.None);
     assert(view.valid);
     assert(view.host == "auth.example.com");
@@ -508,8 +508,8 @@ fn test_oversized_url_overflow() {
 }
 
 fn test_oversized_response_headers_overflow() {
-    var map = wing::HeaderMap { .. };
-    var arena = wing::OverflowArena { .. };
+    var map = http::HeaderMap { .. };
+    var arena = http::OverflowArena { .. };
 
     var huge_resp: u8[>..] = [];
     huge_resp.append("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n");
@@ -521,24 +521,24 @@ fn test_oversized_response_headers_overflow() {
     }
     huge_resp.append("X-Status-Check: verified\r\n\r\n");
 
-    let std_err = wing::parse_response_headers(huge_resp[..], map);
-    assert(std_err == wing::HeaderParseError.CapacityExceeded);
+    let std_err = http::parse_response_headers(huge_resp[..], map);
+    assert(std_err == http::HeaderParseError.CapacityExceeded);
 
-    let of_err = wing::parse_response_headers_with_overflow(huge_resp[..], map, arena);
-    assert(wing::is_ok(of_err));
+    let of_err = http::parse_response_headers_with_overflow(huge_resp[..], map, arena);
+    assert(http::is_ok(of_err));
     assert(map.status_code == 200);
     assert(map.http_major == 1);
     assert(map.http_minor == 1);
 
-    let check = wing::get_header_spill(map, arena, "X-Status-Check");
+    let check = http::get_header_spill(map, arena, "X-Status-Check");
     assert(check == "verified");
 
     print("OVERSIZED_RESPONSE_HEADERS_OVERFLOW: OK");
 }
 
 fn test_oversized_request_headers_overflow() {
-    var map = wing::HeaderMap { .. };
-    var arena = wing::OverflowArena { .. };
+    var map = http::HeaderMap { .. };
+    var arena = http::OverflowArena { .. };
 
     var huge_req: u8[>..] = [];
     huge_req.append("POST /api/v1/submit HTTP/1.1\r\nHost: api.example.com\r\n");
@@ -550,24 +550,24 @@ fn test_oversized_request_headers_overflow() {
     }
     huge_req.append("X-Req-Check: verified_req\r\n\r\n");
 
-    let std_err = wing::parse_request_headers(huge_req[..], map);
-    assert(std_err == wing::HeaderParseError.CapacityExceeded);
+    let std_err = http::parse_request_headers(huge_req[..], map);
+    assert(std_err == http::HeaderParseError.CapacityExceeded);
 
-    let of_err = wing::parse_request_headers_with_overflow(huge_req[..], map, arena);
-    assert(wing::is_ok(of_err));
+    let of_err = http::parse_request_headers_with_overflow(huge_req[..], map, arena);
+    assert(http::is_ok(of_err));
 
-    let host = wing::get_header_spill(map, arena, "Host");
+    let host = http::get_header_spill(map, arena, "Host");
     assert(host == "api.example.com");
 
-    let check = wing::get_header_spill(map, arena, "X-Req-Check");
+    let check = http::get_header_spill(map, arena, "X-Req-Check");
     assert(check == "verified_req");
 
     print("OVERSIZED_REQUEST_HEADERS_OVERFLOW: OK");
 }
 
 fn test_spill_accessors_and_serialization() {
-    var map = wing::HeaderMap { .. };
-    var arena = wing::OverflowArena { .. };
+    var map = http::HeaderMap { .. };
+    var arena = http::OverflowArena { .. };
 
     var raw_input: u8[>..] = [];
     raw_input.append("Host: service.local\r\n");
@@ -580,17 +580,17 @@ fn test_spill_accessors_and_serialization() {
     }
     raw_input.append("\r\n");
 
-    let err = wing::parse_headers_with_overflow(raw_input[..], map, arena);
-    assert(wing::is_ok(err));
+    let err = http::parse_headers_with_overflow(raw_input[..], map, arena);
+    assert(http::is_ok(err));
 
     var values: u8[..256][>..] = [];
-    wing::get_all_values_spill(map, arena, "X-Tag", values);
+    http::get_all_values_spill(map, arena, "X-Tag", values);
     assert(values.len == 140);
     assert(values[0] == "tag-000");
     assert(values[139] == "tag-139");
 
     var raw_out: u8[>..] = [];
-    wing::raw_headers_spill(map, arena, raw_out);
+    http::raw_headers_spill(map, arena, raw_out);
     assert(raw_out.len > 0);
 
     print("SPILL_ACCESSORS_AND_SERIALIZATION: OK");
@@ -656,7 +656,7 @@ fn encode_client_h2_request<B>(
 fn test_h2_capacity_lifecycle() {
     var client_hpack = http2::DynamicTable { .. };
     var sess = server_internal::new_h2_server_session("localhost");
-    var pipeline = wing::ServerPipelineConfig { .. };
+    var pipeline = server::ServerPipelineConfig { .. };
     var timer = server_internal::ConnectionTimer { .. };
 
     // Handshake
@@ -886,22 +886,22 @@ fn run_09_verify_uring_leak() {
 //
 
 fn test_pso_route_matching() {
-    var router = wing::new_radix_router();
+    var router = server::new_radix_router();
 
     // 1. Zero-cost fast-path bypass probe (pso_mask = 0)
-    assert(wing::add_route_pso(router, "GET", "/healthz", 1001, 0));
+    assert(server::add_route_pso(router, "GET", "/healthz", 1001, 0));
 
     // 2. Default protected endpoint (default pso_mask)
-    assert(wing::add_route(router, "GET", "/api/v1/users/{id}", 1002));
+    assert(server::add_route(router, "GET", "/api/v1/users/{id}", 1002));
 
     // 3. Custom security + egress isolation endpoint
-    let custom_pso: u64 = wing::STAGE_INGRESS_CORS_PREFLIGHT | wing::STAGE_EGRESS_SECURITY_HEADERS;
-    assert(wing::add_route_pso(router, "POST", "/api/v1/secure", 1003, custom_pso));
+    let custom_pso: u64 = server::STAGE_INGRESS_CORS_PREFLIGHT | server::STAGE_EGRESS_SECURITY_HEADERS;
+    assert(server::add_route_pso(router, "POST", "/api/v1/secure", 1003, custom_pso));
 
     // Match /healthz
-    var params1 = wing::ZeroAllocParams { .. };
+    var params1 = http::ZeroAllocParams { .. };
     var canon1: u8[..512] = [];
-    let match1 = wing::match_route(router, "GET", "/healthz", params1, canon1);
+    let match1 = server::match_route(router, "GET", "/healthz", params1, canon1);
     match match1 {
         Found f => {
             assert(f.handler_id == 1001);
@@ -911,21 +911,21 @@ fn test_pso_route_matching() {
     };
 
     // Match /api/v1/users/42
-    var params2 = wing::ZeroAllocParams { .. };
+    var params2 = http::ZeroAllocParams { .. };
     var canon2: u8[..512] = [];
-    let match2 = wing::match_route(router, "GET", "/api/v1/users/42", params2, canon2);
+    let match2 = server::match_route(router, "GET", "/api/v1/users/42", params2, canon2);
     match match2 {
         Found f => {
             assert(f.handler_id == 1002);
-            assert(f.pso_mask == wing::DEFAULT_ROUTE_PSO_MASK);
+            assert(f.pso_mask == server::DEFAULT_ROUTE_PSO_MASK);
         },
         _ => assert(false),
     };
 
     // Match /api/v1/secure
-    var params3 = wing::ZeroAllocParams { .. };
+    var params3 = http::ZeroAllocParams { .. };
     var canon3: u8[..512] = [];
-    let match3 = wing::match_route(router, "POST", "/api/v1/secure", params3, canon3);
+    let match3 = server::match_route(router, "POST", "/api/v1/secure", params3, canon3);
     match match3 {
         Found f => {
             assert(f.handler_id == 1003);
@@ -939,73 +939,73 @@ fn test_pso_route_matching() {
 
 fn test_pso_fast_path_and_ingress() {
     let quota = security::new_gcra_quota(100, wing::secs(1), 10);
-    var cfg = wing::new_server_pipeline_config("example.com", quota);
+    var cfg = server::new_server_pipeline_config("example.com", quota);
 
     // Register /healthz with pso_mask = 0
-    assert(wing::add_route_pso(cfg.router, "GET", "/healthz", 1001, 0));
+    assert(server::add_route_pso(cfg.router, "GET", "/healthz", 1001, 0));
 
     // Register /protected with default pso_mask
-    assert(wing::add_route(cfg.router, "POST", "/protected", 1002));
+    assert(server::add_route(cfg.router, "POST", "/protected", 1002));
 
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
     // Case 1: Fast-path probe bypasses invalid Expect header
-    var req_probe = wing::new_request("GET", "/healthz");
-    wing::append_header(req_probe.headers, "Host", "example.com");
-    wing::append_header(req_probe.headers, "Expect", "invalid-unsupported-expectation");
+    var req_probe = http::new_request("GET", "/healthz");
+    http::append_header(req_probe.headers, "Host", "example.com");
+    http::append_header(req_probe.headers, "Expect", "invalid-unsupported-expectation");
 
-    var res_probe = wing::Response { .. };
+    var res_probe = http::Response { .. };
     var fut_probe = server_internal::new_inline_handler_future(0);
-    let outcome_probe = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_probe, 1000000000, res_probe, fut_probe);
+    let outcome_probe = server::execute_pipeline(cfg, timer, "127.0.0.1", req_probe, 1000000000, res_probe, fut_probe);
 
-    assert(outcome_probe == wing::PipelineOutcome.Handled);
+    assert(outcome_probe == server::PipelineOutcome.Handled);
     assert(res_probe.status_code == 200);
     assert(res_probe.body == "Hello, World!");
     print("PSO_FAST_PATH_BYPASS: OK");
 
     // Case 2: Protected route rejects invalid Expect header with 417
-    var req_bad_exp = wing::new_request("POST", "/protected");
-    wing::append_header(req_bad_exp.headers, "Host", "example.com");
-    wing::append_header(req_bad_exp.headers, "Expect", "invalid-unsupported-expectation");
+    var req_bad_exp = http::new_request("POST", "/protected");
+    http::append_header(req_bad_exp.headers, "Host", "example.com");
+    http::append_header(req_bad_exp.headers, "Expect", "invalid-unsupported-expectation");
 
-    var res_bad_exp = wing::Response { .. };
+    var res_bad_exp = http::Response { .. };
     var fut_bad_exp = server_internal::new_inline_handler_future(0);
-    let outcome_bad_exp = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_bad_exp, 1000000000, res_bad_exp, fut_bad_exp);
+    let outcome_bad_exp = server::execute_pipeline(cfg, timer, "127.0.0.1", req_bad_exp, 1000000000, res_bad_exp, fut_bad_exp);
 
-    assert(outcome_bad_exp == wing::PipelineOutcome.ExpectationFailed);
+    assert(outcome_bad_exp == server::PipelineOutcome.ExpectationFailed);
     assert(res_bad_exp.status_code == 417);
 
     // Case 3: Protected route accepts valid Expect: 100-continue
-    var req_ok_exp = wing::new_request("POST", "/protected");
-    wing::append_header(req_ok_exp.headers, "Host", "example.com");
-    wing::append_header(req_ok_exp.headers, "Sec-Fetch-Site", "same-origin");
-    wing::append_header(req_ok_exp.headers, "Expect", "100-continue");
+    var req_ok_exp = http::new_request("POST", "/protected");
+    http::append_header(req_ok_exp.headers, "Host", "example.com");
+    http::append_header(req_ok_exp.headers, "Sec-Fetch-Site", "same-origin");
+    http::append_header(req_ok_exp.headers, "Expect", "100-continue");
 
-    var res_ok_exp = wing::Response { .. };
+    var res_ok_exp = http::Response { .. };
     var fut_ok_exp = server_internal::new_inline_handler_future(0);
-    let outcome_ok_exp = wing::execute_pipeline(cfg, timer, "127.0.0.1", req_ok_exp, 1000000000, res_ok_exp, fut_ok_exp);
+    let outcome_ok_exp = server::execute_pipeline(cfg, timer, "127.0.0.1", req_ok_exp, 1000000000, res_ok_exp, fut_ok_exp);
 
-    assert(outcome_ok_exp == wing::PipelineOutcome.Handled);
+    assert(outcome_ok_exp == server::PipelineOutcome.Handled);
     assert(res_ok_exp.status_code == 200);
     print("PSO_INGRESS_ENFORCEMENT: OK");
 }
 
 fn test_pso_egress_security_headers() {
     let quota = security::new_gcra_quota(100, wing::secs(1), 10);
-    var cfg = wing::new_server_pipeline_config("example.com", quota);
+    var cfg = server::new_server_pipeline_config("example.com", quota);
 
-    let secure_pso: u64 = wing::STAGE_EGRESS_SECURITY_HEADERS;
-    assert(wing::add_route_pso(cfg.router, "GET", "/secure-api", 1002, secure_pso));
+    let secure_pso: u64 = server::STAGE_EGRESS_SECURITY_HEADERS;
+    assert(server::add_route_pso(cfg.router, "GET", "/secure-api", 1002, secure_pso));
 
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    var req = wing::new_request("GET", "/secure-api");
-    wing::append_header(req.headers, "Host", "example.com");
+    var req = http::new_request("GET", "/secure-api");
+    http::append_header(req.headers, "Host", "example.com");
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     var fut = server_internal::new_inline_handler_future(0);
-    let outcome = wing::execute_pipeline(cfg, timer, "127.0.0.1", req, 1000000000, res, fut);
+    let outcome = server::execute_pipeline(cfg, timer, "127.0.0.1", req, 1000000000, res, fut);
 
-    assert(outcome == wing::PipelineOutcome.Handled);
+    assert(outcome == server::PipelineOutcome.Handled);
     assert(res.status_code == 200);
     assert(res.has_header("Strict-Transport-Security"));
     assert(res.has_header("Vary"));
@@ -1013,30 +1013,29 @@ fn test_pso_egress_security_headers() {
 }
 
 fn test_client_bitmask_interceptors() {
-    var pipeline = wing::InterceptorPipeline { .. };
+    var pipeline = client::InterceptorPipeline { .. };
 
     // Register interceptors via bitmask setters
-    assert(wing::add_bearer_auth(pipeline, "super-secret-token"));
-    assert(wing::add_request_id(pipeline, "trace-"));
-    assert(wing::add_traceparent(pipeline, "01"));
-    assert(wing::add_retry(pipeline, 3, true));
+    assert(client::add_bearer_auth(pipeline, "super-secret-token"));
+    assert(client::add_request_id(pipeline, "trace-"));
+    assert(client::add_traceparent(pipeline, "01"));
+    assert(client::add_retry(pipeline, 3, true));
 
     // Verify bitmask has bits set
-    assert((pipeline.active_mask & wing::INTERCEPTOR_APP_AUTH_BEARER) != 0);
-    assert((pipeline.active_mask & wing::INTERCEPTOR_APP_REQUEST_ID) != 0);
-    assert((pipeline.active_mask & wing::INTERCEPTOR_APP_TRACEPARENT) != 0);
-    assert((pipeline.active_mask & wing::INTERCEPTOR_APP_RETRY) != 0);
+    assert((pipeline.active_mask & client::INTERCEPTOR_APP_AUTH_BEARER) != 0);
+    assert((pipeline.active_mask & client::INTERCEPTOR_APP_REQUEST_ID) != 0);
+    assert((pipeline.active_mask & client::INTERCEPTOR_APP_TRACEPARENT) != 0);
+    assert((pipeline.active_mask & client::INTERCEPTOR_APP_RETRY) != 0);
 
     // Verify instant retry policy query
-    var retries:   i32  = 0;
-    var retry_5xx: bool = false;
-    assert(wing::find_retry_policy(pipeline, retries, retry_5xx));
-    assert(retries == 3);
-    assert(retry_5xx);
+    let rpol, ok_retry = client::find_retry_policy(pipeline);
+    assert(ok_retry);
+    assert(rpol.max_retries == 3);
+    assert(rpol.retry_on_5xx);
 
     // Apply request hook
-    var req = wing::new_request("GET", "https://api.internal/data");
-    wing::apply_app_interceptors_request(pipeline, req, 1600000000);
+    var req = http::new_request("GET", "https://api.internal/data");
+    client::apply_app_interceptors_request(pipeline, req, 1600000000);
 
     assert(req.has_header("Authorization"));
     assert(req.header("Authorization") == "Bearer super-secret-token");

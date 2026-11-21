@@ -8,7 +8,7 @@
 // - `Dictionary-ID` request header generator (RFC 9842 Section 2.3)
 // - `dcz` (Dictionary-Compressed Zstandard) frame codec and validator (RFC 9842 Section 5)
 // - `dcb` (Dictionary-Compressed Brotli) frame header codec (RFC 9842 Section 4)
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
@@ -17,6 +17,7 @@ import http.headers;
 import http.sfv;
 import .request;
 import .response;
+import http.codec_internal;
 
 // ---- Normative Constants & Wire Magics (RFC 9842) ------------------------
 
@@ -67,103 +68,6 @@ fn url_path_matches_pattern(path: const u8[:], pattern: const u8[:]) -> bool {
 
 // ---- Header Parsers & Serializers ---------------------------------------
 
-fn apply_dict_match_dest(p: DictionaryParams&, entry: const SfDictEntry&) -> bool {
-    guard entry.is_inner_list else {
-        p.valid = false;
-        return false;
-    }
-    p.match_dest.clear();
-    for &inner in entry.inner_items {
-        guard inner.kind == SfType.String else {
-            p.valid = false;
-            return false;
-        }
-        var dest: u8[..64] = [];
-        guard sf_unescape_string(inner.str_val, dest) && p.match_dest.try_push(dest) else {
-            p.valid = false;
-            return false;
-        }
-    }
-    return true;
-}
-
-fn apply_dict_ttl(p: DictionaryParams&, item: const SfItem&) -> bool {
-    guard item.kind == SfType.Integer && item.int_val >= 0 && item.int_val <= 4294967295 else {
-        p.valid = false;
-        return false;
-    }
-    p.ttl_sec = item.int_val as u32;
-    return true;
-}
-
-// RFC 9842 Section 2.1.4: "type" - Value MUST be an SF Token ("raw").
-fn apply_dict_type(p: DictionaryParams&, item: const SfItem&) -> bool {
-    guard item.kind == SfType.Token && item.str_val == "raw" && p.dict_type.try_set(item.str_val) else {
-        p.valid = false;
-        return false;
-    }
-    return true;
-}
-
-// RFC 9842 Section 2.1.1: "match" - URLPattern regexp groups are prohibited in Use-As-Dictionary match patterns.
-inline fn has_unescaped_urlpattern_regexp(pat: const u8[:]) -> bool {
-    var escaped = false;
-    for b in pat {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if b == '\\' {
-            escaped = true;
-            continue;
-        }
-        if b == '(' || b == ')' {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn apply_dictionary_kv(p: DictionaryParams&, key: const u8[:], item: const SfItem&) -> bool {
-    if key == "match" {
-        guard item.kind == SfType.String && sf_unescape_string(item.str_val, p.match_pattern) else {
-            p.match_pattern.clear();
-            p.valid = false;
-            return false;
-        }
-        guard p.match_pattern.len > 0 && p.match_pattern[0] == '/' &&
-              !has_unescaped_urlpattern_regexp(p.match_pattern[..]) else {
-            p.match_pattern.clear();
-            p.valid = false;
-            return false;
-        }
-        p.valid = true;
-    } else if key == "id" {
-        guard item.kind == SfType.String && sf_unescape_string(item.str_val, p.id) else {
-            p.id.clear();
-            p.valid = false;
-            return false;
-        }
-    } else if key == "ttl" {
-        return apply_dict_ttl(p, item);
-    } else if key == "type" {
-        return apply_dict_type(p, item);
-    }
-    return true;
-}
-
-// RFC 9842 Section 2.1: Use-As-Dictionary - Ignore unrecognized SF member parameters.
-fn apply_dictionary_entry(p: DictionaryParams&, entry: const SfDictEntry&) -> bool {
-    if entry.key == "match-dest" {
-        return apply_dict_match_dest(p, entry);
-    }
-    guard !entry.is_inner_list && apply_dictionary_kv(p, entry.key, entry.item) else {
-        p.valid = false;
-        return false;
-    }
-    return true;
-}
-
 // Parses `Use-As-Dictionary` header value (e.g. `match="/assets/*", id="v1", ttl=86400, type=raw`).
 //
 // Example:
@@ -177,7 +81,7 @@ fn parse_use_as_dictionary_header(header_val: const u8[:]) -> DictionaryParams, 
     }
 
     for &entry in entries {
-        guard apply_dictionary_entry(p, entry) else {
+        guard http_internal::apply_dictionary_entry(p, entry) else {
             return DictionaryParams { .. }, false;
         }
     }
@@ -286,20 +190,6 @@ fn encode_dcb_frame(out: u8[>..]&, dict_hash: const u8[32]&, compressed_payload:
     return true;
 }
 
-inline fn is_dcz_rfc9842_magic(wire: const u8[:]) -> bool {
-    guard wire.len >= 40 else { return false; }
-    return wire[0] == rfc::DCZ_RFC9842_MAGIC0 && wire[1] == rfc::DCZ_RFC9842_MAGIC1 &&
-           wire[2] == rfc::DCZ_RFC9842_MAGIC2 && wire[3] == rfc::DCZ_RFC9842_MAGIC3 &&
-           wire[4] == rfc::DCZ_RFC9842_MAGIC4 && wire[5] == rfc::DCZ_RFC9842_MAGIC5 &&
-           wire[6] == rfc::DCZ_RFC9842_MAGIC6 && wire[7] == rfc::DCZ_RFC9842_MAGIC7;
-}
-
-inline fn is_dcz_legacy_magic(wire: const u8[:]) -> bool {
-    guard wire.len >= 36 else { return false; }
-    return wire[0] == rfc::DCZ_MAGIC_BYTE0 && wire[1] == rfc::DCZ_MAGIC_BYTE1 &&
-           wire[2] == rfc::DCZ_MAGIC_BYTE2 && wire[3] == rfc::DCZ_MAGIC_BYTE3;
-}
-
 // Decodes a DCZ header from wire bytes:
 // Verifies 8-byte RFC 9842 §5 magic (or 4-byte draft magic), extracts 32-byte dict hash
 // and returns the compressed payload slice.
@@ -308,14 +198,14 @@ inline fn is_dcz_legacy_magic(wire: const u8[:]) -> bool {
 //   wire = [0xFF, 'D', 'C', 'Z', ...32 hash bytes..., ...payload...]
 //   returns: payload slice, out_hash populated, ok = true
 fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool {
-    if is_dcz_rfc9842_magic(wire) {
+    if http_internal::is_dcz_rfc9842_magic(wire) {
         let hash_slice = wire[8..40];
         for b, idx in hash_slice {
             out_hash[idx] = b;
         }
         return wire[40..], true;
     }
-    guard is_dcz_legacy_magic(wire) else { return wire[..0], false; }
+    guard http_internal::is_dcz_legacy_magic(wire) else { return wire[..0], false; }
 
     let hash_slice = wire[4..36];
     for b, idx in hash_slice {
@@ -368,62 +258,6 @@ fn verify_dcz_dcb_magic(wire: const u8[:], is_dcz: bool, expected_hash: const u8
 
 // ---- Dictionary Cache Operations -----------------------------------------
 
-fn find_matching_dict_entry_index(
-    cache:         const DictionaryCache&,
-    origin:        const u8[:],
-    id_str:        const u8[:],
-    match_pattern: const u8[:],
-) -> i64 {
-    for i in cache.entries.len {
-        let entry = &cache.entries[i];
-        if entry.valid && entry.origin[..] == origin &&
-           ((id_str.len > 0 && entry.id[..] == id_str) || entry.match_pattern[..] == match_pattern) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-fn find_oldest_dict_entry_index(cache: const DictionaryCache&) -> i64 {
-    var oldest_idx: i64 = 0;
-    guard cache.entries.len > 0 else { return 0; }
-    var oldest_time = cache.entries[0].inserted_at_sec;
-    for i in cache.entries.len {
-        let entry = &cache.entries[i];
-        if !entry.valid {
-            return i;
-        }
-        if entry.inserted_at_sec < oldest_time {
-            oldest_time = entry.inserted_at_sec;
-            oldest_idx = i;
-        }
-    }
-    return oldest_idx;
-}
-
-fn populate_dict_entry(
-    entry:         DictionaryEntry&,
-    origin:        const u8[:],
-    match_pattern: const u8[:],
-    id_str:        const u8[:],
-    body:          const u8[:],
-    hash:          const u8[32]&,
-    b64_hash:      const u8[:],
-    ttl_sec:       u32,
-    now_sec:       i64,
-) -> bool {
-    guard entry.origin.try_set(origin) &&
-          entry.match_pattern.try_set(match_pattern) &&
-          entry.id.try_set(id_str) &&
-          entry.sha256_base64.try_set(b64_hash) &&
-          entry.content.try_set(body) else { return false; }
-    entry.valid = true;
-    entry.sha256_hash = hash;
-    entry.inserted_at_sec = now_sec;
-    entry.ttl_sec = ttl_sec;
-    return true;
-}
-
 // Inserts a new dictionary into the cache
 fn dictionary_cache_insert(
     cache:         DictionaryCache&,
@@ -441,9 +275,9 @@ fn dictionary_cache_insert(
     var b64_hash: u8[..64] = [];
     format_available_dictionary_header(b64_hash, hash);
 
-    let match_idx = find_matching_dict_entry_index(cache, origin, id_str, match_pattern);
+    let match_idx = http_internal::find_matching_dict_entry_index(cache, origin, id_str, match_pattern);
     if match_idx >= 0 && match_idx < cache.entries.len {
-        populate_dict_entry(
+        http_internal::populate_dict_entry(
             cache.entries[match_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec,
         );
         return true;
@@ -451,32 +285,20 @@ fn dictionary_cache_insert(
 
     if cache.entries.len < 8 {
         var entry = DictionaryEntry { .. };
-        populate_dict_entry(
+        http_internal::populate_dict_entry(
             entry, origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec,
         );
         cache.entries.push(entry);
         return true;
     }
 
-    let oldest_idx = find_oldest_dict_entry_index(cache);
+    let oldest_idx = http_internal::find_oldest_dict_entry_index(cache);
     if oldest_idx >= 0 && oldest_idx < cache.entries.len {
-        populate_dict_entry(
+        http_internal::populate_dict_entry(
             cache.entries[oldest_idx], origin, match_pattern, id_str, body, hash, b64_hash[..], ttl_sec, now_sec,
         );
     }
     return true;
-}
-
-fn dict_entry_matches_request(
-    entry:    const DictionaryEntry&,
-    origin:   const u8[:],
-    url_path: const u8[:],
-    now_sec:  i64,
-) -> bool {
-    guard entry.valid && entry.origin[..] == origin else { return false; }
-    let elapsed = now_sec - entry.inserted_at_sec;
-    guard elapsed >= 0 && elapsed < entry.ttl_sec else { return false; }
-    return url_path_matches_pattern(url_path, entry.match_pattern[..]);
 }
 
 fn find_best_matching_dict_idx(
@@ -489,7 +311,7 @@ fn find_best_matching_dict_idx(
     var best_len:  i64 = -1;
     var best_time: i64 = -1;
     for &entry, idx in dict_cache.entries {
-        if dict_entry_matches_request(entry, origin_buf, curr_path, now_sec) {
+        if http_internal::dict_entry_matches_request(entry, origin_buf, curr_path, now_sec) {
             let pat_len = entry.match_pattern.len;
             if pat_len > best_len || (pat_len == best_len && entry.inserted_at_sec >= best_time) {
                 best_idx = idx;
@@ -501,20 +323,20 @@ fn find_best_matching_dict_idx(
     return best_idx;
 }
 
-// Queries dictionary cache for a matching entry for outgoing request
+// Queries dictionary cache for a matching entry for outgoing request.
 fn dictionary_lookup_for_request(
-    cache:           const DictionaryCache&,
-    origin:          const u8[:],
-    url_path:        const u8[:],
-    now_sec:         i64,
-    out_base64_hash: u8[..64]&,
-) -> bool {
+    cache:    const DictionaryCache&,
+    origin:   const u8[:],
+    url_path: const u8[:],
+    now_sec:  i64,
+) -> u8[..64], bool {
+    var out_hash: u8[..64] = [];
     let best_idx = find_best_matching_dict_idx(cache, origin, url_path, now_sec);
     if best_idx >= 0 && best_idx < cache.entries.len {
-        return out_base64_hash.try_set(cache.entries[best_idx].sha256_base64[..]);
+        let ok = out_hash.try_set(cache.entries[best_idx].sha256_base64[..]);
+        return out_hash, ok;
     }
-    out_base64_hash.clear();
-    return false;
+    return out_hash, false;
 }
 
 // Queries dictionary cache by its 32-byte SHA-256 hash
@@ -588,91 +410,6 @@ fn decompress_dcb_payload<B>(
     return out_buf.try_append(decompressed[..]);
 }
 
-// Scans `raw_content` against `dict` with a 4096-entry greedy hash table and records LZ77 commands into `cmds`.
-//
-// Example:
-//   dict = "shared_prefix_data", raw_content = "shared_prefix_data_tail", cmds = []
-//   returns: 18
-fn scan_dcb_dict_commands(
-    dict:        const u8[:],
-    raw_content: const u8[:],
-    cmds:        core::BrotliLz77Cmd[..512]&,
-) -> i64 {
-    cmds.clear();
-    let d_len = min(dict.len, 16384);
-    let d_slice = dict[core::sub_sat_i64(dict.len, d_len)..];
-    var combined: u8[..32768] = [];
-    guard combined.try_append(d_slice) && combined.try_append(raw_content) else { return 0; }
-
-    var htable: i32[4096] = [-1; 4096];
-    var d_pos:  i64       = 0;
-    while core::add_sat_i64(d_pos, 4) <= d_len {
-        let h = core::hash4_brotli(combined[..], d_pos);
-        htable[h] = d_pos as i32;
-        d_pos = core::add_sat_i64(d_pos, 1);
-    }
-
-    var pos:           i64 = 0;
-    var lit_start:     i64 = 0;
-    var matched_bytes: i64 = 0;
-    while core::add_sat_i64(pos, 4) <= raw_content.len {
-        let c_pos = core::add_sat_i64(d_len, pos);
-        let h = core::hash4_brotli(combined[..], c_pos);
-        let cand = htable[h] as i64;
-        let mlen = core::measure_lz77_match(combined[..], cand, c_pos);
-        if mlen >= 4 {
-            let cmd = core::BrotliLz77Cmd {
-                ins_start: lit_start as u32,
-                ins_len:   core::sub_sat_i64(pos, lit_start) as u32,
-                copy_len:  mlen as u32,
-                distance:  core::sub_sat_i64(c_pos, cand) as u32,
-            };
-            guard cmds.try_push(cmd) else { break; }
-            htable[h] = c_pos as i32;
-            matched_bytes = core::add_sat_i64(matched_bytes, mlen);
-            pos = core::add_sat_i64(pos, mlen);
-            lit_start = pos;
-            continue;
-        }
-        htable[h] = c_pos as i32;
-        pos = core::add_sat_i64(pos, 1);
-    }
-
-    if lit_start < raw_content.len && cmds.len > 0 {
-        let tail_cmd = core::BrotliLz77Cmd {
-            ins_start: lit_start as u32,
-            ins_len:   core::sub_sat_i64(raw_content.len, lit_start) as u32,
-            copy_len:  2,
-            distance:  1,
-        };
-        guard cmds.try_push(tail_cmd) else { return 0; }
-    }
-    return matched_bytes;
-}
-
-// Compresses a payload with Brotli using `dictionary_content` for RFC 9842 `dcb` encoding.
-fn compress_dcb_payload<B>(
-    raw_content:        const u8[:],
-    dictionary_content: const u8[:],
-    out_buf:            B&,
-    level:              i32 = 1,
-) -> bool {
-    if dictionary_content.len < 4 || raw_content.len < 4 || raw_content.len > 16384 || level <= 0 {
-        return core::brotli_compress(raw_content, out_buf, level);
-    }
-    var cmds: core::BrotliLz77Cmd[..512] = [];
-    let matched = scan_dcb_dict_commands(dictionary_content, raw_content, cmds);
-    if cmds.len == 0 || matched < 4 {
-        return core::brotli_compress(raw_content, out_buf, 0);
-    }
-    var w = core::new_brotli_bit_writer();
-    var dist_ring: u32[4] = [4, 11, 15, 16];
-    core::emit_brotli_stream_header(w, out_buf);
-    core::emit_brotli_compressed_chunk(w, raw_content, cmds[..], dist_ring, out_buf);
-    core::emit_brotli_final_empty_metablock(w, out_buf);
-    return true;
-}
-
 // High-level helper to encode a test server response with DCB
 fn encode_dcb_response<B>(
     out:                B&,
@@ -682,20 +419,15 @@ fn encode_dcb_response<B>(
 ) -> bool {
     var compressed_brotli: u8[..16384] = [];
     let level: i32 = if dictionary_content.len > 0 { 1 } else { 0 };
-    guard compress_dcb_payload(raw_content, dictionary_content, compressed_brotli, level) else { return false; }
+    guard http_internal::compress_dcb_payload(
+        raw_content, dictionary_content, compressed_brotli, level,
+    ) else {
+        return false;
+    }
     return encode_dcb_frame(out, dict_hash, compressed_brotli[..]);
 }
 
 // ---- RFC 9842 Server-Side Dictionary Negotiation -------------------------
-
-inline fn is_valid_sf_string_value(s: const u8[:]) -> bool {
-    for b in s {
-        if b < 0x20 || b >= 0x7F || b == '"' || b == '\\' {
-            return false;
-        }
-    }
-    return true;
-}
 
 // RFC 9842 Section 2.1: Use-As-Dictionary - Attaches `Use-As-Dictionary` response header advertising
 // the current response payload as a shared compression dictionary for future matching requests.
@@ -706,7 +438,10 @@ fn set_use_as_dictionary_response(
     ttl_sec:       u32         = 86400,
 ) {
     guard match_pattern.len > 0 && match_pattern.len <= 128 && id_str.len <= 64 else { return; }
-    guard is_valid_sf_string_value(match_pattern) && is_valid_sf_string_value(id_str) else { return; }
+    guard http_internal::is_valid_sf_string_value(match_pattern) &&
+        http_internal::is_valid_sf_string_value(id_str) else {
+        return;
+    }
     var hdr_val: u8[..512] = [];
     format_use_as_dictionary_header(hdr_val, match_pattern, id_str, ttl_sec);
     set_header(res, "Use-As-Dictionary", hdr_val[..]);
@@ -734,46 +469,6 @@ fn accept_encoding_has_token(ae: const u8[:], target_token: const u8[:]) -> bool
     return false;
 }
 
-// RFC 9842 Section 2.2 & Section 6: Negotiates Compression Dictionary Transport on an incoming `Request`
-// by verifying `Available-Dictionary` (RFC 9651 `:base64:` byte sequence), `Dictionary-ID`, and `Accept-Encoding`
-// (`dcz` or `dcb`), returning the negotiated Content-Encoding (`"dcz"` or `"dcb"`) and `ok == true`.
-fn negotiate_compression_dictionary(
-    req:           const Request&,
-    expected_hash: const u8[32]&,
-    expected_id:   const u8[:] = "",
-) -> const u8[:], bool {
-    guard expected_id.len <= 126 else { return "", false; }
-    let avail_hdr = find_header(req.headers, "Available-Dictionary").trim_lws();
-    let last_idx = core::sub_sat_i64(avail_hdr.len, 1);
-    guard avail_hdr.len >= 3 && avail_hdr[0] == ':' && avail_hdr[last_idx] == ':' else {
-        return "", false;
-    }
-
-    var expected_b64: u8[..64] = [];
-    format_available_dictionary_header(expected_b64, expected_hash);
-    guard core::ct_eq_bytes(avail_hdr, expected_b64[..]) else {
-        return "", false;
-    }
-
-    let id_hdr = find_header(req.headers, "Dictionary-ID").trim_lws();
-    if expected_id.len > 0 {
-        var exp_id_wire: u8[..128] = [];
-        format_dictionary_id_header(exp_id_wire, expected_id);
-        guard id_hdr == exp_id_wire[..] else { return "", false; }
-    } else {
-        guard id_hdr.len == 0 else { return "", false; }
-    }
-
-    let ae = find_header(req.headers, "Accept-Encoding");
-    if accept_encoding_has_token(ae, rfc::ENCODING_DCZ) {
-        return rfc::ENCODING_DCZ, true;
-    }
-    if accept_encoding_has_token(ae, rfc::ENCODING_DCB) {
-        return rfc::ENCODING_DCB, true;
-    }
-    return "", false;
-}
-
 // RFC 9842 Section 4 & Section 5: Encodes a server `Response` body using `dcz` (`\xFFDCZ` + 32-byte SHA-256)
 // or `dcb` (`\xFFDCB` + 32-byte SHA-256) when negotiated by `negotiate_compression_dictionary`.
 fn apply_negotiated_dictionary_response(
@@ -784,7 +479,7 @@ fn apply_negotiated_dictionary_response(
     expected_id:        const u8[:] = "",
     dictionary_content: const u8[:] = "",
 ) -> bool {
-    let enc, ok = negotiate_compression_dictionary(req, dict_hash, expected_id);
+    let enc, ok = http_internal::negotiate_compression_dictionary(req, dict_hash, expected_id);
     guard ok && raw_content.len <= 16300 else { return false; }
 
     var encoded_body: u8[..16420] = [];

@@ -2,17 +2,18 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Networking and retry policies: exponential backoff and token bucket rate limiting.
-namespace wing;
+namespace client;
 
 import std;
+import core from "..";
 
 // ---- exponential backoff policy --------------------------------------------
 
 // Exponential backoff policy for retrying failed network requests.
 struct Backoff {
-    base_ns: i64 = 100 * MILLISECOND, // Base initial retry delay in nanoseconds.
-    max_ns:  i64 = 10 * SECOND,       // Upper bound cap for retry delay in nanoseconds.
-    factor:  f64 = 2.0,               // Multiplier applied per failed attempt.
+    base_ns: i64 = 100 * core::MILLISECOND, // Base initial retry delay in nanoseconds.
+    max_ns:  i64 = 10 * core::SECOND,       // Upper bound cap for retry delay in nanoseconds.
+    factor:  f64 = 2.0,                     // Multiplier applied per failed attempt.
 }
 
 fn new_backoff(base_ns: i64, max_ns: i64, factor: f64 = 2.0) -> Backoff {
@@ -34,7 +35,7 @@ fn delay(backoff: const Backoff&, attempt: i64) -> i64 {
     let safe_attempt = min(attempt, 60);
     var current: f64 = base_ns;
     let cap_f64: f64 = cap_ns;
-    for step_idx in safe_attempt {
+    for _ in safe_attempt {
         current *= eff_factor;
         if !(current < cap_f64) {
             return cap_ns;
@@ -48,10 +49,10 @@ fn delay(backoff: const Backoff&, attempt: i64) -> i64 {
 
 // Token bucket rate limiter for pacing requests.
 struct RateLimiter {
-    rate_per_sec:        f64 = 1.0,  // Tokens replenished per second.
-    burst_capacity:      f64 = 1.0,  // Maximum token capacity (allowed burst size).
-    tokens:              f64 = 1.0,  // Current available token balance.
-    last_update_mono_ns: i64 = 0,    // Monotonic timestamp of the last token balance update.
+    rate_per_sec:        f64 = 1.0, // Tokens replenished per second.
+    burst_capacity:      f64 = 1.0, // Maximum token capacity (allowed burst size).
+    tokens:              f64 = 1.0, // Current available token balance.
+    last_update_mono_ns: i64 = 0,   // Monotonic timestamp of the last token balance update.
 }
 
 fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter {

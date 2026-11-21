@@ -49,10 +49,10 @@ request smuggling conflicts. `strip_hop_by_hop_headers` removes RFC 9110 §7.6.1
 hop-by-hop fields and any tokens nominated by `Connection`.
 
 ```goose
-var headers = wing::HeaderMap { .. };
-let err = wing::parse_request_headers(raw_wire, headers);
-if err == wing::HeaderParseError.None {
-    let host = wing::get_header(headers, "Host");
+var headers = http::HeaderMap { .. };
+let err = http::parse_request_headers(raw_wire, headers);
+if err == http::HeaderParseError.None {
+    let host = headers.get_header("Host");
 }
 ```
 
@@ -115,19 +115,19 @@ context across `application/ohttp-req` request encapsulation and
 ### HTTP Message Signatures (`signatures.goose`, RFC 9421)
 
 ```goose
-struct HttpSignatureParams
+struct SignatureParams
 
-fn sign_http_request(req: Request&, params: const HttpSignatureParams&, secret_key: const u8[:]) -> bool
-fn verify_http_signature(req: const Request&, label: const u8[:], params: const HttpSignatureParams&, key_bytes: const u8[:], now_sec: i64 = 0) -> bool
-fn sign_http_response(res: Response&, req: const Request&, params: const HttpSignatureParams&, secret_key: const u8[:]) -> bool
-fn verify_http_response_signature(res: const Response&, req: const Request&, label: const u8[:], params: const HttpSignatureParams&, key_bytes: const u8[:], now_sec: i64 = 0) -> bool
+fn sign_request(req: Request&, params: const SignatureParams&, secret_key: const u8[:]) -> bool
+fn verify_signature(req: const Request&, label: const u8[:], params: const SignatureParams&, key_bytes: const u8[:], now_sec: i64 = 0) -> bool
+fn sign_response(res: Response&, req: const Request&, params: const SignatureParams&, secret_key: const u8[:]) -> bool
+fn verify_response_signature(res: const Response&, req: const Request&, label: const u8[:], params: const SignatureParams&, key_bytes: const u8[:], now_sec: i64 = 0) -> bool
 fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u8[:]) -> bool
 fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool
 fn sign_response_ed25519(res: Response&, req: const Request&, key_id: const u8[:], private_key: const u8[:]) -> bool
 fn verify_response_ed25519(res: const Response&, req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool
 ```
 
-`HttpSignatureParams` configures the key identifier, signature algorithm,
+`SignatureParams` configures the key identifier, signature algorithm,
 creation/expiration timestamps, and covered message components for RFC 9421
 `Signature-Input` and `Signature` headers. Response signing and verification
 functions bind the response signature base to the initiating `Request` via the
@@ -215,7 +215,7 @@ fn encode_dcb_frame<B>(out: B&, dict_hash: const u8[32]&, compressed_payload: co
 fn decode_dcz_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool
 fn decode_dcb_header(wire: const u8[:], out_hash: u8[32]&) -> const u8[:], bool
 fn dictionary_cache_insert(cache: DictionaryCache&, origin: const u8[:], match_pattern: const u8[:], id_str: const u8[:], body: const u8[:], ttl_sec: u32, now_sec: i64) -> bool
-fn dictionary_lookup_for_request(cache: const DictionaryCache&, origin: const u8[:], url_path: const u8[:], now_sec: i64, out_base64_hash: u8[..64]&) -> bool
+fn dictionary_lookup_for_request(cache: const DictionaryCache&, origin: const u8[:], url_path: const u8[:], now_sec: i64) -> u8[..64], bool
 ```
 
 Implements RFC 9842 Compression Dictionary Transport. `DictionaryParams` holds
@@ -224,8 +224,7 @@ parsed `Use-As-Dictionary` parameters (`match_pattern`, `match_dest`, `id_str`,
 40-byte Zstandard `dcz` magic header and 32-byte SHA-256 dictionary hash;
 `encode_dcb_frame` and `decode_dcb_header` handle the 36-byte Brotli `dcb`
 header. `DictionaryCache` stores per-origin `DictionaryEntry` records and
-formats the longest-matching SFV `Available-Dictionary` hash into
-`out_base64_hash: u8[..64]&`.
+returns the longest-matching SFV `Available-Dictionary` hash (`u8[..64], bool`).
 
 ### Early Hints & CASPER Golomb-Coded Sets (`early_hints.goose`, RFC 8297)
 
@@ -256,9 +255,9 @@ redundant preload hints.
 struct ResumableUploadState
 struct SecurityTxt
 
-fn parse_client_cert(raw: const u8[:], out_der: u8[..4096]&, out_len: i32&) -> bool
-fn encode_client_cert(der: const u8[:], out: u8[..8192]&) -> i32
-fn parse_client_cert_chain(raw: const u8[:], out_certs: u8[..4096][..4]&, out_lens: i32[..4]&, out_count: i32&) -> bool
+fn parse_client_cert(raw: const u8[:], out_der: u8[..4096]&) -> bool
+fn encode_client_cert<B>(der: const u8[:], out: B&) -> bool
+fn parse_client_cert_chain(raw: const u8[:], out_certs: u8[..4096][..4]&) -> bool
 fn init_resumable_upload(total_size: i64, chunk_size: i64 = 65536) -> ResumableUploadState
 fn format_upload_creation_request(req: Request&, endpoint: const u8[:], first_chunk: const u8[:], is_complete: bool)
 fn format_upload_chunk_request(req: Request&, state: const ResumableUploadState&, chunk: const u8[:], is_complete: bool)
@@ -302,8 +301,8 @@ fn append_forwarded_header(out_headers: HeaderMap&, elem: const ForwardedElement
 
 // http/priority.goose (RFC 9218)
 struct PriorityParam
-fn parse_http_priority(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool
-fn serialize_http_priority<B>(p: const PriorityParam&, out: B&)
+fn parse_priority(raw: const u8[:], default_incremental: bool = false) -> PriorityParam, bool
+fn serialize_priority<B>(p: const PriorityParam&, out: B&)
 
 // http/incremental.goose (RFC 9849)
 fn parse_incremental_header(val: const u8[:]) -> bool, bool

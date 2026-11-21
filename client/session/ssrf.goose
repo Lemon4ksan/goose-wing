@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Client-session URL and resolved-IP SSRF enforcement returning RedirectError.
-namespace wing;
+// Client-session URL SSRF enforcement returning RedirectError.
+namespace client;
 
 import std;
 import core from "../..";
@@ -41,24 +41,5 @@ fn validate_url_against_ssrf(url_val: const core::Url&, policy: const security::
         return RedirectError.SsrfBlockedIp;
     }
 
-    return RedirectError.None;
-}
-
-fn validate_resolved_ips_against_ssrf(ips: const u8[:][:], policy: const security::SsrfGuardPolicy&) -> RedirectError {
-    guard policy.enabled else { return RedirectError.None; }
-    guard ips.len > 0 else { return RedirectError.SsrfBlockedIp; }
-    for ip in ips {
-        guard security::is_valid_resolved_ip_literal(ip) else {
-            return RedirectError.SsrfBlockedIp;
-        }
-        let blocked = if policy.deny_local_network {
-            security::is_private_or_reserved_ip(ip)
-        } else {
-            security::is_cloud_metadata_or_reserved_ip(ip)
-        };
-        if blocked {
-            return RedirectError.SsrfBlockedIp;
-        }
-    }
     return RedirectError.None;
 }

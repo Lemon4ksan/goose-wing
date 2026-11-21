@@ -345,9 +345,9 @@ fn validate_recv_compression(is_compressed: bool, enc: const u8[:], is_server: b
 // Built-in handler for `/grpc.health.v1.Health/Check` (gRFC A66).
 fn handle_builtin_health_check(
     d:   const ServerDispatcher&,
-    req: const wing::Request&,
+    req: const http::Request&,
     ctx: const ServerContext&,
-    res: wing::Response&,
+    res: http::Response&,
 ) -> bool {
     var req_payload: u8[>..] = [];
     guard grpc_internal::decode_and_validate_single_lpm(d, req, ctx, res, req_payload) else {
@@ -375,9 +375,9 @@ fn handle_builtin_health_check(
 // Executes a single Request-Response RPC cycle conforming to RFC gRPC over HTTP/2 and gRPC-Web.
 fn dispatch_unary<HandlerFn: fn(u16, ServerContext&, const u8[:], u8[>..]&) -> Status>(
     d:                 const ServerDispatcher&,
-    req:               const wing::Request&,
+    req:               const http::Request&,
     now_mono_ns:       u64,
-    res:               wing::Response&,
+    res:               http::Response&,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard grpc_internal::is_request(req) else { return false; }
@@ -484,9 +484,9 @@ fn on_unary<B>(
 fn dispatch_unary_stage<Stage>(
     d:                 const ServerDispatcher&,
     stage:             Stage&,
-    req:               const wing::Request&,
+    req:               const http::Request&,
     now_mono_ns:       u64,
-    res:               wing::Response&,
+    res:               http::Response&,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard grpc_internal::is_request(req) else { return false; }
@@ -520,9 +520,9 @@ fn dispatch_server_streaming<
     HandlerFn: fn(u16, ServerContext&, const u8[:], ServerStreamWriter&) -> Status,
 >(
     d:                 const ServerDispatcher&,
-    req:               const wing::Request&,
+    req:               const http::Request&,
     now_mono_ns:       u64,
-    res:               wing::Response&,
+    res:               http::Response&,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard grpc_internal::is_request(req) else { return false; }
@@ -555,9 +555,9 @@ fn dispatch_client_streaming<
     HandlerFn: fn(u16, ServerContext&, const ClientStreamReader&, u8[>..]&) -> Status,
 >(
     d:                 const ServerDispatcher&,
-    req:               const wing::Request&,
+    req:               const http::Request&,
     now_mono_ns:       u64,
-    res:               wing::Response&,
+    res:               http::Response&,
     req_start_mono_ns: u64 = 0,
 ) -> bool {
     guard grpc_internal::is_request(req) else { return false; }
@@ -781,7 +781,7 @@ fn dispatch_bidi_streaming(
 fn emit_h2_response_frames<B>(
     hpack_enc: http2::DynamicTable&,
     stream_id: u32,
-    res:       const wing::Response&,
+    res:       const http::Response&,
     out:       B&,
 ) {
     let end_hdr = res.body.len == 0 && res.trailers.entries.len == 0;
@@ -839,7 +839,7 @@ fn handle_h2_control_frame(
                 stream_id:  0,
             };
             let _ = wire::encode_frame_header(ack_hdr, ack);
-            let _ = wing::tcp_send(conn, ack[..]);
+            let _ = net::tcp_send(conn, ack[..]);
         }
         return true;
     }
@@ -850,7 +850,7 @@ fn handle_h2_control_frame(
             for p in 8 { ping_data[p] = payload[p]; }
             var pong: u8[..24] = [];
             let _ = wire::encode_ping_frame(ping_data, true, pong);
-            let _ = wing::tcp_send(conn, pong[..]);
+            let _ = net::tcp_send(conn, pong[..]);
         }
         return true;
     }
@@ -881,12 +881,12 @@ fn handle_h2_wire_frame<
     HandlerFn: fn(u16, ServerContext&, const u8[:], u8[>..]&) -> Status,
 >(
     conn:              i64,
-    server:            wing::HttpServer&,
+    server:            server::HttpServer&,
     d:                 const ServerDispatcher&,
     client_ip:         const u8[:],
     hpack_dec:         http2::DynamicTable&,
     hpack_enc:         http2::DynamicTable&,
-    pending:           wing::Request&,
+    pending:           http::Request&,
     pending_stream_id: u32&,
     hdr:               const wire::WireFrameHeader&,
     payload:           const u8[:],
@@ -898,7 +898,7 @@ fn handle_h2_wire_frame<
     if hdr.frame_type != rfc::H2_FRAME_HEADERS && hdr.frame_type != rfc::H2_FRAME_DATA {
         let ok_ctrl = handle_h2_control_frame(conn, hdr, payload);
         if ok_ctrl && hdr.frame_type == rfc::H2_FRAME_RST_STREAM && hdr.stream_id == pending_stream_id {
-            wing::reset_server_request_fast(pending);
+            server::reset_server_request_fast(pending);
             pending_stream_id = 0;
         }
         return ok_ctrl;
@@ -913,7 +913,7 @@ fn handle_h2_wire_frame<
         let frag, ok_frag = grpc_internal::slice_h2_headers_fragment(payload, hdr.flags, hdr.stream_id);
         guard ok_frag else { return false; }
         var pseudo = http2::PseudoHeaders { .. };
-        wing::reset_server_request_fast(pending);
+        server::reset_server_request_fast(pending);
         let _ = pending.method.try_set("POST");
         let hpack_res = http2::decode_hpack_to_map(
             hpack_dec, frag, pseudo, pending.headers, 8192, true,
@@ -922,7 +922,7 @@ fn handle_h2_wire_frame<
             && pseudo.has_method
             && !pseudo.has_status
             && !pseudo.has_protocol else {
-            wing::reset_server_request_fast(pending);
+            server::reset_server_request_fast(pending);
             return false;
         }
         pending_stream_id = hdr.stream_id;
@@ -938,14 +938,14 @@ fn handle_h2_wire_frame<
             let _ = pending.headers.append_header("host", pseudo.authority[..]);
         }
         if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
-            var res = wing::Response { .. };
+            var res = http::Response { .. };
             grpc_internal::execute_server_unary(server, d, client_ip, pending, res, HandlerFn);
             out_wire.clear();
             emit_h2_response_frames(hpack_enc, hdr.stream_id, res, out_wire);
             if out_wire.len > 0 {
-                let _ = wing::tcp_send(conn, out_wire[..]);
+                let _ = net::tcp_send(conn, out_wire[..]);
             }
-            wing::reset_server_request_fast(pending);
+            server::reset_server_request_fast(pending);
             pending_stream_id = 0;
         }
         return true;
@@ -962,20 +962,20 @@ fn handle_h2_wire_frame<
         core::add_sat_u64(rfc::GRPC_DEFAULT_MAX_MESSAGE_SIZE, rfc::GRPC_LPM_HEADER_LEN),
     );
     guard core::add_sat_u64(pending.body.len as u64, data_slice.len as u64) <= max_body else {
-        wing::reset_server_request_fast(pending);
+        server::reset_server_request_fast(pending);
         pending_stream_id = 0;
         return false;
     }
     pending.body.append(data_slice);
     if (hdr.flags & rfc::H2_FLAG_END_STREAM) != 0 {
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         grpc_internal::execute_server_unary(server, d, client_ip, pending, res, HandlerFn);
         out_wire.clear();
         emit_h2_response_frames(hpack_enc, hdr.stream_id, res, out_wire);
         if out_wire.len > 0 {
-            let _ = wing::tcp_send(conn, out_wire[..]);
+            let _ = net::tcp_send(conn, out_wire[..]);
         }
-        wing::reset_server_request_fast(pending);
+        server::reset_server_request_fast(pending);
         pending_stream_id = 0;
     }
     return true;
@@ -986,16 +986,16 @@ fn serve_listener<
     HandlerFn: fn(u16, ServerContext&, const u8[:], u8[>..]&) -> Status,
 >(
     listener_fd: i64,
-    server:      wing::HttpServer&,
+    server:      server::HttpServer&,
     d:           const ServerDispatcher&,
 ) {
     server.is_running = true;
     while server.is_running {
-        let conn = wing::tcp_accept(listener_fd, 200);
+        let conn = net::tcp_accept(listener_fd, 200);
         if conn < 0 {
             continue;
         }
         grpc_internal::serve_connection(server, d, conn, HandlerFn);
-        wing::tcp_close(conn);
+        net::tcp_close(conn);
     }
 }

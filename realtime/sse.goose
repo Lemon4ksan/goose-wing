@@ -167,24 +167,24 @@ fn consume<E>(sub: SseSubscription&, chunk: const u8[:], out_events: E&) {
 }
 
 // Configures an HTTP request for SSE streaming per W3C EventSource.
-fn prepare_request(sub: const SseSubscription&, req: wing::Request&) {
-    wing::set_header(req, "Accept", "text/event-stream");
-    wing::set_header(req, "Cache-Control", "no-cache");
-    wing::set_header(req, "Connection", "keep-alive");
+fn prepare_request(sub: const SseSubscription&, req: http::Request&) {
+    http::set_header(req, "Accept", "text/event-stream");
+    http::set_header(req, "Cache-Control", "no-cache");
+    http::set_header(req, "Connection", "keep-alive");
     if sub.parser.last_event_id.len > 0 {
         let raw_id = sub.parser.last_event_id[..];
         let clean_id = raw_id[..realtime_internal::sse_clean_token_len(raw_id)];
         if clean_id.len > 0 {
-            wing::set_header(req, "Last-Event-ID", clean_id);
+            http::set_header(req, "Last-Event-ID", clean_id);
         }
     }
 }
 
 // Configures a server HTTP response for SSE streaming (text/event-stream).
-fn init_response(res: wing::Response&) {
+fn init_response(res: http::Response&) {
     res.status_code = 200;
-    wing::set_header(res, "Content-Type", "text/event-stream");
-    wing::set_header(res, "Cache-Control", "no-cache");
-    wing::set_header(res, "Connection", "keep-alive");
-    wing::set_header(res, "X-Accel-Buffering", "no");
+    http::set_header(res, "Content-Type", "text/event-stream");
+    http::set_header(res, "Cache-Control", "no-cache");
+    http::set_header(res, "Connection", "keep-alive");
+    http::set_header(res, "X-Accel-Buffering", "no");
 }

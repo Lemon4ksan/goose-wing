@@ -3,10 +3,11 @@
 
 // Multipart form-data parsing (RFC 7578, RFC 2046) and HTTP range request
 // handling (RFC 9110 Section 14, Section 13.1.5).
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
+import http.internal;
 
 // ---- multipart errors & options --------------------------------------------
 
@@ -92,26 +93,6 @@ fn bmh_find(haystack: const u8[:], needle: const u8[:], table: const u16[256]&, 
     return -1;
 }
 
-// Validates an unquoted boundary character sequence according to RFC 2046 Section 5.1.1.
-fn validate_raw_boundary_chars(boundary: const u8[:]) -> bool {
-    guard boundary.len >= 1 && boundary.len <= 70 else { return false; }
-    // RFC 2046 Section 5.1.1: The boundary parameter must not end with a space.
-    if boundary[boundary.len - 1] == ' ' {
-        return false;
-    }
-    for b in boundary {
-        if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
-            continue;
-        }
-        if b == '\'' || b == '(' || b == ')' || b == '+' || b == '_' || b == ',' ||
-           b == '-' || b == '.' || b == '/' || b == ':' || b == '=' || b == '?' || b == ' ' {
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
 // Whether boundary contains only characters allowed by RFC 2046 Section 5.1.1.
 // Handles both raw boundaries and boundaries enclosed in quotes (RFC 7578 Section 4.4).
 fn validate_boundary_string(boundary: const u8[:]) -> bool {
@@ -119,125 +100,12 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
     if boundary[0] == '"' {
         var unquoted: u8[..74] = [];
         guard strict_unquote(boundary, unquoted, 74) else { return false; }
-        return validate_raw_boundary_chars(unquoted[..]);
+        return http_internal::validate_raw_boundary_chars(unquoted[..]);
     }
-    return validate_raw_boundary_chars(boundary);
+    return http_internal::validate_raw_boundary_chars(boundary);
 }
 
 // ---- multipart parsing -----------------------------------------------------
-
-// Parses a multipart/form-data payload according to RFC 7578 and RFC 2046.
-//
-// The boundary must be between 1 and 70 ASCII characters (RFC 2046 Section 5.1.1).
-// Validates delimiter line endings and closing dashes per RFC 2046 Section 5.1.1.
-fn is_valid_delimiter_suffix(body: const u8[:], pos: i64) -> bool {
-    guard pos <= body.len else { return false; }
-    let rem = body[pos..];
-    if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
-        let after_close = rem[2..].trim_lws_start();
-        return after_close.len == 0 ||
-               (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
-               (after_close.len >= 1 && after_close[0] == '\n');
-    }
-    let after_pad = rem.trim_lws_start();
-    return (after_pad.len >= 2 && after_pad[0] == '\r' && after_pad[1] == '\n') ||
-           (after_pad.len >= 1 && after_pad[0] == '\n');
-}
-
-fn is_closing_boundary_at(body: const u8[:], cursor: i64) -> bool {
-    let rem = body[cursor..];
-    if rem.len >= 2 && rem[0] == '-' && rem[1] == '-' {
-        let after_close = rem[2..].trim_lws_start();
-        return after_close.len == 0 ||
-               (after_close.len >= 2 && after_close[0] == '\r' && after_close[1] == '\n') ||
-               (after_close.len >= 1 && after_close[0] == '\n');
-    }
-    return false;
-}
-
-fn find_initial_boundary(body: const u8[:], init_delim: const u8[:]) -> i64 {
-    var cursor: i64 = 0;
-    while cursor + init_delim.len <= body.len {
-        let is_line_start = cursor == 0 || body[cursor - 1] == '\n';
-        if is_line_start && body[cursor..cursor + init_delim.len] == init_delim[..] {
-            let post_init = cursor + init_delim.len;
-            if is_valid_delimiter_suffix(body, post_init) {
-                return cursor;
-            }
-        }
-        cursor++;
-    }
-    return -1;
-}
-
-fn find_header_end(body: const u8[:], cursor: i64, max_scan: i64, delim_len: i64&) -> i64 {
-    var scan_h = cursor;
-    while scan_h < max_scan {
-        if scan_h + 4 <= body.len && body[scan_h] == '\r' && body[scan_h + 1] == '\n' &&
-           body[scan_h + 2] == '\r' && body[scan_h + 3] == '\n' {
-            delim_len = 4;
-            return scan_h;
-        }
-        if scan_h + 2 <= body.len && body[scan_h] == '\n' && body[scan_h + 1] == '\n' {
-            delim_len = 2;
-            return scan_h;
-        }
-        scan_h++;
-    }
-    delim_len = 0;
-    return -1;
-}
-
-fn resolve_part_header_end(body: const u8[:], cursor: i64, max_header_bytes: i64, delim_len: i64&) -> i64 {
-    if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
-        delim_len = 2;
-        return cursor;
-    }
-    if cursor < body.len && body[cursor] == '\n' {
-        delim_len = 1;
-        return cursor;
-    }
-    let max_h_scan = min(cursor + max_header_bytes, body.len);
-    return find_header_end(body, cursor, max_h_scan, delim_len);
-}
-
-fn find_next_boundary_delim(
-    body:        const u8[:],
-    cursor:      i64,
-    part_delim:  const u8[:],
-    shift_table: const u16[256]&,
-) -> i64 {
-    var search_pos = cursor;
-    while search_pos < body.len {
-        let found = bmh_find(body, part_delim[..], shift_table, search_pos);
-        if found < 0 {
-            return -1;
-        }
-        let post_pos = found + part_delim.len;
-        if is_valid_delimiter_suffix(body, post_pos) {
-            return found;
-        }
-        search_pos = found + 1;
-    }
-    return -1;
-}
-
-fn populate_part_metadata(part_headers: const HeaderMap&, part: MultipartPart&) -> bool {
-    let disp_raw = get_header(part_headers, "content-disposition");
-    if disp_raw.len > 0 {
-        let mt, mt_ok = parse_content_disposition(disp_raw);
-        guard mt_ok && mt.type_name[..].eq_ascii_fold("form-data") else { return false; }
-        let p_name = param(mt, "name");
-        let p_fn = param(mt, "filename");
-        guard part.name.try_append(p_name) && part.filename.try_append(p_fn) else { return false; }
-    }
-    let ct_raw = get_header(part_headers, "content-type");
-    if ct_raw.len > 0 {
-        let ct_len = min(ct_raw.len, part.content_type.cap);
-        part.content_type.append(ct_raw[..ct_len]);
-    }
-    return true;
-}
 
 // Go #75557 & RFC 7578 §4.2: Formats a Content-Disposition header value with strict CRLF injection protection.
 // Rejects names or filenames containing raw CR, LF, or NUL bytes.
@@ -275,102 +143,6 @@ fn format_content_disposition<B>(name: const u8[:], filename: const u8[:], out: 
     return true;
 }
 
-// Parses a single multipart body part after the initial or preceding boundary delimiter.
-//
-// Example:
-//   body = "\r\nContent-Type: text/plain\r\n\r\nHello\r\n--boundary--", cursor = 0
-//   returns: MultipartError.Ok, advances cursor to end of part body
-fn parse_multipart_part(
-    body:              const u8[:],
-    cursor:            i64&,
-    part_delim:        const u8[:],
-    shift_table:       const u16[256]&,
-    options:           const MultipartOptions&,
-    total_memory_used: i64&,
-    msg:               MultipartMessage&,
-) -> MultipartError {
-    let saved_cursor = cursor;
-    let saved_mem = total_memory_used;
-    var committed = false;
-    defer if !committed {
-        cursor = saved_cursor;
-        total_memory_used = saved_mem;
-    };
-
-    if cursor + 2 <= body.len && body[cursor] == '\r' && body[cursor + 1] == '\n' {
-        cursor += 2;
-    } else if cursor < body.len && body[cursor] == '\n' {
-        cursor += 1;
-    } else {
-        return MultipartError.PrematureEOF;
-    }
-
-    guard cursor < body.len else {
-        return MultipartError.PrematureEOF;
-    }
-
-    guard msg.parts.len < options.max_parts else {
-        return MultipartError.ExceededMaxParts;
-    }
-
-    let next_delim_pos = find_next_boundary_delim(body, cursor, part_delim[..], shift_table);
-    guard next_delim_pos >= 0 else {
-        return MultipartError.PrematureEOF;
-    }
-
-    var header_delim_len: i64 = 0;
-    let part_slice = body[..next_delim_pos];
-    let header_end = resolve_part_header_end(part_slice, cursor, options.max_header_bytes, header_delim_len);
-    guard header_end >= 0 else {
-        return MultipartError.InvalidPartHeaders;
-    }
-
-    let raw_part_headers = body[cursor..header_end];
-    // Go #81741 & Go #65383 multipart header memory accounting: prevent memory limit bypass
-    guard options.max_memory_bytes - total_memory_used >= raw_part_headers.len else {
-        return MultipartError.ExceededMaxMemory;
-    }
-    total_memory_used += raw_part_headers.len;
-
-    var part_headers = HeaderMap { .. };
-    if raw_part_headers.len > 0 {
-        let h_err = parse_headers(raw_part_headers, part_headers);
-        guard is_ok(h_err) else {
-            return MultipartError.InvalidPartHeaders;
-        }
-    }
-
-    // RFC 7578 Section 4.7 & Go #66434 / #63855: Content-Transfer-Encoding is deprecated and MUST be rejected
-    if has_header(part_headers, "content-transfer-encoding") {
-        return MultipartError.InvalidPartHeaders;
-    }
-
-    cursor = header_end + header_delim_len;
-
-    var part_end = next_delim_pos;
-    if next_delim_pos > cursor && body[next_delim_pos - 1] == '\r' {
-        part_end = next_delim_pos - 1;
-    }
-
-    let part_data = body[cursor..part_end];
-    guard options.max_memory_bytes - total_memory_used >= part_data.len else {
-        return MultipartError.ExceededMaxMemory;
-    }
-    total_memory_used += part_data.len;
-
-    var part = MultipartPart { headers: part_headers, .. };
-    part.data = part_data;
-    let meta_ok = populate_part_metadata(part_headers, part);
-    guard meta_ok else {
-        return MultipartError.InvalidPartHeaders;
-    }
-    msg.parts.push(part);
-
-    cursor = next_delim_pos + part_delim.len;
-    committed = true;
-    return MultipartError.None;
-}
-
 // Delimiters are matched using a 16-bit Boyer-Moore-Horspool shift table,
 // requiring CRLF, LF, or '--' immediately after the boundary to avoid prefix
 // collisions. Total memory and part counts are bounded by options.
@@ -405,7 +177,7 @@ fn parse_multipart(
         msg.valid = false;
         return msg, MultipartError.InvalidBoundaryLength;
     }
-    guard validate_raw_boundary_chars(eff_boundary[..]) else {
+    guard http_internal::validate_raw_boundary_chars(eff_boundary[..]) else {
         msg.valid = false;
         return msg, MultipartError.InvalidBoundaryCharacters;
     }
@@ -423,7 +195,7 @@ fn parse_multipart(
     var shift_table: u16[256] = [0; 256];
     build_bmh_shift_table(part_delim[..], shift_table);
 
-    var cursor = find_initial_boundary(body, init_delim[..]);
+    var cursor = http_internal::find_initial_boundary(body, init_delim[..]);
     guard cursor >= 0 else {
         msg.valid = false;
         return msg, MultipartError.MissingBoundaryDelimiter;
@@ -434,7 +206,7 @@ fn parse_multipart(
     var has_closing_delimiter = false;
 
     while cursor < body.len {
-        if is_closing_boundary_at(body, cursor) {
+        if http_internal::is_closing_boundary_at(body, cursor) {
             has_closing_delimiter = true;
             break; // Valid closing boundary reached
         }
@@ -443,7 +215,7 @@ fn parse_multipart(
         let after_pad = rem.trim_lws_start();
         cursor += rem.len - after_pad.len;
 
-        let p_err = parse_multipart_part(
+        let p_err = http_internal::parse_multipart_part(
             body, cursor, part_delim[..], shift_table, options, total_memory_used, msg,
         );
         guard p_err == MultipartError.None else {
@@ -517,145 +289,6 @@ fn parse_i64_slice(s: const u8[:]) -> i64, bool {
     return val as! i64, true;
 }
 
-// Parses a single HTTP range specification token (e.g. "0-499", "500-", "-500").
-//
-// Example:
-//   item = "0-499", spec = RangeSpec { .. }
-//   returns: RangeError.None, populates spec with form and offsets
-fn parse_single_range_spec(item: const u8[:], spec: RangeSpec&) -> RangeError {
-    let pre_raw, post_raw, has_dash = item.split_once_byte('-');
-    guard has_dash else { return RangeError.MalformedRange; }
-
-    let pre = pre_raw.trim_lws();
-    let post = post_raw.trim_lws();
-
-    if pre.len == 0 {
-        guard post.len > 0 else { return RangeError.MalformedRange; }
-        let suffix_len, s_ok = parse_i64_slice(post);
-        guard s_ok && suffix_len > 0 else { return RangeError.MalformedRange; }
-        spec.form = RangeForm.Suffix;
-        spec.start = suffix_len;
-        spec.has_end = false;
-    } else if post.len == 0 {
-        let start_val, p_ok = parse_i64_slice(pre);
-        guard p_ok && start_val >= 0 else { return RangeError.MalformedRange; }
-        spec.form = RangeForm.OpenPrefix;
-        spec.start = start_val;
-        spec.has_end = false;
-    } else {
-        let start_val, p_ok = parse_i64_slice(pre);
-        let end_val, e_ok = parse_i64_slice(post);
-        guard p_ok && e_ok && start_val >= 0 && end_val >= start_val else {
-            return RangeError.MalformedRange;
-        }
-        spec.form = RangeForm.Explicit;
-        spec.start = start_val;
-        spec.end_pos = end_val;
-        spec.has_end = true;
-    }
-    return RangeError.None;
-}
-
-fn normalize_range_spec(spec: const RangeSpec&, resource_len: i64, norm: NormalizedRange&, has_norm: bool&) {
-    has_norm = false;
-    guard resource_len > 0 else { return; }
-    match spec.form {
-        Explicit => {
-            if spec.start < resource_len {
-                norm.start = spec.start;
-                norm.end_pos = min(spec.end_pos, resource_len - 1);
-                has_norm = true;
-            }
-        },
-        OpenPrefix => {
-            if spec.start < resource_len {
-                norm.start = spec.start;
-                norm.end_pos = resource_len - 1;
-                has_norm = true;
-            }
-        },
-        Suffix => {
-            let suf = spec.start;
-            if suf > 0 {
-                norm.start = max(0, resource_len - suf);
-                norm.end_pos = resource_len - 1;
-                has_norm = true;
-            }
-        },
-    }
-}
-
-fn coalesce_normalized_ranges(raw_ranges: NormalizedRange[..32]&, out_ranges: NormalizedRange[..32]&) -> bool {
-    guard raw_ranges.len > 0 else { return true; }
-    for i in 1..raw_ranges.len {
-        var j = i;
-        while j > 0 && (raw_ranges[j].start < raw_ranges[j - 1].start ||
-            (raw_ranges[j].start == raw_ranges[j - 1].start &&
-             raw_ranges[j].end_pos < raw_ranges[j - 1].end_pos)) {
-            let temp = raw_ranges[j];
-            raw_ranges[j] = raw_ranges[j - 1];
-            raw_ranges[j - 1] = temp;
-            j--;
-        }
-    }
-
-    var merged = raw_ranges[0];
-    for i in 1..raw_ranges.len {
-        let next_r = raw_ranges[i];
-        let can_merge = next_r.start <= merged.end_pos ||
-            (merged.end_pos < 9223372036854775807 && next_r.start <= merged.end_pos + 1);
-        if can_merge {
-            merged.end_pos = max(merged.end_pos, next_r.end_pos);
-        } else {
-            guard out_ranges.try_push(merged) else { return false; }
-            merged = next_r;
-        }
-    }
-    return out_ranges.try_push(merged);
-}
-
-// Parses a comma-separated list of range specifications.
-//
-// Example:
-//   spec_list = "0-499, 500-999", max_ranges = 16
-//   returns: RangeError.None, populates specs
-fn parse_range_spec_list(
-    spec_list:  const u8[:],
-    max_ranges: i32,
-    specs:      RangeSpec[..32]&,
-) -> RangeError {
-    var cursor:         i64 = 0;
-    var empty_elements: i32 = 0;
-    let max_empty: i32 = 16;
-
-    while cursor <= spec_list.len {
-        var comma_pos = cursor;
-        while comma_pos < spec_list.len && spec_list[comma_pos] != ',' {
-            comma_pos++;
-        }
-
-        let item = spec_list[cursor..comma_pos].trim_lws();
-        cursor = comma_pos + 1;
-
-        if item.len == 0 {
-            empty_elements++;
-            guard empty_elements <= max_empty else { return RangeError.TooManyEmptyElements; }
-            continue;
-        }
-
-        guard specs.len < max_ranges && specs.len < specs.cap else {
-            return RangeError.ExceededMaxRanges;
-        }
-
-        var spec = RangeSpec { .. };
-        let spec_err = parse_single_range_spec(item, spec);
-        guard is_ok(spec_err) else { return spec_err; }
-
-        specs.push(spec);
-    }
-    return RangeError.None;
-}
-
 // Parses an HTTP Range header into normalized intervals (RFC 9110 Section 14.1.2).
 // When with_coalesce is true, overlapping and adjacent ranges are merged.
 //
@@ -682,14 +315,14 @@ fn parse_range_header(
     var specs:      RangeSpec[..32]       = [];
     var raw_ranges: NormalizedRange[..32] = [];
 
-    let parse_err = parse_range_spec_list(spec_list, max_ranges, specs);
+    let parse_err = http_internal::parse_range_spec_list(spec_list, max_ranges, specs);
     guard is_ok(parse_err) else { return rs, parse_err; }
     guard specs.len > 0 else { return rs, RangeError.EmptyRange; }
 
     for spec in specs {
         var norm = NormalizedRange { .. };
         var has_norm = false;
-        normalize_range_spec(spec, resource_len, norm, has_norm);
+        http_internal::normalize_range_spec(spec, resource_len, norm, has_norm);
         if has_norm {
             raw_ranges.push(norm);
         }
@@ -701,7 +334,7 @@ fn parse_range_header(
     }
 
     if with_coalesce && raw_ranges.len > 1 {
-        guard coalesce_normalized_ranges(raw_ranges, rs.ranges) else {
+        guard http_internal::coalesce_normalized_ranges(raw_ranges, rs.ranges) else {
             return rs, RangeError.ExceededMaxRanges;
         }
         rs.coalesced = true;
@@ -856,48 +489,6 @@ fn serve_range_request<OpenFn: fn(i64, i64, u8[>..]&)>(
     };
 }
 
-fn validate_range_set_bounds(ranges: const NormalizedRange[..32]&) -> bool {
-    for r in ranges {
-        if r.end_pos < r.start || r.start < 0 || r.end_pos - r.start >= 9223372036854775807 {
-            return false;
-        }
-    }
-    return true;
-}
-
-fn serve_multipart_ranges<OpenFn: fn(i64, i64, u8[>..]&)>(
-    ranges:       const NormalizedRange[..32]&,
-    resource_len: i64,
-    content_type: const u8[:],
-    boundary:     const u8[:],
-    out_body:     u8[>..]&,
-) {
-    var cr_val: u8[..64] = [];
-    for r in ranges {
-        out_body.append("--");
-        out_body.append(boundary);
-        out_body.append("\r\n");
-
-        out_body.append("Content-Type: ");
-        out_body.append(content_type);
-        out_body.append("\r\n");
-
-        out_body.append("Content-Range: ");
-        cr_val.clear();
-        format_content_range(r.start, r.end_pos, resource_len, cr_val);
-        out_body.append(cr_val[..]);
-        out_body.append("\r\n\r\n");
-
-        let part_len = r.end_pos - r.start + 1;
-        OpenFn(r.start, part_len, out_body);
-        out_body.append("\r\n");
-    }
-
-    out_body.append("--");
-    out_body.append(boundary);
-    out_body.append("--\r\n");
-}
-
 // Handles a pre-parsed RangeSet, validating 64-bit integer overflow and writing status, headers, and body slices.
 fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
     rs:           const RangeSet&,
@@ -908,7 +499,7 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
     out_body:     u8[>..]&,
 ) {
     out_body.clear();
-    if !rs.is_satisfiable || rs.ranges.len == 0 || !validate_range_set_bounds(rs.ranges) {
+    if !rs.is_satisfiable || rs.ranges.len == 0 || !http_internal::validate_range_set_bounds(rs.ranges) {
         out_status = 416;
         var cr_val: u8[..64] = [];
         format_content_range(-1, -1, resource_len, cr_val);
@@ -941,7 +532,9 @@ fn serve_range_set<OpenFn: fn(i64, i64, u8[>..]&)>(
         ct_val.append(boundary);
         insert_header(out_headers, "content-type", ct_val[..]);
 
-        serve_multipart_ranges(rs.ranges, resource_len, content_type, boundary, out_body) { off, len, out =>
+        http_internal::serve_multipart_ranges(
+            rs.ranges, resource_len, content_type, boundary, out_body,
+        ) { off, len, out =>
             OpenFn(off, len, out);
         };
 

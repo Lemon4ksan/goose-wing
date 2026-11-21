@@ -22,7 +22,7 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // ----------------------------------------------------------------------------
 fn test_declarative_ws_routing(t: lit::T&) {
     t.run("1. Declarative add_ws_route & 101 Switching Protocols Handshake") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
 
         var ws_cfg = realtime::new_ws_behavior(101);
         ws_cfg.subprotocol.append("chat.v2");
@@ -39,10 +39,10 @@ fn test_declarative_ws_routing(t: lit::T&) {
         let req_wire: const u8[:] = "GET /ws/live HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: chat.v2\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n\r\n";
 
         var wire_out: u8[..2048] = [];
-        let outcome, ok_handle = wing::handle_connection_wire(server, "127.0.0.1", req_wire, 1000, wire_out);
+        let outcome, ok_handle = server::handle_connection_wire(server, "127.0.0.1", req_wire, 1000, wire_out);
 
         sub.assert_true(ok_handle, "handle_connection_wire succeeded");
-        sub.assert_true(outcome == wing::PipelineOutcome.Handled, "Outcome is Handled");
+        sub.assert_true(outcome == server::PipelineOutcome.Handled, "Outcome is Handled");
 
         let wire_str = wire_out[..];
         sub.assert_true(find(wire_str, "HTTP/1.1 101 Switching Protocols\r\n") == 0, "Status 101");
@@ -54,27 +54,27 @@ fn test_declarative_ws_routing(t: lit::T&) {
     };
 
     t.run("2. WS Request to Unregistered Route Falls Back to 404") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
         let ws_cfg = realtime::new_ws_behavior(101);
         server.add_ws_route("/ws/valid", ws_cfg);
 
         let unreg_wire: const u8[:] = "GET /ws/unknown HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
 
         var wire_out: u8[..1024] = [];
-        let outcome, ok_handle = wing::handle_connection_wire(server, "127.0.0.1", unreg_wire, 1000, wire_out);
+        let outcome, ok_handle = server::handle_connection_wire(server, "127.0.0.1", unreg_wire, 1000, wire_out);
         sub.assert_true(ok_handle, "Handled gracefully");
         sub.assert_true(find(wire_out[..], "404 Not Found") >= 0, "Returns 404 for unknown WS route");
     };
 
     t.run("3. Connection Wire WS Upgrade") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
         let ws_cfg = realtime::new_ws_behavior(200);
         server.add_ws_route("/ws/fast", ws_cfg);
 
         let fast_wire: const u8[:] = "GET /ws/fast HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
 
         var wire_out: u8[..1024] = [];
-        let outcome, ok_handle = wing::handle_connection_wire(server, "127.0.0.1", fast_wire, 1000, wire_out);
+        let outcome, ok_handle = server::handle_connection_wire(server, "127.0.0.1", fast_wire, 1000, wire_out);
         sub.assert_true(ok_handle, "Handled WS upgrade");
         sub.assert_true(find(wire_out[..], "HTTP/1.1 101 Switching Protocols") == 0, "Returns 101");
     };
@@ -286,7 +286,7 @@ fn test_heartbeat_and_idle_sweeper(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_subscription_counts_and_topics(t: lit::T&) {
     t.run("1. Subscription Count Lifecycle (Room Creation / Destruction)") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
         var old_cnt: i32 = -1;
         var new_cnt: i32 = -1;
 
@@ -316,7 +316,7 @@ fn test_subscription_counts_and_topics(t: lit::T&) {
     };
 
     t.run("2. Per-Socket Topic Enumeration") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
         server.subscribe(42, "feed/crypto");
         server.subscribe(42, "feed/stocks");
         server.subscribe(42, "news/#");
@@ -341,12 +341,12 @@ fn test_subscription_counts_and_topics(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_async_upgrade_and_aborted(t: lit::T&) {
     t.run("1. Asynchronous Upgrade with UserData & UserTag") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
         var ws_cfg = realtime::new_ws_behavior(50);
         ws_cfg.subprotocol.append("v1.stream");
         server.add_ws_route("/ws/stream", ws_cfg);
 
-        var req = wing::new_request("GET", "/ws/stream");
+        var req = http::new_request("GET", "/ws/stream");
         req.set_header("Host", "127.0.0.1:8080");
         req.set_header("Upgrade", "websocket");
         req.set_header("Connection", "Upgrade");
@@ -377,11 +377,11 @@ fn test_async_upgrade_and_aborted(t: lit::T&) {
     };
 
     t.run("2. Asynchronous Upgrade Aborted by Client Disconnect") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
         var ws_cfg = realtime::new_ws_behavior(50);
         server.add_ws_route("/ws/abortable", ws_cfg);
 
-        var req = wing::new_request("GET", "/ws/abortable");
+        var req = http::new_request("GET", "/ws/abortable");
         req.set_header("Host", "127.0.0.1:8080");
         req.set_header("Upgrade", "websocket");
         req.set_header("Connection", "Upgrade");
@@ -408,7 +408,7 @@ fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
         var cfg = net_internal::auto_transport_driver_config();
         cfg.active_kind = net_internal::TransportDriverKind.Standard;
 
-        var el = wing::new_event_loop(cfg);
+        var el = net::new_event_loop(cfg);
         sub.assert_false(el.has_deferred_tasks(), "No deferred tasks initially");
 
         // External thread schedules work on event loop
@@ -420,14 +420,14 @@ fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
         sub.assert_eq(el.deferred_count, 2, "Count is 2");
 
         var count_dispatched: u32 = 0;
-        let drained = wing::drain_deferred_tasks(el) { tag, udata, tid, loop_ref =>
+        let drained = net::drain_deferred_tasks(el) { tag, udata, tid, loop_ref =>
             count_dispatched += 1;
         };
         sub.assert_eq(drained, 2, "Drained 2 tasks");
         sub.assert_eq(count_dispatched, 2, "Dispatched 2 tasks");
         sub.assert_false(el.has_deferred_tasks(), "Queue empty after drain");
 
-        wing::close_event_loop(el);
+        net::close_event_loop(el);
     };
 
     t.run("2. Dedicated Sliding-Window Compressor") { sub =>
@@ -458,29 +458,29 @@ fn test_loop_defer_and_dedicated_compressor(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_header_bloom_filter(t: lit::T&) {
     t.run("1. 256-bit Header BloomFilter Bitwise Rejection") { sub =>
-        var bf = wing::HeaderBloomFilter { .. };
-        wing::add_header(bf, "Content-Type");
-        wing::add_header(bf, "Host");
-        wing::add_header(bf, "Connection");
-        wing::add_header(bf, "X-Custom-Auth");
+        var bf = http::HeaderBloomFilter { .. };
+        http::add_header(bf, "Content-Type");
+        http::add_header(bf, "Host");
+        http::add_header(bf, "Connection");
+        http::add_header(bf, "X-Custom-Auth");
 
         // Case-insensitive positive checks
-        sub.assert_true(wing::might_have_header(bf, "content-type"), "Matches lowercase content-type");
-        sub.assert_true(wing::might_have_header(bf, "CONTENT-TYPE"), "Matches uppercase CONTENT-TYPE");
-        sub.assert_true(wing::might_have_header(bf, "Content-Type"), "Matches mixed-case Content-Type");
-        sub.assert_true(wing::might_have_header(bf, "host"), "Matches host");
-        sub.assert_true(wing::might_have_header(bf, "connection"), "Matches connection");
-        sub.assert_true(wing::might_have_header(bf, "x-custom-auth"), "Matches x-custom-auth");
+        sub.assert_true(http::might_have_header(bf, "content-type"), "Matches lowercase content-type");
+        sub.assert_true(http::might_have_header(bf, "CONTENT-TYPE"), "Matches uppercase CONTENT-TYPE");
+        sub.assert_true(http::might_have_header(bf, "Content-Type"), "Matches mixed-case Content-Type");
+        sub.assert_true(http::might_have_header(bf, "host"), "Matches host");
+        sub.assert_true(http::might_have_header(bf, "connection"), "Matches connection");
+        sub.assert_true(http::might_have_header(bf, "x-custom-auth"), "Matches x-custom-auth");
 
         // Negative checks: must be rejected with 0 string comparisons
-        sub.assert_false(wing::might_have_header(bf, "sec-websocket-key"), "Rejects missing sec-websocket-key in 3 cycles");
-        sub.assert_false(wing::might_have_header(bf, "authorization"), "Rejects missing authorization in 3 cycles");
-        sub.assert_false(wing::might_have_header(bf, "upgrade"), "Rejects missing upgrade in 3 cycles");
-        sub.assert_false(wing::might_have_header(bf, "transfer-encoding"), "Rejects missing transfer-encoding in 3 cycles");
+        sub.assert_false(http::might_have_header(bf, "sec-websocket-key"), "Rejects missing sec-websocket-key in 3 cycles");
+        sub.assert_false(http::might_have_header(bf, "authorization"), "Rejects missing authorization in 3 cycles");
+        sub.assert_false(http::might_have_header(bf, "upgrade"), "Rejects missing upgrade in 3 cycles");
+        sub.assert_false(http::might_have_header(bf, "transfer-encoding"), "Rejects missing transfer-encoding in 3 cycles");
     };
 
     t.run("2. Request Struct with Integrated BloomFilter") { sub =>
-        var req = wing::new_request("GET", "/api/v1/status");
+        var req = http::new_request("GET", "/api/v1/status");
         req.set_header("Host", "api.example.com");
         req.set_header("Accept", "application/json");
 
@@ -499,11 +499,11 @@ fn test_header_bloom_filter(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_fast_serialization(t: lit::T&) {
     t.run("1. Pre-formatted 200 OK Status Line & Content-Length 0") { sub =>
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         res.status_code = 200;
 
         var wire: u8[>..] = [];
-        wing::serialize_http1_response(res, "goose-wing", wire);
+        server::serialize_http1_response(res, "goose-wing", wire);
 
         let wire_str = wire[..];
         sub.assert_true(find(wire_str, "HTTP/1.1 200 OK\r\n") == 0, "Status line uses pre-formatted 200 OK");
@@ -552,29 +552,29 @@ fn test_zero_copy_websocket_view(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_shared_tcp_buffer(t: lit::T&) {
     t.run("1. Live TCP Direct Slice Recv") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
 
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
 
-        let srv_sock = wing::tcp_accept(listener, 2000);
+        let srv_sock = net::tcp_accept(listener, 2000);
         sub.assert_gt(srv_sock, 0, "Server accepted");
 
         // Client sends payload
         let payload = "ZERO_COPY_TCP_PAYLOAD_TEST";
-        wing::tcp_send(client, payload);
+        net::tcp_send(client, payload);
 
         // Server receives directly into preallocated slice without stack memset
         var srv_storage: u8[256] = [0; 256];
-        let recvd = wing::tcp_recv_slice(srv_sock, srv_storage[..], 2000);
+        let recvd = net::tcp_recv_slice(srv_sock, srv_storage[..], 2000);
         sub.assert_eq(recvd, payload.len as i32, "Direct slice received all bytes");
         sub.assert_bytes_eq(srv_storage[..recvd], payload, "Storage content matches sent payload");
 
-        wing::tcp_close(client);
-        wing::tcp_close(srv_sock);
-        wing::tcp_close(listener);
+        net::tcp_close(client);
+        net::tcp_close(srv_sock);
+        net::tcp_close(listener);
     };
 }
 
@@ -659,47 +659,47 @@ fn test_topic_tree_pubsub(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_vectored_io(t: lit::T&) {
     t.run("1. Zero-Copy HTTP Response via Vectored I/O (tcp_send2)") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
 
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
 
-        let srv_sock = wing::tcp_accept(listener, 2000);
+        let srv_sock = net::tcp_accept(listener, 2000);
         sub.assert_gt(srv_sock, 0, "Server accepted");
 
         // 1. Direct tcp_send2 with separate header and payload slices
         let hdr_part = "HDR_PART;";
         let body_part = "BODY_PART_VECTORED_IO";
-        let sent2 = wing::tcp_send2(srv_sock, hdr_part, body_part);
+        let sent2 = net::tcp_send2(srv_sock, hdr_part, body_part);
         sub.assert_eq(sent2, (hdr_part.len + body_part.len) as i32, "tcp_send2 sent both slices in 1 call");
 
         var client_buf: u8[256] = [0; 256];
-        let recvd = wing::tcp_recv_slice(client, client_buf[..], 2000);
+        let recvd = net::tcp_recv_slice(client, client_buf[..], 2000);
         sub.assert_eq(recvd, (hdr_part.len + body_part.len) as i32, "Client received combined slices");
         sub.assert_bytes_eq(client_buf[..recvd], "HDR_PART;BODY_PART_VECTORED_IO", "Data matches concatenation without memory copy");
 
         // 2. Full HTTP response via send_http1_response (zero-copy body)
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         res.status_code = 200;
         res.set_header("Content-Type", "text/plain");
         res.body.append("HELLO_VECTORED_WORLD");
 
         var wire_headers: u8[..1024] = [];
-        let sent_res = wing::send_http1_response(srv_sock, res, "goose-wing", wire_headers);
+        let sent_res = server::send_http1_response(srv_sock, res, "goose-wing", wire_headers);
         sub.assert_gt(sent_res, 0, "send_http1_response transmitted bytes");
 
         var resp_buf: u8[1024] = [0; 1024];
-        let recvd_resp = wing::tcp_recv_slice(client, resp_buf[..], 2000);
+        let recvd_resp = net::tcp_recv_slice(client, resp_buf[..], 2000);
         sub.assert_gt(recvd_resp, 0, "Client received response");
         let resp_slice = resp_buf[..recvd_resp];
         sub.assert_true(find(resp_slice, "HTTP/1.1 200 OK\r\n") == 0, "Starts with 200 OK");
         sub.assert_true(find(resp_slice, "HELLO_VECTORED_WORLD") >= 0, "Body received intact");
 
-        wing::tcp_close(client);
-        wing::tcp_close(srv_sock);
-        wing::tcp_close(listener);
+        net::tcp_close(client);
+        net::tcp_close(srv_sock);
+        net::tcp_close(listener);
     };
 }
 
@@ -708,51 +708,51 @@ fn test_vectored_io(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_server_cork_buffer(t: lit::T&) {
     t.run("1. 16 KB CorkBuffer Syscall Coalescing") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
 
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
 
-        let srv_sock = wing::tcp_accept(listener, 2000);
+        let srv_sock = net::tcp_accept(listener, 2000);
         sub.assert_gt(srv_sock, 0, "Server accepted");
 
-        var cork = wing::new_server_cork(srv_sock);
-        wing::server_cork_write(cork, "alpha;");
-        wing::server_cork_write(cork, "beta;");
-        wing::server_cork_write(cork, "gamma;");
-        wing::server_cork_write2(cork, "delta;", "epsilon;");
+        var cork = server::new_server_cork(srv_sock);
+        server::server_cork_write(cork, "alpha;");
+        server::server_cork_write(cork, "beta;");
+        server::server_cork_write(cork, "gamma;");
+        server::server_cork_write2(cork, "delta;", "epsilon;");
 
         // 4 writes (5 items) are coalesced into the 16 KB buffer without network transmission
         sub.assert_eq(core::cork_pending(cork.buffer), 31, "31 bytes buffered in cork");
 
         // Flush cork buffer in 1 syscall
-        let flushed = wing::server_cork_flush(cork);
+        let flushed = server::server_cork_flush(cork);
         sub.assert_eq(flushed, 31, "31 bytes flushed to socket in 1 syscall");
         sub.assert_eq(core::cork_pending(cork.buffer), 0, "Cork buffer is empty after flush");
 
         var recv_storage: u8[128] = [0; 128];
-        let recvd = wing::tcp_recv_slice(client, recv_storage[..], 2000);
+        let recvd = net::tcp_recv_slice(client, recv_storage[..], 2000);
         sub.assert_eq(recvd, 31, "Client received all coalesced bytes at once");
         sub.assert_bytes_eq(recv_storage[..recvd], "alpha;beta;gamma;delta;epsilon;", "Coalesced data verified");
 
         // Test server_cork_write_response (zero-copy headers + body)
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         res.status_code = 200;
         res.body.append("cork body test");
-        let wr_res = wing::server_cork_write_response(cork, res, "goose-wing");
+        let wr_res = server::server_cork_write_response(cork, res, "goose-wing");
         sub.assert_gt(wr_res, 0, "Response written to cork");
-        wing::server_cork_flush(cork);
+        server::server_cork_flush(cork);
         var resp_buf: u8[512] = [0; 512];
-        let recvd_res = wing::tcp_recv_slice(client, resp_buf[..], 2000);
+        let recvd_res = net::tcp_recv_slice(client, resp_buf[..], 2000);
         sub.assert_gt(recvd_res, 0, "Client received response");
         sub.assert_true(find(resp_buf[..recvd_res], "HTTP/1.1 200 OK") >= 0, "Status line 200 present");
         sub.assert_true(find(resp_buf[..recvd_res], "cork body test") >= 0, "Body present");
 
-        wing::tcp_close(client);
-        wing::tcp_close(srv_sock);
-        wing::tcp_close(listener);
+        net::tcp_close(client);
+        net::tcp_close(srv_sock);
+        net::tcp_close(listener);
     };
 }
 
@@ -772,15 +772,15 @@ fn test_handshake_and_date_and_swar_utf8(t: lit::T&) {
     };
 
     t.run("2. Cached RFC 7231 Date Header Generation") { sub =>
-        let date_hdr = wing::get_cached_http_date_header(1700000000); // Fixed epoch 2023-11-14 22:13:20 GMT
+        let date_hdr = server::get_cached_http_date_header(1700000000); // Fixed epoch 2023-11-14 22:13:20 GMT
         sub.assert_true(find(date_hdr, "Date: ") == 0, "Header starts with Date: ");
         sub.assert_true(find(date_hdr, "GMT\r\n") > 0, "Header ends with GMT CRLF");
 
         // Check response serialization automatically includes Date
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         res.status_code = 200;
         var wire: u8[..512] = [];
-        wing::serialize_http1_headers(res, "goose-wing", wire);
+        server::serialize_http1_headers(res, "goose-wing", wire);
         sub.assert_true(find(wire[..], "Date: ") >= 0, "HTTP/1.1 response includes Date header");
     };
 
@@ -837,50 +837,50 @@ fn test_fast_query_parser(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_epoll_reactor_multiplexer(t: lit::T&) {
     t.run("1. Non-blocking Epoll Reactor Multiplexing Across Multiple Sockets") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        let port = wing::tcp_getsockname_port(listener);
-        sub.assert_true(wing::tcp_set_nonblocking(listener, true), "Listener configured non-blocking");
+        let port = net::tcp_getsockname_port(listener);
+        sub.assert_true(net::tcp_set_nonblocking(listener, true), "Listener configured non-blocking");
 
-        let epfd = wing::epoll_create();
+        let epfd = net::epoll_create();
         sub.assert_gt(epfd, 0, "Epoll reactor created");
 
-        let ok_add_l = wing::epoll_add(epfd, listener, wing::EPOLL_READ, wing::EPOLL_LISTENER_TAG);
+        let ok_add_l = net::epoll_add(epfd, listener, net::EPOLL_READ, net::EPOLL_LISTENER_TAG);
         sub.assert_true(ok_add_l, "Listener added to epoll");
 
         // Connect 2 clients concurrently
-        let c1 = wing::tcp_connect("127.0.0.1", port, 2000);
-        let c2 = wing::tcp_connect("127.0.0.1", port, 2000);
+        let c1 = net::tcp_connect("127.0.0.1", port, 2000);
+        let c2 = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(c1, 0, "Client 1 connected");
         sub.assert_gt(c2, 0, "Client 2 connected");
 
         // Harvest accept readiness
         var ready_fds:   i64[..16] = [];
         var ready_udata: u64[..16] = [];
-        let n_accept = wing::epoll_wait(epfd, ready_fds, ready_udata, 2000);
+        let n_accept = net::epoll_wait(epfd, ready_fds, ready_udata, 2000);
         sub.assert_gt(n_accept, 0, "Accept readiness harvested by epoll_wait");
 
         var accepted_socks: i64[..8] = [];
         loop {
-            let s = wing::tcp_accept_nonblocking(listener);
+            let s = net::tcp_accept_nonblocking(listener);
             if s <= 0 { break; }
-            wing::tcp_set_nonblocking(s, true);
+            net::tcp_set_nonblocking(s, true);
             accepted_socks.push(s);
         }
         sub.assert_eq(accepted_socks.len, 2, "Both client sockets accepted non-blocking");
 
         // Register accepted sockets in epoll with unique udata tags
-        wing::epoll_add(epfd, accepted_socks[0], wing::EPOLL_READ, 101);
-        wing::epoll_add(epfd, accepted_socks[1], wing::EPOLL_READ, 102);
+        net::epoll_add(epfd, accepted_socks[0], net::EPOLL_READ, 101);
+        net::epoll_add(epfd, accepted_socks[1], net::EPOLL_READ, 102);
 
         // Clients send messages
-        wing::tcp_send(c1, "PING_ONE");
-        wing::tcp_send(c2, "PING_TWO");
+        net::tcp_send(c1, "PING_ONE");
+        net::tcp_send(c2, "PING_TWO");
 
         // Reactor harvests read readiness for both sockets in 1 single epoll_wait call
         ready_fds.clear();
         ready_udata.clear();
-        let n_data = wing::epoll_wait(epfd, ready_fds, ready_udata, 2000);
+        let n_data = net::epoll_wait(epfd, ready_fds, ready_udata, 2000);
         sub.assert_gt(n_data, 0, "Data readiness events harvested");
 
         var recvd_1 = false;
@@ -890,13 +890,13 @@ fn test_epoll_reactor_multiplexer(t: lit::T&) {
             let tag = ready_udata[i];
             if tag == 101 {
                 var buf: u8[..128] = [];
-                let r = wing::tcp_recv_nonblocking(accepted_socks[0], buf);
+                let r = net::tcp_recv_nonblocking(accepted_socks[0], buf);
                 sub.assert_eq(r, 8, "8 bytes read from sock 0");
                 sub.assert_bytes_eq(buf[..], "PING_ONE", "Matches PING_ONE");
                 recvd_1 = true;
             } else if tag == 102 {
                 var buf: u8[..128] = [];
-                let r = wing::tcp_recv_nonblocking(accepted_socks[1], buf);
+                let r = net::tcp_recv_nonblocking(accepted_socks[1], buf);
                 sub.assert_eq(r, 8, "8 bytes read from sock 1");
                 sub.assert_bytes_eq(buf[..], "PING_TWO", "Matches PING_TWO");
                 recvd_2 = true;
@@ -907,16 +907,16 @@ fn test_epoll_reactor_multiplexer(t: lit::T&) {
         sub.assert_true(recvd_2, "Socket 1 processed non-blocking in reactor");
 
         // Clean up
-        wing::epoll_del(epfd, accepted_socks[0]);
-        wing::epoll_del(epfd, accepted_socks[1]);
-        wing::epoll_del(epfd, listener);
-        wing::epoll_close(epfd);
+        net::epoll_del(epfd, accepted_socks[0]);
+        net::epoll_del(epfd, accepted_socks[1]);
+        net::epoll_del(epfd, listener);
+        net::epoll_close(epfd);
 
-        wing::tcp_close(c1);
-        wing::tcp_close(c2);
-        wing::tcp_close(accepted_socks[0]);
-        wing::tcp_close(accepted_socks[1]);
-        wing::tcp_close(listener);
+        net::tcp_close(c1);
+        net::tcp_close(c2);
+        net::tcp_close(accepted_socks[0]);
+        net::tcp_close(accepted_socks[1]);
+        net::tcp_close(listener);
     };
 }
 
@@ -1096,34 +1096,34 @@ fn test_chunked_fsm_decoder(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_http_route_cache(t: lit::T&) {
     t.run("1. Dual-Expiry Coalescing HTTP Route Cache") { sub =>
-        var cache = wing::new_http_route_cache(1000, 5000);
+        var cache = server::new_http_route_cache(1000, 5000);
 
         // Initially empty
-        let initial = wing::cache_lookup(cache, 100);
-        sub.assert_eq(initial, wing::CacheLookup.Miss, "Empty cache returns Miss");
+        let initial = server::cache_lookup(cache, 100);
+        sub.assert_eq(initial, server::CacheLookup.Miss, "Empty cache returns Miss");
 
         // Store rendered response
         let wire_sample = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nCached Hello!";
-        let ok_store = wing::cache_store(cache, 1000, wire_sample);
+        let ok_store = server::cache_store(cache, 1000, wire_sample);
         sub.assert_true(ok_store, "Response cached successfully");
 
         // Fresh hit (within lower_expiry 1000ms: at t=1500)
-        let hit_fresh = wing::cache_lookup(cache, 1500);
-        sub.assert_eq(hit_fresh, wing::CacheLookup.HitFresh, "Lookup at t=1500 is Fresh Hit");
+        let hit_fresh = server::cache_lookup(cache, 1500);
+        sub.assert_eq(hit_fresh, server::CacheLookup.HitFresh, "Lookup at t=1500 is Fresh Hit");
         sub.assert_bytes_eq(cache.wire[..], wire_sample, "Cached wire matches");
 
         // Stale hit (between 1000ms and 5000ms: at t=3000)
-        let hit_stale = wing::cache_lookup(cache, 3000);
-        sub.assert_eq(hit_stale, wing::CacheLookup.HitStaleNeedsUpdate, "Lookup at t=3000 is Stale Hit");
+        let hit_stale = server::cache_lookup(cache, 3000);
+        sub.assert_eq(hit_stale, server::CacheLookup.HitStaleNeedsUpdate, "Lookup at t=3000 is Stale Hit");
         sub.assert_bytes_eq(cache.wire[..], wire_sample, "Stale cached response still served");
 
         // Expired miss (after upper_expiry 5000ms: at t=7000)
-        let hit_expired = wing::cache_lookup(cache, 7000);
-        sub.assert_eq(hit_expired, wing::CacheLookup.Miss, "Lookup at t=7000 is Miss");
+        let hit_expired = server::cache_lookup(cache, 7000);
+        sub.assert_eq(hit_expired, server::CacheLookup.Miss, "Lookup at t=7000 is Miss");
 
         // Invalidation
-        wing::cache_invalidate(cache);
-        sub.assert_eq(wing::cache_lookup(cache, 1500), wing::CacheLookup.Miss, "Invalidated cache is Miss");
+        server::cache_invalidate(cache);
+        sub.assert_eq(server::cache_lookup(cache, 1500), server::CacheLookup.Miss, "Invalidated cache is Miss");
     };
 }
 
@@ -1198,35 +1198,35 @@ fn test_buffer_fencing_margin(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_tcp_quickack_and_cork(t: lit::T&) {
     t.run("1. TCP QuickACK and Cork Control") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
 
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
 
-        let accepted = wing::tcp_accept(listener, 2000);
+        let accepted = net::tcp_accept(listener, 2000);
         sub.assert_gt(accepted, 0, "Accepted incoming connection");
 
         // Set TCP_QUICKACK
-        let ok_qack = wing::tcp_set_quickack(accepted, true);
+        let ok_qack = net::tcp_set_quickack(accepted, true);
         sub.assert_true(ok_qack, "TCP_QUICKACK configured successfully");
 
         // Set TCP_CORK enable
-        let ok_cork_on = wing::tcp_set_cork(accepted, true);
+        let ok_cork_on = net::tcp_set_cork(accepted, true);
         sub.assert_true(ok_cork_on, "TCP_CORK enabled successfully");
 
         // Send under cork
-        let sent = wing::tcp_send(accepted, "CORKED_PAYLOAD");
+        let sent = net::tcp_send(accepted, "CORKED_PAYLOAD");
         sub.assert_gt(sent, 0, "Bytes sent under cork");
 
         // Uncork
-        let ok_cork_off = wing::tcp_set_cork(accepted, false);
+        let ok_cork_off = net::tcp_set_cork(accepted, false);
         sub.assert_true(ok_cork_off, "TCP_CORK disabled successfully (flushed)");
 
-        wing::tcp_close(client);
-        wing::tcp_close(accepted);
-        wing::tcp_close(listener);
+        net::tcp_close(client);
+        net::tcp_close(accepted);
+        net::tcp_close(listener);
     };
 }
 
@@ -1242,17 +1242,17 @@ fn test_uweb_1951_non_ascii_url_rejection(t: lit::T&) {
     // Request target must only consist of visible ASCII characters (0x21..0x7E).
     // Raw UTF-8 bytes (e.g. 0xD1, 0x82) or raw binary bytes (>= 0x80) MUST be rejected with HTTP 400.
 
-    var req = wing::new_request("GET", "");
+    var req = http::new_request("GET", "");
     let bad_utf8: const u8[:] = "GET /тест HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let ok1, _ = wing::parse_http1_wire_request(bad_utf8, req);
+    let ok1, _ = server::parse_http1_wire_request(bad_utf8, req);
     t.assert_false(ok1, "Raw UTF-8 in request target must be rejected per #1951 / RFC 9112 §3.2");
 
     let bad_bin: const u8[:] = "GET /\xFF\xFE/resource HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let ok2, _ = wing::parse_http1_wire_request(bad_bin, req);
+    let ok2, _ = server::parse_http1_wire_request(bad_bin, req);
     t.assert_false(ok2, "High-bit raw binary bytes in request target must be rejected");
 
     let valid_ascii: const u8[:] = "GET /test/path?foo=bar%20baz HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let ok3, _ = wing::parse_http1_wire_request(valid_ascii, req);
+    let ok3, _ = server::parse_http1_wire_request(valid_ascii, req);
     t.assert_true(ok3, "Valid visible ASCII path must be accepted");
 }
 
@@ -1264,13 +1264,13 @@ fn test_uweb_1855_head_content_length_duplicate(t: lit::T&) {
     // When responding to HEAD or providing a manual Content-Length on empty body,
     // the server MUST NOT serialize two conflicting Content-Length headers (e.g. 0 and 1024).
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     res.status_code = 200;
-    wing::set_header(res, "Content-Length", "1024");
+    http::set_header(res, "Content-Length", "1024");
     // Body is intentionally empty (HEAD response)
 
     var wire_out: u8[..1024] = [];
-    wing::serialize_http1_response(res, "GooseWing", wire_out);
+    server::serialize_http1_response(res, "GooseWing", wire_out);
     let wire_str = wire_out[..];
 
     t.assert_true(find(wire_str, "Content-Length: 1024\r\n") >= 0, "Must contain Content-Length: 1024");
@@ -1296,12 +1296,12 @@ fn test_uweb_1927_proxy_enforcement_and_no_fallthrough(t: lit::T&) {
     // When accept_proxy_protocol is enabled, the connection MUST begin with a valid PROXY header.
     // If a client sends plain HTTP without PROXY, it MUST be rejected immediately (NO fallthrough!).
 
-    var srv = wing::new_http_server("127.0.0.1", 8080);
+    var srv = server::new_http_server("127.0.0.1", 8080);
     srv.accept_proxy_protocol = true;
 
     var wire_out: u8[..1024] = [];
     let plain_http: const u8[:] = "GET /admin HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let outcome, ok = wing::handle_connection_wire(srv, "192.168.1.50", plain_http, 123456789, wire_out);
+    let outcome, ok = server::handle_connection_wire(srv, "192.168.1.50", plain_http, 123456789, wire_out);
 
     t.assert_false(ok, "Direct plain HTTP connection when PROXY is enforced must be rejected");
     t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must return 400 Bad Request on missing PROXY header");
@@ -1395,28 +1395,28 @@ fn test_uweb_1933_topictree_trailing_wildcard(t: lit::T&) {
 // 32. #263 Socket Handle Lifecycle & Inheritance Defense
 // ----------------------------------------------------------------------------
 fn test_usock_263_socket_lifecycle_and_non_blocking_clean(t: lit::T&) {
-    let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+    let listener = net::tcp_listen("127.0.0.1", 0, 16);
     t.assert_true(listener > 0, "Listener created with non-inheritable handle");
-    let port = wing::tcp_getsockname_port(listener);
+    let port = net::tcp_getsockname_port(listener);
     t.assert_true(port > 0, "Port allocated");
 
-    let client = wing::tcp_connect("127.0.0.1", port, 2000);
+    let client = net::tcp_connect("127.0.0.1", port, 2000);
     t.assert_true(client > 0, "Client connected without handle inheritance");
 
-    let server_sock = wing::tcp_accept(listener, 2000);
+    let server_sock = net::tcp_accept(listener, 2000);
     t.assert_true(server_sock > 0, "Server accepted connection");
 
     let msg = "PING_uWS_263";
-    let sent = wing::tcp_send(client, msg);
+    let sent = net::tcp_send(client, msg);
     t.assert_eq(sent, msg.len as i32, "Sent test payload");
 
     var buf: u8[128] = [0; 128];
-    let recvd = wing::tcp_recv_slice(server_sock, buf[..], 2000);
+    let recvd = net::tcp_recv_slice(server_sock, buf[..], 2000);
     t.assert_eq(recvd, msg.len as i32, "Received payload on accepted socket");
 
-    wing::tcp_close(client);
-    wing::tcp_close(server_sock);
-    wing::tcp_close(listener);
+    net::tcp_close(client);
+    net::tcp_close(server_sock);
+    net::tcp_close(listener);
 }
 
 // ----------------------------------------------------------------------------
@@ -1427,36 +1427,36 @@ fn test_uweb_1949_host_header_validation(t: lit::T&) {
     // 1. Missing Host header in HTTP/1.1 must be rejected with 400.
     // 2. Multiple Host headers must be rejected with 400.
     // 3. Host containing path ('/'), query ('?'), fragment ('#'), or userinfo ('@') must be rejected with 400.
-    var req = wing::new_request("GET", "");
+    var req = http::new_request("GET", "");
 
     // 1. Missing Host in HTTP/1.1
     let no_host: const u8[:] = "GET / HTTP/1.1\r\nConnection: close\r\n\r\n";
-    let ok1, _ = wing::parse_http1_wire_request(no_host, req);
+    let ok1, _ = server::parse_http1_wire_request(no_host, req);
     t.assert_false(ok1, "HTTP/1.1 request without Host header must be rejected");
 
     // 2. Host with path slash '/'
     let slash_host: const u8[:] = "GET / HTTP/1.1\r\nHost: localhost:8080/path\r\n\r\n";
-    let ok2, _ = wing::parse_http1_wire_request(slash_host, req);
+    let ok2, _ = server::parse_http1_wire_request(slash_host, req);
     t.assert_false(ok2, "Host header with slash '/path' must be rejected");
 
     // 3. Host with query '?'
     let query_host: const u8[:] = "GET / HTTP/1.1\r\nHost: localhost?query=1\r\n\r\n";
-    let ok3, _ = wing::parse_http1_wire_request(query_host, req);
+    let ok3, _ = server::parse_http1_wire_request(query_host, req);
     t.assert_false(ok3, "Host header with query '?' must be rejected");
 
     // 4. Host with userinfo '@'
     let user_host: const u8[:] = "GET / HTTP/1.1\r\nHost: admin@localhost\r\n\r\n";
-    let ok4, _ = wing::parse_http1_wire_request(user_host, req);
+    let ok4, _ = server::parse_http1_wire_request(user_host, req);
     t.assert_false(ok4, "Host header with userinfo '@' must be rejected");
 
     // 5. Multiple conflicting Host headers
     let multi_host: const u8[:] = "GET / HTTP/1.1\r\nHost: alpha.com\r\nHost: beta.com\r\n\r\n";
-    let ok5, _ = wing::parse_http1_wire_request(multi_host, req);
+    let ok5, _ = server::parse_http1_wire_request(multi_host, req);
     t.assert_false(ok5, "Multiple Host headers must be rejected");
 
     // 6. Valid Host header
     let valid_host: const u8[:] = "GET / HTTP/1.1\r\nHost: localhost:8080\r\n\r\n";
-    let ok6, _ = wing::parse_http1_wire_request(valid_host, req);
+    let ok6, _ = server::parse_http1_wire_request(valid_host, req);
     t.assert_true(ok6, "Valid Host header must be accepted");
 }
 
@@ -1467,12 +1467,12 @@ fn test_uweb_1370_204_no_content_length(t: lit::T&) {
     // Issue #1370 / RFC 9110 Section 8.6:
     // A server MUST NOT send a Content-Length header field in any response
     // with status code 204 (No Content).
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     res.status_code = 204;
-    wing::set_header(res, "Content-Length", "0"); // User handler mistakenly sets Content-Length
+    http::set_header(res, "Content-Length", "0"); // User handler mistakenly sets Content-Length
 
     var wire_out: u8[..1024] = [];
-    wing::serialize_http1_response(res, "GooseWing", wire_out);
+    server::serialize_http1_response(res, "GooseWing", wire_out);
     let wire_str = wire_out[..];
 
     t.assert_false(find(wire_str, "Content-Length") >= 0, "204 No Content response must NOT contain Content-Length header");
@@ -1505,18 +1505,18 @@ fn test_uweb_1952_options_asterisk_and_get_asterisk_rejection(t: lit::T&) {
     // Asterisk-form ('*') request target is ONLY valid for OPTIONS.
     // GET *, POST *, or any non-OPTIONS method with '*' MUST be rejected with 400.
     // Normal origin-form targets for GET/POST must begin with '/'.
-    var req = wing::new_request("GET", "");
+    var req = http::new_request("GET", "");
 
     let opt_star: const u8[:] = "OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let ok1, _ = wing::parse_http1_wire_request(opt_star, req);
+    let ok1, _ = server::parse_http1_wire_request(opt_star, req);
     t.assert_true(ok1, "OPTIONS * HTTP/1.1 must be accepted per RFC 9112 §3.2.4");
 
     let get_star: const u8[:] = "GET * HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let ok2, _ = wing::parse_http1_wire_request(get_star, req);
+    let ok2, _ = server::parse_http1_wire_request(get_star, req);
     t.assert_false(ok2, "GET * HTTP/1.1 must be rejected per #1952 / RFC 9112 §3.2.4");
 
     let post_star: const u8[:] = "POST * HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let ok3, _ = wing::parse_http1_wire_request(post_star, req);
+    let ok3, _ = server::parse_http1_wire_request(post_star, req);
     t.assert_false(ok3, "POST * HTTP/1.1 must be rejected");
 }
 
@@ -1626,14 +1626,14 @@ fn test_uweb_1898_extra_bytes_connection_poisoning(t: lit::T&) {
     // Extra bytes sent beyond Content-Length must not be ignored or allowed to poison keep-alive.
     // If a request stream contains unparseable trailing junk after a request, the connection handler
     // must reject it with 400 Bad Request and fail the stream (return ok = false), rather than silently breaking.
-    var server = wing::new_http_server();
-    wing::add_route(server.pipeline.router, "POST", "/submit", 1);
+    var server = server::new_http_server();
+    server::add_route(server.pipeline.router, "POST", "/submit", 1);
 
     let poisoned_stream: const u8[:] =
         "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nHELLOPOISON_EXTRA_BYTES_LINGERING";
 
     var wire_out: u8[..4096] = [];
-    let handled, ok = wing::handle_connection_wire_pipelined(server, "127.0.0.1", poisoned_stream, 0, wire_out);
+    let handled, ok = server::handle_connection_wire_pipelined(server, "127.0.0.1", poisoned_stream, 0, wire_out);
     t.assert_false(ok, "Trailing unparseable bytes after Content-Length must invalidate the stream (ok = false)");
     t.assert_true(find(wire_out[..], "400 Bad Request") >= 0, "Must serialize 400 Bad Request for poisoned connection");
 }
@@ -1680,7 +1680,7 @@ fn test_uweb_1658_max_header_size_rejection(t: lit::T&) {
     // #1658 / RFC 9112 §2.1:
     // Total header block size must be bounded (e.g. 8192 bytes).
     // Incoming requests exceeding 8192 bytes of headers must be rejected.
-    var req = wing::new_request("GET", "");
+    var req = http::new_request("GET", "");
     var huge_wire: u8[>..] = [];
     huge_wire.append("GET /large-headers HTTP/1.1\r\nHost: example.com\r\n");
     for i in 26 {
@@ -1689,7 +1689,7 @@ fn test_uweb_1658_max_header_size_rejection(t: lit::T&) {
     huge_wire.append("\r\n");
     t.assert_true(huge_wire.len > 8192, "Total wire headers exceed 8192 bytes");
 
-    let ok, _ = wing::parse_http1_wire_request(huge_wire[..], req);
+    let ok, _ = server::parse_http1_wire_request(huge_wire[..], req);
     t.assert_false(ok, "Headers exceeding 8KB must be rejected per #1658 / RFC 9112 §2.1");
 }
 
@@ -1701,18 +1701,18 @@ fn test_usock_101_windows_exclusive_port_defense(t: lit::T&) {
     // On Windows, listening sockets MUST set SO_EXCLUSIVEADDRUSE rather than SO_REUSEADDR.
     // SO_REUSEADDR on Windows permits rogue processes to forcibly bind to the same port and steal connections (port hijacking).
     // With SO_EXCLUSIVEADDRUSE, a second bind to the same local IP and port MUST fail.
-    let s1 = wing::native_tcp_listen("127.0.0.1", 0, 128);
+    let s1 = net_internal::native_tcp_listen("127.0.0.1", 0, 128);
     t.assert_true(s1 > 0, "First listener created successfully");
-    let port = wing::native_tcp_getsockname_port(s1);
+    let port = net_internal::native_tcp_getsockname_port(s1);
     t.assert_true(port > 0, "Listener bound to dynamic port");
 
     // Second bind attempt on the same address & port: MUST be rejected
-    let s2 = wing::native_tcp_listen("127.0.0.1", port, 128);
+    let s2 = net_internal::native_tcp_listen("127.0.0.1", port, 128);
     t.assert_eq(s2, -1, "Second listener on exact same port MUST fail (-1)");
 
-    wing::native_tcp_close(s1);
+    net_internal::native_tcp_close(s1);
     if s2 > 0 {
-        wing::native_tcp_close(s2);
+        net_internal::native_tcp_close(s2);
     }
 }
 
@@ -1723,31 +1723,31 @@ fn test_rfc_6455_sec_websocket_key_validation(t: lit::T&) {
     // RFC 6455 Section 4.2.1:
     // "The |Sec-WebSocket-Key| MUST be a base64-encoded value that, when decoded, is 16 bytes in length."
     // Handshake request with malformed, short, or non-base64 key MUST be rejected with HTTP 400.
-    var req_bad = wing::new_request("GET", "/ws");
-    wing::set_header(req_bad, "Host", "example.com");
-    wing::set_header(req_bad, "Upgrade", "websocket");
-    wing::set_header(req_bad, "Connection", "Upgrade");
-    wing::set_header(req_bad, "Sec-WebSocket-Version", "13");
-    wing::set_header(req_bad, "Sec-WebSocket-Key", "short_invalid_key");
+    var req_bad = http::new_request("GET", "/ws");
+    http::set_header(req_bad, "Host", "example.com");
+    http::set_header(req_bad, "Upgrade", "websocket");
+    http::set_header(req_bad, "Connection", "Upgrade");
+    http::set_header(req_bad, "Sec-WebSocket-Version", "13");
+    http::set_header(req_bad, "Sec-WebSocket-Key", "short_invalid_key");
 
-    var res_bad = wing::Response { .. };
+    var res_bad = http::Response { .. };
     let sess_bad, ok_bad = realtime::ws_upgrade_request(req_bad, res_bad);
     t.assert_false(ok_bad, "Upgrade with non-16-byte key must fail");
     t.assert_eq(res_bad.status_code, 400, "Must return HTTP 400 Bad Request for malformed Sec-WebSocket-Key");
 
     // Valid 16-byte nonce base64-encoded (RFC 6455 example)
-    var req_good = wing::new_request("GET", "/ws");
-    wing::set_header(req_good, "Host", "example.com");
-    wing::set_header(req_good, "Upgrade", "websocket");
-    wing::set_header(req_good, "Connection", "Upgrade");
-    wing::set_header(req_good, "Sec-WebSocket-Version", "13");
-    wing::set_header(req_good, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+    var req_good = http::new_request("GET", "/ws");
+    http::set_header(req_good, "Host", "example.com");
+    http::set_header(req_good, "Upgrade", "websocket");
+    http::set_header(req_good, "Connection", "Upgrade");
+    http::set_header(req_good, "Sec-WebSocket-Version", "13");
+    http::set_header(req_good, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
 
-    var res_good = wing::Response { .. };
+    var res_good = http::Response { .. };
     let sess_good, ok_good = realtime::ws_upgrade_request(req_good, res_good);
     t.assert_true(ok_good, "Upgrade with valid Sec-WebSocket-Key must succeed");
     t.assert_eq(res_good.status_code, 101, "Must return HTTP 101 Switching Protocols");
-    let accept_val = wing::header(res_good, "Sec-WebSocket-Accept");
+    let accept_val = http::header(res_good, "Sec-WebSocket-Accept");
     t.assert_eq(accept_val, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "Correct RFC 6455 Sec-WebSocket-Accept header");
 }
 
@@ -1771,7 +1771,7 @@ fn test_uweb_1948_proxy_v2_command_and_family_validation(t: lit::T&) {
     bad_wire1.push(0x01); // Invalid UNSPEC+STREAM
     bad_wire1.push(0x00); // len hi
     bad_wire1.push(0x00); // len lo
-    let hdr1, c1, ok1 = wing::parse_proxy_v2(bad_wire1[..]);
+    let hdr1, c1, ok1 = net::parse_proxy_v2(bad_wire1[..]);
     t.assert_false(ok1, "PROXY v2 with invalid fam_trans 0x01 (UNSPEC+STREAM) MUST be rejected");
 
     // Case 2: fam_trans = 0x10 (INET4 + UNSPEC) - MUST FAIL
@@ -1781,7 +1781,7 @@ fn test_uweb_1948_proxy_v2_command_and_family_validation(t: lit::T&) {
     bad_wire2.push(0x10); // Invalid INET4+UNSPEC
     bad_wire2.push(0x00); // len hi
     bad_wire2.push(0x00); // len lo
-    let hdr2, c2, ok2 = wing::parse_proxy_v2(bad_wire2[..]);
+    let hdr2, c2, ok2 = net::parse_proxy_v2(bad_wire2[..]);
     t.assert_false(ok2, "PROXY v2 with invalid fam_trans 0x10 (INET4+UNSPEC) MUST be rejected");
 
     // Case 3: Command LOCAL (0x20) with IPv4 address payload - MUST NOT expose proxied address
@@ -1795,7 +1795,7 @@ fn test_uweb_1948_proxy_v2_command_and_family_validation(t: lit::T&) {
     let addr_bytes: u8[12] = [10, 0, 0, 1, 10, 0, 0, 2, 0x04, 0xD2, 0x00, 0x50];
     local_wire.append(addr_bytes[..]);
 
-    let hdr3, c3, ok3 = wing::parse_proxy_v2(local_wire[..]);
+    let hdr3, c3, ok3 = net::parse_proxy_v2(local_wire[..]);
     t.assert_true(ok3, "LOCAL command header syntax is valid");
     t.assert_eq(hdr3.src_ip_str.len, 0, "LOCAL command MUST NOT expose proxied client IP");
 }
@@ -1814,7 +1814,7 @@ fn test_usock_258_windows_connect_rst_immediate_failure(t: lit::T&) {
     // 2) Elapsed time MUST be bounded (< 300ms) without hanging.
 
     let sw = core::stopwatch();
-    let s = wing::native_tcp_connect("127.0.0.1", 59999, 50);
+    let s = net_internal::native_tcp_connect("127.0.0.1", 59999, 50);
     let dur_ms = sw.elapsed().as_millis();
 
     t.assert_eq(s, -1, "Connect to closed port MUST return -1 (never call on_open)");
@@ -1835,26 +1835,26 @@ fn test_uweb_1941_transfer_encoding_list_and_final_chunked(t: lit::T&) {
     // 2) multiple chunked encodings (e.g. "chunked, chunked")
 
     // 1. Valid list forms ending in chunked
-    t.assert_true(wing::validate_transfer_encoding_value("chunked"), "Single chunked is valid");
-    t.assert_true(wing::validate_transfer_encoding_value("CHUNKED"), "Case-insensitive CHUNKED is valid");
-    t.assert_true(wing::validate_transfer_encoding_value("gzip, chunked"), "gzip, chunked list is valid");
-    t.assert_true(wing::validate_transfer_encoding_value("identity, chunked"), "identity, chunked list is valid");
-    t.assert_true(wing::validate_transfer_encoding_value("deflate, gzip, chunked"), "deflate, gzip, chunked list is valid");
-    t.assert_true(wing::validate_transfer_encoding_value("br, chunked"), "br, chunked list is valid");
-    t.assert_true(wing::validate_transfer_encoding_value("gzip;q=1.0, chunked"), "parameterized coding is valid");
+    t.assert_true(http::validate_transfer_encoding_value("chunked"), "Single chunked is valid");
+    t.assert_true(http::validate_transfer_encoding_value("CHUNKED"), "Case-insensitive CHUNKED is valid");
+    t.assert_true(http::validate_transfer_encoding_value("gzip, chunked"), "gzip, chunked list is valid");
+    t.assert_true(http::validate_transfer_encoding_value("identity, chunked"), "identity, chunked list is valid");
+    t.assert_true(http::validate_transfer_encoding_value("deflate, gzip, chunked"), "deflate, gzip, chunked list is valid");
+    t.assert_true(http::validate_transfer_encoding_value("br, chunked"), "br, chunked list is valid");
+    t.assert_true(http::validate_transfer_encoding_value("gzip;q=1.0, chunked"), "parameterized coding is valid");
 
     // 2. Invalid forms (chunked not final or duplicate chunked)
-    t.assert_false(wing::validate_transfer_encoding_value("chunked, gzip"), "chunked before gzip must be rejected");
-    t.assert_false(wing::validate_transfer_encoding_value("chunked, identity"), "chunked before identity must be rejected");
-    t.assert_false(wing::validate_transfer_encoding_value("identity"), "Missing chunked must be rejected");
-    t.assert_false(wing::validate_transfer_encoding_value("chunked, chunked"), "Duplicate chunked must be rejected");
+    t.assert_false(http::validate_transfer_encoding_value("chunked, gzip"), "chunked before gzip must be rejected");
+    t.assert_false(http::validate_transfer_encoding_value("chunked, identity"), "chunked before identity must be rejected");
+    t.assert_false(http::validate_transfer_encoding_value("identity"), "Missing chunked must be rejected");
+    t.assert_false(http::validate_transfer_encoding_value("chunked, chunked"), "Duplicate chunked must be rejected");
 
     // 3. End-to-end server wire handling with identity, chunked
-    var server = wing::new_http_server("test-server");
-    wing::add_post_route(server, "/upload", 1);
+    var server = server::new_http_server("test-server");
+    server::add_post_route(server, "/upload", 1);
     var wire_out: u8[..512] = [];
     let raw_req: const u8[:] = "POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: identity, chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
-    let _, ok = wing::handle_connection_wire(server, "127.0.0.1", raw_req, 1000000000, wire_out);
+    let _, ok = server::handle_connection_wire(server, "127.0.0.1", raw_req, 1000000000, wire_out);
     t.assert_true(ok, "Server must accept and process request with Transfer-Encoding: identity, chunked");
     t.assert_contains(wire_out[..], "200 OK", "Server responds 200 OK to valid chunked list form");
 }
@@ -1879,48 +1879,48 @@ fn test_uweb_1936_chunk_extension_and_size_whitespace_validation(t: lit::T&) {
     // 6) Legitimate extensions ("5;name=value;flag\r\n" and "5;name=\"quoted val\"\r\n") MUST succeed.
 
     var body: u8[>..] = [];
-    var trailers = wing::HeaderMap { .. };
+    var trailers = http::HeaderMap { .. };
 
     // 1. Valid extensions
     body.clear(); trailers.clear();
-    let err1, _ = wing::decode_chunked_body_with_trailers("5;name=value;flag\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_eq(err1, wing::ChunkedDecodeError.None, "Valid chunk extension accepted");
+    let err1, _ = http::decode_chunked_body_with_trailers("5;name=value;flag\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_eq(err1, http::ChunkedDecodeError.None, "Valid chunk extension accepted");
 
     body.clear(); trailers.clear();
-    let err2, _ = wing::decode_chunked_body_with_trailers("5;name=\"quoted val\"\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_eq(err2, wing::ChunkedDecodeError.None, "Valid quoted extension accepted");
+    let err2, _ = http::decode_chunked_body_with_trailers("5;name=\"quoted val\"\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_eq(err2, http::ChunkedDecodeError.None, "Valid quoted extension accepted");
 
     // 2. Illegal whitespace around chunk-size (smuggling vector)
     body.clear(); trailers.clear();
-    let err_ws1, _ = wing::decode_chunked_body_with_trailers(" 5\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_ne(err_ws1, wing::ChunkedDecodeError.None, "Leading whitespace before chunk size MUST be rejected");
+    let err_ws1, _ = http::decode_chunked_body_with_trailers(" 5\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_ne(err_ws1, http::ChunkedDecodeError.None, "Leading whitespace before chunk size MUST be rejected");
 
     body.clear(); trailers.clear();
-    let err_ws2, _ = wing::decode_chunked_body_with_trailers("5 \r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_ne(err_ws2, wing::ChunkedDecodeError.None, "Trailing whitespace after chunk size without ';' MUST be rejected");
+    let err_ws2, _ = http::decode_chunked_body_with_trailers("5 \r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_ne(err_ws2, http::ChunkedDecodeError.None, "Trailing whitespace after chunk size without ';' MUST be rejected");
 
     // 3. Illegal empty extension names
     body.clear(); trailers.clear();
-    let err_ext1, _ = wing::decode_chunked_body_with_trailers("5;\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_ne(err_ext1, wing::ChunkedDecodeError.None, "Empty extension name after ';' MUST be rejected");
+    let err_ext1, _ = http::decode_chunked_body_with_trailers("5;\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_ne(err_ext1, http::ChunkedDecodeError.None, "Empty extension name after ';' MUST be rejected");
 
     body.clear(); trailers.clear();
-    let err_ext2, _ = wing::decode_chunked_body_with_trailers("5;=val\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_ne(err_ext2, wing::ChunkedDecodeError.None, "Extension with missing name before '=' MUST be rejected");
+    let err_ext2, _ = http::decode_chunked_body_with_trailers("5;=val\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_ne(err_ext2, http::ChunkedDecodeError.None, "Extension with missing name before '=' MUST be rejected");
 
     body.clear(); trailers.clear();
-    let err_ext3, _ = wing::decode_chunked_body_with_trailers("5;;foo=bar\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_ne(err_ext3, wing::ChunkedDecodeError.None, "Double semicolon in extension MUST be rejected");
+    let err_ext3, _ = http::decode_chunked_body_with_trailers("5;;foo=bar\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_ne(err_ext3, http::ChunkedDecodeError.None, "Double semicolon in extension MUST be rejected");
 
     // 4. Unclosed quoted-string in extension value
     body.clear(); trailers.clear();
-    let err_quote, _ = wing::decode_chunked_body_with_trailers("5;foo=\"unclosed\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_ne(err_quote, wing::ChunkedDecodeError.None, "Unclosed quoted string in extension MUST be rejected");
+    let err_quote, _ = http::decode_chunked_body_with_trailers("5;foo=\"unclosed\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_ne(err_quote, http::ChunkedDecodeError.None, "Unclosed quoted string in extension MUST be rejected");
 
     // 5. Invalid token character in extension name
     body.clear(); trailers.clear();
-    let err_tok, _ = wing::decode_chunked_body_with_trailers("5;foo@bar=1\r\nHello\r\n0\r\n\r\n", body, trailers);
-    t.assert_ne(err_tok, wing::ChunkedDecodeError.None, "Invalid token character '@' in extension name MUST be rejected");
+    let err_tok, _ = http::decode_chunked_body_with_trailers("5;foo@bar=1\r\nHello\r\n0\r\n\r\n", body, trailers);
+    t.assert_ne(err_tok, http::ChunkedDecodeError.None, "Invalid token character '@' in extension name MUST be rejected");
 }
 
 // --- Test 50: PreparedMessage & publishPrepared ---
@@ -2074,14 +2074,14 @@ fn on_test_socket_writable(fd: i64, total_written: u64, tag: u64) -> bool {
     return true;
 }
 
-fn test_missing_sni_fallback(hostname: const u8[:]) -> wing::SniCredentials {
+fn test_missing_sni_fallback(hostname: const u8[:]) -> server::SniCredentials {
     if core::contains(hostname, "fallback") {
-        return wing::SniCredentials {
+        return server::SniCredentials {
             cert_pem: "FALLBACK_CERT_PEM",
             key_pem:  "FALLBACK_KEY_PEM",
         };
     }
-    return wing::SniCredentials { .. };
+    return server::SniCredentials { .. };
 }
 
 // --- Test 53: endWithoutBody & HEAD/304 Content-Length Spoofing ---
@@ -2089,16 +2089,16 @@ fn test_missing_sni_fallback(hostname: const u8[:]) -> wing::SniCredentials {
 // 53. endWithoutBody & HEAD/304 Content-Length Spoofing
 // ----------------------------------------------------------------------------
 fn test_uweb_end_without_body(t: lit::T&) {
-    var res = wing::Response { status_code: 200, .. };
+    var res = http::Response { status_code: 200, .. };
     var wire: u8[..1024] = [];
 
     // 1. Standard end_without_body with reported Content-Length (HEAD request)
-    wing::end_without_body(res, "goose-wing", wire, 1048576, false);
+    server::end_without_body(res, "goose-wing", wire, 1048576, false);
     t.assert_gt(wire.len, 0, "Wire headers serialized");
     t.assert_true(core::contains(wire[..], "Content-Length: 1048576\r\n"), "Content-Length present in header block");
     t.assert_true(core::contains(wire[..], "\r\n\r\n"), "Double CRLF terminator present");
 
-    let sent_bytes = wing::send_http1_end_without_body(0, res, "goose-wing", wire, 1048576, false);
+    let sent_bytes = server::send_http1_end_without_body(0, res, "goose-wing", wire, 1048576, false);
     t.assert_eq(sent_bytes, 0, "send_http1_end_without_body returns 0 on non-positive fd");
 
     // Verify wire has exactly 0 body bytes after \r\n\r\n
@@ -2107,8 +2107,8 @@ fn test_uweb_end_without_body(t: lit::T&) {
 
     // 2. end_without_body with close_connection = true
     wire.clear();
-    var res2 = wing::Response { status_code: 304, .. };
-    wing::end_without_body(res2, "goose-wing", wire, -1, true);
+    var res2 = http::Response { status_code: 304, .. };
+    server::end_without_body(res2, "goose-wing", wire, -1, true);
     t.assert_true(core::contains(wire[..], "Connection: close\r\n"), "Connection: close added");
     t.assert_false(core::contains(wire[..], "Content-Length"), "Content-Length omitted when negative");
 }
@@ -2118,11 +2118,11 @@ fn test_uweb_end_without_body(t: lit::T&) {
 // 54. Streaming Ingress onData / onDataV2
 // ----------------------------------------------------------------------------
 fn test_uweb_streaming_on_data(t: lit::T&) {
-    var req = wing::new_request("POST", "/upload/stream");
-    var consumer = wing::HttpStreamConsumer { .. };
+    var req = http::new_request("POST", "/upload/stream");
+    var consumer = server::HttpStreamConsumer { .. };
 
     let wire_headers = "POST /upload/stream HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\n\r\n";
-    let ok_beg, hdr_len = wing::begin_http_stream_request(wire_headers, req, consumer);
+    let ok_beg, hdr_len = server::begin_http_stream_request(wire_headers, req, consumer);
     t.assert_true(ok_beg, "begin_http_stream_request succeeded");
     t.assert_eq(consumer.content_length, 100, "Content-Length parsed as 100");
     t.assert_true(consumer.is_headers_parsed, "Headers marked parsed");
@@ -2135,7 +2135,7 @@ fn test_uweb_streaming_on_data(t: lit::T&) {
 
     // Chunk 1: 40 bytes
     let chunk1 = "1234567890123456789012345678901234567890";
-    let c1, is_last1, ok1 = wing::feed_http_stream_chunk(consumer, chunk1, stream_chunk_collector);
+    let c1, is_last1, ok1 = server::feed_http_stream_chunk(consumer, chunk1, stream_chunk_collector);
     t.assert_true(ok1, "Chunk 1 fed successfully");
     t.assert_eq(c1, 40, "Consumed 40 bytes");
     t.assert_false(is_last1, "Chunk 1 is not last");
@@ -2144,7 +2144,7 @@ fn test_uweb_streaming_on_data(t: lit::T&) {
 
     // Chunk 2: 60 bytes (completes the 100 bytes)
     let chunk2 = "123456789012345678901234567890123456789012345678901234567890";
-    let c2, is_last2, ok2 = wing::feed_http_stream_chunk(consumer, chunk2, stream_chunk_collector);
+    let c2, is_last2, ok2 = server::feed_http_stream_chunk(consumer, chunk2, stream_chunk_collector);
     t.assert_true(ok2, "Chunk 2 fed successfully");
     t.assert_eq(c2, 60, "Consumed 60 bytes");
     t.assert_true(is_last2, "Chunk 2 is last");
@@ -2159,7 +2159,7 @@ fn test_uweb_streaming_on_data(t: lit::T&) {
 // 55. Async Backpressure (onWritable) & Abort (onAborted)
 // ----------------------------------------------------------------------------
 fn test_uweb_async_backpressure_and_aborted(t: lit::T&) {
-    var ctx = wing::HttpAsyncContext {
+    var ctx = server::HttpAsyncContext {
         sock_fd:          42,
         user_tag:         999,
         is_backpressured: true,
@@ -2172,20 +2172,20 @@ fn test_uweb_async_backpressure_and_aborted(t: lit::T&) {
     g_async_aborted_tag = 0;
 
     // 1. Socket drains: triggers onWritable
-    let drained = wing::notify_socket_writable(ctx, on_test_socket_writable);
+    let drained = server::notify_socket_writable(ctx, on_test_socket_writable);
     t.assert_true(drained, "notify_socket_writable returned true");
     t.assert_true(g_async_writable_called, "onWritable callback executed");
     t.assert_false(ctx.is_backpressured, "Backpressured state cleared on drain");
 
     // 2. Client terminates prematurely: triggers onAborted
-    wing::notify_client_aborted(ctx, on_test_client_aborted);
+    server::notify_client_aborted(ctx, on_test_client_aborted);
     t.assert_true(ctx.is_aborted, "Context marked is_aborted");
     t.assert_eq(g_async_aborted_fd, 42, "onAborted received correct fd");
     t.assert_eq(g_async_aborted_tag, 999, "onAborted received correct user tag");
 
     // Further writable notifications MUST be ignored after abort
     g_async_writable_called = false;
-    let blocked = wing::notify_socket_writable(ctx, on_test_socket_writable);
+    let blocked = server::notify_socket_writable(ctx, on_test_socket_writable);
     t.assert_false(blocked, "Writable notification rejected when connection aborted");
     t.assert_false(g_async_writable_called, "onWritable not called when connection aborted");
 }
@@ -2195,7 +2195,7 @@ fn test_uweb_async_backpressure_and_aborted(t: lit::T&) {
 // 56. Dynamic Runtime SNI Multi-Certificate Registry
 // ----------------------------------------------------------------------------
 fn test_uweb_dynamic_sni_registry(t: lit::T&) {
-    var server = wing::new_http_server("test-sni");
+    var server = server::new_http_server("test-sni");
 
     let cert_main: const u8[:] = "-----BEGIN CERTIFICATE-----\nMAIN\n-----END CERTIFICATE-----";
     let key_main:  const u8[:] = "-----BEGIN PRIVATE KEY-----\nMAIN_KEY\n-----END PRIVATE KEY-----";
@@ -2207,68 +2207,68 @@ fn test_uweb_dynamic_sni_registry(t: lit::T&) {
     let key_special:  const u8[:] = "-----BEGIN PRIVATE KEY-----\nSPECIAL_KEY\n-----END PRIVATE KEY-----";
 
     // 1. Direct SNI pattern matcher compliance (RFC 6125 §6.4.3)
-    t.assert_true(wing::sni_pattern_matches("example.com", "example.com"), "Exact domain matches");
-    t.assert_true(wing::sni_pattern_matches("example.com", "EXAMPLE.COM"), "Exact domain case-insensitive");
-    t.assert_true(wing::sni_pattern_matches("*.example.com", "api.example.com"), "Wildcard matches subdomain");
-    t.assert_true(wing::sni_pattern_matches("*.example.com", "API.EXAMPLE.COM"), "Wildcard case-insensitive");
-    t.assert_false(wing::sni_pattern_matches("*.example.com", "example.com"), "Wildcard does NOT match apex domain");
-    t.assert_false(wing::sni_pattern_matches("*.example.com", "deep.sub.example.com"), "Wildcard does NOT match multi-level subdomain");
-    t.assert_false(wing::sni_pattern_matches("*.example.com", "other.org"), "Wildcard does NOT match different domain");
+    t.assert_true(server::sni_pattern_matches("example.com", "example.com"), "Exact domain matches");
+    t.assert_true(server::sni_pattern_matches("example.com", "EXAMPLE.COM"), "Exact domain case-insensitive");
+    t.assert_true(server::sni_pattern_matches("*.example.com", "api.example.com"), "Wildcard matches subdomain");
+    t.assert_true(server::sni_pattern_matches("*.example.com", "API.EXAMPLE.COM"), "Wildcard case-insensitive");
+    t.assert_false(server::sni_pattern_matches("*.example.com", "example.com"), "Wildcard does NOT match apex domain");
+    t.assert_false(server::sni_pattern_matches("*.example.com", "deep.sub.example.com"), "Wildcard does NOT match multi-level subdomain");
+    t.assert_false(server::sni_pattern_matches("*.example.com", "other.org"), "Wildcard does NOT match different domain");
 
     // 2. Register domains (app.addServerName)
-    let ok_add1 = wing::add_server_name(server, "api.example.com", cert_main, key_main);
+    let ok_add1 = server::add_server_name(server, "api.example.com", cert_main, key_main);
     t.assert_true(ok_add1, "Added exact domain api.example.com");
 
-    let ok_add2 = wing::add_server_name(server, "*.wildcard.org", cert_wildcard, key_wildcard);
+    let ok_add2 = server::add_server_name(server, "*.wildcard.org", cert_wildcard, key_wildcard);
     t.assert_true(ok_add2, "Added wildcard domain *.wildcard.org");
 
-    let ok_add3 = wing::add_server_name(server, "special.wildcard.org", cert_special, key_special);
+    let ok_add3 = server::add_server_name(server, "special.wildcard.org", cert_special, key_special);
     t.assert_true(ok_add3, "Added special override domain special.wildcard.org");
 
     t.assert_eq(server.sni_registry.count, 3, "3 SNI domain entries registered");
 
     // 3. Resolve exact match
-    let cred1, ok1 = wing::resolve_sni_credentials(server, "api.example.com");
+    let cred1, ok1 = server::resolve_sni_credentials(server, "api.example.com");
     t.assert_true(ok1, "Resolved api.example.com");
     t.assert_eq(cred1.cert_pem, cert_main, "Exact match returned correct cert");
     t.assert_eq(cred1.key_pem, key_main, "Exact match returned correct key");
 
     // 4. Resolve exact match case-insensitive
-    let cred1_case, ok1_case = wing::resolve_sni_credentials(server, "API.EXAMPLE.COM");
+    let cred1_case, ok1_case = server::resolve_sni_credentials(server, "API.EXAMPLE.COM");
     t.assert_true(ok1_case, "Resolved API.EXAMPLE.COM case-insensitive");
     t.assert_eq(cred1_case.cert_pem, cert_main, "Case-insensitive matched correct cert");
 
     // 5. Resolve wildcard match
-    let cred2, ok2 = wing::resolve_sni_credentials(server, "sub.wildcard.org");
+    let cred2, ok2 = server::resolve_sni_credentials(server, "sub.wildcard.org");
     t.assert_true(ok2, "Resolved sub.wildcard.org via wildcard");
     t.assert_eq(cred2.cert_pem, cert_wildcard, "Wildcard returned wildcard cert");
 
     // 6. Exact match priority over wildcard
-    let cred3, ok3 = wing::resolve_sni_credentials(server, "special.wildcard.org");
+    let cred3, ok3 = server::resolve_sni_credentials(server, "special.wildcard.org");
     t.assert_true(ok3, "Resolved special.wildcard.org");
     t.assert_eq(cred3.cert_pem, cert_special, "Exact priority returned special cert, not wildcard cert");
 
     // 7. Non-matching queries
-    let _, ok_apex = wing::resolve_sni_credentials(server, "wildcard.org");
+    let _, ok_apex = server::resolve_sni_credentials(server, "wildcard.org");
     t.assert_false(ok_apex, "Apex domain rejected by wildcard SNI");
 
-    let _, ok_multi = wing::resolve_sni_credentials(server, "deep.sub.wildcard.org");
+    let _, ok_multi = server::resolve_sni_credentials(server, "deep.sub.wildcard.org");
     t.assert_false(ok_multi, "Multi-level subdomain rejected by wildcard SNI");
 
-    let _, ok_unreg = wing::resolve_sni_credentials(server, "unregistered.net");
+    let _, ok_unreg = server::resolve_sni_credentials(server, "unregistered.net");
     t.assert_false(ok_unreg, "Unregistered domain returns false");
 
     // 8. Fallback for missing server name (app.missingServerName)
-    let cred_fb, ok_fb = wing::resolve_sni_credentials_with_fallback(server, "dynamic.fallback.io", test_missing_sni_fallback);
+    let cred_fb, ok_fb = server::resolve_sni_credentials_with_fallback(server, "dynamic.fallback.io", test_missing_sni_fallback);
     t.assert_true(ok_fb, "Fallback handler resolved missing server name");
     t.assert_eq(cred_fb.cert_pem, "FALLBACK_CERT_PEM", "Fallback cert returned");
 
     // 9. Remove server name (app.removeServerName)
-    let ok_rem = wing::remove_server_name(server, "api.example.com");
+    let ok_rem = server::remove_server_name(server, "api.example.com");
     t.assert_true(ok_rem, "remove_server_name succeeded");
     t.assert_eq(server.sni_registry.count, 2, "SNI registry count decremented to 2");
 
-    let _, ok_post_rem = wing::resolve_sni_credentials(server, "api.example.com");
+    let _, ok_post_rem = server::resolve_sni_credentials(server, "api.example.com");
     t.assert_false(ok_post_rem, "api.example.com no longer resolves after removal");
 }
 
@@ -2277,52 +2277,52 @@ fn test_uweb_dynamic_sni_registry(t: lit::T&) {
 // 57. Unix Domain Sockets (AF_UNIX) & Socket Adoption
 // ----------------------------------------------------------------------------
 fn test_uweb_unix_domain_sockets_and_adopt_socket(t: lit::T&) {
-    var server = wing::new_http_server("test-uds");
+    var server = server::new_http_server("test-uds");
 
     // 1. Socket Adoption (us_adopt_accepted_socket)
-    let raw_sock = wing::tcp_listen("127.0.0.1", 0, 16);
+    let raw_sock = net::tcp_listen("127.0.0.1", 0, 16);
     t.assert_gt(raw_sock, 0, "Created raw listener socket");
 
-    let adopted = wing::adopt_socket(server, raw_sock);
+    let adopted = server::adopt_socket(server, raw_sock);
     t.assert_eq(adopted, raw_sock, "Socket adopted successfully and matches descriptor");
 
-    let bad_adopted = wing::adopt_socket(server, -1);
+    let bad_adopted = server::adopt_socket(server, -1);
     t.assert_eq(bad_adopted, -1, "Invalid descriptor adoption rejected with -1");
 
-    wing::tcp_close(raw_sock);
+    net::tcp_close(raw_sock);
 
     // 2. Unix Domain Sockets (AF_UNIX) Listen & Connect
     let uds_path: const u8[:] = "./test_uweb_uds.sock";
-    let uds_listener = wing::listen_unix(server, uds_path, 16);
+    let uds_listener = server::listen_unix(server, uds_path, 16);
     t.assert_gt(uds_listener, 0, "listen_unix created AF_UNIX listener");
 
-    let uds_client = wing::tcp_connect_unix(uds_path);
+    let uds_client = net::tcp_connect_unix(uds_path);
     t.assert_gt(uds_client, 0, "tcp_connect_unix connected to AF_UNIX socket");
 
-    let uds_conn = wing::tcp_accept(uds_listener, 2000);
+    let uds_conn = net::tcp_accept(uds_listener, 2000);
     t.assert_gt(uds_conn, 0, "Accepted AF_UNIX client connection");
 
     // Full duplex data transfer over AF_UNIX socket
-    let sent = wing::tcp_send(uds_client, "PING_UDS");
+    let sent = net::tcp_send(uds_client, "PING_UDS");
     t.assert_eq(sent, 8, "Sent 8 bytes over AF_UNIX client");
 
     var srv_buf: u8[..64] = [];
-    let recvd = wing::tcp_recv(uds_conn, srv_buf, 2000);
+    let recvd = net::tcp_recv(uds_conn, srv_buf, 2000);
     t.assert_eq(recvd, 8, "Server received 8 bytes over AF_UNIX");
     t.assert_eq(srv_buf[..8], "PING_UDS", "Server received authentic payload");
 
-    let replied = wing::tcp_send(uds_conn, "PONG_UDS");
+    let replied = net::tcp_send(uds_conn, "PONG_UDS");
     t.assert_eq(replied, 8, "Server replied 8 bytes over AF_UNIX");
 
     var client_buf: u8[..64] = [];
-    let recvd_cli = wing::tcp_recv(uds_client, client_buf, 2000);
+    let recvd_cli = net::tcp_recv(uds_client, client_buf, 2000);
     t.assert_eq(recvd_cli, 8, "Client received 8 bytes over AF_UNIX");
     t.assert_eq(client_buf[..8], "PONG_UDS", "Client received authentic reply");
 
     // Clean up
-    wing::tcp_close(uds_client);
-    wing::tcp_close(uds_conn);
-    wing::tcp_close(uds_listener);
+    net::tcp_close(uds_client);
+    net::tcp_close(uds_conn);
+    net::tcp_close(uds_listener);
 }
 
 fn main() {

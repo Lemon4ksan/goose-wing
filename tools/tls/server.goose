@@ -10,7 +10,7 @@ import wing from "../..";
 fn parse_client_hello_sni_alpn(
     ch_payload: const u8[:],
     sni_str:    u8[..255]&,
-    out_alpn:   wing::NegotiatedAlpn&,
+    out_alpn:   tls::NegotiatedAlpn&,
 ) {
     guard ch_payload.len > 34 else { return; }
     let sess_id_len = ch_payload[34] as i64;
@@ -29,17 +29,17 @@ fn parse_client_hello_sni_alpn(
     guard ch_payload.len >= ext_start + 2 + ext_total_len else { return; }
 
     let exts_slice = ch_payload[ext_start..(ext_start + 2 + ext_total_len)];
-    var entries: wing::TlsExtensionEntry[..32] = [];
-    guard wing::parse_extensions_block(exts_slice, entries) else { return; }
+    var entries: tls::ExtensionEntry[..32] = [];
+    guard tls::parse_extensions_block(exts_slice, entries) else { return; }
 
-    let sni_raw, has_sni = wing::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
+    let sni_raw, has_sni = tls::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
     if has_sni {
-        let _ = wing::parse_sni_extension(sni_raw, sni_str);
+        let _ = tls::parse_sni_extension(sni_raw, sni_str);
     }
 
-    let alpn_raw, has_alpn = wing::find_extension(entries, rfc::TLS_EXT_ALPN);
+    let alpn_raw, has_alpn = tls::find_extension(entries, rfc::TLS_EXT_ALPN);
     if has_alpn {
-        out_alpn = wing::negotiate_alpn(alpn_raw, false);
+        out_alpn = tls::negotiate_alpn(alpn_raw, false);
     }
 }
 
@@ -87,12 +87,12 @@ fn send_tls13_server_hello(conn: i64) {
     record_out.push(0x01);
     record_out.push(0x01);
 
-    wing::tcp_send(conn, record_out[..]);
+    net::tcp_send(conn, record_out[..]);
 }
 
 fn handle_tls_handshake_record(
     conn:           i64,
-    server:         const wing::HttpServer&,
+    server:         const server::HttpServer&,
     record_payload: const u8[:],
 ) {
     guard record_payload.len >= 4 else { return; }
@@ -104,12 +104,12 @@ fn handle_tls_handshake_record(
 
     let ch_payload = record_payload[4..4 + (msg_len as i64)];
     var sni_str: u8[..255] = [];
-    var negotiated_alpn = wing::NegotiatedAlpn.None;
+    var negotiated_alpn = tls::NegotiatedAlpn.None;
     parse_client_hello_sni_alpn(ch_payload, sni_str, negotiated_alpn);
     let _ = negotiated_alpn;
 
     if sni_str.len > 0 {
-        let _, ok_sni = wing::resolve_sni_credentials(server, sni_str[..]);
+        let _, ok_sni = server::resolve_sni_credentials(server, sni_str[..]);
         guard ok_sni else { return; }
     }
 
@@ -126,49 +126,49 @@ fn is_synthetic_wire_client_hello(record_payload: const u8[:]) -> bool {
 
 fn serve_live_tls13_session(
     conn:           i64,
-    server:         wing::HttpServer&,
-    tls_cfg:        const wing::TlsServerHandshakeConfig&,
+    server:         server::HttpServer&,
+    tls_cfg:        const tls::ServerHandshakeConfig&,
     record_payload: const u8[:],
 ) {
-    let slot_idx, ok_hs = wing::tls_server_handshake_with_ch(conn, record_payload, tls_cfg);
+    let slot_idx, ok_hs = tls::server_handshake_with_ch(conn, record_payload, tls_cfg);
     guard ok_hs else { return; }
 
     var pipe = core::new_pipe_buffer();
     var cork = core::new_cork_buffer();
-    let h2_idx = wing::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
-    guard h2_idx >= 0 && h2_idx < wing::REACTOR_MAX_H2_SESSIONS else {
-        wing::free_tls_cipher_slot(slot_idx);
+    let h2_idx = server::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+    guard h2_idx >= 0 && h2_idx < server::REACTOR_MAX_H2_SESSIONS else {
+        tls::free_cipher_slot(slot_idx);
         return;
     }
 
     loop {
-        let recvd = wing::tls_recv_pipe(conn, slot_idx, pipe, 4096, 2000);
+        let recvd = server::tls_recv_pipe(conn, slot_idx, pipe, 4096, 2000);
         if recvd <= 0 { break; }
 
         let now_ns = core::as_nanos(core::monotonic_now());
-        let _, ok = wing::handle_connection_pipe(
-            server, "127.0.0.1", pipe, now_ns, cork, wing::g_default_reactor.h2_sessions[h2_idx],
+        let _, ok = server::handle_connection_pipe(
+            server, "127.0.0.1", pipe, now_ns, cork, server::g_default_reactor.h2_sessions[h2_idx],
         );
-        let should_close = !ok || wing::response_wire_has_connection_close(core::cork_as_slice(cork));
+        let should_close = !ok || server::response_wire_has_connection_close(core::cork_as_slice(cork));
         if !ok {
-            if cork.cork_pending() > 0 { wing::tls_flush_cork(conn, slot_idx, cork); }
+            if cork.cork_pending() > 0 { server::tls_flush_cork(conn, slot_idx, cork); }
             break;
         }
         if cork.cork_pending() > 0 {
-            let sent = wing::tls_flush_cork(conn, slot_idx, cork);
+            let sent = server::tls_flush_cork(conn, slot_idx, cork);
             if sent <= 0 || should_close { break; }
         } else if should_close {
             break;
         }
     }
-    wing::free_reactor_h2_session(h2_idx as i16, server.pipeline);
-    wing::free_tls_cipher_slot(slot_idx);
+    server::free_reactor_h2_session(h2_idx as i16, server.pipeline);
+    tls::free_cipher_slot(slot_idx);
 }
 
 fn handle_tls_connection(
     conn:    i64,
-    server:  wing::HttpServer&,
-    tls_cfg: const wing::TlsServerHandshakeConfig&,
+    server:  server::HttpServer&,
+    tls_cfg: const tls::ServerHandshakeConfig&,
 ) -> bool {
     var in_buf:   u8[>..]    = [];
     var out_wire: u8[..256]  = [];
@@ -177,7 +177,7 @@ fn handle_tls_connection(
 
     while true {
         chunk.clear();
-        let recvd = wing::tcp_recv(conn, chunk, 4096, 500);
+        let recvd = net::tcp_recv(conn, chunk, 4096, 500);
         if recvd == -2 {
             continue;
         }
@@ -190,8 +190,8 @@ fn handle_tls_connection(
             let hdr_end = core::fast_find_crlfcrlf(in_buf[..]);
             if hdr_end >= 0 {
                 out_wire.clear();
-                let _ = wing::handle_connection_wire(server, "127.0.0.1", in_buf[..], 0, out_wire);
-                wing::tcp_send(conn, out_wire[..]);
+                let _ = server::handle_connection_wire(server, "127.0.0.1", in_buf[..], 0, out_wire);
+                net::tcp_send(conn, out_wire[..]);
                 return false;
             }
             continue;
@@ -229,26 +229,26 @@ fn handle_tls_connection(
 }
 
 fn main() {
-    let port_env = wing::get_env_port(0);
-    let listener = wing::tcp_listen("0.0.0.0", port_env, 128);
+    let port_env = net::get_env_port(0);
+    let listener = net::tcp_listen("0.0.0.0", port_env, 128);
     if listener <= 0 {
         print("ERROR_FAILED_TO_LISTEN\n");
         return;
     }
-    let port = wing::tcp_getsockname_port(listener);
+    let port = net::tcp_getsockname_port(listener);
 
-    var server = wing::new_http_server("0.0.0.0", port);
+    var server = server::new_http_server("0.0.0.0", port);
     let _ = server.server_name.try_set("goose-tls/1.3");
-    let _ = wing::add_server_name(server, "goose-wing.local", "CERT-GOOSE-WING", "KEY-GOOSE-WING");
-    let _ = wing::add_server_name(server, "*.goose-wing.local", "CERT-WILDCARD-GOOSE-WING", "KEY-WILDCARD-GOOSE-WING");
-    wing::add_static_get_route(server, "/secure-hello", "text/plain", "Hello over TLS 1.3!", 1);
-    let _ = wing::add_static_route(server.pipeline.router, "POST", "/secure-echo", "text/plain", "TLS_ECHO_OK", 2);
-    wing::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
+    let _ = server::add_server_name(server, "goose-wing.local", "CERT-GOOSE-WING", "KEY-GOOSE-WING");
+    let _ = server::add_server_name(server, "*.goose-wing.local", "CERT-WILDCARD-GOOSE-WING", "KEY-WILDCARD-GOOSE-WING");
+    server::add_static_get_route(server, "/secure-hello", "text/plain", "Hello over TLS 1.3!", 1);
+    let _ = server::add_static_route(server.pipeline.router, "POST", "/secure-echo", "text/plain", "TLS_ECHO_OK", 2);
+    server::add_static_get_route(server, "/shutdown", "text/plain", "BYE\n", 99);
 
     let seed: u8[32] = [0x42; 32];
     var cert_der: u8[..2048] = [];
-    let _ = wing::build_test_ed25519_cert_der(seed, "goose-wing.local", "goose-wing.local", "127.0.0.1", cert_der);
-    var tls_cfg = wing::TlsServerHandshakeConfig {
+    let _ = tls::build_test_ed25519_cert_der(seed, "goose-wing.local", "goose-wing.local", "127.0.0.1", cert_der);
+    var tls_cfg = tls::ServerHandshakeConfig {
         priv_seed: seed,
         ..
     };
@@ -259,14 +259,14 @@ fn main() {
 
     var is_running = true;
     while is_running {
-        let conn = wing::tcp_accept(listener, 200);
+        let conn = net::tcp_accept(listener, 200);
         if conn <= 0 {
             continue;
         }
 
         is_running = handle_tls_connection(conn, server, tls_cfg);
-        wing::tcp_close(conn);
+        net::tcp_close(conn);
     }
 
-    wing::tcp_close(listener);
+    net::tcp_close(listener);
 }

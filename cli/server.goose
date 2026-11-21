@@ -10,13 +10,13 @@ import args;
 import rules;
 import term;
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     stage: ProgrammableServerStage&,
     phase: wire::ServerHookPhase,
-    _cfg:  wing::ServerPipelineConfig&,
-    req:   const wing::Request&,
-    _ctx:  wing::ServerStageCtx&,
-    res:   wing::Response&,
+    _cfg:  server::ServerPipelineConfig&,
+    req:   const http::Request&,
+    _ctx:  server::ServerStageCtx&,
+    res:   http::Response&,
 ) -> wire::StageVerdict {
     var note: u8[..64] = [];
     let verdict = eval_programmable_server_stage(stage, phase, req, res, note);
@@ -64,15 +64,15 @@ fn execute_serve_cmd(cfg: const CliConfig&) -> i64 {
         return load_rc;
     }
 
-    let listener = wing::tcp_listen(cfg.bind_host[..], cfg.port, 128);
+    let listener = net::tcp_listen(cfg.bind_host[..], cfg.port, 128);
     if listener <= 0 {
         write_stderr(str("wing serve: failed to bind ", cfg.bind_host[..], ":", cfg.port, "\n"));
         return 1;
     }
-    defer wing::tcp_close(listener);
+    defer net::tcp_close(listener);
 
-    let actual_port = wing::tcp_getsockname_port(listener);
-    var server = wing::new_http_server(cfg.bind_host[..], actual_port);
+    let actual_port = net::tcp_getsockname_port(listener);
+    var server = server::new_http_server(cfg.bind_host[..], actual_port);
     let _ = server.server_name.try_set("goose-wing-cli/1.0");
     server.pipeline.enable_csrf_guard = false;
     server.pipeline.enable_rate_limiter = false;
@@ -99,19 +99,19 @@ fn execute_serve_cmd(cfg: const CliConfig&) -> i64 {
     var out_wire:    u8[..65536] = [];
 
     server.handle_os_signals = true;
-    wing::server_init_run_state(server);
-    while !wing::server_should_stop(server) {
+    server::init_run_state(server);
+    while !server::should_stop(server) {
         if stage.max_reqs > 0 && stage.served_reqs >= stage.max_reqs {
             break;
         }
-        let conn = wing::tcp_accept(listener, 200);
+        let conn = net::tcp_accept(listener, 200);
         if conn <= 0 {
             continue;
         }
-        let _ = wing::serve_http_connection_on_listener_buf(
+        let _ = server::serve_http_connection_on_listener_buf(
             listener, conn, server, stage, in_buf, ws_frag_buf, out_wire, 500,
         );
-        wing::tcp_close(conn);
+        net::tcp_close(conn);
     }
 
     return 0;

@@ -65,15 +65,15 @@ inline fn is_forwarded_metadata_header(name: const u8[:]) -> bool {
 
 // Filters incoming request headers and populates outgoing proxy request headers.
 fn filter_and_forward_headers(
-    in_headers:    const wing::HeaderMap&,
-    out_headers:   wing::HeaderMap&,
+    in_headers:    const http::HeaderMap&,
+    out_headers:   http::HeaderMap&,
     client_ip:     const u8[:],
     proto:         const u8[:],
     upstream_host: const u8[:],
     config:        const Config&,
 ) -> bool {
     guard proxy_internal::has_consistent_framing_headers(in_headers) else { return false; }
-    wing::reset_for_keep_alive(out_headers);
+    http::reset_for_keep_alive(out_headers);
     var committed = false;
     defer if !committed { out_headers.clear(); };
 
@@ -83,16 +83,15 @@ fn filter_and_forward_headers(
     let cert_der_len = config.client_cert_der_len;
     let actual_der_len = config.client_cert_der.len as i32;
     let eff_der_len = if cert_der_len > 0 { min(cert_der_len, actual_der_len) } else { actual_der_len };
-    if config.forward_client_cert && eff_der_len > 0 && eff_der_len <= wing::CLIENT_CERT_MAX_DER_LEN {
+    if config.forward_client_cert && eff_der_len > 0 && eff_der_len <= http::CLIENT_CERT_MAX_DER_LEN {
         var enc: u8[..8192] = [];
-        let n = wing::encode_client_cert(config.client_cert_der[..eff_der_len], enc);
-        if n > 0 {
-            guard wing::append_header(out_headers, "Client-Cert", enc[..n]) else { return false; }
+        if http::encode_client_cert(config.client_cert_der[..eff_der_len], enc) {
+            guard http::append_header(out_headers, "Client-Cert", enc[..]) else { return false; }
         }
     }
 
     if !config.preserve_host && upstream_host.len > 0 {
-        guard wing::append_header(out_headers, "Host", upstream_host) else { return false; }
+        guard http::append_header(out_headers, "Host", upstream_host) else { return false; }
     }
 
     if config.append_forwarded {
@@ -119,7 +118,7 @@ fn filter_and_forward_headers(
 fn serialize_upstream_request<B>(
     method:       const u8[:],
     uri:          const u8[:],
-    headers:      const wing::HeaderMap&,
+    headers:      const http::HeaderMap&,
     body:         const u8[:],
     out:          B&,
     http_version: const u8[:] = "HTTP/1.1",
@@ -140,7 +139,7 @@ fn serialize_upstream_request<B>(
 // Layer 7 Reverse Proxy Gateway instance managing an UpstreamCluster.
 struct ReverseProxy {
     cluster:            UpstreamCluster              = UpstreamCluster { .. },
-    warm_upstreams:     wing::UpstreamPool           = wing::UpstreamPool { .. },
+    warm_upstreams:     net::UpstreamPool            = net::UpstreamPool { .. },
     config:             Config                       = Config { .. },
     rate_limiter:       security::GatewayRateLimiter = security::GatewayRateLimiter { .. },
     health_checker:     ClusterHealthChecker         = ClusterHealthChecker { .. },
@@ -203,7 +202,7 @@ fn prepare_proxy_request_at<B>(
     rp:         ReverseProxy&,
     method:     const u8[:],
     uri:        const u8[:],
-    in_headers: const wing::HeaderMap&,
+    in_headers: const http::HeaderMap&,
     client_ip:  const u8[:],
     proto:      const u8[:],
     body:       const u8[:],
@@ -244,7 +243,7 @@ fn prepare_proxy_request_at<B>(
     }
 
     // 4. Header filtering and metadata injection.
-    var forward_headers = wing::HeaderMap { .. };
+    var forward_headers = http::HeaderMap { .. };
     var host_buf: u8[..128] = [];
     let ok_prep = proxy_internal::format_upstream_authority(
         target.host[..],
@@ -270,7 +269,7 @@ fn prepare_proxy_request<B>(
     rp:         ReverseProxy&,
     method:     const u8[:],
     uri:        const u8[:],
-    in_headers: const wing::HeaderMap&,
+    in_headers: const http::HeaderMap&,
     client_ip:  const u8[:],
     proto:      const u8[:],
     body:       const u8[:],
@@ -412,38 +411,38 @@ fn park_proxy_upstream_conn(
     nik:             u64 = 0,
 ) -> bool {
     guard fd >= 0 && host.len > 0 && port > 0 else { return false; }
-    let pool_key = wing::new_pool_key(
-        wing::PoolScheme.Http,
+    let pool_key = net::new_pool_key(
+        net::PoolScheme.Http,
         host,
         port,
-        wing::new_direct_proxy_chain(),
-        wing::NetworkAnonymizationKey { .. },
-        wing::TlsAndDnsPolicy { .. },
+        net::new_direct_proxy_chain(),
+        net::NetworkAnonymizationKey { .. },
+        net::TlsAndDnsPolicy { .. },
     );
-    return wing::register_upstream_conn(rp.warm_upstreams, fd, pool_key.origin_endpoint, tls_fingerprint, nik);
+    return net::register_upstream_conn(rp.warm_upstreams, fd, pool_key.origin_endpoint, tls_fingerprint, nik);
 }
 
 fn exchange_prepared_wire_on_conn(
-    conn:       wing::PooledConnection&,
+    conn:       net::PooledConnection&,
     method:     const u8[:],
     wire_req:   const u8[:],
-    out_resp:   wing::Response&,
+    out_resp:   http::Response&,
     timeout_ms: u32,
 ) -> WireReuse, bool {
-    var eh = wing::EarlyHintsResponse { .. };
+    var eh = http::EarlyHintsResponse { .. };
     return proxy_internal::exchange_prepared_wire_impl(
         conn, method, wire_req, out_resp, eh, proxy_internal::HintCaptureMode.Ignore, timeout_ms,
     );
 }
 
 fn exchange_prepared_wire_on_conn_with_hints(
-    conn:         wing::PooledConnection&,
+    conn:         net::PooledConnection&,
     method:       const u8[:],
     wire_req:     const u8[:],
     out_upstream: UpstreamResponse&,
     timeout_ms:   u32,
 ) -> WireReuse, bool {
-    var eh = wing::EarlyHintsResponse { .. };
+    var eh = http::EarlyHintsResponse { .. };
     let reuse, ok = proxy_internal::exchange_prepared_wire_impl(
         conn, method, wire_req, out_upstream.resp, eh, proxy_internal::HintCaptureMode.Capture, timeout_ms,
     );
@@ -464,10 +463,10 @@ struct UpstreamAccelControl {
 }
 
 struct UpstreamResponse {
-    early_hints:     wing::EarlyHintsResponse = wing::EarlyHintsResponse { .. },
+    early_hints:     http::EarlyHintsResponse = http::EarlyHintsResponse { .. },
     has_early_hints: bool                     = false,
     accel:           UpstreamAccelControl     = UpstreamAccelControl { .. },
-    resp:            wing::Response           = wing::Response { .. },
+    resp:            http::Response           = http::Response { .. },
 }
 
 // Parses `X-Accel-*` control header values into `accel` (Nginx `ngx_http_upstream_headers_in` parity).
@@ -539,10 +538,10 @@ fn try_rewrite_upstream_url<B>(
 // Parses `X-Accel-*` control headers, strips hop-by-hop and `X-Accel-*` headers,
 // and rewrites `Location` and `Content-Location` prefixes matching `backend_url_prefix`.
 fn process_and_filter_upstream_response_headers<B>(
-    in_headers:         const wing::HeaderMap&,
+    in_headers:         const http::HeaderMap&,
     backend_url_prefix: const u8[:],
     public_url_prefix:  const u8[:],
-    out_headers:        wing::HeaderMap&,
+    out_headers:        http::HeaderMap&,
     out_location_buf:   B&,
     accel:              UpstreamAccelControl&,
 ) -> bool {
@@ -556,7 +555,7 @@ fn process_and_filter_upstream_response_headers<B>(
         out_location_buf.clear();
         accel = UpstreamAccelControl { .. };
     };
-    if wing::is_incremental_requested(in_headers) {
+    if http::is_incremental_requested(in_headers) {
         accel.incremental_preferred = true;
         accel.disable_buffering = true;
     }
@@ -580,13 +579,13 @@ fn process_and_filter_upstream_response_headers<B>(
 }
 
 // Captures `Link` headers from an upstream `103 Early Hints` interim response into `out_upstream`.
-fn capture_upstream_early_hints(in_resp: const wing::Response&, out_upstream: UpstreamResponse&) {
+fn capture_upstream_early_hints(in_resp: const http::Response&, out_upstream: UpstreamResponse&) {
     guard in_resp.status_code == 103 else { return; }
     for &entry in in_resp.headers.entries {
-        let name = wing::entry_name(in_resp.headers, entry);
+        let name = http::entry_name(in_resp.headers, entry);
         if name.eq_ascii_fold("link") {
-            let val = wing::entry_value(in_resp.headers, entry);
-            if wing::parse_link_header(val, out_upstream.early_hints.links) {
+            let val = http::entry_value(in_resp.headers, entry);
+            if http::parse_link_header(val, out_upstream.early_hints.links) {
                 out_upstream.early_hints.is_valid = out_upstream.early_hints.links.len > 0;
                 out_upstream.has_early_hints = out_upstream.early_hints.is_valid;
             }
@@ -599,14 +598,14 @@ fn capture_upstream_early_hints(in_resp: const wing::Response&, out_upstream: Up
 // a pooled backend connection, reads the upstream response, and records health via `complete_upstream_exchange`.
 fn execute_proxy_exchange(
     rp:         ReverseProxy&,
-    pool:       wing::StreamPool&,
+    pool:       net::StreamPool&,
     method:     const u8[:],
     uri:        const u8[:],
-    in_headers: const wing::HeaderMap&,
+    in_headers: const http::HeaderMap&,
     client_ip:  const u8[:],
     proto:      const u8[:],
     body:       const u8[:],
-    out_resp:   wing::Response&,
+    out_resp:   http::Response&,
     timeout_ms: u32 = 5000,
     now_ns:     u64 = 0,
 ) -> bool {
@@ -630,7 +629,7 @@ fn execute_proxy_exchange(
     let c_idx = pool.find_connection_index(conn_id);
     guard c_idx >= 0 else {
         if warm_fd >= 0 {
-            let _ = wing::release_upstream_conn(rp.warm_upstreams, warm_fd, wing::EPOLLRDHUP);
+            let _ = net::release_upstream_conn(rp.warm_upstreams, warm_fd, net::EPOLLRDHUP);
         } else {
             pool.close_pooled_connection(conn_id);
         }
@@ -644,7 +643,7 @@ fn execute_proxy_exchange(
     );
     var headers_valid = ok_ex && !out_resp.had_te_cl_conflict;
     if headers_valid {
-        var filtered_hdrs = wing::HeaderMap { .. };
+        var filtered_hdrs = http::HeaderMap { .. };
         var loc_buf: u8[..512] = [];
         var accel = UpstreamAccelControl { .. };
         headers_valid = process_and_filter_upstream_response_headers(
@@ -657,14 +656,14 @@ fn execute_proxy_exchange(
     let can_reuse = headers_valid && reuse == WireReuse.KeepAlive && pool.conns[c_idx].rx_buf.len == 0;
     proxy_internal::finalize_proxy_upstream_conn(rp, pool, conn_id, c_idx, warm_fd, can_reuse, now_i64);
     if headers_valid {
-        var ps_entry = wing::ProxyStatusEntry {
+        var ps_entry = http::ProxyStatusEntry {
             received_status: out_resp.status_code,
             ..
         };
         let _ = ps_entry.proxy_name.try_set(rp.config.via_pseudonym[..]);
         let _ = ps_entry.next_hop.try_set(target.host[..]);
         var ps_buf: u8[..256] = [];
-        wing::format_proxy_status(ps_entry, ps_buf);
+        http::format_proxy_status(ps_entry, ps_buf);
         out_resp.set_header("Proxy-Status", ps_buf[..]);
     }
     let recorded_status = if headers_valid { out_resp.status_code } else { 0 };

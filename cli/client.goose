@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Client command execution engine (`wing <URL>`) over `wing::Client`.
+// Client command execution engine (`wing <URL>`) over `client::Client`.
 import std;
 import os;
 import core from "..";
@@ -12,7 +12,7 @@ import term;
 
 const MULTIPART_BOUNDARY: const u8[:] = "------------------------WingFormBoundary7MA4YWxkTrZu0gW";
 
-fn apply_resolve_overrides(sess: wing::Client&, cfg: const CliConfig&) {
+fn apply_resolve_overrides(sess: client::Client&, cfg: const CliConfig&) {
     let now_sec = core::micros(max(0, sess.virtual_clock_us)).as_secs();
     for &r in cfg.resolves {
         let ip4, ok_ip = parse_ipv4_be_u32(r.ip[..]);
@@ -90,7 +90,7 @@ fn append_multipart_field_part(
     body_out.append("\r\nContent-Disposition: ");
     var disp: u8[..1024] = [];
     let fn_slice = if f.filename.len > 0 { f.filename[..] } else { "" };
-    guard wing::format_content_disposition(f.name[..], fn_slice, disp) else { return false; }
+    guard http::format_content_disposition(f.name[..], fn_slice, disp) else { return false; }
     body_out.append(disp[..]);
     body_out.append("\r\n");
 
@@ -124,7 +124,7 @@ fn append_multipart_field_part(
     return true;
 }
 
-fn build_multipart_form_body(cfg: const CliConfig&, req: wing::Request&) -> bool {
+fn build_multipart_form_body(cfg: const CliConfig&, req: http::Request&) -> bool {
     var body_out: u8[>..] = [];
     for &f in cfg.form_fields {
         guard append_multipart_field_part(f, cfg.silent, body_out) else { return false; }
@@ -140,7 +140,7 @@ fn build_multipart_form_body(cfg: const CliConfig&, req: wing::Request&) -> bool
     return true;
 }
 
-fn apply_range_and_referer_headers(cfg: const CliConfig&, req: wing::Request&, out_resume_off: i64&) {
+fn apply_range_and_referer_headers(cfg: const CliConfig&, req: http::Request&, out_resume_off: i64&) {
     out_resume_off = cfg.resume_from;
     if cfg.auto_resume && cfg.output_file.len > 0 && file_exists(cfg.output_file[..]) {
         var existing: u8[>..] = [];
@@ -170,7 +170,7 @@ fn apply_range_and_referer_headers(cfg: const CliConfig&, req: wing::Request&, o
     }
 }
 
-fn apply_basic_auth_header(cfg: const CliConfig&, req: wing::Request&) {
+fn apply_basic_auth_header(cfg: const CliConfig&, req: http::Request&) {
     var raw_cred: u8[..160] = [];
     let _ = raw_cred.try_set(cfg.basic_user[..]);
     let _ = raw_cred.try_push(':');
@@ -185,8 +185,8 @@ fn apply_basic_auth_header(cfg: const CliConfig&, req: wing::Request&) {
     core::secure_zeroize_slice(auth_hdr[..]);
 }
 
-fn build_cli_request(cfg: const CliConfig&, req: wing::Request&, out_resume_off: i64&) -> bool {
-    req = wing::new_request(cfg.method[..], cfg.url[..]);
+fn build_cli_request(cfg: const CliConfig&, req: http::Request&, out_resume_off: i64&) -> bool {
+    req = http::new_request(cfg.method[..], cfg.url[..]);
     if cfg.bearer_token.len > 0 {
         req.bearer(cfg.bearer_token[..]);
     } else if cfg.basic_user.len > 0 {
@@ -210,7 +210,7 @@ fn build_cli_request(cfg: const CliConfig&, req: wing::Request&, out_resume_off:
     return true;
 }
 
-fn report_cli_error(cfg: const CliConfig&, err: const wing::Error&) {
+fn report_cli_error(cfg: const CliConfig&, err: const http::Error&) {
     if !cfg.silent {
         var err_out: u8[>..] = [];
         err_out.append("wing: (");
@@ -222,7 +222,7 @@ fn report_cli_error(cfg: const CliConfig&, err: const wing::Error&) {
     }
 }
 
-fn write_cli_output_file(cfg: const CliConfig&, res: const wing::Response&, resume_off: i64) -> bool {
+fn write_cli_output_file(cfg: const CliConfig&, res: const http::Response&, resume_off: i64) -> bool {
     guard cfg.output_file.len > 0 && !(cfg.fail_on_error && res.status_code >= 400) else {
         return true;
     }
@@ -247,7 +247,7 @@ fn write_cli_output_file(cfg: const CliConfig&, res: const wing::Response&, resu
     return false;
 }
 
-fn write_dump_headers_file(cfg: const CliConfig&, res: const wing::Response&) -> bool {
+fn write_dump_headers_file(cfg: const CliConfig&, res: const http::Response&) -> bool {
     guard cfg.dump_header_file.len > 0 else { return true; }
     var dump: u8[>..] = [];
     dump.append(res.protocol[..]);
@@ -270,7 +270,7 @@ fn write_dump_headers_file(cfg: const CliConfig&, res: const wing::Response&) ->
     return write_file(cfg.dump_header_file[..], dump);
 }
 
-fn load_and_save_cookie_jars(sess: wing::Client&, cfg: const CliConfig&, save_phase: bool) {
+fn load_and_save_cookie_jars(sess: client::Client&, cfg: const CliConfig&, save_phase: bool) {
     if save_phase {
         guard cfg.cookie_jar_out.len > 0 else { return; }
         var out_jar: u8[>..] = [];
@@ -299,7 +299,7 @@ fn load_and_save_cookie_jars(sess: wing::Client&, cfg: const CliConfig&, save_ph
 fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
     let eff_proxy = resolve_effective_proxy(cfg);
 
-    var sess = wing::new_client(wing::ClientConfig {
+    var sess = client::new_client(client::Config {
         profile:              if cfg.raw_profile { fingerprint::Profile.None } else { fingerprint::Profile.Wing },
         proxy_url:            eff_proxy[..],
         timeout_ms:           cfg.timeout_ms,
@@ -323,7 +323,7 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
             write_stderr(str("wing: cannot read cacert file: ", cfg.cacert_file[..], "\n"));
             return 77;
         }
-        let _, ok_ca = wing::add_trust_anchors_pem(sess.trust_store, ca_pem[..]);
+        let _, ok_ca = tls::add_trust_anchors_pem(sess.trust_store, ca_pem[..]);
         if !ok_ca {
             write_stderr(str("wing: invalid CA PEM bundle: ", cfg.cacert_file[..], "\n"));
             return 77;
@@ -348,7 +348,7 @@ fn execute_client_cmd(cfg: const CliConfig&) -> i64 {
         sess.set_credentials(cfg.basic_user[..], cfg.basic_pass[..]);
     }
 
-    var req = wing::Request { .. };
+    var req = http::Request { .. };
     var resume_off: i64 = 0;
     guard build_cli_request(cfg, req, resume_off) else { return 2; }
 

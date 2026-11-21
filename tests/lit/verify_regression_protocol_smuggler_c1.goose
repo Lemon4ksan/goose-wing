@@ -88,7 +88,7 @@ fn test_bug1_h3_push_promise_and_qpack() {
     assert(out_fields.len == 0);
 
     var q_pseudo = http3::PseudoHeaders {};
-    var q_headers = wing::HeaderMap {};
+    var q_headers = http::HeaderMap {};
     let q_map_err = http3::decode_qpack_to_map(tbl, partial_sec[..], q_pseudo, q_headers, 16384);
     assert(q_map_err != http3::QpackError.None);
     assert(!q_pseudo.has_method && q_headers.entries.len == 0);
@@ -142,14 +142,14 @@ fn test_bug3_connect_end_stream_smuggling() {
     let reordered_json = "{\"metadata\":{\"x-trace\":[\"req-99\"]},\"error\":{\"code\":\"permission_denied\",\"message\":\"blocked\"}}";
     var st = grpc::StatusCode.Ok;
     var msg: u8[..256] = [];
-    var tr = wing::HeaderMap { .. };
+    var tr = http::HeaderMap { .. };
     assert(grpc::parse_connect_end_stream(reordered_json, st, msg, tr));
     assert(st == grpc::StatusCode.PermissionDenied);
     assert(msg[..] == "blocked");
-    assert(wing::get_header(tr, "x-trace") == "req-99");
+    assert(http::get_header(tr, "x-trace") == "req-99");
 
     // 3B. Malformed EndStream after metadata entry must roll back out_trailers and reject unclosed brackets.
-    var tr_bad = wing::HeaderMap { .. };
+    var tr_bad = http::HeaderMap { .. };
     let truncated_meta = "{\"metadata\":{\"x-leak\":[\"1\"],\"x-broken\":[\"unclosed}}";
     assert(!grpc::parse_connect_end_stream(truncated_meta, st, msg, tr_bad));
     assert(tr_bad.entries.len == 0);
@@ -189,7 +189,7 @@ fn test_bug4_hpack_transactional_bounds() {
     var dt = http2::new_dynamic_table(4096);
     var bad_h2_blk: u8[..16] = [0x82, 0x86, 0x84, 0x00, 0x05, 'x', '-', 'b'];
     var h2_pseudo = http2::PseudoHeaders {};
-    var h2_headers = wing::HeaderMap {};
+    var h2_headers = http::HeaderMap {};
     let h2_dec_err = http2::decode_hpack_to_map(dt, bad_h2_blk[..], h2_pseudo, h2_headers, 8192, true);
     assert(h2_dec_err == rfc::H2_ERR_COMPRESSION_ERROR);
     assert(!h2_pseudo.has_method && !h2_pseudo.has_scheme && !h2_pseudo.has_path && h2_headers.entries.len == 0);

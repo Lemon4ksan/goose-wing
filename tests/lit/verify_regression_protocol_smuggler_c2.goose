@@ -19,9 +19,9 @@ import wing from "../..";
 //           & 64-bit google.rpc.Status.code Truncation
 // ---------------------------------------------------------------------------
 fn test_ps_c2_01_grpc_smuggling_and_truncation() {
-    var hdrs = wing::HeaderMap { .. };
-    let _ = wing::append_header(hdrs, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
-    var trls = wing::HeaderMap { .. };
+    var hdrs = http::HeaderMap { .. };
+    let _ = http::append_header(hdrs, "content-type", rfc::GRPC_WEB_CONTENT_TYPE_PROTO);
+    var trls = http::HeaderMap { .. };
 
     // 1a. Smuggled Data frame (0x00) AFTER a Trailer frame (0x80) must be rejected
     var smuggled_after_trailer: u8[>..] = [];
@@ -63,9 +63,9 @@ fn test_ps_c2_01_grpc_smuggling_and_truncation() {
     assert(resp4.payload.len == 0);
 
     // 1e. Native gRPC unary response with trailing garbage after LPM frame must clear out_resp.payload on failure
-    var native_hdrs = wing::HeaderMap { .. };
-    let _ = wing::append_header(native_hdrs, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
-    let _ = wing::append_header(native_hdrs, "grpc-status", "0");
+    var native_hdrs = http::HeaderMap { .. };
+    let _ = http::append_header(native_hdrs, "content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
+    let _ = http::append_header(native_hdrs, "grpc-status", "0");
     var body_with_extra: u8[>..] = [];
     grpc::encode_lpm("valid_msg", body_with_extra, false);
     body_with_extra.push(0xAA);
@@ -190,8 +190,8 @@ fn test_ps_c2_02_quic_stream_and_loss_integrity() {
 // ---------------------------------------------------------------------------
 fn test_ps_c2_03_http_sfv_bhttp_headers() {
     // 3a. RFC 8941 inner list with OWS after ';' or spaces/')' inside quoted-string parameter values
-    var dict_entries: wing::SfDictEntry[..16] = [];
-    let ok_dict = wing::parse_sf_dict("sig=(\"a\"; k=\"x ) y\" \"b\"; p=1);created=100", dict_entries);
+    var dict_entries: http::SfDictEntry[..16] = [];
+    let ok_dict = http::parse_sf_dict("sig=(\"a\"; k=\"x ) y\" \"b\"; p=1);created=100", dict_entries);
     assert(ok_dict && dict_entries.len == 1);
     assert(dict_entries[0].is_inner_list && dict_entries[0].inner_items.len == 2);
     assert(dict_entries[0].inner_items[0].str_val == "a");
@@ -207,8 +207,8 @@ fn test_ps_c2_03_http_sfv_bhttp_headers() {
         0x02, '/', 'a',
         0x00,
     ];
-    var bhttp_req = wing::BhttpRequest { .. };
-    assert(!wing::bhttp_decode_request(bad_bhttp_method[..], bhttp_req));
+    var bhttp_req = http::BhttpRequest { .. };
+    assert(!http::bhttp_decode_request(bad_bhttp_method[..], bhttp_req));
     assert(bhttp_req.method.len == 0);
 
     // Framing=0x00, method="GET" (3), scheme="https" (5), authority="" (0), path="/a b\r\n" (6)
@@ -219,28 +219,28 @@ fn test_ps_c2_03_http_sfv_bhttp_headers() {
         0x00,
         0x06, '/', 'a', ' ', 'b', '\r', '\n',
     ];
-    assert(!wing::bhttp_decode_request(bad_bhttp_path[..], bhttp_req));
+    assert(!http::bhttp_decode_request(bad_bhttp_path[..], bhttp_req));
     assert(bhttp_req.target.len == 0);
 
     // 3c. HeaderMap: parse_headers("", map) on reused keep-alive map must clear old headers and set valid = false
-    var hmap = wing::HeaderMap { .. };
-    let err_ok = wing::parse_headers("Host: example.com\r\n\r\n", hmap);
-    assert(err_ok == wing::HeaderParseError.None && hmap.valid && hmap.entries.len == 1);
+    var hmap = http::HeaderMap { .. };
+    let err_ok = http::parse_headers("Host: example.com\r\n\r\n", hmap);
+    assert(err_ok == http::HeaderParseError.None && hmap.valid && hmap.entries.len == 1);
 
-    let err_empty = wing::parse_headers("", hmap);
-    assert(err_empty == wing::HeaderParseError.EmptyInput);
+    let err_empty = http::parse_headers("", hmap);
+    assert(err_empty == http::HeaderParseError.EmptyInput);
     assert(!hmap.valid && hmap.entries.len == 0);
 
-    let err_trunc_resp = wing::parse_response_headers("HTTP/1.1 200 OK\r\n", hmap);
-    assert(err_trunc_resp == wing::HeaderParseError.EmptyInput);
+    let err_trunc_resp = http::parse_response_headers("HTTP/1.1 200 OK\r\n", hmap);
+    assert(err_trunc_resp == http::HeaderParseError.EmptyInput);
     assert(!hmap.valid);
 
     // 3d. HeaderMap obs-fold: comma in folded continuation line must set HEADER_FLAG_CONTAINS_COMMA
-    var fold_map = wing::HeaderMap { .. };
-    let err_fold = wing::parse_headers("X-List: first\r\n , second\r\n\r\n", fold_map, true);
-    assert(err_fold == wing::HeaderParseError.None && fold_map.valid);
+    var fold_map = http::HeaderMap { .. };
+    let err_fold = http::parse_headers("X-List: first\r\n , second\r\n\r\n", fold_map, true);
+    assert(err_fold == http::HeaderParseError.None && fold_map.valid);
     assert(fold_map.header_contains_comma[0]);
-    assert((fold_map.entries[0].flags & wing::HEADER_FLAG_CONTAINS_COMMA) != 0);
+    assert((fold_map.entries[0].flags & http::HEADER_FLAG_CONTAINS_COMMA) != 0);
 
     print("PS-C2-03: PASS");
 }

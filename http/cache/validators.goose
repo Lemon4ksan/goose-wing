@@ -4,12 +4,13 @@
 // RFC 9110 & RFC 9111 Section 4.1: Conditional request validators and Vary matching engine.
 // Implements EntityTag (ETag) weak/strong comparisons, Last-Modified revalidation,
 // RFC 9111 Section 4.1 Vary-star poisoning defense, and 304 merge filtering.
-namespace wing;
+namespace http;
 
 import std;
 import core from "../..";
 import http.headers;
 import http.cache.cache_control;
+import http.cache.internal;
 
 // ---- entity tag (etag) model (rfc 9110 section 8.8.3) ----------------------
 
@@ -65,27 +66,6 @@ fn strong_eq(a: EntityTag, b: EntityTag) -> bool {
     return core::equal_short(a.tag[..], b.tag[..]);
 }
 
-fn read_next_etag_token(s: const u8[:], cursor: i64&) -> const u8[:] {
-    let rem = s[cursor..].trim_start_bytes(" \t,");
-    cursor = s.len - rem.len;
-    guard rem.len > 0 else { return ""; }
-
-    var in_quotes = false;
-    var end_idx: i64 = 0;
-    while end_idx < rem.len {
-        let b = rem[end_idx];
-        if b == '"' {
-            in_quotes = !in_quotes;
-        } else if b == ',' && !in_quotes {
-            break;
-        }
-        end_idx++;
-    }
-    let tag = rem[..end_idx].trim_lws();
-    cursor += if end_idx < rem.len { end_idx + 1 } else { end_idx };
-    return tag;
-}
-
 // Checks if cached ETag matches an incoming If-None-Match header (RFC 9110 §13.1.2).
 // Supports wildcard "*" and comma-separated lists of ETags using weak_eq.
 fn match_if_none_match(raw_if_none_match: const u8[:], cached_etag: const EntityTag&) -> bool {
@@ -95,7 +75,7 @@ fn match_if_none_match(raw_if_none_match: const u8[:], cached_etag: const Entity
 
     var cursor: i64 = 0;
     while cursor < s.len {
-        let tag = read_next_etag_token(s, cursor);
+        let tag = http_internal::read_next_etag_token(s, cursor);
         guard tag.len > 0 else { break; }
         if tag == "*" || weak_eq(parse_etag(tag), cached_etag) {
             return true;
@@ -112,7 +92,7 @@ fn match_if_match(raw_if_match: const u8[:], cached_etag: const EntityTag&) -> b
 
     var cursor: i64 = 0;
     while cursor < s.len {
-        let tag = read_next_etag_token(s, cursor);
+        let tag = http_internal::read_next_etag_token(s, cursor);
         guard tag.len > 0 else { break; }
         if tag == "*" || strong_eq(parse_etag(tag), cached_etag) {
             return true;
@@ -157,42 +137,6 @@ struct VarySnapshot {
     valid:    bool           = true,
 }
 
-// Constructs a zero-initialized VarySnapshot.
-// Checks if field_name already exists in recorded vary items.
-fn has_vary_field(items: const VaryItem[..16]&, field_name: const u8[:]) -> bool {
-    for &item in items {
-        if item.name[..].eq_ascii_fold(field_name) { return true; }
-    }
-    return false;
-}
-
-// Extracts canonical header value from request headers for Vary recording.
-//
-// Example:
-//   field_name = "Accept-Encoding", req_headers has "Accept-Encoding: gzip"
-//   returns: true, out_val="gzip", is_oversized=false
-fn extract_vary_value(
-    req_headers:  const HeaderMap&,
-    field_name:   const u8[:],
-    out_val:      u8[..256]&,
-    is_oversized: bool&,
-) -> bool {
-    guard has_header(req_headers, field_name) else { return false; }
-    var val_buf: u8[..512] = [];
-    let ok_c = get_combined(req_headers, field_name, val_buf, 512);
-    guard ok_c else {
-        is_oversized = true;
-        return false;
-    }
-    let raw = val_buf[..].trim_lws();
-
-    guard out_val.try_append(raw) else {
-        is_oversized = true;
-        return false;
-    }
-    return true;
-}
-
 // Records the request headers specified in the response's Vary header.
 // RFC 9111 Section 4.1 Vary-star poisoning defense: marks has_star = true on "*", preventing subsequent matches.
 fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderMap&) -> VarySnapshot {
@@ -213,14 +157,14 @@ fn record_vary_snapshot(cached_vary_raw: const u8[:], req_headers: const HeaderM
             return snap;
         }
 
-        if !has_vary_field(snap.items, field_name) {
+        if !http_internal::has_vary_field(snap.items, field_name) {
             var item = VaryItem { .. };
             guard item.name.try_set(field_name) else {
                 snap.valid = false;
                 return snap;
             }
             var is_oversized = false;
-            item.is_absent = !extract_vary_value(req_headers, field_name, item.value, is_oversized);
+            item.is_absent = !http_internal::extract_vary_value(req_headers, field_name, item.value, is_oversized);
             if is_oversized || !snap.items.try_push(item) {
                 snap.valid = false;
                 return snap;
@@ -261,40 +205,6 @@ fn matches_vary(snap: const VarySnapshot&, incoming_req_headers: const HeaderMap
 
 // ---- storage sanitization & 304 header merge -------------------------------
 
-// Checks whether a header must be stripped prior to storage in cache.
-fn should_strip_from_cache(entry_flags: u8, name: const u8[:], shared: bool, cc: const CacheControl&) -> bool {
-    if (entry_flags & HEADER_FLAG_SECURITY_STATE) != 0 ||
-       name.eq_ascii_fold("strict-transport-security") ||
-       name.eq_ascii_fold("x-content-type-options") ||
-       name.eq_ascii_fold("x-webkit-csp") ||
-       name.starts_with_fold("x-content-") ||
-       name.starts_with_fold("x-webkit-") {
-        return true;
-    }
-    if (entry_flags & HEADER_FLAG_CHALLENGE) != 0 ||
-       name.eq_ascii_fold("www-authenticate") ||
-       name.eq_ascii_fold("proxy-authenticate") {
-        return true;
-    }
-    if shared && ((entry_flags & HEADER_FLAG_COOKIE_STATE) != 0 ||
-       name.eq_ascii_fold("set-cookie") ||
-       name.eq_ascii_fold("set-cookie2") ||
-       name.eq_ascii_fold("clear-site-data")) {
-        return true;
-    }
-    if shared && (cc.flags & CC_PRIVATE) != 0 {
-        for &f in cc.private_fields {
-            if f[..].eq_ascii_fold(name) { return true; }
-        }
-    }
-    if (cc.flags & CC_NO_CACHE) != 0 {
-        for &f in cc.no_cache_fields {
-            if f[..].eq_ascii_fold(name) { return true; }
-        }
-    }
-    return false;
-}
-
 // Strips hop-by-hop headers, challenges, cookies (shared), security state headers,
 // and qualified private/no-cache fields prior to cache storage. Rejects embedded NULs/CRLF.
 //
@@ -316,10 +226,12 @@ fn sanitize_for_storage(
         let name = intermediate.raw_buf[entry.name_begin..entry.name_end];
         let val = intermediate.raw_buf[entry.values_begin..entry.values_end];
 
-        if has_embedded_nulls(name) || has_embedded_nulls(val) || !is_valid_header_value(val) {
+        let invalid = http_internal::has_embedded_nulls(name) ||
+            http_internal::has_embedded_nulls(val) || !is_valid_header_value(val);
+        if invalid {
             continue;
         }
-        if should_strip_from_cache(entry.flags, name, shared, cc) {
+        if http_internal::should_strip_from_cache(entry.flags, name, shared, cc) {
             continue;
         }
 

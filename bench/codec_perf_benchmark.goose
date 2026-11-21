@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Engine Codec Microbenchmark Suite:
-// 1. HTTP/1.1 Parser (wing::parse_request_headers, wing::parse_response_headers)
-// 2. HeaderMap & Bloom Filter (wing::append_header, set_header, get_header, has_header, add_header, might_have_header)
+// 1. HTTP/1.1 Parser (http::parse_request_headers, http::parse_response_headers)
+// 2. HeaderMap & Bloom Filter (http::append_header, set_header, get_header, has_header, add_header, might_have_header)
 // 3. URL Parser (core::parse_url, core::parse_url_view)
 // 4. HPACK Codec (http2::encode_hpack_field, http2::decode_hpack_to_map with Huffman + dynamic table)
 // 5. AEAD Ciphers (AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 inplace seal/open on 1 KB records)
@@ -110,21 +110,21 @@ fn bench_h1_request(iters: i64) -> u64 {
     append_sample_h1_request(req_buf);
     let req_wire = req_buf[..];
 
-    var map = wing::HeaderMap { .. };
+    var map = http::HeaderMap { .. };
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
 
     for _ in warmup {
-        let err = wing::parse_request_headers(req_wire, map);
-        assert(wing::is_ok(err));
+        let err = http::parse_request_headers(req_wire, map);
+        assert(http::is_ok(err));
         checksum = core::add_sat_u64(checksum, map.entries.len as u64);
     }
 
     let watch = core::stopwatch();
     for _ in iters {
-        let err = wing::parse_request_headers(req_wire, map);
-        assert(wing::is_ok(err) && map.entries.len == 9);
-        let req_id = wing::get_header(map, "x-request-id");
+        let err = http::parse_request_headers(req_wire, map);
+        assert(http::is_ok(err) && map.entries.len == 9);
+        let req_id = http::get_header(map, "x-request-id");
         checksum = core::add_sat_u64(checksum, core::add_sat_u64(map.entries.len as u64, req_id.len as u64));
     }
     let dt = core::elapsed(watch);
@@ -151,21 +151,21 @@ fn bench_h1_response(iters: i64) -> u64 {
     append_sample_h1_response(resp_buf);
     let resp_wire = resp_buf[..];
 
-    var map = wing::HeaderMap { .. };
+    var map = http::HeaderMap { .. };
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
 
     for _ in warmup {
-        let err = wing::parse_response_headers(resp_wire, map);
-        assert(wing::is_ok(err));
+        let err = http::parse_response_headers(resp_wire, map);
+        assert(http::is_ok(err));
         checksum = core::add_sat_u64(checksum, map.status_code as u64);
     }
 
     let watch = core::stopwatch();
     for _ in iters {
-        let err = wing::parse_response_headers(resp_wire, map);
-        assert(wing::is_ok(err) && map.status_code == 200);
-        let etag = wing::get_header(map, "etag");
+        let err = http::parse_response_headers(resp_wire, map);
+        assert(http::is_ok(err) && map.status_code == 200);
+        let etag = http::get_header(map, "etag");
         checksum = core::add_sat_u64(checksum, core::add_sat_u64(map.status_code as u64, etag.len as u64));
     }
     let dt = core::elapsed(watch);
@@ -174,20 +174,20 @@ fn bench_h1_response(iters: i64) -> u64 {
     return checksum;
 }
 
-fn populate_sample_headermap(map: wing::HeaderMap&) -> i64 {
-    wing::clear(map);
-    assert(wing::append_header(map, "Host", "api.example.com"));
-    assert(wing::append_header(map, "Content-Type", "application/json"));
-    assert(wing::append_header(map, "Authorization", "Bearer tok_bench_0123456789abcdef"));
-    assert(wing::append_header(map, "Accept-Encoding", "gzip, br"));
-    assert(wing::append_header(map, "Connection", "keep-alive"));
-    assert(wing::append_header(map, "X-Trace-B3", "80f198ee56343ba864fe8b2a57d3eff7"));
-    wing::set_header(map, "X-Request-Id", "req-9f3d2a1b-4c5e");
+fn populate_sample_headermap(map: http::HeaderMap&) -> i64 {
+    http::clear(map);
+    assert(http::append_header(map, "Host", "api.example.com"));
+    assert(http::append_header(map, "Content-Type", "application/json"));
+    assert(http::append_header(map, "Authorization", "Bearer tok_bench_0123456789abcdef"));
+    assert(http::append_header(map, "Accept-Encoding", "gzip, br"));
+    assert(http::append_header(map, "Connection", "keep-alive"));
+    assert(http::append_header(map, "X-Trace-B3", "80f198ee56343ba864fe8b2a57d3eff7"));
+    http::set_header(map, "X-Request-Id", "req-9f3d2a1b-4c5e");
     return map.raw_buf.len;
 }
 
 fn bench_headermap_write(iters: i64) -> u64 {
-    var map = wing::HeaderMap { .. };
+    var map = http::HeaderMap { .. };
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
 
@@ -208,7 +208,7 @@ fn bench_headermap_write(iters: i64) -> u64 {
 }
 
 fn bench_headermap_lookup(iters: i64) -> u64 {
-    var map = wing::HeaderMap { .. };
+    var map = http::HeaderMap { .. };
     let _ = populate_sample_headermap(map);
     let keys:      const u8[:][4] = ["Host", "content-type", "X-Request-Id", "x-trace-b3"];
     let avg_bytes: u64            = 29;
@@ -217,15 +217,15 @@ fn bench_headermap_lookup(iters: i64) -> u64 {
 
     for k in warmup {
         let key = keys[k & 3];
-        assert(wing::has_header(map, key));
-        checksum = core::add_sat_u64(checksum, wing::get_header(map, key).len as u64);
+        assert(http::has_header(map, key));
+        checksum = core::add_sat_u64(checksum, http::get_header(map, key).len as u64);
     }
 
     let watch = core::stopwatch();
     for k in iters {
         let key = keys[k & 3];
-        let present = wing::has_header(map, key);
-        let val = wing::get_header(map, key);
+        let present = http::has_header(map, key);
+        let val = http::get_header(map, key);
         assert(present && val.len > 0);
         checksum = core::add_sat_u64(checksum, core::add_sat_u64(val.len as u64, val[0]));
     }
@@ -236,7 +236,7 @@ fn bench_headermap_lookup(iters: i64) -> u64 {
 }
 
 fn bench_bloom_filter(iters: i64) -> u64 {
-    var bf = wing::HeaderBloomFilter { .. };
+    var bf = http::HeaderBloomFilter { .. };
     let present_keys: const u8[:][8] = [
         "Host",
         "Content-Type",
@@ -248,8 +248,8 @@ fn bench_bloom_filter(iters: i64) -> u64 {
         "User-Agent",
     ];
     for key in present_keys {
-        wing::add_header(bf, key);
-        assert(wing::might_have_header(bf, key));
+        http::add_header(bf, key);
+        assert(http::might_have_header(bf, key));
     }
 
     let miss_keys: const u8[:][4] = [
@@ -259,14 +259,14 @@ fn bench_bloom_filter(iters: i64) -> u64 {
         "Transfer-Encoding",
     ];
     for mkey in miss_keys {
-        assert(!wing::might_have_header(bf, mkey));
+        assert(!http::might_have_header(bf, mkey));
     }
 
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
     for k in warmup {
         let mk = miss_keys[k & 3];
-        let hit = wing::might_have_header(bf, mk);
+        let hit = http::might_have_header(bf, mk);
         assert(!hit);
         checksum = core::add_sat_u64(checksum, mk.len as u64);
     }
@@ -274,7 +274,7 @@ fn bench_bloom_filter(iters: i64) -> u64 {
     let watch = core::stopwatch();
     for k in iters {
         let mk = miss_keys[k & 3];
-        let hit = wing::might_have_header(bf, mk);
+        let hit = http::might_have_header(bf, mk);
         assert(!hit);
         checksum = core::add_sat_u64(checksum, mk.len as u64);
     }
@@ -400,7 +400,7 @@ fn bench_hpack_decode(iters: i64) -> u64 {
 
     var dec_dt = http2::new_dynamic_table();
     var pseudo = http2::PseudoHeaders { .. };
-    var hdrs = wing::HeaderMap { .. };
+    var hdrs = http::HeaderMap { .. };
     let warmup = calc_warmup_iters(iters);
     var checksum: u64 = 0;
 
@@ -414,7 +414,7 @@ fn bench_hpack_decode(iters: i64) -> u64 {
     for _ in iters {
         let err = http2::decode_hpack_to_map(dec_dt, wire_block[..], pseudo, hdrs);
         assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);
-        let req_id = wing::get_header(hdrs, "x-request-id");
+        let req_id = http::get_header(hdrs, "x-request-id");
         checksum = core::add_sat_u64(checksum, core::add_sat_u64(pseudo.path.len as u64, req_id.len as u64));
     }
     let dt_elapsed = core::elapsed(watch);
@@ -429,7 +429,7 @@ fn bench_hpack_decode(iters: i64) -> u64 {
             dec_dt, wire_block[..], pseudo, hdrs, name_buf, val_buf,
         );
         assert(err == 0 && pseudo.has_method && hdrs.entries.len == 4);
-        let req_id = wing::get_header(hdrs, "x-request-id");
+        let req_id = http::get_header(hdrs, "x-request-id");
         checksum = core::add_sat_u64(checksum, core::add_sat_u64(pseudo.path.len as u64, req_id.len as u64));
     }
     let dt_scratch = core::elapsed(w_scratch);

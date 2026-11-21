@@ -372,7 +372,7 @@ inline fn emit_qpack_pseudo_field(
 
 inline fn emit_qpack_field_to_map(
     out_pseudo:  http3::PseudoHeaders&,
-    out_headers: wing::HeaderMap&,
+    out_headers: http::HeaderMap&,
     budget_left: u64&,
     name:        const u8[:],
     val:         const u8[:],
@@ -400,7 +400,7 @@ inline fn emit_qpack_field_to_map(
         }
     }
     if name == "host" {
-        guard !wing::has_header(out_headers, "host") && is_valid_authority_or_host(val) else {
+        guard !http::has_header(out_headers, "host") && is_valid_authority_or_host(val) else {
             return http3::QpackError.MessageError;
         }
         if out_pseudo.has_authority && !out_pseudo.authority[..].eq_ascii_fold(val) {
@@ -420,12 +420,12 @@ inline fn emit_qpack_field_to_map(
         out_pseudo.content_length = cl;
     }
 
-    guard wing::append_header(out_headers, name, val) else {
+    guard http::append_header(out_headers, name, val) else {
         return http3::QpackError.HeaderListTooLarge;
     }
     if never_index && out_headers.entries.len > 0 {
         let last_idx = out_headers.entries.len - 1;
-        out_headers.entries[last_idx].flags = out_headers.entries[last_idx].flags | wing::HEADER_FLAG_SENSITIVE;
+        out_headers.entries[last_idx].flags = out_headers.entries[last_idx].flags | http::HEADER_FLAG_SENSITIVE;
     }
     return http3::QpackError.None;
 }
@@ -444,7 +444,7 @@ fn decode_qpack_field_line_to_map(
     ric:              u64,
     budget:           u64&,
     out_pseudo:       http3::PseudoHeaders&,
-    out_headers:      wing::HeaderMap&,
+    out_headers:      http::HeaderMap&,
     max_dyn_abs_used: u64&,
     used_any_dyn:     bool&,
 ) -> http3::QpackError {

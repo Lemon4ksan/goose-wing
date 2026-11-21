@@ -57,6 +57,7 @@ import http.headers.lexical;
 import http.headers.chunked;
 import http.headers.chunked_fsm;
 import http.headers.perfect_hash;
+import http.headers.internal;
 import http.sfv;
 import http.priority;
 import http.incremental;
@@ -89,6 +90,18 @@ import http.cache.freshness;
 import http.cache.validators;
 import http.cache.engine;
 import http.cache.cache_groups;
+import http.cache.internal;
+import http.internal;
+import http.ext_internal;
+import http.meta_internal;
+import http.codec_internal;
+import http.sfv_sig_internal;
+
+// Ergonomic facade struct aliases for core HTTP application types.
+type Request = http::Request;
+type Response = http::Response;
+type HeaderMap = http::HeaderMap;
+type Error = http::Error;
 
 // ---- cookie engine, http/2 & authentication (Layer 4) ----------------------
 
@@ -126,12 +139,14 @@ import fingerprint.p0f;
 import fingerprint.akamai;
 import fingerprint.profile;
 
+import net.internal;
 import net.want_queue;
 import net.slowloris;
 import net.proxy;
 import net.socks5;
 import net.http_connect;
 import net.tcp;
+import net.udp;
 import net.transport;
 import net.pool;
 import net.upstream_pool;
@@ -146,25 +161,38 @@ import net.driver;
 import net.accel;
 import net.poller;
 import net.event_loop;
+import net.io_host_internal;
 import net.io_host;
 import net.goose_io;
 
 // ---- tls 1.3, quic & http/3 (Layers 6-8) -----------------------------------
 
+import tls.internal;
 import tls.record;
+import tls.record_internal;
 import tls.key_schedule;
 import tls.asn1;
+import tls.types;
 import tls.sct;
+import tls.ticket_internal;
+import tls.ticket;
+import tls.pki_internal;
+import tls.x509_san;
+import tls.x509_chain_internal;
 import tls.x509;
 import tls.ocsp;
 import tls.crl;
-import tls.ticket;
-import tls.handshake;
-import tls.ech;
 import tls.post_quantum;
 import tls.cert_compression;
-import tls.session;
+import tls.handshake_internal;
+import tls.handshake;
+import tls.ech;
 import tls.pem;
+import tls.session_internal;
+import tls.session;
+import tls.handshake_io_internal;
+import tls.client_handshake;
+import tls.server_handshake;
 
 import quic.internal;
 import quic.packet_internal;
@@ -212,7 +240,9 @@ import realtime.webtransport;
 
 // ---- client session & server engines (Layer 11) ----------------------------
 
+import client.internal;
 import client.redirect;
+import client.session.internal;
 import client.session.ssrf;
 import client.session.mock;
 import client.client;
@@ -227,21 +257,49 @@ import client.telemetry;
 import client.interceptor;
 import client.stream;
 
+type Client = client::Client;
+type Session = client::Session;
+type ClientConfig = client::Config;
+type SessionConfig = client::Config;
+
+import server.internal;
+import server.router_internal;
 import server.router;
 import server.pool;
 import server.edge_filter;
 import server.cache;
+import server.pipeline_internal;
 import server.pipeline;
+import server.h1_codec_internal;
 import server.h1_codec;
 import server.cork;
 import server.stream_consumer;
 import server.sni;
+import server.server_internal;
 import server.server;
+import server.reactor_internal;
 import server.reactor;
 import server.async_reactor;
 import server.h2_multiplexer;
 import server.soa_timer;
 import server.profiler;
+
+// Top-level server facade struct/enum aliases (preserve UFCS without wrapper functions).
+type HttpServer = server::HttpServer;
+type RadixRouter = server::RadixRouter;
+type ServerPipelineConfig = server::ServerPipelineConfig;
+type ServerStageCtx = server::ServerStageCtx;
+type PipelineOutcome = server::PipelineOutcome;
+type RouteMatchResult = server::RouteMatchResult;
+type SoAConnTable = server::SoAConnTable;
+type AsyncServerReactor = server::AsyncServerReactor;
+type EdgeFilter = server::EdgeFilter;
+type EdgeFilterVerdict = server::EdgeFilterVerdict;
+type HttpRouteCache = server::HttpRouteCache;
+type CacheLookup = server::CacheLookup;
+type H3ServerEndpoint = server::H3ServerEndpoint;
+type H3L2Config = server::H3L2Config;
+type H3L2Backend = server::H3L2Backend;
 
 // ---- grpc & reverse proxy gateways (Layer 12) ------------------------------
 

@@ -28,14 +28,14 @@ fn verify_transport_and_framing_gates() {
     print("WING_UDP_BATCH_INITIALIZED: capacity=", batch_cap);
 
     // 2. HPACK wire codec & perfect hash header verification
-    let hdr_id = wing::identify_known_header("content-type");
-    let hdr_auth = wing::identify_known_header("authorization");
-    let match_ok = (hdr_id == wing::KnownHeaderId.ContentType && hdr_auth == wing::KnownHeaderId.Authorization);
+    let hdr_id = http::identify_known_header("content-type");
+    let hdr_auth = http::identify_known_header("authorization");
+    let match_ok = (hdr_id == http::KnownHeaderId.ContentType && hdr_auth == http::KnownHeaderId.Authorization);
     print("WING_HPACK_RING_LINEARIZED: head=0, tail=128");
     print("WING_HPACK_HASH_HIT: slot=42, match=", match_ok);
 
     // 3. RFC 9218 Extensible HTTP Priority & quantum yield
-    let prio, prio_ok = wing::parse_http_priority("u=0, i");
+    let prio, prio_ok = http::parse_priority("u=0, i");
     assert(prio_ok && prio.urgency == 0 && prio.incremental);
     print("WING_SCHEDULER_ACTIVE_MASK: 0x01");
     print("WING_BURST_QUANTUM_YIELD: urgency=", prio.urgency, ", frames=16");

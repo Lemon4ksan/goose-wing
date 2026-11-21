@@ -2,12 +2,13 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // RFC 1928 & RFC 1929 SOCKS5/5h wire codecs and client handshake.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
 import .proxy;
 import .tcp;
+import .internal;
 
 enum Socks5Error {
     None,
@@ -75,10 +76,10 @@ fn build_socks5_rfc1929_auth(
     password: const u8[:],
     out:      u8[..520]&,
 ) -> Socks5Error {
-    out.clear();
     guard username.len >= 1 && username.len <= 255 else { return Socks5Error.AuthFailed; }
     guard password.len >= 1 && password.len <= 255 else { return Socks5Error.AuthFailed; }
 
+    out.clear();
     out.push(rfc::SOCKS5_RFC1929_VER);
     out.push(username.len as u8);
     out.append(username);
@@ -114,21 +115,25 @@ fn build_socks5_connect_request(
     port:          u16,
     out:           u8[..300]&,
 ) -> Socks5Error {
+    let is_domain = scheme == ProxyScheme.Socks5h;
+    if is_domain {
+        guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
+    } else {
+        guard has_ipv4 else { return Socks5Error.AddressTypeNotSupported; }
+    }
+
     out.clear();
     out.push(rfc::SOCKS5_VER);
     out.push(rfc::SOCKS5_CMD_CONNECT);
     out.push(0x00);
 
-    if scheme == ProxyScheme.Socks5h {
-        guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
+    if is_domain {
         out.push(rfc::SOCKS5_ATYP_DOMAIN);
         out.push(host_str.len as u8);
         out.append(host_str);
-    } else if has_ipv4 {
+    } else {
         out.push(rfc::SOCKS5_ATYP_IPV4);
         out.append(resolved_ipv4[..]);
-    } else {
-        return Socks5Error.AddressTypeNotSupported;
     }
 
     out.append_u16_be(port);
@@ -148,21 +153,25 @@ fn build_socks5_connect_request_v6(
     port:          u16,
     out:           u8[..300]&,
 ) -> Socks5Error {
+    let is_domain = scheme == ProxyScheme.Socks5h;
+    if is_domain {
+        guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
+    } else {
+        guard has_ipv6 else { return Socks5Error.AddressTypeNotSupported; }
+    }
+
     out.clear();
     out.push(rfc::SOCKS5_VER);
     out.push(rfc::SOCKS5_CMD_CONNECT);
     out.push(0x00);
 
-    if scheme == ProxyScheme.Socks5h {
-        guard host_str.len >= 1 && host_str.len <= 255 else { return Socks5Error.AddressTypeNotSupported; }
+    if is_domain {
         out.push(rfc::SOCKS5_ATYP_DOMAIN);
         out.push(host_str.len as u8);
         out.append(host_str);
-    } else if has_ipv6 {
+    } else {
         out.push(rfc::SOCKS5_ATYP_IPV6);
         out.append(resolved_ipv6[..]);
-    } else {
-        return Socks5Error.AddressTypeNotSupported;
     }
 
     out.append_u16_be(port);
@@ -174,41 +183,6 @@ struct Socks5Reply {
     atyp:           u8  = 0,
     bound_port:     u16 = 0,
     bytes_consumed: i64 = 0,
-}
-
-// Calculates expected wire length of SOCKS5 connect reply based on ATYP (RFC 1928 Section 5).
-fn socks5_needed_length(buf: const u8[:], atyp: u8) -> i64, Socks5Error {
-    if buf[2] != 0 {
-        return 0, Socks5Error.InvalidReplyHeader;
-    }
-    if atyp != rfc::SOCKS5_ATYP_IPV4 && atyp != rfc::SOCKS5_ATYP_IPV6 && atyp != rfc::SOCKS5_ATYP_DOMAIN {
-        return 0, Socks5Error.AddressTypeNotSupported;
-    }
-    if atyp == rfc::SOCKS5_ATYP_DOMAIN && buf.len < 5 {
-        return 0, Socks5Error.BufferTruncated;
-    }
-    if buf.len >= 5 {
-        let expected_len = core::socks5_expected_frame_len_ct(buf);
-        if expected_len > 0 {
-            return expected_len, Socks5Error.None;
-        }
-    }
-    if atyp == rfc::SOCKS5_ATYP_IPV4 { return 10, Socks5Error.None; }
-    if atyp == rfc::SOCKS5_ATYP_IPV6 { return 22, Socks5Error.None; }
-    return 0, Socks5Error.AddressTypeNotSupported;
-}
-
-// Maps RFC 1928 REP octet to corresponding Socks5Error variant.
-fn socks5_rep_to_error(rep: u8) -> Socks5Error {
-    if rep == rfc::SOCKS5_REP_SUCCEEDED { return Socks5Error.None; }
-    if rep == rfc::SOCKS5_REP_GENERAL_FAILURE { return Socks5Error.ServerFailure; }
-    if rep == rfc::SOCKS5_REP_NOT_ALLOWED { return Socks5Error.ConnectionNotAllowed; }
-    if rep == rfc::SOCKS5_REP_NET_UNREACHABLE { return Socks5Error.NetworkUnreachable; }
-    if rep == rfc::SOCKS5_REP_HOST_UNREACHABLE { return Socks5Error.HostUnreachable; }
-    if rep == rfc::SOCKS5_REP_CONN_REFUSED { return Socks5Error.ConnectionRefused; }
-    if rep == rfc::SOCKS5_REP_TTL_EXPIRED { return Socks5Error.TtlExpired; }
-    if rep == rfc::SOCKS5_REP_CMD_NOT_SUPPORTED { return Socks5Error.CommandNotSupported; }
-    return Socks5Error.AddressTypeNotSupported;
 }
 
 // Parses Phase 4 Server Connect Reply [VER=0x05, REP, RSV=0x00, ATYP, BND.ADDR, BND.PORT].
@@ -223,7 +197,7 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
 
     let rep = buf[1];
     let atyp = buf[3];
-    let needed_len, err = socks5_needed_length(buf, atyp);
+    let needed_len, err = net_internal::socks5_needed_length(buf, atyp);
     guard err == Socks5Error.None else { return Socks5Reply { .. }, err; }
     guard buf.len >= needed_len else { return Socks5Reply { .. }, Socks5Error.BufferTruncated; }
     // RFC 1928 Section 6: Replies - reject trailing bytes beyond the reply frame boundary
@@ -238,46 +212,7 @@ fn parse_socks5_connect_reply(buf: const u8[:]) -> Socks5Reply, Socks5Error {
         bytes_consumed: needed_len,
     };
 
-    return res, socks5_rep_to_error(rep);
-}
-
-fn recv_exact_socks5_bytes(sock_fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
-    var off: i64 = 0;
-    while off < dst.len {
-        let n = tcp_recv_slice(sock_fd, dst[off..], timeout_ms);
-        guard n > 0 else { return false; }
-        off = core::add_sat_i64(off, n);
-    }
-    return true;
-}
-
-fn recv_socks5_connect_reply_wire(
-    sock_fd:    i64,
-    buf:        u8[300]&,
-    timeout_ms: u32,
-) -> i64, Socks5Error {
-    // RFC 1928 Section 6: Replies - read 4-octet header, then exact BND.ADDR + BND.PORT without over-reading tunnel
-    guard recv_exact_socks5_bytes(sock_fd, buf[..4], timeout_ms) else {
-        return 0, Socks5Error.BufferTruncated;
-    }
-    var have: i64 = 4;
-    if buf[3] == rfc::SOCKS5_ATYP_DOMAIN {
-        guard recv_exact_socks5_bytes(sock_fd, buf[4..5], timeout_ms) else {
-            return 0, Socks5Error.BufferTruncated;
-        }
-        have = 5;
-    }
-    let needed_len, len_err = socks5_needed_length(buf[..have], buf[3]);
-    guard len_err == Socks5Error.None else { return 0, len_err; }
-    guard needed_len >= have && needed_len <= 300 else {
-        return 0, Socks5Error.InvalidReplyHeader;
-    }
-    if needed_len > have {
-        guard recv_exact_socks5_bytes(sock_fd, buf[have..needed_len], timeout_ms) else {
-            return 0, Socks5Error.BufferTruncated;
-        }
-    }
-    return needed_len, Socks5Error.None;
+    return res, net_internal::socks5_rep_to_error(rep);
 }
 
 // Executes a live SOCKS5/SOCKS5h client handshake over an open TCP socket (RFC 1928 & RFC 1929).
@@ -296,7 +231,7 @@ fn socks5_client_handshake(
     guard tcp_send(sock_fd, greet[..]) == (greet.len as i32) else { return Socks5Error.ServerFailure; }
 
     var reply_raw: u8[2] = [0; 2];
-    guard recv_exact_socks5_bytes(sock_fd, reply_raw[..], timeout_ms) else {
+    guard net_internal::recv_exact_socks5_bytes(sock_fd, reply_raw[..], timeout_ms) else {
         return Socks5Error.BufferTruncated;
     }
     let method, g_err = parse_socks5_greeting_reply(reply_raw[..]);
@@ -308,7 +243,7 @@ fn socks5_client_handshake(
         defer core::secure_zeroize_slice(auth_buf[..]);
         guard a_err == Socks5Error.None else { return a_err; }
         guard tcp_send(sock_fd, auth_buf[..]) == (auth_buf.len as i32) else { return Socks5Error.AuthFailed; }
-        guard recv_exact_socks5_bytes(sock_fd, reply_raw[..], timeout_ms) else {
+        guard net_internal::recv_exact_socks5_bytes(sock_fd, reply_raw[..], timeout_ms) else {
             return Socks5Error.BufferTruncated;
         }
         let auth_res = parse_socks5_rfc1929_reply(reply_raw[..]);
@@ -328,7 +263,7 @@ fn socks5_client_handshake(
     guard tcp_send(sock_fd, req_buf[..]) == (req_buf.len as i32) else { return Socks5Error.ServerFailure; }
 
     var conn_reply_raw: u8[300] = [0; 300];
-    let exact_len, r_err = recv_socks5_connect_reply_wire(sock_fd, conn_reply_raw, timeout_ms);
+    let exact_len, r_err = net_internal::recv_socks5_connect_reply_wire(sock_fd, conn_reply_raw, timeout_ms);
     guard r_err == Socks5Error.None else { return r_err; }
     let _, c_err = parse_socks5_connect_reply(conn_reply_raw[..exact_len]);
     return c_err;

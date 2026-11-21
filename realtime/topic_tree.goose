@@ -465,7 +465,7 @@ fn publish_frame(tree: TopicTree&, topic: const u8[:], frame_wire: const u8[:]) 
 
     var delivered: i64 = 0;
     for fd in matched_fds {
-        let sent = wing::tcp_send(fd, frame_wire);
+        let sent = net::tcp_send(fd, frame_wire);
         if sent > 0 {
             delivered += 1;
         }
@@ -564,7 +564,7 @@ fn publish_prepared(
 
     var delivered: i64 = 0;
     for fd in matched_fds {
-        let sent = wing::tcp_send(fd, msg.wire[..]);
+        let sent = net::tcp_send(fd, msg.wire[..]);
         if sent > 0 {
             delivered += 1;
         }

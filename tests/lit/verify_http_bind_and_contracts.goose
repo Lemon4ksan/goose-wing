@@ -74,47 +74,47 @@ struct ContractResBody {
 }
 
 fn test_validation_problem() {
-    var vp = wing::ValidationProblem { .. };
-    print("vp_init_valid: ", wing::is_valid_problem(vp));
+    var vp = http::ValidationProblem { .. };
+    print("vp_init_valid: ", http::is_valid_problem(vp));
     print(
         "loc_names: ",
-        wing::location_wire_name(wing::ValidationLocation.Query), ",",
-        wing::location_wire_name(wing::ValidationLocation.Header), ",",
-        wing::location_wire_name(wing::ValidationLocation.PathParam), ",",
-        wing::location_wire_name(wing::ValidationLocation.Cookie), ",",
-        wing::location_wire_name(wing::ValidationLocation.Body), ",",
-        wing::location_wire_name(wing::ValidationLocation.Response), ",",
-        wing::location_wire_name(wing::ValidationLocation.Unknown),
+        http::location_wire_name(http::ValidationLocation.Query), ",",
+        http::location_wire_name(http::ValidationLocation.Header), ",",
+        http::location_wire_name(http::ValidationLocation.PathParam), ",",
+        http::location_wire_name(http::ValidationLocation.Cookie), ",",
+        http::location_wire_name(http::ValidationLocation.Body), ",",
+        http::location_wire_name(http::ValidationLocation.Response), ",",
+        http::location_wire_name(http::ValidationLocation.Unknown),
     );
 
-    let ok_pass = wing::check_field(vp, true, wing::ValidationLocation.Query, "page", "ok", "ok");
-    let ok_fail = wing::check_field(
+    let ok_pass = http::check_field(vp, true, http::ValidationLocation.Query, "page", "ok", "ok");
+    let ok_fail = http::check_field(
         vp,
         false,
-        wing::ValidationLocation.Query,
+        http::ValidationLocation.Query,
         "bad\r\nkey",
         "invalid_int",
         "must be positive integer",
     );
-    print("check_field: ", ok_pass, " ", ok_fail, " valid=", wing::is_valid_problem(vp));
+    print("check_field: ", ok_pass, " ", ok_fail, " valid=", http::is_valid_problem(vp));
 
     var detailed_out: u8[..1024] = [];
-    wing::serialize_validation_problem(vp, detailed_out, wing::ValidationDetailMode.Detailed);
+    http::serialize_validation_problem(vp, detailed_out, http::ValidationDetailMode.Detailed);
     print("detailed: ", detailed_out[..]);
 
     var redacted_out: u8[..512] = [];
-    wing::serialize_validation_problem(vp, redacted_out, wing::ValidationDetailMode.Redacted);
+    http::serialize_validation_problem(vp, redacted_out, http::ValidationDetailMode.Redacted);
     print("redacted: ", redacted_out[..]);
 
-    var res = wing::Response { .. };
-    wing::write_validation_problem_response(res, vp, wing::ValidationDetailMode.Detailed);
-    print("vp_res: ", res.status_code, " ct=", wing::header(res, "Content-Type"));
+    var res = http::Response { .. };
+    http::write_validation_problem_response(res, vp, http::ValidationDetailMode.Detailed);
+    print("vp_res: ", res.status_code, " ct=", http::header(res, "Content-Type"));
 }
 
 fn test_declarative_binders() {
     var q_dto = DemoQueryDto { page: 99, .. };
-    var vp = wing::ValidationProblem { .. };
-    let ok_q = wing::bind_query(
+    var vp = http::ValidationProblem { .. };
+    let ok_q = http::bind_query(
         "/items?page=3&limit=50&offset=100&delta=-5&active=true&tag=alpha#frag",
         q_dto,
         vp,
@@ -125,19 +125,19 @@ fn test_declarative_binders() {
         " tag=", q_dto.tag[..],
     );
 
-    let fail_q = wing::bind_query("page=not_an_int&limit=10", q_dto, vp);
+    let fail_q = http::bind_query("page=not_an_int&limit=10", q_dto, vp);
     print("bind_query_rollback: ", fail_q, " page_preserved=", q_dto.page, " errs=", vp.errors.len);
 
-    var hdrs = wing::HeaderMap { .. };
-    wing::set_header(hdrs, "X-Request-Id", "req-777", false);
-    wing::set_header(hdrs, "X-Retry-Max", "4", false);
+    var hdrs = http::HeaderMap { .. };
+    http::set_header(hdrs, "X-Request-Id", "req-777", false);
+    http::set_header(hdrs, "X-Retry-Max", "4", false);
     var h_dto = DemoHeaderDto { .. };
-    var vp_h = wing::ValidationProblem { .. };
-    let ok_h = wing::bind_headers(hdrs, h_dto, vp_h);
+    var vp_h = http::ValidationProblem { .. };
+    let ok_h = http::bind_headers(hdrs, h_dto, vp_h);
     print("bind_headers_ok: ", ok_h, " id=", h_dto.x_request_id[..], " retry=", h_dto.x_retry_max);
 
     let req_path = "/orgs/12/users/345/profile";
-    var router_params = wing::ZeroAllocParams { len: 3, .. };
+    var router_params = http::ZeroAllocParams { len: 3, .. };
     let _ = router_params.spans[0].name.try_set("org_id");
     router_params.spans[0].val_start = 6;
     router_params.spans[0].val_end = 8;
@@ -149,18 +149,18 @@ fn test_declarative_binders() {
     router_params.spans[2].val_end = 26;
 
     var p_dto = DemoParamDto { .. };
-    var vp_p = wing::ValidationProblem { .. };
-    let ok_p = wing::bind_params(router_params, req_path, p_dto, vp_p);
+    var vp_p = http::ValidationProblem { .. };
+    let ok_p = http::bind_params(router_params, req_path, p_dto, vp_p);
     print("bind_params_ok: ", ok_p, " org=", p_dto.org_id, " user=", p_dto.user_id, " slug=", p_dto.slug[..]);
 
     var c_dto = DemoCookieDto { .. };
-    var vp_c = wing::ValidationProblem { .. };
-    let ok_c = wing::bind_cookies("theme=light; sid=\"tok_xyz\"; debug=1", c_dto, vp_c);
+    var vp_c = http::ValidationProblem { .. };
+    let ok_c = http::bind_cookies("theme=light; sid=\"tok_xyz\"; debug=1", c_dto, vp_c);
     print("bind_cookies_ok: ", ok_c, " sid=", c_dto.sid[..], " debug=", c_dto.debug);
 
     var j_dto = DemoJsonDto { id: 11, .. };
-    var vp_j = wing::ValidationProblem { .. };
-    let ok_j = wing::bind_json(
+    var vp_j = http::ValidationProblem { .. };
+    let ok_j = http::bind_json(
         "{\"id\":42,\"count\":1000,\"code\":201,\"score\":9.5,\"admin\":true,\"name\":\"wing\",\"extra\":1}",
         j_dto,
         vp_j,
@@ -170,69 +170,69 @@ fn test_declarative_binders() {
         " code=", j_dto.code, " admin=", j_dto.admin, " name=", j_dto.name[..],
     );
 
-    let fail_j = wing::bind_json("{\"id\":999,\"name\":\"this_string_is_way_too_long_for_16\"}", j_dto, vp_j);
+    let fail_j = http::bind_json("{\"id\":999,\"name\":\"this_string_is_way_too_long_for_16\"}", j_dto, vp_j);
     print("bind_json_rollback: ", fail_j, " id_preserved=", j_dto.id, " errs=", vp_j.errors.len);
 }
 
 fn test_request_and_response_ufcs() {
-    var req = wing::new_post("https://example.com:8443/v1/orders?region=eu&tier=gold#sec");
-    let _ = wing::query(req, "local_k", "local_v");
-    wing::bearer(req, "secret_jwt_123");
-    wing::raw_json(req, "{\"id\":77,\"count\":5,\"code\":1,\"score\":1.0,\"admin\":false,\"name\":\"item\"}");
+    var req = http::new_post("https://example.com:8443/v1/orders?region=eu&tier=gold#sec");
+    let _ = http::query(req, "local_k", "local_v");
+    http::bearer(req, "secret_jwt_123");
+    http::raw_json(req, "{\"id\":77,\"count\":5,\"code\":1,\"score\":1.0,\"admin\":false,\"name\":\"item\"}");
 
-    print("req_path: ", wing::path_slice(req), " query=", wing::extract_request_query(req.url[..]));
+    print("req_path: ", http::path_slice(req), " query=", http::extract_request_query(req.url[..]));
     var q_val: u8[..64] = [];
-    let has_reg = wing::has_query_param(req, "region");
-    let ok_reg = wing::query_param(req, "region", q_val);
+    let has_reg = http::has_query_param(req, "region");
+    let ok_reg = http::query_param(req, "region", q_val);
     var loc_val: u8[..64] = [];
-    let ok_loc = wing::query_param(req, "local_k", loc_val);
+    let ok_loc = http::query_param(req, "local_k", loc_val);
     print("req_query: ", has_reg, " ", ok_reg, " reg=", q_val[..], " loc=", ok_loc, ":", loc_val[..]);
-    print("req_bearer: ", wing::bearer_token(req));
+    print("req_bearer: ", http::bearer_token(req));
 
     var decoded_body = DemoJsonDto { .. };
-    let dec_err = wing::decode_json_body(req, decoded_body);
-    print("decode_req_json: ", wing::ok(dec_err), " id=", decoded_body.id, " name=", decoded_body.name[..]);
+    let dec_err = http::decode_json_body(req, decoded_body);
+    print("decode_req_json: ", http::ok(dec_err), " id=", decoded_body.id, " name=", decoded_body.name[..]);
 
     // Bug #5: bounded JSON string capacity check vs growable u8[>..]
-    var res_over = wing::Response { status_code: 200, .. };
-    wing::respond_json_str(res_over, 200, "{\"token\":\"0123456789abcdef\"}");
-    let bounded_out, bounded_err = wing::decode_json<BoundedReplyDto>(res_over);
-    let grow_out, grow_err = wing::decode_json<GrowableReplyDto>(res_over);
-    print("bug5_bounded_ok: ", wing::ok(bounded_err), " len=", bounded_out.token.len);
-    print("bug5_grow_ok: ", wing::ok(grow_err), " val=", grow_out.token[..]);
+    var res_over = http::Response { status_code: 200, .. };
+    http::respond_json_str(res_over, 200, "{\"token\":\"0123456789abcdef\"}");
+    let bounded_out, bounded_err = http::decode_json<BoundedReplyDto>(res_over);
+    let grow_out, grow_err = http::decode_json<GrowableReplyDto>(res_over);
+    print("bug5_bounded_ok: ", http::ok(bounded_err), " len=", bounded_out.token.len);
+    print("bug5_grow_ok: ", http::ok(grow_err), " val=", grow_out.token[..]);
 
     // Bug #4: client auto-decompress guard policy
-    let pol = wing::DecompressGuardPolicy { .. };
+    let pol = http::DecompressGuardPolicy { .. };
     print(
-        "bug4_decompress: get200=", wing::should_auto_decompress("GET", 200, pol),
-        " head200=", wing::should_auto_decompress("HEAD", 200, pol),
-        " get204=", wing::should_auto_decompress("GET", 204, pol),
-        " get500=", wing::should_auto_decompress("GET", 500, pol),
+        "bug4_decompress: get200=", http::should_auto_decompress("GET", 200, pol),
+        " head200=", http::should_auto_decompress("HEAD", 200, pol),
+        " get204=", http::should_auto_decompress("GET", 204, pol),
+        " get500=", http::should_auto_decompress("GET", 500, pol),
     );
 
     // Ergonomic response helpers
-    var res = wing::Response { .. };
-    wing::respond_html(res, 200, "<h1>Hello</h1>");
-    print("res_html: ", res.status_code, " ct=", wing::header(res, "Content-Type"), " body=", res.body[..]);
-    wing::respond_bytes(res, 200, "RAW", "application/octet-stream");
+    var res = http::Response { .. };
+    http::respond_html(res, 200, "<h1>Hello</h1>");
+    print("res_html: ", res.status_code, " ct=", http::header(res, "Content-Type"), " body=", res.body[..]);
+    http::respond_bytes(res, 200, "RAW", "application/octet-stream");
     print("res_bytes: ", res.body[..]);
-    wing::respond_not_found(res, "missing");
+    http::respond_not_found(res, "missing");
     print("res_404: ", res.status_code, " body=", res.body[..]);
-    wing::respond_no_content(res);
+    http::respond_no_content(res);
     print("res_204: ", res.status_code, " len=", res.body.len);
 
-    let redir_ok = wing::respond_redirect(res, "/login", 302);
-    let redir_crlf = wing::respond_redirect(res, "/bad\r\nSet-Cookie: evil=1", 302);
-    let redir_status = wing::respond_redirect(res, "/bad", 200);
+    let redir_ok = http::respond_redirect(res, "/login", 302);
+    let redir_crlf = http::respond_redirect(res, "/bad\r\nSet-Cookie: evil=1", 302);
+    let redir_status = http::respond_redirect(res, "/bad", 200);
     print(
         "res_redirect: ", redir_ok, " crlf=", redir_crlf, " bad_code=", redir_status,
-        " loc=", wing::header(res, "Location"),
+        " loc=", http::header(res, "Location"),
     );
 
-    let _ = wing::append_vary(res, "Accept-Encoding");
-    let _ = wing::append_vary(res, "accept-encoding");
-    let _ = wing::append_vary(res, "Origin");
-    print("res_vary: ", wing::header(res, "Vary"));
+    let _ = http::append_vary(res, "Accept-Encoding");
+    let _ = http::append_vary(res, "accept-encoding");
+    let _ = http::append_vary(res, "Origin");
+    print("res_vary: ", http::header(res, "Vary"));
 }
 
 fn test_cookie_deltas_and_contracts() {
@@ -242,19 +242,19 @@ fn test_cookie_deltas_and_contracts() {
     let _ = cookie::add(jar, cookie::new_canonical_cookie("session_id", "s_new"));
     let _ = cookie::remove(jar, cookie::new_canonical_cookie("to_remove", "v1"));
 
-    var out_hdrs = wing::HeaderMap { .. };
+    var out_hdrs = http::HeaderMap { .. };
     let flush_ok = cookie::flush_deltas(jar, out_hdrs);
     print(
         "cookie_flush: ", flush_ok, " count=", out_hdrs.entries.len,
-        " first=", wing::get_header(out_hdrs, "Set-Cookie"),
+        " first=", http::get_header(out_hdrs, "Set-Cookie"),
     );
 
     print(
-        "non_empty: ", wing::type_is_non_empty<wing::EmptyPart>(), " ",
-        wing::type_is_non_empty<ContractReqBody>(),
+        "non_empty: ", client::type_is_non_empty<client::EmptyPart>(), " ",
+        client::type_is_non_empty<ContractReqBody>(),
     );
 
-    let spec = wing::EndpointSpec<ContractPathParams, ContractQueryDto, ContractReqBody, ContractResBody> {
+    let spec = client::EndpointSpec<ContractPathParams, ContractQueryDto, ContractReqBody, ContractResBody> {
         method:        "POST",
         path_template: "/orgs/:org_id/users/:user_id/tiers/:tier/revs/:rev/preview/:preview/slug/:slug",
     };
@@ -269,8 +269,8 @@ fn test_cookie_deltas_and_contracts() {
     let q_dto = ContractQueryDto { limit: 25, verbose: true, filter: "all" };
     let b_dto = ContractReqBody { title: "Create", count: 3 };
 
-    var built_req = wing::Request { .. };
-    let build_ok = wing::build_contract_request(spec, "https://api.example.com/", params, q_dto, b_dto, built_req);
+    var built_req = http::Request { .. };
+    let build_ok = client::build_contract_request(spec, "https://api.example.com/", params, q_dto, b_dto, built_req);
     print(
         "contract_req: ", build_ok, " method=", built_req.method[..],
         " url=", built_req.url[..], " q_count=", built_req.query_params.len,
@@ -279,9 +279,9 @@ fn test_cookie_deltas_and_contracts() {
 
     // Reject path traversal in contract path param and call_endpoint
     let bad_params = ContractPathParams { org_id: 1, user_id: 1, tier: 1, rev: 1, preview: false, slug: "../admin" };
-    let bad_ok = wing::build_contract_request(spec, "https://api.example.com", bad_params, q_dto, b_dto, built_req);
-    var client = wing::Client { .. };
-    let _, _, call_err = wing::call_endpoint(client, spec, "https://api.example.com", bad_params, q_dto, b_dto);
+    let bad_ok = client::build_contract_request(spec, "https://api.example.com", bad_params, q_dto, b_dto, built_req);
+    var client = client::Client { .. };
+    let _, _, call_err = client::call_endpoint(client, spec, "https://api.example.com", bad_params, q_dto, b_dto);
     print("contract_traversal_rejected: ", bad_ok, " call_err_code=", call_err.code);
 }
 

@@ -34,22 +34,22 @@ fn count_active_slabs(pool: const server_internal::SpillSlabPool&) -> i64 {
 // 1. Bug 1: Content-Encoding unknown token rejection, multi-layer rollback, and Content-Digest pre-decompress order
 fn test_bug1_response_content_decoding_and_digest() {
     // 1a. Unknown Content-Encoding token must return false and preserve Content-Encoding header
-    var res_unknown = wing::Response { status_code: 200, .. };
-    wing::set_header(res_unknown, "Content-Encoding", "lz4");
-    wing::set_header(res_unknown, "Content-Length", "11");
+    var res_unknown = http::Response { status_code: 200, .. };
+    http::set_header(res_unknown, "Content-Encoding", "lz4");
+    http::set_header(res_unknown, "Content-Length", "11");
     res_unknown.body.append("RAW_LZ4_DAT");
-    let ok_unknown = wing::decode_body(res_unknown);
-    let hdr_preserved = wing::header(res_unknown, "Content-Encoding") == "lz4";
+    let ok_unknown = http::decode_body(res_unknown);
+    let hdr_preserved = http::header(res_unknown, "Content-Encoding") == "lz4";
     let body_intact = res_unknown.body[..] == "RAW_LZ4_DAT";
 
     // 1b. Multi-layer Content-Encoding ("gzip, deflate"): outer deflate succeeds, inner gzip fails -> must roll back res.body
     var outer_deflate: u8[>..] = [];
     let ok_comp = core::zlib_compress("NOT_VALID_GZIP_STREAM", outer_deflate);
     assert(ok_comp);
-    var res_chain = wing::Response { status_code: 200, .. };
-    wing::set_header(res_chain, "Content-Encoding", "gzip, deflate");
+    var res_chain = http::Response { status_code: 200, .. };
+    http::set_header(res_chain, "Content-Encoding", "gzip, deflate");
     res_chain.body.append(outer_deflate[..]);
-    let ok_chain = wing::decode_body(res_chain);
+    let ok_chain = http::decode_body(res_chain);
     let chain_rolled_back = !ok_chain && res_chain.body[..] == outer_deflate[..];
 
     // 1c. Client with verify_content_digest = true receiving gzipped response + valid RFC 9530 Content-Digest over wire bytes
@@ -57,40 +57,40 @@ fn test_bug1_response_content_decoding_and_digest() {
     let ok_gz = core::gzip_compress("digest-verified-payload", gz_wire);
     assert(ok_gz);
     var cd_hdr: u8[..128] = [];
-    let ok_cd = wing::format_digest_field_value("sha-256", gz_wire[..], cd_hdr);
+    let ok_cd = http::format_digest_field_value("sha-256", gz_wire[..], cd_hdr);
     assert(ok_cd);
 
-    var cli = wing::new_client("https://api.example.com");
+    var cli = client::new_client("https://api.example.com");
     cli.verify_content_digest = true;
     cli.strict_content_decoding = true;
-    var route_ok = wing::MockExchange {
+    var route_ok = client::MockExchange {
         status_code: 200,
         ..
     };
     let _ = route_ok.method.try_set("GET");
     let _ = route_ok.pattern_url.try_set("https://api.example.com/compressed");
-    wing::add_mock_header(route_ok, "Content-Encoding", "gzip");
-    wing::add_mock_header(route_ok, "Content-Digest", cd_hdr[..]);
+    client::add_mock_header(route_ok, "Content-Encoding", "gzip");
+    client::add_mock_header(route_ok, "Content-Digest", cd_hdr[..]);
     let _ = route_ok.body.try_set(gz_wire[..]);
     let _ = cli.mock_routes.try_push(route_ok);
 
-    var route_bad_enc = wing::MockExchange {
+    var route_bad_enc = client::MockExchange {
         status_code: 200,
         ..
     };
     let _ = route_bad_enc.method.try_set("GET");
     let _ = route_bad_enc.pattern_url.try_set("https://api.example.com/unknown-enc");
-    wing::add_mock_header(route_bad_enc, "Content-Encoding", "snappy");
+    client::add_mock_header(route_bad_enc, "Content-Encoding", "snappy");
     let _ = route_bad_enc.body.try_set("RAW_SNAPPY");
     let _ = cli.mock_routes.try_push(route_bad_enc);
 
-    let req1 = wing::new_request("GET", "https://api.example.com/compressed");
-    let resp1, err1 = wing::execute_request(cli, req1);
-    let cd_gz_ok = wing::ok(err1) && resp1.status_code == 200 && resp1.body[..] == "digest-verified-payload";
+    let req1 = http::new_request("GET", "https://api.example.com/compressed");
+    let resp1, err1 = client::execute_request(cli, req1);
+    let cd_gz_ok = http::ok(err1) && resp1.status_code == 200 && resp1.body[..] == "digest-verified-payload";
 
-    let req2 = wing::new_request("GET", "https://api.example.com/unknown-enc");
-    let _, err2 = wing::execute_request(cli, req2);
-    let strict_unknown_rejected = !wing::ok(err2) && err2.code == 502;
+    let req2 = http::new_request("GET", "https://api.example.com/unknown-enc");
+    let _, err2 = client::execute_request(cli, req2);
+    let strict_unknown_rejected = !http::ok(err2) && err2.code == 502;
 
     print(
         "BUG1_CONTENT_DECODE: unknown_rejected=", !ok_unknown,
@@ -108,11 +108,11 @@ fn test_bug2_response_json_transactional_rollback() {
     var profile = AppUserProfile { id: 7 };
     let _ = profile.name.try_set("alice");
 
-    var bad_res = wing::Response { status_code: 200, .. };
+    var bad_res = http::Response { status_code: 200, .. };
     bad_res.body.append("{\"id\":999,\"name\":12345}");
 
-    let err = wing::json(bad_res, profile);
-    let rejected = !wing::ok(err);
+    let err = http::json(bad_res, profile);
+    let rejected = !http::ok(err);
     let rolled_back = profile.id == 7 && profile.name[..] == "alice";
 
     print("BUG2_JSON_ROLLBACK: rejected=", rejected, " rolled_back=", rolled_back, "\n");
@@ -122,9 +122,9 @@ fn test_bug2_response_json_transactional_rollback() {
 // 3. Bug 3: HTTP/2 server SpillSlabPool leak when connection aborts with GOAWAY mid-stream
 fn test_bug3_h2_spill_slab_reclaimed_on_goaway() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "POST", "/upload", 1);
+    server::add_route(pipeline.router, "POST", "/upload", 1);
 
     var init_wire: u8[>..] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE);

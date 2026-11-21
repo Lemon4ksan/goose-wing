@@ -9,26 +9,26 @@ import wing from "../..";
 
 fn dispatch_incoming_datagram(
     sock:      i64,
-    server:    wing::HttpServer&,
-    ep:        wing::H3ServerEndpoint&,
+    server:    server::HttpServer&,
+    ep:        server::H3ServerEndpoint&,
     datagram:  const u8[:],
     peer_ip:   u32,
     peer_port: u16,
     out_wire:  u8[..2048]&,
 ) -> bool {
-    let udp_tr = wing::Transport.Udp {
+    let udp_tr = net::Transport.Udp {
         fd:        sock,
         peer_ip4:  peer_ip,
         peer_port: peer_port,
     };
     if datagram.len >= 8 && datagram[..8] == "SHUTDOWN" {
-        let _ = wing::send(udp_tr, "BYE");
+        let _ = net::send(udp_tr, "BYE");
         return false;
     }
 
     let now_ns = core::as_nanos(core::monotonic_now());
-    if wing::handle_h3_quic_datagram(server, ep, "127.0.0.1", datagram, now_ns, out_wire) {
-        let _ = wing::send(udp_tr, out_wire[..]);
+    if server::handle_h3_quic_datagram(server, ep, "127.0.0.1", datagram, now_ns, out_wire) {
+        let _ = net::send(udp_tr, out_wire[..]);
     }
     return true;
 }
@@ -43,14 +43,14 @@ inline fn is_recv_valid(recvd: i32, max_len: i64) -> bool {
 
 fn poll_and_dispatch_datagram(
     sock:     i64,
-    server:   wing::HttpServer&,
-    ep:       wing::H3ServerEndpoint&,
+    server:   server::HttpServer&,
+    ep:       server::H3ServerEndpoint&,
     in_buf:   u8[:],
     out_wire: u8[..2048]&,
 ) -> bool {
     var peer_port: u16 = 0;
     var peer_ip:   u32 = 0;
-    let recvd = wing::udp_recvfrom(sock, in_buf, 500, peer_ip, peer_port);
+    let recvd = net::udp_recvfrom(sock, in_buf, 500, peer_ip, peer_port);
     if is_recv_timeout(recvd) {
         return true;
     }
@@ -62,7 +62,7 @@ fn poll_and_dispatch_datagram(
     );
 }
 
-fn run_server_loop(sock: i64, server: wing::HttpServer&, ep: wing::H3ServerEndpoint&) {
+fn run_server_loop(sock: i64, server: server::HttpServer&, ep: server::H3ServerEndpoint&) {
     var in_buf:   u8[65536]  = [0; 65536];
     var out_wire: u8[..2048] = [];
     var is_running = true;
@@ -72,20 +72,20 @@ fn run_server_loop(sock: i64, server: wing::HttpServer&, ep: wing::H3ServerEndpo
 }
 
 fn main() {
-    let port_env = wing::get_env_port(0);
-    let sock = wing::udp_bind("0.0.0.0", port_env);
+    let port_env = net::get_env_port(0);
+    let sock = net::udp_bind("0.0.0.0", port_env);
     guard sock > 0 else {
         print("ERROR_FAILED_TO_BIND\n");
         return;
     }
 
-    let port = wing::tcp_getsockname_port(sock);
-    var server = wing::new_http_server("0.0.0.0", port);
-    wing::add_static_get_route(server, "/", "text/plain", "Hello from goose-wing HTTP/3!", 1);
-    wing::add_static_get_route(
+    let port = net::tcp_getsockname_port(sock);
+    var server = server::new_http_server("0.0.0.0", port);
+    server::add_static_get_route(server, "/", "text/plain", "Hello from goose-wing HTTP/3!", 1);
+    server::add_static_get_route(
         server, "/api/info", "application/json", "{\"protocol\":\"h3\",\"engine\":\"goose-wing\"}", 2,
     );
-    let _ = wing::add_static_route(server.pipeline.router, "POST", "/echo", "text/plain", "H3_POST_ACK", 3);
+    let _ = server::add_static_route(server.pipeline.router, "POST", "/echo", "text/plain", "H3_POST_ACK", 3);
 
     let settings = fingerprint::H3Settings {
         qpack_max_table_capacity: 4096,
@@ -93,11 +93,11 @@ fn main() {
         qpack_blocked_streams:    16,
         enable_connect_protocol:  1,
     };
-    var ep = wing::new_h3_server_endpoint(settings);
+    var ep = server::new_h3_server_endpoint(settings);
 
     print("READY_PORT:", port, "\n");
 
     run_server_loop(sock, server, ep);
 
-    wing::tcp_close(sock);
+    net::tcp_close(sock);
 }

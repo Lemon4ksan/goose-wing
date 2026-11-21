@@ -907,13 +907,13 @@ fn test_zstandard_rfc8878(t: lit::T&) {
         var wire: u8[>..] = [];
         core::zstd_compress(raw_payload, wire, true);
 
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         res.status_code = 200;
-        wing::set_header(res, "Content-Encoding", "zstd");
-        wing::set_header(res, "Content-Type", "text/plain");
+        http::set_header(res, "Content-Encoding", "zstd");
+        http::set_header(res, "Content-Type", "text/plain");
         res.body.append(wire[..]);
 
-        let decoded = wing::decode_body(res);
+        let decoded = http::decode_body(res);
         sub.assert_true(decoded, "decode_body must handle Content-Encoding: zstd");
         sub.assert_eq(res.body[..], raw_payload, "Decoded HTTP body must match original payload");
     };
@@ -1747,14 +1747,14 @@ fn test_brotli_http_client_integration(t: lit::T&) {
         sub.assert_true(ok_c, "Compressed test payload");
 
         // 2. Response with Content-Encoding: br
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         res.status_code = 200;
-        wing::set_header(res, "Content-Encoding", "br");
-        wing::set_header(res, "Content-Type", "application/json");
+        http::set_header(res, "Content-Encoding", "br");
+        http::set_header(res, "Content-Type", "application/json");
         res.body.append(comp_body[..]);
 
-        // 3. Transparent auto-decompression via wing::decode_body
-        let ok_dec = wing::decode_body(res);
+        // 3. Transparent auto-decompression via http::decode_body
+        let ok_dec = http::decode_body(res);
         sub.assert_true(ok_dec, "decode_body succeeded for Content-Encoding: br");
         sub.assert_eq(res.body[..], original_body, "Body was automatically decompressed from Brotli");
     };
@@ -1774,7 +1774,7 @@ fn test_brotli_http_client_integration(t: lit::T&) {
 fn test_dictionary_header_parsing_and_matching(t: lit::T&) {
     t.run("Use-As-Dictionary Parser: match, id, ttl") { sub =>
         let raw = "match=\"/assets/*\", id=\"v1\", ttl=3600, type=raw";
-        let p, ok = wing::parse_use_as_dictionary_header(raw);
+        let p, ok = http::parse_use_as_dictionary_header(raw);
         sub.assert_true(ok, "parse_use_as_dictionary_header succeeded");
         sub.assert_bytes_eq(p.match_pattern[..], "/assets/*", "match_pattern is /assets/*");
         sub.assert_bytes_eq(p.id[..], "v1", "id is v1");
@@ -1783,31 +1783,31 @@ fn test_dictionary_header_parsing_and_matching(t: lit::T&) {
 
         // Unrecognized SF item parameters are ignored without spoofing dictionary keys (RFC 9842 §2.1)
         let raw_params = "match=\"/api/*\";ext=1, id=\"v2\";match=\"/spoof\", ttl=7200";
-        let p2, ok2 = wing::parse_use_as_dictionary_header(raw_params);
+        let p2, ok2 = http::parse_use_as_dictionary_header(raw_params);
         sub.assert_true(ok2, "SF dictionary with ignored member params parsed");
         sub.assert_bytes_eq(p2.match_pattern[..], "/api/*", "match is /api/* (not spoofed by param)");
         sub.assert_eq(p2.ttl_sec, 7200, "ttl is 7200");
 
         // RFC 9842 §2.1.4: type MUST be an SF Token, not a String
-        let _, ok_str_type = wing::parse_use_as_dictionary_header("match=\"/assets/*\", type=\"raw\"");
+        let _, ok_str_type = http::parse_use_as_dictionary_header("match=\"/assets/*\", type=\"raw\"");
         sub.assert_false(ok_str_type, "String type=\"raw\" rejected per RFC 9842 §2.1.4");
 
         // RFC 9842 §2.1.1: URLPattern regexp groups are prohibited
-        let _, ok_regex = wing::parse_use_as_dictionary_header("match=\"/assets/(.*)\"");
+        let _, ok_regex = http::parse_use_as_dictionary_header("match=\"/assets/(.*)\"");
         sub.assert_false(ok_regex, "Regexp group in match pattern rejected per RFC 9842 §2.1.1");
     };
 
     t.run("URL Pattern Matching") { sub =>
-        sub.assert_true(wing::url_path_matches_pattern("/assets/app.js", "/assets/*"), "/assets/app.js matches /assets/*");
-        sub.assert_true(wing::url_path_matches_pattern("/assets/vendor/chunk.js", "/assets/*"), "subpath matches /assets/*");
-        sub.assert_false(wing::url_path_matches_pattern("/api/users", "/assets/*"), "/api/users does NOT match /assets/*");
-        sub.assert_true(wing::url_path_matches_pattern("/exact.js", "/exact.js"), "exact match works");
-        sub.assert_false(wing::url_path_matches_pattern("/other.js", "/exact.js"), "mismatch works");
+        sub.assert_true(http::url_path_matches_pattern("/assets/app.js", "/assets/*"), "/assets/app.js matches /assets/*");
+        sub.assert_true(http::url_path_matches_pattern("/assets/vendor/chunk.js", "/assets/*"), "subpath matches /assets/*");
+        sub.assert_false(http::url_path_matches_pattern("/api/users", "/assets/*"), "/api/users does NOT match /assets/*");
+        sub.assert_true(http::url_path_matches_pattern("/exact.js", "/exact.js"), "exact match works");
+        sub.assert_false(http::url_path_matches_pattern("/other.js", "/exact.js"), "mismatch works");
     };
 
     t.run("RFC 9842 Dictionary-ID Formatting") { sub =>
         var id_buf: u8[..64] = [];
-        wing::format_dictionary_id_header(id_buf, "dict-v1");
+        http::format_dictionary_id_header(id_buf, "dict-v1");
         sub.assert_bytes_eq(id_buf[..], "\"dict-v1\"", "Formatted Dictionary-ID header value");
     };
 }
@@ -1822,7 +1822,7 @@ fn test_dcz_frame_codec(t: lit::T&) {
 
         let uncompressed_target = "Hello World! This is target data to compress with dcz.";
         var dcz_wire: u8[>..] = [];
-        let enc_ok = wing::encode_dcz_response(dcz_wire, hash, uncompressed_target);
+        let enc_ok = http::encode_dcz_response(dcz_wire, hash, uncompressed_target);
         sub.assert_true(enc_ok, "encode_dcz_response ok");
 
         // Verify RFC 9842 Section 5 40-byte fixed header:
@@ -1839,13 +1839,13 @@ fn test_dcz_frame_codec(t: lit::T&) {
 
         // Decode DCZ header
         var decoded_hash: u8[32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let p_slice, dec_ok = wing::decode_dcz_header(dcz_wire[..], decoded_hash);
+        let p_slice, dec_ok = http::decode_dcz_header(dcz_wire[..], decoded_hash);
         sub.assert_true(dec_ok, "decode_dcz_header ok");
         sub.assert_bytes_eq(decoded_hash[..], hash[..], "Decoded 32-byte dict hash matches");
 
         // Decompress payload using dictionary
         var decompressed: u8[>..] = [];
-        let dec_body_ok = wing::decompress_dcz_payload(p_slice, dict_data, decompressed);
+        let dec_body_ok = http::decompress_dcz_payload(p_slice, dict_data, decompressed);
         sub.assert_true(dec_body_ok, "decompress_dcz_payload ok");
         sub.assert_bytes_eq(decompressed[..], uncompressed_target, "Decompressed payload matches original target data!");
     };
@@ -1856,43 +1856,43 @@ fn test_dcz_frame_codec(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_client_dictionary_lifecycle(t: lit::T&) {
     t.run("Request 1 Learns Dictionary, Request 2 Sends Available-Dictionary & Decodes dcz") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000); // t0
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000); // t0
 
         let dict_body = "function sharedCommonUtils() { return 42; }";
         let dict_hash = core::sha256(dict_body);
 
         // 1. Mock dictionary endpoint returning Use-As-Dictionary header
-        wing::mock_route(client, "GET", "https://cdn.site.com/assets/dict.js", 200, dict_body);
-        wing::add_mock_header(client, "Use-As-Dictionary", "match=\"/assets/*\", id=\"v1\", ttl=86400");
+        client::mock_route(client, "GET", "https://cdn.site.com/assets/dict.js", 200, dict_body);
+        client::add_mock_header(client, "Use-As-Dictionary", "match=\"/assets/*\", id=\"v1\", ttl=86400");
 
-        sub.assert_false(wing::has_dictionary_for(client, "https://cdn.site.com/assets/app.js"), "no dictionary before request");
+        sub.assert_false(client::has_dictionary_for(client, "https://cdn.site.com/assets/app.js"), "no dictionary before request");
 
         // Fetch dictionary
-        let resp1, err1 = wing::get(client, "https://cdn.site.com/assets/dict.js");
-        sub.assert_true(wing::ok(err1), "fetch dict ok");
-        sub.assert_eq(wing::status(resp1), 200, "200 OK");
+        let resp1, err1 = client::get(client, "https://cdn.site.com/assets/dict.js");
+        sub.assert_true(http::ok(err1), "fetch dict ok");
+        sub.assert_eq(http::status(resp1), 200, "200 OK");
 
         // Client has now ingested dictionary
-        sub.assert_true(wing::has_dictionary_for(client, "https://cdn.site.com/assets/app.js"), "dictionary available for /assets/app.js");
-        sub.assert_false(wing::has_dictionary_for(client, "https://cdn.site.com/api/user"), "not available for non-matching path");
-        sub.assert_false(wing::has_dictionary_for(client, "https://other.com/assets/app.js"), "not available for different origin");
+        sub.assert_true(client::has_dictionary_for(client, "https://cdn.site.com/assets/app.js"), "dictionary available for /assets/app.js");
+        sub.assert_false(client::has_dictionary_for(client, "https://cdn.site.com/api/user"), "not available for non-matching path");
+        sub.assert_false(client::has_dictionary_for(client, "https://other.com/assets/app.js"), "not available for different origin");
 
         // 2. Mock app endpoint returning DCZ compressed response
         let original_app_js = "console.log('App started with shared utils'); sharedCommonUtils();";
         var dcz_payload: u8[>..] = [];
-        wing::encode_dcz_response(dcz_payload, dict_hash, original_app_js);
+        http::encode_dcz_response(dcz_payload, dict_hash, original_app_js);
 
-        wing::mock_route(client, "GET", "https://cdn.site.com/assets/app.js", 200, dcz_payload[..]);
-        wing::add_mock_header(client, "Content-Encoding", "dcz");
+        client::mock_route(client, "GET", "https://cdn.site.com/assets/app.js", 200, dcz_payload[..]);
+        client::add_mock_header(client, "Content-Encoding", "dcz");
 
         // Fetch app.js: Client automatically adds Available-Dictionary and decompresses dcz!
-        let resp2, err2 = wing::get(client, "https://cdn.site.com/assets/app.js");
-        sub.assert_true(wing::ok(err2), "fetch app.js ok");
-        sub.assert_eq(wing::status(resp2), 200, "200 OK");
+        let resp2, err2 = client::get(client, "https://cdn.site.com/assets/app.js");
+        sub.assert_true(http::ok(err2), "fetch app.js ok");
+        sub.assert_eq(http::status(resp2), 200, "200 OK");
 
         // Verify client sent Available-Dictionary header
-        let sent_avail = wing::sent_header(resp2, "Available-Dictionary");
+        let sent_avail = http::sent_header(resp2, "Available-Dictionary");
         sub.assert_true(sent_avail.len > 0, "Available-Dictionary sent in request");
         sub.assert_eq(sent_avail[0], ':' as u8, "Starts with colon (Structured Fields byte sequence)");
         sub.assert_eq(sent_avail[sent_avail.len - 1], ':' as u8, "Ends with colon");
@@ -1903,45 +1903,45 @@ fn test_client_dictionary_lifecycle(t: lit::T&) {
         // 3. Mock app endpoint returning DCB (Dictionary-Compressed Brotli) response
         let original_app_css = "body { margin: 0; padding: 0; background: #fff; }";
         var dcb_payload: u8[>..] = [];
-        wing::encode_dcb_response(dcb_payload, dict_hash, original_app_css);
+        http::encode_dcb_response(dcb_payload, dict_hash, original_app_css);
 
-        wing::mock_route(client, "GET", "https://cdn.site.com/assets/style.css", 200, dcb_payload[..]);
-        wing::add_mock_header(client, "Content-Encoding", "dcb");
+        client::mock_route(client, "GET", "https://cdn.site.com/assets/style.css", 200, dcb_payload[..]);
+        client::add_mock_header(client, "Content-Encoding", "dcb");
 
-        let resp3, err3 = wing::get(client, "https://cdn.site.com/assets/style.css");
-        sub.assert_true(wing::ok(err3), "fetch style.css ok");
+        let resp3, err3 = client::get(client, "https://cdn.site.com/assets/style.css");
+        sub.assert_true(http::ok(err3), "fetch style.css ok");
         sub.assert_bytes_eq(resp3.body[..], original_app_css, "Body was transparently decompressed from dcb!");
     };
 
     t.run("Dictionary TTL Expiration") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000); // t0
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000); // t0
 
-        wing::mock_route(client, "GET", "https://api.site.com/dict", 200, "short_lived_dictionary");
-        wing::add_mock_header(client, "Use-As-Dictionary", "match=\"/api/*\", id=\"temp\", ttl=3");
+        client::mock_route(client, "GET", "https://api.site.com/dict", 200, "short_lived_dictionary");
+        client::add_mock_header(client, "Use-As-Dictionary", "match=\"/api/*\", id=\"temp\", ttl=3");
 
-        let _, _ = wing::get(client, "https://api.site.com/dict");
-        sub.assert_true(wing::has_dictionary_for(client, "https://api.site.com/api/v1"), "valid at t0");
+        let _, _ = client::get(client, "https://api.site.com/dict");
+        sub.assert_true(client::has_dictionary_for(client, "https://api.site.com/api/v1"), "valid at t0");
 
         // Advance 2s: still valid
-        wing::set_clock_us(client, 1700000002000000);
-        sub.assert_true(wing::has_dictionary_for(client, "https://api.site.com/api/v1"), "valid at t0+2s (< 3s)");
+        client::set_clock_us(client, 1700000002000000);
+        sub.assert_true(client::has_dictionary_for(client, "https://api.site.com/api/v1"), "valid at t0+2s (< 3s)");
 
         // Advance 4s: expired
-        wing::set_clock_us(client, 1700000004000000);
-        sub.assert_false(wing::has_dictionary_for(client, "https://api.site.com/api/v1"), "expired at t0+4s (>= 3s)");
+        client::set_clock_us(client, 1700000004000000);
+        sub.assert_false(client::has_dictionary_for(client, "https://api.site.com/api/v1"), "expired at t0+4s (>= 3s)");
     };
 
     t.run("Insecure Transport Security Invariant") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000);
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000);
 
         // Plain HTTP server tries to declare a dictionary
-        wing::mock_route(client, "GET", "http://insecure.site.com/dict", 200, "insecure_dict");
-        wing::add_mock_header(client, "Use-As-Dictionary", "match=\"/*\"");
+        client::mock_route(client, "GET", "http://insecure.site.com/dict", 200, "insecure_dict");
+        client::add_mock_header(client, "Use-As-Dictionary", "match=\"/*\"");
 
-        let _, _ = wing::get(client, "http://insecure.site.com/dict");
-        sub.assert_false(wing::has_dictionary_for(client, "http://insecure.site.com/page"), "Use-As-Dictionary ignored over insecure HTTP");
+        let _, _ = client::get(client, "http://insecure.site.com/dict");
+        sub.assert_false(client::has_dictionary_for(client, "http://insecure.site.com/page"), "Use-As-Dictionary ignored over insecure HTTP");
     };
 }
 
@@ -1953,12 +1953,12 @@ fn test_client_dictionary_lifecycle(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_f001_compression_dict_bounds(t: lit::T&) {
     t.run("dictionary_cache_insert rejects match_pattern > 128 bytes") { sub =>
-        var cache = wing::DictionaryCache { .. };
+        var cache = http::DictionaryCache { .. };
         var long_pat: u8[..200] = [];
         long_pat.append("/");
         for i in 150 { long_pat.push('a'); }
 
-        let ok = wing::dictionary_cache_insert(
+        let ok = http::dictionary_cache_insert(
             cache,
             "https://example.com",
             long_pat[..],
@@ -1971,11 +1971,11 @@ fn test_f001_compression_dict_bounds(t: lit::T&) {
     };
 
     t.run("dictionary_cache_insert rejects id > 64 bytes") { sub =>
-        var cache = wing::DictionaryCache { .. };
+        var cache = http::DictionaryCache { .. };
         var long_id: u8[..100] = [];
         for i in 80 { long_id.push('b'); }
 
-        let ok = wing::dictionary_cache_insert(
+        let ok = http::dictionary_cache_insert(
             cache,
             "https://example.com",
             "/assets/*",
@@ -1993,7 +1993,7 @@ fn test_f001_compression_dict_bounds(t: lit::T&) {
         for i in 150 { raw.push('a'); }
         raw.append("\", id=\"v1\"");
 
-        let p, ok = wing::parse_use_as_dictionary_header(raw[..]);
+        let p, ok = http::parse_use_as_dictionary_header(raw[..]);
         sub.assert_false(ok, "match_pattern > 128B MUST return ok == false and not overflow DictionaryParams.match_pattern");
     };
 }

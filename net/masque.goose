@@ -3,14 +3,14 @@
 
 // HTTP Datagrams and Capsules (RFC 9297), MASQUE CONNECT-UDP (RFC 9298), & MASQUE CONNECT-IP (RFC 9484).
 // Zero-heap protocol codec for modern privacy proxies and UDP/IP tunneling over HTTP/2 and HTTP/3.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
+import .internal;
 
 // ---- Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
-// Legacy draft backward-compatibility constants
 struct HttpCapsule {
     capsule_type: u64         = 0,
     payload:      const u8[:] = [],
@@ -35,9 +35,8 @@ fn parse_http_capsule(src: const u8[:]) -> HttpCapsule, bool {
     let clen, off2, ok2 = quic::decode_varint(src, off1);
     guard ok2 else { return c, false; }
 
-    // Prevent u64 addition overflow
-    guard clen <= (src.len as u64) && (off2 + clen) <= (src.len as u64) else { return c, false; }
-    let total_len = off2 + clen;
+    let total_len = core::add_sat_u64(off2, clen);
+    guard clen <= (src.len as u64) && total_len <= (src.len as u64) else { return c, false; }
 
     let start_idx = off2 as i64;
     let end_idx = total_len as i64;
@@ -52,7 +51,8 @@ fn encode_http_capsule<B>(out: B&, capsule_type: u64, payload: const u8[:]) -> b
     var hdr: u8[..16] = [];
     guard quic::encode_varint(capsule_type, hdr) else { return false; }
     guard quic::encode_varint(payload.len as u64, hdr) else { return false; }
-    guard out.len + hdr.len + payload.len <= out.cap else { return false; }
+    let needed = core::add_sat_i64(core::add_sat_i64(out.len, hdr.len), payload.len);
+    guard needed <= out.cap else { return false; }
     out.append(hdr[..]);
     out.append(payload);
     return true;
@@ -68,7 +68,7 @@ fn is_capsule_protocol_negotiated(header_val: const u8[:]) -> bool {
 }
 
 // Checks if Capsule-Protocol header is negotiated in a HeaderMap
-fn has_capsule_protocol(headers: const HeaderMap&) -> bool {
+fn has_capsule_protocol(headers: const http::HeaderMap&) -> bool {
     let val = headers.get_header("capsule-protocol");
     return is_capsule_protocol_negotiated(val);
 }
@@ -82,7 +82,8 @@ fn encode_http_datagram<B>(out: B&, quarter_stream_id: u64, context_id: u64, pay
     guard quarter_stream_id <= 0x0FFFFFFFFFFFFFFF &&
           quic::encode_varint(quarter_stream_id, hdr) else { return false; }
     guard quic::encode_varint(context_id, hdr) else { return false; }
-    guard out.len + hdr.len + payload.len <= out.cap else { return false; }
+    let needed = core::add_sat_i64(core::add_sat_i64(out.len, hdr.len), payload.len);
+    guard needed <= out.cap else { return false; }
     out.append(hdr[..]);
     out.append(payload);
     return true;
@@ -122,49 +123,6 @@ fn format_connect_udp_path<B>(out: B&, target_host: const u8[:], target_port: u1
     out.push('/');
 }
 
-inline fn is_forbidden_connect_udp_host_byte(b: u8) -> bool {
-    return b <= 0x20 || b == 0x7F || b == '/' || b == '\\' || b == '?' || b == '#' || b == '@' || b == '[' || b == ']';
-}
-
-// Decodes and validates a MASQUE CONNECT-UDP target_host path segment (RFC 9298 Section 3).
-// Rolls back `out_host` on failure.
-//
-// Example:
-//   host_part = "2001%3Adb8%3A%3A1"
-//   returns: true, out_host = "2001:db8::1"
-fn decode_connect_udp_target_host(host_part: const u8[:], out_host: u8[..256]&) -> bool {
-    let saved_len = out_host.len;
-    var committed = false;
-    defer if !committed { out_host.resize(saved_len); };
-    var idx: i64 = 0;
-    while idx < host_part.len {
-        let b = host_part[idx];
-        // RFC 9298 Section 3: Tunneling UDP over HTTP - literal colons in IPv6 MUST be percent-encoded
-        guard b != ':' else { return false; }
-        if b == '%' {
-            let p1 = core::add_sat_i64(idx, 1);
-            let p2 = core::add_sat_i64(idx, 2);
-            let p3 = core::add_sat_i64(idx, 3);
-            guard p2 < host_part.len &&
-                  core::is_ascii_hexdigit(host_part[p1]) &&
-                  core::is_ascii_hexdigit(host_part[p2]) else {
-                return false;
-            }
-            let decoded, ok_hex = host_part[p1..p3].parse_u8_hex();
-            guard ok_hex && !is_forbidden_connect_udp_host_byte(decoded) && out_host.try_push(decoded) else {
-                return false;
-            }
-            idx = p3;
-        } else {
-            guard !is_forbidden_connect_udp_host_byte(b) && out_host.try_push(b) else { return false; }
-            idx = core::add_sat_i64(idx, 1);
-        }
-    }
-    guard out_host.len > saved_len else { return false; }
-    committed = true;
-    return true;
-}
-
 // Parses a MASQUE CONNECT-UDP URI template path into (host, port, ok) (RFC 9298 Section 3).
 //
 // Example:
@@ -179,10 +137,10 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..256], u16, bool {
     let rem = path[prefix.len..];
     let host_part, rem_after_host, host_ok = rem.split_once_byte('/');
     guard host_ok && host_part.len > 0 else { return out_host, 0, false; }
-    guard decode_connect_udp_target_host(host_part, out_host) else { return out_host, 0, false; }
+    guard net_internal::decode_connect_udp_target_host(host_part, out_host) else { return out_host, 0, false; }
 
     var port_part = rem_after_host;
-    if port_part.len > 0 && port_part[port_part.len - 1] == '/' {
+    if port_part.len > 0 && port_part[core::sub_sat_i64(port_part.len, 1)] == '/' {
         port_part = port_part[..^1];
     }
     guard port_part.len > 0 && port_part.index_of_byte('/') < 0 else { return out_host, 0, false; }
@@ -196,17 +154,11 @@ fn parse_connect_udp_path(path: const u8[:]) -> u8[..256], u16, bool {
 
 const MAX_CONNECT_UDP_PAYLOAD_LEN: i64 = 65527; // RFC 9298 §5
 
-fn assemble_datagram_body(body: u8[..2048]&, context_id: u64, udp_packet: const u8[:]) -> bool {
-    guard context_id != 0 || udp_packet.len <= MAX_CONNECT_UDP_PAYLOAD_LEN else { return false; }
-    guard quic::encode_varint(context_id, body) else { return false; }
-    return body.try_append(udp_packet);
-}
-
 // Encodes a UDP payload into a DATAGRAM capsule (RFC 9297 / RFC 9298 Section 5):
 // Format: Context ID (VarInt = 0) || UDP Payload
 fn encode_connect_udp_datagram_capsule<B>(out: B&, context_id: u64, udp_packet: const u8[:]) -> bool {
     var datagram_body: u8[..2048] = [];
-    guard assemble_datagram_body(datagram_body, context_id, udp_packet) else { return false; }
+    guard net_internal::assemble_datagram_body(datagram_body, context_id, udp_packet) else { return false; }
     return encode_http_capsule(out, rfc::CAPSULE_DATAGRAM, datagram_body[..]);
 }
 
@@ -251,31 +203,6 @@ struct RouteAdvertisement {
     ip_protocol: u8       = 0,
 }
 
-fn host_mask_for_rem_bits(rem: i64) -> u8 {
-    return match rem {
-        0 => 0xFF,
-        1 => 0x7F,
-        2 => 0x3F,
-        3 => 0x1F,
-        4 => 0x0F,
-        5 => 0x07,
-        6 => 0x03,
-        7 => 0x01,
-        _ => 0x00,
-    };
-}
-
-// RFC 9484 §4.7.1 & §4.7.2: Lower bits of IP Address not covered by prefix length MUST be 0.
-fn has_zero_host_bits(ip: const u8[:], prefix_len: u8) -> bool {
-    var rem: i64 = prefix_len;
-    for b in ip {
-        let mask = host_mask_for_rem_bits(rem);
-        guard (b & mask) == 0 else { return false; }
-        rem = max(core::sub_sat_i64(rem, 8), 0);
-    }
-    return true;
-}
-
 // Encodes an ADDRESS_REQUEST Capsule (RFC 9484 Section 4.7.2):
 // Format: Request ID (VarInt) || IP Version (u8) || IP bytes (4 or 16) || Prefix Len (u8)
 fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> bool {
@@ -286,7 +213,7 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
     if req.ip_version == 4 {
         guard req.prefix_len <= 32 else { return false; }
         if req.requested_ip.len == 4 {
-            guard has_zero_host_bits(req.requested_ip[..], req.prefix_len) else { return false; }
+            guard net_internal::has_zero_host_bits(req.requested_ip[..], req.prefix_len) else { return false; }
             body.append(req.requested_ip[..]);
         } else if req.requested_ip.len == 0 {
             let zeros: u8[4] = [0, 0, 0, 0];
@@ -297,7 +224,7 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
     } else if req.ip_version == 6 {
         guard req.prefix_len <= 128 else { return false; }
         if req.requested_ip.len == 16 {
-            guard has_zero_host_bits(req.requested_ip[..], req.prefix_len) else { return false; }
+            guard net_internal::has_zero_host_bits(req.requested_ip[..], req.prefix_len) else { return false; }
             body.append(req.requested_ip[..]);
         } else if req.requested_ip.len == 0 {
             let zeros: u8[16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -312,49 +239,6 @@ fn encode_address_request_capsule<B>(out: B&, req: const IpAddressRequest&) -> b
     return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_REQUEST, body[..]);
 }
 
-// Decodes a single IP Address Request entry and advances `cur` (RFC 9484 §4.7.2).
-//
-// Example:
-//   payload = [0x01, 4, 10, 0, 0, 1, 32], cur = 0
-//   returns: true, cur = 7
-fn decode_address_request_entry(payload: const u8[:], cur: i64&, out_req: IpAddressRequest&) -> bool {
-    let req_id, off, ok = quic::decode_varint(payload, cur as u64);
-    guard ok && req_id != 0 && (off as i64) < payload.len else { return false; }
-    let ver_idx = off as i64;
-    let ip_ver = payload[ver_idx];
-    let ip_start = ver_idx + 1;
-    if ip_ver == 4 {
-        let entry_end = ip_start + 4 + 1;
-        guard entry_end <= payload.len else { return false; }
-        let ip_slice = payload[ip_start..ip_start + 4];
-        let p_len = payload[ip_start + 4];
-        guard p_len <= 32 && has_zero_host_bits(ip_slice, p_len) else { return false; }
-        if out_req.requested_ip.len == 0 {
-            out_req.request_id = req_id;
-            out_req.ip_version = 4;
-            out_req.requested_ip.append(ip_slice);
-            out_req.prefix_len = p_len;
-        }
-        cur = entry_end;
-        return true;
-    } else if ip_ver == 6 {
-        let entry_end = ip_start + 16 + 1;
-        guard entry_end <= payload.len else { return false; }
-        let ip_slice = payload[ip_start..ip_start + 16];
-        let p_len = payload[ip_start + 16];
-        guard p_len <= 128 && has_zero_host_bits(ip_slice, p_len) else { return false; }
-        if out_req.requested_ip.len == 0 {
-            out_req.request_id = req_id;
-            out_req.ip_version = 6;
-            out_req.requested_ip.append(ip_slice);
-            out_req.prefix_len = p_len;
-        }
-        cur = entry_end;
-        return true;
-    }
-    return false;
-}
-
 // Decodes an ADDRESS_REQUEST Capsule payload (RFC 9484 §4.7.2).
 //
 // Example:
@@ -365,7 +249,7 @@ fn decode_address_request_capsule(payload: const u8[:]) -> IpAddressRequest, boo
     guard payload.len > 0 else { return req, false; }
     var cur: i64 = 0;
     while cur < payload.len {
-        guard decode_address_request_entry(payload, cur, req) else { return req, false; }
+        guard net_internal::decode_address_request_entry(payload, cur, req) else { return req, false; }
     }
     return req, cur == payload.len && req.requested_ip.len > 0;
 }
@@ -378,60 +262,17 @@ fn encode_address_assign_capsule<B>(out: B&, assign: const IpAddressAssign&) -> 
     body.push(assign.ip_version);
     if assign.ip_version == 4 {
         guard assign.prefix_len <= 32 && assign.assigned_ip.len == 4 else { return false; }
-        guard has_zero_host_bits(assign.assigned_ip[..], assign.prefix_len) else { return false; }
+        guard net_internal::has_zero_host_bits(assign.assigned_ip[..], assign.prefix_len) else { return false; }
         body.append(assign.assigned_ip[..]);
     } else if assign.ip_version == 6 {
         guard assign.prefix_len <= 128 && assign.assigned_ip.len == 16 else { return false; }
-        guard has_zero_host_bits(assign.assigned_ip[..], assign.prefix_len) else { return false; }
+        guard net_internal::has_zero_host_bits(assign.assigned_ip[..], assign.prefix_len) else { return false; }
         body.append(assign.assigned_ip[..]);
     } else {
         return false;
     }
     body.push(assign.prefix_len);
     return encode_http_capsule(out, rfc::CAPSULE_ADDRESS_ASSIGN, body[..]);
-}
-
-// Decodes a single IP Address Assign entry and advances `cur` (RFC 9484 §4.7.1).
-//
-// Example:
-//   payload = [0x01, 4, 10, 0, 0, 2, 32], cur = 0
-//   returns: true, cur = 7
-fn decode_address_assign_entry(payload: const u8[:], cur: i64&, out_assign: IpAddressAssign&) -> bool {
-    let req_id, off, ok = quic::decode_varint(payload, cur as u64);
-    guard ok && (off as i64) < payload.len else { return false; }
-    let ver_idx = off as i64;
-    let ip_ver = payload[ver_idx];
-    let ip_start = ver_idx + 1;
-    if ip_ver == 4 {
-        let entry_end = ip_start + 4 + 1;
-        guard entry_end <= payload.len else { return false; }
-        let ip_slice = payload[ip_start..ip_start + 4];
-        let p_len = payload[ip_start + 4];
-        guard p_len <= 32 && has_zero_host_bits(ip_slice, p_len) else { return false; }
-        if out_assign.assigned_ip.len == 0 {
-            out_assign.request_id = req_id;
-            out_assign.ip_version = 4;
-            out_assign.assigned_ip.append(ip_slice);
-            out_assign.prefix_len = p_len;
-        }
-        cur = entry_end;
-        return true;
-    } else if ip_ver == 6 {
-        let entry_end = ip_start + 16 + 1;
-        guard entry_end <= payload.len else { return false; }
-        let ip_slice = payload[ip_start..ip_start + 16];
-        let p_len = payload[ip_start + 16];
-        guard p_len <= 128 && has_zero_host_bits(ip_slice, p_len) else { return false; }
-        if out_assign.assigned_ip.len == 0 {
-            out_assign.request_id = req_id;
-            out_assign.ip_version = 6;
-            out_assign.assigned_ip.append(ip_slice);
-            out_assign.prefix_len = p_len;
-        }
-        cur = entry_end;
-        return true;
-    }
-    return false;
 }
 
 // RFC 9484 Section 4.7.1: ADDRESS_ASSIGN Capsule - empty capsule withdraws all assigned addresses
@@ -448,24 +289,15 @@ fn decode_address_assign_capsule(payload: const u8[:]) -> IpAddressAssign, bool 
     }
     var cur: i64 = 0;
     while cur < payload.len {
-        guard decode_address_assign_entry(payload, cur, assign) else { return assign, false; }
+        guard net_internal::decode_address_assign_entry(payload, cur, assign) else { return assign, false; }
     }
     return assign, cur == payload.len && assign.assigned_ip.len > 0;
-}
-
-fn is_valid_ip_range(start_ip: const u8[:], end_ip: const u8[:]) -> bool {
-    guard start_ip.len > 0 && start_ip.len == end_ip.len else { return false; }
-    for i in start_ip.len {
-        if start_ip[i] < end_ip[i] { return true; }
-        if start_ip[i] > end_ip[i] { return false; }
-    }
-    return true;
 }
 
 // Encodes a ROUTE_ADVERTISEMENT Capsule (RFC 9484 Section 4.7.3):
 // Format: IP Version (u8) || Start IP (4 or 16) || End IP (4 or 16) || IP Protocol (u8)
 fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisement&) -> bool {
-    guard is_valid_ip_range(route.start_ip[..], route.end_ip[..]) else { return false; }
+    guard net_internal::is_valid_ip_range(route.start_ip[..], route.end_ip[..]) else { return false; }
     var body: u8[..128] = [];
     body.push(route.ip_version);
     if route.ip_version == 4 {
@@ -483,46 +315,6 @@ fn encode_route_advertisement_capsule<B>(out: B&, route: const RouteAdvertisemen
     return encode_http_capsule(out, rfc::CAPSULE_ROUTE_ADVERTISEMENT, body[..]);
 }
 
-// Decodes a single Route Advertisement entry and advances `cur` (RFC 9484 §4.7.3).
-//
-// Example:
-//   payload = [4, 10, 0, 0, 0, 10, 0, 0, 255, 6], cur = 0
-//   returns: true, cur = 10
-fn decode_route_entry(payload: const u8[:], cur: i64&, out_route: RouteAdvertisement&) -> bool {
-    guard cur < payload.len else { return false; }
-    let ip_ver = payload[cur];
-    if ip_ver == 4 {
-        let entry_end = cur + 10;
-        guard entry_end <= payload.len else { return false; }
-        let start_slice = payload[cur + 1..cur + 5];
-        let end_slice = payload[cur + 5..cur + 9];
-        guard is_valid_ip_range(start_slice, end_slice) else { return false; }
-        if out_route.start_ip.len == 0 {
-            out_route.ip_version = 4;
-            out_route.start_ip.append(start_slice);
-            out_route.end_ip.append(end_slice);
-            out_route.ip_protocol = payload[cur + 9];
-        }
-        cur = entry_end;
-        return true;
-    } else if ip_ver == 6 {
-        let entry_end = cur + 34;
-        guard entry_end <= payload.len else { return false; }
-        let start_slice = payload[cur + 1..cur + 17];
-        let end_slice = payload[cur + 17..cur + 33];
-        guard is_valid_ip_range(start_slice, end_slice) else { return false; }
-        if out_route.start_ip.len == 0 {
-            out_route.ip_version = 6;
-            out_route.start_ip.append(start_slice);
-            out_route.end_ip.append(end_slice);
-            out_route.ip_protocol = payload[cur + 33];
-        }
-        cur = entry_end;
-        return true;
-    }
-    return false;
-}
-
 // RFC 9484 Section 4.7.3: ROUTE_ADVERTISEMENT Capsule - empty capsule withdraws all advertised routes
 //
 // Example:
@@ -535,9 +327,9 @@ fn decode_route_advertisement_capsule(payload: const u8[:]) -> RouteAdvertisemen
     }
     var cur: i64 = 0;
     while cur < payload.len {
-        guard decode_route_entry(payload, cur, route) else { return route, false; }
+        guard net_internal::decode_route_entry(payload, cur, route) else { return route, false; }
     }
-    return route, cur == payload.len && is_valid_ip_range(route.start_ip[..], route.end_ip[..]);
+    return route, cur == payload.len && net_internal::is_valid_ip_range(route.start_ip[..], route.end_ip[..]);
 }
 
 // ---- MASQUE Tunnel Session Manager ---------------------------------------
@@ -585,7 +377,7 @@ fn new_connect_udp_tunnel(
 ) -> MasqueTunnelSession {
     var s = MasqueTunnelSession {
         stream_id:         stream_id,
-        quarter_stream_id: stream_id / 4,
+        quarter_stream_id: stream_id >> 2,
         state:             MasqueTunnelState.Idle,
         ..
     };
@@ -604,7 +396,7 @@ fn new_connect_ip_tunnel(
 ) -> MasqueTunnelSession {
     var s = MasqueTunnelSession {
         stream_id:         stream_id,
-        quarter_stream_id: stream_id / 4,
+        quarter_stream_id: stream_id >> 2,
         state:             MasqueTunnelState.Idle,
         ..
     };
@@ -617,7 +409,7 @@ fn new_connect_ip_tunnel(
 // Builds the HTTP Extended CONNECT request headers and path for MASQUE handshake (RFC 9298 & RFC 9484)
 fn build_masque_connect_request(
     tunnel:      const MasqueTunnelSession&,
-    out_headers: HeaderMap&,
+    out_headers: http::HeaderMap&,
     out_path:    u8[..256]&,
 ) {
     out_headers.clear();
@@ -673,19 +465,10 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
     }
 
     if ok {
-        tunnel.packets_sent++;
-        tunnel.bytes_sent += packet.len as u64;
+        tunnel.packets_sent = core::add_sat_u64(tunnel.packets_sent, 1);
+        tunnel.bytes_sent = core::add_sat_u64(tunnel.bytes_sent, packet.len as u64);
     }
     return ok;
-}
-
-inline fn is_all_zero_ip_bytes(ip: const u8[:]) -> bool {
-    for b in ip {
-        if b != 0 {
-            return false;
-        }
-    }
-    return true;
 }
 
 // RFC 9484 Section 4.7.1: ADDRESS_ASSIGN Capsule - empty payload removes all assigned addresses
@@ -697,7 +480,7 @@ fn apply_assigned_ip(tunnel: MasqueTunnelSession&, payload: const u8[:]) -> bool
         tunnel.assigned_prefix_len = 0;
         return true;
     }
-    guard assign.assigned_ip.len > 0 && !is_all_zero_ip_bytes(assign.assigned_ip[..]) else {
+    guard assign.assigned_ip.len > 0 && !net_internal::is_all_zero_ip_bytes(assign.assigned_ip[..]) else {
         return false;
     }
     guard tunnel.assigned_ip.try_set(assign.assigned_ip[..]) else { return false; }
@@ -707,7 +490,6 @@ fn apply_assigned_ip(tunnel: MasqueTunnelSession&, payload: const u8[:]) -> bool
 
 // Ingests an incoming in-stream Capsule from the tunnel wire stream.
 fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], out_packet: B&) -> bool {
-    out_packet.clear();
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let c, ok_c = parse_http_capsule(capsule_wire);
@@ -720,21 +502,26 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
         let ctx_id, pkt, ok_pkt = parse_connect_udp_datagram(c.payload);
         guard ok_pkt && ctx_id == 0 else { return false; }
         guard out_packet.try_set(pkt) else { return false; }
-        tunnel.packets_received++;
-        tunnel.bytes_received += pkt.len as u64;
+        tunnel.packets_received = core::add_sat_u64(tunnel.packets_received, 1);
+        tunnel.bytes_received = core::add_sat_u64(tunnel.bytes_received, pkt.len as u64);
         return true;
     }
 
     if c.capsule_type == rfc::CAPSULE_ADDRESS_ASSIGN || c.capsule_type == rfc::CAPSULE_DRAFT_ADDRESS_ASSIGN {
-        return apply_assigned_ip(tunnel, c.payload);
+        guard apply_assigned_ip(tunnel, c.payload) else { return false; }
+        out_packet.clear();
+        return true;
     }
 
     if c.capsule_type == rfc::CAPSULE_ROUTE_ADVERTISEMENT || c.capsule_type == rfc::CAPSULE_DRAFT_ROUTE_ADVERTISEMENT {
         let _, ok_r = decode_route_advertisement_capsule(c.payload);
-        return ok_r;
+        guard ok_r else { return false; }
+        out_packet.clear();
+        return true;
     }
 
     // RFC 9297 §3.2: Endpoints which receive a capsule with an unknown capsule type MUST silently ignore that capsule.
+    out_packet.clear();
     return true;
 }
 
@@ -744,7 +531,6 @@ fn receive_quic_datagram<B>(
     datagram_frame_payload: const u8[:],
     out_packet:             B&,
 ) -> bool {
-    out_packet.clear();
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
 
     let q_id, ctx_id, pkt, ok = decode_http_datagram(datagram_frame_payload);
@@ -752,7 +538,7 @@ fn receive_quic_datagram<B>(
           ctx_id == 0 && pkt.len <= MAX_CONNECT_UDP_PAYLOAD_LEN else { return false; }
 
     guard out_packet.try_set(pkt) else { return false; }
-    tunnel.packets_received++;
-    tunnel.bytes_received += pkt.len as u64;
+    tunnel.packets_received = core::add_sat_u64(tunnel.packets_received, 1);
+    tunnel.bytes_received = core::add_sat_u64(tunnel.bytes_received, pkt.len as u64);
     return true;
 }

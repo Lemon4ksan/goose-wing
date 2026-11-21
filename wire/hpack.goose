@@ -186,14 +186,14 @@ enum WireHeaderSectionKind {
 }
 
 fn is_valid_h2_request_pseudo_fields(pseudo: const http2::PseudoHeaders&) -> bool {
-    guard pseudo.has_method && wing::is_valid_token_swar(pseudo.method[..]) else { return false; }
+    guard pseudo.has_method && http::is_valid_token_swar(pseudo.method[..]) else { return false; }
     if pseudo.has_authority {
         guard http2::is_valid_authority(pseudo.authority[..]) else { return false; }
     }
     if pseudo.has_protocol {
         // RFC 8441 Section 4: The Extended CONNECT Method - requires :scheme, :path, :authority, and token :protocol.
         guard pseudo.method[..] == "CONNECT" && pseudo.has_authority
-            && pseudo.protocol.len > 0 && wing::is_valid_token_swar(pseudo.protocol[..]) else {
+            && pseudo.protocol.len > 0 && http::is_valid_token_swar(pseudo.protocol[..]) else {
             return false;
         }
     }
@@ -259,7 +259,7 @@ fn encode_hpack_pseudo_fields<B>(
 }
 
 inline fn should_skip_h2_entry(
-    headers:  const wing::HeaderMap&,
+    headers:  const http::HeaderMap&,
     raw_name: const u8[:],
     val:      const u8[:],
     kind:     WireHeaderSectionKind,
@@ -267,7 +267,7 @@ inline fn should_skip_h2_entry(
     if raw_name.len > 0 && raw_name[0] == ':' {
         return true;
     }
-    if is_h2_skipped_header_name(raw_name) || wing::is_token_in_connection_header_map(headers, raw_name) {
+    if is_h2_skipped_header_name(raw_name) || http::is_token_in_connection_header_map(headers, raw_name) {
         return true;
     }
     // RFC 9113 Section 8.2.2: Connection-Specific Header Fields - TE is only permitted in requests with "trailers".
@@ -290,14 +290,14 @@ inline fn is_forbidden_h2_trailer_field(lower_name: const u8[:]) -> bool {
 
 fn encode_single_hpack_map_entry<B>(
     dt:          http2::DynamicTable&,
-    headers:     const wing::HeaderMap&,
-    e:           const wing::HeaderEntry&,
+    headers:     const http::HeaderMap&,
+    e:           const http::HeaderEntry&,
     kind:        WireHeaderSectionKind,
     out:         B&,
     use_huffman: bool,
 ) -> bool {
-    let raw_name = wing::entry_name(headers, e);
-    let val = wing::entry_value(headers, e);
+    let raw_name = http::entry_name(headers, e);
+    let val = http::entry_value(headers, e);
     if should_skip_h2_entry(headers, raw_name, val, kind) {
         return true;
     }
@@ -309,7 +309,7 @@ fn encode_single_hpack_map_entry<B>(
     }
     let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
     guard http2::validate_field_syntax(lower_name[..], eff_val) else { return false; }
-    let is_sens = wing::is_sensitive(e);
+    let is_sens = http::is_sensitive(e);
     let idx_mode = if is_sens {
         http2::HpackIndexing.NeverIndexed
     } else {
@@ -328,7 +328,7 @@ fn encode_single_hpack_map_entry<B>(
 fn encode_hpack_from_map<B>(
     dt:          http2::DynamicTable&,
     pseudo:      const http2::PseudoHeaders&,
-    headers:     const wing::HeaderMap&,
+    headers:     const http::HeaderMap&,
     out:         B&,
     use_huffman: bool = true,
 ) -> bool {
@@ -357,10 +357,10 @@ fn encode_hpack_from_map<B>(
     return true;
 }
 
-fn coalesce_h2_cookie_headers(map: wing::HeaderMap&) -> bool {
+fn coalesce_h2_cookie_headers(map: http::HeaderMap&) -> bool {
     var count: i64 = 0;
     for &e in map.entries {
-        if wing::entry_name(map, e).eq_ascii_fold("cookie") {
+        if http::entry_name(map, e).eq_ascii_fold("cookie") {
             count = core::add_sat_i64(count, 1);
         }
     }
@@ -368,14 +368,14 @@ fn coalesce_h2_cookie_headers(map: wing::HeaderMap&) -> bool {
     var combined: u8[..8192] = [];
     var first = true;
     for &e in map.entries {
-        guard wing::entry_name(map, e).eq_ascii_fold("cookie") else { continue; }
+        guard http::entry_name(map, e).eq_ascii_fold("cookie") else { continue; }
         if !first {
             guard combined.try_append("; ") else { return false; }
         }
         first = false;
-        guard combined.try_append(wing::entry_value(map, e)) else { return false; }
+        guard combined.try_append(http::entry_value(map, e)) else { return false; }
     }
-    return wing::set_or_replace(map, "cookie", combined[..], true);
+    return http::set_or_replace(map, "cookie", combined[..], true);
 }
 
 // Decodes an HPACK header block into `out_pseudo` and `out_headers` using `dt` (RFC 7541, RFC 9113 §8.2).
@@ -388,7 +388,7 @@ fn decode_hpack_to_map(
     dt:                   http2::DynamicTable&,
     src:                  const u8[:],
     out_pseudo:           http2::PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     max_header_list_size: u32  = 8192,
     validate_http2_rules: bool = true,
 ) -> u32 {
@@ -432,7 +432,7 @@ fn decode_hpack_to_map(
     if validate_http2_rules && !out_pseudo.is_trailer {
         let v_err = http2::validate_mandatory_pseudo_headers(out_pseudo);
         guard v_err == rfc::H2_ERR_NO_ERROR else { return v_err; }
-        if out_pseudo.has_status && wing::has_header(out_headers, "te") {
+        if out_pseudo.has_status && http::has_header(out_headers, "te") {
             return rfc::H2_ERR_PROTOCOL_ERROR;
         }
     }
@@ -617,7 +617,7 @@ fn from_internal_h2_pseudo(src: const http2::PseudoHeaders&) -> WireH2PseudoHead
 fn hpack_encode_header_block<B>(
     state:       WireHpackState&,
     pseudo:      const WireH2PseudoHeaders&,
-    headers:     const wing::HeaderMap&,
+    headers:     const http::HeaderMap&,
     out:         B&,
     use_huffman: bool = true,
 ) -> bool {
@@ -652,7 +652,7 @@ fn hpack_decode_block(
     state:                WireHpackState&,
     src:                  const u8[:],
     out_pseudo:           WireH2PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     validate_http2_rules: bool = true,
 ) -> u32 {
     let saved_table = state.table;

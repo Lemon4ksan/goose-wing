@@ -167,7 +167,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         // 3. Indexed :path: / (static index 4 -> 0x84)
         let raw_block: u8[3] = [0x82, 0x87, 0x84];
         var pseudo = http2::PseudoHeaders { .. };
-        var out = wing::HeaderMap { .. };
+        var out = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "valid pseudo-headers decode with NO_ERROR");
         sub.assert_true(pseudo.has_method && pseudo.has_scheme && pseudo.has_path, "3 pseudo-fields decoded");
@@ -181,7 +181,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         // 2. Pseudo header: :path: / (static index 4 -> 0x84)  <-- ILLEGAL: pseudo after regular!
         let raw_block: u8[2] = [0x93, 0x84];
         var pseudo = http2::PseudoHeaders { .. };
-        var out = wing::HeaderMap { .. };
+        var out = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "pseudo-header after regular header must trigger PROTOCOL_ERROR");
     };
@@ -191,7 +191,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         // Block: duplicate :method: GET (0x82, 0x82)
         let raw_block: u8[2] = [0x82, 0x82];
         var pseudo = http2::PseudoHeaders { .. };
-        var out = wing::HeaderMap { .. };
+        var out = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "duplicate pseudo-header must trigger PROTOCOL_ERROR");
     };
@@ -221,7 +221,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         raw_block.append("20");
 
         var pseudo = http2::PseudoHeaders { .. };
-        var out = wing::HeaderMap { .. };
+        var out = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "conflicting Content-Length headers must trigger PROTOCOL_ERROR");
 
@@ -234,7 +234,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         raw_block.push(0x00); raw_block.push(14); raw_block.append("content-length"); raw_block.push(2); raw_block.append("10");
 
         var pseudo_ok = http2::PseudoHeaders { .. };
-        var out_ok = wing::HeaderMap { .. };
+        var out_ok = http::HeaderMap { .. };
         let err_ok = http2::decode_hpack_to_map(dt, raw_block[..], pseudo_ok, out_ok);
         sub.assert_eq(err_ok, rfc::H2_ERR_NO_ERROR, "identical multiple Content-Length headers are accepted");
     };
@@ -250,7 +250,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         raw_block.append("close");
 
         var pseudo = http2::PseudoHeaders { .. };
-        var out = wing::HeaderMap { .. };
+        var out = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, raw_block[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "forbidden 'connection' header must trigger PROTOCOL_ERROR");
     };
@@ -261,7 +261,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         // Missing :path (only :method: GET and :scheme: https)
         let block_no_path: u8[2] = [0x82, 0x87];
         var pseudo1 = http2::PseudoHeaders { .. };
-        var out1 = wing::HeaderMap { .. };
+        var out1 = http::HeaderMap { .. };
         let err1 = http2::decode_hpack_to_map(dt, block_no_path[..], pseudo1, out1);
         sub.assert_eq(err1, rfc::H2_ERR_PROTOCOL_ERROR, "request without :path must trigger PROTOCOL_ERROR");
 
@@ -273,7 +273,7 @@ fn test_hpack_dynamic_table_and_header_blocks(t: lit::T&) {
         block_no_pseudo.push(3);
         block_no_pseudo.append("bot");
         var pseudo2 = http2::PseudoHeaders { .. };
-        var out2 = wing::HeaderMap { .. };
+        var out2 = http::HeaderMap { .. };
         let err2 = http2::decode_hpack_to_map(dt, block_no_pseudo[..], pseudo2, out2);
         sub.assert_eq(err2, rfc::H2_ERR_PROTOCOL_ERROR, "request without pseudo-headers must trigger PROTOCOL_ERROR");
     };
@@ -338,31 +338,31 @@ fn test_binary_framing_and_rfc9218(t: lit::T&) {
 
     t.run("FRAME-03: RFC 9218 Priority Dictionary Parser") { sub =>
         // Vector 1: "u=0, i"
-        let p1, ok1 = wing::parse_http_priority("u=0, i");
+        let p1, ok1 = http::parse_priority("u=0, i");
         sub.assert_true(ok1, "parse u=0, i succeeds");
         sub.assert_eq(p1.urgency, 0, "urgency is 0");
         sub.assert_true(p1.incremental, "incremental is true");
 
         // Vector 2: "u=5"
-        let p2, ok2 = wing::parse_http_priority("u=5");
+        let p2, ok2 = http::parse_priority("u=5");
         sub.assert_true(ok2, "parse u=5 succeeds");
         sub.assert_eq(p2.urgency, 5, "urgency is 5");
         sub.assert_false(p2.incremental, "incremental defaults to false");
 
         // Vector 3: "i=?0, u=2"
-        let p3, ok3 = wing::parse_http_priority("i=?0, u=2");
+        let p3, ok3 = http::parse_priority("i=?0, u=2");
         sub.assert_true(ok3, "parse i=?0, u=2 succeeds");
         sub.assert_eq(p3.urgency, 2, "urgency is 2");
         sub.assert_false(p3.incremental, "incremental is explicitly false");
 
         // Vector 4: Forward compatibility - ignore unknown parameters
-        let p4, ok4 = wing::parse_http_priority("future_param=123, u=7");
+        let p4, ok4 = http::parse_priority("future_param=123, u=7");
         sub.assert_true(ok4, "parse with unknown param succeeds");
         sub.assert_eq(p4.urgency, 7, "urgency is 7");
     };
 
     t.run("FRAME-04: PRIORITY_UPDATE Frame Codec Roundtrip") { sub =>
-        let prio = wing::PriorityParam { urgency: 1, incremental: true };
+        let prio = http::PriorityParam { urgency: 1, incremental: true };
         var payload: u8[..32] = [];
         http2::encode_priority_update_payload(42, prio, payload);
 
@@ -455,7 +455,7 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         // Open stream 3 (set to urgency 0 - urgent)
         let h3 = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         http2::on_ingress_frame_header(sess, h3, 0);
-        http2::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 0, incremental: false });
+        http2::apply_priority_update(sess, 3, http::PriorityParam { urgency: 0, incremental: false });
 
         sess.streams[0].pending_send_bytes = 1000; // stream 1
         sess.streams[1].pending_send_bytes = 1000; // stream 3
@@ -473,13 +473,13 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         // Stream 1: urgency 1, non-incremental, 2000 bytes
         let h1 = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         http2::on_ingress_frame_header(sess, h1, 0);
-        http2::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 1, incremental: false });
+        http2::apply_priority_update(sess, 1, http::PriorityParam { urgency: 1, incremental: false });
         sess.streams[0].pending_send_bytes = 2000;
 
         // Stream 3: urgency 1, incremental, 2000 bytes
         let h3 = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         http2::on_ingress_frame_header(sess, h3, 0);
-        http2::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 1, incremental: true });
+        http2::apply_priority_update(sess, 3, http::PriorityParam { urgency: 1, incremental: true });
         sess.streams[1].pending_send_bytes = 2000;
 
         // Frame slice size 500
@@ -497,13 +497,13 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         // Stream 1: urgency 2, incremental, 1000 bytes
         let h1 = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         http2::on_ingress_frame_header(sess, h1, 0);
-        http2::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 2, incremental: true });
+        http2::apply_priority_update(sess, 1, http::PriorityParam { urgency: 2, incremental: true });
         sess.streams[0].pending_send_bytes = 1000;
 
         // Stream 3: urgency 2, incremental, 1000 bytes
         let h3 = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         http2::on_ingress_frame_header(sess, h3, 0);
-        http2::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 2, incremental: true });
+        http2::apply_priority_update(sess, 3, http::PriorityParam { urgency: 2, incremental: true });
         sess.streams[1].pending_send_bytes = 1000;
 
         // Schedule round 1 & 2: each stream should get scheduled in round-robin order
@@ -525,13 +525,13 @@ fn test_rfc9218_write_scheduler(t: lit::T&) {
         // Stream 1: high urgency 0, non-incremental, large payload (20000 bytes)
         let h1 = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 1 };
         http2::on_ingress_frame_header(sess, h1, 0);
-        http2::apply_priority_update(sess, 1, wing::PriorityParam { urgency: 0, incremental: false });
+        http2::apply_priority_update(sess, 1, http::PriorityParam { urgency: 0, incremental: false });
         sess.streams[0].pending_send_bytes = 20000;
 
         // Stream 3: lower urgency 3, non-incremental, small payload (500 bytes)
         let h3 = http2::FrameHeader { length: 0, frame_type: rfc::H2_FRAME_HEADERS, flags: rfc::H2_FLAG_END_HEADERS, stream_id: 3 };
         http2::on_ingress_frame_header(sess, h3, 0);
-        http2::apply_priority_update(sess, 3, wing::PriorityParam { urgency: 3, incremental: false });
+        http2::apply_priority_update(sess, 3, http::PriorityParam { urgency: 3, incremental: false });
         sess.streams[1].pending_send_bytes = 500;
 
         // Run 16 consecutive frames for stream 1
@@ -802,7 +802,7 @@ fn encode_client_trailers<B>(
 fn test_h2_handshake_and_settings(t: lit::T&) {
     t.run("H2-01: Preface & Initial Server SETTINGS emission") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var out_wire: u8[..512] = [];
@@ -824,7 +824,7 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 
     t.run("H2-02: Client SETTINGS ACK & PING ACK") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         // Prepend preface
@@ -879,7 +879,7 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 
     t.run("H2-02b: Outbound Frame Aggregation with Zero-Heap CorkBuffer") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[..256] = [];
@@ -919,9 +919,9 @@ fn test_h2_handshake_and_settings(t: lit::T&) {
 fn test_h2_request_dispatch(t: lit::T&) {
     t.run("H2-03: Single GET Request through Server Pipeline") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/api/greet", 101);
+        server::add_route(pipeline.router, "GET", "/api/greet", 101);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
@@ -948,7 +948,7 @@ fn test_h2_request_dispatch(t: lit::T&) {
 
         // Decode response headers with client HPACK table
         var dec_pseudo = http2::PseudoHeaders { .. };
-        var dec_resp = wing::HeaderMap { .. };
+        var dec_resp = http::HeaderMap { .. };
         let hpack_payload = out_wire[42..42 + resp_hdr.length];
         let dec_err = http2::decode_hpack_to_map(client_hpack, hpack_payload, dec_pseudo, dec_resp);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "Client decoded response HPACK without error");
@@ -960,9 +960,9 @@ fn test_h2_request_dispatch(t: lit::T&) {
 
     t.run("H2-04: POST Request with DATA Frame Payload") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "POST", "/api/data", 202);
+        server::add_route(pipeline.router, "POST", "/api/data", 202);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
@@ -983,10 +983,10 @@ fn test_h2_request_dispatch(t: lit::T&) {
 
     t.run("H2-05: Concurrent Multiplexed Streams (Streams 1 and 3)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/first", 1);
-        wing::add_route(pipeline.router, "GET", "/second", 2);
+        server::add_route(pipeline.router, "GET", "/first", 1);
+        server::add_route(pipeline.router, "GET", "/second", 2);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
@@ -1024,8 +1024,8 @@ fn test_h2_request_dispatch(t: lit::T&) {
 // 9. End-to-End HttpServer Integration with HTTP/2 Preface Detection
 fn test_h2_server_wire_integration(t: lit::T&) {
     t.run("HttpServer.handle_connection_wire auto-detects H2 and serves requests") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
-        wing::add_get_route(server, "/ping", 999);
+        var server = server::new_http_server("127.0.0.1", 8080);
+        server::add_get_route(server, "/ping", 999);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
@@ -1034,10 +1034,10 @@ fn test_h2_server_wire_integration(t: lit::T&) {
         encode_client_headers(client_hpack, 1, "GET", "/ping", "127.0.0.1", true, wire_in);
 
         var wire_out: u8[..1024] = [];
-        let outcome, ok = wing::handle_connection_wire(server, "127.0.0.1", wire_in[..], 1700000000000000, wire_out);
+        let outcome, ok = server::handle_connection_wire(server, "127.0.0.1", wire_in[..], 1700000000000000, wire_out);
 
         sub.assert_true(ok, "handle_connection_wire succeeded on HTTP/2 stream");
-        sub.assert_true(outcome == wing::PipelineOutcome.Handled, "Pipeline handled route");
+        sub.assert_true(outcome == server::PipelineOutcome.Handled, "Pipeline handled route");
         sub.assert_gt(wire_out.len, 33, "Generated HTTP/2 response frames");
         sub.assert_ge(server.requests_processed, 1, "Requests processed incremented");
     };
@@ -1047,9 +1047,9 @@ fn test_h2_server_wire_integration(t: lit::T&) {
 fn test_h2_continuation_and_anti_dos(t: lit::T&) {
     t.run("H2-06: Multi-Frame CONTINUATION Header Assembly") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/split/headers", 200);
+        server::add_route(pipeline.router, "GET", "/split/headers", 200);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
@@ -1105,7 +1105,7 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
 
     t.run("H2-07: Ban Zero-Length Non-Terminal CONTINUATION (CVE-2024-2758 / CVE-2024-31309)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[..512] = [];
@@ -1143,9 +1143,9 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
 
     t.run("H2-08: Rapid Reset Batch Bypass (CVE-2023-44487)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
+        server::add_route(pipeline.router, "GET", "/fast/reset", 50);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
@@ -1181,9 +1181,9 @@ fn test_h2_continuation_and_anti_dos(t: lit::T&) {
 fn test_h2_protocol_invariants(t: lit::T&) {
     t.run("H2-09: Client Request Trailers Accepted (RFC 9113 §8.1.2)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "POST", "/upload/trailers", 10);
+        server::add_route(pipeline.router, "POST", "/upload/trailers", 10);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1211,9 +1211,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-10: Client Trailers with Pseudo-Headers Rejected (RFC 9113 §8.1.2)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "POST", "/upload/pseudo-trailer", 11);
+        server::add_route(pipeline.router, "POST", "/upload/pseudo-trailer", 11);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1233,9 +1233,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-11: Large Flow Control Ingress Window Replenishment (RFC 9113 §6.9)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "POST", "/bulk", 12);
+        server::add_route(pipeline.router, "POST", "/bulk", 12);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1259,9 +1259,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-12: Stream State Transition to Closed (RFC 9113 §5.1)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/test", 13);
+        server::add_route(pipeline.router, "GET", "/test", 13);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1287,9 +1287,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-13: Stream WINDOW_UPDATE increment 0 emits RST_STREAM (RFC 9113 §6.9)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/test", 14);
+        server::add_route(pipeline.router, "GET", "/test", 14);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1325,7 +1325,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-14: Client SETTINGS_ENABLE_PUSH > 1 rejected, 0 and 1 accepted (RFC 9113 §6.5.2)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire_ok: u8[>..] = [];
@@ -1360,7 +1360,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-15: gRPC Response Body Preserved Without Spurious OK (RFC 9113)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
@@ -1386,7 +1386,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-16: PRIORITY Self-Dependency Rejection (RFC 9113 §5.3.1)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1413,7 +1413,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-16b: PRIORITY Frame Size Error Triggers RST_STREAM(FRAME_SIZE_ERROR) Not GOAWAY (RFC 9113 §5.4.2 & §6.3)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1470,9 +1470,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-17: HEADERS on RST-Closed Stream Triggers RST_STREAM(STREAM_CLOSED) Not GOAWAY (RFC 9113 §5.1)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/test", 17);
+        server::add_route(pipeline.router, "GET", "/test", 17);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1518,7 +1518,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-18: Interleaved Non-CONTINUATION Frame During Header Accumulation Triggers GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.10)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1559,7 +1559,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-19: Unprompted CONTINUATION Frame Triggers GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.10)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1589,7 +1589,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-20: Client PUSH_PROMISE Frame Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.6)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1619,7 +1619,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-21: Duplicate / Unsolicited SETTINGS ACK Rejected with GOAWAY(PROTOCOL_ERROR) (RFC 9113 §6.5 & §10.5)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1656,7 +1656,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-22: Control Frame Flood (Excess PINGs/ACKs > 64) Triggers GOAWAY(ENHANCE_YOUR_CALM) (RFC 9113 §10.5)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1699,7 +1699,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-23: HPACK Dynamic Table Size Update Mid-Block Rejected with COMPRESSION_ERROR (RFC 7541 §4.2)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1728,7 +1728,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-24: HPACK Out-of-Bounds Dynamic Table Index Lookup Rejected with COMPRESSION_ERROR (RFC 7541 §2.3.3)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -1756,7 +1756,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-25: PRIORITY_UPDATE on Stream 0 and Server-Initiated Stream Rejection (RFC 9218 §7.1)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         // Sub-test A: Prioritized Stream ID 0 must be rejected with PROTOCOL_ERROR
@@ -1828,9 +1828,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-26: Rapid Reset Large Batch Defense (>16 Cancellations) Handled Without Dispatch (CVE-2023-44487)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/fast/reset", 50);
+        server::add_route(pipeline.router, "GET", "/fast/reset", 50);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1862,9 +1862,9 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-27: WINDOW_UPDATE on Closed Stream Ignored Without Error (RFC 9113 §5.1)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-        wing::add_route(pipeline.router, "GET", "/test", 27);
+        server::add_route(pipeline.router, "GET", "/test", 27);
 
         var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
         var wire: u8[>..] = [];
@@ -1894,7 +1894,7 @@ fn test_h2_protocol_invariants(t: lit::T&) {
 
     t.run("H2-28: Connection Flow Control Window Exceeding 2^31-1 Emits GOAWAY(FLOW_CONTROL_ERROR) (RFC 9113 §6.9)") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -2489,7 +2489,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
     t.run("HPACK-SEC-08: Dynamic Table Size Update in middle of Block Rejected") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // Header block:
         // 1. Static index 2 (:method: GET) -> 0x82
@@ -2502,7 +2502,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
     t.run("HPACK-SEC-09: Table Size Update Exceeding SETTINGS Max Rejected") { sub =>
         var dt = http2::new_dynamic_table(1024); // max allowed size = 1024
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // Table size update requesting 2048:
         // 001xxxxx prefix 5: 0x3F (31), followed by (2048 - 31) = 2017 -> 2017 = 0x7E1 -> 0xE1 0x0F
@@ -2514,7 +2514,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
     t.run("HPACK-SEC-10: Pseudo-Header Ordering (Pseudo After Regular Rejected)") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // Header block:
         // 1. Static index 24 (cache-control: no-cache) -> 0x98 (regular header)
@@ -2527,7 +2527,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
     t.run("HPACK-SEC-11: Forbidden Connection Headers in HTTP/2 Rejected") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // Literal Header with Incremental Indexing (01000000 = 0x40):
         // Name: "connection" (raw, 10 bytes): 0x0A, "connection"
@@ -2547,7 +2547,7 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
     t.run("HPACK-SEC-12: Disallowed TE Header Value Rejected") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // TE header with value other than "trailers" (e.g. "gzip") is illegal in HTTP/2
         var te_block: u8[..64] = [];
@@ -2577,22 +2577,22 @@ fn test_hpack_rfc9113_header_block_rules(t: lit::T&) {
 fn test_extended_connect_detection(t: lit::T&) {
     t.run("Extended CONNECT vs Classic Tunnel Detection") { sub =>
         // 1. Classic TCP tunnel CONNECT (RFC 9114 §4.4)
-        var tunnel_req = wing::new_request("CONNECT", "example.com:443");
-        wing::set_header(tunnel_req, ":method", "CONNECT");
-        wing::set_header(tunnel_req, ":authority", "example.com:443");
+        var tunnel_req = http::new_request("CONNECT", "example.com:443");
+        http::set_header(tunnel_req, ":method", "CONNECT");
+        http::set_header(tunnel_req, ":authority", "example.com:443");
         sub.assert_false(realtime::is_extended_connect_request(tunnel_req), "Classic tunnel is not extended connect");
 
         // 2. Extended CONNECT (RFC 8441 / RFC 9220)
-        var ext_req = wing::new_request("CONNECT", "/chat");
-        wing::set_header(ext_req, ":method", "CONNECT");
-        wing::set_header(ext_req, ":protocol", "websocket");
-        wing::set_header(ext_req, ":scheme", "https");
-        wing::set_header(ext_req, ":authority", "example.com");
-        wing::set_header(ext_req, ":path", "/chat");
+        var ext_req = http::new_request("CONNECT", "/chat");
+        http::set_header(ext_req, ":method", "CONNECT");
+        http::set_header(ext_req, ":protocol", "websocket");
+        http::set_header(ext_req, ":scheme", "https");
+        http::set_header(ext_req, ":authority", "example.com");
+        http::set_header(ext_req, ":path", "/chat");
         sub.assert_true(realtime::is_extended_connect_request(ext_req), "Detected extended connect via :protocol");
 
         // 3. Regular GET request
-        var get_req = wing::new_request("GET", "/index.html");
+        var get_req = http::new_request("GET", "/index.html");
         sub.assert_false(realtime::is_extended_connect_request(get_req), "GET is not extended connect");
     };
 }
@@ -2602,7 +2602,7 @@ fn test_extended_connect_detection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_websocket_formatting(t: lit::T&) {
     t.run("HTTP/3 Request Formatting & Protocol Validation (RFC 9220 §3)") { sub =>
-        var req = wing::new_request("GET", "/");
+        var req = http::new_request("GET", "/");
         realtime::format_h3_websocket_request(req, "/v2/feed", "h3.example.com", "https", "json-stream");
 
         sub.assert_bytes_eq(req.method[..], "CONNECT", "Method is CONNECT");
@@ -2620,11 +2620,11 @@ fn test_h3_websocket_formatting(t: lit::T&) {
 
         // Strict rejection of forbidden headers (RFC 9220 §3)
         var bad_req = req;
-        wing::set_header(bad_req, "Upgrade", "websocket");
+        http::set_header(bad_req, "Upgrade", "websocket");
         sub.assert_false(realtime::validate_h3_websocket_request(bad_req), "Upgrade header rejected");
 
         var bad_req2 = req;
-        wing::set_header(bad_req2, "Sec-WebSocket-Key", "abc123==");
+        http::set_header(bad_req2, "Sec-WebSocket-Key", "abc123==");
         sub.assert_false(realtime::validate_h3_websocket_request(bad_req2), "Sec-WebSocket-Key rejected");
     };
 }
@@ -2634,10 +2634,10 @@ fn test_h3_websocket_formatting(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h3_server_upgrade(t: lit::T&) {
     t.run("Server-Side HTTP/3 WebSocket Upgrade (200 OK)") { sub =>
-        var req = wing::new_request("GET", "/");
+        var req = http::new_request("GET", "/");
         realtime::format_h3_websocket_request(req, "/ws", "h3.example.com", "https", "v1.proto, v2.proto");
 
-        var resp = wing::Response { .. };
+        var resp = http::Response { .. };
         let session, ok = realtime::ws_h3_upgrade_request(req, resp, "v2.proto");
         sub.assert_true(ok, "Upgrade accepted");
         sub.assert_eq(resp.status_code, 200, "RFC 9220 §3: Status code MUST be 200 (NOT 101)");
@@ -2687,47 +2687,47 @@ fn test_stream_frame_encapsulation(t: lit::T&) {
 fn test_priority_parsing(t: lit::T&) {
     t.run("Priority Header Parsing (RFC 9218 §4)") { sub =>
         // 1. High urgency with incremental
-        let p1, ok1 = wing::parse_http_priority("u=0, i");
+        let p1, ok1 = http::parse_priority("u=0, i");
         sub.assert_true(ok1, "Parsed u=0, i");
         sub.assert_eq(p1.urgency, 0, "Urgency 0");
         sub.assert_true(p1.incremental, "Incremental true");
 
         // 2. Lowest urgency without incremental
-        let p2, ok2 = wing::parse_http_priority("u=7");
+        let p2, ok2 = http::parse_priority("u=7");
         sub.assert_true(ok2, "Parsed u=7");
         sub.assert_eq(p2.urgency, 7, "Urgency 7");
         sub.assert_false(p2.incremental, "Incremental false");
 
         // 3. Incremental only (urgency defaults to 3)
-        let p3, ok3 = wing::parse_http_priority("i");
+        let p3, ok3 = http::parse_priority("i");
         sub.assert_true(ok3, "Parsed i");
         sub.assert_eq(p3.urgency, 3, "Default urgency 3");
         sub.assert_true(p3.incremental, "Incremental true");
 
         // 4. Reverse order with explicit boolean ?0
-        let p4, ok4 = wing::parse_http_priority("i=?0, u=2");
+        let p4, ok4 = http::parse_priority("i=?0, u=2");
         sub.assert_true(ok4, "Parsed i=?0, u=2");
         sub.assert_eq(p4.urgency, 2, "Urgency 2");
         sub.assert_false(p4.incremental, "Incremental false");
 
         // 5. Unknown parameter tolerance (RFC 9218 §4)
-        let p5, ok5 = wing::parse_http_priority("u=1, unknown=param, i");
+        let p5, ok5 = http::parse_priority("u=1, unknown=param, i");
         sub.assert_true(ok5, "Parsed with unknown parameter");
         sub.assert_eq(p5.urgency, 1, "Urgency 1");
         sub.assert_true(p5.incremental, "Incremental true");
 
         // 6. Out of range urgency ignored (must stay default 3)
-        let p6, ok6 = wing::parse_http_priority("u=9, i");
+        let p6, ok6 = http::parse_priority("u=9, i");
         sub.assert_true(ok6, "Parsed with out-of-range u");
         sub.assert_eq(p6.urgency, 3, "Urgency preserved default 3");
         sub.assert_true(p6.incremental, "Incremental true");
 
         // 7. Standalone out-of-range u=8 or unknown key foo=1 succeeds with defaults (RFC 9218 §4)
-        let p7, ok7 = wing::parse_http_priority("u=8");
+        let p7, ok7 = http::parse_priority("u=8");
         sub.assert_true(ok7, "Standalone out-of-range u=8 ignored with defaults");
         sub.assert_eq(p7.urgency, 3, "Standalone u=8 defaults urgency to 3");
         sub.assert_false(p7.incremental, "Standalone u=8 defaults incremental to false");
-        let p8, ok8 = wing::parse_http_priority("foo=1");
+        let p8, ok8 = http::parse_priority("foo=1");
         sub.assert_true(ok8, "Unknown-only SF dictionary key ignored with defaults");
         sub.assert_eq(p8.urgency, 3, "Unknown-only key defaults urgency to 3");
     };
@@ -2740,18 +2740,18 @@ fn test_priority_serialization(t: lit::T&) {
     t.run("Priority Header Serialization") { sub =>
         var out: u8[>..] = [];
 
-        var p1 = wing::PriorityParam { urgency: 0, incremental: true };
-        wing::serialize_http_priority(p1, out);
+        var p1 = http::PriorityParam { urgency: 0, incremental: true };
+        http::serialize_priority(p1, out);
         sub.assert_eq(out[..], "u=0, i", "Serialized u=0, i");
 
         out.clear();
-        var p2 = wing::PriorityParam { urgency: 5, incremental: false };
-        wing::serialize_http_priority(p2, out);
+        var p2 = http::PriorityParam { urgency: 5, incremental: false };
+        http::serialize_priority(p2, out);
         sub.assert_eq(out[..], "u=5", "Serialized u=5");
 
-        let def_p = wing::priority_default();
-        sub.assert_true(wing::priority_is_default(def_p), "Default priority recognized");
-        sub.assert_false(wing::priority_is_default(p1), "Non-default priority recognized");
+        let def_p = http::priority_default();
+        sub.assert_true(http::priority_is_default(def_p), "Default priority recognized");
+        sub.assert_false(http::priority_is_default(p1), "Non-default priority recognized");
     };
 }
 
@@ -2761,7 +2761,7 @@ fn test_priority_serialization(t: lit::T&) {
 fn test_h2_priority_update_frame(t: lit::T&) {
     t.run("HTTP/2 PRIORITY_UPDATE Frame (RFC 9218 §7.1)") { sub =>
         var frame_buf: u8[>..] = [];
-        let prio = wing::PriorityParam { urgency: 1, incremental: true };
+        let prio = http::PriorityParam { urgency: 1, incremental: true };
         http2::encode_priority_update_payload(5, prio, frame_buf);
 
         sub.assert_gt(frame_buf.len, 4, "Frame payload encoded");
@@ -2804,7 +2804,7 @@ fn test_h3_priority_update_integration(t: lit::T&) {
 
         // Encode a PRIORITY_UPDATE frame for stream 0
         var update_buf: u8[>..] = [];
-        let new_prio = wing::PriorityParam { urgency: 0, incremental: true };
+        let new_prio = http::PriorityParam { urgency: 0, incremental: true };
         let enc_ok = http3::encode_priority_update_request(update_buf, req_id, new_prio);
         sub.assert_true(enc_ok, "Encoded H3 PRIORITY_UPDATE frame");
 
@@ -2926,7 +2926,7 @@ fn test_h2_extension_frames(t: lit::T&) {
 
     t.run("ALTSVC-05: Server Ingress handles ORIGIN and ALTSVC extension frames") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire: u8[>..] = [];
@@ -2963,7 +2963,7 @@ fn test_nghttp2_and_h2_vendor_conformance(t: lit::T&) {
         // value: Huffman bit set with length 0 (0x80)
         let wire: u8[7] = [0x82, 0x87, 0x84, 0x40, 0x01, 'x', 0x80];
         var pseudo = http2::PseudoHeaders { .. };
-        var out = wing::HeaderMap { .. };
+        var out = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, wire[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "zero-length Huffman string literal decodes with NO_ERROR");
         sub.assert_true(out.has_header("x"), "header 'x' present in decoded map");
@@ -2975,14 +2975,14 @@ fn test_nghttp2_and_h2_vendor_conformance(t: lit::T&) {
         var dt = http2::new_dynamic_table(4096);
         let wire_idx0: u8[1] = [0x80];
         var pseudo0 = http2::PseudoHeaders { .. };
-        var out0 = wing::HeaderMap { .. };
+        var out0 = http::HeaderMap { .. };
         let err0 = http2::decode_hpack_to_map(dt, wire_idx0[..], pseudo0, out0);
         sub.assert_eq(err0, rfc::H2_ERR_COMPRESSION_ERROR, "indexed representation 0x80 must return COMPRESSION_ERROR");
 
         // Index 62 when dynamic table is empty -> COMPRESSION_ERROR
         let wire_idx62: u8[2] = [0x82, 0xBE];
         var pseudo62 = http2::PseudoHeaders { .. };
-        var out62 = wing::HeaderMap { .. };
+        var out62 = http::HeaderMap { .. };
         let err62 = http2::decode_hpack_to_map(dt, wire_idx62[..], pseudo62, out62);
         sub.assert_eq(err62, rfc::H2_ERR_COMPRESSION_ERROR, "out-of-bounds dynamic index 62 on empty table returns COMPRESSION_ERROR");
     };
@@ -2999,7 +2999,7 @@ fn test_nghttp2_and_h2_vendor_conformance(t: lit::T&) {
         // Followed by :method: GET (0x82), :scheme: https (0x87), :path: / (0x84)
         let wire: u8[7] = [0x20, 0x3F, 0xE1, 0x07, 0x82, 0x87, 0x84];
         var pseudo = http2::PseudoHeaders { .. };
-        var out = wing::HeaderMap { .. };
+        var out = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, wire[..], pseudo, out);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "consecutive leading table size updates (0 then 1024) accepted");
         sub.assert_eq(dt.count, 0, "size update to 0 evicted all prior dynamic entries");
@@ -3027,7 +3027,7 @@ fn test_nghttp2_and_h2_vendor_conformance(t: lit::T&) {
             http2::encode_hpack_field(enc_dt, hblock, "x-seq-id", val_buf[..], http2::HpackIndexing.Incremental, true);
 
             var pseudo = http2::PseudoHeaders { .. };
-            var out = wing::HeaderMap { .. };
+            var out = http::HeaderMap { .. };
             let err = http2::decode_hpack_to_map(dec_dt, hblock[..], pseudo, out);
             sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "iteration HPACK block decoded");
             sub.assert_eq(out.get_header("x-seq-id"), val_buf[..], "decoded x-seq-id matches encoded value");
@@ -3039,57 +3039,57 @@ fn test_nghttp2_and_h2_vendor_conformance(t: lit::T&) {
 
     t.run("NGHTTP2-HTTP-01: RFC 9218 Extensible Priority Vectors (test_nghttp2_http_parse_priority)") { sub =>
         // 1. Empty string -> returns default urgency=3, inc=false with ok=false (no explicit parameter)
-        let p_empty, ok_empty = wing::parse_http_priority("");
+        let p_empty, ok_empty = http::parse_priority("");
         sub.assert_false(ok_empty, "empty priority field has no explicit parameters");
         sub.assert_eq(p_empty.urgency, 3, "default urgency 3");
         sub.assert_false(p_empty.incremental, "default incremental false");
 
         // 2. "u=7,i" -> urgency=7, inc=true
-        let p1, ok1 = wing::parse_http_priority("u=7,i");
+        let p1, ok1 = http::parse_priority("u=7,i");
         sub.assert_true(ok1, "u=7,i parses");
         sub.assert_eq(p1.urgency, 7, "urgency 7");
         sub.assert_true(p1.incremental, "incremental true");
 
         // 3. "u=0,i=?0" -> urgency=0, inc=false
-        let p2, ok2 = wing::parse_http_priority("u=0,i=?0");
+        let p2, ok2 = http::parse_priority("u=0,i=?0");
         sub.assert_true(ok2, "u=0,i=?0 parses");
         sub.assert_eq(p2.urgency, 0, "urgency 0");
         sub.assert_false(p2.incremental, "incremental false");
 
         // 4. Duplicate keys: "u=0, i, i=?0, u=6" -> last key wins (urgency=6, inc=false)
-        let p3, ok3 = wing::parse_http_priority("u=0, i, i=?0, u=6");
+        let p3, ok3 = http::parse_priority("u=0, i, i=?0, u=6");
         sub.assert_true(ok3, "duplicate keys parse");
         sub.assert_eq(p3.urgency, 6, "later urgency u=6 overwrites u=0");
         sub.assert_false(p3.incremental, "later i=?0 overwrites i");
 
         // 5. Explicit boolean ?1: "i=?1" -> urgency=3, inc=true
-        let p4, ok4 = wing::parse_http_priority("i=?1");
+        let p4, ok4 = http::parse_priority("i=?1");
         sub.assert_true(ok4, "i=?1 parses");
         sub.assert_eq(p4.urgency, 3, "default urgency 3");
         sub.assert_true(p4.incremental, "incremental true");
 
         // 6. Out-of-bounds u=-1 or u=8 ignored/preserved per RFC 9218 §4
-        let p5, ok5 = wing::parse_http_priority("u=-1, i=?1");
+        let p5, ok5 = http::parse_priority("u=-1, i=?1");
         sub.assert_true(ok5, "u=-1 ignored gracefully");
         sub.assert_eq(p5.urgency, 3, "urgency remains default 3");
         sub.assert_true(p5.incremental, "incremental true preserved");
 
         // 7. Complex parameterized dictionary with inner list and quoted commas (nghttp2_http_test.c:249)
-        let p6, ok6 = wing::parse_http_priority("i=?0, u=1, a=(x y z), u=2; i=?0;foo=\",,,\", i=?1;i=?0; u=6");
+        let p6, ok6 = http::parse_priority("i=?0, u=1, a=(x y z), u=2; i=?0;foo=\",,,\", i=?1;i=?0; u=6");
         sub.assert_true(ok6, "complex parameterized priority dictionary parses");
         sub.assert_eq(p6.urgency, 2, "u=2 wins (u=6 after ';' is parameter on i, not dict member)");
         sub.assert_true(p6.incremental, "i=?1 wins (i=?0 after ';' is parameter, not dict member)");
 
         // 8. RFC 9218 §4: Values of unexpected types MUST be ignored, malformed SF rejected
-        let p_bad_i, ok_bad_i = wing::parse_http_priority("i=(1 2), u=1");
+        let p_bad_i, ok_bad_i = http::parse_priority("i=(1 2), u=1");
         sub.assert_true(ok_bad_i, "inner list i=(1 2) ignored per RFC 9218 §4");
         sub.assert_eq(p_bad_i.urgency, 1, "u=1 still applied after ignored i=(1 2)");
         sub.assert_false(p_bad_i.incremental, "default incremental preserved when i=(1 2) ignored");
-        let p_bad_u, ok_bad_u = wing::parse_http_priority("u=(1 2), i");
+        let p_bad_u, ok_bad_u = http::parse_priority("u=(1 2), i");
         sub.assert_true(ok_bad_u, "inner list u=(1 2) ignored per RFC 9218 §4");
         sub.assert_eq(p_bad_u.urgency, 3, "default urgency 3 preserved when u=(1 2) ignored");
         sub.assert_true(p_bad_u.incremental, "i still applied after ignored u=(1 2)");
-        let _, ok_bad_syntax = wing::parse_http_priority("u=0,");
+        let _, ok_bad_syntax = http::parse_priority("u=0,");
         sub.assert_false(ok_bad_syntax, "trailing comma 'u=0,' rejected");
     };
 
@@ -3147,7 +3147,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
             hblock.push(3);
             hblock.append("val");
             var pseudo = http2::PseudoHeaders { .. };
-            var out = wing::HeaderMap { .. };
+            var out = http::HeaderMap { .. };
             let err = http2::decode_hpack_to_map(dt, hblock[..], pseudo, out);
             sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "forbidden connection-specific header rejected");
         }
@@ -3163,7 +3163,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
             hblock.push(bte.len as u8);
             hblock.append(bte);
             var pseudo = http2::PseudoHeaders { .. };
-            var out = wing::HeaderMap { .. };
+            var out = http::HeaderMap { .. };
             let err = http2::decode_hpack_to_map(dt, hblock[..], pseudo, out);
             sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "TE header != 'trailers' rejected");
         }
@@ -3175,7 +3175,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
         hb_te_ok.push(8);
         hb_te_ok.append("trailers");
         var pseudo_te = http2::PseudoHeaders { .. };
-        var out_te = wing::HeaderMap { .. };
+        var out_te = http::HeaderMap { .. };
         sub.assert_eq(http2::decode_hpack_to_map(dt_te_ok, hb_te_ok[..], pseudo_te, out_te), rfc::H2_ERR_NO_ERROR, "TE: trailers accepted");
 
         // 3. Uppercase letters in header names (RFC 9113 §8.2.1) must fail
@@ -3189,7 +3189,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
             hblock.push(3);
             hblock.append("val");
             var pseudo = http2::PseudoHeaders { .. };
-            var out = wing::HeaderMap { .. };
+            var out = http::HeaderMap { .. };
             let err = http2::decode_hpack_to_map(dt, hblock[..], pseudo, out);
             sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "uppercase character in header name rejected");
         }
@@ -3279,7 +3279,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
 
         var dec_dt1 = http2::new_dynamic_table(4096);
         var pseudo_ext = http2::PseudoHeaders { .. };
-        var out_ext = wing::HeaderMap { .. };
+        var out_ext = http::HeaderMap { .. };
         let err_ext = http2::decode_hpack_to_map(dec_dt1, hb_ext[..], pseudo_ext, out_ext);
         sub.assert_eq(err_ext, rfc::H2_ERR_NO_ERROR, "Extended CONNECT with trailing :protocol accepted");
         sub.assert_eq(pseudo_ext.protocol[..], "websocket", ":protocol is websocket");
@@ -3291,7 +3291,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
         http2::encode_hpack_field(dt_bad_conn, hb_bad_conn, ":scheme", "https", http2::HpackIndexing.None, false);
         http2::encode_hpack_field(dt_bad_conn, hb_bad_conn, ":authority", "example.com:443", http2::HpackIndexing.None, false);
         var pseudo_bc = http2::PseudoHeaders { .. };
-        var out_bc = wing::HeaderMap { .. };
+        var out_bc = http::HeaderMap { .. };
         sub.assert_eq(
             http2::decode_hpack_to_map(dt_bad_conn, hb_bad_conn[..], pseudo_bc, out_bc),
             rfc::H2_ERR_PROTOCOL_ERROR,
@@ -3306,7 +3306,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
         http2::encode_hpack_field(dt_opt, hb_opt, ":path", "*", http2::HpackIndexing.None, false);
         http2::encode_hpack_field(dt_opt, hb_opt, ":authority", "example.com", http2::HpackIndexing.None, false);
         var pseudo_opt = http2::PseudoHeaders { .. };
-        var out_opt = wing::HeaderMap { .. };
+        var out_opt = http::HeaderMap { .. };
         sub.assert_eq(http2::decode_hpack_to_map(dt_opt, hb_opt[..], pseudo_opt, out_opt), rfc::H2_ERR_NO_ERROR, "OPTIONS * accepted");
 
         var dt_get_star1 = http2::new_dynamic_table(4096);
@@ -3315,7 +3315,7 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
         http2::encode_hpack_field(dt_get_star1, hb_get_star1, ":scheme", "https", http2::HpackIndexing.None, false);
         http2::encode_hpack_field(dt_get_star1, hb_get_star1, ":path", "*", http2::HpackIndexing.None, false);
         var pseudo_gs1 = http2::PseudoHeaders { .. };
-        var out_gs1 = wing::HeaderMap { .. };
+        var out_gs1 = http::HeaderMap { .. };
         sub.assert_eq(http2::decode_hpack_to_map(dt_get_star1, hb_get_star1[..], pseudo_gs1, out_gs1), rfc::H2_ERR_PROTOCOL_ERROR, "GET * (:method before :path) rejected");
 
         var dt_get_star2 = http2::new_dynamic_table(4096);
@@ -3324,12 +3324,12 @@ fn test_nghttp2_session_and_http_semantics(t: lit::T&) {
         http2::encode_hpack_field(dt_get_star2, hb_get_star2, ":method", "GET", http2::HpackIndexing.None, false);
         http2::encode_hpack_field(dt_get_star2, hb_get_star2, ":scheme", "https", http2::HpackIndexing.None, false);
         var pseudo_gs2 = http2::PseudoHeaders { .. };
-        var out_gs2 = wing::HeaderMap { .. };
+        var out_gs2 = http::HeaderMap { .. };
         sub.assert_eq(http2::decode_hpack_to_map(dt_get_star2, hb_get_star2[..], pseudo_gs2, out_gs2), rfc::H2_ERR_PROTOCOL_ERROR, "GET * (:path before :method) rejected");
 
         // 4. Content-Length mismatch with DATA payload length triggers RST_STREAM(PROTOCOL_ERROR) (RFC 9113 §8.1.1)
         var sess_cl = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline_cl = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline_cl = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer_cl = server_internal::new_connection_timer(30000000000, 1000000000);
         var wire_cl: u8[..512] = [];
         wire_cl.append(rfc::H2_CLIENT_PREFACE[..]);
@@ -3398,7 +3398,7 @@ fn test_f015_h2_dict_forwarded_hsts_trace(t: lit::T&) {
         for i in 80 { raw.push('x'); }
         raw.append("\", match=\"/assets/*\"");
 
-        let p, ok = wing::parse_use_as_dictionary_header(raw[..]);
+        let p, ok = http::parse_use_as_dictionary_header(raw[..]);
         sub.assert_false(ok, "Oversized id followed by valid match MUST fail parsing");
     };
 
@@ -3408,13 +3408,13 @@ fn test_f015_h2_dict_forwarded_hsts_trace(t: lit::T&) {
         for i in 200 { raw.push('1'); }
         raw.append("\";proto=https");
 
-        var elem = wing::ForwardedElement { .. };
-        let ok = wing::parse_forwarded_element(raw[..], elem);
+        var elem = http::ForwardedElement { .. };
+        let ok = http::parse_forwarded_element(raw[..], elem);
         sub.assert_false(ok, "Forwarded element with oversized for parameter MUST fail instead of ignoring error");
     };
 
     t.run("parse_tracestate rejects duplicate keys per W3C Section 3.3.1") { sub =>
-        let ts, ok = wing::parse_tracestate("rojo=1,rojo=2");
+        let ts, ok = http::parse_tracestate("rojo=1,rojo=2");
         sub.assert_false(ok, "Duplicate key in tracestate MUST be rejected per W3C §3.3.1");
     };
 }
@@ -3461,7 +3461,7 @@ fn test_h2_field_value_ctl_rejection(t: lit::T&) {
 fn test_h2_undefined_pseudo_header_rejection(t: lit::T&) {
     t.run("Valid standard pseudo-headers accepted in order") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var list = wing::HeaderMap { .. };
+        var list = http::HeaderMap { .. };
         let err1 = http2::validate_header_ordering_and_rules(pseudo, list, ":method", "GET");
         sub.assert_eq(err1, rfc::H2_ERR_NO_ERROR, ":method is valid pseudo-header");
 
@@ -3473,14 +3473,14 @@ fn test_h2_undefined_pseudo_header_rejection(t: lit::T&) {
         // RFC 9113 Section 8.3: "Endpoints MUST treat a request or response that contains an undefined
         // or invalid pseudo-header field as malformed (Section 8.1.1)."
         var pseudo = http2::PseudoHeaders { .. };
-        var list = wing::HeaderMap { .. };
+        var list = http::HeaderMap { .. };
         let err = http2::validate_header_ordering_and_rules(pseudo, list, ":custom", "val");
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Undefined pseudo-header :custom MUST return ERR_PROTOCOL_ERROR");
     };
 
     t.run("Undefined pseudo-header :fake MUST return ERR_PROTOCOL_ERROR") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var list = wing::HeaderMap { .. };
+        var list = http::HeaderMap { .. };
         let err = http2::validate_header_ordering_and_rules(pseudo, list, ":fake", "exploit");
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Undefined pseudo-header :fake MUST return ERR_PROTOCOL_ERROR");
     };
@@ -3592,7 +3592,7 @@ fn test_h2_goaway_stream_id_zero(t: lit::T&) {
 fn test_h2_connect_scheme_path_rejection(t: lit::T&) {
     t.run("Standard CONNECT with :path present MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.5)") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_meth = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "CONNECT");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method CONNECT accepted");
 
@@ -3606,7 +3606,7 @@ fn test_h2_connect_scheme_path_rejection(t: lit::T&) {
 
     t.run("Standard CONNECT with :scheme present MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.5)") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_meth = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "CONNECT");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method CONNECT accepted");
 
@@ -3625,7 +3625,7 @@ fn test_h2_connect_scheme_path_rejection(t: lit::T&) {
 fn test_h2_asterisk_path_only_for_options(t: lit::T&) {
     t.run("Asterisk-form :path '*' is valid for OPTIONS method") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_meth = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "OPTIONS");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method OPTIONS accepted");
 
@@ -3635,7 +3635,7 @@ fn test_h2_asterisk_path_only_for_options(t: lit::T&) {
 
     t.run("Asterisk-form :path '*' on GET method MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.3.1)") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_meth = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
 
@@ -3650,7 +3650,7 @@ fn test_h2_asterisk_path_only_for_options(t: lit::T&) {
 fn test_h2_pseudo_header_request_response_segregation(t: lit::T&) {
     t.run("Response pseudo-header :status in Request header block MUST return ERR_PROTOCOL_ERROR") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_meth = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
 
@@ -3660,7 +3660,7 @@ fn test_h2_pseudo_header_request_response_segregation(t: lit::T&) {
 
     t.run("Request pseudo-header :method in Response header block MUST return ERR_PROTOCOL_ERROR") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_status = http2::validate_header_ordering_and_rules(pseudo, headers, ":status", "200");
         sub.assert_eq(ok_status, rfc::H2_ERR_NO_ERROR, ":status 200 accepted");
 
@@ -3675,7 +3675,7 @@ fn test_h2_pseudo_header_request_response_segregation(t: lit::T&) {
 fn test_h2_authority_host_consistency_and_duplicates(t: lit::T&) {
     t.run("Matching :authority and Host headers are accepted") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_auth = http2::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com");
         sub.assert_eq(ok_auth, rfc::H2_ERR_NO_ERROR, ":authority accepted");
 
@@ -3685,7 +3685,7 @@ fn test_h2_authority_host_consistency_and_duplicates(t: lit::T&) {
 
     t.run("Conflicting :authority and Host headers MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.3.1)") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_auth = http2::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com");
         sub.assert_eq(ok_auth, rfc::H2_ERR_NO_ERROR, ":authority accepted");
 
@@ -3695,7 +3695,7 @@ fn test_h2_authority_host_consistency_and_duplicates(t: lit::T&) {
 
     t.run("Multiple Host headers in HTTP/2 MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.2.1)") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_host1 = http2::validate_header_ordering_and_rules(pseudo, headers, "host", "example.com");
         sub.assert_eq(ok_host1, rfc::H2_ERR_NO_ERROR, "First Host accepted");
 
@@ -3800,7 +3800,7 @@ fn test_h2_stream_blocked_after_goaway(t: lit::T&) {
 fn test_h2_path_character_validation(t: lit::T&) {
     t.run("Path containing unescaped angle brackets (<>) MUST return ERR_PROTOCOL_ERROR (Go #77843)") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_meth = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
 
@@ -3830,7 +3830,7 @@ fn test_h2_trailer_forbidden_pseudo_headers(t: lit::T&) {
         // RFC 9113 Section 8.3:
         // "Pseudo-header fields MUST NOT appear in trailer sections."
         var pseudo = http2::PseudoHeaders { is_trailer: true, .. };
-        var trailers = wing::HeaderMap { .. };
+        var trailers = http::HeaderMap { .. };
 
         let err_status = http2::validate_header_ordering_and_rules(pseudo, trailers, ":status", "200");
         sub.assert_eq(err_status, rfc::H2_ERR_PROTOCOL_ERROR, "Pseudo-header :status in trailers MUST return PROTOCOL_ERROR");
@@ -3850,7 +3850,7 @@ fn test_h2_trailer_forbidden_pseudo_headers(t: lit::T&) {
 fn test_h2_authority_character_validation(t: lit::T&) {
     t.run(":authority with path, query, fragment or userinfo MUST return ERR_PROTOCOL_ERROR") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let ok_meth = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
         sub.assert_eq(ok_meth, rfc::H2_ERR_NO_ERROR, ":method GET accepted");
 
@@ -3877,7 +3877,7 @@ fn test_h2_authority_character_validation(t: lit::T&) {
 fn test_h2_trailer_disallowed_fields(t: lit::T&) {
     t.run("Disallowed headers in HTTP/2 trailers MUST return ERR_PROTOCOL_ERROR (RFC 9113 §8.1.2)") { sub =>
         var pseudo = http2::PseudoHeaders { is_trailer: true, .. };
-        var trailers = wing::HeaderMap { .. };
+        var trailers = http::HeaderMap { .. };
 
         let err_cl = http2::validate_header_ordering_and_rules(pseudo, trailers, "content-length", "100");
         sub.assert_eq(err_cl, rfc::H2_ERR_PROTOCOL_ERROR, "content-length in trailers MUST return PROTOCOL_ERROR");
@@ -3937,12 +3937,12 @@ fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: lit::T&) {
         wire.append("newval");
 
         var out_pseudo = http2::PseudoHeaders { .. };
-        var out_headers = wing::HeaderMap { .. };
+        var out_headers = http::HeaderMap { .. };
         let err_code = http2::decode_hpack_to_map(dt, wire[..], out_pseudo, out_headers, 8192, false);
         sub.assert_eq(err_code, rfc::H2_ERR_NO_ERROR, "Literal header with indexed name from dynamic table MUST decode without bounds abort");
         sub.assert_eq(out_headers.entries.len, 1, "Decoded 1 header");
-        sub.assert_eq(wing::entry_name(out_headers, out_headers.entries[0]), "custom-header", "Header name matches dynamic table entry");
-        sub.assert_eq(wing::entry_value(out_headers, out_headers.entries[0]), "newval", "Header value matches literal value");
+        sub.assert_eq(http::entry_name(out_headers, out_headers.entries[0]), "custom-header", "Header name matches dynamic table entry");
+        sub.assert_eq(http::entry_value(out_headers, out_headers.entries[0]), "newval", "Header value matches literal value");
     };
 }
 
@@ -3952,7 +3952,7 @@ fn test_hpack_literal_indexed_name_dynamic_value_overflow(t: lit::T&) {
 fn test_h2_authority_whitespace_rejection(t: lit::T&) {
     t.run(":authority with interior space MUST return ERR_PROTOCOL_ERROR") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let _ = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
 
         let code = http2::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com :80");
@@ -3961,7 +3961,7 @@ fn test_h2_authority_whitespace_rejection(t: lit::T&) {
 
     t.run(":authority with comma MUST return ERR_PROTOCOL_ERROR") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let _ = http2::validate_header_ordering_and_rules(pseudo, headers, ":method", "GET");
 
         let code = http2::validate_header_ordering_and_rules(pseudo, headers, ":authority", "example.com,evil.com");
@@ -3975,7 +3975,7 @@ fn test_h2_authority_whitespace_rejection(t: lit::T&) {
 fn test_h2_multiplexer_and_hpack_rfc9113(t: lit::T&) {
     t.run("H2 server ingress rejects invalid SETTINGS_MAX_FRAME_SIZE < 16384") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         // Client preface + SETTINGS frame with MAX_FRAME_SIZE = 0
@@ -4066,7 +4066,7 @@ fn has_rst_stream_for(wire: const u8[:], stream_id: u32) -> bool {
 
 fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
     t.run("H2 ingress rejects Content-Length > 0 on HEADERS frame with END_STREAM") { sub =>
@@ -4164,18 +4164,18 @@ fn test_h2_multiplexer_rfc9113_invariants(t: lit::T&) {
 fn test_h2_multiplexer_trailers(t: lit::T&) {
     t.run("emit_response_trailers filters pseudo-headers, hop-by-hop, and disallowed fields") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var trailers = wing::HeaderMap { .. };
+        var trailers = http::HeaderMap { .. };
 
         // Valid trailers
-        wing::append_header(trailers, "x-checksum", "sha256-abc");
-        wing::append_header(trailers, "x-duration", "15ms");
+        http::append_header(trailers, "x-checksum", "sha256-abc");
+        http::append_header(trailers, "x-duration", "15ms");
 
         // Forbidden pseudo-headers and connection headers per RFC 9113 §8.1 / §8.2.2
-        wing::append_header(trailers, ":status", "200");
-        wing::append_header(trailers, "connection", "close");
-        wing::append_header(trailers, "transfer-encoding", "chunked");
-        wing::append_header(trailers, "content-length", "42");
-        wing::append_header(trailers, "host", "example.com");
+        http::append_header(trailers, ":status", "200");
+        http::append_header(trailers, "connection", "close");
+        http::append_header(trailers, "transfer-encoding", "chunked");
+        http::append_header(trailers, "content-length", "42");
+        http::append_header(trailers, "host", "example.com");
 
         var out_wire: u8[>..] = [];
         server_internal::emit_response_trailers(sess, 1, trailers, out_wire);
@@ -4192,21 +4192,21 @@ fn test_h2_multiplexer_trailers(t: lit::T&) {
 
         // Decode HPACK payload
         var dec_pseudo = http2::PseudoHeaders { is_trailer: true, .. };
-        var dec_list = wing::HeaderMap { .. };
+        var dec_list = http::HeaderMap { .. };
         let dec_err = http2::decode_hpack_to_map(sess.conn.hpack_dec, out_wire[9..9 + (hdr.length as i64)], dec_pseudo, dec_list);
         sub.assert_eq(dec_err, rfc::H2_ERR_NO_ERROR, "HPACK block decoded");
 
         // Exactly 2 valid trailer headers should survive
         sub.assert_eq(dec_list.entries.len, 2, "Only 2 valid trailers encoded");
-        sub.assert_bytes_eq(wing::entry_name(dec_list, dec_list.entries[0]), "x-checksum", "First trailer name");
-        sub.assert_bytes_eq(wing::entry_value(dec_list, dec_list.entries[0]), "sha256-abc", "First trailer value");
-        sub.assert_bytes_eq(wing::entry_name(dec_list, dec_list.entries[1]), "x-duration", "Second trailer name");
-        sub.assert_bytes_eq(wing::entry_value(dec_list, dec_list.entries[1]), "15ms", "Second trailer value");
+        sub.assert_bytes_eq(http::entry_name(dec_list, dec_list.entries[0]), "x-checksum", "First trailer name");
+        sub.assert_bytes_eq(http::entry_value(dec_list, dec_list.entries[0]), "sha256-abc", "First trailer value");
+        sub.assert_bytes_eq(http::entry_name(dec_list, dec_list.entries[1]), "x-duration", "Second trailer name");
+        sub.assert_bytes_eq(http::entry_value(dec_list, dec_list.entries[1]), "15ms", "Second trailer value");
     };
 
     t.run("handle_h2_server_ingress emits response with body and trailers") { sub =>
         var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-        var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+        var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
         var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
         var wire_in: u8[>..] = [];
@@ -4243,7 +4243,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
     t.run("HPACK: reject empty :authority and empty host") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // 1. Empty :authority (0x01 is static index for :authority with literal value len 0)
         var empty_auth_block: u8[..32] = [];
@@ -4267,7 +4267,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         empty_host_block.push(0);    // value len 0
 
         var pseudo2 = http2::PseudoHeaders { .. };
-        var out_list2 = wing::HeaderMap { .. };
+        var out_list2 = http::HeaderMap { .. };
         let err_host = http2::decode_hpack_to_map(dt, empty_host_block[..], pseudo2, out_list2);
         sub.assert_eq(err_host, rfc::H2_ERR_PROTOCOL_ERROR, "empty host header MUST return PROTOCOL_ERROR");
     };
@@ -4275,7 +4275,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
     t.run("HPACK: reject host with invalid authority characters") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // Host containing slash (host: evil.com/path)
         var slash_host_block: u8[..32] = [];
@@ -4303,7 +4303,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
         user_host_block.append("user@evil.com");
 
         var pseudo2 = http2::PseudoHeaders { .. };
-        var out_list2 = wing::HeaderMap { .. };
+        var out_list2 = http::HeaderMap { .. };
         let err_user = http2::decode_hpack_to_map(dt, user_host_block[..], pseudo2, out_list2);
         sub.assert_eq(err_user, rfc::H2_ERR_PROTOCOL_ERROR, "host with @ MUST return PROTOCOL_ERROR");
     };
@@ -4311,7 +4311,7 @@ fn test_h2_hpack_host_authority_validation(t: lit::T&) {
     t.run("HPACK: accept case-insensitive matching :authority and host") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // :authority: Example.COM and host: example.com
         var hpack_block: u8[..64] = [];
@@ -4401,7 +4401,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
     t.run("HPACK: reject invalid :status values (out of range, non-3-digit, or 101)") { sub =>
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
 
         // 1. :status = "999" (out of 100..599 range)
         var block_999: u8[..32] = [];
@@ -4423,7 +4423,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_042.append("042");
 
         var pseudo2 = http2::PseudoHeaders { .. };
-        var out_list2 = wing::HeaderMap { .. };
+        var out_list2 = http::HeaderMap { .. };
         let err_042 = http2::decode_hpack_to_map(dt, block_042[..], pseudo2, out_list2);
         sub.assert_eq(err_042, rfc::H2_ERR_PROTOCOL_ERROR, ":status 042 MUST return PROTOCOL_ERROR");
 
@@ -4436,7 +4436,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_101.append("101");
 
         var pseudo3 = http2::PseudoHeaders { .. };
-        var out_list3 = wing::HeaderMap { .. };
+        var out_list3 = http::HeaderMap { .. };
         let err_101 = http2::decode_hpack_to_map(dt, block_101[..], pseudo3, out_list3);
         sub.assert_eq(err_101, rfc::H2_ERR_PROTOCOL_ERROR, ":status 101 MUST return PROTOCOL_ERROR");
 
@@ -4449,7 +4449,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_short.append("20");
 
         var pseudo4 = http2::PseudoHeaders { .. };
-        var out_list4 = wing::HeaderMap { .. };
+        var out_list4 = http::HeaderMap { .. };
         let err_short = http2::decode_hpack_to_map(dt, block_short[..], pseudo4, out_list4);
         sub.assert_eq(err_short, rfc::H2_ERR_PROTOCOL_ERROR, ":status 20 MUST return PROTOCOL_ERROR");
 
@@ -4462,7 +4462,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_long.append("2000");
 
         var pseudo5 = http2::PseudoHeaders { .. };
-        var out_list5 = wing::HeaderMap { .. };
+        var out_list5 = http::HeaderMap { .. };
         let err_long = http2::decode_hpack_to_map(dt, block_long[..], pseudo5, out_list5);
         sub.assert_eq(err_long, rfc::H2_ERR_PROTOCOL_ERROR, ":status 2000 MUST return PROTOCOL_ERROR");
     };
@@ -4475,7 +4475,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_200.push(0x88); // static entry 8 (:status: 200)
 
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
         let err_200 = http2::decode_hpack_to_map(dt, block_200[..], pseudo, out_list);
         sub.assert_eq(err_200, rfc::H2_ERR_NO_ERROR, ":status 200 accepted");
 
@@ -4484,7 +4484,7 @@ fn test_h2_status_pseudo_header_validation(t: lit::T&) {
         block_204.push(0x89); // static entry 9 (:status: 204)
 
         var pseudo2 = http2::PseudoHeaders { .. };
-        var out_list2 = wing::HeaderMap { .. };
+        var out_list2 = http::HeaderMap { .. };
         let err_204 = http2::decode_hpack_to_map(dt, block_204[..], pseudo2, out_list2);
         sub.assert_eq(err_204, rfc::H2_ERR_NO_ERROR, ":status 204 accepted");
     };
@@ -4559,7 +4559,7 @@ fn test_h2_goose2rfc_audit_regressions(t: lit::T&) {
 
     t.run("H2_1_C03 & H2_1_C05: PRIORITY_UPDATE on stream 0/even and closed stream monotonicity") { sub =>
         var conn = http2::new_h2_connection(0);
-        let p = wing::PriorityParam { urgency: 1, incremental: true };
+        let p = http::PriorityParam { urgency: 1, incremental: true };
         let err_zero = http2::apply_priority_update(conn, 0, p);
         sub.assert_eq(err_zero, rfc::H2_ERR_PROTOCOL_ERROR, "PRIORITY_UPDATE prioritized_stream_id=0 rejected");
         sub.assert_true(!conn.client_sent_priority, "client_sent_priority not dirtied on error");
@@ -4613,7 +4613,7 @@ fn test_h2_goose2rfc_audit_regressions(t: lit::T&) {
 
     t.run("H2_2_C03, H2_2_C05, H2_2_C06: HPACK pseudo-header syntax, TE in trailers, and rollback") { sub =>
         var pseudo = http2::PseudoHeaders { .. };
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         let err_m = http2::validate_and_record_pseudo_header(pseudo, ":method", "GET /Evil", true);
         sub.assert_eq(err_m, rfc::H2_ERR_PROTOCOL_ERROR, ":method with space rejected");
 

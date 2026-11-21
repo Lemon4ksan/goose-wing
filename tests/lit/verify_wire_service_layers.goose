@@ -315,22 +315,22 @@ fn test_composed_stack_zero_alloc() {
 }
 
 fn test_interceptor_multi_header_composition() {
-    var pipeline = wing::InterceptorPipeline { .. };
-    assert(wing::add_header(pipeline, wing::InterceptorScope.Application, "X-A", "1"));
-    assert(wing::add_header(pipeline, wing::InterceptorScope.Application, "X-B", "2"));
-    assert(wing::add_header(pipeline, wing::InterceptorScope.Application, "x-a", "updated-1"));
-    assert(wing::add_header(pipeline, wing::InterceptorScope.Network, "X-Net-1", "n1"));
-    assert(wing::add_header(pipeline, wing::InterceptorScope.Network, "X-Net-2", "n2"));
+    var pipeline = client::InterceptorPipeline { .. };
+    assert(client::add_header(pipeline, client::InterceptorScope.Application, "X-A", "1"));
+    assert(client::add_header(pipeline, client::InterceptorScope.Application, "X-B", "2"));
+    assert(client::add_header(pipeline, client::InterceptorScope.Application, "x-a", "updated-1"));
+    assert(client::add_header(pipeline, client::InterceptorScope.Network, "X-Net-1", "n1"));
+    assert(client::add_header(pipeline, client::InterceptorScope.Network, "X-Net-2", "n2"));
 
-    var req = wing::new_request("GET", "https://example.com/api");
-    wing::apply_app_interceptors_request(pipeline, req, 1000);
-    assert(wing::header(req, "X-A") == "updated-1");
-    assert(wing::header(req, "X-B") == "2");
+    var req = http::new_request("GET", "https://example.com/api");
+    client::apply_app_interceptors_request(pipeline, req, 1000);
+    assert(http::header(req, "X-A") == "updated-1");
+    assert(http::header(req, "X-B") == "2");
 
-    var wire_hdrs = wing::HeaderMap { .. };
-    wing::apply_network_interceptors_request(pipeline, wire_hdrs, "https://example.com/api", "GET", 0, 1);
-    assert(wing::get_header(wire_hdrs, "X-Net-1") == "n1");
-    assert(wing::get_header(wire_hdrs, "X-Net-2") == "n2");
+    var wire_hdrs = http::HeaderMap { .. };
+    client::apply_network_interceptors_request(pipeline, wire_hdrs, "https://example.com/api", "GET", 0, 1);
+    assert(http::get_header(wire_hdrs, "X-Net-1") == "n1");
+    assert(http::get_header(wire_hdrs, "X-Net-2") == "n2");
 }
 
 fn ::main() {

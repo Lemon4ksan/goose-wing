@@ -1,40 +1,51 @@
 # `client`
 
-Package `client` provides the zero-allocation HTTP client models, content
-decompression (`gzip`, `deflate`, `br`, `zstd`, `dcb`, `dcz`), two-tier
+Package `client` (`namespace client;`, internal helpers in
+`namespace client_internal;`) provides the zero-allocation HTTP client models,
+content decompression (`gzip`, `deflate`, `br`, `zstd`, `dcb`, `dcz`), two-tier
 application and network interceptor pipelines, configurable TLS/HTTP2 client
-profiles, 0-RTT replay guards (RFC 8470), and HAR 1.2 telemetry export for
-`goose-wing`.
+profiles, 0-RTT replay guards (RFC 8470), chunked streaming I/O, typed endpoint
+contracts, and HAR 1.2 telemetry export for `goose-wing`.
 
 ```goose
-var c = new_client("https://example.com");
-set_profile(c, Profile.Wing);
-var req = new_get("/index.html");
-set_header(req, "Accept", "text/html");
+var c = client::new_client("https://example.com");
+c.set_profile(fingerprint::Profile.Wing);
+var req = wing::new_request("GET", "/index.html");
+req.set_header("Accept", "text/html");
 ```
 
 ## Public API
 
-### 1. Configuration & Lifecycle (`client/client.goose`, `fingerprint/profile.goose`)
+### 1. Configuration and lifecycle (`client/client.goose`)
 
 ```goose
-enum Profile { Wing, Custom, None }
-struct ClientConfig {
-    base_url: u8[..512], user_agent: u8[..256], timeout_ms: i64,
-    follow_redirects: bool, max_redirects: i32, verify_tls: bool,
-    profile: Profile, enable_cookies: bool, enable_cache: bool,
-    enable_alt_svc: bool, enable_h3: bool, proxy_url: u8[..256],
-    max_response_body_size: i64, enable_ssrf_guard: bool,
-    ssrf_https_only: bool, doh_endpoint_url: u8[..256]
+struct Config {
+    base_url: const u8[:], profile: fingerprint::Profile,
+    proxy_url: const u8[:], timeout_ms: i64, follow_redirects: bool,
+    cookie_jar: bool, enable_cache: bool, cache_options: wing::CacheOptions,
+    enable_altsvc: bool, enable_protocol_racing: bool,
+    quic_race_delay_ms: i64, enable_compression_dict: bool,
+    strict_content_decoding: bool, insecure_skip_verify: bool,
+    sig_key_id: const u8[:], sig_private_key: const u8[:],
+    sig_public_key: const u8[:],
 }
+type SessionConfig = Config;
+struct Credentials { ... }
+struct DpopState { ... }
 struct Client { ... }
-fn profile_user_agent(p: Profile) -> const u8[:]
-fn profile_name(p: Profile) -> const u8[:]
+type Session = Client;
+
 fn new_client() -> Client
-fn new_client(cfg: ClientConfig) -> Client
+fn new_client(cfg: Config) -> Client
 fn new_client(base_url: const u8[:]) -> Client
-fn set_profile(session: Session&, profile: Profile)
-fn set_profile(session: Session&, profile: const ClientProfile&)
+fn new_session() -> Client
+fn new_session(cfg: Config) -> Client
+fn new_session(base_url: const u8[:]) -> Client
+fn set_base_url(session: Session&, url: const u8[:])
+fn set_profile(session: Session&, profile: fingerprint::Profile)
+fn set_profile(session: Session&, profile: const fingerprint::ClientProfile&)
+fn set_user_agent(session: Session&, ua: const u8[:])
+fn user_agent(session: const Session&) -> const u8[:]
 fn set_timeout_ms(session: Session&, ms: i64)
 fn set_proxy(session: Session&, proxy_url: const u8[:])
 fn set_redirect_mode(session: Session&, mode: RedirectMode)
@@ -43,78 +54,38 @@ fn enable_ech(session: Session&, auto_discover: bool = true)
 fn enable_altsvc(session: Session&, enabled: bool = true)
 fn enable_protocol_racing(session: Session&, enabled: bool = true, quic_delay_ms: i64 = 200)
 fn enable_compression_dict(session: Session&, enabled: bool = true)
+fn enable_hsts(session: Session&, enabled: bool = true)
+fn set_credentials(session: Session&, username: const u8[:], password: const u8[:]) -> bool
+fn set_dpop_credentials(session: Session&, private_key: const u8[32]&, token: const u8[:] = "") -> bool
+fn set_http_signature_keys(session: Session&, key_id: const u8[:], private_key: const u8[:], public_key: const u8[:] = "") -> bool
+fn load_trust_anchors_pem_file(sess: Session&, path: const u8[:]) -> i64, bool
+fn configure_session_tls_ca_pem(sess: Session&, pem_bundle: const u8[:], allow_loopback: bool = false) -> i64, bool
+fn lookup_cached_ech_config(dns_cache: const dns::Cache&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
+fn resolve_ech_config(session: Session&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
+fn attach_dictionary_request_headers(session: const Session&, origin: const u8[:], url_path: const u8[:], req: wing::Request&) -> bool
+fn process_dictionary_response<B>(session: Session&, origin: const u8[:], use_as_dict_hdr: const u8[:], content_encoding: const u8[:], raw_body: const u8[:], out: B&) -> bool
 fn close(session: Session&)
 ```
 
-`Client` owns the connection pool, RFC 9111 cache, cookie jar, HSTS store,
-`Alt-Svc` table, and RFC 9842 compression dictionary store. `set_profile` aligns
-the `User-Agent`, TLS 1.3 cipher/extension order (JA3/JA4), HTTP/2 `SETTINGS`,
-and pseudo-header ordering (`:method`, `:authority`, `:scheme`, `:path`) with
-the selected `Profile` (`Profile.Wing` for the canonical `goose-wing` wire
-signature or `Profile.Custom` with a caller-constructed `ClientProfile`). When
-`enable_protocol_racing` is active against a direct HTTP/3 UDP endpoint
-(`serve_h3`), `execute_live_h3_hop` does an **Unencrypted H3 over UDP (Datagram
-Direct)** exchange using RFC 9114 framing and QPACK; full encrypted QUIC v1 +
-TLS 1.3 sessions use `QuicConnection` (`quic/connection.goose`) and
-`H3Connection` (`http3/connection.goose`). `close` is idempotent and drains all
+`Client` (`Session`) owns the connection pool, RFC 9111 cache, cookie jar, HSTS
+store, `Alt-Svc` table, and RFC 9842 compression dictionary store. `set_profile`
+aligns the `User-Agent`, TLS 1.3 cipher/extension order (JA3/JA4), HTTP/2
+`SETTINGS`, and pseudo-header ordering (`:method`, `:authority`, `:scheme`,
+`:path`) with the selected `fingerprint::Profile`. When `enable_protocol_racing`
+is active against a direct HTTP/3 UDP endpoint (`serve_h3`),
+`execute_live_h3_hop` does an unencrypted H3 over UDP (datagram direct) exchange
+using RFC 9114 framing and QPACK; full encrypted QUIC v1 + TLS 1.3 sessions use
+`quic::Connection` and `http3::Connection`. `close` is idempotent and drains all
 pooled transport descriptors.
 
-### 2. Request Model (`http/request.goose`, RFC 9110)
+### 2. Interceptors, redirects, backoff, and rate limiting (`client/interceptor.goose`, `client/redirect.goose`, `client/policy.goose`)
 
 ```goose
-struct Request {
-    method: u8[..16], url: u8[..2048], headers: HeaderMap,
-    trailers: HeaderMap, query_params: QueryParam[..32],
-    rewind_buf: u8[..4096], body: u8[>..], timeout: i64, cors_mode: bool
-}
-fn reset_request(req: Request&)
-fn new_request(method: const u8[:], url: const u8[:]) -> Request
-fn new_get(url: const u8[:]) -> Request
-fn new_post(url: const u8[:]) -> Request
-fn new_query(url: const u8[:], body: const u8[:], content_type: const u8[:] = "application/json") -> Request
-fn set_header(req: Request&, name: const u8[:], value: const u8[:]) -> Request&
-fn remove_header(req: Request&, name: const u8[:]) -> Request&
-fn bearer(req: Request&, token: const u8[:]) -> Request&
-fn query(req: Request&, key: const u8[:], value: const u8[:]) -> Request&
-fn set_priority(req: Request&, urgency: u8, incremental: bool = false) -> Request&
-fn sign_hmac_sha256(req: Request&, secret_key: const u8[:], header_name: const u8[:] = "X-Signature-256") -> Request&
-```
-
-`Request` stores up to 32 query parameters (`QueryParam[..32]`), a 2048-byte
-target URL (`u8[..2048]`), and a 4096-byte `rewind_buf` used to replay bodies
-across `307 Temporary Redirect` and `308 Permanent Redirect` hops without
-re-allocating. Builder functions (`set_header`, `bearer`, `query`,
-`set_priority`, `sign_hmac_sha256`) mutate `req` in place and return `Request&`
-for method chaining.
-
-### 3. Response Model (`http/response.goose`, RFC 9110)
-
-```goose
-struct Response {
-    status_code: i32, status_text: u8[..64], headers: HeaderMap,
-    trailers: HeaderMap, body: u8[>..], elapsed_ms: i64,
-    redirect_count: i32, final_url: u8[..2048], from_cache: bool,
-    timings: RequestTimings, protocol: u8[..16]
-}
-fn is_ok(resp: const Response&) -> bool
-fn is_redirect(resp: const Response&) -> bool
-fn find_header(resp: const Response&, name: const u8[:]) -> const u8[:]
-fn has_header(resp: const Response&, name: const u8[:]) -> bool
-fn decode_body(resp: Response&) -> bool
-```
-
-`is_ok` returns `true` for status codes in `200..299`, and `is_redirect` matches
-`301`, `302`, `303`, `307`, and `308`. `decode_body` inspects `Content-Encoding`
-(`gzip`, `deflate`, `br`, `zstd`, `dcb`, `dcz`), replaces `resp.body` with the
-decompressed payload in place, and returns `false` if decompression fails or
-exceeds configured bomb limits.
-
-### 4. Interceptors, Redirects, Backoff & Rate Limiting (`client/interceptor.goose`, `client/redirect.goose`, `client/policy.goose`)
-
-```goose
+struct RetryPolicy { max_retries: i32, retry_on_5xx: bool }
 struct InterceptorPipeline { active_mask: u64, ... }
 struct InterceptorEntry { ... }
 enum InterceptorScope { Application, Network }
+enum InterceptorKind { None, Logging, AuthBearer, Header, RequestId, Traceparent, RetryPolicy, Metrics }
 enum LogLevel { None, Basic, Headers, Body }
 enum RedirectMode { Follow, Manual, Error }
 enum ReferrerPolicy {
@@ -122,100 +93,115 @@ enum ReferrerPolicy {
     SameOrigin, StrictOrigin, StrictOriginWhenCrossOrigin, UnsafeUrl
 }
 enum RedirectError {
-    None, MaxRedirectsExceeded, LoopDetected, MissingLocationHeader,
-    HttpsToHttpDowngradeBlocked, RedirectModeError
+    None, MissingLocation, MultipleLocationHeaders, InvalidLocationUrl,
+    ForbiddenRedirectScheme, CorsCredentialsInRedirectUrl,
+    SchemeDowngradeBlocked, TooManyRedirects, RedirectBlockedByPolicy,
+    CannotRewindBody, SsrfBlockedUrl, SsrfBlockedIp
 }
-struct RedirectOptions {
-    mode: RedirectMode, referrer_policy: ReferrerPolicy, max_redirects: i32,
-    strict_301_302_post_to_get: bool, block_https_to_http_downgrade: bool,
-    strip_sensitive_headers_on_cross_origin: bool
-}
-struct RedirectInfo {
-    should_redirect: bool, new_method: u8[..16], target_url: u8[..2048],
-    is_cross_origin: bool, preserve_body: bool
-}
+struct RedirectOptions { ... }
+struct RedirectSanitizeOptions { ... }
+struct RedirectInfo { ... }
 struct Backoff { base_ns: i64, max_ns: i64, factor: f64 }
 struct RateLimiter { rate_per_sec: f64, burst_capacity: f64, tokens: f64, last_update_mono_ns: i64 }
+
 fn add_interceptor(pipeline: InterceptorPipeline&, entry: InterceptorEntry) -> bool
 fn add_header(pipeline: InterceptorPipeline&, scope: InterceptorScope, name: const u8[:], val: const u8[:]) -> bool
 fn add_logging(pipeline: InterceptorPipeline&, scope: InterceptorScope, level: LogLevel) -> bool
 fn add_bearer_auth(pipeline: InterceptorPipeline&, token: const u8[:]) -> bool
 fn add_request_id(pipeline: InterceptorPipeline&, prefix: const u8[:] = "req-") -> bool
 fn add_traceparent(pipeline: InterceptorPipeline&, sample_flag: const u8[:] = "01") -> bool
-fn add_retry(pipeline: InterceptorPipeline&, max_retries: i32 = 3, retry_on_5xx: bool = true) -> bool
-fn compute_redirect_info(status_code: i32, req_method: const u8[:], location_header: const u8[:], current_url: const u8[:]) -> RedirectInfo
-fn sanitize_headers_on_redirect(req: Request&)
+fn add_retry(pipeline: InterceptorPipeline&, max_retries: i32, retry_on_5xx: bool = true) -> bool
+fn add_metrics(pipeline: InterceptorPipeline&) -> bool
+fn find_retry_policy(pipeline: const InterceptorPipeline&) -> RetryPolicy, bool
+fn parse_referrer_policy_with_fallback(val: const u8[:], fallback: ReferrerPolicy) -> ReferrerPolicy
+fn compute_redirect_info(current_method: const u8[:], status_code: i32, current_url_str: const u8[:], location_header: const u8[:], current_referrer_policy: ReferrerPolicy, current_referrer: const u8[:], options: RedirectOptions = RedirectOptions { .. }) -> RedirectInfo
+fn sanitize_headers_on_redirect(headers: wing::HeaderMap&, redirect_info: const RedirectInfo&, options: RedirectSanitizeOptions = RedirectSanitizeOptions { .. })
+fn record_redirect_hop_cache_headers(taint: RedirectHopCacheTaint&, hop_headers: const wing::HeaderMap&)
+fn apply_custom_redirect_strip(headers: wing::HeaderMap&, is_cross_origin: bool, policy: const CustomRedirectStripPolicy&)
 fn new_backoff(base_ns: i64, max_ns: i64, factor: f64 = 2.0) -> Backoff
 fn delay(backoff: const Backoff&, attempt: i64) -> i64
 fn new_rate_limiter(rate_per_sec: f64, burst: i64) -> RateLimiter
 fn allow(limiter: RateLimiter&, now_mono: i64) -> bool
+fn allow(limiter: RateLimiter&) -> bool
 ```
 
-`InterceptorPipeline` dispatches up to 64 application and network interceptors
-gated by `active_mask`. `compute_redirect_info` implements RFC 9110 §15.4 method
+`InterceptorPipeline` dispatches application and network interceptors gated by
+`active_mask`. `compute_redirect_info` implements RFC 9110 Section 15.4 method
 rewriting (`POST` -> `GET` on `301`/`302`/`303`, method and body preservation on
 `307`/`308`), while `sanitize_headers_on_redirect` strips `Authorization`,
-`Cookie`, and `Proxy-Authorization` across cross-origin hops.
+`Cookie`, `DPoP`, `Signature`, and `Proxy-Authorization` across cross-origin
+hops.
 
-### 5. 0-RTT Early Data Replay Guard (`client/replay_guard.goose`, RFC 8470)
+### 3. 0-RTT early data replay guard (`client/replay_guard.goose`, RFC 8470)
 
 ```goose
-enum EarlyDataDecision { Allowed0Rtt, DeferTo1Rtt, RetryOn1Rtt }
-fn evaluate_early_data_request(method: const u8[:], allow_early_data_flag: bool) -> EarlyDataDecision
-fn evaluate_early_data_response(status_code: i32, was_sent_in_early_data: bool) -> EarlyDataDecision
-fn append_early_data_header(req: Request&, handshake_complete: bool)
+enum EarlyDataDecision { Allow, RejectMutating, RetryOn1Rtt }
+fn evaluate_early_data_request(method: const u8[:], allow_mutating_override: bool = false) -> EarlyDataDecision
+fn evaluate_early_data_response(status_code: u16, was_sent_early: bool) -> EarlyDataDecision
+fn append_early_data_header<B>(out: B&) -> bool
 ```
 
 Enforces RFC 8470 0-RTT anti-replay rules: `evaluate_early_data_request`
 restricts TLS 1.3 / QUIC 0-RTT transmission to safe idempotent methods (`GET`,
-`HEAD`, `OPTIONS`, `TRACE`), `append_early_data_header` attaches `Early-Data: 1`
-when the handshake is not yet complete, and `evaluate_early_data_response`
-triggers a transparent 1-RTT retry (`RetryOn1Rtt`) on `425 Too Early`.
+`HEAD`, `OPTIONS`, `TRACE`), `append_early_data_header` appends `Early-Data: 1`
+with capacity validation, and `evaluate_early_data_response` triggers a 1-RTT
+retry (`RetryOn1Rtt`) on `425 Too Early`.
 
-### 6. Streaming Body I/O (`client/stream.goose`)
+### 4. Streaming body I/O (`client/stream.goose`)
 
 ```goose
-struct ChunkWriter { trailers: HeaderMap, finished: bool, buffer: u8[>..] }
+struct ChunkWriter { trailers: wing::HeaderMap, finished: bool, buffer: u8[>..] }
 enum ChunkedStreamState { ChunkSizeLine, ChunkData, ChunkDataCrlf, Trailers, Complete, Error }
 struct ChunkedStreamDecoder { ... }
 enum StreamReadStatus { Data, Eof, Error }
 struct StreamProgress { bytes_processed: u64, total_bytes: i64, percent: f64, is_finished: bool }
 struct StreamReader { ... }
-struct ArenaSink { max_bytes: i64 }
+
+fn encode_chunk<B>(data: const u8[:], out: B&) -> bool
+fn encode_chunk_end<B>(out: B&) -> bool
+fn encode_chunk_trailer<B>(name: const u8[:], val: const u8[:], out: B&) -> bool
+fn encode_chunked_payload<B>(body: const u8[:], trailers: const wing::HeaderMap&, chunk_size: i64, out: B&) -> bool
 fn write_chunk(writer: ChunkWriter&, data: const u8[:])
 fn add_trailer(writer: ChunkWriter&, name: const u8[:], val: const u8[:]) -> bool
 fn finish_chunk_writer(writer: ChunkWriter&)
-fn feed_chunked_stream<B>(dec: ChunkedStreamDecoder&, input: const u8[:], out_body: B&, max_emit: i64 = -1) -> bool, i64
-fn new_stream_reader(resp: const Response&) -> StreamReader
+fn is_complete(dec: const ChunkedStreamDecoder&) -> bool
+fn has_error(dec: const ChunkedStreamDecoder&) -> bool
+fn feed_chunked_stream<B>(dec: ChunkedStreamDecoder&, input: const u8[:], out: B&, max_emit: i64 = -1) -> i64, bool
+fn parse_content_length_value(cl: const u8[:]) -> i64, bool
+fn new_stream_reader(resp: const wing::Response&) -> StreamReader
 fn read_chunk<B>(reader: StreamReader&, max_bytes: i64, out: B&) -> StreamReadStatus, bool
 fn read_all<B>(reader: StreamReader&, out: B&) -> u64
 fn trailer(reader: const StreamReader&, name: const u8[:]) -> const u8[:]
+fn copy_trailers_to_response(reader: const StreamReader&, resp: wing::Response&)
 fn stream_progress(reader: const StreamReader&) -> StreamProgress
-fn pump_chunk_fsm<Sink, B>(dec: http_internal::ChunkFsmDecoder&, wire: const u8[:], sink: Sink, out: B&) -> http_internal::ChunkFsmStatus, i64
 ```
 
-`ChunkWriter` frames outbound RFC 9112 §7.1 chunked bodies with up to 16
-trailing header fields (`HeaderField[..16]`) emitted by `finish_chunk_writer`.
-`ChunkedStreamDecoder` parses inbound chunked streams incrementally via
-`feed_chunked_stream` or `pump_chunk_fsm`, rejecting malformed hex lengths or
-missing CRLF terminators with `false`.
+`ChunkWriter` frames outbound RFC 9112 Section 7.1 chunked bodies with up to 16
+trailing header fields emitted by `finish_chunk_writer`. `ChunkedStreamDecoder`
+parses inbound chunked streams incrementally via `feed_chunked_stream`
+(returning `(consumed, ok)` and rolling back `out` on framing error).
 
-### 7. Request Timings & HAR 1.2 Telemetry (`client/telemetry.goose`)
+### 5. Typed endpoint contracts and HAR 1.2 telemetry (`client/contract.goose`, `client/telemetry.goose`)
 
 ```goose
+struct EmptyPart {}
+struct EndpointSpec<Params, Query, ReqBody, ResBody> { method: u8[..16], path_template: u8[..256] }
 struct RequestTimings {
-    blocked_us: i64, dns_us: i64, connect_us: i64, tls_us: i64,
-    send_us: i64, wait_us: i64, receive_us: i64, total_us: i64, ttfb_us: i64
+    blocked_us: i64, dns_us: i64, connect_us: i64, ssl_us: i64,
+    send_us: i64, wait_us: i64, receive_us: i64,
 }
 struct HarEntry { ... }
-fn compute_total_timing_us(t: RequestTimings&)
-fn format_us_as_ms<B>(us: i64, out: B&)
+
+fn type_is_non_empty<T>() -> bool
+fn build_contract_request<Params, Query, ReqBody, ResBody>(spec: const EndpointSpec<Params, Query, ReqBody, ResBody>&, base_url: const u8[:], params: const Params&, query_dto: const Query&, body_dto: const ReqBody&, out_req: wing::Request&) -> bool
+fn call_endpoint<Params, Query, ReqBody, ResBody>(c: Client&, spec: const EndpointSpec<Params, Query, ReqBody, ResBody>&, base_url: const u8[:], params: const Params&, query_dto: const Query&, body_dto: const ReqBody&) -> ResBody, wing::Response, wing::Error
+fn compute_total_timing_us(t: const RequestTimings&) -> i64
 fn serialize_har_entry_json<B>(entry: const HarEntry&, out: B&)
 ```
 
-`compute_total_timing_us` sums microsecond phase durations into `total_us` and
-calculates time-to-first-byte (`ttfb_us`), while `serialize_har_entry_json`
-exports request, response, and timing breakdowns as a HAR 1.2 JSON object.
+`compute_total_timing_us` sums microsecond phase durations with saturating
+addition, while `serialize_har_entry_json` exports request, response, and timing
+breakdowns as a HAR 1.2 JSON object.
 
 ## Verification
 

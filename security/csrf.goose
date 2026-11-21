@@ -341,7 +341,7 @@ fn extract_fetch_context<Req>(
     }
 
     let req_path = extract_path_from_url(req.url[..]);
-    if !wing::canonicalize_route_path(req_path, ctx.path) {
+    if !server::canonicalize_route_path(req_path, ctx.path) {
         ctx.path.clear();
     }
 
@@ -386,7 +386,7 @@ fn apply_isolation_headers<Res>(res: Res&) {
             rfc::HEADER_VARY,
             rfc::FETCH_METADATA_VARY_VALUE,
             security_internal::CSRF_VARY_SLOT,
-            wing::HEADER_FLAG_CONTAINS_COMMA,
+            http::HEADER_FLAG_CONTAINS_COMMA,
             rfc::HASH_HDR_VARY,
             true,
         ) {
@@ -402,7 +402,7 @@ fn apply_isolation_headers<Res>(res: Res&) {
             rfc::HEADER_STRICT_TRANSPORT_SECURITY,
             rfc::HSTS_DEFAULT_VALUE,
             security_internal::CSRF_HSTS_SLOT,
-            wing::HEADER_FLAG_SECURITY_STATE,
+            http::HEADER_FLAG_SECURITY_STATE,
             rfc::HASH_HDR_STRICT_TRANSPORT_SECURITY,
             false,
         ) {

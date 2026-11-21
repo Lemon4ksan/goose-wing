@@ -552,73 +552,73 @@ fn test_smartnic_ktls_offload(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_pool_key_dimensions_and_isolation(t: lit::T&) {
     t.run("5-Dimensional PoolKey Exact Match and Partition Isolation") { sub =>
-        let nak1 = wing::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
-        let nak2 = wing::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
-        let nak_cross = wing::new_network_anonymization_key("https://a.com", true, 0, 1, 0);
-        let nak_nonce = wing::new_network_anonymization_key("https://a.com", false, 42, 1, 0);
-        let nak_part = wing::new_network_anonymization_key("https://a.com", false, 0, 2, 0);
-        let nak_worker = wing::new_network_anonymization_key("https://a.com", false, 0, 1, 99);
+        let nak1 = net::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
+        let nak2 = net::new_network_anonymization_key("https://a.com", false, 0, 1, 0);
+        let nak_cross = net::new_network_anonymization_key("https://a.com", true, 0, 1, 0);
+        let nak_nonce = net::new_network_anonymization_key("https://a.com", false, 42, 1, 0);
+        let nak_part = net::new_network_anonymization_key("https://a.com", false, 0, 2, 0);
+        let nak_worker = net::new_network_anonymization_key("https://a.com", false, 0, 1, 99);
 
-        sub.assert_true(wing::network_anonymization_key_equals(nak1, nak2), "Identical NAK matches");
-        sub.assert_false(wing::network_anonymization_key_equals(nak1, nak_cross), "Cross-site flag isolates partition");
-        sub.assert_false(wing::network_anonymization_key_equals(nak1, nak_nonce), "Ephemeral nonce isolates partition");
-        sub.assert_false(wing::network_anonymization_key_equals(nak1, nak_part), "Network isolation partition isolates partition");
-        sub.assert_false(wing::network_anonymization_key_equals(nak1, nak_worker), "Worker session ID isolates proxy automation workers");
+        sub.assert_true(net::network_anonymization_key_equals(nak1, nak2), "Identical NAK matches");
+        sub.assert_false(net::network_anonymization_key_equals(nak1, nak_cross), "Cross-site flag isolates partition");
+        sub.assert_false(net::network_anonymization_key_equals(nak1, nak_nonce), "Ephemeral nonce isolates partition");
+        sub.assert_false(net::network_anonymization_key_equals(nak1, nak_part), "Network isolation partition isolates partition");
+        sub.assert_false(net::network_anonymization_key_equals(nak1, nak_worker), "Worker session ID isolates proxy automation workers");
 
         // Case insensitivity of top frame site
-        let nak_upper = wing::new_network_anonymization_key("HTTPS://A.COM", false, 0, 1, 0);
-        sub.assert_true(wing::network_anonymization_key_equals(nak1, nak_upper), "Top frame site matches case-insensitively");
+        let nak_upper = net::new_network_anonymization_key("HTTPS://A.COM", false, 0, 1, 0);
+        sub.assert_true(net::network_anonymization_key_equals(nak1, nak_upper), "Top frame site matches case-insensitively");
 
-        let direct_chain = wing::new_direct_proxy_chain();
-        let socks_proxy = wing::new_proxy_server(wing::ProxyScheme.Socks5h, "proxy.local", 1080);
-        let socks_chain = wing::new_single_proxy_chain(socks_proxy);
-        let http_proxy = wing::new_proxy_server(wing::ProxyScheme.Http, "proxy.local", 8080);
-        let http_chain = wing::new_single_proxy_chain(http_proxy);
+        let direct_chain = net::new_direct_proxy_chain();
+        let socks_proxy = net::new_proxy_server(net::ProxyScheme.Socks5h, "proxy.local", 1080);
+        let socks_chain = net::new_single_proxy_chain(socks_proxy);
+        let http_proxy = net::new_proxy_server(net::ProxyScheme.Http, "proxy.local", 8080);
+        let http_chain = net::new_single_proxy_chain(http_proxy);
 
-        let default_policy = wing::TlsAndDnsPolicy { .. };
-        var privacy_policy = wing::TlsAndDnsPolicy { .. };
-        privacy_policy.privacy_mode = wing::PrivacyMode.Enabled;
+        let default_policy = net::TlsAndDnsPolicy { .. };
+        var privacy_policy = net::TlsAndDnsPolicy { .. };
+        privacy_policy.privacy_mode = net::PrivacyMode.Enabled;
 
-        var doh_policy = wing::TlsAndDnsPolicy { .. };
-        doh_policy.secure_dns_policy = wing::SecureDnsPolicy.Disable;
+        var doh_policy = net::TlsAndDnsPolicy { .. };
+        doh_policy.secure_dns_policy = net::SecureDnsPolicy.Disable;
 
-        var cert_policy = wing::TlsAndDnsPolicy { .. };
+        var cert_policy = net::TlsAndDnsPolicy { .. };
         cert_policy.disable_cert_network_fetches = true;
 
-        var net_policy = wing::TlsAndDnsPolicy { .. };
+        var net_policy = net::TlsAndDnsPolicy { .. };
         net_policy.target_network_id = 999;
 
-        let key1 = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, default_policy);
-        let key2 = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, direct_chain, nak2, default_policy);
-        let key_case = wing::new_pool_key(wing::PoolScheme.Https, "API.SERVICE.COM", 443, direct_chain, nak1, default_policy);
-        let key_port = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 8443, direct_chain, nak1, default_policy);
-        let key_scheme = wing::new_pool_key(wing::PoolScheme.Http, "api.service.com", 80, direct_chain, nak1, default_policy);
-        let key_h2c = wing::new_pool_key(wing::PoolScheme.H2c, "api.service.com", 80, direct_chain, nak1, default_policy);
-        let key_proxy_socks = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, socks_chain, nak1, default_policy);
-        let key_proxy_http = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, http_chain, nak1, default_policy);
-        let key_priv = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, privacy_policy);
-        let key_doh = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, doh_policy);
-        let key_cert = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, cert_policy);
-        let key_net = wing::new_pool_key(wing::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, net_policy);
+        let key1 = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, default_policy);
+        let key2 = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, direct_chain, nak2, default_policy);
+        let key_case = net::new_pool_key(net::PoolScheme.Https, "API.SERVICE.COM", 443, direct_chain, nak1, default_policy);
+        let key_port = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 8443, direct_chain, nak1, default_policy);
+        let key_scheme = net::new_pool_key(net::PoolScheme.Http, "api.service.com", 80, direct_chain, nak1, default_policy);
+        let key_h2c = net::new_pool_key(net::PoolScheme.H2c, "api.service.com", 80, direct_chain, nak1, default_policy);
+        let key_proxy_socks = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, socks_chain, nak1, default_policy);
+        let key_proxy_http = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, http_chain, nak1, default_policy);
+        let key_priv = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, privacy_policy);
+        let key_doh = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, doh_policy);
+        let key_cert = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, cert_policy);
+        let key_net = net::new_pool_key(net::PoolScheme.Https, "api.service.com", 443, direct_chain, nak1, net_policy);
 
-        sub.assert_true(wing::pool_key_equals(key1, key2), "Key1 equals Key2 with identical dimensions");
-        sub.assert_true(wing::pool_key_equals(key1, key_case), "Host matches case-insensitively");
-        sub.assert_false(wing::pool_key_equals(key1, key_port), "Port mismatch isolates socket group");
-        sub.assert_false(wing::pool_key_equals(key1, key_scheme), "Scheme mismatch isolates socket group");
-        sub.assert_false(wing::pool_key_equals(key1, key_h2c), "H2c plaintext scheme isolates socket group (CVE-2026-94441)");
-        sub.assert_false(wing::pool_key_equals(key_scheme, key_h2c), "Http and H2c schemes are strictly isolated");
-        sub.assert_false(wing::pool_key_equals(key1, key_proxy_socks), "Proxy chain mismatch isolates socket group");
-        sub.assert_false(wing::pool_key_equals(key_proxy_socks, key_proxy_http), "Different proxy protocols isolated");
-        sub.assert_false(wing::pool_key_equals(key1, key_priv), "Privacy mode mismatch isolates socket group");
-        sub.assert_false(wing::pool_key_equals(key1, key_doh), "Secure DNS policy mismatch isolates socket group");
-        sub.assert_false(wing::pool_key_equals(key1, key_cert), "Cert network fetch flag mismatch isolates socket group");
-        sub.assert_false(wing::pool_key_equals(key1, key_net), "Target network ID mismatch isolates socket group");
+        sub.assert_true(net::pool_key_equals(key1, key2), "Key1 equals Key2 with identical dimensions");
+        sub.assert_true(net::pool_key_equals(key1, key_case), "Host matches case-insensitively");
+        sub.assert_false(net::pool_key_equals(key1, key_port), "Port mismatch isolates socket group");
+        sub.assert_false(net::pool_key_equals(key1, key_scheme), "Scheme mismatch isolates socket group");
+        sub.assert_false(net::pool_key_equals(key1, key_h2c), "H2c plaintext scheme isolates socket group (CVE-2026-94441)");
+        sub.assert_false(net::pool_key_equals(key_scheme, key_h2c), "Http and H2c schemes are strictly isolated");
+        sub.assert_false(net::pool_key_equals(key1, key_proxy_socks), "Proxy chain mismatch isolates socket group");
+        sub.assert_false(net::pool_key_equals(key_proxy_socks, key_proxy_http), "Different proxy protocols isolated");
+        sub.assert_false(net::pool_key_equals(key1, key_priv), "Privacy mode mismatch isolates socket group");
+        sub.assert_false(net::pool_key_equals(key1, key_doh), "Secure DNS policy mismatch isolates socket group");
+        sub.assert_false(net::pool_key_equals(key1, key_cert), "Cert network fetch flag mismatch isolates socket group");
+        sub.assert_false(net::pool_key_equals(key1, key_net), "Target network ID mismatch isolates socket group");
 
-        let h1 = wing::pool_key_hash(key1);
-        let h2 = wing::pool_key_hash(key2);
-        let h_case = wing::pool_key_hash(key_case);
-        let h_port = wing::pool_key_hash(key_port);
-        let h_scheme = wing::pool_key_hash(key_scheme);
+        let h1 = net::pool_key_hash(key1);
+        let h2 = net::pool_key_hash(key2);
+        let h_case = net::pool_key_hash(key_case);
+        let h_port = net::pool_key_hash(key_port);
+        let h_scheme = net::pool_key_hash(key_scheme);
         sub.assert_eq(h1, h2, "Identical PoolKey produces identical hash");
         sub.assert_eq(h1, h_case, "Case-folded host produces identical hash");
         sub.assert_ne(h1, h_port, "Port difference changes hash");
@@ -626,17 +626,17 @@ fn test_pool_key_dimensions_and_isolation(t: lit::T&) {
     };
 
     t.run("Preconnect Scheme Normalization") { sub =>
-        sub.assert_true(wing::normalize_preconnect_scheme(wing::PoolScheme.Ws) == wing::PoolScheme.Http, "WS maps to HTTP");
-        sub.assert_true(wing::normalize_preconnect_scheme(wing::PoolScheme.Wss) == wing::PoolScheme.Https, "WSS maps to HTTPS");
-        sub.assert_true(wing::normalize_preconnect_scheme(wing::PoolScheme.Http) == wing::PoolScheme.Http, "HTTP preserved");
-        sub.assert_true(wing::normalize_preconnect_scheme(wing::PoolScheme.Https) == wing::PoolScheme.Https, "HTTPS preserved");
-        sub.assert_true(wing::normalize_preconnect_scheme(wing::PoolScheme.H2c) == wing::PoolScheme.H2c, "H2c preserved");
+        sub.assert_true(net::normalize_preconnect_scheme(net::PoolScheme.Ws) == net::PoolScheme.Http, "WS maps to HTTP");
+        sub.assert_true(net::normalize_preconnect_scheme(net::PoolScheme.Wss) == net::PoolScheme.Https, "WSS maps to HTTPS");
+        sub.assert_true(net::normalize_preconnect_scheme(net::PoolScheme.Http) == net::PoolScheme.Http, "HTTP preserved");
+        sub.assert_true(net::normalize_preconnect_scheme(net::PoolScheme.Https) == net::PoolScheme.Https, "HTTPS preserved");
+        sub.assert_true(net::normalize_preconnect_scheme(net::PoolScheme.H2c) == net::PoolScheme.H2c, "H2c preserved");
 
-        sub.assert_true(wing::is_cryptographic_scheme(wing::PoolScheme.Https), "HTTPS is cryptographic");
-        sub.assert_true(wing::is_cryptographic_scheme(wing::PoolScheme.Wss), "WSS is cryptographic");
-        sub.assert_false(wing::is_cryptographic_scheme(wing::PoolScheme.Http), "HTTP is not cryptographic");
-        sub.assert_false(wing::is_cryptographic_scheme(wing::PoolScheme.Ws), "WS is not cryptographic");
-        sub.assert_false(wing::is_cryptographic_scheme(wing::PoolScheme.H2c), "H2c is not cryptographic");
+        sub.assert_true(net::is_cryptographic_scheme(net::PoolScheme.Https), "HTTPS is cryptographic");
+        sub.assert_true(net::is_cryptographic_scheme(net::PoolScheme.Wss), "WSS is cryptographic");
+        sub.assert_false(net::is_cryptographic_scheme(net::PoolScheme.Http), "HTTP is not cryptographic");
+        sub.assert_false(net::is_cryptographic_scheme(net::PoolScheme.Ws), "WS is not cryptographic");
+        sub.assert_false(net::is_cryptographic_scheme(net::PoolScheme.H2c), "H2c is not cryptographic");
     };
 }
 
@@ -645,78 +645,78 @@ fn test_pool_key_dimensions_and_isolation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_want_queue_dual_slice(t: lit::T&) {
     t.run("FIFO Operations and Reallocation-Free Promotion") { sub =>
-        var q = wing::WantQueue { .. };
-        sub.assert_true(wing::is_queue_empty(q), "Initial queue is empty");
-        sub.assert_eq(wing::queue_len(q), 0, "Initial queue len is 0");
+        var q = net::WantQueue { .. };
+        sub.assert_true(net::is_queue_empty(q), "Initial queue is empty");
+        sub.assert_eq(net::queue_len(q), 0, "Initial queue len is 0");
 
-        let nak = wing::new_network_anonymization_key("https://origin.io");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "origin.io", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        let nak = net::new_network_anonymization_key("https://origin.io");
+        let key = net::new_pool_key(net::PoolScheme.Https, "origin.io", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
-        var w1 = wing::WantConn { req_id: 101, .. };
-        var w2 = wing::WantConn { req_id: 102, .. };
-        var w3 = wing::WantConn { req_id: 103, .. };
+        var w1 = net::WantConn { req_id: 101, .. };
+        var w2 = net::WantConn { req_id: 102, .. };
+        var w3 = net::WantConn { req_id: 103, .. };
 
-        sub.assert_true(wing::push_want(q, w1), "Pushed w1");
-        sub.assert_true(wing::push_want(q, w2), "Pushed w2");
-        sub.assert_true(wing::push_want(q, w3), "Pushed w3");
-        sub.assert_eq(wing::queue_len(q), 3, "Queue len == 3");
-        sub.assert_false(wing::is_queue_empty(q), "Queue is not empty");
+        sub.assert_true(net::push_want(q, w1), "Pushed w1");
+        sub.assert_true(net::push_want(q, w2), "Pushed w2");
+        sub.assert_true(net::push_want(q, w3), "Pushed w3");
+        sub.assert_eq(net::queue_len(q), 3, "Queue len == 3");
+        sub.assert_false(net::is_queue_empty(q), "Queue is not empty");
 
-        let p1, ok1 = wing::pop_want(q);
+        let p1, ok1 = net::pop_want(q);
         sub.assert_true(ok1 && p1.req_id == 101, "Popped w1 in FIFO order");
-        sub.assert_eq(wing::queue_len(q), 2, "Queue len == 2 after popping w1");
+        sub.assert_eq(net::queue_len(q), 2, "Queue len == 2 after popping w1");
 
         // Cancel w2 while still in queue
-        sub.assert_true(wing::cancel_want(q, 102), "Cancelled w2");
-        sub.assert_false(wing::cancel_want(q, 99999), "Non-existent request ID cancellation returns false");
+        sub.assert_true(net::cancel_want(q, 102), "Cancelled w2");
+        sub.assert_false(net::cancel_want(q, 99999), "Non-existent request ID cancellation returns false");
 
-        let p3, ok3 = wing::pop_want(q);
+        let p3, ok3 = net::pop_want(q);
         sub.assert_true(ok3 && p3.req_id == 103, "Popped w3, skipping cancelled w2");
-        sub.assert_eq(wing::queue_len(q), 0, "Queue len == 0 after skipping w2 and popping w3");
+        sub.assert_eq(net::queue_len(q), 0, "Queue len == 0 after skipping w2 and popping w3");
 
-        let p_none, ok_none = wing::pop_want(q);
+        let p_none, ok_none = net::pop_want(q);
         sub.assert_false(ok_none, "Queue exhausted");
-        sub.assert_true(wing::is_queue_empty(q), "Queue is empty when exhausted");
+        sub.assert_true(net::is_queue_empty(q), "Queue is empty when exhausted");
     };
 
     t.run("Tail-to-Head Compaction Under Sustained Load") { sub =>
-        var q = wing::WantQueue { .. };
-        let nak = wing::new_network_anonymization_key("https://origin.io");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "origin.io", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        var q = net::WantQueue { .. };
+        let nak = net::new_network_anonymization_key("https://origin.io");
+        let key = net::new_pool_key(net::PoolScheme.Https, "origin.io", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
         // Fill tail slice to maximum capacity (32 items)
         for i in 32 {
-            var item = wing::WantConn { req_id: (i + 1) as u64, .. };
-            let pushed = wing::push_want(q, item);
+            var item = net::WantConn { req_id: (i + 1) as u64, .. };
+            let pushed = net::push_want(q, item);
             sub.assert_true(pushed, "Pushed item into tail");
         }
-        sub.assert_eq(wing::queue_len(q), 32, "Queue filled with 32 items");
+        sub.assert_eq(net::queue_len(q), 32, "Queue filled with 32 items");
 
         // Pop 16 items: first pop transfers tail into head, then advances head_pos
         for i in 16 {
-            let item, ok = wing::pop_want(q);
+            let item, ok = net::pop_want(q);
             sub.assert_true(ok, "Popped item cleanly");
             sub.assert_eq(item.req_id, (i + 1) as u64, "Popped in strictly ascending FIFO order");
         }
-        sub.assert_eq(wing::queue_len(q), 16, "16 items remaining in head");
+        sub.assert_eq(net::queue_len(q), 16, "16 items remaining in head");
 
         // Push 16 more items into freshly empty tail slice
         for i in 16 {
-            var item = wing::WantConn { req_id: (100 + i) as u64, .. };
-            let pushed = wing::push_want(q, item);
+            var item = net::WantConn { req_id: (100 + i) as u64, .. };
+            let pushed = net::push_want(q, item);
             sub.assert_true(pushed, "Pushed into tail slice while head has items");
         }
-        sub.assert_eq(wing::queue_len(q), 32, "Queue has 16 in head + 16 in tail = 32 total");
+        sub.assert_eq(net::queue_len(q), 32, "Queue has 16 in head + 16 in tail = 32 total");
 
         // Pop remaining 16 from head
         for i in 16 {
-            let item, ok = wing::pop_want(q);
+            let item, ok = net::pop_want(q);
             sub.assert_true(ok, "Popped item from head");
             sub.assert_eq(item.req_id, (17 + i) as u64, "Expected head item id");
         }
 
         // Next pop triggers compaction of tail into head
-        let item100, ok100 = wing::pop_want(q);
+        let item100, ok100 = net::pop_want(q);
         sub.assert_true(ok100, "Popped first item from compacted tail");
         sub.assert_eq(item100.req_id, 100, "Compacted tail item preserved FIFO order");
     };
@@ -727,70 +727,70 @@ fn test_want_queue_dual_slice(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_connection_liveness_and_extensive_checks(t: lit::T&) {
     t.run("OkHttp isHealthy and Non-Blocking FIN Detection") { sub =>
-        let nak = wing::new_network_anonymization_key("https://example.com");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        let nak = net::new_network_anonymization_key("https://example.com");
+        let key = net::new_pool_key(net::PoolScheme.Https, "example.com", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
-        var conn = wing::PooledConnection {
+        var conn = net::PooledConnection {
             conn_id:            1,
             key:                copy(key),
-            protocol:           wing::NegotiatedProtocol.Http11,
+            protocol:           net::NegotiatedProtocol.Http11,
             active_allocations: 0,
             idle_at_ns:         1000000000, // Idle at 1.0s
             ..
         };
 
         // Within healthy threshold (500ms idle) -> healthy without extensive checks
-        sub.assert_true(wing::is_connection_healthy(conn, 1500000000, false), "Fresh idle connection is healthy");
+        sub.assert_true(net::is_connection_healthy(conn, 1500000000, false), "Fresh idle connection is healthy");
 
         // After healthy threshold (2.5s idle) without FIN -> healthy
-        sub.assert_true(wing::is_connection_healthy(conn, 3500000000, true), "Idle connection with open socket is healthy");
+        sub.assert_true(net::is_connection_healthy(conn, 3500000000, true), "Idle connection with open socket is healthy");
 
         // Remote closed socket (FIN received / source_exhausted)
         conn.source_exhausted = true;
-        sub.assert_false(wing::is_connection_healthy(conn, 3500000000, true), "Extensive check detects source_exhausted EOF/FIN");
+        sub.assert_false(net::is_connection_healthy(conn, 3500000000, true), "Extensive check detects source_exhausted EOF/FIN");
         sub.assert_true(conn.no_new_exchanges, "Connection marked no_new_exchanges on EOF");
         sub.assert_true(conn.closed, "Connection marked closed on EOF");
 
         // Already closed connection
-        sub.assert_false(wing::is_connection_healthy(conn, 3600000000, false), "Closed connection is unhealthy");
+        sub.assert_false(net::is_connection_healthy(conn, 3600000000, false), "Closed connection is unhealthy");
 
         // Remote RST received
-        var conn_rst = wing::PooledConnection {
+        var conn_rst = net::PooledConnection {
             conn_id:    2,
             key:        copy(key),
             remote_rst: true,
             ..
         };
-        sub.assert_false(wing::is_connection_healthy(conn_rst, 2000000000, false), "Connection with remote RST is unhealthy");
+        sub.assert_false(net::is_connection_healthy(conn_rst, 2000000000, false), "Connection with remote RST is unhealthy");
 
         // Marked no_new_exchanges (e.g. Connection: close header received)
-        var conn_no_new = wing::PooledConnection {
+        var conn_no_new = net::PooledConnection {
             conn_id:          3,
             key:              copy(key),
             no_new_exchanges: true,
             ..
         };
-        sub.assert_false(wing::is_connection_healthy(conn_no_new, 2000000000, false), "Connection with no_new_exchanges is unhealthy");
+        sub.assert_false(net::is_connection_healthy(conn_no_new, 2000000000, false), "Connection with no_new_exchanges is unhealthy");
 
         // Active multiplexed streams on HTTP/2 remain healthy while active
-        var conn_h2 = wing::PooledConnection {
+        var conn_h2 = net::PooledConnection {
             conn_id:            4,
             key:                copy(key),
-            protocol:           wing::NegotiatedProtocol.Http2,
+            protocol:           net::NegotiatedProtocol.Http2,
             active_allocations: 5,
             ..
         };
-        sub.assert_true(wing::is_connection_healthy(conn_h2, 5000000000, false), "Active HTTP/2 multiplexed stream is healthy");
+        sub.assert_true(net::is_connection_healthy(conn_h2, 5000000000, false), "Active HTTP/2 multiplexed stream is healthy");
 
         // Idle connection past 90 seconds timeout becomes unhealthy
-        var conn_idle_timeout = wing::PooledConnection {
+        var conn_idle_timeout = net::PooledConnection {
             conn_id:            5,
             key:                copy(key),
             active_allocations: 0,
             idle_at_ns:         1000000000,
             ..
         };
-        sub.assert_false(wing::is_connection_healthy(conn_idle_timeout, 96000000000, false), "Connection idle > 90s is unhealthy");
+        sub.assert_false(net::is_connection_healthy(conn_idle_timeout, 96000000000, false), "Connection idle > 90s is unhealthy");
         sub.assert_true(conn_idle_timeout.closed, "Expired idle connection marked closed");
     };
 }
@@ -800,20 +800,20 @@ fn test_connection_liveness_and_extensive_checks(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_http2_ip_coalescing_and_san_matching(t: lit::T&) {
     t.run("Chromium H2 IP Coalescing with Wildcard SAN & Security Boundaries") { sub =>
-        let nak = wing::new_network_anonymization_key("https://example.com");
-        let nak_other = wing::new_network_anonymization_key("https://other-site.com");
-        let key_a = wing::new_pool_key(wing::PoolScheme.Https, "alpha.example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
-        let key_b = wing::new_pool_key(wing::PoolScheme.Https, "beta.example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
-        let key_deep = wing::new_pool_key(wing::PoolScheme.Https, "sub.beta.example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
-        let key_apex = wing::new_pool_key(wing::PoolScheme.Https, "example.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
-        let key_unrelated = wing::new_pool_key(wing::PoolScheme.Https, "other.org", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
-        let key_nak_mismatch = wing::new_pool_key(wing::PoolScheme.Https, "beta.example.com", 443, wing::new_direct_proxy_chain(), nak_other, wing::TlsAndDnsPolicy { .. });
-        let key_http_plaintext = wing::new_pool_key(wing::PoolScheme.Http, "beta.example.com", 80, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        let nak = net::new_network_anonymization_key("https://example.com");
+        let nak_other = net::new_network_anonymization_key("https://other-site.com");
+        let key_a = net::new_pool_key(net::PoolScheme.Https, "alpha.example.com", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
+        let key_b = net::new_pool_key(net::PoolScheme.Https, "beta.example.com", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
+        let key_deep = net::new_pool_key(net::PoolScheme.Https, "sub.beta.example.com", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
+        let key_apex = net::new_pool_key(net::PoolScheme.Https, "example.com", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
+        let key_unrelated = net::new_pool_key(net::PoolScheme.Https, "other.org", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
+        let key_nak_mismatch = net::new_pool_key(net::PoolScheme.Https, "beta.example.com", 443, net::new_direct_proxy_chain(), nak_other, net::TlsAndDnsPolicy { .. });
+        let key_http_plaintext = net::new_pool_key(net::PoolScheme.Http, "beta.example.com", 80, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
-        var conn = wing::PooledConnection {
+        var conn = net::PooledConnection {
             conn_id:                10,
             key:                    copy(key_a),
-            protocol:               wing::NegotiatedProtocol.Http2,
+            protocol:               net::NegotiatedProtocol.Http2,
             max_concurrent_streams: 100,
             active_allocations:     1,
             cert_valid:             true,
@@ -828,42 +828,42 @@ fn test_http2_ip_coalescing_and_san_matching(t: lit::T&) {
         conn.san_hosts.push(san_wild);
 
         // 1. Target beta.example.com resolves to same IP 93.184.216.34 and matches *.example.com SAN
-        let can_coalesce_b, is_neg_b = wing::can_coalesce_h2_connection(conn, key_b, "93.184.216.34");
+        let can_coalesce_b, is_neg_b = net::can_coalesce_h2_connection(conn, key_b, "93.184.216.34");
         sub.assert_true(can_coalesce_b, "H2 connection coalesced for beta.example.com under *.example.com");
         sub.assert_false(is_neg_b, "Not a negative IP pool result");
 
         // 2. Wildcard boundary: multi-level subdomain (*.example.com must NOT match sub.beta.example.com)
-        let can_coalesce_deep, is_neg_deep = wing::can_coalesce_h2_connection(conn, key_deep, "93.184.216.34");
+        let can_coalesce_deep, is_neg_deep = net::can_coalesce_h2_connection(conn, key_deep, "93.184.216.34");
         sub.assert_false(can_coalesce_deep, "Wildcard *.example.com does NOT cover multi-level sub.beta.example.com");
         sub.assert_true(is_neg_deep, "Negative IP pool result recorded");
 
         // 3. Wildcard boundary: apex domain (*.example.com must NOT match example.com)
-        let can_coalesce_apex, is_neg_apex = wing::can_coalesce_h2_connection(conn, key_apex, "93.184.216.34");
+        let can_coalesce_apex, is_neg_apex = net::can_coalesce_h2_connection(conn, key_apex, "93.184.216.34");
         sub.assert_false(can_coalesce_apex, "Wildcard *.example.com does NOT cover apex domain example.com");
         sub.assert_true(is_neg_apex, "Negative IP pool result recorded");
 
         // 4. Target other.org resolves to same IP but SAN does NOT match
-        let can_coalesce_other, is_neg_other = wing::can_coalesce_h2_connection(conn, key_unrelated, "93.184.216.34");
+        let can_coalesce_other, is_neg_other = net::can_coalesce_h2_connection(conn, key_unrelated, "93.184.216.34");
         sub.assert_false(can_coalesce_other, "H2 connection rejected for unrelated domain");
         sub.assert_true(is_neg_other, "Recorded negative IP pool result for metric tracking");
 
         // 5. Partition isolation: NAK mismatch blocks coalescing even if IP and SAN match
-        let can_coalesce_nak, is_neg_nak = wing::can_coalesce_h2_connection(conn, key_nak_mismatch, "93.184.216.34");
+        let can_coalesce_nak, is_neg_nak = net::can_coalesce_h2_connection(conn, key_nak_mismatch, "93.184.216.34");
         sub.assert_false(can_coalesce_nak, "NAK cross-site partition mismatch blocks coalescing");
 
         // 6. Security invariant CVE-2026-94441: Scheme mismatch blocks coalescing
-        let can_coalesce_plain, is_neg_plain = wing::can_coalesce_h2_connection(conn, key_http_plaintext, "93.184.216.34");
+        let can_coalesce_plain, is_neg_plain = net::can_coalesce_h2_connection(conn, key_http_plaintext, "93.184.216.34");
         sub.assert_false(can_coalesce_plain, "Plaintext HTTP connection cannot coalesce with HTTPS (CVE-2026-94441)");
 
         // 7. Invalid certificate: cert_valid = false blocks coalescing
         var conn_bad_cert = copy(conn);
         conn_bad_cert.cert_valid = false;
-        let can_coalesce_cert, is_neg_cert = wing::can_coalesce_h2_connection(conn_bad_cert, key_b, "93.184.216.34");
+        let can_coalesce_cert, is_neg_cert = net::can_coalesce_h2_connection(conn_bad_cert, key_b, "93.184.216.34");
         sub.assert_false(can_coalesce_cert, "Invalid certificate blocks coalescing");
         sub.assert_true(is_neg_cert, "Recorded negative result on invalid certificate");
 
         // 8. IP mismatch: 93.184.216.34 vs 93.184.216.99
-        let can_coalesce_ip, is_neg_ip = wing::can_coalesce_h2_connection(conn, key_b, "93.184.216.99");
+        let can_coalesce_ip, is_neg_ip = net::can_coalesce_h2_connection(conn, key_b, "93.184.216.99");
         sub.assert_false(can_coalesce_ip, "Different IP address blocks coalescing");
     };
 }
@@ -873,51 +873,51 @@ fn test_http2_ip_coalescing_and_san_matching(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_stream_pool_quotas_and_eviction(t: lit::T&) {
     t.run("Soft-Cap LRU Eviction and Priority Reuse") { sub =>
-        var pool = wing::new_stream_pool(6, 32, 2); // Soft-cap of 2 connections
-        let nak = wing::new_network_anonymization_key("https://service.net");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "service.net", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        var pool = net::new_stream_pool(6, 32, 2); // Soft-cap of 2 connections
+        let nak = net::new_network_anonymization_key("https://service.net");
+        let key = net::new_pool_key(net::PoolScheme.Https, "service.net", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
         // Add 2 connections
-        let c1 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "1.1.1.1", 1, 1000000);
-        let c2 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "1.1.1.1", 1, 2000000);
+        let c1 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "1.1.1.1", 1, 1000000);
+        let c2 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "1.1.1.1", 1, 2000000);
 
         // Release c1 at t=3.0s, making it idle
-        wing::release_connection(pool, c1, 3000000000);
+        net::release_connection(pool, c1, 3000000000);
         let grp_idx = pool.find_group_index(key);
         sub.assert_true(grp_idx >= 0, "Group index exists");
         sub.assert_eq(pool.groups[grp_idx].active_conns, 1, "1 active conn in group");
         sub.assert_eq(pool.groups[grp_idx].idle_conns, 1, "1 idle conn in group");
 
         // Adding 3rd connection exceeds soft-cap (2) -> triggers eviction of oldest idle (c1)
-        let c3 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "1.1.1.1", 1, 4000000);
+        let c3 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "1.1.1.1", 1, 4000000);
 
         sub.assert_true(pool.conns[0].closed, "Oldest idle connection c1 was evicted");
         sub.assert_eq(c3, 3, "New connection c3 registered successfully");
 
         // OkHttp Priority Rule: acquire_pooled_connection prefers healthy pooled connection
-        let acquired_id, ok_acq = wing::acquire_pooled_connection(pool, key, "1.1.1.1", 5000000000);
+        let acquired_id, ok_acq = net::acquire_pooled_connection(pool, key, "1.1.1.1", 5000000000);
         // c2 was active with allocation 1, but c3 was active with allocation 1. If we release c2:
-        wing::release_connection(pool, c2, 4500000000);
-        let acquired_c2, ok_c2 = wing::acquire_pooled_connection(pool, key, "1.1.1.1", 5000000000);
+        net::release_connection(pool, c2, 4500000000);
+        let acquired_c2, ok_c2 = net::acquire_pooled_connection(pool, key, "1.1.1.1", 5000000000);
         sub.assert_true(ok_c2 && acquired_c2 == c2, "Reused pooled connection c2 over new dial");
 
         // Multiple releases do not corrupt active allocations count below 0
-        wing::release_connection(pool, c2, 5000000000);
+        net::release_connection(pool, c2, 5000000000);
         sub.assert_eq(pool.conns[1].active_allocations, 0, "Active allocations clamped to 0");
     };
 
     t.run("Active Connections Immune to Soft-Cap Eviction") { sub =>
-        var pool = wing::new_stream_pool(6, 32, 2);
-        let nak = wing::new_network_anonymization_key("https://busy.net");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "busy.net", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        var pool = net::new_stream_pool(6, 32, 2);
+        let nak = net::new_network_anonymization_key("https://busy.net");
+        let key = net::new_pool_key(net::PoolScheme.Https, "busy.net", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
         // Register 2 connections and keep both active (active_allocations == 1)
-        let c1 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "2.2.2.2", 1, 1000000);
-        let c2 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "2.2.2.2", 1, 2000000);
+        let c1 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "2.2.2.2", 1, 1000000);
+        let c2 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "2.2.2.2", 1, 2000000);
 
         // Neither is released, so both have active_allocations = 1.
         // Registering a 3rd connection exceeds soft-cap (2), but neither can be evicted because both are active!
-        let c3 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "2.2.2.2", 1, 3000000);
+        let c3 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "2.2.2.2", 1, 3000000);
 
         sub.assert_false(pool.conns[0].closed, "Active connection c1 not evicted");
         sub.assert_false(pool.conns[1].closed, "Active connection c2 not evicted");
@@ -930,28 +930,28 @@ fn test_stream_pool_quotas_and_eviction(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_2026_56866_connect_rejection_pool_safety(t: lit::T&) {
     t.run("CVE-2026-56866: Rejected CONNECT Sockets Must Never Be Returned to Pool") { sub =>
-        let nak = wing::new_network_anonymization_key("https://proxy-target.com");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "proxy-target.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        let nak = net::new_network_anonymization_key("https://proxy-target.com");
+        let key = net::new_pool_key(net::PoolScheme.Https, "proxy-target.com", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
         // Simulate a socket where CONNECT tunnel was rejected (e.g. 407 Proxy Auth or 502 Bad Gateway)
-        var failed_tunnel_conn = wing::PooledConnection {
+        var failed_tunnel_conn = net::PooledConnection {
             conn_id:          101,
             key:              copy(key),
-            protocol:         wing::NegotiatedProtocol.Http11,
+            protocol:         net::NegotiatedProtocol.Http11,
             no_new_exchanges: true, // Marked immediately on CONNECT rejection
             closed:           true, // Marked closed to prevent reuse
             ..
         };
 
         // Liveness check must immediately report unhealthy
-        let healthy = wing::is_connection_healthy(failed_tunnel_conn, 2000000000, false);
+        let healthy = net::is_connection_healthy(failed_tunnel_conn, 2000000000, false);
         sub.assert_false(healthy, "Rejected CONNECT connection is strictly unhealthy");
 
         // Attempting to acquire from a pool containing closed/no_new_exchanges connection must fail
-        var pool = wing::new_stream_pool(6, 32, 10);
+        var pool = net::new_stream_pool(6, 32, 10);
         pool.conns.push(failed_tunnel_conn);
 
-        let acq_id, ok_acq = wing::acquire_pooled_connection(pool, key, "", 2500000000);
+        let acq_id, ok_acq = net::acquire_pooled_connection(pool, key, "", 2500000000);
         sub.assert_false(ok_acq, "Acquire never returns a rejected CONNECT socket (prevents response desync)");
     };
 }
@@ -973,12 +973,12 @@ fn test_poller_creation_and_lifecycle(t: lit::T&) {
         var cfg = net_internal::auto_transport_driver_config();
         cfg.active_kind = net_internal::TransportDriverKind.Standard;
 
-        var poller = wing::new_poller(cfg);
+        var poller = net::new_poller(cfg);
         sub.assert_true(poller.is_open, "Poller is open");
         sub.assert_eq(poller.active_fd_count, 0, "No active fds initially");
         sub.assert_eq(poller.active_timer_count, 0, "No active timers initially");
 
-        wing::close_poller(poller);
+        net::close_poller(poller);
         sub.assert_false(poller.is_open, "Poller closed cleanly");
     };
 
@@ -986,14 +986,14 @@ fn test_poller_creation_and_lifecycle(t: lit::T&) {
         let plat = net_internal::detect_target_platform();
         var cfg = net_internal::auto_transport_driver_config();
 
-        var poller = wing::new_poller(cfg);
+        var poller = net::new_poller(cfg);
         sub.assert_true(poller.is_open, "Poller created successfully with auto-selected driver");
 
         if plat == net_internal::TargetPlatform.Windows && cfg.active_kind == net_internal::TransportDriverKind.WindowsRIO {
             sub.assert_true(poller.rio_cq_id != 0, "Windows RIO completion queue initialized");
         }
 
-        wing::close_poller(poller);
+        net::close_poller(poller);
         sub.assert_false(poller.is_open, "Poller closed");
     };
 }
@@ -1003,46 +1003,46 @@ fn test_poller_creation_and_lifecycle(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_poller_registration_and_readiness(t: lit::T&) {
     var cfg = net_internal::auto_transport_driver_config();
-    var poller = wing::new_poller(cfg);
+    var poller = net::new_poller(cfg);
 
     t.run("Registration Table: Add, Duplicate Guard, Modify, Deregister") { sub =>
         // Register fd 10
-        let ok_reg = wing::register_socket(poller, 10, 1001, core::PollInterest.Read, core::PollTrigger.Level);
+        let ok_reg = net::register_socket(poller, 10, 1001, core::PollInterest.Read, core::PollTrigger.Level);
         sub.assert_true(ok_reg, "Socket 10 registered");
         sub.assert_eq(poller.active_fd_count, 1, "1 active fd");
 
         // Duplicate registration rejected
-        let dup_reg = wing::register_socket(poller, 10, 1002, core::PollInterest.Write, core::PollTrigger.Level);
+        let dup_reg = net::register_socket(poller, 10, 1002, core::PollInterest.Write, core::PollTrigger.Level);
         sub.assert_false(dup_reg, "Duplicate fd 10 registration rejected");
 
         // Modify interest to ReadWrite
-        let ok_mod = wing::modify_socket(poller, 10, 1001, core::PollInterest.ReadWrite, core::PollTrigger.Edge);
+        let ok_mod = net::modify_socket(poller, 10, 1001, core::PollInterest.ReadWrite, core::PollTrigger.Edge);
         sub.assert_true(ok_mod, "Socket 10 modified");
 
-        let idx = wing::find_registration(poller, 10);
+        let idx = net::find_registration(poller, 10);
         sub.assert_true(idx >= 0, "Socket 10 found");
         sub.assert_eq(poller.registrations[idx].interest, core::PollInterest.ReadWrite, "Interest is ReadWrite");
         sub.assert_eq(poller.registrations[idx].trigger, core::PollTrigger.Edge, "Trigger is Edge");
 
         // Deregister
-        let ok_dereg = wing::deregister_socket(poller, 10);
+        let ok_dereg = net::deregister_socket(poller, 10);
         sub.assert_true(ok_dereg, "Socket 10 deregistered");
         sub.assert_eq(poller.active_fd_count, 0, "0 active fds");
-        sub.assert_eq(wing::find_registration(poller, 10), -1, "Socket 10 no longer found");
+        sub.assert_eq(net::find_registration(poller, 10), -1, "Socket 10 no longer found");
     };
 
     t.run("Readiness Multiplexing: Read, Write, Error, Hangup") { sub =>
-        wing::register_socket(poller, 20, 2001, core::PollInterest.Read, core::PollTrigger.Level);
-        wing::register_socket(poller, 21, 2002, core::PollInterest.Write, core::PollTrigger.Level);
-        wing::register_socket(poller, 22, 2003, core::PollInterest.ReadWrite, core::PollTrigger.Level);
+        net::register_socket(poller, 20, 2001, core::PollInterest.Read, core::PollTrigger.Level);
+        net::register_socket(poller, 21, 2002, core::PollInterest.Write, core::PollTrigger.Level);
+        net::register_socket(poller, 22, 2003, core::PollInterest.ReadWrite, core::PollTrigger.Level);
 
         // Simulate events
-        wing::simulate_read_ready(poller, 20, 512); // fd 20 has 512 bytes unread
-        wing::simulate_write_ready(poller, 21);      // fd 21 ready to write
-        wing::simulate_hangup(poller, 22);           // fd 22 hangup/EOF
+        net::simulate_read_ready(poller, 20, 512); // fd 20 has 512 bytes unread
+        net::simulate_write_ready(poller, 21);      // fd 21 ready to write
+        net::simulate_hangup(poller, 22);           // fd 22 hangup/EOF
 
         var events: core::PollReadyEvent[..64] = [];
-        let count = wing::poll_events(poller, 0, 1000000000, events);
+        let count = net::poll_events(poller, 0, 1000000000, events);
 
         sub.assert_eq(count, 3, "3 readiness events harvested");
 
@@ -1074,12 +1074,12 @@ fn test_poller_registration_and_readiness(t: lit::T&) {
         sub.assert_true(found_21, "fd 21 event processed");
         sub.assert_true(found_22, "fd 22 event processed");
 
-        wing::deregister_socket(poller, 20);
-        wing::deregister_socket(poller, 21);
-        wing::deregister_socket(poller, 22);
+        net::deregister_socket(poller, 20);
+        net::deregister_socket(poller, 21);
+        net::deregister_socket(poller, 22);
     };
 
-    wing::close_poller(poller);
+    net::close_poller(poller);
 }
 
 // ----------------------------------------------------------------------------
@@ -1087,23 +1087,23 @@ fn test_poller_registration_and_readiness(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_poller_timer_wheel(t: lit::T&) {
     var cfg = net_internal::auto_transport_driver_config();
-    var poller = wing::new_poller(cfg);
+    var poller = net::new_poller(cfg);
 
     t.run("One-shot Timer Expiration") { sub =>
         let now_ns: u64 = 1000000000; // 1.0s
         // Schedule one-shot timer for 50ms (deadline 1.05s)
-        let ok_add = wing::add_timer(poller, 101, 50, 9101, false, now_ns);
+        let ok_add = net::add_timer(poller, 101, 50, 9101, false, now_ns);
         sub.assert_true(ok_add, "Timer 101 added");
         sub.assert_eq(poller.active_timer_count, 1, "1 active timer");
 
         // Poll at 1.04s (40ms elapsed) -> timer should NOT fire
         var events40: core::PollReadyEvent[..64] = [];
-        let c40 = wing::poll_events(poller, 0, now_ns + 40000000, events40);
+        let c40 = net::poll_events(poller, 0, now_ns + 40000000, events40);
         sub.assert_eq(c40, 0, "Timer not yet expired at 40ms");
 
         // Poll at 1.06s (60ms elapsed) -> timer should fire!
         var events60: core::PollReadyEvent[..64] = [];
-        let c60 = wing::poll_events(poller, 0, now_ns + 60000000, events60);
+        let c60 = net::poll_events(poller, 0, now_ns + 60000000, events60);
         sub.assert_eq(c60, 1, "Timer fired at 60ms");
         sub.assert_eq(events60[0].tag, 9101, "Timer tag matches");
         sub.assert_true(events60[0].is_timer, "is_timer flag is true");
@@ -1114,18 +1114,18 @@ fn test_poller_timer_wheel(t: lit::T&) {
 
         // Subsequent poll should not fire
         var events70: core::PollReadyEvent[..64] = [];
-        let c70 = wing::poll_events(poller, 0, now_ns + 70000000, events70);
+        let c70 = net::poll_events(poller, 0, now_ns + 70000000, events70);
         sub.assert_eq(c70, 0, "No duplicate timer triggers");
     };
 
     t.run("Periodic Timer & Cancellation") { sub =>
         let now_ns: u64 = 1000000000;
         // Schedule periodic timer every 100ms
-        wing::add_timer(poller, 202, 100, 9202, true, now_ns);
+        net::add_timer(poller, 202, 100, 9202, true, now_ns);
 
         // 1st tick at 110ms
         var ev1: core::PollReadyEvent[..64] = [];
-        let c1 = wing::poll_events(poller, 0, now_ns + 110000000, ev1);
+        let c1 = net::poll_events(poller, 0, now_ns + 110000000, ev1);
         sub.assert_eq(c1, 1, "1st tick fired");
         sub.assert_eq(ev1[0].tag, 9202, "Tag matches");
 
@@ -1134,72 +1134,72 @@ fn test_poller_timer_wheel(t: lit::T&) {
 
         // 2nd tick at 220ms
         var ev2: core::PollReadyEvent[..64] = [];
-        let c2 = wing::poll_events(poller, 0, now_ns + 220000000, ev2);
+        let c2 = net::poll_events(poller, 0, now_ns + 220000000, ev2);
         sub.assert_eq(c2, 1, "2nd tick fired");
 
         // Cancel timer
-        let ok_cancel = wing::cancel_timer(poller, 202);
+        let ok_cancel = net::cancel_timer(poller, 202);
         sub.assert_true(ok_cancel, "Timer cancelled");
         sub.assert_eq(poller.active_timer_count, 0, "0 active timers");
 
         // 3rd tick should NOT fire after cancellation
         var ev3: core::PollReadyEvent[..64] = [];
-        let c3 = wing::poll_events(poller, 0, now_ns + 330000000, ev3);
+        let c3 = net::poll_events(poller, 0, now_ns + 330000000, ev3);
         sub.assert_eq(c3, 0, "No tick after cancellation");
     };
 
-    wing::close_poller(poller);
+    net::close_poller(poller);
 }
 
 // ----------------------------------------------------------------------------
 // 18. Non-blocking EventLoop I/O
 // ----------------------------------------------------------------------------
-fn dummy_event_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::EventLoop&) {
+fn dummy_event_handler(tag: u64, ev: const core::PollReadyEvent&, el: net::EventLoop&) {
     if tag == 5001 {
         if (ev.events & core::POLL_READ) != 0 {
             var msg_buf: u8[..64] = [];
-            wing::consume_read(el, tag, msg_buf);
+            net::consume_read(el, tag, msg_buf);
             // Echo back with prefix "ACK:"
             var reply: u8[..64] = "ACK:";
             reply.append(msg_buf[..]);
-            wing::queue_write(el, tag, reply[..]);
+            net::queue_write(el, tag, reply[..]);
         }
     }
 }
 
 fn test_event_loop_io(t: lit::T&) {
     var cfg = net_internal::auto_transport_driver_config();
-    var el = wing::new_event_loop(cfg);
+    var el = net::new_event_loop(cfg);
 
     t.run("Bind Connection, Queue Write, Feed Read & Consume") { sub =>
-        let ok_bind = wing::bind_connection(el, 30, 5001, core::PollInterest.ReadWrite);
+        let ok_bind = net::bind_connection(el, 30, 5001, core::PollInterest.ReadWrite);
         sub.assert_true(ok_bind, "Connection 5001 bound");
 
         // Feed incoming data
-        let ok_feed = wing::feed_read(el, 5001, "REQUEST_DATA_01");
+        let ok_feed = net::feed_read(el, 5001, "REQUEST_DATA_01");
         sub.assert_true(ok_feed, "Data fed into read buffer");
 
         // Run event loop once
-        let dispatched = wing::run_loop_once(el, 0, 1000000000, dummy_event_handler);
+        let dispatched = net::run_loop_once(el, 0, 1000000000, dummy_event_handler);
         sub.assert_eq(dispatched, 1, "1 event dispatched in loop");
         sub.assert_eq(el.iteration_count, 1, "Iteration count is 1");
         sub.assert_eq(el.events_dispatched_total, 1, "1 total dispatched event");
 
         // The handler consumed the read and queued an "ACK:REQUEST_DATA_01" response
-        let b_idx = wing::find_connection_buffer(el, 5001);
+        let b_idx = net::find_connection_buffer(el, 5001);
         sub.assert_true(b_idx >= 0, "Buffer found");
         sub.assert_bytes_eq(el.buffers[b_idx].write_buf[..], "ACK:REQUEST_DATA_01", "Outbound reply queued");
 
         // Flush writes
-        let flushed = wing::flush_writes(el, 5001);
+        let flushed = net::flush_writes(el, 5001);
         sub.assert_eq(flushed, 19, "Flushed 19 bytes");
         sub.assert_eq(el.buffers[b_idx].write_buf.len, 0, "Write buffer cleared");
 
         // Unbind
-        sub.assert_true(wing::unbind_connection(el, 5001), "Unbound");
+        sub.assert_true(net::unbind_connection(el, 5001), "Unbound");
     };
 
-    wing::close_event_loop(el);
+    net::close_event_loop(el);
 }
 
 // ----------------------------------------------------------------------------
@@ -1208,21 +1208,21 @@ fn test_event_loop_io(t: lit::T&) {
 var g_server_received: u8[..64] = [];
 var g_client_received: u8[..64] = [];
 
-fn bidi_network_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::EventLoop&) {
+fn bidi_network_handler(tag: u64, ev: const core::PollReadyEvent&, el: net::EventLoop&) {
     if tag == 6001 { // Server connection
         if (ev.events & core::POLL_READ) != 0 {
             var buf: u8[..64] = [];
-            wing::consume_read(el, tag, buf);
+            net::consume_read(el, tag, buf);
             g_server_received.clear();
             g_server_received.append(buf[..]);
 
             // Server responds
-            wing::queue_write(el, tag, "SERVER_OK");
+            net::queue_write(el, tag, "SERVER_OK");
         }
     } else if tag == 6002 { // Client connection
         if (ev.events & core::POLL_READ) != 0 {
             var buf: u8[..64] = [];
-            wing::consume_read(el, tag, buf);
+            net::consume_read(el, tag, buf);
             g_client_received.clear();
             g_client_received.append(buf[..]);
         }
@@ -1231,40 +1231,40 @@ fn bidi_network_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::Eve
 
 fn test_bidi_client_server_cycle(t: lit::T&) {
     var cfg = net_internal::auto_transport_driver_config();
-    var el = wing::new_event_loop(cfg);
+    var el = net::new_event_loop(cfg);
 
     t.run("Complete Non-blocking Bidi Request-Response Roundtrip") { sub =>
         g_server_received.clear();
         g_client_received.clear();
 
-        wing::bind_connection(el, 40, 6001, core::PollInterest.ReadWrite); // Server
-        wing::bind_connection(el, 41, 6002, core::PollInterest.ReadWrite); // Client
+        net::bind_connection(el, 40, 6001, core::PollInterest.ReadWrite); // Server
+        net::bind_connection(el, 41, 6002, core::PollInterest.ReadWrite); // Client
 
         // 1. Client sends request to Server
-        wing::feed_read(el, 6001, "PING_FROM_CLIENT");
+        net::feed_read(el, 6001, "PING_FROM_CLIENT");
 
         // 2. EventLoop Step 1: Server receives request and queues response
-        wing::run_loop_once(el, 0, 1000000000, bidi_network_handler);
+        net::run_loop_once(el, 0, 1000000000, bidi_network_handler);
 
         sub.assert_bytes_eq(g_server_received[..], "PING_FROM_CLIENT", "Server processed request");
 
         // 3. Network forwards Server's outbound response to Client's inbound buffer
-        let s_idx = wing::find_connection_buffer(el, 6001);
+        let s_idx = net::find_connection_buffer(el, 6001);
         let s_out = el.buffers[s_idx].write_buf[..];
         sub.assert_bytes_eq(s_out, "SERVER_OK", "Server queued reply");
-        wing::feed_read(el, 6002, s_out);
-        wing::flush_writes(el, 6001);
+        net::feed_read(el, 6002, s_out);
+        net::flush_writes(el, 6001);
 
         // 4. EventLoop Step 2: Client receives Server's response
-        wing::run_loop_once(el, 0, 1000001000, bidi_network_handler);
+        net::run_loop_once(el, 0, 1000001000, bidi_network_handler);
 
         sub.assert_bytes_eq(g_client_received[..], "SERVER_OK", "Client received server reply");
 
-        wing::unbind_connection(el, 6001);
-        wing::unbind_connection(el, 6002);
+        net::unbind_connection(el, 6001);
+        net::unbind_connection(el, 6002);
     };
 
-    wing::close_event_loop(el);
+    net::close_event_loop(el);
 }
 
 // ----------------------------------------------------------------------------
@@ -1272,66 +1272,66 @@ fn test_bidi_client_server_cycle(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_coarse_socket_timeouts(t: lit::T&) {
     var cfg = net_internal::auto_transport_driver_config();
-    var poller = wing::new_poller(cfg);
+    var poller = net::new_poller(cfg);
 
     t.run("Coarse 4-second Socket Timeout Expiry & Cancellation") { sub =>
         let now_ns: u64 = 1000000000; // 1.0s
-        wing::register_socket(poller, 50, 7001, core::PollInterest.Read, core::PollTrigger.Level);
+        net::register_socket(poller, 50, 7001, core::PollInterest.Read, core::PollTrigger.Level);
 
         // Initial timeout is disabled (255)
-        sub.assert_eq(wing::get_socket_timeout(poller, 50), wing::COARSE_TIMEOUT_DISABLED, "Timeout disabled initially");
+        sub.assert_eq(net::get_socket_timeout(poller, 50), net::COARSE_TIMEOUT_DISABLED, "Timeout disabled initially");
 
         // Set 4-second timeout (1 tick ahead)
-        let ok_set = wing::set_socket_timeout(poller, 50, 4);
+        let ok_set = net::set_socket_timeout(poller, 50, 4);
         sub.assert_true(ok_set, "Set 4s coarse timeout");
-        sub.assert_true(wing::get_socket_timeout(poller, 50) != wing::COARSE_TIMEOUT_DISABLED, "Timeout tick armed");
+        sub.assert_true(net::get_socket_timeout(poller, 50) != net::COARSE_TIMEOUT_DISABLED, "Timeout tick armed");
 
         // First poll: initial anchor (delta 0s)
         var evs1: core::PollReadyEvent[..64] = [];
-        let c1 = wing::poll_events(poller, 0, now_ns, evs1);
+        let c1 = net::poll_events(poller, 0, now_ns, evs1);
         sub.assert_eq(c1, 0, "No events at initial poll");
 
         // Second poll: +2.0s (less than 4s threshold)
         var evs2: core::PollReadyEvent[..64] = [];
-        let c2 = wing::poll_events(poller, 0, now_ns + 2000000000, evs2);
+        let c2 = net::poll_events(poller, 0, now_ns + 2000000000, evs2);
         sub.assert_eq(c2, 0, "No timeout event before 4 seconds");
 
         // Third poll: +4.1s (4-second boundary crossed, tick matches)
         var evs3: core::PollReadyEvent[..64] = [];
-        let c3 = wing::poll_events(poller, 0, now_ns + 4100000000, evs3);
+        let c3 = net::poll_events(poller, 0, now_ns + 4100000000, evs3);
         sub.assert_eq(c3, 1, "Coarse timeout event fired at 4s boundary");
         sub.assert_true(evs3[0].is_timer, "Event is marked as timer");
         sub.assert_eq(evs3[0].tag, 7001, "Event tag matches socket 50 tag");
         sub.assert_eq(evs3[0].fd, 50, "Event fd matches socket 50");
-        sub.assert_eq(wing::get_socket_timeout(poller, 50), wing::COARSE_TIMEOUT_DISABLED, "Timeout reset to disabled after firing");
+        sub.assert_eq(net::get_socket_timeout(poller, 50), net::COARSE_TIMEOUT_DISABLED, "Timeout reset to disabled after firing");
 
         // Arm and cancel with seconds = 0
-        wing::set_socket_timeout(poller, 50, 16);
-        sub.assert_true(wing::get_socket_timeout(poller, 50) != wing::COARSE_TIMEOUT_DISABLED, "Armed 16s timeout");
-        wing::set_socket_timeout(poller, 50, 0); // Disable
-        sub.assert_eq(wing::get_socket_timeout(poller, 50), wing::COARSE_TIMEOUT_DISABLED, "Disabled via seconds=0");
+        net::set_socket_timeout(poller, 50, 16);
+        sub.assert_true(net::get_socket_timeout(poller, 50) != net::COARSE_TIMEOUT_DISABLED, "Armed 16s timeout");
+        net::set_socket_timeout(poller, 50, 0); // Disable
+        sub.assert_eq(net::get_socket_timeout(poller, 50), net::COARSE_TIMEOUT_DISABLED, "Disabled via seconds=0");
 
-        wing::deregister_socket(poller, 50);
+        net::deregister_socket(poller, 50);
     };
 
     t.run("Multi-Tick Jump Expiry Without Skips (elapsed_ticks > 1)") { sub =>
         let now_ns: u64 = 10000000000; // 10.0s
-        wing::register_socket(poller, 60, 8001, core::PollInterest.Read, core::PollTrigger.Level);
+        net::register_socket(poller, 60, 8001, core::PollInterest.Read, core::PollTrigger.Level);
 
         // Arm timeout for 4 seconds (target = current_tick + 1)
-        wing::set_socket_timeout(poller, 60, 4);
+        net::set_socket_timeout(poller, 60, 4);
 
         // Advance poll by 12 seconds (elapsed_ticks = 3, skips over tick + 1)
         var evs: core::PollReadyEvent[..64] = [];
-        let fired = wing::poll_events(poller, 0, now_ns + 12000000000, evs);
+        let fired = net::poll_events(poller, 0, now_ns + 12000000000, evs);
         sub.assert_eq(fired, 1, "Coarse timeout fired even when time jumped 3 ticks ahead");
         sub.assert_true(evs[0].is_timer, "Event is marked as timer");
         sub.assert_eq(evs[0].fd, 60, "Event fd matches socket 60");
 
-        wing::deregister_socket(poller, 60);
+        net::deregister_socket(poller, 60);
     };
 
-    wing::close_poller(poller);
+    net::close_poller(poller);
 }
 
 // --- Component: net_happy_eyeballs ---
@@ -1345,38 +1345,38 @@ fn test_coarse_socket_timeouts(t: lit::T&) {
 fn test_cad_calculation_and_absolute_floor(t: lit::T&) {
     t.run("CAD Clamping and Strict Absolute Floor >= 10 ms") { sub =>
         // Default when RTT is unknown: 250 ms
-        let cad_default = wing::compute_effective_cad_ms(0, false);
+        let cad_default = net::compute_effective_cad_ms(0, false);
         sub.assert_eq(cad_default, 250, "Default CAD is 250 ms (RFC 8305)");
 
         // Observed RTT within normal window [100 ms, 2000 ms]
-        let cad_normal = wing::compute_effective_cad_ms(180, true);
+        let cad_normal = net::compute_effective_cad_ms(180, true);
         sub.assert_eq(cad_normal, 180, "Observed RTT 180 ms preserved");
 
         // Observed RTT below recommended minimum 100 ms
-        let cad_clamped_min = wing::compute_effective_cad_ms(45, true, 100, 2000);
+        let cad_clamped_min = net::compute_effective_cad_ms(45, true, 100, 2000);
         sub.assert_eq(cad_clamped_min, 100, "RTT 45 ms clamped to min 100 ms");
 
         // Observed RTT above max 2000 ms
-        let cad_clamped_max = wing::compute_effective_cad_ms(4500, true, 100, 2000);
+        let cad_clamped_max = net::compute_effective_cad_ms(4500, true, 100, 2000);
         sub.assert_eq(cad_clamped_max, 2000, "RTT 4500 ms clamped to max 2000 ms");
 
         // Normative safety barrier: MUST NOT be less than 10 ms even with caller override
-        let cad_floor1 = wing::compute_effective_cad_ms(2, true, 4, 1000);
+        let cad_floor1 = net::compute_effective_cad_ms(2, true, 4, 1000);
         sub.assert_eq(cad_floor1, 10, "CAD strictly clamped to absolute floor >= 10 ms");
 
         // 0 ms RTT (e.g. localhost or loopback)
-        let cad_zero = wing::compute_effective_cad_ms(0, true, 0, 1000);
+        let cad_zero = net::compute_effective_cad_ms(0, true, 0, 1000);
         sub.assert_eq(cad_zero, 10, "0 ms RTT clamped to 10 ms absolute floor");
 
         // Negative RTT (clock jump backwards or uncalibrated timer)
-        let cad_neg = wing::compute_effective_cad_ms(-250, true, 0, 1000);
+        let cad_neg = net::compute_effective_cad_ms(-250, true, 0, 1000);
         sub.assert_eq(cad_neg, 10, "Negative RTT clamped safely to 10 ms absolute floor");
 
         // Custom bounds [500 ms, 1500 ms]
-        let cad_custom = wing::compute_effective_cad_ms(200, true, 500, 1500);
+        let cad_custom = net::compute_effective_cad_ms(200, true, 500, 1500);
         sub.assert_eq(cad_custom, 500, "Custom min 500 ms applied");
 
-        let cad_custom_high = wing::compute_effective_cad_ms(1800, true, 500, 1500);
+        let cad_custom_high = net::compute_effective_cad_ms(1800, true, 500, 1500);
         sub.assert_eq(cad_custom_high, 1500, "Custom max 1500 ms applied");
     };
 }
@@ -1386,98 +1386,98 @@ fn test_cad_calculation_and_absolute_floor(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc6724_and_hev3_interleaving(t: lit::T&) {
     t.run("First Address Family Count = 1 Interleaving Matrix") { sub =>
-        var ipv6_list: wing::DnsCandidate[..8] = [];
-        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
-        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
+        var ipv6_list: net::DnsCandidate[..8] = [];
+        ipv6_list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443));
+        ipv6_list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::2", 443));
 
-        var ipv4_list: wing::DnsCandidate[..8] = [];
-        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
-        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.2", 443));
+        var ipv4_list: net::DnsCandidate[..8] = [];
+        ipv4_list.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.1", 443));
+        ipv4_list.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.2", 443));
 
-        var interleaved: wing::DnsCandidate[..32] = [];
-        wing::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
+        var interleaved: net::DnsCandidate[..32] = [];
+        net::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
 
         sub.assert_eq(interleaved.len, 4, "4 candidates interleaved");
-        sub.assert_true(interleaved[0].family == wing::AddressFamily.IPv6, "Candidate 0 is IPv6_1");
-        sub.assert_true(interleaved[1].family == wing::AddressFamily.IPv4, "Candidate 1 is IPv4_1");
-        sub.assert_true(interleaved[2].family == wing::AddressFamily.IPv6, "Candidate 2 is IPv6_2");
-        sub.assert_true(interleaved[3].family == wing::AddressFamily.IPv4, "Candidate 3 is IPv4_2");
+        sub.assert_true(interleaved[0].family == net::AddressFamily.IPv6, "Candidate 0 is IPv6_1");
+        sub.assert_true(interleaved[1].family == net::AddressFamily.IPv4, "Candidate 1 is IPv4_1");
+        sub.assert_true(interleaved[2].family == net::AddressFamily.IPv6, "Candidate 2 is IPv6_2");
+        sub.assert_true(interleaved[3].family == net::AddressFamily.IPv4, "Candidate 3 is IPv4_2");
     };
 
     t.run("Asymmetric Candidate Interleaving (IPv6 Heavily Dominates)") { sub =>
-        var ipv6_list: wing::DnsCandidate[..8] = [];
-        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
-        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
-        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::3", 443));
-        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::4", 443));
+        var ipv6_list: net::DnsCandidate[..8] = [];
+        ipv6_list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443));
+        ipv6_list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::2", 443));
+        ipv6_list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::3", 443));
+        ipv6_list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::4", 443));
 
-        var ipv4_list: wing::DnsCandidate[..8] = [];
-        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
+        var ipv4_list: net::DnsCandidate[..8] = [];
+        ipv4_list.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.1", 443));
 
-        var interleaved: wing::DnsCandidate[..32] = [];
-        wing::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
+        var interleaved: net::DnsCandidate[..32] = [];
+        net::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
 
         sub.assert_eq(interleaved.len, 5, "5 candidates total");
-        sub.assert_true(interleaved[0].family == wing::AddressFamily.IPv6, "0 is IPv6");
-        sub.assert_true(interleaved[1].family == wing::AddressFamily.IPv4, "1 is IPv4");
-        sub.assert_true(interleaved[2].family == wing::AddressFamily.IPv6, "2 is IPv6");
-        sub.assert_true(interleaved[3].family == wing::AddressFamily.IPv6, "3 is IPv6");
-        sub.assert_true(interleaved[4].family == wing::AddressFamily.IPv6, "4 is IPv6");
+        sub.assert_true(interleaved[0].family == net::AddressFamily.IPv6, "0 is IPv6");
+        sub.assert_true(interleaved[1].family == net::AddressFamily.IPv4, "1 is IPv4");
+        sub.assert_true(interleaved[2].family == net::AddressFamily.IPv6, "2 is IPv6");
+        sub.assert_true(interleaved[3].family == net::AddressFamily.IPv6, "3 is IPv6");
+        sub.assert_true(interleaved[4].family == net::AddressFamily.IPv6, "4 is IPv6");
     };
 
     t.run("Asymmetric Candidate Interleaving (IPv4 Heavily Dominates)") { sub =>
-        var ipv6_list: wing::DnsCandidate[..8] = [];
-        ipv6_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
+        var ipv6_list: net::DnsCandidate[..8] = [];
+        ipv6_list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443));
 
-        var ipv4_list: wing::DnsCandidate[..8] = [];
-        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
-        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.2", 443));
-        ipv4_list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.3", 443));
+        var ipv4_list: net::DnsCandidate[..8] = [];
+        ipv4_list.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.1", 443));
+        ipv4_list.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.2", 443));
+        ipv4_list.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.3", 443));
 
-        var interleaved: wing::DnsCandidate[..32] = [];
-        wing::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
+        var interleaved: net::DnsCandidate[..32] = [];
+        net::interleave_candidates_he(ipv6_list[..], ipv4_list[..], interleaved, 1);
 
         sub.assert_eq(interleaved.len, 4, "4 candidates total");
-        sub.assert_true(interleaved[0].family == wing::AddressFamily.IPv6, "0 is IPv6");
-        sub.assert_true(interleaved[1].family == wing::AddressFamily.IPv4, "1 is IPv4");
-        sub.assert_true(interleaved[2].family == wing::AddressFamily.IPv4, "2 is IPv4");
-        sub.assert_true(interleaved[3].family == wing::AddressFamily.IPv4, "3 is IPv4");
+        sub.assert_true(interleaved[0].family == net::AddressFamily.IPv6, "0 is IPv6");
+        sub.assert_true(interleaved[1].family == net::AddressFamily.IPv4, "1 is IPv4");
+        sub.assert_true(interleaved[2].family == net::AddressFamily.IPv4, "2 is IPv4");
+        sub.assert_true(interleaved[3].family == net::AddressFamily.IPv4, "3 is IPv4");
     };
 
     t.run("Single-Stack Fallbacks (0 IPv6 or 0 IPv4)") { sub =>
-        var ipv6_only: wing::DnsCandidate[..8] = [];
-        ipv6_only.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
-        ipv6_only.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
-        var empty_ipv4: wing::DnsCandidate[..8] = [];
+        var ipv6_only: net::DnsCandidate[..8] = [];
+        ipv6_only.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443));
+        ipv6_only.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::2", 443));
+        var empty_ipv4: net::DnsCandidate[..8] = [];
 
-        var res_v6: wing::DnsCandidate[..32] = [];
-        wing::interleave_candidates_he(ipv6_only[..], empty_ipv4[..], res_v6, 1);
+        var res_v6: net::DnsCandidate[..32] = [];
+        net::interleave_candidates_he(ipv6_only[..], empty_ipv4[..], res_v6, 1);
         sub.assert_eq(res_v6.len, 2, "IPv6-only preserved 2 candidates");
-        sub.assert_true(res_v6[0].family == wing::AddressFamily.IPv6, "Res 0 is IPv6");
-        sub.assert_true(res_v6[1].family == wing::AddressFamily.IPv6, "Res 1 is IPv6");
+        sub.assert_true(res_v6[0].family == net::AddressFamily.IPv6, "Res 0 is IPv6");
+        sub.assert_true(res_v6[1].family == net::AddressFamily.IPv6, "Res 1 is IPv6");
 
-        var empty_ipv6: wing::DnsCandidate[..8] = [];
-        var ipv4_only:  wing::DnsCandidate[..8] = [];
-        ipv4_only.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "1.1.1.1", 80));
-        var res_v4: wing::DnsCandidate[..32] = [];
-        wing::interleave_candidates_he(empty_ipv6[..], ipv4_only[..], res_v4, 1);
+        var empty_ipv6: net::DnsCandidate[..8] = [];
+        var ipv4_only:  net::DnsCandidate[..8] = [];
+        ipv4_only.push(net::new_dns_candidate(net::AddressFamily.IPv4, "1.1.1.1", 80));
+        var res_v4: net::DnsCandidate[..32] = [];
+        net::interleave_candidates_he(empty_ipv6[..], ipv4_only[..], res_v4, 1);
         sub.assert_eq(res_v4.len, 1, "IPv4-only preserved 1 candidate");
-        sub.assert_true(res_v4[0].family == wing::AddressFamily.IPv4, "Res 0 is IPv4");
+        sub.assert_true(res_v4[0].family == net::AddressFamily.IPv4, "Res 0 is IPv4");
     };
 
     t.run("HEv3 Protocol Interleaving (QUIC vs TCP)") { sub =>
-        var list: wing::DnsCandidate[..8] = [];
-        list.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
-        list.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
+        var list: net::DnsCandidate[..8] = [];
+        list.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443));
+        list.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.1", 443));
 
-        var proto_interleaved: wing::DnsCandidate[..32] = [];
-        wing::interleave_protocols_hev3(list[..], proto_interleaved);
+        var proto_interleaved: net::DnsCandidate[..32] = [];
+        net::interleave_protocols_hev3(list[..], proto_interleaved);
 
         sub.assert_eq(proto_interleaved.len, 4, "4 protocol attempts generated (QUIC + TCP for both)");
-        sub.assert_true(proto_interleaved[0].l4_proto == wing::L4Protocol.QuicUdp, "Attempt 0 is QUIC/UDP IPv6");
-        sub.assert_true(proto_interleaved[1].l4_proto == wing::L4Protocol.Tcp, "Attempt 1 is TCP IPv6");
-        sub.assert_true(proto_interleaved[2].l4_proto == wing::L4Protocol.QuicUdp, "Attempt 2 is QUIC/UDP IPv4");
-        sub.assert_true(proto_interleaved[3].l4_proto == wing::L4Protocol.Tcp, "Attempt 3 is TCP IPv4");
+        sub.assert_true(proto_interleaved[0].l4_proto == net::L4Protocol.QuicUdp, "Attempt 0 is QUIC/UDP IPv6");
+        sub.assert_true(proto_interleaved[1].l4_proto == net::L4Protocol.Tcp, "Attempt 1 is TCP IPv6");
+        sub.assert_true(proto_interleaved[2].l4_proto == net::L4Protocol.QuicUdp, "Attempt 2 is QUIC/UDP IPv4");
+        sub.assert_true(proto_interleaved[3].l4_proto == net::L4Protocol.Tcp, "Attempt 3 is TCP IPv4");
     };
 }
 
@@ -1486,9 +1486,9 @@ fn test_rfc6724_and_hev3_interleaving(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_dns_race_and_resolution_delay(t: lit::T&) {
     t.run("Asymmetric Priority: AAAA First Cancels Delay") { sub =>
-        var task = wing::new_dns_race_task();
+        var task = net::new_dns_race_task();
         let ip6: const u8[:][1] = ["2001:db8::1"];
-        wing::on_dns_aaaa_response(task, ip6[..], 100);
+        net::on_dns_aaaa_response(task, ip6[..], 100);
 
         sub.assert_true(task.ready_to_connect, "Ready to connect immediately on AAAA");
         sub.assert_false(task.rd_timer_armed, "RD timer NOT armed when AAAA arrives first");
@@ -1496,9 +1496,9 @@ fn test_dns_race_and_resolution_delay(t: lit::T&) {
     };
 
     t.run("A First Arms 50 ms Resolution Delay Timer") { sub =>
-        var task = wing::new_dns_race_task();
+        var task = net::new_dns_race_task();
         let ip4: const u8[:][1] = ["198.51.100.1"];
-        wing::on_dns_a_response(task, ip4[..], 100);
+        net::on_dns_a_response(task, ip4[..], 100);
 
         sub.assert_false(task.ready_to_connect, "Not ready immediately: waiting for AAAA in RD window");
         sub.assert_true(task.rd_timer_armed, "RD timer armed for 50 ms");
@@ -1506,34 +1506,34 @@ fn test_dns_race_and_resolution_delay(t: lit::T&) {
 
         // Positive AAAA arrives at t=120 (< 150)
         let ip6: const u8[:][1] = ["2001:db8::1"];
-        wing::on_dns_aaaa_response(task, ip6[..], 120);
+        net::on_dns_aaaa_response(task, ip6[..], 120);
         sub.assert_true(task.ready_to_connect, "Unblocked by late AAAA before RD deadline");
         sub.assert_false(task.rd_timer_armed, "RD timer cancelled on positive AAAA");
     };
 
     t.run("RD Expiration Unblocks IPv4") { sub =>
-        var task = wing::new_dns_race_task();
+        var task = net::new_dns_race_task();
         let ip4: const u8[:][1] = ["198.51.100.1"];
-        wing::on_dns_a_response(task, ip4[..], 100);
+        net::on_dns_a_response(task, ip4[..], 100);
 
         // Tick before deadline
-        let unblocked_early = wing::check_dns_resolution_delay_tick(task, 140);
+        let unblocked_early = net::check_dns_resolution_delay_tick(task, 140);
         sub.assert_false(unblocked_early, "Not unblocked at t=140");
 
         // Tick at deadline (t=150)
-        let unblocked = wing::check_dns_resolution_delay_tick(task, 150);
+        let unblocked = net::check_dns_resolution_delay_tick(task, 150);
         sub.assert_true(unblocked, "Unblocked at t=150 (50 ms RD expired)");
         sub.assert_true(task.ready_to_connect, "Ready to connect with IPv4");
     };
 
     t.run("Negative AAAA Immediately Unblocks IPv4") { sub =>
-        var task = wing::new_dns_race_task();
+        var task = net::new_dns_race_task();
         let ip4: const u8[:][1] = ["198.51.100.1"];
-        wing::on_dns_a_response(task, ip4[..], 100);
+        net::on_dns_a_response(task, ip4[..], 100);
 
         // Empty AAAA response (NODATA / negative)
         let empty_ip6: const u8[:][0] = [];
-        wing::on_dns_aaaa_response(task, empty_ip6[..], 110);
+        net::on_dns_aaaa_response(task, empty_ip6[..], 110);
         sub.assert_true(task.ready_to_connect, "Negative AAAA immediately unblocks IPv4 without waiting for 50 ms");
         sub.assert_false(task.rd_timer_armed, "RD timer disarmed");
     };
@@ -1544,72 +1544,72 @@ fn test_dns_race_and_resolution_delay(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_attempt_manager_racing_and_winner(t: lit::T&) {
     t.run("Staggered Connection Racing, Winner Binding & Loser Cancellation (Go #59494)") { sub =>
-        var mgr = wing::new_attempt_manager(250); // CAD = 250 ms
+        var mgr = net::new_attempt_manager(250); // CAD = 250 ms
 
-        var candidates: wing::DnsCandidate[..4] = [];
-        candidates.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
-        candidates.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443));
-        candidates.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::2", 443));
+        var candidates: net::DnsCandidate[..4] = [];
+        candidates.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443));
+        candidates.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.1", 443));
+        candidates.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::2", 443));
 
-        wing::start_attempt_race(mgr, candidates[..], 0);
+        net::start_attempt_race(mgr, candidates[..], 0);
 
         sub.assert_eq(mgr.attempts.len, 1, "First attempt launched at t=0");
         sub.assert_eq(mgr.attempts[0].attempt_id, 1, "Attempt 1 launched");
 
         // Tick at t=100 (< CAD 250 ms) -> no new attempt
-        let launched_early = wing::tick_attempt_manager(mgr, 100);
+        let launched_early = net::tick_attempt_manager(mgr, 100);
         sub.assert_false(launched_early, "No attempt launched at t=100");
         sub.assert_eq(mgr.attempts.len, 1, "Still 1 attempt");
 
         // Tick at t=250 (= CAD) -> launches second attempt (IPv4)
-        let launched_cad = wing::tick_attempt_manager(mgr, 250);
+        let launched_cad = net::tick_attempt_manager(mgr, 250);
         sub.assert_true(launched_cad, "Second attempt launched at t=250");
         sub.assert_eq(mgr.attempts.len, 2, "2 attempts now active");
 
         // Tick at t=500 (= 2*CAD) -> launches third attempt (IPv6_2)
-        let launched_third = wing::tick_attempt_manager(mgr, 500);
+        let launched_third = net::tick_attempt_manager(mgr, 500);
         sub.assert_true(launched_third, "Third attempt launched at t=500");
         sub.assert_eq(mgr.attempts.len, 3, "3 attempts now active");
 
         // Attempt 2 (IPv4) wins at t=550
         // Defense (Go #59494, #35122): All other attempts (1 and 3) must be cancelled immediately to prevent leaked dials on Windows!
-        let won = wing::bind_winner_attempt(mgr, 2);
+        let won = net::bind_winner_attempt(mgr, 2);
         sub.assert_true(won, "Attempt 2 bound as winner");
         sub.assert_true(mgr.has_winner, "Manager marked has_winner");
-        sub.assert_true(mgr.attempts[0].state == wing::AttemptState.Cancelled, "Attempt 1 cancelled");
-        sub.assert_true(mgr.attempts[1].state == wing::AttemptState.Connected, "Attempt 2 connected");
-        sub.assert_true(mgr.attempts[2].state == wing::AttemptState.Cancelled, "Attempt 3 cancelled");
+        sub.assert_true(mgr.attempts[0].state == net::AttemptState.Cancelled, "Attempt 1 cancelled");
+        sub.assert_true(mgr.attempts[1].state == net::AttemptState.Connected, "Attempt 2 connected");
+        sub.assert_true(mgr.attempts[2].state == net::AttemptState.Cancelled, "Attempt 3 cancelled");
 
         // Attempting to tick after winner does not launch further attempts
-        let tick_post_winner = wing::tick_attempt_manager(mgr, 750);
+        let tick_post_winner = net::tick_attempt_manager(mgr, 750);
         sub.assert_false(tick_post_winner, "No attempts launched after winner is bound");
     };
 
     t.run("Last Resort Local Synthesis Delay (2000 ms)") { sub =>
-        var mgr = wing::new_attempt_manager(250);
-        var candidates: wing::DnsCandidate[..2] = [];
-        candidates.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::99", 443));
+        var mgr = net::new_attempt_manager(250);
+        var candidates: net::DnsCandidate[..2] = [];
+        candidates.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::99", 443));
 
-        wing::start_attempt_race(mgr, candidates[..], 0);
+        net::start_attempt_race(mgr, candidates[..], 0);
         sub.assert_true(mgr.last_resort_armed, "Last resort synthesis armed for last IPv6 attempt");
         sub.assert_eq(mgr.last_resort_deadline_ms, 2000, "Deadline set to 2000 ms");
 
         // Tick at t=1999 -> not triggered
-        wing::tick_attempt_manager(mgr, 1999);
+        net::tick_attempt_manager(mgr, 1999);
         sub.assert_false(mgr.last_resort_triggered, "Not triggered before 2000 ms");
 
         // Tick at t=2000 -> triggers RFC 7050 NAT64 synthesis
-        wing::tick_attempt_manager(mgr, 2000);
+        net::tick_attempt_manager(mgr, 2000);
         sub.assert_true(mgr.last_resort_triggered, "Last resort synthesis triggered at 2000 ms");
         sub.assert_true(mgr.pending_candidates.len >= 2, "Synthesized NAT64 candidate injected into pending queue");
 
         // With an IPv4 candidate present, synthesizes 64:ff9b::<ipv4> with target port
-        var mgr4 = wing::new_attempt_manager(250);
-        var cands4: wing::DnsCandidate[..2] = [];
-        cands4.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 8443));
-        cands4.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "192.0.2.33", 8443));
-        wing::start_attempt_race(mgr4, cands4[..], 0);
-        wing::tick_attempt_manager(mgr4, 2000);
+        var mgr4 = net::new_attempt_manager(250);
+        var cands4: net::DnsCandidate[..2] = [];
+        cands4.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 8443));
+        cands4.push(net::new_dns_candidate(net::AddressFamily.IPv4, "192.0.2.33", 8443));
+        net::start_attempt_race(mgr4, cands4[..], 0);
+        net::tick_attempt_manager(mgr4, 2000);
         sub.assert_true(mgr4.last_resort_triggered, "Triggered for mixed list");
         let last_cand = mgr4.pending_candidates[mgr4.pending_candidates.len - 1];
         sub.assert_bytes_eq(last_cand.ip[..], "64:ff9b::192.0.2.33", "NAT64 synthesized from candidate IPv4");
@@ -1618,22 +1618,22 @@ fn test_attempt_manager_racing_and_winner(t: lit::T&) {
 
     t.run("Chromium JobController Creation Rules and Waiting Delay") { sub =>
         // dns_alpn_h3_job rules: HTTPS + QUIC + no proxy + no active QUIC session
-        sub.assert_true(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: false, has_available_quic_session: false }), "Created on HTTPS, QUIC, direct, no active session");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: false, quic_enabled: true, uses_proxy: false, has_available_quic_session: false }), "Not created on plain HTTP");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: false, uses_proxy: false, has_available_quic_session: false }), "Not created when QUIC disabled");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: true, has_available_quic_session: false }), "Not created when proxy is configured");
-        sub.assert_false(wing::should_create_dns_alpn_h3_job(wing::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: false, has_available_quic_session: true }), "Not created when active QUIC session can be reused");
+        sub.assert_true(net::should_create_dns_alpn_h3_job(net::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: false, has_available_quic_session: false }), "Created on HTTPS, QUIC, direct, no active session");
+        sub.assert_false(net::should_create_dns_alpn_h3_job(net::H3JobOptions { is_https: false, quic_enabled: true, uses_proxy: false, has_available_quic_session: false }), "Not created on plain HTTP");
+        sub.assert_false(net::should_create_dns_alpn_h3_job(net::H3JobOptions { is_https: true, quic_enabled: false, uses_proxy: false, has_available_quic_session: false }), "Not created when QUIC disabled");
+        sub.assert_false(net::should_create_dns_alpn_h3_job(net::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: true, has_available_quic_session: false }), "Not created when proxy is configured");
+        sub.assert_false(net::should_create_dns_alpn_h3_job(net::H3JobOptions { is_https: true, quic_enabled: true, uses_proxy: false, has_available_quic_session: true }), "Not created when active QUIC session can be reused");
 
         // Waiting delay cancelled when open TCP socket already exists in pool
-        let delay_open_tcp = wing::compute_main_job_waiting_delay_ms(true, 200, false);
+        let delay_open_tcp = net::compute_main_job_waiting_delay_ms(true, 200, false);
         sub.assert_eq(delay_open_tcp, 0, "Waiting delay cancelled (0 ms) when open TCP socket exists");
 
         // Waiting delay cancelled when DNS confirms no HTTP/3 ALPN support
-        let delay_no_h3 = wing::compute_main_job_waiting_delay_ms(false, 200, true);
+        let delay_no_h3 = net::compute_main_job_waiting_delay_ms(false, 200, true);
         sub.assert_eq(delay_no_h3, 0, "Waiting delay cancelled (0 ms) when DNS confirms no HTTP/3");
 
         // Default waiting delay when cold
-        let delay_cold = wing::compute_main_job_waiting_delay_ms(false, 200, false);
+        let delay_cold = net::compute_main_job_waiting_delay_ms(false, 200, false);
         sub.assert_eq(delay_cold, 200, "Default waiting delay applied when cold");
     };
 }
@@ -1650,95 +1650,95 @@ fn test_attempt_manager_racing_and_winner(t: lit::T&) {
 fn test_tier1_stale_socket_and_quic_fallback(t: lit::T&) {
     t.run("Tier 1 4-Condition Invariant Evaluation") { sub =>
         // 1. Standard idempotent GET on reused Keep-Alive connection before headers
-        var req_get = wing::new_request("GET", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_get), "Reused GET before headers approved for immediate Tier 1 retry");
+        var req_get = http::new_request("GET", "https://api.io/items");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_get), "Reused GET before headers approved for immediate Tier 1 retry");
 
         // 2. Fresh dial connection failure: MUST NOT retry at Tier 1 (fails fast)
-        sub.assert_false(wing::should_retry_tier1_stale_socket(false, req_get), "Fresh connection failure rejected for Tier 1 retry");
+        sub.assert_false(net::should_retry_tier1_stale_socket(false, req_get), "Fresh connection failure rejected for Tier 1 retry");
 
         // 3. Response headers already received: MUST NOT retry at Tier 1
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_get, true), "Failure after response headers rejected for Tier 1 retry");
+        sub.assert_false(net::should_retry_tier1_stale_socket(true, req_get, true), "Failure after response headers rejected for Tier 1 retry");
 
         // 4. Non-idempotent POST without Idempotency-Key: MUST NOT retry
-        var req_post = wing::new_request("POST", "https://api.io/payments");
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_post), "Non-idempotent POST without Idempotency-Key rejected");
+        var req_post = http::new_request("POST", "https://api.io/payments");
+        sub.assert_false(net::should_retry_tier1_stale_socket(true, req_post), "Non-idempotent POST without Idempotency-Key rejected");
 
         // 5. Non-idempotent POST WITH Idempotency-Key: approved for retry
-        wing::set_header(req_post, "Idempotency-Key", "uuid-v4-998811-aabbcc");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_post), "POST with Idempotency-Key approved for Tier 1 retry");
+        http::set_header(req_post, "Idempotency-Key", "uuid-v4-998811-aabbcc");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_post), "POST with Idempotency-Key approved for Tier 1 retry");
 
         // 6. Non-idempotent PATCH without Idempotency-Key: rejected
-        var req_patch = wing::new_request("PATCH", "https://api.io/items/1");
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_patch), "PATCH without Idempotency-Key rejected");
+        var req_patch = http::new_request("PATCH", "https://api.io/items/1");
+        sub.assert_false(net::should_retry_tier1_stale_socket(true, req_patch), "PATCH without Idempotency-Key rejected");
 
         // 7. Non-idempotent PATCH WITH Idempotency-Key: approved
-        wing::set_header(req_patch, "Idempotency-Key", "patch-key-1");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_patch), "PATCH with Idempotency-Key approved");
+        http::set_header(req_patch, "Idempotency-Key", "patch-key-1");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_patch), "PATCH with Idempotency-Key approved");
 
         // 8. Idempotent RFC methods sweep
-        var req_head = wing::new_request("HEAD", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_head), "HEAD is idempotent");
+        var req_head = http::new_request("HEAD", "https://api.io/items");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_head), "HEAD is idempotent");
 
-        var req_put = wing::new_request("PUT", "https://api.io/items/1");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_put), "PUT is idempotent");
+        var req_put = http::new_request("PUT", "https://api.io/items/1");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_put), "PUT is idempotent");
 
-        var req_del = wing::new_request("DELETE", "https://api.io/items/1");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_del), "DELETE is idempotent");
+        var req_del = http::new_request("DELETE", "https://api.io/items/1");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_del), "DELETE is idempotent");
 
-        var req_opt = wing::new_request("OPTIONS", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_opt), "OPTIONS is idempotent");
+        var req_opt = http::new_request("OPTIONS", "https://api.io/items");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_opt), "OPTIONS is idempotent");
 
-        var req_trace = wing::new_request("TRACE", "https://api.io/items");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_trace), "TRACE is idempotent");
+        var req_trace = http::new_request("TRACE", "https://api.io/items");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_trace), "TRACE is idempotent");
     };
 
     t.run("Go #81671 & RFC 9110: QUERY Method Safe & Replayable") { sub =>
         // RFC 9110 and draft-ietf-httpbis-safe-method-w-body:
         // QUERY method is safe and idempotent, and carries a request body.
         // It MUST be replayable on stale socket disconnections.
-        var req_query = wing::new_request("QUERY", "https://api.io/search");
-        wing::text(req_query, "SELECT id, name FROM users WHERE active = true");
+        var req_query = http::new_request("QUERY", "https://api.io/search");
+        http::text(req_query, "SELECT id, name FROM users WHERE active = true");
         sub.assert_true(rfc::is_idempotent_method("QUERY"), "QUERY recognized as idempotent");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_query), "QUERY with rewindable body replayable on stale socket drop");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_query), "QUERY with rewindable body replayable on stale socket drop");
     };
 
     t.run("Defense against One-Shot Stream Retry Bug (Go #41907 / #41913)") { sub =>
         // Request with non-empty body that is NOT rewindable (already consumed stream)
-        var req_stream = wing::new_request("PUT", "https://api.io/upload");
+        var req_stream = http::new_request("PUT", "https://api.io/upload");
         req_stream.body.append("multipart-stream-chunk-data");
         req_stream.rewindable = false;
         req_stream.body_consumed = true;
 
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_stream), "Unrewindable consumed body stream rejected (prevents sending empty body)");
+        sub.assert_false(net::should_retry_tier1_stale_socket(true, req_stream), "Unrewindable consumed body stream rejected (prevents sending empty body)");
 
         // Non-empty body with rewindable = false but body_consumed = false
-        var req_unrewind = wing::new_request("PUT", "https://api.io/upload");
+        var req_unrewind = http::new_request("PUT", "https://api.io/upload");
         req_unrewind.body.append("data");
         req_unrewind.rewindable = false;
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_unrewind), "Unrewindable body rejected");
+        sub.assert_false(net::should_retry_tier1_stale_socket(true, req_unrewind), "Unrewindable body rejected");
 
         // Non-empty body with rewindable = true and body_consumed = true
-        var req_consumed = wing::new_request("PUT", "https://api.io/upload");
+        var req_consumed = http::new_request("PUT", "https://api.io/upload");
         req_consumed.body.append("data");
         req_consumed.rewindable = true;
         req_consumed.body_consumed = true;
-        sub.assert_false(wing::should_retry_tier1_stale_socket(true, req_consumed), "Already-consumed rewindable body rejected");
+        sub.assert_false(net::should_retry_tier1_stale_socket(true, req_consumed), "Already-consumed rewindable body rejected");
 
         // Request with rewindable body buffer (GetBody pattern)
-        var req_rewindable = wing::new_request("PUT", "https://api.io/upload");
-        wing::text(req_rewindable, "rewindable-payload-data");
-        sub.assert_true(wing::should_retry_tier1_stale_socket(true, req_rewindable), "Rewindable body approved for retry");
+        var req_rewindable = http::new_request("PUT", "https://api.io/upload");
+        http::text(req_rewindable, "rewindable-payload-data");
+        sub.assert_true(net::should_retry_tier1_stale_socket(true, req_rewindable), "Rewindable body approved for retry");
     };
 
     t.run("Chromium ERR_QUIC_PROTOCOL_ERROR Automatic TCP Fallback") { sub =>
-        var req = wing::new_request("GET", "https://quic.example.com");
-        let dec = wing::evaluate_tier1_retry(wing::ERR_QUIC_PROTOCOL_ERROR, false, req);
+        var req = http::new_request("GET", "https://quic.example.com");
+        let dec = net::evaluate_tier1_retry(net::ERR_QUIC_PROTOCOL_ERROR, false, req);
 
         sub.assert_true(dec.retry_immediately, "Immediate retry on ERR_QUIC_PROTOCOL_ERROR");
         sub.assert_true(dec.disable_alternative_services, "disable_alternative_services flagged to force reliable TCP/TLS");
 
         // If headers were already received, cannot fallback immediately
-        let dec_headers = wing::evaluate_tier1_retry(wing::ERR_QUIC_PROTOCOL_ERROR, false, req, true);
+        let dec_headers = net::evaluate_tier1_retry(net::ERR_QUIC_PROTOCOL_ERROR, false, req, true);
         sub.assert_false(dec_headers.retry_immediately, "QUIC error after headers received does not trigger blind retry");
     };
 }
@@ -1751,47 +1751,47 @@ fn test_tier2_exponential_backoff_and_jitter(t: lit::T&) {
         var seed:       u64 = 123456789;
         var prev_sleep: i64 = 0;
 
-        let cfg_full = wing::new_backoff_config(100, 5000, wing::JitterStrategy.FullJitter);
-        let cfg_equal = wing::new_backoff_config(100, 5000, wing::JitterStrategy.EqualJitter);
-        let cfg_decorr = wing::new_backoff_config(100, 5000, wing::JitterStrategy.DecorrelatedJitter);
-        let cfg_none = wing::new_backoff_config(100, 5000, wing::JitterStrategy.None);
+        let cfg_full = net::new_backoff_config(100, 5000, net::JitterStrategy.FullJitter);
+        let cfg_equal = net::new_backoff_config(100, 5000, net::JitterStrategy.EqualJitter);
+        let cfg_decorr = net::new_backoff_config(100, 5000, net::JitterStrategy.DecorrelatedJitter);
+        let cfg_none = net::new_backoff_config(100, 5000, net::JitterStrategy.None);
 
         // Attempt 0: target 100 ms
-        let t0 = wing::compute_backoff_jitter_ms(cfg_none, 0, prev_sleep, seed);
+        let t0 = net::compute_backoff_jitter_ms(cfg_none, 0, prev_sleep, seed);
         sub.assert_eq(t0, 100, "Attempt 0 deterministic delay is 100 ms");
 
         // Attempt 1: target 200 ms
-        let t1 = wing::compute_backoff_jitter_ms(cfg_none, 1, prev_sleep, seed);
+        let t1 = net::compute_backoff_jitter_ms(cfg_none, 1, prev_sleep, seed);
         sub.assert_eq(t1, 200, "Attempt 1 deterministic delay is 200 ms");
 
         // Attempt 3: target 100 * 2^3 = 800 ms
-        let t3 = wing::compute_backoff_jitter_ms(cfg_none, 3, prev_sleep, seed);
+        let t3 = net::compute_backoff_jitter_ms(cfg_none, 3, prev_sleep, seed);
         sub.assert_eq(t3, 800, "Attempt 3 deterministic delay is 800 ms");
 
         // Attempt 10: target 100 * 2^10 = 102400 ms -> clamped to cap 5000 ms
-        let t10 = wing::compute_backoff_jitter_ms(cfg_none, 10, prev_sleep, seed);
+        let t10 = net::compute_backoff_jitter_ms(cfg_none, 10, prev_sleep, seed);
         sub.assert_eq(t10, 5000, "Attempt 10 clamped to cap 5000 ms");
 
         // Attempt 50: large attempt number must NOT overflow 64-bit integer
-        let t50 = wing::compute_backoff_jitter_ms(cfg_none, 50, prev_sleep, seed);
+        let t50 = net::compute_backoff_jitter_ms(cfg_none, 50, prev_sleep, seed);
         sub.assert_eq(t50, 5000, "Attempt 50 clamped safely without integer overflow");
 
         // Full Jitter: in range [0, 800]
         for i in 20 {
-            let fj = wing::compute_backoff_jitter_ms(cfg_full, 3, prev_sleep, seed);
+            let fj = net::compute_backoff_jitter_ms(cfg_full, 3, prev_sleep, seed);
             sub.assert_true(fj >= 0 && fj <= 800, "Full Jitter within [0, 800]");
         }
 
         // Equal Jitter: in range [half, target] = [400, 800]
         for i in 20 {
-            let ej = wing::compute_backoff_jitter_ms(cfg_equal, 3, prev_sleep, seed);
+            let ej = net::compute_backoff_jitter_ms(cfg_equal, 3, prev_sleep, seed);
             sub.assert_true(ej >= 400 && ej <= 800, "Equal Jitter maintains non-zero floor within [400, 800]");
         }
 
         // Decorrelated Jitter bounded by [base, cap]
         prev_sleep = 100;
         for i in 20 {
-            let dj = wing::compute_backoff_jitter_ms(cfg_decorr, 3, prev_sleep, seed);
+            let dj = net::compute_backoff_jitter_ms(cfg_decorr, 3, prev_sleep, seed);
             sub.assert_true(dj >= 100 && dj <= 5000, "Decorrelated Jitter bounded by [base, cap]");
         }
     };
@@ -1804,47 +1804,47 @@ fn test_rfc9110_retry_after_parser(t: lit::T&) {
     t.run("delay-seconds (1*DIGIT) Parsing") { sub =>
         let now_ms: i64 = 1700000000000;
 
-        let ms0, ok0 = wing::parse_retry_after_ms("0", now_ms);
+        let ms0, ok0 = net::parse_retry_after_ms("0", now_ms);
         sub.assert_true(ok0, "Parsed delay-seconds '0'");
         sub.assert_eq(ms0, 0, "0 seconds is 0 ms");
 
-        let ms1, ok1 = wing::parse_retry_after_ms("1", now_ms);
+        let ms1, ok1 = net::parse_retry_after_ms("1", now_ms);
         sub.assert_true(ok1, "Parsed delay-seconds '1'");
         sub.assert_eq(ms1, 1000, "1 second is 1000 ms");
 
-        let ms120, ok120 = wing::parse_retry_after_ms("120", now_ms);
+        let ms120, ok120 = net::parse_retry_after_ms("120", now_ms);
         sub.assert_true(ok120, "Parsed delay-seconds '120'");
         sub.assert_eq(ms120, 120000, "120 seconds is 120,000 ms");
 
-        let ms86400, ok86400 = wing::parse_retry_after_ms("86400", now_ms);
+        let ms86400, ok86400 = net::parse_retry_after_ms("86400", now_ms);
         sub.assert_true(ok86400, "Parsed delay-seconds '86400'");
         sub.assert_eq(ms86400, 86400000, "86400 seconds is 86,400,000 ms (24h)");
 
         // Leading/trailing whitespace trimmed
-        let ms_ws, ok_ws = wing::parse_retry_after_ms("  45  ", now_ms);
+        let ms_ws, ok_ws = net::parse_retry_after_ms("  45  ", now_ms);
         sub.assert_true(ok_ws, "Parsed delay-seconds with whitespace");
         sub.assert_eq(ms_ws, 45000, "45 seconds is 45,000 ms");
 
         // Invalid integer formats rejected
-        let _, bad1 = wing::parse_retry_after_ms("120s", now_ms);
+        let _, bad1 = net::parse_retry_after_ms("120s", now_ms);
         sub.assert_false(bad1, "Rejected unit suffix '120s'");
 
-        let _, bad2 = wing::parse_retry_after_ms("-10", now_ms);
+        let _, bad2 = net::parse_retry_after_ms("-10", now_ms);
         sub.assert_false(bad2, "Rejected negative delay-seconds '-10'");
 
-        let _, bad3 = wing::parse_retry_after_ms("+10", now_ms);
+        let _, bad3 = net::parse_retry_after_ms("+10", now_ms);
         sub.assert_false(bad3, "Rejected explicit positive sign '+10'");
 
-        let _, bad4 = wing::parse_retry_after_ms("12.5", now_ms);
+        let _, bad4 = net::parse_retry_after_ms("12.5", now_ms);
         sub.assert_false(bad4, "Rejected decimal delay-seconds '12.5'");
 
-        let _, bad5 = wing::parse_retry_after_ms("abc", now_ms);
+        let _, bad5 = net::parse_retry_after_ms("abc", now_ms);
         sub.assert_false(bad5, "Rejected alphanumeric string");
 
-        let _, bad6 = wing::parse_retry_after_ms("", now_ms);
+        let _, bad6 = net::parse_retry_after_ms("", now_ms);
         sub.assert_false(bad6, "Rejected empty string");
 
-        let _, bad7 = wing::parse_retry_after_ms("   ", now_ms);
+        let _, bad7 = net::parse_retry_after_ms("   ", now_ms);
         sub.assert_false(bad7, "Rejected whitespace-only string");
     };
 
@@ -1853,23 +1853,23 @@ fn test_rfc9110_retry_after_parser(t: lit::T&) {
         let http_date = "Wed, 21 Oct 2015 07:28:00 GMT";
 
         // If current time is earlier (e.g. 1445412470000, 10s earlier)
-        let delta_ms, ok_date = wing::parse_retry_after_ms(http_date, 1445412470000);
+        let delta_ms, ok_date = net::parse_retry_after_ms(http_date, 1445412470000);
         sub.assert_true(ok_date, "Parsed valid future IMF-fixdate");
         sub.assert_eq(delta_ms, 10000, "Calculated 10,000 ms delta");
 
         // If date is in the past: clamped to 0 ms
-        let delta_past, ok_past = wing::parse_retry_after_ms(http_date, 1500000000000);
+        let delta_past, ok_past = net::parse_retry_after_ms(http_date, 1500000000000);
         sub.assert_true(ok_past, "Parsed past IMF-fixdate");
         sub.assert_eq(delta_past, 0, "Past date clamped to 0 ms (never negative)");
 
         // Invalid calendar date: Feb 31 rejected by round-trip check
         let bad_date = "Wed, 31 Feb 2024 12:00:00 GMT";
-        let _, ok_bad = wing::parse_retry_after_ms(bad_date, 1700000000000);
+        let _, ok_bad = net::parse_retry_after_ms(bad_date, 1700000000000);
         sub.assert_false(ok_bad, "Invalid calendar day 31 Feb rejected by round-trip validator");
 
         // Invalid month string
         let bad_month = "Wed, 21 Foo 2026 07:28:00 GMT";
-        let _, ok_bm = wing::parse_retry_after_ms(bad_month, 1700000000000);
+        let _, ok_bm = net::parse_retry_after_ms(bad_month, 1700000000000);
         sub.assert_false(ok_bm, "Invalid month 'Foo' rejected");
     };
 }
@@ -1879,48 +1879,48 @@ fn test_rfc9110_retry_after_parser(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_circuit_breaker_and_adaptive_retry_budget(t: lit::T&) {
     t.run("Host Circuit Breaker on Excessive Retry-After") { sub =>
-        var breaker = wing::new_host_circuit_breaker(60000); // 60s max wait
+        var breaker = net::new_host_circuit_breaker(60000); // 60s max wait
 
         // Retry-After of 30s does not trip circuit breaker
-        let tripped_small = wing::trip_circuit_breaker_if_exceeded(breaker, "api.overloaded.com", 30000, 0);
+        let tripped_small = net::trip_circuit_breaker_if_exceeded(breaker, "api.overloaded.com", 30000, 0);
         sub.assert_false(tripped_small, "30s does not trip circuit breaker");
-        sub.assert_false(wing::is_host_circuit_broken(breaker, "api.overloaded.com", 0), "Host not blocked");
+        sub.assert_false(net::is_host_circuit_broken(breaker, "api.overloaded.com", 0), "Host not blocked");
 
         // Retry-After of 300s (> 60s) trips circuit breaker
-        let tripped_large = wing::trip_circuit_breaker_if_exceeded(breaker, "api.overloaded.com", 300000, 1000000000);
+        let tripped_large = net::trip_circuit_breaker_if_exceeded(breaker, "api.overloaded.com", 300000, 1000000000);
         sub.assert_true(tripped_large, "300s trips circuit breaker");
-        sub.assert_true(wing::is_host_circuit_broken(breaker, "api.overloaded.com", 2000000000), "Host blocked by circuit breaker");
+        sub.assert_true(net::is_host_circuit_broken(breaker, "api.overloaded.com", 2000000000), "Host blocked by circuit breaker");
 
         // Advance beyond unblock deadline (1s + 300s = 301s)
-        sub.assert_false(wing::is_host_circuit_broken(breaker, "api.overloaded.com", 302000000000), "Host unblocked after cool-down");
+        sub.assert_false(net::is_host_circuit_broken(breaker, "api.overloaded.com", 302000000000), "Host unblocked after cool-down");
 
         // Different host is not blocked
-        sub.assert_false(wing::is_host_circuit_broken(breaker, "other.healthy.com", 2000000000), "Other host is not blocked");
+        sub.assert_false(net::is_host_circuit_broken(breaker, "other.healthy.com", 2000000000), "Other host is not blocked");
     };
 
     t.run("Google SRE Adaptive Retry Budget") { sub =>
         // 20% max ratio, 2 retries/sec floor, 10s window (floor = 20 retries allowed)
-        var budget = wing::new_adaptive_retry_budget(20, 2, 10);
+        var budget = net::new_adaptive_retry_budget(20, 2, 10);
 
         // Record 100 primary requests
         for i in 100 {
-            wing::record_primary_request(budget, 1000000000);
+            net::record_primary_request(budget, 1000000000);
         }
 
         // Allowed retries: max(100 * 20% = 20, 2 * 10 = 20) = 20 retries
         for i in 20 {
-            let ok = wing::allow_retry_budget(budget, 1000000000);
+            let ok = net::allow_retry_budget(budget, 1000000000);
             sub.assert_true(ok, "Retry within budget allowed");
         }
 
         // 21st retry attempt exceeds budget during flood
-        let blocked = wing::allow_retry_budget(budget, 1000000000);
+        let blocked = net::allow_retry_budget(budget, 1000000000);
         sub.assert_false(blocked, "Retry exceeding 20% budget rejected to prevent retry storm");
 
         // After window advances (t = 12s, delta = 11s > 10s window), budget resets
-        wing::record_primary_request(budget, 12000000000);
+        net::record_primary_request(budget, 12000000000);
         sub.assert_eq(budget.retried_requests, 0, "Retried requests reset in new window");
-        let ok_new = wing::allow_retry_budget(budget, 12000000000);
+        let ok_new = net::allow_retry_budget(budget, 12000000000);
         sub.assert_true(ok_new, "Retry permitted after window resets");
     };
 }
@@ -2128,12 +2128,12 @@ fn test_dns_decode_label_length_and_reserved_bits(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_h2c_vs_https_connection_pool_isolation(t: lit::T&) {
     t.run("Connection pool key for H2c vs Https to same host:port MUST NOT match") { sub =>
-        let dummy_proxy = wing::ProxyChain { .. };
-        let dummy_part = wing::NetworkAnonymizationKey { .. };
-        let dummy_policy = wing::TlsAndDnsPolicy { .. };
+        let dummy_proxy = net::ProxyChain { .. };
+        let dummy_part = net::NetworkAnonymizationKey { .. };
+        let dummy_policy = net::TlsAndDnsPolicy { .. };
 
-        let h2c_key = wing::new_pool_key(
-            wing::PoolScheme.H2c,
+        let h2c_key = net::new_pool_key(
+            net::PoolScheme.H2c,
             "api.internal",
             80,
             dummy_proxy,
@@ -2141,8 +2141,8 @@ fn test_h2c_vs_https_connection_pool_isolation(t: lit::T&) {
             dummy_policy,
         );
 
-        let https_key = wing::new_pool_key(
-            wing::PoolScheme.Https,
+        let https_key = net::new_pool_key(
+            net::PoolScheme.Https,
             "api.internal",
             80,
             dummy_proxy,
@@ -2150,8 +2150,8 @@ fn test_h2c_vs_https_connection_pool_isolation(t: lit::T&) {
             dummy_policy,
         );
 
-        sub.assert_false(wing::pool_key_equals(h2c_key, https_key), "H2c and Https pool keys MUST NOT be equal");
-        sub.assert_ne(wing::pool_key_hash(h2c_key), wing::pool_key_hash(https_key), "H2c and Https pool keys MUST produce different hashes");
+        sub.assert_false(net::pool_key_equals(h2c_key, https_key), "H2c and Https pool keys MUST NOT be equal");
+        sub.assert_ne(net::pool_key_hash(h2c_key), net::pool_key_hash(https_key), "H2c and Https pool keys MUST produce different hashes");
     };
 }
 
@@ -2174,53 +2174,53 @@ fn test_dns_name_length_overflow(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_group_and_proxy_quotas_with_waiter_handoff(t: lit::T&) {
     t.run("max_sockets_per_group evicts group idle or rejects when all active, and hands off to WantQueue waiter") { sub =>
-        var pool = wing::new_stream_pool();
+        var pool = net::new_stream_pool();
         pool.max_sockets_per_group = 2;
         pool.max_sockets_per_proxy = 3;
 
-        var proxy = wing::ProxyChain { .. };
+        var proxy = net::ProxyChain { .. };
         proxy.is_direct = false;
-        proxy.servers.push(wing::new_proxy_server(wing::ProxyScheme.Http, "proxy.corp.local", 8080));
+        proxy.servers.push(net::new_proxy_server(net::ProxyScheme.Http, "proxy.corp.local", 8080));
 
-        let nak = wing::NetworkAnonymizationKey { .. };
-        let pol = wing::TlsAndDnsPolicy { .. };
-        let key_a = wing::new_pool_key(wing::PoolScheme.Https, "a.example.com", 443, proxy, nak, pol);
-        let key_b = wing::new_pool_key(wing::PoolScheme.Https, "b.example.com", 443, proxy, nak, pol);
+        let nak = net::NetworkAnonymizationKey { .. };
+        let pol = net::TlsAndDnsPolicy { .. };
+        let key_a = net::new_pool_key(net::PoolScheme.Https, "a.example.com", 443, proxy, nak, pol);
+        let key_b = net::new_pool_key(net::PoolScheme.Https, "b.example.com", 443, proxy, nak, pol);
 
-        sub.assert_true(wing::can_allocate_group_socket(pool, key_a), "Initial group quota available");
+        sub.assert_true(net::can_allocate_group_socket(pool, key_a), "Initial group quota available");
 
-        let id1 = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1000);
-        let id2 = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1001);
+        let id1 = net::register_connection(pool, key_a, net::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1000);
+        let id2 = net::register_connection(pool, key_a, net::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1001);
         sub.assert_gt(id1, 0, "Conn 1 allocated");
         sub.assert_gt(id2, 0, "Conn 2 allocated");
-        sub.assert_false(wing::can_allocate_group_socket(pool, key_a), "Group quota full with 2 active connections");
+        sub.assert_false(net::can_allocate_group_socket(pool, key_a), "Group quota full with 2 active connections");
 
         // 3rd active connection in same group MUST be rejected (-1)
-        let id3_blocked = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1002);
+        let id3_blocked = net::register_connection(pool, key_a, net::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1002);
         sub.assert_eq(id3_blocked, -1, "3rd active connection in group rejected by max_sockets_per_group");
 
         // Enqueue a waiter for group A and release id1 -> direct handoff to waiter!
-        let enq_ok = wing::enqueue_group_waiter(pool, key_a, 9001);
+        let enq_ok = net::enqueue_group_waiter(pool, key_a, 9001);
         sub.assert_true(enq_ok, "Waiter enqueued in group WantQueue");
-        var handed_waiter = wing::WantConn { .. };
-        let rel_ok1, handed_off = wing::release_connection_or_handoff(pool, id1, 1004, handed_waiter);
+        var handed_waiter = net::WantConn { .. };
+        let rel_ok1, handed_off = net::release_connection_or_handoff(pool, id1, 1004, handed_waiter);
         sub.assert_true(rel_ok1 && handed_off, "Released connection handed off directly to queued waiter");
         sub.assert_eq(handed_waiter.req_id, 9001 as u64, "Handed off waiter req_id matches");
 
         // Release id1 again with no waiters -> becomes Idle
-        var dummy_waiter = wing::WantConn { .. };
-        let rel_ok2, handed_off2 = wing::release_connection_or_handoff(pool, id1, 1005, dummy_waiter);
+        var dummy_waiter = net::WantConn { .. };
+        let rel_ok2, handed_off2 = net::release_connection_or_handoff(pool, id1, 1005, dummy_waiter);
         sub.assert_true(rel_ok2 && !handed_off2, "Released connection parks as Idle when WantQueue is empty");
-        sub.assert_true(wing::can_allocate_group_socket(pool, key_a), "Group quota available by evicting idle connection");
+        sub.assert_true(net::can_allocate_group_socket(pool, key_a), "Group quota available by evicting idle connection");
 
         // Allocating new connection in group A evicts idle id1 and succeeds
-        let id3_ok = wing::register_connection(pool, key_a, wing::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1006);
+        let id3_ok = net::register_connection(pool, key_a, net::NegotiatedProtocol.Http11, "203.0.113.10", 443, 1006);
         sub.assert_gt(id3_ok, 0, "New connection in group A succeeds after evicting oldest idle in group");
 
         // Group B shares the same proxy (max_sockets_per_proxy = 3, currently 2 active in group A)
-        let id_b1 = wing::register_connection(pool, key_b, wing::NegotiatedProtocol.Http11, "203.0.113.11", 443, 1007);
+        let id_b1 = net::register_connection(pool, key_b, net::NegotiatedProtocol.Http11, "203.0.113.11", 443, 1007);
         sub.assert_gt(id_b1, 0, "3rd proxy connection across group B allowed");
-        let id_b2_blocked = wing::register_connection(pool, key_b, wing::NegotiatedProtocol.Http11, "203.0.113.11", 443, 1008);
+        let id_b2_blocked = net::register_connection(pool, key_b, net::NegotiatedProtocol.Http11, "203.0.113.11", 443, 1008);
         sub.assert_eq(id_b2_blocked, -1, "4th active connection on same proxy rejected by max_sockets_per_proxy=3");
     };
 }
@@ -2243,7 +2243,7 @@ fn test_hev3_https_svcb_and_address_family_cache(t: lit::T&) {
         rec.ipv4_hints.push(0x5DB8D822);
         rec.ipv6_hints.push([0x26, 0x06, 0x28, 0x00, 0x02, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x48]);
 
-        let meta, eff_port = wing::extract_https_svcb_metadata(rec, 443);
+        let meta, eff_port = net::extract_https_svcb_metadata(rec, 443);
         sub.assert_eq(eff_port, 8443, "SVCB port override applied");
         sub.assert_true(meta.alpn_h3, "alpn_h3 extracted");
         sub.assert_true(meta.alpn_h2, "alpn_h2 extracted");
@@ -2254,51 +2254,51 @@ fn test_hev3_https_svcb_and_address_family_cache(t: lit::T&) {
     };
 
     t.run("AddressFamilyCache records preferred winner family and reorders interleave") { sub =>
-        var af_cache = wing::AddressFamilyCache { .. };
-        let _, found0 = wing::lookup_preferred_family(af_cache, "dual.example.com", 100);
+        var af_cache = net::AddressFamilyCache { .. };
+        let _, found0 = net::lookup_preferred_family(af_cache, "dual.example.com", 100);
         sub.assert_false(found0, "Empty cache returns false");
 
-        wing::record_preferred_family(af_cache, "dual.example.com", wing::AddressFamily.IPv4, 100);
-        let pref, found1 = wing::lookup_preferred_family(af_cache, "dual.example.com", 200);
+        net::record_preferred_family(af_cache, "dual.example.com", net::AddressFamily.IPv4, 100);
+        let pref, found1 = net::lookup_preferred_family(af_cache, "dual.example.com", 200);
         sub.assert_true(found1, "Cache hit within TTL");
-        sub.assert_true(pref == wing::AddressFamily.IPv4, "Preferred family is IPv4");
+        sub.assert_true(pref == net::AddressFamily.IPv4, "Preferred family is IPv4");
 
-        let _, found_exp = wing::lookup_preferred_family(af_cache, "dual.example.com", 800);
+        let _, found_exp = net::lookup_preferred_family(af_cache, "dual.example.com", 800);
         sub.assert_false(found_exp, "Cache entry expires after 600s TTL");
 
-        var v6: wing::DnsCandidate[..2] = [];
-        v6.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443, wing::L4Protocol.Tcp, 50));
-        var v4: wing::DnsCandidate[..2] = [];
-        v4.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "198.51.100.1", 443, wing::L4Protocol.Tcp, 40));
+        var v6: net::DnsCandidate[..2] = [];
+        v6.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443, net::L4Protocol.Tcp, 50));
+        var v4: net::DnsCandidate[..2] = [];
+        v4.push(net::new_dns_candidate(net::AddressFamily.IPv4, "198.51.100.1", 443, net::L4Protocol.Tcp, 40));
 
-        var out: wing::DnsCandidate[..32] = [];
-        wing::interleave_candidates_by_preference(v6[..], v4[..], wing::AddressFamily.IPv4, out);
+        var out: net::DnsCandidate[..32] = [];
+        net::interleave_candidates_by_preference(v6[..], v4[..], net::AddressFamily.IPv4, out);
         sub.assert_eq(out.len, 2, "2 candidates interleaved");
-        sub.assert_true(out[0].family == wing::AddressFamily.IPv4, "IPv4 placed first when preferred");
-        sub.assert_true(out[1].family == wing::AddressFamily.IPv6, "IPv6 placed second");
+        sub.assert_true(out[0].family == net::AddressFamily.IPv4, "IPv4 placed first when preferred");
+        sub.assert_true(out[1].family == net::AddressFamily.IPv6, "IPv6 placed second");
     };
 }
 
 // ----------------------------------------------------------------------------
 // 37. Core Cross-Framework UFCS Async Reactor & Backpressure Contract
 // ----------------------------------------------------------------------------
-fn wake_echo_handler(tag: u64, ev: const core::PollReadyEvent&, el: wing::EventLoop&) {
+fn wake_echo_handler(tag: u64, ev: const core::PollReadyEvent&, el: net::EventLoop&) {
     if tag == 8800 && (ev.events & core::POLL_WAKE) != 0 {
-        let _ = wing::defer_task(el, tag, 1, 7);
+        let _ = net::defer_task(el, tag, 1, 7);
     }
 }
 
 fn test_core_reactor_and_wake_contract(t: lit::T&) {
     t.run("core::Poller Generic Reactor & POLL_WAKE Delivery") { sub =>
         var cfg = net_internal::auto_transport_driver_config();
-        var poller = wing::new_poller(cfg);
+        var poller = net::new_poller(cfg);
 
         sub.assert_true(core::reactor_register(poller, 71, 3001, core::PollInterest.Read, core::PollTrigger.Level), "reactor_register");
         sub.assert_true(core::reactor_modify(poller, 71, 3001, core::PollInterest.ReadWrite, core::PollTrigger.Edge), "reactor_modify");
         sub.assert_true(core::reactor_wake(poller, 4444), "reactor_wake 4444");
         sub.assert_true(core::reactor_wake(poller, 4444), "reactor_wake dedups 4444");
         sub.assert_true(core::reactor_add_timer(poller, 55, 10, 5555, false, 1000000), "reactor_add_timer");
-        let _ = wing::simulate_read_ready(poller, 71, 128);
+        let _ = net::simulate_read_ready(poller, 71, 128);
 
         var evs: core::PollReadyEvent[..64] = [];
         let n = core::reactor_poll(poller, 0, 20000000, evs);
@@ -2306,21 +2306,21 @@ fn test_core_reactor_and_wake_contract(t: lit::T&) {
         sub.assert_eq(evs[0].tag, 4444, "First event is wake tag 4444");
         sub.assert_true((evs[0].events & core::POLL_WAKE) != 0, "Wake event has POLL_WAKE");
         sub.assert_true(core::reactor_deregister(poller, 71), "reactor_deregister");
-        wing::close_poller(poller);
+        net::close_poller(poller);
     };
 
     t.run("EventLoop::wake_tag & Stopped Guard") { sub =>
         var cfg = net_internal::auto_transport_driver_config();
-        var el = wing::new_event_loop(cfg);
-        sub.assert_true(wing::wake_tag(el, 8800), "wake_tag queued on open loop");
-        let cnt = wing::run_loop_once(el, 0, 1000000, wake_echo_handler);
+        var el = net::new_event_loop(cfg);
+        sub.assert_true(net::wake_tag(el, 8800), "wake_tag queued on open loop");
+        let cnt = net::run_loop_once(el, 0, 1000000, wake_echo_handler);
         sub.assert_eq(cnt, 1, "1 wake event dispatched");
-        sub.assert_true(wing::has_deferred_tasks(el), "wake_echo_handler deferred follow-up task");
-        wing::close_event_loop(el);
-        sub.assert_false(wing::wake_tag(el, 8801), "wake_tag rejected on stopped loop");
+        sub.assert_true(net::has_deferred_tasks(el), "wake_echo_handler deferred follow-up task");
+        net::close_event_loop(el);
+        sub.assert_false(net::wake_tag(el, 8801), "wake_tag rejected on stopped loop");
     };
 
-    t.run("core::stream_try_send/recv Backpressure & wing::TcpDialer") { sub =>
+    t.run("core::stream_try_send/recv Backpressure & net::TcpDialer") { sub =>
         var pipe = core::new_pipe_buffer();
         var rx: u8[16] = [0; 16];
         let r0, e0 = core::stream_try_recv(pipe, rx[..]);
@@ -2340,7 +2340,7 @@ fn test_core_reactor_and_wake_contract(t: lit::T&) {
         sub.assert_eq(r2, 0, "0 bytes after drain");
         sub.assert_eq(e2, core::IoError.Eof, "Closed drained pipe yields Eof");
 
-        var dialer = wing::TcpDialer { default_timeout_ms: 100 };
+        var dialer = net::TcpDialer { default_timeout_ms: 100 };
         let fd, derr = core::reactor_dial(dialer, core::DialTarget { host: "", port: 0, .. });
         sub.assert_eq(fd, -1, "Invalid dial target returns -1");
         sub.assert_eq(derr, core::IoError.InvalidArgument, "Invalid dial target returns InvalidArgument");
@@ -2352,22 +2352,22 @@ fn test_core_reactor_and_wake_contract(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_live_os_loopback_reactor_e2e(t: lit::T&) {
     t.run("Live OS Loopback: TcpDialer + EventLoop OS Multiplexing + Eof") { sub =>
-        let srv = wing::tcp_listen("127.0.0.1", 0);
+        let srv = net::tcp_listen("127.0.0.1", 0);
         sub.assert_true(srv > 0, "tcp_listen ephemeral loopback");
-        defer if srv > 0 { wing::tcp_close(srv); };
-        let port = wing::tcp_getsockname_port(srv);
+        defer if srv > 0 { net::tcp_close(srv); };
+        let port = net::tcp_getsockname_port(srv);
         sub.assert_true(port != 0, "getsockname returns bound port");
 
-        var dialer = wing::TcpDialer { default_timeout_ms: 2000 };
+        var dialer = net::TcpDialer { default_timeout_ms: 2000 };
         let target = core::DialTarget { host: "127.0.0.1", port: port, timeout_ms: 2000, non_blocking: true };
         let cli_fd, derr = core::reactor_dial(dialer, target);
         sub.assert_true(cli_fd > 0 && derr == core::IoError.None, "reactor_dial non_blocking loopback");
-        var cli_tr: wing::Transport = wing::Transport.Tcp { fd: cli_fd };
+        var cli_tr: net::Transport = net::Transport.Tcp { fd: cli_fd };
         defer core::stream_close(cli_tr);
 
-        let acc_fd = wing::tcp_accept(srv, 1000);
+        let acc_fd = net::tcp_accept(srv, 1000);
         sub.assert_true(acc_fd > 0, "tcp_accept loopback peer");
-        var acc_tr: wing::Transport = wing::Transport.Tcp { fd: acc_fd };
+        var acc_tr: net::Transport = net::Transport.Tcp { fd: acc_fd };
         defer core::stream_close(acc_tr);
 
         var rx: u8[32] = [0; 32];
@@ -2376,9 +2376,9 @@ fn test_live_os_loopback_reactor_e2e(t: lit::T&) {
         sub.assert_eq(e0, core::IoError.WouldBlock, "Empty non-blocking Tcp recv yields WouldBlock");
 
         var cfg = net_internal::auto_transport_driver_config();
-        var el = wing::new_event_loop(cfg);
-        defer wing::close_event_loop(el);
-        sub.assert_true(wing::enable_os_multiplexing(el), "EventLoop enable_os_multiplexing");
+        var el = net::new_event_loop(cfg);
+        defer net::close_event_loop(el);
+        sub.assert_true(net::enable_os_multiplexing(el), "EventLoop enable_os_multiplexing");
         sub.assert_true(core::reactor_register(el, cli_fd as i32, 7070, core::PollInterest.Read), "reactor_register");
         sub.assert_true(core::reactor_modify(el, cli_fd as i32, 7070, core::PollInterest.ReadWrite), "reactor_modify");
         sub.assert_true(core::reactor_add_timer(el, 91, 5000, 9191, false, 1000), "reactor_add_timer");
@@ -2411,7 +2411,7 @@ fn test_live_os_loopback_reactor_e2e(t: lit::T&) {
     };
 
     t.run("Transport.Virtual: Empty WouldBlock, Full WouldBlock, and Peer Close Eof") { sub =>
-        let ran = wing::with_virtual_pipe_pair() { end_a, end_b =>
+        let ran = net::with_virtual_pipe_pair() { end_a, end_b =>
             var rx: u8[512] = [0; 512];
             let r0, e0 = core::stream_try_recv(end_b, rx[..]);
             sub.assert_eq(r0, 0, "Empty virtual pipe recv yields 0");
@@ -2459,9 +2459,9 @@ fn verify_live_windows_rio_guards(sub: lit::T&) {
 
     let lfd_v6 = net_internal::rio_listen("::1", 0, 16);
     sub.assert_gt(lfd_v6, 0, "RIO IPv6 ::1 listener opens");
-    sub.assert_gt(wing::tcp_getsockname_port(lfd_v6), 0, "IPv6 getsockname returns non-zero port");
+    sub.assert_gt(net::tcp_getsockname_port(lfd_v6), 0, "IPv6 getsockname returns non-zero port");
     sub.assert_eq(net_internal::native_rio_is_listener(lfd_v6), 1, "IPv6 RIO listener recognized");
-    wing::tcp_close(lfd_v6);
+    net::tcp_close(lfd_v6);
 }
 
 fn test_os_shim_regression_guards(t: lit::T&) {
@@ -2487,22 +2487,22 @@ fn test_os_shim_regression_guards(t: lit::T&) {
         let kev_eof_err = net_internal::Kevent {
             ident: 1, filter: net_internal::EVFILT_READ, flags: net_internal::EV_EOF, fflags: 104, data: 0, udata: 1,
         };
-        let fl, is_eof = wing::map_kevent_to_poll_flags(kev_eof_err);
+        let fl, is_eof = net::map_kevent_to_poll_flags(kev_eof_err);
         sub.assert_true(is_eof && (fl & core::POLL_HANGUP) != 0 && (fl & core::POLL_ERROR) != 0, "EV_EOF+fflags sets POLL_ERROR");
     };
 
     t.run("ReactorAccelRuntime slot generation rejects stale tokens across slot reuse") { sub =>
-        var accel = wing::ReactorAccelRuntime { mode: wing::ReactorAccelMode.Rio, .. };
+        var accel = net::ReactorAccelRuntime { mode: net::ReactorAccelMode.Rio, .. };
         accel.slot_accel[2] = true;
-        let tok1 = wing::reactor_accel_slot_token(accel, 2);
-        let s1, ok1 = wing::reactor_accel_match_token(accel, tok1);
+        let tok1 = net::reactor_accel_slot_token(accel, 2);
+        let s1, ok1 = net::reactor_accel_match_token(accel, tok1);
         sub.assert_true(ok1 && s1 == 2, "Fresh token matches active slot");
 
-        wing::reactor_reset_accel_slot(accel, 2);
+        net::reactor_reset_accel_slot(accel, 2);
         accel.slot_accel[2] = true;
-        let tok2 = wing::reactor_accel_slot_token(accel, 2);
-        let s2, ok2 = wing::reactor_accel_match_token(accel, tok2);
-        let _, ok_stale = wing::reactor_accel_match_token(accel, tok1);
+        let tok2 = net::reactor_accel_slot_token(accel, 2);
+        let s2, ok2 = net::reactor_accel_match_token(accel, tok2);
+        let _, ok_stale = net::reactor_accel_match_token(accel, tok1);
         sub.assert_true(ok2 && s2 == 2 && !ok_stale, "Stale generation token rejected after slot reuse");
     };
 

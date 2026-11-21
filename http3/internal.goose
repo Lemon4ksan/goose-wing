@@ -80,19 +80,19 @@ inline fn apply_parsed_h3_setting(id: u64, val: u64, settings: fingerprint::H3Se
 }
 
 inline fn apply_h3_priority_entry(
-    entry: const wing::SfDictEntry&,
-    prio:  wing::PriorityParam&,
+    entry: const http::SfDictEntry&,
+    prio:  http::PriorityParam&,
 ) -> bool {
     if entry.key == "u" {
         if !entry.is_inner_list &&
-           entry.item.kind == wing::SfType.Integer &&
-           wing::is_valid_urgency(entry.item.int_val) {
+           entry.item.kind == http::SfType.Integer &&
+           http::is_valid_urgency(entry.item.int_val) {
             prio.urgency = entry.item.int_val as u8;
         }
         return true;
     }
     if entry.key == "i" {
-        if !entry.is_inner_list && entry.item.kind == wing::SfType.Boolean {
+        if !entry.is_inner_list && entry.item.kind == http::SfType.Boolean {
             prio.incremental = entry.item.bool_val;
         }
         return true;
@@ -108,14 +108,14 @@ inline fn apply_h3_priority_entry(
 fn parse_h3_priority_field_value(
     field_value:         const u8[:],
     default_incremental: bool = false,
-) -> wing::PriorityParam, bool {
-    var prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
+) -> http::PriorityParam, bool {
+    var prio = http::PriorityParam { urgency: 3, incremental: default_incremental };
     let trimmed = field_value.trim_ascii_space();
     if trimmed.len == 0 {
         return prio, true;
     }
-    var entries: wing::SfDictEntry[..16] = [];
-    guard wing::parse_sf_dict(trimmed, entries) else { return prio, false; }
+    var entries: http::SfDictEntry[..16] = [];
+    guard http::parse_sf_dict(trimmed, entries) else { return prio, false; }
     for &entry in entries {
         guard apply_h3_priority_entry(entry, prio) else { return prio, false; }
     }

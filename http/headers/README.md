@@ -26,8 +26,8 @@ remaining characters case-insensitively. `header_id_to_bit` and
 1-byte tag.
 
 ```goose
-let id = wing::identify_known_header("Content-Length");
-let mask_bit = wing::header_id_to_bit(id);
+let id = http::identify_known_header("Content-Length");
+let mask_bit = http::header_id_to_bit(id);
 ```
 
 ### Lexical Validation & SWAR Transformations (`lexical.goose`)
@@ -47,7 +47,7 @@ fn scan_token_swar(src: const u8[:]) -> i64, bool
 fn is_valid_header_name(name: const u8[:]) -> bool
 fn is_valid_header_name_h2(name: const u8[:]) -> bool
 fn is_valid_header_value(val: const u8[:]) -> bool
-fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool
+fn validate_content_length_value(val: const u8[:]) -> i64, bool
 fn is_valid_transfer_coding(coding: const u8[:]) -> bool
 fn validate_transfer_encoding_value(val: const u8[:]) -> bool
 fn hash_header_name(name: const u8[:]) -> u32
@@ -77,7 +77,7 @@ enum ChunkedDecodeError {
 }
 
 fn parse_chunk_extensions(s: const u8[:], cursor: i64&) -> ChunkedDecodeError
-fn parse_chunk_size_hex(chunk_size_line: const u8[:], out_size: u64&) -> ChunkedDecodeError
+fn parse_chunk_size_hex(chunk_size_line: const u8[:]) -> u64, ChunkedDecodeError
 fn parse_single_trailer_field(tr_line: const u8[:], out_trailers: HeaderMap&) -> ChunkedDecodeError
 fn parse_chunked_trailers_with_out(raw: const u8[:], cursor: i64&, out_trailers: HeaderMap&) -> ChunkedDecodeError
 fn decode_chunked_body_with_trailers(raw: const u8[:], out_body: u8[>..]&, out_trailers: HeaderMap&) -> ChunkedDecodeError, i64

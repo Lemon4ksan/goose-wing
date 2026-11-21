@@ -154,7 +154,7 @@ fn test_jwks_x5c_x5t_and_key_ops() {
         0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60,
     ];
     var der_leaf: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(ed_seed, "auth.example.com", "auth.example.com", "", der_leaf));
+    assert(tls::build_test_ed25519_cert_der(ed_seed, "auth.example.com", "auth.example.com", "", der_leaf));
     var x5c_b64: u8[..1024] = [];
     core::base64_encode(der_leaf[..], x5c_b64);
     let dig = core::sha256(der_leaf[..]);
@@ -774,10 +774,10 @@ fn run_05_rfc_repro_auth_dpop_edge() {
     ));
     assert(proof_at.len >= 392);
 
-    var dpop_req = wing::Request { .. };
+    var dpop_req = http::Request { .. };
     auth::attach_dpop(dpop_req, proof_at[..]);
     assert(dpop_req.headers.entries.len == 1);
-    assert(wing::header(dpop_req, "DPoP").len == proof_at.len);
+    assert(http::header(dpop_req, "DPoP").len == proof_at.len);
     print("DPOP_ATTACH_AND_SENSITIVE: OK");
 
     // ---- 5. RFC 9449 §4.3 Target URI Normalization Edge Cases --------------
@@ -807,14 +807,14 @@ fn run_05_rfc_repro_auth_dpop_edge() {
     print("DPOP_HEADER_REJECTIONS: OK");
 
     // ---- 8. RFC 9449 §8 Nonce Header Validation ----------------------------
-    var hdrs_dup = wing::HeaderMap { .. };
-    wing::append_header(hdrs_dup, "DPoP-Nonce", "nonce1");
-    wing::append_header(hdrs_dup, "DPoP-Nonce", "nonce2");
+    var hdrs_dup = http::HeaderMap { .. };
+    http::append_header(hdrs_dup, "DPoP-Nonce", "nonce1");
+    http::append_header(hdrs_dup, "DPoP-Nonce", "nonce2");
     let _, ok_nonce = auth::extract_dpop_nonce(hdrs_dup);
     assert(!ok_nonce);
 
-    var hdrs_bad = wing::HeaderMap { .. };
-    wing::append_header(hdrs_bad, "DPoP-Nonce", "bad nonce with spaces");
+    var hdrs_bad = http::HeaderMap { .. };
+    http::append_header(hdrs_bad, "DPoP-Nonce", "bad nonce with spaces");
     let _, ok_bad = auth::extract_dpop_nonce(hdrs_bad);
     assert(!ok_bad);
     print("DPOP_NONCE_VALIDATION: OK");

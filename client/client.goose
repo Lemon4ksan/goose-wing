@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Client session facade, configuration models, and lifecycle methods.
-namespace wing;
+namespace client;
 
 import std;
 import core from "..";
+import rfc.http;
 import cookie.constants;
 import cookie.canonical;
 import cookie.policy;
@@ -43,10 +44,12 @@ import security.privacypass;
 import security.ssrf;
 import client.replay_guard;
 import client.telemetry;
+import .internal;
+import .session.internal;
 
 // ---- 1. Configuration & State Structs --------------------------------------
 
-struct ClientConfig {
+struct Config {
     base_url:                const u8[:]          = "",
     profile:                 fingerprint::Profile = fingerprint::Profile.Wing,
     proxy_url:               const u8[:]          = "",
@@ -54,7 +57,7 @@ struct ClientConfig {
     follow_redirects:        bool                 = true,
     cookie_jar:              bool                 = true,
     enable_cache:            bool                 = false,
-    cache_options:           CacheOptions         = CacheOptions { .. },
+    cache_options:           http::CacheOptions   = http::CacheOptions { .. },
     enable_altsvc:           bool                 = true,
     enable_protocol_racing:  bool                 = true,
     quic_race_delay_ms:      i64                  = 200,
@@ -66,9 +69,9 @@ struct ClientConfig {
     sig_public_key:          const u8[:]          = "",
 }
 
-type SessionConfig = ClientConfig;
+type SessionConfig = Config;
 
-struct ClientCredentials {
+struct Credentials {
     username:        u8[..128]             = [],
     password:        u8[..128]             = [],
     has_credentials: bool                  = false,
@@ -77,7 +80,7 @@ struct ClientCredentials {
     last_digest:     auth::DigestChallenge = auth::DigestChallenge { .. },
 }
 
-struct ClientDpopState {
+struct DpopState {
     private_key:  u8[32]     = [0; 32],
     access_token: u8[..2048] = [],
     has_key:      bool       = false,
@@ -96,15 +99,15 @@ struct Client {
     https_only:              bool                       = false,
     enable_referer:          bool                       = true,
     default_referrer_policy: ReferrerPolicy             = ReferrerPolicy.StrictOriginWhenCrossOrigin,
-    default_headers:         HeaderMap                  = HeaderMap { .. },
+    default_headers:         http::HeaderMap            = http::HeaderMap { .. },
     ssrf_guard:              security::SsrfGuardPolicy  = security::SsrfGuardPolicy { .. },
     virtual_clock_us:        i64                        = 1700000000000000,
     trusted_location_hosts:  u8[..128][..8]             = [],
     mock_routes:             MockExchange[..8]          = [],
 
     // RFC 9111 HTTP Cache Engine
-    cache:        HttpCache = HttpCache { .. },
-    enable_cache: bool      = false,
+    cache:        http::Cache = http::Cache { .. },
+    enable_cache: bool        = false,
 
     // RFC 8484 DNS-over-HTTPS (DoH) & RFC 9460 Automated ECH Discovery
     doh:                dns::DohResolver = dns::DohResolver { .. },
@@ -114,47 +117,47 @@ struct Client {
     dns_cache:          dns::Cache       = dns::Cache { .. },
 
     // RFC 7838 Alt-Svc & Protocol Racing
-    altsvc:                 AltSvcCache = AltSvcCache { .. },
-    enable_altsvc:          bool        = true,
-    enable_protocol_racing: bool        = true,
-    quic_race_delay_ms:     i64         = 200,
+    altsvc:                 http::AltSvcCache = http::AltSvcCache { .. },
+    enable_altsvc:          bool              = true,
+    enable_protocol_racing: bool              = true,
+    quic_race_delay_ms:     i64               = 200,
 
     // Compression Dictionary Transport (RFC 9842 dcz/dcb)
-    dict_cache:              DictionaryCache = DictionaryCache { .. },
-    enable_compression_dict: bool            = true,
+    dict_cache:              http::DictionaryCache = http::DictionaryCache { .. },
+    enable_compression_dict: bool                  = true,
 
     // OkHttp/Tower-style 2-tier Interceptor Pipeline (Application & Network)
     pipeline:      InterceptorPipeline = InterceptorPipeline { .. },
     wire_pipeline: wire::WirePipeline  = wire::default_client_pipeline(),
 
     // RFC 7616 Digest & RFC 7617 Basic Authenticator
-    creds:               ClientCredentials           = ClientCredentials { .. },
+    creds:               Credentials                 = Credentials { .. },
     private_token_cache: security::PrivateTokenCache = security::PrivateTokenCache { .. },
 
     // RFC 6797 HTTP Strict Transport Security (HSTS)
-    hsts:        HstsCache = HstsCache { .. },
-    enable_hsts: bool      = true,
+    hsts:        http::HstsCache = http::HstsCache { .. },
+    enable_hsts: bool            = true,
 
     // L4 / L7 Resilient connection pool (Keep-Alive, IP coalescing, WantQueue)
-    pool:     StreamPool         = StreamPool { .. },
-    af_cache: AddressFamilyCache = AddressFamilyCache { .. },
+    pool:     net::StreamPool         = net::StreamPool { .. },
+    af_cache: net::AddressFamilyCache = net::AddressFamilyCache { .. },
 
-    enable_cookie_jar:       bool                = true,
-    http2_prior_knowledge:   bool                = false,
-    strict_content_decoding: bool                = false,
-    verify_content_digest:   bool                = false,
-    enable_early_data:       bool                = false,
-    enable_har_telemetry:    bool                = false,
-    last_har_json:           u8[..2048]          = [],
-    retry_budget:            AdaptiveRetryBudget = new_adaptive_retry_budget(),
-    circuit_breaker:         HostCircuitBreaker  = new_host_circuit_breaker(),
-    backoff_config:          BackoffConfig       = new_backoff_config(),
-    dpop:                    ClientDpopState     = ClientDpopState { .. },
-    sig_key_id:              u8[..64]            = [],
-    sig_private_key:         u8[..64]            = [],
-    sig_public_key:          u8[..64]            = [],
-    trust_store:             TrustAnchorStore    = TrustAnchorStore { .. },
-    insecure_skip_verify:    bool                = false,
+    enable_cookie_jar:       bool                     = true,
+    http2_prior_knowledge:   bool                     = false,
+    strict_content_decoding: bool                     = false,
+    verify_content_digest:   bool                     = false,
+    enable_early_data:       bool                     = false,
+    enable_har_telemetry:    bool                     = false,
+    last_har_json:           u8[..2048]               = [],
+    retry_budget:            net::AdaptiveRetryBudget = net::new_adaptive_retry_budget(),
+    circuit_breaker:         net::HostCircuitBreaker  = net::new_host_circuit_breaker(),
+    backoff_config:          net::BackoffConfig       = net::new_backoff_config(),
+    dpop:                    DpopState                = DpopState { .. },
+    sig_key_id:              u8[..64]                 = [],
+    sig_private_key:         u8[..64]                 = [],
+    sig_public_key:          u8[..64]                 = [],
+    trust_store:             tls::TrustAnchorStore    = tls::TrustAnchorStore { .. },
+    insecure_skip_verify:    bool                     = false,
 
     // Resizable field must be final
     jar: cookie::CanonicalCookieJar = cookie::CanonicalCookieJar { .. },
@@ -168,131 +171,102 @@ fn new_client() -> Client {
     var c = Client {
         profile:                 fingerprint::Profile.Wing,
         ssrf_guard:              security::SsrfGuardPolicy { .. },
-        cache:                   new_http_cache(),
+        cache:                   http::Cache { .. },
         enable_cache:            false,
-        altsvc:                  AltSvcCache { .. },
+        altsvc:                  http::AltSvcCache { .. },
         enable_altsvc:           true,
         enable_protocol_racing:  true,
         quic_race_delay_ms:      200,
-        dict_cache:              DictionaryCache { .. },
+        dict_cache:              http::DictionaryCache { .. },
         enable_compression_dict: true,
         pipeline:                InterceptorPipeline { .. },
         wire_pipeline:           wire::default_client_pipeline(),
-        hsts:                    HstsCache { .. },
+        hsts:                    http::HstsCache { .. },
         enable_hsts:             true,
-        pool:                    new_stream_pool(),
+        pool:                    net::new_stream_pool(),
         enable_cookie_jar:       true,
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
     let def_p = fingerprint::wing_default_profile();
-    apply_profile(c, def_p);
+    client_internal::apply_profile(c, def_p);
     return c;
 }
 
-fn new_client(cfg: ClientConfig) -> Client {
-    var client = Client {
+fn new_client(cfg: Config) -> Client {
+    var c = Client {
         profile:                 cfg.profile,
         timeout_ms:              cfg.timeout_ms,
         follow_redirects:        cfg.follow_redirects,
         redirect_mode:           if cfg.follow_redirects { RedirectMode.Follow } else { RedirectMode.Manual },
         ssrf_guard:              security::SsrfGuardPolicy { .. },
-        cache:                   new_http_cache(cfg.cache_options),
+        cache:                   http::Cache { options: cfg.cache_options, .. },
         enable_cache:            cfg.enable_cache,
-        altsvc:                  AltSvcCache { .. },
+        altsvc:                  http::AltSvcCache { .. },
         enable_altsvc:           cfg.enable_altsvc,
         enable_protocol_racing:  cfg.enable_protocol_racing,
         quic_race_delay_ms:      cfg.quic_race_delay_ms,
-        dict_cache:              DictionaryCache { .. },
+        dict_cache:              http::DictionaryCache { .. },
         enable_compression_dict: cfg.enable_compression_dict,
         pipeline:                InterceptorPipeline { .. },
         wire_pipeline:           wire::default_client_pipeline(),
-        hsts:                    HstsCache { .. },
+        hsts:                    http::HstsCache { .. },
         enable_hsts:             true,
-        pool:                    new_stream_pool(),
+        pool:                    net::new_stream_pool(),
         enable_cookie_jar:       cfg.cookie_jar,
         strict_content_decoding: cfg.strict_content_decoding,
         insecure_skip_verify:    cfg.insecure_skip_verify,
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
-    client.base_url.append(cfg.base_url);
-    client.proxy_url.append(cfg.proxy_url);
+    c.base_url.append(cfg.base_url);
+    c.proxy_url.append(cfg.proxy_url);
     if cfg.profile != fingerprint::Profile.None {
-        set_profile(client, cfg.profile);
+        set_profile(c, cfg.profile);
     }
     if cfg.sig_private_key.len > 0 || cfg.sig_public_key.len > 0 {
-        let _ = set_http_signature_keys(client, cfg.sig_key_id, cfg.sig_private_key, cfg.sig_public_key);
+        let _ = set_http_signature_keys(c, cfg.sig_key_id, cfg.sig_private_key, cfg.sig_public_key);
     }
-    return client;
+    return c;
 }
 
 fn new_client(base_url: const u8[:]) -> Client {
-    var client = new_client();
-    client.base_url.append(base_url);
-    return client;
+    var c = new_client();
+    c.base_url.append(base_url);
+    return c;
 }
 
 fn new_client<F: fn(Client&)>(base_url: const u8[:]) -> Client {
-    var client = new_client(base_url);
-    F(&client);
-    return client;
+    var c = new_client(base_url);
+    F(&c);
+    return c;
 }
 
 fn new_client<F: fn(Client&)>() -> Client {
-    var client = new_client();
-    F(&client);
-    return client;
+    var c = new_client();
+    F(&c);
+    return c;
 }
 
 inline fn new_session() -> Client { return new_client(); }
-inline fn new_session(cfg: ClientConfig) -> Client { return new_client(cfg); }
+inline fn new_session(cfg: Config) -> Client { return new_client(cfg); }
 inline fn new_session(base_url: const u8[:]) -> Client { return new_client(base_url); }
 fn new_session<F: fn(Client&)>(base_url: const u8[:]) -> Client {
-    var client = new_client(base_url);
-    F(&client);
-    return client;
+    var c = new_client(base_url);
+    F(&c);
+    return c;
 }
 fn new_session<F: fn(Client&)>() -> Client {
-    var client = new_client();
-    F(&client);
-    return client;
+    var c = new_client();
+    F(&c);
+    return c;
 }
 
 // ---- 3. Core Session Mutators & Fingerprint Accessors ----------------------
 
 fn set_base_url(session: Session&, url: const u8[:]) {
-    session.base_url.clear();
     let n = min(url.len, session.base_url.cap);
-    session.base_url.append(url[..n]);
-}
-
-fn apply_profile(client: Client&, profile: const fingerprint::ClientProfile&) {
-    client.profile = profile.kind;
-    client.profile_spec = profile;
-    client.default_headers.clear();
-    if profile.user_agent.len > 0 {
-        set_header(client.default_headers, "User-Agent", profile.user_agent[..]);
-    }
-    if profile.accept.len > 0 {
-        set_header(client.default_headers, "Accept", profile.accept[..]);
-    }
-    if profile.accept_encoding.len > 0 {
-        set_header(client.default_headers, "Accept-Encoding", profile.accept_encoding[..]);
-    }
-    if profile.accept_language.len > 0 {
-        set_header(client.default_headers, "Accept-Language", profile.accept_language[..]);
-    }
-    if profile.upgrade_insecure_requests.len > 0 {
-        set_header(client.default_headers, "Upgrade-Insecure-Requests", profile.upgrade_insecure_requests[..]);
-    }
-    for &e in profile.extra_headers.entries {
-        let h_name = entry_name(profile.extra_headers, e);
-        let h_val = entry_value(profile.extra_headers, e);
-        if h_name.len > 0 {
-            set_header(client.default_headers, h_name, h_val);
-        }
-    }
+    let _ = session.base_url.try_set(url[..n]);
 }
 
 fn set_profile(session: Session&, profile: fingerprint::Profile) {
@@ -304,26 +278,26 @@ fn set_profile(session: Session&, profile: fingerprint::Profile) {
     }
     if profile == fingerprint::Profile.Custom {
         let p = fingerprint::custom_profile();
-        apply_profile(session, p);
+        client_internal::apply_profile(session, p);
         return;
     }
     if profile == fingerprint::Profile.Wing {
         let p = fingerprint::wing_default_profile();
-        apply_profile(session, p);
+        client_internal::apply_profile(session, p);
     }
 }
 
 fn set_profile(session: Session&, profile: const fingerprint::ClientProfile&) {
-    apply_profile(session, profile);
+    client_internal::apply_profile(session, profile);
 }
 
 fn set_user_agent(session: Session&, ua: const u8[:]) {
-    set_header(session.default_headers, "User-Agent", ua);
+    http::set_header(session.default_headers, "User-Agent", ua);
     session.profile_spec.set_user_agent(ua);
 }
 
 fn user_agent(session: const Session&) -> const u8[:] {
-    let ua = get_header(session.default_headers, "user-agent");
+    let ua = http::get_header(session.default_headers, "user-agent");
     if ua.len > 0 { return ua; }
     return session.profile.user_agent();
 }
@@ -345,9 +319,8 @@ fn akamai_hash(session: const Session&) -> u8[..32] {
 }
 
 fn set_proxy(session: Session&, proxy_url: const u8[:]) {
-    session.proxy_url.clear();
     let n = min(proxy_url.len, session.proxy_url.cap);
-    session.proxy_url.append(proxy_url[..n]);
+    let _ = session.proxy_url.try_set(proxy_url[..n]);
 }
 
 fn set_timeout_ms(session: Session&, ms: i64) {
@@ -356,7 +329,7 @@ fn set_timeout_ms(session: Session&, ms: i64) {
 
 // Closes all idle and active connections in the session's pool.
 fn close(session: Session&) {
-    drain_stream_pool(session.pool);
+    net::drain_stream_pool(session.pool);
 }
 
 fn set_redirect_mode(session: Session&, mode: RedirectMode) {
@@ -368,9 +341,8 @@ fn set_redirect_mode(session: Session&, mode: RedirectMode) {
 
 fn enable_doh(session: Session&, endpoint: const u8[:] = "https://cloudflare-dns.com/dns-query", use_post: bool = true) {
     session.enable_doh = true;
-    session.doh.endpoint.clear();
     let n = min(endpoint.len, session.doh.endpoint.cap);
-    session.doh.endpoint.append(endpoint[..n]);
+    let _ = session.doh.endpoint.try_set(endpoint[..n]);
     session.doh.use_post = use_post;
 }
 
@@ -393,17 +365,17 @@ fn enable_protocol_racing(session: Session&, enabled: bool = true, quic_delay_ms
 
 fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
     var origin_buf: u8[..128] = [];
-    resolve_target_origin(target, origin_buf);
+    client_internal::resolve_target_origin(target, origin_buf);
     let now_sec = session.virtual_clock_us / 1000000;
-    var ep = AltSvcEndpoint { .. };
-    return lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
+    var ep = http::AltSvcEndpoint { .. };
+    return http::lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
 }
 
 fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
     var origin_buf: u8[..128] = [];
-    resolve_target_origin(target, origin_buf);
+    client_internal::resolve_target_origin(target, origin_buf);
     let now_sec = session.virtual_clock_us / 1000000;
-    return is_broken(session.altsvc, origin_buf[..], now_sec);
+    return http::is_broken(session.altsvc, origin_buf[..], now_sec);
 }
 
 // ---- compression dictionary transport configuration (chrome 123+ dcz/dcb) --
@@ -414,17 +386,17 @@ fn enable_compression_dict(session: Session&, enabled: bool = true) {
 
 fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool {
     var origin_buf: u8[..128] = [];
-    resolve_target_origin(target_url, origin_buf);
+    client_internal::resolve_target_origin(target_url, origin_buf);
     var path_buf: u8[..256] = [];
-    let parsed, err = core::parse_url(target_url);
+    let parsed, _ = core::parse_url(target_url);
     if parsed.valid {
         let _ = path_buf.try_set(parsed.pathname());
     } else {
         let _ = path_buf.try_set("/");
     }
     let now_sec = session.virtual_clock_us / 1000000;
-    var dummy_hash: u8[..64] = [];
-    return dictionary_lookup_for_request(session.dict_cache, origin_buf[..], path_buf[..], now_sec, dummy_hash);
+    let _, found = http::dictionary_lookup_for_request(session.dict_cache, origin_buf[..], path_buf[..], now_sec);
+    return found;
 }
 
 // ---- interceptor pipeline configuration (okhttp/tower-style) ---------------
@@ -521,17 +493,17 @@ fn enable_hsts(session: Session&, enabled: bool = true) {
 
 fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
     let now_sec = session.virtual_clock_us / 1000000;
-    return is_hsts_host(session.hsts, hostname, now_sec);
+    return http::is_hsts_host(session.hsts, hostname, now_sec);
 }
 
 fn export_hsts<B>(session: const Session&, out: B&) -> i64 {
     let now_sec = session.virtual_clock_us / 1000000;
-    return save_hsts_cache(session.hsts, now_sec, out);
+    return http::save_hsts_cache(session.hsts, now_sec, out);
 }
 
 fn import_hsts(session: Session&, data: const u8[:]) -> i64 {
     let now_sec = session.virtual_clock_us / 1000000;
-    return load_hsts_cache(session.hsts, data, now_sec);
+    return http::load_hsts_cache(session.hsts, data, now_sec);
 }
 
 fn allow_port(session: Session&, port_num: i32) -> bool {
@@ -550,25 +522,21 @@ fn set_clock_us(session: Session&, now_us: i64) {
 
 fn trust_location_host(session: Session&, host_name: const u8[:]) -> bool {
     guard host_name.len > 0 && host_name.len <= 128 else { return false; }
-    guard !is_trusted_location_host(session, host_name) else { return true; }
+    guard !client_internal::is_trusted_location_host(session, host_name) else { return true; }
     var host_buf: u8[..128] = [];
     host_name.to_lower_ascii(host_buf);
     return session.trusted_location_hosts.try_push(host_buf);
-}
-
-fn is_trusted_location_host(session: const Session&, host_name: const u8[:]) -> bool {
-    return session.trusted_location_hosts.any() { it[..].eq_ascii_fold(host_name) };
 }
 
 // Loads PEM-encoded CA trust anchors from `path` into `sess.trust_store` and
 // enforces peer certificate verification on the session.
 //
 // Example:
-//   let count, ok = wing::load_trust_anchors_pem_file(sess, "certs/ca.pem");
+//   let count, ok = sess.load_trust_anchors_pem_file("certs/ca.pem");
 //   returns: count >= 1, ok = true (or 0, false if unreadable/empty/invalid)
 fn load_trust_anchors_pem_file(sess: Session&, path: const u8[:]) -> i64, bool {
     guard path.len > 0 else { return 0, false; }
-    let count, ok = load_trust_anchors_pem_file(sess.trust_store, path);
+    let count, ok = tls::load_trust_anchors_pem_file(sess.trust_store, path);
     guard ok else { return 0, false; }
     sess.insecure_skip_verify = false;
     return count, true;
@@ -579,7 +547,7 @@ fn load_trust_anchors_pem_file(sess: Session&, path: const u8[:]) -> i64, bool {
 // targets for local test or proxy harnesses.
 //
 // Example:
-//   let count, ok = wing::configure_session_tls_ca_pem(sess, ca_pem, true);
+//   let count, ok = sess.configure_session_tls_ca_pem(ca_pem, true);
 //   returns: count >= 1, ok = true with `sess.ssrf_guard.deny_local_network = false`
 fn configure_session_tls_ca_pem(
     sess:           Session&,
@@ -588,7 +556,7 @@ fn configure_session_tls_ca_pem(
 ) -> i64, bool {
     guard pem_bundle.len > 0 else { return 0, false; }
     let saved_len = sess.trust_store.anchors.len;
-    let count, ok = add_trust_anchors_pem(sess.trust_store, pem_bundle);
+    let count, ok = tls::add_trust_anchors_pem(sess.trust_store, pem_bundle);
     guard ok && count > 0 else {
         sess.trust_store.anchors.resize(saved_len);
         return 0, false;
@@ -658,22 +626,16 @@ fn set_mock_quic_blocked(session: Session&, blocked: bool = true) {
     }
 }
 
-fn set_mock_protocol(session: Session&, proto: const u8[:]) {
-    if session.mock_routes.len > 0 {
-        set_mock_protocol(session.mock_routes[session.mock_routes.len - 1], proto);
-    }
-}
-
 fn add_mock_websocket(session: Session&, url_pattern: const u8[:], subprotocol: const u8[:] = "") {
     var route = MockExchange {
         status_code: rfc::STATUS_SWITCHING_PROTOCOLS,
         ..
     };
     guard route.method.try_set("GET") && route.pattern_url.try_set(url_pattern) else { return; }
-    set_header(route.headers, "Upgrade", "websocket");
-    set_header(route.headers, "Connection", "Upgrade");
+    http::set_header(route.headers, "Upgrade", "websocket");
+    http::set_header(route.headers, "Connection", "Upgrade");
     if subprotocol.len > 0 {
-        set_header(route.headers, "Sec-WebSocket-Protocol", subprotocol);
+        http::set_header(route.headers, "Sec-WebSocket-Protocol", subprotocol);
     }
     let _ = session.mock_routes.try_push(route);
 }
@@ -686,9 +648,9 @@ fn add_mock_sse(session: Session&, url_pattern: const u8[:], sample_events: cons
     guard route.method.try_set("GET")
         && route.pattern_url.try_set(url_pattern)
         && route.body.try_set(sample_events) else { return; }
-    set_header(route.headers, "Content-Type", "text/event-stream");
-    set_header(route.headers, "Cache-Control", "no-cache");
-    set_header(route.headers, "Connection", "keep-alive");
+    http::set_header(route.headers, "Content-Type", "text/event-stream");
+    http::set_header(route.headers, "Cache-Control", "no-cache");
+    http::set_header(route.headers, "Connection", "keep-alive");
     let _ = session.mock_routes.try_push(route);
 }
 
@@ -712,188 +674,57 @@ fn cookie(session: const Session&, name: const u8[:]) -> const u8[:] {
 }
 
 fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
-    set_header(session.default_headers, name, value);
+    http::set_header(session.default_headers, name, value);
 }
 
-// ---- 5. Session Protocol Helpers (DoH, ECH Discovery & RFC 9842 Dictionary) -
+// ---- 5. ECH Discovery & RFC 9842 Compression Dictionary APIs ---------------
 
-// Creates an isolated `Client` copying only transport, TLS verification, SSRF policy,
-// virtual clock, and mock routes so application credentials, cookies, and interceptors
-// do not leak across internal sub-requests (such as RFC 8484 DoH queries).
-fn clone_isolated_transport_client(session: const Session&) -> Client {
-    var isolated = new_client();
-    isolated.virtual_clock_us = session.virtual_clock_us;
-    isolated.proxy_url.append(session.proxy_url[..]);
-    isolated.timeout_ms = session.timeout_ms;
-    isolated.trust_store = copy(session.trust_store);
-    isolated.insecure_skip_verify = session.insecure_skip_verify;
-    isolated.ssrf_guard = copy(session.ssrf_guard);
-    isolated.mock_routes = copy(session.mock_routes);
-    return isolated;
-}
-
-// Dispatches a DNS-over-HTTPS wire query using an isolated HTTP client transport
-// to ensure application credentials, custom headers, and interceptors do not leak to public resolvers.
-fn doh_query(
-    session:  Session&,
-    domain:   const u8[:],
-    qtype:    u16,
-    tx_id:    u16,
-    out_resp: dns::Response&,
-) -> bool {
-    var req = new_request(if session.doh.use_post { "POST" } else { "GET" }, "");
-
-    if session.doh.use_post {
-        req.url.append(session.doh.endpoint[..]);
-        set_header(req, "content-type", "application/dns-message");
-        set_header(req, "accept", "application/dns-message");
-        var wire_query: u8[..512] = [];
-        guard dns::build_query(domain, qtype, tx_id, wire_query) else { return false; }
-        req.body.append(wire_query[..]);
-    } else {
-        guard dns::build_doh_get_url(session.doh.endpoint[..], domain, qtype, req.url) else { return false; }
-        set_header(req, "accept", "application/dns-message");
-    }
-
-    var doh_client = clone_isolated_transport_client(session);
-    let res, err = do(doh_client, req);
-    guard ok(err) && res.status_code == rfc::STATUS_OK else { return false; }
-
-    let parsed, ok_dns = dns::parse_response(res.body[..]);
-    guard ok_dns else { return false; }
-    out_resp = parsed;
-    guard out_resp.rcode == rfc::DNS_RCODE_NOERROR && out_resp.question_count == 1 else { return false; }
-    let expected_tx_id: u16 = if session.doh.use_post { tx_id } else { 0 };
-    guard out_resp.tx_id == expected_tx_id else { return false; }
-    return true;
-}
-
+// Looks up a fresh cached ECHConfigList for `domain` in `dns_cache`.
 fn lookup_cached_ech_config(
     dns_cache: const dns::Cache&,
     domain:    const u8[:],
     now_sec:   i64,
-    out_ech:   u8[..512]&,
-) -> bool {
+) -> u8[..512], bool {
+    var ech: u8[..512] = [];
     let cached, cache_status = dns_cache.lookup(domain, rfc::DNS_QTYPE_HTTPS, now_sec);
     if cached && cache_status == dns::CacheStatus.Fresh {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
-                return out_ech.try_set(rec.ech_config_list[..]);
+                let ok_set = ech.try_set(rec.ech_config_list[..]);
+                return ech, ok_set;
             }
         }
     }
-    out_ech.clear();
-    return false;
-}
-
-fn discover_and_cache_ech_config(
-    session: Session&,
-    domain:  const u8[:],
-    now_sec: i64,
-    out_ech: u8[..512]&,
-) -> bool {
-    guard session.enable_doh && session.auto_ech_discovery else { return false; }
-
-    var dns_resp = dns::Response { .. };
-    // RFC 8484 §4.1: DoH clients SHOULD set DNS ID to 0 for maximum HTTP cacheability
-    guard doh_query(session, domain, rfc::DNS_QTYPE_HTTPS, 0, dns_resp) else { return false; }
-
-    let eff_ttl = if dns_resp.min_ttl_sec > 0 { dns_resp.min_ttl_sec } else { 300 };
-    var cache_entry = dns::CacheEntry {
-        qtype:           rfc::DNS_QTYPE_HTTPS,
-        inserted_at_sec: now_sec,
-        ttl_sec:         eff_ttl,
-        valid:           true,
-        ..
-    };
-    guard cache_entry.domain.try_set(domain) else { return false; }
-
-    var found_ech = false;
-    for &rec in dns_resp.https_records {
-        let _ = cache_entry.https_records.try_push(rec);
-        if rec.has_ech && rec.ech_config_list.len > 0 && !found_ech {
-            found_ech = out_ech.try_set(rec.ech_config_list[..]);
-        }
-    }
-
-    session.dns_cache.insert(cache_entry);
-    return found_ech;
+    return ech, false;
 }
 
 // Discovers or extracts ECHConfigList for a domain.
-// First checks local dns::Cache; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
+// Checks local `dns::Cache` first; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
 fn resolve_ech_config(
     session: Session&,
     domain:  const u8[:],
     now_sec: i64,
-    out_ech: u8[..512]&,
-) -> bool {
-    out_ech.clear();
-    if lookup_cached_ech_config(session.dns_cache, domain, now_sec, out_ech) {
-        return true;
+) -> u8[..512], bool {
+    let cached_ech, ok_cached = lookup_cached_ech_config(session.dns_cache, domain, now_sec);
+    if ok_cached {
+        return cached_ech, true;
     }
-    if discover_and_cache_ech_config(session, domain, now_sec, out_ech) {
-        return true;
+    let disc_ech, ok_disc = client_internal::discover_and_cache_ech_config(session, domain, now_sec);
+    if ok_disc {
+        return disc_ech, true;
     }
-    // Fallback: If discovery failed, check if a stale entry is available
+    // Fallback: if discovery failed, check if a stale entry is available.
+    var stale_ech: u8[..512] = [];
     let cached, stale_status = session.dns_cache.lookup(domain, rfc::DNS_QTYPE_HTTPS, now_sec);
     if cached && (stale_status == dns::CacheStatus.Fresh || stale_status == dns::CacheStatus.Stale) {
         for &rec in cached.https_records {
             if rec.has_ech && rec.ech_config_list.len > 0 {
-                return out_ech.try_set(rec.ech_config_list[..]);
+                let ok_set = stale_ech.try_set(rec.ech_config_list[..]);
+                return stale_ech, ok_set;
             }
         }
     }
-    out_ech.clear();
-    return false;
-}
-
-inline fn is_localhost_dict_authority(auth: const u8[:]) -> bool {
-    let host_part, _, _ = auth.partition_byte('/');
-    if host_part.starts_with_fold("localhost") {
-        return host_part.len == 9 || host_part[9] == ':';
-    }
-    if core::starts_with(host_part, "127.0.0.1") {
-        return host_part.len == 9 || host_part[9] == ':';
-    }
-    if core::starts_with(host_part, "[::1]") {
-        return host_part.len == 5 || host_part[5] == ':';
-    }
-    return false;
-}
-
-inline fn is_secure_dict_origin(origin: const u8[:]) -> bool {
-    guard origin.len > 0 else { return false; }
-    if origin.starts_with_fold("https://") {
-        return origin.len > 8;
-    }
-    if origin.starts_with_fold("http://") {
-        return is_localhost_dict_authority(origin[7..]);
-    }
-    if core::contains(origin, "://") {
-        return false;
-    }
-    guard origin[0] != ':' else { return false; }
-    if core::ends_with(origin, ":80") {
-        return is_localhost_dict_authority(origin);
-    }
-    return true;
-}
-
-inline fn is_dict_entry_usable_for_session(
-    session: const Session&,
-    entry:   const DictionaryEntry&,
-    origin:  const u8[:],
-) -> bool {
-    guard entry.valid && entry.origin.len > 0 && entry.origin[..].eq_ascii_fold(origin) else {
-        return false;
-    }
-    guard entry.ttl_sec > 0 else { return true; }
-    if session.virtual_clock_us == 1700000000000000 && entry.inserted_at_sec > 0 && entry.inserted_at_sec < 100000000 {
-        return true;
-    }
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
-    return now_sec >= entry.inserted_at_sec && core::sub_sat_i64(now_sec, entry.inserted_at_sec) < entry.ttl_sec;
+    return stale_ech, false;
 }
 
 // RFC 9842 Section 2.2: Available-Dictionary - Attaches `Available-Dictionary` and `Dictionary-ID`
@@ -902,18 +733,18 @@ fn attach_dictionary_request_headers(
     session:  const Session&,
     origin:   const u8[:],
     url_path: const u8[:],
-    req:      Request&,
+    req:      http::Request&,
 ) -> bool {
-    guard session.enable_compression_dict && is_secure_dict_origin(origin) else { return false; }
+    guard session.enable_compression_dict && client_internal::is_secure_dict_origin(origin) else { return false; }
     let now_sec = session.virtual_clock_us / 1000000;
-    let best_idx = find_best_matching_dict_idx(session.dict_cache, origin, url_path, now_sec);
+    let best_idx = http::find_best_matching_dict_idx(session.dict_cache, origin, url_path, now_sec);
     guard best_idx >= 0 && best_idx < session.dict_cache.entries.len else { return false; }
     let entry .= session.dict_cache.entries[best_idx];
-    set_header(req, "Available-Dictionary", entry.sha256_base64[..]);
+    http::set_header(req, "Available-Dictionary", entry.sha256_base64[..]);
     if entry.id.len > 0 {
         var id_hdr: u8[..128] = [];
-        format_dictionary_id_header(id_hdr, entry.id[..]);
-        set_header(req, "Dictionary-ID", id_hdr[..]);
+        http::format_dictionary_id_header(id_hdr, entry.id[..]);
+        http::set_header(req, "Dictionary-ID", id_hdr[..]);
     }
     return true;
 }
@@ -926,57 +757,37 @@ fn process_dictionary_response<B>(
     use_as_dict_hdr:  const u8[:],
     content_encoding: const u8[:],
     raw_body:         const u8[:],
-    out_decoded:      B&,
+    out:              B&,
 ) -> bool {
-    guard is_secure_dict_origin(origin) else { return false; }
+    guard client_internal::is_secure_dict_origin(origin) else { return false; }
     let enc = content_encoding.trim_lws();
-    let prev_len = out_decoded.len;
+    let prev_len = out.len;
     var committed = false;
-    defer if !committed { out_decoded.resize(prev_len); };
+    defer if !committed { out.resize(prev_len); };
     if enc.eq_ascii_fold(rfc::ENCODING_DCZ) {
-        var dict_hash: u8[32] = [0; 32];
-        let _, ok_hdr = decode_dcz_header(raw_body, dict_hash);
-        guard ok_hdr else { return false; }
-        var dict_entry = DictionaryEntry { .. };
-        guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
-            return false;
-        }
-        guard is_dict_entry_usable_for_session(session, dict_entry, origin) else { return false; }
-        let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, true, dict_entry.sha256_hash);
-        guard ok_magic else { return false; }
-        guard decompress_dcz_payload(comp_payload, dict_entry.content[..], out_decoded) else {
+        guard client_internal::decode_dict_compressed_body(session, origin, true, raw_body, out) else {
             return false;
         }
     } else if enc.eq_ascii_fold(rfc::ENCODING_DCB) {
-        var dict_hash: u8[32] = [0; 32];
-        let _, ok_hdr = decode_dcb_header(raw_body, dict_hash);
-        guard ok_hdr else { return false; }
-        var dict_entry = DictionaryEntry { .. };
-        guard dictionary_lookup_by_hash(session.dict_cache, dict_hash, dict_entry) else {
-            return false;
-        }
-        guard is_dict_entry_usable_for_session(session, dict_entry, origin) else { return false; }
-        let comp_payload, ok_magic = verify_dcz_dcb_magic(raw_body, false, dict_entry.sha256_hash);
-        guard ok_magic else { return false; }
-        guard decompress_dcb_payload(comp_payload, dict_entry.content[..], out_decoded) else {
+        guard client_internal::decode_dict_compressed_body(session, origin, false, raw_body, out) else {
             return false;
         }
     } else if enc.len == 0 || enc.eq_ascii_fold("identity") {
-        guard out_decoded.try_append(raw_body) else { return false; }
+        guard out.try_append(raw_body) else { return false; }
     } else {
         return false;
     }
 
     if session.enable_compression_dict && use_as_dict_hdr.len > 0 {
-        let params, ok_p = parse_use_as_dictionary_header(use_as_dict_hdr);
+        let params, ok_p = http::parse_use_as_dictionary_header(use_as_dict_hdr);
         if ok_p {
             let now_sec = div_euclid(session.virtual_clock_us, 1000000);
-            dictionary_cache_insert(
+            http::dictionary_cache_insert(
                 session.dict_cache,
                 origin,
                 params.match_pattern[..],
                 params.id[..],
-                out_decoded[prev_len..],
+                out[prev_len..],
                 params.ttl_sec,
                 now_sec,
             );

@@ -18,14 +18,14 @@ inline fn is_valid_h3_request_stream_id(stream_id: u64) -> bool {
 }
 
 fn is_valid_h3_request_pseudo_fields(pseudo: const http3::PseudoHeaders&) -> bool {
-    guard pseudo.has_method && wing::is_valid_token_swar(pseudo.method[..]) else { return false; }
+    guard pseudo.has_method && http::is_valid_token_swar(pseudo.method[..]) else { return false; }
     if pseudo.has_authority {
         guard http2::is_valid_authority(pseudo.authority[..]) else { return false; }
     }
     if pseudo.has_protocol {
         // RFC 9220 Section 3: WebSockets Upgrade over HTTP/3 - Extended CONNECT requires :authority and token :protocol.
         guard pseudo.method[..] == "CONNECT" && pseudo.has_authority
-            && pseudo.protocol.len > 0 && wing::is_valid_token_swar(pseudo.protocol[..]) else {
+            && pseudo.protocol.len > 0 && http::is_valid_token_swar(pseudo.protocol[..]) else {
             return false;
         }
     }
@@ -143,16 +143,16 @@ fn encode_single_h3_map_entry<B1, B2>(
     tbl:            http3::QpackTable&,
     stream_id:      u64,
     base:           u64,
-    headers:        const wing::HeaderMap&,
-    e:              const wing::HeaderEntry&,
+    headers:        const http::HeaderMap&,
+    e:              const http::HeaderEntry&,
     kind:           WireHeaderSectionKind,
     body_fields:    B1&,
     out_enc_stream: B2&,
     max_dyn_abs:    u64&,
     used_any_dyn:   bool&,
 ) -> bool {
-    let raw_name = wing::entry_name(headers, e);
-    let val = wing::entry_value(headers, e);
+    let raw_name = http::entry_name(headers, e);
+    let val = http::entry_value(headers, e);
     if should_skip_h2_entry(headers, raw_name, val, kind) {
         return true;
     }
@@ -164,7 +164,7 @@ fn encode_single_h3_map_entry<B1, B2>(
     }
     let eff_val = if lower_name[..] == "te" { "trailers" } else { val };
     guard http2::validate_field_syntax(lower_name[..], eff_val) else { return false; }
-    if wing::is_sensitive(e) {
+    if http::is_sensitive(e) {
         return encode_qpack_sensitive_field(body_fields, lower_name[..], eff_val);
     }
     let prev_body = body_fields.len;
@@ -185,7 +185,7 @@ fn encode_h3_headers_from_map<B1, B2>(
     tbl:            http3::QpackTable&,
     stream_id:      u64,
     pseudo:         const http3::PseudoHeaders&,
-    headers:        const wing::HeaderMap&,
+    headers:        const http::HeaderMap&,
     out_enc_stream: B1&,
     out_frame:      B2&,
 ) -> bool {
@@ -249,7 +249,7 @@ fn decode_h3_headers_to_map(
     stream_id:         u64,
     qpack_payload:     const u8[:],
     out_pseudo:        http3::PseudoHeaders&,
-    out_headers:       wing::HeaderMap&,
+    out_headers:       http::HeaderMap&,
     max_field_section: u64 = 16384,
 ) -> http3::QpackError {
     let was_trailer = out_pseudo.is_trailer;
@@ -273,13 +273,13 @@ fn decode_h3_headers_to_map(
     guard is_valid_h3_pseudo_fields(out_pseudo) else {
         return http3::QpackError.MessageError;
     }
-    if out_pseudo.has_status && wing::has_header(out_headers, "te") {
+    if out_pseudo.has_status && http::has_header(out_headers, "te") {
         return http3::QpackError.MessageError;
     }
     if !out_pseudo.is_trailer && !out_pseudo.has_status && out_pseudo.method[..] != "CONNECT" {
         let is_http_scheme = out_pseudo.scheme[..].eq_ascii_fold("http")
             || out_pseudo.scheme[..].eq_ascii_fold("https");
-        if is_http_scheme && !out_pseudo.has_authority && !wing::has_header(out_headers, "host") {
+        if is_http_scheme && !out_pseudo.has_authority && !http::has_header(out_headers, "host") {
             return http3::QpackError.MessageError;
         }
     }

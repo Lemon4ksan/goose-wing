@@ -21,7 +21,7 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 fn test_socks5_greeting_and_rfc1929(t: lit::T&) {
     t.run("SOCKS5 Phase 1 Greeting and Negotiation") { sub =>
         var greeting_buf: u8[..16] = [];
-        wing::build_socks5_greeting(wing::Socks5GreetingOptions { has_credentials: true, enable_gssapi: true }, greeting_buf);
+        net::build_socks5_greeting(net::Socks5GreetingOptions { has_credentials: true, enable_gssapi: true }, greeting_buf);
 
         sub.assert_eq(greeting_buf[0], 0x05, "Greeting version is 0x05");
         sub.assert_eq(greeting_buf[1], 3, "3 auth methods announced (None, UserPass, GSSAPI)");
@@ -31,51 +31,51 @@ fn test_socks5_greeting_and_rfc1929(t: lit::T&) {
 
         // Greeting without credentials and without GSSAPI (None only)
         var greet_none: u8[..16] = [];
-        wing::build_socks5_greeting(wing::Socks5GreetingOptions { has_credentials: false, enable_gssapi: false }, greet_none);
+        net::build_socks5_greeting(net::Socks5GreetingOptions { has_credentials: false, enable_gssapi: false }, greet_none);
         sub.assert_eq(greet_none.len, 3, "Greeting len == 3 (ver, nmethods=1, none)");
         sub.assert_eq(greet_none[1], 1, "1 auth method announced");
         sub.assert_eq(greet_none[2], 0x00, "Method is None");
 
         // Parse valid server selection [0x05, 0x02]
         let server_reply: u8[2] = [0x05, 0x02];
-        let method, err = wing::parse_socks5_greeting_reply(server_reply[..]);
-        sub.assert_true(err == wing::Socks5Error.None, "Greeting parsed cleanly");
+        let method, err = net::parse_socks5_greeting_reply(server_reply[..]);
+        sub.assert_true(err == net::Socks5Error.None, "Greeting parsed cleanly");
         sub.assert_eq(method, 0x02, "UserPass method selected by server");
 
         // Server selects None [0x05, 0x00]
         let reply_none: u8[2] = [0x05, 0x00];
-        let m_none, err_none = wing::parse_socks5_greeting_reply(reply_none[..]);
-        sub.assert_true(err_none == wing::Socks5Error.None, "None auth parsed cleanly");
+        let m_none, err_none = net::parse_socks5_greeting_reply(reply_none[..]);
+        sub.assert_true(err_none == net::Socks5Error.None, "None auth parsed cleanly");
         sub.assert_eq(m_none, 0x00, "None selected");
 
         // Server rejects with 0xFF
         let reject_reply: u8[2] = [0x05, 0xFF];
-        let m_rej, err_rej = wing::parse_socks5_greeting_reply(reject_reply[..]);
-        sub.assert_true(err_rej == wing::Socks5Error.NoAcceptableAuth, "0xFF rejected as NoAcceptableAuth");
+        let m_rej, err_rej = net::parse_socks5_greeting_reply(reject_reply[..]);
+        sub.assert_true(err_rej == net::Socks5Error.NoAcceptableAuth, "0xFF rejected as NoAcceptableAuth");
 
         // Server bad versions
         let bad_ver1: u8[2] = [0x04, 0x00];
-        let m_bad1, err_bad1 = wing::parse_socks5_greeting_reply(bad_ver1[..]);
-        sub.assert_true(err_bad1 == wing::Socks5Error.InvalidVersion, "Version 0x04 rejected");
+        let m_bad1, err_bad1 = net::parse_socks5_greeting_reply(bad_ver1[..]);
+        sub.assert_true(err_bad1 == net::Socks5Error.InvalidVersion, "Version 0x04 rejected");
 
         let bad_ver2: u8[2] = [0x06, 0x00];
-        let m_bad2, err_bad2 = wing::parse_socks5_greeting_reply(bad_ver2[..]);
-        sub.assert_true(err_bad2 == wing::Socks5Error.InvalidVersion, "Version 0x06 rejected");
+        let m_bad2, err_bad2 = net::parse_socks5_greeting_reply(bad_ver2[..]);
+        sub.assert_true(err_bad2 == net::Socks5Error.InvalidVersion, "Version 0x06 rejected");
 
         // Truncated greeting reply
         let trunc1: u8[1] = [0x05];
-        let m_tr1, err_tr1 = wing::parse_socks5_greeting_reply(trunc1[..]);
-        sub.assert_true(err_tr1 == wing::Socks5Error.BufferTruncated, "1-byte reply is truncated");
+        let m_tr1, err_tr1 = net::parse_socks5_greeting_reply(trunc1[..]);
+        sub.assert_true(err_tr1 == net::Socks5Error.BufferTruncated, "1-byte reply is truncated");
 
         let empty_reply: u8[0] = [];
-        let m_emp, err_emp = wing::parse_socks5_greeting_reply(empty_reply[..]);
-        sub.assert_true(err_emp == wing::Socks5Error.BufferTruncated, "0-byte reply is truncated");
+        let m_emp, err_emp = net::parse_socks5_greeting_reply(empty_reply[..]);
+        sub.assert_true(err_emp == net::Socks5Error.BufferTruncated, "0-byte reply is truncated");
     };
 
     t.run("RFC 1929 Subnegotiation Version 0x01 Invariant & Buffer Limits") { sub =>
         var auth_buf: u8[..520] = [];
-        let auth_err = wing::build_socks5_rfc1929_auth("testuser", "secretpass123", auth_buf);
-        sub.assert_true(auth_err == wing::Socks5Error.None, "RFC 1929 auth frame built");
+        let auth_err = net::build_socks5_rfc1929_auth("testuser", "secretpass123", auth_buf);
+        sub.assert_true(auth_err == net::Socks5Error.None, "RFC 1929 auth frame built");
 
         // Critical standard invariant: RFC 1929 version MUST be 0x01, NOT 0x05!
         sub.assert_eq(auth_buf[0], 0x01, "First byte is strictly RFC 1929 version 0x01");
@@ -86,37 +86,37 @@ fn test_socks5_greeting_and_rfc1929(t: lit::T&) {
 
         // Boundary: 0-length username is forbidden per RFC 1929
         var auth_buf_bad: u8[..520] = [];
-        let err_empty_u = wing::build_socks5_rfc1929_auth("", "secret", auth_buf_bad);
-        sub.assert_true(err_empty_u == wing::Socks5Error.AuthFailed, "0-length username rejected");
+        let err_empty_u = net::build_socks5_rfc1929_auth("", "secret", auth_buf_bad);
+        sub.assert_true(err_empty_u == net::Socks5Error.AuthFailed, "0-length username rejected");
 
         // Boundary: 0-length password is forbidden per RFC 1929
-        let err_empty_p = wing::build_socks5_rfc1929_auth("user", "", auth_buf_bad);
-        sub.assert_true(err_empty_p == wing::Socks5Error.AuthFailed, "0-length password rejected");
+        let err_empty_p = net::build_socks5_rfc1929_auth("user", "", auth_buf_bad);
+        sub.assert_true(err_empty_p == net::Socks5Error.AuthFailed, "0-length password rejected");
 
         // Boundary: 1-char username and password
-        let err_single = wing::build_socks5_rfc1929_auth("u", "p", auth_buf_bad);
-        sub.assert_true(err_single == wing::Socks5Error.None, "Single-char user/pass accepted");
+        let err_single = net::build_socks5_rfc1929_auth("u", "p", auth_buf_bad);
+        sub.assert_true(err_single == net::Socks5Error.None, "Single-char user/pass accepted");
         sub.assert_eq(auth_buf_bad.len, 5, "Len is 1 (ver) + 1 (ulen) + 1 (u) + 1 (plen) + 1 (p) = 5");
 
         // Parse valid RFC 1929 reply [0x01, 0x00]
         let reply_ok: u8[2] = [0x01, 0x00];
-        let rep_err = wing::parse_socks5_rfc1929_reply(reply_ok[..]);
-        sub.assert_true(rep_err == wing::Socks5Error.None, "Status 0x00 authenticated successfully");
+        let rep_err = net::parse_socks5_rfc1929_reply(reply_ok[..]);
+        sub.assert_true(rep_err == net::Socks5Error.None, "Status 0x00 authenticated successfully");
 
         // Parse rejected RFC 1929 reply [0x01, 0x01]
         let reply_fail: u8[2] = [0x01, 0x01];
-        let fail_err = wing::parse_socks5_rfc1929_reply(reply_fail[..]);
-        sub.assert_true(fail_err == wing::Socks5Error.AuthFailed, "Non-0x00 status rejected as AuthFailed");
+        let fail_err = net::parse_socks5_rfc1929_reply(reply_fail[..]);
+        sub.assert_true(fail_err == net::Socks5Error.AuthFailed, "Non-0x00 status rejected as AuthFailed");
 
         // Invalid version byte in RFC 1929 reply (e.g. 0x05)
         let reply_wrong_ver: u8[2] = [0x05, 0x00];
-        let wrong_ver_err = wing::parse_socks5_rfc1929_reply(reply_wrong_ver[..]);
-        sub.assert_true(wrong_ver_err == wing::Socks5Error.InvalidAuthResponse, "Wrong version byte in auth reply rejected");
+        let wrong_ver_err = net::parse_socks5_rfc1929_reply(reply_wrong_ver[..]);
+        sub.assert_true(wrong_ver_err == net::Socks5Error.InvalidAuthResponse, "Wrong version byte in auth reply rejected");
 
         // Truncated RFC 1929 reply
         let reply_trunc: u8[1] = [0x01];
-        let trunc_auth_err = wing::parse_socks5_rfc1929_reply(reply_trunc[..]);
-        sub.assert_true(trunc_auth_err == wing::Socks5Error.BufferTruncated, "Truncated auth reply caught");
+        let trunc_auth_err = net::parse_socks5_rfc1929_reply(reply_trunc[..]);
+        sub.assert_true(trunc_auth_err == net::Socks5Error.BufferTruncated, "Truncated auth reply caught");
     };
 }
 
@@ -128,8 +128,8 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
         // socks5h:// MUST use ATYP = 0x03 to delegate DNS resolution to proxy node
         var req_socks5h: u8[..300] = [];
         let dummy_ip: u8[4] = [0, 0, 0, 0];
-        let err_h = wing::build_socks5_connect_request(wing::ProxyScheme.Socks5h, "target.internal", dummy_ip, false, 443, req_socks5h);
-        sub.assert_true(err_h == wing::Socks5Error.None, "Socks5h request built");
+        let err_h = net::build_socks5_connect_request(net::ProxyScheme.Socks5h, "target.internal", dummy_ip, false, 443, req_socks5h);
+        sub.assert_true(err_h == net::Socks5Error.None, "Socks5h request built");
 
         sub.assert_eq(req_socks5h[0], 0x05, "VER == 0x05");
         sub.assert_eq(req_socks5h[1], 0x01, "CMD == 0x01 (CONNECT)");
@@ -143,8 +143,8 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
         // socks5:// with local DNS resolution uses ATYP = 0x01
         var req_socks5: u8[..300] = [];
         let local_ip: u8[4] = [93, 184, 216, 34];
-        let err_5 = wing::build_socks5_connect_request(wing::ProxyScheme.Socks5, "example.com", local_ip, true, 80, req_socks5);
-        sub.assert_true(err_5 == wing::Socks5Error.None, "Socks5 IPv4 request built");
+        let err_5 = net::build_socks5_connect_request(net::ProxyScheme.Socks5, "example.com", local_ip, true, 80, req_socks5);
+        sub.assert_true(err_5 == net::Socks5Error.None, "Socks5 IPv4 request built");
         sub.assert_eq(req_socks5[3], 0x01, "ATYP == 0x01 (IPv4)");
         sub.assert_eq(req_socks5[4], 93, "IPv4 octet 0");
         sub.assert_eq(req_socks5[5], 184, "IPv4 octet 1");
@@ -157,14 +157,14 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
         var req_socks5_v6: u8[..300] = [];
         var ip6:           u8[16]    = [0; 16];
         ip6[15] = 1;
-        let err_v6 = wing::build_socks5_connect_request_v6(wing::ProxyScheme.Socks5, "example.com", ip6, true, 80, req_socks5_v6);
-        sub.assert_true(err_v6 == wing::Socks5Error.None, "Socks5 IPv6 request built");
+        let err_v6 = net::build_socks5_connect_request_v6(net::ProxyScheme.Socks5, "example.com", ip6, true, 80, req_socks5_v6);
+        sub.assert_true(err_v6 == net::Socks5Error.None, "Socks5 IPv6 request built");
         sub.assert_eq(req_socks5_v6[3], 0x04, "ATYP == 0x04 (IPv6)");
 
         // High port boundary: 65535 (0xFFFF)
         var req_max_port: u8[..300] = [];
-        let err_mp = wing::build_socks5_connect_request(wing::ProxyScheme.Socks5, "example.com", local_ip, true, 65535, req_max_port);
-        sub.assert_true(err_mp == wing::Socks5Error.None, "Max port 65535 built");
+        let err_mp = net::build_socks5_connect_request(net::ProxyScheme.Socks5, "example.com", local_ip, true, 65535, req_max_port);
+        sub.assert_true(err_mp == net::Socks5Error.None, "Max port 65535 built");
         sub.assert_eq(req_max_port[8], 0xFF, "Port hi == 0xFF");
         sub.assert_eq(req_max_port[9], 0xFF, "Port lo == 0xFF");
     };
@@ -172,56 +172,56 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
     t.run("Parse SOCKS5 Reply Frames & All 9 Error Codes") { sub =>
         // Success reply: VER=0x05, REP=0x00, RSV=0x00, ATYP=0x01, BND.ADDR=127.0.0.1, BND.PORT=1080 (0x0438)
         let reply_ok: u8[10] = [0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38];
-        let rep, err = wing::parse_socks5_connect_reply(reply_ok[..]);
-        sub.assert_true(err == wing::Socks5Error.None, "Success reply parsed cleanly");
+        let rep, err = net::parse_socks5_connect_reply(reply_ok[..]);
+        sub.assert_true(err == net::Socks5Error.None, "Success reply parsed cleanly");
         sub.assert_eq(rep.bound_port, 1080, "Bound port 1080 parsed");
         sub.assert_eq(rep.bytes_consumed, 10, "Consumed exact 10 bytes");
 
         // Test all RFC 1928 failure codes:
         // REP = 0x01: GeneralFailure
         let reply_01: u8[10] = [0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_01 = wing::parse_socks5_connect_reply(reply_01[..]);
-        sub.assert_true(err_01 == wing::Socks5Error.ServerFailure, "0x01 is ServerFailure");
+        let _, err_01 = net::parse_socks5_connect_reply(reply_01[..]);
+        sub.assert_true(err_01 == net::Socks5Error.ServerFailure, "0x01 is ServerFailure");
 
         // REP = 0x02: ConnectionNotAllowed
         let reply_02: u8[10] = [0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_02 = wing::parse_socks5_connect_reply(reply_02[..]);
-        sub.assert_true(err_02 == wing::Socks5Error.ConnectionNotAllowed, "0x02 is ConnectionNotAllowed");
+        let _, err_02 = net::parse_socks5_connect_reply(reply_02[..]);
+        sub.assert_true(err_02 == net::Socks5Error.ConnectionNotAllowed, "0x02 is ConnectionNotAllowed");
 
         // REP = 0x03: NetworkUnreachable
         let reply_03: u8[10] = [0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_03 = wing::parse_socks5_connect_reply(reply_03[..]);
-        sub.assert_true(err_03 == wing::Socks5Error.NetworkUnreachable, "0x03 is NetworkUnreachable");
+        let _, err_03 = net::parse_socks5_connect_reply(reply_03[..]);
+        sub.assert_true(err_03 == net::Socks5Error.NetworkUnreachable, "0x03 is NetworkUnreachable");
 
         // REP = 0x04: HostUnreachable
         let reply_04: u8[10] = [0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_04 = wing::parse_socks5_connect_reply(reply_04[..]);
-        sub.assert_true(err_04 == wing::Socks5Error.HostUnreachable, "0x04 is HostUnreachable");
+        let _, err_04 = net::parse_socks5_connect_reply(reply_04[..]);
+        sub.assert_true(err_04 == net::Socks5Error.HostUnreachable, "0x04 is HostUnreachable");
 
         // REP = 0x05: ConnectionRefused
         let reply_05: u8[10] = [0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_05 = wing::parse_socks5_connect_reply(reply_05[..]);
-        sub.assert_true(err_05 == wing::Socks5Error.ConnectionRefused, "0x05 is ConnectionRefused");
+        let _, err_05 = net::parse_socks5_connect_reply(reply_05[..]);
+        sub.assert_true(err_05 == net::Socks5Error.ConnectionRefused, "0x05 is ConnectionRefused");
 
         // REP = 0x06: TtlExpired
         let reply_06: u8[10] = [0x05, 0x06, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_06 = wing::parse_socks5_connect_reply(reply_06[..]);
-        sub.assert_true(err_06 == wing::Socks5Error.TtlExpired, "0x06 is TtlExpired");
+        let _, err_06 = net::parse_socks5_connect_reply(reply_06[..]);
+        sub.assert_true(err_06 == net::Socks5Error.TtlExpired, "0x06 is TtlExpired");
 
         // REP = 0x07: CommandNotSupported
         let reply_07: u8[10] = [0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_07 = wing::parse_socks5_connect_reply(reply_07[..]);
-        sub.assert_true(err_07 == wing::Socks5Error.CommandNotSupported, "0x07 is CommandNotSupported");
+        let _, err_07 = net::parse_socks5_connect_reply(reply_07[..]);
+        sub.assert_true(err_07 == net::Socks5Error.CommandNotSupported, "0x07 is CommandNotSupported");
 
         // REP = 0x08: AddressTypeNotSupported
         let reply_08: u8[10] = [0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        let _, err_08 = wing::parse_socks5_connect_reply(reply_08[..]);
-        sub.assert_true(err_08 == wing::Socks5Error.AddressTypeNotSupported, "0x08 is AddressTypeNotSupported");
+        let _, err_08 = net::parse_socks5_connect_reply(reply_08[..]);
+        sub.assert_true(err_08 == net::Socks5Error.AddressTypeNotSupported, "0x08 is AddressTypeNotSupported");
 
         // Domain bound reply: 4 + 1 + 10 ("proxy.node") + 2 = 17 bytes
         var rep_domain: u8[17] = [0x05, 0x00, 0x00, 0x03, 10, 'p', 'r', 'o', 'x', 'y', '.', 'n', 'o', 'd', 'e', 0x1F, 0x90];
-        let rep_d, err_d = wing::parse_socks5_connect_reply(rep_domain[..]);
-        sub.assert_true(err_d == wing::Socks5Error.None, "Domain reply parsed cleanly");
+        let rep_d, err_d = net::parse_socks5_connect_reply(rep_domain[..]);
+        sub.assert_true(err_d == net::Socks5Error.None, "Domain reply parsed cleanly");
         sub.assert_eq(rep_d.bound_port, 8080, "Bound port 8080 parsed");
         sub.assert_eq(rep_d.bytes_consumed, 17, "Consumed exact 17 bytes");
 
@@ -232,24 +232,24 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
             0x01, 0xBB,
         ];
-        let rep_6, err_6 = wing::parse_socks5_connect_reply(rep_ipv6[..]);
-        sub.assert_true(err_6 == wing::Socks5Error.None, "IPv6 reply parsed cleanly");
+        let rep_6, err_6 = net::parse_socks5_connect_reply(rep_ipv6[..]);
+        sub.assert_true(err_6 == net::Socks5Error.None, "IPv6 reply parsed cleanly");
         sub.assert_eq(rep_6.bound_port, 443, "Bound port 443 parsed");
         sub.assert_eq(rep_6.bytes_consumed, 22, "Consumed exact 22 bytes");
 
         // Truncated replies
         let trunc_ipv4: u8[9] = [0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x04];
-        let _, err_tr_4 = wing::parse_socks5_connect_reply(trunc_ipv4[..]);
-        sub.assert_true(err_tr_4 == wing::Socks5Error.BufferTruncated, "Truncated IPv4 reply caught");
+        let _, err_tr_4 = net::parse_socks5_connect_reply(trunc_ipv4[..]);
+        sub.assert_true(err_tr_4 == net::Socks5Error.BufferTruncated, "Truncated IPv4 reply caught");
 
         let trunc_ipv6: u8[21] = [0x05, 0x00, 0x00, 0x04, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-        let _, err_tr_6 = wing::parse_socks5_connect_reply(trunc_ipv6[..]);
-        sub.assert_true(err_tr_6 == wing::Socks5Error.BufferTruncated, "Truncated IPv6 reply caught");
+        let _, err_tr_6 = net::parse_socks5_connect_reply(trunc_ipv6[..]);
+        sub.assert_true(err_tr_6 == net::Socks5Error.BufferTruncated, "Truncated IPv6 reply caught");
 
         // Invalid ATYP (0x02)
         let reply_bad_atyp: u8[10] = [0x05, 0x00, 0x00, 0x02, 0, 0, 0, 0, 0, 0];
-        let _, err_bad_atyp = wing::parse_socks5_connect_reply(reply_bad_atyp[..]);
-        sub.assert_true(err_bad_atyp == wing::Socks5Error.AddressTypeNotSupported, "Invalid ATYP 0x02 rejected");
+        let _, err_bad_atyp = net::parse_socks5_connect_reply(reply_bad_atyp[..]);
+        sub.assert_true(err_bad_atyp == net::Socks5Error.AddressTypeNotSupported, "Invalid ATYP 0x02 rejected");
     };
 }
 
@@ -259,86 +259,86 @@ fn test_socks5_command_and_reply_parsing(t: lit::T&) {
 fn test_http_connect_tunnel_and_buffer_hygiene(t: lit::T&) {
     t.run("CONNECT Header Construction & Credential Isolation (CVE-2025-4673)") { sub =>
         var req_buf: u8[..1024] = [];
-        wing::build_http_connect_request("secure.bank.com", 443, "Basic dXNlcjpwYXNz", "goose-wing/1.0", req_buf);
+        net::build_http_connect_request("secure.bank.com", 443, "Basic dXNlcjpwYXNz", "goose-wing/1.0", req_buf);
 
         sub.assert_true(starts_with(req_buf[..], "CONNECT secure.bank.com:443 HTTP/1.1\r\n"), "CONNECT request line correct");
         sub.assert_contains(req_buf[..], "Proxy-Authorization: Basic dXNlcjpwYXNz\r\n", "Proxy auth header included");
 
         // Isolation barrier: sanitize_tunnel_headers_for_origin (CVE-2025-4673 & CVE-2021-33197)
-        var origin_headers = wing::HeaderMap { .. };
-        wing::append_header(origin_headers, "Host", "secure.bank.com");
-        wing::append_header(origin_headers, "Proxy-Authorization", "Basic dXNlcjpwYXNz");
-        wing::append_header(origin_headers, "PROXY-AUTHORIZATION", "Basic UPPERCASE_LEAK");
-        wing::append_header(origin_headers, "proxy-authorization", "Basic lowercase_leak");
-        wing::append_header(origin_headers, "Proxy-Authenticate", "Basic realm=corp");
-        wing::append_header(origin_headers, "Proxy-Connection", "Keep-Alive");
-        wing::append_header(origin_headers, "Authorization", "Bearer user_token_99");
-        wing::append_header(origin_headers, "Cookie", "session=secret_session");
+        var origin_headers = http::HeaderMap { .. };
+        http::append_header(origin_headers, "Host", "secure.bank.com");
+        http::append_header(origin_headers, "Proxy-Authorization", "Basic dXNlcjpwYXNz");
+        http::append_header(origin_headers, "PROXY-AUTHORIZATION", "Basic UPPERCASE_LEAK");
+        http::append_header(origin_headers, "proxy-authorization", "Basic lowercase_leak");
+        http::append_header(origin_headers, "Proxy-Authenticate", "Basic realm=corp");
+        http::append_header(origin_headers, "Proxy-Connection", "Keep-Alive");
+        http::append_header(origin_headers, "Authorization", "Bearer user_token_99");
+        http::append_header(origin_headers, "Cookie", "session=secret_session");
 
-        wing::sanitize_tunnel_headers_for_origin(origin_headers);
+        net::sanitize_tunnel_headers_for_origin(origin_headers);
 
         sub.assert_eq(origin_headers.entries.len, 3, "All 5 proxy header variations stripped from origin request");
-        sub.assert_bytes_eq(wing::entry_name(origin_headers, origin_headers.entries[0]), "Host", "Host header preserved");
-        sub.assert_bytes_eq(wing::entry_name(origin_headers, origin_headers.entries[1]), "Authorization", "Target origin bearer auth preserved");
-        sub.assert_bytes_eq(wing::entry_name(origin_headers, origin_headers.entries[2]), "Cookie", "Origin cookies preserved");
+        sub.assert_bytes_eq(http::entry_name(origin_headers, origin_headers.entries[0]), "Host", "Host header preserved");
+        sub.assert_bytes_eq(http::entry_name(origin_headers, origin_headers.entries[1]), "Authorization", "Target origin bearer auth preserved");
+        sub.assert_bytes_eq(http::entry_name(origin_headers, origin_headers.entries[2]), "Cookie", "Origin cookies preserved");
 
         // Edge case: empty headers list
-        var empty_hdrs = wing::HeaderMap { .. };
-        wing::sanitize_tunnel_headers_for_origin(empty_hdrs);
+        var empty_hdrs = http::HeaderMap { .. };
+        net::sanitize_tunnel_headers_for_origin(empty_hdrs);
         sub.assert_eq(empty_hdrs.entries.len, 0, "Empty headers list remains empty");
 
         // Edge case: headers list with ONLY proxy headers
-        var only_proxy = wing::HeaderMap { .. };
-        wing::append_header(only_proxy, "Proxy-Authorization", "Basic xyz");
-        wing::append_header(only_proxy, "Proxy-Connection", "close");
-        wing::sanitize_tunnel_headers_for_origin(only_proxy);
+        var only_proxy = http::HeaderMap { .. };
+        http::append_header(only_proxy, "Proxy-Authorization", "Basic xyz");
+        http::append_header(only_proxy, "Proxy-Connection", "close");
+        net::sanitize_tunnel_headers_for_origin(only_proxy);
         sub.assert_eq(only_proxy.entries.len, 0, "Headers list with only proxy headers reduced to 0");
     };
 
     t.run("OkHttp Leftover Buffer Defense: TLS Tunnel Buffered Too Many Bytes (CVE-2026-56866)") { sub =>
         // 1. Clean CONNECT response with no trailing bytes
         let clean_resp = "HTTP/1.1 200 Connection Established\r\nProxy-Agent: corporate-proxy\r\n\r\n";
-        let err_clean = wing::verify_connect_tunnel_response(clean_resp, 0);
-        sub.assert_true(err_clean == wing::ConnectTunnelError.None, "Clean 200 OK CONNECT approved");
+        let err_clean = net::verify_connect_tunnel_response(clean_resp, 0);
+        sub.assert_true(err_clean == net::ConnectTunnelError.None, "Clean 200 OK CONNECT approved");
 
         // 2. Data injection attack: Extra bytes after \r\n\r\n before TLS handshake
         let injected_resp = "HTTP/1.1 200 Connection Established\r\n\r\nINJECTED_TLS_PREFIX_DATA";
-        let err_injected = wing::verify_connect_tunnel_response(injected_resp, 0);
-        sub.assert_true(err_injected == wing::ConnectTunnelError.TunnelBufferedTooManyBytes, "Detected leftover buffer data injection");
+        let err_injected = net::verify_connect_tunnel_response(injected_resp, 0);
+        sub.assert_true(err_injected == net::ConnectTunnelError.TunnelBufferedTooManyBytes, "Detected leftover buffer data injection");
 
         // 3. Single-byte smuggled prefix attack
         let single_byte_inj = "HTTP/1.1 200 Connection Established\r\n\r\nX";
-        let err_single = wing::verify_connect_tunnel_response(single_byte_inj, 0);
-        sub.assert_true(err_single == wing::ConnectTunnelError.TunnelBufferedTooManyBytes, "1-byte smuggled prefix caught");
+        let err_single = net::verify_connect_tunnel_response(single_byte_inj, 0);
+        sub.assert_true(err_single == net::ConnectTunnelError.TunnelBufferedTooManyBytes, "1-byte smuggled prefix caught");
 
         // 4. Sink has leftover unwritten bytes
-        let err_sink = wing::verify_connect_tunnel_response(clean_resp, 16);
-        sub.assert_true(err_sink == wing::ConnectTunnelError.TunnelBufferedTooManyBytes, "Detected non-empty sink buffer");
+        let err_sink = net::verify_connect_tunnel_response(clean_resp, 16);
+        sub.assert_true(err_sink == net::ConnectTunnelError.TunnelBufferedTooManyBytes, "Detected non-empty sink buffer");
 
         // 5. Proxy Authentication Required (407)
         let auth_req_resp = "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\n\r\n";
-        let err_407 = wing::verify_connect_tunnel_response(auth_req_resp, 0);
-        sub.assert_true(err_407 == wing::ConnectTunnelError.ProxyAuthRequired, "407 status parsed correctly");
+        let err_407 = net::verify_connect_tunnel_response(auth_req_resp, 0);
+        sub.assert_true(err_407 == net::ConnectTunnelError.ProxyAuthRequired, "407 status parsed correctly");
 
         // 6. Bad Gateway (502)
         let bad_gw = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-        let err_502 = wing::verify_connect_tunnel_response(bad_gw, 0);
-        sub.assert_true(err_502 == wing::ConnectTunnelError.ConnectFailed, "502 status mapped to ConnectFailed");
+        let err_502 = net::verify_connect_tunnel_response(bad_gw, 0);
+        sub.assert_true(err_502 == net::ConnectTunnelError.ConnectFailed, "502 status mapped to ConnectFailed");
 
         // 7. Forbidden (403)
         let forbidden = "HTTP/1.1 403 Forbidden\r\n\r\n";
-        let err_403 = wing::verify_connect_tunnel_response(forbidden, 0);
-        sub.assert_true(err_403 == wing::ConnectTunnelError.ConnectFailed, "403 status mapped to ConnectFailed");
+        let err_403 = net::verify_connect_tunnel_response(forbidden, 0);
+        sub.assert_true(err_403 == net::ConnectTunnelError.ConnectFailed, "403 status mapped to ConnectFailed");
 
         // 8. Missing \r\n\r\n
         let no_end = "HTTP/1.1 200 OK\r\nHeader: value";
-        let err_no_end = wing::verify_connect_tunnel_response(no_end, 0);
-        sub.assert_true(err_no_end == wing::ConnectTunnelError.MalformedHeaders, "Missing header end separator caught");
+        let err_no_end = net::verify_connect_tunnel_response(no_end, 0);
+        sub.assert_true(err_no_end == net::ConnectTunnelError.MalformedHeaders, "Missing header end separator caught");
 
         // 9. Short / Truncated response
         let short_resp = "HTTP/1.1 200";
-        let err_short = wing::verify_connect_tunnel_response(short_resp, 0);
-        sub.assert_true(err_short == wing::ConnectTunnelError.MalformedHeaders, "Truncated response caught");
+        let err_short = net::verify_connect_tunnel_response(short_resp, 0);
+        sub.assert_true(err_short == net::ConnectTunnelError.MalformedHeaders, "Truncated response caught");
     };
 }
 
@@ -347,44 +347,44 @@ fn test_http_connect_tunnel_and_buffer_hygiene(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_slowloris_tarpit_defenses(t: lit::T&) {
     t.run("4-Tier Slowloris Defense Enforcement") { sub =>
-        let cfg = wing::SlowlorisDefenseConfig { .. };
-        var reader = wing::new_header_reader(cfg, 0);
+        let cfg = net::SlowlorisDefenseConfig { .. };
+        var reader = net::new_header_reader(cfg, 0);
 
         // Feed standard fast chunk at t=100ms
         let chunk1 = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n";
-        let v1 = wing::feed_header_bytes(reader, chunk1, 100000000);
-        sub.assert_true(v1 == wing::SlowlorisViolation.None, "Valid chunk approved");
+        let v1 = net::feed_header_bytes(reader, chunk1, 100000000);
+        sub.assert_true(v1 == net::SlowlorisViolation.None, "Valid chunk approved");
 
         // Barrier 1: Monotonic Cumulative Header Deadline (10s)
         let chunk2 = "User-Agent: test\r\n";
-        let v_timeout = wing::feed_header_bytes(reader, chunk2, 10500000000); // t=10.5s
-        sub.assert_true(v_timeout == wing::SlowlorisViolation.HeaderTimeoutExpired, "Header timeout triggered after 10s monotonic deadline");
+        let v_timeout = net::feed_header_bytes(reader, chunk2, 10500000000); // t=10.5s
+        sub.assert_true(v_timeout == net::SlowlorisViolation.HeaderTimeoutExpired, "Header timeout triggered after 10s monotonic deadline");
         sub.assert_true(reader.poison_connection, "Poison connection flagged");
 
         // Barrier 3: Memory ceiling (64 KB)
-        var reader_mem = wing::new_header_reader(cfg, 0);
+        var reader_mem = net::new_header_reader(cfg, 0);
         reader_mem.cumulative_header_bytes = 65000;
         let big_chunk: u8[1000] = ['A'; 1000];
-        let v_mem = wing::feed_header_bytes(reader_mem, big_chunk[..], 500000000);
-        sub.assert_true(v_mem == wing::SlowlorisViolation.MaxHeaderBytesExceeded, "Hard memory ceiling triggered on 65 KB header block");
+        let v_mem = net::feed_header_bytes(reader_mem, big_chunk[..], 500000000);
+        sub.assert_true(v_mem == net::SlowlorisViolation.MaxHeaderBytesExceeded, "Hard memory ceiling triggered on 65 KB header block");
         sub.assert_true(reader_mem.poison_connection, "Memory ceiling poisons connection");
 
         // Barrier 4: Byte-Drip gate (< 256 B/s)
-        var reader_drip = wing::new_header_reader(cfg, 0);
+        var reader_drip = net::new_header_reader(cfg, 0);
         let drip_byte = "X";
         // 1 byte received over 2.0 seconds -> 0.5 B/s (< 256 B/s)
-        let v_drip = wing::feed_header_bytes(reader_drip, drip_byte, 2000000000);
-        sub.assert_true(v_drip == wing::SlowlorisViolation.MinIngressRateViolated, "Byte-drip tarpit caught by minimum ingress rate gate");
+        let v_drip = net::feed_header_bytes(reader_drip, drip_byte, 2000000000);
+        sub.assert_true(v_drip == net::SlowlorisViolation.MinIngressRateViolated, "Byte-drip tarpit caught by minimum ingress rate gate");
         sub.assert_true(reader_drip.poison_connection, "Byte-drip poisons connection");
 
         // Barrier 5: Header lines count ceiling (> 100 lines)
-        var reader_lines = wing::new_header_reader(cfg, 0);
+        var reader_lines = net::new_header_reader(cfg, 0);
         var many_lines: u8[..4096] = [];
         for i in 101 {
             many_lines.append("X-H: v\r\n");
         }
-        let v_lines = wing::feed_header_bytes(reader_lines, many_lines[..], 500000000);
-        sub.assert_true(v_lines == wing::SlowlorisViolation.MaxHeaderCountExceeded, "101 header lines exceeds max_header_count (100)");
+        let v_lines = net::feed_header_bytes(reader_lines, many_lines[..], 500000000);
+        sub.assert_true(v_lines == net::SlowlorisViolation.MaxHeaderCountExceeded, "101 header lines exceeds max_header_count (100)");
         sub.assert_true(reader_lines.poison_connection, "Header count excess poisons connection");
     };
 }
@@ -397,13 +397,13 @@ fn test_slowloris_tarpit_defenses(t: lit::T&) {
 fn test_proxy_v1_conformance(t: lit::T&) {
     t.run("PROXY-v1-01: Valid TCP4 line parsing") { sub =>
         let raw = "PROXY TCP4 192.168.0.1 10.0.0.1 56324 443\r\nGET / HTTP/1.1\r\n";
-        let hdr, consumed, ok = wing::parse_proxy_v1(raw);
+        let hdr, consumed, ok = net::parse_proxy_v1(raw);
         sub.assert_true(ok, "parse_proxy_v1 succeeds on valid TCP4");
         sub.assert_eq(consumed, 43, "consumed exact 43 bytes of PROXY v1 line");
-        sub.assert_true(hdr.version == wing::ProxyProtocolVersion.V1, "version is V1");
-        sub.assert_true(hdr.command == wing::ProxyCommand.Proxy, "command is Proxy");
-        sub.assert_true(hdr.family == wing::ProxyAddressFamily.Inet4, "family is Inet4");
-        sub.assert_true(hdr.transport == wing::ProxyTransportProtocol.Stream, "transport is Stream");
+        sub.assert_true(hdr.version == net::ProxyProtocolVersion.V1, "version is V1");
+        sub.assert_true(hdr.command == net::ProxyCommand.Proxy, "command is Proxy");
+        sub.assert_true(hdr.family == net::ProxyAddressFamily.Inet4, "family is Inet4");
+        sub.assert_true(hdr.transport == net::ProxyTransportProtocol.Stream, "transport is Stream");
         sub.assert_bytes_eq(hdr.src_ip_str[..], "192.168.0.1", "src_ip_str matches");
         sub.assert_bytes_eq(hdr.dst_ip_str[..], "10.0.0.1", "dst_ip_str matches");
         sub.assert_eq(hdr.src_port, 56324, "src_port matches");
@@ -414,10 +414,10 @@ fn test_proxy_v1_conformance(t: lit::T&) {
 
     t.run("PROXY-v1-02: Valid TCP6 line parsing") { sub =>
         let raw = "PROXY TCP6 2001:db8::1 2001:db8::2 56324 443\r\n";
-        let hdr, consumed, ok = wing::parse_proxy_v1(raw);
+        let hdr, consumed, ok = net::parse_proxy_v1(raw);
         sub.assert_true(ok, "parse_proxy_v1 succeeds on valid TCP6");
         sub.assert_eq(consumed, raw.len, "consumed full line");
-        sub.assert_true(hdr.family == wing::ProxyAddressFamily.Inet6, "family is Inet6");
+        sub.assert_true(hdr.family == net::ProxyAddressFamily.Inet6, "family is Inet6");
         sub.assert_bytes_eq(hdr.src_ip_str[..], "2001:db8::1", "IPv6 src matches");
         sub.assert_bytes_eq(hdr.dst_ip_str[..], "2001:db8::2", "IPv6 dst matches");
         sub.assert_eq(hdr.src_port, 56324, "src port matches");
@@ -432,19 +432,19 @@ fn test_proxy_v1_conformance(t: lit::T&) {
 
     t.run("PROXY-v1-03: UNKNOWN protocol parsing") { sub =>
         let raw = "PROXY UNKNOWN\r\n";
-        let hdr, consumed, ok = wing::parse_proxy_v1(raw);
+        let hdr, consumed, ok = net::parse_proxy_v1(raw);
         sub.assert_true(ok, "parse_proxy_v1 succeeds on UNKNOWN");
         sub.assert_eq(consumed, 15, "consumed exact 15 bytes");
-        sub.assert_true(hdr.command == wing::ProxyCommand.Local, "command is Local for UNKNOWN");
-        sub.assert_true(hdr.family == wing::ProxyAddressFamily.Unspec, "family is Unspec");
+        sub.assert_true(hdr.command == net::ProxyCommand.Local, "command is Local for UNKNOWN");
+        sub.assert_true(hdr.family == net::ProxyAddressFamily.Unspec, "family is Unspec");
     };
 
     t.run("PROXY-v1-04: Serialization round-trip") { sub =>
-        var hdr = wing::ProxyHeader {
-            version:   wing::ProxyProtocolVersion.V1,
-            command:   wing::ProxyCommand.Proxy,
-            family:    wing::ProxyAddressFamily.Inet4,
-            transport: wing::ProxyTransportProtocol.Stream,
+        var hdr = net::ProxyHeader {
+            version:   net::ProxyProtocolVersion.V1,
+            command:   net::ProxyCommand.Proxy,
+            family:    net::ProxyAddressFamily.Inet4,
+            transport: net::ProxyTransportProtocol.Stream,
             src_ipv4:  [172, 16, 1, 25],
             dst_ipv4:  [10, 0, 0, 2],
             src_port:  41234,
@@ -455,12 +455,12 @@ fn test_proxy_v1_conformance(t: lit::T&) {
         hdr.dst_ip_str.append("10.0.0.2");
 
         var out: u8[..128] = [];
-        let ok_fmt = wing::format_proxy_v1(hdr, out);
+        let ok_fmt = net::format_proxy_v1(hdr, out);
         sub.assert_true(ok_fmt, "format_proxy_v1 succeeds");
         sub.assert_bytes_eq(out[..], "PROXY TCP4 172.16.1.25 10.0.0.2 41234 8080\r\n", "serialized v1 format matches spec");
 
         // Parse back
-        let back_hdr, consumed, ok_back = wing::parse_proxy_v1(out[..]);
+        let back_hdr, consumed, ok_back = net::parse_proxy_v1(out[..]);
         sub.assert_true(ok_back, "parse back succeeds");
         sub.assert_eq(consumed, out.len, "consumed all bytes");
         sub.assert_eq(back_hdr.src_port, 41234, "round-trip port matches");
@@ -470,27 +470,27 @@ fn test_proxy_v1_conformance(t: lit::T&) {
     t.run("PROXY-v1-05: Rejection of invalid and truncated lines") { sub =>
         // Missing CRLF
         let truncated = "PROXY TCP4 192.168.0.1 10.0.0.1 56324 443";
-        let _, _, ok_trunc = wing::parse_proxy_v1(truncated);
+        let _, _, ok_trunc = net::parse_proxy_v1(truncated);
         sub.assert_false(ok_trunc, "truncated line without CRLF rejected");
 
         // Wrong prefix
         let wrong_prefix = "PROX2 TCP4 192.168.0.1 10.0.0.1 56324 443\r\n";
-        let _, _, ok_pref = wing::parse_proxy_v1(wrong_prefix);
+        let _, _, ok_pref = net::parse_proxy_v1(wrong_prefix);
         sub.assert_false(ok_pref, "wrong prefix rejected");
 
         // Invalid IP octet > 255
         let bad_ip = "PROXY TCP4 300.168.0.1 10.0.0.1 56324 443\r\n";
-        let _, _, ok_bad_ip = wing::parse_proxy_v1(bad_ip);
+        let _, _, ok_bad_ip = net::parse_proxy_v1(bad_ip);
         sub.assert_false(ok_bad_ip, "octet > 255 rejected");
 
         // Invalid Port > 65535
         let bad_port = "PROXY TCP4 192.168.0.1 10.0.0.1 70000 443\r\n";
-        let _, _, ok_bad_port = wing::parse_proxy_v1(bad_port);
+        let _, _, ok_bad_port = net::parse_proxy_v1(bad_port);
         sub.assert_false(ok_bad_port, "port > 65535 rejected");
 
         // Missing tokens
         let missing_tok = "PROXY TCP4 192.168.0.1 10.0.0.1 443\r\n";
-        let _, _, ok_mis = wing::parse_proxy_v1(missing_tok);
+        let _, _, ok_mis = net::parse_proxy_v1(missing_tok);
         sub.assert_false(ok_mis, "line with missing tokens rejected");
     };
 }
@@ -512,13 +512,13 @@ fn test_proxy_v2_conformance(t: lit::T&) {
         wire.push(0xC3); wire.push(0x50);
         wire.push(0x01); wire.push(0xBB);
 
-        let hdr, consumed, ok = wing::parse_proxy_v2(wire[..]);
+        let hdr, consumed, ok = net::parse_proxy_v2(wire[..]);
         sub.assert_true(ok, "parse_proxy_v2 succeeds on IPv4 TCP");
         sub.assert_eq(consumed, 28, "consumed exact 28 bytes (16 header + 12 addr)");
-        sub.assert_true(hdr.version == wing::ProxyProtocolVersion.V2, "version is V2");
-        sub.assert_true(hdr.command == wing::ProxyCommand.Proxy, "command is Proxy");
-        sub.assert_true(hdr.family == wing::ProxyAddressFamily.Inet4, "family is Inet4");
-        sub.assert_true(hdr.transport == wing::ProxyTransportProtocol.Stream, "transport is Stream");
+        sub.assert_true(hdr.version == net::ProxyProtocolVersion.V2, "version is V2");
+        sub.assert_true(hdr.command == net::ProxyCommand.Proxy, "command is Proxy");
+        sub.assert_true(hdr.family == net::ProxyAddressFamily.Inet4, "family is Inet4");
+        sub.assert_true(hdr.transport == net::ProxyTransportProtocol.Stream, "transport is Stream");
         sub.assert_bytes_eq(hdr.src_ip_str[..], "192.168.1.10", "formatted src IPv4 matches");
         sub.assert_bytes_eq(hdr.dst_ip_str[..], "10.0.0.1", "formatted dst IPv4 matches");
         sub.assert_eq(hdr.src_port, 50000, "src port matches");
@@ -532,11 +532,11 @@ fn test_proxy_v2_conformance(t: lit::T&) {
         wire.push(0x00); // UNSPEC, UNSPEC
         wire.push(0x00); wire.push(0x00); // payload length = 0
 
-        let hdr, consumed, ok = wing::parse_proxy_v2(wire[..]);
+        let hdr, consumed, ok = net::parse_proxy_v2(wire[..]);
         sub.assert_true(ok, "parse_proxy_v2 succeeds on LOCAL");
         sub.assert_eq(consumed, 16, "consumed exact 16 bytes");
-        sub.assert_true(hdr.command == wing::ProxyCommand.Local, "command is Local");
-        sub.assert_true(hdr.family == wing::ProxyAddressFamily.Unspec, "family is Unspec");
+        sub.assert_true(hdr.command == net::ProxyCommand.Local, "command is Local");
+        sub.assert_true(hdr.family == net::ProxyAddressFamily.Unspec, "family is Unspec");
     };
 
     t.run("PROXY-v2-03: IPv6 TCP binary header parsing") { sub =>
@@ -554,10 +554,10 @@ fn test_proxy_v2_conformance(t: lit::T&) {
         wire.push(0x1F); wire.push(0x90);
         wire.push(0x01); wire.push(0xBB);
 
-        let hdr, consumed, ok = wing::parse_proxy_v2(wire[..]);
+        let hdr, consumed, ok = net::parse_proxy_v2(wire[..]);
         sub.assert_true(ok, "parse_proxy_v2 succeeds on IPv6");
         sub.assert_eq(consumed, 52, "consumed 16 header + 36 addr = 52 bytes");
-        sub.assert_true(hdr.family == wing::ProxyAddressFamily.Inet6, "family is Inet6");
+        sub.assert_true(hdr.family == net::ProxyAddressFamily.Inet6, "family is Inet6");
         sub.assert_eq(hdr.src_port, 8080, "src port matches");
         sub.assert_eq(hdr.dst_port, 443, "dst port matches");
     };
@@ -565,14 +565,14 @@ fn test_proxy_v2_conformance(t: lit::T&) {
     t.run("PROXY-v2-04: Rejection of invalid v2 headers") { sub =>
         // Corrupted preamble
         var bad_preamble: u8[16] = [0; 16];
-        let _, _, ok_bad = wing::parse_proxy_v2(bad_preamble[..]);
+        let _, _, ok_bad = net::parse_proxy_v2(bad_preamble[..]);
         sub.assert_false(ok_bad, "bad preamble rejected");
 
         // Wrong version (0x11 instead of 0x21)
         var bad_ver: u8[..32] = [];
         for b in net_internal::PROXY_V2_PREAMBLE { bad_ver.push(b); }
         bad_ver.push(0x11); bad_ver.push(0x11); bad_ver.push(0); bad_ver.push(0);
-        let _, _, ok_ver = wing::parse_proxy_v2(bad_ver[..]);
+        let _, _, ok_ver = net::parse_proxy_v2(bad_ver[..]);
         sub.assert_false(ok_ver, "version != 2 rejected");
 
         // Truncated payload length claim
@@ -580,7 +580,7 @@ fn test_proxy_v2_conformance(t: lit::T&) {
         for b in net_internal::PROXY_V2_PREAMBLE { trunc_wire.push(b); }
         trunc_wire.push(0x21); trunc_wire.push(0x11);
         trunc_wire.push(0x00); trunc_wire.push(100); // claim 100 bytes but only 16 present
-        let _, _, ok_len = wing::parse_proxy_v2(trunc_wire[..]);
+        let _, _, ok_len = net::parse_proxy_v2(trunc_wire[..]);
         sub.assert_false(ok_len, "truncated payload rejected");
     };
 }
@@ -588,11 +588,11 @@ fn test_proxy_v2_conformance(t: lit::T&) {
 // 7. PROXY Protocol v2 TLV (Type-Length-Value) Metadata
 fn test_proxy_v2_tlvs(t: lit::T&) {
     t.run("PROXY-v2-TLV-01: ALPN, Authority, and Unique ID") { sub =>
-        var hdr = wing::ProxyHeader {
-            version:   wing::ProxyProtocolVersion.V2,
-            command:   wing::ProxyCommand.Proxy,
-            family:    wing::ProxyAddressFamily.Inet4,
-            transport: wing::ProxyTransportProtocol.Stream,
+        var hdr = net::ProxyHeader {
+            version:   net::ProxyProtocolVersion.V2,
+            command:   net::ProxyCommand.Proxy,
+            family:    net::ProxyAddressFamily.Inet4,
+            transport: net::ProxyTransportProtocol.Stream,
             src_ipv4:  [192, 168, 1, 100],
             dst_ipv4:  [10, 0, 0, 1],
             src_port:  45678,
@@ -605,11 +605,11 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
         hdr.netns.append("ns_customer_prod");
 
         var wire: u8[..256] = [];
-        let ok_fmt = wing::format_proxy_v2(hdr, wire);
+        let ok_fmt = net::format_proxy_v2(hdr, wire);
         sub.assert_true(ok_fmt, "format_proxy_v2 with TLVs succeeds");
 
         // Parse back
-        let back_hdr, consumed, ok_parse = wing::parse_proxy_v2(wire[..]);
+        let back_hdr, consumed, ok_parse = net::parse_proxy_v2(wire[..]);
         sub.assert_true(ok_parse, "parse_proxy_v2 succeeds on serialized TLVs");
         sub.assert_eq(consumed, wire.len, "consumed full wire with TLVs");
         sub.assert_bytes_eq(back_hdr.alpn[..], "h2", "ALPN TLV matches");
@@ -619,11 +619,11 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
     };
 
     t.run("PROXY-v2-TLV-02: SSL/TLS Metadata & Sub-TLVs") { sub =>
-        var hdr = wing::ProxyHeader {
-            version:   wing::ProxyProtocolVersion.V2,
-            command:   wing::ProxyCommand.Proxy,
-            family:    wing::ProxyAddressFamily.Inet4,
-            transport: wing::ProxyTransportProtocol.Stream,
+        var hdr = net::ProxyHeader {
+            version:   net::ProxyProtocolVersion.V2,
+            command:   net::ProxyCommand.Proxy,
+            family:    net::ProxyAddressFamily.Inet4,
+            transport: net::ProxyTransportProtocol.Stream,
             src_ipv4:  [10, 20, 30, 40],
             dst_ipv4:  [10, 0, 0, 2],
             src_port:  33445,
@@ -640,11 +640,11 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
         hdr.ssl.client_cn.append("client.tenant42.prod");
 
         var wire: u8[..512] = [];
-        let ok_fmt = wing::format_proxy_v2(hdr, wire);
+        let ok_fmt = net::format_proxy_v2(hdr, wire);
         sub.assert_true(ok_fmt, "format_proxy_v2 with SSL TLV succeeds");
 
         // Parse back
-        let back_hdr, consumed, ok_parse = wing::parse_proxy_v2(wire[..]);
+        let back_hdr, consumed, ok_parse = net::parse_proxy_v2(wire[..]);
         sub.assert_true(ok_parse, "parse_proxy_v2 parses SSL TLVs cleanly");
         sub.assert_eq(consumed, wire.len, "consumed entire buffer");
         sub.assert_true(back_hdr.ssl.has_ssl, "SSL flag set");
@@ -662,8 +662,8 @@ fn test_proxy_v2_tlvs(t: lit::T&) {
 fn test_proxy_server_integration(t: lit::T&) {
     t.run("Auto-Detection and Stream Stripping") { sub =>
         let stream = "PROXY TCP4 203.0.113.195 10.0.0.1 54321 80\r\nGET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        var proxy_hdr = wing::ProxyHeader { .. };
-        let rest, has_proxy = wing::detect_and_strip_proxy_header(stream, proxy_hdr);
+        var proxy_hdr = net::ProxyHeader { .. };
+        let rest, has_proxy = net::detect_and_strip_proxy_header(stream, proxy_hdr);
 
         sub.assert_true(has_proxy, "PROXY header detected and stripped");
         sub.assert_bytes_eq(proxy_hdr.src_ip_str[..], "203.0.113.195", "Client IP extracted from PROXY v1");
@@ -671,24 +671,24 @@ fn test_proxy_server_integration(t: lit::T&) {
 
         // Non-proxy stream returns original stream unchanged
         let non_proxy = "GET /status HTTP/1.1\r\nHost: test.com\r\n\r\n";
-        var empty_hdr = wing::ProxyHeader { .. };
-        let rest2, has_proxy2 = wing::detect_and_strip_proxy_header(non_proxy, empty_hdr);
+        var empty_hdr = net::ProxyHeader { .. };
+        let rest2, has_proxy2 = net::detect_and_strip_proxy_header(non_proxy, empty_hdr);
         sub.assert_false(has_proxy2, "No PROXY header detected on plain HTTP");
         sub.assert_bytes_eq(rest2, non_proxy, "Plain HTTP stream unchanged");
     };
 
     t.run("HttpServer with accept_proxy_protocol = true") { sub =>
-        var server = wing::new_http_server("127.0.0.1", 8080);
+        var server = server::new_http_server("127.0.0.1", 8080);
         server.accept_proxy_protocol = true;
-        wing::add_get_route(server, "/api/hello", 101);
+        server::add_get_route(server, "/api/hello", 101);
 
         // Prepend PROXY v1 header before HTTP/1.1 wire request
         let wire_in = "PROXY TCP4 198.51.100.77 10.0.0.1 61234 8080\r\nGET /api/hello HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
         var wire_out: u8[..512] = [];
 
-        let outcome, ok = wing::handle_connection_wire(server, "127.0.0.1", wire_in, 1700000000, wire_out);
+        let outcome, ok = server::handle_connection_wire(server, "127.0.0.1", wire_in, 1700000000, wire_out);
         sub.assert_true(ok, "handle_connection_wire succeeds with PROXY header");
-        sub.assert_true(outcome == wing::PipelineOutcome.Handled, "Pipeline handled route");
+        sub.assert_true(outcome == server::PipelineOutcome.Handled, "Pipeline handled route");
         sub.assert_gt(wire_out.len, 0, "Response generated");
         sub.assert_bytes_eq(wire_out[..15], "HTTP/1.1 200 OK", "Server returned 200 OK");
         sub.assert_eq(server.requests_processed, 1, "Requests counter incremented");
@@ -876,8 +876,8 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
         proxy::add_upstream_target(rp.cluster, "upstream.local:8080", 8080);
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "frontend.test");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "frontend.test");
 
         var wire: u8[>..] = [];
         let t_idx, ok = proxy::prepare_proxy_request(rp, "GET", "/api", in_headers, "127.0.0.1", "http", "", wire);
@@ -903,8 +903,8 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         proxy::add_upstream_target(rp.cluster, "backend.srv:8080", 8080);
         rp.config.max_active_conns_per_target = 2;
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "test.example.com");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "test.example.com");
 
         var wire: u8[>..] = [];
         let idx1, ok1 = proxy::prepare_proxy_request(rp, "GET", "/", in_headers, "10.0.0.1", "http", "", wire);
@@ -933,13 +933,13 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
         proxy::add_upstream_target(rp.cluster, "app.internal:80", 80);
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "legit.example.com");
-        wing::append_header(in_headers, "Connection", "keep-alive, X-Secret-Internal");
-        wing::append_header(in_headers, "X-Secret-Internal", "should-be-stripped");
-        wing::append_header(in_headers, "X-Forwarded-Host", "evil-spoof.com");
-        wing::append_header(in_headers, "X-Forwarded-Proto", "gopher");
-        wing::append_header(in_headers, "X-Forwarded-Ssl", "on");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "legit.example.com");
+        http::append_header(in_headers, "Connection", "keep-alive, X-Secret-Internal");
+        http::append_header(in_headers, "X-Secret-Internal", "should-be-stripped");
+        http::append_header(in_headers, "X-Forwarded-Host", "evil-spoof.com");
+        http::append_header(in_headers, "X-Forwarded-Proto", "gopher");
+        http::append_header(in_headers, "X-Forwarded-Ssl", "on");
 
         var wire: u8[>..] = [];
         let _, ok = proxy::prepare_proxy_request(rp, "GET", "/secure", in_headers, "203.0.113.5", "https", "", wire);
@@ -960,8 +960,8 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         rp.config.enable_rate_limiting = true;
         rp.rate_limiter = security::new_gateway_rate_limiter(10, 1); // 10 rps, burst 1
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "test.example.com");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "test.example.com");
 
         var wire: u8[>..] = [];
         let client_ip: u8[..16] = "198.51.100.77";
@@ -1003,9 +1003,9 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
         proxy::add_upstream_target(rp.cluster, "app.internal:80", 80);
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "api.example.com");
-        wing::append_header(in_headers, "X-Forwarded-For", "127.0.0.1, 10.0.0.1");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "api.example.com");
+        http::append_header(in_headers, "X-Forwarded-For", "127.0.0.1, 10.0.0.1");
 
         // 1. Default mode: trust_incoming_xff is false -> spoofed XFF dropped
         var wire_untrusted: u8[>..] = [];
@@ -1051,8 +1051,8 @@ fn test_reverse_proxy_hardening(t: lit::T&) {
         sub.assert_eq(rp.config.rate_limit_rps, 10, "Config RPS is 10");
         sub.assert_eq(rp.config.rate_limit_burst, 1, "Config burst is 1");
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "test.example.com");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "test.example.com");
 
         var wire: u8[>..] = [];
         let client_ip: u8[..16] = "198.51.100.88";
@@ -1390,7 +1390,7 @@ fn test_ietf_rate_limit_headers(t: lit::T&) {
             reset_after_ns:  200000000,
         };
 
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         security::apply_rate_limit_headers(res, quota, dec);
 
         sub.assert_true(res.has_header("RateLimit-Limit"), "RateLimit-Limit emitted");
@@ -1408,7 +1408,7 @@ fn test_ietf_rate_limit_headers(t: lit::T&) {
             current_tat_ns: 3500000000,
         };
 
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         security::apply_rate_limit_headers(res, quota, dec);
 
         sub.assert_eq(res.status_code, 429, "status set to 429 Too Many Requests");
@@ -1509,27 +1509,27 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
     t.run("Capsule Protocol Framing & Zero-Copy Decode") { sub =>
         var wire: u8[..256] = [];
         let raw_payload = "test_capsule_payload_bytes";
-        let enc_ok = wing::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, raw_payload);
+        let enc_ok = net::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, raw_payload);
         sub.assert_true(enc_ok, "encode_http_capsule succeeded");
 
-        let c, dec_ok = wing::parse_http_capsule(wire[..]);
+        let c, dec_ok = net::parse_http_capsule(wire[..]);
         sub.assert_true(dec_ok, "parse_http_capsule succeeded");
         sub.assert_eq(c.capsule_type, rfc::CAPSULE_DATAGRAM, "Type is rfc::CAPSULE_DATAGRAM (0x00)");
         sub.assert_bytes_eq(c.payload, raw_payload, "Payload bytes match exactly");
 
         // Truncated capsule wire detection
         let short_wire = wire[..wire.len - 3];
-        let _, trunc_ok = wing::parse_http_capsule(short_wire);
+        let _, trunc_ok = net::parse_http_capsule(short_wire);
         sub.assert_false(trunc_ok, "Truncated capsule detected and rejected");
 
         // Capsule-Protocol RFC 9297 Section 3.4 / RFC 8941 validation
-        sub.assert_true(wing::is_capsule_protocol_negotiated("?1"), "Standard ?1");
-        sub.assert_true(wing::is_capsule_protocol_negotiated(" ?1; param=value "), "Structured ?1 with params");
-        sub.assert_false(wing::is_capsule_protocol_negotiated("?0"), "?0 rejected");
+        sub.assert_true(net::is_capsule_protocol_negotiated("?1"), "Standard ?1");
+        sub.assert_true(net::is_capsule_protocol_negotiated(" ?1; param=value "), "Structured ?1 with params");
+        sub.assert_false(net::is_capsule_protocol_negotiated("?0"), "?0 rejected");
 
-        var mock_hdrs = wing::HeaderMap { .. };
-        wing::append_header(mock_hdrs, "capsule-protocol", "?1");
-        sub.assert_true(mock_hdrs.has_capsule_protocol(), "has_capsule_protocol on HeaderMap");
+        var mock_hdrs = http::HeaderMap { .. };
+        http::append_header(mock_hdrs, "capsule-protocol", "?1");
+        sub.assert_true(net::has_capsule_protocol(mock_hdrs), "has_capsule_protocol on HeaderMap");
     };
 
     t.run("HTTP Datagrams over QUIC (Quarter Stream ID + Context ID)") { sub =>
@@ -1538,10 +1538,10 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
         let quarter_stream_id: u64 = 2; // Stream ID 8 / 4 = 2
         let context_id:        u64 = 0; // Default uncompressed context
 
-        let enc_ok = wing::encode_http_datagram(dgram_wire, quarter_stream_id, context_id, udp_sample);
+        let enc_ok = net::encode_http_datagram(dgram_wire, quarter_stream_id, context_id, udp_sample);
         sub.assert_true(enc_ok, "encode_http_datagram ok");
 
-        let q_id, ctx_id, payload, dec_ok = wing::decode_http_datagram(dgram_wire[..]);
+        let q_id, ctx_id, payload, dec_ok = net::decode_http_datagram(dgram_wire[..]);
         sub.assert_true(dec_ok, "decode_http_datagram ok");
         sub.assert_eq(q_id, 2, "Quarter stream ID matches (2)");
         sub.assert_eq(ctx_id, 0, "Context ID matches (0)");
@@ -1564,41 +1564,41 @@ fn test_rfc9297_capsules_and_datagrams(t: lit::T&) {
 fn test_rfc9298_connect_udp(t: lit::T&) {
     t.run("URI Template Formatting and Parsing") { sub =>
         var path_buf: u8[..256] = [];
-        wing::format_connect_udp_path(path_buf, "1.1.1.1", 53);
+        net::format_connect_udp_path(path_buf, "1.1.1.1", 53);
         sub.assert_bytes_eq(path_buf[..], "/.well-known/masque/udp/1.1.1.1/53/", "Format IPv4 53");
 
-        let host, port, ok = wing::parse_connect_udp_path(path_buf[..]);
+        let host, port, ok = net::parse_connect_udp_path(path_buf[..]);
         sub.assert_true(ok, "parse_connect_udp_path ok");
         sub.assert_bytes_eq(host[..], "1.1.1.1", "Host parsed correctly");
         sub.assert_eq(port, 53, "Port parsed correctly (53)");
 
         // Domain name target
         var domain_path: u8[..256] = [];
-        wing::format_connect_udp_path(domain_path, "dns.google", 853);
-        let d_host, d_port, d_ok = wing::parse_connect_udp_path(domain_path[..]);
+        net::format_connect_udp_path(domain_path, "dns.google", 853);
+        let d_host, d_port, d_ok = net::parse_connect_udp_path(domain_path[..]);
         sub.assert_true(d_ok, "parse domain target ok");
         sub.assert_bytes_eq(d_host[..], "dns.google", "Domain target parsed");
         sub.assert_eq(d_port, 853, "Port 853 parsed");
 
         // Invalid paths
-        let _, _, bad1 = wing::parse_connect_udp_path("/random/path/foo");
+        let _, _, bad1 = net::parse_connect_udp_path("/random/path/foo");
         sub.assert_false(bad1, "Random path rejected");
 
-        let _, _, bad2 = wing::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/notaport/");
+        let _, _, bad2 = net::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/notaport/");
         sub.assert_false(bad2, "Non-numeric port rejected");
     };
 
     t.run("In-Stream DATAGRAM Capsule Serialization") { sub =>
         var wire: u8[..256] = [];
         let udp_data = "\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01";
-        let enc_ok = wing::encode_connect_udp_datagram_capsule(wire, 0, udp_data);
+        let enc_ok = net::encode_connect_udp_datagram_capsule(wire, 0, udp_data);
         sub.assert_true(enc_ok, "encode_connect_udp_datagram_capsule ok");
 
-        let c, ok_c = wing::parse_http_capsule(wire[..]);
+        let c, ok_c = net::parse_http_capsule(wire[..]);
         sub.assert_true(ok_c, "parse outer capsule ok");
         sub.assert_eq(c.capsule_type, rfc::CAPSULE_DATAGRAM, "Capsule type is 0x00");
 
-        let ctx_id, parsed_udp, ok_udp = wing::parse_connect_udp_datagram(c.payload);
+        let ctx_id, parsed_udp, ok_udp = net::parse_connect_udp_datagram(c.payload);
         sub.assert_true(ok_udp, "parse_connect_udp_datagram ok");
         sub.assert_eq(ctx_id, 0, "Context ID is 0");
         sub.assert_bytes_eq(parsed_udp, udp_data, "UDP payload matches");
@@ -1611,7 +1611,7 @@ fn test_rfc9298_connect_udp(t: lit::T&) {
 fn test_rfc9484_connect_ip(t: lit::T&) {
     t.run("ADDRESS_REQUEST & ADDRESS_ASSIGN Capsules") { sub =>
         // 1. Client creates Address Request
-        var req = wing::IpAddressRequest {
+        var req = net::IpAddressRequest {
             request_id: 1,
             ip_version: 4,
             prefix_len: 32,
@@ -1620,14 +1620,14 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         req.requested_ip.append([10, 0, 0, 42]);
 
         var req_wire: u8[..256] = [];
-        let req_enc_ok = wing::encode_address_request_capsule(req_wire, req);
+        let req_enc_ok = net::encode_address_request_capsule(req_wire, req);
         sub.assert_true(req_enc_ok, "encode_address_request_capsule ok");
 
-        let c_req, c_req_ok = wing::parse_http_capsule(req_wire[..]);
+        let c_req, c_req_ok = net::parse_http_capsule(req_wire[..]);
         sub.assert_true(c_req_ok, "parse request capsule ok");
         sub.assert_eq(c_req.capsule_type, rfc::CAPSULE_ADDRESS_REQUEST, "Type is ADDRESS_REQUEST (0x02)");
 
-        let dec_req, dec_req_ok = wing::decode_address_request_capsule(c_req.payload);
+        let dec_req, dec_req_ok = net::decode_address_request_capsule(c_req.payload);
         sub.assert_true(dec_req_ok, "decode_address_request_capsule ok");
         sub.assert_eq(dec_req.request_id, 1, "Request ID matches (1)");
         sub.assert_eq(dec_req.ip_version, 4, "IPv4");
@@ -1635,7 +1635,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         sub.assert_bytes_eq(dec_req.requested_ip[..], [10, 0, 0, 42], "IP matches 10.0.0.42");
 
         // 2. Server creates Address Assign
-        var assign = wing::IpAddressAssign {
+        var assign = net::IpAddressAssign {
             request_id: 1,
             ip_version: 4,
             prefix_len: 24,
@@ -1644,14 +1644,14 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         assign.assigned_ip.append([192, 168, 1, 0]);
 
         var assign_wire: u8[..256] = [];
-        let assign_enc_ok = wing::encode_address_assign_capsule(assign_wire, assign);
+        let assign_enc_ok = net::encode_address_assign_capsule(assign_wire, assign);
         sub.assert_true(assign_enc_ok, "encode_address_assign_capsule ok");
 
-        let c_assign, c_assign_ok = wing::parse_http_capsule(assign_wire[..]);
+        let c_assign, c_assign_ok = net::parse_http_capsule(assign_wire[..]);
         sub.assert_true(c_assign_ok, "parse assign capsule ok");
         sub.assert_eq(c_assign.capsule_type, rfc::CAPSULE_ADDRESS_ASSIGN, "Type is ADDRESS_ASSIGN (0x01)");
 
-        let dec_assign, dec_assign_ok = wing::decode_address_assign_capsule(c_assign.payload);
+        let dec_assign, dec_assign_ok = net::decode_address_assign_capsule(c_assign.payload);
         sub.assert_true(dec_assign_ok, "decode_address_assign_capsule ok");
         sub.assert_eq(dec_assign.request_id, 1, "Request ID matches (1)");
         sub.assert_eq(dec_assign.prefix_len, 24, "Prefix len 24");
@@ -1659,7 +1659,7 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
     };
 
     t.run("ROUTE_ADVERTISEMENT Capsule") { sub =>
-        var route = wing::RouteAdvertisement {
+        var route = net::RouteAdvertisement {
             ip_version:  4,
             ip_protocol: 0,
             ..
@@ -1668,14 +1668,14 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
         route.end_ip.append([10, 0, 0, 255]);
 
         var route_wire: u8[..256] = [];
-        let enc_ok = wing::encode_route_advertisement_capsule(route_wire, route);
+        let enc_ok = net::encode_route_advertisement_capsule(route_wire, route);
         sub.assert_true(enc_ok, "encode_route_advertisement_capsule ok");
 
-        let c, c_ok = wing::parse_http_capsule(route_wire[..]);
+        let c, c_ok = net::parse_http_capsule(route_wire[..]);
         sub.assert_true(c_ok, "parse route capsule ok");
         sub.assert_eq(c.capsule_type, rfc::CAPSULE_ROUTE_ADVERTISEMENT, "Type is ROUTE_ADVERTISEMENT (0x03)");
 
-        let dec_route, dec_route_ok = wing::decode_route_advertisement_capsule(c.payload);
+        let dec_route, dec_route_ok = net::decode_route_advertisement_capsule(c.payload);
         sub.assert_true(dec_route_ok, "decode_route_advertisement_capsule ok");
         sub.assert_eq(dec_route.ip_version, 4, "IPv4");
         sub.assert_bytes_eq(dec_route.start_ip[..], [10, 0, 0, 0], "Start IP 10.0.0.0 matches");
@@ -1689,17 +1689,17 @@ fn test_rfc9484_connect_ip(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
     t.run("CONNECT-UDP Handshake & End-to-End Tunneling via Client") { sub =>
-        var client = wing::new_client();
+        var client = client::new_client();
 
         // Configure mock proxy accepting CONNECT-UDP
-        wing::mock_route(client, "CONNECT", "https://proxy.privacy.org/.well-known/masque/udp/1.1.1.1/53/", 200, "");
-        wing::add_mock_header(client, "Capsule-Protocol", "?1");
+        client::mock_route(client, "CONNECT", "https://proxy.privacy.org/.well-known/masque/udp/1.1.1.1/53/", 200, "");
+        client::add_mock_header(client, "Capsule-Protocol", "?1");
 
         // 1. Client connects via CONNECT-UDP
-        let tunnel, resp, err = wing::connect_udp(client, "https://proxy.privacy.org", "1.1.1.1", 53, 4, false);
-        sub.assert_true(wing::ok(err), "connect_udp handshake succeeded");
-        sub.assert_eq(wing::status(resp), 200, "200 OK");
-        sub.assert_true(tunnel.state == wing::MasqueTunnelState.Established, "Tunnel state is Established");
+        let tunnel, resp, err = client::connect_udp(client, "https://proxy.privacy.org", "1.1.1.1", 53, 4, false);
+        sub.assert_true(http::ok(err), "connect_udp handshake succeeded");
+        sub.assert_eq(http::status(resp), 200, "200 OK");
+        sub.assert_true(tunnel.state == net::MasqueTunnelState.Established, "Tunnel state is Established");
 
         // 2. Client sends UDP packet through tunnel (in-stream capsule mode via UFCS)
         var tunnel_mut = copy(tunnel);
@@ -1719,20 +1719,20 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
     };
 
     t.run("CONNECT-IP Handshake & Address Assignment via Client") { sub =>
-        var client = wing::new_client();
+        var client = client::new_client();
 
         // Configure mock VPN gateway accepting CONNECT-IP
-        wing::mock_route(client, "CONNECT", "https://vpn.corp.com/.well-known/masque/ip/", 200, "");
-        wing::add_mock_header(client, "Capsule-Protocol", "?1");
+        client::mock_route(client, "CONNECT", "https://vpn.corp.com/.well-known/masque/ip/", 200, "");
+        client::add_mock_header(client, "Capsule-Protocol", "?1");
 
         // 1. Client connects via CONNECT-IP
-        let tunnel, resp, err = wing::connect_ip(client, "https://vpn.corp.com", 0, false);
-        sub.assert_true(wing::ok(err), "connect_ip handshake succeeded");
-        sub.assert_true(tunnel.state == wing::MasqueTunnelState.Established, "Tunnel is Established");
+        let tunnel, resp, err = client::connect_ip(client, "https://vpn.corp.com", 0, false);
+        sub.assert_true(http::ok(err), "connect_ip handshake succeeded");
+        sub.assert_true(tunnel.state == net::MasqueTunnelState.Established, "Tunnel is Established");
 
         // 2. Simulate server sending ADDRESS_ASSIGN capsule
         var tunnel_mut = copy(tunnel);
-        var assign = wing::IpAddressAssign {
+        var assign = net::IpAddressAssign {
             request_id: 10,
             ip_version: 4,
             prefix_len: 32,
@@ -1741,25 +1741,25 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
         assign.assigned_ip.append([10, 8, 0, 5]);
 
         var assign_capsule_wire: u8[..256] = [];
-        wing::encode_address_assign_capsule(assign_capsule_wire, assign);
+        net::encode_address_assign_capsule(assign_capsule_wire, assign);
 
         var dummy_pkt: u8[..256] = [];
-        let recv_ok = wing::receive_capsule(tunnel_mut, assign_capsule_wire[..], dummy_pkt);
+        let recv_ok = net::receive_capsule(tunnel_mut, assign_capsule_wire[..], dummy_pkt);
         sub.assert_true(recv_ok, "ADDRESS_ASSIGN capsule ingested");
         sub.assert_bytes_eq(tunnel_mut.assigned_ip[..], [10, 8, 0, 5], "Tunnel assigned IP is 10.8.0.5");
         sub.assert_eq(tunnel_mut.assigned_prefix_len, 32, "Tunnel prefix length is /32");
     };
 
     t.run("Proxy Rejection (Missing Capsule-Protocol Header)") { sub =>
-        var client = wing::new_client();
+        var client = client::new_client();
 
         // Mock proxy returning 200 OK without Capsule-Protocol: ?1
-        wing::mock_route(client, "CONNECT", "https://bad-proxy.org/.well-known/masque/udp/8.8.8.8/53/", 200, "");
+        client::mock_route(client, "CONNECT", "https://bad-proxy.org/.well-known/masque/udp/8.8.8.8/53/", 200, "");
 
-        let tunnel, resp, err = wing::connect_udp(client, "https://bad-proxy.org", "8.8.8.8", 53);
-        sub.assert_false(wing::ok(err), "Failed due to missing Capsule-Protocol");
+        let tunnel, resp, err = client::connect_udp(client, "https://bad-proxy.org", "8.8.8.8", 53);
+        sub.assert_false(http::ok(err), "Failed due to missing Capsule-Protocol");
         sub.assert_eq(err.code, 502, "Error 502 Bad Gateway");
-        sub.assert_true(tunnel.state == wing::MasqueTunnelState.Failed, "Tunnel state is Failed");
+        sub.assert_true(tunnel.state == net::MasqueTunnelState.Failed, "Tunnel state is Failed");
     };
 }
 
@@ -1771,35 +1771,35 @@ fn test_masque_client_sessions_and_tunneling(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_masque_connect_udp_path_parsing(t: lit::T&) {
     // 1. Valid RFC 9298 paths
-    let h1, p1, ok1 = wing::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/53/");
+    let h1, p1, ok1 = net::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/53/");
     t.assert_true(ok1, "valid template with trailing slash should pass");
     t.assert_eq(p1, 53, "port should be 53");
     t.assert_true(h1[..] == "1.1.1.1", "host should match");
 
-    let h2, p2, ok2 = wing::parse_connect_udp_path("/.well-known/masque/udp/example.com/443");
+    let h2, p2, ok2 = net::parse_connect_udp_path("/.well-known/masque/udp/example.com/443");
     t.assert_true(ok2, "valid template without trailing slash should pass");
     t.assert_eq(p2, 443, "port should be 443");
     t.assert_true(h2[..] == "example.com", "host should match");
 
     // 2. RFC 9298 Section 3: target_port MUST be 1..65535, port 0 strictly forbidden
-    let _, _, ok_zero = wing::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/0/");
+    let _, _, ok_zero = net::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/0/");
     t.assert_false(ok_zero, "port 0 must be rejected");
 
-    let _, _, ok_big = wing::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/65536/");
+    let _, _, ok_big = net::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/65536/");
     t.assert_false(ok_big, "port > 65535 must be rejected");
 
     // 3. Characters forbidden in host part
-    let _, _, ok_bad1 = wing::parse_connect_udp_path("/.well-known/masque/udp/bad?host/53/");
+    let _, _, ok_bad1 = net::parse_connect_udp_path("/.well-known/masque/udp/bad?host/53/");
     t.assert_false(ok_bad1, "host with query delimiter must be rejected");
 
-    let _, _, ok_bad2 = wing::parse_connect_udp_path("/.well-known/masque/udp/bad#host/53/");
+    let _, _, ok_bad2 = net::parse_connect_udp_path("/.well-known/masque/udp/bad#host/53/");
     t.assert_false(ok_bad2, "host with hash fragment delimiter must be rejected");
 
-    let _, _, ok_bad3 = wing::parse_connect_udp_path("/.well-known/masque/udp/bad host/53/");
+    let _, _, ok_bad3 = net::parse_connect_udp_path("/.well-known/masque/udp/bad host/53/");
     t.assert_false(ok_bad3, "host with space must be rejected");
 
     // 4. Extra path segments
-    let _, _, ok_extra = wing::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/53/extra");
+    let _, _, ok_extra = net::parse_connect_udp_path("/.well-known/masque/udp/1.1.1.1/53/extra");
     t.assert_false(ok_extra, "extra segments after port must be rejected");
 }
 
@@ -1809,29 +1809,29 @@ fn test_masque_connect_udp_path_parsing(t: lit::T&) {
 fn test_masque_capsule_codecs(t: lit::T&) {
     // 1. DATAGRAM capsule encode & decode
     var cap_out: u8[..128] = [];
-    let enc_ok = wing::encode_connect_udp_datagram_capsule(cap_out, 0, "ping");
+    let enc_ok = net::encode_connect_udp_datagram_capsule(cap_out, 0, "ping");
     t.assert_true(enc_ok, "datagram capsule encode should succeed");
 
-    let cap, parse_ok = wing::parse_http_capsule(cap_out[..]);
+    let cap, parse_ok = net::parse_http_capsule(cap_out[..]);
     t.assert_true(parse_ok, "http capsule parse should succeed");
     t.assert_true(cap.capsule_type == rfc::CAPSULE_DATAGRAM, "capsule type should be DATAGRAM");
 
-    let ctx_id, pkt, pkt_ok = wing::parse_connect_udp_datagram(cap.payload);
+    let ctx_id, pkt, pkt_ok = net::parse_connect_udp_datagram(cap.payload);
     t.assert_true(pkt_ok, "connect udp datagram parse should succeed");
     t.assert_eq(ctx_id, 0, "context id should be 0");
     t.assert_true(pkt == "ping", "payload should match");
 
     // 2. CONNECT-IP ADDRESS_ASSIGN IPv4 (RFC 9484)
-    var assign4 = wing::IpAddressAssign { request_id: 42, ip_version: 4, prefix_len: 32, .. };
+    var assign4 = net::IpAddressAssign { request_id: 42, ip_version: 4, prefix_len: 32, .. };
     assign4.assigned_ip.append([10, 0, 0, 1]);
     var wire4: u8[..128] = [];
-    t.assert_true(wing::encode_address_assign_capsule(wire4, assign4), "encode address assign v4");
+    t.assert_true(net::encode_address_assign_capsule(wire4, assign4), "encode address assign v4");
 
-    let cap4, cap4_ok = wing::parse_http_capsule(wire4[..]);
+    let cap4, cap4_ok = net::parse_http_capsule(wire4[..]);
     t.assert_true(cap4_ok, "parse assign capsule");
     t.assert_true(cap4.capsule_type == rfc::CAPSULE_ADDRESS_ASSIGN, "type matches address assign");
 
-    let dec4, dec4_ok = wing::decode_address_assign_capsule(cap4.payload);
+    let dec4, dec4_ok = net::decode_address_assign_capsule(cap4.payload);
     t.assert_true(dec4_ok, "decode address assign v4");
     t.assert_eq(dec4.request_id, 42, "req id matches");
     t.assert_eq(dec4.ip_version, 4, "version is 4");
@@ -1841,17 +1841,17 @@ fn test_masque_capsule_codecs(t: lit::T&) {
     // 3. CONNECT-IP ADDRESS_ASSIGN invalid versions / bounds
     // Invalid IP version 5
     let bad_ver_wire: u8[7] = [0x01, 0x05, 10, 0, 0, 1, 0x20];
-    let _, bad_ver_ok = wing::decode_address_assign_capsule(bad_ver_wire[..]);
+    let _, bad_ver_ok = net::decode_address_assign_capsule(bad_ver_wire[..]);
     t.assert_false(bad_ver_ok, "invalid IP version 5 must be rejected");
 
     // IPv4 prefix length > 32
     let bad_pre_wire: u8[7] = [0x01, 0x04, 10, 0, 0, 1, 0x21];
-    let _, bad_pre_wire_ok = wing::decode_address_assign_capsule(bad_pre_wire[..]);
+    let _, bad_pre_wire_ok = net::decode_address_assign_capsule(bad_pre_wire[..]);
     t.assert_false(bad_pre_wire_ok, "IPv4 prefix length > 32 must be rejected");
 
     // IPv4 with wrong byte count (3 bytes instead of 4)
     let bad_len_wire: u8[6] = [0x01, 0x04, 10, 0, 1, 0x20];
-    let _, bad_len_ok = wing::decode_address_assign_capsule(bad_len_wire[..]);
+    let _, bad_len_ok = net::decode_address_assign_capsule(bad_len_wire[..]);
     t.assert_false(bad_len_ok, "IPv4 address with rdlength != 4 must be rejected");
 }
 
@@ -1935,32 +1935,32 @@ fn test_dns_record_bounds_and_https_target(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_altsvc_learning_and_h3_promotion(t: lit::T&) {
     t.run("Cold Request Learns Alt-Svc and Next Request Upgrades to HTTP/3") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000); // t = 1700000000s
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000); // t = 1700000000s
 
         // 1. Setup mock route returning Alt-Svc header
-        wing::mock_route(client, "GET", "https://api.example.com/v1/user", 200, "{\"id\":1}");
-        wing::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400; persist=1");
+        client::mock_route(client, "GET", "https://api.example.com/v1/user", 200, "{\"id\":1}");
+        client::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400; persist=1");
 
         // Before request: cache has no entry
-        sub.assert_false(wing::has_altsvc_h3(client, "api.example.com:443"), "no prior Alt-Svc for api.example.com");
+        sub.assert_false(client::has_altsvc_h3(client, "api.example.com:443"), "no prior Alt-Svc for api.example.com");
 
         // 2. Cold request: executed over standard TCP (HTTP/1.1)
-        let resp1, err1 = wing::get(client, "https://api.example.com/v1/user");
-        sub.assert_true(wing::ok(err1), "cold request succeeds");
-        sub.assert_eq(wing::status(resp1), 200, "200 OK");
-        sub.assert_eq(wing::protocol(resp1), "HTTP/1.1", "cold request served via HTTP/1.1");
-        sub.assert_false(wing::is_http3(resp1), "not HTTP/3 yet");
+        let resp1, err1 = client::get(client, "https://api.example.com/v1/user");
+        sub.assert_true(http::ok(err1), "cold request succeeds");
+        sub.assert_eq(http::status(resp1), 200, "200 OK");
+        sub.assert_eq(http::protocol(resp1), "HTTP/1.1", "cold request served via HTTP/1.1");
+        sub.assert_false(http::is_http3(resp1), "not HTTP/3 yet");
 
         // 3. Verify Alt-Svc was ingested into client cache
-        sub.assert_true(wing::has_altsvc_h3(client, "api.example.com:443"), "Alt-Svc cached for api.example.com:443");
-        sub.assert_true(wing::has_altsvc_h3(client, "https://api.example.com/v1/user"), "URL origin lookup works");
+        sub.assert_true(client::has_altsvc_h3(client, "api.example.com:443"), "Alt-Svc cached for api.example.com:443");
+        sub.assert_true(client::has_altsvc_h3(client, "https://api.example.com/v1/user"), "URL origin lookup works");
 
         // 4. Second request: Alt-Svc candidate found -> upgraded to HTTP/3!
-        let resp2, err2 = wing::get(client, "https://api.example.com/v1/user");
-        sub.assert_true(wing::ok(err2), "second request succeeds");
-        sub.assert_eq(wing::protocol(resp2), "h3", "second request upgraded to h3 via Alt-Svc!");
-        sub.assert_true(wing::is_http3(resp2), "is_http3 helper returns true");
+        let resp2, err2 = client::get(client, "https://api.example.com/v1/user");
+        sub.assert_true(http::ok(err2), "second request succeeds");
+        sub.assert_eq(http::protocol(resp2), "h3", "second request upgraded to h3 via Alt-Svc!");
+        sub.assert_true(http::is_http3(resp2), "is_http3 helper returns true");
     };
 }
 
@@ -1969,78 +1969,78 @@ fn test_altsvc_learning_and_h3_promotion(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_chromium_protocol_racing_and_udp_fallback(t: lit::T&) {
     t.run("UDP Firewall Block: TCP Wins Race, Zero Error, Backoff Recorded") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000); // t0 = 1700000000s (sec)
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000); // t0 = 1700000000s (sec)
 
         // Seed Alt-Svc cache
-        wing::mock_route(client, "GET", "https://fast.edge.net/data", 200, "{\"ready\":true}");
-        wing::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=3600");
+        client::mock_route(client, "GET", "https://fast.edge.net/data", 200, "{\"ready\":true}");
+        client::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=3600");
 
-        let resp_seed, err_seed = wing::get(client, "https://fast.edge.net/data");
-        sub.assert_true(wing::ok(err_seed), "seed request ok");
-        sub.assert_true(wing::has_altsvc_h3(client, "fast.edge.net:443"), "Alt-Svc cached");
+        let resp_seed, err_seed = client::get(client, "https://fast.edge.net/data");
+        sub.assert_true(http::ok(err_seed), "seed request ok");
+        sub.assert_true(client::has_altsvc_h3(client, "fast.edge.net:443"), "Alt-Svc cached");
 
         // Now simulate corporate firewall blocking UDP/QUIC (e.g. timeout or packet drop)
-        wing::set_mock_quic_blocked(client, true);
+        client::set_mock_quic_blocked(client, true);
 
         // Request during UDP blockage: Protocol Race starts
         // Alternative Job (H3) times out / blocked -> Main Job (TCP) wins the race!
-        let resp_blocked, err_blocked = wing::get(client, "https://fast.edge.net/data");
-        sub.assert_true(wing::ok(err_blocked), "request succeeds without user error");
-        sub.assert_eq(wing::status(resp_blocked), 200, "200 OK via TCP fallback");
-        sub.assert_eq(wing::protocol(resp_blocked), "HTTP/1.1", "served via TCP Main Job");
+        let resp_blocked, err_blocked = client::get(client, "https://fast.edge.net/data");
+        sub.assert_true(http::ok(err_blocked), "request succeeds without user error");
+        sub.assert_eq(http::status(resp_blocked), 200, "200 OK via TCP fallback");
+        sub.assert_eq(http::protocol(resp_blocked), "HTTP/1.1", "served via TCP Main Job");
 
         // Check Chromium failure penalization: origin is now marked broken!
-        sub.assert_true(wing::is_altsvc_broken(client, "fast.edge.net:443"), "origin fast.edge.net marked broken");
-        sub.assert_false(wing::has_altsvc_h3(client, "fast.edge.net:443"), "has_altsvc_h3 suppressed during backoff");
+        sub.assert_true(client::is_altsvc_broken(client, "fast.edge.net:443"), "origin fast.edge.net marked broken");
+        sub.assert_false(client::has_altsvc_h3(client, "fast.edge.net:443"), "has_altsvc_h3 suppressed during backoff");
 
         // Request 1 second later (within 5s initial backoff window):
-        wing::set_clock_us(client, 1700000001000000); // t0 + 1s
-        let resp_cached_tcp, err_cached_tcp = wing::get(client, "https://fast.edge.net/data");
-        sub.assert_true(wing::ok(err_cached_tcp), "fast-path TCP succeeds");
-        sub.assert_eq(wing::protocol(resp_cached_tcp), "HTTP/1.1", "bypassed QUIC race without delay");
+        client::set_clock_us(client, 1700000001000000); // t0 + 1s
+        let resp_cached_tcp, err_cached_tcp = client::get(client, "https://fast.edge.net/data");
+        sub.assert_true(http::ok(err_cached_tcp), "fast-path TCP succeeds");
+        sub.assert_eq(http::protocol(resp_cached_tcp), "HTTP/1.1", "bypassed QUIC race without delay");
 
         // Advance virtual clock past 5s backoff window (t0 + 6s)
-        wing::set_clock_us(client, 1700000006000000); // t0 + 6s
-        sub.assert_false(wing::is_altsvc_broken(client, "fast.edge.net:443"), "backoff expired after 5s");
-        sub.assert_true(wing::has_altsvc_h3(client, "fast.edge.net:443"), "H3 candidate available again");
+        client::set_clock_us(client, 1700000006000000); // t0 + 6s
+        sub.assert_false(client::is_altsvc_broken(client, "fast.edge.net:443"), "backoff expired after 5s");
+        sub.assert_true(client::has_altsvc_h3(client, "fast.edge.net:443"), "H3 candidate available again");
 
         // Now firewall allows UDP again:
-        wing::set_mock_quic_blocked(client, false);
-        let resp_recovered, err_recovered = wing::get(client, "https://fast.edge.net/data");
-        sub.assert_true(wing::ok(err_recovered), "recovered request ok");
-        sub.assert_eq(wing::protocol(resp_recovered), "h3", "H3 race won after recovery!");
-        sub.assert_false(wing::is_altsvc_broken(client, "fast.edge.net:443"), "broken status cleared on success");
+        client::set_mock_quic_blocked(client, false);
+        let resp_recovered, err_recovered = client::get(client, "https://fast.edge.net/data");
+        sub.assert_true(http::ok(err_recovered), "recovered request ok");
+        sub.assert_eq(http::protocol(resp_recovered), "h3", "H3 race won after recovery!");
+        sub.assert_false(client::is_altsvc_broken(client, "fast.edge.net:443"), "broken status cleared on success");
     };
 
     t.run("Exponential Failure Backoff Progression (5s -> 10s)") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000); // t0
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000); // t0
 
-        wing::mock_route(client, "GET", "https://flaky.cdn.com/res", 200, "flaky");
-        wing::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
-        let _, _ = wing::get(client, "https://flaky.cdn.com/res");
+        client::mock_route(client, "GET", "https://flaky.cdn.com/res", 200, "flaky");
+        client::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
+        let _, _ = client::get(client, "https://flaky.cdn.com/res");
 
         // Failure 1: backoff is 5s
-        wing::set_mock_quic_blocked(client, true);
-        let _, _ = wing::get(client, "https://flaky.cdn.com/res");
-        sub.assert_true(wing::is_altsvc_broken(client, "flaky.cdn.com:443"), "broken attempt 1");
+        client::set_mock_quic_blocked(client, true);
+        let _, _ = client::get(client, "https://flaky.cdn.com/res");
+        sub.assert_true(client::is_altsvc_broken(client, "flaky.cdn.com:443"), "broken attempt 1");
 
         // At t0 + 6s: backoff 1 has expired
-        wing::set_clock_us(client, 1700000006000000);
-        sub.assert_false(wing::is_altsvc_broken(client, "flaky.cdn.com:443"), "expired at t0+6s");
+        client::set_clock_us(client, 1700000006000000);
+        sub.assert_false(client::is_altsvc_broken(client, "flaky.cdn.com:443"), "expired at t0+6s");
 
         // Failure 2: backoff doubles to 10s (broken until t0 + 6s + 10s = t0 + 16s)
-        let _, _ = wing::get(client, "https://flaky.cdn.com/res");
-        sub.assert_true(wing::is_altsvc_broken(client, "flaky.cdn.com:443"), "broken attempt 2");
+        let _, _ = client::get(client, "https://flaky.cdn.com/res");
+        sub.assert_true(client::is_altsvc_broken(client, "flaky.cdn.com:443"), "broken attempt 2");
 
         // At t0 + 12s: still broken (12 < 16)
-        wing::set_clock_us(client, 1700000012000000);
-        sub.assert_true(wing::is_altsvc_broken(client, "flaky.cdn.com:443"), "still broken at t0+12s");
+        client::set_clock_us(client, 1700000012000000);
+        sub.assert_true(client::is_altsvc_broken(client, "flaky.cdn.com:443"), "still broken at t0+12s");
 
         // At t0 + 17s: backoff 2 expired (17 >= 16)
-        wing::set_clock_us(client, 1700000017000000);
-        sub.assert_false(wing::is_altsvc_broken(client, "flaky.cdn.com:443"), "expired at t0+17s");
+        client::set_clock_us(client, 1700000017000000);
+        sub.assert_false(client::is_altsvc_broken(client, "flaky.cdn.com:443"), "expired at t0+17s");
     };
 }
 
@@ -2049,42 +2049,42 @@ fn test_chromium_protocol_racing_and_udp_fallback(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_altsvc_clear_and_ttl_expiration(t: lit::T&) {
     t.run("Alt-Svc: clear Purges Origin from Cache Immediately") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000);
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000);
 
-        wing::mock_route(client, "GET", "https://service.org/item", 200, "item");
-        wing::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
-        let _, _ = wing::get(client, "https://service.org/item");
-        sub.assert_true(wing::has_altsvc_h3(client, "service.org:443"), "cached");
+        client::mock_route(client, "GET", "https://service.org/item", 200, "item");
+        client::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
+        let _, _ = client::get(client, "https://service.org/item");
+        sub.assert_true(client::has_altsvc_h3(client, "service.org:443"), "cached");
 
         // Server sends `Alt-Svc: clear` (RFC 7838 Section 3.1)
-        wing::mock_route(client, "POST", "https://service.org/logout", 200, "bye");
-        wing::add_mock_header(client, "Alt-Svc", "clear");
-        let _, _ = wing::post(client, "https://service.org/logout") { _ => };
+        client::mock_route(client, "POST", "https://service.org/logout", 200, "bye");
+        client::add_mock_header(client, "Alt-Svc", "clear");
+        let _, _ = client::post(client, "https://service.org/logout") { _ => };
 
-        sub.assert_false(wing::has_altsvc_h3(client, "service.org:443"), "origin purged after clear");
+        sub.assert_false(client::has_altsvc_h3(client, "service.org:443"), "origin purged after clear");
 
         // Subsequent request uses standard TCP
-        let resp3, _ = wing::get(client, "https://service.org/item");
-        sub.assert_eq(wing::protocol(resp3), "HTTP/1.1", "served via HTTP/1.1 after clear");
+        let resp3, _ = client::get(client, "https://service.org/item");
+        sub.assert_eq(http::protocol(resp3), "HTTP/1.1", "served via HTTP/1.1 after clear");
     };
 
     t.run("Max-Age (ma) Expiration") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000); // t0
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000); // t0
 
-        wing::mock_route(client, "GET", "https://short-lived.com/status", 200, "ok");
-        wing::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=3"); // TTL = 3 seconds
-        let _, _ = wing::get(client, "https://short-lived.com/status");
-        sub.assert_true(wing::has_altsvc_h3(client, "short-lived.com:443"), "cached at t0");
+        client::mock_route(client, "GET", "https://short-lived.com/status", 200, "ok");
+        client::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=3"); // TTL = 3 seconds
+        let _, _ = client::get(client, "https://short-lived.com/status");
+        sub.assert_true(client::has_altsvc_h3(client, "short-lived.com:443"), "cached at t0");
 
         // Advance 2 seconds (still valid)
-        wing::set_clock_us(client, 1700000002000000); // t0 + 2s
-        sub.assert_true(wing::has_altsvc_h3(client, "short-lived.com:443"), "valid at t0+2s (< 3s)");
+        client::set_clock_us(client, 1700000002000000); // t0 + 2s
+        sub.assert_true(client::has_altsvc_h3(client, "short-lived.com:443"), "valid at t0+2s (< 3s)");
 
         // Advance 4 seconds (expired)
-        wing::set_clock_us(client, 1700000004000000); // t0 + 4s
-        sub.assert_false(wing::has_altsvc_h3(client, "short-lived.com:443"), "expired at t0+4s (>= 3s)");
+        client::set_clock_us(client, 1700000004000000); // t0 + 4s
+        sub.assert_false(client::has_altsvc_h3(client, "short-lived.com:443"), "expired at t0+4s (>= 3s)");
     };
 }
 
@@ -2093,32 +2093,32 @@ fn test_altsvc_clear_and_ttl_expiration(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc7838_security_and_options(t: lit::T&) {
     t.run("RFC 7838 Section 2.1: Alt-Svc MUST be Ignored on Insecure HTTP") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000);
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000);
 
         // Plain HTTP server attempts to send Alt-Svc
-        wing::mock_route(client, "GET", "http://insecure.site/api", 200, "insecure");
-        wing::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
+        client::mock_route(client, "GET", "http://insecure.site/api", 200, "insecure");
+        client::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
 
-        let resp, err = wing::get(client, "http://insecure.site/api");
-        sub.assert_true(wing::ok(err), "http request ok");
+        let resp, err = client::get(client, "http://insecure.site/api");
+        sub.assert_true(http::ok(err), "http request ok");
 
         // MUST NOT be cached because transport was unencrypted HTTP!
-        sub.assert_false(wing::has_altsvc_h3(client, "insecure.site:80"), "Alt-Svc ignored over insecure HTTP");
+        sub.assert_false(client::has_altsvc_h3(client, "insecure.site:80"), "Alt-Svc ignored over insecure HTTP");
     };
 
     t.run("Manual Disabling of Alt-Svc or Protocol Racing") { sub =>
-        var client = wing::new_client();
-        wing::enable_altsvc(client, false); // Alt-Svc disabled
+        var client = client::new_client();
+        client::enable_altsvc(client, false); // Alt-Svc disabled
 
-        wing::mock_route(client, "GET", "https://disabled.com/data", 200, "data");
-        wing::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
+        client::mock_route(client, "GET", "https://disabled.com/data", 200, "data");
+        client::add_mock_header(client, "Alt-Svc", "h3=\":443\"; ma=86400");
 
-        let resp1, _ = wing::get(client, "https://disabled.com/data");
-        sub.assert_false(wing::has_altsvc_h3(client, "disabled.com:443"), "not cached when disabled");
+        let resp1, _ = client::get(client, "https://disabled.com/data");
+        sub.assert_false(client::has_altsvc_h3(client, "disabled.com:443"), "not cached when disabled");
 
-        let resp2, _ = wing::get(client, "https://disabled.com/data");
-        sub.assert_eq(wing::protocol(resp2), "HTTP/1.1", "remains HTTP/1.1");
+        let resp2, _ = client::get(client, "https://disabled.com/data");
+        sub.assert_eq(http::protocol(resp2), "HTTP/1.1", "remains HTTP/1.1");
     };
 }
 
@@ -2136,40 +2136,40 @@ fn test_client_cert_header(t: lit::T&) {
         }
 
         var field: u8[..8192] = [];
-        let enc_len = wing::encode_client_cert(der[..], field);
-        sub.assert_eq(enc_len, 90, "encode writes 90 bytes for 64-byte DER");
+        let ok_enc = http::encode_client_cert(der[..], field);
+        sub.assert_true(ok_enc, "encode succeeds for 64-byte DER");
+        sub.assert_eq(field.len, 90, "encode writes 90 bytes for 64-byte DER");
         sub.assert_bytes_eq(
-            field[..enc_len],
+            field[..],
             ":AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw==:",
             "encoded field matches SFV Byte Sequence form",
         );
 
         var out_der: u8[..4096] = [];
-        var out_len: i32        = 0;
-        let ok = wing::parse_client_cert(field[..enc_len], out_der, out_len);
+        let ok = http::parse_client_cert(field[..], out_der);
         sub.assert_true(ok, "parse_client_cert accepts encoded field");
-        sub.assert_eq(out_len, 64, "decoded DER length is 64");
-        sub.assert_bytes_eq(out_der[..out_len], der[..], "round-trip preserves DER bytes");
+        sub.assert_eq(out_der.len, 64, "decoded DER length is 64");
+        sub.assert_bytes_eq(out_der[..], der[..], "round-trip preserves DER bytes");
 
         var reenc: u8[..8192] = [];
-        let re_len = wing::encode_client_cert(out_der[..out_len], reenc);
-        sub.assert_eq(re_len, enc_len, "re-encode length matches");
-        sub.assert_bytes_eq(reenc[..re_len], field[..enc_len], "re-encode is byte-for-byte identical");
+        let ok_re = http::encode_client_cert(out_der[..], reenc);
+        sub.assert_true(ok_re, "re-encode succeeds");
+        sub.assert_eq(reenc.len, field.len, "re-encode length matches");
+        sub.assert_bytes_eq(reenc[..], field[..], "re-encode is byte-for-byte identical");
     };
 
     t.run("Client-Cert rejects trailing content, empty, and oversize DER") { sub =>
         var out_der: u8[..4096] = [];
-        var out_len: i32        = 0;
 
         let trailing = ":AAECAw==:extra";
-        sub.assert_false(wing::parse_client_cert(trailing, out_der, out_len), "trailing content after colon rejected");
-        sub.assert_eq(out_len, 0, "out_len cleared on trailing-content failure");
+        sub.assert_false(http::parse_client_cert(trailing, out_der), "trailing content after colon rejected");
+        sub.assert_eq(out_der.len, 0, "out_der cleared on trailing-content failure");
 
         let empty = "::";
-        sub.assert_false(wing::parse_client_cert(empty, out_der, out_len), "empty Byte Sequence rejected");
+        sub.assert_false(http::parse_client_cert(empty, out_der), "empty Byte Sequence rejected");
 
         let unclosed = ":AAECAw==";
-        sub.assert_false(wing::parse_client_cert(unclosed, out_der, out_len), "missing closing colon rejected");
+        sub.assert_false(http::parse_client_cert(unclosed, out_der), "missing closing colon rejected");
 
         // 4097-byte DER fixture (enterprise cap is 4096)
         var big: u8[>..] = [];
@@ -2182,42 +2182,34 @@ fn test_client_cert_header(t: lit::T&) {
         core::base64_encode(der_src[..], b64_buf);
         big.append(b64_buf[..]);
         big.push(':');
-        sub.assert_false(wing::parse_client_cert(big[..], out_der, out_len), "DER > 4096 bytes rejected");
-        sub.assert_eq(out_len, 0, "out_len cleared on oversize failure");
+        sub.assert_false(http::parse_client_cert(big[..], out_der), "DER > 4096 bytes rejected");
+        sub.assert_eq(out_der.len, 0, "out_der cleared on oversize failure");
     };
 
     t.run("Client-Cert-Chain list parse and malformed-item rejection") { sub =>
         var certs: u8[..4096][..4] = [];
-        var lens:  i32[..4]        = [];
-        var count: i32             = 0;
 
         // SFV List of Byte Sequences with trailing comma (RFC 9110 §5.6.1 #rule)
-        let ok2 = wing::parse_client_cert_chain(":YQ==:, :Yg==:,", certs, lens, count);
+        let ok2 = http::parse_client_cert_chain(":YQ==:, :Yg==:,", certs);
         sub.assert_true(ok2, "two-item list with trailing comma accepted");
-        sub.assert_eq(count, 2, "count == 2");
-        sub.assert_eq(lens[0], 1, "item 0 length is 1");
-        sub.assert_eq(lens[1], 1, "item 1 length is 1");
-        sub.assert_bytes_eq(certs[0][..lens[0]], "a", "item 0 decodes to a");
-        sub.assert_bytes_eq(certs[1][..lens[1]], "b", "item 1 decodes to b");
+        sub.assert_eq(certs.len, 2, "count == 2");
+        sub.assert_eq(certs[0].len, 1, "item 0 length is 1");
+        sub.assert_eq(certs[1].len, 1, "item 1 length is 1");
+        sub.assert_bytes_eq(certs[0][..], "a", "item 0 decodes to a");
+        sub.assert_bytes_eq(certs[1][..], "b", "item 1 decodes to b");
 
         certs.clear();
-        lens.clear();
-        count = 0;
-        let ok_bad = wing::parse_client_cert_chain(":YQ==:, !!!, :Yg==:", certs, lens, count);
+        let ok_bad = http::parse_client_cert_chain(":YQ==:, !!!, :Yg==:", certs);
         sub.assert_false(ok_bad, "malformed item rejects whole field (RFC 9440 §2.3)");
-        sub.assert_eq(count, 0, "out_count == 0 on malformed chain");
+        sub.assert_eq(certs.len, 0, "certs cleared on malformed chain");
 
         certs.clear();
-        lens.clear();
-        count = 0;
-        let ok5 = wing::parse_client_cert_chain(
+        let ok5 = http::parse_client_cert_chain(
             ":YQ==:, :Yg==:, :YQ==:, :Yg==:, :YQ==:",
             certs,
-            lens,
-            count,
         );
         sub.assert_false(ok5, "more than 4 chain items rejected");
-        sub.assert_eq(count, 0, "out_count == 0 on oversize chain");
+        sub.assert_eq(certs.len, 0, "certs cleared on oversize chain");
     };
 
     t.run("Spoofing strip via is_forwarded_metadata_header") { sub =>
@@ -2230,11 +2222,11 @@ fn test_client_cert_header(t: lit::T&) {
         var cfg = proxy::Config { .. };
         sub.assert_false(cfg.forward_client_cert, "forward_client_cert defaults to false");
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "origin.example");
-        wing::append_header(in_headers, "Client-Cert", ":spoof:");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "origin.example");
+        http::append_header(in_headers, "Client-Cert", ":spoof:");
 
-        var out_headers = wing::HeaderMap { .. };
+        var out_headers = http::HeaderMap { .. };
         let ok = proxy::filter_and_forward_headers(
             in_headers,
             out_headers,
@@ -2244,7 +2236,7 @@ fn test_client_cert_header(t: lit::T&) {
             cfg,
         );
         sub.assert_true(ok, "filter_and_forward_headers succeeds");
-        sub.assert_false(wing::has_header(out_headers, "Client-Cert"), "spoofed Client-Cert stripped");
+        sub.assert_false(http::has_header(out_headers, "Client-Cert"), "spoofed Client-Cert stripped");
     };
 
     t.run("filter_and_forward_headers injects exactly one Client-Cert when enabled") { sub =>
@@ -2255,11 +2247,11 @@ fn test_client_cert_header(t: lit::T&) {
         }
         cfg.client_cert_der_len = 64;
 
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "origin.example");
-        wing::append_header(in_headers, "Client-Cert", ":spoof:");
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "origin.example");
+        http::append_header(in_headers, "Client-Cert", ":spoof:");
 
-        var out_headers = wing::HeaderMap { .. };
+        var out_headers = http::HeaderMap { .. };
         let ok = proxy::filter_and_forward_headers(
             in_headers,
             out_headers,
@@ -2281,10 +2273,10 @@ fn test_client_cert_header(t: lit::T&) {
         sub.assert_eq(client_cert_count, 1, "exactly one Client-Cert header");
 
         var expected: u8[..8192] = [];
-        let enc_len = wing::encode_client_cert(cfg.client_cert_der[..cfg.client_cert_der_len], expected);
-        sub.assert_true(enc_len > 0, "expected encode produces output");
-        let actual = wing::get_header(out_headers, "Client-Cert");
-        sub.assert_bytes_eq(actual, expected[..enc_len], "Client-Cert equals encode_client_cert(client_cert_der)");
+        let ok_enc = http::encode_client_cert(cfg.client_cert_der[..cfg.client_cert_der_len], expected);
+        sub.assert_true(ok_enc && expected.len > 0, "expected encode produces output");
+        let actual = http::get_header(out_headers, "Client-Cert");
+        sub.assert_bytes_eq(actual, expected[..], "Client-Cert equals encode_client_cert(client_cert_der)");
     };
 }
 
@@ -2490,39 +2482,39 @@ fn test_reverse_proxy_streaming(t: lit::T&) {
     };
 
     t.run("Live ReverseProxy exchange over StreamPool") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         guard listener > 0 else { return; }
-        let port = wing::tcp_getsockname_port(listener);
+        let port = net::tcp_getsockname_port(listener);
         sub.assert_gt(port as i64, 0, "ephemeral port allocated");
 
-        let client_sock = wing::tcp_connect("127.0.0.1", port, 2000);
+        let client_sock = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client_sock, 0, "connected to upstream listener");
-        let server_sock = wing::tcp_accept(listener, 2000);
+        let server_sock = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_sock, 0, "accepted upstream socket");
 
         let canned_resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nUpstream Pong";
-        let _ = wing::tcp_send(server_sock, canned_resp);
+        let _ = net::tcp_send(server_sock, canned_resp);
 
         var rp = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
         sub.assert_true(proxy::add_upstream_target(rp.cluster, "127.0.0.1", port, 1), "added upstream");
 
-        var pool = wing::new_stream_pool();
-        let pkey = wing::new_pool_key(
-            wing::PoolScheme.Http,
+        var pool = net::new_stream_pool();
+        let pkey = net::new_pool_key(
+            net::PoolScheme.Http,
             "127.0.0.1",
             port,
-            wing::new_direct_proxy_chain(),
-            wing::NetworkAnonymizationKey { .. },
-            wing::TlsAndDnsPolicy { .. },
+            net::new_direct_proxy_chain(),
+            net::NetworkAnonymizationKey { .. },
+            net::TlsAndDnsPolicy { .. },
         );
-        let t = wing::Transport.Tcp { fd: client_sock };
-        let cid = wing::register_connection(pool, pkey, wing::NegotiatedProtocol.Http11, t, "127.0.0.1", 1, 1000);
+        let t = net::Transport.Tcp { fd: client_sock };
+        let cid = net::register_connection(pool, pkey, net::NegotiatedProtocol.Http11, t, "127.0.0.1", 1, 1000);
         sub.assert_gt(cid as i64, 0, "registered warm connection in pool");
-        let _ = wing::release_connection(pool, cid, 1000);
+        let _ = net::release_connection(pool, cid, 1000);
 
-        var in_hdrs = wing::HeaderMap { .. };
-        let _ = wing::append_header(in_hdrs, "Host", "edge.example.com");
-        var resp = wing::Response { .. };
+        var in_hdrs = http::HeaderMap { .. };
+        let _ = http::append_header(in_hdrs, "Host", "edge.example.com");
+        var resp = http::Response { .. };
         let ok_ex = proxy::execute_proxy_exchange(
             rp, pool, "GET", "/v1/health", in_hdrs, "203.0.113.5", "https", "", resp, 2000, 2000,
         );
@@ -2532,9 +2524,9 @@ fn test_reverse_proxy_streaming(t: lit::T&) {
         sub.assert_eq(rp.cluster.targets[0].active_conns, 0, "active conns released after exchange");
         sub.assert_eq(rp.cluster.targets[0].successes, 1, "upstream success recorded");
 
-        wing::tcp_close(server_sock);
-        wing::tcp_close(listener);
-        wing::close_pooled_connection(pool, cid);
+        net::tcp_close(server_sock);
+        net::tcp_close(listener);
+        net::close_pooled_connection(pool, cid);
     };
 }
 
@@ -2560,7 +2552,7 @@ fn test_proxy_v2_truncated_tlv_and_trailing_bytes(t: lit::T&) {
         wire.push(0x01); // TLV type 1 (ALPN)
         wire.push(0x00); // Truncated length (missing second byte and value)
 
-        let hdr, consumed, ok = wing::parse_proxy_v2(wire[..]);
+        let hdr, consumed, ok = net::parse_proxy_v2(wire[..]);
         sub.assert_false(ok, "PROXY v2 with trailing truncated TLV bytes MUST be rejected");
     };
 }
@@ -2570,21 +2562,21 @@ fn test_proxy_v2_truncated_tlv_and_trailing_bytes(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_pool_and_proxy_san_invariants(t: lit::T&) {
     t.run("matches_san_pattern rejects TLD wildcard *.com") { sub =>
-        let matches_tld = wing::matches_san_pattern("*.com", "example.com");
+        let matches_tld = net::matches_san_pattern("*.com", "example.com");
         sub.assert_false(matches_tld, "*.com wildcard MUST NOT match apex domain (RFC 6125 §6.4.3)");
     };
 
     t.run("matches_san_pattern rejects candidate hostname with literal wildcard") { sub =>
-        let matches_wild = wing::matches_san_pattern("*.example.com", "*.example.com");
+        let matches_wild = net::matches_san_pattern("*.example.com", "*.example.com");
         sub.assert_false(matches_wild, "Candidate hostname containing literal '*' MUST NOT match");
     };
 
     t.run("verify_connect_tunnel_response rejects non-HTTP or 4-digit status codes") { sub =>
-        let err1 = wing::verify_connect_tunnel_response("HTTP/1.1 2000 OK\r\n\r\n");
-        sub.assert_true(err1 == wing::ConnectTunnelError.InvalidStatusLine, "Status code '2000' must be InvalidStatusLine");
+        let err1 = net::verify_connect_tunnel_response("HTTP/1.1 2000 OK\r\n\r\n");
+        sub.assert_true(err1 == net::ConnectTunnelError.InvalidStatusLine, "Status code '2000' must be InvalidStatusLine");
 
-        let err2 = wing::verify_connect_tunnel_response("UNKNOWN 200 OK\r\n\r\n");
-        sub.assert_true(err2 == wing::ConnectTunnelError.InvalidStatusLine, "Non-HTTP protocol must be InvalidStatusLine");
+        let err2 = net::verify_connect_tunnel_response("UNKNOWN 200 OK\r\n\r\n");
+        sub.assert_true(err2 == net::ConnectTunnelError.InvalidStatusLine, "Non-HTTP protocol must be InvalidStatusLine");
     };
 }
 
@@ -2594,7 +2586,7 @@ fn test_pool_and_proxy_san_invariants(t: lit::T&) {
 fn test_proxy_protocol_overflow(t: lit::T&) {
     // PROXY v1 with >8 space-separated tokens
     let bad_line: const u8[:] = "PROXY TCP4 1.1.1.1 2.2.2.2 80 80 EXTRA1 EXTRA2 EXTRA3 EXTRA4\r\n";
-    let hdr, consumed, ok = wing::parse_proxy_v1(bad_line);
+    let hdr, consumed, ok = net::parse_proxy_v1(bad_line);
     t.assert_false(ok, "PROXY v1 with >8 tokens must fail safely without buffer overflow");
 }
 
@@ -2609,7 +2601,7 @@ fn test_masque_address_capsule_bounds(t: lit::T&) {
     for i in 20 { payload.push(0xAA); } // 20 bytes (> 16 cap)
     payload.push(32); // prefix_len = 32
 
-    let req, ok = wing::decode_address_request_capsule(payload[..]);
+    let req, ok = net::decode_address_request_capsule(payload[..]);
     t.assert_false(ok, "Address request capsule with >16 IP bytes must fail without panic");
 }
 
@@ -2618,24 +2610,24 @@ fn test_masque_address_capsule_bounds(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_goose2rfc_net_audit_regressions(t: lit::T&) {
     // NET1_C01: RFC 9484 §4.7.2 ADDRESS_REQUEST rejects request_id == 0 and non-zero host bits
-    var req_zero_id = wing::IpAddressRequest { request_id: 0, ip_version: 4, prefix_len: 32, .. };
+    var req_zero_id = net::IpAddressRequest { request_id: 0, ip_version: 4, prefix_len: 32, .. };
     req_zero_id.requested_ip.append([10, 0, 0, 1]);
     var out_wire: u8[..64] = [];
-    t.assert_false(wing::encode_address_request_capsule(out_wire, req_zero_id), "request_id == 0 rejected");
+    t.assert_false(net::encode_address_request_capsule(out_wire, req_zero_id), "request_id == 0 rejected");
     let raw_req_zero: const u8[7] = [0x00, 4, 10, 0, 0, 1, 32];
-    let _, ok_req_zero = wing::decode_address_request_capsule(raw_req_zero[..]);
+    let _, ok_req_zero = net::decode_address_request_capsule(raw_req_zero[..]);
     t.assert_false(ok_req_zero, "decode ADDRESS_REQUEST with request_id == 0 rejected");
 
     let raw_req_host_bits: const u8[7] = [0x01, 4, 10, 0, 0, 1, 24];
-    let _, ok_req_host = wing::decode_address_request_capsule(raw_req_host_bits[..]);
+    let _, ok_req_host = net::decode_address_request_capsule(raw_req_host_bits[..]);
     t.assert_false(ok_req_host, "decode ADDRESS_REQUEST with non-zero host bits under /24 rejected");
 
     // NET1_C02: RFC 9484 §4.7.1 ADDRESS_ASSIGN rejects non-zero host bits outside prefix_len
-    var bad_assign = wing::IpAddressAssign { request_id: 1, ip_version: 4, prefix_len: 24, .. };
+    var bad_assign = net::IpAddressAssign { request_id: 1, ip_version: 4, prefix_len: 24, .. };
     bad_assign.assigned_ip.append([192, 168, 1, 100]);
-    t.assert_false(wing::encode_address_assign_capsule(out_wire, bad_assign), "encode ADDRESS_ASSIGN non-zero host bits rejected");
+    t.assert_false(net::encode_address_assign_capsule(out_wire, bad_assign), "encode ADDRESS_ASSIGN non-zero host bits rejected");
     let raw_assign_host_bits: const u8[7] = [0x01, 4, 192, 168, 1, 100, 24];
-    let _, ok_assign_host = wing::decode_address_assign_capsule(raw_assign_host_bits[..]);
+    let _, ok_assign_host = net::decode_address_assign_capsule(raw_assign_host_bits[..]);
     t.assert_false(ok_assign_host, "decode ADDRESS_ASSIGN non-zero host bits rejected");
 
     // NET1_C03: RFC 9484 §4.7.3 decode_route_entry validates start_ip <= end_ip on every entry
@@ -2643,14 +2635,14 @@ fn test_goose2rfc_net_audit_regressions(t: lit::T&) {
         4, 10, 0, 0, 0, 10, 0, 0, 255, 0,
         4, 10, 0, 1, 255, 10, 0, 1, 0, 0,
     ];
-    let _, ok_two_routes = wing::decode_route_advertisement_capsule(two_routes_second_inv[..]);
+    let _, ok_two_routes = net::decode_route_advertisement_capsule(two_routes_second_inv[..]);
     t.assert_false(ok_two_routes, "multi-entry ROUTE_ADVERTISEMENT with inverted 2nd entry rejected");
 
     // NET1_C05: RFC 9298 §5 Context ID 0 UDP Proxying Payload > 65527 bytes rejected
     var huge_dgram: u8[>..] = [];
     huge_dgram.push(0x00); // Context ID = 0
     for _ in 65528 { huge_dgram.push(0x42); }
-    let _, _, ok_huge_dgram = wing::parse_connect_udp_datagram(huge_dgram[..]);
+    let _, _, ok_huge_dgram = net::parse_connect_udp_datagram(huge_dgram[..]);
     t.assert_false(ok_huge_dgram, "Context ID 0 UDP payload > 65527 bytes rejected");
 
     // NET1_C08 & NET1_C10: Transactional rollback on parse_https_svc_params and parse_proxy_v2_ssl_tlv
@@ -2660,34 +2652,34 @@ fn test_goose2rfc_net_audit_regressions(t: lit::T&) {
     t.assert_eq(svc_rec.alpns.len, 0, "HttpsRecord.alpns rolled back on error");
 
     let bad_ssl_tlv: const u8[7] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00];
-    var ssl_info = wing::ProxySslInfo { .. };
-    t.assert_false(wing::parse_proxy_v2_ssl_tlv(bad_ssl_tlv[..], ssl_info), "truncated SSL TLV rejected");
+    var ssl_info = net::ProxySslInfo { .. };
+    t.assert_false(net::parse_proxy_v2_ssl_tlv(bad_ssl_tlv[..], ssl_info), "truncated SSL TLV rejected");
     t.assert_false(ssl_info.has_ssl, "ProxySslInfo rolled back on error");
 
     // NET2_C03: StreamPool release_connection_or_handoff does not hand off or idle-pool draining connections
-    var sp = wing::new_stream_pool(6, 32, 4);
-    var pk = wing::PoolKey { scheme: wing::PoolScheme.Https, .. };
+    var sp = net::new_stream_pool(6, 32, 4);
+    var pk = net::PoolKey { scheme: net::PoolScheme.Https, .. };
     pk.origin_endpoint.host.append("api.example.com");
     pk.origin_endpoint.port = 443;
-    let cid = wing::register_connection(sp, pk, wing::NegotiatedProtocol.Http2, "1.1.1.1", 100, 1000);
-    t.assert_true(wing::enqueue_group_waiter(sp, pk, 777), "waiter enqueued");
+    let cid = net::register_connection(sp, pk, net::NegotiatedProtocol.Http2, "1.1.1.1", 100, 1000);
+    t.assert_true(net::enqueue_group_waiter(sp, pk, 777), "waiter enqueued");
     sp.conns[0].no_new_exchanges = true;
-    var waiter_out = wing::WantConn { .. };
-    let rel_ok, handed_off = wing::release_connection_or_handoff(sp, cid, 2000, waiter_out);
+    var waiter_out = net::WantConn { .. };
+    let rel_ok, handed_off = net::release_connection_or_handoff(sp, cid, 2000, waiter_out);
     t.assert_true(rel_ok && !handed_off, "draining connection not handed off to waiter");
-    let g_idx = wing::find_group_index(sp, pk);
+    let g_idx = net::find_group_index(sp, pk);
     t.assert_eq(sp.groups[g_idx].active_conns, 0, "active_conns decremented to 0");
     t.assert_eq(sp.groups[g_idx].idle_conns, 0, "draining connection closed rather than added to idle_conns");
 }
 
 fn test_warm_upstream_pool_and_slowloris_h1_guard(t: lit::T&) {
     t.run("ReverseProxy Warm UpstreamPool Reuse and EPOLLRDHUP Eviction") { sub =>
-        let slot_idx, ok_pipe = wing::alloc_virtual_pipe_slot();
+        let slot_idx, ok_pipe = net::alloc_virtual_pipe_slot();
         sub.assert_true(ok_pipe, "allocated virtual pipe slot");
-        defer wing::free_virtual_pipe_slot(slot_idx);
+        defer net::free_virtual_pipe_slot(slot_idx);
 
-        let fd_client = (wing::virtual_pipe_to_fd(slot_idx, false) & 0x7FFFFFFF) as i32;
-        var backend_end: wing::Transport = wing::Transport.Virtual { pipe_slot: slot_idx, is_b_end: true };
+        let fd_client = (net::virtual_pipe_to_fd(slot_idx, false) & 0x7FFFFFFF) as i32;
+        var backend_end: net::Transport = net::Transport.Virtual { pipe_slot: slot_idx, is_b_end: true };
         let canned_resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok";
         sub.assert_eq(backend_end.send(canned_resp), canned_resp.len as i32, "seeded backend response");
 
@@ -2698,10 +2690,10 @@ fn test_warm_upstream_pool_and_slowloris_h1_guard(t: lit::T&) {
             "parked warm upstream socket",
         );
 
-        var sp = wing::new_stream_pool(6, 32, 4);
-        var in_headers = wing::HeaderMap { .. };
-        wing::append_header(in_headers, "Host", "edge.example.com");
-        var out_resp = wing::Response { .. };
+        var sp = net::new_stream_pool(6, 32, 4);
+        var in_headers = http::HeaderMap { .. };
+        http::append_header(in_headers, "Host", "edge.example.com");
+        var out_resp = http::Response { .. };
         let ex_ok = proxy::execute_proxy_exchange(
             rp, sp, "GET", "/ready", in_headers, "203.0.113.10", "https", "", out_resp, 1000, 1000000,
         );
@@ -2712,7 +2704,7 @@ fn test_warm_upstream_pool_and_slowloris_h1_guard(t: lit::T&) {
         sub.assert_true(rp.warm_upstreams.entries[0].healthy, "warm socket remains healthy");
 
         sub.assert_true(
-            wing::notify_upstream_epoll_events(rp.warm_upstreams, fd_client, wing::EPOLLRDHUP),
+            net::notify_upstream_epoll_events(rp.warm_upstreams, fd_client, net::EPOLLRDHUP),
             "notified EPOLLRDHUP on warm socket",
         );
         sub.assert_eq(rp.warm_upstreams.evicted_rdhup, 1 as u64, "EPOLLRDHUP evicted idle warm socket");
@@ -2720,7 +2712,7 @@ fn test_warm_upstream_pool_and_slowloris_h1_guard(t: lit::T&) {
     };
 
     t.run("HTTP/1.1 read_response_headers Enforces Slowloris Header Line Cap") { sub =>
-        var conn = wing::PooledConnection { .. };
+        var conn = net::PooledConnection { .. };
         let _ = conn.rx_buf.try_append("HTTP/1.1 200 OK\r\n");
         for i in 105 {
             let _ = conn.rx_buf.try_append("X-Pad: 1\r\n");

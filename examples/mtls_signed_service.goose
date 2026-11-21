@@ -39,66 +39,66 @@ fn main() {
     // Server requests client certificate with Ed25519 signature algorithm
     var cr_buf: u8[..256] = [];
     let sig_algs: u16[1] = [rfc::SIG_SCHEME_ED25519];
-    let cr_ok = wing::encode_certificate_request(cr_buf, "", sig_algs[..]);
+    let cr_ok = tls::encode_certificate_request(cr_buf, "", sig_algs[..]);
     assert(cr_ok);
 
     // Client verifies CertificateRequest and formats Certificate + CertificateVerify
-    var client_cr = wing::CertificateRequestMsg { .. };
-    let cr_parsed = wing::parse_certificate_request(cr_buf[..], false, client_cr);
+    var client_cr = tls::CertificateRequestMsg { .. };
+    let cr_parsed = tls::parse_certificate_request(cr_buf[..], false, client_cr);
     assert(cr_parsed && client_cr.has_signature_algorithms);
 
     var client_cert_msg: u8[..256] = [];
-    let cert_ok = wing::encode_client_certificate(client_cert_msg, "", "CN=PaymentWorkerNode01");
+    let cert_ok = tls::encode_client_certificate(client_cert_msg, "", "CN=PaymentWorkerNode01");
     assert(cert_ok);
 
     // Server verifies client certificate and transitions to handshake completion
-    let next_hs_state, hs_ok = wing::server_wait_cert_step(rfc::TLS_HS_CERTIFICATE, false);
-    assert(hs_ok && next_hs_state == wing::HsState.ServerWaitCV);
+    let next_hs_state, hs_ok = tls_internal::server_wait_cert_step(rfc::TLS_HS_CERTIFICATE, false);
+    assert(hs_ok && next_hs_state == tls::HsState.ServerWaitCV);
     print("    mTLS Handshake verified: Client identity 'CN=PaymentWorkerNode01' authenticated.\n");
 
     // ---- Client Prepares Authenticated Request ---------------------------
     print("[2] Client Constructing Authenticated Request:");
     let req_payload = "{\"account_id\": \"ACC-9921\", \"amount\": 50000, \"currency\": \"USD\"}";
 
-    var req = wing::Request {
+    var req = http::Request {
         method: "POST",
         url:    "https://payments.internal.mesh/v2/settlement?priority=high",
         ..
     };
     req.body.append(req_payload);
-    wing::set_header(req, "Content-Type", "application/json");
+    http::set_header(req, "Content-Type", "application/json");
 
     // Set RFC 9218 priority (Urgency 1 = High, Incremental = true)
-    wing::set_priority(req, 1, true);
-    print("    Configured RFC 9218 Priority: ", wing::header(req, "Priority"));
+    http::set_priority(req, 1, true);
+    print("    Configured RFC 9218 Priority: ", http::header(req, "Priority"));
 
     // Add RFC 9530 Content-Digest
-    let digest_set_ok = wing::set_content_digest(req, "sha-256");
+    let digest_set_ok = http::set_content_digest(req, "sha-256");
     assert(digest_set_ok);
-    print("    Generated RFC 9530 Digest:   ", wing::header(req, "Content-Digest"));
+    print("    Generated RFC 9530 Digest:   ", http::header(req, "Content-Digest"));
 
     // Sign request per RFC 9421 using client Ed25519 private key
-    let req_signed = wing::sign_request_ed25519(req, "client-node-01", client_seed[..]);
+    let req_signed = http::sign_request_ed25519(req, "client-node-01", client_seed[..]);
     assert(req_signed);
-    print("    Applied RFC 9421 Signature:  ", wing::header(req, "Signature"));
-    print("    Signature Input Parameters:  ", wing::header(req, "Signature-Input"), "\n");
+    print("    Applied RFC 9421 Signature:  ", http::header(req, "Signature"));
+    print("    Signature Input Parameters:  ", http::header(req, "Signature-Input"), "\n");
 
     // ---- Server Ingestion & Verification ---------------------------------
     print("[3] Server Ingestion & Boundary Verification:");
 
     // 1. Verify RFC 9530 Content-Digest
-    let digest_valid = wing::verify_request_content_digest(req);
+    let digest_valid = http::verify_request_content_digest(req);
     assert(digest_valid);
     print("    RFC 9530 Content-Digest: PASSED (Payload integrity verified).");
 
     // 2. Verify RFC 9421 HTTP Message Signature with client public key
-    let sig_valid = wing::verify_request_ed25519(req, "client-node-01", client_pub[..]);
+    let sig_valid = http::verify_request_ed25519(req, "client-node-01", client_pub[..]);
     assert(sig_valid);
     print("    RFC 9421 HTTP Signature: PASSED (Non-repudiation and authenticity verified).");
 
     // 3. Inspect RFC 9218 Priority
-    let prio_val = wing::header(req, "Priority");
-    let prio_param, ok_prio = wing::parse_http_priority(prio_val);
+    let prio_val = http::header(req, "Priority");
+    let prio_param, ok_prio = http::parse_priority(prio_val);
     assert(ok_prio);
     print("    RFC 9218 Parsed Urgency:  ", prio_param.urgency, " (incremental = ", prio_param.incremental, ")\n");
 
@@ -107,18 +107,18 @@ fn main() {
     let resp_chunk1 = "{\"status\": \"settled\", \"transaction_id\": \"TXN-40192\", ";
     let resp_chunk2 = "\"timestamp\": 1730198000, \"cleared\": true}";
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     res.status_code = 200;
     res.body.append(resp_chunk1);
     res.body.append(resp_chunk2);
-    wing::set_header(res, "Content-Type", "application/json");
+    http::set_header(res, "Content-Type", "application/json");
 
     // Add RFC 9530 Content-Digest to response
-    let res_digest_set = wing::set_response_content_digest(res, "sha-256");
+    let res_digest_set = http::set_response_content_digest(res, "sha-256");
     assert(res_digest_set);
 
     // Sign response per RFC 9421 bound to request context with server Ed25519 private key
-    let res_signed = wing::sign_response_ed25519(res, req, "server-gateway-01", server_seed[..]);
+    let res_signed = http::sign_response_ed25519(res, req, "server-gateway-01", server_seed[..]);
     assert(res_signed);
 
     // Build IoVecArray for zero-copy transmission
@@ -128,18 +128,18 @@ fn main() {
     assert(ok_v1 && ok_v2);
 
     var wire_headers: u8[>..] = [];
-    let sent_bytes = wing::send_http1_response_iov(-1, res, "goose-wing/2.0", iov, wire_headers);
+    let sent_bytes = server::send_http1_response_iov(-1, res, "goose-wing/2.0", iov, wire_headers);
     print("    Response serialized wire headers: ", wire_headers.len, " bytes");
     print("    Vectorized payload chunks:        ", core::iovec_count(iov), " segments (total ", core::iovec_total_bytes(iov), " bytes)");
     print("    Total wire transmission:          ", wire_headers.len + core::iovec_total_bytes(iov), " bytes (0 heap allocations)\n");
 
     // ---- Client Verification of Server Response --------------------------
     print("[5] Client Response Validation:");
-    let res_sig_valid = wing::verify_response_ed25519(res, req, "server-gateway-01", server_pub[..]);
+    let res_sig_valid = http::verify_response_ed25519(res, req, "server-gateway-01", server_pub[..]);
     assert(res_sig_valid);
     print("    Server Response Signature: PASSED.");
 
-    let res_digest_valid = wing::verify_response_content_digest(res);
+    let res_digest_valid = http::verify_response_content_digest(res);
     assert(res_digest_valid);
     print("    Server Response Digest:    PASSED.");
 }

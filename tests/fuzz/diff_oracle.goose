@@ -522,14 +522,14 @@ fn eval_base64_op<B>(op: const u8[:], payload: const u8[:], scratch: u8[..16384]
 
 fn eval_http1_op<B>(op: const u8[:], payload: const u8[:], out_line: B&) -> bool {
     if op == "http1_verdict" {
-        var req = wing::Request { .. };
-        let ok, consumed = wing::parse_http1_wire_request(payload, req);
+        var req = http::Request { .. };
+        let ok, consumed = server::parse_http1_wire_request(payload, req);
         if !ok || consumed <= 0 {
             out_line.append("ERR");
             return true;
         }
         out_line.append("ok ");
-        if (req.presence_mask & wing::HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
+        if (req.presence_mask & http::HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
             out_line.append("chunked");
         } else if req.body.len > 0 {
             out_line.append("length");
@@ -543,8 +543,8 @@ fn eval_http1_op<B>(op: const u8[:], payload: const u8[:], out_line: B&) -> bool
         return true;
     }
     guard op == "http1_req" else { return false; }
-    var req = wing::Request { .. };
-    let ok, consumed = wing::parse_http1_wire_request(payload, req);
+    var req = http::Request { .. };
+    let ok, consumed = server::parse_http1_wire_request(payload, req);
     if !ok || consumed <= 0 {
         out_line.append("ERR");
         return true;
@@ -559,7 +559,7 @@ fn eval_http1_op<B>(op: const u8[:], payload: const u8[:], out_line: B&) -> bool
     out_line.push(' ');
     core::format_i64_dec(req.body.len, out_line);
     out_line.push(' ');
-    let is_chunked: i64 = if (req.presence_mask & wing::HDR_PRESENCE_TRANSFER_ENCODING) != 0 { 1 } else { 0 };
+    let is_chunked: i64 = if (req.presence_mask & http::HDR_PRESENCE_TRANSFER_ENCODING) != 0 { 1 } else { 0 };
     core::format_i64_dec(is_chunked, out_line);
     return true;
 }

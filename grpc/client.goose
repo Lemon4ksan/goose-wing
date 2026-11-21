@@ -57,7 +57,7 @@ fn build_request_headers(
     cfg:         const CallConfig&,
     host:        const u8[:],
     scheme:      const u8[:],
-    out_headers: wing::HeaderMap&,
+    out_headers: http::HeaderMap&,
 ) {
     out_headers.reset_for_keep_alive();
 
@@ -107,7 +107,7 @@ fn build_http_request(
     cfg:            const CallConfig&,
     base_url:       const u8[:],
     serialized_msg: const u8[:],
-    out_req:        wing::Request&,
+    out_req:        http::Request&,
 ) {
     let _ = out_req.method.try_set("POST");
 
@@ -166,8 +166,8 @@ fn build_http_request(
 //   body = "\x00\x00\x00\x00\x05hello", is_web = false
 //   returns: ok = true, out_resp.payload = "hello", out_resp.status = Ok
 fn parse_unary_response(
-    res_headers:  const wing::HeaderMap&,
-    res_trailers: const wing::HeaderMap&,
+    res_headers:  const http::HeaderMap&,
+    res_trailers: const http::HeaderMap&,
     body:         const u8[:],
     is_web:       bool,
     out_resp:     Response&,
@@ -255,7 +255,7 @@ fn process_web_response(body: const u8[:], ct: const u8[:], out_resp: Response&)
 // Dispatches a Unary RPC through a client session, handling URL construction,
 // LPM serialization, and response parsing.
 fn unary_call(
-    session:     wing::Session&,
+    session:     client::Session&,
     base_url:    const u8[:],
     cfg:         const CallConfig&,
     request_msg: const u8[:],
@@ -267,11 +267,11 @@ fn unary_call(
     out_resp.is_compressed = false;
     out_resp.is_trailers_only = false;
 
-    var req = wing::new_request("POST", "");
+    var req = http::new_request("POST", "");
     cfg.build_http_request(base_url, request_msg, req);
 
-    let res, err = wing::do(session, req);
-    guard wing::ok(err) else {
+    let res, err = client::do(session, req);
+    guard http::ok(err) else {
         let rst_hdr = res.trailer("x-wing-h2-rst-code");
         if rst_hdr.len > 0 {
             let rst_code, ok_rst = rst_hdr.parse_u32_dec();

@@ -704,12 +704,12 @@ fn ws_drain_and_close(conn_fd: i64) {
     while step < 10 {
         step = core::add_sat_i64(step, 1);
         drain_buf.clear();
-        let dn = wing::tcp_recv(conn_fd, drain_buf, 20);
+        let dn = net::tcp_recv(conn_fd, drain_buf, 20);
         if dn <= 0 {
             break;
         }
     }
-    wing::tcp_close(conn_fd);
+    net::tcp_close(conn_fd);
 }
 
 inline fn is_ws_data_message(view: const realtime::WsMessageView&) -> bool {
@@ -718,7 +718,7 @@ inline fn is_ws_data_message(view: const realtime::WsMessageView&) -> bool {
 
 inline fn flush_ws_wire(conn_fd: i64, wire: const u8[:]) {
     if wire.len > 0 {
-        let _ = wing::tcp_send(conn_fd, wire);
+        let _ = net::tcp_send(conn_fd, wire);
     }
 }
 
@@ -984,20 +984,20 @@ fn has_header_token_fold(list: const u8[:], target: const u8[:]) -> bool {
     return false;
 }
 
-fn req_count_header(req: const wing::Request&, header_name: const u8[:]) -> i64 {
+fn req_count_header(req: const http::Request&, header_name: const u8[:]) -> i64 {
     var count: i64 = 0;
     for &e in req.headers.entries {
-        if wing::entry_name(req.headers, e).eq_ascii_fold(header_name) {
+        if http::entry_name(req.headers, e).eq_ascii_fold(header_name) {
             count = core::add_sat_i64(count, 1);
         }
     }
     return count;
 }
 
-fn req_has_header_token(req: const wing::Request&, header_name: const u8[:], token: const u8[:]) -> bool {
+fn req_has_header_token(req: const http::Request&, header_name: const u8[:], token: const u8[:]) -> bool {
     for &e in req.headers.entries {
-        if wing::entry_name(req.headers, e).eq_ascii_fold(header_name) {
-            if has_header_token_fold(wing::entry_value(req.headers, e), token) {
+        if http::entry_name(req.headers, e).eq_ascii_fold(header_name) {
+            if has_header_token_fold(http::entry_value(req.headers, e), token) {
                 return true;
             }
         }
@@ -1005,10 +1005,10 @@ fn req_has_header_token(req: const wing::Request&, header_name: const u8[:], tok
     return false;
 }
 
-fn req_has_subprotocol(req: const wing::Request&, subprotocol: const u8[:]) -> bool {
+fn req_has_subprotocol(req: const http::Request&, subprotocol: const u8[:]) -> bool {
     for &e in req.headers.entries {
-        if wing::entry_name(req.headers, e).eq_ascii_fold("sec-websocket-protocol") {
-            if realtime::has_subprotocol_token(wing::entry_value(req.headers, e), subprotocol) {
+        if http::entry_name(req.headers, e).eq_ascii_fold("sec-websocket-protocol") {
+            if realtime::has_subprotocol_token(http::entry_value(req.headers, e), subprotocol) {
                 return true;
             }
         }
@@ -1017,9 +1017,9 @@ fn req_has_subprotocol(req: const wing::Request&, subprotocol: const u8[:]) -> b
 }
 
 inline fn resolve_hdr_entry_name(
-    map:     const wing::HeaderMap&,
+    map:     const http::HeaderMap&,
     raw_buf: const u8[:],
-    e:       const wing::HeaderEntry&,
+    e:       const http::HeaderEntry&,
 ) -> const u8[:] {
     if raw_buf.len > 0 && e.name_end <= raw_buf.len {
         return raw_buf[(e.name_begin as i64)..(e.name_end as i64)];
@@ -1031,9 +1031,9 @@ inline fn resolve_hdr_entry_name(
 }
 
 inline fn resolve_hdr_entry_val(
-    map:     const wing::HeaderMap&,
+    map:     const http::HeaderMap&,
     raw_buf: const u8[:],
-    e:       const wing::HeaderEntry&,
+    e:       const http::HeaderEntry&,
 ) -> const u8[:] {
     if raw_buf.len > 0 && e.values_end <= raw_buf.len {
         return raw_buf[(e.values_begin as i64)..(e.values_end as i64)];
@@ -1045,7 +1045,7 @@ inline fn resolve_hdr_entry_val(
 }
 
 fn map_has_header_token(
-    map:         const wing::HeaderMap&,
+    map:         const http::HeaderMap&,
     raw_buf:     const u8[:],
     header_name: const u8[:],
     token:       const u8[:],
@@ -1066,7 +1066,7 @@ fn map_has_header_token(
 //   header_name = "sec-websocket-accept"
 //   returns: ("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", 1)
 fn map_extract_single_header(
-    map:         const wing::HeaderMap&,
+    map:         const http::HeaderMap&,
     raw_buf:     const u8[:],
     header_name: const u8[:],
 ) -> const u8[:], i64 {
@@ -1131,7 +1131,7 @@ inline fn validate_single_response_ws_ext(
 }
 
 fn validate_response_ws_extensions(
-    headers:            const wing::HeaderMap&,
+    headers:            const http::HeaderMap&,
     raw_buf:            const u8[:],
     offered_extensions: const u8[:],
 ) -> bool {
@@ -1155,7 +1155,7 @@ fn validate_response_ws_extensions(
     return true;
 }
 
-inline fn req_has_ws_host_authority(req: const wing::Request&) -> bool {
+inline fn req_has_ws_host_authority(req: const http::Request&) -> bool {
     let host_cnt = req_count_header(req, "host");
     if host_cnt > 1 {
         return false;
@@ -1184,18 +1184,18 @@ fn append_unique_ws_subprotocols(raw_val: const u8[:], seen: (const u8[:])[..32]
     return true;
 }
 
-fn req_has_valid_ws_subprotocols(req: const wing::Request&) -> bool {
+fn req_has_valid_ws_subprotocols(req: const http::Request&) -> bool {
     var seen: (const u8[:])[..32] = [];
     for &e in req.headers.entries {
-        if wing::entry_name(req.headers, e).eq_ascii_fold("sec-websocket-protocol") {
-            let raw_val = wing::entry_value(req.headers, e).trim_lws();
+        if http::entry_name(req.headers, e).eq_ascii_fold("sec-websocket-protocol") {
+            let raw_val = http::entry_value(req.headers, e).trim_lws();
             guard append_unique_ws_subprotocols(raw_val, seen) else { return false; }
         }
     }
     return true;
 }
 
-fn validate_ws_upgrade_headers(req: const wing::Request&, out_resp: wing::Response&) -> const u8[:], bool {
+fn validate_ws_upgrade_headers(req: const http::Request&, out_resp: http::Response&) -> const u8[:], bool {
     guard req_has_ws_host_authority(req) &&
         req_has_header_token(req, "upgrade", "websocket") &&
         req_has_header_token(req, "connection", "upgrade") else {
@@ -1230,7 +1230,7 @@ inline fn is_forbidden_h2_ws_header(name: const u8[:]) -> bool {
            name.eq_ascii_fold("sec-websocket-key");
 }
 
-fn format_h2_websocket_response(res: wing::Response&, subprotocol: const u8[:] = "") {
+fn format_h2_websocket_response(res: http::Response&, subprotocol: const u8[:] = "") {
     res.status_code = rfc::STATUS_OK;
     if subprotocol.len > 0 {
         res.set_header("sec-websocket-protocol", subprotocol);
@@ -1471,7 +1471,7 @@ fn flush_node_palette_messages(
     for i in count {
         let msg_idx = tree.nodes[n_i64].message_indices[i] as i64;
         if msg_idx >= 0 && msg_idx < tree.palette_len {
-            let sent = wing::tcp_send(fd, tree.palette[msg_idx].wire[..]);
+            let sent = net::tcp_send(fd, tree.palette[msg_idx].wire[..]);
             if sent > 0 {
                 sent_total += 1;
             }

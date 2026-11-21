@@ -480,7 +480,7 @@ fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
 
 // Emits `Set-Cookie` headers into `headers` exclusively for `COOKIE_DELTA_ADDED`
 // and `COOKIE_DELTA_REMOVED` entries in `jar`.
-fn flush_deltas(jar: const ServerCookieDeltaJar&, headers: wing::HeaderMap&) -> bool {
+fn flush_deltas(jar: const ServerCookieDeltaJar&, headers: http::HeaderMap&) -> bool {
     let saved_headers = headers;
     var committed = false;
     defer if !committed {

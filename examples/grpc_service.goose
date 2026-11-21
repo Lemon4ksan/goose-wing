@@ -52,7 +52,7 @@ fn main() {
     print("    -> payment.PaymentService/ProcessPayment (ID: 2)");
 
     // 3. Simulate Inbound HTTP/2 gRPC Unary Request for Greeter
-    var req1 = wing::new_request("POST", "/helloworld.Greeter/SayHello") { r =>
+    var req1 = http::new_request("POST", "/helloworld.Greeter/SayHello") { r =>
         r.set_header("content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
         r.set_header("authorization", "Bearer secret-cluster-token-xyz");
     };
@@ -62,19 +62,19 @@ fn main() {
 
     print("\n[2] Inbound Greeter Call Received:");
     print("    Target: ", req1.url);
-    print("    Content-Type: ", wing::header(req1, "content-type"));
+    print("    Content-Type: ", http::header(req1, "content-type"));
     print("    LPM Wire Size: ", req1.body.len, " bytes");
 
     // 4. Dispatch through zero-allocation gRPC dispatcher
-    var res1 = wing::Response { .. };
+    var res1 = http::Response { .. };
     let now_mono_ns: u64 = 1000000000;
     let handled1 = grpc::dispatch_unary(dispatcher, req1, now_mono_ns, res1, service_unary_handler);
 
     print("\n[3] Dispatch Execution Result:");
     print("    Handled: ", handled1);
     print("    HTTP Status: ", res1.status_code);
-    print("    Metadata x-server-version: ", wing::header(res1, "x-server-version"));
-    print("    Trailer grpc-status: ", wing::trailer(res1, rfc::HEADER_GRPC_STATUS));
+    print("    Metadata x-server-version: ", http::header(res1, "x-server-version"));
+    print("    Trailer grpc-status: ", http::trailer(res1, rfc::HEADER_GRPC_STATUS));
 
     // Decode response LPM payload
     var decoded_msg: u8[>..] = [];
@@ -83,18 +83,18 @@ fn main() {
     print("    Decoded Response Payload: ", decoded_msg[..]);
 
     // 5. Simulate Inbound Call Without Credentials (Unauthenticated error test)
-    var req2 = wing::new_request("POST", "/helloworld.Greeter/SayHello") { r =>
+    var req2 = http::new_request("POST", "/helloworld.Greeter/SayHello") { r =>
         r.set_header("content-type", rfc::GRPC_CONTENT_TYPE_PROTO);
     };
     grpc::encode_lpm("Intruder", req2.body, false);
 
-    var res2 = wing::Response { .. };
+    var res2 = http::Response { .. };
     let handled2 = grpc::dispatch_unary(dispatcher, req2, now_mono_ns, res2, service_unary_handler);
 
     // In RFC gRPC over HTTP/2, pure errors are returned as 'Trailers-Only'
     // in the initial response HEADERS block to avoid allocating stream data frames.
-    let err_status = wing::header(res2, rfc::HEADER_GRPC_STATUS);
-    let err_msg = wing::header(res2, rfc::HEADER_GRPC_MESSAGE);
+    let err_status = http::header(res2, rfc::HEADER_GRPC_STATUS);
+    let err_msg = http::header(res2, rfc::HEADER_GRPC_MESSAGE);
 
     print("\n[4] Unauthenticated Call Handling (RFC Trailers-Only):");
     print("    Handled: ", handled2);

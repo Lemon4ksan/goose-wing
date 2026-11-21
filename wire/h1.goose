@@ -31,16 +31,16 @@ inline fn is_valid_h1_host_value(host: const u8[:]) -> bool {
 }
 
 inline fn should_skip_h1_header(
-    headers:     const wing::HeaderMap&,
+    headers:     const http::HeaderMap&,
     name:        const u8[:],
     val:         const u8[:],
     filter_mode: H1HeaderFilterMode,
 ) -> bool {
     guard filter_mode == H1HeaderFilterMode.StripHopByHop else { return false; }
-    if wing::is_hop_by_hop_header_name(name) {
+    if http::is_hop_by_hop_header_name(name) {
         return !(name.eq_ascii_fold("te") && val.trim_lws().eq_ascii_fold("trailers"));
     }
-    return wing::is_token_in_connection_header_map(headers, name);
+    return http::is_token_in_connection_header_map(headers, name);
 }
 
 struct H1HeaderScanFlags {
@@ -76,7 +76,7 @@ fn check_and_record_h1_header_entry(
     is_request: bool,
     flags:      H1HeaderScanFlags&,
 ) -> bool {
-    guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
+    guard http::is_valid_header_name(name) && http::is_valid_header_value(val) else {
         return false;
     }
     if is_request && name.eq_ascii_fold("host") {
@@ -90,14 +90,14 @@ fn check_and_record_h1_header_entry(
 }
 
 fn append_h1_request_headers<B>(
-    headers:     const wing::HeaderMap&,
+    headers:     const http::HeaderMap&,
     filter_mode: H1HeaderFilterMode,
     flags:       H1HeaderScanFlags&,
     out:         B&,
 ) -> bool {
     for &e in headers.entries {
-        let name = wing::entry_name(headers, e);
-        let val = wing::entry_value(headers, e);
+        let name = http::entry_name(headers, e);
+        let val = http::entry_value(headers, e);
         if should_skip_h1_header(headers, name, val, filter_mode) {
             continue;
         }
@@ -122,7 +122,7 @@ fn encode_h1_request<B>(
     method:       const u8[:],
     target:       const u8[:],
     host:         const u8[:],
-    headers:      const wing::HeaderMap&,
+    headers:      const http::HeaderMap&,
     body:         const u8[:],
     filter_mode:  H1HeaderFilterMode,
     out:          B&,
@@ -131,7 +131,7 @@ fn encode_h1_request<B>(
     let eff_target = if target.len > 0 { target } else { "/" };
     let eff_ver = if http_version.len > 0 { http_version } else { "HTTP/1.1" };
     let valid_ver = eff_ver == "HTTP/1.1" || eff_ver == "HTTP/1.0";
-    guard wing::is_valid_header_name(method) &&
+    guard http::is_valid_header_name(method) &&
           is_valid_h1_request_target(eff_target) &&
           is_valid_h1_host_value(host) &&
           valid_ver else {
@@ -183,7 +183,7 @@ fn encode_h1_request<B>(
 }
 
 fn append_h1_response_headers<B>(
-    headers:     const wing::HeaderMap&,
+    headers:     const http::HeaderMap&,
     status_code: u16,
     flags:       H1HeaderScanFlags&,
     out:         B&,
@@ -191,8 +191,8 @@ fn append_h1_response_headers<B>(
     let forbid_cl = status_code < 200 || status_code == 204;
     let forbid_te = rfc::is_empty_body_status(status_code as i32);
     for &e in headers.entries {
-        let name = wing::entry_name(headers, e);
-        let val = wing::entry_value(headers, e);
+        let name = http::entry_name(headers, e);
+        let val = http::entry_value(headers, e);
         guard check_and_record_h1_header_entry(name, val, false, flags) else { return false; }
         guard !(forbid_cl && name.eq_ascii_fold("content-length")) &&
               !(forbid_te && name.eq_ascii_fold("transfer-encoding")) else {
@@ -218,15 +218,15 @@ fn encode_h1_response<B>(
     status_code:     u16,
     reason:          const u8[:],
     server_name:     const u8[:],
-    headers:         const wing::HeaderMap&,
+    headers:         const http::HeaderMap&,
     body:            const u8[:],
     is_head_request: bool,
     out:             B&,
 ) -> bool {
     guard status_code >= 100 && status_code <= 599 else { return false; }
     let eff_reason = if reason.len > 0 { reason } else { rfc::status_phrase(status_code as i32) };
-    guard wing::is_valid_header_value(eff_reason) &&
-          wing::is_valid_header_value(server_name) else {
+    guard http::is_valid_header_value(eff_reason) &&
+          http::is_valid_header_value(server_name) else {
         return false;
     }
 
@@ -291,7 +291,7 @@ fn scan_h1_wire_field_name(src: const u8[:]) -> i64, bool {
     guard src.len > 0 else { return 0, false; }
     var i: i64 = 0;
     while core::add_sat_i64(i, 8) <= src.len {
-        if !wing::is_valid_token_word_swar(src, i) {
+        if !http::is_valid_token_word_swar(src, i) {
             break;
         }
         i = core::add_sat_i64(i, 8);
@@ -302,7 +302,7 @@ fn scan_h1_wire_field_name(src: const u8[:]) -> i64, bool {
             guard i > 0 else { return 0, false; }
             return i, true;
         }
-        guard wing::is_tchar(b) else { return 0, false; }
+        guard http::is_tchar(b) else { return 0, false; }
         i = core::add_sat_i64(i, 1);
     }
     return 0, false;
@@ -353,9 +353,9 @@ inline fn has_bare_cr_or_lf(s: const u8[:]) -> bool {
 fn decode_h1_response_head(
     raw:            const u8[:],
     out_status:     u16&,
-    out_headers:    wing::HeaderMap&,
+    out_headers:    http::HeaderMap&,
     allow_obs_fold: bool = false,
-) -> i64, wing::HeaderParseError {
+) -> i64, http::HeaderParseError {
     var committed = false;
     out_status = 0;
     out_headers.clear();
@@ -366,7 +366,7 @@ fn decode_h1_response_head(
 
     let crlfcrlf_off = core::fast_find_crlfcrlf(raw);
     guard crlfcrlf_off >= 0 else {
-        return 0, wing::HeaderParseError.Incomplete;
+        return 0, http::HeaderParseError.Incomplete;
     }
     let head_no_end = raw[..crlfcrlf_off];
     let body_offset = core::add_sat_i64(crlfcrlf_off, 4);
@@ -376,19 +376,19 @@ fn decode_h1_response_head(
         guard head_no_end.len >= 12 &&
               !has_bare_cr_or_lf(head_no_end) &&
               parse_h1_wire_status_line(head_no_end, out_status) else {
-            return 0, wing::HeaderParseError.MalformedStatusLine;
+            return 0, http::HeaderParseError.MalformedStatusLine;
         }
         out_headers.status_code = out_status;
         out_headers.http_major = 1;
         out_headers.http_minor = if core::starts_with(head_no_end, "HTTP/1.0 ") { 0 } else { 1 };
         committed = true;
-        return body_offset, wing::HeaderParseError.None;
+        return body_offset, http::HeaderParseError.None;
     }
 
     guard status_line.len >= 12 &&
           !has_bare_cr_or_lf(status_line) &&
           parse_h1_wire_status_line(status_line, out_status) else {
-        return 0, wing::HeaderParseError.MalformedStatusLine;
+        return 0, http::HeaderParseError.MalformedStatusLine;
     }
     let minor: u8 = if core::starts_with(status_line, "HTTP/1.0 ") { 0 } else { 1 };
 
@@ -397,20 +397,20 @@ fn decode_h1_response_head(
         out_headers.http_major = 1;
         out_headers.http_minor = minor;
         committed = true;
-        return body_offset, wing::HeaderParseError.None;
+        return body_offset, http::HeaderParseError.None;
     }
 
     guard !has_bare_cr_or_lf(headers_no_end) else {
-        return 0, wing::HeaderParseError.InvalidHeaderValue;
+        return 0, http::HeaderParseError.InvalidHeaderValue;
     }
 
-    let err = wing::parse_headers(headers_no_end, out_headers, allow_obs_fold);
-    guard err == wing::HeaderParseError.None else {
+    let err = http::parse_headers(headers_no_end, out_headers, allow_obs_fold);
+    guard err == http::HeaderParseError.None else {
         return 0, err;
     }
     out_headers.status_code = out_status;
     out_headers.http_major = 1;
     out_headers.http_minor = minor;
     committed = true;
-    return body_offset, wing::HeaderParseError.None;
+    return body_offset, http::HeaderParseError.None;
 }

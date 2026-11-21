@@ -13,10 +13,10 @@ import wing from "../..";
 fn test_cab_c2_01_x509_chain_and_parser() {
     let seed: u8[32] = [0x7A; 32];
     var valid_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(seed, "example.com", "example.com", "127.0.0.1", valid_der));
+    assert(tls::build_test_ed25519_cert_der(seed, "example.com", "example.com", "127.0.0.1", valid_der));
 
-    var cert = wing::ParsedCert { .. };
-    assert(wing::parse_x509_certificate(valid_der[..], cert));
+    var cert = tls::ParsedCert { .. };
+    assert(tls::parse_x509_certificate(valid_der[..], cert));
 
     // 1. Reusing a dirty ParsedCert across parse_x509_certificate calls must not leak state
     // or trigger false-positive duplicate extension errors on the second parse.
@@ -24,7 +24,7 @@ fn test_cab_c2_01_x509_chain_and_parser() {
     reused_cert.is_ca = true;
     reused_cert.path_len_constraint = 3;
     reused_cert.has_must_staple = true;
-    let reparse_ok = wing::parse_x509_certificate(valid_der[..], reused_cert);
+    let reparse_ok = tls::parse_x509_certificate(valid_der[..], reused_cert);
     let reuse_clean = reparse_ok &&
         !reused_cert.has_unsupported_critical &&
         reused_cert.path_len_constraint == -1 &&
@@ -37,34 +37,34 @@ fn test_cab_c2_01_x509_chain_and_parser() {
     let last_idx = forged_der.len - 1;
     forged_der[last_idx] = forged_der[last_idx] ^ 0xFF;
 
-    var forged_cert = wing::ParsedCert { .. };
-    assert(wing::parse_x509_certificate(forged_der[..], forged_cert));
+    var forged_cert = tls::ParsedCert { .. };
+    assert(tls::parse_x509_certificate(forged_der[..], forged_cert));
 
-    var store = wing::TrustAnchorStore { .. };
-    assert(wing::add_trust_anchor_cert_der(store, valid_der[..]));
+    var store = tls::TrustAnchorStore { .. };
+    assert(tls::add_trust_anchor_cert_der(store, valid_der[..]));
 
-    var chain_forged: wing::ParsedCert[..8] = [];
-    var raw_forged:   (const u8[:])[..8]    = [];
+    var chain_forged: tls::ParsedCert[..8] = [];
+    var raw_forged:   (const u8[:])[..8]   = [];
     let _ = chain_forged.try_push(forged_cert);
     let _ = raw_forged.try_push(forged_der[..]);
-    let forged_alert = wing::verify_certificate_chain(
+    let forged_alert = tls::verify_certificate_chain(
         chain_forged, raw_forged, store, cert.validity_not_before + 10,
     );
-    let forged_rejected = (forged_alert == wing::TlsAlert.BadCertificate);
+    let forged_rejected = (forged_alert == tls::Alert.BadCertificate);
 
     // 3. Certificate with corrupted SAN extension bytes must be rejected by verify_certificate_chain
     // even when no CA in the chain has NameConstraints.
     var bad_san_cert = cert;
     bad_san_cert.has_san = true;
-    bad_san_cert.san_raw = wing::Span16 { offset: 0, length: 2 };
-    var chain_bad_san: wing::ParsedCert[..8] = [];
-    var raw_bad_san:   (const u8[:])[..8]    = [];
+    bad_san_cert.san_raw = tls::Span16 { offset: 0, length: 2 };
+    var chain_bad_san: tls::ParsedCert[..8] = [];
+    var raw_bad_san:   (const u8[:])[..8]   = [];
     let _ = chain_bad_san.try_push(bad_san_cert);
     let _ = raw_bad_san.try_push(valid_der[..]);
-    let bad_san_alert = wing::verify_certificate_chain(
+    let bad_san_alert = tls::verify_certificate_chain(
         chain_bad_san, raw_bad_san, store, cert.validity_not_before + 10,
     );
-    let bad_san_rejected = (bad_san_alert == wing::TlsAlert.BadCertificate);
+    let bad_san_rejected = (bad_san_alert == tls::Alert.BadCertificate);
 
     print("CAB_C2_01: ", reuse_clean && forged_rejected && bad_san_rejected);
 }
@@ -145,10 +145,10 @@ fn test_cab_c2_03_crypto_jar_and_cors() {
         ..
     };
     assert(security::add_allowed_origin(cred_cors, "https://app.example.com"));
-    var pre_req = wing::new_request("OPTIONS", "/api/data");
-    wing::set_header(pre_req, "Origin", "https://app.example.com");
-    wing::set_header(pre_req, "Access-Control-Request-Method", "DELETE");
-    var pre_res = wing::Response { .. };
+    var pre_req = http::new_request("OPTIONS", "/api/data");
+    http::set_header(pre_req, "Origin", "https://app.example.com");
+    http::set_header(pre_req, "Access-Control-Request-Method", "DELETE");
+    var pre_res = http::Response { .. };
     let pre_res_code = security::evaluate_cors(cred_cors, pre_req, pre_res);
     let cred_wild_rejected = (pre_res_code != security::CorsResult.AllowedPreflight);
 

@@ -105,11 +105,11 @@ fn test_wsrt01_permessage_deflate_negotiation() {
 // 4. WSRT-02: Client-side RFC 6455 HTTP/1.1 101 Upgrade response verification
 fn test_wsrt02_client_upgrade_verification() {
     let client_key = "dGhlIHNhbXBsZSBub25jZQ==";
-    var hdrs = wing::HeaderMap { .. };
-    wing::set_header(hdrs, "Upgrade", "websocket");
-    wing::set_header(hdrs, "Connection", "Upgrade");
-    wing::set_header(hdrs, "Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-    wing::set_header(hdrs, "Sec-WebSocket-Protocol", "chat");
+    var hdrs = http::HeaderMap { .. };
+    http::set_header(hdrs, "Upgrade", "websocket");
+    http::set_header(hdrs, "Connection", "Upgrade");
+    http::set_header(hdrs, "Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    http::set_header(hdrs, "Sec-WebSocket-Protocol", "chat");
 
     let proto, err = realtime::validate_client_upgrade_response(101, hdrs, "", client_key, "superchat, chat");
     assert(err == realtime::WsError.None);
@@ -174,7 +174,7 @@ fn test_wsrt03_04_half_closed_and_masking() {
     realtime::abort_with_hook(pending) { _fd: i64, _tag: u64 => };
     assert(pending.is_aborted);
 
-    var h3_resp = wing::Response { .. };
+    var h3_resp = http::Response { .. };
     realtime::format_h3_websocket_response(h3_resp, "chat");
     assert(realtime::is_h3_websocket_response(h3_resp));
 
@@ -651,7 +651,7 @@ fn test_websocket_regressions() {
     // CHECK: WS_CLOSED_PARTIAL: consumed=0 handled=false
 
     // 7.10 ws_upgrade_request MUST NOT leave 101 headers in out_resp when subprotocol > 64 bytes, and validate_h2_websocket_request MUST enforce http/https :scheme
-    var upg_req = wing::new_request("GET", "http://example.com/ws");
+    var upg_req = http::new_request("GET", "http://example.com/ws");
     upg_req.set_header("Host", "example.com");
     upg_req.set_header("Upgrade", "websocket");
     upg_req.set_header("Connection", "Upgrade");
@@ -659,11 +659,11 @@ fn test_websocket_regressions() {
     upg_req.set_header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
     var big_subproto: u8[..128] = [];
     for _ in 70 { big_subproto.push('p'); }
-    var upg_resp = wing::Response { .. };
+    var upg_resp = http::Response { .. };
     let _, ok_upg_big = realtime::ws_upgrade_request(upg_req, upg_resp, big_subproto[..]);
-    let leaked_accept = wing::header(upg_resp, "Sec-WebSocket-Accept").len > 0;
+    let leaked_accept = http::header(upg_resp, "Sec-WebSocket-Accept").len > 0;
 
-    var h2_req = wing::Request { .. };
+    var h2_req = http::Request { .. };
     realtime::format_h2_websocket_request(h2_req, "/ws", "example.com", "ftp");
     let ok_h2_ftp = realtime::validate_h2_websocket_request(h2_req);
     print("WS_UPGRADE_CLEAN: ok_big=", ok_upg_big, " leaked_accept=", leaked_accept, " h2_ftp=", ok_h2_ftp, "\n");
@@ -747,24 +747,24 @@ fn test_cross_component_and_rfc_edge_regressions() {
     // CHECK: F001_RFC7692_DEFLATE: s1=true d12=true empty=true tiny_inf=false tiny_def=false
 
     // 9.2 (F002) RFC 6455 §4.1 & §4.2.1 HTTP/1.0 rejection, duplicate key/version, subprotocol tchar
-    var req_h10 = wing::new_request("GET", "/ws");
+    var req_h10 = http::new_request("GET", "/ws");
     req_h10.is_http10 = true;
-    wing::set_header(req_h10, "Host", "example.com");
-    wing::set_header(req_h10, "Upgrade", "websocket");
-    wing::set_header(req_h10, "Connection", "Upgrade");
-    wing::set_header(req_h10, "Sec-WebSocket-Version", "13");
-    wing::set_header(req_h10, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
-    var resp_h10 = wing::Response { .. };
+    http::set_header(req_h10, "Host", "example.com");
+    http::set_header(req_h10, "Upgrade", "websocket");
+    http::set_header(req_h10, "Connection", "Upgrade");
+    http::set_header(req_h10, "Sec-WebSocket-Version", "13");
+    http::set_header(req_h10, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+    var resp_h10 = http::Response { .. };
     let _, ok_h10 = realtime::ws_upgrade_request(req_h10, resp_h10);
 
-    var req_dup = wing::new_request("GET", "/ws");
-    wing::set_header(req_dup, "Host", "example.com");
-    wing::set_header(req_dup, "Upgrade", "websocket");
-    wing::set_header(req_dup, "Connection", "Upgrade");
-    wing::set_header(req_dup, "Sec-WebSocket-Version", "13");
-    wing::set_header(req_dup, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
-    let _ = wing::append_header(req_dup.headers, "Sec-WebSocket-Key", "AQIDBAUGBwgJCgsMDQ4PEA==");
-    var resp_dup = wing::Response { .. };
+    var req_dup = http::new_request("GET", "/ws");
+    http::set_header(req_dup, "Host", "example.com");
+    http::set_header(req_dup, "Upgrade", "websocket");
+    http::set_header(req_dup, "Connection", "Upgrade");
+    http::set_header(req_dup, "Sec-WebSocket-Version", "13");
+    http::set_header(req_dup, "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==");
+    let _ = http::append_header(req_dup.headers, "Sec-WebSocket-Key", "AQIDBAUGBwgJCgsMDQ4PEA==");
+    var resp_dup = http::Response { .. };
     let _, ok_dup = realtime::ws_upgrade_request(req_dup, resp_dup);
     let bad_sub = realtime::has_subprotocol_token("chat, bad proto", "bad proto");
     print("F002_WS_HANDSHAKE: h10=", ok_h10, " dup_key=", ok_dup, " bad_sub=", bad_sub, "\n");
@@ -798,7 +798,7 @@ fn test_cross_component_and_rfc_edge_regressions() {
     var small_dgram_out: u8[..3] = [];
     let ok_small_dg = realtime::decode_quic_datagram_frame(dgram_big[..], small_dgram_out);
     var wt_sess = realtime::WebTransportSession { is_active: false, is_draining: true, close_code: 99, .. };
-    var wt_res = wing::Response { .. };
+    var wt_res = http::Response { .. };
     wt_res.status_code = 200;
     let _ = wt_sess.handle_webtransport_response(wt_res);
     let wt_reopened = realtime::is_webtransport_session_open(wt_sess) && wt_sess.close_code == 0;
@@ -1146,13 +1146,13 @@ fn decode_h2_ws_payload(buf: const u8[:]) -> i64 {
 }
 
 fn test_rfc8441_handshake() {
-    var req = wing::new_request("GET", "/");
+    var req = http::new_request("GET", "/");
     realtime::format_h2_websocket_request(req, "/chat", "example.com", "https", "chat.v1");
 
     assert(realtime::is_h2_websocket_request(req));
     assert(realtime::validate_h2_websocket_request(req));
 
-    var resp = wing::Response { .. };
+    var resp = http::Response { .. };
     let session, ok = realtime::ws_h2_upgrade_request(req, resp, "chat.v1");
     assert(ok);
     assert(resp.status_code == 200);
@@ -1161,7 +1161,7 @@ fn test_rfc8441_handshake() {
 
     // Forbidden headers check: Upgrade or Connection MUST NOT be present
     var bad_req = req;
-    wing::set_header(bad_req, "Upgrade", "websocket");
+    http::set_header(bad_req, "Upgrade", "websocket");
     assert(!realtime::validate_h2_websocket_request(bad_req));
 
     print("H2_WS_HANDSHAKE: OK");

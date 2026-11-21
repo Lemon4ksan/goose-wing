@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // RFC 9110 Section 12.5: Content Negotiation Fields - Accept, Accept-Encoding, and Accept-Language.
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";

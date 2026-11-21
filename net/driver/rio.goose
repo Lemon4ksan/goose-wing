@@ -260,8 +260,8 @@ fn rio_wait_cq(cq_id: u64, timeout_ms: i32) -> i32 {
 
 // Drains completed Windows RIO operations into a bounded `RioResult[..64]` slice.
 fn rio_drain_completions(cq_id: u64, out_results: RioResult[..64]&) -> u32 {
-    out_results.clear();
     guard cq_id != 0 else { return 0; }
+    out_results.clear();
     var raw: RioResult[64] = [RioResult { .. }; 64];
     let n = native_rio_dequeue_slice(cq_id, raw[..]);
     guard n > 0 else { return 0; }

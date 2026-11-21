@@ -104,8 +104,8 @@ fn run_01_verify_http1_chunked() {
 //
 
 fn test_sfv_list_inner_lists_and_decimals() {
-    var list_items: wing::SfParameterizedItem[..16] = [];
-    let ok_list = wing::parse_sf_list("(\"a\";x=1 \"b\";y=2);lvl=3, 3.14, 2.500, -0.05", list_items);
+    var list_items: http::SfParameterizedItem[..16] = [];
+    let ok_list = http::parse_sf_list("(\"a\";x=1 \"b\";y=2);lvl=3, 3.14, 2.500, -0.05", list_items);
     assert(ok_list);
     assert(list_items.len == 4);
     assert(list_items[0].is_inner_list);
@@ -117,47 +117,47 @@ fn test_sfv_list_inner_lists_and_decimals() {
     assert(list_items[0].params[0].item.int_val == 3);
 
     var out: u8[..64] = [];
-    wing::sf_serialize_item(list_items[1].item, out);
+    http::sf_serialize_item(list_items[1].item, out);
     assert(out[..] == "3.14");
 
     out.clear();
-    wing::sf_serialize_item(list_items[2].item, out);
+    http::sf_serialize_item(list_items[2].item, out);
     assert(out[..] == "2.5");
 
     out.clear();
-    wing::sf_serialize_item(list_items[3].item, out);
+    http::sf_serialize_item(list_items[3].item, out);
     assert(out[..] == "-0.05");
     print("SFV_INNER_LIST_AND_DECIMAL: OK");
 }
 
 fn test_sfv_base64_and_decoders() {
-    var items: wing::SfParameterizedItem[..16] = [];
-    assert(!wing::parse_sf_list(":===:", items));
-    assert(!wing::parse_sf_list(":a=b:", items));
-    assert(!wing::parse_sf_list(":abc:", items));
-    assert(wing::parse_sf_list(":YWJj:", items));
-    assert(wing::parse_sf_list(":YWI=:", items));
-    assert(wing::parse_sf_list(":YQ==:", items));
-    assert(wing::parse_sf_list("::", items));
+    var items: http::SfParameterizedItem[..16] = [];
+    assert(!http::parse_sf_list(":===:", items));
+    assert(!http::parse_sf_list(":a=b:", items));
+    assert(!http::parse_sf_list(":abc:", items));
+    assert(http::parse_sf_list(":YWJj:", items));
+    assert(http::parse_sf_list(":YWI=:", items));
+    assert(http::parse_sf_list(":YQ==:", items));
+    assert(http::parse_sf_list("::", items));
 
     var unesc: u8[..64] = [];
-    assert(wing::sf_unescape_string("hello \\\"world\\\" \\\\ok", unesc));
+    assert(http::sf_unescape_string("hello \\\"world\\\" \\\\ok", unesc));
     assert(unesc[..] == "hello \"world\" \\ok");
-    assert(!wing::sf_unescape_string("bad\\escape", unesc));
+    assert(!http::sf_unescape_string("bad\\escape", unesc));
 
     var disp: u8[..64] = [];
-    assert(wing::sf_decode_display_string("hello%20%c3%bc", disp));
+    assert(http::sf_decode_display_string("hello%20%c3%bc", disp));
     assert(disp[..] == "hello \xc3\xbc");
-    assert(!wing::sf_decode_display_string("bad%2Ghex", disp));
-    assert(!wing::sf_decode_display_string("bad%ffutf8", disp));
-    assert(wing::sf_skip_ws_and_commas(" ,  a", 0) == 4);
+    assert(!http::sf_decode_display_string("bad%2Ghex", disp));
+    assert(!http::sf_decode_display_string("bad%ffutf8", disp));
+    assert(http::sf_skip_ws_and_commas(" ,  a", 0) == 4);
     print("SFV_BASE64_AND_DECODERS: OK");
 }
 
 fn test_h1_wire_parsers() {
-    assert(wing::swar_to_lower_64(0x4142434445464748) == 0x6162636465666768);
+    assert(http::swar_to_lower_64(0x4142434445464748) == 0x6162636465666768);
     var ch_b: u8 = 'A';
-    assert(wing::is_field_name_byte_fast_lowercased(ch_b) && ch_b == 'a');
+    assert(http::is_field_name_byte_fast_lowercased(ch_b) && ch_b == 'a');
 
     var st_code: u16 = 0;
     assert(wire::parse_h1_wire_status_line("HTTP/1.1 200", st_code) && st_code == 200);
@@ -165,43 +165,43 @@ fn test_h1_wire_parsers() {
     assert(fn_ok && fn_len == 14);
     let _, bad_fn = wire::scan_h1_wire_field_name("Bad@Header-Name: val\r\n");
     assert(!bad_fn);
-    let _, bad_swar = wing::scan_header_field_name_swar("Bad/Header-Name: val\r\n");
+    let _, bad_swar = http::scan_header_field_name_swar("Bad/Header-Name: val\r\n");
     assert(!bad_swar);
 
-    let m_conn, l_conn, ok_conn = wing::match_http_method_u32("CONNECT authority:443 HTTP/1.1\r\n");
+    let m_conn, l_conn, ok_conn = http::match_http_method_u32("CONNECT authority:443 HTTP/1.1\r\n");
     assert(ok_conn && m_conn == "CONNECT" && l_conn == 8);
-    let m_opt, l_opt, ok_opt = wing::match_http_method_u32("OPTIONS * HTTP/1.1\r\n");
+    let m_opt, l_opt, ok_opt = http::match_http_method_u32("OPTIONS * HTTP/1.1\r\n");
     assert(ok_opt && m_opt == "OPTIONS" && l_opt == 8);
-    let m_trc, l_trc, ok_trc = wing::match_http_method_u32("TRACE / HTTP/1.1\r\n");
+    let m_trc, l_trc, ok_trc = http::match_http_method_u32("TRACE / HTTP/1.1\r\n");
     assert(ok_trc && m_trc == "TRACE" && l_trc == 6);
-    let m_pat, l_pat, ok_pat = wing::match_http_method_u32("PATCH /item HTTP/1.1\r\n");
+    let m_pat, l_pat, ok_pat = http::match_http_method_u32("PATCH /item HTTP/1.1\r\n");
     assert(ok_pat && m_pat == "PATCH" && l_pat == 6);
 
-    var req_map = wing::HeaderMap { .. };
-    let req_err = wing::parse_request_headers("\r\nGET / HTTP/1.1\r\nHost: example.com\r\nConnection: X-Custom\r\n\r\n", req_map);
-    assert(req_err == wing::HeaderParseError.None && wing::get_header(req_map, "host") == "example.com");
-    assert(!wing::is_continuation(req_map.entries[0]));
-    assert(!wing::is_cookie_state(req_map.entries[0]));
-    assert(!wing::is_security_state(req_map.entries[0]));
-    assert(!wing::is_non_cacheable(req_map.entries[0]));
+    var req_map = http::HeaderMap { .. };
+    let req_err = http::parse_request_headers("\r\nGET / HTTP/1.1\r\nHost: example.com\r\nConnection: X-Custom\r\n\r\n", req_map);
+    assert(req_err == http::HeaderParseError.None && http::get_header(req_map, "host") == "example.com");
+    assert(!http::is_continuation(req_map.entries[0]));
+    assert(!http::is_cookie_state(req_map.entries[0]));
+    assert(!http::is_security_state(req_map.entries[0]));
+    assert(!http::is_non_cacheable(req_map.entries[0]));
     var all_vals: u8[..256][>..] = [];
-    wing::get_all_values(req_map, "host", all_vals);
+    http::get_all_values(req_map, "host", all_vals);
     assert(all_vals.len == 1);
     var conn_toks: u8[..64][..32] = [];
-    wing::collect_connection_tokens(req_map, conn_toks);
+    http::collect_connection_tokens(req_map, conn_toks);
     assert(conn_toks.len == 1);
 
-    var res_map = wing::HeaderMap { .. };
-    let res_err = wing::parse_response_headers_with_mode(
+    var res_map = http::HeaderMap { .. };
+    let res_err = http::parse_response_headers_with_mode(
         "ICY 200 OK\r\nicy-name : stream\r\n\r\n",
         res_map,
-        wing::H1ResponseParseMode.ClientCompat,
+        http::H1ResponseParseMode.ClientCompat,
     );
-    assert(res_err == wing::HeaderParseError.None && res_map.status_code == 200);
-    assert(wing::get_header(res_map, "icy-name") == "stream");
+    assert(res_err == http::HeaderParseError.None && res_map.status_code == 200);
+    assert(http::get_header(res_map, "icy-name") == "stream");
 
-    assert(wing::is_chunk_overhead_excessive(120000, 102400));
-    assert(!wing::is_chunk_overhead_excessive(500000, 102400));
+    assert(http::is_chunk_overhead_excessive(120000, 102400));
+    assert(!http::is_chunk_overhead_excessive(500000, 102400));
     print("H1_WIRE_PARSERS: OK");
 }
 
@@ -224,12 +224,12 @@ fn run_02_verify_sfv_rfc9651() {
 // Verification of RFC 8288 Link header and RFC 8941 Structured Fields upload boolean via wing::http.
 //
 
-// Wire validator for RFC 8288 Link header using wing::parse_link_header
+// Wire validator for RFC 8288 Link header using http::parse_link_header
 fn wing_validate_link_header_wire(buf: const u8[:]) -> i64 {
     guard buf.len >= 2 else { return -1; }
     guard buf[0] == '<' else { return -2; }
-    var links: wing::EarlyHintLink[..8] = [];
-    if wing::parse_link_header(buf, links) {
+    var links: http::EarlyHintLink[..8] = [];
+    if http::parse_link_header(buf, links) {
         guard links.len > 0 && links[0].uri.len > 0 else { return -3; }
         return links[0].uri.len;
     }
@@ -297,47 +297,47 @@ fn run_03_verify_http_extensions_edge() {
 
 fn run_04_verify_http_incremental() {
     // 1. Valid Boolean Items
-    let inc1, ok1 = wing::parse_incremental_header("?1");
+    let inc1, ok1 = http::parse_incremental_header("?1");
     assert(ok1);
     assert(inc1);
     print("INC_TRUE: 1");
     // CHECK: INC_TRUE: 1
 
-    let inc0, ok0 = wing::parse_incremental_header("?0");
+    let inc0, ok0 = http::parse_incremental_header("?0");
     assert(ok0);
     assert(!inc0);
     print("INC_FALSE: 1");
     // CHECK: INC_FALSE: 1
 
     // 2. Parameters ignored per RFC 10036 §2
-    let inc_param, ok_param = wing::parse_incremental_header("?1; param=value");
+    let inc_param, ok_param = http::parse_incremental_header("?1; param=value");
     assert(ok_param);
     assert(inc_param);
     print("INC_PARAM_IGNORED: 1");
     // CHECK: INC_PARAM_IGNORED: 1
 
     // 3. Non-Boolean types must be ignored (RFC 10036 §2)
-    let _, ok_int = wing::parse_incremental_header("1");
+    let _, ok_int = http::parse_incremental_header("1");
     assert(!ok_int);
 
-    let _, ok_str = wing::parse_incremental_header("\"?1\"");
+    let _, ok_str = http::parse_incremental_header("\"?1\"");
     assert(!ok_str);
 
-    let _, ok_tok = wing::parse_incremental_header("true");
+    let _, ok_tok = http::parse_incremental_header("true");
     assert(!ok_tok);
     print("NON_BOOLEAN_IGNORED: 1");
     // CHECK: NON_BOOLEAN_IGNORED: 1
 
     // 4. HeaderMap inspection
-    var headers = wing::HeaderMap { .. };
-    wing::append_incremental_header(headers, true);
-    assert(wing::is_incremental_requested(headers));
+    var headers = http::HeaderMap { .. };
+    http::append_incremental_header(headers, true);
+    assert(http::is_incremental_requested(headers));
     print("HEADER_MAP_INCREMENTAL: 1");
     // CHECK: HEADER_MAP_INCREMENTAL: 1
 
     // 5. Intermediary incremental_refused Proxy-Status
     var ps_refused: u8[..128] = [];
-    wing::format_incremental_refused_proxy_status(ps_refused, "edge-proxy");
+    http::format_incremental_refused_proxy_status(ps_refused, "edge-proxy");
     assert(core::contains(ps_refused[..], "edge-proxy"));
     assert(core::contains(ps_refused[..], "error=incremental_refused"));
     print("PROXY_STATUS_REFUSED: 1");
@@ -345,7 +345,7 @@ fn run_04_verify_http_incremental() {
 
     // 6. Intermediary connection_limit_reached Proxy-Status
     var ps_limited: u8[..128] = [];
-    wing::format_incremental_limit_reached_proxy_status(ps_limited, "edge-proxy");
+    http::format_incremental_limit_reached_proxy_status(ps_limited, "edge-proxy");
     assert(core::contains(ps_limited[..], "edge-proxy"));
     assert(core::contains(ps_limited[..], "error=connection_limit_reached"));
     print("PROXY_STATUS_LIMITED: 1");
@@ -370,7 +370,7 @@ fn run_04_verify_http_incremental() {
 
 fn test_rfc9457_problem_details() {
     // 1. Serialization with explicit type URI
-    var prob = wing::ProblemDetails {
+    var prob = http::ProblemDetails {
         status:   403,
         type_uri: "https://example.com/probs/out-of-credit",
         title:    "You do not have enough credit.",
@@ -378,7 +378,7 @@ fn test_rfc9457_problem_details() {
         instance: "/account/12345/msgs/abc",
     };
     var json_out: u8[..1024] = [];
-    wing::serialize_problem_details(prob, json_out);
+    http::serialize_problem_details(prob, json_out);
     assert(core::contains(json_out[..], "\"status\":403"));
     assert(core::contains(json_out[..], "\"type\":\"https://example.com/probs/out-of-credit\""));
     assert(core::contains(json_out[..], "\"title\":\"You do not have enough credit.\""));
@@ -387,27 +387,27 @@ fn test_rfc9457_problem_details() {
     // CHECK: PROBLEM_SERIALIZE_OK: 1
 
     // 2. Default type URI "about:blank" (RFC 9457 §4.2.1)
-    var blank_prob = wing::ProblemDetails {
+    var blank_prob = http::ProblemDetails {
         status: 404,
         title:  "Item Not Found",
         ..
     };
     var blank_out: u8[..512] = [];
-    wing::serialize_problem_details(blank_prob, blank_out);
+    http::serialize_problem_details(blank_prob, blank_out);
     assert(core::contains(blank_out[..], "\"type\":\"about:blank\""));
     print("PROBLEM_DEFAULT_TYPE_OK: 1");
     // CHECK: PROBLEM_DEFAULT_TYPE_OK: 1
 
     // 3. Problem response constructor
-    let res = wing::new_problem_response(prob);
+    let res = http::new_problem_response(prob);
     assert(res.status_code == 403);
-    assert(wing::header(res, "Content-Type") == "application/problem+json");
+    assert(http::header(res, "Content-Type") == "application/problem+json");
     print("PROBLEM_RESPONSE_OK: 1");
     // CHECK: PROBLEM_RESPONSE_OK: 1
 
     // 4. Parsing problem details JSON
-    var parsed = wing::ProblemDetails { .. };
-    let ok_parse = wing::parse_problem_details(json_out[..], parsed);
+    var parsed = http::ProblemDetails { .. };
+    let ok_parse = http::parse_problem_details(json_out[..], parsed);
     assert(ok_parse);
     assert(parsed.status == 403);
     assert(parsed.title[..] == "You do not have enough credit.");
@@ -418,14 +418,14 @@ fn test_rfc9457_problem_details() {
 
 fn test_rfc7239_forwarded() {
     // 1. Format IPv4 Forwarded element
-    var elem4 = wing::ForwardedElement {
+    var elem4 = http::ForwardedElement {
         for_node: "192.0.2.60",
         proto:    "https",
         host:     "api.example.com",
         ..
     };
     var fwd_buf: u8[..512] = [];
-    wing::format_forwarded_element(elem4, fwd_buf);
+    http::format_forwarded_element(elem4, fwd_buf);
     assert(core::contains(fwd_buf[..], "for=192.0.2.60"));
     assert(core::contains(fwd_buf[..], "proto=https"));
     assert(core::contains(fwd_buf[..], "host=api.example.com"));
@@ -433,31 +433,31 @@ fn test_rfc7239_forwarded() {
     // CHECK: FORWARDED_IPV4_OK: 1
 
     // 2. Format IPv6 Forwarded element with mandatory double quotes (RFC 7239 §4)
-    var elem6 = wing::ForwardedElement {
+    var elem6 = http::ForwardedElement {
         by:       "203.0.113.43",
         for_node: "[2001:db8:cafe::17]:4711",
         proto:    "http",
         ..
     };
     var fwd_buf6: u8[..512] = [];
-    wing::format_forwarded_element(elem6, fwd_buf6);
+    http::format_forwarded_element(elem6, fwd_buf6);
     assert(core::contains(fwd_buf6[..], "for=\"[2001:db8:cafe::17]:4711\""));
     assert(core::contains(fwd_buf6[..], "by=203.0.113.43"));
     print("FORWARDED_IPV6_QUOTES_OK: 1");
     // CHECK: FORWARDED_IPV6_QUOTES_OK: 1
 
     // 3. Append to HeaderMap
-    var headers = wing::HeaderMap { .. };
-    wing::append_forwarded_header(headers, elem4);
-    let h_val = wing::get_header(headers, "Forwarded");
+    var headers = http::HeaderMap { .. };
+    http::append_forwarded_header(headers, elem4);
+    let h_val = http::get_header(headers, "Forwarded");
     assert(core::contains(h_val, "for=192.0.2.60"));
     print("FORWARDED_HEADER_APPEND_OK: 1");
     // CHECK: FORWARDED_HEADER_APPEND_OK: 1
 
     // 4. Parse multi-hop Forwarded header
     let raw_multi = "for=192.0.2.60;proto=http, for=\"[2001:db8::1]\";by=203.0.113.43;host=proxy.net";
-    var parsed_elems: wing::ForwardedElement[..8] = [];
-    let count = wing::parse_forwarded_header(raw_multi, parsed_elems);
+    var parsed_elems: http::ForwardedElement[..8] = [];
+    let count = http::parse_forwarded_header(raw_multi, parsed_elems);
     assert(count == 2);
     assert(parsed_elems[0].for_node[..] == "192.0.2.60");
     assert(parsed_elems[0].proto[..] == "http");
@@ -472,7 +472,7 @@ fn test_rfc_status_codes_and_early_data() {
     // 1. RFC 8470 Section 5.2: 425 Too Early
     assert(rfc::status_phrase(425) == "Too Early");
     assert(rfc::HEADER_EARLY_DATA == "Early-Data");
-    let dec_retry = wing::evaluate_early_data_response(425, true);
+    let dec_retry = client::evaluate_early_data_response(425, true);
     match dec_retry {
         RetryOn1Rtt => { print("EARLY_DATA_RETRY_OK: 1"); },
         _ => { assert(false); },
@@ -542,57 +542,57 @@ fn run_06_verify_smuggling_desync() {
     print("=== HTTP1_SMUGGLE_DEFENSES ===");
 
     // 1. Conflicting TE followed by CL (TE.CL)
-    var map1 = wing::HeaderMap { .. };
+    var map1 = http::HeaderMap { .. };
     let raw_te_cl = "Transfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n";
-    let err1 = wing::parse_headers(raw_te_cl, map1);
-    assert(err1 == wing::HeaderParseError.InvalidContentLength);
+    let err1 = http::parse_headers(raw_te_cl, map1);
+    assert(err1 == http::HeaderParseError.InvalidContentLength);
     assert(!map1.valid);
     print("TE_CL_CONFLICT: REJECTED");
 
     // 2. Conflicting CL followed by TE (CL.TE)
-    var map2 = wing::HeaderMap { .. };
+    var map2 = http::HeaderMap { .. };
     let raw_cl_te = "Content-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n";
-    let err2 = wing::parse_headers(raw_cl_te, map2);
-    assert(err2 == wing::HeaderParseError.InvalidContentLength);
+    let err2 = http::parse_headers(raw_cl_te, map2);
+    assert(err2 == http::HeaderParseError.InvalidContentLength);
     assert(!map2.valid);
     print("CL_TE_CONFLICT: REJECTED");
 
     // 3. Duplicate differing Content-Length headers (CL.CL)
-    var map3 = wing::HeaderMap { .. };
+    var map3 = http::HeaderMap { .. };
     let raw_diff_cl = "Content-Length: 10\r\nContent-Length: 20\r\n\r\n";
-    let err3 = wing::parse_headers(raw_diff_cl, map3);
-    assert(err3 == wing::HeaderParseError.InvalidContentLength);
+    let err3 = http::parse_headers(raw_diff_cl, map3);
+    assert(err3 == http::HeaderParseError.InvalidContentLength);
     assert(!map3.valid);
     print("DUP_CL_DIFF: REJECTED");
 
     // 4. Duplicate IDENTICAL Content-Length headers per RFC 9112 §6.3
-    var map4 = wing::HeaderMap { .. };
+    var map4 = http::HeaderMap { .. };
     let raw_same_cl = "Content-Length: 42\r\nContent-Length: 42\r\n\r\n";
-    let err4 = wing::parse_headers(raw_same_cl, map4);
-    assert(err4 == wing::HeaderParseError.None);
+    let err4 = http::parse_headers(raw_same_cl, map4);
+    assert(err4 == http::HeaderParseError.None);
     assert(map4.valid);
-    assert(wing::get_header(map4, "content-length") == "42");
+    assert(http::get_header(map4, "content-length") == "42");
     print("DUP_CL_SAME: ACCEPTED");
 
     // 5. 64-bit integer overflow in Content-Length (30-digit flood)
-    var map5 = wing::HeaderMap { .. };
+    var map5 = http::HeaderMap { .. };
     let raw_ovf = "Content-Length: 999999999999999999999999999999\r\n\r\n";
-    let err5 = wing::parse_headers(raw_ovf, map5);
-    assert(err5 == wing::HeaderParseError.InvalidContentLength);
+    let err5 = http::parse_headers(raw_ovf, map5);
+    assert(err5 == http::HeaderParseError.InvalidContentLength);
     print("CL_OVERFLOW: REJECTED");
 
     // 6. obs-fold on Content-Length rejection even in compatibility mode
-    var map6 = wing::HeaderMap { .. };
+    var map6 = http::HeaderMap { .. };
     let raw_fold = "Content-Length: 10\r\n 20\r\n\r\n";
-    let err6 = wing::parse_headers(raw_fold, map6, true);
-    assert(err6 == wing::HeaderParseError.InvalidContentLength);
+    let err6 = http::parse_headers(raw_fold, map6, true);
+    assert(err6 == http::HeaderParseError.InvalidContentLength);
     print("CL_OBS_FOLD: REJECTED");
 
     // 7. Duplicate Transfer-Encoding headers rejection
-    var map7 = wing::HeaderMap { .. };
+    var map7 = http::HeaderMap { .. };
     let raw_dup_te = "Transfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n";
-    let err7 = wing::parse_headers(raw_dup_te, map7);
-    assert(err7 == wing::HeaderParseError.InvalidContentLength);
+    let err7 = http::parse_headers(raw_dup_te, map7);
+    assert(err7 == http::HeaderParseError.InvalidContentLength);
     print("DUP_TE_HEADERS: REJECTED");
 
     // 8. Chunked single-register FSM stream slicing and mutation fuzzing
@@ -608,59 +608,59 @@ fn run_06_verify_smuggling_desync() {
     print("CHUNK_HEX_OVERFLOW: REJECTED");
 
     // 10. Pipelined stream demarcation rejection of TE.CL smuggling (RFC 9112 §6.1, §6.3)
-    var srv_te_cl = wing::new_http_server();
+    var srv_te_cl = server::new_http_server();
     var out_wire1: u8[..4096] = [];
     let payload_te_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\n\r\n0\r\n\r\n";
-    let _, _, ok1, _ = wing::handle_connection_wire_pipelined_stream(srv_te_cl, "127.0.0.1", payload_te_cl, 0, out_wire1);
+    let _, _, ok1, _ = server::handle_connection_wire_pipelined_stream(srv_te_cl, "127.0.0.1", payload_te_cl, 0, out_wire1);
     assert(!ok1);
     assert(find(out_wire1[..], "400 Bad Request") >= 0);
     print("PIPELINE_TE_CL_SMUGGLE: REJECTED");
 
     // 11. Pipelined stream demarcation rejection of CL.TE smuggling (RFC 9112 §6.1, §6.3)
-    var srv_cl_te = wing::new_http_server();
+    var srv_cl_te = server::new_http_server();
     var out_wire2: u8[..4096] = [];
     let payload_cl_te = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 100\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
-    let _, _, ok2, _ = wing::handle_connection_wire_pipelined_stream(srv_cl_te, "127.0.0.1", payload_cl_te, 0, out_wire2);
+    let _, _, ok2, _ = server::handle_connection_wire_pipelined_stream(srv_cl_te, "127.0.0.1", payload_cl_te, 0, out_wire2);
     assert(!ok2);
     assert(find(out_wire2[..], "400 Bad Request") >= 0);
     print("PIPELINE_CL_TE_SMUGGLE: REJECTED");
 
     // 12. Pipelined stream demarcation rejection of duplicate differing CL (RFC 9112 §6.3)
-    var srv_cl_cl = wing::new_http_server();
+    var srv_cl_cl = server::new_http_server();
     var out_wire3: u8[..4096] = [];
     let payload_cl_cl = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 50\r\nContent-Length: 60\r\n\r\nhello";
-    let _, _, ok3, _ = wing::handle_connection_wire_pipelined_stream(srv_cl_cl, "127.0.0.1", payload_cl_cl, 0, out_wire3);
+    let _, _, ok3, _ = server::handle_connection_wire_pipelined_stream(srv_cl_cl, "127.0.0.1", payload_cl_cl, 0, out_wire3);
     assert(!ok3);
     assert(find(out_wire3[..], "400 Bad Request") >= 0);
     print("PIPELINE_DUP_CL_DIFF: REJECTED");
 
     // 13. Reverse proxy Content-Length stripping when Transfer-Encoding present (RFC 9112 §6.3)
-    var in_proxy_te = wing::HeaderMap { .. };
-    wing::append_header(in_proxy_te, "Host", "example.com");
-    wing::append_header(in_proxy_te, "Transfer-Encoding", "chunked");
-    wing::append_header(in_proxy_te, "Content-Length", "42");
-    var out_proxy_te = wing::HeaderMap { .. };
+    var in_proxy_te = http::HeaderMap { .. };
+    http::append_header(in_proxy_te, "Host", "example.com");
+    http::append_header(in_proxy_te, "Transfer-Encoding", "chunked");
+    http::append_header(in_proxy_te, "Content-Length", "42");
+    var out_proxy_te = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.strip_hop_by_hop = false;
     let ok_te_cl = proxy::filter_and_forward_headers(in_proxy_te, out_proxy_te, "127.0.0.1", "http", "backend:80", cfg);
     assert(!ok_te_cl);
-    assert(!wing::has_header(out_proxy_te, "Content-Length"));
+    assert(!http::has_header(out_proxy_te, "Content-Length"));
     print("PROXY_TE_CL_STRIP_CL: PASS");
 
     // 14. Reverse proxy duplicate Content-Length rejection / consolidation (RFC 9112 §6.3)
-    var in_p_diff = wing::HeaderMap { .. };
-    wing::append_header(in_p_diff, "Host", "example.com");
-    wing::append_header(in_p_diff, "Content-Length", "10");
-    wing::append_header(in_p_diff, "Content-Length", "20");
-    var out_p_diff = wing::HeaderMap { .. };
+    var in_p_diff = http::HeaderMap { .. };
+    http::append_header(in_p_diff, "Host", "example.com");
+    http::append_header(in_p_diff, "Content-Length", "10");
+    http::append_header(in_p_diff, "Content-Length", "20");
+    var out_p_diff = http::HeaderMap { .. };
     let ok_p_diff = proxy::filter_and_forward_headers(in_p_diff, out_p_diff, "127.0.0.1", "http", "backend:80", cfg);
     assert(!ok_p_diff);
 
-    var in_p_same = wing::HeaderMap { .. };
-    wing::append_header(in_p_same, "Host", "example.com");
-    wing::append_header(in_p_same, "Content-Length", "42");
-    wing::append_header(in_p_same, "Content-Length", "42");
-    var out_p_same = wing::HeaderMap { .. };
+    var in_p_same = http::HeaderMap { .. };
+    http::append_header(in_p_same, "Host", "example.com");
+    http::append_header(in_p_same, "Content-Length", "42");
+    http::append_header(in_p_same, "Content-Length", "42");
+    var out_p_same = http::HeaderMap { .. };
     let ok_p_same = proxy::filter_and_forward_headers(in_p_same, out_p_same, "127.0.0.1", "http", "backend:80", cfg);
     assert(ok_p_same);
     var p_cl_count: i64 = 0;
@@ -673,25 +673,25 @@ fn run_06_verify_smuggling_desync() {
     print("PROXY_DUP_CL_RESOLVED: PASS");
 
     // 15. Reverse proxy TE/CL smuggling edge variations (RFC 9112 §6.1, §6.3)
-    var in_p_ws = wing::HeaderMap { .. };
-    wing::append_header(in_p_ws, "Host", "example.com");
-    wing::append_header(in_p_ws, "Transfer-Encoding", "   chunked  \t");
-    wing::append_header(in_p_ws, "Content-Length", "10");
-    var out_p_ws = wing::HeaderMap { .. };
+    var in_p_ws = http::HeaderMap { .. };
+    http::append_header(in_p_ws, "Host", "example.com");
+    http::append_header(in_p_ws, "Transfer-Encoding", "   chunked  \t");
+    http::append_header(in_p_ws, "Content-Length", "10");
+    var out_p_ws = http::HeaderMap { .. };
     assert(!proxy::filter_and_forward_headers(in_p_ws, out_p_ws, "127.0.0.1", "http", "backend:80", cfg));
 
-    var in_p_mc = wing::HeaderMap { .. };
-    wing::append_header(in_p_mc, "Host", "example.com");
-    wing::append_header(in_p_mc, "tRaNsFeR-eNcOdInG", "chunked");
-    wing::append_header(in_p_mc, "cOnTeNt-LeNgTh", "10");
-    var out_p_mc = wing::HeaderMap { .. };
+    var in_p_mc = http::HeaderMap { .. };
+    http::append_header(in_p_mc, "Host", "example.com");
+    http::append_header(in_p_mc, "tRaNsFeR-eNcOdInG", "chunked");
+    http::append_header(in_p_mc, "cOnTeNt-LeNgTh", "10");
+    var out_p_mc = http::HeaderMap { .. };
     assert(!proxy::filter_and_forward_headers(in_p_mc, out_p_mc, "127.0.0.1", "http", "backend:80", cfg));
 
-    var in_p_mte = wing::HeaderMap { .. };
-    wing::append_header(in_p_mte, "Host", "example.com");
-    wing::append_header(in_p_mte, "Transfer-Encoding", "chunked");
-    wing::append_header(in_p_mte, "Transfer-Encoding", "gzip");
-    var out_p_mte = wing::HeaderMap { .. };
+    var in_p_mte = http::HeaderMap { .. };
+    http::append_header(in_p_mte, "Host", "example.com");
+    http::append_header(in_p_mte, "Transfer-Encoding", "chunked");
+    http::append_header(in_p_mte, "Transfer-Encoding", "gzip");
+    var out_p_mte = http::HeaderMap { .. };
     assert(!proxy::filter_and_forward_headers(in_p_mte, out_p_mte, "127.0.0.1", "http", "backend:80", cfg));
     print("PROXY_TE_CL_VARIATIONS: REJECTED");
 }
@@ -752,7 +752,7 @@ fn test_chunked_fsm_drip() {
 fn test_h2_socket_drip() {
     var client_hpack = http2::DynamicTable { .. };
     var sess = server_internal::new_h2_server_session("localhost");
-    var pipeline = wing::ServerPipelineConfig { .. };
+    var pipeline = server::ServerPipelineConfig { .. };
     var timer = server_internal::ConnectionTimer { .. };
 
     // Handshake
@@ -1014,7 +1014,7 @@ fn parse_dns_question(buf: const u8[:]) -> i64 {
 // Section 3: TLS 1.3 record header parser wired to wing TLS record decoder
 fn parse_tls_record_header(buf: const u8[:]) -> i64 {
     if buf.len < 5 { return -1; }
-    let _, _, rlen, _, ok = wing::parse_tls_record_header(buf);
+    let _, _, rlen, _, ok = tls::parse_record_header(buf);
     if !ok { return -2; }
     return rlen;
 }

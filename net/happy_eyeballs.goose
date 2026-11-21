@@ -3,11 +3,12 @@
 
 // Happy Eyeballs v2 (RFC 8305) and v3 connection racing, DNS resolution delay,
 // CAD pacing with absolute floor, candidate interleaving, and Chromium AttemptManager coordination.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
 import dns.svcb;
+import .internal;
 
 // ---- RFC 8305 and HEv3 normative constants ------------------------------
 
@@ -67,30 +68,6 @@ struct ConnectionEndpointMetadata {
     ipv4_hints:         u8[..64][..4] = [],
 }
 
-fn populate_svcb_alpn_flags(rec: const dns::HttpsRecord&, meta: ConnectionEndpointMetadata&) {
-    for &alpn_tok in rec.alpns {
-        let tok = alpn_tok[..];
-        if tok == "h3" || tok.starts_with("h3-") {
-            meta.alpn_h3 = true;
-        } else if tok == "h2" {
-            meta.alpn_h2 = true;
-        }
-    }
-}
-
-fn populate_svcb_ip_hints(rec: const dns::HttpsRecord&, meta: ConnectionEndpointMetadata&) {
-    var ip6_buf: u8[..64] = [];
-    for &ip6 in rec.ipv6_hints {
-        core::format_ipv6_bytes(ip6, ip6_buf);
-        guard meta.ipv6_hints.try_push(ip6_buf) else { break; }
-    }
-    var ip4_buf: u8[..64] = [];
-    for ip4 in rec.ipv4_hints {
-        core::format_ipv4_u32(ip4, ip4_buf);
-        guard meta.ipv4_hints.try_push(ip4_buf) else { break; }
-    }
-}
-
 // Extracts Happy Eyeballs v3 endpoint metadata and effective port from an RFC 9460 HTTPS/SVCB record.
 //
 // Example:
@@ -120,8 +97,8 @@ fn extract_https_svcb_metadata(
         let _ = meta.target_name.try_append(rec.target_name[..]);
     }
     meta.ech_config_present = rec.has_ech && rec.ech_config_list.len > 0;
-    populate_svcb_alpn_flags(rec, meta);
-    populate_svcb_ip_hints(rec, meta);
+    net_internal::populate_svcb_alpn_flags(rec, meta);
+    net_internal::populate_svcb_ip_hints(rec, meta);
     let eff_port: u16 = if rec.port > 0 { rec.port } else { default_port };
     return meta, eff_port;
 }
@@ -167,22 +144,23 @@ fn interleave_candidates_he(
     var idx4: i64 = 0;
 
     // First, emit first_family_count from preferred family (IPv6)
-    var initial_count = 0;
-    while idx6 < ipv6_list.len && initial_count < first_family_count {
+    var initial_count: i64 = 0;
+    let first_limit = first_family_count as i64;
+    while idx6 < ipv6_list.len && initial_count < first_limit {
         let _ = out.try_push(copy(ipv6_list[idx6]));
-        idx6++;
-        initial_count++;
+        idx6 = core::add_sat_i64(idx6, 1);
+        initial_count = core::add_sat_i64(initial_count, 1);
     }
 
     // Interleave remaining 1-by-1
     while (idx6 < ipv6_list.len || idx4 < ipv4_list.len) && out.len < 32 {
         if idx4 < ipv4_list.len {
             let _ = out.try_push(copy(ipv4_list[idx4]));
-            idx4++;
+            idx4 = core::add_sat_i64(idx4, 1);
         }
         if idx6 < ipv6_list.len {
             let _ = out.try_push(copy(ipv6_list[idx6]));
-            idx6++;
+            idx6 = core::add_sat_i64(idx6, 1);
         }
     }
 }
@@ -280,7 +258,7 @@ fn on_dns_a_response(task: DnsRaceTask&, ips: const u8[:][:], now_ms: i64) {
         } else {
             // A arrived first! Arm Resolution Delay (RD = 50 ms) to wait for AAAA
             task.rd_timer_armed = true;
-            task.rd_deadline_ms = now_ms + rfc::HE_RESOLUTION_DELAY_MS;
+            task.rd_deadline_ms = core::add_sat_i64(now_ms, rfc::HE_RESOLUTION_DELAY_MS);
         }
     } else {
         task.a_status = DnsQueryStatus.Negative;
@@ -424,100 +402,7 @@ fn start_attempt_race(manager: AttemptManager&, candidates: const DnsCandidate[:
     manager.last_resort_triggered = false;
 
     // Launch first attempt immediately
-    launch_next_candidate_attempt(manager, now_ms);
-}
-
-inline fn maybe_arm_last_resort_nat64(manager: AttemptManager&, cand: const DnsCandidate&, now_ms: i64) {
-    guard manager.enable_nat64_synthesis && cand.family == AddressFamily.IPv6 && !manager.last_resort_armed else {
-        return;
-    }
-    var has_more_ipv6 = false;
-    for i in manager.current_attempt_idx..manager.pending_candidates.len {
-        if manager.pending_candidates[i].family == AddressFamily.IPv6 {
-            has_more_ipv6 = true;
-            break;
-        }
-    }
-    if !has_more_ipv6 {
-        manager.last_resort_armed = true;
-        manager.last_resort_deadline_ms = core::add_sat_i64(now_ms, rfc::HE_LAST_RESORT_SYNTHESIS_DELAY_MS);
-    }
-}
-
-// Launches next candidate and schedules CAD delay for subsequent candidate.
-fn launch_next_candidate_attempt(manager: AttemptManager&, now_ms: i64) -> bool {
-    guard manager.current_attempt_idx < manager.pending_candidates.len else { return false; }
-    guard manager.attempts.len < 16 else { return false; }
-
-    let cand = manager.pending_candidates[manager.current_attempt_idx];
-    manager.current_attempt_idx++;
-
-    let aid = manager.next_id;
-    manager.next_id++;
-
-    var attempt = ConnectionAttempt {
-        attempt_id:    aid,
-        candidate:     copy(cand),
-        start_time_ms: now_ms,
-        state:         AttemptState.Connecting,
-    };
-    manager.attempts.push(attempt);
-
-    // Schedule next attempt after CAD
-    manager.next_attempt_start_ms = now_ms + manager.effective_cad_ms;
-
-    // Arm Last Resort Local Synthesis when the last IPv6 attempt is dispatched
-    maybe_arm_last_resort_nat64(manager, cand, now_ms);
-
-    return true;
-}
-
-// Synthesizes a NAT64 IPv6 address prefix 64:ff9b::/96 per RFC 7050 from IPv4 candidate.
-fn synthesize_nat64_candidate(manager: AttemptManager&) {
-    guard manager.pending_candidates.len < manager.pending_candidates.cap else { return; }
-    var v4_ip:   u8[..256] = [];
-    var v4_port: u16       = 443;
-    var v4_proto = L4Protocol.Tcp;
-    var v4_prec: i32 = 30;
-    var found_v4 = false;
-
-    for &c in manager.pending_candidates {
-        if c.family == AddressFamily.IPv4 {
-            v4_ip.append(c.ip[..]);
-            v4_port = c.port;
-            v4_proto = c.l4_proto;
-            v4_prec = c.precedence;
-            found_v4 = true;
-            break;
-        }
-    }
-    if !found_v4 {
-        for &att in manager.attempts {
-            if att.candidate.family == AddressFamily.IPv4 {
-                v4_ip.append(att.candidate.ip[..]);
-                v4_port = att.candidate.port;
-                v4_proto = att.candidate.l4_proto;
-                v4_prec = att.candidate.precedence;
-                found_v4 = true;
-                break;
-            }
-        }
-    }
-    var syn_ip: u8[..256] = [];
-    if found_v4 {
-        syn_ip.append("64:ff9b::");
-        let _ = syn_ip.try_append(v4_ip[..]);
-    } else {
-        syn_ip.append("64:ff9b::192.0.2.1");
-    }
-    var nat64_cand = new_dns_candidate(
-        AddressFamily.IPv6,
-        syn_ip[..],
-        v4_port,
-        v4_proto,
-        v4_prec,
-    );
-    let _ = manager.pending_candidates.try_push(nat64_cand);
+    let _ = net_internal::launch_next_candidate_attempt(manager, now_ms);
 }
 
 // Advances the connection racing state machine on monotonic time ticks.
@@ -528,12 +413,12 @@ fn tick_attempt_manager(manager: AttemptManager&, now_ms: i64) -> bool {
     if manager.enable_nat64_synthesis && manager.last_resort_armed && !manager.last_resort_triggered &&
         now_ms >= manager.last_resort_deadline_ms {
         manager.last_resort_triggered = true;
-        synthesize_nat64_candidate(manager);
+        net_internal::synthesize_nat64_candidate(manager);
     }
 
     // Launch next connection attempt if CAD interval has passed
     if manager.current_attempt_idx < manager.pending_candidates.len && now_ms >= manager.next_attempt_start_ms {
-        return launch_next_candidate_attempt(manager, now_ms);
+        return net_internal::launch_next_candidate_attempt(manager, now_ms);
     }
 
     return false;

@@ -3,12 +3,15 @@
 
 // HTTP redirect state machine and header sanitization (RFC 9110 Section 15.4, WHATWG Fetch Section 4.5).
 // Handles method rewriting, referrer policy calculation, and sensitive header stripping.
-namespace wing;
+namespace client;
 
 import std;
 import core from "..";
 import cookie.constants;
 import cookie.policy;
+import http.headers;
+import http.request;
+import .internal;
 
 // ---- redirect enumerations and policies ------------------------------------
 
@@ -42,23 +45,6 @@ enum RedirectError {
     CannotRewindBody,
     SsrfBlockedUrl,
     SsrfBlockedIp,
-}
-
-fn redirect_error_to_string(err: RedirectError) -> const u8[:] {
-    return match err {
-        None => "None",
-        MissingLocation => "ERR_MISSING_LOCATION",
-        MultipleLocationHeaders => "ERR_MULTIPLE_LOCATION_HEADERS",
-        InvalidLocationUrl => "ERR_INVALID_LOCATION_URL",
-        ForbiddenRedirectScheme => "ERR_FORBIDDEN_REDIRECT_SCHEME",
-        CorsCredentialsInRedirectUrl => "ERR_CORS_CREDENTIALS_IN_REDIRECT_URL",
-        SchemeDowngradeBlocked => "ERR_SCHEME_DOWNGRADE_BLOCKED",
-        TooManyRedirects => "ERR_TOO_MANY_REDIRECTS",
-        RedirectBlockedByPolicy => "ERR_REDIRECT_BLOCKED_BY_POLICY",
-        CannotRewindBody => "ERR_CANNOT_REWIND_BODY",
-        SsrfBlockedUrl => "ERR_SSRF_BLOCKED_URL",
-        SsrfBlockedIp => "ERR_SSRF_BLOCKED_IP",
-    };
 }
 
 // Parses a Referrer-Policy header value, supporting comma-separated tokens (RFC 9110 Section 15.4).
@@ -102,23 +88,6 @@ struct RedirectOptions {
     had_cross_site_hop: bool = false,
 }
 
-struct RedirectSiteOptions {
-    has_initiator:      bool = false,
-    had_cross_site_hop: bool = false,
-}
-
-struct RedirectReferrerOptions {
-    is_cross_origin: bool = false,
-    is_downgrade:    bool = false,
-}
-
-struct RedirectOriginOptions {
-    is_cross_origin: bool = false,
-    tainted_origin:  bool = false,
-    cors_mode:       bool = false,
-    clear_body:      bool = false,
-}
-
 struct RedirectSanitizeOptions {
     cors_mode:                   bool = false,
     tainted_origin:              bool = false,
@@ -127,19 +96,19 @@ struct RedirectSanitizeOptions {
 }
 
 struct RedirectInfo {
-    status_code:                  i32            = 0,
-    new_method:                   u8[..16]       = [],
-    new_url:                      core::Url      = core::Url { .. },
-    new_site_for_cookies:         SiteForCookies = SiteForCookies { .. },
-    new_referrer:                 u8[..2048]     = [],
-    new_referrer_policy:          ReferrerPolicy = ReferrerPolicy.StrictOriginWhenCrossOrigin,
-    insecure_scheme_was_upgraded: bool           = false,
-    is_cross_origin:              bool           = false,
-    is_scheme_downgrade:          bool           = false,
-    is_port_changed:              bool           = false,
-    is_cross_site_tainted:        bool           = false,
-    clear_body:                   bool           = false,
-    error:                        RedirectError  = RedirectError.None,
+    status_code:                  i32                  = 0,
+    new_method:                   u8[..16]             = [],
+    new_url:                      core::Url            = core::Url { .. },
+    new_site_for_cookies:         http::SiteForCookies = http::SiteForCookies { .. },
+    new_referrer:                 u8[..2048]           = [],
+    new_referrer_policy:          ReferrerPolicy       = ReferrerPolicy.StrictOriginWhenCrossOrigin,
+    insecure_scheme_was_upgraded: bool                 = false,
+    is_cross_origin:              bool                 = false,
+    is_scheme_downgrade:          bool                 = false,
+    is_port_changed:              bool                 = false,
+    is_cross_site_tainted:        bool                 = false,
+    clear_body:                   bool                 = false,
+    error:                        RedirectError        = RedirectError.None,
 }
 
 // ---- pure function compute_redirect_info -----------------------------------
@@ -176,144 +145,6 @@ fn compute_redirect_info(
     );
 }
 
-fn mutate_redirect_method<B>(
-    status_code:    i32,
-    current_method: const u8[:],
-    out_method:     B&,
-    clear_body:     bool&,
-) {
-    out_method.clear();
-    clear_body = false;
-
-    if !rfc::is_redirect_status(status_code) {
-        out_method.append(current_method);
-        return;
-    }
-
-    let should_rewrite = if status_code == rfc::STATUS_MOVED_PERMANENTLY || status_code == rfc::STATUS_FOUND {
-        current_method.eq_ascii_fold("POST")
-    } else if status_code == rfc::STATUS_SEE_OTHER {
-        !current_method.eq_ascii_fold("GET") && !current_method.eq_ascii_fold("HEAD")
-    } else {
-        false
-    };
-
-    if should_rewrite {
-        out_method.append("GET");
-        clear_body = true;
-    } else {
-        out_method.append(current_method);
-    }
-}
-
-fn inherit_target_fragment(
-    target_url:                        core::Url&,
-    current_url:                       const core::Url&,
-    clean_loc:                         const u8[:],
-    preserve_fragment_on_redirect_url: const u8[:],
-) {
-    let target_hash = target_url.hash();
-    let curr_hash = current_url.hash();
-    if target_hash.len == 0 && curr_hash.len > 0 {
-        if preserve_fragment_on_redirect_url.len == 0 || clean_loc != preserve_fragment_on_redirect_url {
-            let hash_start = target_url.href.len as i32;
-            guard target_url.href.try_append(curr_hash) else {
-                return;
-            }
-            target_url.hash_start = hash_start;
-            target_url.hash_end = target_url.href.len as i32;
-        }
-    }
-}
-
-fn compute_redirect_site_for_cookies(
-    current_url:              const core::Url&,
-    new_url:                  const core::Url&,
-    first_party_policy:       cookie::FirstPartyURLPolicy,
-    current_site_for_cookies: const SiteForCookies&,
-    url_chain:                const core::Url[:],
-    initiator:                const core::Origin&,
-    options:                  RedirectSiteOptions,
-) -> SiteForCookies, bool {
-    let same_site_step = cookie::is_schemeful_same_site(
-        current_url.scheme(), current_url.hostname(),
-        new_url.scheme(), new_url.hostname(),
-    );
-    let initiator_ok = !options.has_initiator || (
-        initiator.kind != core::OriginKind.Opaque && cookie::is_schemeful_same_site(
-            initiator.scheme[..], initiator.host[..],
-            new_url.scheme(), new_url.hostname(),
-        )
-    );
-
-    if first_party_policy == cookie::FirstPartyURLPolicy.NEVER_CHANGE_FIRST_PARTY_URL {
-        // Subresources / background requests: once tainted, remains null forever
-        let is_first_p = cookie::is_first_party(current_site_for_cookies, new_url.href[..], true);
-
-        if options.had_cross_site_hop || !same_site_step || !is_first_p || !initiator_ok {
-            return cookie::null_site_for_cookies(), true;
-        }
-        return copy(current_site_for_cookies), false;
-    }
-
-    // Main-frame top-level navigation: SiteForCookies updates to target
-    let new_site = cookie::site_for_cookies_from_parsed_url(new_url);
-    var chain_tainted = options.had_cross_site_hop || !same_site_step || !initiator_ok;
-    for &hop_url in url_chain {
-        if !cookie::is_schemeful_same_site(
-            hop_url.scheme(), hop_url.hostname(),
-            new_url.scheme(), new_url.hostname(),
-        ) {
-            chain_tainted = true;
-        }
-    }
-    return new_site, chain_tainted;
-}
-
-fn validate_redirect_target(
-    location_header: const u8[:],
-    current_url:     const core::Url&,
-    options:         RedirectOptions,
-) -> core::Url, RedirectError {
-    let clean_loc = location_header.trim_ascii_space();
-    guard clean_loc.len > 0 else {
-        return core::Url { .. }, RedirectError.MissingLocation;
-    }
-
-    let parsed_target, parse_err = core::parse_url_with_base(clean_loc, current_url);
-    guard parsed_target.valid else {
-        return core::Url { .. }, RedirectError.InvalidLocationUrl;
-    }
-
-    if !parsed_target.is_http_or_https() {
-        return core::Url { .. }, RedirectError.ForbiddenRedirectScheme;
-    }
-
-    if options.cors_mode && parsed_target.has_credentials() {
-        let same_orig = current_url.is_same_origin_url(parsed_target);
-        if !same_orig || options.tainted_origin {
-            return core::Url { .. }, RedirectError.CorsCredentialsInRedirectUrl;
-        }
-    }
-
-    return parsed_target, RedirectError.None;
-}
-
-fn classify_redirect_origin_relation(
-    current_url:         const core::Url&,
-    target_url:          const core::Url&,
-    out_is_downgrade:    bool&,
-    out_is_cross_origin: bool&,
-    out_is_port_changed: bool&,
-) {
-    let same_orig = current_url.is_same_origin_url(target_url);
-    let is_downgrade = (current_url.scheme() == "https" && target_url.scheme() == "http");
-    let port_changed = current_url.effective_port() != target_url.effective_port();
-    out_is_downgrade = is_downgrade;
-    out_is_cross_origin = !same_orig || is_downgrade;
-    out_is_port_changed = port_changed;
-}
-
 // Computes redirect metadata for an HTTP redirect response (RFC 9110, WHATWG Fetch).
 // Mutates method and body flags, sets cross-origin status, and calculates referrer.
 fn compute_redirect_info(
@@ -324,7 +155,7 @@ fn compute_redirect_info(
     response_referrer_policy_header:   const u8[:],
     current_referrer_policy:           ReferrerPolicy,
     current_referrer:                  const u8[:],
-    current_site_for_cookies:          const SiteForCookies&,
+    current_site_for_cookies:          const http::SiteForCookies&,
     first_party_policy:                cookie::FirstPartyURLPolicy,
     url_chain:                         const core::Url[:],
     initiator:                         const core::Origin&,
@@ -337,7 +168,7 @@ fn compute_redirect_info(
         ..
     };
 
-    let parsed_target, val_err = validate_redirect_target(location_header, current_url, options);
+    let parsed_target, val_err = client_internal::validate_redirect_target(location_header, current_url, options);
     guard val_err == RedirectError.None else {
         info.error = val_err;
         return info;
@@ -345,16 +176,14 @@ fn compute_redirect_info(
 
     info.new_url = parsed_target;
     let loc_trimmed = location_header.trim_ascii_space();
-    inherit_target_fragment(info.new_url, current_url, loc_trimmed, preserve_fragment_on_redirect_url);
-    mutate_redirect_method(status_code, current_method, info.new_method, info.clear_body);
+    client_internal::inherit_target_fragment(info.new_url, current_url, loc_trimmed, preserve_fragment_on_redirect_url);
+    let body_act = client_internal::mutate_redirect_method(status_code, current_method, info.new_method);
+    info.clear_body = body_act == client_internal::RedirectBodyAction.Clear;
 
-    classify_redirect_origin_relation(
-        current_url,
-        info.new_url,
-        info.is_scheme_downgrade,
-        info.is_cross_origin,
-        info.is_port_changed,
-    );
+    let rel = client_internal::classify_redirect_origin_relation(current_url, info.new_url);
+    info.is_scheme_downgrade = rel.is_downgrade;
+    info.is_cross_origin = rel.is_cross_origin;
+    info.is_port_changed = rel.is_port_changed;
 
     if response_referrer_policy_header.len > 0 {
         info.new_referrer_policy = parse_referrer_policy_with_fallback(
@@ -370,31 +199,31 @@ fn compute_redirect_info(
         let parsed_ref = core::new_url(current_referrer);
         if parsed_ref.valid {
             ref_source = parsed_ref;
-            let ref_same_orig = parsed_ref.is_same_origin_url(info.new_url);
-            ref_is_downgrade = (parsed_ref.scheme() == "https" && info.new_url.scheme() == "http");
-            ref_is_cross_origin = !ref_same_orig || ref_is_downgrade;
+            let ref_rel = client_internal::classify_redirect_origin_relation(parsed_ref, info.new_url);
+            ref_is_downgrade = ref_rel.is_downgrade;
+            ref_is_cross_origin = ref_rel.is_cross_origin;
         }
     }
 
-    compute_new_referrer(
+    client_internal::compute_new_referrer(
         ref_source,
         info.new_url,
         info.new_referrer_policy,
-        RedirectReferrerOptions {
+        client_internal::RedirectReferrerOptions {
             is_cross_origin: ref_is_cross_origin,
             is_downgrade:    ref_is_downgrade,
         },
         info.new_referrer,
     );
 
-    let sfc, tainted = compute_redirect_site_for_cookies(
+    let sfc, tainted = client_internal::compute_redirect_site_for_cookies(
         current_url,
         info.new_url,
         first_party_policy,
         current_site_for_cookies,
         url_chain,
         initiator,
-        RedirectSiteOptions {
+        client_internal::RedirectSiteOptions {
             has_initiator:      options.has_initiator,
             had_cross_site_hop: options.had_cross_site_hop,
         },
@@ -405,139 +234,7 @@ fn compute_redirect_info(
     return info;
 }
 
-// ---- referrer calculation helper -------------------------------------------
-
-fn should_drop_referrer(policy: ReferrerPolicy, options: RedirectReferrerOptions) -> bool {
-    if policy == ReferrerPolicy.NoReferrer {
-        return true;
-    }
-    if options.is_downgrade {
-        if policy == ReferrerPolicy.NoReferrerWhenDowngrade ||
-            policy == ReferrerPolicy.StrictOrigin ||
-            policy == ReferrerPolicy.StrictOriginWhenCrossOrigin {
-            return true;
-        }
-    }
-    if options.is_cross_origin && policy == ReferrerPolicy.SameOrigin {
-        return true;
-    }
-    return false;
-}
-
-fn is_origin_only_referrer(policy: ReferrerPolicy, is_cross_origin: bool) -> bool {
-    if policy == ReferrerPolicy.Origin || policy == ReferrerPolicy.StrictOrigin {
-        return true;
-    }
-    if is_cross_origin {
-        if policy == ReferrerPolicy.OriginWhenCrossOrigin ||
-            policy == ReferrerPolicy.StrictOriginWhenCrossOrigin {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn serialize_stripped_full_referrer<B>(source_url: const core::Url&, out: B&) {
-    out.append(source_url.scheme());
-    out.append("://");
-    out.append(source_url.host());
-    out.append(source_url.pathname());
-    out.append(source_url.search());
-}
-
-fn compute_new_referrer<B>(
-    source_url: const core::Url&,
-    target_url: const core::Url&,
-    policy:     ReferrerPolicy,
-    options:    RedirectReferrerOptions,
-    out:        B&,
-) {
-    out.clear();
-
-    if should_drop_referrer(policy, options) {
-        return;
-    }
-
-    if is_origin_only_referrer(policy, options.is_cross_origin) {
-        core::serialize_origin(core::origin_from_url(source_url), out);
-        return;
-    }
-
-    serialize_stripped_full_referrer(source_url, out);
-}
-
 // ---- header sanitization on redirect ---------------------------------------
-
-inline fn is_redirect_rewritten_payload_header(name: const u8[:]) -> bool {
-    return rfc::is_payload_or_conditional_header(name) ||
-           name.eq_ascii_fold("content-digest") ||
-           name.eq_ascii_fold("repr-digest") ||
-           name.eq_ascii_fold("content-range") ||
-           name.eq_ascii_fold("trailer");
-}
-
-// Strips payload and conditional validator headers in a single O(N) pass
-// when a redirect mutates request to GET (RFC 9110 Section 15.4).
-fn remove_payload_and_conditional_headers(headers: HeaderMap&) {
-    var found = false;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
-    let total_entries = headers.entries.len;
-
-    for read_i in total_entries {
-        let name = entry_name(headers, headers.entries[read_i]);
-        if is_redirect_rewritten_payload_header(name) {
-            found = true;
-            continue;
-        }
-        compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
-    }
-    if found {
-        finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
-    }
-}
-
-// Strips `Sec-Fetch-*` and `Sec-CH-*` headers when redirecting onto an untrustworthy HTTP origin
-// (Chromium `MaybeRemoveSecHeaders`, `sec_header_helpers.cc:310-331`).
-fn remove_sec_headers_on_downgrade(headers: HeaderMap&, target_url: const core::Url&) {
-    if cookie::is_trustworthy_non_crypto_host(target_url.hostname()) {
-        return;
-    }
-    var found = false;
-    var write_entry_i: i64 = 0;
-    var write_raw_pos: u16 = 0;
-    let total_entries = headers.entries.len;
-
-    for read_i in total_entries {
-        let name = entry_name(headers, headers.entries[read_i]);
-        if name.starts_with_fold("sec-fetch-") || name.starts_with_fold("sec-ch-") {
-            found = true;
-            continue;
-        }
-        compact_kept_entry_in_place(headers, read_i, write_entry_i, write_raw_pos);
-    }
-    if found {
-        finish_in_place_compaction(headers, write_entry_i, write_raw_pos);
-    }
-}
-
-// Sanitizes or drops Origin header on cross-origin redirect hops (WHATWG Fetch Section 4.4).
-//
-// Example:
-//   headers = [Origin: "https://a.com"], options = { is_cross_origin = true, clear_body = true }
-//   headers becomes: [] (Origin header removed)
-fn sanitize_origin_header_on_redirect(
-    headers: HeaderMap&,
-    options: RedirectOriginOptions,
-) {
-    if has_header(headers, "Origin") && (options.is_cross_origin || options.tainted_origin) {
-        if options.clear_body && !options.cors_mode && !options.tainted_origin {
-            remove_header_by_name(headers, "Origin");
-        } else {
-            set_header(headers, "Origin", "null");
-        }
-    }
-}
 
 // Sanitizes outbound headers across redirect hops (RFC 9110 Section 15.4, WHATWG Fetch Section 4.4).
 // Strips Cookie headers, removes credentials on cross-origin or downgrade hops, and drops payload headers.
@@ -546,40 +243,40 @@ fn sanitize_origin_header_on_redirect(
 //   headers = [Cookie: "id=1", Host: "a.com"], redirect_info.is_cross_origin = true
 //   headers becomes: [] (Cookie and Host stripped)
 fn sanitize_headers_on_redirect(
-    headers:       HeaderMap&,
+    headers:       http::HeaderMap&,
     redirect_info: const RedirectInfo&,
     options:       RedirectSanitizeOptions = RedirectSanitizeOptions { .. },
 ) {
     // Cookie header is stripped and re-evaluated from the cookie jar for the new URL.
-    remove_header_by_name(headers, "Cookie");
+    http::remove_header_by_name(headers, "Cookie");
 
-    // Go #82350: Strip stale Host header on cross-origin redirects
+    // Go #82350: Strip stale Host header on cross-origin redirects.
     if redirect_info.is_cross_origin {
-        remove_header_by_name(headers, "Host");
+        http::remove_header_by_name(headers, "Host");
     }
 
     // Strip sensitive headers on cross-origin redirects or scheme downgrades.
     let strip_auth = redirect_info.is_scheme_downgrade ||
         (redirect_info.is_cross_origin && (!options.trusted_location_forwarding || redirect_info.is_port_changed));
     if strip_auth {
-        remove_sensitive_headers(headers);
-        remove_header_by_name(headers, "DPoP");
-        remove_header_by_name(headers, "Signature");
-        remove_header_by_name(headers, "Signature-Input");
+        http::remove_sensitive_headers(headers);
+        http::remove_header_by_name(headers, "DPoP");
+        http::remove_header_by_name(headers, "Signature");
+        http::remove_header_by_name(headers, "Signature-Input");
     }
     if redirect_info.is_scheme_downgrade {
-        remove_sec_headers_on_downgrade(headers, redirect_info.new_url);
+        client_internal::remove_sec_headers_on_downgrade(headers, redirect_info.new_url);
     }
 
     // Strip payload and representation headers when mutating to GET.
     if redirect_info.clear_body {
-        remove_payload_and_conditional_headers(headers);
+        client_internal::remove_payload_and_conditional_headers(headers);
     }
 
-    // Origin header sanitization (WHATWG Fetch)
-    sanitize_origin_header_on_redirect(
+    // Origin header sanitization (WHATWG Fetch).
+    client_internal::sanitize_origin_header_on_redirect(
         headers,
-        RedirectOriginOptions {
+        client_internal::RedirectOriginOptions {
             is_cross_origin: redirect_info.is_cross_origin,
             tainted_origin:  options.tainted_origin,
             cors_mode:       options.cors_mode,
@@ -587,10 +284,10 @@ fn sanitize_headers_on_redirect(
         },
     );
 
-    // Referer Header Application
-    remove_header_by_name(headers, "Referer");
+    // Referer Header Application.
+    http::remove_header_by_name(headers, "Referer");
     if options.enable_referer && redirect_info.new_referrer.len > 0 {
-        set_header(headers, "Referer", redirect_info.new_referrer[..]);
+        http::set_header(headers, "Referer", redirect_info.new_referrer[..]);
     }
 }
 
@@ -603,10 +300,10 @@ struct RedirectHopCacheTaint {
 
 // Aggregates `no-store` and `private` Cache-Control directives across intermediate redirect hops
 // so outer caches do not store a final 200 response under an uncacheable initial redirect key.
-fn record_redirect_hop_cache_headers(taint: RedirectHopCacheTaint&, hop_headers: const HeaderMap&) {
+fn record_redirect_hop_cache_headers(taint: RedirectHopCacheTaint&, hop_headers: const http::HeaderMap&) {
     for &entry in hop_headers.entries {
-        guard entry_name(hop_headers, entry).eq_ascii_fold("cache-control") else { continue; }
-        let cc = entry_value(hop_headers, entry);
+        guard http::entry_name(hop_headers, entry).eq_ascii_fold("cache-control") else { continue; }
+        let cc = http::entry_value(hop_headers, entry);
         guard cc.len > 0 else { continue; }
         each_split(cc, ',') { raw_dir =>
             let d_name, _, _ = raw_dir.trim_lws().split_once_byte('=');
@@ -627,16 +324,16 @@ struct CustomRedirectStripPolicy {
 
 // Strips caller-configured unconditional and cross-origin header names across a redirect hop.
 fn apply_custom_redirect_strip(
-    headers:         HeaderMap&,
+    headers:         http::HeaderMap&,
     is_cross_origin: bool,
     policy:          const CustomRedirectStripPolicy&,
 ) {
     for &name in policy.always_strip {
-        remove_header_by_name(headers, name[..]);
+        http::remove_header_by_name(headers, name[..]);
     }
     if is_cross_origin {
         for &name in policy.cross_origin_strip {
-            remove_header_by_name(headers, name[..]);
+            http::remove_header_by_name(headers, name[..]);
         }
     }
 }

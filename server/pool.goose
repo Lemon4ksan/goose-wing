@@ -19,7 +19,7 @@ let ENTRY_ALL:      u32 = 0x0F;
 // ---- header map pool -------------------------------------------------------
 
 struct PooledHeaderMap {
-    headers: wing::HeaderMap = wing::HeaderMap { .. },
+    headers: http::HeaderMap = http::HeaderMap { .. },
     in_use:  bool            = false,
 }
 
@@ -51,7 +51,7 @@ struct RequestExtensions {
     matched_route:     u8[..64]              = [],
     conn_id:           u64                   = 0,
     request_seq:       u64                   = 0,
-    params:            wing::ZeroAllocParams = wing::ZeroAllocParams { .. },
+    params:            http::ZeroAllocParams = http::ZeroAllocParams { .. },
     session_data:      u8[..512]             = [],
     canon_url:         u8[..2048]            = [],
     cors_origin:       u8[..128]             = [],

@@ -4,7 +4,7 @@
 // RFC 9530 Digest Fields for HTTP (obsoleting RFC 3230 and RFC 5843).
 // Defines Content-Digest and Repr-Digest headers using RFC 8941 Structured Fields
 // Dictionary syntax with byte sequences (:base64:) for sha-256 and sha-512.
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
@@ -12,38 +12,9 @@ import .request;
 import .response;
 import http.headers.chunked_fsm;
 import .sfv;
+import http.codec_internal;
 
 // ---- RFC 9530 Constants --------------------------------------------------
-
-inline fn compute_sha256_digest(data: const u8[:]) -> u8[..64] {
-    var out: u8[..64] = [];
-    let hash = core::sha256(data);
-    out.append(hash[..]);
-    return out;
-}
-
-inline fn compute_sha512_digest(data: const u8[:]) -> u8[..64] {
-    var out: u8[..64] = [];
-    let hash = core::sha512(data);
-    out.append(hash[..]);
-    return out;
-}
-
-// Computes raw RFC 9530 digest bytes (SHA-256 or SHA-512) returning bounded array via RVO.
-//
-// Example:
-//   data = "hello world", alg = "sha-256"
-//   returns: [185, 91, 154, ...], ok = true
-fn compute_digest_bytes(data: const u8[:], alg: const u8[:]) -> u8[..64], bool {
-    if alg.eq_ascii_fold(rfc::DIGEST_ALG_SHA256) {
-        return compute_sha256_digest(data), true;
-    }
-    if alg.eq_ascii_fold(rfc::DIGEST_ALG_SHA512) {
-        return compute_sha512_digest(data), true;
-    }
-    var empty: u8[..64] = [];
-    return empty, false;
-}
 
 // Formats an RFC 9530 Structured Field dictionary value: e.g. "sha-256=:X48E9...=:"
 //
@@ -51,13 +22,20 @@ fn compute_digest_bytes(data: const u8[:], alg: const u8[:]) -> u8[..64], bool {
 //   alg = "sha-256", data = "hello world"
 //   returns: true, out = "sha-256=:uU0nuZ...=:"
 fn format_digest_field_value<B>(alg: const u8[:], data: const u8[:], out: B&) -> bool {
-    out.clear();
-    let hash_bytes, ok_hash = compute_digest_bytes(data, alg);
+    let hash_bytes, ok_hash = http_internal::compute_digest_bytes(data, alg);
     guard ok_hash else { return false; }
 
-    out.append(if alg.eq_ascii_fold(rfc::DIGEST_ALG_SHA512) { "sha-512=:" } else { "sha-256=:" });
+    out.clear();
+    var committed = false;
+    defer if !committed { out.clear(); };
+
+    let prefix = if alg.eq_ascii_fold(rfc::DIGEST_ALG_SHA512) { "sha-512=:" } else { "sha-256=:" };
+    guard out.try_append(prefix) else { return false; }
+    let b64_len = ((hash_bytes.len + 2) / 3) * 4;
+    guard out.len + b64_len + 1 <= out.cap else { return false; }
     core::base64_encode(hash_bytes[..], out);
-    out.push(':' as u8);
+    guard out.try_push(':' as u8) else { return false; }
+    committed = true;
     return true;
 }
 
@@ -97,49 +75,7 @@ fn set_response_content_digest(res: Response&, alg: const u8[:] = "sha-256") -> 
     return true;
 }
 
-// Computes and attaches RFC 9530 Content-Digest, Repr-Digest, and Want-*-Digest headers to Request.
-fn apply_request_digest_headers(
-    req:             Request&,
-    alg:             const u8[:],
-    include_repr:    bool,
-    want_algorithms: const u8[:] = "sha-256=10",
-) -> bool {
-    var cd_val: u8[..128] = [];
-    guard format_digest_field_value(alg, req.body[..], cd_val) else { return false; }
-    var rd_val: u8[..128] = [];
-    if include_repr {
-        guard format_digest_field_value(alg, req.body[..], rd_val) else { return false; }
-    }
-    set_header(req, rfc::HEADER_CONTENT_DIGEST, cd_val[..]);
-    if include_repr {
-        set_header(req, rfc::HEADER_REPR_DIGEST, rd_val[..]);
-    }
-    if want_algorithms.len > 0 {
-        set_want_content_digest(req, want_algorithms);
-        set_want_repr_digest(req, want_algorithms);
-    }
-    return true;
-}
-
-fn apply_request_digest_headers(req: Request&, alg: const u8[:] = "sha-256") -> bool {
-    return apply_request_digest_headers(req, alg, true, "sha-256=10");
-}
-
 // ---- Verification Logic --------------------------------------------------
-
-fn check_digest_match(expected_b64: const u8[:], alg: const u8[:], data: const u8[:]) -> bool {
-    var expected_hash: u8[..64] = [];
-    guard core::base64_decode(expected_b64, expected_hash) else { return false; }
-    let computed_hash, ok_hash = compute_digest_bytes(data, alg);
-    guard ok_hash else { return false; }
-    guard computed_hash.len == expected_hash.len else { return false; }
-    return core::ct_eq_bytes(computed_hash[..], expected_hash[..]);
-}
-
-fn verify_single_digest_entry(entry: const SfDictEntry&, data: const u8[:]) -> bool {
-    guard entry.item.kind == SfType.Binary else { return false; }
-    return check_digest_match(entry.item.str_val[..], entry.key[..], data);
-}
 
 // Verifies a raw RFC 9530 Content-Digest or Repr-Digest header value against message data.
 // Returns true if at least one supported digest matches.
@@ -154,7 +90,7 @@ fn verify_digest_field(header_val: const u8[:], data: const u8[:]) -> bool {
         let is_sha256 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256);
         let is_sha512 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA512);
         if is_sha256 || is_sha512 {
-            guard verify_single_digest_entry(entry, data) else { return false; }
+            guard http_internal::verify_single_digest_entry(entry, data) else { return false; }
             matched_any = true;
         }
     }
@@ -189,29 +125,6 @@ fn verify_response_repr_digest(res: const Response&) -> bool {
     return verify_digest_field(combined[..], res.body[..]);
 }
 
-// RFC 9530 Section 4: Integrity Preference Fields - Parse Want-*-Digest SF Dictionary weights (0..10).
-fn accumulate_want_digest_weights(
-    raw:   const u8[:],
-    w_256: i64&,
-    w_512: i64&,
-) -> bool {
-    guard raw.len > 0 else { return true; }
-    var entries: SfDictEntry[..16] = [];
-    guard parse_sf_dict(raw, entries) else { return false; }
-    for &e in entries {
-        guard !e.is_inner_list && e.item.kind == SfType.Integer &&
-              e.item.int_val >= 0 && e.item.int_val <= 10 else {
-            return false;
-        }
-        if e.key.eq_ascii_fold(rfc::DIGEST_ALG_SHA256) {
-            w_256 = e.item.int_val;
-        } else if e.key.eq_ascii_fold(rfc::DIGEST_ALG_SHA512) {
-            w_512 = e.item.int_val;
-        }
-    }
-    return true;
-}
-
 // Verifies request Repr-Digest if present and attaches Response Content-Digest when requested via Want-*-Digest.
 fn apply_response_digest_if_wanted(
     req:         const Request&,
@@ -232,14 +145,14 @@ fn apply_response_digest_if_wanted(
     if has_wcd {
         var comb_cd: u8[..1024] = [];
         guard req.headers.get_combined(rfc::HEADER_WANT_CONTENT_DIGEST, comb_cd, 1024) &&
-              accumulate_want_digest_weights(comb_cd[..], w_256, w_512) else {
+              http_internal::accumulate_want_digest_weights(comb_cd[..], w_256, w_512) else {
             return true;
         }
     }
     if has_wrd {
         var comb_rd: u8[..1024] = [];
         guard req.headers.get_combined(rfc::HEADER_WANT_REPR_DIGEST, comb_rd, 1024) &&
-              accumulate_want_digest_weights(comb_rd[..], w_256, w_512) else {
+              http_internal::accumulate_want_digest_weights(comb_rd[..], w_256, w_512) else {
             return true;
         }
     }
@@ -280,26 +193,6 @@ struct StreamingDigestVerifier {
     is_valid_init: bool                = false,
 }
 
-inline fn apply_streaming_digest_entry(v: StreamingDigestVerifier&, entry: const SfDictEntry&) -> bool {
-    let is_sha256 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA256);
-    let is_sha512 = entry.key[..].eq_ascii_fold(rfc::DIGEST_ALG_SHA512);
-    guard is_sha256 || is_sha512 else { return true; }
-    guard entry.item.kind == SfType.Binary else { return false; }
-
-    var decoded: u8[..64] = [];
-    guard core::base64_decode(entry.item.str_val[..], decoded) else { return false; }
-    let req_len: i64 = if is_sha512 { 64 } else { 32 };
-    guard decoded.len == req_len else { return false; }
-
-    if !v.is_valid_init || is_sha512 {
-        v.algo = if is_sha512 { StreamingDigestAlgo.Sha512 } else { StreamingDigestAlgo.Sha256 };
-        v.expected_hash.clear();
-        v.expected_hash.append(decoded[..]);
-        v.is_valid_init = true;
-    }
-    return true;
-}
-
 // Parses an RFC 9530 Content-Digest or Repr-Digest dictionary field and initializes
 // an incremental SHA-256 or SHA-512 streaming verifier.
 fn begin_streaming_digest(header_val: const u8[:]) -> StreamingDigestVerifier, bool {
@@ -310,7 +203,7 @@ fn begin_streaming_digest(header_val: const u8[:]) -> StreamingDigestVerifier, b
     guard parse_sf_dict(header_val, entries) else { return v, false; }
 
     for &entry in entries {
-        guard apply_streaming_digest_entry(v, entry) else { return v, false; }
+        guard http_internal::apply_streaming_digest_entry(v, entry) else { return v, false; }
     }
     guard v.is_valid_init else { return v, false; }
     return v, true;
@@ -449,53 +342,4 @@ fn pump_chunk_fsm_streaming<F>(
         }
     }
     return http_internal::ChunkFsmStatus.NeedMore, total_consumed;
-}
-
-// Decodes an HTTP/1.1 chunked body from wire bytes into `out_body` while verifying
-// the request's RFC 9530 Content-Digest or Repr-Digest header.
-fn verify_chunked_wire_digest<B>(
-    req:         const Request&,
-    wire_chunks: const u8[:],
-    out_body:    B&,
-    max_bytes:   i64,
-) -> bool {
-    out_body.clear();
-    var ver, ok_v = begin_request_streaming_digest(req);
-    guard ok_v else { return false; }
-
-    var dec_stream = http_internal::new_chunk_fsm_decoder();
-    var feed_ok = true;
-    let st_stream, consumed_stream = pump_chunk_fsm_streaming(dec_stream, wire_chunks) { chunk =>
-        if !update_streaming_digest(ver, chunk) {
-            feed_ok = false;
-        }
-    };
-    guard feed_ok && st_stream == http_internal::ChunkFsmStatus.Complete && consumed_stream == wire_chunks.len else {
-        return false;
-    }
-    guard finish_streaming_digest(ver) else { return false; }
-
-    var dec = http_internal::new_chunk_fsm_decoder();
-    var hsink = new_hashing_sink(ArenaSink { max_bytes: max_bytes });
-    let st, consumed = pump_chunk_fsm(dec, wire_chunks, hsink, out_body);
-    guard st == http_internal::ChunkFsmStatus.Complete && consumed == wire_chunks.len else {
-        out_body.clear();
-        return false;
-    }
-    let sink_hash = finish_hashing_sink(hsink);
-    if ver.algo == StreamingDigestAlgo.Sha256 {
-        guard core::ct_eq_bytes(sink_hash[..], ver.expected_hash[..]) else {
-            out_body.clear();
-            return false;
-        }
-    }
-    return true;
-}
-
-fn verify_chunked_wire_digest<B>(
-    req:         const Request&,
-    wire_chunks: const u8[:],
-    out_body:    B&,
-) -> bool {
-    return verify_chunked_wire_digest(req, wire_chunks, out_body, 16777216);
 }

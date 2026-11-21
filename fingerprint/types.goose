@@ -163,7 +163,7 @@ struct ClientProfile {
     accept_encoding:           u8[..64]           = [],
     accept_language:           u8[..64]           = [],
     upgrade_insecure_requests: u8[..8]            = [],
-    extra_headers:             wing::HeaderMap    = wing::HeaderMap { .. },
+    extra_headers:             http::HeaderMap    = http::HeaderMap { .. },
     h2:                        H2Settings         = H2Settings { .. },
     h3:                        H3Settings         = H3Settings { .. },
     tls:                       TlsFingerprintSpec = TlsFingerprintSpec { .. },

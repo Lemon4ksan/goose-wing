@@ -142,8 +142,8 @@ inline fn read_valid_x5c_cert_b64(reader: json::Reader&) -> bool {
     var der_buf: u8[..2048] = [];
     guard core::read_json_string_into(reader, b64_buf) && b64_buf.len > 0 else { return false; }
     guard core::base64_decode(b64_buf[..], der_buf) && der_buf.len > 0 else { return false; }
-    var cert = wing::ParsedCert { .. };
-    return wing::parse_x509_certificate(der_buf[..], cert);
+    var cert = tls::ParsedCert { .. };
+    return tls::parse_x509_certificate(der_buf[..], cert);
 }
 
 // Parses JWK "x5c" certificate chain array and extracts the leaf DER Base64 string (RFC 7517 §4.7).
@@ -280,9 +280,9 @@ fn finalize_rsa_key(raw_n: const u8[:], raw_e: const u8[:], key_item: auth::Jwks
 // RFC 7517 Section 4.7: "x5c" (X.509 Certificate Chain) Parameter - leaf DER must parse and match JWK key
 inline fn validate_jwk_x5c_spki(leaf_der: const u8[:], key_item: const auth::JwksKey&) -> bool {
     guard key_item.kty != auth::JwkKeyType.Oct && key_item.kty != auth::JwkKeyType.Unknown else { return false; }
-    var cert = wing::ParsedCert { .. };
-    guard wing::parse_x509_certificate(leaf_der, cert) else { return false; }
-    var spki_pub = wing::span_slice(leaf_der, cert.spki_pubkey);
+    var cert = tls::ParsedCert { .. };
+    guard tls::parse_x509_certificate(leaf_der, cert) else { return false; }
+    var spki_pub = tls::span_slice(leaf_der, cert.spki_pubkey);
     if spki_pub.len >= 2 && spki_pub[0] == 0 {
         spki_pub = spki_pub[1..];
     }

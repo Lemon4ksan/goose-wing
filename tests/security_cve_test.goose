@@ -20,7 +20,7 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 // 1. CVE-2021-28918 & CVE-2021-29922: Octal, Hex, Dword, Shorthand IPv4 SSRF
 // ----------------------------------------------------------------------------
 fn test_cve_ipv4_formats_ssrf(t: lit::T&) {
-    var session = wing::new_session();
+    var session = client::new_session();
     session.ssrf_guard.enabled = true;
     session.ssrf_guard.deny_local_network = true;
 
@@ -34,9 +34,9 @@ fn test_cve_ipv4_formats_ssrf(t: lit::T&) {
     ];
 
     for &url in targets {
-        var req = wing::new_get(url[..]);
-        let _, err = wing::execute_request(session, req);
-        t.assert_false(wing::ok(err), "IPv4 format bypass must be blocked");
+        var req = http::new_get(url[..]);
+        let _, err = client::execute_request(session, req);
+        t.assert_false(http::ok(err), "IPv4 format bypass must be blocked");
     }
 }
 
@@ -44,7 +44,7 @@ fn test_cve_ipv4_formats_ssrf(t: lit::T&) {
 // 2. CVE-2024-24790 & RFC 6761: Localhost, Uncompressed IPv6 & Tunnel SSRF
 // ----------------------------------------------------------------------------
 fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: lit::T&) {
-    var session = wing::new_session();
+    var session = client::new_session();
     session.ssrf_guard.enabled = true;
     session.ssrf_guard.deny_local_network = true;
 
@@ -54,18 +54,18 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: lit::T&) {
         "http://service.localhost/admin",
     ];
     for &url in lh_targets {
-        var req_lh = wing::new_get(url[..]);
-        let _, err_lh = wing::execute_request(session, req_lh);
-        t.assert_false(wing::ok(err_lh), "RFC 6761 localhost target must be blocked");
+        var req_lh = http::new_get(url[..]);
+        let _, err_lh = client::execute_request(session, req_lh);
+        t.assert_false(http::ok(err_lh), "RFC 6761 localhost target must be blocked");
     }
 
     // DNS Rebinding with Uncompressed IPv6 Loopback
-    wing::mock_route(session, "GET", "http://rebind-uncompressed.com/api", 200, "ok");
-    wing::add_mock_resolved_ip(session, "0:0:0:0:0:0:0:1");
+    client::mock_route(session, "GET", "http://rebind-uncompressed.com/api", 200, "ok");
+    client::add_mock_resolved_ip(session, "0:0:0:0:0:0:0:1");
 
-    var req = wing::new_get("http://rebind-uncompressed.com/api");
-    let _, err = wing::execute_request(session, req);
-    t.assert_false(wing::ok(err), "DNS rebinding with 0:0:0:0:0:0:0:1 must be blocked");
+    var req = http::new_get("http://rebind-uncompressed.com/api");
+    let _, err = client::execute_request(session, req);
+    t.assert_false(http::ok(err), "DNS rebinding with 0:0:0:0:0:0:0:1 must be blocked");
 
     let tunnel_targets: const u8[..64][..5] = [
         "http://[::127.0.0.1]/status",
@@ -75,9 +75,9 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: lit::T&) {
         "http://[2002:7f00:1::]/status",
     ];
     for &url in tunnel_targets {
-        var req_t = wing::new_get(url[..]);
-        let _, err_t = wing::execute_request(session, req_t);
-        t.assert_false(wing::ok(err_t), "IPv6 tunnel/compatible loopback must be blocked");
+        var req_t = http::new_get(url[..]);
+        let _, err_t = client::execute_request(session, req_t);
+        t.assert_false(http::ok(err_t), "IPv6 tunnel/compatible loopback must be blocked");
     }
 }
 
@@ -86,13 +86,13 @@ fn test_cve_localhost_and_ipv6_tunnels_ssrf(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_crlf_header_injection(t: lit::T&) {
     t.run("Header Name with CRLF or Control Characters must be Sanitized/Rejected") { sub =>
-        var req = wing::new_get("https://example.com/api");
-        wing::set_header(req, "X-Injected\r\nEvil: true", "valid-value");
+        var req = http::new_get("https://example.com/api");
+        http::set_header(req, "X-Injected\r\nEvil: true", "valid-value");
 
         var has_injected_crlf = false;
         for idx in 0..req.headers.entries.len {
             let e = req.headers.entries[idx];
-            for b in wing::entry_name(req.headers, e) {
+            for b in http::entry_name(req.headers, e) {
                 if b == '\r' || b == '\n' || b == 0 {
                     has_injected_crlf = true;
                 }
@@ -102,13 +102,13 @@ fn test_cve_crlf_header_injection(t: lit::T&) {
     };
 
     t.run("Header Value with CRLF must be Sanitized/Rejected") { sub =>
-        var req = wing::new_get("https://example.com/api");
-        wing::set_header(req, "X-Test", "value\r\nSet-Cookie: pwned=true");
+        var req = http::new_get("https://example.com/api");
+        http::set_header(req, "X-Test", "value\r\nSet-Cookie: pwned=true");
 
         var has_injected_crlf = false;
         for idx in 0..req.headers.entries.len {
             let e = req.headers.entries[idx];
-            for b in wing::entry_value(req.headers, e) {
+            for b in http::entry_value(req.headers, e) {
                 if b == '\r' || b == '\n' || b == 0 {
                     has_injected_crlf = true;
                 }
@@ -123,77 +123,77 @@ fn test_cve_crlf_header_injection(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_port_change_and_representation_headers(t: lit::T&) {
     t.run("CVE-2022-27776: Port Change on Trusted Host Must Strip Authorization") { sub =>
-        var req = wing::new_get("https://example.com:443/login");
-        wing::set_header(req, "Authorization", "Bearer top_secret");
-        wing::set_header(req, "X-API-Key", "secret-key-123");
+        var req = http::new_get("https://example.com:443/login");
+        http::set_header(req, "Authorization", "Bearer top_secret");
+        http::set_header(req, "X-API-Key", "secret-key-123");
 
         // Redirect to same hostname example.com, but different port 8443
-        let redirect_info = wing::compute_redirect_info(
+        let redirect_info = client::compute_redirect_info(
             "GET", 302, "https://example.com:443/login", "https://example.com:8443/admin",
-            wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com:443/login",
-            wing::RedirectOptions { .. },
+            client::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com:443/login",
+            client::RedirectOptions { .. },
         );
 
         sub.assert_true(redirect_info.is_cross_origin, "different port must be cross-origin");
 
         // Even with trusted_location_forwarding = true, port change must NOT leak credentials!
-        wing::sanitize_headers_on_redirect(
+        client::sanitize_headers_on_redirect(
             req.headers,
             redirect_info,
-            wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
+            client::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
         );
 
-        let has_auth = wing::has_header(req.headers, "Authorization");
-        let has_key = wing::has_header(req.headers, "X-API-Key");
+        let has_auth = http::has_header(req.headers, "Authorization");
+        let has_key = http::has_header(req.headers, "X-API-Key");
         sub.assert_false(has_auth, "Authorization must be stripped across port change even if hostname is trusted");
         sub.assert_false(has_key, "X-API-Key must be stripped across port change even if hostname is trusted");
     };
 
     t.run("Cross-Origin Redirect Must Strip Signatures and CSRF Tokens") { sub =>
-        var req = wing::new_post("https://example.com/api");
-        wing::sign_hmac_sha256(req, "secret");
-        wing::set_header(req, "X-CSRF-Token", "csrf-token-abc");
+        var req = http::new_post("https://example.com/api");
+        http::sign_hmac_sha256(req, "secret");
+        http::set_header(req, "X-CSRF-Token", "csrf-token-abc");
 
-        let redirect_info = wing::compute_redirect_info(
+        let redirect_info = client::compute_redirect_info(
             "POST", 302, "https://example.com/api", "https://other.com/api",
-            wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/api",
-            wing::RedirectOptions { .. },
+            client::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/api",
+            client::RedirectOptions { .. },
         );
 
-        wing::sanitize_headers_on_redirect(
+        client::sanitize_headers_on_redirect(
             req.headers,
             redirect_info,
-            wing::RedirectSanitizeOptions { enable_referer: true },
+            client::RedirectSanitizeOptions { enable_referer: true },
         );
 
-        let has_sig = wing::has_header(req.headers, "X-Signature-256");
-        let has_csrf = wing::has_header(req.headers, "X-CSRF-Token");
+        let has_sig = http::has_header(req.headers, "X-Signature-256");
+        let has_csrf = http::has_header(req.headers, "X-CSRF-Token");
         sub.assert_false(has_sig, "X-Signature-256 must be stripped on cross-origin redirect");
         sub.assert_false(has_csrf, "X-CSRF-Token must be stripped on cross-origin redirect");
     };
 
     t.run("Method Mutation to GET Must Strip Conditional / Representation Headers") { sub =>
-        var req = wing::new_post("https://example.com/upload");
-        wing::set_header(req, "If-Match", "\"etag-123\"");
-        wing::set_header(req, "If-None-Match", "\"etag-456\"");
-        wing::set_header(req, "Expect", "100-continue");
+        var req = http::new_post("https://example.com/upload");
+        http::set_header(req, "If-Match", "\"etag-123\"");
+        http::set_header(req, "If-None-Match", "\"etag-456\"");
+        http::set_header(req, "Expect", "100-continue");
 
-        let redirect_info = wing::compute_redirect_info(
+        let redirect_info = client::compute_redirect_info(
             "POST", 303, "https://example.com/upload", "https://example.com/status",
-            wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/upload",
-            wing::RedirectOptions { .. },
+            client::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://example.com/upload",
+            client::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.clear_body, "303 clears body");
 
-        wing::sanitize_headers_on_redirect(
+        client::sanitize_headers_on_redirect(
             req.headers,
             redirect_info,
-            wing::RedirectSanitizeOptions { enable_referer: true },
+            client::RedirectSanitizeOptions { enable_referer: true },
         );
 
-        let has_if_match = wing::has_header(req.headers, "If-Match");
-        let has_if_none_match = wing::has_header(req.headers, "If-None-Match");
-        let has_expect = wing::has_header(req.headers, "Expect");
+        let has_if_match = http::has_header(req.headers, "If-Match");
+        let has_if_none_match = http::has_header(req.headers, "If-None-Match");
+        let has_expect = http::has_header(req.headers, "Expect");
         sub.assert_false(has_if_match, "If-Match must be stripped when method mutates to GET");
         sub.assert_false(has_if_none_match, "If-None-Match must be stripped when method mutates to GET");
         sub.assert_false(has_expect, "Expect must be stripped when method mutates to GET");
@@ -225,13 +225,13 @@ fn test_cve_cookie_url_and_query_ordering(t: lit::T&) {
 
     t.run("build_effective_url: Query Parameters Must Precede Fragment") { sub =>
         var out:    u8[..2048]           = [];
-        var params: wing::QueryItem[..2] = [];
-        var q1 = wing::QueryItem { .. };
+        var params: http::QueryItem[..2] = [];
+        var q1 = http::QueryItem { .. };
         q1.key.append("tab");
         q1.value.append("profile");
         params.push(q1);
 
-        wing::build_effective_url("https://example.com/account#overview", "", params[..], out);
+        client::build_effective_url("https://example.com/account#overview", "", params[..], out);
         sub.assert_bytes_eq(out[..], "https://example.com/account?tab=profile#overview", "query parameters must be placed before fragment");
     };
 }
@@ -268,42 +268,42 @@ fn test_cve_netscape_import_security(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_2026_94441_h2_scheme_isolation(t: lit::T&) {
     t.run("PoolKey Scheme Isolation: Plaintext H2c Must Never Match HTTPS") { sub =>
-        let nak = wing::new_network_anonymization_key("https://service.com");
-        let direct = wing::new_direct_proxy_chain();
-        let policy = wing::TlsAndDnsPolicy { .. };
+        let nak = net::new_network_anonymization_key("https://service.com");
+        let direct = net::new_direct_proxy_chain();
+        let policy = net::TlsAndDnsPolicy { .. };
 
-        let key_https = wing::new_pool_key(wing::PoolScheme.Https, "service.com", 443, direct, nak, policy);
-        let key_h2c = wing::new_pool_key(wing::PoolScheme.H2c, "service.com", 80, direct, nak, policy);
-        let key_http = wing::new_pool_key(wing::PoolScheme.Http, "service.com", 80, direct, nak, policy);
+        let key_https = net::new_pool_key(net::PoolScheme.Https, "service.com", 443, direct, nak, policy);
+        let key_h2c = net::new_pool_key(net::PoolScheme.H2c, "service.com", 80, direct, nak, policy);
+        let key_http = net::new_pool_key(net::PoolScheme.Http, "service.com", 80, direct, nak, policy);
 
-        sub.assert_false(wing::pool_key_equals(key_https, key_h2c), "HTTPS key must never match unencrypted H2c");
-        sub.assert_false(wing::pool_key_equals(key_https, key_http), "HTTPS key must never match unencrypted HTTP");
-        sub.assert_false(wing::pool_key_equals(key_h2c, key_http), "H2c key must never match HTTP");
+        sub.assert_false(net::pool_key_equals(key_https, key_h2c), "HTTPS key must never match unencrypted H2c");
+        sub.assert_false(net::pool_key_equals(key_https, key_http), "HTTPS key must never match unencrypted HTTP");
+        sub.assert_false(net::pool_key_equals(key_h2c, key_http), "H2c key must never match HTTP");
     };
 
     t.run("H2 IP Coalescing: Plaintext H2c Must Never Coalesce with HTTPS") { sub =>
-        let nak = wing::new_network_anonymization_key("https://secure.com");
-        let key_https = wing::new_pool_key(wing::PoolScheme.Https, "secure.com", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
-        let key_h2c = wing::new_pool_key(wing::PoolScheme.H2c, "secure.com", 80, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        let nak = net::new_network_anonymization_key("https://secure.com");
+        let key_https = net::new_pool_key(net::PoolScheme.Https, "secure.com", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
+        let key_h2c = net::new_pool_key(net::PoolScheme.H2c, "secure.com", 80, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
-        var conn_unencrypted = wing::PooledConnection {
+        var conn_unencrypted = net::PooledConnection {
             conn_id:    1,
             key:        key_h2c,
-            protocol:   wing::NegotiatedProtocol.Http2,
+            protocol:   net::NegotiatedProtocol.Http2,
             cert_valid: false,
             ..
         };
         conn_unencrypted.resolved_ip.append("93.184.216.34");
 
         // Attempt to coalesce an unencrypted H2 connection for an HTTPS target
-        let can_coalesce, is_neg = wing::can_coalesce_h2_connection(conn_unencrypted, key_https, "93.184.216.34");
+        let can_coalesce, is_neg = net::can_coalesce_h2_connection(conn_unencrypted, key_https, "93.184.216.34");
         sub.assert_false(can_coalesce, "Unencrypted HTTP/2 connection must NEVER coalesce for HTTPS request (CVE-2026-94441)");
 
         // StreamPool acquire must fail to match unencrypted socket for HTTPS
-        var pool = wing::new_stream_pool(6, 32, 10);
+        var pool = net::new_stream_pool(6, 32, 10);
         pool.conns.push(conn_unencrypted);
 
-        let acq_id, ok_acq = wing::acquire_pooled_connection(pool, key_https, "93.184.216.34", 1000000000);
+        let acq_id, ok_acq = net::acquire_pooled_connection(pool, key_https, "93.184.216.34", 1000000000);
         sub.assert_false(ok_acq, "Acquire never returns unencrypted H2 socket for https:// request");
     };
 }
@@ -315,38 +315,38 @@ fn test_cve_connect_tunnel_security(t: lit::T&) {
     t.run("CVE-2026-56866: Prefix Data Injection Detection in CONNECT Response") { sub =>
         // Clean 200 OK CONNECT response
         let clean = "HTTP/1.1 200 Connection Established\r\n\r\n";
-        let err_clean = wing::verify_connect_tunnel_response(clean, 0);
-        sub.assert_true(err_clean == wing::ConnectTunnelError.None, "Clean 200 CONNECT approved");
+        let err_clean = net::verify_connect_tunnel_response(clean, 0);
+        sub.assert_true(err_clean == net::ConnectTunnelError.None, "Clean 200 CONNECT approved");
 
         // Trailing bytes injected after \r\n\r\n
         let smuggled = "HTTP/1.1 200 Connection Established\r\n\r\nGET /smuggled HTTP/1.1\r\n";
-        let err_smuggled = wing::verify_connect_tunnel_response(smuggled, 0);
-        sub.assert_true(err_smuggled == wing::ConnectTunnelError.TunnelBufferedTooManyBytes, "Smuggled prefix caught by leftover buffer check");
+        let err_smuggled = net::verify_connect_tunnel_response(smuggled, 0);
+        sub.assert_true(err_smuggled == net::ConnectTunnelError.TunnelBufferedTooManyBytes, "Smuggled prefix caught by leftover buffer check");
 
         // Leftover bytes in client output sink
-        let err_sink = wing::verify_connect_tunnel_response(clean, 8);
-        sub.assert_true(err_sink == wing::ConnectTunnelError.TunnelBufferedTooManyBytes, "Sink buffer leftover bytes caught");
+        let err_sink = net::verify_connect_tunnel_response(clean, 8);
+        sub.assert_true(err_sink == net::ConnectTunnelError.TunnelBufferedTooManyBytes, "Sink buffer leftover bytes caught");
     };
 
     t.run("CVE-2026-56866 & CVE-2026-94439: Discard Sockets on Non-200 Rejection") { sub =>
         // 407 Proxy Authentication Required
         let resp_407 = "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
-        let err_407 = wing::verify_connect_tunnel_response(resp_407, 0);
-        sub.assert_true(err_407 == wing::ConnectTunnelError.ProxyAuthRequired, "407 mapped to ProxyAuthRequired");
+        let err_407 = net::verify_connect_tunnel_response(resp_407, 0);
+        sub.assert_true(err_407 == net::ConnectTunnelError.ProxyAuthRequired, "407 mapped to ProxyAuthRequired");
 
         // 502 Bad Gateway
         let resp_502 = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-        let err_502 = wing::verify_connect_tunnel_response(resp_502, 0);
-        sub.assert_true(err_502 == wing::ConnectTunnelError.ConnectFailed, "502 mapped to ConnectFailed");
+        let err_502 = net::verify_connect_tunnel_response(resp_502, 0);
+        sub.assert_true(err_502 == net::ConnectTunnelError.ConnectFailed, "502 mapped to ConnectFailed");
 
         // Connection must be marked closed and never returned to pool
-        var conn = wing::PooledConnection {
+        var conn = net::PooledConnection {
             conn_id:          42,
             no_new_exchanges: true,
             closed:           true,
             ..
         };
-        sub.assert_false(wing::is_connection_healthy(conn, 1000000000, false), "Failed CONNECT connection is strictly unhealthy");
+        sub.assert_false(net::is_connection_healthy(conn, 1000000000, false), "Failed CONNECT connection is strictly unhealthy");
     };
 }
 
@@ -355,36 +355,36 @@ fn test_cve_connect_tunnel_security(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_cve_proxy_authorization_leakage(t: lit::T&) {
     t.run("CVE-2025-4673: Strip Proxy-Authorization Before Origin Request") { sub =>
-        var headers = wing::HeaderMap { .. };
-        wing::append_header(headers, "Host", "target.com");
-        wing::append_header(headers, "Proxy-Authorization", "Basic proxy_secret_cred");
-        wing::append_header(headers, "PROXY-AUTHORIZATION", "Basic UPPERCASE_SECRET");
-        wing::append_header(headers, "Proxy-Authenticate", "Basic realm=proxy");
-        wing::append_header(headers, "Proxy-Connection", "Keep-Alive");
-        wing::append_header(headers, "Authorization", "Bearer origin_token");
+        var headers = http::HeaderMap { .. };
+        http::append_header(headers, "Host", "target.com");
+        http::append_header(headers, "Proxy-Authorization", "Basic proxy_secret_cred");
+        http::append_header(headers, "PROXY-AUTHORIZATION", "Basic UPPERCASE_SECRET");
+        http::append_header(headers, "Proxy-Authenticate", "Basic realm=proxy");
+        http::append_header(headers, "Proxy-Connection", "Keep-Alive");
+        http::append_header(headers, "Authorization", "Bearer origin_token");
 
-        wing::sanitize_tunnel_headers_for_origin(headers);
+        net::sanitize_tunnel_headers_for_origin(headers);
 
         sub.assert_eq(headers.entries.len, 2, "All proxy headers stripped");
-        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[0]), "Host", "Host header preserved");
-        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[1]), "Authorization", "Origin bearer token preserved");
+        sub.assert_bytes_eq(http::entry_name(headers, headers.entries[0]), "Host", "Host header preserved");
+        sub.assert_bytes_eq(http::entry_name(headers, headers.entries[1]), "Authorization", "Origin bearer token preserved");
     };
 
     t.run("CVE-2025-4673: Cross-Origin Redirect Must Strip Proxy-Authorization") { sub =>
-        var req = wing::new_get("https://proxy.origin.com/resource");
-        wing::set_header(req, "Proxy-Authorization", "Basic secret_proxy_tok");
-        wing::set_header(req, "Authorization", "Bearer user_token");
+        var req = http::new_get("https://proxy.origin.com/resource");
+        http::set_header(req, "Proxy-Authorization", "Basic secret_proxy_tok");
+        http::set_header(req, "Authorization", "Bearer user_token");
 
-        let redirect_info = wing::compute_redirect_info(
+        let redirect_info = client::compute_redirect_info(
             "GET", 302, "https://proxy.origin.com/resource", "https://other-domain.com/landing",
-            wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://proxy.origin.com/resource",
-            wing::RedirectOptions { .. },
+            client::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://proxy.origin.com/resource",
+            client::RedirectOptions { .. },
         );
 
-        wing::sanitize_headers_on_redirect(req.headers, redirect_info, wing::RedirectSanitizeOptions { .. });
+        client::sanitize_headers_on_redirect(req.headers, redirect_info, client::RedirectSanitizeOptions { .. });
 
-        let has_proxy_auth = wing::has_header(req.headers, "Proxy-Authorization");
-        let has_user_auth = wing::has_header(req.headers, "Authorization");
+        let has_proxy_auth = http::has_header(req.headers, "Proxy-Authorization");
+        let has_user_auth = http::has_header(req.headers, "Authorization");
         sub.assert_false(has_proxy_auth, "Proxy-Authorization must be stripped on cross-origin redirect (CVE-2025-4673)");
         sub.assert_false(has_user_auth, "Authorization must be stripped on cross-origin redirect");
     };
@@ -394,14 +394,14 @@ fn test_cve_proxy_authorization_leakage(t: lit::T&) {
 // 10. CVE-2025-22870: IPv6 Zone ID Proxy Bypass & SSRF Defense
 // ----------------------------------------------------------------------------
 fn test_cve_ipv6_zone_id_proxy_bypass(t: lit::T&) {
-    var session = wing::new_session();
+    var session = client::new_session();
     session.ssrf_guard.enabled = true;
     session.ssrf_guard.deny_local_network = true;
 
     // IPv6 link-local with zone ID
-    var req_ll = wing::new_get("http://[fe80::1%25eth0]/admin");
-    let res_ll, err_ll = wing::execute_request(session, req_ll);
-    t.assert_false(wing::ok(err_ll), "Link-local IPv6 with zone ID must be blocked by SSRF guard (CVE-2025-22870)");
+    var req_ll = http::new_get("http://[fe80::1%25eth0]/admin");
+    let res_ll, err_ll = client::execute_request(session, req_ll);
+    t.assert_false(http::ok(err_ll), "Link-local IPv6 with zone ID must be blocked by SSRF guard (CVE-2025-22870)");
 }
 
 // ----------------------------------------------------------------------------
@@ -412,16 +412,16 @@ fn test_go_81671_query_method_replayable(t: lit::T&) {
         sub.assert_true(rfc::is_idempotent_method("QUERY"), "QUERY is semantically idempotent per RFC 9110");
         sub.assert_true(rfc::is_idempotent_method("query"), "QUERY case-insensitive check matches");
 
-        var req = wing::new_request("QUERY", "https://api.io/search");
-        wing::text(req, "{\"filter\": \"status=active\"}");
+        var req = http::new_request("QUERY", "https://api.io/search");
+        http::text(req, "{\"filter\": \"status=active\"}");
 
         // On reused socket before response headers arrived, QUERY is replayable
-        let can_retry = wing::should_retry_tier1_stale_socket(true, req);
+        let can_retry = net::should_retry_tier1_stale_socket(true, req);
         sub.assert_true(can_retry, "QUERY request replayable on stale Keep-Alive connection drop (Go #81671)");
 
         // If body is unrewindable, must NOT retry (protecting payload integrity)
         req.rewindable = false;
-        let cant_retry_unrewind = wing::should_retry_tier1_stale_socket(true, req);
+        let cant_retry_unrewind = net::should_retry_tier1_stale_socket(true, req);
         sub.assert_false(cant_retry_unrewind, "Unrewindable QUERY request must not be retried");
     };
 }
@@ -432,7 +432,7 @@ fn test_go_81671_query_method_replayable(t: lit::T&) {
 fn test_cve_2023_24538_mime_param_escaped_quotes(t: lit::T&) {
     t.run("Escaped quote with semicolon inside parameter value (Go #58547)") { sub =>
         let raw_ct = "text/html; title=\"hello \\\"; foo=bar\"; charset=utf-8";
-        let mt, ok = wing::parse_media_type(raw_ct);
+        let mt, ok = http::parse_media_type(raw_ct);
         sub.assert_true(ok, "MIME parsing must succeed with escaped quote and semicolon");
         sub.assert_bytes_eq(mt.mime_type[..], "text/html", "Mime type text/html");
         sub.assert_eq(mt.params.len, 2, "Must have exactly 2 parameters");
@@ -497,14 +497,14 @@ fn test_cve_alpn_nul_byte_and_empty_list(t: lit::T&) {
     t.run("ALPN with embedded NUL byte MUST be rejected (RFC 7301 Section 3.1)") { sub =>
         // Protocol list: ["h2\0", "h2"] -> 1st entry has embedded NUL byte
         let alpn_nul: u8[9] = [0x00, 0x07, 0x03, 'h', '2', 0x00, 0x02, 'h', '2'];
-        let res = wing::negotiate_alpn(alpn_nul[..], false);
-        sub.assert_true(res == wing::NegotiatedAlpn.None, "ALPN with embedded NUL byte must negotiate None (RFC 7301)");
+        let res = tls::negotiate_alpn(alpn_nul[..], false);
+        sub.assert_true(res == tls::NegotiatedAlpn.None, "ALPN with embedded NUL byte must negotiate None (RFC 7301)");
     };
 
     t.run("ALPN with empty list (0 length) MUST be rejected") { sub =>
         let alpn_zero_list: u8[2] = [0x00, 0x00];
-        let res = wing::negotiate_alpn(alpn_zero_list[..], false);
-        sub.assert_true(res == wing::NegotiatedAlpn.None, "ALPN with 0-length list must negotiate None");
+        let res = tls::negotiate_alpn(alpn_zero_list[..], false);
+        sub.assert_true(res == tls::NegotiatedAlpn.None, "ALPN with 0-length list must negotiate None");
     };
 }
 // ----------------------------------------------------------------------------
@@ -515,8 +515,8 @@ fn test_cve_rfc7578_reject_content_transfer_encoding(t: lit::T&) {
         let boundary = "boundary123";
         let body = "--boundary123\r\nContent-Disposition: form-data; name=\"upload\"\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n--boundary123--\r\n";
 
-        let msg, err = wing::parse_multipart(body, boundary);
-        sub.assert_false(wing::is_ok(err), "RFC 7578 Section 4.7: Content-Transfer-Encoding in multipart MUST be rejected");
+        let msg, err = http::parse_multipart(body, boundary);
+        sub.assert_false(http::is_ok(err), "RFC 7578 Section 4.7: Content-Transfer-Encoding in multipart MUST be rejected");
         sub.assert_false(msg.valid, "Multipart message marked invalid");
     };
 }
@@ -532,8 +532,8 @@ fn test_cve_2023_39326_chunk_extension_overflow(t: lit::T&) {
         raw.append("\r\nhello\r\n0\r\n\r\n");
 
         var out: u8[>..] = [];
-        let err = wing::decode_chunked_body(raw[..], out);
-        sub.assert_true(err == wing::ChunkedDecodeError.InvalidChunkExtension, "Excessive chunk extension must be rejected with InvalidChunkExtension");
+        let err = http::decode_chunked_body(raw[..], out);
+        sub.assert_true(err == http::ChunkedDecodeError.InvalidChunkExtension, "Excessive chunk extension must be rejected with InvalidChunkExtension");
     };
 }
 
@@ -541,21 +541,21 @@ fn test_cve_2023_39326_chunk_extension_overflow(t: lit::T&) {
 // 17. Go #60997 & RFC 6265bis: CookieJar Secure Cookie Exemption on Localhost
 // ----------------------------------------------------------------------------
 fn test_go_60997_localhost_secure_cookies(t: lit::T&) {
-    var session = wing::new_session();
+    var session = client::new_session();
 
-    wing::mock_route(session, "GET", "http://localhost:8080/login", 200, "ok");
-    wing::add_mock_set_cookie(session, "sid=local_secret; Secure; HttpOnly; SameSite=None; Path=/");
+    client::mock_route(session, "GET", "http://localhost:8080/login", 200, "ok");
+    client::add_mock_set_cookie(session, "sid=local_secret; Secure; HttpOnly; SameSite=None; Path=/");
 
-    let req1 = wing::new_get("http://localhost:8080/login");
-    let res1, err1 = wing::execute_request(session, req1);
-    t.assert_true(wing::ok(err1), "Login request to localhost succeeded");
-    t.assert_bytes_eq(wing::cookie(session, "sid"), "local_secret", "Secure cookie must be accepted on http://localhost");
+    let req1 = http::new_get("http://localhost:8080/login");
+    let res1, err1 = client::execute_request(session, req1);
+    t.assert_true(http::ok(err1), "Login request to localhost succeeded");
+    t.assert_bytes_eq(client::cookie(session, "sid"), "local_secret", "Secure cookie must be accepted on http://localhost");
 
-    wing::mock_route(session, "GET", "http://localhost:8080/api", 200, "data");
+    client::mock_route(session, "GET", "http://localhost:8080/api", 200, "data");
 
-    let req2 = wing::new_get("http://localhost:8080/api");
-    let res2, err2 = wing::execute_request(session, req2);
-    t.assert_true(wing::ok(err2), "API request to localhost succeeded");
+    let req2 = http::new_get("http://localhost:8080/api");
+    let res2, err2 = client::execute_request(session, req2);
+    t.assert_true(http::ok(err2), "API request to localhost succeeded");
 }
 
 // ----------------------------------------------------------------------------
@@ -569,11 +569,11 @@ fn test_cve_2026_94440_multipart_memory_header_accounting(t: lit::T&) {
         for i in 1200 { body.push('X'); }
         body.append("\r\n\r\nsmall_payload\r\n--bound999--\r\n");
 
-        var options = wing::MultipartOptions { .. };
+        var options = http::MultipartOptions { .. };
         options.max_memory_bytes = 1000; // Small limit: 1000 bytes
 
-        let msg, err = wing::parse_multipart(body[..], boundary, options);
-        sub.assert_true(err == wing::MultipartError.ExceededMaxMemory, "Form with 1200-byte header must exceed 1000-byte max_memory_bytes");
+        let msg, err = http::parse_multipart(body[..], boundary, options);
+        sub.assert_true(err == http::MultipartError.ExceededMaxMemory, "Form with 1200-byte header must exceed 1000-byte max_memory_bytes");
         sub.assert_false(msg.valid, "Multipart marked invalid on memory limit breach");
     };
 }
@@ -583,20 +583,20 @@ fn test_cve_2026_94440_multipart_memory_header_accounting(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc9110_proxy_hop_by_hop_sanitization(t: lit::T&) {
     t.run("Proxy header sanitization must strip standard hop-by-hop headers and connection tokens (RFC 9110 & Go #16875)") { sub =>
-        var headers = wing::HeaderMap { .. };
-        wing::append_header(headers, "Host", "origin.example.com");
-        wing::append_header(headers, "Proxy-Authorization", "Basic c2VjcmV0");
-        wing::append_header(headers, "Connection", "keep-alive, x-forwarded-hop");
-        wing::append_header(headers, "Keep-Alive", "timeout=5");
-        wing::append_header(headers, "Transfer-Encoding", "chunked");
-        wing::append_header(headers, "X-Forwarded-Hop", "strip-me");
-        wing::append_header(headers, "Accept", "application/json");
+        var headers = http::HeaderMap { .. };
+        http::append_header(headers, "Host", "origin.example.com");
+        http::append_header(headers, "Proxy-Authorization", "Basic c2VjcmV0");
+        http::append_header(headers, "Connection", "keep-alive, x-forwarded-hop");
+        http::append_header(headers, "Keep-Alive", "timeout=5");
+        http::append_header(headers, "Transfer-Encoding", "chunked");
+        http::append_header(headers, "X-Forwarded-Hop", "strip-me");
+        http::append_header(headers, "Accept", "application/json");
 
-        wing::sanitize_tunnel_headers_for_origin(headers);
+        net::sanitize_tunnel_headers_for_origin(headers);
 
         sub.assert_eq(headers.entries.len, 2, "Only non-hop-by-hop headers (Host, Accept) should remain");
-        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[0]), "Host", "Header 0 is Host");
-        sub.assert_bytes_eq(wing::entry_name(headers, headers.entries[1]), "Accept", "Header 1 is Accept");
+        sub.assert_bytes_eq(http::entry_name(headers, headers.entries[0]), "Host", "Header 0 is Host");
+        sub.assert_bytes_eq(http::entry_name(headers, headers.entries[1]), "Accept", "Header 1 is Accept");
     };
 }
 
@@ -611,7 +611,7 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
 
         var dt_dec = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Absolute URL in :path MUST return ERR_PROTOCOL_ERROR");
     };
@@ -623,7 +623,7 @@ fn test_rfc9113_http2_path_pseudo_header_validation(t: lit::T&) {
 
         var dt_dec = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Empty :path MUST return ERR_PROTOCOL_ERROR");
     };
@@ -677,36 +677,36 @@ fn append_numbered_headers<B>(dst: B&, count: i64) {
 // ----------------------------------------------------------------------------
 fn test_adversarial_http1_headers(t: lit::T&) {
     t.run("AW-H1-01: space before colon rejected at parse_headers") { sub =>
-        var map = wing::HeaderMap { .. };
-        let err = wing::parse_headers("Host : example.com\r\n\r\n", map);
-        sub.assert_eq(err, wing::HeaderParseError.InvalidHeaderName, "space before colon rejects the field line");
+        var map = http::HeaderMap { .. };
+        let err = http::parse_headers("Host : example.com\r\n\r\n", map);
+        sub.assert_eq(err, http::HeaderParseError.InvalidHeaderName, "space before colon rejects the field line");
     };
 
     t.run("AW-H1-02: tab before colon rejected at parse_headers") { sub =>
-        var map = wing::HeaderMap { .. };
-        let err = wing::parse_headers("Host\t: example.com\r\n\r\n", map);
-        sub.assert_eq(err, wing::HeaderParseError.InvalidHeaderName, "tab before colon rejects the field line");
+        var map = http::HeaderMap { .. };
+        let err = http::parse_headers("Host\t: example.com\r\n\r\n", map);
+        sub.assert_eq(err, http::HeaderParseError.InvalidHeaderName, "tab before colon rejects the field line");
     };
 
     t.run("AW-H1-03: CRLF inside header value does not create a second header") { sub =>
-        var map_inj = wing::HeaderMap { .. };
-        let err_inj = wing::parse_headers("X-A: v1\r\n smuggled\r\n\r\n", map_inj, false);
-        sub.assert_eq(err_inj, wing::HeaderParseError.ObsFoldForbidden, "bare continuation rejected");
+        var map_inj = http::HeaderMap { .. };
+        let err_inj = http::parse_headers("X-A: v1\r\n smuggled\r\n\r\n", map_inj, false);
+        sub.assert_eq(err_inj, http::HeaderParseError.ObsFoldForbidden, "bare continuation rejected");
         sub.assert_true(map_inj.entries.len <= 1, "continuation does not materialize a second entry");
 
-        var map_ok = wing::HeaderMap { .. };
-        let err_ok = wing::parse_headers("X-A: v1\r\nX-B: v2\r\n\r\n", map_ok);
-        sub.assert_eq(err_ok, wing::HeaderParseError.None, "legal block parses");
+        var map_ok = http::HeaderMap { .. };
+        let err_ok = http::parse_headers("X-A: v1\r\nX-B: v2\r\n\r\n", map_ok);
+        sub.assert_eq(err_ok, http::HeaderParseError.None, "legal block parses");
         sub.assert_eq(map_ok.entries.len, 2, "exactly the intended headers stored");
-        sub.assert_bytes_eq(wing::get_header(map_ok, "X-A"), "v1", "X-A intact");
-        sub.assert_bytes_eq(wing::get_header(map_ok, "X-B"), "v2", "X-B intact");
+        sub.assert_bytes_eq(http::get_header(map_ok, "X-A"), "v1", "X-A intact");
+        sub.assert_bytes_eq(http::get_header(map_ok, "X-B"), "v2", "X-B intact");
     };
 
     t.run("AW-H1-04: bare LF (not CRLF) as line ending rejected or not accepted as valid framing") { sub =>
-        var map = wing::HeaderMap { .. };
-        let err = wing::parse_headers("Host: example.com\n\n", map);
+        var map = http::HeaderMap { .. };
+        let err = http::parse_headers("Host: example.com\n\n", map);
         // PARKED (Vector B): bare LF accepted; harden to reject per RFC 9112 §2.2 / desync defense.
-        sub.assert_eq(err, wing::HeaderParseError.None, "current behavior: bare LF block accepted as valid framing");
+        sub.assert_eq(err, http::HeaderParseError.None, "current behavior: bare LF block accepted as valid framing");
     };
 
     t.run("AW-H1-05: 128 headers accepted, 129th causes CapacityExceeded") { sub =>
@@ -715,9 +715,9 @@ fn test_adversarial_http1_headers(t: lit::T&) {
         append_numbered_headers(at_cap, 127);
         at_cap.append("\r\n");
 
-        var map_ok = wing::HeaderMap { .. };
-        let err_ok = wing::parse_headers(at_cap[..], map_ok);
-        sub.assert_eq(err_ok, wing::HeaderParseError.None, "block at entry capacity parses");
+        var map_ok = http::HeaderMap { .. };
+        let err_ok = http::parse_headers(at_cap[..], map_ok);
+        sub.assert_eq(err_ok, http::HeaderParseError.None, "block at entry capacity parses");
         sub.assert_true(map_ok.valid, "map valid at entry capacity");
         sub.assert_eq(map_ok.entries.len, 128, "Host consumes a general entry slot alongside numbered lines");
 
@@ -726,9 +726,9 @@ fn test_adversarial_http1_headers(t: lit::T&) {
         append_numbered_headers(over, 127);
         over.append("X-Overflow: z\r\n\r\n");
 
-        var map_over = wing::HeaderMap { .. };
-        let err_over = wing::parse_headers(over[..], map_over);
-        sub.assert_eq(err_over, wing::HeaderParseError.CapacityExceeded, "overflow header exceeds entry capacity");
+        var map_over = http::HeaderMap { .. };
+        let err_over = http::parse_headers(over[..], map_over);
+        sub.assert_eq(err_over, http::HeaderParseError.CapacityExceeded, "overflow header exceeds entry capacity");
         sub.assert_false(map_over.valid, "map invalid after capacity overflow");
     };
 }
@@ -740,7 +740,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
     t.run("AW-H2-01: HEADERS payload_len claims N but ingress delivers N-1 then never completes") { sub =>
         var client_hpack = http2::DynamicTable { .. };
         var sess = server_internal::new_h2_server_session("localhost");
-        var pipeline = wing::ServerPipelineConfig { .. };
+        var pipeline = server::ServerPipelineConfig { .. };
         var timer = server_internal::ConnectionTimer { .. };
 
         // Handshake: preface + empty SETTINGS
@@ -788,7 +788,7 @@ fn test_adversarial_h2_h3_chopping(t: lit::T&) {
     t.run("AW-H2-02: DATA frame length exceeds remaining buffer across two calls") { sub =>
         var client_hpack = http2::DynamicTable { .. };
         var sess = server_internal::new_h2_server_session("localhost");
-        var pipeline = wing::ServerPipelineConfig { .. };
+        var pipeline = server::ServerPipelineConfig { .. };
         var timer = server_internal::ConnectionTimer { .. };
 
         // Handshake
@@ -1088,20 +1088,20 @@ fn test_cursor_transactionality(t: lit::T&) {
 
     t.run("AW-CUR-03: parse_headers error leaves map.valid false and does not leave partial Host") { sub =>
         // Failing Content-Length first; Host after the error point must not materialize.
-        var map = wing::HeaderMap { .. };
-        let err = wing::parse_headers("Content-Length: abc\r\nHost: example.com\r\n\r\n", map);
-        sub.assert_eq(err, wing::HeaderParseError.InvalidContentLength, "non-digit Content-Length yields InvalidContentLength");
+        var map = http::HeaderMap { .. };
+        let err = http::parse_headers("Content-Length: abc\r\nHost: example.com\r\n\r\n", map);
+        sub.assert_eq(err, http::HeaderParseError.InvalidContentLength, "non-digit Content-Length yields InvalidContentLength");
         sub.assert_false(map.valid, "map.valid false after framing error");
-        sub.assert_false(wing::has_header(map, "content-length"), "invalid Content-Length entry is not stored");
-        sub.assert_false(wing::has_header(map, "host"), "Host after the failing line does not materialize (no partial Host)");
+        sub.assert_false(http::has_header(map, "content-length"), "invalid Content-Length entry is not stored");
+        sub.assert_false(http::has_header(map, "host"), "Host after the failing line does not materialize (no partial Host)");
 
         // Host-first residue: Host parses before the failing line. Pre-error entries may remain
         // in the map and are gated only by map.valid (fail-closed). Whether a failing parse should
         // empty the map versus relying on valid-flag gating is an open product contract question
         // (RF10) - has_header(map, "host") is deliberately not asserted either way here.
-        var map_hf = wing::HeaderMap { .. };
-        let err_hf = wing::parse_headers("Host: example.com\r\nContent-Length: abc\r\n\r\n", map_hf);
-        sub.assert_eq(err_hf, wing::HeaderParseError.InvalidContentLength, "non-digit Content-Length yields InvalidContentLength");
+        var map_hf = http::HeaderMap { .. };
+        let err_hf = http::parse_headers("Host: example.com\r\nContent-Length: abc\r\n\r\n", map_hf);
+        sub.assert_eq(err_hf, http::HeaderParseError.InvalidContentLength, "non-digit Content-Length yields InvalidContentLength");
         sub.assert_false(map_hf.valid, "map.valid false after framing error (fail-closed gate)");
     };
 }
@@ -1120,18 +1120,18 @@ fn test_chunked_cve_2019_16276(t: lit::T&) {
     // Space before colon in trailers must be rejected
     var wire: u8[..64] = [];
     wire.append("Content-Length : 100\r\n\r\n");
-    var out_trailers = wing::HeaderMap { .. };
+    var out_trailers = http::HeaderMap { .. };
     var cursor: i64 = 0;
-    let err = wing::parse_chunked_trailers_with_out(wire[..], cursor, out_trailers);
-    t.assert_true(err != wing::ChunkedDecodeError.None, "Space before colon in trailer must fail per CVE-2019-16276");
+    let err = http::parse_chunked_trailers_with_out(wire[..], cursor, out_trailers);
+    t.assert_true(err != http::ChunkedDecodeError.None, "Space before colon in trailer must fail per CVE-2019-16276");
 
     // Negative / overflow chunk size
     var bad_chunk: u8[..64] = [];
     bad_chunk.append("FFFFFFFFFFFFFFFF\r\n");
     var out_body: u8[>..] = [];
-    var trailers = wing::HeaderMap { .. };
-    let b_err, b_consumed = wing::decode_chunked_body_with_trailers(bad_chunk[..], out_body, trailers);
-    t.assert_true(b_err != wing::ChunkedDecodeError.None, "Overflow chunk size FFFFFFFFFFFFFFFF must be rejected");
+    var trailers = http::HeaderMap { .. };
+    let b_err, b_consumed = http::decode_chunked_body_with_trailers(bad_chunk[..], out_body, trailers);
+    t.assert_true(b_err != http::ChunkedDecodeError.None, "Overflow chunk size FFFFFFFFFFFFFFFF must be rejected");
 }
 
 // ----------------------------------------------------------------------------
@@ -1152,9 +1152,9 @@ fn test_ipv6_mapped_ipv4_ssrf_cve_2024_24790(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_connect_tunnel_rejection_cve_2026_56866(t: lit::T&) {
     // CVE-2026-56866: Failed or rejected CONNECT responses must poison/close connection
-    t.assert_true(wing::should_close_connection_on_connect_error(wing::ConnectTunnelError.ProxyAuthRequired), "407 must close");
-    t.assert_true(wing::should_close_connection_on_connect_error(wing::ConnectTunnelError.ConnectFailed), "Failed connect must close");
-    t.assert_false(wing::should_close_connection_on_connect_error(wing::ConnectTunnelError.None), "Success connect must not close");
+    t.assert_true(net::should_close_connection_on_connect_error(net::ConnectTunnelError.ProxyAuthRequired), "407 must close");
+    t.assert_true(net::should_close_connection_on_connect_error(net::ConnectTunnelError.ConnectFailed), "Failed connect must close");
+    t.assert_false(net::should_close_connection_on_connect_error(net::ConnectTunnelError.None), "Success connect must not close");
 }
 
 // ----------------------------------------------------------------------------
@@ -1204,8 +1204,8 @@ fn test_punycode_validation_cve_2026_39821_and_97044(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_x509_uri_zone_id_cve_2024_45341(t: lit::T&) {
     // CVE-2024-45341: IPv6 zone IDs in URI SAN must not bypass name constraints
-    t.assert_true(wing::match_uri_san("example.com", "example.com"), "Identical URI SAN matches");
-    t.assert_false(wing::match_uri_san("fe80::1%eth0", "fe80::1%eth0"), "Zone ID in URI SAN must be rejected");
+    t.assert_true(tls::match_uri_san("example.com", "example.com"), "Identical URI SAN matches");
+    t.assert_false(tls::match_uri_san("fe80::1%eth0", "fe80::1%eth0"), "Zone ID in URI SAN must be rejected");
 }
 
 // ----------------------------------------------------------------------------
@@ -1215,16 +1215,16 @@ fn test_error_sanitization_cve_2026_42507(t: lit::T&) {
     // CVE-2026-42507: Unescaped inputs in errors must be sanitized against CRLF injection
     let untrusted: const u8[:] = "Bad\r\nSet-Cookie: evil\x00";
     var clean_buf: u8[..64] = [];
-    wing::sanitize_untrusted_for_error(untrusted, clean_buf);
+    http::sanitize_untrusted_for_error(untrusted, clean_buf);
     t.assert_false(core::contains_byte(clean_buf[..], '\r'), "CR must be removed/replaced");
     t.assert_false(core::contains_byte(clean_buf[..], '\n'), "LF must be removed/replaced");
     t.assert_false(core::contains_byte(clean_buf[..], 0), "NUL must be removed/replaced");
 }
 
 fn main() {
-    let _ = wing::tcp_init();
+    let _ = net::tcp_init();
     var dummy: u8[4] = [0, 0, 0, 0];
-    wing::swar_to_lower(dummy[..]);
+    http::swar_to_lower(dummy[..]);
 
     var runner = lit::new_runner("CVE Regression Suite", lit::Verbosity.Verbose);
 

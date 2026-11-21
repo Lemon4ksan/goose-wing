@@ -220,7 +220,7 @@ fn append_json_escaped_bytes(src: const u8[:], out: u8[>..]&) {
 }
 
 // Formats a request reflection payload in httpbin JSON format.
-fn build_httpbin_reflection_json(req: const wing::Request&, peer_ip: const u8[:], out: u8[>..]&) {
+fn build_httpbin_reflection_json(req: const http::Request&, peer_ip: const u8[:], out: u8[>..]&) {
     out.clear();
     out.append("{\n  \"method\": \"");
     append_json_escaped_bytes(req.method[..], out);
@@ -251,7 +251,7 @@ fn build_httpbin_reflection_json(req: const wing::Request&, peer_ip: const u8[:]
     out.append("\"\n}\n");
 }
 
-fn build_httpbin_headers_json(req: const wing::Request&, out: u8[>..]&) {
+fn build_httpbin_headers_json(req: const http::Request&, out: u8[>..]&) {
     out.clear();
     out.append("{\n  \"headers\": {\n");
     let n_hdrs = req.headers.entries.len;
@@ -269,7 +269,7 @@ fn build_httpbin_headers_json(req: const wing::Request&, out: u8[>..]&) {
     out.append("  }\n}\n");
 }
 
-fn handle_httpbin_status_or_redirect(path: const u8[:], res: wing::Response&) -> bool {
+fn handle_httpbin_status_or_redirect(path: const u8[:], res: http::Response&) -> bool {
     if core::starts_with(path, "/status/") && path.len > 8 {
         let code_u64, ok = path[8..].parse_u64_dec();
         guard ok && code_u64 >= 100 && code_u64 <= 599 else { return false; }
@@ -319,16 +319,16 @@ fn generate_synthetic_alphabet_bytes(total_len: i64, out: u8[>..]&) {
 fn try_serve_range_slice(
     range_hdr: const u8[:],
     full_buf:  const u8[:],
-    res:       wing::Response&,
+    res:       http::Response&,
 ) -> bool {
     let total_len = full_buf.len;
     guard range_hdr.len > 0 else { return false; }
-    let rs, r_err = wing::parse_range_header(range_hdr, total_len);
+    let rs, r_err = http::parse_range_header(range_hdr, total_len);
     let is_bytes_unit = range_hdr.trim_lws().starts_with_fold("bytes=");
-    if r_err == wing::RangeError.Unsatisfiable || (total_len == 0 && is_bytes_unit) {
+    if r_err == http::RangeError.Unsatisfiable || (total_len == 0 && is_bytes_unit) {
         res.status_code = 416;
         var cr_416: u8[..64] = [];
-        wing::format_content_range(-1, -1, total_len, cr_416);
+        http::format_content_range(-1, -1, total_len, cr_416);
         res.set_header("Content-Range", cr_416[..]);
         res.set_header("Accept-Ranges", "bytes");
         res.set_header("Content-Type", "application/octet-stream");
@@ -339,7 +339,7 @@ fn try_serve_range_slice(
     let r0 = rs.ranges[0];
     res.status_code = 206;
     var cr_hdr: u8[..64] = [];
-    wing::format_content_range(r0.start, r0.end_pos, total_len, cr_hdr);
+    http::format_content_range(r0.start, r0.end_pos, total_len, cr_hdr);
     res.set_header("Content-Range", cr_hdr[..]);
     res.set_header("Accept-Ranges", "bytes");
     res.set_header("Content-Type", "application/octet-stream");
@@ -353,8 +353,8 @@ fn try_serve_range_slice(
 
 fn handle_httpbin_range_or_bytes(
     path: const u8[:],
-    req:  const wing::Request&,
-    res:  wing::Response&,
+    req:  const http::Request&,
+    res:  http::Response&,
 ) -> bool {
     let is_bytes = core::starts_with(path, "/bytes/") && path.len > 7;
     let is_range = core::starts_with(path, "/range/") && path.len > 7;
@@ -381,8 +381,8 @@ fn handle_httpbin_range_or_bytes(
 
 fn handle_httpbin_auth_routes(
     path: const u8[:],
-    req:  const wing::Request&,
-    res:  wing::Response&,
+    req:  const http::Request&,
+    res:  http::Response&,
 ) -> bool {
     if path == "/bearer" {
         let auth = req.header("Authorization");
@@ -440,8 +440,8 @@ fn handle_httpbin_dynamic_routes(
     stage: ProgrammableServerStage&,
     path:  const u8[:],
     query: const u8[:],
-    req:   const wing::Request&,
-    res:   wing::Response&,
+    req:   const http::Request&,
+    res:   http::Response&,
 ) -> bool {
     if handle_httpbin_status_or_redirect(path, res) {
         return true;
@@ -492,9 +492,9 @@ fn handle_httpbin_dynamic_routes(
 
 fn handle_builtin_httpbin(
     stage:   ProgrammableServerStage&,
-    req:     const wing::Request&,
+    req:     const http::Request&,
     peer_ip: const u8[:],
-    res:     wing::Response&,
+    res:     http::Response&,
 ) -> bool {
     let path = strip_query_path(req.url[..]);
     let query = extract_query_string(req.url[..]);
@@ -560,7 +560,7 @@ fn handle_builtin_httpbin(
 
 fn apply_matched_scenario_rule(
     r:        RouteRule&,
-    res:      wing::Response&,
+    res:      http::Response&,
     out_note: u8[..64]&,
 ) {
     r.calls = core::add_sat_u64(r.calls, 1);
@@ -594,8 +594,8 @@ fn apply_matched_scenario_rule(
 
 fn finalize_programmable_response(
     stage: ProgrammableServerStage&,
-    req:   const wing::Request&,
-    res:   wing::Response&,
+    req:   const http::Request&,
+    res:   http::Response&,
 ) {
     if stage.max_reqs > 0 && stage.served_reqs >= stage.max_reqs {
         res.set_header("Connection", "close");
@@ -613,8 +613,8 @@ fn finalize_programmable_response(
 fn eval_programmable_server_stage(
     stage:    ProgrammableServerStage&,
     phase:    wire::ServerHookPhase,
-    req:      const wing::Request&,
-    res:      wing::Response&,
+    req:      const http::Request&,
+    res:      http::Response&,
     out_note: u8[..64]&,
 ) -> wire::StageVerdict {
     out_note.clear();

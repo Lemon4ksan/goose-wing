@@ -34,10 +34,10 @@ fn core::close(v: CustomVsockTransport&) {
 }
 
 fn test_virtual_pipe_pair_and_scoped_helper() {
-    var end_a, end_b, ok_open = wing::open_virtual_pipe_pair();
+    var end_a, end_b, ok_open = net::open_virtual_pipe_pair();
     assert(ok_open);
-    assert(wing::is_connected(end_a));
-    assert(wing::is_connected(end_b));
+    assert(net::is_connected(end_a));
+    assert(net::is_connected(end_b));
 
     let msg_a = "PING_OVER_VIRTUAL_PIPE_A_TO_B";
     let sent_a = end_a.send(msg_a);
@@ -59,10 +59,10 @@ fn test_virtual_pipe_pair_and_scoped_helper() {
 
     end_a.close();
     end_b.close();
-    assert(!wing::is_connected(end_a));
-    assert(!wing::is_connected(end_b));
+    assert(!net::is_connected(end_a));
+    assert(!net::is_connected(end_b));
 
-    let ok_scoped = wing::with_virtual_pipe_pair() { pipe_a, pipe_b =>
+    let ok_scoped = net::with_virtual_pipe_pair() { pipe_a, pipe_b =>
         let s1 = core::stream_send(pipe_a, "SCOPED_FRAME");
         assert(s1 == 12);
         var buf: u8[32] = [0; 32];
@@ -77,51 +77,51 @@ fn test_virtual_pipe_pair_and_scoped_helper() {
 }
 
 fn test_tls13_over_virtual_pipe_fd() {
-    let vslot, ok_slot = wing::alloc_virtual_pipe_slot();
+    let vslot, ok_slot = net::alloc_virtual_pipe_slot();
     assert(ok_slot);
 
-    let fd_client = wing::virtual_pipe_to_fd(vslot, false);
-    let fd_server = wing::virtual_pipe_to_fd(vslot, true);
-    assert(wing::is_virtual_pipe_fd(fd_client));
-    assert(wing::is_virtual_pipe_fd(fd_server));
+    let fd_client = net::virtual_pipe_to_fd(vslot, false);
+    let fd_server = net::virtual_pipe_to_fd(vslot, true);
+    assert(net::is_virtual_pipe_fd(fd_client));
+    assert(net::is_virtual_pipe_fd(fd_server));
 
-    let dec_slot, dec_b, ok_dec = wing::decode_virtual_pipe_fd(fd_server);
+    let dec_slot, dec_b, ok_dec = net::decode_virtual_pipe_fd(fd_server);
     assert(ok_dec);
     assert(dec_slot == vslot);
     assert(dec_b);
 
-    let c_slot = wing::alloc_tls_cipher_slot();
-    let s_slot = wing::alloc_tls_cipher_slot();
+    let c_slot = tls::alloc_cipher_slot();
+    let s_slot = tls::alloc_cipher_slot();
     assert(c_slot != 0xFFFF && s_slot != 0xFFFF);
 
     let c_idx = c_slot as i64;
     let s_idx = s_slot as i64;
-    wing::g_tls_cipher_slots[c_idx].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
-    wing::g_tls_cipher_slots[c_idx].key_len = 16;
-    wing::g_tls_cipher_slots[s_idx].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
-    wing::g_tls_cipher_slots[s_idx].key_len = 16;
-    wing::g_tls_cipher_slots[s_idx].is_server = true;
+    tls::g_tls_cipher_slots[c_idx].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
+    tls::g_tls_cipher_slots[c_idx].key_len = 16;
+    tls::g_tls_cipher_slots[s_idx].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
+    tls::g_tls_cipher_slots[s_idx].key_len = 16;
+    tls::g_tls_cipher_slots[s_idx].is_server = true;
 
     for i in 16 {
-        wing::g_tls_cipher_slots[c_idx].tx_key[i] = (0x10 + i) as u8;
-        wing::g_tls_cipher_slots[s_idx].rx_key[i] = (0x10 + i) as u8;
-        wing::g_tls_cipher_slots[s_idx].tx_key[i] = (0x30 + i) as u8;
-        wing::g_tls_cipher_slots[c_idx].rx_key[i] = (0x30 + i) as u8;
+        tls::g_tls_cipher_slots[c_idx].tx_key[i] = (0x10 + i) as u8;
+        tls::g_tls_cipher_slots[s_idx].rx_key[i] = (0x10 + i) as u8;
+        tls::g_tls_cipher_slots[s_idx].tx_key[i] = (0x30 + i) as u8;
+        tls::g_tls_cipher_slots[c_idx].rx_key[i] = (0x30 + i) as u8;
     }
     for i in 12 {
-        wing::g_tls_cipher_slots[c_idx].tx_iv[i] = (0xA0 + i) as u8;
-        wing::g_tls_cipher_slots[s_idx].rx_iv[i] = (0xA0 + i) as u8;
-        wing::g_tls_cipher_slots[s_idx].tx_iv[i] = (0xB0 + i) as u8;
-        wing::g_tls_cipher_slots[c_idx].rx_iv[i] = (0xB0 + i) as u8;
+        tls::g_tls_cipher_slots[c_idx].tx_iv[i] = (0xA0 + i) as u8;
+        tls::g_tls_cipher_slots[s_idx].rx_iv[i] = (0xA0 + i) as u8;
+        tls::g_tls_cipher_slots[s_idx].tx_iv[i] = (0xB0 + i) as u8;
+        tls::g_tls_cipher_slots[c_idx].rx_iv[i] = (0xB0 + i) as u8;
     }
 
-    var tls_client = wing::Transport.Tls {
+    var tls_client = net::Transport.Tls {
         fd:            fd_client,
         record_seq_rx: 0,
         record_seq_tx: 0,
         cipher_slot:   c_slot,
     };
-    var tls_server = wing::Transport.Tls {
+    var tls_server = net::Transport.Tls {
         fd:            fd_server,
         record_seq_rx: 0,
         record_seq_tx: 0,
@@ -201,13 +201,13 @@ fn test_core_reactor_and_backpressure_contract() {
     let p_r3, p_re3 = core::stream_try_recv(pipe, p_rx[..]);
     assert(p_r3 == 0 && p_re3 == core::IoError.Eof);
 
-    // 3. Reactor <R> + Dialer <D> generic contract over wing::Poller & wing::TcpDialer
-    var dialer = wing::TcpDialer { .. };
+    // 3. Reactor <R> + Dialer <D> generic contract over net::Poller & net::TcpDialer
+    var dialer = net::TcpDialer { .. };
     let bad_fd, bad_err = core::reactor_dial(dialer, core::DialTarget { host: "", port: 0, .. });
     assert(bad_fd == -1 && bad_err == core::IoError.InvalidArgument);
 
     var cfg = net_internal::auto_transport_driver_config();
-    var p = wing::new_poller(cfg);
+    var p = net::new_poller(cfg);
     assert(core::reactor_register(p, 77, 4242, core::PollInterest.Read, core::PollTrigger.Edge));
     assert(core::reactor_modify(p, 77, 4242, core::PollInterest.ReadWrite, core::PollTrigger.Edge));
     assert(core::reactor_add_timer(p, 11, 25, 7777, false, 1000000));
@@ -218,7 +218,7 @@ fn test_core_reactor_and_backpressure_contract() {
     let nev = core::reactor_poll(p, 0, 50000000, evs);
     assert(nev == 1 && evs[0].tag == 9999 && (evs[0].events & core::POLL_WAKE) != 0);
     assert(core::reactor_deregister(p, 77));
-    wing::close_poller(p);
+    net::close_poller(p);
     print("CORE_REACTOR_CONTRACT: OK");
 }
 

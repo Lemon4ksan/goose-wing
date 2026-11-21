@@ -14,29 +14,29 @@ extern fn alloc_frees() -> u64 = "wing_alloc_frees";
 extern fn alloc_mark(probe: u8[>..]&) -> u64 = "wing_alloc_mark";
 extern fn alloc_growth(probe: u8[>..]&, mark: u64) -> i64 = "wing_alloc_growth";
 
-var g_scale_app: wing::HttpServer = wing::HttpServer { .. };
+var g_scale_app: server::HttpServer = server::HttpServer { .. };
 
 struct ItemApiStage {
     _unused: i32 = 0,
 }
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     _stage: ItemApiStage&,
     phase:  wire::ServerHookPhase,
-    cfg:    wing::ServerPipelineConfig&,
-    req:    const wing::Request&,
-    ctx:    wing::ServerStageCtx&,
-    res:    wing::Response&,
+    cfg:    server::ServerPipelineConfig&,
+    req:    const http::Request&,
+    ctx:    server::ServerStageCtx&,
+    res:    http::Response&,
 ) -> wire::StageVerdict {
     guard phase == wire::ServerHookPhase.RouteHandler && ctx.handler_id == 3001 else {
         return wire::StageVerdict.Continue;
     }
-    let item_id = wing::route_param_or(cfg, ctx, "id", "0");
-    let raw_region = wing::header(req, "x-client-region");
+    let item_id = server::route_param_or(cfg, ctx, "id", "0");
+    let raw_region = http::header(req, "x-client-region");
     let region = if raw_region.len > 0 { raw_region } else { "unknown" };
 
-    wing::set_header(res, "content-type", "application/json");
-    wing::set_header(res, "x-engine", "goose-wing");
+    http::set_header(res, "content-type", "application/json");
+    http::set_header(res, "x-engine", "goose-wing");
     res.body.clear();
     res.body.append("{\"id\":");
     core::format_json_string(res.body, item_id);
@@ -48,51 +48,51 @@ fn wing::on_server_stage(
 }
 
 fn setup_scale_server(port: u16) {
-    wing::init_http_server_inplace(g_scale_app, "127.0.0.1", port);
+    server::init_http_server_inplace(g_scale_app, "127.0.0.1", port);
     g_scale_app.pipeline.enable_csrf_guard = false;
     g_scale_app.pipeline.enable_cors = false;
     g_scale_app.pipeline.enable_rate_limiter = false;
     g_scale_app.pipeline.enable_slowloris_timer = false;
-    g_scale_app.accel_mode = wing::ReactorAccelMode.PollFallback;
-    assert(wing::add_static_route(g_scale_app.pipeline.router, "GET", "/ping", "text/plain", "PONG"));
-    wing::add_get_route(g_scale_app, "/api/v1/items/{id}", 3001);
+    g_scale_app.accel_mode = net::ReactorAccelMode.PollFallback;
+    assert(server::add_static_route(g_scale_app.pipeline.router, "GET", "/ping", "text/plain", "PONG"));
+    server::add_get_route(g_scale_app, "/api/v1/items/{id}", 3001);
 }
 
 fn run_http_server(port: u16) {
     setup_scale_server(port);
-    let lfd = wing::tcp_listen("127.0.0.1", port, 2048);
+    let lfd = net::tcp_listen("127.0.0.1", port, 2048);
     guard lfd > 0 else {
         print("FATAL: listen failed on port ", port);
         return;
     }
     print("SERVER_READY port=", port);
     var stage = ItemApiStage {};
-    let _ = wing::serve_reactor_with_stage(g_scale_app, lfd, stage, 0);
-    wing::tcp_close(lfd);
+    let _ = server::serve_reactor_with_stage(g_scale_app, lfd, stage, 0);
+    net::tcp_close(lfd);
 }
 
 fn run_soa_probe(port: u16, populate: bool) {
-    var table = wing::SoAConnTable { max_slots: 10240, .. };
+    var table = server::SoAConnTable { max_slots: 10240, .. };
     var wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
     if populate {
         let tick = core::tick_timer_arm(wheel, 15);
         var active: i64 = 0;
         for i in 10000 {
             let fd = 1000 + i;
-            let slot = wing::soa_table_alloc(table, fd, tick);
+            let slot = server::soa_table_alloc(table, fd, tick);
             if slot >= 0 {
-                wing::soa_table_set_peer_ip(table, slot, "10.0.0.42");
+                server::soa_table_set_peer_ip(table, slot, "10.0.0.42");
                 active += 1;
             }
         }
         assert(active == 10000 && table.count == 10000);
         var expired: i64[256] = [0; 256];
-        let _ = wing::soa_table_sweep_expired(table, wheel, expired[..]);
+        let _ = server::soa_table_sweep_expired(table, wheel, expired[..]);
     }
-    let lfd = wing::tcp_listen("127.0.0.1", port, 16);
+    let lfd = net::tcp_listen("127.0.0.1", port, 16);
     assert(lfd > 0);
     sleep_ms(5000);
-    wing::tcp_close(lfd);
+    net::tcp_close(lfd);
 }
 
 fn run_zero_alloc_proof(iters: i64) {
@@ -100,8 +100,8 @@ fn run_zero_alloc_proof(iters: i64) {
     var stage = ItemApiStage {};
     var conn_timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var fut = server_internal::InlineHandlerFuture { .. };
-    var req = wing::Request { .. };
-    var res = wing::Response { .. };
+    var req = http::Request { .. };
+    var res = http::Response { .. };
 
     var raw_http_buf: u8[..256] = [];
     let _ = raw_http_buf.try_append("GET /api/v1/items/42 HTTP/1.1\r\n");
@@ -112,10 +112,10 @@ fn run_zero_alloc_proof(iters: i64) {
 
     var probe: u8[>..] = [];
     {
-        let ok_w, _ = wing::parse_http1_wire_request(raw_http, req);
+        let ok_w, _ = server::parse_http1_wire_request(raw_http, req);
         assert(ok_w);
-        wing::reset_response(res);
-        let _ = wing::execute_server_pipeline_with_stage(
+        http::reset_response(res);
+        let _ = server::execute_server_pipeline_with_stage(
             g_scale_app.pipeline, conn_timer, "127.0.0.1", req, 1000000, res, fut, stage,
         );
         assert(res.status_code == 200);
@@ -125,11 +125,11 @@ fn run_zero_alloc_proof(iters: i64) {
     let mark = alloc_mark(probe);
 
     for i in iters {
-        let ok_p, _ = wing::parse_http1_wire_request(raw_http, req);
+        let ok_p, _ = server::parse_http1_wire_request(raw_http, req);
         assert(ok_p);
-        wing::reset_response(res);
+        http::reset_response(res);
         let now_ns = ((i + 2) * 1000000) as u64;
-        let _ = wing::execute_server_pipeline_with_stage(
+        let _ = server::execute_server_pipeline_with_stage(
             g_scale_app.pipeline, conn_timer, "127.0.0.1", req, now_ns, res, fut, stage,
         );
         assert(res.status_code == 200);

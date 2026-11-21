@@ -100,78 +100,78 @@ fn test_h1_chunking_desync_fsm() {
 
 fn test_smuggling_and_framing_conflicts() {
     // 1. CL.TE conflict
-    var map_cl_te = wing::HeaderMap { .. };
-    let err_cl_te = wing::parse_headers("Content-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n", map_cl_te);
-    assert(err_cl_te == wing::HeaderParseError.InvalidContentLength);
+    var map_cl_te = http::HeaderMap { .. };
+    let err_cl_te = http::parse_headers("Content-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n", map_cl_te);
+    assert(err_cl_te == http::HeaderParseError.InvalidContentLength);
     assert(!map_cl_te.valid);
     print("SMUGGLE_CL_TE_CONFLICT: REJECTED");
 
     // 2. TE.CL conflict
-    var map_te_cl = wing::HeaderMap { .. };
-    let err_te_cl = wing::parse_headers("Transfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n", map_te_cl);
-    assert(err_te_cl == wing::HeaderParseError.InvalidContentLength);
+    var map_te_cl = http::HeaderMap { .. };
+    let err_te_cl = http::parse_headers("Transfer-Encoding: chunked\r\nContent-Length: 42\r\n\r\n", map_te_cl);
+    assert(err_te_cl == http::HeaderParseError.InvalidContentLength);
     assert(!map_te_cl.valid);
     print("SMUGGLE_TE_CL_CONFLICT: REJECTED");
 
     // 3. Duplicate differing Content-Length headers
-    var map_dup_diff = wing::HeaderMap { .. };
-    let err_dup_diff = wing::parse_headers("Content-Length: 10\r\nContent-Length: 20\r\n\r\n", map_dup_diff);
-    assert(err_dup_diff == wing::HeaderParseError.InvalidContentLength);
+    var map_dup_diff = http::HeaderMap { .. };
+    let err_dup_diff = http::parse_headers("Content-Length: 10\r\nContent-Length: 20\r\n\r\n", map_dup_diff);
+    assert(err_dup_diff == http::HeaderParseError.InvalidContentLength);
     assert(!map_dup_diff.valid);
     print("SMUGGLE_DUP_CL_DIFF: REJECTED");
 
     // 4. Duplicate identical Content-Length headers (RFC 9112 §6.3)
-    var map_dup_same = wing::HeaderMap { .. };
-    let err_dup_same = wing::parse_headers("Content-Length: 42\r\nContent-Length: 42\r\n\r\n", map_dup_same);
-    assert(err_dup_same == wing::HeaderParseError.None);
+    var map_dup_same = http::HeaderMap { .. };
+    let err_dup_same = http::parse_headers("Content-Length: 42\r\nContent-Length: 42\r\n\r\n", map_dup_same);
+    assert(err_dup_same == http::HeaderParseError.None);
     assert(map_dup_same.valid);
     print("SMUGGLE_DUP_CL_SAME: ACCEPTED");
 
     // 5. Duplicate Host header rejection (RFC 9112 §7.2)
-    var map_dup_host = wing::HeaderMap { .. };
-    let err_dup_host = wing::parse_headers("Host: a.example.com\r\nHost: b.example.com\r\n\r\n", map_dup_host);
-    assert(err_dup_host == wing::HeaderParseError.InvalidHeaderName);
+    var map_dup_host = http::HeaderMap { .. };
+    let err_dup_host = http::parse_headers("Host: a.example.com\r\nHost: b.example.com\r\n\r\n", map_dup_host);
+    assert(err_dup_host == http::HeaderParseError.InvalidHeaderName);
     assert(!map_dup_host.valid);
     print("SMUGGLE_DUP_HOST: REJECTED");
 
     // 6. Host header with forbidden characters (@ userinfo)
-    var map_bad_host = wing::HeaderMap { .. };
-    let err_bad_host = wing::parse_headers("Host: admin@example.com\r\n\r\n", map_bad_host);
-    assert(err_bad_host == wing::HeaderParseError.InvalidHeaderValue);
+    var map_bad_host = http::HeaderMap { .. };
+    let err_bad_host = http::parse_headers("Host: admin@example.com\r\n\r\n", map_bad_host);
+    assert(err_bad_host == http::HeaderParseError.InvalidHeaderValue);
     assert(!map_bad_host.valid);
     print("SMUGGLE_HOST_FORBIDDEN_CHARS: REJECTED");
 
     // 7. Embedded null-byte injection rejection
-    var map_null = wing::HeaderMap { .. };
+    var map_null = http::HeaderMap { .. };
     var null_raw: u8[>..] = [];
     null_raw.append("Host: example.com");
     null_raw.push(0x00);
     null_raw.append("\r\n\r\n");
-    let err_null = wing::parse_headers(null_raw[..], map_null);
-    assert(err_null == wing::HeaderParseError.EmbeddedNull);
+    let err_null = http::parse_headers(null_raw[..], map_null);
+    assert(err_null == http::HeaderParseError.EmbeddedNull);
     assert(!map_null.valid);
     print("SMUGGLE_NULL_BYTE: REJECTED");
 
     // 8. Obsolete line folding rejection
-    var map_fold = wing::HeaderMap { .. };
-    let err_fold = wing::parse_headers("Host: example.com\r\n folded: val\r\n\r\n", map_fold, false);
-    assert(err_fold == wing::HeaderParseError.ObsFoldForbidden);
+    var map_fold = http::HeaderMap { .. };
+    let err_fold = http::parse_headers("Host: example.com\r\n folded: val\r\n\r\n", map_fold, false);
+    assert(err_fold == http::HeaderParseError.ObsFoldForbidden);
     assert(!map_fold.valid);
     print("SMUGGLE_OBS_FOLD: REJECTED");
 }
 
 fn test_reverse_proxy_hop_by_hop_sanitization() {
-    var in_map = wing::HeaderMap { .. };
-    wing::append_header(in_map, "Host", "public.example.com");
-    wing::append_header(in_map, "Connection", "close, X-Internal-Token");
-    wing::append_header(in_map, "Keep-Alive", "timeout=5");
-    wing::append_header(in_map, "Transfer-Encoding", "chunked");
-    wing::append_header(in_map, "Upgrade", "websocket");
-    wing::append_header(in_map, "X-Internal-Token", "secret-payload");
-    wing::append_header(in_map, "TE", "trailers");
-    wing::append_header(in_map, "X-Forwarded-For", "198.51.100.1");
+    var in_map = http::HeaderMap { .. };
+    http::append_header(in_map, "Host", "public.example.com");
+    http::append_header(in_map, "Connection", "close, X-Internal-Token");
+    http::append_header(in_map, "Keep-Alive", "timeout=5");
+    http::append_header(in_map, "Transfer-Encoding", "chunked");
+    http::append_header(in_map, "Upgrade", "websocket");
+    http::append_header(in_map, "X-Internal-Token", "secret-payload");
+    http::append_header(in_map, "TE", "trailers");
+    http::append_header(in_map, "X-Forwarded-For", "198.51.100.1");
 
-    var out_map = wing::HeaderMap { .. };
+    var out_map = http::HeaderMap { .. };
     var cfg = proxy::Config { .. };
     cfg.preserve_host = false;
     cfg.trust_incoming_xff = true;
@@ -187,26 +187,26 @@ fn test_reverse_proxy_hop_by_hop_sanitization() {
         cfg,
     );
 
-    let h_conn = wing::get_header(out_map, "Connection");
-    let h_ka = wing::get_header(out_map, "Keep-Alive");
-    let h_te = wing::get_header(out_map, "Transfer-Encoding");
-    let h_upg = wing::get_header(out_map, "Upgrade");
+    let h_conn = http::get_header(out_map, "Connection");
+    let h_ka = http::get_header(out_map, "Keep-Alive");
+    let h_te = http::get_header(out_map, "Transfer-Encoding");
+    let h_upg = http::get_header(out_map, "Upgrade");
     assert(h_conn.len == 0 && h_ka.len == 0 && h_te.len == 0 && h_upg.len == 0);
     print("PROXY_HOP_BY_HOP_STRIPPED: OK");
 
-    let h_token = wing::get_header(out_map, "X-Internal-Token");
+    let h_token = http::get_header(out_map, "X-Internal-Token");
     assert(h_token.len == 0);
     print("PROXY_CUSTOM_TOKEN_STRIPPED: OK");
 
-    let h_trailers = wing::get_header(out_map, "TE");
+    let h_trailers = http::get_header(out_map, "TE");
     assert(h_trailers == "trailers");
     print("PROXY_TE_TRAILERS_PRESERVED: OK");
 
-    let h_xff = wing::get_header(out_map, "X-Forwarded-For");
+    let h_xff = http::get_header(out_map, "X-Forwarded-For");
     assert(h_xff == "198.51.100.1, 203.0.113.50");
     print("PROXY_XFF_CHAINED: OK");
 
-    let h_via = wing::get_header(out_map, "Via");
+    let h_via = http::get_header(out_map, "Via");
     assert(h_via == "1.1 wing-chaos");
     print("PROXY_VIA_INJECTED: OK");
 }
@@ -381,7 +381,7 @@ fn test_h2_dos_and_stream_parity() {
 fn test_h2_pseudo_header_invariants() {
     // 1. Pseudo-header after regular header (RFC 9113 §8.3)
     var pseudo1 = http2::PseudoHeaders { .. };
-    var list1 = wing::HeaderMap { .. };
+    var list1 = http::HeaderMap { .. };
     pseudo1.has_regular_header = true;
     let err_order = http2::validate_header_ordering_and_rules(pseudo1, list1, ":method", "GET");
     assert(err_order == rfc::H2_ERR_PROTOCOL_ERROR);
@@ -389,7 +389,7 @@ fn test_h2_pseudo_header_invariants() {
 
     // 2. Duplicate pseudo-header
     var pseudo2 = http2::PseudoHeaders { .. };
-    var list2 = wing::HeaderMap { .. };
+    var list2 = http::HeaderMap { .. };
     let _ = http2::validate_header_ordering_and_rules(pseudo2, list2, ":method", "GET");
     let err_dup = http2::validate_header_ordering_and_rules(pseudo2, list2, ":method", "POST");
     assert(err_dup == rfc::H2_ERR_PROTOCOL_ERROR);
@@ -397,14 +397,14 @@ fn test_h2_pseudo_header_invariants() {
 
     // 3. Undefined pseudo-header
     var pseudo3 = http2::PseudoHeaders { .. };
-    var list3 = wing::HeaderMap { .. };
+    var list3 = http::HeaderMap { .. };
     let err_undef = http2::validate_header_ordering_and_rules(pseudo3, list3, ":custom", "val");
     assert(err_undef == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_UNDEFINED_PSEUDO_BAN: PROTOCOL_ERROR");
 
     // 4. Forbidden connection-specific headers in HTTP/2 (RFC 9113 §8.2.2)
     var pseudo4 = http2::PseudoHeaders { .. };
-    var list4 = wing::HeaderMap { .. };
+    var list4 = http::HeaderMap { .. };
     let err_conn = http2::validate_header_ordering_and_rules(pseudo4, list4, "connection", "close");
     assert(err_conn == rfc::H2_ERR_PROTOCOL_ERROR);
     let err_te = http2::validate_header_ordering_and_rules(pseudo4, list4, "transfer-encoding", "chunked");
@@ -417,21 +417,21 @@ fn test_h2_pseudo_header_invariants() {
 
     // 5. TE header with disallowed value
     var pseudo5 = http2::PseudoHeaders { .. };
-    var list5 = wing::HeaderMap { .. };
+    var list5 = http::HeaderMap { .. };
     let err_te_val = http2::validate_header_ordering_and_rules(pseudo5, list5, "te", "gzip");
     assert(err_te_val == rfc::H2_ERR_PROTOCOL_ERROR);
     print("H2_DISALLOWED_TE_VALUE: PROTOCOL_ERROR");
 
     // 6. TE header with allowed 'trailers'
     var pseudo6 = http2::PseudoHeaders { .. };
-    var list6 = wing::HeaderMap { .. };
+    var list6 = http::HeaderMap { .. };
     let ok_te_val = http2::validate_header_ordering_and_rules(pseudo6, list6, "te", "trailers");
     assert(ok_te_val == rfc::H2_ERR_NO_ERROR);
     print("H2_ALLOWED_TE_TRAILERS: OK");
 
     // 7. :authority forbidden characters (@ and /)
     var pseudo7 = http2::PseudoHeaders { .. };
-    var list7 = wing::HeaderMap { .. };
+    var list7 = http::HeaderMap { .. };
     let err_auth_at = http2::validate_header_ordering_and_rules(pseudo7, list7, ":authority", "admin@example.com");
     assert(err_auth_at == rfc::H2_ERR_PROTOCOL_ERROR);
     let err_auth_slash = http2::validate_header_ordering_and_rules(pseudo7, list7, ":authority", "example.com/api");
@@ -440,7 +440,7 @@ fn test_h2_pseudo_header_invariants() {
 
     // 8. :authority vs Host mismatch
     var pseudo8 = http2::PseudoHeaders { .. };
-    var list8 = wing::HeaderMap { .. };
+    var list8 = http::HeaderMap { .. };
     let _ = http2::validate_header_ordering_and_rules(pseudo8, list8, ":authority", "example.com");
     let err_mismatch = http2::validate_header_ordering_and_rules(pseudo8, list8, "host", "attacker.com");
     assert(err_mismatch == rfc::H2_ERR_PROTOCOL_ERROR);
@@ -520,15 +520,15 @@ fn run_01_verify_cross_protocol_differential() {
 // CHECK: === [2/11] verify_live_e2e_workflows ===
 
 // End-to-End Live Socket Verification Suite for High-Level Protocol Workflows:
-// 1. Live SOCKS5 (RFC 1928/1929) & HTTP CONNECT Proxy Tunnels (`wing::Client` -> Proxy -> `wing::HttpServer`).
+// 1. Live SOCKS5 (RFC 1928/1929) & HTTP CONNECT Proxy Tunnels (`client::Client` -> Proxy -> `server::HttpServer`).
 // 2. Live 401 Digest SHA-256 (RFC 7616) & Basic Auth (RFC 7617) Challenge-Response + Cookie Jar Persistence.
 // 3. Live RFC 9111 HTTP Cache (`200 OK` + `ETag` -> Fresh Hit -> TTL Expiry -> `If-None-Match` -> `304 Not Modified`).
 // 4. Live Native Client<->Server WebSocket (RFC 6455 HTTP/1.1 + RFC 8441 HTTP/2 Extended CONNECT) & W3C SSE (`text/event-stream`).
 // 5. Live ReverseProxy + LoadBalancer (`execute_proxy_exchange`) with Dead-Target Failover & `X-Forwarded-For`/`Via`.
 
-var g_e2e_client: wing::Client        = wing::Client { .. };
+var g_e2e_client: client::Client      = client::Client { .. };
 var g_e2e_proxy:  proxy::ReverseProxy = proxy::ReverseProxy { .. };
-var g_e2e_pool:   wing::StreamPool    = wing::StreamPool { .. };
+var g_e2e_pool:   net::StreamPool     = net::StreamPool { .. };
 
 var g_reval_hits: i32 = 0;
 
@@ -545,7 +545,7 @@ fn find_subslice(haystack: const u8[:], needle: const u8[:]) -> i64 {
 
 // ---- Server Route Handlers & Live Socket Accept Helper ---------------------
 
-fn handle_tunnel_origin(req: const wing::Request&, res: wing::Response&) {
+fn handle_tunnel_origin(req: const http::Request&, res: http::Response&) {
     // Verify Proxy-Authorization was stripped before reaching origin (Seam 19)
     assert(!req.has_header("proxy-authorization"));
     assert(!req.has_header("proxy-connection"));
@@ -555,7 +555,7 @@ fn handle_tunnel_origin(req: const wing::Request&, res: wing::Response&) {
     res.body.append(req.url[..]);
 }
 
-fn handle_digest_protected(req: const wing::Request&, res: wing::Response&) {
+fn handle_digest_protected(req: const http::Request&, res: http::Response&) {
     let auth = req.header("authorization");
     if auth.len == 0 || !core::starts_with_fold(auth, "Digest ") {
         res.status_code = 401;
@@ -578,7 +578,7 @@ fn handle_digest_protected(req: const wing::Request&, res: wing::Response&) {
     res.body.append("DIGEST_AUTH_OK");
 }
 
-fn handle_cacheable_resource(req: const wing::Request&, res: wing::Response&) {
+fn handle_cacheable_resource(req: const http::Request&, res: http::Response&) {
     let inm = req.header("if-none-match");
     if inm == "\"v42\"" {
         g_reval_hits += 1;
@@ -595,7 +595,7 @@ fn handle_cacheable_resource(req: const wing::Request&, res: wing::Response&) {
     res.body.append("CACHED_LIVE_PAYLOAD_V42");
 }
 
-fn handle_sse_stream(req: const wing::Request&, res: wing::Response&) {
+fn handle_sse_stream(req: const http::Request&, res: http::Response&) {
     realtime::init_response(res);
     let last_id = req.header("last-event-id");
     if last_id == "ev-2" {
@@ -606,7 +606,7 @@ fn handle_sse_stream(req: const wing::Request&, res: wing::Response&) {
     realtime::sse_format_event(res.body, "message", "final-item", "ev-2", 0);
 }
 
-fn handle_proxy_backend(req: const wing::Request&, res: wing::Response&) {
+fn handle_proxy_backend(req: const http::Request&, res: http::Response&) {
     let xff = req.header("x-forwarded-for");
     let via = req.header("via");
     assert(xff == "198.51.100.77");
@@ -618,21 +618,21 @@ fn handle_proxy_backend(req: const wing::Request&, res: wing::Response&) {
 }
 
 fn accept_and_serve_one_e2e(lfd: i64) -> bool {
-    let sfd = wing::tcp_accept(lfd, 200);
+    let sfd = net::tcp_accept(lfd, 200);
     guard sfd > 0 else { return false; }
     var rx_buf: u8[..4096] = [];
-    let n_rx = wing::tcp_recv(sfd, rx_buf, 4096, 200);
+    let n_rx = net::tcp_recv(sfd, rx_buf, 4096, 200);
     guard n_rx > 0 else {
-        wing::tcp_close(sfd);
+        net::tcp_close(sfd);
         return false;
     }
-    var req = wing::Request { .. };
-    let ok_p, _ = wing::parse_http1_wire_request(rx_buf[..n_rx], req);
+    var req = http::Request { .. };
+    let ok_p, _ = server::parse_http1_wire_request(rx_buf[..n_rx], req);
     guard ok_p else {
-        wing::tcp_close(sfd);
+        net::tcp_close(sfd);
         return false;
     }
-    var res = wing::Response { status_code: 404, .. };
+    var res = http::Response { status_code: 404, .. };
     if req.url[..] == "/tunnel-check" {
         handle_tunnel_origin(req, res);
     } else if req.url[..] == "/digest-protected" {
@@ -645,24 +645,24 @@ fn accept_and_serve_one_e2e(lfd: i64) -> bool {
         handle_proxy_backend(req, res);
     }
     var tx_buf: u8[..4096] = [];
-    wing::serialize_http1_response(res, "goose-wing-e2e", tx_buf);
-    let sent = wing::tcp_send(sfd, tx_buf[..]);
-    wing::tcp_close(sfd);
+    server::serialize_http1_response(res, "goose-wing-e2e", tx_buf);
+    let sent = net::tcp_send(sfd, tx_buf[..]);
+    net::tcp_close(sfd);
     return sent == tx_buf.len;
 }
 
 // ---- 1. Live SOCKS5 & HTTP CONNECT Proxy Tunnels ---------------------------
 
 fn test_live_proxy_tunnels() {
-    let srv_lfd = wing::tcp_listen("127.0.0.1", 0);
-    let prx_lfd = wing::tcp_listen("127.0.0.1", 0);
+    let srv_lfd = net::tcp_listen("127.0.0.1", 0);
+    let prx_lfd = net::tcp_listen("127.0.0.1", 0);
     assert(srv_lfd > 0 && prx_lfd > 0);
-    let srv_port = wing::tcp_getsockname_port(srv_lfd);
-    let prx_port = wing::tcp_getsockname_port(prx_lfd);
+    let srv_port = net::tcp_getsockname_port(srv_lfd);
+    let prx_port = net::tcp_getsockname_port(prx_lfd);
 
     // 1A. Verify live SOCKS5h RFC 1928 + RFC 1929 Username/Password client<->server handshake
-    let c_socks = wing::tcp_connect("127.0.0.1", prx_port, 200);
-    let s_socks = wing::tcp_accept(prx_lfd, 200);
+    let c_socks = net::tcp_connect("127.0.0.1", prx_port, 200);
+    let s_socks = net::tcp_accept(prx_lfd, 200);
     assert(c_socks > 0 && s_socks > 0);
 
     // Pre-send server replies (method selection [0x05, 0x02], RFC 1929 auth [0x01, 0x00], CONNECT reply)
@@ -672,205 +672,205 @@ fn test_live_proxy_tunnels() {
         0x01, 0x00,
         0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x00,
     ];
-    assert(wing::tcp_send(s_socks, srv_socks_script[..]) == 14);
-    let s5_err = wing::socks5_client_handshake(
-        c_socks, wing::ProxyScheme.Socks5h, "origin.internal", srv_port, "alice", "s3cret", 200,
+    assert(net::tcp_send(s_socks, srv_socks_script[..]) == 14);
+    let s5_err = net::socks5_client_handshake(
+        c_socks, net::ProxyScheme.Socks5h, "origin.internal", srv_port, "alice", "s3cret", 200,
     );
-    assert(s5_err == wing::Socks5Error.None);
+    assert(s5_err == net::Socks5Error.None);
 
     var s5_rx: u8[..128] = [];
-    let n_s5 = wing::tcp_recv(s_socks, s5_rx, 128, 200);
+    let n_s5 = net::tcp_recv(s_socks, s5_rx, 128, 200);
     assert(n_s5 > 10 && s5_rx[0] == 0x05 && s5_rx[4] == 0x01); // Greeting 0x05 + RFC 1929 0x01
     assert(find_subslice(s5_rx[..n_s5], "origin.internal") >= 0); // ATYP=0x03 domain for socks5h://
-    wing::tcp_close(c_socks);
-    wing::tcp_close(s_socks);
+    net::tcp_close(c_socks);
+    net::tcp_close(s_socks);
 
     // 1B. Verify live HTTP CONNECT tunnel client<->server handshake with Proxy-Authorization
-    let c_hc = wing::tcp_connect("127.0.0.1", prx_port, 200);
-    let s_hc = wing::tcp_accept(prx_lfd, 200);
+    let c_hc = net::tcp_connect("127.0.0.1", prx_port, 200);
+    let s_hc = net::tcp_accept(prx_lfd, 200);
     assert(c_hc > 0 && s_hc > 0);
     let connect_200 = "HTTP/1.1 200 Connection Established\r\nProxy-Agent: wing-proxy\r\n\r\n";
-    assert(wing::tcp_send(s_hc, connect_200) == connect_200.len);
-    let hc_err = wing::http_connect_client_handshake(
+    assert(net::tcp_send(s_hc, connect_200) == connect_200.len);
+    let hc_err = net::http_connect_client_handshake(
         c_hc, "origin.internal", srv_port, "Basic YWxpY2U6czNjcmV0", "goose-wing/1.0", 200,
     );
-    assert(hc_err == wing::ConnectTunnelError.None);
+    assert(hc_err == net::ConnectTunnelError.None);
     var hc_rx: u8[..512] = [];
-    let n_hc = wing::tcp_recv(s_hc, hc_rx, 512, 200);
+    let n_hc = net::tcp_recv(s_hc, hc_rx, 512, 200);
     assert(n_hc > 0 && find_subslice(hc_rx[..n_hc], "CONNECT origin.internal:") >= 0);
     assert(find_subslice(hc_rx[..n_hc], "Proxy-Authorization: Basic YWxpY2U6czNjcmV0") >= 0);
-    wing::tcp_close(c_hc);
-    wing::tcp_close(s_hc);
+    net::tcp_close(c_hc);
+    net::tcp_close(s_hc);
 
-    // 1C. Now tunnel an HTTP/1.1 request through `wing::Client` with `proxy_url` -> origin server
-    let srv_conn_c = wing::tcp_connect("127.0.0.1", srv_port, 200);
-    let srv_conn_s = wing::tcp_accept(srv_lfd, 200);
+    // 1C. Now tunnel an HTTP/1.1 request through `client::Client` with `proxy_url` -> origin server
+    let srv_conn_c = net::tcp_connect("127.0.0.1", srv_port, 200);
+    let srv_conn_s = net::tcp_accept(srv_lfd, 200);
     assert(srv_conn_c > 0 && srv_conn_s > 0);
 
-    g_e2e_client = wing::Client { .. };
+    g_e2e_client = client::Client { .. };
     g_e2e_client.virtual_clock_us = 1;
     let _ = g_e2e_client.proxy_url.try_set("http://alice:s3cret@127.0.0.1:18888");
-    let proxy_chain = wing::resolve_hop_proxy_chain(g_e2e_client);
-    let pkey = wing::new_pool_key(
-        wing::PoolScheme.Http, "127.0.0.1", srv_port,
+    let proxy_chain = client::resolve_hop_proxy_chain(g_e2e_client);
+    let pkey = net::new_pool_key(
+        net::PoolScheme.Http, "127.0.0.1", srv_port,
         proxy_chain,
-        wing::new_network_anonymization_key("127.0.0.1", false),
-        wing::TlsAndDnsPolicy { .. },
+        net::new_network_anonymization_key("127.0.0.1", false),
+        net::TlsAndDnsPolicy { .. },
     );
-    let tp_direct_tun: wing::Transport = wing::Transport.Tcp { fd: srv_conn_c };
-    let cid_tun = wing::register_connection(
-        g_e2e_client.pool, pkey, wing::NegotiatedProtocol.Http11, tp_direct_tun, "127.0.0.1", 1, 1000,
+    let tp_direct_tun: net::Transport = net::Transport.Tcp { fd: srv_conn_c };
+    let cid_tun = net::register_connection(
+        g_e2e_client.pool, pkey, net::NegotiatedProtocol.Http11, tp_direct_tun, "127.0.0.1", 1, 1000,
     );
-    wing::release_connection(g_e2e_client.pool, cid_tun, 1000);
+    net::release_connection(g_e2e_client.pool, cid_tun, 1000);
 
     var url_tun: u8[..128] = [];
     url_tun.append("http://127.0.0.1:");
     core::format_u64_dec(srv_port, url_tun);
     url_tun.append("/tunnel-check");
 
-    var req_tun = wing::new_get(url_tun[..]);
+    var req_tun = http::new_get(url_tun[..]);
     // Attach a Proxy-Authorization header that MUST be stripped by `execute_live_network_hop` when `!proxy_chain.is_direct`
-    wing::set_header(req_tun, "Proxy-Authorization", "Basic YWxpY2U6czNjcmV0");
-    wing::set_header(req_tun, "Proxy-Connection", "keep-alive");
+    http::set_header(req_tun, "Proxy-Authorization", "Basic YWxpY2U6czNjcmV0");
+    http::set_header(req_tun, "Proxy-Connection", "keep-alive");
 
     let canned_origin_resp = "HTTP/1.1 200 OK\r\nContent-Length: 16\r\nX-Origin-Reached: yes\r\n\r\nTUNNEL_ORIGIN_OK";
-    assert(wing::tcp_send(srv_conn_s, canned_origin_resp) == canned_origin_resp.len);
+    assert(net::tcp_send(srv_conn_s, canned_origin_resp) == canned_origin_resp.len);
 
-    let resp_tun, err_tun = wing::execute_request(g_e2e_client, req_tun);
-    assert(wing::ok(err_tun) && resp_tun.status_code == 200);
+    let resp_tun, err_tun = client::execute_request(g_e2e_client, req_tun);
+    assert(http::ok(err_tun) && resp_tun.status_code == 200);
     assert(resp_tun.body[..] == "TUNNEL_ORIGIN_OK");
 
     // Read the exact wire bytes received by the origin server on `srv_conn_s` and feed them into our live server!
     var origin_rx: u8[..2048] = [];
-    let n_orig = wing::tcp_recv(srv_conn_s, origin_rx, 2048, 200);
+    let n_orig = net::tcp_recv(srv_conn_s, origin_rx, 2048, 200);
     assert(n_orig > 0);
     assert(find_subslice(origin_rx[..n_orig], "Proxy-Authorization") < 0);
     assert(find_subslice(origin_rx[..n_orig], "Proxy-Connection") < 0);
 
-    let v_c = wing::tcp_connect("127.0.0.1", srv_port, 200);
+    let v_c = net::tcp_connect("127.0.0.1", srv_port, 200);
     assert(v_c > 0);
-    assert(wing::tcp_send(v_c, origin_rx[..n_orig]) == n_orig);
+    assert(net::tcp_send(v_c, origin_rx[..n_orig]) == n_orig);
     assert(accept_and_serve_one_e2e(srv_lfd));
     var srv_out: u8[..1024] = [];
-    let n_so = wing::tcp_recv(v_c, srv_out, 1024, 200);
+    let n_so = net::tcp_recv(v_c, srv_out, 1024, 200);
     assert(n_so > 0 && find_subslice(srv_out[..n_so], "TUNNEL_ORIGIN_OK:/tunnel-check") >= 0);
 
-    wing::tcp_close(v_c);
-    wing::tcp_close(srv_conn_c);
-    wing::tcp_close(srv_conn_s);
-    wing::tcp_close(srv_lfd);
-    wing::tcp_close(prx_lfd);
+    net::tcp_close(v_c);
+    net::tcp_close(srv_conn_c);
+    net::tcp_close(srv_conn_s);
+    net::tcp_close(srv_lfd);
+    net::tcp_close(prx_lfd);
     print("E2E_LIVE_PROXY_TUNNELS: OK");
 }
 
 // ---- 2. Live 401 Digest SHA-256 Challenge-Response + Cookie Jar ------------
 
 fn test_live_digest_auth_and_cookies() {
-    let srv_lfd = wing::tcp_listen("127.0.0.1", 0);
+    let srv_lfd = net::tcp_listen("127.0.0.1", 0);
     assert(srv_lfd > 0);
-    let srv_port = wing::tcp_getsockname_port(srv_lfd);
+    let srv_port = net::tcp_getsockname_port(srv_lfd);
 
-    let c_fd = wing::tcp_connect("127.0.0.1", srv_port, 200);
-    let s_fd = wing::tcp_accept(srv_lfd, 200);
+    let c_fd = net::tcp_connect("127.0.0.1", srv_port, 200);
+    let s_fd = net::tcp_accept(srv_lfd, 200);
     assert(c_fd > 0 && s_fd > 0);
 
-    g_e2e_client = wing::Client { .. };
+    g_e2e_client = client::Client { .. };
     g_e2e_client.virtual_clock_us = 1700000000000000;
     let _ = g_e2e_client.creds.username.try_set("admin");
     let _ = g_e2e_client.creds.password.try_set("hunter2");
     g_e2e_client.creds.has_credentials = true;
 
-    let pkey = wing::new_pool_key(
-        wing::PoolScheme.Http, "127.0.0.1", srv_port,
-        wing::new_direct_proxy_chain(),
-        wing::new_network_anonymization_key("127.0.0.1", false),
-        wing::TlsAndDnsPolicy { .. },
+    let pkey = net::new_pool_key(
+        net::PoolScheme.Http, "127.0.0.1", srv_port,
+        net::new_direct_proxy_chain(),
+        net::new_network_anonymization_key("127.0.0.1", false),
+        net::TlsAndDnsPolicy { .. },
     );
-    let tp: wing::Transport = wing::Transport.Tcp { fd: c_fd };
-    let cid_auth = wing::register_connection(
-        g_e2e_client.pool, pkey, wing::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1700000000000000000,
+    let tp: net::Transport = net::Transport.Tcp { fd: c_fd };
+    let cid_auth = net::register_connection(
+        g_e2e_client.pool, pkey, net::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1700000000000000000,
     );
-    wing::release_connection(g_e2e_client.pool, cid_auth, 1700000000000000000);
+    net::release_connection(g_e2e_client.pool, cid_auth, 1700000000000000000);
 
     // Queue the 2 pipelined HTTP/1.1 Keep-Alive responses on `s_fd` (401 challenge + 200 OK),
-    // then verify the 2 requests emitted by `wing::Client` against `handle_digest_protected`!
+    // then verify the 2 requests emitted by `client::Client` against `handle_digest_protected`!
     var resp_401_and_200: u8[..1024] = [];
     resp_401_and_200.append("HTTP/1.1 401 Unauthorized\r\n");
     resp_401_and_200.append("WWW-Authenticate: Digest realm=\"wing-api\", nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", qop=\"auth\", algorithm=SHA-256, opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"\r\n");
     resp_401_and_200.append("Set-Cookie: auth_step=challenged; Path=/\r\n");
     resp_401_and_200.append("Content-Length: 12\r\n\r\nUNAUTHORIZED");
     resp_401_and_200.append("HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\nDIGEST_AUTH_OK");
-    assert(wing::tcp_send(s_fd, resp_401_and_200[..]) == resp_401_and_200.len);
+    assert(net::tcp_send(s_fd, resp_401_and_200[..]) == resp_401_and_200.len);
 
     var url_auth: u8[..128] = [];
     url_auth.append("http://127.0.0.1:");
     core::format_u64_dec(srv_port, url_auth);
     url_auth.append("/digest-protected");
 
-    let req_auth = wing::new_get(url_auth[..]);
-    let resp_auth, err_auth = wing::execute_request(g_e2e_client, req_auth);
-    assert(wing::ok(err_auth) && resp_auth.status_code == 200);
+    let req_auth = http::new_get(url_auth[..]);
+    let resp_auth, err_auth = client::execute_request(g_e2e_client, req_auth);
+    assert(http::ok(err_auth) && resp_auth.status_code == 200);
     assert(resp_auth.body[..] == "DIGEST_AUTH_OK");
     assert(cookie::get(g_e2e_client.jar, "auth_step") == "challenged");
 
-    // Read both wire requests emitted by `wing::Client` over `s_fd` and replay the 2nd (authenticated) request
+    // Read both wire requests emitted by `client::Client` over `s_fd` and replay the 2nd (authenticated) request
     // against `accept_and_serve_one_e2e` (`handle_digest_protected`)!
     var wire_both: u8[..4096] = [];
-    let n_both = wing::tcp_recv(s_fd, wire_both, 4096, 200);
+    let n_both = net::tcp_recv(s_fd, wire_both, 4096, 200);
     assert(n_both > 0);
     assert(find_subslice(wire_both[..n_both], "Authorization: Digest ") >= 0);
     let second_get_pos = find_subslice(wire_both[16..n_both], "GET /digest-protected");
     assert(second_get_pos >= 0);
     let req2_slice = wire_both[16 + second_get_pos..n_both];
 
-    let v_c = wing::tcp_connect("127.0.0.1", srv_port, 200);
+    let v_c = net::tcp_connect("127.0.0.1", srv_port, 200);
     assert(v_c > 0);
-    assert(wing::tcp_send(v_c, req2_slice) == req2_slice.len);
+    assert(net::tcp_send(v_c, req2_slice) == req2_slice.len);
     assert(accept_and_serve_one_e2e(srv_lfd));
     var srv_out: u8[..1024] = [];
-    let n_so = wing::tcp_recv(v_c, srv_out, 1024, 200);
+    let n_so = net::tcp_recv(v_c, srv_out, 1024, 200);
     assert(n_so > 0 && find_subslice(srv_out[..n_so], "200 OK") >= 0);
     assert(find_subslice(srv_out[..n_so], "DIGEST_AUTH_OK") >= 0);
 
-    wing::tcp_close(v_c);
-    wing::tcp_close(c_fd);
-    wing::tcp_close(s_fd);
-    wing::tcp_close(srv_lfd);
+    net::tcp_close(v_c);
+    net::tcp_close(c_fd);
+    net::tcp_close(s_fd);
+    net::tcp_close(srv_lfd);
     print("E2E_LIVE_DIGEST_AUTH_AND_COOKIES: OK");
 }
 
 // ---- 3. Live RFC 9111 HTTP Cache Revalidation (200 -> Hit -> 304) ----------
 
 fn test_live_http_cache_revalidation() {
-    let srv_lfd = wing::tcp_listen("127.0.0.1", 0);
+    let srv_lfd = net::tcp_listen("127.0.0.1", 0);
     assert(srv_lfd > 0);
-    let srv_port = wing::tcp_getsockname_port(srv_lfd);
+    let srv_port = net::tcp_getsockname_port(srv_lfd);
 
-    let c_fd = wing::tcp_connect("127.0.0.1", srv_port, 200);
-    let s_fd = wing::tcp_accept(srv_lfd, 200);
+    let c_fd = net::tcp_connect("127.0.0.1", srv_port, 200);
+    let s_fd = net::tcp_accept(srv_lfd, 200);
     assert(c_fd > 0 && s_fd > 0);
 
-    g_e2e_client = wing::Client { .. };
+    g_e2e_client = client::Client { .. };
     g_e2e_client.virtual_clock_us = 1000000000; // t = 1000s
     g_e2e_client.enable_cache = true;
 
-    let pkey = wing::new_pool_key(
-        wing::PoolScheme.Http, "127.0.0.1", srv_port,
-        wing::new_direct_proxy_chain(),
-        wing::new_network_anonymization_key("127.0.0.1", false),
-        wing::TlsAndDnsPolicy { .. },
+    let pkey = net::new_pool_key(
+        net::PoolScheme.Http, "127.0.0.1", srv_port,
+        net::new_direct_proxy_chain(),
+        net::new_network_anonymization_key("127.0.0.1", false),
+        net::TlsAndDnsPolicy { .. },
     );
-    let tp: wing::Transport = wing::Transport.Tcp { fd: c_fd };
-    let cid_cache = wing::register_connection(
-        g_e2e_client.pool, pkey, wing::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1000000000000,
+    let tp: net::Transport = net::Transport.Tcp { fd: c_fd };
+    let cid_cache = net::register_connection(
+        g_e2e_client.pool, pkey, net::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1000000000000,
     );
-    wing::release_connection(g_e2e_client.pool, cid_cache, 1000000000000);
+    net::release_connection(g_e2e_client.pool, cid_cache, 1000000000000);
 
     // Queue initial 200 OK (max-age=10, ETag="v42") and subsequent 304 Not Modified on the Keep-Alive socket
     var wire_200_and_304: u8[..1024] = [];
     wire_200_and_304.append("HTTP/1.1 200 OK\r\nETag: \"v42\"\r\nCache-Control: max-age=10\r\nX-Cache-Freshened: false\r\nContent-Length: 23\r\n\r\nCACHED_LIVE_PAYLOAD_V42");
     wire_200_and_304.append("HTTP/1.1 304 Not Modified\r\nETag: \"v42\"\r\nCache-Control: max-age=60\r\nX-Cache-Freshened: true\r\n\r\n");
-    assert(wing::tcp_send(s_fd, wire_200_and_304[..]) == wire_200_and_304.len);
+    assert(net::tcp_send(s_fd, wire_200_and_304[..]) == wire_200_and_304.len);
 
     var url_cache: u8[..128] = [];
     url_cache.append("http://127.0.0.1:");
@@ -878,62 +878,62 @@ fn test_live_http_cache_revalidation() {
     url_cache.append("/cache-item");
 
     // Step 1 (t = 1000s): Miss -> fetches 200 OK from socket and stores in cache
-    let req1 = wing::new_get(url_cache[..]);
-    let resp1, err1 = wing::execute_request(g_e2e_client, req1);
-    assert(wing::ok(err1) && resp1.status_code == 200);
+    let req1 = http::new_get(url_cache[..]);
+    let resp1, err1 = client::execute_request(g_e2e_client, req1);
+    assert(http::ok(err1) && resp1.status_code == 200);
     assert(resp1.body[..] == "CACHED_LIVE_PAYLOAD_V42");
     assert(resp1.header("x-cache-freshened") == "false");
 
     // Drain 1st request from `s_fd`
     var req1_wire: u8[..1024] = [];
-    let n_r1 = wing::tcp_recv(s_fd, req1_wire, 1024, 200);
+    let n_r1 = net::tcp_recv(s_fd, req1_wire, 1024, 200);
     assert(n_r1 > 0 && find_subslice(req1_wire[..n_r1], "If-None-Match") < 0);
 
     // Step 2 (t = 1005s, within max-age=10): Fresh hit -> served from cache WITHOUT touching socket!
     g_e2e_client.virtual_clock_us = 1005000000;
-    let resp2, err2 = wing::execute_request(g_e2e_client, req1);
-    assert(wing::ok(err2) && resp2.status_code == 200);
+    let resp2, err2 = client::execute_request(g_e2e_client, req1);
+    assert(http::ok(err2) && resp2.status_code == 200);
     assert(resp2.body[..] == "CACHED_LIVE_PAYLOAD_V42");
 
     // Step 3 (t = 1025s, past max-age=10): Stale -> sends conditional `If-None-Match: "v42"` over live socket,
     // receives `304 Not Modified`, and synthesizes freshened 200 OK with cached body + new headers!
     g_e2e_client.virtual_clock_us = 1025000000;
-    let resp3, err3 = wing::execute_request(g_e2e_client, req1);
-    assert(wing::ok(err3) && resp3.status_code == 200);
+    let resp3, err3 = client::execute_request(g_e2e_client, req1);
+    assert(http::ok(err3) && resp3.status_code == 200);
     assert(resp3.body[..] == "CACHED_LIVE_PAYLOAD_V42");
     assert(resp3.header("x-cache-freshened") == "true");
 
     // Verify the conditional request sent over `s_fd` against `accept_and_serve_one_e2e` (`handle_cacheable_resource`)!
     var req3_wire: u8[..1024] = [];
-    let n_r3 = wing::tcp_recv(s_fd, req3_wire, 1024, 200);
+    let n_r3 = net::tcp_recv(s_fd, req3_wire, 1024, 200);
     assert(n_r3 > 0 && find_subslice(req3_wire[..n_r3], "If-None-Match: \"v42\"") >= 0);
 
-    let v_c = wing::tcp_connect("127.0.0.1", srv_port, 200);
+    let v_c = net::tcp_connect("127.0.0.1", srv_port, 200);
     assert(v_c > 0);
-    assert(wing::tcp_send(v_c, req3_wire[..n_r3]) == n_r3);
+    assert(net::tcp_send(v_c, req3_wire[..n_r3]) == n_r3);
     assert(accept_and_serve_one_e2e(srv_lfd));
     assert(g_reval_hits == 1);
     var srv_304: u8[..1024] = [];
-    let n_s304 = wing::tcp_recv(v_c, srv_304, 1024, 200);
+    let n_s304 = net::tcp_recv(v_c, srv_304, 1024, 200);
     assert(n_s304 > 0 && find_subslice(srv_304[..n_s304], "304 Not Modified") >= 0);
 
-    wing::tcp_close(v_c);
-    wing::tcp_close(c_fd);
-    wing::tcp_close(s_fd);
-    wing::tcp_close(srv_lfd);
+    net::tcp_close(v_c);
+    net::tcp_close(c_fd);
+    net::tcp_close(s_fd);
+    net::tcp_close(srv_lfd);
     print("E2E_LIVE_HTTP_CACHE_REVALIDATION: OK");
 }
 
 // ---- 4. Live Client<->Server WebSocket (H1 & H2) + W3C SSE -----------------
 
 fn test_live_websocket_and_sse() {
-    let lfd = wing::tcp_listen("127.0.0.1", 0);
+    let lfd = net::tcp_listen("127.0.0.1", 0);
     assert(lfd > 0);
-    let port = wing::tcp_getsockname_port(lfd);
+    let port = net::tcp_getsockname_port(lfd);
 
     // 4A. Live RFC 6455 HTTP/1.1 WebSocket Handshake + Masked/Unmasked Frames + Ping/Pong + Close
-    let ws_c = wing::tcp_connect("127.0.0.1", port, 200);
-    let ws_s = wing::tcp_accept(lfd, 200);
+    let ws_c = net::tcp_connect("127.0.0.1", port, 200);
+    let ws_s = net::tcp_accept(lfd, 200);
     assert(ws_c > 0 && ws_s > 0);
 
     var cli_ws = realtime::new_websocket_session(true);
@@ -941,26 +941,26 @@ fn test_live_websocket_and_sse() {
     let client_key = "dGhlIHNhbXBsZSBub25jZQ==";
     var hs_req_wire: u8[..512] = [];
     realtime::build_handshake_request(cli_ws, "127.0.0.1", "/ws-live", client_key, hs_req_wire);
-    assert(wing::tcp_send(ws_c, hs_req_wire[..]) == hs_req_wire.len);
+    assert(net::tcp_send(ws_c, hs_req_wire[..]) == hs_req_wire.len);
 
     var srv_rx_hs: u8[..512] = [];
-    let n_hs = wing::tcp_recv(ws_s, srv_rx_hs, 512, 200);
+    let n_hs = net::tcp_recv(ws_s, srv_rx_hs, 512, 200);
     assert(n_hs == hs_req_wire.len);
-    var parsed_ws_req = wing::Request { .. };
-    let ok_p_ws, _ = wing::parse_http1_wire_request(srv_rx_hs[..n_hs], parsed_ws_req);
+    var parsed_ws_req = http::Request { .. };
+    let ok_p_ws, _ = server::parse_http1_wire_request(srv_rx_hs[..n_hs], parsed_ws_req);
     assert(ok_p_ws);
-    var ws_srv_res = wing::Response { .. };
+    var ws_srv_res = http::Response { .. };
     var srv_ws, ok_upg = realtime::ws_upgrade_request(parsed_ws_req, ws_srv_res, "chat");
     assert(ok_upg && ws_srv_res.status_code == 101 && srv_ws.subprotocol[..] == "chat");
 
     var hs_resp_wire: u8[..512] = [];
-    wing::serialize_http1_response(ws_srv_res, "goose-wing-e2e", hs_resp_wire);
-    assert(wing::tcp_send(ws_s, hs_resp_wire[..]) == hs_resp_wire.len);
+    server::serialize_http1_response(ws_srv_res, "goose-wing-e2e", hs_resp_wire);
+    assert(net::tcp_send(ws_s, hs_resp_wire[..]) == hs_resp_wire.len);
 
     var cli_rx_hs: u8[..512] = [];
-    let n_chs = wing::tcp_recv(ws_c, cli_rx_hs, 512, 200);
+    let n_chs = net::tcp_recv(ws_c, cli_rx_hs, 512, 200);
     assert(n_chs == hs_resp_wire.len);
-    var parsed_ws_res = wing::Response { .. };
+    var parsed_ws_res = http::Response { .. };
     assert(wing::parse_response_headers(cli_rx_hs[..n_chs - 4], parsed_ws_res));
     var expected_accept: u8[..64] = [];
     realtime::compute_websocket_accept(client_key, expected_accept);
@@ -969,10 +969,10 @@ fn test_live_websocket_and_sse() {
     // Client sends masked Text frame over live socket
     var cli_frame_wire: u8[..256] = [];
     realtime::send_text(cli_ws, "HELLO_WS_LIVE", cli_frame_wire);
-    assert(wing::tcp_send(ws_c, cli_frame_wire[..]) == cli_frame_wire.len);
+    assert(net::tcp_send(ws_c, cli_frame_wire[..]) == cli_frame_wire.len);
 
     var srv_ws_rx: u8[..256] = [];
-    let n_sws = wing::tcp_recv(ws_s, srv_ws_rx, 256, 200);
+    let n_sws = net::tcp_recv(ws_s, srv_ws_rx, 256, 200);
     assert(n_sws == cli_frame_wire.len);
 
     var srv_msg = realtime::WsMessage { .. };
@@ -981,18 +981,18 @@ fn test_live_websocket_and_sse() {
     assert(srv_msg.is_valid && srv_msg.opcode == rfc::WS_OPCODE_TEXT && srv_msg.data[..] == "HELLO_WS_LIVE");
 
     realtime::send_text(srv_ws, "ACK:HELLO_WS_LIVE", srv_reply);
-    assert(wing::tcp_send(ws_s, srv_reply[..]) == srv_reply.len);
+    assert(net::tcp_send(ws_s, srv_reply[..]) == srv_reply.len);
 
     var cli_ws_rx: u8[..256] = [];
-    let n_cws = wing::tcp_recv(ws_c, cli_ws_rx, 256, 200);
+    let n_cws = net::tcp_recv(ws_c, cli_ws_rx, 256, 200);
     assert(n_cws == srv_reply.len);
     var cli_msg = realtime::WsMessage { .. };
     var cli_reply: u8[..256] = [];
     assert(realtime::receive(cli_ws, cli_ws_rx[..n_cws], cli_msg, cli_reply));
     assert(cli_msg.is_valid && cli_msg.opcode == rfc::WS_OPCODE_TEXT && cli_msg.data[..] == "ACK:HELLO_WS_LIVE");
 
-    wing::tcp_close(ws_c);
-    wing::tcp_close(ws_s);
+    net::tcp_close(ws_c);
+    net::tcp_close(ws_s);
 
     // 4B. Live W3C Server-Sent Events (`SseSubscription` <-> live server with `Last-Event-ID` reconnect)
     var sub = realtime::new_sse_subscription();
@@ -1003,14 +1003,14 @@ fn test_live_websocket_and_sse() {
     var sse_wire1: u8[..512] = [];
     realtime::sse_build_request_headers(sub, host_hdr[..], "/events", sse_wire1);
 
-    let sse_c1 = wing::tcp_connect("127.0.0.1", port, 200);
+    let sse_c1 = net::tcp_connect("127.0.0.1", port, 200);
     assert(sse_c1 > 0);
-    assert(wing::tcp_send(sse_c1, sse_wire1[..]) == sse_wire1.len);
+    assert(net::tcp_send(sse_c1, sse_wire1[..]) == sse_wire1.len);
     assert(accept_and_serve_one_e2e(lfd));
 
     var sse_rx1: u8[..1024] = [];
-    let n_sse1 = wing::tcp_recv(sse_c1, sse_rx1, 1024, 200);
-    wing::tcp_close(sse_c1);
+    let n_sse1 = net::tcp_recv(sse_c1, sse_rx1, 1024, 200);
+    net::tcp_close(sse_c1);
     assert(n_sse1 > 0);
     let body_sep1 = find_subslice(sse_rx1[..n_sse1], "\r\n\r\n");
     assert(body_sep1 > 0);
@@ -1028,14 +1028,14 @@ fn test_live_websocket_and_sse() {
     realtime::sse_build_request_headers(sub, host_hdr[..], "/events", sse_wire2);
     assert(find_subslice(sse_wire2[..], "Last-Event-ID: ev-2") >= 0);
 
-    let sse_c2 = wing::tcp_connect("127.0.0.1", port, 200);
+    let sse_c2 = net::tcp_connect("127.0.0.1", port, 200);
     assert(sse_c2 > 0);
-    assert(wing::tcp_send(sse_c2, sse_wire2[..]) == sse_wire2.len);
+    assert(net::tcp_send(sse_c2, sse_wire2[..]) == sse_wire2.len);
     assert(accept_and_serve_one_e2e(lfd));
 
     var sse_rx2: u8[..1024] = [];
-    let n_sse2 = wing::tcp_recv(sse_c2, sse_rx2, 1024, 200);
-    wing::tcp_close(sse_c2);
+    let n_sse2 = net::tcp_recv(sse_c2, sse_rx2, 1024, 200);
+    net::tcp_close(sse_c2);
     assert(n_sse2 > 0);
     let body_sep2 = find_subslice(sse_rx2[..n_sse2], "\r\n\r\n");
     assert(body_sep2 > 0);
@@ -1044,41 +1044,41 @@ fn test_live_websocket_and_sse() {
     assert(events2.len == 1 && events2[0].event[..] == "resumed" && events2[0].data[..] == "after-ev-2" && events2[0].id[..] == "ev-3");
 
     // 4C. Live HTTP/2 Extended CONNECT (RFC 8441 `:protocol = websocket`) over TCP socket
-    let h2_c = wing::tcp_connect("127.0.0.1", port, 200);
-    let h2_s = wing::tcp_accept(lfd, 200);
+    let h2_c = net::tcp_connect("127.0.0.1", port, 200);
+    let h2_s = net::tcp_accept(lfd, 200);
     assert(h2_c > 0 && h2_s > 0);
 
-    var h2_ws_req = wing::Request { .. };
+    var h2_ws_req = http::Request { .. };
     realtime::format_h2_websocket_request(h2_ws_req, "/ws-h2", "127.0.0.1", "https", "chat");
-    var h2_ctx = wing::RequestExecutionContext { .. };
+    var h2_ctx = client::RequestExecutionContext { .. };
     h2_ctx.current_method.append("CONNECT");
-    wing::copy_headers(h2_ws_req.headers, h2_ctx.headers);
+    http::copy_headers(h2_ws_req.headers, h2_ctx.headers);
     let h2_url = core::new_url("https://127.0.0.1/ws-h2");
     var dt_cli = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var h2_wire: u8[..2048] = [];
-    assert(wing::encode_h2_client_request("CONNECT", h2_url, true, h2_ctx, dt_cli, 1, false, h2_wire));
-    assert(wing::tcp_send(h2_c, h2_wire[..]) == h2_wire.len);
+    assert(client::encode_h2_request("CONNECT", h2_url, true, h2_ctx, dt_cli, 1, false, h2_wire));
+    assert(net::tcp_send(h2_c, h2_wire[..]) == h2_wire.len);
 
     var h2_srv_rx: u8[..2048] = [];
-    let n_h2s = wing::tcp_recv(h2_s, h2_srv_rx, 2048, 200);
+    let n_h2s = net::tcp_recv(h2_s, h2_srv_rx, 2048, 200);
     assert(n_h2s == h2_wire.len);
     var fhdr, _, ok_fh = wire::parse_frame_header(h2_srv_rx[..9]);
     assert(ok_fh && fhdr.frame_type == rfc::H2_FRAME_HEADERS);
     var dt_srv = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var dec_pseudo = http2::PseudoHeaders { .. };
-    var dec_map = wing::HeaderMap { .. };
+    var dec_map = http::HeaderMap { .. };
     let dec_err = wire::decode_hpack_to_map(dt_srv, h2_srv_rx[9..9 + (fhdr.length as i64)], dec_pseudo, dec_map);
     assert(dec_err == rfc::H2_ERR_NO_ERROR);
     var st = server_internal::H2ServerStream { stream_id: 1, active: true, .. };
     assert(server_internal::apply_decoded_pseudo_to_stream(st, dec_pseudo));
-    wing::append_all_headers(dec_map, st.headers);
-    var h2_parsed_req = wing::new_request(st.method[..], st.path[..]);
+    http::append_all_headers(dec_map, st.headers);
+    var h2_parsed_req = http::new_request(st.method[..], st.path[..]);
     server_internal::copy_stream_headers_and_trailers(st, h2_parsed_req);
     assert(realtime::validate_h2_websocket_request(h2_parsed_req));
-    wing::tcp_close(h2_c);
-    wing::tcp_close(h2_s);
+    net::tcp_close(h2_c);
+    net::tcp_close(h2_s);
 
-    wing::tcp_close(lfd);
+    net::tcp_close(lfd);
     print("E2E_LIVE_WEBSOCKET_AND_SSE: OK");
 }
 
@@ -1086,15 +1086,15 @@ fn test_live_websocket_and_sse() {
 
 fn test_live_reverse_proxy_failover() {
     // Allocate a dead port by opening and immediately closing a listener
-    let dead_lfd = wing::tcp_listen("127.0.0.1", 0);
+    let dead_lfd = net::tcp_listen("127.0.0.1", 0);
     assert(dead_lfd > 0);
-    let dead_port = wing::tcp_getsockname_port(dead_lfd);
-    wing::tcp_close(dead_lfd);
+    let dead_port = net::tcp_getsockname_port(dead_lfd);
+    net::tcp_close(dead_lfd);
 
     // Live backend listener
-    let live_lfd = wing::tcp_listen("127.0.0.1", 0);
+    let live_lfd = net::tcp_listen("127.0.0.1", 0);
     assert(live_lfd > 0);
-    let live_port = wing::tcp_getsockname_port(live_lfd);
+    let live_port = net::tcp_getsockname_port(live_lfd);
 
     g_e2e_proxy = proxy::new_reverse_proxy(proxy::LbPolicy.RoundRobin);
     g_e2e_proxy.cluster.max_fails = 1;
@@ -1102,14 +1102,14 @@ fn test_live_reverse_proxy_failover() {
     assert(g_e2e_proxy.cluster.add_upstream_target("127.0.0.1", live_port, 1));
     g_e2e_proxy.cluster.targets[0].unhealthy_threshold = 1;
 
-    g_e2e_pool = wing::StreamPool { .. };
-    var in_hdrs = wing::HeaderMap { .. };
-    let _ = wing::append_header(in_hdrs, "Host", "edge.example.com");
-    let _ = wing::append_header(in_hdrs, "Connection", "keep-alive, x-secret-hop");
-    let _ = wing::append_header(in_hdrs, "X-Secret-Hop", "must-be-stripped");
+    g_e2e_pool = net::StreamPool { .. };
+    var in_hdrs = http::HeaderMap { .. };
+    let _ = http::append_header(in_hdrs, "Host", "edge.example.com");
+    let _ = http::append_header(in_hdrs, "Connection", "keep-alive, x-secret-hop");
+    let _ = http::append_header(in_hdrs, "X-Secret-Hop", "must-be-stripped");
 
     // Attempt 1 hits Target 0 (dead port), fails fast, and marks Target 0 unhealthy
-    var out_resp1 = wing::Response { .. };
+    var out_resp1 = http::Response { .. };
     let ok1 = g_e2e_proxy.execute_proxy_exchange(
         g_e2e_pool, "GET", "/proxy-target", in_hdrs, "198.51.100.77", "http", "", out_resp1, 150, 1000,
     );
@@ -1118,25 +1118,25 @@ fn test_live_reverse_proxy_failover() {
 
     // Pre-accept pooled backend connection for Target 1 so synchronous exchange completes
     // and we verify the exact upstream wire request on `accept_and_serve_one_e2e`!
-    let b_cli = wing::tcp_connect("127.0.0.1", live_port, 200);
-    let b_srv = wing::tcp_accept(live_lfd, 200);
+    let b_cli = net::tcp_connect("127.0.0.1", live_port, 200);
+    let b_srv = net::tcp_accept(live_lfd, 200);
     assert(b_cli > 0 && b_srv > 0);
 
-    let b_pkey = wing::new_pool_key(
-        wing::PoolScheme.Http, "127.0.0.1", live_port,
-        wing::new_direct_proxy_chain(),
-        wing::NetworkAnonymizationKey { .. },
-        wing::TlsAndDnsPolicy { .. },
+    let b_pkey = net::new_pool_key(
+        net::PoolScheme.Http, "127.0.0.1", live_port,
+        net::new_direct_proxy_chain(),
+        net::NetworkAnonymizationKey { .. },
+        net::TlsAndDnsPolicy { .. },
     );
-    let b_tp: wing::Transport = wing::Transport.Tcp { fd: b_cli };
-    let cid_b = wing::register_connection(g_e2e_pool, b_pkey, wing::NegotiatedProtocol.Http11, b_tp, "127.0.0.1", 1, 1000);
-    wing::release_connection(g_e2e_pool, cid_b, 1000);
+    let b_tp: net::Transport = net::Transport.Tcp { fd: b_cli };
+    let cid_b = net::register_connection(g_e2e_pool, b_pkey, net::NegotiatedProtocol.Http11, b_tp, "127.0.0.1", 1, 1000);
+    net::release_connection(g_e2e_pool, cid_b, 1000);
 
     let backend_wire_resp = "HTTP/1.1 200 OK\r\nX-Backend-Handled: true\r\nContent-Length: 16\r\n\r\nUPSTREAM_LIVE_OK";
-    assert(wing::tcp_send(b_srv, backend_wire_resp) == backend_wire_resp.len);
+    assert(net::tcp_send(b_srv, backend_wire_resp) == backend_wire_resp.len);
 
     // Attempt 2 automatically selects healthy Target 1 (`live_port`) and succeeds!
-    var out_resp2 = wing::Response { .. };
+    var out_resp2 = http::Response { .. };
     let ok2 = g_e2e_proxy.execute_proxy_exchange(
         g_e2e_pool, "GET", "/proxy-target", in_hdrs, "198.51.100.77", "http", "", out_resp2, 200, 2000,
     );
@@ -1147,21 +1147,21 @@ fn test_live_reverse_proxy_failover() {
     // Read the exact upstream request produced by `execute_proxy_exchange` on `b_srv`
     // and feed it into `accept_and_serve_one_e2e` (`handle_proxy_backend`) to verify XFF, Via, and hop-by-hop stripping!
     var up_req_wire: u8[..2048] = [];
-    let n_up = wing::tcp_recv(b_srv, up_req_wire, 2048, 200);
+    let n_up = net::tcp_recv(b_srv, up_req_wire, 2048, 200);
     assert(n_up > 0);
 
-    let v_c = wing::tcp_connect("127.0.0.1", live_port, 200);
+    let v_c = net::tcp_connect("127.0.0.1", live_port, 200);
     assert(v_c > 0);
-    assert(wing::tcp_send(v_c, up_req_wire[..n_up]) == n_up);
+    assert(net::tcp_send(v_c, up_req_wire[..n_up]) == n_up);
     assert(accept_and_serve_one_e2e(live_lfd));
     var srv_out: u8[..1024] = [];
-    let n_so = wing::tcp_recv(v_c, srv_out, 1024, 200);
+    let n_so = net::tcp_recv(v_c, srv_out, 1024, 200);
     assert(n_so > 0 && find_subslice(srv_out[..n_so], "UPSTREAM_LIVE_OK") >= 0);
 
-    wing::tcp_close(v_c);
-    wing::tcp_close(b_cli);
-    wing::tcp_close(b_srv);
-    wing::tcp_close(live_lfd);
+    net::tcp_close(v_c);
+    net::tcp_close(b_cli);
+    net::tcp_close(b_srv);
+    net::tcp_close(live_lfd);
     print("E2E_LIVE_REVERSE_PROXY_FAILOVER: OK");
 }
 
@@ -1189,12 +1189,12 @@ fn run_02_verify_live_e2e_workflows() {
 // pipeline stage ordering, TLS SNI routing, and TLS X.509 SAN connection coalescing).
 //
 
-var g_seam_server:  wing::HttpServer  = wing::new_http_server("goose-wing/1.0");
-var g_seam_session: wing::Session     = wing::new_session();
-var g_seam_pool:    wing::StreamPool  = wing::StreamPool { .. };
-var g_cli_h3:       http3::Connection = http3::Connection { .. };
-var g_srv_h3_1:     http3::Connection = http3::Connection { .. };
-var g_srv_h3_2:     http3::Connection = http3::Connection { .. };
+var g_seam_server:  server::HttpServer = server::new_http_server("goose-wing/1.0");
+var g_seam_session: client::Session    = client::new_session();
+var g_seam_pool:    net::StreamPool    = net::StreamPool { .. };
+var g_cli_h3:       http3::Connection  = http3::Connection { .. };
+var g_srv_h3_1:     http3::Connection  = http3::Connection { .. };
+var g_srv_h3_2:     http3::Connection  = http3::Connection { .. };
 
 // 1. Bug 1 & Bug 2: Client HTTP/2 multi-frame / multi-read response drain + trailing HEADERS (gRPC)
 fn test_client_h2_trailers_and_incremental_drain() {
@@ -1203,8 +1203,8 @@ fn test_client_h2_trailers_and_incremental_drain() {
 
     // Build initial response HEADERS (:status = 200, content-type = application/grpc) without END_STREAM
     var init_pseudo = http2::PseudoHeaders { has_status: true, status: 200, .. };
-    var init_hdrs = wing::HeaderMap { .. };
-    wing::append_header(init_hdrs, "content-type", "application/grpc");
+    var init_hdrs = http::HeaderMap { .. };
+    http::append_header(init_hdrs, "content-type", "application/grpc");
 
     var chunk1: u8[..1024] = [];
     assert(wire::encode_h2_headers_frame_from_map(enc_dt, 1, init_pseudo, init_hdrs, false, chunk1, 16384));
@@ -1214,43 +1214,43 @@ fn test_client_h2_trailers_and_incremental_drain() {
     assert(wire::encode_data_frame(1, "GRPC_PAYLOAD", false, chunk2));
 
     var trail_pseudo = http2::PseudoHeaders { is_trailer: true, .. };
-    var trail_hdrs = wing::HeaderMap { .. };
-    wing::append_header(trail_hdrs, "grpc-status", "0");
-    wing::append_header(trail_hdrs, "grpc-message", "OK");
+    var trail_hdrs = http::HeaderMap { .. };
+    http::append_header(trail_hdrs, "grpc-status", "0");
+    http::append_header(trail_hdrs, "grpc-message", "OK");
     assert(wire::encode_h2_headers_frame_from_map(enc_dt, 1, trail_pseudo, trail_hdrs, true, chunk2, 16384));
 
     // Feed chunk1 then chunk2 into rx_accum (simulating 2 socket reads in recv_h2_response_loop)
     var rx_accum: u8[..4096] = [];
-    var resp = wing::Response { .. };
-    var h2_state = wing::H2ClientRecvState { .. };
+    var resp = http::Response { .. };
+    var h2_state = client::H2RecvState { .. };
     var ctrl_out: u8[..256] = [];
 
     rx_accum.append(chunk1[..]);
-    let ok1, done1 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
-    assert(ok1 && !done1 && h2_state.got_hdrs);
+    let st1 = client::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
+    assert(st1 == client::H2RecvStatus.Continue && h2_state.got_hdrs);
     assert(rx_accum.len == 0); // Must drain consumed frame bytes so read 2 does not re-decode chunk1!
 
     rx_accum.append(chunk2[..]);
-    let ok2, done2 = wing::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
-    assert(ok2 && done2);
+    let st2 = client::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
+    assert(st2 == client::H2RecvStatus.Complete);
     assert(resp.status_code == 200);
-    assert(wing::header(resp, "content-type") == "application/grpc");
+    assert(http::header(resp, "content-type") == "application/grpc");
     assert(resp.body[..] == "GRPC_PAYLOAD");
-    assert(wing::trailer(resp, "grpc-status") == "0");
-    assert(wing::trailer(resp, "grpc-message") == "OK");
+    assert(http::trailer(resp, "grpc-status") == "0");
+    assert(http::trailer(resp, "grpc-message") == "OK");
     print("SEAM_H2_CLIENT_TRAILERS_DRAIN: OK");
 }
 
 // 2. Bug 3 & Bug 4: Client HTTP/3 request query string preservation + Server HTTP/3 trailers roundtrip
 fn test_h3_query_and_trailers_seam() {
-    assert(wing::add_static_route(g_seam_server.pipeline.router, "POST", "/grpc.Echo/Call", "application/grpc", "H3_GRPC_BODY", 77));
+    assert(server::add_static_route(g_seam_server.pipeline.router, "POST", "/grpc.Echo/Call", "application/grpc", "H3_GRPC_BODY", 77));
 
     // Client builds HTTP/3 request for URL with query string "?trace=99&mode=fast"
     let u = core::new_url("https://example.com/grpc.Echo/Call?trace=99&mode=fast");
-    var ctx = wing::RequestExecutionContext { .. };
+    var ctx = client::RequestExecutionContext { .. };
     ctx.current_method.append("POST");
     ctx.body.append("REQ_DATA");
-    wing::append_header(ctx.headers, "te", "trailers");
+    http::append_header(ctx.headers, "te", "trailers");
 
     let h3_settings = fingerprint::H3Settings { .. };
     g_cli_h3 = http3::new_client_connection(h3_settings);
@@ -1258,32 +1258,32 @@ fn test_h3_query_and_trailers_seam() {
     assert(ok_s && sid == 0);
 
     var req_wire: u8[..4096] = [];
-    assert(wing::encode_h3_client_request(g_cli_h3, sid, ctx, u, req_wire));
+    assert(client::encode_h3_request(g_cli_h3, sid, ctx, u, req_wire));
 
     g_srv_h3_1 = http3::new_server_connection(h3_settings);
     var tx_wire: u8[..4096] = [];
-    assert(wing::handle_h3_server_datagram(g_seam_server, g_srv_h3_1, sid, "127.0.0.1", req_wire[..], 1000, tx_wire));
+    assert(server::handle_h3_server_datagram(g_seam_server, g_srv_h3_1, sid, "127.0.0.1", req_wire[..], 1000, tx_wire));
 
     // Verify server received the full :path including "?trace=99&mode=fast"
     assert(g_srv_h3_1.streams[0].req_path[..] == "/grpc.Echo/Call?trace=99&mode=fast");
 
     // Verify server HTTP/3 response encoder emits trailing HEADERS when trailers are present
-    var srv_trailers = wing::HeaderMap { .. };
-    wing::append_header(srv_trailers, "grpc-status", "0");
+    var srv_trailers = http::HeaderMap { .. };
+    http::append_header(srv_trailers, "grpc-status", "0");
     var tx_with_trailers: u8[..4096] = [];
     g_srv_h3_2 = http3::new_server_connection(h3_settings);
     assert(http3::handle_stream_data(g_srv_h3_2, sid, true, req_wire[..], true) == rfc::H3_ERR_NO_ERROR);
-    var extra_hdrs = wing::HeaderMap { .. };
-    wing::append_header(extra_hdrs, "content-type", "application/grpc");
+    var extra_hdrs = http::HeaderMap { .. };
+    http::append_header(extra_hdrs, "content-type", "application/grpc");
     assert(http3::send_response_headers_body_and_trailers(
         g_srv_h3_2, sid, 200, extra_hdrs, "H3_GRPC_BODY", srv_trailers, tx_with_trailers,
     ));
 
     let h_err = http3::handle_stream_data(g_cli_h3, sid, true, tx_with_trailers[..], true);
     assert(h_err == rfc::H3_ERR_NO_ERROR);
-    var cli_trailers = wing::HeaderMap { .. };
+    var cli_trailers = http::HeaderMap { .. };
     assert(http3::copy_stream_trailers(g_cli_h3, sid, cli_trailers));
-    assert(wing::get_header(cli_trailers, "grpc-status") == "0");
+    assert(http::get_header(cli_trailers, "grpc-status") == "0");
     print("SEAM_H3_QUERY_AND_TRAILERS: OK");
 }
 
@@ -1293,14 +1293,14 @@ fn test_client_egress_pipeline_custom_order() {
     g_seam_session.wire_pipeline.egress_stages.clear();
     g_seam_session.wire_pipeline.egress_stages.push(wire::STAGE_ID_CLI_OUT_REDIRECT);
 
-    wing::mock_route(g_seam_session, "GET", "https://example.com/start", 302, "");
-    wing::add_mock_header(g_seam_session, "Location", "https://example.com/final");
-    wing::add_mock_set_cookie(g_seam_session, "skipped_cookie=1; Path=/");
-    wing::mock_route(g_seam_session, "GET", "https://example.com/final", 200, "done");
+    client::mock_route(g_seam_session, "GET", "https://example.com/start", 302, "");
+    client::add_mock_header(g_seam_session, "Location", "https://example.com/final");
+    client::add_mock_set_cookie(g_seam_session, "skipped_cookie=1; Path=/");
+    client::mock_route(g_seam_session, "GET", "https://example.com/final", 200, "done");
 
-    var req = wing::new_get("https://example.com/start");
-    let resp, err = wing::execute_request(g_seam_session, req);
-    assert(wing::ok(err) && resp.status_code == 200);
+    var req = http::new_get("https://example.com/start");
+    let resp, err = client::execute_request(g_seam_session, req);
+    assert(http::ok(err) && resp.status_code == 200);
     // Because STAGE_ID_CLI_OUT_COOKIE_STORE was omitted from egress_stages, cookie must not be stored
     assert(cookie::get(g_seam_session.jar, "skipped_cookie") == "");
     print("SEAM_CLIENT_EGRESS_STAGES_ORDER: OK");
@@ -1311,7 +1311,7 @@ fn test_server_tls_sni_extraction() {
     let client_random: u8[32] = [0x11; 32];
     let client_pub:    u8[32] = [0x22; 32];
     var ch_payload: u8[..2048] = [];
-    wing::build_tls13_client_hello_payload(
+    tls::build_client_hello_payload(
         client_random, client_pub, "Api.Example.COM", "h2,http/1.1", ch_payload,
     );
     var ch_msg: u8[..2048] = [];
@@ -1326,7 +1326,7 @@ fn test_server_tls_sni_extraction() {
     var psk_resumed: bool      = false;
     var psk_secret:  u8[32]    = [0; 32];
 
-    assert(wing::parse_client_hello_for_server_sni(
+    assert(tls::parse_client_hello_for_server_sni(
         ch_msg[..], "h2,http/1.1", sid, out_pub, out_alpn, out_sni, psk_resumed, psk_secret,
     ));
     assert(out_alpn[..] == "h2");
@@ -1338,25 +1338,25 @@ fn test_server_tls_sni_extraction() {
 fn test_tls_san_to_pool_coalescing() {
     let seed: u8[32] = [0x42; 32];
     var cert_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(seed, "example.com", "*.example.com", "93.184.216.34", cert_der));
+    assert(tls::build_test_ed25519_cert_der(seed, "example.com", "*.example.com", "93.184.216.34", cert_der));
 
-    let slot_idx = wing::alloc_tls_cipher_slot();
+    let slot_idx = tls::alloc_cipher_slot();
     assert(slot_idx != 0xFFFF);
-    assert(wing::tls_populate_slot_san_hosts_from_der(slot_idx, cert_der[..]));
+    assert(tls::populate_slot_san_hosts_from_der(slot_idx, cert_der[..]));
 
-    let direct_proxy = wing::new_direct_proxy_chain();
-    let nak = wing::NetworkAnonymizationKey { .. };
-    let pol = wing::TlsAndDnsPolicy { .. };
-    var key_a = wing::new_pool_key(wing::PoolScheme.Https, "a.example.com", 443, direct_proxy, nak, pol);
-    var key_b = wing::new_pool_key(wing::PoolScheme.Https, "b.example.com", 443, direct_proxy, nak, pol);
-    let tp = wing::Transport.Tls { fd: 99, record_seq_rx: 0, record_seq_tx: 0, cipher_slot: slot_idx };
+    let direct_proxy = net::new_direct_proxy_chain();
+    let nak = net::NetworkAnonymizationKey { .. };
+    let pol = net::TlsAndDnsPolicy { .. };
+    var key_a = net::new_pool_key(net::PoolScheme.Https, "a.example.com", 443, direct_proxy, nak, pol);
+    var key_b = net::new_pool_key(net::PoolScheme.Https, "b.example.com", 443, direct_proxy, nak, pol);
+    let tp = net::Transport.Tls { fd: 99, record_seq_rx: 0, record_seq_tx: 0, cipher_slot: slot_idx };
 
-    let cid = wing::register_connection(g_seam_pool, key_a, wing::NegotiatedProtocol.Http2, tp, "93.184.216.34", 100, 1000);
+    let cid = net::register_connection(g_seam_pool, key_a, net::NegotiatedProtocol.Http2, tp, "93.184.216.34", 100, 1000);
     assert(cid > 0);
-    let coalesced_id, ok_coal = wing::acquire_pooled_connection(g_seam_pool, key_b, "93.184.216.34", 1001);
+    let coalesced_id, ok_coal = net::acquire_pooled_connection(g_seam_pool, key_b, "93.184.216.34", 1001);
     assert(ok_coal && coalesced_id == cid);
 
-    wing::free_tls_cipher_slot(slot_idx);
+    tls::free_cipher_slot(slot_idx);
     print("SEAM_TLS_SAN_POOL_COALESCING: OK");
 }
 
@@ -1364,17 +1364,17 @@ struct TestCustomEchoStage {
     active: bool = true,
 }
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     _stage: TestCustomEchoStage&,
     phase:  wire::ServerHookPhase,
-    _cfg:   wing::ServerPipelineConfig&,
-    req:    const wing::Request&,
-    _ctx:   wing::ServerStageCtx&,
-    res:    wing::Response&,
+    _cfg:   server::ServerPipelineConfig&,
+    req:    const http::Request&,
+    _ctx:   server::ServerStageCtx&,
+    res:    http::Response&,
 ) -> wire::StageVerdict {
     if phase == wire::ServerHookPhase.PostAuth && req.url[..] == "/echo" {
         res.status_code = 200;
-        wing::set_header(res, "Content-Type", "text/plain");
+        http::set_header(res, "Content-Type", "text/plain");
         res.body.clear();
         res.body.append("ECHO:");
         res.body.append(req.body[..]);
@@ -1385,16 +1385,16 @@ fn wing::on_server_stage(
 
 // 6. Bug 8: Server custom <UserStage> hook phase and ShortCircuit verdict integration
 fn test_server_custom_stage_hook_seam() {
-    wing::add_post_route(g_seam_server, "/echo", 202);
-    var req = wing::new_request("POST", "/echo");
-    wing::append_header(req.headers, "Host", "example.com");
-    wing::append_header(req.headers, "Sec-Fetch-Site", "same-origin");
+    server::add_post_route(g_seam_server, "/echo", 202);
+    var req = http::new_request("POST", "/echo");
+    http::append_header(req.headers, "Host", "example.com");
+    http::append_header(req.headers, "Sec-Fetch-Site", "same-origin");
     req.body.append("payload42");
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     var echo_stage = TestCustomEchoStage { .. };
-    let outcome = wing::dispatch_server_request_with_stage(g_seam_server, "127.0.0.1", req, 2000, res, echo_stage);
-    assert(outcome == wing::PipelineOutcome.Handled);
+    let outcome = server::dispatch_server_request_with_stage(g_seam_server, "127.0.0.1", req, 2000, res, echo_stage);
+    assert(outcome == server::PipelineOutcome.Handled);
     assert(res.status_code == 200);
     assert(res.body[..] == "ECHO:payload42");
     print("SEAM_SERVER_CUSTOM_STAGE_HOOK: OK");
@@ -1403,7 +1403,7 @@ fn test_server_custom_stage_hook_seam() {
 var g_h2_srv_sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
 
 fn test_h2_server_flow_window_and_closed_stream_seams() {
-    wing::add_static_get_route(g_seam_server, "/ping", "text/plain", "PONG", 77);
+    server::add_static_get_route(g_seam_server, "/ping", "text/plain", "PONG", 77);
     var client_dt = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
 
     var wire1: u8[..256] = [];
@@ -1457,10 +1457,10 @@ fn test_h2_server_flow_window_and_closed_stream_seams() {
 // Seam 8: HTTP/2 client `recv_h2_response_loop` must continue reading across >16 sliced chunks
 // until END_STREAM (`done == true`) rather than truncating after 16 reads or returning after HEADERS-only.
 fn test_h2_client_sliced_stream_recv_seam() {
-    let cli_fd = wing::udp_bind("127.0.0.1", 0);
-    let srv_fd = wing::udp_bind("127.0.0.1", 0);
+    let cli_fd = net::udp_bind("127.0.0.1", 0);
+    let srv_fd = net::udp_bind("127.0.0.1", 0);
     assert(cli_fd > 0 && srv_fd > 0);
-    let cli_port = wing::tcp_getsockname_port(cli_fd);
+    let cli_port = net::tcp_getsockname_port(cli_fd);
 
     var srv_enc = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var hblock: u8[..128] = [];
@@ -1488,18 +1488,18 @@ fn test_h2_client_sliced_stream_recv_seam() {
 
     // Send 1 byte per datagram (> 50 datagrams total, exceeding the old 16-step cap)
     for i in wire.len {
-        let _ = wing::native_udp_sendto(srv_fd, wire[i..i + 1], "127.0.0.1", cli_port);
+        let _ = net_internal::native_udp_sendto(srv_fd, wire[i..i + 1], "127.0.0.1", cli_port);
     }
 
-    var conn = wing::PooledConnection {
-        transport: wing::Transport.Udp { fd: cli_fd, peer_ip4: 0x7F000001, peer_port: 9999 },
+    var conn = net::PooledConnection {
+        transport: net::Transport.Udp { fd: cli_fd, peer_ip4: 0x7F000001, peer_port: 9999 },
         hpack_dec: http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
         ..
     };
-    var resp = wing::Response { .. };
-    let ok_h2 = wing::recv_h2_response_loop(conn, 1, false, 200, resp);
-    wing::tcp_close(cli_fd);
-    wing::tcp_close(srv_fd);
+    var resp = http::Response { .. };
+    let ok_h2 = client::recv_h2_response_loop(conn, 1, false, 200, resp);
+    net::tcp_close(cli_fd);
+    net::tcp_close(srv_fd);
 
     assert(ok_h2);
     assert(resp.status_code == 200);
@@ -1514,39 +1514,39 @@ fn test_h1_client_last_response_header_preserved_seam() {
     let raw_rx = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: a=1\r\nConnection: close\r\n\r\nOK";
     let hdr_end_idx = core::fast_find_crlfcrlf(raw_rx);
     assert(hdr_end_idx > 0);
-    var resp = wing::Response { .. };
+    var resp = http::Response { .. };
     assert(wing::parse_response_headers(raw_rx[..hdr_end_idx], resp));
     assert(resp.status_code == 200);
     assert(resp.header("Content-Type") == "text/plain");
     assert(resp.header("Set-Cookie") == "a=1");
     assert(resp.header("Connection") == "close");
 
-    let lfd = wing::tcp_listen("127.0.0.1", 0);
+    let lfd = net::tcp_listen("127.0.0.1", 0);
     assert(lfd > 0);
-    let srv_port = wing::tcp_getsockname_port(lfd);
-    let cli_fd = wing::tcp_connect("127.0.0.1", srv_port, 200);
-    let srv_fd = wing::tcp_accept(lfd, 200);
+    let srv_port = net::tcp_getsockname_port(lfd);
+    let cli_fd = net::tcp_connect("127.0.0.1", srv_port, 200);
+    let srv_fd = net::tcp_accept(lfd, 200);
     assert(cli_fd > 0 && srv_fd > 0);
     let head_resp = "HTTP/1.1 200 OK\r\nContent-Length: 500\r\nConnection: close\r\n\r\n";
-    let _ = wing::tcp_send(srv_fd, head_resp);
+    let _ = net::tcp_send(srv_fd, head_resp);
 
     g_seam_session.timeout_ms = 200;
-    let pkey = wing::new_pool_key(
-        wing::PoolScheme.Http, "127.0.0.1", srv_port,
-        wing::new_direct_proxy_chain(),
-        wing::new_network_anonymization_key("127.0.0.1", false),
-        wing::TlsAndDnsPolicy { .. },
+    let pkey = net::new_pool_key(
+        net::PoolScheme.Http, "127.0.0.1", srv_port,
+        net::new_direct_proxy_chain(),
+        net::new_network_anonymization_key("127.0.0.1", false),
+        net::TlsAndDnsPolicy { .. },
     );
-    let tp: wing::Transport = wing::Transport.Tcp { fd: cli_fd };
-    let cid = wing::register_connection(g_seam_session.pool, pkey, wing::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1000);
-    var ctx = wing::RequestExecutionContext { .. };
+    let tp: net::Transport = net::Transport.Tcp { fd: cli_fd };
+    let cid = net::register_connection(g_seam_session.pool, pkey, net::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1000);
+    var ctx = client::RequestExecutionContext { .. };
     let u = core::new_url("http://127.0.0.1/head-check");
-    var hop_resp = wing::Response { .. };
-    let ok_hop = wing::dispatch_pooled_h1_hop(g_seam_session, cid, "HEAD", ctx, u, false, "http://127.0.0.1", "/head-check", 1, 1000, hop_resp);
+    var hop_resp = http::Response { .. };
+    let ok_hop = client::dispatch_pooled_h1_hop(g_seam_session, cid, "HEAD", ctx, u, false, "http://127.0.0.1", "/head-check", 1, 1000, hop_resp);
     var wire_req: u8[..512] = [];
-    let n_req = wing::tcp_recv(srv_fd, wire_req, 512, 100);
-    wing::tcp_close(srv_fd);
-    wing::tcp_close(lfd);
+    let n_req = net::tcp_recv(srv_fd, wire_req, 512, 100);
+    net::tcp_close(srv_fd);
+    net::tcp_close(lfd);
 
     assert(ok_hop);
     assert(n_req >= 16);
@@ -1575,7 +1575,7 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     let rnd:   u8[32] = [0x11; 32];
     let pub_k: u8[32] = [0x22; 32];
     var ch_body: u8[..512] = [];
-    wing::build_tls13_client_hello_payload(rnd, pub_k, "127.0.0.1", "h2", ch_body);
+    tls::build_client_hello_payload(rnd, pub_k, "127.0.0.1", "h2", ch_body);
     var ch_hs: u8[..520] = [];
     ch_hs.push(rfc::TLS_HS_CLIENT_HELLO);
     core::append_u24_be(ch_hs, ch_body.len as u32);
@@ -1586,15 +1586,15 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     var out_sni:     u8[..255] = [];
     var psk_resumed: bool      = false;
     var psk_secret:  u8[32]    = [0; 32];
-    assert(wing::parse_client_hello_for_server_sni(
+    assert(tls::parse_client_hello_for_server_sni(
         ch_hs[..], "h2,http/1.1", sid, out_pub, out_alpn, out_sni, psk_resumed, psk_secret,
     ));
     assert(out_sni.len == 0);
 
     var enc = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
-    var big_res = wing::Response { status_code: 200, .. };
-    let _ = wing::append_header(big_res.headers, "content-type", "application/grpc");
-    let _ = wing::append_header(big_res.trailers, "grpc-status", "0");
+    var big_res = http::Response { status_code: 200, .. };
+    let _ = http::append_header(big_res.headers, "content-type", "application/grpc");
+    let _ = http::append_header(big_res.trailers, "grpc-status", "0");
     for i in 20000 {
         let _ = i;
         big_res.body.push('A');
@@ -1618,11 +1618,11 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     let _ = grpc::register_unary(disp, "test.Echo", "Unary", 1);
     var hdec = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var henc = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
-    var pending = wing::Request { .. };
+    var pending = http::Request { .. };
     var pending_stream_id: u32 = 1;
     let _ = pending.method.try_set("POST");
     let _ = pending.url.try_set("/test.Echo/Unary");
-    let _ = wing::append_header(pending.headers, "content-type", "application/grpc");
+    let _ = http::append_header(pending.headers, "content-type", "application/grpc");
     var wire_out: u8[..65536] = [];
     let hdr_part1 = wire::WireFrameHeader { length: 5, frame_type: rfc::H2_FRAME_DATA, flags: 0, stream_id: 1 };
     let lpm_prefix: u8[5] = [0, 0, 0, 0, 4];
@@ -1633,20 +1633,20 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     assert(wire_out.len > 0);
 
     // Seam 18: `tls_send_encrypted_record` must allocate `payload.len + 22` bytes (5-byte header + 1-byte inner type + 16-byte tag)
-    let lfd_tls = wing::tcp_listen("127.0.0.1", 0);
+    let lfd_tls = net::tcp_listen("127.0.0.1", 0);
     assert(lfd_tls > 0);
-    let tls_port = wing::tcp_getsockname_port(lfd_tls);
-    let cfd_tls = wing::tcp_connect("127.0.0.1", tls_port, 200);
-    let sfd_tls = wing::tcp_accept(lfd_tls, 200);
+    let tls_port = net::tcp_getsockname_port(lfd_tls);
+    let cfd_tls = net::tcp_connect("127.0.0.1", tls_port, 200);
+    let sfd_tls = net::tcp_accept(lfd_tls, 200);
     assert(cfd_tls > 0 && sfd_tls > 0);
-    let slot_t = wing::alloc_tls_cipher_slot();
-    wing::g_tls_cipher_slots[slot_t as i64].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
-    wing::g_tls_cipher_slots[slot_t as i64].key_len = 16;
-    assert(wing::tls_send_encrypted_record(cfd_tls, slot_t, rfc::TLS_CONTENT_APPLICATION_DATA, "HELLO_TLS13"));
-    wing::free_tls_cipher_slot(slot_t);
-    wing::tcp_close(cfd_tls);
-    wing::tcp_close(sfd_tls);
-    wing::tcp_close(lfd_tls);
+    let slot_t = tls::alloc_cipher_slot();
+    tls::g_tls_cipher_slots[slot_t as i64].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
+    tls::g_tls_cipher_slots[slot_t as i64].key_len = 16;
+    assert(tls::send_encrypted_record(cfd_tls, slot_t, rfc::TLS_CONTENT_APPLICATION_DATA, "HELLO_TLS13"));
+    tls::free_cipher_slot(slot_t);
+    net::tcp_close(cfd_tls);
+    net::tcp_close(sfd_tls);
+    net::tcp_close(lfd_tls);
     print("SEAM_GRPC_H2_LARGE_AND_SNI_IP: OK");
 }
 
@@ -1658,46 +1658,46 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
 //   pseudo-headers, and `H2ServerSession` must preserve `:protocol`, `:scheme`, `:path`, `:authority`
 //   on `req.headers` for `validate_h2_websocket_handshake`.
 fn test_proxy_cache_h2_extended_connect_seams() {
-    g_seam_session = wing::Client { .. };
+    g_seam_session = client::Client { .. };
     g_seam_session.virtual_clock_us = 0;
     g_seam_session.enable_cache = true;
     let parsed_root = core::new_url("http://127.0.0.1:18080");
-    var req_root = wing::new_request("GET", "http://127.0.0.1:18080");
-    var cached_resp = wing::Response { status_code: 200, .. };
-    let _ = wing::append_header(cached_resp.headers, "Cache-Control", "max-age=60");
-    let _ = wing::append_header(cached_resp.headers, "ETag", "\"v1\"");
+    var req_root = http::new_request("GET", "http://127.0.0.1:18080");
+    var cached_resp = http::Response { status_code: 200, .. };
+    let _ = http::append_header(cached_resp.headers, "Cache-Control", "max-age=60");
+    let _ = http::append_header(cached_resp.headers, "ETag", "\"v1\"");
     cached_resp.body.append("CACHED_ROOT_PAYLOAD");
-    var ts = wing::CacheTimestamps { .. };
-    let _ = wing::stage_client_cache_store(
+    var ts = http::CacheTimestamps { .. };
+    let _ = client::stage_cache_store(
         req_root, req_root.headers, parsed_root.href[..], "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
     );
 
-    let early_resp, early_err = wing::execute_request(g_seam_session, req_root);
-    assert(wing::ok(early_err) && early_resp.status_code == 200);
+    let early_resp, early_err = client::execute_request(g_seam_session, req_root);
+    assert(http::ok(early_err) && early_resp.status_code == 200);
     assert(early_resp.body[..] == "CACHED_ROOT_PAYLOAD");
 
-    var ws_req = wing::Request { .. };
+    var ws_req = http::Request { .. };
     realtime::format_h2_websocket_request(ws_req, "/ws", "127.0.0.1:18080", "http", "chat");
-    var ws_ctx = wing::RequestExecutionContext { .. };
-    wing::copy_headers(ws_req.headers, ws_ctx.headers);
+    var ws_ctx = client::RequestExecutionContext { .. };
+    http::copy_headers(ws_req.headers, ws_ctx.headers);
     let u_ws = core::new_url("http://127.0.0.1:18080/ws");
     var dt_cli = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var h2_wire: u8[..4096] = [];
-    assert(wing::encode_h2_client_request("CONNECT", u_ws, false, ws_ctx, dt_cli, 1, false, h2_wire));
+    assert(client::encode_h2_request("CONNECT", u_ws, false, ws_ctx, dt_cli, 1, false, h2_wire));
 
     var fhdr, _, ok_fh = wire::parse_frame_header(h2_wire[..9]);
     assert(ok_fh && fhdr.frame_type == rfc::H2_FRAME_HEADERS);
     var dt_srv = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var dec_pseudo = http2::PseudoHeaders { .. };
-    var dec_map = wing::HeaderMap { .. };
+    var dec_map = http::HeaderMap { .. };
     let dec_err = wire::decode_hpack_to_map(dt_srv, h2_wire[9..9 + (fhdr.length as i64)], dec_pseudo, dec_map);
     assert(dec_err == rfc::H2_ERR_NO_ERROR);
     assert(dec_pseudo.has_protocol && dec_pseudo.protocol[..] == "websocket");
 
     var st = server_internal::H2ServerStream { stream_id: 1, active: true, .. };
     assert(server_internal::apply_decoded_pseudo_to_stream(st, dec_pseudo));
-    wing::append_all_headers(dec_map, st.headers);
-    var srv_req = wing::new_request(st.method[..], st.path[..]);
+    http::append_all_headers(dec_map, st.headers);
+    var srv_req = http::new_request(st.method[..], st.path[..]);
     server_internal::copy_stream_headers_and_trailers(st, srv_req);
     assert(realtime::validate_h2_websocket_request(srv_req));
     print("SEAM_PROXY_CACHE_H2_EXT_CONNECT: OK");
@@ -1739,14 +1739,14 @@ fn run_03_verify_module_seams_regress() {
 //
 
 fn test_snippet_1_http_client() {
-    var sess = wing::new_session("https://api.example.com") { s =>
+    var sess = client::new_session("https://api.example.com") { s =>
         s.set_profile(fingerprint::Profile.Wing);
         s.set_timeout_ms(5000);
         s.default_header("Accept", "application/json");
     };
 
     // Install mock route for offline CI execution
-    wing::mock_route(sess, "GET", "https://api.example.com/v1/status", 200, "{\"status\":\"ok\"}");
+    client::mock_route(sess, "GET", "https://api.example.com/v1/status", 200, "{\"status\":\"ok\"}");
 
     let res, err = sess.get("/v1/status");
     assert(err.ok());
@@ -1757,7 +1757,7 @@ fn test_snippet_1_http_client() {
 }
 
 fn test_snippet_2_http_server() {
-    var server = wing::new_http_server("127.0.0.1", 8080);
+    var server = server::new_http_server("127.0.0.1", 8080);
 
     // Register routes with zero-allocation parameters
     server.add_get_route("/api/v1/users/{id}", 1);
@@ -1933,12 +1933,12 @@ fn bench_tls_record_parsing() {
     let iters:   i64   = 5000;
 
     for _ in 100 {
-        let _ = wing::parse_tls_record_header(raw_rec[..]);
+        let _ = tls::parse_record_header(raw_rec[..]);
     }
 
     let t0 = core::monotonic_now().nanos;
     for _ in iters {
-        let ct, _, len, _, ok = wing::parse_tls_record_header(raw_rec[..]);
+        let ct, _, len, _, ok = tls::parse_record_header(raw_rec[..]);
         assert(ok && ct == 0x17 && len == 256);
     }
     let t1 = core::monotonic_now().nanos;
@@ -2069,8 +2069,8 @@ fn run_07_verify_wire_bounds() {
     // Case 6 (F-WIRE-001): encode_h1_response fails closed and rolls back on small buffer overflow
     var small_h1: u8[..32] = [];
     small_h1.append("PREFIX");
-    var h1_hdrs = wing::HeaderMap { .. };
-    wing::append_header(h1_hdrs, "X-Long-Header", "0123456789abcdef0123456789abcdef");
+    var h1_hdrs = http::HeaderMap { .. };
+    http::append_header(h1_hdrs, "X-Long-Header", "0123456789abcdef0123456789abcdef");
     assert(!wire::encode_h1_response(200, "OK", "goose-wing", h1_hdrs, "hello", false, small_h1));
     assert(small_h1[..] == "PREFIX");
     assert(!wire::encode_h1_request(
@@ -2083,7 +2083,7 @@ fn run_07_verify_wire_bounds() {
 
     // Case 7 (F-WIRE-002): Host header rejects control bytes/spaces & decode_h1_response_head returns MalformedStatusLine
     var host_out: u8[..128] = [];
-    let empty_hdrs = wing::HeaderMap { .. };
+    let empty_hdrs = http::HeaderMap { .. };
     assert(!wire::encode_h1_request(
         "GET", "/", "bad host.example.com", empty_hdrs, "",
         wire::H1HeaderFilterMode.PreserveAll, host_out,
@@ -2093,9 +2093,9 @@ fn run_07_verify_wire_bounds() {
         wire::H1HeaderFilterMode.PreserveAll, host_out,
     ));
     var bad_status: u16 = 0;
-    var parsed_hdrs = wing::HeaderMap { .. };
+    var parsed_hdrs = http::HeaderMap { .. };
     let _, bad_st_err = wire::decode_h1_response_head("HTTP/2.0 200 OK\r\n\r\n", bad_status, parsed_hdrs);
-    assert(bad_st_err == wing::HeaderParseError.MalformedStatusLine);
+    assert(bad_st_err == http::HeaderParseError.MalformedStatusLine);
     print("H1_HOST_AND_STATUS_LINE_BOUNDS: OK\n");
     // CHECK: H1_HOST_AND_STATUS_LINE_BOUNDS: OK
 
@@ -2123,8 +2123,8 @@ fn run_07_verify_wire_bounds() {
     assert(tight_h2[..] == "AB");
     var cont_dt = http2::new_dynamic_table(4096);
     var cont_pseudo = http2::PseudoHeaders { has_status: true, status: 200, .. };
-    var cont_hdrs = wing::HeaderMap { .. };
-    wing::append_header(cont_hdrs, "x-cont-test", "0123456789abcdef0123456789abcdef");
+    var cont_hdrs = http::HeaderMap { .. };
+    http::append_header(cont_hdrs, "x-cont-test", "0123456789abcdef0123456789abcdef");
     var cont_out: u8[..256] = [];
     assert(wire::encode_h2_headers_frame_from_map(cont_dt, 1, cont_pseudo, cont_hdrs, true, cont_out, 16));
     var f_reader = wire::new_wire_h2_frame_reader(cont_out[..]);
@@ -2182,9 +2182,9 @@ fn decode_grpc_lpm_len(buf: const u8[:]) -> i32 {
 }
 
 fn validate_tls_record_header(buf: const u8[:]) -> i32 {
-    let ctype, _, _, alert, ok = wing::parse_tls_record_header(buf);
+    let ctype, _, _, alert, ok = tls::parse_record_header(buf);
     guard ok else {
-        if alert == wing::TlsAlert.RecordOverflow {
+        if alert == tls::Alert.RecordOverflow {
             return 22;
         }
         return -1;
@@ -2199,33 +2199,33 @@ fn verify_h1_wire_parsers() {
     assert(fn_ok && fn_len == 14);
     let _, bad_fn = wire::scan_h1_wire_field_name("Bad@Header-Name: val\r\n");
     assert(!bad_fn);
-    let _, bad_swar = wing::scan_header_field_name_swar("Bad/Header-Name: val\r\n");
+    let _, bad_swar = http::scan_header_field_name_swar("Bad/Header-Name: val\r\n");
     assert(!bad_swar);
 
-    let m_conn, l_conn, ok_conn = wing::match_http_method_u32("CONNECT authority:443 HTTP/1.1\r\n");
+    let m_conn, l_conn, ok_conn = http::match_http_method_u32("CONNECT authority:443 HTTP/1.1\r\n");
     assert(ok_conn && m_conn == "CONNECT" && l_conn == 8);
-    let m_opt, l_opt, ok_opt = wing::match_http_method_u32("OPTIONS * HTTP/1.1\r\n");
+    let m_opt, l_opt, ok_opt = http::match_http_method_u32("OPTIONS * HTTP/1.1\r\n");
     assert(ok_opt && m_opt == "OPTIONS" && l_opt == 8);
-    let m_trc, l_trc, ok_trc = wing::match_http_method_u32("TRACE / HTTP/1.1\r\n");
+    let m_trc, l_trc, ok_trc = http::match_http_method_u32("TRACE / HTTP/1.1\r\n");
     assert(ok_trc && m_trc == "TRACE" && l_trc == 6);
-    let m_pat, l_pat, ok_pat = wing::match_http_method_u32("PATCH /item HTTP/1.1\r\n");
+    let m_pat, l_pat, ok_pat = http::match_http_method_u32("PATCH /item HTTP/1.1\r\n");
     assert(ok_pat && m_pat == "PATCH" && l_pat == 6);
 
-    var req_map = wing::HeaderMap { .. };
-    let req_err = wing::parse_request_headers("\r\nGET / HTTP/1.1\r\nHost: example.com\r\n\r\n", req_map);
-    assert(req_err == wing::HeaderParseError.None && wing::get_header(req_map, "host") == "example.com");
+    var req_map = http::HeaderMap { .. };
+    let req_err = http::parse_request_headers("\r\nGET / HTTP/1.1\r\nHost: example.com\r\n\r\n", req_map);
+    assert(req_err == http::HeaderParseError.None && http::get_header(req_map, "host") == "example.com");
 
-    var res_map = wing::HeaderMap { .. };
-    let res_err = wing::parse_response_headers_with_mode(
+    var res_map = http::HeaderMap { .. };
+    let res_err = http::parse_response_headers_with_mode(
         "ICY 200 OK\r\nicy-name : stream\r\n\r\n",
         res_map,
-        wing::H1ResponseParseMode.ClientCompat,
+        http::H1ResponseParseMode.ClientCompat,
     );
-    assert(res_err == wing::HeaderParseError.None && res_map.status_code == 200);
-    assert(wing::get_header(res_map, "icy-name") == "stream");
+    assert(res_err == http::HeaderParseError.None && res_map.status_code == 200);
+    assert(http::get_header(res_map, "icy-name") == "stream");
 
-    assert(wing::is_chunk_overhead_excessive(120000, 102400));
-    assert(!wing::is_chunk_overhead_excessive(500000, 102400));
+    assert(http::is_chunk_overhead_excessive(120000, 102400));
+    assert(!http::is_chunk_overhead_excessive(500000, 102400));
     print("H1_WIRE_PARSERS: OK");
 }
 
@@ -2258,12 +2258,12 @@ fn run_08_verify_wire_framing() {
     let key: u8[16] = [0; 16];
     let iv:  u8[12] = [0; 12];
     var sealed: u8[64] = [0; 64];
-    let sealed_len, seal_alert, ok_seal = wing::tls_record_seal_aes128_gcm_into(
+    let sealed_len, seal_alert, ok_seal = tls::record_seal_aes128_gcm_into(
         key, iv, 0, rfc::TLS_CONTENT_APPLICATION_DATA, "ping", sealed[..],
     );
-    assert(ok_seal && seal_alert == wing::TlsAlert.CloseNotify && sealed_len == 26);
+    assert(ok_seal && seal_alert == tls::Alert.CloseNotify && sealed_len == 26);
     var dec: u8[64] = [0; 64];
-    let dec_len, inner_t, _, ok_dec = wing::tls_record_decrypt_aes128_gcm_into(
+    let dec_len, inner_t, _, ok_dec = tls::record_decrypt_aes128_gcm_into(
         key, iv, 0, sealed[..5], sealed[5..26], dec[..],
     );
     assert(ok_dec && dec_len == 4 && inner_t == rfc::TLS_CONTENT_APPLICATION_DATA && dec[..4] == "ping");
@@ -2325,9 +2325,9 @@ fn encode_client_request_headers<B>(
 fn test_h2_wire_loopback() {
     var client_hpack = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "GET", "/api/ping", 200);
+    server::add_route(pipeline.router, "GET", "/api/ping", 200);
 
     // Client encodes raw wire stream
     var client_to_server: u8[..1024] = [];
@@ -2383,7 +2383,7 @@ fn test_h2_wire_loopback() {
 
     // Decode response HPACK header block
     var dec_pseudo = http2::PseudoHeaders { .. };
-    var dec_resp = wing::HeaderMap { .. };
+    var dec_resp = http::HeaderMap { .. };
     let hpack_payload = resp_slice[9..9 + r_hdr.length];
     let hpack_err = http2::decode_hpack_to_map(client_hpack, hpack_payload, dec_pseudo, dec_resp);
     assert(hpack_err == rfc::H2_ERR_NO_ERROR);
@@ -2445,8 +2445,8 @@ fn test_h3_wire_loopback() {
     // 2. Request Stream (Stream ID 0, Bidirectional) with HEADERS frame
     // Encode with QPACK including a custom header (`x-loopback-id: 42`) and verify lossless HeaderMap extraction
     var cli_qpack = http3::new_qpack_table(0);
-    var req_hdrs = wing::HeaderMap { .. };
-    wing::append_header(req_hdrs, "x-loopback-id", "42");
+    var req_hdrs = http::HeaderMap { .. };
+    http::append_header(req_hdrs, "x-loopback-id", "42");
     var req_pseudo = http3::PseudoHeaders {
         has_method:    true,
         method:        "GET",
@@ -2468,7 +2468,7 @@ fn test_h3_wire_loopback() {
     let s_idx, found = http3::find_stream_idx(server_conn, 0);
     assert(found);
     assert(server_conn.streams[s_idx].headers_received);
-    assert(wing::get_header(server_conn.streams[s_idx].headers, "x-loopback-id") == "42");
+    assert(http::get_header(server_conn.streams[s_idx].headers, "x-loopback-id") == "42");
 
     // 3. DATA frame with payload "HELLO_H3"
     let body = "HELLO_H3";
@@ -2505,15 +2505,15 @@ fn run_09_verify_wire_loopback() {
 fn test_f_wire_008_transactional_hpack_qpack_tables() {
     var dt = http2::new_dynamic_table(4096);
     var pseudo = http2::PseudoHeaders { has_status: true, status: 200, .. };
-    var hdrs = wing::HeaderMap { .. };
-    wing::append_header(hdrs, "x-first-ok", " indexed-val-1");
-    wing::append_header(hdrs, "x-second-long", "0123456789abcdef0123456789abcdef");
+    var hdrs = http::HeaderMap { .. };
+    http::append_header(hdrs, "x-first-ok", " indexed-val-1");
+    http::append_header(hdrs, "x-second-long", "0123456789abcdef0123456789abcdef");
 
     // 1. encode_hpack_from_map fails on small buffer after inserting first header into `dt`
     var tiny_out: u8[..24] = [];
-    var ok_h2_hdrs = wing::HeaderMap { .. };
-    wing::append_header(ok_h2_hdrs, "x-first-ok", "indexed-val-1");
-    wing::append_header(ok_h2_hdrs, "x-second-long", "0123456789abcdef0123456789abcdef");
+    var ok_h2_hdrs = http::HeaderMap { .. };
+    http::append_header(ok_h2_hdrs, "x-first-ok", "indexed-val-1");
+    http::append_header(ok_h2_hdrs, "x-second-long", "0123456789abcdef0123456789abcdef");
     assert(!wire::encode_hpack_from_map(dt, pseudo, ok_h2_hdrs, tiny_out, false));
     assert(dt.count == 0 && dt.used_bytes == 0);
 
@@ -2542,12 +2542,12 @@ fn test_f_wire_009_qpack_sensitive_and_rfc_headers() {
     var qtbl_dec = http3::new_qpack_table(4096);
     let _ = http3::qpack_set_capacity(qtbl_dec, 4096);
 
-    var req_hdrs = wing::HeaderMap { .. };
-    wing::append_header(req_hdrs, "Authorization", "Bearer secret-jwt");
-    wing::set_header(req_hdrs, "X-Api-Secret", "top-secret-key", true);
-    wing::append_header(req_hdrs, "Connection", "x-internal-hop, keep-alive");
-    wing::append_header(req_hdrs, "X-Internal-Hop", "must-be-stripped");
-    wing::append_header(req_hdrs, "TE", "TRAILERS");
+    var req_hdrs = http::HeaderMap { .. };
+    http::append_header(req_hdrs, "Authorization", "Bearer secret-jwt");
+    http::set_header(req_hdrs, "X-Api-Secret", "top-secret-key", true);
+    http::append_header(req_hdrs, "Connection", "x-internal-hop, keep-alive");
+    http::append_header(req_hdrs, "X-Internal-Hop", "must-be-stripped");
+    http::append_header(req_hdrs, "TE", "TRAILERS");
 
     var req_pseudo = http3::PseudoHeaders {
         has_method:    true,
@@ -2575,16 +2575,16 @@ fn test_f_wire_009_qpack_sensitive_and_rfc_headers() {
         q_off = next_off;
     }
     var dec_qpseudo = http3::PseudoHeaders { .. };
-    var dec_qmap = wing::HeaderMap { .. };
+    var dec_qmap = http::HeaderMap { .. };
     let q_err = wire::decode_h3_headers_to_map(qtbl_dec, 0, q_frame[2..], dec_qpseudo, dec_qmap);
     assert(q_err == http3::QpackError.None);
-    assert(!wing::has_header(dec_qmap, "x-internal-hop"));
-    assert(wing::get_header(dec_qmap, "te") == "trailers");
+    assert(!http::has_header(dec_qmap, "x-internal-hop"));
+    assert(http::get_header(dec_qmap, "te") == "trailers");
     // Custom sensitive header must preserve HEADER_FLAG_SENSITIVE across QPACK N-bit round-trip
     var found_sens = false;
     for &e in dec_qmap.entries {
-        if wing::entry_name(dec_qmap, e) == "x-api-secret" {
-            found_sens = wing::is_sensitive(e);
+        if http::entry_name(dec_qmap, e) == "x-api-secret" {
+            found_sens = http::is_sensitive(e);
         }
     }
     assert(found_sens);
@@ -2606,13 +2606,13 @@ fn test_f_wire_009_qpack_sensitive_and_rfc_headers() {
     var h2_buf: u8[..512] = [];
     assert(wire::encode_hpack_from_map(h2_dt_enc, h2_req_pseudo, req_hdrs, h2_buf, false));
     var dec_h2_pseudo = http2::PseudoHeaders { .. };
-    var dec_h2_map = wing::HeaderMap { .. };
+    var dec_h2_map = http::HeaderMap { .. };
     assert(wire::decode_hpack_to_map(h2_dt_dec, h2_buf[..], dec_h2_pseudo, dec_h2_map) == rfc::H2_ERR_NO_ERROR);
-    assert(!wing::has_header(dec_h2_map, "x-internal-hop"));
-    assert(wing::get_header(dec_h2_map, "te") == "trailers");
+    assert(!http::has_header(dec_h2_map, "x-internal-hop"));
+    assert(http::get_header(dec_h2_map, "te") == "trailers");
 
     // Status 101 (Switching Protocols) must be rejected by both H2 and H3 encoders (RFC 9113 §8.3.2, RFC 9114 §4.3.2)
-    let empty_map = wing::HeaderMap { .. };
+    let empty_map = http::HeaderMap { .. };
     let st101_h2 = http2::PseudoHeaders { has_status: true, status: 101, .. };
     let st101_h3 = http3::PseudoHeaders { has_status: true, status: 101, .. };
     h2_buf.clear();
@@ -2637,27 +2637,27 @@ fn test_f_wire_009_qpack_sensitive_and_rfc_headers() {
 // F-WIRE-010: HTTP/1.1 decode_h1_response_head HeaderMap status/version sync & smuggling rejection.
 fn test_f_wire_010_h1_head_sync_and_smuggling() {
     var status: u16 = 0;
-    var hdrs = wing::HeaderMap { .. };
+    var hdrs = http::HeaderMap { .. };
     let consumed, err = wire::decode_h1_response_head("HTTP/1.0 404 Not Found\r\nServer: wing\r\n\r\n", status, hdrs);
-    assert(err == wing::HeaderParseError.None && consumed > 0 && status == 404);
+    assert(err == http::HeaderParseError.None && consumed > 0 && status == 404);
     assert(hdrs.status_code == 404 && hdrs.http_major == 1 && hdrs.http_minor == 0);
 
     // On header parse error after status line, `status` must reset to 0
     let _, bad_hdr_err = wire::decode_h1_response_head(
         "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n", status, hdrs,
     );
-    assert(bad_hdr_err != wing::HeaderParseError.None && status == 0);
+    assert(bad_hdr_err != http::HeaderParseError.None && status == 0);
 
     // encode_h1_request / encode_h1_response must reject CL + TE smuggling and conflicting Content-Length
-    var smuggle_hdrs = wing::HeaderMap { .. };
-    wing::append_header(smuggle_hdrs, "Content-Length", "5");
-    wing::append_header(smuggle_hdrs, "Transfer-Encoding", "chunked");
+    var smuggle_hdrs = http::HeaderMap { .. };
+    http::append_header(smuggle_hdrs, "Content-Length", "5");
+    http::append_header(smuggle_hdrs, "Transfer-Encoding", "chunked");
     var h1_out: u8[..256] = [];
     assert(!wire::encode_h1_request("POST", "/upload", "example.com", smuggle_hdrs, "hello", wire::H1HeaderFilterMode.PreserveAll, h1_out));
     assert(!wire::encode_h1_response(200, "OK", "wing", smuggle_hdrs, "hello", false, h1_out));
 
-    var mismatch_cl = wing::HeaderMap { .. };
-    wing::append_header(mismatch_cl, "Content-Length", "99");
+    var mismatch_cl = http::HeaderMap { .. };
+    http::append_header(mismatch_cl, "Content-Length", "99");
     assert(!wire::encode_h1_request("POST", "/upload", "example.com", mismatch_cl, "hello", wire::H1HeaderFilterMode.PreserveAll, h1_out));
     assert(!wire::encode_h1_response(200, "OK", "wing", mismatch_cl, "hello", false, h1_out));
 
@@ -2720,13 +2720,13 @@ struct CustomAuditStage {
     post_auth_hits: i32 = 0,
 }
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     stage: CustomAuditStage&,
     phase: wire::ServerHookPhase,
-    _cfg:  wing::ServerPipelineConfig&,
-    _req:  const wing::Request&,
-    _ctx:  wing::ServerStageCtx&,
-    _res:  wing::Response&,
+    _cfg:  server::ServerPipelineConfig&,
+    _req:  const http::Request&,
+    _ctx:  server::ServerStageCtx&,
+    _res:  http::Response&,
 ) -> wire::StageVerdict {
     if phase == wire::ServerHookPhase.PreRoute {
         stage.pre_route_hits += 1;
@@ -2740,65 +2740,65 @@ struct CustomHeaderStage {
     egress_hits: i32 = 0,
 }
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     stage: CustomHeaderStage&,
     phase: wire::ServerHookPhase,
-    _cfg:  wing::ServerPipelineConfig&,
-    _req:  const wing::Request&,
-    _ctx:  wing::ServerStageCtx&,
-    res:   wing::Response&,
+    _cfg:  server::ServerPipelineConfig&,
+    _req:  const http::Request&,
+    _ctx:  server::ServerStageCtx&,
+    res:   http::Response&,
 ) -> wire::StageVerdict {
     if phase == wire::ServerHookPhase.PreSerialize {
         stage.egress_hits += 1;
-        wing::set_header(res, "X-Custom-Stage", "active");
+        http::set_header(res, "X-Custom-Stage", "active");
     }
     return wire::StageVerdict.Continue;
 }
 
 fn test_tier1_and_tier2_pipeline_conformance() {
     // 1. Tier 1 HTTP/1.1 codec round-trip into HeaderMap
-    var req_hdrs = wing::HeaderMap { .. };
-    wing::append_header(req_hdrs, "X-Trace", "t1");
+    var req_hdrs = http::HeaderMap { .. };
+    http::append_header(req_hdrs, "X-Trace", "t1");
     var h1_req_wire: u8[..512] = [];
     assert(wire::encode_h1_request(
         "GET", "/v1/items", "api.example.com", req_hdrs, "",
         wire::H1HeaderFilterMode.PreserveAll, h1_req_wire,
     ));
-    var parsed_req = wing::Request { .. };
-    let ok_req_parse, _ = wing::parse_http1_wire_request(h1_req_wire[..], parsed_req);
+    var parsed_req = http::Request { .. };
+    let ok_req_parse, _ = server::parse_http1_wire_request(h1_req_wire[..], parsed_req);
     assert(ok_req_parse);
-    assert(wing::header(parsed_req, "Host") == "api.example.com");
-    assert(wing::header(parsed_req, "X-Trace") == "t1");
+    assert(http::header(parsed_req, "Host") == "api.example.com");
+    assert(http::header(parsed_req, "X-Trace") == "t1");
 
-    var resp_hdrs = wing::HeaderMap { .. };
-    wing::append_header(resp_hdrs, "Content-Type", "application/json");
+    var resp_hdrs = http::HeaderMap { .. };
+    http::append_header(resp_hdrs, "Content-Type", "application/json");
     var h1_resp_wire: u8[..512] = [];
     assert(wire::encode_h1_response(200, "OK", "goose-wing", resp_hdrs, "{\"ok\":true}", false, h1_resp_wire));
-    var parsed_resp_hdrs = wing::HeaderMap { .. };
+    var parsed_resp_hdrs = http::HeaderMap { .. };
     var parsed_status: u16 = 0;
     let resp_consumed, resp_err = wire::decode_h1_response_head(h1_resp_wire[..], parsed_status, parsed_resp_hdrs);
-    assert(resp_err == wing::HeaderParseError.None && resp_consumed > 0 && parsed_status == 200);
-    assert(wing::get_header(parsed_resp_hdrs, "Content-Type") == "application/json");
+    assert(resp_err == http::HeaderParseError.None && resp_consumed > 0 && parsed_status == 200);
+    assert(http::get_header(parsed_resp_hdrs, "Content-Type") == "application/json");
     print("TIER1_H1_CODEC: OK\n");
 
     // 2. Tier 1 HPACK & QPACK decode directly into HeaderMap
     var dt = http2::new_dynamic_table(4096);
     var hpack_buf: u8[..256] = [];
     var enc_pseudo = http2::PseudoHeaders { has_status: true, status: 200, .. };
-    var h2_in_map = wing::HeaderMap { .. };
-    wing::append_header(h2_in_map, "x-h2-header", "val2");
+    var h2_in_map = http::HeaderMap { .. };
+    http::append_header(h2_in_map, "x-h2-header", "val2");
     assert(wire::encode_hpack_from_map(dt, enc_pseudo, h2_in_map, hpack_buf, false));
     var h2_dec_dt = http2::new_dynamic_table(4096);
     var h2_pseudo = http2::PseudoHeaders { .. };
-    var h2_map = wing::HeaderMap { .. };
+    var h2_map = http::HeaderMap { .. };
     let h2_err = wire::decode_hpack_to_map(h2_dec_dt, hpack_buf[..], h2_pseudo, h2_map);
     assert(h2_err == rfc::H2_ERR_NO_ERROR && h2_pseudo.status == 200);
-    assert(wing::get_header(h2_map, "x-h2-header") == "val2");
+    assert(http::get_header(h2_map, "x-h2-header") == "val2");
 
     var qpack_enc = http3::new_qpack_table(0);
     var qpack_dec = http3::new_qpack_table(0);
-    var q_req_in = wing::HeaderMap { .. };
-    wing::append_header(q_req_in, "x-h3-custom", "val3");
+    var q_req_in = http::HeaderMap { .. };
+    http::append_header(q_req_in, "x-h3-custom", "val3");
     var q_in_pseudo = http3::PseudoHeaders {
         has_method:    true,
         method:        "GET",
@@ -2816,10 +2816,10 @@ fn test_tier1_and_tier2_pipeline_conformance() {
     // Strip 2-byte H3 HEADERS frame header (type=0x01, len)
     let q_payload = q_frame[2..];
     var q_pseudo = http3::PseudoHeaders { .. };
-    var q_map = wing::HeaderMap { .. };
+    var q_map = http::HeaderMap { .. };
     let q_err = wire::decode_h3_headers_to_map(qpack_dec, 0, q_payload, q_pseudo, q_map);
     assert(q_err == http3::QpackError.None && q_pseudo.path[..] == "/h3");
-    assert(wing::get_header(q_map, "x-h3-custom") == "val3");
+    assert(http::get_header(q_map, "x-h3-custom") == "val3");
 
     // Verify wire::hpack_decode_string Huffman decoding and rfc::status_* helpers
     let huff_wire: u8[13] = [0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff];
@@ -2843,34 +2843,34 @@ fn test_tier1_and_tier2_pipeline_conformance() {
     assert(!wire::step(pstate, wire::StageVerdict.ShortCircuit { status_code: 204 }));
     assert(!wire::can_continue(pstate));
 
-    var srv_cfg = wing::new_default_server_pipeline_config("example.com");
+    var srv_cfg = server::new_default_server_pipeline_config("example.com");
     wire::disable_ingress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_IN_SLOWLORIS);
     wire::enable_ingress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_IN_SLOWLORIS);
     wire::disable_egress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_OUT_METRICS);
     wire::enable_egress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_OUT_METRICS);
-    let full_pso = wing::DEFAULT_ROUTE_PSO_MASK | wing::STAGE_EGRESS_ETAG | wing::STAGE_EGRESS_COMPRESS_GZIP | wing::STAGE_EGRESS_METRICS;
-    assert(wing::add_route_pso(srv_cfg.router, "GET", "/custom", 1002, full_pso));
+    let full_pso = server::DEFAULT_ROUTE_PSO_MASK | server::STAGE_EGRESS_ETAG | server::STAGE_EGRESS_COMPRESS_GZIP | server::STAGE_EGRESS_METRICS;
+    assert(server::add_route_pso(srv_cfg.router, "GET", "/custom", 1002, full_pso));
     assert(wire::add_ingress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_IN_AUTH_JWT));
     assert(wire::add_egress_stage(srv_cfg.wire_pipeline, wire::STAGE_ID_SRV_OUT_ETAG));
 
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    var sreq = wing::new_request("GET", "/custom");
-    wing::set_header(sreq, "Host", "example.com");
-    wing::set_header(sreq, "Sec-Fetch-Site", "same-origin");
-    wing::set_header(sreq, "Accept-Encoding", "gzip");
-    var sres = wing::Response { .. };
+    var sreq = http::new_request("GET", "/custom");
+    http::set_header(sreq, "Host", "example.com");
+    http::set_header(sreq, "Sec-Fetch-Site", "same-origin");
+    http::set_header(sreq, "Accept-Encoding", "gzip");
+    var sres = http::Response { .. };
     var sfut = server_internal::new_inline_handler_future(0);
     var custom_chain = wire::chain_stages(CustomAuditStage { .. }, CustomHeaderStage { .. });
-    let sout = wing::execute_server_pipeline_with_stage(
+    let sout = server::execute_server_pipeline_with_stage(
         srv_cfg, timer, "127.0.0.1", sreq, 1005000000, sres, sfut, custom_chain,
     );
-    assert(sout == wing::PipelineOutcome.Handled && sres.status_code == 200);
+    assert(sout == server::PipelineOutcome.Handled && sres.status_code == 200);
     assert(custom_chain.first.pre_route_hits == 1 && custom_chain.first.post_auth_hits == 1);
     assert(custom_chain.next.egress_hits == 1);
-    assert(wing::header(sres, "X-Custom-Stage") == "active");
-    assert(wing::header(sres, "Content-Encoding") == "gzip");
-    assert(wing::has_header(sres, "ETag"));
-    assert(wing::has_header(sres, "Server-Timing"));
+    assert(http::header(sres, "X-Custom-Stage") == "active");
+    assert(http::header(sres, "Content-Encoding") == "gzip");
+    assert(http::has_header(sres, "ETag"));
+    assert(http::has_header(sres, "Server-Timing"));
     print("TIER2_STAGE_CONSTRUCTOR: OK\n");
 }
 

@@ -1,169 +1,129 @@
 # `client/session`
 
-Package `client/session` implements the stateful HTTP session engine that
-orchestrates the composable L7 client stage pipeline, HTTP/1.1 wire exchange,
-RFC 6265bis schemeful Same-Site cookie bridging, convenience HTTP verbs, SSRF
-perimeter defense, and deterministic offline mock routing.
+Package `client/session` (`namespace client;`, internal helpers in
+`namespace client_internal;`) implements the stateful HTTP session engine that
+orchestrates the composable L7 client stage pipeline, HTTP/1.1, HTTP/2, and
+HTTP/3 wire hops, RFC 6265bis schemeful Same-Site cookie bridging, convenience
+HTTP verbs, SSRF perimeter defense, and deterministic offline mock routing.
 
 ```goose
-var s = new_session("https://api.example.com");
-let resp, err = get(s, "/v1/health");
-close(s);
+var s = client::new_session("https://api.example.com");
+let resp, err = s.get("/v1/health");
+s.close();
 ```
 
 ## Public API
 
-### 1. Session Lifecycle & Core Execution (`client/session/verbs.goose`, `client/session/exec.goose`)
+### 1. Execution pipeline and hop helpers (`client/session/exec.goose`)
 
 ```goose
-type Session = Client;
-type SessionConfig = ClientConfig;
 struct RequestExecutionContext { ... }
-struct InterceptorChain { index: i64 }
-fn new_session() -> Session
-fn new_session(cfg: SessionConfig) -> Session
-fn new_session(base_url: const u8[:]) -> Session
-fn build_effective_url(base_url: const u8[:], req_url: const u8[:], query_params: const QueryParam[:], out: u8[..2048]&) -> bool
-fn execute_live_network_hop(c: Client&, hop_req: const Request&, target_url: const u8[:]) -> Response, Error
-fn execute_request(c: Client&, req: const Request&) -> Response, Error
-fn do(c: Client&, req: const Request&) -> Response, Error
-fn proceed(c: Client&, chain: InterceptorChain&, req: Request&) -> Response, Error
-fn do_intercepted(c: Client&, req: const Request&) -> Response, Error
+enum H2RecvStatus { Continue, Complete, Error }
+struct H2RecvState { ... }
+
+fn append_query_params_preserving_fragment<B>(out: B&, query_params: const wing::QueryItem[:])
+fn build_effective_url<B>(base_url: const u8[:], req_url: const u8[:], query_params: const wing::QueryItem[:], out: B&)
+fn apply_redirect_transition(session: const Session&, ctx: RequestExecutionContext&, redirect_info: const RedirectInfo&) -> wing::Error
+fn init_execution_context(session: const Session&, req: const wing::Request&, parsed_initial: const core::Url&) -> RequestExecutionContext
+fn ingest_compression_dict_header(dict_cache: wing::DictionaryCache&, origin_buf: const u8[:], curr_path: const u8[:], now_sec: i64, resp: wing::Response&)
+fn dispatch_pooled_h1_hop(session: Session&, conn_id: i32, curr_method: const u8[:], ctx: RequestExecutionContext&, current_url: const core::Url&, is_https: bool, origin_buf: const u8[:], curr_path: const u8[:], now_sec: i64, now_ns: i64, resp: wing::Response&) -> bool
+fn resolve_hop_proxy_chain(session: const Session&) -> wing::ProxyChain
+fn encode_h2_request<B>(curr_method: const u8[:], current_url: const core::Url&, is_https: bool, ctx: const RequestExecutionContext&, enc_dt: http2::DynamicTable&, stream_id: u32, send_preface: bool, out: B&) -> bool
+fn process_h2_response_frame<B>(hdr: const http2::FrameHeader&, payload: const u8[:], stream_id: u32, is_head: bool, dec_dt: http2::DynamicTable&, resp: wing::Response&, state: H2RecvState&, out_ctrl: B&) -> H2RecvStatus
+fn drain_h2_response_frames<B1, B2>(rx_accum: B1&, stream_id: u32, is_head: bool, dec_dt: http2::DynamicTable&, resp: wing::Response&, state: H2RecvState&, out_ctrl: B2&) -> H2RecvStatus
+fn recv_h2_response_loop(conn: wing::PooledConnection&, stream_id: u32, is_head: bool, eff_timeout: u32, resp: wing::Response&) -> bool
+fn encode_h3_request<B>(h3_conn: http3::Connection&, sid: u64, ctx: const RequestExecutionContext&, current_url: const core::Url&, out: B&) -> bool
+fn execute_live_h3_hop(session: Session&, ctx: RequestExecutionContext&, current_url: const core::Url&, origin_buf: const u8[:], h3_ep: const wing::AltSvcEndpoint&, now_sec: i64, resp: wing::Response&) -> bool
+fn compute_401_auth_header<B>(session: Client&, ctx: RequestExecutionContext&, current_url: const core::Url&, www_auth: const u8[:], out: B&) -> bool
+fn prepare_auth_retry_hop(session: Client&, ctx: RequestExecutionContext&, current_url: const core::Url&, samesite_eval: const cookie::SameSiteCookieContext&, safe_method: bool, resp: const wing::Response&, auth_val: const u8[:])
+fn should_retry_request(status_code: i32, err: wing::Error, method: const u8[:], req: const wing::Request&, attempts: i32, has_retry: bool, max_retries: i32, retry_5xx: bool) -> bool
+fn execute_request(session: Client&, req: const wing::Request&) -> wing::Response, wing::Error
 ```
 
-`build_effective_url` joins `base_url`, `req_url`, and percent-encoded
-`query_params` into a bounded 2048-byte buffer (`u8[..2048]`), returning `false`
-on capacity overflow. `do` and `execute_request` drive `req` through any
-registered `InterceptorChain` (`do_intercepted` / `proceed`) and the
-bitmask-gated L7 client stage pipeline across HTTP/3, HTTP/2, or HTTP/1.1
-transport pools (`execute_live_network_hop`).
+`build_effective_url` joins `base_url`, `req_url`, and percent-encoded query
+parameters while preserving any trailing URL fragment. `execute_request` drives
+requests through application interceptors, retry budgets, circuit breakers, and
+the bitmask-gated L7 client stage pipeline across HTTP/3, HTTP/2, or HTTP/1.1
+transport pools.
 
-### 2. Composable L7 Client Stage Bricks (`client/session/stages.goose`)
+### 2. Composable L7 client stage bricks (`client/session/stages.goose`)
 
 ```goose
-struct ClientStageCtx {
-    hop_req: Request, resp: Response, effective_url: u8[..2048],
-    hop_count: i32, status_code: i32, cached_etag: u8[..128],
-    cached_last_mod: u8[..64], has_stale_entry: bool
-}
-fn on_client_stage(stage: const wire::NoOpStage&, phase: wire::ClientHookPhase, ctx: ClientStageCtx&) -> wire::StageVerdict
-fn execute_client_pipeline_with_stage<UserStage>(c: Client&, req: const Request&, pipe: const wire::WirePipeline&, user_stage: UserStage&) -> Response, Error
-fn stage_client_url_hsts(c: Client&, req: const Request&, effective_url: u8[..2048]&, hop_req: Request&, pipe: const wire::WirePipeline&, out_err: Error&) -> wire::StageVerdict
-fn stage_client_ssrf_guard(c: const Client&, effective_url: const u8[:], out_err: Error&) -> wire::StageVerdict
-fn stage_client_cache_lookup(c: Client&, hop_req: Request&, effective_url: const u8[:], pipe: const wire::WirePipeline&, cached_etag: u8[..128]&, cached_last_mod: u8[..64]&, has_stale_entry: bool&, out_resp: Response&) -> wire::StageVerdict
-fn stage_client_cookie_load(c: Client&, hop_req: Request&, effective_url: const u8[:], redirect_hops: i32, initial_url: const u8[:], pipe: const wire::WirePipeline&)
-fn stage_client_dict_negotiate(c: const Client&, hop_req: Request&, effective_url: const u8[:], pipe: const wire::WirePipeline&)
-fn stage_client_auth_header(c: Client&, hop_req: Request&, effective_url: const u8[:])
-fn stage_client_cookie_store(c: Client&, resp: const Response&, effective_url: const u8[:], initial_url: const u8[:], pipe: const wire::WirePipeline&)
-fn stage_client_alt_svc(c: Client&, resp: const Response&, effective_url: const u8[:], pipe: const wire::WirePipeline&)
-fn stage_client_decompress(c: const Client&, hop_req: const Request&, resp: Response&, pipe: const wire::WirePipeline&, out_err: Error&) -> wire::StageVerdict
-fn stage_client_cache_store(c: Client&, hop_req: const Request&, resp: Response&, effective_url: const u8[:], has_stale_entry: bool, pipe: const wire::WirePipeline&)
-fn stage_client_auth_challenge(c: Client&, hop_req: Request&, resp: const Response&, auth_retried: bool&, pipe: const wire::WirePipeline&) -> wire::StageVerdict
-fn stage_client_redirect(c: Client&, hop_req: Request&, resp: const Response&, effective_url: u8[..2048]&, redirect_hops: i32&, auth_retried: bool&, visited_urls: u8[..512][..21]&, visited_count: i32&, rewind_body: const u8[:], pipe: const wire::WirePipeline&, out_err: Error&) -> wire::StageVerdict
+struct StageCtx { ... }
+
+fn stage_cache_lookup<Cache>(req: const wing::Request&, eff_url: const u8[:], now_sec: i64, headers: wing::HeaderMap&, out_resp: wing::Response&, cache: Cache&, enable_cache: bool, method_override: const u8[:] = "") -> wire::StageVerdict, i64
+fn stage_cookie_load<Jar>(headers: wing::HeaderMap&, current_url: const core::Url&, samesite_eval: const cookie::SameSiteCookieContext&, is_main_frame: bool, part_key: const u8[:], safe_method: bool, now_us: i64, jar: Jar&, enable_jar: bool) -> wire::StageVerdict
+fn stage_cache_store<Cache>(req: const wing::Request&, headers: const wing::HeaderMap&, effective_url: const u8[:], method: const u8[:], out_resp: wing::Response&, cache_ts: wing::CacheTimestamps&, revalidate_idx: i64, cache: Cache&, enable_cache: bool) -> wire::StageVerdict
+fn validate_cors_and_corp_response(ctx: const RequestExecutionContext&, current_url: const core::Url&, resp: const wing::Response&) -> wing::Error
+fn verify_response_signature(session: const Client&, req: const wing::Request&, current_url: const core::Url&, method: const u8[:], headers: const wing::HeaderMap&, resp: const wing::Response&) -> bool
+fn is_noop_stage<Stage>(_stage: const Stage&) -> bool
+fn on_stage<Stage>(_stage: Stage&, _phase: wire::ClientHookPhase, _ctx: StageCtx&) -> wire::StageVerdict
+fn on_custom_slot<Stage>(_stage: Stage&, _slot_id: i64, _ctx: StageCtx&, _headers: wing::HeaderMap&, _out_resp: wing::Response&) -> wire::StageVerdict
+fn run_pre_hop_stages<UserStage>(session: Client&, ctx: RequestExecutionContext&, current_url: core::Url&, samesite_eval: cookie::SameSiteCookieContext&, safe_method: bool, now_sec: i64, out_resp: wing::Response&, out_err: wing::Error&, user_stage: UserStage&) -> wire::StageVerdict
+fn execute_pipeline_with_stage<UserStage>(session: Client&, req: const wing::Request&, user_stage: UserStage&) -> wing::Response, wing::Error
 ```
 
-Each stage brick checks its corresponding bit in `pipe.ingress_mask`
-(`wire::STAGE_CLI_IN_*`) or `pipe.egress_mask` (`wire::STAGE_CLI_OUT_*`) and
+Each stage brick evaluates its corresponding slot in `session.wire_pipeline` and
 returns a `wire::StageVerdict` (`Continue`, `ShortCircuit`, `RetryAuth`,
-`FollowRedirect`, or `Abort`). `stage_client_redirect` tracks up to 21 visited
-512-byte URLs (`u8[..512][..21]`) to detect redirect loops, rewinds request
-bodies from `rewind_body` on `307`/`308`, and strips sensitive headers on
-cross-origin transitions.
+`FollowRedirect`, or `Abort`). Callers can specialize `client::on_stage` or
+`client::on_custom_slot` for custom `<UserStage>` types.
 
-### 3. HTTP/1.1 Wire Exchange (`wire/h1_exchange.goose`)
+### 3. Cookie bridge (`client/session/cookie_bridge.goose`, RFC 6265bis)
 
 ```goose
-enum H1ExchangeState { Idle, SendingRequest, ReadingStatusLine, ReadingHeaders, ReadingBody, Complete, ClosedError }
-fn serialize_h1_request<B>(req: const Request&, parsed_url: const ParsedUrl&, user_agent: const u8[:], default_headers: const HeaderField[:], keep_alive: bool, out: B&)
-fn parse_h1_status_line(line: const u8[:], resp: Response&) -> bool
-fn parse_h1_header_block(raw_block: const u8[:], resp: Response&) -> i64, bool, bool
-fn parse_response_headers(raw_headers: const u8[:], resp: Response&) -> bool
-fn execute_h1_exchange(tp: Transport&, req: const Request&, parsed_url: const ParsedUrl&, user_agent: const u8[:], default_headers: const HeaderField[:], max_body_size: i64, keep_alive: bool = true) -> Response, Error, bool
+fn compute_hop_samesite_context(ctx: const RequestExecutionContext&, current_url: const core::Url&, safe_method: bool) -> cookie::SameSiteCookieContext
+fn compute_hop_partition_key<B>(ctx: const RequestExecutionContext&, current_url: const core::Url&, out: B&)
+fn prepare_hop_cookie_header(session: Session&, ctx: RequestExecutionContext&, current_url: const core::Url&, samesite_eval: const cookie::SameSiteCookieContext&, safe_method: bool)
+fn ingest_hop_response_cookies(session: Session&, ctx: const RequestExecutionContext&, current_url: const core::Url&, samesite_eval: const cookie::SameSiteCookieContext&, resp_headers: const wing::HeaderMap&)
 ```
 
-`parse_h1_header_block` parses the status line and headers from `raw_block` and
-returns `(content_length, is_chunked, ok)`, rejecting conflicting
-`Content-Length` and `Transfer-Encoding` headers to prevent request/response
-smuggling. `execute_h1_exchange` runs a complete keep-alive exchange over `tp`
-and returns a trailing `bool` indicating whether the connection remains clean
-for pool reuse.
+Bridges redirect hops into `cookie::CanonicalCookieJar` with RFC 6265bis
+schemeful Same-Site evaluation and CHIPS (`Partitioned`) top-level site keys.
 
-### 4. Cookie Bridge (`client/session/cookie_bridge.goose`, RFC 6265bis)
+### 4. Convenience HTTP verbs and realtime upgrades (`client/session/verbs.goose`)
 
 ```goose
-fn compute_hop_samesite_context(initial_url: const u8[:], hop_url: const u8[:], is_safe_navigation: bool) -> CookieSameSiteContext
-fn compute_hop_partition_key(initial_url: const u8[:], out_site: u8[..128]&)
-fn prepare_hop_cookie_header(jar: CanonicalCookieJar&, initial_url: const u8[:], hop_url: const u8[:], method: const u8[:], now_epoch_sec: i64, out_cookie_val: u8[..2048]&)
-fn ingest_hop_response_cookies(jar: CanonicalCookieJar&, initial_url: const u8[:], hop_url: const u8[:], resp: const Response&, now_epoch_sec: i64)
+struct InterceptorChain { ... }
+
+fn do(session: Session&, req: const wing::Request&) -> wing::Response, wing::Error
+fn proceed(chain: InterceptorChain&, session: Session&)
+fn do_intercepted<F: fn(InterceptorChain&, Session&)>(session: Session&, req: const wing::Request&) -> wing::Response, wing::Error
+fn get(session: Session&, url: const u8[:]) -> wing::Response, wing::Error
+fn post<F: fn(wing::Request&)>(session: Session&, url: const u8[:]) -> wing::Response, wing::Error
+fn put<F: fn(wing::Request&)>(session: Session&, url: const u8[:]) -> wing::Response, wing::Error
+fn delete(session: Session&, url: const u8[:]) -> wing::Response, wing::Error
+fn query(session: Session&, url: const u8[:], body: const u8[:], content_type: const u8[:]) -> wing::Response, wing::Error
+fn post_chunked<F: fn(ChunkWriter&)>(session: Session&, url: const u8[:]) -> wing::Response, wing::Error
+fn download_stream<F: fn(const StreamProgress&)>(session: Session&, url: const u8[:], chunk_size: i64, out_body: u8[>..]&) -> wing::Response, wing::Error
+fn header_has_token(hdr: const u8[:], token: const u8[:]) -> bool
+fn ws(session: Session&, url: const u8[:]) -> realtime::WebSocketSession, wing::Response, wing::Error
+fn is_sse_content_type(ct: const u8[:]) -> bool
+fn sse(session: Session&, url: const u8[:]) -> realtime::SseSubscription, wing::Response, wing::Error
+fn connect_udp(session: Session&, proxy_url: const u8[:], target_host: const u8[:], target_port: u16, stream_id: u64 = 0, use_datagrams: bool = true) -> wing::MasqueTunnelSession, wing::Response, wing::Error
+fn connect_ip(session: Session&, proxy_url: const u8[:], stream_id: u64 = 0, use_datagrams: bool = true) -> wing::MasqueTunnelSession, wing::Response, wing::Error
 ```
 
-Bridges redirect hops into `CanonicalCookieJar` with RFC 6265bis schemeful
-Same-Site evaluation and CHIPS (`Partitioned`) top-level site keys
-(`u8[..128]`). `prepare_hop_cookie_header` serializes matching cookies into a
-2048-byte `Cookie` header buffer (`u8[..2048]`).
+Provides single-call UFCS methods on `Session` for standard HTTP verbs, chunked
+uploads, streaming downloads (`download_stream`), RFC 6455 WebSocket upgrades
+(`ws`), W3C Server-Sent Events subscriptions (`sse`), and RFC 9298 / RFC 9484
+MASQUE tunnels (`connect_udp`, `connect_ip`).
 
-### 5. Convenience HTTP Verbs & Realtime Upgrades (`client/session/verbs.goose`)
-
-```goose
-fn get(c: Client&, url: const u8[:]) -> Response, Error
-fn post(c: Client&, url: const u8[:], body: const u8[:], content_type: const u8[:] = "text/plain") -> Response, Error
-fn post_json(c: Client&, url: const u8[:], json_body: const u8[:]) -> Response, Error
-fn put(c: Client&, url: const u8[:], body: const u8[:], content_type: const u8[:] = "text/plain") -> Response, Error
-fn put_json(c: Client&, url: const u8[:], json_body: const u8[:]) -> Response, Error
-fn delete(c: Client&, url: const u8[:]) -> Response, Error
-fn query(c: Client&, url: const u8[:], body: const u8[:], content_type: const u8[:] = "application/json") -> Response, Error
-fn post_chunked(c: Client&, url: const u8[:], cw: ChunkWriter&, content_type: const u8[:] = "application/octet-stream") -> Response, Error
-fn put_chunked(c: Client&, url: const u8[:], cw: ChunkWriter&, content_type: const u8[:] = "application/octet-stream") -> Response, Error
-fn download_stream<F: fn(const u8[:])>(c: Client&, url: const u8[:]) -> Response, Error
-fn ws(c: Client&, url: const u8[:]) -> WebSocketSession, Response, Error
-fn sse(c: Client&, url: const u8[:], out_events: SseEvent[..16]&) -> SseSubscription, Response, Error
-fn sse_reconnect(c: Client&, sub: SseSubscription&, out_events: SseEvent[..16]&) -> Response, Error
-fn connect_udp(c: Client&, proxy_url: const u8[:], target_host: const u8[:], target_port: u16) -> MasqueTunnelSession, Response, Error
-fn connect_ip(c: Client&, proxy_url: const u8[:], target_pattern: const u8[:] = "*") -> MasqueTunnelSession, Response, Error
-```
-
-Provides single-call wrappers for standard HTTP verbs, chunked uploads,
-streaming downloads (`download_stream`), RFC 6455 WebSocket upgrades (`ws`), W3C
-Server-Sent Events subscriptions (`sse` and `sse_reconnect`, parsing up to 16
-initial events into `SseEvent[..16]`), and RFC 9298 / RFC 9484 MASQUE tunnels
-(`connect_udp`, `connect_ip`).
-
-### 6. SSRF Security Perimeter (`client/session/ssrf.goose`)
-
-```goose
-struct SsrfGuardPolicy {
-    block_private_ips: bool, block_loopback: bool, block_link_local: bool,
-    block_cgnat: bool, block_dangerous_ports: bool, https_only: bool
-}
-fn new_ssrf_guard_policy() -> SsrfGuardPolicy
-fn is_private_or_reserved_ip(ip_or_host: const u8[:], policy: const SsrfGuardPolicy&) -> bool
-fn is_dangerous_service_port(port: u16) -> bool
-fn validate_url_against_ssrf(url: const u8[:], policy: const SsrfGuardPolicy&) -> Error
-fn validate_resolved_ips_against_ssrf(ips: const u8[:][..8], ip_count: i64, policy: const SsrfGuardPolicy&) -> Error
-```
-
-Defends outbound requests against Server-Side Request Forgery and DNS rebinding:
-`is_private_or_reserved_ip` rejects RFC 1918 private ranges, loopback
-(`127.0.0.0/8`, `::1`), RFC 3927 link-local / cloud metadata
-(`169.254.169.254`), RFC 6598 CGNAT, RFC 4193 ULA, IPv4-mapped IPv6 (`::ffff:`),
-and octal/hex/dword IPv4 encodings. `validate_resolved_ips_against_ssrf`
-inspects up to 8 DNS-resolved IP literals (`const u8[:][..8]`) after resolution
-and before socket connect.
-
-### 7. Deterministic Offline Mock Exchanges (`client/session/mock.goose`)
+### 5. SSRF perimeter and offline mock exchanges (`client/session/ssrf.goose`, `client/session/mock.goose`)
 
 ```goose
 struct MockExchange { ... }
-fn add_mock_header(m: MockExchange&, name: const u8[:], value: const u8[:]) -> MockExchange&
-fn add_mock_set_cookie(m: MockExchange&, cookie_val: const u8[:]) -> MockExchange&
-fn add_mock_resolved_ip(m: MockExchange&, ip: const u8[:]) -> MockExchange&
-fn set_mock_quic_blocked(m: MockExchange&, blocked: bool) -> MockExchange&
-fn set_mock_protocol(m: MockExchange&, proto: const u8[:]) -> MockExchange&
-fn build_mock_response(m: const MockExchange&) -> Response
+
+fn validate_url_against_ssrf(url_val: const core::Url&, policy: const security::SsrfGuardPolicy&) -> RedirectError
+fn add_mock_header(route: MockExchange&, name: const u8[:], value: const u8[:])
+fn add_mock_set_cookie(route: MockExchange&, cookie_str: const u8[:])
+fn add_mock_resolved_ip(route: MockExchange&, ip_str: const u8[:])
+fn set_mock_quic_blocked(route: MockExchange&, blocked: bool = true)
 ```
 
-Allows deterministic unit testing of redirect chains, cookie jars, QUIC
-blackhole fallbacks (`set_mock_quic_blocked`), and SSRF DNS rebinding defenses
+`validate_url_against_ssrf` checks outbound URLs against
+`security::SsrfGuardPolicy` and returns a typed `RedirectError`. `MockExchange`
+supports deterministic unit testing of redirect chains, cookie jars, QUIC
+blackhole fallbacks (`set_mock_quic_blocked`), and DNS rebinding defenses
 (`add_mock_resolved_ip`) without opening live network sockets.
 
 ## Verification

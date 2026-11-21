@@ -236,11 +236,11 @@ fn parse_max_push_id(payload: const u8[:]) -> u64, bool {
 // ---- RFC 9218 PRIORITY_UPDATE Frames for HTTP/3 ----------------------------
 
 // RFC 9218 Section 7.2: HTTP/3 PRIORITY_UPDATE Frame - Request-stream Prioritized Element ID MUST be a client-initiated bidirectional stream ID.
-fn encode_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
+fn encode_priority_update_request<B>(out: B&, stream_id: u64, prio: const http::PriorityParam&) -> bool {
     guard (stream_id & 0x03) == 0 && prio.urgency <= 7 else { return false; }
     var payload: u8[..64] = [];
     guard quic::encode_varint(stream_id, payload) else { return false; }
-    wing::serialize_http_priority(prio, payload);
+    http::serialize_priority(prio, payload);
     var hdr: u8[..16] = [];
     let plen = payload.len as u64;
     guard encode_frame_header(hdr, rfc::H3_FRAME_PRIORITY_UPDATE_REQUEST, plen) else { return false; }
@@ -256,8 +256,8 @@ fn encode_priority_update_request<B>(out: B&, stream_id: u64, prio: const wing::
 fn parse_priority_update_request(
     payload:             const u8[:],
     default_incremental: bool = false,
-) -> u64, wing::PriorityParam, bool {
-    let default_prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
+) -> u64, http::PriorityParam, bool {
+    let default_prio = http::PriorityParam { urgency: 3, incremental: default_incremental };
     guard payload.len > 0 else { return 0, default_prio, false; }
     let stream_id, off, ok = quic::decode_varint(payload, 0);
     guard ok else { return 0, default_prio, false; }
@@ -267,11 +267,11 @@ fn parse_priority_update_request(
 }
 
 // Encodes a PRIORITY_UPDATE frame for a push stream (RFC 9218 Section 7.2, Type 0xF0701).
-fn encode_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::PriorityParam&) -> bool {
+fn encode_priority_update_push<B>(out: B&, push_id: u64, prio: const http::PriorityParam&) -> bool {
     guard prio.urgency <= 7 else { return false; }
     var payload: u8[..64] = [];
     guard quic::encode_varint(push_id, payload) else { return false; }
-    wing::serialize_http_priority(prio, payload);
+    http::serialize_priority(prio, payload);
     var hdr: u8[..16] = [];
     guard encode_frame_header(hdr, rfc::H3_FRAME_PRIORITY_UPDATE_PUSH, payload.len as u64) else { return false; }
     return h3_internal::append_h3_frame_parts(out, hdr[..], payload[..]);
@@ -285,8 +285,8 @@ fn encode_priority_update_push<B>(out: B&, push_id: u64, prio: const wing::Prior
 fn parse_priority_update_push(
     payload:             const u8[:],
     default_incremental: bool = false,
-) -> u64, wing::PriorityParam, bool {
-    let default_prio = wing::PriorityParam { urgency: 3, incremental: default_incremental };
+) -> u64, http::PriorityParam, bool {
+    let default_prio = http::PriorityParam { urgency: 3, incremental: default_incremental };
     guard payload.len > 0 else { return 0, default_prio, false; }
     let push_id, off, ok = quic::decode_varint(payload, 0);
     guard ok else { return 0, default_prio, false; }

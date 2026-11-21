@@ -4,11 +4,12 @@
 // Two-tier resilience retry architecture: Tier 1 zero-delay stale socket recovery
 // with one-shot stream guards and QUIC protocol fallback; Tier 2 exponential backoff
 // with Full/Equal/Decorrelated Jitter, RFC 9110 Retry-After parser, and Google SRE retry budgets.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
 import http.headers;
+import .internal;
 
 // ---- Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------
 
@@ -110,12 +111,12 @@ fn new_backoff_config(
 // Pseudo-random uniform integer in range [min_val, max_val] using WyRand and Lemire fast-range.
 inline fn uniform_random(seed: u64&, min_val: i64, max_val: i64) -> i64 {
     guard max_val > min_val else { return min_val; }
-    seed += core::WYP0_V42;
+    seed = core::add_sat_u64(seed, core::WYP0_V42);
     let rnd = core::wymum(seed ^ core::WYP1_V42, seed);
-    let diff = (max_val as u64) - (min_val as u64);
+    let diff = core::sub_sat_u64(max_val as u64, min_val as u64);
     let range = core::add_sat_u64(diff, 1);
     let offset = core::fast_range_biased_u64(rnd, range) as! i64;
-    return min_val + offset;
+    return core::add_sat_i64(min_val, offset);
 }
 
 // Computes backoff duration using specified Jitter algorithm (AWS Architecture parity).
@@ -144,8 +145,8 @@ fn compute_backoff_jitter_ms(
 
         // Equal Jitter: t/2 + U(0, t/2)
         EqualJitter => {
-            let half = target_t / 2;
-            let sleep_ms = half + uniform_random(rng_seed, 0, half);
+            let half = target_t >> 1;
+            let sleep_ms = core::add_sat_i64(half, uniform_random(rng_seed, 0, half));
             prev_sleep_ms = sleep_ms;
             sleep_ms
         },
@@ -153,7 +154,7 @@ fn compute_backoff_jitter_ms(
         // Decorrelated Jitter: min(c, U(b, prev_sleep * 3))
         DecorrelatedJitter => {
             let prev = if prev_sleep_ms > 0 { prev_sleep_ms } else { safe_base };
-            let upper = if prev > 3074457345618258602 { 9223372036854775807 } else { prev * 3 };
+            let upper = core::ct_min_u64(core::mul_sat_u64(prev as u64, 3), 9223372036854775807) as! i64;
             let rnd_sleep = uniform_random(rng_seed, safe_base, upper);
             let sleep_ms = core::ct_min_i64(rnd_sleep, safe_cap);
             prev_sleep_ms = sleep_ms;
@@ -163,32 +164,6 @@ fn compute_backoff_jitter_ms(
 }
 
 // ---- RFC 9110 Retry-After parser & Circuit Breaker ----------------------
-
-fn try_parse_retry_after_seconds(clean: const u8[:]) -> i64, bool {
-    var all_digits = true;
-    for i in clean.len {
-        let ch = clean[i];
-        if ch < '0' || ch > '9' {
-            all_digits = false;
-            break;
-        }
-    }
-    guard all_digits else { return 0, false; }
-    let secs, ok_s = core::parse_digits(clean);
-    guard ok_s && secs >= 0 else { return 0, false; }
-    return core::retry_after_sec_to_ms_sat(secs), true;
-}
-
-fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64, bool {
-    let parsed_time, ok_t = core::parse_http_date(clean);
-    guard ok_t else { return 0, false; }
-
-    let target_unix_ms = parsed_time.unix_milli();
-    if target_unix_ms <= now_unix_ms {
-        return 0, true;
-    }
-    return core::sub_sat_i64(target_unix_ms, now_unix_ms), true;
-}
 
 // Strict parser for RFC 9110 Retry-After header:
 // Supports delay-seconds (1*DIGIT without signs/decimals/units) and IMF-fixdate with exact UTC round-trip check.
@@ -205,12 +180,12 @@ fn parse_retry_after_ms(
     let has_no_ctl = core::swar_find_ctl(clean) == clean.len && !clean.contains_byte(0x7F);
     guard clean.len > 0 && has_no_ctl else { return 0, false; }
 
-    let sec_ms, ok_sec = try_parse_retry_after_seconds(clean);
+    let sec_ms, ok_sec = net_internal::try_parse_retry_after_seconds(clean);
     if ok_sec {
         return sec_ms, true;
     }
 
-    return try_parse_retry_after_http_date(clean, now_unix_ms);
+    return net_internal::try_parse_retry_after_http_date(clean, now_unix_ms);
 }
 
 // Local Host Circuit Breaker registry entry for excessive Retry-After windows
@@ -242,7 +217,7 @@ fn trip_circuit_breaker_if_exceeded(
     guard retry_after_ms > breaker.max_retry_after_ms else { return false; }
     guard host_str.len > 0 && host_str.len <= 256 else { return false; }
 
-    let block_dur_ns = min(retry_after_ms, 9223372036854) * 1000000;
+    let block_dur_ns = core::mul_sat_u64(min(retry_after_ms, 9223372036854) as u64, 1000000) as! i64;
     let unblock_at = core::add_sat_i64(now_mono_ns, block_dur_ns);
 
     for &h in breaker.hosts {
@@ -314,8 +289,9 @@ fn new_adaptive_retry_budget(
     min_per_sec:    i64 = 2,
     window_dur_sec: i64 = 10,
 ) -> AdaptiveRetryBudget {
+    let win_ns = core::mul_sat_u64(max(window_dur_sec, 0) as u64, 1000000000) as! i64;
     return AdaptiveRetryBudget {
-        window_duration_ns:  window_dur_sec * 1000000000,
+        window_duration_ns:  win_ns,
         max_retry_ratio_pct: ratio_pct,
         min_retries_per_sec: min_per_sec,
         ..
@@ -324,29 +300,32 @@ fn new_adaptive_retry_budget(
 
 // Records a primary request initiation.
 fn record_primary_request(budget: AdaptiveRetryBudget&, now_mono_ns: i64) {
-    if now_mono_ns - budget.window_start_mono_ns >= budget.window_duration_ns {
+    if core::sub_sat_i64(now_mono_ns, budget.window_start_mono_ns) >= budget.window_duration_ns {
         budget.window_start_mono_ns = now_mono_ns;
         budget.total_requests = 0;
         budget.retried_requests = 0;
     }
-    budget.total_requests++;
+    budget.total_requests = core::add_sat_i64(budget.total_requests, 1);
 }
 
 // Checks if retry budget permits another retry attempt, recording it if approved.
 fn allow_retry_budget(budget: AdaptiveRetryBudget&, now_mono_ns: i64) -> bool {
-    if now_mono_ns - budget.window_start_mono_ns >= budget.window_duration_ns {
+    if core::sub_sat_i64(now_mono_ns, budget.window_start_mono_ns) >= budget.window_duration_ns {
         budget.window_start_mono_ns = now_mono_ns;
         budget.total_requests = 0;
         budget.retried_requests = 0;
     }
 
-    let window_secs = budget.window_duration_ns / 1000000000;
-    let allowed_by_ratio = (budget.total_requests * budget.max_retry_ratio_pct) / 100;
-    let allowed_by_floor = budget.min_retries_per_sec * window_secs;
-    let total_allowed = core::ct_max_i64(allowed_by_ratio, allowed_by_floor);
+    let window_secs = (max(budget.window_duration_ns, 0) as u64) / 1000000000;
+    let allowed_by_ratio_u64 = core::mul_sat_u64(
+        max(budget.total_requests, 0) as u64,
+        max(budget.max_retry_ratio_pct, 0) as u64,
+    ) / 100;
+    let allowed_by_floor_u64 = core::mul_sat_u64(max(budget.min_retries_per_sec, 0) as u64, window_secs);
+    let total_allowed = core::ct_max_u64(allowed_by_ratio_u64, allowed_by_floor_u64);
 
-    if budget.retried_requests < total_allowed {
-        budget.retried_requests++;
+    if (max(budget.retried_requests, 0) as u64) < total_allowed {
+        budget.retried_requests = core::add_sat_i64(budget.retried_requests, 1);
         return true;
     }
 
@@ -380,16 +359,16 @@ fn arm_range_resume(
     tracker: RangeResumeTracker&,
     method:  const u8[:],
     status:  i32,
-    headers: const HeaderMap&,
+    headers: const http::HeaderMap&,
 ) {
     tracker = RangeResumeTracker { .. };
     guard method == "GET" && status == 200 else { return; }
-    let etag = get_header(headers, "ETag").trim_lws();
+    let etag = http::get_header(headers, "ETag").trim_lws();
     guard is_strong_etag_validator(etag) else { return; }
-    guard !has_header(headers, "Content-Encoding") else { return; }
+    guard !http::has_header(headers, "Content-Encoding") else { return; }
     guard tracker.etag.try_set(etag) else { return; }
 
-    let cl_raw = get_header(headers, "Content-Length").trim_lws();
+    let cl_raw = http::get_header(headers, "Content-Length").trim_lws();
     if cl_raw.len > 0 {
         let cl_val, ok_cl = cl_raw.parse_u64_dec();
         guard ok_cl && cl_val <= 9223372036854775807 else { return; }
@@ -403,7 +382,7 @@ fn arm_range_resume(
 // Example:
 //   tracker = RangeResumeTracker { etag: "\"v1\"", bytes_received: 4096, total_length: 8192, resumable: true }
 //   returns: true (sets Range: "bytes=4096-8191" and If-Match: "\"v1\"")
-fn build_range_resume_headers(tracker: const RangeResumeTracker&, req_headers: HeaderMap&) -> bool {
+fn build_range_resume_headers(tracker: const RangeResumeTracker&, req_headers: http::HeaderMap&) -> bool {
     guard tracker.resumable && tracker.bytes_received > 0 else { return false; }
     if tracker.total_length >= 0 && (tracker.bytes_received as i64) >= tracker.total_length {
         return false;
@@ -416,7 +395,7 @@ fn build_range_resume_headers(tracker: const RangeResumeTracker&, req_headers: H
         let end_byte = core::sub_sat_u64(tracker.total_length as u64, 1);
         end_byte.format_u64_dec(range_val);
     }
-    set_header(req_headers, "Range", range_val[..]);
-    set_header(req_headers, "If-Match", tracker.etag[..]);
+    http::set_header(req_headers, "Range", range_val[..]);
+    http::set_header(req_headers, "If-Match", tracker.etag[..]);
     return true;
 }

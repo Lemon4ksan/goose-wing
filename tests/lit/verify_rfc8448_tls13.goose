@@ -40,19 +40,19 @@ fn check_record_roundtrip(
 ) {
     var sealed: u8[>..] = [];
     for _ in plain.len + 22 { sealed.push(0); }
-    let sealed_len, alert_s, ok_s = wing::tls_record_seal_aes128_gcm_into(
+    let sealed_len, alert_s, ok_s = tls::record_seal_aes128_gcm_into(
         key, iv, seq, ctype, plain, sealed[..],
     );
-    assert(ok_s && alert_s == wing::TlsAlert.CloseNotify);
+    assert(ok_s && alert_s == tls::Alert.CloseNotify);
     assert(sealed_len == expected.len);
     assert(core::ct_eq_bytes(sealed[..sealed_len], expected));
 
     var dec: u8[>..] = [];
     for _ in sealed_len { dec.push(0); }
-    let dec_len, dec_type, alert_d, ok_d = wing::tls_record_decrypt_aes128_gcm_into(
+    let dec_len, dec_type, alert_d, ok_d = tls::record_decrypt_aes128_gcm_into(
         key, iv, seq, expected[..5], expected[5..], dec[..],
     );
-    assert(ok_d && alert_d == wing::TlsAlert.CloseNotify);
+    assert(ok_d && alert_d == tls::Alert.CloseNotify);
     assert(dec_type == ctype && dec_len == plain.len);
     assert(core::ct_eq_bytes(dec[..dec_len], plain));
 
@@ -60,10 +60,10 @@ fn check_record_roundtrip(
         var tampered: u8[>..] = [];
         tampered.append(expected);
         tampered[tampered.len / 2] ^= 1;
-        let _, _, alert_bad, ok_bad = wing::tls_record_decrypt_aes128_gcm_into(
+        let _, _, alert_bad, ok_bad = tls::record_decrypt_aes128_gcm_into(
             key, iv, seq, tampered[..5], tampered[5..], dec[..],
         );
-        assert(!ok_bad && alert_bad == wing::TlsAlert.BadRecordMac);
+        assert(!ok_bad && alert_bad == tls::Alert.BadRecordMac);
     }
 }
 
@@ -349,10 +349,10 @@ fn check_rfc8448_trace() {
 
     // Wrong sequence number (replay) must fail with BadRecordMac.
     var replay_buf: u8[128] = [0; 128];
-    let _, _, replay_alert, replay_ok = wing::tls_record_decrypt_aes128_gcm_into(
+    let _, _, replay_alert, replay_ok = tls::record_decrypt_aes128_gcm_into(
         s_ap_key, s_ap_iv, 0, s_app_rec[..5], s_app_rec[5..], replay_buf[..],
     );
-    assert(!replay_ok && replay_alert == wing::TlsAlert.BadRecordMac);
+    assert(!replay_ok && replay_alert == tls::Alert.BadRecordMac);
 }
 
 fn main() {

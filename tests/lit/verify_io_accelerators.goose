@@ -41,9 +41,9 @@ fn test_driver_slice_abis() {
         net_internal::native_rio_available() == 1 {
         let lfd = net_internal::rio_listen("127.0.0.1", 0, 16);
         assert(lfd > 0);
-        let port = wing::tcp_getsockname_port(lfd);
+        let port = net::tcp_getsockname_port(lfd);
         assert(port > 0);
-        let cfd = wing::tcp_connect("127.0.0.1", port);
+        let cfd = net::tcp_connect("127.0.0.1", port);
         assert(cfd > 0);
         let sfd = net_internal::rio_accept(lfd);
         assert(sfd > 0);
@@ -55,7 +55,7 @@ fn test_driver_slice_abis() {
         let buf_id = net_internal::native_rio_register_slice(backing[..]);
         assert(buf_id != 0);
         assert(net_internal::native_rio_post_recv(rq, buf_id, 0, 1024, 888) == 0);
-        assert(wing::tcp_send(cfd, "PING") == 4);
+        assert(net::tcp_send(cfd, "PING") == 4);
         assert(net_internal::rio_wait_cq(cq, 1000) >= 0);
         let drained = net_internal::rio_drain_completions(cq, empty_res);
         assert(drained == 1 && empty_res[0].bytes_transferred == 4);
@@ -71,13 +71,13 @@ fn test_driver_slice_abis() {
         let drained_tx = net_internal::rio_drain_completions(cq, empty_res);
         assert(drained_tx == 1 && empty_res[0].request_context == 889);
         var pong_rx: u8[8] = [0; 8];
-        assert(wing::tcp_recv_slice(cfd, pong_rx[..]) == 4 && pong_rx[..4] == "PONG");
+        assert(net::tcp_recv_slice(cfd, pong_rx[..]) == 4 && pong_rx[..4] == "PONG");
 
         net_internal::native_rio_deregister_buffer(buf_id);
         net_internal::native_rio_close_cq(cq);
-        wing::tcp_close(sfd);
-        wing::tcp_close(cfd);
-        wing::tcp_close(lfd);
+        net::tcp_close(sfd);
+        net::tcp_close(cfd);
+        net::tcp_close(lfd);
     }
     print("TASK1_DRIVER_ABIS: OK");
 }
@@ -90,26 +90,26 @@ fn test_tls_slice_codecs_and_ktls_probe() {
     assert(bad_rx < 0 && bad_rt == 0);
     assert(net_internal::smartnic_send_record(-1, "PING", rfc::TLS_CONTENT_APPLICATION_DATA) < 0);
 
-    let slot_s = wing::alloc_tls_cipher_slot();
-    let slot_c = wing::alloc_tls_cipher_slot();
+    let slot_s = tls::alloc_cipher_slot();
+    let slot_c = tls::alloc_cipher_slot();
     assert(slot_s != 0xFFFF && slot_c != 0xFFFF);
     let key: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let iv:  u8[12] = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2];
-    wing::tls_init_cipher_slot_for_test(
+    tls::init_cipher_slot_for_test(
         slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, key[..], iv,
     );
-    wing::tls_init_cipher_slot_for_test(
+    tls::init_cipher_slot_for_test(
         slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, key[..], iv,
     );
 
     // 1. App data roundtrip in memory
     var wire_buf: u8[..2048] = [];
-    assert(wing::tls_cipher_slot_seal_app_data(slot_c, "GET / HTTP/1.1\r\n\r\n", wire_buf));
+    assert(tls::cipher_slot_seal_app_data(slot_c, "GET / HTTP/1.1\r\n\r\n", wire_buf));
     var plain_out: u8[..2048] = [];
-    let cons1, st1 = wing::tls_cipher_slot_unseal_records(slot_s, wire_buf[..10], plain_out);
-    assert(cons1 == 0 && st1 == wing::TlsSliceUnsealStatus.NeedMore && plain_out.len == 0);
-    let cons2, st2 = wing::tls_cipher_slot_unseal_records(slot_s, wire_buf[..], plain_out);
-    assert(cons2 == wire_buf.len && st2 == wing::TlsSliceUnsealStatus.Ok);
+    let cons1, st1 = tls::cipher_slot_unseal_records(slot_s, wire_buf[..10], plain_out);
+    assert(cons1 == 0 && st1 == tls::SliceUnsealStatus.NeedMore && plain_out.len == 0);
+    let cons2, st2 = tls::cipher_slot_unseal_records(slot_s, wire_buf[..], plain_out);
+    assert(cons2 == wire_buf.len && st2 == tls::SliceUnsealStatus.Ok);
     assert(plain_out[..] == "GET / HTTP/1.1\r\n\r\n");
 
     // 2. Review Focus #4: Post-handshake NewSessionTicket (0x04 inside 0x16) cached & skipped, close_notify (0x15) closes
@@ -122,124 +122,124 @@ fn test_tls_slice_codecs_and_ktls_probe() {
         0, 0,
     ];
     var nst_rec: u8[64] = [0; 64];
-    let nst_len, _, ok_nst = wing::tls_record_seal_into(
+    let nst_len, _, ok_nst = tls::record_seal_into(
         rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, 1, rfc::TLS_CONTENT_HANDSHAKE, nst_msg[..], nst_rec[..],
     );
     assert(ok_nst);
     plain_out.clear();
-    let cons_nst, st_nst = wing::tls_cipher_slot_unseal_records(slot_s, nst_rec[..nst_len], plain_out);
-    assert(cons_nst == nst_len && st_nst == wing::TlsSliceUnsealStatus.ControlHandled && plain_out.len == 0);
+    let cons_nst, st_nst = tls::cipher_slot_unseal_records(slot_s, nst_rec[..nst_len], plain_out);
+    assert(cons_nst == nst_len && st_nst == tls::SliceUnsealStatus.ControlHandled && plain_out.len == 0);
 
     var alert_msg: u8[2]  = [1, 0];
     var alert_rec: u8[64] = [0; 64];
-    let al_len, _, ok_al = wing::tls_record_seal_into(
+    let al_len, _, ok_al = tls::record_seal_into(
         rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, 2, rfc::TLS_CONTENT_ALERT, alert_msg[..], alert_rec[..],
     );
     assert(ok_al);
-    let cons_al, st_al = wing::tls_cipher_slot_unseal_records(slot_s, alert_rec[..al_len], plain_out);
-    assert(cons_al == al_len && st_al == wing::TlsSliceUnsealStatus.Closed);
+    let cons_al, st_al = tls::cipher_slot_unseal_records(slot_s, alert_rec[..al_len], plain_out);
+    assert(cons_al == al_len && st_al == tls::SliceUnsealStatus.Closed);
 
-    let _, ktls_bad = wing::tls_try_enable_ktls(slot_s, -1);
+    let _, ktls_bad = tls::try_enable_ktls(slot_s, -1);
     assert(!ktls_bad);
 
-    wing::free_tls_cipher_slot(slot_s);
-    wing::free_tls_cipher_slot(slot_c);
+    tls::free_cipher_slot(slot_s);
+    tls::free_cipher_slot(slot_c);
     print("TASK2_TLS_SLICE_AND_KTLS: OK");
 }
 
 fn test_poller_live_socket_and_synthetic_fds() {
     let cfg = net_internal::auto_transport_driver_config();
-    var p = wing::new_poller(cfg);
+    var p = net::new_poller(cfg);
 
     // Review Focus #2: synthetic FD 77 coexists with live sockets without POLLNVAL/EBADF failure
-    assert(wing::register_socket(p, 77, 7700, core::PollInterest.Read, core::PollTrigger.Edge));
-    assert(wing::simulate_read_ready(p, 77, 128));
+    assert(net::register_socket(p, 77, 7700, core::PollInterest.Read, core::PollTrigger.Edge));
+    assert(net::simulate_read_ready(p, 77, 128));
     var evs: core::PollReadyEvent[..64] = [];
-    let n_sim = wing::poll_events(p, 0, 1000, evs);
+    let n_sim = net::poll_events(p, 0, 1000, evs);
     assert(n_sim == 1 && evs[0].tag == 7700 && (evs[0].events & core::POLL_READ) != 0);
 
     // Real loopback TCP readiness through Poller without manual enable_os_multiplexing
-    let lfd = wing::tcp_listen("127.0.0.1", 0);
+    let lfd = net::tcp_listen("127.0.0.1", 0);
     assert(lfd > 0);
-    let port = wing::tcp_getsockname_port(lfd);
-    let cfd = wing::tcp_connect("127.0.0.1", port);
-    let sfd = wing::tcp_accept(lfd);
+    let port = net::tcp_getsockname_port(lfd);
+    let cfd = net::tcp_connect("127.0.0.1", port);
+    let sfd = net::tcp_accept(lfd);
     assert(cfd > 0 && sfd > 0);
-    let _ = wing::tcp_set_nonblocking(sfd, true);
+    let _ = net::tcp_set_nonblocking(sfd, true);
 
-    assert(wing::register_socket(p, sfd as i32, 9001, core::PollInterest.Read, core::PollTrigger.Level));
-    assert(wing::tcp_send(cfd, "HELLO_POLLER") == 12);
+    assert(net::register_socket(p, sfd as i32, 9001, core::PollInterest.Read, core::PollTrigger.Level));
+    assert(net::tcp_send(cfd, "HELLO_POLLER") == 12);
     evs.clear();
-    let n_live = wing::poll_events(p, 500, 2000, evs);
+    let n_live = net::poll_events(p, 500, 2000, evs);
     assert(n_live == 1 && evs[0].tag == 9001 && (evs[0].events & core::POLL_READ) != 0);
 
     var rx: u8[32] = [0; 32];
-    let nr = wing::tcp_recv_slice(sfd, rx[..]);
+    let nr = net::tcp_recv_slice(sfd, rx[..]);
     assert(nr == 12 && rx[..12] == "HELLO_POLLER");
 
-    assert(wing::deregister_socket(p, 77));
-    assert(wing::deregister_socket(p, sfd as i32));
-    wing::tcp_close(sfd);
-    wing::tcp_close(cfd);
-    wing::tcp_close(lfd);
-    wing::close_poller(p);
+    assert(net::deregister_socket(p, 77));
+    assert(net::deregister_socket(p, sfd as i32));
+    net::tcp_close(sfd);
+    net::tcp_close(cfd);
+    net::tcp_close(lfd);
+    net::close_poller(p);
     print("TASK3_POLLER_LIVE: OK");
 }
 
-fn test_reactor_accelerated_and_fallback(srv: wing::HttpServer&) {
-    srv.accel_mode = wing::ReactorAccelMode.Auto;
-    wing::add_static_get_route(srv, "/", "text/plain", "ACCEL_OK");
+fn test_reactor_accelerated_and_fallback(srv: server::HttpServer&) {
+    srv.accel_mode = net::ReactorAccelMode.Auto;
+    server::add_static_get_route(srv, "/", "text/plain", "ACCEL_OK");
 
     // 1. Accelerated listener (RIO on Windows, io_uring on Linux, kqueue on macOS)
-    let lfd1 = wing::reactor_listen_accelerated(srv, 32);
+    let lfd1 = server::reactor_listen_accelerated(srv, 32);
     assert(lfd1 > 0);
-    let port1 = wing::tcp_getsockname_port(lfd1);
+    let port1 = net::tcp_getsockname_port(lfd1);
     assert(port1 > 0);
-    let cfd1 = wing::tcp_connect("127.0.0.1", port1);
+    let cfd1 = net::tcp_connect("127.0.0.1", port1);
     assert(cfd1 > 0);
-    assert(wing::tcp_send(cfd1, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
-    let served1 = wing::serve_reactor(srv, lfd1, 1);
+    assert(net::tcp_send(cfd1, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+    let served1 = server::serve_reactor(srv, lfd1, 1);
     assert(served1 >= 1);
     var resp: u8[512] = [0; 512];
-    let nr1 = wing::tcp_recv_slice(cfd1, resp[..]);
+    let nr1 = net::tcp_recv_slice(cfd1, resp[..]);
     assert(nr1 > 0 && core::starts_with(resp[..nr1], "HTTP/1.1 200"));
     assert(core::contains(resp[..nr1], "ACCEL_OK"));
-    wing::tcp_close(cfd1);
-    wing::tcp_close(lfd1);
+    net::tcp_close(cfd1);
+    net::tcp_close(lfd1);
 
     // 2. Review Focus #1: Plain non-RIO tcp_listen socket passed to serve_reactor under Auto mode
-    let lfd2 = wing::tcp_listen("127.0.0.1", 0);
+    let lfd2 = net::tcp_listen("127.0.0.1", 0);
     assert(lfd2 > 0);
-    let port2 = wing::tcp_getsockname_port(lfd2);
+    let port2 = net::tcp_getsockname_port(lfd2);
     assert(port2 > 0);
-    let cfd2 = wing::tcp_connect("127.0.0.1", port2);
+    let cfd2 = net::tcp_connect("127.0.0.1", port2);
     assert(cfd2 > 0);
-    assert(wing::tcp_send(cfd2, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
-    let served2 = wing::serve_reactor(srv, lfd2, 1);
+    assert(net::tcp_send(cfd2, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+    let served2 = server::serve_reactor(srv, lfd2, 1);
     assert(served2 >= 1);
-    let nr2 = wing::tcp_recv_slice(cfd2, resp[..]);
+    let nr2 = net::tcp_recv_slice(cfd2, resp[..]);
     assert(nr2 > 0 && core::starts_with(resp[..nr2], "HTTP/1.1 200"));
     assert(core::contains(resp[..nr2], "ACCEL_OK"));
-    wing::tcp_close(cfd2);
-    wing::tcp_close(lfd2);
+    net::tcp_close(cfd2);
+    net::tcp_close(lfd2);
 
     // 3. Explicit PollFallback mode
-    srv.accel_mode = wing::ReactorAccelMode.PollFallback;
-    let lfd3 = wing::reactor_listen_accelerated(srv, 16);
+    srv.accel_mode = net::ReactorAccelMode.PollFallback;
+    let lfd3 = server::reactor_listen_accelerated(srv, 16);
     assert(lfd3 > 0);
-    let port3 = wing::tcp_getsockname_port(lfd3);
-    let cfd3 = wing::tcp_connect("127.0.0.1", port3);
+    let port3 = net::tcp_getsockname_port(lfd3);
+    let cfd3 = net::tcp_connect("127.0.0.1", port3);
     assert(cfd3 > 0);
-    assert(wing::tcp_send(cfd3, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
-    assert(wing::serve_reactor(srv, lfd3, 1) >= 1);
-    let nr3 = wing::tcp_recv_slice(cfd3, resp[..]);
+    assert(net::tcp_send(cfd3, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+    assert(server::serve_reactor(srv, lfd3, 1) >= 1);
+    let nr3 = net::tcp_recv_slice(cfd3, resp[..]);
     assert(nr3 > 0 && core::contains(resp[..nr3], "ACCEL_OK"));
-    wing::tcp_close(cfd3);
-    wing::tcp_close(lfd3);
+    net::tcp_close(cfd3);
+    net::tcp_close(lfd3);
 
     // 4. TLS reactor entrypoint guard + slice SQE helper smoke check
-    let tls_cfg = wing::TlsServerHandshakeConfig { .. };
-    assert(wing::serve_reactor_tls(srv, -1, tls_cfg, 1) == 0);
+    let tls_cfg = tls::ServerHandshakeConfig { .. };
+    assert(server::serve_reactor_tls(srv, -1, tls_cfg, 1) == 0);
     var send_sqe = net_internal::UringSqe { .. };
     net_internal::uring_prep_send_slice(send_sqe, 9, resp[..8], 555);
     assert(send_sqe.opcode == net_internal::URING_OP_SEND && send_sqe.len == 8 && send_sqe.addr != 0);
@@ -306,7 +306,7 @@ fn test_l2_udp_codec_and_malformed_inputs() {
     print("TASK5_L2_CODEC: OK");
 }
 
-fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
+fn test_h3_batched_udp_and_l2_kernel_bypass(srv: server::HttpServer&) {
     // 1. Review Focus #5: AF_XDP UMEM out-of-bounds, oversize, and clean out_frame checks
     var xsk, ok_xsk = net_internal::af_xdp_open_loopback(16, 2048);
     assert(ok_xsk);
@@ -350,13 +350,13 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     // 3. Pump through AF_XDP loopback serve_h3_l2 and verify L2 UDP Version-Negotiation reply
     assert(net_internal::af_xdp_umem_write(xsk, 0, l2_pkt[..]));
     assert(net_internal::af_xdp_inject_loopback_rx(xsk, 0, l2_pkt.len as u32));
-    var h3_ep = wing::new_h3_server_endpoint();
-    let cfg_xdp = wing::H3L2Config {
-        backend:  wing::H3L2Backend.AfXdp,
+    var h3_ep = server::new_h3_server_endpoint();
+    let cfg_xdp = server::H3L2Config {
+        backend:  server::H3L2Backend.AfXdp,
         local_ep: srv_ep,
         ..
     };
-    assert(wing::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
+    assert(server::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
     let tx_addr, ok_comp = net_internal::af_xdp_complete_pop(xsk);
     assert(ok_comp);
     // Also verify Direct-H3 SETTINGS frame (0x04 0x00) over AF_XDP L2
@@ -364,7 +364,7 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     assert(net_internal::encode_l2_udp_frame(cli_ep, srv_ep, "\x04\x00", 2, l2_h3_settings));
     assert(net_internal::af_xdp_umem_write(xsk, tx_addr, l2_h3_settings[..]));
     assert(net_internal::af_xdp_inject_loopback_rx(xsk, tx_addr, l2_h3_settings.len as u32));
-    assert(wing::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
+    assert(server::serve_h3_l2(srv, h3_ep, cfg_xdp, xsk, 1) == 1);
 
     // 4. Pump through DPDK loopback serve_h3_l2 and verify decoded L2 UDP response in TX->RX ring
     var dpdk_dev = net_internal::new_dpdk_device(0);
@@ -372,14 +372,14 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     assert(net_internal::dpdk_init_port(dpdk_dev, dpdk_cfg) == 0);
     assert(net_internal::dpdk_start_port(dpdk_dev) == 0);
     assert(net_internal::dpdk_tx_packet_push(0, 0, l2_pkt[..]));
-    let cfg_dpdk = wing::H3L2Config {
-        backend:       wing::H3L2Backend.Dpdk,
+    let cfg_dpdk = server::H3L2Config {
+        backend:       server::H3L2Backend.Dpdk,
         local_ep:      srv_ep,
         dpdk_port_id:  0,
         dpdk_queue_id: 0,
         ..
     };
-    assert(wing::serve_h3_l2(srv, h3_ep, cfg_dpdk, xsk, 1) == 1);
+    assert(server::serve_h3_l2(srv, h3_ep, cfg_dpdk, xsk, 1) == 1);
     var dpdk_replies: u8[..2048][..32] = [];
     let n_rep = net_internal::dpdk_rx_burst_read(0, 0, dpdk_replies);
     assert(n_rep == 1);
@@ -393,33 +393,33 @@ fn test_h3_batched_udp_and_l2_kernel_bypass(srv: wing::HttpServer&) {
     print("TASK6_H3_BATCH_AND_L2: OK");
 }
 
-fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
-    wing::add_static_get_route(srv, "/", "text/plain", "ACCEL_OK");
+fn test_cross_platform_live_batch_and_accelerators(srv: server::HttpServer&) {
+    server::add_static_get_route(srv, "/", "text/plain", "ACCEL_OK");
 
     // 1. Live multi-datagram UDP loopback batch through serve_h3 (recvmmsg + sendmmsg)
-    let udp_srv = wing::udp_bind("127.0.0.1", 0);
-    let udp_cli = wing::udp_bind("127.0.0.1", 0);
+    let udp_srv = net::udp_bind("127.0.0.1", 0);
+    let udp_cli = net::udp_bind("127.0.0.1", 0);
     assert(udp_srv > 0 && udp_cli > 0);
-    let udp_port = wing::tcp_getsockname_port(udp_srv);
+    let udp_port = net::tcp_getsockname_port(udp_srv);
     assert(udp_port > 0);
 
     let h3_settings = fingerprint::H3Settings { .. };
     var h3_cli = http3::new_client_connection(h3_settings);
     let sid, ok_sid = http3::open_request_stream(h3_cli);
     assert(ok_sid && sid == 0);
-    var extra = wing::HeaderMap { .. };
+    var extra = http::HeaderMap { .. };
     var req_wire: u8[..1024] = [];
     assert(http3::send_request_headers(h3_cli, sid, "GET", "https", "127.0.0.1", "/", extra, true, req_wire));
 
     for _ in 4 {
-        assert(wing::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
+        assert(net_internal::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
     }
-    assert(wing::serve_h3(srv, udp_srv, 4) == 4);
+    assert(server::serve_h3(srv, udp_srv, 4) == 4);
 
-    var rx_batch = wing::UdpBatchQueue { .. };
+    var rx_batch = net::UdpBatchQueue { .. };
     var total_rx: i32 = 0;
     for _ in 8 {
-        let got, ok_b = wing::batch_recv_messages(udp_cli as i32, rx_batch);
+        let got, ok_b = net::batch_recv_messages(rx_batch, udp_cli as i32);
         assert(ok_b);
         if got > 0 {
             for i in rx_batch.msgs.len {
@@ -438,19 +438,19 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
 
     // 2. Verify UdpFallback path of serve_h3_l2 over live UDP socket
     var dummy_xsk = net_internal::new_af_xdp_socket();
-    var h3_ep = wing::new_h3_server_endpoint();
-    let cfg_fb = wing::H3L2Config {
-        backend: wing::H3L2Backend.UdpFallback,
+    var h3_ep = server::new_h3_server_endpoint();
+    let cfg_fb = server::H3L2Config {
+        backend: server::H3L2Backend.UdpFallback,
         udp_fd:  udp_srv,
         ..
     };
-    assert(wing::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
-    assert(wing::serve_h3_l2(srv, h3_ep, cfg_fb, dummy_xsk, 1) == 1);
-    let got_fb, ok_fb = wing::batch_recv_messages(udp_cli as i32, rx_batch);
+    assert(net_internal::native_udp_sendto(udp_cli, req_wire[..], "127.0.0.1", udp_port) > 0);
+    assert(server::serve_h3_l2(srv, h3_ep, cfg_fb, dummy_xsk, 1) == 1);
+    let got_fb, ok_fb = net::batch_recv_messages(rx_batch, udp_cli as i32);
     assert(ok_fb && got_fb == 1);
 
-    wing::tcp_close(udp_cli);
-    wing::tcp_close(udp_srv);
+    net::tcp_close(udp_cli);
+    net::tcp_close(udp_srv);
 
     // 3. Live Linux io_uring pbuf_ring + completion reactor roundtrip when running on Linux
     if net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux {
@@ -463,26 +463,26 @@ fn test_cross_platform_live_batch_and_accelerators(srv: wing::HttpServer&) {
             }
             net_internal::native_uring_close(rfd);
         }
-        srv.accel_mode = wing::ReactorAccelMode.IoUring;
-        let lfd = wing::reactor_listen_accelerated(srv, 16);
+        srv.accel_mode = net::ReactorAccelMode.IoUring;
+        let lfd = server::reactor_listen_accelerated(srv, 16);
         assert(lfd > 0);
-        let lport = wing::tcp_getsockname_port(lfd);
-        let cfd = wing::tcp_connect("127.0.0.1", lport);
+        let lport = net::tcp_getsockname_port(lfd);
+        let cfd = net::tcp_connect("127.0.0.1", lport);
         assert(cfd > 0);
-        assert(wing::tcp_send(cfd, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
-        assert(wing::serve_reactor(srv, lfd, 1) >= 1);
+        assert(net::tcp_send(cfd, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+        assert(server::serve_reactor(srv, lfd, 1) >= 1);
         var resp: u8[..256] = [];
         resp.resize(256, 0);
-        let nr = wing::tcp_recv_slice(cfd, resp[..]);
+        let nr = net::tcp_recv_slice(cfd, resp[..]);
         assert(nr > 0 && core::contains(resp[..nr], "ACCEL_OK"));
-        wing::tcp_close(cfd);
-        wing::tcp_close(lfd);
+        net::tcp_close(cfd);
+        net::tcp_close(lfd);
     }
 
     print("TASK7_CROSS_PLATFORM_E2E: OK");
 }
 
-fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: wing::HttpServer&) {
+fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: server::HttpServer&) {
     // 1. Important #1: millisecond-to-nanosecond conversion for io_uring / kqueue waits
     assert(net_internal::timeout_ms_to_ns(-1) == -1);
     assert(net_internal::timeout_ms_to_ns(0) == 0);
@@ -491,45 +491,45 @@ fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: wing::HttpServe
 
     if net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux {
         let idle_cfg = net_internal::auto_transport_driver_config();
-        var p_idle = wing::new_poller(idle_cfg);
-        let _ = wing::enable_os_multiplexing(p_idle);
+        var p_idle = net::new_poller(idle_cfg);
+        let _ = net::enable_os_multiplexing(p_idle);
         var evs: core::PollReadyEvent[..64] = [];
         let t0 = core::monotonic_now().nanos;
-        let _ = wing::poll_events(p_idle, 20, t0, evs);
+        let _ = net::poll_events(p_idle, 20, t0, evs);
         let elapsed = core::sub_sat_u64(core::monotonic_now().nanos, t0);
         assert(elapsed >= 12000000);
-        wing::close_poller(p_idle);
+        net::close_poller(p_idle);
     }
 
     // 2. Important #2: synchronous AcceptEx cancellation drain before handle close on Windows RIO
     if net_internal::detect_target_platform() == net_internal::TargetPlatform.Windows &&
         net_internal::native_rio_available() == 1 {
-        srv.accel_mode = wing::ReactorAccelMode.Rio;
-        let r_lfd = wing::reactor_listen_accelerated(srv, 16);
+        srv.accel_mode = net::ReactorAccelMode.Rio;
+        let r_lfd = server::reactor_listen_accelerated(srv, 16);
         assert(r_lfd > 0);
         assert(net_internal::native_rio_poll_accept(r_lfd, 0) == 0);
         assert(net_internal::native_rio_cancel_accept(r_lfd) == 1);
         assert(net_internal::native_rio_cancel_accept(r_lfd) == 0);
-        wing::tcp_close(r_lfd);
+        net::tcp_close(r_lfd);
     }
 
     // 3. Important #3: kTLS post-handshake KeyUpdate disconnect + EAGAIN non-close + NewSessionTicket skip
-    let add_eagain, any_eagain, cls_eagain = wing::classify_ktls_recv_turn(-2, 0, "", 0);
+    let add_eagain, any_eagain, cls_eagain = server::classify_ktls_recv_turn(-2, 0, "", 0);
     assert(add_eagain == 0 && !any_eagain && !cls_eagain);
 
     let nst_rec: u8[8] = [rfc::TLS_HS_NEW_SESSION_TICKET, 0, 0, 4, 0, 0, 0, 1];
-    let add_nst, any_nst, cls_nst = wing::classify_ktls_recv_turn(8, rfc::TLS_CONTENT_HANDSHAKE, nst_rec[..], 0);
+    let add_nst, any_nst, cls_nst = server::classify_ktls_recv_turn(8, rfc::TLS_CONTENT_HANDSHAKE, nst_rec[..], 0);
     assert(add_nst == 0 && !any_nst && !cls_nst);
 
     let ku_rec: u8[5] = [rfc::TLS_HS_KEY_UPDATE, 0, 0, 1, 0];
-    let add_ku, any_ku, cls_ku = wing::classify_ktls_recv_turn(5, rfc::TLS_CONTENT_HANDSHAKE, ku_rec[..], 0);
+    let add_ku, any_ku, cls_ku = server::classify_ktls_recv_turn(5, rfc::TLS_CONTENT_HANDSHAKE, ku_rec[..], 0);
     assert(add_ku == 0 && !any_ku && cls_ku);
 
     let al_rec: u8[2] = [1, 0];
-    let add_al, any_al, cls_al = wing::classify_ktls_recv_turn(2, rfc::TLS_CONTENT_ALERT, al_rec[..], 0);
+    let add_al, any_al, cls_al = server::classify_ktls_recv_turn(2, rfc::TLS_CONTENT_ALERT, al_rec[..], 0);
     assert(add_al == 0 && !any_al && cls_al);
 
-    let add_app, any_app, cls_app = wing::classify_ktls_recv_turn(4, rfc::TLS_CONTENT_APPLICATION_DATA, "PING", 0);
+    let add_app, any_app, cls_app = server::classify_ktls_recv_turn(4, rfc::TLS_CONTENT_APPLICATION_DATA, "PING", 0);
     assert(add_app == 4 && any_app && !cls_app);
 
     print("FINAL_REVIEW_FIXES: OK");
@@ -544,7 +544,7 @@ fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: wing::HttpServe
 // CHECK: TASK7_CROSS_PLATFORM_E2E: OK
 // CHECK: FINAL_REVIEW_FIXES: OK
 fn main() {
-    var srv = wing::new_http_server("127.0.0.1", 0);
+    var srv = server::new_http_server("127.0.0.1", 0);
     test_driver_slice_abis();
     test_tls_slice_codecs_and_ktls_probe();
     test_poller_live_socket_and_synthetic_fds();

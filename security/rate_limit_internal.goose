@@ -323,7 +323,7 @@ inline fn ceil_ns_to_sec(ns: u64) -> u64 {
 }
 
 fn find_header_hash_entry_idx(
-    map:   const wing::HeaderMap&,
+    map:   const http::HeaderMap&,
     name:  const u8[:],
     hname: u32,
     wk_id: u8,
@@ -344,13 +344,13 @@ fn find_header_hash_entry_idx(
 }
 
 inline fn try_overwrite_ratelimit_entry_same_len(
-    map:     wing::HeaderMap&,
+    map:     http::HeaderMap&,
     idx:     i64,
     val_str: const u8[:],
 ) -> bool {
     guard idx >= 0 && idx < map.entries.len else { return false; }
     let e .= map.entries[idx];
-    guard e.next_idx == 0xFF && e.reserved == wing::HEADER_SRC_STACK && e.values_end <= map.raw_buf.len else {
+    guard e.next_idx == 0xFF && e.reserved == http::HEADER_SRC_STACK && e.values_end <= map.raw_buf.len else {
         return false;
     }
     let v_begin = e.values_begin as i64;
@@ -364,7 +364,7 @@ inline fn try_overwrite_ratelimit_entry_same_len(
 }
 
 fn set_ratelimit_u64_header(
-    map:   wing::HeaderMap&,
+    map:   http::HeaderMap&,
     name:  const u8[:],
     hname: u32,
     wk_id: u8,
@@ -384,7 +384,7 @@ fn set_ratelimit_u64_header(
         if wk_id != 0xFF {
             map.inline_slots[wk_id as i64] = new_idx;
         }
-        map.entries.push(wing::HeaderEntry {
+        map.entries.push(http::HeaderEntry {
             name_begin:    n_begin,
             name_end:      n_end,
             values_begin:  n_end,

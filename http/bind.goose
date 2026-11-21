@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Declarative zero-allocation request binding (Query, Headers, Params, Cookies, JSON) via const for.
-namespace wing;
+namespace http;
 
 import std;
 import json;
 import core from "..";
 import .headers;
 import .problem;
+import http.internal;
 
 // ---- zero-allocation route parameter spans ---------------------------------
 
@@ -114,224 +115,6 @@ fn param_by_name(
     return "", false;
 }
 
-// ---- scalar text parsers ---------------------------------------------------
-
-// Parses a signed 64-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "-42"
-//   returns: true, dst = -42
-fn parse_bound_scalar(raw: const u8[:], dst: i64&) -> bool {
-    let val, ok = raw.parse_i64_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses an unsigned 64-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "1024"
-//   returns: true, dst = 1024
-fn parse_bound_scalar(raw: const u8[:], dst: u64&) -> bool {
-    let val, ok = raw.parse_u64_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses a signed 32-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "200"
-//   returns: true, dst = 200
-fn parse_bound_scalar(raw: const u8[:], dst: i32&) -> bool {
-    let val, ok = raw.parse_i32_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses an unsigned 32-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "8080"
-//   returns: true, dst = 8080
-fn parse_bound_scalar(raw: const u8[:], dst: u32&) -> bool {
-    let val, ok = raw.parse_u32_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses a boolean literal (`true`, `false`, `1`, `0`) from `raw` into `dst`.
-//
-// Example:
-//   raw = "true"
-//   returns: true, dst = true
-fn parse_bound_scalar(raw: const u8[:], dst: bool&) -> bool {
-    if raw.eq_ascii_fold("true") || raw == "1" {
-        dst = true;
-        return true;
-    }
-    if raw.eq_ascii_fold("false") || raw == "0" {
-        dst = false;
-        return true;
-    }
-    return false;
-}
-
-// Copies `raw` into bounded byte buffer `dst`, failing if `raw.len > dst.cap`.
-//
-// Example:
-//   raw = "alice"
-//   returns: true, dst = "alice"
-fn parse_bound_scalar<B>(raw: const u8[:], dst: B&) -> bool {
-    return dst.try_set(raw);
-}
-
-// ---- header & cookie wire helpers ------------------------------------------
-
-// Converts a `snake_case` struct field name into a lowercase hyphenated HTTP header name.
-// Rolls back `out` on capacity overflow.
-//
-// Example:
-//   field_name = "x_request_id"
-//   returns: true, out = "x-request-id"
-fn normalize_field_to_header_name<B>(field_name: const u8[:], out: B&) -> bool {
-    let saved_len = out.len;
-    var committed = false;
-    defer if !committed { out.resize(saved_len); };
-    out.clear();
-    guard field_name.len > 0 else { return false; }
-    for b in field_name {
-        let lower_b: u8 = if b >= 'A' && b <= 'Z' { b | 0x20 } else { b };
-        let mapped:  u8 = if b == '_' { '-' } else { lower_b };
-        guard out.try_push(mapped) else { return false; }
-    }
-    committed = true;
-    return true;
-}
-
-// Extracts the raw value of cookie `target_name` from an RFC 6265 `Cookie` request header.
-// Strips optional surrounding double quotes.
-//
-// Example:
-//   cookie_hdr = "theme=dark; sid=\"abc123\"", target_name = "sid"
-//   returns: "abc123", true
-fn find_raw_cookie_value(
-    cookie_hdr:  const u8[:],
-    target_name: const u8[:],
-) -> const u8[:], bool {
-    guard cookie_hdr.len > 0 && target_name.len > 0 else { return "", false; }
-    var tok = core::make_byte_tokenizer(cookie_hdr, ';');
-    while true {
-        let seg, ok = core::token_next(tok);
-        if !ok { break; }
-        let k, v, has_eq = seg.trim_lws().split_once_byte('=');
-        if has_eq && k.trim_lws() == target_name {
-            return v.trim_lws().trim_byte('"'), true;
-        }
-    }
-    return "", false;
-}
-
-// ---- JSON field readers ----------------------------------------------------
-
-fn read_bound_json_field(reader: json::Reader&, dst: i64&) -> bool {
-    let c = json::peek(reader);
-    guard (c >= '0' && c <= '9') || c == '-' else {
-        json::fail(reader, "expected integer");
-        return false;
-    }
-    dst = json::read_int(reader);
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: u64&) -> bool {
-    let c = json::peek(reader);
-    guard c >= '0' && c <= '9' else {
-        json::fail(reader, "expected unsigned integer");
-        return false;
-    }
-    let val = json::read_int(reader);
-    guard val >= 0 else {
-        json::fail(reader, "negative unsigned integer");
-        return false;
-    }
-    dst = val as u64;
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: i32&) -> bool {
-    let c = json::peek(reader);
-    guard (c >= '0' && c <= '9') || c == '-' else {
-        json::fail(reader, "expected i32");
-        return false;
-    }
-    let val = json::read_int(reader);
-    guard val >= -2147483648 && val <= 2147483647 else {
-        json::fail(reader, "i32 out of range");
-        return false;
-    }
-    dst = val as i32;
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: f64&) -> bool {
-    let c = json::peek(reader);
-    guard (c >= '0' && c <= '9') || c == '-' else {
-        json::fail(reader, "expected number");
-        return false;
-    }
-    dst = json::read_number(reader);
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: bool&) -> bool {
-    let c = json::peek(reader);
-    guard c == 't' || c == 'f' else {
-        json::fail(reader, "expected boolean");
-        return false;
-    }
-    dst = json::read_bool(reader);
-    return true;
-}
-
-fn read_bound_json_field<B>(reader: json::Reader&, dst: B&) -> bool {
-    guard core::read_json_string_into(reader, dst) else {
-        json::fail(reader, "invalid or oversize string");
-        return false;
-    }
-    return true;
-}
-
-// Dispatches a single JSON object key to the matching field in `out` via `const for`.
-fn bind_json_member<T>(
-    key:    const u8[:],
-    reader: json::Reader&,
-    out:    T&,
-    vp:     ValidationProblem&,
-) -> bool {
-    var matched = false;
-    var field_ok = true;
-    const for <Name, Acc> in fields<T> {
-        if !matched && key == Name {
-            matched = true;
-            let ok_read = read_bound_json_field(reader, out.Acc);
-            let loc = ValidationLocation.Body;
-            let ok_chk = check_field(vp, ok_read, loc, Name, "invalid_json_field", "invalid JSON field value");
-            field_ok = field_ok && ok_chk;
-        }
-    }
-    if !matched {
-        json::skip(reader);
-    }
-    return field_ok;
-}
-
-// ---- declarative `const for` request binders -------------------------------
-
 // Binds URL query parameters into `out` and records validation failures in `vp`.
 // Rolls back `out` on any validation error.
 fn bind_query<T>(
@@ -349,7 +132,8 @@ fn bind_query<T>(
     const for <Name, Acc> in fields<T> {
         if !(vp.abort_early && !all_ok) {
             var val_buf: u8[..512] = [];
-            let ok_q = raw_q.get_query_param_fast(Name, val_buf) && parse_bound_scalar(val_buf[..], out.Acc);
+            let ok_q = raw_q.get_query_param_fast(Name, val_buf) &&
+                http_internal::parse_bound_scalar(val_buf[..], out.Acc);
             let loc = ValidationLocation.Query;
             let ok_chk = check_field(vp, ok_q, loc, Name, "invalid_query_param", "missing or invalid query parameter");
             all_ok = all_ok && ok_chk;
@@ -374,10 +158,10 @@ fn bind_headers<T>(
     const for <Name, Acc> in fields<T> {
         if !(vp.abort_early && !all_ok) {
             var hdr_name: u8[..64] = [];
-            let name_ok = normalize_field_to_header_name(Name, hdr_name);
+            let name_ok = http_internal::normalize_field_to_header_name(Name, hdr_name);
             let raw_val = if name_ok { get_header(headers, hdr_name[..]) } else { "" };
             let prop = if name_ok { hdr_name[..] } else { Name };
-            let ok_hdr = name_ok && raw_val.len > 0 && parse_bound_scalar(raw_val, out.Acc);
+            let ok_hdr = name_ok && raw_val.len > 0 && http_internal::parse_bound_scalar(raw_val, out.Acc);
             let loc = ValidationLocation.Header;
             let ok_chk = check_field(vp, ok_hdr, loc, prop, "invalid_header", "missing or invalid request header");
             all_ok = all_ok && ok_chk;
@@ -413,7 +197,7 @@ fn bind_params<T>(
                 raw_val = if ok_span { req_path[s_idx..e_idx] } else { raw_val };
                 found = found || ok_span;
             }
-            let ok_p = found && parse_bound_scalar(raw_val, out.Acc);
+            let ok_p = found && http_internal::parse_bound_scalar(raw_val, out.Acc);
             let loc = ValidationLocation.PathParam;
             let ok_chk = check_field(vp, ok_p, loc, Name, "invalid_path_param", "missing or invalid path parameter");
             all_ok = all_ok && ok_chk;
@@ -437,8 +221,8 @@ fn bind_cookies<T>(
     var all_ok = true;
     const for <Name, Acc> in fields<T> {
         if !(vp.abort_early && !all_ok) {
-            let raw_val, found = find_raw_cookie_value(cookie_hdr, Name);
-            let ok_c = found && parse_bound_scalar(raw_val, out.Acc);
+            let raw_val, found = http_internal::find_raw_cookie_value(cookie_hdr, Name);
+            let ok_c = found && http_internal::parse_bound_scalar(raw_val, out.Acc);
             if !check_field(vp, ok_c, ValidationLocation.Cookie, Name, "invalid_cookie", "missing or invalid cookie") {
                 all_ok = false;
             }
@@ -460,14 +244,16 @@ fn bind_json<T>(
     var committed = false;
     defer if !committed { out = saved; };
     if json_bytes.len == 0 {
-        let _ = record_field_error(vp, ValidationLocation.Body, "$", "empty JSON request body", "invalid_json");
+        let _ = http_internal::record_field_error(
+            vp, ValidationLocation.Body, "$", "empty JSON request body", "invalid_json",
+        );
         return false;
     }
     var reader = json::reader(json_bytes);
     var all_ok = true;
     json::each_member(reader) { key =>
         if !(vp.abort_early && !all_ok) {
-            if !bind_json_member(key, reader, out, vp) {
+            if !http_internal::bind_json_member(key, reader, out, vp) {
                 all_ok = false;
             }
         } else {
@@ -476,7 +262,9 @@ fn bind_json<T>(
     };
     if !json::finish(reader) {
         if all_ok {
-            let _ = record_field_error(vp, ValidationLocation.Body, "$", "malformed JSON document", "invalid_json");
+            let _ = http_internal::record_field_error(
+                vp, ValidationLocation.Body, "$", "malformed JSON document", "invalid_json",
+            );
         }
         all_ok = false;
     }

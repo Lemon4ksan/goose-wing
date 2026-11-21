@@ -3,7 +3,7 @@
 
 // Streaming HTTP/1.1 request body consumer and asynchronous backpressure / abort context
 // (uWebSockets onData / onWritable / onAborted pattern).
-namespace wing;
+namespace server;
 
 import std;
 import core from "..";
@@ -11,6 +11,8 @@ import http.headers;
 import http.headers.lexical;
 import http.headers.chunked;
 import .h1_codec;
+import .internal;
+import .h1_codec_internal;
 
 // State of a streaming HTTP/1.1 request body consumer (uWebSockets onData / onDataV2 pattern)
 struct HttpStreamConsumer {
@@ -33,27 +35,27 @@ fn begin_http_stream_request<Req>(
     var committed = false;
     defer if !committed {
         consumer = HttpStreamConsumer { .. };
-        clear_request_headers_state(out_req);
+        server_internal::clear_request_headers_state(out_req);
         out_req.method.clear();
         out_req.url.clear();
         out_req.is_http10 = false;
     };
 
-    var tracker = HeaderPresenceTracker { .. };
+    var tracker = http::HeaderPresenceTracker { .. };
     var body_start_idx: i64 = 0;
-    guard parse_http1_request_headers(wire, out_req, tracker, body_start_idx) else {
+    guard server_internal::parse_http1_request_headers(wire, out_req, tracker, body_start_idx) else {
         return false, 0;
     }
 
     consumer.header_end_idx = body_start_idx;
     consumer.is_headers_parsed = true;
 
-    let has_te = (tracker.mask & HDR_PRESENCE_TRANSFER_ENCODING) != 0;
-    let has_cl = (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0;
+    let has_te = (tracker.mask & http::HDR_PRESENCE_TRANSFER_ENCODING) != 0;
+    let has_cl = (tracker.mask & http::HDR_PRESENCE_CONTENT_LENGTH) != 0;
 
     if has_te {
         // RFC 9112 Section 6.1: A server MUST NOT apply Transfer-Encoding to an HTTP/1.0 request
-        guard !out_req.is_http10 && validate_span_te_header(out_req.headers, tracker.te_idx) else {
+        guard !out_req.is_http10 && server_internal::validate_span_te_header(out_req.headers, tracker.te_idx) else {
             return false, 0;
         }
         consumer.is_chunked = true;
@@ -77,100 +79,6 @@ fn begin_http_stream_request<Req>(
     return true, body_start_idx;
 }
 
-inline fn peek_terminal_zero_chunk(incoming: const u8[:], cursor: i64&) -> bool {
-    guard cursor < incoming.len else { return false; }
-    var peek_cur = cursor;
-    var next_sz: u64 = 1;
-    let next_err = read_chunk_size_line(incoming, peek_cur, next_sz);
-    guard next_err == ChunkedDecodeError.None && next_sz == 0 else { return false; }
-    let tr_err = parse_chunked_trailers(incoming, peek_cur);
-    guard tr_err == ChunkedDecodeError.None else { return false; }
-    cursor = peek_cur;
-    return true;
-}
-
-inline fn feed_fixed_length_http_stream(
-    consumer: HttpStreamConsumer&,
-    incoming: const u8[:],
-) -> i64, bool, bool {
-    let remaining = core::sub_sat_i64(consumer.content_length, consumer.bytes_received);
-    guard remaining > 0 else {
-        consumer.is_finished = true;
-        return 0, true, true;
-    }
-
-    let chunk_len = min(incoming.len, remaining);
-    consumer.bytes_received = core::add_sat_i64(consumer.bytes_received, chunk_len);
-    let is_last = consumer.bytes_received >= consumer.content_length;
-    if is_last {
-        consumer.is_finished = true;
-    }
-    return chunk_len, is_last, true;
-}
-
-// Steps one frame of a chunked HTTP stream at `cursor`, returning `(data_slice, has_data, is_last, ok)`.
-// On partial input (`UnexpectedEof`), returns `has_data = false, is_last = false, ok = true` and leaves `cursor`
-// at the start of the incomplete chunk.
-//
-// Example:
-//   incoming = "5\r\nhello\r\n0\r\n\r\n", cursor = 0
-//   returns: data_slice = "hello", has_data = true, is_last = true, ok = true, cursor = 15
-fn step_chunked_http_stream_frame(
-    consumer: HttpStreamConsumer&,
-    incoming: const u8[:],
-    cursor:   i64&,
-) -> const u8[:], bool, bool, bool {
-    let chunk_start = cursor;
-    var chunk_size: u64 = 0;
-    let line_err = read_chunk_size_line(incoming, cursor, chunk_size);
-    if line_err == ChunkedDecodeError.UnexpectedEof {
-        cursor = chunk_start;
-        return "", false, false, true;
-    }
-    guard line_err == ChunkedDecodeError.None && chunk_size <= (MAX_SERVER_BODY_LIMIT as u64) else {
-        cursor = chunk_start;
-        return "", false, false, false;
-    }
-    if chunk_size == 0 {
-        let tr_err = parse_chunked_trailers(incoming, cursor);
-        if tr_err == ChunkedDecodeError.UnexpectedEof {
-            cursor = chunk_start;
-            return "", false, false, true;
-        }
-        guard tr_err == ChunkedDecodeError.None else {
-            cursor = chunk_start;
-            return "", false, false, false;
-        }
-        consumer.is_finished = true;
-        return "", false, true, true;
-    }
-    let csize = chunk_size as i64;
-    let data_end = core::add_sat_i64(cursor, csize);
-    let frame_end = core::add_sat_i64(data_end, 2);
-    if frame_end > incoming.len {
-        cursor = chunk_start;
-        return "", false, false, true;
-    }
-    guard incoming[data_end] == '\r' && incoming[core::add_sat_i64(data_end, 1)] == '\n' else {
-        cursor = chunk_start;
-        return "", false, false, false;
-    }
-    let next_received = core::add_sat_i64(consumer.bytes_received, csize);
-    guard next_received <= MAX_SERVER_BODY_LIMIT else {
-        cursor = chunk_start;
-        return "", false, false, false;
-    }
-    let data_slice = incoming[cursor..data_end];
-    cursor = frame_end;
-    consumer.bytes_received = next_received;
-
-    let finished_now = peek_terminal_zero_chunk(incoming, cursor);
-    if finished_now {
-        consumer.is_finished = true;
-    }
-    return data_slice, true, finished_now, true;
-}
-
 // Feeds incoming wire slice chunks to an onData callback (uWebSockets onData(chunk, is_last) pattern).
 // Invokes `Callback(chunk, is_last)` as data arrives across packet boundaries.
 // Returns (consumed_bytes, is_last, ok).
@@ -188,7 +96,7 @@ fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
     guard incoming.len > 0 else { return 0, false, true; }
 
     if consumer.content_length >= 0 {
-        let chunk_len, is_last, ok = feed_fixed_length_http_stream(consumer, incoming);
+        let chunk_len, is_last, ok = server_internal::feed_fixed_length_http_stream(consumer, incoming);
         if chunk_len > 0 {
             Callback(incoming[..chunk_len], is_last);
         }
@@ -197,7 +105,11 @@ fn feed_http_stream_chunk<Callback: fn(const u8[:], bool)>(
 
     var cursor: i64 = 0;
     while cursor < incoming.len {
-        let data_slice, has_data, is_last, ok = step_chunked_http_stream_frame(consumer, incoming, cursor);
+        let data_slice, has_data, is_last, ok = server_internal::step_chunked_http_stream_frame(
+            consumer,
+            incoming,
+            cursor,
+        );
         guard ok else {
             consumer.is_headers_parsed = false;
             consumer.is_finished = true;

@@ -910,9 +910,9 @@ fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
         }
         in_buf.compact_wire_buffer(consumed);
         chunk_buf.clear();
-        let recvd = wing::tcp_recv(conn_fd, chunk_buf, 100);
+        let recvd = net::tcp_recv(conn_fd, chunk_buf, 100);
         if recvd < 0 {
-            wing::tcp_close(conn_fd);
+            net::tcp_close(conn_fd);
             return;
         }
         if recvd == 0 {
@@ -928,7 +928,7 @@ fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
             close_reply.clear();
             close(ws, rfc::WS_STATUS_MESSAGE_TOO_BIG, "frame exceeds wire buffer capacity", close_reply);
             if close_reply.len > 0 {
-                let _ = wing::tcp_send(conn_fd, close_reply[..]);
+                let _ = net::tcp_send(conn_fd, close_reply[..]);
             }
             realtime_internal::ws_drain_and_close(conn_fd);
             return;

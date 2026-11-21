@@ -45,7 +45,7 @@ fn sha256_hex_digest(data: const u8[:]) -> u8[..64] {
 // Example:
 //   raw_hdrs = "X-Req-Tag: alpha-99\n"
 //   returns: true, req has X-Req-Tag = "alpha-99"
-fn parse_header_lines_into_req(raw_hdrs: const u8[:], req: wing::Request&) -> bool {
+fn parse_header_lines_into_req(raw_hdrs: const u8[:], req: http::Request&) -> bool {
     var tok = core::make_byte_tokenizer(raw_hdrs, '\n');
     while true {
         let raw_line, has_more = core::token_next(tok);
@@ -56,12 +56,12 @@ fn parse_header_lines_into_req(raw_hdrs: const u8[:], req: wing::Request&) -> bo
         guard ok else { return false; }
         let k = k_raw.trim_lws();
         let v = v_raw.trim_lws();
-        wing::set_header(req, k, v);
+        http::set_header(req, k, v);
     }
     return true;
 }
 
-fn format_checked_headers(res: const wing::Response&, hdr_csv: const u8[:], out: u8[..1024]&) {
+fn format_checked_headers(res: const http::Response&, hdr_csv: const u8[:], out: u8[..1024]&) {
     out.clear();
     guard hdr_csv != "-" else {
         let _ = out.try_append("-");
@@ -128,13 +128,13 @@ fn parse_verdict_case(line: const u8[:]) -> VerdictCase, bool {
 }
 
 fn execute_verdict_case(
-    sess:     wing::Session&,
+    sess:     client::Session&,
     vc:       const VerdictCase&,
     hdr_buf:  u8[>..]&,
     body_buf: u8[>..]&,
     hdr_out:  u8[..1024]&,
 ) {
-    var req = wing::new_request(vc.method, vc.url);
+    var req = http::new_request(vc.method, vc.url);
     if vc.hdr_hex != "-" {
         guard decode_hex_bytes(vc.hdr_hex, hdr_buf) else {
             print(vc.name, "\tERR\t-\tbad-hdr-hex");
@@ -153,8 +153,8 @@ fn execute_verdict_case(
         req.set_stream_body(body_buf[..], true);
     }
 
-    let res, err = wing::execute_request(sess, req);
-    if !wing::ok(err) {
+    let res, err = client::execute_request(sess, req);
+    if !http::ok(err) {
         print(vc.name, "\tERR\t-\t", err.stage[..], ":", err.code, ":", err.message[..]);
         return;
     }
@@ -183,18 +183,18 @@ fn main() {
         exit(2);
     }
 
-    let cfg = wing::ClientConfig { timeout_ms: 5000, .. };
-    var sess_trusted = wing::new_session(cfg);
+    let cfg = client::Config { timeout_ms: 5000, .. };
+    var sess_trusted = client::new_session(cfg);
     defer sess_trusted.close();
     sess_trusted.ssrf_guard.enabled = false;
     sess_trusted.insecure_skip_verify = false;
-    let added, pem_ok = wing::add_trust_anchors_pem(sess_trusted.trust_store, ca_pem[..]);
+    let added, pem_ok = tls::add_trust_anchors_pem(sess_trusted.trust_store, ca_pem[..]);
     guard pem_ok && added > 0 else {
         print("failed to load CA trust anchor\n");
         exit(2);
     }
 
-    var sess_untrusted = wing::new_session(cfg);
+    var sess_untrusted = client::new_session(cfg);
     defer sess_untrusted.close();
     sess_untrusted.ssrf_guard.enabled = false;
     sess_untrusted.insecure_skip_verify = false;

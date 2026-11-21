@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // W3C Server-Timing header telemetry recorder and formatter.
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
 import rfc.http;
 import .headers;
 import .response;
+import http.meta_internal;
 
 struct ServerTimingSpan {
     name:     u8[..32] = [],
@@ -27,19 +28,6 @@ fn clear(rec: ServerTimingRecorder&) {
     rec.spans.clear();
 }
 
-// RFC 9110 Section 5.6.4: Quoted Strings - Reject non-HTAB control octets and enforce capacity.
-inline fn copy_valid_timing_desc(src: const u8[:], dst: u8[..64]&) -> bool {
-    dst.clear();
-    for b in src {
-        if b == '\r' || b == '\n' || b == 0 { continue; }
-        guard (b == '\t' || (b >= 0x20 && b != 0x7F)) && dst.try_push(b) else {
-            dst.clear();
-            return false;
-        }
-    }
-    return true;
-}
-
 // Starts a monotonic span in `rec` and returns its slot index (or -1 if full/invalid).
 fn start_span(
     rec:    ServerTimingRecorder&,
@@ -51,7 +39,7 @@ fn start_span(
     var sp = ServerTimingSpan { start_ns: now_ns, active: true, .. };
     guard sp.name.try_set(name) else { return -1; }
     if desc.len > 0 {
-        guard copy_valid_timing_desc(desc, sp.desc) else { return -1; }
+        guard http_internal::copy_valid_timing_desc(desc, sp.desc) else { return -1; }
     }
     let idx = rec.spans.len as i32;
     guard rec.spans.try_push(sp) else { return -1; }
@@ -80,7 +68,7 @@ fn record_duration_ns(
     var sp = ServerTimingSpan { dur_ns: dur_ns, has_dur: true, .. };
     guard sp.name.try_set(name) else { return false; }
     if desc.len > 0 {
-        guard copy_valid_timing_desc(desc, sp.desc) else { return false; }
+        guard http_internal::copy_valid_timing_desc(desc, sp.desc) else { return false; }
     }
     return rec.spans.try_push(sp);
 }

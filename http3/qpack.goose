@@ -461,7 +461,7 @@ fn decode_qpack_to_map(
     tbl:               const QpackTable&,
     src:               const u8[:],
     out_pseudo:        PseudoHeaders&,
-    out_headers:       wing::HeaderMap&,
+    out_headers:       http::HeaderMap&,
     max_field_section: u64 = 16384,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }
@@ -521,7 +521,7 @@ fn decode_or_block_qpack_to_map(
     stream_id:         u64,
     src:               const u8[:],
     out_pseudo:        PseudoHeaders&,
-    out_headers:       wing::HeaderMap&,
+    out_headers:       http::HeaderMap&,
     max_field_section: u64 = 16384,
 ) -> QpackError {
     guard src.len >= 2 else { return QpackError.DecompressionFailed; }

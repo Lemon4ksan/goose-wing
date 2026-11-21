@@ -4,7 +4,7 @@
 // Minimal Perfect Hashing & O(1) Dispatcher for Well-Known HTTP Headers.
 // Replaces multi-pass string comparisons and case-folding loops with a
 // deterministic length + leading-byte discriminator and single-shot verification.
-namespace wing;
+namespace http;
 
 import std;
 import core from "../..";

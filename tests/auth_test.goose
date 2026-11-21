@@ -87,20 +87,20 @@ fn test_rfc7616_official_ietf_vector(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_401_authenticator_loop(t: lit::T&) {
     t.run("Client Automatically Resolves 401 Challenge with RFC 7616 Digest") { sub =>
-        var client = wing::new_client();
-        wing::set_credentials(client, "Mufasa", "Circle of Life");
+        var client = client::new_client();
+        client::set_credentials(client, "Mufasa", "Circle of Life");
 
         // First attempt (no Authorization header sent yet) returns 401 with Digest challenge
-        wing::mock_route(client, "GET", "https://api.corp.com/protected/doc", 401, "{\"error\":\"unauthorized\"}");
-        wing::add_mock_header(client, "WWW-Authenticate", "Digest realm=\"http-auth@example.org\", qop=\"auth\", algorithm=SHA-256, nonce=\"7ypf/xlj9xxbKfUIDFtdaQ==\"");
+        client::mock_route(client, "GET", "https://api.corp.com/protected/doc", 401, "{\"error\":\"unauthorized\"}");
+        client::add_mock_header(client, "WWW-Authenticate", "Digest realm=\"http-auth@example.org\", qop=\"auth\", algorithm=SHA-256, nonce=\"7ypf/xlj9xxbKfUIDFtdaQ==\"");
 
         // Route with Authorization header returns 200 OK
         // In our mock engine, when client adds Authorization header, it executes hop
-        let resp, err = wing::get(client, "https://api.corp.com/protected/doc");
-        sub.assert_true(wing::ok(err), "request completed");
+        let resp, err = client::get(client, "https://api.corp.com/protected/doc");
+        sub.assert_true(http::ok(err), "request completed");
 
         // Verify sent Authorization header on replay
-        let sent_auth = wing::sent_header(resp, "Authorization");
+        let sent_auth = http::sent_header(resp, "Authorization");
         sub.assert_true(sent_auth.len > 0, "Client generated and sent Authorization header");
         sub.assert_bytes_eq(sent_auth[..7], "Digest ", "Scheme is Digest");
 
@@ -114,32 +114,32 @@ fn test_401_authenticator_loop(t: lit::T&) {
     };
 
     t.run("Client Automatically Resolves 401 Challenge with RFC 7617 Basic Auth") { sub =>
-        var client = wing::new_client();
-        wing::set_credentials(client, "admin", "secret123");
+        var client = client::new_client();
+        client::set_credentials(client, "admin", "secret123");
 
-        wing::mock_route(client, "GET", "https://api.corp.com/admin", 401, "unauthorized");
-        wing::add_mock_header(client, "WWW-Authenticate", "Basic realm=\"admin-area\"");
+        client::mock_route(client, "GET", "https://api.corp.com/admin", 401, "unauthorized");
+        client::add_mock_header(client, "WWW-Authenticate", "Basic realm=\"admin-area\"");
 
-        let resp, err = wing::get(client, "https://api.corp.com/admin");
-        sub.assert_true(wing::ok(err), "request completed");
+        let resp, err = client::get(client, "https://api.corp.com/admin");
+        sub.assert_true(http::ok(err), "request completed");
 
-        let sent_auth = wing::sent_header(resp, "Authorization");
+        let sent_auth = http::sent_header(resp, "Authorization");
         sub.assert_true(sent_auth.len > 0, "Basic Authorization header sent");
         // "admin:secret123" in base64 is "YWRtaW46c2VjcmV0MTIz"
         sub.assert_bytes_eq(sent_auth, "Basic YWRtaW46c2VjcmV0MTIz", "Correct Base64 Basic auth sent");
     };
 
     t.run("Loop Prevention: Persistent 401 Returns to Caller Without Infinite Loop") { sub =>
-        var client = wing::new_client();
-        wing::set_credentials(client, "wrong_user", "wrong_pass");
+        var client = client::new_client();
+        client::set_credentials(client, "wrong_user", "wrong_pass");
 
-        wing::mock_route(client, "GET", "https://api.corp.com/secure", 401, "invalid credentials");
-        wing::add_mock_header(client, "WWW-Authenticate", "Basic realm=\"test\"");
+        client::mock_route(client, "GET", "https://api.corp.com/secure", 401, "invalid credentials");
+        client::add_mock_header(client, "WWW-Authenticate", "Basic realm=\"test\"");
 
         // If credentials fail, client retries once with Auth header, server still returns 401, and client stops cleanly!
-        let resp, err = wing::get(client, "https://api.corp.com/secure");
-        sub.assert_true(wing::ok(err), "no hang or crash");
-        sub.assert_eq(wing::status(resp), 401, "401 status returned to caller");
+        let resp, err = client::get(client, "https://api.corp.com/secure");
+        sub.assert_true(http::ok(err), "no hang or crash");
+        sub.assert_eq(http::status(resp), 401, "401 status returned to caller");
     };
 }
 
@@ -1501,7 +1501,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
     };
 
     t.run("DPoP Request Header Attachment & Nonce Extraction") { sub =>
-        var req = wing::Request { .. };
+        var req = http::Request { .. };
         auth::attach_dpop(req, "eyJhbGciOi...", "token_xyz");
 
         sub.assert_true(req.has_header("DPoP"), "Request contains DPoP header");
@@ -1510,9 +1510,9 @@ fn test_dpop_rfc9449(t: lit::T&) {
         sub.assert_bytes_eq(req.header("Authorization"), "DPoP token_xyz", "Authorization header has DPoP scheme");
 
         // Nonce extraction from response headers
-        var resp_headers = wing::HeaderMap { .. };
-        wing::append_header(resp_headers, "Content-Type", "application/json");
-        wing::append_header(resp_headers, "DPoP-Nonce", "server_nonce_retry_456");
+        var resp_headers = http::HeaderMap { .. };
+        http::append_header(resp_headers, "Content-Type", "application/json");
+        http::append_header(resp_headers, "DPoP-Nonce", "server_nonce_retry_456");
 
         var extracted_nonce: u8[..128] = [];
         let ok_nonce = auth::extract_dpop_nonce(resp_headers, extracted_nonce);
@@ -1675,7 +1675,7 @@ fn test_dpop_rfc9449(t: lit::T&) {
     };
 
     t.run("DPoP Attach access token into Authorization header") { sub =>
-        var req = wing::Request { .. };
+        var req = http::Request { .. };
         var token_bytes: u8[..350] = [];
         for i in 300 {
             token_bytes.push(('a' as u8) + ((i % 26) as u8));
@@ -1913,11 +1913,11 @@ fn test_privacypass_headers_and_cache(t: lit::T&) {
     };
 
     t.run("Client Response Challenge Detection and GREASE Types") { sub =>
-        var resp = wing::Response { status_code: 401, .. };
-        wing::set_header(resp, "WWW-Authenticate", "PrivateToken challenge=\"abc\"");
+        var resp = http::Response { status_code: 401, .. };
+        http::set_header(resp, "WWW-Authenticate", "PrivateToken challenge=\"abc\"");
         sub.assert_true(security::has_private_token_challenge(resp), "Detects 401 PrivateToken challenge");
 
-        var resp_200 = wing::Response { status_code: 200, .. };
+        var resp_200 = http::Response { status_code: 200, .. };
         sub.assert_false(security::has_private_token_challenge(resp_200), "Rejects non-401 response");
 
         // GREASE verification (RFC 9577 §6.2.1)
@@ -2659,29 +2659,29 @@ fn test_es256_rsa_jwt_jwks_dpop(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_f003_signature_input_verification(t: lit::T&) {
     t.run("verify_http_signature rejects when label missing from Signature-Input header") { sub =>
-        var req = wing::new_request("GET", "https://example.com/data");
-        var params = wing::HttpSignatureParams { label: "sig1", .. };
+        var req = http::new_request("GET", "https://example.com/data");
+        var params = http::SignatureParams { label: "sig1", .. };
         params.components.push("@method");
         params.components.push("@target-uri");
 
         let key = "secret-key-12345678901234567890";
-        sub.assert_true(wing::sign_http_request(req, params, key), "Request signed successfully");
+        sub.assert_true(http::sign_request(req, params, key), "Request signed successfully");
 
         // Tamper Signature-Input to define a different label "sig_other"
-        wing::set_header(req, "Signature-Input", "sig_other=(\"@method\" \"@target-uri\")");
+        http::set_header(req, "Signature-Input", "sig_other=(\"@method\" \"@target-uri\")");
 
         // Verification for "sig1" MUST fail because sig1 is not declared in Signature-Input!
-        let ok_ver = wing::verify_http_signature(req, "sig1", params, key);
+        let ok_ver = http::verify_signature(req, "sig1", params, key);
         sub.assert_false(ok_ver, "verify_http_signature MUST fail when label does not match Signature-Input");
     };
 
     t.run("sign_request_ed25519 rejects key_id > 64 bytes without abort") { sub =>
-        var req = wing::new_request("POST", "https://example.com/api");
+        var req = http::new_request("POST", "https://example.com/api");
         var long_key_id: u8[..128] = [];
         for i in 80 { long_key_id.push('k'); }
 
         let seed: u8[32] = [0x01; 32];
-        let ok = wing::sign_request_ed25519(req, long_key_id[..], seed[..]);
+        let ok = http::sign_request_ed25519(req, long_key_id[..], seed[..]);
         sub.assert_false(ok, "key_id > 64B MUST return false and not abort on params.key_id.append");
     };
 }
@@ -2694,36 +2694,36 @@ fn test_f003_signature_input_verification(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_f014_sfv_and_signatures(t: lit::T&) {
     t.run("parse_sfv_list and parse_sfv_dict reject unclosed '(' at EOF") { sub =>
-        var list = wing::SfvList { .. };
-        let ok_l = wing::parse_sfv_list("(", list);
+        var list = http::SfvList { .. };
+        let ok_l = http::parse_sfv_list("(", list);
         sub.assert_false(ok_l, "Unclosed '(' in parse_sfv_list MUST return false");
 
-        var dict = wing::SfvDict { .. };
-        let ok_d = wing::parse_sfv_dict("k=(", dict);
+        var dict = http::SfvDict { .. };
+        let ok_d = http::parse_sfv_dict("k=(", dict);
         sub.assert_false(ok_d, "Unclosed 'k=(' in parse_sfv_dict MUST return false");
     };
 
     t.run("parse_sf_dict and parse_sf_list reject leading/consecutive commas and invalid base64 binary") { sub =>
-        var entries: wing::SfDictEntry[..16] = [];
-        sub.assert_false(wing::parse_sf_dict(", a=1", entries), "Leading comma in SF dict MUST fail");
-        sub.assert_false(wing::parse_sf_dict("a=1, , b=2", entries), "Empty member in SF dict MUST fail");
+        var entries: http::SfDictEntry[..16] = [];
+        sub.assert_false(http::parse_sf_dict(", a=1", entries), "Leading comma in SF dict MUST fail");
+        sub.assert_false(http::parse_sf_dict("a=1, , b=2", entries), "Empty member in SF dict MUST fail");
 
-        var items: wing::SfParameterizedItem[..16] = [];
-        sub.assert_false(wing::parse_sf_list(":not valid base64!:", items), "Invalid base64 chars in sf-binary MUST fail");
+        var items: http::SfParameterizedItem[..16] = [];
+        sub.assert_false(http::parse_sf_list(":not valid base64!:", items), "Invalid base64 chars in sf-binary MUST fail");
     };
 
     t.run("verify_http_signature rejects when Signature-Input component list does not match params") { sub =>
-        var req = wing::new_request("GET", "https://example.com/pay");
-        var params = wing::HttpSignatureParams { label: "sig1", .. };
+        var req = http::new_request("GET", "https://example.com/pay");
+        var params = http::SignatureParams { label: "sig1", .. };
         params.components.push("@method");
         params.components.push("@target-uri");
 
         let key = "secret-key-12345678901234567890";
-        sub.assert_true(wing::sign_http_request(req, params, key), "Signed request");
+        sub.assert_true(http::sign_request(req, params, key), "Signed request");
 
         // Tamper Signature-Input to omit @target-uri (empty inner list)
-        wing::set_header(req, "Signature-Input", "sig1=();alg=\"hmac-sha256\"");
-        let ok_ver = wing::verify_http_signature(req, "sig1", params, key);
+        http::set_header(req, "Signature-Input", "sig1=();alg=\"hmac-sha256\"");
+        let ok_ver = http::verify_signature(req, "sig1", params, key);
         sub.assert_false(ok_ver, "Mismatched component list in Signature-Input MUST fail verification");
     };
 }
@@ -2790,56 +2790,56 @@ fn test_jwt_oversized_fields_no_abort(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_http_extensions_signatures_hsts_trace(t: lit::T&) {
     t.run("verify_http_signature must enforce signature label match") { sub =>
-        var req = wing::new_request("GET", "https://example.com/data");
-        var params = wing::HttpSignatureParams { label: "sig1", .. };
+        var req = http::new_request("GET", "https://example.com/data");
+        var params = http::SignatureParams { label: "sig1", .. };
         params.components.push("@method");
         params.components.push("@target-uri");
 
         let key = "secret-key-1234";
-        sub.assert_true(wing::sign_http_request(req, params, key), "Request signed successfully");
+        sub.assert_true(http::sign_request(req, params, key), "Request signed successfully");
 
         // Verify with matching label
-        sub.assert_true(wing::verify_http_signature(req, "sig1", params, key), "Verification with sig1 succeeds");
+        sub.assert_true(http::verify_signature(req, "sig1", params, key), "Verification with sig1 succeeds");
 
         // Verify with mismatched label MUST fail
-        sub.assert_false(wing::verify_http_signature(req, "sig2", params, key), "Verification with sig2 MUST fail");
+        sub.assert_false(http::verify_signature(req, "sig2", params, key), "Verification with sig2 MUST fail");
     };
 
     t.run("parse_hsts_header supports quoted max-age") { sub =>
-        let dir, ok = wing::parse_hsts_header("max-age=\"31536000\"; includeSubDomains");
+        let dir, ok = http::parse_hsts_header("max-age=\"31536000\"; includeSubDomains");
         sub.assert_true(ok, "Quoted max-age must parse successfully per RFC 6797 §6.1");
         sub.assert_eq(dir.max_age_sec, 31536000, "max-age value matches 31536000");
         sub.assert_true(dir.include_subdomains, "includeSubDomains matches");
     };
 
     t.run("parse_hsts_header rejects duplicate max-age directives") { sub =>
-        let dir, ok = wing::parse_hsts_header("max-age=100; max-age=200");
+        let dir, ok = http::parse_hsts_header("max-age=100; max-age=200");
         sub.assert_false(ok, "Duplicate max-age directive MUST be rejected per RFC 6797 §6.1");
     };
 
     t.run("tracestate parser rejects empty value") { sub =>
-        let ts, ok = wing::parse_tracestate("foo=");
+        let ts, ok = http::parse_tracestate("foo=");
         sub.assert_false(ok, "Empty tracestate value MUST be rejected per W3C Section 3.3.1.2");
     };
 
     t.run("tracestate parser rejects key starting with non-alpha") { sub =>
-        let ts, ok = wing::parse_tracestate("_bad=1");
+        let ts, ok = http::parse_tracestate("_bad=1");
         sub.assert_false(ok, "Tracestate key starting with '_' MUST be rejected per W3C Section 3.3.1.1");
     };
 
     t.run("hsts rejects IP address literal and trims trailing dot") { sub =>
-        var cache = wing::HstsCache { .. };
+        var cache = http::HstsCache { .. };
         // RFC 6797 §8.1.1: Rejection of IP address literals
-        sub.assert_false(wing::hsts_cache_update(cache, "192.168.1.1", "max-age=31536000", 1000), "HSTS must reject IPv4 literal");
-        sub.assert_false(wing::hsts_cache_update(cache, "::1", "max-age=31536000", 1000), "HSTS must reject IPv6 literal");
-        sub.assert_false(wing::is_hsts_host(cache, "192.168.1.1", 1000), "IPv4 is not HSTS host");
-        sub.assert_false(wing::is_hsts_host(cache, "127.0.0.1", 1000), "127.0.0.1 is not HSTS host");
+        sub.assert_false(http::hsts_cache_update(cache, "192.168.1.1", "max-age=31536000", 1000), "HSTS must reject IPv4 literal");
+        sub.assert_false(http::hsts_cache_update(cache, "::1", "max-age=31536000", 1000), "HSTS must reject IPv6 literal");
+        sub.assert_false(http::is_hsts_host(cache, "192.168.1.1", 1000), "IPv4 is not HSTS host");
+        sub.assert_false(http::is_hsts_host(cache, "127.0.0.1", 1000), "127.0.0.1 is not HSTS host");
 
         // FQDN trailing dot normalization
-        sub.assert_true(wing::hsts_cache_update(cache, "example.com.", "max-age=31536000", 1000), "HSTS ingests FQDN with trailing dot");
-        sub.assert_true(wing::is_hsts_host(cache, "example.com", 1000), "Matches without trailing dot");
-        sub.assert_true(wing::is_hsts_host(cache, "example.com.", 1000), "Matches with trailing dot");
-        sub.assert_true(wing::is_hsts_host(cache, "app.dev.", 1000), "Preloaded TLD matches with trailing dot");
+        sub.assert_true(http::hsts_cache_update(cache, "example.com.", "max-age=31536000", 1000), "HSTS ingests FQDN with trailing dot");
+        sub.assert_true(http::is_hsts_host(cache, "example.com", 1000), "Matches without trailing dot");
+        sub.assert_true(http::is_hsts_host(cache, "example.com.", 1000), "Matches with trailing dot");
+        sub.assert_true(http::is_hsts_host(cache, "app.dev.", 1000), "Preloaded TLD matches with trailing dot");
     };
 }
 

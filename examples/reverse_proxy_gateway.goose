@@ -27,14 +27,14 @@ fn main() {
     }
 
     // 2. Prepare incoming client request headers
-    var client_headers = wing::HeaderMap { .. };
-    wing::append_header(client_headers, "Host", "api.example.com");
-    wing::append_header(client_headers, "User-Agent", "Mozilla/5.0 (Client Gateway Test)");
-    wing::append_header(client_headers, "Connection", "keep-alive, X-Debug-Trace");
-    wing::append_header(client_headers, "Keep-Alive", "timeout=30");
-    wing::append_header(client_headers, "X-Debug-Trace", "internal-trace-id-9988");
-    wing::append_header(client_headers, "X-Forwarded-For", "203.0.113.1");
-    wing::append_header(client_headers, "Accept", "application/json");
+    var client_headers = http::HeaderMap { .. };
+    http::append_header(client_headers, "Host", "api.example.com");
+    http::append_header(client_headers, "User-Agent", "Mozilla/5.0 (Client Gateway Test)");
+    http::append_header(client_headers, "Connection", "keep-alive, X-Debug-Trace");
+    http::append_header(client_headers, "Keep-Alive", "timeout=30");
+    http::append_header(client_headers, "X-Debug-Trace", "internal-trace-id-9988");
+    http::append_header(client_headers, "X-Forwarded-For", "203.0.113.1");
+    http::append_header(client_headers, "Accept", "application/json");
 
     print("\n[2] Client Request Ingress:");
     print("    Client IP: 198.51.100.77");

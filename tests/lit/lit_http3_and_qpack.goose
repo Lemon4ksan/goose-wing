@@ -580,11 +580,11 @@ fn test_quich3_priority_scheduler() {
     let sid8, _ = http3::open_request_stream(conn);
 
     conn.streams[0].tx_pending_bytes = 512;
-    conn.streams[0].priority = wing::PriorityParam { urgency: 4, incremental: false };
+    conn.streams[0].priority = http::PriorityParam { urgency: 4, incremental: false };
     conn.streams[1].tx_pending_bytes = 512;
-    conn.streams[1].priority = wing::PriorityParam { urgency: 1, incremental: true };
+    conn.streams[1].priority = http::PriorityParam { urgency: 1, incremental: true };
     conn.streams[2].tx_pending_bytes = 512;
-    conn.streams[2].priority = wing::PriorityParam { urgency: 1, incremental: true };
+    conn.streams[2].priority = http::PriorityParam { urgency: 1, incremental: true };
 
     let next1, ok1 = http3::select_next_tx_stream(conn);
     assert(ok1 && next1 == sid4);
@@ -630,7 +630,7 @@ fn test_quich3_webtransport_settings_and_glitch() {
     assert(err_huge == rfc::H3_ERR_EXCESSIVE_LOAD);
 
     // WebTransport connect request validation & control glitch limiter
-    var wt_req = wing::Request { .. };
+    var wt_req = http::Request { .. };
     realtime::format_webtransport_connect_request(wt_req, "https://wt.example.com/session");
     assert(realtime::is_webtransport_connect_request(wt_req));
     realtime::format_webtransport_connect_request(wt_req, "http://wt.example.com/session");
@@ -716,7 +716,7 @@ fn test_server_rejects_missing_authority_and_host() {
 fn test_qpack_never_index_flag_on_duplicate_header_name() {
     let tbl = http3::new_qpack_table(4096, 16);
     var pseudo = http3::PseudoHeaders { .. };
-    var headers = wing::HeaderMap { .. };
+    var headers = http::HeaderMap { .. };
 
     // QPACK section with two "set-cookie" headers:
     // First: "set-cookie: theme=dark" without never_index
@@ -745,8 +745,8 @@ fn test_qpack_never_index_flag_on_duplicate_header_name() {
     assert(err == http3::QpackError.None);
     assert(headers.entries.len == 2);
 
-    let flag0 = (headers.entries[0].flags & wing::HEADER_FLAG_SENSITIVE) != 0;
-    let flag1 = (headers.entries[1].flags & wing::HEADER_FLAG_SENSITIVE) != 0;
+    let flag0 = (headers.entries[0].flags & http::HEADER_FLAG_SENSITIVE) != 0;
+    let flag1 = (headers.entries[1].flags & http::HEADER_FLAG_SENSITIVE) != 0;
 
     // Entry 0 must NOT be sensitive; Entry 1 MUST be sensitive
     assert(!flag0);
@@ -894,10 +894,10 @@ fn test_qpack_multi_section_fifo_ack() {
     assert(http3::encode_headers_frame(req_frame, req_qpack[..]));
     assert(http3::handle_stream_data(srv, 0, true, req_frame[..], true) == rfc::H3_ERR_NO_ERROR);
 
-    var hdrs = wing::HeaderMap { .. };
-    wing::set_header(hdrs, "x-resp-hdr", "v1");
-    var trls = wing::HeaderMap { .. };
-    wing::set_header(trls, "x-trailer", "t1");
+    var hdrs = http::HeaderMap { .. };
+    http::set_header(hdrs, "x-resp-hdr", "v1");
+    var trls = http::HeaderMap { .. };
+    http::set_header(trls, "x-trailer", "t1");
     var out_wire: u8[..512] = [];
     assert(http3::send_response_headers_body_and_trailers(srv, 0, 200, hdrs, "body", trls, out_wire));
 
@@ -916,7 +916,7 @@ fn test_head_and_no_content_response_framing() {
     let sid, ok_open = http3::open_request_stream(cli);
     assert(ok_open && sid == 0);
     var req_out: u8[..256] = [];
-    var empty_h = wing::HeaderMap { .. };
+    var empty_h = http::HeaderMap { .. };
     assert(http3::send_request_headers(cli, sid, "HEAD", "https", "example.com", "/file", empty_h, true, req_out));
 
     var resp_qpack: u8[..128] = [0x00, 0x00];
@@ -972,7 +972,7 @@ fn test_priority_update_rfc9218_edge_cases() {
 
     // Send PRIORITY_UPDATE(stream 0, u=1, i) BEFORE stream 0 is opened
     var pu_wire: u8[..32] = [];
-    let p_target = wing::PriorityParam { urgency: 1, incremental: true };
+    let p_target = http::PriorityParam { urgency: 1, incremental: true };
     assert(http3::encode_priority_update_request(pu_wire, 0, p_target));
     assert(http3::handle_stream_data(srv, 2, false, pu_wire[..], false) == rfc::H3_ERR_NO_ERROR);
     let idx0, found0 = http3::find_stream_idx(srv, 0);

@@ -25,18 +25,6 @@ const CHUNK_STATE_EXTENSION_DONE_QUOTED:  u64 = 0x0008000000000000;
 const CHUNK_STATE_SEEN_HEX:               u64 = 0x0080000000000000;
 const CHUNK_STATE_SEEN_BWS:               u64 = 0x0040000000000000;
 
-const CHUNK_STATE_EXTENSION_ALL_FLAGS: u64 =
-    CHUNK_STATE_EXTENSION_MODE |
-    CHUNK_STATE_EXTENSION_EXPECTS_NAME |
-    CHUNK_STATE_EXTENSION_IN_NAME |
-    CHUNK_STATE_EXTENSION_EXPECTS_VAL |
-    CHUNK_STATE_EXTENSION_QUOTED |
-    CHUNK_STATE_EXTENSION_ESCAPED |
-    CHUNK_STATE_EXTENSION_DONE_QUOTED |
-    CHUNK_STATE_EXTENSION_EXPECTS_LF |
-    CHUNK_STATE_SEEN_HEX |
-    CHUNK_STATE_SEEN_BWS;
-
 const CHUNK_STATE_EXTENSION_INCOMPLETE_FLAGS: u64 =
     CHUNK_STATE_EXTENSION_EXPECTS_NAME |
     CHUNK_STATE_EXTENSION_EXPECTS_VAL |
@@ -98,7 +86,7 @@ inline fn record_chunk_fsm_overhead(
     let ovh_add = core::sub_sat_i64(read_add, max(0, payload_len));
     dec.total_read = core::add_sat_i64(dec.total_read, read_add);
     dec.total_overhead = core::add_sat_i64(dec.total_overhead, ovh_add);
-    if wing::is_chunk_overhead_excessive(dec.total_read, dec.total_overhead) {
+    if http::is_chunk_overhead_excessive(dec.total_read, dec.total_overhead) {
         dec.state = CHUNK_STATE_IS_ERROR;
         return ChunkFsmStatus.Error;
     }

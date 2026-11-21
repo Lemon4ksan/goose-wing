@@ -3,8 +3,8 @@
 
 // Unit tests for low-level performance primitives:
 // 1. Lock-free SPSC Ring queue (core::SpscRing).
-// 2. Minimal Perfect Hash header identifier (wing::identify_known_header).
-// 3. Structure-of-Arrays connection state table (wing::SoAConnTable).
+// 2. Minimal Perfect Hash header identifier (http::identify_known_header).
+// 3. Structure-of-Arrays connection state table (server::SoAConnTable).
 // 4. Software prefetch primitives (core::prefetch_t0, core::prefetch_nta).
 //
 // RUN: goose build -o %t.exe %s
@@ -80,32 +80,32 @@ fn test_spsc_queue_lifecycle(t: lit::T&) {
 fn test_identify_known_header(t: lit::T&) {
     t.run("Minimal Perfect Hash Header Classification") { sub =>
         // Canonical casing
-        sub.assert_eq(wing::identify_known_header("Host"), wing::KnownHeaderId.Host);
-        sub.assert_eq(wing::identify_known_header("Date"), wing::KnownHeaderId.Date);
-        sub.assert_eq(wing::identify_known_header("Accept"), wing::KnownHeaderId.Accept);
-        sub.assert_eq(wing::identify_known_header("Cookie"), wing::KnownHeaderId.Cookie);
-        sub.assert_eq(wing::identify_known_header("Origin"), wing::KnownHeaderId.Origin);
-        sub.assert_eq(wing::identify_known_header("Server"), wing::KnownHeaderId.Server);
-        sub.assert_eq(wing::identify_known_header("Connection"), wing::KnownHeaderId.Connection);
-        sub.assert_eq(wing::identify_known_header("User-Agent"), wing::KnownHeaderId.UserAgent);
-        sub.assert_eq(wing::identify_known_header("Content-Type"), wing::KnownHeaderId.ContentType);
-        sub.assert_eq(wing::identify_known_header("Content-Length"), wing::KnownHeaderId.ContentLength);
-        sub.assert_eq(wing::identify_known_header("Authorization"), wing::KnownHeaderId.Authorization);
-        sub.assert_eq(wing::identify_known_header("Transfer-Encoding"), wing::KnownHeaderId.TransferEncoding);
-        sub.assert_eq(wing::identify_known_header("Sec-WebSocket-Key"), wing::KnownHeaderId.SecWebSocketKey);
+        sub.assert_eq(http::identify_known_header("Host"), http::KnownHeaderId.Host);
+        sub.assert_eq(http::identify_known_header("Date"), http::KnownHeaderId.Date);
+        sub.assert_eq(http::identify_known_header("Accept"), http::KnownHeaderId.Accept);
+        sub.assert_eq(http::identify_known_header("Cookie"), http::KnownHeaderId.Cookie);
+        sub.assert_eq(http::identify_known_header("Origin"), http::KnownHeaderId.Origin);
+        sub.assert_eq(http::identify_known_header("Server"), http::KnownHeaderId.Server);
+        sub.assert_eq(http::identify_known_header("Connection"), http::KnownHeaderId.Connection);
+        sub.assert_eq(http::identify_known_header("User-Agent"), http::KnownHeaderId.UserAgent);
+        sub.assert_eq(http::identify_known_header("Content-Type"), http::KnownHeaderId.ContentType);
+        sub.assert_eq(http::identify_known_header("Content-Length"), http::KnownHeaderId.ContentLength);
+        sub.assert_eq(http::identify_known_header("Authorization"), http::KnownHeaderId.Authorization);
+        sub.assert_eq(http::identify_known_header("Transfer-Encoding"), http::KnownHeaderId.TransferEncoding);
+        sub.assert_eq(http::identify_known_header("Sec-WebSocket-Key"), http::KnownHeaderId.SecWebSocketKey);
 
         // Mixed / lowercase / uppercase casing
-        sub.assert_eq(wing::identify_known_header("host"), wing::KnownHeaderId.Host);
-        sub.assert_eq(wing::identify_known_header("HOST"), wing::KnownHeaderId.Host);
-        sub.assert_eq(wing::identify_known_header("cOnTeNt-LeNgTh"), wing::KnownHeaderId.ContentLength);
-        sub.assert_eq(wing::identify_known_header("transfer-encoding"), wing::KnownHeaderId.TransferEncoding);
-        sub.assert_eq(wing::identify_known_header("USER-AGENT"), wing::KnownHeaderId.UserAgent);
+        sub.assert_eq(http::identify_known_header("host"), http::KnownHeaderId.Host);
+        sub.assert_eq(http::identify_known_header("HOST"), http::KnownHeaderId.Host);
+        sub.assert_eq(http::identify_known_header("cOnTeNt-LeNgTh"), http::KnownHeaderId.ContentLength);
+        sub.assert_eq(http::identify_known_header("transfer-encoding"), http::KnownHeaderId.TransferEncoding);
+        sub.assert_eq(http::identify_known_header("USER-AGENT"), http::KnownHeaderId.UserAgent);
 
         // Unknown / edge lengths
-        sub.assert_eq(wing::identify_known_header(""), wing::KnownHeaderId.Unknown);
-        sub.assert_eq(wing::identify_known_header("x"), wing::KnownHeaderId.Unknown);
-        sub.assert_eq(wing::identify_known_header("x-custom-header"), wing::KnownHeaderId.Unknown);
-        sub.assert_eq(wing::identify_known_header("very-long-unknown-header-name-exceeding-limit"), wing::KnownHeaderId.Unknown);
+        sub.assert_eq(http::identify_known_header(""), http::KnownHeaderId.Unknown);
+        sub.assert_eq(http::identify_known_header("x"), http::KnownHeaderId.Unknown);
+        sub.assert_eq(http::identify_known_header("x-custom-header"), http::KnownHeaderId.Unknown);
+        sub.assert_eq(http::identify_known_header("very-long-unknown-header-name-exceeding-limit"), http::KnownHeaderId.Unknown);
     };
 }
 
@@ -114,20 +114,20 @@ fn test_identify_known_header(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_soa_conn_table_lifecycle(t: lit::T&) {
     t.run("SoA Connection Table Alloc, Touch & Sweep") { sub =>
-        var table = wing::SoAConnTable { .. };
+        var table = server::SoAConnTable { .. };
         sub.assert_eq(table.count, 0);
 
         // Allocate slots
-        let s0 = wing::soa_table_alloc(table, 100, 10);
-        let s1 = wing::soa_table_alloc(table, 101, 20);
-        let s2 = wing::soa_table_alloc(table, 102, 30);
+        let s0 = server::soa_table_alloc(table, 100, 10);
+        let s1 = server::soa_table_alloc(table, 101, 20);
+        let s2 = server::soa_table_alloc(table, 102, 30);
         sub.assert_eq(s0, 0);
         sub.assert_eq(s1, 1);
         sub.assert_eq(s2, 2);
         sub.assert_eq(table.count, 3);
 
         // Touch slot 1
-        wing::soa_table_touch(table, s1, 25);
+        server::soa_table_touch(table, s1, 25);
         sub.assert_eq(table.timeout_ticks[s1], 25 as u8);
 
         // Timer wheel setup: advance to 22
@@ -136,12 +136,12 @@ fn test_soa_conn_table_lifecycle(t: lit::T&) {
 
         // Sweep expired
         var expired: i64[16] = [0; 16];
-        let n_exp = wing::soa_table_sweep_expired(table, wheel, expired[..]);
+        let n_exp = server::soa_table_sweep_expired(table, wheel, expired[..]);
         sub.assert_eq(n_exp, 1);
         sub.assert_eq(expired[0], s0);
 
         // Free slot 0
-        wing::soa_table_free(table, s0);
+        server::soa_table_free(table, s0);
         sub.assert_eq(table.fds[s0], -1);
         sub.assert_eq(table.timeout_ticks[s0], 255 as u8);
     };

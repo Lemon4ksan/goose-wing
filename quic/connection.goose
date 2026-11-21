@@ -35,36 +35,36 @@ struct ProcessResult {
 }
 
 struct QuicConnection {
-    role:                           QuicRole               = QuicRole.Server,
-    state:                          QuicConnState          = QuicConnState.Initial,
-    scid:                           u8[..20]               = [],
-    dcid:                           u8[..20]               = [],
-    original_dcid:                  u8[..20]               = [],
-    initial_space:                  PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    handshake_space:                PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    app_space:                      PnSpaceState           = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    tx_initial_space:               PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    tx_handshake_space:             PnSpaceState           = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    tx_app_space:                   PnSpaceState           = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    initial_crypto:                 wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
-    handshake_crypto:               wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
-    app_crypto:                     wing::QuicCryptoStream = wing::QuicCryptoStream { .. },
-    rtt:                            RttState               = RttState { .. },
-    pacer:                          Pacer                  = Pacer { .. },
-    bbr:                            BbrState               = BbrState { .. },
-    stream_table:                   QuicStreamTable        = QuicStreamTable { .. },
-    flow_ctrl:                      QuicFlowControl        = QuicFlowControl { .. },
-    bytes_received:                 u64                    = 0,
-    bytes_sent:                     u64                    = 0,
-    validated_address:              bool                   = false,
-    packets_rx:                     u64                    = 0,
-    packets_tx:                     u64                    = 0,
-    close_code:                     u64                    = 0,
-    allow_grease_quic_bit:          bool                   = false,
-    allow_unencrypted_test_packets: bool                   = false,
-    peer_reset_tokens:              u8[16][..8]            = [],
-    migration:                      QuicMigrationManager   = QuicMigrationManager { .. },
-    dplpmtud:                       Dplpmtud               = Dplpmtud { .. },
+    role:                           QuicRole              = QuicRole.Server,
+    state:                          QuicConnState         = QuicConnState.Initial,
+    scid:                           u8[..20]              = [],
+    dcid:                           u8[..20]              = [],
+    original_dcid:                  u8[..20]              = [],
+    initial_space:                  PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    handshake_space:                PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    app_space:                      PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    tx_initial_space:               PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    tx_handshake_space:             PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    tx_app_space:                   PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    initial_crypto:                 tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    handshake_crypto:               tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    app_crypto:                     tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    rtt:                            RttState              = RttState { .. },
+    pacer:                          Pacer                 = Pacer { .. },
+    bbr:                            BbrState              = BbrState { .. },
+    stream_table:                   QuicStreamTable       = QuicStreamTable { .. },
+    flow_ctrl:                      QuicFlowControl       = QuicFlowControl { .. },
+    bytes_received:                 u64                   = 0,
+    bytes_sent:                     u64                   = 0,
+    validated_address:              bool                  = false,
+    packets_rx:                     u64                   = 0,
+    packets_tx:                     u64                   = 0,
+    close_code:                     u64                   = 0,
+    allow_grease_quic_bit:          bool                  = false,
+    allow_unencrypted_test_packets: bool                  = false,
+    peer_reset_tokens:              u8[16][..8]           = [],
+    migration:                      QuicMigrationManager  = QuicMigrationManager { .. },
+    dplpmtud:                       Dplpmtud              = Dplpmtud { .. },
 }
 
 fn new_server_connection(scid: const u8[:]) -> QuicConnection {
@@ -294,7 +294,7 @@ fn seal_packet<B>(
 
     var iv12: u8[12] = [0; 12];
     for i in 12 { iv12[i] = space.aead_iv[i]; }
-    let nonce, ok_nonce = wing::compute_record_nonce(iv12, hdr.packet_number);
+    let nonce, ok_nonce = tls::compute_record_nonce(iv12, hdr.packet_number);
     guard ok_nonce else { return false; }
 
     var ct_buf: u8[..16384] = [];
@@ -309,7 +309,7 @@ fn seal_packet<B>(
         return false;
     }
 
-    let sample_slice, ok_samp = wing::quic_extract_hp_sample(full_pkt[..], pn_offset);
+    let sample_slice, ok_samp = tls::quic_extract_hp_sample(full_pkt[..], pn_offset);
     guard ok_samp else { return false; }
     let hp_mask, ok_mask = quic_internal::quic_compute_hp_mask(space, sample_slice);
     guard ok_mask else { return false; }

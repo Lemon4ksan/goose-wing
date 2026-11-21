@@ -289,7 +289,7 @@ fn order_pseudo_headers(
     authority: const u8[:],
     scheme:    const u8[:],
     path:      const u8[:],
-    out:       wing::HeaderMap&,
+    out:       http::HeaderMap&,
 ) -> bool {
     out.clear();
     var committed = false;

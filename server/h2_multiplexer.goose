@@ -11,6 +11,8 @@ import core from "..";
 import .router;
 import .pool;
 import .pipeline;
+import .pipeline_internal;
+import .router_internal;
 
 // ---- Server Stream Descriptor --------------------------------------------
 
@@ -39,8 +41,8 @@ struct H2ServerStream {
     path:                    u8[..2048]      = [],
     scheme:                  u8[..16]        = [],
     authority:               u8[..256]       = [],
-    headers:                 wing::HeaderMap = wing::HeaderMap { .. },
-    trailers:                wing::HeaderMap = wing::HeaderMap { .. },
+    headers:                 http::HeaderMap = http::HeaderMap { .. },
+    trailers:                http::HeaderMap = http::HeaderMap { .. },
     body:                    u8[..8192]      = [],
 }
 
@@ -395,7 +397,7 @@ inline fn emit_pending_dyn_size_updates<B>(sess: H2ServerSession&, hpack_block: 
 fn emit_response_headers<B>(
     sess:       H2ServerSession&,
     stream_id:  u32,
-    res:        const wing::Response&,
+    res:        const http::Response&,
     end_stream: bool,
     out:        B&,
 ) {
@@ -425,8 +427,8 @@ fn emit_response_headers<B>(
     }
 
     for &e in res.headers.entries {
-        let name_slice = wing::entry_name(res.headers, e);
-        let val_slice = wing::entry_value(res.headers, e);
+        let name_slice = http::entry_name(res.headers, e);
+        let val_slice = http::entry_value(res.headers, e);
         guard !is_h2_forbidden_hop_header(name_slice) else { continue; }
         var lower_name: u8[..256] = [];
         guard name_slice.len <= lower_name.cap else { continue; }
@@ -527,15 +529,15 @@ fn emit_response_data<B>(
 fn emit_response_trailers<B>(
     sess:      H2ServerSession&,
     stream_id: u32,
-    trailers:  const wing::HeaderMap&,
+    trailers:  const http::HeaderMap&,
     out:       B&,
 ) {
     guard trailers.entries.len > 0 else { return; }
     var hpack_block: u8[..4096] = [];
 
     for &e in trailers.entries {
-        let name_slice = wing::entry_name(trailers, e);
-        let val_slice = wing::entry_value(trailers, e);
+        let name_slice = http::entry_name(trailers, e);
+        let val_slice = http::entry_value(trailers, e);
         // RFC 9113 §8.1 / §8.2.2 & RFC 9110 §6.5.1: Trailers MUST NOT include pseudo-headers,
         // hop-by-hop connection headers, or disallowed framing/routing trailer fields.
         if name_slice.len > 0 && name_slice[0] != ':' &&
@@ -593,10 +595,10 @@ fn apply_decoded_pseudo_to_stream(st: H2ServerStream&, pseudo: const http2::Pseu
         guard st.authority.try_set(pseudo.authority[..]) else { return false; }
     }
     if pseudo.has_protocol {
-        guard wing::append_header(st.headers, ":protocol", pseudo.protocol[..]) &&
-              wing::append_header(st.headers, ":scheme", pseudo.scheme[..]) &&
-              wing::append_header(st.headers, ":path", pseudo.path[..]) &&
-              wing::append_header(st.headers, ":authority", pseudo.authority[..]) else {
+        guard http::append_header(st.headers, ":protocol", pseudo.protocol[..]) &&
+              http::append_header(st.headers, ":scheme", pseudo.scheme[..]) &&
+              http::append_header(st.headers, ":path", pseudo.path[..]) &&
+              http::append_header(st.headers, ":authority", pseudo.authority[..]) else {
             return false;
         }
     }
@@ -605,10 +607,10 @@ fn apply_decoded_pseudo_to_stream(st: H2ServerStream&, pseudo: const http2::Pseu
     return true;
 }
 
-inline fn validate_decoded_map_bounds(map: const wing::HeaderMap&) -> bool {
+inline fn validate_decoded_map_bounds(map: const http::HeaderMap&) -> bool {
     for &e in map.entries {
-        let n = wing::entry_name(map, e);
-        let v = wing::entry_value(map, e);
+        let n = http::entry_name(map, e);
+        let v = http::entry_value(map, e);
         guard n.len <= 256 && v.len <= 8192 else { return false; }
     }
     return true;
@@ -620,7 +622,7 @@ inline fn is_stream_cancelled_in_batch(cancelled: const u32[:], stream_id: u32) 
 
 inline fn terminate_server_stream(
     sess:      H2ServerSession&,
-    pipeline:  wing::ServerPipelineConfig&,
+    pipeline:  server::ServerPipelineConfig&,
     stream_id: u32,
 ) {
     http2::reset_stream(sess.conn, stream_id);
@@ -640,7 +642,7 @@ inline fn terminate_server_stream(
     }
 }
 
-fn cleanup_h2_server_session(sess: H2ServerSession&, pipeline: wing::ServerPipelineConfig&) {
+fn cleanup_h2_server_session(sess: H2ServerSession&, pipeline: server::ServerPipelineConfig&) {
     for i in sess.streams.len {
         if sess.streams[i].active && sess.streams[i].spill_slab_idx >= 0 {
             release_spill_slab(pipeline.slab_pool, sess.streams[i].spill_slab_idx);
@@ -677,7 +679,7 @@ inline fn validate_request_pseudo_headers(
 
 fn process_ingress_window_update<B>(
     sess:          H2ServerSession&,
-    pipeline:      wing::ServerPipelineConfig&,
+    pipeline:      server::ServerPipelineConfig&,
     hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
@@ -819,15 +821,15 @@ fn process_ingress_settings<B>(
 inline fn apply_request_priority_header(
     conn:      http2::Connection&,
     stream_id: u32,
-    headers:   const wing::HeaderMap&,
+    headers:   const http::HeaderMap&,
 ) {
     let s_idx, found = http2::find_stream_idx(conn, stream_id);
     if found && conn.streams[s_idx].has_explicit_priority_update {
         return;
     }
-    let prio_hdr = wing::get_header(headers, "priority");
+    let prio_hdr = http::get_header(headers, "priority");
     guard prio_hdr.len > 0 else { return; }
-    let parsed_prio, ok_prio = wing::parse_http_priority(prio_hdr, false);
+    let parsed_prio, ok_prio = http::parse_priority(prio_hdr, false);
     if ok_prio {
         let _ = http2::apply_priority_update(conn, stream_id, parsed_prio);
     }
@@ -835,7 +837,7 @@ inline fn apply_request_priority_header(
 
 fn process_ingress_headers<B>(
     sess:              H2ServerSession&,
-    pipeline:          wing::ServerPipelineConfig&,
+    pipeline:          server::ServerPipelineConfig&,
     hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
@@ -909,7 +911,7 @@ fn process_ingress_headers<B>(
     }
 
     var pseudo = http2::PseudoHeaders { is_trailer: is_trailer, .. };
-    var dec_headers = wing::HeaderMap { .. };
+    var dec_headers = http::HeaderMap { .. };
     let dec_err = http2::decode_hpack_to_map(
         sess.conn.hpack_dec,
         fragment,
@@ -947,7 +949,7 @@ fn process_ingress_headers<B>(
                 terminate_server_stream(sess, pipeline, hdr.stream_id);
                 return true;
             }
-            wing::append_all_headers(dec_headers, sess.streams[s_exist_idx].trailers);
+            http::append_all_headers(dec_headers, sess.streams[s_exist_idx].trailers);
             sess.streams[s_exist_idx].body_received = true;
             sess.streams[s_exist_idx].phase = H2StreamPhase.HalfClosedRemote;
             let c_idx, c_found = http2::find_stream_idx(sess.conn, hdr.stream_id);
@@ -988,7 +990,7 @@ fn process_ingress_headers<B>(
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
-    wing::append_all_headers(dec_headers, sess.streams[s_idx].headers);
+    http::append_all_headers(dec_headers, sess.streams[s_idx].headers);
     apply_request_priority_header(sess.conn, hdr.stream_id, dec_headers);
     if pseudo.has_content_length {
         sess.streams[s_idx].declared_content_length = pseudo.content_length_val;
@@ -1006,7 +1008,7 @@ fn process_ingress_headers<B>(
 
 fn process_ingress_continuation<B>(
     sess:              H2ServerSession&,
-    pipeline:          wing::ServerPipelineConfig&,
+    pipeline:          server::ServerPipelineConfig&,
     hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
@@ -1021,7 +1023,7 @@ fn process_ingress_continuation<B>(
     guard (hdr.flags & rfc::H2_FLAG_END_HEADERS) != 0 else { return true; }
 
     var pseudo = http2::PseudoHeaders { is_trailer: sess.header_accum_is_trailer, .. };
-    var dec_headers = wing::HeaderMap { .. };
+    var dec_headers = http::HeaderMap { .. };
     let dec_err = http2::decode_hpack_to_map(
         sess.conn.hpack_dec,
         sess.header_accumulator[..],
@@ -1069,7 +1071,7 @@ fn process_ingress_continuation<B>(
             terminate_server_stream(sess, pipeline, hdr.stream_id);
             return true;
         }
-        wing::append_all_headers(dec_headers, sess.streams[s_idx].trailers);
+        http::append_all_headers(dec_headers, sess.streams[s_idx].trailers);
         sess.streams[s_idx].body_received = true;
         sess.streams[s_idx].phase = H2StreamPhase.HalfClosedRemote;
         let c_idx, c_found = http2::find_stream_idx(sess.conn, hdr.stream_id);
@@ -1115,7 +1117,7 @@ fn process_ingress_continuation<B>(
         terminate_server_stream(sess, pipeline, hdr.stream_id);
         return true;
     }
-    wing::append_all_headers(dec_headers, sess.streams[s_idx].headers);
+    http::append_all_headers(dec_headers, sess.streams[s_idx].headers);
     apply_request_priority_header(sess.conn, hdr.stream_id, dec_headers);
     if pseudo.has_content_length {
         sess.streams[s_idx].declared_content_length = pseudo.content_length_val;
@@ -1259,7 +1261,7 @@ inline fn replenish_ingress_data_windows<B>(
 
 fn process_ingress_data<B>(
     sess:          H2ServerSession&,
-    pipeline:      wing::ServerPipelineConfig&,
+    pipeline:      server::ServerPipelineConfig&,
     hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
@@ -1443,7 +1445,7 @@ fn process_ingress_goaway<B>(
 
 inline fn process_ingress_priority<B>(
     sess:          H2ServerSession&,
-    pipeline:      wing::ServerPipelineConfig&,
+    pipeline:      server::ServerPipelineConfig&,
     hdr:           const http2::FrameHeader&,
     frame_payload: const u8[:],
     out_wire:      B&,
@@ -1484,7 +1486,7 @@ inline fn process_ingress_ping<B>(
 
 fn dispatch_ingress_frame<B>(
     sess:              H2ServerSession&,
-    pipeline:          wing::ServerPipelineConfig&,
+    pipeline:          server::ServerPipelineConfig&,
     hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     cancelled_streams: const u32[:],
@@ -1527,19 +1529,19 @@ fn dispatch_ingress_frame<B>(
     return true;
 }
 
-inline fn copy_stream_headers_and_trailers(st: const H2ServerStream&, req: wing::Request&) {
-    if st.authority.len > 0 && !wing::has_header(st.headers, "host") {
-        let _ = wing::append_header(req.headers, "host", st.authority[..]);
-        req.presence_mask |= wing::HDR_PRESENCE_HOST;
+inline fn copy_stream_headers_and_trailers(st: const H2ServerStream&, req: http::Request&) {
+    if st.authority.len > 0 && !http::has_header(st.headers, "host") {
+        let _ = http::append_header(req.headers, "host", st.authority[..]);
+        req.presence_mask |= http::HDR_PRESENCE_HOST;
     }
     for &e in st.headers.entries {
-        let name = wing::entry_name(st.headers, e);
-        let val = wing::entry_value(st.headers, e);
-        guard wing::append_header(req.headers, name, val) else { break; }
-        let known_id = wing::identify_known_header(name);
-        req.presence_mask |= wing::header_id_to_bit(known_id);
+        let name = http::entry_name(st.headers, e);
+        let val = http::entry_value(st.headers, e);
+        guard http::append_header(req.headers, name, val) else { break; }
+        let known_id = http::identify_known_header(name);
+        req.presence_mask |= http::header_id_to_bit(known_id);
     }
-    wing::append_all_headers(st.trailers, req.trailers);
+    http::append_all_headers(st.trailers, req.trailers);
 }
 
 inline fn complete_server_stream_response(
@@ -1565,7 +1567,7 @@ inline fn complete_server_stream_response(
 
 fn flush_pending_server_stream<B>(
     sess:       H2ServerSession&,
-    pipeline:   wing::ServerPipelineConfig&,
+    pipeline:   server::ServerPipelineConfig&,
     stream_idx: i64,
     out_wire:   B&,
 ) {
@@ -1618,7 +1620,7 @@ fn flush_pending_server_stream<B>(
 
 inline fn stash_pending_response_body(
     sess:       H2ServerSession&,
-    pipeline:   wing::ServerPipelineConfig&,
+    pipeline:   server::ServerPipelineConfig&,
     stream_idx: i64,
     rem_slice:  const u8[:],
 ) -> bool {
@@ -1637,11 +1639,11 @@ inline fn stash_pending_response_body(
 
 inline fn buffer_unsent_response_tail<B>(
     sess:             H2ServerSession&,
-    pipeline:         wing::ServerPipelineConfig&,
+    pipeline:         server::ServerPipelineConfig&,
     stream_idx:       i64,
     target_stream_id: u32,
     rem_slice:        const u8[:],
-    res:              const wing::Response&,
+    res:              const http::Response&,
     has_trailers:     bool,
     out_wire:         B&,
 ) {
@@ -1652,17 +1654,17 @@ inline fn buffer_unsent_response_tail<B>(
     }
     sess.streams[stream_idx].trailers.clear();
     if has_trailers {
-        wing::append_all_headers(res.trailers, sess.streams[stream_idx].trailers);
+        http::append_all_headers(res.trailers, sess.streams[stream_idx].trailers);
     }
     sess.streams[stream_idx].pending_has_trailers = has_trailers;
 }
 
 fn emit_h2_stream_response<B>(
     sess:             H2ServerSession&,
-    pipeline:         wing::ServerPipelineConfig&,
+    pipeline:         server::ServerPipelineConfig&,
     stream_idx:       i64,
     target_stream_id: u32,
-    res:              const wing::Response&,
+    res:              const http::Response&,
     out_wire:         B&,
 ) {
     let has_body = res.body.len > 0 && !rfc::is_empty_body_status(res.status_code);
@@ -1710,7 +1712,7 @@ fn next_ready_h2_stream(sess: const H2ServerSession&) -> i64 {
 
 fn flush_h2_stream_tails<B>(
     sess:     H2ServerSession&,
-    pipeline: wing::ServerPipelineConfig&,
+    pipeline: server::ServerPipelineConfig&,
     out_wire: B&,
 ) {
     for i in sess.streams.len {
@@ -1723,23 +1725,23 @@ fn flush_h2_stream_tails<B>(
 fn execute_h2_stream_async<Stage, B>(
     sess:       H2ServerSession&,
     stream_idx: i64,
-    pipeline:   wing::ServerPipelineConfig&,
+    pipeline:   server::ServerPipelineConfig&,
     timer:      server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
     now_ms:     u64,
     wake_token: core::WakeToken,
-    out_req:    wing::Request&,
-    out_sctx:   wing::ServerStageCtx&,
+    out_req:    http::Request&,
+    out_sctx:   server::ServerStageCtx&,
     out_wire:   B&,
     stage:      Stage&,
-) -> wing::PipelineOutcome {
+) -> server::PipelineOutcome {
     let target_stream_id = sess.streams[stream_idx].stream_id;
-    out_req = wing::new_request(sess.streams[stream_idx].method[..], sess.streams[stream_idx].path[..]);
+    out_req = http::new_request(sess.streams[stream_idx].method[..], sess.streams[stream_idx].path[..]);
     copy_stream_headers_and_trailers(sess.streams[stream_idx], out_req);
     if sess.streams[stream_idx].spill_slab_idx >= 0 {
         let s_slot = sess.streams[stream_idx].spill_slab_idx as i64;
         guard s_slot >= 0 && s_slot < pipeline.slab_pool.slabs.len else {
-            return wing::PipelineOutcome.RateLimited;
+            return server::PipelineOutcome.RateLimited;
         }
         out_req.body.append(pipeline.slab_pool.slabs[s_slot].data[..]);
         release_spill_slab(pipeline.slab_pool, sess.streams[stream_idx].spill_slab_idx);
@@ -1749,16 +1751,16 @@ fn execute_h2_stream_async<Stage, B>(
         sess.streams[stream_idx].body.clear();
     }
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     var future = server_internal::new_inline_handler_future(0);
     let now_ns = core::mul_sat_u64(now_ms, 1000000);
-    out_sctx = wing::ServerStageCtx { wake_token: wake_token, now_ns: now_ns, .. };
-    let outcome = wing::execute_server_pipeline_async(
+    out_sctx = server::ServerStageCtx { wake_token: wake_token, now_ns: now_ns, .. };
+    let outcome = server::execute_server_pipeline_async(
         pipeline, timer, client_ip, out_req, now_ns, res, future, out_sctx, stage,
     );
-    if outcome == wing::PipelineOutcome.Pending {
+    if outcome == server::PipelineOutcome.Pending {
         sess.streams[stream_idx].pending_async = true;
-        return wing::PipelineOutcome.Pending;
+        return server::PipelineOutcome.Pending;
     }
     if res.status_code <= 0 {
         res.status_code = 500;
@@ -1770,10 +1772,10 @@ fn execute_h2_stream_async<Stage, B>(
 fn complete_pending_h2_stream_response<Stage, B>(
     sess:             H2ServerSession&,
     target_stream_id: u32,
-    pipeline:         wing::ServerPipelineConfig&,
+    pipeline:         server::ServerPipelineConfig&,
     now_ms:           u64,
-    req:              const wing::Request&,
-    sctx:             wing::ServerStageCtx&,
+    req:              const http::Request&,
+    sctx:             server::ServerStageCtx&,
     out_wire:         B&,
     stage:            Stage&,
 ) -> bool {
@@ -1781,9 +1783,9 @@ fn complete_pending_h2_stream_response<Stage, B>(
     guard stream_idx >= 0 && sess.streams[stream_idx].pending_async else { return false; }
     sess.streams[stream_idx].pending_async = false;
 
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     let now_ns = core::mul_sat_u64(now_ms, 1000000);
-    let _ = wing::resume_server_pipeline_egress(pipeline, req, now_ns, sctx, res, stage);
+    let _ = server::resume_server_pipeline_egress(pipeline, req, now_ns, sctx, res, stage);
     if res.status_code <= 0 {
         res.status_code = 500;
     }
@@ -1794,15 +1796,15 @@ fn complete_pending_h2_stream_response<Stage, B>(
 fn execute_ready_server_stream<Stage, B>(
     sess:       H2ServerSession&,
     stream_idx: i64,
-    pipeline:   wing::ServerPipelineConfig&,
+    pipeline:   server::ServerPipelineConfig&,
     timer:      server_internal::ConnectionTimer&,
     client_ip:  const u8[:],
     now_ms:     u64,
     out_wire:   B&,
     stage:      Stage&,
 ) {
-    var req = wing::Request { .. };
-    var sctx = wing::ServerStageCtx { .. };
+    var req = http::Request { .. };
+    var sctx = server::ServerStageCtx { .. };
     let _ = execute_h2_stream_async(
         sess,
         stream_idx,
@@ -1820,7 +1822,7 @@ fn execute_ready_server_stream<Stage, B>(
 
 fn dispatch_ready_server_streams<Stage, B>(
     sess:      H2ServerSession&,
-    pipeline:  wing::ServerPipelineConfig&,
+    pipeline:  server::ServerPipelineConfig&,
     timer:     server_internal::ConnectionTimer&,
     client_ip: const u8[:],
     now_ms:    u64,
@@ -1927,7 +1929,7 @@ inline fn decompress_rejected_headers_frame<B>(
         return false;
     }
     var dummy_pseudo = http2::PseudoHeaders { .. };
-    var dummy_headers = wing::HeaderMap { .. };
+    var dummy_headers = http::HeaderMap { .. };
     let dec_err = http2::decode_hpack_to_map(
         sess.conn.hpack_dec, frag, dummy_pseudo, dummy_headers, sess.conn.max_header_list_size, false,
     );
@@ -1941,7 +1943,7 @@ inline fn decompress_rejected_headers_frame<B>(
 // Handles frame header ingress errors, emitting stream resets and advancing offset.
 fn handle_ingress_header_error<B>(
     sess:            H2ServerSession&,
-    pipeline:        wing::ServerPipelineConfig&,
+    pipeline:        server::ServerPipelineConfig&,
     hdr:             const http2::FrameHeader&,
     frame_payload:   const u8[:],
     err:             u32,
@@ -2022,7 +2024,7 @@ inline fn skip_server_ignored_extension_frame<B>(
 //   returns: true, offset = 33
 inline fn step_h2_server_ingress_frame<B>(
     sess:              H2ServerSession&,
-    pipeline:          wing::ServerPipelineConfig&,
+    pipeline:          server::ServerPipelineConfig&,
     hdr:               const http2::FrameHeader&,
     frame_payload:     const u8[:],
     total_frame_len:   i64,
@@ -2070,7 +2072,7 @@ inline fn step_h2_server_ingress_frame<B>(
 //   returns: consumed = 33, ok = true
 fn ingest_h2_server_frames<B>(
     sess:     H2ServerSession&,
-    pipeline: wing::ServerPipelineConfig&,
+    pipeline: server::ServerPipelineConfig&,
     wire:     const u8[:],
     now_ms:   u64,
     out_wire: B&,
@@ -2111,7 +2113,7 @@ fn ingest_h2_server_frames<B>(
 // Returns (total_bytes_consumed, success)
 fn handle_h2_server_ingress<Stage, B>(
     sess:      H2ServerSession&,
-    pipeline:  wing::ServerPipelineConfig&,
+    pipeline:  server::ServerPipelineConfig&,
     timer:     server_internal::ConnectionTimer&,
     client_ip: const u8[:],
     wire:      const u8[:],
@@ -2129,7 +2131,7 @@ fn handle_h2_server_ingress<Stage, B>(
 // Returns (total_bytes_consumed, success)
 fn handle_h2_server_ingress<B>(
     sess:      H2ServerSession&,
-    pipeline:  wing::ServerPipelineConfig&,
+    pipeline:  server::ServerPipelineConfig&,
     timer:     server_internal::ConnectionTimer&,
     client_ip: const u8[:],
     wire:      const u8[:],

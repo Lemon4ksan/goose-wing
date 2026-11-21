@@ -164,13 +164,13 @@ fn verify_dpop_proof(
 fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
     guard proof.len > 0 && proof.len <= 4096 else { return; }
     guard core::swar_find_ctl(proof) == proof.len else { return; }
-    wing::set_header(req, rfc::DPOP_HEADER, proof);
+    http::set_header(req, rfc::DPOP_HEADER, proof);
     if access_token.len > 0 && access_token.len <= 4096 && core::swar_find_ctl(access_token) == access_token.len {
         var auth_val: u8[..4112] = [];
         defer core::secure_zeroize_slice(auth_val[..]);
         auth_val.append("DPoP ");
         auth_val.append(access_token);
-        wing::set_header(req, "Authorization", auth_val[..]);
+        http::set_header(req, "Authorization", auth_val[..]);
     }
 }
 
@@ -179,18 +179,18 @@ fn attach_dpop<R>(req: R&, proof: const u8[:], access_token: const u8[:] = "") {
 // Example:
 //   headers contains "DPoP-Nonce: server_nonce_retry_456"
 //   returns: "server_nonce_retry_456", ok = true
-fn extract_dpop_nonce(headers: const wing::HeaderMap&) -> const u8[:], bool {
+fn extract_dpop_nonce(headers: const http::HeaderMap&) -> const u8[:], bool {
     var found_idx: i64 = -1;
     var count:     i64 = 0;
     for i in headers.entries.len {
         let e .= headers.entries[i];
-        if wing::entry_name(headers, e).eq_ascii_fold(rfc::DPOP_NONCE_HEADER) {
+        if http::entry_name(headers, e).eq_ascii_fold(rfc::DPOP_NONCE_HEADER) {
             count = core::add_sat_i64(count, 1);
             found_idx = i;
         }
     }
     guard count == 1 && found_idx >= 0 else { return "", false; }
-    let val = wing::entry_value(headers, headers.entries[found_idx]);
+    let val = http::entry_value(headers, headers.entries[found_idx]);
     guard rfc::is_valid_dpop_nonce(val) else { return "", false; }
     return val, true;
 }
@@ -200,7 +200,7 @@ fn extract_dpop_nonce(headers: const wing::HeaderMap&) -> const u8[:], bool {
 // Example:
 //   headers contains "DPoP-Nonce: server_nonce_retry_456"
 //   returns: true, out = "server_nonce_retry_456"
-fn extract_dpop_nonce<B>(headers: const wing::HeaderMap&, out: B&) -> bool {
+fn extract_dpop_nonce<B>(headers: const http::HeaderMap&, out: B&) -> bool {
     let val, ok = extract_dpop_nonce(headers);
     guard ok && out.try_set(val) else {
         out.resize(0);

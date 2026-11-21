@@ -2,30 +2,13 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // RFC 6962 Certificate Transparency v1 SignedCertificateTimestamp (SCT) wire parser.
-namespace wing;
+namespace tls;
 
 import std;
 import core from "..";
+import .internal;
 import .asn1;
-
-struct ParsedSct {
-    version:      u8     = 0,
-    log_id:       u8[32] = [0; 32],
-    timestamp_ms: u64    = 0,
-    hash_alg:     u8     = 0,
-    sig_alg:      u8     = 0,
-    extensions:   Span16 = Span16 { offset: 0, length: 0 },
-    signature:    Span16 = Span16 { offset: 0, length: 0 },
-}
-
-// Packs two big-endian 32-bit halves into an RFC 6962 §3.2 64-bit millisecond timestamp.
-//
-// Example:
-//   ts_hi = 0x0000018E, ts_lo = 0x00000001
-//   returns: 0x0000018E00000001
-inline fn pack_sct_timestamp_ms(ts_hi: u32, ts_lo: u32) -> u64 {
-    return ((ts_hi as u64) << 32) | ts_lo;
-}
+import .types;
 
 // Parses a single RFC 6962 §3.2 v1 SignedCertificateTimestamp entry from `raw`.
 //
@@ -52,7 +35,7 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
 
     out.version = ver;
     core::ct_copy_bytes(out.log_id[..], log_id);
-    out.timestamp_ms = pack_sct_timestamp_ms(ts_hi, ts_lo);
+    out.timestamp_ms = tls_internal::pack_sct_timestamp_ms(ts_hi, ts_lo);
     out.hash_alg = hash_alg;
     out.sig_alg = sig_alg;
     out.extensions = make_span(raw, ext_sub.buf);
@@ -66,13 +49,13 @@ fn parse_sct_entry(raw: const u8[:], out: ParsedSct&) -> bool {
 //   raw_list = [0x00, 0x31, 0x00, 0x2F, <47B v1 SerializedSCT>]
 //   returns: true, out_scts.len = 1
 fn parse_sct_list(raw_list: const u8[:], out_scts: ParsedSct[..8]&) -> bool {
-    out_scts.clear();
     var committed = false;
     defer if !committed { out_scts.clear(); };
     var c = core::cursor_from(raw_list);
     var list_cursor, ok_l = c.read_u16_sub_cursor();
     guard ok_l && c.buf.len == 0 && list_cursor.buf.len > 0 else { return false; }
 
+    out_scts.clear();
     while list_cursor.buf.len > 0 {
         let sct_cursor, ok_s = list_cursor.read_u16_sub_cursor();
         guard ok_s && sct_cursor.buf.len > 0 else { return false; }

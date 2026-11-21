@@ -46,9 +46,9 @@ header field name is nominated by a qualified `private="field"` or
 `no-cache="field"` directive.
 
 ```goose
-let cc = wing::parse_cache_control_headers(resp.headers);
-if !wing::is_no_store(cc) && wing::has_max_age(cc) {
-    let immutable = wing::is_immutable(cc);
+let cc = http::parse_cache_control_headers(resp.headers);
+if !http::is_no_store(cc) && http::has_max_age(cc) {
+    let immutable = http::is_immutable(cc);
 }
 ```
 
@@ -119,20 +119,19 @@ struct LookupDecision
 enum ResponseDecisionKind { StoreAndReturn, FreshenAndReturn, PassThrough }
 struct ResponseDecision
 struct CacheWriters
-struct HttpCache
+struct Cache
 
-fn new_http_cache(options: CacheOptions = CacheOptions { .. }) -> HttpCache
-fn lookup(cache: HttpCache&, req: const Request&, cur_now_sec: i64, cur_mono_ns: u64 = 0) -> LookupDecision
-fn on_response(cache: HttpCache&, req: const Request&, resp: const Response&, ts: const CacheTimestamps&, revalidate_entry_idx: i64 = -1) -> ResponseDecision
-fn freshen_cached_entry_304(cache: HttpCache&, revalidate_entry_idx: i64, resp: const Response&, ts: const CacheTimestamps&, req_headers: const HeaderMap& = HeaderMap { .. }) -> ResponseDecision
-fn invalidate_matching_url(cache: HttpCache&, target_url: const u8[:]) -> i64
-fn check_invalidation(cache: HttpCache&, req: const Request&, resp: const Response&) -> i64
+fn lookup(cache: Cache&, req: const Request&, cur_now_sec: i64, cur_mono_ns: u64 = 0) -> LookupDecision
+fn on_response(cache: Cache&, req: const Request&, resp: const Response&, ts: const CacheTimestamps&, revalidate_entry_idx: i64 = -1) -> ResponseDecision
+fn freshen_cached_entry_304(cache: Cache&, revalidate_entry_idx: i64, resp: const Response&, ts: const CacheTimestamps&, req_headers: const HeaderMap& = HeaderMap { .. }) -> ResponseDecision
+fn invalidate_matching_url(cache: Cache&, target_url: const u8[:]) -> i64
+fn check_invalidation(cache: Cache&, req: const Request&, resp: const Response&) -> i64
 ```
 
-`HttpCache` is a fixed-capacity LRU store configured by `CacheOptions` that
-stores `CachedEntry` representations and coordinates singleflight request
-coalescing through `CacheWriters`. `lookup` evaluates stored entries and returns
-a `LookupDecision` (`Miss`, `Hit`, `Revalidate` with synthesized conditional
+`Cache` is a fixed-capacity LRU store configured by `CacheOptions` that stores
+`CachedEntry` representations and coordinates singleflight request coalescing
+through `CacheWriters`. `lookup` evaluates stored entries and returns a
+`LookupDecision` (`Miss`, `Hit`, `Revalidate` with synthesized conditional
 headers, or `Fail504` when `only-if-cached` misses). `on_response` handles
 post-response storage, `304 Not Modified` freshening via
 `freshen_cached_entry_304`, `stale-if-error` fallback, and unsafe method
@@ -143,10 +142,10 @@ invalidation (`check_invalidation` and `invalidate_matching_url`).
 ```goose
 struct CacheGroupTag
 
-fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_count: i32&) -> bool
-fn serialize_cache_group_list(tags: const CacheGroupTag[..32]&, count: i32, out: u8[..512]&) -> i32
+fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&) -> bool
+fn serialize_cache_group_list<B>(tags: const CacheGroupTag[:], out: B&) -> bool
 fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool
-fn invalidate_group(cache: HttpCache&, group: const u8[:], base_url: const u8[:] = "") -> i64
+fn invalidate_group(cache: Cache&, group: const u8[:], base_url: const u8[:] = "") -> i64
 ```
 
 Implements RFC 9875 HTTP Cache Groups. `CacheGroupTag` stores a group string up

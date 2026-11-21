@@ -602,7 +602,7 @@ fn validate_and_record_pseudo_header(
 // Validates and records a single decoded HPACK field into `out_pseudo` and `out_headers`.
 fn validate_header_ordering_and_rules(
     out_pseudo:           PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     name:                 const u8[:],
     val:                  const u8[:],
     validate_http2_rules: bool        = true,
@@ -642,7 +642,7 @@ fn validate_header_ordering_and_rules(
             return rfc::H2_ERR_ENHANCE_YOUR_CALM;
         }
         if join_st == h2_internal::CookieJoinStatus.NotCookie {
-            guard wing::append_validated_header(out_headers, name, val) else {
+            guard http::append_validated_header(out_headers, name, val) else {
                 return rfc::H2_ERR_ENHANCE_YOUR_CALM;
             }
         }
@@ -653,7 +653,7 @@ fn validate_header_ordering_and_rules(
             return rfc::H2_ERR_ENHANCE_YOUR_CALM;
         }
         if join_st == h2_internal::CookieJoinStatus.NotCookie {
-            guard wing::append_header(out_headers, name, val) else {
+            guard http::append_header(out_headers, name, val) else {
                 return rfc::H2_ERR_ENHANCE_YOUR_CALM;
             }
         }
@@ -715,7 +715,7 @@ fn decode_hpack_field_step_to_map(
     updates_allowed:      bool&,
     update_count:         u32&,
     out_pseudo:           PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     max_header_list_size: u32,
     validate_http2_rules: bool,
 ) -> u64, u32 {
@@ -773,13 +773,13 @@ fn validate_mandatory_pseudo_headers(pseudo: const PseudoHeaders&) -> u32 {
 // iterative dynamic table size updates only at the start of the block, and `max_header_list_size`.
 //
 // Example:
-//   src = [0x82, 0x86, 0x84], out_pseudo = PseudoHeaders { .. }, out_headers = wing::HeaderMap { .. }
+//   src = [0x82, 0x86, 0x84], out_pseudo = PseudoHeaders { .. }, out_headers = http::HeaderMap { .. }
 //   returns: error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
 fn decode_hpack_to_map_with_scratch(
     dt:                   DynamicTable&,
     src:                  const u8[:],
     out_pseudo:           PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     name_buf:             u8[..256]&,
     val_buf:              u8[..8192]&,
     max_header_list_size: u32  = 8192,
@@ -842,13 +842,13 @@ fn decode_hpack_to_map_with_scratch(
 // Decodes a complete HPACK header block into `out_pseudo` and `out_headers` using stack scratch buffers.
 //
 // Example:
-//   src = [0x82, 0x86, 0x84], out_pseudo = PseudoHeaders { .. }, out_headers = wing::HeaderMap { .. }
+//   src = [0x82, 0x86, 0x84], out_pseudo = PseudoHeaders { .. }, out_headers = http::HeaderMap { .. }
 //   returns: error_code = ERR_NO_ERROR, out_pseudo.method = "GET"
 fn decode_hpack_to_map(
     dt:                   DynamicTable&,
     src:                  const u8[:],
     out_pseudo:           PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     max_header_list_size: u32  = 8192,
     validate_http2_rules: bool = true,
 ) -> u32 {

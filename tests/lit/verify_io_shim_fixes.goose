@@ -51,7 +51,7 @@ fn test_kqueue_filter_and_poller_contracts() {
         udata:  101,
     };
     assert(net_internal::kevent_bytes_available(kev_write) == 0);
-    let fl_w, eof_w = wing::map_kevent_to_poll_flags(kev_write);
+    let fl_w, eof_w = net::map_kevent_to_poll_flags(kev_write);
     assert(fl_w == core::POLL_WRITE && !eof_w);
 
     var kev_read = net_internal::Kevent {
@@ -72,7 +72,7 @@ fn test_kqueue_filter_and_poller_contracts() {
         data:   0,
         udata:  103,
     };
-    let fl_c, eof_c = wing::map_kevent_to_poll_flags(kev_eof_clean);
+    let fl_c, eof_c = net::map_kevent_to_poll_flags(kev_eof_clean);
     assert(eof_c && (fl_c & core::POLL_HANGUP) != 0 && (fl_c & core::POLL_ERROR) == 0);
 
     var kev_eof_err = net_internal::Kevent {
@@ -83,48 +83,48 @@ fn test_kqueue_filter_and_poller_contracts() {
         data:   0,
         udata:  104,
     };
-    let fl_e, eof_e = wing::map_kevent_to_poll_flags(kev_eof_err);
+    let fl_e, eof_e = net::map_kevent_to_poll_flags(kev_eof_err);
     assert(eof_e && (fl_e & core::POLL_HANGUP) != 0 && (fl_e & core::POLL_ERROR) != 0);
 
     var cfg = net_internal::auto_transport_driver_config();
-    var p = wing::new_poller(cfg);
-    assert(wing::register_socket(p, 88, 8801, core::PollInterest.Read, core::PollTrigger.Level));
-    assert(wing::modify_socket(p, 88, 8802, core::PollInterest.ReadWrite, core::PollTrigger.Edge));
-    assert(wing::deregister_socket(p, 88));
-    wing::close_poller(p);
+    var p = net::new_poller(cfg);
+    assert(net::register_socket(p, 88, 8801, core::PollInterest.Read, core::PollTrigger.Level));
+    assert(net::modify_socket(p, 88, 8802, core::PollInterest.ReadWrite, core::PollTrigger.Edge));
+    assert(net::deregister_socket(p, 88));
+    net::close_poller(p);
     print("SHIM_KQUEUE_AND_POLLER: OK");
 }
 
 fn test_reactor_slot_generation_token_guard() {
-    var accel = wing::ReactorAccelRuntime {
-        mode: wing::ReactorAccelMode.Rio,
+    var accel = net::ReactorAccelRuntime {
+        mode: net::ReactorAccelMode.Rio,
         ..
     };
     accel.slot_accel[3] = true;
     accel.active_accel_slots = 1;
-    let tok1 = wing::reactor_accel_slot_token(accel, 3);
-    let slot1, ok1 = wing::reactor_accel_match_token(accel, tok1);
+    let tok1 = net::reactor_accel_slot_token(accel, 3);
+    let slot1, ok1 = net::reactor_accel_match_token(accel, tok1);
     assert(ok1 && slot1 == 3);
 
-    wing::reactor_reset_accel_slot(accel, 3);
-    let _, ok_reset = wing::reactor_accel_match_token(accel, tok1);
+    net::reactor_reset_accel_slot(accel, 3);
+    let _, ok_reset = net::reactor_accel_match_token(accel, tok1);
     assert(!ok_reset && accel.active_accel_slots == 0);
 
     // Reusing the same physical slot rejects stale completions carrying old generation token.
     accel.slot_accel[3] = true;
     accel.active_accel_slots = 1;
-    let tok2 = wing::reactor_accel_slot_token(accel, 3);
+    let tok2 = net::reactor_accel_slot_token(accel, 3);
     assert(tok2 != tok1);
-    let slot2, ok2 = wing::reactor_accel_match_token(accel, tok2);
-    let _, ok_stale = wing::reactor_accel_match_token(accel, tok1);
+    let slot2, ok2 = net::reactor_accel_match_token(accel, tok2);
+    let _, ok_stale = net::reactor_accel_match_token(accel, tok1);
     assert(ok2 && slot2 == 3 && !ok_stale);
 
     // Generation counter wraps 65535 -> 1 (never 0) and generation 0 tokens always fail.
     accel.slot_gen[3] = 65535;
-    wing::reactor_reset_accel_slot(accel, 3);
+    net::reactor_reset_accel_slot(accel, 3);
     assert(accel.slot_gen[3] == 1);
     accel.slot_accel[3] = true;
-    let _, ok_zero = wing::reactor_accel_match_token(accel, 3);
+    let _, ok_zero = net::reactor_accel_match_token(accel, 3);
     assert(!ok_zero);
     print("ACCEL_SLOT_GENERATIONS: OK");
 }
@@ -145,20 +145,20 @@ fn verify_rio_cq_repeated_timeouts_and_v6() {
     // IPv6 "::1" RIO listener + non-RIO vs RIO socket family check + dual-stack AcceptEx roundtrip.
     let lfd_v6 = net_internal::rio_listen("::1", 0, 16);
     assert(lfd_v6 > 0);
-    let port_v6 = wing::tcp_getsockname_port(lfd_v6);
+    let port_v6 = net::tcp_getsockname_port(lfd_v6);
     assert(port_v6 > 0 && net_internal::native_rio_is_listener(lfd_v6) == 1);
-    wing::tcp_close(lfd_v6);
+    net::tcp_close(lfd_v6);
 
     let lfd_dual = net_internal::rio_listen("::", 0, 16);
     assert(lfd_dual > 0);
-    let port_dual = wing::tcp_getsockname_port(lfd_dual);
+    let port_dual = net::tcp_getsockname_port(lfd_dual);
     assert(port_dual > 0 && net_internal::native_rio_is_listener(lfd_dual) == 1);
 
-    let std_fd = wing::tcp_listen("127.0.0.1", 0);
+    let std_fd = net::tcp_listen("127.0.0.1", 0);
     assert(std_fd > 0 && net_internal::native_rio_is_listener(std_fd) == 0);
-    wing::tcp_close(std_fd);
+    net::tcp_close(std_fd);
 
-    let cfd = wing::tcp_connect("127.0.0.1", port_dual);
+    let cfd = net::tcp_connect("127.0.0.1", port_dual);
     assert(cfd > 0);
     let sfd = net_internal::native_rio_poll_accept(lfd_dual, 1000);
     assert(sfd > 0);
@@ -169,7 +169,7 @@ fn verify_rio_cq_repeated_timeouts_and_v6() {
     let rq = net_internal::native_rio_create_rq_ctx(sfd, 16, 16, cq, cq, 0x00020005);
     assert(rq != 0);
     assert(net_internal::native_rio_post_recv(rq, bid, 0, 1024, 901) == 0);
-    assert(wing::tcp_send(cfd, "V6_DUAL_OK") == 10);
+    assert(net::tcp_send(cfd, "V6_DUAL_OK") == 10);
     assert(net_internal::rio_wait_cq(cq, 1000) == 1);
     var results: net_internal::RioResult[..64] = [];
     let drained = net_internal::rio_drain_completions(cq, results);
@@ -177,39 +177,39 @@ fn verify_rio_cq_repeated_timeouts_and_v6() {
     assert(results[0].bytes_transferred == 10 && backing[..10] == "V6_DUAL_OK");
 
     net_internal::native_rio_deregister_buffer(bid);
-    wing::tcp_close(sfd);
-    wing::tcp_close(cfd);
-    wing::tcp_close(lfd_dual);
+    net::tcp_close(sfd);
+    net::tcp_close(cfd);
+    net::tcp_close(lfd_dual);
 }
 
 fn verify_rio_burst_accept_reactor() {
-    var srv = wing::new_http_server("127.0.0.1", 0);
-    srv.accel_mode = wing::ReactorAccelMode.Rio;
-    wing::add_static_get_route(srv, "/burst", "text/plain", "BURST_OK");
+    var srv = server::new_http_server("127.0.0.1", 0);
+    srv.accel_mode = net::ReactorAccelMode.Rio;
+    server::add_static_get_route(srv, "/burst", "text/plain", "BURST_OK");
 
-    let lfd = wing::reactor_listen_accelerated(srv, 64);
+    let lfd = server::reactor_listen_accelerated(srv, 64);
     assert(lfd > 0);
-    let port = wing::tcp_getsockname_port(lfd);
+    let port = net::tcp_getsockname_port(lfd);
     assert(port > 0);
 
     var clients: i64[4] = [0; 4];
     for i in 4 {
-        let c = wing::tcp_connect("127.0.0.1", port);
+        let c = net::tcp_connect("127.0.0.1", port);
         assert(c > 0);
-        assert(wing::tcp_send(c, "GET /burst HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
+        assert(net::tcp_send(c, "GET /burst HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") > 0);
         clients[i] = c;
     }
 
-    let served = wing::serve_reactor(srv, lfd, 4);
+    let served = server::serve_reactor(srv, lfd, 4);
     assert(served >= 4);
 
     var resp: u8[512] = [0; 512];
     for i in 4 {
-        let nr = wing::tcp_recv_slice(clients[i], resp[..]);
+        let nr = net::tcp_recv_slice(clients[i], resp[..]);
         assert(nr > 0 && core::contains(resp[..nr], "BURST_OK"));
-        wing::tcp_close(clients[i]);
+        net::tcp_close(clients[i]);
     }
-    wing::tcp_close(lfd);
+    net::tcp_close(lfd);
 }
 
 fn test_live_rio_timeout_ipv6_and_burst() {

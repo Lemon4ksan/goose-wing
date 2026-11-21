@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // HTTP response representation, header inspectors, and JSON decoding (RFC 9110).
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
@@ -11,6 +11,7 @@ import .request;
 import http.compression_dict;
 import http.early_hints;
 import http.headers;
+import http.internal;
 
 // ---- error model & diagnostics ---------------------------------------------
 
@@ -34,21 +35,8 @@ struct Error {
     message: u8[..256] = [],
 }
 
-fn error_stage_to_kind(stage: const u8[:]) -> ErrorKind {
-    if stage.eq_ascii_fold("transport") { return ErrorKind.Transport; }
-    if stage.eq_ascii_fold("tls") { return ErrorKind.Tls; }
-    if stage.eq_ascii_fold("mock") { return ErrorKind.Mock; }
-    if stage.eq_ascii_fold("ssrf_guard") { return ErrorKind.SsrfGuard; }
-    if stage.eq_ascii_fold("protocol") { return ErrorKind.Protocol; }
-    if stage.eq_ascii_fold("timeout") { return ErrorKind.Timeout; }
-    if stage.eq_ascii_fold("stream") { return ErrorKind.Stream; }
-    if stage.eq_ascii_fold("url") || stage.eq_ascii_fold("invalid_url") { return ErrorKind.InvalidUrl; }
-    if stage.eq_ascii_fold("redirect") { return ErrorKind.Redirect; }
-    return ErrorKind.None;
-}
-
 fn make_error(code: i32, stage: const u8[:], message: const u8[:], kind: ErrorKind = ErrorKind.None) -> Error {
-    let resolved_kind = if kind != ErrorKind.None { kind } else { error_stage_to_kind(stage) };
+    let resolved_kind = if kind != ErrorKind.None { kind } else { http_internal::error_stage_to_kind(stage) };
     var err = Error { kind: resolved_kind, code: code, .. };
     err.stage.append(stage);
     err.message.append(message);
@@ -115,29 +103,12 @@ enum HttpVersion {
     Http3,
 }
 
-// Parses a wire HTTP protocol token or ALPN identifier into a typed HttpVersion enum.
-//
-// Example:
-//   proto = "HTTP/2.0"
-//   returns: HttpVersion.Http2
-fn parse_http_version(proto: const u8[:]) -> HttpVersion {
-    if proto == "HTTP/1.0" { return HttpVersion.Http10; }
-    if proto == "HTTP/1.1" || proto == "h1" { return HttpVersion.Http11; }
-    if proto == "HTTP/2" || proto == "HTTP/2.0" || proto == "h2" || proto == "h2c" {
-        return HttpVersion.Http2;
-    }
-    if proto == "HTTP/3" || proto == "HTTP/3.0" || proto == "h3" {
-        return HttpVersion.Http3;
-    }
-    return HttpVersion.Unknown;
-}
-
 fn protocol(res: const Response&) -> const u8[:] {
     return res.protocol[..];
 }
 
 fn http_version(res: const Response&) -> HttpVersion {
-    return parse_http_version(protocol(res));
+    return http_internal::parse_http_version(protocol(res));
 }
 
 fn is_http3(res: const Response&) -> bool {
@@ -188,18 +159,8 @@ fn add_trailer(res: Response&, name: const u8[:], value: const u8[:]) {
     set_header(res.trailers, name, value, false);
 }
 
-fn classify_response_presence_bit(name: const u8[:]) -> u16 {
-    if name.eq_ascii_fold("date") { return RES_PRESENCE_DATE; }
-    if name.eq_ascii_fold("content-length") { return RES_PRESENCE_CONTENT_LENGTH; }
-    if name.eq_ascii_fold("content-type") { return RES_PRESENCE_CONTENT_TYPE; }
-    if name.eq_ascii_fold("connection") { return RES_PRESENCE_CONNECTION; }
-    if name.eq_ascii_fold("transfer-encoding") { return RES_PRESENCE_TRANSFER_ENCODING; }
-    if name.eq_ascii_fold("server") { return RES_PRESENCE_SERVER; }
-    return 0;
-}
-
 fn update_response_presence(res: Response&, name: const u8[:]) {
-    let bit = classify_response_presence_bit(name);
+    let bit = http_internal::classify_response_presence_bit(name);
     if bit != 0 {
         res.presence_mask = res.presence_mask | bit;
     }
@@ -215,7 +176,7 @@ fn set_header(res: Response&, name: const u8[:], value: const u8[:]) {
 fn remove_header(res: Response&, name: const u8[:]) -> bool {
     let removed = remove_header(res.headers, name);
     if removed {
-        let bit = classify_response_presence_bit(name);
+        let bit = http_internal::classify_response_presence_bit(name);
         if bit != 0 {
             res.presence_mask = res.presence_mask & (~bit);
         }
@@ -241,14 +202,6 @@ fn clear_decompressed_headers(res: Response&) {
     res.presence_mask = res.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
 }
 
-inline fn is_valid_coding_token(tok: const u8[:]) -> bool {
-    guard tok.len > 0 else { return false; }
-    for b in tok {
-        guard core::is_tchar(b) else { return false; }
-    }
-    return true;
-}
-
 // Parses a comma-separated Content-Encoding header into up to 4 ordered tokens (RFC 9110 §8.4).
 //
 // Example:
@@ -269,7 +222,7 @@ fn parse_content_encoding_chain(
     while rem.len > 0 {
         let head, tail, has_comma = rem.split_once_byte(',');
         let tok = head.trim_lws();
-        guard is_valid_coding_token(tok) else { return false; }
+        guard http_internal::is_valid_coding_token(tok) else { return false; }
         var item: u8[..16] = [];
         guard item.try_set(tok) && out_tokens.try_push(item) else { return false; }
         if !has_comma { break; }
@@ -280,100 +233,6 @@ fn parse_content_encoding_chain(
     return true;
 }
 
-// Decodes a single standard Content-Encoding layer (`identity`, `zstd`, `gzip`, `br`, `deflate`) in place.
-//
-// Example:
-//   tok = "gzip", res.body = <gzipped "ok">
-//   returns: true, res.body = "ok"
-fn decode_single_standard_encoding(tok: const u8[:], res: Response&) -> bool {
-    if tok.eq_ascii_fold("identity") {
-        return true;
-    }
-    if tok.eq_ascii_fold("zstd") {
-        var uncompressed: u8[>..] = [];
-        let ok_z, _ = core::zstd_decompress(res.body[..], uncompressed);
-        guard ok_z else { return false; }
-        res.body.clear();
-        res.body.append(uncompressed[..]);
-        return true;
-    }
-    if tok.eq_ascii_fold("gzip") || tok.eq_ascii_fold("x-gzip") {
-        var uncompressed: u8[>..] = [];
-        let ok_d, _ = core::gzip_decompress(res.body[..], uncompressed);
-        guard ok_d else { return false; }
-        res.body.clear();
-        res.body.append(uncompressed[..]);
-        return true;
-    }
-    if tok.eq_ascii_fold("br") {
-        var uncompressed: u8[>..] = [];
-        let ok_b, _ = core::brotli_decompress(res.body[..], uncompressed);
-        guard ok_b else { return false; }
-        res.body.clear();
-        res.body.append(uncompressed[..]);
-        return true;
-    }
-    if tok.eq_ascii_fold("deflate") {
-        var uncompressed: u8[>..] = [];
-        let ok_z, _ = core::zlib_decompress(res.body[..], uncompressed);
-        if ok_z {
-            res.body.clear();
-            res.body.append(uncompressed[..]);
-            return true;
-        }
-        uncompressed.clear();
-        let ok_d, _ = core::inflate(res.body[..], uncompressed);
-        guard ok_d else { return false; }
-        res.body.clear();
-        res.body.append(uncompressed[..]);
-        return true;
-    }
-    return false;
-}
-
-inline fn is_secure_dict_response_url(url_val: const core::Url&) -> bool {
-    if url_val.is_secure_scheme() {
-        return true;
-    }
-    guard url_val.scheme() == "http" else { return false; }
-    let h = url_val.hostname();
-    return h.eq_ascii_fold("localhost") || h == "127.0.0.1" || h == "::1" || h == "[::1]";
-}
-
-fn dict_entry_matches_response_origin(
-    entry:   const DictionaryEntry&,
-    eff_url: const u8[:],
-    now_sec: i64,
-) -> bool {
-    guard entry.valid else { return false; }
-    let check_ttl = now_sec > 0 && entry.ttl_sec > 0 && entry.inserted_at_sec > 0 &&
-        !(now_sec == 1700000000 && entry.inserted_at_sec < 100000000);
-    if check_ttl {
-        guard now_sec >= entry.inserted_at_sec &&
-            core::sub_sat_i64(now_sec, entry.inserted_at_sec) < entry.ttl_sec else {
-            return false;
-        }
-    }
-    if eff_url.len == 0 {
-        return true;
-    }
-    let u, err = core::parse_url(eff_url);
-    guard err == core::UrlParseError.None && u.valid && is_secure_dict_response_url(u) else {
-        return false;
-    }
-    guard entry.origin.len > 0 else { return false; }
-    if core::contains(entry.origin[..], "://") {
-        let eu, e_err = core::parse_url(entry.origin[..]);
-        guard e_err == core::UrlParseError.None && eu.valid else { return false; }
-        return core::is_same_origin(core::origin_from_url(eu), core::origin_from_url(u));
-    }
-    var hp_buf: u8[..160] = [];
-    guard hp_buf.try_append(u.hostname()) && hp_buf.try_push(':') else { return false; }
-    let eff_port: i64 = u.effective_port();
-    eff_port.format_i64_dec(hp_buf);
-    return entry.origin[..].eq_ascii_fold(hp_buf[..]);
-}
-
 fn find_matching_dict_entry(
     dict_cache: const DictionaryCache&,
     dict_hash:  const u8[:],
@@ -382,49 +241,11 @@ fn find_matching_dict_entry(
 ) -> i64 {
     for &entry, idx in dict_cache.entries {
         if core::ct_eq_bytes(entry.sha256_hash[..], dict_hash) &&
-            dict_entry_matches_response_origin(entry, eff_url, now_sec) {
+            http_internal::dict_entry_matches_response_origin(entry, eff_url, now_sec) {
             return idx;
         }
     }
     return -1;
-}
-
-// Decodes a single RFC 9842 shared-dictionary Content-Encoding layer (`dcz` or `dcb`) in place.
-//
-// Example:
-//   tok = "dcz", res.body = <40-byte DCZ header + zstd frame>
-//   returns: true, res.body = <decompressed payload>
-fn decode_single_dict_encoding(
-    tok:        const u8[:],
-    res:        Response&,
-    dict_cache: const DictionaryCache&,
-    now_sec:    i64 = 0,
-) -> bool {
-    if tok.eq_ascii_fold("dcz") {
-        var dict_hash: u8[32] = [0; 32];
-        let p_slice, ok_hdr = decode_dcz_header(res.body[..], dict_hash);
-        guard ok_hdr else { return false; }
-        let idx = find_matching_dict_entry(dict_cache, dict_hash[..], res.effective_url[..], now_sec);
-        guard idx >= 0 && idx < dict_cache.entries.len else { return false; }
-        var decompressed: u8[>..] = [];
-        guard decompress_dcz_payload(p_slice, dict_cache.entries[idx].content[..], decompressed) else { return false; }
-        res.body.clear();
-        res.body.append(decompressed[..]);
-        return true;
-    }
-    if tok.eq_ascii_fold("dcb") {
-        var dict_hash: u8[32] = [0; 32];
-        let p_slice, ok_hdr = decode_dcb_header(res.body[..], dict_hash);
-        guard ok_hdr else { return false; }
-        let idx = find_matching_dict_entry(dict_cache, dict_hash[..], res.effective_url[..], now_sec);
-        guard idx >= 0 && idx < dict_cache.entries.len else { return false; }
-        var decompressed: u8[>..] = [];
-        guard decompress_dcb_payload(p_slice, dict_cache.entries[idx].content[..], decompressed) else { return false; }
-        res.body.clear();
-        res.body.append(decompressed[..]);
-        return true;
-    }
-    return decode_single_standard_encoding(tok, res);
 }
 
 // Automatically decompresses response.body across single or multi-token Content-Encoding chains
@@ -449,7 +270,7 @@ fn decode_body(res: Response&) -> bool {
     var rev_idx = tokens.len;
     while rev_idx > 0 {
         rev_idx = core::sub_sat_i64(rev_idx, 1);
-        guard decode_single_standard_encoding(tokens[rev_idx][..], res) else { return false; }
+        guard http_internal::decode_single_standard_encoding(tokens[rev_idx][..], res) else { return false; }
     }
     committed = true;
     clear_decompressed_headers(res);
@@ -482,7 +303,11 @@ fn decode_body_with_dictionary(
     var rev_idx = tokens.len;
     while rev_idx > 0 {
         rev_idx = core::sub_sat_i64(rev_idx, 1);
-        guard decode_single_dict_encoding(tokens[rev_idx][..], res, dict_cache, now_sec) else { return false; }
+        guard http_internal::decode_single_dict_encoding(
+            tokens[rev_idx][..], res, dict_cache, now_sec,
+        ) else {
+            return false;
+        }
     }
     committed = true;
     clear_decompressed_headers(res);
@@ -518,65 +343,6 @@ fn should_auto_decompress(
 
 // ---- json reflection readers -----------------------------------------------
 
-fn read_json_field(reader: json::Reader&, dst: i64&) {
-    dst = json::read_int(reader);
-}
-
-fn read_json_field(reader: json::Reader&, dst: u64&) {
-    dst = max(json::read_int(reader), 0) as u64;
-}
-
-fn read_json_field(reader: json::Reader&, dst: i32&) {
-    dst = core::clamp_i64(json::read_int(reader), -2147483648, 2147483647) as i32;
-}
-
-fn read_json_field(reader: json::Reader&, dst: f64&) {
-    dst = json::read_number(reader);
-}
-
-fn read_json_field(reader: json::Reader&, dst: bool&) {
-    dst = json::read_bool(reader);
-}
-
-fn read_json_field(reader: json::Reader&, dst: u8[>..]&) {
-    dst.clear();
-    var scratch: u8[>..] = [];
-    let val = json::read_string(reader, scratch);
-    dst.append(val);
-}
-
-fn read_json_field<B>(reader: json::Reader&, dst: B&) {
-    dst.clear();
-    guard json::peek(reader) == '"' else {
-        json::fail(reader, "expected a string");
-        return;
-    }
-    let start = core::add_sat_i64(reader.pos, 1);
-    let end, escaped = json::scan_string(reader.text, start);
-    guard end >= 0 else {
-        json::fail(reader, "bad string");
-        return;
-    }
-    reader.pos = core::add_sat_i64(end, 1);
-    if !escaped {
-        let raw = reader.text[start..end];
-        guard raw.len <= dst.cap else {
-            json::fail(reader, "string exceeds capacity");
-            return;
-        }
-        dst.append(raw);
-        return;
-    }
-    if !core::decode_json_string_into(reader.text, start, end, dst) {
-        reader.pos = core::sub_sat_i64(start, 1);
-        if !json::valid_escapes(reader.text, start, end) {
-            json::fail(reader, "bad escape");
-        } else {
-            json::fail(reader, "string exceeds capacity");
-        }
-    }
-}
-
 // ---- json response decoding -------------------------------------------------
 
 fn json<T>(res: const Response&, out: T&) -> Error {
@@ -588,7 +354,7 @@ fn json<T>(res: const Response&, out: T&) -> Error {
         var matched = false;
         const for <Name, Acc> in fields<T> {
             if !matched && key == Name {
-                read_json_field(reader, out.Acc);
+                http_internal::read_json_field(reader, out.Acc);
                 matched = true;
             }
         }
@@ -644,7 +410,7 @@ fn respond_json<T>(res: Response&, status_code: i32, payload: const T&) {
         if !first { res.body.push(','); }
         first = false;
         json::format_key(res.body, Name);
-        write_json_field(res.body, payload.Acc);
+        http_internal::write_json_field(res.body, payload.Acc);
     }
     res.body.push('}');
 }
@@ -702,18 +468,6 @@ fn respond_redirect(
     return true;
 }
 
-inline fn vary_list_contains_token(existing: const u8[:], needle: const u8[:]) -> bool {
-    var tok = core::make_byte_tokenizer(existing, ',');
-    while true {
-        let item, ok = core::token_next(tok);
-        if !ok { return false; }
-        if item.trim_lws().eq_ascii_fold(needle) {
-            return true;
-        }
-    }
-    return false;
-}
-
 // Appends `field_name` to the `Vary` response header without duplicating
 // existing case-insensitive tokens (RFC 9110 Section 12.5.5).
 fn append_vary(res: Response&, field_name: const u8[:]) -> bool {
@@ -725,7 +479,7 @@ fn append_vary(res: Response&, field_name: const u8[:]) -> bool {
         }
     }
     let existing = header(res, "Vary").trim_lws();
-    if existing == "*" || vary_list_contains_token(existing, clean) {
+    if existing == "*" || http_internal::vary_list_contains_token(existing, clean) {
         return true;
     }
     if clean == "*" || existing.len == 0 {

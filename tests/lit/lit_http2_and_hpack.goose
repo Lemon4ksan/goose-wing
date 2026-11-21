@@ -99,7 +99,7 @@ fn run_01_rfc_repro_framer_h2_minsize() {
 
 fn test_h2_padded_data_and_overflow() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -507,7 +507,7 @@ fn bench_h2_hpack_decode() {
 
     var dt = http2::new_dynamic_table();
     var pseudo = http2::PseudoHeaders { .. };
-    var out = wing::HeaderMap { .. };
+    var out = http::HeaderMap { .. };
     for _ in iters {
         let err = http2::decode_hpack_to_map(dt, hblock[..], pseudo, out);
         assert(err == 0 && pseudo.has_method && pseudo.has_scheme && pseudo.has_path);
@@ -656,7 +656,7 @@ fn scan_frames(wire: const u8[:]) -> bool, bool, u32 {
 
 fn test_idle_stream_window_update() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -683,7 +683,7 @@ fn test_idle_stream_window_update() {
 
 fn test_missing_mandatory_pseudo_headers() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -714,7 +714,7 @@ fn test_missing_mandatory_pseudo_headers() {
 
 fn test_content_length_end_stream_headers() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -747,7 +747,7 @@ fn test_content_length_end_stream_headers() {
 
 fn test_content_length_mismatch_data() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -786,7 +786,7 @@ fn test_content_length_mismatch_data() {
 
 fn test_stream_slot_reclamation_on_error() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -816,7 +816,7 @@ fn test_stream_slot_reclamation_on_error() {
 
 fn test_settings_max_frame_size_isolation() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -934,9 +934,9 @@ fn count_in_use_slabs(pool: const server_internal::SpillSlabPool&) -> i64 {
 
 fn test_inline_body_lifecycle() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "POST", "/inline", 1);
+    server::add_route(pipeline.router, "POST", "/inline", 1);
 
     var init_wire: u8[>..] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE);
@@ -971,9 +971,9 @@ fn test_inline_body_lifecycle() {
 
 fn test_dynamic_promotion_and_reassembly() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "POST", "/large", 2);
+    server::add_route(pipeline.router, "POST", "/large", 2);
 
     var init_wire: u8[>..] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE);
@@ -1035,9 +1035,9 @@ fn test_dynamic_promotion_and_reassembly() {
 
 fn test_maximum_capacity_overflow() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "POST", "/overflow", 3);
+    server::add_route(pipeline.router, "POST", "/overflow", 3);
 
     var init_wire: u8[>..] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE);
@@ -1086,9 +1086,9 @@ fn test_maximum_capacity_overflow() {
 
 fn test_pool_saturation_rejection() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "POST", "/saturated", 4);
+    server::add_route(pipeline.router, "POST", "/saturated", 4);
 
     var init_wire: u8[>..] = [];
     init_wire.append(rfc::H2_CLIENT_PREFACE);
@@ -1359,53 +1359,53 @@ fn run_10_verify_hpack_qpack() {
 var g_dt_rfc:     http2::DynamicTable  = http2::DynamicTable { .. };
 var g_dt_wrap:    http2::DynamicTable  = http2::DynamicTable { .. };
 var g_out_pseudo: http2::PseudoHeaders = http2::PseudoHeaders { .. };
-var g_out_list:   wing::HeaderMap      = wing::HeaderMap { .. };
+var g_out_list:   http::HeaderMap      = http::HeaderMap { .. };
 var g_conn:       http2::Connection    = http2::Connection { .. };
-var g_client:     wing::Client         = wing::Client { .. };
-var g_server_res: wing::Response       = wing::Response { .. };
-var g_dcz_res:    wing::Response       = wing::Response { .. };
-var g_req:        wing::Request        = wing::Request { .. };
+var g_client:     client::Client       = client::Client { .. };
+var g_server_res: http::Response       = http::Response { .. };
+var g_dcz_res:    http::Response       = http::Response { .. };
+var g_req:        http::Request        = http::Request { .. };
 
 fn verify_incremental_http1_scan() {
     let raw = "GET /api/v1/items HTTP/1.1\r\nHost: example.com\r\nUser-Agent: wing/1.0\r\n\r\n{\"ok\":true}";
     var cursor: i64 = 0;
 
     // Fragment 1: Partial header before \r\n\r\n
-    let end1, ok1 = wing::scan_http1_headers(raw[..30], 0, cursor);
+    let end1, ok1 = http::scan_http1_headers(raw[..30], 0, cursor);
     assert(!ok1 && end1 == 0 && cursor == 27);
 
     // Fragment 2: Split right inside \r\n\r\n (includes "\r\n\r" at index 68..71)
-    let end2, ok2 = wing::scan_http1_headers(raw[..70], 30, cursor);
+    let end2, ok2 = http::scan_http1_headers(raw[..70], 30, cursor);
     assert(!ok2 && end2 == 0 && cursor == 67);
 
     // Fragment 3: Full header arrives; starts scanning at (70 - 3) = 67 and catches split \r\n\r\n
-    let end3, ok3 = wing::scan_http1_headers(raw, 70, cursor);
+    let end3, ok3 = http::scan_http1_headers(raw, 70, cursor);
     assert(ok3 && end3 == 71 && cursor == 71);
 }
 
 fn verify_lexical_swar_and_methods() {
-    let m1, c1, ok1 = wing::match_http_method_u32("GET /index.html HTTP/1.1\r\n");
+    let m1, c1, ok1 = http::match_http_method_u32("GET /index.html HTTP/1.1\r\n");
     assert(ok1 && m1 == "GET" && c1 == 4);
 
-    let m2, c2, ok2 = wing::match_http_method_u32("POST /submit HTTP/1.1\r\n");
+    let m2, c2, ok2 = http::match_http_method_u32("POST /submit HTTP/1.1\r\n");
     assert(ok2 && m2 == "POST" && c2 == 5);
 
-    let m3, c3, ok3 = wing::match_http_method_u32("HEAD /status HTTP/1.1\r\n");
+    let m3, c3, ok3 = http::match_http_method_u32("HEAD /status HTTP/1.1\r\n");
     assert(ok3 && m3 == "HEAD" && c3 == 5);
 
-    let m4, c4, ok4 = wing::match_http_method_u32("PUT /item HTTP/1.1\r\n");
+    let m4, c4, ok4 = http::match_http_method_u32("PUT /item HTTP/1.1\r\n");
     assert(ok4 && m4 == "PUT" && c4 == 4);
 
-    let m5, c5, ok5 = wing::match_http_method_u32("DELETE /item HTTP/1.1\r\n");
+    let m5, c5, ok5 = http::match_http_method_u32("DELETE /item HTTP/1.1\r\n");
     assert(ok5 && m5 == "DELETE" && c5 == 7);
 
-    let _, _, bad_m = wing::match_http_method_u32("FOOBAR / HTTP/1.1\r\n");
+    let _, _, bad_m = http::match_http_method_u32("FOOBAR / HTTP/1.1\r\n");
     assert(!bad_m);
 
-    assert(wing::is_valid_token_swar("Content-Security-Policy-Report-Only"));
-    assert(!wing::is_valid_token_swar("Bad Header:Name"));
+    assert(http::is_valid_token_swar("Content-Security-Policy-Report-Only"));
+    assert(!http::is_valid_token_swar("Bad Header:Name"));
 
-    let tok_len, tok_ok = wing::scan_token_swar("X-Forwarded-For: 10.0.0.1\r\n");
+    let tok_len, tok_ok = http::scan_token_swar("X-Forwarded-For: 10.0.0.1\r\n");
     assert(tok_ok && tok_len == 15);
 }
 
@@ -1419,8 +1419,8 @@ fn verify_hpack_rfc7541_vectors_and_ring() {
     let err_c21 = http2::decode_hpack_to_map(g_dt_rfc, c21_wire[..], g_out_pseudo, g_out_list, 8192, false);
     assert(err_c21 == rfc::H2_ERR_NO_ERROR);
     assert(g_out_list.entries.len == 1);
-    assert(wing::entry_name(g_out_list, g_out_list.entries[0]) == "custom-key");
-    assert(wing::entry_value(g_out_list, g_out_list.entries[0]) == "custom-header");
+    assert(http::entry_name(g_out_list, g_out_list.entries[0]) == "custom-key");
+    assert(http::entry_value(g_out_list, g_out_list.entries[0]) == "custom-header");
     assert(g_dt_rfc.used_bytes == 55);
 
     // Verify O(1) hash lookup on dynamic table & HpackHashTable overload
@@ -1475,8 +1475,8 @@ fn verify_h2_priority_scheduler_and_burst_cap() {
     http2::open_stream(g_conn, 1, false);
     http2::open_stream(g_conn, 3, false);
 
-    let prio_u0 = wing::PriorityParam { urgency: 0, incremental: false };
-    let prio_u3 = wing::PriorityParam { urgency: 3, incremental: true };
+    let prio_u0 = http::PriorityParam { urgency: 0, incremental: false };
+    let prio_u3 = http::PriorityParam { urgency: 3, incremental: true };
     http2::apply_priority_update(g_conn, 1, prio_u0);
     http2::apply_priority_update(g_conn, 3, prio_u3);
 
@@ -1502,15 +1502,15 @@ fn verify_rfc9842_dictionary_transport() {
     let dict_raw = "common-json-keys-dictionary-v1:{\"id\":1,\"status\":\"active\",\"user\":\"admin\"}";
     let dict_hash = core::sha256(dict_raw);
 
-    wing::set_base_url(g_client, "https://example.com");
-    wing::reset_response(g_server_res);
-    wing::set_use_as_dictionary_response(g_server_res, "/api/*", "dict-v1", 3600);
-    let uad_hdr = wing::header(g_server_res, "Use-As-Dictionary");
+    client::set_base_url(g_client, "https://example.com");
+    http::reset_response(g_server_res);
+    http::set_use_as_dictionary_response(g_server_res, "/api/*", "dict-v1", 3600);
+    let uad_hdr = http::header(g_server_res, "Use-As-Dictionary");
     assert(uad_hdr.len > 0);
 
     // Client processes dictionary response and caches dictionary
     var out_initial: u8[..256] = [];
-    let ok_learn = wing::process_dictionary_response(
+    let ok_learn = client::process_dictionary_response(
         g_client,
         "https://example.com",
         uad_hdr,
@@ -1521,26 +1521,26 @@ fn verify_rfc9842_dictionary_transport() {
     assert(ok_learn && out_initial[..] == dict_raw);
 
     // Client prepares subsequent request to /api/items and attaches Available-Dictionary & Dictionary-ID
-    wing::reset_request(g_req);
+    http::reset_request(g_req);
     g_req.url.append("https://example.com/api/items");
-    wing::set_header(g_req.headers, "Accept-Encoding", "gzip, dcz, dcb", false);
-    let attached = wing::attach_dictionary_request_headers(g_client, "https://example.com", "/api/items", g_req);
+    http::set_header(g_req.headers, "Accept-Encoding", "gzip, dcz, dcb", false);
+    let attached = client::attach_dictionary_request_headers(g_client, "https://example.com", "/api/items", g_req);
     assert(attached);
 
     // Server negotiates DCZ response
-    wing::reset_response(g_dcz_res);
+    http::reset_response(g_dcz_res);
     let payload_plain = "{\"id\":42,\"status\":\"active\",\"user\":\"admin\"}";
-    let ok_neg = wing::apply_negotiated_dictionary_response(g_req, g_dcz_res, dict_hash, payload_plain, "dict-v1");
+    let ok_neg = http::apply_negotiated_dictionary_response(g_req, g_dcz_res, dict_hash, payload_plain, "dict-v1");
     assert(ok_neg);
-    assert(wing::header(g_dcz_res, "Content-Encoding") == "dcz");
+    assert(http::header(g_dcz_res, "Content-Encoding") == "dcz");
 
     // Verify 4-byte magic (\xFFDCZ) and hash
-    let comp_slice, ok_magic = wing::verify_dcz_dcb_magic(g_dcz_res.body[..], true, dict_hash);
+    let comp_slice, ok_magic = http::verify_dcz_dcb_magic(g_dcz_res.body[..], true, dict_hash);
     assert(ok_magic && comp_slice.len > 0);
 
     // Client decodes DCZ response back into plaintext
     var decoded_body: u8[..256] = [];
-    let ok_dec = wing::process_dictionary_response(
+    let ok_dec = client::process_dictionary_response(
         g_client,
         "https://example.com",
         "",
@@ -1552,7 +1552,7 @@ fn verify_rfc9842_dictionary_transport() {
 
     // Negative test: small output buffer must fail closed (Invariant 13, no silent drop)
     var tiny_out: u8[..8] = [];
-    let ok_overflow = wing::process_dictionary_response(
+    let ok_overflow = client::process_dictionary_response(
         g_client,
         "https://example.com",
         "",
@@ -1723,8 +1723,8 @@ fn test_graceful_shutdown_and_protocol_guards() {
     let _, p_exp, _ = http2::parse_priority_update_payload("\x00\x00\x00\x01u=1, i", false);
     assert(http2::apply_priority_update(sess2.conn, 1, p_exp) == rfc::H2_ERR_NO_ERROR);
     assert(sess2.conn.streams[0].has_explicit_priority_update);
-    var hdr_map = wing::HeaderMap { .. };
-    wing::set_header(hdr_map, "priority", "u=6");
+    var hdr_map = http::HeaderMap { .. };
+    http::set_header(hdr_map, "priority", "u=6");
     server_internal::apply_request_priority_header(sess2.conn, 1, hdr_map);
     assert(sess2.conn.streams[0].priority.urgency == 1);
 
@@ -1814,9 +1814,9 @@ fn has_frame_on_wire(wire: const u8[:], frame_type: u8, stream_id: u32) -> bool 
 
 fn test_hpack_sync_across_stream_errors() {
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "GET", "/ok", 1);
+    server::add_route(pipeline.router, "GET", "/ok", 1);
 
     var client_dt = http2::new_dynamic_table(4096);
     var wire1: u8[>..] = [];
@@ -1897,15 +1897,15 @@ fn test_trailer_errors_and_disallowed_fields() {
     var t_block: u8[>..] = [];
     http2::encode_hpack_field(dt, t_block, "authorization", "Bearer tok", http2::HpackIndexing.None, false);
     var pseudo = http2::PseudoHeaders { is_trailer: true, .. };
-    var out_map = wing::HeaderMap { .. };
+    var out_map = http::HeaderMap { .. };
     let err_auth = http2::decode_hpack_to_map(dt, t_block[..], pseudo, out_map);
     assert(err_auth == rfc::H2_ERR_PROTOCOL_ERROR);
 
     // 2. Trailer HEADERS without END_STREAM on open stream must emit RST_STREAM(PROTOCOL_ERROR), NOT GOAWAY
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "POST", "/up", 2);
+    server::add_route(pipeline.router, "POST", "/up", 2);
 
     var client_dt = http2::new_dynamic_table(4096);
     var wire: u8[>..] = [];
@@ -1955,9 +1955,9 @@ fn test_hpack_dyn_size_min_update_and_ring_cap() {
 
     // Part B: SETTINGS_HEADER_TABLE_SIZE 0 then 4096 must emit both 0 (0x20) and 4096 (0x3F 0xE1 0x1F)
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "GET", "/ping", 1);
+    server::add_route(pipeline.router, "GET", "/ping", 1);
 
     var client_enc = http2::new_dynamic_table(4096);
     var client_dec = http2::new_dynamic_table(4096);
@@ -1982,7 +1982,7 @@ fn test_hpack_dyn_size_min_update_and_ring_cap() {
     // Decode stream 1 response headers into client_dec (populates server & content-length in client_dec)
     let resp1_hdr, _ = http2::parse_frame_header(out1[33..42]);
     var p1 = http2::PseudoHeaders { .. };
-    var m1 = wing::HeaderMap { .. };
+    var m1 = http::HeaderMap { .. };
     assert(http2::decode_hpack_to_map(client_dec, out1[42..42 + resp1_hdr.length], p1, m1) == rfc::H2_ERR_NO_ERROR);
     assert(client_dec.count > 0);
 
@@ -2017,7 +2017,7 @@ fn test_hpack_dyn_size_min_update_and_ring_cap() {
     // First byte of resp3_hpack MUST be 0x20 (Dynamic Table Size Update to 0)
     assert(resp3_hpack.len > 0 && resp3_hpack[0] == 0x20);
     var p3 = http2::PseudoHeaders { .. };
-    var m3 = wing::HeaderMap { .. };
+    var m3 = http::HeaderMap { .. };
     assert(http2::decode_hpack_to_map(client_dec, resp3_hpack, p3, m3) == rfc::H2_ERR_NO_ERROR);
     assert(client_dec.count == sess.hpack_enc.count);
     print("TEST_4_HPACK_DYN_MIN_SIZE_AND_RING_CAP: OK\n");
@@ -2026,9 +2026,9 @@ fn test_hpack_dyn_size_min_update_and_ring_cap() {
 fn test_rfc9218_and_client_h2_edge_cases() {
     // 1. RFC 9218 §2.1: SETTINGS_NO_RFC7540_PRIORITIES = 1 ignores self-dependency in HEADERS & PRIORITY
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
-    wing::add_route(pipeline.router, "GET", "/p", 1);
+    server::add_route(pipeline.router, "GET", "/p", 1);
 
     var wire: u8[>..] = [];
     wire.append(rfc::H2_CLIENT_PREFACE[..]);
@@ -2062,9 +2062,9 @@ fn test_rfc9218_and_client_h2_edge_cases() {
 
     // 2. Client H2 padded DATA frame WINDOW_UPDATE must credit full hdr.length (10), not unpadded len (5)
     var dec_dt = http2::new_dynamic_table(4096);
-    var resp = wing::Response { .. };
+    var resp = http::Response { .. };
     var out_ctrl: u8[>..] = [];
-    var st_d = wing::H2ClientRecvState { got_hdrs: true, .. };
+    var st_d = client::H2RecvState { got_hdrs: true, .. };
     let pad_hdr = http2::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_DATA,
@@ -2072,12 +2072,12 @@ fn test_rfc9218_and_client_h2_edge_cases() {
         stream_id:  1,
     };
     let pad_payload: u8[10] = [4, 'h', 'e', 'l', 'l', 'o', 0, 0, 0, 0];
-    let ok_d, end_d = wing::process_h2_response_frame(pad_hdr, pad_payload[..], 1, false, dec_dt, resp, st_d, out_ctrl);
-    assert(ok_d && end_d);
+    let st_pad = client::process_h2_response_frame(pad_hdr, pad_payload[..], 1, false, dec_dt, resp, st_d, out_ctrl);
+    assert(st_pad == client::H2RecvStatus.Complete);
     assert(out_ctrl.len >= 13 && core::read_be_u32(out_ctrl[..], 9) == 10);
 
     // 3. Client H2 1xx informational response with END_STREAM must be rejected (RFC 9113 §8.1)
-    var st_1xx = wing::H2ClientRecvState { .. };
+    var st_1xx = client::H2RecvState { .. };
     let hdr_100 = http2::FrameHeader {
         length:     5,
         frame_type: rfc::H2_FRAME_HEADERS,
@@ -2085,8 +2085,8 @@ fn test_rfc9218_and_client_h2_edge_cases() {
         stream_id:  1,
     };
     let payload_100: u8[5] = [0x08, 0x03, '1', '0', '0']; // :status: 100
-    let ok_100, _ = wing::process_h2_response_frame(hdr_100, payload_100[..], 1, false, dec_dt, resp, st_1xx, out_ctrl);
-    assert(!ok_100);
+    let st_res_100 = client::process_h2_response_frame(hdr_100, payload_100[..], 1, false, dec_dt, resp, st_1xx, out_ctrl);
+    assert(st_res_100 == client::H2RecvStatus.Error);
     print("TEST_5_6_RFC9218_AND_CLIENT_H2: OK\n");
 }
 

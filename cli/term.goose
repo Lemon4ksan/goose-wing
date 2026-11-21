@@ -102,8 +102,8 @@ fn print_help(no_color: bool) {
 
 fn print_client_verbose_request(
     cfg:  const CliConfig&,
-    sess: const wing::Client&,
-    req:  const wing::Request&,
+    sess: const client::Client&,
+    req:  const http::Request&,
 ) {
     var out: u8[>..] = [];
     let nc = cfg.no_color;
@@ -136,8 +136,8 @@ fn print_client_verbose_request(
 
 fn append_write_out_numeric_var<B>(
     var_name:   const u8[:],
-    req:        const wing::Request&,
-    res:        const wing::Response&,
+    req:        const http::Request&,
+    res:        const http::Response&,
     elapsed_ms: u64,
     out:        B&,
 ) {
@@ -166,8 +166,8 @@ fn append_write_out_numeric_var<B>(
 //   appends: "code=200 bytes=572\n"
 fn append_write_out_var<B>(
     var_name:   const u8[:],
-    req:        const wing::Request&,
-    res:        const wing::Response&,
+    req:        const http::Request&,
+    res:        const http::Response&,
     elapsed_ms: u64,
     out:        B&,
 ) {
@@ -188,8 +188,8 @@ fn append_write_out_var<B>(
 
 fn format_write_out<B>(
     fmt:        const u8[:],
-    req:        const wing::Request&,
-    res:        const wing::Response&,
+    req:        const http::Request&,
+    res:        const http::Response&,
     elapsed_ms: u64,
     out:        B&,
 ) {
@@ -220,8 +220,8 @@ fn format_write_out<B>(
 
 fn print_client_response(
     cfg:        const CliConfig&,
-    req:        const wing::Request&,
-    res:        const wing::Response&,
+    req:        const http::Request&,
+    res:        const http::Response&,
     elapsed_ms: u64,
 ) {
     var out: u8[>..] = [];

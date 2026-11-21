@@ -107,7 +107,7 @@ fn parse_header_flag(raw: const u8[:], cfg: CliConfig&) -> bool {
     }
     let name = raw_name.trim_lws();
     let val = raw_val.trim_lws();
-    guard wing::is_valid_header_name(name) && wing::is_valid_header_value(val) else {
+    guard http::is_valid_header_name(name) && http::is_valid_header_value(val) else {
         return set_cli_error(cfg, "invalid header name or value", raw);
     }
     var pair = HeaderPair { .. };
@@ -273,12 +273,12 @@ fn apply_form_modifiers(modifiers: const u8[:], field: FormFieldSpec&) -> bool {
         let trimmed = item.trim_lws();
         if trimmed.starts_with_fold("type=") {
             let ct_val = trimmed[5..];
-            guard wing::is_valid_header_value(ct_val) && field.content_type.try_set(ct_val) else {
+            guard http::is_valid_header_value(ct_val) && field.content_type.try_set(ct_val) else {
                 return false;
             }
         } else if trimmed.starts_with_fold("filename=") {
             let fn_val = trimmed[9..];
-            guard wing::is_valid_header_value(fn_val) && field.filename.try_set(fn_val) else {
+            guard http::is_valid_header_value(fn_val) && field.filename.try_set(fn_val) else {
                 return false;
             }
         }

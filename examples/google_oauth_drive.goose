@@ -132,8 +132,8 @@ fn build_token_request_body<B>(
 }
 
 // Constructs an authenticated Google Drive v3 file listing request (RFC 6750 §2.1).
-fn build_drive_api_request(access_token: const u8[:]) -> wing::Request {
-    var req = wing::new_request("GET", GOOGLE_DRIVE_FILES_API) { r =>
+fn build_drive_api_request(access_token: const u8[:]) -> http::Request {
+    var req = http::new_request("GET", GOOGLE_DRIVE_FILES_API) { r =>
         r.bearer(access_token);
         r.set_header("Accept", "application/json");
     };
@@ -141,12 +141,12 @@ fn build_drive_api_request(access_token: const u8[:]) -> wing::Request {
 }
 
 fn bind_loopback_listener() -> i64, u16 {
-    var listener = wing::tcp_listen("127.0.0.1", 8085, 1);
+    var listener = net::tcp_listen("127.0.0.1", 8085, 1);
     var eff_port: u16 = 8085;
     if listener < 0 {
-        listener = wing::tcp_listen("127.0.0.1", 0, 1);
+        listener = net::tcp_listen("127.0.0.1", 0, 1);
         if listener > 0 {
-            eff_port = wing::tcp_getsockname_port(listener);
+            eff_port = net::tcp_getsockname_port(listener);
         }
     }
     return listener, eff_port;
@@ -158,25 +158,25 @@ fn accept_live_callback<B1, B2>(
     received_state: B2&,
 ) -> bool {
     guard listener > 0 else { return false; }
-    let client_fd = wing::tcp_accept(listener, 50);
+    let client_fd = net::tcp_accept(listener, 50);
     guard client_fd > 0 else { return false; }
 
     var recv_buf: u8[2048] = [0; 2048];
-    let bytes_read = wing::tcp_recv_slice(client_fd, recv_buf[..], 1000);
+    let bytes_read = net::tcp_recv_slice(client_fd, recv_buf[..], 1000);
     guard bytes_read > 0 else {
-        wing::tcp_close(client_fd);
+        net::tcp_close(client_fd);
         return false;
     }
 
     let target, ok_tgt = extract_request_target(recv_buf[..bytes_read]);
     guard ok_tgt && parse_callback_params(target, received_code, received_state) else {
-        wing::tcp_close(client_fd);
+        net::tcp_close(client_fd);
         return false;
     }
 
     let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 49\r\nConnection: close\r\n\r\n<html><body>Authorization received.</body></html>";
-    let _ = wing::tcp_send(client_fd, resp);
-    wing::tcp_close(client_fd);
+    let _ = net::tcp_send(client_fd, resp);
+    net::tcp_close(client_fd);
     return true;
 }
 
@@ -198,8 +198,8 @@ fn format_callback_wire_request(csrf_state: const u8[:], out: u8[..512]&) -> boo
 }
 
 fn simulate_wire_callback(port: u16, csrf_state: const u8[:]) -> i64 {
-    var srv = wing::new_http_server("127.0.0.1", port);
-    wing::add_static_get_route(
+    var srv = server::new_http_server("127.0.0.1", port);
+    server::add_static_get_route(
         srv,
         "/callback",
         "text/html; charset=utf-8",
@@ -211,8 +211,8 @@ fn simulate_wire_callback(port: u16, csrf_state: const u8[:]) -> i64 {
     guard format_callback_wire_request(csrf_state, wire_req) else { return 0; }
 
     var wire_resp: u8[>..] = [];
-    let outcome, ok_wire = wing::handle_connection_wire(srv, "127.0.0.1", wire_req[..], 1000000000, wire_resp);
-    guard ok_wire && outcome == wing::PipelineOutcome.Handled else { return 0; }
+    let outcome, ok_wire = server::handle_connection_wire(srv, "127.0.0.1", wire_req[..], 1000000000, wire_resp);
+    guard ok_wire && outcome == server::PipelineOutcome.Handled else { return 0; }
     return wire_resp.len;
 }
 
@@ -285,7 +285,7 @@ fn main() {
         token_body,
     ));
 
-    var token_req = wing::new_request("POST", GOOGLE_TOKEN_ENDPOINT) { r =>
+    var token_req = http::new_request("POST", GOOGLE_TOKEN_ENDPOINT) { r =>
         r.set_header("Content-Type", "application/x-www-form-urlencoded");
         r.set_header("Accept", "application/json");
         r.text(token_body[..]);
@@ -306,6 +306,6 @@ fn main() {
     print("    Accept: ", drive_req.header("Accept"));
 
     if listener > 0 {
-        wing::tcp_close(listener);
+        net::tcp_close(listener);
     }
 }

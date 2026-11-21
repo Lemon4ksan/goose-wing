@@ -34,7 +34,7 @@ struct Stream {
     state:                        StreamState         = StreamState.Idle,
     send_window:                  i64                 = 65535, // Signed 64-bit integer to support negative deltas
     recv_window:                  i64                 = 65535,
-    priority:                     wing::PriorityParam = wing::PriorityParam { .. },
+    priority:                     http::PriorityParam = http::PriorityParam { .. },
     has_explicit_priority_update: bool                = false,
     pending_send_bytes:           u32                 = 0,
     declared_content_length:      i64                 = -1,
@@ -56,7 +56,7 @@ struct StreamNode {
 // RFC 9218 Section 7.1: HTTP/2 PRIORITY_UPDATE Frame - Buffered priority for an idle peer stream.
 struct IdleStreamPriority {
     stream_id: u32                 = 0,
-    prio:      wing::PriorityParam = wing::PriorityParam { .. },
+    prio:      http::PriorityParam = http::PriorityParam { .. },
 }
 
 // ---- http/2 connection state & coordinator -------------------------------
@@ -175,7 +175,7 @@ fn find_closed_stream_idx(s: const Connection&, stream_id: u32) -> i32, bool {
 
 // Opens a new stream descriptor with default RFC 9218 priority.
 fn open_stream(s: Connection&, stream_id: u32, end_stream: bool) {
-    var def_prio = wing::PriorityParam {
+    var def_prio = http::PriorityParam {
         urgency: 3,
         // Go 1.27 #75500: default to incremental=true before first client priority signal
         incremental: if s.is_behind_proxy { true } else { !s.client_sent_priority },
@@ -510,7 +510,7 @@ fn enqueue_stream_send_bytes(s: Connection&, stream_id: u32, bytes: u32) -> bool
 }
 
 // RFC 9218 Section 7.1: HTTP/2 PRIORITY_UPDATE Frame - Applies dynamic priority update to active or idle streams.
-fn apply_priority_update(s: Connection&, prioritized_stream_id: u32, prio: wing::PriorityParam) -> u32 {
+fn apply_priority_update(s: Connection&, prioritized_stream_id: u32, prio: http::PriorityParam) -> u32 {
     guard prioritized_stream_id != 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     let s_idx, found = find_stream_idx(s, prioritized_stream_id);
     if !found {

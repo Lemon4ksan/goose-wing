@@ -18,39 +18,39 @@ struct C2GrowableDto {
 
 // AB-C2-01: RadixTree matches_static_suffix_chain partial-prefix & internal-node split regression.
 fn test_ab_c2_01_router_suffix_chain() {
-    var tree = wing::new_radix_tree();
+    var tree = server::new_radix_tree();
     // Register suffixed route and fallback route on the same parameter segment
-    let ok_gz = wing::insert_route(tree, "/files/{name}.tar.gz", 10);
-    let ok_bz2 = wing::insert_route(tree, "/files/{name}.tar.bz2", 11);
-    let ok_fb = wing::insert_route(tree, "/files/{name}", 12);
+    let ok_gz = server::insert_route(tree, "/files/{name}.tar.gz", 10);
+    let ok_bz2 = server::insert_route(tree, "/files/{name}.tar.bz2", 11);
+    let ok_fb = server::insert_route(tree, "/files/{name}", 12);
     // Register multi-segment suffixed route and multi-segment fallback route
-    let ok_png = wing::insert_route(tree, "/assets/{item}.png/info", 20);
-    let ok_afb = wing::insert_route(tree, "/assets/{item}/info", 21);
+    let ok_png = server::insert_route(tree, "/assets/{item}.png/info", 20);
+    let ok_afb = server::insert_route(tree, "/assets/{item}/info", 21);
 
     // 1. Exact ".tar.gz" match must route to handler 10 with name="archive"
-    var p_gz = wing::ZeroAllocParams { .. };
-    let res_gz = wing::match_path(tree, "/files/archive.tar.gz", p_gz);
+    var p_gz = http::ZeroAllocParams { .. };
+    let res_gz = server::match_path(tree, "/files/archive.tar.gz", p_gz);
     let id_gz = match res_gz { Found f => f.handler_id, _ => -1 };
-    let val_gz, _ = wing::param_by_name(p_gz, "name", "/files/archive.tar.gz");
+    let val_gz, _ = http::param_by_name(p_gz, "name", "/files/archive.tar.gz");
 
     // 2. Partial suffix ".tar" (prefix of ".tar.gz"/".tar.bz2" with no handler at ".tar")
     //    must fall back to handler 12 with name="archive.tar", NOT 404!
-    var p_tar = wing::ZeroAllocParams { .. };
-    let res_tar = wing::match_path(tree, "/files/archive.tar", p_tar);
+    var p_tar = http::ZeroAllocParams { .. };
+    let res_tar = server::match_path(tree, "/files/archive.tar", p_tar);
     let id_tar = match res_tar { Found f => f.handler_id, _ => -1 };
-    let val_tar, _ = wing::param_by_name(p_tar, "name", "/files/archive.tar");
+    let val_tar, _ = http::param_by_name(p_tar, "name", "/files/archive.tar");
 
     // 3. Partial suffix ".t" (strict prefix inside node ".tar") must fall back to handler 12
-    var p_t = wing::ZeroAllocParams { .. };
-    let res_t = wing::match_path(tree, "/files/archive.t", p_t);
+    var p_t = http::ZeroAllocParams { .. };
+    let res_t = server::match_path(tree, "/files/archive.t", p_t);
     let id_t = match res_t { Found f => f.handler_id, _ => -1 };
-    let val_t, _ = wing::param_by_name(p_t, "name", "/files/archive.t");
+    let val_t, _ = http::param_by_name(p_t, "name", "/files/archive.t");
 
     // 4. Multi-segment partial suffix ".p" before "/info" must route to handler 21 with item="icon.p"
-    var p_p = wing::ZeroAllocParams { .. };
-    let res_p = wing::match_path(tree, "/assets/icon.p/info", p_p);
+    var p_p = http::ZeroAllocParams { .. };
+    let res_p = server::match_path(tree, "/assets/icon.p/info", p_p);
     let id_p = match res_p { Found f => f.handler_id, _ => -1 };
-    let val_p, _ = wing::param_by_name(p_p, "item", "/assets/icon.p/info");
+    let val_p, _ = http::param_by_name(p_p, "item", "/assets/icon.p/info");
 
     print(
         "AB-C2-01:",
@@ -64,38 +64,38 @@ fn test_ab_c2_01_router_suffix_chain() {
 
 // AB-C2-02: Request query_param and decode_json_body transactional rollback on pre-populated buffers.
 fn test_ab_c2_02_request_transactional_rollback() {
-    var req = wing::new_get("https://example.com/search?region=0123456789abcdef_overflow&flag");
-    let _ = wing::query(req, "local_big", "0123456789abcdef_overflow");
+    var req = http::new_get("https://example.com/search?region=0123456789abcdef_overflow&flag");
+    let _ = http::query(req, "local_big", "0123456789abcdef_overflow");
 
     // 1. Pre-populated bounded buffer must remain intact ("fallback") on missing key and overflow
     var bounded_out: u8[..16] = [];
     bounded_out.append("fallback");
-    let ok_missing = wing::query_param(req, "missing_key", bounded_out);
+    let ok_missing = http::query_param(req, "missing_key", bounded_out);
     let preserved_missing = bounded_out[..] == "fallback";
 
     var ovf_out1: u8[..16] = [];
     ovf_out1.append("fallback");
-    let ok_url_ovf = wing::query_param(req, "region", ovf_out1);
+    let ok_url_ovf = http::query_param(req, "region", ovf_out1);
     let preserved_url_ovf = ovf_out1[..] == "fallback";
 
     var ovf_out2: u8[..16] = [];
     ovf_out2.append("fallback");
-    let ok_loc_ovf = wing::query_param(req, "local_big", ovf_out2);
+    let ok_loc_ovf = http::query_param(req, "local_big", ovf_out2);
     let preserved_loc_ovf = ovf_out2[..] == "fallback";
 
     // 2. Valueless URL query parameter ("?flag") must succeed with empty string ""
     var flag_out: u8[..16] = [];
     flag_out.append("stale");
-    let ok_flag = wing::query_param(req, "flag", flag_out);
+    let ok_flag = http::query_param(req, "flag", flag_out);
     let flag_empty = ok_flag && flag_out.len == 0;
 
     // 3. decode_json_body into struct with growable u8[>..] field must roll back on malformed trailing JSON
     var dto = C2GrowableDto { id: 77, .. };
     dto.name.append("initial_name");
-    var bad_req = wing::new_post("https://example.com/items");
-    wing::raw_json(bad_req, "{\"name\":\"mutated_before_error\",\"id\":invalid_json}");
-    let dec_err = wing::decode_json_body(bad_req, dto);
-    let dto_rolled_back = !wing::ok(dec_err) && dto.id == 77 && dto.name[..] == "initial_name";
+    var bad_req = http::new_post("https://example.com/items");
+    http::raw_json(bad_req, "{\"name\":\"mutated_before_error\",\"id\":invalid_json}");
+    let dec_err = http::decode_json_body(bad_req, dto);
+    let dto_rolled_back = !http::ok(dec_err) && dto.id == 77 && dto.name[..] == "initial_name";
 
     print(
         "AB-C2-02:",

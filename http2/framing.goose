@@ -200,8 +200,8 @@ fn validate_settings_parameter(param_id: u16, val: u32, receiver_is_client: bool
 fn parse_priority_update_payload(
     payload:             const u8[:],
     default_incremental: bool = false,
-) -> u32, wing::PriorityParam, u32 {
-    var p = wing::priority_default(default_incremental);
+) -> u32, http::PriorityParam, u32 {
+    var p = http::priority_default(default_incremental);
     guard payload.len >= 4 else {
         return 0, p, rfc::H2_ERR_FRAME_SIZE_ERROR;
     }
@@ -216,7 +216,7 @@ fn parse_priority_update_payload(
     if field_value.trim_ascii_space().len == 0 {
         return prioritized_stream_id, p, rfc::H2_ERR_NO_ERROR;
     }
-    let parsed, ok = wing::parse_http_priority(field_value, default_incremental);
+    let parsed, ok = http::parse_priority(field_value, default_incremental);
     guard ok else {
         return prioritized_stream_id, p, rfc::H2_ERR_PROTOCOL_ERROR;
     }
@@ -224,11 +224,11 @@ fn parse_priority_update_payload(
 }
 
 // RFC 9218 Section 7.1: HTTP/2 PRIORITY_UPDATE Frame - Encodes PRIORITY_UPDATE payload atomically.
-fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const wing::PriorityParam&, out: B&) {
+fn encode_priority_update_payload<B>(prioritized_stream_id: u32, prio: const http::PriorityParam&, out: B&) {
     let clean_id = prioritized_stream_id & 0x7FFFFFFF;
     guard clean_id != 0 && prio.urgency <= 7 else { return; }
     var tmp: u8[..32] = [];
     tmp.append_u32_be(clean_id);
-    wing::serialize_http_priority(prio, tmp);
+    http::serialize_priority(prio, tmp);
     let _ = out.try_append(tmp[..]);
 }

@@ -1556,7 +1556,7 @@ fn test_query_param_truncation_smuggling(t: lit::T&) {
     t.run("Parameters exceeding 32 must not be silently dropped without indication") { sub =>
         // Ensure wing native symbols are linked
         var dummy: u8[..4] = "test";
-        wing::swar_to_lower(dummy[..]);
+        http::swar_to_lower(dummy[..]);
 
         // Construct a query string with 35 parameters where the 33rd parameter is a security-sensitive flag.
         // In fixed-capacity parsers (capacity = 32), parameters beyond 32 are silently ignored.
@@ -1620,23 +1620,23 @@ fn test_malformed_ip_literal_host_rejection(t: lit::T&) {
     t.run("Empty IP-literal Host '[]' must be rejected with 400 Bad Request") { sub =>
         // RFC 9112 §3.2 & RFC 3986 §3.2.2: Host header with empty brackets "[]"
         // is structurally invalid and must be rejected by the server parser.
-        var req = wing::new_request("GET", "/");
+        var req = http::new_request("GET", "/");
         let wire: const u8[:] = "GET / HTTP/1.1\r\nHost: []\r\n\r\n";
-        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        let ok, _ = server::parse_http1_wire_request(wire, req);
         sub.assert_false(ok, "Host: [] must be rejected per RFC 3986 §3.2.2 and Go #78172");
     };
 
     t.run("Unclosed bracket IP-literal Host '[::1' must be rejected") { sub =>
-        var req = wing::new_request("GET", "/");
+        var req = http::new_request("GET", "/");
         let wire: const u8[:] = "GET / HTTP/1.1\r\nHost: [::1\r\n\r\n";
-        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        let ok, _ = server::parse_http1_wire_request(wire, req);
         sub.assert_false(ok, "Host: [::1 must be rejected per RFC 3986 §3.2.2 and Go #78172");
     };
 
     t.run("Invalid IP-literal characters '[invalid_host]' must be rejected") { sub =>
-        var req = wing::new_request("GET", "/");
+        var req = http::new_request("GET", "/");
         let wire: const u8[:] = "GET / HTTP/1.1\r\nHost: [invalid_host]\r\n\r\n";
-        let ok, _ = wing::parse_http1_wire_request(wire, req);
+        let ok, _ = server::parse_http1_wire_request(wire, req);
         sub.assert_false(ok, "Host: [invalid_host] must be rejected per RFC 3986 §3.2.2 and Go #78172");
     };
 }

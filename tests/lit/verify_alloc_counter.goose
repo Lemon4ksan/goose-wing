@@ -82,7 +82,7 @@ fn test_zero_alloc_hot_paths() {
 
     var dt = http2::new_dynamic_table();
     var pseudo = http2::PseudoHeaders { .. };
-    var out = wing::HeaderMap { .. };
+    var out = http::HeaderMap { .. };
     var enc:   u8[..256] = [];
     var probe: u8[>..]   = [];
 
@@ -118,11 +118,11 @@ fn test_zero_alloc_protocol_parsers() {
     alloc_kit::alloc_reset();
     let mark = alloc_kit::alloc_mark(probe);
 
-    var parsed_req = wing::new_request("GET", "/");
+    var parsed_req = http::new_request("GET", "/");
 
     for _ in 1000 {
         parsed_req.url.clear();
-        let ok_http, consumed = wing::parse_http1_wire_request(req_str, parsed_req);
+        let ok_http, consumed = server::parse_http1_wire_request(req_str, parsed_req);
         assert(ok_http && consumed > 0);
 
         var cur: i64 = 0;

@@ -4,12 +4,13 @@
 // RFC 9111 Section 4.2: Mathematical time and freshness calculation engine.
 // Implements apparent age, response delay, corrected initial age, resident time,
 // and hierarchical freshness lifetime calculations with clock skew & monotonic protection.
-namespace wing;
+namespace http;
 
 import std;
 import core from "../..";
 import http.headers;
 import http.cache.cache_control;
+import http.cache.internal;
 
 // ---- cache timestamps & clock model ----------------------------------------
 
@@ -147,57 +148,6 @@ fn compute_current_age(apparent_age: i64, age_hdr: i64, ts: const CacheTimestamp
 
 // ---- freshness lifetime helpers --------------------------------------------
 
-// Computes freshness lifetime from Expires header relative to ref_sec (RFC 9111 §4.2.1 & §5.3).
-// If Expires is "0" or invalid date format, lifetime is 0 and immediately stale (RFC 9111 §5.3 & §4.2.2).
-fn compute_expires_lifetime(resp_headers: const HeaderMap&, ref_sec: i64) -> i64, bool {
-    let expires_raw = get_header(resp_headers, "expires");
-    let trimmed = expires_raw.trim_lws();
-    guard trimmed.len > 0 else { return 0, false; }
-
-    let exp_time, ok_exp = core::parse_http_date(trimmed);
-    // RFC 9111 §5.3 & §4.2.2: An invalid date format (or "0") means immediately stale (lifetime = 0)
-    // and prevents fallback to heuristic freshness from Last-Modified.
-    guard ok_exp else { return 0, true; }
-
-    let date_raw = get_header(resp_headers, "date");
-    var base_sec = ref_sec;
-    if date_raw.len > 0 {
-        let d_time, ok_d = core::parse_http_date(date_raw);
-        if ok_d { base_sec = core::unix(d_time); }
-    }
-
-    let diff = core::unix(exp_time) - base_sec;
-    return max(0, diff), true;
-}
-
-// Computes heuristic freshness lifetime (default 10% of Date - Last-Modified) (RFC 9111 §4.2.2).
-fn compute_last_modified_heuristic(
-    resp_headers:       const HeaderMap&,
-    ref_sec:            i64,
-    heuristic_fraction: i64,
-) -> i64 {
-    guard rfc::is_heuristically_cacheable_status(resp_headers.status_code) else { return 0; }
-
-    let lm_raw = get_header(resp_headers, "last-modified");
-    guard lm_raw.len > 0 else { return 0; }
-
-    let lm_time, ok_lm = core::parse_http_date(lm_raw);
-    guard ok_lm else { return 0; }
-
-    let date_raw = get_header(resp_headers, "date");
-    var base_sec = ref_sec;
-    if date_raw.len > 0 {
-        let d_time, ok_d = core::parse_http_date(date_raw);
-        if ok_d { base_sec = core::unix(d_time); }
-    }
-
-    let delta = base_sec - core::unix(lm_time);
-    guard delta > 0 else { return 0; }
-
-    let heuristic = (delta * heuristic_fraction) / 100;
-    return max(0, heuristic);
-}
-
 // Computes freshness lifetime according to RFC 9111 priority hierarchy.
 // Evaluates s-maxage (shared) > max-age > Expires > immutable > Last-Modified heuristic.
 fn compute_freshness_lifetime(
@@ -217,14 +167,14 @@ fn compute_freshness_lifetime(
         return resp_cc.max_age;
     }
 
-    let exp_lt, ok_exp = compute_expires_lifetime(resp_headers, ts.response_sec);
+    let exp_lt, ok_exp = http_internal::compute_expires_lifetime(resp_headers, ts.response_sec);
     if ok_exp { return exp_lt; }
 
     if is_immutable(resp_cc) {
         return immutable_min_ttl_sec;
     }
 
-    return compute_last_modified_heuristic(resp_headers, ts.response_sec, heuristic_fraction);
+    return http_internal::compute_last_modified_heuristic(resp_headers, ts.response_sec, heuristic_fraction);
 }
 
 // ---- freshness evaluation against request & response directives -------------
@@ -242,64 +192,6 @@ fn is_max_stale_blocked(resp_cc: const CacheControl&, policy: FreshnessPolicy) -
     if policy.shared && is_proxy_revalidate(resp_cc) { return true; }
     if policy.shared && has_s_maxage(resp_cc) { return true; }
     if policy.security_zeroed { return true; }
-    return false;
-}
-
-// Evaluates whether serving stale response is permitted under max-stale or stale-while-revalidate.
-fn evaluate_stale_allowance(
-    resp_cc:     const CacheControl&,
-    req_cc:      const CacheControl&,
-    current_age: i64,
-    lifetime:    i64,
-    policy:      FreshnessPolicy,
-    out_swr:     bool&,
-) -> bool {
-    out_swr = false;
-    guard !is_max_stale_blocked(resp_cc, policy) else { return false; }
-    guard current_age >= lifetime else { return false; }
-
-    let stale_sec = current_age - lifetime;
-
-    // 1. Client max-stale (RFC 9111 Section 5.2.1: Request Directives - Client max-stale directive)
-    if has_max_stale(req_cc) {
-        if req_cc.max_stale < 0 || stale_sec <= req_cc.max_stale {
-            return true;
-        }
-    }
-
-    // 2. Server stale-while-revalidate (RFC 5861 Section 3)
-    if has_stale_while_revalidate(resp_cc) && resp_cc.stale_while_revalidate >= 0 {
-        if stale_sec <= resp_cc.stale_while_revalidate {
-            out_swr = true;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// Evaluates whether a stale cached response can be served during upstream error (RFC 5861 Section 4).
-fn evaluate_stale_if_error(
-    resp_cc:     const CacheControl&,
-    req_cc:      const CacheControl&,
-    current_age: i64,
-    lifetime:    i64,
-    policy:      FreshnessPolicy,
-) -> bool {
-    guard !is_max_stale_blocked(resp_cc, policy) else { return false; }
-    guard current_age >= lifetime else { return false; }
-    let stale_sec = current_age - lifetime;
-
-    var max_sie: i32 = -1;
-    if has_stale_if_error(req_cc) && req_cc.stale_if_error >= 0 {
-        max_sie = req_cc.stale_if_error;
-    } else if has_stale_if_error(resp_cc) && resp_cc.stale_if_error >= 0 {
-        max_sie = resp_cc.stale_if_error;
-    }
-
-    if max_sie >= 0 {
-        return stale_sec <= max_sie;
-    }
     return false;
 }
 
@@ -346,11 +238,11 @@ fn evaluate_freshness(
 
     if !metrics.is_fresh && !basic_fresh && req_max_age_ok && req_min_fresh_ok {
         var is_swr = false;
-        metrics.stale_allowed = evaluate_stale_allowance(
+        metrics.stale_allowed = http_internal::evaluate_stale_allowance(
             resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, policy, is_swr,
         );
         metrics.stale_while_revalidate_allowed = is_swr;
-        metrics.stale_if_error_allowed = evaluate_stale_if_error(
+        metrics.stale_if_error_allowed = http_internal::evaluate_stale_if_error(
             resp_cc, req_cc, metrics.current_age_sec, metrics.freshness_lifetime_sec, policy,
         );
     }

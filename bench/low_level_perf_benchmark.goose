@@ -41,13 +41,13 @@ struct BaselineAosSlot {
 
 fn baseline_sweep_aos(
     slots:       BaselineAosSlot[:],
-    wheel:       const wing::TickTimerWheel&,
+    wheel:       const core::TickTimerWheel&,
     out_expired: i64[:],
 ) -> i64 {
     var expired_n: i64 = 0;
     for s in slots.len {
         let slot = slots[s];
-        if slot.timeout_tick != 255 && wing::tick_timer_is_expired(wheel, slot.timeout_tick) {
+        if slot.timeout_tick != 255 && core::tick_timer_is_expired(wheel, slot.timeout_tick) {
             if slot.fd > 0 && expired_n < out_expired.len {
                 out_expired[expired_n] = s;
                 expired_n++;
@@ -98,7 +98,7 @@ fn test_spsc_vs_channel_benchmark(t: lit::T&) {
     };
 }
 
-inline fn header_id_to_int(id: wing::KnownHeaderId) -> i64 {
+inline fn header_id_to_int(id: http::KnownHeaderId) -> i64 {
     return match id {
         Host => 1,
         Date => 2,
@@ -138,7 +138,7 @@ fn test_perfect_hash_vs_linear_scan_benchmark(t: lit::T&) {
         let watch_mph = core::stopwatch();
         for k in iters {
             let h = if (k & 1) == 0 { hdr_a } else { hdr_b };
-            mph_sum = mph_sum + header_id_to_int(wing::identify_known_header(h));
+            mph_sum = mph_sum + header_id_to_int(http::identify_known_header(h));
         }
         let dt_mph = core::elapsed(watch_mph);
         sub.assert_gt(mph_sum, 0);
@@ -158,8 +158,8 @@ fn test_soa_vs_aos_sweeper_benchmark(t: lit::T&) {
         let iters: i64 = 2000;
         let conns: i64 = 1024;
 
-        var wheel = wing::new_tick_timer_wheel(15);
-        wing::tick_timer_advance(wheel, 15);
+        var wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
+        core::tick_timer_advance(wheel, 15);
 
         // --- Baseline AoS Setup ---
         var aos_slots: BaselineAosSlot[1024] = [BaselineAosSlot { .. }; 1024];
@@ -178,9 +178,9 @@ fn test_soa_vs_aos_sweeper_benchmark(t: lit::T&) {
         sub.assert_eq(aos_count, 512);
 
         // --- Optimized SoA Setup ---
-        var soa_table = wing::SoAConnTable { .. };
+        var soa_table = server::SoAConnTable { .. };
         for i in conns {
-            let slot = wing::soa_table_alloc(soa_table, 1000 + i, if i < 512 { 10 } else { 20 });
+            let slot = server::soa_table_alloc(soa_table, 1000 + i, if i < 512 { 10 } else { 20 });
             sub.assert_eq(slot, i);
         }
         var soa_expired: i64[1024] = [0; 1024];
@@ -188,7 +188,7 @@ fn test_soa_vs_aos_sweeper_benchmark(t: lit::T&) {
         let watch_soa = core::stopwatch();
         var soa_count: i64 = 0;
         for _ in iters {
-            soa_count = wing::soa_table_sweep_expired(soa_table, wheel, soa_expired[..]);
+            soa_count = server::soa_table_sweep_expired(soa_table, wheel, soa_expired[..]);
         }
         let dt_soa = core::elapsed(watch_soa);
         sub.assert_eq(soa_count, 512);

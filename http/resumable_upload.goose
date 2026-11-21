@@ -4,7 +4,7 @@
 // IETF draft-ietf-httpbis-resumable-upload-14 (Resumable Uploads for HTTP).
 // Standardizes chunked, interrupted, and resumable data uploads replacing legacy protocols (tus.io).
 // Uses RFC 8941 Structured Fields for Upload-Offset and Upload-Complete (?0 / ?1).
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";

@@ -28,14 +28,14 @@ fn test_cve_2026_78667_range_header_overflow(t: lit::T&) {
         }
         oversized.append("0-1");
 
-        let rs, err = wing::parse_range_header(oversized[..], 1000);
-        sub.assert_true(err == wing::RangeError.ExceededMaxRanges, "Range header > 1024 bytes must return ExceededMaxRanges");
+        let rs, err = http::parse_range_header(oversized[..], 1000);
+        sub.assert_true(err == http::RangeError.ExceededMaxRanges, "Range header > 1024 bytes must return ExceededMaxRanges");
         sub.assert_eq(rs.ranges.len, 0, "No ranges should be populated");
     };
 
     t.run("Valid Range header under 1024 bytes must succeed") { sub =>
-        let rs, err = wing::parse_range_header("bytes=0-499,500-999", 2000, true);
-        sub.assert_true(wing::is_ok(err), "Valid range must succeed");
+        let rs, err = http::parse_range_header("bytes=0-499,500-999", 2000, true);
+        sub.assert_true(http::is_ok(err), "Valid range must succeed");
         sub.assert_eq(rs.ranges.len, 1, "Ranges 0-499 and 500-999 should coalesce into 1 contiguous range (0-999)");
     };
 }
@@ -46,27 +46,27 @@ fn test_cve_2026_78667_range_header_overflow(t: lit::T&) {
 fn test_go_75557_content_disposition_crlf_injection(t: lit::T&) {
     t.run("Go #75557: Field name with CRLF injection MUST be rejected") { sub =>
         var out: u8[..256] = [];
-        let ok = wing::format_content_disposition("upload\r\nEvil: injected", "test.txt", out);
+        let ok = http::format_content_disposition("upload\r\nEvil: injected", "test.txt", out);
         sub.assert_false(ok, "CRLF in field name must return false");
         sub.assert_eq(out.len, 0, "Output must remain empty on rejection");
     };
 
     t.run("Go #75557: Filename with CRLF injection MUST be rejected") { sub =>
         var out: u8[..256] = [];
-        let ok = wing::format_content_disposition("file", "image.png\r\nSet-Cookie: pwned=1", out);
+        let ok = http::format_content_disposition("file", "image.png\r\nSet-Cookie: pwned=1", out);
         sub.assert_false(ok, "CRLF in filename must return false");
         sub.assert_eq(out.len, 0, "Output must remain empty on rejection");
     };
 
     t.run("Go #75557: NUL byte injection in field name or filename MUST be rejected") { sub =>
         var out: u8[..256] = [];
-        let ok = wing::format_content_disposition("field\0injection", "safe.txt", out);
+        let ok = http::format_content_disposition("field\0injection", "safe.txt", out);
         sub.assert_false(ok, "NUL byte in field name must return false");
     };
 
     t.run("Valid parameters with quotes and backslashes are properly escaped") { sub =>
         var out: u8[..256] = [];
-        let ok = wing::format_content_disposition("my \"field\"", "vacation\\\"photo\".jpg", out);
+        let ok = http::format_content_disposition("my \"field\"", "vacation\\\"photo\".jpg", out);
         sub.assert_true(ok, "Valid parameters should format successfully");
         sub.assert_true(find(out[..], "name=\"my \\\"field\\\"\"") >= 0, "Quotes in name must be escaped");
         sub.assert_true(find(out[..], "filename=\"vacation\\\\\\\"photo\\\".jpg\"") >= 0, "Backslashes and quotes escaped in filename");
@@ -87,7 +87,7 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
 
         var dt_dec = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_PROTOCOL_ERROR, "Excessive digits in Content-Length must trigger PROTOCOL_ERROR");
     };
@@ -102,7 +102,7 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
 
         var dt_dec = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt_dec, raw_bytes[..], pseudo, out_list, 8192, true);
         sub.assert_eq(err, rfc::H2_ERR_NO_ERROR, "Valid Content-Length must succeed");
         sub.assert_true(pseudo.has_content_length, "has_content_length set");
@@ -115,9 +115,9 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_openssl_31392_uri_name_constraints_nul(t: lit::T&) {
     t.run("OpenSSL #31392 / RFC 5280 В§4.2.1.10: URI matching against DNS name constraint") { sub =>
-        sub.assert_true(wing::match_uri_name_constraint("https://api.example.com/v1", "example.com"), "Subdomain matches constraint");
-        sub.assert_true(wing::match_uri_name_constraint("https://example.com/login", "example.com"), "Exact domain matches constraint");
-        sub.assert_false(wing::match_uri_name_constraint("https://evil.com/login", "example.com"), "Foreign domain must be rejected");
+        sub.assert_true(tls::match_uri_name_constraint("https://api.example.com/v1", "example.com"), "Subdomain matches constraint");
+        sub.assert_true(tls::match_uri_name_constraint("https://example.com/login", "example.com"), "Exact domain matches constraint");
+        sub.assert_false(tls::match_uri_name_constraint("https://evil.com/login", "example.com"), "Foreign domain must be rejected");
     };
 
     t.run("CVE-2009-2408: URI containing embedded NUL byte MUST be rejected") { sub =>
@@ -127,24 +127,24 @@ fn test_openssl_31392_uri_name_constraints_nul(t: lit::T&) {
             0x00,
             '.', 'e', 'v', 'i', 'l', '.', 'c', 'o', 'm',
         ];
-        sub.assert_false(wing::match_uri_name_constraint(nul_uri[..], "example.com"), "NUL byte in URI must be rejected");
+        sub.assert_false(tls::match_uri_name_constraint(nul_uri[..], "example.com"), "NUL byte in URI must be rejected");
     };
 
     t.run("CVE-2024-45341 / Go #71208: IPv6 Zone ID URI Name Constraints Bypass Defense") { sub =>
         sub.assert_true(
-            wing::match_uri_name_constraint("https://[2001:db8::1%25eth0]:8443/api", "2001:db8::1"),
+            tls::match_uri_name_constraint("https://[2001:db8::1%25eth0]:8443/api", "2001:db8::1"),
             "IPv6 URI with encoded zone ID matches IP constraint",
         );
         sub.assert_true(
-            wing::match_uri_name_constraint("https://[2001:db8::1%eth0]/status", "[2001:db8::1]"),
+            tls::match_uri_name_constraint("https://[2001:db8::1%eth0]/status", "[2001:db8::1]"),
             "IPv6 URI with raw zone ID matches bracketed constraint",
         );
         sub.assert_false(
-            wing::match_uri_name_constraint("https://[2001:db8::2%eth0]/api", "2001:db8::1"),
+            tls::match_uri_name_constraint("https://[2001:db8::2%eth0]/api", "2001:db8::1"),
             "Non-matching IPv6 URI must be rejected",
         );
         sub.assert_false(
-            wing::match_uri_name_constraint("https://[malformed-ipv6/api", "2001:db8::1"),
+            tls::match_uri_name_constraint("https://[malformed-ipv6/api", "2001:db8::1"),
             "Unclosed bracket in IPv6 URI must be rejected",
         );
     };
@@ -189,8 +189,8 @@ fn test_openssl_tls13_zero_length_plaintext_invariants(t: lit::T&) {
     t.run("RFC 8446 В§5.4: Empty Application Data record with padding is permitted") { sub =>
         // Record with inner ContentType = 0x17 (Application Data) followed by zero padding
         let plain_wire: u8[4] = [0x17, 0x00, 0x00, 0x00];
-        let content, inner_type, alert = wing::unpack_tls_inner_plaintext(plain_wire[..]);
-        sub.assert_true(alert == wing::TlsAlert.CloseNotify, "Empty application data with padding must be accepted");
+        let content, inner_type, alert = tls::unpack_inner_plaintext(plain_wire[..]);
+        sub.assert_true(alert == tls::Alert.CloseNotify, "Empty application data with padding must be accepted");
         sub.assert_eq(inner_type, 0x17, "Inner content type is ApplicationData");
         sub.assert_eq(content.len, 0, "Payload length is 0");
     };
@@ -198,14 +198,14 @@ fn test_openssl_tls13_zero_length_plaintext_invariants(t: lit::T&) {
     t.run("RFC 8446 В§5.4: Empty Handshake record MUST be rejected with unexpected_message") { sub =>
         // Record with inner ContentType = 0x16 (Handshake) and 0 payload bytes followed by padding
         let plain_hs: u8[3] = [0x16, 0x00, 0x00];
-        let _, _, alert = wing::unpack_tls_inner_plaintext(plain_hs[..]);
-        sub.assert_eq(alert, wing::TlsAlert.UnexpectedMessage, "Empty Handshake record must return unexpected_message");
+        let _, _, alert = tls::unpack_inner_plaintext(plain_hs[..]);
+        sub.assert_eq(alert, tls::Alert.UnexpectedMessage, "Empty Handshake record must return unexpected_message");
     };
 
     t.run("RFC 8446 В§5.4: All-zero padding record MUST be rejected with unexpected_message") { sub =>
         let all_zero: u8[16] = [0; 16];
-        let _, _, alert = wing::unpack_tls_inner_plaintext(all_zero[..]);
-        sub.assert_eq(alert, wing::TlsAlert.UnexpectedMessage, "All-zero record missing inner ContentType must be rejected");
+        let _, _, alert = tls::unpack_inner_plaintext(all_zero[..]);
+        sub.assert_eq(alert, tls::Alert.UnexpectedMessage, "All-zero record missing inner ContentType must be rejected");
     };
 }
 
@@ -215,15 +215,15 @@ fn test_openssl_tls13_zero_length_plaintext_invariants(t: lit::T&) {
 fn test_go_66434_content_transfer_encoding_rejection(t: lit::T&) {
     t.run("Go #66434 & RFC 7578 В§4.7: Content-Transfer-Encoding in multipart part MUST be rejected") { sub =>
         let body = "--sep\r\nContent-Disposition: form-data; name=\"msg\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8=\r\n--sep--\r\n";
-        let msg, err = wing::parse_multipart(body, "sep");
-        sub.assert_true(err == wing::MultipartError.InvalidPartHeaders, "Deprecated Content-Transfer-Encoding must be rejected");
+        let msg, err = http::parse_multipart(body, "sep");
+        sub.assert_true(err == http::MultipartError.InvalidPartHeaders, "Deprecated Content-Transfer-Encoding must be rejected");
         sub.assert_false(msg.valid, "Message marked invalid");
     };
 
     t.run("Standard multipart without Content-Transfer-Encoding must succeed") { sub =>
         let body = "--sep\r\nContent-Disposition: form-data; name=\"msg\"\r\n\r\nHello World\r\n--sep--\r\n";
-        let msg, err = wing::parse_multipart(body, "sep");
-        sub.assert_true(wing::is_ok(err), "Standard multipart must parse successfully");
+        let msg, err = http::parse_multipart(body, "sep");
+        sub.assert_true(http::is_ok(err), "Standard multipart must parse successfully");
         sub.assert_true(msg.valid, "Message marked valid");
         sub.assert_eq(msg.parts.len, 1, "1 part parsed");
     };
@@ -274,11 +274,11 @@ fn test_openssl_33428_ech_alpn_isolation(t: lit::T&) {
         let outer_alpn = "http/1.1";
 
         sub.assert_true(
-            wing::validate_ech_alpn_negotiation(true, "h2", inner_alpn, outer_alpn),
+            tls::validate_ech_alpn_negotiation(true, "h2", inner_alpn, outer_alpn),
             "Selected inner ALPN accepted when ECH accepted",
         );
         sub.assert_false(
-            wing::validate_ech_alpn_negotiation(true, "http/1.1", inner_alpn, outer_alpn),
+            tls::validate_ech_alpn_negotiation(true, "http/1.1", inner_alpn, outer_alpn),
             "Outer ALPN rejected when ECH accepted",
         );
     };
@@ -288,11 +288,11 @@ fn test_openssl_33428_ech_alpn_isolation(t: lit::T&) {
         let outer_alpn = "http/1.1";
 
         sub.assert_true(
-            wing::validate_ech_alpn_negotiation(false, "http/1.1", inner_alpn, outer_alpn),
+            tls::validate_ech_alpn_negotiation(false, "http/1.1", inner_alpn, outer_alpn),
             "Selected outer ALPN accepted when ECH rejected",
         );
         sub.assert_false(
-            wing::validate_ech_alpn_negotiation(false, "h2", inner_alpn, outer_alpn),
+            tls::validate_ech_alpn_negotiation(false, "h2", inner_alpn, outer_alpn),
             "Inner ALPN MUST NOT leak into unencrypted outer connection",
         );
     };
@@ -303,35 +303,35 @@ fn test_openssl_33428_ech_alpn_isolation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
     t.run("OpenSSL #33332 & Go #82350: Cross-origin redirect strips sensitive headers and Host") { sub =>
-        var headers = wing::HeaderMap { .. };
-        wing::append_header(headers, "Authorization", "Bearer secret-token");
-        wing::append_header(headers, "Cookie", "session=xyz123");
-        wing::append_header(headers, "X-Api-Key", "super-secret-key");
-        wing::append_header(headers, "Host", "api.bank.com");
-        wing::append_header(headers, "X-Custom-Data", "regular-value");
+        var headers = http::HeaderMap { .. };
+        http::append_header(headers, "Authorization", "Bearer secret-token");
+        http::append_header(headers, "Cookie", "session=xyz123");
+        http::append_header(headers, "X-Api-Key", "super-secret-key");
+        http::append_header(headers, "Host", "api.bank.com");
+        http::append_header(headers, "X-Custom-Data", "regular-value");
 
-        var rinfo = wing::RedirectInfo {
+        var rinfo = client::RedirectInfo {
             is_cross_origin:     true,
             is_scheme_downgrade: false,
             is_port_changed:     false,
             ..
         };
 
-        wing::sanitize_headers_on_redirect(headers, rinfo, wing::RedirectSanitizeOptions { .. });
+        client::sanitize_headers_on_redirect(headers, rinfo, client::RedirectSanitizeOptions { .. });
 
-        sub.assert_false(wing::has_header(headers, "Authorization"), "Authorization must be stripped on cross-origin redirect");
-        sub.assert_false(wing::has_header(headers, "Cookie"), "Cookie must be stripped on redirect");
-        sub.assert_false(wing::has_header(headers, "X-Api-Key"), "X-Api-Key must be stripped on cross-origin redirect");
-        sub.assert_false(wing::has_header(headers, "Host"), "Stale Host header must be stripped on cross-origin redirect (Go #82350)");
-        sub.assert_true(wing::has_header(headers, "X-Custom-Data"), "Non-sensitive custom header must be preserved");
+        sub.assert_false(http::has_header(headers, "Authorization"), "Authorization must be stripped on cross-origin redirect");
+        sub.assert_false(http::has_header(headers, "Cookie"), "Cookie must be stripped on redirect");
+        sub.assert_false(http::has_header(headers, "X-Api-Key"), "X-Api-Key must be stripped on cross-origin redirect");
+        sub.assert_false(http::has_header(headers, "Host"), "Stale Host header must be stripped on cross-origin redirect (Go #82350)");
+        sub.assert_true(http::has_header(headers, "X-Custom-Data"), "Non-sensitive custom header must be preserved");
     };
 
     t.run("CVE-2018-1000007: Scheme downgrade (HTTPS -> HTTP) strips credentials even to trusted host") { sub =>
-        var headers = wing::HeaderMap { .. };
-        wing::append_header(headers, "Authorization", "Basic dXNlcjpwYXNz");
-        wing::append_header(headers, "X-Custom", "safe");
+        var headers = http::HeaderMap { .. };
+        http::append_header(headers, "Authorization", "Basic dXNlcjpwYXNz");
+        http::append_header(headers, "X-Custom", "safe");
 
-        var rinfo = wing::RedirectInfo {
+        var rinfo = client::RedirectInfo {
             is_cross_origin:     false,
             is_scheme_downgrade: true,
             is_port_changed:     false,
@@ -339,14 +339,14 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
         };
 
         // trusted_location_forwarding = true
-        wing::sanitize_headers_on_redirect(
+        client::sanitize_headers_on_redirect(
             headers,
             rinfo,
-            wing::RedirectSanitizeOptions { trusted_location_forwarding: true },
+            client::RedirectSanitizeOptions { trusted_location_forwarding: true },
         );
 
-        sub.assert_false(wing::has_header(headers, "Authorization"), "Scheme downgrade MUST strip credentials even if host is trusted");
-        sub.assert_true(wing::has_header(headers, "X-Custom"), "Non-sensitive header preserved");
+        sub.assert_false(http::has_header(headers, "Authorization"), "Scheme downgrade MUST strip credentials even if host is trusted");
+        sub.assert_true(http::has_header(headers, "X-Custom"), "Non-sensitive header preserved");
     };
 }
 
@@ -355,17 +355,17 @@ fn test_openssl_33332_redirect_sensitive_header_purging(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_uweb_1941_chained_transfer_encoding_validation(t: lit::T&) {
     t.run("uWS #1941 / #1943 & RFC 9112 В§6.1: Valid chained transfer codings ending in chunked") { sub =>
-        sub.assert_true(wing::validate_transfer_encoding_value("chunked"), "Single chunked is valid");
-        sub.assert_true(wing::validate_transfer_encoding_value("gzip, chunked"), "gzip, chunked is valid");
-        sub.assert_true(wing::validate_transfer_encoding_value("identity, chunked"), "identity, chunked is valid");
-        sub.assert_true(wing::validate_transfer_encoding_value("deflate, gzip, chunked"), "deflate, gzip, chunked is valid");
+        sub.assert_true(http::validate_transfer_encoding_value("chunked"), "Single chunked is valid");
+        sub.assert_true(http::validate_transfer_encoding_value("gzip, chunked"), "gzip, chunked is valid");
+        sub.assert_true(http::validate_transfer_encoding_value("identity, chunked"), "identity, chunked is valid");
+        sub.assert_true(http::validate_transfer_encoding_value("deflate, gzip, chunked"), "deflate, gzip, chunked is valid");
     };
 
     t.run("uWS #1941 / #1943: Rejection of invalid transfer codings or non-final chunked") { sub =>
-        sub.assert_false(wing::validate_transfer_encoding_value("chunked, gzip"), "chunked before gzip MUST be rejected");
-        sub.assert_false(wing::validate_transfer_encoding_value("gzip, chunked,"), "Trailing comma MUST be rejected");
-        sub.assert_false(wing::validate_transfer_encoding_value("chunked, chunked"), "Duplicate chunked MUST be rejected");
-        sub.assert_false(wing::validate_transfer_encoding_value("identity"), "Missing chunked MUST be rejected");
+        sub.assert_false(http::validate_transfer_encoding_value("chunked, gzip"), "chunked before gzip MUST be rejected");
+        sub.assert_false(http::validate_transfer_encoding_value("gzip, chunked,"), "Trailing comma MUST be rejected");
+        sub.assert_false(http::validate_transfer_encoding_value("chunked, chunked"), "Duplicate chunked MUST be rejected");
+        sub.assert_false(http::validate_transfer_encoding_value("identity"), "Missing chunked MUST be rejected");
     };
 }
 
@@ -375,7 +375,7 @@ fn test_uweb_1941_chained_transfer_encoding_validation(t: lit::T&) {
 fn test_cve_2026_42507_diagnostic_log_injection_defense(t: lit::T&) {
     t.run("CVE-2026-42507 & Go #79346: Escapes CRLF and control characters in untrusted tokens") { sub =>
         var out: u8[..128] = [];
-        wing::escape_diagnostic_control_chars("admin\r\nSet-Cookie: pwn=1\x00\x1b", out);
+        http::escape_diagnostic_control_chars("admin\r\nSet-Cookie: pwn=1\x00\x1b", out);
 
         sub.assert_false(core::contains_byte(out[..], 13), "Raw CR (13) must not be present in output");
         sub.assert_false(core::contains_byte(out[..], 10), "Raw LF (10) must not be present in output");
@@ -418,58 +418,58 @@ fn test_h2_window_update_and_settings_cpu_limits(t: lit::T&) {
 fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
     t.run("Strict client handshake transition table enforcement (RFC 8446)") { sub =>
         // In full handshake (is_psk = false), Finished received prematurely before Cert/CV MUST be rejected
-        let st_bad_fin, ok_bad_fin = wing::validate_client_handshake_transition(
-            wing::HsState.ClientWaitCertCr,
+        let st_bad_fin, ok_bad_fin = tls::validate_client_handshake_transition(
+            tls::HsState.ClientWaitCertCr,
             rfc::TLS_HS_FINISHED,
-            wing::HandshakeMode.Full,
+            tls::HandshakeMode.Full,
             false,
         );
         sub.assert_false(ok_bad_fin, "Finished before Certificate/CV in full handshake MUST be rejected");
-        sub.assert_true(st_bad_fin == wing::HsState.Closed, "Illegal transition transitions to Closed");
+        sub.assert_true(st_bad_fin == tls::HsState.Closed, "Illegal transition transitions to Closed");
 
         // In PSK mode (is_psk = true), Finished is accepted directly after ServerHello/EncryptedExtensions
-        let st_psk_fin, ok_psk_fin = wing::validate_client_handshake_transition(
-            wing::HsState.ClientWaitCertCr,
+        let st_psk_fin, ok_psk_fin = tls::validate_client_handshake_transition(
+            tls::HsState.ClientWaitCertCr,
             rfc::TLS_HS_FINISHED,
-            wing::HandshakeMode.Psk,
+            tls::HandshakeMode.Psk,
             false,
         );
         sub.assert_true(ok_psk_fin, "Finished accepted in PSK mode");
-        sub.assert_true(st_psk_fin == wing::HsState.Connected, "PSK Finished transitions to Connected");
+        sub.assert_true(st_psk_fin == tls::HsState.Connected, "PSK Finished transitions to Connected");
 
         // Certificate received when expecting Certificate transitions to CV
-        let st_cert, ok_cert = wing::validate_client_handshake_transition(
-            wing::HsState.ClientWaitCert,
+        let st_cert, ok_cert = tls::validate_client_handshake_transition(
+            tls::HsState.ClientWaitCert,
             rfc::TLS_HS_CERTIFICATE,
-            wing::HandshakeMode.Full,
+            tls::HandshakeMode.Full,
             false,
         );
         sub.assert_true(ok_cert, "Certificate accepted in ClientWaitCert");
-        sub.assert_true(st_cert == wing::HsState.ClientWaitCV, "Transitions to ClientWaitCV");
+        sub.assert_true(st_cert == tls::HsState.ClientWaitCV, "Transitions to ClientWaitCV");
 
         // Synthetic message_hash (254) MUST NEVER appear on wire
-        let st_hash, ok_hash = wing::validate_client_handshake_transition(
-            wing::HsState.ClientWaitSH,
+        let st_hash, ok_hash = tls::validate_client_handshake_transition(
+            tls::HsState.ClientWaitSH,
             rfc::TLS_HS_MESSAGE_HASH,
-            wing::HandshakeMode.Full,
+            tls::HandshakeMode.Full,
             false,
         );
         sub.assert_false(ok_hash, "Synthetic message_hash on wire MUST be rejected");
 
         // Post-handshake: only NewSessionTicket and KeyUpdate permitted
-        let st_ticket, ok_ticket = wing::validate_client_handshake_transition(
-            wing::HsState.Connected,
+        let st_ticket, ok_ticket = tls::validate_client_handshake_transition(
+            tls::HsState.Connected,
             rfc::TLS_HS_NEW_SESSION_TICKET,
-            wing::HandshakeMode.Full,
+            tls::HandshakeMode.Full,
             false,
         );
         sub.assert_true(ok_ticket, "NewSessionTicket accepted post-handshake");
-        sub.assert_true(st_ticket == wing::HsState.Connected, "Remains Connected");
+        sub.assert_true(st_ticket == tls::HsState.Connected, "Remains Connected");
 
-        let st_rehandshake, ok_rehandshake = wing::validate_client_handshake_transition(
-            wing::HsState.Connected,
+        let st_rehandshake, ok_rehandshake = tls::validate_client_handshake_transition(
+            tls::HsState.Connected,
             rfc::TLS_HS_SERVER_HELLO,
-            wing::HandshakeMode.Full,
+            tls::HandshakeMode.Full,
             false,
         );
         sub.assert_false(ok_rehandshake, "ServerHello received while Connected MUST be rejected (renegotiation banned)");
@@ -477,17 +477,17 @@ fn test_openssl_handshake_state_machine_transition_invariants(t: lit::T&) {
 
     t.run("Strict server handshake transition table enforcement (RFC 8446)") { sub =>
         // Finished accepted in ServerWaitFinished
-        let st_srv_fin, ok_srv_fin = wing::validate_server_handshake_transition(
-            wing::HsState.ServerWaitFinished,
+        let st_srv_fin, ok_srv_fin = tls::validate_server_handshake_transition(
+            tls::HsState.ServerWaitFinished,
             rfc::TLS_HS_FINISHED,
             false,
         );
         sub.assert_true(ok_srv_fin, "Finished accepted by server in ServerWaitFinished");
-        sub.assert_true(st_srv_fin == wing::HsState.Connected, "Server transitions to Connected");
+        sub.assert_true(st_srv_fin == tls::HsState.Connected, "Server transitions to Connected");
 
         // Out-of-order ClientHello in ServerWaitFinished rejected
-        let st_srv_bad, ok_srv_bad = wing::validate_server_handshake_transition(
-            wing::HsState.ServerWaitFinished,
+        let st_srv_bad, ok_srv_bad = tls::validate_server_handshake_transition(
+            tls::HsState.ServerWaitFinished,
             rfc::TLS_HS_CLIENT_HELLO,
             false,
         );
@@ -653,7 +653,7 @@ fn test_http2_hpack_boundary_and_capacity_defenses(t: lit::T&) {
 
         var dt = http2::new_dynamic_table(4096);
         var pseudo = http2::PseudoHeaders { .. };
-        var out_list = wing::HeaderMap { .. };
+        var out_list = http::HeaderMap { .. };
         let err = http2::decode_hpack_to_map(dt, raw_block[..], pseudo, out_list, 8192, false);
         sub.assert_ne(err, rfc::H2_ERR_NO_ERROR, "Header with 300-byte name MUST fail decoding safely");
     };
@@ -1295,8 +1295,8 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
             0x00, 0x00, 0x08, 0x00, // max_early_data_size = 2048
         ];
 
-        var nst = wing::NewSessionTicketMsg { .. };
-        let ok = wing::parse_new_session_ticket(dup_early_data_wire[..], nst);
+        var nst = tls::NewSessionTicketMsg { .. };
+        let ok = tls::parse_new_session_ticket(dup_early_data_wire[..], nst);
         sub.assert_false(ok, "duplicate early_data extension in NewSessionTicket MUST be rejected");
     };
 
@@ -1313,8 +1313,8 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
             0x03, 0x04,             // TLS 1.3
         ];
 
-        var nst = wing::NewSessionTicketMsg { .. };
-        let ok = wing::parse_new_session_ticket(forbidden_ext_wire[..], nst);
+        var nst = tls::NewSessionTicketMsg { .. };
+        let ok = tls::parse_new_session_ticket(forbidden_ext_wire[..], nst);
         sub.assert_false(ok, "supported_versions extension in NewSessionTicket MUST be rejected");
     };
 
@@ -1331,15 +1331,15 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
             0x00, 0x00, 0x40, 0x00, // max_early_data_size = 16384
         ];
 
-        var nst = wing::NewSessionTicketMsg { .. };
-        let ok = wing::parse_new_session_ticket(zero_life_early_data_wire[..], nst);
+        var nst = tls::NewSessionTicketMsg { .. };
+        let ok = tls::parse_new_session_ticket(zero_life_early_data_wire[..], nst);
         sub.assert_false(ok, "early_data with ticket_lifetime == 0 MUST be rejected");
     };
 
     t.run("RFC 8446 §4.6.1: Duplicate ticket_nonce on same connection rejected (ticket confusion defense)") { sub =>
-        var cache = wing::SessionTicketCache { .. };
+        var cache = tls::SessionTicketCache { .. };
 
-        var t1 = wing::NewSessionTicketMsg {
+        var t1 = tls::NewSessionTicketMsg {
             ticket_lifetime: 3600,
             ticket_age_add:  100,
             ..
@@ -1347,12 +1347,12 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
         t1.ticket_nonce.append([0x01, 0x02, 0x03]);
         t1.ticket.append([0xAA, 0xBB, 0xCC]);
 
-        let ok1 = wing::cache_session_ticket(cache, t1);
+        let ok1 = tls::cache_session_ticket(cache, t1);
         sub.assert_true(ok1, "First ticket with nonce [1,2,3] cached successfully");
         sub.assert_eq(cache.tickets.len, 1, "Cache length is 1");
 
         // Duplicate ticket_nonce with different ticket payload MUST be rejected
-        var t2 = wing::NewSessionTicketMsg {
+        var t2 = tls::NewSessionTicketMsg {
             ticket_lifetime: 3600,
             ticket_age_add:  200,
             ..
@@ -1360,45 +1360,45 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
         t2.ticket_nonce.append([0x01, 0x02, 0x03]); // DUPLICATE NONCE
         t2.ticket.append([0xDD, 0xEE, 0xFF]);
 
-        let ok2 = wing::cache_session_ticket(cache, t2);
+        let ok2 = tls::cache_session_ticket(cache, t2);
         sub.assert_false(ok2, "Ticket with duplicate ticket_nonce on same connection MUST be rejected");
         sub.assert_eq(cache.tickets.len, 1, "Cache length remains 1 after duplicate nonce rejection");
     };
 
     t.run("RFC 8446 §4.6.1: Duplicate ticket payload on same connection rejected") { sub =>
-        var cache = wing::SessionTicketCache { .. };
+        var cache = tls::SessionTicketCache { .. };
 
-        var t1 = wing::NewSessionTicketMsg {
+        var t1 = tls::NewSessionTicketMsg {
             ticket_lifetime: 3600,
             ticket_age_add:  100,
             ..
         };
         t1.ticket_nonce.append([0x01, 0x01]);
         t1.ticket.append([0xCA, 0xFE, 0xBA, 0xBE]);
-        let ok1 = wing::cache_session_ticket(cache, t1);
+        let ok1 = tls::cache_session_ticket(cache, t1);
         sub.assert_true(ok1, "Initial ticket cached successfully");
 
         // Duplicate ticket payload with different nonce MUST be rejected
-        var t2 = wing::NewSessionTicketMsg {
+        var t2 = tls::NewSessionTicketMsg {
             ticket_lifetime: 3600,
             ticket_age_add:  300,
             ..
         };
         t2.ticket_nonce.append([0x02, 0x02]);
         t2.ticket.append([0xCA, 0xFE, 0xBA, 0xBE]); // DUPLICATE TICKET PAYLOAD
-        let ok2 = wing::cache_session_ticket(cache, t2);
+        let ok2 = tls::cache_session_ticket(cache, t2);
         sub.assert_false(ok2, "Ticket with duplicate ticket payload on same connection MUST be rejected");
         sub.assert_eq(cache.tickets.len, 1, "Cache length remains 1 after duplicate ticket rejection");
 
         // Distinct ticket with unique nonce and payload succeeds
-        var t3 = wing::NewSessionTicketMsg {
+        var t3 = tls::NewSessionTicketMsg {
             ticket_lifetime: 3600,
             ticket_age_add:  400,
             ..
         };
         t3.ticket_nonce.append([0x03, 0x03]);
         t3.ticket.append([0xDE, 0xAD, 0xBE, 0xEF]);
-        let ok3 = wing::cache_session_ticket(cache, t3);
+        let ok3 = tls::cache_session_ticket(cache, t3);
         sub.assert_true(ok3, "Distinct ticket with unique nonce and payload cached successfully");
         sub.assert_eq(cache.tickets.len, 2, "Cache length incremented to 2");
     };
@@ -1409,26 +1409,26 @@ fn test_rfc8446_nst_extension_validation_and_ticket_confusion(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: lit::T&) {
     t.run("Pool saturation at 64 connections reclaims idle/evicted slots without starvation") { sub =>
-        var pool = wing::new_stream_pool(64, 64, 64);
-        let nak = wing::new_network_anonymization_key("https://pool-test.org");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "pool-test.org", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        var pool = net::new_stream_pool(64, 64, 64);
+        let nak = net::new_network_anonymization_key("https://pool-test.org");
+        let key = net::new_pool_key(net::PoolScheme.Https, "pool-test.org", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
         // Register 64 connections saturating pool capacity
         var c_ids: i32[64] = [0; 64];
         for i in 64 {
-            let cid = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.1", 1, (i + 1) as i64 * 1000);
+            let cid = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "10.0.0.1", 1, (i + 1) as i64 * 1000);
             sub.assert_gt(cid, 0, "Initial 64 connections successfully registered");
             c_ids[i] = cid;
         }
         sub.assert_eq(pool.conns.len, 64, "Pool reached maximum capacity (64)");
 
         // Release the first connection making it idle
-        wing::release_connection(pool, c_ids[0], 1000000);
+        net::release_connection(pool, c_ids[0], 1000000);
         sub.assert_eq(pool.conns[0].active_allocations, 0, "Connection 0 is idle");
 
         // In unpatched code, registering a 65th connection returns -1 (pool starvation).
         // With slot reclamation, the idle connection is evicted and its slot reused.
-        let c65 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.1", 1, 2000000);
+        let c65 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "10.0.0.1", 1, 2000000);
         sub.assert_gt(c65, 0, "65th connection registered successfully by reclaiming evicted slot");
         sub.assert_eq(c65, 65, "Connection ID incremented monotonically");
         sub.assert_eq(pool.conns.len, 64, "Connection pool storage remains bounded at 64");
@@ -1437,41 +1437,41 @@ fn test_rfc9110_connection_pool_starvation_and_slot_reclamation(t: lit::T&) {
     };
 
     t.run("Explicitly closed connection slot is reclaimed immediately") { sub =>
-        var pool = wing::new_stream_pool(64, 64, 64);
-        let nak = wing::new_network_anonymization_key("https://reclaim.org");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "reclaim.org", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        var pool = net::new_stream_pool(64, 64, 64);
+        let nak = net::new_network_anonymization_key("https://reclaim.org");
+        let key = net::new_pool_key(net::PoolScheme.Https, "reclaim.org", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
         var c_ids: i32[64] = [0; 64];
         for i in 64 {
-            c_ids[i] = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.2", 1, (i + 1) as i64 * 1000);
+            c_ids[i] = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "10.0.0.2", 1, (i + 1) as i64 * 1000);
         }
         sub.assert_eq(pool.conns.len, 64, "Pool saturated at 64");
 
         // Explicitly close slot 5
-        let ok_close = wing::close_pooled_connection(pool, c_ids[5]);
+        let ok_close = net::close_pooled_connection(pool, c_ids[5]);
         sub.assert_true(ok_close, "Connection c_ids[5] closed successfully");
         sub.assert_true(pool.conns[5].closed, "Slot 5 marked closed");
 
         // Register 65th connection: must reclaim slot 5 immediately without evicting other slots
-        let c65 = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.2", 1, 5000000);
+        let c65 = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "10.0.0.2", 1, 5000000);
         sub.assert_gt(c65, 0, "New connection successfully registered");
         sub.assert_eq(pool.conns[5].conn_id, c65, "Slot 5 reclaimed by connection 65");
         sub.assert_false(pool.conns[5].closed, "Reclaimed slot is open and active");
     };
 
     t.run("Registering when all 64 slots are active fails closed without panic") { sub =>
-        var pool = wing::new_stream_pool(64, 64, 64);
-        let nak = wing::new_network_anonymization_key("https://busy-pool.org");
-        let key = wing::new_pool_key(wing::PoolScheme.Https, "busy-pool.org", 443, wing::new_direct_proxy_chain(), nak, wing::TlsAndDnsPolicy { .. });
+        var pool = net::new_stream_pool(64, 64, 64);
+        let nak = net::new_network_anonymization_key("https://busy-pool.org");
+        let key = net::new_pool_key(net::PoolScheme.Https, "busy-pool.org", 443, net::new_direct_proxy_chain(), nak, net::TlsAndDnsPolicy { .. });
 
         for i in 64 {
-            let cid = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.3", 1, (i + 1) as i64 * 1000);
+            let cid = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "10.0.0.3", 1, (i + 1) as i64 * 1000);
             sub.assert_gt(cid, 0, "Registered active connection");
         }
 
         // None are released, so all 64 have active_allocations = 1.
         // Eviction cannot evict any active connection, so registering returns -1 cleanly.
-        let c_fail = wing::register_connection(pool, key, wing::NegotiatedProtocol.Http11, "10.0.0.3", 1, 9000000);
+        let c_fail = net::register_connection(pool, key, net::NegotiatedProtocol.Http11, "10.0.0.3", 1, 9000000);
         sub.assert_eq(c_fail, -1, "Fully active saturated pool returns -1 without crash or corruption");
     };
 }
@@ -1682,83 +1682,83 @@ fn test_rfc8725_jwks_key_confusion_and_algorithm_binding(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: lit::T&) {
     t.run("Case 1: Peer FIN followed by local shutdown completes full socket teardown") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
         // Client sends payload and immediately closes its write side (sends FIN)
         let req: const u8[:] = "PING_REQUEST";
-        wing::tcp_send(client, req);
-        wing::tcp_shutdown(client, wing::SHUT_WR);
+        net::tcp_send(client, req);
+        net::tcp_shutdown(client, net::SHUT_WR);
 
         // Server reads payload and then detects EOF (peer FIN)
         var srv_req: u8[..64] = [];
-        let r1 = wing::tcp_recv(server_conn, srv_req, 64, 2000);
+        let r1 = net::tcp_recv(server_conn, srv_req, 64, 2000);
         sub.assert_eq(r1, req.len as i32, "Server received request");
 
         var eof_probe: u8[..16] = [];
-        let eof = wing::tcp_recv(server_conn, eof_probe, 16, 500);
+        let eof = net::tcp_recv(server_conn, eof_probe, 16, 500);
         sub.assert_eq(eof, 0, "Server detected peer FIN (EOF)");
 
-        var server_bp = wing::BackPressure { .. };
-        wing::async_socket_on_peer_fin(server_conn, server_bp);
+        var server_bp = net::BackPressure { .. };
+        net::async_socket_on_peer_fin(server_conn, server_bp);
         sub.assert_true(server_bp.peer_fin_received, "Server recorded peer FIN");
         sub.assert_false(server_bp.write_shut, "Server write half is still open for response");
 
         // Server can still send response back
         var server_cork = core::new_cork_buffer();
         let resp: const u8[:] = "PONG_RESPONSE";
-        let wr_bytes, _ = wing::async_socket_write(server_conn, server_cork, server_bp, resp);
+        let wr_bytes, _ = net::async_socket_write(server_conn, server_cork, server_bp, resp);
         sub.assert_gt(wr_bytes, 0, "Server wrote response");
-        wing::async_socket_uncork(server_conn, server_cork, server_bp);
+        net::async_socket_uncork(server_conn, server_cork, server_bp);
 
         // Client receives response
         var cli_resp: u8[..64] = [];
-        let r2 = wing::tcp_recv(client, cli_resp, 64, 2000);
+        let r2 = net::tcp_recv(client, cli_resp, 64, 2000);
         sub.assert_eq(r2, resp.len as i32, "Client received response");
 
         // Now server shuts down its write direction.
         // Because peer_fin_received is true, both directions are now closed!
         // async_socket_shutdown must cleanly execute tcp_close(server_conn).
-        let did_shut, is_def = wing::async_socket_shutdown(server_conn, server_bp, server_cork);
+        let did_shut, is_def = net::async_socket_shutdown(server_conn, server_bp, server_cork);
         sub.assert_true(did_shut, "Immediate shutdown executed");
         sub.assert_false(is_def, "Shutdown was not deferred");
         sub.assert_true(server_bp.write_shut, "Server write direction shut");
 
         // Verify socket is closed (further reads or writes fail)
         var post_buf: u8[..16] = [];
-        let post_recv = wing::tcp_recv(server_conn, post_buf, 16, 100);
+        let post_recv = net::tcp_recv(server_conn, post_buf, 16, 100);
         sub.assert_lt(post_recv, 0, "Server socket closed after both halves shut down");
     };
 
     t.run("Case 2: Local shutdown followed by peer FIN completes full socket teardown") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
-        var server_bp = wing::BackPressure { .. };
+        var server_bp = net::BackPressure { .. };
         var server_cork = core::new_cork_buffer();
 
         // Server initiates write shutdown first (sends FIN to client)
-        let did_shut, is_def = wing::async_socket_shutdown(server_conn, server_bp, server_cork);
+        let did_shut, is_def = net::async_socket_shutdown(server_conn, server_bp, server_cork);
         sub.assert_true(did_shut, "Server shut write side");
         sub.assert_false(is_def, "Shutdown was not deferred");
         sub.assert_true(server_bp.write_shut, "Server write_shut is true");
@@ -1766,74 +1766,74 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: lit::
 
         // Client detects EOF from server
         var cli_buf: u8[..16] = [];
-        let eof = wing::tcp_recv(client, cli_buf, 16, 500);
+        let eof = net::tcp_recv(client, cli_buf, 16, 500);
         sub.assert_eq(eof, 0, "Client saw server EOF (FIN)");
 
         // Client can still send its final data before closing
         let final_data: const u8[:] = "FINAL_DATA";
-        wing::tcp_send(client, final_data);
-        wing::tcp_shutdown(client, wing::SHUT_WR);
+        net::tcp_send(client, final_data);
+        net::tcp_shutdown(client, net::SHUT_WR);
 
         // Server reads remaining data from client
         var srv_final: u8[..64] = [];
-        let r = wing::tcp_recv(server_conn, srv_final, 64, 1000);
+        let r = net::tcp_recv(server_conn, srv_final, 64, 1000);
         sub.assert_eq(r, final_data.len as i32, "Server read client final data");
 
         // Server detects client EOF
         var cli_eof_buf: u8[..16] = [];
-        let cli_eof = wing::tcp_recv(server_conn, cli_eof_buf, 16, 500);
+        let cli_eof = net::tcp_recv(server_conn, cli_eof_buf, 16, 500);
         sub.assert_eq(cli_eof, 0, "Server detected client FIN (EOF)");
 
         // When server records peer FIN with write_shut already true,
         // async_socket_on_peer_fin must automatically complete socket teardown (tcp_close)
-        wing::async_socket_on_peer_fin(server_conn, server_bp);
+        net::async_socket_on_peer_fin(server_conn, server_bp);
         sub.assert_true(server_bp.peer_fin_received, "Peer FIN recorded");
 
         // Socket handle must now be closed
         var closed_probe: u8[..16] = [];
-        let closed_res = wing::tcp_recv(server_conn, closed_probe, 16, 100);
+        let closed_res = net::tcp_recv(server_conn, closed_probe, 16, 100);
         sub.assert_lt(closed_res, 0, "Server socket closed when second FIN received");
     };
 
     t.run("Case 3: Deferred shutdown with pending backpressure tears down socket when drain completes") { sub =>
-        let listener = wing::tcp_listen("127.0.0.1", 0, 16);
+        let listener = net::tcp_listen("127.0.0.1", 0, 16);
         sub.assert_gt(listener, 0, "Listener created");
-        defer wing::tcp_close(listener);
+        defer net::tcp_close(listener);
 
-        let port = wing::tcp_getsockname_port(listener);
-        let client = wing::tcp_connect("127.0.0.1", port, 2000);
+        let port = net::tcp_getsockname_port(listener);
+        let client = net::tcp_connect("127.0.0.1", port, 2000);
         sub.assert_gt(client, 0, "Client connected");
-        defer wing::tcp_close(client);
+        defer net::tcp_close(client);
 
-        let server_conn = wing::tcp_accept(listener, 2000);
+        let server_conn = net::tcp_accept(listener, 2000);
         sub.assert_gt(server_conn, 0, "Server accepted");
-        defer wing::tcp_close(server_conn);
+        defer net::tcp_close(server_conn);
 
-        var server_bp = wing::BackPressure { .. };
+        var server_bp = net::BackPressure { .. };
         var server_cork = core::new_cork_buffer();
 
         // Client shuts down its write side (sends FIN)
-        wing::tcp_shutdown(client, wing::SHUT_WR);
+        net::tcp_shutdown(client, net::SHUT_WR);
         var probe: u8[..16] = [];
-        let eof = wing::tcp_recv(server_conn, probe, 16, 500);
+        let eof = net::tcp_recv(server_conn, probe, 16, 500);
         sub.assert_eq(eof, 0, "Server received peer FIN");
-        wing::async_socket_on_peer_fin(server_conn, server_bp);
+        net::async_socket_on_peer_fin(server_conn, server_bp);
         sub.assert_true(server_bp.peer_fin_received, "Peer FIN recorded in backpressure");
 
         // Server queues backpressure
         let payload: const u8[:] = "QUEUED_DEFERRED_DATA";
-        wing::backpressure_append(server_bp, payload);
-        sub.assert_gt(wing::backpressure_len(server_bp), 0, "Backpressure contains payload");
+        net::backpressure_append(server_bp, payload);
+        sub.assert_gt(net::backpressure_len(server_bp), 0, "Backpressure contains payload");
 
         // Server initiates shutdown: must defer because backpressure is non-empty
-        let did_shut, is_def = wing::async_socket_shutdown(server_conn, server_bp, server_cork);
+        let did_shut, is_def = net::async_socket_shutdown(server_conn, server_bp, server_cork);
         sub.assert_false(did_shut, "Shutdown deferred");
         sub.assert_true(is_def, "Shutdown marked deferred");
         sub.assert_true(server_bp.shutdown_pending, "Shutdown pending");
         sub.assert_false(server_bp.write_shut, "write_shut is false while draining");
 
         // Drain backpressure completely
-        let drained, empty = wing::async_socket_drain(server_conn, server_bp);
+        let drained, empty = net::async_socket_drain(server_conn, server_bp);
         sub.assert_gt(drained, 0, "Backpressure drained to wire");
         sub.assert_true(empty, "Backpressure now fully empty");
         sub.assert_true(server_bp.write_shut, "Deferred shutdown executed write_shut");
@@ -1841,27 +1841,27 @@ fn test_rfc9293_half_closed_socket_teardown_and_drain_deadlock_defenses(t: lit::
 
         // Client reads all drained payload
         var cli_buf: u8[..64] = [];
-        let recvd = wing::tcp_recv(client, cli_buf, 64, 1000);
+        let recvd = net::tcp_recv(client, cli_buf, 64, 1000);
         sub.assert_eq(recvd, payload.len as i32, "Client received all deferred payload");
 
         // Because peer_fin_received was true, check_execute_deferred_shutdown closed the socket
         var post_probe: u8[..16] = [];
-        let post_res = wing::tcp_recv(server_conn, post_probe, 16, 100);
+        let post_res = net::tcp_recv(server_conn, post_probe, 16, 100);
         sub.assert_lt(post_res, 0, "Server socket closed upon deferred shutdown completion");
     };
 
     t.run("Case 4: Drain failure on broken socket triggers abort and clears backpressure to prevent deadlock") { sub =>
-        var bp = wing::BackPressure { .. };
-        wing::backpressure_append(bp, "STALLED_PAYLOAD_FOR_DEAD_SOCKET");
-        sub.assert_gt(wing::backpressure_len(bp), 0, "Backpressure has buffered data");
+        var bp = net::BackPressure { .. };
+        net::backpressure_append(bp, "STALLED_PAYLOAD_FOR_DEAD_SOCKET");
+        sub.assert_gt(net::backpressure_len(bp), 0, "Backpressure has buffered data");
 
         // Use an invalid / closed socket descriptor to simulate write error (sent < 0)
         let dead_fd: i64 = 99999;
-        let sent, empty = wing::async_socket_drain(dead_fd, bp);
+        let sent, empty = net::async_socket_drain(dead_fd, bp);
 
         sub.assert_lt(sent, 0, "Drain on dead socket returns error < 0");
         sub.assert_true(empty, "Drain returns empty=true to prevent infinite event loop polling spin");
-        sub.assert_eq(wing::backpressure_len(bp), 0, "Backpressure cleared by abortive teardown");
+        sub.assert_eq(net::backpressure_len(bp), 0, "Backpressure cleared by abortive teardown");
         sub.assert_true(bp.write_shut, "Write side marked shut after error abort");
         sub.assert_false(bp.shutdown_pending, "Pending shutdown cleared");
     };

@@ -1270,14 +1270,14 @@ fn validate_content_length_pseudo(pseudo: http2::PseudoHeaders&, val: const u8[:
 
 fn validate_h2_host_header(
     pseudo:      const http2::PseudoHeaders&,
-    out_headers: const wing::HeaderMap&,
+    out_headers: const http::HeaderMap&,
     val:         const u8[:],
 ) -> u32 {
     guard val.len > 0 else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     for b in val {
         guard !is_forbidden_authority_byte(b) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     }
-    guard !wing::has_header(out_headers, "host") else { return rfc::H2_ERR_PROTOCOL_ERROR; }
+    guard !http::has_header(out_headers, "host") else { return rfc::H2_ERR_PROTOCOL_ERROR; }
     if pseudo.has_authority {
         guard pseudo.authority[..].eq_ascii_fold(val) else {
             return rfc::H2_ERR_PROTOCOL_ERROR;
@@ -1288,7 +1288,7 @@ fn validate_h2_host_header(
 
 fn validate_regular_header_to_map(
     pseudo:      http2::PseudoHeaders&,
-    out_headers: const wing::HeaderMap&,
+    out_headers: const http::HeaderMap&,
     name:        const u8[:],
     val:         const u8[:],
 ) -> u32 {
@@ -1372,19 +1372,19 @@ enum CookieJoinStatus {
 
 // RFC 9113 Section 8.2.3: Compressing the Cookie Header Field - Concatenates extra cookie fields with "; ".
 fn join_existing_cookie(
-    out_headers: wing::HeaderMap&,
+    out_headers: http::HeaderMap&,
     name:        const u8[:],
     val:         const u8[:],
 ) -> CookieJoinStatus {
-    guard name.eq_ascii_fold("cookie") && wing::has_header(out_headers, "cookie") else {
+    guard name.eq_ascii_fold("cookie") && http::has_header(out_headers, "cookie") else {
         return CookieJoinStatus.NotCookie;
     }
-    let prev = wing::get_header(out_headers, "cookie");
+    let prev = http::get_header(out_headers, "cookie");
     var combined: u8[..8192] = [];
     guard combined.try_append(prev) && combined.try_append("; ") && combined.try_append(val) else {
         return CookieJoinStatus.Overflow;
     }
-    if wing::insert_header(out_headers, "cookie", combined[..]) {
+    if http::insert_header(out_headers, "cookie", combined[..]) {
         return CookieJoinStatus.Joined;
     }
     return CookieJoinStatus.Overflow;
@@ -1392,7 +1392,7 @@ fn join_existing_cookie(
 
 fn append_decoded_header_to_map(
     out_pseudo:           http2::PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     name:                 const u8[:],
     val:                  const u8[:],
     max_header_list_size: u32,
@@ -1469,7 +1469,7 @@ fn decode_hpack_field_step_with_scratch(
     updates_allowed:      bool&,
     update_count:         u32&,
     out_pseudo:           http2::PseudoHeaders&,
-    out_headers:          wing::HeaderMap&,
+    out_headers:          http::HeaderMap&,
     max_header_list_size: u32,
     validate_http2_rules: bool,
     name_buf:             u8[..256]&,
@@ -1682,8 +1682,8 @@ inline fn should_keep_idle_priority(item: const http2::IdleStreamPriority&, open
     return (opened_id & 1) == 0 || (item.stream_id & 1) != 1 || item.stream_id > opened_id;
 }
 
-fn take_idle_stream_priority(s: http2::Connection&, stream_id: u32) -> wing::PriorityParam, bool {
-    var matched_prio = wing::PriorityParam { .. };
+fn take_idle_stream_priority(s: http2::Connection&, stream_id: u32) -> http::PriorityParam, bool {
+    var matched_prio = http::PriorityParam { .. };
     var found = false;
     var kept: http2::IdleStreamPriority[..128] = [];
     for &item in s.idle_priorities {
@@ -2064,7 +2064,7 @@ fn refresh_active_urgency_buckets(s: http2::Connection&) {
 fn record_idle_stream_priority(
     s:         http2::Connection&,
     stream_id: u32,
-    prio:      wing::PriorityParam,
+    prio:      http::PriorityParam,
 ) -> u32 {
     var final_prio = prio;
     if s.is_behind_proxy {

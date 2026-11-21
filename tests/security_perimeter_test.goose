@@ -57,9 +57,9 @@ fn test_cross_origin_isolation(t: lit::T&) {
         sub.assert_false(ctx.is_cross_origin_isolated, "Not isolated without COEP");
 
         // 5. Update directly from HeaderMap via UFCS
-        var headers = wing::HeaderMap { .. };
-        wing::append_header(headers, "cross-origin-opener-policy", "same-origin");
-        wing::append_header(headers, "cross-origin-embedder-policy", "require-corp");
+        var headers = http::HeaderMap { .. };
+        http::append_header(headers, "cross-origin-opener-policy", "same-origin");
+        http::append_header(headers, "cross-origin-embedder-policy", "require-corp");
         ctx.update_from_headers(headers, "https://service.internal");
         sub.assert_true(ctx.is_cross_origin_isolated, "HeaderMap UFCS update_from_headers isolated");
         sub.assert_bytes_eq(ctx.document_origin[..], "https://service.internal", "HeaderMap origin stored");
@@ -413,8 +413,8 @@ fn test_fetch_metadata_decision_matrix(t: lit::T&) {
         var guard_cfg = security::CrossOriginGuard { .. };
         security::add_exempt_path(guard_cfg, "/api/webhook/stripe");
 
-        var req = wing::new_request("POST", "https://api.example.com/api/webhook/stripe?signature=abc123#frag");
-        wing::set_header(req, "Sec-Fetch-Site", "cross-site");
+        var req = http::new_request("POST", "https://api.example.com/api/webhook/stripe?signature=abc123#frag");
+        http::set_header(req, "Sec-Fetch-Site", "cross-site");
         let ctx = security::extract_fetch_context(req, "api.example.com");
 
         sub.assert_bytes_eq(ctx.path[..], "/api/webhook/stripe", "path extracted cleanly without query or host");
@@ -437,7 +437,7 @@ fn test_fetch_metadata_decision_matrix(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_isolation_headers_injection(t: lit::T&) {
     t.run("Mandatory Vary and HSTS Headers") { sub =>
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         security::apply_isolation_headers(res);
 
         sub.assert_true(res.has_header("Vary"), "Vary header present on protected response");
@@ -476,12 +476,12 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         policy.max_age_sec = 7200;
 
         // Preflight request
-        var preflight_req = wing::new_request("OPTIONS", "/api/v1/resource");
-        wing::set_header(preflight_req, "Origin", "https://portal.example.com");
-        wing::set_header(preflight_req, "Access-Control-Request-Method", "POST");
-        wing::set_header(preflight_req, "Access-Control-Request-Headers", "Content-Type, Authorization");
+        var preflight_req = http::new_request("OPTIONS", "/api/v1/resource");
+        http::set_header(preflight_req, "Origin", "https://portal.example.com");
+        http::set_header(preflight_req, "Access-Control-Request-Method", "POST");
+        http::set_header(preflight_req, "Access-Control-Request-Headers", "Content-Type, Authorization");
 
-        var preflight_res = wing::Response { .. };
+        var preflight_res = http::Response { .. };
         let preflight_res_code = security::evaluate_cors(policy, preflight_req, preflight_res);
         sub.assert_true(preflight_res_code == security::CorsResult.AllowedPreflight, "preflight handled cleanly");
         sub.assert_eq(preflight_res.status_code, 204, "preflight returns 204 No Content");
@@ -501,10 +501,10 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         security::add_allowed_origin(policy, "*");
         policy.allow_credentials = true; // Illegal combination per W3C CORS / Fetch spec
 
-        var req = wing::new_request("GET", "/api/data");
-        wing::set_header(req, "Origin", "https://untrusted.com");
+        var req = http::new_request("GET", "/api/data");
+        http::set_header(req, "Origin", "https://untrusted.com");
 
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         let res_code = security::evaluate_cors(policy, req, res);
         sub.assert_true(res_code == security::CorsResult.InvalidConfig, "wildcard with allow_credentials rejected with InvalidConfig");
     };
@@ -515,10 +515,10 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         security::add_allowed_origin(policy, "*");
         policy.allow_credentials = true; // Illegal per Fetch spec §3.2.2 even if multiple origins present
 
-        var req = wing::new_request("GET", "/api/data");
-        wing::set_header(req, "Origin", "https://portal.example.com");
+        var req = http::new_request("GET", "/api/data");
+        http::set_header(req, "Origin", "https://portal.example.com");
 
-        var res = wing::Response { .. };
+        var res = http::Response { .. };
         let res_code = security::evaluate_cors(policy, req, res);
         sub.assert_true(res_code == security::CorsResult.InvalidConfig, "wildcard in multi-origin with allow_credentials rejected with InvalidConfig");
     };
@@ -529,9 +529,9 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         security::add_allowed_origin(wild_policy, "*");
         wild_policy.allow_credentials = false;
 
-        var iframe_req = wing::new_request("GET", "/api/data");
-        wing::set_header(iframe_req, "Origin", "null");
-        var iframe_res = wing::Response { .. };
+        var iframe_req = http::new_request("GET", "/api/data");
+        http::set_header(iframe_req, "Origin", "null");
+        var iframe_res = http::Response { .. };
         let wild_null_code = security::evaluate_cors(wild_policy, iframe_req, iframe_res);
         sub.assert_true(wild_null_code == security::CorsResult.RejectedOrigin, "Origin: null rejected against wildcard pattern");
         sub.assert_false(iframe_res.has_header("Access-Control-Allow-Origin"), "never reflect Access-Control-Allow-Origin: null");
@@ -541,9 +541,9 @@ fn test_cors_policy_and_matching(t: lit::T&) {
         security::add_allowed_origin(cred_policy, "https://app.example.com");
         cred_policy.allow_credentials = true;
 
-        var upper_null_req = wing::new_request("GET", "/api/user");
-        wing::set_header(upper_null_req, "Origin", "NULL");
-        var upper_null_res = wing::Response { .. };
+        var upper_null_req = http::new_request("GET", "/api/user");
+        http::set_header(upper_null_req, "Origin", "NULL");
+        var upper_null_res = http::Response { .. };
         let upper_code = security::evaluate_cors(cred_policy, upper_null_req, upper_null_res);
         sub.assert_true(upper_code == security::CorsResult.RejectedOrigin, "Origin: NULL rejected when credentials enabled");
     };
@@ -612,61 +612,61 @@ fn test_csrf_constant_time_tokens(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_edge_filter_lifecycle_and_evaluation(t: lit::T&) {
     t.run("Case 1: Edge Filter Rule Registration and Path Filtering") { sub =>
-        var filter = wing::EdgeFilter { .. };
+        var filter = server::EdgeFilter { .. };
         sub.assert_true(filter.enabled, "Filter enabled by default");
         sub.assert_eq(filter.rules.len, 0, "Initial rules empty");
 
         // Add rules:
         // 1. Block /admin without header
-        let r_admin = wing::make_edge_filter_rule(
+        let r_admin = server::make_edge_filter_rule(
             "admin-protect",
             "/admin",
-            wing::EdgeFilterVerdict.BlockForbidden,
+            server::EdgeFilterVerdict.BlockForbidden,
         );
-        sub.assert_true(wing::add_edge_filter_rule(filter, r_admin), "Admin rule added");
+        sub.assert_true(server::add_edge_filter_rule(filter, r_admin), "Admin rule added");
 
         // 2. Throttle /api/heavy
-        let r_heavy = wing::make_edge_filter_rule(
+        let r_heavy = server::make_edge_filter_rule(
             "heavy-throttle",
             "/api/heavy",
-            wing::EdgeFilterVerdict.ThrottleRate,
+            server::EdgeFilterVerdict.ThrottleRate,
         );
-        sub.assert_true(wing::add_edge_filter_rule(filter, r_heavy), "Heavy throttle rule added");
+        sub.assert_true(server::add_edge_filter_rule(filter, r_heavy), "Heavy throttle rule added");
 
         // Evaluate /public/index.html -> Pass
-        var empty_headers = wing::HeaderMap { .. };
-        let v1 = wing::evaluate_edge_filter(filter, "GET", "/public/index.html", empty_headers);
-        sub.assert_true(v1 == wing::EdgeFilterVerdict.Pass, "Public path passes");
+        var empty_headers = http::HeaderMap { .. };
+        let v1 = server::evaluate_edge_filter(filter, "GET", "/public/index.html", empty_headers);
+        sub.assert_true(v1 == server::EdgeFilterVerdict.Pass, "Public path passes");
 
         // Evaluate /admin/users -> BlockForbidden (403)
-        let v2 = wing::evaluate_edge_filter(filter, "POST", "/admin/users", empty_headers);
-        sub.assert_true(v2 == wing::EdgeFilterVerdict.BlockForbidden, "Admin path blocked");
+        let v2 = server::evaluate_edge_filter(filter, "POST", "/admin/users", empty_headers);
+        sub.assert_true(v2 == server::EdgeFilterVerdict.BlockForbidden, "Admin path blocked");
 
         // Evaluate /api/heavy/compute -> ThrottleRate (429)
-        let v3 = wing::evaluate_edge_filter(filter, "POST", "/api/heavy/compute", empty_headers);
-        sub.assert_true(v3 == wing::EdgeFilterVerdict.ThrottleRate, "Heavy path throttled");
+        let v3 = server::evaluate_edge_filter(filter, "POST", "/api/heavy/compute", empty_headers);
+        sub.assert_true(v3 == server::EdgeFilterVerdict.ThrottleRate, "Heavy path throttled");
 
         sub.assert_eq(filter.total_inspected as i64, 3, "Total inspected count");
         sub.assert_eq(filter.total_blocked as i64, 2, "Total blocked count");
     };
 
     t.run("Case 2: Required Header Condition") { sub =>
-        var filter = wing::EdgeFilter { .. };
-        var rule = wing::make_edge_filter_rule("api-key-gate", "/v1/secure", wing::EdgeFilterVerdict.BlockForbidden);
+        var filter = server::EdgeFilter { .. };
+        var rule = server::make_edge_filter_rule("api-key-gate", "/v1/secure", server::EdgeFilterVerdict.BlockForbidden);
         rule.required_header.append("X-API-Key");
-        let _ = wing::add_edge_filter_rule(filter, rule);
+        let _ = server::add_edge_filter_rule(filter, rule);
 
         // Missing header -> Block
-        var hdrs_missing = wing::HeaderMap { .. };
-        wing::append_header(hdrs_missing, "Authorization", "Bearer tok");
-        let v_deny = wing::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_missing);
-        sub.assert_true(v_deny == wing::EdgeFilterVerdict.BlockForbidden, "Missing required header blocked");
+        var hdrs_missing = http::HeaderMap { .. };
+        http::append_header(hdrs_missing, "Authorization", "Bearer tok");
+        let v_deny = server::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_missing);
+        sub.assert_true(v_deny == server::EdgeFilterVerdict.BlockForbidden, "Missing required header blocked");
 
         // Present header -> Pass
-        var hdrs_ok = wing::HeaderMap { .. };
-        wing::append_header(hdrs_ok, "X-API-Key", "secret-key-123");
-        let v_allow = wing::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_ok);
-        sub.assert_true(v_allow == wing::EdgeFilterVerdict.Pass, "Present required header allowed");
+        var hdrs_ok = http::HeaderMap { .. };
+        http::append_header(hdrs_ok, "X-API-Key", "secret-key-123");
+        let v_allow = server::evaluate_edge_filter(filter, "GET", "/v1/secure/data", hdrs_ok);
+        sub.assert_true(v_allow == server::EdgeFilterVerdict.Pass, "Present required header allowed");
     };
 }
 
@@ -685,7 +685,7 @@ fn test_edge_filter_lifecycle_and_evaluation(t: lit::T&) {
 fn test_hsts_header_parsing(t: lit::T&) {
     t.run("Parse max-age, includeSubDomains, and preload") { sub =>
         let raw = "max-age=31536000; includeSubDomains; preload";
-        let d, ok = wing::parse_hsts_header(raw);
+        let d, ok = http::parse_hsts_header(raw);
         sub.assert_true(ok, "hsts parsed successfully");
         sub.assert_eq(d.max_age_sec, 31536000, "max-age is 1 year in seconds");
         sub.assert_true(d.include_subdomains, "includeSubDomains is true");
@@ -693,7 +693,7 @@ fn test_hsts_header_parsing(t: lit::T&) {
 
         // Case-insensitive and whitespace-tolerant
         let raw2 = "  includeSubDomains ;  MAX-AGE = 86400  ";
-        let d2, ok2 = wing::parse_hsts_header(raw2);
+        let d2, ok2 = http::parse_hsts_header(raw2);
         sub.assert_true(ok2, "case-insensitive hsts parsed");
         sub.assert_eq(d2.max_age_sec, 86400, "max-age 86400");
         sub.assert_true(d2.include_subdomains, "includeSubDomains matched");
@@ -706,39 +706,39 @@ fn test_hsts_header_parsing(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
     t.run("Chromium Preload List: Google, GitHub & .dev/.app TLDs Auto-Upgraded to HTTPS") { sub =>
-        var client = wing::new_client();
+        var client = client::new_client();
 
         // 1. Static preloaded domain (github.com & expanded preload domains)
-        sub.assert_true(wing::is_hsts(client, "github.com"), "github.com is preloaded HSTS");
-        sub.assert_true(wing::is_hsts(client, "api.github.com"), "api.github.com inherits HSTS");
-        sub.assert_true(wing::is_hsts(client, "stripe.com"), "stripe.com is preloaded HSTS");
-        sub.assert_true(wing::is_hsts(client, "api.stripe.com"), "api.stripe.com inherits HSTS");
-        sub.assert_true(wing::is_hsts(client, "proton.me"), "proton.me is preloaded HSTS");
-        sub.assert_true(wing::is_hsts(client, "1password.com"), "1password.com is preloaded HSTS");
+        sub.assert_true(client::is_hsts(client, "github.com"), "github.com is preloaded HSTS");
+        sub.assert_true(client::is_hsts(client, "api.github.com"), "api.github.com inherits HSTS");
+        sub.assert_true(client::is_hsts(client, "stripe.com"), "stripe.com is preloaded HSTS");
+        sub.assert_true(client::is_hsts(client, "api.stripe.com"), "api.stripe.com inherits HSTS");
+        sub.assert_true(client::is_hsts(client, "proton.me"), "proton.me is preloaded HSTS");
+        sub.assert_true(client::is_hsts(client, "1password.com"), "1password.com is preloaded HSTS");
 
         // 2. HSTS TLD (.dev, .app, .page, .bank, .insurance, .chrome, .goog, .youtube, .zip)
-        sub.assert_true(wing::is_hsts(client, "myproject.dev"), ".dev TLD is always HSTS");
-        sub.assert_true(wing::is_hsts(client, "coolservice.app"), ".app TLD is always HSTS");
-        sub.assert_true(wing::is_hsts(client, "secure.insurance"), ".insurance TLD is always HSTS");
-        sub.assert_true(wing::is_hsts(client, "portal.chrome"), ".chrome TLD is always HSTS");
-        sub.assert_true(wing::is_hsts(client, "archive.zip"), ".zip TLD is always HSTS");
+        sub.assert_true(client::is_hsts(client, "myproject.dev"), ".dev TLD is always HSTS");
+        sub.assert_true(client::is_hsts(client, "coolservice.app"), ".app TLD is always HSTS");
+        sub.assert_true(client::is_hsts(client, "secure.insurance"), ".insurance TLD is always HSTS");
+        sub.assert_true(client::is_hsts(client, "portal.chrome"), ".chrome TLD is always HSTS");
+        sub.assert_true(client::is_hsts(client, "archive.zip"), ".zip TLD is always HSTS");
 
         // 3. Regular non-HSTS domain
-        sub.assert_false(wing::is_hsts(client, "example.com"), "example.com is not HSTS");
+        sub.assert_false(client::is_hsts(client, "example.com"), "example.com is not HSTS");
 
         // 4. Test pre-flight URL rewrite
         // Mock the HTTPS route
-        wing::mock_route(client, "GET", "https://github.com/trending", 200, "{\"repos\":[]}");
+        client::mock_route(client, "GET", "https://github.com/trending", 200, "{\"repos\":[]}");
 
         // Client initiates GET with http://github.com/trending
-        let resp, err = wing::get(client, "http://github.com/trending");
-        sub.assert_true(wing::ok(err), "request succeeded");
-        sub.assert_eq(wing::status(resp), 200, "status 200");
+        let resp, err = client::get(client, "http://github.com/trending");
+        sub.assert_true(http::ok(err), "request succeeded");
+        sub.assert_eq(http::status(resp), 200, "status 200");
         // Effective URL must be https://, not cleartext http://!
         sub.assert_bytes_eq(resp.effective_url[..8], "https://", "URL was transparently upgraded to https:// before dispatch");
 
         // 5. Userinfo and IPv6 authority handling in split_http_url and hsts_upgrade_url
-        let u_host, u_port, u_rem, u_ok = wing::split_http_url("http://alice:secret@github.com:8080/org/repo?x=1");
+        let u_host, u_port, u_rem, u_ok = http::split_http_url("http://alice:secret@github.com:8080/org/repo?x=1");
         sub.assert_true(u_ok, "split_http_url with userinfo ok");
         sub.assert_bytes_eq(u_host, "github.com", "host extracted after userinfo@");
         sub.assert_bytes_eq(u_port, "8080", "port extracted after host");
@@ -746,7 +746,7 @@ fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
 
         var upgraded_userinfo: u8[..256] = [];
         sub.assert_true(
-            wing::hsts_upgrade_url(client.hsts, "http://alice:secret@github.com:8080/org/repo", 1700000000, upgraded_userinfo),
+            http::hsts_upgrade_url(client.hsts, "http://alice:secret@github.com:8080/org/repo", 1700000000, upgraded_userinfo),
             "hsts_upgrade_url upgrades URL with userinfo",
         );
         sub.assert_bytes_eq(
@@ -755,13 +755,13 @@ fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
             "userinfo and custom port preserved during HSTS upgrade",
         );
 
-        let v6_host, v6_port, v6_rem, v6_ok = wing::split_http_url("http://[2001:db8::1]:8080/status");
+        let v6_host, v6_port, v6_rem, v6_ok = http::split_http_url("http://[2001:db8::1]:8080/status");
         sub.assert_true(v6_ok, "split_http_url with IPv6 literal ok");
         sub.assert_bytes_eq(v6_host, "[2001:db8::1]", "IPv6 bracketed host preserved without splitting on internal colons");
         sub.assert_bytes_eq(v6_port, "8080", "IPv6 port extracted cleanly");
         sub.assert_bytes_eq(v6_rem, "/status", "IPv6 remainder preserved");
         sub.assert_false(
-            wing::hsts_upgrade_url(client.hsts, "http://[2001:db8::1]:8080/status", 1700000000, upgraded_userinfo),
+            http::hsts_upgrade_url(client.hsts, "http://[2001:db8::1]:8080/status", 1700000000, upgraded_userinfo),
             "RFC 6797 §8.1.1: IPv6 literal is never an HSTS host",
         );
     };
@@ -772,67 +772,67 @@ fn test_hsts_preload_list_auto_upgrade(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
     t.run("Dynamic Learning: Response Header Upgrades Subsequent Cleartext Requests") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000); // t0
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000); // t0
 
-        sub.assert_false(wing::is_hsts(client, "mycorp.internal"), "not HSTS initially");
+        sub.assert_false(client::is_hsts(client, "mycorp.internal"), "not HSTS initially");
 
         // 1. Visit HTTPS site which serves Strict-Transport-Security header
-        wing::mock_route(client, "GET", "https://mycorp.internal/login", 200, "login-page");
-        wing::add_mock_header(client, "Strict-Transport-Security", "max-age=3600; includeSubDomains");
+        client::mock_route(client, "GET", "https://mycorp.internal/login", 200, "login-page");
+        client::add_mock_header(client, "Strict-Transport-Security", "max-age=3600; includeSubDomains");
 
-        let resp1, err1 = wing::get(client, "https://mycorp.internal/login");
-        sub.assert_true(wing::ok(err1), "initial https login ok");
+        let resp1, err1 = client::get(client, "https://mycorp.internal/login");
+        sub.assert_true(http::ok(err1), "initial https login ok");
 
         // Client has now recorded HSTS for mycorp.internal and its subdomains
-        sub.assert_true(wing::is_hsts(client, "mycorp.internal"), "now known HSTS host");
-        sub.assert_true(wing::is_hsts(client, "api.mycorp.internal"), "subdomain also protected");
+        sub.assert_true(client::is_hsts(client, "mycorp.internal"), "now known HSTS host");
+        sub.assert_true(client::is_hsts(client, "api.mycorp.internal"), "subdomain also protected");
 
         // 2. Next request: user enters plain http://mycorp.internal/dashboard
-        wing::mock_route(client, "GET", "https://mycorp.internal/dashboard", 200, "dashboard-secure-content");
+        client::mock_route(client, "GET", "https://mycorp.internal/dashboard", 200, "dashboard-secure-content");
 
-        let resp2, err2 = wing::get(client, "http://mycorp.internal/dashboard");
-        sub.assert_true(wing::ok(err2), "dashboard request ok");
+        let resp2, err2 = client::get(client, "http://mycorp.internal/dashboard");
+        sub.assert_true(http::ok(err2), "dashboard request ok");
         sub.assert_bytes_eq(resp2.effective_url[..8], "https://", "http:// upgraded to https:// preventing SSL stripping");
         sub.assert_bytes_eq(resp2.body[..], "dashboard-secure-content", "secure content returned");
     };
 
     t.run("HSTS Deletion Directive (max-age=0)") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000);
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000);
 
         // Learn HSTS
-        wing::mock_route(client, "GET", "https://service.org/start", 200, "ok");
-        wing::add_mock_header(client, "Strict-Transport-Security", "max-age=7200");
-        let _, _ = wing::get(client, "https://service.org/start");
-        sub.assert_true(wing::is_hsts(client, "service.org"), "hsts active");
+        client::mock_route(client, "GET", "https://service.org/start", 200, "ok");
+        client::add_mock_header(client, "Strict-Transport-Security", "max-age=7200");
+        let _, _ = client::get(client, "https://service.org/start");
+        sub.assert_true(client::is_hsts(client, "service.org"), "hsts active");
 
         // Server sends max-age=0 to revoke HSTS
-        wing::mock_route(client, "GET", "https://service.org/revoke", 200, "revoked");
-        wing::add_mock_header(client, "Strict-Transport-Security", "max-age=0");
-        let _, _ = wing::get(client, "https://service.org/revoke");
+        client::mock_route(client, "GET", "https://service.org/revoke", 200, "revoked");
+        client::add_mock_header(client, "Strict-Transport-Security", "max-age=0");
+        let _, _ = client::get(client, "https://service.org/revoke");
 
         // Host must now be deleted from known HSTS hosts
-        sub.assert_false(wing::is_hsts(client, "service.org"), "hsts revoked via max-age=0");
+        sub.assert_false(client::is_hsts(client, "service.org"), "hsts revoked via max-age=0");
     };
 
     t.run("RFC 6797 Section 8.1 Security Invariant: Rejection Over Insecure HTTP") { sub =>
-        var client = wing::new_client();
-        wing::set_clock_us(client, 1700000000000000);
+        var client = client::new_client();
+        client::set_clock_us(client, 1700000000000000);
 
         // Insecure plain HTTP server tries to assert HSTS
-        wing::mock_route(client, "GET", "http://insecure.test/page", 200, "insecure-page");
-        wing::add_mock_header(client, "Strict-Transport-Security", "max-age=31536000");
+        client::mock_route(client, "GET", "http://insecure.test/page", 200, "insecure-page");
+        client::add_mock_header(client, "Strict-Transport-Security", "max-age=31536000");
 
-        let _, _ = wing::get(client, "http://insecure.test/page");
+        let _, _ = client::get(client, "http://insecure.test/page");
 
         // RFC 6797 Section 8.1: Must be rejected and ignored!
-        sub.assert_false(wing::is_hsts(client, "insecure.test"), "HSTS header ignored over plain HTTP");
+        sub.assert_false(client::is_hsts(client, "insecure.test"), "HSTS header ignored over plain HTTP");
     };
 
     t.run("HSTS Cache Persistence (save_hsts_cache / load_hsts_cache) & 128-Entry Capacity") { sub =>
-        var client1 = wing::new_client();
-        wing::set_clock_us(client1, 1700000000000000);
+        var client1 = client::new_client();
+        client::set_clock_us(client1, 1700000000000000);
 
         // Populate 20 distinct dynamic HSTS hosts (exceeding old 16-entry cap)
         for i in 20 {
@@ -841,7 +841,7 @@ fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
             format(host_buf, i);
             host_buf.append(".example.org");
             sub.assert_true(
-                wing::hsts_cache_update(client1.hsts, host_buf[..], "max-age=3600; includeSubDomains; preload", 1700000000),
+                http::hsts_cache_update(client1.hsts, host_buf[..], "max-age=3600; includeSubDomains; preload", 1700000000),
                 "hsts_cache_update succeeds for all 20 hosts",
             );
         }
@@ -852,26 +852,26 @@ fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
             host_buf.append("host");
             format(host_buf, i);
             host_buf.append(".example.org");
-            sub.assert_true(wing::is_hsts(client1, host_buf[..]), "all 20 hosts retained in 128-entry HstsCache");
+            sub.assert_true(client::is_hsts(client1, host_buf[..]), "all 20 hosts retained in 128-entry HstsCache");
         }
 
         // Serialize HSTS cache
         var persisted: u8[>..] = [];
-        let saved_count = wing::export_hsts(client1, persisted);
+        let saved_count = client::export_hsts(client1, persisted);
         sub.assert_eq(saved_count, 20, "all 20 active entries exported");
 
         // Load into a fresh client at t = 1700000500
-        var client2 = wing::new_client();
-        wing::set_clock_us(client2, 1700000500000000);
-        let loaded_count = wing::import_hsts(client2, persisted[..]);
+        var client2 = client::new_client();
+        client::set_clock_us(client2, 1700000500000000);
+        let loaded_count = client::import_hsts(client2, persisted[..]);
         sub.assert_eq(loaded_count, 20, "all 20 unexpired entries imported");
-        sub.assert_true(wing::is_hsts(client2, "sub.host0.example.org"), "imported subdomain HSTS active");
-        sub.assert_true(wing::is_hsts(client2, "host19.example.org"), "imported 20th host HSTS active");
+        sub.assert_true(client::is_hsts(client2, "sub.host0.example.org"), "imported subdomain HSTS active");
+        sub.assert_true(client::is_hsts(client2, "host19.example.org"), "imported 20th host HSTS active");
 
         // Loading after expiry (t = 1700004000) skips expired entries
-        var client3 = wing::new_client();
-        wing::set_clock_us(client3, 1700004000000000);
-        let expired_loaded = wing::import_hsts(client3, persisted[..]);
+        var client3 = client::new_client();
+        client::set_clock_us(client3, 1700004000000000);
+        let expired_loaded = client::import_hsts(client3, persisted[..]);
         sub.assert_eq(expired_loaded, 0, "expired entries skipped on import");
     };
 }
@@ -887,66 +887,66 @@ fn test_dynamic_hsts_cache_lifecycle(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_ipv4_mapped_ipv6_ssrf(t: lit::T&) {
     t.run("IPv4-Mapped IPv6 Loopback and Private Address SSRF Blocking") { sub =>
-        var session = wing::new_session();
+        var session = client::new_session();
         session.ssrf_guard.enabled = true;
         session.ssrf_guard.deny_local_network = true;
 
         // 1. IPv4-mapped loopback (127.0.0.1)
-        var req_loop = wing::new_get("http://[::ffff:127.0.0.1]/admin");
-        let res_loop, err_loop = wing::execute_request(session, req_loop);
-        sub.assert_false(wing::ok(err_loop), "[::ffff:127.0.0.1] loopback must be blocked by SSRF guard");
+        var req_loop = http::new_get("http://[::ffff:127.0.0.1]/admin");
+        let res_loop, err_loop = client::execute_request(session, req_loop);
+        sub.assert_false(http::ok(err_loop), "[::ffff:127.0.0.1] loopback must be blocked by SSRF guard");
 
         // 2. IPv4-mapped cloud metadata (169.254.169.254)
-        var req_meta = wing::new_get("http://[::ffff:169.254.169.254]/latest/meta-data/");
-        let res_meta, err_meta = wing::execute_request(session, req_meta);
-        sub.assert_false(wing::ok(err_meta), "[::ffff:169.254.169.254] cloud metadata must be blocked by SSRF guard");
+        var req_meta = http::new_get("http://[::ffff:169.254.169.254]/latest/meta-data/");
+        let res_meta, err_meta = client::execute_request(session, req_meta);
+        sub.assert_false(http::ok(err_meta), "[::ffff:169.254.169.254] cloud metadata must be blocked by SSRF guard");
 
         // 3. IPv4-mapped RFC 1918 private subnet (10.0.0.1)
-        var req_priv10 = wing::new_get("http://[::ffff:10.0.0.1]/internal");
-        let res_priv10, err_priv10 = wing::execute_request(session, req_priv10);
-        sub.assert_false(wing::ok(err_priv10), "[::ffff:10.0.0.1] private 10.x must be blocked by SSRF guard");
+        var req_priv10 = http::new_get("http://[::ffff:10.0.0.1]/internal");
+        let res_priv10, err_priv10 = client::execute_request(session, req_priv10);
+        sub.assert_false(http::ok(err_priv10), "[::ffff:10.0.0.1] private 10.x must be blocked by SSRF guard");
 
         // 4. IPv4-mapped RFC 1918 private subnet (192.168.1.1)
-        var req_priv192 = wing::new_get("http://[::ffff:192.168.1.1]/router");
-        let res_priv192, err_priv192 = wing::execute_request(session, req_priv192);
-        sub.assert_false(wing::ok(err_priv192), "[::ffff:192.168.1.1] private 192.168.x must be blocked by SSRF guard");
+        var req_priv192 = http::new_get("http://[::ffff:192.168.1.1]/router");
+        let res_priv192, err_priv192 = client::execute_request(session, req_priv192);
+        sub.assert_false(http::ok(err_priv192), "[::ffff:192.168.1.1] private 192.168.x must be blocked by SSRF guard");
 
         // 5. IPv4-mapped RFC 1918 private subnet (172.16.0.1)
-        var req_priv172 = wing::new_get("http://[::ffff:172.16.0.1]/backend");
-        let res_priv172, err_priv172 = wing::execute_request(session, req_priv172);
-        sub.assert_false(wing::ok(err_priv172), "[::ffff:172.16.0.1] private 172.16.x must be blocked by SSRF guard");
+        var req_priv172 = http::new_get("http://[::ffff:172.16.0.1]/backend");
+        let res_priv172, err_priv172 = client::execute_request(session, req_priv172);
+        sub.assert_false(http::ok(err_priv172), "[::ffff:172.16.0.1] private 172.16.x must be blocked by SSRF guard");
 
         // 6. Direct hex-format IPv4-mapped loopback [::ffff:7f00:1]
-        var req_hex_loop = wing::new_get("http://[::ffff:7f00:1]/status");
-        let res_hex_loop, err_hex_loop = wing::execute_request(session, req_hex_loop);
-        sub.assert_false(wing::ok(err_hex_loop), "[::ffff:7f00:1] hex loopback must be blocked by SSRF guard");
+        var req_hex_loop = http::new_get("http://[::ffff:7f00:1]/status");
+        let res_hex_loop, err_hex_loop = client::execute_request(session, req_hex_loop);
+        sub.assert_false(http::ok(err_hex_loop), "[::ffff:7f00:1] hex loopback must be blocked by SSRF guard");
 
         // 7. Direct hex-format IPv4-mapped cloud metadata [::ffff:a9fe:a9fe]
-        var req_hex_meta = wing::new_get("http://[::ffff:a9fe:a9fe]/meta");
-        let res_hex_meta, err_hex_meta = wing::execute_request(session, req_hex_meta);
-        sub.assert_false(wing::ok(err_hex_meta), "[::ffff:a9fe:a9fe] hex metadata must be blocked by SSRF guard");
+        var req_hex_meta = http::new_get("http://[::ffff:a9fe:a9fe]/meta");
+        let res_hex_meta, err_hex_meta = client::execute_request(session, req_hex_meta);
+        sub.assert_false(http::ok(err_hex_meta), "[::ffff:a9fe:a9fe] hex metadata must be blocked by SSRF guard");
     };
 
     t.run("DNS Rebinding with IPv4-Mapped IPv6 Resolved Address") { sub =>
-        var session = wing::new_session();
+        var session = client::new_session();
         session.ssrf_guard.enabled = true;
         session.ssrf_guard.deny_local_network = true;
 
         // Hostname resolves to IPv4-mapped loopback address
-        wing::mock_route(session, "GET", "http://rebind.target.com/api", 200, "ok");
-        wing::add_mock_resolved_ip(session, "::ffff:127.0.0.1");
+        client::mock_route(session, "GET", "http://rebind.target.com/api", 200, "ok");
+        client::add_mock_resolved_ip(session, "::ffff:127.0.0.1");
 
-        var req = wing::new_get("http://rebind.target.com/api");
-        let res, err = wing::execute_request(session, req);
-        sub.assert_false(wing::ok(err), "DNS rebinding with ::ffff:127.0.0.1 must be blocked");
+        var req = http::new_get("http://rebind.target.com/api");
+        let res, err = client::execute_request(session, req);
+        sub.assert_false(http::ok(err), "DNS rebinding with ::ffff:127.0.0.1 must be blocked");
 
         // Hostname resolves to hex IPv4-mapped loopback address ::ffff:7f00:1
-        wing::mock_route(session, "GET", "http://rebind2.target.com/api", 200, "ok");
-        wing::add_mock_resolved_ip(session, "::ffff:7f00:1");
+        client::mock_route(session, "GET", "http://rebind2.target.com/api", 200, "ok");
+        client::add_mock_resolved_ip(session, "::ffff:7f00:1");
 
-        var req2 = wing::new_get("http://rebind2.target.com/api");
-        let res2, err2 = wing::execute_request(session, req2);
-        sub.assert_false(wing::ok(err2), "DNS rebinding with ::ffff:7f00:1 must be blocked");
+        var req2 = http::new_get("http://rebind2.target.com/api");
+        let res2, err2 = client::execute_request(session, req2);
+        sub.assert_false(http::ok(err2), "DNS rebinding with ::ffff:7f00:1 must be blocked");
     };
 }
 
@@ -958,28 +958,28 @@ fn test_ipv4_mapped_ipv6_ssrf(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
     t.run("sanitize_headers_on_redirect: Scheme Downgrade to Trusted Host Strips Sensitive Headers") { sub =>
-        var req = wing::new_get("https://example.com/secure");
-        wing::set_header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
-        wing::set_header(req, "X-API-Key", "super-secret-token");
-        wing::set_header(req, "Custom-Key", "public-data");
+        var req = http::new_get("https://example.com/secure");
+        http::set_header(req, "Authorization", "Basic YWxhZGRpbjpvcGVuc2VzYW1l");
+        http::set_header(req, "X-API-Key", "super-secret-token");
+        http::set_header(req, "Custom-Key", "public-data");
 
-        let redirect_info = wing::compute_redirect_info(
+        let redirect_info = client::compute_redirect_info(
             "GET", 302, "https://example.com/secure", "http://example.com/insecure",
-            wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/secure",
-            wing::RedirectOptions { .. },
+            client::ReferrerPolicy.NoReferrerWhenDowngrade, "https://example.com/secure",
+            client::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.is_scheme_downgrade, "scheme downgrade detected");
 
         // When trusted_location_forwarding is true, scheme downgrade MUST STILL strip sensitive headers per RFC 9110
-        wing::sanitize_headers_on_redirect(
+        client::sanitize_headers_on_redirect(
             req.headers,
             redirect_info,
-            wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
+            client::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
         );
 
-        let has_auth = wing::has_header(req.headers, "Authorization");
-        let has_api_key = wing::has_header(req.headers, "X-API-Key");
-        let has_custom = wing::has_header(req.headers, "Custom-Key");
+        let has_auth = http::has_header(req.headers, "Authorization");
+        let has_api_key = http::has_header(req.headers, "X-API-Key");
+        let has_custom = http::has_header(req.headers, "Custom-Key");
 
         sub.assert_false(has_auth, "Authorization must be stripped on scheme downgrade even if host is trusted");
         sub.assert_false(has_api_key, "X-API-Key must be stripped on scheme downgrade even if host is trusted");
@@ -987,48 +987,48 @@ fn test_scheme_downgrade_with_trusted_hosts(t: lit::T&) {
     };
 
     t.run("ClientSession End-to-End: Scheme Downgrade to Trusted Host Strips Credentials") { sub =>
-        var session = wing::new_session();
-        wing::trust_location_host(session, "example.com");
+        var session = client::new_session();
+        client::trust_location_host(session, "example.com");
 
         // Route 1: HTTPS endpoint redirects to HTTP on trusted host example.com
-        wing::mock_route(session, "GET", "https://example.com/login", 302, "");
-        wing::add_mock_header(session, "Location", "http://example.com/cleartext_api");
+        client::mock_route(session, "GET", "https://example.com/login", 302, "");
+        client::add_mock_header(session, "Location", "http://example.com/cleartext_api");
 
         // Route 2: Destination cleartext HTTP endpoint
-        wing::mock_route(session, "GET", "http://example.com/cleartext_api", 200, "{\"ok\":true}");
+        client::mock_route(session, "GET", "http://example.com/cleartext_api", 200, "{\"ok\":true}");
 
-        var req = wing::new_get("https://example.com/login");
-        wing::set_header(req, "Authorization", "Bearer top_secret_credential");
+        var req = http::new_get("https://example.com/login");
+        http::set_header(req, "Authorization", "Bearer top_secret_credential");
 
-        let res, err = wing::execute_request(session, req);
-        sub.assert_true(wing::ok(err), "request succeeded");
+        let res, err = client::execute_request(session, req);
+        sub.assert_true(http::ok(err), "request succeeded");
         sub.assert_eq(res.status_code, 200, "final status 200");
 
-        let sent_auth = wing::has_sent_header(res, "Authorization");
+        let sent_auth = http::has_sent_header(res, "Authorization");
         sub.assert_false(sent_auth, "Authorization header must not be sent over cleartext HTTP on scheme downgrade");
     };
 
     t.run("Cross-Origin HTTPS -> HTTPS to Trusted Host Preserves Credentials") { sub =>
-        var req = wing::new_get("https://app.client.com/data");
-        wing::set_header(req, "Authorization", "Bearer shared_token");
+        var req = http::new_get("https://app.client.com/data");
+        http::set_header(req, "Authorization", "Bearer shared_token");
 
         // Cross-origin redirect, but both ends are secure HTTPS
-        let redirect_info = wing::compute_redirect_info(
+        let redirect_info = client::compute_redirect_info(
             "GET", 302, "https://app.client.com/data", "https://api.trusted.com/data",
-            wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://app.client.com/data",
-            wing::RedirectOptions { .. },
+            client::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://app.client.com/data",
+            client::RedirectOptions { .. },
         );
         sub.assert_true(redirect_info.is_cross_origin, "cross origin redirect");
         sub.assert_false(redirect_info.is_scheme_downgrade, "no scheme downgrade");
 
         // With trusted_location_forwarding = true on HTTPS -> HTTPS, credentials are preserved
-        wing::sanitize_headers_on_redirect(
+        client::sanitize_headers_on_redirect(
             req.headers,
             redirect_info,
-            wing::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
+            client::RedirectSanitizeOptions { enable_referer: true, trusted_location_forwarding: true },
         );
 
-        let has_auth = wing::has_header(req.headers, "Authorization");
+        let has_auth = http::has_header(req.headers, "Authorization");
         sub.assert_true(has_auth, "Authorization is preserved for trusted cross-origin HTTPS -> HTTPS");
     };
 }
@@ -1100,10 +1100,10 @@ fn test_security_txt_valid_matrix(t: lit::T&) {
         let valid_payload = "# RFC 9116 security.txt disclosure policy\n-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nContact: mailto:security@example.com\nContact: https://example.com/security\nExpires: 2030-12-31T23:59:59Z\nEncryption: https://example.com/pgp-key.txt\nCanonical: https://example.com/.well-known/security.txt\nAcknowledgments: https://example.com/hall-of-fame\nPolicy: https://example.com/disclosure-policy\nHiring: https://example.com/security-jobs\nPreferred-Languages: en, ru, de\n\n-----BEGIN PGP SIGNATURE-----\nVersion: OpenPrivacy\n...\n";
 
         let now_epoch: i64 = 1700000000; // Nov 2023
-        let sec = wing::parse_security_txt(valid_payload, now_epoch);
+        let sec = http::parse_security_txt(valid_payload, now_epoch);
 
         sub.assert_true(sec.is_valid, "Valid security.txt marked valid");
-        sub.assert_eq(sec.status, wing::SEC_TXT_OK, "Status is SEC_TXT_OK");
+        sub.assert_eq(sec.status, http::SEC_TXT_OK, "Status is SEC_TXT_OK");
         sub.assert_eq(sec.contact.len, 2, "2 contacts parsed");
         sub.assert_bytes_eq(sec.contact[0][..], "mailto:security@example.com", "Contact 1 matches");
         sub.assert_bytes_eq(sec.contact[1][..], "https://example.com/security", "Contact 2 matches");
@@ -1117,47 +1117,47 @@ fn test_security_txt_valid_matrix(t: lit::T&) {
     t.run("2. Mandatory Contact Field Enforcement (RFC 9116 §2.5.3)") { sub =>
         let missing_contact = "Expires: 2030-12-31T23:59:59Z\nCanonical: https://example.com/.well-known/security.txt\n";
 
-        let sec = wing::parse_security_txt(missing_contact, 0);
+        let sec = http::parse_security_txt(missing_contact, 0);
         sub.assert_false(sec.is_valid, "Missing contact must not be valid");
-        sub.assert_eq(sec.status, wing::SEC_TXT_ERR_MISSING_CONTACT, "Status indicates missing contact");
+        sub.assert_eq(sec.status, http::SEC_TXT_ERR_MISSING_CONTACT, "Status indicates missing contact");
     };
 
     t.run("3. Mandatory Expires Field Enforcement (RFC 9116 §2.5.5)") { sub =>
         let missing_expires = "Contact: mailto:security@example.com\n";
 
-        let sec = wing::parse_security_txt(missing_expires, 0);
+        let sec = http::parse_security_txt(missing_expires, 0);
         sub.assert_false(sec.is_valid, "Missing expires must not be valid");
-        sub.assert_eq(sec.status, wing::SEC_TXT_ERR_MISSING_EXPIRES, "Status indicates missing expires");
+        sub.assert_eq(sec.status, http::SEC_TXT_ERR_MISSING_EXPIRES, "Status indicates missing expires");
     };
 
     t.run("4. Duplicate Expires Rejection") { sub =>
         let dup_expires = "Contact: mailto:security@example.com\nExpires: 2030-12-31T23:59:59Z\nExpires: 2031-12-31T23:59:59Z\n";
 
-        let sec = wing::parse_security_txt(dup_expires, 0);
+        let sec = http::parse_security_txt(dup_expires, 0);
         sub.assert_false(sec.is_valid, "Duplicate expires must be rejected");
-        sub.assert_eq(sec.status, wing::SEC_TXT_ERR_DUPLICATE_EXPIRES, "Status indicates duplicate expires");
+        sub.assert_eq(sec.status, http::SEC_TXT_ERR_DUPLICATE_EXPIRES, "Status indicates duplicate expires");
     };
 
     t.run("5. Expired / Stale Timestamp Rejection") { sub =>
         let stale_txt = "Contact: mailto:security@example.com\nExpires: 2021-01-01T00:00:00Z\n";
 
         let now_epoch: i64 = 1700000000; // Nov 2023
-        let sec = wing::parse_security_txt(stale_txt, now_epoch);
+        let sec = http::parse_security_txt(stale_txt, now_epoch);
         sub.assert_false(sec.is_valid, "Stale file must not be valid");
         sub.assert_true(sec.is_expired, "is_expired flag set");
-        sub.assert_eq(sec.status, wing::SEC_TXT_ERR_EXPIRED, "Status indicates expired file");
+        sub.assert_eq(sec.status, http::SEC_TXT_ERR_EXPIRED, "Status indicates expired file");
     };
 
     t.run("6. Canonical HTTPS Requirement (RFC 9116 §2.5.2)") { sub =>
         let insecure_canonical = "Contact: mailto:security@example.com\nExpires: 2030-12-31T23:59:59Z\nCanonical: http://example.com/.well-known/security.txt\n";
 
-        let sec = wing::parse_security_txt(insecure_canonical, 0);
+        let sec = http::parse_security_txt(insecure_canonical, 0);
         sub.assert_false(sec.is_valid, "Non-HTTPS canonical must fail");
-        sub.assert_eq(sec.status, wing::SEC_TXT_ERR_INVALID_CANONICAL, "Status indicates invalid canonical");
+        sub.assert_eq(sec.status, http::SEC_TXT_ERR_INVALID_CANONICAL, "Status indicates invalid canonical");
     };
 
     t.run("7. Roundtrip Format and Parse") { sub =>
-        var orig = wing::SecurityTxt { .. };
+        var orig = http::SecurityTxt { .. };
         orig.contact.push("mailto:cert@company.org");
         orig.expires.append("2032-06-30T12:00:00Z");
         orig.canonical.push("https://company.org/.well-known/security.txt");
@@ -1165,9 +1165,9 @@ fn test_security_txt_valid_matrix(t: lit::T&) {
         orig.preferred_languages.append("en");
 
         var wire: u8[>..] = [];
-        wing::format_security_txt(orig, wire);
+        http::format_security_txt(orig, wire);
 
-        let parsed = wing::parse_security_txt(wire[..], 0);
+        let parsed = http::parse_security_txt(wire[..], 0);
         sub.assert_true(parsed.is_valid, "Formatted wire text re-parses as valid");
         sub.assert_bytes_eq(parsed.contact[0][..], "mailto:cert@company.org", "Roundtrip contact matches");
         sub.assert_bytes_eq(parsed.expires[..], "2032-06-30T12:00:00Z", "Roundtrip expires matches");
@@ -1177,10 +1177,10 @@ fn test_security_txt_valid_matrix(t: lit::T&) {
     };
 
     t.run("8. Path Validation Helpers") { sub =>
-        sub.assert_true(wing::is_security_txt_path("/.well-known/security.txt"), "Standard well-known path matches");
-        sub.assert_true(wing::is_security_txt_path("/security.txt"), "Legacy root path matches");
-        sub.assert_false(wing::is_security_txt_path("/security"), "Non-matching path rejected");
-        sub.assert_false(wing::is_security_txt_path("/.well-known/other"), "Other well-known path rejected");
+        sub.assert_true(http::is_security_txt_path("/.well-known/security.txt"), "Standard well-known path matches");
+        sub.assert_true(http::is_security_txt_path("/security.txt"), "Legacy root path matches");
+        sub.assert_false(http::is_security_txt_path("/security"), "Non-matching path rejected");
+        sub.assert_false(http::is_security_txt_path("/.well-known/other"), "Other well-known path rejected");
     };
 }
 
@@ -1199,8 +1199,8 @@ fn test_security_txt_valid_matrix(t: lit::T&) {
 fn test_altsvc_and_h3_promotion(t: lit::T&) {
     t.run("1. RFC 7838 Alt-Svc Parsing & Format") { sub =>
         let raw = "h3=\":443\"; ma=86400; persist=1, h2=\"alt.example.com:8443\"; ma=3600";
-        var endpoints: wing::AltSvcEndpoint[..4] = [];
-        let ok, is_clear = wing::parse_altsvc_header(raw, endpoints);
+        var endpoints: http::AltSvcEndpoint[..4] = [];
+        let ok, is_clear = http::parse_altsvc_header(raw, endpoints);
 
         sub.assert_true(ok, "Parse valid Alt-Svc header");
         sub.assert_false(is_clear, "Not a clear directive");
@@ -1219,43 +1219,43 @@ fn test_altsvc_and_h3_promotion(t: lit::T&) {
         sub.assert_eq(endpoints[1].max_age_sec as i64, 3600, "Endpoint 2 max-age is 3600");
 
         // Clear directive
-        var empty_eps: wing::AltSvcEndpoint[..4] = [];
-        let ok_clr, is_clr = wing::parse_altsvc_header("clear", empty_eps);
+        var empty_eps: http::AltSvcEndpoint[..4] = [];
+        let ok_clr, is_clr = http::parse_altsvc_header("clear", empty_eps);
         sub.assert_true(ok_clr, "Parse clear succeeds");
         sub.assert_true(is_clr, "Is clear flag true");
 
         // Server-side format
         var server_hdr: u8[>..] = [];
-        wing::format_altsvc_header(server_hdr, "h3", 443, 86400, true);
+        http::format_altsvc_header(server_hdr, "h3", 443, 86400, true);
         sub.assert_bytes_eq(server_hdr[..], "h3=\":443\"; ma=86400; persist=1", "Server Alt-Svc formatted");
     };
 
     t.run("2. Alt-Svc Cache Promotion & Backoff on Failure") { sub =>
-        var cache = wing::AltSvcCache { .. };
+        var cache = http::AltSvcCache { .. };
         let origin = "example.com:443";
         let raw = "h3=\":443\"; ma=1000";
 
         // Insert at t = 1000
-        wing::update(cache, origin, raw, 1000);
+        http::update(cache, origin, raw, 1000);
 
         // Lookup at t = 1500 (500s elapsed < 1000s max-age)
-        var promoted_ep = wing::AltSvcEndpoint { .. };
-        let has_h3 = wing::lookup_h3(cache, origin, 1500, promoted_ep);
+        var promoted_ep = http::AltSvcEndpoint { .. };
+        let has_h3 = http::lookup_h3(cache, origin, 1500, promoted_ep);
         sub.assert_true(has_h3, "Lookup succeeds and promotes to HTTP/3");
         sub.assert_bytes_eq(promoted_ep.proto[..], "h3", "Promoted proto is h3");
         sub.assert_eq(promoted_ep.port, 443, "Promoted port is 443");
 
         // Simulate connection failure (e.g. UDP blocked by firewall)
-        wing::record_failure(cache, origin, 1501);
+        http::record_failure(cache, origin, 1501);
 
         // Immediate subsequent lookup at t = 1502 must fail (broken_until_sec active)
-        var fail_ep = wing::AltSvcEndpoint { .. };
-        let is_broken = wing::lookup_h3(cache, origin, 1502, fail_ep);
+        var fail_ep = http::AltSvcEndpoint { .. };
+        let is_broken = http::lookup_h3(cache, origin, 1502, fail_ep);
         sub.assert_false(is_broken, "Immediate lookup after failure returns false (backoff active)");
 
         // Clear directive invalidation
-        wing::update(cache, origin, "clear", 1600);
-        let cleared = wing::lookup_h3(cache, origin, 1600, fail_ep);
+        http::update(cache, origin, "clear", 1600);
+        let cleared = http::lookup_h3(cache, origin, 1600, fail_ep);
         sub.assert_false(cleared, "Clear directive purged origin from cache");
     };
 }
@@ -1266,19 +1266,19 @@ fn test_altsvc_and_h3_promotion(t: lit::T&) {
 fn test_early_hints_and_replay_guard(t: lit::T&) {
     t.run("1. RFC 8297 103 Early Hints Link Preload / Preconnect") { sub =>
         let link_hdr = "</style.css>; rel=preload; as=style, <https://cdn.example.com>; rel=preconnect";
-        let hints, ok = wing::parse_early_hints(103, link_hdr);
+        let hints, ok = http::parse_early_hints(103, link_hdr);
 
         sub.assert_true(ok, "Parse 103 Early Hints response");
         sub.assert_eq(hints.links.len, 2, "2 links parsed");
 
         // Link 1: preload
         sub.assert_bytes_eq(hints.links[0].uri[..], "/style.css", "Link 1 URI");
-        sub.assert_true(wing::early_hint_is_preload(hints.links[0]), "Link 1 is preload");
+        sub.assert_true(http::early_hint_is_preload(hints.links[0]), "Link 1 is preload");
         sub.assert_bytes_eq(hints.links[0].as_type[..], "style", "Link 1 as=style");
 
         // Link 2: preconnect
         sub.assert_bytes_eq(hints.links[1].uri[..], "https://cdn.example.com", "Link 2 URI");
-        sub.assert_true(wing::early_hint_is_preconnect(hints.links[1]), "Link 2 is preconnect");
+        sub.assert_true(http::early_hint_is_preconnect(hints.links[1]), "Link 2 is preconnect");
     };
 
     t.run("2. RFC 8470 0-RTT Anti-Replay & 425 Too Early Recovery") { sub =>
@@ -1290,16 +1290,16 @@ fn test_early_hints_and_replay_guard(t: lit::T&) {
         sub.assert_false(rfc::is_safe_for_early_data("POST"), "POST is mutating, forbidden in 0-RTT");
         sub.assert_false(rfc::is_safe_for_early_data("DELETE"), "DELETE is mutating, forbidden in 0-RTT");
 
-        let dec_post = wing::evaluate_early_data_request("POST", false);
-        sub.assert_eq(dec_post, wing::EarlyDataDecision.RejectMutating, "POST evaluated as RejectMutating");
+        let dec_post = client::evaluate_early_data_request("POST", false);
+        sub.assert_eq(dec_post, client::EarlyDataDecision.RejectMutating, "POST evaluated as RejectMutating");
 
         // Server returns 425 Too Early
-        let dec_425 = wing::evaluate_early_data_response(425, true);
-        sub.assert_eq(dec_425, wing::EarlyDataDecision.RetryOn1Rtt, "425 triggers transparent 1-RTT retry");
+        let dec_425 = client::evaluate_early_data_response(425, true);
+        sub.assert_eq(dec_425, client::EarlyDataDecision.RetryOn1Rtt, "425 triggers transparent 1-RTT retry");
 
         // Header format
         var req_hdr: u8[>..] = [];
-        wing::append_early_data_header(req_hdr);
+        client::append_early_data_header(req_hdr);
         sub.assert_bytes_eq(req_hdr[..], "Early-Data: 1\r\n", "Early-Data header appended");
     };
 }
@@ -1310,7 +1310,7 @@ fn test_early_hints_and_replay_guard(t: lit::T&) {
 fn test_no_vary_search_cache(t: lit::T&) {
     t.run("1. W3C No-Vary-Search Header Parser") { sub =>
         let raw = "params, except=(\"id\" \"page\"), key-order";
-        let nvs, ok = wing::parse_no_vary_search(raw);
+        let nvs, ok = http::parse_no_vary_search(raw);
 
         sub.assert_true(ok, "Parse No-Vary-Search header");
         sub.assert_true(nvs.ignore_all_params, "params flag ignores all params by default");
@@ -1322,20 +1322,20 @@ fn test_no_vary_search_cache(t: lit::T&) {
 
     t.run("2. Query Parameter Normalization for Cache Hits") { sub =>
         let raw = "params, except=(\"id\")";
-        let nvs, _ = wing::parse_no_vary_search(raw);
+        let nvs, _ = http::parse_no_vary_search(raw);
 
         // Input URL with marketing tracking tags and id in between
         let input_query = "utm_source=twitter&id=42&utm_medium=social&fbclid=XYZ123";
         var normalized: u8[>..] = [];
-        wing::normalize_query_for_cache(input_query, nvs, normalized);
+        http::normalize_query_for_cache(input_query, nvs, normalized);
 
         sub.assert_bytes_eq(normalized[..], "id=42", "Tracking parameters stripped, only excepted id preserved");
 
         // Parameter order sorting
         let unordered = "b=2&a=1&c=3";
-        let nvs_order, _ = wing::parse_no_vary_search("key-order");
+        let nvs_order, _ = http::parse_no_vary_search("key-order");
         var sorted_q: u8[>..] = [];
-        wing::normalize_query_for_cache(unordered, nvs_order, sorted_q);
+        http::normalize_query_for_cache(unordered, nvs_order, sorted_q);
         sub.assert_bytes_eq(sorted_q[..], "a=1&b=2&c=3", "Parameters sorted alphabetically by key");
     };
 }
@@ -1347,9 +1347,9 @@ fn test_masque_capsules_and_datagrams(t: lit::T&) {
     t.run("1. RFC 9297 Capsule Codec") { sub =>
         var wire: u8[..256] = [];
         let payload = "capsule_data_payload";
-        sub.assert_true(wing::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, payload), "encode capsule");
+        sub.assert_true(net::encode_http_capsule(wire, rfc::CAPSULE_DATAGRAM, payload), "encode capsule");
 
-        let c, ok = wing::parse_http_capsule(wire[..]);
+        let c, ok = net::parse_http_capsule(wire[..]);
         sub.assert_true(ok, "parse capsule");
         sub.assert_eq(c.capsule_type, rfc::CAPSULE_DATAGRAM, "Capsule type is DATAGRAM (0x00)");
         sub.assert_bytes_eq(c.payload, payload, "Payload matches original");
@@ -1357,22 +1357,22 @@ fn test_masque_capsules_and_datagrams(t: lit::T&) {
 
     t.run("2. MASQUE CONNECT-UDP (RFC 9298) Tunneling") { sub =>
         var path: u8[..256] = [];
-        wing::format_connect_udp_path(path, "1.1.1.1", 53);
+        net::format_connect_udp_path(path, "1.1.1.1", 53);
         sub.assert_bytes_eq(path[..], "/.well-known/masque/udp/1.1.1.1/53/", "MASQUE URI template path");
 
         // UDP packet datagram capsule
         var datagram_capsule: u8[..256] = [];
         let fake_dns_query = "dns_packet_bytes";
         sub.assert_true(
-            wing::encode_connect_udp_datagram_capsule(datagram_capsule, 0, fake_dns_query),
+            net::encode_connect_udp_datagram_capsule(datagram_capsule, 0, fake_dns_query),
             "encode datagram capsule",
         );
 
-        let parsed_capsule, ok_c = wing::parse_http_capsule(datagram_capsule[..]);
+        let parsed_capsule, ok_c = net::parse_http_capsule(datagram_capsule[..]);
         sub.assert_true(ok_c, "parse datagram capsule");
         sub.assert_eq(parsed_capsule.capsule_type, rfc::CAPSULE_DATAGRAM, "Type is DATAGRAM");
 
-        let ctx_id, udp_packet, ok_udp = wing::parse_connect_udp_datagram(parsed_capsule.payload);
+        let ctx_id, udp_packet, ok_udp = net::parse_connect_udp_datagram(parsed_capsule.payload);
         sub.assert_true(ok_udp, "parse connect-udp datagram");
         sub.assert_eq(ctx_id, 0, "Context ID is 0");
         sub.assert_bytes_eq(udp_packet, fake_dns_query, "Decapsulated UDP packet matches");
@@ -1384,7 +1384,7 @@ fn test_masque_capsules_and_datagrams(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_har_telemetry_and_isolation(t: lit::T&) {
     t.run("1. HAR 1.2 Telemetry & Timing Waterfall Serializer") { sub =>
-        let timings = wing::RequestTimings {
+        let timings = client::RequestTimings {
             blocked_us: 100,
             dns_us:     1250,
             connect_us: 8400,
@@ -1393,10 +1393,10 @@ fn test_har_telemetry_and_isolation(t: lit::T&) {
             wait_us:    25400,
             receive_us: 3200,
         };
-        let total_us = wing::compute_total_timing_us(timings);
+        let total_us = client::compute_total_timing_us(timings);
         sub.assert_eq(total_us, 53700, "Total duration 53.7 ms = 53700 us");
 
-        var entry = wing::HarEntry {
+        var entry = client::HarEntry {
             status:         200,
             request_bytes:  450,
             response_bytes: 12500,
@@ -1410,7 +1410,7 @@ fn test_har_telemetry_and_isolation(t: lit::T&) {
         entry.status_text.append("OK");
 
         var json_buf: u8[>..] = [];
-        wing::serialize_har_entry_json(entry, json_buf);
+        client::serialize_har_entry_json(entry, json_buf);
 
         sub.assert_contains(json_buf[..], "\"time\":53.70", "HAR entry includes total time");
         sub.assert_contains(json_buf[..], "\"url\":\"https://api.example.com/v1/data\"", "HAR entry includes URL");
@@ -1419,12 +1419,12 @@ fn test_har_telemetry_and_isolation(t: lit::T&) {
     };
 
     t.run("2. Network Isolation Keys (NIK) State Partitioning") { sub =>
-        let nik = wing::new_network_isolation_key("https://site-a.com", "https://site-b.com");
+        let nik = net::new_network_isolation_key("https://site-a.com", "https://site-b.com");
         sub.assert_false(nik.is_empty, "NIK is not empty");
         sub.assert_true(nik.is_cross_site, "Cross-site NIK detected");
 
         var partitioned_key: u8[>..] = [];
-        wing::format_partitioned_key("example.com:443", nik, partitioned_key);
+        net::format_partitioned_key(nik, "example.com:443", partitioned_key);
         sub.assert_bytes_eq(
             partitioned_key[..],
             "example.com:443{https://site-a.com,https://site-b.com}",
@@ -1432,9 +1432,9 @@ fn test_har_telemetry_and_isolation(t: lit::T&) {
         );
 
         // Empty NIK fallback
-        let empty_nik = wing::empty_network_isolation_key();
+        let empty_nik = net::empty_network_isolation_key();
         var raw_key: u8[>..] = [];
-        wing::format_partitioned_key("example.com:443", empty_nik, raw_key);
+        net::format_partitioned_key(empty_nik, "example.com:443", raw_key);
         sub.assert_bytes_eq(raw_key[..], "example.com:443", "Empty NIK leaves key unpartitioned");
     };
 }
@@ -1688,9 +1688,9 @@ fn test_security_audit_regressions(t: lit::T&) {
         );
 
         // Duplicate Sec-Fetch-Site header must not downgrade CrossSite to Missing
-        var req_dup = wing::new_request("POST", "https://app.example.com/transfer");
-        wing::append_header(req_dup.headers, "Sec-Fetch-Site", "cross-site");
-        wing::append_header(req_dup.headers, "Sec-Fetch-Site", "");
+        var req_dup = http::new_request("POST", "https://app.example.com/transfer");
+        http::append_header(req_dup.headers, "Sec-Fetch-Site", "cross-site");
+        http::append_header(req_dup.headers, "Sec-Fetch-Site", "");
         let extracted_dup = security::extract_fetch_context(req_dup, "app.example.com");
         sub.assert_true(
             extracted_dup.site == security::SecFetchSite.CrossSite,
@@ -1705,7 +1705,7 @@ fn test_security_audit_regressions(t: lit::T&) {
         );
 
         // Vary: X-Origin must still receive Origin token
-        var res_vary = wing::Response { status_code: 200, .. };
+        var res_vary = http::Response { status_code: 200, .. };
         res_vary.set_header("Vary", "X-Origin");
         security::apply_cors_vary_header(res_vary);
         sub.assert_bytes_eq(res_vary.header("Vary"), "X-Origin, Origin", "Vary: X-Origin is not confused with Origin");
@@ -1713,9 +1713,9 @@ fn test_security_audit_regressions(t: lit::T&) {
         // Regular OPTIONS without Access-Control-Request-Method is not a preflight
         var cors_cfg = security::CorsPolicy { .. };
         let _ = security::add_allowed_origin(cors_cfg, "https://app.example.com");
-        var req_opt = wing::new_request("OPTIONS", "https://api.example.com/info");
-        wing::set_header(req_opt, "Origin", "https://app.example.com");
-        var res_opt = wing::Response { status_code: 200, .. };
+        var req_opt = http::new_request("OPTIONS", "https://api.example.com/info");
+        http::set_header(req_opt, "Origin", "https://app.example.com");
+        var res_opt = http::Response { status_code: 200, .. };
         let cors_res = security::evaluate_cors(cors_cfg, req_opt, res_opt);
         sub.assert_true(
             cors_res == security::CorsResult.AllowedActual,
@@ -1783,10 +1783,10 @@ fn test_security_audit_regressions(t: lit::T&) {
         );
 
         // attach_private_token formats and sets Authorization header with '='-padded base64url
-        var req_pt = wing::new_request("GET", "https://api.example.com/resource");
+        var req_pt = http::new_request("GET", "https://api.example.com/resource");
         security::attach_private_token(req_pt, "tok_raw_bytes");
         sub.assert_bytes_eq(
-            wing::header(req_pt, "Authorization"),
+            http::header(req_pt, "Authorization"),
             "PrivateToken token=\"dG9rX3Jhd19ieXRlcw==\"",
             "attach_private_token sets padded base64url Authorization header per RFC 9577 §2.2.2",
         );
@@ -1822,27 +1822,27 @@ fn test_security_audit_regressions(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_f007_hsts_rfc6797_invariants(t: lit::T&) {
     t.run("parse_hsts_header rejects duplicate includeSubDomains directive") { sub =>
-        let dir, ok = wing::parse_hsts_header("max-age=31536000; includeSubDomains; includeSubDomains");
+        let dir, ok = http::parse_hsts_header("max-age=31536000; includeSubDomains; includeSubDomains");
         sub.assert_false(ok, "Duplicate includeSubDomains MUST be rejected per RFC 6797 §6.1");
     };
 
     t.run("parse_hsts_header rejects duplicate preload directive") { sub =>
-        let dir, ok = wing::parse_hsts_header("max-age=31536000; preload; preload");
+        let dir, ok = http::parse_hsts_header("max-age=31536000; preload; preload");
         sub.assert_false(ok, "Duplicate preload MUST be rejected per RFC 6797 §6.1");
     };
 
     t.run("parse_hsts_header rejects includeSubDomains with value") { sub =>
-        let dir, ok = wing::parse_hsts_header("max-age=31536000; includeSubDomains=true");
+        let dir, ok = http::parse_hsts_header("max-age=31536000; includeSubDomains=true");
         sub.assert_false(ok, "includeSubDomains directive with value MUST be rejected per RFC 6797 §6.1.2");
     };
 
     t.run("hsts_cache_update updates is_preload on existing cache entry") { sub =>
-        var cache = wing::HstsCache { .. };
-        let ok1 = wing::hsts_cache_update(cache, "example.com", "max-age=31536000", 1000);
+        var cache = http::HstsCache { .. };
+        let ok1 = http::hsts_cache_update(cache, "example.com", "max-age=31536000", 1000);
         sub.assert_true(ok1, "Initial HSTS entry stored without preload");
 
         // Now update same host with preload directive
-        let ok2 = wing::hsts_cache_update(cache, "example.com", "max-age=31536000; preload", 2000);
+        let ok2 = http::hsts_cache_update(cache, "example.com", "max-age=31536000; preload", 2000);
         sub.assert_true(ok2, "Update HSTS entry with preload succeeds");
         sub.assert_true(cache.entries[0].is_preload, "Existing cache entry is_preload must be updated to true");
     };
@@ -1910,33 +1910,33 @@ fn test_cors_preflight_validation_and_hsts_localhost(t: lit::T&) {
         };
         let _ = security::add_allowed_origin(policy, "*");
 
-        var req_bad_method = wing::new_request("OPTIONS", "https://api.example.com/resource");
-        wing::set_header(req_bad_method, "Origin", "https://app.example.com");
-        wing::set_header(req_bad_method, "Access-Control-Request-Method", "DELETE");
-        var resp_bad_m = wing::Response { .. };
+        var req_bad_method = http::new_request("OPTIONS", "https://api.example.com/resource");
+        http::set_header(req_bad_method, "Origin", "https://app.example.com");
+        http::set_header(req_bad_method, "Access-Control-Request-Method", "DELETE");
+        var resp_bad_m = http::Response { .. };
         let dec_bad_m = security::evaluate_cors(policy, req_bad_method, resp_bad_m);
         sub.assert_true(dec_bad_m == security::CorsResult.RejectedPreflightMethod, "Disallowed DELETE preflight method rejected");
 
-        var req_bad_hdr = wing::new_request("OPTIONS", "https://api.example.com/resource");
-        wing::set_header(req_bad_hdr, "Origin", "https://app.example.com");
-        wing::set_header(req_bad_hdr, "Access-Control-Request-Method", "POST");
-        wing::set_header(req_bad_hdr, "Access-Control-Request-Headers", "X-Custom-Token, X-Forbidden-Header");
-        var resp_bad_h = wing::Response { .. };
+        var req_bad_hdr = http::new_request("OPTIONS", "https://api.example.com/resource");
+        http::set_header(req_bad_hdr, "Origin", "https://app.example.com");
+        http::set_header(req_bad_hdr, "Access-Control-Request-Method", "POST");
+        http::set_header(req_bad_hdr, "Access-Control-Request-Headers", "X-Custom-Token, X-Forbidden-Header");
+        var resp_bad_h = http::Response { .. };
         let dec_bad_h = security::evaluate_cors(policy, req_bad_hdr, resp_bad_h);
         sub.assert_true(dec_bad_h == security::CorsResult.RejectedPreflightHeaders, "Disallowed preflight header rejected");
 
-        var req_ok = wing::new_request("OPTIONS", "https://api.example.com/resource");
-        wing::set_header(req_ok, "Origin", "https://app.example.com");
-        wing::set_header(req_ok, "Access-Control-Request-Method", "POST");
-        wing::set_header(req_ok, "Access-Control-Request-Headers", "Accept, Content-Language, X-Custom-Token");
-        var resp_ok = wing::Response { .. };
+        var req_ok = http::new_request("OPTIONS", "https://api.example.com/resource");
+        http::set_header(req_ok, "Origin", "https://app.example.com");
+        http::set_header(req_ok, "Access-Control-Request-Method", "POST");
+        http::set_header(req_ok, "Access-Control-Request-Headers", "Accept, Content-Language, X-Custom-Token");
+        var resp_ok = http::Response { .. };
         let dec_ok = security::evaluate_cors(policy, req_ok, resp_ok);
         sub.assert_true(dec_ok == security::CorsResult.AllowedPreflight, "Valid preflight method and headers accepted");
     };
 
     t.run("verify_client_cors_response enforces ACAO, ACAC, and tainted origin rules") { sub =>
-        var hdrs = wing::HeaderMap { .. };
-        wing::set_header(hdrs, "Access-Control-Allow-Origin", "*");
+        var hdrs = http::HeaderMap { .. };
+        http::set_header(hdrs, "Access-Control-Allow-Origin", "*");
         sub.assert_true(
             security::verify_client_cors_response(hdrs, "https://app.example.com"),
             "Uncredentialed wildcard ACAO passes",
@@ -1947,8 +1947,8 @@ fn test_cors_preflight_validation_and_hsts_localhost(t: lit::T&) {
             "Credentialed wildcard ACAO rejected per Fetch spec",
         );
 
-        wing::set_header(hdrs, "Access-Control-Allow-Origin", "null");
-        wing::set_header(hdrs, "Access-Control-Allow-Credentials", "true");
+        http::set_header(hdrs, "Access-Control-Allow-Origin", "null");
+        http::set_header(hdrs, "Access-Control-Allow-Credentials", "true");
         let tainted_cred_opts = security::ClientCorsVerifyOptions {
             tainted_origin:      true,
             include_credentials: true,
@@ -1960,10 +1960,10 @@ fn test_cors_preflight_validation_and_hsts_localhost(t: lit::T&) {
     };
 
     t.run("HSTS exempts localhost and .localhost from upgrades even if dynamic entry was inserted") { sub =>
-        var cache = wing::HstsCache { .. };
-        let _ = wing::hsts_cache_update(cache, "localhost", "max-age=31536000; includeSubDomains", 1000);
-        sub.assert_false(wing::is_hsts_host(cache, "localhost", 1010), "localhost is exempt from HSTS upgrades");
-        sub.assert_false(wing::is_hsts_host(cache, "sub.localhost", 1010), "sub.localhost is exempt from HSTS upgrades");
+        var cache = http::HstsCache { .. };
+        let _ = http::hsts_cache_update(cache, "localhost", "max-age=31536000; includeSubDomains", 1000);
+        sub.assert_false(http::is_hsts_host(cache, "localhost", 1010), "localhost is exempt from HSTS upgrades");
+        sub.assert_false(http::is_hsts_host(cache, "sub.localhost", 1010), "sub.localhost is exempt from HSTS upgrades");
     };
 }
 
@@ -2104,7 +2104,7 @@ fn test_goose2rfc_security_audit_regressions(t: lit::T&) {
         var long_host: u8[..300] = [];
         for i in 260 { long_host.push('a'); }
         long_host.append(".com");
-        var req_long = wing::new_request("POST", "/transfer");
+        var req_long = http::new_request("POST", "/transfer");
         let ctx_long = security::extract_fetch_context(req_long, long_host[..]);
         sub.assert_eq(ctx_long.target_host.len, 0, "oversize target_host cleared fail-closed");
 

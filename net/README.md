@@ -9,11 +9,11 @@ path, using stack-bounded buffers (`u8[..N]`) and zero-copy byte slices
 (`const u8[:]`).
 
 ```goose
-var poller = new_poller(net_internal::auto_transport_driver_config());
-let fd = tcp_connect("93.184.216.34", 80, 5000);
-register_socket(poller, fd as i32, 1, core::PollInterest.ReadWrite);
-tcp_close(fd);
-close_poller(poller);
+var poller = net::new_poller(net_internal::auto_transport_driver_config());
+let fd = net::tcp_connect("93.184.216.34", 80, 5000);
+poller.register_socket(fd as i32, 1, core::PollInterest.ReadWrite);
+net::tcp_close(fd);
+poller.close_poller();
 ```
 
 ## Public API Reference
@@ -80,9 +80,9 @@ error.
 struct UdpDatagram { payload: u8[..1472], peer_ip4: u32, peer_port: u16, gso_size: u16 }
 struct UdpBatchQueue { msgs: UdpDatagram[..32], count: i32, flushed_batches: u64, total_sent: u64, total_recvd: u64 }
 fn build_udp_datagram(data: const u8[:], peer_ip4: u32, peer_port: u16, gso_size: u16 = 0) -> UdpDatagram, bool
-fn enqueue_udp_datagram(fd: i32, queue: UdpBatchQueue&, dgram: const UdpDatagram&) -> i32, bool
-fn batch_send_messages(fd: i32, queue: UdpBatchQueue&) -> i32, bool
-fn batch_recv_messages(fd: i32, queue: UdpBatchQueue&) -> i32, bool
+fn enqueue_udp_datagram(queue: UdpBatchQueue&, fd: i32, dgram: const UdpDatagram&) -> i32, bool
+fn batch_send_messages(queue: UdpBatchQueue&, fd: i32) -> i32, bool
+fn batch_recv_messages(queue: UdpBatchQueue&, fd: i32) -> i32, bool
 ```
 
 `UdpBatchQueue` batches `sendmmsg` and `recvmmsg` transitions over a bounded
@@ -97,7 +97,7 @@ zero datagrams are silently dropped.
 ```goose
 struct Poller { ... }
 struct EventLoop { ... }
-root struct NetHost { ... }
+struct Host { ... }
 struct TcpDialer { default_timeout_ms: u32 = 5000 }
 fn new_poller(driver_cfg: const net_internal::TransportDriverConfig&) -> Poller
 fn enable_os_multiplexing(p: Poller&) -> bool
@@ -108,25 +108,25 @@ fn modify_socket(p: Poller&, fd: i32, tag: u64, interest: core::PollInterest, tr
 fn deregister_socket(p: Poller&, fd: i32) -> bool
 fn wake_tag(p: Poller&, tag: u64) -> bool
 fn poll_events(p: Poller&, timeout_ms: i64, now_ns: u64, out_events: core::PollReadyEvent[..64]&) -> i32
-fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i32
-fn new_net_host(driver_cfg: const net_internal::TransportDriverConfig&) -> NetHost
-fn close_net_host(host: NetHost&)
-fn link_listen(host: NetHost&, addr: core::ConnectAddr, owner: u16, tag: u64, backlog: i32) -> core::IoLink, core::IoError
-fn link_local_port(host: const NetHost&, link: core::IoLink) -> u16
-fn link_connect(host: NetHost&, addr: core::ConnectAddr, owner: u16, tag: u64) -> core::IoLink, core::ConnectStatus
-fn host_open_virtual_pair(host: NetHost&, owner_a: u16, owner_b: u16, tag_a: u64 = 0, tag_b: u64 = 0) -> core::IoLink, core::IoLink, bool
-fn link_send(host: NetHost&, link: core::IoLink, data: const u8[:]) -> i32, core::IoError
-fn link_set_rx_paused(host: NetHost&, link: core::IoLink, paused: bool) -> bool
-fn link_shutdown_write(host: NetHost&, link: core::IoLink) -> bool
-fn link_close(host: NetHost&, link: core::IoLink) -> bool
-fn link_abort(host: NetHost&, link: core::IoLink) -> bool
-fn link_add_timer(host: NetHost&, timer_id: u64, delay_ms: u64, owner: u16, tag: u64, periodic: bool, now_ns: u64) -> bool
-fn link_cancel_timer(host: NetHost&, timer_id: u64) -> bool
-fn link_wake(host: NetHost&, token: core::WakeToken) -> bool
-fn link_poll_dispatch<D>(host: NetHost&, driver: D&, timeout_ms: i64, now_ns: u64) -> i32
+fn dial_endpoint(d: const TcpDialer&, target: core::DialTarget) -> i64
+fn new_host(driver_cfg: const net_internal::TransportDriverConfig&) -> Host
+fn close_host(host: Host&)
+fn link_listen(host: Host&, addr: core::ConnectAddr, owner: u16, tag: u64, backlog: i32) -> core::IoLink, core::IoError
+fn link_local_port(host: const Host&, link: core::IoLink) -> u16
+fn link_connect(host: Host&, addr: core::ConnectAddr, owner: u16, tag: u64) -> core::IoLink, core::ConnectStatus
+fn open_virtual_pair(host: Host&, owner_a: u16, owner_b: u16, tag_a: u64 = 0, tag_b: u64 = 0) -> core::IoLink, core::IoLink, bool
+fn link_send(host: Host&, link: core::IoLink, data: const u8[:]) -> i32, core::IoError
+fn link_set_rx_paused(host: Host&, link: core::IoLink, paused: bool) -> bool
+fn link_shutdown_write(host: Host&, link: core::IoLink) -> bool
+fn link_close(host: Host&, link: core::IoLink) -> bool
+fn link_abort(host: Host&, link: core::IoLink) -> bool
+fn link_add_timer(host: Host&, timer_id: u64, delay_ms: u64, owner: u16, tag: u64, periodic: bool, now_ns: u64) -> bool
+fn link_cancel_timer(host: Host&, timer_id: u64) -> bool
+fn link_wake(host: Host&, token: core::WakeToken) -> bool
+fn link_poll_dispatch<D>(host: Host&, driver: D&, timeout_ms: i64, now_ns: u64) -> i32
 ```
 
-`NetHost` implements the `core::host_*` push/completion contract across Linux
+`Host` implements the `core::host_*` push/completion contract across Linux
 `epoll` & `io_uring` (`pbuf_ring`), Windows `WSAPoll` & `RIO`, macOS `kqueue`,
 and in-memory virtual pairs, delivering generation-checked `IoLink` and
 `WakeToken` events to passive protocol drivers (`core::on_link_event`). Both
@@ -337,8 +337,6 @@ fn is_host_circuit_broken(cb: HostCircuitBreaker&, now_ms: i64) -> bool
 fn should_retry_tier1_stale_socket<Req>(reused_connection: bool, req: const Req&, headers_received: bool = false) -> bool
 fn evaluate_tier1_retry<Req>(err_code: i32, reused_connection: bool, req: const Req&, headers_received: bool = false) -> Tier1Decision
 fn parse_retry_after_ms(header_raw: const u8[:], now_unix_ms: i64) -> i64, bool
-fn try_parse_retry_after_seconds(clean: const u8[:]) -> i64, bool
-fn try_parse_retry_after_http_date(clean: const u8[:], now_unix_ms: i64) -> i64, bool
 ```
 
 `compute_backoff_jitter_ms` updates `prev_sleep_ms` and `rng_seed` in place to
@@ -346,9 +344,8 @@ compute exponential or decorrelated-jitter delays bounded by `cfg.cap_ms`.
 `evaluate_tier1_retry` permits zero-delay replay on a fresh socket when a pooled
 connection fails before response headers arrive, and disables broken QUIC
 alternative services on `ERR_QUIC_PROTOCOL_ERROR`. `parse_retry_after_ms` parses
-RFC 9110 §10.2.3 `Retry-After` headers in either delta-seconds
-(`try_parse_retry_after_seconds`) or IMF-fixdate
-(`try_parse_retry_after_http_date`) format into non-negative milliseconds.
+RFC 9110 §10.2.3 `Retry-After` headers in either delta-seconds or IMF-fixdate
+format into non-negative milliseconds.
 
 ### 12. Reactor I/O Accelerators (`net/accel.goose`)
 

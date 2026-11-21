@@ -8,21 +8,21 @@ import core from "../..";
 import wing from "../..";
 
 fn main() {
-    let port_env = wing::get_env_port(0);
+    let port_env = net::get_env_port(0);
 
-    var server = wing::new_http_server();
-    wing::add_static_get_route(server, "/", "text/plain", "OK", 1);
-    wing::add_post_route(server, "/echo", 2);
-    wing::add_static_get_route(server, "/health", "text/plain", "HEALTHY", 3);
+    var server = server::new_http_server();
+    server::add_static_get_route(server, "/", "text/plain", "OK", 1);
+    server::add_post_route(server, "/echo", 2);
+    server::add_static_get_route(server, "/health", "text/plain", "HEALTHY", 3);
 
-    let listener = wing::tcp_listen("0.0.0.0", port_env, 4096);
+    let listener = net::tcp_listen("0.0.0.0", port_env, 4096);
     guard listener > 0 else {
         print("ERROR_FAILED_TO_LISTEN\n");
         return;
     }
 
-    let port = wing::tcp_getsockname_port(listener);
+    let port = net::tcp_getsockname_port(listener);
     print("READY_PORT:", port, "\n");
 
-    wing::serve_reactor(server, listener, 0);
+    server::serve_reactor(server, listener, 0);
 }

@@ -35,7 +35,7 @@ fn wing_parse_der_tlv(buf: const u8[:]) -> i64 {
     var c = core::cursor_from(buf);
     var tag: u8 = 0;
     var val = core::cursor_from(buf[..0]);
-    if wing::get_any_asn1_element(c, tag, val) {
+    if tls::get_any_asn1_element(c, tag, val) {
         return val.buf.len;
     }
     guard buf.len >= 2 else { return -1; }
@@ -44,7 +44,7 @@ fn wing_parse_der_tlv(buf: const u8[:]) -> i64 {
 
     var c_len = core::cursor_from(buf[1..]);
     var out_len: i64 = 0;
-    guard wing::get_asn1_length(c_len, out_len) else { return -2; }
+    guard tls::get_asn1_length(c_len, out_len) else { return -2; }
     let total_hdr = buf.len - c_len.buf.len;
     guard buf.len >= total_hdr + out_len else { return -1; }
     return -2;
@@ -56,7 +56,7 @@ fn wing_validate_der_integer(buf: const u8[:]) -> i64 {
     guard buf[0] == rfc::ASN1_TAG_INTEGER else { return 0; }
     var c = core::cursor_from(buf);
     var val: i64 = 0;
-    if !wing::get_asn1_integer(c, val) {
+    if !tls::get_asn1_integer(c, val) {
         let vlen = buf[1] as i64;
         guard buf.len >= 2 + vlen else { return -1; }
         return 0;
@@ -136,12 +136,12 @@ fn run_01_verify_asn1_der() {
 // Verification of ITU-T X.690 length boundaries and RFC 5280 serial number rules via wing::tls.
 //
 
-// Wire adapter for verify_split_stream and fuzzing using wing::get_asn1_length
+// Wire adapter for verify_split_stream and fuzzing using tls::get_asn1_length
 fn wing_decode_der_length(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
     var c = core::cursor_from(buf);
     var out_len: i64 = 0;
-    if wing::get_asn1_length(c, out_len) {
+    if tls::get_asn1_length(c, out_len) {
         return out_len;
     }
     let b0 = buf[0];
@@ -153,10 +153,10 @@ fn wing_decode_der_length(buf: const u8[:]) -> i64 {
     return -2;
 }
 
-// Validates RFC 5280 positive serial number rules and canonical padding via wing::validate_asn1_integer
+// Validates RFC 5280 positive serial number rules and canonical padding via tls::validate_asn1_integer
 fn wing_validate_asn1_serial_number(buf: const u8[:]) -> i64 {
     guard buf.len > 0 else { return -1; }
-    if wing::validate_asn1_integer(buf, true) {
+    if tls::validate_asn1_integer(buf, true) {
         return 1;
     }
     return -2;

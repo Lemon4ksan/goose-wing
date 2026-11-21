@@ -156,7 +156,7 @@ inline fn convert_timeout_unit(num: u64, unit: u8) -> u64, bool {
     return 0, false;
 }
 
-inline fn resolve_effective_http_status(headers: const wing::HeaderMap&) -> i32 {
+inline fn resolve_effective_http_status(headers: const http::HeaderMap&) -> i32 {
     if headers.status_code != 200 {
         return headers.status_code as u16;
     }
@@ -611,10 +611,10 @@ fn append_connect_json_quoted<B>(raw: const u8[:], out: B&) -> bool {
     return true;
 }
 
-inline fn has_prior_trailer_key_fold(trailers: const wing::HeaderMap&, limit_idx: i64, key: const u8[:]) -> bool {
+inline fn has_prior_trailer_key_fold(trailers: const http::HeaderMap&, limit_idx: i64, key: const u8[:]) -> bool {
     for j in limit_idx {
         let e .= trailers.entries[j];
-        if wing::entry_name(trailers, e).eq_ascii_fold(key) {
+        if http::entry_name(trailers, e).eq_ascii_fold(key) {
             return true;
         }
     }
@@ -622,7 +622,7 @@ inline fn has_prior_trailer_key_fold(trailers: const wing::HeaderMap&, limit_idx
 }
 
 fn append_connect_trailer_value_array<B>(
-    trailers:  const wing::HeaderMap&,
+    trailers:  const http::HeaderMap&,
     start_idx: i64,
     key:       const u8[:],
     json_buf:  B&,
@@ -632,11 +632,11 @@ fn append_connect_trailer_value_array<B>(
     var j = start_idx;
     while j < trailers.entries.len {
         let e .= trailers.entries[j];
-        if wing::entry_name(trailers, e).eq_ascii_fold(key) {
+        if http::entry_name(trailers, e).eq_ascii_fold(key) {
             if !first_val {
                 guard json_buf.try_push(',') else { return false; }
             }
-            guard append_connect_json_quoted(wing::entry_value(trailers, e), json_buf) else { return false; }
+            guard append_connect_json_quoted(http::entry_value(trailers, e), json_buf) else { return false; }
             first_val = false;
         }
         j = core::add_sat_i64(j, 1);
@@ -644,12 +644,12 @@ fn append_connect_trailer_value_array<B>(
     return json_buf.try_push(']');
 }
 
-fn append_connect_end_stream_metadata<B>(trailers: const wing::HeaderMap&, json_buf: B&) -> bool {
+fn append_connect_end_stream_metadata<B>(trailers: const http::HeaderMap&, json_buf: B&) -> bool {
     guard json_buf.try_append("\"metadata\":{") else { return false; }
     var first_meta = true;
     var lower_key: u8[..128] = [];
     for &e, i in trailers.entries {
-        let k = wing::entry_name(trailers, e);
+        let k = http::entry_name(trailers, e);
         if k.len == 0 || has_prior_trailer_key_fold(trailers, i, k) {
             continue;
         }
@@ -719,7 +719,7 @@ inline fn is_valid_connect_metadata_entry(key: const u8[:], val: const u8[:]) ->
 fn parse_connect_metadata_array(
     reader:       json::Reader&,
     lower_key:    const u8[:],
-    out_trailers: wing::HeaderMap&,
+    out_trailers: http::HeaderMap&,
     had_error:    bool&,
 ) {
     if json::peek(reader) != '[' {
@@ -745,7 +745,7 @@ fn parse_connect_metadata_array(
 fn parse_connect_metadata_member(
     reader:       json::Reader&,
     seen_meta:    bool&,
-    out_trailers: wing::HeaderMap&,
+    out_trailers: http::HeaderMap&,
     had_error:    bool&,
 ) {
     if seen_meta || json::peek(reader) != '{' {
@@ -857,7 +857,7 @@ fn parse_connect_error_member<B>(
     }
 }
 
-fn is_connect_get_request(req: const wing::Request&) -> bool {
+fn is_connect_get_request(req: const http::Request&) -> bool {
     guard req.method[..].eq_ascii_fold("GET") else { return false; }
     let q_idx = req.url[..].index_of_byte('?');
     guard q_idx >= 0 else { return false; }
@@ -957,7 +957,7 @@ fn encode_health_check_lpm<B>(serving_st: grpc::ServingStatus, out_lpm: B&) {
 
 // ---- Client Internal Helpers --------------------------------------------
 
-inline fn append_custom_metadata_to_request(req: wing::Request&, meta: const grpc::Metadata[:]) {
+inline fn append_custom_metadata_to_request(req: http::Request&, meta: const grpc::Metadata[:]) {
     for &m in meta {
         if is_valid_custom_metadata(m.key[..], m.value[..]) {
             req.set_header(m.key[..], m.value[..]);
@@ -1072,8 +1072,8 @@ fn scan_web_unary_frames(
 //   body = "\x00\x00\x00\x00\x05hello\x80\x00\x00\x00\x0Fgrpc-status: 0\r\n"
 //   returns: true, out_resp.payload = "hello", out_resp.status = Ok
 fn parse_web_unary_body(
-    res_headers:  const wing::HeaderMap&,
-    res_trailers: const wing::HeaderMap&,
+    res_headers:  const http::HeaderMap&,
+    res_trailers: const http::HeaderMap&,
     body:         const u8[:],
     out_resp:     grpc::Response&,
 ) -> bool {
@@ -1127,7 +1127,7 @@ fn parse_web_unary_body(
 // Example:
 //   res.trailers["grpc-status"] = "0", res.status_code = 200
 //   returns: true, out_resp.status = grpc::StatusCode.Ok
-inline fn extract_client_response_status(res: const wing::Response&, out_resp: grpc::Response&) -> bool {
+inline fn extract_client_response_status(res: const http::Response&, out_resp: grpc::Response&) -> bool {
     let in_trailers = res.trailers.has_header(rfc::HEADER_GRPC_STATUS);
     let in_headers = !in_trailers && res.headers.has_header(rfc::HEADER_GRPC_STATUS);
     if !in_trailers && !in_headers {

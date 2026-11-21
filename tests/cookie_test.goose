@@ -1628,13 +1628,13 @@ fn test_ssrf_filter_bypasses(t: lit::T&) {
         var policy = security::SsrfGuardPolicy { enabled: true, .. };
         let u_multi = core::new_url("http://[ff02::1%25eth0]/status");
         sub.assert_true(u_multi.valid, "Scoped multicast URL is syntactically valid per RFC 6874");
-        let err_multi = wing::validate_url_against_ssrf(u_multi, policy);
-        sub.assert_ne(err_multi, wing::RedirectError.None, "Scoped multicast URL must be blocked by SSRF guard");
+        let err_multi = client::validate_url_against_ssrf(u_multi, policy);
+        sub.assert_ne(err_multi, client::RedirectError.None, "Scoped multicast URL must be blocked by SSRF guard");
 
         let u_node = core::new_url("http://[ff01::1%25eth0]/admin");
         sub.assert_true(u_node.valid, "Node-local multicast URL is syntactically valid per RFC 6874");
-        let err_node = wing::validate_url_against_ssrf(u_node, policy);
-        sub.assert_ne(err_node, wing::RedirectError.None, "Node-local multicast URL must be blocked by SSRF guard");
+        let err_node = client::validate_url_against_ssrf(u_node, policy);
+        sub.assert_ne(err_node, client::RedirectError.None, "Node-local multicast URL must be blocked by SSRF guard");
     };
 }
 
@@ -1656,34 +1656,34 @@ fn test_dangerous_service_ports(t: lit::T&) {
 
         // Port 0 request
         let u_p0 = core::new_url("http://example.com:0/api");
-        let err_p0 = wing::validate_url_against_ssrf(u_p0, policy);
-        sub.assert_ne(err_p0, wing::RedirectError.None, "Port 0 URL must be blocked by SSRF guard");
+        let err_p0 = client::validate_url_against_ssrf(u_p0, policy);
+        sub.assert_ne(err_p0, client::RedirectError.None, "Port 0 URL must be blocked by SSRF guard");
 
         // Port 3306 request
         let u_mysql = core::new_url("http://example.com:3306/db");
-        let err_mysql = wing::validate_url_against_ssrf(u_mysql, policy);
-        sub.assert_ne(err_mysql, wing::RedirectError.None, "Port 3306 URL must be blocked by SSRF guard");
+        let err_mysql = client::validate_url_against_ssrf(u_mysql, policy);
+        sub.assert_ne(err_mysql, client::RedirectError.None, "Port 3306 URL must be blocked by SSRF guard");
 
         // Trailing-dot loopback URL request
         let u_dot = core::new_url("http://127.0.0.1./admin");
-        let err_dot = wing::validate_url_against_ssrf(u_dot, policy);
-        sub.assert_ne(err_dot, wing::RedirectError.None, "http://127.0.0.1./ with trailing dot must be blocked by SSRF guard");
+        let err_dot = client::validate_url_against_ssrf(u_dot, policy);
+        sub.assert_ne(err_dot, client::RedirectError.None, "http://127.0.0.1./ with trailing dot must be blocked by SSRF guard");
     };
 
     t.run("PORT-03: validate_url_against_ssrf blocks Redis (6379), Memcached (11211), and Docker (2375)") { sub =>
         var policy = security::SsrfGuardPolicy { enabled: true, .. };
 
         let u_redis = core::new_url("http://example.com:6379/");
-        let err_redis = wing::validate_url_against_ssrf(u_redis, policy);
-        sub.assert_ne(err_redis, wing::RedirectError.None, "Redis 6379 must be blocked");
+        let err_redis = client::validate_url_against_ssrf(u_redis, policy);
+        sub.assert_ne(err_redis, client::RedirectError.None, "Redis 6379 must be blocked");
 
         let u_mem = core::new_url("http://example.com:11211/");
-        let err_mem = wing::validate_url_against_ssrf(u_mem, policy);
-        sub.assert_ne(err_mem, wing::RedirectError.None, "Memcached 11211 must be blocked");
+        let err_mem = client::validate_url_against_ssrf(u_mem, policy);
+        sub.assert_ne(err_mem, client::RedirectError.None, "Memcached 11211 must be blocked");
 
         let u_doc = core::new_url("http://example.com:2375/");
-        let err_doc = wing::validate_url_against_ssrf(u_doc, policy);
-        sub.assert_ne(err_doc, wing::RedirectError.None, "Docker daemon 2375 must be blocked");
+        let err_doc = client::validate_url_against_ssrf(u_doc, policy);
+        sub.assert_ne(err_doc, client::RedirectError.None, "Docker daemon 2375 must be blocked");
     };
 }
 
@@ -2661,7 +2661,7 @@ fn test_goose2rfc_cookie_audit_regressions(t: lit::T&) {
         big_cookie.with_domain("example.com", false).with_path("/").with_secure(true).with_http_only(true);
         var djar = cookie::ServerCookieDeltaJar { .. };
         sub.assert_true(cookie::add(djar, big_cookie));
-        var hmap = wing::HeaderMap { .. };
+        var hmap = http::HeaderMap { .. };
         sub.assert_true(cookie::flush_deltas(djar, hmap), "4096B payload + attributes must fit in flush_deltas");
     };
 

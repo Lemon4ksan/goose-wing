@@ -3,10 +3,11 @@
 
 // Zero-allocation dual-slice waiter queue for connection pools.
 // Separates consumer (head, head_pos) and producer (tail) cache lines to avoid false sharing.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
+import .internal;
 
 struct WantConn {
     req_id:           u64  = 0,
@@ -34,36 +35,12 @@ fn is_queue_empty(q: const WantQueue&) -> bool {
     return q.queue_len() == 0;
 }
 
-inline fn compact_want_queue(q: WantQueue&) {
-    var new_head: WantConn[..32] = [];
-    if q.head_pos < q.head.len {
-        for &item in q.head[q.head_pos..] {
-            if !item.cancelled {
-                new_head.push(copy(item));
-            }
-        }
-    }
-    var new_tail: WantConn[..32] = [];
-    for &t_item in q.tail {
-        if !t_item.cancelled {
-            if new_head.len < 32 {
-                new_head.push(copy(t_item));
-            } else {
-                new_tail.push(copy(t_item));
-            }
-        }
-    }
-    q.head = new_head;
-    q.head_pos = 0;
-    q.tail = new_tail;
-}
-
 // Appends a connection requirement to the tail slice.
 fn push_want(q: WantQueue&, item: WantConn) -> bool {
     if q.tail.try_push(item) {
         return true;
     }
-    q.compact_want_queue();
+    net_internal::compact_want_queue(q);
     return q.tail.try_push(item);
 }
 
@@ -102,14 +79,14 @@ fn cancel_want(q: WantQueue&, req_id: u64) -> bool {
     for &item in q.head[q.head_pos..] {
         if item.req_id == req_id && !item.cancelled {
             item.cancelled = true;
-            q.compact_want_queue();
+            net_internal::compact_want_queue(q);
             return true;
         }
     }
     for &item in q.tail {
         if item.req_id == req_id && !item.cancelled {
             item.cancelled = true;
-            q.compact_want_queue();
+            net_internal::compact_want_queue(q);
             return true;
         }
     }

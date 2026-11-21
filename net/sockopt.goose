@@ -8,6 +8,7 @@ namespace net_internal;
 
 import std;
 import core from "..";
+import .internal;
 
 // ---- OS-Level Socket Constants ------------------------------------------
 
@@ -156,7 +157,7 @@ inline fn apply_tcp_keepalive_option(fd: i64, opts: const SocketOptions&) {
     guard opts.keepalive_idle_secs > 0 else { return; }
     let intvl = max(opts.keepalive_interval_secs, 1);
     let cnt = max(opts.keepalive_probes, 1);
-    let _ = wing::native_tcp_set_keepalive_params(fd, opts.keepalive_idle_secs, intvl, cnt);
+    let _ = native_tcp_set_keepalive_params(fd, opts.keepalive_idle_secs, intvl, cnt);
 }
 
 // Validates and applies `SocketOptions` to a socket descriptor `fd` (or validates configuration when `fd <= 0`).
@@ -165,19 +166,19 @@ fn apply_socket_options(fd: i64, opts: const SocketOptions&) -> bool {
     guard fd > 0 else { return true; }
     let reuse_flag:   i32 = if opts.reuse_addr { 1 } else { 0 };
     let nodelay_flag: i32 = if opts.tcp_nodelay { 1 } else { 0 };
-    let _ = wing::native_tcp_set_reuseaddr(fd, reuse_flag);
+    let _ = native_tcp_set_reuseaddr(fd, reuse_flag);
     if opts.reuse_port {
-        let _ = wing::native_tcp_set_reuseport(fd, 1);
+        let _ = native_tcp_set_reuseport(fd, 1);
     }
-    let _ = wing::native_tcp_set_nodelay(fd, nodelay_flag);
+    let _ = native_tcp_set_nodelay(fd, nodelay_flag);
     if opts.tcp_quickack {
-        let _ = wing::native_tcp_set_quickack(fd, 1);
+        let _ = native_tcp_set_quickack(fd, 1);
     }
     if opts.tcp_cork {
-        let _ = wing::native_tcp_set_cork(fd, 1);
+        let _ = native_tcp_set_cork(fd, 1);
     }
     if opts.tcp_fastopen > 0 {
-        let _ = wing::native_tcp_set_fastopen(fd, opts.tcp_fastopen);
+        let _ = native_tcp_set_fastopen(fd, opts.tcp_fastopen);
     }
     apply_tcp_keepalive_option(fd, opts);
     return true;

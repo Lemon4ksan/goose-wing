@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // HTTP header lexical validation, SWAR scanning, and framing checks (RFC 9110, RFC 9112, RFC 9113).
-namespace wing;
+namespace http;
 
 import std;
 import core from "../..";
+import http.headers.internal;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET:   ByteSet     = byte_set(CRLF_BYTES[..]);
@@ -47,16 +48,9 @@ inline fn is_field_name_byte_fast_lowercased(b: u8&) -> bool {
     return is_tchar(b);
 }
 
-// Header presence bitmask constants (O(1) duplicate & smuggling detector, aligned with header_id_to_bit)
-const HDR_PRESENCE_NONE:              u32 = 0;
 const HDR_PRESENCE_HOST:              u32 = 0x0002;
-const HDR_PRESENCE_DATE:              u32 = 0x0004;
-const HDR_PRESENCE_ACCEPT:            u32 = 0x0008;
 const HDR_PRESENCE_COOKIE:            u32 = 0x0010;
-const HDR_PRESENCE_ORIGIN:            u32 = 0x0020;
-const HDR_PRESENCE_SERVER:            u32 = 0x0040;
 const HDR_PRESENCE_CONNECTION:        u32 = 0x0080;
-const HDR_PRESENCE_USER_AGENT:        u32 = 0x0100;
 const HDR_PRESENCE_CONTENT_TYPE:      u32 = 0x0200;
 const HDR_PRESENCE_CONTENT_LENGTH:    u32 = 0x0400;
 const HDR_PRESENCE_AUTHORIZATION:     u32 = 0x0800;
@@ -98,8 +92,8 @@ fn track_known_header_presence(
             true
         },
         ContentLength => {
-            var parsed_val: i64 = 0;
-            guard validate_content_length_value(val, parsed_val) else { return false; }
+            let parsed_val, ok_cl = validate_content_length_value(val);
+            guard ok_cl else { return false; }
             if (tracker.mask & HDR_PRESENCE_CONTENT_LENGTH) != 0 {
                 tracker.has_duplicate_cl = true;
                 guard tracker.parsed_cl < 0 || tracker.parsed_cl == parsed_val else { return false; }
@@ -317,10 +311,6 @@ fn is_valid_header_name_h2(name: const u8[:]) -> bool {
     return true;
 }
 
-fn has_embedded_nulls(data: const u8[:]) -> bool {
-    return find_any(data, NULL_SET) >= 0;
-}
-
 fn is_valid_header_value(val: const u8[:]) -> bool {
     for b in val {
         guard is_valid_header_value_byte(b) else { return false; }
@@ -328,38 +318,17 @@ fn is_valid_header_value(val: const u8[:]) -> bool {
     return true;
 }
 
-// RFC 9110 Section 8.6 & RFC 9112 Section 6.3: Content-Length validation & anti-smuggling parser
-//
-// Example:
-//   s = "1024"
-//   returns: true, out_val = 1024
-fn parse_cl_digits(s: const u8[:], out_val: i64&) -> bool {
-    for b in s {
-        guard b >= '0' && b <= '9' else { return false; }
-    }
-    let num, ok = s.parse_u64_dec();
-    guard ok && num <= 9223372036854775807 else { return false; }
-    out_val = num as! i64;
-    return true;
-}
-
-fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
+fn validate_content_length_value(val: const u8[:]) -> i64, bool {
     let trimmed = val.trim_lws();
-    guard trimmed.len > 0 else { return false; }
+    guard trimmed.len > 0 else { return 0, false; }
 
-    var has_comma = false;
-    for b in trimmed {
-        if b == ',' {
-            has_comma = true;
-            break;
-        }
+    if !trimmed.contains_byte(',') {
+        var single_val: i64 = 0;
+        let ok = http_internal::parse_cl_digits(trimmed, single_val);
+        return single_val, ok;
     }
 
-    if !has_comma {
-        return parse_cl_digits(trimmed, out_val);
-    }
-
-    guard trimmed[0] != ',' && trimmed[trimmed.len - 1] != ',' else { return false; }
+    guard trimmed[0] != ',' && trimmed[trimmed.len - 1] != ',' else { return 0, false; }
 
     var first_parsed = false;
     var target_val: i64 = 0;
@@ -372,47 +341,23 @@ fn validate_content_length_value(val: const u8[:], out_val: i64&) -> bool {
         }
 
         let piece = trimmed[cursor..comma_idx].trim_lws();
-        guard piece.len > 0 else { return false; }
+        guard piece.len > 0 else { return 0, false; }
 
         var piece_num: i64 = 0;
-        guard parse_cl_digits(piece, piece_num) else { return false; }
+        guard http_internal::parse_cl_digits(piece, piece_num) else { return 0, false; }
 
         if !first_parsed {
             target_val = piece_num;
             first_parsed = true;
         } else {
-            guard piece_num == target_val else { return false; }
+            guard piece_num == target_val else { return 0, false; }
         }
 
         cursor = comma_idx + 1;
     }
 
-    guard first_parsed else { return false; }
-    out_val = target_val;
-    return true;
-}
-
-// RFC 9110 Section 5.6.4: Quoted Strings - Validate qdtext and backslash quoted-pair escapes.
-//
-// Example:
-//   v = "\"a\\\"b\"" -> true
-//   v = "\"a\\\""    -> false
-fn is_valid_rfc9110_quoted_string(v: const u8[:]) -> bool {
-    guard v.len >= 2 && v[0] == '"' && core::ends_with(v, "\"") else { return false; }
-    var idx: i64 = 1;
-    let end = core::sub_sat_i64(v.len, 1);
-    while idx < end {
-        let b = v[idx];
-        if b == '\\' {
-            idx = core::add_sat_i64(idx, 1);
-            guard idx < end && is_valid_header_value_byte(v[idx]) else { return false; }
-            idx = core::add_sat_i64(idx, 1);
-            continue;
-        }
-        guard b != '"' && is_valid_header_value_byte(b) else { return false; }
-        idx = core::add_sat_i64(idx, 1);
-    }
-    return true;
+    guard first_parsed else { return 0, false; }
+    return target_val, true;
 }
 
 // RFC 9112 Section 7: Validates a transfer-coding element (e.g. "chunked", "gzip", "identity", "gzip;q=1.0").
@@ -452,7 +397,11 @@ fn is_valid_transfer_coding(coding: const u8[:]) -> bool {
         let k = k_raw.trim_lws();
         let v = v_raw.trim_lws();
         guard k.len > 0 && v.len > 0 && is_valid_token_swar(k) else { return false; }
-        let ok_val = if v[0] == '"' { is_valid_rfc9110_quoted_string(v) } else { is_valid_token_swar(v) };
+        let ok_val = if v[0] == '"' {
+            http_internal::is_valid_rfc9110_quoted_string(v)
+        } else {
+            is_valid_token_swar(v)
+        };
         guard ok_val else { return false; }
         if p_end >= rem.len { break; }
         rem = rem[p_end + 1..];
@@ -517,15 +466,6 @@ fn hash_header_name(name: const u8[:]) -> u32 {
 }
 
 // ---- wire parser lexical helpers -------------------------------------------
-
-fn is_line_whitespace_only(line: const u8[:]) -> bool {
-    for b in line {
-        if b != ' ' && b != '\t' {
-            return false;
-        }
-    }
-    return true;
-}
 
 fn advance_crlf(buf: const u8[:], cursor: i64&, line_end: i64) -> bool {
     cursor = line_end;

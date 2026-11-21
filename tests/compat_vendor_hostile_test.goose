@@ -53,24 +53,24 @@ fn test_vendor_h1_chunked_and_smuggling(t: lit::T&) {
     };
 
     t.run("llhttp content-length.md & CVE-2023-45287: dirty reused Request/HeaderMap") { sub =>
-        var dirty_req = wing::new_request("POST", "/dirty");
+        var dirty_req = http::new_request("POST", "/dirty");
         let seed_wire: const u8[:] = "POST /ok HTTP/1.1\r\nHost: example.com\r\nContent-Length: 3\r\n\r\nabc";
-        let ok_seed, _ = wing::parse_http1_wire_request(seed_wire, dirty_req);
+        let ok_seed, _ = server::parse_http1_wire_request(seed_wire, dirty_req);
         sub.assert_true(ok_seed, "seed request parsed into dirty struct");
 
         let te_cl_wire: const u8[:] =
             "POST /first HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding:\r\nContent-Length: 5\r\n\r\nhello";
-        let ok_te_cl, _ = wing::parse_http1_wire_request(te_cl_wire, dirty_req);
+        let ok_te_cl, _ = server::parse_http1_wire_request(te_cl_wire, dirty_req);
         sub.assert_false(ok_te_cl, "empty Transfer-Encoding + Content-Length rejected");
 
         let dup_cl_wire: const u8[:] =
             "PUT /url HTTP/1.1\r\nHost: example.com\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\na";
-        let ok_dup_cl, _ = wing::parse_http1_wire_request(dup_cl_wire, dirty_req);
+        let ok_dup_cl, _ = server::parse_http1_wire_request(dup_cl_wire, dirty_req);
         sub.assert_false(ok_dup_cl, "conflicting duplicate Content-Length rejected");
 
         let sp_colon_wire: const u8[:] =
             "PUT /url HTTP/1.1\r\nHost: example.com\r\nContent-Length : 4\r\n\r\nabcd";
-        let ok_sp, _ = wing::parse_http1_wire_request(sp_colon_wire, dirty_req);
+        let ok_sp, _ = server::parse_http1_wire_request(sp_colon_wire, dirty_req);
         sub.assert_false(ok_sp, "space before colon in Content-Length rejected");
 
         var body_bad: u8[>..] = [];
@@ -86,20 +86,20 @@ fn test_vendor_h1_chunked_and_smuggling(t: lit::T&) {
 // 2. Structured Fields & No-Vary-Search Streaming Parser (vendor/sfparse, chromium)
 fn test_vendor_sfv_and_novarysearch(t: lit::T&) {
     t.run("chromium No-Vary-Search: duplicate keys, overrides & 8KB streaming header") { sub =>
-        let nvs1, ok_nvs1 = wing::parse_no_vary_search("params=(\"a\" \"b\"), params=?0, key-order=?1");
+        let nvs1, ok_nvs1 = http::parse_no_vary_search("params=(\"a\" \"b\"), params=?0, key-order=?1");
         sub.assert_true(ok_nvs1, "parsed duplicate-key NVS");
         sub.assert_false(nvs1.key_order_matters, "key-order=?1 disables key order sensitivity");
         sub.assert_true(
-            wing::are_urls_nvs_equivalent(
+            http::are_urls_nvs_equivalent(
                 "https://example.com/p?b=2&a=1", "https://example.com/p?a=1&b=2", nvs1,
             ),
             "reordered params match under key-order=?1",
         );
 
-        let nvs2, ok_nvs2 = wing::parse_no_vary_search("params, except=(\"id\" \"lang\");unk=1");
+        let nvs2, ok_nvs2 = http::parse_no_vary_search("params, except=(\"id\" \"lang\");unk=1");
         sub.assert_true(ok_nvs2, "parsed params+except NVS");
         sub.assert_true(
-            wing::are_urls_nvs_equivalent(
+            http::are_urls_nvs_equivalent(
                 "https://example.com/p?id=7&utm=x&lang=en",
                 "https://example.com/p?id=7&utm=y&lang=en",
                 nvs2,
@@ -107,7 +107,7 @@ fn test_vendor_sfv_and_novarysearch(t: lit::T&) {
             "except list preserves id and lang while ignoring utm",
         );
         sub.assert_false(
-            wing::are_urls_nvs_equivalent(
+            http::are_urls_nvs_equivalent(
                 "https://example.com/p?id=7&utm=x&lang=en",
                 "https://example.com/p?lang=en&id=7&utm=y",
                 nvs2,
@@ -115,7 +115,7 @@ fn test_vendor_sfv_and_novarysearch(t: lit::T&) {
             "without key-order, reordered preserved params do not match",
         );
         sub.assert_false(
-            wing::are_urls_nvs_equivalent(
+            http::are_urls_nvs_equivalent(
                 "https://example.com/p?id=7&lang=en",
                 "https://example.com/p?id=8&lang=en",
                 nvs2,
@@ -128,18 +128,18 @@ fn test_vendor_sfv_and_novarysearch(t: lit::T&) {
         for _ in 240 {
             huge_nvs.append(", unk=(\"x\" \"y\")");
         }
-        let nvs_huge, ok_huge = wing::parse_no_vary_search(huge_nvs[..]);
+        let nvs_huge, ok_huge = http::parse_no_vary_search(huge_nvs[..]);
         sub.assert_true(ok_huge, "parsed 8KB NVS header");
         sub.assert_false(nvs_huge.key_order_matters, "8KB streaming NVS parses without stack overflow");
     };
 
     t.run("sfparse & nghttp2_http_test: dirty containers & boundary rejections") { sub =>
-        var dict: wing::SfDictEntry[..16] = [];
-        sub.assert_true(wing::parse_sf_dict("u=3, i", dict), "seed valid dict");
-        sub.assert_false(wing::parse_sf_dict("u=0, ", dict), "trailing comma rejected (nghttp2_http_test)");
+        var dict: http::SfDictEntry[..16] = [];
+        sub.assert_true(http::parse_sf_dict("u=3, i", dict), "seed valid dict");
+        sub.assert_false(http::parse_sf_dict("u=0, ", dict), "trailing comma rejected (nghttp2_http_test)");
         sub.assert_eq(dict.len, 0, "failed parse clears dirty dict container");
 
-        let pri_override, ok_pri = wing::parse_http_priority("u=0, i, i=?0, u=6", false);
+        let pri_override, ok_pri = http::parse_priority("u=0, i, i=?0, u=6", false);
         sub.assert_true(ok_pri, "duplicate priority keys override per RFC 8941 (nghttp2_http_test:112)");
         sub.assert_eq(pri_override.urgency as i64, 6, "u=6 overrides u=0");
         sub.assert_false(pri_override.incremental, "i=?0 overrides i");
@@ -149,22 +149,22 @@ fn test_vendor_sfv_and_novarysearch(t: lit::T&) {
 // 3. HTTP Cache Multi-Header Cache-Control & Dirty ScalableHttpCache (chromium, curl)
 fn test_vendor_cache_multiline_poisoning(t: lit::T&) {
     t.run("multi-line conflicting Cache-Control: public + second line no-store") { sub =>
-        var cache = wing::ScalableHttpCache { .. };
-        wing::init_scalable_http_cache(cache, 16, 4096);
+        var cache = http::ScalableCache { .. };
+        http::init_scalable_cache(cache, 16, 4096);
 
-        var req = wing::new_request("GET", "https://cdn.example.com/secret.json");
-        var res_ok = wing::Response { status_code: 200, .. };
+        var req = http::new_request("GET", "https://cdn.example.com/secret.json");
+        var res_ok = http::Response { status_code: 200, .. };
         res_ok.set_header("Cache-Control", "public, max-age=600");
         res_ok.body.append("{\"v\":1}");
-        sub.assert_true(wing::store_response(cache, req, res_ok, 1000), "initial public response cached");
+        sub.assert_true(http::store_response(cache, req, res_ok, 1000), "initial public response cached");
 
-        var res_poison = wing::Response { status_code: 200, .. };
-        let _ = wing::append_header(res_poison.headers, "cache-control", "public, max-age=3600");
-        let _ = wing::append_header(res_poison.headers, "cache-control", "no-store");
+        var res_poison = http::Response { status_code: 200, .. };
+        let _ = http::append_header(res_poison.headers, "cache-control", "public, max-age=3600");
+        let _ = http::append_header(res_poison.headers, "cache-control", "no-store");
         res_poison.body.append("{\"v\":2}");
-        var req2 = wing::new_request("GET", "https://cdn.example.com/no-store.json");
+        var req2 = http::new_request("GET", "https://cdn.example.com/no-store.json");
         sub.assert_false(
-            wing::store_response(cache, req2, res_poison, 1005),
+            http::store_response(cache, req2, res_poison, 1005),
             "second Cache-Control: no-store line blocks storage",
         );
     };
@@ -173,29 +173,29 @@ fn test_vendor_cache_multiline_poisoning(t: lit::T&) {
 // 4. Redirect Sanitization & H2 Connection Pool Coalescing (curl, pingora, h2o)
 fn test_vendor_redirect_and_pool_coalescing(t: lit::T&) {
     t.run("curl cross-origin redirect strips credentials & pool blocks PSL coalescing") { sub =>
-        var req = wing::new_post("https://a.example.com/login");
-        wing::set_header(req, "Authorization", "Bearer secret-tok");
-        wing::set_header(req, "Cookie", "sid=12345");
-        wing::set_header(req, "Proxy-Authorization", "Basic abc");
-        wing::set_header(req, "Content-Length", "12");
-        wing::set_header(req, "Content-Type", "application/json");
+        var req = http::new_post("https://a.example.com/login");
+        http::set_header(req, "Authorization", "Bearer secret-tok");
+        http::set_header(req, "Cookie", "sid=12345");
+        http::set_header(req, "Proxy-Authorization", "Basic abc");
+        http::set_header(req, "Content-Length", "12");
+        http::set_header(req, "Content-Type", "application/json");
 
-        let info = wing::compute_redirect_info(
+        let info = client::compute_redirect_info(
             "POST", 302, "https://a.example.com/login", "https://evil.other.org/landing",
-            wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://a.example.com/login",
+            client::ReferrerPolicy.StrictOriginWhenCrossOrigin, "https://a.example.com/login",
         );
-        wing::sanitize_headers_on_redirect(req.headers, info);
-        sub.assert_false(wing::has_header(req, "Authorization"), "cross-origin Authorization stripped");
-        sub.assert_false(wing::has_header(req, "Cookie"), "cross-origin Cookie stripped");
-        sub.assert_false(wing::has_header(req, "Proxy-Authorization"), "Proxy-Authorization stripped");
-        sub.assert_false(wing::has_header(req, "Content-Length"), "POST->GET strips Content-Length");
+        client::sanitize_headers_on_redirect(req.headers, info);
+        sub.assert_false(http::has_header(req, "Authorization"), "cross-origin Authorization stripped");
+        sub.assert_false(http::has_header(req, "Cookie"), "cross-origin Cookie stripped");
+        sub.assert_false(http::has_header(req, "Proxy-Authorization"), "Proxy-Authorization stripped");
+        sub.assert_false(http::has_header(req, "Content-Length"), "POST->GET strips Content-Length");
 
         sub.assert_false(
-            wing::matches_san_pattern("*.co.uk", "bank.co.uk"),
+            net::matches_san_pattern("*.co.uk", "bank.co.uk"),
             "wildcard SAN on public suffix *.co.uk rejected in pool coalescing",
         );
         sub.assert_true(
-            wing::matches_san_pattern("*.example.co.uk", "api.example.co.uk"),
+            net::matches_san_pattern("*.example.co.uk", "api.example.co.uk"),
             "registrable wildcard *.example.co.uk accepted",
         );
     };
@@ -205,7 +205,7 @@ fn test_vendor_redirect_and_pool_coalescing(t: lit::T&) {
 fn test_vendor_h2_chopped_ingress_and_hpack(t: lit::T&) {
     t.run("nghttp2: 3-byte chopped preface + headers without END_HEADERS + interleaved PING") { sub =>
         var sess = server_internal::new_h2_server_session("localhost");
-        var pipeline = wing::ServerPipelineConfig { .. };
+        var pipeline = server::ServerPipelineConfig { .. };
         var timer = server_internal::ConnectionTimer { .. };
         var wire_in:  u8[..512]   = [];
         var wire_out: u8[..16384] = [];
@@ -252,7 +252,7 @@ fn test_vendor_h2_chopped_ingress_and_hpack(t: lit::T&) {
 
     t.run("ls-hpack / h2: HPACK table size update exceeding allowed max rejected") { sub =>
         var dt = http2::new_dynamic_table(256);
-        var hdrs = wing::HeaderMap { .. };
+        var hdrs = http::HeaderMap { .. };
         var pseudo = http2::PseudoHeaders { .. };
         // Dynamic table size update 0x3F 0xE2 0x01 => 31 + (0x62 + 128) = 287 > 256
         let oversize_update: u8[3] = [0x3F, 0xE2, 0x01];
@@ -328,9 +328,9 @@ fn test_vendor_h3_1byte_fragmentation(t: lit::T&) {
 // 8. TLS 1.3 Slice Unseal KeyUpdate Ratchet & Unknown PSK Fallback (rustls, picotls, BoGo)
 fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
     t.run("TLS 1.3 slice unseal: KeyUpdate ratchets rx key & user_canceled warning ignored") { sub =>
-        let slot_idx = wing::alloc_tls_cipher_slot();
+        let slot_idx = tls::alloc_cipher_slot();
         sub.assert_ne(slot_idx as i64, 0xFFFF, "allocated cipher slot");
-        defer wing::free_tls_cipher_slot(slot_idx);
+        defer tls::free_cipher_slot(slot_idx);
 
         let idx = slot_idx as i64;
         var sender_sec: u8[32] = [0x33; 32];
@@ -338,23 +338,23 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         var sender_iv:  u8[12] = [0; 12];
         tls_internal::ks_derive_key_iv(1, sender_sec[..], 16, sender_key[..], sender_iv);
 
-        wing::g_tls_cipher_slots[idx].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
-        wing::g_tls_cipher_slots[idx].hash_id = 1;
-        wing::g_tls_cipher_slots[idx].hash_len = 32;
-        wing::g_tls_cipher_slots[idx].key_len = 16;
-        for i in 32 { wing::g_tls_cipher_slots[idx].rx_traffic_secret[i] = sender_sec[i]; }
-        for i in 16 { wing::g_tls_cipher_slots[idx].rx_key[i] = sender_key[i]; }
-        wing::g_tls_cipher_slots[idx].rx_iv = sender_iv;
-        wing::tls_prepare_cipher_aes_key(
+        tls::g_tls_cipher_slots[idx].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
+        tls::g_tls_cipher_slots[idx].hash_id = 1;
+        tls::g_tls_cipher_slots[idx].hash_len = 32;
+        tls::g_tls_cipher_slots[idx].key_len = 16;
+        for i in 32 { tls::g_tls_cipher_slots[idx].rx_traffic_secret[i] = sender_sec[i]; }
+        for i in 16 { tls::g_tls_cipher_slots[idx].rx_key[i] = sender_key[i]; }
+        tls::g_tls_cipher_slots[idx].rx_iv = sender_iv;
+        tls::prepare_cipher_aes_key(
             rfc::TLS_CIPHER_AES_128_GCM_SHA256,
-            wing::g_tls_cipher_slots[idx].rx_key[..16],
-            wing::g_tls_cipher_slots[idx].rx_aes_key,
+            tls::g_tls_cipher_slots[idx].rx_key[..16],
+            tls::g_tls_cipher_slots[idx].rx_aes_key,
         );
 
         // Seal Record 0: user_canceled warning alert [level=1, desc=90]
         var rec0: u8[64] = [0; 64];
         let warn_msg: u8[2] = [1, rfc::TLS_ALERT_USER_CANCELED];
-        let len0, _, ok0 = wing::tls_record_seal_into(
+        let len0, _, ok0 = tls::record_seal_into(
             rfc::TLS_CIPHER_AES_128_GCM_SHA256, sender_key[..], sender_iv, 0,
             rfc::TLS_CONTENT_ALERT, warn_msg[..], rec0[..],
         );
@@ -363,7 +363,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         // Seal Record 1 (seq=1): KeyUpdate (update_not_requested = 0): [24, 0, 0, 1, 0]
         var rec1: u8[64] = [0; 64];
         let ku_msg: u8[5] = [rfc::TLS_HS_KEY_UPDATE, 0, 0, 1, 0];
-        let len1, _, ok1 = wing::tls_record_seal_into(
+        let len1, _, ok1 = tls::record_seal_into(
             rfc::TLS_CIPHER_AES_128_GCM_SHA256, sender_key[..], sender_iv, 1,
             rfc::TLS_CONTENT_HANDSHAKE, ku_msg[..], rec1[..],
         );
@@ -373,7 +373,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         tls_internal::ks_update_traffic_secret(1, 32, sender_sec[..]);
         tls_internal::ks_derive_key_iv(1, sender_sec[..], 16, sender_key[..], sender_iv);
         var rec2: u8[64] = [0; 64];
-        let len2, _, ok2 = wing::tls_record_seal_into(
+        let len2, _, ok2 = tls::record_seal_into(
             rfc::TLS_CIPHER_AES_128_GCM_SHA256, sender_key[..], sender_iv, 0,
             rfc::TLS_CONTENT_APPLICATION_DATA, "post-ku-ok", rec2[..],
         );
@@ -381,30 +381,30 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
 
         var scratch:   u8[128]   = [0; 128];
         var out_plain: u8[..128] = [];
-        let st0 = wing::unseal_single_slot_record(
-            wing::g_tls_cipher_slots[idx], rec0[..5], rec0[5..len0], scratch[..], out_plain,
+        let st0 = tls::unseal_single_slot_record(
+            tls::g_tls_cipher_slots[idx], rec0[..5], rec0[5..len0], scratch[..], out_plain,
         );
-        let st1 = wing::unseal_single_slot_record(
-            wing::g_tls_cipher_slots[idx], rec1[..5], rec1[5..len1], scratch[..], out_plain,
+        let st1 = tls::unseal_single_slot_record(
+            tls::g_tls_cipher_slots[idx], rec1[..5], rec1[5..len1], scratch[..], out_plain,
         );
-        let st2 = wing::unseal_single_slot_record(
-            wing::g_tls_cipher_slots[idx], rec2[..5], rec2[5..len2], scratch[..], out_plain,
+        let st2 = tls::unseal_single_slot_record(
+            tls::g_tls_cipher_slots[idx], rec2[..5], rec2[5..len2], scratch[..], out_plain,
         );
-        sub.assert_true(st0 == wing::TlsSliceUnsealStatus.ControlHandled, "user_canceled warning ignored");
-        sub.assert_true(st1 == wing::TlsSliceUnsealStatus.ControlHandled, "KeyUpdate handled without closing");
-        sub.assert_true(st2 == wing::TlsSliceUnsealStatus.Ok, "ratcheted ApplicationData decrypted");
+        sub.assert_true(st0 == tls::SliceUnsealStatus.ControlHandled, "user_canceled warning ignored");
+        sub.assert_true(st1 == tls::SliceUnsealStatus.ControlHandled, "KeyUpdate handled without closing");
+        sub.assert_true(st2 == tls::SliceUnsealStatus.Ok, "ratcheted ApplicationData decrypted");
         sub.assert_bytes_eq(out_plain[..], "post-ku-ok", "decrypted payload after KeyUpdate matches");
     };
 
     t.run("RFC 8446 §4.2.11: unknown PSK falls back to 1-RTT while forged known binder aborts") { sub =>
-        wing::clear_tls13_session_tickets();
+        tls::clear_session_tickets();
         let cli_rand: u8[32] = [0x42; 32];
         let cli_priv: u8[32] = [0x24; 32];
         let cli_pub = core::x25519_base_scalarmult(cli_priv);
         let fake_psk: u8[32] = [0x99; 32];
 
         var ch_payload: u8[..1024] = [];
-        wing::build_tls13_client_hello_payload(
+        tls::build_client_hello_payload(
             cli_rand, cli_pub, "api.example.com", "h2", ch_payload, "expired-ticket-id", 100,
         );
         var ch_msg: u8[..1024] = [];
@@ -419,7 +419,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         let trunc_ch, ok_tr = tls_internal::truncate_client_hello_for_binder(ch_msg[..], 33);
         sub.assert_true(ok_tr, "truncated CH for binder");
         var binder: u8[32] = [0; 32];
-        sub.assert_true(wing::compute_tls13_psk_binder(b_key, trunc_ch, binder), "computed PSK binder");
+        sub.assert_true(tls::compute_psk_binder(b_key, trunc_ch, binder), "computed PSK binder");
         let b_start = ch_msg.len - 32;
         for i in 32 { ch_msg[b_start + i] = binder[i]; }
 
@@ -428,7 +428,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         var alpn:    u8[..32] = [];
         var resumed = true;
         var out_psk: u8[32] = [0; 32];
-        let ok_unknown = wing::parse_client_hello_for_server(
+        let ok_unknown = tls::parse_client_hello_for_server(
             ch_msg[..], "h2", sid, out_pub, alpn, resumed, out_psk,
         );
         sub.assert_true(ok_unknown, "unknown PSK identity does not abort ClientHello");
@@ -436,14 +436,14 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
 
         // Register "expired-ticket-id" with a DIFFERENT secret so binder verification fails
         let server_psk: u8[32] = [0x77; 32];
-        wing::store_tls13_session_ticket(
+        tls::store_session_ticket(
             "api.example.com", "expired-ticket-id", server_psk[..], 0, 3600, rfc::TLS_CIPHER_AES_128_GCM_SHA256,
         );
-        let ok_forged = wing::parse_client_hello_for_server(
+        let ok_forged = tls::parse_client_hello_for_server(
             ch_msg[..], "h2", sid, out_pub, alpn, resumed, out_psk,
         );
         sub.assert_false(ok_forged, "known PSK identity with invalid binder MUST abort handshake");
-        wing::clear_tls13_session_tickets();
+        tls::clear_session_tickets();
     };
 }
 
@@ -451,21 +451,21 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
 fn test_vendor_x509_san_and_der_hardening(t: lit::T&) {
     t.run("x509-limbo: IPv6 SAN text matching, 4B/16B ASCII hostname rejection & DNS IP literal ban") { sub =>
         let v6_bytes: u8[16] = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        let san_ip6 = wing::SanEntry { san_type: wing::SanType.Ip, val: v6_bytes[..] };
-        sub.assert_true(wing::match_san(san_ip6, "2001:db8::1"), "bare IPv6 matches iPAddress SAN");
-        sub.assert_true(wing::match_san(san_ip6, "[2001:0db8:0:0::1]"), "bracketed uncomp IPv6 matches");
-        sub.assert_false(wing::match_san(san_ip6, "2001:db8::1%eth0"), "IPv6 zone ID rejected");
-        sub.assert_false(wing::match_san(san_ip6, "0123456789abcdef"), "16-byte ASCII host must NOT match IPv6 SAN");
+        let san_ip6 = tls::SanEntry { san_type: tls::SanType.Ip, val: v6_bytes[..] };
+        sub.assert_true(tls::match_san(san_ip6, "2001:db8::1"), "bare IPv6 matches iPAddress SAN");
+        sub.assert_true(tls::match_san(san_ip6, "[2001:0db8:0:0::1]"), "bracketed uncomp IPv6 matches");
+        sub.assert_false(tls::match_san(san_ip6, "2001:db8::1%eth0"), "IPv6 zone ID rejected");
+        sub.assert_false(tls::match_san(san_ip6, "0123456789abcdef"), "16-byte ASCII host must NOT match IPv6 SAN");
 
         let v4_ascii_collision: u8[4] = ['a' as u8, 'b' as u8, 'c' as u8, 'd' as u8];
-        let san_ip4 = wing::SanEntry { san_type: wing::SanType.Ip, val: v4_ascii_collision[..] };
-        sub.assert_false(wing::match_san(san_ip4, "abcd"), "4-byte ASCII host 'abcd' must NOT match IPv4 SAN");
-        sub.assert_true(wing::match_san(san_ip4, "97.98.99.100"), "decimal 97.98.99.100 matches IPv4 SAN");
+        let san_ip4 = tls::SanEntry { san_type: tls::SanType.Ip, val: v4_ascii_collision[..] };
+        sub.assert_false(tls::match_san(san_ip4, "abcd"), "4-byte ASCII host 'abcd' must NOT match IPv4 SAN");
+        sub.assert_true(tls::match_san(san_ip4, "97.98.99.100"), "decimal 97.98.99.100 matches IPv4 SAN");
 
-        sub.assert_false(wing::match_dns_san("127.0.0.1", "127.0.0.1"), "dNSName must NOT match IPv4 host");
-        let san_uri = wing::SanEntry { san_type: wing::SanType.Uri, val: "https://example.com" };
-        sub.assert_false(wing::match_san(san_uri, "example.com"), "URI SAN must NOT match bare DNS host");
-        sub.assert_true(wing::match_san(san_uri, "https://example.com"), "URI SAN matches full URI");
+        sub.assert_false(tls::match_dns_san("127.0.0.1", "127.0.0.1"), "dNSName must NOT match IPv4 host");
+        let san_uri = tls::SanEntry { san_type: tls::SanType.Uri, val: "https://example.com" };
+        sub.assert_false(tls::match_san(san_uri, "example.com"), "URI SAN must NOT match bare DNS host");
+        sub.assert_true(tls::match_san(san_uri, "https://example.com"), "URI SAN matches full URI");
     };
 
     t.run("RFC 5280: non-CA TrustAnchor cannot sign child cert while pinned leaf succeeds") { sub =>
@@ -473,14 +473,14 @@ fn test_vendor_x509_san_and_der_hardening(t: lit::T&) {
         let leaf_seed:   u8[32] = [0x22; 32];
         var ee_anchor_der: u8[..2048] = [];
         sub.assert_true(
-            wing::build_test_ed25519_cert_der(anchor_seed, "ee-root", "ee.example.com", "", ee_anchor_der),
+            tls::build_test_ed25519_cert_der(anchor_seed, "ee-root", "ee.example.com", "", ee_anchor_der),
             "built base cert",
         );
         // Flip BasicConstraints cA=TRUE (0x01 0x01 0xFF) inside ee_anchor_der to FALSE (0x00) and re-sign
-        var parsed_tmp = wing::ParsedCert { .. };
-        sub.assert_true(wing::parse_x509_certificate(ee_anchor_der[..], parsed_tmp), "parsed base cert");
+        var parsed_tmp = tls::ParsedCert { .. };
+        sub.assert_true(tls::parse_x509_certificate(ee_anchor_der[..], parsed_tmp), "parsed base cert");
 
-        var non_ca_anchor = wing::TrustAnchor {
+        var non_ca_anchor = tls::TrustAnchor {
             has_basic_constraints: true,
             is_ca:                 false,
             has_pub_material:      true,
@@ -488,29 +488,29 @@ fn test_vendor_x509_san_and_der_hardening(t: lit::T&) {
             ..
         };
         let kp_a = core::ed25519_keypair(anchor_seed);
-        let _ = non_ca_anchor.subject_raw.try_set(wing::span_slice(ee_anchor_der[..], parsed_tmp.subject_raw));
+        let _ = non_ca_anchor.subject_raw.try_set(tls::span_slice(ee_anchor_der[..], parsed_tmp.subject_raw));
         let _ = non_ca_anchor.spki_pubkey.try_set(kp_a.public_key[..]);
 
-        var store = wing::TrustAnchorStore { .. };
+        var store = tls::TrustAnchorStore { .. };
         let _ = store.anchors.try_push(non_ca_anchor);
 
         var child_der: u8[..2048] = [];
         sub.assert_true(
-            wing::build_test_ed25519_cert_der(leaf_seed, "ee-root", "leaf.example.com", "", child_der),
+            tls::build_test_ed25519_cert_der(leaf_seed, "ee-root", "leaf.example.com", "", child_der),
             "built child cert with matching issuer DN",
         );
-        var child_parsed = wing::ParsedCert { .. };
-        sub.assert_true(wing::parse_x509_certificate(child_der[..], child_parsed), "parsed child");
+        var child_parsed = tls::ParsedCert { .. };
+        sub.assert_true(tls::parse_x509_certificate(child_der[..], child_parsed), "parsed child");
         child_parsed.is_ca = false;
 
-        var chain_p: wing::ParsedCert[..8] = [];
-        var chain_r: (const u8[:])[..8]    = [];
+        var chain_p: tls::ParsedCert[..8] = [];
+        var chain_r: (const u8[:])[..8]   = [];
         let _ = chain_p.try_push(child_parsed);
         let _ = chain_r.try_push(child_der[..]);
-        let alert = wing::verify_certificate_chain(
+        let alert = tls::verify_certificate_chain(
             chain_p, chain_r, store, child_parsed.validity_not_before + 5,
         );
-        sub.assert_true(alert == wing::TlsAlert.BadCertificate, "non-CA TrustAnchor rejected as issuer");
+        sub.assert_true(alert == tls::Alert.BadCertificate, "non-CA TrustAnchor rejected as issuer");
     };
 }
 
@@ -520,8 +520,8 @@ fn test_vendor_ocsp_multicert_and_unsigned(t: lit::T&) {
         // Malformed Good [0] with 1 byte (0x80 0x01 0x00) instead of IMPLICIT NULL (0x80 0x00)
         let bad_good: u8[3] = [0x80, 0x01, 0x00];
         var c = core::cursor_from(bad_good[..]);
-        var st = wing::OcspCertStatus.Unknown;
-        sub.assert_false(wing::x509_parse_ocsp_cert_status(c, st), "Good [0] with length 1 rejected");
+        var st = tls::OcspCertStatus.Unknown;
+        sub.assert_false(tls_internal::x509_parse_ocsp_cert_status(c, st), "Good [0] with length 1 rejected");
     };
 }
 
@@ -545,8 +545,8 @@ fn test_vendor_ssrf_and_dns_wire(t: lit::T&) {
         let policy = security::SsrfGuardPolicy { enabled: true, deny_local_network: true, .. };
         let u_int, err_u = core::parse_url("https://redis.prod.internal/keys");
         sub.assert_true(err_u == core::UrlParseError.None, "parsed .internal URL");
-        let redir_err = wing::validate_url_against_ssrf(u_int, policy);
-        sub.assert_true(redir_err == wing::RedirectError.SsrfBlockedIp, ".internal blocked by SSRF policy");
+        let redir_err = client::validate_url_against_ssrf(u_int, policy);
+        sub.assert_true(redir_err == client::RedirectError.SsrfBlockedIp, ".internal blocked by SSRF policy");
     };
 
     t.run("DNS & RFC 9460 §7.1.2: embedded dot/NUL label & mandatory=no-default-alpn rejected") { sub =>
@@ -643,31 +643,31 @@ fn test_vendor_cookies_samesite_and_scoping(t: lit::T&) {
 // 13. HTTP Message Signatures: Component Parameter Smuggling & Decimal Params (RFC 9421)
 fn test_vendor_http_signatures_smuggling(t: lit::T&) {
     t.run("RFC 9421: reject mismatched ;req and ;req=?0 component parameters") { sub =>
-        var item_req = wing::SfItem { kind: wing::SfType.String, str_val: "@authority", .. };
-        var p_req = wing::SfItemParam { kind: wing::SfType.Boolean, bool_val: true, .. };
+        var item_req = http::SfItem { kind: http::SfType.String, str_val: "@authority", .. };
+        var p_req = http::SfItemParam { kind: http::SfType.Boolean, bool_val: true, .. };
         let _ = p_req.key.try_set("req");
         let _ = item_req.params.try_push(p_req);
         sub.assert_false(
-            wing::matches_signature_component(item_req, "@authority"),
+            http::matches_signature_component(item_req, "@authority"),
             ";req parameter must NOT match bare @authority",
         );
 
-        var item_req0 = wing::SfItem { kind: wing::SfType.String, str_val: "@path", .. };
-        var p_req0 = wing::SfItemParam { kind: wing::SfType.Boolean, bool_val: false, .. };
+        var item_req0 = http::SfItem { kind: http::SfType.String, str_val: "@path", .. };
+        var p_req0 = http::SfItemParam { kind: http::SfType.Boolean, bool_val: false, .. };
         let _ = p_req0.key.try_set("req");
         let _ = item_req0.params.try_push(p_req0);
         sub.assert_false(
-            wing::matches_signature_component(item_req0, "@path;req"),
+            http::matches_signature_component(item_req0, "@path;req"),
             ";req=?0 must NOT match @path;req",
         );
         sub.assert_false(
-            wing::matches_signature_component(item_req0, "@path"),
+            http::matches_signature_component(item_req0, "@path"),
             ";req=?0 must NOT match bare @path",
         );
 
         var dec_out: u8[..32] = [];
         sub.assert_true(
-            wing::append_wire_sf_bare(wing::SfType.Decimal, 0, 1.25, "", false, dec_out),
+            http::append_wire_sf_bare(http::SfType.Decimal, 0, 1.25, "", false, dec_out),
             "serialized Decimal bare item",
         );
         sub.assert_bytes_eq(dec_out[..], "1.25", "Decimal formats dec_val instead of zero int_val");
@@ -677,10 +677,10 @@ fn test_vendor_http_signatures_smuggling(t: lit::T&) {
 // 14. WebSocket Deflate UTF-8 / PMD Negotiation & gRPC Stream Parser (wslay, tungstenite, grpc-go)
 fn test_vendor_ws_and_grpc_streaming(t: lit::T&) {
     t.run("tungstenite / uWS: PMD 101 parameter validation & CRLF handshake guard") { sub =>
-        var hdrs = wing::HeaderMap { .. };
+        var hdrs = http::HeaderMap { .. };
         let raw =
             "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nSec-WebSocket-Extensions: permessage-deflate; server_max_window_bits=7\r\n\r\n";
-        sub.assert_true(wing::parse_headers(raw, hdrs, false) == wing::HeaderParseError.None, "parsed 101 headers");
+        sub.assert_true(http::parse_headers(raw, hdrs, false) == http::HeaderParseError.None, "parsed 101 headers");
         let _, err_pmd = realtime::validate_client_upgrade_response(
             101, hdrs, raw, "dGhlIHNhbXBsZSBub25jZQ==", "", "permessage-deflate",
         );
@@ -739,10 +739,10 @@ fn test_vendor_ws_and_grpc_streaming(t: lit::T&) {
         sub.assert_true(grpc::feed(p, batch[..17]), "feed works again after reset()");
 
         // Truncated LPM with grpc-status: 0 trailer must set Internal, not Ok
-        var hmap = wing::HeaderMap { .. };
-        var tmap = wing::HeaderMap { .. };
-        let _ = wing::append_header(hmap, "content-type", "application/grpc");
-        let _ = wing::append_header(tmap, "grpc-status", "0");
+        var hmap = http::HeaderMap { .. };
+        var tmap = http::HeaderMap { .. };
+        let _ = http::append_header(hmap, "content-type", "application/grpc");
+        let _ = http::append_header(tmap, "grpc-status", "0");
         let trunc_body: u8[6] = [0x00, 0x00, 0x00, 0x00, 0x0A, 'x'];
         var g_resp = grpc::Response { .. };
         sub.assert_false(

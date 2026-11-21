@@ -220,9 +220,9 @@ fn cookie_internal::validate_security_prefixes(
 
 // ---- site for cookies and navigation context -------------------------------
 
-fn site_for_cookies_from_url(url: const u8[:]) -> wing::SiteForCookies {
+fn site_for_cookies_from_url(url: const u8[:]) -> http::SiteForCookies {
     let parsed = parse_canonical_cookie_url(url);
-    var site = wing::SiteForCookies { schemefully_same: true, is_null: false, .. };
+    var site = http::SiteForCookies { schemefully_same: true, is_null: false, .. };
     guard parsed.scheme.len > 0 && site.scheme.try_set(parsed.scheme[..]) else {
         return null_site_for_cookies();
     }
@@ -232,8 +232,8 @@ fn site_for_cookies_from_url(url: const u8[:]) -> wing::SiteForCookies {
     return site;
 }
 
-fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> wing::SiteForCookies {
-    var site = wing::SiteForCookies { schemefully_same: true, is_null: false, .. };
+fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> http::SiteForCookies {
+    var site = http::SiteForCookies { schemefully_same: true, is_null: false, .. };
     let scheme_slice = url_val.scheme();
     guard scheme_slice.len > 0 && site.scheme.try_set(scheme_slice) else {
         return null_site_for_cookies();
@@ -244,11 +244,11 @@ fn site_for_cookies_from_parsed_url(url_val: const core::Url&) -> wing::SiteForC
     return site;
 }
 
-fn null_site_for_cookies() -> wing::SiteForCookies {
-    return wing::SiteForCookies { is_null: true, schemefully_same: false };
+fn null_site_for_cookies() -> http::SiteForCookies {
+    return http::SiteForCookies { is_null: true, schemefully_same: false };
 }
 
-fn format_site_for_cookies<B>(site: const wing::SiteForCookies&, out: B&) {
+fn format_site_for_cookies<B>(site: const http::SiteForCookies&, out: B&) {
     out.append("SiteForCookies: {site=");
     if site.is_null {
         out.append("null; schemefully_same=false}");
@@ -262,7 +262,7 @@ fn format_site_for_cookies<B>(site: const wing::SiteForCookies&, out: B&) {
     }
 }
 
-fn compare_with_frame_tree_site_and_revise(site: wing::SiteForCookies&, frame_url: const u8[:]) {
+fn compare_with_frame_tree_site_and_revise(site: http::SiteForCookies&, frame_url: const u8[:]) {
     guard !site.is_null else { return; }
     let frame_site = site_for_cookies_from_url(frame_url);
 
@@ -284,7 +284,7 @@ fn compute_site_for_cookies_with_ancestors(
     top_url:       const u8[:],
     ancestor_urls: const u8[:][:],
     is_sandboxed:  bool = false,
-) -> wing::SiteForCookies {
+) -> http::SiteForCookies {
     if is_sandboxed ||
        top_url.starts_with_fold("data:") ||
        top_url.starts_with_fold("about:") ||
@@ -304,7 +304,7 @@ fn compute_site_for_cookies_with_ancestors(
     return top_site;
 }
 
-fn is_first_party(site: const wing::SiteForCookies&, req_url: const u8[:], compute_schemefully: bool = true) -> bool {
+fn is_first_party(site: const http::SiteForCookies&, req_url: const u8[:], compute_schemefully: bool = true) -> bool {
     guard !site.is_null else { return false; }
     if compute_schemefully && !site.schemefully_same { return false; }
 
@@ -319,7 +319,7 @@ fn is_first_party(site: const wing::SiteForCookies&, req_url: const u8[:], compu
     return true;
 }
 
-fn is_request_same_site(site: const wing::SiteForCookies&, req_url: const u8[:]) -> bool {
+fn is_request_same_site(site: const http::SiteForCookies&, req_url: const u8[:]) -> bool {
     return is_first_party(site, req_url, true);
 }
 

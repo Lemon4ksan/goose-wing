@@ -86,7 +86,7 @@ fn read_varint(wire: const u8[:], idx: i64&) -> u64, bool {
 
 // Formats an HTTP/3 Extended CONNECT request to open a WebTransport session.
 fn format_webtransport_connect_request(
-    req:        wing::Request&,
+    req:        http::Request&,
     url_target: const u8[:],
 ) {
     let _ = req.method.try_set("CONNECT");
@@ -95,12 +95,12 @@ fn format_webtransport_connect_request(
 
     // RFC 8441 / RFC 9220 / WebTransport draft-16:
     // :protocol = webtransport
-    wing::set_header(req, ":protocol", rfc::WEBTRANSPORT_PROTOCOL);
-    wing::set_header(req, "sec-webtransport-http3-draft", "draft16");
+    http::set_header(req, ":protocol", rfc::WEBTRANSPORT_PROTOCOL);
+    http::set_header(req, "sec-webtransport-http3-draft", "draft16");
 }
 
 // Validates whether an incoming HTTP request is an Extended CONNECT WebTransport request.
-fn is_webtransport_connect_request(req: const wing::Request&) -> bool {
+fn is_webtransport_connect_request(req: const http::Request&) -> bool {
     if req.method[..] != "CONNECT" { return false; }
     if !req.has_header(":protocol") { return false; }
     if req.header(":protocol") != rfc::WEBTRANSPORT_PROTOCOL { return false; }
@@ -110,13 +110,13 @@ fn is_webtransport_connect_request(req: const wing::Request&) -> bool {
 }
 
 // Formats an HTTP/3 response accepting a WebTransport session.
-fn format_webtransport_connect_response(res: wing::Response&) {
+fn format_webtransport_connect_response(res: http::Response&) {
     res.status_code = 200;
-    wing::set_header(res, "sec-webtransport-http3-draft", "draft16");
+    http::set_header(res, "sec-webtransport-http3-draft", "draft16");
 }
 
 // Validates whether server response accepts the WebTransport session.
-fn handle_webtransport_response(session: WebTransportSession&, res: const wing::Response&) -> bool {
+fn handle_webtransport_response(session: WebTransportSession&, res: const http::Response&) -> bool {
     let status_ok = res.status_code >= 200 && res.status_code < 300 &&
         res.status_code != 204 && res.status_code != 205 && res.status_code != 206;
     let hdrs_ok = !res.has_header("content-length") &&

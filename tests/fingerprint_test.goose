@@ -159,29 +159,29 @@ fn test_wing_profile_and_session(t: lit::T&) {
     };
 
     t.run("2. Client Session Out-of-the-Box Identity") { sub =>
-        var session = wing::new_client();
+        var session = client::new_client();
         sub.assert_eq(session.profile, fingerprint::Profile.Wing, "New client defaults to Profile.Wing");
-        sub.assert_contains(wing::user_agent(session), "Wing/1.0", "Session defaults to Wing authentic User-Agent");
+        sub.assert_contains(client::user_agent(session), "Wing/1.0", "Session defaults to Wing authentic User-Agent");
 
         // Default headers check
-        let has_ua = wing::has_header(session.default_headers, "User-Agent");
-        let has_accept = wing::has_header(session.default_headers, "Accept");
-        let has_zstd = find(wing::get_header(session.default_headers, "Accept-Encoding"), "zstd") >= 0;
+        let has_ua = http::has_header(session.default_headers, "User-Agent");
+        let has_accept = http::has_header(session.default_headers, "Accept");
+        let has_zstd = find(http::get_header(session.default_headers, "Accept-Encoding"), "zstd") >= 0;
         sub.assert_true(has_ua, "User-Agent present in session default headers");
         sub.assert_true(has_accept, "Accept present in session default headers");
         sub.assert_true(has_zstd, "Zstandard present in session default Accept-Encoding");
 
         // Session JA4
-        let s_ja4 = wing::ja4(session);
+        let s_ja4 = client::ja4(session);
         sub.assert_bytes_eq(s_ja4[..11], "t13d0910h2_", "Session JA4 matches Wing default profile");
     };
 
     t.run("3. 100% User Control: Custom Profile Overrides Without Browser Mimicry") { sub =>
-        var session = wing::new_client();
+        var session = client::new_client();
 
         // Caller can fully change UA and headers without any browser mimicry
         session.set_user_agent("CustomGooseBot/2.4 (Internal Systems)");
-        sub.assert_bytes_eq(wing::user_agent(session), "CustomGooseBot/2.4 (Internal Systems)", "Custom user agent applied cleanly");
+        sub.assert_bytes_eq(client::user_agent(session), "CustomGooseBot/2.4 (Internal Systems)", "Custom user agent applied cleanly");
 
         // Caller can configure a completely custom ClientProfile
         var custom = fingerprint::custom_profile();
@@ -192,7 +192,7 @@ fn test_wing_profile_and_session(t: lit::T&) {
         custom.set_header("X-API-Client", "Wing/Core");
 
         session.set_profile(custom);
-        sub.assert_bytes_eq(wing::user_agent(session), "WingCustomWorker/3.1", "Custom profile UA applied");
+        sub.assert_bytes_eq(client::user_agent(session), "WingCustomWorker/3.1", "Custom profile UA applied");
 
         let custom_ja4h = custom.ja4h("POST", "HTTP/2");
         sub.assert_bytes_eq(custom_ja4h[..12], "po20nn05dede", "Custom JA4H reflects custom profile headers (dede lang, 5 headers)");
@@ -434,32 +434,32 @@ fn test_akamai_wire_framing_roundtrip(t: lit::T&) {
 fn test_akamai_pseudo_header_ordering(t: lit::T&) {
     t.run("Order pseudo headers according to custom profile specification") { sub =>
         let wing_fp = fingerprint::akamai_wing_preset();
-        var wing_ordered = wing::HeaderMap { .. };
+        var wing_ordered = http::HeaderMap { .. };
         sub.assert_true(wing_fp.order_pseudo_headers("GET", "api.example.com", "https", "/v1/data", wing_ordered), "Order Wing pseudo-headers");
 
         sub.assert_eq(wing_ordered.entries.len, 4, "4 ordered headers");
-        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[0]), ":method", "Wing 0 is :method");
-        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[1]), ":authority", "Wing 1 is :authority");
-        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[2]), ":scheme", "Wing 2 is :scheme");
-        sub.assert_eq(wing::entry_name(wing_ordered, wing_ordered.entries[3]), ":path", "Wing 3 is :path");
+        sub.assert_eq(http::entry_name(wing_ordered, wing_ordered.entries[0]), ":method", "Wing 0 is :method");
+        sub.assert_eq(http::entry_name(wing_ordered, wing_ordered.entries[1]), ":authority", "Wing 1 is :authority");
+        sub.assert_eq(http::entry_name(wing_ordered, wing_ordered.entries[2]), ":scheme", "Wing 2 is :scheme");
+        sub.assert_eq(http::entry_name(wing_ordered, wing_ordered.entries[3]), ":path", "Wing 3 is :path");
 
         let mpas_fp = fingerprint::custom_akamai_fingerprint(12517377, "m,p,a,s");
-        var mpas_ordered = wing::HeaderMap { .. };
+        var mpas_ordered = http::HeaderMap { .. };
         sub.assert_true(mpas_fp.order_pseudo_headers("GET", "api.example.com", "https", "/v1/data", mpas_ordered), "Order m,p,a,s pseudo-headers");
 
-        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[0]), ":method", "Custom m,p,a,s 0 is :method");
-        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[1]), ":path", "Custom m,p,a,s 1 is :path");
-        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[2]), ":authority", "Custom m,p,a,s 2 is :authority");
-        sub.assert_eq(wing::entry_name(mpas_ordered, mpas_ordered.entries[3]), ":scheme", "Custom m,p,a,s 3 is :scheme");
+        sub.assert_eq(http::entry_name(mpas_ordered, mpas_ordered.entries[0]), ":method", "Custom m,p,a,s 0 is :method");
+        sub.assert_eq(http::entry_name(mpas_ordered, mpas_ordered.entries[1]), ":path", "Custom m,p,a,s 1 is :path");
+        sub.assert_eq(http::entry_name(mpas_ordered, mpas_ordered.entries[2]), ":authority", "Custom m,p,a,s 2 is :authority");
+        sub.assert_eq(http::entry_name(mpas_ordered, mpas_ordered.entries[3]), ":scheme", "Custom m,p,a,s 3 is :scheme");
 
         let msap_fp = fingerprint::custom_akamai_fingerprint(10485760, "m,s,a,p");
-        var msap_ordered = wing::HeaderMap { .. };
+        var msap_ordered = http::HeaderMap { .. };
         sub.assert_true(msap_fp.order_pseudo_headers("GET", "api.example.com", "https", "/v1/data", msap_ordered), "Order m,s,a,p pseudo-headers");
 
-        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[0]), ":method", "Custom m,s,a,p 0 is :method");
-        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[1]), ":scheme", "Custom m,s,a,p 1 is :scheme");
-        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[2]), ":authority", "Custom m,s,a,p 2 is :authority");
-        sub.assert_eq(wing::entry_name(msap_ordered, msap_ordered.entries[3]), ":path", "Custom m,s,a,p 3 is :path");
+        sub.assert_eq(http::entry_name(msap_ordered, msap_ordered.entries[0]), ":method", "Custom m,s,a,p 0 is :method");
+        sub.assert_eq(http::entry_name(msap_ordered, msap_ordered.entries[1]), ":scheme", "Custom m,s,a,p 1 is :scheme");
+        sub.assert_eq(http::entry_name(msap_ordered, msap_ordered.entries[2]), ":authority", "Custom m,s,a,p 2 is :authority");
+        sub.assert_eq(http::entry_name(msap_ordered, msap_ordered.entries[3]), ":path", "Custom m,s,a,p 3 is :path");
     };
 }
 
@@ -473,7 +473,7 @@ fn test_akamai_browser_profiles(t: lit::T&) {
         sub.assert_eq(fp_str4[..], "1:65536;2:0;3:100;4:6291456;6:262144|15663105|0|m,a,s,p", "Wing default profile has authentic Wing Akamai fingerprint");
 
         // Session integration
-        var session = wing::new_session();
+        var session = client::new_session();
         let sess_ak = session.akamai();
         sub.assert_eq(sess_ak[..], fp_str4[..], "Session exports authentic Akamai fingerprint");
         let sess_hash = session.akamai_hash();
@@ -539,8 +539,8 @@ fn test_wing_authentic_p0f(t: lit::T&) {
         );
 
         // Client session exposes p0f signature
-        let session = wing::new_client();
-        let s_p0f = wing::p0f(session);
+        let session = client::new_client();
+        let s_p0f = client::p0f(session);
         sub.assert_bytes_eq(
             s_p0f[..],
             "*:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0",

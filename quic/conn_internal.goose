@@ -661,13 +661,13 @@ fn dispatch_crypto_inbound(
     }
     var ok = false;
     if htype == quic::QuicHeaderType.Initial {
-        let ingested, _ = wing::quic_crypto_stream_ingest(conn.initial_crypto, frame.offset, frame.payload);
+        let _, ingested = tls::quic_crypto_stream_ingest(conn.initial_crypto, frame.offset, frame.payload);
         ok = ingested;
     } else if htype == quic::QuicHeaderType.Handshake {
-        let ingested, _ = wing::quic_crypto_stream_ingest(conn.handshake_crypto, frame.offset, frame.payload);
+        let _, ingested = tls::quic_crypto_stream_ingest(conn.handshake_crypto, frame.offset, frame.payload);
         ok = ingested;
     } else {
-        let ingested, _ = wing::quic_crypto_stream_ingest(conn.app_crypto, frame.offset, frame.payload);
+        let _, ingested = tls::quic_crypto_stream_ingest(conn.app_crypto, frame.offset, frame.payload);
         ok = ingested;
     }
     guard ok else {
@@ -864,7 +864,7 @@ fn quic_aead_open_payload(
 
     var iv12: u8[12] = [0; 12];
     for i in 12 { iv12[i] = space.aead_iv[i]; }
-    let nonce, ok_nonce = wing::compute_record_nonce(iv12, pn);
+    let nonce, ok_nonce = tls::compute_record_nonce(iv12, pn);
     guard ok_nonce else { return false; }
 
     let is_aes128 = space.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256 && space.aead_key.len == 16;
@@ -1047,7 +1047,7 @@ fn verify_and_decrypt_packet(
     var work_pkt: u8[..16512] = [];
     guard pkt_wire_len > 0 && work_pkt.try_append(pkt_slice[..pkt_wire_len]) else { return 0, false; }
 
-    let sample_slice, ok_samp = wing::quic_extract_hp_sample(work_pkt[..], hdr.pn_offset);
+    let sample_slice, ok_samp = tls::quic_extract_hp_sample(work_pkt[..], hdr.pn_offset);
     guard ok_samp else { return 0, false; }
     let hp_mask, ok_mask = quic_compute_hp_mask(space, sample_slice);
     guard ok_mask else { return 0, false; }

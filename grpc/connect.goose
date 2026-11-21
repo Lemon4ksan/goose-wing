@@ -57,7 +57,7 @@ fn parse_connect_get_query(
 fn encode_connect_end_stream<B>(
     code:     StatusCode,
     message:  const u8[:],
-    trailers: const wing::HeaderMap&,
+    trailers: const http::HeaderMap&,
     out:      B&,
 ) -> bool {
     let saved_len = out.len;
@@ -94,7 +94,7 @@ fn parse_connect_end_stream<B>(
     json_bytes:   const u8[:],
     out_status:   StatusCode&,
     out_message:  B&,
-    out_trailers: wing::HeaderMap&,
+    out_trailers: http::HeaderMap&,
 ) -> bool {
     guard json_bytes.validate_utf8() else { return false; }
     var reader = json::reader(json_bytes);
@@ -102,7 +102,7 @@ fn parse_connect_end_stream<B>(
 
     var tmp_status = StatusCode.Ok;
     var tmp_msg: u8[..256] = [];
-    var tmp_trailers = wing::HeaderMap { .. };
+    var tmp_trailers = http::HeaderMap { .. };
     var seen_error = false;
     var seen_meta = false;
     var had_error = false;

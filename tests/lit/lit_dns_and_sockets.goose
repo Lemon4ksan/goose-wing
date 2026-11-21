@@ -131,7 +131,7 @@ fn run_01_verify_dns_https_svcb() {
 
 // Wire adapter for verify_split_stream and fuzzing using wing's real parse_http_capsule
 fn wing_validate_masque_capsule_wire(buf: const u8[:]) -> i64 {
-    let cap, ok = wing::parse_http_capsule(buf);
+    let cap, ok = net::parse_http_capsule(buf);
     if ok {
         return cap.payload.len;
     }
@@ -276,34 +276,34 @@ fn tcp_close(sub: L4Subsystem&, sock_id: i32) {
 fn test_proxy_protocol_wire_ingress() {
     // PROXY v1 text ingress
     let v1_wire = "PROXY TCP4 203.0.113.195 198.51.100.1 56324 443\r\nPING-PONG-TEST";
-    var v1_hdr = wing::ProxyHeader { .. };
-    let app_stream, ok1 = wing::detect_and_strip_proxy_header(v1_wire, v1_hdr);
+    var v1_hdr = net::ProxyHeader { .. };
+    let app_stream, ok1 = net::detect_and_strip_proxy_header(v1_wire, v1_hdr);
     assert(ok1);
-    assert(v1_hdr.version == wing::ProxyProtocolVersion.V1);
-    assert(v1_hdr.family == wing::ProxyAddressFamily.Inet4);
+    assert(v1_hdr.version == net::ProxyProtocolVersion.V1);
+    assert(v1_hdr.family == net::ProxyAddressFamily.Inet4);
     assert(v1_hdr.src_port == 56324);
     assert(v1_hdr.dst_port == 443);
     assert(app_stream == "PING-PONG-TEST");
 
     // PROXY v2 binary ingress
-    var v2_hdr_orig = wing::ProxyHeader {
-        version:   wing::ProxyProtocolVersion.V2,
-        command:   wing::ProxyCommand.Proxy,
-        family:    wing::ProxyAddressFamily.Inet4,
-        transport: wing::ProxyTransportProtocol.Stream,
+    var v2_hdr_orig = net::ProxyHeader {
+        version:   net::ProxyProtocolVersion.V2,
+        command:   net::ProxyCommand.Proxy,
+        family:    net::ProxyAddressFamily.Inet4,
+        transport: net::ProxyTransportProtocol.Stream,
         src_ipv4:  [192, 168, 1, 50],
         dst_ipv4:  [10, 0, 0, 1],
         src_port:  8080,
         dst_port:  80,
     };
     var v2_wire: u8[..512] = [];
-    assert(wing::format_proxy_v2(v2_hdr_orig, v2_wire));
+    assert(net::format_proxy_v2(v2_hdr_orig, v2_wire));
     v2_wire.append("PONG-REPLY-OK!");
 
-    var v2_hdr_parsed = wing::ProxyHeader { .. };
-    let v2_app, ok2 = wing::detect_and_strip_proxy_header(v2_wire[..], v2_hdr_parsed);
+    var v2_hdr_parsed = net::ProxyHeader { .. };
+    let v2_app, ok2 = net::detect_and_strip_proxy_header(v2_wire[..], v2_hdr_parsed);
     assert(ok2);
-    assert(v2_hdr_parsed.version == wing::ProxyProtocolVersion.V2);
+    assert(v2_hdr_parsed.version == net::ProxyProtocolVersion.V2);
     assert(v2_hdr_parsed.src_port == 8080);
     assert(v2_hdr_parsed.dst_port == 80);
     assert(v2_app == "PONG-REPLY-OK!");
@@ -374,17 +374,17 @@ inline fn advance_test_loop_idx(idx: i32) -> i32 {
 }
 
 fn verify_udp_batch_engine() {
-    var queue = wing::UdpBatchQueue { .. };
-    print("WING_UDP_BATCH_INITIALIZED: capacity=", wing::UDP_BATCH_CAPACITY, "\n");
+    var queue = net::UdpBatchQueue { .. };
+    print("WING_UDP_BATCH_INITIALIZED: capacity=", net::UDP_BATCH_CAPACITY, "\n");
 
     let payload = "QUIC-SHORT-HEADER-FRAME-PAYLOAD-1200";
-    let dgram, build_ok = wing::build_udp_datagram(payload, 0x0100007F, 4433, 1200);
+    let dgram, build_ok = net::build_udp_datagram(payload, 0x0100007F, 4433, 1200);
     assert(build_ok);
     assert(dgram.gso_size == 1200);
 
     // Negative test: oversize UDP datagram (> 1472 bytes) must be rejected (Invariant 13)
     var oversize_buf: u8[1500] = [0x41; 1500];
-    let _, ovf_ok = wing::build_udp_datagram(oversize_buf[..], 0x0100007F, 4433, 0);
+    let _, ovf_ok = net::build_udp_datagram(oversize_buf[..], 0x0100007F, 4433, 0);
     if ovf_ok {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
     }
@@ -393,7 +393,7 @@ fn verify_udp_batch_engine() {
     // Enqueue 32 datagrams without triggering an intermediate flush
     var i: i32 = 0;
     while i < 32 {
-        let flushed, enq_ok = wing::enqueue_udp_datagram(0, queue, dgram);
+        let flushed, enq_ok = net::enqueue_udp_datagram(queue, 0, dgram);
         assert(enq_ok);
         assert(flushed == 0);
         i = advance_test_loop_idx(i);
@@ -402,7 +402,7 @@ fn verify_udp_batch_engine() {
     assert(queue.flushed_batches == 0);
 
     // Enqueue 33rd datagram: must automatically flush the 32 queued datagrams before buffering packet 33
-    let flushed_on_33, ok_33 = wing::enqueue_udp_datagram(0, queue, dgram);
+    let flushed_on_33, ok_33 = net::enqueue_udp_datagram(queue, 0, dgram);
     if !ok_33 || flushed_on_33 != 32 || queue.count != 1 {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP\n");
     }
@@ -414,15 +414,15 @@ fn verify_udp_batch_engine() {
     print("UDP_BATCH_AUTO_FLUSH_33RD: flushed=", flushed_on_33, " remaining=", queue.count, "\n");
 
     // Flush the remaining 1 datagram explicitly
-    let final_sent, final_ok = wing::batch_send_messages(0, queue);
+    let final_sent, final_ok = net::batch_send_messages(queue, 0);
     assert(final_ok && final_sent == 1 && queue.count == 0);
 
     // Verify batch_recv_messages on virtual descriptor 0 and negative fd rejection
-    let recvd, recv_ok = wing::batch_recv_messages(0, queue);
+    let recvd, recv_ok = net::batch_recv_messages(queue, 0);
     assert(recv_ok && recvd == 0);
-    let _, bad_recv_ok = wing::batch_recv_messages(-1, queue);
+    let _, bad_recv_ok = net::batch_recv_messages(queue, -1);
     assert(!bad_recv_ok);
-    let _, bad_send_ok = wing::batch_send_messages(-1, queue);
+    let _, bad_send_ok = net::batch_send_messages(queue, -1);
     assert(!bad_send_ok);
     print("UDP_BATCH_RECV_AND_BOUNDS: OK\n");
 }
@@ -480,30 +480,30 @@ fn verify_rio_address_pool() {
 }
 
 fn verify_upstream_pool_nik_and_rdhup() {
-    var upool = wing::UpstreamPool { .. };
-    let origin = wing::new_origin_endpoint("api.internal.example.com", 443);
+    var upool = net::UpstreamPool { .. };
+    let origin = net::new_origin_endpoint("api.internal.example.com", 443);
     let tls_fp:       u64 = 0xAABBCCDDEEFF0011;
     let nik_tenant_a: u64 = 1001;
     let nik_tenant_b: u64 = 2002;
 
-    assert(wing::register_upstream_conn(upool, 55, origin, tls_fp, nik_tenant_a));
+    assert(net::register_upstream_conn(upool, 55, origin, tls_fp, nik_tenant_a));
 
     // Tenant B (different NIK) MUST NOT acquire Tenant A's warm socket
-    let _, cross_nik_ok = wing::acquire_upstream_conn(upool, origin, tls_fp, nik_tenant_b);
+    let _, cross_nik_ok = net::acquire_upstream_conn(upool, origin, tls_fp, nik_tenant_b);
     assert(!cross_nik_ok);
     print("UPSTREAM_POOL_NIK_ISOLATION: OK\n");
 
     // Tenant A acquires and releases its socket cleanly
-    let fd_a, ok_a = wing::acquire_upstream_conn(upool, origin, tls_fp, nik_tenant_a);
+    let fd_a, ok_a = net::acquire_upstream_conn(upool, origin, tls_fp, nik_tenant_a);
     assert(ok_a && fd_a == 55);
-    assert(wing::release_upstream_conn(upool, 55, 0));
+    assert(net::release_upstream_conn(upool, 55, 0));
 
     // Simulate kernel signaling EPOLLRDHUP (0x2000) while idle
-    assert(wing::notify_upstream_epoll_events(upool, 55, wing::EPOLLRDHUP));
+    assert(net::notify_upstream_epoll_events(upool, 55, net::EPOLLRDHUP));
     assert(upool.evicted_rdhup == 1);
 
     // Subsequent acquire for Tenant A MUST NOT return the half-closed socket
-    let _, stale_ok = wing::acquire_upstream_conn(upool, origin, tls_fp, nik_tenant_a);
+    let _, stale_ok = net::acquire_upstream_conn(upool, origin, tls_fp, nik_tenant_a);
     assert(!stale_ok);
     print("UPSTREAM_POOL_EPOLLRDHUP_EVICTION: evicted=", upool.evicted_rdhup, "\n");
 }
@@ -560,9 +560,9 @@ fn run_04_verify_udp_batch() {
 
 var g_reentrant_ran: i32 = 0;
 
-fn reentrant_task_cb(tag: u64, user_data: u64, task_id: u32, el: wing::EventLoop&) {
+fn reentrant_task_cb(tag: u64, user_data: u64, task_id: u32, el: net::EventLoop&) {
     if tag == 101 {
-        let _ = wing::defer_task(el, 202, 0, 2);
+        let _ = net::defer_task(el, 202, 0, 2);
     } else if tag == 202 {
         g_reentrant_ran = 1;
     }
@@ -587,12 +587,12 @@ fn verify_iocomp_track_e(p_cfg: const net_internal::TransportDriverConfig&) {
     var rio_res: net_internal::RioResult[..64] = [];
     let _ = net_internal::rio_drain_completions(0, rio_res);
     rio_res.push(net_internal::RioResult { status: 0, bytes_transferred: 128, socket_context: 9001, request_context: 1 });
-    var p_rio = wing::new_poller(p_cfg);
-    wing::register_socket(p_rio, 88, 9001, core::PollInterest.Read, core::PollTrigger.Level);
+    var p_rio = net::new_poller(p_cfg);
+    net::register_socket(p_rio, 88, 9001, core::PollInterest.Read, core::PollTrigger.Level);
     var rio_evs: core::PollReadyEvent[..64] = [];
-    let mapped_rio = wing::rio_map_completions_to_events(p_rio, rio_res[..], rio_evs);
+    let mapped_rio = net::rio_map_completions_to_events(p_rio, rio_res[..], rio_evs);
     assert(mapped_rio == 1 && rio_evs[0].fd == 88 && rio_evs[0].bytes_available == 128);
-    wing::close_poller(p_rio);
+    net::close_poller(p_rio);
 
     let sock_opts = net_internal::SocketOptions {
         keepalive_idle_secs:      60,
@@ -618,12 +618,12 @@ fn verify_iocomp_track_e(p_cfg: const net_internal::TransportDriverConfig&) {
     let plain_dcz = "shared-dictionary-prefix-content-for-rfc9842-dcz! trailing payload";
     let dict_sha = core::sha256(fmt_dict[..]);
     var dcz_wire: u8[..512] = [];
-    assert(wing::encode_dcz_response(dcz_wire, dict_sha, plain_dcz, fmt_dict[..]));
+    assert(http::encode_dcz_response(dcz_wire, dict_sha, plain_dcz, fmt_dict[..]));
     var parsed_sha: u8[32] = [0; 32];
-    let dcz_zstd, dcz_hdr_ok = wing::decode_dcz_header(dcz_wire[..], parsed_sha);
+    let dcz_zstd, dcz_hdr_ok = http::decode_dcz_header(dcz_wire[..], parsed_sha);
     assert(dcz_hdr_ok && core::ct_eq_bytes(parsed_sha[..], dict_sha[..]));
     var dcz_decoded: u8[..512] = [];
-    assert(wing::decompress_dcz_payload(dcz_zstd, fmt_dict[..], dcz_decoded));
+    assert(http::decompress_dcz_payload(dcz_zstd, fmt_dict[..], dcz_decoded));
     assert(dcz_decoded[..] == plain_dcz);
 
     var z_frames: u8[..512] = [];
@@ -654,63 +654,63 @@ fn run_05_verify_net_audit() {
 
     // F002: uniform_random i64 overflow when max_val - min_val == i64::MAX
     var seed: u64 = 42;
-    let ur = wing::uniform_random(seed, 0, 9223372036854775807);
+    let ur = net::uniform_random(seed, 0, 9223372036854775807);
     assert(ur >= 0);
-    let cfg_neg = wing::BackoffConfig {
+    let cfg_neg = net::BackoffConfig {
         base_ms:  0,
         cap_ms:   -500,
-        strategy: wing::JitterStrategy.DecorrelatedJitter,
+        strategy: net::JitterStrategy.DecorrelatedJitter,
     };
     var prev_sleep: i64 = 4000000000000000000;
-    let backoff_neg = wing::compute_backoff_jitter_ms(cfg_neg, 1, prev_sleep, seed);
+    let backoff_neg = net::compute_backoff_jitter_ms(cfg_neg, 1, prev_sleep, seed);
     assert(backoff_neg == 0);
     print("F002_BACKOFF_OK: ", backoff_neg);
 
     // F003: CircuitBreaker expired slot reclamation on 17th host and >256B host rejection
-    var breaker = wing::new_host_circuit_breaker(1000);
+    var breaker = net::new_host_circuit_breaker(1000);
     for i in 16 {
         var h: u8[..32] = [];
         h.append("host-");
         h.push(('a' + i) as u8);
         h.append(".example.com");
-        let tripped = wing::trip_circuit_breaker_if_exceeded(breaker, h[..], 2000, 1000);
+        let tripped = net::trip_circuit_breaker_if_exceeded(breaker, h[..], 2000, 1000);
         assert(tripped);
     }
     // At t = 5000000000 (5s > 2s cooldown), all 16 entries have expired.
     // Tripping a 17th host must reclaim an expired slot so is_host_circuit_broken returns true.
-    let tripped17 = wing::trip_circuit_breaker_if_exceeded(breaker, "host-17.example.com", 2000, 5000000000);
+    let tripped17 = net::trip_circuit_breaker_if_exceeded(breaker, "host-17.example.com", 2000, 5000000000);
     assert(tripped17);
-    let broken17 = wing::is_host_circuit_broken(breaker, "host-17.example.com", 5500000000);
+    let broken17 = net::is_host_circuit_broken(breaker, "host-17.example.com", 5500000000);
     assert(broken17);
     print("F003_BREAKER_17: ", if broken17 { 1 } else { 0 });
 
     // F004: Pool active connection protection on EPOLLRDHUP, release idempotency, and case-folded hash
-    var up_pool = wing::UpstreamPool { .. };
-    var ep = wing::OriginEndpoint { port: 8080, .. };
+    var up_pool = net::UpstreamPool { .. };
+    var ep = net::OriginEndpoint { port: 8080, .. };
     ep.host.append("10.0.0.1");
-    assert(wing::register_upstream_conn(up_pool, 0, ep, 111, 222));
-    let acq_fd, acq_ok = wing::acquire_upstream_conn(up_pool, ep, 111, 222);
+    assert(net::register_upstream_conn(up_pool, 0, ep, 111, 222));
+    let acq_fd, acq_ok = net::acquire_upstream_conn(up_pool, ep, 111, 222);
     assert(acq_ok && acq_fd == 0);
     // Delivering EPOLLRDHUP while in_use == true must NOT evict the active entry while borrowed
-    let _ = wing::notify_upstream_epoll_events(up_pool, 0, wing::EPOLLRDHUP);
+    let _ = net::notify_upstream_epoll_events(up_pool, 0, net::EPOLLRDHUP);
     assert(up_pool.entries[0].in_use && up_pool.entries[0].healthy);
 
     // Case-insensitive pool_key_hash when PoolKey constructed with mixed-case host
-    var pk_upper = wing::PoolKey { scheme: wing::PoolScheme.Https, .. };
+    var pk_upper = net::PoolKey { scheme: net::PoolScheme.Https, .. };
     pk_upper.origin_endpoint.host.append("API.EXAMPLE.COM");
     pk_upper.origin_endpoint.port = 443;
-    var pk_lower = wing::PoolKey { scheme: wing::PoolScheme.Https, .. };
+    var pk_lower = net::PoolKey { scheme: net::PoolScheme.Https, .. };
     pk_lower.origin_endpoint.host.append("api.example.com");
     pk_lower.origin_endpoint.port = 443;
-    assert(wing::pool_key_equals(pk_upper, pk_lower));
-    assert(wing::pool_key_hash(pk_upper) == wing::pool_key_hash(pk_lower));
+    assert(net::pool_key_equals(pk_upper, pk_lower));
+    assert(net::pool_key_hash(pk_upper) == net::pool_key_hash(pk_lower));
 
     // Double release_connection must not underflow active_conns or double-increment idle_conns
-    var sp = wing::new_stream_pool(6, 32, 4);
-    let cid = wing::register_connection(sp, pk_lower, wing::NegotiatedProtocol.Http11, "1.1.1.1", 1, 1000);
-    wing::release_connection(sp, cid, 2000);
-    wing::release_connection(sp, cid, 3000);
-    let g_idx = wing::find_group_index(sp, pk_lower);
+    var sp = net::new_stream_pool(6, 32, 4);
+    let cid = net::register_connection(sp, pk_lower, net::NegotiatedProtocol.Http11, "1.1.1.1", 1, 1000);
+    net::release_connection(sp, cid, 2000);
+    net::release_connection(sp, cid, 3000);
+    let g_idx = net::find_group_index(sp, pk_lower);
     assert(g_idx >= 0);
     assert(sp.groups[g_idx].active_conns == 0);
     assert(sp.groups[g_idx].idle_conns == 1);
@@ -718,78 +718,78 @@ fn run_05_verify_net_audit() {
 
     // F005: Poller coarse timeout preserved when out_events full, re-entrant defer_task, and bounded consume_read
     var p_cfg = net_internal::auto_transport_driver_config();
-    var poller = wing::new_poller(p_cfg);
-    wing::register_socket(poller, 50, 7001, core::PollInterest.Read, core::PollTrigger.Level);
-    wing::set_socket_timeout(poller, 50, 4);
+    var poller = net::new_poller(p_cfg);
+    net::register_socket(poller, 50, 7001, core::PollInterest.Read, core::PollTrigger.Level);
+    net::set_socket_timeout(poller, 50, 4);
     var full_evs: core::PollReadyEvent[..64] = [];
-    let _ = wing::poll_events(poller, 0, 1000000000, full_evs);
+    let _ = net::poll_events(poller, 0, 1000000000, full_evs);
     for _ in 64 {
         full_evs.push(core::PollReadyEvent { .. });
     }
     // Advance 5 seconds with full (64/64) event buffer: timeout must NOT be lost!
-    let c_full = wing::check_coarse_timeouts(poller, 6000000000, full_evs);
+    let c_full = net::check_coarse_timeouts(poller, 6000000000, full_evs);
     assert(c_full == 0);
-    assert(wing::get_socket_timeout(poller, 50) != wing::COARSE_TIMEOUT_DISABLED);
-    wing::close_poller(poller);
+    assert(net::get_socket_timeout(poller, 50) != net::COARSE_TIMEOUT_DISABLED);
+    net::close_poller(poller);
 
-    var el = wing::new_event_loop(p_cfg);
-    let _ = wing::bind_connection(el, 30, 5001, core::PollInterest.Read);
-    let _ = wing::feed_read(el, 5001, "0123456789");
+    var el = net::new_event_loop(p_cfg);
+    let _ = net::bind_connection(el, 30, 5001, core::PollInterest.Read);
+    let _ = net::feed_read(el, 5001, "0123456789");
     var small_out: u8[..4] = [];
-    let consumed1 = wing::consume_read(el, 5001, small_out);
+    let consumed1 = net::consume_read(el, 5001, small_out);
     assert(consumed1 == 4 && small_out[..] == "0123");
     var rest_out: u8[..16] = [];
-    let consumed2 = wing::consume_read(el, 5001, rest_out);
+    let consumed2 = net::consume_read(el, 5001, rest_out);
     assert(consumed2 == 6 && rest_out[..] == "456789");
 
-    let _ = wing::defer_task(el, 101, 0, 1);
-    let _ = wing::drain_deferred_tasks(el, reentrant_task_cb);
-    let _ = wing::drain_deferred_tasks(el, reentrant_task_cb);
+    let _ = net::defer_task(el, 101, 0, 1);
+    let _ = net::drain_deferred_tasks(el, reentrant_task_cb);
+    let _ = net::drain_deferred_tasks(el, reentrant_task_cb);
     assert(g_reentrant_ran == 1);
-    wing::close_event_loop(el);
+    net::close_event_loop(el);
     print("F005_POLLER_OK: ", g_reentrant_ran);
 
     // F006: MASQUE transactional capacity check on encode_http_capsule and out_packet clear in receive_capsule
     var tiny_cap: u8[..4] = [];
-    let cap_ok = wing::encode_http_capsule(tiny_cap, rfc::CAPSULE_DATAGRAM, "0123456789");
+    let cap_ok = net::encode_http_capsule(tiny_cap, rfc::CAPSULE_DATAGRAM, "0123456789");
     assert(!cap_ok && tiny_cap.len == 0);
 
-    var tun = wing::new_connect_udp_tunnel("https://proxy.org", "1.1.1.1", 53);
-    tun.state = wing::MasqueTunnelState.Established;
+    var tun = net::new_connect_udp_tunnel("https://proxy.org", "1.1.1.1", 53);
+    tun.state = net::MasqueTunnelState.Established;
     var wire_dg: u8[..64] = [];
-    assert(wing::encode_connect_udp_datagram_capsule(wire_dg, 0, "hello"));
+    assert(net::encode_connect_udp_datagram_capsule(wire_dg, 0, "hello"));
     var recv_buf: u8[..16] = [];
     recv_buf.append("STALE_PREFIX_");
-    assert(wing::receive_capsule(tun, wire_dg[..], recv_buf));
+    assert(net::receive_capsule(tun, wire_dg[..], recv_buf));
     assert(recv_buf[..] == "hello");
     print("F006_MASQUE_LEN: ", recv_buf.len);
 
     // F007: HTTP CONNECT status line space in header and split-chunk CRLFCRLF in HeaderReader
     let spoofed_connect = "HTTP/1.1\r\nX-Spoof: 200 OK\r\n\r\n";
-    let spoof_err = wing::verify_connect_tunnel_response(spoofed_connect, 0);
-    assert(spoof_err == wing::ConnectTunnelError.MalformedHeaders);
+    let spoof_err = net::verify_connect_tunnel_response(spoofed_connect, 0);
+    assert(spoof_err == net::ConnectTunnelError.MalformedHeaders);
 
-    let sl_cfg = wing::SlowlorisDefenseConfig { .. };
-    var h_reader = wing::new_header_reader(sl_cfg, 0);
-    let v_part1 = wing::feed_header_bytes(h_reader, "HTTP/1.1 200 OK\r\nHost: a\r\n", 1000000);
-    assert(v_part1 == wing::SlowlorisViolation.None && !h_reader.headers_complete);
-    let v_part2 = wing::feed_header_bytes(h_reader, "\r\n", 2000000);
-    assert(v_part2 == wing::SlowlorisViolation.None && h_reader.headers_complete);
+    let sl_cfg = net::SlowlorisDefenseConfig { .. };
+    var h_reader = net::new_header_reader(sl_cfg, 0);
+    let v_part1 = net::feed_header_bytes(h_reader, "HTTP/1.1 200 OK\r\nHost: a\r\n", 1000000);
+    assert(v_part1 == net::SlowlorisViolation.None && !h_reader.headers_complete);
+    let v_part2 = net::feed_header_bytes(h_reader, "\r\n", 2000000);
+    assert(v_part2 == net::SlowlorisViolation.None && h_reader.headers_complete);
     print("F007_CONNECT_OK: ", if h_reader.headers_complete { 1 } else { 0 });
 
     // F008: PROXY v1 leading zeros / double spaces rejection and format_proxy_v2 bounded buffer guard
-    let _, _, ok_lead_zero_ip = wing::parse_proxy_v1("PROXY TCP4 010.0.0.1 10.0.0.2 5000 80\r\n");
+    let _, _, ok_lead_zero_ip = net::parse_proxy_v1("PROXY TCP4 010.0.0.1 10.0.0.2 5000 80\r\n");
     assert(!ok_lead_zero_ip);
-    let _, _, ok_lead_zero_port = wing::parse_proxy_v1("PROXY TCP4 10.0.0.1 10.0.0.2 05000 80\r\n");
+    let _, _, ok_lead_zero_port = net::parse_proxy_v1("PROXY TCP4 10.0.0.1 10.0.0.2 05000 80\r\n");
     assert(!ok_lead_zero_port);
-    let _, _, ok_double_space = wing::parse_proxy_v1("PROXY  TCP4 10.0.0.1 10.0.0.2 5000 80\r\n");
+    let _, _, ok_double_space = net::parse_proxy_v1("PROXY  TCP4 10.0.0.1 10.0.0.2 5000 80\r\n");
     assert(!ok_double_space);
 
-    var phdr = wing::ProxyHeader {
-        version:   wing::ProxyProtocolVersion.V2,
-        command:   wing::ProxyCommand.Proxy,
-        family:    wing::ProxyAddressFamily.Inet4,
-        transport: wing::ProxyTransportProtocol.Stream,
+    var phdr = net::ProxyHeader {
+        version:   net::ProxyProtocolVersion.V2,
+        command:   net::ProxyCommand.Proxy,
+        family:    net::ProxyAddressFamily.Inet4,
+        transport: net::ProxyTransportProtocol.Stream,
         src_ipv4:  [10, 0, 0, 1],
         dst_ipv4:  [10, 0, 0, 2],
         src_port:  1234,
@@ -797,7 +797,7 @@ fn run_05_verify_net_audit() {
         ..
     };
     var tiny_v2: u8[..8] = [];
-    let v2_ok = wing::format_proxy_v2(phdr, tiny_v2);
+    let v2_ok = net::format_proxy_v2(phdr, tiny_v2);
     assert(!v2_ok && tiny_v2.len == 0);
     print("F008_PROXY_OK: 1");
 
@@ -814,47 +814,47 @@ fn run_05_verify_net_audit() {
     print("F009_DNS_OK: ", if !mand_ok { 1 } else { 0 });
 
     // F010: Happy Eyeballs start_attempt_race state reset on reuse & Isolation key content comparison
-    var he_mgr = wing::new_attempt_manager(250);
-    var cands: wing::DnsCandidate[..2] = [];
-    cands.push(wing::new_dns_candidate(wing::AddressFamily.IPv6, "2001:db8::1", 443));
-    wing::start_attempt_race(he_mgr, cands[..], 0);
+    var he_mgr = net::new_attempt_manager(250);
+    var cands: net::DnsCandidate[..2] = [];
+    cands.push(net::new_dns_candidate(net::AddressFamily.IPv6, "2001:db8::1", 443));
+    net::start_attempt_race(he_mgr, cands[..], 0);
     assert(he_mgr.attempts.len == 1);
-    wing::start_attempt_race(he_mgr, cands[..], 100);
+    net::start_attempt_race(he_mgr, cands[..], 100);
     assert(he_mgr.attempts.len == 1);
 
     var site1: u8[..32] = [];
     site1.append("https://example.com");
     var site2: u8[..32] = [];
     site2.append("https://example.com");
-    let nik = wing::new_network_isolation_key(site1[..], site2[..]);
+    let nik = net::new_network_isolation_key(site1[..], site2[..]);
     assert(!nik.is_cross_site);
 
     // Exercise late DNS candidate injection, MASQUE QUIC datagram ingress, Poller helpers, and L4 driver APIs
-    var late_q: wing::DnsCandidate[..32] = [];
-    wing::inject_late_dns_candidates(late_q, cands[..]);
+    var late_q: net::DnsCandidate[..32] = [];
+    net::inject_late_dns_candidates(late_q, cands[..]);
     assert(late_q.len == 1);
 
     var dgram_wire: u8[..64] = [];
-    let dgram_enc_ok = wing::encode_http_datagram(dgram_wire, tun.quarter_stream_id, 0, "quux");
+    let dgram_enc_ok = net::encode_http_datagram(dgram_wire, tun.quarter_stream_id, 0, "quux");
     assert(dgram_enc_ok);
     var dgram_out: u8[..32] = [];
-    let dgram_rx_ok = wing::receive_quic_datagram(tun, dgram_wire[..], dgram_out);
+    let dgram_rx_ok = net::receive_quic_datagram(tun, dgram_wire[..], dgram_out);
     assert(dgram_rx_ok && dgram_out[..] == "quux");
 
-    var p2 = wing::new_poller(p_cfg);
-    wing::register_socket(p2, 60, 8001, core::PollInterest.Read, core::PollTrigger.Level);
-    assert(wing::find_by_tag(p2, 8001) >= 0);
-    assert(wing::simulate_error(p2, 60));
-    wing::close_poller(p2);
+    var p2 = net::new_poller(p_cfg);
+    net::register_socket(p2, 60, 8001, core::PollInterest.Read, core::PollTrigger.Level);
+    assert(net::find_by_tag(p2, 8001) >= 0);
+    assert(net::simulate_error(p2, 60));
+    net::close_poller(p2);
 
-    var el2 = wing::new_event_loop(p_cfg);
-    let _ = wing::bind_connection(el2, 61, 8002, core::PollInterest.Read);
-    assert(wing::set_connection_timeout(el2, 8002, 8));
-    wing::close_event_loop(el2);
+    var el2 = net::new_event_loop(p_cfg);
+    let _ = net::bind_connection(el2, 61, 8002, core::PollInterest.Read);
+    assert(net::set_connection_timeout(el2, 8002, 8));
+    net::close_event_loop(el2);
 
-    assert(!wing::tcp_set_reuseport(-1, true));
-    assert(!wing::epoll_mod(-1, 1, wing::EPOLL_READ, 0));
-    wing::tcp_cleanup();
+    assert(!net::tcp_set_reuseport(-1, true));
+    assert(!net::epoll_mod(-1, 1, net::EPOLL_READ, 0));
+    net::tcp_cleanup();
 
     let probe_res = net_internal::probe_transport_driver(net_internal::TransportDriverKind.Standard);
     assert(probe_res.available);
@@ -875,43 +875,43 @@ fn run_05_verify_net_audit() {
 
     // F011: RFC 9484 §§4.7.1-4.7.3 empty ADDRESS_ASSIGN / ROUTE_ADVERTISEMENT revocation vs malformed rejection
     let empty_payload: const u8[:] = "";
-    let empty_assign, ok_empty_assign = wing::decode_address_assign_capsule(empty_payload);
+    let empty_assign, ok_empty_assign = net::decode_address_assign_capsule(empty_payload);
     assert(ok_empty_assign && empty_assign.assigned_ip.len == 0 && empty_assign.prefix_len == 0);
-    let _, ok_empty_req = wing::decode_address_request_capsule(empty_payload);
+    let _, ok_empty_req = net::decode_address_request_capsule(empty_payload);
     assert(!ok_empty_req);
-    let empty_route, ok_empty_route = wing::decode_route_advertisement_capsule(empty_payload);
+    let empty_route, ok_empty_route = net::decode_route_advertisement_capsule(empty_payload);
     assert(ok_empty_route && empty_route.start_ip.len == 0 && empty_route.end_ip.len == 0);
     let trunc_assign: const u8[4] = [0x01, 0x04, 10, 0];
-    let _, ok_trunc_assign = wing::decode_address_assign_capsule(trunc_assign[..]);
+    let _, ok_trunc_assign = net::decode_address_assign_capsule(trunc_assign[..]);
     assert(!ok_trunc_assign);
     let trunc_route: const u8[3] = [0x04, 10, 0];
-    let _, ok_trunc_route = wing::decode_route_advertisement_capsule(trunc_route[..]);
+    let _, ok_trunc_route = net::decode_route_advertisement_capsule(trunc_route[..]);
     assert(!ok_trunc_route);
-    var tun_assigned = wing::new_connect_udp_tunnel("https://proxy.org", "1.1.1.1", 53);
-    tun_assigned.state = wing::MasqueTunnelState.Established;
+    var tun_assigned = net::new_connect_udp_tunnel("https://proxy.org", "1.1.1.1", 53);
+    tun_assigned.state = net::MasqueTunnelState.Established;
     tun_assigned.assigned_ip.append("192.168.1.100");
     tun_assigned.assigned_prefix_len = 24;
     let zero_reject: const u8[7] = [0x01, 0x04, 0, 0, 0, 0, 32];
-    assert(!wing::apply_assigned_ip(tun_assigned, trunc_assign[..]));
-    assert(!wing::apply_assigned_ip(tun_assigned, zero_reject[..]));
+    assert(!net::apply_assigned_ip(tun_assigned, trunc_assign[..]));
+    assert(!net::apply_assigned_ip(tun_assigned, zero_reject[..]));
     assert(tun_assigned.assigned_ip[..] == "192.168.1.100");
     var empty_route_wire: u8[..8] = [];
-    assert(wing::encode_http_capsule(empty_route_wire, rfc::CAPSULE_ROUTE_ADVERTISEMENT, empty_payload));
+    assert(net::encode_http_capsule(empty_route_wire, rfc::CAPSULE_ROUTE_ADVERTISEMENT, empty_payload));
     var pkt_scratch: u8[..16] = [];
-    assert(wing::receive_capsule(tun_assigned, empty_route_wire[..], pkt_scratch));
-    assert(wing::apply_assigned_ip(tun_assigned, empty_payload));
+    assert(net::receive_capsule(tun_assigned, empty_route_wire[..], pkt_scratch));
+    assert(net::apply_assigned_ip(tun_assigned, empty_payload));
     assert(tun_assigned.assigned_ip.len == 0 && tun_assigned.assigned_prefix_len == 0);
     print("F011_MASQUE_EMPTY_REVOKE: 1");
 
     // F012: UpstreamPool EPOLLRDHUP notification while in_use and release preservation
-    var up_test = wing::UpstreamPool { .. };
-    let ep_test = wing::new_origin_endpoint("backend.test", 443);
-    assert(wing::register_upstream_conn(up_test, 77, ep_test, 0x1122, 100));
-    let fd_borrowed, acq_ok = wing::acquire_upstream_conn(up_test, ep_test, 0x1122, 100);
+    var up_test = net::UpstreamPool { .. };
+    let ep_test = net::new_origin_endpoint("backend.test", 443);
+    assert(net::register_upstream_conn(up_test, 77, ep_test, 0x1122, 100));
+    let fd_borrowed, acq_ok = net::acquire_upstream_conn(up_test, ep_test, 0x1122, 100);
     assert(acq_ok && fd_borrowed == 77);
-    assert(wing::notify_upstream_epoll_events(up_test, 77, wing::EPOLLRDHUP));
-    assert(!wing::release_upstream_conn(up_test, 77, 0));
-    let _, reacq_ok = wing::acquire_upstream_conn(up_test, ep_test, 0x1122, 100);
+    assert(net::notify_upstream_epoll_events(up_test, 77, net::EPOLLRDHUP));
+    assert(!net::release_upstream_conn(up_test, 77, 0));
+    let _, reacq_ok = net::acquire_upstream_conn(up_test, ep_test, 0x1122, 100);
     assert(!reacq_ok);
     print("F012_UPSTREAM_RDHUP_IN_USE: 1");
 
@@ -936,13 +936,13 @@ fn run_05_verify_net_audit() {
     print("F014_DNS_CACHE_SKEW: 1");
 
     // F015: bind_winner_attempt rejects Failed or Cancelled attempts
-    var amgr = wing::new_attempt_manager(250);
-    var amgr_cands: wing::DnsCandidate[..1] = [];
-    amgr_cands.push(wing::new_dns_candidate(wing::AddressFamily.IPv4, "1.1.1.1", 80));
-    wing::start_attempt_race(amgr, amgr_cands[..], 0);
-    amgr.attempts[0].state = wing::AttemptState.Failed;
-    assert(!wing::bind_winner_attempt(amgr, amgr.attempts[0].attempt_id));
-    assert(amgr.attempts[0].state == wing::AttemptState.Failed);
+    var amgr = net::new_attempt_manager(250);
+    var amgr_cands: net::DnsCandidate[..1] = [];
+    amgr_cands.push(net::new_dns_candidate(net::AddressFamily.IPv4, "1.1.1.1", 80));
+    net::start_attempt_race(amgr, amgr_cands[..], 0);
+    amgr.attempts[0].state = net::AttemptState.Failed;
+    assert(!net::bind_winner_attempt(amgr, amgr.attempts[0].attempt_id));
+    assert(amgr.attempts[0].state == net::AttemptState.Failed);
     print("F015_BIND_WINNER_FAILED: 1");
 
     // F016: format_i64_dec formats negative integers correctly
@@ -954,13 +954,13 @@ fn run_05_verify_net_audit() {
     // F017: Capacity protection on new_origin_endpoint, new_dns_candidate, and format_partitioned_key
     var big_host: u8[..300] = [];
     for _ in 280 { big_host.push('x'); }
-    let ep_big = wing::new_origin_endpoint(big_host[..], 80);
+    let ep_big = net::new_origin_endpoint(big_host[..], 80);
     assert(ep_big.host.len <= 256);
-    let cand_big = wing::new_dns_candidate(wing::AddressFamily.IPv4, big_host[..], 80);
+    let cand_big = net::new_dns_candidate(net::AddressFamily.IPv4, big_host[..], 80);
     assert(cand_big.ip.len <= 64);
     var tiny_part: u8[..4] = [];
-    let nik_test = wing::new_network_isolation_key("https://a.com", "https://b.com");
-    wing::format_partitioned_key("base", nik_test, tiny_part);
+    let nik_test = net::new_network_isolation_key("https://a.com", "https://b.com");
+    net::format_partitioned_key(nik_test, "base", tiny_part);
     assert(tiny_part.len <= 4);
     print("F017_CAP_GUARDS_OK: 1");
 
@@ -1068,18 +1068,18 @@ fn test_r002_happy_eyeballs_seams() {
     var fqdn_100: u8[..128] = [];
     for _ in 20 { fqdn_100.append("sub."); }
     fqdn_100.append("example.com");
-    let cand = wing::new_dns_candidate(wing::AddressFamily.IPv4, fqdn_100[..], 443);
+    let cand = net::new_dns_candidate(net::AddressFamily.IPv4, fqdn_100[..], 443);
     assert(cand.ip[..] == fqdn_100[..]);
 
     // 2. on_dns_a_response when AAAA already Failed must NOT wait 50ms RD delay
-    var task = wing::new_dns_race_task(50);
-    task.aaaa_status = wing::DnsQueryStatus.Failed;
+    var task = net::new_dns_race_task(50);
+    task.aaaa_status = net::DnsQueryStatus.Failed;
     let a_ips: (const u8[:])[1] = ["93.184.216.34"];
-    wing::on_dns_a_response(task, a_ips[..], 20);
+    net::on_dns_a_response(task, a_ips[..], 20);
     assert(task.ready_to_connect && !task.rd_timer_armed);
 
     // 3. new_attempt_manager clamps cad_ms to >= 10ms (RFC 8305 §5)
-    let mgr = wing::new_attempt_manager(2);
+    let mgr = net::new_attempt_manager(2);
     assert(mgr.effective_cad_ms >= 10);
     print("R002_HE_SEAMS: 1");
 }
@@ -1087,91 +1087,91 @@ fn test_r002_happy_eyeballs_seams() {
 fn test_r003_proxy_hop_by_hop_and_handshake() {
     // 1. RFC 9110 §7.6.1: sanitize_tunnel_headers_for_origin must not overwrite Connection
     //    entry in place before checking later headers nominated by Connection!
-    var hdrs = wing::HeaderMap { .. };
-    wing::append_header(hdrs, "Connection", "X-Secret-Token");
-    wing::append_header(hdrs, "Host", "origin.example.com");
-    wing::append_header(hdrs, "X-Secret-Token", "leaked-secret-value");
-    wing::sanitize_tunnel_headers_for_origin(hdrs);
-    assert(!wing::has_header(hdrs, "X-Secret-Token"));
-    assert(wing::has_header(hdrs, "Host"));
+    var hdrs = http::HeaderMap { .. };
+    http::append_header(hdrs, "Connection", "X-Secret-Token");
+    http::append_header(hdrs, "Host", "origin.example.com");
+    http::append_header(hdrs, "X-Secret-Token", "leaked-secret-value");
+    net::sanitize_tunnel_headers_for_origin(hdrs);
+    assert(!http::has_header(hdrs, "X-Secret-Token"));
+    assert(http::has_header(hdrs, "Host"));
 
     // 2. RFC 1928 §6: SOCKS5 connect reply with non-zero RSV byte must be rejected
     let bad_rsv_reply: const u8[10] = [0x05, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0x04, 0x38];
-    let _, rsv_err = wing::parse_socks5_connect_reply(bad_rsv_reply[..]);
-    assert(rsv_err == wing::Socks5Error.InvalidReplyHeader);
+    let _, rsv_err = net::parse_socks5_connect_reply(bad_rsv_reply[..]);
+    assert(rsv_err == net::Socks5Error.InvalidReplyHeader);
 
     // 3. Slowloris HeaderReader: bare \n\n must not disarm Slowloris checks
-    let sl_cfg = wing::SlowlorisDefenseConfig { .. };
-    var reader = wing::new_header_reader(sl_cfg, 0);
-    let v1 = wing::feed_header_bytes(reader, "HTTP/1.1 200 OK\n\n", 1000000);
-    assert(v1 == wing::SlowlorisViolation.None && !reader.headers_complete);
+    let sl_cfg = net::SlowlorisDefenseConfig { .. };
+    var reader = net::new_header_reader(sl_cfg, 0);
+    let v1 = net::feed_header_bytes(reader, "HTTP/1.1 200 OK\n\n", 1000000);
+    assert(v1 == net::SlowlorisViolation.None && !reader.headers_complete);
 
     // 4. build_http_connect_request rejects whitespace in target_host
     var req_out: u8[..1024] = [];
-    wing::build_http_connect_request("bad host.com", 443, "", "", req_out);
+    net::build_http_connect_request("bad host.com", 443, "", "", req_out);
     assert(req_out.len == 0);
     print("R003_PROXY_SEAMS: 1");
 }
 
 fn test_r004_masque_rfc_invariants() {
     // 1. RFC 9297 §3.4: Capsule-Protocol SFV List (?1, ?0) must be rejected
-    assert(!wing::is_capsule_protocol_negotiated("?1, ?0"));
-    assert(!wing::is_capsule_protocol_negotiated("?1; a=1, ?1"));
+    assert(!net::is_capsule_protocol_negotiated("?1, ?0"));
+    assert(!net::is_capsule_protocol_negotiated("?1; a=1, ?1"));
 
     // 2. RFC 9297 §2.1: quarter_stream_id > 2^60 - 1 rejected
     var dg_out: u8[..64] = [];
-    assert(!wing::encode_http_datagram(dg_out, 0x1000000000000000, 0, "pkt"));
+    assert(!net::encode_http_datagram(dg_out, 0x1000000000000000, 0, "pkt"));
 
     // 3. RFC 9298 §3: IPv6 colons percent-encoded in format_connect_udp_path and decoded in parse_connect_udp_path
     var v6_path: u8[..256] = [];
-    wing::format_connect_udp_path(v6_path, "2001:db8::1", 443);
+    net::format_connect_udp_path(v6_path, "2001:db8::1", 443);
     assert(v6_path[..] == "/.well-known/masque/udp/2001%3Adb8%3A%3A1/443/");
-    let dec_h, dec_p, dec_ok = wing::parse_connect_udp_path(v6_path[..]);
+    let dec_h, dec_p, dec_ok = net::parse_connect_udp_path(v6_path[..]);
     assert(dec_ok && dec_p == 443 && dec_h[..] == "2001:db8::1");
-    let _, _, raw_colon_ok = wing::parse_connect_udp_path("/.well-known/masque/udp/2001:db8::1/443/");
+    let _, _, raw_colon_ok = net::parse_connect_udp_path("/.well-known/masque/udp/2001:db8::1/443/");
     assert(!raw_colon_ok);
 
     // 4. RFC 9484 §4.7.3: Inverted route range (start_ip > end_ip) rejected in decode and receive_capsule
-    var inv_route = wing::RouteAdvertisement { ip_version: 4, ip_protocol: 0, .. };
+    var inv_route = net::RouteAdvertisement { ip_version: 4, ip_protocol: 0, .. };
     inv_route.start_ip.append([10, 0, 0, 255]);
     inv_route.end_ip.append([10, 0, 0, 0]);
     var route_wire: u8[..64] = [];
-    assert(!wing::encode_route_advertisement_capsule(route_wire, inv_route));
+    assert(!net::encode_route_advertisement_capsule(route_wire, inv_route));
     let raw_inv_payload: const u8[10] = [4, 10, 0, 0, 255, 10, 0, 0, 0, 0];
-    let _, inv_dec_ok = wing::decode_route_advertisement_capsule(raw_inv_payload[..]);
+    let _, inv_dec_ok = net::decode_route_advertisement_capsule(raw_inv_payload[..]);
     assert(!inv_dec_ok);
     print("R004_MASQUE_RFC: 1");
 }
 
 fn test_r005_proxy_protocol_roundtrip_and_bounds() {
     // 1. HAProxy v2 LOCAL + AF_UNSPEC default ProxyHeader round-trip
-    var local_hdr = wing::ProxyHeader {
-        version: wing::ProxyProtocolVersion.V2,
-        command: wing::ProxyCommand.Local,
-        family:  wing::ProxyAddressFamily.Unspec,
+    var local_hdr = net::ProxyHeader {
+        version: net::ProxyProtocolVersion.V2,
+        command: net::ProxyCommand.Local,
+        family:  net::ProxyAddressFamily.Unspec,
         ..
     };
     var v2_out: u8[..64] = [];
-    assert(wing::format_proxy_v2(local_hdr, v2_out));
-    let parsed_v2, consumed_v2, ok_v2 = wing::parse_proxy_v2(v2_out[..]);
-    assert(ok_v2 && consumed_v2 == 16 && parsed_v2.command == wing::ProxyCommand.Local);
+    assert(net::format_proxy_v2(local_hdr, v2_out));
+    let parsed_v2, consumed_v2, ok_v2 = net::parse_proxy_v2(v2_out[..]);
+    assert(ok_v2 && consumed_v2 == 16 && parsed_v2.command == net::ProxyCommand.Local);
 
     // 2. HAProxy v1 UNKNOWN with embedded NUL rejected
-    let _, _, bad_v1 = wing::parse_proxy_v1("PROXY UNKNOWN bad\x00char\r\n");
+    let _, _, bad_v1 = net::parse_proxy_v1("PROXY UNKNOWN bad\x00char\r\n");
     assert(!bad_v1);
     print("R005_PROXY_PROTO: 1");
 }
 
 fn test_r006_pool_h2_coalescing_and_queues() {
     // 1. RFC 9110 §4.3.1: H2 coalescing MUST NOT coalesce across different origin ports
-    let nak = wing::new_network_anonymization_key("https://example.com");
-    let chain = wing::new_direct_proxy_chain();
-    let pol = wing::TlsAndDnsPolicy { .. };
-    let key_443 = wing::new_pool_key(wing::PoolScheme.Https, "a.example.com", 443, chain, nak, pol);
-    let key_8443 = wing::new_pool_key(wing::PoolScheme.Https, "b.example.com", 8443, chain, nak, pol);
-    var conn = wing::PooledConnection {
+    let nak = net::new_network_anonymization_key("https://example.com");
+    let chain = net::new_direct_proxy_chain();
+    let pol = net::TlsAndDnsPolicy { .. };
+    let key_443 = net::new_pool_key(net::PoolScheme.Https, "a.example.com", 443, chain, nak, pol);
+    let key_8443 = net::new_pool_key(net::PoolScheme.Https, "b.example.com", 8443, chain, nak, pol);
+    var conn = net::PooledConnection {
         key:                    key_443,
-        protocol:               wing::NegotiatedProtocol.Http2,
+        protocol:               net::NegotiatedProtocol.Http2,
         max_concurrent_streams: 100,
         cert_valid:             true,
         ..
@@ -1180,72 +1180,72 @@ fn test_r006_pool_h2_coalescing_and_queues() {
     var san: u8[..128] = [];
     san.append("*.example.com");
     conn.san_hosts.push(san);
-    assert(!wing::can_coalesce_h2_connection(conn, key_8443, "93.184.216.34"));
+    assert(!net::can_coalesce_h2_connection(conn, key_8443, "93.184.216.34"));
 
     // 2. RFC 6125: matches_san_pattern rejects trailing-dot TLD wildcard and IPv4 wildcard
-    assert(!wing::matches_san_pattern("", ""));
-    assert(!wing::matches_san_pattern("*.com.", "evil.com."));
-    assert(!wing::matches_san_pattern("*.0.0.1", "127.0.0.1"));
+    assert(!net::matches_san_pattern("", ""));
+    assert(!net::matches_san_pattern("*.com.", "evil.com."));
+    assert(!net::matches_san_pattern("*.0.0.1", "127.0.0.1"));
 
     // 3. WantQueue compaction drops cancelled items so 65th push succeeds
-    var wq = wing::WantQueue { .. };
+    var wq = net::WantQueue { .. };
     for i in 64 {
         let req_id = (i + 1) as u64;
-        assert(wing::push_want(wq, wing::WantConn { req_id: req_id, .. }));
-        assert(wing::cancel_want(wq, req_id));
+        assert(net::push_want(wq, net::WantConn { req_id: req_id, .. }));
+        assert(net::cancel_want(wq, req_id));
     }
-    assert(wing::queue_len(wq) == 0);
-    assert(wing::push_want(wq, wing::WantConn { req_id: 65, .. }));
+    assert(net::queue_len(wq) == 0);
+    assert(net::push_want(wq, net::WantConn { req_id: 65, .. }));
 
     // 4. UpstreamPool bitwise-OR epoll_events preserves EPOLLRDHUP across subsequent events
-    var up = wing::UpstreamPool { .. };
-    let ep = wing::new_origin_endpoint("10.0.0.1", 8080);
-    assert(wing::register_upstream_conn(up, 55, ep, 1, 1));
-    let _, acq_ok = wing::acquire_upstream_conn(up, ep, 1, 1);
+    var up = net::UpstreamPool { .. };
+    let ep = net::new_origin_endpoint("10.0.0.1", 8080);
+    assert(net::register_upstream_conn(up, 55, ep, 1, 1));
+    let _, acq_ok = net::acquire_upstream_conn(up, ep, 1, 1);
     assert(acq_ok);
-    let _ = wing::notify_upstream_epoll_events(up, 55, wing::EPOLLRDHUP);
-    let _ = wing::notify_upstream_epoll_events(up, 55, wing::EPOLL_READ);
-    assert(!wing::release_upstream_conn(up, 55, 0));
+    let _ = net::notify_upstream_epoll_events(up, 55, net::EPOLLRDHUP);
+    let _ = net::notify_upstream_epoll_events(up, 55, net::EPOLL_READ);
+    assert(!net::release_upstream_conn(up, 55, 0));
     print("R006_POOL_SEAMS: 1");
 }
 
 fn test_r007_isolation_and_retry_rfc() {
     // 1. NetworkIsolationKey empty check, case folding, and fail-closed on >128B site
-    let empty_nik = wing::new_network_isolation_key("", "");
+    let empty_nik = net::new_network_isolation_key("", "");
     assert(empty_nik.is_empty);
-    let upper_nik = wing::new_network_isolation_key("HTTPS://EXAMPLE.COM", "https://example.com");
-    let lower_nik = wing::new_network_isolation_key("https://example.com", "https://example.com");
+    let upper_nik = net::new_network_isolation_key("HTTPS://EXAMPLE.COM", "https://example.com");
+    let lower_nik = net::new_network_isolation_key("https://example.com", "https://example.com");
     assert(upper_nik.top_level_site[..] == lower_nik.top_level_site[..]);
 
     // 2. RFC 9110 §5.6.7: Retry-After accepts obsolete RFC 850 and asctime HTTP-dates
-    let _, ok_rfc850 = wing::parse_retry_after_ms("Sunday, 06-Nov-94 08:49:37 GMT", 784111770000);
+    let _, ok_rfc850 = net::parse_retry_after_ms("Sunday, 06-Nov-94 08:49:37 GMT", 784111770000);
     assert(ok_rfc850);
-    let _, ok_asctime = wing::parse_retry_after_ms("Sun Nov  6 08:49:37 1994", 784111770000);
+    let _, ok_asctime = net::parse_retry_after_ms("Sun Nov  6 08:49:37 1994", 784111770000);
     assert(ok_asctime);
 
     // 3. CircuitBreaker must not shorten an active longer block
-    var cb = wing::new_host_circuit_breaker(60000);
-    assert(wing::trip_circuit_breaker_if_exceeded(cb, "api.test", 300000, 1000000000));
-    assert(wing::trip_circuit_breaker_if_exceeded(cb, "api.test", 70000, 1000000000));
-    assert(wing::is_host_circuit_broken(cb, "api.test", 200000000000));
+    var cb = net::new_host_circuit_breaker(60000);
+    assert(net::trip_circuit_breaker_if_exceeded(cb, "api.test", 300000, 1000000000));
+    assert(net::trip_circuit_breaker_if_exceeded(cb, "api.test", 70000, 1000000000));
+    assert(net::is_host_circuit_broken(cb, "api.test", 200000000000));
     print("R007_ISO_RETRY: 1");
 }
 
 fn test_r008_poller_timer_tcp_and_drivers() {
     // 1. Edge-triggered Poller preserves unreported readiness bits
     var p_cfg = net_internal::auto_transport_driver_config();
-    var p = wing::new_poller(p_cfg);
-    wing::register_socket(p, 10, 100, core::PollInterest.Read, core::PollTrigger.Edge);
-    let _ = wing::simulate_read_ready(p, 10, 64);
-    let _ = wing::simulate_write_ready(p, 10);
+    var p = net::new_poller(p_cfg);
+    net::register_socket(p, 10, 100, core::PollInterest.Read, core::PollTrigger.Edge);
+    let _ = net::simulate_read_ready(p, 10, 64);
+    let _ = net::simulate_write_ready(p, 10);
     var evs: core::PollReadyEvent[..64] = [];
-    let n1 = wing::poll_events(p, 0, 1000, evs);
+    let n1 = net::poll_events(p, 0, 1000, evs);
     assert(n1 == 1 && (evs[0].events & core::POLL_READ) != 0 && (evs[0].events & core::POLL_WRITE) == 0);
-    let _ = wing::modify_socket(p, 10, 100, core::PollInterest.Write, core::PollTrigger.Edge);
+    let _ = net::modify_socket(p, 10, 100, core::PollInterest.Write, core::PollTrigger.Edge);
     evs.clear();
-    let n2 = wing::poll_events(p, 0, 2000, evs);
+    let n2 = net::poll_events(p, 0, 2000, evs);
     assert(n2 == 1 && (evs[0].events & core::POLL_WRITE) != 0);
-    wing::close_poller(p);
+    net::close_poller(p);
 
     // 2. TickTimerWheel u32 addition wrap-around when current_tick + elapsed >= 2^32 (2^32 % 240 == 16 != 0)
     var wheel = core::TickTimerWheel { current_tick: 200, .. };
@@ -1266,10 +1266,10 @@ fn test_r008_poller_timer_tcp_and_drivers() {
 fn test_r009_goose2rfc_net_audit_regressions() {
     // NET1_C01 & NET1_C02: RFC 9484 §4.7.1 & §4.7.2 request_id != 0 and zero host bits
     let raw_req_zero: const u8[7] = [0x00, 4, 10, 0, 0, 1, 32];
-    let _, ok_req_zero = wing::decode_address_request_capsule(raw_req_zero[..]);
+    let _, ok_req_zero = net::decode_address_request_capsule(raw_req_zero[..]);
     assert(!ok_req_zero);
     let raw_assign_host: const u8[7] = [0x01, 4, 192, 168, 1, 100, 24];
-    let _, ok_assign_host = wing::decode_address_assign_capsule(raw_assign_host[..]);
+    let _, ok_assign_host = net::decode_address_assign_capsule(raw_assign_host[..]);
     assert(!ok_assign_host);
 
     // NET1_C03: RFC 9484 §4.7.3 multi-entry ROUTE_ADVERTISEMENT validates all entries
@@ -1277,21 +1277,21 @@ fn test_r009_goose2rfc_net_audit_regressions() {
         4, 10, 0, 0, 0, 10, 0, 0, 255, 0,
         4, 10, 0, 1, 255, 10, 0, 1, 0, 0,
     ];
-    let _, ok_two_routes = wing::decode_route_advertisement_capsule(two_routes_inv[..]);
+    let _, ok_two_routes = net::decode_route_advertisement_capsule(two_routes_inv[..]);
     assert(!ok_two_routes);
 
     // NET2_C03: StreamPool release_connection_or_handoff closes draining connection
-    var sp = wing::new_stream_pool(6, 32, 4);
-    var pk = wing::PoolKey { scheme: wing::PoolScheme.Https, .. };
+    var sp = net::new_stream_pool(6, 32, 4);
+    var pk = net::PoolKey { scheme: net::PoolScheme.Https, .. };
     pk.origin_endpoint.host.append("api.example.com");
     pk.origin_endpoint.port = 443;
-    let cid = wing::register_connection(sp, pk, wing::NegotiatedProtocol.Http2, "1.1.1.1", 100, 1000);
-    assert(wing::enqueue_group_waiter(sp, pk, 777));
+    let cid = net::register_connection(sp, pk, net::NegotiatedProtocol.Http2, "1.1.1.1", 100, 1000);
+    assert(net::enqueue_group_waiter(sp, pk, 777));
     sp.conns[0].no_new_exchanges = true;
-    var waiter_out = wing::WantConn { .. };
-    let rel_ok, handed_off = wing::release_connection_or_handoff(sp, cid, 2000, waiter_out);
+    var waiter_out = net::WantConn { .. };
+    let rel_ok, handed_off = net::release_connection_or_handoff(sp, cid, 2000, waiter_out);
     assert(rel_ok && !handed_off);
-    let g_idx = wing::find_group_index(sp, pk);
+    let g_idx = net::find_group_index(sp, pk);
     assert(sp.groups[g_idx].active_conns == 0 && sp.groups[g_idx].idle_conns == 0);
     print("GOOSE2RFC_NET_AUDIT_REGRESSIONS: OK");
 }

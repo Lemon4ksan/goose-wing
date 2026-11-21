@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Cookie Jar integration for client request hops and response ingestion (RFC 6265bis).
-namespace wing;
+namespace client;
 
 import std;
 import core from "../..";
@@ -12,9 +12,10 @@ import cookie.psl;
 import cookie.parser;
 import cookie.policy;
 import cookie.engine;
-import client.session.ssrf;
-import client.session.mock;
+import http.headers;
 import client.client;
+import client.session.exec;
+import .internal;
 
 // Computes the SameSite cookie context for a request hop.
 fn compute_hop_samesite_context(
@@ -70,25 +71,6 @@ fn compute_hop_samesite_context(
     };
 }
 
-// Computes the SameSite cookie context for Set-Cookie response ingestion
-// (Chromium `net::cookie_util::ComputeSameSiteContextForResponse` / `MakeInclusiveForSet`,
-// `cookie_util.cc:992-1047`): main-frame navigations whose target URL is first-party
-// relative to `site_for_cookies` can set `SameSite=Lax` and `SameSite=Strict` cookies.
-fn compute_hop_samesite_context_for_response(
-    ctx:               const RequestExecutionContext&,
-    current_url:       const core::Url&,
-    req_samesite_eval: const cookie::SameSiteCookieContext&,
-) -> cookie::SameSiteCookieContext {
-    var resp_ctx = copy(req_samesite_eval);
-    if ctx.is_main_frame && !ctx.site_for_cookies.is_null {
-        let is_first_p = cookie::is_first_party(ctx.site_for_cookies, current_url.href[..], true);
-        if is_first_p && resp_ctx.context_type == cookie::SameSiteContextType.CrossSite {
-            resp_ctx.context_type = cookie::SameSiteContextType.SameSiteLax;
-        }
-    }
-    return resp_ctx;
-}
-
 // Derives the top-level site partition key for CHIPS cookies (RFC 6265bis).
 //
 // Example:
@@ -99,6 +81,8 @@ fn compute_hop_partition_key<B>(
     current_url: const core::Url&,
     out:         B&,
 ) {
+    var committed = false;
+    defer if !committed { out.clear(); };
     out.clear();
     let fallback_sch = current_url.scheme();
     if ctx.top_frame_origin.host.len > 0 {
@@ -108,27 +92,29 @@ fn compute_hop_partition_key<B>(
         cookie::extract_etld_plus_one(ctx.top_frame_origin.host[..], top_etld);
         let site_host = if top_etld.len > 0 { top_etld[..] } else { ctx.top_frame_origin.host[..] };
         guard out.try_append(top_sch) && out.try_append("://") && out.try_append(site_host) else {
-            out.clear();
             return;
         }
-    } else if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
+        committed = true;
+        return;
+    }
+    if !ctx.site_for_cookies.is_null && ctx.site_for_cookies.registrable_domain.len > 0 {
         let sfc_sch = if ctx.site_for_cookies.scheme.len > 0 { ctx.site_for_cookies.scheme[..] } else { fallback_sch };
         guard sfc_sch.len > 0 else { return; }
         guard out.try_append(sfc_sch) && out.try_append("://") &&
             out.try_append(ctx.site_for_cookies.registrable_domain[..]) else {
-            out.clear();
             return;
         }
-    } else {
-        guard fallback_sch.len > 0 else { return; }
-        var etld: u8[..128] = [];
-        cookie::extract_etld_plus_one(current_url.hostname(), etld);
-        let site_host = if etld.len > 0 { etld[..] } else { current_url.hostname() };
-        guard out.try_append(fallback_sch) && out.try_append("://") && out.try_append(site_host) else {
-            out.clear();
-            return;
-        }
+        committed = true;
+        return;
     }
+    guard fallback_sch.len > 0 else { return; }
+    var etld: u8[..128] = [];
+    cookie::extract_etld_plus_one(current_url.hostname(), etld);
+    let site_host = if etld.len > 0 { etld[..] } else { current_url.hostname() };
+    guard out.try_append(fallback_sch) && out.try_append("://") && out.try_append(site_host) else {
+        return;
+    }
+    committed = true;
 }
 
 // Matches and attaches Cookie headers from the canonical jar to outbound request headers.
@@ -171,41 +157,33 @@ fn ingest_hop_response_cookies(
     ctx:           const RequestExecutionContext&,
     current_url:   const core::Url&,
     samesite_eval: const cookie::SameSiteCookieContext&,
-    resp_headers:  const HeaderMap&,
+    resp_headers:  const http::HeaderMap&,
 ) {
-    let resp_samesite = compute_hop_samesite_context_for_response(ctx, current_url, samesite_eval);
-    for i in resp_headers.entries.len {
-        let e = resp_headers.entries[i];
-        let ename = entry_name(resp_headers, e);
+    let resp_samesite = client_internal::compute_hop_samesite_context_for_response(ctx, current_url, samesite_eval);
+    var def_path: u8[..256] = [];
+    cookie::compute_default_path(current_url.pathname(), def_path);
+    let is_sec_channel = current_url.is_secure_scheme() ||
+        cookie::is_trustworthy_non_crypto_host(current_url.hostname());
+    let opts = cookie::InclusionOptions {
+        is_main_frame:     ctx.is_main_frame,
+        is_secure_channel: is_sec_channel,
+    };
+    var part_key: u8[..256] = [];
+    compute_hop_partition_key(ctx, current_url, part_key);
+
+    for &e in resp_headers.entries {
+        let ename = http::entry_name(resp_headers, e);
         guard ename.eq_ascii_fold("set-cookie") else { continue; }
-        let set_cookie_str = entry_value(resp_headers, e);
-        var def_path: u8[..256] = [];
-        cookie::compute_default_path(current_url.pathname(), def_path);
-        var parsed_cookie, parse_cause, cookie_ok = cookie::parse_canonical_set_cookie(
+        let set_cookie_str = http::entry_value(resp_headers, e);
+        var parsed_cookie, _, cookie_ok = cookie::parse_canonical_set_cookie(
             set_cookie_str,
             current_url.hostname(),
             def_path[..],
             session.virtual_clock_us,
         );
-        guard cookie_ok else {
-            continue;
-        }
-        let is_sec_channel = current_url.is_secure_scheme() ||
-            cookie::is_trustworthy_non_crypto_host(current_url.hostname());
-        let opts = cookie::InclusionOptions {
-            is_main_frame:     ctx.is_main_frame,
-            is_secure_channel: is_sec_channel,
-        };
-        let _, can_write = cookie::can_set_for_context(
-            parsed_cookie,
-            resp_samesite,
-            opts,
-        );
-        guard can_write else {
-            continue;
-        }
-        var part_key: u8[..256] = [];
-        compute_hop_partition_key(ctx, current_url, part_key);
+        guard cookie_ok else { continue; }
+        let _, can_write = cookie::can_set_for_context(parsed_cookie, resp_samesite, opts);
+        guard can_write else { continue; }
         session.jar.set_cookie_header(current_url.href[..], set_cookie_str, session.virtual_clock_us, part_key[..]);
     }
 }

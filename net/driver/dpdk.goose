@@ -136,8 +136,8 @@ fn dpdk_tx_burst(dev: const DpdkDevice&, queue_id: u16, mbufs: const u64[:]) -> 
 }
 
 fn dpdk_rx_burst(dev: const DpdkDevice&, queue_id: u16, out_mbufs: u64[..32]&, max_pkts: u16 = 32) -> u16 {
-    out_mbufs.clear();
     guard dev.is_started && max_pkts > 0 else { return 0; }
+    out_mbufs.clear();
     let limit = min(max_pkts as i64, 32) as u16;
     var tmp: u64[32] = [0; 32];
     let n = native_dpdk_rx_burst(dev.port_id, queue_id, tmp[0], limit);

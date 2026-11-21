@@ -60,7 +60,7 @@ fn serialize_h1_request(
     if !has_cl && !has_te && (req.body.len > 0 || needs_zero_cl) {
         var cl_buf: u8[..32] = [];
         req.body.len.format_i64_dec(cl_buf);
-        guard append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
+        guard http::append_header(hdrs, "Content-Length", cl_buf[..]) else { return false; }
     }
     guard wire::encode_h1_request(
         req.method[..],
@@ -126,12 +126,12 @@ fn parse_h1_status_line(
 //   resp.headers = [("Transfer-Encoding", "chunked"), ("Content-Length", "10")]
 //   returns: Content-Length removed from headers
 fn strip_conflicting_content_length(resp: Response&) {
-    guard has_header(resp.headers, "Transfer-Encoding") && has_header(resp.headers, "Content-Length") else {
+    guard http::has_header(resp.headers, "Transfer-Encoding") && http::has_header(resp.headers, "Content-Length") else {
         return;
     }
     resp.had_te_cl_conflict = true;
-    remove_header_by_name(resp.headers, "content-length");
-    resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_CONTENT_LENGTH);
+    http::remove_header_by_name(resp.headers, "content-length");
+    resp.presence_mask = resp.presence_mask & (~http::RES_PRESENCE_CONTENT_LENGTH);
 }
 
 inline fn split_next_strict_crlf_line(hb: const u8[:], offset: i64&) -> const u8[:], bool {
@@ -178,14 +178,14 @@ fn parse_h1_header_block(
         let v_len = v_trim.len;
         let hval = line[v_start..(v_start + v_len)];
 
-        guard is_valid_header_name(hname) && is_valid_header_value(hval) else { return false; }
+        guard http::is_valid_header_name(hname) && http::is_valid_header_value(hval) else { return false; }
         if hname.eq_ascii_fold("content-length") {
             let _, cl_ok = hval.parse_u64_dec();
-            let prev_cl = header(resp, "Content-Length");
+            let prev_cl = http::header(resp, "Content-Length");
             guard cl_ok && (prev_cl.len == 0 || prev_cl == hval) else { return false; }
         }
-        guard append_header(resp.headers, hname, hval) else { return false; }
-        update_response_presence(resp, hname);
+        guard http::append_header(resp.headers, hname, hval) else { return false; }
+        http::update_response_presence(resp, hname);
     }
     strip_conflicting_content_length(resp);
     return true;
@@ -221,7 +221,7 @@ fn parse_response_headers(header_block: const u8[:], resp: Response&) -> bool {
 // ---- 4. Body Streaming Pumps ------------------------------------------------
 
 fn pump_h1_fixed_body(
-    conn:       PooledConnection&,
+    conn:       net::PooledConnection&,
     bytes_left: u64&,
     resp:       Response&,
     timeout_ms: u32,
@@ -275,8 +275,8 @@ fn feed_chunk_slice(
         if st == http_internal::ChunkFsmStatus.Complete {
             if trailer_buf.len > 0 {
                 var tr_cur: i64 = 0;
-                let tr_err = parse_chunked_trailers_with_out(trailer_buf[..], tr_cur, resp.trailers);
-                guard tr_err == ChunkedDecodeError.None else { return true, false; }
+                let tr_err = http::parse_chunked_trailers_with_out(trailer_buf[..], tr_cur, resp.trailers);
+                guard tr_err == http::ChunkedDecodeError.None else { return true, false; }
             }
             return true, true;
         }
@@ -288,7 +288,7 @@ fn feed_chunk_slice(
 }
 
 fn pump_h1_chunked_body(
-    conn:       PooledConnection&,
+    conn:       net::PooledConnection&,
     dec:        http_internal::ChunkFsmDecoder&,
     leftover:   const u8[:],
     resp:       Response&,
@@ -328,7 +328,7 @@ fn pump_h1_chunked_body(
 // Example:
 //   buf = "GET / HTTP/1.1\r\n\r\n"
 //   returns: true
-fn send_all(trans: Transport&, buf: const u8[:]) -> bool {
+fn send_all(trans: net::Transport&, buf: const u8[:]) -> bool {
     var sent_total: i64 = 0;
     while sent_total < buf.len {
         let sent = trans.send(buf[sent_total..]);
@@ -339,7 +339,7 @@ fn send_all(trans: Transport&, buf: const u8[:]) -> bool {
 }
 
 fn send_h1_request(
-    conn:    PooledConnection&,
+    conn:    net::PooledConnection&,
     req:     const Request&,
     url_val: const core::Url&,
 ) -> bool {
@@ -347,9 +347,9 @@ fn send_h1_request(
     guard serialize_h1_request(req, url_val, req_wire) else { return false; }
     guard send_all(conn.transport, req_wire[..]) else { return false; }
 
-    if header_has_token(req.header("Transfer-Encoding"), "chunked") && !req.body_prechunked {
+    if client::header_has_token(req.header("Transfer-Encoding"), "chunked") && !req.body_prechunked {
         var chunk_wire: u8[>..] = [];
-        guard encode_chunked_payload(req.body[..], req.trailers, 4096, chunk_wire) else {
+        guard client::encode_chunked_payload(req.body[..], req.trailers, 4096, chunk_wire) else {
             return false;
         }
         return send_all(conn.transport, chunk_wire[..]);
@@ -361,7 +361,7 @@ fn send_h1_request(
 }
 
 inline fn feed_h1_header_guard(
-    guard_reader: HeaderReader&,
+    guard_reader: net::HeaderReader&,
     rx_buf:       const u8[:],
     from_idx:     i64,
     hdr_end_idx:  i64,
@@ -369,14 +369,14 @@ inline fn feed_h1_header_guard(
 ) -> bool {
     let inspect_end = if hdr_end_idx >= 0 { hdr_end_idx + 4 } else { rx_buf.len };
     guard inspect_end > from_idx else { return true; }
-    return feed_header_bytes(guard_reader, rx_buf[from_idx..inspect_end], now_ns) == SlowlorisViolation.None;
+    return net::feed_header_bytes(guard_reader, rx_buf[from_idx..inspect_end], now_ns) == net::SlowlorisViolation.None;
 }
 
-fn read_response_headers(conn: PooledConnection&, timeout_ms: u32) -> i64, bool {
+fn read_response_headers(conn: net::PooledConnection&, timeout_ms: u32) -> i64, bool {
     let start_ns = (core::as_nanos(core::monotonic_now()) & 0x7FFFFFFFFFFFFFFF) as i64;
     let hdr_timeout_ns = max(10000000000, (timeout_ms as i64) * 1000000);
-    var guard_reader = new_header_reader(
-        SlowlorisDefenseConfig { response_header_timeout_ns: hdr_timeout_ns, .. },
+    var guard_reader = net::new_header_reader(
+        net::SlowlorisDefenseConfig { response_header_timeout_ns: hdr_timeout_ns, .. },
         start_ns,
     );
     var hdr_end_idx: i64 = core::fast_find_crlfcrlf(conn.rx_buf[..]);
@@ -400,7 +400,7 @@ fn read_response_headers(conn: PooledConnection&, timeout_ms: u32) -> i64, bool 
 }
 
 fn pump_cl_body(
-    conn:       PooledConnection&,
+    conn:       net::PooledConnection&,
     resp:       Response&,
     leftover:   const u8[:],
     cl_str:     const u8[:],
@@ -426,10 +426,10 @@ fn pump_cl_body(
 // Transfer-Encoding, the connection MUST NOT be reused to prevent response smuggling.
 fn has_rogue_empty_status_framing(method: const u8[:], status: i32, headers: const HeaderMap&) -> bool {
     guard !method.eq_ascii_fold("HEAD") && (status == 204 || status == 304) else { return false; }
-    if has_header(headers, "Transfer-Encoding") {
+    if http::has_header(headers, "Transfer-Encoding") {
         return true;
     }
-    let cl = get_header(headers, "Content-Length").trim_lws();
+    let cl = http::get_header(headers, "Content-Length").trim_lws();
     guard cl.len > 0 else { return false; }
     let cl_val, ok_cl = cl.parse_u64_dec();
     return !ok_cl || cl_val > 0;
@@ -437,8 +437,8 @@ fn has_rogue_empty_status_framing(method: const u8[:], status: i32, headers: con
 
 fn headers_have_connection_token(headers: const HeaderMap&, token: const u8[:]) -> bool {
     for &hdr in headers.entries {
-        if entry_name(headers, hdr).eq_ascii_fold("connection") {
-            if header_has_token(entry_value(headers, hdr), token) {
+        if http::entry_name(headers, hdr).eq_ascii_fold("connection") {
+            if client::header_has_token(http::entry_value(headers, hdr), token) {
                 return true;
             }
         }
@@ -451,8 +451,8 @@ fn collect_h1_response_te(headers: const HeaderMap&, out_te: u8[..256]&) -> bool
     var committed = false;
     defer if !committed { out_te.clear(); };
     for &hdr in headers.entries {
-        if entry_name(headers, hdr).eq_ascii_fold("transfer-encoding") {
-            let val = entry_value(headers, hdr).trim_lws();
+        if http::entry_name(headers, hdr).eq_ascii_fold("transfer-encoding") {
+            let val = http::entry_value(headers, hdr).trim_lws();
             guard val.len > 0 else { return false; }
             if out_te.len > 0 {
                 guard out_te.try_append(", ") else { return false; }
@@ -478,7 +478,7 @@ fn classify_h1_transfer_encoding(te: const u8[:]) -> i32 {
     while rem.len > 0 {
         let head, tail, has_comma = rem.split_once_unquoted_byte(',');
         let piece = head.trim_lws();
-        guard piece.len > 0 && is_valid_transfer_coding(piece) else { return 0; }
+        guard piece.len > 0 && http::is_valid_transfer_coding(piece) else { return 0; }
         let tok_raw, _, has_semi = piece.split_once_unquoted_byte(';');
         let tok = tok_raw.trim_lws();
         last_chunked = tok.eq_ascii_fold("chunked");
@@ -492,7 +492,7 @@ fn classify_h1_transfer_encoding(te: const u8[:]) -> i32 {
     return if last_chunked { 1 } else { 2 };
 }
 
-fn pump_eof_response_body(conn: PooledConnection&, resp: Response&, leftover: const u8[:], timeout_ms: u32) {
+fn pump_eof_response_body(conn: net::PooledConnection&, resp: Response&, leftover: const u8[:], timeout_ms: u32) {
     if leftover.len > 0 {
         resp.body.append(leftover);
     }
@@ -505,7 +505,7 @@ fn pump_eof_response_body(conn: PooledConnection&, resp: Response&, leftover: co
 }
 
 fn pump_response_body(
-    conn:       PooledConnection&,
+    conn:       net::PooledConnection&,
     req:        const Request&,
     resp:       Response&,
     leftover:   const u8[:],
@@ -534,7 +534,7 @@ fn pump_response_body(
         return true, can_preserve;
     }
 
-    if has_header(resp.headers, "Transfer-Encoding") {
+    if http::has_header(resp.headers, "Transfer-Encoding") {
         guard resp.protocol != "HTTP/1.0" else { return false, false; }
         var te_combined: u8[..256] = [];
         guard collect_h1_response_te(resp.headers, te_combined) else { return false, false; }
@@ -544,8 +544,8 @@ fn pump_response_body(
             var dec = http_internal::new_chunk_fsm_decoder();
             let ok_chunk = pump_h1_chunked_body(conn, dec, leftover, resp, timeout_ms);
             if ok_chunk {
-                remove_header_by_name(resp.headers, "transfer-encoding");
-                resp.presence_mask = resp.presence_mask & (~RES_PRESENCE_TRANSFER_ENCODING);
+                http::remove_header_by_name(resp.headers, "transfer-encoding");
+                resp.presence_mask = resp.presence_mask & (~http::RES_PRESENCE_TRANSFER_ENCODING);
             }
             return ok_chunk, keep_alive;
         }
@@ -565,13 +565,13 @@ fn pump_response_body(
 
 // Executes an end-to-end HTTP/1.1 exchange over a pooled connection with zero heap allocation.
 fn execute_h1_exchange(
-    conn:       PooledConnection&,
+    conn:       net::PooledConnection&,
     req:        const Request&,
     url_val:    const core::Url&,
     resp:       Response&,
     timeout_ms: u32 = 5000,
 ) -> bool, bool {
-    reset_response(resp);
+    http::reset_response(resp);
     guard send_h1_request(conn, req, url_val) else { return false, false; }
 
     for interim_step in 6 {
@@ -588,8 +588,8 @@ fn execute_h1_exchange(
             resp.status_code != rfc::STATUS_SWITCHING_PROTOCOLS;
         if is_interim {
             guard !resp.had_te_cl_conflict &&
-                !has_header(resp.headers, "Transfer-Encoding") &&
-                !has_header(resp.headers, "Content-Length") else {
+                !http::has_header(resp.headers, "Transfer-Encoding") &&
+                !http::has_header(resp.headers, "Content-Length") else {
                 return false, false;
             }
             conn.rx_buf.compact_wire_buffer(leftover_start);
@@ -723,7 +723,7 @@ fn on_headers(sink: BufferedBodySink&, head: const ResponseHead&) -> StreamSinkV
     let _ = sink.resp.protocol.try_set(head.protocol[..]);
     sink.resp.headers = head.headers;
     if sink.max_response_bytes > 0 {
-        let cl_str = get_header(head.headers, "Content-Length").trim_lws();
+        let cl_str = http::get_header(head.headers, "Content-Length").trim_lws();
         if cl_str.len > 0 {
             let cl_val, ok_cl = cl_str.parse_u64_dec();
             if !ok_cl || cl_val > sink.max_response_bytes {
@@ -746,12 +746,12 @@ fn on_data(sink: BufferedBodySink&, chunk: const u8[:]) -> StreamSinkVerdict {
 }
 
 fn on_complete(sink: BufferedBodySink&, trailers: const HeaderMap&) {
-    copy_headers(trailers, sink.resp.trailers);
+    http::copy_headers(trailers, sink.resp.trailers);
 }
 
 // Pumps an exact `Content-Length` body directly into `sink.on_data(chunk)` using a 4 KB stack array.
 fn stream_h1_fixed_body<Sink>(
-    conn:           PooledConnection&,
+    conn:           net::PooledConnection&,
     content_length: u64,
     leftover:       const u8[:],
     body_timeout:   u32,
@@ -781,7 +781,7 @@ fn stream_h1_fixed_body<Sink>(
 // Drains and discards at most `max_drain_bytes` of a fixed-length unread HTTP/1.1 body
 // so redirect hops and auth challenges can recycle the keep-alive socket instead of closing it.
 fn drain_h1_fixed_body_bounded(
-    conn:            PooledConnection&,
+    conn:            net::PooledConnection&,
     content_length:  u64,
     leftover_len:    u64,
     max_drain_bytes: u64,

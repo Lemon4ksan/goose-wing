@@ -27,33 +27,33 @@ fn test_bug1_csrf_fetch_metadata_bypasses() {
 
     // 1A. Same-site GET navigation to sensitive route (/oauth/authorize) without user activation (?1)
     // must be rejected both via evaluate_request_csrf and evaluate_fetch_metadata.
-    var req_sens = wing::new_request("GET", "https://app.example.com/oauth/authorize?client_id=1");
-    wing::set_header(req_sens, "Sec-Fetch-Site", "same-site");
-    wing::set_header(req_sens, "Sec-Fetch-Mode", "navigate");
-    wing::set_header(req_sens, "Sec-Fetch-Dest", "document");
+    var req_sens = http::new_request("GET", "https://app.example.com/oauth/authorize?client_id=1");
+    http::set_header(req_sens, "Sec-Fetch-Site", "same-site");
+    http::set_header(req_sens, "Sec-Fetch-Mode", "navigate");
+    http::set_header(req_sens, "Sec-Fetch-Dest", "document");
 
     let dec_req_sens = security::evaluate_request_csrf(guard_cfg, req_sens, "app.example.com", true);
     let ctx_sens = security::extract_fetch_context(req_sens, "app.example.com", true);
     let dec_ctx_sens = security::evaluate_fetch_metadata(guard_cfg, ctx_sens);
 
     // 1B. Same-site iframe embedding when allow_same_site = false must be rejected.
-    var req_embed = wing::new_request("GET", "https://app.example.com/dashboard");
-    wing::set_header(req_embed, "Sec-Fetch-Site", "same-site");
-    wing::set_header(req_embed, "Sec-Fetch-Mode", "navigate");
-    wing::set_header(req_embed, "Sec-Fetch-Dest", "iframe");
+    var req_embed = http::new_request("GET", "https://app.example.com/dashboard");
+    http::set_header(req_embed, "Sec-Fetch-Site", "same-site");
+    http::set_header(req_embed, "Sec-Fetch-Mode", "navigate");
+    http::set_header(req_embed, "Sec-Fetch-Dest", "iframe");
     let dec_req_embed = security::evaluate_request_csrf(guard_cfg, req_embed, "app.example.com", false);
 
     // 1C. Empty Sec-Fetch-Site header followed by same-origin duplicate must not smuggle SameOrigin.
-    var req_smuggle = wing::new_request("POST", "https://app.example.com/transfer");
-    wing::append_header(req_smuggle.headers, "Sec-Fetch-Site", "");
-    wing::append_header(req_smuggle.headers, "Sec-Fetch-Site", "same-origin");
+    var req_smuggle = http::new_request("POST", "https://app.example.com/transfer");
+    http::append_header(req_smuggle.headers, "Sec-Fetch-Site", "");
+    http::append_header(req_smuggle.headers, "Sec-Fetch-Site", "same-origin");
     let ctx_smuggle = security::extract_fetch_context(req_smuggle, "app.example.com", false);
     let dec_smuggle = security::evaluate_request_csrf(guard_cfg, req_smuggle, "app.example.com", false);
 
     // 1D. Duplicate conflicting Origin headers in fallback mode must fail closed.
-    var req_dup_orig = wing::new_request("POST", "https://app.example.com/transfer");
-    wing::append_header(req_dup_orig.headers, "Origin", "https://app.example.com");
-    wing::append_header(req_dup_orig.headers, "Origin", "https://evil.attacker.example");
+    var req_dup_orig = http::new_request("POST", "https://app.example.com/transfer");
+    http::append_header(req_dup_orig.headers, "Origin", "https://app.example.com");
+    http::append_header(req_dup_orig.headers, "Origin", "https://evil.attacker.example");
     let dec_dup_orig = security::evaluate_request_csrf(guard_cfg, req_dup_orig, "app.example.com", false);
 
     let ok = !security::is_allowed(dec_req_sens) &&
@@ -90,10 +90,10 @@ fn test_bug2_dpop_jwk_and_enterprise_token_buffers() {
         big_proof.push('a');
         big_token.push('b');
     }
-    var req = wing::Request { .. };
+    var req = http::Request { .. };
     auth::attach_dpop(req, big_proof[..], big_token[..]);
-    let attached_dpop = wing::header(req, "DPoP");
-    let attached_auth = wing::header(req, "Authorization");
+    let attached_dpop = http::header(req, "DPoP");
+    let attached_auth = http::header(req, "Authorization");
 
     var form_out: u8[..8192] = [];
     let ok_form = auth::encode_token_endpoint_form(big_token[..], auth::TokenTypeHint.AccessToken, form_out);
@@ -115,18 +115,18 @@ fn test_bug3_tls_crl_verification_and_tickets() {
     // 3A. Build a valid self-signed Ed25519 certificate for example.com (serial = 1).
     let ca_seed: u8[32] = [0x42; 32];
     var cert_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(ca_seed, "example.com", "example.com", "127.0.0.1", cert_der));
-    var parsed_cert = wing::ParsedCert { .. };
-    assert(wing::parse_x509_certificate(cert_der[..], parsed_cert));
+    assert(tls::build_test_ed25519_cert_der(ca_seed, "example.com", "example.com", "127.0.0.1", cert_der));
+    var parsed_cert = tls::ParsedCert { .. };
+    assert(tls::parse_x509_certificate(cert_der[..], parsed_cert));
 
-    var chain_parsed: wing::ParsedCert[..8] = [];
+    var chain_parsed: tls::ParsedCert[..8] = [];
     chain_parsed.push(parsed_cert);
     var chain_slices: (const u8[:])[..8] = [];
     chain_slices.push(cert_der[..]);
 
     // Build an unsigned/forged CRL whose signature is invalid (all-zero 64-byte signature)
     // and whose serial list does not revoke serial 1. verify_crl_for_chain MUST reject it!
-    let leaf_issuer = wing::span_slice(cert_der[..], parsed_cert.issuer_raw);
+    let leaf_issuer = tls::span_slice(cert_der[..], parsed_cert.issuer_raw);
     var b_tbs = core::builder_init();
     b_tbs.buf.push(0x30);
     assert(core::start_u8_prefix(b_tbs));
@@ -150,7 +150,7 @@ fn test_bug3_tls_crl_verification_and_tickets() {
     for _ in 64 { forged_crl.buf.push(0xAA); }
     assert(core::finish_u8_prefix(forged_crl));
 
-    let forged_crl_accepted = wing::verify_crl_for_chain(forged_crl.buf[..], chain_parsed, chain_slices);
+    let forged_crl_accepted = tls::verify_crl_for_chain(forged_crl.buf[..], chain_parsed, chain_slices);
 
     // Build a validly signed CRL using ca_seed -> verify_crl_for_chain MUST accept it (serial 1 not revoked).
     let valid_crl_sig = core::ed25519_sign(ca_seed, b_tbs.buf[..]);
@@ -165,7 +165,7 @@ fn test_bug3_tls_crl_verification_and_tickets() {
     core::put_bytes(valid_crl, valid_crl_sig[..]);
     assert(core::finish_u8_prefix(valid_crl));
 
-    let valid_crl_accepted = wing::verify_crl_for_chain(valid_crl.buf[..], chain_parsed, chain_slices);
+    let valid_crl_accepted = tls::verify_crl_for_chain(valid_crl.buf[..], chain_parsed, chain_slices);
 
     // 3B. CRL with mismatched inner TBSCertList.signature OID vs outer signatureAlgorithm OID must fail parse_x509_crl.
     var mismatch_crl = core::builder_init();
@@ -180,21 +180,21 @@ fn test_bug3_tls_crl_verification_and_tickets() {
     mismatch_crl.buf.push(0x01);
     assert(core::finish_u8_prefix(mismatch_crl));
 
-    var parsed_mismatch = wing::ParsedCrl { .. };
-    let mismatch_parsed_ok = wing::parse_x509_crl(mismatch_crl.buf[..], parsed_mismatch);
+    var parsed_mismatch = tls::ParsedCrl { .. };
+    let mismatch_parsed_ok = tls::parse_x509_crl(mismatch_crl.buf[..], parsed_mismatch);
 
     // 3C. TLS 1.3 session ticket cache must reject lifetime > MAX_TICKET_LIFETIME_SECS (604800)
     // and clear out_ticket / out_psk on lookup miss.
-    wing::clear_tls13_session_tickets();
+    tls::clear_session_tickets();
     let psk32: u8[32] = [0x77; 32];
-    wing::store_tls13_session_ticket("overlife.example.com", "ticket-over", psk32[..], 1, 604801);
+    tls::store_session_ticket("overlife.example.com", "ticket-over", psk32[..], 1, 604801);
     var out_t:   u8[..256] = [];
     var out_p:   u8[..48]  = [];
     var out_age: u32       = 99;
     var out_cs:  u16       = 0x1301;
     out_t.append("stale_ticket");
     out_p.append("stale_psk");
-    let found_over = wing::lookup_tls13_session_ticket_full("overlife.example.com", out_t, out_p, out_age, out_cs);
+    let found_over = tls::lookup_session_ticket_full("overlife.example.com", out_t, out_p, out_age, out_cs);
 
     let ok = !forged_crl_accepted &&
              valid_crl_accepted &&

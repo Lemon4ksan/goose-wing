@@ -5,12 +5,13 @@
 // encapsulation over HPKE (RFC 9180), protecting binary HTTP (RFC 9292).
 // Suite support is restricted to DHKEM(X25519, HKDF-SHA256) with AES-128-GCM
 // or ChaCha20-Poly1305 (the suites provided by tls/hpke.goose for OHTTP).
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
 import security.hpke;
 import .bhttp;
+import http.codec_internal;
 
 // ---- RFC 9458 constants ----------------------------------------------------
 
@@ -40,106 +41,7 @@ struct OhttpSession {
 
 // ---- shared helpers ---------------------------------------------------------
 
-// Suite restriction for this engine: DHKEM(X25519, HKDF-SHA256) paired with
-// AES-128-GCM or ChaCha20-Poly1305 (RFC 9458 Section 4.3 selection rules).
-fn ohttp_suite_supported(kem_id: u16, kdf_id: u16, aead_id: u16) -> bool {
-    if kem_id != rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 {
-        return false;
-    }
-    if kdf_id != rfc::HPKE_KDF_HKDF_SHA256 {
-        return false;
-    }
-    return aead_id == rfc::HPKE_AEAD_AES_128_GCM || aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305;
-}
-
-// Builds the 7-byte message header hdr = key_id || kem_id || kdf_id || aead_id
-// in network byte order (RFC 9458 Section 4.3 step 1).
-fn ohttp_build_hdr(cfg: const OhttpKeyConfig&, out: u8[7]&) {
-    out[0] = cfg.key_id;
-    out[1] = ((cfg.kem_id >> 8) & 0xFF) as u8;
-    out[2] = (cfg.kem_id & 0xFF) as u8;
-    out[3] = ((cfg.kdf_id >> 8) & 0xFF) as u8;
-    out[4] = (cfg.kdf_id & 0xFF) as u8;
-    out[5] = ((cfg.aead_id >> 8) & 0xFF) as u8;
-    out[6] = (cfg.aead_id & 0xFF) as u8;
-}
-
-// Builds info = "message/bhttp request" || 0x00 || hdr (RFC 9458 Section 4.3 step 2):
-// 21-byte label + 1 zero byte + 7-byte hdr = 29 bytes (Appendix A info vector).
-fn ohttp_request_info(hdr: const u8[:], out: u8[..30]&) -> bool {
-    out.clear();
-    out.append(rfc::OHTTP_INFO_REQUEST);
-    out.push(0);
-    out.append(hdr);
-    return out.len == 29;
-}
-
-// Derives the response AEAD key and nonce (RFC 9458 Section 4.4 steps 1-5):
-// secret = context.Export("message/bhttp response", max(Nn, Nk));
-// prk = Extract(salt = enc || response_nonce, ikm = secret);
-// key = Expand(prk, "key", Nk); nonce = Expand(prk, "nonce", Nn).
-// Raw HKDF from RFC 5869, not TLS-style labeled expand.
-fn ohttp_derive_response_aead(
-    session:        const OhttpSession&,
-    response_nonce: const u8[:],
-    out_key:        u8[32]&,
-    out_nonce:      u8[12]&,
-) -> bool {
-    let nk = session.ctx.key_len;
-    let nn = session.ctx.nonce_len;
-    let exp_len = max(nk, nn);
-    guard nk > 0 && nk <= 32 && nn > 0 && nn <= 12 else { return false; }
-    guard response_nonce.len == exp_len else { return false; }
-    guard session.enc_len == 32 && session.enc.len == 32 else { return false; }
-
-    var secret: u8[32] = [0; 32];
-    guard security::hpke_export(session.ctx, rfc::OHTTP_INFO_RESPONSE, secret[..exp_len]) else { return false; }
-
-    var salt: u8[..64] = [];
-    salt.append(session.enc[..]);
-    salt.append(response_nonce);
-    let prk = core::hkdf_extract(salt[..], secret[..exp_len]);
-    core::secure_zeroize_32(secret);
-
-    let ok_k = core::hkdf_expand_bytes_256(prk[..], "key", nk, out_key[..nk]);
-    let ok_n = core::hkdf_expand_bytes_256(prk[..], "nonce", nn, out_nonce[..nn]);
-    core::secure_zeroize_32(prk);
-    return ok_k && ok_n;
-}
-
 // ---- key configuration parsing (RFC 9458 Sections 3.1-3.2) ------------------
-
-// Scans supported OHTTP symmetric suites and extracts the first supported pair (RFC 9458 §3.1).
-//
-// Example:
-// RFC 9458 Section 3.1: Key Configuration Encoding - Select the first supported (KDF, AEAD) pair and skip unsupported pairs.
-//
-// Example:
-//   raw = key_config_bytes, kem_id = 0x0020, sym_len = 4
-//   returns: true, out_kdf = 0x0001, out_aead = 0x0001
-fn scan_supported_ohttp_sym_suite(
-    raw:      const u8[:],
-    kem_id:   u16,
-    sym_len:  u16,
-    out_kdf:  u16&,
-    out_aead: u16&,
-) -> bool {
-    let limit = sym_len as i64;
-    let sym_end = core::add_sat_i64(37, limit);
-    guard sym_end <= raw.len else { return false; }
-    var cur = core::cursor_from(raw[37..sym_end]);
-    while cur.buf.len >= 4 {
-        let kdf, ok_kdf = cur.read_u16();
-        let aead, ok_aead = cur.read_u16();
-        guard ok_kdf && ok_aead else { return false; }
-        if ohttp_suite_supported(kem_id, kdf, aead) {
-            out_kdf = kdf;
-            out_aead = aead;
-            return true;
-        }
-    }
-    return false;
-}
 
 // Parses one key configuration: Key Identifier (8), KEM ID (16), Public Key
 // (Npk*8, Npk = 32 for X25519), Symmetric Algorithms Length (16) = 4..65532,
@@ -150,15 +52,15 @@ fn scan_supported_ohttp_sym_suite(
 //   returns: ok = true, out.key_id = 1, out.kem_id = 0x0020, first pair 0x0001/0x0001
 fn parse_ohttp_key_config(raw: const u8[:], out: OhttpKeyConfig&) -> bool {
     guard raw.len >= rfc::OHTTP_MIN_KEY_CONFIG_LEN else { return false; }
-    let kem_id = ((raw[1] as u16) << 8) | raw[2];
+    let kem_id = core::read_be_u16(raw, 1);
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
-    let sym_len = ((raw[35] as u16) << 8) | raw[36];
-    guard sym_len >= 4 && (sym_len % 4) == 0 else { return false; }
+    let sym_len = core::read_be_u16(raw, 35);
+    guard sym_len >= 4 && (sym_len & 3) == 0 else { return false; }
     guard 37 + (sym_len as i64) == raw.len else { return false; }
 
     var kdf_id:  u16 = 0;
     var aead_id: u16 = 0;
-    guard scan_supported_ohttp_sym_suite(raw, kem_id, sym_len, kdf_id, aead_id) else {
+    guard http_internal::scan_supported_ohttp_sym_suite(raw, kem_id, sym_len, kdf_id, aead_id) else {
         return false;
     }
 
@@ -169,27 +71,6 @@ fn parse_ohttp_key_config(raw: const u8[:], out: OhttpKeyConfig&) -> bool {
     let _ = out.public_key.try_set(raw[3..35]);
     out.public_key_len = 32;
     return true;
-}
-
-fn ohttp_rfc9180_kem_pk_len(kem_id: u16) -> i64 {
-    if kem_id == 0x0010 { return 65; }
-    if kem_id == 0x0011 { return 97; }
-    if kem_id == 0x0012 { return 133; }
-    if kem_id == 0x0020 { return 32; }
-    if kem_id == 0x0021 { return 56; }
-    return 0;
-}
-
-// RFC 9458 Section 3.2: Key Configuration Media Type - Well-formed configs with unsupported KEM/AEAD are skipped.
-fn is_skippable_ohttp_key_config(raw: const u8[:]) -> bool {
-    var cur = core::cursor_from(raw);
-    let _, ok_kid = cur.read_u8();
-    let kem_id, ok_kem = cur.read_u16();
-    let pk_len = ohttp_rfc9180_kem_pk_len(kem_id);
-    guard ok_kid && ok_kem && pk_len > 0 else { return false; }
-    let _, ok_pk = cur.read_bytes(pk_len);
-    let sym_bytes, ok_sym = cur.read_u16_prefixed();
-    return ok_pk && ok_sym && cur.buf.len == 0 && sym_bytes.len >= 4 && (sym_bytes.len & 3) == 0;
 }
 
 // Parses an "application/ohttp-keys" collection: u16be length-prefixed configs
@@ -218,7 +99,7 @@ fn parse_ohttp_key_configs(raw: const u8[:], out: OhttpKeyConfig[..4]&, out_coun
                 return false;
             }
         } else {
-            guard is_skippable_ohttp_key_config(elem_raw) else { return false; }
+            guard http_internal::is_skippable_ohttp_key_config(elem_raw) else { return false; }
         }
     }
     guard out.len > 0 else { return false; }
@@ -245,13 +126,13 @@ fn ohttp_seal_request(
     out_len:      i32&,
     session:      OhttpSession&,
 ) -> bool {
-    guard ohttp_suite_supported(cfg.kem_id, cfg.kdf_id, cfg.aead_id) else { return false; }
+    guard http_internal::ohttp_suite_supported(cfg.kem_id, cfg.kdf_id, cfg.aead_id) else { return false; }
     guard cfg.public_key_len == 32 && cfg.public_key.len == 32 else { return false; }
 
     var hdr: u8[7] = [0; 7];
-    ohttp_build_hdr(cfg, hdr);
+    http_internal::ohttp_build_hdr(cfg, hdr);
     var info: u8[..30] = [];
-    guard ohttp_request_info(hdr[..], info) else { return false; }
+    guard http_internal::ohttp_request_info(hdr[..], info) else { return false; }
 
     var pk: u8[32] = [0; 32];
     for i in 32 { pk[i] = cfg.public_key[i]; }
@@ -304,12 +185,12 @@ fn ohttp_open_request(
     let kem_id = ((enc_request[1] as u16) << 8) | enc_request[2];
     let kdf_id = ((enc_request[3] as u16) << 8) | enc_request[4];
     let aead_id = ((enc_request[5] as u16) << 8) | enc_request[6];
-    guard ohttp_suite_supported(kem_id, kdf_id, aead_id) else { return false; }
+    guard http_internal::ohttp_suite_supported(kem_id, kdf_id, aead_id) else { return false; }
 
     var hdr: u8[7] = [0; 7];
     for i in 7 { hdr[i] = enc_request[i]; }
     var info: u8[..30] = [];
-    guard ohttp_request_info(hdr[..], info) else { return false; }
+    guard http_internal::ohttp_request_info(hdr[..], info) else { return false; }
 
     var enc: u8[32] = [0; 32];
     for i in 32 { enc[i] = enc_request[rfc::OHTTP_HDR_LEN + i]; }
@@ -356,7 +237,7 @@ fn ohttp_seal_response(
 
     var key:   u8[32] = [0; 32];
     var nonce: u8[12] = [0; 12];
-    guard ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
+    guard http_internal::ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
 
     var ct: u8[..8192] = [];
     for i in response.len { ct.push(0); }
@@ -410,7 +291,7 @@ fn ohttp_open_response(
 
     var key:   u8[32] = [0; 32];
     var nonce: u8[12] = [0; 12];
-    guard ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
+    guard http_internal::ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
 
     var tag: u8[16] = [0; 16];
     for i in 16 { tag[i] = ct[ct.len - 16 + i]; }

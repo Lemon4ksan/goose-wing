@@ -4,143 +4,17 @@
 // Layer 4 Cross-Platform TCP Socket Engine for goose-wing.
 // Synchronous and non-blocking socket wrappers
 // supporting live OS TCP connections over Windows Winsock2 and POSIX.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
+import .internal;
 
-// Native C shims (shim/tcp.c)
-extern fn native_tcp_init() -> i32 = "wing_tcp_init";
-extern fn native_tcp_cleanup() = "wing_tcp_cleanup";
-extern fn native_tcp_listen(host: const u8[:], port: u16, backlog: i32) -> i64 = "wing_tcp_listen";
-extern fn native_tcp_listen_unix(path: const u8[:], backlog: i32) -> i64 = "wing_tcp_listen_unix";
-extern fn native_tcp_connect_unix(path: const u8[:]) -> i64 = "wing_tcp_connect_unix";
-extern fn native_tcp_connect_unix_begin(path: const u8[:], out_state: i32&) -> i64 = "wing_tcp_connect_unix_begin";
-extern fn native_adopt_socket(raw_fd: i64) -> i64 = "wing_adopt_socket";
-extern fn native_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockname_port";
-extern fn native_tcp_get_peer_ip(sock_fd: i64, out_ip: u8[:]) -> i32 = "wing_tcp_get_peer_ip";
-extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
-extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
-extern fn native_tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 = "wing_tcp_connect_begin";
-extern fn native_tcp_connect_finish(sock_fd: i64) -> i32 = "wing_tcp_connect_finish";
-extern fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send";
-extern fn native_tcp_send2(sock_fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 = "wing_tcp_send2";
-extern fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32 = "wing_tcp_recv";
-extern fn native_tcp_close(sock_fd: i64) = "wing_tcp_close";
-extern fn native_tcp_shutdown(sock_fd: i64, how: i32) -> i32 = "wing_tcp_shutdown";
-extern fn native_tcp_set_linger(sock_fd: i64, onoff: i32, linger_sec: i32) -> i32 = "wing_tcp_set_linger";
-extern fn native_tcp_set_nodelay(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_nodelay";
-extern fn native_tcp_set_reuseaddr(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_reuseaddr";
-extern fn native_tcp_set_reuseport(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_reuseport";
-extern fn native_tcp_set_defer_accept(sock_fd: i64, timeout_sec: i32) -> i32 = "wing_tcp_set_defer_accept";
-extern fn native_tcp_set_user_timeout(sock_fd: i64, timeout_ms: u32) -> i32 = "wing_tcp_set_user_timeout";
-extern fn native_tcp_set_keepalive_params(
-    sock_fd:   i64,
-    idle_sec:  i32,
-    intvl_sec: i32,
-    cnt:       i32,
-) -> i32 = "wing_tcp_set_keepalive_params";
-extern fn native_tcp_set_syn_retries(sock_fd: i64, count: i32) -> i32 = "wing_tcp_set_syn_retries";
-extern fn native_tcp_get_notsent_bytes(sock_fd: i64) -> i64 = "wing_tcp_get_notsent_bytes";
-extern fn native_tcp_get_readable_bytes(sock_fd: i64) -> i64 = "wing_tcp_get_readable_bytes";
+// Public environment & signal C shims (shim/tcp.c)
 extern fn get_env_port(default_port: u16) -> u16 = "wing_get_env_port";
 extern fn get_env_workers(default_workers: i64) -> i64 = "wing_get_env_workers";
-extern fn native_tcp_set_nonblocking(sock_fd: i64, nonblocking: i32) -> i32 = "wing_tcp_set_nonblocking";
-extern fn native_tcp_set_quickack(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_quickack";
-extern fn native_tcp_set_cork(sock_fd: i64, enable: i32) -> i32 = "wing_tcp_set_cork";
-extern fn native_tcp_accept_nonblocking(listener_fd: i64) -> i64 = "wing_tcp_accept_nonblocking";
-extern fn native_tcp_recv_nonblocking(sock_fd: i64, buf: u8[:]) -> i32 = "wing_tcp_recv_nonblocking";
-extern fn native_epoll_create() -> i64 = "wing_epoll_create";
-extern fn native_epoll_add(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32 = "wing_epoll_add";
-extern fn native_epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> i32 = "wing_epoll_mod";
-extern fn native_epoll_del(epfd: i64, sock_fd: i64) -> i32 = "wing_epoll_del";
-extern fn native_epoll_wait(epfd: i64, out_fds: i64[:], out_udata: u64[:], timeout_ms: i32) -> i32 = "wing_epoll_wait";
-extern fn native_epoll_wait_events(
-    epfd:       i64,
-    out_fds:    i64[:],
-    out_udata:  u64[:],
-    out_events: u32[:],
-    timeout_ms: i32,
-) -> i32 = "wing_epoll_wait_events";
-extern fn native_epoll_close(epfd: i64) = "wing_epoll_close";
-extern fn native_fast_cork_append(
-    conn:     i64,
-    cork_buf: u8[:],
-    cork_len: i64,
-    resp:     const u8[:],
-) -> i64 = "wing_fast_cork_append";
-extern fn native_set_cpu_affinity(cpu_id: i64) -> i32 = "wing_set_cpu_affinity";
-extern fn native_tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> i32 = "wing_tcp_set_incoming_cpu";
-extern fn native_tcp_set_fastopen(sock_fd: i64, qlen: i32) -> i32 = "wing_tcp_set_fastopen";
-extern fn native_tcp_send_fastopen(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send_fastopen";
-extern fn native_tcp_set_tos(sock_fd: i64, tos: i32) -> i32 = "wing_tcp_set_tos";
-extern fn native_tcp_set_tclass(sock_fd: i64, tclass: i32) -> i32 = "wing_tcp_set_tclass";
-extern fn native_install_shutdown_signals() -> i32 = "wing_install_shutdown_signals";
-extern fn native_shutdown_requested() -> i32 = "wing_shutdown_requested";
 extern fn request_shutdown() = "wing_request_shutdown";
 extern fn reset_shutdown_signals() = "wing_reset_shutdown_signals";
-extern fn native_consume_reload_signal() -> i32 = "wing_consume_reload_signal";
-extern fn native_tcp_listen_dual(
-    host:    const u8[:],
-    port:    u16,
-    backlog: i32,
-    flags:   i32,
-) -> i64 = "wing_tcp_listen_dual";
-extern fn native_tcp_accept_info(
-    listener_fd:     i64,
-    mode_flags:      i32,
-    out_peer_ip:     u8[:],
-    out_peer_ip_len: i32&,
-    out_peer_port:   u16&,
-    out_dst_ip:      u8[:],
-    out_dst_ip_len:  i32&,
-    out_dst_port:    u16&,
-) -> i64 = "wing_tcp_accept_info";
-extern fn native_tcp_connect_bound_begin(
-    src_ip:    const u8[:],
-    dst_ip:    const u8[:],
-    dst_port:  u16,
-    so_mark:   u32,
-    out_state: i32&,
-    out_err:   i32&,
-) -> i64 = "wing_tcp_connect_bound_begin";
-extern fn native_tcp_connect_status(sock_fd: i64) -> i32 = "wing_tcp_connect_status";
-extern fn native_tcp_recv_peek(sock_fd: i64, dst: u8[:]) -> i32 = "wing_tcp_recv_peek";
-extern fn native_tcp_set_ttl(sock_fd: i64, ttl: i32, is_ipv6: i32) -> i32 = "wing_tcp_set_ttl";
-extern fn native_pipe_create(out_read_fd: i64&, out_write_fd: i64&) -> i32 = "wing_pipe_create";
-extern fn native_pipe_close(read_fd: i64, write_fd: i64) = "wing_pipe_close";
-extern fn native_tcp_splice_chunk(
-    src_fd:        i64,
-    dst_fd:        i64,
-    pipe_r:        i64,
-    pipe_w:        i64,
-    max_bytes:     i64,
-    in_pipe_bytes: i64&,
-) -> i64 = "wing_tcp_splice_chunk";
-extern fn native_net_get_local_ips(out_buf: u8[:]) -> i32 = "wing_net_get_local_ips";
-extern fn native_udp_open_dual(bind_ip: const u8[:], bind_port: u16, flags: i32) -> i64 = "wing_udp_open_dual";
-extern fn native_udp_sendto_dual(
-    sock_fd:  i64,
-    data:     const u8[:],
-    dst_ip:   const u8[:],
-    dst_port: u16,
-) -> i32 = "wing_udp_sendto_dual";
-extern fn native_udp_recvfrom_dual(
-    sock_fd:         i64,
-    out_buf:         u8[:],
-    out_peer_ip:     u8[:],
-    out_peer_ip_len: i32&,
-    out_peer_port:   u16&,
-) -> i32 = "wing_udp_recvfrom_dual";
-extern fn native_udp_exchange_dual(
-    server_ip:   const u8[:],
-    server_port: u16,
-    query:       const u8[:],
-    out_resp:    u8[:],
-    timeout_ms:  u32,
-) -> i32 = "wing_udp_exchange_dual";
-extern fn native_fs_disk_usage_percent(path: const u8[:]) -> i32 = "wing_fs_disk_usage_percent";
-extern fn native_fs_file_mtime(path: const u8[:]) -> i64 = "wing_fs_file_mtime";
 
 // Event flags for epoll multiplexer
 const EPOLL_READ:         u32 = 1;
@@ -150,15 +24,12 @@ const EPOLL_HUP:          u32 = 16;
 const EPOLL_ET:           u32 = 0x80000000;
 const EPOLL_LISTENER_TAG: u64 = 0xFFFFFFFFFFFFFFFF;
 
-// Global initialization flag
-var g_tcp_initialized: bool = false;
-
 // Initializes socket subsystem (WSAStartup on Windows).
 fn tcp_init() -> bool {
-    if !g_tcp_initialized {
-        let res = native_tcp_init();
+    if !net_internal::g_tcp_initialized {
+        let res = net_internal::native_tcp_init();
         if res == 0 {
-            g_tcp_initialized = true;
+            net_internal::g_tcp_initialized = true;
         }
         return res == 0;
     }
@@ -167,25 +38,25 @@ fn tcp_init() -> bool {
 
 // Cleans up socket subsystem.
 fn tcp_cleanup() {
-    if g_tcp_initialized {
-        native_tcp_cleanup();
-        g_tcp_initialized = false;
+    if net_internal::g_tcp_initialized {
+        net_internal::native_tcp_cleanup();
+        net_internal::g_tcp_initialized = false;
     }
 }
 
 // Installs OS shutdown/reload signal handlers (SIGINT/SIGTERM on POSIX & ConsoleCtrl/CRT signals on Windows).
 fn install_shutdown_signals() -> bool {
-    return native_install_shutdown_signals() == 0;
+    return net_internal::native_install_shutdown_signals() == 0;
 }
 
 // Returns true once SIGINT, SIGTERM, or `request_shutdown()` has been triggered.
 fn shutdown_requested() -> bool {
-    return native_shutdown_requested() != 0;
+    return net_internal::native_shutdown_requested() != 0;
 }
 
 // Atomically reads and clears a pending SIGHUP reload signal (POSIX).
 fn consume_reload_signal() -> bool {
-    return native_consume_reload_signal() != 0;
+    return net_internal::native_consume_reload_signal() != 0;
 }
 
 // Listens for incoming TCP connections on host:port.
@@ -193,31 +64,21 @@ fn consume_reload_signal() -> bool {
 // Returns listening socket handle, or -1 on error.
 fn tcp_listen(host: const u8[:], port: u16 = 0, backlog: i32 = 128) -> i64 {
     tcp_init();
-    return native_tcp_listen(host, port, backlog);
+    return net_internal::native_tcp_listen(host, port, backlog);
 }
 
 // Listens on a Unix Domain Socket (AF_UNIX) path (uWebSockets us_socket_context_listen_unix pattern).
 // Returns listening socket handle, or -1 on error.
 fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64 {
     tcp_init();
-    return native_tcp_listen_unix(path, backlog);
+    return net_internal::native_tcp_listen_unix(path, backlog);
 }
 
 // Connects to a Unix Domain Socket (AF_UNIX) path (uWebSockets us_socket_context_connect_unix pattern).
 // Returns connected socket handle (> 0), or -1 on error.
 fn tcp_connect_unix(path: const u8[:]) -> i64 {
     tcp_init();
-    return native_tcp_connect_unix(path);
-}
-
-// Begins a non-blocking AF_UNIX client connect; out_state: 0=connected, 1=in_progress, -1=failed.
-fn tcp_connect_unix_begin(path: const u8[:], out_state: i32&) -> i64 {
-    guard path.len > 0 && path.len < 108 else {
-        out_state = -1;
-        return -1;
-    }
-    tcp_init();
-    return native_tcp_connect_unix_begin(path, out_state);
+    return net_internal::native_tcp_connect_unix(path);
 }
 
 // Adopts an externally accepted or inherited socket descriptor (uWebSockets us_adopt_accepted_socket pattern).
@@ -225,18 +86,19 @@ fn tcp_connect_unix_begin(path: const u8[:], out_state: i32&) -> i64 {
 // Returns sanitized socket handle, or -1 on error.
 fn adopt_socket(raw_fd: i64) -> i64 {
     tcp_init();
-    return native_adopt_socket(raw_fd);
+    return net_internal::native_adopt_socket(raw_fd);
 }
 
 // Retrieves the locally bound port for a socket.
 fn tcp_getsockname_port(fd: i64) -> u16 {
-    return native_tcp_getsockname_port(fd);
+    guard fd > 0 else { return 0; }
+    return net_internal::native_tcp_getsockname_port(fd);
 }
 
 // Retrieves the connected peer IPv4 address string for a socket (or "127.0.0.1" fallback).
 fn tcp_get_peer_ip(fd: i64, out_ip: u8[..64]&) {
     var raw: u8[64] = [0; 64];
-    let n = native_tcp_get_peer_ip(fd, raw[..]);
+    let n = net_internal::native_tcp_get_peer_ip(fd, raw[..]);
     if n > 0 && n <= 64 {
         let _ = out_ip.try_set(raw[..n]);
     } else {
@@ -247,37 +109,22 @@ fn tcp_get_peer_ip(fd: i64, out_ip: u8[..64]&) {
 // Accepts an incoming connection with an optional timeout in milliseconds.
 // Returns accepted socket handle (> 0), 0 on timeout, or -1 on error.
 fn tcp_accept(listener_fd: i64, timeout_ms: u32 = 0) -> i64 {
-    return native_tcp_accept(listener_fd, timeout_ms);
+    guard listener_fd > 0 else { return -1; }
+    return net_internal::native_tcp_accept(listener_fd, timeout_ms);
 }
 
 // Connects to a remote TCP endpoint with timeout in milliseconds.
 // Returns connected socket handle (> 0), or -1 on error/timeout.
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64 {
     tcp_init();
-    return native_tcp_connect(host, port, timeout_ms);
-}
-
-// Begins a non-blocking TCP connect; out_state: 0=connected, 1=in_progress, -1=failed.
-fn tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 {
-    guard host.len > 0 && port != 0 else {
-        out_state = -1;
-        return -1;
-    }
-    tcp_init();
-    return native_tcp_connect_begin(host, port, out_state);
-}
-
-// Checks SO_ERROR after POLL_WRITE / POLL_ERROR on an in-progress non-blocking connect.
-fn tcp_connect_finish(fd: i64) -> bool {
-    guard fd > 0 else { return false; }
-    return native_tcp_connect_finish(fd) == 0;
+    return net_internal::native_tcp_connect(host, port, timeout_ms);
 }
 
 // Sends bytes over TCP socket.
 // Returns bytes sent (> 0), or -1 on error.
 fn tcp_send(fd: i64, data: const u8[:]) -> i32 {
     guard fd > 0 && data.len > 0 else { return 0; }
-    return native_tcp_send(fd, data);
+    return net_internal::native_tcp_send(fd, data);
 }
 
 // Sends two slices (e.g. HTTP headers and body) in a single syscall via vectored I/O (WSASend / writev).
@@ -291,40 +138,7 @@ fn tcp_send2(fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 {
     if hdr.len == 0 {
         return tcp_send(fd, payload);
     }
-    return native_tcp_send2(fd, hdr, payload);
-}
-
-fn tcp_sendv_one(fd: i64, arr: core::IoVecArray&) -> i32 {
-    let chunk = arr.iovec_get(0);
-    let sent = tcp_send(fd, chunk);
-    if sent > 0 {
-        arr.iovec_consume(sent);
-    }
-    return sent;
-}
-
-fn tcp_sendv_two(fd: i64, arr: core::IoVecArray&) -> i32 {
-    let c0 = arr.iovec_get(0);
-    let c1 = arr.iovec_get(1);
-    let sent = tcp_send2(fd, c0, c1);
-    if sent > 0 {
-        arr.iovec_consume(sent);
-    }
-    return sent;
-}
-
-fn tcp_sendv_multi(fd: i64, arr: core::IoVecArray&) -> i32 {
-    var total_sent: i32 = 0;
-    while !arr.iovec_is_empty() {
-        let c = arr.iovec_get(0);
-        let sent = tcp_send(fd, c);
-        guard sent > 0 else {
-            return if total_sent > 0 { total_sent } else { sent };
-        }
-        arr.iovec_consume(sent);
-        total_sent = total_sent + sent;
-    }
-    return total_sent;
+    return net_internal::native_tcp_send2(fd, hdr, payload);
 }
 
 // Sends an IoVecArray of up to 16 chunks over TCP socket using zero-allocation scatter/gather.
@@ -334,9 +148,9 @@ fn tcp_sendv(fd: i64, arr: core::IoVecArray&) -> i32 {
     guard fd > 0 else { return 0; }
     let count = arr.iovec_count();
     guard count > 0 else { return 0; }
-    if count == 1 { return tcp_sendv_one(fd, arr); }
-    if count == 2 { return tcp_sendv_two(fd, arr); }
-    return tcp_sendv_multi(fd, arr);
+    if count == 1 { return net_internal::tcp_sendv_one(fd, arr); }
+    if count == 2 { return net_internal::tcp_sendv_two(fd, arr); }
+    return net_internal::tcp_sendv_multi(fd, arr);
 }
 
 // Global shared 64 KB receive loop buffer (LIBUS_RECV_BUFFER_LENGTH = 65536) in .bss
@@ -347,13 +161,7 @@ const RECV_BUFFER_CAP: i64 = 65536;
 // Returns bytes received (> 0), 0 on clean EOF, -2 on timeout, or -1 on error.
 fn tcp_recv_slice(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 && dst.len > 0 else { return -1; }
-    return native_tcp_recv(fd, dst, timeout_ms);
-}
-
-inline fn ensure_shared_buf_len(buf: u8[..65536]&, eff_max: i32) {
-    if (buf.len as i32) < eff_max {
-        buf.resize(eff_max as i64, 0);
-    }
+    return net_internal::native_tcp_recv(fd, dst, timeout_ms);
 }
 
 // Receives bytes directly into the caller-provided receive buffer without allocating or zeroing stack memory.
@@ -361,8 +169,8 @@ inline fn ensure_shared_buf_len(buf: u8[..65536]&, eff_max: i32) {
 fn tcp_recv_shared(fd: i64, buf: u8[..65536]&, max_len: i32 = 65536, timeout_ms: u32 = 5000) -> i32, const u8[:] {
     guard fd > 0 else { return -1, ""; }
     let eff_max = min(RECV_BUFFER_CAP as i32, max(1, max_len));
-    ensure_shared_buf_len(buf, eff_max);
-    let recvd = native_tcp_recv(fd, buf[..eff_max], timeout_ms);
+    net_internal::ensure_shared_buf_len(buf, eff_max);
+    let recvd = net_internal::native_tcp_recv(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
         return recvd, buf[..recvd];
     }
@@ -379,9 +187,9 @@ fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) ->
     guard fd > 0 else { return -1; }
     var buf: u8[16384] = [0; 16384];
     let eff_max = min(16384, max(1, max_len));
-    let recvd = native_tcp_recv(fd, buf[..eff_max], timeout_ms);
+    let recvd = net_internal::native_tcp_recv(fd, buf[..eff_max], timeout_ms);
     if recvd > 0 {
-        let copy_len = min(recvd as i64, max(0, out.cap - out.len));
+        let copy_len = min(recvd as i64, max(0, core::sub_sat_i64(out.cap, out.len)));
         out.append(buf[..copy_len]);
     }
     return recvd;
@@ -390,7 +198,7 @@ fn tcp_recv<B>(fd: i64, out: B&, max_len: i32 = 4096, timeout_ms: u32 = 5000) ->
 // Closes socket handle.
 fn tcp_close(fd: i64) {
     if fd > 0 {
-        native_tcp_close(fd);
+        net_internal::native_tcp_close(fd);
     }
 }
 
@@ -411,43 +219,43 @@ const SHUT_RDWR: i32 = 2;
 // Shuts down socket send/receive channels.
 fn tcp_shutdown(fd: i64, how: i32 = SHUT_WR) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_shutdown(fd, how) == 0;
+    return net_internal::native_tcp_shutdown(fd, how) == 0;
 }
 
 // Configures SO_LINGER on socket (RFC 1122 Section 4.2.2.13).
 fn tcp_set_linger(fd: i64, onoff: bool, linger_sec: i32 = 0) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_linger(fd, if onoff { 1 } else { 0 }, linger_sec) == 0;
+    return net_internal::native_tcp_set_linger(fd, if onoff { 1 } else { 0 }, linger_sec) == 0;
 }
 
 // Configures TCP_NODELAY (Nagle algorithm bypass) on socket.
 fn tcp_set_nodelay(fd: i64, enable: bool = true) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_nodelay(fd, if enable { 1 } else { 0 }) == 0;
+    return net_internal::native_tcp_set_nodelay(fd, if enable { 1 } else { 0 }) == 0;
 }
 
 // Configures SO_REUSEADDR on socket.
 fn tcp_set_reuseaddr(fd: i64, enable: bool = true) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_reuseaddr(fd, if enable { 1 } else { 0 }) == 0;
+    return net_internal::native_tcp_set_reuseaddr(fd, if enable { 1 } else { 0 }) == 0;
 }
 
 // Configures SO_REUSEPORT on socket (Linux / FreeBSD).
 fn tcp_set_reuseport(fd: i64, enable: bool = true) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_reuseport(fd, if enable { 1 } else { 0 }) == 0;
+    return net_internal::native_tcp_set_reuseport(fd, if enable { 1 } else { 0 }) == 0;
 }
 
 // Configures TCP_DEFER_ACCEPT to eliminate context switches on empty connections.
 fn tcp_set_defer_accept(fd: i64, timeout_sec: i32 = 1) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_defer_accept(fd, timeout_sec) == 0;
+    return net_internal::native_tcp_set_defer_accept(fd, timeout_sec) == 0;
 }
 
 // Configures TCP_USER_TIMEOUT (e.g. 5000ms) to abort dead peers in 5s instead of 15m.
 fn tcp_set_user_timeout(fd: i64, timeout_ms: u32 = 5000) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_user_timeout(fd, timeout_ms) == 0;
+    return net_internal::native_tcp_set_user_timeout(fd, timeout_ms) == 0;
 }
 
 // Configures aggressive SO_KEEPALIVE profile with strict boundary validation (RFC 1122 Section 4.2.3.6).
@@ -457,13 +265,13 @@ fn tcp_set_keepalive(fd: i64, idle_sec: i32 = 1, intvl_sec: i32 = 11, cnt: i32 =
     guard idle_sec >= 1 && idle_sec <= 7200 else { return false; }
     guard intvl_sec >= 1 && intvl_sec <= 300 else { return false; }
     guard cnt >= 1 && cnt <= 127 else { return false; }
-    return native_tcp_set_keepalive_params(fd, idle_sec, intvl_sec, cnt) == 0;
+    return net_internal::native_tcp_set_keepalive_params(fd, idle_sec, intvl_sec, cnt) == 0;
 }
 
 // Limits SYN retransmissions on connect to abort unreachable hosts quickly.
 fn tcp_set_syn_retries(fd: i64, count: i32 = 3) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_syn_retries(fd, count) == 0;
+    return net_internal::native_tcp_set_syn_retries(fd, count) == 0;
 }
 
 // RFC 7413 Section 5.1: TCP Fast Open Server Configuration - Default TFO queue length
@@ -471,18 +279,16 @@ const TCP_FASTOPEN_DEFAULT_QLEN: i32 = 512;
 // RFC 7413 Section 5.2: TCP Fast Open Client Operation - MSG_FASTOPEN flag for sendto
 const MSG_FASTOPEN: i32 = 0x20000000;
 
-// RFC 3168 Section 5: The ECN Field in IP - Explicit Congestion Notification codepoints
-
 // RFC 7413 Section 5.1: TCP Fast Open Server Configuration - Enables TFO on listening socket
 fn tcp_set_fastopen(fd: i64, qlen: i32 = TCP_FASTOPEN_DEFAULT_QLEN) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_fastopen(fd, qlen) == 0;
+    return net_internal::native_tcp_set_fastopen(fd, qlen) == 0;
 }
 
 // RFC 7413 Section 5.2: TCP Fast Open Client Operation - Sends initial data payload with SYN
 fn tcp_send_fastopen(fd: i64, data: const u8[:]) -> i32 {
     guard fd > 0 && data.len > 0 else { return 0; }
-    return native_tcp_send_fastopen(fd, data);
+    return net_internal::native_tcp_send_fastopen(fd, data);
 }
 
 // RFC 3168 Section 5: The ECN Field in IP - Extracts 2-bit ECN codepoint from IP TOS octet
@@ -504,31 +310,31 @@ inline fn ecn_is_congestion_experienced(tos: u8) -> bool {
 // RFC 3168 Section 6.1.1: ECN-Capable TCP - Configures IP_TOS octet on IPv4 socket
 fn tcp_set_tos(fd: i64, tos: u8) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_tos(fd, tos) == 0;
+    return net_internal::native_tcp_set_tos(fd, tos) == 0;
 }
 
 // RFC 3168 Section 6.1.1: ECN-Capable TCP - Configures IPV6_TCLASS octet on IPv6 socket
 fn tcp_set_ipv6_tclass(fd: i64, tclass: u8) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_tclass(fd, tclass) == 0;
+    return net_internal::native_tcp_set_tclass(fd, tclass) == 0;
 }
 
 // RFC 3168 Section 6.1.1: ECN-Capable TCP - Configures ECN codepoint on IPv4 socket
 fn tcp_set_ecn(fd: i64, codepoint: u8) -> bool {
     guard fd > 0 && codepoint <= rfc::ECN_MASK else { return false; }
-    return native_tcp_set_tos(fd, codepoint) == 0;
+    return net_internal::native_tcp_set_tos(fd, codepoint) == 0;
 }
 
 // Retrieves number of unsent / unacknowledged bytes in socket write queue (tcpi_notsent_bytes).
 fn tcp_get_notsent_bytes(fd: i64) -> i64 {
     guard fd > 0 else { return 0; }
-    return native_tcp_get_notsent_bytes(fd);
+    return net_internal::native_tcp_get_notsent_bytes(fd);
 }
 
 // Retrieves number of immediately readable bytes in socket receive queue.
 fn tcp_get_readable_bytes(fd: i64) -> i64 {
     guard fd > 0 else { return 0; }
-    return native_tcp_get_readable_bytes(fd);
+    return net_internal::native_tcp_get_readable_bytes(fd);
 }
 
 // Flushes buffered data from CorkBuffer directly to TCP socket.
@@ -560,7 +366,7 @@ struct BackPressure {
 }
 
 fn backpressure_len(bp: const BackPressure&) -> i64 {
-    return bp.data.len - bp.pending_removal;
+    return core::sub_sat_i64(bp.data.len, bp.pending_removal);
 }
 
 // Queries whether outbound flow control is active (unsent data buffered in backpressure).
@@ -568,19 +374,8 @@ fn tcp_is_flow_controlled(bp: const BackPressure&) -> bool {
     return backpressure_len(bp) > 0;
 }
 
-fn backpressure_data(bp: const BackPressure&) -> const u8[:] {
-    guard bp.pending_removal < bp.data.len else { return ""; }
-    return bp.data[bp.pending_removal..];
-}
-
 fn backpressure_clear(bp: BackPressure&) {
     bp.data.clear();
-    bp.pending_removal = 0;
-}
-
-fn backpressure_compact(bp: BackPressure&) {
-    guard bp.pending_removal > 0 else { return; }
-    bp.data.compact_wire_buffer(bp.pending_removal);
     bp.pending_removal = 0;
 }
 
@@ -588,110 +383,17 @@ fn backpressure_compact(bp: BackPressure&) {
 fn backpressure_append(bp: BackPressure&, bytes: const u8[:]) -> bool {
     guard bytes.len > 0 else { return true; }
 
-    if bp.data.len + bytes.len > bp.data.cap {
-        backpressure_compact(bp);
+    if core::add_sat_i64(bp.data.len, bytes.len) > bp.data.cap {
+        net_internal::backpressure_compact(bp);
     }
 
     guard bp.data.try_append(bytes) else {
-        bp.drop_count += 1;
+        bp.drop_count = core::add_sat_u64(bp.drop_count, 1);
         return false;
     }
 
-    bp.total_buffered += bytes.len as u64;
+    bp.total_buffered = core::add_sat_u64(bp.total_buffered, bytes.len as u64);
     return true;
-}
-
-// Advances pending removal and amortizes compaction only when pendingRemoval > (data.len >> 5).
-// Eliminates O(N^2) memory moves on frequent partial packet sends (Alex Hultman / uWS pattern).
-fn backpressure_erase(bp: BackPressure&, n: i64) {
-    guard n > 0 else { return; }
-    bp.pending_removal += n;
-    bp.total_drained += n as u64;
-
-    if bp.pending_removal >= bp.data.len {
-        bp.data.clear();
-        bp.pending_removal = 0;
-    } else if bp.pending_removal > (bp.data.len >> 5) {
-        backpressure_compact(bp);
-    }
-}
-
-// Attempts to drain active backpressure during write. Returns (handled, bytes_written, needs_poll).
-fn async_write_drain_existing(
-    fd:         i64,
-    bp:         BackPressure&,
-    data:       const u8[:],
-    optionally: bool,
-) -> bool, i32, bool {
-    guard backpressure_len(bp) > 0 else { return false, 0, false; }
-    let sent = tcp_send(fd, backpressure_data(bp));
-    if sent < 0 {
-        return true, -1, false;
-    }
-    if sent > 0 {
-        backpressure_erase(bp, sent);
-    }
-    guard backpressure_len(bp) > 0 else { return false, 0, false; }
-    if optionally {
-        return true, 0, true;
-    }
-    guard backpressure_append(bp, data) else {
-        return true, 0, true;
-    }
-    return true, data.len as i32, true;
-}
-
-// Flushes cork buffer during write. If cork cannot be fully sent, spills cork and optional data to backpressure.
-fn async_write_spill_cork(
-    fd:         i64,
-    cork:       core::CorkBuffer&,
-    bp:         BackPressure&,
-    data:       const u8[:],
-    optionally: bool,
-) -> bool, i32, bool {
-    guard cork.cork_pending() > 0 else { return false, 0, false; }
-    let cork_sent = tcp_send(fd, cork.cork_as_slice());
-    if cork_sent < 0 {
-        return true, -1, false;
-    }
-    if cork_sent > 0 {
-        cork.cork_consume(cork_sent);
-    }
-    guard cork.cork_pending() > 0 else { return false, 0, false; }
-    guard backpressure_append(bp, cork.cork_as_slice()) else {
-        return true, 0, true;
-    }
-    cork.cork_reset();
-    if !optionally && data.len > 0 {
-        guard backpressure_append(bp, data) else {
-            return true, 0, true;
-        }
-        return true, data.len as i32, true;
-    }
-    return true, 0, true;
-}
-
-// Writes unsent wire remainder directly to socket or queues to backpressure.
-fn async_write_direct(
-    fd:         i64,
-    bp:         BackPressure&,
-    data:       const u8[:],
-    optionally: bool,
-) -> i32, bool {
-    let sent = tcp_send(fd, data);
-    if sent < 0 {
-        return -1, false;
-    }
-    guard sent < (data.len as i32) else { return sent, false; }
-    let sent_clamped = max(sent, 0);
-    if optionally {
-        return sent_clamped, true;
-    }
-    let unsent_offset = sent_clamped as i64;
-    guard backpressure_append(bp, data[unsent_offset..]) else {
-        return sent_clamped, true;
-    }
-    return data.len as i32, true;
 }
 
 // Three-level prioritized async write matching uWebSockets AsyncSocket::write:
@@ -708,11 +410,11 @@ fn async_socket_write(
 ) -> i32, bool {
     guard fd > 0 else { return 0, false; }
     guard !bp.write_shut && !bp.shutdown_pending else {
-        bp.drop_count += 1;
+        bp.drop_count = core::add_sat_u64(bp.drop_count, 1);
         return 0, false;
     }
 
-    let handled_bp, written_bp, poll_bp = async_write_drain_existing(fd, bp, data, optionally);
+    let written_bp, poll_bp, handled_bp = net_internal::async_write_drain_existing(fd, bp, data, optionally);
     guard !handled_bp else { return written_bp, poll_bp; }
 
     guard data.len > 0 else { return 0, false; }
@@ -722,10 +424,10 @@ fn async_socket_write(
         return data.len as i32, false;
     }
 
-    let handled_cork, written_cork, poll_cork = async_write_spill_cork(fd, cork, bp, data, optionally);
+    let written_cork, poll_cork, handled_cork = net_internal::async_write_spill_cork(fd, cork, bp, data, optionally);
     guard !handled_cork else { return written_cork, poll_cork; }
 
-    return async_write_direct(fd, bp, data, optionally);
+    return net_internal::async_write_direct(fd, bp, data, optionally);
 }
 
 // Spills remaining cork buffer into backpressure.
@@ -736,60 +438,32 @@ fn uncork_spill_to_bp(cork: core::CorkBuffer&, bp: BackPressure&) {
     }
 }
 
-// Directly flushes cork buffer to wire, spilling to backpressure if partially sent.
-fn uncork_flush_direct(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i32, bool {
-    guard cork.cork_pending() > 0 else { return 0, false; }
-    let sent_cork = tcp_send(fd, cork.cork_as_slice());
-    if sent_cork > 0 {
-        cork.cork_consume(sent_cork);
-    }
-    guard cork.cork_pending() > 0 else {
-        return sent_cork, false;
-    }
-    if backpressure_append(bp, cork.cork_as_slice()) {
-        cork.cork_reset();
-    }
-    return sent_cork, true;
-}
-
 // Uncorks the socket and flushes cork buffer while strictly preserving FIFO stream order.
 // If backpressure is already active, cork data is appended behind backpressure without out-of-order sending.
 // Returns (bytes_written, needs_writable_poll).
 fn async_socket_uncork(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i32, bool {
     guard fd > 0 else { return 0, false; }
 
-    var total_sent: i32 = 0;
+    var total_sent: i64 = 0;
 
     // 1. Drain existing backpressure first to maintain strict TCP FIFO stream ordering
     if backpressure_len(bp) > 0 {
-        let sent_bp = tcp_send(fd, backpressure_data(bp));
+        let sent_bp = tcp_send(fd, net_internal::backpressure_data(bp));
         if sent_bp > 0 {
-            backpressure_erase(bp, sent_bp);
-            total_sent += sent_bp;
+            net_internal::backpressure_erase(bp, sent_bp);
+            total_sent = core::add_sat_i64(total_sent, sent_bp);
         }
     }
 
     // 2. If backpressure is still active, append cork to backpressure without sending ahead of it
     if backpressure_len(bp) > 0 {
         uncork_spill_to_bp(cork, bp);
-        return total_sent, true;
+        return total_sent as i32, true;
     }
 
     // 3. Backpressure is clear; flush cork buffer directly to socket
-    let sent_cork, needs_poll = uncork_flush_direct(fd, cork, bp);
-    return total_sent + sent_cork, needs_poll;
-}
-
-// Executes deferred shutdown if backpressure is clear and shutdown was requested.
-// If peer FIN was already received, both directions are terminated; completes full socket teardown (RFC 9293 §3.5).
-fn check_execute_deferred_shutdown(fd: i64, bp: BackPressure&) {
-    guard bp.shutdown_pending else { return; }
-    tcp_shutdown(fd, SHUT_WR);
-    bp.write_shut = true;
-    bp.shutdown_pending = false;
-    if bp.peer_fin_received && fd > 0 {
-        tcp_close(fd);
-    }
+    let sent_cork, needs_poll = net_internal::uncork_flush_direct(fd, cork, bp);
+    return core::add_sat_i64(total_sent, sent_cork) as i32, needs_poll;
 }
 
 // Drains backpressure queue upon writable event (POLL_WRITE).
@@ -806,17 +480,17 @@ fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     }
     let bp_active = backpressure_len(bp);
     guard bp_active > 0 else {
-        check_execute_deferred_shutdown(fd, bp);
+        net_internal::check_execute_deferred_shutdown(fd, bp);
         return 0, true;
     }
 
-    let sent = tcp_send(fd, backpressure_data(bp));
+    let sent = tcp_send(fd, net_internal::backpressure_data(bp));
     if sent < 0 {
         async_socket_abort(fd, bp);
         return sent, true;
     }
     if sent > 0 {
-        backpressure_erase(bp, sent);
+        net_internal::backpressure_erase(bp, sent);
     }
 
     if backpressure_len(bp) == 0 && bp.pending_cork.len > 0 {
@@ -826,7 +500,7 @@ fn async_socket_drain(fd: i64, bp: BackPressure&) -> i32, bool {
     }
     let is_empty = backpressure_len(bp) == 0 && bp.pending_cork.len == 0;
     if is_empty {
-        check_execute_deferred_shutdown(fd, bp);
+        net_internal::check_execute_deferred_shutdown(fd, bp);
     }
     return sent, is_empty;
 }
@@ -908,7 +582,7 @@ fn tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout
     if err != core::IoError.None {
         return -1;
     }
-    let recvd = native_tcp_recv(fd, span, timeout_ms);
+    let recvd = net_internal::native_tcp_recv(fd, span, timeout_ms);
     if recvd > 0 {
         pipe.commit_write(recvd);
     }
@@ -918,26 +592,26 @@ fn tcp_recv_pipe(fd: i64, pipe: core::PipeBuffer&, min_span: i64 = 4096, timeout
 // Configures socket non-blocking mode.
 fn tcp_set_nonblocking(fd: i64, nonblocking: bool = true) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_nonblocking(fd, if nonblocking { 1 } else { 0 }) == 0;
+    return net_internal::native_tcp_set_nonblocking(fd, if nonblocking { 1 } else { 0 }) == 0;
 }
 
 // Sets TCP_QUICKACK (Linux delayed ACK bypass) to eliminate 40ms delayed ACK stalls.
 fn tcp_set_quickack(fd: i64, enable: bool = true) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_quickack(fd, if enable { 1 } else { 0 }) == 0;
+    return net_internal::native_tcp_set_quickack(fd, if enable { 1 } else { 0 }) == 0;
 }
 
 // Sets TCP_CORK (Linux) to coalesce frames at the kernel TCP stack level.
 fn tcp_set_cork(fd: i64, enable: bool = true) -> bool {
     guard fd > 0 else { return false; }
-    return native_tcp_set_cork(fd, if enable { 1 } else { 0 }) == 0;
+    return net_internal::native_tcp_set_cork(fd, if enable { 1 } else { 0 }) == 0;
 }
 
 // Accepts an incoming connection in non-blocking mode.
 // Returns socket handle (> 0), 0 if no connection pending (EAGAIN), or -1 on error.
 fn tcp_accept_nonblocking(listener_fd: i64) -> i64 {
     guard listener_fd > 0 else { return -1; }
-    return native_tcp_accept_nonblocking(listener_fd);
+    return net_internal::native_tcp_accept_nonblocking(listener_fd);
 }
 
 // Receives bytes from non-blocking socket into out buffer without zeroing memory.
@@ -949,9 +623,9 @@ fn tcp_accept_nonblocking(listener_fd: i64) -> i64 {
 fn tcp_recv_nonblocking<B>(fd: i64, out: B&) -> i32 {
     guard fd > 0 else { return -1; }
     var buf: u8[16384] = [0; 16384];
-    let recvd = native_tcp_recv_nonblocking(fd, buf[..16384]);
+    let recvd = net_internal::native_tcp_recv_nonblocking(fd, buf[..16384]);
     if recvd > 0 {
-        let copy_len = min(recvd as i64, max(0, out.cap - out.len));
+        let copy_len = min(recvd as i64, max(0, core::sub_sat_i64(out.cap, out.len)));
         out.append(buf[..copy_len]);
     }
     return recvd;
@@ -960,50 +634,31 @@ fn tcp_recv_nonblocking<B>(fd: i64, out: B&) -> i32 {
 // Receives bytes from non-blocking socket directly into destination slice.
 fn tcp_recv_nonblocking_slice(fd: i64, dst: u8[:]) -> i32 {
     guard fd > 0 && dst.len > 0 else { return -1; }
-    return native_tcp_recv_nonblocking(fd, dst);
+    return net_internal::native_tcp_recv_nonblocking(fd, dst);
 }
 
 // Creates an epoll/reactor handle (native epoll_create1 on Linux, WSAPoll on Windows).
 fn epoll_create() -> i64 {
     tcp_init();
-    return native_epoll_create();
+    return net_internal::native_epoll_create();
 }
 
 // Registers a socket descriptor in the epoll multiplexer.
 fn epoll_add(epfd: i64, sock_fd: i64, events: u32 = EPOLL_READ, udata: u64 = 0) -> bool {
     guard epfd >= 0 && sock_fd > 0 else { return false; }
-    return native_epoll_add(epfd, sock_fd, events, udata) == 0;
+    return net_internal::native_epoll_add(epfd, sock_fd, events, udata) == 0;
 }
 
 // Modifies interest flags for a registered socket descriptor.
 fn epoll_mod(epfd: i64, sock_fd: i64, events: u32, udata: u64) -> bool {
     guard epfd >= 0 && sock_fd > 0 else { return false; }
-    return native_epoll_mod(epfd, sock_fd, events, udata) == 0;
+    return net_internal::native_epoll_mod(epfd, sock_fd, events, udata) == 0;
 }
 
 // Removes a socket descriptor from the epoll multiplexer.
 fn epoll_del(epfd: i64, sock_fd: i64) -> bool {
     guard epfd >= 0 && sock_fd > 0 else { return false; }
-    return native_epoll_del(epfd, sock_fd) == 0;
-}
-
-// Waits for I/O events on the epoll multiplexer directly into fixed-size slices.
-// Avoids allocations, stack memsets, and push overhead (uWebSockets loop.c pattern).
-fn epoll_wait_direct(epfd: i64, raw_fds: i64[:], raw_udata: u64[:], timeout_ms: i32 = -1) -> i32 {
-    guard epfd >= 0 && (raw_fds.len > 0 || raw_udata.len > 0) else { return 0; }
-    return native_epoll_wait(epfd, raw_fds, raw_udata, timeout_ms);
-}
-
-// Waits for readiness events and returns translated core::POLL_* bitmasks in `raw_events`.
-fn epoll_wait_events_direct(
-    epfd:       i64,
-    raw_fds:    i64[:],
-    raw_udata:  u64[:],
-    raw_events: u32[:],
-    timeout_ms: i32 = -1,
-) -> i32 {
-    guard epfd >= 0 && raw_udata.len > 0 && raw_events.len > 0 else { return 0; }
-    return native_epoll_wait_events(epfd, raw_fds, raw_udata, raw_events, timeout_ms);
+    return net_internal::native_epoll_del(epfd, sock_fd) == 0;
 }
 
 // Waits for I/O events on the epoll multiplexer.
@@ -1014,7 +669,7 @@ fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1)
     out_udata.clear();
     var raw_fds:   i64[256] = [0; 256];
     var raw_udata: u64[256] = [0; 256];
-    let n = native_epoll_wait(epfd, raw_fds[..], raw_udata[..], timeout_ms);
+    let n = net_internal::native_epoll_wait(epfd, raw_fds[..], raw_udata[..], timeout_ms);
     guard n > 0 else { return 0; }
     let limit = min(n as i64, min(out_fds.cap, out_udata.cap));
     for i in limit {
@@ -1027,20 +682,20 @@ fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1)
 // Closes epoll/reactor handle.
 fn epoll_close(epfd: i64) {
     if epfd >= 0 {
-        native_epoll_close(epfd);
+        net_internal::native_epoll_close(epfd);
     }
 }
 
 // Pins calling thread to specific CPU core ID.
 fn set_cpu_affinity(cpu_id: i64) -> bool {
     guard cpu_id >= 0 else { return false; }
-    return native_set_cpu_affinity(cpu_id) == 0;
+    return net_internal::native_set_cpu_affinity(cpu_id) == 0;
 }
 
 // Binds listener incoming socket queue to specific CPU core (SO_INCOMING_CPU).
 fn tcp_set_incoming_cpu(sock_fd: i64, cpu_id: i64) -> bool {
     guard sock_fd > 0 && cpu_id >= 0 else { return false; }
-    return native_tcp_set_incoming_cpu(sock_fd, cpu_id) == 0;
+    return net_internal::native_tcp_set_incoming_cpu(sock_fd, cpu_id) == 0;
 }
 
 // Deterministic O(1) connection slot index allocator for reactor loops.
@@ -1058,8 +713,9 @@ fn init_free_slots(stack: FreeSlotStack&, count: i64) {
     let n = min(max(count, 0), FREE_SLOT_STACK_CAP);
     stack.top = n;
     stack.capacity = n;
+    let last = core::sub_sat_i64(n, 1);
     for i in n {
-        stack.indices[i] = ((n - 1 - i) as u16);
+        stack.indices[i] = core::sub_sat_i64(last, i) as u16;
     }
 }
 
@@ -1067,7 +723,7 @@ fn init_free_slots(stack: FreeSlotStack&, count: i64) {
 fn pop_free_slot(stack: FreeSlotStack&) -> i64 {
     let top = stack.top;
     guard top > 0 && top <= FREE_SLOT_STACK_CAP else { return -1; }
-    let next_top = top - 1;
+    let next_top = core::sub_sat_i64(top, 1);
     stack.top = next_top;
     return stack.indices[next_top];
 }
@@ -1076,7 +732,7 @@ fn pop_free_slot(stack: FreeSlotStack&) -> i64 {
 fn push_free_slot(stack: FreeSlotStack&, slot: i64) -> bool {
     guard slot >= 0 && slot < stack.capacity && stack.top < stack.capacity else { return false; }
     stack.indices[stack.top] = slot as u16;
-    stack.top++;
+    stack.top = core::add_sat_i64(stack.top, 1);
     return true;
 }
 
@@ -1137,7 +793,7 @@ fn tcp_listen_dual(
     flags:   i32 = 0,
 ) -> i64 {
     let _ = tcp_init();
-    return native_tcp_listen_dual(host, port, backlog, flags);
+    return net_internal::native_tcp_listen_dual(host, port, backlog, flags);
 }
 
 // Non-blockingly accepts a connection and extracts peer and local/original-dst endpoints.
@@ -1153,7 +809,7 @@ fn tcp_accept_info(
     out_dst_port:    u16&,
 ) -> i64 {
     guard listener_fd > 0 else { return -1; }
-    return native_tcp_accept_info(
+    return net_internal::native_tcp_accept_info(
         listener_fd,
         mode_flags,
         out_peer_ip,
@@ -1181,35 +837,35 @@ fn tcp_connect_bound_begin(
         return -1;
     }
     let _ = tcp_init();
-    return native_tcp_connect_bound_begin(src_ip, dst_ip, dst_port, so_mark, out_state, out_err);
+    return net_internal::native_tcp_connect_bound_begin(src_ip, dst_ip, dst_port, so_mark, out_state, out_err);
 }
 
 // Reads async connect completion status via SO_ERROR (0 = ok, 1 = refused, 2 = unreach, 3 = timeout).
 fn tcp_connect_status(sock_fd: i64) -> i32 {
     guard sock_fd > 0 else { return -1; }
-    return native_tcp_connect_status(sock_fd);
+    return net_internal::native_tcp_connect_status(sock_fd);
 }
 
 // Non-destructively peeks bytes from a socket using MSG_PEEK (-2 on WouldBlock).
 fn tcp_recv_peek(sock_fd: i64, dst: u8[:]) -> i32 {
     guard sock_fd > 0 && dst.len > 0 else { return -1; }
-    return native_tcp_recv_peek(sock_fd, dst);
+    return net_internal::native_tcp_recv_peek(sock_fd, dst);
 }
 
 // Configures IP_TTL (or IPV6_UNICAST_HOPS) on an outbound socket.
 fn tcp_set_ttl(sock_fd: i64, ttl: i32, is_ipv6: bool = false) -> bool {
     guard sock_fd > 0 && ttl >= 1 && ttl <= 255 else { return false; }
-    return native_tcp_set_ttl(sock_fd, ttl, if is_ipv6 { 1 } else { 0 }) == 0;
+    return net_internal::native_tcp_set_ttl(sock_fd, ttl, if is_ipv6 { 1 } else { 0 }) == 0;
 }
 
 // Creates a non-blocking kernel pipe pair for splice(2) forwarding (Linux only).
 fn pipe_create(out_read_fd: i64&, out_write_fd: i64&) -> bool {
-    return native_pipe_create(out_read_fd, out_write_fd) == 0;
+    return net_internal::native_pipe_create(out_read_fd, out_write_fd) == 0;
 }
 
 // Closes a kernel pipe pair created by pipe_create.
 fn pipe_close(read_fd: i64, write_fd: i64) {
-    native_pipe_close(read_fd, write_fd);
+    net_internal::native_pipe_close(read_fd, write_fd);
 }
 
 // Relays up to `max_bytes` from `src_fd` to `dst_fd` via a kernel pipe (Linux splice).
@@ -1225,26 +881,26 @@ fn tcp_splice_chunk(
     guard src_fd > 0 && dst_fd > 0 && pipe_r >= 0 && pipe_w >= 0 && max_bytes > 0 else {
         return -1;
     }
-    return native_tcp_splice_chunk(src_fd, dst_fd, pipe_r, pipe_w, max_bytes, in_pipe_bytes);
+    return net_internal::native_tcp_splice_chunk(src_fd, dst_fd, pipe_r, pipe_w, max_bytes, in_pipe_bytes);
 }
 
 // Writes newline-separated local host IPv4/IPv6 addresses into `out_buf`.
 fn net_get_local_ips(out_buf: u8[:]) -> i32 {
     guard out_buf.len > 0 else { return -1; }
     let _ = tcp_init();
-    return native_net_get_local_ips(out_buf);
+    return net_internal::native_net_get_local_ips(out_buf);
 }
 
 // Opens a non-blocking dual-stack UDP socket (flags: bit 1 = force IPv6, bit 2 = IP_FREEBIND).
 fn udp_open_dual(bind_ip: const u8[:] = "", bind_port: u16 = 0, flags: i32 = 0) -> i64 {
     let _ = tcp_init();
-    return native_udp_open_dual(bind_ip, bind_port, flags);
+    return net_internal::native_udp_open_dual(bind_ip, bind_port, flags);
 }
 
 // Sends a non-blocking UDP datagram to an IPv4 or IPv6 literal (`-2` on WouldBlock).
 fn udp_sendto_dual(sock_fd: i64, data: const u8[:], dst_ip: const u8[:], dst_port: u16) -> i32 {
     guard sock_fd > 0 && dst_ip.len > 0 && dst_port != 0 else { return -1; }
-    return native_udp_sendto_dual(sock_fd, data, dst_ip, dst_port);
+    return net_internal::native_udp_sendto_dual(sock_fd, data, dst_ip, dst_port);
 }
 
 // Non-blockingly receives a UDP datagram and extracts sender IP + port (`-2` on WouldBlock).
@@ -1256,7 +912,7 @@ fn udp_recvfrom_dual(
     out_peer_port:   u16&,
 ) -> i32 {
     guard sock_fd > 0 && out_buf.len > 0 else { return -1; }
-    return native_udp_recvfrom_dual(sock_fd, out_buf, out_peer_ip, out_peer_ip_len, out_peer_port);
+    return net_internal::native_udp_recvfrom_dual(sock_fd, out_buf, out_peer_ip, out_peer_ip_len, out_peer_port);
 }
 
 // Executes a bounded-timeout synchronous UDP request/response to an IPv4 or IPv6 server.
@@ -1271,17 +927,17 @@ fn udp_exchange_dual(
         return -1;
     }
     let _ = tcp_init();
-    return native_udp_exchange_dual(server_ip, server_port, query, out_resp, timeout_ms);
+    return net_internal::native_udp_exchange_dual(server_ip, server_port, query, out_resp, timeout_ms);
 }
 
 // Returns filesystem disk usage percentage (0..100) for `path`, or -1 on error.
 fn fs_disk_usage_percent(path: const u8[:]) -> i32 {
     guard path.len > 0 && path.len < 1024 else { return -1; }
-    return native_fs_disk_usage_percent(path);
+    return net_internal::native_fs_disk_usage_percent(path);
 }
 
 // Returns last modification Unix timestamp in seconds for `path`, or -1 if missing.
 fn fs_file_mtime(path: const u8[:]) -> i64 {
     guard path.len > 0 && path.len < 1024 else { return -1; }
-    return native_fs_file_mtime(path);
+    return net_internal::native_fs_file_mtime(path);
 }

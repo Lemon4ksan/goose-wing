@@ -45,12 +45,12 @@ fn main() {
     var idx:   i64        = 0;
     var label: u8[..64]   = [];
     var der:   u8[..4096] = [];
-    let ok1 = wing::pem_next_block(raw_pem, idx, label, der);
+    let ok1 = tls::pem_next_block(raw_pem, idx, label, der);
     assert(ok1);
     assert(label[..] == "CERTIFICATE");
     assert(der.len == 4 && der[0] == 1 && der[1] == 2 && der[2] == 3 && der[3] == 4);
 
-    let ok2 = wing::pem_next_block(raw_pem, idx, label, der);
+    let ok2 = tls::pem_next_block(raw_pem, idx, label, der);
     assert(ok2);
     assert(label[..] == "PRIVATE KEY");
     assert(der.len == 3 && der[0] == 5 && der[1] == 6 && der[2] == 7);
@@ -59,17 +59,17 @@ fn main() {
     // 2. Negative PEM cases: mismatched label, bad base64, empty body, transactional rollback
     var bad_idx: i64 = 2;
     let bad_mismatch = "xx-----BEGIN CERTIFICATE-----\nAQID\n-----END PRIVATE KEY-----\n";
-    assert(!wing::pem_next_block(bad_mismatch, bad_idx, label, der));
+    assert(!tls::pem_next_block(bad_mismatch, bad_idx, label, der));
     assert(bad_idx == 2 && label.len == 0 && der.len == 0);
 
     let bad_b64 = "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n";
     var bad_b64_idx: i64 = 0;
-    assert(!wing::pem_next_block(bad_b64, bad_b64_idx, label, der));
+    assert(!tls::pem_next_block(bad_b64, bad_b64_idx, label, der));
     assert(bad_b64_idx == 0 && der.len == 0);
 
     let bad_empty = "-----BEGIN CERTIFICATE-----\n\n-----END CERTIFICATE-----\n";
     var empty_idx: i64 = 0;
-    assert(!wing::pem_next_block(bad_empty, empty_idx, label, der));
+    assert(!tls::pem_next_block(bad_empty, empty_idx, label, der));
     assert(empty_idx == 0);
 
     print("pem_blocks_ok: true");
@@ -88,8 +88,8 @@ fn main() {
     var ed_pem: u8[>..] = [];
     make_pem_block("PRIVATE KEY", pkcs8_ed_der[..], ed_pem);
     var parsed_ed_key: u8[32] = [0; 32];
-    let ed_kind, ok_ed = wing::parse_private_key_pem(ed_pem[..], parsed_ed_key);
-    assert(ok_ed && ed_kind == wing::PrivateKeyKind.Ed25519);
+    let ed_kind, ok_ed = tls::parse_private_key_pem(ed_pem[..], parsed_ed_key);
+    assert(ok_ed && ed_kind == tls::PrivateKeyKind.Ed25519);
     assert(parsed_ed_key[..] == ed_seed[..]);
 
     // 4. PKCS#8 ECDSA P-256 PrivateKeyInfo & SEC 1 EC PRIVATE KEY
@@ -105,8 +105,8 @@ fn main() {
     var sec1_pem: u8[>..] = [];
     make_pem_block("EC PRIVATE KEY", sec1_der[..], sec1_pem);
     var parsed_sec1_key: u8[32] = [0; 32];
-    let sec1_kind, ok_sec1 = wing::parse_private_key_pem(sec1_pem[..], parsed_sec1_key);
-    assert(ok_sec1 && sec1_kind == wing::PrivateKeyKind.EcdsaP256);
+    let sec1_kind, ok_sec1 = tls::parse_private_key_pem(sec1_pem[..], parsed_sec1_key);
+    assert(ok_sec1 && sec1_kind == tls::PrivateKeyKind.EcdsaP256);
     assert(parsed_sec1_key[..] == p256_scalar[..]);
 
     var pkcs8_p256_der: u8[>..] = [
@@ -119,15 +119,15 @@ fn main() {
     var pkcs8_p256_pem: u8[>..] = [];
     make_pem_block("PRIVATE KEY", pkcs8_p256_der[..], pkcs8_p256_pem);
     var parsed_p256_key: u8[32] = [0; 32];
-    let p256_kind, ok_p256 = wing::parse_private_key_pem(pkcs8_p256_pem[..], parsed_p256_key);
-    assert(ok_p256 && p256_kind == wing::PrivateKeyKind.EcdsaP256);
+    let p256_kind, ok_p256 = tls::parse_private_key_pem(pkcs8_p256_pem[..], parsed_p256_key);
+    assert(ok_p256 && p256_kind == tls::PrivateKeyKind.EcdsaP256);
     assert(parsed_p256_key[..] == p256_scalar[..]);
 
     // Encrypted private key MUST be rejected and output zeroized
     var enc_pem: u8[>..] = [];
     make_pem_block("ENCRYPTED PRIVATE KEY", pkcs8_ed_der[..], enc_pem);
-    let enc_kind, ok_enc = wing::parse_private_key_pem(enc_pem[..], parsed_ed_key);
-    assert(!ok_enc && enc_kind == wing::PrivateKeyKind.Unknown);
+    let enc_kind, ok_enc = tls::parse_private_key_pem(enc_pem[..], parsed_ed_key);
+    assert(!ok_enc && enc_kind == tls::PrivateKeyKind.Unknown);
     assert(is_all_zero_32(parsed_ed_key));
 
     print("pkcs8_keys_ok: true");
@@ -135,32 +135,32 @@ fn main() {
 
     // 5. TrustAnchorStore multi-cert PEM bundle & Server SNI credential loading
     var cert1_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(ed_seed, "ca.wing.test", "ca.wing.test", "", cert1_der));
+    assert(tls::build_test_ed25519_cert_der(ed_seed, "ca.wing.test", "ca.wing.test", "", cert1_der));
     var cert2_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(p256_scalar, "leaf.wing.test", "leaf.wing.test", "", cert2_der));
+    assert(tls::build_test_ed25519_cert_der(p256_scalar, "leaf.wing.test", "leaf.wing.test", "", cert2_der));
 
     var bundle_pem: u8[>..] = [];
     make_pem_block("CERTIFICATE", cert1_der[..], bundle_pem);
     make_pem_block("CERTIFICATE", cert2_der[..], bundle_pem);
 
-    var store = wing::TrustAnchorStore { .. };
-    let added, ok_store = wing::add_trust_anchors_pem(store, bundle_pem[..]);
+    var store = tls::TrustAnchorStore { .. };
+    let added, ok_store = tls::add_trust_anchors_pem(store, bundle_pem[..]);
     assert(ok_store && added == 2 && store.anchors.len == 2);
 
     var leaf_cert_pem: u8[>..] = [];
     make_pem_block("CERTIFICATE", cert1_der[..], leaf_cert_pem);
-    var srv = wing::new_http_server("127.0.0.1", 8443);
-    assert(wing::add_server_name(srv, "api.wing.test", leaf_cert_pem[..], ed_pem[..]));
-    let sni_creds, ok_sni = wing::resolve_sni_credentials(srv, "api.wing.test");
+    var srv = server::new_http_server("127.0.0.1", 8443);
+    assert(server::add_server_name(srv, "api.wing.test", leaf_cert_pem[..], ed_pem[..]));
+    let sni_creds, ok_sni = server::resolve_sni_credentials(srv, "api.wing.test");
     assert(ok_sni);
 
-    var tls_cfg = wing::TlsServerHandshakeConfig { .. };
-    assert(wing::sni_credentials_to_tls_config(sni_creds, tls_cfg));
+    var tls_cfg = tls::ServerHandshakeConfig { .. };
+    assert(server::sni_credentials_to_tls_config(sni_creds, tls_cfg));
     assert(tls_cfg.cert_der[..] == cert1_der[..]);
     assert(tls_cfg.priv_seed[..] == ed_seed[..]);
 
     // Mismatched algorithm (Ed25519 cert + P-256 key) MUST fail and wipe tls_cfg
-    assert(!wing::load_tls_server_credentials_pem(leaf_cert_pem[..], sec1_pem[..], tls_cfg));
+    assert(!tls::load_server_credentials_pem(leaf_cert_pem[..], sec1_pem[..], tls_cfg));
     assert(tls_cfg.cert_der.len == 0 && is_all_zero_32(tls_cfg.priv_seed));
 
     print("tls_sni_pem_ok: true");

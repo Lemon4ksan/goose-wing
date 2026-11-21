@@ -21,12 +21,12 @@ import wire_kit from ".";
 
 fn parse_tls_record_step(buf: const u8[:]) -> i64 {
     guard buf.len >= 5 else { return -1; }
-    let ct, _, len, alert, ok = wing::parse_tls_record_header(buf);
+    let ct, _, len, alert, ok = tls::parse_record_header(buf);
     guard ok else {
-        if alert == wing::TlsAlert.RecordOverflow {
+        if alert == tls::Alert.RecordOverflow {
             return -22;
         }
-        if alert == wing::TlsAlert.ProtocolVersion {
+        if alert == tls::Alert.ProtocolVersion {
             return -70;
         }
         return -2;
@@ -39,40 +39,40 @@ fn run_01_verify_tls_handshake_wire() {
     print("=== TLS_HANDSHAKE_AND_RECORD_VERIFICATION ===");
 
     // 1. Client handshake state machine progression (RFC 8446 §4)
-    let st1, ok1 = wing::can_client_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_SERVER_HELLO);
-    assert(ok1 && st1 == wing::HsState.ClientWaitEE);
+    let st1, ok1 = tls::can_client_transition(tls::HsState.ClientWaitSH, rfc::TLS_HS_SERVER_HELLO);
+    assert(ok1 && st1 == tls::HsState.ClientWaitEE);
     print("FSM_CLIENT: ClientWaitSH -> ClientWaitEE");
 
-    let st2, ok2 = wing::can_client_transition(wing::HsState.ClientWaitEE, rfc::TLS_HS_ENCRYPTED_EXTENSIONS);
-    assert(ok2 && st2 == wing::HsState.ClientWaitCertCr);
+    let st2, ok2 = tls::can_client_transition(tls::HsState.ClientWaitEE, rfc::TLS_HS_ENCRYPTED_EXTENSIONS);
+    assert(ok2 && st2 == tls::HsState.ClientWaitCertCr);
     print("FSM_CLIENT: ClientWaitEE -> ClientWaitCertCr");
 
-    let st3, ok3 = wing::can_client_transition(wing::HsState.ClientWaitCertCr, rfc::TLS_HS_CERTIFICATE);
-    assert(ok3 && st3 == wing::HsState.ClientWaitCV);
+    let st3, ok3 = tls::can_client_transition(tls::HsState.ClientWaitCertCr, rfc::TLS_HS_CERTIFICATE);
+    assert(ok3 && st3 == tls::HsState.ClientWaitCV);
     print("FSM_CLIENT: ClientWaitCertCr -> ClientWaitCV");
 
-    let st4, ok4 = wing::can_client_transition(wing::HsState.ClientWaitCV, rfc::TLS_HS_CERTIFICATE_VERIFY);
-    assert(ok4 && st4 == wing::HsState.ClientWaitFinished);
+    let st4, ok4 = tls::can_client_transition(tls::HsState.ClientWaitCV, rfc::TLS_HS_CERTIFICATE_VERIFY);
+    assert(ok4 && st4 == tls::HsState.ClientWaitFinished);
     print("FSM_CLIENT: ClientWaitCV -> ClientWaitFinished");
 
-    let st5, ok5 = wing::can_client_transition(wing::HsState.ClientWaitFinished, rfc::TLS_HS_FINISHED);
-    assert(ok5 && st5 == wing::HsState.Connected);
+    let st5, ok5 = tls::can_client_transition(tls::HsState.ClientWaitFinished, rfc::TLS_HS_FINISHED);
+    assert(ok5 && st5 == tls::HsState.Connected);
     print("FSM_CLIENT: ClientWaitFinished -> Connected");
 
     // 2. Illegal handshake transition: unexpected Finished in ClientWaitSH
-    let _, ok_inv = wing::can_client_transition(wing::HsState.ClientWaitSH, rfc::TLS_HS_FINISHED);
+    let _, ok_inv = tls::can_client_transition(tls::HsState.ClientWaitSH, rfc::TLS_HS_FINISHED);
     assert(!ok_inv);
     print("ILLEGAL_TRANSITION: REJECTED");
 
     // 3. HelloRetryRequest detection & synthetic message_hash compression (RFC 8446 §4.4.1)
-    assert(wing::is_hello_retry_request(rfc::HRR_RANDOM));
+    assert(tls::is_hello_retry_request(rfc::HRR_RANDOM));
     var arbitrary_rand: u8[32] = [0x55; 32];
-    assert(!wing::is_hello_retry_request(arbitrary_rand));
+    assert(!tls::is_hello_retry_request(arbitrary_rand));
     print("HRR_RANDOM_DETECTION: OK");
 
     let ch1_hash: u8[32] = [0xAA; 32];
     var synthetic_msg: u8[36] = [0; 36];
-    let written, ok_comp = wing::compress_hrr_transcript(32, ch1_hash[..], synthetic_msg[..]);
+    let written, ok_comp = tls::compress_hrr_transcript(32, ch1_hash[..], synthetic_msg[..]);
     assert(ok_comp && written == 36);
     assert(synthetic_msg[0] == 0xFE); // message_hash pseudo-handshake type
     print("SYNTHETIC_MESSAGE_HASH: OK");
@@ -98,17 +98,17 @@ fn run_01_verify_tls_handshake_wire() {
     print("TLS_RECORD_VERSION_BAN: ALERT_70");
 
     // 7. Regression: Server FSM transition coverage & illegal transition rejection (RFC 8446 §A.2)
-    let sst1, sok1 = wing::can_server_transition(wing::HsState.ServerWaitCH, rfc::TLS_HS_CLIENT_HELLO);
-    assert(sok1 && sst1 == wing::HsState.ServerWaitFinished);
-    let _, sok_bad = wing::can_server_transition(wing::HsState.ServerWaitCH, rfc::TLS_HS_FINISHED);
+    let sst1, sok1 = tls::can_server_transition(tls::HsState.ServerWaitCH, rfc::TLS_HS_CLIENT_HELLO);
+    assert(sok1 && sst1 == tls::HsState.ServerWaitFinished);
+    let _, sok_bad = tls::can_server_transition(tls::HsState.ServerWaitCH, rfc::TLS_HS_FINISHED);
     assert(!sok_bad);
     print("FSM_SERVER: OK");
 
     // 8. Regression: CRL 16-byte (128-bit) serial number revocation must not be silently dropped (RFC 5280 §4.1.2.2)
     var crl_16b_serial: u8[>..] = [];
     assert(wire_kit::parse_hex("0102030405060708090a0b0c0d0e0f10", crl_16b_serial));
-    var crl_out = wing::ParsedCrl { .. };
-    let ok_crl_16b = wing::parse_crl_entry_serial(crl_16b_serial[..], crl_out);
+    var crl_out = tls::ParsedCrl { .. };
+    let ok_crl_16b = tls::parse_crl_entry_serial(crl_16b_serial[..], crl_out);
     assert(!ok_crl_16b || crl_out.serials.len == 1);
     print("CRL_128BIT_SERIAL_HANDLED: OK");
 
@@ -179,17 +179,17 @@ fn run_01_verify_tls_handshake_wire() {
     assert(core::finish_u8_prefix(b_ocsp));
     assert(core::finish_u8_prefix(b_ocsp));
 
-    var parsed_ocsp_16 = wing::ParsedOcspResponse {};
-    assert(wing::parse_ocsp_response(b_ocsp.buf[..], parsed_ocsp_16));
+    var parsed_ocsp_16 = tls::ParsedOcspResponse {};
+    assert(tls::parse_ocsp_response(b_ocsp.buf[..], parsed_ocsp_16));
     let raw_leaf_16: u8[5] = [0x42, 0x30, 0x02, 0x05, 0x00];
-    var leaf_16 = wing::ParsedCert {
-        serial_number: wing::Span16 { offset: 0, length: 1 },
-        issuer_raw:    wing::Span16 { offset: 1, length: 4 },
+    var leaf_16 = tls::ParsedCert {
+        serial_number: tls::Span16 { offset: 0, length: 1 },
+        issuer_raw:    tls::Span16 { offset: 1, length: 4 },
         ..
     };
     let mid_ts = (parsed_ocsp_16.this_update + parsed_ocsp_16.next_update) / 2;
-    let ocsp_alert = wing::validate_ocsp_stapling(b_ocsp.buf[..], leaf_16, raw_leaf_16[..], mid_ts);
-    assert(ocsp_alert != wing::TlsAlert.CloseNotify);
+    let ocsp_alert = tls::validate_ocsp_stapling(b_ocsp.buf[..], leaf_16, raw_leaf_16[..], mid_ts);
+    assert(ocsp_alert != tls::Alert.CloseNotify);
     print("OCSP_MALFORMED_HASH_LEN_REJECTED: OK");
 
     // 10. Regression: Post-Quantum X25519+ML-KEM-768 parser must reject non-X25519 hybrid group 0x11EB (SecP256r1MLKEM768)
@@ -240,20 +240,20 @@ fn run_01_verify_tls_handshake_wire() {
     print("HPKE_OVERSIZED_INFO_REJECTED: OK");
 
     // 12. Regression: ECH outer extension rejects empty ciphertext (RFC 9849 §5)
-    let cs_ech = wing::EchCipherSuite { kdf_id: 1, aead_id: 1 };
+    let cs_ech = tls::EchCipherSuite { kdf_id: 1, aead_id: 1 };
     let enc_ech: u8[32] = [0; 32];
     var ech_buf: u8[..128] = [];
-    let ok_ech_empty = wing::build_ech_outer_extension(1, cs_ech, enc_ech, "", ech_buf);
+    let ok_ech_empty = tls::build_ech_outer_extension(1, cs_ech, enc_ech, "", ech_buf);
     assert(!ok_ech_empty);
     print("ECH_EMPTY_CIPHERTEXT_REJECTED: OK");
 
     // 13. Regression: CertificateRequest encoder must reject >29 sig_algorithms or enlarge ext_buf instead of truncating u8[..64]
     var sigs_40: u16[40]   = [0x0804; 40];
     var cr_out:  u8[..256] = [];
-    let ok_cr_40 = wing::encode_certificate_request(cr_out, "ctx", sigs_40[..]);
+    let ok_cr_40 = tls::encode_certificate_request(cr_out, "ctx", sigs_40[..]);
     if ok_cr_40 {
-        var parsed_cr = wing::CertificateRequestMsg { .. };
-        let ok_pcr = wing::parse_certificate_request(cr_out[..], true, parsed_cr);
+        var parsed_cr = tls::CertificateRequestMsg { .. };
+        let ok_pcr = tls::parse_certificate_request(cr_out[..], true, parsed_cr);
         assert(ok_pcr && parsed_cr.sig_algorithms.len == 40);
     }
     print("CERT_REQ_40_SIG_ALGS: OK");
@@ -283,37 +283,37 @@ fn run_01_verify_tls_handshake_wire() {
 
     // 17. Regression (TLS-BUG-002): extract_leaf_ocsp_extension must reject malformed CertificateEntry extension blocks
     let bad_cert_ext: u8[3] = [0x00, 0x05, 0xFF];
-    let _, ok_bad_ocsp_ext = wing::extract_leaf_ocsp_extension(bad_cert_ext[..]);
+    let _, ok_bad_ocsp_ext = tls::extract_leaf_ocsp_extension(bad_cert_ext[..]);
     assert(!ok_bad_ocsp_ext);
     print("LEAF_OCSP_EXT_REJECT_MALFORMED: OK");
 
     // 18. Regression (TLS-BUG-003): x509_verify_cert_signature must reject unhandled signature algorithm OIDs
     let fake_cert_raw: u8[16] = [0x30, 0x03, 0x02, 0x01, 0x01, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D, 0xAA, 0xBB];
-    let child_unhandled = wing::ParsedCert {
-        tbs_cert:        wing::Span16 { offset: 0, length: 5 },
-        sig_alg_oid:     wing::Span16 { offset: 5, length: 9 },
-        signature_value: wing::Span16 { offset: 14, length: 2 },
+    let child_unhandled = tls::ParsedCert {
+        tbs_cert:        tls::Span16 { offset: 0, length: 5 },
+        sig_alg_oid:     tls::Span16 { offset: 5, length: 9 },
+        signature_value: tls::Span16 { offset: 14, length: 2 },
         ..
     };
-    let parent_dummy = wing::ParsedCert {
-        spki_pubkey: wing::Span16 { offset: 0, length: 5 },
+    let parent_dummy = tls::ParsedCert {
+        spki_pubkey: tls::Span16 { offset: 0, length: 5 },
         ..
     };
-    let sig_alert = wing::x509_verify_cert_signature(child_unhandled, fake_cert_raw[..], parent_dummy, fake_cert_raw[..]);
-    assert(sig_alert != wing::TlsAlert.CloseNotify);
+    let sig_alert = tls::x509_verify_cert_signature(child_unhandled, fake_cert_raw[..], parent_dummy, fake_cert_raw[..]);
+    assert(sig_alert != tls::Alert.CloseNotify);
     print("X509_UNHANDLED_SIG_OID_REJECTED: OK");
 
     // 19. Regression (TLS-BUG-005 & TLS-BUG-006): ECH public_name leading/consecutive dots & KeyShare u16 wraparound
-    assert(!wing::validate_ech_public_name_bytes(".example.com"));
-    assert(!wing::validate_ech_public_name_bytes("a..b.com"));
-    assert(!wing::validate_ech_public_name_bytes("-bad.example.com"));
-    var early_ctrl = wing::EarlyDataController {
-        state:                   wing::EarlyDataState.Offered,
+    assert(!tls_internal::validate_ech_public_name_bytes(".example.com"));
+    assert(!tls_internal::validate_ech_public_name_bytes("a..b.com"));
+    assert(!tls_internal::validate_ech_public_name_bytes("-bad.example.com"));
+    var early_ctrl = tls::EarlyDataController {
+        state:                   tls::EarlyDataState.Offered,
         psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
         negotiated_cipher_suite: 0,
         ..
     };
-    assert(!wing::early_data_on_encrypted_extensions(early_ctrl, true));
+    assert(!tls::early_data_on_encrypted_extensions(early_ctrl, true));
     print("ECH_AND_EARLY_DATA_GUARDS: OK");
 
     // 20. Regression (TLS-BUG-007 & TLS-BUG-008): HPKE sequence overflow / unknown aead_id & StrikeRegister previous-epoch replay
@@ -332,41 +332,41 @@ fn run_01_verify_tls_handshake_wire() {
 
     // 21. Regression (TLS-BUG-010 & TLS-BUG-012): Header capacity guard & X.509 pathLenConstraint > 255 / duplicate extension rejection
     var tiny_hdr: u8[..4] = [];
-    assert(!wing::encode_tls_ciphertext_header(tiny_hdr, 23, 32));
-    var bc_cert = wing::ParsedCert { path_len_constraint: -1, .. };
+    assert(!tls::encode_ciphertext_header(tiny_hdr, 23, 32));
+    var bc_cert = tls::ParsedCert { path_len_constraint: -1, .. };
     let bc_ext_256: u8[9] = [0x30, 0x07, 0x01, 0x01, 0xFF, 0x02, 0x02, 0x01, 0x00];
     var bc_cur = core::cursor_from(bc_ext_256[..]);
-    wing::x509_parse_basic_constraints_ext(bc_cur, bc_cert);
+    tls_internal::x509_parse_basic_constraints_ext(bc_cur, bc_cert);
     assert(bc_cert.path_len_constraint == 255 || bc_cert.has_unsupported_critical);
     print("RECORD_AND_X509_BC_GUARDS: OK");
 
     // 22. Wave 1 Track D [TLSC-03]: Post-Handshake CertificateRequest non-empty context & PHA extension
     var pha_ext: u8[..8] = [];
-    wing::encode_post_handshake_auth_extension(pha_ext);
+    tls::encode_post_handshake_auth_extension(pha_ext);
     assert(pha_ext.len == 4 && pha_ext[0] == 0x00 && pha_ext[1] == 0x31 && pha_ext[2] == 0x00 && pha_ext[3] == 0x00);
     let sig_ed: u16[1] = [rfc::SIG_SCHEME_ED25519];
     var cr_empty_ctx: u8[..64] = [];
-    assert(wing::encode_certificate_request(cr_empty_ctx, "", sig_ed[..]));
-    var parsed_pha_cr = wing::CertificateRequestMsg { .. };
-    assert(!wing::parse_certificate_request(cr_empty_ctx[..], true, parsed_pha_cr));
-    assert(wing::parse_certificate_request(cr_empty_ctx[..], false, parsed_pha_cr));
+    assert(tls::encode_certificate_request(cr_empty_ctx, "", sig_ed[..]));
+    var parsed_pha_cr = tls::CertificateRequestMsg { .. };
+    assert(!tls::parse_certificate_request(cr_empty_ctx[..], true, parsed_pha_cr));
+    assert(tls::parse_certificate_request(cr_empty_ctx[..], false, parsed_pha_cr));
     var cr_nonempty_ctx: u8[..64] = [];
-    assert(wing::encode_certificate_request(cr_nonempty_ctx, "pha-ctx-1", sig_ed[..]));
-    assert(wing::parse_certificate_request(cr_nonempty_ctx[..], true, parsed_pha_cr));
+    assert(tls::encode_certificate_request(cr_nonempty_ctx, "pha-ctx-1", sig_ed[..]));
+    assert(tls::parse_certificate_request(cr_nonempty_ctx[..], true, parsed_pha_cr));
     assert(parsed_pha_cr.context[..] == "pha-ctx-1");
     print("POST_HANDSHAKE_AUTH_CONTEXT_GUARD: OK");
 
     // 23. Wave 1 Track D [TLSC-06]: Stateless STEK Ticket Seal/Open & Dual-Key Rotation
-    var ring = wing::TlsTicketKeyRing {
+    var ring = tls::TicketKeyRing {
         keys: [
-            wing::TlsTicketStek {
+            tls::TicketStek {
                 key_name:     [0xAA, 0xBB, 0xCC, 0x01],
                 aead_key:     [0x11; 32],
                 created_sec:  1000,
                 lifetime_sec: 3600,
                 active:       true,
             },
-            wing::TlsTicketStek {
+            tls::TicketStek {
                 key_name:     [0xAA, 0xBB, 0xCC, 0x02],
                 aead_key:     [0x22; 32],
                 created_sec:  2000,
@@ -380,23 +380,23 @@ fn run_01_verify_tls_handshake_wire() {
     for i in 32 { psk_in.push((i + 1) as u8); }
     let ticket_iv: u8[12] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C];
     var sealed_ticket: u8[..128] = [];
-    assert(wing::seal_stateless_tls13_ticket(ring, psk_in, rfc::TLS_CIPHER_AES_128_GCM_SHA256, 1000000, ticket_iv, sealed_ticket));
+    assert(tls::seal_stateless_ticket(ring, psk_in, rfc::TLS_CIPHER_AES_128_GCM_SHA256, 1000000, ticket_iv, sealed_ticket));
     assert(sealed_ticket.len == 95);
     // Rotate active key to slot 1; ticket sealed under slot 0 must still open cleanly
     ring.current_idx = 1;
-    let opened_tkt, ok_open_tkt = wing::open_stateless_tls13_ticket(ring, sealed_ticket[..], 1005000);
+    let opened_tkt, ok_open_tkt = tls::open_stateless_ticket(ring, sealed_ticket[..], 1005000);
     assert(ok_open_tkt && opened_tkt.in_use && opened_tkt.cipher_suite == rfc::TLS_CIPHER_AES_128_GCM_SHA256);
     assert(core::ct_eq_bytes(opened_tkt.psk[..], psk_in[..]));
     // 48-byte SHA-384 PSK stateless ticket round-trip without truncation
     var psk_48: u8[..48] = [];
     for i in 48 { psk_48.push((0x80 + i) as u8); }
     var sealed_ticket_48: u8[..128] = [];
-    assert(wing::seal_stateless_tls13_ticket(ring, psk_48, rfc::TLS_CIPHER_AES_256_GCM_SHA384, 1000000, ticket_iv, sealed_ticket_48));
-    let opened_tkt_48, ok_open_48 = wing::open_stateless_tls13_ticket(ring, sealed_ticket_48[..], 1005000);
+    assert(tls::seal_stateless_ticket(ring, psk_48, rfc::TLS_CIPHER_AES_256_GCM_SHA384, 1000000, ticket_iv, sealed_ticket_48));
+    let opened_tkt_48, ok_open_48 = tls::open_stateless_ticket(ring, sealed_ticket_48[..], 1005000);
     assert(ok_open_48 && opened_tkt_48.psk.len == 48 && opened_tkt_48.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384);
     assert(core::ct_eq_bytes(opened_tkt_48.psk[..], psk_48[..]));
     // Expired ticket must be rejected
-    let _, ok_exp_tkt = wing::open_stateless_tls13_ticket(ring, sealed_ticket[..], 1000000 + 3600001);
+    let _, ok_exp_tkt = tls::open_stateless_ticket(ring, sealed_ticket[..], 1000000 + 3600001);
     assert(!ok_exp_tkt);
     print("STATELESS_STEK_ROTATION: OK");
 
@@ -419,30 +419,30 @@ fn run_01_verify_tls_handshake_wire() {
     core::append_u16_be(hrr_exts, 2);
     core::append_u16_be(hrr_exts, rfc::GROUP_X25519);
     // cookie (44) -> "stateless-hrr-cookie"
-    assert(wing::serialize_tls_cookie_extension(hrr_exts, "stateless-hrr-cookie"));
+    assert(tls::serialize_cookie_extension(hrr_exts, "stateless-hrr-cookie"));
     core::append_u16_be(hrr_body, hrr_exts.len as u16);
     hrr_body.append(hrr_exts[..]);
     core::append_u24_be(hrr_wire, hrr_body.len as u32);
     hrr_wire.append(hrr_body[..]);
 
-    var parsed_hrr = wing::ParsedServerHello { .. };
-    assert(wing::parse_live_server_hello(hrr_wire[..], parsed_hrr));
+    var parsed_hrr = tls::ParsedServerHello { .. };
+    assert(tls::parse_live_server_hello(hrr_wire[..], parsed_hrr));
     assert(parsed_hrr.is_hrr && parsed_hrr.selected_group == rfc::GROUP_X25519);
     assert(parsed_hrr.hrr_cookie[..] == "stateless-hrr-cookie");
     print("HRR_COOKIE_AND_GROUP_PARSE: OK");
 
     // 25. Wave 1 Track D [TLSMOD-004 & TLSMOD-007 & TLSMOD-008]: Dynamic Record Sizing, In-Place AEAD & Pre-Compressed Cert
-    assert(wing::TLS_SINGLE_MSS_PLAINTEXT_LEN == 1378);
-    assert(wing::TLS_DYNAMIC_RESIZE_THRESHOLD_BYTES == 65536);
+    assert(tls::SINGLE_MSS_PLAINTEXT_LEN == 1378);
+    assert(tls::DYNAMIC_RESIZE_THRESHOLD_BYTES == 65536);
     let rec_key: u8[16] = [0x33; 16];
     let rec_iv:  u8[12] = [0x44; 12];
     var rec_ct: u8[64] = [0; 64];
-    let sealed_n, _, ok_rec_seal = wing::tls_record_seal_aes128_gcm_into(
+    let sealed_n, _, ok_rec_seal = tls::record_seal_aes128_gcm_into(
         rec_key, rec_iv, 7, rfc::TLS_CONTENT_APPLICATION_DATA, "inplace-payload", rec_ct[..],
     );
     assert(ok_rec_seal && sealed_n == 5 + 15 + 1 + 16);
     var rec_pt: u8[64] = [0; 64];
-    let dec_n, dec_inner, _, ok_rec_dec = wing::tls_record_decrypt_aes128_gcm_into(
+    let dec_n, dec_inner, _, ok_rec_dec = tls::record_decrypt_aes128_gcm_into(
         rec_key, rec_iv, 7, rec_ct[0..5], rec_ct[5..sealed_n], rec_pt[..],
     );
     assert(ok_rec_dec && dec_n == 15 && dec_inner == rfc::TLS_CONTENT_APPLICATION_DATA);
@@ -451,30 +451,30 @@ fn run_01_verify_tls_handshake_wire() {
     let ch_rand: u8[32] = [0x11; 32];
     let ch_pub:  u8[32] = [0x22; 32];
     var ch_pay: u8[..1024] = [];
-    wing::build_tls13_client_hello_payload(
+    tls::build_client_hello_payload(
         ch_rand, ch_pub, "example.com", "h2", ch_pay, "", 0, false, "", "", "cookie123", true,
     );
     var ch_full: u8[..1028] = [];
     ch_full.push(rfc::TLS_HS_CLIENT_HELLO);
     core::append_u24_be(ch_full, ch_pay.len as u32);
     ch_full.append(ch_pay[..]);
-    let sel_comp = wing::select_server_cert_comp_algo(ch_full[..], rfc::CERT_COMPRESSION_BROTLI);
+    let sel_comp = tls::select_server_cert_comp_algo(ch_full[..], rfc::CERT_COMPRESSION_BROTLI);
     assert(sel_comp == rfc::CERT_COMPRESSION_BROTLI);
-    var srv_cfg = wing::TlsServerHandshakeConfig {
+    var srv_cfg = tls::ServerHandshakeConfig {
         compressed_cert_algo: rfc::CERT_COMPRESSION_BROTLI,
         ..
     };
     let _ = srv_cfg.cert_der.try_set("DUMMY_DER_CERT");
     let _ = srv_cfg.compressed_cert_data.try_set("COMPRESSED_BYTES");
     var comp_cert_hs: u8[..4096] = [];
-    assert(wing::encode_server_cert_or_compressed_msg(srv_cfg, sel_comp, comp_cert_hs));
+    assert(tls::encode_server_cert_or_compressed_msg(srv_cfg, sel_comp, comp_cert_hs));
     assert(comp_cert_hs[0] == rfc::TLS_HS_COMPRESSED_CERTIFICATE);
-    let exp_slot = wing::alloc_tls_cipher_slot();
+    let exp_slot = tls::alloc_cipher_slot();
     assert(exp_slot != 0xFFFF);
     var exp_out: u8[..256] = [];
-    assert(wing::tls_session_export_keying_material(exp_slot, "EXPORTER-Channel-Binding", "ctx", 32, exp_out));
+    assert(tls::session_export_keying_material(exp_slot, "EXPORTER-Channel-Binding", "ctx", 32, exp_out));
     assert(exp_out.len == 32);
-    wing::free_tls_cipher_slot(exp_slot);
+    tls::free_cipher_slot(exp_slot);
     print("DYNAMIC_RECORD_AND_COMPRESSED_CERT: OK");
 }
 
@@ -630,39 +630,39 @@ fn verify_tls_record_slice_and_bounds() {
         0x02, 0xDE, 0xAD,
     ];
     var cursor: i64 = 0;
-    let ctype, ver, rlen, hdr_alert, hdr_ok = wing::parse_tls_record_header_at(wire_bytes[..], cursor);
-    assert(hdr_ok && ctype == 0x17 && ver == 0x0303 && rlen == 5 && hdr_alert == wing::TlsAlert.CloseNotify);
+    let ctype, ver, rlen, hdr_alert, hdr_ok = tls::parse_record_header_at(wire_bytes[..], cursor);
+    assert(hdr_ok && ctype == 0x17 && ver == 0x0303 && rlen == 5 && hdr_alert == tls::Alert.CloseNotify);
     assert(cursor == 5);
 
     var b8:  u8  = 0;
     var b16: u16 = 0;
     var b24: u32 = 0;
     var b32: u32 = 0;
-    assert(wing::slice_get_u8(wire_bytes[..], cursor, b8) && b8 == 0xAA);
-    assert(wing::slice_get_u16(wire_bytes[..], cursor, b16) && b16 == 0x0102);
-    assert(wing::slice_get_u24(wire_bytes[..], cursor, b24) && b24 == 0x000102);
-    assert(wing::slice_get_u32(wire_bytes[..], cursor, b32) && b32 == 0x01020304);
-    let sub8, ok_s8 = wing::slice_get_u8_length_prefixed(wire_bytes[..], cursor);
+    assert(tls::slice_get_u8(wire_bytes[..], cursor, b8) && b8 == 0xAA);
+    assert(tls::slice_get_u16(wire_bytes[..], cursor, b16) && b16 == 0x0102);
+    assert(tls::slice_get_u24(wire_bytes[..], cursor, b24) && b24 == 0x000102);
+    assert(tls::slice_get_u32(wire_bytes[..], cursor, b32) && b32 == 0x01020304);
+    let sub8, ok_s8 = tls::slice_get_u8_length_prefixed(wire_bytes[..], cursor);
     assert(ok_s8 && sub8.len == 2 && cursor == 18);
 
     var r_cursor: i64 = 5;
-    let r_b8, ok_r8 = wing::slice_read_u8(wire_bytes[..], r_cursor);
+    let r_b8, ok_r8 = tls::slice_read_u8(wire_bytes[..], r_cursor);
     assert(ok_r8 && r_b8 == 0xAA && r_cursor == 6);
-    let r_b16, ok_r16 = wing::slice_read_u16(wire_bytes[..], r_cursor);
+    let r_b16, ok_r16 = tls::slice_read_u16(wire_bytes[..], r_cursor);
     assert(ok_r16 && r_b16 == 0x0102 && r_cursor == 8);
-    let r_b24, ok_r24 = wing::slice_read_u24(wire_bytes[..], r_cursor);
+    let r_b24, ok_r24 = tls::slice_read_u24(wire_bytes[..], r_cursor);
     assert(ok_r24 && r_b24 == 0x000102 && r_cursor == 11);
-    let r_b32, ok_r32 = wing::slice_read_u32(wire_bytes[..], r_cursor);
+    let r_b32, ok_r32 = tls::slice_read_u32(wire_bytes[..], r_cursor);
     assert(ok_r32 && r_b32 == 0x01020304 && r_cursor == 15);
 
     let pfx16: u8[4] = [0x00, 0x02, 0xBE, 0xEF];
     var c16: i64 = 0;
-    let sub16, ok_s16 = wing::slice_get_u16_length_prefixed(pfx16[..], c16);
+    let sub16, ok_s16 = tls::slice_get_u16_length_prefixed(pfx16[..], c16);
     assert(ok_s16 && sub16.len == 2 && c16 == 4);
 
     let pfx24: u8[5] = [0x00, 0x00, 0x02, 0xCA, 0xFE];
     var c24: i64 = 0;
-    let sub24, ok_s24 = wing::slice_get_u24_length_prefixed(pfx24[..], c24);
+    let sub24, ok_s24 = tls::slice_get_u24_length_prefixed(pfx24[..], c24);
     assert(ok_s24 && sub24.len == 2 && c24 == 5);
 
     var bc = core::cursor_from(pfx24[..]);
@@ -678,7 +678,7 @@ fn verify_tls_record_slice_and_bounds() {
     let iv:       u8[12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
     let hdr:      u8[5]  = [0x17, 0x03, 0x03, 0x00, 0x15];
     let inner_pt: u8[5]  = [0x70, 0x69, 0x6E, 0x67, 0x17]; // "ping" + ContentType 0x17
-    let nonce, ok_n = wing::compute_record_nonce(iv, 0);
+    let nonce, ok_n = tls::compute_record_nonce(iv, 0);
     assert(ok_n);
 
     var payload: u8[21] = [0; 21];
@@ -687,21 +687,21 @@ fn verify_tls_record_slice_and_bounds() {
     for i in 16 { payload[5 + i] = rec_tag[i]; }
 
     var plain_buf: u8[64] = [0; 64];
-    let plain_len, inner_type, dec_alert, dec_ok = wing::tls_record_decrypt_aes128_gcm_into(
+    let plain_len, inner_type, dec_alert, dec_ok = tls::record_decrypt_aes128_gcm_into(
         key, iv, 0, hdr[..], payload[..], plain_buf[..],
     );
-    assert(dec_ok && plain_len == 4 && inner_type == 0x17 && dec_alert == wing::TlsAlert.CloseNotify);
+    assert(dec_ok && plain_len == 4 && inner_type == 0x17 && dec_alert == tls::Alert.CloseNotify);
 
     // Oversized ciphertext (> 16640 bytes) MUST fail closed with RecordOverflow (Invariant 13)
     var oversize_payload: u8[16641] = [0; 16641];
     var out_over:         u8[16384] = [0; 16384];
-    let _, _, over_alert, over_ok = wing::tls_record_decrypt_aes128_gcm_into(
+    let _, _, over_alert, over_ok = tls::record_decrypt_aes128_gcm_into(
         key, iv, 0, hdr[..], oversize_payload[..], out_over[..],
     );
     if over_ok {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP");
     }
-    assert(!over_ok && over_alert == wing::TlsAlert.RecordOverflow);
+    assert(!over_ok && over_alert == tls::Alert.RecordOverflow);
     print("TLS_RECORD_FUSION_OK: true");
 }
 
@@ -810,27 +810,27 @@ fn verify_x509_crl_binary_search() {
     assert(core::finish_u8_prefix(b)); // finish outer length
     b.offsets.pop();
 
-    var crl = wing::ParsedCrl { .. };
-    assert(wing::parse_x509_crl(b.buf[..], crl));
+    var crl = tls::ParsedCrl { .. };
+    assert(tls::parse_x509_crl(b.buf[..], crl));
     assert(crl.serial_count == 2);
     assert(crl.serials[0] == 0x0100);
     assert(crl.serials[1] == 0x0300);
-    assert(wing::crl_is_revoked(crl, 0x0100));
-    assert(wing::crl_is_revoked(crl, 0x0300));
-    assert(!wing::crl_is_revoked(crl, 99));
+    assert(tls::crl_is_revoked(crl, 0x0100));
+    assert(tls::crl_is_revoked(crl, 0x0300));
+    assert(!tls::crl_is_revoked(crl, 99));
 
     // Fill up to 128 serials and verify 129th returns false (Invariant 13)
-    var full_crl = wing::ParsedCrl { .. };
+    var full_crl = tls::ParsedCrl { .. };
     for i in 128 {
         let s = (200 - i) as u64;
-        assert(wing::crl_insert_serial(full_crl, s));
+        assert(tls::crl_insert_serial(full_crl, s));
     }
     assert(full_crl.serial_count == 128);
-    assert(wing::crl_is_revoked(full_crl, 73));
-    assert(wing::crl_is_revoked(full_crl, 200));
-    assert(!wing::crl_is_revoked(full_crl, 500));
+    assert(tls::crl_is_revoked(full_crl, 73));
+    assert(tls::crl_is_revoked(full_crl, 200));
+    assert(!tls::crl_is_revoked(full_crl, 500));
 
-    let overflow_ok = wing::crl_insert_serial(full_crl, 999);
+    let overflow_ok = tls::crl_insert_serial(full_crl, 999);
     if overflow_ok {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP");
     }
@@ -870,13 +870,13 @@ fn test_new_session_ticket_codec() {
     let ticket_body: const u8[:] = "encrypted_session_ticket_payload_bytes";
 
     // Encode NST with 1 hour lifetime (3600s), age_add = 0x12345678, max_early_data = 16384
-    let enc_ok = wing::encode_new_session_ticket(raw_nst, 3600, 0x12345678, nonce[..], ticket_body, 16384);
+    let enc_ok = tls::encode_new_session_ticket(raw_nst, 3600, 0x12345678, nonce[..], ticket_body, 16384);
     assert(enc_ok);
     assert(raw_nst.len > 0);
     print("NST_ENCODE: OK");
 
-    var nst = wing::NewSessionTicketMsg { .. };
-    let dec_ok = wing::parse_new_session_ticket(raw_nst[..], nst);
+    var nst = tls::NewSessionTicketMsg { .. };
+    let dec_ok = tls::parse_new_session_ticket(raw_nst[..], nst);
     assert(dec_ok);
     assert(nst.ticket_lifetime == 3600);
     assert(nst.ticket_age_add == 0x12345678);
@@ -929,8 +929,8 @@ fn test_ticket_age_validation() {
 }
 
 fn test_0rtt_controller_lifecycle() {
-    var ctrl = wing::EarlyDataController {
-        state:                   wing::EarlyDataState.Offered,
+    var ctrl = tls::EarlyDataController {
+        state:                   tls::EarlyDataState.Offered,
         max_early_data_size:     1000,
         psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
         negotiated_cipher_suite: rfc::TLS_CIPHER_AES_128_GCM_SHA256,
@@ -938,31 +938,31 @@ fn test_0rtt_controller_lifecycle() {
     };
 
     // Send 500 bytes of early data (under 1000 limit)
-    assert(wing::early_data_record_sent(ctrl, 500));
+    assert(tls::early_data_record_sent(ctrl, 500));
     assert(ctrl.bytes_sent == 500);
 
     // Try sending 600 bytes (500 + 600 = 1100 > 1000 limit) -> MUST FAIL
-    assert(!wing::early_data_record_sent(ctrl, 600));
+    assert(!tls::early_data_record_sent(ctrl, 600));
     assert(ctrl.bytes_sent == 500);
     print("0RTT_SIZE_LIMIT_ENFORCED: OK");
 
     // Server accepts early data in EncryptedExtensions with matching cipher
-    assert(wing::early_data_on_encrypted_extensions(ctrl, true));
-    assert(ctrl.state == wing::EarlyDataState.Accepted);
-    assert(wing::early_data_can_send_eoed(ctrl));
+    assert(tls::early_data_on_encrypted_extensions(ctrl, true));
+    assert(ctrl.state == tls::EarlyDataState.Accepted);
+    assert(tls::early_data_can_send_eoed(ctrl));
     print("0RTT_ACCEPTED_LIFECYCLE: OK");
 
     // Test OpenSSL Bug #31406: Cipher mismatch between PSK and server selection MUST be rejected
-    var ctrl_mismatch = wing::EarlyDataController {
-        state:                   wing::EarlyDataState.Offered,
+    var ctrl_mismatch = tls::EarlyDataController {
+        state:                   tls::EarlyDataState.Offered,
         max_early_data_size:     1000,
         psk_cipher_suite:        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
         negotiated_cipher_suite: rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
         ..
     };
-    let accepted = wing::early_data_on_encrypted_extensions(ctrl_mismatch, true);
+    let accepted = tls::early_data_on_encrypted_extensions(ctrl_mismatch, true);
     assert(!accepted);
-    assert(ctrl_mismatch.state == wing::EarlyDataState.Rejected);
+    assert(ctrl_mismatch.state == tls::EarlyDataState.Rejected);
     assert(ctrl_mismatch.keys_discarded);
     print("0RTT_CIPHER_MISMATCH_REJECTED: OK");
 }
@@ -1004,19 +1004,19 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     // Malformed 1-byte ALPN extension MUST be rejected (return false)
     let malformed_alpn_1b: u8[1] = [0x00];
     var out_alpn: u8[..32] = [];
-    let ok1 = wing::select_server_alpn_from_ext(malformed_alpn_1b[..], "h2", out_alpn);
+    let ok1 = tls::select_server_alpn_from_ext(malformed_alpn_1b[..], "h2", out_alpn);
     assert(!ok1); // MUST fail on malformed 1-byte ALPN extension!
     print("TLS_ALPN_REJECT_MALFORMED_1B: OK");
 
     // Malformed 2-byte ALPN extension MUST also be rejected (empty list length)
     let malformed_alpn_2b: u8[2] = [0x00, 0x00];
-    let ok2 = wing::select_server_alpn_from_ext(malformed_alpn_2b[..], "h2", out_alpn);
+    let ok2 = tls::select_server_alpn_from_ext(malformed_alpn_2b[..], "h2", out_alpn);
     assert(!ok2); // MUST fail on malformed 2-byte ALPN extension!
     print("TLS_ALPN_REJECT_MALFORMED_2B: OK");
 
     // Valid ALPN extension with "h2" (len=2: 0x00, 0x03, 0x02, 'h', '2') MUST succeed
     let valid_alpn: u8[5] = [0x00, 0x03, 0x02, 'h', '2'];
-    let ok3 = wing::select_server_alpn_from_ext(valid_alpn[..], "h2", out_alpn);
+    let ok3 = tls::select_server_alpn_from_ext(valid_alpn[..], "h2", out_alpn);
     assert(ok3);
     assert(out_alpn == "h2");
     print("TLS_ALPN_ACCEPT_VALID: OK");
@@ -1024,12 +1024,12 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     // ---- 2. Bug 2: encode_key_update bounded array truncation (GOOSE-BUG-2) ----
     // Zero-capacity destination buffer MUST cause encode_key_update to fail closed (false)
     var zero_buf: u8[..0] = [];
-    let ok_ku_fail = wing::encode_key_update(zero_buf, 0);
+    let ok_ku_fail = tls::encode_key_update(zero_buf, 0);
     assert(!ok_ku_fail); // MUST fail closed when buffer has no remaining capacity!
     print("TLS_KEY_UPDATE_REJECT_NOCAP: OK");
 
     var normal_buf: u8[..4] = [];
-    let ok_ku_succ = wing::encode_key_update(normal_buf, 0);
+    let ok_ku_succ = tls::encode_key_update(normal_buf, 0);
     assert(ok_ku_succ);
     assert(normal_buf.len == 1 && normal_buf[0] == 0);
     print("TLS_KEY_UPDATE_ACCEPT_VALID: OK");
@@ -1038,11 +1038,11 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     // Outer content type in TLS 1.3 TLSCiphertext is strictly application_data (0x17).
     // ChangeCipherSpec (0x14) is an unencrypted record and MUST NOT be accepted as ciphertext header!
     var hdr_buf: u8[..16] = [];
-    let ok_ccs_hdr = wing::encode_tls_ciphertext_header(hdr_buf, rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 32);
+    let ok_ccs_hdr = tls::encode_ciphertext_header(hdr_buf, rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 32);
     assert(!ok_ccs_hdr); // MUST reject ChangeCipherSpec as ciphertext header!
     print("TLS_CIPHERTEXT_HDR_REJECT_CCS: OK");
 
-    let ok_app_hdr = wing::encode_tls_ciphertext_header(hdr_buf, rfc::TLS_CONTENT_APPLICATION_DATA, 32);
+    let ok_app_hdr = tls::encode_ciphertext_header(hdr_buf, rfc::TLS_CONTENT_APPLICATION_DATA, 32);
     assert(ok_app_hdr);
     print("TLS_CIPHERTEXT_HDR_ACCEPT_APP: OK");
 
@@ -1081,13 +1081,13 @@ fn run_04_rfc_repro_tls_bug_fixes() {
         rfc::TLS_EXT_KEY_SHARE,
     ];
     var outer_ext_wire: u8[..64] = [];
-    assert(wing::encode_ech_outer_extensions(outer_ext_wire, outer_exts[..]));
+    assert(tls::encode_ech_outer_extensions(outer_ext_wire, outer_exts[..]));
     assert(outer_ext_wire.len == 11);
     assert(outer_ext_wire[0] == 0xFD && outer_ext_wire[1] == 0x00 && outer_ext_wire[4] == 6);
 
     let inner_rand: u8[32] = [0x33; 32];
     var ch_inner_buf: u8[..512] = [];
-    assert(wing::build_encoded_client_hello_inner(
+    assert(tls::build_encoded_client_hello_inner(
         ch_inner_buf, inner_rand, "secret.example.com", "h2", outer_exts[..], 64,
     ));
     assert(ch_inner_buf.len > 0 && (ch_inner_buf.len & 31) == 0);
@@ -1097,17 +1097,17 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     sh_wire[1] = 0x00;
     sh_wire[2] = 0x00;
     sh_wire[3] = 44;
-    let confirm1, ok_conf1 = wing::compute_ech_accept_confirmation(inner_rand, ch_inner_buf[..], sh_wire[..], false);
+    let confirm1, ok_conf1 = tls::compute_ech_accept_confirmation(inner_rand, ch_inner_buf[..], sh_wire[..], false);
     assert(ok_conf1);
 
     // Mutating ServerHello.random[24..32] (sh_wire[30..38]) MUST produce the identical confirmation
     var sh_wire2 = sh_wire;
     core::ct_copy_bytes(sh_wire2[30..38], confirm1[..]);
-    let confirm2, ok_conf2 = wing::compute_ech_accept_confirmation(inner_rand, ch_inner_buf[..], sh_wire2[..], false);
+    let confirm2, ok_conf2 = tls::compute_ech_accept_confirmation(inner_rand, ch_inner_buf[..], sh_wire2[..], false);
     assert(ok_conf2 && confirm1 == confirm2);
-    assert(wing::verify_ech_acceptance_confirmation(sh_wire2[30..38], confirm2));
+    assert(tls::verify_ech_acceptance_confirmation(sh_wire2[30..38], confirm2));
 
-    let hrr_confirm, ok_hrr_conf = wing::compute_ech_accept_confirmation(inner_rand, ch_inner_buf[..], sh_wire[..], true);
+    let hrr_confirm, ok_hrr_conf = tls::compute_ech_accept_confirmation(inner_rand, ch_inner_buf[..], sh_wire[..], true);
     assert(ok_hrr_conf && hrr_confirm != confirm1);
     print("TLS_ECH_CONFIRMATION_OK: true");
 
@@ -1227,10 +1227,10 @@ fn run_04_rfc_repro_tls_bug_fixes() {
 fn test_bug1_x509_empty_sig_and_unsigned_ocsp_crl() {
     let seed: u8[32] = [0x42; 32];
     var cert_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(seed, "example.com", "example.com", "127.0.0.1", cert_der));
+    assert(tls::build_test_ed25519_cert_der(seed, "example.com", "example.com", "127.0.0.1", cert_der));
 
-    var valid_parsed = wing::ParsedCert { .. };
-    assert(wing::parse_x509_certificate(cert_der[..], valid_parsed));
+    var valid_parsed = tls::ParsedCert { .. };
+    assert(tls::parse_x509_certificate(cert_der[..], valid_parsed));
 
     // Forge certificate by replacing 64-byte signature BIT STRING (03 41 00 <64B>) with empty BIT STRING (03 01 00)
     // Header of cert_der is 4 bytes (0x30 0x82 hi lo), inner body is cert_der[4..orig_len].
@@ -1255,13 +1255,13 @@ fn test_bug1_x509_empty_sig_and_unsigned_ocsp_crl() {
     forged_der.push(0x01);
     forged_der.push(0x00);
 
-    var forged_parsed = wing::ParsedCert { .. };
-    let ok_parse_forged = wing::parse_x509_certificate(forged_der[..], forged_parsed);
-    let verify_alert = wing::x509_verify_cert_signature(
+    var forged_parsed = tls::ParsedCert { .. };
+    let ok_parse_forged = tls::parse_x509_certificate(forged_der[..], forged_parsed);
+    let verify_alert = tls::x509_verify_cert_signature(
         forged_parsed, forged_der[..], valid_parsed, cert_der[..],
     );
     assert(!ok_parse_forged);
-    assert(verify_alert == wing::TlsAlert.BadCertificate);
+    assert(verify_alert == tls::Alert.BadCertificate);
     print("BUG1_X509_EMPTY_SIG_REJECTED: OK");
 
     // BasicOCSPResponse with empty signature BIT STRING (03 01 00) MUST be rejected by parse_ocsp_response
@@ -1288,8 +1288,8 @@ fn test_bug1_x509_empty_sig_and_unsigned_ocsp_crl() {
         0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70, // signatureAlgorithm (Ed25519)
         0x03, 0x01, 0x00, // empty 0-byte signature BIT STRING
     ];
-    var ocsp_out = wing::ParsedOcspResponse { .. };
-    assert(!wing::parse_ocsp_response(unsigned_ocsp[..], ocsp_out));
+    var ocsp_out = tls::ParsedOcspResponse { .. };
+    assert(!tls::parse_ocsp_response(unsigned_ocsp[..], ocsp_out));
     print("BUG1_UNSIGNED_OCSP_REJECTED: OK");
 
     // Unsigned CRL (CertificateList missing outer signatureAlgorithm and signatureValue) MUST be rejected
@@ -1300,15 +1300,15 @@ fn test_bug1_x509_empty_sig_and_unsigned_ocsp_crl() {
         0x30, 0x06, 0x31, 0x04, 0x30, 0x02, 0x06, 0x00, // issuer
         0x17, 0x0D, '2', '5', '0', '1', '0', '1', '0', '0', '0', '0', '0', '0', 'Z',
     ];
-    var crl_out = wing::ParsedCrl { .. };
-    assert(!wing::parse_x509_crl(unsigned_crl[..], crl_out));
+    var crl_out = tls::ParsedCrl { .. };
+    assert(!tls::parse_x509_crl(unsigned_crl[..], crl_out));
     print("BUG1_UNSIGNED_CRL_REJECTED: OK");
 }
 
 fn test_bug2_x509_malformed_extensions_bypass() {
     let seed: u8[32] = [0x42; 32];
     var cert_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(seed, "example.com", "example.com", "127.0.0.1", cert_der));
+    assert(tls::build_test_ed25519_cert_der(seed, "example.com", "example.com", "127.0.0.1", cert_der));
 
     // Locate [3] EXPLICIT extensions tag (0xA3) inside tbsCertificate and corrupt the inner SEQUENCE header
     // or first extension SEQUENCE tag so read_cert_extensions breaks early before critical extensions.
@@ -1324,8 +1324,8 @@ fn test_bug2_x509_malformed_extensions_bypass() {
     // Corrupt first extension tag inside Extensions SEQUENCE from 0x30 (SEQUENCE) to 0x05 (NULL)
     corrupted[a3_idx + 4] = 0x05;
 
-    var parsed_corrupt = wing::ParsedCert { .. };
-    let ok_parse = wing::parse_x509_certificate(corrupted[..], parsed_corrupt);
+    var parsed_corrupt = tls::ParsedCert { .. };
+    let ok_parse = tls::parse_x509_certificate(corrupted[..], parsed_corrupt);
     assert(!ok_parse);
     print("BUG2_X509_MALFORMED_EXT_REJECTED: OK");
 }
@@ -1339,14 +1339,14 @@ fn test_bug3_handshake_forbidden_extensions_and_ch_rules() {
         0x00, 0x1D,
     ];
     var neg_alpn: u8[..32] = [];
-    assert(!wing::parse_encrypted_extensions_alpn(ee_with_key_share[..], neg_alpn));
+    assert(!tls::parse_encrypted_extensions_alpn(ee_with_key_share[..], neg_alpn));
     print("BUG3_EE_FORBIDDEN_EXT_REJECTED: OK");
 
     // 2. ServerHello containing forbidden ALPN extension (0x00, 0x10) MUST be rejected (RFC 8446 §4.2 Table 2)
     let srv_rand: u8[32] = [0x11; 32];
     let srv_pub:  u8[32] = [0x22; 32];
     var sh_payload: u8[..512] = [];
-    wing::build_tls13_server_hello_payload(srv_rand, "", srv_pub, sh_payload, false);
+    tls::build_server_hello_payload(srv_rand, "", srv_pub, sh_payload, false);
     // Append forbidden ALPN extension (00 10 00 05 00 03 02 'h' '2') into ServerHello extensions block
     // In build_tls13_server_hello_payload: ver(2) + rand(32) + sid(1) + cs(2) + comp(1) = 38, then ext_total_len(2) at 38..40
     let old_ext_len = core::read_be_u16(sh_payload[..], 38);
@@ -1366,14 +1366,14 @@ fn test_bug3_handshake_forbidden_extensions_and_ch_rules() {
     var out_grp:   u16        = 0;
     var out_share: u8[..2048] = [];
     var out_psk = false;
-    assert(!wing::parse_server_hello_or_hrr(sh_msg[..], out_cs, out_hrr, out_grp, out_share, out_psk));
+    assert(!tls::parse_server_hello_or_hrr(sh_msg[..], out_cs, out_hrr, out_grp, out_share, out_psk));
     print("BUG3_SH_FORBIDDEN_EXT_REJECTED: OK");
 
     // 3. ClientHello with non-null legacy_compression_methods ([0x01]) MUST be rejected by server (RFC 8446 §4.1.2)
     let cli_rand: u8[32] = [0x33; 32];
     let cli_pub:  u8[32] = [0x44; 32];
     var ch_payload: u8[..512] = [];
-    wing::build_tls13_client_hello_payload(cli_rand, cli_pub, "example.com", "h2", ch_payload);
+    tls::build_client_hello_payload(cli_rand, cli_pub, "example.com", "h2", ch_payload);
     // In build_tls13_client_hello_payload: ver(2) + rand(32) + sid_len(1) + sid(32) + cs_len(2) + cs(6) + comp_len(1) + comp_byte(1 at idx 76)
     ch_payload[76] = 0x01; // non-zero compression method (DEFLATE)
     var ch_msg: u8[..512] = [];
@@ -1386,89 +1386,89 @@ fn test_bug3_handshake_forbidden_extensions_and_ch_rules() {
     var srv_alpn: u8[..32] = [];
     var srv_psk_res = false;
     var srv_psk_sec: u8[32] = [0; 32];
-    assert(!wing::parse_client_hello_for_server(
+    assert(!tls::parse_client_hello_for_server(
         ch_msg[..], "h2", srv_sid, srv_cpub, srv_alpn, srv_psk_res, srv_psk_sec,
     ));
     print("BUG3_CH_INVALID_COMPRESSION_REJECTED: OK");
 }
 
 fn test_bug4_sha384_nst_resumption_psk() {
-    wing::clear_tls13_session_tickets();
-    let slot_idx = wing::alloc_tls_cipher_slot();
+    tls::clear_session_tickets();
+    let slot_idx = tls::alloc_cipher_slot();
     assert(slot_idx != 0xFFFF);
     let idx = slot_idx as i64;
-    wing::g_tls_cipher_slots[idx].cipher_suite = rfc::TLS_CIPHER_AES_256_GCM_SHA384;
-    wing::g_tls_cipher_slots[idx].hash_id = 2;
-    wing::g_tls_cipher_slots[idx].hash_len = 48;
-    wing::g_tls_cipher_slots[idx].key_len = 32;
-    let _ = wing::g_tls_cipher_slots[idx].server_name.try_set("sha384.example.com");
+    tls::g_tls_cipher_slots[idx].cipher_suite = rfc::TLS_CIPHER_AES_256_GCM_SHA384;
+    tls::g_tls_cipher_slots[idx].hash_id = 2;
+    tls::g_tls_cipher_slots[idx].hash_len = 48;
+    tls::g_tls_cipher_slots[idx].key_len = 32;
+    let _ = tls::g_tls_cipher_slots[idx].server_name.try_set("sha384.example.com");
     for i in 48 {
-        wing::g_tls_cipher_slots[idx].resumption_secret[i] = (0xA0 + i) as u8;
+        tls::g_tls_cipher_slots[idx].resumption_secret[i] = (0xA0 + i) as u8;
     }
 
     var nst_body: u8[..128] = [];
     let nonce: u8[4] = [1, 2, 3, 4];
-    assert(wing::encode_new_session_ticket(nst_body, 3600, 0x12345678, nonce[..], "sha384-ticket-01", 0));
+    assert(tls::encode_new_session_ticket(nst_body, 3600, 0x12345678, nonce[..], "sha384-ticket-01", 0));
 
-    wing::tls_process_received_nst(idx, nst_body[..]);
+    tls::process_received_nst(idx, nst_body[..]);
 
     var out_ticket: u8[..256] = [];
     var out_psk:    u8[32]    = [0; 32];
     var out_age:    u32       = 0;
-    let found = wing::lookup_tls13_session_ticket("sha384.example.com", out_ticket, out_psk, out_age);
+    let found = tls::lookup_session_ticket("sha384.example.com", out_ticket, out_psk, out_age);
     assert(found);
     assert(out_ticket[..] == "sha384-ticket-01");
     var out_psk_full: u8[..48] = [];
     var out_cs:       u16      = 0;
-    assert(wing::lookup_tls13_session_ticket_full("sha384.example.com", out_ticket, out_psk_full, out_age, out_cs));
+    assert(tls::lookup_session_ticket_full("sha384.example.com", out_ticket, out_psk_full, out_age, out_cs));
     assert(out_psk_full.len == 48 && out_cs == rfc::TLS_CIPHER_AES_256_GCM_SHA384);
-    wing::free_tls_cipher_slot(slot_idx);
+    tls::free_cipher_slot(slot_idx);
     print("BUG4_SHA384_NST_PSK_CACHED: OK");
 }
 
 fn test_bug5_post_handshake_server_rejects_client_nst() {
-    let slot_idx = wing::alloc_tls_cipher_slot();
+    let slot_idx = tls::alloc_cipher_slot();
     assert(slot_idx != 0xFFFF);
     let idx = slot_idx as i64;
-    wing::g_tls_cipher_slots[idx].is_server = true;
+    tls::g_tls_cipher_slots[idx].is_server = true;
 
     var nst_body: u8[..128] = [];
     let nonce: u8[2] = [0x01, 0x02];
-    assert(wing::encode_new_session_ticket(nst_body, 3600, 100, nonce[..], "cli-sent-ticket", 0));
+    assert(tls::encode_new_session_ticket(nst_body, 3600, 100, nonce[..], "cli-sent-ticket", 0));
     var hs_msg: u8[..160] = [];
     hs_msg.push(rfc::TLS_HS_NEW_SESSION_TICKET);
     core::append_u24_be(hs_msg, nst_body.len as u32);
     hs_msg.append(nst_body[..]);
 
     // Server MUST NOT accept NewSessionTicket from client (RFC 8446 §4.6.1)
-    assert(!wing::tls_dispatch_post_handshake_record(-1, slot_idx, hs_msg[..]));
+    assert(!tls::dispatch_post_handshake_record(-1, slot_idx, hs_msg[..]));
     // Malformed post-handshake message MUST also return false
     let bad_post_hs: u8[3] = [rfc::TLS_HS_KEY_UPDATE, 0x00, 0x00];
-    assert(!wing::tls_dispatch_post_handshake_record(-1, slot_idx, bad_post_hs[..]));
+    assert(!tls::dispatch_post_handshake_record(-1, slot_idx, bad_post_hs[..]));
     // Fragmented plaintext handshake message (declared len 10, only 6 bytes received) MUST wait for next record
     let frag_hs: u8[6] = [rfc::TLS_HS_CLIENT_HELLO, 0x00, 0x00, 0x0A, 0x03, 0x03];
-    assert(!wing::has_complete_plaintext_handshake_msg(frag_hs[..]));
-    wing::free_tls_cipher_slot(slot_idx);
+    assert(!tls::has_complete_plaintext_handshake_msg(frag_hs[..]));
+    tls::free_cipher_slot(slot_idx);
     print("BUG5_SERVER_REJECTS_CLIENT_NST: OK");
 }
 
 fn test_tlsc01_tls_feature_must_staple() {
-    assert(wing::is_known_extension_oid(rfc::OID_TLS_FEATURE[..]));
+    assert(tls_internal::is_known_extension_oid(rfc::OID_TLS_FEATURE[..]));
     let feat_der: u8[5] = [0x30, 0x03, 0x02, 0x01, 0x05];
-    var cert = wing::ParsedCert { .. };
-    assert(wing::x509_parse_tls_feature_ext(feat_der[..], cert));
+    var cert = tls::ParsedCert { .. };
+    assert(tls_internal::x509_parse_tls_feature_ext(feat_der[..], cert));
     assert(cert.has_must_staple);
     assert(!cert.has_unsupported_critical);
 
     let empty_seq: u8[2] = [0x30, 0x00];
-    var bad_cert = wing::ParsedCert { .. };
-    assert(!wing::x509_parse_tls_feature_ext(empty_seq[..], bad_cert));
+    var bad_cert = tls::ParsedCert { .. };
+    assert(!tls_internal::x509_parse_tls_feature_ext(empty_seq[..], bad_cert));
     assert(bad_cert.has_unsupported_critical);
     print("TLSC01_MUST_STAPLE_EXT: OK");
 }
 
 fn test_tlsc02_sct_list_parsing() {
-    assert(wing::is_known_extension_oid(rfc::OID_CT_PRECERT_SCTS[..]));
+    assert(tls_internal::is_known_extension_oid(rfc::OID_CT_PRECERT_SCTS[..]));
     // Build a 49-byte v1 SerializedSCT:
     // version(1)=0, log_id(32)=0xAA.., timestamp(8)=0x0000018E00000001, ext_len(2)=0, hash(1)=4, sig(1)=3, sig_len(2)=2, sig=[0xDE,0xAD]
     var sct_bytes: u8[..64] = [];
@@ -1483,8 +1483,8 @@ fn test_tlsc02_sct_list_parsing() {
     ];
     sct_bytes.append(ts_and_tail[..]);
 
-    var single_sct = wing::ParsedSct { .. };
-    assert(wing::parse_sct_entry(sct_bytes[..], single_sct));
+    var single_sct = tls::ParsedSct { .. };
+    assert(tls::parse_sct_entry(sct_bytes[..], single_sct));
     assert(single_sct.version == 0);
     assert(single_sct.log_id[0] == 0xAA && single_sct.log_id[31] == 0xAA);
     assert(single_sct.timestamp_ms == 0x0000018E00000001);
@@ -1496,8 +1496,8 @@ fn test_tlsc02_sct_list_parsing() {
     core::append_u16_be(sct_list_raw, sct_bytes.len as u16);
     sct_list_raw.append(sct_bytes[..]);
 
-    var scts: wing::ParsedSct[..8] = [];
-    assert(wing::parse_sct_list(sct_list_raw[..], scts));
+    var scts: tls::ParsedSct[..8] = [];
+    assert(tls::parse_sct_list(sct_list_raw[..], scts));
     assert(scts.len == 1);
 
     // Dispatch via X.509 OCTET STRING wrapper
@@ -1506,64 +1506,64 @@ fn test_tlsc02_sct_list_parsing() {
     ext_oct.push(sct_list_raw.len as u8);
     ext_oct.append(sct_list_raw[..]);
     var ext_cur = core::cursor_from(ext_oct[..]);
-    var cert = wing::ParsedCert { .. };
-    wing::x509_dispatch_extension(ext_oct[..], rfc::OID_CT_PRECERT_SCTS[..], ext_cur, cert);
+    var cert = tls::ParsedCert { .. };
+    tls_internal::x509_dispatch_extension(ext_oct[..], rfc::OID_CT_PRECERT_SCTS[..], ext_cur, cert);
     assert(cert.has_sct_list && cert.sct_count == 1);
     print("TLSC02_SCT_LIST_PARSED: OK");
 }
 
 fn test_tlsc04_eku_parsing_and_enforcement() {
-    assert(wing::is_known_extension_oid(rfc::OID_EXT_KEY_USAGE[..]));
+    assert(tls_internal::is_known_extension_oid(rfc::OID_EXT_KEY_USAGE[..]));
     // SEQUENCE { id-kp-serverAuth, id-kp-clientAuth }
     let eku_srv_cli: u8[22] = [
         0x30, 0x14,
         0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01,
         0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02,
     ];
-    var cert_ok = wing::ParsedCert { .. };
-    assert(wing::x509_parse_eku_ext(eku_srv_cli[..], cert_ok));
+    var cert_ok = tls::ParsedCert { .. };
+    assert(tls_internal::x509_parse_eku_ext(eku_srv_cli[..], cert_ok));
     assert(cert_ok.has_eku);
     assert(cert_ok.eku_mask == (rfc::EKU_SERVER_AUTH | rfc::EKU_CLIENT_AUTH));
-    assert(wing::validate_end_entity_constraints(cert_ok) == wing::TlsAlert.CloseNotify);
+    assert(tls_internal::validate_end_entity_constraints(cert_ok) == tls::Alert.CloseNotify);
 
     // SEQUENCE { id-kp-OCSPSigning } -> leaf cert must fail end-entity TLS constraint check
     let eku_ocsp_only: u8[12] = [
         0x30, 0x0A,
         0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09,
     ];
-    var cert_ocsp = wing::ParsedCert { .. };
-    assert(wing::x509_parse_eku_ext(eku_ocsp_only[..], cert_ocsp));
+    var cert_ocsp = tls::ParsedCert { .. };
+    assert(tls_internal::x509_parse_eku_ext(eku_ocsp_only[..], cert_ocsp));
     assert(cert_ocsp.has_eku && cert_ocsp.eku_mask == rfc::EKU_OCSP_SIGNING);
-    assert(wing::validate_end_entity_constraints(cert_ocsp) == wing::TlsAlert.UnsupportedCertificate);
+    assert(tls_internal::validate_end_entity_constraints(cert_ocsp) == tls::Alert.UnsupportedCertificate);
 
     // Empty EKU SEQUENCE MUST be rejected
     let empty_eku: u8[2] = [0x30, 0x00];
-    var cert_empty = wing::ParsedCert { .. };
-    assert(!wing::x509_parse_eku_ext(empty_eku[..], cert_empty));
+    var cert_empty = tls::ParsedCert { .. };
+    assert(!tls_internal::x509_parse_eku_ext(empty_eku[..], cert_empty));
     print("TLSC04_EKU_ENFORCED: OK");
 }
 
 fn test_tlsc05_email_name_constraints() {
     // 1. Exact mailbox constraint (local part case-sensitive, host part case-insensitive)
-    assert(wing::match_email_name_constraint("alice@Example.COM", "alice@example.com"));
-    assert(!wing::match_email_name_constraint("Alice@example.com", "alice@example.com"));
+    assert(tls::match_email_name_constraint("alice@Example.COM", "alice@example.com"));
+    assert(!tls::match_email_name_constraint("Alice@example.com", "alice@example.com"));
 
     // 2. Leading-dot domain suffix constraint (.example.com)
-    assert(wing::match_email_name_constraint("bob@mail.example.com", ".example.com"));
-    assert(!wing::match_email_name_constraint("bob@example.com", ".example.com"));
+    assert(tls::match_email_name_constraint("bob@mail.example.com", ".example.com"));
+    assert(!tls::match_email_name_constraint("bob@example.com", ".example.com"));
 
     // 3. Exact host constraint after '@' (example.com)
-    assert(wing::match_email_name_constraint("carol@EXAMPLE.COM", "example.com"));
-    assert(!wing::match_email_name_constraint("carol@sub.example.com", "example.com"));
+    assert(tls::match_email_name_constraint("carol@EXAMPLE.COM", "example.com"));
+    assert(!tls::match_email_name_constraint("carol@sub.example.com", "example.com"));
 
     // 4. End-to-end SAN [1] + NameConstraints [1] evaluation
     let san_der: u8[19] = [
         0x30, 0x11,
         0x81, 0x0F, 'u', 's', 'e', 'r', '@', 's', 'u', 'b', '.', 'o', 'r', 'g', '.', 'u', 'k',
     ];
-    var sans: wing::SanEntry[..16] = [];
-    assert(wing::parse_san_extension(san_der[..], sans));
-    assert(sans.len == 1 && sans[0].san_type == wing::SanType.Email);
+    var sans: tls::SanEntry[..16] = [];
+    assert(tls::parse_san_extension(san_der[..], sans));
+    assert(sans.len == 1 && sans[0].san_type == tls::SanType.Email);
 
     let nc_permitted_der: u8[17] = [
         0x30, 0x0F,
@@ -1572,33 +1572,33 @@ fn test_tlsc05_email_name_constraints() {
         0x30, 0x09,
         0x81, 0x07, '.', 'o', 'r', 'g', '.', 'u', 'k',
     ];
-    var nc_list: wing::NameConstraintEntry[..16] = [];
-    assert(wing::parse_name_constraints(nc_permitted_der[..], nc_list));
-    assert(wing::check_name_constraints(nc_list, sans[0]));
+    var nc_list: tls::NameConstraintEntry[..16] = [];
+    assert(tls::parse_name_constraints(nc_permitted_der[..], nc_list));
+    assert(tls::check_name_constraints(nc_list, sans[0]));
 
     let nc_implicit_der: u8[15] = [
         0x30, 0x0D, 0xA0, 0x0B, 0x30, 0x09,
         0x81, 0x07, '.', 'o', 'r', 'g', '.', 'u', 'k',
     ];
-    var nc_imp: wing::NameConstraintEntry[..16] = [];
-    assert(wing::parse_name_constraints(nc_implicit_der[..], nc_imp));
-    assert(nc_imp.len == 1 && wing::check_name_constraints(nc_imp, sans[0]));
+    var nc_imp: tls::NameConstraintEntry[..16] = [];
+    assert(tls::parse_name_constraints(nc_implicit_der[..], nc_imp));
+    assert(nc_imp.len == 1 && tls::check_name_constraints(nc_imp, sans[0]));
     print("TLSC05_EMAIL_NAME_CONSTRAINTS: OK");
 }
 
 fn test_goose2rfc_tls_audit_regressions() {
     let hs_ovf: u8[5] = [0x16, 0x03, 0x03, 0x40, 0x01];
-    let _, _, _, al_ovf, ok_ovf = wing::parse_tls_record_header(hs_ovf[..]);
-    assert(!ok_ovf && al_ovf == wing::TlsAlert.RecordOverflow);
+    let _, _, _, al_ovf, ok_ovf = tls::parse_record_header(hs_ovf[..]);
+    assert(!ok_ovf && al_ovf == tls::Alert.RecordOverflow);
     let hs_zero: u8[5] = [0x16, 0x03, 0x03, 0x00, 0x00];
-    let _, _, _, al_z, ok_z = wing::parse_tls_record_header(hs_zero[..]);
-    assert(!ok_z && al_z == wing::TlsAlert.UnexpectedMessage);
+    let _, _, _, al_z, ok_z = tls::parse_record_header(hs_zero[..]);
+    assert(!ok_z && al_z == tls::Alert.UnexpectedMessage);
 
-    assert(!wing::validate_ech_public_name_bytes("example.123"));
-    assert(!wing::validate_ech_public_name_bytes("example.0x1a"));
+    assert(!tls_internal::validate_ech_public_name_bytes("example.123"));
+    assert(!tls_internal::validate_ech_public_name_bytes("example.0x1a"));
     var ext_mand: u8[6] = [0x80, 0x01, 0x00, 0x02, 0xAA, 0xBB];
     var cur_mand = core::cursor_from(ext_mand[..]);
-    assert(!wing::validate_ech_config_extensions(cur_mand));
+    assert(!tls::validate_ech_config_extensions(cur_mand));
 
     var dup_ks: u8[..80] = [0x00, 0x48];
     for _ in 2 {
@@ -1607,11 +1607,11 @@ fn test_goose2rfc_tls_audit_regressions() {
         for _ in 32 { dup_ks.push(0x42); }
     }
     var out_shares: u8[..4096] = [];
-    assert(!wing::parse_key_share_client_extension(dup_ks[..], out_shares));
+    assert(!tls::parse_key_share_client_extension(dup_ks[..], out_shares));
 
     let bad_cert_msg: u8[10] = [0x01, 0xAA, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0xFF, 0x00];
     var certs_out: const u8[:][..8] = [];
-    let _, ok_cert = wing::parse_tls13_certificate_chain_and_ocsp(bad_cert_msg[..], certs_out);
+    let _, ok_cert = tls::parse_certificate_chain_and_ocsp(bad_cert_msg[..], certs_out);
     assert(!ok_cert);
     print("GOOSE2RFC_TLS_AUDIT_REGRESSIONS: OK");
 }
@@ -1671,8 +1671,8 @@ fn run_06_rfc_repro_auth_tls_wire_edge() {
         0x00, 0x02,             // list_len = 2
         0x08, 0x07,             // ed25519
     ];
-    var cr1 = wing::CertificateRequestMsg { .. };
-    let ok_dup = wing::parse_certificate_request(cr_duplicate_sig_algs[..], false, cr1);
+    var cr1 = tls::CertificateRequestMsg { .. };
+    let ok_dup = tls::parse_certificate_request(cr_duplicate_sig_algs[..], false, cr1);
     assert(!ok_dup); // MUST REJECT duplicate extensions in CertificateRequest!
     print("TLS_CR_REJECT_DUPLICATE_EXT: OK");
 
@@ -1692,8 +1692,8 @@ fn run_06_rfc_repro_auth_tls_wire_edge() {
         0x00, 0x04,             // ext_len = 4
         0x00, 0x02, 0xAA, 0xBB, // dummy share data
     ];
-    var cr2 = wing::CertificateRequestMsg { .. };
-    let ok_forbidden_cr = wing::parse_certificate_request(cr_forbidden_key_share[..], false, cr2);
+    var cr2 = tls::CertificateRequestMsg { .. };
+    let ok_forbidden_cr = tls::parse_certificate_request(cr_forbidden_key_share[..], false, cr2);
     assert(!ok_forbidden_cr); // MUST REJECT forbidden extension in CertificateRequest!
     print("TLS_CR_REJECT_FORBIDDEN_EXT: OK");
 
@@ -1711,8 +1711,8 @@ fn run_06_rfc_repro_auth_tls_wire_edge() {
         0x00, 0x03,             // ext_len = 3
         0x00, 0x01, 0x00,       // authorities data
     ];
-    var nst1 = wing::NewSessionTicketMsg { .. };
-    let ok_nst_forbidden = wing::parse_new_session_ticket(nst_forbidden_ext[..], nst1);
+    var nst1 = tls::NewSessionTicketMsg { .. };
+    let ok_nst_forbidden = tls::parse_new_session_ticket(nst_forbidden_ext[..], nst1);
     assert(!ok_nst_forbidden); // MUST REJECT forbidden extension in NewSessionTicket!
     print("TLS_NST_REJECT_FORBIDDEN_EXT: OK");
 
@@ -1720,7 +1720,7 @@ fn run_06_rfc_repro_auth_tls_wire_edge() {
     // RFC 8446 Section 4.4.3: Certificate Verify - The digital signature is then computed over the concatenation of: 64 spaces, context string, separator 0x00, content to be signed.
     var transcript_32: u8[32]  = [0x01; 32];
     var msg_buf:       u8[160] = [0; 160];
-    let msg_len, ok_msg = wing::build_certificate_verify_message(true, transcript_32[..], msg_buf[..]);
+    let msg_len, ok_msg = tls::build_certificate_verify_message(true, transcript_32[..], msg_buf[..]);
     assert(ok_msg);
     assert(msg_len == 130);
 
@@ -1805,10 +1805,10 @@ fn test_akamai_regressions() {
     var dup_fp = fingerprint::akamai_wing_preset();
     dup_fp.pseudo_headers.clear();
     dup_fp.pseudo_headers.append("mmasp");
-    var hmap = wing::HeaderMap { .. };
+    var hmap = http::HeaderMap { .. };
     assert(dup_fp.order_pseudo_headers("GET", "example.com", "https", "/index", hmap));
     assert(hmap.entries.len == 4);
-    assert(wing::get_header(hmap, ":path") == "/index");
+    assert(http::get_header(hmap, ":path") == "/index");
 
     let expected_wing = fingerprint::akamai_wing_preset();
     var bad_wu = fingerprint::akamai_wing_preset();

@@ -56,22 +56,22 @@ fn test_client_ca_and_ssrf_facade() {
     ];
     var cert1_der: u8[..2048] = [];
     var cert2_der: u8[..2048] = [];
-    assert(wing::build_test_ed25519_cert_der(seed1, "ca1.wing.test", "ca1.wing.test", "", cert1_der));
-    assert(wing::build_test_ed25519_cert_der(seed2, "ca2.wing.test", "ca2.wing.test", "", cert2_der));
+    assert(tls::build_test_ed25519_cert_der(seed1, "ca1.wing.test", "ca1.wing.test", "", cert1_der));
+    assert(tls::build_test_ed25519_cert_der(seed2, "ca2.wing.test", "ca2.wing.test", "", cert2_der));
 
     var bundle_pem: u8[>..] = [];
     make_pem_block("CERTIFICATE", cert1_der[..], bundle_pem);
     make_pem_block("CERTIFICATE", cert2_der[..], bundle_pem);
 
-    var sess = wing::new_session(wing::SessionConfig { insecure_skip_verify: true, .. });
-    let cnt1, ok1 = wing::configure_session_tls_ca_pem(sess, bundle_pem[..]);
+    var sess = client::new_session(client::SessionConfig { insecure_skip_verify: true, .. });
+    let cnt1, ok1 = client::configure_session_tls_ca_pem(sess, bundle_pem[..]);
     assert(ok1 && cnt1 == 2 && sess.trust_store.anchors.len == 2);
     assert(!sess.insecure_skip_verify);
     assert(sess.ssrf_guard.deny_local_network);
 
     // Loopback test-harness mode sets deny_local_network = false without disabling CA verification.
-    var local_sess = wing::new_session(wing::SessionConfig { insecure_skip_verify: true, .. });
-    let cnt2, ok2 = wing::configure_session_tls_ca_pem(local_sess, bundle_pem[..], true);
+    var local_sess = client::new_session(client::SessionConfig { insecure_skip_verify: true, .. });
+    let cnt2, ok2 = client::configure_session_tls_ca_pem(local_sess, bundle_pem[..], true);
     assert(ok2 && cnt2 == 2 && !local_sess.insecure_skip_verify);
     assert(!local_sess.ssrf_guard.deny_local_network);
 
@@ -80,23 +80,23 @@ fn test_client_ca_and_ssrf_facade() {
 
     var ssrf_strict = sess.ssrf_guard;
     ssrf_strict.enabled = true;
-    assert(wing::validate_url_against_ssrf(parsed_local_url, ssrf_strict) != wing::RedirectError.None);
+    assert(client::validate_url_against_ssrf(parsed_local_url, ssrf_strict) != client::RedirectError.None);
 
     var ssrf_local = local_sess.ssrf_guard;
     ssrf_local.enabled = true;
-    assert(wing::validate_url_against_ssrf(parsed_local_url, ssrf_local) == wing::RedirectError.None);
+    assert(client::validate_url_against_ssrf(parsed_local_url, ssrf_local) == client::RedirectError.None);
 
     // Negative PEM / rollback cases on Session.
-    let c_empty, ok_empty = wing::configure_session_tls_ca_pem(sess, "");
+    let c_empty, ok_empty = client::configure_session_tls_ca_pem(sess, "");
     assert(!ok_empty && c_empty == 0 && sess.trust_store.anchors.len == 2);
     let bad_pem = "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n";
-    let c_bad, ok_bad = wing::configure_session_tls_ca_pem(sess, bad_pem);
+    let c_bad, ok_bad = client::configure_session_tls_ca_pem(sess, bad_pem);
     assert(!ok_bad && c_bad == 0 && sess.trust_store.anchors.len == 2);
 
     // File-backed trust anchor loading (positive via OS temp dir + negative/nonexistent).
-    let c_miss, ok_miss = wing::load_trust_anchors_pem_file(sess, "nonexistent_wing_ca_bundle.pem");
+    let c_miss, ok_miss = client::load_trust_anchors_pem_file(sess, "nonexistent_wing_ca_bundle.pem");
     assert(!ok_miss && c_miss == 0 && sess.trust_store.anchors.len == 2);
-    let c_empty_path, ok_empty_path = wing::load_trust_anchors_pem_file(sess, "");
+    let c_empty_path, ok_empty_path = client::load_trust_anchors_pem_file(sess, "");
     assert(!ok_empty_path && c_empty_path == 0 && sess.trust_store.anchors.len == 2);
 
     var tmp_dir: u8[>..] = [];
@@ -106,18 +106,18 @@ fn test_client_ca_and_ssrf_facade() {
         ca_path.append("/wing_engine_api_facade_test_ca.pem");
         assert(write_file_atomic(ca_path[..], bundle_pem[..]));
 
-        var file_sess = wing::new_session(wing::SessionConfig { insecure_skip_verify: true, .. });
-        let fc1, fok1 = wing::load_trust_anchors_pem_file(file_sess, ca_path[..]);
+        var file_sess = client::new_session(client::SessionConfig { insecure_skip_verify: true, .. });
+        let fc1, fok1 = client::load_trust_anchors_pem_file(file_sess, ca_path[..]);
         assert(fok1 && fc1 == 2 && file_sess.trust_store.anchors.len == 2);
         assert(!file_sess.insecure_skip_verify);
 
-        var direct_store = wing::TrustAnchorStore {};
-        let fc2, fok2 = wing::load_trust_anchors_pem_file(direct_store, ca_path[..]);
+        var direct_store = tls::TrustAnchorStore {};
+        let fc2, fok2 = tls::load_trust_anchors_pem_file(direct_store, ca_path[..]);
         assert(fok2 && fc2 == 2 && direct_store.anchors.len == 2);
 
         // Bad file contents MUST roll back existing anchors cleanly.
         assert(write_file_atomic(ca_path[..], bad_pem));
-        let fc_bad, fok_bad = wing::load_trust_anchors_pem_file(direct_store, ca_path[..]);
+        let fc_bad, fok_bad = tls::load_trust_anchors_pem_file(direct_store, ca_path[..]);
         assert(!fok_bad && fc_bad == 0 && direct_store.anchors.len == 2);
     }
 
@@ -144,24 +144,24 @@ fn test_wire_hpack_and_h2_facade() {
     let resp_pseudo, ok_respp = wire::make_h2_response_pseudo(204);
     assert(ok_reqp && ok_respp && resp_pseudo.status == 204 && resp_pseudo.has_status);
 
-    var req_hdrs = wing::HeaderMap {};
-    assert(wing::append_header(req_hdrs, "Content-Type", "application/json"));
-    wing::set_header(req_hdrs, "Authorization", "Bearer top-secret-token", true);
-    assert(wing::append_header(req_hdrs, "X-Trace-Id", "trace-42"));
+    var req_hdrs = http::HeaderMap {};
+    assert(http::append_header(req_hdrs, "Content-Type", "application/json"));
+    http::set_header(req_hdrs, "Authorization", "Bearer top-secret-token", true);
+    assert(http::append_header(req_hdrs, "X-Trace-Id", "trace-42"));
 
     var hpack_wire: u8[>..] = [];
     assert(wire::hpack_encode_header_block(enc, req_pseudo, req_hdrs, hpack_wire, true));
     assert(enc.blocks_encoded == 1 && enc.bytes_encoded == (hpack_wire.len as u64));
 
     var out_pseudo = wire::WireH2PseudoHeaders {};
-    var out_hdrs = wing::HeaderMap {};
+    var out_hdrs = http::HeaderMap {};
     let derr = wire::hpack_decode_block(dec, hpack_wire[..], out_pseudo, out_hdrs);
     assert(derr == rfc::H2_ERR_NO_ERROR);
     assert(out_pseudo.method[..] == "POST" && out_pseudo.scheme[..] == "https");
     assert(out_pseudo.authority[..] == "api.wing.test" && out_pseudo.path[..] == "/v1/items");
     assert(dec.blocks_decoded == 1 && dec.bytes_decoded == (hpack_wire.len as u64));
-    assert(wing::get_header(out_hdrs, "x-trace-id") == "trace-42");
-    assert(wing::get_header(out_hdrs, "authorization") == "Bearer top-secret-token");
+    assert(http::get_header(out_hdrs, "x-trace-id") == "trace-42");
+    assert(http::get_header(out_hdrs, "authorization") == "Bearer top-secret-token");
 
     // Truncated HPACK block MUST fail and roll back decoder counters and outputs.
     assert(hpack_wire.len > 1);

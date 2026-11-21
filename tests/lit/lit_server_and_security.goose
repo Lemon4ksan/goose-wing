@@ -16,27 +16,27 @@ import wire_kit from ".";
 // CHECK: === [1/8] verify_backpressure_fsm ===
 
 fn run_01_verify_backpressure_fsm() {
-    var bp = wing::BackpressureSlot { .. };
+    var bp = net::BackpressureSlot { .. };
     assert(!bp.is_active);
     assert(bp.len == 0);
 
     // Buffering zero-length must fail
-    assert(!wing::buffer_backpressure(bp, ""));
+    assert(!net::buffer_backpressure(bp, ""));
 
     // Buffering valid slice
     let msg: const u8[:] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
-    assert(wing::buffer_backpressure(bp, msg));
+    assert(net::buffer_backpressure(bp, msg));
     assert(bp.is_active);
     assert(bp.len == msg.len);
     assert(bp.offset == 0);
 
     // Verify drain simulation with invalid fd returns false
-    let drained, ok = wing::drain_backpressure(bp, -1);
+    let drained, ok = net::drain_backpressure(bp, -1);
     assert(!ok);
 
     // Manual offset advancement simulation
     bp.offset = msg.len;
-    let drained2, ok2 = wing::drain_backpressure(bp, -1);
+    let drained2, ok2 = net::drain_backpressure(bp, -1);
     // When offset >= len, drain resets slot and returns true
     assert(ok2);
     assert(!bp.is_active);
@@ -44,9 +44,9 @@ fn run_01_verify_backpressure_fsm() {
 
     // Verify large payload buffering up to 16 KB
     var large_msg: u8[8192] = ['X'; 8192];
-    assert(wing::buffer_backpressure(bp, large_msg[..]));
+    assert(net::buffer_backpressure(bp, large_msg[..]));
     assert(bp.len == 8192);
-    wing::clear_backpressure_slot(bp);
+    net::clear_backpressure_slot(bp);
     assert(!bp.is_active);
 
     print("BACKPRESSURE_FSM: OK");
@@ -64,15 +64,15 @@ fn run_01_verify_backpressure_fsm() {
 
 fn scan_disposition_crlf(buf: const u8[:]) -> i32 {
     var out_disp: u8[>..] = [];
-    if !wing::format_content_disposition(buf, "", out_disp) {
+    if !http::format_content_disposition(buf, "", out_disp) {
         return 1; // Rejected CRLF injection
     }
     return 0;
 }
 
 fn scan_tls_inner_type(buf: const u8[:]) -> i32 {
-    let _, inner_type, alert = wing::unpack_tls_inner_plaintext(buf);
-    if alert == wing::TlsAlert.UnexpectedMessage {
+    let _, inner_type, alert = tls::unpack_inner_plaintext(buf);
+    if alert == tls::Alert.UnexpectedMessage {
         return -2;
     }
     if inner_type == 23 {
@@ -181,22 +181,22 @@ fn test_cve_2026_78667_range_header_flood() {
     var oversized: u8[1100] = ['a'; 1100];
     oversized[0] = 'b'; oversized[1] = 'y'; oversized[2] = 't'; oversized[3] = 'e'; oversized[4] = 's'; oversized[5] = '=';
 
-    let rs_bad, err_bad = wing::parse_range_header(oversized[..], 1000);
-    assert(err_bad == wing::RangeError.ExceededMaxRanges);
+    let rs_bad, err_bad = http::parse_range_header(oversized[..], 1000);
+    assert(err_bad == http::RangeError.ExceededMaxRanges);
     assert(rs_bad.ranges.len == 0);
     print("CVE_2026_78667_RANGE_FLOOD_REJECTED: OK");
 
-    let rs_good, err_good = wing::parse_range_header("bytes=0-499,500-999", 2000, true);
-    assert(wing::is_ok(err_good));
+    let rs_good, err_good = http::parse_range_header("bytes=0-499,500-999", 2000, true);
+    assert(http::is_ok(err_good));
     assert(rs_good.ranges.len == 1);
     assert(rs_good.ranges[0].start == 0 && rs_good.ranges[0].end_pos == 999);
     print("RANGE_COALESCE_CONTIGUOUS: OK");
 }
 
 fn test_openssl_cve_2009_2408_uri_nul() {
-    assert(wing::match_uri_name_constraint("https://api.example.com/v1", "example.com"));
-    assert(wing::match_uri_name_constraint("https://example.com/login", "example.com"));
-    assert(!wing::match_uri_name_constraint("https://evil.com/login", "example.com"));
+    assert(tls::match_uri_name_constraint("https://api.example.com/v1", "example.com"));
+    assert(tls::match_uri_name_constraint("https://example.com/login", "example.com"));
+    assert(!tls::match_uri_name_constraint("https://evil.com/login", "example.com"));
     print("URI_NAME_CONSTRAINTS_DOMAINS: OK");
 
     let nul_uri: u8[29] = [
@@ -205,7 +205,7 @@ fn test_openssl_cve_2009_2408_uri_nul() {
         0x00,
         '.', 'e', 'v', 'i', 'l', '.', 'c', 'o', 'm',
     ];
-    let nul_match = wing::match_uri_name_constraint(nul_uri[..], "example.com");
+    let nul_match = tls::match_uri_name_constraint(nul_uri[..], "example.com");
     assert(!nul_match);
     print("CVE_2009_2408_NUL_INJECTION_REJECTED: OK");
 }
@@ -267,46 +267,46 @@ fn run_03_verify_historical_cves() {
 //
 
 fn test_l0_exact_hits() {
-    var router = wing::new_radix_router();
+    var router = server::new_radix_router();
 
-    assert(wing::add_route(router, "GET", "/plaintext", 101));
-    assert(wing::add_route(router, "GET", "/json", 102));
-    assert(wing::add_route(router, "GET", "/healthz", 103));
-    assert(wing::add_route(router, "GET", "/", 104));
-    assert(wing::add_route(router, "GET", "/123456789012345", 105)); // exactly 16 bytes
+    assert(server::add_route(router, "GET", "/plaintext", 101));
+    assert(server::add_route(router, "GET", "/json", 102));
+    assert(server::add_route(router, "GET", "/healthz", 103));
+    assert(server::add_route(router, "GET", "/", 104));
+    assert(server::add_route(router, "GET", "/123456789012345", 105)); // exactly 16 bytes
 
     // Verify L0 count
     assert(router.l0_table.count == 5);
 
     // Exact matches
-    var params = wing::ZeroAllocParams { .. };
+    var params = http::ZeroAllocParams { .. };
     var canon: u8[..512] = [];
 
-    let m1 = wing::match_route(router, "GET", "/plaintext", params, canon);
+    let m1 = server::match_route(router, "GET", "/plaintext", params, canon);
     match m1 {
         Found f => assert(f.handler_id == 101),
         _ => assert(false),
     };
 
-    let m2 = wing::match_route(router, "GET", "/json", params, canon);
+    let m2 = server::match_route(router, "GET", "/json", params, canon);
     match m2 {
         Found f => assert(f.handler_id == 102),
         _ => assert(false),
     };
 
-    let m3 = wing::match_route(router, "GET", "/healthz", params, canon);
+    let m3 = server::match_route(router, "GET", "/healthz", params, canon);
     match m3 {
         Found f => assert(f.handler_id == 103),
         _ => assert(false),
     };
 
-    let m4 = wing::match_route(router, "GET", "/", params, canon);
+    let m4 = server::match_route(router, "GET", "/", params, canon);
     match m4 {
         Found f => assert(f.handler_id == 104),
         _ => assert(false),
     };
 
-    let m5 = wing::match_route(router, "GET", "/123456789012345", params, canon);
+    let m5 = server::match_route(router, "GET", "/123456789012345", params, canon);
     match m5 {
         Found f => assert(f.handler_id == 105),
         _ => assert(false),
@@ -317,23 +317,23 @@ fn test_l0_exact_hits() {
 }
 
 fn test_l0_query_and_uncanonical_fallbacks() {
-    var router = wing::new_radix_router();
+    var router = server::new_radix_router();
 
-    assert(wing::add_route(router, "GET", "/plaintext", 101));
-    assert(wing::add_route(router, "GET", "/json", 102));
+    assert(server::add_route(router, "GET", "/plaintext", 101));
+    assert(server::add_route(router, "GET", "/json", 102));
 
-    var params = wing::ZeroAllocParams { .. };
+    var params = http::ZeroAllocParams { .. };
     var canon: u8[..512] = [];
 
     // Query strings should cleanly miss L0 and fall through to Tier 1
-    let q1 = wing::match_route(router, "GET", "/plaintext?format=raw", params, canon);
+    let q1 = server::match_route(router, "GET", "/plaintext?format=raw", params, canon);
     match q1 {
         Found f => assert(f.handler_id == 101),
         _ => assert(false),
     };
     assert(canon[..] == "/plaintext");
 
-    let q2 = wing::match_route(router, "GET", "/json?pretty=true", params, canon);
+    let q2 = server::match_route(router, "GET", "/json?pretty=true", params, canon);
     match q2 {
         Found f => assert(f.handler_id == 102),
         _ => assert(false),
@@ -341,14 +341,14 @@ fn test_l0_query_and_uncanonical_fallbacks() {
     assert(canon[..] == "/json");
 
     // Uncanonical paths (double slashes / dot segments) fall through to Tier 1
-    let u1 = wing::match_route(router, "GET", "//plaintext", params, canon);
+    let u1 = server::match_route(router, "GET", "//plaintext", params, canon);
     match u1 {
         Found f => assert(f.handler_id == 101),
         _ => assert(false),
     };
     assert(canon[..] == "/plaintext");
 
-    let u2 = wing::match_route(router, "GET", "/./json", params, canon);
+    let u2 = server::match_route(router, "GET", "/./json", params, canon);
     match u2 {
         Found f => assert(f.handler_id == 102),
         _ => assert(false),
@@ -360,42 +360,42 @@ fn test_l0_query_and_uncanonical_fallbacks() {
 }
 
 fn test_l0_method_segregation() {
-    var router = wing::new_radix_router();
+    var router = server::new_radix_router();
 
-    assert(wing::add_route(router, "GET", "/status", 201));
-    assert(wing::add_route(router, "POST", "/status", 202));
-    assert(wing::add_route(router, "DELETE", "/status", 203));
+    assert(server::add_route(router, "GET", "/status", 201));
+    assert(server::add_route(router, "POST", "/status", 202));
+    assert(server::add_route(router, "DELETE", "/status", 203));
 
-    var params = wing::ZeroAllocParams { .. };
+    var params = http::ZeroAllocParams { .. };
     var canon: u8[..512] = [];
 
-    let m_get = wing::match_route(router, "GET", "/status", params, canon);
+    let m_get = server::match_route(router, "GET", "/status", params, canon);
     match m_get {
         Found f => assert(f.handler_id == 201),
         _ => assert(false),
     };
 
-    let m_post = wing::match_route(router, "POST", "/status", params, canon);
+    let m_post = server::match_route(router, "POST", "/status", params, canon);
     match m_post {
         Found f => assert(f.handler_id == 202),
         _ => assert(false),
     };
 
-    let m_del = wing::match_route(router, "DELETE", "/status", params, canon);
+    let m_del = server::match_route(router, "DELETE", "/status", params, canon);
     match m_del {
         Found f => assert(f.handler_id == 203),
         _ => assert(false),
     };
 
     // Automatic HEAD routing for GET
-    let m_head = wing::match_route(router, "HEAD", "/status", params, canon);
+    let m_head = server::match_route(router, "HEAD", "/status", params, canon);
     match m_head {
         Found f => assert(f.handler_id == 201),
         _ => assert(false),
     };
 
     // MethodNotAllowed
-    let m_put = wing::match_route(router, "PUT", "/status", params, canon);
+    let m_put = server::match_route(router, "PUT", "/status", params, canon);
     match m_put {
         MethodNotAllowed _ => {},
         _ => assert(false),
@@ -406,7 +406,7 @@ fn test_l0_method_segregation() {
 }
 
 fn test_l0_overflow_and_dynamic_routes() {
-    var router = wing::new_radix_router();
+    var router = server::new_radix_router();
 
     // Fill up all 16 slots of L0 table
     let prefixes: const u8[:][16] = [
@@ -417,23 +417,23 @@ fn test_l0_overflow_and_dynamic_routes() {
     ];
 
     for i in 16 {
-        assert(wing::add_route(router, "GET", prefixes[i], (300 + i) as i32));
+        assert(server::add_route(router, "GET", prefixes[i], (300 + i) as i32));
     }
     assert(router.l0_table.count == 16);
 
     // 17th route (> 16 routes) overflows cleanly into Tier 1
-    assert(wing::add_route(router, "GET", "/r16_overflow", 316));
+    assert(server::add_route(router, "GET", "/r16_overflow", 316));
     assert(router.l0_table.count == 16); // L0 is full at 16
 
     // Dynamic parameter route (not in L0)
-    assert(wing::add_route(router, "GET", "/users/{id}", 401));
+    assert(server::add_route(router, "GET", "/users/{id}", 401));
 
-    var params = wing::ZeroAllocParams { .. };
+    var params = http::ZeroAllocParams { .. };
     var canon: u8[..512] = [];
 
     // Verify all 16 L0 routes hit
     for i in 16 {
-        let m = wing::match_route(router, "GET", prefixes[i], params, canon);
+        let m = server::match_route(router, "GET", prefixes[i], params, canon);
         match m {
             Found f => assert(f.handler_id == (300 + i) as i32),
             _ => assert(false),
@@ -441,19 +441,19 @@ fn test_l0_overflow_and_dynamic_routes() {
     }
 
     // Verify 17th overflow route matches via Tier 1
-    let m_over = wing::match_route(router, "GET", "/r16_overflow", params, canon);
+    let m_over = server::match_route(router, "GET", "/r16_overflow", params, canon);
     match m_over {
         Found f => assert(f.handler_id == 316),
         _ => assert(false),
     };
 
     // Verify dynamic parameter route matches and extracts param
-    let m_dyn = wing::match_route(router, "GET", "/users/alice", params, canon);
+    let m_dyn = server::match_route(router, "GET", "/users/alice", params, canon);
     match m_dyn {
         Found f => {
             assert(f.handler_id == 401);
             assert(params.len == 1);
-            let val, ok_p = wing::param_by_name(params, "id", "/users/alice");
+            let val, ok_p = http::param_by_name(params, "id", "/users/alice");
             assert(ok_p);
             assert(val == "alice");
         },
@@ -466,34 +466,34 @@ fn test_l0_overflow_and_dynamic_routes() {
 
 fn test_l0_pipeline_execution() {
     let quota = security::new_gcra_quota(100, wing::secs(1), 10);
-    var cfg = wing::new_server_pipeline_config("example.com", quota);
+    var cfg = server::new_server_pipeline_config("example.com", quota);
 
-    assert(wing::add_route(cfg.router, "GET", "/healthz", 1001));
-    assert(wing::add_route(cfg.router, "GET", "/json", 1002));
+    assert(server::add_route(cfg.router, "GET", "/healthz", 1001));
+    assert(server::add_route(cfg.router, "GET", "/json", 1002));
     assert(cfg.router.l0_table.count == 2);
 
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
 
     // Exact L0 hit through pipeline
-    var req1 = wing::new_request("GET", "/healthz");
-    wing::append_header(req1.headers, "Host", "example.com");
+    var req1 = http::new_request("GET", "/healthz");
+    http::append_header(req1.headers, "Host", "example.com");
 
-    var res1 = wing::Response { .. };
+    var res1 = http::Response { .. };
     var fut1 = server_internal::new_inline_handler_future(0);
-    let out1 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req1, 1000000000, res1, fut1);
+    let out1 = server::execute_pipeline(cfg, timer, "127.0.0.1", req1, 1000000000, res1, fut1);
 
-    assert(out1 == wing::PipelineOutcome.Handled);
+    assert(out1 == server::PipelineOutcome.Handled);
     assert(res1.status_code == 200);
 
     // Query fallback through pipeline
-    var req2 = wing::new_request("GET", "/json?pretty=1");
-    wing::append_header(req2.headers, "Host", "example.com");
+    var req2 = http::new_request("GET", "/json?pretty=1");
+    http::append_header(req2.headers, "Host", "example.com");
 
-    var res2 = wing::Response { .. };
+    var res2 = http::Response { .. };
     var fut2 = server_internal::new_inline_handler_future(0);
-    let out2 = wing::execute_pipeline(cfg, timer, "127.0.0.1", req2, 1000000000, res2, fut2);
+    let out2 = server::execute_pipeline(cfg, timer, "127.0.0.1", req2, 1000000000, res2, fut2);
 
-    assert(out2 == wing::PipelineOutcome.Handled);
+    assert(out2 == server::PipelineOutcome.Handled);
     assert(res2.status_code == 200);
 
     print("L0_PIPELINE_EXECUTION_OK");
@@ -523,7 +523,7 @@ fn run_04_verify_l0_simd_routing() {
 fn test_h2_stream_progression() {
     print("=== H2_STREAM_PROGRESSION ===");
     var sess = server_internal::new_h2_server_session("goose-wing/1.0", 1000);
-    var pipeline = wing::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
+    var pipeline = server::new_server_pipeline_config("127.0.0.1", security::new_gcra_quota(1000, wing::secs(1), 100));
     var timer = server_internal::new_connection_timer(30000000000, 1000000000);
     var wire_out: u8[>..] = [];
 
@@ -691,7 +691,7 @@ fn test_h3_role_polarity_case_a(settings: fingerprint::H3Settings) {
 
     // Then client receives forbidden PRIORITY_UPDATE_REQUEST
     var prio_frame: u8[..64] = [];
-    let prio = wing::PriorityParam { urgency: 1, incremental: false };
+    let prio = http::PriorityParam { urgency: 1, incremental: false };
     assert(http3::encode_priority_update_request(prio_frame, 0, prio));
 
     let err_prio = client_conn.handle_stream_data(3, false, prio_frame[..], false);
@@ -771,7 +771,7 @@ fn test_h2_state_matrix() {
 
     // Case C: Server receives PUSH_PROMISE (RFC 9113 Section 6.6)
     var sess = server_internal::new_h2_server_session("localhost");
-    var pipeline = wing::ServerPipelineConfig { .. };
+    var pipeline = server::ServerPipelineConfig { .. };
     var timer = server_internal::ConnectionTimer { .. };
     var handshake_wire: u8[..64] = [];
     handshake_wire.append(rfc::H2_CLIENT_PREFACE[..]);
@@ -965,7 +965,7 @@ fn test_missing_security_apis() {
     assert(!security::validate_cors_policy(cors_invalid));
 
     // 2. apply_strict_cross_origin_isolation
-    var res = wing::Response { .. };
+    var res = http::Response { .. };
     security::apply_strict_cross_origin_isolation(res);
     assert(res.header("Cross-Origin-Opener-Policy") == "same-origin");
     assert(res.header("Cross-Origin-Embedder-Policy") == "require-corp");
@@ -1066,9 +1066,9 @@ fn test_cors_empty_origin_rejected() {
     assert(!security::validate_cors_policy(cred_policy));
     assert(!security::is_origin_allowed(cred_policy, "https://evil.example"));
 
-    var req = wing::new_request("GET", "/api/secret");
-    wing::set_header(req, "Origin", "https://evil.example");
-    var res = wing::Response { .. };
+    var req = http::new_request("GET", "/api/secret");
+    http::set_header(req, "Origin", "https://evil.example");
+    var res = http::Response { .. };
     assert(security::evaluate_cors(cred_policy, req, res) == security::CorsResult.InvalidConfig);
 
     print("CORS_EMPTY_ORIGIN_REJECTED: OK");
@@ -1140,26 +1140,26 @@ fn test_csrf_canonical_path_and_trusted_cors() {
     assert(security::add_trusted_origin(guard_cfg, "https://partner.example.com"));
 
     // FIND-0008: Path traversal "/api/webhook/../../admin/transfer" must canonicalize to "/admin/transfer" and NOT match "/api/webhook"
-    var req_trav = wing::new_request("POST", "/api/webhook/../../admin/transfer");
-    wing::set_header(req_trav, "Sec-Fetch-Site", "cross-site");
+    var req_trav = http::new_request("POST", "/api/webhook/../../admin/transfer");
+    http::set_header(req_trav, "Sec-Fetch-Site", "cross-site");
     let ctx_trav = security::extract_fetch_context(req_trav, "app.example.com");
     assert(ctx_trav.path[..] == "/admin/transfer");
     let dec_trav = security::evaluate_fetch_metadata(guard_cfg, ctx_trav);
     assert(!security::is_allowed(dec_trav));
 
-    var req_pct = wing::new_request("POST", "/api/webhook/%2e%2e/%2e%2e/admin/transfer");
-    wing::set_header(req_pct, "Sec-Fetch-Site", "cross-site");
+    var req_pct = http::new_request("POST", "/api/webhook/%2e%2e/%2e%2e/admin/transfer");
+    http::set_header(req_pct, "Sec-Fetch-Site", "cross-site");
     let ctx_pct = security::extract_fetch_context(req_pct, "app.example.com");
     assert(ctx_pct.path[..] == "/admin/transfer");
     let dec_pct = security::evaluate_fetch_metadata(guard_cfg, ctx_pct);
     assert(!security::is_allowed(dec_pct));
 
     // FIND-0007: Safe cross-site CORS subresource request from a trusted origin must be allowed
-    var req_cors_get = wing::new_request("GET", "/api/data");
-    wing::set_header(req_cors_get, "Sec-Fetch-Site", "cross-site");
-    wing::set_header(req_cors_get, "Sec-Fetch-Mode", "cors");
-    wing::set_header(req_cors_get, "Sec-Fetch-Dest", "empty");
-    wing::set_header(req_cors_get, "Origin", "https://partner.example.com");
+    var req_cors_get = http::new_request("GET", "/api/data");
+    http::set_header(req_cors_get, "Sec-Fetch-Site", "cross-site");
+    http::set_header(req_cors_get, "Sec-Fetch-Mode", "cors");
+    http::set_header(req_cors_get, "Sec-Fetch-Dest", "empty");
+    http::set_header(req_cors_get, "Origin", "https://partner.example.com");
     let ctx_cors_get = security::extract_fetch_context(req_cors_get, "app.example.com");
     let dec_cors_get = security::evaluate_fetch_metadata(guard_cfg, ctx_cors_get);
     assert(security::is_allowed(dec_cors_get));
@@ -1317,10 +1317,10 @@ fn run_07_verify_security_bug_hunter() {
 // Verification of HTTP/1.1 request wire parser and RFC 9112 syntax invariants via wing.
 //
 
-// Wire adapter for verify_split_stream and fuzzing using wing::parse_http1_wire_request
+// Wire adapter for verify_split_stream and fuzzing using server::parse_http1_wire_request
 fn wing_validate_http1_request_wire(buf: const u8[:]) -> i64 {
-    var req = wing::new_request("GET", "/");
-    let ok, consumed = wing::parse_http1_wire_request(buf, req);
+    var req = http::new_request("GET", "/");
+    let ok, consumed = server::parse_http1_wire_request(buf, req);
     if ok {
         return consumed;
     }
@@ -1335,8 +1335,8 @@ fn run_08_verify_server_pipeline_edge() {
     assert(wire_kit::verify_split_stream(req_str, -1, 47, wing_validate_http1_request_wire));
     assert(wire_kit::fuzz_payload(req_str, 100, wing_validate_http1_request_wire));
 
-    var parsed_req = wing::new_request("GET", "/");
-    let ok, consumed = wing::parse_http1_wire_request(req_str, parsed_req);
+    var parsed_req = http::new_request("GET", "/");
+    let ok, consumed = server::parse_http1_wire_request(req_str, parsed_req);
     assert(ok);
     assert(consumed == 47);
     assert(parsed_req.method == "GET");

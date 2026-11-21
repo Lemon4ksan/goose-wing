@@ -24,7 +24,7 @@ fn format_ms_x100<B>(ns: i64, out: B&) {
 fn build_benchmark_cert(out_der: u8[..2048]&) {
     let seed: u8[32] = [0x42; 32];
     out_der.clear();
-    let ok = wing::build_test_ed25519_cert_der(
+    let ok = tls::build_test_ed25519_cert_der(
         seed,
         "localhost",
         "localhost",
@@ -34,31 +34,31 @@ fn build_benchmark_cert(out_der: u8[..2048]&) {
     assert(ok);
 }
 
-var g_bench_app: wing::HttpServer = wing::HttpServer { .. };
+var g_bench_app: server::HttpServer = server::HttpServer { .. };
 
 struct UserApiStage {
     _unused: i32 = 0,
 }
 
-fn wing::on_server_stage(
+fn server::on_server_stage(
     _stage: UserApiStage&,
     phase:  wire::ServerHookPhase,
-    cfg:    wing::ServerPipelineConfig&,
-    req:    const wing::Request&,
-    ctx:    wing::ServerStageCtx&,
-    res:    wing::Response&,
+    cfg:    server::ServerPipelineConfig&,
+    req:    const http::Request&,
+    ctx:    server::ServerStageCtx&,
+    res:    http::Response&,
 ) -> wire::StageVerdict {
     guard phase == wire::ServerHookPhase.RouteHandler && ctx.handler_id == 2001 else {
         return wire::StageVerdict.Continue;
     }
-    let uid = wing::route_param_or(cfg, ctx, "id", "0");
-    let raw_region = wing::header(req, "x-client-region");
+    let uid = server::route_param_or(cfg, ctx, "id", "0");
+    let raw_region = http::header(req, "x-client-region");
     let region = if raw_region.len > 0 { raw_region } else { "unknown" };
-    let authed = wing::header(req, "authorization").len > 0;
+    let authed = http::header(req, "authorization").len > 0;
 
-    wing::set_header(res, "content-type", "application/json");
-    wing::set_header(res, "x-engine", "goose-wing");
-    wing::set_header(res, "cache-control", "no-store");
+    http::set_header(res, "content-type", "application/json");
+    http::set_header(res, "x-engine", "goose-wing");
+    http::set_header(res, "cache-control", "no-store");
 
     res.body.clear();
     res.body.append("{\"id\":");
@@ -76,47 +76,47 @@ fn wing::on_server_stage(
 }
 
 fn run_h2_tls_server(port: u16, max_conns: i64, accel_str: const u8[:]) {
-    wing::init_http_server_inplace(g_bench_app, "127.0.0.1", port);
+    server::init_http_server_inplace(g_bench_app, "127.0.0.1", port);
     g_bench_app.pipeline.enable_csrf_guard = false;
     g_bench_app.pipeline.enable_cors = false;
     g_bench_app.pipeline.enable_rate_limiter = false;
     g_bench_app.pipeline.enable_slowloris_timer = false;
     if accel_str == "poll" {
-        g_bench_app.accel_mode = wing::ReactorAccelMode.PollFallback;
+        g_bench_app.accel_mode = net::ReactorAccelMode.PollFallback;
     } else if accel_str == "rio" {
-        g_bench_app.accel_mode = wing::ReactorAccelMode.Rio;
+        g_bench_app.accel_mode = net::ReactorAccelMode.Rio;
     } else {
-        g_bench_app.accel_mode = wing::ReactorAccelMode.Auto;
+        g_bench_app.accel_mode = net::ReactorAccelMode.Auto;
     }
 
-    assert(wing::add_static_route(
+    assert(server::add_static_route(
         g_bench_app.pipeline.router,
         "GET",
         "/plaintext",
         "text/plain",
         "Hello, HTTP/2 over TLS 1.3!",
     ));
-    assert(wing::add_static_route(
+    assert(server::add_static_route(
         g_bench_app.pipeline.router,
         "GET",
         "/json",
         "application/json",
         "{\"status\":200,\"message\":\"ok\",\"engine\":\"goose-wing\",\"protocol\":\"h2\",\"tls\":\"1.3\"}",
     ));
-    wing::add_get_route(g_bench_app, "/api/v1/users/{id}", 2001);
+    server::add_get_route(g_bench_app, "/api/v1/users/{id}", 2001);
 
     var cert_der: u8[..2048] = [];
     build_benchmark_cert(cert_der);
 
-    var tls_cfg = wing::TlsServerHandshakeConfig { .. };
+    var tls_cfg = tls::ServerHandshakeConfig { .. };
     assert(tls_cfg.cert_der.try_set(cert_der[..]));
     tls_cfg.priv_seed = [0x42; 32];
     assert(tls_cfg.alpn.try_set("h2,http/1.1"));
 
     let listener = if accel_str == "poll" {
-        wing::tcp_listen("127.0.0.1", port, 1024)
+        net::tcp_listen("127.0.0.1", port, 1024)
     } else {
-        wing::reactor_listen_accelerated(g_bench_app, 1024)
+        server::reactor_listen_accelerated(g_bench_app, 1024)
     };
     guard listener > 0 else {
         print("FATAL: Failed to bind listener on 127.0.0.1:", port);
@@ -124,20 +124,20 @@ fn run_h2_tls_server(port: u16, max_conns: i64, accel_str: const u8[:]) {
     }
     print("SERVER_READY port=", port);
     var stage = UserApiStage {};
-    let _ = wing::serve_reactor_tls_with_stage(g_bench_app, listener, tls_cfg, stage, max_conns);
-    wing::tcp_close(listener);
+    let _ = server::serve_reactor_tls_with_stage(g_bench_app, listener, tls_cfg, stage, max_conns);
+    net::tcp_close(listener);
 }
 
 fn run_h2_tls_client(port: u16, iters: i64, path: const u8[:]) {
     var cert_der: u8[..2048] = [];
     build_benchmark_cert(cert_der);
 
-    var cfg = wing::ClientConfig { timeout_ms: 10000, .. };
-    var sess = wing::new_session(cfg);
+    var cfg = client::Config { timeout_ms: 10000, .. };
+    var sess = client::new_session(cfg);
     defer sess.close();
     sess.ssrf_guard.enabled = false;
     sess.insecure_skip_verify = false;
-    assert(wing::add_trust_anchor_cert_der(sess.trust_store, cert_der[..]));
+    assert(tls::add_trust_anchor_cert_der(sess.trust_store, cert_der[..]));
 
     var url: u8[..128] = [];
     let _ = url.try_append("https://127.0.0.1:");
@@ -146,19 +146,19 @@ fn run_h2_tls_client(port: u16, iters: i64, path: const u8[:]) {
 
     let warmup = min(max(iters >> 3, 5), 50);
     for _ in warmup {
-        var req = wing::new_get(url[..]);
-        let res, err = wing::execute_request(sess, req);
-        assert(wing::ok(err) && res.status_code == 200);
+        var req = http::new_get(url[..]);
+        let res, err = client::execute_request(sess, req);
+        assert(http::ok(err) && res.status_code == 200);
     }
 
     var latencies: i64[>..] = [];
     let watch_total = core::stopwatch();
     for _ in iters {
         let t_req = core::stopwatch();
-        var req = wing::new_get(url[..]);
-        let res, err = wing::execute_request(sess, req);
+        var req = http::new_get(url[..]);
+        let res, err = client::execute_request(sess, req);
         let dt_ns = core::elapsed(t_req).as_nanos();
-        assert(wing::ok(err) && res.status_code == 200);
+        assert(http::ok(err) && res.status_code == 200);
         latencies.push(dt_ns);
     }
     let total_elapsed = core::elapsed(watch_total);

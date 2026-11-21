@@ -5,12 +5,13 @@
 // Encapsulates Linux io_uring, Windows RIO, macOS kqueue, and epoll/WSAPoll
 // registration, lazy slab buffer ownership, and transmit/receive submission behind
 // `ReactorAccelRuntime` so server engines stay independent of driver rings.
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
 import net.driver;
 import .tcp;
+import .internal;
 
 enum ReactorAccelMode {
     Auto,
@@ -151,29 +152,9 @@ fn reactor_post_rio_slot_rx(accel: ReactorAccelRuntime&, slot: i64) -> bool {
     ) == 0;
 }
 
-inline fn reactor_cancel_uring_slot(accel: ReactorAccelRuntime&, slot: i64) {
-    guard accel.slot_accel[slot] && accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0 else { return; }
-    let tok = reactor_accel_slot_token(accel, slot);
-    let rx_tag = if accel.slot_ktls_rx[slot] {
-        REACTOR_URING_TAG_POLL | tok
-    } else {
-        REACTOR_URING_TAG_RECV | tok
-    };
-    var cancel_sqes: net_internal::UringSqe[..2] = [];
-    var rx_cancel = net_internal::UringSqe { .. };
-    net_internal::uring_prep_cancel(rx_cancel, rx_tag);
-    let _ = cancel_sqes.try_push(rx_cancel);
-    if accel.slot_tx_inflight[slot] {
-        var tx_cancel = net_internal::UringSqe { .. };
-        net_internal::uring_prep_cancel(tx_cancel, REACTOR_URING_TAG_SEND | tok);
-        let _ = cancel_sqes.try_push(tx_cancel);
-    }
-    let _ = net_internal::uring_submit_sqes(accel.uring_fd, cancel_sqes[..]);
-}
-
 fn reactor_reset_accel_slot(accel: ReactorAccelRuntime&, slot: i64) {
     guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS else { return; }
-    reactor_cancel_uring_slot(accel, slot);
+    net_internal::reactor_cancel_uring_slot(accel, slot);
     if accel.slot_accel[slot] {
         accel.active_accel_slots = max(core::sub_sat_i64(accel.active_accel_slots, 1), 0);
     }
@@ -229,70 +210,6 @@ fn reactor_close_accel(accel: ReactorAccelRuntime&) {
     accel.mode = ReactorAccelMode.PollFallback;
 }
 
-fn reactor_try_open_uring(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    let rfd = net_internal::native_uring_create(256, 0);
-    guard rfd >= 0 else { return false; }
-    let pbuf, ok_pb = net_internal::uring_alloc_pbuf_ring(rfd, REACTOR_URING_PBUF_BGID, 256, 4096);
-    if !ok_pb || pbuf == 0 {
-        net_internal::native_uring_close(rfd);
-        return false;
-    }
-    accel.mode = ReactorAccelMode.IoUring;
-    accel.uring_fd = rfd;
-    accel.uring_pbuf = pbuf;
-    if listener_fd > 0 {
-        tcp_set_nonblocking(listener_fd, true);
-        reactor_arm_uring_accept(accel, listener_fd);
-    }
-    return true;
-}
-
-fn reactor_try_open_rio(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    guard net_internal::native_rio_available() == 1 && accel.epfd >= 0 else { return false; }
-    let cq = net_internal::native_rio_create_cq(512);
-    guard cq != 0 else { return false; }
-    let tx_cq = net_internal::native_rio_create_cq(512);
-    if tx_cq == 0 {
-        net_internal::native_rio_close_cq(cq);
-        return false;
-    }
-    ensure_reactor_accel_slab(accel);
-    let bid = net_internal::native_rio_register_slice(accel.slab[..]);
-    if bid == 0 {
-        net_internal::native_rio_close_cq(tx_cq);
-        net_internal::native_rio_close_cq(cq);
-        return false;
-    }
-    accel.mode = ReactorAccelMode.Rio;
-    accel.rio_cq = cq;
-    accel.rio_tx_cq = tx_cq;
-    accel.rio_buf_id = bid;
-    if listener_fd > 0 {
-        if net_internal::native_rio_is_listener(listener_fd) == 1 {
-            accel.rio_listener_fd = listener_fd;
-        } else {
-            tcp_set_nonblocking(listener_fd, true);
-            if epoll_add(accel.epfd, listener_fd, EPOLL_READ, EPOLL_LISTENER_TAG) {
-                accel.epfd_registered_count = core::add_sat_i64(accel.epfd_registered_count, 1) as i32;
-            }
-        }
-    }
-    return true;
-}
-
-fn reactor_try_open_kqueue(accel: ReactorAccelRuntime&, listener_fd: i64) -> bool {
-    let kq = net_internal::native_kqueue_create();
-    guard kq >= 0 else { return false; }
-    accel.mode = ReactorAccelMode.Kqueue;
-    accel.kq_fd = kq;
-    if listener_fd > 0 {
-        tcp_set_nonblocking(listener_fd, true);
-        let r_flags = net_internal::EV_ADD | net_internal::EV_ENABLE;
-        reactor_queue_kq_change(accel, listener_fd, r_flags, EPOLL_LISTENER_TAG);
-    }
-    return true;
-}
-
 fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, listener_fd: i64) -> bool {
     reactor_close_accel(accel);
     for s in REACTOR_ACCEL_SLOTS {
@@ -303,17 +220,17 @@ fn reactor_init_accel(accel: ReactorAccelRuntime&, requested: ReactorAccelMode, 
 
     if plat == net_internal::TargetPlatform.Linux &&
         (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.IoUring) &&
-        reactor_try_open_uring(accel, listener_fd) {
+        net_internal::reactor_try_open_uring(accel, listener_fd) {
         return true;
     }
     if plat == net_internal::TargetPlatform.Windows &&
         (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.Rio) &&
-        reactor_try_open_rio(accel, listener_fd) {
+        net_internal::reactor_try_open_rio(accel, listener_fd) {
         return true;
     }
     if plat == net_internal::TargetPlatform.Darwin &&
         (requested == ReactorAccelMode.Auto || requested == ReactorAccelMode.Kqueue) &&
-        reactor_try_open_kqueue(accel, listener_fd) {
+        net_internal::reactor_try_open_kqueue(accel, listener_fd) {
         return true;
     }
 
@@ -500,7 +417,7 @@ fn reactor_wait_readiness_events(
     } else {
         timeout_ms
     };
-    return epoll_wait_direct(accel.epfd, empty_fds[..], ready_udata, eff_timeout);
+    return net_internal::epoll_wait_direct(accel.epfd, empty_fds[..], ready_udata, eff_timeout);
 }
 
 fn reactor_detach_listener(accel: ReactorAccelRuntime&, listener_fd: i64) {
@@ -520,7 +437,7 @@ fn reactor_detach_listener(accel: ReactorAccelRuntime&, listener_fd: i64) {
     }
     if accel.epfd >= 0 {
         if epoll_del(accel.epfd, listener_fd) {
-            accel.epfd_registered_count = max(0, accel.epfd_registered_count - 1);
+            accel.epfd_registered_count = max(0, core::sub_sat_i64(accel.epfd_registered_count, 1)) as i32;
         }
     }
 }

@@ -525,7 +525,7 @@ fn encode_cookie_header_to_map(
     partition_key: const u8[:],
     now_us:        i64,
     access:        AccessOptions,
-    headers:       wing::HeaderMap&,
+    headers:       http::HeaderMap&,
 ) -> bool {
     var matched_indices: u16[..180] = [];
     cookie_internal::collect_matching_cookie_indices(

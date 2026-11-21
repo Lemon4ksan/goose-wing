@@ -6,7 +6,7 @@
 // - Connection Pools (preventing cross-site socket reuse and timing attacks)
 // - DNS Cache partitioning (preventing DNS cache side-channel sniffing)
 // - Cookie Jar partitioning (RFC 6265bis Partitioned / CHIPS cookies)
-namespace wing;
+namespace net;
 
 import std;
 import core from "..";
@@ -88,7 +88,7 @@ fn empty_network_isolation_key() -> NetworkIsolationKey {
 // Generates a partition-aware cache or connection key:
 // If NIK is empty, writes `base_key`.
 // If NIK is active, writes `base_key{top_level_site,frame_site}`.
-fn format_partitioned_key<B>(base_key: const u8[:], nik: const NetworkIsolationKey&, out: B&) {
+fn format_partitioned_key<B>(nik: const NetworkIsolationKey&, base_key: const u8[:], out: B&) {
     let _ = out.try_append(base_key);
     if !nik.is_empty {
         let _ = out.try_append("{");

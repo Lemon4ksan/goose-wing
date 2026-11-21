@@ -19,25 +19,25 @@ import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 fn test_strict_unquote_invariants(t: lit::T&) {
     t.run("Chromium HttpUtil::StrictUnquote Valid Cases") { sub =>
         var out: u8[>..] = [];
-        let ok1 = wing::strict_unquote("\"simple text\"", out);
+        let ok1 = http::strict_unquote("\"simple text\"", out);
         sub.assert_true(ok1, "Simple double-quoted string unquotes");
         sub.assert_bytes_eq(out[..], "simple text", "Content matches");
 
         // Escaped quotes inside
         out.clear();
-        let ok2 = wing::strict_unquote("\"hello \\\"world\\\"\"", out);
+        let ok2 = http::strict_unquote("\"hello \\\"world\\\"\"", out);
         sub.assert_true(ok2, "Escaped internal quotes unquote");
         sub.assert_bytes_eq(out[..], "hello \"world\"", "Internal quotes preserved");
 
         // Even number of backslashes before closing quote (escaped backslash)
         out.clear();
-        let ok3 = wing::strict_unquote("\"path\\\\\"", out);
+        let ok3 = http::strict_unquote("\"path\\\\\"", out);
         sub.assert_true(ok3, "Even number of backslashes before closing quote unquotes to single backslash");
         sub.assert_bytes_eq(out[..], "path\\", "Trailing single backslash preserved");
 
         // Single quote inside double quotes is valid text
         out.clear();
-        let ok4 = wing::strict_unquote("\"user's parameter\"", out);
+        let ok4 = http::strict_unquote("\"user's parameter\"", out);
         sub.assert_true(ok4, "Single quote inside double quotes is valid");
         sub.assert_bytes_eq(out[..], "user's parameter", "Single quote unquoted");
     };
@@ -46,25 +46,25 @@ fn test_strict_unquote_invariants(t: lit::T&) {
         var out: u8[>..] = [];
 
         // Odd number of backslashes before closing quote escapes the delimiter -> MUST FAIL
-        let bad_esc = wing::strict_unquote("\"abc\\\"", out);
+        let bad_esc = http::strict_unquote("\"abc\\\"", out);
         sub.assert_false(bad_esc, "Escaped closing quote must fail");
 
-        let bad_esc2 = wing::strict_unquote("\"\\\"", out);
+        let bad_esc2 = http::strict_unquote("\"\\\"", out);
         sub.assert_false(bad_esc2, "Single escaped quote inside quotes must fail");
 
         // Single quotes are NEVER delimiters
-        let single_q = wing::strict_unquote("'single-quoted'", out);
+        let single_q = http::strict_unquote("'single-quoted'", out);
         sub.assert_false(single_q, "Single-quoted string must fail");
 
-        let empty_single = wing::strict_unquote("''", out);
+        let empty_single = http::strict_unquote("''", out);
         sub.assert_false(empty_single, "Empty single quotes must fail");
 
         // Unquoted string
-        let unquoted = wing::strict_unquote("unquoted_token", out);
+        let unquoted = http::strict_unquote("unquoted_token", out);
         sub.assert_false(unquoted, "Unquoted string must fail");
 
         // Unpaired quote
-        let unpaired = wing::strict_unquote("\"unclosed", out);
+        let unpaired = http::strict_unquote("\"unclosed", out);
         sub.assert_false(unpaired, "Unclosed quote must fail");
     };
 }
@@ -74,35 +74,35 @@ fn test_strict_unquote_invariants(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_media_type_parser(t: lit::T&) {
     t.run("Content-Type Parsing and Parameters") { sub =>
-        let mt, ok = wing::parse_media_type("text/html; charset=UTF-8; boundary=\"----WebKit123\"");
+        let mt, ok = http::parse_media_type("text/html; charset=UTF-8; boundary=\"----WebKit123\"");
         sub.assert_true(ok, "Valid Content-Type parsed");
         sub.assert_bytes_eq(mt.mime_type[..], "text/html", "Mime type normalized lowercase");
         sub.assert_bytes_eq(mt.type_name[..], "text", "Type matches");
         sub.assert_bytes_eq(mt.subtype[..], "html", "Subtype matches");
 
-        sub.assert_bytes_eq(wing::charset(mt), "UTF-8", "Charset extracted");
-        sub.assert_bytes_eq(wing::boundary(mt), "----WebKit123", "Strict unquoted boundary extracted");
-        sub.assert_false(wing::is_multipart(mt), "text/html is not multipart");
+        sub.assert_bytes_eq(http::charset(mt), "UTF-8", "Charset extracted");
+        sub.assert_bytes_eq(http::boundary(mt), "----WebKit123", "Strict unquoted boundary extracted");
+        sub.assert_false(http::is_multipart(mt), "text/html is not multipart");
     };
 
     t.run("Multipart Form-Data Detection") { sub =>
-        let mt, ok = wing::parse_media_type("multipart/form-data; boundary=boundary_xyz_99");
+        let mt, ok = http::parse_media_type("multipart/form-data; boundary=boundary_xyz_99");
         sub.assert_true(ok, "Multipart Content-Type parsed");
-        sub.assert_true(wing::is_multipart(mt), "Identified as multipart");
-        sub.assert_bytes_eq(wing::boundary(mt), "boundary_xyz_99", "Boundary extracted");
+        sub.assert_true(http::is_multipart(mt), "Identified as multipart");
+        sub.assert_bytes_eq(http::boundary(mt), "boundary_xyz_99", "Boundary extracted");
     };
 
     t.run("Malformed Media Type Rejections") { sub =>
-        let mt1, ok1 = wing::parse_media_type("");
+        let mt1, ok1 = http::parse_media_type("");
         sub.assert_false(ok1, "Empty input fails");
 
-        let mt2, ok2 = wing::parse_media_type("notype");
+        let mt2, ok2 = http::parse_media_type("notype");
         sub.assert_false(ok2, "Missing slash fails");
 
-        let mt3, ok3 = wing::parse_media_type("type/");
+        let mt3, ok3 = http::parse_media_type("type/");
         sub.assert_false(ok3, "Empty subtype fails");
 
-        let mt4, ok4 = wing::parse_media_type("text/html; badparameter");
+        let mt4, ok4 = http::parse_media_type("text/html; badparameter");
         sub.assert_false(ok4, "Parameter without '=' fails");
     };
 }
@@ -112,60 +112,60 @@ fn test_media_type_parser(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_sfv_integers_and_decimals(t: lit::T&) {
     t.run("RFC 8941 Section 3.3.1 sf-integer 15-Digit Bounds") { sub =>
-        var item = wing::SfvItem { .. };
+        var item = http::SfvItem { .. };
 
         // 15 digits positive max
-        let ok1 = wing::parse_sfv_item("999999999999999", item);
+        let ok1 = http::parse_sfv_item("999999999999999", item);
         sub.assert_true(ok1, "15 digits max integer parsed");
-        sub.assert_eq(item.bare.kind, wing::SfvType.Integer, "Is Integer");
+        sub.assert_eq(item.bare.kind, http::SfvType.Integer, "Is Integer");
         sub.assert_eq(item.bare.int_val, 999999999999999, "Integer value matches");
 
         // 15 digits negative max
-        let ok2 = wing::parse_sfv_item("-999999999999999", item);
+        let ok2 = http::parse_sfv_item("-999999999999999", item);
         sub.assert_true(ok2, "15 digits min integer parsed");
         sub.assert_eq(item.bare.int_val, -999999999999999, "Negative value matches");
 
         // 16 digits MUST FAIL per RFC 8941 Section 3.3.1
-        let ok3 = wing::parse_sfv_item("1000000000000000", item);
+        let ok3 = http::parse_sfv_item("1000000000000000", item);
         sub.assert_false(ok3, "16-digit integer must be rejected");
 
         // Zero and negative zero
-        let ok_zero = wing::parse_sfv_item("-0", item);
+        let ok_zero = http::parse_sfv_item("-0", item);
         sub.assert_true(ok_zero, "-0 is valid");
         sub.assert_eq(item.bare.int_val, 0, "-0 parsed as 0");
     };
 
     t.run("RFC 8941 Section 3.3.2 sf-decimal (12.3 Fixed-Point Milliths)") { sub =>
-        var item = wing::SfvItem { .. };
+        var item = http::SfvItem { .. };
 
         // 1.5 -> 1500 milliths
-        let ok1 = wing::parse_sfv_item("1.5", item);
+        let ok1 = http::parse_sfv_item("1.5", item);
         sub.assert_true(ok1, "1.5 parsed as decimal");
-        sub.assert_eq(item.bare.kind, wing::SfvType.Decimal, "Is Decimal");
+        sub.assert_eq(item.bare.kind, http::SfvType.Decimal, "Is Decimal");
         sub.assert_eq(item.bare.int_val, 1500, "1.5 is 1500 milliths");
 
         // -0.123 -> -123 milliths
-        let ok2 = wing::parse_sfv_item("-0.123", item);
+        let ok2 = http::parse_sfv_item("-0.123", item);
         sub.assert_true(ok2, "-0.123 parsed as decimal");
         sub.assert_eq(item.bare.int_val, -123, "-123 milliths");
 
         // Serialization
         var ser: u8[>..] = [];
-        wing::serialize_sfv_decimal(item.bare.int_val, ser);
+        http::serialize_sfv_decimal(item.bare.int_val, ser);
         sub.assert_bytes_eq(ser[..], "-0.123", "Serialized decimal matches");
 
         ser.clear();
-        wing::serialize_sfv_decimal(1500, ser);
+        http::serialize_sfv_decimal(1500, ser);
         sub.assert_bytes_eq(ser[..], "1.5", "Trailing zeros stripped in serialization");
 
         // Strict rejections
-        let bad_dot_only = wing::parse_sfv_item("1.", item);
+        let bad_dot_only = http::parse_sfv_item("1.", item);
         sub.assert_false(bad_dot_only, "Dot without fractional digits fails");
 
-        let bad_no_int = wing::parse_sfv_item(".5", item);
+        let bad_no_int = http::parse_sfv_item(".5", item);
         sub.assert_false(bad_no_int, "Dot without integer digits fails");
 
-        let bad_4_frac = wing::parse_sfv_item("1.1234", item);
+        let bad_4_frac = http::parse_sfv_item("1.1234", item);
         sub.assert_false(bad_4_frac, "4 fractional digits fails");
     };
 }
@@ -175,42 +175,42 @@ fn test_sfv_integers_and_decimals(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_sfv_strings_tokens_and_keys(t: lit::T&) {
     t.run("RFC 8941 Section 3.3.3 sf-string Escape Invariants") { sub =>
-        var item = wing::SfvItem { .. };
+        var item = http::SfvItem { .. };
 
-        let ok1 = wing::parse_sfv_item("\"hello \\\"world\\\" and \\\\ slash\"", item);
+        let ok1 = http::parse_sfv_item("\"hello \\\"world\\\" and \\\\ slash\"", item);
         sub.assert_true(ok1, "Valid escaped string parsed");
-        sub.assert_eq(item.bare.kind, wing::SfvType.String, "Is String");
+        sub.assert_eq(item.bare.kind, http::SfvType.String, "Is String");
         sub.assert_bytes_eq(item.bare.text[..], "hello \"world\" and \\ slash", "Escapes decoded");
 
         // Illegal escape sequence (e.g. \n or \t) MUST FAIL per RFC 8941 Section 3.3.3
-        let bad_esc = wing::parse_sfv_item("\"illegal \\n escape\"", item);
+        let bad_esc = http::parse_sfv_item("\"illegal \\n escape\"", item);
         sub.assert_false(bad_esc, "\\n escape sequence is forbidden in sf-string");
 
         // Single quotes forbidden
-        let single_q = wing::parse_sfv_item("'single'", item);
+        let single_q = http::parse_sfv_item("'single'", item);
         sub.assert_false(single_q, "Single-quoted string is forbidden");
     };
 
     t.run("RFC 8941 Section 3.1.2 Dictionary Key Lowercase Invariant") { sub =>
-        var dict = wing::SfvDict { .. };
+        var dict = http::SfvDict { .. };
 
         // Valid lowercase key
-        let ok_lower = wing::parse_sfv_dict("cache-control_max.age*=?1", dict);
+        let ok_lower = http::parse_sfv_dict("cache-control_max.age*=?1", dict);
         sub.assert_true(ok_lower, "Lowercase key is valid");
         sub.assert_eq(dict.entries.len, 1, "1 entry in dict");
 
         // Uppercase in key MUST CAUSE COMPLETE ATOMIC PARSE FAILURE
-        let bad_upper = wing::parse_sfv_dict("SHA-256=123", dict);
+        let bad_upper = http::parse_sfv_dict("SHA-256=123", dict);
         sub.assert_false(bad_upper, "Uppercase in key causes hard parse failure");
         sub.assert_false(dict.valid, "Dictionary marked invalid on uppercase key");
     };
 
     t.run("RFC 8941 Section 3.3.5 sf-binary Base64 Decoding") { sub =>
-        var item = wing::SfvItem { .. };
+        var item = http::SfvItem { .. };
         // :AQIDBA==: -> [1, 2, 3, 4]
-        let ok = wing::parse_sfv_item(":AQIDBA==:", item);
+        let ok = http::parse_sfv_item(":AQIDBA==:", item);
         sub.assert_true(ok, "Binary parsed");
-        sub.assert_eq(item.bare.kind, wing::SfvType.ByteSequence, "Is ByteSequence");
+        sub.assert_eq(item.bare.kind, http::SfvType.ByteSequence, "Is ByteSequence");
         sub.assert_eq(item.bare.text.len, 4, "4 bytes decoded");
         sub.assert_eq(item.bare.text[0], 1, "Byte 0");
         sub.assert_eq(item.bare.text[1], 2, "Byte 1");
@@ -224,31 +224,31 @@ fn test_sfv_strings_tokens_and_keys(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_sfv_rfc9651_dates_and_display_strings(t: lit::T&) {
     t.run("RFC 9651 Section 3.3.7 sf-date (@epoch)") { sub =>
-        var item = wing::SfvItem { .. };
-        let ok = wing::parse_sfv_item("@1659578233", item);
+        var item = http::SfvItem { .. };
+        let ok = http::parse_sfv_item("@1659578233", item);
         sub.assert_true(ok, "Date parsed");
-        sub.assert_eq(item.bare.kind, wing::SfvType.Date, "Is Date");
+        sub.assert_eq(item.bare.kind, http::SfvType.Date, "Is Date");
         sub.assert_eq(item.bare.int_val, 1659578233, "Timestamp matches");
 
         // Decimal date MUST FAIL
-        let bad_dec_date = wing::parse_sfv_item("@1659578233.5", item);
+        let bad_dec_date = http::parse_sfv_item("@1659578233.5", item);
         sub.assert_false(bad_dec_date, "Decimal date must fail");
     };
 
     t.run("RFC 9651 Section 3.3.8 sf-displaystring (%\"...\" UTF-8 and Lowercase Hex)") { sub =>
-        var item = wing::SfvItem { .. };
+        var item = http::SfvItem { .. };
         // %"f%c3%bcber" -> "f\xc3\xbcber" (German u, 2 bytes UTF-8) -> 6 bytes total
-        let ok = wing::parse_sfv_item("%\"f%c3%bcber\"", item);
+        let ok = http::parse_sfv_item("%\"f%c3%bcber\"", item);
         sub.assert_true(ok, "DisplayString with percent-encoded UTF-8 parsed");
-        sub.assert_eq(item.bare.kind, wing::SfvType.DisplayString, "Is DisplayString");
+        sub.assert_eq(item.bare.kind, http::SfvType.DisplayString, "Is DisplayString");
         sub.assert_eq(item.bare.text.len, 6, "6 bytes decoded");
 
         // Uppercase percent-encoded hex (%C3) MUST FAIL per RFC 9651 Section 3.3.8!
-        let bad_upper = wing::parse_sfv_item("%\"f%C3%bcber\"", item);
+        let bad_upper = http::parse_sfv_item("%\"f%C3%bcber\"", item);
         sub.assert_false(bad_upper, "Uppercase percent-hex is strictly forbidden");
 
         // Invalid UTF-8 sequence MUST FAIL
-        let bad_utf8 = wing::parse_sfv_item("%\"%ff%ff\"", item);
+        let bad_utf8 = http::parse_sfv_item("%\"%ff%ff\"", item);
         sub.assert_false(bad_utf8, "Invalid UTF-8 byte sequence must fail");
     };
 }
@@ -258,15 +258,15 @@ fn test_sfv_rfc9651_dates_and_display_strings(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_sfv_lists_and_dictionaries(t: lit::T&) {
     t.run("RFC 8941 Section 3.1 List with Standalone and Inner Lists") { sub =>
-        var list = wing::SfvList { .. };
+        var list = http::SfvList { .. };
         // sugar, (milk tea);temp=hot, "cookies"
-        let ok = wing::parse_sfv_list("sugar, (milk tea);temp=hot, \"cookies\"", list);
+        let ok = http::parse_sfv_list("sugar, (milk tea);temp=hot, \"cookies\"", list);
         sub.assert_true(ok, "Structured list parsed");
         sub.assert_eq(list.members.len, 3, "3 list members");
 
         // Member 0: token "sugar"
         sub.assert_false(list.members[0].is_inner_list, "Member 0 is standalone item");
-        sub.assert_eq(list.members[0].item.bare.kind, wing::SfvType.Token, "Is Token");
+        sub.assert_eq(list.members[0].item.bare.kind, http::SfvType.Token, "Is Token");
 
         // Member 1: inner list (milk tea) with param temp=hot
         sub.assert_true(list.members[1].is_inner_list, "Member 1 is inner list");
@@ -276,14 +276,14 @@ fn test_sfv_lists_and_dictionaries(t: lit::T&) {
 
         // Member 2: string "cookies"
         sub.assert_false(list.members[2].is_inner_list, "Member 2 is standalone item");
-        sub.assert_eq(list.members[2].item.bare.kind, wing::SfvType.String, "Is String");
+        sub.assert_eq(list.members[2].item.bare.kind, http::SfvType.String, "Is String");
     };
 
     t.run("RFC 8941 Section 3.2 Dictionary In-Place Duplicate Overwrite") { sub =>
-        var dict = wing::SfvDict { .. };
+        var dict = http::SfvDict { .. };
         // a=1, b=?0, a=2
         // Duplicate key 'a' MUST overwrite previous value in-place per RFC 8941 Section 3.2!
-        let ok = wing::parse_sfv_dict("a=1, b=?0, a=2", dict);
+        let ok = http::parse_sfv_dict("a=1, b=?0, a=2", dict);
         sub.assert_true(ok, "Dictionary parsed");
         sub.assert_eq(dict.entries.len, 2, "2 unique keys (a and b)");
         sub.assert_bytes_eq(dict.entries[0].key[..], "a", "Key 0 is a");
@@ -314,8 +314,8 @@ fn test_streaming_multipart_parsing(t: lit::T&) {
         body.append("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\r\n");
         body.append("------GooseBoundaryXYZ--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Multipart parsed cleanly");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Multipart parsed cleanly");
         sub.assert_true(msg.valid, "Message marked valid");
         sub.assert_eq(msg.parts.len, 2, "Exactly 2 parts parsed");
 
@@ -342,10 +342,10 @@ fn test_streaming_multipart_parsing(t: lit::T&) {
         body.append("--test_boundary--\r\n");
 
         // Limit to max 2 parts
-        var opts = wing::MultipartOptions { .. };
+        var opts = http::MultipartOptions { .. };
         opts.max_parts = 2;
-        let msg, err = wing::parse_multipart(body[..], boundary, opts);
-        sub.assert_eq(err, wing::MultipartError.ExceededMaxParts, "ExceededMaxParts triggered");
+        let msg, err = http::parse_multipart(body[..], boundary, opts);
+        sub.assert_eq(err, http::MultipartError.ExceededMaxParts, "ExceededMaxParts triggered");
         sub.assert_false(msg.valid, "Message invalid on quota exceed");
     };
 }
@@ -363,8 +363,8 @@ fn test_cve_2026_19484_boundary_and_bmh_table(t: lit::T&) {
         }
 
         let body = "--fake\r\n\r\ntest\r\n--fake--\r\n";
-        let msg, err = wing::parse_multipart(body, long_boundary[..]);
-        sub.assert_eq(err, wing::MultipartError.InvalidBoundaryLength, "252-byte boundary rejected before state allocation");
+        let msg, err = http::parse_multipart(body, long_boundary[..]);
+        sub.assert_eq(err, http::MultipartError.InvalidBoundaryLength, "252-byte boundary rejected before state allocation");
         sub.assert_false(msg.valid, "Invalid boundary makes message invalid");
     };
 
@@ -378,7 +378,7 @@ fn test_cve_2026_19484_boundary_and_bmh_table(t: lit::T&) {
         }
 
         var table: u16[256] = [0; 256];
-        wing::build_bmh_shift_table(big_needle[..], table);
+        http::build_bmh_shift_table(big_needle[..], table);
 
         // Every byte not in the needle prefix must have shift == 256 (not 0!)
         let shift_other = table['y' as i64];
@@ -395,22 +395,22 @@ fn test_rfc9110_range_requests(t: lit::T&) {
         let file_len: i64 = 10000;
 
         // 1. Explicit: bytes=0-499
-        let rs1, err1 = wing::parse_range_header("bytes=0-499", file_len);
-        sub.assert_eq(err1, wing::RangeError.None, "Explicit range parsed");
+        let rs1, err1 = http::parse_range_header("bytes=0-499", file_len);
+        sub.assert_eq(err1, http::RangeError.None, "Explicit range parsed");
         sub.assert_eq(rs1.ranges.len, 1, "1 range");
         sub.assert_eq(rs1.ranges[0].start, 0, "Start 0");
         sub.assert_eq(rs1.ranges[0].end_pos, 499, "End 499");
 
         // 2. Open prefix: bytes=5000-
-        let rs2, err2 = wing::parse_range_header("bytes=5000-", file_len);
-        sub.assert_eq(err2, wing::RangeError.None, "Open prefix range parsed");
+        let rs2, err2 = http::parse_range_header("bytes=5000-", file_len);
+        sub.assert_eq(err2, http::RangeError.None, "Open prefix range parsed");
         sub.assert_eq(rs2.ranges.len, 1, "1 range");
         sub.assert_eq(rs2.ranges[0].start, 5000, "Start 5000");
         sub.assert_eq(rs2.ranges[0].end_pos, 9999, "End 9999 (last byte of 10000)");
 
         // 3. Suffix: bytes=-500 (last 500 bytes: 9500-9999)
-        let rs3, err3 = wing::parse_range_header("bytes=-500", file_len);
-        sub.assert_eq(err3, wing::RangeError.None, "Suffix range parsed");
+        let rs3, err3 = http::parse_range_header("bytes=-500", file_len);
+        sub.assert_eq(err3, http::RangeError.None, "Suffix range parsed");
         sub.assert_eq(rs3.ranges.len, 1, "1 range");
         sub.assert_eq(rs3.ranges[0].start, 9500, "Start 9500");
         sub.assert_eq(rs3.ranges[0].end_pos, 9999, "End 9999");
@@ -418,12 +418,12 @@ fn test_rfc9110_range_requests(t: lit::T&) {
 
     t.run("RFC 9110 Section 14.4 416 Range Not Satisfiable") { sub =>
         let file_len: i64 = 5000;
-        let rs, err = wing::parse_range_header("bytes=60000-", file_len);
-        sub.assert_eq(err, wing::RangeError.Unsatisfiable, "Unsatisfiable range returns 416 error");
+        let rs, err = http::parse_range_header("bytes=60000-", file_len);
+        sub.assert_eq(err, http::RangeError.Unsatisfiable, "Unsatisfiable range returns 416 error");
         sub.assert_false(rs.is_satisfiable, "Marked unsatisfiable");
 
         var cr_val: u8[>..] = [];
-        wing::format_content_range(-1, -1, file_len, cr_val);
+        http::format_content_range(-1, -1, file_len, cr_val);
         sub.assert_bytes_eq(cr_val[..], "bytes */5000", "Mandatory Content-Range bytes */5000 formatted");
     };
 }
@@ -442,32 +442,32 @@ fn test_cve_2011_3192_apache_killer_and_coalescing(t: lit::T&) {
             format(attack_hdr, i * 10 + 5);
         }
 
-        let rs, err = wing::parse_range_header(attack_hdr[..], 10000);
-        sub.assert_eq(err, wing::RangeError.ExceededMaxRanges, "Excessive range count rejected to defeat CVE-2011-3192");
+        let rs, err = http::parse_range_header(attack_hdr[..], 10000);
+        sub.assert_eq(err, http::RangeError.ExceededMaxRanges, "Excessive range count rejected to defeat CVE-2011-3192");
     };
 
     t.run("RFC 9110 Range Coalescing (s2 <= e1 + 1)") { sub =>
         let file_len: i64 = 10000;
 
         // Overlapping ranges: bytes=0-500, 400-999 -> [0, 999]
-        let rs_over, err_over = wing::parse_range_header("bytes=0-500, 400-999", file_len, true);
-        sub.assert_eq(err_over, wing::RangeError.None, "Overlapping ranges parsed");
+        let rs_over, err_over = http::parse_range_header("bytes=0-500, 400-999", file_len, true);
+        sub.assert_eq(err_over, http::RangeError.None, "Overlapping ranges parsed");
         sub.assert_true(rs_over.coalesced, "Coalescing occurred");
         sub.assert_eq(rs_over.ranges.len, 1, "Coalesced into 1 range");
         sub.assert_eq(rs_over.ranges[0].start, 0, "Merged start 0");
         sub.assert_eq(rs_over.ranges[0].end_pos, 999, "Merged end 999");
 
         // Adjacent ranges: bytes=0-100, 101-200 -> [0, 200]
-        let rs_adj, err_adj = wing::parse_range_header("bytes=0-100, 101-200", file_len, true);
-        sub.assert_eq(err_adj, wing::RangeError.None, "Adjacent ranges parsed");
+        let rs_adj, err_adj = http::parse_range_header("bytes=0-100, 101-200", file_len, true);
+        sub.assert_eq(err_adj, http::RangeError.None, "Adjacent ranges parsed");
         sub.assert_true(rs_adj.coalesced, "Coalescing occurred");
         sub.assert_eq(rs_adj.ranges.len, 1, "Coalesced into 1 range");
         sub.assert_eq(rs_adj.ranges[0].start, 0, "Merged start 0");
         sub.assert_eq(rs_adj.ranges[0].end_pos, 200, "Merged end 200");
 
         // Disjoint ranges: bytes=0-100, 500-600 -> 2 ranges
-        let rs_dis, err_dis = wing::parse_range_header("bytes=0-100, 500-600", file_len, true);
-        sub.assert_eq(err_dis, wing::RangeError.None, "Disjoint ranges parsed");
+        let rs_dis, err_dis = http::parse_range_header("bytes=0-100, 500-600", file_len, true);
+        sub.assert_eq(err_dis, http::RangeError.None, "Disjoint ranges parsed");
         sub.assert_eq(rs_dis.ranges.len, 2, "Keeps 2 distinct ranges");
         sub.assert_eq(rs_dis.ranges[0].start, 0, "Range 0 start");
         sub.assert_eq(rs_dis.ranges[0].end_pos, 100, "Range 0 end");
@@ -484,18 +484,18 @@ fn test_if_range_and_seconds_truncation(t: lit::T&) {
         let file_time: i64 = 0;
 
         // Strong ETag matches
-        let ok_strong = wing::evaluate_if_range("\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
+        let ok_strong = http::evaluate_if_range("\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
         sub.assert_true(ok_strong, "Strong ETag match succeeds");
 
         // Weak ETag MUST NEVER match in If-Range per RFC 9110 Section 13.1.5
-        let bad_weak1 = wing::evaluate_if_range("W/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
+        let bad_weak1 = http::evaluate_if_range("W/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
         sub.assert_false(bad_weak1, "Weak ETag forbidden in If-Range");
 
-        let bad_weak2 = wing::evaluate_if_range("w/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
+        let bad_weak2 = http::evaluate_if_range("w/\"strong-etag-1\"", "\"strong-etag-1\"", file_time);
         sub.assert_false(bad_weak2, "Lowercase weak ETag forbidden in If-Range");
 
         // Resource ETag being weak is also forbidden per RFC 9110 Section 13.1.5
-        let bad_weak3 = wing::evaluate_if_range("\"strong-etag-1\"", "W/\"strong-etag-1\"", file_time);
+        let bad_weak3 = http::evaluate_if_range("\"strong-etag-1\"", "W/\"strong-etag-1\"", file_time);
         sub.assert_false(bad_weak3, "Weak target representation ETag forbidden in If-Range");
     };
 
@@ -506,10 +506,10 @@ fn test_if_range_and_seconds_truncation(t: lit::T&) {
         var http_date_buf: u8[>..] = [];
         core::format_http(http_date_buf, core::unix(exact_sec));
 
-        let is_match = wing::evaluate_if_range(http_date_buf[..], "", exact_sec);
+        let is_match = http::evaluate_if_range(http_date_buf[..], "", exact_sec);
         sub.assert_true(is_match, "Exact unix seconds timestamp matches HTTP-Date");
 
-        let is_mismatch = wing::evaluate_if_range(http_date_buf[..], "", exact_sec + 1);
+        let is_mismatch = http::evaluate_if_range(http_date_buf[..], "", exact_sec + 1);
         sub.assert_false(is_mismatch, "Different unix seconds timestamp fails If-Range");
     };
 }
@@ -523,10 +523,10 @@ fn test_serve_range_and_patch_validation(t: lit::T&) {
         let res_len = source_data.len;
 
         var status: i32 = 0;
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         var body_out: u8[>..] = [];
 
-        wing::serve_range_request(
+        http::serve_range_request(
             "bytes=0-9",
             "",
             "\"etag\"",
@@ -541,24 +541,24 @@ fn test_serve_range_and_patch_validation(t: lit::T&) {
         };
 
         sub.assert_eq(status, 206, "Status 206 Partial Content");
-        sub.assert_bytes_eq(wing::get_header(headers, "content-range"), "bytes 0-9/36", "Content-Range header exact");
-        sub.assert_bytes_eq(wing::get_header(headers, "content-length"), "10", "Content-Length is 10");
+        sub.assert_bytes_eq(http::get_header(headers, "content-range"), "bytes 0-9/36", "Content-Range header exact");
+        sub.assert_bytes_eq(http::get_header(headers, "content-length"), "10", "Content-Length is 10");
         sub.assert_bytes_eq(body_out[..], "0123456789", "Body contains exactly first 10 bytes");
     };
 
     t.run("draft-wright Byte-Range PATCH Validation") { sub =>
         // Valid PATCH: Content-Range matches body length (10 bytes: 0-9)
-        let s1, e1, ok1 = wing::validate_byterange_patch("bytes 0-9/1000", 10);
+        let s1, e1, ok1 = http::validate_byterange_patch("bytes 0-9/1000", 10);
         sub.assert_true(ok1, "Valid PATCH Content-Range accepted");
         sub.assert_eq(s1, 0, "Start 0");
         sub.assert_eq(e1, 9, "End 9");
 
         // Length mismatch (body length 5 != 10)
-        let s2, e2, ok2 = wing::validate_byterange_patch("bytes 0-9/1000", 5);
+        let s2, e2, ok2 = http::validate_byterange_patch("bytes 0-9/1000", 5);
         sub.assert_false(ok2, "Length mismatch rejected");
 
         // Unsatisfied form 'bytes */1000' in PATCH is a syntax error
-        let s3, e3, ok3 = wing::validate_byterange_patch("bytes */1000", 0);
+        let s3, e3, ok3 = http::validate_byterange_patch("bytes */1000", 0);
         sub.assert_false(ok3, "Unsatisfied bytes */N in PATCH rejected");
     };
 }
@@ -576,8 +576,8 @@ fn test_boundary_delimiter_and_disposition_invariants(t: lit::T&) {
         body.append("data\r\n");
         body.append("--IncompBnd\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.PrematureEOF, "Truncated payload without closing dashes rejected as PrematureEOF");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.PrematureEOF, "Truncated payload without closing dashes rejected as PrematureEOF");
         sub.assert_false(msg.valid, "Message marked invalid");
     };
 
@@ -590,8 +590,8 @@ fn test_boundary_delimiter_and_disposition_invariants(t: lit::T&) {
         body.append("pre\r\n--SafeBnd--not_close\r\npost\r\n");
         body.append("--SafeBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Payload with inner --bnd--collision parsed cleanly");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Payload with inner --bnd--collision parsed cleanly");
         sub.assert_true(msg.valid, "Message valid");
         sub.assert_eq(msg.parts.len, 1, "Exactly 1 part extracted");
         sub.assert_bytes_eq(msg.parts[0].data, "pre\r\n--SafeBnd--not_close\r\npost", "Body containing false boundary suffix preserved intact");
@@ -606,8 +606,8 @@ fn test_boundary_delimiter_and_disposition_invariants(t: lit::T&) {
         bad_body.append("bytes\r\n");
         bad_body.append("--DispBnd--\r\n");
 
-        let msg1, err1 = wing::parse_multipart(bad_body[..], boundary);
-        sub.assert_eq(err1, wing::MultipartError.InvalidPartHeaders, "Non-form-data Content-Disposition rejected");
+        let msg1, err1 = http::parse_multipart(bad_body[..], boundary);
+        sub.assert_eq(err1, http::MultipartError.InvalidPartHeaders, "Non-form-data Content-Disposition rejected");
         sub.assert_false(msg1.valid, "Message marked invalid");
 
         // Part 2: Malformed Content-Disposition header with unclosed quote
@@ -617,8 +617,8 @@ fn test_boundary_delimiter_and_disposition_invariants(t: lit::T&) {
         malformed_body.append("bytes\r\n");
         malformed_body.append("--DispBnd--\r\n");
 
-        let msg2, err2 = wing::parse_multipart(malformed_body[..], boundary);
-        sub.assert_eq(err2, wing::MultipartError.InvalidPartHeaders, "Malformed Content-Disposition header rejected");
+        let msg2, err2 = http::parse_multipart(malformed_body[..], boundary);
+        sub.assert_eq(err2, http::MultipartError.InvalidPartHeaders, "Malformed Content-Disposition header rejected");
         sub.assert_false(msg2.valid, "Message marked invalid on malformed disposition");
     };
 }
@@ -631,8 +631,8 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
         let file_len: i64 = 10000;
 
         // 1. Out-of-order disjoint: bytes=100-200, 0-50 -> sorted [0, 50], [100, 200]
-        let rs_ord, err_ord = wing::parse_range_header("bytes=100-200, 0-50", file_len, true);
-        sub.assert_eq(err_ord, wing::RangeError.None, "Out-of-order ranges parsed");
+        let rs_ord, err_ord = http::parse_range_header("bytes=100-200, 0-50", file_len, true);
+        sub.assert_eq(err_ord, http::RangeError.None, "Out-of-order ranges parsed");
         sub.assert_true(rs_ord.coalesced, "Coalescing triggered");
         sub.assert_eq(rs_ord.ranges.len, 2, "Maintains 2 sorted disjoint ranges");
         sub.assert_eq(rs_ord.ranges[0].start, 0, "First range start is 0");
@@ -641,24 +641,24 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
         sub.assert_eq(rs_ord.ranges[1].end_pos, 200, "Second range end is 200");
 
         // 2. Out-of-order overlapping: bytes=100-200, 0-150 -> merged [0, 200]
-        let rs_over, err_over = wing::parse_range_header("bytes=100-200, 0-150", file_len, true);
-        sub.assert_eq(err_over, wing::RangeError.None, "Out-of-order overlapping parsed");
+        let rs_over, err_over = http::parse_range_header("bytes=100-200, 0-150", file_len, true);
+        sub.assert_eq(err_over, http::RangeError.None, "Out-of-order overlapping parsed");
         sub.assert_true(rs_over.coalesced, "Coalesced");
         sub.assert_eq(rs_over.ranges.len, 1, "Merged to 1 range");
         sub.assert_eq(rs_over.ranges[0].start, 0, "Merged start 0");
         sub.assert_eq(rs_over.ranges[0].end_pos, 200, "Merged end 200");
 
         // 3. Duplicate identical ranges: bytes=0-50, 0-50 -> single range [0, 50]
-        let rs_dup, err_dup = wing::parse_range_header("bytes=0-50, 0-50", file_len, true);
-        sub.assert_eq(err_dup, wing::RangeError.None, "Duplicate ranges parsed");
+        let rs_dup, err_dup = http::parse_range_header("bytes=0-50, 0-50", file_len, true);
+        sub.assert_eq(err_dup, http::RangeError.None, "Duplicate ranges parsed");
         sub.assert_true(rs_dup.coalesced, "Coalesced");
         sub.assert_eq(rs_dup.ranges.len, 1, "Duplicate coalesced to 1 range");
         sub.assert_eq(rs_dup.ranges[0].start, 0, "Range start 0");
         sub.assert_eq(rs_dup.ranges[0].end_pos, 50, "Range end 50");
 
         // 4. Identical start, out-of-order end: bytes=0-100, 0-50 -> merged [0, 100]
-        let rs_same_s, err_same_s = wing::parse_range_header("bytes=0-100, 0-50", file_len, true);
-        sub.assert_eq(err_same_s, wing::RangeError.None, "Same start parsed");
+        let rs_same_s, err_same_s = http::parse_range_header("bytes=0-100, 0-50", file_len, true);
+        sub.assert_eq(err_same_s, http::RangeError.None, "Same start parsed");
         sub.assert_true(rs_same_s.coalesced, "Coalesced");
         sub.assert_eq(rs_same_s.ranges.len, 1, "Merged into 1 range");
         sub.assert_eq(rs_same_s.ranges[0].start, 0, "Merged start 0");
@@ -669,12 +669,12 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
         let file_len: i64 = 10000;
 
         // bytes=-0 must be rejected with MalformedRange
-        let rs_zero, err_zero = wing::parse_range_header("bytes=-0", file_len);
-        sub.assert_eq(err_zero, wing::RangeError.MalformedRange, "bytes=-0 rejected as MalformedRange");
+        let rs_zero, err_zero = http::parse_range_header("bytes=-0", file_len);
+        sub.assert_eq(err_zero, http::RangeError.MalformedRange, "bytes=-0 rejected as MalformedRange");
 
         // Suffix length exceeding resource length clamps to full resource [0, file_len - 1]
-        let rs_clamp, err_clamp = wing::parse_range_header("bytes=-20000", file_len);
-        sub.assert_eq(err_clamp, wing::RangeError.None, "Large suffix parsed");
+        let rs_clamp, err_clamp = http::parse_range_header("bytes=-20000", file_len);
+        sub.assert_eq(err_clamp, http::RangeError.None, "Large suffix parsed");
         sub.assert_eq(rs_clamp.ranges.len, 1, "1 range");
         sub.assert_eq(rs_clamp.ranges[0].start, 0, "Start clamped to 0");
         sub.assert_eq(rs_clamp.ranges[0].end_pos, 9999, "End clamped to resource_len - 1");
@@ -682,22 +682,22 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
 
     t.run("64-Bit Integer Overflow Guard in Range Serving") { sub =>
         // Construct a synthetic RangeSet where end_pos - start + 1 would overflow signed 64-bit int
-        var rs = wing::RangeSet {
+        var rs = http::RangeSet {
             resource_length: 9223372036854775807,
             is_satisfiable:  true,
             coalesced:       false,
             ..
         };
-        rs.ranges.push(wing::NormalizedRange {
+        rs.ranges.push(http::NormalizedRange {
             start:   0,
             end_pos: 9223372036854775807,
         });
 
         var status: i32 = 0;
-        var headers = wing::HeaderMap { .. };
+        var headers = http::HeaderMap { .. };
         var body_out: u8[>..] = [];
 
-        wing::serve_range_set(
+        http::serve_range_set(
             rs,
             9223372036854775807,
             "application/octet-stream",
@@ -710,8 +710,8 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
         };
 
         sub.assert_eq(status, 416, "Status 416 Range Not Satisfiable on i64 overflow");
-        sub.assert_bytes_eq(wing::get_header(headers, "content-range"), "bytes */9223372036854775807", "416 Content-Range with resource length");
-        sub.assert_bytes_eq(wing::get_header(headers, "content-length"), "0", "Content-Length is 0");
+        sub.assert_bytes_eq(http::get_header(headers, "content-range"), "bytes */9223372036854775807", "416 Content-Range with resource length");
+        sub.assert_bytes_eq(http::get_header(headers, "content-length"), "0", "Content-Length is 0");
         sub.assert_eq(body_out.len, 0, "Body empty");
     };
 
@@ -740,15 +740,15 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
         body.append("--Outer--\r\n");
 
         // 1. Outer parse: should NOT prematurely terminate at --Outer_Inner
-        let outer_msg, outer_err = wing::parse_multipart(body[..], outer_boundary);
-        sub.assert_eq(outer_err, wing::MultipartError.None, "Outer multipart parsed cleanly");
+        let outer_msg, outer_err = http::parse_multipart(body[..], outer_boundary);
+        sub.assert_eq(outer_err, http::MultipartError.None, "Outer multipart parsed cleanly");
         sub.assert_true(outer_msg.valid, "Outer message valid");
         sub.assert_eq(outer_msg.parts.len, 1, "Exactly 1 outer part extracted");
         sub.assert_bytes_eq(outer_msg.parts[0].name[..], "upload_batch", "Outer part name matched");
 
         // 2. Inner parse: parse outer part's data with inner boundary
-        let inner_msg, inner_err = wing::parse_multipart(outer_msg.parts[0].data, inner_boundary);
-        sub.assert_eq(inner_err, wing::MultipartError.None, "Inner nested multipart parsed cleanly");
+        let inner_msg, inner_err = http::parse_multipart(outer_msg.parts[0].data, inner_boundary);
+        sub.assert_eq(inner_err, http::MultipartError.None, "Inner nested multipart parsed cleanly");
         sub.assert_true(inner_msg.valid, "Inner message valid");
         sub.assert_eq(inner_msg.parts.len, 2, "Both nested parts extracted");
 
@@ -770,31 +770,31 @@ fn test_rfc9110_coalescing_and_nested_boundaries(t: lit::T&) {
 fn test_round3_boundary_quoting_patch_and_quotas(t: lit::T&) {
     t.run("RFC 7578 / RFC 2046 Quoted Boundary Unquoting and Validation") { sub =>
         // 1. Valid quoted boundary
-        sub.assert_true(wing::validate_boundary_string("\"valid-quoted-bnd\""), "Standard quoted boundary accepted");
+        sub.assert_true(http::validate_boundary_string("\"valid-quoted-bnd\""), "Standard quoted boundary accepted");
 
         // 2. Interior space is valid in RFC 2046 bchars
-        sub.assert_true(wing::validate_boundary_string("\"valid boundary with spaces\""), "Quoted boundary with interior spaces accepted");
+        sub.assert_true(http::validate_boundary_string("\"valid boundary with spaces\""), "Quoted boundary with interior spaces accepted");
 
         // 3. Trailing space rejected per RFC 2046 Section 5.1.1
-        sub.assert_false(wing::validate_boundary_string("\"boundary with trailing space \""), "Quoted boundary ending with space rejected");
+        sub.assert_false(http::validate_boundary_string("\"boundary with trailing space \""), "Quoted boundary ending with space rejected");
 
         // 4. Escaped quotes inside boundary rejected (quote is not an RFC 2046 bchar)
-        sub.assert_false(wing::validate_boundary_string("\"escaped\\\"quote\""), "Escaped quote inside boundary rejected");
+        sub.assert_false(http::validate_boundary_string("\"escaped\\\"quote\""), "Escaped quote inside boundary rejected");
 
         // 5. Escaped backslash inside boundary rejected (backslash is not an RFC 2046 bchar)
-        sub.assert_false(wing::validate_boundary_string("\"escaped\\\\pair\""), "Escaped backslash inside boundary rejected");
+        sub.assert_false(http::validate_boundary_string("\"escaped\\\\pair\""), "Escaped backslash inside boundary rejected");
 
         // 6. Unclosed quote rejected
-        sub.assert_false(wing::validate_boundary_string("\"unclosed-boundary"), "Unclosed quoted boundary rejected");
+        sub.assert_false(http::validate_boundary_string("\"unclosed-boundary"), "Unclosed quoted boundary rejected");
 
         // 7. Escaped terminal quote rejected
-        sub.assert_false(wing::validate_boundary_string("\"escaped-terminal\\\""), "Escaped terminal quote rejected");
+        sub.assert_false(http::validate_boundary_string("\"escaped-terminal\\\""), "Escaped terminal quote rejected");
 
         // 8. Empty quotes rejected (length 0)
-        sub.assert_false(wing::validate_boundary_string("\"\""), "Empty quoted boundary rejected");
+        sub.assert_false(http::validate_boundary_string("\"\""), "Empty quoted boundary rejected");
 
         // 9. Quoted boundary with invalid character rejected
-        sub.assert_false(wing::validate_boundary_string("\"bad@boundary\""), "Quoted boundary with @ rejected");
+        sub.assert_false(http::validate_boundary_string("\"bad@boundary\""), "Quoted boundary with @ rejected");
 
         // 10. parse_multipart with quoted boundary parameter
         var body: u8[>..] = [];
@@ -803,8 +803,8 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: lit::T&) {
         body.append("hello quoted\r\n");
         body.append("--QuotedBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], "\"QuotedBnd\"");
-        sub.assert_eq(err, wing::MultipartError.None, "parse_multipart unquotes boundary and matches wire delimiters");
+        let msg, err = http::parse_multipart(body[..], "\"QuotedBnd\"");
+        sub.assert_eq(err, http::MultipartError.None, "parse_multipart unquotes boundary and matches wire delimiters");
         sub.assert_true(msg.valid, "Message valid");
         sub.assert_eq(msg.parts.len, 1, "1 part extracted");
         sub.assert_bytes_eq(msg.parts[0].data, "hello quoted", "Part body extracted correctly");
@@ -812,41 +812,41 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: lit::T&) {
 
     t.run("Byte-Range PATCH Validation Syntax & Wildcards (draft-wright)") { sub =>
         // 1. Wildcard complete-length: bytes 0-9/* (accepted)
-        let s_wc, e_wc, ok_wc = wing::validate_byterange_patch("bytes 0-9/*", 10);
+        let s_wc, e_wc, ok_wc = http::validate_byterange_patch("bytes 0-9/*", 10);
         sub.assert_true(ok_wc, "Wildcard complete-length bytes 0-9/* accepted");
         sub.assert_eq(s_wc, 0, "Start 0");
         sub.assert_eq(e_wc, 9, "End 9");
 
         // 2. Wildcard range interval: bytes */* (rejected)
-        let s_wc2, e_wc2, ok_wc2 = wing::validate_byterange_patch("bytes */*", 0);
+        let s_wc2, e_wc2, ok_wc2 = http::validate_byterange_patch("bytes */*", 0);
         sub.assert_false(ok_wc2, "Wildcard range bytes */* rejected in PATCH");
 
         // 3. Inverted range interval: bytes 50-20/100 (start > end, rejected)
-        let s_inv, e_inv, ok_inv = wing::validate_byterange_patch("bytes 50-20/100", 10);
+        let s_inv, e_inv, ok_inv = http::validate_byterange_patch("bytes 50-20/100", 10);
         sub.assert_false(ok_inv, "Inverted range bytes 50-20/100 rejected");
 
         // 4. Negative offset: bytes -10-20/100 (rejected)
-        let s_neg, e_neg, ok_neg = wing::validate_byterange_patch("bytes -10-20/100", 10);
+        let s_neg, e_neg, ok_neg = http::validate_byterange_patch("bytes -10-20/100", 10);
         sub.assert_false(ok_neg, "Negative start offset rejected");
 
         // 5. Non-numeric range characters: bytes 0-abc/100 (rejected)
-        let s_nan, e_nan, ok_nan = wing::validate_byterange_patch("bytes 0-abc/100", 10);
+        let s_nan, e_nan, ok_nan = http::validate_byterange_patch("bytes 0-abc/100", 10);
         sub.assert_false(ok_nan, "Non-numeric range characters rejected");
 
         // 6. Non-numeric total characters: bytes 0-9/xyz (rejected)
-        let s_nan_tot, e_nan_tot, ok_nan_tot = wing::validate_byterange_patch("bytes 0-9/xyz", 10);
+        let s_nan_tot, e_nan_tot, ok_nan_tot = http::validate_byterange_patch("bytes 0-9/xyz", 10);
         sub.assert_false(ok_nan_tot, "Non-numeric total length rejected");
 
         // 7. Complete length <= end byte: bytes 0-9/5 (rejected)
-        let s_short, e_short, ok_short = wing::validate_byterange_patch("bytes 0-9/5", 10);
+        let s_short, e_short, ok_short = http::validate_byterange_patch("bytes 0-9/5", 10);
         sub.assert_false(ok_short, "Complete length <= last byte rejected");
 
         // 8. Missing complete length: bytes 0-9/ (rejected)
-        let s_miss, e_miss, ok_miss = wing::validate_byterange_patch("bytes 0-9/", 10);
+        let s_miss, e_miss, ok_miss = http::validate_byterange_patch("bytes 0-9/", 10);
         sub.assert_false(ok_miss, "Missing complete length after slash rejected");
 
         // 9. Negative body length: bytes 0-9/10 with body_len = -1 (rejected)
-        let s_neg_len, e_neg_len, ok_neg_len = wing::validate_byterange_patch("bytes 0-9/10", -1);
+        let s_neg_len, e_neg_len, ok_neg_len = http::validate_byterange_patch("bytes 0-9/10", -1);
         sub.assert_false(ok_neg_len, "Negative body length rejected");
     };
 
@@ -859,33 +859,33 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: lit::T&) {
         body_3parts.append("--QuotaBnd--\r\n");
 
         // Exactly max_parts: 3 parts with max_parts = 3 succeeds
-        var opts_exact = wing::MultipartOptions { .. };
+        var opts_exact = http::MultipartOptions { .. };
         opts_exact.max_parts = 3;
-        let msg_exact, err_exact = wing::parse_multipart(body_3parts[..], boundary, opts_exact);
-        sub.assert_eq(err_exact, wing::MultipartError.None, "Exactly max_parts (3 of 3) succeeds");
+        let msg_exact, err_exact = http::parse_multipart(body_3parts[..], boundary, opts_exact);
+        sub.assert_eq(err_exact, http::MultipartError.None, "Exactly max_parts (3 of 3) succeeds");
         sub.assert_true(msg_exact.valid, "Exact parts count valid");
         sub.assert_eq(msg_exact.parts.len, 3, "All 3 parts parsed");
 
         // Exceeding max_parts by 1: 3 parts with max_parts = 2 rejected
-        var opts_exceed = wing::MultipartOptions { .. };
+        var opts_exceed = http::MultipartOptions { .. };
         opts_exceed.max_parts = 2;
-        let msg_exceed, err_exceed = wing::parse_multipart(body_3parts[..], boundary, opts_exceed);
-        sub.assert_eq(err_exceed, wing::MultipartError.ExceededMaxParts, "max_parts + 1 rejected with ExceededMaxParts");
+        let msg_exceed, err_exceed = http::parse_multipart(body_3parts[..], boundary, opts_exceed);
+        sub.assert_eq(err_exceed, http::MultipartError.ExceededMaxParts, "max_parts + 1 rejected with ExceededMaxParts");
         sub.assert_false(msg_exceed.valid, "Exceeded parts invalid");
 
         // max_parts = 0 rejected immediately
-        var opts_zero = wing::MultipartOptions { .. };
+        var opts_zero = http::MultipartOptions { .. };
         opts_zero.max_parts = 0;
-        let msg_zero, err_zero = wing::parse_multipart(body_3parts[..], boundary, opts_zero);
-        sub.assert_eq(err_zero, wing::MultipartError.ExceededMaxParts, "max_parts = 0 rejected with ExceededMaxParts");
+        let msg_zero, err_zero = http::parse_multipart(body_3parts[..], boundary, opts_zero);
+        sub.assert_eq(err_zero, http::MultipartError.ExceededMaxParts, "max_parts = 0 rejected with ExceededMaxParts");
         sub.assert_false(msg_zero.valid, "Zero max_parts invalid");
 
         // Memory quota boundary: calculate total header + body bytes of first part
         // Content-Disposition: form-data; name="p1"\r\n (45 bytes) + v1 (2 bytes) = 47 bytes
-        var opts_mem = wing::MultipartOptions { .. };
+        var opts_mem = http::MultipartOptions { .. };
         opts_mem.max_memory_bytes = 46; // 1 byte less than part 1 requires
-        let msg_mem, err_mem = wing::parse_multipart(body_3parts[..], boundary, opts_mem);
-        sub.assert_eq(err_mem, wing::MultipartError.ExceededMaxMemory, "Memory quota boundary enforced with ExceededMaxMemory");
+        let msg_mem, err_mem = http::parse_multipart(body_3parts[..], boundary, opts_mem);
+        sub.assert_eq(err_mem, http::MultipartError.ExceededMaxMemory, "Memory quota boundary enforced with ExceededMaxMemory");
         sub.assert_false(msg_mem.valid, "Memory exceeded message invalid");
     };
 }
@@ -901,28 +901,28 @@ fn test_round3_boundary_quoting_patch_and_quotas(t: lit::T&) {
 fn test_range_offset_i64_overflow(t: lit::T&) {
     t.run("parse_i64_slice Rejects Values >= 2^63 and Multi-Digit Overflows") { sub =>
         // Boundary: 2^63 - 1 (9223372036854775807) is maximum signed positive i64
-        let val_max, ok_max = wing::parse_i64_slice("9223372036854775807");
+        let val_max, ok_max = http::parse_i64_slice("9223372036854775807");
         sub.assert_true(ok_max, "i64::MAX (9223372036854775807) must parse successfully");
         sub.assert_eq(val_max, 9223372036854775807, "Exact i64::MAX value preserved");
 
         // 2^63 (9223372036854775808): signed overflow to negative in C
-        let val_ovf1, ok_ovf1 = wing::parse_i64_slice("9223372036854775808");
+        let val_ovf1, ok_ovf1 = http::parse_i64_slice("9223372036854775808");
         sub.assert_false(ok_ovf1, "2^63 (9223372036854775808) must be rejected with ok=false");
 
         // 2^64 (18446744073709551616): wraps to 0 in 64-bit unsigned/signed arithmetic
-        let val_ovf2, ok_ovf2 = wing::parse_i64_slice("18446744073709551616");
+        let val_ovf2, ok_ovf2 = http::parse_i64_slice("18446744073709551616");
         sub.assert_false(ok_ovf2, "2^64 (18446744073709551616) must be rejected with ok=false");
 
         // Extreme 20-digit overflow (99999999999999999999)
-        let val_ovf3, ok_ovf3 = wing::parse_i64_slice("99999999999999999999");
+        let val_ovf3, ok_ovf3 = http::parse_i64_slice("99999999999999999999");
         sub.assert_false(ok_ovf3, "20-digit value (99999999999999999999) must be rejected with ok=false");
 
         // Multi-limb extreme digits
-        let val_ovf4, ok_ovf4 = wing::parse_i64_slice("123456789012345678901234567890");
+        let val_ovf4, ok_ovf4 = http::parse_i64_slice("123456789012345678901234567890");
         sub.assert_false(ok_ovf4, "30-digit value must be rejected with ok=false");
 
         // Leading zeros on valid value
-        let val_zero, ok_zero = wing::parse_i64_slice("00000000000000000042");
+        let val_zero, ok_zero = http::parse_i64_slice("00000000000000000042");
         sub.assert_true(ok_zero, "Leading zeros on valid value 42 must succeed");
         sub.assert_eq(val_zero, 42, "Value 42 parsed accurately despite leading zeros");
     };
@@ -931,33 +931,33 @@ fn test_range_offset_i64_overflow(t: lit::T&) {
         let file_len: i64 = 1000;
 
         // Open prefix with 2^64 (wraps to 0 without overflow guard)
-        let rs_ovf1, err_ovf1 = wing::parse_range_header("bytes=18446744073709551616-", file_len);
-        sub.assert_eq(err_ovf1, wing::RangeError.MalformedRange, "bytes=2^64- must return MalformedRange");
+        let rs_ovf1, err_ovf1 = http::parse_range_header("bytes=18446744073709551616-", file_len);
+        sub.assert_eq(err_ovf1, http::RangeError.MalformedRange, "bytes=2^64- must return MalformedRange");
 
         // Open prefix with 2^63 (9223372036854775808-)
-        let rs_ovf2, err_ovf2 = wing::parse_range_header("bytes=9223372036854775808-", file_len);
-        sub.assert_eq(err_ovf2, wing::RangeError.MalformedRange, "bytes=2^63- must return MalformedRange");
+        let rs_ovf2, err_ovf2 = http::parse_range_header("bytes=9223372036854775808-", file_len);
+        sub.assert_eq(err_ovf2, http::RangeError.MalformedRange, "bytes=2^63- must return MalformedRange");
 
         // Explicit interval with overflowing end offset (bytes=0-18446744073709551616)
-        let rs_ovf3, err_ovf3 = wing::parse_range_header("bytes=0-18446744073709551616", file_len);
-        sub.assert_eq(err_ovf3, wing::RangeError.MalformedRange, "bytes=0-2^64 must return MalformedRange");
+        let rs_ovf3, err_ovf3 = http::parse_range_header("bytes=0-18446744073709551616", file_len);
+        sub.assert_eq(err_ovf3, http::RangeError.MalformedRange, "bytes=0-2^64 must return MalformedRange");
 
         // Suffix interval with overflowing offset (bytes=-18446744073709551626)
-        let rs_ovf4, err_ovf4 = wing::parse_range_header("bytes=-18446744073709551626", file_len);
-        sub.assert_eq(err_ovf4, wing::RangeError.MalformedRange, "bytes=-(2^64+10) must return MalformedRange");
+        let rs_ovf4, err_ovf4 = http::parse_range_header("bytes=-18446744073709551626", file_len);
+        sub.assert_eq(err_ovf4, http::RangeError.MalformedRange, "bytes=-(2^64+10) must return MalformedRange");
 
         // 20-digit overflow
-        let rs_ovf5, err_ovf5 = wing::parse_range_header("bytes=99999999999999999999-", file_len);
-        sub.assert_eq(err_ovf5, wing::RangeError.MalformedRange, "20-digit range offset must return MalformedRange");
+        let rs_ovf5, err_ovf5 = http::parse_range_header("bytes=99999999999999999999-", file_len);
+        sub.assert_eq(err_ovf5, http::RangeError.MalformedRange, "20-digit range offset must return MalformedRange");
     };
 
     t.run("draft-wright validate_byterange_patch Rejects Overflowing Offsets") { sub =>
         // 2^64 in PATCH range header
-        let s_p, e_p, ok_p = wing::validate_byterange_patch("bytes 18446744073709551616-18446744073709551625/1000", 10);
+        let s_p, e_p, ok_p = http::validate_byterange_patch("bytes 18446744073709551616-18446744073709551625/1000", 10);
         sub.assert_false(ok_p, "PATCH with 2^64 offset must be rejected");
 
         // Valid boundary PATCH range
-        let s_ok, e_ok, ok_valid = wing::validate_byterange_patch("bytes 0-9/1000", 10);
+        let s_ok, e_ok, ok_valid = http::validate_byterange_patch("bytes 0-9/1000", 10);
         sub.assert_true(ok_valid, "Valid PATCH range must be accepted");
         sub.assert_eq(s_ok, 0, "Start offset 0");
         sub.assert_eq(e_ok, 9, "End offset 9");
@@ -981,8 +981,8 @@ fn test_multipart_lf_delimiter_and_line_endings(t: lit::T&) {
         body.append("hello world\n");
         body.append("--GooseLFBoundary42--\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "LF multipart parsed cleanly with None error");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "LF multipart parsed cleanly with None error");
         sub.assert_true(msg.valid, "Message marked valid for LF body");
         sub.assert_eq(msg.parts.len, 2, "Exactly 2 parts parsed from LF body");
 
@@ -1011,8 +1011,8 @@ fn test_multipart_lf_delimiter_and_line_endings(t: lit::T&) {
         body.append("beta\n");
         body.append("--GooseMixedBoundary--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Mixed CRLF/LF multipart parsed cleanly");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Mixed CRLF/LF multipart parsed cleanly");
         sub.assert_true(msg.valid, "Message valid with mixed line endings");
         sub.assert_eq(msg.parts.len, 2, "2 parts extracted");
         sub.assert_bytes_eq(msg.parts[0].data, "alpha", "Part 1 data exact");
@@ -1029,8 +1029,8 @@ fn test_multipart_lf_delimiter_and_line_endings(t: lit::T&) {
         body.append("value\r\n");
         body.append("--TrueBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Preamble with embedded boundary substring handled");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Preamble with embedded boundary substring handled");
         sub.assert_true(msg.valid, "Valid message despite preamble");
         sub.assert_eq(msg.parts.len, 1, "Exactly 1 real part extracted");
         sub.assert_bytes_eq(msg.parts[0].name[..], "field", "Field name matches");
@@ -1046,8 +1046,8 @@ fn test_range_limits_and_coalescing(t: lit::T&) {
         let res_len: i64 = 9223372036854775806;
         // Overlapping adjacent intervals at high 64-bit offsets:
         // bytes=1000-2000, 2001-3000 -> merged [1000, 3000]
-        let rs, err = wing::parse_range_header("bytes=1000-2000, 2001-3000", res_len, true);
-        sub.assert_eq(err, wing::RangeError.None, "High offset range parsed");
+        let rs, err = http::parse_range_header("bytes=1000-2000, 2001-3000", res_len, true);
+        sub.assert_eq(err, http::RangeError.None, "High offset range parsed");
         sub.assert_true(rs.coalesced, "Coalescing flag active");
         sub.assert_eq(rs.ranges.len, 1, "Merged to 1 range");
         sub.assert_eq(rs.ranges[0].start, 1000, "Merged start 1000");
@@ -1056,28 +1056,28 @@ fn test_range_limits_and_coalescing(t: lit::T&) {
 
     t.run("Algorithmic Limit on Empty Elements Defends Against Denial of Service") { sub =>
         // > 16 empty comma elements
-        let rs_dos, err_dos = wing::parse_range_header("bytes=,,,,,,,,,,,,,,,,,,0-10", 100);
-        sub.assert_eq(err_dos, wing::RangeError.TooManyEmptyElements, "Excessive empty elements rejected");
+        let rs_dos, err_dos = http::parse_range_header("bytes=,,,,,,,,,,,,,,,,,,0-10", 100);
+        sub.assert_eq(err_dos, http::RangeError.TooManyEmptyElements, "Excessive empty elements rejected");
     };
 
     t.run("Range bytes=-0 Must Be Rejected as Malformed") { sub =>
         // RFC 9110: bytes=-0 requests 0 bytes from suffix, which is invalid
-        let rs, err = wing::parse_range_header("bytes=-0", 1000);
-        sub.assert_eq(err, wing::RangeError.MalformedRange, "bytes=-0 must return MalformedRange, not 206 with invalid Content-Range");
+        let rs, err = http::parse_range_header("bytes=-0", 1000);
+        sub.assert_eq(err, http::RangeError.MalformedRange, "bytes=-0 must return MalformedRange, not 206 with invalid Content-Range");
     };
 
     t.run("Case-Insensitive Bytes= Unit Accepted") { sub =>
-        let rs1, err1 = wing::parse_range_header("BYTES=0-100", 1000);
-        sub.assert_eq(err1, wing::RangeError.None, "Uppercase BYTES= must be accepted");
+        let rs1, err1 = http::parse_range_header("BYTES=0-100", 1000);
+        sub.assert_eq(err1, http::RangeError.None, "Uppercase BYTES= must be accepted");
         sub.assert_eq(rs1.ranges.len, 1);
 
-        let rs2, err2 = wing::parse_range_header("Bytes=0-100", 1000);
-        sub.assert_eq(err2, wing::RangeError.None, "Mixed case Bytes= must be accepted");
+        let rs2, err2 = http::parse_range_header("Bytes=0-100", 1000);
+        sub.assert_eq(err2, http::RangeError.None, "Mixed case Bytes= must be accepted");
     };
 
     t.run("Unsupported Range Unit Returns InvalidUnit") { sub =>
-        let rs, err = wing::parse_range_header("items=0-10", 1000);
-        sub.assert_eq(err, wing::RangeError.InvalidUnit, "Unsupported unit 'items' must return InvalidUnit");
+        let rs, err = http::parse_range_header("items=0-10", 1000);
+        sub.assert_eq(err, http::RangeError.InvalidUnit, "Unsupported unit 'items' must return InvalidUnit");
     };
 }
 
@@ -1098,11 +1098,11 @@ fn test_mime_headers_memory_limit_bypass(t: lit::T&) {
 
         // Quota: 25 bytes total memory. Part 1 takes 14 bytes. Remaining budget is 11 bytes (< 400 bytes).
         // Part 2 has 43 bytes, which exceeds remaining 11 bytes.
-        var opts = wing::MultipartOptions { .. };
+        var opts = http::MultipartOptions { .. };
         opts.max_memory_bytes = 25;
 
-        let msg, err = wing::parse_multipart(body[..], boundary, opts);
-        sub.assert_eq(err, wing::MultipartError.ExceededMaxMemory, "Memory limit strictly enforced when remaining quota < 400 bytes");
+        let msg, err = http::parse_multipart(body[..], boundary, opts);
+        sub.assert_eq(err, http::MultipartError.ExceededMaxMemory, "Memory limit strictly enforced when remaining quota < 400 bytes");
         sub.assert_false(msg.valid, "Message marked invalid upon memory limit breach");
     };
 
@@ -1120,11 +1120,11 @@ fn test_mime_headers_memory_limit_bypass(t: lit::T&) {
         body.append("payload\r\n");
         body.append("--GooseHdrBnd--\r\n");
 
-        var opts = wing::MultipartOptions { .. };
+        var opts = http::MultipartOptions { .. };
         opts.max_header_bytes = 500; // Small limit to test bounded scan
 
-        let msg, err = wing::parse_multipart(body[..], boundary, opts);
-        sub.assert_eq(err, wing::MultipartError.InvalidPartHeaders, "Header line exceeding max_header_bytes rejected without memory bypass");
+        let msg, err = http::parse_multipart(body[..], boundary, opts);
+        sub.assert_eq(err, http::MultipartError.InvalidPartHeaders, "Header line exceeding max_header_bytes rejected without memory bypass");
         sub.assert_false(msg.valid, "Message marked invalid on oversized header");
     };
 
@@ -1136,11 +1136,11 @@ fn test_mime_headers_memory_limit_bypass(t: lit::T&) {
         body.append("x\r\n");
         body.append("--GooseZeroMem--\r\n");
 
-        var opts = wing::MultipartOptions { .. };
+        var opts = http::MultipartOptions { .. };
         opts.max_memory_bytes = 0;
 
-        let msg, err = wing::parse_multipart(body[..], boundary, opts);
-        sub.assert_eq(err, wing::MultipartError.ExceededMaxMemory, "Zero memory budget triggers ExceededMaxMemory on any part data");
+        let msg, err = http::parse_multipart(body[..], boundary, opts);
+        sub.assert_eq(err, http::MultipartError.ExceededMaxMemory, "Zero memory budget triggers ExceededMaxMemory on any part data");
         sub.assert_false(msg.valid, "Invalid message on zero budget");
     };
 }
@@ -1160,8 +1160,8 @@ fn test_range_header_size_and_count_limits(t: lit::T&) {
             format(attack_hdr, i * 2 + 1);
         }
 
-        let rs, err = wing::parse_range_header(attack_hdr[..], 10000);
-        sub.assert_eq(err, wing::RangeError.ExceededMaxRanges, "205-range attack rejected at range index 16 without CPU exhaustion");
+        let rs, err = http::parse_range_header(attack_hdr[..], 10000);
+        sub.assert_eq(err, http::RangeError.ExceededMaxRanges, "205-range attack rejected at range index 16 without CPU exhaustion");
         sub.assert_eq(rs.ranges.len, 0, "No ranges returned on exceeded max ranges");
     };
 
@@ -1174,18 +1174,18 @@ fn test_range_header_size_and_count_limits(t: lit::T&) {
             format(big_attack, i + 1);
         }
 
-        let rs, err = wing::parse_range_header(big_attack[..], 50000);
-        sub.assert_eq(err, wing::RangeError.ExceededMaxRanges, "500-range attack rejected cleanly");
+        let rs, err = http::parse_range_header(big_attack[..], 50000);
+        sub.assert_eq(err, http::RangeError.ExceededMaxRanges, "500-range attack rejected cleanly");
     };
 
     t.run("Comma Flooding and Empty Element Abuse (CVE-2011-3192 Denial of Service)") { sub =>
         // 20 empty elements
-        let rs_empty, err_empty = wing::parse_range_header("bytes=,,,,,,,,,,,,,,,,,,,,0-10", 1000);
-        sub.assert_eq(err_empty, wing::RangeError.TooManyEmptyElements, "Exceeding 16 empty elements rejected");
+        let rs_empty, err_empty = http::parse_range_header("bytes=,,,,,,,,,,,,,,,,,,,,0-10", 1000);
+        sub.assert_eq(err_empty, http::RangeError.TooManyEmptyElements, "Exceeding 16 empty elements rejected");
 
         // 16 empty elements allowed, followed by valid range
-        let rs_valid, err_valid = wing::parse_range_header("bytes=,,,,,,,,,,,,,,,,0-10", 1000);
-        sub.assert_eq(err_valid, wing::RangeError.None, "16 empty elements within ceiling accepted");
+        let rs_valid, err_valid = http::parse_range_header("bytes=,,,,,,,,,,,,,,,,0-10", 1000);
+        sub.assert_eq(err_valid, http::RangeError.None, "16 empty elements within ceiling accepted");
         sub.assert_eq(rs_valid.ranges.len, 1, "1 valid range extracted");
     };
 }
@@ -1205,8 +1205,8 @@ fn test_delimiter_line_ending_desync(t: lit::T&) {
         body.append("value2\n");
         body.append("--PureLF--\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Pure LF delimiters parsed with None error");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Pure LF delimiters parsed with None error");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 2, "2 parts extracted");
         sub.assert_bytes_eq(msg.parts[0].data, "value1", "Part 1 data value1");
@@ -1222,8 +1222,8 @@ fn test_delimiter_line_ending_desync(t: lit::T&) {
         body.append("hello\r\r\n");
         body.append("--CrBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "CR body parsed cleanly");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "CR body parsed cleanly");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 1, "1 part extracted");
         sub.assert_bytes_eq(msg.parts[0].data, "hello\r", "Body ends with embedded carriage return");
@@ -1238,8 +1238,8 @@ fn test_delimiter_line_ending_desync(t: lit::T&) {
         body.append("content\r\n");
         body.append("--PadBnd-- \t \r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Transport padding on delimiters accepted per RFC 2046");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Transport padding on delimiters accepted per RFC 2046");
         sub.assert_true(msg.valid, "Valid message with padded boundaries");
         sub.assert_eq(msg.parts.len, 1, "1 part parsed");
         sub.assert_bytes_eq(msg.parts[0].data, "content", "Content matches");
@@ -1262,8 +1262,8 @@ fn test_multipart_part_count_fuzzing(t: lit::T&) {
         body.append("--FloodBnd--\r\n");
 
         // Default max_parts is 64
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.ExceededMaxParts, "1,000-part flood intercepted at max_parts quota");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.ExceededMaxParts, "1,000-part flood intercepted at max_parts quota");
         sub.assert_false(msg.valid, "Message marked invalid on part quota breach");
     };
 
@@ -1277,12 +1277,12 @@ fn test_multipart_part_count_fuzzing(t: lit::T&) {
         }
         body.append("--MemFloodBnd--\r\n");
 
-        var opts = wing::MultipartOptions { .. };
+        var opts = http::MultipartOptions { .. };
         opts.max_parts = 500;
         opts.max_memory_bytes = 500; // Cap memory at 500 bytes (exceeded around part 31)
 
-        let msg, err = wing::parse_multipart(body[..], boundary, opts);
-        sub.assert_eq(err, wing::MultipartError.ExceededMaxMemory, "Memory ceiling strictly terminates multi-part ingestion");
+        let msg, err = http::parse_multipart(body[..], boundary, opts);
+        sub.assert_eq(err, http::MultipartError.ExceededMaxMemory, "Memory ceiling strictly terminates multi-part ingestion");
         sub.assert_false(msg.valid, "Message invalid on memory exhaustion");
     };
 
@@ -1296,11 +1296,11 @@ fn test_multipart_part_count_fuzzing(t: lit::T&) {
         }
         body.append("--EmptyPartsBnd--\r\n");
 
-        var opts = wing::MultipartOptions { .. };
+        var opts = http::MultipartOptions { .. };
         opts.max_parts = 64;
 
-        let msg, err = wing::parse_multipart(body[..], boundary, opts);
-        sub.assert_eq(err, wing::MultipartError.None, "50 empty parts parsed cleanly");
+        let msg, err = http::parse_multipart(body[..], boundary, opts);
+        sub.assert_eq(err, http::MultipartError.None, "50 empty parts parsed cleanly");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 50, "50 parts successfully extracted into zero-heap structure");
     };
@@ -1312,76 +1312,76 @@ fn test_multipart_part_count_fuzzing(t: lit::T&) {
 fn test_malformed_boundary_quoting_and_lexical(t: lit::T&) {
     t.run("RFC 2046 Section 5.1.1 Boundary Length Bounds (0, 70, 71 Chars)") { sub =>
         // Empty boundary: length 0
-        sub.assert_false(wing::validate_boundary_string(""), "0-length boundary rejected");
+        sub.assert_false(http::validate_boundary_string(""), "0-length boundary rejected");
 
         // 70-character boundary: exact upper limit
         var b70: u8[..70] = [];
         for i in 70 {
             b70.push('a');
         }
-        sub.assert_true(wing::validate_boundary_string(b70[..]), "70-character boundary valid per RFC 2046");
+        sub.assert_true(http::validate_boundary_string(b70[..]), "70-character boundary valid per RFC 2046");
 
         // 71-character boundary: rejected
         var b71: u8[..72] = [];
         for i in 71 {
             b71.push('a');
         }
-        sub.assert_false(wing::validate_boundary_string(b71[..]), "71-character boundary rejected (> 70 chars)");
+        sub.assert_false(http::validate_boundary_string(b71[..]), "71-character boundary rejected (> 70 chars)");
     };
 
     t.run("RFC 2046 Boundary Character Set Validation") { sub =>
         // Valid special characters: ' ( ) + _ , - . / : = ?
-        sub.assert_true(wing::validate_boundary_string("abc-123_XYZ:+=?().,'/+"), "All RFC 2046 bchars accepted");
+        sub.assert_true(http::validate_boundary_string("abc-123_XYZ:+=?().,'/+"), "All RFC 2046 bchars accepted");
 
         // Invalid characters: @, [, ], {, }, <, >, ;, CTL
-        sub.assert_false(wing::validate_boundary_string("bad@boundary"), "@ rejected");
-        sub.assert_false(wing::validate_boundary_string("bad[boundary"), "[ rejected");
-        sub.assert_false(wing::validate_boundary_string("bad]boundary"), "] rejected");
-        sub.assert_false(wing::validate_boundary_string("bad{boundary"), "{ rejected");
-        sub.assert_false(wing::validate_boundary_string("bad;boundary"), "; rejected");
-        sub.assert_false(wing::validate_boundary_string("bad\x00boundary"), "NUL rejected");
-        sub.assert_false(wing::validate_boundary_string("bad\r\nboundary"), "CRLF injection in boundary rejected");
+        sub.assert_false(http::validate_boundary_string("bad@boundary"), "@ rejected");
+        sub.assert_false(http::validate_boundary_string("bad[boundary"), "[ rejected");
+        sub.assert_false(http::validate_boundary_string("bad]boundary"), "] rejected");
+        sub.assert_false(http::validate_boundary_string("bad{boundary"), "{ rejected");
+        sub.assert_false(http::validate_boundary_string("bad;boundary"), "; rejected");
+        sub.assert_false(http::validate_boundary_string("bad\x00boundary"), "NUL rejected");
+        sub.assert_false(http::validate_boundary_string("bad\r\nboundary"), "CRLF injection in boundary rejected");
     };
 
     t.run("Chromium StrictUnquote Boundary Quoting Invariants") { sub =>
         // 1. Quoted valid boundary
         var out1: u8[>..] = [];
-        let ok1 = wing::strict_unquote("\"valid-boundary-123\"", out1);
+        let ok1 = http::strict_unquote("\"valid-boundary-123\"", out1);
         sub.assert_true(ok1, "Quoted boundary unquoted successfully");
         sub.assert_bytes_eq(out1[..], "valid-boundary-123", "Unquoted boundary string exact");
 
         // 2. Unclosed quote: rejected
         var out2: u8[>..] = [];
-        let ok2 = wing::strict_unquote("\"unclosed-boundary", out2);
+        let ok2 = http::strict_unquote("\"unclosed-boundary", out2);
         sub.assert_false(ok2, "Unclosed quote rejected");
 
         // 3. Single quotes: rejected
         var out3: u8[>..] = [];
-        let ok3 = wing::strict_unquote("'single-quoted'", out3);
+        let ok3 = http::strict_unquote("'single-quoted'", out3);
         sub.assert_false(ok3, "Single quotes rejected by StrictUnquote");
 
         // 4. Escaped terminal quote: rejected
         var out4: u8[>..] = [];
-        let ok4 = wing::strict_unquote("\"escaped-quote\\\"", out4);
+        let ok4 = http::strict_unquote("\"escaped-quote\\\"", out4);
         sub.assert_false(ok4, "Escaped terminal quote rejected");
 
         // 5. Escaped pairs within boundary: \\ decoded
         var out5: u8[>..] = [];
-        let ok5 = wing::strict_unquote("\"escaped\\\\pair\"", out5);
+        let ok5 = http::strict_unquote("\"escaped\\\\pair\"", out5);
         sub.assert_true(ok5, "Escaped backslash accepted");
         sub.assert_bytes_eq(out5[..], "escaped\\pair", "Decoded escaped backslash");
     };
 
     t.run("Content-Type Header Boundary Parameter Parsing") { sub =>
         // Boundary with semicolon inside quotes: boundary="foo;bar"
-        let ct1, ok1 = wing::parse_media_type("multipart/form-data; boundary=\"foo;bar\"");
+        let ct1, ok1 = http::parse_media_type("multipart/form-data; boundary=\"foo;bar\"");
         sub.assert_true(ok1, "Content-Type with quoted semicolon in boundary parsed");
-        sub.assert_bytes_eq(wing::boundary(ct1), "foo;bar", "Boundary parameter preserved with semicolon");
+        sub.assert_bytes_eq(http::boundary(ct1), "foo;bar", "Boundary parameter preserved with semicolon");
 
         // Unquoted boundary
-        let ct2, ok2 = wing::parse_media_type("multipart/form-data; boundary=my-boundary-42");
+        let ct2, ok2 = http::parse_media_type("multipart/form-data; boundary=my-boundary-42");
         sub.assert_true(ok2, "Unquoted boundary parsed");
-        sub.assert_bytes_eq(wing::boundary(ct2), "my-boundary-42", "Unquoted boundary matches");
+        sub.assert_bytes_eq(http::boundary(ct2), "my-boundary-42", "Unquoted boundary matches");
     };
 }
 
@@ -1398,8 +1398,8 @@ fn test_redos_and_nested_boundaries(t: lit::T&) {
         body.append("prefix data: --NextPart_12345_alt and inner payload\r\n");
         body.append("--NextPart_12345--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], outer_bnd);
-        sub.assert_eq(err, wing::MultipartError.None, "Prefix collision parsed without premature EOF");
+        let msg, err = http::parse_multipart(body[..], outer_bnd);
+        sub.assert_eq(err, http::MultipartError.None, "Prefix collision parsed without premature EOF");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 1, "Exactly 1 outer part extracted");
         sub.assert_bytes_eq(msg.parts[0].data, "prefix data: --NextPart_12345_alt and inner payload", "Inner data with boundary prefix intact");
@@ -1414,8 +1414,8 @@ fn test_redos_and_nested_boundaries(t: lit::T&) {
         body.append("This is text containing --MidLineBnd right in the middle of a line!\r\n");
         body.append("--MidLineBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Mid-line boundary substring does not break parsing");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Mid-line boundary substring does not break parsing");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 1, "1 part extracted");
         sub.assert_bytes_eq(msg.parts[0].data, "This is text containing --MidLineBnd right in the middle of a line!", "Body text preserved intact");
@@ -1438,14 +1438,14 @@ fn test_redos_and_nested_boundaries(t: lit::T&) {
         outer_doc.append("\r\n--OuterBnd--\r\n");
 
         // Parse outer
-        let outer_msg, outer_err = wing::parse_multipart(outer_doc[..], outer_bnd);
-        sub.assert_eq(outer_err, wing::MultipartError.None, "Outer multipart parsed");
+        let outer_msg, outer_err = http::parse_multipart(outer_doc[..], outer_bnd);
+        sub.assert_eq(outer_err, http::MultipartError.None, "Outer multipart parsed");
         sub.assert_true(outer_msg.valid, "Outer message valid");
         sub.assert_eq(outer_msg.parts.len, 1, "1 outer part");
 
         // Parse inner
-        let inner_msg, inner_err = wing::parse_multipart(outer_msg.parts[0].data, inner_bnd);
-        sub.assert_eq(inner_err, wing::MultipartError.None, "Inner multipart parsed cleanly from outer data");
+        let inner_msg, inner_err = http::parse_multipart(outer_msg.parts[0].data, inner_bnd);
+        sub.assert_eq(inner_err, http::MultipartError.None, "Inner multipart parsed cleanly from outer data");
         sub.assert_true(inner_msg.valid, "Inner message valid");
         sub.assert_eq(inner_msg.parts.len, 1, "1 inner part extracted");
         sub.assert_bytes_eq(inner_msg.parts[0].data, "nested-value", "Inner part data exact");
@@ -1458,13 +1458,13 @@ fn test_redos_and_nested_boundaries(t: lit::T&) {
         needle.push('X');
 
         var table: u16[256] = [0; 256];
-        wing::build_bmh_shift_table(needle[..], table);
+        http::build_bmh_shift_table(needle[..], table);
 
         var haystack: u8[>..] = [];
         for i in 10000 { haystack.push('-'); }
         haystack.push('X'); // Only at the very end
 
-        let pos = wing::bmh_find(haystack[..], needle[..], table, 0);
+        let pos = http::bmh_find(haystack[..], needle[..], table, 0);
         sub.assert_eq(pos, 9970, "BMH finds needle at exact offset in linear time without backtracking");
     };
 }
@@ -1483,8 +1483,8 @@ fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
         body.append("root:x:0:0...\r\n");
         body.append("--TravBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Multipart with traversal filename parsed safely");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Multipart with traversal filename parsed safely");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 1, "1 part extracted");
         sub.assert_bytes_eq(msg.parts[0].filename[..], "../../etc/passwd", "Filename extracted verbatim without unsafe filesystem execution");
@@ -1499,8 +1499,8 @@ fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
         body.append("binary-content\r\n");
         body.append("--EmptyNameBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Empty name part parsed cleanly");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Empty name part parsed cleanly");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 1, "Part with empty name retained");
         sub.assert_bytes_eq(msg.parts[0].name[..], "", "Part name is empty string");
@@ -1516,8 +1516,8 @@ fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
         body.append("plain-value\r\n");
         body.append("--OptFnBnd--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], boundary);
-        sub.assert_eq(err, wing::MultipartError.None, "Form field without filename parsed");
+        let msg, err = http::parse_multipart(body[..], boundary);
+        sub.assert_eq(err, http::MultipartError.None, "Form field without filename parsed");
         sub.assert_true(msg.valid, "Valid message");
         sub.assert_eq(msg.parts.len, 1, "1 part");
         sub.assert_bytes_eq(msg.parts[0].name[..], "field_without_filename", "Field name extracted");
@@ -1537,14 +1537,14 @@ fn test_mime_disposition_and_filename_traversal(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_resumable_uploads(t: lit::T&) {
     t.run("Upload Session Initialization & Creation Request") { sub =>
-        var state = wing::init_resumable_upload(800000, 500000);
+        var state = http::init_resumable_upload(800000, 500000);
         sub.assert_eq(state.total_size, 800000, "Total size is 800KB");
         sub.assert_eq(state.offset, 0, "Initial offset is 0");
         sub.assert_false(state.complete, "Initial complete is false");
 
-        var create_req = wing::Request { .. };
+        var create_req = http::Request { .. };
         let chunk1 = "FIRST_CHUNK_DATA_500000_BYTES";
-        wing::format_upload_creation_request(create_req, "https://storage.cdn.com/uploads", chunk1, false);
+        http::format_upload_creation_request(create_req, "https://storage.cdn.com/uploads", chunk1, false);
 
         sub.assert_bytes_eq(create_req.method[..], "POST", "Method is POST");
         sub.assert_bytes_eq(create_req.url[..], "https://storage.cdn.com/uploads", "URL is uploads endpoint");
@@ -1556,24 +1556,24 @@ fn test_resumable_uploads(t: lit::T&) {
     };
 
     t.run("Creation Response Handling & Chunk Append (PATCH)") { sub =>
-        var state = wing::init_resumable_upload(800000, 500000);
+        var state = http::init_resumable_upload(800000, 500000);
 
         // Server responds 201 Created
-        var create_resp = wing::Response { status_code: 201, .. };
-        wing::set_header(create_resp, "Location", "https://storage.cdn.com/uploads/session-abc1234");
-        wing::set_header(create_resp, "Upload-Offset", "500000");
-        wing::set_header(create_resp, "Upload-Complete", "?0");
+        var create_resp = http::Response { status_code: 201, .. };
+        http::set_header(create_resp, "Location", "https://storage.cdn.com/uploads/session-abc1234");
+        http::set_header(create_resp, "Upload-Offset", "500000");
+        http::set_header(create_resp, "Upload-Complete", "?0");
 
-        let ok_handle = wing::handle_creation_response(create_resp, state);
+        let ok_handle = http::handle_creation_response(create_resp, state);
         sub.assert_true(ok_handle, "Creation response handled");
         sub.assert_bytes_eq(state.upload_url[..], "https://storage.cdn.com/uploads/session-abc1234", "Session URL stored");
         sub.assert_eq(state.offset, 500000, "Server offset updated to 500000");
         sub.assert_false(state.complete, "Upload is not complete yet");
 
         // Format final chunk append (PATCH)
-        var patch_req = wing::Request { .. };
+        var patch_req = http::Request { .. };
         let final_chunk = "FINAL_CHUNK_DATA_300000_BYTES";
-        wing::format_upload_chunk_request(patch_req, state, final_chunk, true);
+        http::format_upload_chunk_request(patch_req, state, final_chunk, true);
 
         sub.assert_bytes_eq(patch_req.method[..], "PATCH", "Method is PATCH");
         sub.assert_bytes_eq(patch_req.url[..], "https://storage.cdn.com/uploads/session-abc1234", "PATCH URL is session URL");
@@ -1584,31 +1584,31 @@ fn test_resumable_uploads(t: lit::T&) {
         sub.assert_bytes_eq(patch_req.header("Upload-Complete"), "?1", "Upload-Complete is ?1 on final chunk");
 
         // Server responds 204 No Content for PATCH
-        var patch_resp = wing::Response { status_code: 204, .. };
-        wing::set_header(patch_resp, "Upload-Offset", "800000");
-        wing::set_header(patch_resp, "Upload-Complete", "?1");
+        var patch_resp = http::Response { status_code: 204, .. };
+        http::set_header(patch_resp, "Upload-Offset", "800000");
+        http::set_header(patch_resp, "Upload-Complete", "?1");
 
-        let ok_patch = wing::handle_chunk_response(patch_resp, state);
+        let ok_patch = http::handle_chunk_response(patch_resp, state);
         sub.assert_true(ok_patch, "Chunk response handled");
         sub.assert_eq(state.offset, 800000, "Offset updated to 800000");
         sub.assert_true(state.complete, "State complete is now true");
     };
 
     t.run("Interruption Offset Query Recovery (HEAD)") { sub =>
-        var state = wing::init_resumable_upload(800000, 500000);
+        var state = http::init_resumable_upload(800000, 500000);
         state.upload_url.append("https://storage.cdn.com/uploads/session-abc1234");
         state.offset = 0; // Simulated connection loss / client restart
 
-        var head_req = wing::Request { .. };
-        wing::format_upload_offset_query(head_req, state.upload_url[..]);
+        var head_req = http::Request { .. };
+        http::format_upload_offset_query(head_req, state.upload_url[..]);
         sub.assert_bytes_eq(head_req.method[..], "HEAD", "Offset query is HEAD");
 
         // Server returns current stored offset 500000
-        var head_resp = wing::Response { status_code: 204, .. };
-        wing::set_header(head_resp, "Upload-Offset", "500000");
-        wing::set_header(head_resp, "Upload-Complete", "?0");
+        var head_resp = http::Response { status_code: 204, .. };
+        http::set_header(head_resp, "Upload-Offset", "500000");
+        http::set_header(head_resp, "Upload-Complete", "?0");
 
-        let ok_rec = wing::handle_offset_query_response(head_resp, state);
+        let ok_rec = http::handle_offset_query_response(head_resp, state);
         sub.assert_true(ok_rec, "Offset query response parsed");
         sub.assert_eq(state.offset, 500000, "Offset successfully recovered to 500000");
         sub.assert_false(state.complete, "Complete flag correctly reflects ongoing upload");
@@ -1624,26 +1624,26 @@ fn test_multipart_boundary_rfc2231_and_validation(t: lit::T&) {
         // An intermediary WAF sees boundary=normal, but a server honoring boundary* parses injected parts.
         // RFC 7578 / RFC 2046 strictly restricts boundary characters (1..70 bchars, no CRLF).
         let ct_header = "multipart/form-data; boundary=safe_boundary; boundary*=utf-8''injected_boundary";
-        let mt, ok = wing::parse_media_type(ct_header);
+        let mt, ok = http::parse_media_type(ct_header);
         sub.assert_true(ok);
 
-        let chosen_boundary = wing::param(mt, "boundary");
+        let chosen_boundary = http::param(mt, "boundary");
         sub.assert_bytes_eq(chosen_boundary, "safe_boundary", "RFC 2231 boundary* must NOT override plain boundary parameter");
-        sub.assert_false(wing::has_param(mt, "boundary*"), "boundary* extended notation should not be accepted as a valid parameter");
+        sub.assert_false(http::has_param(mt, "boundary*"), "boundary* extended notation should not be accepted as a valid parameter");
     };
 
     t.run("Boundary containing CRLF or invalid characters must fail parse_media_type") { sub =>
         // Boundary with CRLF or control characters is a request smuggling vector
         let ct_crlf = "multipart/form-data; boundary=bad\r\nboundary";
-        let _, ok1 = wing::parse_media_type(ct_crlf);
+        let _, ok1 = http::parse_media_type(ct_crlf);
         sub.assert_false(ok1, "Media type with CRLF in boundary value must be rejected");
 
         // Boundary with raw quotes or invalid punctuation
         let ct_invalid_chars = "multipart/form-data; boundary=bad@boundary#123";
-        let mt2, ok2 = wing::parse_media_type(ct_invalid_chars);
-        let b2 = wing::param(mt2, "boundary");
+        let mt2, ok2 = http::parse_media_type(ct_invalid_chars);
+        let b2 = http::param(mt2, "boundary");
         // Boundary chars must conform to RFC 2046 bchars
-        sub.assert_false(wing::validate_boundary_string(b2), "RFC 2046 rejects '@' and '#' in boundary tokens");
+        sub.assert_false(http::validate_boundary_string(b2), "RFC 2046 rejects '@' and '#' in boundary tokens");
     };
 }
 
@@ -1662,13 +1662,13 @@ fn test_mime_parameter_truncation_and_boundary(t: lit::T&) {
         }
         raw_mt.append("; boundary=evil_boundary");
 
-        let mt, ok = wing::parse_media_type(raw_mt[..]);
+        let mt, ok = http::parse_media_type(raw_mt[..]);
         sub.assert_false(ok, "MediaType with > 16 parameters MUST fail parsing instead of silently dropping boundary");
     };
 
     t.run("Duplicate boundary parameter MUST be rejected (RFC 2046 / Go #82343)") { sub =>
         let raw = "multipart/form-data; boundary=first; boundary=second";
-        let mt, ok = wing::parse_media_type(raw);
+        let mt, ok = http::parse_media_type(raw);
         sub.assert_false(ok, "Duplicate boundary parameter MUST be rejected");
     };
 
@@ -1678,7 +1678,7 @@ fn test_mime_parameter_truncation_and_boundary(t: lit::T&) {
         for i in 300 { raw_long_val.push('u'); }
         raw_long_val.append("\"");
 
-        let mt, ok = wing::parse_media_type(raw_long_val[..]);
+        let mt, ok = http::parse_media_type(raw_long_val[..]);
         sub.assert_false(ok, "Parameter value > 256 bytes MUST fail parsing safely without abort");
     };
 }
@@ -1696,8 +1696,8 @@ fn test_multipart_oversized_content_type_no_abort(t: lit::T&) {
         body.append("payload content\r\n");
         body.append("--myboundary--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], "myboundary");
-        sub.assert_true(wing::is_ok(err), "Part with long Content-Type header MUST parse without bounds abort");
+        let msg, err = http::parse_multipart(body[..], "myboundary");
+        sub.assert_true(http::is_ok(err), "Part with long Content-Type header MUST parse without bounds abort");
         sub.assert_eq(msg.parts.len, 1, "Parsed 1 part");
         sub.assert_true(msg.parts[0].content_type.len > 0, "Part content_type must be captured");
     };
@@ -1713,8 +1713,8 @@ fn test_mime_and_sfv_truncation_smuggling(t: lit::T&) {
         for i in 64 { long_key_entry.push('a'); }
         long_key_entry.append("b=1");
 
-        var dict = wing::SfvDict { .. };
-        let ok = wing::parse_sfv_dict(long_key_entry[..], dict);
+        var dict = http::SfvDict { .. };
+        let ok = http::parse_sfv_dict(long_key_entry[..], dict);
         sub.assert_false(ok, "SFV key > 64B MUST return false and not truncate to 64B");
     };
 
@@ -1722,8 +1722,8 @@ fn test_mime_and_sfv_truncation_smuggling(t: lit::T&) {
         var raw_tok: u8[>..] = [];
         for i in 1100 { raw_tok.push('a'); }
 
-        var item = wing::SfvItem { .. };
-        let ok = wing::parse_sfv_item(raw_tok[..], item);
+        var item = http::SfvItem { .. };
+        let ok = http::parse_sfv_item(raw_tok[..], item);
         sub.assert_false(ok, "SFV token > 1088 bytes MUST return false");
     };
 
@@ -1733,8 +1733,8 @@ fn test_mime_and_sfv_truncation_smuggling(t: lit::T&) {
         for i in 1100 { raw_bin.push('A'); }
         raw_bin.push(':');
 
-        var item = wing::SfvItem { .. };
-        let ok = wing::parse_sfv_item(raw_bin[..], item);
+        var item = http::SfvItem { .. };
+        let ok = http::parse_sfv_item(raw_bin[..], item);
         sub.assert_false(ok, "SFV binary > 1088 bytes MUST return false");
     };
 
@@ -1743,19 +1743,19 @@ fn test_mime_and_sfv_truncation_smuggling(t: lit::T&) {
         for i in 40 { raw_disp.push('x'); }
         raw_disp.append("; filename=\"test.txt\"");
 
-        let mt, ok = wing::parse_content_disposition(raw_disp[..]);
+        let mt, ok = http::parse_content_disposition(raw_disp[..]);
         sub.assert_false(ok, "Disposition type > 32 bytes MUST return false safely");
     };
 
     t.run("decompress_dcz_payload and decompress_dcb_payload reject corrupted payloads") { sub =>
         let corrupt = "corrupted non-compressed payload bytes";
         var out_dcz: u8[>..] = [];
-        let ok_dcz = wing::decompress_dcz_payload(corrupt, "dictionary", out_dcz);
+        let ok_dcz = http::decompress_dcz_payload(corrupt, "dictionary", out_dcz);
         sub.assert_false(ok_dcz, "decompress_dcz_payload MUST return false on corrupted data");
         sub.assert_eq(out_dcz.len, 0, "No raw bytes emitted to out_buf on DCZ error");
 
         var out_dcb: u8[>..] = [];
-        let ok_dcb = wing::decompress_dcb_payload(corrupt, "dictionary", out_dcb);
+        let ok_dcb = http::decompress_dcb_payload(corrupt, "dictionary", out_dcb);
         sub.assert_false(ok_dcb, "decompress_dcb_payload MUST return false on corrupted data");
         sub.assert_eq(out_dcb.len, 0, "No raw bytes emitted to out_buf on DCB error");
     };
@@ -1766,7 +1766,7 @@ fn test_mime_and_sfv_truncation_smuggling(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn test_multipart_boundary_and_smuggling_invariants(t: lit::T&) {
     t.run("RFC 2046 §5.1.1: Boundary ending in space is strictly invalid") { sub =>
-        let valid_space = wing::validate_boundary_string("valid-boundary ");
+        let valid_space = http::validate_boundary_string("valid-boundary ");
         sub.assert_false(valid_space, "Boundary with trailing space MUST be rejected per RFC 2046 §5.1.1");
     };
 
@@ -1779,9 +1779,9 @@ fn test_multipart_boundary_and_smuggling_invariants(t: lit::T&) {
         body.append(long_name[..]);
         body.append("\"\r\n\r\nvalue\r\n--myboundary--\r\n");
 
-        let msg, err = wing::parse_multipart(body[..], "myboundary");
+        let msg, err = http::parse_multipart(body[..], "myboundary");
         // Parameter name > 64B must return InvalidPartHeaders and not truncate to 64 'a's
-        sub.assert_false(wing::is_ok(err), "Field name > 64B must be rejected rather than silently truncated");
+        sub.assert_false(http::is_ok(err), "Field name > 64B must be rejected rather than silently truncated");
         sub.assert_false(msg.valid, "Message valid flag must be false");
     };
 }

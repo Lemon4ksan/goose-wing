@@ -33,19 +33,19 @@ fn main() {
     // Scenario 2: Zero-Allocation HeaderMap & O(1) Fast Inline Lookups
     // ------------------------------------------------------------------------
     print("\n[2/11] RFC 9110 HeaderMap & O(1) Slots...\n");
-    var map = wing::HeaderMap { .. };
-    let _h = wing::set_inline(map, wing::WellKnownHeader.Host, "api.exchange.io:8443");
-    let _ct = wing::set_inline(map, wing::WellKnownHeader.ContentType, "application/json; charset=utf-8");
-    let _cl = wing::set_inline(map, wing::WellKnownHeader.ContentLength, "2048");
-    wing::append_header(map, "User-Agent", "Goose-Wing/Wasm 1.0 (Gosling-Engine)");
-    wing::append_header(map, "X-Wasm-Engine", "Gosling-ZeroAlloc");
-    wing::append_header(map, "Idempotency-Key", "idemp_998877aabb");
+    var map = http::HeaderMap { .. };
+    let _h = http::set_inline(map, http::WellKnownHeader.Host, "api.exchange.io:8443");
+    let _ct = http::set_inline(map, http::WellKnownHeader.ContentType, "application/json; charset=utf-8");
+    let _cl = http::set_inline(map, http::WellKnownHeader.ContentLength, "2048");
+    http::append_header(map, "User-Agent", "Goose-Wing/Wasm 1.0 (Gosling-Engine)");
+    http::append_header(map, "X-Wasm-Engine", "Gosling-ZeroAlloc");
+    http::append_header(map, "Idempotency-Key", "idemp_998877aabb");
 
-    print("  Host:            ", wing::get_header(map, "host"), "\n");
-    print("  Content-Type:    ", wing::get_header(map, "content-type"), "\n");
-    print("  Content-Length:  ", wing::get_header(map, "content-length"), "\n");
-    print("  User-Agent:      ", wing::get_header(map, "user-agent"), "\n");
-    print("  Idempotency-Key: ", wing::get_header(map, "idempotency-key"), "\n");
+    print("  Host:            ", http::get_header(map, "host"), "\n");
+    print("  Content-Type:    ", http::get_header(map, "content-type"), "\n");
+    print("  Content-Length:  ", http::get_header(map, "content-length"), "\n");
+    print("  User-Agent:      ", http::get_header(map, "user-agent"), "\n");
+    print("  Idempotency-Key: ", http::get_header(map, "idempotency-key"), "\n");
 
     // ------------------------------------------------------------------------
     // Scenario 3: Canonical Cookie Jar with Security Scoping & Prefix Rules
@@ -70,28 +70,28 @@ fn main() {
     // ------------------------------------------------------------------------
     print("\n[4/11] Redirect State Machine & CVE Sanitization...\n");
     // Test 301 POST -> GET method mutation
-    let r_info = wing::compute_redirect_info(
+    let r_info = client::compute_redirect_info(
         "POST", 301, "https://api.exchange.io/v1/auth", "https://sso.other-tenant.com/login",
-        wing::ReferrerPolicy.NoReferrerWhenDowngrade, "https://api.exchange.io/v1/auth",
-        wing::RedirectOptions { .. },
+        client::ReferrerPolicy.NoReferrerWhenDowngrade, "https://api.exchange.io/v1/auth",
+        client::RedirectOptions { .. },
     );
     print("  301 New Method:      ", r_info.new_method[..], "\n");
     print("  301 Clear Body:      ", r_info.clear_body, "\n");
     print("  301 Is Cross-Origin: ", r_info.is_cross_origin, "\n");
 
-    var req_headers = wing::HeaderMap { .. };
-    wing::append_header(req_headers, "Authorization", "Bearer secret_jwt_token_999");
-    wing::append_header(req_headers, "X-API-Key", "api_key_secret_888");
-    wing::append_header(req_headers, "Accept", "application/json");
+    var req_headers = http::HeaderMap { .. };
+    http::append_header(req_headers, "Authorization", "Bearer secret_jwt_token_999");
+    http::append_header(req_headers, "X-API-Key", "api_key_secret_888");
+    http::append_header(req_headers, "Accept", "application/json");
 
-    wing::sanitize_headers_on_redirect(
+    client::sanitize_headers_on_redirect(
         req_headers,
         r_info,
-        wing::RedirectSanitizeOptions { enable_referer: true },
+        client::RedirectSanitizeOptions { enable_referer: true },
     );
-    let has_auth = wing::has_header(req_headers, "Authorization");
-    let has_apikey = wing::has_header(req_headers, "X-API-Key");
-    let has_accept = wing::has_header(req_headers, "Accept");
+    let has_auth = http::has_header(req_headers, "Authorization");
+    let has_apikey = http::has_header(req_headers, "X-API-Key");
+    let has_accept = http::has_header(req_headers, "Accept");
     print("  Auth purged:         ", !has_auth, "\n");
     print("  API Key purged:      ", !has_apikey, "\n");
     print("  Accept preserved:    ", has_accept, "\n");
@@ -102,14 +102,14 @@ fn main() {
     print("\n[5/11] RFC 9112 Chunked Transfer Coding & Trailers...\n");
     let chunked_wire = "5\r\nHello\r\n8\r\n, World!\r\n0\r\nETag: \"v1\"\r\nX-Checksum: sha256-abc123\r\n\r\n";
     var body_out: u8[>..] = [];
-    var trailers_out = wing::HeaderMap { .. };
-    let err_chunk, _consumed = wing::decode_chunked_body_with_trailers(chunked_wire, body_out, trailers_out);
-    print("  Chunk decode ok:     ", err_chunk == wing::ChunkedDecodeError.None, "\n");
+    var trailers_out = http::HeaderMap { .. };
+    let err_chunk, _consumed = http::decode_chunked_body_with_trailers(chunked_wire, body_out, trailers_out);
+    print("  Chunk decode ok:     ", err_chunk == http::ChunkedDecodeError.None, "\n");
     print("  Body Reassembled:    ", body_out[..], "\n");
     print("  Trailers Extracted:  ", trailers_out.entries.len, "\n");
     for ti in trailers_out.entries.len {
         let e = trailers_out.entries[ti];
-        print("    Trailer: ", wing::entry_name(trailers_out, e), " = ", wing::entry_value(trailers_out, e), "\n");
+        print("    Trailer: ", http::entry_name(trailers_out, e), " = ", http::entry_value(trailers_out, e), "\n");
     }
 
     // ------------------------------------------------------------------------
@@ -135,7 +135,7 @@ fn main() {
     // Scenario 7: RFC 9218 Extensible Prioritization Scheme
     // ------------------------------------------------------------------------
     print("\n[7/11] RFC 9218 HTTP Priority Parsing...\n");
-    let prio, ok_prio = wing::parse_http_priority("u=1, i");
+    let prio, ok_prio = http::parse_priority("u=1, i");
     print("  Priority parsed:     ", ok_prio, "\n");
     print("  Urgency level:       ", prio.urgency, "\n");
     print("  Incremental:         ", prio.incremental, "\n");
@@ -144,28 +144,28 @@ fn main() {
     // Scenario 8: Layer 4 Zero-Allocation Virtual TCP Transport
     // ------------------------------------------------------------------------
     print("\n[8/11] L4 Virtual TCP Transport & Socket Exchange...\n");
-    let listener = wing::tcp_listen("127.0.0.1", 8080, 16);
+    let listener = net::tcp_listen("127.0.0.1", 8080, 16);
     print("  TCP Listener FD:     ", listener, "\n");
 
-    let client = wing::tcp_connect("127.0.0.1", 8080, 100);
+    let client = net::tcp_connect("127.0.0.1", 8080, 100);
     print("  TCP Client FD:       ", client, "\n");
 
-    let server_conn = wing::tcp_accept(listener, 100);
+    let server_conn = net::tcp_accept(listener, 100);
     print("  TCP Accepted FD:     ", server_conn, "\n");
 
     // Verify non-blocking recv returns -2 (WouldBlock) before data is sent
     var srv_buf: u8[..256] = [];
     srv_buf.resize(256, 0);
-    let would_block = wing::tcp_recv_slice(server_conn, srv_buf, 0);
+    let would_block = net::tcp_recv_slice(server_conn, srv_buf, 0);
     print("  Server Recv WouldBlock (-2): ", would_block == -2, "\n");
 
     // Client sends HTTP GET request
     let req = "GET /index.html HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
-    let sent_bytes = wing::tcp_send(client, req);
+    let sent_bytes = net::tcp_send(client, req);
     print("  Client Sent:         ", sent_bytes, " bytes\n");
 
     // Server receives request
-    let rcvd_bytes = wing::tcp_recv_slice(server_conn, srv_buf);
+    let rcvd_bytes = net::tcp_recv_slice(server_conn, srv_buf);
     print("  Server Received:     ", rcvd_bytes, " bytes\n");
     if rcvd_bytes > 0 {
         print("  Server Wire Payload: ", srv_buf[..rcvd_bytes], "\n");
@@ -173,35 +173,35 @@ fn main() {
 
     // Server sends HTTP 200 OK response
     let resp = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, Wasm!\n";
-    let srv_sent = wing::tcp_send(server_conn, resp);
+    let srv_sent = net::tcp_send(server_conn, resp);
     print("  Server Sent:         ", srv_sent, " bytes\n");
 
     // Client receives response
     var cli_buf: u8[..256] = [];
     cli_buf.resize(256, 0);
-    let cli_rcvd = wing::tcp_recv_slice(client, cli_buf);
+    let cli_rcvd = net::tcp_recv_slice(client, cli_buf);
     print("  Client Received:     ", cli_rcvd, " bytes\n");
     if cli_rcvd > 0 {
         print("  Client Wire Payload: ", cli_buf[..cli_rcvd], "\n");
     }
 
     // Verify clean EOF (0) when peer closes connection
-    wing::tcp_close(client);
-    let eof_bytes = wing::tcp_recv_slice(server_conn, srv_buf, 0);
+    net::tcp_close(client);
+    let eof_bytes = net::tcp_recv_slice(server_conn, srv_buf, 0);
     print("  Server Recv Clean EOF (0):   ", eof_bytes == 0, "\n");
 
-    wing::tcp_close(server_conn);
-    wing::tcp_close(listener);
+    net::tcp_close(server_conn);
+    net::tcp_close(listener);
 
     // Verify backlog saturation & listener close queue drainage
-    let lis_backlog = wing::tcp_listen("127.0.0.1", 8088, 2);
-    let bc1 = wing::tcp_connect("127.0.0.1", 8088, 10);
-    let bc2 = wing::tcp_connect("127.0.0.1", 8088, 10);
-    let bc3 = wing::tcp_connect("127.0.0.1", 8088, 10);
+    let lis_backlog = net::tcp_listen("127.0.0.1", 8088, 2);
+    let bc1 = net::tcp_connect("127.0.0.1", 8088, 10);
+    let bc2 = net::tcp_connect("127.0.0.1", 8088, 10);
+    let bc3 = net::tcp_connect("127.0.0.1", 8088, 10);
     print("  Backlog Overflow Rejected:   ", bc3 == -1, "\n");
-    wing::tcp_close(lis_backlog);
-    if bc1 > 0 { wing::tcp_close(bc1); }
-    if bc2 > 0 { wing::tcp_close(bc2); }
+    net::tcp_close(lis_backlog);
+    if bc1 > 0 { net::tcp_close(bc1); }
+    if bc2 > 0 { net::tcp_close(bc2); }
     print("  Sockets Closed:      OK\n");
 
     // ------------------------------------------------------------------------
@@ -219,7 +219,7 @@ fn main() {
     print("  HPACK Encoded Bytes: ", hpack_wire.len, "\n");
 
     var decoded_pseudo = http2::PseudoHeaders { .. };
-    var decoded_headers = wing::HeaderMap { .. };
+    var decoded_headers = http::HeaderMap { .. };
     let hpack_dec_err = http2::decode_hpack_to_map(dt_dec, hpack_wire[..], decoded_pseudo, decoded_headers);
     print("  HPACK Decode Err:    ", hpack_dec_err, " (0 == OK)\n");
     print("  Decoded Headers:     ", decoded_headers.entries.len + 3, "\n");
@@ -228,7 +228,7 @@ fn main() {
     print("    [2] :scheme = ", decoded_pseudo.scheme[..], "\n");
     for di in decoded_headers.entries.len {
         let e = decoded_headers.entries[di];
-        print("    [", di + 3, "] ", wing::entry_name(decoded_headers, e), " = ", wing::entry_value(decoded_headers, e), "\n");
+        print("    [", di + 3, "] ", http::entry_name(decoded_headers, e), " = ", http::entry_value(decoded_headers, e), "\n");
     }
 
     // ------------------------------------------------------------------------

@@ -23,8 +23,8 @@ fn encode_single_h3_extra_header<B1, B2>(
     tbl:           http3::QpackTable&,
     stream_id:     u64,
     base:          u64,
-    extra_headers: const wing::HeaderMap&,
-    entry:         const wing::HeaderEntry&,
+    extra_headers: const http::HeaderMap&,
+    entry:         const http::HeaderEntry&,
     body_fields:   B1&,
     enc_stream:    B2&,
     max_dyn_abs:   u64&,
@@ -59,7 +59,7 @@ fn encode_h3_extra_headers<B1, B2>(
     tbl:           http3::QpackTable&,
     stream_id:     u64,
     base:          u64,
-    extra_headers: const wing::HeaderMap&,
+    extra_headers: const http::HeaderMap&,
     body_fields:   B1&,
     enc_stream:    B2&,
     max_dyn_abs:   u64&,
@@ -1039,7 +1039,7 @@ fn validate_single_push_promise_field(
 ) -> bool {
     let fname = field.name[..];
     let fval = field.value[..];
-    guard wing::is_valid_header_name_h2(fname) && !has_ctl_chars(fval) else { return false; }
+    guard http::is_valid_header_name_h2(fname) && !has_ctl_chars(fval) else { return false; }
     if fname.len > 0 && fname[0] == ':' {
         guard !seen_regular else { return false; }
         return validate_push_promise_pseudo_field(field, counts, req_method, req_path, auth_val);
@@ -1228,7 +1228,7 @@ fn handle_bidi_headers(
         guard t_err == rfc::H3_ERR_NO_ERROR else { return t_err; }
         conn.streams[s_idx].trailers.clear();
         for &f in decoded_fields {
-            guard wing::append_header(conn.streams[s_idx].trailers, f.name[..], f.value[..]) else {
+            guard http::append_header(conn.streams[s_idx].trailers, f.name[..], f.value[..]) else {
                 conn.state = http3::ConnState.Closed;
                 conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
                 return rfc::H3_ERR_EXCESSIVE_LOAD;
@@ -1243,7 +1243,7 @@ fn handle_bidi_headers(
     conn.streams[s_idx].headers.clear();
     for &f in decoded_fields {
         if f.name.len > 0 && f.name[0] != ':' {
-            guard wing::append_header(conn.streams[s_idx].headers, f.name[..], f.value[..]) else {
+            guard http::append_header(conn.streams[s_idx].headers, f.name[..], f.value[..]) else {
                 conn.state = http3::ConnState.Closed;
                 conn.error_code = rfc::H3_ERR_EXCESSIVE_LOAD;
                 return rfc::H3_ERR_EXCESSIVE_LOAD;

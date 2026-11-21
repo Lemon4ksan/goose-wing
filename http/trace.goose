@@ -4,10 +4,11 @@
 // W3C Trace Context (RFC 9239 / W3C Recommendation 23 November 2021).
 // Provides zero-heap parsing, validation, and generation of `traceparent`
 // and `tracestate` distributed tracing headers.
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
+import http.meta_internal;
 
 // ---- traceparent model & invariants -------------------------------------
 
@@ -23,12 +24,6 @@ struct Traceparent {
 const TRACE_FLAG_NONE:    u8 = 0x00;
 const TRACE_FLAG_SAMPLED: u8 = 0x01; // Bit 0: parent recorded / sampled
 
-inline fn hex_val(c: u8) -> i32 {
-    if c >= '0' && c <= '9' { return c - '0'; }
-    if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
-    return -1;
-}
-
 // Parses 2 hex characters into a u8.
 //
 // Example:
@@ -36,17 +31,10 @@ inline fn hex_val(c: u8) -> i32 {
 //   returns: 42, ok = true
 fn parse_hex_u8(src: const u8[:], offset: i64) -> u8, bool {
     guard offset + 2 <= src.len else { return 0, false; }
-    let h0 = hex_val(src[offset]);
-    let h1 = hex_val(src[offset + 1]);
+    let h0 = http_internal::hex_val(src[offset]);
+    let h1 = http_internal::hex_val(src[offset + 1]);
     guard h0 >= 0 && h1 >= 0 else { return 0, false; }
     return ((h0 << 4) | h1) as u8, true;
-}
-
-// Formats a u8 into 2 lowercase hex characters
-fn format_hex_u8<B>(val: u8, out: B&) {
-    let hex_chars: const u8[16] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'];
-    out.push(hex_chars[(val >> 4) & 0x0F]);
-    out.push(hex_chars[val & 0x0F]);
 }
 
 // Parses raw `traceparent` header string conforming to W3C Section 3.2:
@@ -115,17 +103,17 @@ fn parse_traceparent(raw: const u8[:]) -> Traceparent, bool {
 
 // Formats a Traceparent struct into the standard 55-byte wire string
 fn format_traceparent<B>(tp: const Traceparent&, out: B&) {
-    format_hex_u8(tp.version, out);
+    http_internal::format_hex_u8(tp.version, out);
     out.push('-');
     for b in tp.trace_id {
-        format_hex_u8(b, out);
+        http_internal::format_hex_u8(b, out);
     }
     out.push('-');
     for b in tp.parent_id {
-        format_hex_u8(b, out);
+        http_internal::format_hex_u8(b, out);
     }
     out.push('-');
-    format_hex_u8(tp.trace_flags, out);
+    http_internal::format_hex_u8(tp.trace_flags, out);
 }
 
 // Constructs a new valid Traceparent
@@ -155,42 +143,6 @@ struct Tracestate {
     valid:   bool                   = true,
 }
 
-// Key validation conforming to W3C Section 3.3:
-// simple key: [a-z][a-z0-9_*/-]{0,255}
-// multi-tenant key: [a-z0-9_*/-]{1,241}@[a-z][a-z0-9_*/-]{0,13}
-fn is_valid_tracestate_key(key: const u8[:]) -> bool {
-    guard key.len >= 1 && key.len <= 256 else { return false; }
-    var at_pos: i64 = -1;
-    for i in key.len {
-        let b = key[i];
-        if b == '@' {
-            guard at_pos < 0 else { return false; } // only one '@' allowed
-            at_pos = i;
-            continue;
-        }
-        let is_alpha_num = (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9');
-        let valid_char = is_alpha_num || b == '_' || b == '-' || b == '*' || b == '/';
-        guard valid_char else { return false; }
-    }
-    if at_pos >= 0 {
-        let tenant_len = at_pos;
-        let system_len = key.len - at_pos - 1;
-        guard tenant_len >= 1 && tenant_len <= 241 else { return false; }
-        guard system_len >= 1 && system_len <= 14 else { return false; }
-        let sys_first = key[at_pos + 1];
-        guard sys_first >= 'a' && sys_first <= 'z' else { return false; }
-        let tenant_first = key[0];
-        let is_alnum = (tenant_first >= 'a' && tenant_first <= 'z') ||
-            (tenant_first >= '0' && tenant_first <= '9');
-        guard is_alnum else { return false; }
-    } else {
-        // Simple key MUST start with lowercase ASCII letter (W3C §3.3.1.1: lcalpha)
-        let first = key[0];
-        guard first >= 'a' && first <= 'z' else { return false; }
-    }
-    return true;
-}
-
 // Value validation conforming to W3C Section 3.3.1.2:
 // 0..255 nblk-chr / chr followed by 1 nblk-chr (0x21..0x7E excluding ',' and '=')
 fn is_valid_tracestate_val(val: const u8[:]) -> bool {
@@ -200,20 +152,6 @@ fn is_valid_tracestate_val(val: const u8[:]) -> bool {
         guard b >= 0x20 && b <= 0x7E && b != ',' && b != '=' else { return false; }
     }
     return true;
-}
-
-fn find_tracestate_entry_bounds(raw: const u8[:], cursor: i64, out_eq: i64&, out_comma: i64&) {
-    var i = cursor;
-    while i < raw.len {
-        let b = raw[i];
-        if b == '=' && out_eq < 0 {
-            out_eq = i;
-        } else if b == ',' {
-            out_comma = i;
-            break;
-        }
-        i++;
-    }
 }
 
 // Parses W3C `tracestate` header: comma-separated list of key=val pairs.
@@ -237,7 +175,7 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
 
         var eq_pos:    i64 = -1;
         var comma_pos: i64 = -1;
-        find_tracestate_entry_bounds(raw, cursor, eq_pos, comma_pos);
+        http_internal::find_tracestate_entry_bounds(raw, cursor, eq_pos, comma_pos);
 
         let entry_end = if comma_pos >= 0 { comma_pos } else { raw.len };
         guard eq_pos > cursor && eq_pos < entry_end else { return ts, false; }
@@ -245,7 +183,7 @@ fn parse_tracestate(raw: const u8[:]) -> Tracestate, bool {
         let k_raw = raw[cursor..eq_pos];
         let v_raw = raw[eq_pos + 1..entry_end].trim_lws_end();
 
-        guard is_valid_tracestate_key(k_raw) else { return ts, false; }
+        guard http_internal::is_valid_tracestate_key(k_raw) else { return ts, false; }
         guard is_valid_tracestate_val(v_raw) else { return ts, false; }
 
         for &m in ts.members {
@@ -290,7 +228,7 @@ fn tracestate_get(ts: const Tracestate&, key: const u8[:]) -> const u8[:] {
 
 // Updates or prepends a key-value pair per W3C Section 3.3 (most recent at the front)
 fn tracestate_set(ts: Tracestate&, key: const u8[:], val: const u8[:]) -> bool {
-    guard is_valid_tracestate_key(key) && is_valid_tracestate_val(val) else { return false; }
+    guard http_internal::is_valid_tracestate_key(key) && is_valid_tracestate_val(val) else { return false; }
 
     // Find and remove existing key if present
     var existing_idx: i64 = -1;

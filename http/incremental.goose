@@ -4,13 +4,12 @@
 // RFC 10036: Incremental Forwarding of HTTP Messages.
 // Defines the "Incremental" HTTP header field which instructs intermediaries
 // to forward messages incrementally rather than buffering the entire message.
-namespace wing;
+namespace http;
 
 import std;
 import core from "..";
 import .headers;
 import .sfv;
-import .response;
 
 // ---- RFC 10036 Constants --------------------------------------------------
 

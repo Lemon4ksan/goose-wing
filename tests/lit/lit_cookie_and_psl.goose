@@ -26,23 +26,23 @@ fn test_f001_ipv6_bracket_cross_component() {
     assert(cookie::is_first_party(sfc, "http://[::1]:8080/api/v1/login", true));
     assert(cookie::is_trustworthy_non_crypto_host(core::hostname(u_v6)));
 
-    var session = wing::new_session();
+    var session = client::new_session();
     session.virtual_clock_us = now_us;
-    var ctx = wing::RequestExecutionContext {
+    var ctx = client::RequestExecutionContext {
         site_for_cookies: sfc,
         is_main_frame:    true,
         ..
     };
-    let ss_eval = wing::compute_hop_samesite_context(ctx, u_v6, true);
+    let ss_eval = client::compute_hop_samesite_context(ctx, u_v6, true);
     assert(ss_eval.context_type == cookie::SameSiteContextType.SameSiteStrict);
 
-    var resp_hdrs = wing::HeaderMap { .. };
-    wing::set_header(resp_hdrs, "Set-Cookie", "__Host-v6=tok_v6; Secure; Path=/; SameSite=Strict");
-    wing::ingest_hop_response_cookies(session, ctx, u_v6, ss_eval, resp_hdrs);
+    var resp_hdrs = http::HeaderMap { .. };
+    http::set_header(resp_hdrs, "Set-Cookie", "__Host-v6=tok_v6; Secure; Path=/; SameSite=Strict");
+    client::ingest_hop_response_cookies(session, ctx, u_v6, ss_eval, resp_hdrs);
     assert(session.jar.cookies.len == 1);
 
-    wing::prepare_hop_cookie_header(session, ctx, u_v6, ss_eval, true);
-    assert(core::contains(wing::find_header(ctx.headers, "Cookie"), "__Host-v6=tok_v6"));
+    client::prepare_hop_cookie_header(session, ctx, u_v6, ss_eval, true);
+    assert(core::contains(http::find_header(ctx.headers, "Cookie"), "__Host-v6=tok_v6"));
     print("F001_IPV6_CROSS_COMPONENT: OK");
 }
 
@@ -56,11 +56,11 @@ fn test_f002_psl_dafsa_redirect_isolation() {
     var chain: core::Url[..4] = [];
     chain.push(u_a);
     let sfc_a = cookie::site_for_cookies_from_parsed_url(u_a);
-    let r_info = wing::compute_redirect_info(
+    let r_info = client::compute_redirect_info(
         302, "GET", u_a, "https://tenant-b.onrender.com/finish", "",
-        wing::ReferrerPolicy.StrictOriginWhenCrossOrigin, "", sfc_a,
+        client::ReferrerPolicy.StrictOriginWhenCrossOrigin, "", sfc_a,
         cookie::FirstPartyURLPolicy.UPDATE_FIRST_PARTY_URL_ON_REDIRECT, chain[..], orig_a,
-        wing::RedirectOptions { has_initiator: true, is_main_frame: true, .. },
+        client::RedirectOptions { has_initiator: true, is_main_frame: true, .. },
     );
     assert(r_info.is_cross_site_tainted);
     assert(cookie::is_first_party(r_info.new_site_for_cookies, "https://tenant-b.onrender.com/finish", true));
@@ -86,12 +86,12 @@ fn test_f003_samesite_context_and_set_guard() {
     var jar = cookie::CanonicalCookieJar { .. };
     assert(cookie::set_cookie_header(jar, "https://bank.com/", "lax_sid=secret2; SameSite=Lax; Secure; Path=/", now_us));
     let u_bank = core::new_url("https://bank.com/dashboard");
-    var hdrs = wing::HeaderMap { .. };
-    let _ = wing::stage_client_cookie_load(hdrs, u_bank, cross_ctx, true, "", true, now_us, jar, true);
-    assert(!core::contains(wing::find_header(hdrs, "Cookie"), "lax_sid=secret2"));
+    var hdrs = http::HeaderMap { .. };
+    let _ = client::stage_cookie_load(hdrs, u_bank, cross_ctx, true, "", true, now_us, jar, true);
+    assert(!core::contains(http::find_header(hdrs, "Cookie"), "lax_sid=secret2"));
 
     let u_evil = core::new_url("https://evil.com/");
-    let ctx_nav = wing::RequestExecutionContext {
+    let ctx_nav = client::RequestExecutionContext {
         initiator:          core::origin_from_url(u_evil),
         has_initiator:      true,
         site_for_cookies:   cookie::site_for_cookies_from_url("https://bank.com/"),
@@ -99,16 +99,16 @@ fn test_f003_samesite_context_and_set_guard() {
         is_main_frame:      true,
         ..
     };
-    let nav_eval = wing::compute_hop_samesite_context(ctx_nav, u_bank, true);
+    let nav_eval = client::compute_hop_samesite_context(ctx_nav, u_bank, true);
     assert(nav_eval.context_type == cookie::SameSiteContextType.SameSiteLax);
 
-    let ctx_null_sfc = wing::RequestExecutionContext {
+    let ctx_null_sfc = client::RequestExecutionContext {
         is_main_frame:      true,
         had_cross_site_hop: true,
         site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
-    let null_eval = wing::compute_hop_samesite_context(ctx_null_sfc, u_bank, true);
+    let null_eval = client::compute_hop_samesite_context(ctx_null_sfc, u_bank, true);
     assert(null_eval.context_type == cookie::SameSiteContextType.CrossSite);
     print("F003_SAMESITE_CONTEXT_BOUNDARY: OK");
 }
@@ -474,12 +474,12 @@ fn test_dafsa_psl_cross_site() {
 }
 
 fn test_h1_set_cookie_parsing() {
-    var resp = wing::Response { .. };
+    var resp = http::Response { .. };
     let raw_resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: session=longtoken_abc123xyz456; Path=/; Secure; HttpOnly\r\n\r\n";
     let ok = wing::parse_response_headers(raw_resp[..], resp);
     assert(ok);
-    assert(wing::has_header(resp, "Set-Cookie"));
-    assert(core::contains(wing::header(resp, "Set-Cookie"), "longtoken_abc123xyz456"));
+    assert(http::has_header(resp, "Set-Cookie"));
+    assert(core::contains(http::header(resp, "Set-Cookie"), "longtoken_abc123xyz456"));
     print("CHECK_H1_SET_COOKIE: OK");
 }
 

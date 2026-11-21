@@ -5,20 +5,19 @@
 // Parses and serializes List-of-Strings field values (RFC 9875 §2 and §3), attaches groups to
 // stored responses, and invalidates stored responses by group membership. Group names are opaque
 // strings compared case-sensitively (RFC 9875 §2.1).
-namespace wing;
+namespace http;
 
 import std;
 import core from "../..";
 import http.sfv;
+import http.sfv_sig_internal;
 import http.cache.engine;
+import http.cache.internal;
 
 // ---- RFC 9875 group limits -------------------------------------------------
 
 // Maximum characters in a single cache group name (List of Strings per RFC 9875 §2; engine budget 64).
 const CACHE_GROUP_TAG_MAX: i32 = 64;
-
-// Maximum group members per stored response (RFC 9875 §2 mandates at least 32; engine budget 32)..
-const CACHE_GROUP_MAX_PER_ENTRY: i32 = 32;
 
 // ---- cache group tag model -------------------------------------------------
 
@@ -30,84 +29,76 @@ struct CacheGroupTag {
 
 // Parses a Cache-Groups or Cache-Group-Invalidation List-of-Strings field value (RFC 9875 §2/§3).
 // Fails closed: a non-String member, oversize name, excess member count, or malformed list yields
-// ok == false with out_count == 0. Unrecognised parameters are ignored (RFC 9875 §2).
+// ok == false with out_tags cleared. Unrecognised parameters are ignored (RFC 9875 §2).
 //
 // Example:
-//   raw = "\"scripts\", \"fonts\"", out_tags = [], out_count = 0
-//   returns: true, out_tags = ["scripts", "fonts"], out_count = 2
-fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&, out_count: i32&) -> bool {
-    out_tags.clear();
-    out_count = 0;
+//   raw = "\"scripts\", \"fonts\"", out_tags = []
+//   returns: true, out_tags = ["scripts", "fonts"] (out_tags.len == 2)
+fn parse_cache_group_list(raw: const u8[:], out_tags: CacheGroupTag[..32]&) -> bool {
+    var committed = false;
+    defer if !committed { out_tags.clear(); };
     var parsed: CacheGroupTag[..32] = [];
 
-    var cursor = sf_skip_ws(raw, 0);
+    var cursor = http_internal::sf_skip_ws(raw, 0);
 
     while cursor < raw.len {
         var bare = SfvBareItem { .. };
-        guard parse_sfv_bare_item(raw, cursor, bare) else { return false; }
+        guard http_internal::parse_sfv_bare_item(raw, cursor, bare) else { return false; }
         guard bare.kind == SfvType.String else { return false; }
 
-        guard skip_sfv_parameters(raw, cursor) else { return false; }
+        guard http_internal::skip_sfv_parameters(raw, cursor) else { return false; }
 
         var tag = CacheGroupTag { len: bare.text.len as i32, .. };
         guard tag.name.try_set(bare.text[..]) && parsed.try_push(tag) else { return false; }
 
         var has_more = false;
-        guard sfv_advance_comma(raw, cursor, has_more) else { return false; }
+        guard http_internal::sfv_advance_comma(raw, cursor, has_more) else { return false; }
         if !has_more { break; }
     }
 
     out_tags = parsed;
-    out_count = parsed.len as i32;
+    committed = true;
     return true;
 }
 
-// Computes the exact wire length of the quoted List-of-Strings value for the first count members
-// (RFC 9875 §2). Members cost name + 4 bytes ("name", with separator); the trailing ", " is
-// subtracted for non-empty lists. Clamped to tags.len so out-of-range counts never index past
-// the caller's tag vector.
+// Computes the exact wire length of the quoted List-of-Strings value for `tags` (RFC 9875 §2).
+// Members cost name + 4 bytes ("name", with separator); the trailing ", " is subtracted for
+// non-empty lists.
 //
 // Example:
-//   tags = ["scripts", "fonts"], count = 2
+//   tags = ["scripts", "fonts"]
 //   returns: 18 ("\"scripts\", \"fonts\"")
-fn cache_group_list_wire_len(tags: const CacheGroupTag[..32]&, count: i32) -> i64 {
-    let limit = min<i64>(count, tags.len);
-    guard limit > 0 else { return 0; }
+fn cache_group_list_wire_len(tags: const CacheGroupTag[:]) -> i64 {
+    guard tags.len > 0 else { return 0; }
     var total: i64 = 0;
-    for slot in 0..limit {
-        total = core::add_sat_i64(total, core::add_sat_i64(tags[slot].name.len, 4));
+    for &tag in tags {
+        total = core::add_sat_i64(total, core::add_sat_i64(tag.name.len, 4));
     }
     return core::sub_sat_i64(total, 2);
 }
 
-// Byte delta appended to the caller-owned buffer during this serialization.
-fn cache_group_bytes_written(now_len: i64, start_len: i64) -> i64 {
-    return now_len - start_len;
-}
-
-// Accumulates two counts of invalidated stored responses (RFC 9875 §2.2.1 group purge totals).
-fn add_invalidated_entries(total: i64, purged: i64) -> i64 {
-    return total + purged;
-}
-
 // Serializes cache group members into a quoted List-of-Strings field value (RFC 9875 §2/§3).
-// Members are joined by ", ". Returns bytes written, or -1 when count is out of range or the
-// output would overflow the caller-owned buffer.
+// Members are joined by ", ". Rolls back `out` on capacity overflow and returns false.
 //
 // Example:
-//   tags = ["scripts", "fonts"], count = 2, out = []
-//   returns: 18, out = "\"scripts\", \"fonts\""
-fn serialize_cache_group_list(tags: const CacheGroupTag[..32]&, count: i32, out: u8[..512]&) -> i32 {
-    guard count >= 0 && count <= tags.len &&
-        cache_group_list_wire_len(tags, count) <= out.cap - out.len else { return -1; }
-    let start_len = out.len;
-    for slot in 0..count {
-        if slot > 0 { out.append(", "); }
-        out.append("\"");
-        out.append(tags[slot].name[..]);
-        out.append("\"");
+//   tags = ["scripts", "fonts"], out = []
+//   returns: true, out = "\"scripts\", \"fonts\""
+fn serialize_cache_group_list<B>(tags: const CacheGroupTag[:], out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    for &tag, slot in tags {
+        if slot > 0 {
+            guard out.try_append(", ") else { return false; }
+        }
+        guard out.try_push('"') &&
+              out.try_append(tag.name[..]) &&
+              out.try_push('"') else {
+            return false;
+        }
     }
-    return cache_group_bytes_written(out.len, start_len) as i32;
+    committed = true;
+    return true;
 }
 
 // Reports whether a stored response belongs to the given group.
@@ -116,11 +107,10 @@ fn serialize_cache_group_list(tags: const CacheGroupTag[..32]&, count: i32, out:
 fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool {
     let raw_cg = entry.headers.get_header("cache-groups");
     guard raw_cg.len > 0 else { return false; }
-    var tags:  CacheGroupTag[..32] = [];
-    var count: i32                 = 0;
-    guard parse_cache_group_list(raw_cg, tags, count) && count > 0 else { return false; }
-    for slot in 0..count {
-        if tags[slot].name[..] == group { return true; }
+    var tags: CacheGroupTag[..32] = [];
+    guard parse_cache_group_list(raw_cg, tags) && tags.len > 0 else { return false; }
+    for &tag in tags {
+        if tag.name[..] == group { return true; }
     }
     return false;
 }
@@ -129,7 +119,7 @@ fn entry_has_group(entry: const CachedEntry&, group: const u8[:]) -> bool {
 // entries invalidated (group invalidation per RFC 9875 §2.1 & §3). Applies the same entry reset as
 // invalidate_matching_url (invalid, security-zeroed, LRU-detached).
 fn invalidate_group(
-    cache:    HttpCache&,
+    cache:    Cache&,
     group:    const u8[:],
     base_url: const u8[:] = "",
 ) -> i64 {
@@ -153,8 +143,8 @@ fn invalidate_group(
         }
         entry.is_valid = false;
         entry.security_zeroed = true;
-        cache.lru_detach(idx as i32);
-        count = add_invalidated_entries(count, 1);
+        http_internal::lru_detach(cache, idx as i32);
+        count = core::add_sat_i64(count, 1);
     }
     return count;
 }

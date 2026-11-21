@@ -180,7 +180,7 @@ fn send_request_headers<B>(
     scheme:        const u8[:],
     authority:     const u8[:],
     path:          const u8[:],
-    extra_headers: const wing::HeaderMap&,
+    extra_headers: const http::HeaderMap&,
     end_stream:    bool,
     out:           B&,
 ) -> bool {
@@ -548,7 +548,7 @@ fn get_response_body(conn: const Connection&, stream_id: u64) -> const u8[:], bo
     return "", false;
 }
 
-fn copy_stream_headers(conn: const Connection&, stream_id: u64, out_headers: wing::HeaderMap&) -> bool {
+fn copy_stream_headers(conn: const Connection&, stream_id: u64, out_headers: http::HeaderMap&) -> bool {
     let s_idx, found = find_stream_idx(conn, stream_id);
     guard found && s_idx >= 0 && s_idx < conn.streams.len && conn.streams[s_idx].headers_received else {
         return false;
@@ -556,9 +556,9 @@ fn copy_stream_headers(conn: const Connection&, stream_id: u64, out_headers: win
     out_headers.clear();
     let src .= conn.streams[s_idx].headers;
     for &e in src.entries {
-        let name = wing::entry_name(src, e);
-        let val = wing::entry_value(src, e);
-        if !wing::append_header(out_headers, name, val) {
+        let name = http::entry_name(src, e);
+        let val = http::entry_value(src, e);
+        if !http::append_header(out_headers, name, val) {
             out_headers.clear();
             return false;
         }
@@ -566,7 +566,7 @@ fn copy_stream_headers(conn: const Connection&, stream_id: u64, out_headers: win
     return true;
 }
 
-fn copy_stream_trailers(conn: const Connection&, stream_id: u64, out_trailers: wing::HeaderMap&) -> bool {
+fn copy_stream_trailers(conn: const Connection&, stream_id: u64, out_trailers: http::HeaderMap&) -> bool {
     let s_idx, found = find_stream_idx(conn, stream_id);
     guard found && s_idx >= 0 && s_idx < conn.streams.len && conn.streams[s_idx].trailers_received else {
         return false;
@@ -574,9 +574,9 @@ fn copy_stream_trailers(conn: const Connection&, stream_id: u64, out_trailers: w
     out_trailers.clear();
     let src .= conn.streams[s_idx].trailers;
     for &e in src.entries {
-        let name = wing::entry_name(src, e);
-        let val = wing::entry_value(src, e);
-        if !wing::append_header(out_trailers, name, val) {
+        let name = http::entry_name(src, e);
+        let val = http::entry_value(src, e);
+        if !http::append_header(out_trailers, name, val) {
             out_trailers.clear();
             return false;
         }
@@ -597,9 +597,9 @@ fn send_response_headers_body_and_trailers<B>(
     conn:          Connection&,
     stream_id:     u64,
     status_code:   i32,
-    extra_headers: const wing::HeaderMap&,
+    extra_headers: const http::HeaderMap&,
     body:          const u8[:],
-    trailers:      const wing::HeaderMap&,
+    trailers:      const http::HeaderMap&,
     out:           B&,
 ) -> bool {
     let s_idx, found = find_stream_idx(conn, stream_id);
@@ -682,7 +682,7 @@ fn send_response_headers_body_and_trailers<B>(
 
 // ---- RFC 9218 Extensible Stream Priority Scheduling ----------------------
 
-fn apply_stream_priority(conn: Connection&, stream_id: u64, prio: const wing::PriorityParam&) -> bool {
+fn apply_stream_priority(conn: Connection&, stream_id: u64, prio: const http::PriorityParam&) -> bool {
     var s_idx, found = find_stream_idx(conn, stream_id);
     if !found && conn.role == ConnRole.Server && (stream_id & 0x03) == 0 {
         let new_idx, err = get_or_create_bidi_stream(conn, stream_id);
@@ -697,10 +697,10 @@ fn apply_stream_priority(conn: Connection&, stream_id: u64, prio: const wing::Pr
     return true;
 }
 
-fn get_stream_priority(conn: const Connection&, stream_id: u64) -> wing::PriorityParam, bool {
+fn get_stream_priority(conn: const Connection&, stream_id: u64) -> http::PriorityParam, bool {
     let s_idx, found = find_stream_idx(conn, stream_id);
     guard found && s_idx >= 0 && s_idx < conn.streams.len else {
-        return wing::priority_default(false), false;
+        return http::priority_default(false), false;
     }
     return conn.streams[s_idx].priority, true;
 }

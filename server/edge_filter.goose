@@ -4,10 +4,13 @@
 // Programmable zero-allocation L7 Edge Filter for Goose-Wing.
 // Provides sandboxed L7 request inspection, rule evaluation,
 // and path/header filtering without heap allocations.
-namespace wing;
+namespace server;
 
 import std;
 import core from "..";
+import http.headers;
+import .router;
+import .internal;
 
 enum EdgeFilterVerdict {
     Pass,
@@ -58,19 +61,10 @@ fn make_edge_filter_rule(
     return r;
 }
 
-fn has_non_empty_header_value(headers: const HeaderMap&, req_name: const u8[:]) -> bool {
-    for &e in headers.entries {
-        if entry_name(headers, e).eq_ascii_fold(req_name) && entry_value(headers, e).trim_lws().len > 0 {
-            return true;
-        }
-    }
-    return false;
-}
-
 fn edge_rule_matches(
     rule:    const EdgeFilterRule&,
     path:    const u8[:],
-    headers: const HeaderMap&,
+    headers: const http::HeaderMap&,
 ) -> bool {
     guard rule.enabled && rule.path_prefix.len > 0 else { return false; }
     var canon_path: u8[..2048] = [];
@@ -88,7 +82,7 @@ fn edge_rule_matches(
         return false;
     }
     if rule.required_header.len > 0 {
-        guard !has_non_empty_header_value(headers, rule.required_header[..]) else { return false; }
+        guard !server_internal::has_non_empty_header_value(headers, rule.required_header[..]) else { return false; }
     }
     return true;
 }
@@ -99,7 +93,7 @@ fn evaluate_edge_filter(
     filter:  EdgeFilter&,
     method:  const u8[:],
     path:    const u8[:],
-    headers: const HeaderMap&,
+    headers: const http::HeaderMap&,
 ) -> EdgeFilterVerdict {
     guard filter.enabled else { return EdgeFilterVerdict.Pass; }
     filter.total_inspected = core::add_sat_u64(filter.total_inspected, 1);

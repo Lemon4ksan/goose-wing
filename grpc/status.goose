@@ -177,8 +177,8 @@ fn parse_timeout(val: const u8[:]) -> u64, bool {
 //   headers = { ":status": "200" }, trailers = { "grpc-status": "0" }
 //   returns: true, out_status = StatusCode.Ok
 fn extract_status<B>(
-    headers:     const wing::HeaderMap&,
-    trailers:    const wing::HeaderMap&,
+    headers:     const http::HeaderMap&,
+    trailers:    const http::HeaderMap&,
     out_status:  StatusCode&,
     out_message: B&,
 ) -> bool {

@@ -1,13 +1,15 @@
 # `server`
 
-Package `server` implements the zero-allocation HTTP/1.1, HTTP/2, HTTP/3, and
+Package `server` (`namespace server;` for public APIs,
+`namespace server_internal;` for internal pools, HTTP/2 multiplexing, and
+protocol plumbing) implements the zero-allocation HTTP/1.1, HTTP/2, HTTP/3, and
 WebSocket server engine of `goose-wing`, combining a two-tier L0 register and
 Radix Tree router, a bitmask-driven security and caching pipeline, an L7 WAF
 edge filter, and an event-loop reactor.
 
 ```goose
-var srv = new_http_server("127.0.0.1", 8080);
-add_static_route(srv.pipeline.router, "GET", "/healthz", "text/plain", "ok");
+var srv = server::new_http_server("127.0.0.1", 8080);
+server::add_static_route(srv.pipeline.router, "GET", "/healthz", "text/plain", "ok");
 ```
 
 ## Public API Reference
@@ -15,21 +17,25 @@ add_static_route(srv.pipeline.router, "GET", "/healthz", "text/plain", "ok");
 ### 1. HTTP Server Lifecycle, TLS & Pub/Sub (`server/server.goose`)
 
 ```goose
-enum ReactorAccelMode { Auto, PollFallback, IoUring, Rio, Kqueue }
+// Public namespace: server
 struct HttpServer {
     pipeline: ServerPipelineConfig, host: u8[..256], port: u16,
     server_name: u8[..64], timer: server_internal::ConnectionTimer,
-    topic_tree: TopicTree, ws_routes: WsRouteEntry[..16],
-    shared_compressor: SharedWsCompressor, sni_registry: SniRegistry,
+    topic_tree: realtime::TopicTree, ws_routes: WsRouteEntry[..16],
+    shared_compressor: realtime::SharedWsCompressor, sni_registry: SniRegistry,
     worker_ring: core::SpscRing, cached_date: CachedHttpDate,
-    accel_mode: ReactorAccelMode = ReactorAccelMode.Auto,
+    accel_mode: wing::ReactorAccelMode = wing::ReactorAccelMode.Auto,
     enable_header_memoization: bool = false, ...
 }
-fn new_http_server(host: const u8[:], port: u16, quota: GcraQuota = new_gcra_quota(1000, secs(1), 100)) -> HttpServer
+fn new_http_server(host_str: const u8[:] = "127.0.0.1", port_num: u16 = 8080) -> HttpServer
+fn init_http_server_inplace(server: HttpServer&, host_str: const u8[:] = "127.0.0.1", port_num: u16 = 8080)
+fn new_http_server_with_quota<Q>(host_str: const u8[:], port_num: u16, quota: Q) -> HttpServer
 fn set_header_memoization(server: HttpServer&, enabled: bool)
+fn init_run_state(server: HttpServer&)
+fn should_stop(server: const HttpServer&) -> bool
 fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 fn serve_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_connections: i64 = 0) -> i64
-fn serve_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const TlsServerHandshakeConfig&, max_connections: i64 = 0) -> i64
+fn serve_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const wing::TlsServerHandshakeConfig&, max_connections: i64 = 0) -> i64
 fn handle_connection_wire<B>(server: HttpServer&, client_ip: const u8[:], wire_in: const u8[:], now_ns: u64, wire_out: B&) -> PipelineOutcome, bool
 fn subscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
 fn unsubscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
@@ -66,13 +72,14 @@ struct H3L2Config {
 struct H3ServerEndpoint {
     conn: h3_internal::H3Connection
 }
-fn reactor_listen_accelerated(server: HttpServer&, backlog: i32 = 1024) -> i64
+fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 128) -> i64
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_requests: i64 = 0) -> i64
 fn serve_reactor_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_requests: i64 = 0) -> i64
-fn serve_reactor_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const TlsServerHandshakeConfig&, max_requests: i64 = 0) -> i64
-fn new_h3_server_endpoint(settings: H3Settings = H3Settings { .. }) -> H3ServerEndpoint
+fn serve_reactor_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const wing::TlsServerHandshakeConfig&, max_requests: i64 = 0) -> i64
+fn serve_reactor_tls_with_stage<Stage>(server: HttpServer&, listener_fd: i64, tls_cfg: const wing::TlsServerHandshakeConfig&, stage: Stage&, max_requests: i64 = 0) -> i64
+fn new_h3_server_endpoint(settings: http3::Settings = http3::Settings { .. }) -> H3ServerEndpoint
 fn handle_h3_quic_datagram<B>(server: HttpServer&, ep: H3ServerEndpoint&, client_ip: const u8[:], datagram: const u8[:], now_ns: u64, out_wire: B&) -> bool
-fn handle_h3_server_datagram<B>(server: HttpServer&, h3_conn: h3_internal::H3Connection&, stream_id: u64, client_ip: const u8[:], rx_wire: const u8[:], now_ns: u64, tx_wire: B&) -> bool
+fn handle_h3_server_datagram<B>(server: HttpServer&, h3_conn: http3::Connection&, stream_id: u64, client_ip: const u8[:], rx_wire: const u8[:], now_ns: u64, tx_wire: B&) -> bool
 fn serve_h3(server: HttpServer&, udp_fd: i64, max_datagrams: i64 = 1) -> i64
 fn serve_h3_l2(server: HttpServer&, ep: H3ServerEndpoint&, cfg: const H3L2Config&, xsk: net_internal::AfXdpSocket&, max_packets: i64 = 64) -> i64
 ```
@@ -114,6 +121,7 @@ struct RadixRouter {
     static_payloads: StaticRoutePayload[..32]
 }
 fn new_radix_router() -> RadixRouter
+fn init_radix_router_inplace(r: RadixRouter&)
 fn init_default_static_payloads(r: RadixRouter&)
 fn add_route(router: RadixRouter&, method: const u8[:], path: const u8[:], handler_id: i32, entries_mask: u32 = 0, pso_mask: u64 = DEFAULT_ROUTE_PSO_MASK) -> bool
 fn add_route_pso(router: RadixRouter&, method: const u8[:], path: const u8[:], handler_id: i32, pso_mask: u64) -> bool
@@ -162,7 +170,8 @@ struct ServerStageCtx {
     ingress_mask: u64, egress_mask: u64, now_ns: u64, outcome: PipelineOutcome, ...
 }
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig
-fn validate_pipeline_expect_header(req: const Request&) -> bool
+fn init_server_pipeline_config_inplace(cfg: ServerPipelineConfig&, target_host: const u8[:], quota: security::GcraQuota)
+fn validate_pipeline_expect_header(req: const wing::Request&) -> bool
 fn execute_pipeline(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&) -> PipelineOutcome
 fn execute_server_pipeline_with_stage<UserStage>(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&, user_stage: UserStage&) -> PipelineOutcome
 fn execute_server_pipeline_async<UserStage>(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&, sctx: ServerStageCtx&, user_stage: UserStage&) -> PipelineOutcome
@@ -193,11 +202,12 @@ fn stage_server_metrics_log(ext: const server_internal::RequestExtensions&, res:
 public routes bypass unused CSRF, JWT, or rate-limit stages.
 `ServerPipelineConfig` owns per-instance `memo: ServerCompressAndEtagMemo`
 scratch state for ETag and compression memoization. User stages hook into
-lifecycle phases via `on_server_stage` (`wire::ServerHookPhase`: `PreRoute`,
-`PostAuth`, `BodyChunk`, `RouteHandler`, `ResumeHandler`, `PreSerialize`,
-`AfterResponse`, `OnError`) and into programmable custom stage bindings
+lifecycle phases via `server::on_server_stage` (`wire::ServerHookPhase`:
+`PreRoute`, `PostAuth`, `BodyChunk`, `RouteHandler`, `ResumeHandler`,
+`PreSerialize`, `AfterResponse`, `OnError`), into streaming request chunks via
+`server::on_server_body_chunk`, and into programmable custom stage bindings
 (`STAGE_ID_USER_0..3`, stage IDs `16..19` in
-`cfg.wire_pipeline.custom_bindings`) via `on_server_custom_slot`.
+`cfg.wire_pipeline.custom_bindings`) via `server::on_server_custom_slot`.
 
 ### 4b. Inversion-of-Control Async Server Reactor (`server/async_reactor.goose`)
 

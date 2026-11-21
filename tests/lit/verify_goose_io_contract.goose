@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Lemon4ksan
 
-// Verification of the `goose-io` v0.1 contract adapter (`net/goose_io.goose`) over `wing::NetHost`.
+// Verification of the `goose-io` v0.1 contract adapter (`net/goose_io.goose`) over `net::Host`.
 // Covers compile-time `require_*` verifiers, deferred `BadAddress` dial failure with `set_user`,
 // live TCP loopback `listen` + `dial` + `HalfClose` + `PassEnd`, episode-based `Writable`
 // backpressure, and multi-library composition (`tag = 1` front server + `tag = 2/3` fakepg).
