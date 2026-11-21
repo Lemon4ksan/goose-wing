@@ -6,7 +6,7 @@ namespace server_internal;
 
 import std;
 import slice_pool;
-import core from "..";
+import core;
 import rfc.http;
 import rfc.h3_quic;
 import http.headers;

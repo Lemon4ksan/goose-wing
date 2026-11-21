@@ -4,7 +4,6 @@
 // Dedicated gRPC and gRPC-Web Server for goose-wing E2E Verification.
 // Implements RFC gRPC over HTTP/2, RFC 7540/9113, and gRPC-Web (binary and text).
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn handle_say_hello(

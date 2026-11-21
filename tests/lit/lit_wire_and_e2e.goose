@@ -6,7 +6,6 @@
 // RUN: %t.exe | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 import wire_kit from ".";
 
@@ -1493,9 +1492,9 @@ fn test_h2_client_sliced_stream_recv_seam() {
 
     var conn = net::PooledConnection {
         transport: net::Transport.Udp { fd: cli_fd, peer_ip4: 0x7F000001, peer_port: 9999 },
-        hpack_dec: http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE),
         ..
     };
+    defer net::release_hpack_slot(conn);
     var resp = http::Response { .. };
     let ok_h2 = client::recv_h2_response_loop(conn, 1, false, 200, resp);
     net::tcp_close(cli_fd);

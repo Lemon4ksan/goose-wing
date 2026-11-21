@@ -5,7 +5,7 @@
 namespace client;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import cookie.constants;
 import cookie.canonical;
@@ -168,8 +168,12 @@ type Session = Client;
 // ---- 2. Client & Session Factories -----------------------------------------
 
 fn new_client() -> Client {
-    var c = Client {
-        profile:                 fingerprint::Profile.Wing,
+    let def_p = fingerprint::wing_default_profile();
+    let def_hdrs = client_internal::build_profile_headers(def_p);
+    return Client {
+        profile:                 def_p.kind,
+        profile_spec:            def_p,
+        default_headers:         def_hdrs,
         ssrf_guard:              security::SsrfGuardPolicy { .. },
         cache:                   http::Cache { .. },
         enable_cache:            false,
@@ -188,17 +192,40 @@ fn new_client() -> Client {
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
-    let def_p = fingerprint::wing_default_profile();
-    client_internal::apply_profile(c, def_p);
-    return c;
 }
 
 fn new_client(cfg: Config) -> Client {
-    var c = Client {
-        profile:                 cfg.profile,
+    var base_buf:  u8[..256] = [];
+    var proxy_buf: u8[..256] = [];
+    let _ = base_buf.try_set(cfg.base_url);
+    let _ = proxy_buf.try_set(cfg.proxy_url);
+
+    let prof_spec = client_internal::resolve_profile_spec(cfg.profile);
+    let def_hdrs = client_internal::build_profile_headers(prof_spec);
+
+    var sig_kid:  u8[..64] = [];
+    var sig_priv: u8[..64] = [];
+    var sig_pub:  u8[..64] = [];
+    let has_sig = cfg.sig_private_key.len > 0 || cfg.sig_public_key.len > 0;
+    let valid_sig = has_sig &&
+        cfg.sig_key_id.len <= sig_kid.cap &&
+        (cfg.sig_private_key.len == 0 || cfg.sig_private_key.len == 32) &&
+        (cfg.sig_public_key.len == 0 || cfg.sig_public_key.len == 32);
+    if valid_sig {
+        let _ = sig_kid.try_set(cfg.sig_key_id);
+        let _ = sig_priv.try_set(cfg.sig_private_key);
+        let _ = sig_pub.try_set(cfg.sig_public_key);
+    }
+
+    return Client {
+        base_url:                base_buf,
+        profile:                 prof_spec.kind,
+        profile_spec:            prof_spec,
+        proxy_url:               proxy_buf,
         timeout_ms:              cfg.timeout_ms,
         follow_redirects:        cfg.follow_redirects,
         redirect_mode:           if cfg.follow_redirects { RedirectMode.Follow } else { RedirectMode.Manual },
+        default_headers:         def_hdrs,
         ssrf_guard:              security::SsrfGuardPolicy { .. },
         cache:                   http::Cache { options: cfg.cache_options, .. },
         enable_cache:            cfg.enable_cache,
@@ -215,25 +242,43 @@ fn new_client(cfg: Config) -> Client {
         pool:                    net::new_stream_pool(),
         enable_cookie_jar:       cfg.cookie_jar,
         strict_content_decoding: cfg.strict_content_decoding,
+        sig_key_id:              sig_kid,
+        sig_private_key:         sig_priv,
+        sig_public_key:          sig_pub,
         insecure_skip_verify:    cfg.insecure_skip_verify,
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
-    c.base_url.append(cfg.base_url);
-    c.proxy_url.append(cfg.proxy_url);
-    if cfg.profile != fingerprint::Profile.None {
-        set_profile(c, cfg.profile);
-    }
-    if cfg.sig_private_key.len > 0 || cfg.sig_public_key.len > 0 {
-        let _ = set_http_signature_keys(c, cfg.sig_key_id, cfg.sig_private_key, cfg.sig_public_key);
-    }
-    return c;
 }
 
 fn new_client(base_url: const u8[:]) -> Client {
-    var c = new_client();
-    c.base_url.append(base_url);
-    return c;
+    let def_p = fingerprint::wing_default_profile();
+    let def_hdrs = client_internal::build_profile_headers(def_p);
+    var base_buf: u8[..256] = [];
+    let _ = base_buf.try_set(base_url);
+    return Client {
+        base_url:                base_buf,
+        profile:                 def_p.kind,
+        profile_spec:            def_p,
+        default_headers:         def_hdrs,
+        ssrf_guard:              security::SsrfGuardPolicy { .. },
+        cache:                   http::Cache { .. },
+        enable_cache:            false,
+        altsvc:                  http::AltSvcCache { .. },
+        enable_altsvc:           true,
+        enable_protocol_racing:  true,
+        quic_race_delay_ms:      200,
+        dict_cache:              http::DictionaryCache { .. },
+        enable_compression_dict: true,
+        pipeline:                InterceptorPipeline { .. },
+        wire_pipeline:           wire::default_client_pipeline(),
+        hsts:                    http::HstsCache { .. },
+        enable_hsts:             true,
+        pool:                    net::new_stream_pool(),
+        enable_cookie_jar:       true,
+        jar:                     cookie::CanonicalCookieJar { .. },
+        ..
+    };
 }
 
 fn new_client<F: fn(Client&)>(base_url: const u8[:]) -> Client {

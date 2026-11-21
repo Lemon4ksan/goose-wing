@@ -11,7 +11,6 @@
 //   - PS-C2-04 (core/url/path.goose, core/url/parser.goose)
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 // ---------------------------------------------------------------------------

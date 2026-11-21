@@ -5,7 +5,7 @@
 namespace net_internal;
 
 import std;
-import core from "../..";
+import core;
 
 extern fn native_host_platform() -> i32 = "wing_host_platform";
 

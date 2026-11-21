@@ -7,7 +7,7 @@
 namespace server_internal;
 
 import std;
-import core from "..";
+import core;
 import .router;
 import .pool;
 import .pipeline;
@@ -620,7 +620,7 @@ inline fn is_stream_cancelled_in_batch(cancelled: const u32[:], stream_id: u32) 
     return cancelled.contains(stream_id);
 }
 
-inline fn terminate_server_stream(
+fn terminate_server_stream(
     sess:      H2ServerSession&,
     pipeline:  server::ServerPipelineConfig&,
     stream_id: u32,

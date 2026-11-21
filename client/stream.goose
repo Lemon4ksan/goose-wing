@@ -6,7 +6,7 @@
 namespace client;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import http.request;
 import http.response;

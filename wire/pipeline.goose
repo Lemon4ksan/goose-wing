@@ -5,7 +5,7 @@
 namespace wire;
 
 import std;
-import core from "..";
+import core;
 
 // Pipeline role separating client and server stage bitmasks and stage slots.
 enum PipelineRole {

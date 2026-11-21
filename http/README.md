@@ -182,6 +182,7 @@ enum MultipartError {
 struct MultipartOptions
 struct MultipartPart
 struct MultipartMessage
+struct MultipartWriter
 struct RangeSpec
 struct NormalizedRange
 struct RangeSet
@@ -189,6 +190,12 @@ struct RangeSet
 fn parse_media_type(raw: const u8[:]) -> MediaType, bool
 fn parse_content_disposition(raw: const u8[:]) -> MediaType, bool
 fn parse_multipart(body: const u8[:], boundary: const u8[:], options: MultipartOptions = MultipartOptions { .. }) -> MultipartMessage, MultipartError
+fn new_multipart_writer(boundary: const u8[:] = "") -> MultipartWriter, bool
+fn multipart_content_type(w: const MultipartWriter&) -> u8[..128]
+fn write_field(w: MultipartWriter&, name: const u8[:], value: const u8[:]) -> bool
+fn write_file(w: MultipartWriter&, field_name: const u8[:], filename: const u8[:], content_type: const u8[:], data: const u8[:]) -> bool
+fn finish(w: MultipartWriter&) -> bool
+fn multipart(req: Request&, w: MultipartWriter&) -> bool
 fn parse_range_header(header_val: const u8[:], resource_len: i64, with_coalesce: bool = true, max_ranges: i32 = 16) -> RangeSet, RangeError
 fn evaluate_if_range(if_range_header: const u8[:], etag: const u8[:], mod_unix_sec: i64) -> bool
 ```
@@ -198,8 +205,11 @@ fn evaluate_if_range(if_range_header: const u8[:], etag: const u8[:], mod_unix_s
 `Content-Disposition` headers. `parse_multipart` scans boundaries with
 Boyer-Moore-Horspool (`bmh_find`) while enforcing `MultipartOptions` ceilings on
 part count, per-part size, header size, and total memory budget (mitigating
-CVE-2023-24536). `parse_range_header` validates and coalesces RFC 9110 §14.1.2
-byte `Range` intervals (`RangeSpec`, `NormalizedRange`, `RangeSet`), and
+CVE-2023-24536). `MultipartWriter` builds RFC 7578 `multipart/form-data`
+payloads for client uploads (`write_field`, `write_file`, `finish`, and
+`req.multipart(w)`) with CSPRNG boundary generation and CRLF/NUL injection
+rejection. `parse_range_header` validates and coalesces RFC 9110 §14.1.2 byte
+`Range` intervals (`RangeSpec`, `NormalizedRange`, `RangeSet`), and
 `evaluate_if_range` checks RFC 9110 §13.1.5 `If-Range` validators.
 
 ### Compression Dictionary Transport (`compression_dict.goose`, RFC 9842)
@@ -343,7 +353,7 @@ distributed tracing:
 
 | Module | Specification | Purpose and Bounded Capacities |
 | :--- | :--- | :--- |
-| `http/altsvc.goose` | RFC 7838 | Parses `Alt-Svc` headers and caches up to 64 origins (`AltSvcOriginEntry[..64]`) with exponential failure backoff for HTTP/3 (`h3`) endpoint promotion. |
+| `http/altsvc.goose` | RFC 7838 | Parses `Alt-Svc` headers and caches up to 16 origins (`AltSvcOriginEntry[..16]`) with exponential failure backoff for HTTP/3 (`h3`) endpoint promotion. |
 | `http/hsts.goose` | RFC 6797 | Parses `Strict-Transport-Security`, maintains a 128-entry dynamic `HstsCache` plus static preload list, and upgrades `http://` URLs to `https://`. |
 | `http/forwarded.goose` | RFC 7239 | Parses and formats up to 8 `Forwarded` proxy hops (`ForwardedElement[..8]`) with `by`, `for`, `host`, and `proto` attributes. |
 | `http/priority.goose` | RFC 9218 | Parses and serializes extensible HTTP `Priority` dictionaries (`urgency` in `0..7` and `incremental` boolean flag). |

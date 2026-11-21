@@ -6,7 +6,7 @@
 namespace cookie;
 
 import std;
-import core from "..";
+import core;
 import json;
 import .constants;
 import .limits;

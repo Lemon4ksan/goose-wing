@@ -12,7 +12,6 @@
 // RUN: goose build -o %t.exe %s
 // RUN: %t.exe
 import std;
-import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
@@ -783,11 +782,11 @@ fn test_url_query_delimiter_and_decoding_defenses(t: lit::T&) {
 
         // 1. get_query_param_fast must not leak fragment parameters
         var out_val: u8[..64] = [];
-        let found_admin, _ = core::get_query_param_fast(poisoned_query, "admin", out_val);
-        sub.assert_false(found_admin, "Injected fragment param 'admin' must not be found by get_query_param_fast");
+        let match_admin = core::get_query_param_fast(poisoned_query, "admin", out_val);
+        sub.assert_true(match_admin == core::QueryParamMatch.Missing, "Injected fragment param 'admin' must not be found by get_query_param_fast");
 
-        let found_role, _ = core::get_query_param_fast(poisoned_query, "role", out_val);
-        sub.assert_false(found_role, "Injected fragment param 'role' must not be found by get_query_param_fast");
+        let match_role = core::get_query_param_fast(poisoned_query, "role", out_val);
+        sub.assert_true(match_role == core::QueryParamMatch.Missing, "Injected fragment param 'role' must not be found by get_query_param_fast");
 
         // 2. has_query_param_fast must not report existence of fragment parameters
         sub.assert_false(core::has_query_param_fast(poisoned_query, "admin"), "has_query_param_fast must return false for fragment params");
@@ -806,8 +805,8 @@ fn test_url_query_delimiter_and_decoding_defenses(t: lit::T&) {
     t.run("URI query key lookup per RFC 3986 §3.4 ('+' preserved verbatim)") { sub =>
         let query_str = "?user+name=Alice&order+by=desc";
         var out_name: u8[..64] = [];
-        let found_name, _ = core::get_query_param_fast(query_str, "user+name", out_name);
-        sub.assert_true(found_name, "get_query_param_fast must find 'user+name' verbatim");
+        let match_name = core::get_query_param_fast(query_str, "user+name", out_name);
+        sub.assert_true(match_name == core::QueryParamMatch.Value, "get_query_param_fast must find 'user+name' verbatim");
         sub.assert_bytes_eq(out_name[..], "Alice", "Matched param value must be 'Alice'");
         sub.assert_true(core::has_query_param_fast(query_str, "user+name"), "has_query_param_fast must find plus key");
     };
@@ -815,8 +814,8 @@ fn test_url_query_delimiter_and_decoding_defenses(t: lit::T&) {
     t.run("Query parameter lookup into undersized buffer fails safely without truncation") { sub =>
         let query_str = "?token=012345678901234567890123456789";
         var small_buf: u8[..8] = [];
-        let found_tok, _ = core::get_query_param_fast(query_str, "token", small_buf);
-        sub.assert_false(found_tok, "get_query_param_fast into undersized buffer must fail closed without silent truncation");
+        let match_tok = core::get_query_param_fast(query_str, "token", small_buf);
+        sub.assert_true(match_tok == core::QueryParamMatch.Missing, "get_query_param_fast into undersized buffer must fail closed without silent truncation");
     };
 }
 

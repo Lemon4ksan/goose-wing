@@ -4,7 +4,6 @@
 // Programmable test server execution engine (`wing serve`) with scenario router & httpbin.
 import std;
 import os;
-import core from "..";
 import wing from "..";
 import args;
 import rules;

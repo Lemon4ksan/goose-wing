@@ -4,7 +4,6 @@
 // Dedicated HTTP/3 & QUIC UDP Server for goose-wing E2E Verification.
 // Conforms to RFC 9000 (QUIC Transport), RFC 9114 (HTTP/3), and RFC 9204 (QPACK).
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn dispatch_incoming_datagram(

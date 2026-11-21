@@ -5,7 +5,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn test_streaming_digest_sha256_and_sha512() {

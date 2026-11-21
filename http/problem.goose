@@ -6,7 +6,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import json;
 import .response;
 import .headers;

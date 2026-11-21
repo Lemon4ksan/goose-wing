@@ -6,7 +6,6 @@
 // ported from nghttp2, nghttp3, ngtcp2, quinn-proto, rustls, picotls, boringssl,
 // llhttp, tungstenite, cookie-rs, and sfparse.
 import std;
-import core from "../..";
 import wing from "../..";
 
 // ---- FuzzedDataProvider (ported from LLVM <fuzzer/FuzzedDataProvider.h>) ----

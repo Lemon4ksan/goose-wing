@@ -4,7 +4,6 @@
 // Demonstration of goose-wing Realtime Engine:
 // Zero-Allocation WebSocket framing and TopicTree pub/sub message broadcasting.
 import std;
-import core from "..";
 import wing from "..";
 
 fn main() {

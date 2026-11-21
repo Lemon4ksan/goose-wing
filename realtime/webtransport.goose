@@ -9,7 +9,7 @@
 namespace realtime;
 
 import std;
-import core from "..";
+import core;
 import rfc.h3_quic;
 import http.request;
 import http.response;

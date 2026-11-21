@@ -6,7 +6,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import .router;
 import .pool;
 import .pipeline;

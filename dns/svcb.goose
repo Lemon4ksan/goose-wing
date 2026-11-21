@@ -6,7 +6,7 @@
 namespace dns;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // ---- RFC 9460 HTTPS/SVCB Record Models ----------------------------------
@@ -14,7 +14,7 @@ import .internal;
 struct HttpsRecord {
     priority:        u16           = 0, // 0 = AliasMode, >0 = ServiceMode
     target_name:     u8[..255]     = [],
-    alpns:           u8[..64][..8] = [],
+    alpns:           u8[..32][..4] = [],
     port:            u16           = 443,
     no_default_alpn: bool          = false,
     ipv4_hints:      u32[..8]      = [],

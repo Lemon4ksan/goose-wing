@@ -9,7 +9,6 @@
 
 import std;
 import os;
-import core from "../..";
 import wing from "../..";
 
 // Decodes an even-length ASCII hex string into `out`.

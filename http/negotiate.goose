@@ -5,7 +5,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 
 // RFC 9110 Section 12.4.2: Quality Values - Maximum quality weight in integer milliths (1.000 == 1000).
 const QVALUE_MAX_MILLITHS: i32 = 1000;

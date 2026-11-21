@@ -6,7 +6,6 @@
 //   qpack_verdict decode <batch_file>
 //   qpack_verdict encode <batch_file> [huffman:0|1]
 
-import core from "../..";
 import wing from "../..";
 import std;
 

@@ -7,7 +7,6 @@
 // RUN: goose build -o %t.exe %s
 // RUN: %t.exe
 import std;
-import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 

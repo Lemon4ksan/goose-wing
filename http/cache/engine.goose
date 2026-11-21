@@ -7,7 +7,7 @@
 namespace http;
 
 import std;
-import core from "../..";
+import core;
 import http.request;
 import http.response;
 import http.headers;
@@ -229,16 +229,16 @@ fn release_with_status(writers: CacheWriters&, hash: u64, status: CacheLockStatu
 
 // HTTP cache coordinator with intrusive O(1) LRU list.
 struct Cache {
-    options:             CacheOptions      = CacheOptions { .. },
-    entries:             CachedEntry[..16] = [],
-    writers:             CacheWriters      = CacheWriters { .. },
-    lru_head:            i32               = -1,
-    lru_tail:            i32               = -1,
-    total_hits:          i64               = 0,
-    total_misses:        i64               = 0,
-    total_revalidations: i64               = 0,
-    total_stores:        i64               = 0,
-    total_invalidations: i64               = 0,
+    options:             CacheOptions     = CacheOptions { .. },
+    entries:             CachedEntry[..4] = [],
+    writers:             CacheWriters     = CacheWriters { .. },
+    lru_head:            i32              = -1,
+    lru_tail:            i32              = -1,
+    total_hits:          i64              = 0,
+    total_misses:        i64              = 0,
+    total_revalidations: i64              = 0,
+    total_stores:        i64              = 0,
+    total_invalidations: i64              = 0,
 }
 
 // Checks whether target_url (which may be relative) shares origin with base_url (RFC 9111 §4.4).

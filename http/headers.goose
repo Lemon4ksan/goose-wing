@@ -7,7 +7,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import .headers.lexical;
 import .headers.perfect_hash;
 import http.headers.internal;
@@ -368,136 +368,69 @@ fn well_known_to_slot(id: WellKnownHeader) -> i64 {
     };
 }
 
+const WELL_KNOWN_HEADER_NAMES: const u8[:][63] = [
+    "host", "content-type", "content-length", "content-disposition",
+    "content-encoding", "content-language", "content-location", "content-range",
+    "accept", "accept-charset", "accept-encoding", "accept-language",
+    "accept-ranges", "authorization", "proxy-authorization", "www-authenticate",
+    "proxy-authenticate", "cookie", "set-cookie", "set-cookie2",
+    "clear-site-data", "cache-control", "age", "expires", "date", "etag",
+    "if-match", "if-none-match", "if-modified-since", "if-unmodified-since",
+    "if-range", "last-modified", "location", "range", "vary", "via",
+    "connection", "keep-alive", "transfer-encoding", "te", "trailer",
+    "upgrade", "user-agent", "server", "referer", "origin",
+    "strict-transport-security", "content-security-policy",
+    "x-content-type-options", "x-frame-options", "x-webkit-csp",
+    "access-control-allow-origin", "access-control-allow-credentials",
+    "access-control-allow-headers", "access-control-allow-methods",
+    "access-control-expose-headers", "access-control-max-age",
+    "access-control-request-headers", "access-control-request-method",
+    "alt-svc", "retry-after", "priority", "expect",
+];
+
+const WELL_KNOWN_HEADER_IDS: WellKnownHeader[63] = [
+    WellKnownHeader.Host, WellKnownHeader.ContentType, WellKnownHeader.ContentLength,
+    WellKnownHeader.ContentDisposition, WellKnownHeader.ContentEncoding,
+    WellKnownHeader.ContentLanguage, WellKnownHeader.ContentLocation,
+    WellKnownHeader.ContentRange, WellKnownHeader.Accept,
+    WellKnownHeader.AcceptCharset, WellKnownHeader.AcceptEncoding,
+    WellKnownHeader.AcceptLanguage, WellKnownHeader.AcceptRanges,
+    WellKnownHeader.Authorization, WellKnownHeader.ProxyAuthorization,
+    WellKnownHeader.WwwAuthenticate, WellKnownHeader.ProxyAuthenticate,
+    WellKnownHeader.Cookie, WellKnownHeader.SetCookie, WellKnownHeader.SetCookie2,
+    WellKnownHeader.ClearSiteData, WellKnownHeader.CacheControl,
+    WellKnownHeader.Age, WellKnownHeader.Expires, WellKnownHeader.Date,
+    WellKnownHeader.ETag, WellKnownHeader.IfMatch, WellKnownHeader.IfNoneMatch,
+    WellKnownHeader.IfModifiedSince, WellKnownHeader.IfUnmodifiedSince,
+    WellKnownHeader.IfRange, WellKnownHeader.LastModified,
+    WellKnownHeader.Location, WellKnownHeader.Range, WellKnownHeader.Vary,
+    WellKnownHeader.Via, WellKnownHeader.Connection, WellKnownHeader.KeepAlive,
+    WellKnownHeader.TransferEncoding, WellKnownHeader.TE, WellKnownHeader.Trailer,
+    WellKnownHeader.Upgrade, WellKnownHeader.UserAgent, WellKnownHeader.Server,
+    WellKnownHeader.Referer, WellKnownHeader.OriginHeader,
+    WellKnownHeader.StrictTransportSecurity, WellKnownHeader.ContentSecurityPolicy,
+    WellKnownHeader.XContentTypeOptions, WellKnownHeader.XFrameOptions,
+    WellKnownHeader.XWebkitCsp, WellKnownHeader.AccessControlAllowOrigin,
+    WellKnownHeader.AccessControlAllowCredentials,
+    WellKnownHeader.AccessControlAllowHeaders,
+    WellKnownHeader.AccessControlAllowMethods,
+    WellKnownHeader.AccessControlExposeHeaders,
+    WellKnownHeader.AccessControlMaxAge,
+    WellKnownHeader.AccessControlRequestHeaders,
+    WellKnownHeader.AccessControlRequestMethod,
+    WellKnownHeader.AltSvc, WellKnownHeader.RetryAfter,
+    WellKnownHeader.Priority, WellKnownHeader.Expect,
+];
+
 fn classify_well_known_header(name: const u8[:]) -> WellKnownHeader {
     let len = name.len;
     guard len >= 2 && len <= 32 && is_valid_header_name(name) else { return WellKnownHeader.Unknown; }
-
-    if name.starts_with_fold("access-control-") {
-        return http_internal::classify_cors_header(name, len);
-    }
-
-    match len {
-        2 => {
-            let w = (core::read_le_u16(name, 0) | 0x2020) as u32;
-            if w == 0x6574 { return WellKnownHeader.TE; }
-        },
-        3 => {
-            let w = (name[0] as u32 | 0x20) | (((name[1] as u32 | 0x20)) << 8) | (((name[2] as u32 | 0x20)) << 16);
-            if w == 0x656761 { return WellKnownHeader.Age; }
-            if w == 0x616976 { return WellKnownHeader.Via; }
-        },
-        4 => {
-            let w = core::read_le_u32(name, 0) | 0x20202020;
-            if w == 0x74736f68 { return WellKnownHeader.Host; }
-            if w == 0x65746164 { return WellKnownHeader.Date; }
-            if w == 0x67617465 { return WellKnownHeader.ETag; }
-            if w == 0x79726176 { return WellKnownHeader.Vary; }
-        },
-        5 => {
-            if (core::read_le_u32(name, 0) | 0x20202020) == 0x676e6172 && ((name[4] as u32) | 0x20) == 0x65 {
-                return WellKnownHeader.Range;
-            }
-        },
-        6 => {
-            let w32 = core::read_le_u32(name, 0) | 0x20202020;
-            let w16 = (core::read_le_u16(name, 4) | 0x2020) as u32;
-            if w32 == 0x65636361 && w16 == 0x7470 { return WellKnownHeader.Accept; }
-            if w32 == 0x6b6f6f63 && w16 == 0x6569 { return WellKnownHeader.Cookie; }
-            if w32 == 0x76726573 && w16 == 0x7265 { return WellKnownHeader.Server; }
-            if w32 == 0x6769726f && w16 == 0x6e69 { return WellKnownHeader.OriginHeader; }
-            if w32 == 0x65707865 && w16 == 0x7463 { return WellKnownHeader.Expect; }
-        },
-        7 => {
-            let w32 = core::read_le_u32(name, 0) | 0x20202020;
-            let w16 = (core::read_le_u16(name, 4) | 0x2020) as u32;
-            let b6 = ((name[6] as u32) | 0x20);
-            if w32 == 0x69707865 && w16 == 0x6572 && b6 == 0x73 { return WellKnownHeader.Expires; }
-            if w32 == 0x65666572 && w16 == 0x6572 && b6 == 0x72 { return WellKnownHeader.Referer; }
-            if w32 == 0x69617274 && w16 == 0x656c && b6 == 0x72 { return WellKnownHeader.Trailer; }
-            if w32 == 0x72677075 && w16 == 0x6461 && b6 == 0x65 { return WellKnownHeader.Upgrade; }
-            if w32 == 0x2d746c61 && w16 == 0x7673 && b6 == 0x63 { return WellKnownHeader.AltSvc; }
-        },
-        8 => {
-            let w = core::read_le_u64(name, 0) | 0x2020202020202020;
-            if w == 0x6e6f697461636f6c { return WellKnownHeader.Location; }
-            if w == 0x686374616d2d6669 { return WellKnownHeader.IfMatch; }
-            if w == 0x65676e61722d6669 { return WellKnownHeader.IfRange; }
-            if w == 0x797469726f697270 { return WellKnownHeader.Priority; }
-        },
-        10 => {
-            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
-            let w16 = (core::read_le_u16(name, 8) | 0x2020) as u32;
-            if w64 == 0x697463656e6e6f63 && w16 == 0x6e6f { return WellKnownHeader.Connection; }
-            if w64 == 0x696c612d7065656b && w16 == 0x6576 { return WellKnownHeader.KeepAlive; }
-            if w64 == 0x6567612d72657375 && w16 == 0x746e { return WellKnownHeader.UserAgent; }
-            if w64 == 0x6b6f6f632d746573 && w16 == 0x6569 { return WellKnownHeader.SetCookie; }
-        },
-        11 => {
-            if name.eq_ascii_fold("set-cookie2") { return WellKnownHeader.SetCookie2; }
-            if name.eq_ascii_fold("retry-after") { return WellKnownHeader.RetryAfter; }
-        },
-        12 => {
-            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
-            let w32 = core::read_le_u32(name, 8) | 0x20202020;
-            if w64 == 0x2d746e65746e6f63 && w32 == 0x65707974 { return WellKnownHeader.ContentType; }
-            if name.eq_ascii_fold("x-webkit-csp") { return WellKnownHeader.XWebkitCsp; }
-        },
-        13 => {
-            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
-            let w32 = core::read_le_u32(name, 8) | 0x20202020;
-            let b12 = ((name[12] as u32) | 0x20);
-            if w64 == 0x6f632d6568636163 && w32 == 0x6f72746e && b12 == 0x6c { return WellKnownHeader.CacheControl; }
-            if w64 == 0x7a69726f68747561 && w32 == 0x6f697461 && b12 == 0x6e { return WellKnownHeader.Authorization; }
-            if w64 == 0x646f6d2d7473616c && w32 == 0x65696669 && b12 == 0x64 { return WellKnownHeader.LastModified; }
-            if w64 == 0x2d656e6f6e2d6669 && w32 == 0x6374616d && b12 == 0x68 { return WellKnownHeader.IfNoneMatch; }
-            if w64 == 0x722d747065636361 && w32 == 0x65676e61 && b12 == 0x73 { return WellKnownHeader.AcceptRanges; }
-            if w64 == 0x2d746e65746e6f63 && w32 == 0x676e6172 && b12 == 0x65 { return WellKnownHeader.ContentRange; }
-        },
-        14 => {
-            let w64 = core::read_le_u64(name, 0) | 0x2020202020202020;
-            let w32 = core::read_le_u32(name, 8) | 0x20202020;
-            let w16 = (core::read_le_u16(name, 12) | 0x2020) as u32;
-            if w64 == 0x2d746e65746e6f63 && w32 == 0x676e656c && w16 == 0x6874 { return WellKnownHeader.ContentLength; }
-            if name.eq_ascii_fold("accept-charset") { return WellKnownHeader.AcceptCharset; }
-        },
-        15 => {
-            if name.eq_ascii_fold("accept-encoding") { return WellKnownHeader.AcceptEncoding; }
-            if name.eq_ascii_fold("accept-language") { return WellKnownHeader.AcceptLanguage; }
-            if name.eq_ascii_fold("clear-site-data") { return WellKnownHeader.ClearSiteData; }
-            if name.eq_ascii_fold("x-frame-options") { return WellKnownHeader.XFrameOptions; }
-        },
-        16 => {
-            let w64_0 = core::read_le_u64(name, 0) | 0x2020202020202020;
-            let w64_1 = core::read_le_u64(name, 8) | 0x2020202020202020;
-            if w64_0 == 0x687475612d777777 && w64_1 == 0x6574616369746e65 { return WellKnownHeader.WwwAuthenticate; }
-            if w64_0 == 0x2d746e65746e6f63 {
-                if w64_1 == 0x676e69646f636e65 { return WellKnownHeader.ContentEncoding; }
-                if w64_1 == 0x65676175676e616c { return WellKnownHeader.ContentLanguage; }
-                if w64_1 == 0x6e6f697461636f6c { return WellKnownHeader.ContentLocation; }
-            }
-        },
-        17 => {
-            if name.eq_ascii_fold("if-modified-since") { return WellKnownHeader.IfModifiedSince; }
-            if name.eq_ascii_fold("transfer-encoding") { return WellKnownHeader.TransferEncoding; }
-        },
-        18 => {
-            if name.eq_ascii_fold("proxy-authenticate") { return WellKnownHeader.ProxyAuthenticate; }
-        },
-        19 => {
-            if name.eq_ascii_fold("if-unmodified-since") { return WellKnownHeader.IfUnmodifiedSince; }
-            if name.eq_ascii_fold("proxy-authorization") { return WellKnownHeader.ProxyAuthorization; }
-            if name.eq_ascii_fold("content-disposition") { return WellKnownHeader.ContentDisposition; }
-        },
-        22 => {
-            if name.eq_ascii_fold("x-content-type-options") { return WellKnownHeader.XContentTypeOptions; }
-        },
-        23 => {
-            if name.eq_ascii_fold("content-security-policy") { return WellKnownHeader.ContentSecurityPolicy; }
-        },
-        25 => {
-            if name.eq_ascii_fold("strict-transport-security") { return WellKnownHeader.StrictTransportSecurity; }
-        },
-        _ => {},
+    let b0 = core::to_lower_ascii_byte(name[0]);
+    for i in 63 {
+        let cand = WELL_KNOWN_HEADER_NAMES[i];
+        if cand.len == len && cand[0] == b0 && name.eq_ascii_fold(cand) {
+            return WELL_KNOWN_HEADER_IDS[i];
+        }
     }
     return WellKnownHeader.Unknown;
 }

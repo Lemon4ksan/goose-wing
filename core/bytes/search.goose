@@ -7,7 +7,7 @@ namespace core;
 import std;
 
 // Equal check for 1..32 byte slices using branchless unaligned 64/32/16-bit XOR.
-inline fn equal_short(s: const u8[:], needle: const u8[:]) -> bool {
+fn equal_short(s: const u8[:], needle: const u8[:]) -> bool {
     guard s.len == needle.len else { return false; }
     let n = needle.len;
     guard n >= 1 else { return true; }

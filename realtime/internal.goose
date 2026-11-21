@@ -5,7 +5,7 @@
 namespace realtime_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import rfc.ws;
 import rfc.h3_quic;

@@ -329,7 +329,7 @@ inline fn bit_reverse_8(val: u32, len: i32) -> u32 {
     return rev16 >> ((16 - len) as u32);
 }
 
-inline fn insert_brotli_huffman_symbol(
+fn insert_brotli_huffman_symbol(
     table:     BrotliHuffmanTable&,
     s:         i32,
     len:       i32,
@@ -478,7 +478,7 @@ fn decode_brotli_symbol_slow(r: BrotliBitReader&, table: const BrotliHuffmanTabl
 // Example:
 //   table.single_symbol = 5
 //   returns: 5, true
-inline fn decode_brotli_symbol(r: BrotliBitReader&, table: const BrotliHuffmanTable&) -> i32, bool {
+fn decode_brotli_symbol(r: BrotliBitReader&, table: const BrotliHuffmanTable&) -> i32, bool {
     if table.single_symbol >= 0 {
         return table.single_symbol, true;
     }
@@ -511,7 +511,7 @@ inline fn decode_brotli_symbol(r: BrotliBitReader&, table: const BrotliHuffmanTa
 // Example:
 //   desc.single_symbol = 5
 //   returns: 5, true
-inline fn decode_brotli_tree_symbol(
+fn decode_brotli_tree_symbol(
     r:      BrotliBitReader&,
     desc:   const BrotliTreeDesc&,
     tables: const BrotliHuffmanTable[:],
@@ -2444,9 +2444,9 @@ inline fn brotli_dict_tail_bytes(dict: const u8[:]) -> u8, u8 {
 }
 
 // Internal Brotli decompressor (RFC 7932) with optional shared dictionary and max output limit protection.
-fn brotli_decompress_with_limit_impl<B>(
+fn brotli_decompress_with_limit_impl(
     src:              const u8[:],
-    out:              B&,
+    out:              u8[>..]&,
     max_output_bytes: i64         = -1,
     dict:             const u8[:] = "",
 ) -> CompressError {
@@ -2498,6 +2498,22 @@ fn brotli_decompress_with_limit_impl<B>(
     }
 
     committed = true;
+    return CompressError.None;
+}
+
+// Generic bounded-buffer bridge delegating to the single non-generic u8[>..] Brotli core.
+fn brotli_decompress_with_limit_impl<B>(
+    src:              const u8[:],
+    out:              B&,
+    max_output_bytes: i64         = -1,
+    dict:             const u8[:] = "",
+) -> CompressError {
+    let avail = sub_sat_i64(out.cap, out.len);
+    let eff_limit = if max_output_bytes >= 0 && max_output_bytes < avail { max_output_bytes } else { avail };
+    var tmp: u8[>..] = [];
+    let err = brotli_decompress_with_limit_impl(src, tmp, eff_limit, dict);
+    guard err == CompressError.None else { return err; }
+    guard out.try_append(tmp[..]) else { return CompressError.OutputBufferOverflow; }
     return CompressError.None;
 }
 

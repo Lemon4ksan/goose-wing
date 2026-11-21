@@ -8,7 +8,7 @@
 namespace http_internal;
 
 import std;
-import core from "../..";
+import core;
 import http.headers.chunked;
 
 const CHUNK_STATE_HAS_SIZE:               u64 = 0x8000000000000000;
@@ -163,7 +163,7 @@ fn feed_chunk_trailer(
 }
 
 // Consumes a single character of chunk hex size or delimiter (RFC 9112 §7.1.1).
-inline fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
+fn feed_chunk_hex_char(dec: ChunkFsmDecoder&, c: u8) -> bool {
     dec.ext_bytes++;
     if dec.ext_bytes > 1024 {
         dec.state = CHUNK_STATE_IS_ERROR;
@@ -247,7 +247,7 @@ inline fn finish_chunk_ext_lf(dec: ChunkFsmDecoder&, done: bool&) -> bool {
 }
 
 // Consumes a single character of chunk extensions (RFC 9112 §7.1.1).
-inline fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
+fn feed_chunk_ext_char(dec: ChunkFsmDecoder&, c: u8, done: bool&) -> bool {
     dec.ext_bytes++;
     if dec.ext_bytes > 1024 {
         dec.state = CHUNK_STATE_IS_ERROR;
@@ -399,7 +399,7 @@ fn feed_chunk_header(
 // Example:
 //   data = "hello\r\n", offset = 0, size = 7
 //   returns: YieldChunk, chunk = "hello"
-inline fn feed_chunk_body_full(
+fn feed_chunk_body_full(
     dec:    ChunkFsmDecoder&,
     data:   const u8[:],
     offset: i64&,
@@ -443,7 +443,7 @@ inline fn feed_chunk_body_full(
 // Example:
 //   data = "hel", offset = 0, size = 7, rem_data = 3
 //   returns: YieldChunk, chunk = "hel"
-inline fn feed_chunk_body_partial(
+fn feed_chunk_body_partial(
     dec:      ChunkFsmDecoder&,
     data:     const u8[:],
     offset:   i64&,

@@ -683,8 +683,10 @@ fn get_query_param(tokens: const QueryTokens&, key: const u8[:]) -> const u8[:],
 fn has_query_param(tokens: const QueryTokens&, key: const u8[:]) -> bool
 fn get_query_param_decoded<B>(tokens: const QueryTokens&, key: const u8[:], out: B&) -> bool
 fn validate_query_param_count(query: const u8[:], max_params: i64) -> bool
-fn get_query_param_fast(query: const u8[:], key: const u8[:]) -> const u8[:], bool
-fn has_query_param_fast(query: const u8[:], key: const u8[:]) -> bool
+enum QueryParamMatch { Missing, Valueless, Value }
+fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> QueryParamMatch
+fn has_query_param_fast(raw_query: const u8[:], key: const u8[:]) -> bool
+fn append_query_component<B>(raw: const u8[:], out: B&) -> bool
 ```
 
 Implements owned (`Url`) and borrowed (`UrlView`) URL parsing and IDNA Punycode

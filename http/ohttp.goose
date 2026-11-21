@@ -8,7 +8,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import security.hpke;
 import .bhttp;
 import http.codec_internal;

@@ -5,7 +5,7 @@
 namespace wire;
 
 import std;
-import core from "..";
+import core;
 import .pipeline;
 
 // RFC 9110 Section 15.5.22: 429 (Too Many Requests) - status code returned on rate-limit rejection.

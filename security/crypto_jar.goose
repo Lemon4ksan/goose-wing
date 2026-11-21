@@ -5,7 +5,7 @@
 namespace security;
 
 import std;
-import core from "..";
+import core;
 import .crypto_internal;
 
 // ---- multi-key rotation container (KeyStore) -------------------------------

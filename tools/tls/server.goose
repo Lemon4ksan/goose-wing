@@ -4,7 +4,6 @@
 // Dedicated TLS 1.3 Interop Server for goose-wing E2E Verification.
 // Conforms to RFC 8446 (TLS 1.3), RFC 6066 (SNI), RFC 7301 (ALPN), and RFC 8879 (Cert Compression).
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn parse_client_hello_sni_alpn(

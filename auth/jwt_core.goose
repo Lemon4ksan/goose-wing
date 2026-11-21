@@ -5,7 +5,7 @@
 namespace auth;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import .types;
 import .internal;

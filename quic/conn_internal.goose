@@ -5,7 +5,7 @@
 namespace quic_internal;
 
 import std;
-import core from "..";
+import core;
 import .packet;
 import .packet_internal;
 import .AckFrame;

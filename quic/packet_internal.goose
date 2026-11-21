@@ -5,7 +5,7 @@
 namespace quic_internal;
 
 import std;
-import core from "..";
+import core;
 import .packet;
 
 // ---- Variable-Length Integer Bit Helpers (RFC 9000 Section 16) -----------

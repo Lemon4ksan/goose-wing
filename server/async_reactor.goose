@@ -7,7 +7,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import net.driver;
 import net.io_host;
 import .router;

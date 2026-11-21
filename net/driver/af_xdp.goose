@@ -6,7 +6,7 @@
 namespace net_internal;
 
 import std;
-import core from "../..";
+import core;
 import net.driver.types;
 
 // Native C bindings from shim/af_xdp.c

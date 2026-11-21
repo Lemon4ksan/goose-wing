@@ -15,7 +15,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 // CHECK: === CYCLE 1 CRYPTO AUTH BREAKER REGRESSION SUITE ===

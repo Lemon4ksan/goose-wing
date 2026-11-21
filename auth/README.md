@@ -174,7 +174,7 @@ struct DPoPReplayCache {
 fn normalize_dpop_target_uri<B>(raw_uri: const u8[:], out: B&) -> bool
 fn compute_dpop_ath<B>(access_token: const u8[:], out: B&) -> bool
 fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") -> bool
-inline fn build_dpop_claims_json<B>(method: const u8[:], norm_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool
+fn build_dpop_claims_json<B>(method: const u8[:], norm_uri: const u8[:], access_token: const u8[:], nonce: const u8[:], now_sec: i64, jti: const u8[:], out: B&) -> bool
 fn is_matching_dpop_alg(alg_val: const u8[:], expected_alg: const u8[:]) -> bool
 fn parse_dpop_header_jwk_info<B>(header_json: const u8[:], out_alg: B&, out_jwk: DPoPJwkInfo&) -> bool
 fn verify_dpop_header<B>(header_json: const u8[:], expected_alg: const u8[:], out_alg: B&, out_jwk: DPoPJwkInfo&) -> bool

@@ -5,7 +5,7 @@
 namespace h3_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.h3_quic;
 import http.headers;
 import .internal;
@@ -314,7 +314,7 @@ fn decode_qpack_field_line<F>(
     return http3::QpackError.DecompressionFailed;
 }
 
-inline fn emit_qpack_pseudo_field(
+fn emit_qpack_pseudo_field(
     out_pseudo: http3::PseudoHeaders&,
     name:       const u8[:],
     val:        const u8[:],
@@ -370,7 +370,7 @@ inline fn emit_qpack_pseudo_field(
     return http3::QpackError.MessageError;
 }
 
-inline fn emit_qpack_field_to_map(
+fn emit_qpack_field_to_map(
     out_pseudo:  http3::PseudoHeaders&,
     out_headers: http::HeaderMap&,
     budget_left: u64&,

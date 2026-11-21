@@ -5,7 +5,7 @@
 namespace fingerprint_internal;
 
 import std;
-import core from "..";
+import core;
 import http2.framing;
 import .types;
 

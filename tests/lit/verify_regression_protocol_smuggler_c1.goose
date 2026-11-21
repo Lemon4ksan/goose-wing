@@ -5,7 +5,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 // Bug 1: HTTP/3 PUSH_PROMISE QPACK stream-ID confusion, response smuggling on unblock,

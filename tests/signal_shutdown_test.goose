@@ -8,7 +8,6 @@
 // RUN: %t.exe
 import std;
 import os;
-import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 

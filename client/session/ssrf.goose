@@ -5,7 +5,7 @@
 namespace client;
 
 import std;
-import core from "../..";
+import core;
 import client.redirect;
 import security.ssrf;
 

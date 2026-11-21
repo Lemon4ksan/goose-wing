@@ -5,7 +5,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 const PROF_STAGE_FRAMING: i32 = 0;

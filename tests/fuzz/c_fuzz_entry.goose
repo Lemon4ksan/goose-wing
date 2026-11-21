@@ -7,7 +7,6 @@
 //   goose --standalone --header .lit/cache/fuzz/c_fuzz_entry.h -o .lit/cache/fuzz/c_fuzz_entry.c tests/fuzz/c_fuzz_entry.goose
 
 import std;
-import core from "../..";
 import wing from "../..";
 import .oss_fuzz;
 

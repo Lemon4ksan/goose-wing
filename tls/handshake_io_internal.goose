@@ -5,7 +5,7 @@
 namespace tls_internal;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 import .record;
 import .record_internal;

@@ -5,7 +5,6 @@
 // Conforms to production engine: server::HttpServer + server::serve_reactor
 // Zero-Allocation HTTP/1.1 & WebSocket (RFC 6455) Engine
 import std;
-import core from "../..";
 import wing from "../..";
 
 struct WorkerContext {

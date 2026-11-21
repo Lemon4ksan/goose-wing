@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Deterministic zero-allocation DNS cache with TTL and Stale-While-Revalidate (RFC 1035 & RFC 5861).
-// Backed by an intrusive doubly-linked LRU list over a bounded 64-entry array.
+// Backed by an intrusive doubly-linked LRU list over a bounded 16-entry array.
 namespace dns;
 
 import std;
-import core from "..";
+import core;
 import .svcb;
 import .internal;
 
@@ -23,7 +23,7 @@ struct CacheEntry {
     qtype:           u16              = rfc::DNS_QTYPE_A,
     ipv4_hints:      u32[..8]         = [],
     ipv6_hints:      u8[16][..8]      = [],
-    https_records:   HttpsRecord[..4] = [],
+    https_records:   HttpsRecord[..2] = [],
     inserted_at_sec: i64              = 0,
     ttl_sec:         u32              = 300,
     stale_ttl_sec:   u32              = 86400, // 24-hour max stale grace period
@@ -33,7 +33,7 @@ struct CacheEntry {
 }
 
 struct Cache {
-    entries:  CacheEntry[..64] = [],
+    entries:  CacheEntry[..16] = [],
     lru_head: i32              = -1,
     lru_tail: i32              = -1,
 }

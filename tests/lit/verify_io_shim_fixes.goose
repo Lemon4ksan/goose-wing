@@ -6,7 +6,6 @@
 // RUN: %t.exe | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn test_platform_and_uring_abi_contracts() {

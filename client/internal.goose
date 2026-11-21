@@ -5,7 +5,7 @@
 namespace client_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import cookie.constants;
 import cookie.policy;
@@ -875,32 +875,47 @@ fn apply_contract_query<Query>(req: http::Request&, query_dto: const Query&) -> 
 
 // ---- Client Facade Internal Helpers (Profile, DoH, ECH, Dictionary) --------
 
-fn apply_profile(c: client::Client&, profile: const fingerprint::ClientProfile&) {
-    c.profile = profile.kind;
-    c.profile_spec = profile;
-    c.default_headers.clear();
+fn resolve_profile_spec(kind: fingerprint::Profile) -> fingerprint::ClientProfile {
+    if kind == fingerprint::Profile.None {
+        return fingerprint::none_profile();
+    }
+    if kind == fingerprint::Profile.Custom {
+        return fingerprint::custom_profile();
+    }
+    return fingerprint::wing_default_profile();
+}
+
+fn build_profile_headers(profile: const fingerprint::ClientProfile&) -> http::HeaderMap {
+    var hdrs = http::HeaderMap { .. };
     if profile.user_agent.len > 0 {
-        http::set_header(c.default_headers, "User-Agent", profile.user_agent[..]);
+        http::set_header(hdrs, "User-Agent", profile.user_agent[..]);
     }
     if profile.accept.len > 0 {
-        http::set_header(c.default_headers, "Accept", profile.accept[..]);
+        http::set_header(hdrs, "Accept", profile.accept[..]);
     }
     if profile.accept_encoding.len > 0 {
-        http::set_header(c.default_headers, "Accept-Encoding", profile.accept_encoding[..]);
+        http::set_header(hdrs, "Accept-Encoding", profile.accept_encoding[..]);
     }
     if profile.accept_language.len > 0 {
-        http::set_header(c.default_headers, "Accept-Language", profile.accept_language[..]);
+        http::set_header(hdrs, "Accept-Language", profile.accept_language[..]);
     }
     if profile.upgrade_insecure_requests.len > 0 {
-        http::set_header(c.default_headers, "Upgrade-Insecure-Requests", profile.upgrade_insecure_requests[..]);
+        http::set_header(hdrs, "Upgrade-Insecure-Requests", profile.upgrade_insecure_requests[..]);
     }
     for &e in profile.extra_headers.entries {
         let h_name = http::entry_name(profile.extra_headers, e);
         let h_val = http::entry_value(profile.extra_headers, e);
         if h_name.len > 0 {
-            http::set_header(c.default_headers, h_name, h_val);
+            http::set_header(hdrs, h_name, h_val);
         }
     }
+    return hdrs;
+}
+
+fn apply_profile(c: client::Client&, profile: const fingerprint::ClientProfile&) {
+    c.profile = profile.kind;
+    c.profile_spec = profile;
+    c.default_headers = build_profile_headers(profile);
 }
 
 fn is_trusted_location_host(session: const client::Session&, host_name: const u8[:]) -> bool {
@@ -911,15 +926,38 @@ fn is_trusted_location_host(session: const client::Session&, host_name: const u8
 // virtual clock, and mock routes so application credentials, cookies, and interceptors
 // do not leak across internal sub-requests (such as RFC 8484 DoH queries).
 fn clone_isolated_transport_client(session: const client::Session&) -> client::Client {
-    var isolated = client::new_client();
-    isolated.virtual_clock_us = session.virtual_clock_us;
-    isolated.proxy_url.append(session.proxy_url[..]);
-    isolated.timeout_ms = session.timeout_ms;
-    isolated.trust_store = copy(session.trust_store);
-    isolated.insecure_skip_verify = session.insecure_skip_verify;
-    isolated.ssrf_guard = copy(session.ssrf_guard);
-    isolated.mock_routes = copy(session.mock_routes);
-    return isolated;
+    let def_p = fingerprint::wing_default_profile();
+    let def_hdrs = build_profile_headers(def_p);
+    var proxy_buf: u8[..256] = [];
+    let _ = proxy_buf.try_set(session.proxy_url[..]);
+    return client::Client {
+        profile:                 def_p.kind,
+        profile_spec:            def_p,
+        proxy_url:               proxy_buf,
+        timeout_ms:              session.timeout_ms,
+        default_headers:         def_hdrs,
+        ssrf_guard:              copy(session.ssrf_guard),
+        virtual_clock_us:        session.virtual_clock_us,
+        mock_routes:             copy(session.mock_routes),
+        cache:                   http::Cache { .. },
+        enable_cache:            false,
+        altsvc:                  http::AltSvcCache { .. },
+        enable_altsvc:           true,
+        enable_protocol_racing:  true,
+        quic_race_delay_ms:      200,
+        dict_cache:              http::DictionaryCache { .. },
+        enable_compression_dict: true,
+        pipeline:                client::InterceptorPipeline { .. },
+        wire_pipeline:           wire::default_client_pipeline(),
+        hsts:                    http::HstsCache { .. },
+        enable_hsts:             true,
+        pool:                    net::new_stream_pool(),
+        enable_cookie_jar:       true,
+        trust_store:             copy(session.trust_store),
+        insecure_skip_verify:    session.insecure_skip_verify,
+        jar:                     cookie::CanonicalCookieJar { .. },
+        ..
+    };
 }
 
 // Dispatches a DNS-over-HTTPS wire query using an isolated HTTP client transport

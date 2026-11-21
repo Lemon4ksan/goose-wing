@@ -11,7 +11,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import http.headers;
 import http.sfv;

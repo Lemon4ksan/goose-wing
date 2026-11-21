@@ -6,7 +6,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // Maximum IPv4/IPv6 UDP payload size for QUIC Ethernet frames without IP fragmentation (RFC 9000 Section 14).

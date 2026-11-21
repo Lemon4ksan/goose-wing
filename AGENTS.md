@@ -55,11 +55,12 @@ endian readers, saturating math, or UTF-8/JSON helpers. Import `core.bytes`,
 
 - **Predicates**: `core::is_tchar(b)` (RFC 9110), `core::is_uri_unreserved(b)`
   (RFC 3986), `core::is_ascii_vchar(b)`, `core::is_ascii_printable(b)`,
-  `core::is_ascii_alpha(b)`, `core::is_ascii_alnum(b)`,
+  `core::is_ascii_alpha(b)`, `core::is_ascii_alphanumeric(b)`,
   `core::is_ascii_digit(b)`, `core::is_ascii_hexdigit(b)`,
   `core::is_ascii_ctl(b)`, `core::hex_digit_to_val(b) -> i32`.
-- **Case conversion**: `core::to_lower_byte(b)`, `core::to_upper_byte(b)`,
-  `s.to_lower_ascii(out)`, `s.to_upper_ascii(out)`.
+- **Case conversion**: `core::to_lower_ascii_byte(b)`,
+  `core::to_upper_ascii_byte(b)`, `s.to_lower_ascii(out)`,
+  `s.to_upper_ascii(out)`.
 - **Case-insensitive UFCS on `const u8[:]`**: `a.eq_ascii_fold(b)`,
   `s.starts_with_fold(prefix)`, `s.ends_with_fold(suffix)`,
   `s.contains_fold(needle)`, `s.index_of_fold(needle) -> i64`.

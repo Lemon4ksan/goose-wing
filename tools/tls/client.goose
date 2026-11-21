@@ -6,7 +6,6 @@
 // trust-store verification, IP SAN matching, untrusted certificate rejection,
 // ALPN h2 negotiation, and pooled TLS+H2 stream multiplexing against tools/tls/server.goose.
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn make_https_base_url(port: u16, out: u8[..128]&) {

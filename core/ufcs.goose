@@ -108,7 +108,7 @@ fn ::validate_utf8(data: const u8[:]) -> bool { return core::validate_utf8(data)
 
 // ---- fast query lookup bridges (const u8[:]) -------------------------------
 
-fn ::get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> bool, bool {
+fn ::get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> core::QueryParamMatch {
     return core::get_query_param_fast(raw_query, key, out);
 }
 

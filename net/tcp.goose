@@ -7,7 +7,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // Public environment & signal C shims (shim/tcp.c)
@@ -865,6 +865,7 @@ fn pipe_create(out_read_fd: i64&, out_write_fd: i64&) -> bool {
 
 // Closes a kernel pipe pair created by pipe_create.
 fn pipe_close(read_fd: i64, write_fd: i64) {
+    guard read_fd >= 0 || write_fd >= 0 else { return; }
     net_internal::native_pipe_close(read_fd, write_fd);
 }
 

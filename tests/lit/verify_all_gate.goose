@@ -12,7 +12,6 @@
 // - Cross-module canonical entrypoints (`core`, `http`, `http2`, `tls`, `quic`, `realtime`, `proxy`, `grpc`, `cookie`, `auth`)
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 // CHECK: WING_UDP_BATCH_INITIALIZED: capacity=32

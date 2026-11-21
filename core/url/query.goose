@@ -372,11 +372,23 @@ fn validate_query_param_count(query: const u8[:], max_allowed: i64 = MAX_URL_QUE
 
 // ---- Fast Zero-Allocation Query Parameter Lookup (uWebSockets QueryParser) ---
 
+enum QueryParamMatch {
+    Missing,
+    Valueless,
+    Value,
+}
+
 // Fast zero-allocation query parameter lookup directly from raw query slice.
 // Scans raw_query for key without allocating a QueryParamsList or parsing unrelated parameters.
-// Returns (found, is_valueless). If found and has a value, out is cleared and the decoded value is written into out.
-fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> bool, bool {
-    guard key.len > 0 && raw_query.len > 0 else { return false, false; }
+// Returns QueryParamMatch.Value (and writes decoded value into out), QueryParamMatch.Valueless
+// (clears out), or QueryParamMatch.Missing (not found or buffer overflow).
+//
+// Example:
+//   raw_query = "?a=1&flag", key = "a" -> QueryParamMatch.Value, out = "1"
+//   raw_query = "?a=1&flag", key = "flag" -> QueryParamMatch.Valueless, out = ""
+//   raw_query = "?a=1&flag", key = "z" -> QueryParamMatch.Missing
+fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) -> QueryParamMatch {
+    guard key.len > 0 && raw_query.len > 0 else { return QueryParamMatch.Missing; }
 
     var q = raw_query;
     if q[0] == '?' {
@@ -411,19 +423,20 @@ fn get_query_param_fast<B>(raw_query: const u8[:], key: const u8[:], out: B&) ->
 
         if matches {
             if eq_pos < 0 {
-                return true, true;
+                out.clear();
+                return QueryParamMatch.Valueless;
             }
             let stmt_val = statement[eq_pos + 1..];
             out.clear();
             let dec_ok = percent_decode_query(stmt_val, out);
             guard dec_ok else {
                 out.clear();
-                return false, false;
+                return QueryParamMatch.Missing;
             }
-            return true, false;
+            return QueryParamMatch.Value;
         }
     }
-    return false, false;
+    return QueryParamMatch.Missing;
 }
 
 // Fast zero-allocation query parameter existence check.
@@ -577,11 +590,15 @@ inline fn needs_query_component_escape(b: u8) -> bool {
 }
 
 // Escapes special delimiters and control characters in a query parameter component (RFC 3986 §3.4).
+// Rolls back `out` to its original length if buffer capacity is exceeded.
 //
 // Example:
 //   raw = "a&b=c", out = []
 //   returns: true, out = "a%26b%3Dc"
-fn append_query_component(raw: const u8[:], out: u8[..2048]&) -> bool {
+fn append_query_component<B>(raw: const u8[:], out: B&) -> bool {
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
     for b in raw {
         if needs_query_component_escape(b) {
             guard out.try_push('%') else { return false; }
@@ -591,5 +608,6 @@ fn append_query_component(raw: const u8[:], out: u8[..2048]&) -> bool {
             guard out.try_push(b) else { return false; }
         }
     }
+    committed = true;
     return true;
 }

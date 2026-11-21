@@ -8,7 +8,6 @@
 // RUN: %t.exe %t.sock | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 const OWNER_TCP_TEST:     u16 = core::IO_OWNER_USER_START;

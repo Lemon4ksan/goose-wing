@@ -6,7 +6,7 @@
 namespace net_internal;
 
 import std;
-import core from "../..";
+import core;
 
 const ETH_HDR_LEN:            i64 = 14;
 const ETH_TYPE_IPV4:          u16 = 0x0800;

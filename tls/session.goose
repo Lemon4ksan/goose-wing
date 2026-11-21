@@ -6,7 +6,7 @@
 namespace tls;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 import .record;
 import .record_internal;
@@ -307,7 +307,7 @@ inline fn apply_unsealed_slot_handshake_control(slot: CipherSlot&, hs_bytes: con
     return SliceUnsealStatus.ControlHandled;
 }
 
-inline fn unseal_single_slot_record<B>(
+fn unseal_single_slot_record<B>(
     slot:      CipherSlot&,
     rec_hdr:   const u8[:],
     rec_body:  const u8[:],
@@ -509,7 +509,7 @@ fn populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) -> boo
 }
 
 // Copies verified DNS SubjectAltName entries from `slot_idx` into `out_sans` for HTTP/2 connection coalescing.
-fn copy_slot_san_hosts(slot_idx: u16, out_sans: u8[..128][..8]&) {
+fn copy_slot_san_hosts<B>(slot_idx: u16, out_sans: B&) {
     out_sans.clear();
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return; }

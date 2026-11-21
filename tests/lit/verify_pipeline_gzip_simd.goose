@@ -4,7 +4,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn append_feed_post(out: u8[>..]&, post_idx: i64) {

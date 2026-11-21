@@ -7,7 +7,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn all_bytes_zero(buf: const u8[:]) -> bool {

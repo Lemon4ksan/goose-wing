@@ -8,7 +8,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import net.driver;
 import .tcp;
 import .internal;

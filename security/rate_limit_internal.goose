@@ -5,7 +5,7 @@
 namespace security_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 
 const GCRA_MAX_CLOCK_DRIFT_NS: u64 = 5000000000; // 5.0 seconds

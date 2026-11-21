@@ -8,7 +8,6 @@
 // and WebSocket session lifecycle invariants across server/*, client/*, proxy/*, and realtime/*.
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 struct C2GrowableDto {

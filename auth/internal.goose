@@ -6,7 +6,7 @@ namespace auth_internal;
 
 import std;
 import json;
-import core from "..";
+import core;
 import rfc.http;
 import .types;
 
@@ -155,7 +155,7 @@ inline fn mark_device_auth_key_seen(seen_mask: u32&, bit: u32, had_err: bool&) {
 // Example:
 //   key = "user_code", reader at "\"WDJB-MJHT\""
 //   sets: resp.user_code = "WDJB-MJHT", had_err = false
-inline fn parse_device_auth_field(
+fn parse_device_auth_field(
     key:       const u8[:],
     reader:    json::Reader&,
     resp:      auth::DeviceAuthResponse&,
@@ -383,7 +383,7 @@ inline fn parse_introspection_str_member(
 // Example:
 //   key = "active", reader at "true"
 //   sets: resp.active = true, seen_mask |= 1
-inline fn parse_introspection_field(
+fn parse_introspection_field(
     key:       const u8[:],
     reader:    json::Reader&,
     resp:      auth::IntrospectionResponse&,

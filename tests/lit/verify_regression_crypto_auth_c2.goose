@@ -5,7 +5,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 // CAB-C2-01: X.509 ParsedCert struct reuse state leak, unverified self-issued trust anchor

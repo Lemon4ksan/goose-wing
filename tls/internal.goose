@@ -5,7 +5,7 @@
 namespace tls_internal;
 
 import std;
-import core from "..";
+import core;
 
 // ---- ASN.1 DER Internal Helpers (X.690 §8 & §10) --------------------------
 

@@ -5,7 +5,6 @@
 // High-performance, zero-allocation gRPC Unary RPC dispatching,
 // Length-Prefixed Message (LPM) framing, metadata propagation, and trailers.
 import std;
-import core from "..";
 import wing from "..";
 
 fn service_unary_handler(

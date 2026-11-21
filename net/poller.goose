@@ -10,7 +10,7 @@ import std;
 import net.driver;
 import .tcp;
 import .internal;
-import core from "..";
+import core;
 
 // Time conversion constants
 const NANOS_PER_MILLI: u64 = 1000000;

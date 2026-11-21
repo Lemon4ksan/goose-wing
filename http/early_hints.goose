@@ -9,7 +9,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import .headers;
 import .mime;
 import http.ext_internal;

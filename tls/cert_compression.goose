@@ -6,7 +6,7 @@
 namespace tls_internal;
 
 import std;
-import core from "..";
+import core;
 
 // ---- CompressedCertificate Message Model ---------------------------------
 

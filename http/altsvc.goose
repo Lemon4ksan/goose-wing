@@ -9,7 +9,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import .headers.lexical;
 import .mime;
 import http.ext_internal;
@@ -34,7 +34,7 @@ struct AltSvcOriginEntry {
 }
 
 struct AltSvcCache {
-    entries: AltSvcOriginEntry[..64] = [],
+    entries: AltSvcOriginEntry[..16] = [],
 }
 
 // ---- RFC 7838 Header Parser ---------------------------------------------

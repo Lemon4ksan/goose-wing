@@ -5,7 +5,7 @@
 namespace auth;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 
 // ---- ACME HTTP-01 Challenges (RFC 8555 §8.1 / §8.3) ----------------------

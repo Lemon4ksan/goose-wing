@@ -6,7 +6,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import json;
 import http.priority;
 import http.incremental;
@@ -338,7 +338,7 @@ fn query_param<B>(req: const Request&, key: const u8[:], out: B&) -> bool {
     let raw_q = extract_request_query(req.url[..]);
     guard raw_q.len > 0 else { return false; }
     out.clear();
-    guard raw_q.get_query_param_fast(key, out) else { return false; }
+    guard raw_q.get_query_param_fast(key, out) != core::QueryParamMatch.Missing else { return false; }
     committed = true;
     return true;
 }

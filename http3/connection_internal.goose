@@ -6,7 +6,7 @@
 namespace h3_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.h3_quic;
 import http.headers;
 import quic.packet;

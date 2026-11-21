@@ -7,7 +7,7 @@
 namespace quic;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // ---- Path Validation States & Endpoint Representation -------------------

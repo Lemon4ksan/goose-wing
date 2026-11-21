@@ -5,7 +5,7 @@
 namespace http_internal;
 
 import std;
-import core from "..";
+import core;
 import http.forwarded;
 import http.headers;
 import http.mime;

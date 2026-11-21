@@ -7,7 +7,7 @@
 namespace proxy;
 
 import std;
-import core from "..";
+import core;
 import http.headers;
 import http.client_cert;
 import http.early_hints;

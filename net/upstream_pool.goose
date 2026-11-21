@@ -5,7 +5,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .pool;
 import .tcp;
 import .transport;

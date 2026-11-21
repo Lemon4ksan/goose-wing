@@ -4,7 +4,6 @@
 // Dedicated HTTP/2 Server for h2spec Conformance Testing (RFC 9113 & RFC 7540).
 // HTTP/2 implementation in pure Goose for h2spec testing.
 import std;
-import core from "../..";
 import wing from "../..";
 
 var g_h2spec_server = server::new_http_server("127.0.0.1", 0);

@@ -8,7 +8,7 @@
 namespace quic;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // ---- user-space leaky bucket pacer (picoquic model) ----------------------

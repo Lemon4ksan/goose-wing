@@ -8,7 +8,6 @@
 // CHECK: Bench_Outer/Sub_Inner
 // CHECK: SUITE: Hardware Cycle Profiler Test Suite | PASS: 4/4 | FAIL: 0
 import std;
-import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 

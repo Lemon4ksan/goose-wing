@@ -59,16 +59,22 @@ without modifying the core decoders.
 
 ## Quick start
 
+Import `wing` as a single package (it exposes `core::*` and all protocol
+namespaces; submodules can import `wing.core` or `wing.http.multipart`):
+
+```goose
+import wing from "github.com/Lemon4ksan/goose-wing@v0.1.0";
+```
+
 ### 1. HTTP client session
 
 ```goose
 import std;
-import core;
 import wing;
 
 fn main() {
-    var sess = wing::new_session("https://api.example.com") { s =>
-        s.set_profile(wing::Profile.Wing);
+    var sess = client::new_session("https://api.example.com") { s =>
+        s.set_profile(fingerprint::Profile.Wing);
         s.set_timeout_ms(5000);
         s.default_header("Accept", "application/json");
     };
@@ -88,32 +94,30 @@ fn main() {
 
 ```goose
 import std;
-import core;
 import wing;
 
 fn main() {
-    let listener = wing::tcp_listen("127.0.0.1", 8080, 128);
+    let listener = net::tcp_listen("127.0.0.1", 8080, 128);
     guard listener > 0 else { return; }
-    defer wing::tcp_close(listener);
+    defer net::tcp_close(listener);
 
-    var server = wing::new_http_server("127.0.0.1", 8080);
-    server.add_static_get_route("/health", "application/json", "{\"ok\":true}", 1);
-    server.add_get_route("/api/v1/users/{id}", 2);
+    var srv = server::new_http_server("127.0.0.1", 8080);
+    srv.add_static_get_route("/health", "application/json", "{\"ok\":true}", 1);
+    srv.add_get_route("/api/v1/users/{id}", 2);
 
-    server.serve_reactor(listener);
+    srv.serve_reactor(listener);
 }
 ```
 
 ### 3. WebSocket frame encoding
 
 ```goose
-import core;
 import wing;
 
 fn main() {
-    var hdr = wing::WsFrameHeader {
+    var hdr = realtime::WsFrameHeader {
         fin: true,
-        opcode: wing::WS_OPCODE_TEXT,
+        opcode: realtime::WS_OPCODE_TEXT,
         masked: true,
         mask_key: [0x12, 0x34, 0x56, 0x78],
         payload_len: 5,
@@ -124,7 +128,7 @@ fn main() {
 
     var payload: u8[..32] = [];
     payload.append("Hello");
-    wing::mask_websocket_payload(payload[..], hdr.mask_key);
+    realtime::mask_websocket_payload(payload[..], hdr.mask_key);
     frame.append(payload[..]);
 }
 ```
@@ -138,6 +142,10 @@ verification suites:
 python tools/test_runner.py --check-only
 goose-lit tests
 ```
+
+For full-stack binaries combining `server::HttpServer`, `client::Session`, and
+TLS on memory-constrained Windows hosts, pass `--cc clang`, `-O1`, or
+`--debug -O0` to keep C compiler peak memory low.
 
 With [`just`](https://github.com/casey/just) installed:
 

@@ -4,7 +4,6 @@
 // Standalone Live Goose-Wing Server for Toxiproxy Chaos & Security Attacks Testing.
 // Handles HTTP/1.1, WebSocket (RFC 6455), and HTTP/2 (RFC 9113) natively in Goose!
 import std;
-import core from "../..";
 import wing from "../..";
 
 struct ChaosEchoStage {

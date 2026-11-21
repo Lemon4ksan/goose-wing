@@ -8,7 +8,7 @@
 namespace http;
 
 import std;
-import core from "../..";
+import core;
 import http.sfv;
 import http.sfv_sig_internal;
 import http.cache.engine;

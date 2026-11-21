@@ -4,7 +4,6 @@
 // Command-line argument structures and parser for the standalone wing CLI.
 import std;
 import os;
-import core from "..";
 import wing from "..";
 
 enum CliMode {

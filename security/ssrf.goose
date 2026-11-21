@@ -5,7 +5,7 @@
 namespace security;
 
 import std;
-import core from "..";
+import core;
 import .policy_internal;
 
 // ---- SSRF guard policy and 3-tier checks -----------------------------------

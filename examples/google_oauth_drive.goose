@@ -4,7 +4,6 @@
 // Demonstration of Google OAuth 2.0 CLI Authorization Code Flow with PKCE
 // (RFC 7636, RFC 8252) and Google Drive API v3 Request Dispatching.
 import std;
-import core from "..";
 import wing from "..";
 
 const GOOGLE_AUTH_ENDPOINT:   const u8[:] = "https://accounts.google.com/o/oauth2/v2/auth";

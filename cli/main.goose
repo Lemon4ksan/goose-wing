@@ -4,7 +4,6 @@
 // Standalone Goose-Wing CLI (`wing`): HTTP/1.1, HTTP/2, TLS 1.3 Client & Programmable Server.
 import std;
 import os;
-import core from "..";
 import wing from "..";
 import args;
 import term;

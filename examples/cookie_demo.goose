@@ -3,7 +3,6 @@
 
 // Example demonstrating cookie jar usage and method chaining.
 import std;
-import core from "..";
 import wing from "..";
 
 fn assert(cond: bool, msg: const u8[:]) {

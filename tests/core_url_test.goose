@@ -6,7 +6,6 @@
 // RUN: goose build -o %t.exe %s
 // RUN: %t.exe
 import std;
-import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
@@ -1928,8 +1927,8 @@ fn test_query_parameter_smuggling_and_truncation(t: lit::T&) {
         for i in 64 { search_key.push('a'); }
 
         var out_val: u8[..64] = [];
-        let found, _ = core::get_query_param_fast(raw_query[..], search_key[..], out_val);
-        sub.assert_false(found, "Fast query param lookup MUST NOT falsely match truncated 64-byte key");
+        let m = core::get_query_param_fast(raw_query[..], search_key[..], out_val);
+        sub.assert_true(m == core::QueryParamMatch.Missing, "Fast query param lookup MUST NOT falsely match truncated 64-byte key");
     };
 
     t.run("Query param parser MUST NOT silently drop parameter 129 (smuggling)") { sub =>

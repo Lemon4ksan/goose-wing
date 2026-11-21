@@ -5,7 +5,7 @@
 namespace client;
 
 import std;
-import core from "../..";
+import core;
 import cookie.constants;
 import cookie.canonical;
 import cookie.psl;

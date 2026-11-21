@@ -87,7 +87,7 @@ fn validate_utf8(data: const u8[:]) -> bool {
     return true;
 }
 
-inline fn step_utf8_multibyte(
+fn step_utf8_multibyte(
     data:     const u8[:],
     n:        i64,
     i:        i64,

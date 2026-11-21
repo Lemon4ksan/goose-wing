@@ -8,7 +8,6 @@
 // 4. RFC 9218 Extensible Prioritization Scheme
 // 5. Zero-copy vectorized server transmission via IoVecArray (send_http1_response_iov)
 import std;
-import core from "..";
 import wing from "..";
 
 fn main() {

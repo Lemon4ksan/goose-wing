@@ -7,7 +7,7 @@
 namespace fingerprint;
 
 import std;
-import core from "..";
+import core;
 import http.headers;
 import .types;
 import .ja4;

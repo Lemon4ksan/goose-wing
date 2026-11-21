@@ -8,7 +8,6 @@
 // RUN: goose build --include shim/prof_hook.h -o %t.exe %s
 // RUN: %t.exe
 import std;
-import core from "..";
 import wing from "..";
 
 fn wire_req_plaintext() -> const u8[:] {

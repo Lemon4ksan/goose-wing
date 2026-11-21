@@ -5,7 +5,7 @@
 namespace net_internal;
 
 import std;
-import core from "..";
+import core;
 import net.driver;
 import .tcp;
 import .transport;
@@ -317,7 +317,7 @@ inline fn queue_kq_diff(
     }
 }
 
-inline fn sync_uring_slot_interest(host: net::Host&, slot: i64, new_mask: u32) {
+fn sync_uring_slot_interest(host: net::Host&, slot: i64, new_mask: u32) {
     let gen = host.links[slot].gen;
     let fd = host.links[slot].fd as i32;
     let old_mask = host.links[slot].epoll_mask;
@@ -410,7 +410,7 @@ inline fn remove_slot_from_epoll_shard(host: net::Host&, slot: i64, fd: i64) {
     }
 }
 
-inline fn sync_epoll_slot_interest(
+fn sync_epoll_slot_interest(
     host:     net::Host&,
     slot:     i64,
     fd:       i64,

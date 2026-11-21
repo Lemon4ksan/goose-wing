@@ -4,7 +4,6 @@
 // goose-wing Network Chaos Test Server
 // Exercises serve_reactor under TCP packet fragmentation, micro-slicing, and pipelining.
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn main() {

@@ -11,7 +11,7 @@ import json;
 
 // ---- core & rfc subsystems (Layers 0-1) ------------------------------------
 
-import core from ".";
+import core;
 import rfc.http;
 import rfc.h2;
 import rfc.h3_quic;

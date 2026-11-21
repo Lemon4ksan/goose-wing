@@ -4,7 +4,6 @@
 // Showcase C: Edge Footprint, Cold Start, 1,000 Live Connections,
 // 10,000-Slot SoAConnTable Scaling & Zero-Heap Allocation Proof
 import std;
-import core from "..";
 import wing from "..";
 
 extern fn alloc_reset() = "wing_alloc_reset";

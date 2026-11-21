@@ -6,7 +6,7 @@ namespace http;
 
 import std;
 import json;
-import core from "..";
+import core;
 import .headers;
 import .problem;
 import http.internal;
@@ -132,7 +132,7 @@ fn bind_query<T>(
     const for <Name, Acc> in fields<T> {
         if !(vp.abort_early && !all_ok) {
             var val_buf: u8[..512] = [];
-            let ok_q = raw_q.get_query_param_fast(Name, val_buf) &&
+            let ok_q = raw_q.get_query_param_fast(Name, val_buf) == core::QueryParamMatch.Value &&
                 http_internal::parse_bound_scalar(val_buf[..], out.Acc);
             let loc = ValidationLocation.Query;
             let ok_chk = check_field(vp, ok_q, loc, Name, "invalid_query_param", "missing or invalid query parameter");

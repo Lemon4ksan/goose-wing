@@ -6,7 +6,7 @@ namespace auth_internal;
 
 import std;
 import json;
-import core from "..";
+import core;
 import rfc.http;
 import .types;
 import .internal;

@@ -6,7 +6,7 @@
 namespace rfc;
 
 import std;
-import core from "..";
+import core;
 
 // ---- HTTP Status Codes (RFC 9110 Section 15) -----------------------------
 

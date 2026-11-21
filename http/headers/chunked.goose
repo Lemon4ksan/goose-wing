@@ -5,7 +5,7 @@
 namespace http;
 
 import std;
-import core from "../..";
+import core;
 import http.headers.internal;
 
 // RFC 9112 Section 7.1: Chunked Transfer Coding & Smuggling Defense Diagnostics

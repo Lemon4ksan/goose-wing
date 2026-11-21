@@ -6,7 +6,7 @@
 namespace rfc;
 
 import std;
-import core from ".";
+import core;
 
 import rfc.http;
 import rfc.h2;

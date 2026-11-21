@@ -5,7 +5,6 @@
 // 1. Live Windows Registered I/O (ReactorAccelMode.Rio) vs WSAPoll (ReactorAccelMode.PollFallback)
 // 2. L2 HTTP/3 & QUIC datapath: AF_XDP UMEM vs DPDK burst ring vs OS UDP sockets (serve_h3_l2)
 import std;
-import core from "..";
 import wing from "..";
 
 var g_drv_app: server::HttpServer = server::HttpServer { .. };

@@ -5,7 +5,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import http.bind;
 import wire.pipeline;
 import .router_internal;

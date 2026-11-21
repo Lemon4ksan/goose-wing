@@ -8,7 +8,7 @@ namespace goose_io;
 
 import std;
 import os;
-import core from "..";
+import core;
 import net.driver;
 import .io_host;
 

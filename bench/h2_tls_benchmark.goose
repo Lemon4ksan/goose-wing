@@ -5,7 +5,6 @@
 // Measures throughput (req/s), latency distribution (p50, p90, p99),
 // and process RSS memory footprint under TLS 1.3 + ALPN h2 multiplexing.
 import std;
-import core from "..";
 import wing from "..";
 
 fn format_ms_x100<B>(ns: i64, out: B&) {

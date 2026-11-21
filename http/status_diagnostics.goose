@@ -7,7 +7,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import http.meta_internal;
 
 // ---- RFC 9211 Cache-Status Model -----------------------------------------

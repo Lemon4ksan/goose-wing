@@ -6,7 +6,7 @@
 namespace proxy;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 enum LbPolicy {

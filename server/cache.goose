@@ -10,7 +10,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 enum CacheLookup {

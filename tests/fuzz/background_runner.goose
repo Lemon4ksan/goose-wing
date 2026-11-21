@@ -8,7 +8,6 @@
 
 import std;
 import os;
-import core from "../..";
 import wing from "../..";
 import .oss_fuzz;
 

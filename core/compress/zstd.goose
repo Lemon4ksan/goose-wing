@@ -1201,7 +1201,7 @@ fn huf_decode_stream_slice(r: ZstdBitReader&, table: const HufTable&, dst: u8[:]
     return decoded == count && !r.underflow && r.bit_pos == 0;
 }
 
-inline fn huf_decode_4streams_step(
+fn huf_decode_4streams_step(
     src1:      const u8[:], src2: const u8[:], src3: const u8[:], src4: const u8[:],
     ptr1:      i64&, ptr2: i64&, ptr3: i64&, ptr4: i64&,
     bits1:     u32&, bits2: u32&, bits3: u32&, bits4: u32&,
@@ -3073,9 +3073,9 @@ fn prepare_zstd_dict_context(dict: const u8[:], parsed_dict: ParsedZstdDict&) ->
 }
 
 // Internal frame decompressor (RFC 8878 section 3.1.1) with output limit and dictionary support.
-fn zstd_decompress_with_limit_impl<B>(
+fn zstd_decompress_with_limit_impl(
     src:              const u8[:],
-    out_buf:          B&,
+    out_buf:          u8[>..]&,
     max_output_bytes: i64         = -1,
     dict:             const u8[:] = "",
 ) -> CompressError {
@@ -3121,12 +3121,28 @@ fn zstd_decompress_with_limit_impl<B>(
     return CompressError.None;
 }
 
+// Generic bounded-buffer bridge delegating to the single non-generic u8[>..] Zstd core.
+fn zstd_decompress_with_limit_impl<B>(
+    src:              const u8[:],
+    out_buf:          B&,
+    max_output_bytes: i64         = -1,
+    dict:             const u8[:] = "",
+) -> CompressError {
+    let avail = sub_sat_i64(out_buf.cap, out_buf.len);
+    let eff_limit = if max_output_bytes >= 0 && max_output_bytes < avail { max_output_bytes } else { avail };
+    var tmp: u8[>..] = [];
+    let err = zstd_decompress_with_limit_impl(src, tmp, eff_limit, dict);
+    guard err == CompressError.None else { return err; }
+    guard out_buf.try_append(tmp[..]) else { return CompressError.OutputBufferOverflow; }
+    return CompressError.None;
+}
+
 // Incrementally decompresses complete Zstandard frames from `src` and returns consumed bytes.
 // Stops cleanly at frame boundaries if a trailing frame is still truncated, returning `CompressError.None`
 // when at least one frame was consumed or `CompressError.InputBufferTruncated` when the first frame is incomplete.
-fn zstd_decompress_frames_incremental<B>(
+fn zstd_decompress_frames_incremental(
     src:              const u8[:],
-    out_buf:          B&,
+    out_buf:          u8[>..]&,
     max_output_bytes: i64         = -1,
     dict:             const u8[:] = "",
 ) -> i64, CompressError {
@@ -3174,6 +3190,22 @@ fn zstd_decompress_frames_incremental<B>(
     }
 
     return offset, CompressError.None;
+}
+
+fn zstd_decompress_frames_incremental<B>(
+    src:              const u8[:],
+    out_buf:          B&,
+    max_output_bytes: i64         = -1,
+    dict:             const u8[:] = "",
+) -> i64, CompressError {
+    let avail = sub_sat_i64(out_buf.cap, out_buf.len);
+    let eff_limit = if max_output_bytes >= 0 && max_output_bytes < avail { max_output_bytes } else { avail };
+    var tmp: u8[>..] = [];
+    let consumed, err = zstd_decompress_frames_incremental(src, tmp, eff_limit, dict);
+    if err == CompressError.None && tmp.len > 0 {
+        guard out_buf.try_append(tmp[..]) else { return 0, CompressError.OutputBufferOverflow; }
+    }
+    return consumed, err;
 }
 
 // Extracts dictionary content slice from a raw or formatted RFC 8878 Section 5 dictionary.
@@ -3372,7 +3404,7 @@ inline fn match_len_to_code(match_len: u32, code: u32&, extra: u32&, extra_bits:
     extra_bits = ML_EXTRA_BITS[c];
 }
 
-inline fn offset_to_code(
+fn offset_to_code(
     offset:     u32,
     lit_len:    u32,
     rep:        u32[3]&,

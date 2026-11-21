@@ -192,54 +192,47 @@ fn find_trailing_dot_positions(
     }
 }
 
+const KNOWN_TWO_LEVEL_SUFFIXES: const u8[:][78] = [
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "net.uk", "me.uk", "sch.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "ed.jp",
+    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz",
+    "com.br", "net.br", "org.br", "gov.br",
+    "co.in", "net.in", "org.in", "gen.in", "gov.in", "ac.in",
+    "com.ru", "net.ru", "org.ru", "pp.ru", "spb.ru", "msk.ru", "gov.ru", "edu.ru",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
+    "com.tw", "org.tw", "net.tw", "gov.tw", "edu.tw",
+    "co.kr", "ne.kr", "or.kr", "go.kr", "ac.kr",
+    "com.sg", "edu.sg", "gov.sg", "net.sg", "org.sg",
+    "com.tr", "edu.tr", "gov.tr", "org.tr", "net.tr",
+    "co.za", "net.za", "org.za", "gov.za", "ac.za",
+    "co.il", "org.il", "net.il", "ac.il", "gov.il",
+    "fed.us", "state.us",
+];
+
+const KNOWN_ONE_LEVEL_SUFFIXES: const u8[:][54] = [
+    "com", "org", "net", "edu", "gov", "mil", "io", "co", "ai",
+    "dev", "app", "ru", "uk", "de", "fr", "nl", "eu", "us",
+    "ca", "me", "xyz", "info", "biz", "online", "site", "store", "tech",
+    "cloud", "pro", "su", "by", "kz", "ua", "ch", "at", "se",
+    "no", "fi", "dk", "pl", "cz", "jp", "cn", "in", "br",
+    "mx", "au", "nz", "za", "kr", "tw", "hk", "sg", "local",
+];
+
 fn is_known_two_level_suffix(domain_suffix: const u8[:]) -> bool {
-    return domain_suffix == "co.uk" || domain_suffix == "org.uk" || domain_suffix == "gov.uk" ||
-           domain_suffix == "ac.uk" || domain_suffix == "net.uk" || domain_suffix == "me.uk" ||
-           domain_suffix == "sch.uk" || domain_suffix == "com.au" || domain_suffix == "net.au" ||
-           domain_suffix == "org.au" || domain_suffix == "edu.au" || domain_suffix == "gov.au" ||
-           domain_suffix == "co.jp" || domain_suffix == "ne.jp" || domain_suffix == "or.jp" ||
-           domain_suffix == "ac.jp" || domain_suffix == "go.jp" || domain_suffix == "ed.jp" ||
-           domain_suffix == "co.nz" || domain_suffix == "net.nz" || domain_suffix == "org.nz" ||
-           domain_suffix == "govt.nz" || domain_suffix == "ac.nz" || domain_suffix == "com.br" ||
-           domain_suffix == "net.br" || domain_suffix == "org.br" || domain_suffix == "gov.br" ||
-           domain_suffix == "co.in" || domain_suffix == "net.in" || domain_suffix == "org.in" ||
-           domain_suffix == "gen.in" || domain_suffix == "gov.in" || domain_suffix == "ac.in" ||
-           domain_suffix == "com.ru" || domain_suffix == "net.ru" || domain_suffix == "org.ru" ||
-           domain_suffix == "pp.ru" || domain_suffix == "spb.ru" || domain_suffix == "msk.ru" ||
-           domain_suffix == "gov.ru" || domain_suffix == "edu.ru" || domain_suffix == "com.cn" ||
-           domain_suffix == "net.cn" || domain_suffix == "org.cn" || domain_suffix == "gov.cn" ||
-           domain_suffix == "edu.cn" || domain_suffix == "com.tw" || domain_suffix == "org.tw" ||
-           domain_suffix == "net.tw" || domain_suffix == "gov.tw" || domain_suffix == "edu.tw" ||
-           domain_suffix == "co.kr" || domain_suffix == "ne.kr" || domain_suffix == "or.kr" ||
-           domain_suffix == "go.kr" || domain_suffix == "ac.kr" || domain_suffix == "com.sg" ||
-           domain_suffix == "edu.sg" || domain_suffix == "gov.sg" || domain_suffix == "net.sg" ||
-           domain_suffix == "org.sg" || domain_suffix == "com.tr" || domain_suffix == "edu.tr" ||
-           domain_suffix == "gov.tr" || domain_suffix == "org.tr" || domain_suffix == "net.tr" ||
-           domain_suffix == "co.za" || domain_suffix == "net.za" || domain_suffix == "org.za" ||
-           domain_suffix == "gov.za" || domain_suffix == "ac.za" || domain_suffix == "co.il" ||
-           domain_suffix == "org.il" || domain_suffix == "net.il" || domain_suffix == "ac.il" ||
-           domain_suffix == "gov.il" || domain_suffix == "fed.us" || domain_suffix == "state.us";
+    guard domain_suffix.len >= 5 && domain_suffix.len <= 8 else { return false; }
+    for s in KNOWN_TWO_LEVEL_SUFFIXES {
+        if s.len == domain_suffix.len && s == domain_suffix { return true; }
+    }
+    return false;
 }
 
 fn is_known_one_level_suffix(domain_suffix: const u8[:]) -> bool {
-    return domain_suffix == "com" || domain_suffix == "org" || domain_suffix == "net" ||
-           domain_suffix == "edu" || domain_suffix == "gov" || domain_suffix == "mil" ||
-           domain_suffix == "io" || domain_suffix == "co" || domain_suffix == "ai" ||
-           domain_suffix == "dev" || domain_suffix == "app" || domain_suffix == "ru" ||
-           domain_suffix == "uk" || domain_suffix == "de" || domain_suffix == "fr" ||
-           domain_suffix == "nl" || domain_suffix == "eu" || domain_suffix == "us" ||
-           domain_suffix == "ca" || domain_suffix == "me" || domain_suffix == "xyz" ||
-           domain_suffix == "info" || domain_suffix == "biz" || domain_suffix == "online" ||
-           domain_suffix == "site" || domain_suffix == "store" || domain_suffix == "tech" ||
-           domain_suffix == "cloud" || domain_suffix == "pro" || domain_suffix == "su" ||
-           domain_suffix == "by" || domain_suffix == "kz" || domain_suffix == "ua" ||
-           domain_suffix == "ch" || domain_suffix == "at" || domain_suffix == "se" ||
-           domain_suffix == "no" || domain_suffix == "fi" || domain_suffix == "dk" ||
-           domain_suffix == "pl" || domain_suffix == "cz" || domain_suffix == "jp" ||
-           domain_suffix == "cn" || domain_suffix == "in" || domain_suffix == "br" ||
-           domain_suffix == "mx" || domain_suffix == "au" || domain_suffix == "nz" ||
-           domain_suffix == "za" || domain_suffix == "kr" || domain_suffix == "tw" ||
-           domain_suffix == "hk" || domain_suffix == "sg" || domain_suffix == "local";
+    guard domain_suffix.len >= 2 && domain_suffix.len <= 6 else { return false; }
+    for s in KNOWN_ONE_LEVEL_SUFFIXES {
+        if s.len == domain_suffix.len && s == domain_suffix { return true; }
+    }
+    return false;
 }
 
 fn check_known_explicit_suffix<B>(domain: const u8[:], out: B&, is_icann: bool&) -> bool {

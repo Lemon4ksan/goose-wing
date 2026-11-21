@@ -7,7 +7,6 @@
 // RUN: %t.exe | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn format_loopback_url(port: u16, path: const u8[:], out: u8[..128]&) {

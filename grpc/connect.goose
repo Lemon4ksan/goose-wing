@@ -7,7 +7,7 @@ namespace grpc;
 
 import std;
 import json;
-import core from "..";
+import core;
 import http.headers;
 import .constants;
 import .internal;

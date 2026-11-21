@@ -6,7 +6,6 @@
 // RUN: goose build -o %t.exe %s
 // RUN: %t.exe
 import std;
-import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 
@@ -808,21 +807,18 @@ fn test_fast_query_parser(t: lit::T&) {
 
         // 1. Direct targeted retrieval with percent decoding
         var search_val: u8[..64] = [];
-        let found_search, is_valueless_search = core::get_query_param_fast(query_str, "search", search_val);
-        sub.assert_true(found_search, "Found 'search'");
-        sub.assert_false(is_valueless_search, "'search' has a value");
+        let search_match = core::get_query_param_fast(query_str, "search", search_val);
+        sub.assert_true(search_match == core::QueryParamMatch.Value, "'search' matched with value");
         sub.assert_bytes_eq(search_val[..], "hello+world!", "+ preserved verbatim per RFC 3986 and %21 to !");
 
         // 2. Valueless query parameter ("?debug") vs empty value ("?empty=")
         var debug_val: u8[..64] = [];
-        let found_debug, is_valueless_debug = core::get_query_param_fast(query_str, "debug", debug_val);
-        sub.assert_true(found_debug, "Found 'debug'");
-        sub.assert_true(is_valueless_debug, "'debug' correctly recognized as valueless parameter");
+        let debug_match = core::get_query_param_fast(query_str, "debug", debug_val);
+        sub.assert_true(debug_match == core::QueryParamMatch.Valueless, "'debug' correctly recognized as valueless parameter");
 
         var empty_val: u8[..64] = [];
-        let found_empty, is_valueless_empty = core::get_query_param_fast(query_str, "empty", empty_val);
-        sub.assert_true(found_empty, "Found 'empty'");
-        sub.assert_false(is_valueless_empty, "'empty' has an empty value (not valueless)");
+        let empty_match = core::get_query_param_fast(query_str, "empty", empty_val);
+        sub.assert_true(empty_match == core::QueryParamMatch.Value, "'empty' has an empty value (not valueless)");
         sub.assert_eq(empty_val.len, 0, "empty value length is 0");
 
         // 3. Fast existence checks
@@ -1601,20 +1597,17 @@ fn test_uweb_1944_query_lookup_encoded_and_valueless(t: lit::T&) {
     t.assert_true(core::has_query_param_fast(query_str, "user id"), "Must find percent-encoded key 'user id'");
 
     var user_id_val: u8[..64] = [];
-    let found1, is_valueless1 = core::get_query_param_fast(query_str, "user id", user_id_val);
-    t.assert_true(found1, "Found 'user id'");
-    t.assert_false(is_valueless1, "'user id' has value");
+    let match1 = core::get_query_param_fast(query_str, "user id", user_id_val);
+    t.assert_true(match1 == core::QueryParamMatch.Value, "'user id' has value");
     t.assert_eq(user_id_val[..], "42", "Decoded value of 'user id' is '42'");
 
     var flag_val: u8[..64] = [];
-    let found2, is_valueless2 = core::get_query_param_fast(query_str, "flag", flag_val);
-    t.assert_true(found2, "Found valueless 'flag'");
-    t.assert_true(is_valueless2, "'flag' is valueless");
+    let match2 = core::get_query_param_fast(query_str, "flag", flag_val);
+    t.assert_true(match2 == core::QueryParamMatch.Valueless, "'flag' is valueless");
 
     var cat_val: u8[..64] = [];
-    let found3, is_valueless3 = core::get_query_param_fast(query_str, "category/tag", cat_val);
-    t.assert_true(found3, "Found 'category/tag'");
-    t.assert_false(is_valueless3, "'category/tag' has value");
+    let match3 = core::get_query_param_fast(query_str, "category/tag", cat_val);
+    t.assert_true(match3 == core::QueryParamMatch.Value, "'category/tag' has value");
     t.assert_eq(cat_val[..], "news", "Decoded value of 'category/tag' is 'news'");
 }
 

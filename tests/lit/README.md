@@ -153,7 +153,6 @@ print("HIST_BUG_123: DEFENDED");
 // RUN: %t.exe | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 import wire_kit from ".";
 

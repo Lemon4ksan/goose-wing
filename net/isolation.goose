@@ -9,7 +9,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 
 // ---- Network Anonymization Key (NAK) Model --------------------------------
 

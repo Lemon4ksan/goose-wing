@@ -10,7 +10,7 @@
 namespace realtime;
 
 import std;
-import core from "..";
+import core;
 import rfc.ws;
 import net.tcp;
 import .internal;

@@ -4,7 +4,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 // ---- 1. Pipeline 64-Slot & Programmable User Stages -------------------------

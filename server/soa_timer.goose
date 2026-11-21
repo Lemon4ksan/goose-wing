@@ -8,7 +8,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 const SOA_TABLE_CAP: i64 = 4096;

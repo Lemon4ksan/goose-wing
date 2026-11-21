@@ -5,7 +5,7 @@
 namespace dns_internal;
 
 import std;
-import core from "..";
+import core;
 import .svcb;
 import .wire;
 import .cache;
@@ -105,13 +105,13 @@ fn parse_alpn_param(rec: dns::HttpsRecord&, val: const u8[:]) -> bool {
     defer if !committed { rec.alpns.resize(saved_len); };
     guard val.len > 0 else { return false; }
     var alpn_off: i64      = 0;
-    var entry:    u8[..64] = [];
+    var entry:    u8[..32] = [];
     while alpn_off < val.len {
         let slen = val[alpn_off] as i64;
         alpn_off += 1;
         guard slen > 0 && alpn_off + slen <= val.len else { return false; }
         let s = val[alpn_off..alpn_off + slen];
-        if s.len <= 64 && rec.alpns.len < rec.alpns.cap {
+        if s.len <= 32 && rec.alpns.len < rec.alpns.cap {
             guard entry.try_set(s) && rec.alpns.try_push(entry) else { return false; }
         }
         alpn_off += slen;

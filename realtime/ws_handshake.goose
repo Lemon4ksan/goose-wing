@@ -6,7 +6,7 @@
 namespace realtime;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import rfc.ws;
 import http.headers;

@@ -5,7 +5,7 @@
 namespace http_internal;
 
 import std;
-import core from "..";
+import core;
 import http.bhttp;
 import http.client_cert;
 import http.compression_dict;

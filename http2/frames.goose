@@ -7,7 +7,7 @@
 
 namespace http2;
 
-import core from "..";
+import core;
 import .framing;
 import .internal;
 

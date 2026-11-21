@@ -5,7 +5,7 @@
 namespace grpc_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import rfc.h2;
 import rfc.grpc;

@@ -6,7 +6,7 @@
 namespace client;
 
 import std;
-import core from "..";
+import core;
 import cookie.constants;
 import cookie.policy;
 import http.headers;

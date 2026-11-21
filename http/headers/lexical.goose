@@ -5,7 +5,7 @@
 namespace http;
 
 import std;
-import core from "../..";
+import core;
 import http.headers.internal;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];

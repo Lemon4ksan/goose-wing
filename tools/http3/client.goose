@@ -6,7 +6,6 @@
 // request/response framing (QPACK HEADERS + DATA), and query-string routing
 // against tools/http3/server.goose.
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn make_h3_client(port: u16, out_origin: u8[..128]&) -> client::Client {

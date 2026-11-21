@@ -5,7 +5,7 @@
 namespace wire;
 
 import std;
-import core from "..";
+import core;
 
 enum H1HeaderFilterMode {
     PreserveAll,

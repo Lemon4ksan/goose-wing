@@ -6,7 +6,7 @@
 namespace cookie_internal;
 
 import std;
-import core from "..";
+import core;
 
 const PSL_DAFSA_FLAG_EXCEPTION: i32 = 1;
 const PSL_DAFSA_FLAG_WILDCARD:  i32 = 2;

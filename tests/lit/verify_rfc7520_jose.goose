@@ -6,7 +6,6 @@
 //
 // RUN: goose %s | %FileCheck %s
 
-import core from "../..";
 import wing from "../..";
 
 fn decode_b64u_fixed(src: const u8[:], dst: u8[>..]&) -> bool {

@@ -5,7 +5,7 @@
 namespace tls_internal;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 import .record;
 import .record_internal;
@@ -397,23 +397,27 @@ fn verify_ocsp_against_trust_store(
 ) -> bool, bool {
     let leaf_issuer_dn = tls::span_slice(leaf_raw, leaf_cert.issuer_raw);
     guard leaf_issuer_dn.len > 0 else { return false, false; }
+    var matched_idx: i64 = -1;
     for i in trust_store.anchors.len {
         let a .= trust_store.anchors[i];
         if a.is_valid && a.has_pub_material && a.subject_raw[..] == leaf_issuer_dn {
-            let alert = tls::validate_ocsp_stapling(leaf_ocsp, leaf_cert, leaf_raw, eff_clock);
-            guard alert == tls::Alert.CloseNotify else { return true, false; }
-            var ocsp_parsed = tls::ParsedOcspResponse { .. };
-            guard tls::parse_ocsp_response(leaf_ocsp, ocsp_parsed) else { return true, false; }
-            guard x509_verify_ocsp_cert_id_material(
-                ocsp_parsed, leaf_ocsp, a.subject_raw[..], a.spki_pubkey[..],
-            ) else { return true, false; }
-            let sig_alert = x509_verify_ocsp_signature_with_pubkey(
-                ocsp_parsed, leaf_ocsp, a.spki_pubkey[..],
-            );
-            return true, sig_alert == tls::Alert.CloseNotify;
+            matched_idx = i;
+            break;
         }
     }
-    return false, false;
+    guard matched_idx >= 0 else { return false, false; }
+    let a .= trust_store.anchors[matched_idx];
+    let alert = tls::validate_ocsp_stapling(leaf_ocsp, leaf_cert, leaf_raw, eff_clock);
+    guard alert == tls::Alert.CloseNotify else { return true, false; }
+    var ocsp_parsed = tls::ParsedOcspResponse { .. };
+    guard tls::parse_ocsp_response(leaf_ocsp, ocsp_parsed) else { return true, false; }
+    guard x509_verify_ocsp_cert_id_material(
+        ocsp_parsed, leaf_ocsp, a.subject_raw[..], a.spki_pubkey[..],
+    ) else { return true, false; }
+    let sig_alert = x509_verify_ocsp_signature_with_pubkey(
+        ocsp_parsed, leaf_ocsp, a.spki_pubkey[..],
+    );
+    return true, sig_alert == tls::Alert.CloseNotify;
 }
 
 fn verify_stapled_ocsp_for_chain(
@@ -459,13 +463,19 @@ fn verify_crl_signer_for_cert(
         let sig_alert = tls::x509_verify_crl_signature(crl_parsed, crl_der, iss, chain_slices[next_idx]);
         return sig_alert == tls::Alert.CloseNotify;
     }
+    var matched_anchor: i64 = -1;
     for j in trust_store.anchors.len {
         let a .= trust_store.anchors[j];
         if a.is_valid && a.has_pub_material && a.subject_raw[..] == crl_parsed.issuer {
-            guard !a.has_key_usage || (a.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
-            let alert = x509_verify_crl_signature_with_pubkey(crl_parsed, crl_der, a.spki_pubkey[..]);
-            return alert == tls::Alert.CloseNotify;
+            matched_anchor = j;
+            break;
         }
+    }
+    if matched_anchor >= 0 {
+        let a .= trust_store.anchors[matched_anchor];
+        guard !a.has_key_usage || (a.key_usage & rfc::KEY_USAGE_CRL_SIGN) != 0 else { return false; }
+        let alert = x509_verify_crl_signature_with_pubkey(crl_parsed, crl_der, a.spki_pubkey[..]);
+        return alert == tls::Alert.CloseNotify;
     }
     let self_cert .= chain_parsed[cert_idx];
     let self_subj = tls::span_slice(chain_slices[cert_idx], self_cert.subject_raw);

@@ -8,7 +8,7 @@
 namespace security;
 
 import std;
-import core from "..";
+import core;
 import .rate_limit_internal;
 
 // Quota configuration specifying cell spacing (T) and burst headroom (tau).

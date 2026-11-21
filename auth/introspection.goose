@@ -6,7 +6,7 @@ namespace auth;
 
 import std;
 import json;
-import core from "..";
+import core;
 import .types;
 import .internal;
 

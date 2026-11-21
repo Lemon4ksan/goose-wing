@@ -5,7 +5,7 @@
 namespace server_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import http.headers;
 import http.request;
@@ -242,7 +242,7 @@ fn extract_bearer_token(auth_hdr: const u8[:]) -> const u8[:] {
     return tok;
 }
 
-inline fn populate_cached_response(cache: const server::HttpRouteCache&, res: http::Response&) -> wire::StageVerdict {
+fn populate_cached_response(cache: const server::HttpRouteCache&, res: http::Response&) -> wire::StageVerdict {
     res.status_code = 200;
     let _ = res.body.try_set(cache.wire[..]);
     if cache.content_type.len > 0 {
@@ -273,7 +273,7 @@ inline fn populate_cached_response(cache: const server::HttpRouteCache&, res: ht
     return wire::StageVerdict.ShortCircuit { status_code: 200 };
 }
 
-inline fn populate_missing_response_etag(res: http::Response&, memo: server::ServerCompressAndEtagMemo&) {
+fn populate_missing_response_etag(res: http::Response&, memo: server::ServerCompressAndEtagMemo&) {
     if res.body.len <= 512 && memo.etag_src.len > 0 && res.body[..] == memo.etag_src[..] {
         if !res.headers.append_known_pipeline_header(
             rfc::HEADER_ETAG,
@@ -308,7 +308,7 @@ inline fn populate_missing_response_etag(res: http::Response&, memo: server::Ser
     }
 }
 
-inline fn append_vary_accept_encoding(res: http::Response&) {
+fn append_vary_accept_encoding(res: http::Response&) {
     let cur = http::get_inline(res.headers, http::WellKnownHeader.Vary);
     if cur.len == 0 {
         if !res.headers.append_known_pipeline_header(
@@ -335,7 +335,7 @@ inline fn append_vary_accept_encoding(res: http::Response&) {
     }
 }
 
-inline fn finalize_compressed_response(res: http::Response&, encoding: const u8[:], suffix: const u8[:]) {
+fn finalize_compressed_response(res: http::Response&, encoding: const u8[:], suffix: const u8[:]) {
     if !res.headers.append_known_pipeline_header(
         rfc::HEADER_CONTENT_ENCODING,
         encoding,
@@ -395,7 +395,7 @@ fn try_compress_brotli(res: http::Response&, memo: server::ServerCompressAndEtag
     return true;
 }
 
-inline fn maybe_store_gzip_memo(
+fn maybe_store_gzip_memo(
     src:        const u8[:],
     compressed: const u8[:],
     gz_level:   i32,
@@ -408,7 +408,7 @@ inline fn maybe_store_gzip_memo(
     }
 }
 
-inline fn try_apply_gzip_memo(
+fn try_apply_gzip_memo(
     res:      http::Response&,
     memo:     const server::ServerCompressAndEtagMemo&,
     gz_level: i32,

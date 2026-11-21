@@ -6,7 +6,7 @@
 namespace security;
 
 import std;
-import core from "..";
+import core;
 import .crypto_internal;
 
 // ---- RFC 9180 Identifiers and Code Points --------------------------------

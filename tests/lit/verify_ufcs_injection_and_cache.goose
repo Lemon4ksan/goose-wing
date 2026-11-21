@@ -4,7 +4,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 // Mock PKCS#11 / CloudKMS hardware signer holding zero key material in struct fields.

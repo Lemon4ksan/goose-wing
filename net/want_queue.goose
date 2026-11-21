@@ -6,7 +6,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 struct WantConn {

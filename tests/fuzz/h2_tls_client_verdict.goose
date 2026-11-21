@@ -3,7 +3,6 @@
 
 // Differential client verdict oracle runner for live TLS 1.3 + HTTP/2 + X.509.
 import std;
-import core from "../..";
 import wing from "../..";
 
 // Decodes an even-length hexadecimal ASCII string into `out`.

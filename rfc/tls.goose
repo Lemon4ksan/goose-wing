@@ -83,7 +83,7 @@ const TLS_EXT_QUIC_TRANSPORT_PARAMETERS:    u16 = 0x39;   // RFC 9001 Section 8.
 const TLS_EXT_RENEGOTIATION_INFO:           u16 = 0xFF01; // RFC 8446 Section 4.1.3
 
 // RFC 8446 Section 4.2: Extensions - Table 2 indicates recognized TLS extensions.
-inline fn is_known_tls_extension(ext_type: u16) -> bool {
+fn is_known_tls_extension(ext_type: u16) -> bool {
     return match ext_type {
         rfc::TLS_EXT_SERVER_NAME => true,
         rfc::TLS_EXT_MAX_FRAGMENT_LENGTH => true,

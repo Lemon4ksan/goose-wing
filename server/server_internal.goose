@@ -5,7 +5,7 @@
 namespace server_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import rfc.ws;
 import http.headers;
@@ -47,7 +47,7 @@ const WS_PERMESSAGE_DEFLATE_HDR: const u8[:] = "Sec-WebSocket-Extensions: permes
 
 const WS_HDR_CRLF: const u8[:] = "\r\n";
 
-inline fn serialize_and_init_ws_upgrade<B>(
+fn serialize_and_init_ws_upgrade<B>(
     route_behavior: const realtime::WsBehavior&,
     pending:        realtime::WsPendingUpgrade&,
     subproto:       const u8[:],
@@ -413,7 +413,7 @@ fn scan_chunked_cumulative_size(chunk_slice: const u8[:]) -> u64, http::ChunkedD
     return total_sz, http::ChunkedDecodeError.UnexpectedEof;
 }
 
-inline fn check_pipelined_chunked_head<B>(
+fn check_pipelined_chunked_head<B>(
     stream:      const u8[:],
     hdr_end:     i64,
     server_name: const u8[:],
@@ -922,41 +922,39 @@ fn process_pipelined_stream_turn<Stage, B>(
     res:              http::Response&,
     wire_out:         B&,
     wire_in_len:      i64,
-    step_consumed:    i64&,
     total_handled:    i64&,
     total_consumed:   i64&,
     conn_wants_close: bool&,
     stage:            Stage&,
-) -> StreamTurnResult {
-    guard wire_out.len + 256 <= wire_out.cap else { return StreamTurnResult.Stop; }
+) -> StreamTurnResult, i64 {
+    guard wire_out.len + 256 <= wire_out.cap else { return StreamTurnResult.Stop, 0; }
 
     server::reset_server_request_fast(req);
     let ok_parse, consumed = server::parse_http1_wire_request(stream, req);
     guard ok_parse && consumed > 0 else {
         var keep = false;
         let _ = server::handle_pipelined_parse_failure(server.server_name[..], stream, req, wire_out, keep);
-        return if keep { StreamTurnResult.KeepStreamFail } else { StreamTurnResult.ParseFail };
+        let st = if keep { StreamTurnResult.KeepStreamFail } else { StreamTurnResult.ParseFail };
+        return st, 0;
     }
 
     if try_handle_pipelined_websocket(server, req, wire_out) {
         total_handled++;
         total_consumed += consumed;
-        step_consumed = consumed;
-        return StreamTurnResult.Stop;
+        return StreamTurnResult.Stop, consumed;
     }
 
     let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
     total_handled++;
     total_consumed += consumed;
-    step_consumed = consumed;
 
     if wants_close || req.method[..] == "CONNECT" {
         conn_wants_close = true;
         if req.method[..] == "CONNECT" { total_consumed = wire_in_len; }
-        return StreamTurnResult.Stop;
+        return StreamTurnResult.Stop, consumed;
     }
 
-    return StreamTurnResult.Continue;
+    return StreamTurnResult.Continue, consumed;
 }
 
 fn drain_pipelined_stream_turns<Stage, B>(
@@ -978,10 +976,9 @@ fn drain_pipelined_stream_turns<Stage, B>(
         stream = strip_pipelined_crlf(stream, total_consumed);
         if stream.len == 0 { break; }
 
-        var step_consumed: i64 = 0;
-        let turn_res = process_pipelined_stream_turn(
+        let turn_res, step_consumed = process_pipelined_stream_turn(
             server, client_ip, stream, now_ns, req, res,
-            wire_out, wire_in_len, step_consumed, total_handled, total_consumed, conn_wants_close, stage,
+            wire_out, wire_in_len, total_handled, total_consumed, conn_wants_close, stage,
         );
         match turn_res {
             Continue => {
@@ -1381,7 +1378,7 @@ fn poll_http_connection_ingress_buf<InBuf>(
     return !try_dispatch_h2_or_invalid_preface_buf(server, conn_fd, in_buf, recv_timeout_ms);
 }
 
-inline fn step_page_ring_conn<Stage>(
+fn step_page_ring_conn<Stage>(
     server:  server::HttpServer&,
     conn:    i64,
     peer_ip: const u8[:],
@@ -1452,7 +1449,7 @@ fn serve_page_ring_loop(
     return serve_page_ring_loop(server, listener_fd, max_connections, ring, noop);
 }
 
-inline fn step_pipe_loop_conn<Stage>(
+fn step_pipe_loop_conn<Stage>(
     server:  server::HttpServer&,
     conn:    i64,
     peer_ip: const u8[:],
@@ -1531,7 +1528,7 @@ inline fn verify_tls_slot_sni(server: const server::HttpServer&, slot_idx: i32) 
     return ok_sni;
 }
 
-inline fn step_tls_loop_conn(
+fn step_tls_loop_conn(
     server:   server::HttpServer&,
     conn:     i64,
     slot_idx: u16,
@@ -1561,7 +1558,7 @@ inline fn step_tls_loop_conn(
 
 // Incremental Sans-IO pipeline handler using hardware page-mirrored ring buffer (PageRingBuffer) and `<Stage>`.
 // Eliminates buffer wraparound splitting and memmove compaction during streaming request processing.
-inline fn handle_page_ring_h2_preface<Stage, B>(
+fn handle_page_ring_h2_preface<Stage, B>(
     server:     server::HttpServer&,
     client_ip:  const u8[:],
     ring:       core::PageRingBuffer&,

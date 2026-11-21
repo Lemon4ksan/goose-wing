@@ -7,7 +7,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .tcp;
 import .internal;
 

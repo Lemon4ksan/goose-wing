@@ -3,7 +3,6 @@
 
 // Demonstration of the goose-wing Unified App-Layer API (Variant 2 + Variant 3 synthesis).
 import std;
-import core from "..";
 import wing from "..";
 
 struct CreateOrderReq {

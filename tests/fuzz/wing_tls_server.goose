@@ -4,7 +4,6 @@
 // Live TLS 1.3 + HTTP/1.1 / HTTP/2 interop server for OpenSSL differential testing.
 // Issues post-handshake NewSessionTicket and handles KeyUpdate and 1-RTT resumption.
 import std;
-import core from "../..";
 import wing from "../..";
 
 const NST_LIFETIME_SEC: u32 = 3600;

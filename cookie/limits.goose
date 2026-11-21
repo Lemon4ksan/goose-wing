@@ -6,7 +6,7 @@
 namespace cookie_internal;
 
 import std;
-import core from "..";
+import core;
 
 // Maximum cookie lifetime (400 days = 576,000 minutes).
 let K_MAX_COOKIE_AGE_SEC: i64 = 576000 * 60;           // 34,560,000 seconds

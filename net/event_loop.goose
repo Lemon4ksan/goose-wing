@@ -5,7 +5,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .driver;
 import .poller;
 import .tcp;

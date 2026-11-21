@@ -7,7 +7,7 @@
 namespace quic;
 
 import std;
-import core from "..";
+import core;
 import .packet_internal;
 
 // ---- Variable-Length Integer Codec (RFC 9000 Section 16) -----------------
@@ -43,7 +43,7 @@ fn encode_varint<B>(val: u64, out: B&) -> bool {
 // Example:
 //   src = [0x40, 0x25], idx = 0
 //   returns: val = 37, ok = true, idx = 2
-inline fn decode_varint_cursor(src: const u8[:], idx: i64&) -> u64, bool {
+fn decode_varint_cursor(src: const u8[:], idx: i64&) -> u64, bool {
     guard idx >= 0 && idx < src.len else { return 0, false; }
     let first = src[idx];
     let vlen = quic_internal::quic_varint_len(first) as i64;

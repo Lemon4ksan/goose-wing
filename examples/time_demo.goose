@@ -3,7 +3,6 @@
 
 // Test and demonstration of the clean, stdlib-ready Time & Duration library in goose-wing.
 import std;
-import core from "..";
 import wing from "..";
 
 fn assert(cond: bool, message: const u8[:]) {

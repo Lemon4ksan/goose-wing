@@ -6,7 +6,7 @@ namespace grpc_internal;
 
 import std;
 import json;
-import core from "..";
+import core;
 import rfc.grpc;
 import http.headers;
 import http.request;
@@ -861,8 +861,8 @@ fn is_connect_get_request(req: const http::Request&) -> bool {
     guard req.method[..].eq_ascii_fold("GET") else { return false; }
     let q_idx = req.url[..].index_of_byte('?');
     guard q_idx >= 0 else { return false; }
-    var rem = req.url[core::add_sat_i64(q_idx, 1)..];
-    var key_buf: u8[..16] = [];
+    var rem:     const u8[:] = req.url[core::add_sat_i64(q_idx, 1)..];
+    var key_buf: u8[..16]    = [];
     while rem.len > 0 {
         let pair, rest, has_amp = rem.split_once_byte('&');
         let item = if has_amp { pair } else { rem };

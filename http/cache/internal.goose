@@ -5,7 +5,7 @@
 namespace http_internal;
 
 import std;
-import core from "../..";
+import core;
 import http.cache.cache_control;
 import http.cache.cache_groups;
 import http.cache.engine;

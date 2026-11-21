@@ -6,7 +6,7 @@
 namespace tls;
 
 import std;
-import core from "..";
+import core;
 import .types;
 import .ticket_internal;
 

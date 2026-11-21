@@ -5,7 +5,6 @@
 // Exercises real `client::Session` (HTTP/1.1, chunked, redirects, CookieJar, Keep-Alive pool,
 // automatic retries, and HTTP/2 client multiplexing) through live Toxiproxy fault injection.
 import std;
-import core from "../..";
 import wing from "../..";
 
 var g_chaos_proxy: proxy::ReverseProxy = proxy::ReverseProxy { .. };

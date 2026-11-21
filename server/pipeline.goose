@@ -6,7 +6,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import .router;
 import .pool;

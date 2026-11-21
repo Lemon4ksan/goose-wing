@@ -5,7 +5,7 @@
 namespace client;
 
 import std;
-import core from "../..";
+import core;
 import rfc.http;
 import rfc.h2;
 import rfc.h3_quic;
@@ -506,12 +506,15 @@ fn recv_h2_response_loop(
     eff_timeout: u32,
     resp:        http::Response&,
 ) -> bool {
+    let hpack_idx = net::ensure_hpack_slot(conn);
+    guard hpack_idx >= 0 else { return false; }
+    let hpack_dec .= net::hpack_dec_slot(hpack_idx);
     let saved_resp = copy(resp);
-    let saved_dt = copy(conn.hpack_dec);
+    let saved_dt = copy(hpack_dec);
     var committed = false;
     defer if !committed {
         client_internal::rollback_h2_response_preserving_rst(resp, saved_resp);
-        conn.hpack_dec = copy(saved_dt);
+        hpack_dec = copy(saved_dt);
     };
     var rx_accum: u8[..65536] = [];
     if conn.rx_buf.len > 0 {
@@ -526,7 +529,7 @@ fn recv_h2_response_loop(
         if rx_accum.len >= 9 {
             ctrl_out.clear();
             let st_pre = drain_h2_response_frames(
-                rx_accum, stream_id, is_head, conn.hpack_dec, resp, state, ctrl_out,
+                rx_accum, stream_id, is_head, hpack_dec, resp, state, ctrl_out,
             );
             guard st_pre != H2RecvStatus.Error else { return false; }
             if ctrl_out.len > 0 { let _ = wing::send_all(conn.transport, ctrl_out[..]); }
@@ -538,7 +541,7 @@ fn recv_h2_response_loop(
         }
         ctrl_out.clear();
         let st = drain_h2_response_frames(
-            rx_accum, stream_id, is_head, conn.hpack_dec, resp, state, ctrl_out,
+            rx_accum, stream_id, is_head, hpack_dec, resp, state, ctrl_out,
         );
         guard st != H2RecvStatus.Error else { return false; }
         if ctrl_out.len > 0 { let _ = wing::send_all(conn.transport, ctrl_out[..]); }
@@ -718,7 +721,7 @@ fn compute_401_auth_header<B>(
     return false;
 }
 
-inline fn prepare_auth_retry_hop(
+fn prepare_auth_retry_hop(
     session:       Client&,
     ctx:           RequestExecutionContext&,
     current_url:   const core::Url&,
@@ -741,7 +744,7 @@ inline fn prepare_auth_retry_hop(
     http::set_header(ctx.headers, "Authorization", auth_val, true);
 }
 
-inline fn should_retry_request(
+fn should_retry_request(
     status_code: i32,
     err:         http::Error,
     method:      const u8[:],
@@ -786,17 +789,22 @@ fn execute_request(session: Client&, req: const http::Request&) -> http::Respons
     var attempts:      i32 = 0;
     var prev_sleep_ms: i64 = 0;
     var rng_seed:      u64 = (start_us as u64) ^ 0x9E3779B97F4A7C15;
+    var final_req = copy(req);
+    var final_resp = http::Response { .. };
+    var final_err = http::Error { .. };
     loop {
         // Phase -1: Application Interceptors (Request Hook) per attempt
-        var active_req = copy(req);
-        active_req.disallow_early_data = req.disallow_early_data || attempts > 0;
-        apply_app_interceptors_request(session.pipeline, active_req, session.virtual_clock_us);
+        final_req = copy(req);
+        final_req.disallow_early_data = req.disallow_early_data || attempts > 0;
+        apply_app_interceptors_request(session.pipeline, final_req, session.virtual_clock_us);
 
-        var resp, err = client_internal::execute_request_inner(session, active_req);
-        client_internal::evaluate_response_retry_after(session, target_host, resp, now_ns);
+        let resp, err = client_internal::execute_request_inner(session, final_req);
+        final_resp = copy(resp);
+        final_err = err;
+        client_internal::evaluate_response_retry_after(session, target_host, final_resp, now_ns);
 
         let retry = should_retry_request(
-            resp.status_code, err, active_req.method[..], active_req,
+            final_resp.status_code, final_err, final_req.method[..], final_req,
             attempts, has_retry, retry_pol.max_retries, retry_pol.retry_on_5xx,
         );
         if retry && net::allow_retry_budget(session.retry_budget, now_ns) {
@@ -805,13 +813,12 @@ fn execute_request(session: Client&, req: const http::Request&) -> http::Respons
             attempts += 1;
             continue;
         }
-
-        // Phase 6: Application Interceptors (Response Hook)
-        let total_dur_us = session.virtual_clock_us - start_us;
-        client_internal::apply_app_interceptors_response(session.pipeline, active_req, resp, err, total_dur_us);
-        client_internal::record_client_har_telemetry(session, active_req, resp, total_dur_us);
-        return resp, err;
+        break;
     }
-    let err_fail = http::make_error(rfc::STATUS_INTERNAL_SERVER_ERROR, "client", "request execution failed");
-    return http::Response { .. }, err_fail;
+
+    // Phase 6: Application Interceptors (Response Hook)
+    let total_dur_us = session.virtual_clock_us - start_us;
+    client_internal::apply_app_interceptors_response(session.pipeline, final_req, final_resp, final_err, total_dur_us);
+    client_internal::record_client_har_telemetry(session, final_req, final_resp, total_dur_us);
+    return final_resp, final_err;
 }

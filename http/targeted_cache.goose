@@ -6,7 +6,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import http.headers;
 import http.sfv;
 import http.cache.cache_control;

@@ -6,7 +6,7 @@ namespace auth;
 
 import std;
 import json;
-import core from "..";
+import core;
 import rfc.http;
 import .types;
 import .internal;
@@ -64,7 +64,7 @@ fn generate_dpop_jti<B>(out: B&, entropy: const u8[:] = "") -> bool {
 }
 
 // Builds RFC 9449 Section 4.2 DPoP proof payload JSON (`jti`, `htm`, `htu`, `iat`, optional `nonce`/`ath`) into `out`.
-inline fn build_dpop_claims_json<B>(
+fn build_dpop_claims_json<B>(
     method:       const u8[:],
     norm_uri:     const u8[:],
     access_token: const u8[:],

@@ -5,7 +5,7 @@
 namespace server_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import http.headers;
 import http.headers.lexical;
@@ -329,7 +329,7 @@ inline fn is_headers_cache_already_loaded<Req>(out_req: const Req&) -> bool {
     return out_req.headers.raw_buf[..] == server::g_h1_parse_cache.raw_buf[..];
 }
 
-inline fn try_restore_cached_headers_stream<Req>(
+fn try_restore_cached_headers_stream<Req>(
     rest_headers:     const u8[:],
     out_req:          Req&,
     presence_tracker: http::HeaderPresenceTracker&,
@@ -353,7 +353,7 @@ inline fn try_restore_cached_headers_stream<Req>(
     return true;
 }
 
-inline fn save_cached_headers_stream<Req>(
+fn save_cached_headers_stream<Req>(
     rest_headers:     const u8[:],
     out_req:          const Req&,
     presence_tracker: const http::HeaderPresenceTracker&,

@@ -11,7 +11,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import .mime;
 import http.ext_internal;
@@ -63,8 +63,8 @@ struct HstsEntry {
 }
 
 struct HstsCache {
-    entries:             HstsEntry[..128] = [],
-    enable_preload_list: bool             = true,
+    entries:             HstsEntry[..32] = [],
+    enable_preload_list: bool            = true,
 }
 
 const HSTS_PRELOAD_TLDS: const u8[:][30] = [

@@ -7,7 +7,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import http.headers;
 import .router;
 import .internal;

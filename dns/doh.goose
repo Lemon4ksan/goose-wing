@@ -6,7 +6,7 @@
 namespace dns;
 
 import std;
-import core from "..";
+import core;
 import .wire;
 import .internal;
 

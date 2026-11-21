@@ -5,7 +5,7 @@
 namespace proxy_internal;
 
 import std;
-import core from "..";
+import core;
 import http.headers;
 import http.forwarded;
 import http.request;
@@ -895,13 +895,14 @@ inline fn finalize_proxy_upstream_conn(
     }
 }
 
-fn read_and_parse_upstream_headers(
+fn read_and_parse_upstream_headers<B>(
     conn:       net::PooledConnection&,
+    hdr_buf:    B&,
     out_resp:   http::Response&,
     timeout_ms: u32,
 ) -> i64, bool {
-    let hdr_end_idx, ok_hdr = wing::read_response_headers(conn, timeout_ms);
-    let rx = conn.rx_buf[..];
+    let hdr_end_idx, ok_hdr = wing::read_response_headers_into(conn, hdr_buf, timeout_ms);
+    let rx = hdr_buf[..];
     let body_start = core::add_sat_i64(hdr_end_idx, 4);
     guard ok_hdr && hdr_end_idx >= 0 && body_start <= rx.len else { return -1, false; }
     guard wing::parse_response_headers(rx[..hdr_end_idx], out_resp) else { return -1, false; }
@@ -926,23 +927,26 @@ fn exchange_prepared_wire_impl(
     out_early_hints = http::EarlyHintsResponse { .. };
     guard wing::send_all(conn.transport, wire_req) else { return proxy::WireReuse.Close, false; }
 
+    var hdr_buf: u8[..16384] = [];
+    if conn.rx_buf.len > 0 {
+        guard hdr_buf.try_append(conn.rx_buf[..]) else { return proxy::WireReuse.Close, false; }
+        conn.rx_buf.clear();
+    }
+
     var dummy_req = http::new_request(method, "/");
     // RFC 9110 Section 15.2: Informational 1xx - cap consecutive 1xx interim responses to 5.
     for interim_step in 6 {
         guard interim_step < 5 else { return proxy::WireReuse.Close, false; }
-        let leftover_start, ok_hdr = read_and_parse_upstream_headers(conn, out_resp, timeout_ms);
-        let rx = conn.rx_buf[..];
+        let leftover_start, ok_hdr = read_and_parse_upstream_headers(conn, hdr_buf, out_resp, timeout_ms);
+        let rx = hdr_buf[..];
         guard ok_hdr && leftover_start >= 0 && leftover_start <= rx.len else {
             return proxy::WireReuse.Close, false;
         }
         let sc = out_resp.status_code;
         let is_interim = sc >= 100 && sc < 200 && sc != 101;
         guard is_interim else {
-            var leftover: u8[..8192] = [];
-            guard leftover.try_set(rx[leftover_start..]) else { return proxy::WireReuse.Close, false; }
-            conn.rx_buf.clear();
             let ok_body, keep_alive = wing::pump_response_body(
-                conn, dummy_req, out_resp, leftover[..], timeout_ms,
+                conn, dummy_req, out_resp, rx[leftover_start..], timeout_ms,
             );
             let reuse = if keep_alive { proxy::WireReuse.KeepAlive } else { proxy::WireReuse.Close };
             return reuse, ok_body;
@@ -958,7 +962,7 @@ fn exchange_prepared_wire_impl(
             proxy::capture_upstream_early_hints(out_resp, up_tmp);
             out_early_hints = up_tmp.early_hints;
         }
-        conn.rx_buf.compact_wire_buffer(leftover_start);
+        hdr_buf.compact_wire_buffer(leftover_start);
     }
     return proxy::WireReuse.Close, false;
 }
@@ -1000,7 +1004,7 @@ inline fn matches_backend_url_prefix(url_val: const u8[:], backend_url_prefix: c
     return rem.len == 0 || rem[0] == '/' || rem[0] == '?' || rem[0] == '#';
 }
 
-inline fn filter_single_upstream_response_header<B>(
+fn filter_single_upstream_response_header<B>(
     in_headers:          const http::HeaderMap&,
     entry_idx:           i64,
     backend_url_prefix:  const u8[:],

@@ -6,7 +6,7 @@
 namespace net_internal;
 
 import std;
-import core from "..";
+import core;
 import .proxy_protocol;
 
 // PROXY protocol version 1 prefix: "PROXY "

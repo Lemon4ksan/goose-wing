@@ -3,7 +3,6 @@
 
 // Scenario rule parser and built-in httpbin endpoint engine for `wing serve`.
 import std;
-import core from "..";
 import wing from "..";
 
 struct RouteRule {

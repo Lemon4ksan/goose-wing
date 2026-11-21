@@ -5,7 +5,7 @@
 namespace net_internal;
 
 import std;
-import core from "..";
+import core;
 import dns.svcb;
 import cookie.psl;
 import .driver;
@@ -1194,6 +1194,7 @@ fn evict_oldest_idle_connection(pool: net::StreamPool&, now_ns: i64) -> bool {
         let victim .= pool.conns[oldest_idx];
         group_record_closed(pool, victim.key, false);
         victim.transport.close();
+        net::release_hpack_slot(victim);
         victim.rx_buf.clear();
         victim.closed = true;
         victim.no_new_exchanges = true;
@@ -1219,6 +1220,7 @@ fn evict_oldest_idle_in_group(pool: net::StreamPool&, key: const net::PoolKey&) 
     let victim .= pool.conns[oldest_idx];
     group_record_closed(pool, victim.key, false);
     victim.transport.close();
+    net::release_hpack_slot(victim);
     victim.rx_buf.clear();
     victim.closed = true;
     victim.no_new_exchanges = true;
@@ -1257,6 +1259,7 @@ fn evict_oldest_idle_for_proxy(pool: net::StreamPool&, proxy_chain: const net::P
     let victim .= pool.conns[oldest_idx];
     group_record_closed(pool, victim.key, false);
     victim.transport.close();
+    net::release_hpack_slot(victim);
     victim.rx_buf.clear();
     victim.closed = true;
     victim.no_new_exchanges = true;
@@ -1388,6 +1391,7 @@ fn finalize_idle_or_draining_conn(pool: net::StreamPool&, c: net::PooledConnecti
     if c.no_new_exchanges || c.remote_rst || c.source_exhausted {
         group_record_closed(pool, c.key, true);
         c.transport.close();
+        net::release_hpack_slot(c);
         c.rx_buf.clear();
         c.closed = true;
         c.no_new_exchanges = true;

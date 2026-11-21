@@ -7,7 +7,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import .headers;
 import http.codec_internal;
 

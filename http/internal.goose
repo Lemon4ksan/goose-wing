@@ -5,7 +5,7 @@
 namespace http_internal;
 
 import std;
-import core from "..";
+import core;
 import cookie.policy;
 import http.bind;
 import http.compression_dict;

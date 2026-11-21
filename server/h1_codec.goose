@@ -5,7 +5,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import rfc.h2;
 import http.headers;

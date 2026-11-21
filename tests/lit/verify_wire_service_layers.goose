@@ -6,7 +6,6 @@
 namespace wire;
 
 import std;
-import core from "../..";
 import wing from "../..";
 import wing.wire.service;
 import wing.client.interceptor;

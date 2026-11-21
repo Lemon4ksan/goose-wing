@@ -8,7 +8,7 @@
 namespace client;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 
 enum EarlyDataDecision {

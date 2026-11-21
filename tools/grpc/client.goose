@@ -6,7 +6,6 @@
 // custom metadata reflection, HTTP/2 trailers (grpc-status / grpc-message),
 // and multi-DATA frame 32 KB payloads against tools/grpc/server.goose.
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn make_grpc_h2_client(port: u16) -> client::Client {

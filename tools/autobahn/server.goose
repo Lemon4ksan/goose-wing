@@ -4,7 +4,6 @@
 // Dedicated WebSocket Echo Server for Autobahn Testsuite (RFC 6455 Compliance).
 // RFC-conformant WebSocket implementation in pure Goose.
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn main() {

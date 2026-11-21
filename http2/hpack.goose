@@ -7,7 +7,7 @@
 namespace http2;
 
 import std;
-import core from "..";
+import core;
 import .framing;
 import .internal;
 import http.headers;

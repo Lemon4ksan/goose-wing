@@ -8,7 +8,6 @@
 // 4. Google SRE Adaptive Retry Budget (Token Bucket traffic capping)
 // 5. Host Circuit Breaker & RFC 9110 Retry-After Protection
 import std;
-import core from "..";
 import wing from "..";
 
 fn main() {

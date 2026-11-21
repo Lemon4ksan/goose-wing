@@ -5,7 +5,7 @@
 namespace server;
 
 import std;
-import core from "..";
+import core;
 import http.headers;
 import tls.x509;
 import tls.session;

@@ -5,7 +5,7 @@
 namespace cookie;
 
 import std;
-import core from "..";
+import core;
 import .limits;
 import .constants;
 import .canonical;

@@ -6,7 +6,7 @@
 namespace quic;
 
 import std;
-import core from "..";
+import core;
 import .packet;
 import .AckFrame;
 import .bbr;

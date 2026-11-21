@@ -4,7 +4,6 @@
 // Client command execution engine (`wing <URL>`) over `client::Client`.
 import std;
 import os;
-import core from "..";
 import wing from "..";
 import args;
 import rules;

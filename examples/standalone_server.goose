@@ -3,7 +3,6 @@
 
 // Demonstration of goose-wing Standalone Zero-Allocation Async Socket & HTTP Server.
 import std;
-import core from "..";
 import wing from "..";
 
 fn main() {

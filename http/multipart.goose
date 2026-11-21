@@ -6,8 +6,15 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
+import .request;
 import http.internal;
+
+extern fn multipart_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
+
+const MULTIPART_MAX_BOUNDARY_LEN: i64 = 70; // RFC 2046 Section 5.1.1
+
+var g_multipart_boundary_counter: u64 = 0;
 
 // ---- multipart errors & options --------------------------------------------
 
@@ -105,41 +112,206 @@ fn validate_boundary_string(boundary: const u8[:]) -> bool {
     return http_internal::validate_raw_boundary_chars(boundary);
 }
 
-// ---- multipart parsing -----------------------------------------------------
+// ---- multipart parsing & serialization -------------------------------------
 
-// Go #75557 & RFC 7578 §4.2: Formats a Content-Disposition header value with strict CRLF injection protection.
-// Rejects names or filenames containing raw CR, LF, or NUL bytes.
-// Escapes quotes and backslashes per RFC 7578 Section 4.2.
-fn format_content_disposition<B>(name: const u8[:], filename: const u8[:], out: B&) -> bool {
-    guard name.len > 0 else { return false; }
-    // Check for CRLF / NUL injection in name
-    for b in name {
-        guard b != '\r' && b != '\n' && b != 0 else { return false; }
-    }
-    // Check for CRLF / NUL injection in filename
-    for b in filename {
-        guard b != '\r' && b != '\n' && b != 0 else { return false; }
-    }
-
-    out.append("form-data; name=\"");
-    for b in name {
-        if b == '"' || b == '\\' {
-            out.push('\\');
+inline fn has_crlf_or_nul(s: const u8[:]) -> bool {
+    for b in s {
+        if b == '\r' || b == '\n' || b == 0 {
+            return true;
         }
-        out.push(b);
     }
-    out.push('"');
+    return false;
+}
+
+inline fn append_quoted_param_value<B>(val: const u8[:], out: B&) -> bool {
+    for b in val {
+        if b == '"' || b == '\\' {
+            guard out.try_push('\\') else { return false; }
+        }
+        guard out.try_push(b) else { return false; }
+    }
+    return true;
+}
+
+// Go #75557 & RFC 7578 Section 4.2: Formats a Content-Disposition header value with
+// strict CRLF/NUL injection protection and transactional rollback on capacity overflow.
+//
+// Example:
+//   name = "doc", filename = "a\"b.pdf", out = []
+//   returns: true, out = "form-data; name=\"doc\"; filename=\"a\\\"b.pdf\""
+fn format_content_disposition<B>(name: const u8[:], filename: const u8[:], out: B&) -> bool {
+    guard name.len > 0 && !has_crlf_or_nul(name) && !has_crlf_or_nul(filename) else {
+        return false;
+    }
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+
+    guard out.try_append("form-data; name=\"") else { return false; }
+    guard append_quoted_param_value(name, out) else { return false; }
+    guard out.try_push('"') else { return false; }
 
     if filename.len > 0 {
-        out.append("; filename=\"");
-        for b in filename {
-            if b == '"' || b == '\\' {
-                out.push('\\');
-            }
-            out.push(b);
-        }
-        out.push('"');
+        guard out.try_append("; filename=\"") else { return false; }
+        guard append_quoted_param_value(filename, out) else { return false; }
+        guard out.try_push('"') else { return false; }
     }
+    committed = true;
+    return true;
+}
+
+// Stateful RFC 7578 multipart/form-data serializer for client uploads.
+struct MultipartWriter {
+    boundary:   u8[..70] = [],
+    finished:   bool     = false,
+    part_count: i64      = 0,
+    body:       u8[>..]  = [],
+}
+
+fn generate_multipart_boundary() -> u8[..70] {
+    g_multipart_boundary_counter += 1;
+    var seed: u8[48] = [0; 48];
+    let _ = multipart_random_bytes(seed[0..32]);
+    core::write_le_u64_at(seed[..], 32, clock_ns() as u64);
+    core::write_le_u64_at(seed[..], 40, g_multipart_boundary_counter);
+    let digest = core::sha256(seed[..]);
+    core::secure_zeroize_48(seed);
+
+    var out: u8[..70] = "----GooseWing";
+    for i in 16 {
+        core::format_u8_hex(digest[i], out, false);
+    }
+    return out;
+}
+
+// Creates an RFC 7578 multipart/form-data writer.
+// When `boundary` is empty, generates an unpredictable 45-byte RFC 2046 boundary.
+// Returns `(writer, false)` if a caller-supplied boundary violates RFC 2046 Section 5.1.1.
+//
+// Example:
+//   boundary = "test-boundary" -> writer.boundary = "test-boundary", ok = true
+//   boundary = "bad\r\n" -> ok = false
+fn new_multipart_writer(boundary: const u8[:] = "") -> MultipartWriter, bool {
+    if boundary.len == 0 {
+        let gen = generate_multipart_boundary();
+        return MultipartWriter { boundary: gen, .. }, true;
+    }
+    guard boundary.len <= MULTIPART_MAX_BOUNDARY_LEN &&
+        http_internal::validate_raw_boundary_chars(boundary) else {
+        return MultipartWriter { .. }, false;
+    }
+    var b: u8[..70] = [];
+    guard b.try_set(boundary) else { return MultipartWriter { .. }, false; }
+    return MultipartWriter { boundary: b, .. }, true;
+}
+
+// Formats the RFC 7578 Content-Type header value for `w`, quoting the boundary when
+// it contains non-token characters (RFC 2046 Section 5.1.1).
+//
+// Example:
+//   w.boundary = "abc123" -> "multipart/form-data; boundary=abc123"
+fn multipart_content_type(w: const MultipartWriter&) -> u8[..128] {
+    var out: u8[..128] = [];
+    guard w.boundary.len > 0 else { return out; }
+    var needs_quote = false;
+    for b in w.boundary {
+        if !core::is_tchar(b) {
+            needs_quote = true;
+            break;
+        }
+    }
+    let _ = out.try_append("multipart/form-data; boundary=");
+    if needs_quote {
+        let _ = out.try_push('"');
+        let _ = out.try_append(w.boundary[..]);
+        let _ = out.try_push('"');
+    } else {
+        let _ = out.try_append(w.boundary[..]);
+    }
+    return out;
+}
+
+// Appends a text form field part to `w` (RFC 7578 Section 4.2).
+// Rolls back `w.body` on invalid field name or if `w` is already finished.
+//
+// Example:
+//   write_field(w, "chat_id", "42") -> true
+fn write_field(w: MultipartWriter&, name: const u8[:], value: const u8[:]) -> bool {
+    guard !w.finished && w.boundary.len > 0 else { return false; }
+    let saved_len = w.body.len;
+    var committed = false;
+    defer if !committed { w.body.resize(saved_len); };
+
+    w.body.append("--");
+    w.body.append(w.boundary[..]);
+    w.body.append("\r\nContent-Disposition: ");
+    guard format_content_disposition(name, "", w.body) else { return false; }
+    w.body.append("\r\n\r\n");
+    w.body.append(value);
+    w.body.append("\r\n");
+    w.part_count = core::add_sat_i64(w.part_count, 1);
+    committed = true;
+    return true;
+}
+
+// Appends a binary or file upload part to `w` (RFC 7578 Section 4.2, Section 4.4).
+// Empty `content_type` defaults to `application/octet-stream`.
+// Rejects CR, LF, or NUL in `field_name`, `filename`, or `content_type`.
+//
+// Example:
+//   write_file(w, "document", "report.pdf", "application/pdf", pdf_bytes) -> true
+fn write_file(
+    w:            MultipartWriter&,
+    field_name:   const u8[:],
+    filename:     const u8[:],
+    content_type: const u8[:],
+    data:         const u8[:],
+) -> bool {
+    guard !w.finished && w.boundary.len > 0 && filename.len > 0 else { return false; }
+    let eff_ct = if content_type.len > 0 { content_type } else { "application/octet-stream" };
+    guard !has_crlf_or_nul(eff_ct) else { return false; }
+
+    let saved_len = w.body.len;
+    var committed = false;
+    defer if !committed { w.body.resize(saved_len); };
+
+    w.body.append("--");
+    w.body.append(w.boundary[..]);
+    w.body.append("\r\nContent-Disposition: ");
+    guard format_content_disposition(field_name, filename, w.body) else { return false; }
+    w.body.append("\r\nContent-Type: ");
+    w.body.append(eff_ct);
+    w.body.append("\r\n\r\n");
+    w.body.append(data);
+    w.body.append("\r\n");
+    w.part_count = core::add_sat_i64(w.part_count, 1);
+    committed = true;
+    return true;
+}
+
+// Appends the closing RFC 2046 boundary delimiter (`--<boundary>--\r\n`) to `w`.
+// Idempotent when called on an already-finished writer.
+fn finish(w: MultipartWriter&) -> bool {
+    guard w.boundary.len > 0 else { return false; }
+    if w.finished { return true; }
+    w.body.append("--");
+    w.body.append(w.boundary[..]);
+    w.body.append("--\r\n");
+    w.finished = true;
+    return true;
+}
+
+// Finalizes `w` and attaches its body and `Content-Type` header to `req`.
+fn multipart(req: Request&, w: MultipartWriter&) -> bool {
+    guard finish(w) else { return false; }
+    let ct = multipart_content_type(w);
+    guard ct.len > 0 else { return false; }
+    set_header(req, "Content-Type", ct[..]);
+    req.body.clear();
+    req.body.append(w.body[..]);
+    req.rewind_buf.clear();
+    req.rewindable = req.rewind_buf.try_set(req.body[..]);
+    req.body_consumed = false;
     return true;
 }
 

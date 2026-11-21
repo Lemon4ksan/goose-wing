@@ -6,7 +6,7 @@
 namespace client_internal;
 
 import std;
-import core from "../..";
+import core;
 import rfc.http;
 import rfc.h2;
 import rfc.h3_quic;
@@ -1427,38 +1427,43 @@ fn try_match_mock_route(
     let curr_method = ctx.current_method[..];
     let is_https = current_url.is_secure_scheme();
 
-    for &route in session.mock_routes {
+    var matched_idx: i64 = -1;
+    for &route, i in session.mock_routes {
         let method_match = route.method.len == 0 || route.method[..].eq_ascii_fold(curr_method);
         let url_match = route.pattern_url[..] == curr_href || core::starts_with(curr_href, route.pattern_url[..]);
-        guard method_match && url_match else { continue; }
-
-        let dns_err = validate_mock_route_dns(route, session.ssrf_guard);
-        if dns_err != client::RedirectError.None {
-            out_dns_err = dns_err;
-            out_resp = http::Response {
-                status_code:   rfc::STATUS_FORBIDDEN,
-                effective_url: copy(current_url.href),
-                ..
-            };
-            return true;
+        if method_match && url_match {
+            matched_idx = i;
+            break;
         }
+    }
+    guard matched_idx >= 0 else { return false; }
 
-        let mock_resp = build_mock_response(route, current_url, ctx.headers);
-        out_resp = copy(mock_resp);
-        if route.status_code == rfc::STATUS_SWITCHING_PROTOCOLS {
-            let sent_key = http::find_header(ctx.headers, "sec-websocket-key");
-            if sent_key.len > 0 && out_resp.header("sec-websocket-accept").len == 0 {
-                var accept_buf: u8[..64] = [];
-                realtime::compute_websocket_accept(sent_key, accept_buf);
-                out_resp.set_header("Sec-WebSocket-Accept", accept_buf[..]);
-            }
-        }
-
-        resolve_mock_protocol_racing(session, route, is_https, origin_buf, has_h3, now_sec, out_resp);
-        ingest_transport_response_headers(session, current_url, is_https, origin_buf, curr_path, now_sec, out_resp);
+    let route .= session.mock_routes[matched_idx];
+    let dns_err = validate_mock_route_dns(route, session.ssrf_guard);
+    if dns_err != client::RedirectError.None {
+        out_dns_err = dns_err;
+        out_resp = http::Response {
+            status_code:   rfc::STATUS_FORBIDDEN,
+            effective_url: copy(current_url.href),
+            ..
+        };
         return true;
     }
-    return false;
+
+    let mock_resp = build_mock_response(route, current_url, ctx.headers);
+    out_resp = copy(mock_resp);
+    if route.status_code == rfc::STATUS_SWITCHING_PROTOCOLS {
+        let sent_key = http::find_header(ctx.headers, "sec-websocket-key");
+        if sent_key.len > 0 && out_resp.header("sec-websocket-accept").len == 0 {
+            var accept_buf: u8[..64] = [];
+            realtime::compute_websocket_accept(sent_key, accept_buf);
+            out_resp.set_header("Sec-WebSocket-Accept", accept_buf[..]);
+        }
+    }
+
+    resolve_mock_protocol_racing(session, route, is_https, origin_buf, has_h3, now_sec, out_resp);
+    ingest_transport_response_headers(session, current_url, is_https, origin_buf, curr_path, now_sec, out_resp);
+    return true;
 }
 
 inline fn calc_effective_timeout_ms(session_timeout: i64, req_timeout: i64) -> u32 {
@@ -1935,11 +1940,14 @@ fn dispatch_pooled_h2_hop(
     defer if !released { session.pool.close_pooled_connection(conn_id); };
 
     let conn .= session.pool.conns[c_idx];
+    let hpack_idx = net::ensure_hpack_slot(conn);
+    guard hpack_idx >= 0 else { return false; }
+    let hpack_enc .= net::hpack_enc_slot(hpack_idx);
     let stream_id = conn.next_h2_stream_id;
     let send_preface = !conn.h2_preface_sent;
     var wire_out: u8[..65536] = [];
     guard client::encode_h2_request(
-        curr_method, current_url, is_https, ctx, conn.hpack_enc, stream_id, send_preface, wire_out,
+        curr_method, current_url, is_https, ctx, hpack_enc, stream_id, send_preface, wire_out,
     ) else {
         return false;
     }
@@ -2241,7 +2249,7 @@ fn execute_request_inner(session: client::Client&, req: const http::Request&) ->
     return client::execute_pipeline_with_stage(session, req, noop);
 }
 
-inline fn evaluate_response_retry_after(
+fn evaluate_response_retry_after(
     session:  client::Client&,
     host_str: const u8[:],
     resp:     const http::Response&,
@@ -2256,7 +2264,7 @@ inline fn evaluate_response_retry_after(
     }
 }
 
-inline fn record_client_har_telemetry(
+fn record_client_har_telemetry(
     session:      client::Client&,
     req:          const http::Request&,
     resp:         const http::Response&,

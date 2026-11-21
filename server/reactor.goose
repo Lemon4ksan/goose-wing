@@ -9,7 +9,7 @@ namespace server;
 
 import std;
 import slice_pool;
-import core from "..";
+import core;
 import .router;
 import .pool;
 import .pipeline;

@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Lemon4ksan
 
 import std;
-import core from "..";
 import wing from "..";
 import lit from "github.com/Lemon4ksan/goose-lit@v0.1.0";
 

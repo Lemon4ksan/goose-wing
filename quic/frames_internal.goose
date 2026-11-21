@@ -5,7 +5,7 @@
 namespace quic_internal;
 
 import std;
-import core from "..";
+import core;
 import .packet;
 import .frames;
 
@@ -125,7 +125,7 @@ inline fn decode_ack_ecn_counts(src: const u8[:], idx: i64&) -> bool {
 // Example:
 //   src = [largest_acked=10, delay=0, range_count=0, first_range=5], idx = 0, is_ecn = false
 //   returns: QuicFrame { frame_type: Ack, offset: 10, length: 5 }, ok = true
-inline fn decode_ack_frame_cursor(
+fn decode_ack_frame_cursor(
     src:         const u8[:],
     idx:         i64&,
     is_ecn:      bool,
@@ -288,7 +288,7 @@ inline fn decode_crypto_frame(src: const u8[:], idx: i64&) -> quic::QuicCryptoFr
 //   returns: QuicStreamFrame { stream_id: 4, offset: 0, fin: true, data: "ok" }, ok = true, idx = 5
 //
 // crap:trusted-bounds
-inline fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicStreamFrame, bool {
+fn decode_stream_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicStreamFrame, bool {
     let saved_idx = idx;
     var committed = false;
     defer if !committed { idx = saved_idx; };
@@ -731,7 +731,7 @@ fn demux_blocked_frame(src: const u8[:], idx: i64&, ftype: u64) -> quic::QuicFra
 //   returns: QuicFrame { frame_type: ConnectionClose, error_code: 0, payload: "bye" }, ok = true
 //
 // crap:trusted-bounds
-inline fn decode_connection_close_frame(
+fn decode_connection_close_frame(
     src:   const u8[:],
     idx:   i64&,
     ftype: u64,

@@ -6,7 +6,6 @@
 // RUN: %t.exe | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn verify_bogo_tls13_record_and_ccs() {

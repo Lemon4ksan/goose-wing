@@ -966,7 +966,7 @@ enum FastStepResult {
 
 // Single step of inflate_fast: decodes up to two literals or one literal + one full match
 // inline when >= 16 input bytes and >= 260 output capacity/quota bytes remain and dict is empty.
-inline fn step_inflate_fast<B>(
+fn step_inflate_fast<B>(
     r:               BitReader&,
     lit_table:       const HuffmanTable&,
     dist_table:      const HuffmanTable&,
@@ -1402,9 +1402,9 @@ fn inflate_dynamic_block<B>(
 }
 
 // Extended inflate: supports preset dictionary, max_output_bytes quota, and reports bytes consumed from src.
-fn inflate_ex<B>(
+fn inflate_ex(
     src:              const u8[:],
-    out:              B&,
+    out:              u8[>..]&,
     dict:             const u8[:] = "",
     max_output_bytes: i64         = 0,
     max_window_dist:  i64         = 32768,
@@ -1449,6 +1449,28 @@ fn inflate_ex<B>(
 
     align_to_byte(r);
     return CompressError.None, r.pos;
+}
+
+// Generic bounded-buffer bridge delegating to the single non-generic u8[>..] inflate core.
+fn inflate_ex<B>(
+    src:              const u8[:],
+    out:              B&,
+    dict:             const u8[:] = "",
+    max_output_bytes: i64         = 0,
+    max_window_dist:  i64         = 32768,
+) -> CompressError, i64 {
+    let avail = sub_sat_i64(out.cap, out.len);
+    let eff_limit = if max_output_bytes > 0 && max_output_bytes < avail {
+        max_output_bytes
+    } else {
+        max(avail, 1)
+    };
+    var tmp: u8[>..] = [];
+    let err, consumed = inflate_ex(src, tmp, dict, eff_limit, max_window_dist);
+    if tmp.len > 0 {
+        guard out.try_append(tmp[..]) else { return CompressError.OutputBufferOverflow, consumed; }
+    }
+    return err, consumed;
 }
 
 // Inflates RFC 1951 raw deflate stream from src into out.
@@ -1930,7 +1952,7 @@ fn deflate_fast_l1_small<B>(src: const u8[:], out: B&, w: BitWriter&, is_final: 
     return !w.overflow;
 }
 
-inline fn run_fast_l1_chunk_loop<B>(
+fn run_fast_l1_chunk_loop<B>(
     src:         const u8[:],
     chunk_start: i64,
     chunk_end:   i64,

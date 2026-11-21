@@ -6,7 +6,7 @@
 namespace grpc;
 
 import std;
-import core from "..";
+import core;
 import rfc.grpc;
 import http.headers;
 import .constants;

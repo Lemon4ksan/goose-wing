@@ -8,7 +8,7 @@
 namespace proxy;
 
 import std;
-import core from "..";
+import core;
 import .load_balancer;
 import .internal;
 

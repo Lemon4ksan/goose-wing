@@ -11,7 +11,6 @@
 // RUN: goose build --cc gcc -O2 -o %t.exe %s
 // RUN: %t.exe --iters 5000
 import std;
-import core from "..";
 import wing from "..";
 
 const DEFAULT_BENCH_ITERS: i64 = 10000;

@@ -7,7 +7,7 @@
 namespace net_internal;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // ---- OS-Level Socket Constants ------------------------------------------

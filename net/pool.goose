@@ -6,7 +6,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .isolation;
 import .want_queue;
 import .proxy;
@@ -153,29 +153,76 @@ enum NegotiatedProtocol {
     Http3Quic,
 }
 
+// Lazy global HPACK dynamic table slot backing HTTP/2 pooled connections without inflating C stack frames.
+struct PooledHpackState {
+    in_use: bool                = false,
+    enc:    http2::DynamicTable = http2::new_dynamic_table(4096),
+    dec:    http2::DynamicTable = http2::new_dynamic_table(4096),
+}
+
+const MAX_POOLED_HPACK_SLOTS: i64 = 16;
+
+var g_hpack_slots: PooledHpackState[16] = [PooledHpackState { .. }; 16];
+
 // Active or idle pooled TCP/TLS/QUIC connection representation.
 struct PooledConnection {
-    conn_id:                i32                 = -1,
-    key:                    PoolKey             = PoolKey { .. },
-    protocol:               NegotiatedProtocol  = NegotiatedProtocol.Http11,
-    transport:              Transport           = Transport.Disconnected,
-    rx_buf:                 u8[..8192]          = [],
-    resolved_ip:            u8[..64]            = [],
-    san_hosts:              u8[..128][..8]      = [],
-    cert_valid:             bool                = true,
-    active_allocations:     i32                 = 0,
-    max_concurrent_streams: i32                 = 1,
-    idle_at_ns:             i64                 = 0,
-    created_at_ns:          i64                 = 0,
-    use_count:              i64                 = 0,
-    source_exhausted:       bool                = false, // Simulates MSG_PEEK | MSG_DONTWAIT detection of EOF/FIN
-    remote_rst:             bool                = false,
-    no_new_exchanges:       bool                = false,
-    closed:                 bool                = false,
-    hpack_enc:              http2::DynamicTable = http2::new_dynamic_table(4096),
-    hpack_dec:              http2::DynamicTable = http2::new_dynamic_table(4096),
-    next_h2_stream_id:      u32                 = 1,
-    h2_preface_sent:        bool                = false,
+    conn_id:                i32                = -1,
+    key:                    PoolKey            = PoolKey { .. },
+    protocol:               NegotiatedProtocol = NegotiatedProtocol.Http11,
+    transport:              Transport          = Transport.Disconnected,
+    rx_buf:                 u8[..2048]         = [],
+    resolved_ip:            u8[..64]           = [],
+    san_hosts:              u8[..128][..4]     = [],
+    cert_valid:             bool               = true,
+    active_allocations:     i32                = 0,
+    max_concurrent_streams: i32                = 1,
+    idle_at_ns:             i64                = 0,
+    created_at_ns:          i64                = 0,
+    use_count:              i64                = 0,
+    source_exhausted:       bool               = false, // Simulates MSG_PEEK | MSG_DONTWAIT detection of EOF/FIN
+    remote_rst:             bool               = false,
+    no_new_exchanges:       bool               = false,
+    closed:                 bool               = false,
+    hpack_slot:             i16                = -1,
+    next_h2_stream_id:      u32                = 1,
+    h2_preface_sent:        bool               = false,
+}
+
+// Lazily allocates or returns the active global HPACK dynamic table slot for an HTTP/2 connection.
+fn ensure_hpack_slot(conn: PooledConnection&) -> i32 {
+    let cur: i64 = conn.hpack_slot;
+    if cur >= 0 && cur < MAX_POOLED_HPACK_SLOTS && g_hpack_slots[cur].in_use {
+        return conn.hpack_slot;
+    }
+    for &slot, i in g_hpack_slots {
+        if !slot.in_use {
+            slot.in_use = true;
+            slot.enc = http2::new_dynamic_table(4096);
+            slot.dec = http2::new_dynamic_table(4096);
+            conn.hpack_slot = i as i16;
+            return i as i32;
+        }
+    }
+    return -1;
+}
+
+// Releases any global HPACK dynamic table slot bound to `conn` (idempotent).
+fn release_hpack_slot(conn: PooledConnection&) {
+    let idx: i64 = conn.hpack_slot;
+    if idx >= 0 && idx < MAX_POOLED_HPACK_SLOTS {
+        g_hpack_slots[idx].in_use = false;
+    }
+    conn.hpack_slot = -1;
+}
+
+fn hpack_enc_slot(slot_idx: i32) -> http2::DynamicTable& {
+    let idx: i64 = if slot_idx >= 0 && slot_idx < MAX_POOLED_HPACK_SLOTS { slot_idx } else { 0 };
+    return g_hpack_slots[idx].enc;
+}
+
+fn hpack_dec_slot(slot_idx: i32) -> http2::DynamicTable& {
+    let idx: i64 = if slot_idx >= 0 && slot_idx < MAX_POOLED_HPACK_SLOTS { slot_idx } else { 0 };
+    return g_hpack_slots[idx].dec;
 }
 
 const IDLE_CONNECTION_HEALTHY_NS:   i64 = 1000000000; // 1 second threshold for extensive checks
@@ -209,6 +256,7 @@ fn is_connection_healthy(
 
     if max_idle_ns > 0 && idle_duration_ns > max_idle_ns {
         conn.transport.close();
+        release_hpack_slot(conn);
         conn.rx_buf.clear();
         conn.no_new_exchanges = true;
         conn.closed = true;
@@ -219,6 +267,7 @@ fn is_connection_healthy(
         // Non-blocking check for received FIN (stream exhaustion)
         if conn.source_exhausted {
             conn.transport.close();
+            release_hpack_slot(conn);
             conn.rx_buf.clear();
             conn.no_new_exchanges = true;
             conn.closed = true;
@@ -336,7 +385,7 @@ struct ConnectionGroup {
 
 struct StreamPool {
     conns:                         PooledConnection[..64]    = [],
-    groups:                        ConnectionGroup[..32]     = [],
+    groups:                        ConnectionGroup[..16]     = [],
     group_index:                   core::FlatIndexBucket[64] = [core::FlatIndexBucket { .. }; 64],
     max_sockets_per_group:         i32                       = DEFAULT_MAX_SOCKETS_PER_GROUP,
     max_sockets_per_proxy:         i32                       = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
@@ -413,6 +462,7 @@ fn close_pooled_connection(pool: StreamPool&, conn_id: i32) -> bool {
         if c.conn_id == conn_id && !c.closed {
             net_internal::group_record_closed(pool, c.key, c.active_allocations > 0);
             c.transport.close();
+            release_hpack_slot(c);
             c.rx_buf.clear();
             c.closed = true;
             c.no_new_exchanges = true;
@@ -442,6 +492,7 @@ fn drain_stream_pool(pool: StreamPool&) {
         if !c.closed {
             net_internal::group_record_closed(pool, c.key, c.active_allocations > 0);
             c.transport.close();
+            release_hpack_slot(c);
             c.rx_buf.clear();
             c.closed = true;
             c.no_new_exchanges = true;
@@ -524,6 +575,7 @@ fn register_connection(
     guard conn.resolved_ip.try_append(resolved_ip) else { return -1; }
 
     if slot_idx >= 0 {
+        release_hpack_slot(pool.conns[slot_idx]);
         pool.conns[slot_idx] = conn;
     } else {
         pool.conns.push(conn);
@@ -705,7 +757,7 @@ fn should_retire_connection(
 // Evicts unused ConnectionGroup entries (zero active/idle/dialing sockets and empty WantQueue)
 // so multi-origin dispatchers do not exhaust the fixed group table ceiling.
 fn reclaim_idle_origin_groups(pool: StreamPool&) -> i32 {
-    var kept:      ConnectionGroup[..32] = [];
+    var kept:      ConnectionGroup[..16] = [];
     var reclaimed: i64                   = 0;
     for &grp in pool.groups {
         if net_internal::is_origin_group_unused(grp) {

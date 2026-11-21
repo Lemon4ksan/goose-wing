@@ -6,7 +6,7 @@ namespace auth_internal;
 
 import std;
 import json;
-import core from "..";
+import core;
 import rfc.http;
 import .types;
 import .internal;
@@ -71,7 +71,7 @@ inline fn parse_jwt_header_str<B>(
 // Example:
 //   key = "alg", reader at "\"HS256\""
 //   sets: header.alg = JwtAlg.HS256, seen_alg = true
-inline fn parse_jwt_header_member(
+fn parse_jwt_header_member(
     key:         const u8[:],
     reader:      json::Reader&,
     header:      auth::JwtHeader&,

@@ -5,7 +5,7 @@
 namespace cookie;
 
 import std;
-import core from "..";
+import core;
 
 // ---- same-site enumeration -------------------------------------------------
 

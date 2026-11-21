@@ -1481,31 +1481,97 @@ int32_t wing_tcp_set_reuseport(int64_t sock_fd, int32_t enable) {
 #endif
 }
 
-// Cryptographically secure pseudorandom byte generator (RtlGenRandom on Windows, getrandom on Linux).
+// Cryptographically secure pseudorandom byte generator (BCryptGenRandom / RtlGenRandom on Windows, getrandom on Linux).
 int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
     if (out.data == NULL || out.len <= 0) return 0;
 #ifdef _WIN32
+    typedef LONG(WINAPI * BCryptGenRandomFn)(PVOID, PUCHAR, ULONG, ULONG);
     typedef BOOLEAN(NTAPI * RtlGenRandomFn)(PVOID, ULONG);
-    static RtlGenRandomFn pfnRtlGenRandom = NULL;
-    if (pfnRtlGenRandom == NULL) {
-        HMODULE hAdvApi = GetModuleHandleA("advapi32.dll");
-        if (hAdvApi != NULL) {
-            pfnRtlGenRandom = (RtlGenRandomFn)(void *)GetProcAddress(hAdvApi, "SystemFunction036");
+    static volatile PVOID g_pfnBCryptGenRandom = NULL;
+    static volatile PVOID g_pfnRtlGenRandom = NULL;
+
+    BCryptGenRandomFn pfnBCrypt = (BCryptGenRandomFn)InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, NULL, NULL);
+    if (pfnBCrypt == NULL) {
+        HMODULE hBCrypt = LoadLibraryA("bcrypt.dll");
+        if (hBCrypt != NULL) {
+            void *sym = (void *)GetProcAddress(hBCrypt, "BCryptGenRandom");
+            if (sym != NULL) {
+                InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, sym, NULL);
+                pfnBCrypt = (BCryptGenRandomFn)sym;
+            }
         }
     }
-    if (pfnRtlGenRandom != NULL) {
-        if (pfnRtlGenRandom(out.data, (ULONG)out.len)) return 0;
+    if (pfnBCrypt != NULL) {
+        size_t offset = 0;
+        size_t total = (size_t)out.len;
+        while (offset < total) {
+            ULONG chunk = (total - offset) > 0x7FFFFFFFu ? 0x7FFFFFFFu : (ULONG)(total - offset);
+            // BCRYPT_USE_SYSTEM_PREFERRED_RNG = 0x00000002
+            if (pfnBCrypt(NULL, (PUCHAR)(out.data + offset), chunk, 0x00000002u) < 0) {
+                return -1;
+            }
+            offset += (size_t)chunk;
+        }
+        return 0;
+    }
+
+    RtlGenRandomFn pfnRtl = (RtlGenRandomFn)InterlockedCompareExchangePointer(&g_pfnRtlGenRandom, NULL, NULL);
+    if (pfnRtl == NULL) {
+        HMODULE hAdvApi = LoadLibraryA("advapi32.dll");
+        if (hAdvApi != NULL) {
+            void *sym = (void *)GetProcAddress(hAdvApi, "SystemFunction036");
+            if (sym != NULL) {
+                InterlockedCompareExchangePointer(&g_pfnRtlGenRandom, sym, NULL);
+                pfnRtl = (RtlGenRandomFn)sym;
+            }
+        }
+    }
+    if (pfnRtl != NULL) {
+        size_t offset = 0;
+        size_t total = (size_t)out.len;
+        while (offset < total) {
+            ULONG chunk = (total - offset) > 0x7FFFFFFFu ? 0x7FFFFFFFu : (ULONG)(total - offset);
+            if (!pfnRtl(out.data + offset, chunk)) {
+                return -1;
+            }
+            offset += (size_t)chunk;
+        }
+        return 0;
     }
     return -1;
 #elif defined(__linux__) && defined(SYS_getrandom)
-    long res = syscall(SYS_getrandom, out.data, (size_t)out.len, 0);
-    return res == (long)out.len ? 0 : -1;
+    size_t offset = 0;
+    size_t total = (size_t)out.len;
+    while (offset < total) {
+        long res = syscall(SYS_getrandom, out.data + offset, total - offset, 0);
+        if (res < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (res == 0) return -1;
+        offset += (size_t)res;
+    }
+    return 0;
 #else
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd >= 0) {
-        ssize_t res = read(fd, out.data, (size_t)out.len);
+        size_t offset = 0;
+        size_t total = (size_t)out.len;
+        while (offset < total) {
+            ssize_t res = read(fd, out.data + offset, total - offset);
+            if (res < 0) {
+                if (errno == EINTR) continue;
+                close(fd);
+                return -1;
+            }
+            if (res == 0) {
+                close(fd);
+                return -1;
+            }
+            offset += (size_t)res;
+        }
         close(fd);
-        return res == (ssize_t)out.len ? 0 : -1;
+        return 0;
     }
     return -1;
 #endif

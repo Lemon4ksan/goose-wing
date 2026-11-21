@@ -128,10 +128,10 @@ fn sha256_final(ctx: Sha256Ctx&) -> u8[32] {
 
     var out: u8[32] = [0; 32];
     for i in 8 {
-        out[i * 4] = (ctx.h[i] >> 24) as u8;
-        out[i * 4 + 1] = (ctx.h[i] >> 16) as u8;
-        out[i * 4 + 2] = (ctx.h[i] >> 8) as u8;
-        out[i * 4 + 3] = ctx.h[i] as u8;
+        out[i * 4] = ((ctx.h[i] >> 24) & 0xFF) as u8;
+        out[i * 4 + 1] = ((ctx.h[i] >> 16) & 0xFF) as u8;
+        out[i * 4 + 2] = ((ctx.h[i] >> 8) & 0xFF) as u8;
+        out[i * 4 + 3] = (ctx.h[i] & 0xFF) as u8;
     }
     return out;
 }

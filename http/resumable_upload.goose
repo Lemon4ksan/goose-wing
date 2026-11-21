@@ -7,7 +7,7 @@
 namespace http;
 
 import std;
-import core from "..";
+import core;
 import .request;
 import .response;
 import .sfv;

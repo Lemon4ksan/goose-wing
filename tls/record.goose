@@ -6,7 +6,7 @@
 namespace tls;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // ---- TLS 1.3 Alert Codes (RFC 8446 Section 6) ---------------------------
@@ -73,7 +73,7 @@ inline fn alert_to_u8(alert: Alert) -> u8 {
     };
 }
 
-inline fn u8_to_alert(code: u8) -> Alert, bool {
+fn u8_to_alert(code: u8) -> Alert, bool {
     let alert = match code {
         rfc::TLS_ALERT_CLOSE_NOTIFY => Alert.CloseNotify,
         rfc::TLS_ALERT_UNEXPECTED_MESSAGE => Alert.UnexpectedMessage,

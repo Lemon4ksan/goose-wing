@@ -7,7 +7,7 @@
 namespace wing;
 
 import std;
-import core from "..";
+import core;
 import http.response;
 import http.request;
 import net.pool;
@@ -372,31 +372,35 @@ inline fn feed_h1_header_guard(
     return net::feed_header_bytes(guard_reader, rx_buf[from_idx..inspect_end], now_ns) == net::SlowlorisViolation.None;
 }
 
-fn read_response_headers(conn: net::PooledConnection&, timeout_ms: u32) -> i64, bool {
+fn read_response_headers_into<B>(conn: net::PooledConnection&, dst: B&, timeout_ms: u32) -> i64, bool {
     let start_ns = (core::as_nanos(core::monotonic_now()) & 0x7FFFFFFFFFFFFFFF) as i64;
     let hdr_timeout_ns = max(10000000000, (timeout_ms as i64) * 1000000);
     var guard_reader = net::new_header_reader(
         net::SlowlorisDefenseConfig { response_header_timeout_ns: hdr_timeout_ns, .. },
         start_ns,
     );
-    var hdr_end_idx: i64 = core::fast_find_crlfcrlf(conn.rx_buf[..]);
-    guard feed_h1_header_guard(guard_reader, conn.rx_buf[..], 0, hdr_end_idx, start_ns) else {
+    var hdr_end_idx: i64 = core::fast_find_crlfcrlf(dst[..]);
+    guard feed_h1_header_guard(guard_reader, dst[..], 0, hdr_end_idx, start_ns) else {
         return 0, false;
     }
 
     var raw_recv: u8[4096] = [0; 4096];
     while hdr_end_idx < 0 {
-        let prev_len = conn.rx_buf.len;
+        let prev_len = dst.len;
         let recvd = conn.transport.recv_slice(raw_recv[..], timeout_ms);
         guard recvd > 0 else { return 0, false; }
-        guard conn.rx_buf.try_append(raw_recv[..recvd]) else { return 0, false; }
-        hdr_end_idx = core::fast_find_crlfcrlf(conn.rx_buf[..]);
+        guard dst.try_append(raw_recv[..recvd]) else { return 0, false; }
+        hdr_end_idx = core::fast_find_crlfcrlf(dst[..]);
         let now_ns = (core::as_nanos(core::monotonic_now()) & 0x7FFFFFFFFFFFFFFF) as i64;
-        guard feed_h1_header_guard(guard_reader, conn.rx_buf[..], prev_len, hdr_end_idx, now_ns) else {
+        guard feed_h1_header_guard(guard_reader, dst[..], prev_len, hdr_end_idx, now_ns) else {
             return 0, false;
         }
     }
     return hdr_end_idx, true;
+}
+
+fn read_response_headers(conn: net::PooledConnection&, timeout_ms: u32) -> i64, bool {
+    return read_response_headers_into(conn, conn.rx_buf, timeout_ms);
 }
 
 fn pump_cl_body(
@@ -574,11 +578,17 @@ fn execute_h1_exchange(
     http::reset_response(resp);
     guard send_h1_request(conn, req, url_val) else { return false, false; }
 
+    var hdr_buf: u8[..16384] = [];
+    if conn.rx_buf.len > 0 {
+        guard hdr_buf.try_append(conn.rx_buf[..]) else { return false, false; }
+        conn.rx_buf.clear();
+    }
+
     for interim_step in 6 {
-        let hdr_end_idx, ok_hdr = read_response_headers(conn, timeout_ms);
+        let hdr_end_idx, ok_hdr = read_response_headers_into(conn, hdr_buf, timeout_ms);
         guard ok_hdr && hdr_end_idx >= 0 else { return false, false; }
 
-        guard parse_response_headers(conn.rx_buf[..hdr_end_idx], resp) else { return false, false; }
+        guard parse_response_headers(hdr_buf[..hdr_end_idx], resp) else { return false, false; }
         let leftover_start = hdr_end_idx + 4;
 
         // RFC 9112 §6.3 / RFC 9110 §15.2: 1xx informational responses (except 101 Switching Protocols)
@@ -592,14 +602,11 @@ fn execute_h1_exchange(
                 !http::has_header(resp.headers, "Content-Length") else {
                 return false, false;
             }
-            conn.rx_buf.compact_wire_buffer(leftover_start);
+            hdr_buf.compact_wire_buffer(leftover_start);
             continue;
         }
 
-        var leftover: u8[..8192] = [];
-        guard leftover.try_set(conn.rx_buf[leftover_start..]) else { return false, false; }
-        conn.rx_buf.clear();
-        return pump_response_body(conn, req, resp, leftover[..], timeout_ms);
+        return pump_response_body(conn, req, resp, hdr_buf[leftover_start..], timeout_ms);
     }
     return false, false;
 }

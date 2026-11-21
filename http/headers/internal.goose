@@ -5,7 +5,7 @@
 namespace http_internal;
 
 import std;
-import core from "../..";
+import core;
 import http.headers.chunked;
 import http.headers.lexical;
 import http.headers.perfect_hash;
@@ -344,49 +344,6 @@ fn well_known_header_name(id: http::WellKnownHeader) -> const u8[:] {
         Expect => "expect",
         _ => "",
     };
-}
-
-inline fn classify_cors_header(name: const u8[:], len: i64) -> http::WellKnownHeader {
-    match len {
-        22 => {
-            if name.eq_ascii_fold("access-control-max-age") {
-                return http::WellKnownHeader.AccessControlMaxAge;
-            }
-        },
-        27 => {
-            if name.eq_ascii_fold("access-control-allow-origin") {
-                return http::WellKnownHeader.AccessControlAllowOrigin;
-            }
-            if name.eq_ascii_fold("access-control-allow-headers") {
-                return http::WellKnownHeader.AccessControlAllowHeaders;
-            }
-            if name.eq_ascii_fold("access-control-allow-methods") {
-                return http::WellKnownHeader.AccessControlAllowMethods;
-            }
-        },
-        28 => {
-            if name.eq_ascii_fold("access-control-expose-headers") {
-                return http::WellKnownHeader.AccessControlExposeHeaders;
-            }
-        },
-        29 => {
-            if name.eq_ascii_fold("access-control-request-method") {
-                return http::WellKnownHeader.AccessControlRequestMethod;
-            }
-        },
-        30 => {
-            if name.eq_ascii_fold("access-control-request-headers") {
-                return http::WellKnownHeader.AccessControlRequestHeaders;
-            }
-        },
-        32 => {
-            if name.eq_ascii_fold("access-control-allow-credentials") {
-                return http::WellKnownHeader.AccessControlAllowCredentials;
-            }
-        },
-        _ => {},
-    }
-    return http::WellKnownHeader.Unknown;
 }
 
 fn well_known_header_flags(id: http::WellKnownHeader, name: const u8[:]) -> u8 {

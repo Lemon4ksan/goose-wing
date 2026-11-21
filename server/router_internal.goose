@@ -5,7 +5,7 @@
 namespace server_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.http;
 import .router;
 

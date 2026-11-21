@@ -5,7 +5,6 @@
 // Demonstrates upstream cluster routing, circuit breaker, hop-by-hop header stripping,
 // and zero-allocation upstream HTTP/1.1 request forwarding.
 import std;
-import core from "..";
 import wing from "..";
 
 fn main() {

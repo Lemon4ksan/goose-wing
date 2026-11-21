@@ -7,7 +7,7 @@
 namespace http3;
 
 import std;
-import core from "..";
+import core;
 import rfc.h3_quic;
 import http.headers;
 import http2.hpack;

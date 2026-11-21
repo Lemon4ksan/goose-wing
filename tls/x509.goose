@@ -6,7 +6,7 @@
 namespace tls;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 import .record;
 import .asn1;

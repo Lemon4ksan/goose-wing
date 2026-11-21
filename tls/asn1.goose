@@ -6,7 +6,7 @@
 namespace tls;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // ---- Strict Canonical ASN.1 DER Parser -----------------------------------

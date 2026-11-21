@@ -9,7 +9,7 @@
 namespace tls_internal;
 
 import std;
-import core from "..";
+import core;
 
 // ---- RFC 10024 & IANA NamedGroup Identifiers -----------------------------
 

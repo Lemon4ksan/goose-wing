@@ -27,7 +27,7 @@ let resp, parsed = dns::parse_response(query[..]);
 struct HttpsRecord {
     priority:        u16           = 0,
     target_name:     u8[..255]     = [],
-    alpns:           u8[..64][..8] = [],
+    alpns:           u8[..32][..4] = [],
     port:            u16           = 443,
     no_default_alpn: bool          = false,
     ipv4_hints:      u32[..8]      = [],
@@ -88,7 +88,7 @@ struct CacheEntry {
     qtype:           u16              = rfc::DNS_QTYPE_A,
     ipv4_hints:      u32[..8]         = [],
     ipv6_hints:      u8[16][..8]      = [],
-    https_records:   HttpsRecord[..4] = [],
+    https_records:   HttpsRecord[..2] = [],
     inserted_at_sec: i64              = 0,
     ttl_sec:         u32              = 300,
     stale_ttl_sec:   u32              = 86400,
@@ -98,7 +98,7 @@ struct CacheEntry {
 }
 
 struct Cache {
-    entries:  CacheEntry[..64] = [],
+    entries:  CacheEntry[..16] = [],
     lru_head: i32              = -1,
     lru_tail: i32              = -1,
 }
@@ -107,7 +107,7 @@ fn lookup(cache: const Cache&, domain: const u8[:], qtype: u16, now_sec: i64) ->
 fn insert(cache: Cache&, entry: const CacheEntry&)
 ```
 
-`Cache` provides fixed 64-entry LRU storage with RFC 5861 Stale-While-Revalidate
+`Cache` provides fixed 16-entry LRU storage with RFC 5861 Stale-While-Revalidate
 grace periods (default 24h). `cache.lookup` returns a zero-copy
 `const CacheEntry?` alongside `CacheStatus.Fresh` when within TTL,
 `CacheStatus.Stale` during the grace window, or `(null, CacheStatus.Expired)`

@@ -7,7 +7,6 @@
 // RUN: %t.exe | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn make_pem_block(label: const u8[:], der: const u8[:], out: u8[>..]&) {

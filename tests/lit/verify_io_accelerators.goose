@@ -4,7 +4,6 @@
 // RUN: goose %s | %FileCheck %s
 
 import std;
-import core from "../..";
 import wing from "../..";
 
 fn test_driver_slice_abis() {

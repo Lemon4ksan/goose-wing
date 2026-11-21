@@ -6,7 +6,7 @@
 namespace net;
 
 import std;
-import core from "..";
+import core;
 import .internal;
 
 // ---- Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---

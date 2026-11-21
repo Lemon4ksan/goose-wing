@@ -6,7 +6,7 @@
 namespace tls_internal;
 
 import std;
-import core from "..";
+import core;
 import rfc.h3_quic;
 import rfc.tls;
 
