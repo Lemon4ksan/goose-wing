@@ -59,11 +59,14 @@ without modifying the core decoders.
 
 ## Quick start
 
-Import `wing` as a single package (it exposes `core::*` and all protocol
-namespaces; submodules can import `wing.core` or `wing.http.multipart`):
+Import `wing` as a single package for the full stack, `core` for base
+primitives, or `wing_h1` for the modular zero-copy HTTP/1.1 pipeline without
+`tls`, `http2`, `http3`, `quic`, `grpc`, or `realtime` (see
+[h1/README.md](h1/README.md)):
 
 ```goose
 import wing from "github.com/Lemon4ksan/goose-wing@v0.1.0";
+import wing_h1 from "github.com/Lemon4ksan/goose-wing@v0.1.0";
 ```
 
 ### 1. HTTP client session
@@ -212,6 +215,8 @@ and L7 security and caching stages:
 
 - [Architecture](docs/architecture.md): Memory model, ingress boundaries, module
   layout, and request/response data flow.
+- [Modular HTTP/1.1 pipeline](h1/README.md): Minimal `wing_h1` entrypoint for
+  zero-copy `Tcp -> Http1 -> Router` services and clients.
 - [Features and nuances](docs/features_and_nuances.md): Buffer budgets,
   algorithm complexities, fail-closed thresholds, and edge cases.
 - [Security defenses](docs/security_defenses.md): CVE defenses, protocol attack

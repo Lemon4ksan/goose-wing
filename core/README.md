@@ -277,9 +277,11 @@ returning `false` on truncated input.
 ### `core/crypto/`: Constant-Time Cryptography
 
 ```goose
-// core/crypto/ct.goose & core/crypto/base64.goose
+// core/crypto/ct.goose, core/crypto/csprng.goose & core/crypto/base64.goose
 struct KeySlot { .. }
 struct DudectContext { .. }
+fn csprng_fill(dst: u8[:]) -> bool
+fn csprng_u64() -> u64, bool
 fn ct_eq_u8(a: u8, b: u8) -> u8
 fn ct_select_u8(mask: u8, a: u8, b: u8) -> u8
 fn ct_eq_bytes(a: const u8[:], b: const u8[:]) -> bool
@@ -383,7 +385,9 @@ fn rsa_pss_sha512_sign(n_be: const u8[:], d_be: const u8[:], msg: const u8[:], s
 ```
 
 Provides constant-time comparisons, zeroization, and DudeCT timing verification
-(`core/crypto/ct.goose`), RFC 4648 Base64 and Base64url codecs
+(`core/crypto/ct.goose`), OS-backed CSPRNG byte generation via `BCryptGenRandom`
+on Windows and `getrandom(2)` or `/dev/urandom` on POSIX
+(`core/crypto/csprng.goose`), RFC 4648 Base64 and Base64url codecs
 (`core/crypto/base64.goose`), SHA-2/SHA-1/MD5 digests, HMAC, and HKDF
 (`core/crypto/sha.goose`, `core/crypto/md5.goose`), AES-GCM and vector-fused
 GHASH (`core/crypto/aes.goose`, `core/crypto/fusion.goose`), RFC 8439

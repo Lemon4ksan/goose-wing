@@ -6,8 +6,8 @@
 c_sources_windows = ["shim/rio.c", "shim/uring.c", "shim/kqueue.c", "shim/simd.c", "shim/tcp.c", "shim/af_xdp.c", "shim/dpdk.c", "shim/smartnic.c", "shim/page_ring.c", "shim/page_mem.c", "shim/spsc.c", "shim/profiler.c", "shim/crypto_fusion.c"];
 c_sources_linux = ["shim/rio.c", "shim/uring.c", "shim/kqueue.c", "shim/simd.c", "shim/tcp.c", "shim/af_xdp.c", "shim/dpdk.c", "shim/smartnic.c", "shim/page_ring.c", "shim/page_mem.c", "shim/spsc.c", "shim/profiler.c", "shim/crypto_fusion.c"];
 c_sources_macos = ["shim/rio.c", "shim/uring.c", "shim/kqueue.c", "shim/simd.c", "shim/tcp.c", "shim/af_xdp.c", "shim/dpdk.c", "shim/smartnic.c", "shim/page_ring.c", "shim/page_mem.c", "shim/spsc.c", "shim/profiler.c", "shim/crypto_fusion.c"];
-c_libs_windows = ["ws2_32", "mswsock"];
+c_libs_windows = ["ws2_32", "mswsock", "bcrypt"];
 c_flags_cc = ["-mstackrealign"];
-c_flags_cc_windows = ["-mstackrealign", "-Wl,--stack,33554432"];
+c_flags_cc_windows = ["-mstackrealign"];
 c_flags_msvc = ["/std:c11"];
 exclude = ["scratch", "vendor", "tools", "bench", "cli"];
