@@ -131,3 +131,22 @@ diff-h2-tls:
 
 # Run all differential verification harnesses sequentially
 diff-all: diff-fuzz diff-h1 diff-url diff-hpack diff-h2-tls
+
+# Build the goose2rfc specification compiler into tools/bin/goose2rfc
+[unix]
+build-goose2rfc:
+    mkdir -p tools/bin
+    cd tools/goose2rfc && goose build -O2 -o ../bin/goose2rfc src/main.goose
+
+[windows]
+build-goose2rfc:
+    New-Item -ItemType Directory -Force -Path tools/bin | Out-Null
+    $env:GOOSE_CC = (Resolve-Path tools/gcc_noavx.cmd).Path; Push-Location tools/goose2rfc; try { goose build -O2 -o ../bin/goose2rfc.exe src/main.goose } finally { Pop-Location }
+
+# Generate ASD-STE100 .sm.md state-machine specifications via goose2rfc
+rfc-specs *targets="--all":
+    python scripts/gen_rfc_specs.py {{ targets }}
+
+# Run goose2rfc LIT verification suite
+test-goose2rfc:
+    goose-lit tools/goose2rfc/tests/lit

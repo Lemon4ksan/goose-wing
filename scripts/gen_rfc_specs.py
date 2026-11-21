@@ -47,10 +47,44 @@ DEFAULT_PACKAGES = [
 ]
 
 
-def find_goose2rfc(root: Path, explicit_bin: str) -> Path | None:
+def build_goose2rfc(root: Path) -> Path | None:
+    src_dir = root / "tools" / "goose2rfc"
+    main_src = src_dir / "src" / "main.goose"
+    if not main_src.exists():
+        return None
+    goose_bin = shutil.which("goose")
+    if not goose_bin:
+        return None
+    exe_name = "goose2rfc.exe" if os.name == "nt" else "goose2rfc"
+    out_dir = root / "tools" / "bin"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_bin = out_dir / exe_name
+    env = os.environ.copy()
+    if os.name == "nt":
+        gcc_noavx = root / "tools" / "gcc_noavx.cmd"
+        if gcc_noavx.exists():
+            env.setdefault("GOOSE_CC", str(gcc_noavx))
+    print(f"[goose2rfc] Building {out_bin.relative_to(root).as_posix()}...")
+    res = subprocess.run(
+        [goose_bin, "build", "-O2", "-o", str(out_bin), "src/main.goose"],
+        cwd=str(src_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        sys.stderr.write(f"[ERROR] Failed to build goose2rfc:\n{res.stdout}{res.stderr}\n")
+        return None
+    return out_bin if out_bin.exists() else None
+
+
+def find_goose2rfc(root: Path, explicit_bin: str, rebuild: bool = False) -> Path | None:
     if explicit_bin:
         p = Path(explicit_bin)
         return p if p.exists() else None
+
+    if rebuild:
+        return build_goose2rfc(root)
 
     env_bin = os.environ.get("GOOSE2RFC_BIN", "")
     if env_bin:
@@ -60,9 +94,8 @@ def find_goose2rfc(root: Path, explicit_bin: str) -> Path | None:
 
     exe_name = "goose2rfc.exe" if os.name == "nt" else "goose2rfc"
     candidates = [
-        root.parent / "goose2rfc" / exe_name,
-        root.parent / "goose2rfc" / "bin" / exe_name,
         root / "tools" / "bin" / exe_name,
+        root / "tools" / "goose2rfc" / exe_name,
     ]
     for cand in candidates:
         if cand.exists():
@@ -72,7 +105,7 @@ def find_goose2rfc(root: Path, explicit_bin: str) -> Path | None:
     if which_hit:
         return Path(which_hit)
 
-    return None
+    return build_goose2rfc(root)
 
 
 def find_goosemarklint(root: Path) -> Path | None:
@@ -160,6 +193,11 @@ def main() -> int:
         help="Explicit path to goose2rfc binary",
     )
     parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Rebuild tools/bin/goose2rfc from tools/goose2rfc/src/main.goose before compiling",
+    )
+    parser.add_argument(
         "--jobs",
         "-j",
         type=int,
@@ -174,10 +212,11 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
-    goose2rfc_bin = find_goose2rfc(root, args.bin)
+    goose2rfc_bin = find_goose2rfc(root, args.bin, rebuild=args.rebuild)
     if not goose2rfc_bin:
         sys.stderr.write(
-            "[ERROR] Could not locate goose2rfc binary. Pass --bin <path> or set GOOSE2RFC_BIN.\n"
+            "[ERROR] Could not locate or build goose2rfc binary. "
+            "Pass --bin <path> or set GOOSE2RFC_BIN.\n"
         )
         return 1
 

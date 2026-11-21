@@ -1,0 +1,16 @@
+# template_id	block	pattern
+CALLER_SETS	entry_context	Caller `{0}` sets `{1}` before it calls `{2}`.
+CALLER_DIRECT	entry_context	Direct callers of `{0}` can pass any `{1}` value.
+CALLER_CONSUMES	entry_context	Caller `{0}` reads prefix `{1}` before it calls `{2}`.
+REQ_MAX	requirements	- R{0}: `{1}` must be at most `{2}`. If `{1}` is greater, `{3}` returns `false`. — {4}
+REQ_MIN	requirements	- R{0}: `{1}` must be at least `{2}`. If `{1}` is smaller, `{3}` returns `false`. — {4}
+REQ_EQ	requirements	- R{0}: `{1}` must equal `{2}`. If `{1}` is not equal, `{3}` returns `false`. — {4}
+REQ_NE	requirements	- R{0}: `{1}` must not equal `{2}`. If `{1}` equals `{2}`, `{3}` returns `false`. — {4}
+REQ_PRED	requirements	- R{0}: `{1}` must be `true`. If it is `false`, `{2}` returns `false`. — {3}
+UNCHK_BITS	unchecked_surface	`{0}` does not check `{1}` bits.
+UNCHK_OMIT	unchecked_surface	If `{0}` is `false`, `{1}` omits `{2}` even when `{3}`.
+UNCHK_DISCARD	unchecked_surface	`{0}` reads `{1}` into `_` and discards the value.
+EFF_UNMOD	error_side_effects	`{0}` does not change `{1}` before any `return false` path.
+EFF_TRANS_DEFER	error_side_effects	`{0}` resets `{1}` on all `return false` paths.
+EFF_CALLER_REST	error_side_effects	`{0}` leaves `{1}` changed, and caller `{2}` restores `{1}` on `false`.
+EFF_DIRTY	error_side_effects	`{0}` changes `{1}` before `return false` without rollback.

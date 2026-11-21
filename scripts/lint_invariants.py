@@ -96,7 +96,7 @@ def main() -> int:
                 if d_line.startswith("+++ b/"):
                     current_rel = d_line[6:].strip()
                     if current_rel.endswith(".goose") and not current_rel.startswith(
-                        "tools/goosemarklint/"
+                        ("tools/goosemarklint/", "tools/goose2rfc/")
                     ):
                         staged_lines_by_file[current_rel] = set()
                         full_p = (root / current_rel).resolve()
@@ -119,6 +119,7 @@ def main() -> int:
                 for bad in [
                     f"{os.sep}vendor{os.sep}",
                     f"{os.sep}goosemarklint{os.sep}",
+                    f"{os.sep}goose2rfc{os.sep}",
                     f"{os.sep}scratch{os.sep}",
                     f"{os.sep}.",
                     f"{os.sep}bin{os.sep}",

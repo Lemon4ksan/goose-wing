@@ -1,0 +1,25 @@
+{
+  "roots": ["wing.goose", "core.goose"],
+  "include": ["quic/*", "tls/*", "http/*"],
+  "exclude": ["core/bytes/swar_*", "*::bloom_*"],
+  "functions": ["decode_*", "encode_*", "parse_*", "validate_*"],
+  "max_inline_depth": 3,
+  "inline_max_nodes": 24,
+  "max_fsm_rows": 128,
+  "fold_lookup_tables": true,
+  "formats": ["sm.md", "json"],
+  "out_dir": "out/spec",
+  "strict": true,
+  "sections": [
+    "manifest",
+    "structures",
+    "signature",
+    "entry_context",
+    "wire_ops",
+    "requirements",
+    "unchecked_surface",
+    "error_side_effects",
+    "machines"
+  ],
+  "intrinsics_manifest": "data/intrinsics.tsv"
+}

@@ -108,13 +108,13 @@ source code, classify it into one of two categories:
 
 | Symptom in `.sm.md` | Root Cause in `goose2rfc` |
 | --- | --- |
-| Second `let x = ...` branch shows expression from first branch | `inl_add_binding` in `src/sema/inliner.goose` must update existing binding `x` in place instead of appending a shadowed duplicate. |
-| Stdlib call `json::finish(r)` inlines unrelated `finish` from another file | `inl_try_inline_guard_call` / `inl_try_inline_let_stmt` in `src/sema/inliner.goose` must not strip `json::` / `std::` prefixes and must check parameter arity in `inl_bind_call_params`. |
-| Inliner scans past the end of a function containing `'{'` or `'}'` | `inl_find_matching_rbrace` in `src/sema/inliner.goose` must ignore braces inside char literals `'...'`, strings `"..."`, and `//` comments. |
-| `if a \|\| b { return false; }` becomes `a_neg \|\| b` instead of `!(a \|\| b)` | `inl_negate_fail_cond` in `src/sema/inliner.goose` must wrap compound `\|\|` / `&&` conditions in `!(...)` per De Morgan's laws. |
-| `a >= X && a <= Y` renders as `` `a >= X && a` must be at most `Y` `` | `inl_emit_bound_callee_clause` in `src/sema/inliner.goose` must split top-level `&&` clauses before matching `<=` / `>=`. |
-| `json::each_member` / `json::each_element` flagged as `[UNRESOLVED_AST_HAZARD]` | `parse_assign_or_expr_stmt` in `src/frontend/parser.goose` must parse trailing-block calls `callee(args) { ... };` as `AstKind.ForStmt`. |
-| Dispatcher `if k == "x" { mutate(out); return true; }` marked `DIRTY_EXPOSED` | `scan_param_mutations` in `src/sema/effects.goose` must skip `IfStmt` blocks that unconditionally end with `return true;` (`if_stmt_returns_only_true_eff`). |
+| Second `let x = ...` branch shows expression from first branch | `inl_add_binding` in `tools/goose2rfc/src/sema/inliner.goose` must update existing binding `x` in place instead of appending a shadowed duplicate. |
+| Stdlib call `json::finish(r)` inlines unrelated `finish` from another file | `inl_try_inline_guard_call` / `inl_try_inline_let_stmt` in `tools/goose2rfc/src/sema/inliner.goose` must not strip `json::` / `std::` prefixes and must check parameter arity in `inl_bind_call_params`. |
+| Inliner scans past the end of a function containing `'{'` or `'}'` | `inl_find_matching_rbrace` in `tools/goose2rfc/src/sema/inliner.goose` must ignore braces inside char literals `'...'`, strings `"..."`, and `//` comments. |
+| `if a \|\| b { return false; }` becomes `a_neg \|\| b` instead of `!(a \|\| b)` | `inl_negate_fail_cond` in `tools/goose2rfc/src/sema/inliner.goose` must wrap compound `\|\|` / `&&` conditions in `!(...)` per De Morgan's laws. |
+| `a >= X && a <= Y` renders as `` `a >= X && a` must be at most `Y` `` | `inl_emit_bound_callee_clause` in `tools/goose2rfc/src/sema/inliner.goose` must split top-level `&&` clauses before matching `<=` / `>=`. |
+| `json::each_member` / `json::each_element` flagged as `[UNRESOLVED_AST_HAZARD]` | `parse_assign_or_expr_stmt` in `tools/goose2rfc/src/frontend/parser.goose` must parse trailing-block calls `callee(args) { ... };` as `AstKind.ForStmt`. |
+| Dispatcher `if k == "x" { mutate(out); return true; }` marked `DIRTY_EXPOSED` | `scan_param_mutations` in `tools/goose2rfc/src/sema/effects.goose` must skip `IfStmt` blocks that unconditionally end with `return true;` (`if_stmt_returns_only_true_eff`). |
 
 ## 4. Mandatory Verification Checklist Before Commit
 

@@ -116,7 +116,7 @@ fi
         GATE_FILES=""
         for file in $STAGED_FILES; do
             case "$file" in
-                tests/*|examples/*|bench/*|tools/goosemarklint/*)
+                tests/*|examples/*|bench/*|tools/goosemarklint/*|tools/goose2rfc/*)
                     continue
                     ;;
                 *)

@@ -10,5 +10,5 @@ prefix = CHECK
 src_dir = .
 tests_dir = tests
 timeout = 300
-exclude = tests/lit/wire_kit.goose, tests/lit/alloc_kit.goose, tests/fuzz/, tests/wasm_runner.goose, tools/goosemarklint/, vendor/
+exclude = tests/lit/wire_kit.goose, tests/lit/alloc_kit.goose, tests/fuzz/, tests/wasm_runner.goose, tools/goosemarklint/, tools/goose2rfc/src/, vendor/
 cc = tools/gcc_stack.bat
