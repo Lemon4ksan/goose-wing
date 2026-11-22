@@ -783,7 +783,7 @@ def run_limbo_document(
         trusted_der = [pem_to_der(p) for p in trusted_pems]
         inter_der = [pem_to_der(p) for p in inter_pems]
         peer_der = pem_to_der(peer_pem)
-        pn = tc.get("peer_certificate_expected_peer_name")
+        pn = tc.get("expected_peer_name") or tc.get("peer_certificate_expected_peer_name")
         peer_val = "-"
         if (
             isinstance(pn, dict)
