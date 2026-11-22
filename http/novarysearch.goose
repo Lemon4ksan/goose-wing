@@ -10,7 +10,7 @@ namespace http;
 import std;
 import core;
 import .sfv;
-import http.ext_internal;
+import http.hsts_nvs_internal;
 
 // ---- No-Vary-Search Model -----------------------------------------------
 

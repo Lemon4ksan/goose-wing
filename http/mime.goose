@@ -8,7 +8,7 @@ namespace http;
 
 import std;
 import core;
-import http.internal;
+import http.message_internal;
 
 // ---- string unquoting ------------------------------------------------------
 

@@ -11,6 +11,7 @@ import std;
 import core;
 import http.sfv;
 import http.sfv_sig_internal;
+import http.sfv_wire_internal;
 import http.cache.engine;
 import http.cache.internal;
 

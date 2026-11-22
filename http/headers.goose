@@ -10,6 +10,7 @@ import std;
 import core;
 import .headers.lexical;
 import .headers.perfect_hash;
+import http.headers.wire_internal;
 import http.headers.internal;
 
 // ---- header ascii helpers (RFC 9110 Section 5.6.3) -------------------------

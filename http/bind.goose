@@ -10,7 +10,7 @@ import core;
 import .headers;
 import .json_codec;
 import .problem;
-import http.internal;
+import http.message_internal;
 
 // ---- zero-allocation route parameter spans ---------------------------------
 

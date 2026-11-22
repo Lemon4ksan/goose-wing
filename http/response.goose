@@ -12,7 +12,7 @@ import .request;
 import http.compression_dict;
 import http.early_hints;
 import http.headers;
-import http.internal;
+import http.message_internal;
 
 // ---- error model & diagnostics ---------------------------------------------
 

@@ -6,7 +6,7 @@ namespace http;
 
 import std;
 import core;
-import http.headers.internal;
+import http.headers.wire_internal;
 
 let CRLF_BYTES: const u8[2] = ['\r', '\n'];
 let CRLF_SET:   ByteSet     = byte_set(CRLF_BYTES[..]);

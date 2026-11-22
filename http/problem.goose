@@ -10,7 +10,7 @@ import core;
 import json;
 import .response;
 import .headers;
-import http.internal;
+import http.message_internal;
 
 // RFC 9457 Section 3: The Problem Details JSON Object.
 struct ProblemDetails {

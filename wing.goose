@@ -57,6 +57,7 @@ import http.headers.lexical;
 import http.headers.chunked;
 import http.headers.chunked_fsm;
 import http.headers.perfect_hash;
+import http.headers.wire_internal;
 import http.headers.internal;
 import http.sfv;
 import http.priority;
@@ -92,11 +93,16 @@ import http.cache.validators;
 import http.cache.engine;
 import http.cache.cache_groups;
 import http.cache.internal;
+import http.cache.store_internal;
 import http.internal;
+import http.message_internal;
 import http.ext_internal;
+import http.hsts_nvs_internal;
 import http.meta_internal;
 import http.codec_internal;
 import http.sfv_sig_internal;
+import http.sfv_wire_internal;
+import http.sig_internal;
 
 // Ergonomic facade struct aliases for core HTTP application types.
 type Request = http::Request;

@@ -19,6 +19,7 @@ import http.cache.cache_groups;
 import http.targeted_cache;
 import http.status_diagnostics;
 import http.cache.internal;
+import http.cache.store_internal;
 
 // ---- cache options ---------------------------------------------------------
 

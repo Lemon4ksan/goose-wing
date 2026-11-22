@@ -12,7 +12,7 @@ import core;
 import .request;
 import .response;
 import .sfv;
-import http.sfv_sig_internal;
+import http.sig_internal;
 
 // ---- RFC 9421 Constants --------------------------------------------------
 

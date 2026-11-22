@@ -14,7 +14,7 @@ import std;
 import core;
 import rfc.http;
 import .mime;
-import http.ext_internal;
+import http.hsts_nvs_internal;
 
 // ---- HSTS Directive Model ------------------------------------------------
 

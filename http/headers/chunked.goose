@@ -6,7 +6,7 @@ namespace http;
 
 import std;
 import core;
-import http.headers.internal;
+import http.headers.wire_internal;
 
 // RFC 9112 Section 7.1: Chunked Transfer Coding & Smuggling Defense Diagnostics
 enum ChunkedDecodeError {

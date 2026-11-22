@@ -9,6 +9,7 @@ namespace http;
 import std;
 import core;
 import http.sfv_sig_internal;
+import http.sfv_wire_internal;
 
 // ---- Data Types & Enums --------------------------------------------------
 

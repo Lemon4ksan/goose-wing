@@ -14,7 +14,7 @@ import http.trace;
 import cookie.policy;
 import .json_codec;
 import .response;
-import http.internal;
+import http.message_internal;
 
 // ---- request & query item models -------------------------------------------
 
