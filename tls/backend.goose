@@ -613,9 +613,9 @@ fn pure_client_step_init(slot: PureTlsSlot&) -> TlsBackendStatus {
         return TlsBackendStatus.HandshakeError;
     }
 
-    var psk_ticket:  u8[..256] = [];
-    var psk_age_add: u32       = 0;
-    var psk_suite:   u16       = 0;
+    var psk_ticket:  u8[..1536] = [];
+    var psk_age_add: u32        = 0;
+    var psk_suite:   u16        = 0;
     slot.psk_secret.clear();
     slot.has_psk_ticket = slot.enable_session_tickets && lookup_session_ticket_full(
         slot.server_name[..], psk_ticket, slot.psk_secret, psk_age_add, psk_suite,

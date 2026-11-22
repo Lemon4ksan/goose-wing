@@ -172,7 +172,7 @@ const STEK_TICKET_WIRE_LEN:      i64 = 95; // 4B key_name + 12B iv + 63B ciphert
 struct CachedSessionTicket {
     in_use:       bool       = false,
     server_name:  u8[..256]  = [],
-    ticket:       u8[..1024] = [],
+    ticket:       u8[..1536] = [],
     psk:          u8[..48]   = [],
     age_add:      u32        = 0,
     lifetime:     u32        = 0,
@@ -314,12 +314,12 @@ struct ParsedServerHello {
 }
 
 struct NewSessionTicketMsg {
-    ticket_lifetime:     u32       = 0,
-    ticket_age_add:      u32       = 0,
-    ticket_nonce:        u8[..255] = [],
-    ticket:              u8[..256] = [],
-    has_early_data:      bool      = false,
-    max_early_data_size: u32       = 0,
+    ticket_lifetime:     u32        = 0,
+    ticket_age_add:      u32        = 0,
+    ticket_nonce:        u8[..255]  = [],
+    ticket:              u8[..1536] = [],
+    has_early_data:      bool       = false,
+    max_early_data_size: u32        = 0,
 }
 
 struct SessionTicketCache {

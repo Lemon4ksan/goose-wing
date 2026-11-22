@@ -773,7 +773,7 @@ fn send_new_session_ticket(
     hs_msg.append(nst_body[..]);
     guard send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_HANDSHAKE, hs_msg[..]) else { return false; }
 
-    if ticket_lifetime > 0 && ticket.len > 0 && ticket.len <= 256 {
+    if ticket_lifetime > 0 && ticket.len > 0 && ticket.len <= 1536 {
         var ks_res = tls_internal::KeySchedule {
             hash_id:           g_tls_cipher_slots[idx].hash_id,
             hash_len:          g_tls_cipher_slots[idx].hash_len,

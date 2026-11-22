@@ -125,7 +125,7 @@ fn store_session_ticket(
     issued_at_ms: i64 = 0,
 ) {
     guard server_name.len > 0 && server_name.len <= 255 else { return; }
-    guard ticket.len > 0 && ticket.len <= 1024 &&
+    guard ticket.len > 0 && ticket.len <= 1536 &&
         lifetime > 0 && lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else {
         return;
     }

@@ -82,8 +82,8 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         return 0xFFFF, false;
     }
 
-    var psk_ticket: u8[..256] = [];
-    var psk_secret: u8[..48]  = [];
+    var psk_ticket: u8[..1536] = [];
+    var psk_secret: u8[..48]   = [];
     defer core::secure_zeroize_slice(psk_secret[..]);
     var psk_age_add: u32 = 0;
     var psk_suite:   u16 = 0;

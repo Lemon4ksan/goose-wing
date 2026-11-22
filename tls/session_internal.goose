@@ -373,7 +373,7 @@ fn encode_psk_client_extensions<B>(
     psk_age_add: u32,
     binder_len:  u8 = 32,
 ) {
-    guard psk_ticket.len > 0 && psk_ticket.len <= 256 && (binder_len == 32 || binder_len == 48) else { return; }
+    guard psk_ticket.len > 0 && psk_ticket.len <= 1536 && (binder_len == 32 || binder_len == 48) else { return; }
     out.append_u16_be(rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES);
     out.append_u16_be(2);
     out.push(1);

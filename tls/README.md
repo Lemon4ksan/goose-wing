@@ -214,9 +214,9 @@ struct ParsedServerHello {
 struct NewSessionTicketMsg {
     ticket_lifetime:     u32       = 0,
     ticket_age_add:      u32       = 0,
-    ticket_nonce:        u8[..255] = [],
-    ticket:              u8[..256] = [],
-    has_early_data:      bool      = false,
+    ticket_nonce:        u8[..255]  = [],
+    ticket:              u8[..1536] = [],
+    has_early_data:      bool       = false,
     max_early_data_size: u32       = 0,
 }
 
@@ -340,7 +340,7 @@ struct CipherSlot {
 struct CachedSessionTicket {
     in_use:       bool       = false,
     server_name:  u8[..256]  = [],
-    ticket:       u8[..1024] = [],
+    ticket:       u8[..1536] = [],
     psk:          u8[..48]   = [],
     age_add:      u32        = 0,
     lifetime:     u32        = 0,
