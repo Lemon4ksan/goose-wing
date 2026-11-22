@@ -507,7 +507,7 @@ fn uring_is_available() -> bool {
     guard net_internal::detect_target_platform() == net_internal::TargetPlatform.Linux else {
         return false;
     }
-    return net_internal::native_uring_probe() == 1;
+    return net_internal::native_uring_probe() == 0;
 }
 
 fn uring_events_to_poll_mask(events: u32) -> u32 {
