@@ -603,7 +603,7 @@ fn fuzz_target_tls13_deframer_and_handshake(data: const u8[:]) -> u64 {
     var ch_sni:  u8[..255] = [];
     var psk_resumed = false;
     var psk_secret: u8[32] = [0; 32];
-    if tls::parse_client_hello_for_server_sni(data, "h2,http/1.1", ch_sid, ch_pub, ch_alpn, ch_sni, psk_resumed, psk_secret) {
+    if tls_internal::parse_client_hello_for_server_sni(data, "h2,http/1.1", ch_sid, ch_pub, ch_alpn, ch_sni, psk_resumed, psk_secret) {
         sig = fuzz_mix_state(sig, 0x9010 ^ (ch_sni.len as u64));
     }
 
@@ -612,14 +612,14 @@ fn fuzz_target_tls13_deframer_and_handshake(data: const u8[:]) -> u64 {
     var sh_group: u16        = 0;
     var sh_share: u8[..2048] = [];
     var sh_psk_resumed = false;
-    if tls::parse_server_hello_or_hrr(data, sh_cipher, sh_is_hrr, sh_group, sh_share, sh_psk_resumed) {
+    if tls_internal::parse_server_hello_or_hrr(data, sh_cipher, sh_is_hrr, sh_group, sh_share, sh_psk_resumed) {
         assert(rfc::is_supported_tls13_cipher_suite(sh_cipher));
         if sh_is_hrr { assert(sh_share.len == 0); }
         sig = fuzz_mix_state(sig, 0x9020 ^ (sh_cipher as u64));
     }
 
     var ee_alpn: u8[..32] = [];
-    if tls::parse_encrypted_extensions_alpn(data, ee_alpn) { sig = fuzz_mix_state(sig, 0x9030); }
+    if tls_internal::parse_encrypted_extensions_alpn(data, ee_alpn) { sig = fuzz_mix_state(sig, 0x9030); }
 
     // Structure-aware extension placement oracle (RFC 8446 §4.2 Table 2)
     var fdp = new_fdp(data);
@@ -631,7 +631,7 @@ fn fuzz_target_tls13_deframer_and_handshake(data: const u8[:]) -> u64 {
     core::write_be_u16(synth_ee, ext_type);
     core::write_be_u16(synth_ee, ext_val.len as u16);
     synth_ee.append(ext_val);
-    let ok_synth_ee = tls::parse_encrypted_extensions_alpn(synth_ee[..], ee_alpn);
+    let ok_synth_ee = tls_internal::parse_encrypted_extensions_alpn(synth_ee[..], ee_alpn);
     if rfc::is_forbidden_ee_extension(ext_type) {
         assert(!ok_synth_ee);
     }
@@ -647,7 +647,7 @@ fn fuzz_target_tls13_deframer_and_handshake(data: const u8[:]) -> u64 {
 
     let _, ok_ku = tls::parse_key_update(data);
     if ok_ku { sig = fuzz_mix_state(sig, 0x9070); }
-    let _, ok_cc = tls::parse_compressed_certificate(data);
+    let _, ok_cc = tls_internal::parse_compressed_certificate(data);
     if ok_cc { sig = fuzz_mix_state(sig, 0x9080); }
 
     var ech_cfg = tls::EchConfig { .. };

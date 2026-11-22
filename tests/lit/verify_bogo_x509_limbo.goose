@@ -71,7 +71,7 @@ fn verify_bogo_tls13_downgrade_and_extensions() {
         core::write_be_u16(ee_wire, 4);
         core::write_be_u16(ee_wire, forbidden_types[i]);
         core::write_be_u16(ee_wire, 0);
-        assert(!tls::parse_encrypted_extensions_alpn(ee_wire[..], out_alpn));
+        assert(!tls_internal::parse_encrypted_extensions_alpn(ee_wire[..], out_alpn));
     }
 
     // 4. BoGo: Curve / SignatureScheme binding (legacy RSA PKCS#1 v1.5 0x0401 forbidden in TLS 1.3 CertificateVerify)

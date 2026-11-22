@@ -464,3 +464,61 @@ enum SniOfferState {
 var g_tls_entropy_pool:    u8[32]          = [0; 32];
 var g_tls_entropy_counter: u64             = 0;
 var g_tls_cipher_slots:    CipherSlot[>..] = [];
+
+// ---- Pluggable TLS Backend Contract Types ---------------------------------
+
+enum TlsBackendKind {
+    PureGoose,
+    SystemOpenSsl,
+    SystemSchannel,
+    SystemSecureTransport,
+    Auto,
+}
+
+enum TlsMinVersion {
+    Tls13,
+    Tls12,
+}
+
+enum TlsBackendStatus {
+    Ok,
+    WantRead,
+    WantWrite,
+    Closed,
+    Unavailable,
+    HandshakeError,
+    VerifyError,
+    Error,
+}
+
+struct TlsBackendConfig {
+    kind:                   TlsBackendKind   = TlsBackendKind.PureGoose,
+    min_version:            TlsMinVersion    = TlsMinVersion.Tls13,
+    is_server:              bool             = false,
+    server_name:            u8[..256]        = [],
+    alpn_wire:              u8[..64]         = [],
+    insecure_skip_verify:   bool             = false,
+    use_system_roots:       bool             = true,
+    ca_file:                u8[..256]        = [],
+    cert_pem_file:          u8[..256]        = [],
+    key_pem_file:           u8[..256]        = [],
+    cert_der:               u8[..4096]       = [],
+    priv_seed:              u8[32]           = [0; 32],
+    trust_store:            TrustAnchorStore = TrustAnchorStore { .. },
+    enable_pq_hybrid:       bool             = false,
+    enable_session_tickets: bool             = true,
+    require_ocsp_stapling:  bool             = false,
+    crl_der:                u8[..4096]       = [],
+    keylog_file:            u8[..256]        = [],
+}
+
+struct TlsEndpoint {
+    kind:        TlsBackendKind = TlsBackendKind.PureGoose,
+    active_kind: TlsBackendKind = TlsBackendKind.PureGoose,
+    is_server:   bool           = false,
+    established: bool           = false,
+    closed:      bool           = false,
+    pure_slot:   i32            = -1,
+    pure_gen:    u32            = 0,
+    native_id:   i64            = -1,
+}

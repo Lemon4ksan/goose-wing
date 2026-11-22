@@ -913,7 +913,7 @@ fn test_handshake_state_machine(t: lit::T&) {
         // Synthetic message_hash compression (RFC 8446 §4.4.1)
         let ch1_hash: u8[32] = [0x99; 32];
         var out_msg: u8[36] = [0; 36];
-        let written, ok_comp = tls::compress_hrr_transcript(32, ch1_hash[..], out_msg[..]);
+        let written, ok_comp = tls_internal::compress_hrr_transcript(32, ch1_hash[..], out_msg[..]);
         sub.assert_true(ok_comp, "synthetic message_hash generated");
         sub.assert_eq(written, 36, "length is 36 bytes");
         sub.assert_eq(out_msg[0], 0xFE, "msg_type is message_hash (254 / 0xFE)");
@@ -2703,20 +2703,20 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
             rfc::GROUP_SECP384R1_MLKEM1024,
         ];
         var ext_wire: u8[>..] = [];
-        tls::encode_supported_groups_extension(ext_wire, groups[..]);
+        tls_internal::encode_supported_groups_extension(ext_wire, groups[..]);
         sub.assert_eq(ext_wire.len, 2 + 2 + 2 + 6, "Supported groups wire length");
 
         var parsed_groups: u16[..32] = [];
-        let ok_sg = tls::parse_supported_groups_extension(ext_wire[4..], parsed_groups);
+        let ok_sg = tls_internal::parse_supported_groups_extension(ext_wire[4..], parsed_groups);
         sub.assert_true(ok_sg, "Parsed supported groups");
         sub.assert_eq(parsed_groups.len, 3, "Parsed 3 groups");
 
         // RFC 8446 §4.2.7: >32 groups (40 groups) parsed into u16[..64] without artificial 32-group cap
         var groups40:   u16[40] = [rfc::GROUP_X25519; 40];
         var ext_wire40: u8[>..] = [];
-        tls::encode_supported_groups_extension(ext_wire40, groups40[..]);
+        tls_internal::encode_supported_groups_extension(ext_wire40, groups40[..]);
         var parsed_groups64: u16[..64] = [];
-        sub.assert_true(tls::parse_supported_groups_extension(ext_wire40[4..], parsed_groups64), "40 supported groups parsed into u16[..64]");
+        sub.assert_true(tls_internal::parse_supported_groups_extension(ext_wire40[4..], parsed_groups64), "40 supported groups parsed into u16[..64]");
         sub.assert_eq(parsed_groups64.len, 40, "Parsed all 40 groups");
 
         var ecdh256: u8[32] = [0; 32];
@@ -2863,7 +2863,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         var b_empty = core::builder_init();
         core::start_u16_prefix(b_empty);
         core::finish_u16_prefix(b_empty); // len 0
-        sub.assert_false(tls::validate_alpn_extension(b_empty.buf[..]), "empty ALPN list rejected by validator");
+        sub.assert_false(tls_internal::validate_alpn_extension(b_empty.buf[..]), "empty ALPN list rejected by validator");
         let neg_empty = tls::negotiate_alpn(b_empty.buf[..], false);
         sub.assert_true(neg_empty == tls::NegotiatedAlpn.None, "empty ALPN list negotiates None");
 
@@ -2874,7 +2874,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         // 0-length name
         core::finish_u8_prefix(b_zlen);
         core::finish_u16_prefix(b_zlen);
-        sub.assert_false(tls::validate_alpn_extension(b_zlen.buf[..]), "0-length protocol name rejected");
+        sub.assert_false(tls_internal::validate_alpn_extension(b_zlen.buf[..]), "0-length protocol name rejected");
         let neg_zlen = tls::negotiate_alpn(b_zlen.buf[..], false);
         sub.assert_true(neg_zlen == tls::NegotiatedAlpn.None, "0-length protocol name negotiates None");
 
@@ -2886,7 +2886,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         core::finish_u8_prefix(b_valid);
         core::finish_u16_prefix(b_valid);
         core::put_u8(b_valid, 0x99); // trailing garbage
-        sub.assert_false(tls::validate_alpn_extension(b_valid.buf[..]), "trailing bytes in ALPN rejected");
+        sub.assert_false(tls_internal::validate_alpn_extension(b_valid.buf[..]), "trailing bytes in ALPN rejected");
         let neg_trail = tls::negotiate_alpn(b_valid.buf[..], false);
         sub.assert_true(neg_trail == tls::NegotiatedAlpn.None, "trailing bytes in ALPN negotiates None");
     };
@@ -2899,7 +2899,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         core::put_u16(b_ch, 0x0303); // TLS 1.2
         core::finish_u8_prefix(b_ch);
 
-        let has_tls13, ok_ch = tls::parse_client_supported_versions(b_ch.buf[..]);
+        let has_tls13, ok_ch = tls_internal::parse_client_supported_versions(b_ch.buf[..]);
         sub.assert_true(ok_ch, "ClientHello supported_versions parsed");
         sub.assert_true(has_tls13, "TLS 1.3 supported");
 
@@ -2910,7 +2910,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         core::put_u16(b_legacy, 0x0301);
         core::finish_u8_prefix(b_legacy);
 
-        let has_tls13_leg, ok_leg = tls::parse_client_supported_versions(b_legacy.buf[..]);
+        let has_tls13_leg, ok_leg = tls_internal::parse_client_supported_versions(b_legacy.buf[..]);
         sub.assert_true(ok_leg, "legacy list parses");
         sub.assert_false(has_tls13_leg, "TLS 1.3 NOT supported in legacy-only ClientHello");
 
@@ -2920,7 +2920,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         core::put_u8(b_odd, 0x03);
         core::put_u8(b_odd, 0x04);
         core::put_u8(b_odd, 0x03);
-        let _, ok_odd = tls::parse_client_supported_versions(b_odd.buf[..]);
+        let _, ok_odd = tls_internal::parse_client_supported_versions(b_odd.buf[..]);
         sub.assert_false(ok_odd, "odd length supported_versions rejected");
 
         // 4. ClientHello duplicate versions rejected
@@ -2929,23 +2929,23 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         core::put_u16(b_dup, 0x0304);
         core::put_u16(b_dup, 0x0304); // duplicate!
         core::finish_u8_prefix(b_dup);
-        let _, ok_dup = tls::parse_client_supported_versions(b_dup.buf[..]);
+        let _, ok_dup = tls_internal::parse_client_supported_versions(b_dup.buf[..]);
         sub.assert_false(ok_dup, "duplicate version in ClientHello supported_versions rejected");
 
         // 5. ServerHello valid selection (0x0304 TLS 1.3)
         let sh_valid: u8[2] = [0x03, 0x04];
-        let sel_ver, ok_sh = tls::parse_server_supported_versions(sh_valid[..]);
+        let sel_ver, ok_sh = tls_internal::parse_server_supported_versions(sh_valid[..]);
         sub.assert_true(ok_sh, "ServerHello TLS 1.3 accepted");
         sub.assert_eq(sel_ver, 0x0304, "selected version is 0x0304");
 
         // 6. ServerHello selecting legacy TLS 1.2 (0x0303 downgrade attempt)
         let sh_downgrade: u8[2] = [0x03, 0x03];
-        let _, ok_dg = tls::parse_server_supported_versions(sh_downgrade[..]);
+        let _, ok_dg = tls_internal::parse_server_supported_versions(sh_downgrade[..]);
         sub.assert_false(ok_dg, "ServerHello TLS 1.2 downgrade strictly rejected");
 
         // 7. ServerHello length != 2 bytes
         let sh_badlen: u8[3] = [0x03, 0x04, 0x00];
-        let _, ok_bl = tls::parse_server_supported_versions(sh_badlen[..]);
+        let _, ok_bl = tls_internal::parse_server_supported_versions(sh_badlen[..]);
         sub.assert_false(ok_bl, "ServerHello supported_versions length != 2 rejected");
     };
 
@@ -2963,25 +2963,25 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         sub.assert_eq(m_len, 5, "msg_len is 5");
 
         // 3. Record boundary validation: record payload len == 9 (4 header + 5 payload)
-        let _, _, ok_bnd = tls::validate_handshake_record_boundary(hs_msg[..], 9);
+        let _, _, ok_bnd = tls_internal::validate_handshake_record_boundary(hs_msg[..], 9);
         sub.assert_true(ok_bnd, "record boundary exactly matches message length");
 
         // Record boundary mismatch (declared 9, record is 8)
-        let _, _, ok_mismatch = tls::validate_handshake_record_boundary(hs_msg[..], 8);
+        let _, _, ok_mismatch = tls_internal::validate_handshake_record_boundary(hs_msg[..], 8);
         sub.assert_false(ok_mismatch, "record boundary mismatch rejected");
 
         // 4. Handshake header encoding length check (cannot exceed 2^24 - 1)
         var out_hdr: u8[4] = [0; 4];
-        sub.assert_true(tls::encode_handshake_header(1, 1000, out_hdr), "encode valid header length");
-        sub.assert_false(tls::encode_handshake_header(1, 16777216, out_hdr), "overflow > 2^24-1 rejected");
+        sub.assert_true(tls_internal::encode_handshake_header(1, 1000, out_hdr), "encode valid header length");
+        sub.assert_false(tls_internal::encode_handshake_header(1, 16777216, out_hdr), "overflow > 2^24-1 rejected");
 
         // 5. RFC 8446 Section 5.1: Handshake headers MUST NOT be split across records
         let dummy_ch = "ClientHelloWirePayloadForTestingFragmentationRules1234567890";
         var recs: u8[>..] = [];
         // Attempting to split at byte 2 (splitting 4-byte handshake header)
-        sub.assert_false(tls::fragment_client_hello(dummy_ch, 2, recs), "splitting handshake header (< 4 bytes) strictly rejected");
+        sub.assert_false(tls_internal::fragment_client_hello(dummy_ch, 2, recs), "splitting handshake header (< 4 bytes) strictly rejected");
         // Valid split at byte 10 (>= 4 bytes)
-        sub.assert_true(tls::fragment_client_hello(dummy_ch, 10, recs), "valid fragmentation >= 4 bytes succeeds");
+        sub.assert_true(tls_internal::fragment_client_hello(dummy_ch, 10, recs), "valid fragmentation >= 4 bytes succeeds");
 
         // 6. RFC 8446 Section 4: Synthetic message_hash (254 / 0xFE) MUST NEVER appear on wire
         let hs_synth: u8[36] = [
@@ -2992,7 +2992,7 @@ fn test_handshake_and_ech_security(t: lit::T&) {
         let _, _, ok_wire_synth = tls::parse_handshake_header(hs_synth[..]);
         sub.assert_false(ok_wire_synth, "synthetic message_hash (254) on wire strictly rejected in parse_handshake_header");
 
-        let _, _, ok_bnd_synth = tls::validate_handshake_record_boundary(hs_synth[..], 36);
+        let _, _, ok_bnd_synth = tls_internal::validate_handshake_record_boundary(hs_synth[..], 36);
         sub.assert_false(ok_bnd_synth, "synthetic message_hash (254) strictly rejected in validate_handshake_record_boundary");
     };
 
@@ -3138,9 +3138,9 @@ fn test_handshake_and_ech_security(t: lit::T&) {
 
         // 7. ECH inner padding bounds
         var padded: u8[..512] = [];
-        sub.assert_false(tls::pad_ech_inner("", 64, 10, padded), "empty inner_bytes rejected");
-        sub.assert_false(tls::pad_ech_inner("inner", 64, -1, padded), "negative real_sni_len rejected");
-        sub.assert_true(tls::pad_ech_inner("inner", 64, 10, padded), "valid padding succeeds");
+        sub.assert_false(tls_internal::pad_ech_inner("", 64, 10, padded), "empty inner_bytes rejected");
+        sub.assert_false(tls_internal::pad_ech_inner("inner", 64, -1, padded), "negative real_sni_len rejected");
+        sub.assert_true(tls_internal::pad_ech_inner("inner", 64, 10, padded), "valid padding succeeds");
         sub.assert_eq(padded.len % 32, 0, "padded output is aligned to 32 bytes");
     };
 }
@@ -3212,9 +3212,9 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
     t.run("TLS-32: RFC 8446 §4.1.4 HelloRetryRequest Single HRR Limit & Transcript message_hash") { sub =>
         // 1. Single HRR limit: first HRR valid, second HRR rejected
-        sub.assert_true(tls::validate_hrr_count(0), "first HRR permitted");
-        sub.assert_false(tls::validate_hrr_count(1), "second HRR strictly rejected per RFC 8446 Section 4.1.4");
-        sub.assert_false(tls::validate_hrr_count(2), "third HRR rejected");
+        sub.assert_true(tls_internal::validate_hrr_count(0), "first HRR permitted");
+        sub.assert_false(tls_internal::validate_hrr_count(1), "second HRR strictly rejected per RFC 8446 Section 4.1.4");
+        sub.assert_false(tls_internal::validate_hrr_count(2), "third HRR rejected");
 
         // 2. Client state transition on HRR: remains waiting for ServerHello2
         let st_hrr, ok_hrr = tls::validate_client_handshake_transition(
@@ -3229,7 +3229,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         // 3. Transcript synthetic message_hash generation
         let mock_ch1 = "ClientHello1DataForTranscriptCompression123456789";
         var out_synth: u8[36] = [0; 36];
-        let synth_len, ok_synth = tls::build_synthetic_message_hash(mock_ch1, 32, out_synth[..]);
+        let synth_len, ok_synth = tls_internal::build_synthetic_message_hash(mock_ch1, 32, out_synth[..]);
         sub.assert_true(ok_synth, "build synthetic message_hash succeeds");
         sub.assert_eq(synth_len, 36, "message_hash length is 36 bytes (4 hdr + 32 sha256)");
         sub.assert_eq(out_synth[0], rfc::TLS_HS_MESSAGE_HASH, "type is 254 (message_hash)");
@@ -3243,15 +3243,15 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         // 4. RFC 8446 Section 4.4.1: compress_hrr_transcript MUST reject non-TLS 1.3 hash algorithms
         let dummy_md5: u8[16] = [0; 16];
         var out_md5: u8[20] = [0; 20];
-        let _, ok_md5 = tls::compress_hrr_transcript(16, dummy_md5[..], out_md5[..]);
+        let _, ok_md5 = tls_internal::compress_hrr_transcript(16, dummy_md5[..], out_md5[..]);
         sub.assert_false(ok_md5, "compress_hrr_transcript strictly rejects non-TLS 1.3 hash length (16)");
     };
 
     t.run("TLS-33: RFC 8446 §4.1.4 HRR Cipher Suite & Selected Group Matching Rules") { sub =>
         // 1. HRR cipher suite matching ServerHello
-        sub.assert_true(tls::validate_hrr_cipher_suite(0x1301, 0x1301), "identical cipher suite accepted");
-        sub.assert_false(tls::validate_hrr_cipher_suite(0x1301, 0x1302), "cipher suite mismatch strictly rejected");
-        sub.assert_false(tls::validate_hrr_cipher_suite(0, 0x1301), "uninitialized HRR cipher suite rejected");
+        sub.assert_true(tls_internal::validate_hrr_cipher_suite(0x1301, 0x1301), "identical cipher suite accepted");
+        sub.assert_false(tls_internal::validate_hrr_cipher_suite(0x1301, 0x1302), "cipher suite mismatch strictly rejected");
+        sub.assert_false(tls_internal::validate_hrr_cipher_suite(0, 0x1301), "uninitialized HRR cipher suite rejected");
 
         // 2. HRR selected_group validation:
         // Client supported: X25519 (0x001D), SecP256r1 (0x0017)
@@ -3261,19 +3261,19 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
         // Server requests SecP256r1 (0x0017) -> supported and NOT in initial shares -> VALID!
         sub.assert_true(
-            tls::validate_hrr_selected_group(0x0017, supp_groups[..], initial_shares[..]),
+            tls_internal::validate_hrr_selected_group(0x0017, supp_groups[..], initial_shares[..]),
             "HRR selecting supported group not in initial shares accepted",
         );
 
         // Server requests group NOT in client supported_groups (e.g. SecP384r1 0x0018) -> REJECTED!
         sub.assert_false(
-            tls::validate_hrr_selected_group(0x0018, supp_groups[..], initial_shares[..]),
+            tls_internal::validate_hrr_selected_group(0x0018, supp_groups[..], initial_shares[..]),
             "HRR selecting unsupported group strictly rejected",
         );
 
         // Server requests group that client ALREADY sent key_share for (X25519 0x001D) -> REJECTED!
         sub.assert_false(
-            tls::validate_hrr_selected_group(0x001D, supp_groups[..], initial_shares[..]),
+            tls_internal::validate_hrr_selected_group(0x001D, supp_groups[..], initial_shares[..]),
             "HRR selecting group already present in initial key_shares strictly rejected per RFC 8446 Section 4.1.4",
         );
     };
@@ -3282,7 +3282,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         // 1. Legitimate ServerRandom for TLS 1.3
         var s_rand: u8[32] = [0; 32];
         for i in 32 { s_rand[i] = (i + 1) as u8; }
-        sub.assert_false(tls::has_downgrade_sentinel(s_rand), "clean random has no sentinel");
+        sub.assert_false(tls_internal::has_downgrade_sentinel(s_rand), "clean random has no sentinel");
         sub.assert_true(
             tls::validate_server_random_downgrade(s_rand, rfc::TLS_VERSION_1_3, true),
             "TLS 1.3 negotiation with clean random valid",
@@ -3291,7 +3291,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         // 2. Active downgrade attack on TLS 1.3: ServerHello negotiated version is TLS 1.3 but contains sentinel
         var s_rand_dg12 = s_rand;
         for i in 8 { s_rand_dg12[24 + i] = rfc::DOWNGRADE_SENTINEL_TLS12[i]; }
-        sub.assert_true(tls::has_downgrade_sentinel(s_rand_dg12), "sentinel TLS 1.2 detected");
+        sub.assert_true(tls_internal::has_downgrade_sentinel(s_rand_dg12), "sentinel TLS 1.2 detected");
         sub.assert_false(
             tls::validate_server_random_downgrade(s_rand_dg12, rfc::TLS_VERSION_1_3, true),
             "downgrade sentinel in TLS 1.3 ServerHello strictly rejected",
@@ -3299,7 +3299,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
         var s_rand_dg11 = s_rand;
         for i in 8 { s_rand_dg11[24 + i] = rfc::DOWNGRADE_SENTINEL_TLS11[i]; }
-        sub.assert_true(tls::has_downgrade_sentinel(s_rand_dg11), "sentinel TLS 1.1 detected");
+        sub.assert_true(tls_internal::has_downgrade_sentinel(s_rand_dg11), "sentinel TLS 1.1 detected");
         sub.assert_false(
             tls::validate_server_random_downgrade(s_rand_dg11, rfc::TLS_VERSION_1_3, true),
             "downgrade sentinel 1.1 in TLS 1.3 ServerHello strictly rejected",
@@ -3332,9 +3332,9 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
         // 3. Negotiation against client-offered list
         let client_ciphers: u16[2] = [0x1301, 0x1303];
-        sub.assert_true(tls::validate_server_cipher_suite(0x1301, client_ciphers[..]), "offered suite 0x1301 accepted");
-        sub.assert_false(tls::validate_server_cipher_suite(0x1302, client_ciphers[..]), "unoffered suite 0x1302 rejected");
-        sub.assert_false(tls::validate_server_cipher_suite(0xC02F, client_ciphers[..]), "legacy suite 0xC02F rejected");
+        sub.assert_true(tls_internal::validate_server_cipher_suite(0x1301, client_ciphers[..]), "offered suite 0x1301 accepted");
+        sub.assert_false(tls_internal::validate_server_cipher_suite(0x1302, client_ciphers[..]), "unoffered suite 0x1302 rejected");
+        sub.assert_false(tls_internal::validate_server_cipher_suite(0xC02F, client_ciphers[..]), "legacy suite 0xC02F rejected");
     };
 
     t.run("TLS-36: RFC 9849 §§5-7 ECH HRR Handling, RetryConfigs & Acceptance Confirmation") { sub =>
@@ -3422,7 +3422,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         var fsm_bad_hrr = fsm;
         var dummy_rc = tls::EchConfigList { .. };
         sub.assert_false(
-            tls::ech_fsm_on_server_hello(
+            tls_internal::ech_fsm_on_server_hello(
                 fsm_bad_hrr,
                 tls::EchServerHelloType.HelloRetryRequest,
                 true,
@@ -3434,7 +3434,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         );
 
         // HRR without ECH extension rejects ECH (Bypassed) -> EncryptedExtensions delivers retry_configs
-        let ok_fsm_hrr = tls::ech_fsm_on_server_hello(
+        let ok_fsm_hrr = tls_internal::ech_fsm_on_server_hello(
             fsm,
             tls::EchServerHelloType.HelloRetryRequest,
             false,
@@ -3446,7 +3446,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
         sub.assert_true(fsm.mode == tls::EchHandshakeMode.Bypassed, "mode is Bypassed after HRR without ECH ext");
 
         // Second HRR strictly rejected!
-        let ok_fsm_hrr2 = tls::ech_fsm_on_server_hello(
+        let ok_fsm_hrr2 = tls_internal::ech_fsm_on_server_hello(
             fsm,
             tls::EchServerHelloType.HelloRetryRequest,
             false,
@@ -3471,7 +3471,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
             offered_config_id: 1,
         };
         sub.assert_false(
-            tls::ech_fsm_on_server_hello(
+            tls_internal::ech_fsm_on_server_hello(
                 fsm_accept,
                 tls::EchServerHelloType.ServerHello,
                 true, // illegal ECH extension in non-HRR ServerHello
@@ -3481,7 +3481,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
             ),
             "non-HRR ServerHello carrying ECH extension rejected",
         );
-        let ok_fsm_sh = tls::ech_fsm_on_server_hello(
+        let ok_fsm_sh = tls_internal::ech_fsm_on_server_hello(
             fsm_accept,
             tls::EchServerHelloType.ServerHello,
             false, // acceptance signaled in ServerHello.random[24..32]
@@ -3503,7 +3503,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
             has_hrr:           false,
             offered_config_id: 1,
         };
-        let ok_hrr_acc = tls::ech_fsm_on_server_hello(
+        let ok_hrr_acc = tls_internal::ech_fsm_on_server_hello(
             fsm_hrr_accept,
             tls::EchServerHelloType.HelloRetryRequest,
             true, // HRR ECH extension carries 8-byte confirmation
@@ -3517,7 +3517,7 @@ fn test_handshake_r2_invariants(t: lit::T&) {
 
         // Attacker strips/corrupts ECH confirmation in ServerHello2.random[24..32]
         let zero_confirm: u8[8] = [0; 8];
-        let ok_sh_strip = tls::ech_fsm_on_server_hello(
+        let ok_sh_strip = tls_internal::ech_fsm_on_server_hello(
             fsm_hrr_accept,
             tls::EchServerHelloType.ServerHello,
             false,
@@ -3581,7 +3581,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         let valid_nonce: u8[4] = [0x01, 0x02, 0x03, 0x04];
         let valid_ticket_data = "encrypted_session_ticket_sample";
         sub.assert_true(
-            tls::encode_new_session_ticket(
+            tls_internal::encode_new_session_ticket(
                 b_ticket,
                 3600, // lifetime: 1 hour <= 604800
                 0x12345678, // age_add
@@ -3606,7 +3606,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
 
         // 2. Reject ticket_lifetime > 604800 (7 days)
         var b_bad_life: u8[..512] = [];
-        tls::encode_new_session_ticket(b_bad_life, 604801, 0, valid_nonce[..], valid_ticket_data, 0);
+        tls_internal::encode_new_session_ticket(b_bad_life, 604801, 0, valid_nonce[..], valid_ticket_data, 0);
         var nst_bad = tls::NewSessionTicketMsg { .. };
         sub.assert_false(
             tls::parse_new_session_ticket(b_bad_life[..], nst_bad),
@@ -3673,19 +3673,19 @@ fn test_handshake_r3_invariants(t: lit::T&) {
     t.run("TLS-38: KeyUpdate Transitions, Byte Validation & DoS Rate Limiting") { sub =>
         // 1. KeyUpdate rejected prior to Connected state
         sub.assert_false(
-            tls::validate_key_update_state(tls::HsState.ClientStart),
+            tls_internal::validate_key_update_state(tls::HsState.ClientStart),
             "KeyUpdate rejected in ClientStart",
         );
         sub.assert_false(
-            tls::validate_key_update_state(tls::HsState.ClientWaitSH),
+            tls_internal::validate_key_update_state(tls::HsState.ClientWaitSH),
             "KeyUpdate rejected in ClientWaitSH",
         );
         sub.assert_false(
-            tls::validate_key_update_state(tls::HsState.ClientWaitFinished),
+            tls_internal::validate_key_update_state(tls::HsState.ClientWaitFinished),
             "KeyUpdate rejected in ClientWaitFinished",
         );
         sub.assert_true(
-            tls::validate_key_update_state(tls::HsState.Connected),
+            tls_internal::validate_key_update_state(tls::HsState.Connected),
             "KeyUpdate accepted in Connected",
         );
 
@@ -3715,20 +3715,20 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         // 3. DoS Rate Limiting / Ping-Pong defense
         var tracker = tls::KeyUpdateTracker { .. };
         for i in 32 {
-            let needs_resp, ok_tr = tls::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
+            let needs_resp, ok_tr = tls_internal::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
             sub.assert_true(ok_tr, "track KeyUpdate within limit succeeds");
             sub.assert_true(needs_resp, "update_requested signals response required");
         }
         sub.assert_eq(tracker.consecutive_updates as i64, 32, "consecutive_updates is 32");
 
         // 33rd consecutive update without application data MUST be rejected!
-        let _, ok_overflow = tls::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
+        let _, ok_overflow = tls_internal::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
         sub.assert_false(ok_overflow, "33rd consecutive KeyUpdate rejected (DoS defense)");
 
         // Intervening application data resets consecutive counter
-        tls::on_key_update_app_data(tracker);
+        tls_internal::on_key_update_app_data(tracker);
         sub.assert_eq(tracker.consecutive_updates as i64, 0, "consecutive_updates reset after app data");
-        let _, ok_after_reset = tls::track_received_key_update(tracker, tls::HsState.Connected, ku_not_req[..]);
+        let _, ok_after_reset = tls_internal::track_received_key_update(tracker, tls::HsState.Connected, ku_not_req[..]);
         sub.assert_true(ok_after_reset, "KeyUpdate accepted after app data reset");
     };
 
@@ -3797,14 +3797,14 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             0x00,                   // context len = 0
             0x00, 0x00, 0x00,       // certificate_list len = 0
         ];
-        let is_empty, ok_cert = tls::parse_certificate_header_is_empty(empty_cert_wire[..]);
+        let is_empty, ok_cert = tls_internal::parse_certificate_header_is_empty(empty_cert_wire[..]);
         sub.assert_true(ok_cert, "parse Certificate header succeeds");
         sub.assert_true(is_empty, "certificate_list is recognized as empty");
 
         // 2. Server transition when client sends empty certificate:
         // Skips CertificateVerify and expects Finished directly
         var st = tls::HsState.ServerWaitCert;
-        let next_st, ok_tr = tls::validate_server_handshake_transition_auth(
+        let next_st, ok_tr = tls_internal::validate_server_handshake_transition_auth(
             st,
             rfc::TLS_HS_CERTIFICATE,
             tls::ClientAuthMode.Requested,
@@ -3814,7 +3814,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_true(next_st == tls::HsState.ServerWaitFinished, "server skips ServerWaitCV and transitions to ServerWaitFinished");
 
         // In ServerWaitFinished, Finished transitions to Connected
-        let final_st, ok_fin = tls::validate_server_handshake_transition_auth(
+        let final_st, ok_fin = tls_internal::validate_server_handshake_transition_auth(
             next_st,
             rfc::TLS_HS_FINISHED,
             tls::ClientAuthMode.Requested,
@@ -3824,7 +3824,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_true(final_st == tls::HsState.Connected, "server reaches Connected state");
 
         // 3. Client sending CertificateVerify when certificate was empty MUST be rejected (RFC 8446 §4.4.2)
-        let _, ok_bad_cv = tls::validate_server_handshake_transition_auth(
+        let _, ok_bad_cv = tls_internal::validate_server_handshake_transition_auth(
             tls::HsState.ServerWaitCV,
             rfc::TLS_HS_CERTIFICATE_VERIFY,
             tls::ClientAuthMode.Requested,
@@ -3833,7 +3833,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_false(ok_bad_cv, "CertificateVerify strictly rejected when client cert is empty");
 
         // 4. Normal client auth with cert: proceeds through ServerWaitCV
-        let next_full, ok_full = tls::validate_server_handshake_transition_auth(
+        let next_full, ok_full = tls_internal::validate_server_handshake_transition_auth(
             tls::HsState.ServerWaitCert,
             rfc::TLS_HS_CERTIFICATE,
             tls::ClientAuthMode.Requested,
@@ -3856,11 +3856,11 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             ..
         };
         sub.assert_true(
-            tls::early_data_on_encrypted_extensions(ctrl_accept, true),
+            tls_internal::early_data_on_encrypted_extensions(ctrl_accept, true),
             "early_data accepted in EncryptedExtensions",
         );
         sub.assert_true(ctrl_accept.state == tls::EarlyDataState.Accepted, "state is Accepted");
-        sub.assert_true(tls::early_data_can_send_eoed(ctrl_accept), "client permitted to send EndOfEarlyData");
+        sub.assert_true(tls_internal::early_data_can_send_eoed(ctrl_accept), "client permitted to send EndOfEarlyData");
 
         // 2. Early data rejected by server (recovery mode)
         var ctrl_reject = tls::EarlyDataController {
@@ -3869,12 +3869,12 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             ..
         };
         sub.assert_true(
-            tls::early_data_on_encrypted_extensions(ctrl_reject, false),
+            tls_internal::early_data_on_encrypted_extensions(ctrl_reject, false),
             "early_data rejected in EncryptedExtensions handled cleanly",
         );
         sub.assert_true(ctrl_reject.state == tls::EarlyDataState.Rejected, "state is Rejected");
         sub.assert_true(ctrl_reject.keys_discarded, "0-RTT traffic keys discarded immediately");
-        sub.assert_false(tls::early_data_can_send_eoed(ctrl_reject), "client MUST NOT send EndOfEarlyData when rejected");
+        sub.assert_false(tls_internal::early_data_can_send_eoed(ctrl_reject), "client MUST NOT send EndOfEarlyData when rejected");
 
         // 3. Early data record size bounds
         var ctrl_send = tls::EarlyDataController {
@@ -3882,9 +3882,9 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             max_early_data_size: 100,
             ..
         };
-        sub.assert_true(tls::early_data_record_sent(ctrl_send, 50), "send 50 bytes within limit succeeds");
-        sub.assert_true(tls::early_data_record_sent(ctrl_send, 50), "send another 50 bytes reaching limit succeeds");
-        sub.assert_false(tls::early_data_record_sent(ctrl_send, 1), "send exceeding max_early_data_size rejected");
+        sub.assert_true(tls_internal::early_data_record_sent(ctrl_send, 50), "send 50 bytes within limit succeeds");
+        sub.assert_true(tls_internal::early_data_record_sent(ctrl_send, 50), "send another 50 bytes reaching limit succeeds");
+        sub.assert_false(tls_internal::early_data_record_sent(ctrl_send, 1), "send exceeding max_early_data_size rejected");
 
         // 4. ECH early_data placement rules (stricter than RFC 9849 §6.1 step 7)
         sub.assert_true(
@@ -3903,15 +3903,15 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         // 5. OpenSSL Bug #31406 & RFC 8446 §4.2.10: 0-RTT PSK cipher suite mismatch handling
         // Case A: server validator strictly rejects mismatched cipher suite
         sub.assert_true(
-            tls::validate_server_early_data_cipher(rfc::TLS_CIPHER_AES_128_CCM_SHA256, rfc::TLS_CIPHER_AES_128_CCM_SHA256),
+            tls_internal::validate_server_early_data_cipher(rfc::TLS_CIPHER_AES_128_CCM_SHA256, rfc::TLS_CIPHER_AES_128_CCM_SHA256),
             "identical cipher suites permit early data acceptance",
         );
         sub.assert_false(
-            tls::validate_server_early_data_cipher(rfc::TLS_CIPHER_AES_128_CCM_SHA256, rfc::TLS_CIPHER_AES_128_CCM_8_SHA256),
+            tls_internal::validate_server_early_data_cipher(rfc::TLS_CIPHER_AES_128_CCM_SHA256, rfc::TLS_CIPHER_AES_128_CCM_8_SHA256),
             "mismatched PSK vs negotiated cipher suite strictly rejected on server (OpenSSL #31406)",
         );
         sub.assert_false(
-            tls::validate_server_early_data_cipher(0, rfc::TLS_CIPHER_AES_128_GCM_SHA256),
+            tls_internal::validate_server_early_data_cipher(0, rfc::TLS_CIPHER_AES_128_GCM_SHA256),
             "uninitialized PSK cipher rejected",
         );
 
@@ -3923,11 +3923,11 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             negotiated_cipher_suite: rfc::TLS_CIPHER_AES_128_CCM_8_SHA256,
             ..
         };
-        let ok_ee_mismatch = tls::early_data_on_encrypted_extensions(ctrl_mismatch, true);
+        let ok_ee_mismatch = tls_internal::early_data_on_encrypted_extensions(ctrl_mismatch, true);
         sub.assert_false(ok_ee_mismatch, "client aborts early data when EE accepts despite cipher mismatch");
         sub.assert_true(ctrl_mismatch.state == tls::EarlyDataState.Rejected, "state transitions to Rejected");
         sub.assert_true(ctrl_mismatch.keys_discarded, "0-RTT keys discarded on mismatch");
-        sub.assert_false(tls::early_data_can_send_eoed(ctrl_mismatch), "client cannot send EOED on mismatch");
+        sub.assert_false(tls_internal::early_data_can_send_eoed(ctrl_mismatch), "client cannot send EOED on mismatch");
     };
 
     // ------------------------------------------------------------------------
@@ -3941,7 +3941,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             0x00, 0x00, 0x05,       // compressed_certificate_message length = 5
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, // compressed_data (5 bytes)
         ];
-        let parsed, ok_parse = tls::parse_compressed_certificate(valid_comp_payload[..]);
+        let parsed, ok_parse = tls_internal::parse_compressed_certificate(valid_comp_payload[..]);
         sub.assert_true(ok_parse, "parse valid CompressedCertificate succeeds");
         sub.assert_eq(parsed.algorithm, rfc::CERT_COMPRESSION_ZSTD, "algorithm is zstd");
         sub.assert_eq(parsed.uncompressed_len as i64, 16, "uncompressed_len is 16");
@@ -3953,7 +3953,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             0x00, 0x00, 0x05,
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
         ];
-        let _, ok_unknown = tls::parse_compressed_certificate(unknown_algo[..]);
+        let _, ok_unknown = tls_internal::parse_compressed_certificate(unknown_algo[..]);
         sub.assert_false(ok_unknown, "unknown compression algorithm rejected");
 
         // 3. Reject uncompressed_length == 0
@@ -3963,7 +3963,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             0x00, 0x00, 0x05,
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
         ];
-        let _, ok_zero_ulen = tls::parse_compressed_certificate(zero_ulen[..]);
+        let _, ok_zero_ulen = tls_internal::parse_compressed_certificate(zero_ulen[..]);
         sub.assert_false(ok_zero_ulen, "uncompressed_length == 0 rejected");
 
         // 4. Reject uncompressed_length > MAX_UNCOMPRESSED_CERT_LEN (65536)
@@ -3973,7 +3973,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
             0x00, 0x00, 0x05,
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
         ];
-        let _, ok_bomb = tls::parse_compressed_certificate(bomb_payload[..]);
+        let _, ok_bomb = tls_internal::parse_compressed_certificate(bomb_payload[..]);
         sub.assert_false(ok_bomb, "decompression bomb exceeding MAX_UNCOMPRESSED_CERT_LEN rejected");
 
         // 5. Client & Server transitions reject unsolicited CompressedCertificate unless offered (RFC 8879 §4)
@@ -4007,14 +4007,14 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_true(ok_cc, "offered CompressedCertificate accepted in ClientWaitCert");
         sub.assert_true(next_cc == tls::HsState.ClientWaitCV, "transitions to ClientWaitCV");
 
-        let _, ok_srv_unsol = tls::validate_server_handshake_transition_auth(
+        let _, ok_srv_unsol = tls_internal::validate_server_handshake_transition_auth(
             tls::HsState.ServerWaitCert,
             rfc::TLS_HS_COMPRESSED_CERTIFICATE,
             tls::ClientAuthMode.Requested,
             false,
         );
         sub.assert_false(ok_srv_unsol, "server rejects unsolicited CompressedCertificate");
-        let next_srv_cc, ok_srv_cc = tls::validate_server_handshake_transition_auth(
+        let next_srv_cc, ok_srv_cc = tls_internal::validate_server_handshake_transition_auth(
             tls::HsState.ServerWaitCert,
             rfc::TLS_HS_COMPRESSED_CERTIFICATE,
             tls::ClientAuthMode.Requested,
@@ -4025,7 +4025,7 @@ fn test_handshake_r3_invariants(t: lit::T&) {
         sub.assert_true(ok_srv_cc && next_srv_cc == tls::HsState.ServerWaitCV, "server accepts offered CompressedCertificate");
 
         let brotli_only: u16[1] = [rfc::CERT_COMPRESSION_BROTLI];
-        let _, ok_unoffered_algo = tls::parse_compressed_certificate(valid_comp_payload[..], brotli_only[..]);
+        let _, ok_unoffered_algo = tls_internal::parse_compressed_certificate(valid_comp_payload[..], brotli_only[..]);
         sub.assert_false(ok_unoffered_algo, "Zstd CompressedCertificate rejected when only Brotli was offered");
     };
 }
@@ -4093,7 +4093,7 @@ fn test_rfc8879_brotli_cert_compression(t: lit::T&) {
         var wire_copy: u8[..4096] = [];
         wire_copy.append(wire[..]);
         var decomp3: u8[..4096] = [];
-        let ok_incoming = tls::decompress_incoming_certificate(wire_copy[..], decomp3);
+        let ok_incoming = tls_internal::decompress_incoming_certificate(wire_copy[..], decomp3);
         sub.assert_true(ok_incoming, "decompress_incoming_certificate succeeds on handshake wire payload");
         sub.assert_bytes_eq(decomp3[..], cert_plaintext, "decomp3 matches original plaintext");
 
@@ -4245,16 +4245,16 @@ fn test_remediation_misc(t: lit::T&) {
         sub.assert_true(st == tls::HsState.Connected, "state remains Connected");
 
         let hs_msg: u8[14] = [0x01, 0x00, 0x00, 0x0A, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let m_type, m_len, ok_fit = tls::validate_handshake_record_boundary(hs_msg[..], 20);
+        let m_type, m_len, ok_fit = tls_internal::validate_handshake_record_boundary(hs_msg[..], 20);
         sub.assert_true(ok_fit, "handshake fits in record");
         sub.assert_eq(m_type, 1, "parsed message type matches");
         sub.assert_eq(m_len, 10, "parsed message len matches");
 
-        let _, _, ok_exceed = tls::validate_handshake_record_boundary(hs_msg[..], 10);
+        let _, _, ok_exceed = tls_internal::validate_handshake_record_boundary(hs_msg[..], 10);
         sub.assert_false(ok_exceed, "handshake + 4 header exceeds record");
 
         var pad_buf: u8[..512] = [];
-        let ok_pad0 = tls::pad_ech_inner("inner-hello", 64, 0, pad_buf);
+        let ok_pad0 = tls_internal::pad_ech_inner("inner-hello", 64, 0, pad_buf);
         sub.assert_true(ok_pad0, "pad_ech_inner with real_sni_len == 0 succeeds");
         sub.assert_eq(pad_buf.len % 32, 0, "pad_buf is 32-byte aligned");
 
@@ -4436,7 +4436,7 @@ fn test_live_tls_transport_session(t: lit::T&) {
         let cli_pub = core::x25519_base_scalarmult(cli_priv);
 
         var ch_payload: u8[..2048] = [];
-        tls::build_client_hello_payload(
+        tls_internal::build_client_hello_payload(
             cli_rand, cli_pub, "example.com", "h2,http/1.1",
             ch_payload, out_ticket[..], out_age,
         );
@@ -4452,7 +4452,7 @@ fn test_live_tls_transport_session(t: lit::T&) {
         let trunc_ch, ok_tr = tls_internal::truncate_client_hello_for_binder(ch_msg[..], 33);
         sub.assert_true(ok_tr, "truncate_client_hello_for_binder succeeds");
         var binder: u8[32] = [0; 32];
-        sub.assert_true(tls::compute_psk_binder(b_key, trunc_ch, binder), "compute_tls13_psk_binder succeeds");
+        sub.assert_true(tls_internal::compute_psk_binder(b_key, trunc_ch, binder), "compute_tls13_psk_binder succeeds");
         let b_start = ch_msg.len - 32;
         for i in 32 { ch_msg[b_start + i] = binder[i]; }
 
@@ -4461,7 +4461,7 @@ fn test_live_tls_transport_session(t: lit::T&) {
         var srv_alpn:    u8[..32] = [];
         var srv_resumed: bool     = false;
         var srv_psk:     u8[32]   = [0; 32];
-        let ok_ch = tls::parse_client_hello_for_server(
+        let ok_ch = tls_internal::parse_client_hello_for_server(
             ch_msg[..], "h2,http/1.1", srv_sid, srv_cli_pub,
             srv_alpn, srv_resumed, srv_psk,
         );
@@ -4483,7 +4483,7 @@ fn test_tls13_cookie_extension_validation(t: lit::T&) {
         // cookie<1..2^16-1>: vector length 0 is strictly forbidden by RFC 8446 Section 4.2.2
         let empty_cookie: u8[2] = [0x00, 0x00];
         var out: u8[..64] = [];
-        let ok = tls::parse_cookie_extension(empty_cookie[..], out);
+        let ok = tls_internal::parse_cookie_extension(empty_cookie[..], out);
         sub.assert_false(ok, "Zero-length cookie vector must be rejected");
     };
 
@@ -4491,7 +4491,7 @@ fn test_tls13_cookie_extension_validation(t: lit::T&) {
         // Advertises 4 bytes but only 2 present
         let trunc_cookie: u8[4] = [0x00, 0x04, 0xAA, 0xBB];
         var out: u8[..64] = [];
-        let ok = tls::parse_cookie_extension(trunc_cookie[..], out);
+        let ok = tls_internal::parse_cookie_extension(trunc_cookie[..], out);
         sub.assert_false(ok, "Truncated cookie payload must be rejected");
     };
 
@@ -4499,14 +4499,14 @@ fn test_tls13_cookie_extension_validation(t: lit::T&) {
         // Advertises 2 bytes but 3 bytes present in extension
         let trailing_cookie: u8[5] = [0x00, 0x02, 0xAA, 0xBB, 0xFF];
         var out: u8[..64] = [];
-        let ok = tls::parse_cookie_extension(trailing_cookie[..], out);
+        let ok = tls_internal::parse_cookie_extension(trailing_cookie[..], out);
         sub.assert_false(ok, "Trailing bytes after cookie vector must be rejected");
     };
 
     t.run("Valid Cookie extension succeeds") { sub =>
         let valid_cookie: u8[6] = [0x00, 0x04, 0x01, 0x02, 0x03, 0x04];
         var out: u8[..64] = [];
-        let ok = tls::parse_cookie_extension(valid_cookie[..], out);
+        let ok = tls_internal::parse_cookie_extension(valid_cookie[..], out);
         sub.assert_true(ok, "Valid cookie extension parsed successfully");
         sub.assert_eq(out.len, 4, "Extracted 4-byte cookie");
         let expected: u8[4] = [0x01, 0x02, 0x03, 0x04];
@@ -4521,21 +4521,21 @@ fn test_tls13_cert_authorities_extension_validation(t: lit::T&) {
     t.run("certificate_authorities extension with empty vector (< 3 bytes) MUST be rejected") { sub =>
         // authorities<3..2^16-1>: length 0 is strictly forbidden by RFC 8446 Section 4.2.4
         let empty_ca: u8[2] = [0x00, 0x00];
-        let ok = tls::validate_certificate_authorities_extension(empty_ca[..]);
+        let ok = tls_internal::validate_certificate_authorities_extension(empty_ca[..]);
         sub.assert_false(ok, "Empty authorities vector must be rejected");
     };
 
     t.run("certificate_authorities extension with vector length < 3 MUST be rejected") { sub =>
         // authorities vector length 2 (less than lower bound 3)
         let short_ca: u8[4] = [0x00, 0x02, 0x00, 0x00];
-        let ok = tls::validate_certificate_authorities_extension(short_ca[..]);
+        let ok = tls_internal::validate_certificate_authorities_extension(short_ca[..]);
         sub.assert_false(ok, "Authorities vector length < 3 must be rejected");
     };
 
     t.run("certificate_authorities extension with valid DN succeeds") { sub =>
         // authorities vector length = 5: one DN with length = 3 ("ABC")
         let valid_ca: u8[7] = [0x00, 0x05, 0x00, 0x03, 'A', 'B', 'C'];
-        let ok = tls::validate_certificate_authorities_extension(valid_ca[..]);
+        let ok = tls_internal::validate_certificate_authorities_extension(valid_ca[..]);
         sub.assert_true(ok, "Valid authorities vector accepted");
     };
 
@@ -4607,11 +4607,11 @@ fn check_goose2rfc_pki_and_ech_regressions(t: lit::T&) {
 
         var ext_mand: u8[6] = [0x80, 0x01, 0x00, 0x02, 0xAA, 0xBB];
         var cur_mand = core::cursor_from(ext_mand[..]);
-        sub.assert_false(tls::validate_ech_config_extensions(cur_mand), "mandatory unknown ECH ext rejected");
+        sub.assert_false(tls_internal::validate_ech_config_extensions(cur_mand), "mandatory unknown ECH ext rejected");
 
         var ext_dup: u8[8] = [0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
         var cur_dup = core::cursor_from(ext_dup[..]);
-        sub.assert_false(tls::validate_ech_config_extensions(cur_dup), "duplicate ECH ext rejected");
+        sub.assert_false(tls_internal::validate_ech_config_extensions(cur_dup), "duplicate ECH ext rejected");
 
         // RFC 5280 §4.1.2.2: <= 7-byte serials stay < 0x8000000000000000 while >= 8-byte serials hash with MSB set
         let ser7: u8[7] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
@@ -4645,13 +4645,13 @@ fn check_goose2rfc_handshake_and_session_regressions(t: lit::T&) {
             for _ in 32 { dup_ks.push(0x42); }
         }
         var out_shares: u8[..4096] = [];
-        sub.assert_false(tls::parse_key_share_client_extension(dup_ks[..], out_shares), "duplicate X25519 share rejected");
+        sub.assert_false(tls_internal::parse_key_share_client_extension(dup_ks[..], out_shares), "duplicate X25519 share rejected");
     };
 
     t.run("TLS2_C01, TLS2_C03 & TLS2_C05: Server Certificate context, PSK modes, and ticket expiry") { sub =>
         let bad_cert_msg: u8[10] = [0x01, 0xAA, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0xFF, 0x00];
         var certs_out: const u8[:][..8] = [];
-        let _, ok_cert = tls::parse_certificate_chain_and_ocsp(bad_cert_msg[..], certs_out);
+        let _, ok_cert = tls_internal::parse_certificate_chain_and_ocsp(bad_cert_msg[..], certs_out);
         sub.assert_false(ok_cert, "non-empty server certificate_request_context rejected");
 
         let psk32: u8[32] = [0x33; 32];

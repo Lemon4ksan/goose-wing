@@ -8,16 +8,12 @@ namespace tls_internal;
 import std;
 import core;
 
-// ---- CompressedCertificate Message Model ---------------------------------
-
 // RFC 8879 Section 4: Compressed Certificate Message - Structure
 struct CompressedCertificate {
     algorithm:                      u16         = rfc::CERT_COMPRESSION_BROTLI,
     uncompressed_length:            u32         = 0,
     compressed_certificate_message: const u8[:] = "",
 }
-
-// ---- Wire Encoding and Decoding (RFC 8879 §4) -----------------------------
 
 // RFC 8879 Section 4: Compressed Certificate Message - Serializer
 fn encode_compressed_certificate<B>(
@@ -69,8 +65,6 @@ fn parse_compressed_certificate_msg(
     out.compressed_certificate_message = comp_cursor.buf;
     return true;
 }
-
-// ---- Safe Decompression Engine (RFC 8879 §4) ------------------------------
 
 // RFC 8879 Section 4: Compressed Certificate Message - Safe Decompression Handler
 // Verifies uncompressed size against maximum buffer bound and prevents decompression bombs.

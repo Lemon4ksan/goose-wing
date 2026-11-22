@@ -551,17 +551,17 @@ fn test_crl_sha256_capacity_and_cipher_slots() {
 
     // Insert 1024 serials (> old 128 cap), verify lookups, verify 1025th fails closed
     var crl = tls::ParsedCrl { .. };
-    assert(tls::crl_insert_serial(crl, s20_id));
+    assert(tls_internal::crl_insert_serial(crl, s20_id));
     for i in 1023 {
         let s = (5000 - i) as u64;
-        assert(tls::crl_insert_serial(crl, s));
+        assert(tls_internal::crl_insert_serial(crl, s));
     }
     assert(crl.serial_count == 1024);
     assert(tls::crl_is_revoked(crl, s20_id));
     assert(tls::crl_is_revoked(crl, 5000));
     assert(tls::crl_is_revoked(crl, 3978));
     assert(!tls::crl_is_revoked(crl, 99999));
-    assert(!tls::crl_insert_serial(crl, 77777));
+    assert(!tls_internal::crl_insert_serial(crl, 77777));
 
     print("CRL_SHA256_1024_AND_SLOTS_4096: OK");
 }

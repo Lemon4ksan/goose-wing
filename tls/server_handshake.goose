@@ -14,92 +14,21 @@ import .handshake_internal;
 import .types;
 import .x509;
 import .ticket;
-import .post_quantum;
+import .pq_ntt_internal;
+import .pq_mlkem_internal;
 import .cert_compression;
 import .session_internal;
+import .session_codec_internal;
 import .session;
-import .handshake_io_internal;
+import .handshake_io_client_internal;
+import .handshake_io_server_internal;
 import net.tcp;
+import .handshake_wire_internal;
+import .session_slot_internal;
+import .session_wire_internal;
 
 // Parses ClientHello payload for server handshake, extracting session ID,
 // client X25519 key share, ALPN, SNI, and PSK.
-//
-// Example:
-//   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, 0x00, 0x13, 0x01]
-//   returns: true, out_session_id = [], out_client_pub = [32 bytes], out_sni = "api.example.com"
-fn parse_client_hello_for_server_sni(
-    payload:         const u8[:],
-    server_alpn_csv: const u8[:],
-    out_session_id:  u8[..32]&,
-    out_client_pub:  u8[32]&,
-    out_alpn:        u8[..32]&,
-    out_sni:         u8[..255]&,
-    out_psk_resumed: bool&,
-    out_psk_secret:  u8[32]&,
-) -> bool {
-    core::secure_zeroize_32(out_psk_secret);
-    var full_psk: u8[..48] = [];
-    defer core::secure_zeroize_slice(full_psk[..]);
-    var sel_cs: u16 = 0;
-    var sel_id: u16 = 0;
-    guard tls_internal::parse_client_hello_for_server_full(
-        payload, server_alpn_csv, 0, out_session_id, out_client_pub,
-        out_alpn, out_sni, sel_cs, out_psk_resumed, full_psk, sel_id,
-    ) else { return false; }
-    if out_psk_resumed && full_psk.len >= 32 {
-        core::ct_copy_bytes(out_psk_secret[..], full_psk[0..32]);
-    }
-    return true;
-}
-
-// Parses ClientHello payload for server handshake, extracting session ID, client X25519 key share, ALPN, and PSK.
-//
-// Example:
-//   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, 0x00, 0x13, 0x01]
-//   returns: true, out_session_id = [], out_client_pub = [32 bytes]
-fn parse_client_hello_for_server(
-    payload:         const u8[:],
-    server_alpn_csv: const u8[:],
-    out_session_id:  u8[..32]&,
-    out_client_pub:  u8[32]&,
-    out_alpn:        u8[..32]&,
-    out_psk_resumed: bool&,
-    out_psk_secret:  u8[32]&,
-) -> bool {
-    var unused_sni: u8[..255] = [];
-    return parse_client_hello_for_server_sni(
-        payload, server_alpn_csv, out_session_id, out_client_pub,
-        out_alpn, unused_sni, out_psk_resumed, out_psk_secret,
-    );
-}
-
-// Generates ephemeral server randomness, X25519 keypair, and ECDHE shared secret.
-// Fails closed and wipes secret material if OS CSPRNG or X25519 key exchange fails.
-fn generate_server_handshake_keys(
-    client_pub:       const u8[32]&,
-    out_random:       u8[32]&,
-    out_server_pub:   u8[32]&,
-    out_ecdhe_secret: u8[32]&,
-) -> bool {
-    var committed = false;
-    defer if !committed {
-        core::secure_zeroize_32(out_random);
-        core::secure_zeroize_32(out_server_pub);
-        core::secure_zeroize_32(out_ecdhe_secret);
-    };
-    var server_priv: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(server_priv);
-    guard random_bytes_32_checked(out_random) && random_bytes_32_checked(server_priv) else {
-        return false;
-    }
-    out_server_pub = core::x25519_base_scalarmult(server_priv);
-    var ecdhe, ok_ecdhe = core::x25519_shared_secret(server_priv, client_pub);
-    defer core::secure_zeroize_32(ecdhe);
-    guard ok_ecdhe else { return false; }
-    out_ecdhe_secret = ecdhe;
-    committed = true;
-    return true;
-}
 
 // Executes full TLS 1.3 server handshake given an already-read ClientHello handshake message (RFC 8446 §4).
 fn server_handshake_with_ch(
@@ -112,7 +41,7 @@ fn server_handshake_with_ch(
     let idx = slot_idx as i64;
 
     var transcript = Transcript { .. };
-    transcript_update(transcript, ch_msg);
+    tls_internal::transcript_update(transcript, ch_msg);
 
     var session_id:      u8[..32]  = [];
     var client_pub:      u8[32]    = [0; 32];
@@ -139,13 +68,13 @@ fn server_handshake_with_ch(
     var server_pub:    u8[32] = [0; 32];
     var ecdhe_secret:  u8[32] = [0; 32];
     defer core::secure_zeroize_32(ecdhe_secret);
-    guard generate_server_handshake_keys(client_pub, server_random, server_pub, ecdhe_secret) else {
+    guard tls_internal::generate_server_handshake_keys(client_pub, server_random, server_pub, ecdhe_secret) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
 
     var sh_payload: u8[..2048] = [];
-    build_server_hello_payload(
+    tls_internal::build_server_hello_payload(
         server_random, session_id[..], server_pub, sh_payload,
         psk_resumed, cipher_suite, selected_psk_id,
     );
@@ -160,7 +89,7 @@ fn server_handshake_with_ch(
     }
     let ccs: u8[6] = [rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
     tls_internal::tls_write_all(fd, ccs[..]);
-    transcript_update(transcript, sh_msg[..]);
+    tls_internal::transcript_update(transcript, sh_msg[..]);
 
     var ks, ok_ks = tls_internal::ks_init(cipher_suite);
     defer tls_internal::ks_zeroize(ks);
@@ -174,7 +103,7 @@ fn server_handshake_with_ch(
     }
 
     var ch_sh_hash: u8[..48] = [];
-    transcript_current_hash(transcript, ks.hash_id, ch_sh_hash);
+    tls_internal::transcript_current_hash(transcript, ks.hash_id, ch_sh_hash);
     guard tls_internal::ks_derive_handshake_traffic(ks, ch_sh_hash[..]) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -207,7 +136,7 @@ fn server_handshake_with_ch(
         return 0xFFFF, false;
     }
 
-    let negotiated_cert_comp_algo = select_server_cert_comp_algo(ch_msg, config.compressed_cert_algo);
+    let negotiated_cert_comp_algo = tls_internal::select_server_cert_comp_algo(ch_msg, config.compressed_cert_algo);
     guard tls_internal::tls_server_send_flight(
         fd, server_hs_key[..klen], server_hs_iv, ks,
         transcript, config, neg_alpn[..], psk_resumed, negotiated_cert_comp_algo, cipher_suite,
@@ -217,7 +146,7 @@ fn server_handshake_with_ch(
     }
 
     var h_through_srv_fin: u8[..48] = [];
-    transcript_current_hash(transcript, ks.hash_id, h_through_srv_fin);
+    tls_internal::transcript_current_hash(transcript, ks.hash_id, h_through_srv_fin);
     guard tls_internal::ks_advance_to_master(ks, h_through_srv_fin[..]) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -252,7 +181,7 @@ fn server_handshake_with_ch(
     }
 
     var h_before_cli_fin: u8[..48] = [];
-    transcript_current_hash(transcript, ks.hash_id, h_before_cli_fin);
+    tls_internal::transcript_current_hash(transcript, ks.hash_id, h_before_cli_fin);
     var exp_cli_fin: u8[48] = [0; 48];
     let ok_exp_fin = tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.client_hs_traffic[..hlen],
@@ -267,9 +196,9 @@ fn server_handshake_with_ch(
         return 0xFFFF, false;
     }
 
-    transcript_update_msg(transcript, msg_fin, cli_fin_body[..hlen]);
+    tls_internal::transcript_update_msg(transcript, msg_fin, cli_fin_body[..hlen]);
     var h_through_cli_fin: u8[..48] = [];
-    transcript_current_hash(transcript, ks.hash_id, h_through_cli_fin);
+    tls_internal::transcript_current_hash(transcript, ks.hash_id, h_through_cli_fin);
     tls_internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
 
     var client_ap_key: u8[32] = [0; 32];

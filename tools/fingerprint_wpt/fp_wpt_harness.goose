@@ -368,7 +368,7 @@ fn handle_profile_cmd(name: const u8[:], st: HarnessState&) {
 
     var rand32: u8[32] = [0x11; 32];
     var pub32:  u8[32] = [0x22; 32];
-    tls::build_client_hello_payload(rand32, pub32, "tls.peet.ws", "h2,http/1.1", st.ext_buf);
+    tls_internal::build_client_hello_payload(rand32, pub32, "tls.peet.ws", "h2,http/1.1", st.ext_buf);
     encode_hex_all(st.ext_buf[..], st.hex_c);
 
     print(

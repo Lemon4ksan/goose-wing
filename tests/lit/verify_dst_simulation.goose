@@ -398,7 +398,7 @@ fn run_tls13_dst_scenario(world: net::DstWorld&, ep_c: u16, ep_s: u16) -> u64, u
     let srv_pub = core::x25519_base_scalarmult(srv_priv);
 
     var ch_payload: u8[..2048] = [];
-    tls::build_client_hello_payload(cli_rand, cli_pub, "dst.tls.local", "h2,http/1.1", ch_payload);
+    tls_internal::build_client_hello_payload(cli_rand, cli_pub, "dst.tls.local", "h2,http/1.1", ch_payload);
     var ch_msg: u8[..2048] = [];
     ch_msg.push(rfc::TLS_HS_CLIENT_HELLO);
     ch_msg.append_u24_be(ch_payload.len as u32);
@@ -418,7 +418,7 @@ fn run_tls13_dst_scenario(world: net::DstWorld&, ep_c: u16, ep_s: u16) -> u64, u
     var parsed_sni:  u8[..255] = [];
     var psk_resumed = false;
     var psk_secret: u8[32] = [0; 32];
-    assert(tls::parse_client_hello_for_server_sni(
+    assert(tls_internal::parse_client_hello_for_server_sni(
         srv_ch_rx[..], "h2,http/1.1", sid_out, parsed_cpub, neg_alpn, parsed_sni, psk_resumed, psk_secret,
     ));
     assert(parsed_sni[..] == "dst.tls.local" && neg_alpn[..] == "h2");
@@ -426,7 +426,7 @@ fn run_tls13_dst_scenario(world: net::DstWorld&, ep_c: u16, ep_s: u16) -> u64, u
 
     // Build and transmit ServerHello back across fragmented DST TCP.
     var sh_payload: u8[..1024] = [];
-    tls::build_server_hello_payload(
+    tls_internal::build_server_hello_payload(
         srv_rand, sid_out[..], srv_pub, sh_payload, false, rfc::TLS_CIPHER_AES_128_GCM_SHA256, 0,
     );
     var sh_msg: u8[..1024] = [];
@@ -446,10 +446,10 @@ fn run_tls13_dst_scenario(world: net::DstWorld&, ep_c: u16, ep_s: u16) -> u64, u
 
     // Derive identical RFC 8446 transcript hash & AES-128-GCM application traffic keys on both sides.
     var tr = tls::Transcript { .. };
-    tls::transcript_update(tr, ch_msg[..]);
-    tls::transcript_update(tr, sh_msg[..]);
+    tls_internal::transcript_update(tr, ch_msg[..]);
+    tls_internal::transcript_update(tr, sh_msg[..]);
     var tr_hash: u8[..48] = [];
-    tls::transcript_current_hash(tr, tls_internal::HASH_SHA256, tr_hash);
+    tls_internal::transcript_current_hash(tr, tls_internal::HASH_SHA256, tr_hash);
     assert(tr_hash.len == 32);
 
     var srv_share32: u8[32] = [0; 32];

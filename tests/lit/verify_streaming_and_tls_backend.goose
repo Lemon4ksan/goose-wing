@@ -947,7 +947,7 @@ fn test_tls_stream_mtls_and_tcp_opts() {
     assert(tslot != 0xFFFF);
     let k16:  u8[16] = [0x11; 16];
     let iv12: u8[12] = [0x22; 12];
-    tls::init_cipher_slot_for_test(tslot, rfc::TLS_CIPHER_AES_128_GCM_SHA256, k16[..], iv12, k16[..], iv12);
+    tls_internal::init_cipher_slot_for_test(tslot, rfc::TLS_CIPHER_AES_128_GCM_SHA256, k16[..], iv12, k16[..], iv12);
     var leg_buf: u8[64] = [0; 64];
     let leg_wb = tls::transport_recv_slice(fd_r, tslot, leg_buf[..], 0);
     net::virtual_fd_close(fd_w);

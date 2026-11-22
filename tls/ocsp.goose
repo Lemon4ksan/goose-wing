@@ -11,7 +11,11 @@ import .record;
 import .asn1;
 import .types;
 import .x509;
-import .pki_internal;
+import .pki_sig_internal;
+import .pki_x509_ext_internal;
+import .pki_nc_san_internal;
+import .pki_ocsp_internal;
+import .pki_crl_internal;
 
 // RFC 6960 Section 4.2.1: ASN.1 Specification of the OCSP Response - Parses DER OCSPResponse with rollback.
 //
@@ -68,7 +72,7 @@ fn validate_ocsp_stapling(
         }
         var sig_alert = x509_verify_ocsp_signature(resp, raw_ocsp, issuer_cert, issuer_raw_der);
         if sig_alert != Alert.CloseNotify && resp.responder_cert_der.length > 0 {
-            sig_alert = verify_delegated_ocsp_responder(
+            sig_alert = tls_internal::verify_delegated_ocsp_responder(
                 resp, raw_ocsp, issuer_cert, issuer_raw_der, now_unix,
             );
         }
@@ -98,41 +102,6 @@ fn x509_verify_ocsp_signature(
         parent_pubkey = parent_pubkey[1..];
     }
     return tls_internal::x509_verify_ocsp_signature_with_pubkey(resp, raw_ocsp, parent_pubkey);
-}
-
-// RFC 6960 Section 4.2.2.2: Authorized Responders - Verifies an embedded delegated OCSP responder cert
-// issued by `issuer_cert` with `id-kp-OCSPSigning` EKU and checks the BasicOCSPResponse signature.
-fn verify_delegated_ocsp_responder(
-    resp:        const ParsedOcspResponse&,
-    raw_ocsp:    const u8[:],
-    issuer_cert: const ParsedCert&,
-    issuer_raw:  const u8[:],
-    now_unix:    i64,
-) -> Alert {
-    let responder_der = span_slice(raw_ocsp, resp.responder_cert_der);
-    guard responder_der.len > 0 else { return Alert.BadCertificateStatusResponse; }
-
-    var responder_cert = ParsedCert { .. };
-    guard parse_x509_certificate(responder_der, responder_cert) else {
-        return Alert.BadCertificateStatusResponse;
-    }
-    guard now_unix >= responder_cert.validity_not_before &&
-        now_unix <= responder_cert.validity_not_after else {
-        return Alert.BadCertificateStatusResponse;
-    }
-    guard responder_cert.has_eku && (responder_cert.eku_mask & rfc::EKU_OCSP_SIGNING) != 0 else {
-        return Alert.BadCertificateStatusResponse;
-    }
-    let resp_issuer_dn = span_slice(responder_der, responder_cert.issuer_raw);
-    let ca_subject_dn = span_slice(issuer_raw, issuer_cert.subject_raw);
-    guard resp_issuer_dn.len > 0 && resp_issuer_dn == ca_subject_dn else {
-        return Alert.BadCertificateStatusResponse;
-    }
-    let chain_alert = x509_verify_cert_signature(
-        responder_cert, responder_der, issuer_cert, issuer_raw,
-    );
-    guard chain_alert == Alert.CloseNotify else { return chain_alert; }
-    return x509_verify_ocsp_signature(resp, raw_ocsp, responder_cert, responder_der);
 }
 
 // RFC 6066 Section 8: Certificate Status Request - Unwraps CertificateStatus (status_type = ocsp(1) + u24 OCSPResponse).

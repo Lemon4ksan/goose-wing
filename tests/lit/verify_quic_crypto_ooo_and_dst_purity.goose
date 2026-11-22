@@ -3,7 +3,7 @@
 
 // Verification LIT test for RFC 9000 Section 7.5 QUIC out-of-order CRYPTO
 // stream reassembly and full DST determinism purity across core::now,
-// core::csprng_fill/csprng_u64, tls::random_bytes_32, and
+// core::csprng_fill/csprng_u64, tls_internal::random_bytes_32, and
 // http::generate_multipart_boundary.
 // RUN: goose %s | %FileCheck %s
 
@@ -252,7 +252,7 @@ fn test_live_quic_crypto_lossy_dst() {
 }
 
 // 5. Full DST purity run capturing core::now, core::csprng_fill, core::csprng_u64,
-//    tls::random_bytes_32, and http::generate_multipart_boundary.
+//    tls_internal::random_bytes_32, and http::generate_multipart_boundary.
 fn run_dst_purity_sample(seed: u64) -> DstPuritySample {
     var world = net::DstWorld { .. };
     net::dst_init(world, seed, SIM_BASE_UNIX_NS);
@@ -273,8 +273,8 @@ fn run_dst_purity_sample(seed: u64) -> DstPuritySample {
     s.csprng_u64_a = u_a;
     s.csprng_u64_b = u_b;
 
-    s.tls_rand_a = tls::random_bytes_32();
-    s.tls_rand_b = tls::random_bytes_32();
+    s.tls_rand_a = tls_internal::random_bytes_32();
+    s.tls_rand_b = tls_internal::random_bytes_32();
     assert(s.tls_rand_a[..] != s.tls_rand_b[..]);
 
     s.boundary_a = http::generate_multipart_boundary();
@@ -318,8 +318,8 @@ fn test_dst_purity_and_os_resume() {
     let lu2, ok_l2 = core::csprng_u64();
     assert(ok_l1 && ok_l2 && lu1 != lu2);
 
-    let lt1 = tls::random_bytes_32();
-    let lt2 = tls::random_bytes_32();
+    let lt1 = tls_internal::random_bytes_32();
+    let lt2 = tls_internal::random_bytes_32();
     assert(lt1[..] != lt2[..] && lt1[..] != run1.tls_rand_a[..]);
 
     let lb1 = http::generate_multipart_boundary();

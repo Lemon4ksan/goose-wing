@@ -12,7 +12,11 @@ import .internal;
 import .asn1;
 import .types;
 import .x509;
-import .pki_internal;
+import .pki_sig_internal;
+import .pki_x509_ext_internal;
+import .pki_nc_san_internal;
+import .pki_ocsp_internal;
+import .pki_crl_internal;
 
 // Scans `raw` starting at `idx` for the next PEM-encapsulated block (RFC 7468).
 // Extracts the encapsulation label and decodes the Base64 payload into `out_der`.

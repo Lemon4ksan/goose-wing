@@ -94,10 +94,10 @@ fn test_tls_slice_codecs_and_ktls_probe() {
     assert(slot_s != 0xFFFF && slot_c != 0xFFFF);
     let key: u8[16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let iv:  u8[12] = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2];
-    tls::init_cipher_slot_for_test(
+    tls_internal::init_cipher_slot_for_test(
         slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, key[..], iv,
     );
-    tls::init_cipher_slot_for_test(
+    tls_internal::init_cipher_slot_for_test(
         slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, key[..], iv, key[..], iv,
     );
 

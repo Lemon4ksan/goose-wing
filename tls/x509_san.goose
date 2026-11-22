@@ -11,7 +11,11 @@ import .internal;
 import .asn1;
 import .record;
 import .types;
-import .pki_internal;
+import .pki_sig_internal;
+import .pki_x509_ext_internal;
+import .pki_nc_san_internal;
+import .pki_ocsp_internal;
+import .pki_crl_internal;
 
 fn matches_trust_anchor(store: const TrustAnchorStore&, cert: const ParsedCert&, raw_cert: const u8[:]) -> bool {
     let s_slice = span_slice(raw_cert, cert.subject_raw);
@@ -126,74 +130,6 @@ fn validate_san_dns_name(dns: const u8[:]) -> bool {
     return true;
 }
 
-inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type: SanType&) -> bool {
-    if tag_num == 1 { // rfc822Name [1] IA5String
-        guard elem_buf.len > 0 && !elem_buf.contains_byte(0) else { return false; }
-        out_type = SanType.Email;
-        return true;
-    }
-    if tag_num == 2 { // dNSName [2] IA5String
-        guard validate_san_dns_name(elem_buf) else { return false; }
-        out_type = SanType.Dns;
-        return true;
-    }
-    if tag_num == 7 { // iPAddress [7] OCTET STRING
-        guard elem_buf.len == 4 || elem_buf.len == 16 else { return false; }
-        out_type = SanType.Ip;
-        return true;
-    }
-    if tag_num == 4 { // directoryName [4] EXPLICIT Name
-        guard elem_buf.len > 0 else { return false; }
-        out_type = SanType.DirName;
-        return true;
-    }
-    if tag_num == 6 { // uniformResourceIdentifier [6] IA5String
-        guard elem_buf.len > 0 && tls_internal::x509_has_valid_uri_scheme(elem_buf) else { return false; }
-        guard !elem_buf.contains_byte('%') && !elem_buf.contains_byte(0) else { return false; }
-        out_type = SanType.Uri;
-        return true;
-    }
-    guard tag_num <= 8 else { return false; }
-    out_type = SanType.Other;
-    return true;
-}
-
-fn x509_open_san_sequence(san_der: const u8[:], out_seq: core::ByteCursor&) -> bool {
-    var c = core::cursor_from(san_der);
-    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, out_seq) &&
-        c.cursor_len() == 0 &&
-        out_seq.cursor_len() > 0 else {
-        return false;
-    }
-    return true;
-}
-
-// Reads and classifies the next GeneralName entry from an open SubjectAltName cursor.
-//
-// Example:
-//   names_seq = [0x82, 0x0B, "example.com"]
-//   returns: SanEntry { san_type: SanType.Dns, val: "example.com" }, ok = true
-fn x509_next_san_entry(names_seq: core::ByteCursor&) -> SanEntry, bool {
-    var tag: u8 = 0;
-    var elem = core::cursor_from(names_seq.buf[..0]);
-    guard get_any_asn1_element(names_seq, tag, elem) else {
-        return SanEntry { san_type: SanType.Other, val: names_seq.buf[..0] }, false;
-    }
-
-    let tag_num = tag & 0x1F;
-    var st = SanType.Other;
-    guard x509_classify_san_element(tag_num, elem.buf, st) else {
-        return SanEntry { san_type: SanType.Other, val: names_seq.buf[..0] }, false;
-    }
-    return SanEntry { san_type: st, val: elem.buf }, true;
-}
-
-fn x509_parse_single_san<S>(names_seq: core::ByteCursor&, out_sans: S&) -> bool {
-    let entry, ok = x509_next_san_entry(names_seq);
-    guard ok else { return false; }
-    return out_sans.try_push(entry);
-}
-
 // RFC 5280 Section 4.2.1.6: Subject Alternative Name - Parses GeneralNames with transactional rollback.
 //
 // Example:
@@ -204,12 +140,12 @@ fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool {
     defer if !committed { out_sans.clear(); };
 
     var names_seq = core::cursor_from(san_der[..0]);
-    guard x509_open_san_sequence(san_der, names_seq) else { return false; }
+    guard tls_internal::x509_open_san_sequence(san_der, names_seq) else { return false; }
     out_sans.clear();
 
     var count: i64 = 0;
     while names_seq.cursor_len() > 0 {
-        guard x509_parse_single_san(names_seq, out_sans) else { return false; }
+        guard tls_internal::x509_parse_single_san(names_seq, out_sans) else { return false; }
         count++;
     }
     guard count > 0 else { return false; }
@@ -217,33 +153,15 @@ fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool {
     return true;
 }
 
-// Validates all GeneralNames in a raw SubjectAltName extension without any entry-count cap.
-fn validate_san_extension(san_der: const u8[:]) -> bool {
-    var names_seq = core::cursor_from(san_der[..0]);
-    guard x509_open_san_sequence(san_der, names_seq) else { return false; }
-    var seen_any = false;
-    while names_seq.cursor_len() > 0 {
-        let _, ok = x509_next_san_entry(names_seq);
-        guard ok else { return false; }
-        seen_any = true;
-    }
-    return seen_any;
-}
-
-fn validate_cert_san_extension(cert: const ParsedCert&, raw_cert: const u8[:]) -> bool {
-    guard cert.has_san else { return false; }
-    return validate_san_extension(span_slice(raw_cert, cert.san_raw));
-}
-
 // Streams and validates all SAN entries on `cert`, returning true iff valid and at least one matches `host`.
 fn match_cert_san_host(cert: const ParsedCert&, raw_cert: const u8[:], host: const u8[:]) -> bool {
     guard cert.has_san else { return false; }
     var names_seq = core::cursor_from(raw_cert[..0]);
-    guard x509_open_san_sequence(span_slice(raw_cert, cert.san_raw), names_seq) else { return false; }
+    guard tls_internal::x509_open_san_sequence(span_slice(raw_cert, cert.san_raw), names_seq) else { return false; }
     var matched = false;
     var seen_any = false;
     while names_seq.cursor_len() > 0 {
-        let entry, ok = x509_next_san_entry(names_seq);
+        let entry, ok = tls_internal::x509_next_san_entry(names_seq);
         guard ok else { return false; }
         if !matched && match_san(entry, host) {
             matched = true;
@@ -443,70 +361,6 @@ fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEn
     return true;
 }
 
-// RFC 5280 Section 4.2.1.10: Name Constraints - Matches DirectoryName RDNSequence prefix.
-fn match_dn_name_constraint(candidate_dn: const u8[:], constraint_dn: const u8[:]) -> bool {
-    guard candidate_dn.len > 0 && constraint_dn.len > 0 else { return false; }
-    if candidate_dn == constraint_dn {
-        return true;
-    }
-    var cand_c = core::cursor_from(candidate_dn);
-    var cons_c = core::cursor_from(constraint_dn);
-    var cand_seq = core::cursor_from(candidate_dn[..0]);
-    var cons_seq = core::cursor_from(constraint_dn[..0]);
-    guard get_asn1_element(cand_c, rfc::ASN1_TAG_SEQUENCE, cand_seq) &&
-        get_asn1_element(cons_c, rfc::ASN1_TAG_SEQUENCE, cons_seq) &&
-        cand_c.cursor_len() == 0 &&
-        cons_c.cursor_len() == 0 else {
-        return false;
-    }
-    return core::starts_with(cand_seq.buf, cons_seq.buf);
-}
-
-inline fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEntry&) -> bool {
-    if nc.san_type == SanType.Dns {
-        return match_dns_name_constraint(san.val, nc.val);
-    }
-    if nc.san_type == SanType.Ip {
-        return match_ip_name_constraint(san.val, nc.val);
-    }
-    if nc.san_type == SanType.Uri {
-        return match_uri_name_constraint(san.val, nc.val);
-    }
-    if nc.san_type == SanType.Email {
-        return match_email_name_constraint(san.val, nc.val);
-    }
-    if nc.san_type == SanType.DirName {
-        return match_dn_name_constraint(san.val, nc.val);
-    }
-    return false;
-}
-
-fn x509_eval_single_nc(
-    nc:                const NameConstraintEntry&,
-    san:               const SanEntry&,
-    has_permitted:     bool&,
-    matched_permitted: bool&,
-) -> bool {
-    if nc.san_type != san.san_type {
-        return true;
-    }
-    // RFC 5280 Section 4.2.1.10: Name Constraints - Unsupported name form constraints MUST reject matching SANs.
-    if nc.san_type == SanType.Other {
-        return false;
-    }
-    let matched = x509_match_constraint_entry(nc, san);
-    if nc.is_excluded {
-        // CVE-2025-61727: Reject wildcard DNS SAN (e.g. *.example.com) that can match an excluded DNS subtree.
-        let wildcard_overlap = nc.san_type == SanType.Dns && match_dns_san(san.val, nc.val);
-        return !matched && !wildcard_overlap;
-    }
-    has_permitted = true;
-    if matched {
-        matched_permitted = true;
-    }
-    return true;
-}
-
 // Matches a single SAN against parsed Name Constraints.
 fn check_name_constraints(
     constraints: const NameConstraintEntry[..16]&,
@@ -516,31 +370,12 @@ fn check_name_constraints(
     var matched_permitted = false;
 
     for i in constraints.len {
-        guard x509_eval_single_nc(constraints[i], san, has_permitted, matched_permitted) else {
+        guard tls_internal::x509_eval_single_nc(constraints[i], san, has_permitted, matched_permitted) else {
             return false;
         }
     }
 
     return !has_permitted || matched_permitted;
-}
-
-// Streams and enforces parsed NameConstraints against every SAN on `cert` without any entry-count cap.
-fn check_cert_sans_against_nc(
-    nc_entries: const NameConstraintEntry[..16]&,
-    cert:       const ParsedCert&,
-    raw_cert:   const u8[:],
-) -> bool {
-    guard cert.has_san else { return true; }
-    var names_seq = core::cursor_from(raw_cert[..0]);
-    guard x509_open_san_sequence(span_slice(raw_cert, cert.san_raw), names_seq) else { return false; }
-    var seen_any = false;
-    while names_seq.cursor_len() > 0 {
-        let entry, ok = x509_next_san_entry(names_seq);
-        guard ok else { return false; }
-        guard check_name_constraints(nc_entries, entry) else { return false; }
-        seen_any = true;
-    }
-    return seen_any;
 }
 
 fn x509_verify_cert_signature(

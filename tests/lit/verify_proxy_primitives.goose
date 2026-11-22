@@ -157,7 +157,7 @@ fn test_http_proxy_and_tls_chain() {
     let _ = ca_item.try_append(ca_bytes[..]);
     let chain: u8[..4096][1] = [ca_item];
     var cert_out: u8[..1024] = [];
-    assert(tls::encode_client_certificate_chain(cert_out, "", leaf[..], chain[..]));
+    assert(tls_internal::encode_client_certificate_chain(cert_out, "", leaf[..], chain[..]));
     assert(cert_out.len == 20);
     print("HTTP_PROXY_TLS_CHAIN_OK\n");
     // CHECK: HTTP_PROXY_TLS_CHAIN_OK

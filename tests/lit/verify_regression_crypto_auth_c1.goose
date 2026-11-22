@@ -149,7 +149,7 @@ fn test_bug3_tls_crl_verification_and_tickets() {
     for _ in 64 { forged_crl.buf.push(0xAA); }
     assert(core::finish_u8_prefix(forged_crl));
 
-    let forged_crl_accepted = tls::verify_crl_for_chain(forged_crl.buf[..], chain_parsed, chain_slices);
+    let forged_crl_accepted = tls_internal::verify_crl_for_chain(forged_crl.buf[..], chain_parsed, chain_slices);
 
     // Build a validly signed CRL using ca_seed -> verify_crl_for_chain MUST accept it (serial 1 not revoked).
     let valid_crl_sig = core::ed25519_sign(ca_seed, b_tbs.buf[..]);
@@ -164,7 +164,7 @@ fn test_bug3_tls_crl_verification_and_tickets() {
     core::put_bytes(valid_crl, valid_crl_sig[..]);
     assert(core::finish_u8_prefix(valid_crl));
 
-    let valid_crl_accepted = tls::verify_crl_for_chain(valid_crl.buf[..], chain_parsed, chain_slices);
+    let valid_crl_accepted = tls_internal::verify_crl_for_chain(valid_crl.buf[..], chain_parsed, chain_slices);
 
     // 3B. CRL with mismatched inner TBSCertList.signature OID vs outer signatureAlgorithm OID must fail parse_x509_crl.
     var mismatch_crl = core::builder_init();

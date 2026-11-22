@@ -618,7 +618,7 @@ fn test_ech_protocol(t: lit::T&) {
 
         // Pad inner hello to hide length
         var inner_padded: u8[..512] = [];
-        let ok_pad = tls::pad_ech_inner(inner_hello[..], config.maximum_name_length, real_sni.len, inner_padded);
+        let ok_pad = tls_internal::pad_ech_inner(inner_hello[..], config.maximum_name_length, real_sni.len, inner_padded);
         sub.assert_true(ok_pad, "pad_ech_inner succeeds");
         sub.assert_gt(inner_padded.len, inner_hello.len, "padding added");
         sub.assert_eq(inner_padded.len % 32, 0, "padded length aligned to 32 bytes");
@@ -648,14 +648,14 @@ fn test_ech_protocol(t: lit::T&) {
 
         // Format outer ECH extension
         var outer_ext_bytes: u8[..512] = [];
-        let ok_ext = tls::build_ech_outer_extension(config.config_id, cs, enc, ciphertext[..], outer_ext_bytes);
+        let ok_ext = tls_internal::build_ech_outer_extension(config.config_id, cs, enc, ciphertext[..], outer_ext_bytes);
         sub.assert_true(ok_ext, "build_ech_outer_extension succeeds");
         sub.assert_eq(outer_ext_bytes[0], rfc::ECH_CLIENT_OUTER, "outer flag is 0x00");
         sub.assert_eq(outer_ext_bytes[5], 7, "config_id is 7");
 
         // Format inner ECH extension (must be 1 byte: 0x01)
         var inner_ext_bytes: u8[>..] = [];
-        tls::build_ech_inner_extension(inner_ext_bytes);
+        tls_internal::build_ech_inner_extension(inner_ext_bytes);
         sub.assert_eq(inner_ext_bytes.len, 1, "inner extension is 1 byte");
         sub.assert_eq(inner_ext_bytes[0], rfc::ECH_CLIENT_INNER, "inner flag is 0x01");
 
@@ -844,7 +844,7 @@ fn test_empty_client_certificate(t: lit::T&) {
         let enc_ok = tls::encode_client_certificate(cert_buf, "", "");
         sub.assert_true(enc_ok, "Encoded empty client Certificate");
 
-        let is_empty, ok_p = tls::parse_certificate_header_is_empty(cert_buf[..]);
+        let is_empty, ok_p = tls_internal::parse_certificate_header_is_empty(cert_buf[..]);
         sub.assert_true(ok_p, "Parsed certificate header");
         sub.assert_true(is_empty, "Certificate list is empty");
 
@@ -890,7 +890,7 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
         sub.assert_eq(scheme, rfc::SIG_SCHEME_ED25519, "Scheme is Ed25519");
         sub.assert_eq(parsed_sig.len, 64, "Signature length is 64 bytes");
 
-        let verify_ok = tls::verify_client_certificate_verify(
+        let verify_ok = tls_internal::verify_client_certificate_verify(
             scheme,
             parsed_sig,
             client_pub[..],
@@ -902,7 +902,7 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
         var tampered_sig: u8[64] = [0; 64];
         for i in 64 { tampered_sig[i] = parsed_sig[i]; }
         tampered_sig[10] = tampered_sig[10] ^ 0xFF;
-        let tampered_ok = tls::verify_client_certificate_verify(
+        let tampered_ok = tls_internal::verify_client_certificate_verify(
             scheme,
             tampered_sig[..],
             client_pub[..],
@@ -912,7 +912,7 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
 
         // Wrong public key rejected
         var wrong_pub: u8[32] = [0xFF; 32];
-        let wrong_pub_ok = tls::verify_client_certificate_verify(
+        let wrong_pub_ok = tls_internal::verify_client_certificate_verify(
             scheme,
             parsed_sig,
             wrong_pub[..],
@@ -922,7 +922,7 @@ fn test_client_certificate_verify_ed25519(t: lit::T&) {
 
         // Wrong transcript hash rejected
         var wrong_hash: u8[32] = [0x00; 32];
-        let wrong_hash_ok = tls::verify_client_certificate_verify(
+        let wrong_hash_ok = tls_internal::verify_client_certificate_verify(
             scheme,
             parsed_sig,
             client_pub[..],
@@ -1052,7 +1052,7 @@ fn test_rfc8879_certificate_compression(t: lit::T&) {
     t.run("1. RFC 8879 Extension & Handshake Message Codecs") { sub =>
         let algos: u16[2] = [rfc::CERT_COMPRESSION_ZSTD, rfc::CERT_COMPRESSION_BROTLI];
         var ext_wire: u8[>..] = [];
-        tls::encode_compress_certificate_extension(ext_wire, algos[..]);
+        tls_internal::encode_compress_certificate_extension(ext_wire, algos[..]);
 
         sub.assert_eq(ext_wire.len, 2 + 2 + 1 + 4, "Extension wire length: 2 type + 2 len + 1 list_len + 4 algorithms = 9 bytes");
         let ext_type = ((ext_wire[0] as u16) << 8) | ext_wire[1];
@@ -1065,7 +1065,7 @@ fn test_rfc8879_certificate_compression(t: lit::T&) {
 
         var hs_payload: u8[>..] = [];
         sub.assert_true(
-            tls::encode_compressed_certificate_payload(
+            tls_internal::encode_compressed_certificate_payload(
                 hs_payload,
                 rfc::CERT_COMPRESSION_ZSTD,
                 fake_cert.len as u32,
@@ -1074,11 +1074,11 @@ fn test_rfc8879_certificate_compression(t: lit::T&) {
             "Encode CompressedCertificate payload succeeds",
         );
         sub.assert_false(
-            tls::encode_compressed_certificate_payload(hs_payload, rfc::CERT_COMPRESSION_ZSTD, 0, compressed[..]),
+            tls_internal::encode_compressed_certificate_payload(hs_payload, rfc::CERT_COMPRESSION_ZSTD, 0, compressed[..]),
             "Encode CompressedCertificate rejects uncompressed_len == 0",
         );
 
-        let parsed, ok_parse = tls::parse_compressed_certificate(hs_payload[..]);
+        let parsed, ok_parse = tls_internal::parse_compressed_certificate(hs_payload[..]);
         sub.assert_true(ok_parse, "Parse CompressedCertificate payload");
         sub.assert_eq(parsed.algorithm, rfc::CERT_COMPRESSION_ZSTD, "Algorithm is Zstandard (3)");
         sub.assert_eq(parsed.uncompressed_len as i64, fake_cert.len as i64, "Uncompressed length matches original");
@@ -1099,7 +1099,7 @@ fn test_tls_client_hello_fragmentation(t: lit::T&) {
         var records: u8[>..] = [];
 
         let split_point: i64 = 20;
-        sub.assert_true(tls::fragment_client_hello(dummy_ch, split_point, records), "fragment_client_hello succeeds");
+        sub.assert_true(tls_internal::fragment_client_hello(dummy_ch, split_point, records), "fragment_client_hello succeeds");
 
         // Record 1: 5 bytes header + 20 bytes data = 25 bytes
         sub.assert_eq(records[0], 22, "Record 1 content type is Handshake (22)");
@@ -1833,7 +1833,7 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
             j += 1;
         }
 
-        // 3. CompressedCertificate (RFC 8879) malformed header & truncation checks via both tls::parse_compressed_certificate and tls_internal::parse_compressed_certificate_msg
+        // 3. CompressedCertificate (RFC 8879) malformed header & truncation checks via both tls_internal::parse_compressed_certificate and tls_internal::parse_compressed_certificate_msg
         let comp_bytes = "compressed_payload_bytes";
         var cc_msg = tls_internal::CompressedCertificate {
             algorithm:                      rfc::CERT_COMPRESSION_ZSTD,
@@ -1844,7 +1844,7 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
         sub.assert_true(tls_internal::encode_compressed_certificate(cc_msg, cc_wire), "encode CompressedCertificate message");
         var pub_cc_wire: u8[>..] = [];
         sub.assert_true(
-            tls::encode_compressed_certificate_payload(pub_cc_wire, rfc::CERT_COMPRESSION_ZSTD, 128, comp_bytes),
+            tls_internal::encode_compressed_certificate_payload(pub_cc_wire, rfc::CERT_COMPRESSION_ZSTD, 128, comp_bytes),
             "public encode_compressed_certificate_payload succeeds",
         );
         sub.assert_bytes_eq(pub_cc_wire[..], cc_wire[..], "public and internal RFC 8879 encoders produce identical 8B+data wire format");
@@ -1854,15 +1854,15 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
             var tmp_cc = tls_internal::CompressedCertificate { .. };
             let ok_cc_t = tls_internal::parse_compressed_certificate_msg(cc_wire[..k], tmp_cc);
             sub.assert_false(ok_cc_t, "truncated CompressedCertificate rejected by internal parser");
-            let _, ok_pub_t = tls::parse_compressed_certificate(pub_cc_wire[..k]);
-            sub.assert_false(ok_pub_t, "truncated CompressedCertificate rejected by public tls::parse_compressed_certificate");
+            let _, ok_pub_t = tls_internal::parse_compressed_certificate(pub_cc_wire[..k]);
+            sub.assert_false(ok_pub_t, "truncated CompressedCertificate rejected by public tls_internal::parse_compressed_certificate");
             k += 1;
         }
         var full_cc = tls_internal::CompressedCertificate { .. };
         sub.assert_true(tls_internal::parse_compressed_certificate_msg(cc_wire[..], full_cc), "full CompressedCertificate parsed");
         sub.assert_eq(full_cc.algorithm, rfc::CERT_COMPRESSION_ZSTD, "algorithm matches Zstd");
         sub.assert_eq(full_cc.uncompressed_length, 128, "uncompressed_length matches 128");
-        let full_pub_cc, ok_full_pub = tls::parse_compressed_certificate(pub_cc_wire[..]);
+        let full_pub_cc, ok_full_pub = tls_internal::parse_compressed_certificate(pub_cc_wire[..]);
         sub.assert_true(ok_full_pub, "full CompressedCertificate parsed by public API");
         sub.assert_eq(full_pub_cc.uncompressed_len, 128, "public API uncompressed_len matches 128");
 
@@ -1959,26 +1959,26 @@ fn test_rustls_vendor_conformance(t: lit::T&) {
 
         // 2. parse_client_supported_versions edge cases (RFC 8446 §4.2.1)
         let sv_valid: u8[5] = [0x04, 0x03, 0x04, 0x03, 0x03];
-        let has_13, ok_sv = tls::parse_client_supported_versions(sv_valid[..]);
+        let has_13, ok_sv = tls_internal::parse_client_supported_versions(sv_valid[..]);
         sub.assert_true(ok_sv && has_13, "valid client supported_versions [0x0304, 0x0303] accepted");
 
         let sv_dup: u8[5] = [0x04, 0x03, 0x04, 0x03, 0x04];
-        let _, ok_sv_dup = tls::parse_client_supported_versions(sv_dup[..]);
+        let _, ok_sv_dup = tls_internal::parse_client_supported_versions(sv_dup[..]);
         sub.assert_false(ok_sv_dup, "duplicate version 0x0304 in supported_versions rejected");
 
         let sv_empty: u8[1] = [0x00];
-        let _, ok_sv_empty = tls::parse_client_supported_versions(sv_empty[..]);
+        let _, ok_sv_empty = tls_internal::parse_client_supported_versions(sv_empty[..]);
         sub.assert_false(ok_sv_empty, "empty supported_versions list rejected");
 
         let sv_odd: u8[4] = [0x03, 0x03, 0x04, 0x03];
-        let _, ok_sv_odd = tls::parse_client_supported_versions(sv_odd[..]);
+        let _, ok_sv_odd = tls_internal::parse_client_supported_versions(sv_odd[..]);
         sub.assert_false(ok_sv_odd, "odd byte length in supported_versions rejected");
 
         // 3. NewSessionTicket validation (RFC 8446 §4.6.1):
         // Valid ticket with max_early_data_size = 16384
         var valid_nst_wire: u8[..64] = [];
         sub.assert_true(
-            tls::encode_new_session_ticket(valid_nst_wire, 3600, 0x11223344, "nonce1", "ticket-bytes-01", 16384),
+            tls_internal::encode_new_session_ticket(valid_nst_wire, 3600, 0x11223344, "nonce1", "ticket-bytes-01", 16384),
             "encode valid NewSessionTicket",
         );
         var parsed_nst = tls::NewSessionTicketMsg { .. };

@@ -246,10 +246,10 @@ thread_fn concurrent_io_worker(native_id: i64) {
     var wire: u8[256] = [0; 256];
     for _ in 500 {
         var st: i32 = 0;
-        let _ = tls::native_tls_backend_pending_wire(native_id);
-        let _ = tls::native_tls_backend_drain_wire(native_id, wire[..], st);
-        let _ = tls::native_tls_backend_step_handshake(native_id);
-        let _ = tls::native_tls_backend_is_established(native_id);
+        let _ = tls_internal::native_tls_backend_pending_wire(native_id);
+        let _ = tls_internal::native_tls_backend_drain_wire(native_id, wire[..], st);
+        let _ = tls_internal::native_tls_backend_step_handshake(native_id);
+        let _ = tls_internal::native_tls_backend_is_established(native_id);
     }
 }
 

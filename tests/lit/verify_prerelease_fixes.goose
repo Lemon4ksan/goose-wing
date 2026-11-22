@@ -244,7 +244,7 @@ fn test_live_tls_interop_fixes() {
         0x30, 0x00,
     ];
     var certs: const u8[:][..8] = [];
-    let ocsp_der, ok_chain = tls::parse_certificate_chain_and_ocsp(cert_msg[..], certs);
+    let ocsp_der, ok_chain = tls_internal::parse_certificate_chain_and_ocsp(cert_msg[..], certs);
     let f9_ok = ok_chain && certs.len == 1 && certs[0] == "CERT" &&
         ocsp_der.len == 2 && ocsp_der[0] == 0x30 && ocsp_der[1] == 0x00;
 
@@ -263,9 +263,9 @@ fn test_live_tls_interop_fixes() {
         0x00, 0x03, 0x00, 0x1D, // invalid odd NamedGroupList length
     ];
     var neg_alpn: u8[..32] = [];
-    let ok_ee1 = tls::parse_encrypted_extensions_alpn(ee_ok_wire[..], neg_alpn, "h2,http/1.1");
+    let ok_ee1 = tls_internal::parse_encrypted_extensions_alpn(ee_ok_wire[..], neg_alpn, "h2,http/1.1");
     let ee1_alpn_ok = ok_ee1 && neg_alpn[..] == "h2";
-    let ok_ee2 = tls::parse_encrypted_extensions_alpn(ee_bad_grp[..], neg_alpn, "h2,http/1.1");
+    let ok_ee2 = tls_internal::parse_encrypted_extensions_alpn(ee_bad_grp[..], neg_alpn, "h2,http/1.1");
     let f10_ok = ee1_alpn_ok && !ok_ee2;
 
     // 3. Finding #11: Legacy zero serial [0x00] accepted in X.509 TBS parser, strict validate_asn1_integer unchanged

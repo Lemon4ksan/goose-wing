@@ -54,7 +54,7 @@ fn test_zero_startup_and_oob_rejection() {
 
     let _, ok_ktls = tls::try_enable_ktls(0, 1);
     assert(!ok_ktls);
-    assert(!tls::send_encrypted_record(1, 0, rfc::TLS_CONTENT_APPLICATION_DATA, "hi"));
+    assert(!tls_internal::send_encrypted_record(1, 0, rfc::TLS_CONTENT_APPLICATION_DATA, "hi"));
     assert(tls::transport_send(1, 0, "hi") == -1);
     assert(tls::transport_send(1, 0xFFFF, "hi") == -1);
 
@@ -63,9 +63,9 @@ fn test_zero_startup_and_oob_rejection() {
     assert(tls::transport_recv_slice(1, 0xFFFF, rx_buf[..], 10) == -1);
     assert(!tls::send_key_update(1, 0, 0));
     assert(!tls::send_new_session_ticket(1, 0, 60, "n", "t"));
-    assert(tls::dispatch_post_handshake_record(-1, 0, "\x18\x00\x00\x01\x00") != tls::Alert.CloseNotify);
-    assert(!tls::process_received_nst(0, "1234"));
-    assert(!tls::process_received_nst(-1, "1234"));
+    assert(tls_internal::dispatch_post_handshake_record(-1, 0, "\x18\x00\x00\x01\x00") != tls::Alert.CloseNotify);
+    assert(!tls_internal::process_received_nst(0, "1234"));
+    assert(!tls_internal::process_received_nst(-1, "1234"));
     tls::transport_close(-1, 0);
     tls::transport_close(-1, 0xFFFF);
 
@@ -106,10 +106,10 @@ fn test_tls_lazy_slot_seal_unseal_wipe_and_reuse() {
     let c2s_iv:  u8[12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
     let s2c_iv:  u8[12] = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
 
-    tls::init_cipher_slot_for_test(
+    tls_internal::init_cipher_slot_for_test(
         slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, c2s_key[..], c2s_iv, s2c_key[..], s2c_iv,
     );
-    tls::init_cipher_slot_for_test(
+    tls_internal::init_cipher_slot_for_test(
         slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, s2c_key[..], s2c_iv, c2s_key[..], c2s_iv,
     );
 

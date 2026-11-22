@@ -10,7 +10,11 @@ import .internal;
 import .asn1;
 import .record;
 import .types;
-import .pki_internal;
+import .pki_sig_internal;
+import .pki_x509_ext_internal;
+import .pki_nc_san_internal;
+import .pki_ocsp_internal;
+import .pki_crl_internal;
 import .x509_san;
 
 fn validate_chain_cert_validity(cert: const tls::ParsedCert&, now_unix: i64) -> tls::Alert {
@@ -203,7 +207,7 @@ fn x509_validate_single_chain_cert(
         return tls::Alert.BadCertificate;
     }
     if cert.has_san {
-        guard tls::validate_cert_san_extension(cert, raw_cert) else {
+        guard validate_cert_san_extension(cert, raw_cert) else {
             return tls::Alert.BadCertificate;
         }
     }
@@ -263,7 +267,7 @@ fn x509_enforce_single_cert_nc(
         if j > 0 && x509_is_self_issued(chain_certs[j], raw_certs[j]) {
             continue;
         }
-        guard tls::check_cert_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
+        guard check_cert_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
             return false;
         }
     }
@@ -315,7 +319,7 @@ fn x509_enforce_anchor_name_constraints(
         if j > 0 && x509_is_self_issued(chain_certs[j], raw_certs[j]) {
             continue;
         }
-        guard tls::check_cert_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
+        guard check_cert_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
             return tls::Alert.BadCertificate;
         }
     }
@@ -442,4 +446,20 @@ fn x509_validate_chain_nodes(
         }
     }
     return tls::Alert.CloseNotify;
+}
+
+// Validates CABF BR / RFC 5280 self-signed Root CA constraints on AKI and EKU extensions.
+fn validate_self_signed_root_anchor(cert: const tls::ParsedCert&, raw_cert_der: const u8[:]) -> bool {
+    guard cert.is_ca && x509_is_self_issued(cert, raw_cert_der) else { return true; }
+    // CABF BR Section 7.1.2.1.2: Root CA certificates MUST NOT contain ExtendedKeyUsage.
+    guard !cert.has_eku else { return false; }
+    if cert.has_akid_ext {
+        guard cert.has_akid && !cert.akid_has_extra_fields else { return false; }
+        if cert.has_skid {
+            let akid = tls::span_slice(raw_cert_der, cert.akid_key_id);
+            let skid = tls::span_slice(raw_cert_der, cert.skid_key_id);
+            guard akid == skid else { return false; }
+        }
+    }
+    return true;
 }

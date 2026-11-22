@@ -1310,7 +1310,7 @@ fn test_server_tls_sni_extraction() {
     let client_random: u8[32] = [0x11; 32];
     let client_pub:    u8[32] = [0x22; 32];
     var ch_payload: u8[..2048] = [];
-    tls::build_client_hello_payload(
+    tls_internal::build_client_hello_payload(
         client_random, client_pub, "Api.Example.COM", "h2,http/1.1", ch_payload,
     );
     var ch_msg: u8[..2048] = [];
@@ -1325,7 +1325,7 @@ fn test_server_tls_sni_extraction() {
     var psk_resumed: bool      = false;
     var psk_secret:  u8[32]    = [0; 32];
 
-    assert(tls::parse_client_hello_for_server_sni(
+    assert(tls_internal::parse_client_hello_for_server_sni(
         ch_msg[..], "h2,http/1.1", sid, out_pub, out_alpn, out_sni, psk_resumed, psk_secret,
     ));
     assert(out_alpn[..] == "h2");
@@ -1574,7 +1574,7 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     let rnd:   u8[32] = [0x11; 32];
     let pub_k: u8[32] = [0x22; 32];
     var ch_body: u8[..512] = [];
-    tls::build_client_hello_payload(rnd, pub_k, "127.0.0.1", "h2", ch_body);
+    tls_internal::build_client_hello_payload(rnd, pub_k, "127.0.0.1", "h2", ch_body);
     var ch_hs: u8[..520] = [];
     ch_hs.push(rfc::TLS_HS_CLIENT_HELLO);
     core::append_u24_be(ch_hs, ch_body.len as u32);
@@ -1585,7 +1585,7 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     var out_sni:     u8[..255] = [];
     var psk_resumed: bool      = false;
     var psk_secret:  u8[32]    = [0; 32];
-    assert(tls::parse_client_hello_for_server_sni(
+    assert(tls_internal::parse_client_hello_for_server_sni(
         ch_hs[..], "h2,http/1.1", sid, out_pub, out_alpn, out_sni, psk_resumed, psk_secret,
     ));
     assert(out_sni.len == 0);
@@ -1641,7 +1641,7 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
     let slot_t = tls::alloc_cipher_slot();
     tls::g_tls_cipher_slots[slot_t as i64].cipher_suite = rfc::TLS_CIPHER_AES_128_GCM_SHA256;
     tls::g_tls_cipher_slots[slot_t as i64].key_len = 16;
-    assert(tls::send_encrypted_record(cfd_tls, slot_t, rfc::TLS_CONTENT_APPLICATION_DATA, "HELLO_TLS13"));
+    assert(tls_internal::send_encrypted_record(cfd_tls, slot_t, rfc::TLS_CONTENT_APPLICATION_DATA, "HELLO_TLS13"));
     tls::free_cipher_slot(slot_t);
     net::tcp_close(cfd_tls);
     net::tcp_close(sfd_tls);

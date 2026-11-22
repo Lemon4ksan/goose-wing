@@ -16,52 +16,23 @@ import .x509;
 import .ocsp;
 import .crl;
 import .ticket;
-import .post_quantum;
+import .pq_ntt_internal;
+import .pq_mlkem_internal;
 import .cert_compression;
 import .ech;
 import .session_internal;
+import .session_codec_internal;
 import .session;
-import .handshake_io_internal;
+import .handshake_io_client_internal;
+import .handshake_io_server_internal;
 import net.tcp;
+import .handshake_wire_internal;
+import .ech_internal;
+import .session_slot_internal;
+import .session_wire_internal;
 
 // Generates client handshake randomness, X25519 keypair, and optional ML-KEM-768 keypair.
 // Fails closed and wipes all private key material if OS CSPRNG fails.
-fn generate_client_handshake_keys(
-    enable_pq_hybrid: bool,
-    out_random:       u8[32]&,
-    out_x25519_priv:  u8[32]&,
-    out_x25519_pub:   u8[32]&,
-    out_pq_priv:      u8[2400]&,
-    out_pq_pub:       u8[1184]&,
-) -> bool {
-    var committed = false;
-    defer if !committed {
-        core::secure_zeroize_32(out_random);
-        core::secure_zeroize_32(out_x25519_priv);
-        core::secure_zeroize_32(out_x25519_pub);
-        core::secure_zeroize_slice(out_pq_priv[..]);
-        core::secure_zeroize_slice(out_pq_pub[..]);
-    };
-    guard random_bytes_32_checked(out_random) && random_bytes_32_checked(out_x25519_priv) else {
-        return false;
-    }
-    out_x25519_pub = core::x25519_base_scalarmult(out_x25519_priv);
-    if enable_pq_hybrid {
-        var pq_d: u8[32] = [0; 32];
-        var pq_z: u8[32] = [0; 32];
-        defer core::secure_zeroize_32(pq_d);
-        defer core::secure_zeroize_32(pq_z);
-        guard random_bytes_32_checked(pq_d) && random_bytes_32_checked(pq_z) else {
-            return false;
-        }
-        var ek, dk = tls_internal::mlkem768_keygen(pq_d, pq_z);
-        defer core::secure_zeroize_slice(dk[..]);
-        out_pq_priv = dk;
-        out_pq_pub = ek;
-    }
-    committed = true;
-    return true;
-}
 
 // Executes full TLS 1.3 client handshake over raw TCP socket, returning slot index (RFC 8446 §4).
 fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool {
@@ -77,7 +48,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     var pq_priv:    u8[2400] = [0; 2400];
     defer core::secure_zeroize_slice(pq_priv[..]);
     var pq_pub: u8[1184] = [0; 1184];
-    guard generate_client_handshake_keys(
+    guard tls_internal::generate_client_handshake_keys(
         config.enable_pq_hybrid, client_random, client_priv, client_pub, pq_priv, pq_pub,
     ) else {
         free_cipher_slot(slot_idx);
@@ -98,7 +69,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     tls_internal::prepare_ech_outer_extension(config, ech_ext_raw);
 
     var ch_payload: u8[..4096] = [];
-    build_client_hello_payload(
+    tls_internal::build_client_hello_payload(
         client_random, client_pub, config.server_name[..], config.alpn[..],
         ch_payload, psk_ticket[..], psk_age_add,
         config.enable_pq_hybrid, if config.enable_pq_hybrid { pq_pub[..] } else { "" },
@@ -121,7 +92,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     tls_internal::tls_write_all(fd, ccs[..]);
 
     var transcript = Transcript { .. };
-    transcript_update(transcript, ch_msg[..]);
+    tls_internal::transcript_update(transcript, ch_msg[..]);
 
     var sh_msg: u8[..16384] = [];
     guard tls_internal::read_plaintext_handshake_record(fd, sh_msg, config.handshake_timeout_ms) else {
@@ -151,7 +122,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-        transcript_update(transcript, sh_msg[..]);
+        tls_internal::transcript_update(transcript, sh_msg[..]);
     }
 
     let cipher_suite = sh.cipher_suite;
@@ -239,7 +210,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     }
 
     var ch_sh_hash: u8[..48] = [];
-    transcript_current_hash(transcript, ks.hash_id, ch_sh_hash);
+    tls_internal::transcript_current_hash(transcript, ks.hash_id, ch_sh_hash);
     guard tls_internal::ks_derive_handshake_traffic(ks, ch_sh_hash[..]) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -288,7 +259,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     }
 
     var h_through_srv_fin: u8[..48] = [];
-    transcript_current_hash(transcript, ks.hash_id, h_through_srv_fin);
+    tls_internal::transcript_current_hash(transcript, ks.hash_id, h_through_srv_fin);
     guard tls_internal::ks_advance_to_master(ks, h_through_srv_fin[..]) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -304,7 +275,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     }
 
     var h_through_cli_fin: u8[..48] = [];
-    transcript_current_hash(transcript, ks.hash_id, h_through_cli_fin);
+    tls_internal::transcript_current_hash(transcript, ks.hash_id, h_through_cli_fin);
     tls_internal::ks_advance_to_resumption(ks, h_through_cli_fin[..]);
 
     var client_ap_key: u8[32] = [0; 32];

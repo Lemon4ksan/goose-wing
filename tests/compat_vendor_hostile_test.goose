@@ -344,7 +344,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         for i in 32 { tls::g_tls_cipher_slots[idx].rx_traffic_secret[i] = sender_sec[i]; }
         for i in 16 { tls::g_tls_cipher_slots[idx].rx_key[i] = sender_key[i]; }
         tls::g_tls_cipher_slots[idx].rx_iv = sender_iv;
-        tls::prepare_cipher_aes_key(
+        tls_internal::prepare_cipher_aes_key(
             rfc::TLS_CIPHER_AES_128_GCM_SHA256,
             tls::g_tls_cipher_slots[idx].rx_key[..16],
             tls::g_tls_cipher_slots[idx].rx_aes_key,
@@ -380,13 +380,13 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
 
         var scratch:   u8[128]   = [0; 128];
         var out_plain: u8[..128] = [];
-        let st0 = tls::unseal_single_slot_record(
+        let st0 = tls_internal::unseal_single_slot_record(
             tls::g_tls_cipher_slots[idx], rec0[..5], rec0[5..len0], scratch[..], out_plain,
         );
-        let st1 = tls::unseal_single_slot_record(
+        let st1 = tls_internal::unseal_single_slot_record(
             tls::g_tls_cipher_slots[idx], rec1[..5], rec1[5..len1], scratch[..], out_plain,
         );
-        let st2 = tls::unseal_single_slot_record(
+        let st2 = tls_internal::unseal_single_slot_record(
             tls::g_tls_cipher_slots[idx], rec2[..5], rec2[5..len2], scratch[..], out_plain,
         );
         sub.assert_true(st0 == tls::SliceUnsealStatus.ControlHandled, "user_canceled warning ignored");
@@ -403,7 +403,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         let fake_psk: u8[32] = [0x99; 32];
 
         var ch_payload: u8[..1024] = [];
-        tls::build_client_hello_payload(
+        tls_internal::build_client_hello_payload(
             cli_rand, cli_pub, "api.example.com", "h2", ch_payload, "expired-ticket-id", 100,
         );
         var ch_msg: u8[..1024] = [];
@@ -418,7 +418,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         let trunc_ch, ok_tr = tls_internal::truncate_client_hello_for_binder(ch_msg[..], 33);
         sub.assert_true(ok_tr, "truncated CH for binder");
         var binder: u8[32] = [0; 32];
-        sub.assert_true(tls::compute_psk_binder(b_key, trunc_ch, binder), "computed PSK binder");
+        sub.assert_true(tls_internal::compute_psk_binder(b_key, trunc_ch, binder), "computed PSK binder");
         let b_start = ch_msg.len - 32;
         for i in 32 { ch_msg[b_start + i] = binder[i]; }
 
@@ -427,7 +427,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         var alpn:    u8[..32] = [];
         var resumed = true;
         var out_psk: u8[32] = [0; 32];
-        let ok_unknown = tls::parse_client_hello_for_server(
+        let ok_unknown = tls_internal::parse_client_hello_for_server(
             ch_msg[..], "h2", sid, out_pub, alpn, resumed, out_psk,
         );
         sub.assert_true(ok_unknown, "unknown PSK identity does not abort ClientHello");
@@ -438,7 +438,7 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         tls::store_session_ticket(
             "api.example.com", "expired-ticket-id", server_psk[..], 0, 3600, rfc::TLS_CIPHER_AES_128_GCM_SHA256,
         );
-        let ok_forged = tls::parse_client_hello_for_server(
+        let ok_forged = tls_internal::parse_client_hello_for_server(
             ch_msg[..], "h2", sid, out_pub, alpn, resumed, out_psk,
         );
         sub.assert_false(ok_forged, "known PSK identity with invalid binder MUST abort handshake");

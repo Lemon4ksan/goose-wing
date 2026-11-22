@@ -22,9 +22,9 @@ fn test_csprng_checked_dst_and_fail_closed() {
     // 1a. Normal OS CSPRNG path succeeds and ratchets entropy pool.
     var r1: u8[32] = [0; 32];
     var r2: u8[32] = [0; 32];
-    assert(tls::random_bytes_32_checked(r1));
+    assert(tls_internal::random_bytes_32_checked(r1));
     let pool_after_r1 = tls::g_tls_entropy_pool;
-    assert(tls::random_bytes_32_checked(r2));
+    assert(tls_internal::random_bytes_32_checked(r2));
     assert(!all_bytes_zero(r1[..]));
     assert(!all_bytes_zero(r2[..]));
     assert(!core::ct_eq_bytes(r1[..], r2[..]));
@@ -35,15 +35,15 @@ fn test_csprng_checked_dst_and_fail_closed() {
     core::sim_rng_enable(0x1337C0DE);
     var d1: u8[32] = [0; 32];
     var d2: u8[32] = [0; 32];
-    assert(tls::random_bytes_32_checked(d1));
-    assert(tls::random_bytes_32_checked(d2));
+    assert(tls_internal::random_bytes_32_checked(d1));
+    assert(tls_internal::random_bytes_32_checked(d2));
     assert(!core::ct_eq_bytes(d1[..], d2[..]));
 
     core::sim_rng_enable(0x1337C0DE);
     var d1_rep: u8[32] = [0; 32];
     var d2_rep: u8[32] = [0; 32];
-    assert(tls::random_bytes_32_checked(d1_rep));
-    assert(tls::random_bytes_32_checked(d2_rep));
+    assert(tls_internal::random_bytes_32_checked(d1_rep));
+    assert(tls_internal::random_bytes_32_checked(d2_rep));
     assert(core::ct_eq_bytes(d1[..], d1_rep[..]));
     assert(core::ct_eq_bytes(d2[..], d2_rep[..]));
     core::sim_rng_disable();
@@ -53,12 +53,12 @@ fn test_csprng_checked_dst_and_fail_closed() {
     defer tls_internal::tls_set_csprng_fault_for_test(false);
 
     var tainted: u8[32] = [0xAA; 32];
-    assert(!tls::random_bytes_32_checked(tainted));
+    assert(!tls_internal::random_bytes_32_checked(tainted));
     assert(all_bytes_zero(tainted[..]));
     assert(all_bytes_zero(tls::g_tls_entropy_pool[..]));
     assert(tls::g_tls_entropy_counter == 0);
 
-    let zero_fallback = tls::random_bytes_32();
+    let zero_fallback = tls_internal::random_bytes_32();
     assert(all_bytes_zero(zero_fallback[..]));
     assert(all_bytes_zero(tls::g_tls_entropy_pool[..]));
 
@@ -72,7 +72,7 @@ fn test_csprng_checked_dst_and_fail_closed() {
     var ch_payload: u8[..4096] = [];
     let dummy_rand: u8[32] = [0x11; 32];
     let dummy_pub:  u8[32] = [0x22; 32];
-    tls::build_client_hello_payload(dummy_rand, dummy_pub, "hardening.example", "h2", ch_payload);
+    tls_internal::build_client_hello_payload(dummy_rand, dummy_pub, "hardening.example", "h2", ch_payload);
     var ch_msg: u8[..4096] = [];
     ch_msg.push(rfc::TLS_HS_CLIENT_HELLO);
     ch_msg.append_u24_be(ch_payload.len as u32);
@@ -84,7 +84,7 @@ fn test_csprng_checked_dst_and_fail_closed() {
     // Recovery after fault cleared.
     tls_internal::tls_set_csprng_fault_for_test(false);
     var rec: u8[32] = [0; 32];
-    assert(tls::random_bytes_32_checked(rec));
+    assert(tls_internal::random_bytes_32_checked(rec));
     assert(!all_bytes_zero(rec[..]));
     print("CSPRNG_FAIL_CLOSED_AND_DST: OK");
 }
@@ -182,10 +182,10 @@ fn test_auto_key_update_and_hard_limit_fail_closed() {
     assert(tls_internal::ks_derive_key_iv(tls_internal::HASH_SHA256, c2s_sec[..], 16, c2s_key[..], c2s_iv));
     assert(tls_internal::ks_derive_key_iv(tls_internal::HASH_SHA256, s2c_sec[..], 16, s2c_key[..], s2c_iv));
 
-    tls::init_cipher_slot_for_test(
+    tls_internal::init_cipher_slot_for_test(
         slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, c2s_key[..], c2s_iv, s2c_key[..], s2c_iv,
     );
-    tls::init_cipher_slot_for_test(
+    tls_internal::init_cipher_slot_for_test(
         slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, s2c_key[..], s2c_iv, c2s_key[..], c2s_iv,
     );
 
@@ -237,14 +237,14 @@ fn test_hard_limit_fail_closed() {
 
     let k16: u8[16] = [0x24; 16];
     let iv:  u8[12] = [0x88; 12];
-    tls::init_cipher_slot_for_test(slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, k16[..], iv, k16[..], iv);
-    tls::init_cipher_slot_for_test(slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, k16[..], iv, k16[..], iv);
+    tls_internal::init_cipher_slot_for_test(slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, k16[..], iv, k16[..], iv);
+    tls_internal::init_cipher_slot_for_test(slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, k16[..], iv, k16[..], iv);
     let c_idx = slot_c as i64;
     let s_idx = slot_s as i64;
 
     // Socket TX and KeyUpdate fail closed at TLS_AES_GCM_HARD_RECORD_LIMIT.
     tls::g_tls_cipher_slots[c_idx].tx_seq = tls::TLS_AES_GCM_HARD_RECORD_LIMIT;
-    assert(!tls::send_encrypted_record(fd_c, slot_c, rfc::TLS_CONTENT_APPLICATION_DATA, "blocked"));
+    assert(!tls_internal::send_encrypted_record(fd_c, slot_c, rfc::TLS_CONTENT_APPLICATION_DATA, "blocked"));
     assert(tls::transport_send(fd_c, slot_c, "blocked") == -1);
     assert(!tls::send_key_update(fd_c, slot_c, rfc::KEY_UPDATE_NOT_REQUESTED));
 
@@ -278,8 +278,8 @@ fn test_hard_limit_fail_closed() {
 
     // ChaCha20-Poly1305 allows (HARD_LIMIT - 1) and rejects HARD_LIMIT.
     let k32: u8[32] = [0x66; 32];
-    tls::init_cipher_slot_for_test(slot_c, rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256, k32[..], iv, k32[..], iv);
-    tls::init_cipher_slot_for_test(slot_s, rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256, k32[..], iv, k32[..], iv);
+    tls_internal::init_cipher_slot_for_test(slot_c, rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256, k32[..], iv, k32[..], iv);
+    tls_internal::init_cipher_slot_for_test(slot_s, rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256, k32[..], iv, k32[..], iv);
     tls::g_tls_cipher_slots[c_idx].tx_seq = tls::TLS_CHACHA20_HARD_RECORD_LIMIT - 1;
     tls::g_tls_cipher_slots[s_idx].rx_seq = tls::TLS_CHACHA20_HARD_RECORD_LIMIT - 1;
 

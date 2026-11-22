@@ -432,9 +432,9 @@ fn test_http_sfv_dcb_and_cache_lru() {
 
 fn test_tls_crypto_x509_and_cipher_selection() {
     // 4a. CSPRNG state ratchet regression (tls_random_bytes_32)
-    let r1 = tls::random_bytes_32();
+    let r1 = tls_internal::random_bytes_32();
     let pool_after_r1 = tls::g_tls_entropy_pool;
-    let r2 = tls::random_bytes_32();
+    let r2 = tls_internal::random_bytes_32();
     assert(!core::ct_eq_bytes(r1[..], r2[..]));
     assert(!core::ct_eq_bytes(pool_after_r1[..], r1[..]));
     assert(!core::ct_eq_bytes(tls::g_tls_entropy_pool[..], r2[..]));
@@ -502,11 +502,11 @@ fn test_tls_crypto_x509_and_cipher_selection() {
 
     // 4e. Server dynamic cipher suite selection (select_cipher_suite)
     let offer_chacha: u8[4] = [0x13, 0x03, 0x13, 0x01];
-    let cs_chacha, ok_cc = tls::select_cipher_suite(offer_chacha[..]);
+    let cs_chacha, ok_cc = tls_internal::select_cipher_suite(offer_chacha[..]);
     assert(ok_cc && cs_chacha == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256);
 
     let offer_aes256: u8[4] = [0x13, 0x02, 0x13, 0x01];
-    let cs_aes256, ok_a2 = tls::select_cipher_suite(offer_aes256[..]);
+    let cs_aes256, ok_a2 = tls_internal::select_cipher_suite(offer_aes256[..]);
     assert(ok_a2 && cs_aes256 == rfc::TLS_CIPHER_AES_256_GCM_SHA384);
 
     // 4f. CertificateVerify dynamic signing dispatch (Ed25519 & ECDSA P-256)
@@ -514,12 +514,12 @@ fn test_tls_crypto_x509_and_cipher_selection() {
     var ed_cert: u8[..2048] = [];
     assert(tls::build_test_ed25519_cert_der(cv_seed, "test.local", "test.local", "", ed_cert));
     var ed_sig_buf: u8[..128] = [];
-    let ed_scheme, ok_ed_sig = tls::sign_certificate_verify(
+    let ed_scheme, ok_ed_sig = tls_internal::sign_certificate_verify(
         ed_cert[..], cv_seed, "tls13-cv-payload", ed_sig_buf,
     );
     let ed_kp = core::ed25519_keypair(cv_seed);
     assert(ok_ed_sig && ed_scheme == rfc::SIG_SCHEME_ED25519);
-    assert(tls::verify_certificate_verify_sig(
+    assert(tls_internal::verify_certificate_verify_sig(
         ed_scheme, ed_sig_buf[..], ed_kp.public_key[..], "tls13-cv-payload",
     ));
 
