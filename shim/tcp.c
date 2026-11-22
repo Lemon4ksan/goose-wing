@@ -374,6 +374,66 @@ int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_
     return wing_tcp_connect(host, port, timeout_ms);
 }
 
+static int wing_wasm_is_ip_literal(const char *s, int *out_is_v6) {
+    if (s == NULL || s[0] == '\0') return 0;
+    int has_colon = (strchr(s, ':') != NULL);
+    int has_dot = (strchr(s, '.') != NULL);
+    if (!has_colon && !has_dot) return 0;
+    for (const char *p = s; *p != '\0'; p++) {
+        char c = *p;
+        int ok = (c >= '0' && c <= '9') || c == '.';
+        if (has_colon) {
+            ok = ok || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':';
+        }
+        if (!ok) return 0;
+    }
+    if (out_is_v6) *out_is_v6 = has_colon;
+    return 1;
+}
+
+int32_t wing_net_resolve_host(wing_bytes_ro host, int32_t ip_family, wing_bytes_rw out_buf) {
+    if (host.data == NULL || host.len <= 0 || host.len >= 256) return -1;
+    if (ip_family < 0 || ip_family > 2 || out_buf.data == NULL || out_buf.len <= 0) return -1;
+    char h[256];
+    slice_to_cstr(host, h, sizeof(h));
+    size_t hlen = strlen(h);
+    if (hlen >= 2 && h[0] == '[' && h[hlen - 1] == ']') {
+        memmove(h, h + 1, hlen - 2);
+        h[hlen - 2] = '\0';
+        hlen -= 2;
+    }
+    if (strcmp(h, "localhost") == 0) {
+        const char *res = (ip_family == 1) ? "127.0.0.1\n" : ((ip_family == 2) ? "::1\n" : "127.0.0.1\n::1\n");
+        int64_t n = (int64_t)strlen(res);
+        if (n > out_buf.len) return -1;
+        memcpy(out_buf.data, res, (size_t)n);
+        return (int32_t)n;
+    }
+    int is_v6 = 0;
+    if (!wing_wasm_is_ip_literal(h, &is_v6)) return -1;
+    if ((ip_family == 1 && is_v6) || (ip_family == 2 && !is_v6)) return -1;
+    if ((int64_t)hlen + 1 > out_buf.len) return -1;
+    memcpy(out_buf.data, h, hlen);
+    out_buf.data[hlen] = '\n';
+    return (int32_t)(hlen + 1);
+}
+
+int64_t wing_tcp_connect_ip(wing_bytes_ro ip, uint16_t port, uint32_t timeout_ms, int32_t ip_family,
+                            wing_bytes_ro local_bind_addr) {
+    if (ip.data == NULL || ip.len <= 0 || ip.len >= 128 || port == 0 || ip_family < 0 || ip_family > 2) return -1;
+    char s[128];
+    slice_to_cstr(ip, s, sizeof(s));
+    size_t slen = strlen(s);
+    if (slen >= 2 && s[0] == '[' && s[slen - 1] == ']') {
+        memmove(s, s + 1, slen - 2);
+        s[slen - 2] = '\0';
+    }
+    int is_v6 = 0;
+    if (!wing_wasm_is_ip_literal(s, &is_v6)) return -1;
+    if ((ip_family == 1 && is_v6) || (ip_family == 2 && !is_v6)) return -1;
+    return wing_tcp_connect_ex(ip, port, timeout_ms, ip_family, local_bind_addr);
+}
+
 int32_t wing_tcp_send(int64_t sock_fd, wing_bytes_ro data) {
     if (sock_fd <= 0 || sock_fd >= WASM_MAX_SOCKETS || !g_wasm_sockets[sock_fd].active || data.data == NULL ||
         data.len <= 0) {
@@ -1256,24 +1316,100 @@ static int wing_resolve_tcp_host(wing_bytes_ro host, uint16_t port, int allow_em
     return wing_resolve_tcp_host_family(host, port, allow_empty_loopback, 0, ss, out_family, out_len);
 }
 
-// Connects to remote host:port with timeout, address family constraint
-// (0 = AF_UNSPEC, 1 = AF_INET, 2 = AF_INET6), and optional local_bind_addr bind() before connect().
-int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms, int32_t ip_family,
-                            wing_bytes_ro local_bind_addr) {
-    if (port == 0 || ip_family < 0 || ip_family > 2) return -1;
-    wing_tcp_init();
+static int wing_append_unique_ip_line(wing_bytes_rw out_buf, int64_t *pos, char seen[16][INET6_ADDRSTRLEN],
+                                      int *seen_count, const char *ip_str) {
+    if (ip_str == NULL || ip_str[0] == '\0') return 0;
+    for (int i = 0; i < *seen_count; i++) {
+        if (strcmp(seen[i], ip_str) == 0) return 0;
+    }
+    if (*seen_count >= 16) return 0;
+    size_t slen = strlen(ip_str);
+    if (slen >= INET6_ADDRSTRLEN || *pos + (int64_t)slen + 1 > out_buf.len) return 0;
+    memcpy(seen[*seen_count], ip_str, slen + 1);
+    (*seen_count)++;
+    memcpy(out_buf.data + *pos, ip_str, slen);
+    *pos += (int64_t)slen;
+    out_buf.data[*pos] = '\n';
+    *pos += 1;
+    return 1;
+}
 
-    struct sockaddr_storage ss;
-    int family = AF_INET;
-#ifdef _WIN32
-    int addr_len = 0;
-#else
-    socklen_t addr_len = 0;
-#endif
-    if (wing_resolve_tcp_host_family(host, port, 1, ip_family, &ss, &family, &addr_len) != 0) {
-        return -1;
+// Resolves host (IPv4, IPv6, bracketed IPv6, "localhost", or DNS via getaddrinfo) into newline-separated
+// canonical IP strings. `ip_family`: 0 = Auto, 1 = IPv4Only, 2 = IPv6Only. Returns byte count (> 0) or -1.
+int32_t wing_net_resolve_host(wing_bytes_ro host, int32_t ip_family, wing_bytes_rw out_buf) {
+    if (host.data == NULL || host.len <= 0 || host.len >= 256) return -1;
+    if (ip_family < 0 || ip_family > 2 || out_buf.data == NULL || out_buf.len <= 0) return -1;
+    if (wing_tcp_init() != 0) return -1;
+
+    char host_str[256];
+    slice_to_cstr(host, host_str, sizeof(host_str));
+    size_t hlen = strlen(host_str);
+    if (hlen >= 2 && host_str[0] == '[' && host_str[hlen - 1] == ']') {
+        memmove(host_str, host_str + 1, hlen - 2);
+        host_str[hlen - 2] = '\0';
+    }
+    if (host_str[0] == '\0') return -1;
+
+    int64_t pos = 0;
+    char seen[16][INET6_ADDRSTRLEN];
+    int seen_count = 0;
+
+    if (strcmp(host_str, "localhost") == 0) {
+        if (ip_family != 2) wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, "127.0.0.1");
+        if (ip_family != 1) wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, "::1");
+        return pos > 0 ? (int32_t)pos : -1;
     }
 
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    char ipbuf[INET6_ADDRSTRLEN];
+    if (inet_pton(AF_INET, host_str, &addr4) == 1) {
+        if (ip_family == 2) return -1;
+        if (inet_ntop(AF_INET, &addr4, ipbuf, sizeof(ipbuf)) == NULL) return -1;
+        wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, ipbuf);
+        return pos > 0 ? (int32_t)pos : -1;
+    }
+    if (inet_pton(AF_INET6, host_str, &addr6) == 1) {
+        if (ip_family == 1) return -1;
+        if (inet_ntop(AF_INET6, &addr6, ipbuf, sizeof(ipbuf)) == NULL) return -1;
+        wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, ipbuf);
+        return pos > 0 ? (int32_t)pos : -1;
+    }
+
+    int req_family = (ip_family == 1) ? AF_INET : ((ip_family == 2) ? AF_INET6 : AF_UNSPEC);
+    struct addrinfo hints;
+    struct addrinfo *res_info = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = req_family;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
+        return -1;
+    }
+    for (struct addrinfo *ai = res_info; ai != NULL; ai = ai->ai_next) {
+        ipbuf[0] = '\0';
+        if (ai->ai_family == AF_INET && req_family != AF_INET6) {
+            const struct sockaddr_in *s4 = (const struct sockaddr_in *)ai->ai_addr;
+            if (inet_ntop(AF_INET, &s4->sin_addr, ipbuf, sizeof(ipbuf)) != NULL) {
+                wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, ipbuf);
+            }
+        } else if (ai->ai_family == AF_INET6 && req_family != AF_INET) {
+            const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)ai->ai_addr;
+            if (inet_ntop(AF_INET6, &s6->sin6_addr, ipbuf, sizeof(ipbuf)) != NULL) {
+                wing_append_unique_ip_line(out_buf, &pos, seen, &seen_count, ipbuf);
+            }
+        }
+    }
+    freeaddrinfo(res_info);
+    return pos > 0 ? (int32_t)pos : -1;
+}
+
+static int64_t wing_tcp_connect_sockaddr(const struct sockaddr_storage *ss, int family,
+#ifdef _WIN32
+                                         int addr_len,
+#else
+                                         socklen_t addr_len,
+#endif
+                                         uint32_t timeout_ms, wing_bytes_ro local_bind_addr) {
     SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
         return -1;
@@ -1316,7 +1452,7 @@ int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_
     }
 
     if (timeout_ms == 0) {
-        if (connect(s, (struct sockaddr *)&ss, addr_len) == SOCKET_ERROR) {
+        if (connect(s, (const struct sockaddr *)ss, addr_len) == SOCKET_ERROR) {
             closesocket(s);
             return -1;
         }
@@ -1331,7 +1467,7 @@ int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_
     fcntl(s, F_SETFL, flags | O_NONBLOCK);
 #endif
 
-    int res = connect(s, (struct sockaddr *)&ss, addr_len);
+    int res = connect(s, (const struct sockaddr *)ss, addr_len);
     if (res == SOCKET_ERROR) {
 #ifdef _WIN32
         int err = WSAGetLastError();
@@ -1373,6 +1509,74 @@ int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_
 #endif
 
     return (int64_t)s;
+}
+
+// Connects strictly to a numeric IPv4 or IPv6 literal without invoking DNS (getaddrinfo).
+// Rejects hostnames, "localhost", and empty strings to prevent TOCTOU DNS rebinding.
+int64_t wing_tcp_connect_ip(wing_bytes_ro ip, uint16_t port, uint32_t timeout_ms, int32_t ip_family,
+                            wing_bytes_ro local_bind_addr) {
+    if (ip.data == NULL || ip.len <= 0 || ip.len >= 128 || port == 0 || ip_family < 0 || ip_family > 2) return -1;
+    wing_tcp_init();
+
+    char ip_str[128];
+    slice_to_cstr(ip, ip_str, sizeof(ip_str));
+    size_t slen = strlen(ip_str);
+    if (slen >= 2 && ip_str[0] == '[' && ip_str[slen - 1] == ']') {
+        memmove(ip_str, ip_str + 1, slen - 2);
+        ip_str[slen - 2] = '\0';
+    }
+    if (ip_str[0] == '\0') return -1;
+
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof(ss));
+    int family = 0;
+#ifdef _WIN32
+    int addr_len = 0;
+#else
+    socklen_t addr_len = 0;
+#endif
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    if (inet_pton(AF_INET, ip_str, &addr4) == 1) {
+        if (ip_family == 2) return -1;
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr = addr4;
+        family = AF_INET;
+        addr_len = (int)sizeof(struct sockaddr_in);
+    } else if (inet_pton(AF_INET6, ip_str, &addr6) == 1) {
+        if (ip_family == 1) return -1;
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(port);
+        s6->sin6_addr = addr6;
+        family = AF_INET6;
+        addr_len = (int)sizeof(struct sockaddr_in6);
+    } else {
+        return -1;
+    }
+    return wing_tcp_connect_sockaddr(&ss, family, addr_len, timeout_ms, local_bind_addr);
+}
+
+// Connects to remote host:port with timeout, address family constraint
+// (0 = AF_UNSPEC, 1 = AF_INET, 2 = AF_INET6), and optional local_bind_addr bind() before connect().
+int64_t wing_tcp_connect_ex(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms, int32_t ip_family,
+                            wing_bytes_ro local_bind_addr) {
+    if (port == 0 || ip_family < 0 || ip_family > 2) return -1;
+    wing_tcp_init();
+
+    struct sockaddr_storage ss;
+    int family = AF_INET;
+#ifdef _WIN32
+    int addr_len = 0;
+#else
+    socklen_t addr_len = 0;
+#endif
+    if (wing_resolve_tcp_host_family(host, port, 1, ip_family, &ss, &family, &addr_len) != 0) {
+        return -1;
+    }
+    return wing_tcp_connect_sockaddr(&ss, family, addr_len, timeout_ms, local_bind_addr);
 }
 
 // Connects to remote host:port (IPv4, IPv6, or DNS via getaddrinfo) with timeout in milliseconds.

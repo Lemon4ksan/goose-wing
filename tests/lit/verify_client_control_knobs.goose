@@ -195,6 +195,8 @@ fn make_p256_crl_der(
     b_tbs.put_bytes("\x17\x0D240101000000Z");
     b_tbs.put_bytes("\x17\x0D351231235959Z");
     b_tbs.put_bytes(rev_list[..]);
+    // RFC 5280 Section 5.2.3: crlExtensions [0] containing mandatory cRLNumber (2.5.29.20 = 1).
+    b_tbs.put_bytes("\xA0\x0E\x30\x0C\x30\x0A\x06\x03\x55\x1D\x14\x04\x03\x02\x01\x01");
 
     var tbs_wrapped: u8[..2048] = [];
     wrap_der_tlv(0x30, b_tbs.buf[..], tbs_wrapped);

@@ -45,6 +45,14 @@ extern fn native_tcp_connect_ex(
     ip_family:       i32,
     local_bind_addr: const u8[:],
 ) -> i64 = "wing_tcp_connect_ex";
+extern fn native_tcp_connect_ip(
+    ip:              const u8[:],
+    port:            u16,
+    timeout_ms:      u32,
+    ip_family:       i32,
+    local_bind_addr: const u8[:],
+) -> i64 = "wing_tcp_connect_ip";
+extern fn native_net_resolve_host(host: const u8[:], ip_family: i32, out_buf: u8[:]) -> i32 = "wing_net_resolve_host";
 extern fn native_tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 = "wing_tcp_connect_begin";
 extern fn native_tcp_connect_finish(sock_fd: i64) -> i32 = "wing_tcp_connect_finish";
 extern fn native_tcp_connect_poll(sock_fd: i64) -> i32 = "wing_tcp_connect_poll";

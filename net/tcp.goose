@@ -142,6 +142,86 @@ fn tcp_connect_ex(
     return net_internal::native_tcp_connect_ex(host, port, timeout_ms, fam_i32, local_bind_addr);
 }
 
+// Resolves a hostname or numeric IP into up to 16 unique canonical IPv4/IPv6 strings via OS DNS.
+// Clears `out_ips` on failure (transactional).
+fn resolve_host_ips(
+    host:      const u8[:],
+    out_ips:   u8[..64][..16]&,
+    ip_family: IpFamily = IpFamily.Auto,
+) -> bool {
+    var committed = false;
+    defer if !committed { out_ips.clear(); };
+    out_ips.clear();
+    guard host.len > 0 && host.len < 256 else { return false; }
+    tcp_init();
+
+    var raw_buf: u8[1024] = [0; 1024];
+    let fam_i32 = net_internal::ip_family_to_native_i32(ip_family);
+    let n = net_internal::native_net_resolve_host(host, fam_i32, raw_buf[..]);
+    guard n > 0 && n <= raw_buf.len else { return false; }
+
+    var tok = core::make_byte_tokenizer(raw_buf[..n], '\n');
+    while true {
+        let line, more = core::token_next(tok);
+        guard more else { break; }
+        guard line.len > 0 else { continue; }
+        var ip_entry: u8[..64] = [];
+        guard ip_entry.try_set(line) else { return false; }
+        if !out_ips.try_push(ip_entry) { break; }
+    }
+    guard out_ips.len > 0 else { return false; }
+    committed = true;
+    return true;
+}
+
+// Connects strictly to a numeric IPv4 or IPv6 literal without invoking DNS (TOCTOU DNS-rebinding safe).
+// Rejects hostnames, "localhost", and empty strings. Returns connected socket (> 0) or -1.
+fn tcp_connect_ip(
+    ip:              const u8[:],
+    port:            u16,
+    timeout_ms:      u32         = 5000,
+    ip_family:       IpFamily    = IpFamily.Auto,
+    local_bind_addr: const u8[:] = "",
+) -> i64 {
+    guard ip.len > 0 && port != 0 else { return -1; }
+    tcp_init();
+    let fam_i32 = net_internal::ip_family_to_native_i32(ip_family);
+    return net_internal::native_tcp_connect_ip(ip, port, timeout_ms, fam_i32, local_bind_addr);
+}
+
+// Resolves `host` once, validates every resolved IP via trailing block `F(ip, allowed)` fail-closed
+// (`allowed` defaults to false on each IP), and connects strictly by numeric IP (`tcp_connect_ip`).
+// Populates `out_connected_ip` on success; callers pass original `host` as explicit TLS SNI.
+fn tcp_connect_resolved<F: fn(const u8[:], bool&)>(
+    host:             const u8[:],
+    port:             u16,
+    out_connected_ip: u8[..64]&,
+    timeout_ms:       u32         = 5000,
+    ip_family:        IpFamily    = IpFamily.Auto,
+    local_bind_addr:  const u8[:] = "",
+) -> i64 {
+    out_connected_ip.clear();
+    guard host.len > 0 && port != 0 else { return -1; }
+
+    var ips: u8[..64][..16] = [];
+    guard resolve_host_ips(host, ips, ip_family) else { return -1; }
+
+    // Fail-closed: reject the entire host if any resolved address is not explicitly allowed.
+    for &ip in ips {
+        var allowed = false;
+        F(ip[..], &allowed);
+        guard allowed else { return -1; }
+    }
+    for &ip in ips {
+        let fd = tcp_connect_ip(ip[..], port, timeout_ms, ip_family, local_bind_addr);
+        if fd > 0 {
+            let _ = out_connected_ip.try_set(ip[..]);
+            return fd;
+        }
+    }
+    return -1;
+}
+
 // Initiates a non-blocking TCP connection (IPv4, IPv6, or DNS hostname).
 // Sets `out_state` to 0 (connected immediately), 1 (in progress), or -1 (failed).
 fn tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 {

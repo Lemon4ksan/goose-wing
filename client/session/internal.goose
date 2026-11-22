@@ -1705,6 +1705,53 @@ fn try_resolve_override_candidate(
     return true, http::Error { .. };
 }
 
+inline fn is_ssrf_blocked_ip(policy: const security::SsrfGuardPolicy&, ip: const u8[:]) -> bool {
+    guard policy.enabled else { return false; }
+    return if policy.deny_local_network {
+        security::is_private_or_reserved_ip(ip)
+    } else {
+        security::is_cloud_metadata_or_reserved_ip(ip)
+    };
+}
+
+fn resolve_system_dns_candidates(
+    session:        const client::Session&,
+    host_str:       const u8[:],
+    port_num:       u16,
+    now_sec:        i64,
+    task:           net::DnsRaceTask&,
+    out_candidates: net::DnsCandidate[..32]&,
+) -> http::Error {
+    var resolved_ips: u8[..64][..16] = [];
+    guard net::resolve_host_ips(host_str, resolved_ips, session.ip_family) else {
+        return http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "DNS resolution failed");
+    }
+    for &ip in resolved_ips {
+        guard !is_ssrf_blocked_ip(session.ssrf_guard, ip[..]) else {
+            return http::make_error(
+                rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked",
+            );
+        }
+        if ip[..].contains_byte(':') {
+            let _ = task.ipv6_candidates.try_push(
+                net::new_dns_candidate(net::AddressFamily.IPv6, ip[..], port_num, net::L4Protocol.Tcp, 50),
+            );
+        } else {
+            let _ = task.ipv4_candidates.try_push(
+                net::new_dns_candidate(net::AddressFamily.IPv4, ip[..], port_num, net::L4Protocol.Tcp, 40),
+            );
+        }
+    }
+    let pref_fam, _ = net::lookup_preferred_family(session.af_cache, host_str, now_sec);
+    net::interleave_candidates_by_preference(
+        task.ipv6_candidates[..], task.ipv4_candidates[..], pref_fam, out_candidates,
+    );
+    guard out_candidates.len > 0 else {
+        return http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "DNS resolution returned no usable IP");
+    }
+    return http::Error { .. };
+}
+
 fn resolve_and_validate_live_host<B>(
     session:        client::Session&,
     host_str:       const u8[:],
@@ -1759,14 +1806,10 @@ fn resolve_and_validate_live_host<B>(
         task.ipv6_candidates[..], task.ipv4_candidates[..], pref_fam, out_candidates,
     );
     if out_candidates.len == 0 {
-        let fb_fam = if session.ip_family == net::IpFamily.Ipv6Only || host_str.contains_byte(':') {
-            net::AddressFamily.IPv6
-        } else {
-            net::AddressFamily.IPv4
-        };
-        let _ = out_candidates.try_push(
-            net::new_dns_candidate(fb_fam, host_str, port_num, net::L4Protocol.Tcp, 40),
+        let sys_err = resolve_system_dns_candidates(
+            session, host_str, port_num, now_sec, task, out_candidates,
         );
+        guard http::ok(sys_err) else { return sys_err; }
     }
     committed = true;
     return http::Error { .. };
@@ -1882,14 +1925,7 @@ fn dial_https_proxy_tunnel(
     return tun_fd, http::Error { .. };
 }
 
-fn dial_session_tcp(
-    session:    const client::Session&,
-    host:       const u8[:],
-    port:       u16,
-    timeout_ms: u32,
-) -> i64 {
-    let sock = net::tcp_connect_ex(host, port, timeout_ms, session.ip_family, session.local_bind_addr[..]);
-    guard sock > 0 else { return -1; }
+fn apply_session_tcp_opts(session: const client::Session&, sock: i64) {
     let _ = net::tcp_set_nodelay(sock, session.tcp_nodelay);
     if session.tcp_keepalive_idle_sec > 0 &&
         session.tcp_keepalive_intvl_sec > 0 &&
@@ -1901,6 +1937,29 @@ fn dial_session_tcp(
             session.tcp_keepalive_cnt,
         );
     }
+}
+
+fn dial_session_tcp(
+    session:    const client::Session&,
+    host:       const u8[:],
+    port:       u16,
+    timeout_ms: u32,
+) -> i64 {
+    let sock = net::tcp_connect_ex(host, port, timeout_ms, session.ip_family, session.local_bind_addr[..]);
+    guard sock > 0 else { return -1; }
+    apply_session_tcp_opts(session, sock);
+    return sock;
+}
+
+fn dial_session_tcp_ip(
+    session:    const client::Session&,
+    ip:         const u8[:],
+    port:       u16,
+    timeout_ms: u32,
+) -> i64 {
+    let sock = net::tcp_connect_ip(ip, port, timeout_ms, session.ip_family, session.local_bind_addr[..]);
+    guard sock > 0 else { return -1; }
+    apply_session_tcp_opts(session, sock);
     return sock;
 }
 
@@ -1982,7 +2041,7 @@ fn dial_live_tcp_or_proxy(
     var mgr = net::new_attempt_manager();
     mgr.start_attempt_race(candidates, now_ms);
     for &cand in candidates {
-        let sock = dial_session_tcp(session, cand.ip[..], cand.port, eff_timeout);
+        let sock = dial_session_tcp_ip(session, cand.ip[..], cand.port, eff_timeout);
         if sock > 0 {
             if mgr.attempts.len > 0 {
                 let win_id = mgr.attempts[core::sub_sat_i64(mgr.attempts.len, 1)].attempt_id;

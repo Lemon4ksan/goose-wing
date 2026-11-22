@@ -33,6 +33,9 @@ fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64
 enum IpFamily { Auto, Ipv4Only, Ipv6Only }
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64
 fn tcp_connect_ex(host: const u8[:], port: u16, timeout_ms: u32 = 5000, ip_family: IpFamily = IpFamily.Auto, local_bind_addr: const u8[:] = "") -> i64
+fn resolve_host_ips(host: const u8[:], out_ips: u8[..64][..16]&, ip_family: IpFamily = IpFamily.Auto) -> bool
+fn tcp_connect_ip(ip: const u8[:], port: u16, timeout_ms: u32 = 5000, ip_family: IpFamily = IpFamily.Auto, local_bind_addr: const u8[:] = "") -> i64
+fn tcp_connect_resolved<F: fn(const u8[:], bool&)>(host: const u8[:], port: u16, out_connected_ip: u8[..64]&, timeout_ms: u32 = 5000, ip_family: IpFamily = IpFamily.Auto, local_bind_addr: const u8[:] = "") -> i64
 fn tcp_connect_unix(path: const u8[:]) -> i64
 fn tcp_close(fd: i64)
 fn tcp_abort(fd: i64)
