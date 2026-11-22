@@ -1984,6 +1984,7 @@ fn establish_backend_tls_connection(
         min_version:          session.tls_min_version,
         is_server:            false,
         insecure_skip_verify: effective_insecure_skip,
+        use_system_roots:     session.tls_use_system_roots,
         trust_store:          session.trust_store,
         ..
     };
@@ -2036,6 +2037,7 @@ fn establish_https_transport(
     let _ = tls_cfg.alpn.try_set("h2,http/1.1");
     tls_cfg.trust_store = session.trust_store;
     tls_cfg.insecure_skip_verify = effective_insecure_skip;
+    tls_cfg.use_system_roots = session.tls_use_system_roots;
     tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
     if ech_list.len > 0 {
         let _ = tls_cfg.ech_config_list.try_set(ech_list);

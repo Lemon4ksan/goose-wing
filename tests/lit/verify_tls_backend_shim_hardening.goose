@@ -432,7 +432,7 @@ fn test_openssl_ip_san_and_win_roots() {
     print("ossl_driver_active=", ossl_avail);
     if !ossl_avail {
         print("ipv4_san_ok=true ipv4_mismatch_rejected=true ipv6_san_ok=true ipv6_mismatch_rejected=true");
-        print("dns_sni_ok=true default_roots_verify_ok=true");
+        print("dns_sni_ok=true default_roots_verify_ok=true no_system_roots_ok=true");
         return;
     }
 
@@ -473,11 +473,72 @@ fn test_openssl_ip_san_and_win_roots() {
     let st_def, sni_def = run_ossl_loopback_handshake("localhost", "", cpath[..], kpath[..], false);
     let def_roots_ok = (st_def == tls::TlsBackendStatus.VerifyError) && sni_def;
 
+    // Opt-out (use_system_roots = false, ca_file = ""): skips OS root loading and fails closed.
+    var no_roots_cfg = tls::TlsBackendConfig {
+        kind:                 tls::TlsBackendKind.SystemOpenSsl,
+        is_server:            false,
+        insecure_skip_verify: false,
+        use_system_roots:     false,
+        ..
+    };
+    assert(no_roots_cfg.server_name.try_set("localhost"));
+    var nr_cli, nr_st = tls::tls_endpoint_open(no_roots_cfg);
+    var no_roots_ok = nr_st == tls::TlsBackendStatus.Ok;
+    if no_roots_ok {
+        defer tls::tls_endpoint_close(nr_cli);
+        var srv_cfg = tls::TlsBackendConfig {
+            kind:      tls::TlsBackendKind.SystemOpenSsl,
+            is_server: true,
+            ..
+        };
+        assert(srv_cfg.cert_pem_file.try_set(cpath[..]));
+        assert(srv_cfg.key_pem_file.try_set(kpath[..]));
+        var nr_srv, nrs_st = tls::tls_endpoint_open(srv_cfg);
+        assert(nrs_st == tls::TlsBackendStatus.Ok);
+        defer tls::tls_endpoint_close(nr_srv);
+        var wire: u8[8192] = [0; 8192];
+        var last_st = tls::TlsBackendStatus.WantRead;
+        for _ in 16 {
+            last_st = tls::tls_endpoint_step_handshake(nr_cli);
+            let n1, _ = tls::tls_endpoint_drain_wire(nr_cli, wire[..]);
+            if n1 > 0 { let _, _ = tls::tls_endpoint_feed_wire(nr_srv, wire[..n1]); }
+            let _ = tls::tls_endpoint_step_handshake(nr_srv);
+            let n2, _ = tls::tls_endpoint_drain_wire(nr_srv, wire[..]);
+            if n2 > 0 { let _, _ = tls::tls_endpoint_feed_wire(nr_cli, wire[..n2]); }
+            if last_st == tls::TlsBackendStatus.VerifyError { break; }
+        }
+        no_roots_ok = last_st == tls::TlsBackendStatus.VerifyError;
+    }
+
+    var sch_optout_ok = true;
+    if tls::tls_backend_available(tls::TlsBackendKind.SystemSchannel) {
+        var sch_cfg = tls::TlsBackendConfig {
+            kind:                 tls::TlsBackendKind.SystemSchannel,
+            is_server:            false,
+            insecure_skip_verify: false,
+            use_system_roots:     false,
+            ..
+        };
+        assert(sch_cfg.server_name.try_set("localhost"));
+        var sch_ep, sch_st = tls::tls_endpoint_open(sch_cfg);
+        tls::tls_endpoint_close(sch_ep);
+        sch_optout_ok = sch_st == tls::TlsBackendStatus.VerifyError;
+    }
+
+    var sess = client::new_client("https://localhost");
+    assert(sess.tls_use_system_roots);
+    sess.set_tls_use_system_roots(false);
+    assert(!sess.tls_use_system_roots);
+    sess.set_tls_use_system_roots(true);
+    assert(sess.tls_use_system_roots);
+    sess.close();
+
     print("ipv4_san_ok=", ipv4_ok, " ipv4_mismatch_rejected=", ipv4_bad_ok,
         " ipv6_san_ok=", ipv6_ok, " ipv6_mismatch_rejected=", ipv6_bad_ok);
     // CHECK: ipv4_san_ok=true ipv4_mismatch_rejected=true ipv6_san_ok=true ipv6_mismatch_rejected=true
-    print("dns_sni_ok=", dns_ok, " default_roots_verify_ok=", def_roots_ok);
-    // CHECK: dns_sni_ok=true default_roots_verify_ok=true
+    print("dns_sni_ok=", dns_ok, " default_roots_verify_ok=", def_roots_ok,
+        " no_system_roots_ok=", no_roots_ok && sch_optout_ok);
+    // CHECK: dns_sni_ok=true default_roots_verify_ok=true no_system_roots_ok=true
 }
 
 fn main() {

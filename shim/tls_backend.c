@@ -46,6 +46,9 @@
 #define WING_TLS_MIN_TLS13 0
 #define WING_TLS_MIN_TLS12 1
 
+#define WING_TLS_FLAG_INSECURE_SKIP_VERIFY 1
+#define WING_TLS_FLAG_NO_SYSTEM_ROOTS 2
+
 #define WING_TLS_ST_OK 0
 #define WING_TLS_ST_WANT_READ 1
 #define WING_TLS_ST_WANT_WRITE 2
@@ -639,6 +642,7 @@ typedef struct {
     int kind;
     int is_server;
     int insecure_skip_verify;
+    int use_system_roots;
     int min_version;
     int established;
     int closed;
@@ -934,7 +938,7 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
                 ossl_cleanup_ep(ep);
                 return WING_TLS_ST_VERIFY_ERR;
             }
-        } else {
+        } else if (ep->use_system_roots) {
             (void)g_ossl.SSL_CTX_set_default_verify_paths(ep->ossl_ctx);
 #ifdef _WIN32
             (void)ossl_load_win_root_store(ep->ossl_ctx);
@@ -978,6 +982,7 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
 static int schannel_open_ep(wing_tls_ep_t *ep) {
     if (!schannel_probe()) return WING_TLS_ST_UNAVAILABLE;
     if (ep->is_server) return WING_TLS_ST_UNAVAILABLE;
+    if (!ep->insecure_skip_verify && !ep->use_system_roots) return WING_TLS_ST_VERIFY_ERR;
     DWORD flags = SCH_CRED_NO_DEFAULT_CREDS | SCH_USE_STRONG_CRYPTO;
     flags |= ep->insecure_skip_verify ? (SCH_CRED_MANUAL_CRED_VALIDATION | SCH_CRED_IGNORE_NO_REVOCATION_CHECK |
                                          SCH_CRED_IGNORE_REVOCATION_OFFLINE)
@@ -1262,6 +1267,7 @@ static int st_open_ep(wing_tls_ep_t *ep) {
     if (!secure_transport_probe()) return WING_TLS_ST_UNAVAILABLE;
     /* SecureTransport supports up to TLS 1.2 only: require explicit TlsMinVersion.Tls12 opt-in. */
     if (ep->is_server || ep->min_version != WING_TLS_MIN_TLS12) return WING_TLS_ST_UNAVAILABLE;
+    if (!ep->insecure_skip_verify && !ep->use_system_roots) return WING_TLS_ST_VERIFY_ERR;
     ep->st_ctx = g_st.SSLCreateContext(NULL, ST_SSL_CLIENT_SIDE, ST_SSL_STREAM_TYPE);
     if (ep->st_ctx == NULL) return WING_TLS_ST_ERR;
     if (g_st.SSLSetIOFuncs(ep->st_ctx, st_io_read, st_io_write) != ST_ERR_SUCCESS ||
@@ -1399,7 +1405,8 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     ep->refcount = 0;
     ep->kind = resolved;
     ep->is_server = is_server ? 1 : 0;
-    ep->insecure_skip_verify = insecure_skip_verify ? 1 : 0;
+    ep->insecure_skip_verify = (insecure_skip_verify & WING_TLS_FLAG_INSECURE_SKIP_VERIFY) != 0 ? 1 : 0;
+    ep->use_system_roots = (insecure_skip_verify & WING_TLS_FLAG_NO_SYSTEM_ROOTS) == 0 ? 1 : 0;
     ep->min_version = (min_version == WING_TLS_MIN_TLS12) ? WING_TLS_MIN_TLS12 : WING_TLS_MIN_TLS13;
     copy_cstr_ro(ep->sni, sizeof(ep->sni), server_name);
     copy_cstr_ro(ep->ca_file, sizeof(ep->ca_file), ca_file);

@@ -745,6 +745,7 @@ struct TlsBackendConfig {
     server_name:          u8[..256]        = [],
     alpn_wire:            u8[..64]         = [],
     insecure_skip_verify: bool             = false,
+    use_system_roots:     bool             = true,
     ca_file:              u8[..256]        = [],
     cert_pem_file:        u8[..256]        = [],
     key_pem_file:         u8[..256]        = [],
@@ -787,10 +788,14 @@ by closed polymorphism across:
 - `SystemOpenSsl`: optional OpenSSL 3 / 1.1.1 / BoringSSL driver in
   `shim/tls_backend.c` using memory BIOs, strict TLS 1.3 floor by default
   (`TlsMinVersion.Tls13`) with opt-in TLS 1.2 fallback (`TlsMinVersion.Tls12`),
-  `SSL_VERIFY_PEER` with `SSL_set1_host` hostname verification, custom
-  `ca_file`, bidirectional mTLS (`cert_pem_file` / `key_pem_file` on both
-  servers and clients, plus server `SSL_VERIFY_FAIL_IF_NO_PEER_CERT` when
-  `ca_file` is configured), and server/client ALPN negotiation. Loaded
+  `SSL_VERIFY_PEER` with `SSL_set1_host` DNS verification and
+  `X509_VERIFY_PARAM_set1_ip_asc` IP-literal verification (suppressing IP SNI
+  per RFC 6066 §3), optional OS root store loading (`use_system_roots: true` by
+  default when `ca_file` is empty, including Windows `ROOT` store via
+  `crypt32.dll`; set `use_system_roots = false` to fail closed without OS
+  roots), custom `ca_file`, bidirectional mTLS (`cert_pem_file` / `key_pem_file`
+  on both servers and clients, plus server `SSL_VERIFY_FAIL_IF_NO_PEER_CERT`
+  when `ca_file` is configured), and server/client ALPN negotiation. Loaded
   dynamically via `dlopen` / `LoadLibraryA` with zero compile-time OpenSSL
   dependency (override paths with `WING_OPENSSL_LIB` / `WING_CRYPTO_LIB`, or
   link directly with `-DWING_TLS_LINK_OPENSSL -lssl -lcrypto`).

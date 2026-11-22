@@ -27,7 +27,8 @@ struct Config {
     quic_race_delay_ms: i64, enable_compression_dict: bool,
     strict_content_decoding: bool, insecure_skip_verify: bool,
     tls_backend: tls::TlsBackendKind, tls_min_version: tls::TlsMinVersion,
-    tls_ca_file: const u8[:], sig_key_id: const u8[:],
+    tls_ca_file: const u8[:], tls_use_system_roots: bool,
+    sig_key_id: const u8[:],
     sig_private_key: const u8[:], sig_public_key: const u8[:],
 }
 type SessionConfig = Config;
@@ -64,6 +65,7 @@ fn configure_session_tls_ca_pem(sess: Session&, pem_bundle: const u8[:], allow_l
 fn set_tls_backend(session: Session&, kind: tls::TlsBackendKind)
 fn set_tls_min_version(session: Session&, ver: tls::TlsMinVersion)
 fn set_tls_ca_file(session: Session&, path: const u8[:]) -> bool
+fn set_tls_use_system_roots(session: Session&, enabled: bool)
 fn lookup_cached_ech_config(dns_cache: const dns::Cache&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
 fn resolve_ech_config(session: Session&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
 fn attach_dictionary_request_headers(session: const Session&, origin: const u8[:], url_path: const u8[:], req: wing::Request&) -> bool

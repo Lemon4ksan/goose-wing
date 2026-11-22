@@ -68,6 +68,7 @@ struct Config {
     tls_backend:             tls::TlsBackendKind  = tls::TlsBackendKind.PureGoose,
     tls_min_version:         tls::TlsMinVersion   = tls::TlsMinVersion.Tls13,
     tls_ca_file:             const u8[:]          = "",
+    tls_use_system_roots:    bool                 = true,
     sig_key_id:              const u8[:]          = "",
     sig_private_key:         const u8[:]          = "",
     sig_public_key:          const u8[:]          = "",
@@ -165,6 +166,7 @@ struct Client {
     tls_backend:             tls::TlsBackendKind      = tls::TlsBackendKind.PureGoose,
     tls_min_version:         tls::TlsMinVersion       = tls::TlsMinVersion.Tls13,
     tls_ca_file:             u8[..256]                = [],
+    tls_use_system_roots:    bool                     = true,
 
     // Resizable field must be final
     jar: cookie::CanonicalCookieJar = cookie::CanonicalCookieJar { .. },
@@ -258,6 +260,7 @@ fn new_client(cfg: Config) -> Client {
         tls_backend:             cfg.tls_backend,
         tls_min_version:         cfg.tls_min_version,
         tls_ca_file:             ca_file_buf,
+        tls_use_system_roots:    cfg.tls_use_system_roots,
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
@@ -650,6 +653,14 @@ fn set_tls_ca_file(session: Session&, path: const u8[:]) -> bool {
     }
     net::drain_stream_pool(session.pool);
     return true;
+}
+
+// Controls whether OS system root certificates are loaded when no custom CA bundle or trust store is set.
+fn set_tls_use_system_roots(session: Session&, enabled: bool) {
+    if session.tls_use_system_roots != enabled {
+        session.tls_use_system_roots = enabled;
+        net::drain_stream_pool(session.pool);
+    }
 }
 
 // ---- mock route registration methods ---------------------------------------

@@ -156,6 +156,17 @@ strictly at TLS 1.3 and never fall back to TLS 1.2. Falling back to TLS 1.2
 happens only when explicitly opted in via `min_version =
 tls::TlsMinVersion.Tls12` on one of the system C-shim backends below.
 
+**OS root certificates (`tls_use_system_roots` / `use_system_roots`)**: Loading
+system root CAs (Linux `/etc/ssl`, macOS Keychain, Windows `ROOT` store via
+`crypt32.dll`) is **on by default (`true`)** only when neither a custom
+`tls_ca_file` nor an in-memory `trust_store` is set. Providing a custom CA
+bundle or trust store never inherits OS roots. For air-gapped environments,
+deterministic DST runs, or zero-ambient-trust deployments, disable OS root
+loading with `tls_use_system_roots: false` (or
+`s.set_tls_use_system_roots(false)` /
+`TlsBackendConfig.use_system_roots = false`), which fails closed with
+`VerifyError` unless explicit roots are configured.
+
 Switch `client::Session`, `server::HttpServer`, or sans-IO `tls::TlsEndpoint` to
 an audited system TLS library through the optional C shim
 [`shim/tls_backend.c`](shim/tls_backend.c) without changing protocol or
@@ -190,10 +201,11 @@ import wing;
 fn main() {
     // 1. Client session backed by OpenSSL
     var sess = client::new_client(client::Config {
-        base_url:        "https://api.example.com",
-        tls_backend:     tls::TlsBackendKind.SystemOpenSsl,
-        // tls_min_version: tls::TlsMinVersion.Tls12, // uncomment to allow TLS 1.2 fallback
-        // tls_ca_file:     "/etc/ssl/certs/ca-certificates.crt",
+        base_url:             "https://api.example.com",
+        tls_backend:          tls::TlsBackendKind.SystemOpenSsl,
+        // tls_min_version:      tls::TlsMinVersion.Tls12, // uncomment to allow TLS 1.2 fallback
+        // tls_ca_file:          "/etc/ssl/certs/ca-certificates.crt",
+        // tls_use_system_roots: false, // disable OS root store (fails closed without tls_ca_file)
         ..
     });
     let _, _ = sess.get("/v1/status");

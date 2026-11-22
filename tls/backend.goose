@@ -55,6 +55,7 @@ struct TlsBackendConfig {
     server_name:          u8[..256]        = [],
     alpn_wire:            u8[..64]         = [],
     insecure_skip_verify: bool             = false,
+    use_system_roots:     bool             = true,
     ca_file:              u8[..256]        = [],
     cert_pem_file:        u8[..256]        = [],
     key_pem_file:         u8[..256]        = [],
@@ -84,6 +85,9 @@ const NATIVE_KIND_AUTO:             i32 = 4;
 
 const NATIVE_MIN_TLS13: i32 = 0;
 const NATIVE_MIN_TLS12: i32 = 1;
+
+const NATIVE_FLAG_INSECURE_SKIP_VERIFY: i32 = 1;
+const NATIVE_FLAG_NO_SYSTEM_ROOTS:      i32 = 2;
 
 extern fn native_tls_backend_available(kind: i32) -> i32 = "wing_tls_backend_available";
 
@@ -196,6 +200,7 @@ struct PureTlsSlot {
     generation:           u32                       = 0,
     is_server:            bool                      = false,
     insecure_skip_verify: bool                      = false,
+    use_system_roots:     bool                      = true,
     peer_closed:          bool                      = false,
     stage:                PureHsStage               = PureHsStage.ClientInit,
     cipher_slot:          u16                       = 0xFFFF,
@@ -622,6 +627,7 @@ fn pure_client_verify_cv(slot: PureTlsSlot&, cv_body: const u8[:]) -> TlsBackend
     transcript_current_hash(slot.transcript, slot.ks.hash_id, h_to_cert);
     var cfg = ClientHandshakeConfig {
         insecure_skip_verify: slot.insecure_skip_verify,
+        use_system_roots:     slot.use_system_roots,
         trust_store:          slot.trust_store,
         ..
     };
@@ -924,6 +930,7 @@ fn open_pure_endpoint(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpo
     let slot .= g_pure_tls_slots[idx as i64];
     slot.is_server = is_server;
     slot.insecure_skip_verify = cfg.insecure_skip_verify;
+    slot.use_system_roots = cfg.use_system_roots;
     slot.stage = if is_server { PureHsStage.ServerWaitClientHello } else { PureHsStage.ClientInit };
     let _ = slot.server_name.try_set(cfg.server_name[..]);
     decode_alpn_wire_to_csv(cfg.alpn_wire[..], slot.alpn_csv);
@@ -957,6 +964,17 @@ fn should_route_to_pure_backend(cfg: const TlsBackendConfig&, is_server: bool) -
     return cfg.ca_file.len > 0 && !tls_backend_available(TlsBackendKind.SystemOpenSsl);
 }
 
+// Packs peer verification and OS root-store flags for `wing_tls_backend_open`.
+//
+// Example:
+//   cfg.insecure_skip_verify = false, cfg.use_system_roots = false
+//   returns: 2 (NATIVE_FLAG_NO_SYSTEM_ROOTS)
+inline fn pack_native_verify_flags(cfg: const TlsBackendConfig&) -> i32 {
+    let skip_bit = if cfg.insecure_skip_verify { NATIVE_FLAG_INSECURE_SKIP_VERIFY } else { 0 };
+    let roots_bit = if !cfg.use_system_roots { NATIVE_FLAG_NO_SYSTEM_ROOTS } else { 0 };
+    return skip_bit | roots_bit;
+}
+
 fn open_endpoint_with_role(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpoint, TlsBackendStatus {
     if should_route_to_pure_backend(cfg, is_server) {
         return open_pure_endpoint(cfg, is_server);
@@ -967,7 +985,7 @@ fn open_endpoint_with_role(cfg: const TlsBackendConfig&, is_server: bool) -> Tls
     let nid = native_tls_backend_open(
         kind_to_native_i32(cfg.kind),
         if is_server { 1 } else { 0 },
-        if cfg.insecure_skip_verify { 1 } else { 0 },
+        pack_native_verify_flags(cfg),
         min_version_to_native_i32(cfg.min_version),
         cfg.server_name[..],
         cfg.alpn_wire[..],
