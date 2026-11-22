@@ -271,7 +271,7 @@ checkfree fn consume_chunk_data(
 // ---- http/headers/lexical.goose internal helpers ----
 
 fn has_embedded_nulls(data: const u8[:]) -> bool {
-    return find_any(data, http::NULL_SET) >= 0;
+    return data.contains_byte(0);
 }
 
 // RFC 9110 Section 8.6 & RFC 9112 Section 6.3: Content-Length validation & anti-smuggling parser
@@ -397,63 +397,59 @@ checkfree fn well_known_header_name(id: http::WellKnownHeader) -> const u8[:] {
     };
 }
 
-fn is_security_state_header(id: http::WellKnownHeader, name: const u8[:]) -> bool {
-    if id == http::WellKnownHeader.StrictTransportSecurity ||
-       id == http::WellKnownHeader.XContentTypeOptions ||
-       id == http::WellKnownHeader.XFrameOptions ||
-       id == http::WellKnownHeader.XWebkitCsp {
-        return true;
+const WELL_KNOWN_HEADER_FLAGS_LUT: const u8[64] = [
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 2, 130, 35,
+    163, 2, 19, 19, 19, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 128, 128, 128, 128,
+    128, 128, 0, 0, 0, 0, 64, 0,
+    64, 64, 64, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+const WELL_KNOWN_HEADER_HASH_LUT: const u32[64] = [
+    0xAFFEA56F, 0xFCF70995, 0x4DF9451D, 0xE7D03E5C,
+    0x03E2ED88, 0x017D1113, 0x893B4C2E, 0xD3ECFA4A,
+    0x08247E29, 0xDA645C68, 0xC9715A99, 0x75F67716,
+    0x6625CF66, 0x913657BE, 0xA01F18BB, 0x2E7BCF02,
+    0xA17EDAEF, 0x77A740BF, 0x6E2BE738, 0x791CB4BE,
+    0xC7663AD1, 0x50C8A4CD, 0x2C41499C, 0x3E8EC783,
+    0xD472DC59, 0x06C857C0, 0xD67076EA, 0x972B6177,
+    0x83E879A9, 0xE230478A, 0x8B887E3E, 0xC0575A6B,
+    0x0BF5A9A6, 0xFADC0CD2, 0x40ABDE45, 0x69122C13,
+    0x38B99ED9, 0xE18EDB80, 0xDDB4744C, 0x3C453EB2,
+    0x816FEDE0, 0xDC97CC77, 0x24259BEE, 0x40AC3DD2,
+    0xEC9AF966, 0xD97F9A4F, 0xF6A71E21, 0x5D85A5DC,
+    0xD93B89C9, 0xEE0D1548, 0x211BF35B, 0xA1937BEC,
+    0x35B4CA8C, 0x5ADB24C0, 0x81A75FAC, 0x92055AA9,
+    0x9C6EFBCE, 0xD68CC290, 0x9011AF27, 0x80154303,
+    0xC6DA1376, 0x94E4E309, 0x96DA6B58, 0x00000000,
+];
+
+inline fn well_known_header_flags(id: http::WellKnownHeader, name: const u8[:]) -> u8 {
+    let slot = http::well_known_to_slot(id);
+    if slot >= 0 && slot < 63 {
+        return WELL_KNOWN_HEADER_FLAGS_LUT[slot];
     }
     if name.len >= 10 && (name.starts_with_fold("x-content-") || name.starts_with_fold("x-webkit-")) {
-        return true;
+        return http::HEADER_FLAG_SECURITY_STATE;
     }
-    return name.eq_ascii_fold("x-xss-protection");
+    if name.len == 16 && name.eq_ascii_fold("x-xss-protection") {
+        return http::HEADER_FLAG_SECURITY_STATE;
+    }
+    if name.len == 16 && name.eq_ascii_fold("proxy-connection") {
+        return http::HEADER_FLAG_NON_CACHEABLE;
+    }
+    return http::HEADER_FLAG_NONE;
 }
 
-fn well_known_header_flags(id: http::WellKnownHeader, name: const u8[:]) -> u8 {
-    var flags: u8 = http::HEADER_FLAG_NONE;
-
-    // Cookie & state exceptions
-    if id == http::WellKnownHeader.SetCookie ||
-       id == http::WellKnownHeader.SetCookie2 ||
-       id == http::WellKnownHeader.ClearSiteData {
-        flags |= http::HEADER_FLAG_NO_COMMA_FOLD | http::HEADER_FLAG_SENSITIVE | http::HEADER_FLAG_COOKIE_STATE;
-        return flags;
+inline fn well_known_header_hash(id: http::WellKnownHeader, name: const u8[:]) -> u32 {
+    let slot = http::well_known_to_slot(id);
+    if slot >= 0 && slot < 63 {
+        return WELL_KNOWN_HEADER_HASH_LUT[slot];
     }
-
-    // Authentication challenges
-    if id == http::WellKnownHeader.WwwAuthenticate || id == http::WellKnownHeader.ProxyAuthenticate {
-        flags |= http::HEADER_FLAG_NO_COMMA_FOLD | http::HEADER_FLAG_SENSITIVE | http::HEADER_FLAG_CHALLENGE;
-        if id == http::WellKnownHeader.ProxyAuthenticate {
-            flags |= http::HEADER_FLAG_NON_CACHEABLE;
-        }
-        return flags;
-    }
-
-    // Credentials & auth tokens
-    if id == http::WellKnownHeader.Authorization ||
-       id == http::WellKnownHeader.ProxyAuthorization ||
-       id == http::WellKnownHeader.Cookie {
-        flags |= http::HEADER_FLAG_SENSITIVE;
-    }
-
-    // Security state & prefix matching (Strict-Transport-Security, X-Frame-Options, x-content-*, x-webkit-*)
-    if is_security_state_header(id, name) {
-        flags |= http::HEADER_FLAG_SECURITY_STATE;
-    }
-
-    // Hop-by-hop non-cacheables (RFC 9110 Section 7.6.1 + proxy-connection)
-    if id == http::WellKnownHeader.Connection ||
-       id == http::WellKnownHeader.KeepAlive ||
-       id == http::WellKnownHeader.TransferEncoding ||
-       id == http::WellKnownHeader.TE || id == http::WellKnownHeader.Trailer || id == http::WellKnownHeader.Upgrade ||
-       id == http::WellKnownHeader.ProxyAuthorization || id == http::WellKnownHeader.ProxyAuthenticate {
-        flags |= http::HEADER_FLAG_NON_CACHEABLE;
-    } else if name.eq_ascii_fold("proxy-connection") {
-        flags |= http::HEADER_FLAG_NON_CACHEABLE;
-    }
-
-    return flags;
+    return http::hash_header_name(name);
 }
 
 checkfree fn has_no_comma_fold(entry: const http::HeaderEntry&) -> bool {

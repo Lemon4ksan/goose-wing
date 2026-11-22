@@ -28,21 +28,13 @@ checkfree inline fn next_hpack_generation(dt: http2::DynamicTable&) -> u8 {
     return if g > 1 { g } else { 1 };
 }
 
-// Invalidates any hash table slot pointing to an evicted ring index & generation.
+// Invalidates any hash table slot pointing to an evicted ring index & generation in O(1).
 checkfree inline fn invalidate_hpack_hash_entry(
     dt:       http2::DynamicTable&,
     ring_idx: u64,
     entry:    const http2::HpackHeaderField&,
 ) {
-    let n_off = entry.name_off as i64;
-    let n_len = entry.name_len as i64;
-    let v_off = entry.val_off as i64;
-    let v_len = entry.val_len as i64;
-    let n_end = core::add_sat_i64(n_off, n_len);
-    let v_end = core::add_sat_i64(v_off, v_len);
-    guard n_off >= 0 && n_off <= n_end && n_end <= 4096 else { return; }
-    guard v_off >= 0 && v_off <= v_end && v_end <= 4096 else { return; }
-    let slot = compute_hpack_hash_slot(dt.arena[n_off..n_end], dt.arena[v_off..v_end]);
+    let slot = entry.hash_slot;
     let encoded_ref = core::add_sat_u64(ring_idx, 1) as u16;
     if dt.hash_table.slots[slot] == encoded_ref && dt.hash_table.generations[slot] == entry.generation {
         dt.hash_table.slots[slot] = 0;
@@ -56,9 +48,10 @@ checkfree fn evict_oldest_entry(dt: http2::DynamicTable&) {
     let head_u = dt.head & HPACK_RING_MASK;
     let head_i = head_u as i64;
     guard head_i >= 0 && head_i < 128 else { return; }
-    let oldest = dt.entries[head_i];
+    let oldest .= dt.entries[head_i];
+    let oldest_size = oldest.meta_size;
     invalidate_hpack_hash_entry(dt, head_u, oldest);
-    dt.used_bytes = core::sub_sat_u64(dt.used_bytes, oldest.meta_size);
+    dt.used_bytes = core::sub_sat_u64(dt.used_bytes, oldest_size);
     let next_u = core::add_sat_u64(head_u, 1) & HPACK_RING_MASK;
     dt.head = next_u;
     dt.count = core::sub_sat_u64(dt.count, 1);
@@ -74,29 +67,17 @@ checkfree fn evict_oldest_entry(dt: http2::DynamicTable&) {
     }
 }
 
-checkfree fn has_entry_overlapping_arena_range(
-    dt:          const http2::DynamicTable&,
-    write_start: u32,
-    write_end:   u32,
-) -> bool {
-    var i: u64 = 0;
-    while i < dt.count {
-        let idx_i = (core::add_sat_u64(dt.head, i) & HPACK_RING_MASK) as i64;
-        if idx_i < 0 || idx_i >= 128 { return false; }
-        let entry .= dt.entries[idx_i];
+// RFC 7541 Section 2.3.2: Dynamic Table - O(1)-amortized FIFO boundary eviction.
+checkfree fn evict_overlapping_arena_range(dt: http2::DynamicTable&, write_start: u32, write_end: u32) {
+    while dt.count > 0 {
+        let head_i = (dt.head & HPACK_RING_MASK) as i64;
+        guard head_i >= 0 && head_i < 128 else { return; }
+        let entry .= dt.entries[head_i];
         let old_start = entry.name_off;
         let old_end = core::add_sat_u32(entry.val_off, entry.val_len);
-        if (old_start < write_end) && (old_end > write_start) {
-            return true;
-        }
-        i = core::add_sat_u64(i, 1);
-    }
-    return false;
-}
-
-// RFC 7541 Section 2.3.2: Dynamic Table - Linearized boundary wrap helper.
-checkfree fn evict_overlapping_arena_range(dt: http2::DynamicTable&, write_start: u32, write_end: u32) {
-    while dt.count > 0 && has_entry_overlapping_arena_range(dt, write_start, write_end) {
+        let overlaps = (old_start < write_end) &&
+            (old_end > write_start || (old_end == old_start && old_start >= write_start));
+        guard overlaps else { return; }
         evict_oldest_entry(dt);
     }
 }
@@ -110,15 +91,17 @@ checkfree inline fn pack_header_into_arena(dt: http2::DynamicTable&, name: const
     guard name_off >= 0 && val_off >= name_off && end_off >= val_off && end_off <= 4096 else {
         return 0, 0;
     }
-    for i in n_len {
-        let dst_i = core::add_sat_i64(name_off, i);
-        guard dst_i >= 0 && dst_i < 4096 else { break; }
-        dt.arena[dst_i] = name[i];
+    let dst_name = dt.arena[name_off..val_off];
+    if dst_name.len == n_len {
+        for i in n_len {
+            dst_name[i] = name[i];
+        }
     }
-    for i in v_len {
-        let dst_i = core::add_sat_i64(val_off, i);
-        guard dst_i >= 0 && dst_i < 4096 else { break; }
-        dt.arena[dst_i] = val[i];
+    let dst_val = dt.arena[val_off..end_off];
+    if dst_val.len == v_len {
+        for i in v_len {
+            dst_val[i] = val[i];
+        }
     }
     dt.arena_head = name_off as u32;
     dt.arena_write_pos = end_off as u32;
@@ -321,6 +304,14 @@ inline fn is_forbidden_h2_trailer(name: const u8[:]) -> bool {
         || is_forbidden_h2_hop_by_hop(name) || rfc::is_disallowed_trailer_field(name);
 }
 
+// RFC 9113 Section 8.2.2: TE header field is forbidden in responses and must equal "trailers" in requests.
+inline fn validate_h2_te_header(pseudo: const http2::PseudoHeaders&, val: const u8[:]) -> u32 {
+    if pseudo.has_status || val != "trailers" {
+        return rfc::H2_ERR_PROTOCOL_ERROR;
+    }
+    return rfc::H2_ERR_NO_ERROR;
+}
+
 fn validate_regular_header_to_map(
     pseudo:      http2::PseudoHeaders&,
     out_headers: const http::HeaderMap&,
@@ -332,14 +323,12 @@ fn validate_regular_header_to_map(
     }
     guard !is_forbidden_h2_hop_by_hop(name) else { return rfc::H2_ERR_PROTOCOL_ERROR; }
 
-    var err_reg = rfc::H2_ERR_NO_ERROR;
-    if name == "te" && (pseudo.has_status || val != "trailers") {
-        err_reg = rfc::H2_ERR_PROTOCOL_ERROR;
-    } else if name == "host" {
-        err_reg = validate_h2_host_header(pseudo, out_headers, val);
-    } else if name == "content-length" {
-        err_reg = validate_content_length_pseudo(pseudo, val);
-    }
+    let err_reg: u32 = match name.len {
+        2 => if name == "te" { validate_h2_te_header(pseudo, val) } else { rfc::H2_ERR_NO_ERROR },
+        4 => if name == "host" { validate_h2_host_header(pseudo, out_headers, val) } else { rfc::H2_ERR_NO_ERROR },
+        14 => if name == "content-length" { validate_content_length_pseudo(pseudo, val) } else { rfc::H2_ERR_NO_ERROR },
+        _ => rfc::H2_ERR_NO_ERROR,
+    };
     guard err_reg == rfc::H2_ERR_NO_ERROR else { return err_reg; }
 
     pseudo.has_regular_header = true;

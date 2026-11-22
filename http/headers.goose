@@ -694,55 +694,13 @@ fn parse_headers(
 ) -> HeaderParseError {
     reset_for_keep_alive(map);
     map.valid = false;
-    defer if !map.valid {
-        reset_for_keep_alive(map);
-        map.valid = false;
-    };
     guard raw_input.len > 0 else {
         return HeaderParseError.EmptyInput;
     }
     if http_internal::has_embedded_nulls(raw_input) {
         return HeaderParseError.EmbeddedNull;
     }
-
-    guard map.raw_buf.try_append(raw_input) else {
-        return HeaderParseError.CapacityExceeded;
-    }
-
-    var cursor: i64 = 0;
-    let buf_len = map.raw_buf.len;
-    var is_first_header = true;
-    var prev_was_dup_cl = false;
-
-    while cursor < buf_len {
-        if map.raw_buf[cursor] == '\r' {
-            if cursor + 1 < buf_len && map.raw_buf[cursor + 1] == '\n' {
-                cursor += 2;
-                break;
-            }
-            map.valid = false;
-            return HeaderParseError.InvalidHeaderValue;
-        }
-        if map.raw_buf[cursor] == '\n' {
-            cursor += 1;
-            break;
-        }
-
-        let rel_end = find_any(map.raw_buf[cursor..], CRLF_SET);
-        let line_end = if rel_end >= 0 { cursor + rel_end } else { buf_len };
-        let line_err = http_internal::process_header_line(
-            map.raw_buf[..], cursor, line_end, allow_obs_fold, map, is_first_header, prev_was_dup_cl, mode,
-        );
-        guard is_ok(line_err) else { return line_err; }
-
-        guard advance_crlf(map.raw_buf[..], cursor, line_end) else {
-            map.valid = false;
-            return HeaderParseError.InvalidHeaderValue;
-        }
-    }
-
-    map.valid = true;
-    return HeaderParseError.None;
+    return http_internal::parse_headers_body_validated(raw_input, map, allow_obs_fold, mode);
 }
 
 // Parses an HTTP/1.x header block into map, spilling into arena if headers exceed 8192 B or 128 entries.
@@ -823,7 +781,7 @@ fn parse_response_headers_with_mode(
         return HeaderParseError.MalformedStatusLine;
     }
 
-    let err = parse_headers(raw_input[header_start..], map, allow_obs_fold, mode);
+    let err = http_internal::parse_headers_body_validated(raw_input[header_start..], map, allow_obs_fold, mode);
     guard is_ok(err) else { return err; }
     map.status_code = code;
     map.http_major = major;
@@ -922,7 +880,9 @@ fn parse_request_headers(raw_input: const u8[:], map: HeaderMap&, allow_obs_fold
         header_start++;
     }
 
-    return parse_headers(raw_input[header_start..], map, allow_obs_fold);
+    return http_internal::parse_headers_body_validated(
+        raw_input[header_start..], map, allow_obs_fold, H1ResponseParseMode.Strict,
+    );
 }
 
 // Parses full HTTP/1.1 request line and header block with overflow spill fallback.
@@ -1097,7 +1057,7 @@ fn append_validated_header(map: HeaderMap&, name: const u8[:], trimmed: const u8
 
     let wk_id = classify_well_known_header(name);
     let flags = http_internal::well_known_header_flags(wk_id, name);
-    let hname = hash_header_name(name);
+    let hname = http_internal::well_known_header_hash(wk_id, name);
 
     let contains_comma = trimmed.contains_byte(',');
     let entry_flags = if contains_comma { flags | HEADER_FLAG_CONTAINS_COMMA } else { flags };
@@ -1288,12 +1248,7 @@ fn set_header(map: HeaderMap&, name: const u8[:], value: const u8[:], is_sensiti
         let _ = set_or_replace(map, cname, cval, is_sensitive);
         return;
     }
-    var clean_name: u8[..128]  = [];
-    var clean_val:  u8[..4096] = [];
-    sanitize_header_bytes(name, clean_name);
-    sanitize_header_bytes(value, clean_val);
-    guard clean_name.len > 0 else { return; }
-    let _ = set_or_replace(map, clean_name[..], clean_val[..], is_sensitive);
+    http_internal::set_header_sanitized(map, name, value, is_sensitive);
 }
 
 fn set_inline(map: HeaderMap&, id: WellKnownHeader, value: const u8[:]) -> bool {
@@ -1499,7 +1454,7 @@ fn next_header_value(
         return "", false;
     }
 
-    let entry = map.entries[cur_idx];
+    let entry .= map.entries[cur_idx];
     let wk_id = classify_well_known_header(name);
     if wk_id != WellKnownHeader.Unknown {
         let expected_slot = well_known_to_slot(wk_id) as u8;

@@ -40,7 +40,7 @@ fn parse_single_header_line(
     is_dup_cl: bool&,
     mode:      http::H1ResponseParseMode = http::H1ResponseParseMode.Strict,
 ) -> http::HeaderParseError {
-    let colon_pos = find_any(line, http::COLON_SET);
+    let colon_pos = line.index_of_byte(':');
     guard colon_pos > 0 else {
         map.valid = false;
         return http::HeaderParseError.InvalidHeaderName;
@@ -59,7 +59,9 @@ fn parse_single_header_line(
     }
 
     let raw_val = line[colon_pos + 1..];
-    let val_trimmed = raw_val.trim_lws();
+    let trimmed_start = raw_val.trim_lws_start();
+    let lws_lead = raw_val.len - trimmed_start.len;
+    let val_trimmed = trimmed_start.trim_lws_end();
     guard http::is_valid_header_value(val_trimmed) else {
         map.valid = false;
         return http::HeaderParseError.InvalidHeaderValue;
@@ -78,12 +80,11 @@ fn parse_single_header_line(
     let name_begin_off = cursor as u16;
     let name_end_off = (cursor + raw_name.len) as u16;
 
-    let lws_lead = raw_val.len - raw_val.trim_lws_start().len;
     let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
     let val_end_off = (val_start_off + val_trimmed.len) as u16;
 
     let flags = well_known_header_flags(wk_id, raw_name);
-    let hname = http::hash_header_name(raw_name);
+    let hname = well_known_header_hash(wk_id, raw_name);
 
     let contains_comma = val_trimmed.contains_byte(',');
     let entry_flags = if contains_comma { flags | http::HEADER_FLAG_CONTAINS_COMMA } else { flags };
@@ -125,7 +126,7 @@ fn parse_single_overflow_header_line(
     is_dup_cl: i32&,
 ) -> http::HeaderParseError {
     is_dup_cl = 0;
-    let colon_pos = find_any(line, http::COLON_SET);
+    let colon_pos = line.index_of_byte(':');
     guard colon_pos > 0 else {
         map.valid = false;
         return http::HeaderParseError.InvalidHeaderName;
@@ -142,7 +143,9 @@ fn parse_single_overflow_header_line(
     }
 
     let raw_val = line[colon_pos + 1..];
-    let val_trimmed = raw_val.trim_lws();
+    let trimmed_start = raw_val.trim_lws_start();
+    let lws_lead = raw_val.len - trimmed_start.len;
+    let val_trimmed = trimmed_start.trim_lws_end();
     guard http::is_valid_header_value(val_trimmed) else {
         map.valid = false;
         return http::HeaderParseError.InvalidHeaderValue;
@@ -161,12 +164,11 @@ fn parse_single_overflow_header_line(
     let name_begin_off = cursor as u16;
     let name_end_off = (cursor + colon_pos) as u16;
 
-    let lws_lead = raw_val.len - raw_val.trim_lws_start().len;
     let val_start_off = (cursor + colon_pos + 1 + lws_lead) as u16;
     let val_end_off = (val_start_off + val_trimmed.len) as u16;
 
     let flags = well_known_header_flags(wk_id, raw_name);
-    let hname = http::hash_header_name(raw_name);
+    let hname = well_known_header_hash(wk_id, raw_name);
 
     let contains_comma = val_trimmed.contains_byte(',');
     let entry_flags = if contains_comma { flags | http::HEADER_FLAG_CONTAINS_COMMA } else { flags };
@@ -213,13 +215,12 @@ fn process_header_line(
     mode:            http::H1ResponseParseMode = http::H1ResponseParseMode.Strict,
 ) -> http::HeaderParseError {
     let line = raw_buf[cursor..line_end];
-    if is_line_whitespace_only(line) {
-        map.valid = false;
-        return http::HeaderParseError.WhitespaceOnlyLine;
-    }
-
-    let is_lead_ws = raw_buf[cursor] == ' ' || raw_buf[cursor] == '\t';
+    let is_lead_ws = line.len == 0 || raw_buf[cursor] == ' ' || raw_buf[cursor] == '\t';
     if is_lead_ws {
+        if is_line_whitespace_only(line) {
+            map.valid = false;
+            return http::HeaderParseError.WhitespaceOnlyLine;
+        }
         if prev_was_dup_cl {
             map.valid = false;
             return http::HeaderParseError.ObsFoldForbidden;
@@ -275,14 +276,12 @@ fn parse_overflow_headers_loop(
         let rel_end = find_any(active_buf[cursor..], http::CRLF_SET);
         let line_end = if rel_end >= 0 { cursor + rel_end } else { buf_len };
         let line = active_buf[cursor..line_end];
-
-        if is_line_whitespace_only(line) {
-            map.valid = false;
-            return http::HeaderParseError.WhitespaceOnlyLine;
-        }
-
-        let is_lead_ws = active_buf[cursor] == ' ' || active_buf[cursor] == '\t';
+        let is_lead_ws = line.len == 0 || active_buf[cursor] == ' ' || active_buf[cursor] == '\t';
         if is_lead_ws {
+            if is_line_whitespace_only(line) {
+                map.valid = false;
+                return http::HeaderParseError.WhitespaceOnlyLine;
+            }
             if prev_was_dup_cl {
                 map.valid = false;
                 return http::HeaderParseError.ObsFoldForbidden;
@@ -641,4 +640,81 @@ fn should_update_header_304(entry_flags: u8, name: const u8[:]) -> bool {
         return false;
     }
     return true;
+}
+
+// Checks whether `buf[cursor]` starts an empty CRLF/LF header-block terminator.
+// Returns 1 if terminated (advancing `cursor`), 0 if regular header line, -1 on bare CR.
+//
+// Example:
+//   buf = "\r\n", cursor = 0
+//   returns: 1, cursor = 2
+inline fn consume_empty_header_terminator(buf: const u8[:], cursor: i64&) -> i32 {
+    let b = buf[cursor];
+    if b == '\r' {
+        let next_c = core::add_sat_i64(cursor, 1);
+        if next_c < buf.len && buf[next_c] == '\n' {
+            cursor = core::add_sat_i64(cursor, 2);
+            return 1;
+        }
+        return -1;
+    }
+    if b == '\n' {
+        cursor = core::add_sat_i64(cursor, 1);
+        return 1;
+    }
+    return 0;
+}
+
+// Parses a pre-validated (NUL-free) HTTP/1.x header block into an already-reset `HeaderMap`.
+//
+// Example:
+//   raw_input = "Host: example.com\r\nContent-Length: 0\r\n\r\n", map = HeaderMap { .. }
+//   returns: HeaderParseError.None, populates map.entries
+fn parse_headers_body_validated(
+    raw_input:      const u8[:],
+    map:            http::HeaderMap&,
+    allow_obs_fold: bool,
+    mode:           http::H1ResponseParseMode,
+) -> http::HeaderParseError {
+    defer if !map.valid {
+        http::reset_for_keep_alive(map);
+        map.valid = false;
+    };
+    guard raw_input.len > 0 else { return http::HeaderParseError.EmptyInput; }
+    guard map.raw_buf.try_append(raw_input) else { return http::HeaderParseError.CapacityExceeded; }
+
+    var cursor: i64 = 0;
+    let buf_len = map.raw_buf.len;
+    var is_first_header = true;
+    var prev_was_dup_cl = false;
+
+    while cursor < buf_len {
+        let term = consume_empty_header_terminator(map.raw_buf[..], cursor);
+        if term != 0 {
+            if term < 0 { return http::HeaderParseError.InvalidHeaderValue; }
+            break;
+        }
+
+        let rel_end = find_any(map.raw_buf[cursor..], http::CRLF_SET);
+        let line_end = if rel_end >= 0 { core::add_sat_i64(cursor, rel_end) } else { buf_len };
+        let line_err = process_header_line(
+            map.raw_buf[..], cursor, line_end, allow_obs_fold, map, is_first_header, prev_was_dup_cl, mode,
+        );
+        guard http::is_ok(line_err) else { return line_err; }
+        guard http::advance_crlf(map.raw_buf[..], cursor, line_end) else {
+            return http::HeaderParseError.InvalidHeaderValue;
+        }
+    }
+
+    map.valid = true;
+    return http::HeaderParseError.None;
+}
+
+fn set_header_sanitized(map: http::HeaderMap&, name: const u8[:], value: const u8[:], is_sensitive: bool) {
+    var clean_name: u8[..128]  = [];
+    var clean_val:  u8[..4096] = [];
+    http::sanitize_header_bytes(name, clean_name);
+    http::sanitize_header_bytes(value, clean_val);
+    guard clean_name.len > 0 else { return; }
+    let _ = http::set_or_replace(map, clean_name[..], clean_val[..], is_sensitive);
 }

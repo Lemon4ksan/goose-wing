@@ -274,6 +274,7 @@ struct HpackHeaderField {
     meta_size:   u32  = 0, // name_len + val_len + 32
     generation:  u8   = 0,
     never_index: bool = false,
+    hash_slot:   u8   = 0,
 }
 
 // RFC 7541 Section 2.3.2: Dynamic Table - O(1) direct-mapped encoder hash table with generation tracking.
@@ -348,6 +349,7 @@ checkfree fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:
     guard head_i >= 0 && head_i < 128 && insert_i >= 0 && insert_i < 128 else { return; }
     let name_off, val_off = h2_internal::pack_header_into_arena(dt, name, val);
     let gen = h2_internal::next_hpack_generation(dt);
+    let slot = h2_internal::compute_hpack_hash_slot(name, val);
     dt.entries[insert_i] = HpackHeaderField {
         name_off:    name_off,
         name_len:    name.len as u16,
@@ -356,12 +358,12 @@ checkfree fn insert_header(dt: DynamicTable&, name: const u8[:], val: const u8[:
         meta_size:   entry_weight as u32,
         generation:  gen,
         never_index: never_index,
+        hash_slot:   slot,
     };
     dt.count += 1;
     dt.used_bytes += entry_weight;
     dt.arena_tail = dt.entries[head_i].name_off;
 
-    let slot = h2_internal::compute_hpack_hash_slot(name, val);
     dt.hash_table.slots[slot] = (insert_i as u16) + 1;
     dt.hash_table.generations[slot] = gen;
 }
@@ -645,26 +647,22 @@ fn validate_header_ordering_and_rules(
     if validate_http2_rules {
         let v_reg = h2_internal::validate_regular_header_to_map(out_pseudo, out_headers, name, val);
         guard v_reg == rfc::H2_ERR_NO_ERROR else { return v_reg; }
-        let join_st = h2_internal::join_existing_cookie(out_headers, name, val);
-        if join_st == h2_internal::CookieJoinStatus.Overflow {
-            return rfc::H2_ERR_ENHANCE_YOUR_CALM;
-        }
-        if join_st == h2_internal::CookieJoinStatus.NotCookie {
-            guard http::append_validated_header(out_headers, name, val) else {
-                return rfc::H2_ERR_ENHANCE_YOUR_CALM;
-            }
-        }
     } else {
         out_pseudo.has_regular_header = true;
+    }
+    let is_cookie = name.len == 6 && (name == "cookie" || (!validate_http2_rules && name.eq_ascii_fold("cookie")));
+    if is_cookie {
         let join_st = h2_internal::join_existing_cookie(out_headers, name, val);
         if join_st == h2_internal::CookieJoinStatus.Overflow {
             return rfc::H2_ERR_ENHANCE_YOUR_CALM;
         }
-        if join_st == h2_internal::CookieJoinStatus.NotCookie {
-            guard http::append_validated_header(out_headers, name, val) else {
-                return rfc::H2_ERR_ENHANCE_YOUR_CALM;
-            }
+        if join_st == h2_internal::CookieJoinStatus.Joined {
+            committed = true;
+            return rfc::H2_ERR_NO_ERROR;
         }
+    }
+    guard http::append_validated_header(out_headers, name, val) else {
+        return rfc::H2_ERR_ENHANCE_YOUR_CALM;
     }
     committed = true;
     return rfc::H2_ERR_NO_ERROR;
