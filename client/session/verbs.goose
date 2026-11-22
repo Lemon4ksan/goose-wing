@@ -16,7 +16,7 @@ import realtime.sse;
 import net.masque;
 import client.client;
 import client.session.exec;
-import .internal;
+import .realtime_internal;
 
 // ---- high-level dispatch entry points --------------------------------------
 

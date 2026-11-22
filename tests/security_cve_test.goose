@@ -230,7 +230,7 @@ fn test_cve_cookie_url_and_query_ordering(t: lit::T&) {
         q1.value.append("profile");
         params.push(q1);
 
-        client::build_effective_url("https://example.com/account#overview", "", params[..], out);
+        client_internal::build_effective_url("https://example.com/account#overview", "", params[..], out);
         sub.assert_bytes_eq(out[..], "https://example.com/account?tab=profile#overview", "query parameters must be placed before fragment");
     };
 }

@@ -709,7 +709,7 @@ fn test_live_proxy_tunnels() {
     g_e2e_client = client::Client { .. };
     g_e2e_client.virtual_clock_us = 1;
     let _ = g_e2e_client.proxy_url.try_set("http://alice:s3cret@127.0.0.1:18888");
-    let proxy_chain = client::resolve_hop_proxy_chain(g_e2e_client);
+    let proxy_chain = client_internal::resolve_hop_proxy_chain(g_e2e_client);
     let pkey = net::new_pool_key(
         net::PoolScheme.Http, "127.0.0.1", srv_port,
         proxy_chain,
@@ -1049,13 +1049,13 @@ fn test_live_websocket_and_sse() {
 
     var h2_ws_req = http::Request { .. };
     realtime::format_h2_websocket_request(h2_ws_req, "/ws-h2", "127.0.0.1", "https", "chat");
-    var h2_ctx = client::RequestExecutionContext { .. };
+    var h2_ctx = client_internal::RequestExecutionContext { .. };
     h2_ctx.current_method.append("CONNECT");
     http::copy_headers(h2_ws_req.headers, h2_ctx.headers);
     let h2_url = core::new_url("https://127.0.0.1/ws-h2");
     var dt_cli = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var h2_wire: u8[..2048] = [];
-    assert(client::encode_h2_request("CONNECT", h2_url, true, h2_ctx, dt_cli, 1, false, h2_wire));
+    assert(client_internal::encode_h2_request("CONNECT", h2_url, true, h2_ctx, dt_cli, 1, false, h2_wire));
     assert(net::tcp_send(h2_c, h2_wire[..]) == h2_wire.len);
 
     var h2_srv_rx: u8[..2048] = [];
@@ -1221,17 +1221,17 @@ fn test_client_h2_trailers_and_incremental_drain() {
     // Feed chunk1 then chunk2 into rx_accum (simulating 2 socket reads in recv_h2_response_loop)
     var rx_accum: u8[..4096] = [];
     var resp = http::Response { .. };
-    var h2_state = client::H2RecvState { .. };
+    var h2_state = client_internal::H2RecvState { .. };
     var ctrl_out: u8[..256] = [];
 
     rx_accum.append(chunk1[..]);
-    let st1 = client::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
-    assert(st1 == client::H2RecvStatus.Continue && h2_state.got_hdrs);
+    let st1 = client_internal::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
+    assert(st1 == client_internal::H2RecvStatus.Continue && h2_state.got_hdrs);
     assert(rx_accum.len == 0); // Must drain consumed frame bytes so read 2 does not re-decode chunk1!
 
     rx_accum.append(chunk2[..]);
-    let st2 = client::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
-    assert(st2 == client::H2RecvStatus.Complete);
+    let st2 = client_internal::drain_h2_response_frames(rx_accum, 1, false, dec_dt, resp, h2_state, ctrl_out);
+    assert(st2 == client_internal::H2RecvStatus.Complete);
     assert(resp.status_code == 200);
     assert(http::header(resp, "content-type") == "application/grpc");
     assert(resp.body[..] == "GRPC_PAYLOAD");
@@ -1246,7 +1246,7 @@ fn test_h3_query_and_trailers_seam() {
 
     // Client builds HTTP/3 request for URL with query string "?trace=99&mode=fast"
     let u = core::new_url("https://example.com/grpc.Echo/Call?trace=99&mode=fast");
-    var ctx = client::RequestExecutionContext { .. };
+    var ctx = client_internal::RequestExecutionContext { .. };
     ctx.current_method.append("POST");
     ctx.body.append("REQ_DATA");
     http::append_header(ctx.headers, "te", "trailers");
@@ -1257,7 +1257,7 @@ fn test_h3_query_and_trailers_seam() {
     assert(ok_s && sid == 0);
 
     var req_wire: u8[..4096] = [];
-    assert(client::encode_h3_request(g_cli_h3, sid, ctx, u, req_wire));
+    assert(client_internal::encode_h3_request(g_cli_h3, sid, ctx, u, req_wire));
 
     g_srv_h3_1 = http3::new_server_connection(h3_settings);
     var tx_wire: u8[..4096] = [];
@@ -1496,7 +1496,7 @@ fn test_h2_client_sliced_stream_recv_seam() {
     };
     defer net::release_hpack_slot(conn);
     var resp = http::Response { .. };
-    let ok_h2 = client::recv_h2_response_loop(conn, 1, false, 200, resp);
+    let ok_h2 = client_internal::recv_h2_response_loop(conn, 1, false, 200, resp);
     net::tcp_close(cli_fd);
     net::tcp_close(srv_fd);
 
@@ -1538,10 +1538,10 @@ fn test_h1_client_last_response_header_preserved_seam() {
     );
     let tp: net::Transport = net::Transport.Tcp { fd: cli_fd };
     let cid = net::register_connection(g_seam_session.pool, pkey, net::NegotiatedProtocol.Http11, tp, "127.0.0.1", 1, 1000);
-    var ctx = client::RequestExecutionContext { .. };
+    var ctx = client_internal::RequestExecutionContext { .. };
     let u = core::new_url("http://127.0.0.1/head-check");
     var hop_resp = http::Response { .. };
-    let ok_hop = client::dispatch_pooled_h1_hop(g_seam_session, cid, "HEAD", ctx, u, false, "http://127.0.0.1", "/head-check", 1, 1000, hop_resp);
+    let ok_hop = client_internal::dispatch_pooled_h1_hop(g_seam_session, cid, "HEAD", ctx, u, false, "http://127.0.0.1", "/head-check", 1, 1000, hop_resp);
     var wire_req: u8[..512] = [];
     let n_req = net::tcp_recv(srv_fd, wire_req, 512, 100);
     net::tcp_close(srv_fd);
@@ -1667,7 +1667,7 @@ fn test_proxy_cache_h2_extended_connect_seams() {
     let _ = http::append_header(cached_resp.headers, "ETag", "\"v1\"");
     cached_resp.body.append("CACHED_ROOT_PAYLOAD");
     var ts = http::CacheTimestamps { .. };
-    let _ = client::stage_cache_store(
+    let _ = client_internal::stage_cache_store(
         req_root, req_root.headers, parsed_root.href[..], "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
     );
 
@@ -1677,12 +1677,12 @@ fn test_proxy_cache_h2_extended_connect_seams() {
 
     var ws_req = http::Request { .. };
     realtime::format_h2_websocket_request(ws_req, "/ws", "127.0.0.1:18080", "http", "chat");
-    var ws_ctx = client::RequestExecutionContext { .. };
+    var ws_ctx = client_internal::RequestExecutionContext { .. };
     http::copy_headers(ws_req.headers, ws_ctx.headers);
     let u_ws = core::new_url("http://127.0.0.1:18080/ws");
     var dt_cli = http2::new_dynamic_table(rfc::HPACK_DEFAULT_MAX_DYN_SIZE);
     var h2_wire: u8[..4096] = [];
-    assert(client::encode_h2_request("CONNECT", u_ws, false, ws_ctx, dt_cli, 1, false, h2_wire));
+    assert(client_internal::encode_h2_request("CONNECT", u_ws, false, ws_ctx, dt_cli, 1, false, h2_wire));
 
     var fhdr, _, ok_fh = wire::parse_frame_header(h2_wire[..9]);
     assert(ok_fh && fhdr.frame_type == rfc::H2_FRAME_HEADERS);

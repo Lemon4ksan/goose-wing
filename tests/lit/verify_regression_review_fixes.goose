@@ -112,7 +112,7 @@ fn test_pipeline_64_slot_and_user_stages() {
     assert(wire::add_ingress_stage(client.wire_pipeline, wire::STAGE_ID_USER_1));
 
     var req = http::new_request("GET", "https://example.com/api/v1/resource");
-    var ctx = client::RequestExecutionContext { .. };
+    var ctx = client_internal::RequestExecutionContext { .. };
     let _ = ctx.current_method.try_set("GET");
     var current_url, url_err = core::parse_url("https://example.com/api/v1/resource");
     assert(url_err == core::UrlParseError.None);
@@ -121,7 +121,7 @@ fn test_pipeline_64_slot_and_user_stages() {
     var out_err = http::Error { .. };
     var cli_chain = wire::chain_stages(ClientUserStageA { .. }, ClientUserStageB { .. });
 
-    let cli_verdict = client::run_pre_hop_stages(
+    let cli_verdict = client_internal::run_pre_hop_stages(
         client,
         ctx,
         current_url,

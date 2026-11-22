@@ -180,7 +180,7 @@ fn test_scalable_http_cache_and_stage_polymorphism() {
     // Pass ScalableHttpCache directly into stage_client_cache_lookup<Cache> via UFCS polymorphism
     var stage_hdrs = http::HeaderMap { .. };
     var stage_resp = http::Response { .. };
-    let verdict, _ = client::stage_cache_lookup(
+    let verdict, _ = client_internal::stage_cache_lookup(
         req128,
         url128[..],
         now_ts,

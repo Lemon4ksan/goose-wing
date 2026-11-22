@@ -27,20 +27,20 @@ fn test_f001_ipv6_bracket_cross_component() {
 
     var session = client::new_session();
     session.virtual_clock_us = now_us;
-    var ctx = client::RequestExecutionContext {
+    var ctx = client_internal::RequestExecutionContext {
         site_for_cookies: sfc,
         is_main_frame:    true,
         ..
     };
-    let ss_eval = client::compute_hop_samesite_context(ctx, u_v6, true);
+    let ss_eval = client_internal::compute_hop_samesite_context(ctx, u_v6, true);
     assert(ss_eval.context_type == cookie::SameSiteContextType.SameSiteStrict);
 
     var resp_hdrs = http::HeaderMap { .. };
     http::set_header(resp_hdrs, "Set-Cookie", "__Host-v6=tok_v6; Secure; Path=/; SameSite=Strict");
-    client::ingest_hop_response_cookies(session, ctx, u_v6, ss_eval, resp_hdrs);
+    client_internal::ingest_hop_response_cookies(session, ctx, u_v6, ss_eval, resp_hdrs);
     assert(session.jar.cookies.len == 1);
 
-    client::prepare_hop_cookie_header(session, ctx, u_v6, ss_eval, true);
+    client_internal::prepare_hop_cookie_header(session, ctx, u_v6, ss_eval, true);
     assert(core::contains(http::find_header(ctx.headers, "Cookie"), "__Host-v6=tok_v6"));
     print("F001_IPV6_CROSS_COMPONENT: OK");
 }
@@ -86,11 +86,11 @@ fn test_f003_samesite_context_and_set_guard() {
     assert(cookie::set_cookie_header(jar, "https://bank.com/", "lax_sid=secret2; SameSite=Lax; Secure; Path=/", now_us));
     let u_bank = core::new_url("https://bank.com/dashboard");
     var hdrs = http::HeaderMap { .. };
-    let _ = client::stage_cookie_load(hdrs, u_bank, cross_ctx, true, "", true, now_us, jar, true);
+    let _ = client_internal::stage_cookie_load(hdrs, u_bank, cross_ctx, true, "", true, now_us, jar, true);
     assert(!core::contains(http::find_header(hdrs, "Cookie"), "lax_sid=secret2"));
 
     let u_evil = core::new_url("https://evil.com/");
-    let ctx_nav = client::RequestExecutionContext {
+    let ctx_nav = client_internal::RequestExecutionContext {
         initiator:          core::origin_from_url(u_evil),
         has_initiator:      true,
         site_for_cookies:   cookie::site_for_cookies_from_url("https://bank.com/"),
@@ -98,16 +98,16 @@ fn test_f003_samesite_context_and_set_guard() {
         is_main_frame:      true,
         ..
     };
-    let nav_eval = client::compute_hop_samesite_context(ctx_nav, u_bank, true);
+    let nav_eval = client_internal::compute_hop_samesite_context(ctx_nav, u_bank, true);
     assert(nav_eval.context_type == cookie::SameSiteContextType.SameSiteLax);
 
-    let ctx_null_sfc = client::RequestExecutionContext {
+    let ctx_null_sfc = client_internal::RequestExecutionContext {
         is_main_frame:      true,
         had_cross_site_hop: true,
         site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
-    let null_eval = client::compute_hop_samesite_context(ctx_null_sfc, u_bank, true);
+    let null_eval = client_internal::compute_hop_samesite_context(ctx_null_sfc, u_bank, true);
     assert(null_eval.context_type == cookie::SameSiteContextType.CrossSite);
     print("F003_SAMESITE_CONTEXT_BOUNDARY: OK");
 }

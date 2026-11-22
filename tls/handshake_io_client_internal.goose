@@ -328,7 +328,8 @@ fn tls_client_recv_server_cert_and_cv(
     var h_to_cert: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, h_to_cert);
     guard verify_server_cert_and_signature(cert_body_slice, cv_body[..], h_to_cert[..], config, slot_idx) else {
-        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, classify_cert_failure_alert(cert_body_slice));
+        let cert_alert = classify_cert_failure_alert(cert_body_slice);
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, cert_alert);
         return false;
     }
     transcript_update_msg(transcript, msg_cv, cv_body[..]);

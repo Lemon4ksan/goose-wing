@@ -315,7 +315,7 @@ fn test_body_rewind_overflow() {
     assert(req_large.body.len == 5000);
 
     var session = client::new_session();
-    var ctx = client::RequestExecutionContext { .. };
+    var ctx = client_internal::RequestExecutionContext { .. };
     ctx.body.append(req_large.body[..]);
     ctx.rewindable = req_large.rewindable;
     ctx.body_consumed = true;
@@ -324,7 +324,7 @@ fn test_body_rewind_overflow() {
     red_info.new_method.append("POST");
     red_info.clear_body = false;
 
-    let red_err = client::apply_redirect_transition(session, ctx, red_info);
+    let red_err = client_internal::apply_redirect_transition(session, ctx, red_info);
     assert(!http::ok(red_err));
     assert(red_err.code == rfc::STATUS_BAD_REQUEST);
     print("CHECK_REWIND_OVERFLOW: OK");
@@ -496,7 +496,7 @@ fn test_f003_ech_stale_expiry_and_clear() {
     entry.https_records.push(rec);
     session.dns_cache.insert(entry);
 
-    let out_ech, ok_fresh = client::lookup_cached_ech_config(session.dns_cache, "ech.example.com", 1010);
+    let out_ech, ok_fresh = client_internal::lookup_cached_ech_config(session.dns_cache, "ech.example.com", 1010);
     assert(ok_fresh);
     assert(out_ech[..] == "ech-config-bytes");
 
@@ -529,7 +529,7 @@ fn test_f004_mock_sse_and_set_cookie_bounds() {
 fn test_f005_dictionary_response_order() {
     var session = client::new_session();
     var out_dec: u8[..1024] = [];
-    let ok_corrupt = client::process_dictionary_response(
+    let ok_corrupt = client_internal::process_dictionary_response(
         session,
         "https://example.com",
         "match=\"/app/*\"",
@@ -611,7 +611,7 @@ fn test_f010_samesite_cross_site_main_frame() {
         had_cross_site_hop: false,
     };
     var hdrs = http::HeaderMap { .. };
-    let _ = client::stage_cookie_load(hdrs, target_u, eval, true, "", true, now_us, jar, true);
+    let _ = client_internal::stage_cookie_load(hdrs, target_u, eval, true, "", true, now_us, jar, true);
     assert(!core::contains(http::find_header(hdrs, "Cookie"), "lax_sid=secret"));
     print("F010_SAMESITE_CROSS_SITE_MAIN_FRAME: OK");
 }
@@ -629,25 +629,25 @@ fn test_f011_exec_bounds_and_auth_retry_cookie() {
     }
     var q_items: http::QueryItem[..1] = [];
     var out_url: u8[..2048]           = [];
-    client::build_effective_url(base_big[..], rel_big[..], q_items[..], out_url);
+    client_internal::build_effective_url(base_big[..], rel_big[..], q_items[..], out_url);
 
     var session = client::new_session();
     cookie::set_cookie_header(session.jar, "https://auth.example.com/resource", "sid=initial_token; Path=/", session.virtual_clock_us);
-    var ctx = client::RequestExecutionContext {
+    var ctx = client_internal::RequestExecutionContext {
         site_for_cookies: cookie::site_for_cookies_from_url("https://auth.example.com/resource"),
         is_main_frame:    true,
         ..
     };
     ctx.current_method.append("GET");
     let curr_u = core::new_url("https://auth.example.com/resource");
-    let ss_eval = client::compute_hop_samesite_context(ctx, curr_u, true);
-    client::prepare_hop_cookie_header(session, ctx, curr_u, ss_eval, true);
+    let ss_eval = client_internal::compute_hop_samesite_context(ctx, curr_u, true);
+    client_internal::prepare_hop_cookie_header(session, ctx, curr_u, ss_eval, true);
     assert(core::contains(http::find_header(ctx.headers, "Cookie"), "sid=initial_token"));
 
     var resp_401 = http::Response { status_code: 401, .. };
     http::set_header(resp_401, "WWW-Authenticate", "Basic realm=\"api\"");
     http::set_header(resp_401, "Set-Cookie", "sid=; Path=/; Max-Age=0");
-    client::prepare_auth_retry_hop(session, ctx, curr_u, ss_eval, true, resp_401, "Basic YWxpY2U6c2VjcmV0");
+    client_internal::prepare_auth_retry_hop(session, ctx, curr_u, ss_eval, true, resp_401, "Basic YWxpY2U6c2VjcmV0");
     assert(!core::contains(http::find_header(ctx.headers, "Cookie"), "sid=initial_token"));
     print("F011_EXEC_BOUNDS_AND_AUTH_COOKIE: OK");
 }
@@ -1050,7 +1050,7 @@ fn test_f017_stage_dictionary_compression_handling() {
     resp.body.append("corrupt-dcz-payload");
 
     // Must not cache corrupted dictionary body
-    client::ingest_compression_dict_header(dict_cache, "example.com:443", "/api/item", 1000, resp);
+    client_internal::ingest_compression_dict_header(dict_cache, "example.com:443", "/api/item", 1000, resp);
     assert(dict_cache.entries.len == 0);
     print("F017_STAGE_DICT_COMPRESSION_HANDLING: OK");
 }
@@ -1075,7 +1075,7 @@ fn test_f018_h1_101_no_pool_reuse() {
 fn test_f020_f023_auth_retry_state_and_clear() {
     var session = client::new_client();
     client::set_credentials(session, "alice", "secret123");
-    var ctx = client::RequestExecutionContext {
+    var ctx = client_internal::RequestExecutionContext {
         rewindable:    true,
         body_consumed: true,
         ..
@@ -1087,13 +1087,13 @@ fn test_f020_f023_auth_retry_state_and_clear() {
     let samesite = cookie::SameSiteCookieContext { .. };
     let resp = http::Response { status_code: 401, .. };
 
-    client::prepare_auth_retry_hop(session, ctx, u, samesite, false, resp, "Basic dGVzdA==");
+    client_internal::prepare_auth_retry_hop(session, ctx, u, samesite, false, resp, "Basic dGVzdA==");
     assert(!ctx.body_consumed);
     assert(ctx.auth_retried);
 
     var dirty_header: u8[..4096] = [];
     dirty_header.append("STALE-DIRTY-PREFIX-");
-    let ok_auth = client::compute_401_auth_header(session, ctx, u, "Basic realm=\"api\"", dirty_header);
+    let ok_auth = client_internal::compute_401_auth_header(session, ctx, u, "Basic realm=\"api\"", dirty_header);
     assert(ok_auth);
     assert(!core::starts_with(dirty_header[..], "STALE-DIRTY-PREFIX-"));
     assert(core::starts_with(dirty_header[..], "Basic "));
@@ -1141,18 +1141,18 @@ fn test_ssrf_ipv6() {
 fn test_rfc8470_425() {
     var req_post = http::new_post("https://example.com/api");
     req_post.body.append("payload");
-    assert(!client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_post, 0, false, 0, false));
+    assert(!client_internal::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_post, 0, false, 0, false));
 
     var req_get = http::new_get("https://example.com/api");
-    assert(client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "GET", req_get, 0, false, 0, false));
+    assert(client_internal::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "GET", req_get, 0, false, 0, false));
 
     var req_idem = http::new_post("https://example.com/api");
     req_idem.body.append("payload");
     http::set_header(req_idem, "Idempotency-Key", "uuid-abc");
-    assert(client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_idem, 0, false, 0, false));
+    assert(client_internal::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_idem, 0, false, 0, false));
 
     req_idem.rewindable = false;
-    assert(!client::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_idem, 0, false, 0, false));
+    assert(!client_internal::should_retry_request(rfc::STATUS_TOO_EARLY, http::Error { .. }, "POST", req_idem, 0, false, 0, false));
     print("CHECK_RFC8470_425: OK");
 }
 
@@ -1217,7 +1217,7 @@ fn test_long_fragment() {
     qi.key.append("p");
     qi.value.append("1");
     qitems.push(qi);
-    client::append_query_params_preserving_fragment(url_buf, qitems[..]);
+    client_internal::append_query_params_preserving_fragment(url_buf, qitems[..]);
     assert(core::contains(url_buf[..], "?p=1#"));
     assert(url_buf.len > 600);
     print("CHECK_LONG_FRAGMENT: OK");
@@ -1271,16 +1271,16 @@ fn test_f001_samesite_lax_after_cross_site_redirect() {
     assert(ok_set);
 
     let curr_url = core::new_url("https://target.example.com/landing");
-    var ctx = client::RequestExecutionContext {
+    var ctx = client_internal::RequestExecutionContext {
         is_main_frame:      true,
         had_cross_site_hop: true,
         site_for_cookies:   cookie::null_site_for_cookies(),
         ..
     };
-    let samesite_eval = client::compute_hop_samesite_context(ctx, curr_url, false);
+    let samesite_eval = client_internal::compute_hop_samesite_context(ctx, curr_url, false);
     assert(samesite_eval.context_type == cookie::SameSiteContextType.CrossSite);
 
-    let _ = client::stage_cookie_load(
+    let _ = client_internal::stage_cookie_load(
         ctx.headers,
         curr_url,
         samesite_eval,
@@ -1376,10 +1376,10 @@ fn test_f006_h2_oversize_frame_and_rst_stream() {
     var rx_oversize: u8[..64] = [0x00, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
     var dec_dt = http2::new_dynamic_table(4096);
     var resp = http::Response { .. };
-    var h2_state = client::H2RecvState { .. };
+    var h2_state = client_internal::H2RecvState { .. };
     var ctrl_out: u8[..256] = [];
-    let st_f = client::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, h2_state, ctrl_out);
-    assert(st_f == client::H2RecvStatus.Error);
+    let st_f = client_internal::drain_h2_response_frames(rx_oversize, 1, false, dec_dt, resp, h2_state, ctrl_out);
+    assert(st_f == client_internal::H2RecvStatus.Error);
 
     let rst_hdr = http2::FrameHeader {
         length:     4,
@@ -1388,10 +1388,10 @@ fn test_f006_h2_oversize_frame_and_rst_stream() {
         stream_id:  1,
     };
     let rst_payload: u8[4] = [0x00, 0x00, 0x00, 0x08];
-    let st_rst = client::process_h2_response_frame(
+    let st_rst = client_internal::process_h2_response_frame(
         rst_hdr, rst_payload[..], 1, false, dec_dt, resp, h2_state, ctrl_out,
     );
-    assert(st_rst == client::H2RecvStatus.Error);
+    assert(st_rst == client_internal::H2RecvStatus.Error);
     print("F006_H2_FRAME_VALIDATION: OK");
 }
 
@@ -1399,7 +1399,7 @@ fn test_f006_h2_oversize_frame_and_rst_stream() {
 fn test_f007_altsvc_h3_ssrf_guard() {
     var session = client::new_session();
     session.ssrf_guard = security::new_ssrf_guard_policy();
-    var ctx = client::RequestExecutionContext { .. };
+    var ctx = client_internal::RequestExecutionContext { .. };
     ctx.current_method.append("GET");
     let curr_url = core::new_url("https://example.com/data");
     var bad_ep = http::AltSvcEndpoint {
@@ -1409,7 +1409,7 @@ fn test_f007_altsvc_h3_ssrf_guard() {
     bad_ep.host.append("127.0.0.1");
     bad_ep.proto.append("h3");
     var resp = http::Response { .. };
-    let ok_h3 = client::execute_live_h3_hop(session, ctx, curr_url, "https://example.com:443", bad_ep, 1000, resp);
+    let ok_h3 = client_internal::execute_live_h3_hop(session, ctx, curr_url, "https://example.com:443", bad_ep, 1000, resp);
     assert(!ok_h3);
     print("F007_ALTSVC_H3_SSRF: OK");
 }
@@ -1513,7 +1513,7 @@ fn test_ws_header_tokens() {
 
 fn test_multihop_redirect_body_clear() {
     var session = client::new_session();
-    var ctx = client::RequestExecutionContext { .. };
+    var ctx = client_internal::RequestExecutionContext { .. };
     ctx.body.append("initial_body");
     ctx.rewind_buf.append("initial_body");
     ctx.rewindable = true;
@@ -1523,7 +1523,7 @@ fn test_multihop_redirect_body_clear() {
     red_303.new_method.append("GET");
     red_303.clear_body = true;
 
-    let err_303 = client::apply_redirect_transition(session, ctx, red_303);
+    let err_303 = client_internal::apply_redirect_transition(session, ctx, red_303);
     assert(http::ok(err_303));
     assert(ctx.body.len == 0);
     assert(ctx.rewind_buf.len == 0);
@@ -1533,7 +1533,7 @@ fn test_multihop_redirect_body_clear() {
 
 fn test_multihop_no_resurrect() {
     var session = client::new_session();
-    var ctx = client::RequestExecutionContext { .. };
+    var ctx = client_internal::RequestExecutionContext { .. };
     ctx.body.append("initial_payload");
     ctx.rewind_buf.append("initial_payload");
     ctx.rewindable = true;
@@ -1542,7 +1542,7 @@ fn test_multihop_no_resurrect() {
     var red_303 = client::RedirectInfo { .. };
     red_303.new_method.append("GET");
     red_303.clear_body = true;
-    let _ = client::apply_redirect_transition(session, ctx, red_303);
+    let _ = client_internal::apply_redirect_transition(session, ctx, red_303);
 
     // Hop 2: 307 Temporary Redirect with body_consumed = true
     ctx.body_consumed = true;
@@ -1550,7 +1550,7 @@ fn test_multihop_no_resurrect() {
     red_307.new_method.append("GET");
     red_307.clear_body = false;
 
-    let err_307 = client::apply_redirect_transition(session, ctx, red_307);
+    let err_307 = client_internal::apply_redirect_transition(session, ctx, red_307);
     assert(!http::ok(err_307));
     assert(err_307.code == rfc::STATUS_BAD_REQUEST);
     print("CHECK_MULTIHOP_NO_RESURRECT: OK");

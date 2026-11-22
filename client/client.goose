@@ -47,7 +47,9 @@ import security.ssrf;
 import client.replay_guard;
 import client.telemetry;
 import .internal;
-import .session.internal;
+import .session.tls_hop_internal;
+import .session.dns_dial_internal;
+import .session.hop_context_internal;
 
 // ---- 1. Configuration & State Structs --------------------------------------
 
@@ -1005,26 +1007,7 @@ fn default_header(session: Session&, name: const u8[:], value: const u8[:]) {
     http::set_header(session.default_headers, name, value);
 }
 
-// ---- 5. ECH Discovery & RFC 9842 Compression Dictionary APIs ---------------
-
-// Looks up a fresh cached ECHConfigList for `domain` in `dns_cache`.
-fn lookup_cached_ech_config(
-    dns_cache: const dns::Cache&,
-    domain:    const u8[:],
-    now_sec:   i64,
-) -> u8[..512], bool {
-    var ech: u8[..512] = [];
-    let cached, cache_status = dns_cache.lookup(domain, rfc::DNS_QTYPE_HTTPS, now_sec);
-    if cached && cache_status == dns::CacheStatus.Fresh {
-        for &rec in cached.https_records {
-            if rec.has_ech && rec.ech_config_list.len > 0 {
-                let ok_set = ech.try_set(rec.ech_config_list[..]);
-                return ech, ok_set;
-            }
-        }
-    }
-    return ech, false;
-}
+// ---- 5. ECH Discovery ------------------------------------------------------
 
 // Discovers or extracts ECHConfigList for a domain.
 // Checks local `dns::Cache` first; if missing/expired and DoH is enabled, performs RFC 9460 Type 65 discovery.
@@ -1033,7 +1016,7 @@ fn resolve_ech_config(
     domain:  const u8[:],
     now_sec: i64,
 ) -> u8[..512], bool {
-    let cached_ech, ok_cached = lookup_cached_ech_config(session.dns_cache, domain, now_sec);
+    let cached_ech, ok_cached = client_internal::lookup_cached_ech_config(session.dns_cache, domain, now_sec);
     if ok_cached {
         return cached_ech, true;
     }
@@ -1053,74 +1036,4 @@ fn resolve_ech_config(
         }
     }
     return stale_ech, false;
-}
-
-// RFC 9842 Section 2.2: Available-Dictionary - Attaches `Available-Dictionary` and `Dictionary-ID`
-// request headers when a valid dictionary in `session.dict_cache` matches `(origin, url_path)`.
-fn attach_dictionary_request_headers(
-    session:  const Session&,
-    origin:   const u8[:],
-    url_path: const u8[:],
-    req:      http::Request&,
-) -> bool {
-    guard session.enable_compression_dict && client_internal::is_secure_dict_origin(origin) else { return false; }
-    let now_sec = session.virtual_clock_us / 1000000;
-    let best_idx = http::find_best_matching_dict_idx(session.dict_cache, origin, url_path, now_sec);
-    guard best_idx >= 0 && best_idx < session.dict_cache.entries.len else { return false; }
-    let entry .= session.dict_cache.entries[best_idx];
-    http::set_header(req, "Available-Dictionary", entry.sha256_base64[..]);
-    if entry.id.len > 0 {
-        var id_hdr: u8[..128] = [];
-        http::format_dictionary_id_header(id_hdr, entry.id[..]);
-        http::set_header(req, "Dictionary-ID", id_hdr[..]);
-    }
-    return true;
-}
-
-// RFC 9842 Section 2.1: Use-As-Dictionary - Registers a response body in `session.dict_cache` when
-// `Use-As-Dictionary` is present, and verifies/decodes `dcz` or `dcb` Content-Encoding payloads.
-fn process_dictionary_response<B>(
-    session:          Session&,
-    origin:           const u8[:],
-    use_as_dict_hdr:  const u8[:],
-    content_encoding: const u8[:],
-    raw_body:         const u8[:],
-    out:              B&,
-) -> bool {
-    guard client_internal::is_secure_dict_origin(origin) else { return false; }
-    let enc = content_encoding.trim_lws();
-    let prev_len = out.len;
-    var committed = false;
-    defer if !committed { out.resize(prev_len); };
-    if enc.eq_ascii_fold(rfc::ENCODING_DCZ) {
-        guard client_internal::decode_dict_compressed_body(session, origin, true, raw_body, out) else {
-            return false;
-        }
-    } else if enc.eq_ascii_fold(rfc::ENCODING_DCB) {
-        guard client_internal::decode_dict_compressed_body(session, origin, false, raw_body, out) else {
-            return false;
-        }
-    } else if enc.len == 0 || enc.eq_ascii_fold("identity") {
-        guard out.try_append(raw_body) else { return false; }
-    } else {
-        return false;
-    }
-
-    if session.enable_compression_dict && use_as_dict_hdr.len > 0 {
-        let params, ok_p = http::parse_use_as_dictionary_header(use_as_dict_hdr);
-        if ok_p {
-            let now_sec = div_euclid(session.virtual_clock_us, 1000000);
-            http::dictionary_cache_insert(
-                session.dict_cache,
-                origin,
-                params.match_pattern[..],
-                params.id[..],
-                out[prev_len..],
-                params.ttl_sec,
-                now_sec,
-            );
-        }
-    }
-    committed = true;
-    return true;
 }

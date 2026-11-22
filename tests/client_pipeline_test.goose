@@ -1182,7 +1182,7 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
     t.run("RFC 8470 Section 5.2: 425 Too Early retry idempotency and rewind guards") { sub =>
         var req_post = http::new_post("https://example.com/api");
         req_post.body.append("non-idempotent-body");
-        let retry_post = client::should_retry_request(
+        let retry_post = client_internal::should_retry_request(
             rfc::STATUS_TOO_EARLY,
             http::Error { .. },
             "POST",
@@ -1195,7 +1195,7 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
         sub.assert_false(retry_post, "POST without idempotency key must not retry on 425");
 
         var req_get = http::new_get("https://example.com/api");
-        let retry_get = client::should_retry_request(
+        let retry_get = client_internal::should_retry_request(
             rfc::STATUS_TOO_EARLY,
             http::Error { .. },
             "GET",
@@ -1210,7 +1210,7 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
         var req_post_key = http::new_post("https://example.com/api");
         req_post_key.body.append("body");
         http::set_header(req_post_key, "Idempotency-Key", "uuid-12345");
-        let retry_key = client::should_retry_request(
+        let retry_key = client_internal::should_retry_request(
             rfc::STATUS_TOO_EARLY,
             http::Error { .. },
             "POST",
@@ -1224,7 +1224,7 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
 
         // Non-rewindable body must reject 425 retry
         req_post_key.rewindable = false;
-        let retry_non_rewind = client::should_retry_request(
+        let retry_non_rewind = client_internal::should_retry_request(
             rfc::STATUS_TOO_EARLY,
             http::Error { .. },
             "POST",
@@ -1310,7 +1310,7 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
         qi.key.append("k");
         qi.value.append("v");
         qitems.push(qi);
-        client::append_query_params_preserving_fragment(url_buf, qitems[..]);
+        client_internal::append_query_params_preserving_fragment(url_buf, qitems[..]);
         sub.assert_true(core::contains(url_buf[..], "?k=v#"), "query param inserted before fragment");
         sub.assert_gt(url_buf.len, 600, "fragment longer than 512B was preserved completely");
     };
@@ -1332,12 +1332,12 @@ fn test_client_round3_repro_vectors(t: lit::T&) {
     };
 
     t.run("CHIPS partition key extraction in RequestExecutionContext") { sub =>
-        var ctx = client::RequestExecutionContext { .. };
+        var ctx = client_internal::RequestExecutionContext { .. };
         ctx.top_frame_origin.scheme.append("https");
         ctx.top_frame_origin.host.append("publisher.example.com");
         let u = core::new_url("https://ad.tracker.com/track");
         var part_key: u8[..256] = [];
-        client::compute_hop_partition_key(ctx, u, part_key);
+        client_internal::compute_hop_partition_key(ctx, u, part_key);
         sub.assert_bytes_eq(part_key[..], "https://example.com", "top frame site eTLD+1 used as CHIPS partition key");
     };
 }
@@ -1594,12 +1594,12 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         var dict_short = http::Response { status_code: 200, .. };
         http::set_header(dict_short.headers, "Use-As-Dictionary", "match=\"/app/*\", id=\"short-dict\"");
         dict_short.body.append("short_dictionary_seed_content_123456");
-        client::ingest_compression_dict_header(cli.dict_cache, "https://cdn.example.com", "/dicts/1", now_sec, dict_short);
+        client_internal::ingest_compression_dict_header(cli.dict_cache, "https://cdn.example.com", "/dicts/1", now_sec, dict_short);
 
         var dict_long = http::Response { status_code: 200, .. };
         http::set_header(dict_long.headers, "Use-As-Dictionary", "match=\"/app/v2/*\", match-dest=(\"script\"), id=\"long-dict\"");
         dict_long.body.append("long_dictionary_seed_content_abcdef");
-        client::ingest_compression_dict_header(cli.dict_cache, "https://cdn.example.com", "/dicts/2", now_sec, dict_long);
+        client_internal::ingest_compression_dict_header(cli.dict_cache, "https://cdn.example.com", "/dicts/2", now_sec, dict_long);
 
         // Verify RFC 9842 40-byte DCZ framing and longest-match negotiation
         let long_hash = cli.dict_cache.entries[1].sha256_hash;
@@ -1652,8 +1652,8 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         sub_req.has_site_for_cookies = true;
         let _ = http::set_initiator(sub_req, "https://other.example.org/");
 
-        let exec_ctx = client::init_execution_context(cli, sub_req, echo_url);
-        var samesite_ctx = client::compute_hop_samesite_context(
+        let exec_ctx = client_internal::init_execution_context(cli, sub_req, echo_url);
+        var samesite_ctx = client_internal::compute_hop_samesite_context(
             exec_ctx,
             echo_url,
             true,
@@ -1785,7 +1785,7 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
         );
 
         var decoded: u8[..256] = "prefix:";
-        let ok_cross = client::process_dictionary_response(
+        let ok_cross = client_internal::process_dictionary_response(
             cli,
             "https://origin-b.example.com",
             "",
@@ -1796,7 +1796,7 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
         sub.assert_false(ok_cross, "cross-origin dictionary lookup by hash rejected");
         sub.assert_bytes_eq(decoded[..], "prefix:", "out_decoded preserved on failure");
 
-        let ok_same = client::process_dictionary_response(
+        let ok_same = client_internal::process_dictionary_response(
             cli,
             "https://origin-a.example.com",
             "",
@@ -1830,7 +1830,7 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
     };
 
     t.run("Opaque origin CORS/CORP enforcement, POST Content-Length: 0, and missing Signature rejection") { sub =>
-        var ctx = client::RequestExecutionContext {
+        var ctx = client_internal::RequestExecutionContext {
             has_initiator: true,
             cors_mode:     true,
             ..
@@ -1838,14 +1838,14 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
         ctx.initiator.kind = core::OriginKind.Opaque;
         let target_url = core::new_url("https://api.example.com/data");
         var resp_no_cors = http::Response { status_code: 200, .. };
-        let cors_err1 = client::validate_cors_and_corp_response(ctx, target_url, resp_no_cors);
+        let cors_err1 = client_internal::validate_cors_and_corp_response(ctx, target_url, resp_no_cors);
         sub.assert_false(
             http::ok(cors_err1),
             "Opaque initiator must not bypass CORS check",
         );
         http::set_header(resp_no_cors.headers, "Access-Control-Allow-Origin", "*");
         http::set_header(resp_no_cors.headers, "Cross-Origin-Resource-Policy", "same-origin");
-        let cors_err2 = client::validate_cors_and_corp_response(ctx, target_url, resp_no_cors);
+        let cors_err2 = client_internal::validate_cors_and_corp_response(ctx, target_url, resp_no_cors);
         sub.assert_false(
             http::ok(cors_err2),
             "Opaque initiator must be treated as cross-origin/cross-site for CORP",
@@ -1864,7 +1864,7 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
         sess.sig_public_key.append(pk[..]);
         let unsigned_resp = http::Response { status_code: 200, .. };
         sub.assert_false(
-            client::verify_response_signature(
+            client_internal::verify_response_signature(
                 sess,
                 post_req,
                 target_url,

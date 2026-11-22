@@ -1509,7 +1509,7 @@ fn verify_rfc9842_dictionary_transport() {
 
     // Client processes dictionary response and caches dictionary
     var out_initial: u8[..256] = [];
-    let ok_learn = client::process_dictionary_response(
+    let ok_learn = client_internal::process_dictionary_response(
         g_client,
         "https://example.com",
         uad_hdr,
@@ -1523,7 +1523,7 @@ fn verify_rfc9842_dictionary_transport() {
     http::reset_request(g_req);
     g_req.url.append("https://example.com/api/items");
     http::set_header(g_req.headers, "Accept-Encoding", "gzip, dcz, dcb", false);
-    let attached = client::attach_dictionary_request_headers(g_client, "https://example.com", "/api/items", g_req);
+    let attached = client_internal::attach_dictionary_request_headers(g_client, "https://example.com", "/api/items", g_req);
     assert(attached);
 
     // Server negotiates DCZ response
@@ -1539,7 +1539,7 @@ fn verify_rfc9842_dictionary_transport() {
 
     // Client decodes DCZ response back into plaintext
     var decoded_body: u8[..256] = [];
-    let ok_dec = client::process_dictionary_response(
+    let ok_dec = client_internal::process_dictionary_response(
         g_client,
         "https://example.com",
         "",
@@ -1551,7 +1551,7 @@ fn verify_rfc9842_dictionary_transport() {
 
     // Negative test: small output buffer must fail closed (Invariant 13, no silent drop)
     var tiny_out: u8[..8] = [];
-    let ok_overflow = client::process_dictionary_response(
+    let ok_overflow = client_internal::process_dictionary_response(
         g_client,
         "https://example.com",
         "",
@@ -2063,7 +2063,7 @@ fn test_rfc9218_and_client_h2_edge_cases() {
     var dec_dt = http2::new_dynamic_table(4096);
     var resp = http::Response { .. };
     var out_ctrl: u8[>..] = [];
-    var st_d = client::H2RecvState { got_hdrs: true, .. };
+    var st_d = client_internal::H2RecvState { got_hdrs: true, .. };
     let pad_hdr = http2::FrameHeader {
         length:     10,
         frame_type: rfc::H2_FRAME_DATA,
@@ -2071,12 +2071,12 @@ fn test_rfc9218_and_client_h2_edge_cases() {
         stream_id:  1,
     };
     let pad_payload: u8[10] = [4, 'h', 'e', 'l', 'l', 'o', 0, 0, 0, 0];
-    let st_pad = client::process_h2_response_frame(pad_hdr, pad_payload[..], 1, false, dec_dt, resp, st_d, out_ctrl);
-    assert(st_pad == client::H2RecvStatus.Complete);
+    let st_pad = client_internal::process_h2_response_frame(pad_hdr, pad_payload[..], 1, false, dec_dt, resp, st_d, out_ctrl);
+    assert(st_pad == client_internal::H2RecvStatus.Complete);
     assert(out_ctrl.len >= 13 && core::read_be_u32(out_ctrl[..], 9) == 10);
 
     // 3. Client H2 1xx informational response with END_STREAM must be rejected (RFC 9113 §8.1)
-    var st_1xx = client::H2RecvState { .. };
+    var st_1xx = client_internal::H2RecvState { .. };
     let hdr_100 = http2::FrameHeader {
         length:     5,
         frame_type: rfc::H2_FRAME_HEADERS,
@@ -2084,8 +2084,8 @@ fn test_rfc9218_and_client_h2_edge_cases() {
         stream_id:  1,
     };
     let payload_100: u8[5] = [0x08, 0x03, '1', '0', '0']; // :status: 100
-    let st_res_100 = client::process_h2_response_frame(hdr_100, payload_100[..], 1, false, dec_dt, resp, st_1xx, out_ctrl);
-    assert(st_res_100 == client::H2RecvStatus.Error);
+    let st_res_100 = client_internal::process_h2_response_frame(hdr_100, payload_100[..], 1, false, dec_dt, resp, st_1xx, out_ctrl);
+    assert(st_res_100 == client_internal::H2RecvStatus.Error);
     print("TEST_5_6_RFC9218_AND_CLIENT_H2: OK\n");
 }
 
