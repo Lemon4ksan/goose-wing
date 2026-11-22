@@ -451,7 +451,7 @@ fn test_flow_control_state_tracking(t: lit::T&) {
         // uncork_spill_to_bp preserves cork buffer when backpressure is full
         var cork = core::new_cork_buffer();
         core::cork_write_exact(cork, "SAVED_IN_CORK");
-        net::uncork_spill_to_bp(cork, bp_full);
+        net_internal::uncork_spill_to_bp(cork, bp_full);
         sub.assert_eq(core::cork_pending(cork), 13, "Cork data preserved when backpressure full");
     };
 }

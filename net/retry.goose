@@ -10,6 +10,7 @@ import std;
 import core;
 import http.headers;
 import .internal;
+import .pool_internal;
 
 // ---- Tier 1: Zero-Delay Stale Socket Recovery & QUIC Fallback -----------
 

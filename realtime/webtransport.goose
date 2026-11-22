@@ -14,6 +14,7 @@ import rfc.h3_quic;
 import http.request;
 import http.response;
 import .internal;
+import .pubsub_wt_internal;
 
 // ---- WebTransport Session & Framing Types (draft-16) ---------------------
 
@@ -55,31 +56,6 @@ struct WebTransportStreamReset {
 struct WebTransportStreamStopSending {
     stream_id:  u64 = 0,
     error_code: u32 = 0,
-}
-
-// ---- Varint Reader (RFC 9000 Section 16) ---------------------------------
-
-// Reads a variable-length integer (RFC 9000 Section 16).
-// Advances `idx` past the consumed integer bytes; leaves `idx` unchanged on error.
-//
-// Example:
-//   wire = [0x25], idx = 0
-//   returns: 37, ok = true, idx = 1
-fn read_varint(wire: const u8[:], idx: i64&) -> u64, bool {
-    guard idx >= 0 && idx < wire.len else { return 0, false; }
-    let first = wire[idx];
-    let prefix = first >> 6;
-    let needed = ((1 as u64) << prefix) as i64;
-    let end_idx = core::add_sat_i64(idx, needed);
-    guard end_idx <= wire.len else { return 0, false; }
-
-    var v = (first & 0x3F) as u64;
-    for i in 1..needed {
-        let byte_idx = core::add_sat_i64(idx, i);
-        v = (v << 8) | wire[byte_idx];
-    }
-    idx = end_idx;
-    return v, true;
 }
 
 // ---- Session Initiation (Extended CONNECT :protocol = webtransport) ------
@@ -155,12 +131,12 @@ fn decode_webtransport_uni_stream_header(
     wire: const u8[:],
 ) -> WebTransportUniStreamHeader, bool {
     var idx: i64 = 0;
-    let stype, ok1 = read_varint(wire, idx);
+    let stype, ok1 = realtime_internal::read_varint(wire, idx);
     guard ok1 && stype == rfc::STREAM_TYPE_WEBTRANSPORT else {
         return WebTransportUniStreamHeader { .. }, false;
     }
 
-    let sid, ok2 = read_varint(wire, idx);
+    let sid, ok2 = realtime_internal::read_varint(wire, idx);
     guard ok2 && realtime_internal::is_valid_webtransport_session_id(sid) else {
         return WebTransportUniStreamHeader { .. }, false;
     }
@@ -188,12 +164,12 @@ fn decode_webtransport_bidi_stream_header(
     wire: const u8[:],
 ) -> WebTransportBidiStreamHeader, bool {
     var idx: i64 = 0;
-    let signal, ok1 = read_varint(wire, idx);
+    let signal, ok1 = realtime_internal::read_varint(wire, idx);
     guard ok1 && signal == rfc::WEBTRANSPORT_BIDI_SIGNAL else {
         return WebTransportBidiStreamHeader { .. }, false;
     }
 
-    let sid, ok2 = read_varint(wire, idx);
+    let sid, ok2 = realtime_internal::read_varint(wire, idx);
     guard ok2 && realtime_internal::is_valid_webtransport_session_id(sid) else {
         return WebTransportBidiStreamHeader { .. }, false;
     }
@@ -226,9 +202,9 @@ fn decode_webtransport_datagram(
     out:  WebTransportDatagram&,
 ) -> bool {
     var idx: i64 = 0;
-    let quarter_id, ok1 = read_varint(wire, idx);
+    let quarter_id, ok1 = realtime_internal::read_varint(wire, idx);
     guard ok1 && quarter_id <= 0x0FFFFFFFFFFFFFFF else { return false; }
-    let ctx_id, ok2 = read_varint(wire, idx);
+    let ctx_id, ok2 = realtime_internal::read_varint(wire, idx);
     guard ok2 && ctx_id == 0 else { return false; }
     guard idx <= wire.len && out.payload.try_set(wire[idx..]) else { return false; }
 
@@ -256,7 +232,7 @@ fn decode_quic_datagram_frame<B>(
     out_payload: B&,
 ) -> bool {
     var idx: i64 = 0;
-    let frame_type, ok_t = read_varint(wire, idx);
+    let frame_type, ok_t = realtime_internal::read_varint(wire, idx);
     guard ok_t else { return false; }
 
     guard frame_type == rfc::QUIC_FRAME_DATAGRAM || frame_type == rfc::QUIC_FRAME_DATAGRAM_LEN else {
@@ -265,7 +241,7 @@ fn decode_quic_datagram_frame<B>(
 
     var payload_end = wire.len;
     if frame_type == rfc::QUIC_FRAME_DATAGRAM_LEN {
-        let len, ok_l = read_varint(wire, idx);
+        let len, ok_l = realtime_internal::read_varint(wire, idx);
         let rem_len = core::sub_sat_i64(wire.len, idx) as u64;
         guard ok_l && idx <= wire.len && len == rem_len else {
             return false;
@@ -387,10 +363,10 @@ fn decode_webtransport_reset_stream(
     payload: const u8[:],
 ) -> WebTransportStreamReset, bool {
     var idx: i64 = 0;
-    let sid, ok1 = read_varint(payload, idx);
+    let sid, ok1 = realtime_internal::read_varint(payload, idx);
     guard ok1 else { return WebTransportStreamReset { .. }, false; }
 
-    let code, ok2 = read_varint(payload, idx);
+    let code, ok2 = realtime_internal::read_varint(payload, idx);
     guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else {
         return WebTransportStreamReset { .. }, false;
     }
@@ -423,10 +399,10 @@ fn decode_webtransport_stop_sending(
     payload: const u8[:],
 ) -> WebTransportStreamStopSending, bool {
     var idx: i64 = 0;
-    let sid, ok1 = read_varint(payload, idx);
+    let sid, ok1 = realtime_internal::read_varint(payload, idx);
     guard ok1 else { return WebTransportStreamStopSending { .. }, false; }
 
-    let code, ok2 = read_varint(payload, idx);
+    let code, ok2 = realtime_internal::read_varint(payload, idx);
     guard ok2 && idx == payload.len && code <= 0xFFFFFFFF else {
         return WebTransportStreamStopSending { .. }, false;
     }

@@ -589,7 +589,7 @@ fn verify_iocomp_track_e(p_cfg: const net_internal::TransportDriverConfig&) {
     var p_rio = net::new_poller(p_cfg);
     net::register_socket(p_rio, 88, 9001, core::PollInterest.Read, core::PollTrigger.Level);
     var rio_evs: core::PollReadyEvent[..64] = [];
-    let mapped_rio = net::rio_map_completions_to_events(p_rio, rio_res[..], rio_evs);
+    let mapped_rio = net_internal::rio_map_completions_to_events(p_rio, rio_res[..], rio_evs);
     assert(mapped_rio == 1 && rio_evs[0].fd == 88 && rio_evs[0].bytes_available == 128);
     net::close_poller(p_rio);
 
@@ -891,14 +891,14 @@ fn run_05_verify_net_audit() {
     tun_assigned.assigned_ip.append("192.168.1.100");
     tun_assigned.assigned_prefix_len = 24;
     let zero_reject: const u8[7] = [0x01, 0x04, 0, 0, 0, 0, 32];
-    assert(!net::apply_assigned_ip(tun_assigned, trunc_assign[..]));
-    assert(!net::apply_assigned_ip(tun_assigned, zero_reject[..]));
+    assert(!net_internal::apply_assigned_ip(tun_assigned, trunc_assign[..]));
+    assert(!net_internal::apply_assigned_ip(tun_assigned, zero_reject[..]));
     assert(tun_assigned.assigned_ip[..] == "192.168.1.100");
     var empty_route_wire: u8[..8] = [];
     assert(net::encode_http_capsule(empty_route_wire, rfc::CAPSULE_ROUTE_ADVERTISEMENT, empty_payload));
     var pkt_scratch: u8[..16] = [];
     assert(net::receive_capsule(tun_assigned, empty_route_wire[..], pkt_scratch));
-    assert(net::apply_assigned_ip(tun_assigned, empty_payload));
+    assert(net_internal::apply_assigned_ip(tun_assigned, empty_payload));
     assert(tun_assigned.assigned_ip.len == 0 && tun_assigned.assigned_prefix_len == 0);
     print("F011_MASQUE_EMPTY_REVOKE: 1");
 

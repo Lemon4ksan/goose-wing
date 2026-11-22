@@ -9,6 +9,7 @@ import std;
 import core;
 import rfc.ws;
 import .internal;
+import .ws_pmd_internal;
 import .websocket;
 
 // Compression options matching uWebSockets CompressOptions

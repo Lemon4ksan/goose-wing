@@ -8,6 +8,7 @@ namespace net;
 import std;
 import core;
 import .internal;
+import .tunnel_internal;
 
 // ---- Capsule Types & Constants (RFC 9297 Section 3, RFC 9484 Section 4) ---
 
@@ -471,23 +472,6 @@ fn send_packet<B>(tunnel: MasqueTunnelSession&, packet: const u8[:], out_wire: B
     return ok;
 }
 
-// RFC 9484 Section 4.7.1: ADDRESS_ASSIGN Capsule - empty payload removes all assigned addresses
-fn apply_assigned_ip(tunnel: MasqueTunnelSession&, payload: const u8[:]) -> bool {
-    let assign, ok_a = decode_address_assign_capsule(payload);
-    guard ok_a else { return false; }
-    if payload.len == 0 {
-        tunnel.assigned_ip.clear();
-        tunnel.assigned_prefix_len = 0;
-        return true;
-    }
-    guard assign.assigned_ip.len > 0 && !net_internal::is_all_zero_ip_bytes(assign.assigned_ip[..]) else {
-        return false;
-    }
-    guard tunnel.assigned_ip.try_set(assign.assigned_ip[..]) else { return false; }
-    tunnel.assigned_prefix_len = assign.prefix_len;
-    return true;
-}
-
 // Ingests an incoming in-stream Capsule from the tunnel wire stream.
 fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], out_packet: B&) -> bool {
     guard tunnel.state == MasqueTunnelState.Established else { return false; }
@@ -508,7 +492,7 @@ fn receive_capsule<B>(tunnel: MasqueTunnelSession&, capsule_wire: const u8[:], o
     }
 
     if c.capsule_type == rfc::CAPSULE_ADDRESS_ASSIGN || c.capsule_type == rfc::CAPSULE_DRAFT_ADDRESS_ASSIGN {
-        guard apply_assigned_ip(tunnel, c.payload) else { return false; }
+        guard net_internal::apply_assigned_ip(tunnel, c.payload) else { return false; }
         out_packet.clear();
         return true;
     }

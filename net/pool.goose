@@ -13,6 +13,7 @@ import .proxy;
 import .transport;
 import .udp;
 import .internal;
+import .pool_internal;
 import http2.hpack;
 import cookie.psl;
 

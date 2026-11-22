@@ -14,6 +14,7 @@ import core;
 import http.request;
 import http.response;
 import .internal;
+import .pubsub_wt_internal;
 
 // ---- SSE Event Model ----------------------------------------------------
 

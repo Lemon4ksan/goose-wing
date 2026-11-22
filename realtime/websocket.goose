@@ -15,6 +15,7 @@ import rfc.ws;
 import wire.pipeline;
 import net.tcp;
 import .internal;
+import .ws_pmd_internal;
 import .ws_deflate;
 import .ws_handshake;
 
@@ -187,13 +188,6 @@ fn encode_ws_frame<B>(
     fin:       bool        = true,
 ) {
     let _ = realtime_internal::try_encode_ws_frame(out, opcode, payload, is_client, mask_key, fin);
-}
-
-// Computes exact WebSocket frame wire length including header, extended length, mask key, and payload.
-fn calc_ws_frame_len(payload_len: u64, is_client: bool) -> u64 {
-    let ext_len:  u64 = if payload_len > 65535 { 8 } else if payload_len > 125 { 2 } else { 0 };
-    let mask_len: u64 = if is_client { 4 } else { 0 };
-    return 2 + ext_len + mask_len + payload_len;
 }
 
 // ---- Close Frame Helpers (RFC 6455 Section 5.5.1) -----------------------
@@ -577,7 +571,7 @@ fn send_text_with_status<B>(
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
-    let frame_len = calc_ws_frame_len(text.len as u64, ws.is_client);
+    let frame_len = realtime_internal::calc_ws_frame_len(text.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
@@ -603,7 +597,7 @@ fn send_text_compressed_with_status<B>(
         let reset_win = ws_should_reset_compressor(ws);
         let comp_wire, ok_comp = ws_deflate_message_slice(shared_comp, text, reset_win);
         if ok_comp && comp_wire.len < text.len {
-            let frame_len = calc_ws_frame_len(comp_wire.len as u64, ws.is_client);
+            let frame_len = realtime_internal::calc_ws_frame_len(comp_wire.len as u64, ws.is_client);
             let status = notify_buffered(ws, frame_len, out);
             if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
                 return status;
@@ -613,7 +607,7 @@ fn send_text_compressed_with_status<B>(
         }
     }
 
-    let frame_len = calc_ws_frame_len(text.len as u64, ws.is_client);
+    let frame_len = realtime_internal::calc_ws_frame_len(text.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
@@ -639,7 +633,7 @@ fn send_binary_with_status<B>(
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
-    let frame_len = calc_ws_frame_len(data.len as u64, ws.is_client);
+    let frame_len = realtime_internal::calc_ws_frame_len(data.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
@@ -665,7 +659,7 @@ fn send_binary_compressed_with_status<B>(
         let reset_win = ws_should_reset_compressor(ws);
         let comp_wire, ok_comp = ws_deflate_message_slice(shared_comp, data, reset_win);
         if ok_comp && comp_wire.len < data.len {
-            let frame_len = calc_ws_frame_len(comp_wire.len as u64, ws.is_client);
+            let frame_len = realtime_internal::calc_ws_frame_len(comp_wire.len as u64, ws.is_client);
             let status = notify_buffered(ws, frame_len, out);
             if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
                 return status;
@@ -675,7 +669,7 @@ fn send_binary_compressed_with_status<B>(
         }
     }
 
-    let frame_len = calc_ws_frame_len(data.len as u64, ws.is_client);
+    let frame_len = realtime_internal::calc_ws_frame_len(data.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
@@ -847,22 +841,6 @@ fn receive<B>(ws: WebSocketSession&, wire: u8[:], out_msg: WsMessage&, out_reply
 }
 
 // ---- WebSocket Session Drivers -------------------------------------------
-
-// Consumes and dispatches all complete WebSocket frames currently buffered in `in_slice`.
-// Returns the total number of bytes consumed from `in_slice`.
-fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
-    conn_fd:  i64,
-    ws:       WebSocketSession&,
-    stage:    Stage&,
-    in_slice: u8[:],
-    frag_buf: FragBuf&,
-    out_wire: OutBuf&,
-) -> i64 {
-    var pmd = realtime_internal::WsPmdSessionState { .. };
-    return realtime_internal::drain_ws_session_frames_pmd(
-        conn_fd, ws, stage, in_slice, frag_buf, pmd, out_wire,
-    );
-}
 
 // Drives an upgraded RFC 6455 WebSocket session using caller-supplied wire and fragment buffers.
 fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(

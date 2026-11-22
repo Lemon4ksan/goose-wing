@@ -677,7 +677,7 @@ fn test_webtransport_regressions() {
     // 8.1 read_varint MUST NOT mutate idx on truncated multi-byte varint
     var trunc_varint: u8[1] = [0x40]; // 2-byte prefix (01), missing 2nd byte
     var v_idx:        i64   = 0;
-    let _, ok_vi = realtime::read_varint(trunc_varint[..], v_idx);
+    let _, ok_vi = realtime_internal::read_varint(trunc_varint[..], v_idx);
     print("WT_READ_VARINT_ATOMIC: ok=", ok_vi, " idx=", v_idx, "\n");
     // CHECK: WT_READ_VARINT_ATOMIC: ok=false idx=0
 

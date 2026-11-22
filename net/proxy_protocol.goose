@@ -241,19 +241,6 @@ fn parse_proxy_v2_ssl_tlv(val: const u8[:], ssl: ProxySslInfo&) -> bool {
     return committed;
 }
 
-// Computes the PROXYv2 CRC32c checksum over `frame[..tlv_limit]` with the 4-byte field at `zero_offset` zeroed.
-fn compute_proxy_v2_crc32c(frame: const u8[:], tlv_limit: i64, zero_offset: i64) -> u32 {
-    guard zero_offset >= 0 && core::add_sat_i64(zero_offset, 4) <= tlv_limit && tlv_limit <= frame.len else {
-        return 0;
-    }
-    let zeros: const u8[4] = [0, 0, 0, 0];
-    var crc: u32 = 0xFFFFFFFF;
-    crc = net_internal::crc32c_update_bytes(crc, frame[..zero_offset]);
-    crc = net_internal::crc32c_update_bytes(crc, zeros[..]);
-    crc = net_internal::crc32c_update_bytes(crc, frame[core::add_sat_i64(zero_offset, 4)..tlv_limit]);
-    return crc ^ 0xFFFFFFFF;
-}
-
 // Parses an incoming PROXY v2 binary header (HAProxy §2.2).
 //
 // Example:
@@ -355,7 +342,7 @@ fn append_proxy_v2_crc32c<B>(out: B&) -> bool {
     out.push(0);
     out.push(0);
     out.push(0);
-    let crc = compute_proxy_v2_crc32c(out[..], out.len, crc_offset);
+    let crc = net_internal::compute_proxy_v2_crc32c(out[..], out.len, crc_offset);
     out[crc_offset] = ((crc >> 24) & 0xFF) as u8;
     out[core::add_sat_i64(crc_offset, 1)] = ((crc >> 16) & 0xFF) as u8;
     out[core::add_sat_i64(crc_offset, 2)] = ((crc >> 8) & 0xFF) as u8;

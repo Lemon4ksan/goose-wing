@@ -8,6 +8,7 @@ namespace net;
 import std;
 import core;
 import .internal;
+import .tunnel_internal;
 
 enum SlowlorisViolation {
     None,

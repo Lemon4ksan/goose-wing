@@ -14,6 +14,7 @@ import .tcp;
 import .transport;
 import .internal;
 import .io_host_internal;
+import .io_host_loop_internal;
 
 struct Host {
     backend:         net_internal::HostBackendKind       = net_internal::HostBackendKind.Standard,

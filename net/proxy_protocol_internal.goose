@@ -405,7 +405,7 @@ fn parse_proxy_v2_tlvs(
         } else if tlv_type == PP2_TYPE_CRC32C {
             guard tlv_len == 4 else { return false; }
             let expected_crc = core::read_be_u32(val, 0);
-            let actual_crc = net::compute_proxy_v2_crc32c(wire, tlv_limit, val_start);
+            let actual_crc = compute_proxy_v2_crc32c(wire, tlv_limit, val_start);
             guard actual_crc == expected_crc else { return false; }
         } else if tlv_type == PP2_TYPE_UNIQUE_ID {
             guard hdr.unique_id.try_set(val) else { return false; }
@@ -507,4 +507,17 @@ fn format_proxy_v2_tlvs<B>(hdr: const net::ProxyHeader&, out: B&) {
     if hdr.ssl.has_ssl {
         format_proxy_v2_ssl_tlv(hdr.ssl, out);
     }
+}
+
+// Computes the PROXYv2 CRC32c checksum over `frame[..tlv_limit]` with the 4-byte field at `zero_offset` zeroed.
+fn compute_proxy_v2_crc32c(frame: const u8[:], tlv_limit: i64, zero_offset: i64) -> u32 {
+    guard zero_offset >= 0 && core::add_sat_i64(zero_offset, 4) <= tlv_limit && tlv_limit <= frame.len else {
+        return 0;
+    }
+    let zeros: const u8[4] = [0, 0, 0, 0];
+    var crc: u32 = 0xFFFFFFFF;
+    crc = crc32c_update_bytes(crc, frame[..zero_offset]);
+    crc = crc32c_update_bytes(crc, zeros[..]);
+    crc = crc32c_update_bytes(crc, frame[core::add_sat_i64(zero_offset, 4)..tlv_limit]);
+    return crc ^ 0xFFFFFFFF;
 }

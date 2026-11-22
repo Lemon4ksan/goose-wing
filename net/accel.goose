@@ -12,6 +12,7 @@ import core;
 import net.driver;
 import .tcp;
 import .internal;
+import .poller_internal;
 
 enum ReactorAccelMode {
     Auto,
@@ -316,48 +317,9 @@ fn reactor_drain_rio_tx_cq(accel: ReactorAccelRuntime&) -> u32 {
     return n;
 }
 
-fn reactor_wait_rio_slot_tx(accel: ReactorAccelRuntime&, slot: i64) -> bool {
-    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.rio_tx_cq != 0 else { return false; }
-    var spins: i32 = 0;
-    while accel.slot_tx_inflight[slot] && spins < 500 {
-        let _ = reactor_drain_rio_tx_cq(accel);
-        if !accel.slot_tx_inflight[slot] {
-            break;
-        }
-        let _ = net_internal::rio_wait_cq(accel.rio_tx_cq, 2);
-        spins = core::add_sat_i64(spins, 1) as i32;
-    }
-    return !accel.slot_tx_inflight[slot] && !accel.slot_close_after_tx[slot];
-}
-
-fn reactor_submit_rio_tx(accel: ReactorAccelRuntime&, slot: i64, wire: const u8[:]) -> bool {
-    guard slot >= 0 && slot < REACTOR_ACCEL_SLOTS && accel.slot_rio_rq[slot] != 0 else { return false; }
-    ensure_reactor_accel_slab(accel);
-    let tx_off_u32 = (core::shl_sat_u64(slot as u64, 13) as u32) | 4096;
-    let tx_off = tx_off_u32 as i64;
-    var off: i64 = 0;
-    while off < wire.len {
-        if accel.slot_tx_inflight[slot] {
-            guard reactor_wait_rio_slot_tx(accel, slot) else { return false; }
-        }
-        let rem = core::sub_sat_i64(wire.len, off);
-        let chunk_len = min(rem, REACTOR_ACCEL_BUF_SIZE);
-        for i in chunk_len {
-            accel.slab[core::add_sat_i64(tx_off, i)] = wire[core::add_sat_i64(off, i)];
-        }
-        let rc = net_internal::native_rio_post_send(
-            accel.slot_rio_rq[slot], accel.rio_buf_id, tx_off_u32, chunk_len as u32, REACTOR_REQ_TX_TAG,
-        );
-        guard rc == 0 else { return false; }
-        accel.slot_tx_inflight[slot] = true;
-        off = core::add_sat_i64(off, chunk_len);
-    }
-    return true;
-}
-
 fn reactor_submit_accel_tx(accel: ReactorAccelRuntime&, slot: i64, conn: i64, wire: const u8[:]) -> bool {
     if accel.mode == ReactorAccelMode.Rio && accel.slot_rio_rq[slot] != 0 {
-        return reactor_submit_rio_tx(accel, slot, wire);
+        return net_internal::reactor_submit_rio_tx(accel, slot, wire);
     }
     let can_uring = accel.mode == ReactorAccelMode.IoUring && accel.uring_fd >= 0;
     if can_uring && wire.len <= REACTOR_ACCEL_BUF_SIZE && !accel.slot_tx_inflight[slot] {

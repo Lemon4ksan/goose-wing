@@ -8,6 +8,7 @@ namespace net;
 import std;
 import core;
 import .internal;
+import .pool_internal;
 
 struct WantConn {
     req_id:           u64  = 0,

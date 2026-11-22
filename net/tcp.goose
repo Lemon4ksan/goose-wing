@@ -550,14 +550,6 @@ fn async_socket_write(
     return net_internal::async_write_direct(fd, bp, data, optionally);
 }
 
-// Spills remaining cork buffer into backpressure.
-fn uncork_spill_to_bp(cork: core::CorkBuffer&, bp: BackPressure&) {
-    guard cork.cork_pending() > 0 else { return; }
-    if backpressure_append(bp, cork.cork_as_slice()) {
-        cork.cork_reset();
-    }
-}
-
 // Uncorks the socket and flushes cork buffer while strictly preserving FIFO stream order.
 // If backpressure is already active, cork data is appended behind backpressure without out-of-order sending.
 // Returns (bytes_written, needs_writable_poll).
@@ -577,7 +569,7 @@ fn async_socket_uncork(fd: i64, cork: core::CorkBuffer&, bp: BackPressure&) -> i
 
     // 2. If backpressure is still active, append cork to backpressure without sending ahead of it
     if backpressure_len(bp) > 0 {
-        uncork_spill_to_bp(cork, bp);
+        net_internal::uncork_spill_to_bp(cork, bp);
         return total_sent as i32, true;
     }
 

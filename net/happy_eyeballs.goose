@@ -9,6 +9,7 @@ import std;
 import core;
 import dns.svcb;
 import .internal;
+import .pool_internal;
 
 // ---- RFC 8305 and HEv3 normative constants ------------------------------
 

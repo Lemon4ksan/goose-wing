@@ -50,7 +50,7 @@ fn test_kqueue_filter_and_poller_contracts() {
         udata:  101,
     };
     assert(net_internal::kevent_bytes_available(kev_write) == 0);
-    let fl_w, eof_w = net::map_kevent_to_poll_flags(kev_write);
+    let fl_w, eof_w = net_internal::map_kevent_to_poll_flags(kev_write);
     assert(fl_w == core::POLL_WRITE && !eof_w);
 
     var kev_read = net_internal::Kevent {
@@ -71,7 +71,7 @@ fn test_kqueue_filter_and_poller_contracts() {
         data:   0,
         udata:  103,
     };
-    let fl_c, eof_c = net::map_kevent_to_poll_flags(kev_eof_clean);
+    let fl_c, eof_c = net_internal::map_kevent_to_poll_flags(kev_eof_clean);
     assert(eof_c && (fl_c & core::POLL_HANGUP) != 0 && (fl_c & core::POLL_ERROR) == 0);
 
     var kev_eof_err = net_internal::Kevent {
@@ -82,7 +82,7 @@ fn test_kqueue_filter_and_poller_contracts() {
         data:   0,
         udata:  104,
     };
-    let fl_e, eof_e = net::map_kevent_to_poll_flags(kev_eof_err);
+    let fl_e, eof_e = net_internal::map_kevent_to_poll_flags(kev_eof_err);
     assert(eof_e && (fl_e & core::POLL_HANGUP) != 0 && (fl_e & core::POLL_ERROR) != 0);
 
     var cfg = net_internal::auto_transport_driver_config();

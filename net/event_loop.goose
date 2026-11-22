@@ -10,6 +10,7 @@ import .driver;
 import .poller;
 import .tcp;
 import .internal;
+import .poller_internal;
 
 const EVENT_LOOP_MAX_BUFFERS: i64 = 64;
 const CONNECTION_BUFFER_CAP:  i64 = 4096;

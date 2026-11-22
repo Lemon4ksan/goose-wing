@@ -10,6 +10,7 @@ import std;
 import net.driver;
 import .tcp;
 import .internal;
+import .poller_internal;
 import core;
 
 // Time conversion constants
@@ -396,55 +397,6 @@ fn simulate_hangup(p: Poller&, fd: i32) -> bool {
 
 // ---- Polling Execution --------------------------------------------------
 
-// Maps a slice of Windows RIO `RioResult` items into `PollReadyEvent` entries on `out_events`.
-fn rio_map_completions_to_events(
-    p:          Poller&,
-    results:    const net_internal::RioResult[:],
-    out_events: core::PollReadyEvent[..64]&,
-) -> u64 {
-    var added: u64 = 0;
-    for res in results {
-        guard out_events.len < out_events.cap else { break; }
-        let reg_idx = find_by_tag(p, res.socket_context);
-        let fd_val: i32 = if reg_idx >= 0 && reg_idx < p.registrations.len { p.registrations[reg_idx].fd } else { -1 };
-        let ev_flags: u32 = if res.status != 0 {
-            core::POLL_ERROR
-        } else if res.bytes_transferred == 0 {
-            core::POLL_READ | core::POLL_HANGUP
-        } else {
-            core::POLL_READ
-        };
-        let _ = out_events.try_push(core::PollReadyEvent {
-            tag:             res.socket_context,
-            fd:              fd_val,
-            events:          ev_flags,
-            bytes_available: res.bytes_transferred,
-            is_eof:          res.status == 0 && res.bytes_transferred == 0,
-            is_timer:        false,
-        });
-        p.total_events_dispatched = core::add_sat_u64(p.total_events_dispatched, 1);
-        added = core::add_sat_u64(added, 1);
-    }
-    return added;
-}
-
-inline fn map_kevent_to_poll_flags(kev: const net_internal::Kevent&) -> u32, bool {
-    var flags: u32 = core::POLL_NONE;
-    if kev.filter == net_internal::EVFILT_READ {
-        flags |= core::POLL_READ;
-    } else if kev.filter == net_internal::EVFILT_WRITE {
-        flags |= core::POLL_WRITE;
-    }
-    let is_eof = (kev.flags & net_internal::EV_EOF) != 0;
-    if is_eof {
-        flags |= core::POLL_HANGUP;
-    }
-    if is_eof && kev.fflags != 0 {
-        flags |= core::POLL_ERROR;
-    }
-    return flags, is_eof;
-}
-
 // Gathers readiness events and expired timers into out_events without heap allocations.
 // Returns total number of ready events harvested.
 fn poll_events(
@@ -510,13 +462,6 @@ fn uring_is_available() -> bool {
     return net_internal::native_uring_probe() == 0;
 }
 
-fn uring_events_to_poll_mask(events: u32) -> u32 {
-    var mask: u32 = 0;
-    if (events & EPOLL_READ) != 0 { mask |= net_internal::URING_POLLIN_MASK; }
-    if (events & EPOLL_WRITE) != 0 { mask |= net_internal::URING_POLLOUT_MASK; }
-    return mask;
-}
-
 fn uring_poll_open(up: UringPoller&, entries: u32 = 1024) -> bool {
     up.ring_fd = -1;
     up.watches.clear();
@@ -535,15 +480,6 @@ fn uring_poll_close(up: UringPoller&) {
     up.watches.clear();
 }
 
-inline fn uring_submit_fd_poll(ring_fd: i64, fd: i32, events: u32) {
-    let mask = uring_events_to_poll_mask(events);
-    guard mask != 0 else { return; }
-    var sqe = net_internal::UringSqe { .. };
-    net_internal::uring_prep_poll_add(sqe, fd, mask, fd as u64);
-    var batch: net_internal::UringSqe[1] = [sqe];
-    let _ = net_internal::uring_submit_sqes(ring_fd, batch[..]);
-}
-
 fn uring_poll_add(up: UringPoller&, fd: i64, events: u32, udata: u64) -> bool {
     guard up.ring_fd >= 0 && fd >= 0 && fd < 1048576 else { return false; }
     while up.watches.len <= fd {
@@ -555,7 +491,7 @@ fn uring_poll_add(up: UringPoller&, fd: i64, events: u32, udata: u64) -> bool {
         udata:  udata,
         active: true,
     };
-    uring_submit_fd_poll(up.ring_fd, fd as i32, events);
+    net_internal::uring_submit_fd_poll(up.ring_fd, fd as i32, events);
     return true;
 }
 
@@ -566,7 +502,7 @@ fn uring_poll_mod(up: UringPoller&, fd: i64, events: u32, udata: u64) -> bool {
     net_internal::poller_submit_uring_poll_remove(up.ring_fd, fd as u64);
     up.watches[fd].events = events;
     up.watches[fd].udata = udata;
-    uring_submit_fd_poll(up.ring_fd, up.watches[fd].fd, events);
+    net_internal::uring_submit_fd_poll(up.ring_fd, up.watches[fd].fd, events);
     return true;
 }
 
@@ -577,41 +513,6 @@ fn uring_poll_del(up: UringPoller&, fd: i64) -> bool {
         up.watches[fd].active = false;
     }
     return true;
-}
-
-fn uring_poll_mask_to_events(revents: u32) -> u32 {
-    var mask: u32 = 0;
-    if (revents & net_internal::URING_POLLIN_MASK) != 0 { mask |= 1; }
-    if (revents & net_internal::URING_POLLOUT_MASK) != 0 { mask |= 2; }
-    if (revents & net_internal::URING_POLLERR_MASK) != 0 { mask |= 4; }
-    if (revents & net_internal::URING_POLLHUP_MASK) != 0 { mask |= 8; }
-    return mask;
-}
-
-inline fn uring_consume_poll_cqe(
-    up:         UringPoller&,
-    cqe:        const net_internal::UringCqe&,
-    ready:      i64&,
-    out_fds:    i64[:],
-    out_udata:  u64[:],
-    out_events: u32[:],
-) {
-    guard cqe.user_data != net_internal::URING_INTERNAL_CANCEL_TAG &&
-        cqe.res >= 0 &&
-        (cqe.flags & net_internal::URING_CQE_F_NOTIF) == 0 else { return; }
-    let fd = cqe.user_data as i64;
-    guard fd >= 0 && fd < up.watches.len && up.watches[fd].active else { return; }
-    guard ready >= 0 && ready < out_udata.len && ready < out_events.len else { return; }
-
-    let w = up.watches[fd];
-    uring_submit_fd_poll(up.ring_fd, w.fd, w.events);
-    let mask = uring_poll_mask_to_events(cqe.res as u32);
-    guard mask != 0 else { return; }
-
-    if ready < out_fds.len { out_fds[ready] = w.fd; }
-    out_udata[ready] = w.udata;
-    out_events[ready] = mask;
-    ready = core::add_sat_i64(ready, 1);
 }
 
 fn uring_poll_wait_events(
@@ -633,7 +534,7 @@ fn uring_poll_wait_events(
     let limit = min(n, 64);
     for k in limit {
         guard ready < max_out else { break; }
-        uring_consume_poll_cqe(up, cqes[k], ready, out_fds, out_udata, out_events);
+        net_internal::uring_consume_poll_cqe(up, cqes[k], ready, out_fds, out_udata, out_events);
     }
     return ready as i32;
 }

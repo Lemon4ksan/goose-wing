@@ -8,6 +8,7 @@ import std;
 import core;
 import .tcp;
 import .internal;
+import .tunnel_internal;
 
 enum ConnectTunnelError {
     None,
@@ -139,63 +140,6 @@ enum PortRequirement {
     Required,
 }
 
-inline fn has_ctrl_or_space_bytes(s: const u8[:]) -> bool {
-    guard s.len > 0 else { return true; }
-    for b in s {
-        if b <= 0x20 || b >= 0x7F { return true; }
-    }
-    return false;
-}
-
-// Parses a strictly decimal TCP/UDP port string in 1..65535.
-//
-// Example:
-//   port_slice = "8443"
-//   returns: 8443, true
-inline fn parse_strict_port_u16(port_slice: const u8[:]) -> u16, bool {
-    guard port_slice.len > 0 && port_slice.len <= 5 else { return 0, false; }
-    for b in port_slice {
-        guard b >= '0' && b <= '9' else { return 0, false; }
-    }
-    let p_val, ok_p = port_slice.parse_u32_dec();
-    guard ok_p && p_val >= 1 && p_val <= 65535 else { return 0, false; }
-    return p_val as u16, true;
-}
-
-// Parses a bracketed IPv6 authority ("[::1]:443" or "[::1]" when port is optional).
-//
-// Example:
-//   trimmed = "[2001:db8::1]:8443", default_port = 443, port_rule = PortRequirement.Required
-//   returns: "2001:db8::1", 8443, true
-inline fn parse_bracketed_authority(
-    trimmed:      const u8[:],
-    default_port: u16,
-    port_rule:    PortRequirement,
-) -> u8[..256], u16, bool {
-    var host_out: u8[..256] = [];
-    let close_i = trimmed.index_of_byte(']');
-    guard close_i > 1 else { return host_out, 0, false; }
-    let inner = trimmed[1..close_i];
-    var comp_buf: u8[..64] = [];
-    guard core::parse_and_compress_ipv6(inner, comp_buf) && host_out.try_set(inner) else {
-        return host_out, 0, false;
-    }
-    let after_bracket = core::add_sat_i64(close_i, 1);
-    if after_bracket == trimmed.len {
-        guard port_rule == PortRequirement.Optional && default_port > 0 else {
-            return host_out, 0, false;
-        }
-        return host_out, default_port, true;
-    }
-    let port_start = core::add_sat_i64(close_i, 2);
-    guard port_start < trimmed.len && trimmed[after_bracket] == ':' else {
-        return host_out, 0, false;
-    }
-    let port, ok_p = parse_strict_port_u16(trimmed[port_start..]);
-    guard ok_p else { return host_out, 0, false; }
-    return host_out, port, true;
-}
-
 // Parses `host:port`, `[ipv6]:port`, or bare `host`/`[ipv6]` using `default_port` when optional.
 //
 // Example:
@@ -208,10 +152,10 @@ fn parse_authority_host_port(
 ) -> u8[..256], u16, bool {
     var host_out: u8[..256] = [];
     let trimmed = raw.trim_lws();
-    guard trimmed.len > 0 && !has_ctrl_or_space_bytes(trimmed) else { return host_out, 0, false; }
+    guard trimmed.len > 0 && !net_internal::has_ctrl_or_space_bytes(trimmed) else { return host_out, 0, false; }
 
     if trimmed[0] == '[' {
-        return parse_bracketed_authority(trimmed, default_port, port_rule);
+        return net_internal::parse_bracketed_authority(trimmed, default_port, port_rule);
     }
 
     let col = trimmed.index_of_byte(':');
@@ -228,7 +172,7 @@ fn parse_authority_host_port(
     guard h_part.len > 0 && !h_part.contains_byte(']') && !p_part.contains_byte(':') else {
         return host_out, 0, false;
     }
-    let port, ok_p = parse_strict_port_u16(p_part);
+    let port, ok_p = net_internal::parse_strict_port_u16(p_part);
     guard ok_p && host_out.try_set(h_part) else { return host_out, 0, false; }
     return host_out, port, true;
 }

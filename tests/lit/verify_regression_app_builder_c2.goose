@@ -157,7 +157,7 @@ fn test_ab_c2_04_websocket_session_invariants() {
     var frag_buf: u8[..1024] = [];
     var out_wire: u8[..1024] = [];
     var stage = wire::NoOpStage {};
-    let consumed = realtime::drain_ws_session_frames(-1, ws, stage, in_wire[..], frag_buf, out_wire);
+    let consumed = realtime_internal::drain_ws_session_frames(-1, ws, stage, in_wire[..], frag_buf, out_wire);
     let frag_unlimited_ok = !ws.is_closed && consumed == in_wire.len && frag_buf[..] == "Hello!";
 
     // 2. check_heartbeat must not emit SendPing after close_at (CloseSent half-closed state)

@@ -14,6 +14,7 @@ import core;
 import rfc.ws;
 import net.tcp;
 import .internal;
+import .pubsub_wt_internal;
 import .websocket;
 import .ws_deflate;
 
@@ -399,27 +400,6 @@ fn add_distinct_subscriber(tree: TopicTree&, topic: const u8[:], sub_id: u32) ->
     return new_cnt, ok;
 }
 
-// Appends a socket descriptor to `out_fds` if not previously recorded in bitmask or array.
-// Returns `(count: i32, ok: bool)` with `ok = false` when `out_fds` reaches its 512-subscriber capacity.
-fn add_distinct_subscriber(out_fds: i64[..512]&, seen_mask: u64[4]&, fd: i64) -> i32, bool {
-    guard fd > 0 else { return out_fds.len as i32, false; }
-    let h = realtime_internal::hash_fd_bucket(fd);
-    let word_idx = (h >> 6) as i64;
-    let bit = (1 as u64) << (h & 63);
-
-    if (seen_mask[word_idx] & bit) == 0 {
-        guard out_fds.try_push(fd) else { return out_fds.len as i32, false; }
-        seen_mask[word_idx] |= bit;
-        return out_fds.len as i32, true;
-    }
-
-    for d_fd in out_fds {
-        if d_fd == fd { return out_fds.len as i32, true; }
-    }
-    guard out_fds.try_push(fd) else { return out_fds.len as i32, false; }
-    return out_fds.len as i32, true;
-}
-
 // Finds all distinct sockets subscribed to patterns matching the target topic,
 // returning `(count: i64, ok: bool)` where `ok == false` if the 512-subscriber buffer overflows.
 fn find_subscribers_checked(tree: const TopicTree&, topic: const u8[:], out_fds: i64[..512]&) -> i64, bool {
@@ -438,7 +418,7 @@ fn find_subscribers_checked(tree: const TopicTree&, topic: const u8[:], out_fds:
             let cur_i64 = cur as i64;
             let n_entry .= tree.nodes[cur_i64];
             if n_entry.in_use {
-                let _, add_ok = add_distinct_subscriber(out_fds, seen_mask, n_entry.sock_fd);
+                let _, add_ok = realtime_internal::add_distinct_subscriber(out_fds, seen_mask, n_entry.sock_fd);
                 guard add_ok else { return out_fds.len, false; }
             }
             cur = n_entry.next_sub;

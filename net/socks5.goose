@@ -9,6 +9,7 @@ import core;
 import .proxy;
 import .tcp;
 import .internal;
+import .tunnel_internal;
 
 enum Socks5Error {
     None,
@@ -383,105 +384,6 @@ fn encode_socks5_userpass_reply(ok: bool) -> u8[2] {
     return [rfc::SOCKS5_RFC1929_VER, status];
 }
 
-fn is_valid_socks_domain(dom: const u8[:]) -> bool {
-    guard dom.len >= 1 && dom.len <= 255 else { return false; }
-    for b in dom {
-        guard b > 0x20 && b < 0x7F else { return false; }
-    }
-    return true;
-}
-
-// Decodes a 4-byte IPv4 address + 2-byte port starting at `addr_off`.
-//
-// Example:
-//   buf = [0x01, 127, 0, 0, 1, 0x00, 0x50], addr_off = 1
-//   returns: SocksParseStatus.Ok, out.host = "127.0.0.1", out.port = 80
-inline fn decode_socks5_atyp_ipv4(buf: const u8[:], addr_off: i64, out: SocksTarget&) -> SocksParseStatus {
-    let total = core::add_sat_i64(addr_off, 6);
-    guard buf.len >= total else { return SocksParseStatus.NeedMore; }
-    let o0 = buf[addr_off];
-    let o1 = buf[core::add_sat_i64(addr_off, 1)];
-    let o2 = buf[core::add_sat_i64(addr_off, 2)];
-    let o3 = buf[core::add_sat_i64(addr_off, 3)];
-    out.ip = core::IpAddr {
-        family: core::IpFamily.V4,
-        bytes:  [o0, o1, o2, o3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    };
-    out.is_ip_literal = true;
-    out.port = core::read_be_u16(buf, core::add_sat_i64(addr_off, 4));
-    out.consumed = total;
-    guard core::format_ip_addr(out.ip, out.host) else { return SocksParseStatus.Invalid; }
-    return SocksParseStatus.Ok;
-}
-
-// Decodes a 16-byte IPv6 address + 2-byte port starting at `addr_off`.
-//
-// Example:
-//   buf = [0x04, ...16 bytes..., 0x01, 0xBB], addr_off = 1
-//   returns: SocksParseStatus.Ok, out.port = 443
-inline fn decode_socks5_atyp_ipv6(buf: const u8[:], addr_off: i64, out: SocksTarget&) -> SocksParseStatus {
-    let total = core::add_sat_i64(addr_off, 18);
-    guard buf.len >= total else { return SocksParseStatus.NeedMore; }
-    var ip = core::IpAddr { family: core::IpFamily.V6, .. };
-    for i in 16 {
-        ip.bytes[i] = buf[core::add_sat_i64(addr_off, i)];
-    }
-    out.ip = ip;
-    out.is_ip_literal = true;
-    out.port = core::read_be_u16(buf, core::add_sat_i64(addr_off, 16));
-    out.consumed = total;
-    guard core::format_ip_addr(out.ip, out.host) else { return SocksParseStatus.Invalid; }
-    return SocksParseStatus.Ok;
-}
-
-// Decodes a length-prefixed domain name + 2-byte port starting at `addr_off`.
-//
-// Example:
-//   buf = [0x03, 0x03, 'a', '.', 'b', 0x00, 0x50], addr_off = 1
-//   returns: SocksParseStatus.Ok, out.host = "a.b", out.port = 80
-inline fn decode_socks5_atyp_domain(buf: const u8[:], addr_off: i64, out: SocksTarget&) -> SocksParseStatus {
-    guard buf.len > addr_off else { return SocksParseStatus.NeedMore; }
-    let dlen = buf[addr_off] as i64;
-    guard dlen >= 1 && dlen <= 255 else { return SocksParseStatus.Invalid; }
-    let d_start = core::add_sat_i64(addr_off, 1);
-    let p_off = core::add_sat_i64(d_start, dlen);
-    let total = core::add_sat_i64(p_off, 2);
-    guard buf.len >= total else { return SocksParseStatus.NeedMore; }
-
-    let dom = buf[d_start..p_off];
-    guard is_valid_socks_domain(dom) && out.host.try_set(dom) else { return SocksParseStatus.Invalid; }
-    let lit_ip, is_lit = core::parse_ip_addr(dom);
-    if is_lit {
-        out.is_ip_literal = true;
-        out.ip = lit_ip;
-    }
-    out.port = core::read_be_u16(buf, p_off);
-    out.consumed = total;
-    return SocksParseStatus.Ok;
-}
-
-// Decodes a SOCKS5 [ATYP DST.ADDR DST.PORT] body starting at `atyp_off`.
-//
-// Example:
-//   buf = [0x01, 93, 184, 216, 34, 0x01, 0xBB], atyp_off = 0
-//   returns: out populated with 93.184.216.34:443, consumed = 7, SocksParseStatus.Ok
-fn decode_socks5_atyp_target(buf: const u8[:], atyp_off: i64, out: SocksTarget&) -> SocksParseStatus {
-    guard atyp_off >= 0 && atyp_off < buf.len else { return SocksParseStatus.NeedMore; }
-    let atyp = buf[atyp_off];
-    let addr_off = core::add_sat_i64(atyp_off, 1);
-
-    if atyp == rfc::SOCKS5_ATYP_IPV4 {
-        return decode_socks5_atyp_ipv4(buf, addr_off, out);
-    }
-    if atyp == rfc::SOCKS5_ATYP_IPV6 {
-        return decode_socks5_atyp_ipv6(buf, addr_off, out);
-    }
-    if atyp == rfc::SOCKS5_ATYP_DOMAIN {
-        return decode_socks5_atyp_domain(buf, addr_off, out);
-    }
-    return SocksParseStatus.Unsupported;
-}
-
 // Parses a SOCKS5 client command request (`VER CMD RSV ATYP DST.ADDR DST.PORT`, RFC 1928 Section 4).
 // Supports CONNECT (0x01) and UDP ASSOCIATE (0x03).
 //
@@ -498,24 +400,8 @@ fn parse_socks5_client_request(buf: const u8[:]) -> SocksTarget, SocksParseStatu
     guard cmd == rfc::SOCKS5_CMD_CONNECT || cmd == rfc::SOCKS5_CMD_UDP_ASSOCIATE else {
         return out, SocksParseStatus.Unsupported;
     }
-    let st = decode_socks5_atyp_target(buf, 3, out);
+    let st = net_internal::decode_socks5_atyp_target(buf, 3, out);
     return out, st;
-}
-
-inline fn append_socks5_addr_and_port(ip: const core::IpAddr&, port: u16, out: u8[..32]&) -> bool {
-    if ip.family == core::IpFamily.V6 {
-        let _ = out.try_push(rfc::SOCKS5_ATYP_IPV6);
-        let _ = out.try_append(ip.bytes[..]);
-    } else if ip.family == core::IpFamily.V4 {
-        let _ = out.try_push(rfc::SOCKS5_ATYP_IPV4);
-        let _ = out.try_append(ip.bytes[..4]);
-    } else {
-        let _ = out.try_push(rfc::SOCKS5_ATYP_IPV4);
-        let z4: u8[4] = [0, 0, 0, 0];
-        let _ = out.try_append(z4[..]);
-    }
-    let port_be: u8[2] = [((port >> 8) & 0xFF) as u8, (port & 0xFF) as u8];
-    return out.try_append(port_be[..]);
 }
 
 fn encode_socks5_server_reply(
@@ -530,7 +416,7 @@ fn encode_socks5_server_reply(
     let _ = out.try_push(rfc::SOCKS5_VER);
     let _ = out.try_push(rep_code);
     let _ = out.try_push(0x00);
-    return append_socks5_addr_and_port(bind_ip, bind_port, out);
+    return net_internal::append_socks5_addr_and_port(bind_ip, bind_port, out);
 }
 
 // Parses a SOCKS5 UDP relay header (`RSV RSV FRAG ATYP DST.ADDR DST.PORT`, RFC 1928 Section 7).
@@ -546,7 +432,7 @@ fn parse_socks5_udp_header(pkt: const u8[:]) -> Socks5UdpHeader, SocksParseStatu
     out.frag = pkt[2];
     guard out.frag == 0 else { return out, SocksParseStatus.Unsupported; }
     out.target.cmd = rfc::SOCKS5_CMD_UDP_ASSOCIATE;
-    let st = decode_socks5_atyp_target(pkt, 3, out.target);
+    let st = net_internal::decode_socks5_atyp_target(pkt, 3, out.target);
     guard st == SocksParseStatus.Ok else { return out, st; }
     out.header_len = out.target.consumed;
     return out, SocksParseStatus.Ok;
@@ -559,37 +445,7 @@ fn encode_socks5_udp_header(src_ip: const core::IpAddr&, src_port: u16, out: u8[
     let _ = out.try_push(0x00);
     let _ = out.try_push(0x00);
     let _ = out.try_push(0x00);
-    return append_socks5_addr_and_port(src_ip, src_port, out);
-}
-
-fn find_null_byte_bounded(buf: const u8[:], start: i64, max_len: i64) -> i64 {
-    guard start >= 0 && max_len >= 0 else { return -1; }
-    let limit = min(buf.len, core::add_sat_i64(start, max_len));
-    var pos = start;
-    while pos < limit {
-        if buf[pos] == 0 { return pos; }
-        pos = core::add_sat_i64(pos, 1);
-    }
-    return -1;
-}
-
-inline fn read_socks4a_domain_target(buf: const u8[:], dom_start: i64, out: SocksTarget&) -> SocksParseStatus {
-    let dom_null = find_null_byte_bounded(buf, dom_start, 256);
-    if dom_null < 0 {
-        if buf.len >= core::add_sat_i64(dom_start, 256) { return SocksParseStatus.Invalid; }
-        return SocksParseStatus.NeedMore;
-    }
-    let dom = buf[dom_start..dom_null];
-    guard is_valid_socks_domain(dom) && out.host.try_set(dom) else {
-        return SocksParseStatus.Invalid;
-    }
-    let lit_ip, is_lit = core::parse_ip_addr(dom);
-    if is_lit {
-        out.is_ip_literal = true;
-        out.ip = lit_ip;
-    }
-    out.consumed = core::add_sat_i64(dom_null, 1);
-    return SocksParseStatus.Ok;
+    return net_internal::append_socks5_addr_and_port(src_ip, src_port, out);
 }
 
 // Parses a SOCKS4 or SOCKS4a client request (`VN CD DSTPORT DSTIP USERID\0 [HOST\0]`).
@@ -607,7 +463,7 @@ fn parse_socks4_client_request(buf: const u8[:]) -> SocksTarget, bool, SocksPars
     guard buf[1] == rfc::SOCKS5_CMD_CONNECT else { return out, false, SocksParseStatus.Unsupported; }
     out.port = core::read_be_u16(buf, 2);
 
-    let uid_null = find_null_byte_bounded(buf, 8, 256);
+    let uid_null = net_internal::find_null_byte_bounded(buf, 8, 256);
     if uid_null < 0 {
         if buf.len >= core::add_sat_i64(8, 256) { return out, false, SocksParseStatus.Invalid; }
         return out, false, SocksParseStatus.NeedMore;
@@ -615,7 +471,7 @@ fn parse_socks4_client_request(buf: const u8[:]) -> SocksTarget, bool, SocksPars
 
     let is_4a = buf[4] == 0 && buf[5] == 0 && buf[6] == 0 && buf[7] != 0;
     if is_4a {
-        let st = read_socks4a_domain_target(buf, core::add_sat_i64(uid_null, 1), out);
+        let st = net_internal::read_socks4a_domain_target(buf, core::add_sat_i64(uid_null, 1), out);
         return out, true, st;
     }
 

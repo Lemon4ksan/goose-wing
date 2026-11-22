@@ -141,6 +141,9 @@ import fingerprint.akamai;
 import fingerprint.profile;
 
 import net.internal;
+import net.tunnel_internal;
+import net.pool_internal;
+import net.poller_internal;
 import net.want_queue;
 import net.slowloris;
 import net.proxy;
@@ -163,6 +166,7 @@ import net.accel;
 import net.poller;
 import net.event_loop;
 import net.io_host_internal;
+import net.io_host_loop_internal;
 import net.io_host;
 import net.dst_internal;
 import net.dst;
@@ -237,6 +241,8 @@ import wire.service;
 // ---- realtime & streaming (Layer 10) ---------------------------------------
 
 import realtime.internal;
+import realtime.ws_pmd_internal;
+import realtime.pubsub_wt_internal;
 import realtime.ws_deflate;
 import realtime.ws_handshake;
 import realtime.websocket;

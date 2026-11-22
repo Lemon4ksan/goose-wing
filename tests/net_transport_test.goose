@@ -2486,7 +2486,7 @@ fn test_os_shim_regression_guards(t: lit::T&) {
         let kev_eof_err = net_internal::Kevent {
             ident: 1, filter: net_internal::EVFILT_READ, flags: net_internal::EV_EOF, fflags: 104, data: 0, udata: 1,
         };
-        let fl, is_eof = net::map_kevent_to_poll_flags(kev_eof_err);
+        let fl, is_eof = net_internal::map_kevent_to_poll_flags(kev_eof_err);
         sub.assert_true(is_eof && (fl & core::POLL_HANGUP) != 0 && (fl & core::POLL_ERROR) != 0, "EV_EOF+fflags sets POLL_ERROR");
     };
 

@@ -13,6 +13,7 @@ import http.headers;
 import http.request;
 import http.response;
 import .internal;
+import .ws_pmd_internal;
 import .websocket;
 import .ws_deflate;
 

@@ -367,9 +367,9 @@ fn test_topic_tree_512_limit_and_mqtt_wildcards() {
     // Also verify accumulator overload directly at 512 boundary
     var mask: u64[4] = [0, 0, 0, 0];
     for k in matched_fds {
-        let _, _ = realtime::add_distinct_subscriber(matched_fds, mask, k);
+        let _, _ = realtime_internal::add_distinct_subscriber(matched_fds, mask, k);
     }
-    let _, accum_513_ok = realtime::add_distinct_subscriber(matched_fds, mask, 9999);
+    let _, accum_513_ok = realtime_internal::add_distinct_subscriber(matched_fds, mask, 9999);
 
     // CHECK-NOT: WING_BUFFER_OVERFLOW_SILENT_DROP
     // CHECK: TOPIC_512_SUBSCRIBERS: all_ok=true count=512 dup_ok=true dup_count=512

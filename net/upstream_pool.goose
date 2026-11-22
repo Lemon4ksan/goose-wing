@@ -10,6 +10,7 @@ import .pool;
 import .tcp;
 import .transport;
 import .internal;
+import .pool_internal;
 
 const EPOLLRDHUP: u32 = 0x2000;
 

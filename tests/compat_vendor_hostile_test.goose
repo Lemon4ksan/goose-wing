@@ -706,7 +706,7 @@ fn test_vendor_ws_and_grpc_streaming(t: lit::T&) {
         var stage = wire::NoOpStage {};
         var frag_buf: u8[..4096] = [];
         var out_wire: u8[..4096] = [];
-        let _ = realtime::drain_ws_session_frames(-1, srv_ws, stage, wire_frame[..], frag_buf, out_wire);
+        let _ = realtime_internal::drain_ws_session_frames(-1, srv_ws, stage, wire_frame[..], frag_buf, out_wire);
         sub.assert_true(srv_ws.is_closed, "server session closed on invalid UTF-8 after inflate");
         sub.assert_eq(
             srv_ws.close_code as i64, rfc::WS_STATUS_INVALID_PAYLOAD as i64,

@@ -10,6 +10,7 @@ import std;
 import core;
 import .tcp;
 import .internal;
+import .tunnel_internal;
 
 const VIRTUAL_FD_TAG:       i64 = 0x40000000;
 const VIRTUAL_FD_B_END_BIT: i64 = 0x20000000;
@@ -273,10 +274,6 @@ inline fn is_tunnel_fd(fd: i64) -> bool {
     return fd > 0 && (fd & TUNNEL_FD_TAG) != 0;
 }
 
-inline fn tunnel_slot_to_fd(slot_idx: i64) -> i64 {
-    return TUNNEL_FD_TAG | (slot_idx & 0xFFFF);
-}
-
 // Registers an outer transport (e.g. TLS to an HTTPS forward proxy) as a tagged descriptor.
 // Rejects disconnected or already-tunneled outer transports to keep nesting strictly bounded.
 fn alloc_tunnel_fd(outer: Transport) -> i64, bool {
@@ -307,13 +304,13 @@ fn alloc_tunnel_fd(outer: Transport) -> i64, bool {
         let slot .= g_tunnel_slots[i];
         if !slot.in_use {
             slot = rec;
-            return tunnel_slot_to_fd(i), true;
+            return net_internal::tunnel_slot_to_fd(i), true;
         }
     }
     guard g_tunnel_slots.len < MAX_TUNNEL_SLOTS else { return -1, false; }
     let idx = g_tunnel_slots.len;
     g_tunnel_slots.push(rec);
-    return tunnel_slot_to_fd(idx), true;
+    return net_internal::tunnel_slot_to_fd(idx), true;
 }
 
 recursive fn tunnel_fd_send(fd: i64, data: const u8[:]) -> i32 {
