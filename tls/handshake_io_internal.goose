@@ -203,9 +203,7 @@ fn verify_server_cert_and_signature(
         }
 
         if config.server_name.len > 0 {
-            var sans: tls::SanEntry[..64] = [];
-            let ok_san = tls::get_cert_san_extension(leaf_cert, chain_slices[0], sans);
-            guard ok_san && tls::match_any_san(sans, config.server_name[..]) else { return false; }
+            guard tls::match_cert_san_host(leaf_cert, chain_slices[0], config.server_name[..]) else { return false; }
         }
     }
 

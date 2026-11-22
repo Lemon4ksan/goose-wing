@@ -325,8 +325,14 @@ fn x509_parse_key_usage_ext(ext_val: core::ByteCursor&, cert: tls::ParsedCert&) 
     cert.key_usage = ku;
 }
 
-fn x509_parse_akid_ext(raw_cert: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) {
-    if cert.has_akid {
+fn x509_parse_akid_ext(
+    raw_cert:    const u8[:],
+    ext_val:     core::ByteCursor&,
+    is_critical: bool,
+    cert:        tls::ParsedCert&,
+) {
+    // RFC 5280 Section 4.2.1.1: Authority Key Identifier - Extension MUST be non-critical.
+    if cert.has_akid || is_critical {
         cert.has_unsupported_critical = true;
         return;
     }
@@ -362,7 +368,16 @@ inline fn x509_check_policy_skip_certs(elem_buf: const u8[:]) -> bool {
     return elem_buf.len > 0 && (elem_buf[0] & 0x80) == 0;
 }
 
-fn x509_parse_policy_constraints_ext(ext_val: core::ByteCursor&, cert: tls::ParsedCert&) {
+fn x509_parse_policy_constraints_ext(
+    ext_val:     core::ByteCursor&,
+    is_critical: bool,
+    cert:        tls::ParsedCert&,
+) {
+    // RFC 5280 Section 4.2.1.11: Policy Constraints - Extension MUST be marked critical.
+    if !is_critical {
+        cert.has_malformed_policy_constraints = true;
+        return;
+    }
     var pc_seq = core::cursor_from(ext_val.buf[..0]);
     if !tls::get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, pc_seq) ||
         ext_val.cursor_len() != 0 ||
@@ -496,9 +511,14 @@ fn x509_dispatch_pki_extension(oid: const u8[:], ext_val: core::ByteCursor&, cer
     return true;
 }
 
-fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) -> bool {
+fn x509_dispatch_policy_extension(
+    oid:         const u8[:],
+    ext_val:     core::ByteCursor&,
+    is_critical: bool,
+    cert:        tls::ParsedCert&,
+) -> bool {
     if oid == rfc::OID_POLICY_CONSTRAINTS[..] {
-        x509_parse_policy_constraints_ext(ext_val, cert);
+        x509_parse_policy_constraints_ext(ext_val, is_critical, cert);
         return true;
     } else if oid == rfc::OID_INHIBIT_ANY_POLICY[..] {
         var val: i64 = 0;
@@ -511,10 +531,11 @@ fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: core::ByteCursor&, 
 }
 
 fn x509_dispatch_extension(
-    raw_cert: const u8[:],
-    oid:      const u8[:],
-    ext_val:  core::ByteCursor&,
-    cert:     tls::ParsedCert&,
+    raw_cert:    const u8[:],
+    oid:         const u8[:],
+    ext_val:     core::ByteCursor&,
+    cert:        tls::ParsedCert&,
+    is_critical: bool = false,
 ) -> bool {
     if oid == rfc::OID_BASIC_CONSTRAINTS[..] {
         x509_parse_basic_constraints_ext(ext_val, cert);
@@ -528,6 +549,7 @@ fn x509_dispatch_extension(
             return true;
         }
         cert.has_san = true;
+        cert.san_is_critical = is_critical;
         cert.san_raw = tls::make_span(raw_cert, ext_val.buf);
         return true;
     } else if oid == rfc::OID_NAME_CONSTRAINTS[..] {
@@ -539,13 +561,13 @@ fn x509_dispatch_extension(
         cert.name_constraints_raw = tls::make_span(raw_cert, ext_val.buf);
         return true;
     } else if oid == rfc::OID_AUTH_KEY_IDENTIFIER[..] {
-        x509_parse_akid_ext(raw_cert, ext_val, cert);
+        x509_parse_akid_ext(raw_cert, ext_val, is_critical, cert);
         return true;
     } else if oid == rfc::OID_SUBJECT_KEY_IDENTIFIER[..] {
         x509_parse_skid_ext(raw_cert, ext_val, cert);
         return true;
     }
-    return x509_dispatch_policy_extension(oid, ext_val, cert);
+    return x509_dispatch_policy_extension(oid, ext_val, is_critical, cert);
 }
 
 inline fn x509_check_ext_critical(single_ext: core::ByteCursor&, out_ok: bool&) -> bool {
@@ -597,7 +619,7 @@ fn x509_parse_single_cert_extension(
         return true;
     }
 
-    return x509_dispatch_extension(raw_cert, oid.buf, ext_val, cert);
+    return x509_dispatch_extension(raw_cert, oid.buf, ext_val, cert, is_critical);
 }
 
 // Parses X.509 extensions for BasicConstraints, KeyUsage, and SubjectAltName.
@@ -959,6 +981,9 @@ fn x509_parse_general_subtree_base(
         guard out_val.buf.len == 8 || out_val.buf.len == 32 else { return false; }
         let half = out_val.buf.len / 2;
         guard tls::validate_cidr_mask(out_val.buf[half..]) else { return false; }
+    } else if tag_num == 4 { // directoryName [4] EXPLICIT Name
+        out_type = tls::SanType.DirName;
+        guard out_val.buf.len > 0 else { return false; }
     } else if tag_num == 6 { // uniformResourceIdentifier [6]
         out_type = tls::SanType.Uri;
         guard out_val.buf.len > 0 && !out_val.buf.contains_byte(0) else { return false; }

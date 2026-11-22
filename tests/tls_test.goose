@@ -1143,6 +1143,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
         var raw_root: u8[30] = [0; 30];
         for i in 10 { raw_root[i] = root_subject[i]; }
         for i in 8 { raw_root[10 + i] = root_spki[i]; }
+        for i in 3 { raw_root[18 + i] = rfc::OID_ED25519[i]; }
 
         var cert = tls::ParsedCert {
             raw_len:               30,
@@ -1154,7 +1155,7 @@ fn test_asn1_x509_and_verify(t: lit::T&) {
             validity_not_after:    5000,
             subject_raw:           tls::Span16 { offset: 0, length: 10 },
             spki_raw:              tls::Span16 { offset: 10, length: 8 },
-            spki_alg_oid:          tls::Span16 { offset: 10, length: 1 },
+            spki_alg_oid:          tls::Span16 { offset: 18, length: 3 },
             spki_pubkey:           tls::Span16 { offset: 10, length: 7 },
             extensions_raw:        tls::Span16 { offset: 0, length: 0 },
             is_ca:                 true,
@@ -3713,16 +3714,16 @@ fn test_handshake_r3_invariants(t: lit::T&) {
 
         // 3. DoS Rate Limiting / Ping-Pong defense
         var tracker = tls::KeyUpdateTracker { .. };
-        for i in 32 {
+        for i in 8 {
             let needs_resp, ok_tr = tls::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
             sub.assert_true(ok_tr, "track KeyUpdate within limit succeeds");
             sub.assert_true(needs_resp, "update_requested signals response required");
         }
-        sub.assert_eq(tracker.consecutive_updates as i64, 32, "consecutive_updates is 32");
+        sub.assert_eq(tracker.consecutive_updates as i64, 8, "consecutive_updates is 8");
 
-        // 33rd consecutive update without application data MUST be rejected!
+        // 9th consecutive update without application data MUST be rejected!
         let _, ok_overflow = tls::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
-        sub.assert_false(ok_overflow, "33rd consecutive KeyUpdate rejected (DoS defense)");
+        sub.assert_false(ok_overflow, "9th consecutive KeyUpdate rejected (DoS defense)");
 
         // Intervening application data resets consecutive counter
         tls::on_key_update_app_data(tracker);

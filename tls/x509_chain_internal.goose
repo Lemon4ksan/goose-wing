@@ -57,13 +57,21 @@ fn validate_end_entity_constraints(
     return tls::Alert.CloseNotify;
 }
 
-fn validate_intermediate_ca_constraints(cert: const tls::ParsedCert&, depth: i64) -> tls::Alert {
+fn validate_intermediate_ca_constraints(
+    cert:  const tls::ParsedCert&,
+    depth: i64,
+    role:  tls::CertValidationRole = tls::CertValidationRole.Server,
+) -> tls::Alert {
     // Intermediate CA MUST have basicConstraints asserted with cA: TRUE
     if !cert.has_basic_constraints || !cert.is_ca {
         return tls::Alert.BadCertificate;
     }
     // Intermediate CA MUST assert keyCertSign if KeyUsage is present
     if cert.has_key_usage && (cert.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) == 0 {
+        return tls::Alert.UnsupportedCertificate;
+    }
+    // RFC 5280 Section 4.2.1.12: Extended Key Usage - Constrained intermediate CAs MUST permit the TLS peer role.
+    if cert.has_eku && (cert.eku_mask & required_eku_mask_for_role(role)) == 0 {
         return tls::Alert.UnsupportedCertificate;
     }
     // RFC 5280 Section 4.2.1.9: Basic Constraints - max non-self-issued intermediate certs following this cert.
@@ -121,14 +129,19 @@ fn x509_detect_chain_cycles(chain_certs: const tls::ParsedCert[..8]&, raw_certs:
     return false;
 }
 
-inline fn x509_check_cert_rsa_min_bits(cert: const tls::ParsedCert&, raw_cert: const u8[:]) -> bool {
+inline fn x509_check_cert_spki_policy(cert: const tls::ParsedCert&, raw_cert: const u8[:]) -> bool {
     let spki_oid = tls::span_slice(raw_cert, cert.spki_alg_oid);
-    guard spki_oid == rfc::OID_RSA_ENCRYPTION[..] else { return true; }
-    var spki_pk = tls::span_slice(raw_cert, cert.spki_pubkey);
-    if spki_pk.len >= 2 && spki_pk[0] == 0 {
-        spki_pk = spki_pk[1..];
+    guard spki_oid.len > 0 else { return true; }
+    if spki_oid == rfc::OID_RSA_ENCRYPTION[..] {
+        var spki_pk = tls::span_slice(raw_cert, cert.spki_pubkey);
+        if spki_pk.len >= 2 && spki_pk[0] == 0 {
+            spki_pk = spki_pk[1..];
+        }
+        return is_valid_rsa_pubkey_min_bits(spki_pk);
     }
-    return is_valid_rsa_pubkey_min_bits(spki_pk);
+    return spki_oid == rfc::OID_SECP256R1[..] ||
+        spki_oid == rfc::OID_SECP384R1[..] ||
+        spki_oid == rfc::OID_ED25519[..];
 }
 
 fn x509_verify_cert_sig_with_pss(
@@ -167,12 +180,15 @@ fn x509_validate_single_chain_cert(
     if cert.has_malformed_policy_constraints {
         return tls::Alert.BadCertificate;
     }
-    guard x509_check_cert_rsa_min_bits(cert, raw_cert) else {
+    guard x509_check_cert_spki_policy(cert, raw_cert) else {
+        return tls::Alert.BadCertificate;
+    }
+    // RFC 5280 Section 4.2.1.6: Subject Alternative Name - Empty Subject DN requires critical SAN.
+    if cert.subject_raw.length == 0 && cert.has_san && !cert.san_is_critical {
         return tls::Alert.BadCertificate;
     }
     if cert.has_san {
-        var sans: tls::SanEntry[..64] = [];
-        guard tls::get_cert_san_extension(cert, raw_cert, sans) else {
+        guard tls::validate_cert_san_extension(cert, raw_cert) else {
             return tls::Alert.BadCertificate;
         }
     }
@@ -188,7 +204,7 @@ fn x509_validate_single_chain_cert(
     if i == 0 && !is_direct_trust_anchor {
         return validate_end_entity_constraints(cert, role);
     } else if i > 0 {
-        return validate_intermediate_ca_constraints(cert, core::add_sat_i64(non_self_issued_below, 1));
+        return validate_intermediate_ca_constraints(cert, core::add_sat_i64(non_self_issued_below, 1), role);
     }
     return tls::Alert.CloseNotify;
 }
@@ -218,22 +234,6 @@ fn x509_validate_chain_linkage(
     return tls::Alert.CloseNotify;
 }
 
-fn x509_check_child_sans_against_nc(
-    nc_entries: const tls::NameConstraintEntry[..16]&,
-    child_cert: const tls::ParsedCert&,
-    child_raw:  const u8[:],
-) -> bool {
-    guard child_cert.has_san else { return true; }
-    var child_sans: tls::SanEntry[..64] = [];
-    guard tls::get_cert_san_extension(child_cert, child_raw, child_sans) else { return false; }
-    for s_idx in child_sans.len {
-        if !tls::check_name_constraints(nc_entries, child_sans[s_idx]) {
-            return false;
-        }
-    }
-    return true;
-}
-
 fn x509_enforce_single_cert_nc(
     chain_certs: const tls::ParsedCert[..8]&,
     raw_certs:   const u8[:][..8]&,
@@ -244,7 +244,11 @@ fn x509_enforce_single_cert_nc(
     let nc_bytes = tls::span_slice(raw_certs[k], chain_certs[k].name_constraints_raw);
     guard tls::parse_name_constraints(nc_bytes, nc_entries) else { return false; }
     for j in k {
-        guard x509_check_child_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
+        // RFC 5280 Section 4.2.1.10: Name Constraints - Do not apply to self-issued intermediate certificates.
+        if j > 0 && x509_is_self_issued(chain_certs[j], raw_certs[j]) {
+            continue;
+        }
+        guard tls::check_cert_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
             return false;
         }
     }
@@ -293,7 +297,10 @@ fn x509_enforce_anchor_name_constraints(
         return tls::Alert.BadCertificate;
     }
     for j in child_count {
-        guard x509_check_child_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
+        if j > 0 && x509_is_self_issued(chain_certs[j], raw_certs[j]) {
+            continue;
+        }
+        guard tls::check_cert_sans_against_nc(nc_entries, chain_certs[j], raw_certs[j]) else {
             return tls::Alert.BadCertificate;
         }
     }

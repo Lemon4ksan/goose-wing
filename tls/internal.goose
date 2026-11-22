@@ -172,7 +172,7 @@ inline fn pss_expected_salt_len(pss_hash_id: u8) -> i64 {
 
 inline fn is_valid_rsa_pubkey_min_bits(pubkey_der: const u8[:]) -> bool {
     let n_be, _, ok = core::parse_rsa_public_key_der(pubkey_der);
-    return ok && n_be.len >= MIN_RSA_MODULUS_BYTES;
+    return ok && n_be.len >= MIN_RSA_MODULUS_BYTES && (n_be[0] & 0x80) != 0;
 }
 
 const PEM_PRE_EB:           const u8[:] = "-----BEGIN ";

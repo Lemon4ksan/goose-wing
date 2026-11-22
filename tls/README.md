@@ -498,7 +498,7 @@ struct ParsedSct {
     signature:    Span16 = Span16 { offset: 0, length: 0 },
 }
 
-enum SanType { Dns, Ip, Uri, Email, Other }
+enum SanType { Dns, Ip, Uri, Email, DirName, Other }
 struct SanEntry { san_type: SanType = SanType.Dns, val: const u8[:] = [] }
 struct NameConstraintEntry { san_type: SanType = SanType.Dns, is_excluded: bool = false, val: const u8[:] = [] }
 

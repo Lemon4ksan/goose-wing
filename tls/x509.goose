@@ -66,6 +66,9 @@ fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw
 fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]) -> bool {
     var cert = ParsedCert { .. };
     guard parse_x509_certificate(raw_cert_der, cert) else { return false; }
+    guard !cert.has_unsupported_critical && tls_internal::x509_check_cert_spki_policy(cert, raw_cert_der) else {
+        return false;
+    }
     let subj = span_slice(raw_cert_der, cert.subject_raw);
     let spki = span_slice(raw_cert_der, cert.spki_raw);
     guard subj.len > 0 && spki.len > 0 else { return false; }

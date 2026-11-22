@@ -593,18 +593,25 @@ fn populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) -> boo
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
     var leaf_cert = ParsedCert { .. };
-    guard parse_x509_certificate(cert_der, leaf_cert) else { return false; }
-    var sans: SanEntry[..64] = [];
-    guard get_cert_san_extension(leaf_cert, cert_der, sans) else { return false; }
+    guard parse_x509_certificate(cert_der, leaf_cert) && leaf_cert.has_san else { return false; }
+    var names_seq = core::cursor_from(cert_der[..0]);
+    guard x509_open_san_sequence(span_slice(cert_der, leaf_cert.san_raw), names_seq) else { return false; }
     g_tls_cipher_slots[idx].san_hosts.clear();
-    for &san in sans {
+    var seen_any = false;
+    while names_seq.cursor_len() > 0 {
+        let san, ok = x509_next_san_entry(names_seq);
+        guard ok else {
+            g_tls_cipher_slots[idx].san_hosts.clear();
+            return false;
+        }
+        seen_any = true;
         guard san.san_type == SanType.Dns else { continue; }
         var h_buf: u8[..128] = [];
         if h_buf.try_set(san.val) {
             let _ = g_tls_cipher_slots[idx].san_hosts.try_push(h_buf);
         }
     }
-    return true;
+    return seen_any;
 }
 
 // Copies verified DNS SubjectAltName entries from `slot_idx` into `out_sans` for HTTP/2 connection coalescing.

@@ -142,6 +142,11 @@ inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type
         out_type = SanType.Ip;
         return true;
     }
+    if tag_num == 4 { // directoryName [4] EXPLICIT Name
+        guard elem_buf.len > 0 else { return false; }
+        out_type = SanType.DirName;
+        return true;
+    }
     if tag_num == 6 { // uniformResourceIdentifier [6] IA5String
         guard elem_buf.len > 0 && tls_internal::x509_has_valid_uri_scheme(elem_buf) else { return false; }
         guard !elem_buf.contains_byte('%') && !elem_buf.contains_byte(0) else { return false; }
@@ -153,26 +158,40 @@ inline fn x509_classify_san_element(tag_num: u8, elem_buf: const u8[:], out_type
     return true;
 }
 
-// Parses raw SubjectAltName extension DER (GeneralNames sequence) into zero-allocation SanEntry array.
-// RFC 5280 Section 4.2.1.6:
-// - Outer container must be a SEQUENCE.
-// - SEQUENCE SIZE (1..MAX) OF GeneralName: empty SAN sequence is strictly FORBIDDEN.
-// - iPAddress MUST be exactly 4 octets (IPv4) or 16 octets (IPv6).
-// - dNSName MUST be valid preferred name syntax.
+fn x509_open_san_sequence(san_der: const u8[:], out_seq: core::ByteCursor&) -> bool {
+    var c = core::cursor_from(san_der);
+    guard get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, out_seq) &&
+        c.cursor_len() == 0 &&
+        out_seq.cursor_len() > 0 else {
+        return false;
+    }
+    return true;
+}
+
+// Reads and classifies the next GeneralName entry from an open SubjectAltName cursor.
+//
 // Example:
-fn x509_parse_single_san<S>(names_seq: core::ByteCursor&, out_sans: S&) -> bool {
+//   names_seq = [0x82, 0x0B, "example.com"]
+//   returns: SanEntry { san_type: SanType.Dns, val: "example.com" }, ok = true
+fn x509_next_san_entry(names_seq: core::ByteCursor&) -> SanEntry, bool {
     var tag: u8 = 0;
     var elem = core::cursor_from(names_seq.buf[..0]);
-    guard get_any_asn1_element(names_seq, tag, elem) else { return false; }
+    guard get_any_asn1_element(names_seq, tag, elem) else {
+        return SanEntry { san_type: SanType.Other, val: names_seq.buf[..0] }, false;
+    }
 
     let tag_num = tag & 0x1F;
     var st = SanType.Other;
-    guard x509_classify_san_element(tag_num, elem.buf, st) else { return false; }
+    guard x509_classify_san_element(tag_num, elem.buf, st) else {
+        return SanEntry { san_type: SanType.Other, val: names_seq.buf[..0] }, false;
+    }
+    return SanEntry { san_type: st, val: elem.buf }, true;
+}
 
-    return out_sans.try_push(SanEntry {
-        san_type: st,
-        val:      elem.buf,
-    });
+fn x509_parse_single_san<S>(names_seq: core::ByteCursor&, out_sans: S&) -> bool {
+    let entry, ok = x509_next_san_entry(names_seq);
+    guard ok else { return false; }
+    return out_sans.try_push(entry);
 }
 
 // RFC 5280 Section 4.2.1.6: Subject Alternative Name - Parses GeneralNames with transactional rollback.
@@ -184,11 +203,8 @@ fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool {
     var committed = false;
     defer if !committed { out_sans.clear(); };
 
-    var c = core::cursor_from(san_der);
     var names_seq = core::cursor_from(san_der[..0]);
-    if !get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, names_seq) { return false; }
-    guard c.cursor_len() == 0 else { return false; }
-    guard names_seq.cursor_len() > 0 else { return false; }
+    guard x509_open_san_sequence(san_der, names_seq) else { return false; }
     out_sans.clear();
 
     var count: i64 = 0;
@@ -199,6 +215,42 @@ fn parse_san_extension<S>(san_der: const u8[:], out_sans: S&) -> bool {
     guard count > 0 else { return false; }
     committed = true;
     return true;
+}
+
+// Validates all GeneralNames in a raw SubjectAltName extension without any entry-count cap.
+fn validate_san_extension(san_der: const u8[:]) -> bool {
+    var names_seq = core::cursor_from(san_der[..0]);
+    guard x509_open_san_sequence(san_der, names_seq) else { return false; }
+    var seen_any = false;
+    while names_seq.cursor_len() > 0 {
+        let _, ok = x509_next_san_entry(names_seq);
+        guard ok else { return false; }
+        seen_any = true;
+    }
+    return seen_any;
+}
+
+fn validate_cert_san_extension(cert: const ParsedCert&, raw_cert: const u8[:]) -> bool {
+    guard cert.has_san else { return false; }
+    return validate_san_extension(span_slice(raw_cert, cert.san_raw));
+}
+
+// Streams and validates all SAN entries on `cert`, returning true iff valid and at least one matches `host`.
+fn match_cert_san_host(cert: const ParsedCert&, raw_cert: const u8[:], host: const u8[:]) -> bool {
+    guard cert.has_san else { return false; }
+    var names_seq = core::cursor_from(raw_cert[..0]);
+    guard x509_open_san_sequence(span_slice(raw_cert, cert.san_raw), names_seq) else { return false; }
+    var matched = false;
+    var seen_any = false;
+    while names_seq.cursor_len() > 0 {
+        let entry, ok = x509_next_san_entry(names_seq);
+        guard ok else { return false; }
+        if !matched && match_san(entry, host) {
+            matched = true;
+        }
+        seen_any = true;
+    }
+    return seen_any && matched;
 }
 
 // Matches an IP SAN (binary 4 or 16 octets) against a target IP host (either text IPv4/IPv6 or raw binary).
@@ -318,7 +370,15 @@ fn match_uri_name_constraint(candidate_uri: const u8[:], constraint: const u8[:]
     guard host_part.len > 0 else { return false; }
     guard !tls_internal::x509_is_ipv4_literal(host_part) else { return false; }
 
-    return match_dns_name_constraint(host_part, constraint);
+    let cand = x509_strip_trailing_dot(host_part);
+    let cons = x509_strip_trailing_dot(constraint);
+    guard tls_internal::x509_validate_dns_candidate(cand) else { return false; }
+    guard cons.len > 0 && find(cons, "..") < 0 else { return false; }
+    // RFC 5280 Section 4.2.1.10: Name Constraints - URI constraint with leading '.' matches subdomains; without '.' matches exact host.
+    if cons[0] == '.' {
+        return tls_internal::x509_match_dns_dotted_constraint(cand, cons);
+    }
+    return cand.eq_ascii_fold(cons);
 }
 
 // RFC 5280 §4.2.1.10: rfc822Name (email) name constraint matching.
@@ -383,6 +443,25 @@ fn parse_name_constraints(nc_der: const u8[:], out_constraints: NameConstraintEn
     return true;
 }
 
+// RFC 5280 Section 4.2.1.10: Name Constraints - Matches DirectoryName RDNSequence prefix.
+fn match_dn_name_constraint(candidate_dn: const u8[:], constraint_dn: const u8[:]) -> bool {
+    guard candidate_dn.len > 0 && constraint_dn.len > 0 else { return false; }
+    if candidate_dn == constraint_dn {
+        return true;
+    }
+    var cand_c = core::cursor_from(candidate_dn);
+    var cons_c = core::cursor_from(constraint_dn);
+    var cand_seq = core::cursor_from(candidate_dn[..0]);
+    var cons_seq = core::cursor_from(constraint_dn[..0]);
+    guard get_asn1_element(cand_c, rfc::ASN1_TAG_SEQUENCE, cand_seq) &&
+        get_asn1_element(cons_c, rfc::ASN1_TAG_SEQUENCE, cons_seq) &&
+        cand_c.cursor_len() == 0 &&
+        cons_c.cursor_len() == 0 else {
+        return false;
+    }
+    return core::starts_with(cand_seq.buf, cons_seq.buf);
+}
+
 inline fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const SanEntry&) -> bool {
     if nc.san_type == SanType.Dns {
         return match_dns_name_constraint(san.val, nc.val);
@@ -396,6 +475,9 @@ inline fn x509_match_constraint_entry(nc: const NameConstraintEntry&, san: const
     if nc.san_type == SanType.Email {
         return match_email_name_constraint(san.val, nc.val);
     }
+    if nc.san_type == SanType.DirName {
+        return match_dn_name_constraint(san.val, nc.val);
+    }
     return false;
 }
 
@@ -408,9 +490,15 @@ fn x509_eval_single_nc(
     if nc.san_type != san.san_type {
         return true;
     }
+    // RFC 5280 Section 4.2.1.10: Name Constraints - Unsupported name form constraints MUST reject matching SANs.
+    if nc.san_type == SanType.Other {
+        return false;
+    }
     let matched = x509_match_constraint_entry(nc, san);
     if nc.is_excluded {
-        return !matched;
+        // CVE-2025-61727: Reject wildcard DNS SAN (e.g. *.example.com) that can match an excluded DNS subtree.
+        let wildcard_overlap = nc.san_type == SanType.Dns && match_dns_san(san.val, nc.val);
+        return !matched && !wildcard_overlap;
     }
     has_permitted = true;
     if matched {
@@ -434,6 +522,25 @@ fn check_name_constraints(
     }
 
     return !has_permitted || matched_permitted;
+}
+
+// Streams and enforces parsed NameConstraints against every SAN on `cert` without any entry-count cap.
+fn check_cert_sans_against_nc(
+    nc_entries: const NameConstraintEntry[..16]&,
+    cert:       const ParsedCert&,
+    raw_cert:   const u8[:],
+) -> bool {
+    guard cert.has_san else { return true; }
+    var names_seq = core::cursor_from(raw_cert[..0]);
+    guard x509_open_san_sequence(span_slice(raw_cert, cert.san_raw), names_seq) else { return false; }
+    var seen_any = false;
+    while names_seq.cursor_len() > 0 {
+        let entry, ok = x509_next_san_entry(names_seq);
+        guard ok else { return false; }
+        guard check_name_constraints(nc_entries, entry) else { return false; }
+        seen_any = true;
+    }
+    return seen_any;
 }
 
 fn x509_verify_cert_signature(

@@ -46,6 +46,7 @@ struct ParsedCert {
     extensions_raw:                   Span16 = Span16 { offset: 0, length: 0 },
     san_raw:                          Span16 = Span16 { offset: 0, length: 0 },
     has_san:                          bool   = false,
+    san_is_critical:                  bool   = false,
     is_ca:                            bool   = false,
     has_basic_constraints:            bool   = false,
     path_len_constraint:              i32    = -1,
@@ -97,6 +98,7 @@ enum SanType {
     Ip,
     Uri,
     Email,
+    DirName,
     Other,
 }
 

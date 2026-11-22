@@ -351,9 +351,7 @@ fn check_peer_san(
     peer:      const u8[:],
 ) -> bool {
     guard peer.len > 0 && peer != "-" else { return true; }
-    var sans: tls::SanEntry[..64] = [];
-    guard tls::get_cert_san_extension(leaf_cert, leaf_raw, sans) else { return false; }
-    return tls::match_any_san(sans, peer);
+    return tls::match_cert_san_host(leaf_cert, leaf_raw, peer);
 }
 
 fn handle_verify_cmd(rest: const u8[:], ctx: HarnessCtx&) {

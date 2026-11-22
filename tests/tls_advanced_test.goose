@@ -2107,14 +2107,17 @@ fn test_x509_uri_name_constraints_evasion(t: lit::T&) {
         sub.assert_false(res_ip, "IPv4 literal MUST NOT satisfy dNSName constraint");
     };
 
-    t.run("URI name constraints: valid DNS matches succeed") { sub =>
+    t.run("URI name constraints: RFC 5280 §4.2.1.10 host vs leading-dot domain semantics") { sub =>
         let cand_valid = "https://sub.permitted.example.com/path";
-        let res_v = tls::match_uri_name_constraint(cand_valid, "permitted.example.com");
-        sub.assert_true(res_v, "valid subdomain matches constraint");
+        let res_dot = tls::match_uri_name_constraint(cand_valid, ".permitted.example.com");
+        sub.assert_true(res_dot, "subdomain matches leading-dot URI constraint");
+
+        let res_no_dot = tls::match_uri_name_constraint(cand_valid, "permitted.example.com");
+        sub.assert_false(res_no_dot, "subdomain rejected by non-dotted exact-host URI constraint");
 
         let cand_exact = "https://permitted.example.com/path";
         let res_e = tls::match_uri_name_constraint(cand_exact, "permitted.example.com");
-        sub.assert_true(res_e, "exact domain matches constraint");
+        sub.assert_true(res_e, "exact host matches non-dotted URI constraint");
     };
 }
 
