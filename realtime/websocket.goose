@@ -910,13 +910,13 @@ fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
         }
         in_buf.compact_wire_buffer(consumed);
         chunk_buf.clear();
-        let recvd = net::tcp_recv(conn_fd, chunk_buf, 100);
-        if recvd < 0 {
+        let recvd = net::tcp_recv(conn_fd, chunk_buf, 16384, 100);
+        if recvd == -2 {
+            continue;
+        }
+        if recvd <= 0 {
             net::tcp_close(conn_fd);
             return;
-        }
-        if recvd == 0 {
-            continue;
         }
         let max_pay_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
         let max_wire_cap = if max_pay_i64 > 0 {

@@ -205,11 +205,11 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
         cat = case_id.split(".")[0]
         categories.setdefault(cat, []).append((case_id, res))
 
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 81)
     print(" Autobahn WebSocket Testsuite (RFC 6455) Compliance Report")
-    print("=" * 78)
-    print(f"{'Category':<5} | {'Description':<42} | {'Total':<5} | {'Passed':<6} | {'Status'}")
-    print("-" * 78)
+    print("=" * 81)
+    print(f"{'Category':<8} | {'Description':<42} | {'Total':>5} | {'Passed':>6} | {'Status'}")
+    print("-" * 81)
 
     total_passed = 0
     total_non_strict = 0
@@ -249,9 +249,9 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
 
         ok_total = cat_passed + cat_non_strict + cat_info
         status = "100% OK" if cat_failed == 0 else f"{cat_failed} FAILED"
-        print(f"{cat_num:<5} | {desc:<42} | {cat_total:<5} | {ok_total:<6} | {status}")
+        print(f"{cat_num:<8} | {desc:<42} | {cat_total:>5} | {ok_total:>6} | {status}")
 
-    print("=" * 78)
+    print("=" * 81)
     print(
         f"TOTAL CASES: {total_count}  |  PASSED: {total_passed}  |  "
         f"NON-STRICT: {total_non_strict}  |  INFO: {total_informational}  |  FAILED: {total_failed}"
@@ -264,7 +264,7 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
     )
     print(f"RFC 6455 Core Specification Compliance: {compliance_pct:.1f}%")
     print(f"Detailed HTML Reports: file:///{results_dir.resolve() / 'index.html'}")
-    print("=" * 78 + "\n")
+    print("=" * 81 + "\n")
 
     return (
         total_count,

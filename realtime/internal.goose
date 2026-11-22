@@ -699,12 +699,13 @@ fn on_ws_message<Stage, B>(
 // Drains trailing socket bytes after sending a Close frame so the peer receives
 // the Close frame instead of an immediate TCP RST (RFC 6455 §7.1.1).
 fn ws_drain_and_close(conn_fd: i64) {
+    let _ = net::tcp_shutdown(conn_fd, net::SHUT_WR);
     var drain_buf: u8[..4096] = [];
     var step:      i64        = 0;
     while step < 10 {
         step = core::add_sat_i64(step, 1);
         drain_buf.clear();
-        let dn = net::tcp_recv(conn_fd, drain_buf, 20);
+        let dn = net::tcp_recv(conn_fd, drain_buf, 4096, 20);
         if dn <= 0 {
             break;
         }
