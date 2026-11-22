@@ -12,6 +12,7 @@ curated or full upstream C2SP/Wycheproof, C2SP/CCTV, and NIST ACVP corpora.
 from __future__ import annotations
 
 import argparse
+import gzip
 import io
 import json
 import os
@@ -243,7 +244,7 @@ def _eval_wycheproof_xdh(client: HarnessClient, group: dict, stats: SuiteStats) 
 def _eval_wycheproof_sig(
     client: HarnessClient, alg: str, group: dict, stats: SuiteStats
 ) -> None:
-    key_obj = group.get("key", {})
+    key_obj = group.get("publicKey") or group.get("key") or {}
     sha = group.get("sha", "")
     cmd = ""
     pub_hex = ""
@@ -478,7 +479,7 @@ UPSTREAM_FETCH_URLS: dict[str, list[tuple[str, str]]] = {
         ("wycheproof/hmac_sha384_test.json", "https://raw.githubusercontent.com/C2SP/wycheproof/main/testvectors_v1/hmac_sha384_test.json"),
     ],
     "cctv": [
-        ("cctv/ML-KEM-768-modulus.txt", "https://raw.githubusercontent.com/C2SP/CCTV/main/ML-KEM/modulus/ML-KEM-768.txt"),
+        ("cctv/ML-KEM-768-modulus.txt", "https://raw.githubusercontent.com/C2SP/CCTV/main/ML-KEM/modulus/ML-KEM-768.txt.gz"),
     ],
     "acvp": [
         ("acvp/mlkem_keygen_internalProjection.json", "https://raw.githubusercontent.com/usnistgov/ACVP-Server/master/gen-val/json-files/ML-KEM-keyGen-FIPS203/internalProjection.json"),
@@ -496,7 +497,10 @@ def fetch_upstream_corpora(dest: Path, suite: str) -> None:
             print(f"[fetch] {url} -> {out_path}")
             req = urllib.request.Request(url, headers={"User-Agent": "goose-wing-crypto-vectors/1.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                out_path.write_bytes(resp.read())
+                raw = resp.read()
+                if url.endswith(".gz"):
+                    raw = gzip.decompress(raw)
+                out_path.write_bytes(raw)
 
 
 def run_directory(client: HarnessClient, corpus_dir: Path, suite: str, stats: SuiteStats) -> None:
