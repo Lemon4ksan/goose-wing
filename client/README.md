@@ -21,19 +21,38 @@ req.set_header("Accept", "text/html");
 ```goose
 struct Config {
     base_url: const u8[:], profile: fingerprint::Profile,
-    proxy_url: const u8[:], timeout_ms: i64, follow_redirects: bool,
+    proxy_url: const u8[:], timeout_ms: i64, connect_timeout_ms: i64,
+    tls_handshake_timeout_ms: i64, read_timeout_ms: i64,
+    pool_idle_timeout_ms: i64, follow_redirects: bool,
+    redirect_mode: RedirectMode, max_redirects: i64, https_only: bool,
+    enable_referer: bool, default_referrer_policy: ReferrerPolicy,
     cookie_jar: bool, enable_cache: bool, cache_options: wing::CacheOptions,
+    enable_hsts: bool, enable_doh: bool, enable_ech: bool,
     enable_altsvc: bool, enable_protocol_racing: bool,
     quic_race_delay_ms: i64, enable_compression_dict: bool,
-    strict_content_decoding: bool, insecure_skip_verify: bool,
+    http2_prior_knowledge: bool, auto_decompress: bool,
+    max_response_body_bytes: i64, max_retries: i32,
+    strict_content_decoding: bool, verify_content_digest: bool,
+    enable_early_data: bool, enable_har_telemetry: bool,
+    allow_loopback_ssrf: bool, insecure_skip_verify: bool,
     tls_backend: tls::TlsBackendKind, tls_min_version: tls::TlsMinVersion,
     tls_ca_file: const u8[:], tls_use_system_roots: bool,
-    sig_key_id: const u8[:],
-    sig_private_key: const u8[:], sig_public_key: const u8[:],
+    tls_client_cert_file: const u8[:], tls_client_key_file: const u8[:],
+    tls_enable_pq_hybrid: bool, tls_alpn: const u8[:],
+    tls_enable_session_tickets: bool, tls_require_ocsp_stapling: bool,
+    tls_crl_file: const u8[:], tls_keylog_file: const u8[:],
+    enable_ktls_offload: bool, ip_family: net::IpFamily,
+    local_bind_addr: const u8[:], tcp_nodelay: bool,
+    tcp_keepalive_idle_sec: i32, tcp_keepalive_intvl_sec: i32,
+    tcp_keepalive_cnt: i32, disable_keepalive: bool,
+    max_conns_per_host: i32, use_env_proxy: bool,
+    sig_key_id: const u8[:], sig_private_key: const u8[:],
+    sig_public_key: const u8[:],
 }
 type SessionConfig = Config;
 struct Credentials { ... }
 struct DpopState { ... }
+struct ResolveOverride { host: u8[..128], port: u16, ip: u8[..64] }
 struct Client { ... }
 type Session = Client;
 
@@ -66,6 +85,19 @@ fn set_tls_backend(session: Session&, kind: tls::TlsBackendKind)
 fn set_tls_min_version(session: Session&, ver: tls::TlsMinVersion)
 fn set_tls_ca_file(session: Session&, path: const u8[:]) -> bool
 fn set_tls_use_system_roots(session: Session&, enabled: bool)
+fn set_tls_client_cert(session: Session&, cert_file: const u8[:], key_file: const u8[:]) -> bool
+fn set_tls_alpn(session: Session&, alpn_csv: const u8[:]) -> bool
+fn set_tls_enable_pq_hybrid(session: Session&, enabled: bool)
+fn set_tls_enable_session_tickets(session: Session&, enabled: bool)
+fn set_tls_require_ocsp_stapling(session: Session&, required: bool)
+fn set_tls_crl_file(session: Session&, path: const u8[:]) -> bool
+fn set_tls_keylog_file(session: Session&, path: const u8[:]) -> bool
+fn set_ip_family(session: Session&, family: net::IpFamily)
+fn set_auto_decompress(session: Session&, enabled: bool)
+fn set_max_response_body_bytes(session: Session&, max_bytes: i64)
+fn add_resolve_override(session: Session&, host: const u8[:], port: u16, ip: const u8[:]) -> bool
+fn add_no_proxy(session: Session&, pattern: const u8[:]) -> bool
+fn is_no_proxy_host(session: const Session&, host: const u8[:]) -> bool
 fn lookup_cached_ech_config(dns_cache: const dns::Cache&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
 fn resolve_ech_config(session: Session&, domain: const u8[:], now_sec: i64) -> u8[..512], bool
 fn attach_dictionary_request_headers(session: const Session&, origin: const u8[:], url_path: const u8[:], req: wing::Request&) -> bool
@@ -85,8 +117,20 @@ using RFC 9114 framing and QPACK; full encrypted QUIC v1 + TLS 1.3 sessions use
 `tls::TlsBackendKind.PureGoose` with `tls::TlsMinVersion.Tls13`, keeping the
 native TLS 1.3 fast path unchanged; selecting `SystemOpenSsl`, `SystemSchannel`,
 `SystemSecureTransport`, or `Auto` opens a `net::Transport.TlsBackend` channel
-with automatic `h2` / `http/1.1` ALPN dispatch. `close` is idempotent and drains
-all pooled transport descriptors.
+with automatic `h2` / `http/1.1` ALPN dispatch. Client TLS controls cover mTLS
+PEM credentials (`tls_client_cert_file`, `tls_client_key_file`), custom ALPN
+offers (`tls_alpn`), X25519MLKEM768 hybrid key exchange
+(`tls_enable_pq_hybrid`), session tickets, mandatory OCSP stapling, DER/PEM CRL
+verification (`tls_crl_file`), NSS key logging (`tls_keylog_file`), and optional
+kTLS offload (`enable_ktls_offload`). Split timeouts (`connect_timeout_ms`,
+`tls_handshake_timeout_ms`, `read_timeout_ms`, `pool_idle_timeout_ms`) default
+to `0` (inheriting `timeout_ms` or pool defaults). `add_resolve_override` maps
+`(host, port)` to a static IP at dial time while preserving `Host`, SNI, and TLS
+hostname verification, while `add_no_proxy` and opt-in `use_env_proxy` control
+proxy selection and bypasses. Setting `auto_decompress` to `false` preserves raw
+compressed response bytes and `Content-Encoding` headers, and setting
+`max_response_body_bytes > 0` rejects oversize raw or decompressed bodies
+fail-closed. `close` is idempotent and drains all pooled transport descriptors.
 
 ### 2. Interceptors, redirects, backoff, and rate limiting (`client/interceptor.goose`, `client/redirect.goose`, `client/policy.goose`)
 

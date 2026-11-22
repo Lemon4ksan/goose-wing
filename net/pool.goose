@@ -388,10 +388,12 @@ struct StreamPool {
     groups:                        ConnectionGroup[..16]     = [],
     group_index:                   core::FlatIndexBucket[64] = [core::FlatIndexBucket { .. }; 64],
     max_sockets_per_group:         i32                       = DEFAULT_MAX_SOCKETS_PER_GROUP,
+    max_conns_per_host:            i32                       = 0,
     max_sockets_per_proxy:         i32                       = DEFAULT_MAX_SOCKETS_PER_PROXY_CHAIN,
     socket_soft_cap:               i32                       = DEFAULT_SOCKET_SOFT_CAP_PER_POOL,
     idle_timeout_ns:               i64                       = DEFAULT_IDLE_CONN_TIMEOUT_NS,
     enable_ip_coalescing_h2:       bool                      = true,
+    disable_keepalive:             bool                      = false,
     negative_ip_pool_result_count: i64                       = 0,
     next_conn_id:                  i32                       = 1,
 }
@@ -407,6 +409,28 @@ fn new_stream_pool(
         socket_soft_cap:       soft_cap,
         ..
     };
+}
+
+// Configures bounded per-host connection cap (clamped to 0..64), keep-alive mode,
+// and optional idle timeout in nanoseconds (`idle_timeout_ns < 0` leaves existing value).
+fn configure_stream_pool(
+    pool:               StreamPool&,
+    max_conns_per_host: i32,
+    disable_keepalive:  bool,
+    idle_timeout_ns:    i64 = -1,
+) {
+    let clamped = if max_conns_per_host > 0 { min(max_conns_per_host, 64) } else { 0 };
+    pool.max_conns_per_host = clamped;
+    if clamped > 0 {
+        pool.max_sockets_per_group = clamped;
+    }
+    pool.disable_keepalive = disable_keepalive;
+    if idle_timeout_ns >= 0 {
+        pool.idle_timeout_ns = idle_timeout_ns;
+    }
+    if disable_keepalive {
+        drain_stream_pool(pool);
+    }
 }
 
 // Finds an existing connection group by key.
@@ -481,6 +505,7 @@ fn can_allocate_group_socket(
     respect_limits: RespectLimits = RespectLimits.Enabled,
 ) -> bool {
     guard respect_limits == RespectLimits.Enabled else { return true; }
+    guard net_internal::enforce_host_socket_quota(pool, key) else { return false; }
     guard net_internal::enforce_group_socket_quota(pool, key) else { return false; }
     return net_internal::enforce_proxy_chain_socket_quota(pool, key);
 }
@@ -510,6 +535,7 @@ fn acquire_pooled_connection(
     now_ns:              i64,
     do_extensive_checks: bool = false,
 ) -> i32, bool {
+    guard !pool.disable_keepalive else { return -1, false; }
     // 1. Direct pool match for exact key
     for i in pool.conns.len {
         let cid, ok = net_internal::try_acquire_direct_conn(pool, pool.conns[i], key, now_ns, do_extensive_checks);

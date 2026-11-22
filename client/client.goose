@@ -37,6 +37,7 @@ import client.stream;
 import client.session.ssrf;
 import client.session.mock;
 import net.pool;
+import net.tcp;
 import net.retry;
 import wire.pipeline;
 import auth.digest;
@@ -51,27 +52,65 @@ import .session.internal;
 // ---- 1. Configuration & State Structs --------------------------------------
 
 struct Config {
-    base_url:                const u8[:]          = "",
-    profile:                 fingerprint::Profile = fingerprint::Profile.Wing,
-    proxy_url:               const u8[:]          = "",
-    timeout_ms:              i64                  = 15000,
-    follow_redirects:        bool                 = true,
-    cookie_jar:              bool                 = true,
-    enable_cache:            bool                 = false,
-    cache_options:           http::CacheOptions   = http::CacheOptions { .. },
-    enable_altsvc:           bool                 = true,
-    enable_protocol_racing:  bool                 = true,
-    quic_race_delay_ms:      i64                  = 200,
-    enable_compression_dict: bool                 = true,
-    strict_content_decoding: bool                 = false,
-    insecure_skip_verify:    bool                 = false,
-    tls_backend:             tls::TlsBackendKind  = tls::TlsBackendKind.PureGoose,
-    tls_min_version:         tls::TlsMinVersion   = tls::TlsMinVersion.Tls13,
-    tls_ca_file:             const u8[:]          = "",
-    tls_use_system_roots:    bool                 = true,
-    sig_key_id:              const u8[:]          = "",
-    sig_private_key:         const u8[:]          = "",
-    sig_public_key:          const u8[:]          = "",
+    base_url:                   const u8[:]          = "",
+    profile:                    fingerprint::Profile = fingerprint::Profile.Wing,
+    proxy_url:                  const u8[:]          = "",
+    timeout_ms:                 i64                  = 15000,
+    connect_timeout_ms:         i64                  = 0,
+    tls_handshake_timeout_ms:   i64                  = 0,
+    read_timeout_ms:            i64                  = 0,
+    pool_idle_timeout_ms:       i64                  = 0,
+    follow_redirects:           bool                 = true,
+    redirect_mode:              RedirectMode         = RedirectMode.Follow,
+    max_redirects:              i64                  = 10,
+    https_only:                 bool                 = false,
+    enable_referer:             bool                 = true,
+    default_referrer_policy:    ReferrerPolicy       = ReferrerPolicy.StrictOriginWhenCrossOrigin,
+    cookie_jar:                 bool                 = true,
+    enable_cache:               bool                 = false,
+    cache_options:              http::CacheOptions   = http::CacheOptions { .. },
+    enable_hsts:                bool                 = true,
+    enable_doh:                 bool                 = false,
+    enable_ech:                 bool                 = false,
+    enable_altsvc:              bool                 = true,
+    enable_protocol_racing:     bool                 = true,
+    quic_race_delay_ms:         i64                  = 200,
+    enable_compression_dict:    bool                 = true,
+    http2_prior_knowledge:      bool                 = false,
+    auto_decompress:            bool                 = true,
+    max_response_body_bytes:    i64                  = 0,
+    max_retries:                i32                  = 0,
+    strict_content_decoding:    bool                 = false,
+    verify_content_digest:      bool                 = false,
+    enable_early_data:          bool                 = false,
+    enable_har_telemetry:       bool                 = false,
+    allow_loopback_ssrf:        bool                 = false,
+    insecure_skip_verify:       bool                 = false,
+    tls_backend:                tls::TlsBackendKind  = tls::TlsBackendKind.PureGoose,
+    tls_min_version:            tls::TlsMinVersion   = tls::TlsMinVersion.Tls13,
+    tls_ca_file:                const u8[:]          = "",
+    tls_use_system_roots:       bool                 = true,
+    tls_client_cert_file:       const u8[:]          = "",
+    tls_client_key_file:        const u8[:]          = "",
+    tls_enable_pq_hybrid:       bool                 = false,
+    tls_alpn:                   const u8[:]          = "",
+    tls_enable_session_tickets: bool                 = true,
+    tls_require_ocsp_stapling:  bool                 = false,
+    tls_crl_file:               const u8[:]          = "",
+    tls_keylog_file:            const u8[:]          = "",
+    enable_ktls_offload:        bool                 = false,
+    ip_family:                  net::IpFamily        = net::IpFamily.Auto,
+    local_bind_addr:            const u8[:]          = "",
+    tcp_nodelay:                bool                 = true,
+    tcp_keepalive_idle_sec:     i32                  = 30,
+    tcp_keepalive_intvl_sec:    i32                  = 5,
+    tcp_keepalive_cnt:          i32                  = 3,
+    disable_keepalive:          bool                 = false,
+    max_conns_per_host:         i32                  = 0,
+    use_env_proxy:              bool                 = false,
+    sig_key_id:                 const u8[:]          = "",
+    sig_private_key:            const u8[:]          = "",
+    sig_public_key:             const u8[:]          = "",
 }
 
 type SessionConfig = Config;
@@ -90,6 +129,12 @@ struct DpopState {
     access_token: u8[..2048] = [],
     has_key:      bool       = false,
     last_nonce:   u8[..128]  = [],
+}
+
+struct ResolveOverride {
+    host: u8[..128] = [],
+    port: u16       = 0,
+    ip:   u8[..64]  = [],
 }
 
 struct Client {
@@ -147,26 +192,54 @@ struct Client {
     pool:     net::StreamPool         = net::StreamPool { .. },
     af_cache: net::AddressFamilyCache = net::AddressFamilyCache { .. },
 
-    enable_cookie_jar:       bool                     = true,
-    http2_prior_knowledge:   bool                     = false,
-    strict_content_decoding: bool                     = false,
-    verify_content_digest:   bool                     = false,
-    enable_early_data:       bool                     = false,
-    enable_har_telemetry:    bool                     = false,
-    last_har_json:           u8[..2048]               = [],
-    retry_budget:            net::AdaptiveRetryBudget = net::new_adaptive_retry_budget(),
-    circuit_breaker:         net::HostCircuitBreaker  = net::new_host_circuit_breaker(),
-    backoff_config:          net::BackoffConfig       = net::new_backoff_config(),
-    dpop:                    DpopState                = DpopState { .. },
-    sig_key_id:              u8[..64]                 = [],
-    sig_private_key:         u8[..64]                 = [],
-    sig_public_key:          u8[..64]                 = [],
-    trust_store:             tls::TrustAnchorStore    = tls::TrustAnchorStore { .. },
-    insecure_skip_verify:    bool                     = false,
-    tls_backend:             tls::TlsBackendKind      = tls::TlsBackendKind.PureGoose,
-    tls_min_version:         tls::TlsMinVersion       = tls::TlsMinVersion.Tls13,
-    tls_ca_file:             u8[..256]                = [],
-    tls_use_system_roots:    bool                     = true,
+    enable_cookie_jar:          bool                     = true,
+    http2_prior_knowledge:      bool                     = false,
+    strict_content_decoding:    bool                     = false,
+    verify_content_digest:      bool                     = false,
+    enable_early_data:          bool                     = false,
+    enable_har_telemetry:       bool                     = false,
+    last_har_json:              u8[..2048]               = [],
+    retry_budget:               net::AdaptiveRetryBudget = net::new_adaptive_retry_budget(),
+    circuit_breaker:            net::HostCircuitBreaker  = net::new_host_circuit_breaker(),
+    backoff_config:             net::BackoffConfig       = net::new_backoff_config(),
+    dpop:                       DpopState                = DpopState { .. },
+    sig_key_id:                 u8[..64]                 = [],
+    sig_private_key:            u8[..64]                 = [],
+    sig_public_key:             u8[..64]                 = [],
+    trust_store:                tls::TrustAnchorStore    = tls::TrustAnchorStore { .. },
+    insecure_skip_verify:       bool                     = false,
+    tls_backend:                tls::TlsBackendKind      = tls::TlsBackendKind.PureGoose,
+    tls_min_version:            tls::TlsMinVersion       = tls::TlsMinVersion.Tls13,
+    tls_ca_file:                u8[..256]                = [],
+    tls_use_system_roots:       bool                     = true,
+    tls_client_cert_file:       u8[..256]                = [],
+    tls_client_key_file:        u8[..256]                = [],
+    tls_enable_pq_hybrid:       bool                     = false,
+    tls_alpn:                   u8[..64]                 = [],
+    tls_enable_session_tickets: bool                     = true,
+    tls_require_ocsp_stapling:  bool                     = false,
+    tls_crl_file:               u8[..256]                = [],
+    tls_keylog_file:            u8[..256]                = [],
+    enable_ktls_offload:        bool                     = false,
+    connect_timeout_ms:         i64                      = 0,
+    tls_handshake_timeout_ms:   i64                      = 0,
+    read_timeout_ms:            i64                      = 0,
+    pool_idle_timeout_ms:       i64                      = 0,
+    ip_family:                  net::IpFamily            = net::IpFamily.Auto,
+    local_bind_addr:            u8[..64]                 = [],
+    tcp_nodelay:                bool                     = true,
+    tcp_keepalive_idle_sec:     i32                      = 30,
+    tcp_keepalive_intvl_sec:    i32                      = 5,
+    tcp_keepalive_cnt:          i32                      = 3,
+    disable_keepalive:          bool                     = false,
+    max_conns_per_host:         i32                      = 0,
+    use_env_proxy:              bool                     = false,
+    no_proxy_rules:             u8[..128][..16]          = [],
+    resolve_overrides:          ResolveOverride[..16]    = [],
+    allow_loopback_ssrf:        bool                     = false,
+    max_retries:                i32                      = 0,
+    auto_decompress:            bool                     = true,
+    max_response_body_bytes:    i64                      = 0,
 
     // Resizable field must be final
     jar: cookie::CanonicalCookieJar = cookie::CanonicalCookieJar { .. },
@@ -228,14 +301,12 @@ fn new_client(cfg: Config) -> Client {
         let _ = sig_pub.try_set(cfg.sig_public_key);
     }
 
-    return Client {
+    var c = Client {
         base_url:                base_buf,
         profile:                 prof_spec.kind,
         profile_spec:            prof_spec,
         proxy_url:               proxy_buf,
         timeout_ms:              cfg.timeout_ms,
-        follow_redirects:        cfg.follow_redirects,
-        redirect_mode:           if cfg.follow_redirects { RedirectMode.Follow } else { RedirectMode.Manual },
         default_headers:         def_hdrs,
         ssrf_guard:              security::SsrfGuardPolicy { .. },
         cache:                   http::Cache { options: cfg.cache_options, .. },
@@ -249,7 +320,6 @@ fn new_client(cfg: Config) -> Client {
         pipeline:                InterceptorPipeline { .. },
         wire_pipeline:           wire::default_client_pipeline(),
         hsts:                    http::HstsCache { .. },
-        enable_hsts:             true,
         pool:                    net::new_stream_pool(),
         enable_cookie_jar:       cfg.cookie_jar,
         strict_content_decoding: cfg.strict_content_decoding,
@@ -264,6 +334,8 @@ fn new_client(cfg: Config) -> Client {
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
+    client_internal::apply_client_config_knobs(c, cfg);
+    return c;
 }
 
 fn new_client(base_url: const u8[:]) -> Client {
@@ -677,6 +749,151 @@ fn set_tls_use_system_roots(session: Session&, enabled: bool) {
         session.tls_use_system_roots = enabled;
         net::drain_stream_pool(session.pool);
     }
+}
+
+// Configures client mTLS PEM certificate and private key paths on `session`.
+// Both paths must either be empty (to clear mTLS) or non-empty and within capacity.
+fn set_tls_client_cert(session: Session&, cert_file: const u8[:], key_file: const u8[:]) -> bool {
+    let both_empty = cert_file.len == 0 && key_file.len == 0;
+    let both_set = cert_file.len > 0 && key_file.len > 0;
+    guard (both_empty || both_set)
+        && cert_file.len <= session.tls_client_cert_file.cap
+        && key_file.len <= session.tls_client_key_file.cap else {
+        return false;
+    }
+    let _ = session.tls_client_cert_file.try_set(cert_file);
+    let _ = session.tls_client_key_file.try_set(key_file);
+    net::drain_stream_pool(session.pool);
+    return true;
+}
+
+// Configures comma-separated ALPN protocol offers (e.g. `"http/1.1"` or `"h2,http/1.1"`).
+// Pass an empty slice to restore the default `"h2,http/1.1"` offer.
+fn set_tls_alpn(session: Session&, alpn_csv: const u8[:]) -> bool {
+    guard alpn_csv.len <= session.tls_alpn.cap else { return false; }
+    if alpn_csv.len > 0 {
+        var check_wire: u8[..64] = [];
+        guard client_internal::encode_alpn_csv_to_wire(alpn_csv, check_wire) else { return false; }
+    }
+    let _ = session.tls_alpn.try_set(alpn_csv);
+    net::drain_stream_pool(session.pool);
+    return true;
+}
+
+// Enables or disables X25519MLKEM768 post-quantum hybrid key exchange on `session`.
+fn set_tls_enable_pq_hybrid(session: Session&, enabled: bool) {
+    if session.tls_enable_pq_hybrid != enabled {
+        session.tls_enable_pq_hybrid = enabled;
+        net::drain_stream_pool(session.pool);
+    }
+}
+
+// Enables or disables TLS 1.3 session ticket caching and PSK resumption on `session`.
+fn set_tls_enable_session_tickets(session: Session&, enabled: bool) {
+    if session.tls_enable_session_tickets != enabled {
+        session.tls_enable_session_tickets = enabled;
+        net::drain_stream_pool(session.pool);
+    }
+}
+
+// Requires stapled OCSP responses from TLS peers (fail-closed) when `required` is true.
+fn set_tls_require_ocsp_stapling(session: Session&, required: bool) {
+    if session.tls_require_ocsp_stapling != required {
+        session.tls_require_ocsp_stapling = required;
+        net::drain_stream_pool(session.pool);
+    }
+}
+
+// Configures an X.509 CRL file path (DER or PEM) for certificate revocation checks.
+fn set_tls_crl_file(session: Session&, path: const u8[:]) -> bool {
+    guard session.tls_crl_file.try_set(path) else { return false; }
+    net::drain_stream_pool(session.pool);
+    return true;
+}
+
+// Configures an NSS SSLKEYLOGFILE path for TLS 1.3 traffic secret logging.
+fn set_tls_keylog_file(session: Session&, path: const u8[:]) -> bool {
+    guard session.tls_keylog_file.try_set(path) else { return false; }
+    net::drain_stream_pool(session.pool);
+    return true;
+}
+
+// Constrains outbound TCP connections to IPv4, IPv6, or automatic dual-stack selection.
+fn set_ip_family(session: Session&, family: net::IpFamily) {
+    if session.ip_family != family {
+        session.ip_family = family;
+        net::drain_stream_pool(session.pool);
+    }
+}
+
+// Enables or disables automatic Content-Encoding decompression on HTTP responses.
+fn set_auto_decompress(session: Session&, enabled: bool) {
+    session.auto_decompress = enabled;
+}
+
+// Sets the maximum permitted response body size in bytes (`0` disables the limit).
+fn set_max_response_body_bytes(session: Session&, max_bytes: i64) {
+    session.max_response_body_bytes = max(max_bytes, 0);
+}
+
+// Registers a static `(host, port) -> ip` TCP dial override (similar to `curl --resolve`)
+// while preserving the original `Host` header, TLS SNI, and certificate hostname verification.
+fn add_resolve_override(
+    session: Session&,
+    host:    const u8[:],
+    port:    u16,
+    ip:      const u8[:],
+) -> bool {
+    let h_trim = host.trim_lws().trim_end_byte('.');
+    let ip_trim = ip.trim_lws();
+    guard h_trim.len > 0 && h_trim.len <= 128 && ip_trim.len > 0 && ip_trim.len <= 64 else {
+        return false;
+    }
+    let _, ok_ip = core::parse_ip_addr(ip_trim);
+    guard ok_ip else { return false; }
+
+    var low_host: u8[..128] = [];
+    h_trim.to_lower_ascii(low_host);
+    for &ov in session.resolve_overrides {
+        if ov.port == port && ov.host[..] == low_host[..] {
+            guard ov.ip.try_set(ip_trim) else { return false; }
+            net::drain_stream_pool(session.pool);
+            return true;
+        }
+    }
+    var entry = ResolveOverride { port: port, .. };
+    guard entry.host.try_set(low_host[..]) && entry.ip.try_set(ip_trim) else { return false; }
+    guard session.resolve_overrides.try_push(entry) else { return false; }
+    net::drain_stream_pool(session.pool);
+    return true;
+}
+
+// Registers a `NO_PROXY` bypass pattern (exact host, `.suffix`, `*`, CIDR, or `localhost`).
+fn add_no_proxy(session: Session&, pattern: const u8[:]) -> bool {
+    let pat = pattern.trim_ascii_space();
+    guard pat.len > 0 && pat.len <= 128 else { return false; }
+    for &existing in session.no_proxy_rules {
+        if existing[..].eq_ascii_fold(pat) { return true; }
+    }
+    var pat_buf: u8[..128] = [];
+    guard pat_buf.try_set(pat) else { return false; }
+    return session.no_proxy_rules.try_push(pat_buf);
+}
+
+// Evaluates whether `host` bypasses configured or environment proxies via `no_proxy_rules`
+// (and `NO_PROXY` / `no_proxy` when `session.use_env_proxy` is true).
+fn is_no_proxy_host(session: const Session&, host: const u8[:]) -> bool {
+    let norm_host = client_internal::normalize_no_proxy_host(host);
+    guard norm_host.len > 0 else { return false; }
+    for &rule in session.no_proxy_rules {
+        if client_internal::match_no_proxy_pattern(rule[..], norm_host) {
+            return true;
+        }
+    }
+    if session.use_env_proxy {
+        return client_internal::matches_env_no_proxy(norm_host);
+    }
+    return false;
 }
 
 // ---- mock route registration methods ---------------------------------------

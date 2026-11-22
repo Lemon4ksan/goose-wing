@@ -113,11 +113,33 @@ fn tcp_accept(listener_fd: i64, timeout_ms: u32 = 0) -> i64 {
     return net_internal::native_tcp_accept(listener_fd, timeout_ms);
 }
 
+// Address family constraint for outbound TCP connections.
+enum IpFamily {
+    Auto,
+    Ipv4Only,
+    Ipv6Only,
+}
+
 // Connects to a remote TCP endpoint (IPv4, IPv6, or DNS) with timeout in milliseconds.
 // Returns connected socket handle (> 0), or -1 on error/timeout.
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64 {
     tcp_init();
     return net_internal::native_tcp_connect(host, port, timeout_ms);
+}
+
+// Connects to a remote TCP endpoint with timeout, IP family filter, and optional local source bind IP.
+// Returns connected socket handle (> 0), or -1 on error/timeout.
+fn tcp_connect_ex(
+    host:            const u8[:],
+    port:            u16,
+    timeout_ms:      u32         = 5000,
+    ip_family:       IpFamily    = IpFamily.Auto,
+    local_bind_addr: const u8[:] = "",
+) -> i64 {
+    guard port != 0 else { return -1; }
+    tcp_init();
+    let fam_i32 = net_internal::ip_family_to_native_i32(ip_family);
+    return net_internal::native_tcp_connect_ex(host, port, timeout_ms, fam_i32, local_bind_addr);
 }
 
 // Initiates a non-blocking TCP connection (IPv4, IPv6, or DNS hostname).
@@ -854,6 +876,8 @@ struct TcpConnectOptions {
     keepalive_intvl_sec: i32         = 5,
     keepalive_cnt:       i32         = 3,
     user_timeout_ms:     u32         = 15000,
+    ip_family:           IpFamily    = IpFamily.Auto,
+    local_bind_addr:     u8[..64]    = [],
 }
 
 // Begins a non-blocking IPv4/IPv6 TCP connect with pre-connect SYN profile options.
@@ -868,9 +892,18 @@ fn tcp_connect_with_options(
         out_err = -1;
         return -1;
     }
+    let dst_is_v6 = opts.dst_ip.contains_byte(':');
+    let family_mismatch = (opts.ip_family == IpFamily.Ipv4Only && dst_is_v6) ||
+        (opts.ip_family == IpFamily.Ipv6Only && !dst_is_v6);
+    guard !family_mismatch else {
+        out_state = -1;
+        out_err = 2;
+        return -1;
+    }
+    let eff_src = if opts.local_bind_addr.len > 0 { opts.local_bind_addr[..] } else { opts.src_ip };
     let _ = tcp_init();
     return net_internal::native_tcp_connect_opts_begin(
-        opts.src_ip,
+        eff_src,
         opts.dst_ip,
         opts.dst_port,
         opts.so_mark,

@@ -545,7 +545,7 @@ inline fn keccak_xor_bytes(state: u64[25]&, blk: const u8[:]) {
         let u = i as u64;
         let lane = u >> 3;
         let shift = core::shl_sat_u64(u & 7, 3) as u32;
-        state[lane] ^= core::shl_sat_u64(blk[u] as u64, shift);
+        state[lane] ^= core::shl_sat_u64(blk[u], shift);
     }
 }
 

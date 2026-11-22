@@ -30,7 +30,9 @@ fn tcp_init() -> bool
 fn tcp_cleanup()
 fn tcp_listen(host: const u8[:], port: u16 = 0, backlog: i32 = 128) -> i64
 fn tcp_listen_unix(path: const u8[:], backlog: i32 = 128) -> i64
+enum IpFamily { Auto, Ipv4Only, Ipv6Only }
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64
+fn tcp_connect_ex(host: const u8[:], port: u16, timeout_ms: u32 = 5000, ip_family: IpFamily = IpFamily.Auto, local_bind_addr: const u8[:] = "") -> i64
 fn tcp_connect_unix(path: const u8[:]) -> i64
 fn tcp_close(fd: i64)
 fn tcp_abort(fd: i64)
@@ -47,7 +49,8 @@ fn tcp_send_fastopen(fd: i64, host: const u8[:], port: u16, syn_payload: const u
 fn tcp_set_tos(fd: i64, dscp: u8, ecn: u8 = 0) -> bool
 fn tcp_set_ecn(fd: i64, ecn_bits: u8) -> bool
 struct TcpConnectOptions {
-    src_ip: const u8[:], dst_ip: const u8[:], dst_port: u16, so_mark: u32,
+    src_ip: const u8[:], local_bind_addr: u8[..64], dst_ip: const u8[:],
+    dst_port: u16, ip_family: IpFamily, so_mark: u32,
     ttl: i32, mss: i32, rcvbuf: i32, tcp_nodelay: bool,
     keepalive_idle_sec: i32, keepalive_intvl_sec: i32, keepalive_cnt: i32,
     user_timeout_ms: u32
@@ -65,11 +68,13 @@ write, while `tcp_abort` forces an immediate RFC 1122 §4.2.2.13 RST teardown
 (`SO_LINGER` with timeout 0) without waiting for `TIME_WAIT`. TCP Fast Open
 (RFC 7413) attaches initial application bytes to the SYN packet via
 `tcp_send_fastopen`, and `tcp_set_ecn` updates IPv4/IPv6 ECN bits while
-preserving the active DSCP traffic class. `tcp_connect_with_options` applies
-`SO_MARK`, `IP_TTL` / `IPV6_UNICAST_HOPS`, `TCP_MAXSEG`, `SO_RCVBUF`,
-`TCP_NODELAY`, and optional source-IP bind before `connect()` so the initial SYN
-carries the configured OS profile. Blocking socket timeout waits use `poll(2)`
-on POSIX to avoid `FD_SETSIZE` (`1024`) descriptor limits.
+preserving the active DSCP traffic class. `tcp_connect_ex` and
+`tcp_connect_with_options` enforce `IpFamily` (`Auto`, `Ipv4Only`, `Ipv6Only`)
+and bind an optional `local_bind_addr` before `connect()`;
+`tcp_connect_with_options` also applies `SO_MARK`, `IP_TTL` /
+`IPV6_UNICAST_HOPS`, `TCP_MAXSEG`, `SO_RCVBUF`, and `TCP_NODELAY` so the initial
+SYN carries the configured OS profile. Blocking socket timeout waits use
+`poll(2)` on POSIX to avoid `FD_SETSIZE` (`1024`) descriptor limits.
 
 ### 2. Unified Transport Handle (`net/transport.goose`)
 
@@ -237,6 +242,7 @@ struct StreamPool { ... }
 struct UpstreamPool { entries: UpstreamKeepAliveEntry[..128] }
 fn new_origin_endpoint(host_str: const u8[:], port_num: u16) -> OriginEndpoint
 fn new_stream_pool(max_idle_per_host: i64 = 6, idle_timeout_sec: u64 = 90) -> StreamPool
+fn configure_stream_pool(pool: StreamPool&, max_conns_per_host: i32, disable_keepalive: bool, idle_timeout_ns: i64 = -1)
 fn acquire_pooled_connection(pool: StreamPool&, key: const PoolKey&, resolved_ip: const u8[:], now_ms: u64) -> i64, bool
 fn release_connection(pool: StreamPool&, idx: i64, now_ms: u64)
 fn acquire_upstream_conn(pool: UpstreamPool&, host: const u8[:], port: u16, is_tls: bool, now_ms: u64) -> i64
@@ -246,7 +252,9 @@ fn release_upstream_conn(pool: UpstreamPool&, fd: i64, host: const u8[:], port: 
 `StreamPool` partitions client connections by `PoolKey` (including
 `NetworkAnonymizationKey` to prevent cross-site timing leaks) and supports RFC
 9113 §9.1.1 HTTP/2 connection coalescing when two origins share a resolved IP
-and SAN certificate coverage. `UpstreamPool` maintains up to 128 idle backend
+and SAN certificate coverage. `configure_stream_pool` caps sockets per host
+(`max_conns_per_host`), disables idle keep-alive reuse (`disable_keepalive`),
+and updates `idle_timeout_ns`. `UpstreamPool` maintains up to 128 idle backend
 keep-alive sockets (`UpstreamKeepAliveEntry[..128]`) for reverse proxy reuse;
 `acquire_upstream_conn` returns `-1` on a cache miss.
 

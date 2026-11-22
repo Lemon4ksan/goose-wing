@@ -6,10 +6,12 @@
 namespace client_internal;
 
 import std;
+import os;
 import core;
 import rfc.http;
 import rfc.h2;
 import rfc.h3_quic;
+import rfc.tls;
 import cookie.constants;
 import cookie.canonical;
 import cookie.psl;
@@ -49,6 +51,11 @@ import net.happy_eyeballs;
 import net.retry;
 import net.transport;
 import net.masque;
+import tls.types;
+import tls.asn1;
+import tls.x509;
+import tls.pem;
+import tls.crl;
 import tls.handshake;
 import tls.session;
 import tls.backend;
@@ -845,6 +852,86 @@ fn dispatch_client_ingress_stage(
     return wire::StageVerdict.Continue;
 }
 
+fn verify_raw_response_digests(resp: const http::Response&) -> bool {
+    if http::header(resp, rfc::HEADER_CONTENT_DIGEST).len > 0 && !http::verify_response_content_digest(resp) {
+        return false;
+    }
+    if http::header(resp, rfc::HEADER_REPR_DIGEST).len > 0 && !http::verify_response_repr_digest(resp) {
+        return false;
+    }
+    return true;
+}
+
+fn check_response_body_size_limit(
+    session: const client::Session&,
+    resp:    http::Response&,
+    out_err: http::Error&,
+) -> bool {
+    guard session.max_response_body_bytes > 0 && resp.body.len > session.max_response_body_bytes else {
+        return true;
+    }
+    resp.body.clear();
+    out_err = http::make_error(
+        rfc::STATUS_CONTENT_TOO_LARGE,
+        "protocol",
+        "ERR_RESPONSE_BODY_TOO_LARGE: response body exceeds max_response_body_bytes",
+    );
+    return false;
+}
+
+fn run_client_decompress_and_limit_stage(
+    session:     const client::Client&,
+    req:         const http::Request&,
+    current_url: const core::Url&,
+    ctx:         const client::RequestExecutionContext&,
+    out_resp:    http::Response&,
+    out_err:     http::Error&,
+) -> wire::StageVerdict {
+    if !client::verify_response_signature(
+        session, req, current_url, ctx.current_method[..], ctx.headers, out_resp,
+    ) {
+        out_err = http::make_error(
+            rfc::STATUS_BAD_GATEWAY,
+            "protocol",
+            "ERR_SIGNATURE_VERIFICATION_FAILED: HTTP response signature verification failed",
+        );
+        return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+    }
+    guard check_response_body_size_limit(session, out_resp, out_err) else {
+        return wire::StageVerdict.Abort { err_code: rfc::STATUS_CONTENT_TOO_LARGE };
+    }
+    let strict_dec = session.strict_content_decoding || session.verify_content_digest;
+    if !session.auto_decompress {
+        guard !strict_dec || verify_raw_response_digests(out_resp) else {
+            out_err = http::make_error(
+                rfc::STATUS_BAD_GATEWAY,
+                "protocol",
+                "ERR_CONTENT_DECODING_FAILED: response digest verification failed",
+            );
+            return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
+        }
+        return wire::StageVerdict.Continue;
+    }
+    let dec_v = stage_client_decompress(
+        out_resp,
+        session.dict_cache,
+        strict_dec,
+        div_euclid(session.virtual_clock_us, 1000000),
+    );
+    match dec_v {
+        Abort ab => {
+            let dec_msg = "ERR_CONTENT_DECODING_FAILED: content-encoding decompression failed";
+            out_err = http::make_error(ab.err_code, "protocol", dec_msg);
+            return dec_v;
+        },
+        _ => {},
+    };
+    guard check_response_body_size_limit(session, out_resp, out_err) else {
+        return wire::StageVerdict.Abort { err_code: rfc::STATUS_CONTENT_TOO_LARGE };
+    }
+    return dec_v;
+}
+
 fn dispatch_client_egress_stage(
     stage_id:             u8,
     session:              client::Client&,
@@ -903,30 +990,7 @@ fn dispatch_client_egress_stage(
         );
     }
     if stage_id == wire::STAGE_ID_CLI_OUT_DECOMPRESS {
-        if !client::verify_response_signature(
-            session, req, current_url, ctx.current_method[..], ctx.headers, out_resp,
-        ) {
-            out_err = http::make_error(
-                rfc::STATUS_BAD_GATEWAY,
-                "protocol",
-                "ERR_SIGNATURE_VERIFICATION_FAILED: HTTP response signature verification failed",
-            );
-            return wire::StageVerdict.Abort { err_code: rfc::STATUS_BAD_GATEWAY };
-        }
-        let dec_v = stage_client_decompress(
-            out_resp,
-            session.dict_cache,
-            session.strict_content_decoding || session.verify_content_digest,
-            div_euclid(session.virtual_clock_us, 1000000),
-        );
-        match dec_v {
-            Abort ab => {
-                let dec_msg = "ERR_CONTENT_DECODING_FAILED: content-encoding decompression failed";
-                out_err = http::make_error(ab.err_code, "protocol", dec_msg);
-            },
-            _ => {},
-        };
-        return dec_v;
+        return run_client_decompress_and_limit_stage(session, req, current_url, ctx, out_resp, out_err);
     }
     if stage_id == wire::STAGE_ID_CLI_OUT_CACHE_STORE {
         return client::stage_cache_store(
@@ -1027,6 +1091,9 @@ fn execute_client_auth_retry_hop<UserStage>(
     let retry_dur_us = session.virtual_clock_us - retry_start_us;
     apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, retry_dur_us);
     guard http::ok(hop_err) else { return wire::StageVerdict.Abort { err_code: hop_err.code }, false; }
+    guard check_response_body_size_limit(session, resp, hop_err) else {
+        return wire::StageVerdict.Abort { err_code: hop_err.code }, false;
+    }
 
     let post_v = run_client_post_hop_stages(
         session, ctx, req, current_url, samesite_eval, safe_method,
@@ -1142,6 +1209,7 @@ fn execute_single_client_hop_iteration<UserStage>(
     let hop_start_us = session.virtual_clock_us;
     resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
     guard http::ok(hop_err) else { return true; }
+    guard check_response_body_size_limit(session, resp, hop_err) else { return true; }
     ctx.body_consumed = true;
 
     let hop_dur_us = session.virtual_clock_us - hop_start_us;
@@ -1389,8 +1457,11 @@ fn ingest_transport_response_headers(
     now_sec:     i64,
     resp:        http::Response&,
 ) {
-    let defer_to_strict_stage = session.strict_content_decoding || session.verify_content_digest;
-    if !defer_to_strict_stage &&
+    let defer_to_strict_stage = session.strict_content_decoding
+        || session.verify_content_digest
+        || session.max_response_body_bytes > 0;
+    if session.auto_decompress &&
+        !defer_to_strict_stage &&
         wire::is_egress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_OUT_DECOMPRESS) {
         let _ = stage_client_decompress(resp, session.dict_cache, false, now_sec);
     }
@@ -1470,6 +1541,14 @@ fn try_match_mock_route(
 inline fn calc_effective_timeout_ms(session_timeout: i64, req_timeout: i64) -> u32 {
     let raw = if req_timeout > 0 { req_timeout } else { session_timeout };
     return min(max(raw, 1), 600000) as u32;
+}
+
+inline fn calc_phase_timeout_ms(phase_ms: i64, session_timeout: i64, req_timeout: i64) -> u32 {
+    if phase_ms > 0 {
+        let raw = if req_timeout > 0 { min(phase_ms, req_timeout) } else { phase_ms };
+        return min(max(raw, 1), 600000) as u32;
+    }
+    return calc_effective_timeout_ms(session_timeout, req_timeout);
 }
 
 fn collect_ipv4_dns_candidates(
@@ -1591,6 +1670,41 @@ fn lookup_dns_https_h3_endpoint(
     return ep, true;
 }
 
+fn try_resolve_override_candidate(
+    session:        const client::Session&,
+    host_str:       const u8[:],
+    port_num:       u16,
+    out_candidates: net::DnsCandidate[..32]&,
+) -> bool, http::Error {
+    var ov_ip: u8[..64] = [];
+    guard lookup_resolve_override(session, host_str, port_num, ov_ip) else {
+        return false, http::Error { .. };
+    }
+    if session.ssrf_guard.enabled {
+        let blocked = if session.ssrf_guard.deny_local_network {
+            security::is_private_or_reserved_ip(ov_ip[..])
+        } else {
+            security::is_cloud_metadata_or_reserved_ip(ov_ip[..])
+        };
+        if blocked {
+            return true, http::make_error(
+                rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: resolve override to private IP blocked",
+            );
+        }
+    }
+    let is_v6 = ov_ip[..].contains_byte(':');
+    let fam_mismatch = (session.ip_family == net::IpFamily.Ipv4Only && is_v6) ||
+        (session.ip_family == net::IpFamily.Ipv6Only && !is_v6);
+    if fam_mismatch {
+        return true, http::make_error(
+            rfc::STATUS_BAD_GATEWAY, "transport", "IP family mismatch for resolve override",
+        );
+    }
+    let fam = if is_v6 { net::AddressFamily.IPv6 } else { net::AddressFamily.IPv4 };
+    let _ = out_candidates.try_push(net::new_dns_candidate(fam, ov_ip[..], port_num, net::L4Protocol.Tcp, 50));
+    return true, http::Error { .. };
+}
+
 fn resolve_and_validate_live_host<B>(
     session:        client::Session&,
     host_str:       const u8[:],
@@ -1603,28 +1717,41 @@ fn resolve_and_validate_live_host<B>(
     defer if !committed { out_candidates.clear(); out_ech_list.clear(); };
     out_candidates.clear();
     out_ech_list.clear();
+
+    let has_override, ov_err = try_resolve_override_candidate(session, host_str, port_num, out_candidates);
+    if has_override {
+        committed = http::ok(ov_err);
+        return ov_err;
+    }
+
     let now_ms = core::mul_sat_i64(now_sec, 1000);
     var task = net::new_dns_race_task(port_num);
 
-    let a_entry, a_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_A, now_sec);
-    if a_entry && a_stat != dns::CacheStatus.Expired {
-        guard collect_ipv4_dns_candidates(session.ssrf_guard, a_entry, port_num, task.ipv4_candidates) else {
-            return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
+    if session.ip_family != net::IpFamily.Ipv6Only {
+        let a_entry, a_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_A, now_sec);
+        if a_entry && a_stat != dns::CacheStatus.Expired {
+            guard collect_ipv4_dns_candidates(session.ssrf_guard, a_entry, port_num, task.ipv4_candidates) else {
+                return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
+            }
+            task.a_status = net::DnsQueryStatus.Success;
         }
-        task.a_status = net::DnsQueryStatus.Success;
     }
 
-    let aaaa_entry, aaaa_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_AAAA, now_sec);
-    if aaaa_entry && aaaa_stat != dns::CacheStatus.Expired {
-        guard collect_ipv6_dns_candidates(session.ssrf_guard, aaaa_entry, port_num, task.ipv6_candidates) else {
-            return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
+    if session.ip_family != net::IpFamily.Ipv4Only {
+        let aaaa_entry, aaaa_stat = session.dns_cache.lookup(host_str, rfc::DNS_QTYPE_AAAA, now_sec);
+        if aaaa_entry && aaaa_stat != dns::CacheStatus.Expired {
+            guard collect_ipv6_dns_candidates(session.ssrf_guard, aaaa_entry, port_num, task.ipv6_candidates) else {
+                return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: DNS rebinding to private IP blocked");
+            }
+            task.aaaa_status = net::DnsQueryStatus.Success;
         }
-        task.aaaa_status = net::DnsQueryStatus.Success;
     }
 
     guard resolve_https_svcb_record(session, host_str, port_num, now_sec, task, out_ech_list) else {
         return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: HTTPS SVCB hint to private IP blocked");
     }
+    if session.ip_family == net::IpFamily.Ipv6Only { task.ipv4_candidates.clear(); }
+    if session.ip_family == net::IpFamily.Ipv4Only { task.ipv6_candidates.clear(); }
 
     let _ = task.check_dns_resolution_delay_tick(core::add_sat_i64(now_ms, rfc::HE_RESOLUTION_DELAY_MS));
     let pref_fam, _ = net::lookup_preferred_family(session.af_cache, host_str, now_sec);
@@ -1632,8 +1759,13 @@ fn resolve_and_validate_live_host<B>(
         task.ipv6_candidates[..], task.ipv4_candidates[..], pref_fam, out_candidates,
     );
     if out_candidates.len == 0 {
+        let fb_fam = if session.ip_family == net::IpFamily.Ipv6Only || host_str.contains_byte(':') {
+            net::AddressFamily.IPv6
+        } else {
+            net::AddressFamily.IPv4
+        };
         let _ = out_candidates.try_push(
-            net::new_dns_candidate(net::AddressFamily.IPv4, host_str, port_num, net::L4Protocol.Tcp, 40),
+            net::new_dns_candidate(fb_fam, host_str, port_num, net::L4Protocol.Tcp, 40),
         );
     }
     committed = true;
@@ -1675,12 +1807,15 @@ fn establish_https_proxy_transport(
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
     if session.tls_backend != tls::TlsBackendKind.PureGoose {
         var bcfg = tls::TlsBackendConfig {
-            kind:                 session.tls_backend,
-            min_version:          session.tls_min_version,
-            is_server:            false,
-            insecure_skip_verify: effective_insecure_skip,
-            use_system_roots:     session.tls_use_system_roots,
-            trust_store:          session.trust_store,
+            kind:                   session.tls_backend,
+            min_version:            session.tls_min_version,
+            is_server:              false,
+            insecure_skip_verify:   effective_insecure_skip,
+            use_system_roots:       session.tls_use_system_roots,
+            trust_store:            session.trust_store,
+            enable_pq_hybrid:       session.tls_enable_pq_hybrid,
+            enable_session_tickets: session.tls_enable_session_tickets,
+            require_ocsp_stapling:  session.tls_require_ocsp_stapling,
             ..
         };
         let _ = bcfg.server_name.try_set(proxy_host);
@@ -1703,6 +1838,10 @@ fn establish_https_proxy_transport(
     tls_cfg.trust_store = session.trust_store;
     tls_cfg.insecure_skip_verify = effective_insecure_skip;
     tls_cfg.use_system_roots = session.tls_use_system_roots;
+    tls_cfg.enable_pq_hybrid = session.tls_enable_pq_hybrid;
+    tls_cfg.enable_session_tickets = session.tls_enable_session_tickets;
+    tls_cfg.require_ocsp_stapling = session.tls_require_ocsp_stapling;
+    tls_cfg.handshake_timeout_ms = eff_timeout;
     tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
     let slot_idx, ok_tls = tls::client_handshake(raw_sock, tls_cfg);
     guard ok_tls else {
@@ -1743,9 +1882,30 @@ fn dial_https_proxy_tunnel(
     return tun_fd, http::Error { .. };
 }
 
+fn dial_session_tcp(
+    session:    const client::Session&,
+    host:       const u8[:],
+    port:       u16,
+    timeout_ms: u32,
+) -> i64 {
+    let sock = net::tcp_connect_ex(host, port, timeout_ms, session.ip_family, session.local_bind_addr[..]);
+    guard sock > 0 else { return -1; }
+    let _ = net::tcp_set_nodelay(sock, session.tcp_nodelay);
+    if session.tcp_keepalive_idle_sec > 0 &&
+        session.tcp_keepalive_intvl_sec > 0 &&
+        session.tcp_keepalive_cnt > 0 {
+        let _ = net::tcp_set_keepalive(
+            sock,
+            session.tcp_keepalive_idle_sec,
+            session.tcp_keepalive_intvl_sec,
+            session.tcp_keepalive_cnt,
+        );
+    }
+    return sock;
+}
+
 fn dial_proxy_hop(
     session:     const client::Session&,
-    dialer:      net::TcpDialer&,
     proxy_url:   const u8[:],
     ps:          const net::ProxyServer&,
     host_str:    const u8[:],
@@ -1755,8 +1915,7 @@ fn dial_proxy_hop(
     now_sec:     i64,
 ) -> DialResult, http::Error {
     var res = DialResult { .. };
-    let target = core::DialTarget { host: ps.host[..], port: ps.port, timeout_ms: eff_timeout, .. };
-    let sock, _ = core::reactor_dial(dialer, target);
+    let sock = dial_session_tcp(session, ps.host[..], ps.port, eff_timeout);
     guard sock > 0 else {
         return res, http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed");
     }
@@ -1815,17 +1974,15 @@ fn dial_live_tcp_or_proxy(
     now_sec:     i64,
     now_ms:      i64,
 ) -> DialResult, http::Error {
-    var dialer = net::TcpDialer { default_timeout_ms: eff_timeout };
     if !proxy_chain.is_direct && proxy_chain.servers.len > 0 {
         return dial_proxy_hop(
-            session, dialer, proxy_url, proxy_chain.servers[0], host_str, port_num, candidates, eff_timeout, now_sec,
+            session, proxy_url, proxy_chain.servers[0], host_str, port_num, candidates, eff_timeout, now_sec,
         );
     }
     var mgr = net::new_attempt_manager();
     mgr.start_attempt_race(candidates, now_ms);
     for &cand in candidates {
-        let target = core::DialTarget { host: cand.ip[..], port: cand.port, timeout_ms: eff_timeout, .. };
-        let sock, _ = core::reactor_dial(dialer, target);
+        let sock = dial_session_tcp(session, cand.ip[..], cand.port, eff_timeout);
         if sock > 0 {
             if mgr.attempts.len > 0 {
                 let win_id = mgr.attempts[core::sub_sat_i64(mgr.attempts.len, 1)].attempt_id;
@@ -2068,7 +2225,7 @@ fn dispatch_pooled_h2_hop(
     conn.next_h2_stream_id += 2;
     http::reset_response(resp);
     let _ = resp.protocol.try_set("HTTP/2");
-    let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
+    let eff_timeout = calc_phase_timeout_ms(session.read_timeout_ms, session.timeout_ms, ctx.timeout_ms);
     let is_head = curr_method == "HEAD";
     guard client::recv_h2_response_loop(conn, stream_id, is_head, eff_timeout, resp) else {
         return false;
@@ -2086,25 +2243,44 @@ fn establish_backend_tls_connection(
     sock:                    i64,
     host_str:                const u8[:],
     effective_insecure_skip: bool,
-    eff_timeout:             u32,
+    tls_timeout_ms:          u32,
 ) -> i64, u8[..64], http::Error {
     var bcfg = tls::TlsBackendConfig {
-        kind:                 session.tls_backend,
-        min_version:          session.tls_min_version,
-        is_server:            false,
-        insecure_skip_verify: effective_insecure_skip,
-        use_system_roots:     session.tls_use_system_roots,
-        trust_store:          session.trust_store,
+        kind:                   session.tls_backend,
+        min_version:            session.tls_min_version,
+        is_server:              false,
+        insecure_skip_verify:   effective_insecure_skip,
+        use_system_roots:       session.tls_use_system_roots,
+        trust_store:            session.trust_store,
+        enable_pq_hybrid:       session.tls_enable_pq_hybrid,
+        enable_session_tickets: session.tls_enable_session_tickets,
+        require_ocsp_stapling:  session.tls_require_ocsp_stapling,
         ..
     };
     let _ = bcfg.server_name.try_set(host_str);
-    // RFC 7301 Section 3.1: ALPN wire protocol list (\x02h2\x08http/1.1)
-    let alpn_wire: u8[12] = [2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
-    let _ = bcfg.alpn_wire.try_set(alpn_wire[..]);
+    let alpn_csv = if session.tls_alpn.len > 0 { session.tls_alpn[..] } else { "h2,http/1.1" };
+    guard encode_alpn_csv_to_wire(alpn_csv, bcfg.alpn_wire) else {
+        return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "invalid TLS ALPN configuration");
+    }
     if session.tls_ca_file.len > 0 {
         let _ = bcfg.ca_file.try_set(session.tls_ca_file[..]);
     }
-    let ep_slot, neg_alpn, st = tls::endpoint_client_handshake_fd(sock, bcfg, eff_timeout);
+    if session.tls_client_cert_file.len > 0 || session.tls_client_key_file.len > 0 {
+        guard session.tls_client_cert_file.len > 0 && session.tls_client_key_file.len > 0 else {
+            return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "incomplete client mTLS configuration");
+        }
+        let _ = bcfg.cert_pem_file.try_set(session.tls_client_cert_file[..]);
+        let _ = bcfg.key_pem_file.try_set(session.tls_client_key_file[..]);
+    }
+    if session.tls_crl_file.len > 0 {
+        guard load_crl_der_file(session.tls_crl_file[..], bcfg.crl_der) else {
+            return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS CRL file load failed");
+        }
+    }
+    if session.tls_keylog_file.len > 0 {
+        let _ = bcfg.keylog_file.try_set(session.tls_keylog_file[..]);
+    }
+    let ep_slot, neg_alpn, st = tls::endpoint_client_handshake_fd(sock, bcfg, tls_timeout_ms);
     if st == tls::TlsBackendStatus.Ok && ep_slot >= 0 {
         return ep_slot, neg_alpn, http::Error { .. };
     }
@@ -2116,19 +2292,66 @@ fn establish_backend_tls_connection(
     return -1, neg_alpn, http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", msg);
 }
 
+fn prepare_pure_tls_client_config(
+    session:                 const client::Session&,
+    host_str:                const u8[:],
+    ech_list:                const u8[:],
+    effective_insecure_skip: bool,
+    tls_timeout_ms:          u32,
+    now_sec:                 i64,
+    tls_cfg:                 tls::ClientHandshakeConfig&,
+) -> http::Error {
+    let _ = tls_cfg.server_name.try_set(host_str);
+    let alpn_csv = if session.tls_alpn.len > 0 { session.tls_alpn[..] } else { "h2,http/1.1" };
+    let _ = tls_cfg.alpn.try_set(alpn_csv);
+    tls_cfg.trust_store = session.trust_store;
+    if !effective_insecure_skip && tls_cfg.trust_store.anchors.len == 0 && session.tls_ca_file.len > 0 {
+        let _, ok_ca = tls::load_trust_anchors_pem_file(tls_cfg.trust_store, session.tls_ca_file[..]);
+        guard ok_ca else {
+            return http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS CA bundle load failed");
+        }
+    }
+    tls_cfg.insecure_skip_verify = effective_insecure_skip;
+    tls_cfg.use_system_roots = session.tls_use_system_roots;
+    tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
+    tls_cfg.enable_pq_hybrid = session.tls_enable_pq_hybrid;
+    tls_cfg.enable_session_tickets = session.tls_enable_session_tickets;
+    tls_cfg.require_ocsp_stapling = session.tls_require_ocsp_stapling;
+    tls_cfg.handshake_timeout_ms = tls_timeout_ms;
+    if session.tls_keylog_file.len > 0 {
+        let _ = tls_cfg.keylog_file.try_set(session.tls_keylog_file[..]);
+    }
+    if ech_list.len > 0 {
+        let _ = tls_cfg.ech_config_list.try_set(ech_list);
+    }
+    if session.tls_client_cert_file.len > 0 || session.tls_client_key_file.len > 0 {
+        guard load_client_mtls_pem_files(
+            session.tls_client_cert_file[..], session.tls_client_key_file[..], tls_cfg,
+        ) else {
+            return http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "client mTLS credential load failed");
+        }
+    }
+    if session.tls_crl_file.len > 0 {
+        guard load_crl_der_file(session.tls_crl_file[..], tls_cfg.crl_der) else {
+            return http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS CRL file load failed");
+        }
+    }
+    return http::Error { .. };
+}
+
 fn establish_https_transport(
-    session:     const client::Session&,
-    sock:        i64,
-    host_str:    const u8[:],
-    ech_list:    const u8[:],
-    eff_timeout: u32,
-    now_sec:     i64,
+    session:        const client::Session&,
+    sock:           i64,
+    host_str:       const u8[:],
+    ech_list:       const u8[:],
+    tls_timeout_ms: u32,
+    now_sec:        i64,
 ) -> net::Transport, net::NegotiatedProtocol, http::Error {
     let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(host_str, now_sec);
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
     if session.tls_backend != tls::TlsBackendKind.PureGoose {
         let ep_slot, neg_alpn, tls_err = establish_backend_tls_connection(
-            session, sock, host_str, effective_insecure_skip, eff_timeout,
+            session, sock, host_str, effective_insecure_skip, tls_timeout_ms,
         );
         guard http::ok(tls_err) else {
             return net::Transport.Disconnected, net::NegotiatedProtocol.Http11, tls_err;
@@ -2142,14 +2365,12 @@ fn establish_https_transport(
     }
 
     var tls_cfg = tls::ClientHandshakeConfig { .. };
-    let _ = tls_cfg.server_name.try_set(host_str);
-    let _ = tls_cfg.alpn.try_set("h2,http/1.1");
-    tls_cfg.trust_store = session.trust_store;
-    tls_cfg.insecure_skip_verify = effective_insecure_skip;
-    tls_cfg.use_system_roots = session.tls_use_system_roots;
-    tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
-    if ech_list.len > 0 {
-        let _ = tls_cfg.ech_config_list.try_set(ech_list);
+    defer core::secure_zeroize_32(tls_cfg.client_priv_seed);
+    let prep_err = prepare_pure_tls_client_config(
+        session, host_str, ech_list, effective_insecure_skip, tls_timeout_ms, now_sec, tls_cfg,
+    );
+    guard http::ok(prep_err) else {
+        return net::Transport.Disconnected, net::NegotiatedProtocol.Http11, prep_err;
     }
 
     let slot_idx, ok_tls = tls::client_handshake(sock, tls_cfg);
@@ -2157,6 +2378,9 @@ fn establish_https_transport(
         return net::Transport.Disconnected,
             net::NegotiatedProtocol.Http11,
             http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS 1.3 handshake failed");
+    }
+    if session.enable_ktls_offload {
+        let _, _ = tls::try_enable_ktls(slot_idx, sock);
     }
     let neg_proto = if tls::session_alpn(slot_idx) == "h2" {
         net::NegotiatedProtocol.Http2
@@ -2170,21 +2394,23 @@ fn establish_https_transport(
 }
 
 fn establish_pooled_connection(
-    session:        client::Session&,
-    pool_key:       const net::PoolKey&,
-    proxy_chain:    const net::ProxyChain&,
-    host_str:       const u8[:],
-    port_num:       u16,
-    is_https:       bool,
-    dns_candidates: const net::DnsCandidate[:],
-    ech_list:       const u8[:],
-    eff_timeout:    u32,
-    now_sec:        i64,
-    now_ms:         i64,
-    now_ns:         i64,
+    session:            client::Session&,
+    pool_key:           const net::PoolKey&,
+    proxy_url:          const u8[:],
+    proxy_chain:        const net::ProxyChain&,
+    host_str:           const u8[:],
+    port_num:           u16,
+    is_https:           bool,
+    dns_candidates:     const net::DnsCandidate[:],
+    ech_list:           const u8[:],
+    connect_timeout_ms: u32,
+    tls_timeout_ms:     u32,
+    now_sec:            i64,
+    now_ms:             i64,
+    now_ns:             i64,
 ) -> i32, http::Error {
     let dial_res, dial_err = dial_live_tcp_or_proxy(
-        session, session.proxy_url[..], proxy_chain, host_str, port_num, dns_candidates, eff_timeout, now_sec, now_ms,
+        session, proxy_url, proxy_chain, host_str, port_num, dns_candidates, connect_timeout_ms, now_sec, now_ms,
     );
     guard http::ok(dial_err) else { return -1, dial_err; }
     let sock = dial_res.sock;
@@ -2201,7 +2427,7 @@ fn establish_pooled_connection(
     var neg_proto = net::NegotiatedProtocol.Http11;
     if is_https {
         let https_t, https_proto, tls_err = establish_https_transport(
-            session, sock, host_str, ech_list, eff_timeout, now_sec,
+            session, sock, host_str, ech_list, tls_timeout_ms, now_sec,
         );
         guard http::ok(tls_err) else {
             net::fd_close(sock);
@@ -2238,12 +2464,21 @@ fn execute_live_network_hop(
     let now_sec = session.virtual_clock_us / 1000000;
     let now_ms = session.virtual_clock_us / 1000;
     let host_str = current_url.hostname();
-    if session.ssrf_guard.enabled && security::is_private_or_reserved_ip(host_str) {
-        return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: private IP blocked");
+    sync_session_pool_knobs(session);
+    if session.ssrf_guard.enabled {
+        let blocked = if session.ssrf_guard.deny_local_network {
+            security::is_private_or_reserved_ip(host_str)
+        } else {
+            security::is_cloud_metadata_or_reserved_ip(host_str)
+        };
+        if blocked {
+            return http::make_error(rfc::STATUS_FORBIDDEN, "ssrf_guard", "SSRF: private IP blocked");
+        }
     }
 
     let port_num = current_url.effective_port() as u16;
-    let proxy_chain, ok_proxy = client::resolve_hop_proxy_chain(session);
+    var eff_proxy_url: u8[..256] = [];
+    let proxy_chain, ok_proxy = resolve_effective_hop_proxy(session, host_str, is_https, eff_proxy_url);
     guard ok_proxy else {
         return http::make_error(rfc::STATUS_BAD_REQUEST, "proxy", "invalid proxy configuration");
     }
@@ -2259,7 +2494,13 @@ fn execute_live_network_hop(
         net::sanitize_tunnel_headers_for_origin(ctx.headers);
     }
     if has_h3 && is_https && proxy_chain.is_direct && session.enable_protocol_racing {
-        if client::execute_live_h3_hop(session, ctx, current_url, origin_buf, h3_ep, now_sec, resp) {
+        let saved_t = ctx.timeout_ms;
+        if session.read_timeout_ms > 0 {
+            ctx.timeout_ms = calc_phase_timeout_ms(session.read_timeout_ms, session.timeout_ms, saved_t);
+        }
+        let ok_h3 = client::execute_live_h3_hop(session, ctx, current_url, origin_buf, h3_ep, now_sec, resp);
+        ctx.timeout_ms = saved_t;
+        if ok_h3 {
             session.altsvc.record_success(origin_buf);
             return http::Error { .. };
         }
@@ -2288,10 +2529,11 @@ fn execute_live_network_hop(
     let first_ip = if dns_candidates.len > 0 { dns_candidates[0].ip[..] } else { "" };
     var conn_id, has_pooled = session.pool.acquire_pooled_connection(pool_key, first_ip, now_ns);
     if !has_pooled {
-        let eff_timeout = calc_effective_timeout_ms(session.timeout_ms, ctx.timeout_ms);
+        let conn_t = calc_phase_timeout_ms(session.connect_timeout_ms, session.timeout_ms, ctx.timeout_ms);
+        let tls_t = calc_phase_timeout_ms(session.tls_handshake_timeout_ms, session.timeout_ms, ctx.timeout_ms);
         let new_id, conn_err = establish_pooled_connection(
-            session, pool_key, proxy_chain, host_str, port_num, is_https,
-            dns_candidates[..], ech_list[..], eff_timeout, now_sec, now_ms, now_ns,
+            session, pool_key, eff_proxy_url[..], proxy_chain, host_str, port_num, is_https,
+            dns_candidates[..], ech_list[..], conn_t, tls_t, now_sec, now_ms, now_ns,
         );
         guard http::ok(conn_err) else { return conn_err; }
         conn_id = new_id;
@@ -2310,10 +2552,15 @@ fn execute_live_network_hop(
         return http::Error { .. };
     }
 
+    let saved_h1_t = ctx.timeout_ms;
+    if session.read_timeout_ms > 0 {
+        ctx.timeout_ms = calc_phase_timeout_ms(session.read_timeout_ms, session.timeout_ms, saved_h1_t);
+    }
     let ok_hop = client::dispatch_pooled_h1_hop(
         session, conn_id, ctx.current_method[..], ctx, current_url, is_https,
         origin_buf, curr_path, now_sec, now_ns, resp,
     );
+    ctx.timeout_ms = saved_h1_t;
     guard ok_hop else {
         return http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP/1.1 exchange failed");
     }
@@ -2733,4 +2980,357 @@ fn execute_masque_connect(
 
     tunnel.state = net::MasqueTunnelState.Established;
     return tunnel, resp, http::Error { .. };
+}
+
+// ---- 6. Control Knob, TLS Credential Loader, Resolve & Proxy Helpers -------
+
+fn sync_session_pool_knobs(session: client::Session&) {
+    let idle_ns: i64 = if session.pool_idle_timeout_ms > 0 {
+        core::mul_sat_i64(session.pool_idle_timeout_ms, 1000000)
+    } else {
+        -1
+    };
+    net::configure_stream_pool(
+        session.pool,
+        session.max_conns_per_host,
+        session.disable_keepalive,
+        idle_ns,
+    );
+}
+
+fn apply_client_config_knobs(c: client::Client&, cfg: const client::Config&) {
+    let eff_mode = if cfg.redirect_mode != client::RedirectMode.Follow {
+        cfg.redirect_mode
+    } else if !cfg.follow_redirects {
+        client::RedirectMode.Manual
+    } else {
+        client::RedirectMode.Follow
+    };
+    c.redirect_mode = eff_mode;
+    c.follow_redirects = (eff_mode == client::RedirectMode.Follow);
+    c.max_redirects = cfg.max_redirects;
+    c.https_only = cfg.https_only;
+    c.ssrf_guard.https_only = cfg.https_only;
+    c.enable_referer = cfg.enable_referer;
+    c.default_referrer_policy = cfg.default_referrer_policy;
+    c.enable_hsts = cfg.enable_hsts;
+    c.enable_doh = cfg.enable_doh;
+    c.enable_ech = cfg.enable_ech;
+    c.http2_prior_knowledge = cfg.http2_prior_knowledge;
+    c.auto_decompress = cfg.auto_decompress;
+    c.max_response_body_bytes = max(cfg.max_response_body_bytes, 0);
+    c.verify_content_digest = cfg.verify_content_digest;
+    c.enable_early_data = cfg.enable_early_data;
+    c.enable_har_telemetry = cfg.enable_har_telemetry;
+    c.allow_loopback_ssrf = cfg.allow_loopback_ssrf;
+    if cfg.allow_loopback_ssrf {
+        c.ssrf_guard.deny_local_network = false;
+    }
+    c.max_retries = cfg.max_retries;
+    if cfg.max_retries > 0 {
+        let _ = client::add_retry(c.pipeline, cfg.max_retries, true);
+    }
+    c.connect_timeout_ms = max(cfg.connect_timeout_ms, 0);
+    c.tls_handshake_timeout_ms = max(cfg.tls_handshake_timeout_ms, 0);
+    c.read_timeout_ms = max(cfg.read_timeout_ms, 0);
+    c.pool_idle_timeout_ms = max(cfg.pool_idle_timeout_ms, 0);
+    let _ = c.tls_client_cert_file.try_set(cfg.tls_client_cert_file);
+    let _ = c.tls_client_key_file.try_set(cfg.tls_client_key_file);
+    c.tls_enable_pq_hybrid = cfg.tls_enable_pq_hybrid;
+    let _ = c.tls_alpn.try_set(cfg.tls_alpn);
+    c.tls_enable_session_tickets = cfg.tls_enable_session_tickets;
+    c.tls_require_ocsp_stapling = cfg.tls_require_ocsp_stapling;
+    let _ = c.tls_crl_file.try_set(cfg.tls_crl_file);
+    let _ = c.tls_keylog_file.try_set(cfg.tls_keylog_file);
+    c.enable_ktls_offload = cfg.enable_ktls_offload;
+    c.ip_family = cfg.ip_family;
+    let _ = c.local_bind_addr.try_set(cfg.local_bind_addr);
+    c.tcp_nodelay = cfg.tcp_nodelay;
+    c.tcp_keepalive_idle_sec = cfg.tcp_keepalive_idle_sec;
+    c.tcp_keepalive_intvl_sec = cfg.tcp_keepalive_intvl_sec;
+    c.tcp_keepalive_cnt = cfg.tcp_keepalive_cnt;
+    c.disable_keepalive = cfg.disable_keepalive;
+    c.max_conns_per_host = max(cfg.max_conns_per_host, 0);
+    c.use_env_proxy = cfg.use_env_proxy;
+    sync_session_pool_knobs(c);
+}
+
+// RFC 7301 Section 3.1: The Application-Layer Protocol Negotiation Extension -
+// Encodes a comma-separated ALPN protocol list into length-prefixed wire bytes.
+//
+// Example:
+//   alpn_csv = "h2,http/1.1"
+//   returns: ok = true, out_wire = [2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1']
+fn encode_alpn_csv_to_wire(alpn_csv: const u8[:], out_wire: u8[..64]&) -> bool {
+    var wire_buf: u8[..64] = [];
+    var tokenizer = core::make_byte_tokenizer(alpn_csv, ',');
+    while true {
+        let tok, has_tok = core::token_next(tokenizer);
+        guard has_tok else { break; }
+        let proto = tok.trim_lws();
+        guard proto.len > 0 else { continue; }
+        guard proto.len <= 255 else { return false; }
+        guard wire_buf.try_push(proto.len as u8) && wire_buf.try_append(proto) else {
+            return false;
+        }
+    }
+    guard wire_buf.len > 0 else { return false; }
+    return out_wire.try_set(wire_buf[..]);
+}
+
+// Parses leaf and up to 3 intermediate `"CERTIFICATE"` PEM blocks for client mTLS.
+//
+// Example:
+//   raw_pem = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+//   returns: ok = true, leaf_der populated with leaf X.509 DER
+fn parse_client_pem_cert_chain(
+    raw_pem:     const u8[:],
+    leaf_der:    u8[..4096]&,
+    chain_ders:  u8[..4096][..3]&,
+    parsed_leaf: tls::ParsedCert&,
+) -> bool {
+    var idx:       i64             = 0;
+    var label:     u8[..64]        = [];
+    var der:       u8[..4096]      = [];
+    var tmp_leaf:  u8[..4096]      = [];
+    var tmp_chain: u8[..4096][..3] = [];
+    var tmp_parsed = tls::ParsedCert { .. };
+    guard tls::pem_next_block(raw_pem, idx, label, der) && label[..] == "CERTIFICATE" else {
+        return false;
+    }
+    guard tls::parse_x509_certificate(der[..], tmp_parsed) && tmp_leaf.try_set(der[..]) else {
+        return false;
+    }
+    while idx < raw_pem.len {
+        if core::find(raw_pem[idx..], "-----BEGIN ") < 0 { break; }
+        guard tls::pem_next_block(raw_pem, idx, label, der) else { return false; }
+        guard label[..] == "CERTIFICATE" else { continue; }
+        var chain_parsed = tls::ParsedCert { .. };
+        guard tls::parse_x509_certificate(der[..], chain_parsed) else { return false; }
+        guard tmp_chain.try_push(copy(der)) else { return false; }
+    }
+    guard leaf_der.try_set(tmp_leaf[..]) else { return false; }
+    chain_ders = copy(tmp_chain);
+    parsed_leaf = tmp_parsed;
+    return true;
+}
+
+fn load_client_mtls_pem_files(
+    cert_file: const u8[:],
+    key_file:  const u8[:],
+    cfg:       tls::ClientHandshakeConfig&,
+) -> bool {
+    guard cert_file.len > 0 && key_file.len > 0 else { return false; }
+    var raw_cert: u8[>..] = [];
+    var raw_key:  u8[>..] = [];
+    defer core::secure_zeroize_slice(raw_cert[..]);
+    defer core::secure_zeroize_slice(raw_key[..]);
+    guard read_file(cert_file, raw_cert) && raw_cert.len > 0 && raw_cert.len <= 131072 else {
+        return false;
+    }
+    guard read_file(key_file, raw_key) && raw_key.len > 0 && raw_key.len <= 65536 else {
+        return false;
+    }
+    var leaf_der:   u8[..4096]      = [];
+    var chain_ders: u8[..4096][..3] = [];
+    var parsed_leaf = tls::ParsedCert { .. };
+    guard parse_client_pem_cert_chain(raw_cert[..], leaf_der, chain_ders, parsed_leaf) else {
+        return false;
+    }
+    var priv_seed: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(priv_seed);
+    let key_kind, ok_key = tls::parse_private_key_pem(raw_key[..], priv_seed);
+    guard ok_key else { return false; }
+    let spki_oid = tls::span_slice(leaf_der[..], parsed_leaf.spki_alg_oid);
+    let valid_alg = (key_kind == tls::PrivateKeyKind.Ed25519 && spki_oid == rfc::OID_ED25519[..]) ||
+        (key_kind == tls::PrivateKeyKind.EcdsaP256 && spki_oid == rfc::OID_SECP256R1[..]);
+    guard valid_alg else { return false; }
+    guard cfg.client_cert_der.try_set(leaf_der[..]) else { return false; }
+    cfg.client_chain_der = copy(chain_ders);
+    cfg.client_priv_seed = priv_seed;
+    return true;
+}
+
+fn load_crl_der_file(path: const u8[:], out_crl_der: u8[..4096]&) -> bool {
+    guard path.len > 0 && path.len <= 4096 else { return false; }
+    var raw: u8[>..] = [];
+    defer core::secure_zeroize_slice(raw[..]);
+    guard read_file(path, raw) && raw.len > 0 && raw.len <= 16384 else { return false; }
+    var der_buf: u8[..4096] = [];
+    if core::find(raw[..], "-----BEGIN ") >= 0 {
+        var idx:   i64      = 0;
+        var label: u8[..64] = [];
+        guard tls::pem_next_block(raw[..], idx, label, der_buf) && label[..] == "X509 CRL" else {
+            return false;
+        }
+    } else {
+        guard der_buf.try_set(raw[..]) else { return false; }
+    }
+    var parsed = tls::ParsedCrl { .. };
+    guard tls::parse_x509_crl(der_buf[..], parsed) else { return false; }
+    return out_crl_der.try_set(der_buf[..]);
+}
+
+fn lookup_resolve_override(
+    session:  const client::Session&,
+    host_str: const u8[:],
+    port_num: u16,
+    out_ip:   u8[..64]&,
+) -> bool {
+    let clean_host = host_str.trim_lws().trim_end_byte('.');
+    guard clean_host.len > 0 else { return false; }
+    var wild_idx: i64 = -1;
+    for &ov, i in session.resolve_overrides {
+        guard ov.host[..].eq_ascii_fold(clean_host) else { continue; }
+        if ov.port == port_num {
+            return out_ip.try_set(ov.ip[..]);
+        }
+        if ov.port == 0 && wild_idx < 0 {
+            wild_idx = i;
+        }
+    }
+    if wild_idx >= 0 {
+        return out_ip.try_set(session.resolve_overrides[wild_idx].ip[..]);
+    }
+    return false;
+}
+
+// Strips ASCII whitespace, IPv6 brackets, optional `:port`, and trailing `.` from a host token.
+//
+// Example:
+//   raw = "[::1]:8443" -> "::1"
+//   raw = "Api.Example.COM.:443" -> "Api.Example.COM"
+fn normalize_no_proxy_host(raw: const u8[:]) -> const u8[:] {
+    var s = raw.trim_ascii_space();
+    guard s.len > 0 else { return ""; }
+    if s[0] == '[' {
+        let rb = s.index_of_byte(']');
+        if rb > 1 {
+            s = s[1..rb];
+        }
+    } else {
+        let c1 = s.index_of_byte(':');
+        if c1 > 0 && c1 == s.last_index_of_byte(':') {
+            s = s[..c1];
+        }
+    }
+    return s.trim_end_byte('.');
+}
+
+fn match_no_proxy_domain_suffix(pat: const u8[:], norm_host: const u8[:]) -> bool {
+    let dot_sfx = if core::starts_with(pat, "*.") { pat[1..] } else { pat };
+    let clean_sfx = dot_sfx.trim_end_byte('.');
+    guard clean_sfx.len > 1 else { return false; }
+    return norm_host.ends_with_fold(clean_sfx) || norm_host.eq_ascii_fold(clean_sfx[1..]);
+}
+
+fn match_no_proxy_pattern(pattern: const u8[:], norm_host: const u8[:]) -> bool {
+    let pat = pattern.trim_ascii_space();
+    guard pat.len > 0 && norm_host.len > 0 else { return false; }
+    if pat == "*" { return true; }
+    if pat.eq_ascii_fold("localhost") { return security::is_localhost_name(norm_host); }
+    if pat.contains_byte('/') {
+        let cidr, ok_cidr = core::parse_cidr(pat);
+        let hip, ok_hip = core::parse_ip_addr(norm_host);
+        return ok_cidr && ok_hip && core::cidr_contains_ip(cidr, hip);
+    }
+    if core::starts_with(pat, ".") || core::starts_with(pat, "*.") {
+        return match_no_proxy_domain_suffix(pat, norm_host);
+    }
+    let norm_pat = normalize_no_proxy_host(pat);
+    guard norm_pat.len > 0 else { return false; }
+    let pip, ok_pip = core::parse_ip_addr(norm_pat);
+    if ok_pip {
+        let hip, ok_hip = core::parse_ip_addr(norm_host);
+        return ok_hip && core::ip_addr_equals(pip, hip);
+    }
+    return norm_host.eq_ascii_fold(norm_pat);
+}
+
+fn matches_env_no_proxy(norm_host: const u8[:]) -> bool {
+    var raw: u8[>..] = [];
+    if !env("NO_PROXY", raw) || raw.len == 0 {
+        raw.clear();
+        guard env("no_proxy", raw) && raw.len > 0 else { return false; }
+    }
+    var tokenizer = core::make_byte_tokenizer(raw[..], ',');
+    while true {
+        let tok, has_tok = core::token_next(tokenizer);
+        guard has_tok else { break; }
+        if match_no_proxy_pattern(tok, norm_host) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn read_first_non_empty_env(names: const u8[:][:], out: u8[..256]&) -> bool {
+    var raw: u8[>..] = [];
+    for name in names {
+        raw.clear();
+        guard env(name, raw) else { continue; }
+        let trimmed = raw[..].trim_ascii_space();
+        guard trimmed.len > 0 else { continue; }
+        return out.try_set(trimmed);
+    }
+    return false;
+}
+
+fn resolve_env_proxy_url(is_https: bool, out_url: u8[..256]&) -> bool {
+    let https_vars: const u8[:][4] = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
+    let http_vars:  const u8[:][4] = ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
+    if is_https {
+        return read_first_non_empty_env(https_vars[..], out_url);
+    }
+    return read_first_non_empty_env(http_vars[..], out_url);
+}
+
+fn build_proxy_chain_from_url(proxy_url: const u8[:]) -> net::ProxyChain, bool {
+    guard proxy_url.len > 0 else { return net::new_direct_proxy_chain(), true; }
+    let p_url = core::new_url(proxy_url);
+    guard p_url.valid && p_url.hostname().len > 0 else { return net::new_direct_proxy_chain(), false; }
+    let sc = p_url.scheme();
+    var p_scheme = net::ProxyScheme.Http;
+    if sc == "https" {
+        p_scheme = net::ProxyScheme.Https;
+    } else if sc == "socks5h" {
+        p_scheme = net::ProxyScheme.Socks5h;
+    } else if sc == "socks5" {
+        p_scheme = net::ProxyScheme.Socks5;
+    } else if sc != "http" {
+        return net::new_direct_proxy_chain(), false;
+    }
+    let raw_port = p_url.effective_port();
+    let p_port: u16 = if raw_port > 0 {
+        raw_port as u16
+    } else if p_scheme == net::ProxyScheme.Socks5 || p_scheme == net::ProxyScheme.Socks5h {
+        1080
+    } else if p_scheme == net::ProxyScheme.Https {
+        443
+    } else {
+        80
+    };
+    let ps = net::new_proxy_server(p_scheme, p_url.hostname(), p_port);
+    guard !ps.overflowed else { return net::new_direct_proxy_chain(), false; }
+    return net::new_single_proxy_chain(ps), true;
+}
+
+fn resolve_effective_hop_proxy(
+    session:       const client::Session&,
+    host_str:      const u8[:],
+    is_https:      bool,
+    out_proxy_url: u8[..256]&,
+) -> net::ProxyChain, bool {
+    out_proxy_url.clear();
+    if client::is_no_proxy_host(session, host_str) {
+        return net::new_direct_proxy_chain(), true;
+    }
+    if session.proxy_url.len > 0 {
+        let _ = out_proxy_url.try_set(session.proxy_url[..]);
+        return client::resolve_hop_proxy_chain(session);
+    }
+    if session.use_env_proxy && resolve_env_proxy_url(is_https, out_proxy_url) {
+        return build_proxy_chain_from_url(out_proxy_url[..]);
+    }
+    return net::new_direct_proxy_chain(), true;
 }

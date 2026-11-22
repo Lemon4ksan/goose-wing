@@ -38,6 +38,13 @@ extern fn native_tcp_getsockname_port(sock_fd: i64) -> u16 = "wing_tcp_getsockna
 extern fn native_tcp_get_peer_ip(sock_fd: i64, out_ip: u8[:]) -> i32 = "wing_tcp_get_peer_ip";
 extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tcp_accept";
 extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
+extern fn native_tcp_connect_ex(
+    host:            const u8[:],
+    port:            u16,
+    timeout_ms:      u32,
+    ip_family:       i32,
+    local_bind_addr: const u8[:],
+) -> i64 = "wing_tcp_connect_ex";
 extern fn native_tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 = "wing_tcp_connect_begin";
 extern fn native_tcp_connect_finish(sock_fd: i64) -> i32 = "wing_tcp_connect_finish";
 extern fn native_tcp_connect_poll(sock_fd: i64) -> i32 = "wing_tcp_connect_poll";
@@ -477,6 +484,14 @@ fn recv_socks5_connect_reply_wire(
 }
 
 // ---- TCP & Async BackPressure Helpers --------------------------------------
+
+inline fn ip_family_to_native_i32(fam: net::IpFamily) -> i32 {
+    return match fam {
+        Auto => 0,
+        Ipv4Only => 1,
+        Ipv6Only => 2,
+    };
+}
 
 fn tcp_connect_unix_begin(path: const u8[:], out_state: i32&) -> i64 {
     guard path.len > 0 && path.len < 108 else {
@@ -1276,6 +1291,58 @@ fn evict_oldest_idle_for_proxy(pool: net::StreamPool&, proxy_chain: const net::P
     return true;
 }
 
+fn count_host_sockets(pool: const net::StreamPool&, host: const u8[:]) -> i64, i64 {
+    var active: i64 = 0;
+    var idle:   i64 = 0;
+    for &c in pool.conns {
+        if !c.closed && c.key.origin_endpoint.host[..].eq_ascii_fold(host) {
+            if c.active_allocations > 0 {
+                active = core::add_sat_i64(active, 1);
+            } else {
+                idle = core::add_sat_i64(idle, 1);
+            }
+        }
+    }
+    return active, idle;
+}
+
+fn evict_oldest_idle_for_host(pool: net::StreamPool&, host: const u8[:]) -> bool {
+    var oldest_idx = -1;
+    var oldest_idle_ns: i64 = 0;
+
+    for &c, idx in pool.conns {
+        if !c.closed && c.active_allocations == 0 && c.key.origin_endpoint.host[..].eq_ascii_fold(host) {
+            if oldest_idx == -1 || c.idle_at_ns < oldest_idle_ns {
+                oldest_idx = idx as i32;
+                oldest_idle_ns = c.idle_at_ns;
+            }
+        }
+    }
+
+    guard oldest_idx >= 0 else { return false; }
+    let victim .= pool.conns[oldest_idx];
+    group_record_closed(pool, victim.key, false);
+    victim.transport.close();
+    net::release_hpack_slot(victim);
+    victim.rx_buf.clear();
+    victim.closed = true;
+    victim.no_new_exchanges = true;
+    return true;
+}
+
+fn enforce_host_socket_quota(pool: net::StreamPool&, key: const net::PoolKey&) -> bool {
+    guard pool.max_conns_per_host > 0 else { return true; }
+    let cap = min(pool.max_conns_per_host, 64);
+    let host = key.origin_endpoint.host[..];
+    let h_active, h_idle = count_host_sockets(pool, host);
+    let total_host = core::add_sat_i64(h_active, h_idle);
+    guard total_host >= cap else { return true; }
+    if h_idle > 0 {
+        let _ = evict_oldest_idle_for_host(pool, host);
+    }
+    return h_active < cap;
+}
+
 fn enforce_group_socket_quota(pool: net::StreamPool&, key: const net::PoolKey&) -> bool {
     let grp_idx = pool.find_group_index(key);
     guard grp_idx >= 0 && pool.max_sockets_per_group > 0 else { return true; }
@@ -1384,7 +1451,9 @@ fn try_handoff_to_group_waiter(
     c:          net::PooledConnection&,
     out_waiter: net::WantConn&,
 ) -> bool {
-    guard !c.no_new_exchanges && !c.remote_rst && !c.source_exhausted else { return false; }
+    guard !pool.disable_keepalive && !c.no_new_exchanges && !c.remote_rst && !c.source_exhausted else {
+        return false;
+    }
     let grp_idx = pool.find_group_index(c.key);
     guard grp_idx >= 0 && !pool.groups[grp_idx].wait_queue.is_queue_empty() else { return false; }
     let w_item, ok_w = pool.groups[grp_idx].wait_queue.pop_want();
@@ -1398,7 +1467,7 @@ fn try_handoff_to_group_waiter(
 }
 
 fn finalize_idle_or_draining_conn(pool: net::StreamPool&, c: net::PooledConnection&, now_ns: i64) {
-    if c.no_new_exchanges || c.remote_rst || c.source_exhausted {
+    if pool.disable_keepalive || c.no_new_exchanges || c.remote_rst || c.source_exhausted {
         group_record_closed(pool, c.key, true);
         c.transport.close();
         net::release_hpack_slot(c);
