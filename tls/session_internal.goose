@@ -94,6 +94,7 @@ fn wipe_and_reset_tls_cipher_slot(slot: tls::CipherSlot&) {
     slot.tx_seq = 0;
     slot.peer_closed = false;
     slot.resumed = false;
+    slot.enable_session_tickets = true;
     slot.negotiated_alpn.clear();
     slot.server_name.clear();
     slot.san_hosts.clear();
@@ -478,13 +479,16 @@ fn verify_ocsp_against_trust_store(
 }
 
 fn verify_stapled_ocsp_for_chain(
-    leaf_ocsp:    const u8[:],
-    chain_parsed: const tls::ParsedCert[..8]&,
-    chain_slices: const (const u8[:])[..8]&,
-    eff_clock:    i64,
-    trust_store:  const tls::TrustAnchorStore&,
+    leaf_ocsp:             const u8[:],
+    chain_parsed:          const tls::ParsedCert[..8]&,
+    chain_slices:          const (const u8[:])[..8]&,
+    eff_clock:             i64,
+    trust_store:           const tls::TrustAnchorStore&,
+    require_ocsp_stapling: bool = false,
 ) -> bool {
-    guard leaf_ocsp.len > 0 else { return !chain_parsed[0].has_must_staple; }
+    guard leaf_ocsp.len > 0 else {
+        return !require_ocsp_stapling && !chain_parsed[0].has_must_staple;
+    }
     if chain_parsed.len >= 2 {
         return tls::validate_ocsp_stapling(
             leaf_ocsp, chain_parsed[0], chain_slices[0], eff_clock, chain_slices[1],
@@ -988,4 +992,85 @@ fn build_compressed_cert_payload(
         compressed_certificate_message: compressed_data,
     };
     return tls_internal::encode_compressed_certificate(comp_msg, out_payload);
+}
+
+// Extracts the 32-byte ClientHello.random field from a framed ClientHello handshake message (RFC 8446 Section 4.1.2).
+//
+// Example:
+//   ch_msg = [0x01, 0x00, 0x00, 0x22, 0x03, 0x03, ...32 random bytes...]
+//   returns: true, out_random = [32 random bytes]
+fn extract_ch_client_random(ch_msg: const u8[:], out_random: u8[32]&) -> bool {
+    core::secure_zeroize_32(out_random);
+    guard ch_msg.len >= 38 && ch_msg[0] == rfc::TLS_HS_CLIENT_HELLO else { return false; }
+    core::ct_copy_bytes(out_random[..], ch_msg[6..38]);
+    return true;
+}
+
+// Formats one NSS Key Log Format line (`<LABEL> <client_random_hex> <secret_hex>\n`) into `out`.
+fn append_keylog_secret_line(
+    out:           u8[..1024]&,
+    label:         const u8[:],
+    client_random: const u8[32]&,
+    secret:        const u8[:],
+) -> bool {
+    let saved = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved); };
+    guard label.len > 0 && (secret.len == 32 || secret.len == 48) else { return false; }
+    let hex_secret_len = core::add_sat_i64(secret.len, secret.len);
+    let line_len = core::add_sat_i64(core::add_sat_i64(label.len, 67), hex_secret_len);
+    guard core::sub_sat_i64(out.cap, out.len) >= line_len else { return false; }
+    guard out.try_append(label) && out.try_push(' ') else { return false; }
+    for b in client_random {
+        core::format_u8_hex(b, out, false);
+    }
+    guard out.try_push(' ') else { return false; }
+    for b in secret {
+        core::format_u8_hex(b, out, false);
+    }
+    guard out.try_push('\n') else { return false; }
+    committed = true;
+    return true;
+}
+
+// Appends TLS 1.3 handshake traffic secrets in NSS Key Log Format to `keylog_path`.
+// No-op when `keylog_path` is empty.
+fn emit_tls13_hs_keylog(
+    keylog_path:   const u8[:],
+    client_random: const u8[32]&,
+    ks:            const KeySchedule&,
+) {
+    guard keylog_path.len > 0 else { return; }
+    let hlen = ks.hash_len as i64;
+    guard hlen == 32 || hlen == 48 else { return; }
+    var buf: u8[..1024] = [];
+    defer core::secure_zeroize_slice(buf[..]);
+    guard append_keylog_secret_line(
+        buf, "CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, ks.client_hs_traffic[..hlen],
+    ) && append_keylog_secret_line(
+        buf, "SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, ks.server_hs_traffic[..hlen],
+    ) else { return; }
+    let _ = append_file(keylog_path, buf[..]);
+}
+
+// Appends TLS 1.3 application traffic and exporter secrets in NSS Key Log Format to `keylog_path`.
+// No-op when `keylog_path` is empty.
+fn emit_tls13_app_keylog(
+    keylog_path:   const u8[:],
+    client_random: const u8[32]&,
+    ks:            const KeySchedule&,
+) {
+    guard keylog_path.len > 0 else { return; }
+    let hlen = ks.hash_len as i64;
+    guard hlen == 32 || hlen == 48 else { return; }
+    var buf: u8[..1024] = [];
+    defer core::secure_zeroize_slice(buf[..]);
+    guard append_keylog_secret_line(
+        buf, "CLIENT_TRAFFIC_SECRET_0", client_random, ks.client_ap_traffic[..hlen],
+    ) && append_keylog_secret_line(
+        buf, "SERVER_TRAFFIC_SECRET_0", client_random, ks.server_ap_traffic[..hlen],
+    ) && append_keylog_secret_line(
+        buf, "EXPORTER_SECRET", client_random, ks.exporter_secret[..hlen],
+    ) else { return; }
+    let _ = append_file(keylog_path, buf[..]);
 }

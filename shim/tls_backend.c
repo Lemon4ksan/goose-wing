@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,6 +49,7 @@
 
 #define WING_TLS_FLAG_INSECURE_SKIP_VERIFY 1
 #define WING_TLS_FLAG_NO_SYSTEM_ROOTS 2
+#define WING_TLS_FLAG_NO_SESSION_TICKETS 4
 
 #define WING_TLS_ST_OK 0
 #define WING_TLS_ST_WANT_READ 1
@@ -158,9 +160,11 @@ static void tls_buf_free(tls_buf_t *b) {
 #define OSSL_BIO_CTRL_PENDING 10
 #define OSSL_TLSEXT_ERR_OK 0
 #define OSSL_TLSEXT_ERR_NOACK 3
+#define OSSL_SSL_OP_NO_TICKET 0x00004000ULL
 
 typedef int (*ossl_alpn_cb_t)(void *ssl, const unsigned char **out, unsigned char *outlen, const unsigned char *in,
                               unsigned int inlen, void *arg);
+typedef void (*ossl_keylog_cb_t)(const void *ssl, const char *line);
 
 typedef struct {
     int probed;
@@ -170,6 +174,9 @@ typedef struct {
     void *(*SSL_CTX_new)(const void *);
     void (*SSL_CTX_free)(void *);
     long (*SSL_CTX_ctrl)(void *, int, long, void *);
+    uint64_t (*SSL_CTX_set_options)(void *, uint64_t);
+    int (*SSL_CTX_set_num_tickets)(void *, size_t);
+    void (*SSL_CTX_set_keylog_callback)(void *, ossl_keylog_cb_t);
     void *(*SSL_CTX_get_cert_store)(const void *);
     int (*SSL_CTX_set_default_verify_paths)(void *);
     int (*SSL_CTX_load_verify_locations)(void *, const char *, const char *);
@@ -180,6 +187,8 @@ typedef struct {
     void (*SSL_CTX_set_alpn_select_cb)(void *, ossl_alpn_cb_t, void *);
     void *(*SSL_new)(void *);
     void (*SSL_free)(void *);
+    int (*SSL_set_ex_data)(void *, int, void *);
+    void *(*SSL_get_ex_data)(const void *, int);
     void (*SSL_set_connect_state)(void *);
     void (*SSL_set_accept_state)(void *);
     void (*SSL_set_bio)(void *, void *, void *);
@@ -245,6 +254,21 @@ static void lk_SSL_CTX_free(void *c) { SSL_CTX_free((SSL_CTX *)c); }
 static long lk_SSL_CTX_ctrl(void *c, int cmd, long larg, void *parg) {
     return SSL_CTX_ctrl((SSL_CTX *)c, cmd, larg, parg);
 }
+static uint64_t lk_SSL_CTX_set_options(void *c, uint64_t op) { return (uint64_t)SSL_CTX_set_options((SSL_CTX *)c, op); }
+static int lk_SSL_CTX_set_num_tickets(void *c, size_t n) {
+#if defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(OPENSSL_IS_BORINGSSL)
+    return SSL_CTX_set_num_tickets((SSL_CTX *)c, n);
+#else
+    (void)c;
+    (void)n;
+    return 1;
+#endif
+}
+static void ossl_keylog_cb(const void *ssl, const char *line);
+static void lk_keylog_cb_adapter(const SSL *s, const char *line) { ossl_keylog_cb((const void *)s, line); }
+static void lk_SSL_CTX_set_keylog_callback(void *c, ossl_keylog_cb_t cb) {
+    SSL_CTX_set_keylog_callback((SSL_CTX *)c, cb != NULL ? lk_keylog_cb_adapter : NULL);
+}
 static void *lk_SSL_CTX_get_cert_store(const void *c) { return (void *)SSL_CTX_get_cert_store((const SSL_CTX *)c); }
 static int lk_SSL_CTX_set_default_verify_paths(void *c) { return SSL_CTX_set_default_verify_paths((SSL_CTX *)c); }
 static int lk_SSL_CTX_load_verify_locations(void *c, const char *f, const char *p) {
@@ -274,6 +298,8 @@ static void lk_SSL_CTX_set_alpn_select_cb(void *c, ossl_alpn_cb_t cb, void *arg)
 }
 static void *lk_SSL_new(void *c) { return (void *)SSL_new((SSL_CTX *)c); }
 static void lk_SSL_free(void *s) { SSL_free((SSL *)s); }
+static int lk_SSL_set_ex_data(void *s, int idx, void *arg) { return SSL_set_ex_data((SSL *)s, idx, arg); }
+static void *lk_SSL_get_ex_data(const void *s, int idx) { return SSL_get_ex_data((const SSL *)s, idx); }
 static void lk_SSL_set_connect_state(void *s) { SSL_set_connect_state((SSL *)s); }
 static void lk_SSL_set_accept_state(void *s) { SSL_set_accept_state((SSL *)s); }
 static void lk_SSL_set_bio(void *s, void *r, void *w) { SSL_set_bio((SSL *)s, (BIO *)r, (BIO *)w); }
@@ -316,6 +342,9 @@ static void ossl_probe_impl(void) {
     g_ossl.SSL_CTX_new = lk_SSL_CTX_new;
     g_ossl.SSL_CTX_free = lk_SSL_CTX_free;
     g_ossl.SSL_CTX_ctrl = lk_SSL_CTX_ctrl;
+    g_ossl.SSL_CTX_set_options = lk_SSL_CTX_set_options;
+    g_ossl.SSL_CTX_set_num_tickets = lk_SSL_CTX_set_num_tickets;
+    g_ossl.SSL_CTX_set_keylog_callback = lk_SSL_CTX_set_keylog_callback;
     g_ossl.SSL_CTX_get_cert_store = lk_SSL_CTX_get_cert_store;
     g_ossl.SSL_CTX_set_default_verify_paths = lk_SSL_CTX_set_default_verify_paths;
     g_ossl.SSL_CTX_load_verify_locations = lk_SSL_CTX_load_verify_locations;
@@ -326,6 +355,8 @@ static void ossl_probe_impl(void) {
     g_ossl.SSL_CTX_set_alpn_select_cb = lk_SSL_CTX_set_alpn_select_cb;
     g_ossl.SSL_new = lk_SSL_new;
     g_ossl.SSL_free = lk_SSL_free;
+    g_ossl.SSL_set_ex_data = lk_SSL_set_ex_data;
+    g_ossl.SSL_get_ex_data = lk_SSL_get_ex_data;
     g_ossl.SSL_set_connect_state = lk_SSL_set_connect_state;
     g_ossl.SSL_set_accept_state = lk_SSL_set_accept_state;
     g_ossl.SSL_set_bio = lk_SSL_set_bio;
@@ -395,6 +426,9 @@ static void ossl_probe_impl(void) {
     ok &= load_fn_sym(&g_ossl.SSL_CTX_new, dyn_sym(slib, "SSL_CTX_new"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_free, dyn_sym(slib, "SSL_CTX_free"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_ctrl, dyn_sym(slib, "SSL_CTX_ctrl"));
+    (void)load_fn_sym(&g_ossl.SSL_CTX_set_options, dyn_sym(slib, "SSL_CTX_set_options"));
+    (void)load_fn_sym(&g_ossl.SSL_CTX_set_num_tickets, dyn_sym(slib, "SSL_CTX_set_num_tickets"));
+    (void)load_fn_sym(&g_ossl.SSL_CTX_set_keylog_callback, dyn_sym(slib, "SSL_CTX_set_keylog_callback"));
     (void)load_fn_sym(&g_ossl.SSL_CTX_get_cert_store, dyn_sym(slib, "SSL_CTX_get_cert_store"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_set_default_verify_paths, dyn_sym(slib, "SSL_CTX_set_default_verify_paths"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_load_verify_locations, dyn_sym(slib, "SSL_CTX_load_verify_locations"));
@@ -405,6 +439,8 @@ static void ossl_probe_impl(void) {
     (void)load_fn_sym(&g_ossl.SSL_CTX_set_alpn_select_cb, dyn_sym(slib, "SSL_CTX_set_alpn_select_cb"));
     ok &= load_fn_sym(&g_ossl.SSL_new, dyn_sym(slib, "SSL_new"));
     ok &= load_fn_sym(&g_ossl.SSL_free, dyn_sym(slib, "SSL_free"));
+    (void)load_fn_sym(&g_ossl.SSL_set_ex_data, dyn_sym(slib, "SSL_set_ex_data"));
+    (void)load_fn_sym(&g_ossl.SSL_get_ex_data, dyn_sym(slib, "SSL_get_ex_data"));
     ok &= load_fn_sym(&g_ossl.SSL_set_connect_state, dyn_sym(slib, "SSL_set_connect_state"));
     ok &= load_fn_sym(&g_ossl.SSL_set_accept_state, dyn_sym(slib, "SSL_set_accept_state"));
     ok &= load_fn_sym(&g_ossl.SSL_set_bio, dyn_sym(slib, "SSL_set_bio"));
@@ -643,6 +679,7 @@ typedef struct {
     int is_server;
     int insecure_skip_verify;
     int use_system_roots;
+    int no_session_tickets;
     int min_version;
     int established;
     int closed;
@@ -650,6 +687,7 @@ typedef struct {
     char ca_file[257];
     char cert_pem_file[257];
     char key_pem_file[257];
+    char keylog_file[257];
     uint8_t alpn_wire[64];
     size_t alpn_wire_len;
     uint8_t selected_alpn[64];
@@ -686,19 +724,27 @@ static void wing_tls_ep_destroy(wing_tls_ep_t *ep);
 
 #ifdef _WIN32
 static SRWLOCK g_eps_lock = SRWLOCK_INIT;
+static SRWLOCK g_keylog_lock = SRWLOCK_INIT;
 static void eps_lock(void) { AcquireSRWLockExclusive(&g_eps_lock); }
 static void eps_unlock(void) { ReleaseSRWLockExclusive(&g_eps_lock); }
+static void keylog_lock(void) { AcquireSRWLockExclusive(&g_keylog_lock); }
+static void keylog_unlock(void) { ReleaseSRWLockExclusive(&g_keylog_lock); }
 static void ep_io_lock(wing_tls_ep_t *ep) { AcquireSRWLockExclusive(&ep->io_lock); }
 static void ep_io_unlock(wing_tls_ep_t *ep) { ReleaseSRWLockExclusive(&ep->io_lock); }
 #elif !defined(__wasm__)
 static pthread_mutex_t g_eps_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_keylog_lock = PTHREAD_MUTEX_INITIALIZER;
 static void eps_lock(void) { pthread_mutex_lock(&g_eps_lock); }
 static void eps_unlock(void) { pthread_mutex_unlock(&g_eps_lock); }
+static void keylog_lock(void) { pthread_mutex_lock(&g_keylog_lock); }
+static void keylog_unlock(void) { pthread_mutex_unlock(&g_keylog_lock); }
 static void ep_io_lock(wing_tls_ep_t *ep) { pthread_mutex_lock(&ep->io_lock); }
 static void ep_io_unlock(wing_tls_ep_t *ep) { pthread_mutex_unlock(&ep->io_lock); }
 #else
 static void eps_lock(void) {}
 static void eps_unlock(void) {}
+static void keylog_lock(void) {}
+static void keylog_unlock(void) {}
 static void ep_io_lock(wing_tls_ep_t *ep) { (void)ep; }
 static void ep_io_unlock(wing_tls_ep_t *ep) { (void)ep; }
 #endif
@@ -775,6 +821,22 @@ static int ossl_alpn_select_cb(void *ssl, const unsigned char **out, unsigned ch
     return OSSL_TLSEXT_ERR_NOACK;
 }
 
+static void ossl_keylog_cb(const void *ssl, const char *line) {
+    if (ssl == NULL || line == NULL || line[0] == '\0' || g_ossl.SSL_get_ex_data == NULL) return;
+    const wing_tls_ep_t *ep = (const wing_tls_ep_t *)g_ossl.SSL_get_ex_data(ssl, 0);
+    if (ep == NULL || ep->keylog_file[0] == '\0') return;
+    size_t n = strlen(line);
+    keylog_lock();
+    FILE *fp = fopen(ep->keylog_file, "ab");
+    if (fp != NULL) {
+        (void)fwrite(line, 1, n, fp);
+        if (line[n - 1] != '\n') (void)fputc('\n', fp);
+        (void)fflush(fp);
+        (void)fclose(fp);
+    }
+    keylog_unlock();
+}
+
 static int32_t ossl_map_err(wing_tls_ep_t *ep, int ret, int is_hs) {
     int err = g_ossl.SSL_get_error(ep->ossl_ssl, ret);
     if (err == OSSL_SSL_ERROR_WANT_READ) return WING_TLS_ST_WANT_READ;
@@ -787,6 +849,10 @@ static int32_t ossl_map_err(wing_tls_ep_t *ep, int ret, int is_hs) {
 }
 
 static void ossl_cleanup_ep(wing_tls_ep_t *ep) {
+    wing_tls_zeroize(ep->keylog_file, sizeof(ep->keylog_file));
+    if (ep->ossl_ctx != NULL && g_ossl.SSL_CTX_set_keylog_callback != NULL) {
+        g_ossl.SSL_CTX_set_keylog_callback(ep->ossl_ctx, NULL);
+    }
     if (ep->ossl_ssl != NULL) {
         g_ossl.SSL_free(ep->ossl_ssl);
         ep->ossl_ssl = NULL;
@@ -903,6 +969,15 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
         return WING_TLS_ST_ERR;
     }
 
+    if (ep->no_session_tickets) {
+        if (g_ossl.SSL_CTX_set_options != NULL) {
+            (void)g_ossl.SSL_CTX_set_options(ep->ossl_ctx, OSSL_SSL_OP_NO_TICKET);
+        }
+        if (g_ossl.SSL_CTX_set_num_tickets != NULL) {
+            (void)g_ossl.SSL_CTX_set_num_tickets(ep->ossl_ctx, 0);
+        }
+    }
+
     /* Load PEM certificate chain + private key for both server endpoints and mTLS clients. */
     int has_cert = ep->cert_pem_file[0] != '\0';
     int has_key = ep->key_pem_file[0] != '\0';
@@ -961,6 +1036,9 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
     ep->ossl_rbio = rbio;
     ep->ossl_wbio = wbio;
     g_ossl.SSL_set_bio(ep->ossl_ssl, ep->ossl_rbio, ep->ossl_wbio);
+    if (g_ossl.SSL_set_ex_data != NULL) {
+        (void)g_ossl.SSL_set_ex_data(ep->ossl_ssl, 0, ep);
+    }
 
     if (ep->is_server) {
         g_ossl.SSL_set_accept_state(ep->ossl_ssl);
@@ -1407,6 +1485,7 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     ep->is_server = is_server ? 1 : 0;
     ep->insecure_skip_verify = (insecure_skip_verify & WING_TLS_FLAG_INSECURE_SKIP_VERIFY) != 0 ? 1 : 0;
     ep->use_system_roots = (insecure_skip_verify & WING_TLS_FLAG_NO_SYSTEM_ROOTS) == 0 ? 1 : 0;
+    ep->no_session_tickets = (insecure_skip_verify & WING_TLS_FLAG_NO_SESSION_TICKETS) != 0 ? 1 : 0;
     ep->min_version = (min_version == WING_TLS_MIN_TLS12) ? WING_TLS_MIN_TLS12 : WING_TLS_MIN_TLS13;
     copy_cstr_ro(ep->sni, sizeof(ep->sni), server_name);
     copy_cstr_ro(ep->ca_file, sizeof(ep->ca_file), ca_file);
@@ -1752,6 +1831,37 @@ int32_t wing_tls_backend_shutdown(int64_t handle) {
     } else if (ep->established && ep->kind == WING_TLS_KIND_OPENSSL && g_ossl.SSL_shutdown != NULL) {
         int r = g_ossl.SSL_shutdown(ep->ossl_ssl);
         if (r < 0) st = ossl_map_err(ep, r, 0);
+    }
+    ep_io_unlock(ep);
+    release_ep(ep);
+    return st;
+}
+
+int32_t wing_tls_backend_set_keylog(int64_t handle, wing_tls_ro path) {
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) return WING_TLS_ST_CLOSED;
+    int32_t st = WING_TLS_ST_OK;
+    ep_io_lock(ep);
+    if (ep->closed) {
+        st = WING_TLS_ST_CLOSED;
+    } else if (path.data == NULL || path.len <= 0) {
+        wing_tls_zeroize(ep->keylog_file, sizeof(ep->keylog_file));
+        if (ep->kind == WING_TLS_KIND_OPENSSL && ep->ossl_ctx != NULL && g_ossl.SSL_CTX_set_keylog_callback != NULL) {
+            g_ossl.SSL_CTX_set_keylog_callback(ep->ossl_ctx, NULL);
+        }
+        st = WING_TLS_ST_OK;
+    } else if (ep->kind == WING_TLS_KIND_OPENSSL) {
+        if (ep->ossl_ctx == NULL || ep->ossl_ssl == NULL || g_ossl.SSL_CTX_set_keylog_callback == NULL ||
+            g_ossl.SSL_set_ex_data == NULL || g_ossl.SSL_get_ex_data == NULL) {
+            st = WING_TLS_ST_UNAVAILABLE;
+        } else {
+            copy_cstr_ro(ep->keylog_file, sizeof(ep->keylog_file), path);
+            (void)g_ossl.SSL_set_ex_data(ep->ossl_ssl, 0, ep);
+            g_ossl.SSL_CTX_set_keylog_callback(ep->ossl_ctx, ossl_keylog_cb);
+            st = WING_TLS_ST_OK;
+        }
+    } else {
+        st = WING_TLS_ST_UNAVAILABLE;
     }
     ep_io_unlock(ep);
     release_ep(ep);

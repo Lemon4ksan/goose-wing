@@ -16,9 +16,12 @@ import .handshake_internal;
 import .types;
 import .x509;
 import .pem;
+import .ticket;
+import .post_quantum;
 import .session_internal;
 import .session;
 import .handshake_io_internal;
+import .client_handshake;
 import net.tcp;
 import net.transport;
 
@@ -49,19 +52,24 @@ enum TlsBackendStatus {
 }
 
 struct TlsBackendConfig {
-    kind:                 TlsBackendKind   = TlsBackendKind.PureGoose,
-    min_version:          TlsMinVersion    = TlsMinVersion.Tls13,
-    is_server:            bool             = false,
-    server_name:          u8[..256]        = [],
-    alpn_wire:            u8[..64]         = [],
-    insecure_skip_verify: bool             = false,
-    use_system_roots:     bool             = true,
-    ca_file:              u8[..256]        = [],
-    cert_pem_file:        u8[..256]        = [],
-    key_pem_file:         u8[..256]        = [],
-    cert_der:             u8[..4096]       = [],
-    priv_seed:            u8[32]           = [0; 32],
-    trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
+    kind:                   TlsBackendKind   = TlsBackendKind.PureGoose,
+    min_version:            TlsMinVersion    = TlsMinVersion.Tls13,
+    is_server:              bool             = false,
+    server_name:            u8[..256]        = [],
+    alpn_wire:              u8[..64]         = [],
+    insecure_skip_verify:   bool             = false,
+    use_system_roots:       bool             = true,
+    ca_file:                u8[..256]        = [],
+    cert_pem_file:          u8[..256]        = [],
+    key_pem_file:           u8[..256]        = [],
+    cert_der:               u8[..4096]       = [],
+    priv_seed:              u8[32]           = [0; 32],
+    trust_store:            TrustAnchorStore = TrustAnchorStore { .. },
+    enable_pq_hybrid:       bool             = false,
+    enable_session_tickets: bool             = true,
+    require_ocsp_stapling:  bool             = false,
+    crl_der:                u8[..4096]       = [],
+    keylog_file:            u8[..256]        = [],
 }
 
 struct TlsEndpoint {
@@ -88,6 +96,7 @@ const NATIVE_MIN_TLS12: i32 = 1;
 
 const NATIVE_FLAG_INSECURE_SKIP_VERIFY: i32 = 1;
 const NATIVE_FLAG_NO_SYSTEM_ROOTS:      i32 = 2;
+const NATIVE_FLAG_NO_SESSION_TICKETS:   i32 = 4;
 
 extern fn native_tls_backend_available(kind: i32) -> i32 = "wing_tls_backend_available";
 
@@ -140,6 +149,8 @@ extern fn native_tls_backend_is_established(handle: i64) -> i32 = "wing_tls_back
 extern fn native_tls_backend_pending_wire(handle: i64) -> i64 = "wing_tls_backend_pending_wire";
 
 extern fn native_tls_backend_shutdown(handle: i64) -> i32 = "wing_tls_backend_shutdown";
+
+extern fn native_tls_backend_set_keylog(handle: i64, path: const u8[:]) -> i32 = "wing_tls_backend_set_keylog";
 
 inline fn kind_to_native_i32(kind: TlsBackendKind) -> i32 {
     return match kind {
@@ -196,41 +207,51 @@ enum PureHsStage {
 }
 
 struct PureTlsSlot {
-    in_use:               bool                      = false,
-    generation:           u32                       = 0,
-    is_server:            bool                      = false,
-    insecure_skip_verify: bool                      = false,
-    use_system_roots:     bool                      = true,
-    peer_closed:          bool                      = false,
-    stage:                PureHsStage               = PureHsStage.ClientInit,
-    cipher_slot:          u16                       = 0xFFFF,
-    cipher_suite:         u16                       = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
-    key_len:              u16                       = 16,
-    server_name:          u8[..256]                 = [],
-    alpn_csv:             u8[..64]                  = [],
-    selected_alpn:        u8[..64]                  = [],
-    cert_der:             u8[..4096]                = [],
-    priv_seed:            u8[32]                    = [0; 32],
-    trust_store:          TrustAnchorStore          = TrustAnchorStore { .. },
-    client_random:        u8[32]                    = [0; 32],
-    eph_priv:             u8[32]                    = [0; 32],
-    hs_tx_key:            u8[32]                    = [0; 32],
-    hs_tx_iv:             u8[12]                    = [0; 12],
-    hs_rx_key:            u8[32]                    = [0; 32],
-    hs_rx_iv:             u8[12]                    = [0; 12],
-    hs_tx_seq:            u64                       = 0,
-    hs_rx_seq:            u64                       = 0,
-    ccs_seen:             u32                       = 0,
-    transcript:           Transcript                = Transcript { .. },
-    ks:                   tls_internal::KeySchedule = tls_internal::KeySchedule { .. },
-    srv_fin_hash:         u8[..48]                  = [],
-    peer_cert_body:       u8[..8192]                = [],
-    hs_plain:             u8[..16384]               = [],
-    hs_plain_pos:         i64                       = 0,
-    wire_in:              u8[..32768]               = [],
-    wire_out:             u8[..32768]               = [],
-    app_in:               u8[..16640]               = [],
-    app_in_pos:           i64                       = 0,
+    in_use:                 bool                      = false,
+    generation:             u32                       = 0,
+    is_server:              bool                      = false,
+    insecure_skip_verify:   bool                      = false,
+    use_system_roots:       bool                      = true,
+    enable_pq_hybrid:       bool                      = false,
+    enable_session_tickets: bool                      = true,
+    require_ocsp_stapling:  bool                      = false,
+    has_psk_ticket:         bool                      = false,
+    psk_resumed:            bool                      = false,
+    psk_hash_len:           u8                        = 32,
+    peer_closed:            bool                      = false,
+    stage:                  PureHsStage               = PureHsStage.ClientInit,
+    cipher_slot:            u16                       = 0xFFFF,
+    cipher_suite:           u16                       = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+    key_len:                u16                       = 16,
+    server_name:            u8[..256]                 = [],
+    alpn_csv:               u8[..64]                  = [],
+    selected_alpn:          u8[..64]                  = [],
+    cert_der:               u8[..4096]                = [],
+    priv_seed:              u8[32]                    = [0; 32],
+    trust_store:            TrustAnchorStore          = TrustAnchorStore { .. },
+    crl_der:                u8[..4096]                = [],
+    keylog_file:            u8[..256]                 = [],
+    client_random:          u8[32]                    = [0; 32],
+    eph_priv:               u8[32]                    = [0; 32],
+    pq_priv:                u8[2400]                  = [0; 2400],
+    psk_secret:             u8[..48]                  = [],
+    hs_tx_key:              u8[32]                    = [0; 32],
+    hs_tx_iv:               u8[12]                    = [0; 12],
+    hs_rx_key:              u8[32]                    = [0; 32],
+    hs_rx_iv:               u8[12]                    = [0; 12],
+    hs_tx_seq:              u64                       = 0,
+    hs_rx_seq:              u64                       = 0,
+    ccs_seen:               u32                       = 0,
+    transcript:             Transcript                = Transcript { .. },
+    ks:                     tls_internal::KeySchedule = tls_internal::KeySchedule { .. },
+    srv_fin_hash:           u8[..48]                  = [],
+    peer_cert_body:         u8[..8192]                = [],
+    hs_plain:               u8[..16384]               = [],
+    hs_plain_pos:           i64                       = 0,
+    wire_in:                u8[..32768]               = [],
+    wire_out:               u8[..32768]               = [],
+    app_in:                 u8[..16640]               = [],
+    app_in_pos:             i64                       = 0,
 }
 
 var g_pure_tls_slots:    PureTlsSlot[>..] = [];
@@ -243,6 +264,9 @@ inline fn is_live_pure_slot(slot: const PureTlsSlot&, gen: u32) -> bool {
 
 fn wipe_pure_hs_secrets(slot: PureTlsSlot&) {
     core::secure_zeroize_32(slot.eph_priv);
+    core::secure_zeroize_slice(slot.pq_priv[..]);
+    core::secure_zeroize_slice(slot.psk_secret[..]);
+    slot.psk_secret.clear();
     core::secure_zeroize_32(slot.hs_tx_key);
     core::secure_zeroize_32(slot.hs_rx_key);
     core::secure_zeroize_slice(slot.hs_tx_iv[..]);
@@ -493,10 +517,14 @@ fn pure_next_encrypted_hs_msg(
     return TlsBackendStatus.WantRead;
 }
 
-fn pure_derive_hs_traffic_keys(slot: PureTlsSlot&, ecdhe_secret: const u8[:]) -> bool {
+fn pure_derive_hs_traffic_keys(
+    slot:         PureTlsSlot&,
+    ecdhe_secret: const u8[:],
+    early_ikm:    const u8[:] = "",
+) -> bool {
     var ks, ok_ks = tls_internal::ks_init(slot.cipher_suite);
     guard ok_ks &&
-        tls_internal::ks_init_early_secret(ks, "") &&
+        tls_internal::ks_init_early_secret(ks, early_ikm) &&
         tls_internal::ks_advance_to_handshake(ks, ecdhe_secret) else {
         tls_internal::ks_zeroize(ks);
         return false;
@@ -522,6 +550,7 @@ fn pure_derive_hs_traffic_keys(slot: PureTlsSlot&, ecdhe_secret: const u8[:]) ->
     slot.ks = ks;
     slot.hs_tx_seq = 0;
     slot.hs_rx_seq = 0;
+    tls_internal::emit_tls13_hs_keylog(slot.keylog_file[..], slot.client_random, slot.ks);
     return true;
 }
 
@@ -547,18 +576,25 @@ fn pure_install_app_keys(slot: PureTlsSlot&) -> bool {
         free_cipher_slot(cs_idx);
         return false;
     }
+    tls_internal::emit_tls13_app_keylog(slot.keylog_file[..], slot.client_random, slot.ks);
+    let c_slot_i = cs_idx as i64;
     if slot.is_server {
         tls_internal::tls_setup_server_cipher_slot(
             cs_idx, slot.cipher_suite, klen_u16, slot.ks,
             s_ap_key[..klen], s_ap_iv, c_ap_key[..klen], c_ap_iv,
         );
-        let _ = g_tls_cipher_slots[cs_idx as i64].negotiated_alpn.try_set(slot.selected_alpn[..]);
+        if c_slot_i >= 0 && c_slot_i < g_tls_cipher_slots.len {
+            let _ = g_tls_cipher_slots[c_slot_i].negotiated_alpn.try_set(slot.selected_alpn[..]);
+        }
     } else {
         tls_internal::tls_setup_client_cipher_slot(
             cs_idx, slot.cipher_suite, klen_u16, slot.ks,
             c_ap_key[..klen], c_ap_iv, s_ap_key[..klen], s_ap_iv,
-            slot.server_name[..], slot.selected_alpn[..], false,
+            slot.server_name[..], slot.selected_alpn[..], slot.psk_resumed,
         );
+        if c_slot_i >= 0 && c_slot_i < g_tls_cipher_slots.len {
+            g_tls_cipher_slots[c_slot_i].enable_session_tickets = slot.enable_session_tickets;
+        }
     }
     slot.cipher_slot = cs_idx;
     wipe_pure_hs_secrets(slot);
@@ -569,21 +605,40 @@ fn pure_install_app_keys(slot: PureTlsSlot&) -> bool {
 // ---- PureGoose Client Handshake Steps (RFC 8446 Section 2) -----------------
 
 fn pure_client_step_init(slot: PureTlsSlot&) -> TlsBackendStatus {
-    slot.client_random = random_bytes_32();
-    slot.eph_priv = random_bytes_32();
-    let client_pub = core::x25519_base_scalarmult(slot.eph_priv);
+    var client_pub: u8[32]   = [0; 32];
+    var pq_pub:     u8[1184] = [0; 1184];
+    guard generate_client_handshake_keys(
+        slot.enable_pq_hybrid, slot.client_random, slot.eph_priv, client_pub, slot.pq_priv, pq_pub,
+    ) else {
+        return TlsBackendStatus.HandshakeError;
+    }
+
+    var psk_ticket:  u8[..256] = [];
+    var psk_age_add: u32       = 0;
+    var psk_suite:   u16       = 0;
+    slot.psk_secret.clear();
+    slot.has_psk_ticket = slot.enable_session_tickets && lookup_session_ticket_full(
+        slot.server_name[..], psk_ticket, slot.psk_secret, psk_age_add, psk_suite,
+    );
+    slot.psk_hash_len = if slot.has_psk_ticket && rfc::tls13_cipher_suite_hash_len(psk_suite) == 48 {
+        48
+    } else {
+        32
+    };
 
     var ch_payload: u8[..4096] = [];
     build_client_hello_payload(
         slot.client_random, client_pub, slot.server_name[..], slot.alpn_csv[..], ch_payload,
+        psk_ticket[..], psk_age_add,
+        slot.enable_pq_hybrid, if slot.enable_pq_hybrid { pq_pub[..] } else { "" },
+        "", "", false, slot.psk_hash_len,
     );
     var ch_msg: u8[..4096] = [];
-    guard ch_msg.try_push(rfc::TLS_HS_CLIENT_HELLO) &&
-        ch_msg.try_push(((ch_payload.len >> 16) & 0xFF) as u8) &&
-        ch_msg.try_push(((ch_payload.len >> 8) & 0xFF) as u8) &&
-        ch_msg.try_push((ch_payload.len & 0xFF) as u8) &&
-        ch_msg.try_append(ch_payload[..]) else {
+    guard tls_internal::frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch_payload[..], ch_msg) else {
         return TlsBackendStatus.Error;
+    }
+    if slot.has_psk_ticket {
+        tls_internal::patch_client_hello_psk_binder(ch_msg, slot.psk_secret[..], psk_suite);
     }
     let ccs: u8[6] = [rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
     guard pure_append_plaintext_hs(slot.wire_out, ch_msg[..]) && slot.wire_out.try_append(ccs[..]) else {
@@ -594,6 +649,42 @@ fn pure_client_step_init(slot: PureTlsSlot&) -> TlsBackendStatus {
     return TlsBackendStatus.WantRead;
 }
 
+fn pure_compute_client_ecdhe(
+    slot:       PureTlsSlot&,
+    sh:         const ParsedServerHello&,
+    out_secret: u8[32]&,
+) -> bool {
+    defer core::secure_zeroize_32(slot.eph_priv);
+    defer core::secure_zeroize_slice(slot.pq_priv[..]);
+    if sh.selected_group == rfc::GROUP_X25519_MLKEM768 && slot.enable_pq_hybrid {
+        var srv_share_raw: u8[..2048] = [];
+        srv_share_raw.append_u16_be(sh.selected_group);
+        srv_share_raw.append_u16_be(sh.server_share.len as u16);
+        guard srv_share_raw.try_append(sh.server_share[..]) else { return false; }
+        var srv_pq = tls_internal::PostQuantumServerShare { .. };
+        guard tls_internal::parse_hybrid_server_key_share(srv_pq, srv_share_raw[..]) else { return false; }
+        var classic_ss, ok_c = core::x25519_shared_secret(slot.eph_priv, srv_pq.x25519_public);
+        defer core::secure_zeroize_32(classic_ss);
+        var pq_ss: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(pq_ss);
+        guard ok_c &&
+            tls_internal::mlkem768_decapsulate(srv_pq.mlkem768_ciphertext[..], slot.pq_priv[..], pq_ss[..]) else {
+            return false;
+        }
+        return tls_internal::derive_x25519_mlkem768_shared_secret_checked(
+            classic_ss[..], pq_ss[..], out_secret[..],
+        );
+    }
+    guard sh.selected_group == rfc::GROUP_X25519 && sh.server_share.len == 32 else { return false; }
+    var srv_pub: u8[32] = [0; 32];
+    core::ct_copy_bytes(srv_pub[..], sh.server_share[..]);
+    var ss, ok_ss = core::x25519_shared_secret(slot.eph_priv, srv_pub);
+    defer core::secure_zeroize_32(ss);
+    guard ok_ss else { return false; }
+    core::ct_copy_bytes(out_secret[..], ss[..]);
+    return true;
+}
+
 fn pure_client_step_sh(slot: PureTlsSlot&) -> TlsBackendStatus {
     var sh_msg: u8[..16384] = [];
     let st = pure_pop_plaintext_hs_msg(slot, sh_msg);
@@ -602,20 +693,24 @@ fn pure_client_step_sh(slot: PureTlsSlot&) -> TlsBackendStatus {
     var sh = ParsedServerHello { .. };
     guard parse_live_server_hello(sh_msg[..], sh) &&
         !sh.is_hrr &&
-        tls_internal::validate_live_client_sh(sh, slot.client_random) &&
-        sh.selected_group == rfc::GROUP_X25519 &&
-        sh.server_share.len == 32 else {
+        tls_internal::validate_live_client_sh(sh, slot.client_random) else {
         return TlsBackendStatus.HandshakeError;
     }
+    if sh.psk_resumed {
+        guard slot.has_psk_ticket &&
+            rfc::tls13_cipher_suite_hash_len(sh.cipher_suite) == slot.psk_hash_len else {
+            return TlsBackendStatus.HandshakeError;
+        }
+    }
+    slot.psk_resumed = sh.psk_resumed;
     transcript_update(slot.transcript, sh_msg[..]);
     slot.cipher_suite = sh.cipher_suite;
 
-    var srv_pub: u8[32] = [0; 32];
-    core::ct_copy_bytes(srv_pub[..], sh.server_share[..]);
-    var ecdhe_secret, ok_ss = core::x25519_shared_secret(slot.eph_priv, srv_pub);
-    core::secure_zeroize_32(slot.eph_priv);
+    var ecdhe_secret: u8[32] = [0; 32];
     defer core::secure_zeroize_32(ecdhe_secret);
-    guard ok_ss && pure_derive_hs_traffic_keys(slot, ecdhe_secret[..]) else {
+    let early_ikm = if slot.psk_resumed { slot.psk_secret[..] } else { "" };
+    guard pure_compute_client_ecdhe(slot, sh, ecdhe_secret) &&
+        pure_derive_hs_traffic_keys(slot, ecdhe_secret[..], early_ikm) else {
         return TlsBackendStatus.HandshakeError;
     }
     slot.stage = PureHsStage.ClientWaitEE;
@@ -626,12 +721,14 @@ fn pure_client_verify_cv(slot: PureTlsSlot&, cv_body: const u8[:]) -> TlsBackend
     var h_to_cert: u8[..48] = [];
     transcript_current_hash(slot.transcript, slot.ks.hash_id, h_to_cert);
     var cfg = ClientHandshakeConfig {
-        insecure_skip_verify: slot.insecure_skip_verify,
-        use_system_roots:     slot.use_system_roots,
-        trust_store:          slot.trust_store,
+        insecure_skip_verify:  slot.insecure_skip_verify,
+        use_system_roots:      slot.use_system_roots,
+        require_ocsp_stapling: slot.require_ocsp_stapling,
+        trust_store:           slot.trust_store,
         ..
     };
     let _ = cfg.server_name.try_set(slot.server_name[..]);
+    let _ = cfg.crl_der.try_set(slot.crl_der[..]);
     let ok_v = tls_internal::verify_server_cert_and_signature(
         slot.peer_cert_body[..], cv_body, h_to_cert[..], cfg, 0xFFFF,
     );
@@ -683,6 +780,20 @@ fn pure_client_finish_hs(slot: PureTlsSlot&, fin_body: const u8[:]) -> TlsBacken
     return TlsBackendStatus.Ok;
 }
 
+fn pure_client_step_ee(slot: PureTlsSlot&, body: const u8[:]) -> TlsBackendStatus {
+    let sni_st = if tls_internal::validate_sni_host_bytes(slot.server_name[..]) {
+        SniOfferState.Offered
+    } else {
+        SniOfferState.Omitted
+    };
+    guard parse_encrypted_extensions_alpn(body, slot.selected_alpn, slot.alpn_csv[..], sni_st, false) else {
+        return TlsBackendStatus.HandshakeError;
+    }
+    transcript_update_msg(slot.transcript, rfc::TLS_HS_ENCRYPTED_EXTENSIONS, body);
+    slot.stage = if slot.psk_resumed { PureHsStage.ClientWaitFinished } else { PureHsStage.ClientWaitCert };
+    return TlsBackendStatus.Ok;
+}
+
 fn pure_client_step_encrypted(slot: PureTlsSlot&) -> TlsBackendStatus {
     var msg_t: u8          = 0;
     var body:  u8[..16384] = [];
@@ -691,17 +802,7 @@ fn pure_client_step_encrypted(slot: PureTlsSlot&) -> TlsBackendStatus {
 
     if slot.stage == PureHsStage.ClientWaitEE {
         guard msg_t == rfc::TLS_HS_ENCRYPTED_EXTENSIONS else { return TlsBackendStatus.HandshakeError; }
-        let sni_st = if tls_internal::validate_sni_host_bytes(slot.server_name[..]) {
-            SniOfferState.Offered
-        } else {
-            SniOfferState.Omitted
-        };
-        guard parse_encrypted_extensions_alpn(body[..], slot.selected_alpn, slot.alpn_csv[..], sni_st, false) else {
-            return TlsBackendStatus.HandshakeError;
-        }
-        transcript_update_msg(slot.transcript, msg_t, body[..]);
-        slot.stage = PureHsStage.ClientWaitCert;
-        return TlsBackendStatus.Ok;
+        return pure_client_step_ee(slot, body[..]);
     }
     if slot.stage == PureHsStage.ClientWaitCert {
         guard msg_t == rfc::TLS_HS_CERTIFICATE && slot.peer_cert_body.try_set(body[..]) else {
@@ -790,6 +891,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> TlsBackendStatus {
         ch_msg[..], slot.alpn_csv[..], req_sig, sid, client_pub,
         slot.selected_alpn, client_sni, slot.cipher_suite, psk_res, psk_sec, sel_psk_id,
     ) else { return TlsBackendStatus.HandshakeError; }
+    let _ = tls_internal::extract_ch_client_random(ch_msg[..], slot.client_random);
 
     let srv_rand = random_bytes_32();
     var srv_priv = random_bytes_32();
@@ -931,8 +1033,13 @@ fn open_pure_endpoint(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpo
     slot.is_server = is_server;
     slot.insecure_skip_verify = cfg.insecure_skip_verify;
     slot.use_system_roots = cfg.use_system_roots;
+    slot.enable_pq_hybrid = cfg.enable_pq_hybrid;
+    slot.enable_session_tickets = cfg.enable_session_tickets;
+    slot.require_ocsp_stapling = cfg.require_ocsp_stapling;
     slot.stage = if is_server { PureHsStage.ServerWaitClientHello } else { PureHsStage.ClientInit };
     let _ = slot.server_name.try_set(cfg.server_name[..]);
+    let _ = slot.crl_der.try_set(cfg.crl_der[..]);
+    let _ = slot.keylog_file.try_set(cfg.keylog_file[..]);
     decode_alpn_wire_to_csv(cfg.alpn_wire[..], slot.alpn_csv);
     let cred_st = pure_init_slot_credentials(slot, cfg, is_server);
     guard cred_st == TlsBackendStatus.Ok else {
@@ -957,6 +1064,9 @@ fn should_route_to_pure_backend(cfg: const TlsBackendConfig&, is_server: bool) -
     if is_server {
         return cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0;
     }
+    if cfg.enable_pq_hybrid || cfg.require_ocsp_stapling || cfg.crl_der.len > 0 {
+        return true;
+    }
     guard !cfg.insecure_skip_verify else { return false; }
     if cfg.trust_store.anchors.len > 0 && cfg.ca_file.len == 0 {
         return true;
@@ -964,15 +1074,16 @@ fn should_route_to_pure_backend(cfg: const TlsBackendConfig&, is_server: bool) -
     return cfg.ca_file.len > 0 && !tls_backend_available(TlsBackendKind.SystemOpenSsl);
 }
 
-// Packs peer verification and OS root-store flags for `wing_tls_backend_open`.
+// Packs peer verification, OS root-store, and session-ticket flags for `wing_tls_backend_open`.
 //
 // Example:
-//   cfg.insecure_skip_verify = false, cfg.use_system_roots = false
-//   returns: 2 (NATIVE_FLAG_NO_SYSTEM_ROOTS)
+//   cfg.insecure_skip_verify = false, cfg.use_system_roots = false, cfg.enable_session_tickets = false
+//   returns: 6 (NATIVE_FLAG_NO_SYSTEM_ROOTS | NATIVE_FLAG_NO_SESSION_TICKETS)
 inline fn pack_native_verify_flags(cfg: const TlsBackendConfig&) -> i32 {
     let skip_bit = if cfg.insecure_skip_verify { NATIVE_FLAG_INSECURE_SKIP_VERIFY } else { 0 };
     let roots_bit = if !cfg.use_system_roots { NATIVE_FLAG_NO_SYSTEM_ROOTS } else { 0 };
-    return skip_bit | roots_bit;
+    let tickets_bit = if !cfg.enable_session_tickets { NATIVE_FLAG_NO_SESSION_TICKETS } else { 0 };
+    return skip_bit | roots_bit | tickets_bit;
 }
 
 fn open_endpoint_with_role(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpoint, TlsBackendStatus {
@@ -996,6 +1107,9 @@ fn open_endpoint_with_role(cfg: const TlsBackendConfig&, is_server: bool) -> Tls
         active_i32,
     );
     if nid > 0 && st_i32 == 0 {
+        if cfg.keylog_file.len > 0 {
+            let _ = native_tls_backend_set_keylog(nid, cfg.keylog_file[..]);
+        }
         return TlsEndpoint {
             kind:        cfg.kind,
             active_kind: native_i32_to_kind(active_i32),

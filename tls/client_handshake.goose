@@ -87,7 +87,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     defer core::secure_zeroize_slice(psk_secret[..]);
     var psk_age_add: u32 = 0;
     var psk_suite:   u16 = 0;
-    let has_ticket = lookup_session_ticket_full(
+    let has_ticket = config.enable_session_tickets && lookup_session_ticket_full(
         config.server_name[..], psk_ticket, psk_secret, psk_age_add, psk_suite,
     );
     let psk_hash_len: u8 = if has_ticket && rfc::tls13_cipher_suite_hash_len(psk_suite) == 48 { 48 } else { 32 };
@@ -122,7 +122,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     transcript_update(transcript, ch_msg[..]);
 
     var sh_msg: u8[..16384] = [];
-    guard tls_internal::read_plaintext_handshake_record(fd, sh_msg) else {
+    guard tls_internal::read_plaintext_handshake_record(fd, sh_msg, config.handshake_timeout_ms) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -223,6 +223,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
+    tls_internal::emit_tls13_hs_keylog(config.keylog_file[..], client_random, ks);
 
     var client_hs_key: u8[32] = [0; 32];
     defer core::secure_zeroize_32(client_hs_key);
@@ -270,6 +271,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
+    tls_internal::emit_tls13_app_keylog(config.keylog_file[..], client_random, ks);
 
     guard tls_internal::tls_client_send_finished(
         fd, cipher_suite, client_hs_key[..klen], client_hs_iv, ks, transcript,
@@ -312,5 +314,9 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         server_ap_key[..klen], server_ap_iv,
         config.server_name[..], neg_alpn[..], psk_resumed,
     );
+    let s_idx = slot_idx as i64;
+    if s_idx >= 0 && s_idx < g_tls_cipher_slots.len {
+        g_tls_cipher_slots[s_idx].enable_session_tickets = config.enable_session_tickets;
+    }
     return slot_idx, true;
 }

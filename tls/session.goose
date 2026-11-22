@@ -311,6 +311,32 @@ inline fn inspect_unsealed_handshake_control(hs_bytes: const u8[:]) -> SliceUnse
     return SliceUnsealStatus.ControlHandled;
 }
 
+fn store_slot_nst_global(slot: const CipherSlot&, nst: const NewSessionTicketMsg&) {
+    guard slot.enable_session_tickets && slot.server_name.len > 0 && nst.ticket_lifetime > 0 else { return; }
+    var ks_res = tls_internal::KeySchedule {
+        hash_id:           slot.hash_id,
+        hash_len:          slot.hash_len,
+        stage:             tls_internal::KS_STAGE_RESUMPTION,
+        resumption_secret: slot.resumption_secret,
+        ..
+    };
+    defer tls_internal::ks_zeroize(ks_res);
+    let h_len = slot.hash_len as i64;
+    var psk_full: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(psk_full);
+    if (h_len == 32 || h_len == 48) &&
+        tls_internal::ks_derive_resumption_psk(ks_res, nst.ticket_nonce[..], psk_full[..h_len]) {
+        store_session_ticket(
+            slot.server_name[..],
+            nst.ticket[..],
+            psk_full[..h_len],
+            nst.ticket_age_add,
+            nst.ticket_lifetime,
+            slot.cipher_suite,
+        );
+    }
+}
+
 inline fn apply_unsealed_slot_handshake_control(slot: CipherSlot&, hs_bytes: const u8[:]) -> SliceUnsealStatus {
     guard hs_bytes.len >= 4 else { return SliceUnsealStatus.Error; }
     var rem = hs_bytes;
@@ -331,6 +357,7 @@ inline fn apply_unsealed_slot_handshake_control(slot: CipherSlot&, hs_bytes: con
             guard parse_new_session_ticket(msg_body, nst) && cache_session_ticket(slot.ticket_cache, nst) else {
                 return SliceUnsealStatus.Error;
             }
+            store_slot_nst_global(slot, nst);
         } else {
             return SliceUnsealStatus.Error;
         }
@@ -851,29 +878,7 @@ fn process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
     var nst = NewSessionTicketMsg { .. };
     guard parse_new_session_ticket(msg_body, nst) else { return false; }
     guard cache_session_ticket(g_tls_cipher_slots[idx].ticket_cache, nst) else { return false; }
-    guard g_tls_cipher_slots[idx].server_name.len > 0 && nst.ticket_lifetime > 0 else { return true; }
-    var ks_res = tls_internal::KeySchedule {
-        hash_id:           g_tls_cipher_slots[idx].hash_id,
-        hash_len:          g_tls_cipher_slots[idx].hash_len,
-        stage:             tls_internal::KS_STAGE_RESUMPTION,
-        resumption_secret: g_tls_cipher_slots[idx].resumption_secret,
-        ..
-    };
-    defer tls_internal::ks_zeroize(ks_res);
-    let h_len = g_tls_cipher_slots[idx].hash_len as i64;
-    var psk_full: u8[48] = [0; 48];
-    defer core::secure_zeroize_48(psk_full);
-    if (h_len == 32 || h_len == 48) &&
-        tls_internal::ks_derive_resumption_psk(ks_res, nst.ticket_nonce[..], psk_full[..h_len]) {
-        store_session_ticket(
-            g_tls_cipher_slots[idx].server_name[..],
-            nst.ticket[..],
-            psk_full[..h_len],
-            nst.ticket_age_add,
-            nst.ticket_lifetime,
-            g_tls_cipher_slots[idx].cipher_suite,
-        );
-    }
+    store_slot_nst_global(g_tls_cipher_slots[idx], nst);
     return true;
 }
 

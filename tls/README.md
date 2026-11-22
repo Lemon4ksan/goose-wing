@@ -324,16 +324,17 @@ struct CipherSlot {
     tx_traffic_secret:  u8[48]             = [0; 48],
     exporter_secret:    u8[48]             = [0; 48],
     resumption_secret:  u8[48]             = [0; 48],
-    peer_closed:        bool               = false,
-    resumed:            bool               = false,
-    negotiated_alpn:    u8[..255]          = [],
-    server_name:        u8[..256]          = [],
-    san_hosts:          u8[..128][..8]     = [],
-    rx_plain_buf:       u8[..16384]        = [],
-    rx_plain_pos:       i64                = 0,
-    bytes_sent:         u64                = 0,
-    key_update_tracker: KeyUpdateTracker   = KeyUpdateTracker { .. },
-    ticket_cache:       SessionTicketCache = SessionTicketCache { .. },
+    peer_closed:            bool               = false,
+    resumed:                bool               = false,
+    enable_session_tickets: bool               = true,
+    negotiated_alpn:        u8[..255]          = [],
+    server_name:            u8[..256]          = [],
+    san_hosts:              u8[..128][..8]     = [],
+    rx_plain_buf:           u8[..16384]        = [],
+    rx_plain_pos:           i64                = 0,
+    bytes_sent:             u64                = 0,
+    key_update_tracker:     KeyUpdateTracker   = KeyUpdateTracker { .. },
+    ticket_cache:           SessionTicketCache = SessionTicketCache { .. },
 }
 
 struct CachedSessionTicket {
@@ -368,24 +369,34 @@ struct HandshakeRecordReader {
 }
 
 struct ClientHandshakeConfig {
-    server_name:          u8[..256]        = [],
-    alpn:                 u8[..255]        = [],
-    trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
-    insecure_skip_verify: bool             = false,
-    virtual_clock_sec:    i64              = 0,
-    client_cert_der:      u8[..4096]       = [],
-    client_priv_seed:     u8[32]           = [0; 32],
-    enable_pq_hybrid:     bool             = false,
-    ech_config_list:      u8[..512]        = [],
-    crl_der:              u8[..4096]       = [],
+    server_name:            u8[..256]        = [],
+    alpn:                   u8[..255]        = [],
+    trust_store:            TrustAnchorStore = TrustAnchorStore { .. },
+    use_system_roots:       bool             = true,
+    insecure_skip_verify:   bool             = false,
+    virtual_clock_sec:      i64              = 0,
+    client_cert_der:        u8[..4096]       = [],
+    client_chain_der:       u8[..4096][..3]  = [],
+    client_priv_seed:       u8[32]           = [0; 32],
+    enable_pq_hybrid:       bool             = false,
+    ech_config_list:        u8[..512]        = [],
+    crl_der:                u8[..4096]       = [],
+    enable_session_tickets: bool             = true,
+    require_ocsp_stapling:  bool             = false,
+    handshake_timeout_ms:   u32              = 5000,
+    keylog_file:            u8[..256]        = [],
 }
 
 struct ServerHandshakeConfig {
-    cert_der:             u8[..4096] = [],
-    priv_seed:            u8[32]     = [0; 32],
-    alpn:                 u8[..255]  = [],
-    compressed_cert_algo: u16        = 0,
-    compressed_cert_data: u8[..4096] = [],
+    cert_der:             u8[..4096]       = [],
+    priv_seed:            u8[32]           = [0; 32],
+    alpn:                 u8[..255]        = [],
+    compressed_cert_algo: u16              = 0,
+    compressed_cert_data: u8[..4096]       = [],
+    handshake_timeout_ms: u32              = 5000,
+    keylog_file:          u8[..256]        = [],
+    require_client_cert:  bool             = false,
+    client_trust_store:   TrustAnchorStore = TrustAnchorStore { .. },
 }
 
 fn transcript_update(t: Transcript&, data: const u8[:])
@@ -739,19 +750,24 @@ enum TlsBackendStatus {
 }
 
 struct TlsBackendConfig {
-    kind:                 TlsBackendKind   = TlsBackendKind.PureGoose,
-    min_version:          TlsMinVersion    = TlsMinVersion.Tls13,
-    is_server:            bool             = false,
-    server_name:          u8[..256]        = [],
-    alpn_wire:            u8[..64]         = [],
-    insecure_skip_verify: bool             = false,
-    use_system_roots:     bool             = true,
-    ca_file:              u8[..256]        = [],
-    cert_pem_file:        u8[..256]        = [],
-    key_pem_file:         u8[..256]        = [],
-    cert_der:             u8[..4096]       = [],
-    priv_seed:            u8[32]           = [0; 32],
-    trust_store:          TrustAnchorStore = TrustAnchorStore { .. },
+    kind:                   TlsBackendKind   = TlsBackendKind.PureGoose,
+    min_version:            TlsMinVersion    = TlsMinVersion.Tls13,
+    is_server:              bool             = false,
+    server_name:            u8[..256]        = [],
+    alpn_wire:              u8[..64]         = [],
+    insecure_skip_verify:   bool             = false,
+    use_system_roots:       bool             = true,
+    ca_file:                u8[..256]        = [],
+    cert_pem_file:          u8[..256]        = [],
+    key_pem_file:           u8[..256]        = [],
+    cert_der:               u8[..4096]       = [],
+    priv_seed:              u8[32]           = [0; 32],
+    trust_store:            TrustAnchorStore = TrustAnchorStore { .. },
+    enable_pq_hybrid:       bool             = false,
+    enable_session_tickets: bool             = true,
+    require_ocsp_stapling:  bool             = false,
+    crl_der:                u8[..4096]       = [],
+    keylog_file:            u8[..256]        = [],
 }
 
 struct TlsEndpoint {
@@ -761,6 +777,7 @@ struct TlsEndpoint {
     established: bool           = false,
     closed:      bool           = false,
     pure_slot:   i32            = -1,
+    pure_gen:    u32            = 0,
     native_id:   i64            = -1,
 }
 
@@ -819,7 +836,12 @@ by closed polymorphism across:
 `tls_endpoint_shutdown` queues a graceful RFC 8446 `close_notify` alert,
 `tls_endpoint_pending_wire` reports queued outbound ciphertext bytes for reactor
 `EPOLL_WRITE` arming, and `tls_endpoint_close` is idempotent and wipes handshake
-and traffic keys on shutdown.
+and traffic keys on shutdown. Setting `enable_session_tickets = false` disables
+ticket lookup and global cache storage on `PureGoose` and applies
+`SSL_OP_NO_TICKET` plus zero server tickets on `SystemOpenSsl`. Setting
+`keylog_file` appends NSS Key Log Format secrets on both `PureGoose` and
+`SystemOpenSsl` (disabled by default when empty). `PureGoose` also enforces
+`enable_pq_hybrid`, `require_ocsp_stapling`, and `crl_der` controls.
 
 ### Non-Blocking Reactor TLS Stream (`tls/stream.goose`)
 

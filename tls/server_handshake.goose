@@ -131,6 +131,8 @@ fn server_handshake_with_ch(
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
+    var client_random: u8[32] = [0; 32];
+    let _ = tls_internal::extract_ch_client_random(ch_msg, client_random);
     let _ = g_tls_cipher_slots[idx].server_name.try_set(client_sni[..]);
 
     var server_random: u8[32] = [0; 32];
@@ -177,6 +179,7 @@ fn server_handshake_with_ch(
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
+    tls_internal::emit_tls13_hs_keylog(config.keylog_file[..], client_random, ks);
 
     let key_len_u16 = rfc::tls13_cipher_suite_key_len(cipher_suite);
     let klen = key_len_u16 as i64;
@@ -219,13 +222,23 @@ fn server_handshake_with_ch(
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
+    tls_internal::emit_tls13_app_keylog(config.keylog_file[..], client_random, ks);
 
     var hs_reader = HandshakeRecordReader { .. };
+    if !psk_resumed && config.require_client_cert {
+        guard tls_internal::tls_server_recv_client_auth(
+            hs_reader, fd, cipher_suite, client_hs_key[..klen], client_hs_iv, ks, transcript, config,
+        ) else {
+            free_cipher_slot(slot_idx);
+            return 0xFFFF, false;
+        }
+    }
+
     var cli_fin_body: u8[..16384] = [];
     var msg_fin:      u8          = 0;
     let ok_msg = tls_internal::next_handshake_message(
         hs_reader, fd, cipher_suite, client_hs_key[..klen],
-        client_hs_iv, msg_fin, cli_fin_body, 5000,
+        client_hs_iv, msg_fin, cli_fin_body, config.handshake_timeout_ms,
     );
     guard ok_msg else {
         free_cipher_slot(slot_idx);
@@ -238,10 +251,12 @@ fn server_handshake_with_ch(
         return 0xFFFF, false;
     }
 
+    var h_before_cli_fin: u8[..48] = [];
+    transcript_current_hash(transcript, ks.hash_id, h_before_cli_fin);
     var exp_cli_fin: u8[48] = [0; 48];
     let ok_exp_fin = tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.client_hs_traffic[..hlen],
-        h_through_srv_fin[..], exp_cli_fin[..hlen],
+        h_before_cli_fin[..], exp_cli_fin[..hlen],
     );
     guard ok_exp_fin else {
         free_cipher_slot(slot_idx);
@@ -293,7 +308,7 @@ fn server_handshake_with_ch(
 // Executes full TLS 1.3 server handshake over raw TCP socket, returning slot index (RFC 8446 §4).
 fn server_handshake(fd: i64, config: const ServerHandshakeConfig&) -> u16, bool {
     var ch_msg: u8[..16384] = [];
-    guard tls_internal::read_plaintext_handshake_record(fd, ch_msg) else {
+    guard tls_internal::read_plaintext_handshake_record(fd, ch_msg, config.handshake_timeout_ms) else {
         return 0xFFFF, false;
     }
     return server_handshake_with_ch(fd, ch_msg[..], config);
