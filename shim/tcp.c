@@ -56,9 +56,9 @@ typedef int SOCKET;
 #include <sys/time.h>
 #include <signal.h>
 #include <errno.h>
+#include <pthread.h>
 #if defined(__linux__)
 #include <sched.h>
-#include <pthread.h>
 #ifndef SO_ORIGINAL_DST
 #define SO_ORIGINAL_DST 80
 #endif
@@ -3396,3 +3396,46 @@ int32_t wing_host_platform(void) {
     return 3;
 #endif
 }
+
+// ---- Cross-Platform TLS State Locks ---------------------------------------
+// Lock IDs: 0 = cipher slot table, 1 = entropy pool, 2 = session ticket cache.
+
+#define WING_TLS_LOCK_COUNT 3
+
+#if defined(_WIN32)
+static SRWLOCK g_wing_tls_locks[WING_TLS_LOCK_COUNT] = {
+    SRWLOCK_INIT,
+    SRWLOCK_INIT,
+    SRWLOCK_INIT,
+};
+
+void wing_tls_state_lock(int32_t lock_id) {
+    if (lock_id < 0 || lock_id >= WING_TLS_LOCK_COUNT) return;
+    AcquireSRWLockExclusive(&g_wing_tls_locks[lock_id]);
+}
+
+void wing_tls_state_unlock(int32_t lock_id) {
+    if (lock_id < 0 || lock_id >= WING_TLS_LOCK_COUNT) return;
+    ReleaseSRWLockExclusive(&g_wing_tls_locks[lock_id]);
+}
+#elif !defined(__wasm__)
+static pthread_mutex_t g_wing_tls_locks[WING_TLS_LOCK_COUNT] = {
+    PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_MUTEX_INITIALIZER,
+};
+
+void wing_tls_state_lock(int32_t lock_id) {
+    if (lock_id < 0 || lock_id >= WING_TLS_LOCK_COUNT) return;
+    pthread_mutex_lock(&g_wing_tls_locks[lock_id]);
+}
+
+void wing_tls_state_unlock(int32_t lock_id) {
+    if (lock_id < 0 || lock_id >= WING_TLS_LOCK_COUNT) return;
+    pthread_mutex_unlock(&g_wing_tls_locks[lock_id]);
+}
+#else
+void wing_tls_state_lock(int32_t lock_id) { (void)lock_id; }
+
+void wing_tls_state_unlock(int32_t lock_id) { (void)lock_id; }
+#endif

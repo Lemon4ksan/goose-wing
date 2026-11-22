@@ -71,47 +71,69 @@ fn transcript_replace_with_message_hash(t: Transcript&, hash_id: u8, hash_len: u
     return true;
 }
 
-// Mixes OS kernel CSPRNG (`RtlGenRandom` / `getrandom`), hardware monotonic timer, wall clock,
-// entropy pool, and sequence counter using Fast-Key-Erasure / NIST SP 800-90A domain-separated
-// SHA-256 ratcheting (Invariant 16). Returns deterministic `core::sim_rng_fill` bytes directly
-// when DST simulation entropy is active so repeated seeded runs remain isolated.
-fn random_bytes_32() -> u8[32] {
+// Fills `out` with 32 cryptographically secure random bytes by mixing OS kernel CSPRNG
+// (`BCryptGenRandom` / `RtlGenRandom` / `getrandom`), monotonic timer, wall clock,
+// entropy pool, and sequence counter via Fast-Key-Erasure SHA-256 ratcheting (Invariant 16).
+// Returns deterministic `core::sim_rng_fill` bytes directly when DST simulation entropy is active.
+// Fails closed on OS CSPRNG error by wiping `out` and `g_tls_entropy_pool` and returning `false`.
+fn random_bytes_32_checked(out: u8[32]&) -> bool {
     if core::sim_rng_is_active() {
-        var sim_out: u8[32] = [0; 32];
-        let _ = core::sim_rng_fill(sim_out[..]);
-        return sim_out;
-    }
-    var os_seed: u8[32] = [0; 32];
-    if tls_internal::native_tls_csprng_bytes(os_seed[..]) == 0 {
-        for i in 32 {
-            g_tls_entropy_pool[i] ^= os_seed[i];
+        guard core::sim_rng_fill(out[..]) else {
+            core::secure_zeroize_32(out);
+            return false;
         }
+        return true;
     }
-    core::secure_zeroize_32(os_seed);
+    tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_ENTROPY_POOL);
+    defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_ENTROPY_POOL);
+
+    var os_seed: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(os_seed);
+    guard tls_internal::native_tls_csprng_bytes(os_seed[..]) == 0 else {
+        core::secure_zeroize_32(g_tls_entropy_pool);
+        g_tls_entropy_counter = 0;
+        core::secure_zeroize_32(out);
+        return false;
+    }
+    for i in 32 {
+        g_tls_entropy_pool[i] ^= os_seed[i];
+    }
 
     g_tls_entropy_counter = core::add_sat_u64(g_tls_entropy_counter, 1);
     let mono_ns = core::monotonic_now().nanos;
     let wall_now = core::now();
-    let wall_sec = wall_now.wall_sec as u64;
-    let wall_nsec = (wall_now.nsec as u64) & 0xFFFFFFFF;
+    let wall_sec = (max(0, wall_now.wall_sec) & 0x7FFFFFFFFFFFFFFF) as u64;
+    let wall_nsec = (max(0, wall_now.nsec) & 0x7FFFFFFF) as u32;
 
     var mix: u8[64] = [0; 64];
+    defer core::secure_zeroize_64(mix);
     core::ct_copy_bytes(mix[0..32], g_tls_entropy_pool[..]);
     core::write_le_u64_at(mix[..], 32, g_tls_entropy_counter);
     core::write_le_u64_at(mix[..], 40, mono_ns);
     core::write_le_u64_at(mix[..], 48, wall_sec);
-    core::write_le_u32_at(mix[..], 56, wall_nsec as! u32);
+    core::write_le_u32_at(mix[..], 56, wall_nsec);
     mix[60] = 0x01;
     let out_bytes = core::sha256(mix[..]);
 
     core::ct_copy_bytes(mix[0..32], g_tls_entropy_pool[..]);
     mix[60] = 0x02;
     for i in 32 {
-        mix[32 + i] ^= out_bytes[i];
+        let off = core::add_sat_i64(32, i);
+        mix[off] ^= out_bytes[i];
     }
     g_tls_entropy_pool = core::sha256(mix[..]);
-    core::secure_zeroize_64(mix);
-    return out_bytes;
+    out = out_bytes;
+    return true;
+}
+
+// Returns 32 cryptographically secure random bytes, failing closed with zeroed output
+// and a wiped entropy pool if the OS CSPRNG fails.
+fn random_bytes_32() -> u8[32] {
+    var out: u8[32] = [0; 32];
+    if !random_bytes_32_checked(out) {
+        core::secure_zeroize_32(out);
+    }
+    return out;
 }
 
 // Returns the ALPN protocol negotiated on a cipher slot (empty if none).
@@ -131,6 +153,8 @@ inline fn session_is_resumed(slot_idx: u16) -> bool {
 // Allocates a cipher slot lazily: reuses an inactive slot first, otherwise grows `g_tls_cipher_slots`
 // up to `MAX_TLS_CIPHER_SLOTS`.
 fn alloc_cipher_slot() -> u16 {
+    tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_CIPHER_SLOTS);
+    defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_CIPHER_SLOTS);
     for i in g_tls_cipher_slots.len {
         let slot .= g_tls_cipher_slots[i];
         if !slot.in_use {
@@ -155,6 +179,8 @@ inline fn prepare_cipher_aes_key(cipher_suite: u16, key: const u8[:], ctx: core:
 
 // Releases a cipher slot and securely wipes all cryptographic key material.
 fn free_cipher_slot(slot_idx: u16) {
+    tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_CIPHER_SLOTS);
+    defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_CIPHER_SLOTS);
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len else { return; }
     tls_internal::wipe_and_reset_tls_cipher_slot(g_tls_cipher_slots[idx]);
@@ -320,6 +346,9 @@ fn unseal_single_slot_record<B>(
     scratch:   u8[:],
     out_plain: B&,
 ) -> SliceUnsealStatus {
+    guard !aead_exceeds_hard_limit(slot.cipher_suite, slot.rx_seq) else {
+        return SliceUnsealStatus.Error;
+    }
     let klen = slot.key_len as i64;
     let dec_len, inner_type, _, ok_dec = tls_internal::record_decrypt_prepared_into(
         slot.cipher_suite,
@@ -454,6 +483,9 @@ fn tls_seal_app_data_with_buf<B>(
     let klen = slot.key_len as i64;
     var rem = plain_in;
     while rem.len > 0 {
+        guard !aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else {
+            return false;
+        }
         let chunk_len = min(rem.len, rfc::TLS_MAX_RECORD_PLAINTEXT_LEN);
         let sealed_len, _, ok_seal = tls_internal::record_seal_prepared_into(
             slot.cipher_suite,
@@ -500,7 +532,7 @@ fn cipher_slot_seal_close_notify<B>(slot_idx: u16, out_cipher: B&) -> bool {
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len else { return false; }
     let slot .= g_tls_cipher_slots[idx];
-    guard slot.in_use else { return false; }
+    guard slot.in_use && !aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else { return false; }
     let saved_len = out_cipher.len;
     let saved_seq = slot.tx_seq;
     var committed = false;
@@ -592,8 +624,9 @@ fn session_export_keying_material(
     return true;
 }
 
-// Encrypts and transmits a single TLS 1.3 record over socket using slot keys.
-fn send_encrypted_record(
+// Seals and transmits a single TLS 1.3 record using active slot keys, enforcing the
+// RFC 8446 Section 5.5 hard AEAD record limit without triggering automatic KeyUpdate.
+fn send_encrypted_record_raw(
     fd:         i64,
     slot_idx:   u16,
     inner_type: u8,
@@ -602,13 +635,17 @@ fn send_encrypted_record(
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len else { return false; }
     guard g_tls_cipher_slots[idx].in_use else { return false; }
-
     guard payload.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
-    var ct_buf: u8[..16640] = [];
-    guard payload.len + 22 <= ct_buf.cap else { return false; }
-    while ct_buf.len < payload.len + 22 {
-        ct_buf.push(0);
+    guard !aead_exceeds_hard_limit(
+        g_tls_cipher_slots[idx].cipher_suite, g_tls_cipher_slots[idx].tx_seq,
+    ) else {
+        return false;
     }
+
+    var ct_buf: u8[..16640] = [];
+    let needed = core::add_sat_i64(payload.len, 22);
+    guard needed <= ct_buf.cap else { return false; }
+    ct_buf.resize(needed, 0);
     let klen = g_tls_cipher_slots[idx].key_len as i64;
     let sealed_len, alert, ok_seal = tls_internal::record_seal_prepared_into(
         g_tls_cipher_slots[idx].cipher_suite,
@@ -623,6 +660,32 @@ fn send_encrypted_record(
     guard ok_seal && sealed_len > 0 else { return false; }
     increment_record_seq_num(g_tls_cipher_slots[idx].tx_seq);
     return tls_internal::tls_write_all(fd, ct_buf[..sealed_len]);
+}
+
+// Encrypts and transmits a single TLS 1.3 record over socket using slot keys.
+// Automatically triggers an RFC 8446 Section 5.5 KeyUpdate before sealing application
+// data when the TX sequence number reaches the AEAD key-update ceiling.
+fn send_encrypted_record(
+    fd:         i64,
+    slot_idx:   u16,
+    inner_type: u8,
+    payload:    const u8[:],
+) -> bool {
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else {
+        return false;
+    }
+    guard !aead_exceeds_hard_limit(
+        g_tls_cipher_slots[idx].cipher_suite, g_tls_cipher_slots[idx].tx_seq,
+    ) else {
+        return false;
+    }
+    if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA &&
+        fd > 0 &&
+        aead_needs_key_update(g_tls_cipher_slots[idx].cipher_suite, g_tls_cipher_slots[idx].tx_seq) {
+        guard send_key_update(fd, slot_idx, rfc::KEY_UPDATE_NOT_REQUESTED) else { return false; }
+    }
+    return send_encrypted_record_raw(fd, slot_idx, inner_type, payload);
 }
 
 // Sends application data chunks over TLS 1.3 record layer (RFC 8446 §5.2).
@@ -727,7 +790,7 @@ fn send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
     hs_msg.push(rfc::TLS_HS_KEY_UPDATE);
     hs_msg.push(0x00); hs_msg.push(0x00); hs_msg.push(0x01);
     hs_msg.append(ku_body[..]);
-    let ok_s = send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_HANDSHAKE, hs_msg[..]);
+    let ok_s = send_encrypted_record_raw(fd, slot_idx, rfc::TLS_CONTENT_HANDSHAKE, hs_msg[..]);
     guard ok_s else { return false; }
 
     let h_id = g_tls_cipher_slots[idx].hash_id;
@@ -847,6 +910,11 @@ fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:])
 
 fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return -1; }
+    guard !aead_exceeds_hard_limit(
+        g_tls_cipher_slots[idx].cipher_suite, g_tls_cipher_slots[idx].rx_seq,
+    ) else {
+        return -1;
+    }
     var hdr_buf: u8[5] = [0; 5];
     let hdr_st = tls_internal::tls_read_exact_status(fd, hdr_buf[..], timeout_ms);
     if hdr_st == -2 { return -2; }

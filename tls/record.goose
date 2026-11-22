@@ -370,6 +370,34 @@ const SINGLE_MSS_PLAINTEXT_LEN: i64 = 1378;
 // 64 KB Slow Start threshold before scaling to 16 KB records.
 const DYNAMIC_RESIZE_THRESHOLD_BYTES: u64 = 65536;
 
+// RFC 8446 Section 5.5: Limits on Key Usage - AEAD confidentiality record ceilings.
+const TLS_AES_GCM_KEY_UPDATE_LIMIT:   u64 = 16777216;   // 2^24 records (below 2^24.5 AES-GCM bound)
+const TLS_AES_GCM_HARD_RECORD_LIMIT:  u64 = 23500000;   // Hard fail-closed ceiling below 2^24.5
+const TLS_CHACHA20_KEY_UPDATE_LIMIT:  u64 = 1073741824; // 2^30 records for ChaCha20-Poly1305
+const TLS_CHACHA20_HARD_RECORD_LIMIT: u64 = 2147483648; // 2^31 hard fail-closed ceiling
+
+// RFC 8446 Section 5.5: Limits on Key Usage - Reports whether the record sequence number
+// has reached the threshold requiring an automatic KeyUpdate before further encryption.
+checkfree inline fn aead_needs_key_update(cipher_suite: u16, seq_num: u64) -> bool {
+    let limit = if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
+        TLS_CHACHA20_KEY_UPDATE_LIMIT
+    } else {
+        TLS_AES_GCM_KEY_UPDATE_LIMIT
+    };
+    return seq_num >= limit;
+}
+
+// RFC 8446 Section 5.5: Limits on Key Usage - Reports whether the record sequence number
+// has reached or exceeded the fail-closed ceiling where further AEAD usage is forbidden.
+checkfree inline fn aead_exceeds_hard_limit(cipher_suite: u16, seq_num: u64) -> bool {
+    let limit = if cipher_suite == rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256 {
+        TLS_CHACHA20_HARD_RECORD_LIMIT
+    } else {
+        TLS_AES_GCM_HARD_RECORD_LIMIT
+    };
+    return seq_num >= limit;
+}
+
 // Computes 96-bit (12-byte) per-record nonce: N = iv ^ (0^32 || be64(seq_num))
 // Rejects 2^64 - 1 to prevent counter wraparound and nonce reuse (RFC 8446 Section 5.3).
 checkfree inline fn compute_record_nonce(iv: const u8[12]&, seq_num: u64) -> u8[12], bool {

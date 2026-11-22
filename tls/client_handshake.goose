@@ -24,28 +24,62 @@ import .session;
 import .handshake_io_internal;
 import net.tcp;
 
+// Generates client handshake randomness, X25519 keypair, and optional ML-KEM-768 keypair.
+// Fails closed and wipes all private key material if OS CSPRNG fails.
+fn generate_client_handshake_keys(
+    enable_pq_hybrid: bool,
+    out_random:       u8[32]&,
+    out_x25519_priv:  u8[32]&,
+    out_x25519_pub:   u8[32]&,
+    out_pq_priv:      u8[2400]&,
+    out_pq_pub:       u8[1184]&,
+) -> bool {
+    var committed = false;
+    defer if !committed {
+        core::secure_zeroize_32(out_random);
+        core::secure_zeroize_32(out_x25519_priv);
+        core::secure_zeroize_32(out_x25519_pub);
+        core::secure_zeroize_slice(out_pq_priv[..]);
+        core::secure_zeroize_slice(out_pq_pub[..]);
+    };
+    guard random_bytes_32_checked(out_random) && random_bytes_32_checked(out_x25519_priv) else {
+        return false;
+    }
+    out_x25519_pub = core::x25519_base_scalarmult(out_x25519_priv);
+    if enable_pq_hybrid {
+        var pq_d: u8[32] = [0; 32];
+        var pq_z: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(pq_d);
+        defer core::secure_zeroize_32(pq_z);
+        guard random_bytes_32_checked(pq_d) && random_bytes_32_checked(pq_z) else {
+            return false;
+        }
+        var ek, dk = tls_internal::mlkem768_keygen(pq_d, pq_z);
+        defer core::secure_zeroize_slice(dk[..]);
+        out_pq_priv = dk;
+        out_pq_pub = ek;
+    }
+    committed = true;
+    return true;
+}
+
 // Executes full TLS 1.3 client handshake over raw TCP socket, returning slot index (RFC 8446 §4).
 fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool {
     let slot_idx = alloc_cipher_slot();
     guard slot_idx != 0xFFFF else { return 0xFFFF, false; }
 
-    let client_random = random_bytes_32();
-    var client_priv = random_bytes_32();
+    var client_random: u8[32] = [0; 32];
+    var client_priv:   u8[32] = [0; 32];
     defer core::secure_zeroize_32(client_priv);
-    var client_pub = core::x25519_base_scalarmult(client_priv);
-
-    var pq_priv: u8[2400] = [0; 2400];
+    var client_pub: u8[32]   = [0; 32];
+    var pq_priv:    u8[2400] = [0; 2400];
     defer core::secure_zeroize_slice(pq_priv[..]);
     var pq_pub: u8[1184] = [0; 1184];
-    if config.enable_pq_hybrid {
-        var pq_d = random_bytes_32();
-        var pq_z = random_bytes_32();
-        defer core::secure_zeroize_32(pq_d);
-        defer core::secure_zeroize_32(pq_z);
-        var ek, dk = tls_internal::mlkem768_keygen(pq_d, pq_z);
-        defer core::secure_zeroize_slice(dk[..]);
-        pq_priv = dk;
-        pq_pub = ek;
+    guard generate_client_handshake_keys(
+        config.enable_pq_hybrid, client_random, client_priv, client_pub, pq_priv, pq_pub,
+    ) else {
+        free_cipher_slot(slot_idx);
+        return 0xFFFF, false;
     }
 
     var psk_ticket: u8[..256] = [];

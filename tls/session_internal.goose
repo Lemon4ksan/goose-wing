@@ -27,9 +27,23 @@ import .pki_internal;
 import net.tcp;
 import net.transport;
 
+const TLS_LOCK_CIPHER_SLOTS: i32 = 0;
+const TLS_LOCK_ENTROPY_POOL: i32 = 1;
+const TLS_LOCK_TICKET_CACHE: i32 = 2;
+
+extern fn native_tls_state_lock(lock_id: i32) = "wing_tls_state_lock";
+extern fn native_tls_state_unlock(lock_id: i32) = "wing_tls_state_unlock";
 extern fn raw_tls_csprng_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
 
-var g_tls_sim_last_epoch: u64 = 0;
+var g_tls_sim_last_epoch:        u64  = 0;
+var g_tls_csprng_fault_for_test: bool = false;
+
+// Enables or disables simulated OS CSPRNG failure for fail-closed tests.
+fn tls_set_csprng_fault_for_test(enabled: bool) {
+    native_tls_state_lock(TLS_LOCK_ENTROPY_POOL);
+    defer native_tls_state_unlock(TLS_LOCK_ENTROPY_POOL);
+    g_tls_csprng_fault_for_test = enabled;
+}
 
 // Fills `out` from deterministic simulation entropy when active, or OS CSPRNG otherwise.
 fn native_tls_csprng_bytes(out: u8[:]) -> i32 {
@@ -42,6 +56,10 @@ fn native_tls_csprng_bytes(out: u8[:]) -> i32 {
         }
         let _ = core::sim_rng_fill(out);
         return 0;
+    }
+    if g_tls_csprng_fault_for_test {
+        core::secure_zeroize_slice(out);
+        return -1;
     }
     return raw_tls_csprng_bytes(out);
 }

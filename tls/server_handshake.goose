@@ -73,6 +73,34 @@ fn parse_client_hello_for_server(
     );
 }
 
+// Generates ephemeral server randomness, X25519 keypair, and ECDHE shared secret.
+// Fails closed and wipes secret material if OS CSPRNG or X25519 key exchange fails.
+fn generate_server_handshake_keys(
+    client_pub:       const u8[32]&,
+    out_random:       u8[32]&,
+    out_server_pub:   u8[32]&,
+    out_ecdhe_secret: u8[32]&,
+) -> bool {
+    var committed = false;
+    defer if !committed {
+        core::secure_zeroize_32(out_random);
+        core::secure_zeroize_32(out_server_pub);
+        core::secure_zeroize_32(out_ecdhe_secret);
+    };
+    var server_priv: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(server_priv);
+    guard random_bytes_32_checked(out_random) && random_bytes_32_checked(server_priv) else {
+        return false;
+    }
+    out_server_pub = core::x25519_base_scalarmult(server_priv);
+    var ecdhe, ok_ecdhe = core::x25519_shared_secret(server_priv, client_pub);
+    defer core::secure_zeroize_32(ecdhe);
+    guard ok_ecdhe else { return false; }
+    out_ecdhe_secret = ecdhe;
+    committed = true;
+    return true;
+}
+
 // Executes full TLS 1.3 server handshake given an already-read ClientHello handshake message (RFC 8446 §4).
 fn server_handshake_with_ch(
     fd:     i64,
@@ -105,14 +133,11 @@ fn server_handshake_with_ch(
     }
     let _ = g_tls_cipher_slots[idx].server_name.try_set(client_sni[..]);
 
-    let server_random = random_bytes_32();
-    var server_priv = random_bytes_32();
-    defer core::secure_zeroize_32(server_priv);
-    let server_pub = core::x25519_base_scalarmult(server_priv);
-
-    var ecdhe_secret, ok_ecdhe = core::x25519_shared_secret(server_priv, client_pub);
+    var server_random: u8[32] = [0; 32];
+    var server_pub:    u8[32] = [0; 32];
+    var ecdhe_secret:  u8[32] = [0; 32];
     defer core::secure_zeroize_32(ecdhe_secret);
-    guard ok_ecdhe else {
+    guard generate_server_handshake_keys(client_pub, server_random, server_pub, ecdhe_secret) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }

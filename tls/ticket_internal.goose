@@ -93,6 +93,8 @@ fn lookup_ticket_by_identity_full(
     };
     guard ticket_id.len > 0 else { return false; }
     let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
+    native_tls_state_lock(TLS_LOCK_TICKET_CACHE);
+    defer native_tls_state_unlock(TLS_LOCK_TICKET_CACHE);
     for &entry in g_tls13_tickets {
         if entry.in_use && core::ct_eq_bytes(entry.ticket[..], ticket_id) {
             guard is_cached_ticket_fresh(entry, cur_ms) &&

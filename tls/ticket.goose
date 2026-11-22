@@ -131,6 +131,8 @@ fn store_session_ticket(
     }
     guard psk.len == 32 || psk.len == 48 else { return; }
     let stamp_ms = if issued_at_ms > 0 { issued_at_ms } else { core::unix_milli(core::now()) };
+    tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
+    defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
     for &entry in tls_internal::g_tls13_tickets {
         if entry.in_use && entry.server_name[..] == server_name {
             tls_internal::populate_cached_ticket_slot(
@@ -171,6 +173,8 @@ fn lookup_session_ticket_full<B>(
     };
     guard server_name.len > 0 else { return false; }
     let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
+    tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
+    defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
     for &entry in tls_internal::g_tls13_tickets {
         if entry.in_use && entry.server_name[..] == server_name {
             guard tls_internal::is_cached_ticket_fresh(entry, cur_ms) &&
@@ -203,6 +207,8 @@ fn lookup_session_ticket<B>(
     };
     guard server_name.len > 0 else { return false; }
     let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
+    tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
+    defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
     for &entry in tls_internal::g_tls13_tickets {
         if entry.in_use && entry.server_name[..] == server_name {
             guard tls_internal::is_cached_ticket_fresh(entry, cur_ms) &&
@@ -221,6 +227,8 @@ fn lookup_session_ticket<B>(
 
 // Clears all cached TLS 1.3 session tickets and wipes their PSKs.
 fn clear_session_tickets() {
+    tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
+    defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
     for &entry in tls_internal::g_tls13_tickets {
         core::secure_zeroize_slice(entry.psk[..]);
         entry.psk.clear();
