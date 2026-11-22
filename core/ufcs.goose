@@ -57,9 +57,6 @@ fn ::split_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], boo
 fn ::rsplit_once_byte(s: const u8[:], delim: u8) -> const u8[:], const u8[:], bool {
     return core::rsplit_once_byte(s, delim);
 }
-fn ::split_once(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
-    return core::split_once(s, delim);
-}
 fn ::split_once_fold(s: const u8[:], delim: const u8[:]) -> const u8[:], const u8[:], bool {
     return core::split_once_fold(s, delim);
 }

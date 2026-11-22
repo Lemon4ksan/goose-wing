@@ -113,8 +113,9 @@ fn test_http2_content_length_overflow_defense(t: lit::T&) {
 // 4. OpenSSL #31392 & Go #71208: URI NameConstraints & IPv6 Zone
 // ----------------------------------------------------------------------------
 fn test_openssl_31392_uri_name_constraints_nul(t: lit::T&) {
-    t.run("OpenSSL #31392 / RFC 5280 В§4.2.1.10: URI matching against DNS name constraint") { sub =>
-        sub.assert_true(tls::match_uri_name_constraint("https://api.example.com/v1", "example.com"), "Subdomain matches constraint");
+    t.run("OpenSSL #31392 / RFC 5280 §4.2.1.10: URI matching against DNS name constraint") { sub =>
+        sub.assert_true(tls::match_uri_name_constraint("https://api.example.com/v1", ".example.com"), "Subdomain matches dotted URI constraint");
+        sub.assert_false(tls::match_uri_name_constraint("https://api.example.com/v1", "example.com"), "Subdomain rejected by exact-host URI constraint");
         sub.assert_true(tls::match_uri_name_constraint("https://example.com/login", "example.com"), "Exact domain matches constraint");
         sub.assert_false(tls::match_uri_name_constraint("https://evil.com/login", "example.com"), "Foreign domain must be rejected");
     };

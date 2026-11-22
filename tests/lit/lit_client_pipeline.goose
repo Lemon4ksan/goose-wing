@@ -7,8 +7,8 @@
 
 import std;
 import wing from "../..";
-import args from "../../cli";
-import rules from "../../cli";
+import wing.cli.args;
+import wing.cli.rules;
 
 // ============================================================================
 // 1. cli_bug_hunter_regression (1/9)

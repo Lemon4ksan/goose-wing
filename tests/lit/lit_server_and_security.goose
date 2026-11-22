@@ -193,7 +193,8 @@ fn test_cve_2026_78667_range_header_flood() {
 }
 
 fn test_openssl_cve_2009_2408_uri_nul() {
-    assert(tls::match_uri_name_constraint("https://api.example.com/v1", "example.com"));
+    assert(tls::match_uri_name_constraint("https://api.example.com/v1", ".example.com"));
+    assert(!tls::match_uri_name_constraint("https://api.example.com/v1", "example.com"));
     assert(tls::match_uri_name_constraint("https://example.com/login", "example.com"));
     assert(!tls::match_uri_name_constraint("https://evil.com/login", "example.com"));
     print("URI_NAME_CONSTRAINTS_DOMAINS: OK");
