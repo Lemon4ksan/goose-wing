@@ -41,7 +41,7 @@ fn ws_deflate_message_slice(
 ) -> const u8[:], bool {
     guard raw.len > 0 else { return "", false; }
     shared.compress_buf.clear();
-    let ok = core::deflate(raw, shared.compress_buf, 6);
+    let ok = core::deflate_sync_flush_with_dict(raw, shared.compress_buf, 6, "", 32768);
     guard ok && shared.compress_buf.len > 0 else {
         if reset_window {
             shared.compress_buf.clear();
@@ -152,8 +152,13 @@ fn deflate_message_dedicated<B>(
     var committed = false;
     defer if !committed { dedicated.compress_buf.clear(); };
 
+    let win_bytes = if dedicated.window_kb > 0 {
+        min(core::mul_sat_i64(dedicated.window_kb, 1024), 32768)
+    } else {
+        32768
+    };
     let dict = if reset_window { "" } else { dedicated.history[..] };
-    let ok = core::deflate_with_dict(raw, dedicated.compress_buf, 6, dict);
+    let ok = core::deflate_sync_flush_with_dict(raw, dedicated.compress_buf, 6, dict, win_bytes);
     guard ok && dedicated.compress_buf.len > 0 else { return false; }
 
     let eff_len = realtime_internal::strip_pmd_sync_flush_tail(dedicated.compress_buf[..]);

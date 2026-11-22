@@ -723,43 +723,190 @@ inline fn flush_ws_wire(conn_fd: i64, wire: const u8[:]) {
     }
 }
 
+// Session-scoped RFC 7692 permessage-deflate scratch and sliding-window state.
+// Allocated once per WebSocket session outside the frame loop (0B per-frame allocation).
+root struct WsPmdSessionState {
+    rx_history:   u8[..32768] = [],
+    tx_history:   u8[..32768] = [],
+    rx_comp_buf:  u8[>..]     = [],
+    rx_plain_buf: u8[>..]     = [],
+    tx_comp_buf:  u8[>..]     = [],
+}
+
+inline fn pmd_window_bits_to_bytes(bits: u8) -> i64 {
+    let clamped = max(9, min(bits as i64, 15)) as u32;
+    return core::shl_sat_u64(1, clamped) as i64;
+}
+
+fn update_pmd_window_history(hist: u8[..32768]&, raw: const u8[:], win_bytes: i64) {
+    let cap_win = max(512, min(win_bytes, 32768));
+    guard raw.len > 0 else { return; }
+    if raw.len >= cap_win {
+        let _ = hist.try_set(raw[core::sub_sat_i64(raw.len, cap_win)..]);
+        return;
+    }
+    let keep = core::sub_sat_i64(cap_win, raw.len);
+    if hist.len > keep {
+        let drop_n = core::sub_sat_i64(hist.len, keep);
+        hist.compact_wire_buffer(drop_n);
+    }
+    let _ = hist.try_append(raw);
+}
+
+fn inflate_ws_pmd_frame(
+    ws:      const realtime::WebSocketSession&,
+    payload: const u8[:],
+    pmd:     WsPmdSessionState&,
+    max_pay: i64,
+) -> core::CompressError {
+    pmd.rx_plain_buf.clear();
+    pmd.rx_comp_buf.clear();
+    guard payload.len > 0 && max_pay > 0 else { return core::CompressError.CorruptedBitstream; }
+
+    let tail: u8[6] = [0x00, 0x00, 0xFF, 0xFF, 0x03, 0x00];
+    pmd.rx_comp_buf.append(payload);
+    pmd.rx_comp_buf.append(tail[..]);
+
+    let rx_win = pmd_window_bits_to_bytes(ws.client_max_window_bits);
+    let reset_rx = realtime::ws_should_reset_decompressor(ws);
+    let dict = if reset_rx { "" } else { pmd.rx_history[..] };
+
+    let err, _ = core::inflate_ex(pmd.rx_comp_buf[..], pmd.rx_plain_buf, dict, max_pay, rx_win);
+    if err != core::CompressError.None {
+        pmd.rx_plain_buf.clear();
+        guard err != core::CompressError.OutputBufferOverflow else {
+            return core::CompressError.OutputBufferOverflow;
+        }
+        let err_raw, _ = core::inflate_ex(payload, pmd.rx_plain_buf, dict, max_pay, rx_win);
+        guard err_raw == core::CompressError.None else { return err_raw; }
+    }
+
+    if reset_rx {
+        pmd.rx_history.clear();
+    } else {
+        update_pmd_window_history(pmd.rx_history, pmd.rx_plain_buf[..], rx_win);
+    }
+    return core::CompressError.None;
+}
+
+fn send_ws_pmd_echo<OutBuf>(
+    ws:       realtime::WebSocketSession&,
+    opcode:   u8,
+    plain:    const u8[:],
+    pmd:      WsPmdSessionState&,
+    out_wire: OutBuf&,
+) -> bool {
+    guard ws.permessage_deflate && !ws.is_closed && !ws.close_sent && !ws.close_received else {
+        return false;
+    }
+    let tx_win = pmd_window_bits_to_bytes(ws.server_max_window_bits);
+    let reset_tx = realtime::ws_should_reset_compressor(ws);
+    let dict = if reset_tx { "" } else { pmd.tx_history[..] };
+    pmd.tx_comp_buf.clear();
+    guard core::deflate_sync_flush_with_dict(plain, pmd.tx_comp_buf, 4, dict, tx_win) else {
+        return false;
+    }
+    let eff_len = strip_pmd_sync_flush_tail(pmd.tx_comp_buf[..]);
+    guard eff_len > 0 else { return false; }
+
+    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    realtime::encode_ws_frame_compressed(out_wire, opcode, pmd.tx_comp_buf[..eff_len], ws.is_client, mask, true);
+    if reset_tx {
+        pmd.tx_history.clear();
+    } else {
+        update_pmd_window_history(pmd.tx_history, plain, tx_win);
+    }
+    return true;
+}
+
 fn dispatch_ws_data_turn<Stage, OutBuf, ReplyBuf>(
-    ws:        realtime::WebSocketSession&,
-    stage:     Stage&,
-    view:      const realtime::WsMessageView&,
-    pmd_comp:  realtime::SharedWsCompressor&,
-    pmd_plain: u8[..65536]&,
-    out_wire:  OutBuf&,
-    reply:     ReplyBuf&,
+    conn_fd:  i64,
+    ws:       realtime::WebSocketSession&,
+    stage:    Stage&,
+    view:     const realtime::WsMessageView&,
+    pmd:      WsPmdSessionState&,
+    out_wire: OutBuf&,
+    reply:    ReplyBuf&,
 ) {
+    reply.clear();
+    out_wire.clear();
     if !view.is_compressed {
-        out_wire.clear();
-        on_ws_message(stage, ws, view, out_wire);
+        if !ws.permessage_deflate || !send_ws_pmd_echo(ws, view.opcode, view.payload, pmd, out_wire) {
+            on_ws_message(stage, ws, view, out_wire);
+        }
+        flush_ws_wire(conn_fd, out_wire[..]);
         return;
     }
     let max_pay = if ws.max_payload_length > 0 {
-        min(ws.max_payload_length, 65536) as i64
+        min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64
     } else {
-        65536
+        16777216
     };
-    let reset_win = realtime::ws_should_reset_decompressor(ws);
-    if !pmd_comp.ws_inflate_message(view.payload, pmd_plain, max_pay, reset_win) {
-        ws.close(rfc::WS_STATUS_PROTOCOL_ERROR, "invalid permessage-deflate stream", reply);
+    let inf_err = inflate_ws_pmd_frame(ws, view.payload, pmd, max_pay);
+    if inf_err == core::CompressError.OutputBufferOverflow {
+        ws.close(rfc::WS_STATUS_MESSAGE_TOO_BIG, "compressed message exceeds max payload", reply);
+        flush_ws_wire(conn_fd, reply[..]);
         return;
     }
-    if view.opcode == rfc::WS_OPCODE_TEXT && !pmd_plain[..].validate_utf8() {
+    if inf_err != core::CompressError.None {
+        ws.close(rfc::WS_STATUS_PROTOCOL_ERROR, "invalid permessage-deflate stream", reply);
+        flush_ws_wire(conn_fd, reply[..]);
+        return;
+    }
+    if view.opcode == rfc::WS_OPCODE_TEXT && !pmd.rx_plain_buf[..].validate_utf8() {
         ws.close(rfc::WS_STATUS_INVALID_PAYLOAD, "invalid UTF-8 in compressed text frame", reply);
+        flush_ws_wire(conn_fd, reply[..]);
         return;
     }
     let inflated_view = realtime::WsMessageView {
         opcode:        view.opcode,
-        payload:       pmd_plain[..],
+        payload:       pmd.rx_plain_buf[..],
         is_valid:      true,
         is_compressed: false,
         ..
     };
-    out_wire.clear();
-    on_ws_message(stage, ws, inflated_view, out_wire);
+    if !send_ws_pmd_echo(ws, inflated_view.opcode, inflated_view.payload, pmd, out_wire) {
+        on_ws_message(stage, ws, inflated_view, out_wire);
+    }
+    flush_ws_wire(conn_fd, out_wire[..]);
+}
+
+fn drain_ws_session_frames_pmd<Stage, FragBuf, OutBuf>(
+    conn_fd:  i64,
+    ws:       realtime::WebSocketSession&,
+    stage:    Stage&,
+    in_slice: u8[:],
+    frag_buf: FragBuf&,
+    pmd:      WsPmdSessionState&,
+    out_wire: OutBuf&,
+) -> i64 {
+    var cursor: i64        = 0;
+    var reply:  u8[..1024] = [];
+    let max_pay_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
+    let eff_frag_cap = if max_pay_i64 > 0 {
+        min(ws_buf_cap(frag_buf), max_pay_i64)
+    } else {
+        ws_buf_cap(frag_buf)
+    };
+    while core::add_sat_i64(cursor, 2) <= in_slice.len && !ws.is_closed {
+        reply.clear();
+        let consumed, handled, view = consume_frame_view_into(
+            ws, in_slice[cursor..], frag_buf, eff_frag_cap, reply,
+        );
+        if !handled || consumed <= 0 {
+            break;
+        }
+        cursor = core::add_sat_i64(cursor, consumed);
+        flush_ws_wire(conn_fd, reply[..]);
+        if is_ws_data_message(view) {
+            dispatch_ws_data_turn(conn_fd, ws, stage, view, pmd, out_wire, reply);
+        }
+        if ws.is_closed {
+            ws_drain_and_close(conn_fd);
+            break;
+        }
+    }
+    return cursor;
 }
 
 // ---- PerMessage-Deflate Internal Helpers (RFC 7692) ----------------------

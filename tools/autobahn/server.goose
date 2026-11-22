@@ -20,6 +20,7 @@ fn main() {
     let ws_behavior = realtime::WsBehavior {
         max_payload_length: 16777216,
         idle_timeout_s:     30,
+        compression:        realtime::WS_COMPRESS_DEDICATED,
         ..
     };
     let _ = server::add_ws_route(server, "/", ws_behavior);

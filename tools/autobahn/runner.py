@@ -175,7 +175,7 @@ CATEGORY_NAMES = {
     "4": "Opcodes (Control & Reserved Rejection)",
     "5": "Fragmentation (Interleaved Control Frames)",
     "6": "UTF-8 Validation (RFC 3629 Conformance)",
-    "7": "Close Handshake (Codes, Reasons & Clean TCP)",
+    "7": "Close Handshake (Codes, Reasons)",
     "9": "Limits & Performance (High Throughput)",
     "10": "Miscellaneous & Reporting",
     "12": "WebSocket Compression (RFC 7692 Deflate)",

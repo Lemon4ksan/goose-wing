@@ -1380,14 +1380,7 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     ws.max_lifetime_s = behavior.max_lifetime_s;
     ws.send_pings_automatically = behavior.send_pings_automatically;
     ws.reset_idle_timeout_on_send = behavior.reset_idle_timeout_on_send;
-    let ua_upg = req.header("user-agent");
-    if behavior.compression != realtime::WS_COMPRESS_DISABLED && !realtime::ws_has_broken_compression(ua_upg) {
-        let client_ext = req.header("sec-websocket-extensions");
-        if client_ext.contains_fold("permessage-deflate") {
-            ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-            ws.enable_permessage_deflate(behavior.compression);
-        }
-    }
+    negotiate_ws_route_compression(req, ws_res, ws, behavior.compression);
     out_wire.clear();
     server::serialize_http1_response(
         ws_res, server.server_name[..], out_wire, 0, resolve_server_header_policy(server),
@@ -1397,6 +1390,42 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
     in_buf.compact_wire_buffer(consumed);
     realtime::serve_ws_session_buf(conn_fd, ws, stage, in_buf, ws_frag_buf, out_wire);
     return true;
+}
+
+// Negotiates RFC 7692 permessage-deflate parameters from the upgrade request and configures `ws`.
+fn negotiate_ws_route_compression(
+    req:         const http::Request&,
+    ws_res:      http::Response&,
+    ws:          realtime::WebSocketSession&,
+    compression: u16,
+) {
+    let ua_upg = req.header("user-agent");
+    guard compression != realtime::WS_COMPRESS_DISABLED && !realtime::ws_has_broken_compression(ua_upg) else {
+        return;
+    }
+    let client_ext = req.header("sec-websocket-extensions");
+    guard client_ext.len > 0 else { return; }
+
+    let dedicated = compression == realtime::WS_COMPRESS_DEDICATED;
+    let srv_cfg = realtime::PerMessageDeflateConfig {
+        server_max_window_bits:     rfc::WS_PMD_MAX_WINDOW_BITS,
+        client_max_window_bits:     rfc::WS_PMD_MAX_WINDOW_BITS,
+        server_no_context_takeover: !dedicated,
+        client_no_context_takeover: !dedicated,
+    };
+    let neg, ok_neg = realtime::negotiate_permessage_deflate(client_ext, srv_cfg);
+    guard ok_neg else { return; }
+
+    var ext_val: u8[..192] = [];
+    realtime::append_permessage_deflate_response(neg, ext_val);
+    ws_res.set_header("Sec-WebSocket-Extensions", ext_val[..]);
+    let opts = realtime::WsContextTakeoverOptions {
+        server_no_context: neg.server_no_context_takeover,
+        client_no_context: neg.client_no_context_takeover,
+    };
+    ws.enable_permessage_deflate(compression, opts);
+    ws.server_max_window_bits = neg.server_max_window_bits;
+    ws.client_max_window_bits = neg.client_max_window_bits;
 }
 
 // Flushes buffered HTTP/1.1 response frames in `out_wire` to `conn_fd` and resets the cork buffer.

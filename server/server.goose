@@ -393,17 +393,7 @@ fn complete_ws_upgrade<Req, B>(
     sess.max_lifetime_s = entry.behavior.max_lifetime_s;
     sess.send_pings_automatically = entry.behavior.send_pings_automatically;
     sess.reset_idle_timeout_on_send = entry.behavior.reset_idle_timeout_on_send;
-
-    let ua_upg = req.header("user-agent");
-    let allow_comp = entry.behavior.compression != realtime::WS_COMPRESS_DISABLED
-        && !realtime::ws_has_broken_compression(ua_upg);
-    if allow_comp {
-        let client_ext = req.header("sec-websocket-extensions");
-        if client_ext.contains_fold("permessage-deflate") {
-            ws_res.set_header("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover");
-            sess.enable_permessage_deflate(entry.behavior.compression);
-        }
-    }
+    server_internal::negotiate_ws_route_compression(req, ws_res, sess, entry.behavior.compression);
     serialize_http1_response(
         ws_res, server.server_name[..], wire_out, 0, server_internal::resolve_server_header_policy(server),
     );

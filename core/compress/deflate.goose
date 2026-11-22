@@ -1768,6 +1768,7 @@ struct DeflateConfig {
     good_len:  i32,
     max_lazy:  i32,
     nice_len:  i32,
+    max_dist:  i64 = 32768,
 }
 
 fn get_deflate_config(level: i32) -> DeflateConfig {
@@ -2180,6 +2181,7 @@ fn find_longest_match_nodict(
     nice_len:  i32,
     prev:      const i32[:],
     mask:      i64,
+    max_dist:  i64 = 32768,
 ) -> i32, i32 {
     let max_l = min(sub_sat_i64(src.len, pos), 258);
     guard max_l >= 3 else { return 0, 0; }
@@ -2195,7 +2197,7 @@ fn find_longest_match_nodict(
     while cand >= 0 && chain_count < chain_lim {
         let cand_i64 = cand as i64;
         let dist = sub_sat_i64(pos, cand_i64);
-        if dist > 32768 || dist <= 0 { break; }
+        if dist > max_dist || dist <= 0 { break; }
 
         let l = probe_cand_len_nodict(src, pos, cand_i64, cur_len, max_l, has_u32, target_u32);
         if l > cur_len {
@@ -2203,7 +2205,7 @@ fn find_longest_match_nodict(
             cur_dist = dist as! i32;
             if cur_len >= nice_len || cur_len >= 258 { break; }
         }
-        if dist == 32768 { break; }
+        if dist == max_dist { break; }
         cand = prev[cand_i64 & mask];
         chain_count += 1;
     }
@@ -2385,7 +2387,7 @@ fn lz77_run_nodict_tables(
                 max_chain = ((max_chain as! u32) >> 2) as! i32;
             }
             cur_len, cur_dist = find_longest_match_nodict(
-                src, pos, cand, max_chain, cfg.nice_len, prev, mask,
+                src, pos, cand, max_chain, cfg.nice_len, prev, mask, cfg.max_dist,
             );
         }
 
@@ -2503,6 +2505,7 @@ fn find_longest_match_dict(
     src:        const u8[:],
     total_len:  i64,
     prev:       const i32[:],
+    max_dist:   i64 = 32768,
 ) -> i32, i32 {
     var cur_len:  i32 = 0;
     var cur_dist: i32 = 0;
@@ -2513,7 +2516,7 @@ fn find_longest_match_dict(
     while cand >= 0 && chain_count < chain_lim {
         let cand_i64 = cand as i64;
         let dist = sub_sat_i64(pos, cand_i64);
-        if dist > 32768 || dist <= 0 { break; }
+        if dist > max_dist || dist <= 0 { break; }
 
         if !match_endpoint_mismatch_dict(pos, cand_i64, cur_len, total_len, dict_slice, dict_len, src) {
             let l = match_len_at_offset_dict(pos, cand_i64, dict_slice, dict_len, src, total_len);
@@ -2523,7 +2526,7 @@ fn find_longest_match_dict(
                 if cur_len >= nice_len || cur_len >= 258 { break; }
             }
         }
-        if dist == 32768 { break; }
+        if dist == max_dist { break; }
         cand = prev[cand_i64 & 32767];
         chain_count += 1;
     }
@@ -2657,7 +2660,7 @@ fn lz77_find_matches_dict(
             }
             cur_len, cur_dist = find_longest_match_dict(
                 pos, cand, max_chain, cfg.nice_len,
-                dict_slice, dict_len, src, total_len, prev[..],
+                dict_slice, dict_len, src, total_len, prev[..], cfg.max_dist,
             );
         }
 
@@ -2945,28 +2948,31 @@ inline fn finalize_deflate_block<B>(
 }
 
 fn deflate_block<B>(
-    src:      const u8[:],
-    out:      B&,
-    w:        BitWriter&,
-    level:    i32         = 6,
-    is_final: bool        = true,
-    dict:     const u8[:] = "",
+    src:             const u8[:],
+    out:             B&,
+    w:               BitWriter&,
+    level:           i32         = 6,
+    is_final:        bool        = true,
+    dict:            const u8[:] = "",
+    max_window_dist: i64         = 32768,
 ) -> bool {
     if w.overflow { return false; }
     let out_mark = out.len;
     let saved_w = w;
+    let eff_dist = max(256, min(max_window_dist, 32768));
 
     if level <= 0 {
         emit_stored_blocks(src, out, w, is_final);
         return finalize_deflate_block(true, out, out_mark, w, saved_w);
     }
-    if level == 1 && dict.len == 0 {
+    if level == 1 && dict.len == 0 && eff_dist >= 32768 {
         let ok_l1 = deflate_fast_level1(src, out, w, is_final);
         return finalize_deflate_block(ok_l1, out, out_mark, w, saved_w);
     }
 
     let bfinal_bit: u32 = if is_final { 1 } else { 0 };
-    let cfg = get_deflate_config(level);
+    var cfg = get_deflate_config(level);
+    cfg.max_dist = eff_dist;
 
     var tokens:     LzToken[>..] = [];
     var lit_count:  i32[288]     = [0; 288];
@@ -2975,7 +2981,7 @@ fn deflate_block<B>(
     if dict.len == 0 {
         lz77_find_matches_nodict(src, cfg, tokens, lit_count, dist_count);
     } else {
-        let dict_slice = if dict.len > 32768 { dict[^32768..] } else { dict };
+        let dict_slice = if dict.len > eff_dist { dict[^eff_dist..] } else { dict };
         let dict_len = dict_slice.len;
         let total_len = add_sat_i64(dict_len, src.len);
         lz77_find_matches_dict(
@@ -3021,4 +3027,32 @@ fn deflate<B>(src: const u8[:], out: B&, level: i32 = 6) -> bool {
 fn deflate_with_dict<B>(src: const u8[:], out: B&, level: i32, dict: const u8[:]) -> bool {
     var w = BitWriter { bit_buf: 0, bit_count: 0 };
     return deflate_block(src, out, w, level, true, dict);
+}
+
+// Compresses src using RFC 1951 Deflate with Z_SYNC_FLUSH (BFINAL=0 + empty stored block
+// ending with 0x00 0x00 0xFF 0xFF) and configurable LZ77 window distance (RFC 7692 Section 7.2.1).
+fn deflate_sync_flush_with_dict<B>(
+    src:             const u8[:],
+    out:             B&,
+    level:           i32,
+    dict:            const u8[:],
+    max_window_dist: i64 = 32768,
+) -> bool {
+    let out_mark = out.len;
+    var w = BitWriter { bit_buf: 0, bit_count: 0 };
+    if src.len > 0 {
+        guard deflate_block(src, out, w, level, false, dict, max_window_dist) else {
+            out.resize(out_mark);
+            return false;
+        }
+    }
+    write_bits(w, 0, 3, out);
+    flush_bits(w, out);
+    record_bw_write(w, comp_try_write_le_u16(out, 0));
+    record_bw_write(w, comp_try_write_le_u16(out, 0xFFFF));
+    if w.overflow {
+        out.resize(out_mark);
+        return false;
+    }
+    return true;
 }

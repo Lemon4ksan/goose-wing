@@ -294,6 +294,8 @@ struct WebSocketSession {
     permessage_deflate:         bool = false,
     server_no_context_takeover: bool = true,
     client_no_context_takeover: bool = true,
+    server_max_window_bits:     u8   = 15,
+    client_max_window_bits:     u8   = 15,
 
     // Per-socket UserData / Typed User Context (uWebSockets getUserData pattern)
     user_tag:  u64       = 0,
@@ -856,40 +858,10 @@ fn drain_ws_session_frames<Stage, FragBuf, OutBuf>(
     frag_buf: FragBuf&,
     out_wire: OutBuf&,
 ) -> i64 {
-    var cursor: i64        = 0;
-    var reply:  u8[..1024] = [];
-    var pmd_comp = SharedWsCompressor { .. };
-    var pmd_plain: u8[..65536] = [];
-    while core::add_sat_i64(cursor, 2) <= in_slice.len && !ws.is_closed {
-        reply.clear();
-        let max_pay_i64 = min(ws.max_payload_length, 0x7FFFFFFFFFFFFFFF) as i64;
-        let eff_frag_cap = if max_pay_i64 > 0 {
-            min(realtime_internal::ws_buf_cap(frag_buf), max_pay_i64)
-        } else {
-            realtime_internal::ws_buf_cap(frag_buf)
-        };
-        let consumed, handled, view = realtime_internal::consume_frame_view_into(
-            ws, in_slice[cursor..], frag_buf, eff_frag_cap, reply,
-        );
-        if !handled || consumed <= 0 {
-            break;
-        }
-        cursor = core::add_sat_i64(cursor, consumed);
-        realtime_internal::flush_ws_wire(conn_fd, reply[..]);
-        if realtime_internal::is_ws_data_message(view) {
-            reply.clear();
-            realtime_internal::dispatch_ws_data_turn(ws, stage, view, pmd_comp, pmd_plain, out_wire, reply);
-            realtime_internal::flush_ws_wire(conn_fd, reply[..]);
-            if !ws.is_closed {
-                realtime_internal::flush_ws_wire(conn_fd, out_wire[..]);
-            }
-        }
-        if ws.is_closed {
-            realtime_internal::ws_drain_and_close(conn_fd);
-            break;
-        }
-    }
-    return cursor;
+    var pmd = realtime_internal::WsPmdSessionState { .. };
+    return realtime_internal::drain_ws_session_frames_pmd(
+        conn_fd, ws, stage, in_slice, frag_buf, pmd, out_wire,
+    );
 }
 
 // Drives an upgraded RFC 6455 WebSocket session using caller-supplied wire and fragment buffers.
@@ -903,8 +875,11 @@ fn serve_ws_session_buf<Stage, InBuf, FragBuf, OutBuf>(
 ) {
     var chunk_buf:   u8[..65536] = [];
     var close_reply: u8[..256]   = [];
+    var pmd = realtime_internal::WsPmdSessionState { .. };
     loop {
-        let consumed = drain_ws_session_frames(conn_fd, ws, stage, in_buf[..], frag_buf, out_wire);
+        let consumed = realtime_internal::drain_ws_session_frames_pmd(
+            conn_fd, ws, stage, in_buf[..], frag_buf, pmd, out_wire,
+        );
         if ws.is_closed {
             return;
         }
