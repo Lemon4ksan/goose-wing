@@ -7,10 +7,10 @@ Public entrypoints live in `namespace auth;` across `auth/types.goose`,
 `auth/introspection.goose`, `auth/dpop*.goose`, `auth/jwk.goose`,
 `auth/jwks.goose`, `auth/acme.goose`, `auth/jwt*.goose`, and `auth/jwe.goose`.
 Internal helpers are isolated in `namespace auth_internal;` across
-`auth/internal.goose`, `auth/digest_internal.goose`,
-`auth/dpop_leaf_internal.goose`, `auth/dpop_internal.goose`,
-`auth/jwk_internal.goose`, `auth/jwks_internal.goose`, and
-`auth/jwt_internal.goose`.
+`auth/internal.goose`, `auth/oauth_internal.goose`,
+`auth/digest_internal.goose`, `auth/dpop_leaf_internal.goose`,
+`auth/dpop_internal.goose`, `auth/jwk_internal.goose`,
+`auth/jwks_internal.goose`, and `auth/jwt_internal.goose`.
 
 ```goose
 import wing;

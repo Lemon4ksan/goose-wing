@@ -11,6 +11,7 @@ import core;
 import rfc.http;
 import .crypto_internal;
 import .policy_internal;
+import .privacypass_internal;
 
 // ---- Data Structures -----------------------------------------------------
 

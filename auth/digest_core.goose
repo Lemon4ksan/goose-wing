@@ -117,29 +117,42 @@ fn calculate_digest_ha1(
     cnonce:   const u8[:],
 ) -> u8[..64] {
     guard username.len > 0 && realm.len > 0 else { return []; }
-    var a1: u8[>..] = [];
-    defer core::secure_zeroize_slice(a1[..]);
-    a1.append(username);
-    a1.push(':');
-    a1.append(realm);
-    a1.push(':');
-    a1.append(password);
-
-    var ha1_base = digest_hash_hex(algo, a1[..]);
+    let a1_len = core::add_sat_i64(
+        core::add_sat_i64(username.len, realm.len),
+        core::add_sat_i64(password.len, 2),
+    );
+    var ha1_base: u8[..64] = [];
     defer core::secure_zeroize_slice(ha1_base[..]);
+    if a1_len <= auth_internal::DIGEST_STACK_FAST_CAP {
+        var a1: u8[..1024] = [];
+        defer core::secure_zeroize_slice(a1[..]);
+        auth_internal::append_digest_triple(a1, username, realm, password);
+        ha1_base = digest_hash_hex(algo, a1[..]);
+    } else {
+        var a1: u8[>..] = [];
+        defer core::secure_zeroize_slice(a1[..]);
+        auth_internal::append_digest_triple(a1, username, realm, password);
+        ha1_base = digest_hash_hex(algo, a1[..]);
+    }
     guard ha1_base.len > 0 else { return []; }
     if !rfc::is_sess_digest_algo(algo) {
         return ha1_base;
     }
 
     guard nonce.len > 0 && cnonce.len > 0 else { return []; }
+    let sess_len = core::add_sat_i64(
+        core::add_sat_i64(ha1_base.len, nonce.len),
+        core::add_sat_i64(cnonce.len, 2),
+    );
+    if sess_len <= auth_internal::DIGEST_STACK_FAST_CAP {
+        var a1_sess: u8[..1024] = [];
+        defer core::secure_zeroize_slice(a1_sess[..]);
+        auth_internal::append_digest_triple(a1_sess, ha1_base[..], nonce, cnonce);
+        return digest_hash_hex(algo, a1_sess[..]);
+    }
     var a1_sess: u8[>..] = [];
     defer core::secure_zeroize_slice(a1_sess[..]);
-    a1_sess.append(ha1_base[..]);
-    a1_sess.push(':');
-    a1_sess.append(nonce);
-    a1_sess.push(':');
-    a1_sess.append(cnonce);
+    auth_internal::append_digest_triple(a1_sess, ha1_base[..], nonce, cnonce);
     return digest_hash_hex(algo, a1_sess[..]);
 }
 
@@ -152,16 +165,30 @@ fn calculate_digest_ha2(
     body:        const u8[:],
 ) -> u8[..64] {
     guard method.len > 0 && uri.len > 0 else { return []; }
+    var body_hex: u8[..64] = [];
+    defer core::secure_zeroize_slice(body_hex[..]);
+    var a2_len = core::add_sat_i64(core::add_sat_i64(method.len, uri.len), 1);
+    if is_auth_int {
+        body_hex = digest_hash_hex(algo, body);
+        guard body_hex.len > 0 else { return []; }
+        a2_len = core::add_sat_i64(a2_len, core::add_sat_i64(body_hex.len, 1));
+    }
+    if a2_len <= auth_internal::DIGEST_STACK_FAST_CAP {
+        var a2: u8[..1024] = [];
+        defer core::secure_zeroize_slice(a2[..]);
+        if is_auth_int {
+            auth_internal::append_digest_triple(a2, method, uri, body_hex[..]);
+        } else {
+            auth_internal::append_digest_pair(a2, method, uri);
+        }
+        return digest_hash_hex(algo, a2[..]);
+    }
     var a2: u8[>..] = [];
     defer core::secure_zeroize_slice(a2[..]);
-    a2.append(method);
-    a2.push(':');
-    a2.append(uri);
     if is_auth_int {
-        var body_hex = digest_hash_hex(algo, body);
-        guard body_hex.len > 0 else { return []; }
-        a2.push(':');
-        a2.append(body_hex[..]);
+        auth_internal::append_digest_triple(a2, method, uri, body_hex[..]);
+    } else {
+        auth_internal::append_digest_pair(a2, method, uri);
     }
     return digest_hash_hex(algo, a2[..]);
 }
@@ -177,22 +204,27 @@ fn calculate_digest_response(
     ha2_hex:    const u8[:],
 ) -> u8[..64] {
     guard ha1_hex.len > 0 && nonce.len > 0 && ha2_hex.len > 0 else { return []; }
-    var kd: u8[>..] = [];
-    defer core::secure_zeroize_slice(kd[..]);
-    kd.append(ha1_hex);
-    kd.push(':');
-    kd.append(nonce);
-    kd.push(':');
+    var kd_len = core::add_sat_i64(
+        core::add_sat_i64(ha1_hex.len, nonce.len),
+        core::add_sat_i64(ha2_hex.len, 2),
+    );
     if active_qop.len > 0 {
         guard nc_str.len > 0 && cnonce.len > 0 else { return []; }
-        kd.append(nc_str);
-        kd.push(':');
-        kd.append(cnonce);
-        kd.push(':');
-        kd.append(active_qop);
-        kd.push(':');
+        let qop_extra = core::add_sat_i64(
+            core::add_sat_i64(nc_str.len, cnonce.len),
+            core::add_sat_i64(active_qop.len, 3),
+        );
+        kd_len = core::add_sat_i64(kd_len, qop_extra);
     }
-    kd.append(ha2_hex);
+    if kd_len <= auth_internal::DIGEST_STACK_FAST_CAP {
+        var kd: u8[..1024] = [];
+        defer core::secure_zeroize_slice(kd[..]);
+        auth_internal::append_digest_kd_parts(kd, ha1_hex, nonce, nc_str, cnonce, active_qop, ha2_hex);
+        return digest_hash_hex(algo, kd[..]);
+    }
+    var kd: u8[>..] = [];
+    defer core::secure_zeroize_slice(kd[..]);
+    auth_internal::append_digest_kd_parts(kd, ha1_hex, nonce, nc_str, cnonce, active_qop, ha2_hex);
     return digest_hash_hex(algo, kd[..]);
 }
 
@@ -208,11 +240,16 @@ fn append_digest_uri<B>(out: B&, uri: const u8[:]) -> bool {
 // RFC 7616 Section 3.4.4: Computes H(username ":" realm) when `userhash=true` is negotiated.
 fn resolve_userhash(username: const u8[:], realm: const u8[:], algo: const u8[:]) -> u8[..64] {
     guard username.len > 0 && realm.len > 0 else { return []; }
+    let total_len = core::add_sat_i64(core::add_sat_i64(username.len, realm.len), 1);
+    if total_len <= auth_internal::DIGEST_STACK_FAST_CAP {
+        var buf: u8[..1024] = [];
+        defer core::secure_zeroize_slice(buf[..]);
+        auth_internal::append_digest_pair(buf, username, realm);
+        return digest_hash_hex(algo, buf[..]);
+    }
     var buf: u8[>..] = [];
     defer core::secure_zeroize_slice(buf[..]);
-    buf.append(username);
-    buf.push(':');
-    buf.append(realm);
+    auth_internal::append_digest_pair(buf, username, realm);
     return digest_hash_hex(algo, buf[..]);
 }
 

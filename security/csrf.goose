@@ -8,6 +8,7 @@ import std;
 import core;
 import rfc.http;
 import .policy_internal;
+import .fetch_policy_internal;
 
 // ---- fetch metadata attribute taxonomy -------------------------------------
 

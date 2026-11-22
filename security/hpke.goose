@@ -7,7 +7,7 @@ namespace security;
 
 import std;
 import core;
-import .crypto_internal;
+import .hpke_internal;
 
 // ---- RFC 9180 Identifiers and Code Points --------------------------------
 

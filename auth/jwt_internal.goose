@@ -305,25 +305,101 @@ inline fn record_custom_claim(
     parse_custom_claim_entry(key, reader, claims, had_error);
 }
 
+const JWT_JSON_STACK_CAP:     i64 = 2048;
+const JWT_COMBINED_STACK_CAP: i64 = 2400;
+
+inline fn max_jwt_header_json_len(header: const auth::JwtHeader&) -> i64 {
+    var str_bytes = core::add_sat_i64(
+        header.typ.len,
+        core::add_sat_i64(header.kid.len, header.cty.len),
+    );
+    for &cp in header.crit {
+        str_bytes = core::add_sat_i64(str_bytes, core::add_sat_i64(cp.name.len, 3));
+    }
+    return core::add_sat_i64(96, core::mul_sat_i64(str_bytes, 6));
+}
+
+inline fn max_jwt_claims_json_len(claims: const auth::JwtClaims&) -> i64 {
+    var str_bytes = core::add_sat_i64(
+        claims.iss.len,
+        core::add_sat_i64(claims.sub.len, claims.jti.len),
+    );
+    if claims.audiences.len > 0 {
+        for &a in claims.audiences {
+            str_bytes = core::add_sat_i64(str_bytes, core::add_sat_i64(a.len, 3));
+        }
+    } else {
+        str_bytes = core::add_sat_i64(str_bytes, claims.aud.len);
+    }
+    for &c in claims.custom_claims {
+        let entry = core::add_sat_i64(c.key.len, core::add_sat_i64(c.val_str.len, 32));
+        str_bytes = core::add_sat_i64(str_bytes, entry);
+    }
+    return core::add_sat_i64(192, core::mul_sat_i64(str_bytes, 6));
+}
+
+inline fn jwt_fits_stack_4096(header: const auth::JwtHeader&, claims: const auth::JwtClaims&) -> bool {
+    let hdr_max = max_jwt_header_json_len(header);
+    let clm_max = max_jwt_claims_json_len(claims);
+    return hdr_max <= JWT_JSON_STACK_CAP &&
+        clm_max <= JWT_JSON_STACK_CAP &&
+        core::add_sat_i64(hdr_max, clm_max) <= JWT_COMBINED_STACK_CAP;
+}
+
+inline fn append_b64_jwt_header<B>(header: const auth::JwtHeader&, out: B&) -> bool {
+    if max_jwt_header_json_len(header) <= JWT_JSON_STACK_CAP {
+        var hdr_json: u8[..2048] = [];
+        defer core::secure_zeroize_slice(hdr_json[..]);
+        guard auth::serialize_jwt_header(header, hdr_json) else { return false; }
+        var b64_hdr: u8[..2800] = [];
+        defer core::secure_zeroize_slice(b64_hdr[..]);
+        core::base64url_encode(hdr_json[..], b64_hdr);
+        return out.try_append(b64_hdr[..]);
+    }
+    var hdr_json: u8[>..] = [];
+    defer core::secure_zeroize_slice(hdr_json[..]);
+    guard auth::serialize_jwt_header(header, hdr_json) else { return false; }
+    var b64_hdr: u8[>..] = [];
+    defer core::secure_zeroize_slice(b64_hdr[..]);
+    core::base64url_encode(hdr_json[..], b64_hdr);
+    return out.try_append(b64_hdr[..]);
+}
+
+inline fn append_b64_jwt_claims<B>(claims: const auth::JwtClaims&, out: B&) -> bool {
+    if max_jwt_claims_json_len(claims) <= JWT_JSON_STACK_CAP {
+        var clm_json: u8[..2048] = [];
+        defer core::secure_zeroize_slice(clm_json[..]);
+        guard auth::serialize_jwt_claims(claims, clm_json) else { return false; }
+        var b64_clm: u8[..2800] = [];
+        defer core::secure_zeroize_slice(b64_clm[..]);
+        core::base64url_encode(clm_json[..], b64_clm);
+        return out.try_append(b64_clm[..]);
+    }
+    var clm_json: u8[>..] = [];
+    defer core::secure_zeroize_slice(clm_json[..]);
+    guard auth::serialize_jwt_claims(claims, clm_json) else { return false; }
+    var b64_clm: u8[>..] = [];
+    defer core::secure_zeroize_slice(b64_clm[..]);
+    core::base64url_encode(clm_json[..], b64_clm);
+    return out.try_append(b64_clm[..]);
+}
+
 // Encodes JOSE header + claims JSON into "<b64_header>.<b64_claims>" in `out`.
 fn build_jwt_signing_input<B>(
     header: const auth::JwtHeader&,
     claims: const auth::JwtClaims&,
     out:    B&,
 ) -> bool {
-    var hdr_json: u8[..2048] = [];
-    guard auth::serialize_jwt_header(header, hdr_json) else { return false; }
-    var clm_json: u8[>..] = [];
-    defer core::secure_zeroize_slice(clm_json[..]);
-    guard auth::serialize_jwt_claims(claims, clm_json) else { return false; }
-
-    var b64_hdr: u8[..2800] = [];
-    var b64_clm: u8[>..]    = [];
-    defer core::secure_zeroize_slice(b64_clm[..]);
-    core::base64url_encode(hdr_json[..], b64_hdr);
-    core::base64url_encode(clm_json[..], b64_clm);
-
-    return out.try_append(b64_hdr[..]) && out.try_push('.' as u8) && out.try_append(b64_clm[..]);
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { out.resize(saved_len); };
+    guard append_b64_jwt_header(header, out) &&
+        out.try_push('.' as u8) &&
+        append_b64_jwt_claims(claims, out) else {
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 inline fn append_jwt_hmac_signature<B>(
@@ -363,6 +439,112 @@ inline fn append_jwt_eddsa_signature<B>(
     defer core::secure_zeroize_slice(b64_sig[..]);
     core::base64url_encode(sig[..], b64_sig);
     return out.try_push('.' as u8) && out.try_append(b64_sig[..]);
+}
+
+inline fn commit_signed_jwt_with_b64_sig<B>(
+    signing_input: const u8[:],
+    b64_sig:       const u8[:],
+    out:           B&,
+) -> bool {
+    var committed = false;
+    defer if !committed { out.resize(0); };
+    out.clear();
+    guard out.try_append(signing_input) && out.try_push('.' as u8) && out.try_append(b64_sig) else {
+        return false;
+    }
+    committed = true;
+    return true;
+}
+
+inline fn finish_sign_jwt_hmac<T, B>(
+    header:     const auth::JwtHeader&,
+    claims:     const auth::JwtClaims&,
+    secret_key: const u8[:],
+    token_buf:  T&,
+    out:        B&,
+) -> bool {
+    guard build_jwt_signing_input(header, claims, token_buf) else { return false; }
+    let signing_len = token_buf.len;
+    guard append_jwt_hmac_signature(header.alg, secret_key, token_buf[..signing_len], token_buf) else {
+        return false;
+    }
+    var committed = false;
+    defer if !committed { out.resize(0); };
+    guard out.try_set(token_buf[..]) else { return false; }
+    committed = true;
+    return true;
+}
+
+inline fn finish_sign_jwt_eddsa<T, B>(
+    header:    const auth::JwtHeader&,
+    claims:    const auth::JwtClaims&,
+    seed_key:  const u8[32],
+    token_buf: T&,
+    out:       B&,
+) -> bool {
+    guard build_jwt_signing_input(header, claims, token_buf) else { return false; }
+    let signing_len = token_buf.len;
+    guard append_jwt_eddsa_signature(seed_key, token_buf[..signing_len], token_buf) else {
+        return false;
+    }
+    var committed = false;
+    defer if !committed { out.resize(0); };
+    guard out.try_set(token_buf[..]) else { return false; }
+    committed = true;
+    return true;
+}
+
+inline fn finish_sign_jwt_es256<T, B>(
+    header:    const auth::JwtHeader&,
+    claims:    const auth::JwtClaims&,
+    priv_key:  const u8[32],
+    token_buf: T&,
+    out:       B&,
+) -> bool {
+    guard build_jwt_signing_input(header, claims, token_buf) else { return false; }
+    var sig = core::ecdsa_p256_sign(priv_key, token_buf[..]);
+    defer core::secure_zeroize_64(sig);
+    var b64_sig: u8[..128] = [];
+    defer core::secure_zeroize_slice(b64_sig[..]);
+    core::base64url_encode(sig[..], b64_sig);
+    return commit_signed_jwt_with_b64_sig(token_buf[..], b64_sig[..], out);
+}
+
+inline fn finish_sign_jwt_rs256<T, B>(
+    header:    const auth::JwtHeader&,
+    claims:    const auth::JwtClaims&,
+    n_be:      const u8[:],
+    d_be:      const u8[:],
+    token_buf: T&,
+    out:       B&,
+) -> bool {
+    guard build_jwt_signing_input(header, claims, token_buf) else { return false; }
+    var sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(sig[..]);
+    guard core::rsa_pkcs1_sha256_sign(n_be, d_be, token_buf[..], sig) else { return false; }
+    var b64_sig: u8[..768] = [];
+    defer core::secure_zeroize_slice(b64_sig[..]);
+    core::base64url_encode(sig[..], b64_sig);
+    return commit_signed_jwt_with_b64_sig(token_buf[..], b64_sig[..], out);
+}
+
+inline fn finish_sign_jwt_ps256<T, B>(
+    header:    const auth::JwtHeader&,
+    claims:    const auth::JwtClaims&,
+    n_be:      const u8[:],
+    d_be:      const u8[:],
+    salt:      const u8[:],
+    token_buf: T&,
+    out:       B&,
+) -> bool {
+    guard build_jwt_signing_input(header, claims, token_buf) else { return false; }
+    var sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(sig[..]);
+    guard core::rsa_pss_sha256_sign(n_be, d_be, salt, token_buf[..], sig) else { return false; }
+    var b64_sig: u8[..768] = [];
+    defer core::secure_zeroize_slice(b64_sig[..]);
+    core::base64url_encode(sig[..], b64_sig);
+    return commit_signed_jwt_with_b64_sig(token_buf[..], b64_sig[..], out);
 }
 
 inline fn claims_match_audience(claims: const auth::JwtClaims&, expected: const u8[:]) -> bool {

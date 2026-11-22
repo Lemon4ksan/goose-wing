@@ -180,19 +180,14 @@ fn sign_jwt_hmac<B>(
     let min_len = auth_internal::hmac_min_key_len(header.alg);
     guard min_len > 0 && secret_key.len >= min_len else { return false; }
 
+    if auth_internal::jwt_fits_stack_4096(header, claims) {
+        var token_buf: u8[..4096] = [];
+        defer core::secure_zeroize_slice(token_buf[..]);
+        return auth_internal::finish_sign_jwt_hmac(header, claims, secret_key, token_buf, out);
+    }
     var token_buf: u8[>..] = [];
     defer core::secure_zeroize_slice(token_buf[..]);
-    guard auth_internal::build_jwt_signing_input(header, claims, token_buf) else { return false; }
-    let signing_len = token_buf.len;
-    guard auth_internal::append_jwt_hmac_signature(header.alg, secret_key, token_buf[..signing_len], token_buf) else {
-        return false;
-    }
-
-    var committed = false;
-    defer if !committed { out.resize(0); };
-    guard out.try_set(token_buf[..]) else { return false; }
-    committed = true;
-    return true;
+    return auth_internal::finish_sign_jwt_hmac(header, claims, secret_key, token_buf, out);
 }
 
 // Signs a JWT using Ed25519 (RFC 8037 §3.1) and writes compact JWS to `out`.
@@ -204,19 +199,14 @@ fn sign_jwt_eddsa<B>(
 ) -> bool {
     guard header.alg == JwtAlg.EdDSA else { return false; }
 
+    if auth_internal::jwt_fits_stack_4096(header, claims) {
+        var token_buf: u8[..4096] = [];
+        defer core::secure_zeroize_slice(token_buf[..]);
+        return auth_internal::finish_sign_jwt_eddsa(header, claims, seed_key, token_buf, out);
+    }
     var token_buf: u8[>..] = [];
     defer core::secure_zeroize_slice(token_buf[..]);
-    guard auth_internal::build_jwt_signing_input(header, claims, token_buf) else { return false; }
-    let signing_len = token_buf.len;
-    guard auth_internal::append_jwt_eddsa_signature(seed_key, token_buf[..signing_len], token_buf) else {
-        return false;
-    }
-
-    var committed = false;
-    defer if !committed { out.resize(0); };
-    guard out.try_set(token_buf[..]) else { return false; }
-    committed = true;
-    return true;
+    return auth_internal::finish_sign_jwt_eddsa(header, claims, seed_key, token_buf, out);
 }
 
 // Signs a JWT using ECDSA P-256 + SHA-256 (RFC 7518 §3.4) and writes compact JWS to `out`.
@@ -228,24 +218,14 @@ fn sign_jwt_es256<B>(
 ) -> bool {
     guard header.alg == JwtAlg.ES256 && auth_internal::has_nonzero_byte_32(priv_key) else { return false; }
 
+    if auth_internal::jwt_fits_stack_4096(header, claims) {
+        var token_buf: u8[..4096] = [];
+        defer core::secure_zeroize_slice(token_buf[..]);
+        return auth_internal::finish_sign_jwt_es256(header, claims, priv_key, token_buf, out);
+    }
     var token_buf: u8[>..] = [];
     defer core::secure_zeroize_slice(token_buf[..]);
-    guard auth_internal::build_jwt_signing_input(header, claims, token_buf) else { return false; }
-
-    var sig = core::ecdsa_p256_sign(priv_key, token_buf[..]);
-    defer core::secure_zeroize_64(sig);
-    var b64_sig: u8[..128] = [];
-    defer core::secure_zeroize_slice(b64_sig[..]);
-    core::base64url_encode(sig[..], b64_sig);
-
-    var committed = false;
-    defer if !committed { out.resize(0); };
-    out.clear();
-    guard out.try_append(token_buf[..]) && out.try_push('.' as u8) && out.try_append(b64_sig[..]) else {
-        return false;
-    }
-    committed = true;
-    return true;
+    return auth_internal::finish_sign_jwt_es256(header, claims, priv_key, token_buf, out);
 }
 
 // Signs a JWT using RSASSA-PKCS1-v1_5 SHA-256 (RFC 7518 §3.3) and writes compact JWS to `out`.
@@ -258,24 +238,14 @@ fn sign_jwt_rs256<B>(
 ) -> bool {
     guard header.alg == JwtAlg.RS256 else { return false; }
 
+    if auth_internal::jwt_fits_stack_4096(header, claims) {
+        var token_buf: u8[..4096] = [];
+        defer core::secure_zeroize_slice(token_buf[..]);
+        return auth_internal::finish_sign_jwt_rs256(header, claims, n_be, d_be, token_buf, out);
+    }
     var token_buf: u8[>..] = [];
     defer core::secure_zeroize_slice(token_buf[..]);
-    guard auth_internal::build_jwt_signing_input(header, claims, token_buf) else { return false; }
-
-    var sig: u8[..512] = [];
-    defer core::secure_zeroize_slice(sig[..]);
-    guard core::rsa_pkcs1_sha256_sign(n_be, d_be, token_buf[..], sig) else { return false; }
-    var b64_sig: u8[..768] = [];
-    core::base64url_encode(sig[..], b64_sig);
-
-    var committed = false;
-    defer if !committed { out.resize(0); };
-    out.clear();
-    guard out.try_append(token_buf[..]) && out.try_push('.' as u8) && out.try_append(b64_sig[..]) else {
-        return false;
-    }
-    committed = true;
-    return true;
+    return auth_internal::finish_sign_jwt_rs256(header, claims, n_be, d_be, token_buf, out);
 }
 
 // Signs a JWT using RSASSA-PSS SHA-256 (RFC 7518 §3.5) and writes compact JWS to `out`.
@@ -289,24 +259,14 @@ fn sign_jwt_ps256<B>(
 ) -> bool {
     guard header.alg == JwtAlg.PS256 else { return false; }
 
+    if auth_internal::jwt_fits_stack_4096(header, claims) {
+        var token_buf: u8[..4096] = [];
+        defer core::secure_zeroize_slice(token_buf[..]);
+        return auth_internal::finish_sign_jwt_ps256(header, claims, n_be, d_be, salt, token_buf, out);
+    }
     var token_buf: u8[>..] = [];
     defer core::secure_zeroize_slice(token_buf[..]);
-    guard auth_internal::build_jwt_signing_input(header, claims, token_buf) else { return false; }
-
-    var sig: u8[..512] = [];
-    defer core::secure_zeroize_slice(sig[..]);
-    guard core::rsa_pss_sha256_sign(n_be, d_be, salt, token_buf[..], sig) else { return false; }
-    var b64_sig: u8[..768] = [];
-    core::base64url_encode(sig[..], b64_sig);
-
-    var committed = false;
-    defer if !committed { out.resize(0); };
-    out.clear();
-    guard out.try_append(token_buf[..]) && out.try_push('.' as u8) && out.try_append(b64_sig[..]) else {
-        return false;
-    }
-    committed = true;
-    return true;
+    return auth_internal::finish_sign_jwt_ps256(header, claims, n_be, d_be, salt, token_buf, out);
 }
 
 // Decodes a Base64URL-encoded JWT header segment into `out_header`.

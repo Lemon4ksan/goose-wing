@@ -8,7 +8,7 @@ import std;
 import core;
 import rfc.http;
 import .types;
-import .internal;
+import .oauth_internal;
 
 // RFC 8555 Section 8.3: HTTP Challenge - token has 22..64 Base64URL chars (>= 128-bit entropy).
 fn validate_acme_token(token: const u8[:]) -> bool {

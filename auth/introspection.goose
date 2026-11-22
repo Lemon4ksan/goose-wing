@@ -9,6 +9,7 @@ import json;
 import core;
 import .types;
 import .internal;
+import .oauth_internal;
 
 // RFC 7662 Section 2.1: Introspection Request - encodes token and optional hint as form-urlencoded body.
 fn encode_token_endpoint_form<B>(token: const u8[:], hint: TokenTypeHint, out: B&) -> bool {

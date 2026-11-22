@@ -8,7 +8,7 @@ import std;
 import core;
 import rfc.http;
 import .types;
-import .internal;
+import .oauth_internal;
 
 // RFC 7636 Section 4.1: Client Creates a Code Verifier - 43..128 unreserved chars.
 fn is_valid_code_verifier(v: const u8[:]) -> bool {

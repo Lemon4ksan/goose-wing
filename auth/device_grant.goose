@@ -9,7 +9,7 @@ import json;
 import core;
 import rfc.http;
 import .types;
-import .internal;
+import .oauth_internal;
 
 // RFC 8628 Section 3.2: Device Authorization Response - parses response JSON fields.
 //
