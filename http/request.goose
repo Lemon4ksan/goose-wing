@@ -12,6 +12,7 @@ import http.priority;
 import http.incremental;
 import http.trace;
 import cookie.policy;
+import .json_codec;
 import .response;
 import http.internal;
 
@@ -54,8 +55,6 @@ struct Request {
     disallow_early_data:  bool                        = false,
     body:                 u8[>..]                     = [],
 }
-
-// ---- json reflection writers -----------------------------------------------
 
 // ---- request factories -----------------------------------------------------
 
@@ -218,15 +217,7 @@ fn raw_json(req: Request&, json_str: const u8[:]) {
 fn json<T>(req: Request&, payload: const T&) {
     set_header(req, "Content-Type", "application/json");
     req.body.clear();
-    req.body.push('{');
-    var first = true;
-    const for <Name, Acc> in fields<T> {
-        if !first { req.body.push(','); }
-        first = false;
-        json::format_key(req.body, Name);
-        http_internal::write_json_field(req.body, payload.Acc);
-    }
-    req.body.push('}');
+    encode_json_struct(payload, req.body);
     req.rewind_buf.clear();
     req.rewindable = req.rewind_buf.try_set(req.body[..]);
     req.body_consumed = false;
@@ -373,18 +364,7 @@ fn decode_json_body<T>(req: const Request&, out: T&) -> Error {
         return make_error(rfc::STATUS_BAD_REQUEST, "json_decode", "empty request body");
     }
     var reader = json::reader(req.body[..]);
-    json::each_member(reader) { key =>
-        var matched = false;
-        const for <Name, Acc> in fields<T> {
-            if !matched && key == Name {
-                http_internal::read_json_field(reader, out.Acc);
-                matched = true;
-            }
-        }
-        if !matched {
-            json::skip(reader);
-        }
-    };
+    decode_json_struct(out, reader);
     if !json::finish(reader) {
         let msg = json::message(reader);
         return make_error(rfc::STATUS_UNPROCESSABLE_CONTENT, "json_decode", msg[..]);

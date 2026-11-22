@@ -165,6 +165,11 @@ fn add_delete_route(server: HttpServer&, path: const u8[:], handler_id: i32) {
     add_route(server.pipeline.router, "DELETE", path, handler_id);
 }
 
+// Registers a route on `server` directly from a shared contract spec (`.method` and `.path_template`).
+fn add_contract_route<S>(server: HttpServer&, spec: const S&, handler_id: i32) -> bool {
+    return add_route(server.pipeline.router, spec.method[..], spec.path_template[..], handler_id);
+}
+
 // Registers a declarative WebSocket route on the server instance (uWebSockets app.ws pattern)
 fn add_ws_route(
     server:   HttpServer&,

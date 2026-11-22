@@ -7,6 +7,7 @@ namespace http;
 import std;
 import core;
 import json;
+import .json_codec;
 import .request;
 import http.compression_dict;
 import http.early_hints;
@@ -341,8 +342,6 @@ fn should_auto_decompress(
     return true;
 }
 
-// ---- json reflection readers -----------------------------------------------
-
 // ---- json response decoding -------------------------------------------------
 
 fn json<T>(res: const Response&, out: T&) -> Error {
@@ -350,18 +349,7 @@ fn json<T>(res: const Response&, out: T&) -> Error {
     var committed = false;
     defer if !committed { out = copy(saved); };
     var reader = json::reader(res.body[..]);
-    json::each_member(reader) { key =>
-        var matched = false;
-        const for <Name, Acc> in fields<T> {
-            if !matched && key == Name {
-                http_internal::read_json_field(reader, out.Acc);
-                matched = true;
-            }
-        }
-        if !matched {
-            json::skip(reader);
-        }
-    };
+    decode_json_struct(out, reader);
     if !json::finish(reader) {
         let msg = json::message(reader);
         return make_error(rfc::STATUS_UNPROCESSABLE_CONTENT, "json_decode", msg[..]);
@@ -404,15 +392,7 @@ fn respond_json<T>(res: Response&, status_code: i32, payload: const T&) {
     res.status_code = status_code;
     set_header(res, "Content-Type", "application/json");
     res.body.clear();
-    res.body.push('{');
-    var first = true;
-    const for <Name, Acc> in fields<T> {
-        if !first { res.body.push(','); }
-        first = false;
-        json::format_key(res.body, Name);
-        http_internal::write_json_field(res.body, payload.Acc);
-    }
-    res.body.push('}');
+    encode_json_struct(payload, res.body);
 }
 
 // Populates an HTTP response with an HTML body and `text/html; charset=utf-8` Content-Type header.

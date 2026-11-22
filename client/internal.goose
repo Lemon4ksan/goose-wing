@@ -15,6 +15,7 @@ import dns.doh;
 import fingerprint.profile;
 import http.headers;
 import http.headers.chunked;
+import http.json_codec;
 import http.request;
 import http.response;
 import http.trace;
@@ -758,39 +759,6 @@ fn read_chunk_identity<B>(
 
 // ---- Contract Internal Helpers ---------------------------------------------
 
-fn format_bound_scalar<B>(val: i64, out: B&) -> bool {
-    var tmp: u8[..32] = [];
-    val.format_i64_dec(tmp);
-    return out.try_append(tmp[..]);
-}
-
-fn format_bound_scalar<B>(val: u64, out: B&) -> bool {
-    var tmp: u8[..32] = [];
-    val.format_u64_dec(tmp);
-    return out.try_append(tmp[..]);
-}
-
-fn format_bound_scalar<B>(val: i32, out: B&) -> bool {
-    var tmp: u8[..32] = [];
-    (val as i64).format_i64_dec(tmp);
-    return out.try_append(tmp[..]);
-}
-
-fn format_bound_scalar<B>(val: u32, out: B&) -> bool {
-    var tmp: u8[..32] = [];
-    val.format_u32_dec(tmp);
-    return out.try_append(tmp[..]);
-}
-
-fn format_bound_scalar<B>(val: bool, out: B&) -> bool {
-    let lit = if val { "true" } else { "false" };
-    return out.try_append(lit);
-}
-
-fn format_bound_scalar<B>(val: const u8[:], out: B&) -> bool {
-    return out.try_append(val);
-}
-
 // Formats path parameter `param_name` from `params` into `out`, rejecting empty values,
 // path separators (`/`), query/fragment delimiters (`?`, `#`), and control characters.
 // Rolls back `out` on failure.
@@ -808,12 +776,15 @@ fn format_path_param_segment<Params, B>(
     const for <Name, Acc> in fields<Params> {
         if !matched && Name == param_name {
             matched = true;
-            fmt_ok = format_bound_scalar(params.Acc, seg_buf);
+            fmt_ok = http::format_query_field_val(params.Acc, seg_buf);
         }
     }
     guard matched && fmt_ok && seg_buf.len > 0 else { return false; }
+    guard seg_buf[..] != "." && seg_buf[..] != ".." else { return false; }
     for b in seg_buf[..] {
-        guard b >= 0x20 && b != 0x7F && b != '/' && b != '?' && b != '#' else { return false; }
+        guard b > 0x20 && b < 0x7F && b != '/' && b != '\\' && b != '?' && b != '#' && b != '%' else {
+            return false;
+        }
     }
     guard out.try_append(seg_buf[..]) else { return false; }
     committed = true;
@@ -862,9 +833,10 @@ fn apply_contract_query<Query>(req: http::Request&, query_dto: const Query&) -> 
     defer if !committed { req.query_params.resize(saved_len); };
     var all_ok = true;
     const for <Name, Acc> in fields<Query> {
-        if all_ok {
+        if all_ok && !http::is_omitted_query_field_val(query_dto.Acc) {
             var val_buf: u8[..256] = [];
-            let ok_q = format_bound_scalar(query_dto.Acc, val_buf) && http::query(req, Name, val_buf[..]);
+            let ok_q = http::format_query_field_val(query_dto.Acc, val_buf) &&
+                http::query(req, Name, val_buf[..]);
             all_ok = all_ok && ok_q;
         }
     }

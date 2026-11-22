@@ -62,7 +62,21 @@ fn build_contract_request<Params, Query, ReqBody, ResBody>(
     return true;
 }
 
-// Builds and executes a typed contract request against `c` and decodes the JSON response into `ResBody`.
+// Decodes JSON response body into `ResBody` only on HTTP 2xx responses.
+//
+// Example:
+//   res.status_code = 200, res.body = "{\"id\":1}" -> returns (ResBody { id: 1 }, Error.None)
+//   res.status_code = 401, res.body = "{\"error\":\"denied\"}" -> skips decode, returns Error.None
+fn decode_contract_response<ResBody>(res: const http::Response&) -> ResBody, http::Error {
+    var out_body = ResBody { .. };
+    if res.status_code >= 200 && res.status_code < 300 && type_is_non_empty<ResBody>() {
+        let dec_err = http::json(res, out_body);
+        return out_body, dec_err;
+    }
+    return out_body, http::Error { .. };
+}
+
+// Builds and executes a typed contract request against `c` and decodes 2xx JSON into `ResBody`.
 fn call_endpoint<Params, Query, ReqBody, ResBody>(
     c:         Client&,
     spec:      const EndpointSpec<Params, Query, ReqBody, ResBody>&,
@@ -71,19 +85,38 @@ fn call_endpoint<Params, Query, ReqBody, ResBody>(
     query_dto: const Query&,
     body_dto:  const ReqBody&,
 ) -> ResBody, http::Response, http::Error {
-    var out_body = ResBody { .. };
     var req = http::Request { .. };
     guard build_contract_request(spec, base_url, params, query_dto, body_dto, req) else {
         let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
-        return out_body, http::Response { .. }, err;
+        return ResBody { .. }, http::Response { .. }, err;
     }
     let res, err = do(c, req);
-    if !http::ok(err) {
-        return out_body, res, err;
+    guard http::ok(err) else {
+        return ResBody { .. }, res, err;
     }
-    if type_is_non_empty<ResBody>() {
-        let dec_err = http::json(res, out_body);
-        return out_body, res, dec_err;
+    let out_body, dec_err = decode_contract_response<ResBody>(res);
+    return out_body, res, dec_err;
+}
+
+// Trailing-block overload letting callers configure headers, Bearer auth, or timeouts before dispatch.
+fn call_endpoint<Params, Query, ReqBody, ResBody, F: fn(http::Request&)>(
+    c:         Client&,
+    spec:      const EndpointSpec<Params, Query, ReqBody, ResBody>&,
+    base_url:  const u8[:],
+    params:    const Params&,
+    query_dto: const Query&,
+    body_dto:  const ReqBody&,
+) -> ResBody, http::Response, http::Error {
+    var req = http::Request { .. };
+    guard build_contract_request(spec, base_url, params, query_dto, body_dto, req) else {
+        let err = http::make_error(400, "invalid_url", "contract request build failed", http::ErrorKind.InvalidUrl);
+        return ResBody { .. }, http::Response { .. }, err;
     }
-    return out_body, res, http::Error { .. };
+    F(&req);
+    let res, err = do(c, req);
+    guard http::ok(err) else {
+        return ResBody { .. }, res, err;
+    }
+    let out_body, dec_err = decode_contract_response<ResBody>(res);
+    return out_body, res, dec_err;
 }

@@ -8,6 +8,7 @@ import std;
 import json;
 import core;
 import .headers;
+import .json_codec;
 import .problem;
 import http.internal;
 
@@ -122,18 +123,16 @@ fn bind_query<T>(
     out:              T&,
     vp:               ValidationProblem&,
 ) -> bool {
-    let saved = out;
+    let saved = copy(out);
     var committed = false;
-    defer if !committed { out = saved; };
+    defer if !committed { out = copy(saved); };
     let no_frag, _, _ = raw_url_or_query.partition_byte('#');
     let head, q_tail, has_q = no_frag.split_once_byte('?');
     let raw_q = if has_q { q_tail } else { head };
     var all_ok = true;
     const for <Name, Acc> in fields<T> {
         if !(vp.abort_early && !all_ok) {
-            var val_buf: u8[..512] = [];
-            let ok_q = raw_q.get_query_param_fast(Name, val_buf) == core::QueryParamMatch.Value &&
-                http_internal::parse_bound_scalar(val_buf[..], out.Acc);
+            let ok_q = out.Acc.query_bind_field(raw_q, Name);
             let loc = ValidationLocation.Query;
             let ok_chk = check_field(vp, ok_q, loc, Name, "invalid_query_param", "missing or invalid query parameter");
             all_ok = all_ok && ok_chk;
@@ -151,9 +150,9 @@ fn bind_headers<T>(
     out:     T&,
     vp:      ValidationProblem&,
 ) -> bool {
-    let saved = out;
+    let saved = copy(out);
     var committed = false;
-    defer if !committed { out = saved; };
+    defer if !committed { out = copy(saved); };
     var all_ok = true;
     const for <Name, Acc> in fields<T> {
         if !(vp.abort_early && !all_ok) {
@@ -161,7 +160,7 @@ fn bind_headers<T>(
             let name_ok = http_internal::normalize_field_to_header_name(Name, hdr_name);
             let raw_val = if name_ok { get_header(headers, hdr_name[..]) } else { "" };
             let prop = if name_ok { hdr_name[..] } else { Name };
-            let ok_hdr = name_ok && raw_val.len > 0 && http_internal::parse_bound_scalar(raw_val, out.Acc);
+            let ok_hdr = name_ok && raw_val.len > 0 && out.Acc.query_parse(raw_val);
             let loc = ValidationLocation.Header;
             let ok_chk = check_field(vp, ok_hdr, loc, prop, "invalid_header", "missing or invalid request header");
             all_ok = all_ok && ok_chk;
@@ -180,9 +179,9 @@ fn bind_params<T>(
     out:      T&,
     vp:       ValidationProblem&,
 ) -> bool {
-    let saved = out;
+    let saved = copy(out);
     var committed = false;
-    defer if !committed { out = saved; };
+    defer if !committed { out = copy(saved); };
     var all_ok = true;
     let limit = min(params.len, params.spans.len);
     const for <Name, Acc> in fields<T> {
@@ -197,7 +196,7 @@ fn bind_params<T>(
                 raw_val = if ok_span { req_path[s_idx..e_idx] } else { raw_val };
                 found = found || ok_span;
             }
-            let ok_p = found && http_internal::parse_bound_scalar(raw_val, out.Acc);
+            let ok_p = found && out.Acc.query_parse(raw_val);
             let loc = ValidationLocation.PathParam;
             let ok_chk = check_field(vp, ok_p, loc, Name, "invalid_path_param", "missing or invalid path parameter");
             all_ok = all_ok && ok_chk;
@@ -215,14 +214,14 @@ fn bind_cookies<T>(
     out:        T&,
     vp:         ValidationProblem&,
 ) -> bool {
-    let saved = out;
+    let saved = copy(out);
     var committed = false;
-    defer if !committed { out = saved; };
+    defer if !committed { out = copy(saved); };
     var all_ok = true;
     const for <Name, Acc> in fields<T> {
         if !(vp.abort_early && !all_ok) {
             let raw_val, found = http_internal::find_raw_cookie_value(cookie_hdr, Name);
-            let ok_c = found && http_internal::parse_bound_scalar(raw_val, out.Acc);
+            let ok_c = found && out.Acc.query_parse(raw_val);
             if !check_field(vp, ok_c, ValidationLocation.Cookie, Name, "invalid_cookie", "missing or invalid cookie") {
                 all_ok = false;
             }
@@ -240,9 +239,9 @@ fn bind_json<T>(
     out:        T&,
     vp:         ValidationProblem&,
 ) -> bool {
-    let saved = out;
+    let saved = copy(out);
     var committed = false;
-    defer if !committed { out = saved; };
+    defer if !committed { out = copy(saved); };
     if json_bytes.len == 0 {
         let _ = http_internal::record_field_error(
             vp, ValidationLocation.Body, "$", "empty JSON request body", "invalid_json",

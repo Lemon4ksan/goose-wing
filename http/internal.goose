@@ -12,6 +12,7 @@ import http.compression_dict;
 import http.early_hints;
 import http.headers;
 import http.incremental;
+import http.json_codec;
 import http.mime;
 import http.multipart;
 import http.priority;
@@ -22,80 +23,6 @@ import http.trace;
 import json;
 
 // ---- http/bind.goose internal helpers ----
-
-// Parses a signed 64-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "-42"
-//   returns: true, dst = -42
-fn parse_bound_scalar(raw: const u8[:], dst: i64&) -> bool {
-    let val, ok = raw.parse_i64_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses an unsigned 64-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "1024"
-//   returns: true, dst = 1024
-fn parse_bound_scalar(raw: const u8[:], dst: u64&) -> bool {
-    let val, ok = raw.parse_u64_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses a signed 32-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "200"
-//   returns: true, dst = 200
-fn parse_bound_scalar(raw: const u8[:], dst: i32&) -> bool {
-    let val, ok = raw.parse_i32_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses an unsigned 32-bit decimal integer from `raw` into `dst`.
-//
-// Example:
-//   raw = "8080"
-//   returns: true, dst = 8080
-fn parse_bound_scalar(raw: const u8[:], dst: u32&) -> bool {
-    let val, ok = raw.parse_u32_dec();
-    guard ok else { return false; }
-    dst = val;
-    return true;
-}
-
-// Parses a boolean literal (`true`, `false`, `1`, `0`) from `raw` into `dst`.
-//
-// Example:
-//   raw = "true"
-//   returns: true, dst = true
-fn parse_bound_scalar(raw: const u8[:], dst: bool&) -> bool {
-    if raw.eq_ascii_fold("true") || raw == "1" {
-        dst = true;
-        return true;
-    }
-    if raw.eq_ascii_fold("false") || raw == "0" {
-        dst = false;
-        return true;
-    }
-    return false;
-}
-
-// Copies `raw` into bounded byte buffer `dst`, failing if `raw.len > dst.cap`.
-//
-// Example:
-//   raw = "alice"
-//   returns: true, dst = "alice"
-fn parse_bound_scalar<B>(raw: const u8[:], dst: B&) -> bool {
-    return dst.try_set(raw);
-}
 
 // Converts a `snake_case` struct field name into a lowercase hyphenated HTTP header name.
 // Rolls back `out` on capacity overflow.
@@ -141,74 +68,6 @@ fn find_raw_cookie_value(
     return "", false;
 }
 
-fn read_bound_json_field(reader: json::Reader&, dst: i64&) -> bool {
-    let c = json::peek(reader);
-    guard (c >= '0' && c <= '9') || c == '-' else {
-        json::fail(reader, "expected integer");
-        return false;
-    }
-    dst = json::read_int(reader);
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: u64&) -> bool {
-    let c = json::peek(reader);
-    guard c >= '0' && c <= '9' else {
-        json::fail(reader, "expected unsigned integer");
-        return false;
-    }
-    let val = json::read_int(reader);
-    guard val >= 0 else {
-        json::fail(reader, "negative unsigned integer");
-        return false;
-    }
-    dst = val as u64;
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: i32&) -> bool {
-    let c = json::peek(reader);
-    guard (c >= '0' && c <= '9') || c == '-' else {
-        json::fail(reader, "expected i32");
-        return false;
-    }
-    let val = json::read_int(reader);
-    guard val >= -2147483648 && val <= 2147483647 else {
-        json::fail(reader, "i32 out of range");
-        return false;
-    }
-    dst = val as i32;
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: f64&) -> bool {
-    let c = json::peek(reader);
-    guard (c >= '0' && c <= '9') || c == '-' else {
-        json::fail(reader, "expected number");
-        return false;
-    }
-    dst = json::read_number(reader);
-    return true;
-}
-
-fn read_bound_json_field(reader: json::Reader&, dst: bool&) -> bool {
-    let c = json::peek(reader);
-    guard c == 't' || c == 'f' else {
-        json::fail(reader, "expected boolean");
-        return false;
-    }
-    dst = json::read_bool(reader);
-    return true;
-}
-
-fn read_bound_json_field<B>(reader: json::Reader&, dst: B&) -> bool {
-    guard core::read_json_string_into(reader, dst) else {
-        json::fail(reader, "invalid or oversize string");
-        return false;
-    }
-    return true;
-}
-
 // Dispatches a single JSON object key to the matching field in `out` via `const for`.
 fn bind_json_member<T>(
     key:    const u8[:],
@@ -221,7 +80,8 @@ fn bind_json_member<T>(
     const for <Name, Acc> in fields<T> {
         if !matched && key == Name {
             matched = true;
-            let ok_read = read_bound_json_field(reader, out.Acc);
+            http::decode_json_field_val(out.Acc, reader);
+            let ok_read = reader.error.len == 0;
             let loc = http::ValidationLocation.Body;
             let ok_chk = http::check_field(vp, ok_read, loc, Name, "invalid_json_field", "invalid JSON field value");
             field_ok = field_ok && ok_chk;
@@ -832,26 +692,6 @@ fn record_field_error(
 
 // ---- http/request.goose internal helpers ----
 
-fn write_json_field(out: u8[>..]&, val_str: const u8[:]) {
-    json::format_string(out, val_str);
-}
-
-fn write_json_field(out: u8[>..]&, val_i64: i64) {
-    json::format_int(out, val_i64);
-}
-
-fn write_json_field(out: u8[>..]&, val_i32: i32) {
-    json::format_int(out, val_i32);
-}
-
-fn write_json_field(out: u8[>..]&, val_f64: f64) {
-    json::format_number(out, val_f64);
-}
-
-fn write_json_field(out: u8[>..]&, val_bool: bool) {
-    json::format_bool(out, val_bool);
-}
-
 fn sync_request_header_presence(req: http::Request&, name: const u8[:]) {
     if http::has_header(req.headers, name) {
         let known_id = http::identify_known_header(name);
@@ -1077,65 +917,6 @@ fn decode_single_dict_encoding(
         return true;
     }
     return decode_single_standard_encoding(tok, res);
-}
-
-fn read_json_field(reader: json::Reader&, dst: i64&) {
-    dst = json::read_int(reader);
-}
-
-fn read_json_field(reader: json::Reader&, dst: u64&) {
-    dst = max(json::read_int(reader), 0) as u64;
-}
-
-fn read_json_field(reader: json::Reader&, dst: i32&) {
-    dst = core::clamp_i64(json::read_int(reader), -2147483648, 2147483647) as i32;
-}
-
-fn read_json_field(reader: json::Reader&, dst: f64&) {
-    dst = json::read_number(reader);
-}
-
-fn read_json_field(reader: json::Reader&, dst: bool&) {
-    dst = json::read_bool(reader);
-}
-
-fn read_json_field(reader: json::Reader&, dst: u8[>..]&) {
-    dst.clear();
-    var scratch: u8[>..] = [];
-    let val = json::read_string(reader, scratch);
-    dst.append(val);
-}
-
-fn read_json_field<B>(reader: json::Reader&, dst: B&) {
-    dst.clear();
-    guard json::peek(reader) == '"' else {
-        json::fail(reader, "expected a string");
-        return;
-    }
-    let start = core::add_sat_i64(reader.pos, 1);
-    let end, escaped = json::scan_string(reader.text, start);
-    guard end >= 0 else {
-        json::fail(reader, "bad string");
-        return;
-    }
-    reader.pos = core::add_sat_i64(end, 1);
-    if !escaped {
-        let raw = reader.text[start..end];
-        guard raw.len <= dst.cap else {
-            json::fail(reader, "string exceeds capacity");
-            return;
-        }
-        dst.append(raw);
-        return;
-    }
-    if !core::decode_json_string_into(reader.text, start, end, dst) {
-        reader.pos = core::sub_sat_i64(start, 1);
-        if !json::valid_escapes(reader.text, start, end) {
-            json::fail(reader, "bad escape");
-        } else {
-            json::fail(reader, "string exceeds capacity");
-        }
-    }
 }
 
 inline fn vary_list_contains_token(existing: const u8[:], needle: const u8[:]) -> bool {

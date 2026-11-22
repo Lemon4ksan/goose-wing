@@ -3,6 +3,7 @@
 
 // RUN: goose %s | %FileCheck %s
 import std;
+import json;
 import wing from "../..";
 
 struct DemoQueryDto {
@@ -70,6 +71,62 @@ struct ContractReqBody {
 struct ContractResBody {
     id:     i64      = 0,
     status: u8[..16] = [],
+}
+
+enum DemoRole {
+    Guest,
+    Admin,
+}
+
+fn http::json_encode(v: DemoRole, out: u8[>..]&) {
+    json::format_string(out, if v == DemoRole.Admin { "admin" } else { "guest" });
+}
+
+fn http::json_decode(dst: DemoRole&, r: json::Reader&) {
+    var tok: u8[..16] = [];
+    guard core::read_json_string_into(r, tok) else {
+        if r.error.len == 0 { json::fail(r, "bad role"); }
+        return;
+    }
+    if tok[..] == "admin" { dst = DemoRole.Admin; }
+    else if tok[..] == "guest" { dst = DemoRole.Guest; }
+    else { json::fail(r, "unknown role"); }
+}
+
+fn http::query_parse(dst: DemoRole&, raw: const u8[:]) -> bool {
+    if raw == "admin" { dst = DemoRole.Admin; return true; }
+    if raw == "guest" { dst = DemoRole.Guest; return true; }
+    return false;
+}
+
+fn http::query_format<B>(v: DemoRole, out: B&) -> bool {
+    return out.try_append(if v == DemoRole.Admin { "admin" } else { "guest" });
+}
+
+struct NestedTag {
+    slot:  u8      = 0,
+    delta: i8      = 0,
+    label: u8[..8] = [],
+}
+
+fn http::json_encode(v: const NestedTag&, out: u8[>..]&) { http::encode_json_struct(v, out); }
+fn http::json_decode(dst: NestedTag&, r: json::Reader&) { http::decode_json_struct(dst, r); }
+fn http::json_decode(dst: NestedTag[..4]&, r: json::Reader&) {
+    http::decode_bounded_array<NestedTag[..4], NestedTag>(dst, r);
+}
+
+struct RichPayloadDto {
+    role:    DemoRole            = DemoRole.Guest,
+    sem:     core::Opt<u8>       = core::Opt<u8> { .. },
+    note:    core::Opt<u8[..16]> = core::Opt<u8[..16]> { .. },
+    fixed:   NestedTag[..4]      = [],
+    entries: NestedTag[>..]      = [],
+}
+
+struct OptQueryDto {
+    role: DemoRole            = DemoRole.Guest,
+    sem:  core::Opt<u8>       = core::Opt<u8> { .. },
+    kind: core::Opt<u8[..16]> = core::Opt<u8[..16]> { .. },
 }
 
 fn test_validation_problem() {
@@ -284,11 +341,127 @@ fn test_cookie_deltas_and_contracts() {
     print("contract_traversal_rejected: ", bad_ok, " call_err_code=", call_err.code);
 }
 
+struct U64Dto {
+    v: u64 = 0,
+}
+
+struct SlugParams {
+    slug: u8[..16] = [],
+}
+
+fn test_recursive_json_opt_and_session_contracts() {
+    var payload = RichPayloadDto { role: DemoRole.Admin, sem: core::opt_some<u8>(5), .. };
+    var t1 = NestedTag { slot: 1, delta: -2, .. };
+    let _ = t1.label.try_set("a");
+    let _ = payload.fixed.try_push(t1);
+    var t2 = NestedTag { slot: 2, delta: 3, .. };
+    let _ = t2.label.try_set("b");
+    payload.entries.push(t2);
+
+    var res = http::Response { .. };
+    http::respond_json(res, 200, payload);
+    print("rich_json_enc: ", res.body[..]);
+
+    var decoded = RichPayloadDto { .. };
+    let dec_err = http::json(res, decoded);
+    print(
+        "rich_json_dec: ", http::ok(dec_err), " role=", decoded.role == DemoRole.Admin,
+        " sem=", decoded.sem.present, ":", decoded.sem.value, " note=", decoded.note.present,
+        " fixed=", decoded.fixed.len, ":", decoded.fixed[0].delta,
+        " entries=", decoded.entries.len, ":", decoded.entries[0].label[..],
+    );
+
+    // Optional query binding + custom enum + rollback on invalid optional value
+    var oq = OptQueryDto { .. };
+    var vp = http::ValidationProblem { .. };
+    let ok_omitted = http::bind_query("/v1/x?role=admin", oq, vp);
+    print("opt_query_omit: ", ok_omitted, " role=", oq.role == DemoRole.Admin, " sem=", oq.sem.present);
+
+    let ok_present = http::bind_query("/v1/x?role=guest&sem=4&kind=exams", oq, vp);
+    print(
+        "opt_query_set: ", ok_present, " sem=", oq.sem.present, ":", oq.sem.value,
+        " kind=", oq.kind.present, ":", oq.kind.value[..],
+    );
+
+    let bad_opt = http::bind_query("/v1/x?role=admin&sem=999", oq, vp);
+    print("opt_query_bad: ", bad_opt, " sem_kept=", oq.sem.value);
+
+    // Contract request skips absent Opt<T> query params; server::add_contract_route registers spec
+    let ep = client::EndpointSpec<client::EmptyPart, OptQueryDto, client::EmptyPart, RichPayloadDto> {
+        method:        "GET",
+        path_template: "/v1/rich",
+    };
+    let empty = client::EmptyPart {};
+    let q_min = OptQueryDto { role: DemoRole.Admin, sem: core::opt_some<u8>(3), .. };
+    var built = http::Request { .. };
+    let ok_b = client::build_contract_request(ep, "https://api.example.com", empty, q_min, empty, built);
+    print("opt_contract_q: ", ok_b, " q_count=", built.query_params.len);
+
+    // Trailing-block call_endpoint over mocked Client: 200 decodes RichPayloadDto, 401 skips ResBody decode
+    var mc = client::Client { .. };
+    let _ = client::mock_route(mc, "GET", "https://api.example.com/v1/rich", 200, res.body[..]);
+    let got_ok, res_ok, err_ok = client::call_endpoint(mc, ep, "https://api.example.com", empty, q_min, empty) { req =>
+        http::bearer(req, "test_tok");
+    };
+    print("call_ep_200: ", http::ok(err_ok), " st=", res_ok.status_code, " sem=", got_ok.sem.value);
+
+    var mc401 = client::Client { .. };
+    let _ = client::mock_route(mc401, "GET", "https://api.example.com/v1/rich", 401, "{\"title\":\"unauthorized\"}");
+    let _, res_401, err_401 = client::call_endpoint(mc401, ep, "https://api.example.com", empty, q_min, empty) { req =>
+        http::bearer(req, "bad_tok");
+    };
+    print("call_ep_401: ", http::ok(err_401), " st=", res_401.status_code);
+
+    var srv = server::new_http_server("127.0.0.1", 0);
+    let ok_rt = server::add_contract_route(srv, ep, 42);
+    print("contract_route: ", ok_rt);
+
+    // Oversize Opt<T> query param (> 512 bytes) must be rejected, never silently dropped
+    var huge_q: u8[>..] = [];
+    huge_q.append("/v1/x?role=admin&kind=");
+    for _ in 520 {
+        huge_q.push('a');
+    }
+    var oq_huge = OptQueryDto { .. };
+    let huge_ok = http::bind_query(huge_q[..], oq_huge, vp);
+    print("opt_query_huge: ", huge_ok);
+
+    // Full-range u64 round-trip and negative u64 rejection
+    let max_u = U64Dto { v: 18446744073709551615 };
+    var u_res = http::Response { .. };
+    http::respond_json(u_res, 200, max_u);
+    var u_dec = U64Dto { .. };
+    let u_err = http::json(u_res, u_dec);
+    var u_neg = http::Response { .. };
+    u_neg.body.append("{\"v\":-1}");
+    var u_neg_dec = U64Dto { .. };
+    let u_neg_err = http::json(u_neg, u_neg_dec);
+    print("u64_bounds: ", http::ok(u_err), " max=", u_dec.v == 18446744073709551615, " neg_ok=", http::ok(u_neg_err));
+
+    // Dot-segment and unsafe path params rejected
+    let ep_slug = client::EndpointSpec<SlugParams, client::EmptyPart, client::EmptyPart, client::EmptyPart> {
+        method:        "GET",
+        path_template: "/items/:slug",
+    };
+    var p_dot = SlugParams { .. };
+    let _ = p_dot.slug.try_set("..");
+    var p_sp = SlugParams { .. };
+    let _ = p_sp.slug.try_set("a b");
+    var p_pct = SlugParams { .. };
+    let _ = p_pct.slug.try_set("%2f");
+    var b_tmp = http::Request { .. };
+    let ok_dot = client::build_contract_request(ep_slug, "https://api.example.com", p_dot, empty, empty, b_tmp);
+    let ok_sp = client::build_contract_request(ep_slug, "https://api.example.com", p_sp, empty, empty, b_tmp);
+    let ok_pct = client::build_contract_request(ep_slug, "https://api.example.com", p_pct, empty, empty, b_tmp);
+    print("path_unsafe: ", ok_dot, " ", ok_sp, " ", ok_pct);
+}
+
 fn main() {
     test_validation_problem();
     test_declarative_binders();
     test_request_and_response_ufcs();
     test_cookie_deltas_and_contracts();
+    test_recursive_json_opt_and_session_contracts();
 }
 
 // CHECK: vp_init_valid: true
@@ -321,3 +494,15 @@ fn main() {
 // CHECK-NEXT: non_empty: false true
 // CHECK-NEXT: contract_req: true method=POST url=https://api.example.com/orgs/9/users/42/tiers/2/revs/-1/preview/true/slug/alpha q_count=3 body={"title":"Create","count":3}
 // CHECK-NEXT: contract_traversal_rejected: false call_err_code=400
+// CHECK-NEXT: rich_json_enc: {"role":"admin","sem":5,"fixed":[{"slot":1,"delta":-2,"label":"a"}],"entries":[{"slot":2,"delta":3,"label":"b"}]}
+// CHECK-NEXT: rich_json_dec: true role=true sem=true:5 note=false fixed=1:-2 entries=1:b
+// CHECK-NEXT: opt_query_omit: true role=true sem=false
+// CHECK-NEXT: opt_query_set: true sem=true:4 kind=true:exams
+// CHECK-NEXT: opt_query_bad: false sem_kept=4
+// CHECK-NEXT: opt_contract_q: true q_count=2
+// CHECK-NEXT: call_ep_200: true st=200 sem=5
+// CHECK-NEXT: call_ep_401: true st=401
+// CHECK-NEXT: contract_route: true
+// CHECK-NEXT: opt_query_huge: false
+// CHECK-NEXT: u64_bounds: true max=true neg_ok=false
+// CHECK-NEXT: path_unsafe: false false false
