@@ -86,6 +86,7 @@ static int load_fn_sym(void *dst, const void *src) {
     return 1;
 }
 
+#if defined(_WIN32) || defined(__APPLE__)
 typedef struct {
     uint8_t *data;
     size_t len;
@@ -133,6 +134,7 @@ static void tls_buf_free(tls_buf_t *b) {
     b->len = 0;
     b->cap = 0;
 }
+#endif
 
 /* ---- OpenSSL / BoringSSL Driver (Dynamic or Direct-Link) --------------- */
 
