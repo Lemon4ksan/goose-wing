@@ -660,7 +660,7 @@ fn validate_header_ordering_and_rules(
             return rfc::H2_ERR_ENHANCE_YOUR_CALM;
         }
         if join_st == h2_internal::CookieJoinStatus.NotCookie {
-            guard http::append_header(out_headers, name, val) else {
+            guard http::append_validated_header(out_headers, name, val) else {
                 return rfc::H2_ERR_ENHANCE_YOUR_CALM;
             }
         }

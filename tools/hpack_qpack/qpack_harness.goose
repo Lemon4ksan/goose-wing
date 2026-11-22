@@ -68,13 +68,20 @@ fn serialize_qpack_fields(fields: const http3::HeaderField[>..]&, out: u8[>..]&)
     }
 }
 
+struct PendingBlockedStep {
+    stream_id: u64      = 0,
+    step_id:   u8[..96] = [],
+}
+
 struct QpackHarnessState {
-    dec_tbl:    http3::QpackTable = http3::QpackTable { .. },
-    enc_tbl:    http3::QpackTable = http3::QpackTable { .. },
-    rt_tbl:     http3::QpackTable = http3::QpackTable { .. },
-    enc_stream: u8[..8192]        = [],
-    sec_body:   u8[..8192]        = [],
-    sec_full:   u8[..8192]        = [],
+    dec_tbl:      http3::QpackTable         = http3::QpackTable { .. },
+    enc_tbl:      http3::QpackTable         = http3::QpackTable { .. },
+    rt_tbl:       http3::QpackTable         = http3::QpackTable { .. },
+    enc_stream:   u8[..8192]                = [],
+    sec_body:     u8[..8192]                = [],
+    sec_full:     u8[..8192]                = [],
+    auto_unblock: bool                      = false,
+    pending:      PendingBlockedStep[..128] = [],
 }
 
 fn apply_encoder_stream_bytes(tbl: http3::QpackTable&, wire: const u8[:]) -> http3::QpackError {
@@ -101,10 +108,18 @@ fn apply_decoder_stream_bytes(tbl: http3::QpackTable&, wire: const u8[:]) -> htt
     return http3::QpackError.None;
 }
 
-fn reset_qpack_story(st: QpackHarnessState&, max_cap: u64, max_blk: u32, init_cap: u64) {
+fn reset_qpack_story(
+    st:           QpackHarnessState&,
+    max_cap:      u64,
+    max_blk:      u32,
+    init_cap:     u64,
+    auto_unblock: bool = false,
+) {
     st.dec_tbl = http3::new_qpack_table(max_cap, max_blk, init_cap);
     st.enc_tbl = http3::new_qpack_table(max_cap, max_blk, 0);
     st.rt_tbl = http3::new_qpack_table(max_cap, max_blk, 0);
+    st.auto_unblock = auto_unblock;
+    st.pending.clear();
     st.enc_stream.clear();
     if max_cap > 0 {
         let ok_cap = http3::encode_qpack_set_capacity(st.enc_tbl, max_cap, st.enc_stream);
@@ -199,6 +214,11 @@ fn eval_qpack_section(
     fields.clear();
     let err = http3::decode_or_block_qpack_section(st.dec_tbl, stream_id, wire, fields, 65536);
     if err != http3::QpackError.None {
+        if err == http3::QpackError.StreamBlocked && st.auto_unblock {
+            var meta = PendingBlockedStep { stream_id: stream_id, .. };
+            let _ = meta.step_id.try_set(step_id);
+            let _ = st.pending.try_push(meta);
+        }
         print("SEC_RES\t", step_id, "\t", qpack_err_tag(err), "\t0\t", st.dec_tbl.insert_count, "\t-\n");
         return;
     }
@@ -247,23 +267,106 @@ fn eval_qpack_unblock(
     print("SEC_RES\t", step_id, "\tNone\t1\t", st.dec_tbl.insert_count, "\t", out_hdr, "\n");
 }
 
+fn pop_pending_step_id(st: QpackHarnessState&, stream_id: u64, out_id: u8[..96]&) -> bool {
+    out_id.clear();
+    for i in st.pending.len {
+        if st.pending[i].stream_id == stream_id {
+            let _ = out_id.try_set(st.pending[i].step_id[..]);
+            let last = core::sub_sat_i64(st.pending.len, 1);
+            st.pending[i] = st.pending[last];
+            st.pending.pop();
+            return true;
+        }
+    }
+    return false;
+}
+
+fn find_ready_blocked_stream_idx(tbl: const http3::QpackTable&) -> i64 {
+    for &b, i in tbl.blocked_streams {
+        if b.req_insert_count <= tbl.insert_count {
+            return i;
+        }
+    }
+    return -1;
+}
+
+fn decode_and_report_unblocked(
+    st:         QpackHarnessState&,
+    ready_idx:  i64,
+    saved_wire: u8[..4096]&,
+    step_id:    u8[..96]&,
+    fields:     http3::HeaderField[>..]&,
+    rt_fields:  http3::HeaderField[>..]&,
+    dec_hex:    u8[>..]&,
+    rt_hex:     u8[>..]&,
+) {
+    let sid = st.dec_tbl.blocked_streams[ready_idx].stream_id;
+    saved_wire.clear();
+    let ok_cp = saved_wire.try_set(st.dec_tbl.blocked_streams[ready_idx].encoded_data[..]);
+    let _ = http3::qpack_unblock_stream(st.dec_tbl, sid);
+    guard pop_pending_step_id(st, sid, step_id) else { return; }
+    guard ok_cp else {
+        print("SEC_RES\t", step_id[..], "\tDecompressionFailed\t0\t", st.dec_tbl.insert_count, "\t-\n");
+        return;
+    }
+    fields.clear();
+    let err = http3::decode_qpack_section(st.dec_tbl, saved_wire[..], fields, 65536);
+    if err != http3::QpackError.None {
+        print("SEC_RES\t", step_id[..], "\t", qpack_err_tag(err), "\t0\t", st.dec_tbl.insert_count, "\t-\n");
+        return;
+    }
+    serialize_qpack_fields(fields, dec_hex);
+    let rt_ok = run_qpack_roundtrip(st, sid, fields, dec_hex[..], rt_fields, rt_hex);
+    let out_hdr = if dec_hex.len > 0 { dec_hex[..] } else { "-" };
+    print(
+        "SEC_RES\t", step_id[..], "\tNone\t", if rt_ok { 1 } else { 0 },
+        "\t", st.dec_tbl.insert_count, "\t", out_hdr, "\n",
+    );
+}
+
+fn drain_ready_blocked_streams(
+    st:        QpackHarnessState&,
+    fields:    http3::HeaderField[>..]&,
+    rt_fields: http3::HeaderField[>..]&,
+    dec_hex:   u8[>..]&,
+    rt_hex:    u8[>..]&,
+) {
+    guard st.auto_unblock && st.dec_tbl.blocked_streams.len > 0 else { return; }
+    var saved_wire: u8[..4096] = [];
+    var step_id:    u8[..96]   = [];
+    var guard_iter: i64        = 0;
+    while guard_iter < 128 {
+        guard_iter = core::add_sat_i64(guard_iter, 1);
+        let ready_idx = find_ready_blocked_stream_idx(st.dec_tbl);
+        guard ready_idx >= 0 else { break; }
+        decode_and_report_unblocked(st, ready_idx, saved_wire, step_id, fields, rt_fields, dec_hex, rt_hex);
+    }
+}
+
 fn handle_story_cmd(st: QpackHarnessState&, rest: const u8[:]) {
     let _, r1, ok1 = rest.split_once_byte('\t');
     let cap_s, r2, ok2 = r1.split_once_byte('\t');
-    let blk_s, init_s, ok3 = r2.split_once_byte('\t');
+    let blk_s, r3, ok3 = r2.split_once_byte('\t');
     guard ok1 && ok2 && ok3 else { return; }
+    let init_s, auto_s, has_auto = r3.split_once_byte('\t');
+    let eff_init_s = if has_auto { init_s } else { r3 };
     let max_cap, ok_c = cap_s.parse_u64_dec();
     let max_blk, ok_b = blk_s.parse_u64_dec();
-    let init_cap, ok_i = init_s.parse_u64_dec();
+    let init_cap, ok_i = eff_init_s.parse_u64_dec();
     guard ok_c && ok_b && ok_i else { return; }
-    reset_qpack_story(st, max_cap, min(max_blk, 0xFFFFFFFF) as u32, init_cap);
+    let auto_ub = has_auto && auto_s == "1";
+    reset_qpack_story(st, max_cap, min(max_blk, 0xFFFFFFFF) as u32, init_cap, auto_ub);
 }
 
 fn handle_stream_cmd(
-    st:       QpackHarnessState&,
-    is_enc:   bool,
-    rest:     const u8[:],
-    wire_buf: u8[>..]&,
+    st:        QpackHarnessState&,
+    is_enc:    bool,
+    rest:      const u8[:],
+    wire_buf:  u8[>..]&,
+    fields:    http3::HeaderField[>..]&,
+    rt_fields: http3::HeaderField[>..]&,
+    dec_hex:   u8[>..]&,
+    rt_hex:    u8[>..]&,
 ) {
     let step_id, hex_wire, ok = rest.split_once_byte('\t');
     guard ok && decode_hex_bytes(hex_wire, wire_buf) else {
@@ -277,6 +380,9 @@ fn handle_stream_cmd(
             st.dec_tbl.insert_count, "\t", st.dec_tbl.used_bytes, "\t",
             st.dec_tbl.capacity_bytes, "\n",
         );
+        if err == http3::QpackError.None {
+            drain_ready_blocked_streams(st, fields, rt_fields, dec_hex, rt_hex);
+        }
         return;
     }
     let err = apply_decoder_stream_bytes(st.dec_tbl, wire_buf[..]);
@@ -295,8 +401,8 @@ fn dispatch_qpack_line(
     let cmd, rest, ok_cmd = line.split_once_byte('\t');
     guard ok_cmd else { return; }
     if cmd == "STORY" { handle_story_cmd(st, rest); return; }
-    if cmd == "ENC" { handle_stream_cmd(st, true, rest, wire_buf); return; }
-    if cmd == "DEC" { handle_stream_cmd(st, false, rest, wire_buf); return; }
+    if cmd == "ENC" { handle_stream_cmd(st, true, rest, wire_buf, fields, rt_fields, dec_hex, rt_hex); return; }
+    if cmd == "DEC" { handle_stream_cmd(st, false, rest, wire_buf, fields, rt_fields, dec_hex, rt_hex); return; }
     if cmd == "UNBLOCK" {
         let step_id, sid_s, ok_u = rest.split_once_byte('\t');
         let sid, ok_id = sid_s.parse_u64_dec();

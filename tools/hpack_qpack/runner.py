@@ -284,6 +284,7 @@ def _load_quicwg_enc_story(enc_path: Path, qif_path: Path) -> dict[str, Any] | N
         "max_table_capacity": max_cap,
         "max_blocked_streams": max_blk,
         "initial_capacity": 0 if starts_with_set_cap else max_cap,
+        "auto_unblock": True,
         "steps": steps,
     }
 
@@ -332,7 +333,8 @@ def run_qpack_suite(source_path: Path, rebuild: bool = False) -> tuple[int, int]
         max_cap = int(story.get("max_table_capacity", 4096))
         max_blk = int(story.get("max_blocked_streams", 16))
         init_cap = int(story.get("initial_capacity", 0))
-        tsv_lines.append(f"STORY\t{sname}\t{max_cap}\t{max_blk}\t{init_cap}")
+        auto_ub = 1 if story.get("auto_unblock", False) else 0
+        tsv_lines.append(f"STORY\t{sname}\t{max_cap}\t{max_blk}\t{init_cap}\t{auto_ub}")
         for idx, step in enumerate(story.get("steps", [])):
             sid_tag = f"{sname}#{idx}:{step['kind']}"
             kind = step["kind"]
