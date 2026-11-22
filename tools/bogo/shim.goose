@@ -607,6 +607,10 @@ fn run_openssl_bogo_session(fd: i64, cfg: const BogoConfig&) -> i32 {
 
 fn main() {
     let a = args();
+    if a.len >= 2 && a[1] == "-is-handshaker-supported" {
+        print("No\n");
+        return;
+    }
     var cfg = BogoConfig { .. };
     let cli_rc = parse_bogo_cli_args(a, cfg);
     if cli_rc != BOGO_EXIT_OK {
