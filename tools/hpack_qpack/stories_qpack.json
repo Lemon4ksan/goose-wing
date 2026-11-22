@@ -1,0 +1,144 @@
+{
+  "spdx_license": "Apache-2.0",
+  "schema": "quicwg/qpack",
+  "description": "RFC 9204 Appendix B and quicwg/qpack interop vectors",
+  "stories": [
+    {
+      "name": "rfc9204_b1_static_and_literal",
+      "max_table_capacity": 0,
+      "max_blocked_streams": 0,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "section",
+          "stream_id": 0,
+          "wire": "0000510b2f696e6465782e68746d6c",
+          "headers": [
+            {":path": "/index.html"}
+          ]
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "0000d1d7510b2f696e6465782e68746d6c500f7777772e6578616d706c652e636f6d",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "https"},
+            {":path": "/index.html"},
+            {":authority": "www.example.com"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc9204_b2_dynamic_table",
+      "max_table_capacity": 220,
+      "max_blocked_streams": 16,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3fbd01c00f7777772e6578616d706c652e636f6dc10c2f73616d706c652f70617468",
+          "expect_insert_count": 2
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "03811011",
+          "headers": [
+            {":authority": "www.example.com"},
+            {":path": "/sample/path"}
+          ]
+        },
+        {
+          "kind": "decoder",
+          "wire": "02",
+          "expect_known_rcvd": 2
+        }
+      ]
+    },
+    {
+      "name": "rfc9204_b3_speculative_blocked_stream",
+      "max_table_capacity": 220,
+      "max_blocked_streams": 16,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3fbd01",
+          "expect_insert_count": 0
+        },
+        {
+          "kind": "section",
+          "stream_id": 8,
+          "wire": "020080",
+          "expect_error": "StreamBlocked",
+          "headers": []
+        },
+        {
+          "kind": "encoder",
+          "wire": "4a637573746f6d2d6b65790c637573746f6d2d76616c7565",
+          "expect_insert_count": 1
+        },
+        {
+          "kind": "unblock",
+          "stream_id": 8,
+          "headers": [
+            {"custom-key": "custom-value"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc9204_b4_duplicate_huffman_and_dyn_name_ref",
+      "max_table_capacity": 512,
+      "max_blocked_streams": 16,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3fe103c08cf1e3c2e5f23a6ba0ab90f4ff48782d637573746f6d0276318002763202",
+          "expect_insert_count": 4
+        },
+        {
+          "kind": "section",
+          "stream_id": 12,
+          "wire": "0500d1808182",
+          "headers": [
+            {":method": "GET"},
+            {":authority": "www.example.com"},
+            {"x-custom": "v2"},
+            {"x-custom": "v1"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc9204_error_vectors",
+      "max_table_capacity": 64,
+      "max_blocked_streams": 0,
+      "initial_capacity": 0,
+      "steps": [
+        {
+          "kind": "encoder",
+          "wire": "3fbd01",
+          "expect_error": "EncoderStreamError"
+        },
+        {
+          "kind": "section",
+          "stream_id": 4,
+          "wire": "020080",
+          "expect_error": "BlockedStreamsExhausted",
+          "headers": []
+        },
+        {
+          "kind": "section",
+          "stream_id": 8,
+          "wire": "00",
+          "expect_error": "DecompressionFailed",
+          "headers": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
+services:
+  http3-server:
+    build:
+      context: ../..
+      dockerfile: tools/http3/Dockerfile
+    container_name: goose-wing-h3spec-server
+    environment:
+      - WING_PORT=4433
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "4433:4433/udp"
+    restart: "no"
+
+  h3spec-runner:
+    build:
+      context: ../..
+      dockerfile: tools/h3spec/Dockerfile
+    container_name: goose-wing-h3spec-runner
+    network_mode: "service:http3-server"
+    depends_on:
+      - http3-server
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        "python3 /app/tools/h3spec/runner.py --host 127.0.0.1 --port 4433 && h3spec -p 4433 127.0.0.1 || python3 /app/tools/h3spec/runner.py --host 127.0.0.1 --port 4433",
+      ]
+    restart: "no"

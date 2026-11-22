@@ -1,0 +1,233 @@
+{
+  "spdx_license": "Apache-2.0",
+  "schema": "http2jp/hpack-test-case",
+  "description": "RFC 7541 Appendix C and http2jp/hpack-test-case interop stories",
+  "stories": [
+    {
+      "name": "rfc7541_c3_requests_no_huffman",
+      "draft": 12,
+      "description": "RFC 7541 Appendix C.3 Request Examples without Huffman Coding",
+      "cases": [
+        {
+          "seqno": 0,
+          "header_table_size": 4096,
+          "wire": "828684410f7777772e6578616d706c652e636f6d",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "http"},
+            {":path": "/"},
+            {":authority": "www.example.com"}
+          ]
+        },
+        {
+          "seqno": 1,
+          "wire": "828684be58086e6f2d6361636865",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "http"},
+            {":path": "/"},
+            {":authority": "www.example.com"},
+            {"cache-control": "no-cache"}
+          ]
+        },
+        {
+          "seqno": 2,
+          "wire": "828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "https"},
+            {":path": "/index.html"},
+            {":authority": "www.example.com"},
+            {"custom-key": "custom-value"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc7541_c4_requests_huffman",
+      "draft": 12,
+      "description": "RFC 7541 Appendix C.4 Request Examples with Huffman Coding",
+      "cases": [
+        {
+          "seqno": 0,
+          "header_table_size": 4096,
+          "wire": "828684418cf1e3c2e5f23a6ba0ab90f4ff",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "http"},
+            {":path": "/"},
+            {":authority": "www.example.com"}
+          ]
+        },
+        {
+          "seqno": 1,
+          "wire": "828684be5886a8eb10649cbf",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "http"},
+            {":path": "/"},
+            {":authority": "www.example.com"},
+            {"cache-control": "no-cache"}
+          ]
+        },
+        {
+          "seqno": 2,
+          "wire": "828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "https"},
+            {":path": "/index.html"},
+            {":authority": "www.example.com"},
+            {"custom-key": "custom-value"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc7541_c5_responses_no_huffman",
+      "draft": 12,
+      "description": "RFC 7541 Appendix C.5 Response Examples without Huffman Coding (256B table)",
+      "cases": [
+        {
+          "seqno": 0,
+          "header_table_size": 256,
+          "wire": "4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d",
+          "headers": [
+            {":status": "302"},
+            {"cache-control": "private"},
+            {"date": "Mon, 21 Oct 2013 20:13:21 GMT"},
+            {"location": "https://www.example.com"}
+          ]
+        },
+        {
+          "seqno": 1,
+          "header_table_size": 256,
+          "wire": "4803333037c1c0bf",
+          "headers": [
+            {":status": "307"},
+            {"cache-control": "private"},
+            {"date": "Mon, 21 Oct 2013 20:13:21 GMT"},
+            {"location": "https://www.example.com"}
+          ]
+        },
+        {
+          "seqno": 2,
+          "header_table_size": 256,
+          "wire": "88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69707738666f6f3d4153444a4b48514b425a584f5157454f50495541585157454f49553b206d61782d6167653d333630303b2076657273696f6e3d31",
+          "headers": [
+            {":status": "200"},
+            {"cache-control": "private"},
+            {"date": "Mon, 21 Oct 2013 20:13:22 GMT"},
+            {"location": "https://www.example.com"},
+            {"content-encoding": "gzip"},
+            {"set-cookie": "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc7541_c6_responses_huffman",
+      "draft": 12,
+      "description": "RFC 7541 Appendix C.6 Response Examples with Huffman Coding (256B table)",
+      "cases": [
+        {
+          "seqno": 0,
+          "header_table_size": 256,
+          "wire": "488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a62d1bff6e919d29ad171863c78f0b97c8e9ae82ae43d3",
+          "headers": [
+            {":status": "302"},
+            {"cache-control": "private"},
+            {"date": "Mon, 21 Oct 2013 20:13:21 GMT"},
+            {"location": "https://www.example.com"}
+          ]
+        },
+        {
+          "seqno": 1,
+          "header_table_size": 256,
+          "wire": "4883640effc1c0bf",
+          "headers": [
+            {":status": "307"},
+            {"cache-control": "private"},
+            {"date": "Mon, 21 Oct 2013 20:13:21 GMT"},
+            {"location": "https://www.example.com"}
+          ]
+        },
+        {
+          "seqno": 2,
+          "header_table_size": 256,
+          "wire": "88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab77ad94e7821dd7f2e6c7b335dfdfcd5b3960d5af27087f3672c1ab270fb5291f9587316065c003ed4ee5b1063d5007",
+          "headers": [
+            {":status": "200"},
+            {"cache-control": "private"},
+            {"date": "Mon, 21 Oct 2013 20:13:22 GMT"},
+            {"location": "https://www.example.com"},
+            {"content-encoding": "gzip"},
+            {"set-cookie": "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc7541_size_update_and_indexing_modes",
+      "draft": 12,
+      "description": "Dynamic table size update (0 -> 512), never-indexed, without-indexing, and dynamic reuse",
+      "cases": [
+        {
+          "seqno": 0,
+          "header_table_size": 4096,
+          "wire": "828784100d617574686f72697a6174696f6e067365637265740007782d7472616365023432",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "https"},
+            {":path": "/"},
+            {"authorization": "secret"},
+            {"x-trace": "42"}
+          ]
+        },
+        {
+          "seqno": 1,
+          "header_table_size": 4096,
+          "wire": "203fe1038287844009782d73657373696f6e04746f6b31",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "https"},
+            {":path": "/"},
+            {"x-session": "tok1"}
+          ]
+        },
+        {
+          "seqno": 2,
+          "header_table_size": 4096,
+          "wire": "828784be",
+          "headers": [
+            {":method": "GET"},
+            {":scheme": "https"},
+            {":path": "/"},
+            {"x-session": "tok1"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc7541_error_cases",
+      "draft": 12,
+      "description": "Negative HPACK vectors: index 0 and size update exceeding SETTINGS limit",
+      "cases": [
+        {
+          "seqno": 0,
+          "header_table_size": 256,
+          "wire": "80",
+          "expect_error": true,
+          "headers": []
+        },
+        {
+          "seqno": 1,
+          "header_table_size": 256,
+          "wire": "3fe10382",
+          "expect_error": true,
+          "headers": []
+        }
+      ]
+    }
+  ]
+}

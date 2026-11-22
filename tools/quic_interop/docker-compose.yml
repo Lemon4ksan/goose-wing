@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
+# quic-interop-runner compose matrix for goose-wing self-interop and
+# cross-stack QUIC interop (ngtcp2, quiche, quic-go).
+#
+# Default self-interop:
+#   docker compose -f tools/quic_interop/docker-compose.yml up --build \
+#     --abort-on-container-exit --exit-code-from wing-client
+#
+# Cross-stack peers (optional profiles: ngtcp2, quiche, quic-go):
+#   docker compose -f tools/quic_interop/docker-compose.yml --profile ngtcp2 up
+services:
+  wing-server:
+    build:
+      context: ../..
+      dockerfile: tools/quic_interop/Dockerfile
+    container_name: goose-wing-qir-server
+    environment:
+      - ROLE=server
+      - TESTCASE=${TESTCASE:-transfer}
+      - PORT=443
+      - SSLKEYLOGFILE=/logs/server_keys.log
+    volumes:
+      - qir_www:/www
+      - qir_logs:/logs
+    ports:
+      - "4433:443/udp"
+    restart: "no"
+
+  wing-client:
+    build:
+      context: ../..
+      dockerfile: tools/quic_interop/Dockerfile
+    container_name: goose-wing-qir-client
+    depends_on:
+      - wing-server
+    environment:
+      - ROLE=client
+      - TESTCASE=${TESTCASE:-transfer}
+      - PORT=443
+      - REQUESTS=${REQUESTS:-https://wing-server:443/payload.bin}
+      - SSLKEYLOGFILE=/logs/client_keys.log
+    volumes:
+      - qir_downloads:/downloads
+      - qir_logs:/logs
+    restart: "no"
+
+  ngtcp2-peer:
+    image: ghcr.io/ngtcp2/ngtcp2-interop:latest
+    profiles: ["ngtcp2"]
+    environment:
+      - ROLE=server
+      - TESTCASE=${TESTCASE:-handshake}
+      - SSLKEYLOGFILE=/logs/ngtcp2_keys.log
+    volumes:
+      - qir_www:/www
+      - qir_logs:/logs
+
+  quiche-peer:
+    image: cloudflare/quiche-qns:latest
+    profiles: ["quiche"]
+    environment:
+      - ROLE=server
+      - TESTCASE=${TESTCASE:-handshake}
+      - SSLKEYLOGFILE=/logs/quiche_keys.log
+    volumes:
+      - qir_www:/www
+      - qir_logs:/logs
+
+  quic-go-peer:
+    image: martenseemann/quic-go-interop:latest
+    profiles: ["quic-go"]
+    environment:
+      - ROLE=server
+      - TESTCASE=${TESTCASE:-handshake}
+      - SSLKEYLOGFILE=/logs/quicgo_keys.log
+    volumes:
+      - qir_www:/www
+      - qir_logs:/logs
+
+volumes:
+  qir_www:
+  qir_downloads:
+  qir_logs:

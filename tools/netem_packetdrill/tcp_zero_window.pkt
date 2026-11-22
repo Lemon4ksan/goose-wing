@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 Lemon4ksan
+//
+// packetdrill script: TCP Zero-Window flow control, Persist Timer Zero-Window
+// Probe (ZWP), and Window Update recovery (RFC 9293 Section 3.8.6).
+// Verifies Wing server response backpressure when a slow HTTP peer advertises
+// win 0 and later reopens its receive window.
+
+--tolerance_usecs=150000
+
+0.000 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0.000 setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
++0.000 bind(3, ..., ...) = 0
++0.000 listen(3, 16) = 0
+
+// Handshake with 4096-byte peer receive window (no wscale)
++0.010 < S 0:0(0) win 4096 <mss 1460,sackOK,TS val 100 ecr 0>
++0.000 > S. 0:0(0) ack 1 <mss 1460,sackOK,TS val 200 ecr 100>
++0.010 < . 1:1(0) ack 1 win 4096 <nop,nop,TS val 110 ecr 200>
++0.000 accept(3, ..., ...) = 4
+
+// Server fills the 4096-byte receive window
++0.002 write(4, ..., 4096) = 4096
++0.000 > . 1:1461(1460) ack 1 <nop,nop,TS val 212 ecr 110>
++0.000 > . 1461:2921(1460) ack 1 <nop,nop,TS val 212 ecr 110>
++0.000 > P. 2921:4097(1176) ack 1 <nop,nop,TS val 212 ecr 110>
+
+// Peer ACKs all 4096 bytes and advertises Zero Window (win 0)
++0.010 < . 1:1(0) ack 4097 win 0 <nop,nop,TS val 120 ecr 212>
+
+// Server enqueues 1024 more bytes while peer window is stalled at 0
++0.002 write(4, ..., 1024) = 1024
+
+// Persist timer emits a Zero-Window Probe (ZWP)
++0.150~+0.350 > . 4096:4096(0) ack 1 <nop,nop,TS val 422 ecr 120>
+
+// Peer reopens receive window to 4096 bytes
++0.010 < . 1:1(0) ack 4097 win 4096 <nop,nop,TS val 330 ecr 422>
+
+// Server flushes buffered 1024 bytes immediately after Window Update
++0.000 > P. 4097:5121(1024) ack 1 <nop,nop,TS val 432 ecr 330>
++0.010 < . 1:1(0) ack 5121 win 4096 <nop,nop,TS val 340 ecr 432>
+
++0.001 close(4) = 0
++0.000 close(3) = 0
