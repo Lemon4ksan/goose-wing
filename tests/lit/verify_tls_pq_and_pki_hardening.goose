@@ -464,9 +464,10 @@ fn test_trust_anchor_name_constraints() {
     let bad_seed:  u8[32] = [0xF6; 32];
     let now_sec:   i64    = 1750000000;
 
-    // Build NameConstraints: SEQUENCE { [0] permittedSubtrees { SEQUENCE { dNSName [2] ".allowed.test" } } }
+    // Build NameConstraints: SEQUENCE { [0] permittedSubtrees { SEQUENCE { dNSName [2] "allowed.test" } } }
+    // (RFC 5280 Section 4.2.1.10 forbids leading periods in dNSName constraints.)
     var subtree_body: u8[..32] = [];
-    der_append_tlv(subtree_body, 0x82, ".allowed.test");
+    der_append_tlv(subtree_body, 0x82, "allowed.test");
     var subtree_seq: u8[..40] = [];
     der_wrap(rfc::ASN1_TAG_SEQUENCE, subtree_body[..], subtree_seq);
     var nc_body: u8[..48] = [];

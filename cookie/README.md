@@ -101,9 +101,9 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: SourceScheme, port: i32) ->
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool
 fn matches_path(cookie_val: const CanonicalCookie&, req_path: const u8[:]) -> bool
 fn format<B>(cookie_val: const CanonicalCookie&, out: B&)
-fn add_original(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool
-fn add(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool
-fn remove(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool
+fn add_original(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool
+fn add(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool
+fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool
 fn flush_deltas(jar: const ServerCookieDeltaJar&, headers: wing::HeaderMap&) -> bool
 ```
 
