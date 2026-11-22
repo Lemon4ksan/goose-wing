@@ -129,6 +129,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
 
     var sh = ParsedServerHello { .. };
     guard parse_live_server_hello(sh_msg[..], sh) else {
+        tls_internal::send_plaintext_fatal_alert(fd, tls_internal::classify_sh_failure_alert(sh_msg[..]));
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -144,6 +145,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         }
     } else {
         guard tls_internal::validate_live_client_sh(sh, client_random) else {
+            tls_internal::send_plaintext_fatal_alert(fd, Alert.IllegalParameter);
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
@@ -257,7 +259,8 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     var cert_req = CertificateRequestMsg { .. };
     let ok_flight = tls_internal::tls_client_process_server_flight(
         hs_reader, fd, cipher_suite, server_hs_key[..klen],
-        server_hs_iv, ks, transcript, config, psk_resumed, neg_alpn,
+        server_hs_iv, client_hs_key[..klen], client_hs_iv,
+        ks, transcript, config, psk_resumed, neg_alpn,
         cert_req_received, cert_req, slot_idx,
     );
     guard ok_flight else {

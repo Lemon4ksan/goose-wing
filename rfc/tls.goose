@@ -24,7 +24,7 @@ const TLS_VERSION_1_3:        u16 = 0x0304; // RFC 8446 Section 4.2.1
 const TLS_RECORD_HEADER_LEN:         i64 = 5;     // RFC 8446 Section 5.1
 const TLS_AEAD_TAG_LEN:              i64 = 16;    // RFC 8446 Section 5.2
 const TLS_MAX_RECORD_PLAINTEXT_LEN:  i64 = 16384; // RFC 8446 Section 5.1 (2^14)
-const TLS_MAX_INNER_PLAINTEXT_LEN:   i64 = 16624; // RFC 8446 Section 5.4 (16640 - 16)
+const TLS_MAX_INNER_PLAINTEXT_LEN:   i64 = 16385; // RFC 8446 Section 5.4 (2^14 + 1)
 const TLS_MAX_RECORD_CIPHERTEXT_LEN: i64 = 16640; // RFC 8446 Section 5.2 (2^14 + 256)
 
 // RFC 8446 Appendix D.4: At most one dummy ChangeCipherSpec record is permitted.

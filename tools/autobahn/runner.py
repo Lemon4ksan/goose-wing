@@ -205,15 +205,18 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
         cat = case_id.split(".")[0]
         categories.setdefault(cat, []).append((case_id, res))
 
-    print("\n" + "=" * 81)
+    print("\n" + "=" * 86)
     print(" Autobahn WebSocket Testsuite (RFC 6455) Compliance Report")
-    print("=" * 81)
-    print(f"{'Category':<8} | {'Description':<42} | {'Total':>5} | {'Passed':>6} | {'Status'}")
-    print("-" * 81)
+    print("=" * 86)
+    print(
+        f"{'Category':<8} | {'Description':<42} | {'Total':>5} | {'Passed':>6} | {'Status'}"
+    )
+    print("-" * 86)
 
     total_passed = 0
     total_non_strict = 0
     total_informational = 0
+    total_unimplemented = 0
     total_failed = 0
     total_count = 0
 
@@ -224,6 +227,7 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
         cat_passed = 0
         cat_non_strict = 0
         cat_info = 0
+        cat_unimpl = 0
         cat_failed = 0
 
         for _, res in items:
@@ -236,8 +240,7 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
             elif b == "INFORMATIONAL" or bc == "INFORMATIONAL":
                 cat_info += 1
             elif b == "UNIMPLEMENTED":
-                # Optional extension (e.g. permessage-deflate)
-                cat_non_strict += 1
+                cat_unimpl += 1
             else:
                 cat_failed += 1
 
@@ -245,26 +248,46 @@ def print_summary_table(results_dir: Path) -> tuple[int, int, int]:
         total_passed += cat_passed
         total_non_strict += cat_non_strict
         total_informational += cat_info
+        total_unimplemented += cat_unimpl
         total_failed += cat_failed
 
         ok_total = cat_passed + cat_non_strict + cat_info
-        status = "100% OK" if cat_failed == 0 else f"{cat_failed} FAILED"
-        print(f"{cat_num:<8} | {desc:<42} | {cat_total:>5} | {ok_total:>6} | {status}")
+        if cat_failed > 0:
+            status = f"{cat_failed} FAILED"
+        elif cat_unimpl == cat_total and cat_total > 0:
+            status = f"{cat_unimpl} UNIMPL"
+        elif cat_unimpl > 0:
+            status = f"OK ({cat_unimpl} UNIMPL)"
+        else:
+            status = "100% OK"
+        print(
+            f"{cat_num:<8} | {desc:<42} | {cat_total:>5} | {ok_total:>6} | {status}"
+        )
 
-    print("=" * 81)
+    print("=" * 86)
     print(
-        f"TOTAL CASES: {total_count}  |  PASSED: {total_passed}  |  "
-        f"NON-STRICT: {total_non_strict}  |  INFO: {total_informational}  |  FAILED: {total_failed}"
+        f"TOTAL: {total_count} | PASSED: {total_passed} | "
+        f"NON-STRICT: {total_non_strict} | INFO: {total_informational} | "
+        f"UNIMPL: {total_unimplemented} | FAILED: {total_failed}"
     )
 
-    compliance_pct = (
-        ((total_passed + total_non_strict + total_informational) / total_count * 100)
-        if total_count > 0
-        else 0
+    implemented_total = total_count - total_unimplemented
+    passed_total = total_passed + total_non_strict + total_informational
+    if implemented_total > 0:
+        compliance_pct = passed_total / implemented_total * 100
+        print(
+            f"Implemented Cases Compliance: {compliance_pct:.1f}% "
+            f"({passed_total}/{implemented_total})"
+        )
+    else:
+        print(
+            f"Implemented Cases Compliance: N/A "
+            f"(0 implemented, {total_unimplemented} UNIMPL)"
+        )
+    print(
+        f"Detailed HTML Reports: file:///{(results_dir.resolve() / 'index.html').as_posix()}"
     )
-    print(f"RFC 6455 Core Specification Compliance: {compliance_pct:.1f}%")
-    print(f"Detailed HTML Reports: file:///{results_dir.resolve() / 'index.html'}")
-    print("=" * 81 + "\n")
+    print("=" * 86 + "\n")
 
     return (
         total_count,

@@ -127,12 +127,12 @@ checkfree fn parse_alert_message(data: const u8[:]) -> u8, Alert, bool, bool {
     let desc = data[1];
 
     guard level == 1 || level == 2 else {
-        return level, Alert.DecodeError, true, false;
+        return level, Alert.IllegalParameter, true, false;
     }
 
     let alert, alert_ok = u8_to_alert(desc);
     guard alert_ok else {
-        return level, Alert.DecodeError, true, false;
+        return level, Alert.IllegalParameter, true, false;
     }
 
     var is_fatal = true;

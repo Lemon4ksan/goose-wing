@@ -259,8 +259,8 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
     return bytes(buf)
 
 
-def _xor55(data: bytes) -> bytes:
-    return bytes(b ^ 0x55 for b in data)
+def _xor_bogo(data: bytes) -> bytes:
+    return bytes(b ^ 0xFF for b in data)
 
 
 def _open_listener(ipv6: bool = False) -> tuple[socket.socket, int]:
@@ -309,7 +309,7 @@ def run_bogo_vs_openssl_peer(
                 tls_sock.settimeout(4.0)
                 tls_sock.sendall(payload)
                 resp = _recv_exact(tls_sock, len(payload))
-                if resp == _xor55(payload):
+                if resp == _xor_bogo(payload):
                     state["ok"] = True
                     state["detail"] = f"ver={tls_sock.version()} alpn={tls_sock.selected_alpn_protocol()}"
                 else:
@@ -572,13 +572,13 @@ def _run_core_bogo_tests(
     srv_ctx = _make_server_ctx(pki.srv_cert, pki.srv_key, alpn=["h2", "http/1.1"])
     cli_ctx = _make_client_ctx(ca_cert=pki.ca_cert, alpn=["h2", "http/1.1"])
 
-    # 1. PureGoose Client <-> OpenSSL TLS 1.3 Server (shim-id LE + XOR-0x55 echo)
+    # 1. PureGoose Client <-> OpenSSL TLS 1.3 Server (shim-id LE + XOR-0xFF echo)
     rc, ok, gid, det = run_bogo_vs_openssl_peer(
         exe, env, 1001,
         ["-host-name", "localhost", "-trust-cert", str(pki.ca_cert), "-verify-peer"],
         srv_ctx, peer_is_server=True,
     )
-    check(rc == 0 and ok and gid == 1001, "BoGo/01 PureGoose client TLS 1.3 + shim-id + XOR-0x55", det)
+    check(rc == 0 and ok and gid == 1001, "BoGo/01 PureGoose client TLS 1.3 + shim-id + XOR-0xFF", det)
 
     # 2. PureGoose Client IPv6 ([::1] + -ipv6)
     if _supports_ipv6_loopback():

@@ -3516,3 +3516,10 @@ void wing_tls_state_lock(int32_t lock_id) { (void)lock_id; }
 
 void wing_tls_state_unlock(int32_t lock_id) { (void)lock_id; }
 #endif
+
+void wing_write_stderr(wing_bytes_ro msg) {
+    if (msg.data != NULL && msg.len > 0) {
+        (void)fwrite(msg.data, 1, (size_t)msg.len, stderr);
+        fflush(stderr);
+    }
+}

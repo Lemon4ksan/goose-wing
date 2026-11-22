@@ -404,6 +404,8 @@ struct CipherSlot {
     rx_plain_buf:           u8[..16384]        = [],
     rx_plain_pos:           i64                = 0,
     bytes_sent:             u64                = 0,
+    empty_app_records:      u8                 = 0,
+    warning_alerts:         u8                 = 0,
     key_update_tracker:     KeyUpdateTracker   = KeyUpdateTracker { .. },
     ticket_cache:           SessionTicketCache = SessionTicketCache { .. },
 }
@@ -413,6 +415,7 @@ struct HandshakeRecordReader {
     current_offset:       i64         = 0,
     seq_num:              u64         = 0,
     ccs_count:            u32         = 0,
+    last_alert:           Alert       = Alert.CloseNotify,
 }
 
 struct ClientHandshakeConfig {

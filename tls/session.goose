@@ -588,6 +588,31 @@ fn cipher_slot_seal_close_notify<B>(slot_idx: u16, out_cipher: B&) -> bool {
     return true;
 }
 
+// Seals and sends an RFC 8446 Section 6.2 encrypted fatal alert on an active TLS 1.3 cipher slot.
+fn send_encrypted_fatal_alert(fd: i64, slot_idx: u16, alert: Alert) {
+    let idx = slot_idx as i64;
+    guard fd > 0 && idx >= 0 && idx < g_tls_cipher_slots.len else { return; }
+    let slot .= g_tls_cipher_slots[idx];
+    guard slot.in_use && !aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else { return; }
+    let alert_data: u8[2] = [2, alert_to_u8(alert)];
+    var rec_buf: u8[64] = [0; 64];
+    let klen = slot.key_len as i64;
+    let sealed_len, _, ok_seal = tls_internal::record_seal_prepared_into(
+        slot.cipher_suite,
+        slot.tx_key[..klen],
+        slot.tx_aes_key,
+        slot.tx_iv,
+        slot.tx_seq,
+        rfc::TLS_CONTENT_ALERT,
+        alert_data[..],
+        rec_buf[..],
+    );
+    if ok_seal && sealed_len > 0 {
+        increment_record_seq_num(slot.tx_seq);
+        let _ = net::tcp_send(fd, rec_buf[..sealed_len]);
+    }
+}
+
 // Extracts DNS SubjectAltName entries from a DER X.509 certificate into `g_tls_cipher_slots[slot_idx].san_hosts`.
 fn populate_slot_san_hosts_from_der(slot_idx: u16, cert_der: const u8[:]) -> bool {
     let idx = slot_idx as i64;
@@ -938,13 +963,23 @@ recursive fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], t
     guard hdr_st == 1 else { return -1; }
 
     let ct, ver, payload_len_u16, alert, ok_p = parse_record_header(hdr_buf[..]);
-    guard ok_p else { return -1; }
+    guard ok_p else {
+        send_encrypted_fatal_alert(fd, slot_idx, alert);
+        return -1;
+    }
     let payload_len = payload_len_u16 as i64;
-    guard payload_len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else { return -1; }
+    guard payload_len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
+        send_encrypted_fatal_alert(fd, slot_idx, Alert.RecordOverflow);
+        return -1;
+    }
 
     var ct_payload: u8[16640] = [0; 16640];
     let ok_body = tls_internal::tls_read_exact(fd, ct_payload[..payload_len], timeout_ms);
-    guard ok_body && ct == rfc::TLS_CONTENT_APPLICATION_DATA else { return -1; }
+    guard ok_body else { return -1; }
+    guard ct == rfc::TLS_CONTENT_APPLICATION_DATA else {
+        send_encrypted_fatal_alert(fd, slot_idx, Alert.UnexpectedMessage);
+        return -1;
+    }
 
     var plain_dec: u8[16640] = [0; 16640];
     defer core::secure_zeroize_slice(plain_dec[..payload_len]);
@@ -959,10 +994,24 @@ recursive fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], t
         ct_payload[..payload_len],
         plain_dec[..payload_len],
     );
-    guard ok_dec else { return -1; }
+    guard ok_dec else {
+        send_encrypted_fatal_alert(fd, slot_idx, alert_dec);
+        return -1;
+    }
     increment_record_seq_num(g_tls_cipher_slots[idx].rx_seq);
 
     if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA {
+        if dec_len == 0 {
+            let empty_cnt = core::add_sat_u64(g_tls_cipher_slots[idx].empty_app_records, 1);
+            guard empty_cnt <= 32 else {
+                send_encrypted_fatal_alert(fd, slot_idx, Alert.UnexpectedMessage);
+                return -1;
+            }
+            g_tls_cipher_slots[idx].empty_app_records = empty_cnt as u8;
+            return tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
+        }
+        g_tls_cipher_slots[idx].empty_app_records = 0;
+        g_tls_cipher_slots[idx].warning_alerts = 0;
         let to_user = min(dec_len, dst.len);
         core::ct_copy_bytes(dst[..to_user], plain_dec[..to_user]);
         if dec_len > dst.len {
@@ -980,15 +1029,30 @@ recursive fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], t
             return 0;
         }
         if ok_a && alert_level == 1 && alert_code == Alert.UserCanceled {
-            return 0;
+            let warn_cnt = core::add_sat_u64(g_tls_cipher_slots[idx].warning_alerts, 1);
+            guard warn_cnt <= 4 else {
+                send_encrypted_fatal_alert(fd, slot_idx, Alert.UnexpectedMessage);
+                return -1;
+            }
+            g_tls_cipher_slots[idx].warning_alerts = warn_cnt as u8;
+            return tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
+        }
+        if !ok_a {
+            send_encrypted_fatal_alert(fd, slot_idx, alert_code);
+        } else if alert_level != 2 {
+            send_encrypted_fatal_alert(fd, slot_idx, Alert.DecodeError);
         }
         return -1;
     }
 
     if inner_type == rfc::TLS_CONTENT_HANDSHAKE {
-        guard dispatch_post_handshake_record(fd, slot_idx, plain_dec[..dec_len]) else { return -1; }
-        return 0;
+        guard dispatch_post_handshake_record(fd, slot_idx, plain_dec[..dec_len]) else {
+            send_encrypted_fatal_alert(fd, slot_idx, Alert.UnexpectedMessage);
+            return -1;
+        }
+        return tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
     }
+    send_encrypted_fatal_alert(fd, slot_idx, Alert.UnexpectedMessage);
     return -1;
 }
 

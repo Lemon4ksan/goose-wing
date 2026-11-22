@@ -101,6 +101,8 @@ fn wipe_and_reset_tls_cipher_slot(slot: tls::CipherSlot&) {
     slot.rx_plain_buf.clear();
     slot.rx_plain_pos = 0;
     slot.bytes_sent = 0;
+    slot.empty_app_records = 0;
+    slot.warning_alerts = 0;
     slot.key_update_tracker = tls::KeyUpdateTracker { .. };
     slot.ticket_cache = tls::SessionTicketCache { .. };
 }
@@ -238,8 +240,99 @@ fn compact_handshake_reader(r: tls::HandshakeRecordReader&) {
     r.current_offset = 0;
 }
 
-// Consumes the next handshake message from the reader, reading and decrypting
-// subsequent TLS records from `fd` when the buffered record is exhausted.
+// Sends a plaintext RFC 8446 Section 6.2 fatal alert before handshake keys are active.
+fn send_plaintext_fatal_alert(fd: i64, alert: tls::Alert) {
+    guard fd > 0 && alert != tls::Alert.CloseNotify else { return; }
+    let rec: u8[7] = [
+        rfc::TLS_CONTENT_ALERT,
+        0x03,
+        0x03,
+        0x00,
+        0x02,
+        0x02,
+        tls::alert_to_u8(alert),
+    ];
+    let _ = tls_write_all(fd, rec[..]);
+}
+
+// Seals and sends an encrypted RFC 8446 Section 6.2 fatal alert under handshake traffic keys.
+fn send_hs_fatal_alert(
+    fd:           i64,
+    cipher_suite: u16,
+    tx_key:       const u8[:],
+    tx_iv:        const u8[12]&,
+    alert:        tls::Alert,
+) {
+    guard fd > 0 && tx_key.len > 0 && alert != tls::Alert.CloseNotify else { return; }
+    let alert_data: u8[2] = [2, tls::alert_to_u8(alert)];
+    var rec_buf: u8[64] = [0; 64];
+    let sealed_len, _, ok = tls::record_seal_into(
+        cipher_suite, tx_key, tx_iv, 0, rfc::TLS_CONTENT_ALERT, alert_data[..], rec_buf[..],
+    );
+    if ok && sealed_len > 0 {
+        let _ = tls_write_all(fd, rec_buf[..sealed_len]);
+    }
+}
+
+fn unseal_hs_record_step(
+    r:            tls::HandshakeRecordReader&,
+    fd:           i64,
+    cipher_suite: u16,
+    key:          const u8[:],
+    iv:           const u8[12]&,
+    timeout_ms:   u32,
+) -> bool {
+    var hdr_buf: u8[5] = [0; 5];
+    guard tls_read_exact(fd, hdr_buf[..], timeout_ms) else { return false; }
+
+    let ct, ver, payload_len_u16, alert, ok_p = tls::parse_record_header(hdr_buf[..]);
+    guard ok_p else { r.last_alert = alert; return false; }
+    let payload_len = payload_len_u16 as i64;
+    guard payload_len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else {
+        r.last_alert = tls::Alert.RecordOverflow;
+        return false;
+    }
+
+    var ct_payload: u8[16640] = [0; 16640];
+    guard tls_read_exact(fd, ct_payload[..payload_len], timeout_ms) else { return false; }
+
+    if ct == rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC {
+        guard r.ccs_count < 1 &&
+            r.current_offset == r.current_record_plain.len &&
+            ver == rfc::TLS_LEGACY_VERSION_1_2 &&
+            tls::validate_change_cipher_spec_record(ct_payload[..payload_len]) == tls::Alert.CloseNotify else {
+            r.last_alert = tls::Alert.UnexpectedMessage;
+            return false;
+        }
+        r.ccs_count = core::add_sat_u32(r.ccs_count, 1);
+        return true;
+    }
+    guard ct == rfc::TLS_CONTENT_APPLICATION_DATA else {
+        r.last_alert = tls::Alert.UnexpectedMessage;
+        return false;
+    }
+
+    compact_handshake_reader(r);
+    var plain_dec: u8[16640] = [0; 16640];
+    defer core::secure_zeroize_slice(plain_dec[..payload_len]);
+    let dec_len, inner_type, alert_dec, ok_dec = tls::record_decrypt_into(
+        cipher_suite, key, iv, r.seq_num, hdr_buf[..], ct_payload[..payload_len], plain_dec[..payload_len],
+    );
+    guard ok_dec else { r.last_alert = alert_dec; return false; }
+    guard inner_type == rfc::TLS_CONTENT_HANDSHAKE && dec_len > 0 else {
+        r.last_alert = tls::Alert.UnexpectedMessage;
+        return false;
+    }
+    tls::increment_record_seq_num(r.seq_num);
+    guard r.current_record_plain.try_append(plain_dec[..dec_len]) else {
+        r.last_alert = tls::Alert.DecodeError;
+        return false;
+    }
+    return true;
+}
+
+// Reads the next encrypted handshake message from the TLS 1.3 handshake record stream.
+// Records `r.last_alert` on protocol/decryption errors for RFC 8446 Section 6.2 alert reporting.
 //
 // Example:
 //   r.current_record_plain = [0x08, 0x00, 0x00, 0x02, 0x00, 0x00], r.current_offset = 0
@@ -254,51 +347,14 @@ fn next_handshake_message(
     out_msg_body: u8[..16384]&,
     timeout_ms:   u32,
 ) -> bool {
+    r.last_alert = tls::Alert.CloseNotify;
     loop {
         if try_read_handshake_msg(r, msg_type, out_msg_body) {
             return true;
         }
-
-        var hdr_buf: u8[5] = [0; 5];
-        guard tls_read_exact(fd, hdr_buf[..], timeout_ms) else { return false; }
-
-        let ct, ver, payload_len_u16, alert, ok_p = tls::parse_record_header(hdr_buf[..]);
-        guard ok_p else { return false; }
-        let payload_len = payload_len_u16 as i64;
-        guard payload_len <= rfc::TLS_MAX_RECORD_CIPHERTEXT_LEN else { return false; }
-
-        var ct_payload: u8[..16640] = [];
-        while ct_payload.len < payload_len { ct_payload.push(0); }
-        guard tls_read_exact(fd, ct_payload[..payload_len], timeout_ms) else { return false; }
-
-        if ct == rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC {
-            guard r.ccs_count < 1 &&
-                r.current_offset == r.current_record_plain.len &&
-                ver == rfc::TLS_LEGACY_VERSION_1_2 &&
-                tls::validate_change_cipher_spec_record(ct_payload[..payload_len]) == tls::Alert.CloseNotify else {
-                return false;
-            }
-            r.ccs_count = core::add_sat_u32(r.ccs_count, 1);
-            continue;
+        guard unseal_hs_record_step(r, fd, cipher_suite, key, iv, timeout_ms) else {
+            return false;
         }
-        guard ct == rfc::TLS_CONTENT_APPLICATION_DATA else { return false; }
-
-        compact_handshake_reader(r);
-        var plain_dec: u8[..16640] = [];
-        while plain_dec.len < payload_len { plain_dec.push(0); }
-        let dec_len, inner_type, alert_dec, ok_dec = tls::record_decrypt_into(
-            cipher_suite,
-            key,
-            iv,
-            r.seq_num,
-            hdr_buf[..],
-            ct_payload[..payload_len],
-            plain_dec[..],
-        );
-        guard ok_dec && inner_type == rfc::TLS_CONTENT_HANDSHAKE && dec_len > 0 else { return false; }
-        tls::increment_record_seq_num(r.seq_num);
-
-        guard r.current_record_plain.try_append(plain_dec[..dec_len]) else { return false; }
     }
     return false;
 }
@@ -386,12 +442,16 @@ fn encode_psk_client_extensions<B>(
 }
 
 // Sends a plaintext TLS record containing a handshake message (RFC 8446 §5.1).
-fn send_plaintext_handshake_record(fd: i64, hs_msg: const u8[:]) -> bool {
+// Initial ClientHello MAY use 0x0301; ServerHello and post-HRR ClientHello2 MUST use 0x0303.
+fn send_plaintext_handshake_record(
+    fd:         i64,
+    hs_msg:     const u8[:],
+    legacy_ver: u16 = rfc::TLS_LEGACY_VERSION_1_0,
+) -> bool {
     guard hs_msg.len > 0 && hs_msg.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
     var rec_buf: u8[..16640] = [];
     rec_buf.push(rfc::TLS_CONTENT_HANDSHAKE);
-    rec_buf.push(0x03);
-    rec_buf.push(0x01); // legacy record version 1.0 (RFC 8446 §5.1)
+    rec_buf.append_u16_be(legacy_ver);
     rec_buf.append_u16_be(hs_msg.len as u16);
     rec_buf.append(hs_msg);
     return tls_write_all(fd, rec_buf[..]);

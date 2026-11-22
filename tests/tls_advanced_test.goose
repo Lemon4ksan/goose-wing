@@ -183,17 +183,16 @@ fn test_round2_padding_and_empty_record_invariants(t: lit::T&) {
         sub.assert_eq(pt.len, 0, "plaintext length is 0");
     };
 
-    t.run("RFC 8446 §5.1 & §5.4: Inner plaintext maximum limit (16624 bytes)") { sub =>
-        // TLSCiphertext max is 16640 bytes. AEAD tag is 16 bytes.
-        // Therefore, decrypted TLSInnerPlaintext cannot exceed 16640 - 16 = 16624 bytes.
-        // A decrypted payload of 16625 bytes MUST be rejected with RecordOverflow.
-        var oversized_inner: u8[16625] = [0x00; 16625];
-        oversized_inner[10] = 0x17; // 10 bytes content + type + 16614 padding zeroes = 16625B
+    t.run("RFC 8446 §5.1 & §5.4: Inner plaintext maximum limit (16385 bytes)") { sub =>
+        // RFC 8446 Section 5.4: Full encoded TLSInnerPlaintext MUST NOT exceed 2^14 + 1 (16385) octets.
+        // A decrypted payload of 16386 bytes MUST be rejected with RecordOverflow.
+        var oversized_inner: u8[16386] = [0x00; 16386];
+        oversized_inner[10] = 0x17; // 10 bytes content + type + 16375 padding zeroes = 16386B
         let _, _, alert_ov = tls::unpack_inner_plaintext(oversized_inner[..]);
         sub.assert_eq(
             tls::alert_to_u8(alert_ov),
             tls::alert_to_u8(tls::Alert.RecordOverflow),
-            "decrypted inner plaintext > 16624 bytes yields record_overflow",
+            "decrypted inner plaintext > 16385 bytes yields record_overflow",
         );
     };
 }

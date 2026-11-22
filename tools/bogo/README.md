@@ -1,7 +1,7 @@
 # goose-wing BoGo TLS protocol test suite
 
 BoringSSL BoGo protocol shim ([shim.goose](shim.goose)) and local TLS 1.3
-conformance runner implementing the BoGo `shim-id` header and XOR-`0x55` echo
+conformance runner implementing the BoGo `shim-id` header and XOR-`0xFF` echo
 loop for `PureGoose` and `SystemOpenSsl`.
 
 ## Quick start
@@ -44,7 +44,7 @@ python tools/bogo.py --docker
 The `--local` runner verifies 20+ BoGo-style cases across `PureGoose` and
 `SystemOpenSsl`:
 
-- BoGo 8-byte little-endian `shim-id` framing and XOR-`0x55` echo over IPv4 and
+- BoGo 8-byte little-endian `shim-id` framing and XOR-`0xFF` echo over IPv4 and
   IPv6 (`[::1]`).
 - `PureGoose` client and server against OpenSSL peers and self-peer relays.
 - ALPN negotiation (`h2`, `http/1.1`) and mismatch rejection (`-expect-alpn`).

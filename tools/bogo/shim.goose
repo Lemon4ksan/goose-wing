@@ -3,7 +3,7 @@
 
 // BoringSSL BoGo protocol test shim for goose-wing (`PureGoose` and `SystemOpenSsl`).
 // Connects over TCP, writes the 8-byte little-endian `shim-id` header, completes TLS 1.3
-// (or opt-in TLS 1.2 on OpenSSL), and runs the BoGo XOR-0x55 application echo loop.
+// (or opt-in TLS 1.2 on OpenSSL), and runs the BoGo XOR-0xFF application echo loop.
 import std;
 import os;
 import wing from "../..";
@@ -11,10 +11,12 @@ import wing from "../..";
 const BOGO_EXIT_OK:            i32 = 0;
 const BOGO_EXIT_FAIL:          i32 = 1;
 const BOGO_EXIT_UNIMPLEMENTED: i32 = 89;
-const BOGO_XOR_MASK:           u8  = 0x55;
+const BOGO_XOR_MASK:           u8  = 0xFF;
 const BOGO_IO_TIMEOUT_MS:      u32 = 5000;
 const TLS_VERSION_1_2_WIRE:    u16 = 0x0303;
 const TLS_VERSION_1_3_WIRE:    u16 = 0x0304;
+
+extern fn bogo_err(msg: const u8[:]) = "wing_write_stderr";
 
 struct BogoConfig {
     port:           u16                 = 0,
@@ -357,36 +359,36 @@ fn load_pure_server_creds(cfg: const BogoConfig&, srv_cfg: tls::ServerHandshakeC
 fn run_pure_bogo_write_first(fd: i64, slot_idx: u16) -> i32 {
     let msg = "hello";
     guard tls::transport_send(fd, slot_idx, msg) == (msg.len as i32) else {
-        print("BOGO_ERR: WRITE_FAILED\n");
+        bogo_err("BOGO_ERR: WRITE_FAILED\n");
         return BOGO_EXIT_FAIL;
     }
     var buf: u8[64] = [0; 64];
     let nr = tls::transport_recv_slice(fd, slot_idx, buf[..], BOGO_IO_TIMEOUT_MS);
     guard nr == (msg.len as i32) else {
-        print("BOGO_ERR: RECORD_ERROR\n");
+        bogo_err("BOGO_ERR: RECORD_ERROR\n");
         return BOGO_EXIT_FAIL;
     }
     xor_bogo_payload(buf[..nr]);
     guard buf[..nr] == msg else {
-        print("BOGO_ERR: ECHO_MISMATCH\n");
+        bogo_err("BOGO_ERR: ECHO_MISMATCH\n");
         return BOGO_EXIT_FAIL;
     }
     return BOGO_EXIT_OK;
 }
 
 fn run_pure_bogo_echo(fd: i64, slot_idx: u16) -> i32 {
-    var buf: u8[4096] = [0; 4096];
+    var buf: u8[16384] = [0; 16384];
     for _ in 1024 {
         let nr = tls::transport_recv_slice(fd, slot_idx, buf[..], BOGO_IO_TIMEOUT_MS);
         if nr == 0 { return BOGO_EXIT_OK; }
         guard nr > 0 && nr <= buf.len else {
-            print("BOGO_ERR: RECORD_ERROR\n");
+            bogo_err("BOGO_ERR: RECORD_ERROR\n");
             return BOGO_EXIT_FAIL;
         }
         xor_bogo_payload(buf[..nr]);
         let ns = tls::transport_send(fd, slot_idx, buf[..nr]);
         guard ns == nr else {
-            print("BOGO_ERR: WRITE_FAILED\n");
+            bogo_err("BOGO_ERR: WRITE_FAILED\n");
             return BOGO_EXIT_FAIL;
         }
     }
@@ -400,7 +402,7 @@ fn check_expected_alpn(selected: const u8[:], expected: const u8[:]) -> bool {
 
 fn run_pure_bogo_client(fd: i64, cfg: const BogoConfig&) -> i32 {
     var cli_cfg = tls::ClientHandshakeConfig {
-        insecure_skip_verify: !cfg.verify_peer && cfg.trust_cert.len == 0,
+        insecure_skip_verify: !cfg.verify_peer,
         use_system_roots:     cfg.trust_cert.len == 0,
         ..
     };
@@ -425,17 +427,17 @@ fn run_pure_bogo_client(fd: i64, cfg: const BogoConfig&) -> i32 {
     let slot_idx, ok_hs = tls::client_handshake(fd, cli_cfg);
     guard ok_hs else {
         net::tcp_close(fd);
-        print("BOGO_ERR: HANDSHAKE_FAILED\n");
+        bogo_err("BOGO_ERR: HANDSHAKE_FAILED\n");
         return BOGO_EXIT_FAIL;
     }
     defer tls::transport_close(fd, slot_idx);
     guard check_expected_alpn(tls::session_alpn(slot_idx), cfg.expect_alpn[..]) else {
-        print("BOGO_ERR: ALPN_MISMATCH\n");
+        bogo_err("BOGO_ERR: ALPN_MISMATCH\n");
         return BOGO_EXIT_FAIL;
     }
     if cfg.key_update {
         guard tls::send_key_update(fd, slot_idx, rfc::KEY_UPDATE_REQUESTED) else {
-            print("BOGO_ERR: KEY_UPDATE_FAILED\n");
+            bogo_err("BOGO_ERR: KEY_UPDATE_FAILED\n");
             return BOGO_EXIT_FAIL;
         }
     }
@@ -452,17 +454,17 @@ fn run_pure_bogo_server(fd: i64, cfg: const BogoConfig&) -> i32 {
     let slot_idx, ok_hs = tls::server_handshake(fd, srv_cfg);
     guard ok_hs else {
         net::tcp_close(fd);
-        print("BOGO_ERR: HANDSHAKE_FAILED\n");
+        bogo_err("BOGO_ERR: HANDSHAKE_FAILED\n");
         return BOGO_EXIT_FAIL;
     }
     defer tls::transport_close(fd, slot_idx);
     guard check_expected_alpn(tls::session_alpn(slot_idx), cfg.expect_alpn[..]) else {
-        print("BOGO_ERR: ALPN_MISMATCH\n");
+        bogo_err("BOGO_ERR: ALPN_MISMATCH\n");
         return BOGO_EXIT_FAIL;
     }
     if cfg.key_update {
         guard tls::send_key_update(fd, slot_idx, rfc::KEY_UPDATE_REQUESTED) else {
-            print("BOGO_ERR: KEY_UPDATE_FAILED\n");
+            bogo_err("BOGO_ERR: KEY_UPDATE_FAILED\n");
             return BOGO_EXIT_FAIL;
         }
     }
@@ -520,13 +522,14 @@ fn drive_ep_handshake(fd: i64, ep: tls::TlsEndpoint&) -> tls::TlsBackendStatus {
 
 fn run_ep_bogo_echo(fd: i64, ep: tls::TlsEndpoint&) -> i32 {
     var rx:  u8[16384] = [0; 16384];
-    var app: u8[4096]  = [0; 4096];
+    var app: u8[16384] = [0; 16384];
     for _ in 1024 {
         let nr, st = tls::tls_endpoint_read_app(ep, app[..]);
         if nr > 0 && nr <= app.len {
             xor_bogo_payload(app[..nr]);
             let nw, sw = tls::tls_endpoint_write_app(ep, app[..nr]);
             guard sw == tls::TlsBackendStatus.Ok && nw == nr && flush_ep_wire(fd, ep) else {
+                bogo_err("BOGO_ERR: WRITE_FAILED\n");
                 return BOGO_EXIT_FAIL;
             }
             continue;
@@ -537,12 +540,16 @@ fn run_ep_bogo_echo(fd: i64, ep: tls::TlsEndpoint&) -> i32 {
             return BOGO_EXIT_OK;
         }
         guard st == tls::TlsBackendStatus.WantRead || st == tls::TlsBackendStatus.Ok else {
+            bogo_err("BOGO_ERR: RECORD_ERROR\n");
             return BOGO_EXIT_FAIL;
         }
         let _ = flush_ep_wire(fd, ep);
         let rst = feed_ep_wire_once(fd, ep, rx[..]);
         if rst == tls::TlsBackendStatus.Closed { return BOGO_EXIT_OK; }
-        guard rst == tls::TlsBackendStatus.Ok else { return BOGO_EXIT_FAIL; }
+        guard rst == tls::TlsBackendStatus.Ok else {
+            bogo_err("BOGO_ERR: RECORD_ERROR\n");
+            return BOGO_EXIT_FAIL;
+        }
     }
     return BOGO_EXIT_OK;
 }
@@ -550,16 +557,11 @@ fn run_ep_bogo_echo(fd: i64, ep: tls::TlsEndpoint&) -> i32 {
 fn build_openssl_bogo_config(cfg: const BogoConfig&, out: tls::TlsBackendConfig&) -> bool {
     let want_tls12 = (cfg.min_version > 0 && cfg.min_version <= TLS_VERSION_1_2_WIRE) ||
         (cfg.max_version > 0 && cfg.max_version <= TLS_VERSION_1_2_WIRE);
-    let skip_verify = if cfg.is_server {
-        !cfg.verify_peer
-    } else {
-        !cfg.verify_peer && cfg.trust_cert.len == 0
-    };
     out = tls::TlsBackendConfig {
         kind:                 tls::TlsBackendKind.SystemOpenSsl,
         min_version:          if want_tls12 { tls::TlsMinVersion.Tls12 } else { tls::TlsMinVersion.Tls13 },
         is_server:            cfg.is_server,
-        insecure_skip_verify: skip_verify,
+        insecure_skip_verify: !cfg.verify_peer,
         use_system_roots:     cfg.trust_cert.len == 0,
         ..
     };
@@ -583,7 +585,7 @@ fn run_openssl_bogo_session(fd: i64, cfg: const BogoConfig&) -> i32 {
             print("BOGO_UNIMPLEMENTED: SystemOpenSsl unavailable\n");
             return BOGO_EXIT_UNIMPLEMENTED;
         }
-        print("BOGO_ERR: OPEN_FAILED\n");
+        bogo_err("BOGO_ERR: OPEN_FAILED\n");
         return BOGO_EXIT_FAIL;
     }
     defer tls::tls_endpoint_close(ep);
@@ -591,15 +593,15 @@ fn run_openssl_bogo_session(fd: i64, cfg: const BogoConfig&) -> i32 {
     let hs_st = drive_ep_handshake(fd, ep);
     guard hs_st == tls::TlsBackendStatus.Ok else {
         if hs_st == tls::TlsBackendStatus.VerifyError {
-            print("BOGO_ERR: VERIFY_FAILED\n");
+            bogo_err("BOGO_ERR: VERIFY_FAILED\n");
         } else {
-            print("BOGO_ERR: HANDSHAKE_FAILED\n");
+            bogo_err("BOGO_ERR: HANDSHAKE_FAILED\n");
         }
         return BOGO_EXIT_FAIL;
     }
     let sel_alpn = tls::tls_endpoint_selected_alpn(ep);
     guard check_expected_alpn(sel_alpn[..], cfg.expect_alpn[..]) else {
-        print("BOGO_ERR: ALPN_MISMATCH\n");
+        bogo_err("BOGO_ERR: ALPN_MISMATCH\n");
         return BOGO_EXIT_FAIL;
     }
     return run_ep_bogo_echo(fd, ep);
@@ -607,9 +609,11 @@ fn run_openssl_bogo_session(fd: i64, cfg: const BogoConfig&) -> i32 {
 
 fn main() {
     let a = args();
-    if a.len >= 2 && a[1] == "-is-handshaker-supported" {
-        print("No\n");
-        return;
+    for arg in a {
+        if arg == "-is-handshaker-supported" {
+            print("No\n");
+            return;
+        }
     }
     var cfg = BogoConfig { .. };
     let cli_rc = parse_bogo_cli_args(a, cfg);
@@ -621,19 +625,19 @@ fn main() {
         exit(pol_rc);
     }
     guard cfg.port > 0 else {
-        print("BOGO_ERR: MISSING_PORT\n");
+        bogo_err("BOGO_ERR: MISSING_PORT\n");
         exit(BOGO_EXIT_FAIL);
     }
 
     let host = if cfg.ipv6 { "::1" } else { "127.0.0.1" };
     let fd = net::tcp_connect(host, cfg.port, BOGO_IO_TIMEOUT_MS);
     guard fd > 0 else {
-        print("BOGO_ERR: CONNECT_FAILED\n");
+        bogo_err("BOGO_ERR: CONNECT_FAILED\n");
         exit(BOGO_EXIT_FAIL);
     }
     guard write_bogo_shim_header(fd, cfg.shim_id) else {
         net::tcp_close(fd);
-        print("BOGO_ERR: HEADER_WRITE_FAILED\n");
+        bogo_err("BOGO_ERR: HEADER_WRITE_FAILED\n");
         exit(BOGO_EXIT_FAIL);
     }
 

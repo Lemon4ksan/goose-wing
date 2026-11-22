@@ -154,7 +154,7 @@ fn server_handshake_with_ch(
     sh_msg.append_u24_be(sh_payload.len as u32);
     sh_msg.append(sh_payload[..]);
 
-    guard tls_internal::send_plaintext_handshake_record(fd, sh_msg[..]) else {
+    guard tls_internal::send_plaintext_handshake_record(fd, sh_msg[..], rfc::TLS_LEGACY_VERSION_1_2) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }

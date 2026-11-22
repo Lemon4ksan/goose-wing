@@ -226,6 +226,30 @@ fn verify_server_cert_and_signature(
     return verify_cv_sig_with_min_rsa(sig_scheme, sig_bytes, leaf_pub, cv_msg_buf[..cv_len]);
 }
 
+fn classify_ee_failure_alert(ee_body: const u8[:]) -> tls::Alert {
+    var entries: tls::ExtensionEntry[..32] = [];
+    guard tls::parse_extensions_block(ee_body, entries) else { return tls::Alert.DecodeError; }
+    for &e in entries {
+        if e.ext_type == rfc::TLS_EXT_SERVER_NAME && e.data.len != 0 {
+            return tls::Alert.DecodeError;
+        }
+    }
+    return tls::Alert.UnsupportedExtension;
+}
+
+fn classify_sh_failure_alert(sh_msg: const u8[:]) -> tls::Alert {
+    var tmp = tls::ParsedServerHello { .. };
+    var rand_arr: u8[32] = [0; 32];
+    let ext_bytes, ok_pre = tls::read_server_hello_preamble(sh_msg, rand_arr, tmp);
+    guard ok_pre else { return tls::Alert.DecodeError; }
+    var entries: tls::ExtensionEntry[..32] = [];
+    guard tls::parse_extensions_block(ext_bytes, entries) else { return tls::Alert.DecodeError; }
+    if !validate_sh_or_hrr_extensions(entries, tmp.is_hrr) {
+        return tls::Alert.UnsupportedExtension;
+    }
+    return tls::Alert.IllegalParameter;
+}
+
 // Ingests and verifies the encrypted server flight: EncryptedExtensions, [CertificateRequest],
 // [Certificate | CompressedCertificate, CertificateVerify], Finished.
 fn tls_client_process_server_flight<B>(
@@ -234,6 +258,8 @@ fn tls_client_process_server_flight<B>(
     cipher_suite:          u16,
     server_hs_key:         const u8[:],
     server_hs_iv:          const u8[12]&,
+    client_hs_key:         const u8[:],
+    client_hs_iv:          const u8[12]&,
     ks:                    const tls_internal::KeySchedule&,
     transcript:            tls::Transcript&,
     config:                const tls::ClientHandshakeConfig&,
@@ -249,8 +275,14 @@ fn tls_client_process_server_flight<B>(
     var ee_body: u8[..16384] = [];
     guard next_handshake_message(
         hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv, msg_ee, ee_body, config.handshake_timeout_ms,
-    ) else { return false; }
-    guard msg_ee == rfc::TLS_HS_ENCRYPTED_EXTENSIONS else { return false; }
+    ) else {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, hs_reader.last_alert);
+        return false;
+    }
+    guard msg_ee == rfc::TLS_HS_ENCRYPTED_EXTENSIONS else {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.UnexpectedMessage);
+        return false;
+    }
     let sni_state = if validate_sni_host_bytes(config.server_name[..]) {
         tls::SniOfferState.Offered
     } else {
@@ -258,7 +290,12 @@ fn tls_client_process_server_flight<B>(
     };
     guard tls::parse_encrypted_extensions_alpn(
         ee_body[..], out_alpn, config.alpn[..], sni_state, config.ech_config_list.len > 0,
-    ) else { return false; }
+    ) else {
+        send_hs_fatal_alert(
+            fd, cipher_suite, client_hs_key, client_hs_iv, classify_ee_failure_alert(ee_body[..]),
+        );
+        return false;
+    }
     tls::transcript_update_msg(transcript, msg_ee, ee_body[..]);
 
     if !psk_resumed {
@@ -266,10 +303,16 @@ fn tls_client_process_server_flight<B>(
         var next_body: u8[..16384] = [];
         guard next_handshake_message(
             hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv, msg_next, next_body, config.handshake_timeout_ms,
-        ) else { return false; }
+        ) else {
+            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, hs_reader.last_alert);
+            return false;
+        }
 
         if msg_next == rfc::TLS_HS_CERTIFICATE_REQUEST {
-            guard tls::parse_certificate_request(next_body[..], false, out_cert_req) else { return false; }
+            guard tls::parse_certificate_request(next_body[..], false, out_cert_req) else {
+                send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.DecodeError);
+                return false;
+            }
             tls::transcript_update_msg(transcript, msg_next, next_body[..]);
             out_cert_req_received = true;
 
@@ -277,7 +320,10 @@ fn tls_client_process_server_flight<B>(
             guard next_handshake_message(
                 hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv,
                 msg_next, next_body, config.handshake_timeout_ms,
-            ) else { return false; }
+            ) else {
+                send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, hs_reader.last_alert);
+                return false;
+            }
         }
 
         var decomp_cert: u8[..16384] = [];
@@ -291,11 +337,13 @@ fn tls_client_process_server_flight<B>(
                 rfc::CERT_COMPRESSION_ZLIB,
             ];
             guard tls::decompress_incoming_certificate(next_body[..], decomp_cert, offered_comp[..]) else {
+                send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.BadCertificate);
                 return false;
             }
         } else if msg_next == rfc::TLS_HS_CERTIFICATE {
             tls::transcript_update_msg(transcript, msg_next, next_body[..]);
         } else {
+            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.UnexpectedMessage);
             return false;
         }
 
@@ -305,13 +353,22 @@ fn tls_client_process_server_flight<B>(
         var cv_body: u8[..16384] = [];
         guard next_handshake_message(
             hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv, msg_cv, cv_body, config.handshake_timeout_ms,
-        ) else { return false; }
-        guard msg_cv == rfc::TLS_HS_CERTIFICATE_VERIFY else { return false; }
+        ) else {
+            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, hs_reader.last_alert);
+            return false;
+        }
+        guard msg_cv == rfc::TLS_HS_CERTIFICATE_VERIFY else {
+            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.UnexpectedMessage);
+            return false;
+        }
 
         var h_to_cert: u8[..48] = [];
         tls::transcript_current_hash(transcript, ks.hash_id, h_to_cert);
         let ok_v = verify_server_cert_and_signature(cert_body_slice, cv_body[..], h_to_cert[..], config, slot_idx);
-        guard ok_v else { return false; }
+        guard ok_v else {
+            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.DecodeError);
+            return false;
+        }
         tls::transcript_update_msg(transcript, msg_cv, cv_body[..]);
     }
 
@@ -319,11 +376,21 @@ fn tls_client_process_server_flight<B>(
     var fin_body: u8[..16384] = [];
     guard next_handshake_message(
         hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv, msg_fin, fin_body, config.handshake_timeout_ms,
-    ) else { return false; }
+    ) else {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, hs_reader.last_alert);
+        return false;
+    }
     let hlen = ks.hash_len as i64;
-    guard msg_fin == rfc::TLS_HS_FINISHED &&
-        fin_body.len == hlen &&
-        hs_reader.current_offset == hs_reader.current_record_plain.len else {
+    guard msg_fin == rfc::TLS_HS_FINISHED else {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.UnexpectedMessage);
+        return false;
+    }
+    guard fin_body.len == hlen else {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.DecryptError);
+        return false;
+    }
+    guard hs_reader.current_offset == hs_reader.current_record_plain.len else {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.UnexpectedMessage);
         return false;
     }
 
@@ -333,7 +400,10 @@ fn tls_client_process_server_flight<B>(
     guard tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.server_hs_traffic[..hlen], h_to_cv[..], exp_srv_fin[..hlen],
     ) else { return false; }
-    guard core::ct_eq_bytes(exp_srv_fin[..hlen], fin_body[..hlen]) else { return false; }
+    guard core::ct_eq_bytes(exp_srv_fin[..hlen], fin_body[..hlen]) else {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.DecryptError);
+        return false;
+    }
     tls::transcript_update_msg(transcript, msg_fin, fin_body[..]);
     return true;
 }
@@ -576,11 +646,17 @@ fn handle_client_hrr_transition(
     hrr_raw_msg:   const u8[:],
     sh:            tls::ParsedServerHello&,
 ) -> bool {
-    guard validate_live_client_sh(sh, client_random) else { return false; }
+    guard validate_live_client_sh(sh, client_random) else {
+        send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
+        return false;
+    }
     let hrr_cipher = sh.cipher_suite;
     let hrr_group = sh.selected_group;
     let has_group = hrr_group != 0;
-    guard has_group || sh.hrr_cookie.len > 0 else { return false; }
+    guard has_group || sh.hrr_cookie.len > 0 else {
+        send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
+        return false;
+    }
     if has_group {
         let all_groups: u16[4] = [
             rfc::GROUP_X25519_MLKEM768,
@@ -591,6 +667,7 @@ fn handle_client_hrr_transition(
         let init_shares: u16[2] = [rfc::GROUP_X25519_MLKEM768, rfc::GROUP_X25519];
         let grp_start = if config.enable_pq_hybrid { 0 } else { 1 };
         guard tls::validate_hrr_selected_group(hrr_group, all_groups[grp_start..], init_shares[grp_start..]) else {
+            send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
             return false;
         }
     }
@@ -600,11 +677,12 @@ fn handle_client_hrr_transition(
     );
     guard ok_regen else { return false; }
 
-    tls::transcript_update(transcript, hrr_raw_msg);
+    // RFC 8446 Section 4.4.1: The Transcript Hash - Replace CH1 with synthetic message_hash before appending HRR.
     var ks_hrr, ok_kshr = tls_internal::ks_init(hrr_cipher);
     guard ok_kshr && tls::transcript_replace_with_message_hash(transcript, ks_hrr.hash_id, ks_hrr.hash_len) else {
         return false;
     }
+    tls::transcript_update(transcript, hrr_raw_msg);
 
     var ch2_payload: u8[..4096] = [];
     tls::build_client_hello_payload(
@@ -618,16 +696,23 @@ fn handle_client_hrr_transition(
         return false;
     }
 
-    guard send_plaintext_handshake_record(fd, ch2_msg[..]) else { return false; }
+    guard send_plaintext_handshake_record(fd, ch2_msg[..], rfc::TLS_LEGACY_VERSION_1_2) else { return false; }
     tls::transcript_update(transcript, ch2_msg[..]);
 
     var sh2_msg: u8[..16384] = [];
     guard read_plaintext_handshake_record(fd, sh2_msg, config.handshake_timeout_ms) else { return false; }
-    guard tls::parse_live_server_hello(sh2_msg[..], sh) &&
-        !sh.is_hrr &&
-        validate_live_client_sh(sh, client_random) &&
+    guard tls::parse_live_server_hello(sh2_msg[..], sh) else {
+        send_plaintext_fatal_alert(fd, classify_sh_failure_alert(sh2_msg[..]));
+        return false;
+    }
+    guard !sh.is_hrr else {
+        send_plaintext_fatal_alert(fd, tls::Alert.UnexpectedMessage);
+        return false;
+    }
+    guard validate_live_client_sh(sh, client_random) &&
         tls::validate_hrr_cipher_suite(hrr_cipher, sh.cipher_suite) &&
         (hrr_group == 0 || sh.selected_group == hrr_group) else {
+        send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
         return false;
     }
     tls::transcript_update(transcript, sh2_msg[..]);
