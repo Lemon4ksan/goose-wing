@@ -10,6 +10,8 @@ import std;
 import core;
 import .packet;
 import .frames_internal;
+import .frames_demux_internal;
+import .transport_params_internal;
 
 // ---- Frame Constants & Stream Flags (RFC 9000 Section 19) ----------------
 

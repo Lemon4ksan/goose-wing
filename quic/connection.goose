@@ -16,6 +16,7 @@ import .flow_control;
 import .migration;
 import .dplpmtud;
 import .conn_internal;
+import .conn_crypto_internal;
 import .internal;
 import tls.record;
 

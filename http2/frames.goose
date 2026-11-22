@@ -9,7 +9,7 @@ namespace http2;
 
 import core;
 import .framing;
-import .internal;
+import .frames_internal;
 
 // RFC 7838 Section 4: The ALTSVC HTTP/2 Frame
 // Origin-Len (16 bits) | Origin (variable) | Alt-Svc-Value (variable)

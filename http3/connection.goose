@@ -19,6 +19,7 @@ import .framing;
 import .qpack_codec;
 import .qpack_internal;
 import .qpack;
+import .stream_internal;
 import .connection_internal;
 
 // ---- Connection Constructors & Push Control --------------------------------

@@ -123,6 +123,9 @@ import cookie.engine;
 import cookie.store;
 
 import http2.internal;
+import http2.frames_internal;
+import http2.hpack_tables_internal;
+import http2.hpack_internal;
 import http2.framing;
 import http2.frames;
 import http2.hpack;
@@ -228,6 +231,8 @@ import quic.internal;
 import quic.packet_internal;
 import quic.packet;
 import quic.frames_internal;
+import quic.frames_demux_internal;
+import quic.transport_params_internal;
 import quic.frames;
 import quic.migration;
 import quic.dplpmtud;
@@ -236,6 +241,7 @@ import quic.flow_control;
 import quic.AckFrame;
 import quic.bbr;
 import quic.conn_internal;
+import quic.conn_crypto_internal;
 import quic.connection;
 
 import http3.internal;
@@ -244,6 +250,7 @@ import http3.framing;
 import http3.qpack_codec;
 import http3.qpack_internal;
 import http3.qpack;
+import http3.stream_internal;
 import http3.connection_internal;
 import http3.connection;
 

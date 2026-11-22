@@ -9,7 +9,8 @@ namespace http2;
 import std;
 import core;
 import .framing;
-import .internal;
+import .hpack_tables_internal;
+import .hpack_internal;
 import http.headers;
 
 // ---- hpack public constants ----------------------------------------------

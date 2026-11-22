@@ -7,7 +7,7 @@ namespace http2;
 
 import std;
 import core;
-import .internal;
+import .frames_internal;
 
 // ---- 9-byte frame header -------------------------------------------------
 
