@@ -145,7 +145,8 @@ fn keccak_squeeze(state: u64[25]&, rate: u64, out: u8[:]) {
 // FIPS 202 Section 6.1: SHA3-256 cryptographic hash function (rate = 136, domain = 0x06).
 fn sha3_256(data: const u8[:]) -> u8[32] {
     var state: u64[25] = [0; 25];
-    var out:   u8[32]  = [0; 32];
+    defer core::secure_zeroize_u64_slice(state[..]);
+    var out: u8[32] = [0; 32];
     keccak_absorb(state, data, 136, 0x06);
     keccak_squeeze(state, 136, out[..]);
     return out;
@@ -154,7 +155,8 @@ fn sha3_256(data: const u8[:]) -> u8[32] {
 // FIPS 202 Section 6.1: SHA3-512 cryptographic hash function (rate = 72, domain = 0x06).
 fn sha3_512(data: const u8[:]) -> u8[64] {
     var state: u64[25] = [0; 25];
-    var out:   u8[64]  = [0; 64];
+    defer core::secure_zeroize_u64_slice(state[..]);
+    var out: u8[64] = [0; 64];
     keccak_absorb(state, data, 72, 0x06);
     keccak_squeeze(state, 72, out[..]);
     return out;
@@ -163,6 +165,7 @@ fn sha3_512(data: const u8[:]) -> u8[64] {
 // FIPS 202 Section 6.2: SHAKE128 extendable-output function (rate = 168, domain = 0x1F).
 fn shake128_squeeze(data: const u8[:], out: u8[:]) {
     var state: u64[25] = [0; 25];
+    defer core::secure_zeroize_u64_slice(state[..]);
     keccak_absorb(state, data, 168, 0x1F);
     keccak_squeeze(state, 168, out);
 }
@@ -170,6 +173,7 @@ fn shake128_squeeze(data: const u8[:], out: u8[:]) {
 // FIPS 202 Section 6.2: SHAKE256 extendable-output function (rate = 136, domain = 0x1F).
 fn shake256_squeeze(data: const u8[:], out: u8[:]) {
     var state: u64[25] = [0; 25];
+    defer core::secure_zeroize_u64_slice(state[..]);
     keccak_absorb(state, data, 136, 0x1F);
     keccak_squeeze(state, 136, out);
 }

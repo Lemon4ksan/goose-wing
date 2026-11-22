@@ -1841,8 +1841,11 @@ int32_t wing_tcp_set_reuseport(int64_t sock_fd, int32_t enable) {
 
 // Cryptographically secure pseudorandom byte generator (BCryptGenRandom / RtlGenRandom on Windows, getrandom on Linux).
 int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
-    if (out.data == NULL || out.len <= 0) return 0;
+    if (out.data == NULL || out.len <= 0) return -1;
 #ifdef _WIN32
+#ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
+#define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800u
+#endif
     typedef LONG(WINAPI * BCryptGenRandomFn)(PVOID, PUCHAR, ULONG, ULONG);
     typedef BOOLEAN(NTAPI * RtlGenRandomFn)(PVOID, ULONG);
     static volatile PVOID g_pfnBCryptGenRandom = NULL;
@@ -1851,12 +1854,19 @@ int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
     BCryptGenRandomFn pfnBCrypt =
         (BCryptGenRandomFn)InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, NULL, NULL);
     if (pfnBCrypt == NULL) {
-        HMODULE hBCrypt = LoadLibraryA("bcrypt.dll");
+        HMODULE hBCrypt = LoadLibraryExA("bcrypt.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (hBCrypt != NULL) {
             void *sym = (void *)GetProcAddress(hBCrypt, "BCryptGenRandom");
             if (sym != NULL) {
-                InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, sym, NULL);
-                pfnBCrypt = (BCryptGenRandomFn)sym;
+                PVOID prev = InterlockedCompareExchangePointer(&g_pfnBCryptGenRandom, sym, NULL);
+                if (prev != NULL) {
+                    FreeLibrary(hBCrypt);
+                    pfnBCrypt = (BCryptGenRandomFn)prev;
+                } else {
+                    pfnBCrypt = (BCryptGenRandomFn)sym;
+                }
+            } else {
+                FreeLibrary(hBCrypt);
             }
         }
     }
@@ -1876,12 +1886,19 @@ int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
 
     RtlGenRandomFn pfnRtl = (RtlGenRandomFn)InterlockedCompareExchangePointer(&g_pfnRtlGenRandom, NULL, NULL);
     if (pfnRtl == NULL) {
-        HMODULE hAdvApi = LoadLibraryA("advapi32.dll");
+        HMODULE hAdvApi = LoadLibraryExA("advapi32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (hAdvApi != NULL) {
             void *sym = (void *)GetProcAddress(hAdvApi, "SystemFunction036");
             if (sym != NULL) {
-                InterlockedCompareExchangePointer(&g_pfnRtlGenRandom, sym, NULL);
-                pfnRtl = (RtlGenRandomFn)sym;
+                PVOID prev = InterlockedCompareExchangePointer(&g_pfnRtlGenRandom, sym, NULL);
+                if (prev != NULL) {
+                    FreeLibrary(hAdvApi);
+                    pfnRtl = (RtlGenRandomFn)prev;
+                } else {
+                    pfnRtl = (RtlGenRandomFn)sym;
+                }
+            } else {
+                FreeLibrary(hAdvApi);
             }
         }
     }
@@ -1911,8 +1928,15 @@ int32_t wing_crypto_random_bytes(wing_bytes_rw out) {
         offset += (size_t)res;
     }
     return 0;
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    arc4random_buf(out.data, (size_t)out.len);
+    return 0;
 #else
-    int fd = open("/dev/urandom", O_RDONLY);
+    int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open("/dev/urandom", flags);
     if (fd >= 0) {
         size_t offset = 0;
         size_t total = (size_t)out.len;

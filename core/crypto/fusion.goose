@@ -35,10 +35,14 @@ fn fused_aes128_gcm_encrypt_4blocks(
     inc_ctr32(ctr);
     let c3 = ctr;
 
-    let ek0 = aes128_encrypt_block(ks, c0);
-    let ek1 = aes128_encrypt_block(ks, c1);
-    let ek2 = aes128_encrypt_block(ks, c2);
-    let ek3 = aes128_encrypt_block(ks, c3);
+    var ek0 = aes128_encrypt_block(ks, c0);
+    var ek1 = aes128_encrypt_block(ks, c1);
+    var ek2 = aes128_encrypt_block(ks, c2);
+    var ek3 = aes128_encrypt_block(ks, c3);
+    defer secure_zeroize_16(ek0);
+    defer secure_zeroize_16(ek1);
+    defer secure_zeroize_16(ek2);
+    defer secure_zeroize_16(ek3);
 
     for i in 16 {
         let b0 = plaintext[off + i] ^ ek0[i];
@@ -94,10 +98,14 @@ fn fused_aes128_gcm_decrypt_4blocks(
     inc_ctr32(ctr);
     let c3 = ctr;
 
-    let ek0 = aes128_encrypt_block(ks, c0);
-    let ek1 = aes128_encrypt_block(ks, c1);
-    let ek2 = aes128_encrypt_block(ks, c2);
-    let ek3 = aes128_encrypt_block(ks, c3);
+    var ek0 = aes128_encrypt_block(ks, c0);
+    var ek1 = aes128_encrypt_block(ks, c1);
+    var ek2 = aes128_encrypt_block(ks, c2);
+    var ek3 = aes128_encrypt_block(ks, c3);
+    defer secure_zeroize_16(ek0);
+    defer secure_zeroize_16(ek1);
+    defer secure_zeroize_16(ek2);
+    defer secure_zeroize_16(ek3);
 
     for i in 16 {
         let b0 = ciphertext[off + i];
@@ -157,9 +165,13 @@ fn fused_aes128_gcm_finalize_tag(
     return tag;
 }
 
+// NIST SP 800-38D Section 5.2.1.1: max AES-GCM plaintext = (2^32 - 2) * 16 bytes, AAD <= 2^61 - 1 bytes.
+const AES_GCM_MAX_PLAINTEXT_BYTES: i64 = 0xFFFFFFFE0;
+const AES_GCM_MAX_AAD_BYTES:       i64 = 0x1FFFFFFFFFFFFFFF;
+
 // Out-of-place 4-block fused AES-128-GCM encryption (NIST SP 800-38D).
 // Interleaves 4-block AES-CTR keystream generation with GHASH accumulation.
-// Returns `(tag, written_len, ok)`. Fails closed if `dst.len < plaintext.len`.
+// Returns `(tag, written_len, ok)`. Fails closed if `dst.len < plaintext.len` or NIST SP 800-38D caps exceeded.
 // crap:ignore
 fn fused_aes_gcm_encrypt(
     key:       const u8[16]&,
@@ -169,7 +181,11 @@ fn fused_aes_gcm_encrypt(
     dst:       u8[:],
 ) -> u8[16], i64, bool {
     var tag: u8[16] = [0; 16];
-    guard dst.len >= plaintext.len else { return tag, 0, false; }
+    guard plaintext.len >= 0 && plaintext.len <= AES_GCM_MAX_PLAINTEXT_BYTES &&
+        aad.len >= 0 && aad.len <= AES_GCM_MAX_AAD_BYTES &&
+        dst.len >= plaintext.len else {
+        return tag, 0, false;
+    }
     let written = native_aes_gcm_seal_aead(
         key[..], nonce12[..], plaintext, aad, dst[..plaintext.len], tag[..],
     );
@@ -194,7 +210,11 @@ fn fused_aes_gcm_decrypt(
     tag:        const u8[16]&,
     dst:        u8[:],
 ) -> i64, bool {
-    guard dst.len >= ciphertext.len else { return 0, false; }
+    guard ciphertext.len >= 0 && ciphertext.len <= AES_GCM_MAX_PLAINTEXT_BYTES &&
+        aad.len >= 0 && aad.len <= AES_GCM_MAX_AAD_BYTES &&
+        dst.len >= ciphertext.len else {
+        return 0, false;
+    }
     let dec_len = native_aes_gcm_open_aead(
         key[..], nonce12[..], ciphertext, aad, tag[..], dst[..ciphertext.len],
     );

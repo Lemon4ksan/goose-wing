@@ -650,8 +650,8 @@ fn regenerate_client_hrr_keyshare(
         defer core::secure_zeroize_32(r2);
         core::ct_copy_bytes(out_p384_priv[0..32], r1[..]);
         core::ct_copy_bytes(out_p384_priv[32..48], r2[0..16]);
-        let pub97 = core::p384_ecdh_public_key(out_p384_priv);
-        guard out_nist_pub.try_set(pub97[..]) else { return false, false; }
+        let pub97, ok_p384 = core::p384_ecdh_public_key(out_p384_priv);
+        guard ok_p384 && out_nist_pub.try_set(pub97[..]) else { return false, false; }
         return false, true;
     }
     guard enable_pq_cfg && selected_group == rfc::GROUP_X25519_MLKEM768 else {

@@ -77,10 +77,11 @@ fn pure_client_step_init(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
 fn pure_compute_client_ecdhe(
     slot:       PureTlsSlot&,
     sh:         const tls::ParsedServerHello&,
-    out_secret: u8[32]&,
+    out_secret: u8[..80]&,
 ) -> bool {
     defer core::secure_zeroize_32(slot.eph_priv);
     defer core::secure_zeroize_slice(slot.pq_priv[..]);
+    out_secret.clear();
     if sh.selected_group == rfc::GROUP_X25519_MLKEM768 && slot.enable_pq_hybrid {
         var srv_share_raw: u8[..2048] = [];
         srv_share_raw.append_u16_be(sh.selected_group);
@@ -96,9 +97,14 @@ fn pure_compute_client_ecdhe(
             mlkem768_decapsulate(srv_pq.mlkem768_ciphertext[..], slot.pq_priv[..], pq_ss[..]) else {
             return false;
         }
-        return derive_x25519_mlkem768_shared_secret_checked(
-            classic_ss[..], pq_ss[..], out_secret[..],
-        );
+        var pq_comb: u8[64] = [0; 64];
+        defer core::secure_zeroize_64(pq_comb);
+        guard derive_x25519_mlkem768_shared_secret_checked(
+            classic_ss[..], pq_ss[..], pq_comb[..],
+        ) else {
+            return false;
+        }
+        return out_secret.try_set(pq_comb[..]);
     }
     guard sh.selected_group == rfc::GROUP_X25519 && sh.server_share.len == 32 else { return false; }
     var srv_pub: u8[32] = [0; 32];
@@ -106,8 +112,7 @@ fn pure_compute_client_ecdhe(
     var ss, ok_ss = core::x25519_shared_secret(slot.eph_priv, srv_pub);
     defer core::secure_zeroize_32(ss);
     guard ok_ss else { return false; }
-    core::ct_copy_bytes(out_secret[..], ss[..]);
-    return true;
+    return out_secret.try_set(ss[..]);
 }
 
 fn pure_client_step_sh(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
@@ -131,8 +136,8 @@ fn pure_client_step_sh(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     transcript_update(slot.transcript, sh_msg[..]);
     slot.cipher_suite = sh.cipher_suite;
 
-    var ecdhe_secret: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(ecdhe_secret);
+    var ecdhe_secret: u8[..80] = [];
+    defer core::secure_zeroize_slice(ecdhe_secret[..]);
     let early_ikm = if slot.psk_resumed { slot.psk_secret[..] } else { "" };
     guard pure_compute_client_ecdhe(slot, sh, ecdhe_secret) &&
         pure_derive_hs_traffic_keys(slot, ecdhe_secret[..], early_ikm) else {

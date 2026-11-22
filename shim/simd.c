@@ -7,12 +7,19 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#ifndef __STDC_WANT_LIB_EXT1__
+#define __STDC_WANT_LIB_EXT1__ 1
+#endif
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <string.h>
 
 #if defined(_MSC_VER)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <intrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
@@ -959,6 +966,9 @@ void wing_secure_zeroize(wing_bytes_rw slice) {
     while (len--) {
         *p++ = 0;
     }
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : : "r"(slice.data) : "memory");
+#endif
 #endif
 }
 

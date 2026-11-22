@@ -1104,8 +1104,8 @@ fn fuzz_target_crypto_aead_and_kdf(data: const u8[:]) -> u64 {
 
     var xct:  u8[..512] = [];
     var xdec: u8[..512] = [];
-    let xtag = core::xchacha20_poly1305_seal(key32, nonce24, plain, aad, xct);
-    assert(core::xchacha20_poly1305_open(key32, nonce24, xct[..], aad, xtag, xdec) && xdec[..] == plain);
+    let xtag, ok_xseal = core::xchacha20_poly1305_seal(key32, nonce24, plain, aad, xct);
+    assert(ok_xseal && core::xchacha20_poly1305_open(key32, nonce24, xct[..], aad, xtag, xdec) && xdec[..] == plain);
 
     let prk256 = core::hkdf_extract(aad, key32[..]);
     var okm256: u8[64] = [0; 64];

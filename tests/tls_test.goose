@@ -2465,8 +2465,11 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
             group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
+        let pq_d: u8[32] = [0x11; 32];
+        let pq_z: u8[32] = [0x22; 32];
+        let ek768, _ = tls_internal::mlkem768_keygen(pq_d, pq_z);
         for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
-        for i in 1184 { client_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
+        client_share.mlkem768_public = ek768;
 
         var wire: u8[>..] = [];
         client_share.format_hybrid_key_share(wire);
@@ -2478,13 +2481,21 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
         sub.assert_bytes_eq(wire[4..1188], client_share.mlkem768_public[..], "0x11EC wire starts with ML-KEM-768 public key (PQ || Classical)");
         sub.assert_bytes_eq(wire[1188..1220], client_share.x25519_public[..], "0x11EC wire ends with X25519 public key");
 
+        // Non-canonical ML-KEM-768 encapsulation key coefficient (>= 3329) rejected at parse time
+        var bad_mod_wire: u8[>..] = [];
+        bad_mod_wire.append(wire[..]);
+        bad_mod_wire[4] = 0xFF;
+        bad_mod_wire[5] = 0xFF;
+        var bad_mod = tls_internal::PostQuantumKeyShare { .. };
+        sub.assert_false(bad_mod.parse_hybrid_key_share(bad_mod_wire[..]), "rejects non-canonical ML-KEM-768 modulus >= 3329");
+
         // Draft 0x6399 (Classical || PQ) ordering verification
         var draft_share = tls_internal::PostQuantumKeyShare {
             group: rfc::GROUP_X25519_KYBER768_DRAFT00,
             ..
         };
         for i in 32 { draft_share.x25519_public[i] = (i + 1) as u8; }
-        for i in 1184 { draft_share.mlkem768_public[i] = ((i * 3 + 1) & 0xFF) as u8; }
+        draft_share.mlkem768_public = ek768;
         var draft_wire: u8[>..] = [];
         draft_share.format_hybrid_key_share(draft_wire);
         sub.assert_eq(draft_wire.len, 1220, "Draft 0x6399 wire length 1220");
@@ -2529,17 +2540,21 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
     t.run("TLS-26: Hybrid Shared Secret Combiner & All-Zero Contributory Defense") { sub =>
         let classical_ss: u8[32] = [0x11; 32];
         let pq_ss:        u8[32] = [0x22; 32];
-        var out_secret: u8[32] = [0; 32];
+        var out_secret: u8[64] = [0; 64];
 
-        // Valid derivation succeeds
+        // Valid derivation succeeds (RFC 10024 §4.3 raw 64-byte concatenation)
         let ok_comb = tls_internal::derive_hybrid_shared_secret_checked(classical_ss[..], pq_ss[..], out_secret[..]);
         sub.assert_true(ok_comb, "valid hybrid shared secret derived");
+        sub.assert_bytes_eq(out_secret[0..32], classical_ss[..], "classical secret first");
+        sub.assert_bytes_eq(out_secret[32..64], pq_ss[..], "pq secret second");
 
-        var out_x25519_mlkem: u8[32] = [0; 32];
+        var out_x25519_mlkem: u8[64] = [0; 64];
         let ok_mlkem_comb = tls_internal::derive_x25519_mlkem768_shared_secret_checked(classical_ss[..], pq_ss[..], out_x25519_mlkem[..]);
         sub.assert_true(ok_mlkem_comb, "valid x25519_mlkem768 shared secret derived (PQ || Classical)");
         let direct_sec = tls_internal::derive_x25519_mlkem768_shared_secret(classical_ss, pq_ss);
         sub.assert_bytes_eq(out_x25519_mlkem[..], direct_sec[..], "direct derivation matches checked");
+        sub.assert_bytes_eq(direct_sec[0..32], pq_ss[..], "X25519MLKEM768 puts PQ first");
+        sub.assert_bytes_eq(direct_sec[32..64], classical_ss[..], "X25519MLKEM768 puts X25519 second");
 
         // Contributory attack defense: all-zero classical X25519 secret rejected (RFC 7748 §6.1)
         let zero_classical: u8[32] = [0x00; 32];
@@ -2557,66 +2572,60 @@ fn test_post_quantum_hybrid_exchange(t: lit::T&) {
     };
 
     t.run("TLS-35: Post-Quantum ML-KEM-768 Decapsulation & FIPS 203 Implicit Rejection") { sub =>
-        var sk = tls_internal::MLKEM768PrivateKey { .. };
-        // Implicit rejection seed z (32 bytes)
-        for i in 32 { sk.z[i] = (i + 0x41) as u8; }
-        // Private key (mock 1152 bytes)
-        for i in 1152 { sk.private_key[i] = ((i * 13 + 5) & 0xFF) as u8; }
-        for i in 1152 { sk.public_key[i] = ((i * 7 + 1) & 0xFF) as u8; }
-
-        // 1. Valid ciphertext decapsulation
-        var valid_ct: u8[1088] = [0xAA; 1088];
-        var ss_valid: u8[32]   = [0; 32];
-        let is_rej_valid, ok_valid = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_valid[..]);
-        sub.assert_true(ok_valid, "valid ciphertext decapsulation succeeds");
-        sub.assert_false(is_rej_valid, "valid ciphertext does NOT trigger implicit rejection");
-
-        // Verify derived secret is non-zero
-        var ss_has_nonzero = false;
-        for b in ss_valid {
-            if b != 0 { ss_has_nonzero = true; break; }
+        var d_seed: u8[32] = [0; 32];
+        var z_seed: u8[32] = [0; 32];
+        var m_seed: u8[32] = [0; 32];
+        for i in 32 {
+            d_seed[i] = (i + 0x11) as u8;
+            z_seed[i] = (i + 0x41) as u8;
+            m_seed[i] = (i + 0x71) as u8;
         }
-        sub.assert_true(ss_has_nonzero, "derived shared secret has non-zero entropy");
+        let ek, sk = tls_internal::mlkem768_keygen(d_seed, z_seed);
 
-        // 2. All-zero ciphertext (1088 bytes) MUST trigger deterministic implicit rejection (FIPS 203 §7.2)
-        var zero_ct: u8[1088] = [0x00; 1088];
-        var ss_zero: u8[32]   = [0; 32];
-        let is_rej_zero, ok_zero = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero[..]);
-        sub.assert_true(ok_zero, "all-zero ciphertext decapsulation succeeds via implicit rejection");
-        sub.assert_true(is_rej_zero, "all-zero ciphertext triggers implicit rejection");
+        // 1. Valid ciphertext encapsulation & decapsulation round-trip
+        let valid_ct, enc_ss, ok_enc = tls_internal::mlkem768_encapsulate(ek, m_seed);
+        sub.assert_true(ok_enc, "encapsulate succeeds");
 
-        // Verify that the implicit rejection key matches K_bar = HMAC-SHA256(z, c)
-        var expected_k_bar: u8[32] = [0; 32];
-        let ok_k_bar = tls_internal::mlkem768_compute_implicit_rejection(sk.z, zero_ct[..], expected_k_bar[..]);
-        sub.assert_true(ok_k_bar, "expected k_bar computed");
-        sub.assert_bytes_eq(ss_zero[..], expected_k_bar[..], "implicit rejection key matches FIPS 203 derivation from seed z");
+        var ss_valid: u8[32] = [0; 32];
+        sub.assert_true(tls_internal::mlkem768_decapsulate(valid_ct[..], sk[..], ss_valid[..]), "valid ciphertext decapsulation succeeds");
+        sub.assert_bytes_eq(ss_valid[..], enc_ss[..], "decapsulated secret matches encapsulated secret");
+
+        // 2. Tampered ciphertext MUST trigger deterministic FIPS 203 §7.3 implicit rejection J(z || ct)
+        var bad_ct = valid_ct;
+        bad_ct[0] ^= 0xFF;
+        var ss_bad: u8[32] = [0; 32];
+        sub.assert_true(tls_internal::mlkem768_decapsulate(bad_ct[..], sk[..], ss_bad[..]), "tampered ciphertext decapsulation succeeds via implicit rejection");
+        sub.assert_false(core::ct_eq_bytes(ss_bad[..], enc_ss[..]), "tampered ciphertext yields implicit rejection secret");
+
+        let expected_k_bar = tls_internal::ml_kem_j(sk[2368..2400], bad_ct[..]);
+        sub.assert_bytes_eq(ss_bad[..], expected_k_bar[..], "implicit rejection key matches FIPS 203 J(z || c)");
 
         // Determinism: decapsulating with same corrupt ciphertext produces identical shared key
-        var ss_zero_again: u8[32] = [0; 32];
-        tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, zero_ct[..], ss_zero_again[..]);
-        sub.assert_bytes_eq(ss_zero[..], ss_zero_again[..], "implicit rejection is deterministic");
+        var ss_bad_again: u8[32] = [0; 32];
+        sub.assert_true(tls_internal::mlkem768_decapsulate(bad_ct[..], sk[..], ss_bad_again[..]), "second implicit rejection succeeds");
+        sub.assert_bytes_eq(ss_bad[..], ss_bad_again[..], "implicit rejection is deterministic");
 
         // 3. Different rejection seed z produces different implicit rejection key
         var sk2 = sk;
-        sk2.z[0] ^= 0xFF;
+        sk2[2368] ^= 0xFF;
         var ss_diff_z: u8[32] = [0; 32];
-        tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk2, zero_ct[..], ss_diff_z[..]);
-        var diff_z_matches = true;
-        for i in 32 {
-            if ss_diff_z[i] != ss_zero[i] { diff_z_matches = false; break; }
-        }
-        sub.assert_false(diff_z_matches, "different seed z produces distinct implicit rejection key");
+        sub.assert_true(tls_internal::mlkem768_decapsulate(bad_ct[..], sk2[..], ss_diff_z[..]), "decaps with distinct z succeeds");
+        sub.assert_false(core::ct_eq_bytes(ss_diff_z[..], ss_bad[..]), "different seed z produces distinct implicit rejection key");
 
-        // 4. Truncated ciphertext (< 1088 bytes) rejected safely without panic or hang
+        // 4. FIPS 203 §7.3 decapsulationKeyCheck rejects modified H(ek)
+        var sk_bad_h = sk;
+        sk_bad_h[2336] ^= 0x01;
+        var ss_bad_h: u8[32] = [0; 32];
+        sub.assert_false(tls_internal::mlkem768_decapsulate(valid_ct[..], sk_bad_h[..], ss_bad_h[..]), "modified H(ek) fails decapsulationKeyCheck");
+
+        // 5. Truncated ciphertext (< 1088 bytes) rejected safely
         let short_ct: u8[500] = [0xAA; 500];
         var ss_short: u8[32] = [0; 32];
-        let _, ok_short = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, short_ct[..], ss_short[..]);
-        sub.assert_false(ok_short, "truncated ciphertext fails safely");
+        sub.assert_false(tls_internal::mlkem768_decapsulate(short_ct[..], sk[..], ss_short[..]), "truncated ciphertext fails safely");
 
-        // 5. Short destination buffer (< 32 bytes) rejected safely
+        // 6. Short destination buffer (< 32 bytes) rejected safely
         var ss_tiny: u8[16] = [0; 16];
-        let _, ok_tiny = tls_internal::mlkem768_decapsulate_with_implicit_rejection(sk, valid_ct[..], ss_tiny[..]);
-        sub.assert_false(ok_tiny, "short output buffer fails safely");
+        sub.assert_false(tls_internal::mlkem768_decapsulate(valid_ct[..], sk[..], ss_tiny[..]), "short output buffer fails safely");
     };
 
     t.run("TLS-42: RFC 10024 Traditional Post-Quantum Hybrids (SecP256r1MLKEM768 & SecP384r1MLKEM1024)") { sub =>

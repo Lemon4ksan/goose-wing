@@ -600,12 +600,9 @@ fn p256_ecdh_shared_secret(priv_key: const u8[32]&, peer_pub: const u8[:]) -> u8
     var zero: u8[32] = [0; 32];
     let peer_pt, ok_pt = decode_p256_public_key(peer_pub);
     guard ok_pt else { return zero, false; }
-    var d = u256_from_be(priv_key);
+    var d = u256_add_mod(u256_from_be(priv_key), U256 { .. }, P256_ORDER);
     defer zeroize_u256(d);
-    if u256_is_zero(d) || u256_cmp(d, P256_ORDER) >= 0 {
-        d = u256_add_mod(d, U256 { .. }, P256_ORDER);
-        guard !u256_is_zero(d) else { return zero, false; }
-    }
+    guard !u256_is_zero(d) else { return zero, false; }
     let shared_pt = p256_scalar_mul(peer_pt, d);
     guard !shared_pt.infinity else { return zero, false; }
     return u256_to_be(shared_pt.x), true;
@@ -1408,22 +1405,23 @@ fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
 }
 
 // Derives a 97-byte uncompressed SEC1 NIST P-384 (secp384r1) public key (`0x04 || X || Y`).
+// Returns `(zero, false)` when `priv_key == 0 mod n` instead of silently substituting `d = 1`.
 // crap:ignore
-fn p384_ecdh_public_key(priv_key: const u8[48]&) -> u8[97] {
+fn p384_ecdh_public_key(priv_key: const u8[48]&) -> u8[97], bool {
+    var out: u8[97] = [0; 97];
     var d = u384_add_mod(u384_from_be(priv_key), U384 { .. }, P384_ORDER);
     defer zeroize_u384(d);
-    if u384_is_zero(d) { d.v[0] = 1; }
+    guard !u384_is_zero(d) else { return out, false; }
     let g = P384Point { x: U384 { v: P384_GX }, y: U384 { v: P384_GY }, infinity: false };
     let pub_pt = p384_scalar_mul(g, d);
     let xb = u384_to_be(pub_pt.x);
     let yb = u384_to_be(pub_pt.y);
-    var out: u8[97] = [0; 97];
     out[0] = 0x04;
     for i in 48 {
         out[1 + i] = xb[i];
         out[49 + i] = yb[i];
     }
-    return out;
+    return out, true;
 }
 
 // Computes an RFC 8446 Section 4.2.8.2 NIST P-384 (secp384r1) ECDH 48-byte shared secret.
@@ -1432,12 +1430,9 @@ fn p384_ecdh_shared_secret(priv_key: const u8[48]&, peer_pub: const u8[:]) -> u8
     var zero: u8[48] = [0; 48];
     let peer_pt, ok_pt = decode_p384_public_key(peer_pub);
     guard ok_pt else { return zero, false; }
-    var d = u384_from_be(priv_key);
+    var d = u384_add_mod(u384_from_be(priv_key), U384 { .. }, P384_ORDER);
     defer zeroize_u384(d);
-    if u384_is_zero(d) || u384_cmp(d, P384_ORDER) >= 0 {
-        d = u384_add_mod(d, U384 { .. }, P384_ORDER);
-        guard !u384_is_zero(d) else { return zero, false; }
-    }
+    guard !u384_is_zero(d) else { return zero, false; }
     let shared_pt = p384_scalar_mul(peer_pt, d);
     guard !shared_pt.infinity else { return zero, false; }
     return u384_to_be(shared_pt.x), true;

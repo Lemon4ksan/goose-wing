@@ -706,23 +706,22 @@ fn verify_tls_record_slice_and_bounds() {
 
 // crap:ignore
 fn verify_mlkem768_decapsulate() {
-    var sk: u8[2400] = [0; 2400];
-    for i in 2400 {
-        sk[i] = ((i * 13 + 5) & 0xFF) as u8;
-    }
-
-    var ct_valid: u8[1088] = [0; 1088];
-    for i in 1056 {
-        ct_valid[i] = ((i * 17 + 9) & 0xFF) as u8;
-    }
-    let m_prime = core::hmac_sha256(sk[0..32], ct_valid[0..1056]);
-    let valid_tag = core::hmac_sha256(sk[1152..1184], m_prime[..]);
+    var d_seed: u8[32] = [0; 32];
+    var z_seed: u8[32] = [0; 32];
+    var m_seed: u8[32] = [0; 32];
     for i in 32 {
-        ct_valid[1056 + i] = valid_tag[i];
+        d_seed[i] = ((i * 13 + 5) & 0xFF) as u8;
+        z_seed[i] = ((i * 17 + 9) & 0xFF) as u8;
+        m_seed[i] = ((i * 23 + 3) & 0xFF) as u8;
     }
+    let ek, sk = tls_internal::mlkem768_keygen(d_seed, z_seed);
+
+    let ct_valid, ss_enc, ok_enc = tls_internal::mlkem768_encapsulate(ek, m_seed);
+    assert(ok_enc);
 
     var ss_valid: u8[32] = [0; 32];
     assert(tls_internal::mlkem768_decapsulate(ct_valid[..], sk[..], ss_valid[..]));
+    assert(core::ct_eq_bytes(ss_valid[..], ss_enc[..]));
 
     var ct_tampered = ct_valid;
     ct_tampered[0] ^= 0xFF;
@@ -730,8 +729,26 @@ fn verify_mlkem768_decapsulate() {
     assert(tls_internal::mlkem768_decapsulate(ct_tampered[..], sk[..], ss_tampered[..]));
     assert(!core::ct_eq_bytes(ss_valid[..], ss_tampered[..]));
 
-    let expected_k_bar = core::hmac_sha256(sk[2368..2400], ct_tampered[..]);
+    let expected_k_bar = tls_internal::ml_kem_j(sk[2368..2400], ct_tampered[..]);
     assert(core::ct_eq_bytes(ss_tampered[..], expected_k_bar[..]));
+
+    // FIPS 203 §7.3 decapsulationKeyCheck: modified H(ek) must fail closed
+    var sk_bad_h = sk;
+    sk_bad_h[2336] ^= 0x80;
+    var ss_bad_h: u8[32] = [0; 32];
+    assert(!tls_internal::mlkem768_decapsulate(ct_valid[..], sk_bad_h[..], ss_bad_h[..]));
+
+    // Legacy forged-HMAC tag must NOT bypass FIPS 203 FO implicit rejection
+    var ct_forged: u8[1088] = [0x42; 1088];
+    let m_prime = core::hmac_sha256(sk[0..32], ct_forged[0..1056]);
+    let forged_tag = core::hmac_sha256(sk[1152..1184], m_prime[..]);
+    for i in 32 {
+        ct_forged[1056 + i] = forged_tag[i];
+    }
+    var ss_forged: u8[32] = [0; 32];
+    assert(tls_internal::mlkem768_decapsulate(ct_forged[..], sk[..], ss_forged[..]));
+    let expected_forged_j = tls_internal::ml_kem_j(sk[2368..2400], ct_forged[..]);
+    assert(core::ct_eq_bytes(ss_forged[..], expected_forged_j[..]));
 
     var tiny_ss: u8[16] = [0; 16];
     if tls_internal::mlkem768_decapsulate(ct_valid[..], sk[..], tiny_ss[..]) {
@@ -757,7 +774,9 @@ fn verify_mlkem768_decapsulate() {
     let c48:  u8[48] = [1; 48];
     let pq32: u8[32] = [2; 32];
     let comb48 = tls_internal::derive_secp384r1_mlkem1024_shared_secret(c48, pq32);
-    assert(comb48.len == 48);
+    assert(comb48.len == 80);
+    assert(core::ct_eq_bytes(comb48[0..48], c48[..]));
+    assert(core::ct_eq_bytes(comb48[48..80], pq32[..]));
     print("MLKEM768_DECAPS_OK: true");
 }
 

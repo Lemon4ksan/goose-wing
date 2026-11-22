@@ -140,13 +140,23 @@ def run_static_audit() -> tuple[bool, list[str]]:
         if re.search(r"u8\[256\]|uint8_t\s+\w+\[256\]|uint32_t\s+\w+\[256\]", code):
             findings.append(f"256-entry lookup table found in {p.relative_to(ROOT_DIR)}")
 
-    pq_path = ROOT_DIR / "tls" / "post_quantum.goose"
-    pq_code = _strip_comments(pq_path.read_text(encoding="utf-8"))
-    for idx, line in enumerate(pq_code.splitlines(), start=1):
-        if re.search(r"(?<![\"'])\s[/%]\s", line):
-            findings.append(f"Division/modulo operator in {pq_path.relative_to(ROOT_DIR)}:{idx}: {line.strip()}")
+    pq_paths = [
+        ROOT_DIR / "tls" / "pq_mlkem_internal.goose",
+        ROOT_DIR / "tls" / "pq_ntt_internal.goose",
+    ]
+    for pq_path in pq_paths:
+        if not pq_path.exists():
+            findings.append(f"Missing PQ audit target: {pq_path.relative_to(ROOT_DIR)}")
+            continue
+        pq_code = _strip_comments(pq_path.read_text(encoding="utf-8"))
+        for idx, line in enumerate(pq_code.splitlines(), start=1):
+            if re.search(r"(?<![\"'])\s[/%]\s", line):
+                findings.append(f"Division/modulo operator in {pq_path.relative_to(ROOT_DIR)}:{idx}: {line.strip()}")
 
-    for p in sorted((ROOT_DIR / "core" / "crypto").glob("*.goose")):
+    crypto_files = sorted((ROOT_DIR / "core" / "crypto").glob("*.goose"))
+    if not crypto_files:
+        findings.append("No core/crypto/*.goose files found for static audit")
+    for p in crypto_files:
         code = _strip_comments(p.read_text(encoding="utf-8"))
         if re.search(r"\b(?:computed_tag|expected_tag)\s*(?:==|!=)", code):
             findings.append(f"Non-constant-time tag comparison in {p.relative_to(ROOT_DIR)}")

@@ -229,7 +229,7 @@ fn test_rsa_min_2048_and_strict_pss() {
     let salt32: u8[32] = [0x5A; 32];
     let msg = "TLS-1.3-RSA-Hardening-Payload";
 
-    // Valid 1024-bit RSA prime modulus (128 bytes < 256 bytes)
+    // Weak 1024-bit RSA prime modulus (128 bytes < 256 bytes) MUST be rejected by core & TLS
     var n1024: u8[128] = [0xFF; 128];
     n1024[127] = 0x4D;
     var d1024: u8[128] = [0xAA; 128];
@@ -238,25 +238,25 @@ fn test_rsa_min_2048_and_strict_pss() {
     encode_rsa_pkcs1_pub_der(n1024[..], e3_be[..], pk1024_der);
 
     var sig1024_pkcs1: u8[..512] = [];
-    assert(core::rsa_pkcs1_sha256_sign(n1024[..], d1024[..], msg, sig1024_pkcs1));
-    assert(core::rsa_pkcs1_sha256_verify_der(pk1024_der[..], msg, sig1024_pkcs1[..]));
+    assert(!core::rsa_pkcs1_sha256_sign(n1024[..], d1024[..], msg, sig1024_pkcs1));
+    assert(!core::rsa_pkcs1_sha256_verify_der(pk1024_der[..], msg, n1024[..]));
     assert(
         tls_internal::x509_verify_signature_by_oid(
-            rfc::OID_SIG_SHA256_RSA[..], msg, sig1024_pkcs1[..], pk1024_der[..], tls::Alert.BadCertificate,
+            rfc::OID_SIG_SHA256_RSA[..], msg, n1024[..], pk1024_der[..], tls::Alert.BadCertificate,
         ) == tls::Alert.BadCertificate,
     );
 
     var sig1024_pss: u8[..512] = [];
-    assert(core::rsa_pss_sha256_sign(n1024[..], d1024[..], salt32[..], msg, sig1024_pss));
-    assert(core::rsa_pss_sha256_verify_der(pk1024_der[..], msg, sig1024_pss[..]));
+    assert(!core::rsa_pss_sha256_sign(n1024[..], d1024[..], salt32[..], msg, sig1024_pss));
+    assert(!core::rsa_pss_sha256_verify_der(pk1024_der[..], msg, n1024[..]));
     assert(
         tls_internal::x509_verify_signature_by_oid(
-            rfc::OID_SIG_RSASSA_PSS[..], msg, sig1024_pss[..], pk1024_der[..],
+            rfc::OID_SIG_RSASSA_PSS[..], msg, n1024[..], pk1024_der[..],
             tls::Alert.BadCertificate, tls_internal::PSS_HASH_SHA256,
         ) == tls::Alert.BadCertificate,
     );
     assert(!tls_internal::verify_cv_sig_with_min_rsa(
-        rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256, sig1024_pss[..], pk1024_der[..], msg,
+        rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256, n1024[..], pk1024_der[..], msg,
     ));
 
     // Valid 2048-bit RSA prime modulus (256 bytes >= 256 bytes)

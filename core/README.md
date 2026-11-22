@@ -336,13 +336,13 @@ fn fused_aes_gcm_encrypt<B>(key: const u8[16]&, nonce: const u8[12]&, aad: const
 fn fused_aes_gcm_decrypt<B>(key: const u8[16]&, nonce: const u8[12]&, aad: const u8[:], ciphertext: const u8[:], tag: const u8[16]&, out_plaintext: B&) -> bool
 fn hchacha20(key: const u8[32]&, nonce: const u8[16]&) -> u8[32]
 fn chacha20_block(key: const u8[32]&, counter: u32, nonce: const u8[12]&) -> u8[64]
-fn chacha20_xor(key: const u8[32]&, counter: u32, nonce: const u8[12]&, src: const u8[:], dst: u8[:])
+fn chacha20_xor<B>(key: const u8[32]&, counter: u32, nonce12: const u8[12]&, input: const u8[:], out: B&) -> bool
 fn poly1305_mac(key: const u8[32]&, msg: const u8[:]) -> u8[16]
 fn chacha20_poly1305_seal<B>(key: const u8[32]&, nonce: const u8[12]&, aad: const u8[:], plaintext: const u8[:], out_ciphertext: B&, out_tag: u8[16]&)
 fn chacha20_poly1305_open<B>(key: const u8[32]&, nonce: const u8[12]&, aad: const u8[:], ciphertext: const u8[:], tag: const u8[16]&, out_plaintext: B&) -> bool
 fn chacha20_poly1305_seal_inplace(key: const u8[32]&, nonce: const u8[12]&, aad: const u8[:], buf: u8[:], out_tag: u8[16]&)
 fn chacha20_poly1305_open_inplace(key: const u8[32]&, nonce: const u8[12]&, aad: const u8[:], buf: u8[:], tag: const u8[16]&) -> bool
-fn xchacha20_poly1305_seal<B>(key: const u8[32]&, nonce: const u8[24]&, aad: const u8[:], plaintext: const u8[:], out_ciphertext: B&, out_tag: u8[16]&)
+fn xchacha20_poly1305_seal<B>(key: const u8[32]&, nonce24: const u8[24]&, plaintext: const u8[:], aad: const u8[:], out_ciphertext: B&) -> u8[16], bool
 fn xchacha20_poly1305_open<B>(key: const u8[32]&, nonce: const u8[24]&, aad: const u8[:], ciphertext: const u8[:], tag: const u8[16]&, out_plaintext: B&) -> bool
 
 // core/crypto/x25519.goose, core/crypto/ed25519.goose, core/crypto/ecdsa.goose & core/crypto/rsa.goose

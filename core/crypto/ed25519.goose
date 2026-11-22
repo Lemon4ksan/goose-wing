@@ -423,15 +423,11 @@ fn sc_muladd(k: const u8[32]&, s: const u8[32]&, r: const u8[32]&) -> u8[32] {
     }
 
     let out = sc_reduce(b64);
-    for i in 16 {
-        k_w[i] = 0;
-        s_w[i] = 0;
-        r_w[i] = 0;
-    }
-    for i in 32 {
-        acc[i] = 0;
-        out_words[i] = 0;
-    }
+    secure_zeroize_u64_slice(k_w[..]);
+    secure_zeroize_u64_slice(s_w[..]);
+    secure_zeroize_u64_slice(r_w[..]);
+    secure_zeroize_u64_slice(acc[..]);
+    secure_zeroize_u16_slice(out_words[..]);
     secure_zeroize_64(b64);
     return out;
 }

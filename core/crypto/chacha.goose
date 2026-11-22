@@ -79,7 +79,7 @@ fn hchacha20(key: const u8[32]&, nonce16: const u8[16]&) -> u8[32] {
     store_u32_le(out[..], 20, s[13]);
     store_u32_le(out[..], 24, s[14]);
     store_u32_le(out[..], 28, s[15]);
-    s = [0; 16];
+    secure_zeroize_u32_slice(s[..]);
     return out;
 }
 
@@ -107,12 +107,14 @@ fn chacha20_block(key: const u8[32]&, counter: u32, nonce12: const u8[12]&) -> u
     for i in 16 {
         store_u32_le(blk[..], i * 4, s[i] + orig[i]);
     }
-    s = [0; 16];
-    orig = [0; 16];
+    secure_zeroize_u32_slice(s[..]);
+    secure_zeroize_u32_slice(orig[..]);
     return blk;
 }
 
-const CHACHA20_POLY1305_MAX_BYTES: i64 = 0x3FFFFFFFF0;
+// RFC 8439 Section 2.8: AEAD Construction - max plaintext length is (2^32 - 1) * 64 bytes
+// because counter 0 is reserved for the Poly1305 one-time key block.
+const CHACHA20_POLY1305_MAX_BYTES: i64 = 0x3FFFFFFFC0;
 
 fn chacha20_xor<B>(
     key:     const u8[32]&,
@@ -120,14 +122,15 @@ fn chacha20_xor<B>(
     nonce12: const u8[12]&,
     input:   const u8[:],
     out:     B&,
-) {
-    guard input.len > 0 else { return; }
+) -> bool {
+    guard input.len > 0 else { return true; }
     let blocks = add_sat_u64((sub_sat_i64(input.len, 1) as u64) >> 6, 1);
-    guard add_sat_u64(counter as u64, blocks) <= 0x100000000 else { return; }
-    guard crypto_buf_has_room(out, input.len) else { return; }
+    guard add_sat_u64(counter as u64, blocks) <= 0x100000000 else { return false; }
+    guard crypto_buf_has_room(out, input.len) else { return false; }
     var cur_ctr = counter;
     var offset = 0;
     var blk: u8[64] = [0; 64];
+    defer secure_zeroize_64(blk);
     while offset < input.len {
         blk = chacha20_block(key, cur_ctr, nonce12);
         cur_ctr += 1;
@@ -138,7 +141,7 @@ fn chacha20_xor<B>(
         }
         offset += take;
     }
-    secure_zeroize_64(blk);
+    return true;
 }
 
 // Poly1305 one-time MAC over GF(2^130 - 5) using 26-bit limbs for pure 64-bit arithmetic.
@@ -318,37 +321,36 @@ fn xchacha20_poly1305_seal<B>(
     plaintext:      const u8[:],
     aad:            const u8[:],
     out_ciphertext: B&,
-) -> u8[16] {
+) -> u8[16], bool {
     var zero_tag: u8[16] = [0; 16];
     guard plaintext.len <= CHACHA20_POLY1305_MAX_BYTES &&
           crypto_buf_has_room(out_ciphertext, plaintext.len) else {
-        return zero_tag;
+        return zero_tag, false;
     }
     var nonce16: u8[16] = [0; 16];
     for i in 16 { nonce16[i] = nonce24[i]; }
     var subkey = hchacha20(key, nonce16);
+    defer secure_zeroize_32(subkey);
 
     var subnonce: u8[12] = [0; 12];
     for i in 8 { subnonce[4 + i] = nonce24[16 + i]; }
 
     var ot_block = chacha20_block(subkey, 0, subnonce);
     var otk: u8[32] = [0; 32];
+    defer secure_zeroize_32(otk);
     for i in 32 { otk[i] = ot_block[i]; }
     secure_zeroize_64(ot_block);
 
     let ct_start = out_ciphertext.len;
-    chacha20_xor(subkey, 1, subnonce, plaintext, out_ciphertext);
-    secure_zeroize_32(subkey);
-    guard sub_sat_i64(out_ciphertext.len, ct_start) == plaintext.len else {
+    let ok_xor = chacha20_xor(subkey, 1, subnonce, plaintext, out_ciphertext);
+    guard ok_xor && sub_sat_i64(out_ciphertext.len, ct_start) == plaintext.len else {
         out_ciphertext.resize(ct_start);
-        secure_zeroize_32(otk);
-        return zero_tag;
+        return zero_tag, false;
     }
     let ciphertext_slice = out_ciphertext[ct_start..];
 
     let tag = poly1305_aead_mac(otk, aad, ciphertext_slice);
-    secure_zeroize_32(otk);
-    return tag;
+    return tag, true;
 }
 
 fn xchacha20_poly1305_open<B>(
@@ -385,10 +387,10 @@ fn xchacha20_poly1305_open<B>(
     }
 
     let start_len = out_plaintext.len;
-    chacha20_xor(subkey, 1, subnonce, ciphertext, out_plaintext);
+    let ok_xor = chacha20_xor(subkey, 1, subnonce, ciphertext, out_plaintext);
     secure_zeroize_32(subkey);
     secure_zeroize_32(otk);
-    guard core::sub_sat_i64(out_plaintext.len, start_len) == ciphertext.len else {
+    guard ok_xor && core::sub_sat_i64(out_plaintext.len, start_len) == ciphertext.len else {
         out_plaintext.resize(start_len);
         return false;
     }
@@ -537,8 +539,8 @@ fn chacha20_poly1305_open<B>(
     }
 
     let start_len = out_plaintext.len;
-    chacha20_xor(key, 1, nonce12, ciphertext, out_plaintext);
-    guard core::sub_sat_i64(out_plaintext.len, start_len) == ciphertext.len else {
+    let ok_xor = chacha20_xor(key, 1, nonce12, ciphertext, out_plaintext);
+    guard ok_xor && core::sub_sat_i64(out_plaintext.len, start_len) == ciphertext.len else {
         out_plaintext.resize(start_len);
         return false;
     }

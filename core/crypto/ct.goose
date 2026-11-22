@@ -101,6 +101,38 @@ fn secure_zeroize_slice(buf: u8[:]) {
     native_secure_zeroize(buf);
 }
 
+// Zeroizes a u32 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+inline fn secure_zeroize_u32_slice(buf: u32[:]) {
+    var z_bytes: u8[32] = [0; 32];
+    native_secure_zeroize(z_bytes[..]);
+    let z: u32 = z_bytes[0];
+    for i in buf.len { buf[i] = z; }
+}
+
+// Zeroizes a u64 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+inline fn secure_zeroize_u64_slice(buf: u64[:]) {
+    var z_bytes: u8[32] = [0; 32];
+    native_secure_zeroize(z_bytes[..]);
+    let z: u64 = z_bytes[0];
+    for i in buf.len { buf[i] = z; }
+}
+
+// Zeroizes a u16 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+inline fn secure_zeroize_u16_slice(buf: u16[:]) {
+    var z_bytes: u8[32] = [0; 32];
+    native_secure_zeroize(z_bytes[..]);
+    let z: u16 = z_bytes[0];
+    for i in buf.len { buf[i] = z; }
+}
+
+// Zeroizes an i32 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+inline fn secure_zeroize_i32_slice(buf: i32[:]) {
+    var z_bytes: u8[32] = [0; 32];
+    native_secure_zeroize(z_bytes[..]);
+    let z: i32 = z_bytes[0];
+    for i in buf.len { buf[i] = z; }
+}
+
 inline fn crypto_buf_has_room<A>(arr: const A&, needed: i64) -> bool {
     return needed >= 0 && arr.len <= arr.cap && needed <= arr.cap - arr.len;
 }
@@ -119,7 +151,11 @@ struct KeySlot {
 }
 
 fn new_key_slot(key_id: u32, raw_key: const u8[:], created_at_sec: i64 = 0, expires_at_sec: i64 = 0) -> KeySlot {
-    guard raw_key.len == 32 else {
+    var nonzero: u8 = 0;
+    if raw_key.len == 32 {
+        for idx in 32 { nonzero |= raw_key[idx]; }
+    }
+    guard raw_key.len == 32 && nonzero != 0 else {
         return KeySlot {
             key_id:         key_id,
             master_key:     [0; 32],

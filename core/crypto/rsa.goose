@@ -12,21 +12,24 @@ import core.crypto.sha;
 
 // ---- Big-Endian & 32-Bit Limb Montgomery Modular Arithmetic (up to 4096 bits) -----
 
-// Constant-time full-scan comparison of two equal-length big-endian byte slices `a` and `b`.
+// Minimum RSA modulus size in bytes for signature generation/verification and key parsing (2048 bits).
+const RSA_MIN_MODULUS_BYTES: i64 = 256;
+
+// Constant-time branchless comparison of two equal-length big-endian byte slices `a` and `b`.
 // crap:ignore
 inline fn rsa_be_cmp(a: const u8[:], b: const u8[:]) -> i32 {
     var gt: u32 = 0;
     var lt: u32 = 0;
     for i in a.len {
+        let ai = a[i] as u32;
+        let bi = b[i] as u32;
         let undecided = (gt | lt) ^ 1;
-        let bi_gt: u32 = if a[i] > b[i] { 1 } else { 0 };
-        let bi_lt: u32 = if a[i] < b[i] { 1 } else { 0 };
+        let bi_gt = ((bi - ai) >> 31) & 1;
+        let bi_lt = ((ai - bi) >> 31) & 1;
         gt |= undecided & bi_gt;
         lt |= undecided & bi_lt;
     }
-    if gt != 0 { return 1; }
-    if lt != 0 { return -1; }
-    return 0;
+    return core::sub_sat_i64(gt as i64, lt as i64) as i32;
 }
 
 // Zeroizes a mutable `u32` limb slice in place using an opaque zeroization barrier.
@@ -362,62 +365,61 @@ inline fn rsa_limbs_sub_mod(a: u32[:], b: const u32[:], m: const u32[:]) {
     }
 }
 
-// Computes `out_inv = r^-1 mod m` via binary extended GCD for odd `m`; returns false if `gcd(r, m) != 1`.
+// Computes `out_inv = r^-1 mod m` via fixed-iteration branchless binary extended GCD for odd `m`.
+// Constant-time with respect to `r_limbs`; returns false if `gcd(r, m) != 1`.
 // crap:ignore
 fn rsa_limbs_mod_inv(r_limbs: const u32[:], m_limbs: const u32[:], out_inv: u32[..128]&) -> bool {
     let n = m_limbs.len;
     guard n > 0 && n <= 128 && r_limbs.len == n && (m_limbs[0] & 1) == 1 else { return false; }
     guard !rsa_limbs_is_zero(r_limbs) else { return false; }
-    var u:    u32[128] = [0; 128];
-    var v:    u32[128] = [0; 128];
-    var x1:   u32[128] = [0; 128];
-    var x2:   u32[128] = [0; 128];
-    var diff: u32[128] = [0; 128];
+    var a:     u32[128] = [0; 128];
+    var b:     u32[128] = [0; 128];
+    var u:     u32[128] = [0; 128];
+    var v:     u32[128] = [0; 128];
+    var u_tmp: u32[128] = [0; 128];
+    defer rsa_zeroize_limbs(a[0..n]);
+    defer rsa_zeroize_limbs(b[0..n]);
     defer rsa_zeroize_limbs(u[0..n]);
     defer rsa_zeroize_limbs(v[0..n]);
-    defer rsa_zeroize_limbs(x1[0..n]);
-    defer rsa_zeroize_limbs(x2[0..n]);
-    defer rsa_zeroize_limbs(diff[0..n]);
-    for i in n { u[i] = r_limbs[i]; v[i] = m_limbs[i]; }
-    x1[0] = 1;
-    while !rsa_limbs_is_zero(u[0..n]) && !rsa_limbs_is_zero(v[0..n]) {
-        while (u[0] & 1) == 0 {
-            rsa_limbs_shr1(u[0..n], 0);
-            rsa_limbs_halve_mod(x1[0..n], m_limbs);
-        }
-        while (v[0] & 1) == 0 {
-            rsa_limbs_shr1(v[0..n], 0);
-            rsa_limbs_halve_mod(x2[0..n], m_limbs);
-        }
+    defer rsa_zeroize_limbs(u_tmp[0..n]);
+    for i in n { a[i] = r_limbs[i]; b[i] = m_limbs[i]; }
+    u[0] = 1;
+    let total_steps = n * 64;
+    for _ in total_steps {
+        let odd = a[0] & 1;
         var borrow: u64 = 0;
         for i in n {
-            let d = (u[i] as u64) - v[i] - borrow;
-            diff[i] = (d & 0xFFFFFFFF) as u32;
+            let d = (a[i] as u64) - b[i] - borrow;
             borrow = d >> 63;
         }
-        if borrow == 0 {
-            for i in n { u[i] = diff[i]; }
-            rsa_limbs_sub_mod(x1[0..n], x2[0..n], m_limbs);
-        } else {
-            var b2: u64 = 0;
-            for i in n {
-                let d = (v[i] as u64) - u[i] - b2;
-                v[i] = (d & 0xFFFFFFFF) as u32;
-                b2 = d >> 63;
-            }
-            rsa_limbs_sub_mod(x2[0..n], x1[0..n], m_limbs);
+        let swap_mask: u32 = 0 - (odd & (borrow as u32));
+        for i in n {
+            let da = (a[i] ^ b[i]) & swap_mask;
+            a[i] ^= da;
+            b[i] ^= da;
+            let du = (u[i] ^ v[i]) & swap_mask;
+            u[i] ^= du;
+            v[i] ^= du;
         }
+        let odd_mask: u32 = 0 - odd;
+        var sub_borrow: u64 = 0;
+        for i in n {
+            let d = (a[i] as u64) - (b[i] & odd_mask) - sub_borrow;
+            a[i] = (d & 0xFFFFFFFF) as u32;
+            sub_borrow = d >> 63;
+            u_tmp[i] = u[i];
+        }
+        rsa_limbs_sub_mod(u_tmp[0..n], v[0..n], m_limbs);
+        for i in n {
+            u[i] = (u[i] & (~odd_mask)) | (u_tmp[i] & odd_mask);
+        }
+        rsa_limbs_shr1(a[0..n], 0);
+        rsa_limbs_halve_mod(u[0..n], m_limbs);
     }
     out_inv.clear();
-    if rsa_limbs_is_one(u[0..n]) {
-        out_inv.append(x1[0..n]);
-        return true;
-    }
-    if rsa_limbs_is_one(v[0..n]) {
-        out_inv.append(x2[0..n]);
-        return true;
-    }
-    return false;
+    guard rsa_limbs_is_one(b[0..n]) else { return false; }
+    out_inv.append(v[0..n]);
+    return true;
 }
 
 // Computes Chaum-blinded `out = base^exp mod m` using public exponent `pub_exp`:
@@ -431,7 +433,9 @@ fn rsa_mod_exp_blinded(
     out:     u8[..512]&,
 ) -> bool {
     let k = m.len;
-    guard k >= 64 && k <= 512 && base.len == k && exp.len > 0 && exp.len <= 512 else { return false; }
+    guard k >= RSA_MIN_MODULUS_BYTES && k <= 512 && base.len == k && exp.len > 0 && exp.len <= 512 else {
+        return false;
+    }
     guard is_valid_rsa_public_exponent(pub_exp, m) && rsa_be_cmp(base, m) < 0 else { return false; }
 
     var m_limbs:     u32[..128] = [];
@@ -473,54 +477,57 @@ fn rsa_mod_exp_blinded(
     return out.len == k;
 }
 
-// Computes exponent-blinded `out = base^exp mod m` via additive splitting `exp = (exp - r) + r`
-// when public exponent `e` is unavailable, using a 256-bit CSPRNG mask `r`.
+// Computes full-width exponent-blinded `out = base^exp mod m` via additive splitting `exp = (exp - r) + r`
+// using a `(exp.len - 1)`-byte CSPRNG mask `r`. Fails closed on CSPRNG error or degenerate exponent.
 // crap:ignore
 fn rsa_mod_exp_exp_blinded(base: const u8[:], exp: const u8[:], m: const u8[:], out: u8[..512]&) -> bool {
     let k = m.len;
-    guard k >= 64 && k <= 512 && base.len == k && exp.len > 0 && exp.len <= 512 else { return false; }
-    if exp.len <= 32 {
-        return rsa_mod_exp(base, exp, m, out);
+    guard k >= RSA_MIN_MODULUS_BYTES && k <= 512 && base.len == k && exp.len > 1 && exp.len <= 512 else {
+        return false;
     }
-    var r_be:     u8[32]    = [0; 32];
+    var r_be:     u8[512]   = [0; 512];
     var d_masked: u8[512]   = [0; 512];
     var part1:    u8[..512] = [];
     var part2:    u8[..512] = [];
-    defer secure_zeroize_32(r_be);
+    defer secure_zeroize_slice(r_be[0..exp.len]);
     defer secure_zeroize_slice(d_masked[0..exp.len]);
     defer secure_zeroize_slice(part1[..]);
     defer secure_zeroize_slice(part2[..]);
-    guard csprng_fill(r_be[..]) else {
-        return rsa_mod_exp(base, exp, m, out);
-    }
-    r_be[31] |= 0x01;
 
-    var borrow:  u32 = 0;
-    var nonzero: u8  = 0;
-    let r_off = exp.len - 32;
-    var idx = exp.len - 1;
-    while idx >= 0 {
-        let rb: u32 = if idx >= r_off { r_be[idx - r_off] } else { 0 };
-        let diff = exp[idx] - rb - borrow;
-        let out_b = (diff & 0xFF) as u8;
-        d_masked[idx] = out_b;
-        nonzero |= out_b;
-        borrow = diff >> 31;
-        idx -= 1;
+    var split_ok = false;
+    for _ in 8 {
+        r_be[0] = 0x00;
+        guard csprng_fill(r_be[1..exp.len]) else { return false; }
+        r_be[exp.len - 1] |= 0x01;
+        var borrow:  u32 = 0;
+        var nonzero: u8  = 0;
+        var idx = exp.len - 1;
+        while idx >= 0 {
+            let diff = (exp[idx] as u32) - r_be[idx] - borrow;
+            let out_b = (diff & 0xFF) as u8;
+            d_masked[idx] = out_b;
+            nonzero |= out_b;
+            borrow = diff >> 31;
+            idx -= 1;
+        }
+        if borrow == 0 && nonzero != 0 {
+            split_ok = true;
+            break;
+        }
     }
-    if borrow != 0 || nonzero == 0 {
-        return rsa_mod_exp(base, exp, m, out);
-    }
+    guard split_ok else { return false; }
     guard rsa_mod_exp(base, d_masked[0..exp.len], m, part1) else { return false; }
-    guard rsa_mod_exp(base, r_be[..], m, part2) else { return false; }
+    guard rsa_mod_exp(base, r_be[0..exp.len], m, part2) else { return false; }
     rsa_be_mul_mod(part1[..], part2[..], m, out);
     return out.len == k;
 }
 
-// Validates that an RSA public exponent `e_be` is an odd integer in `3 <= e < n` with odd modulus `n` (RFC 8017 §3.1).
+// Validates that an RSA public exponent `e_be` is an odd integer in `3 <= e < n` with odd >=2048-bit modulus `n`.
 // crap:ignore
 fn is_valid_rsa_public_exponent(e_be: const u8[:], n_be: const u8[:]) -> bool {
-    guard e_be.len > 0 && n_be.len >= 64 && (n_be[n_be.len - 1] & 1) == 1 else { return false; }
+    guard e_be.len > 0 && n_be.len >= RSA_MIN_MODULUS_BYTES && (n_be[n_be.len - 1] & 1) == 1 else {
+        return false;
+    }
     var start: i64 = 0;
     while start < e_be.len && e_be[start] == 0 {
         start += 1;
@@ -581,13 +588,17 @@ fn parse_rsa_public_key_der(der: const u8[:]) -> const u8[:], const u8[:], bool 
     guard seq_ok && seq_tag == 0x30 && idx + seq_len == der.len else { return "", "", false; }
 
     let n_tag, n_len, n_ok = parse_der_tlv_header(der, idx);
-    guard n_ok && n_tag == 0x02 && n_len >= 64 else { return "", "", false; }
+    guard n_ok && n_tag == 0x02 && n_len >= RSA_MIN_MODULUS_BYTES else { return "", "", false; }
     var n_slice = der[idx..idx + n_len];
     idx += n_len;
     guard (n_slice[0] & 0x80) == 0 else { return "", "", false; }
     if n_slice[0] == 0x00 {
         guard n_slice.len > 1 && (n_slice[1] & 0x80) != 0 else { return "", "", false; }
         n_slice = n_slice[1..n_slice.len];
+    }
+    guard n_slice.len >= RSA_MIN_MODULUS_BYTES && n_slice[0] != 0 &&
+        (n_slice.len > RSA_MIN_MODULUS_BYTES || (n_slice[0] & 0x80) != 0) else {
+        return "", "", false;
     }
 
     let e_tag, e_len, e_ok = parse_der_tlv_header(der, idx);
@@ -954,7 +965,7 @@ fn rsa_pss_sha256_sign(
     message: const u8[:],
     out_sig: u8[..512]&,
 ) -> bool {
-    guard n_be.len >= 64 && salt.len == 32 else { return false; }
+    guard n_be.len >= RSA_MIN_MODULUS_BYTES && salt.len == 32 else { return false; }
     let m_hash = sha256(message);
     var em: u8[..512] = [];
     defer secure_zeroize_slice(em[..]);
@@ -972,7 +983,7 @@ fn rsa_pss_sha256_sign_blinded(
     message: const u8[:],
     out_sig: u8[..512]&,
 ) -> bool {
-    guard n_be.len >= 64 && salt.len == 32 else { return false; }
+    guard n_be.len >= RSA_MIN_MODULUS_BYTES && salt.len == 32 else { return false; }
     let m_hash = sha256(message);
     var em: u8[..512] = [];
     defer secure_zeroize_slice(em[..]);
@@ -989,7 +1000,7 @@ fn rsa_pss_sha512_sign(
     message: const u8[:],
     out_sig: u8[..512]&,
 ) -> bool {
-    guard n_be.len >= 130 && salt.len == 64 else { return false; }
+    guard n_be.len >= RSA_MIN_MODULUS_BYTES && salt.len == 64 else { return false; }
     let m_hash = sha512(message);
     var em: u8[..512] = [];
     defer secure_zeroize_slice(em[..]);

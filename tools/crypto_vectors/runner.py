@@ -382,6 +382,12 @@ def _eval_acvp_mlkem(client: HarnessClient, mode: str, group: dict, stats: Suite
                 stats.record_pass()
             else:
                 stats.record_fail(f"ACVP ML-KEM-768 ekCheck tcId={tc_id} mismatch")
+        elif fn_name == "decapsulationKeyCheck":
+            got = client.call("MLKEM768_DECAPS", "00" * 1088, hex_or_dash(tc["dk"]))
+            if (got[0] == "OK") == bool(tc["testPassed"]):
+                stats.record_pass()
+            else:
+                stats.record_fail(f"ACVP ML-KEM-768 dkCheck tcId={tc_id} mismatch")
         else:
             stats.record_skip()
 

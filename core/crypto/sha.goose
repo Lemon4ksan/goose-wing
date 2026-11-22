@@ -138,13 +138,14 @@ fn sha256_final(ctx: Sha256Ctx&) -> u8[32] {
 
 fn sha256(data: const u8[:]) -> u8[32] {
     var ctx = Sha256Ctx { .. };
+    defer zeroize_sha256_ctx(ctx);
     sha256_update(ctx, data);
     return sha256_final(ctx);
 }
 
 fn zeroize_sha256_ctx(ctx: Sha256Ctx&) {
     secure_zeroize_64(ctx.buf);
-    for i in 8 { ctx.h[i] = 0; }
+    secure_zeroize_u32_slice(ctx.h[..]);
     ctx.buf_len = 0;
     ctx.total_len = 0;
 }
@@ -353,7 +354,7 @@ struct Sha384Ctx {
 
 fn zeroize_sha384_ctx(ctx: Sha384Ctx&) {
     secure_zeroize_slice(ctx.buf[..]);
-    for i in 8 { ctx.h[i] = 0; }
+    secure_zeroize_u64_slice(ctx.h[..]);
     ctx.buf_len = 0;
     ctx.total_len = 0;
     ctx.total_len_hi = 0;
@@ -411,6 +412,7 @@ fn sha384_final(ctx: Sha384Ctx&) -> u8[48] {
 
 fn sha384(data: const u8[:]) -> u8[48] {
     var ctx = Sha384Ctx { .. };
+    defer zeroize_sha384_ctx(ctx);
     sha384_update(ctx, data);
     return sha384_final(ctx);
 }
@@ -430,7 +432,7 @@ struct Sha512Ctx {
 
 fn zeroize_sha512_ctx(ctx: Sha512Ctx&) {
     secure_zeroize_slice(ctx.buf[..]);
-    for i in 8 { ctx.h[i] = 0; }
+    secure_zeroize_u64_slice(ctx.h[..]);
     ctx.buf_len = 0;
     ctx.total_len = 0;
     ctx.total_len_hi = 0;
@@ -488,6 +490,7 @@ fn sha512_final(ctx: Sha512Ctx&) -> u8[64] {
 
 fn sha512(data: const u8[:]) -> u8[64] {
     var ctx = Sha512Ctx { .. };
+    defer zeroize_sha512_ctx(ctx);
     sha512_update(ctx, data);
     return sha512_final(ctx);
 }
@@ -555,8 +558,17 @@ fn sha512_256_final(ctx: Sha512_256Ctx&) -> u8[32] {
     return out;
 }
 
+fn zeroize_sha512_256_ctx(ctx: Sha512_256Ctx&) {
+    secure_zeroize_slice(ctx.buf[..]);
+    secure_zeroize_u64_slice(ctx.h[..]);
+    ctx.buf_len = 0;
+    ctx.total_len = 0;
+    ctx.total_len_hi = 0;
+}
+
 fn sha512_256(data: const u8[:]) -> u8[32] {
     var ctx = Sha512_256Ctx { .. };
+    defer zeroize_sha512_256_ctx(ctx);
     sha512_256_update(ctx, data);
     return sha512_256_final(ctx);
 }

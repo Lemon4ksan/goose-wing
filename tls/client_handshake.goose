@@ -135,7 +135,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         return 0xFFFF, false;
     }
 
-    var ecdhe_secret: u8[..48] = [];
+    var ecdhe_secret: u8[..80] = [];
     defer core::secure_zeroize_slice(ecdhe_secret[..]);
     if srv_group == rfc::GROUP_X25519_MLKEM768 {
         var srv_share_raw: u8[..2048] = [];
@@ -159,8 +159,8 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-        var pq_comb: u8[32] = [0; 32];
-        defer core::secure_zeroize_32(pq_comb);
+        var pq_comb: u8[64] = [0; 64];
+        defer core::secure_zeroize_64(pq_comb);
         let ok_pq = tls_internal::derive_x25519_mlkem768_shared_secret_checked(
             classic_ss[..], pq_ss[..], pq_comb[..],
         );

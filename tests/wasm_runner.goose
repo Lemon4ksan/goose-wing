@@ -238,8 +238,11 @@ fn main() {
         group: rfc::GROUP_X25519_MLKEM768,
         ..
     };
+    let pq_d: u8[32] = [0x11; 32];
+    let pq_z: u8[32] = [0x22; 32];
+    let ek768, _ = tls_internal::mlkem768_keygen(pq_d, pq_z);
     for i in 32 { client_share.x25519_public[i] = (i + 1) as u8; }
-    for i in 1184 { client_share.mlkem768_public[i] = ((i * 7 + 3) & 0xFF) as u8; }
+    client_share.mlkem768_public = ek768;
 
     var pq_wire: u8[>..] = [];
     client_share.format_hybrid_key_share(pq_wire);
@@ -259,7 +262,7 @@ fn main() {
         49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64,
     ];
     let hybrid_secret = tls_internal::derive_hybrid_shared_secret(classical_ss, pq_ss);
-    print("  Hybrid Combined Secret: SHA256[0..4] = [", hybrid_secret[0], ", ", hybrid_secret[1], ", ", hybrid_secret[2], ", ", hybrid_secret[3], "]\n");
+    print("  Hybrid Combined Secret (64B): [", hybrid_secret[0], ", ", hybrid_secret[1], ", ", hybrid_secret[2], ", ", hybrid_secret[3], "]\n");
 
     // ------------------------------------------------------------------------
     // Scenario 11: RFC 9000 QUIC Variable-Length Integer & Packet Framing

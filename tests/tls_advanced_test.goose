@@ -955,8 +955,11 @@ fn test_post_quantum_hybrid(t: lit::T&) {
             group: rfc::GROUP_X25519_MLKEM768,
             ..
         };
+        let pq_d: u8[32] = [0x11; 32];
+        let pq_z: u8[32] = [0x22; 32];
+        let ek768, _ = tls_internal::mlkem768_keygen(pq_d, pq_z);
         for i in 32 { share.x25519_public[i] = (i + 1) as u8; }
-        for i in 1184 { share.mlkem768_public[i] = ((i * 7 + 3) & 0xFF) as u8; }
+        share.mlkem768_public = ek768;
 
         var wire: u8[>..] = [];
         share.format_hybrid_key_share(wire);
@@ -1033,11 +1036,9 @@ fn test_post_quantum_hybrid(t: lit::T&) {
         ];
 
         let combined_secret = tls_internal::derive_hybrid_shared_secret(classical_ss, pq_ss);
-        var zero_cnt = 0;
-        for b in combined_secret {
-            if b == 0 { zero_cnt += 1; }
-        }
-        sub.assert_true(zero_cnt < 32, "Hybrid secret is high-entropy 32-byte SHA-256");
+        sub.assert_eq(combined_secret.len, 64, "RFC 10024 hybrid secret is raw 64-byte concatenation");
+        sub.assert_bytes_eq(combined_secret[0..32], classical_ss[..], "classical secret first");
+        sub.assert_bytes_eq(combined_secret[32..64], pq_ss[..], "pq secret second");
     };
 }
 
@@ -1564,7 +1565,8 @@ fn test_aead_ciphers(t: lit::T&) {
         let plaintext = "user_id=12345&role=admin";
 
         var ciphertext: u8[..256] = [];
-        let tag = core::xchacha20_poly1305_seal(key, nonce, plaintext, aad, ciphertext);
+        let tag, ok_seal = core::xchacha20_poly1305_seal(key, nonce, plaintext, aad, ciphertext);
+        sub.assert_true(ok_seal, "xchacha20_poly1305_seal succeeds");
         sub.assert_eq(ciphertext.len, plaintext.len, "ciphertext length equals plaintext length");
 
         // Authentic decryption

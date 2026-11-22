@@ -209,7 +209,11 @@ fn seal_binary_xchacha20<B>(
 
     var aad_stack: u8[..4128] = [];
     build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_u, cookie_name, aad_stack);
-    let tag = core::xchacha20_poly1305_seal(slot.encryption_key, nonce24, plaintext, aad_stack[..], out);
+    let tag, ok_seal = core::xchacha20_poly1305_seal(slot.encryption_key, nonce24, plaintext, aad_stack[..], out);
+    guard ok_seal else {
+        out.clear();
+        return false;
+    }
     out.append(tag[..]);
     return true;
 }
