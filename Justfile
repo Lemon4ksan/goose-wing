@@ -127,6 +127,69 @@ e2e-http3:
 e2e-chaos:
     python tools/toxiproxy.py --docker
 
+# Run BoGo TLS conformance shim and local/Docker runner
+bogo *args="--local":
+    python tools/bogo.py {{ args }}
+
+# Run TLS audit suites (tlsfuzzer, TLS-Anvil, TLS-Attacker, testssl.sh)
+tls-audit *args="--local --suite all":
+    python tools/tls_audit.py {{ args }}
+
+# Run badssl.com canary and offline local CA matrix
+badssl *args="--offline":
+    python tools/badssl_canary.py {{ args }}
+
+# Run Wycheproof, C2SP/CCTV, and NIST ACVP cryptographic vector suites
+crypto-vectors *args="--local --suite all":
+    python tools/crypto_vectors.py {{ args }}
+
+# Run dudect Welch's t-test constant-time statistical timing suite
+dudect *args="--local":
+    python tools/dudect.py {{ args }}
+
+# Run ctgrind / TIMECOP taint-analysis and binary constant-time audit
+ctgrind *args="--local":
+    python tools/ctgrind.py {{ args }}
+
+# Run x509-limbo, BetterTLS, and NIST PKITS certificate validation suites
+x509-suites *args="--local --suite all":
+    python tools/x509_suites.py {{ args }}
+
+# Run JA3/JA4/Akamai H2 fingerprint parity and WPT cookies/redirects/CORS suite
+fingerprint-wpt *args="--local":
+    python tools/fingerprint_wpt.py {{ args }}
+
+# Run HTTP/1.1 smuggling differential wall and HTTP Garden adapter
+smuggling *args="--local":
+    python tools/smuggling.py {{ args }}
+
+# Run HTTP Garden origin-echo differential self-test
+http-garden:
+    python tools/smuggling/http_garden_adapter.py --self-test
+
+# Run RFC 9111/5861/9875 HTTP cache conformance suite (http-tests style)
+cache-conformance *args="--local":
+    python tools/cache_conformance.py {{ args }}
+
+# Run http2jp/hpack-test-case and quicwg/qpack interop suites
+hpack-qpack *args="--local --suite all":
+    python tools/hpack_qpack.py {{ args }}
+
+# Run h3spec QUIC and HTTP/3 error conformance suite
+h3spec *args="--local":
+    python tools/h3spec.py {{ args }}
+
+# Run quic-interop-runner self-interop / cross-stack suite
+quic-interop *args="--local":
+    python tools/quic_interop.py {{ args }}
+
+# Run tc netem UDP/QUIC chaos and packetdrill TCP edge suite
+netem-packetdrill *args="--local":
+    python tools/netem_packetdrill.py {{ args }}
+
+# Run all local/offline conformance, crypto, PKI, HTTP, and QUIC testbeds
+testbeds-local: bogo tls-audit badssl crypto-vectors dudect ctgrind x509-suites fingerprint-wpt smuggling http-garden cache-conformance hpack-qpack h3spec quic-interop netem-packetdrill
+
 # Run cryptographic, compression, and framing differential fuzzing suite
 diff-fuzz:
     python scripts/diff_fuzz.py
