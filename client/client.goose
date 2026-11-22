@@ -46,7 +46,7 @@ import security.privacypass;
 import security.ssrf;
 import client.replay_guard;
 import client.telemetry;
-import .internal;
+import .stream_facade_internal;
 import .session.tls_hop_internal;
 import .session.dns_dial_internal;
 import .session.hop_context_internal;

@@ -9,7 +9,7 @@ import core;
 import http.request;
 import http.response;
 import .client;
-import .internal;
+import .stream_facade_internal;
 import .session.verbs;
 
 // Marker struct for contract endpoints without path parameters, query parameters, or bodies.

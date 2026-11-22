@@ -20,7 +20,7 @@ import net.retry;
 import client.replay_guard;
 import client.telemetry;
 import client.client;
-import client.internal;
+import client.stream_facade_internal;
 import .hop_context_internal;
 import .verbs;
 

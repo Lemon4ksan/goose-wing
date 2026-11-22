@@ -12,7 +12,7 @@ import http.request;
 import http.response;
 import http.headers;
 import http.headers.chunked;
-import .internal;
+import .stream_facade_internal;
 
 // ---- RFC 9112 Chunked Transfer Framing -----------------------------------
 

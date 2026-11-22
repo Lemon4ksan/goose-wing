@@ -30,19 +30,17 @@ fn compute_ja4<B>(
     out.append(fingerprint_internal::ja4_version_string(supported_versions));
     out.push(if sni { 'd' } else { 'i' });
 
-    var filtered_ciphers: u16[>..] = [];
-    fingerprint_internal::filter_grease_u16(ciphers, filtered_ciphers);
-    fingerprint_internal::append_two_digits(filtered_ciphers.len, out);
+    let cipher_count = fingerprint_internal::count_non_grease_u16(ciphers);
+    fingerprint_internal::append_two_digits(cipher_count, out);
 
-    var filtered_exts: u16[>..] = [];
-    fingerprint_internal::filter_grease_u16(extensions, filtered_exts);
-    fingerprint_internal::append_two_digits(filtered_exts.len, out);
+    let ext_count = fingerprint_internal::count_non_grease_u16(extensions);
+    fingerprint_internal::append_two_digits(ext_count, out);
 
     fingerprint_internal::ja4_alpn_string(alpn_protocol, out);
     out.push('_');
-    fingerprint_internal::append_ja4_ciphers_hash(filtered_ciphers, out);
+    fingerprint_internal::append_ja4_ciphers_hash(ciphers, out);
     out.push('_');
-    fingerprint_internal::append_ja4_extensions_hash(filtered_exts[..], sig_algorithms, out);
+    fingerprint_internal::append_ja4_extensions_hash(extensions, sig_algorithms, out);
 }
 
 // Computes the FoxIO JA4 TLS client fingerprint returning a fixed-capacity buffer.
@@ -85,7 +83,7 @@ fn compute_ja4h<B>(
 
     out.append(fingerprint_internal::ja4h_proto_string(proto));
 
-    let filtered_headers, resolved = fingerprint_internal::filter_ja4h_headers(
+    let header_count, resolved, headers_hash = fingerprint_internal::summarize_ja4h_headers(
         header_names,
         flags,
         cookie_names.len > 0,
@@ -93,10 +91,10 @@ fn compute_ja4h<B>(
 
     out.push(if resolved.has_cookie { 'c' } else { 'n' });
     out.push(if resolved.has_referer { 'r' } else { 'n' });
-    fingerprint_internal::append_two_digits(filtered_headers.len, out);
+    fingerprint_internal::append_two_digits(header_count, out);
     fingerprint_internal::append_ja4h_language(accept_language, out);
     out.push('_');
-    fingerprint_internal::append_ja4h_headers_hash(filtered_headers[..], out);
+    out.append(headers_hash[..]);
     out.push('_');
     fingerprint_internal::append_ja4h_cookies_hash(cookie_names, cookie_values, out);
 }

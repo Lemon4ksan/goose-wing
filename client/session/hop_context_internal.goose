@@ -22,6 +22,7 @@ import wire.pipeline;
 import client.redirect;
 import client.client;
 import client.internal;
+import client.stream_facade_internal;
 import .ssrf;
 
 struct RequestExecutionContext {

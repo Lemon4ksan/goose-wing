@@ -8,7 +8,7 @@ namespace fingerprint;
 import std;
 import core;
 import .types;
-import .internal;
+import .p0f_internal;
 
 // ---- Authentic Wing TCP SYN Signature --------------------------------------
 

@@ -10,7 +10,7 @@ import json;
 import core;
 import http.headers;
 import .constants;
-import .internal;
+import .connect_internal;
 
 const CONNECT_FLAG_END_STREAM: u8          = 0x02; // Connect Protocol streaming EndStream envelope flag
 const CONNECT_CONTENT_PREFIX:  const u8[:] = "application/connect+";

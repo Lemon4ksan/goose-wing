@@ -149,15 +149,16 @@ fn ja4h(
     cookie_names:  const u8[:][:] = [],
     cookie_values: const u8[:][:] = [],
 ) -> u8[..64] {
-    var header_names: const u8[:][>..] = [];
-    if profile.user_agent.len > 0 { header_names.push("user-agent"); }
-    if profile.accept.len > 0 { header_names.push("accept"); }
-    if profile.accept_encoding.len > 0 { header_names.push("accept-encoding"); }
-    if profile.accept_language.len > 0 { header_names.push("accept-language"); }
-    if profile.upgrade_insecure_requests.len > 0 { header_names.push("upgrade-insecure-requests"); }
+    // 5 standard profile headers + HeaderMap max 128 entries = 133 max.
+    var header_names: const u8[:][..136] = [];
+    if profile.user_agent.len > 0 { let _ = header_names.try_push("user-agent"); }
+    if profile.accept.len > 0 { let _ = header_names.try_push("accept"); }
+    if profile.accept_encoding.len > 0 { let _ = header_names.try_push("accept-encoding"); }
+    if profile.accept_language.len > 0 { let _ = header_names.try_push("accept-language"); }
+    if profile.upgrade_insecure_requests.len > 0 { let _ = header_names.try_push("upgrade-insecure-requests"); }
 
     for &e in profile.extra_headers.entries {
-        header_names.push(profile.extra_headers.entry_name(e));
+        let _ = header_names.try_push(profile.extra_headers.entry_name(e));
     }
 
     return compute_ja4h(

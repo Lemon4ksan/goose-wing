@@ -27,6 +27,7 @@ import wire.h1;
 import .load_balancer;
 import .health_check;
 import .internal;
+import .headers_internal;
 
 const TARGET_NONE: i32 = -1;
 

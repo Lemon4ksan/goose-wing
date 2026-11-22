@@ -144,6 +144,9 @@ import auth.acme;
 
 // ---- fingerprinting & resilient l4 networking (Layer 5) --------------------
 
+import fingerprint.internal;
+import fingerprint.akamai_internal;
+import fingerprint.p0f_internal;
 import fingerprint.ja4;
 import fingerprint.p0f;
 import fingerprint.akamai;
@@ -282,6 +285,7 @@ import realtime.webtransport;
 // ---- client session & server engines (Layer 11) ----------------------------
 
 import client.internal;
+import client.stream_facade_internal;
 import client.redirect;
 import client.session.ssrf;
 import client.session.mock;
@@ -367,6 +371,7 @@ type H3L2Backend = server::H3L2Backend;
 // ---- grpc & reverse proxy gateways (Layer 12) ------------------------------
 
 import grpc.internal;
+import grpc.connect_internal;
 import grpc.constants;
 import grpc.framing;
 import grpc.status;
@@ -374,9 +379,11 @@ import grpc.connect;
 import grpc.health;
 import grpc.client;
 import grpc.server_internal;
+import grpc.server_dispatch_internal;
 import grpc.server;
 
 import proxy.internal;
+import proxy.headers_internal;
 import proxy.health_check;
 import proxy.load_balancer;
 import proxy.reverse_proxy;

@@ -23,7 +23,9 @@ import .status;
 import .connect;
 import .health;
 import .internal;
+import .connect_internal;
 import .server_internal;
+import .server_dispatch_internal;
 
 // Parses standard gRPC URI path: `/{service}/{method}` or `/{package}.{service}/{method}`.
 // Leaves `out_service` and `out_method` untouched when returning false.

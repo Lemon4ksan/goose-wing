@@ -12,7 +12,7 @@ import core;
 import http.headers;
 import http2.framing;
 import .types;
-import .internal;
+import .akamai_internal;
 
 // ---- Formatting & Serialization ------------------------------------------
 
