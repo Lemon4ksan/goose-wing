@@ -29,6 +29,7 @@ struct VerifyCmd {
     leaf_hex:    const u8[:]             = "-",
     inters_hex:  const u8[:]             = "-",
     anchors_hex: const u8[:]             = "-",
+    max_depth:   i64                     = -1,
 }
 
 struct RevocationCmd {
@@ -172,12 +173,19 @@ fn parse_verify_cmd(rest: const u8[:]) -> VerifyCmd, bool {
     let c3, r3, ok3 = r2.split_once_byte('\t');
     let c4, r4, ok4 = r3.split_once_byte('\t');
     let c5, r5, ok5 = r4.split_once_byte('\t');
-    let c6, c7, ok6 = r5.split_once_byte('\t');
+    let c6, r6, ok6 = r5.split_once_byte('\t');
     guard ok0 && ok1 && ok2 && ok3 && ok4 && ok5 && ok6 else { return out, false; }
+    let c7, c8, has_c8 = r6.split_once_byte('\t');
+    let anchors_tok = if has_c8 { c7 } else { r6 };
     let mode, ok_m = parse_verify_mode(c1);
     let role, ok_r = parse_role_token(c2);
     let now_u, ok_t = c3.parse_i64_dec();
     guard ok_m && ok_r && ok_t else { return out, false; }
+    if has_c8 {
+        let md, ok_md = c8.parse_i64_dec();
+        guard ok_md else { return out, false; }
+        out.max_depth = md;
+    }
     out.case_id = c0;
     out.mode = mode;
     out.role = role;
@@ -185,7 +193,7 @@ fn parse_verify_cmd(rest: const u8[:]) -> VerifyCmd, bool {
     out.peer = c4;
     out.leaf_hex = c5;
     out.inters_hex = c6;
-    out.anchors_hex = c7;
+    out.anchors_hex = anchors_tok;
     return out, true;
 }
 
@@ -270,6 +278,26 @@ fn is_issuer_candidate(
     return cand_subj.len > 0 && cand_subj == top_issuer;
 }
 
+inline fn is_self_issued_cert(cert: const tls::ParsedCert&, raw_cert: const u8[:]) -> bool {
+    let iss = tls::span_slice(raw_cert, cert.issuer_raw);
+    let sub = tls::span_slice(raw_cert, cert.subject_raw);
+    return iss.len > 0 && iss == sub;
+}
+
+inline fn next_non_self_issued_depth(
+    cert:       const tls::ParsedCert&,
+    raw_cert:   const u8[:],
+    non_si_cnt: i64,
+    max_depth:  i64,
+) -> i64, bool {
+    let next_cnt = if is_self_issued_cert(cert, raw_cert) {
+        non_si_cnt
+    } else {
+        core::add_sat_i64(non_si_cnt, 1)
+    };
+    return next_cnt, max_depth < 0 || next_cnt <= max_depth;
+}
+
 recursive fn dfs_build_chain(
     pool_certs: const tls::ParsedCert[..16]&,
     pool_raws:  const u8[:][..16]&,
@@ -279,6 +307,8 @@ recursive fn dfs_build_chain(
     now_unix:   i64,
     role:       tls::CertValidationRole,
     visited:    bool[16]&,
+    max_depth:  i64,
+    non_si_cnt: i64,
 ) -> tls::Alert {
     var best = tls::verify_certificate_chain(chain, raws, store, now_unix, role);
     if best == tls::Alert.CloseNotify || chain.len >= MAX_CHAIN_LEN {
@@ -289,10 +319,11 @@ recursive fn dfs_build_chain(
     let limit = min(pool_certs.len, MAX_INTERMEDIATES);
     for i in limit {
         guard is_issuer_candidate(pool_certs[i], pool_raws[i], top_issuer, visited[i]) else { continue; }
-        guard chain.try_push(pool_certs[i]) && raws.try_push(pool_raws[i]) else { continue; }
+        let next_non_si, ok_depth = next_non_self_issued_depth(pool_certs[i], pool_raws[i], non_si_cnt, max_depth);
+        guard ok_depth && chain.try_push(pool_certs[i]) && raws.try_push(pool_raws[i]) else { continue; }
         visited[i] = true;
         let sub = dfs_build_chain(
-            pool_certs, pool_raws, chain, raws, store, now_unix, role, visited,
+            pool_certs, pool_raws, chain, raws, store, now_unix, role, visited, max_depth, next_non_si,
         );
         visited[i] = false;
         chain.pop();
@@ -327,6 +358,7 @@ fn verify_chain_build(
     store:       const tls::TrustAnchorStore&,
     now_unix:    i64,
     role:        tls::CertValidationRole,
+    max_depth:   i64,
     leaf_out:    tls::ParsedCert&,
 ) -> tls::Alert {
     let leaf_end = core::add_sat_i64(leaf_span.start, leaf_span.len);
@@ -342,7 +374,7 @@ fn verify_chain_build(
     var raws:    const u8[:][..8]     = [];
     var visited: bool[16]             = [false; 16];
     guard chain.try_push(leaf_out) && raws.try_push(leaf_raw) else { return tls::Alert.BadCertificate; }
-    return dfs_build_chain(pool_certs, pool_raws, chain, raws, store, now_unix, role, visited);
+    return dfs_build_chain(pool_certs, pool_raws, chain, raws, store, now_unix, role, visited, max_depth, 0);
 }
 
 fn check_peer_san(
@@ -381,7 +413,7 @@ fn handle_verify_cmd(rest: const u8[:], ctx: HarnessCtx&) {
         )
     } else {
         verify_chain_build(
-            ctx.arena[..], leaf_sp, inter_spans, ctx.store, cmd.now_unix, cmd.role, leaf_cert,
+            ctx.arena[..], leaf_sp, inter_spans, ctx.store, cmd.now_unix, cmd.role, cmd.max_depth, leaf_cert,
         )
     };
     if alert != tls::Alert.CloseNotify {
@@ -407,26 +439,24 @@ fn eval_crl_status(
 ) -> const u8[:], const u8[:] {
     var leaf_cert = tls::ParsedCert { .. };
     var issuer_cert = tls::ParsedCert { .. };
-    var crl = tls::ParsedCrl { .. };
     guard tls::parse_x509_certificate(leaf_raw, leaf_cert) &&
-        tls::parse_x509_certificate(issuer_raw, issuer_cert) &&
-        tls::parse_x509_crl(crl_raw, crl) else {
+        tls::parse_x509_certificate(issuer_raw, issuer_cert) else {
         return "PARSE_ERR", "DecodeError";
     }
+    let leaf_iss = tls::span_slice(leaf_raw, leaf_cert.issuer_raw);
     let iss_subj = tls::span_slice(issuer_raw, issuer_cert.subject_raw);
-    guard crl.issuer.len > 0 && crl.issuer == iss_subj else {
-        return "BAD_ISSUER", "UnknownCa";
+    guard leaf_iss.len > 0 && leaf_iss == iss_subj else {
+        return "DIFF_ISSUER", "CloseNotify";
     }
-    let sig_alert = tls::x509_verify_crl_signature(crl, crl_raw, issuer_cert, issuer_raw);
-    guard sig_alert == tls::Alert.CloseNotify else { return "BAD_SIG", alert_name(sig_alert); }
-    let expired = now_unix < crl.this_update || (crl.next_update > 0 && now_unix > crl.next_update);
-    guard !expired else { return "EXPIRED", "CertificateExpired"; }
     let ser_u64, ok_ser = tls::parse_asn1_serial_u64(tls::span_slice(leaf_raw, leaf_cert.serial_number));
     guard ok_ser else { return "PARSE_ERR", "BadCertificate"; }
-    if tls::crl_is_revoked(crl, ser_u64) {
-        return "REVOKED", "CertificateRevoked";
-    }
-    return "OK", "CloseNotify";
+    let alert = tls::check_crl_der_revocation(crl_raw, ser_u64, issuer_cert, issuer_raw, now_unix);
+    if alert == tls::Alert.CloseNotify { return "OK", "CloseNotify"; }
+    if alert == tls::Alert.CertificateRevoked { return "REVOKED", "CertificateRevoked"; }
+    if alert == tls::Alert.CertificateExpired { return "EXPIRED", "CertificateExpired"; }
+    if alert == tls::Alert.UnknownCa { return "BAD_ISSUER", "UnknownCa"; }
+    if alert == tls::Alert.BadCertificate { return "BAD_SIG", "BadCertificate"; }
+    return "PARSE_ERR", alert_name(alert);
 }
 
 fn handle_crl_cmd(rest: const u8[:], ctx: HarnessCtx&) {

@@ -559,6 +559,7 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool
 fn crl_insert_serial(crl: ParsedCrl&, serial: u64) -> bool
 fn crl_is_revoked(crl: const ParsedCrl&, serial: u64) -> bool
 fn x509_verify_crl_signature(crl: const ParsedCrl&, raw_crl: const u8[:], issuer_cert: const ParsedCert&, issuer_raw: const u8[:]) -> Alert
+fn check_crl_der_revocation(raw_crl: const u8[:], target_serial: u64, issuer_cert: const ParsedCert&, issuer_raw: const u8[:], now_unix: i64) -> Alert
 fn verify_signature_scheme_curve_binding(sig_scheme: u16, spki_oid: const u8[:]) -> bool
 fn build_certificate_verify_message(is_server: bool, transcript_hash: const u8[:], out: u8[:]) -> i64, bool
 fn pem_next_block(raw: const u8[:], idx: i64&, out_label: u8[..64]&, out_der: u8[..4096]&) -> bool

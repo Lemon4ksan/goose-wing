@@ -600,12 +600,13 @@ class HarnessClient:
         now_unix: int = DEFAULT_NOW,
         role: str = "SERVER",
         mode: str = "BUILD",
+        max_depth: int = -1,
     ) -> tuple[bool, str]:
         leaf_h = leaf_der.hex() if leaf_der else "-"
         inter_h = ",".join(c.hex() for c in inters_der if c) or "-"
         anch_h = ",".join(c.hex() for c in anchors_der if c) or "-"
         cols = self._send_recv(
-            f"VERIFY\t{case_id}\t{mode}\t{role}\t{now_unix}\t{peer}\t{leaf_h}\t{inter_h}\t{anch_h}"
+            f"VERIFY\t{case_id}\t{mode}\t{role}\t{now_unix}\t{peer}\t{leaf_h}\t{inter_h}\t{anch_h}\t{max_depth}"
         )
         if len(cols) >= 4 and cols[0] == "VERDICT":
             return cols[2] == "OK", cols[3]
@@ -796,9 +797,11 @@ def run_limbo_document(
             role = "SERVER"
         now_u = parse_iso_time(tc.get("validation_time"))
         mode = str(tc.get("_harness_mode", "BUILD"))
+        raw_depth = tc.get("max_chain_depth")
+        max_d = int(raw_depth) if raw_depth is not None else -1
         got_ok, reason = client.verify(
             cid, peer_der, inter_der, trusted_der,
-            peer=peer_val, now_unix=now_u, role=role, mode=mode,
+            peer=peer_val, now_unix=now_u, role=role, mode=mode, max_depth=max_d,
         )
         crl_pems = tc.get("crls") or []
         if got_ok and crl_pems:
@@ -806,19 +809,20 @@ def run_limbo_document(
             for crl_pem in crl_pems:
                 crl_der = pem_to_der(str(crl_pem))
                 crl_ok = False
+                saw_matching_crl = False
                 last_reason = "CrlRejected"
                 for iss in issuers:
                     crl_st, crl_r = client.check_crl(cid, peer_der, iss, crl_der, now_unix=now_u)
-                    if crl_st == "BAD_ISSUER":
-                        last_reason = crl_r
+                    if crl_st in ("DIFF_ISSUER", "BAD_ISSUER"):
                         continue
+                    saw_matching_crl = True
                     if crl_st == "OK":
                         crl_ok = True
                         break
                     last_reason = f"{crl_st}:{crl_r}"
                     crl_ok = False
                     break
-                if not crl_ok:
+                if saw_matching_crl and not crl_ok:
                     got_ok = False
                     reason = last_reason
                     break
