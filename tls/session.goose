@@ -228,7 +228,7 @@ fn init_cipher_slot_for_test(
 }
 
 fn try_enable_ktls(slot_idx: u16, fd: i64) -> net_internal::SmartNicSession, bool {
-    guard fd > 0 && !net::is_virtual_pipe_fd(fd) else {
+    guard fd > 0 && !net::is_virtual_pipe_fd(fd) && !net::is_tunnel_fd(fd) else {
         return net_internal::new_smartnic_session(fd), false;
     }
     let idx = slot_idx as i64;
@@ -653,7 +653,7 @@ fn session_export_keying_material(
 
 // Seals and transmits a single TLS 1.3 record using active slot keys, enforcing the
 // RFC 8446 Section 5.5 hard AEAD record limit without triggering automatic KeyUpdate.
-fn send_encrypted_record_raw(
+recursive fn send_encrypted_record_raw(
     fd:         i64,
     slot_idx:   u16,
     inner_type: u8,
@@ -692,7 +692,7 @@ fn send_encrypted_record_raw(
 // Encrypts and transmits a single TLS 1.3 record over socket using slot keys.
 // Automatically triggers an RFC 8446 Section 5.5 KeyUpdate before sealing application
 // data when the TX sequence number reaches the AEAD key-update ceiling.
-fn send_encrypted_record(
+recursive fn send_encrypted_record(
     fd:         i64,
     slot_idx:   u16,
     inner_type: u8,
@@ -718,7 +718,7 @@ fn send_encrypted_record(
 // Sends application data chunks over TLS 1.3 record layer (RFC 8446 §5.2).
 // Uses single-MSS records (`TLS_SINGLE_MSS_PLAINTEXT_LEN` = 1378 B) during the first 64 KB
 // (`TLS_DYNAMIC_RESIZE_THRESHOLD_BYTES`) to eliminate multi-packet TCP head-of-line blocking during Slow Start.
-fn transport_send(fd: i64, slot_idx: u16, data: const u8[:]) -> i32 {
+recursive fn transport_send(fd: i64, slot_idx: u16, data: const u8[:]) -> i32 {
     let ret_len = (data.len & 0x7FFFFFFF) as i32;
     guard fd > 0 && data.len > 0 else { return 0; }
     let idx = slot_idx as i64;
@@ -806,7 +806,7 @@ fn send_new_session_ticket(
 }
 
 // Sends a post-handshake KeyUpdate message and rotates transmitter traffic keys (RFC 8446 §4.6.3).
-fn send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
+recursive fn send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len else { return false; }
     guard g_tls_cipher_slots[idx].in_use else { return false; }
@@ -844,7 +844,7 @@ fn send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool {
     return true;
 }
 
-fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
+recursive fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return; }
     let h_id = g_tls_cipher_slots[idx].hash_id;
@@ -882,18 +882,19 @@ fn process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
     return true;
 }
 
-fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:]) -> bool {
+recursive fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:]) -> bool {
     guard hs_bytes.len >= 4 else { return false; }
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
-    var c_hs = core::cursor_from(hs_bytes);
-    while c_hs.cursor_len() > 0 {
-        guard c_hs.cursor_len() >= 4 else { return false; }
-        let msg_type, msg_len, ok_m = parse_handshake_header(c_hs.buf);
+    var off: i64 = 0;
+    while off < hs_bytes.len {
+        let rem = hs_bytes[off..];
+        guard rem.len >= 4 else { return false; }
+        let msg_type, msg_len, ok_m = parse_handshake_header(rem);
         guard ok_m else { return false; }
         let full_msg_len = core::add_sat_i64(4, msg_len);
-        guard c_hs.buf.len >= full_msg_len else { return false; }
-        let msg_body = c_hs.buf[4..full_msg_len];
+        guard rem.len >= full_msg_len else { return false; }
+        let msg_body = rem[4..full_msg_len];
 
         if msg_type == rfc::TLS_HS_NEW_SESSION_TICKET {
             guard process_received_nst(idx, msg_body) else { return false; }
@@ -908,12 +909,12 @@ fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:])
         } else {
             return false;
         }
-        c_hs.buf = c_hs.buf[full_msg_len..];
+        off = core::add_sat_i64(off, full_msg_len);
     }
     return true;
 }
 
-fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
+recursive fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return -1; }
     guard !aead_exceeds_hard_limit(
         g_tls_cipher_slots[idx].cipher_suite, g_tls_cipher_slots[idx].rx_seq,
@@ -986,7 +987,7 @@ fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms:
 
 // Receives decrypted application data bytes from TLS 1.3 socket, handling residual buffers,
 // post-handshake NewSessionTicket, KeyUpdate, and CloseNotify alerts (RFC 8446 §5.2, §4.6).
-fn transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+recursive fn transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard fd > 0 && dst.len > 0 else { return -1; }
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len else { return -1; }
@@ -1005,7 +1006,7 @@ fn transport_recv_slice(fd: i64, slot_idx: u16, dst: u8[:], timeout_ms: u32 = 50
 }
 
 // Sends a CloseNotify alert, wipes secrets, and closes socket (RFC 8446 §6.1).
-fn transport_close(fd: i64, slot_idx: u16) {
+recursive fn transport_close(fd: i64, slot_idx: u16) {
     if fd > 0 {
         let idx = slot_idx as i64;
         let valid_slot = idx >= 0 && idx < g_tls_cipher_slots.len &&
@@ -1018,11 +1019,7 @@ fn transport_close(fd: i64, slot_idx: u16) {
                 send_encrypted_record(fd, slot_idx, rfc::TLS_CONTENT_ALERT, alert_data[..]);
             }
         }
-        if net::is_virtual_pipe_fd(fd) {
-            net::virtual_fd_close(fd);
-        } else {
-            net::tcp_close(fd);
-        }
+        net::fd_close(fd);
     }
     free_cipher_slot(slot_idx);
 }

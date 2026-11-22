@@ -23,20 +23,6 @@ struct TlsStream {
     shutdown_sent: bool        = false,
 }
 
-inline fn tls_stream_send_fd(fd: i64, data: const u8[:]) -> i32 {
-    if net::is_virtual_pipe_fd(fd) {
-        return net::virtual_fd_send(fd, data);
-    }
-    return net::tcp_send(fd, data);
-}
-
-inline fn tls_stream_recv_fd(fd: i64, dst: u8[:]) -> i32 {
-    if net::is_virtual_pipe_fd(fd) {
-        return net::virtual_fd_recv(fd, dst);
-    }
-    return net::tcp_recv_nonblocking_slice(fd, dst);
-}
-
 // Opens a non-blocking TLS stream bound to an already-created socket or virtual pipe `fd`.
 // The caller retains ownership of `fd` and closes it after `tls_stream_close`.
 fn tls_stream_open(fd: i64, cfg: const TlsBackendConfig&) -> TlsStream, TlsBackendStatus {
@@ -55,7 +41,7 @@ fn tls_stream_flush_staged_tx(s: TlsStream&) -> i64, TlsBackendStatus {
         s.tx_wire_pos = 0;
         return 0, TlsBackendStatus.Ok;
     }
-    let sent = tls_stream_send_fd(s.fd, s.tx_wire[pos..total]);
+    let sent = net::fd_send(s.fd, s.tx_wire[pos..total]);
     if sent == -2 {
         return 0, TlsBackendStatus.WantWrite;
     }
@@ -78,7 +64,7 @@ fn tls_stream_send_one_chunk(s: TlsStream&, chunk: u8[:]) -> i64, bool, TlsBacke
     guard dst == TlsBackendStatus.Ok else { return 0, false, dst; }
     guard drained > 0 && drained <= chunk.len else { return 0, false, TlsBackendStatus.Ok; }
 
-    let sent = tls_stream_send_fd(s.fd, chunk[..drained]);
+    let sent = net::fd_send(s.fd, chunk[..drained]);
     if sent == -2 {
         let _ = s.tx_wire.try_set(chunk[..drained]);
         s.tx_wire_pos = 0;
@@ -152,7 +138,7 @@ fn tls_stream_pump_rx(s: TlsStream&) -> i64, TlsBackendStatus {
     guard !s.rx_eof else { return 0, TlsBackendStatus.Closed; }
 
     var rx_buf: u8[16640] = [0; 16640];
-    let recvd = tls_stream_recv_fd(s.fd, rx_buf[..]);
+    let recvd = net::fd_recv(s.fd, rx_buf[..], 0);
     if recvd == -2 { return 0, TlsBackendStatus.WantRead; }
     if recvd == 0 {
         s.rx_eof = true;

@@ -1417,41 +1417,18 @@ fn release_backend_transport_slot(slot_id: i64) {
     g_backend_transport_active = core::sub_sat_i64(g_backend_transport_active, 1);
 }
 
-fn endpoint_fd_send_all(fd: i64, data: const u8[:]) -> bool {
+recursive fn endpoint_fd_send_all(fd: i64, data: const u8[:]) -> bool {
     guard fd > 0 else { return false; }
     var off: i64 = 0;
     while off < data.len {
-        let sent = if net::is_virtual_pipe_fd(fd) {
-            net::virtual_fd_send(fd, data[off..])
-        } else {
-            net::tcp_send(fd, data[off..])
-        };
+        let sent = net::fd_send(fd, data[off..]);
         guard sent > 0 else { return false; }
         off = core::add_sat_i64(off, sent);
     }
     return true;
 }
 
-inline fn endpoint_fd_recv(fd: i64, dst: u8[:], timeout_ms: u32) -> i32 {
-    if net::is_virtual_pipe_fd(fd) {
-        return net::virtual_fd_recv(fd, dst);
-    }
-    if timeout_ms == 0 {
-        return net::tcp_recv_nonblocking_slice(fd, dst);
-    }
-    return net::tcp_recv_slice(fd, dst, timeout_ms);
-}
-
-inline fn endpoint_fd_close_raw(fd: i64) {
-    guard fd > 0 else { return; }
-    if net::is_virtual_pipe_fd(fd) {
-        net::virtual_fd_close(fd);
-    } else {
-        net::tcp_close(fd);
-    }
-}
-
-fn endpoint_drain_to_fd(ep: TlsEndpoint&, fd: i64) -> bool {
+recursive fn endpoint_drain_to_fd(ep: TlsEndpoint&, fd: i64) -> bool {
     var wire: u8[16640] = [0; 16640];
     for _ in 64 {
         let n, st = tls_endpoint_drain_wire(ep, wire[..]);
@@ -1483,14 +1460,14 @@ fn endpoint_feed_staged_rx(slot: TlsBackendTransportSlot&) -> i64, TlsBackendSta
     return fed, fst;
 }
 
-fn endpoint_feed_slot_rx(slot: TlsBackendTransportSlot&, fd: i64, timeout_ms: u32) -> i32 {
+recursive fn endpoint_feed_slot_rx(slot: TlsBackendTransportSlot&, fd: i64, timeout_ms: u32) -> i32 {
     if slot.rx_pos < slot.rx_pending.len {
         let fed0, fst0 = endpoint_feed_staged_rx(slot);
         guard fst0 == TlsBackendStatus.Ok || fst0 == TlsBackendStatus.WantWrite else { return -1; }
         if fed0 > 0 || fst0 == TlsBackendStatus.WantWrite { return 1; }
     }
     var rx: u8[16640] = [0; 16640];
-    let recvd = endpoint_fd_recv(fd, rx[..], timeout_ms);
+    let recvd = net::fd_recv(fd, rx[..], timeout_ms);
     if recvd <= 0 { return recvd; }
     guard recvd <= rx.len else { return -1; }
     let fed, fst = tls_endpoint_feed_wire(slot.ep, rx[..recvd]);
@@ -1587,7 +1564,7 @@ fn endpoint_server_handshake_fd(
 
 // Encrypts `data` via the backend `TlsEndpoint` at `slot_id` and flushes ciphertext to `fd`.
 // Returns total plaintext bytes sent (> 0), 0 for empty slice, or -1 on error.
-fn endpoint_transport_send(fd: i64, slot_id: i64, data: const u8[:]) -> i32 {
+recursive fn endpoint_transport_send(fd: i64, slot_id: i64, data: const u8[:]) -> i32 {
     guard data.len > 0 else { return 0; }
     guard fd > 0 && endpoint_slot_is_ready(slot_id) else { return -1; }
     let slot .= g_backend_transport_slots[slot_id];
@@ -1611,7 +1588,7 @@ fn endpoint_transport_send(fd: i64, slot_id: i64, data: const u8[:]) -> i32 {
 // Decrypts plaintext from the backend `TlsEndpoint` at `slot_id` into `dst`, pulling
 // ciphertext from `fd` whenever the endpoint reports `WantRead`.
 // Returns plaintext bytes read (> 0), 0 on clean EOF/CloseNotify, -2 on timeout, or -1 on error.
-fn endpoint_transport_recv_slice(
+recursive fn endpoint_transport_recv_slice(
     fd:         i64,
     slot_id:    i64,
     dst:        u8[:],
@@ -1633,14 +1610,14 @@ fn endpoint_transport_recv_slice(
 }
 
 // Idempotently closes the backend endpoint slot and underlying socket/virtual pipe `fd`.
-fn endpoint_transport_close(fd: i64, slot_id: i64) {
+recursive fn endpoint_transport_close(fd: i64, slot_id: i64) {
     if slot_id >= 0 && slot_id < g_backend_transport_slots.len {
         let was_in_use = g_backend_transport_slots[slot_id].in_use;
         if was_in_use {
             release_backend_transport_slot(slot_id);
-            endpoint_fd_close_raw(fd);
+            net::fd_close(fd);
         }
         return;
     }
-    endpoint_fd_close_raw(fd);
+    net::fd_close(fd);
 }

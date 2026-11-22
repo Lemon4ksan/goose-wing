@@ -127,15 +127,11 @@ inline fn peek_ciphertext_record_len(rem: const u8[:]) -> i64, tls::SliceUnsealS
 //    0 : clean EOF before any byte was read
 //   -2 : timeout / WouldBlock before any byte was read
 //   -1 : socket error or mid-record truncation
-fn tls_read_exact_status(fd: i64, dst: u8[:], timeout_ms: u32) -> i32 {
+recursive fn tls_read_exact_status(fd: i64, dst: u8[:], timeout_ms: u32) -> i32 {
     guard fd > 0 && dst.len > 0 else { return -1; }
     var total_read: i64 = 0;
     while total_read < dst.len {
-        let recvd = if net::is_virtual_pipe_fd(fd) {
-            net::virtual_fd_recv(fd, dst[total_read..])
-        } else {
-            net::tcp_recv_slice(fd, dst[total_read..], timeout_ms)
-        };
+        let recvd = net::fd_recv(fd, dst[total_read..], timeout_ms);
         if recvd > 0 {
             total_read = core::add_sat_i64(total_read, recvd);
             continue;
@@ -149,21 +145,17 @@ fn tls_read_exact_status(fd: i64, dst: u8[:], timeout_ms: u32) -> i32 {
 }
 
 // Reads exactly dst.len bytes from socket, returning false on error, timeout, or EOF before full read.
-fn tls_read_exact(fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
+recursive fn tls_read_exact(fd: i64, dst: u8[:], timeout_ms: u32) -> bool {
     return tls_read_exact_status(fd, dst, timeout_ms) == 1;
 }
 
 // Writes entire data buffer to socket, retrying transient WouldBlock (-2) on non-blocking FDs.
-fn tls_write_all(fd: i64, data: const u8[:]) -> bool {
+recursive fn tls_write_all(fd: i64, data: const u8[:]) -> bool {
     guard fd > 0 && data.len > 0 else { return false; }
     var total_sent: i64 = 0;
     var retries:    i32 = 0;
     while total_sent < data.len {
-        let sent = if net::is_virtual_pipe_fd(fd) {
-            net::virtual_fd_send(fd, data[total_sent..])
-        } else {
-            net::tcp_send(fd, data[total_sent..])
-        };
+        let sent = net::fd_send(fd, data[total_sent..]);
         if sent > 0 {
             total_sent = core::add_sat_i64(total_sent, sent);
             retries = 0;

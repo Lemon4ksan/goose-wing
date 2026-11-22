@@ -325,21 +325,25 @@ fn dispatch_pooled_h1_hop(
     return true;
 }
 
-fn resolve_hop_proxy_chain(session: const Session&) -> net::ProxyChain {
+fn resolve_hop_proxy_chain(session: const Session&) -> net::ProxyChain, bool {
     if session.proxy_url.len == 0 {
-        return net::new_direct_proxy_chain();
+        return net::new_direct_proxy_chain(), true;
     }
     let p_url = core::new_url(session.proxy_url[..]);
-    guard p_url.valid else { return net::new_direct_proxy_chain(); }
-    let p_scheme = if p_url.scheme() == "https" {
-        net::ProxyScheme.Https
-    } else if p_url.scheme() == "socks5h" {
-        net::ProxyScheme.Socks5h
-    } else if p_url.scheme() == "socks5" {
-        net::ProxyScheme.Socks5
-    } else {
-        net::ProxyScheme.Http
-    };
+    guard p_url.valid && p_url.hostname().len > 0 else {
+        return net::new_direct_proxy_chain(), false;
+    }
+    let sc = p_url.scheme();
+    var p_scheme = net::ProxyScheme.Http;
+    if sc == "https" {
+        p_scheme = net::ProxyScheme.Https;
+    } else if sc == "socks5h" {
+        p_scheme = net::ProxyScheme.Socks5h;
+    } else if sc == "socks5" {
+        p_scheme = net::ProxyScheme.Socks5;
+    } else if sc != "http" {
+        return net::new_direct_proxy_chain(), false;
+    }
     let raw_port = p_url.effective_port();
     let p_port: u16 = if raw_port > 0 {
         raw_port as u16
@@ -351,7 +355,8 @@ fn resolve_hop_proxy_chain(session: const Session&) -> net::ProxyChain {
         80
     };
     let ps = net::new_proxy_server(p_scheme, p_url.hostname(), p_port);
-    return net::new_single_proxy_chain(ps);
+    guard !ps.overflowed else { return net::new_direct_proxy_chain(), false; }
+    return net::new_single_proxy_chain(ps), true;
 }
 
 enum H2RecvStatus {

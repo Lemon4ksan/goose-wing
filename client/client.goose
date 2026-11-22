@@ -378,9 +378,25 @@ fn akamai_hash(session: const Session&) -> u8[..32] {
     return session.profile_spec.akamai_hash();
 }
 
-fn set_proxy(session: Session&, proxy_url: const u8[:]) {
-    let n = min(proxy_url.len, session.proxy_url.cap);
-    let _ = session.proxy_url.try_set(proxy_url[..n]);
+// Validates and configures an outbound proxy (`http://`, `https://`, `socks5://`, `socks5h://`)
+// on `session`, or clears the proxy when `proxy_url` is empty. Drains pooled connections on change.
+fn set_proxy(session: Session&, proxy_url: const u8[:]) -> bool {
+    if proxy_url.len == 0 {
+        core::secure_zeroize_slice(session.proxy_url[..]);
+        session.proxy_url.clear();
+        net::drain_stream_pool(session.pool);
+        return true;
+    }
+    guard proxy_url.len <= session.proxy_url.cap else { return false; }
+    let p_url = core::new_url(proxy_url);
+    guard p_url.valid && p_url.hostname().len > 0 else { return false; }
+    let sc = p_url.scheme();
+    let valid_scheme = sc == "http" || sc == "https" || sc == "socks5" || sc == "socks5h";
+    guard valid_scheme else { return false; }
+    core::secure_zeroize_slice(session.proxy_url[..]);
+    guard session.proxy_url.try_set(proxy_url) else { return false; }
+    net::drain_stream_pool(session.pool);
+    return true;
 }
 
 fn set_timeout_ms(session: Session&, ms: i64) {

@@ -21,7 +21,7 @@ struct OrderConfirmation {
 fn main() {
     var session = client::new_session("https://api.exchange.io") { sess =>
         sess.set_profile(fingerprint::Profile.Wing);
-        sess.set_proxy("socks5://127.0.0.1:1080");
+        let _ = sess.set_proxy("socks5://127.0.0.1:1080");
         sess.set_timeout_ms(10000);
         sess.set_cookie("session_id", "sid_998877aabb");
         sess.default_header("Accept", "application/json");

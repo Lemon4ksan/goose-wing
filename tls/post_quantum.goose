@@ -538,12 +538,14 @@ fn keccak_f1600(state: u64[25]&) {
     }
 }
 
+// Branchless constant-time byte XOR into Keccak-f[1600] lanes (shift is bounded in 0..56; zero secret branches).
+// crap:ignore
 inline fn keccak_xor_bytes(state: u64[25]&, blk: const u8[:]) {
     for i in blk.len {
         let u = i as u64;
         let lane = u >> 3;
         let shift = core::shl_sat_u64(u & 7, 3) as u32;
-        state[lane] ^= core::shl_sat_u64(blk[u], shift);
+        state[lane] ^= core::shl_sat_u64(blk[u] as u64, shift);
     }
 }
 

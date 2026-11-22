@@ -1645,7 +1645,106 @@ struct DialResult {
     ip:   u8[..64] = [],
 }
 
+fn build_proxy_basic_auth(p_user: const u8[:], p_pass: const u8[:], out_auth: u8[..256]&) -> bool {
+    out_auth.clear();
+    guard p_user.len > 0 else { return true; }
+    var cred_raw: u8[..160] = [];
+    defer core::secure_zeroize_slice(cred_raw[..]);
+    guard cred_raw.try_append(p_user) && cred_raw.try_push(':') && cred_raw.try_append(p_pass) else {
+        return false;
+    }
+    var cred_b64: u8[..224] = [];
+    defer core::secure_zeroize_slice(cred_b64[..]);
+    core::base64_encode(cred_raw[..], cred_b64);
+    guard cred_b64.len > 0 && out_auth.try_append("Basic ") && out_auth.try_append(cred_b64[..]) else {
+        core::secure_zeroize_slice(out_auth[..]);
+        out_auth.clear();
+        return false;
+    }
+    return true;
+}
+
+fn establish_https_proxy_transport(
+    session:     const client::Session&,
+    raw_sock:    i64,
+    proxy_host:  const u8[:],
+    eff_timeout: u32,
+    now_sec:     i64,
+) -> net::Transport, http::Error {
+    let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(proxy_host, now_sec);
+    let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
+    if session.tls_backend != tls::TlsBackendKind.PureGoose {
+        var bcfg = tls::TlsBackendConfig {
+            kind:                 session.tls_backend,
+            min_version:          session.tls_min_version,
+            is_server:            false,
+            insecure_skip_verify: effective_insecure_skip,
+            use_system_roots:     session.tls_use_system_roots,
+            trust_store:          session.trust_store,
+            ..
+        };
+        let _ = bcfg.server_name.try_set(proxy_host);
+        let alpn_h1: u8[9] = [8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
+        let _ = bcfg.alpn_wire.try_set(alpn_h1[..]);
+        if session.tls_ca_file.len > 0 {
+            let _ = bcfg.ca_file.try_set(session.tls_ca_file[..]);
+        }
+        let ep_slot, _, st = tls::endpoint_client_handshake_fd(raw_sock, bcfg, eff_timeout);
+        guard st == tls::TlsBackendStatus.Ok && ep_slot >= 0 else {
+            return net::Transport.Disconnected,
+                http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "HTTPS proxy TLS handshake failed");
+        }
+        return net::Transport.TlsBackend { fd: raw_sock, endpoint_slot: ep_slot }, http::Error { .. };
+    }
+
+    var tls_cfg = tls::ClientHandshakeConfig { .. };
+    let _ = tls_cfg.server_name.try_set(proxy_host);
+    let _ = tls_cfg.alpn.try_set("http/1.1");
+    tls_cfg.trust_store = session.trust_store;
+    tls_cfg.insecure_skip_verify = effective_insecure_skip;
+    tls_cfg.use_system_roots = session.tls_use_system_roots;
+    tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
+    let slot_idx, ok_tls = tls::client_handshake(raw_sock, tls_cfg);
+    guard ok_tls else {
+        return net::Transport.Disconnected,
+            http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "HTTPS proxy TLS 1.3 handshake failed");
+    }
+    return net::Transport.Tls { fd: raw_sock, record_seq_rx: 0, record_seq_tx: 0, cipher_slot: slot_idx },
+        http::Error { .. };
+}
+
+fn dial_https_proxy_tunnel(
+    session:     const client::Session&,
+    raw_sock:    i64,
+    proxy_host:  const u8[:],
+    host_str:    const u8[:],
+    port_num:    u16,
+    proxy_auth:  const u8[:],
+    eff_timeout: u32,
+    now_sec:     i64,
+) -> i64, http::Error {
+    var outer_t, tls_err = establish_https_proxy_transport(session, raw_sock, proxy_host, eff_timeout, now_sec);
+    guard http::ok(tls_err) else {
+        net::fd_close(raw_sock);
+        return -1, tls_err;
+    }
+    let c_err = net::http_connect_transport_handshake(
+        outer_t, host_str, port_num, proxy_auth, "goose-wing/1.0", eff_timeout,
+    );
+    guard c_err == net::ConnectTunnelError.None else {
+        outer_t.close();
+        return -1, http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTPS CONNECT tunnel failed");
+    }
+    let tun_fd, ok_tun = net::alloc_tunnel_fd(outer_t);
+    guard ok_tun else {
+        outer_t.close();
+        return -1, http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "TLS tunnel descriptor table full");
+    }
+    return tun_fd, http::Error { .. };
+}
+
 fn dial_proxy_hop(
+    session:     const client::Session&,
     dialer:      net::TcpDialer&,
     proxy_url:   const u8[:],
     ps:          const net::ProxyServer&,
@@ -1653,6 +1752,7 @@ fn dial_proxy_hop(
     port_num:    u16,
     candidates:  const net::DnsCandidate[:],
     eff_timeout: u32,
+    now_sec:     i64,
 ) -> DialResult, http::Error {
     var res = DialResult { .. };
     let target = core::DialTarget { host: ps.host[..], port: ps.port, timeout_ms: eff_timeout, .. };
@@ -1661,7 +1761,7 @@ fn dial_proxy_hop(
         return res, http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "Proxy TCP connect failed");
     }
     var proxy_ready = false;
-    defer if !proxy_ready { net_internal::native_tcp_close(sock); };
+    defer if !proxy_ready { net::fd_close(sock); };
     let p_url = core::new_url(proxy_url);
     let p_user = p_url.username();
     let p_pass = p_url.password();
@@ -1672,24 +1772,31 @@ fn dial_proxy_hop(
         guard s_err == net::Socks5Error.None else {
             return res, http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "SOCKS5 handshake failed");
         }
-    } else {
-        var proxy_auth: u8[..256] = [];
-        defer core::secure_zeroize_slice(proxy_auth[..]);
-        if p_user.len > 0 {
-            var cred_raw: u8[..160] = [];
-            format(cred_raw, p_user, ":", p_pass);
-            var cred_b64: u8[..224] = [];
-            core::base64_encode(cred_raw[..], cred_b64);
-            core::secure_zeroize_slice(cred_raw[..]);
-            format(proxy_auth, "Basic ", cred_b64[..]);
-            core::secure_zeroize_slice(cred_b64[..]);
-        }
-        let c_err = net::http_connect_client_handshake(
-            sock, host_str, port_num, proxy_auth[..], "goose-wing/1.0", eff_timeout,
+        proxy_ready = true;
+        res.sock = sock;
+        let _ = res.ip.try_set(ps.host[..]);
+        return res, http::Error { .. };
+    }
+    var proxy_auth: u8[..256] = [];
+    defer core::secure_zeroize_slice(proxy_auth[..]);
+    guard build_proxy_basic_auth(p_user, p_pass, proxy_auth) else {
+        return res, http::make_error(rfc::STATUS_BAD_REQUEST, "proxy", "Proxy credentials exceed capacity");
+    }
+    if ps.scheme == net::ProxyScheme.Https {
+        proxy_ready = true;
+        let tun_fd, h_err = dial_https_proxy_tunnel(
+            session, sock, ps.host[..], host_str, port_num, proxy_auth[..], eff_timeout, now_sec,
         );
-        guard c_err == net::ConnectTunnelError.None else {
-            return res, http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
-        }
+        guard http::ok(h_err) else { return res, h_err; }
+        res.sock = tun_fd;
+        let _ = res.ip.try_set(ps.host[..]);
+        return res, http::Error { .. };
+    }
+    let c_err = net::http_connect_client_handshake(
+        sock, host_str, port_num, proxy_auth[..], "goose-wing/1.0", eff_timeout,
+    );
+    guard c_err == net::ConnectTunnelError.None else {
+        return res, http::make_error(rfc::STATUS_BAD_GATEWAY, "transport", "HTTP CONNECT tunnel failed");
     }
     proxy_ready = true;
     res.sock = sock;
@@ -1698,18 +1805,20 @@ fn dial_proxy_hop(
 }
 
 fn dial_live_tcp_or_proxy(
+    session:     const client::Session&,
     proxy_url:   const u8[:],
     proxy_chain: const net::ProxyChain&,
     host_str:    const u8[:],
     port_num:    u16,
     candidates:  const net::DnsCandidate[:],
     eff_timeout: u32,
+    now_sec:     i64,
     now_ms:      i64,
 ) -> DialResult, http::Error {
     var dialer = net::TcpDialer { default_timeout_ms: eff_timeout };
     if !proxy_chain.is_direct && proxy_chain.servers.len > 0 {
         return dial_proxy_hop(
-            dialer, proxy_url, proxy_chain.servers[0], host_str, port_num, candidates, eff_timeout,
+            session, dialer, proxy_url, proxy_chain.servers[0], host_str, port_num, candidates, eff_timeout, now_sec,
         );
     }
     var mgr = net::new_attempt_manager();
@@ -2075,16 +2184,18 @@ fn establish_pooled_connection(
     now_ns:         i64,
 ) -> i32, http::Error {
     let dial_res, dial_err = dial_live_tcp_or_proxy(
-        session.proxy_url[..], proxy_chain, host_str, port_num, dns_candidates, eff_timeout, now_ms,
+        session, session.proxy_url[..], proxy_chain, host_str, port_num, dns_candidates, eff_timeout, now_sec, now_ms,
     );
     guard http::ok(dial_err) else { return -1, dial_err; }
     let sock = dial_res.sock;
-    let win_fam = if dial_res.ip[..].contains_byte(':') {
-        net::AddressFamily.IPv6
-    } else {
-        net::AddressFamily.IPv4
-    };
-    net::record_preferred_family(session.af_cache, host_str, win_fam, now_sec);
+    if proxy_chain.is_direct {
+        let win_fam = if dial_res.ip[..].contains_byte(':') {
+            net::AddressFamily.IPv6
+        } else {
+            net::AddressFamily.IPv4
+        };
+        net::record_preferred_family(session.af_cache, host_str, win_fam, now_sec);
+    }
 
     var t = net::Transport.Disconnected;
     var neg_proto = net::NegotiatedProtocol.Http11;
@@ -2093,7 +2204,7 @@ fn establish_pooled_connection(
             session, sock, host_str, ech_list, eff_timeout, now_sec,
         );
         guard http::ok(tls_err) else {
-            net_internal::native_tcp_close(sock);
+            net::fd_close(sock);
             return -1, tls_err;
         }
         t = https_t;
@@ -2132,12 +2243,18 @@ fn execute_live_network_hop(
     }
 
     let port_num = current_url.effective_port() as u16;
+    let proxy_chain, ok_proxy = client::resolve_hop_proxy_chain(session);
+    guard ok_proxy else {
+        return http::make_error(rfc::STATUS_BAD_REQUEST, "proxy", "invalid proxy configuration");
+    }
     var dns_candidates: net::DnsCandidate[..32] = [];
     var ech_list:       u8[..512]               = [];
-    let dns_err = resolve_and_validate_live_host(session, host_str, port_num, now_sec, dns_candidates, ech_list);
-    guard http::ok(dns_err) else { return dns_err; }
-
-    let proxy_chain = client::resolve_hop_proxy_chain(session);
+    let needs_local_dns = proxy_chain.is_direct ||
+        (proxy_chain.servers.len > 0 && proxy_chain.servers[0].scheme == net::ProxyScheme.Socks5);
+    if needs_local_dns {
+        let dns_err = resolve_and_validate_live_host(session, host_str, port_num, now_sec, dns_candidates, ech_list);
+        guard http::ok(dns_err) else { return dns_err; }
+    }
     if !proxy_chain.is_direct {
         net::sanitize_tunnel_headers_for_origin(ctx.headers);
     }

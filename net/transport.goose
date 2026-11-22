@@ -13,7 +13,27 @@ import .internal;
 
 const VIRTUAL_FD_TAG:       i64 = 0x40000000;
 const VIRTUAL_FD_B_END_BIT: i64 = 0x20000000;
+const TUNNEL_FD_TAG:        i64 = 0x10000000;
 const MAX_VIRTUAL_PIPES:    i64 = 32;
+const MAX_TUNNEL_SLOTS:     i64 = 32;
+
+enum TunnelOuterKind {
+    None,
+    PureTls,
+    BackendTls,
+    Virtual,
+}
+
+struct TunnelTransportSlot {
+    kind:      TunnelOuterKind = TunnelOuterKind.None,
+    raw_fd:    i64             = -1,
+    tls_slot:  i64             = -1,
+    pipe_slot: u16             = 0,
+    is_b_end:  bool            = false,
+    in_use:    bool            = false,
+}
+
+var g_tunnel_slots: TunnelTransportSlot[>..] = [];
 
 struct VirtualPipeSlot {
     a_to_b:   core::RingBuffer = core::RingBuffer { .. },
@@ -247,6 +267,162 @@ fn virtual_fd_close(fd: i64) {
     virtual_pipe_close(pipe_slot, is_b_end);
 }
 
+// ---- Layered TLS-in-TLS Tunnel Descriptors ---------------------------------
+
+inline fn is_tunnel_fd(fd: i64) -> bool {
+    return fd > 0 && (fd & TUNNEL_FD_TAG) != 0;
+}
+
+inline fn tunnel_slot_to_fd(slot_idx: i64) -> i64 {
+    return TUNNEL_FD_TAG | (slot_idx & 0xFFFF);
+}
+
+// Registers an outer transport (e.g. TLS to an HTTPS forward proxy) as a tagged descriptor.
+// Rejects disconnected or already-tunneled outer transports to keep nesting strictly bounded.
+fn alloc_tunnel_fd(outer: Transport) -> i64, bool {
+    var rec = TunnelTransportSlot { in_use: true, .. };
+    let can_wrap = match outer {
+        Tls t => {
+            rec.kind = TunnelOuterKind.PureTls;
+            rec.raw_fd = t.fd;
+            rec.tls_slot = t.cipher_slot;
+            t.fd > 0 && !is_tunnel_fd(t.fd)
+        },
+        TlsBackend tb => {
+            rec.kind = TunnelOuterKind.BackendTls;
+            rec.raw_fd = tb.fd;
+            rec.tls_slot = tb.endpoint_slot;
+            tb.fd > 0 && tb.endpoint_slot >= 0 && !is_tunnel_fd(tb.fd)
+        },
+        Virtual v => {
+            rec.kind = TunnelOuterKind.Virtual;
+            rec.pipe_slot = v.pipe_slot;
+            rec.is_b_end = v.is_b_end;
+            true
+        },
+        _ => false,
+    };
+    guard can_wrap else { return -1, false; }
+    for i in g_tunnel_slots.len {
+        let slot .= g_tunnel_slots[i];
+        if !slot.in_use {
+            slot = rec;
+            return tunnel_slot_to_fd(i), true;
+        }
+    }
+    guard g_tunnel_slots.len < MAX_TUNNEL_SLOTS else { return -1, false; }
+    let idx = g_tunnel_slots.len;
+    g_tunnel_slots.push(rec);
+    return tunnel_slot_to_fd(idx), true;
+}
+
+recursive fn tunnel_fd_send(fd: i64, data: const u8[:]) -> i32 {
+    guard is_tunnel_fd(fd) else { return -1; }
+    let idx = fd & 0xFFFF;
+    guard idx >= 0 && idx < g_tunnel_slots.len && g_tunnel_slots[idx].in_use else { return -1; }
+    let s = g_tunnel_slots[idx];
+    return match s.kind {
+        PureTls => tls::transport_send(s.raw_fd, (s.tls_slot & 0xFFFF) as u16, data),
+        BackendTls => tls::endpoint_transport_send(s.raw_fd, s.tls_slot, data),
+        Virtual => virtual_pipe_send(s.pipe_slot, s.is_b_end, data),
+        None => -1,
+    };
+}
+
+recursive fn tunnel_fd_recv(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+    guard is_tunnel_fd(fd) else { return -1; }
+    let idx = fd & 0xFFFF;
+    guard idx >= 0 && idx < g_tunnel_slots.len && g_tunnel_slots[idx].in_use else { return -1; }
+    let s = g_tunnel_slots[idx];
+    return match s.kind {
+        PureTls => tls::transport_recv_slice(s.raw_fd, (s.tls_slot & 0xFFFF) as u16, dst, timeout_ms),
+        BackendTls => tls::endpoint_transport_recv_slice(s.raw_fd, s.tls_slot, dst, timeout_ms),
+        Virtual => virtual_pipe_recv(s.pipe_slot, s.is_b_end, dst),
+        None => -1,
+    };
+}
+
+recursive fn tunnel_fd_close(fd: i64) {
+    guard is_tunnel_fd(fd) else { return; }
+    let idx = fd & 0xFFFF;
+    guard idx >= 0 && idx < g_tunnel_slots.len && g_tunnel_slots[idx].in_use else { return; }
+    let s = g_tunnel_slots[idx];
+    g_tunnel_slots[idx] = TunnelTransportSlot { .. };
+    match s.kind {
+        PureTls => { tls::transport_close(s.raw_fd, (s.tls_slot & 0xFFFF) as u16); },
+        BackendTls => { tls::endpoint_transport_close(s.raw_fd, s.tls_slot); },
+        Virtual => { virtual_pipe_close(s.pipe_slot, s.is_b_end); },
+        None => {},
+    };
+}
+
+// Unified descriptor send/recv/close across OS TCP, virtual pipes, and TLS tunnel fds.
+recursive fn fd_send(fd: i64, data: const u8[:]) -> i32 {
+    if is_virtual_pipe_fd(fd) {
+        return virtual_fd_send(fd, data);
+    }
+    if is_tunnel_fd(fd) {
+        return tunnel_fd_send(fd, data);
+    }
+    return tcp_send(fd, data);
+}
+
+recursive fn fd_recv(fd: i64, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
+    if is_virtual_pipe_fd(fd) {
+        return virtual_fd_recv(fd, dst);
+    }
+    if is_tunnel_fd(fd) {
+        return tunnel_fd_recv(fd, dst, timeout_ms);
+    }
+    if timeout_ms == 0 {
+        return tcp_recv_nonblocking_slice(fd, dst);
+    }
+    return tcp_recv_slice(fd, dst, timeout_ms);
+}
+
+recursive fn fd_close(fd: i64) {
+    guard fd > 0 else { return; }
+    if is_virtual_pipe_fd(fd) {
+        virtual_fd_close(fd);
+    } else if is_tunnel_fd(fd) {
+        tunnel_fd_close(fd);
+    } else {
+        tcp_close(fd);
+    }
+}
+
+// Executes an HTTP CONNECT tunnel handshake over any connected `Transport` (TCP, TLS, or Virtual).
+//
+// Example:
+//   t = Transport.Tls { .. }, target_host = "api.telegram.org", target_port = 443
+//   returns: ConnectTunnelError.None when proxy answers 200 Connection Established
+fn http_connect_transport_handshake(
+    t:           Transport,
+    target_host: const u8[:],
+    target_port: u16,
+    proxy_auth:  const u8[:],
+    user_agent:  const u8[:],
+    timeout_ms:  u32 = 5000,
+) -> ConnectTunnelError {
+    guard is_connected(t) else { return ConnectTunnelError.ConnectFailed; }
+    var req_buf: u8[..1024] = [];
+    build_http_connect_request(target_host, target_port, proxy_auth, user_agent, req_buf);
+    guard req_buf.len > 0 && t.send(req_buf[..]) == (req_buf.len as i32) else {
+        return ConnectTunnelError.ConnectFailed;
+    }
+    var resp_buf: u8[..4096] = [];
+    var chunk:    u8[1024]   = [0; 1024];
+    for _ in 8 {
+        let n = t.recv_slice(chunk[..], timeout_ms);
+        guard n > 0 else { break; }
+        guard resp_buf.try_append(chunk[..n]) else { return ConnectTunnelError.TunnelBufferedTooManyBytes; }
+        if net_internal::has_final_connect_header_terminator(resp_buf[..]) {
+            break;
+        }
+    }
+    return verify_connect_tunnel_response(resp_buf[..], 0);
+}
+
 // ---- Transport Status & Predicates -----------------------------------------
 
 fn is_connected(t: Transport) -> bool {
@@ -264,7 +440,7 @@ fn send(t: Transport.Disconnected, data: const u8[:]) -> i32 {
 
 fn send(t: Transport.Tcp, data: const u8[:]) -> i32 {
     guard t.fd > 0 else { return 0; }
-    return tcp_send(t.fd, data);
+    return fd_send(t.fd, data);
 }
 
 fn send(t: Transport.Unix, data: const u8[:]) -> i32 {
@@ -318,10 +494,7 @@ fn recv_slice(t: Transport.Disconnected, dst: u8[:], timeout_ms: u32 = 5000) -> 
 fn recv_slice(t: Transport.Tcp, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
     guard dst.len > 0 else { return 0; }
     guard t.fd > 0 else { return -1; }
-    if timeout_ms == 0 {
-        return tcp_recv_nonblocking_slice(t.fd, dst);
-    }
-    return tcp_recv_slice(t.fd, dst, timeout_ms);
+    return fd_recv(t.fd, dst, timeout_ms);
 }
 
 fn recv_slice(t: Transport.Unix, dst: u8[:], timeout_ms: u32 = 5000) -> i32 {
@@ -382,7 +555,7 @@ fn close(t: Transport.Disconnected) {
 
 fn close(t: Transport.Tcp) {
     if t.fd > 0 {
-        tcp_close(t.fd);
+        fd_close(t.fd);
     }
 }
 
