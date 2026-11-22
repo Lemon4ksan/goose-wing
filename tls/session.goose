@@ -611,6 +611,7 @@ fn send_encrypted_fatal_alert(fd: i64, slot_idx: u16, alert: Alert) {
         increment_record_seq_num(slot.tx_seq);
         let _ = net::tcp_send(fd, rec_buf[..sealed_len]);
     }
+    slot.peer_closed = true;
 }
 
 // Extracts DNS SubjectAltName entries from a DER X.509 certificate into `g_tls_cipher_slots[slot_idx].san_hosts`.
@@ -741,9 +742,11 @@ recursive fn send_encrypted_record(
     }
     if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA &&
         fd > 0 &&
-        aead_needs_key_update(g_tls_cipher_slots[idx].cipher_suite, g_tls_cipher_slots[idx].tx_seq) {
-        guard send_key_update(fd, slot_idx, rfc::KEY_UPDATE_NOT_REQUESTED) else { return false; }
-    }
+        (g_tls_cipher_slots[idx].key_update_tracker.pending_response ||
+         aead_needs_key_update(g_tls_cipher_slots[idx].cipher_suite, g_tls_cipher_slots[idx].tx_seq)) {
+            g_tls_cipher_slots[idx].key_update_tracker.pending_response = false;
+            guard send_key_update(fd, slot_idx, rfc::KEY_UPDATE_NOT_REQUESTED) else { return false; }
+        }
     return send_encrypted_record_raw(fd, slot_idx, inner_type, payload);
 }
 
@@ -900,7 +903,7 @@ recursive fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
     );
     g_tls_cipher_slots[idx].rx_seq = 0;
     if needs_resp {
-        send_key_update(fd, slot_idx, rfc::KEY_UPDATE_NOT_REQUESTED);
+        g_tls_cipher_slots[idx].key_update_tracker.pending_response = true;
     }
 }
 
@@ -914,36 +917,40 @@ fn process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
     return true;
 }
 
-recursive fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:]) -> bool {
-    guard hs_bytes.len >= 4 else { return false; }
+recursive fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:]) -> Alert {
+    guard hs_bytes.len >= 4 else { return Alert.DecodeError; }
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
+    guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else {
+        return Alert.InternalError;
+    }
     var off: i64 = 0;
     while off < hs_bytes.len {
         let rem = hs_bytes[off..];
-        guard rem.len >= 4 else { return false; }
+        guard rem.len >= 4 else { return Alert.DecodeError; }
         let msg_type, msg_len, ok_m = parse_handshake_header(rem);
-        guard ok_m else { return false; }
+        guard ok_m else { return Alert.DecodeError; }
         let full_msg_len = core::add_sat_i64(4, msg_len);
-        guard rem.len >= full_msg_len else { return false; }
+        guard rem.len >= full_msg_len else { return Alert.DecodeError; }
         let msg_body = rem[4..full_msg_len];
 
         if msg_type == rfc::TLS_HS_NEW_SESSION_TICKET {
-            guard process_received_nst(idx, msg_body) else { return false; }
+            guard process_received_nst(idx, msg_body) else {
+                return tls_internal::classify_nst_failure_alert(msg_body);
+            }
         } else if msg_type == rfc::TLS_HS_KEY_UPDATE {
             let needs_resp, ok_ku = track_received_key_update(
                 g_tls_cipher_slots[idx].key_update_tracker,
                 HsState.Connected,
                 msg_body,
             );
-            guard ok_ku else { return false; }
+            guard ok_ku else { return Alert.UnexpectedMessage; }
             tls_apply_rx_key_update(slot_idx, needs_resp, fd);
         } else {
-            return false;
+            return Alert.UnexpectedMessage;
         }
         off = core::add_sat_i64(off, full_msg_len);
     }
-    return true;
+    return Alert.CloseNotify;
 }
 
 recursive fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
@@ -1046,8 +1053,9 @@ recursive fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], t
     }
 
     if inner_type == rfc::TLS_CONTENT_HANDSHAKE {
-        guard dispatch_post_handshake_record(fd, slot_idx, plain_dec[..dec_len]) else {
-            send_encrypted_fatal_alert(fd, slot_idx, Alert.UnexpectedMessage);
+        let ph_alert = dispatch_post_handshake_record(fd, slot_idx, plain_dec[..dec_len]);
+        guard ph_alert == Alert.CloseNotify else {
+            send_encrypted_fatal_alert(fd, slot_idx, ph_alert);
             return -1;
         }
         return tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
@@ -1305,9 +1313,9 @@ fn extract_leaf_ocsp_extension(ext_bytes: const u8[:]) -> const u8[:], bool {
 // Example:
 //   payload = [0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x04, 'C', 'E', 'R', 'T', 0x00, 0x00]
 //   returns: out_leaf_ocsp = "", ok = true, out_certs.len = 1
-fn parse_certificate_chain_and_ocsp(
+fn parse_certificate_chain_and_ocsp<CertList>(
     payload:   const u8[:],
-    out_certs: const u8[:][..8]&,
+    out_certs: CertList&,
 ) -> const u8[:], bool {
     var committed = false;
     defer if !committed { out_certs.clear(); };
@@ -1371,6 +1379,7 @@ fn build_client_hello_payload<B>(
     hrr_cookie:     const u8[:] = "",
     offer_pha:      bool        = false,
     psk_binder_len: u8          = 32,
+    p256_pub:       const u8[:] = "",
 ) {
     out.clear();
     out.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
@@ -1432,18 +1441,28 @@ fn build_client_hello_payload<B>(
     }
 
     var shares: u8[..1280] = [];
-    if enable_pq && pq_pub.len == rfc::MLKEM768_PUBLIC_LEN {
-        var pq_share = tls_internal::PostQuantumKeyShare {
-            group:         rfc::GROUP_X25519_MLKEM768,
-            x25519_public: client_pub,
-            ..
-        };
-        core::ct_copy_bytes(pq_share.mlkem768_public[..], pq_pub);
-        tls_internal::format_hybrid_key_share(pq_share, shares);
+    if p256_pub.len == 65 {
+        shares.append_u16_be(rfc::GROUP_SECP256R1);
+        shares.append_u16_be(65);
+        shares.append(p256_pub);
+    } else if p256_pub.len == 97 {
+        shares.append_u16_be(rfc::GROUP_SECP384R1);
+        shares.append_u16_be(97);
+        shares.append(p256_pub);
+    } else {
+        if enable_pq && pq_pub.len == rfc::MLKEM768_PUBLIC_LEN {
+            var pq_share = tls_internal::PostQuantumKeyShare {
+                group:         rfc::GROUP_X25519_MLKEM768,
+                x25519_public: client_pub,
+                ..
+            };
+            core::ct_copy_bytes(pq_share.mlkem768_public[..], pq_pub);
+            tls_internal::format_hybrid_key_share(pq_share, shares);
+        }
+        shares.append_u16_be(rfc::GROUP_X25519);
+        shares.append_u16_be(32);
+        shares.append(client_pub[..]);
     }
-    shares.append_u16_be(rfc::GROUP_X25519);
-    shares.append_u16_be(32);
-    shares.append(client_pub[..]);
     tls_internal::encode_key_share_client_extension(ext_buf, shares[..]);
 
     if tls_internal::validate_sni_host_bytes(server_name) {

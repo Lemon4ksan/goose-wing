@@ -177,28 +177,29 @@ fn verify_server_cert_and_signature(
     config:             const tls::ClientHandshakeConfig&,
     slot_idx:           u16 = 0xFFFF,
 ) -> bool {
-    var chain_slices: const u8[:][..8] = [];
+    var chain_slices: const u8[:][..64] = [];
     let leaf_ocsp, ok_chain = tls::parse_certificate_chain_and_ocsp(cert_body, chain_slices);
     guard ok_chain else { return false; }
     var leaf_cert = tls::ParsedCert { .. };
     guard tls::parse_x509_certificate(chain_slices[0], leaf_cert) else { return false; }
     if slot_idx != 0xFFFF { let _ = tls::populate_slot_san_hosts_from_der(slot_idx, chain_slices[0]); }
 
-    var chain_parsed: tls::ParsedCert[..8] = [];
-    guard chain_parsed.try_push(leaf_cert) else { return false; }
+    var chain_parsed:  tls::ParsedCert[..8] = [];
+    var verify_slices: const u8[:][..8]     = [];
+    guard chain_parsed.try_push(leaf_cert) && verify_slices.try_push(chain_slices[0]) else { return false; }
 
     var idx: i64 = 1;
     let parse_limit = if config.insecure_skip_verify { 1 } else { chain_slices.len };
     while idx < parse_limit {
         var c_parsed = tls::ParsedCert { .. };
         guard tls::parse_x509_certificate(chain_slices[idx], c_parsed) else { return false; }
-        guard chain_parsed.try_push(c_parsed) else { return false; }
+        guard chain_parsed.try_push(c_parsed) && verify_slices.try_push(chain_slices[idx]) else { return false; }
         idx++;
     }
 
     if !config.insecure_skip_verify {
         let eff_clock = if config.virtual_clock_sec > 0 { config.virtual_clock_sec } else { core::now().wall_sec };
-        guard verify_chain_ocsp_and_crl(chain_parsed, chain_slices, leaf_ocsp, config, eff_clock) else {
+        guard verify_chain_ocsp_and_crl(chain_parsed, verify_slices, leaf_ocsp, config, eff_clock) else {
             return false;
         }
 
@@ -207,6 +208,12 @@ fn verify_server_cert_and_signature(
         }
     }
 
+    if leaf_cert.has_key_usage && (leaf_cert.key_usage & rfc::KEY_USAGE_DIGITAL_SIGNATURE) == 0 {
+        return false;
+    }
+    let leaf_spki_oid = tls::span_slice(chain_slices[0], leaf_cert.spki_alg_oid);
+    guard leaf_spki_oid != rfc::OID_SIG_RSASSA_PSS[..] else { return false; }
+
     var leaf_pub = tls::span_slice(chain_slices[0], leaf_cert.spki_pubkey);
     if leaf_pub.len >= 2 && leaf_pub[0] == 0 { leaf_pub = leaf_pub[1..]; }
 
@@ -214,8 +221,7 @@ fn verify_server_cert_and_signature(
     guard ok_parse_cv else { return false; }
 
     if !config.insecure_skip_verify {
-        let spki_oid = tls::span_slice(chain_slices[0], leaf_cert.spki_alg_oid);
-        guard tls::verify_signature_scheme_curve_binding(sig_scheme, spki_oid) else { return false; }
+        guard tls::verify_signature_scheme_curve_binding(sig_scheme, leaf_spki_oid) else { return false; }
     }
 
     var cv_msg_buf: u8[..256] = [];
@@ -237,13 +243,69 @@ fn classify_ee_failure_alert(ee_body: const u8[:]) -> tls::Alert {
     return tls::Alert.UnsupportedExtension;
 }
 
+fn has_duplicate_extension_type(ext_block: const u8[:]) -> bool {
+    var c = core::cursor_from(ext_block);
+    var body, ok_b = c.read_u16_sub_cursor();
+    guard ok_b && c.cursor_len() == 0 else { return false; }
+    var seen: u16[..32] = [];
+    while body.cursor_len() > 0 {
+        let et, ok_t = body.read_u16();
+        let _, ok_d = body.read_u16_prefixed();
+        guard ok_t && ok_d else { return false; }
+        if seen.contains(et) { return true; }
+        guard seen.try_push(et) else { return false; }
+    }
+    return false;
+}
+
+fn has_unsolicited_cert_entry_ext(ext_bytes: const u8[:]) -> bool {
+    var cur = core::cursor_from(ext_bytes);
+    while cur.cursor_len() > 0 {
+        let et, ok_t = cur.read_u16();
+        let _, ok_d = cur.read_u16_prefixed();
+        guard ok_t && ok_d else { return false; }
+        if et != rfc::TLS_EXT_STATUS_REQUEST && et != rfc::TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn classify_cert_failure_alert(cert_body: const u8[:]) -> tls::Alert {
+    var c = core::cursor_from(cert_body);
+    let ctx, ok_ctx = c.read_u8_prefixed();
+    guard ok_ctx && ctx.len == 0 else { return tls::Alert.DecodeError; }
+    let list_bytes, ok_list = c.read_u24_prefixed();
+    guard ok_list && c.cursor_len() == 0 else { return tls::Alert.DecodeError; }
+    var lc = core::cursor_from(list_bytes);
+    while lc.cursor_len() > 0 {
+        let cert_bytes, ok_c = lc.read_u24_prefixed();
+        let ext_bytes, ok_e = lc.read_u16_prefixed();
+        guard ok_c && cert_bytes.len > 0 && ok_e else { return tls::Alert.DecodeError; }
+        if ext_bytes.len > 0 && has_unsolicited_cert_entry_ext(ext_bytes) {
+            return tls::Alert.UnsupportedExtension;
+        }
+    }
+    return tls::Alert.DecodeError;
+}
+
 fn classify_sh_failure_alert(sh_msg: const u8[:]) -> tls::Alert {
+    let _, msg_len, ok_hdr = tls::parse_handshake_header(sh_msg);
+    if ok_hdr && sh_msg.len > core::add_sat_i64(4, msg_len) {
+        return tls::Alert.UnexpectedMessage;
+    }
     var tmp = tls::ParsedServerHello { .. };
     var rand_arr: u8[32] = [0; 32];
     let ext_bytes, ok_pre = tls::read_server_hello_preamble(sh_msg, rand_arr, tmp);
     guard ok_pre else { return tls::Alert.DecodeError; }
     var entries: tls::ExtensionEntry[..32] = [];
-    guard tls::parse_extensions_block(ext_bytes, entries) else { return tls::Alert.DecodeError; }
+    if !tls::parse_extensions_block(ext_bytes, entries) {
+        return if has_duplicate_extension_type(ext_bytes) {
+            tls::Alert.IllegalParameter
+        } else {
+            tls::Alert.DecodeError
+        };
+    }
     if !validate_sh_or_hrr_extensions(entries, tmp.is_hrr) {
         return tls::Alert.UnsupportedExtension;
     }
@@ -300,7 +362,7 @@ fn tls_client_process_server_flight<B>(
 
     if !psk_resumed {
         var msg_next:  u8          = 0;
-        var next_body: u8[..16384] = [];
+        var next_body: u8[..65536] = [];
         guard next_handshake_message(
             hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv, msg_next, next_body, config.handshake_timeout_ms,
         ) else {
@@ -326,7 +388,7 @@ fn tls_client_process_server_flight<B>(
             }
         }
 
-        var decomp_cert: u8[..16384] = [];
+        var decomp_cert: u8[..65536] = [];
         var is_comp_cert = false;
         if msg_next == rfc::TLS_HS_COMPRESSED_CERTIFICATE {
             is_comp_cert = true;
@@ -366,7 +428,8 @@ fn tls_client_process_server_flight<B>(
         tls::transcript_current_hash(transcript, ks.hash_id, h_to_cert);
         let ok_v = verify_server_cert_and_signature(cert_body_slice, cv_body[..], h_to_cert[..], config, slot_idx);
         guard ok_v else {
-            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.DecodeError);
+            let cert_alert = classify_cert_failure_alert(cert_body_slice);
+            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, cert_alert);
             return false;
         }
         tls::transcript_update_msg(transcript, msg_cv, cv_body[..]);
@@ -610,11 +673,31 @@ fn regenerate_client_hrr_keyshare(
     client_pub:     u8[32]&,
     pq_priv:        u8[2400]&,
     pq_pub:         u8[1184]&,
+    out_p384_priv:  u8[48]&,
+    out_nist_pub:   u8[..97]&,
 ) -> bool, bool {
+    out_nist_pub.clear();
     guard selected_group != 0 else { return enable_pq_cfg, true; }
     if selected_group == rfc::GROUP_X25519 {
         client_priv = tls::random_bytes_32();
         client_pub = core::x25519_base_scalarmult(client_priv);
+        return false, true;
+    }
+    if selected_group == rfc::GROUP_SECP256R1 {
+        client_priv = tls::random_bytes_32();
+        let pub65 = core::ecdsa_p256_public_key(client_priv);
+        guard out_nist_pub.try_set(pub65[..]) else { return false, false; }
+        return false, true;
+    }
+    if selected_group == rfc::GROUP_SECP384R1 {
+        var r1 = tls::random_bytes_32();
+        var r2 = tls::random_bytes_32();
+        defer core::secure_zeroize_32(r1);
+        defer core::secure_zeroize_32(r2);
+        core::ct_copy_bytes(out_p384_priv[0..32], r1[..]);
+        core::ct_copy_bytes(out_p384_priv[32..48], r2[0..16]);
+        let pub97 = core::p384_ecdh_public_key(out_p384_priv);
+        guard out_nist_pub.try_set(pub97[..]) else { return false, false; }
         return false, true;
     }
     guard enable_pq_cfg && selected_group == rfc::GROUP_X25519_MLKEM768 else {
@@ -639,6 +722,7 @@ fn handle_client_hrr_transition(
     client_random: const u8[32]&,
     client_priv:   u8[32]&,
     client_pub:    u8[32]&,
+    p384_priv:     u8[48]&,
     pq_priv:       u8[2400]&,
     pq_pub:        u8[1184]&,
     ech_ext_raw:   const u8[:],
@@ -672,8 +756,9 @@ fn handle_client_hrr_transition(
         }
     }
 
+    var nist_pub: u8[..97] = [];
     let enable_pq_ch2, ok_regen = regenerate_client_hrr_keyshare(
-        hrr_group, config.enable_pq_hybrid, client_priv, client_pub, pq_priv, pq_pub,
+        hrr_group, config.enable_pq_hybrid, client_priv, client_pub, pq_priv, pq_pub, p384_priv, nist_pub,
     );
     guard ok_regen else { return false; }
 
@@ -689,7 +774,7 @@ fn handle_client_hrr_transition(
         client_random, client_pub, config.server_name[..], config.alpn[..],
         ch2_payload, "", 0,
         enable_pq_ch2, if enable_pq_ch2 { pq_pub[..] } else { "" },
-        ech_ext_raw, sh.hrr_cookie[..], config.client_cert_der.len > 0,
+        ech_ext_raw, sh.hrr_cookie[..], config.client_cert_der.len > 0, 32, nist_pub[..],
     );
     var ch2_msg: u8[..4096] = [];
     guard frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch2_payload[..], ch2_msg) else {

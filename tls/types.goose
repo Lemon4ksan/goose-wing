@@ -411,7 +411,7 @@ struct CipherSlot {
 }
 
 struct HandshakeRecordReader {
-    current_record_plain: u8[..32768] = [],
+    current_record_plain: u8[..65536] = [],
     current_offset:       i64         = 0,
     seq_num:              u64         = 0,
     ccs_count:            u32         = 0,

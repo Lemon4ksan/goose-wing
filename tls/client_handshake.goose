@@ -71,6 +71,8 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     var client_random: u8[32] = [0; 32];
     var client_priv:   u8[32] = [0; 32];
     defer core::secure_zeroize_32(client_priv);
+    var p384_priv: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(p384_priv);
     var client_pub: u8[32]   = [0; 32];
     var pq_priv:    u8[2400] = [0; 2400];
     defer core::secure_zeroize_slice(pq_priv[..]);
@@ -136,7 +138,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
 
     if sh.is_hrr {
         let ok_hrr = tls_internal::handle_client_hrr_transition(
-            fd, config, client_random, client_priv, client_pub,
+            fd, config, client_random, client_priv, client_pub, p384_priv,
             pq_priv, pq_pub, ech_ext_raw[..], transcript, sh_msg[..], sh,
         );
         guard ok_hrr else {
@@ -162,8 +164,8 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         return 0xFFFF, false;
     }
 
-    var ecdhe_secret: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(ecdhe_secret);
+    var ecdhe_secret: u8[..48] = [];
+    defer core::secure_zeroize_slice(ecdhe_secret[..]);
     if srv_group == rfc::GROUP_X25519_MLKEM768 {
         var srv_share_raw: u8[..2048] = [];
         srv_share_raw.append_u16_be(srv_group);
@@ -186,10 +188,12 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
+        var pq_comb: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(pq_comb);
         let ok_pq = tls_internal::derive_x25519_mlkem768_shared_secret_checked(
-            classic_ss[..], pq_ss[..], ecdhe_secret[..],
+            classic_ss[..], pq_ss[..], pq_comb[..],
         );
-        guard ok_pq else {
+        guard ok_pq && ecdhe_secret.try_set(pq_comb[..]) else {
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
@@ -198,11 +202,26 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         core::ct_copy_bytes(srv_pub[..], srv_share[..]);
         var ss, ok_ss = core::x25519_shared_secret(client_priv, srv_pub);
         defer core::secure_zeroize_32(ss);
-        guard ok_ss else {
+        guard ok_ss && ecdhe_secret.try_set(ss[..]) else {
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-        core::ct_copy_bytes(ecdhe_secret[..], ss[..]);
+    } else if srv_group == rfc::GROUP_SECP256R1 && srv_share.len == 65 {
+        var ss256, ok_ss256 = core::p256_ecdh_shared_secret(client_priv, srv_share[..]);
+        defer core::secure_zeroize_32(ss256);
+        guard ok_ss256 && ecdhe_secret.try_set(ss256[..]) else {
+            tls_internal::send_plaintext_fatal_alert(fd, Alert.IllegalParameter);
+            free_cipher_slot(slot_idx);
+            return 0xFFFF, false;
+        }
+    } else if srv_group == rfc::GROUP_SECP384R1 && srv_share.len == 97 {
+        var ss384, ok_ss384 = core::p384_ecdh_shared_secret(p384_priv, srv_share[..]);
+        defer core::secure_zeroize_48(ss384);
+        guard ok_ss384 && ecdhe_secret.try_set(ss384[..]) else {
+            tls_internal::send_plaintext_fatal_alert(fd, Alert.IllegalParameter);
+            free_cipher_slot(slot_idx);
+            return 0xFFFF, false;
+        }
     } else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;

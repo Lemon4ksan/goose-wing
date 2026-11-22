@@ -735,6 +735,20 @@ fn read_ticket_early_data(ext_data: core::ByteCursor&, out: tls::NewSessionTicke
     return true;
 }
 
+// Validates the TLS 1.3 `tls_flags` extension payload (IANA ExtensionType 62).
+// Rejects empty flag vectors with DecodeError and trailing zero octets with IllegalParameter.
+fn validate_ticket_tls_flags(ext_data: core::ByteCursor&) -> tls::Alert {
+    let flags_c, ok_f = ext_data.read_u8_sub_cursor();
+    guard ok_f && ext_data.cursor_len() == 0 && flags_c.cursor_len() >= 1 else {
+        return tls::Alert.DecodeError;
+    }
+    let last_idx = core::sub_sat_i64(flags_c.buf.len, 1);
+    guard flags_c.buf[last_idx] != 0 else {
+        return tls::Alert.IllegalParameter;
+    }
+    return tls::Alert.CloseNotify;
+}
+
 fn read_ticket_extensions(ext_cursor: core::ByteCursor&, out: tls::NewSessionTicketMsg&) -> bool {
     var seen_types: u16[..16] = [];
     while ext_cursor.cursor_len() > 0 {
@@ -751,9 +765,34 @@ fn read_ticket_extensions(ext_cursor: core::ByteCursor&, out: tls::NewSessionTic
 
         if ext_type == rfc::TLS_EXT_EARLY_DATA {
             guard read_ticket_early_data(ext_data, out) else { return false; }
+        } else if ext_type == rfc::TLS_EXT_TLS_FLAGS {
+            guard validate_ticket_tls_flags(ext_data) == tls::Alert.CloseNotify else { return false; }
         }
     }
     return ext_cursor.cursor_len() == 0;
+}
+
+// Classifies a malformed NewSessionTicket payload into the RFC-prescribed fatal alert.
+fn classify_nst_failure_alert(payload: const u8[:]) -> tls::Alert {
+    var c = core::cursor_from(payload);
+    let _, ok_lt = c.read_u32();
+    let _, ok_aa = c.read_u32();
+    let _, ok_nc = c.read_u8_prefixed();
+    let _, ok_tk = c.read_u16_prefixed();
+    var ext_c, ok_ext = c.read_u16_sub_cursor();
+    guard ok_lt && ok_aa && ok_nc && ok_tk && ok_ext && c.cursor_len() == 0 else {
+        return tls::Alert.DecodeError;
+    }
+    while ext_c.cursor_len() > 0 {
+        let et, ok_t = ext_c.read_u16();
+        var ed, ok_d = ext_c.read_u16_sub_cursor();
+        guard ok_t && ok_d else { return tls::Alert.DecodeError; }
+        if et == rfc::TLS_EXT_TLS_FLAGS {
+            let flg_alert = validate_ticket_tls_flags(ed);
+            if flg_alert != tls::Alert.CloseNotify { return flg_alert; }
+        }
+    }
+    return tls::Alert.DecodeError;
 }
 
 fn read_ticket_nonce(c: core::ByteCursor&, out: tls::NewSessionTicketMsg&) -> bool {

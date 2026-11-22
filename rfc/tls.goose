@@ -80,6 +80,7 @@ const TLS_EXT_POST_HANDSHAKE_AUTH:          u16 = 49;     // RFC 8446 Section 4.
 const TLS_EXT_SIGNATURE_ALGORITHMS_CERT:    u16 = 50;     // RFC 8446 Section 4.2.3
 const TLS_EXT_KEY_SHARE:                    u16 = 51;     // RFC 8446 Section 4.2.8
 const TLS_EXT_QUIC_TRANSPORT_PARAMETERS:    u16 = 0x39;   // RFC 9001 Section 8.2
+const TLS_EXT_TLS_FLAGS:                    u16 = 0x003E; // IANA TLS ExtensionType 62 (tls_flags)
 const TLS_EXT_RENEGOTIATION_INFO:           u16 = 0xFF01; // RFC 8446 Section 4.1.3
 
 // RFC 8446 Section 4.2: Extensions - Table 2 indicates recognized TLS extensions.

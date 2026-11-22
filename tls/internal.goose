@@ -144,7 +144,7 @@ inline fn is_stateless_ticket_within_lifetime(issued_ms: i64, now_ms: i64, lifet
 // ---- ECH / PEM / CRL / OCSP Leaf Constants & Pure Helpers ------------------
 
 const MAX_CRL_SERIALS:             i64 = 1024;
-const MAX_CONSECUTIVE_KEY_UPDATES: u32 = 8;
+const MAX_CONSECUTIVE_KEY_UPDATES: u32 = 32;
 const MAX_CHAIN_DEPTH:             i64 = 8;
 // Minimum RSA public key modulus size in octets (256 bytes = 2048 bits).
 const MIN_RSA_MODULUS_BYTES: i64 = 256;

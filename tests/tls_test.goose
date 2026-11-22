@@ -3714,16 +3714,16 @@ fn test_handshake_r3_invariants(t: lit::T&) {
 
         // 3. DoS Rate Limiting / Ping-Pong defense
         var tracker = tls::KeyUpdateTracker { .. };
-        for i in 8 {
+        for i in 32 {
             let needs_resp, ok_tr = tls::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
             sub.assert_true(ok_tr, "track KeyUpdate within limit succeeds");
             sub.assert_true(needs_resp, "update_requested signals response required");
         }
-        sub.assert_eq(tracker.consecutive_updates as i64, 8, "consecutive_updates is 8");
+        sub.assert_eq(tracker.consecutive_updates as i64, 32, "consecutive_updates is 32");
 
-        // 9th consecutive update without application data MUST be rejected!
+        // 33rd consecutive update without application data MUST be rejected!
         let _, ok_overflow = tls::track_received_key_update(tracker, tls::HsState.Connected, ku_req[..]);
-        sub.assert_false(ok_overflow, "9th consecutive KeyUpdate rejected (DoS defense)");
+        sub.assert_false(ok_overflow, "33rd consecutive KeyUpdate rejected (DoS defense)");
 
         // Intervening application data resets consecutive counter
         tls::on_key_update_app_data(tracker);

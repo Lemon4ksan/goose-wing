@@ -205,10 +205,10 @@ fn tls_drain_rx_buf(idx: i64, dst: u8[:]) -> i32 {
     return (to_copy & 0x7FFFFFFF) as i32;
 }
 
-fn try_read_handshake_msg(
+fn try_read_handshake_msg<OutBuf>(
     r:            tls::HandshakeRecordReader&,
     msg_type:     u8&,
-    out_msg_body: u8[..16384]&,
+    out_msg_body: OutBuf&,
 ) -> bool {
     let remaining_plain = r.current_record_plain.len - r.current_offset;
     guard remaining_plain >= 4 else { return false; }
@@ -337,14 +337,14 @@ fn unseal_hs_record_step(
 // Example:
 //   r.current_record_plain = [0x08, 0x00, 0x00, 0x02, 0x00, 0x00], r.current_offset = 0
 //   returns: true, msg_type = 8, out_msg_body = [0x00, 0x00]
-fn next_handshake_message(
+fn next_handshake_message<OutBuf>(
     r:            tls::HandshakeRecordReader&,
     fd:           i64,
     cipher_suite: u16,
     key:          const u8[:],
     iv:           const u8[12]&,
     msg_type:     u8&,
-    out_msg_body: u8[..16384]&,
+    out_msg_body: OutBuf&,
     timeout_ms:   u32,
 ) -> bool {
     r.last_alert = tls::Alert.CloseNotify;
@@ -421,11 +421,12 @@ fn encode_psk_client_extensions<B>(
     psk_age_add: u32,
     binder_len:  u8 = 32,
 ) {
-    guard psk_ticket.len > 0 && psk_ticket.len <= 1536 && (binder_len == 32 || binder_len == 48) else { return; }
+    // RFC 8446 Section 4.2.9: Pre-Shared Key Exchange Modes - Advertise psk_dhe_ke (1) so servers may issue tickets.
     out.append_u16_be(rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES);
     out.append_u16_be(2);
     out.push(1);
     out.push(1);
+    guard psk_ticket.len > 0 && psk_ticket.len <= 1536 && (binder_len == 32 || binder_len == 48) else { return; }
 
     let id_entry_len = core::add_sat_i64(psk_ticket.len, 6) as u16;
     let binders_entry_len: u16 = if binder_len == 48 { 49 } else { 33 };
