@@ -14,10 +14,9 @@ import .qpack_codec;
 
 // ---- Dynamic Table Arena & Eviction ----------------------------------------
 
-// Compacts dynamic table arena in place to reclaim space from evicted entries.
+// Compacts dynamic table arena in place (monotonic left-shift, zero scratch buffer).
 fn qpack_compact_arena(tbl: http3::QpackTable&) {
-    var new_arena: u8[16384] = [0; 16384];
-    var new_pos:   u32       = 0;
+    var new_pos: u32 = 0;
     for &e in tbl.entries {
         let n_len = e.name_len as u32;
         let v_len = e.val_len as u32;
@@ -25,21 +24,26 @@ fn qpack_compact_arena(tbl: http3::QpackTable&) {
         let old_v_off = e.val_off as i64;
         let new_pos_i = new_pos as i64;
 
-        for j in (n_len as i64) {
-            new_arena[new_pos_i + j] = tbl.arena[old_n_off + j];
+        if new_pos_i < old_n_off {
+            for j in (n_len as i64) {
+                let dst_i = core::add_sat_i64(new_pos_i, j);
+                let src_i = core::add_sat_i64(old_n_off, j);
+                tbl.arena[dst_i] = tbl.arena[src_i];
+            }
         }
         e.name_off = new_pos;
-        new_pos += n_len;
+        new_pos = core::add_sat_u32(new_pos, n_len);
 
         let next_pos_i = new_pos as i64;
-        for j in (v_len as i64) {
-            new_arena[next_pos_i + j] = tbl.arena[old_v_off + j];
+        if next_pos_i < old_v_off {
+            for j in (v_len as i64) {
+                let dst_i = core::add_sat_i64(next_pos_i, j);
+                let src_i = core::add_sat_i64(old_v_off, j);
+                tbl.arena[dst_i] = tbl.arena[src_i];
+            }
         }
         e.val_off = new_pos;
-        new_pos += v_len;
-    }
-    for k in (new_pos as i64) {
-        tbl.arena[k] = new_arena[k];
+        new_pos = core::add_sat_u32(new_pos, v_len);
     }
     tbl.arena_write_pos = new_pos;
 }
