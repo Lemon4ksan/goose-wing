@@ -1,0 +1,11 @@
+{
+  "lsp": {
+    "goose": {
+      "initialization_options": {
+        "entryFiles": [
+          "wing.goose",
+        ]
+      }
+    }
+  }
+}
