@@ -28,7 +28,21 @@ struct HttpServer {
     enable_header_memoization: bool = false,
     tls_backend: tls::TlsBackendKind = tls::TlsBackendKind.PureGoose,
     tls_min_version: tls::TlsMinVersion = tls::TlsMinVersion.Tls13,
-    tls_cert_pem_file: u8[..256] = [], tls_key_pem_file: u8[..256] = [], ...
+    tls_cert_pem_file: u8[..256] = [], tls_key_pem_file: u8[..256] = [],
+    tls_ca_file: u8[..256] = [], tls_require_client_cert: bool = false,
+    tls_alpn_wire: u8[..64] = [], tls_keylog_file: u8[..256] = [],
+    tls_handshake_timeout_ms: u32 = 5000, idle_timeout_ms: u64 = 30000,
+    read_header_timeout_ms: u32 = 5000, read_body_timeout_ms: u32 = 15000,
+    max_header_bytes: i64 = 16384, max_body_bytes: i64 = 10485760,
+    max_connections: i32 = 0, max_h2_concurrent_streams: u32 = 100,
+    omit_server_header: bool = false, omit_date_header: bool = false,
+    so_reuseport: bool = false, listen_backlog: i32 = 128,
+    tcp_nodelay: bool = true, ...
+}
+enum ServerHeaderPolicy { Standard, OmitServer, OmitDate, OmitBoth }
+enum H1WireParseStatus { Ok, Incomplete, BadRequest, HeadersTooLarge, ContentTooLarge }
+struct ServerSocketOptions {
+    listen_backlog: i32 = 128, so_reuseport: bool = false, tcp_nodelay: bool = true
 }
 fn new_http_server(host_str: const u8[:] = "127.0.0.1", port_num: u16 = 8080) -> HttpServer
 fn init_http_server_inplace(server: HttpServer&, host_str: const u8[:] = "127.0.0.1", port_num: u16 = 8080)
@@ -40,7 +54,18 @@ fn serve(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64
 fn serve_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_connections: i64 = 0) -> i64
 fn serve_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const wing::TlsServerHandshakeConfig&, max_connections: i64 = 0) -> i64
 fn configure_server_tls_backend(srv: HttpServer&, kind: tls::TlsBackendKind, min_ver: tls::TlsMinVersion = tls::TlsMinVersion.Tls13, cert_pem: const u8[:] = "", key_pem: const u8[:] = "") -> bool
-fn accept_tls_backend_connection(srv: const HttpServer&, client_fd: i64, alpn_wire: const u8[:] = "", timeout_ms: u32 = 5000) -> net::Transport, u8[..64], tls::TlsBackendStatus
+fn configure_server_mtls(srv: HttpServer&, ca_pem_file: const u8[:], require_client_cert: bool = true) -> bool
+fn set_server_tls_alpn(srv: HttpServer&, alpn_wire: const u8[:]) -> bool
+fn set_server_tls_keylog_file(srv: HttpServer&, path: const u8[:]) -> bool
+fn set_server_timeouts(srv: HttpServer&, idle_ms: u64, read_header_ms: u32, read_body_ms: u32, tls_hs_ms: u32 = 5000)
+fn set_server_limits(srv: HttpServer&, max_header_bytes: i64, max_body_bytes: i64, max_connections: i32, max_h2_streams: u32 = 100)
+fn set_server_header_visibility(srv: HttpServer&, policy: ServerHeaderPolicy)
+fn set_server_socket_options(srv: HttpServer&, opts: const ServerSocketOptions&)
+fn listen_http_server(srv: const HttpServer&) -> i64
+fn accept_tls_backend_connection(srv: const HttpServer&, client_fd: i64, alpn_wire: const u8[:] = "", timeout_ms: u32 = 0) -> net::Transport, u8[..64], tls::TlsBackendStatus
+fn parse_http1_wire_request_with_limits<Req>(wire: const u8[:], out_req: Req&, max_header_bytes: i64 = 16384, max_body_bytes: i64 = MAX_SERVER_BODY_LIMIT) -> H1WireParseStatus, i64
+fn serialize_headers_too_large_error<B>(server_name: const u8[:], wire_out: B&, header_policy: ServerHeaderPolicy = ServerHeaderPolicy.Standard)
+fn serialize_content_too_large_error<B>(server_name: const u8[:], wire_out: B&, header_policy: ServerHeaderPolicy = ServerHeaderPolicy.Standard)
 fn handle_connection_wire<B>(server: HttpServer&, client_ip: const u8[:], wire_in: const u8[:], now_ns: u64, wire_out: B&) -> PipelineOutcome, bool
 fn subscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
 fn unsubscribe(server: HttpServer&, sock_fd: i64, pattern: const u8[:]) -> bool
@@ -53,12 +78,17 @@ fn find_subscribers(server: const HttpServer&, topic: const u8[:], out_fds: i64[
 
 `HttpServer` combines synchronous serving loops (`serve`, `serve_with_stage`,
 and TLS 1.3 `serve_tls` with `h2` / `http/1.1` ALPN and SNI certificate
-selection), pluggable TLS backend configuration (`configure_server_tls_backend`
-and `accept_tls_backend_connection`), and a Sans-IO wire processor
-(`handle_connection_wire`). By default, `enable_header_memoization` is `false`
-so every HTTP/1.1 request executes full 64-bit SWAR header scanning without
-reusing cached Keep-Alive header blocks; call
-`set_header_memoization(server, true)` to opt in to Keep-Alive header
+selection), pluggable TLS backend controls (`configure_server_tls_backend`,
+`configure_server_mtls`, `set_server_tls_alpn`, `set_server_tls_keylog_file`,
+and `accept_tls_backend_connection`), operational limits and hygiene setters
+(`set_server_timeouts`, `set_server_limits`, `set_server_header_visibility`,
+`set_server_socket_options`, and `listen_http_server`), and a Sans-IO wire
+processor (`handle_connection_wire`). Oversized HTTP/1.1 headers and payloads
+exceeding `max_header_bytes` or `max_body_bytes` return `431 Request Header
+Fields Too Large` or `413 Content Too Large`, respectively. By default,
+`enable_header_memoization` is `false` so every HTTP/1.1 request executes full
+64-bit SWAR header scanning without reusing cached Keep-Alive header blocks;
+call `set_header_memoization(server, true)` to opt in to Keep-Alive header
 memoization (`g_h1_parse_cache` and pipelined identical-request batching).
 Routing and middleware state live inside `server.pipeline`
 (`server.pipeline.router`, `server.pipeline.edge_filter`,
@@ -79,7 +109,7 @@ struct H3L2Config {
 struct H3ServerEndpoint {
     conn: h3_internal::H3Connection
 }
-fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 128) -> i64
+fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 0) -> i64
 fn serve_reactor(server: HttpServer&, listener_fd: i64, max_requests: i64 = 0) -> i64
 fn serve_reactor_with_stage<UserStage>(server: HttpServer&, listener_fd: i64, user_stage: UserStage&, max_requests: i64 = 0) -> i64
 fn serve_reactor_tls(server: HttpServer&, listener_fd: i64, tls_cfg: const wing::TlsServerHandshakeConfig&, max_requests: i64 = 0) -> i64
@@ -170,7 +200,8 @@ struct ServerPipelineConfig {
     wire_pipeline: wire::WirePipeline, header_pool: server_internal::HeaderMapPool,
     ext_pool: server_internal::ExtensionsPool, slab_pool: server_internal::SpillSlabPool,
     memo: ServerCompressAndEtagMemo, target_host: u8[..256],
-    server_pso_capabilities: u64, ...
+    server_pso_capabilities: u64, max_header_bytes: i64 = 16384,
+    max_body_bytes: i64 = 10485760, max_h2_concurrent_streams: u32 = 100, ...
 }
 struct ServerStageCtx {
     ext_slot_idx: i32, handler_id: i32, entries_mask: u32, pso_mask: u64,
@@ -178,6 +209,7 @@ struct ServerStageCtx {
 }
 fn new_default_server_pipeline_config(target_host: const u8[:]) -> ServerPipelineConfig
 fn init_server_pipeline_config_inplace(cfg: ServerPipelineConfig&, target_host: const u8[:], quota: security::GcraQuota)
+fn check_pipeline_dos_limits(cfg: const ServerPipelineConfig&, req: const http::Request&) -> i32
 fn validate_pipeline_expect_header(req: const wing::Request&) -> bool
 fn execute_pipeline(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&) -> PipelineOutcome
 fn execute_server_pipeline_with_stage<UserStage>(cfg: ServerPipelineConfig&, conn_timer: server_internal::ConnectionTimer&, client_ip: const u8[:], req: const Request&, now_ns: u64, res: Response&, out_future: server_internal::InlineHandlerFuture&, user_stage: UserStage&) -> PipelineOutcome

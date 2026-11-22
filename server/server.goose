@@ -65,6 +65,30 @@ struct HttpServer {
     tls_min_version:           tls::TlsMinVersion               = tls::TlsMinVersion.Tls13,
     tls_cert_pem_file:         u8[..256]                        = [],
     tls_key_pem_file:          u8[..256]                        = [],
+    tls_ca_file:               u8[..256]                        = [],
+    tls_require_client_cert:   bool                             = false,
+    tls_alpn_wire:             u8[..64]                         = [],
+    tls_keylog_file:           u8[..256]                        = [],
+    tls_handshake_timeout_ms:  u32                              = 5000,
+    idle_timeout_ms:           u64                              = 30000,
+    read_header_timeout_ms:    u32                              = 5000,
+    read_body_timeout_ms:      u32                              = 15000,
+    max_header_bytes:          i64                              = 16384,
+    max_body_bytes:            i64                              = 10485760,
+    max_connections:           i32                              = 0,
+    max_h2_concurrent_streams: u32                              = 100,
+    omit_server_header:        bool                             = false,
+    omit_date_header:          bool                             = false,
+    so_reuseport:              bool                             = false,
+    listen_backlog:            i32                              = 128,
+    tcp_nodelay:               bool                             = true,
+}
+
+// Listening TCP socket tuning options applied by `set_server_socket_options` and `listen_http_server`.
+struct ServerSocketOptions {
+    listen_backlog: i32  = 128,
+    so_reuseport:   bool = false,
+    tcp_nodelay:    bool = true,
 }
 
 // Enables or disables Keep-Alive HTTP/1.1 header block memoization (`g_h1_parse_cache`,
@@ -380,7 +404,9 @@ fn complete_ws_upgrade<Req, B>(
             sess.enable_permessage_deflate(entry.behavior.compression);
         }
     }
-    serialize_http1_response(ws_res, server.server_name[..], wire_out);
+    serialize_http1_response(
+        ws_res, server.server_name[..], wire_out, 0, server_internal::resolve_server_header_policy(server),
+    );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     return true;
 }
@@ -417,8 +443,9 @@ fn handle_connection_wire<Stage, B>(
         let now_ms = div_euclid(now_ns, 1000000);
         var sess = server_internal::new_h2_server_session(server.server_name[..], now_ms);
         defer server_internal::cleanup_h2_server_session(sess, server.pipeline);
+        let pref_len = server_internal::prepare_h2_server_preface(sess, server, raw_stream, wire_out);
         let _, ok_h2 = server_internal::handle_h2_server_ingress(
-            sess, server.pipeline, server.timer, effective_ip[..], raw_stream, now_ms, wire_out, stage,
+            sess, server.pipeline, server.timer, effective_ip[..], raw_stream[pref_len..], now_ms, wire_out, stage,
         );
         if ok_h2 {
             server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
@@ -710,8 +737,9 @@ inline fn alloc_temp_h2_session(
     pipeline:    ServerPipelineConfig&,
     server_name: const u8[:],
     now_ns:      u64,
+    max_streams: u32 = 0,
 ) -> i64 {
-    return alloc_reactor_h2_session(pipeline, server_name, now_ns / 1000000);
+    return alloc_reactor_h2_session(pipeline, server_name, div_euclid(now_ns, 1000000), max_streams);
 }
 
 fn handle_connection_pipe_with_stage<Stage, B>(
@@ -722,7 +750,9 @@ fn handle_connection_pipe_with_stage<Stage, B>(
     wire_out:  B&,
     stage:     Stage&,
 ) -> i64, bool {
-    let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
+    let h2_idx = alloc_temp_h2_session(
+        server.pipeline, server.server_name[..], now_ns, server.max_h2_concurrent_streams,
+    );
     guard h2_idx >= 0 && h2_idx < REACTOR_MAX_H2_SESSIONS else { return 0, false; }
     defer free_reactor_h2_session(h2_idx as i16, server.pipeline);
     return handle_connection_pipe(
@@ -859,7 +889,7 @@ fn serve_http_connection_on_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
     let poll_ms: u32 = min(max(recv_timeout_ms, 1), 100);
 
     loop {
-        if has_ready_http1_request(in_buf[..], server.pipeline.hdr_scan_cursor) {
+        if server_internal::is_http1_ingress_ready_or_over_limit(server, in_buf[..]) {
             idle_ticks = 0;
             if server_internal::process_ready_http1_connection_buf(
                 conn_fd, server, peer_ip[..], stage, in_buf, ws_frag_buf, out_wire,
@@ -893,15 +923,19 @@ fn serve_http_listener_buf<Stage, InBuf, FragBuf, OutBuf>(
 ) {
     guard listener_fd > 0 else { return; }
     init_run_state(server);
-    while !should_stop(server) {
+    var accepted: i64 = 0;
+    let conn_cap: i64 = max(server.max_connections, 0);
+    while !should_stop(server) && (conn_cap == 0 || accepted < conn_cap) {
         let conn = net::tcp_accept(listener_fd, 200);
         if conn <= 0 {
             continue;
         }
+        let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
         let _ = serve_http_connection_on_listener_buf(
             listener_fd, conn, server, stage, in_buf, ws_frag_buf, out_wire, recv_timeout_ms,
         );
         net::tcp_close(conn);
+        accepted = core::add_sat_i64(accepted, 1);
     }
     server.is_running = false;
 }
@@ -967,15 +1001,16 @@ fn serve_with_stage<Stage>(
     max_connections: i64 = 0,
 ) -> i64 {
     guard listener_fd > 0 else { return 0; }
+    let eff_max = server_internal::resolve_accept_conn_limit(server, max_connections);
 
     var ring = core::PageRingBuffer { .. };
     let ok_ring = ring.page_ring_init(65536);
     if ok_ring {
         defer ring.page_ring_close();
-        return server_internal::serve_page_ring_loop(server, listener_fd, max_connections, ring, stage);
+        return server_internal::serve_page_ring_loop(server, listener_fd, eff_max, ring, stage);
     }
 
-    return server_internal::serve_pipe_loop(server, listener_fd, max_connections, stage);
+    return server_internal::serve_pipe_loop(server, listener_fd, eff_max, stage);
 }
 
 // Executes a live TCP accept and dispatch loop.
@@ -1035,13 +1070,144 @@ fn configure_server_tls_backend(
     return true;
 }
 
+// Configures server-side mutual TLS (mTLS) verification on `srv` transactionally.
+// Rejects oversize CA paths or an empty CA path when `require_client_cert` is true.
+fn configure_server_mtls(
+    srv:                 HttpServer&,
+    ca_pem_file:         const u8[:],
+    require_client_cert: bool = true,
+) -> bool {
+    guard ca_pem_file.len <= srv.tls_ca_file.cap else { return false; }
+    guard !require_client_cert || ca_pem_file.len > 0 else { return false; }
+    var ca_buf: u8[..256] = [];
+    guard ca_buf.try_set(ca_pem_file) else { return false; }
+    srv.tls_ca_file = ca_buf;
+    srv.tls_require_client_cert = require_client_cert;
+    return true;
+}
+
+inline fn is_valid_alpn_wire(alpn_wire: const u8[:]) -> bool {
+    var pos: i64 = 0;
+    while pos < alpn_wire.len {
+        let plen = alpn_wire[pos] as i64;
+        let next_pos = core::add_sat_i64(core::add_sat_i64(pos, 1), plen);
+        guard plen > 0 && next_pos <= alpn_wire.len else { return false; }
+        pos = next_pos;
+    }
+    return true;
+}
+
+// Configures default RFC 7301 length-prefixed ALPN wire protocol list on `srv` transactionally.
+// Pass an empty slice to revert to the default `h2` + `http/1.1` preference list.
+fn set_server_tls_alpn(srv: HttpServer&, alpn_wire: const u8[:]) -> bool {
+    guard alpn_wire.len <= srv.tls_alpn_wire.cap && is_valid_alpn_wire(alpn_wire) else {
+        return false;
+    }
+    var alpn_buf: u8[..64] = [];
+    guard alpn_buf.try_set(alpn_wire) else { return false; }
+    srv.tls_alpn_wire = alpn_buf;
+    return true;
+}
+
+// Configures NSS SSLKEYLOGFILE output path for TLS handshakes on `srv` transactionally.
+fn set_server_tls_keylog_file(srv: HttpServer&, path: const u8[:]) -> bool {
+    guard path.len <= srv.tls_keylog_file.cap else { return false; }
+    var log_buf: u8[..256] = [];
+    guard log_buf.try_set(path) else { return false; }
+    srv.tls_keylog_file = log_buf;
+    return true;
+}
+
+// Configures idle, header read, body read, and TLS handshake timeouts on `srv`,
+// synchronizing `srv.timer` and `srv.pipeline.deadline_ns`.
+fn set_server_timeouts(
+    srv:            HttpServer&,
+    idle_ms:        u64,
+    read_header_ms: u32,
+    read_body_ms:   u32,
+    tls_hs_ms:      u32 = 5000,
+) {
+    srv.idle_timeout_ms = idle_ms;
+    srv.read_header_timeout_ms = read_header_ms;
+    srv.read_body_timeout_ms = read_body_ms;
+    srv.tls_handshake_timeout_ms = tls_hs_ms;
+    let deadline_ns = core::mul_sat_u64(idle_ms, 1000000);
+    if deadline_ns > 0 {
+        srv.pipeline.deadline_ns = deadline_ns;
+        srv.timer.half_deadline_ns = max(deadline_ns >> 1, 1);
+    }
+}
+
+// Configures ingress DoS ceilings (header block bytes, body bytes, concurrent/accept connection cap,
+// and HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS`) on `srv` and its pipeline.
+fn set_server_limits(
+    srv:              HttpServer&,
+    max_header_bytes: i64,
+    max_body_bytes:   i64,
+    max_connections:  i32,
+    max_h2_streams:   u32 = 100,
+) {
+    let eff_hdr = if max_header_bytes > 0 { max_header_bytes } else { 16384 };
+    let eff_body = if max_body_bytes >= 0 { max_body_bytes } else { MAX_SERVER_BODY_LIMIT };
+    let eff_conns = max(max_connections, 0);
+    let eff_h2 = if max_h2_streams > 0 { max_h2_streams } else { 100 };
+    srv.max_header_bytes = eff_hdr;
+    srv.max_body_bytes = eff_body;
+    srv.max_connections = eff_conns;
+    srv.max_h2_concurrent_streams = eff_h2;
+    srv.pipeline.max_header_bytes = eff_hdr;
+    srv.pipeline.max_body_bytes = eff_body;
+    srv.pipeline.max_h2_concurrent_streams = eff_h2;
+}
+
+// Configures automatic `Server` and `Date` header visibility on HTTP/1.1 wire responses.
+fn set_server_header_visibility(srv: HttpServer&, policy: ServerHeaderPolicy) {
+    match policy {
+        Standard => {
+            srv.omit_server_header = false;
+            srv.omit_date_header = false;
+        },
+        OmitServer => {
+            srv.omit_server_header = true;
+            srv.omit_date_header = false;
+        },
+        OmitDate => {
+            srv.omit_server_header = false;
+            srv.omit_date_header = true;
+        },
+        OmitBoth => {
+            srv.omit_server_header = true;
+            srv.omit_date_header = true;
+        },
+    };
+}
+
+// Applies listening TCP socket tuning options (`listen_backlog`, `so_reuseport`, `tcp_nodelay`) on `srv`.
+fn set_server_socket_options(srv: HttpServer&, opts: const ServerSocketOptions&) {
+    srv.listen_backlog = if opts.listen_backlog > 0 { opts.listen_backlog } else { 128 };
+    srv.so_reuseport = opts.so_reuseport;
+    srv.tcp_nodelay = opts.tcp_nodelay;
+}
+
+// Opens a TCP listening socket bound to `srv.host:srv.port` applying backlog, SO_REUSEPORT, and TCP_NODELAY.
+fn listen_http_server(srv: const HttpServer&) -> i64 {
+    let backlog = if srv.listen_backlog > 0 { srv.listen_backlog } else { 128 };
+    let fd = net::tcp_listen(srv.host[..], srv.port, backlog);
+    guard fd > 0 else { return -1; }
+    if srv.so_reuseport {
+        let _ = net::tcp_set_reuseport(fd, true);
+    }
+    let _ = net::tcp_set_nodelay(fd, srv.tcp_nodelay);
+    return fd;
+}
+
 // Performs a server-side TLS handshake over `client_fd` using `srv`'s configured TLS backend.
 // Returns `(transport, negotiated_alpn, status)`; caller retains `client_fd` ownership on failure.
 fn accept_tls_backend_connection(
     srv:        const HttpServer&,
     client_fd:  i64,
     alpn_wire:  const u8[:] = "",
-    timeout_ms: u32         = 5000,
+    timeout_ms: u32         = 0,
 ) -> net::Transport, u8[..64], tls::TlsBackendStatus {
     var empty_alpn: u8[..64] = [];
     guard client_fd > 0 && alpn_wire.len <= 64 else {
@@ -1053,17 +1219,18 @@ fn accept_tls_backend_connection(
         is_server:   true,
         ..
     };
-    guard bcfg.cert_pem_file.try_set(srv.tls_cert_pem_file[..]) &&
-        bcfg.key_pem_file.try_set(srv.tls_key_pem_file[..]) else {
-        return net::Transport.Disconnected, empty_alpn, tls::TlsBackendStatus.Error;
+    let ok_cfg, cfg_err = server_internal::populate_server_tls_backend_config(srv, alpn_wire, bcfg);
+    guard ok_cfg else {
+        return net::Transport.Disconnected, empty_alpn, cfg_err;
     }
-    if alpn_wire.len > 0 {
-        let _ = bcfg.alpn_wire.try_set(alpn_wire);
+    let eff_timeout = if timeout_ms > 0 {
+        timeout_ms
+    } else if srv.tls_handshake_timeout_ms > 0 {
+        srv.tls_handshake_timeout_ms
     } else {
-        let def_alpn: u8[12] = [2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
-        let _ = bcfg.alpn_wire.try_set(def_alpn[..]);
-    }
-    let ep_slot, neg_alpn, st = tls::endpoint_server_handshake_fd(client_fd, bcfg, timeout_ms);
+        5000
+    };
+    let ep_slot, neg_alpn, st = tls::endpoint_server_handshake_fd(client_fd, bcfg, eff_timeout);
     guard st == tls::TlsBackendStatus.Ok && ep_slot >= 0 else {
         return net::Transport.Disconnected, neg_alpn, st;
     }
@@ -1082,11 +1249,13 @@ fn serve_tls(
     var cork = core::new_cork_buffer();
     var peer_ip:      u8[..64] = [];
     var total_served: i64      = 0;
+    let eff_max = server_internal::resolve_accept_conn_limit(server, max_connections);
     init_run_state(server);
 
-    while !should_stop(server) && (max_connections == 0 || total_served < max_connections) {
+    while !should_stop(server) && (eff_max == 0 || total_served < eff_max) {
         let conn = net::tcp_accept(listener_fd, 200);
         if conn <= 0 { continue; }
+        let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
 
         let slot_idx, ok_hs = tls::server_handshake(conn, tls_config);
         if !ok_hs || !server_internal::verify_tls_slot_sni(server, slot_idx) {
@@ -1103,7 +1272,9 @@ fn serve_tls(
         pipe.pipe_reset();
         cork.cork_reset();
         net::tcp_get_peer_ip(conn, peer_ip);
-        let h2_idx = alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+        let h2_idx = alloc_temp_h2_session(
+            server.pipeline, server.server_name[..], 0, server.max_h2_concurrent_streams,
+        );
         if h2_idx < 0 || h2_idx >= REACTOR_MAX_H2_SESSIONS {
             total_served = core::add_sat_i64(total_served, 1);
             continue;
@@ -1181,11 +1352,12 @@ fn handle_connection_page_ring<B>(
 // Executes a live TCP accept and dispatch loop explicitly using PageRingBuffer.
 fn serve_page_ring(server: HttpServer&, listener_fd: i64, max_connections: i64 = 0) -> i64 {
     guard listener_fd > 0 else { return 0; }
+    let eff_max = server_internal::resolve_accept_conn_limit(server, max_connections);
     var ring = core::PageRingBuffer { .. };
     let ok = ring.page_ring_init(65536);
     guard ok else { return 0; }
     defer ring.page_ring_close();
-    return server_internal::serve_page_ring_loop(server, listener_fd, max_connections, ring);
+    return server_internal::serve_page_ring_loop(server, listener_fd, eff_max, ring);
 }
 
 // Serves a static file using memory-mapped pages directly to the wire response buffer.

@@ -41,27 +41,54 @@ var g_reactor_conn_pool: server_internal::ReactorConnectionPool = server_interna
 var g_reactor_accel: net::ReactorAccelRuntime = net::ReactorAccelRuntime { .. };
 
 // Opens a listening TCP socket configured for OS completion accelerators when supported.
-fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 128) -> i64 {
-    return net::listen_accelerated_tcp(server.host[..], server.port, server.accel_mode, backlog);
+fn reactor_listen_accelerated(server: const HttpServer&, backlog: i32 = 0) -> i64 {
+    let eff_backlog = if backlog > 0 {
+        backlog
+    } else if server.listen_backlog > 0 {
+        server.listen_backlog
+    } else {
+        128
+    };
+    let fd = net::listen_accelerated_tcp(server.host[..], server.port, server.accel_mode, eff_backlog);
+    guard fd > 0 else { return -1; }
+    if server.so_reuseport {
+        let _ = net::tcp_set_reuseport(fd, true);
+    }
+    let _ = net::tcp_set_nodelay(fd, server.tcp_nodelay);
+    return fd;
 }
 
 fn alloc_reactor_h2_session(
     pipeline:    ServerPipelineConfig&,
     server_name: const u8[:],
     now_ms:      u64,
+    max_streams: u32 = 0,
 ) -> i16 {
+    let eff_streams = if max_streams > 0 {
+        max_streams
+    } else if pipeline.max_h2_concurrent_streams > 0 {
+        pipeline.max_h2_concurrent_streams
+    } else {
+        100
+    };
+    let eff_hdr_list = if pipeline.max_header_bytes > 0 {
+        min(pipeline.max_header_bytes, 0x7FFFFFFF) as u32
+    } else {
+        16384
+    };
     for i in REACTOR_MAX_H2_SESSIONS {
-        if !g_default_reactor.h2_in_use[i] {
-            while g_default_reactor.h2_sessions.len <= i {
-                g_default_reactor.h2_sessions.push(server_internal::H2ServerSession { .. });
-            }
-            server_internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[i], pipeline);
-            g_default_reactor.h2_in_use[i] = true;
-            server_internal::reset_h2_server_session_inplace(
-                g_default_reactor.h2_sessions[i], server_name, now_ms,
-            );
-            return i as i16;
+        guard !g_default_reactor.h2_in_use[i] else { continue; }
+        while g_default_reactor.h2_sessions.len <= i {
+            g_default_reactor.h2_sessions.push(server_internal::H2ServerSession { .. });
         }
+        server_internal::cleanup_h2_server_session(g_default_reactor.h2_sessions[i], pipeline);
+        g_default_reactor.h2_in_use[i] = true;
+        server_internal::reset_h2_server_session_inplace(
+            g_default_reactor.h2_sessions[i], server_name, now_ms,
+        );
+        g_default_reactor.h2_sessions[i].conn.max_concurrent_streams = eff_streams;
+        g_default_reactor.h2_sessions[i].conn.max_header_list_size = eff_hdr_list;
+        return i as i16;
     }
     return -1;
 }
@@ -147,6 +174,19 @@ fn classify_ktls_recv_turn(
     return 0, buffered_len > 0, false;
 }
 
+inline fn resolve_reactor_slot_cap(server: const HttpServer&) -> i64 {
+    if server.max_connections > 0 {
+        return min(server.max_connections as i64, server_internal::REACTOR_MAX_DYNAMIC_SLOTS);
+    }
+    return server_internal::REACTOR_MAX_DYNAMIC_SLOTS;
+}
+
+inline fn resolve_reactor_idle_sec(server: const HttpServer&) -> u8 {
+    guard server.idle_timeout_ms > 0 else { return 15; }
+    let sec = max(div_euclid(core::add_sat_u64(server.idle_timeout_ms, 999), 1000), 1);
+    return min(sec, core::TICK_TIMER_MAX_DELTA) as u8;
+}
+
 // Executes a share-nothing reactor loop with OS completion/readiness acceleration and a `<Stage>` hook.
 fn serve_reactor_with_stage<Stage>(
     server:          HttpServer&,
@@ -158,14 +198,15 @@ fn serve_reactor_with_stage<Stage>(
     guard server_internal::reactor_prepare_loop(server, listener_fd) else { return 0; }
     defer net::reactor_close_accel(g_reactor_accel);
 
-    var table = SoAConnTable { max_slots: server_internal::REACTOR_MAX_DYNAMIC_SLOTS, .. };
-    var slot_pool = server_internal::ReactorSlotPool { .. };
+    let slot_cap = resolve_reactor_slot_cap(server);
+    var table = SoAConnTable { max_slots: slot_cap, .. };
+    var slot_pool = server_internal::ReactorSlotPool { max_slots: slot_cap, .. };
     var leftover_pool = slice_pool<u8> {};
 
     let dummy_tls_cfg = tls::ServerHandshakeConfig { .. };
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
-    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
+    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: resolve_reactor_idle_sec(server), .. };
     var last_sweep_sec:    i64  = 0;
     var turn_counter:      i64  = 0;
     var cached_now_ns:     u64  = 0;
@@ -230,13 +271,14 @@ fn serve_reactor_tls_with_stage<Stage>(
     guard server_internal::reactor_prepare_loop(server, listener_fd) else { return 0; }
     defer net::reactor_close_accel(g_reactor_accel);
 
-    var table = SoAConnTable { max_slots: server_internal::REACTOR_MAX_DYNAMIC_SLOTS, .. };
-    var slot_pool = server_internal::ReactorSlotPool { .. };
+    let slot_cap = resolve_reactor_slot_cap(server);
+    var table = SoAConnTable { max_slots: slot_cap, .. };
+    var slot_pool = server_internal::ReactorSlotPool { max_slots: slot_cap, .. };
     var leftover_pool = slice_pool<u8> {};
 
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
-    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: 15, .. };
+    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: resolve_reactor_idle_sec(server), .. };
     var last_sweep_sec:    i64  = 0;
     var turn_counter:      i64  = 0;
     var cached_now_ns:     u64  = 0;

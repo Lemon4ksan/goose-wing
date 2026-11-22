@@ -7,16 +7,19 @@ namespace server_internal;
 import std;
 import core;
 import rfc.http;
+import rfc.h2;
 import rfc.ws;
 import http.headers;
 import http.headers.chunked;
 import http.request;
 import http.response;
 import http.compression_dict;
+import http2.framing;
 import net.tcp;
 import net.proxy_protocol;
 import net.accel;
 import tls.session;
+import tls.backend;
 import realtime.ws_handshake;
 import realtime.websocket;
 import realtime.topic_tree;
@@ -116,6 +119,131 @@ fn serialize_and_init_ws_upgrade<B>(
     return session, true;
 }
 
+inline fn resolve_server_header_policy(server: const server::HttpServer&) -> server::ServerHeaderPolicy {
+    if server.omit_server_header && server.omit_date_header {
+        return server::ServerHeaderPolicy.OmitBoth;
+    }
+    if server.omit_server_header {
+        return server::ServerHeaderPolicy.OmitServer;
+    }
+    if server.omit_date_header {
+        return server::ServerHeaderPolicy.OmitDate;
+    }
+    return server::ServerHeaderPolicy.Standard;
+}
+
+inline fn resolve_accept_conn_limit(server: const server::HttpServer&, explicit_max: i64) -> i64 {
+    if explicit_max > 0 { return explicit_max; }
+    return if server.max_connections > 0 { server.max_connections } else { 0 };
+}
+
+inline fn resolve_server_recv_timeout_ms(server: const server::HttpServer&, has_buffered: bool) -> u32 {
+    let ms = if has_buffered { server.read_body_timeout_ms } else { server.read_header_timeout_ms };
+    return if ms > 0 { ms } else { 5000 };
+}
+
+fn populate_server_tls_backend_config(
+    srv:       const server::HttpServer&,
+    alpn_wire: const u8[:],
+    bcfg:      tls::TlsBackendConfig&,
+) -> bool, tls::TlsBackendStatus {
+    guard bcfg.cert_pem_file.try_set(srv.tls_cert_pem_file[..]) &&
+        bcfg.key_pem_file.try_set(srv.tls_key_pem_file[..]) else {
+        return false, tls::TlsBackendStatus.Error;
+    }
+    if srv.tls_require_client_cert {
+        guard srv.tls_ca_file.len > 0 && bcfg.ca_file.try_set(srv.tls_ca_file[..]) else {
+            return false, tls::TlsBackendStatus.VerifyError;
+        }
+    }
+    if srv.tls_keylog_file.len > 0 {
+        guard bcfg.keylog_file.try_set(srv.tls_keylog_file[..]) else {
+            return false, tls::TlsBackendStatus.Error;
+        }
+    }
+    if alpn_wire.len > 0 {
+        guard bcfg.alpn_wire.try_set(alpn_wire) else { return false, tls::TlsBackendStatus.Error; }
+    } else if srv.tls_alpn_wire.len > 0 {
+        guard bcfg.alpn_wire.try_set(srv.tls_alpn_wire[..]) else { return false, tls::TlsBackendStatus.Error; }
+    } else {
+        let def_alpn: u8[12] = [2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
+        let _ = bcfg.alpn_wire.try_set(def_alpn[..]);
+    }
+    return true, tls::TlsBackendStatus.Ok;
+}
+
+// Emits the initial HTTP/2 server SETTINGS frame reflecting `server.max_h2_concurrent_streams`
+// and `server.max_header_bytes`, returning 24 if the client preface was consumed.
+fn prepare_h2_server_preface<B>(
+    sess:       H2ServerSession&,
+    server:     const server::HttpServer&,
+    raw_stream: const u8[:],
+    out_wire:   B&,
+) -> i64 {
+    let max_streams = if server.max_h2_concurrent_streams > 0 { server.max_h2_concurrent_streams } else { 100 };
+    sess.conn.max_concurrent_streams = max_streams;
+    if server.max_header_bytes > 0 {
+        sess.conn.max_header_list_size = min(server.max_header_bytes, 0x7FFFFFFF) as u32;
+    }
+    if server.omit_server_header {
+        sess.server_name.clear();
+    }
+    guard !sess.preface_handled && server::is_h2_client_preface(raw_stream) else {
+        return 0;
+    }
+    sess.preface_handled = true;
+    let hdr = http2::FrameHeader {
+        length:     24,
+        frame_type: rfc::H2_FRAME_SETTINGS,
+        flags:      0,
+        stream_id:  0,
+    };
+    http2::encode_frame_header_to(hdr, out_wire);
+    out_wire.append_u16_be(rfc::H2_SETTING_MAX_CONCURRENT_STREAMS);
+    out_wire.append_u32_be(max_streams);
+    out_wire.append_u16_be(rfc::H2_SETTING_INITIAL_WINDOW_SIZE);
+    out_wire.append_u32_be(8192);
+    out_wire.append_u16_be(rfc::H2_SETTING_MAX_FRAME_SIZE);
+    out_wire.append_u32_be(16384);
+    out_wire.append_u16_be(rfc::H2_SETTING_ENABLE_CONNECT_PROTO);
+    out_wire.append_u32_be(1);
+    sess.server_settings_sent = true;
+    sess.pending_settings_ack = true;
+    return 24;
+}
+
+inline fn emit_h1_parse_status_error<B>(
+    server:   const server::HttpServer&,
+    status:   server::H1WireParseStatus,
+    wire_out: B&,
+) {
+    let policy = resolve_server_header_policy(server);
+    match status {
+        HeadersTooLarge => { server::serialize_headers_too_large_error(server.server_name[..], wire_out, policy); },
+        ContentTooLarge => { server::serialize_content_too_large_error(server.server_name[..], wire_out, policy); },
+        _ => { server::serialize_bad_request_error(server.server_name[..], wire_out, policy); },
+    };
+}
+
+inline fn is_http1_ingress_ready_or_over_limit(server: server::HttpServer&, in_buf: const u8[:]) -> bool {
+    let pre = server::inspect_h1_wire_header_limit(in_buf, server.max_header_bytes);
+    if pre == server::H1WireParseStatus.HeadersTooLarge || pre == server::H1WireParseStatus.BadRequest {
+        return true;
+    }
+    if pre == server::H1WireParseStatus.Ok && server.max_body_bytes >= 0
+        && server.max_body_bytes < server::MAX_SERVER_BODY_LIMIT {
+        var tracker = http::HeaderPresenceTracker { .. };
+        var body_start: i64 = 0;
+        var probe = http::Request { .. };
+        if parse_http1_request_headers(in_buf, probe, tracker, body_start)
+            && (tracker.mask & http::HDR_PRESENCE_CONTENT_LENGTH) != 0
+            && tracker.parsed_cl > server.max_body_bytes {
+            return true;
+        }
+    }
+    return server::has_ready_http1_request(in_buf, server.pipeline.hdr_scan_cursor);
+}
+
 inline fn strip_required_proxy_preface<B>(
     server:       const server::HttpServer&,
     wire_in:      const u8[:],
@@ -123,15 +251,16 @@ inline fn strip_required_proxy_preface<B>(
     wire_out:     B&,
 ) -> const u8[:], bool {
     var proxy_hdr = net::ProxyHeader { .. };
+    let policy = resolve_server_header_policy(server);
     guard net::detect_proxy_protocol(wire_in) != net::ProxyProtocolVersion.None else {
         // uWS #1927 / HAProxy spec: When PROXY protocol is required, connections
         // without a valid PROXY preface MUST NOT fall through to plain HTTP.
-        server::serialize_bad_request_error(server.server_name[..], wire_out);
+        server::serialize_bad_request_error(server.server_name[..], wire_out, policy);
         return wire_in, false;
     }
     let stripped, has_proxy = net::detect_and_strip_proxy_header(wire_in, proxy_hdr);
     guard has_proxy else {
-        server::serialize_bad_request_error(server.server_name[..], wire_out);
+        server::serialize_bad_request_error(server.server_name[..], wire_out, policy);
         return wire_in, false;
     }
     if proxy_hdr.src_ip_str.len > 0 {
@@ -226,12 +355,15 @@ fn try_prepare_single_h1_wire_turn(
     guard parse_http1_request_headers_fixed(raw_stream, g_turn_req, presence_tracker, body_start_idx) else {
         return false;
     }
+    let hdr_cap = if server.max_header_bytes > 0 { server.max_header_bytes } else { 16384 };
+    guard body_start_idx <= hdr_cap else { return false; }
 
     let has_te = (presence_tracker.mask & http::HDR_PRESENCE_TRANSFER_ENCODING) != 0;
     let has_cl = (presence_tracker.mask & http::HDR_PRESENCE_CONTENT_LENGTH) != 0;
     let cl_len = if has_cl { presence_tracker.parsed_cl } else { 0 };
+    let body_cap = if server.max_body_bytes >= 0 { server.max_body_bytes } else { server::MAX_SERVER_BODY_LIMIT };
     let total_consumed = core::add_sat_i64(body_start_idx, cl_len);
-    guard !has_te && cl_len >= 0 && cl_len <= server::MAX_SERVER_BODY_LIMIT && raw_stream.len >= total_consumed else {
+    guard !has_te && cl_len >= 0 && cl_len <= body_cap && raw_stream.len >= total_consumed else {
         return false;
     }
     if cl_len > 0 {
@@ -275,7 +407,9 @@ fn finish_single_h1_wire_turn<Stage, B>(
 
     check_and_apply_connection_close(g_turn_req, g_turn_res);
     apply_shutdown_connection_close(server, g_turn_res);
-    server::serialize_http1_response(g_turn_res, server.server_name[..], wire_out);
+    server::serialize_http1_response(
+        g_turn_res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+    );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 
     return out_outcome;
@@ -292,9 +426,11 @@ fn execute_single_h1_wire_turn<Stage, B>(
     stage:        Stage&,
 ) -> server::PipelineOutcome, bool {
     server::reset_server_request_fast(req);
-    let ok_parse, _ = server::parse_http1_wire_request(raw_stream, req);
-    guard ok_parse else {
-        server::serialize_bad_request_error(server.server_name[..], wire_out);
+    let parse_st, _ = server::parse_http1_wire_request_with_limits(
+        raw_stream, req, server.max_header_bytes, server.max_body_bytes,
+    );
+    guard parse_st == server::H1WireParseStatus.Ok else {
+        emit_h1_parse_status_error(server, parse_st, wire_out);
         return server::PipelineOutcome.Handled, false;
     }
 
@@ -325,7 +461,9 @@ fn execute_single_h1_wire_turn<Stage, B>(
     check_and_apply_connection_close(req, res);
     apply_shutdown_connection_close(server, res);
 
-    server::serialize_http1_response(res, server.server_name[..], wire_out);
+    server::serialize_http1_response(
+        res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+    );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 
     return outcome, true;
@@ -495,9 +633,26 @@ fn dispatch_pipelined_request<Stage, B>(
     );
 
     let wants_close = check_and_apply_connection_close(req, res);
-    server::serialize_http1_response(res, server.server_name[..], wire_out);
-    server.requests_processed++;
+    server::serialize_http1_response(
+        res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+    );
+    server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     return wants_close;
+}
+
+inline fn classify_h1_pipe_parse_failure<B>(
+    server:   const server::HttpServer&,
+    parse_st: server::H1WireParseStatus,
+    stream:   const u8[:],
+    pipe:     core::PipeBuffer&,
+    wire_out: B&,
+) -> PipeStepResult {
+    pipe.advance_to(0, pipe.readable_len());
+    if parse_st == server::H1WireParseStatus.Incomplete && is_possible_http_method_prefix(stream) {
+        return PipeStepResult.Stop;
+    }
+    emit_h1_parse_status_error(server, parse_st, wire_out);
+    return PipeStepResult.Error;
 }
 
 fn process_pipelined_pipe_step<Stage, B>(
@@ -513,28 +668,23 @@ fn process_pipelined_pipe_step<Stage, B>(
 ) -> PipeStepResult {
     let stream = pipe.readable_slice();
     server::reset_server_request_fast(req);
-    let ok_parse, consumed = server::parse_http1_wire_request(stream, req);
+    let parse_st, consumed = server::parse_http1_wire_request_with_limits(
+        stream, req, server.max_header_bytes, server.max_body_bytes,
+    );
 
-    if !ok_parse || consumed <= 0 {
-        var keep = false;
-        let _ = server::handle_pipelined_parse_failure(server.server_name[..], stream, req, wire_out, keep);
-        if keep {
-            pipe.advance_to(0, pipe.readable_len());
-            return PipeStepResult.Stop;
-        }
-        pipe.advance_to(0, pipe.readable_len());
-        return PipeStepResult.Error;
+    if parse_st != server::H1WireParseStatus.Ok || consumed <= 0 {
+        return classify_h1_pipe_parse_failure(server, parse_st, stream, pipe, wire_out);
     }
 
     if try_handle_pipelined_websocket(server, req, wire_out) {
-        total_handled++;
+        total_handled = core::add_sat_i64(total_handled, 1);
         pipe.advance_to(consumed, consumed);
         pipe.advance_to(pipe.readable_len(), pipe.readable_len());
         return PipeStepResult.Stop;
     }
 
     let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
-    total_handled++;
+    total_handled = core::add_sat_i64(total_handled, 1);
     pipe.advance_to(consumed, consumed);
 
     if req.method[..] == "CONNECT" || wants_close {
@@ -553,7 +703,9 @@ inline fn is_noop_server_stage<Stage>(stage: const Stage&) -> bool {
 }
 
 inline fn can_try_fast_l0_static<Stage>(server: const server::HttpServer&, stage: const Stage&) -> bool {
-    guard is_noop_server_stage(stage) else { return false; }
+    guard is_noop_server_stage(stage) && !server.omit_server_header && !server.omit_date_header else {
+        return false;
+    }
     guard server.pipeline.router.l0_table.count > 0 && server.pipeline.router.static_payloads.len > 0 else {
         return false;
     }
@@ -789,7 +941,8 @@ fn try_fast_l0_static_turn<B>(
     out_sp_idx:   i32&,
 ) -> bool {
     let header_end_idx = core::add_sat_i64(hdr_end, 4);
-    guard hdr_end >= 14 && header_end_idx <= 8192 else { return false; }
+    let hdr_limit = if server.max_header_bytes > 0 { min(8192, server.max_header_bytes) } else { 8192 };
+    guard hdr_end >= 14 && header_end_idx <= hdr_limit else { return false; }
     guard core::add_sat_i64(wire_out.len, 768) <= wire_out.cap else { return false; }
 
     let header_bytes = stream[..header_end_idx];
@@ -878,7 +1031,8 @@ fn drain_fast_l0_static_stream<B>(
         let hdr_end = core::fast_find_crlfcrlf(stream);
         server::prof_leave(_pf);
         if hdr_end < 0 {
-            if stream.len <= 8192 && is_possible_http_method_prefix(stream) {
+            let hdr_limit = if server.max_header_bytes > 0 { min(8192, server.max_header_bytes) } else { 8192 };
+            if stream.len <= hdr_limit && is_possible_http_method_prefix(stream) {
                 return stream, true;
             }
             return stream, false;
@@ -913,6 +1067,19 @@ enum StreamTurnResult {
     KeepStreamFail,
 }
 
+inline fn classify_h1_stream_parse_failure<B>(
+    server:   const server::HttpServer&,
+    parse_st: server::H1WireParseStatus,
+    stream:   const u8[:],
+    wire_out: B&,
+) -> StreamTurnResult {
+    if parse_st == server::H1WireParseStatus.Incomplete && is_possible_http_method_prefix(stream) {
+        return StreamTurnResult.KeepStreamFail;
+    }
+    emit_h1_parse_status_error(server, parse_st, wire_out);
+    return StreamTurnResult.ParseFail;
+}
+
 fn process_pipelined_stream_turn<Stage, B>(
     server:           server::HttpServer&,
     client_ip:        const u8[:],
@@ -927,26 +1094,25 @@ fn process_pipelined_stream_turn<Stage, B>(
     conn_wants_close: bool&,
     stage:            Stage&,
 ) -> StreamTurnResult, i64 {
-    guard wire_out.len + 256 <= wire_out.cap else { return StreamTurnResult.Stop, 0; }
+    guard core::add_sat_i64(wire_out.len, 256) <= wire_out.cap else { return StreamTurnResult.Stop, 0; }
 
     server::reset_server_request_fast(req);
-    let ok_parse, consumed = server::parse_http1_wire_request(stream, req);
-    guard ok_parse && consumed > 0 else {
-        var keep = false;
-        let _ = server::handle_pipelined_parse_failure(server.server_name[..], stream, req, wire_out, keep);
-        let st = if keep { StreamTurnResult.KeepStreamFail } else { StreamTurnResult.ParseFail };
-        return st, 0;
+    let parse_st, consumed = server::parse_http1_wire_request_with_limits(
+        stream, req, server.max_header_bytes, server.max_body_bytes,
+    );
+    guard parse_st == server::H1WireParseStatus.Ok && consumed > 0 else {
+        return classify_h1_stream_parse_failure(server, parse_st, stream, wire_out), 0;
     }
 
     if try_handle_pipelined_websocket(server, req, wire_out) {
-        total_handled++;
-        total_consumed += consumed;
+        total_handled = core::add_sat_i64(total_handled, 1);
+        total_consumed = core::add_sat_i64(total_consumed, consumed);
         return StreamTurnResult.Stop, consumed;
     }
 
     let wants_close = dispatch_pipelined_request(server, client_ip, req, res, now_ns, wire_out, stage);
-    total_handled++;
-    total_consumed += consumed;
+    total_handled = core::add_sat_i64(total_handled, 1);
+    total_consumed = core::add_sat_i64(total_consumed, consumed);
 
     if wants_close || req.method[..] == "CONNECT" {
         conn_wants_close = true;
@@ -1025,12 +1191,15 @@ fn try_prepare_single_pipeline_turn<B>(
     guard parse_http1_request_headers_fixed(stream, g_turn_req, presence_tracker, body_start_idx) else {
         return false;
     }
+    let hdr_cap = if server.max_header_bytes > 0 { server.max_header_bytes } else { 16384 };
+    guard body_start_idx <= hdr_cap else { return false; }
 
     let has_te = (presence_tracker.mask & http::HDR_PRESENCE_TRANSFER_ENCODING) != 0;
     let has_cl = (presence_tracker.mask & http::HDR_PRESENCE_CONTENT_LENGTH) != 0;
     let cl_len = if has_cl { presence_tracker.parsed_cl } else { 0 };
+    let body_cap = if server.max_body_bytes >= 0 { server.max_body_bytes } else { server::MAX_SERVER_BODY_LIMIT };
     let expected_end = core::add_sat_i64(body_start_idx, cl_len);
-    guard !has_te && cl_len >= 0 && cl_len <= server::MAX_SERVER_BODY_LIMIT && expected_end == stream.len else {
+    guard !has_te && cl_len >= 0 && cl_len <= body_cap && expected_end == stream.len else {
         return false;
     }
 
@@ -1070,7 +1239,9 @@ fn finish_single_pipeline_turn<Stage, B>(
     );
 
     let wants_close = check_and_apply_connection_close(g_turn_req, g_turn_res);
-    server::serialize_http1_response(g_turn_res, server.server_name[..], wire_out);
+    server::serialize_http1_response(
+        g_turn_res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+    );
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
 
     if wants_close || g_turn_req.method[..] == "CONNECT" {
@@ -1090,9 +1261,12 @@ inline fn handle_h2_pipe_ingress<Stage, B>(
     stage:      Stage&,
 ) -> i64, bool {
     let stream = pipe.readable_slice();
-    let consumed_h2, ok_h2 = server_internal::handle_h2_server_ingress(
-        h2_sess, server.pipeline, server.timer, client_ip, stream, now_ns / 1000000, wire_out, stage,
+    let pref_len = prepare_h2_server_preface(h2_sess, server, stream, wire_out);
+    let consumed_body, ok_h2 = server_internal::handle_h2_server_ingress(
+        h2_sess, server.pipeline, server.timer, client_ip, stream[pref_len..],
+        div_euclid(now_ns, 1000000), wire_out, stage,
     );
+    let consumed_h2 = core::add_sat_i64(pref_len, consumed_body);
     if ok_h2 {
         pipe.advance_to(consumed_h2, consumed_h2);
         server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
@@ -1113,15 +1287,19 @@ inline fn step_h2_server_session_buf<InBuf, OutBuf>(
     out_wire: OutBuf&,
 ) -> bool {
     out_wire.clear();
-    let consumed, ok = server_internal::handle_h2_server_ingress(
+    let pref_len = prepare_h2_server_preface(
+        server::g_default_reactor.h2_sessions[h2_idx], server, h2_in[..], out_wire,
+    );
+    let consumed_body, ok = server_internal::handle_h2_server_ingress(
         server::g_default_reactor.h2_sessions[h2_idx],
         server.pipeline,
         server.timer,
         peer_ip,
-        h2_in[..],
+        h2_in[pref_len..],
         div_euclid(now_ns, 1000000),
         out_wire,
     );
+    let consumed = core::add_sat_i64(pref_len, consumed_body);
     if out_wire.len > 0 {
         let _ = net::tcp_send(conn_fd, out_wire[..]);
     }
@@ -1142,7 +1320,9 @@ fn serve_h2_connection_buf<InBuf>(
 ) -> bool {
     guard conn_fd > 0 else { return false; }
     server.pipeline.trust_proxy_headers = server.pipeline.trust_proxy_headers || server.trust_proxy_headers;
-    let h2_idx = server::alloc_temp_h2_session(server.pipeline, server.server_name[..], 1000000000);
+    let h2_idx = server::alloc_temp_h2_session(
+        server.pipeline, server.server_name[..], 1000000000, server.max_h2_concurrent_streams,
+    );
     guard h2_idx >= 0 && h2_idx < server::REACTOR_MAX_H2_SESSIONS else { return false; }
     defer server::free_reactor_h2_session(h2_idx as i16, server.pipeline);
 
@@ -1209,7 +1389,9 @@ fn serve_http1_upgraded_ws<Stage, InBuf, FragBuf, OutBuf>(
         }
     }
     out_wire.clear();
-    server::serialize_http1_response(ws_res, server.server_name[..], out_wire);
+    server::serialize_http1_response(
+        ws_res, server.server_name[..], out_wire, 0, resolve_server_header_policy(server),
+    );
     let _ = net::tcp_send(conn_fd, out_wire[..]);
     server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
     in_buf.compact_wire_buffer(consumed);
@@ -1250,7 +1432,9 @@ fn dispatch_http1_connection_turn<Stage, OutBuf>(
     if out_wire.len >= 12288 {
         flush_http1_cork_buf(conn_fd, out_wire);
     }
-    server::serialize_http1_response(res, server.server_name[..], out_wire);
+    server::serialize_http1_response(
+        res, server.server_name[..], out_wire, 0, resolve_server_header_policy(server),
+    );
     return wants_ka;
 }
 
@@ -1296,10 +1480,12 @@ fn process_ready_http1_connection_buf<Stage, InBuf, FragBuf, OutBuf>(
     out_wire:    OutBuf&,
 ) -> bool {
     var req = http::new_request("GET", "");
-    let ok_req, consumed = server::parse_http1_wire_request(in_buf[..], req);
-    guard ok_req && consumed > 0 else {
+    let parse_st, consumed = server::parse_http1_wire_request_with_limits(
+        in_buf[..], req, server.max_header_bytes, server.max_body_bytes,
+    );
+    guard parse_st == server::H1WireParseStatus.Ok && consumed > 0 else {
         flush_http1_cork_buf(conn_fd, out_wire);
-        server::serialize_bad_request_error(server.server_name[..], out_wire);
+        emit_h1_parse_status_error(server, parse_st, out_wire);
         flush_http1_cork_buf(conn_fd, out_wire);
         return false;
     }
@@ -1386,7 +1572,8 @@ fn step_page_ring_conn<Stage>(
     cork:    core::CorkBuffer&,
     stage:   Stage&,
 ) -> bool {
-    let recvd = ring.page_ring_recv(conn, 65536, 5000);
+    let recv_ms = resolve_server_recv_timeout_ms(server, ring.count > 0);
+    let recvd = ring.page_ring_recv(conn, 65536, recv_ms);
     guard recvd > 0 else { return false; }
     let now_ns = core::monotonic_now().as_nanos();
     let _, ok_handle = server::handle_connection_page_ring(server, peer_ip, ring, now_ns, cork, stage);
@@ -1420,6 +1607,7 @@ fn serve_page_ring_loop<Stage>(
         if conn <= 0 {
             continue;
         }
+        let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
         defer net::tcp_close(conn);
 
         ring.page_ring_clear();
@@ -1459,7 +1647,8 @@ fn step_pipe_loop_conn<Stage>(
     stage:   Stage&,
 ) -> bool {
     guard !server::should_stop(server) else { return false; }
-    let recvd = net::tcp_recv_pipe(conn, pipe, 4096, 5000);
+    let recv_ms = resolve_server_recv_timeout_ms(server, pipe.readable_len() > 0);
+    let recvd = net::tcp_recv_pipe(conn, pipe, 4096, recv_ms);
     guard recvd > 0 else { return false; }
     let now_ns = core::monotonic_now().as_nanos();
     let _, ok = server::handle_connection_pipe(
@@ -1495,12 +1684,15 @@ fn serve_pipe_loop<Stage>(
         if conn <= 0 {
             continue;
         }
+        let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
         defer net::tcp_close(conn);
 
         pipe.pipe_reset();
         cork.cork_reset();
         net::tcp_get_peer_ip(conn, peer_ip);
-        let h2_idx = server::alloc_temp_h2_session(server.pipeline, server.server_name[..], 0);
+        let h2_idx = server::alloc_temp_h2_session(
+            server.pipeline, server.server_name[..], 0, server.max_h2_concurrent_streams,
+        );
         if h2_idx < 0 || h2_idx >= server::REACTOR_MAX_H2_SESSIONS {
             total_served = core::add_sat_i64(total_served, 1);
             continue;
@@ -1537,7 +1729,8 @@ fn step_tls_loop_conn(
     cork:     core::CorkBuffer&,
     h2_idx:   i64,
 ) -> bool {
-    let recvd = server::tls_recv_pipe(conn, slot_idx, pipe, 4096, 5000);
+    let recv_ms = resolve_server_recv_timeout_ms(server, pipe.readable_len() > 0);
+    let recvd = server::tls_recv_pipe(conn, slot_idx, pipe, 4096, recv_ms);
     guard recvd > 0 else { return false; }
 
     let now_ns = core::monotonic_now().as_nanos();
@@ -1579,7 +1772,9 @@ fn handle_page_ring_h2_preface<Stage, B>(
         out_ok = true;
         return 0;
     }
-    let h2_idx = server::alloc_temp_h2_session(server.pipeline, server.server_name[..], now_ns);
+    let h2_idx = server::alloc_temp_h2_session(
+        server.pipeline, server.server_name[..], now_ns, server.max_h2_concurrent_streams,
+    );
     guard h2_idx >= 0 && h2_idx < server::REACTOR_MAX_H2_SESSIONS else {
         out_done = true;
         out_ok = false;
@@ -1587,21 +1782,25 @@ fn handle_page_ring_h2_preface<Stage, B>(
         return 0;
     }
     defer server::free_reactor_h2_session(h2_idx as i16, server.pipeline);
-    let consumed_h2, ok_h2 = server_internal::handle_h2_server_ingress(
+    let pref_len = prepare_h2_server_preface(
+        server::g_default_reactor.h2_sessions[h2_idx], server, peek_slice, wire_out,
+    );
+    let consumed_body, ok_h2 = server_internal::handle_h2_server_ingress(
         server::g_default_reactor.h2_sessions[h2_idx],
         server.pipeline,
         server.timer,
         client_ip,
-        peek_slice,
-        now_ns / 1000000,
+        peek_slice[pref_len..],
+        div_euclid(now_ns, 1000000),
         wire_out,
         stage,
     );
+    let consumed_h2 = core::add_sat_i64(pref_len, consumed_body);
     out_done = true;
     out_ok = ok_h2;
     if ok_h2 {
         ring.page_ring_discard(consumed_h2);
-        server.requests_processed++;
+        server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
         return 1;
     }
     ring.page_ring_clear();

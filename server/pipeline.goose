@@ -40,41 +40,44 @@ struct ServerCompressAndEtagMemo {
 }
 
 struct ServerPipelineConfig {
-    limiter:                 security::ShardedGcraLimiter      = security::ShardedGcraLimiter { .. },
-    tier_limiters:           security::ShardedGcraLimiter[..4] = [],
-    csrf_guard:              security::CrossOriginGuard        = security::CrossOriginGuard { .. },
-    cors_policy:             security::CorsPolicy              = security::CorsPolicy { .. },
-    router:                  RadixRouter                       = RadixRouter { .. },
-    private_jar:             security::PrivateJar              = security::PrivateJar { .. },
-    edge_filter:             EdgeFilter                        = EdgeFilter { .. },
-    route_cache:             HttpRouteCache                    = HttpRouteCache { .. },
-    jwks:                    auth::Jwks                        = auth::Jwks { .. },
-    jwt_options:             auth::JwtValidationOptions        = auth::JwtValidationOptions { .. },
-    security_txt:            http::SecurityTxt                 = http::SecurityTxt { .. },
-    dpop_replay_cache:       auth::DPoPReplayCache             = auth::DPoPReplayCache { .. },
-    dpop_public_key:         u8[..64]                          = [],
-    sig_key_id:              u8[..64]                          = [],
-    sig_public_key:          u8[..64]                          = [],
-    verify_request_digest:   bool                              = false,
-    emit_problem_details:    bool                              = false,
-    wire_pipeline:           wire::WirePipeline                = wire::default_server_pipeline(),
-    header_pool:             server_internal::HeaderMapPool    = server_internal::HeaderMapPool { .. },
-    ext_pool:                server_internal::ExtensionsPool   = server_internal::ExtensionsPool { .. },
-    slab_pool:               server_internal::SpillSlabPool    = server_internal::SpillSlabPool { .. },
-    memo:                    ServerCompressAndEtagMemo         = ServerCompressAndEtagMemo { .. },
-    target_host:             u8[..256]                         = "example.com",
-    deadline_ns:             u64                               = 30000000000, // 30s
-    gzip_level:              i32                               = 1,
-    enable_rate_limiter:     bool                              = true,
-    enable_csrf_guard:       bool                              = true,
-    enable_cors:             bool                              = true,
-    enable_slowloris_timer:  bool                              = true,
-    tls_enabled:             bool                              = true,
-    trust_proxy_headers:     bool                              = false,
-    server_pso_capabilities: u64                               = 0xFFFFFFFFFFFFFFFF,
-    hdr_scan_cursor:         i64                               = 0,
-    last_valid_host:         u8[..128]                         = [],
-    has_valid_host:          bool                              = false,
+    limiter:                   security::ShardedGcraLimiter      = security::ShardedGcraLimiter { .. },
+    tier_limiters:             security::ShardedGcraLimiter[..4] = [],
+    csrf_guard:                security::CrossOriginGuard        = security::CrossOriginGuard { .. },
+    cors_policy:               security::CorsPolicy              = security::CorsPolicy { .. },
+    router:                    RadixRouter                       = RadixRouter { .. },
+    private_jar:               security::PrivateJar              = security::PrivateJar { .. },
+    edge_filter:               EdgeFilter                        = EdgeFilter { .. },
+    route_cache:               HttpRouteCache                    = HttpRouteCache { .. },
+    jwks:                      auth::Jwks                        = auth::Jwks { .. },
+    jwt_options:               auth::JwtValidationOptions        = auth::JwtValidationOptions { .. },
+    security_txt:              http::SecurityTxt                 = http::SecurityTxt { .. },
+    dpop_replay_cache:         auth::DPoPReplayCache             = auth::DPoPReplayCache { .. },
+    dpop_public_key:           u8[..64]                          = [],
+    sig_key_id:                u8[..64]                          = [],
+    sig_public_key:            u8[..64]                          = [],
+    verify_request_digest:     bool                              = false,
+    emit_problem_details:      bool                              = false,
+    wire_pipeline:             wire::WirePipeline                = wire::default_server_pipeline(),
+    header_pool:               server_internal::HeaderMapPool    = server_internal::HeaderMapPool { .. },
+    ext_pool:                  server_internal::ExtensionsPool   = server_internal::ExtensionsPool { .. },
+    slab_pool:                 server_internal::SpillSlabPool    = server_internal::SpillSlabPool { .. },
+    memo:                      ServerCompressAndEtagMemo         = ServerCompressAndEtagMemo { .. },
+    target_host:               u8[..256]                         = "example.com",
+    deadline_ns:               u64                               = 30000000000, // 30s
+    gzip_level:                i32                               = 1,
+    enable_rate_limiter:       bool                              = true,
+    enable_csrf_guard:         bool                              = true,
+    enable_cors:               bool                              = true,
+    enable_slowloris_timer:    bool                              = true,
+    tls_enabled:               bool                              = true,
+    trust_proxy_headers:       bool                              = false,
+    server_pso_capabilities:   u64                               = 0xFFFFFFFFFFFFFFFF,
+    hdr_scan_cursor:           i64                               = 0,
+    last_valid_host:           u8[..128]                         = [],
+    has_valid_host:            bool                              = false,
+    max_header_bytes:          i64                               = 16384,
+    max_body_bytes:            i64                               = 10485760,
+    max_h2_concurrent_streams: u32                               = 100,
 }
 
 // Initializes an existing `ServerPipelineConfig` in place without allocating a stack temporary.
@@ -91,6 +94,9 @@ fn init_server_pipeline_config_inplace(
     cfg.gzip_level = 1;
     cfg.trust_proxy_headers = false;
     cfg.server_pso_capabilities = 0xFFFFFFFFFFFFFFFF;
+    cfg.max_header_bytes = 16384;
+    cfg.max_body_bytes = 10485760;
+    cfg.max_h2_concurrent_streams = 100;
 }
 
 fn new_server_pipeline_config(target_host: const u8[:], quota: security::GcraQuota) -> ServerPipelineConfig {
@@ -1045,6 +1051,11 @@ fn feed_server_body_chunk_with_stage<UserStage>(
     }
     let active_chunk = if is_compressed { decoded[..] } else { chunk };
     state.bytes_processed = core::add_sat_u64(state.bytes_processed, active_chunk.len as u64);
+    if cfg.max_body_bytes >= 0 && state.bytes_processed > (cfg.max_body_bytes as u64) {
+        state.has_error = true;
+        res.status_code = rfc::STATUS_CONTENT_TOO_LARGE;
+        return wire::StageVerdict.ShortCircuit { status_code: 413 };
+    }
     if state.verify_digest {
         core::sha256_update(state.sha256_ctx, active_chunk);
         if is_last {
@@ -1158,6 +1169,27 @@ fn resume_server_pipeline_egress<UserStage>(
     );
 }
 
+// Validates request header and body sizes against configured DoS ceilings.
+// Returns 0 when within limits, 431 for oversized headers, or 413 for oversized body/Content-Length.
+fn check_pipeline_dos_limits(cfg: const ServerPipelineConfig&, req: const http::Request&) -> i32 {
+    if cfg.max_header_bytes > 0 && req.headers.raw_buf.len > cfg.max_header_bytes {
+        return rfc::STATUS_REQUEST_HEADER_FIELDS_TOO_LARGE;
+    }
+    guard cfg.max_body_bytes >= 0 else { return 0; }
+    if req.body.len > cfg.max_body_bytes {
+        return rfc::STATUS_CONTENT_TOO_LARGE;
+    }
+    let check_cl = req.presence_mask == 0 || (req.presence_mask & http::HDR_PRESENCE_CONTENT_LENGTH) != 0;
+    guard check_cl else { return 0; }
+    let cl_raw = http::header(req, rfc::HEADER_CONTENT_LENGTH);
+    guard cl_raw.len > 0 else { return 0; }
+    let cl_val, ok_cl = cl_raw.trim_lws().parse_i64_dec();
+    if ok_cl && cl_val > cfg.max_body_bytes {
+        return rfc::STATUS_CONTENT_TOO_LARGE;
+    }
+    return 0;
+}
+
 // Executes an incoming request using a caller-owned `ServerStageCtx` carrying `wake_token`.
 // Returns `PipelineOutcome.Pending` if `suspend_server_request(sctx)` was called during handling.
 fn execute_server_pipeline_async<UserStage>(
@@ -1171,6 +1203,13 @@ fn execute_server_pipeline_async<UserStage>(
     sctx:       ServerStageCtx&,
     user_stage: UserStage&,
 ) -> PipelineOutcome {
+    let limit_status = check_pipeline_dos_limits(cfg, req);
+    if limit_status != 0 {
+        res.status_code = limit_status;
+        http::set_header(res, "Connection", "close");
+        return PipelineOutcome.Handled;
+    }
+
     let eff_ip = extract_effective_client_ip(cfg.trust_proxy_headers, client_ip, req);
 
     // Stage 1: Connection liveliness / timeout check (Slowloris defense)
