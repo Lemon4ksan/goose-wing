@@ -991,6 +991,64 @@ fn test_tls_stream_mtls_and_tcp_opts() {
         (ca_st != tls::TlsBackendStatus.Ok);
     print("mtls_fail_closed_ok=", fail_closed_ok);
     // CHECK: mtls_fail_closed_ok=true
+
+    // 6e. Non-blocking net::tcp_connect_begin + net::tcp_connect_poll + IP-literal TLS SAN ("127.0.0.1")
+    let nb_lfd = net::tcp_listen("127.0.0.1", 0, 16);
+    assert(nb_lfd > 0);
+    let _ = net::tcp_set_nonblocking(nb_lfd, true);
+    let nb_port = net::tcp_getsockname_port(nb_lfd);
+    assert(nb_port > 0);
+
+    var nb_st: i32 = -1;
+    let nb_cfd = net::tcp_connect_begin("127.0.0.1", nb_port, nb_st);
+    assert(nb_cfd > 0 && (nb_st == 0 || nb_st == 1));
+    var nb_connected = (nb_st == 0);
+    for _ in 100 {
+        if nb_connected { break; }
+        let pst = net::tcp_connect_poll(nb_cfd);
+        if pst == 0 {
+            nb_connected = true;
+            break;
+        }
+        assert(pst == 1);
+        sleep_ms(1);
+    }
+    var nb_sfd: i64 = -1;
+    for _ in 100 {
+        nb_sfd = net::tcp_accept_nonblocking(nb_lfd);
+        if nb_sfd > 0 { break; }
+        sleep_ms(1);
+    }
+    assert(nb_connected && nb_sfd > 0);
+    let _ = net::tcp_set_nonblocking(nb_sfd, true);
+
+    var ip_cli_cfg = tls::TlsBackendConfig {
+        kind:                 tls::TlsBackendKind.Auto,
+        is_server:            false,
+        insecure_skip_verify: false,
+        trust_store:          trust,
+        ..
+    };
+    assert(ip_cli_cfg.server_name.try_set("127.0.0.1"));
+    var ip_c, ico = tls::tls_stream_open(nb_cfd, ip_cli_cfg);
+    var ip_s, iso = tls::tls_stream_open(nb_sfd, srv_cfg);
+    assert(ico == tls::TlsBackendStatus.Ok && iso == tls::TlsBackendStatus.Ok);
+    for _ in 200 {
+        let _ = tls::tls_stream_step_handshake(ip_c);
+        let _ = tls::tls_stream_step_handshake(ip_s);
+        if tls::tls_endpoint_is_established(ip_c.ep) && tls::tls_endpoint_is_established(ip_s.ep) {
+            break;
+        }
+        sleep_ms(1);
+    }
+    let ip_tls_ok = tls::tls_endpoint_is_established(ip_c.ep) && tls::tls_endpoint_is_established(ip_s.ep);
+    tls::tls_stream_close(ip_c);
+    tls::tls_stream_close(ip_s);
+    net::tcp_close(nb_cfd);
+    net::tcp_close(nb_sfd);
+    net::tcp_close(nb_lfd);
+    print("nb_connect_poll_and_ip_san_ok=", nb_connected && ip_tls_ok);
+    // CHECK: nb_connect_poll_and_ip_san_ok=true
 }
 
 fn main() {

@@ -40,6 +40,7 @@ extern fn native_tcp_accept(listener_fd: i64, timeout_ms: u32) -> i64 = "wing_tc
 extern fn native_tcp_connect(host: const u8[:], port: u16, timeout_ms: u32) -> i64 = "wing_tcp_connect";
 extern fn native_tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 = "wing_tcp_connect_begin";
 extern fn native_tcp_connect_finish(sock_fd: i64) -> i32 = "wing_tcp_connect_finish";
+extern fn native_tcp_connect_poll(sock_fd: i64) -> i32 = "wing_tcp_connect_poll";
 extern fn native_tcp_send(sock_fd: i64, data: const u8[:]) -> i32 = "wing_tcp_send";
 extern fn native_tcp_send2(sock_fd: i64, hdr: const u8[:], payload: const u8[:]) -> i32 = "wing_tcp_send2";
 extern fn native_tcp_recv(sock_fd: i64, buf: u8[:], timeout_ms: u32) -> i32 = "wing_tcp_recv";
@@ -484,15 +485,6 @@ fn tcp_connect_unix_begin(path: const u8[:], out_state: i32&) -> i64 {
     }
     net::tcp_init();
     return native_tcp_connect_unix_begin(path, out_state);
-}
-
-fn tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 {
-    guard host.len > 0 && port != 0 else {
-        out_state = -1;
-        return -1;
-    }
-    net::tcp_init();
-    return native_tcp_connect_begin(host, port, out_state);
 }
 
 fn tcp_connect_finish(fd: i64) -> bool {

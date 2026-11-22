@@ -113,11 +113,29 @@ fn tcp_accept(listener_fd: i64, timeout_ms: u32 = 0) -> i64 {
     return net_internal::native_tcp_accept(listener_fd, timeout_ms);
 }
 
-// Connects to a remote TCP endpoint with timeout in milliseconds.
+// Connects to a remote TCP endpoint (IPv4, IPv6, or DNS) with timeout in milliseconds.
 // Returns connected socket handle (> 0), or -1 on error/timeout.
 fn tcp_connect(host: const u8[:], port: u16, timeout_ms: u32 = 5000) -> i64 {
     tcp_init();
     return net_internal::native_tcp_connect(host, port, timeout_ms);
+}
+
+// Initiates a non-blocking TCP connection (IPv4, IPv6, or DNS hostname).
+// Sets `out_state` to 0 (connected immediately), 1 (in progress), or -1 (failed).
+fn tcp_connect_begin(host: const u8[:], port: u16, out_state: i32&) -> i64 {
+    guard host.len > 0 && port != 0 else {
+        out_state = -1;
+        return -1;
+    }
+    tcp_init();
+    return net_internal::native_tcp_connect_begin(host, port, out_state);
+}
+
+// Non-blocking readiness check for an in-progress TCP connect socket.
+// Returns 0 when connected, 1 while still in progress, or -1 on error/refusal.
+fn tcp_connect_poll(fd: i64) -> i32 {
+    guard fd > 0 else { return -1; }
+    return net_internal::native_tcp_connect_poll(fd);
 }
 
 // Sends bytes over TCP socket.

@@ -16,6 +16,7 @@
 #ifdef WING_TLS_LINK_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
+#include <openssl/x509v3.h>
 #endif
 
 #ifdef _WIN32
@@ -181,6 +182,8 @@ typedef struct {
     int (*SSL_get_error)(const void *, int);
     long (*SSL_ctrl)(void *, int, long, void *);
     int (*SSL_set1_host)(void *, const char *);
+    void *(*SSL_get0_param)(void *);
+    int (*X509_VERIFY_PARAM_set1_ip_asc)(void *, const char *);
     int (*SSL_set_alpn_protos)(void *, const unsigned char *, unsigned int);
     void (*SSL_get0_alpn_selected)(const void *, const unsigned char **, unsigned int *);
     long (*SSL_get_verify_result)(const void *);
@@ -268,6 +271,10 @@ static int lk_SSL_shutdown(void *s) { return SSL_shutdown((SSL *)s); }
 static int lk_SSL_get_error(const void *s, int r) { return SSL_get_error((const SSL *)s, r); }
 static long lk_SSL_ctrl(void *s, int cmd, long larg, void *parg) { return SSL_ctrl((SSL *)s, cmd, larg, parg); }
 static int lk_SSL_set1_host(void *s, const char *h) { return SSL_set1_host((SSL *)s, h); }
+static void *lk_SSL_get0_param(void *s) { return (void *)SSL_get0_param((SSL *)s); }
+static int lk_X509_VERIFY_PARAM_set1_ip_asc(void *p, const char *ip) {
+    return X509_VERIFY_PARAM_set1_ip_asc((X509_VERIFY_PARAM *)p, ip);
+}
 static int lk_SSL_set_alpn_protos(void *s, const unsigned char *p, unsigned int n) {
     return SSL_set_alpn_protos((SSL *)s, p, n);
 }
@@ -309,6 +316,8 @@ static int ossl_probe(void) {
     g_ossl.SSL_get_error = lk_SSL_get_error;
     g_ossl.SSL_ctrl = lk_SSL_ctrl;
     g_ossl.SSL_set1_host = lk_SSL_set1_host;
+    g_ossl.SSL_get0_param = lk_SSL_get0_param;
+    g_ossl.X509_VERIFY_PARAM_set1_ip_asc = lk_X509_VERIFY_PARAM_set1_ip_asc;
     g_ossl.SSL_set_alpn_protos = lk_SSL_set_alpn_protos;
     g_ossl.SSL_get0_alpn_selected = lk_SSL_get0_alpn_selected;
     g_ossl.SSL_get_verify_result = lk_SSL_get_verify_result;
@@ -383,6 +392,8 @@ static int ossl_probe(void) {
     ok &= load_fn_sym(&g_ossl.SSL_get_error, dyn_sym(slib, "SSL_get_error"));
     ok &= load_fn_sym(&g_ossl.SSL_ctrl, dyn_sym(slib, "SSL_ctrl"));
     ok &= load_fn_sym(&g_ossl.SSL_set1_host, dyn_sym(slib, "SSL_set1_host"));
+    (void)load_fn_sym(&g_ossl.SSL_get0_param, dyn_sym(slib, "SSL_get0_param"));
+    (void)load_fn_sym(&g_ossl.X509_VERIFY_PARAM_set1_ip_asc, dyn_sym(clib, "X509_VERIFY_PARAM_set1_ip_asc"));
     ok &= load_fn_sym(&g_ossl.SSL_set_alpn_protos, dyn_sym(slib, "SSL_set_alpn_protos"));
     ok &= load_fn_sym(&g_ossl.SSL_get0_alpn_selected, dyn_sym(slib, "SSL_get0_alpn_selected"));
     (void)load_fn_sym(&g_ossl.SSL_get_verify_result, dyn_sym(slib, "SSL_get_verify_result"));
@@ -683,6 +694,71 @@ static void ossl_cleanup_ep(wing_tls_ep_t *ep) {
     }
 }
 
+static int ossl_is_ipv4_literal(const char *s) {
+    if (s == NULL || s[0] == '\0') return 0;
+    int parts = 0;
+    const char *p = s;
+    while (*p != '\0') {
+        if (parts >= 4 || *p < '0' || *p > '9') return 0;
+        int val = 0;
+        int digits = 0;
+        while (*p >= '0' && *p <= '9') {
+            val = val * 10 + (*p - '0');
+            if (val > 255) return 0;
+            digits++;
+            p++;
+        }
+        if (digits == 0) return 0;
+        parts++;
+        if (*p == '.') {
+            p++;
+            if (*p == '\0') return 0;
+        } else if (*p != '\0') {
+            return 0;
+        }
+    }
+    return parts == 4;
+}
+
+static int ossl_extract_ip_literal(const char *host, char *out_ip, size_t out_cap) {
+    if (host == NULL || host[0] == '\0' || out_cap < 2) return 0;
+    size_t len = strlen(host);
+    const char *start = host;
+    if (len >= 2 && host[0] == '[' && host[len - 1] == ']') {
+        start = host + 1;
+        len -= 2;
+    }
+    if (len == 0 || len >= out_cap) return 0;
+    memcpy(out_ip, start, len);
+    out_ip[len] = '\0';
+    if (ossl_is_ipv4_literal(out_ip) || strchr(out_ip, ':') != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
+static int ossl_configure_client_host(wing_tls_ep_t *ep) {
+    if (ep->sni[0] == '\0') return WING_TLS_ST_OK;
+    char ip_lit[256];
+    if (ossl_extract_ip_literal(ep->sni, ip_lit, sizeof(ip_lit))) {
+        // RFC 6066 Section 3: literal IPv4 and IPv6 addresses are not permitted in TLS SNI.
+        if (ep->insecure_skip_verify) return WING_TLS_ST_OK;
+        if (g_ossl.SSL_get0_param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc == NULL) {
+            return WING_TLS_ST_VERIFY_ERR;
+        }
+        void *param = g_ossl.SSL_get0_param(ep->ossl_ssl);
+        if (param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc(param, ip_lit) != 1) {
+            return WING_TLS_ST_VERIFY_ERR;
+        }
+        return WING_TLS_ST_OK;
+    }
+    (void)g_ossl.SSL_ctrl(ep->ossl_ssl, OSSL_CTRL_SET_SNI, 0, ep->sni);
+    if (!ep->insecure_skip_verify && g_ossl.SSL_set1_host(ep->ossl_ssl, ep->sni) != 1) {
+        return WING_TLS_ST_VERIFY_ERR;
+    }
+    return WING_TLS_ST_OK;
+}
+
 static int ossl_open_ep(wing_tls_ep_t *ep) {
     if (!ossl_probe()) return WING_TLS_ST_UNAVAILABLE;
     const void *meth = ep->is_server ? g_ossl.TLS_server_method() : g_ossl.TLS_client_method();
@@ -752,12 +828,10 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
         g_ossl.SSL_set_accept_state(ep->ossl_ssl);
     } else {
         g_ossl.SSL_set_connect_state(ep->ossl_ssl);
-        if (ep->sni[0] != '\0') {
-            (void)g_ossl.SSL_ctrl(ep->ossl_ssl, OSSL_CTRL_SET_SNI, 0, ep->sni);
-            if (!ep->insecure_skip_verify && g_ossl.SSL_set1_host(ep->ossl_ssl, ep->sni) != 1) {
-                ossl_cleanup_ep(ep);
-                return WING_TLS_ST_VERIFY_ERR;
-            }
+        int host_st = ossl_configure_client_host(ep);
+        if (host_st != WING_TLS_ST_OK) {
+            ossl_cleanup_ep(ep);
+            return host_st;
         }
         if (ep->alpn_wire_len > 0) {
             (void)g_ossl.SSL_set_alpn_protos(ep->ossl_ssl, ep->alpn_wire, (unsigned int)ep->alpn_wire_len);

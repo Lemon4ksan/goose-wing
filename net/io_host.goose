@@ -179,7 +179,7 @@ fn link_connect(
 
     var conn_state: i32 = -1;
     let fd = match addr {
-        Tcp t => net_internal::tcp_connect_begin(t.host, t.port, conn_state),
+        Tcp t => tcp_connect_begin(t.host, t.port, conn_state),
         Unix u => net_internal::tcp_connect_unix_begin(u.path, conn_state),
     };
     guard fd > 0 && conn_state >= 0 else {

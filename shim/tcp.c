@@ -262,6 +262,8 @@ int32_t wing_tcp_connect_finish(int64_t sock_fd) {
     return (sock_fd > 0 && sock_fd < WASM_MAX_SOCKETS && g_wasm_sockets[sock_fd].active) ? 0 : -1;
 }
 
+int32_t wing_tcp_connect_poll(int64_t sock_fd) { return wing_tcp_connect_finish(sock_fd); }
+
 int64_t wing_adopt_socket(int64_t raw_fd) { return raw_fd > 0 ? raw_fd : -1; }
 
 uint16_t wing_tcp_getsockname_port(int64_t sock_fd) {
@@ -1123,11 +1125,114 @@ int64_t wing_tcp_accept(int64_t listener_fd, uint32_t timeout_ms) {
     return (int64_t)client_sock;
 }
 
-// Connects to remote host:port with timeout in milliseconds.
+// Resolves host (IPv4, IPv6, bracketed IPv6, "localhost", or DNS via getaddrinfo AF_UNSPEC) into `ss`.
+// Returns 0 on success, -1 on resolution failure.
+static int wing_resolve_tcp_host(wing_bytes_ro host, uint16_t port, int allow_empty_loopback,
+                                 struct sockaddr_storage *ss, int *out_family,
+#ifdef _WIN32
+                                 int *out_len
+#else
+                                 socklen_t *out_len
+#endif
+) {
+    memset(ss, 0, sizeof(*ss));
+    char host_str[256];
+    if (host.data == NULL || host.len <= 0) {
+        if (!allow_empty_loopback) return -1;
+        host_str[0] = '\0';
+    } else {
+        if (host.len >= (int64_t)sizeof(host_str)) return -1;
+        slice_to_cstr(host, host_str, sizeof(host_str));
+    }
+
+    // Strip optional RFC 3986 brackets around IPv6 literals ("[::1]" -> "::1").
+    size_t hlen = strlen(host_str);
+    if (hlen >= 2 && host_str[0] == '[' && host_str[hlen - 1] == ']') {
+        memmove(host_str, host_str + 1, hlen - 2);
+        host_str[hlen - 2] = '\0';
+    }
+
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    if (host_str[0] == '\0' || strcmp(host_str, "localhost") == 0) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        *out_family = AF_INET;
+        *out_len = (int)sizeof(struct sockaddr_in);
+        return 0;
+    }
+    if (inet_pton(AF_INET, host_str, &addr4) == 1) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(port);
+        s4->sin_addr = addr4;
+        *out_family = AF_INET;
+        *out_len = (int)sizeof(struct sockaddr_in);
+        return 0;
+    }
+    if (inet_pton(AF_INET6, host_str, &addr6) == 1) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(port);
+        s6->sin6_addr = addr6;
+        *out_family = AF_INET6;
+        *out_len = (int)sizeof(struct sockaddr_in6);
+        return 0;
+    }
+#if !defined(__wasm__)
+    struct addrinfo hints;
+    struct addrinfo *res_info = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
+        return -1;
+    }
+    int ok = -1;
+    for (struct addrinfo *ai = res_info; ai != NULL; ai = ai->ai_next) {
+        if (ai->ai_family == AF_INET && ai->ai_addrlen <= sizeof(*ss)) {
+            memcpy(ss, ai->ai_addr, ai->ai_addrlen);
+            ((struct sockaddr_in *)ss)->sin_port = htons(port);
+            *out_family = AF_INET;
+            *out_len = (int)sizeof(struct sockaddr_in);
+            ok = 0;
+            break;
+        }
+        if (ai->ai_family == AF_INET6 && ai->ai_addrlen <= sizeof(*ss)) {
+            memcpy(ss, ai->ai_addr, ai->ai_addrlen);
+            ((struct sockaddr_in6 *)ss)->sin6_port = htons(port);
+            *out_family = AF_INET6;
+            *out_len = (int)sizeof(struct sockaddr_in6);
+            ok = 0;
+            break;
+        }
+    }
+    freeaddrinfo(res_info);
+    return ok;
+#else
+    return -1;
+#endif
+}
+
+// Connects to remote host:port (IPv4, IPv6, or DNS via getaddrinfo) with timeout in milliseconds.
 int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms) {
+    if (port == 0) return -1;
     wing_tcp_init();
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    struct sockaddr_storage ss;
+    int family = AF_INET;
+#ifdef _WIN32
+    int addr_len = 0;
+#else
+    socklen_t addr_len = 0;
+#endif
+    if (wing_resolve_tcp_host(host, port, 1, &ss, &family, &addr_len) != 0) {
+        return -1;
+    }
+
+    SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
         return -1;
     }
@@ -1139,39 +1244,8 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
 
-    char host_str[128];
-    slice_to_cstr(host, host_str, sizeof(host_str));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (host_str[0] == '\0' || strcmp(host_str, "127.0.0.1") == 0 || strcmp(host_str, "localhost") == 0) {
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    } else {
-        addr.sin_addr.s_addr = inet_addr(host_str);
-        if (addr.sin_addr.s_addr == INADDR_NONE) {
-#if !defined(__wasm__)
-            struct addrinfo hints;
-            struct addrinfo *res_info = NULL;
-            memset(&hints, 0, sizeof(hints));
-            hints.ai_family = AF_INET;
-            hints.ai_socktype = SOCK_STREAM;
-            if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
-                closesocket(s);
-                return -1;
-            }
-            addr.sin_addr = ((struct sockaddr_in *)res_info->ai_addr)->sin_addr;
-            freeaddrinfo(res_info);
-#else
-            closesocket(s);
-            return -1;
-#endif
-        }
-    }
-
     if (timeout_ms == 0) {
-        if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        if (connect(s, (struct sockaddr *)&ss, addr_len) == SOCKET_ERROR) {
             closesocket(s);
             return -1;
         }
@@ -1186,7 +1260,7 @@ int64_t wing_tcp_connect(wing_bytes_ro host, uint16_t port, uint32_t timeout_ms)
     fcntl(s, F_SETFL, flags | O_NONBLOCK);
 #endif
 
-    int res = connect(s, (struct sockaddr *)&addr, sizeof(addr));
+    int res = connect(s, (struct sockaddr *)&ss, addr_len);
     if (res == SOCKET_ERROR) {
 #ifdef _WIN32
         int err = WSAGetLastError();
@@ -1239,62 +1313,15 @@ int64_t wing_tcp_connect_begin(wing_bytes_ro host, uint16_t port, int32_t *out_s
     }
     wing_tcp_init();
 
-    char host_str[256];
-    slice_to_cstr(host, host_str, sizeof(host_str));
-
     struct sockaddr_storage ss;
-    memset(&ss, 0, sizeof(ss));
     int family = AF_INET;
 #ifdef _WIN32
     int addr_len = 0;
 #else
     socklen_t addr_len = 0;
 #endif
-    struct in_addr addr4;
-    struct in6_addr addr6;
-    if (strcmp(host_str, "localhost") == 0) {
-        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
-        s4->sin_family = AF_INET;
-        s4->sin_port = htons(port);
-        s4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr_len = (int)sizeof(struct sockaddr_in);
-    } else if (inet_pton(AF_INET, host_str, &addr4) == 1) {
-        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
-        s4->sin_family = AF_INET;
-        s4->sin_port = htons(port);
-        s4->sin_addr = addr4;
-        addr_len = (int)sizeof(struct sockaddr_in);
-    } else if (inet_pton(AF_INET6, host_str, &addr6) == 1) {
-        family = AF_INET6;
-        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
-        s6->sin6_family = AF_INET6;
-        s6->sin6_port = htons(port);
-        s6->sin6_addr = addr6;
-        addr_len = (int)sizeof(struct sockaddr_in6);
-    } else {
-        struct addrinfo hints;
-        struct addrinfo *res_info = NULL;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        if (getaddrinfo(host_str, NULL, &hints, &res_info) != 0 || res_info == NULL) {
-            return -1;
-        }
-        if (res_info->ai_family == AF_INET && res_info->ai_addrlen <= sizeof(ss)) {
-            memcpy(&ss, res_info->ai_addr, res_info->ai_addrlen);
-            ((struct sockaddr_in *)&ss)->sin_port = htons(port);
-            family = AF_INET;
-            addr_len = (int)sizeof(struct sockaddr_in);
-        } else if (res_info->ai_family == AF_INET6 && res_info->ai_addrlen <= sizeof(ss)) {
-            memcpy(&ss, res_info->ai_addr, res_info->ai_addrlen);
-            ((struct sockaddr_in6 *)&ss)->sin6_port = htons(port);
-            family = AF_INET6;
-            addr_len = (int)sizeof(struct sockaddr_in6);
-        } else {
-            freeaddrinfo(res_info);
-            return -1;
-        }
-        freeaddrinfo(res_info);
+    if (wing_resolve_tcp_host(host, port, 0, &ss, &family, &addr_len) != 0) {
+        return -1;
     }
 
     SOCKET s = socket(family, SOCK_STREAM, IPPROTO_TCP);
@@ -1349,6 +1376,16 @@ int32_t wing_tcp_connect_finish(int64_t sock_fd) {
         return -1;
     }
     return sock_err == 0 ? 0 : -1;
+}
+
+// Non-blocking readiness poll for an in-progress TCP connect.
+// Returns: 0 = connected, 1 = still in progress, -1 = failed.
+int32_t wing_tcp_connect_poll(int64_t sock_fd) {
+    if (sock_fd <= 0) return -1;
+    int ready = wing_wait_fd((SOCKET)sock_fd, 1, 0);
+    if (ready == 0) return 1;
+    if (ready < 0) return -1;
+    return wing_tcp_connect_finish(sock_fd);
 }
 
 #ifdef _WIN32
