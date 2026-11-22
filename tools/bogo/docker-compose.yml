@@ -1,0 +1,7 @@
+services:
+  bogo-runner:
+    build:
+      context: ../..
+      dockerfile: tools/bogo/Dockerfile
+    container_name: goose-wing-bogo-runner
+    restart: "no"

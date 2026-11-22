@@ -1,0 +1,81 @@
+services:
+  tls-server:
+    build:
+      context: ../..
+      dockerfile: tools/tls_audit/Dockerfile
+    container_name: goose-wing-tls-audit-server
+    environment:
+      - WING_PORT=8443
+    ports:
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s = socket.create_connection(('127.0.0.1', 8443), 1); s.close()\" || exit 1"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+    restart: "no"
+
+  tlsfuzzer:
+    build:
+      context: ../..
+      dockerfile: tools/tls_audit/Dockerfile
+    container_name: goose-wing-tls-audit-tlsfuzzer
+    depends_on:
+      tls-server:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        PYTHONPATH=/opt/tlsfuzzer /opt/audit-venv/bin/python
+        /opt/tlsfuzzer/scripts/test-tls13-conversation.py -h tls-server -p 8443
+        && python3 /app/tools/tls_audit/runner.py --local --suite tlsfuzzer --host tls-server --port 8443
+    restart: "no"
+
+  tls-anvil:
+    image: ghcr.io/tls-attacker/tls-anvil:latest
+    container_name: goose-wing-tls-audit-anvil
+    depends_on:
+      tls-server:
+        condition: service_healthy
+    command:
+      - "-parallelHandshakes"
+      - "1"
+      - "-strength"
+      - "1"
+      - "-outputFolder"
+      - "/tmp/anvil-out"
+      - "server"
+      - "-connect"
+      - "tls-server:8443"
+    restart: "no"
+
+  tls-attacker:
+    image: ghcr.io/tls-attacker/tls-attacker:latest
+    container_name: goose-wing-tls-audit-attacker
+    depends_on:
+      tls-server:
+        condition: service_healthy
+    volumes:
+      - ./attacker_workflows.xml:/work/attacker_workflows.xml:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        java -jar /apps/TLS-Client.jar -connect tls-server:8443
+        -workflow_input /work/attacker_workflows.xml || true
+    restart: "no"
+
+  testssl:
+    image: drwetter/testssl.sh:3.2
+    container_name: goose-wing-tls-audit-testssl
+    depends_on:
+      tls-server:
+        condition: service_healthy
+    command:
+      - "--protocols"
+      - "--cipher-per-proto"
+      - "--color"
+      - "0"
+      - "--warnings"
+      - "batch"
+      - "tls-server:8443"
+    restart: "no"

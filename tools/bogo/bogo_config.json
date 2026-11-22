@@ -1,0 +1,44 @@
+{
+  "DisabledTests": {
+    "*-SSL3*": "goose-wing PureGoose enforces TLS 1.3 only (RFC 8446)",
+    "*-TLS1": "goose-wing PureGoose enforces TLS 1.3 only (RFC 8446)",
+    "*-TLS1-*": "goose-wing PureGoose enforces TLS 1.3 only (RFC 8446)",
+    "*-TLS11*": "goose-wing PureGoose enforces TLS 1.3 only (RFC 8446)",
+    "*-TLS12*": "goose-wing PureGoose enforces TLS 1.3 only; use -backend openssl for opt-in TLS 1.2",
+    "*-DTLS*": "DTLS transport is not implemented in goose-wing",
+    "*-QUIC*": "QUIC BoGo framing is tested separately via tools/http3.py",
+    "*Renegotiate*": "TLS <= 1.2 renegotiation is unsupported in TLS 1.3",
+    "*FallbackSCSV*": "TLS_FALLBACK_SCSV applies to TLS <= 1.2 downgrade retries",
+    "*RSA-*": "Static RSA key exchange is removed in TLS 1.3",
+    "*DHE-*": "Finite-field DHE is unsupported; X25519 and X25519MLKEM768 are used",
+    "*EarlyData*": "BoGo 0-RTT shim flags are not exposed in this shim",
+    "*ECH*": "BoGo ECH shim flags are tested via native LIT ECH suites",
+    "*DelegatedCredential*": "RFC 9345 delegated credentials are not implemented",
+    "*ClientAuth*": "PureGoose server-side CertificateRequest is not enabled in shim",
+    "*Resume*": "BoGo cross-process session ticket persistence flags are not enabled",
+    "*GREASE*": "BoringSSL-specific GREASE assertion expectations differ from PureGoose",
+    "*V2ClientHello*": "SSLv2-compatible ClientHello is rejected by design",
+    "*FalseStart*": "TLS 1.2 False Start does not apply to TLS 1.3",
+    "*OCSP*": "BoGo stapled OCSP shim flags are tested via native LIT OCSP suites",
+    "*SCT*": "BoGo SCT shim flags are tested via native LIT SCT suites",
+    "*ExportKeyingMaterial*": "BoGo EKM shim flags are tested via native LIT suites"
+  },
+  "ErrorMap": {
+    ":UNEXPECTED_MESSAGE:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":BAD_RECORD_MAC:": "BOGO_ERR: RECORD_ERROR",
+    ":DECODE_ERROR:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":ILLEGAL_PARAMETER:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":PROTOCOL_VERSION:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":UNSUPPORTED_PROTOCOL:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":NO_SHARED_CIPHER:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":WRONG_VERSION_NUMBER:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":CERTIFICATE_VERIFY_FAILED:": "BOGO_ERR: VERIFY_FAILED",
+    ":NO_APPLICATION_PROTOCOL:": "BOGO_ERR: ALPN_MISMATCH",
+    ":DOWNGRADE_DETECTED:": "BOGO_ERR: HANDSHAKE_FAILED",
+    ":INAPPROPRIATE_FALLBACK:": "BOGO_ERR: HANDSHAKE_FAILED"
+  },
+  "AllCurves": [
+    29
+  ]
+}

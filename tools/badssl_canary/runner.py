@@ -142,6 +142,10 @@ class LocalPkiBundle:
     self_signed_key: Path
     untrusted_cert: Path
     untrusted_key: Path
+    weak_rsa_cert: Path
+    weak_rsa_key: Path
+    client_eku_cert: Path
+    client_eku_key: Path
 
 
 def _init_ca(openssl_bin: str, ca_dir: Path, cn: str) -> tuple[Path, Path, Path]:
@@ -221,6 +225,8 @@ def _sign_leaf(
     san: str,
     start_date: str,
     end_date: str,
+    key_type: str = "ec",
+    eku: str = "serverAuth",
 ) -> tuple[Path, Path]:
     key_path = ca_dir / f"{name}.key"
     csr_path = ca_dir / f"{name}.csr"
@@ -231,13 +237,20 @@ def _sign_leaf(
         f"""
 basicConstraints = critical, CA:FALSE
 keyUsage = critical, digitalSignature
-extendedKeyUsage = serverAuth
+extendedKeyUsage = {eku}
 subjectAltName = {san}
 """.strip()
         + "\n",
         encoding="utf-8",
     )
-    _run_openssl(openssl_bin, ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(key_path)], ca_dir)
+    if key_type == "rsa1024":
+        _run_openssl(openssl_bin, ["genrsa", "-out", str(key_path), "1024"], ca_dir)
+    else:
+        _run_openssl(
+            openssl_bin,
+            ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(key_path)],
+            ca_dir,
+        )
     _run_openssl(
         openssl_bin,
         ["req", "-new", "-key", str(key_path), "-subj", f"/CN={cn}", "-out", str(csr_path)],
@@ -300,6 +313,28 @@ def generate_local_pki(work_dir: Path, openssl_bin: str) -> LocalPkiBundle:
         "DNS:wrong.host.local",
         "20250101000000Z",
         "20350101000000Z",
+    )
+    weak_rsa_cert, weak_rsa_key = _sign_leaf(
+        openssl_bin,
+        trusted_dir,
+        ca_cnf,
+        "weakrsa1024",
+        "localhost",
+        "DNS:localhost,IP:127.0.0.1",
+        "20250101000000Z",
+        "20350101000000Z",
+        key_type="rsa1024",
+    )
+    client_eku_cert, client_eku_key = _sign_leaf(
+        openssl_bin,
+        trusted_dir,
+        ca_cnf,
+        "clienteku",
+        "localhost",
+        "DNS:localhost,IP:127.0.0.1",
+        "20250101000000Z",
+        "20350101000000Z",
+        eku="clientAuth",
     )
 
     # Self-signed leaf (not signed by trusted CA)
@@ -372,6 +407,10 @@ subjectAltName = DNS:localhost,IP:127.0.0.1
         self_signed_key=ss_key,
         untrusted_cert=untrusted_cert,
         untrusted_key=untrusted_key,
+        weak_rsa_cert=weak_rsa_cert,
+        weak_rsa_key=weak_rsa_key,
+        client_eku_cert=client_eku_cert,
+        client_eku_key=client_eku_key,
     )
 
 
@@ -385,8 +424,11 @@ class LoopbackTlsEndpoint:
         min_ver: ssl.TLSVersion,
         max_ver: ssl.TLSVersion,
         alpn: list[str] | None = None,
+        seclevel_zero: bool = False,
     ) -> None:
         self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        if seclevel_zero:
+            self.ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
         self.ctx.minimum_version = min_ver
         self.ctx.maximum_version = max_ver
         self.ctx.load_cert_chain(certfile=str(cert_file), keyfile=str(key_file))
@@ -532,13 +574,26 @@ def run_offline_matrix(rebuild: bool = False) -> int:
             "untrusted_root": LoopbackTlsEndpoint(
                 pki.untrusted_cert, pki.untrusted_key, ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3
             ),
+            "weak_rsa1024": LoopbackTlsEndpoint(
+                pki.weak_rsa_cert,
+                pki.weak_rsa_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+                seclevel_zero=True,
+            ),
+            "client_eku": LoopbackTlsEndpoint(
+                pki.client_eku_cert,
+                pki.client_eku_key,
+                ssl.TLSVersion.TLSv1_3,
+                ssl.TLSVersion.TLSv1_3,
+            ),
         }
 
         try:
             print("\nExecuting Offline Local CA TLS Canary Matrix...")
             ca_str = str(pki.ca_cert)
 
-            # 1. PureGoose TLS 1.3 Matrix (6 checks)
+            # 1. PureGoose TLS 1.3 Matrix (8 checks)
             st, act, alpn, app_n = invoke_probe(
                 exe, env, "pure", "tls13", "127.0.0.1", servers["valid_tls13"].port, "localhost", ca_str, "h2,http/1.1"
             )
@@ -552,6 +607,8 @@ def run_offline_matrix(rebuild: bool = False) -> int:
                 ("wrong hostname -> VerifyError", "wrong_host"),
                 ("self-signed cert -> VerifyError", "self_signed"),
                 ("untrusted root CA -> VerifyError", "untrusted_root"),
+                ("weak 1024-bit RSA cert -> VerifyError", "weak_rsa1024"),
+                ("clientAuth-only EKU cert -> VerifyError", "client_eku"),
             ):
                 st, act, _, _ = invoke_probe(
                     exe, env, "pure", "tls13", "127.0.0.1", servers[srv_key].port, "localhost", ca_str, "-"

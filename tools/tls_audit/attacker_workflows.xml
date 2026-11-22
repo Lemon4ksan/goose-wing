@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2026 Lemon4ksan -->
+<!-- RUB-NDS TLS-Attacker negative state-machine workflow traces for goose-wing TLS 1.3 server. -->
+<tlsAttackerSuite target="goose-wing-tls13">
+    <workflowTrace name="out_of_order_ccs_before_client_hello">
+        <description>Send ChangeCipherSpec before ClientHello; server must send fatal unexpected_message (10).</description>
+        <Send>
+            <messages>
+                <ChangeCipherSpec/>
+            </messages>
+        </Send>
+        <Receive>
+            <expectedMessages>
+                <Alert>
+                    <level>2</level>
+                    <description>10</description>
+                </Alert>
+            </expectedMessages>
+        </Receive>
+    </workflowTrace>
+
+    <workflowTrace name="unencrypted_finished_after_server_hello">
+        <description>Complete ClientHello/ServerHello then inject plaintext Finished; server must fail closed.</description>
+        <Send>
+            <messages>
+                <ClientHello>
+                    <extensions>
+                        <SupportedVersions/>
+                        <KeyShare/>
+                        <SignatureAndHashAlgorithmsExtension/>
+                        <ServerNameIndication/>
+                    </extensions>
+                </ClientHello>
+            </messages>
+        </Send>
+        <Receive>
+            <expectedMessages>
+                <ServerHello/>
+                <ChangeCipherSpec/>
+            </expectedMessages>
+        </Receive>
+        <Send>
+            <messages>
+                <Finished/>
+            </messages>
+        </Send>
+        <Receive>
+            <expectedMessages>
+                <Alert>
+                    <level>2</level>
+                </Alert>
+            </expectedMessages>
+        </Receive>
+    </workflowTrace>
+
+    <workflowTrace name="ccs_flood_after_server_hello">
+        <description>Send three consecutive ChangeCipherSpec records after ServerHello; RFC 8446 allows at most one.</description>
+        <Send>
+            <messages>
+                <ClientHello>
+                    <extensions>
+                        <SupportedVersions/>
+                        <KeyShare/>
+                        <SignatureAndHashAlgorithmsExtension/>
+                    </extensions>
+                </ClientHello>
+            </messages>
+        </Send>
+        <Receive>
+            <expectedMessages>
+                <ServerHello/>
+            </expectedMessages>
+        </Receive>
+        <Send>
+            <messages>
+                <ChangeCipherSpec/>
+                <ChangeCipherSpec/>
+                <ChangeCipherSpec/>
+            </messages>
+        </Send>
+        <Receive>
+            <expectedMessages>
+                <Alert>
+                    <level>2</level>
+                </Alert>
+            </expectedMessages>
+        </Receive>
+    </workflowTrace>
+
+    <workflowTrace name="bad_key_share_low_order_x25519">
+        <description>Send all-zero low-order X25519 key share (RFC 7748 Section 6.1); server must reject with fatal alert.</description>
+        <Send>
+            <messages>
+                <ClientHello>
+                    <extensions>
+                        <SupportedVersions/>
+                        <KeyShare>
+                            <keyShareList>
+                                <KeyShareEntry>
+                                    <group>ECDH_X25519</group>
+                                    <publicKey>0000000000000000000000000000000000000000000000000000000000000000</publicKey>
+                                </KeyShareEntry>
+                            </keyShareList>
+                        </KeyShare>
+                    </extensions>
+                </ClientHello>
+            </messages>
+        </Send>
+        <Receive>
+            <expectedMessages>
+                <Alert>
+                    <level>2</level>
+                </Alert>
+            </expectedMessages>
+        </Receive>
+    </workflowTrace>
+</tlsAttackerSuite>
