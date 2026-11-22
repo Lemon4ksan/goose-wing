@@ -230,6 +230,12 @@ fn ws_accept_transport(
 // Sends an RFC 6455 UTF-8 text frame over `conn`.
 fn ws_send_text(conn: WsConn&, text: const u8[:]) -> bool {
     guard conn.open && !conn.ws.is_closed else { return false; }
+    if text.len <= 4000 {
+        var wire_stack: u8[..4096] = [];
+        send_text(conn.ws, text, wire_stack);
+        guard wire_stack.len > 0 else { return false; }
+        return send_all_transport(conn.tr, wire_stack[..]);
+    }
     var wire_out: u8[>..] = [];
     send_text(conn.ws, text, wire_out);
     guard wire_out.len > 0 else { return false; }
@@ -239,6 +245,12 @@ fn ws_send_text(conn: WsConn&, text: const u8[:]) -> bool {
 // Sends an RFC 6455 binary frame over `conn`.
 fn ws_send_binary(conn: WsConn&, data: const u8[:]) -> bool {
     guard conn.open && !conn.ws.is_closed else { return false; }
+    if data.len <= 4000 {
+        var wire_stack: u8[..4096] = [];
+        send_binary(conn.ws, data, wire_stack);
+        guard wire_stack.len > 0 else { return false; }
+        return send_all_transport(conn.tr, wire_stack[..]);
+    }
     var wire_out: u8[>..] = [];
     send_binary(conn.ws, data, wire_out);
     guard wire_out.len > 0 else { return false; }

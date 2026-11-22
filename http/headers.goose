@@ -989,7 +989,7 @@ fn get_header(map: const HeaderMap&, name: const u8[:]) -> const u8[:] {
         let slot = well_known_to_slot(wk_id);
         let idx = map.inline_slots[slot];
         if idx != 0xFF {
-            let entry = map.entries[idx as i64];
+            let entry .= map.entries[idx as i64];
             return entry_value(map, entry);
         }
         return "";

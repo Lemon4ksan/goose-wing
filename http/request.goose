@@ -173,9 +173,16 @@ fn remove_header(req: Request&, name: const u8[:]) -> bool {
 }
 
 fn bearer(req: Request&, token: const u8[:]) {
-    var val: u8[>..] = "Bearer ";
-    val.append(token);
-    sensitive_header(req, "Authorization", val[..]);
+    var stack_val: u8[..4104] = "Bearer ";
+    defer core::secure_zeroize_slice(stack_val[..]);
+    if stack_val.try_append(token) {
+        sensitive_header(req, "Authorization", stack_val[..]);
+        return;
+    }
+    var dyn_val: u8[>..] = "Bearer ";
+    defer core::secure_zeroize_slice(dyn_val[..]);
+    dyn_val.append(token);
+    sensitive_header(req, "Authorization", dyn_val[..]);
 }
 
 // Invariant 13: Strict capacity overflow error propagation.

@@ -783,11 +783,9 @@ fn epoll_wait<F, U>(epfd: i64, out_fds: F&, out_udata: U&, timeout_ms: i32 = -1)
     var raw_udata: u64[256] = [0; 256];
     let n = net_internal::native_epoll_wait(epfd, raw_fds[..], raw_udata[..], timeout_ms);
     guard n > 0 else { return 0; }
-    let limit = min(n as i64, min(out_fds.cap, out_udata.cap));
-    for i in limit {
-        out_fds.push(raw_fds[i]);
-        out_udata.push(raw_udata[i]);
-    }
+    let limit = min(min(n as i64, 256), min(out_fds.cap, out_udata.cap));
+    out_fds.append(raw_fds[..limit]);
+    out_udata.append(raw_udata[..limit]);
     return limit as i32;
 }
 

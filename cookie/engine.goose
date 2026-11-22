@@ -144,7 +144,7 @@ fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = fal
 }
 
 // Safely inserts a pre-built CanonicalCookie through security validation, collision handling, and GC.
-fn set(jar: CanonicalCookieJar&, cookie_val: CanonicalCookie, now_us: i64) -> bool {
+fn set(jar: CanonicalCookieJar&, cookie_val: const CanonicalCookie&, now_us: i64) -> bool {
     let is_sec = cookie_val.secure || (cookie_val.source_scheme == SourceScheme.Secure);
     return jar.set_canonical_cookie(
         cookie_val,
@@ -204,22 +204,24 @@ fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:] {
 
 fn cookie_internal::insert_fresh_cookie(
     jar:        cookie::CanonicalCookieJar&,
-    new_cookie: cookie::CanonicalCookie&,
+    new_cookie: const cookie::CanonicalCookie&,
     now_us:     i64,
 ) {
-    if new_cookie.creation_utc <= 0 { new_cookie.creation_utc = now_us; }
-    if new_cookie.last_update_utc <= 0 { new_cookie.last_update_utc = now_us; }
-    if new_cookie.last_access_utc <= 0 { new_cookie.last_access_utc = now_us; }
-    new_cookie.creation_seq = jar.seq_counter;
-    jar.seq_counter = core::add_sat_i64(jar.seq_counter, 1);
+    let idx = jar.cookies.len;
     jar.cookies.push(new_cookie);
+    let slot .= jar.cookies[idx];
+    if slot.creation_utc <= 0 { slot.creation_utc = now_us; }
+    if slot.last_update_utc <= 0 { slot.last_update_utc = now_us; }
+    if slot.last_access_utc <= 0 { slot.last_access_utc = now_us; }
+    slot.creation_seq = jar.seq_counter;
+    jar.seq_counter = core::add_sat_i64(jar.seq_counter, 1);
 }
 
 // Inserts new_cookie into jar, enforcing prefix rules, origin security,
 // overwrite precedence, and memory quotas (RFC 6265bis Section 5.6).
 fn set_canonical_cookie(
     jar:        CanonicalCookieJar&,
-    new_cookie: CanonicalCookie&,
+    new_cookie: const CanonicalCookie&,
     opts:       SourceOptions,
     now_us:     i64,
 ) -> bool {
@@ -1109,7 +1111,7 @@ fn cookie_internal::evict_global_lru_fallback_cookies(
 
 fn cookie_internal::handle_cookie_collision(
     jar:           cookie::CanonicalCookieJar&,
-    new_cookie:    cookie::CanonicalCookie&,
+    new_cookie:    const cookie::CanonicalCookie&,
     collision_idx: i64,
     url_is_secure: bool,
     now_us:        i64,
@@ -1130,12 +1132,14 @@ fn cookie_internal::handle_cookie_collision(
     }
 
     // Preserve original creation_utc and creation_seq across overwrites.
-    new_cookie.creation_utc = existing.creation_utc;
-    new_cookie.creation_seq = existing.creation_seq;
-    new_cookie.last_update_utc = now_us;
-    new_cookie.last_access_utc = now_us;
-
+    let orig_creation_utc = existing.creation_utc;
+    let orig_creation_seq = existing.creation_seq;
     jar.cookies[collision_idx] = new_cookie;
+    let slot .= jar.cookies[collision_idx];
+    slot.creation_utc = orig_creation_utc;
+    slot.creation_seq = orig_creation_seq;
+    slot.last_update_utc = now_us;
+    slot.last_access_utc = now_us;
     jar.overwritten_count = core::add_sat_i64(jar.overwritten_count, 1);
     return true;
 }

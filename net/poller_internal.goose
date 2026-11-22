@@ -625,7 +625,7 @@ fn rio_map_completions_to_events(
     out_events: core::PollReadyEvent[..64]&,
 ) -> u64 {
     var added: u64 = 0;
-    for res in results {
+    for &res in results {
         guard out_events.len < out_events.cap else { break; }
         let reg_idx = net::find_by_tag(p, res.socket_context);
         let fd_val: i32 = if reg_idx >= 0 && reg_idx < p.registrations.len { p.registrations[reg_idx].fd } else { -1 };

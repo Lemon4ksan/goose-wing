@@ -101,9 +101,9 @@ fn with_source(cookie_ref: CanonicalCookie&, scheme: SourceScheme, port: i32) ->
 fn matches_domain(cookie_val: const CanonicalCookie&, host: const u8[:]) -> bool
 fn matches_path(cookie_val: const CanonicalCookie&, req_path: const u8[:]) -> bool
 fn format<B>(cookie_val: const CanonicalCookie&, out: B&)
-fn add_original(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool
-fn add(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool
-fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool
+fn add_original(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool
+fn add(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool
+fn remove(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool
 fn flush_deltas(jar: const ServerCookieDeltaJar&, headers: wing::HeaderMap&) -> bool
 ```
 
@@ -155,10 +155,10 @@ fn purge_expired(jar: CanonicalCookieJar&, now_us: i64) -> i64
 fn delete_matching(jar: CanonicalCookieJar&, filter: const DeletionInfo&) -> i64
 fn delete_all_created_in_time_range(jar: CanonicalCookieJar&, start_utc: i64, end_utc: i64) -> i64
 fn delete_session_cookies(jar: CanonicalCookieJar&, purge_non_secure: bool = false) -> i64
-fn set(jar: CanonicalCookieJar&, cookie_val: CanonicalCookie, now_us: i64) -> bool
+fn set(jar: CanonicalCookieJar&, cookie_val: const CanonicalCookie&, now_us: i64) -> bool
 fn get(jar: CanonicalCookieJar&, req_url: const u8[:], name: const u8[:], now_us: i64, access: AccessOptions = AccessOptions { .. }, partition_key: const u8[:] = "") -> const u8[:]
 fn get(jar: const CanonicalCookieJar&, name: const u8[:]) -> const u8[:]
-fn set_canonical_cookie(jar: CanonicalCookieJar&, new_cookie: CanonicalCookie&, opts: SourceOptions, now_us: i64) -> bool
+fn set_canonical_cookie(jar: CanonicalCookieJar&, new_cookie: const CanonicalCookie&, opts: SourceOptions, now_us: i64) -> bool
 fn set_cookie_header(jar: CanonicalCookieJar&, req_url: const u8[:], set_cookie_raw: const u8[:], now_us: i64, is_http_api: bool = true, partition_key: const u8[:] = "") -> bool
 fn set_cookie_header(jar: CanonicalCookieJar&, req_url: const u8[:], set_cookie_raw: const u8[:], now_us: i64, partition_key: const u8[:]) -> bool
 fn build_cookie_header<B>(jar: CanonicalCookieJar&, host: const u8[:], path: const u8[:], is_secure: bool, now_us: i64, out: B&)

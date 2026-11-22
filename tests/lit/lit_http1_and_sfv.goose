@@ -842,7 +842,7 @@ fn test_quic_varint_drip() {
 
     // Drip 1..7 bytes: all must fail ok == false
     for len in 7 {
-        let drip_len = (len + 1) as i64;
+        let drip_len = len + 1;
         let _, _, ok = quic::decode_varint(full_8[..drip_len], 0);
         assert(!ok);
     }

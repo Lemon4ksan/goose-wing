@@ -37,7 +37,7 @@ fn normalize_field_to_header_name<B>(field_name: const u8[:], out: B&) -> bool {
     out.clear();
     guard field_name.len > 0 else { return false; }
     for b in field_name {
-        let lower_b: u8 = if b >= 'A' && b <= 'Z' { b | 0x20 } else { b };
+        let lower_b: u8 = core::to_lower_ascii_byte(b);
         let mapped:  u8 = if b == '_' { '-' } else { lower_b };
         guard out.try_push(mapped) else { return false; }
     }
@@ -557,7 +557,7 @@ fn parse_range_spec_list(
 }
 
 fn validate_range_set_bounds(ranges: const http::NormalizedRange[..32]&) -> bool {
-    for r in ranges {
+    for &r in ranges {
         if r.end_pos < r.start || r.start < 0 || r.end_pos - r.start >= 9223372036854775807 {
             return false;
         }
@@ -573,7 +573,7 @@ fn serve_multipart_ranges<OpenFn: fn(i64, i64, u8[>..]&)>(
     out_body:     u8[>..]&,
 ) {
     var cr_val: u8[..64] = [];
-    for r in ranges {
+    for &r in ranges {
         out_body.append("--");
         out_body.append(boundary);
         out_body.append("\r\n");

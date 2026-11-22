@@ -400,7 +400,7 @@ fn cookie_internal::find_delta_cookie_idx(
 }
 
 // Records a cookie parsed from an incoming HTTP `Cookie` request header without marking it as a response delta.
-fn add_original(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
+fn add_original(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool {
     let idx, found = cookie_internal::find_delta_cookie_idx(jar, c.name[..]);
     if found {
         jar.cookies[idx] = c;
@@ -420,7 +420,7 @@ fn add_original(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
 }
 
 // Adds or updates a cookie in the server jar and marks it for emission in `Set-Cookie` response deltas.
-fn add(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
+fn add(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool {
     let idx, found = cookie_internal::find_delta_cookie_idx(jar, c.name[..]);
     if found {
         jar.cookies[idx] = c;
@@ -441,7 +441,7 @@ fn add(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
 
 // Removes a cookie from the server jar. If the cookie was present in `original` cookies, converts it into
 // a removal cookie (`Max-Age=0`) in the response delta; otherwise deletes it from the jar.
-fn remove(jar: ServerCookieDeltaJar&, c: CanonicalCookie) -> bool {
+fn remove(jar: ServerCookieDeltaJar&, c: const CanonicalCookie&) -> bool {
     let idx, found = cookie_internal::find_delta_cookie_idx(jar, c.name[..]);
     guard found else { return false; }
     let cur_state = jar.states[idx];

@@ -640,9 +640,7 @@ fn aes_gcm_open_small<B>(
         return false;
     }
     let start_len = out_plaintext.len;
-    for i in ciphertext.len {
-        out_plaintext.push(tmp[i]);
-    }
+    out_plaintext.append(tmp[..ciphertext.len]);
     secure_zeroize_slice(tmp[..ciphertext.len]);
     let expected_len = add_sat_i64(start_len, ciphertext.len);
     if out_plaintext.len != expected_len {

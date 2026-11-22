@@ -130,7 +130,7 @@ fn ws_perform_handshake(
 
 fn sse_perform_connect(
     session: client::Session&,
-    sub:     realtime::SseSubscription,
+    sub:     const realtime::SseSubscription&,
     req:     http::Request&,
 ) -> realtime::SseSubscription, http::Response, http::Error {
     var eff_sub = sub;

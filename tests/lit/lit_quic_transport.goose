@@ -2162,7 +2162,7 @@ fn test_quic_preferred_address_migration() {
     var zero_pref_buf: u8[..64] = [];
     for i in 24 { zero_pref_buf.push(0); }
     zero_pref_buf.append([4, 1, 2, 3, 4]);
-    for i in 16 { zero_pref_buf.push(0x20 as u8); }
+    for i in 16 { zero_pref_buf.push(0x20); }
     let _bp2, bad_pref_ok2 = quic::decode_preferred_address(zero_pref_buf[..]);
     assert(!bad_pref_ok2);
 

@@ -66,7 +66,7 @@ inline fn is_valid_wire_setting(s: const WireSetting&) -> bool {
 fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
     let payload_len = (settings.len as u32) * 6;
     guard settings.len <= 2796202 else { return false; }
-    for s in settings {
+    for &s in settings {
         guard is_valid_wire_setting(s) else { return false; }
     }
     let start_len = out.len;
@@ -77,8 +77,9 @@ fn encode_settings_frame<B>(settings: const WireSetting[:], out: B&) -> bool {
         stream_id:  0,
     };
     guard encode_frame_header(hdr, out) else { return false; }
-    for s in settings {
-        var entry: u8[..6] = [];
+    var entry: u8[..6] = [];
+    for &s in settings {
+        entry.clear();
         entry.append_u16_be(s.id);
         entry.append_u32_be(s.val);
         guard out.try_append(entry[..]) else {

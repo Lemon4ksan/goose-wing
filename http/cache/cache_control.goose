@@ -245,12 +245,14 @@ fn parse_cache_control_headers(
     var cc = CacheControl { .. };
     var has_cc_header = false;
 
-    for entry in map.entries {
-        let name = map.raw_buf[entry.name_begin..entry.name_end];
-        if name.eq_ascii_fold("cache-control") {
-            has_cc_header = true;
-            let val = map.raw_buf[entry.values_begin..entry.values_end];
-            parse_cache_control_str(val, cc, opts.ignore_cargo_cult);
+    let cc_slot = well_known_to_slot(WellKnownHeader.CacheControl);
+    if map.inline_slots[cc_slot] != 0xFF {
+        for &entry in map.entries {
+            if entry.well_known_id == (cc_slot as u8) {
+                has_cc_header = true;
+                let val = map.raw_buf[entry.values_begin..entry.values_end];
+                parse_cache_control_str(val, cc, opts.ignore_cargo_cult);
+            }
         }
     }
 

@@ -224,23 +224,23 @@ inline fn append_4d<B>(out: B&, value: i64) {
 }
 
 fn append_trimmed_fraction<B>(out: B&, fraction_val: i64, num_digits: i64) {
-    if fraction_val <= 0 { return; }
+    guard fraction_val > 0 && num_digits >= 1 && num_digits <= 9 else { return; }
     var digits: u8[9] = [0; 9];
-    var current_val = fraction_val;
+    var current_val = fraction_val as u64;
+    let last_slot = sub_sat_i64(num_digits, 1);
     for digit_idx in num_digits {
-        let array_idx = num_digits - 1 - digit_idx;
-        digits[array_idx] = ('0' as i64 + (current_val % 10)) as u8;
+        let array_idx = sub_sat_i64(last_slot, digit_idx);
+        digits[array_idx] = ((current_val % 10) + ('0' as u64)) as u8;
         current_val /= 10;
     }
-    var last_non_zero = num_digits - 1;
+    var last_non_zero = last_slot;
     while last_non_zero >= 0 && digits[last_non_zero] == '0' {
-        last_non_zero--;
+        last_non_zero = sub_sat_i64(last_non_zero, 1);
     }
     if last_non_zero >= 0 {
+        let emit_len = add_sat_i64(last_non_zero, 1);
         out.push('.');
-        for copy_idx in (last_non_zero + 1) {
-            out.push(digits[copy_idx]);
-        }
+        out.append(digits[..emit_len]);
     }
 }
 

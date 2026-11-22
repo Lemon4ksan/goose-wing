@@ -222,7 +222,7 @@ fn sanitize_for_storage(
     var intermediate = HeaderMap { .. };
     strip_hop_by_hop_headers(src, intermediate);
 
-    for entry in intermediate.entries {
+    for &entry in intermediate.entries {
         let name = intermediate.raw_buf[entry.name_begin..entry.name_end];
         let val = intermediate.raw_buf[entry.values_begin..entry.values_end];
 

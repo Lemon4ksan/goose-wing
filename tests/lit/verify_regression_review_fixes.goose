@@ -289,7 +289,7 @@ fn test_server_time_methods_h2_and_memo() {
 
     for i in server::REACTOR_MAX_H2_SESSIONS {
         let idx = server::alloc_reactor_h2_session(srv_opt.pipeline, "example.com", 1000);
-        assert((idx as i64) == i);
+        assert(idx == i);
     }
     assert(server::alloc_reactor_h2_session(srv_opt.pipeline, "example.com", 1000) == -1);
     for i in server::REACTOR_MAX_H2_SESSIONS {

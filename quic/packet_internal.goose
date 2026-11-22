@@ -82,7 +82,10 @@ struct QuicHeaderOptions {
 // Example:
 //   src = [0x80, 0x00, 0x00, 0x00, 0x00, 0x04, ...], in_hdr = initial header
 //   returns: QuicHeader { header_type: VersionNegotiation, version: 0 }, ok = true
-checkfree fn parse_quic_version_negotiation(src: const u8[:], in_hdr: quic::QuicHeader) -> quic::QuicHeader, bool {
+checkfree fn parse_quic_version_negotiation(
+    src:    const u8[:],
+    in_hdr: const quic::QuicHeader&,
+) -> quic::QuicHeader, bool {
     // RFC 9000 Section 17.2.1: Version Negotiation Packet - Header Form bit MUST be 1 and Version MUST be 0.
     guard src.len >= 7
         && (src[0] & 0x80) != 0

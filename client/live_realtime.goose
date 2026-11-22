@@ -65,7 +65,7 @@ fn format_live_basic_auth(user: const u8[:], pass: const u8[:], out: u8[..512]&)
     defer core::secure_zeroize_slice(raw[..]);
     guard raw.try_append(user) && raw.try_push(':') && raw.try_append(pass) else { return false; }
     guard out.try_append("Basic ") else { return false; }
-    var b64: u8[>..] = [];
+    var b64: u8[..512] = [];
     defer core::secure_zeroize_slice(b64[..]);
     core::base64_encode(raw[..], b64);
     return out.try_append(b64[..]);

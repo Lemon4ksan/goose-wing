@@ -770,7 +770,7 @@ fn invalidate_target_if_same_origin(
     cache:      http::Cache&,
     header_raw: const u8[:],
     base_url:   const core::Url&,
-    base_orig:  core::Origin,
+    base_orig:  const core::Origin&,
 ) -> i64 {
     guard header_raw.len > 0 && base_url.valid else { return 0; }
     let target_url, err = core::parse_url_with_base(header_raw, base_url);

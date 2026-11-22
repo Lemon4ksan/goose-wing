@@ -48,7 +48,7 @@ fn parse_wire_h2_step(buf: const u8[:]) -> i64 {
     if err != rfc::H2_ERR_NO_ERROR {
         return 1;
     }
-    return (hdr.stream_id & 0x7FFFFFFF) as i64;
+    return hdr.stream_id & 0x7FFFFFFF;
 }
 
 fn test_h1_chunking_desync_fsm() {

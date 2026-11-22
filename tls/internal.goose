@@ -11,40 +11,6 @@ import core;
 
 const ASN1_UNUSED_BITS_MASK_LUT: const u8[8] = [0x00, 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F];
 
-// Parses long-form ASN.1 DER length octets (1..4 bytes) enforcing shortest canonical encoding.
-fn read_asn1_long_length(c: core::ByteCursor&, num_bytes: i64, out_len: i64&) -> bool {
-    guard num_bytes >= 1 && num_bytes <= 4 else { return false; }
-    var length: i64 = 0;
-    var i:      i64 = 0;
-    while i < num_bytes {
-        var b: u8 = 0;
-        guard c.get_u8(b) else { return false; }
-        guard i != 0 || b != 0x00 else { return false; }
-        length = core::add_sat_i64(core::mul_sat_i64(length, 256), b);
-        i = core::add_sat_i64(i, 1);
-    }
-    guard length >= 128 && length <= 0x7FFFFFFF else { return false; }
-    out_len = length;
-    return true;
-}
-
-inline fn asn1_check_der_integer_padding(val: const u8[:]) -> bool {
-    guard val.len >= 1 else { return false; }
-    if val[0] == 0x00 && val.len > 1 {
-        if (val[1] & 0x80) == 0 { return false; }
-    } else if val[0] == 0xFF && val.len > 1 {
-        if (val[1] & 0x80) != 0 { return false; }
-    }
-    return true;
-}
-
-inline fn asn1_check_serial_number_rules(val: const u8[:]) -> bool {
-    guard (val[0] & 0x80) == 0 else { return false; }
-    guard val.len != 1 || val[0] != 0x00 else { return false; }
-    let max_len = if val[0] == 0x00 { 21 } else { 20 };
-    return val.len <= max_len;
-}
-
 // Parses a 2-digit decimal integer from a slice at the given offset.
 //
 // Example:
