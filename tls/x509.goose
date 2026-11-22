@@ -93,6 +93,13 @@ fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]
     if cert.has_skid {
         anchor.has_skid = anchor.skid_key_id.try_set(span_slice(raw_cert_der, cert.skid_key_id));
     }
+    if cert.has_name_constraints {
+        let nc_slice = span_slice(raw_cert_der, cert.name_constraints_raw);
+        guard nc_slice.len > 0 && anchor.name_constraints_raw.try_set(nc_slice) else {
+            return false;
+        }
+        anchor.has_name_constraints = true;
+    }
     if !anchor.has_pub_material {
         anchor.subject_raw.clear();
         anchor.spki_pubkey.clear();
@@ -107,6 +114,7 @@ fn verify_certificate_chain(
     raw_certs:   const u8[:][..8]&,
     trust_store: const TrustAnchorStore&,
     now_unix:    i64,
+    role:        CertValidationRole = CertValidationRole.Server,
 ) -> Alert {
     guard chain_certs.len > 0 && chain_certs.len <= tls_internal::MAX_CHAIN_DEPTH else { return Alert.BadCertificate; }
     guard raw_certs.len > 0 && raw_certs.len == chain_certs.len else { return Alert.BadCertificate; }
@@ -123,7 +131,7 @@ fn verify_certificate_chain(
     }
 
     let nodes_alert = tls_internal::x509_validate_chain_nodes(
-        chain_certs, raw_certs, trust_store, is_direct_trust_anchor, now_unix,
+        chain_certs, raw_certs, trust_store, is_direct_trust_anchor, now_unix, role,
     );
     guard nodes_alert == Alert.CloseNotify else { return nodes_alert; }
 

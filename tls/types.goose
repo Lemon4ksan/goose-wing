@@ -23,11 +23,19 @@ struct ParsedSct {
 
 // ---- X.509 / OCSP / CRL Types (RFC 5280, RFC 6960) ------------------------
 
+// TLS peer validation role binding Extended Key Usage (RFC 5280 Section 4.2.1.12).
+enum CertValidationRole {
+    Server,
+    Client,
+    Any,
+}
+
 struct ParsedCert {
     raw_len:                          u32    = 0,
     tbs_cert:                         Span16 = Span16 { offset: 0, length: 0 },
     serial_number:                    Span16 = Span16 { offset: 0, length: 0 },
     sig_alg_oid:                      Span16 = Span16 { offset: 0, length: 0 },
+    pss_hash_id:                      u8     = 0,
     issuer_raw:                       Span16 = Span16 { offset: 0, length: 0 },
     validity_not_before:              i64    = 0,
     validity_not_after:               i64    = 0,
@@ -65,12 +73,14 @@ struct TrustAnchor {
     subject_raw:           u8[..384] = [],
     spki_pubkey:           u8[..600] = [],
     skid_key_id:           u8[..64]  = [],
+    name_constraints_raw:  u8[..512] = [],
     key_usage:             u16       = 0,
     has_key_usage:         bool      = false,
     has_basic_constraints: bool      = false,
     is_ca:                 bool      = false,
     path_len_constraint:   i32       = -1,
     has_skid:              bool      = false,
+    has_name_constraints:  bool      = false,
     has_pub_material:      bool      = false,
     validity_not_before:   i64       = 0,
     validity_not_after:    i64       = 0,
@@ -126,6 +136,7 @@ struct ParsedOcspResponse {
     hash_alg_oid:       Span16             = Span16 { offset: 0, length: 0 },
     tbs_raw:            Span16             = Span16 { offset: 0, length: 0 },
     sig_alg_oid:        Span16             = Span16 { offset: 0, length: 0 },
+    pss_hash_id:        u8                 = 0,
     signature:          Span16             = Span16 { offset: 0, length: 0 },
     responder_cert_der: Span16             = Span16 { offset: 0, length: 0 },
     this_update:        i64                = 0,
@@ -137,12 +148,13 @@ struct ParsedOcspResponse {
 // inline serial storage for O(log N) binary-search revocation lookup.
 struct ParsedCrl {
     issuer:       const u8[:] = "",
-    serials:      u64[..128]  = [],
+    serials:      u64[..1024] = [],
     serial_count: i32         = 0,
     this_update:  i64         = 0,
     next_update:  i64         = 0,
     tbs_raw:      Span16      = Span16 { offset: 0, length: 0 },
     sig_alg_oid:  Span16      = Span16 { offset: 0, length: 0 },
+    pss_hash_id:  u8          = 0,
     signature:    Span16      = Span16 { offset: 0, length: 0 },
 }
 
@@ -350,7 +362,7 @@ struct Transcript {
     sha384_ctx: core::Sha384Ctx = core::Sha384Ctx { .. },
 }
 
-const MAX_CIPHER_SLOTS: i64 = 256;
+const MAX_CIPHER_SLOTS: i64 = 4096;
 
 enum SliceUnsealStatus {
     Ok,

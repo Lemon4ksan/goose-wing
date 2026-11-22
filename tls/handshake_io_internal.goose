@@ -76,7 +76,9 @@ fn verify_chain_ocsp_and_crl(
     eff_clock:    i64,
 ) -> bool {
     if config.trust_store.anchors.len > 0 || !config.use_system_roots {
-        let alert = tls::verify_certificate_chain(chain_parsed, chain_slices, config.trust_store, eff_clock);
+        let alert = tls::verify_certificate_chain(
+            chain_parsed, chain_slices, config.trust_store, eff_clock, tls::CertValidationRole.Server,
+        );
         guard alert == tls::Alert.CloseNotify else { return false; }
         guard verify_stapled_ocsp_for_chain(
             leaf_ocsp, chain_parsed, chain_slices, eff_clock, config.trust_store,
@@ -98,7 +100,9 @@ fn verify_chain_ocsp_and_crl(
     if top_subj != top_issuer {
         let _ = tls::load_system_roots_for_issuer(sys_store, top_subj);
     }
-    let alert = tls::verify_certificate_chain(chain_parsed, chain_slices, sys_store, eff_clock);
+    let alert = tls::verify_certificate_chain(
+        chain_parsed, chain_slices, sys_store, eff_clock, tls::CertValidationRole.Server,
+    );
     guard alert == tls::Alert.CloseNotify else { return false; }
     guard verify_stapled_ocsp_for_chain(
         leaf_ocsp, chain_parsed, chain_slices, eff_clock, sys_store,
@@ -108,6 +112,61 @@ fn verify_chain_ocsp_and_crl(
     return verify_crl_for_chain_with_store(
         config.crl_der[..], chain_parsed, chain_slices, eff_clock, sys_store,
     );
+}
+
+inline fn verify_cv_sig_with_min_rsa(
+    sig_scheme: u16,
+    sig_bytes:  const u8[:],
+    leaf_pub:   const u8[:],
+    cv_msg:     const u8[:],
+) -> bool {
+    if sig_scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256 ||
+        sig_scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA384 {
+        guard is_valid_rsa_pubkey_min_bits(leaf_pub) else { return false; }
+    }
+    return tls::verify_certificate_verify_sig(sig_scheme, sig_bytes, leaf_pub, cv_msg);
+}
+
+// Validates mTLS client Certificate and CertificateVerify against trust anchor store (RFC 8446 §4.4).
+fn verify_client_cert_and_signature(
+    cert_body:          const u8[:],
+    cv_body:            const u8[:],
+    transcript_to_cert: const u8[:],
+    trust_store:        const tls::TrustAnchorStore&,
+    now_unix:           i64,
+) -> bool {
+    var chain_slices: const u8[:][..8] = [];
+    let _, ok_chain = tls::parse_certificate_chain_and_ocsp(cert_body, chain_slices);
+    guard ok_chain else { return false; }
+
+    var chain_parsed: tls::ParsedCert[..8] = [];
+    for idx in chain_slices.len {
+        var c_parsed = tls::ParsedCert { .. };
+        guard tls::parse_x509_certificate(chain_slices[idx], c_parsed) &&
+            chain_parsed.try_push(c_parsed) else {
+            return false;
+        }
+    }
+
+    let alert = tls::verify_certificate_chain(
+        chain_parsed, chain_slices, trust_store, now_unix, tls::CertValidationRole.Client,
+    );
+    guard alert == tls::Alert.CloseNotify else { return false; }
+
+    let leaf_cert .= chain_parsed[0];
+    var leaf_pub = tls::span_slice(chain_slices[0], leaf_cert.spki_pubkey);
+    if leaf_pub.len >= 2 && leaf_pub[0] == 0 { leaf_pub = leaf_pub[1..]; }
+
+    let sig_scheme, sig_bytes, ok_parse_cv = tls::parse_certificate_verify(cv_body);
+    let spki_oid = tls::span_slice(chain_slices[0], leaf_cert.spki_alg_oid);
+    guard ok_parse_cv && tls::verify_signature_scheme_curve_binding(sig_scheme, spki_oid) else {
+        return false;
+    }
+
+    var cv_msg_buf: u8[160] = [0; 160];
+    let cv_len, ok_cv_msg = tls::build_certificate_verify_message(false, transcript_to_cert, cv_msg_buf[..]);
+    guard ok_cv_msg else { return false; }
+    return verify_cv_sig_with_min_rsa(sig_scheme, sig_bytes, leaf_pub, cv_msg_buf[..cv_len]);
 }
 
 // Validates server Certificate and CertificateVerify against trust anchor store and transcript (RFC 8446 §4.4).
@@ -166,7 +225,7 @@ fn verify_server_cert_and_signature(
     let cv_len, ok_cv_msg = tls::build_certificate_verify_message(true, transcript_to_cert, cv_msg_buf[..]);
     guard ok_cv_msg else { return false; }
 
-    return tls::verify_certificate_verify_sig(sig_scheme, sig_bytes, leaf_pub, cv_msg_buf[..cv_len]);
+    return verify_cv_sig_with_min_rsa(sig_scheme, sig_bytes, leaf_pub, cv_msg_buf[..cv_len]);
 }
 
 // Ingests and verifies the encrypted server flight: EncryptedExtensions, [CertificateRequest],

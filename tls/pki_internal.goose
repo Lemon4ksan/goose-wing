@@ -43,8 +43,101 @@ fn read_tbs_serial(raw_cert: const u8[:], tbs_seq: core::ByteCursor&, out: tls::
     return true;
 }
 
+// Parses a HashAlgorithm AlgorithmIdentifier inside RSASSA-PSS-params (RFC 4055 Section 3.1).
+// Rejects SHA-1 and unknown digests; accepts SHA-256, SHA-384, or SHA-512 with omitted or NULL params.
+//
+// Example:
+//   cur = SEQUENCE { OID(SHA-256), NULL }
+//   returns: PSS_HASH_SHA256, ok = true
+fn parse_pss_hash_alg_id(cur: core::ByteCursor&) -> u8, bool {
+    var alg_seq = core::cursor_from(cur.buf[..0]);
+    var oid = core::cursor_from(cur.buf[..0]);
+    guard tls::get_asn1_element(cur, rfc::ASN1_TAG_SEQUENCE, alg_seq) &&
+        tls::get_asn1_element(alg_seq, rfc::ASN1_TAG_OID, oid) else {
+        return PSS_HASH_NONE, false;
+    }
+    if alg_seq.cursor_len() > 0 {
+        var null_el = core::cursor_from(alg_seq.buf[..0]);
+        guard tls::get_asn1_element(alg_seq, rfc::ASN1_TAG_NULL, null_el) &&
+            null_el.cursor_len() == 0 && alg_seq.cursor_len() == 0 else {
+            return PSS_HASH_NONE, false;
+        }
+    }
+    if oid.buf == OID_OCSP_SHA256[..] { return PSS_HASH_SHA256, true; }
+    if oid.buf == OID_HASH_SHA384[..] { return PSS_HASH_SHA384, true; }
+    if oid.buf == OID_HASH_SHA512[..] { return PSS_HASH_SHA512, true; }
+    return PSS_HASH_NONE, false;
+}
+
+// Parses RFC 4055 Section 3.1 `RSASSA-PSS-params` SEQUENCE and enforces matched MGF1 and saltLength.
+// Rejects omitted parameters or default SHA-1 hash/MGF1 parameters.
+//
+// Example:
+//   sig_alg_rem = SEQUENCE { [0] SHA-256, [1] MGF1(SHA-256), [2] 32 }
+//   returns: PSS_HASH_SHA256, ok = true
+fn parse_rsassa_pss_params(sig_alg_rem: core::ByteCursor&) -> u8, bool {
+    var pss_seq = core::cursor_from(sig_alg_rem.buf[..0]);
+    guard tls::get_asn1_element(sig_alg_rem, rfc::ASN1_TAG_SEQUENCE, pss_seq) &&
+        sig_alg_rem.cursor_len() == 0 else {
+        return PSS_HASH_NONE, false;
+    }
+
+    var hash_ctx = core::cursor_from(pss_seq.buf[..0]);
+    guard tls::get_asn1_element(pss_seq, 0xA0, hash_ctx) else { return PSS_HASH_NONE, false; }
+    let hash_id, ok_h = parse_pss_hash_alg_id(hash_ctx);
+    guard ok_h && hash_ctx.cursor_len() == 0 else { return PSS_HASH_NONE, false; }
+
+    var mgf_ctx = core::cursor_from(pss_seq.buf[..0]);
+    var mgf_seq = core::cursor_from(pss_seq.buf[..0]);
+    var mgf_oid = core::cursor_from(pss_seq.buf[..0]);
+    guard tls::get_asn1_element(pss_seq, 0xA1, mgf_ctx) &&
+        tls::get_asn1_element(mgf_ctx, rfc::ASN1_TAG_SEQUENCE, mgf_seq) &&
+        mgf_ctx.cursor_len() == 0 &&
+        tls::get_asn1_element(mgf_seq, rfc::ASN1_TAG_OID, mgf_oid) &&
+        mgf_oid.buf == OID_MGF1[..] else {
+        return PSS_HASH_NONE, false;
+    }
+    let mgf_hash_id, ok_mh = parse_pss_hash_alg_id(mgf_seq);
+    guard ok_mh && mgf_seq.cursor_len() == 0 && mgf_hash_id == hash_id else {
+        return PSS_HASH_NONE, false;
+    }
+
+    var salt_ctx = core::cursor_from(pss_seq.buf[..0]);
+    var salt_len: i64 = 0;
+    guard tls::get_asn1_element(pss_seq, 0xA2, salt_ctx) &&
+        tls::get_asn1_integer(salt_ctx, salt_len) &&
+        salt_ctx.cursor_len() == 0 &&
+        salt_len == pss_expected_salt_len(hash_id) else {
+        return PSS_HASH_NONE, false;
+    }
+
+    if pss_seq.cursor_len() > 0 {
+        var tr_ctx = core::cursor_from(pss_seq.buf[..0]);
+        var trailer: i64 = 0;
+        guard tls::get_asn1_element(pss_seq, 0xA3, tr_ctx) &&
+            tls::get_asn1_integer(tr_ctx, trailer) &&
+            tr_ctx.cursor_len() == 0 &&
+            trailer == 1 else {
+            return PSS_HASH_NONE, false;
+        }
+    }
+    guard pss_seq.cursor_len() == 0 else { return PSS_HASH_NONE, false; }
+    return hash_id, true;
+}
+
 // RFC 5280 Section 4.1.1.2: signatureAlgorithm - Validates AlgorithmIdentifier parameters by OID.
-fn validate_x509_sig_alg_params(sig_oid: const u8[:], sig_alg_rem: core::ByteCursor&) -> bool {
+fn validate_x509_sig_alg_params(
+    sig_oid:      const u8[:],
+    sig_alg_rem:  core::ByteCursor&,
+    out_pss_hash: u8&,
+) -> bool {
+    out_pss_hash = PSS_HASH_NONE;
+    if sig_oid == rfc::OID_SIG_RSASSA_PSS[..] {
+        let pss_hash, ok_pss = parse_rsassa_pss_params(sig_alg_rem);
+        guard ok_pss else { return false; }
+        out_pss_hash = pss_hash;
+        return true;
+    }
     if sig_oid == rfc::OID_ED25519[..] ||
         sig_oid == rfc::OID_SIG_ECDSA_SHA256[..] ||
         sig_oid == rfc::OID_SIG_ECDSA_SHA384[..] {
@@ -78,7 +171,7 @@ fn read_tbs_sig_alg(
     if !tls::get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, sig_oid) {
         return tls::Span16 { .. }, false;
     }
-    guard validate_x509_sig_alg_params(sig_oid.buf, sig_alg) else {
+    guard validate_x509_sig_alg_params(sig_oid.buf, sig_alg, out.pss_hash_id) else {
         return tls::Span16 { .. }, false;
     }
     out.sig_alg_oid = tls::make_span(raw_cert, sig_oid.buf);
@@ -392,27 +485,29 @@ fn x509_parse_eku_ext(ext_val: const u8[:], cert: tls::ParsedCert&) -> bool {
     return true;
 }
 
-fn x509_dispatch_pki_extension(oid: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) {
+fn x509_dispatch_pki_extension(oid: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) -> bool {
     if oid == rfc::OID_EXT_KEY_USAGE[..] {
-        let _ = x509_parse_eku_ext(ext_val.buf, cert);
+        return x509_parse_eku_ext(ext_val.buf, cert);
     } else if oid == rfc::OID_TLS_FEATURE[..] {
-        let _ = x509_parse_tls_feature_ext(ext_val.buf, cert);
+        return x509_parse_tls_feature_ext(ext_val.buf, cert);
     } else if oid == rfc::OID_CT_PRECERT_SCTS[..] {
-        let _ = x509_parse_sct_ext(ext_val, cert);
+        return x509_parse_sct_ext(ext_val, cert);
     }
+    return true;
 }
 
-fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) {
+fn x509_dispatch_policy_extension(oid: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) -> bool {
     if oid == rfc::OID_POLICY_CONSTRAINTS[..] {
         x509_parse_policy_constraints_ext(ext_val, cert);
+        return true;
     } else if oid == rfc::OID_INHIBIT_ANY_POLICY[..] {
         var val: i64 = 0;
         if !tls::get_asn1_integer(ext_val, val) || ext_val.cursor_len() != 0 || val < 0 {
             cert.has_malformed_policy_constraints = true;
         }
-    } else {
-        x509_dispatch_pki_extension(oid, ext_val, cert);
+        return true;
     }
+    return x509_dispatch_pki_extension(oid, ext_val, cert);
 }
 
 fn x509_dispatch_extension(
@@ -420,32 +515,37 @@ fn x509_dispatch_extension(
     oid:      const u8[:],
     ext_val:  core::ByteCursor&,
     cert:     tls::ParsedCert&,
-) {
+) -> bool {
     if oid == rfc::OID_BASIC_CONSTRAINTS[..] {
         x509_parse_basic_constraints_ext(ext_val, cert);
+        return true;
     } else if oid == rfc::OID_KEY_USAGE[..] {
         x509_parse_key_usage_ext(ext_val, cert);
+        return true;
     } else if oid == rfc::OID_SUBJECT_ALT_NAME[..] {
         if cert.has_san {
             cert.has_unsupported_critical = true;
-            return;
+            return true;
         }
         cert.has_san = true;
         cert.san_raw = tls::make_span(raw_cert, ext_val.buf);
+        return true;
     } else if oid == rfc::OID_NAME_CONSTRAINTS[..] {
         if cert.has_name_constraints {
             cert.has_unsupported_critical = true;
-            return;
+            return true;
         }
         cert.has_name_constraints = true;
         cert.name_constraints_raw = tls::make_span(raw_cert, ext_val.buf);
+        return true;
     } else if oid == rfc::OID_AUTH_KEY_IDENTIFIER[..] {
         x509_parse_akid_ext(raw_cert, ext_val, cert);
+        return true;
     } else if oid == rfc::OID_SUBJECT_KEY_IDENTIFIER[..] {
         x509_parse_skid_ext(raw_cert, ext_val, cert);
-    } else {
-        x509_dispatch_policy_extension(oid, ext_val, cert);
+        return true;
     }
+    return x509_dispatch_policy_extension(oid, ext_val, cert);
 }
 
 inline fn x509_check_ext_critical(single_ext: core::ByteCursor&, out_ok: bool&) -> bool {
@@ -497,8 +597,7 @@ fn x509_parse_single_cert_extension(
         return true;
     }
 
-    x509_dispatch_extension(raw_cert, oid.buf, ext_val, cert);
-    return true;
+    return x509_dispatch_extension(raw_cert, oid.buf, ext_val, cert);
 }
 
 // Parses X.509 extensions for BasicConstraints, KeyUsage, and SubjectAltName.
@@ -936,12 +1035,93 @@ fn x509_parse_subtrees_sequence(
     return true;
 }
 
+// Extracts the RSASSA-PSS hash identifier from a DER TBSCertificate SEQUENCE
+// when a caller invokes `x509_verify_signature_by_oid` without an explicit `pss_hash_id`.
+//
+// Example:
+//   tbs_data = DER SEQUENCE { [0] v3, INTEGER serial, SEQUENCE { OID_SIG_RSASSA_PSS, params }, ... }
+//   returns: PSS_HASH_SHA256 (or PSS_HASH_NONE if absent/invalid)
+fn extract_tbs_pss_hash_id(tbs_data: const u8[:]) -> u8 {
+    guard tbs_data.len > 0 && tbs_data[0] == rfc::ASN1_TAG_SEQUENCE else { return PSS_HASH_NONE; }
+    var c = core::cursor_from(tbs_data);
+    var tbs_seq = core::cursor_from(tbs_data[..0]);
+    guard tls::get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, tbs_seq) && c.cursor_len() == 0 else {
+        return PSS_HASH_NONE;
+    }
+    if tbs_seq.cursor_len() > 0 && tbs_seq.buf[0] == 0xA0 {
+        var ver_el = core::cursor_from(tbs_seq.buf[..0]);
+        guard tls::get_asn1_element(tbs_seq, 0xA0, ver_el) else { return PSS_HASH_NONE; }
+    }
+    var serial = core::cursor_from(tbs_seq.buf[..0]);
+    var sig_alg = core::cursor_from(tbs_seq.buf[..0]);
+    var sig_oid = core::cursor_from(tbs_seq.buf[..0]);
+    guard tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_INTEGER, serial) &&
+        tls::get_asn1_element(tbs_seq, rfc::ASN1_TAG_SEQUENCE, sig_alg) &&
+        tls::get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, sig_oid) &&
+        sig_oid.buf == rfc::OID_SIG_RSASSA_PSS[..] else {
+        return PSS_HASH_NONE;
+    }
+    let pss_hash, ok_pss = parse_rsassa_pss_params(sig_alg);
+    return if ok_pss { pss_hash } else { PSS_HASH_NONE };
+}
+
+inline fn x509_verify_rsa_pss_by_hash(
+    n_be:      const u8[:],
+    e_be:      const u8[:],
+    tbs_data:  const u8[:],
+    sig_bytes: const u8[:],
+    eff_hash:  u8,
+) -> bool {
+    if eff_hash == PSS_HASH_SHA256 {
+        return core::rsa_pss_sha256_verify(n_be, e_be, tbs_data, sig_bytes);
+    }
+    if eff_hash == PSS_HASH_SHA384 {
+        return core::rsa_pss_sha384_verify(n_be, e_be, tbs_data, sig_bytes);
+    }
+    if eff_hash == PSS_HASH_SHA512 {
+        return core::rsa_pss_sha512_verify(n_be, e_be, tbs_data, sig_bytes);
+    }
+    return false;
+}
+
+fn x509_verify_rsa_signature(
+    sig_oid:       const u8[:],
+    tbs_data:      const u8[:],
+    sig_bytes:     const u8[:],
+    parent_pubkey: const u8[:],
+    err_alert:     tls::Alert,
+    pss_hash_id:   u8,
+) -> tls::Alert {
+    let n_be, e_be, ok_rsa = core::parse_rsa_public_key_der(parent_pubkey);
+    guard ok_rsa && n_be.len >= MIN_RSA_MODULUS_BYTES else {
+        return err_alert;
+    }
+    if sig_oid == rfc::OID_SIG_SHA256_RSA[..] {
+        guard core::rsa_pkcs1_sha256_verify(n_be, e_be, tbs_data, sig_bytes) else {
+            return err_alert;
+        }
+        return tls::Alert.CloseNotify;
+    }
+    if sig_oid == rfc::OID_SIG_SHA384_RSA[..] {
+        guard core::rsa_pkcs1_sha384_verify(n_be, e_be, tbs_data, sig_bytes) else {
+            return err_alert;
+        }
+        return tls::Alert.CloseNotify;
+    }
+    let eff_hash = if pss_hash_id != PSS_HASH_NONE { pss_hash_id } else { extract_tbs_pss_hash_id(tbs_data) };
+    guard x509_verify_rsa_pss_by_hash(n_be, e_be, tbs_data, sig_bytes, eff_hash) else {
+        return err_alert;
+    }
+    return tls::Alert.CloseNotify;
+}
+
 fn x509_verify_signature_by_oid(
     sig_oid:       const u8[:],
     tbs_data:      const u8[:],
     sig_bytes:     const u8[:],
     parent_pubkey: const u8[:],
     err_alert:     tls::Alert,
+    pss_hash_id:   u8 = PSS_HASH_NONE,
 ) -> tls::Alert {
     if sig_oid == rfc::OID_ED25519[..] {
         guard parent_pubkey.len == 32 && sig_bytes.len == 64 else {
@@ -972,27 +1152,10 @@ fn x509_verify_signature_by_oid(
         return tls::Alert.CloseNotify;
     }
 
-    if sig_oid == rfc::OID_SIG_SHA256_RSA[..] {
-        guard core::rsa_pkcs1_sha256_verify_der(parent_pubkey, tbs_data, sig_bytes) else {
-            return err_alert;
-        }
-        return tls::Alert.CloseNotify;
-    }
-
-    if sig_oid == rfc::OID_SIG_SHA384_RSA[..] {
-        guard core::rsa_pkcs1_sha384_verify_der(parent_pubkey, tbs_data, sig_bytes) else {
-            return err_alert;
-        }
-        return tls::Alert.CloseNotify;
-    }
-
-    if sig_oid == rfc::OID_SIG_RSASSA_PSS[..] {
-        let pss_ok = core::rsa_pss_sha256_verify_der(parent_pubkey, tbs_data, sig_bytes)
-            || core::rsa_pss_sha384_verify_der(parent_pubkey, tbs_data, sig_bytes);
-        guard pss_ok else {
-            return err_alert;
-        }
-        return tls::Alert.CloseNotify;
+    if sig_oid == rfc::OID_SIG_SHA256_RSA[..] ||
+        sig_oid == rfc::OID_SIG_SHA384_RSA[..] ||
+        sig_oid == rfc::OID_SIG_RSASSA_PSS[..] {
+        return x509_verify_rsa_signature(sig_oid, tbs_data, sig_bytes, parent_pubkey, err_alert, pss_hash_id);
     }
 
     return tls::Alert.UnsupportedCertificate;
@@ -1348,6 +1511,11 @@ fn x509_ocsp_read_basic_sig(
     var sig_oid = core::cursor_from(sig_alg_seq.buf[..0]);
     guard tls::get_asn1_element(sig_alg_seq, rfc::ASN1_TAG_OID, sig_oid) else { return false; }
     out.sig_alg_oid = tls::make_span(raw_ocsp, sig_oid.buf);
+    if sig_oid.buf == rfc::OID_SIG_RSASSA_PSS[..] {
+        let pss_hash, ok_pss = parse_rsassa_pss_params(sig_alg_seq);
+        guard ok_pss else { return false; }
+        out.pss_hash_id = pss_hash;
+    }
 
     guard basic_seq.cursor_len() > 0 else { return false; }
     var sig_bits = core::cursor_from(basic_seq.buf[..0]);
@@ -1582,7 +1750,7 @@ fn x509_verify_ocsp_signature_with_pubkey(
     let tbs_data = tls::span_slice(raw_ocsp, resp.tbs_raw);
     let sig_bytes = tls::span_slice(raw_ocsp, resp.signature);
     return x509_verify_signature_by_oid(
-        sig_oid, tbs_data, sig_bytes, parent_pubkey, tls::Alert.BadCertificateStatusResponse,
+        sig_oid, tbs_data, sig_bytes, parent_pubkey, tls::Alert.BadCertificateStatusResponse, resp.pss_hash_id,
     );
 }
 
@@ -1684,5 +1852,7 @@ fn x509_verify_crl_signature_with_pubkey(
     let sig_oid = tls::span_slice(raw_crl, crl.sig_alg_oid);
     let tbs_data = tls::span_slice(raw_crl, crl.tbs_raw);
     let sig_bytes = tls::span_slice(raw_crl, crl.signature);
-    return x509_verify_signature_by_oid(sig_oid, tbs_data, sig_bytes, parent_pubkey, tls::Alert.BadCertificate);
+    return x509_verify_signature_by_oid(
+        sig_oid, tbs_data, sig_bytes, parent_pubkey, tls::Alert.BadCertificate, crl.pss_hash_id,
+    );
 }

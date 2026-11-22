@@ -66,3 +66,148 @@ fn parse_sct_list(raw_list: const u8[:], out_scts: ParsedSct[..8]&) -> bool {
     committed = true;
     return true;
 }
+
+inline fn sct_entry_wire_len(cert_der: const u8[:], is_precert: bool, issuer_key_hash: const u8[:]) -> i64, bool {
+    if !is_precert {
+        guard cert_der.len > 0 else { return 0, false; }
+        return core::add_sat_i64(5, cert_der.len), true;
+    }
+    if issuer_key_hash.len == 32 && cert_der.len > 0 {
+        return core::add_sat_i64(37, cert_der.len), true;
+    }
+    if issuer_key_hash.len == 0 && cert_der.len > 32 {
+        return core::add_sat_i64(5, cert_der.len), true;
+    }
+    return 0, false;
+}
+
+inline fn append_sct_signed_entry<B>(
+    cert_der:        const u8[:],
+    is_precert:      bool,
+    issuer_key_hash: const u8[:],
+    out:             B&,
+) {
+    if !is_precert {
+        out.append_u16_be(tls_internal::SCT_ENTRY_TYPE_X509);
+        out.append_u24_be(cert_der.len as u32);
+        out.append(cert_der);
+        return;
+    }
+    out.append_u16_be(tls_internal::SCT_ENTRY_TYPE_PRECERT);
+    if issuer_key_hash.len == 32 {
+        out.append(issuer_key_hash);
+        out.append_u24_be(cert_der.len as u32);
+        out.append(cert_der);
+        return;
+    }
+    out.append(cert_der[0..32]);
+    let tbs = cert_der[32..];
+    out.append_u24_be(tbs.len as u32);
+    out.append(tbs);
+}
+
+// Builds the RFC 6962 Section 3.2 digitally-signed SCT payload into `out`.
+// Validates all lengths and buffer capacity before mutating `out` (Invariant 18).
+//
+// Example:
+//   sct = ParsedSct { version: 0, timestamp_ms: 1700000000000, .. }, is_precert = false
+//   returns: true, out appended with version || sig_type || timestamp || entry_type || entry || exts
+fn build_sct_signed_data<B>(
+    sct:             const ParsedSct&,
+    raw_sct:         const u8[:],
+    cert_der:        const u8[:],
+    is_precert:      bool,
+    out:             B&,
+    issuer_key_hash: const u8[:] = "",
+) -> bool {
+    guard sct.version == rfc::SCT_VERSION_V1 else { return false; }
+    let entry_len, ok_entry = sct_entry_wire_len(cert_der, is_precert, issuer_key_hash);
+    let ext_bytes = span_slice(raw_sct, sct.extensions);
+    guard ok_entry && ext_bytes.len <= 65535 else { return false; }
+
+    let total_len = core::add_sat_i64(
+        core::add_sat_i64(12, entry_len),
+        ext_bytes.len,
+    );
+    guard core::add_sat_i64(out.len, total_len) <= out.cap else { return false; }
+
+    out.push(sct.version);
+    out.push(tls_internal::SCT_SIG_TYPE_CERT_TIMESTAMP);
+    out.append_u64_be(sct.timestamp_ms);
+    append_sct_signed_entry(cert_der, is_precert, issuer_key_hash, out);
+    out.append_u16_be(ext_bytes.len as u16);
+    out.append(ext_bytes);
+    return true;
+}
+
+// Extracts raw key bytes from an X.509 SPKI DER or raw CT log key.
+// When `log_pubkey_der` is a full SPKI DER, enforces RFC 6962 Section 3.2 `log_id == SHA-256(SPKI)`.
+//
+// Example:
+//   log_pubkey_der = DER SPKI(P-256), expected_log_id = SHA-256(log_pubkey_der)
+//   returns: true, out_key = 65-byte uncompressed P-256 public key
+fn extract_sct_log_pubkey(
+    log_pubkey_der:  const u8[:],
+    expected_log_id: const u8[32]&,
+    out_key:         u8[..600]&,
+) -> bool {
+    out_key.clear();
+    guard log_pubkey_der.len > 0 else { return false; }
+    var top = core::cursor_from(log_pubkey_der);
+    var spki = core::cursor_from(log_pubkey_der[..0]);
+    var spki_alg = core::cursor_from(log_pubkey_der[..0]);
+    var spki_pk = core::cursor_from(log_pubkey_der[..0]);
+    let is_spki = get_asn1_element(top, rfc::ASN1_TAG_SEQUENCE, spki) &&
+        top.cursor_len() == 0 &&
+        get_asn1_element(spki, rfc::ASN1_TAG_SEQUENCE, spki_alg) &&
+        get_asn1_element(spki, rfc::ASN1_TAG_BIT_STRING, spki_pk) &&
+        spki.cursor_len() == 0;
+    if is_spki {
+        guard validate_asn1_bit_string(spki_pk.buf) && spki_pk.buf.len >= 2 && spki_pk.buf[0] == 0 else {
+            return false;
+        }
+        let log_hash = core::sha256(log_pubkey_der);
+        guard core::ct_eq_tag32(expected_log_id, log_hash) else { return false; }
+        return out_key.try_set(spki_pk.buf[1..]);
+    }
+    return out_key.try_set(log_pubkey_der);
+}
+
+// Verifies an RFC 6962 Section 3.2 SignedCertificateTimestamp cryptographic signature
+// against a CT log public key (ECDSA P-256 SHA-256 or >= 2048-bit RSA PKCS#1 v1.5 SHA-256).
+fn verify_sct_signature(
+    sct:             const ParsedSct&,
+    raw_sct:         const u8[:],
+    cert_der:        const u8[:],
+    log_pubkey_der:  const u8[:],
+    is_precert:      bool,
+    issuer_key_hash: const u8[:] = "",
+) -> bool {
+    guard sct.version == rfc::SCT_VERSION_V1 &&
+        sct.hash_alg == rfc::SCT_HASH_ALG_SHA256 &&
+        sct.signature.length > 0 else {
+        return false;
+    }
+    let sig_bytes = span_slice(raw_sct, sct.signature);
+    guard sig_bytes.len > 0 else { return false; }
+
+    var signed_data: u8[..8192] = [];
+    guard build_sct_signed_data(sct, raw_sct, cert_der, is_precert, signed_data, issuer_key_hash) else {
+        return false;
+    }
+
+    var raw_key: u8[..600] = [];
+    guard extract_sct_log_pubkey(log_pubkey_der, sct.log_id, raw_key) else {
+        return false;
+    }
+
+    if sct.sig_alg == rfc::SCT_SIG_ALG_ECDSA {
+        return core::ecdsa_p256_verify_der(raw_key[..], signed_data[..], sig_bytes);
+    }
+    if sct.sig_alg == rfc::SCT_SIG_ALG_RSA {
+        let n_be, e_be, ok_rsa = core::parse_rsa_public_key_der(raw_key[..]);
+        guard ok_rsa && n_be.len >= tls_internal::MIN_RSA_MODULUS_BYTES else { return false; }
+        return core::rsa_pkcs1_sha256_verify(n_be, e_be, signed_data[..], sig_bytes);
+    }
+    return false;
+}

@@ -14,7 +14,7 @@ import .x509;
 import .pki_internal;
 
 // Inserts a 64-bit certificate serial number into `crl.serials` in ascending
-// sorted order. Fails closed with `false` if `crl.serials.len >= 128` (Invariant 13).
+// sorted order. Fails closed with `false` if `crl.serials.len >= 1024` (Invariant 13).
 fn crl_insert_serial(crl: ParsedCrl&, serial: u64) -> bool {
     guard crl.serials.len < tls_internal::MAX_CRL_SERIALS else {
         return false;
@@ -45,7 +45,7 @@ fn crl_is_revoked(crl: const ParsedCrl&, serial: u64) -> bool {
 
 // Decodes a positive ASN.1 DER INTEGER (1..20 significant bytes, RFC 5280 Section 4.1.2.2) into a
 // canonical `u64` serial identifier: exact big-endian value for 1..7 significant bytes, or a 64-bit
-// FNV-1a digest (with high bit set) for 8..20 significant bytes so the two domains never collide.
+// truncated SHA-256 digest (with high bit set) for 8..20 significant bytes so the domains never collide.
 //
 // Example:
 //   serial_bytes = [0x01, 0x02]
@@ -67,7 +67,8 @@ fn parse_asn1_serial_u64(serial_bytes: const u8[:]) -> u64, bool {
         }
         return val, true;
     }
-    return core::fnv1a_64(serial_bytes[start..]) | 0x8000000000000000, true;
+    let h = core::sha256(serial_bytes[start..]);
+    return core::read_be_u64(h[..], 0) | 0x8000000000000000, true;
 }
 
 // Parses an ASN.1 INTEGER serial from a revoked certificate entry (RFC 5280 §5.1.2.6).
@@ -129,7 +130,7 @@ fn parse_crl_revoked_entries(revoked_raw: const u8[:], out: ParsedCrl&) -> bool 
 
 // Parses an X.509 CertificateList (CRL) in ASN.1 DER format (RFC 5280 Section 5.1).
 // Extracts the issuer Name slice and populates `out.serials` in ascending sorted order.
-// Fails closed (`false`) on malformed DER or if revoked serials exceed 128 (Invariant 13).
+// Fails closed (`false`) on malformed DER or if revoked serials exceed 1024 (Invariant 13).
 //
 // Example:
 //   raw_crl = [0x30, ...] (DER CertificateList)
@@ -167,7 +168,7 @@ fn parse_x509_crl(raw_crl: const u8[:], out: ParsedCrl&) -> bool {
     let inner_sig_alg_raw = sig_alg.buf;
     var inner_sig_oid = core::cursor_from(sig_alg.buf[..0]);
     guard get_asn1_element(sig_alg, rfc::ASN1_TAG_OID, inner_sig_oid) &&
-        tls_internal::validate_x509_sig_alg_params(inner_sig_oid.buf, sig_alg) else {
+        tls_internal::validate_x509_sig_alg_params(inner_sig_oid.buf, sig_alg, out.pss_hash_id) else {
         return false;
     }
 

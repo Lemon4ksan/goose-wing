@@ -99,6 +99,11 @@ fn civil_to_epoch_seconds(
 
 // ---- SCT Internal Helpers (RFC 6962 §3.2) ----------------------------------
 
+// RFC 6962 Section 3.2: Structure of the Signed Certificate Timestamp - SignatureType and LogEntryType values.
+const SCT_SIG_TYPE_CERT_TIMESTAMP: u8  = 0;
+const SCT_ENTRY_TYPE_X509:         u16 = 0;
+const SCT_ENTRY_TYPE_PRECERT:      u16 = 1;
+
 // Packs two big-endian 32-bit halves into an RFC 6962 §3.2 64-bit millisecond timestamp.
 //
 // Example:
@@ -138,14 +143,37 @@ inline fn is_stateless_ticket_within_lifetime(issued_ms: i64, now_ms: i64, lifet
 
 // ---- ECH / PEM / CRL / OCSP Leaf Constants & Pure Helpers ------------------
 
-const MAX_CRL_SERIALS:             i64 = 128;
+const MAX_CRL_SERIALS:             i64 = 1024;
 const MAX_CONSECUTIVE_KEY_UPDATES: u32 = 8;
 const MAX_CHAIN_DEPTH:             i64 = 8;
+// Minimum RSA public key modulus size in octets (256 bytes = 2048 bits).
+const MIN_RSA_MODULUS_BYTES: i64 = 256;
+
+// RFC 4055 Section 3.1: RSASSA-PSS - Supported hash algorithm identifiers and OIDs.
+const PSS_HASH_NONE:   u8 = 0;
+const PSS_HASH_SHA256: u8 = 1;
+const PSS_HASH_SHA384: u8 = 2;
+const PSS_HASH_SHA512: u8 = 3;
 
 const OID_OCSP_SHA1:   const u8[5] = [0x2B, 0x0E, 0x03, 0x02, 0x1A];
 const OID_OCSP_SHA256: const u8[9] = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+const OID_HASH_SHA384: const u8[9] = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02];
+const OID_HASH_SHA512: const u8[9] = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03];
+const OID_MGF1:        const u8[9] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x08];
 // RFC 6066 Section 8: Certificate Status Request - CertificateStatusType ocsp(1).
 const CERT_STATUS_TYPE_OCSP: u8 = 1;
+
+inline fn pss_expected_salt_len(pss_hash_id: u8) -> i64 {
+    if pss_hash_id == PSS_HASH_SHA256 { return 32; }
+    if pss_hash_id == PSS_HASH_SHA384 { return 48; }
+    if pss_hash_id == PSS_HASH_SHA512 { return 64; }
+    return 0;
+}
+
+inline fn is_valid_rsa_pubkey_min_bits(pubkey_der: const u8[:]) -> bool {
+    let n_be, _, ok = core::parse_rsa_public_key_der(pubkey_der);
+    return ok && n_be.len >= MIN_RSA_MODULUS_BYTES;
+}
 
 const PEM_PRE_EB:           const u8[:] = "-----BEGIN ";
 const PEM_POST_EB:          const u8[:] = "-----END ";

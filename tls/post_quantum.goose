@@ -735,7 +735,13 @@ fn mlkem768_decapsulate(
 
 // ---- FIPS 203 Section 4: Ring R_q Arithmetic and Number-Theoretic Transform ---
 
-const MLKEM_Q: i32 = 3329;
+const MLKEM_Q:             i32 = 3329;
+const MLKEM_Q_U32:         u32 = 3329;
+const MLKEM_Q_U64:         u64 = 3329;
+const MLKEM_BARRETT_SHIFT: u32 = 36;
+const MLKEM_BARRETT_MUL:   u64 = 20642678;  // floor(2^36 / 3329) for constant-time Barrett reduction
+const MLKEM_COMPRESS_MUL:  u64 = 20642679;  // ceil(2^36 / 3329) for constant-time Compress_d
+const MLKEM_BARRETT_BIAS:  i64 = 218169344; // 65536 * 3329 (exact multiple of q; handles val >= -218169344)
 
 // FIPS 203 Section 4.3 Table 1: Bit-reversed powers of zeta = 17 mod 3329
 const MLKEM_ZETAS: i32[128] = [
@@ -762,20 +768,43 @@ struct Poly256 {
     coeffs: i32[256] = [0; 256],
 }
 
+// Constant-time Barrett reduction modulo q = 3329 for val in [-218169344, +218169344].
+// Uses biased unsigned branchless arithmetic with zero division, modulo, or secret branches.
 inline fn fips203_mod_q(val: i64) -> i32 {
-    let r = (val % 3329) as i32;
-    if r < 0 {
-        return r + 3329;
-    }
-    return r;
+    let biased = core::add_sat_i64(val, MLKEM_BARRETT_BIAS) as u64;
+    let t = core::mul_sat_u64(biased, MLKEM_BARRETT_MUL) >> MLKEM_BARRETT_SHIFT;
+    let r = core::sub_sat_u64(biased, core::mul_sat_u64(t, MLKEM_Q_U64));
+    let lt_mask = core::ct_mask_u64(core::ct_lt_u64(r, MLKEM_Q_U64));
+    return core::ct_select_u64(lt_mask, r, core::sub_sat_u64(r, MLKEM_Q_U64)) as i32;
+}
+
+inline fn fips203_add_q(a: i32, b: i32) -> i32 {
+    let sum = core::add_sat_u32(a as u32, b as u32);
+    let lt_mask = core::ct_mask_u32(core::ct_lt_u32(sum, MLKEM_Q_U32));
+    return core::ct_select_u32(lt_mask, sum, core::sub_sat_u32(sum, MLKEM_Q_U32)) as i32;
+}
+
+inline fn fips203_sub_q(a: i32, b: i32) -> i32 {
+    let ua = a as u32;
+    let ub = b as u32;
+    let lt_mask = core::ct_mask_u32(core::ct_lt_u32(ua, ub));
+    let ge_val = core::sub_sat_u32(ua, ub);
+    let lt_val = core::sub_sat_u32(core::add_sat_u32(ua, MLKEM_Q_U32), ub);
+    return core::ct_select_u32(lt_mask, lt_val, ge_val) as i32;
+}
+
+// Constant-time FIPS 203 Compress_d(c) = round(scale * c / 3329) mod scale via Barrett multiply.
+// Exact for all c in [0, 3328] and scale = 2^d for d in {1, 4, 10}.
+inline fn fips203_compress_d(coeff: i32, scale: u64, mask: u64) -> u32 {
+    let num = core::add_sat_u64(core::mul_sat_u64(coeff as u64, scale), 1664);
+    return ((core::mul_sat_u64(num, MLKEM_COMPRESS_MUL) >> MLKEM_BARRETT_SHIFT) & mask) as u32;
 }
 
 // Adds two polynomials in R_q: c = (a + b) mod q (FIPS 203 Section 4.1).
 fn poly_add(a: const Poly256&, b: const Poly256&) -> Poly256 {
     var out = Poly256 { .. };
     for i in 256 {
-        let sum = a.coeffs[i] + b.coeffs[i];
-        out.coeffs[i] = if sum >= 3329 { sum - 3329 } else { sum };
+        out.coeffs[i] = fips203_add_q(a.coeffs[i], b.coeffs[i]);
     }
     return out;
 }
@@ -784,8 +813,7 @@ fn poly_add(a: const Poly256&, b: const Poly256&) -> Poly256 {
 fn poly_sub(a: const Poly256&, b: const Poly256&) -> Poly256 {
     var out = Poly256 { .. };
     for i in 256 {
-        let diff = a.coeffs[i] - b.coeffs[i];
-        out.coeffs[i] = if diff < 0 { diff + 3329 } else { diff };
+        out.coeffs[i] = fips203_sub_q(a.coeffs[i], b.coeffs[i]);
     }
     return out;
 }
@@ -793,17 +821,17 @@ fn poly_sub(a: const Poly256&, b: const Poly256&) -> Poly256 {
 fn ntt_butterfly_layer(f: Poly256&, length: i64, k: i64&) {
     var start: i64 = 0;
     while start < 256 {
-        let z = MLKEM_ZETAS[k];
-        k += 1;
+        let z = MLKEM_ZETAS[k] as u64;
+        k = core::add_sat_i64(k, 1);
         var j = start;
         let end_j = core::add_sat_i64(start, length);
         while j < end_j {
             let j_len = core::add_sat_i64(j, length);
-            let t = fips203_mod_q((z as i64) * f.coeffs[j_len]);
+            let t = fips203_mod_q(core::mul_sat_u64(z, f.coeffs[j_len] as u64) as i64);
             let fj = f.coeffs[j];
-            f.coeffs[j_len] = fips203_mod_q(fj - t);
-            f.coeffs[j] = fips203_mod_q(fj + t);
-            j += 1;
+            f.coeffs[j_len] = fips203_sub_q(fj, t);
+            f.coeffs[j] = fips203_add_q(fj, t);
+            j = core::add_sat_i64(j, 1);
         }
         start = core::add_sat_i64(start, core::add_sat_i64(length, length));
     }
@@ -816,7 +844,7 @@ fn poly_ntt(f_in: const Poly256&) -> Poly256 {
     var length: i64 = 128;
     while length >= 2 {
         ntt_butterfly_layer(f, length, k);
-        length = length / 2;
+        length = length >> 1;
     }
     return f;
 }
@@ -824,17 +852,18 @@ fn poly_ntt(f_in: const Poly256&) -> Poly256 {
 fn invntt_butterfly_layer(f: Poly256&, length: i64, k: i64&) {
     var start: i64 = 0;
     while start < 256 {
-        let z = MLKEM_ZETAS[k];
-        k -= 1;
+        let z = MLKEM_ZETAS[k] as u64;
+        k = core::sub_sat_i64(k, 1);
         var j = start;
         let end_j = core::add_sat_i64(start, length);
         while j < end_j {
             let j_len = core::add_sat_i64(j, length);
             let t = f.coeffs[j];
             let f_j_len = f.coeffs[j_len];
-            f.coeffs[j] = fips203_mod_q(t + f_j_len);
-            f.coeffs[j_len] = fips203_mod_q((z as i64) * (f_j_len - t));
-            j += 1;
+            f.coeffs[j] = fips203_add_q(t, f_j_len);
+            let diff = fips203_sub_q(f_j_len, t);
+            f.coeffs[j_len] = fips203_mod_q(core::mul_sat_u64(z, diff as u64) as i64);
+            j = core::add_sat_i64(j, 1);
         }
         start = core::add_sat_i64(start, core::add_sat_i64(length, length));
     }
@@ -850,7 +879,7 @@ fn poly_invntt(f_in: const Poly256&) -> Poly256 {
         length = core::add_sat_i64(length, length);
     }
     for j in 256 {
-        f.coeffs[j] = fips203_mod_q((f.coeffs[j] as i64) * 3303);
+        f.coeffs[j] = fips203_mod_q(core::mul_sat_u64(f.coeffs[j] as u64, 3303) as i64);
     }
     return f;
 }
@@ -862,20 +891,25 @@ fn poly_basemul_acc(acc: Poly256&, a: const Poly256&, b: const Poly256&) {
     var i: u64 = 0;
     while i < 128 {
         let s = i >> 1;
-        let z = MLKEM_ZETAS[64 + s] as u64;
-        let gamma: u64 = if (i & 1) == 0 { z } else { 3329 - z };
+        let z = MLKEM_ZETAS[core::add_sat_u64(64, s)] as u64;
+        let odd_mask = core::ct_mask_u64(i & 1);
+        let gamma = core::ct_select_u64(odd_mask, core::sub_sat_u64(MLKEM_Q_U64, z), z);
         let idx0 = i << 1;
         let idx1 = idx0 | 1;
         let a0 = a.coeffs[idx0] as u64;
         let a1 = a.coeffs[idx1] as u64;
         let b0 = b.coeffs[idx0] as u64;
         let b1 = b.coeffs[idx1] as u64;
-        let a1b1 = (a1 * b1) % 3329;
-        let c0 = (a0 * b0 + a1b1 * gamma) % 3329;
-        let c1 = (a0 * b1 + a1 * b0) % 3329;
-        acc.coeffs[idx0] = (((acc.coeffs[idx0] as u64) + c0) % 3329) as i32;
-        acc.coeffs[idx1] = (((acc.coeffs[idx1] as u64) + c1) % 3329) as i32;
-        i += 1;
+        let a1b1 = fips203_mod_q(core::mul_sat_u64(a1, b1) as i64) as u64;
+        let c0 = fips203_mod_q(
+            core::add_sat_u64(core::mul_sat_u64(a0, b0), core::mul_sat_u64(a1b1, gamma)) as i64,
+        );
+        let c1 = fips203_mod_q(
+            core::add_sat_u64(core::mul_sat_u64(a0, b1), core::mul_sat_u64(a1, b0)) as i64,
+        );
+        acc.coeffs[idx0] = fips203_add_q(acc.coeffs[idx0], c0);
+        acc.coeffs[idx1] = fips203_add_q(acc.coeffs[idx1], c1);
+        i = core::add_sat_u64(i, 1);
     }
 }
 
@@ -887,14 +921,14 @@ fn poly_cbd2(sigma: const u8[32]&, nonce: u8) -> Poly256 {
     var i: u64 = 0;
     while i < 128 {
         let byte_val = buf[i] as u32;
-        let x0 = (byte_val & 1) + ((byte_val >> 1) & 1);
-        let y0 = ((byte_val >> 2) & 1) + ((byte_val >> 3) & 1);
-        let x1 = ((byte_val >> 4) & 1) + ((byte_val >> 5) & 1);
-        let y1 = ((byte_val >> 6) & 1) + ((byte_val >> 7) & 1);
+        let x0 = core::add_sat_u32(byte_val & 1, (byte_val >> 1) & 1) as i32;
+        let y0 = core::add_sat_u32((byte_val >> 2) & 1, (byte_val >> 3) & 1) as i32;
+        let x1 = core::add_sat_u32((byte_val >> 4) & 1, (byte_val >> 5) & 1) as i32;
+        let y1 = core::add_sat_u32((byte_val >> 6) & 1, (byte_val >> 7) & 1) as i32;
         let idx0 = i << 1;
-        f.coeffs[idx0] = ((x0 + 3329 - y0) % 3329) as i32;
-        f.coeffs[idx0 | 1] = ((x1 + 3329 - y1) % 3329) as i32;
-        i += 1;
+        f.coeffs[idx0] = fips203_sub_q(x0, y0);
+        f.coeffs[idx0 | 1] = fips203_sub_q(x1, y1);
+        i = core::add_sat_u64(i, 1);
     }
     core::secure_zeroize_slice(buf[..]);
     return f;
@@ -960,24 +994,24 @@ fn byte_encode_12(f: const Poly256&, out: u8[:]) {
 fn byte_decode_12(raw: const u8[:]) -> Poly256, bool {
     var f = Poly256 { .. };
     guard raw.len >= 384 else { return f, false; }
-    var valid = true;
-    var i: u64 = 0;
+    var valid_mask: u32 = 0xFFFFFFFF;
+    var i:          u64 = 0;
     while i < 128 {
         let idx2 = i << 1;
-        let idx3 = i * 3;
+        let idx3 = core::mul_sat_u64(i, 3);
         let b0 = raw[idx3] as u32;
-        let b1 = raw[idx3 + 1] as u32;
-        let b2 = raw[idx3 + 2] as u32;
+        let b1 = raw[core::add_sat_u64(idx3, 1)] as u32;
+        let b2 = raw[core::add_sat_u64(idx3, 2)] as u32;
         let d0 = b0 | ((b1 & 0x0F) << 8);
         let d1 = (b1 >> 4) | (b2 << 4);
-        if d0 >= 3329 || d1 >= 3329 {
-            valid = false;
-        }
-        f.coeffs[idx2] = (d0 % 3329) as i32;
-        f.coeffs[idx2 | 1] = (d1 % 3329) as i32;
-        i += 1;
+        let m0 = core::ct_mask_u32(core::ct_lt_u32(d0, MLKEM_Q_U32));
+        let m1 = core::ct_mask_u32(core::ct_lt_u32(d1, MLKEM_Q_U32));
+        valid_mask &= m0 & m1;
+        f.coeffs[idx2] = core::ct_select_u32(m0, d0, core::sub_sat_u32(d0, MLKEM_Q_U32)) as i32;
+        f.coeffs[idx2 | 1] = core::ct_select_u32(m1, d1, core::sub_sat_u32(d1, MLKEM_Q_U32)) as i32;
+        i = core::add_sat_u64(i, 1);
     }
-    return f, valid;
+    return f, valid_mask != 0;
 }
 
 // FIPS 203 Section 4.2.1: Compress_10 and ByteEncode_10 for u vector (3 polynomials -> 960 bytes).
@@ -992,8 +1026,7 @@ fn compress_u(u_vec: const Poly256[3]&, out: u8[:]) {
             var t: u32[4] = [0; 4];
             var k: u64    = 0;
             while k < 4 {
-                let c = u_vec[p].coeffs[(i << 2) | k] as u64;
-                t[k] = ((((c << 10) + 1664) / 3329) & 0x3FF) as u32;
+                t[k] = fips203_compress_d(u_vec[p].coeffs[(i << 2) | k], 1024, 0x3FF);
                 k += 1;
             }
             let off = base_off + 5 * i;
@@ -1029,10 +1062,10 @@ fn decompress_u(raw: const u8[:]) -> Poly256[3] {
             let t2 = (b2 >> 4) | ((b3 & 0x3F) << 4);
             let t3 = (b3 >> 6) | (b4 << 2);
             let c_base = i << 2;
-            u_vec[p].coeffs[c_base] = (((t0 * 3329 + 512) >> 10) % 3329) as i32;
-            u_vec[p].coeffs[c_base | 1] = (((t1 * 3329 + 512) >> 10) % 3329) as i32;
-            u_vec[p].coeffs[c_base | 2] = (((t2 * 3329 + 512) >> 10) % 3329) as i32;
-            u_vec[p].coeffs[c_base | 3] = (((t3 * 3329 + 512) >> 10) % 3329) as i32;
+            u_vec[p].coeffs[c_base] = ((t0 * MLKEM_Q_U32 + 512) >> 10) as! i32;
+            u_vec[p].coeffs[c_base | 1] = ((t1 * MLKEM_Q_U32 + 512) >> 10) as! i32;
+            u_vec[p].coeffs[c_base | 2] = ((t2 * MLKEM_Q_U32 + 512) >> 10) as! i32;
+            u_vec[p].coeffs[c_base | 3] = ((t3 * MLKEM_Q_U32 + 512) >> 10) as! i32;
             i += 1;
         }
         p += 1;
@@ -1047,10 +1080,8 @@ fn compress_v(v: const Poly256&, out: u8[:]) {
     var i: u64 = 0;
     while i < 128 {
         let idx2 = i << 1;
-        let c0 = v.coeffs[idx2] as u64;
-        let c1 = v.coeffs[idx2 | 1] as u64;
-        let t0 = (((c0 << 4) + 1664) / 3329) & 0x0F;
-        let t1 = (((c1 << 4) + 1664) / 3329) & 0x0F;
+        let t0 = fips203_compress_d(v.coeffs[idx2], 16, 0x0F);
+        let t1 = fips203_compress_d(v.coeffs[idx2 | 1], 16, 0x0F);
         out[i] = (t0 | (t1 << 4)) as u8;
         i += 1;
     }
@@ -1065,8 +1096,8 @@ fn decompress_v(raw: const u8[:]) -> Poly256 {
     while i < 128 {
         let idx2 = i << 1;
         let vb = raw[i] as u32;
-        v.coeffs[idx2] = ((((vb & 0x0F) * 3329 + 8) >> 4) % 3329) as i32;
-        v.coeffs[idx2 | 1] = ((((vb >> 4) * 3329 + 8) >> 4) % 3329) as i32;
+        v.coeffs[idx2] = (((vb & 0x0F) * MLKEM_Q_U32 + 8) >> 4) as! i32;
+        v.coeffs[idx2 | 1] = (((vb >> 4) * MLKEM_Q_U32 + 8) >> 4) as! i32;
         i += 1;
     }
     return v;
@@ -1081,12 +1112,11 @@ fn decompress_msg_1(m_msg: const u8[32]&) -> Poly256 {
         let b = m_msg[i];
         var bit: u64 = 0;
         while bit < 8 {
-            if ((b >> bit) & 1) == 1 {
-                mu.coeffs[(i << 3) | bit] = 1665;
-            }
-            bit += 1;
+            let mask = core::ct_mask_u32((b >> bit) & 1);
+            mu.coeffs[(i << 3) | bit] = (mask & 1665) as i32;
+            bit = core::add_sat_u64(bit, 1);
         }
-        i += 1;
+        i = core::add_sat_u64(i, 1);
     }
     return mu;
 }
@@ -1279,8 +1309,7 @@ fn fips203_kpke_decrypt_poly(dk_pke: const u8[:], ct: const u8[:]) -> u8[32] {
     for i in 32 {
         var byte_val: u8 = 0;
         for bit in 8 {
-            let c_val = w_poly.coeffs[i * 8 + bit];
-            let bit_val = (((c_val << 1) + 1664) / 3329) & 1;
+            let bit_val = fips203_compress_d(w_poly.coeffs[i * 8 + bit], 2, 1);
             byte_val |= (bit_val as u8) << bit;
         }
         m_out[i] = byte_val;
