@@ -128,7 +128,9 @@ def load_hpack_stories(source_path: Path) -> list[dict[str, Any]]:
                 if isinstance(st, dict) and "cases" in st:
                     stories.append(st)
         elif isinstance(data, dict) and "cases" in data and isinstance(data["cases"], list):
-            stories.append({"name": fp.stem, "cases": data["cases"]})
+            if data["cases"] and "wire" in data["cases"][0]:
+                label = fp.stem if source_path.is_file() else f"{fp.parent.name}/{fp.stem}"
+                stories.append({"name": label, "cases": data["cases"]})
     return stories
 
 
@@ -145,12 +147,13 @@ def run_hpack_suite(source_path: Path, rebuild: bool = False) -> tuple[int, int]
         sname = str(story.get("name", f"story_{s_idx}"))
         cases = story.get("cases", [])
         init_sz = 4096
-        if cases and "header_table_size" in cases[0]:
+        if cases and cases[0].get("header_table_size") is not None:
             init_sz = int(cases[0]["header_table_size"])
         tsv_lines.append(f"STORY\t{sname}\t{init_sz}")
         for c_idx, case in enumerate(cases):
             cid = f"{sname}#{case.get('seqno', c_idx)}"
-            tbl_sz = int(case.get("header_table_size", 0))
+            raw_tbl_sz = case.get("header_table_size")
+            tbl_sz = int(raw_tbl_sz) if raw_tbl_sz is not None else 0
             wire_hex = str(case.get("wire", "")).replace(" ", "").strip()
             tsv_lines.append(f"CASE\t{cid}\t{tbl_sz}\t{wire_hex}")
             case_meta[cid] = (sname, case)
@@ -274,11 +277,13 @@ def _load_quicwg_enc_story(enc_path: Path, qif_path: Path) -> dict[str, Any] | N
                     "headers": exp_hdrs,
                 }
             )
+    first_enc = next((s["wire"] for s in steps if s["kind"] == "encoder" and s["wire"]), "")
+    starts_with_set_cap = bool(first_enc) and (int(first_enc[:2], 16) & 0xE0) == 0x20
     return {
-        "name": enc_path.name,
+        "name": f"{enc_path.parent.name}/{enc_path.name}",
         "max_table_capacity": max_cap,
         "max_blocked_streams": max_blk,
-        "initial_capacity": 0,
+        "initial_capacity": 0 if starts_with_set_cap else max_cap,
         "steps": steps,
     }
 
@@ -302,7 +307,9 @@ def load_qpack_stories(source_path: Path) -> list[dict[str, Any]]:
             stories.append(data)
 
     qif_by_stem = {p.stem: p for p in source_path.rglob("*.qif")}
-    for enc_fp in sorted(source_path.rglob("*.out")):
+    for enc_fp in sorted(source_path.rglob("*.out*")):
+        if not enc_fp.is_file():
+            continue
         base_stem = enc_fp.name.split(".", 1)[0]
         if base_stem in qif_by_stem:
             st = _load_quicwg_enc_story(enc_fp, qif_by_stem[base_stem])
