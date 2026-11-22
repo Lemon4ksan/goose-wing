@@ -15,7 +15,8 @@ import .sct;
 inline fn is_known_pki_extension_oid(oid: const u8[:]) -> bool {
     return oid == rfc::OID_EXT_KEY_USAGE[..] ||
         oid == rfc::OID_TLS_FEATURE[..] ||
-        oid == rfc::OID_CT_PRECERT_SCTS[..];
+        oid == rfc::OID_CT_PRECERT_SCTS[..] ||
+        oid == rfc::OID_AIA[..];
 }
 
 // id-at-commonName (2.5.4.3): 55 04 03
@@ -284,12 +285,17 @@ fn x509_parse_bc_path_len(bc_seq: core::ByteCursor&, cert: tls::ParsedCert&) {
     cert.path_len_constraint = min(path_len, 255) as i32;
 }
 
-fn x509_parse_basic_constraints_ext(ext_val: core::ByteCursor&, cert: tls::ParsedCert&) {
+fn x509_parse_basic_constraints_ext(
+    ext_val:     core::ByteCursor&,
+    cert:        tls::ParsedCert&,
+    is_critical: bool = false,
+) {
     if cert.has_basic_constraints {
         cert.has_unsupported_critical = true;
         return;
     }
     cert.has_basic_constraints = true;
+    cert.bc_is_critical = is_critical;
     var bc_seq = core::cursor_from(ext_val.buf[..0]);
     guard tls::get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, bc_seq) && ext_val.cursor_len() == 0 else {
         cert.has_unsupported_critical = true;
@@ -332,18 +338,29 @@ fn x509_parse_akid_ext(
     cert:        tls::ParsedCert&,
 ) {
     // RFC 5280 Section 4.2.1.1: Authority Key Identifier - Extension MUST be non-critical.
-    if cert.has_akid || is_critical {
+    if cert.has_akid_ext || is_critical {
         cert.has_unsupported_critical = true;
         return;
     }
+    cert.has_akid_ext = true;
     var akid_seq = core::cursor_from(ext_val.buf[..0]);
     guard tls::get_asn1_element(ext_val, rfc::ASN1_TAG_SEQUENCE, akid_seq) && ext_val.cursor_len() == 0 else {
         cert.has_unsupported_critical = true;
         return;
     }
-    guard akid_seq.cursor_len() > 0 && akid_seq.buf[0] == 0x80 else { return; }
+    guard akid_seq.cursor_len() > 0 else { return; }
+    if akid_seq.buf[0] != 0x80 {
+        cert.akid_has_extra_fields = true;
+        return;
+    }
     var akid_key = core::cursor_from(akid_seq.buf[..0]);
-    guard tls::get_asn1_element(akid_seq, 0x80, akid_key) else { return; }
+    guard tls::get_asn1_element(akid_seq, 0x80, akid_key) else {
+        cert.has_unsupported_critical = true;
+        return;
+    }
+    if akid_seq.cursor_len() > 0 {
+        cert.akid_has_extra_fields = true;
+    }
     guard akid_key.buf.len > 0 && akid_key.buf.len <= 64 else { return; }
     cert.has_akid = true;
     cert.akid_key_id = tls::make_span(raw_cert, akid_key.buf);
@@ -473,7 +490,7 @@ inline fn x509_classify_eku_oid(oid: const u8[:]) -> u8 {
 // Example:
 //   ext_val = [0x30, 0x0A, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]
 //   returns: true, cert.has_eku = true, cert.eku_mask = 1 (EKU_SERVER_AUTH)
-fn x509_parse_eku_ext(ext_val: const u8[:], cert: tls::ParsedCert&) -> bool {
+fn x509_parse_eku_ext(ext_val: const u8[:], cert: tls::ParsedCert&, is_critical: bool = false) -> bool {
     if cert.has_eku {
         cert.has_unsupported_critical = true;
         return false;
@@ -489,6 +506,7 @@ fn x509_parse_eku_ext(ext_val: const u8[:], cert: tls::ParsedCert&) -> bool {
         return false;
     }
     cert.has_eku = true;
+    cert.eku_is_critical = is_critical;
     while eku_seq.cursor_len() > 0 {
         var kp_oid = core::cursor_from(eku_seq.buf[..0]);
         guard tls::get_asn1_element(eku_seq, rfc::ASN1_TAG_OID, kp_oid) && kp_oid.buf.len > 0 else {
@@ -500,9 +518,54 @@ fn x509_parse_eku_ext(ext_val: const u8[:], cert: tls::ParsedCert&) -> bool {
     return true;
 }
 
-fn x509_dispatch_pki_extension(oid: const u8[:], ext_val: core::ByteCursor&, cert: tls::ParsedCert&) -> bool {
+// Parses RFC 5280 Section 4.2.2.1 Authority Information Access (`SEQUENCE SIZE (1..MAX) OF AccessDescription`).
+// Rejects critical AIA, empty lists, non-OID accessMethod, and malformed AccessDescription entries.
+//
+// Example:
+//   ext_val = SEQUENCE { SEQUENCE { OID(id-ad-ocsp), [6] "http://ocsp.example.com" } }
+//   returns: true
+fn x509_parse_aia_ext(ext_val: const u8[:], is_critical: bool, cert: tls::ParsedCert&) -> bool {
+    guard !is_critical else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    var c = core::cursor_from(ext_val);
+    var aia_seq = core::cursor_from(ext_val[..0]);
+    guard tls::get_asn1_element(c, rfc::ASN1_TAG_SEQUENCE, aia_seq) &&
+        c.cursor_len() == 0 &&
+        aia_seq.cursor_len() > 0 else {
+        cert.has_unsupported_critical = true;
+        return false;
+    }
+    while aia_seq.cursor_len() > 0 {
+        var desc = core::cursor_from(aia_seq.buf[..0]);
+        var method_oid = core::cursor_from(aia_seq.buf[..0]);
+        var loc = core::cursor_from(aia_seq.buf[..0]);
+        var loc_tag: u8 = 0;
+        guard tls::get_asn1_element(aia_seq, rfc::ASN1_TAG_SEQUENCE, desc) &&
+            tls::get_asn1_element(desc, rfc::ASN1_TAG_OID, method_oid) &&
+            method_oid.buf.len > 0 &&
+            tls::get_any_asn1_element(desc, loc_tag, loc) &&
+            desc.cursor_len() == 0 &&
+            (loc_tag & 0xC0) == 0x80 &&
+            (loc_tag & 0x1F) <= 8 else {
+            cert.has_unsupported_critical = true;
+            return false;
+        }
+    }
+    return true;
+}
+
+fn x509_dispatch_pki_extension(
+    oid:         const u8[:],
+    ext_val:     core::ByteCursor&,
+    is_critical: bool,
+    cert:        tls::ParsedCert&,
+) -> bool {
     if oid == rfc::OID_EXT_KEY_USAGE[..] {
-        return x509_parse_eku_ext(ext_val.buf, cert);
+        return x509_parse_eku_ext(ext_val.buf, cert, is_critical);
+    } else if oid == rfc::OID_AIA[..] {
+        return x509_parse_aia_ext(ext_val.buf, is_critical, cert);
     } else if oid == rfc::OID_TLS_FEATURE[..] {
         return x509_parse_tls_feature_ext(ext_val.buf, cert);
     } else if oid == rfc::OID_CT_PRECERT_SCTS[..] {
@@ -527,7 +590,7 @@ fn x509_dispatch_policy_extension(
         }
         return true;
     }
-    return x509_dispatch_pki_extension(oid, ext_val, cert);
+    return x509_dispatch_pki_extension(oid, ext_val, is_critical, cert);
 }
 
 fn x509_dispatch_extension(
@@ -538,7 +601,7 @@ fn x509_dispatch_extension(
     is_critical: bool = false,
 ) -> bool {
     if oid == rfc::OID_BASIC_CONSTRAINTS[..] {
-        x509_parse_basic_constraints_ext(ext_val, cert);
+        x509_parse_basic_constraints_ext(ext_val, cert, is_critical);
         return true;
     } else if oid == rfc::OID_KEY_USAGE[..] {
         x509_parse_key_usage_ext(ext_val, cert);
@@ -975,7 +1038,10 @@ fn x509_parse_general_subtree_base(
         guard out_val.buf.len > 0 && !out_val.buf.contains_byte(0) else { return false; }
     } else if tag_num == 2 { // dNSName
         out_type = tls::SanType.Dns;
-        guard out_val.buf.len > 0 && !out_val.buf.contains_byte(0) else { return false; }
+        // RFC 5280 Section 4.2.1.10: Name Constraints - dNSName base MUST NOT start with a leading period.
+        guard out_val.buf.len > 0 && out_val.buf[0] != '.' && !out_val.buf.contains_byte(0) else {
+            return false;
+        }
     } else if tag_num == 7 { // iPAddress
         out_type = tls::SanType.Ip;
         guard out_val.buf.len == 8 || out_val.buf.len == 32 else { return false; }
@@ -1851,15 +1917,54 @@ inline fn x509_crl_read_optional_next_update(tbs_cert_list: core::ByteCursor&, o
     return true;
 }
 
+// RFC 5280 Section 5.2.3: CRL Number - Validates non-negative canonical INTEGER (1..20 significant octets).
+fn validate_crl_number_value(ext_oct_raw: const u8[:]) -> bool {
+    var c = core::cursor_from(ext_oct_raw);
+    var num_elem = core::cursor_from(ext_oct_raw[..0]);
+    guard tls::get_asn1_element(c, rfc::ASN1_TAG_INTEGER, num_elem) && c.cursor_len() == 0 else {
+        return false;
+    }
+    let is_zero = num_elem.buf.len == 1 && num_elem.buf[0] == 0x00;
+    return is_zero || validate_crl_serial_length(num_elem.buf);
+}
+
+// RFC 5280 Section 5.2 & 5.2.3: Validates v2 CRL extensions and enforces mandatory non-critical cRLNumber.
+fn validate_v2_crl_extensions(ext_seq_raw: const u8[:]) -> bool {
+    guard ext_seq_raw.len > 0 else { return false; }
+    var seq = core::cursor_from(ext_seq_raw);
+    var has_crl_number = false;
+    while seq.cursor_len() > 0 {
+        var single_ext = core::cursor_from(seq.buf[..0]);
+        guard tls::get_asn1_element(seq, rfc::ASN1_TAG_SEQUENCE, single_ext) else { return false; }
+        var oid = core::cursor_from(single_ext.buf[..0]);
+        guard tls::get_asn1_element(single_ext, rfc::ASN1_TAG_OID, oid) && oid.buf.len > 0 else { return false; }
+        if single_ext.cursor_len() > 0 && single_ext.buf[0] == rfc::ASN1_TAG_BOOLEAN {
+            return false;
+        }
+        var ext_oct = core::cursor_from(single_ext.buf[..0]);
+        guard tls::get_asn1_element(single_ext, rfc::ASN1_TAG_OCTET_STRING, ext_oct) &&
+            single_ext.cursor_len() == 0 else {
+            return false;
+        }
+        if oid.buf == rfc::OID_CRL_NUMBER[..] {
+            guard !has_crl_number && validate_crl_number_value(ext_oct.buf) else { return false; }
+            has_crl_number = true;
+        }
+    }
+    return has_crl_number;
+}
+
 inline fn x509_crl_read_optional_exts(tbs_cert_list: core::ByteCursor&, is_v2: bool) -> bool {
-    guard tbs_cert_list.cursor_len() > 0 else { return true; }
+    if !is_v2 {
+        return tbs_cert_list.cursor_len() == 0;
+    }
+    guard tbs_cert_list.cursor_len() > 0 else { return false; }
     var ext_ctx = core::cursor_from(tbs_cert_list.buf[..0]);
     var ext_seq = core::cursor_from(tbs_cert_list.buf[..0]);
-    guard is_v2 &&
-        tls::get_asn1_element(tbs_cert_list, 0xA0, ext_ctx) &&
+    guard tls::get_asn1_element(tbs_cert_list, 0xA0, ext_ctx) &&
         tls::get_asn1_element(ext_ctx, rfc::ASN1_TAG_SEQUENCE, ext_seq) &&
         ext_ctx.cursor_len() == 0 &&
-        validate_no_critical_x509_extensions(ext_seq.buf) else {
+        validate_v2_crl_extensions(ext_seq.buf) else {
         return false;
     }
     return tbs_cert_list.cursor_len() == 0;

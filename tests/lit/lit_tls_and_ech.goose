@@ -802,6 +802,14 @@ fn verify_x509_crl_binary_search() {
     assert(core::finish_u8_prefix(b));
     assert(core::finish_u8_prefix(b)); // finish revokedCertificates
 
+    // RFC 5280 Section 5.2.3: crlExtensions [0] { SEQUENCE { SEQUENCE { OID cRLNumber, OCTET STRING { INT 1 } } } }
+    let crl_num_ext: u8[16] = [
+        0xA0, 0x0E, 0x30, 0x0C, 0x30, 0x0A,
+        0x06, 0x03, 0x55, 0x1D, 0x14,
+        0x04, 0x03, 0x02, 0x01, 0x01,
+    ];
+    core::put_bytes(b, crl_num_ext[..]);
+
     assert(core::finish_u8_prefix(b)); // finish tbsCertList
     core::put_bytes(b, sig_der[..]);
     let sig_val: u8[3] = [0x03, 0x01, 0x00];
@@ -1440,10 +1448,10 @@ fn test_bug5_post_handshake_server_rejects_client_nst() {
     hs_msg.append(nst_body[..]);
 
     // Server MUST NOT accept NewSessionTicket from client (RFC 8446 §4.6.1)
-    assert(!tls::dispatch_post_handshake_record(-1, slot_idx, hs_msg[..]));
-    // Malformed post-handshake message MUST also return false
+    assert(tls::dispatch_post_handshake_record(-1, slot_idx, hs_msg[..]) != tls::Alert.CloseNotify);
+    // Malformed post-handshake message MUST also return a fatal alert
     let bad_post_hs: u8[3] = [rfc::TLS_HS_KEY_UPDATE, 0x00, 0x00];
-    assert(!tls::dispatch_post_handshake_record(-1, slot_idx, bad_post_hs[..]));
+    assert(tls::dispatch_post_handshake_record(-1, slot_idx, bad_post_hs[..]) != tls::Alert.CloseNotify);
     // Fragmented plaintext handshake message (declared len 10, only 6 bytes received) MUST wait for next record
     let frag_hs: u8[6] = [rfc::TLS_HS_CLIENT_HELLO, 0x00, 0x00, 0x0A, 0x03, 0x03];
     assert(!tls::has_complete_plaintext_handshake_msg(frag_hs[..]));

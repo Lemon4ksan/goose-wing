@@ -4570,13 +4570,24 @@ fn test_tls13_cert_authorities_extension_validation(t: lit::T&) {
 // ----------------------------------------------------------------------------
 fn check_goose2rfc_pki_and_ech_regressions(t: lit::T&) {
     t.run("TLS3_C09: RFC 5280 IMPLICIT NameConstraints without extra outer SEQUENCE") { sub =>
-        let implicit_nc: u8[15] = [
-            0x30, 0x0D, 0xA0, 0x0B, 0x30, 0x09,
-            0x82, 0x07, '.', 'e', 'x', '.', 'c', 'o', 'm',
+        let implicit_nc: u8[14] = [
+            0x30, 0x0C, 0xA0, 0x0A, 0x30, 0x08,
+            0x82, 0x06, 'e', 'x', '.', 'c', 'o', 'm',
         ];
         var nc_out: tls::NameConstraintEntry[..16] = [];
         sub.assert_true(tls::parse_name_constraints(implicit_nc[..], nc_out), "IMPLICIT NameConstraints parsed");
         sub.assert_eq(nc_out.len, 1, "1 permitted DNS subtree");
+
+        // RFC 5280 Section 4.2.1.10: leading period in dNSName subtree base is invalid.
+        let bad_leading_dot: u8[15] = [
+            0x30, 0x0D, 0xA0, 0x0B, 0x30, 0x09,
+            0x82, 0x07, '.', 'e', 'x', '.', 'c', 'o', 'm',
+        ];
+        var bad_nc: tls::NameConstraintEntry[..16] = [];
+        sub.assert_false(
+            tls::parse_name_constraints(bad_leading_dot[..], bad_nc),
+            "leading period DNS NameConstraints rejected",
+        );
     };
 
     t.run("TLS3_C01 & TLS3_C03: RFC 6962 SCT algorithm validation and list rollback") { sub =>

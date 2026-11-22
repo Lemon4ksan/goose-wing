@@ -518,6 +518,9 @@ def build_x509_crl(
             der_seq(der_int(s) + der_time(this_update - 60)) for s in revoked_serials
         )
         tbs += der_seq(entries)
+    # RFC 5280 Section 5.2.3: Conforming v2 CRL issuers MUST include cRLNumber (2.5.29.20).
+    crl_num_ext = x509_ext("2.5.29.20", der_int(1), critical=False)
+    tbs += der_ctx(0, der_seq(crl_num_ext), constructed=True)
     tbs_der = der_seq(bytes(tbs))
     sig = bytearray(signer_key.sign_der(tbs_der))
     if corrupt_sig:

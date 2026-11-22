@@ -46,9 +46,15 @@ fn validate_end_entity_constraints(
     if cert.has_key_usage && (cert.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) != 0 {
         return tls::Alert.UnsupportedCertificate;
     }
-    // RFC 5280 Section 4.2.1.12: Extended Key Usage - End-entity EKU must permit the TLS peer role.
-    if cert.has_eku && (cert.eku_mask & required_eku_mask_for_role(role)) == 0 {
-        return tls::Alert.UnsupportedCertificate;
+    // RFC 5280 Section 4.2.1.12 & CABF BR 7.1.2.7.10: End-entity EKU must be non-critical,
+    // must not assert anyExtendedKeyUsage, and must permit the TLS peer role.
+    if cert.has_eku {
+        if cert.eku_is_critical || (cert.eku_mask & rfc::EKU_ANY) != 0 {
+            return tls::Alert.UnsupportedCertificate;
+        }
+        if (cert.eku_mask & required_eku_mask_for_role(role)) == 0 {
+            return tls::Alert.UnsupportedCertificate;
+        }
     }
     // RFC 5280 §4.2.1.10: Name constraints MUST NOT be used in end-entity certificates
     if cert.has_name_constraints {
@@ -187,6 +193,15 @@ fn x509_validate_single_chain_cert(
     if cert.subject_raw.length == 0 && cert.has_san && !cert.san_is_critical {
         return tls::Alert.BadCertificate;
     }
+    // CABF BR Section 7.1.2.7.12: Non-empty Subject DN forbids critical SAN on end-entity certificates.
+    if i == 0 && !is_direct_trust_anchor && cert.subject_raw.length > 0 && cert.has_san && cert.san_is_critical {
+        return tls::Alert.BadCertificate;
+    }
+    // RFC 5280 Section 4.1.2.2: Serial Number - End-entity serial MUST be strictly positive (> 0).
+    let ser = tls::span_slice(raw_cert, cert.serial_number);
+    if i == 0 && !is_direct_trust_anchor && ser.len == 1 && ser[0] == 0x00 {
+        return tls::Alert.BadCertificate;
+    }
     if cert.has_san {
         guard tls::validate_cert_san_extension(cert, raw_cert) else {
             return tls::Alert.BadCertificate;
@@ -314,7 +329,12 @@ fn x509_verify_cert_against_anchor(
     non_self_issued_count: i64,
     now_unix:              i64,
 ) -> tls::Alert {
-    if anchor.has_basic_constraints && !anchor.is_ca {
+    if anchor.has_validity {
+        // RFC 5280 Section 4.2.1.9: Basic Constraints - Conforming CA anchors MUST assert critical cA=TRUE.
+        if !anchor.has_basic_constraints || !anchor.is_ca || !anchor.bc_is_critical {
+            return tls::Alert.BadCertificate;
+        }
+    } else if anchor.has_basic_constraints && !anchor.is_ca {
         return tls::Alert.BadCertificate;
     }
     if anchor.has_key_usage && (anchor.key_usage & rfc::KEY_USAGE_KEY_CERT_SIGN) == 0 {

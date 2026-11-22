@@ -62,11 +62,29 @@ fn add_trust_anchor(store: TrustAnchorStore&, subject_raw: const u8[:], spki_raw
     return store.anchors.try_push(anchor);
 }
 
+// Validates CABF BR / RFC 5280 self-signed Root CA constraints on AKI and EKU extensions.
+fn validate_self_signed_root_anchor(cert: const ParsedCert&, raw_cert_der: const u8[:]) -> bool {
+    guard cert.is_ca && tls_internal::x509_is_self_issued(cert, raw_cert_der) else { return true; }
+    // CABF BR Section 7.1.2.1.2: Root CA certificates MUST NOT contain ExtendedKeyUsage.
+    guard !cert.has_eku else { return false; }
+    if cert.has_akid_ext {
+        guard cert.has_akid && !cert.akid_has_extra_fields else { return false; }
+        if cert.has_skid {
+            let akid = span_slice(raw_cert_der, cert.akid_key_id);
+            let skid = span_slice(raw_cert_der, cert.skid_key_id);
+            guard akid == skid else { return false; }
+        }
+    }
+    return true;
+}
+
 // Parses a DER-encoded X.509 certificate and adds its Subject DN and SPKI to the trust anchor store.
 fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]) -> bool {
     var cert = ParsedCert { .. };
     guard parse_x509_certificate(raw_cert_der, cert) else { return false; }
-    guard !cert.has_unsupported_critical && tls_internal::x509_check_cert_spki_policy(cert, raw_cert_der) else {
+    guard !cert.has_unsupported_critical &&
+        tls_internal::x509_check_cert_spki_policy(cert, raw_cert_der) &&
+        validate_self_signed_root_anchor(cert, raw_cert_der) else {
         return false;
     }
     let subj = span_slice(raw_cert_der, cert.subject_raw);
@@ -79,6 +97,7 @@ fn add_trust_anchor_cert_der(store: TrustAnchorStore&, raw_cert_der: const u8[:]
         key_usage:             cert.key_usage,
         has_key_usage:         cert.has_key_usage,
         has_basic_constraints: cert.has_basic_constraints,
+        bc_is_critical:        cert.bc_is_critical,
         is_ca:                 cert.is_ca,
         path_len_constraint:   cert.path_len_constraint,
         validity_not_before:   cert.validity_not_before,
