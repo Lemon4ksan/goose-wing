@@ -46,35 +46,166 @@ extern fn native_aes_gcm_open_prepared(
     dst: u8[:],
 ) -> i64 = "wing_aes_gcm_open_prepared";
 
-let AES_SBOX: const u8[256] = [
-    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
-    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
-    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
-    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
-    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
-    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
-    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
-    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
-    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
-    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
-    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
-    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
-    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
-    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
-    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
-    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
-];
-
 let AES_RCON: const u32[10] = [
     0x01000000, 0x02000000, 0x04000000, 0x08000000, 0x10000000,
     0x20000000, 0x40000000, 0x80000000, 0x1b000000, 0x36000000,
 ];
 
+// Bitsliced GF(2^4) multiplicative inversion core for the Boyar-Peralta (2010) AES S-box.
+// crap:ignore
+inline fn aes_sbox_gf16_inv(t21: u32, t22: u32, t23: u32, t24: u32) -> u32, u32, u32, u32 {
+    let t25 = t21 ^ t22;
+    let t26 = t21 & t23;
+    let t27 = t24 ^ t26;
+    let t28 = t25 & t27;
+    let t29 = t28 ^ t22;
+    let t30 = t23 ^ t24;
+    let t31 = t22 ^ t26;
+    let t32 = t31 & t30;
+    let t33 = t32 ^ t24;
+    let t34 = t23 ^ t33;
+    let t35 = t27 ^ t33;
+    let t36 = t24 & t35;
+    let t37 = t36 ^ t34;
+    let t38 = t27 ^ t36;
+    let t39 = t29 & t38;
+    let t40 = t25 ^ t39;
+    return t29, t33, t37, t40;
+}
+
+// Bitsliced bottom affine transform for the Boyar-Peralta (2010) AES S-box.
+// crap:ignore
+inline fn aes_sbox_bottom_linear(z: const u32[18]&, bp: u32[8]&) {
+    let t46 = z[15] ^ z[16];
+    let t47 = z[10] ^ z[11];
+    let t48 = z[5] ^ z[13];
+    let t49 = z[9] ^ z[10];
+    let t50 = z[2] ^ z[12];
+    let t51 = z[2] ^ z[5];
+    let t52 = z[7] ^ z[8];
+    let t53 = z[0] ^ z[3];
+    let t54 = z[6] ^ z[7];
+    let t55 = z[16] ^ z[17];
+    let t56 = z[12] ^ t48;
+    let t57 = t50 ^ t53;
+    let t58 = z[4] ^ t46;
+    let t59 = z[3] ^ t54;
+    let t60 = t46 ^ t57;
+    let t61 = z[14] ^ t57;
+    let t62 = t52 ^ t58;
+    let t63 = t49 ^ t58;
+    let t64 = z[4] ^ t59;
+    let t65 = t61 ^ t62;
+    let t66 = z[1] ^ t63;
+    let t67 = t64 ^ t65;
+    let s3 = t53 ^ t66;
+    bp[0] = t59 ^ t63;
+    bp[1] = t64 ^ (~s3);
+    bp[2] = t55 ^ (~t67);
+    bp[3] = s3;
+    bp[4] = t51 ^ t66;
+    bp[5] = t47 ^ t65;
+    bp[6] = t56 ^ (~t62);
+    bp[7] = t48 ^ (~t60);
+}
+
+// Evaluates the FIPS 197 AES S-box across up to 32 bytes in parallel using Boyar-Peralta (2010)
+// bit-sliced boolean gates (bp[0] = MSB bit 7, bp[7] = LSB bit 0; zero table lookups or branches).
+// crap:ignore
+inline fn aes_sbox_bitslice(bp: u32[8]&) {
+    let x0 = bp[0]; let x1 = bp[1]; let x2 = bp[2]; let x3 = bp[3];
+    let x4 = bp[4]; let x5 = bp[5]; let x6 = bp[6]; let x7 = bp[7];
+    let y14 = x3 ^ x5;
+    let y13 = x0 ^ x6;
+    let y9 = x0 ^ x3;
+    let y8 = x0 ^ x5;
+    let t0 = x1 ^ x2;
+    let y1 = t0 ^ x7;
+    let y4 = y1 ^ x3;
+    let y12 = y13 ^ y14;
+    let y2 = y1 ^ x0;
+    let y5 = y1 ^ x6;
+    let y3 = y5 ^ y8;
+    let t1 = x4 ^ y12;
+    let y15 = t1 ^ x5;
+    let y20 = t1 ^ x1;
+    let y6 = y15 ^ x7;
+    let y10 = y15 ^ t0;
+    let y11 = y20 ^ y9;
+    let y7 = x7 ^ y11;
+    let y17 = y10 ^ y11;
+    let y19 = y10 ^ y8;
+    let y16 = t0 ^ y11;
+    let y21 = y13 ^ y16;
+    let y18 = x0 ^ y16;
+    let t2 = y12 & y15;
+    let t4 = (y3 & y6) ^ t2;
+    let t6 = (y4 & x7) ^ t2;
+    let t7 = y13 & y16;
+    let t9 = (y5 & y1) ^ t7;
+    let t11 = (y2 & y7) ^ t7;
+    let t12 = y9 & y11;
+    let t14 = (y14 & y17) ^ t12;
+    let t16 = (y8 & y10) ^ t12;
+    let t21 = (t4 ^ t14) ^ y20;
+    let t22 = (t6 ^ t16) ^ y19;
+    let t23 = (t9 ^ t14) ^ y21;
+    let t24 = (t11 ^ t16) ^ y18;
+    let t29, t33, t37, t40 = aes_sbox_gf16_inv(t21, t22, t23, t24);
+    let t41 = t40 ^ t37;
+    let t42 = t29 ^ t33;
+    let t43 = t29 ^ t40;
+    let t44 = t33 ^ t37;
+    let t45 = t42 ^ t41;
+    let z: u32[18] = [
+        t44 & y15, t37 & y6, t33 & x7, t43 & y16, t40 & y1, t29 & y7,
+        t42 & y11, t45 & y17, t41 & y10, t44 & y12, t37 & y3, t33 & y4,
+        t43 & y13, t40 & y5, t29 & y2, t42 & y9, t45 & y14, t41 & y8,
+    ];
+    aes_sbox_bottom_linear(z, bp);
+}
+
+// Constant-time bitsliced AES S-box over `buf` (`buf.len <= 16`) in parallel.
+// crap:ignore
+inline fn aes_sub_slice(buf: u8[:]) {
+    var bp: u32[8] = [0; 8];
+    for i in buf.len {
+        let b = buf[i] as u32;
+        let sh = i as u32;
+        bp[0] |= ((b >> 7) & 1) << sh;
+        bp[1] |= ((b >> 6) & 1) << sh;
+        bp[2] |= ((b >> 5) & 1) << sh;
+        bp[3] |= ((b >> 4) & 1) << sh;
+        bp[4] |= ((b >> 3) & 1) << sh;
+        bp[5] |= ((b >> 2) & 1) << sh;
+        bp[6] |= ((b >> 1) & 1) << sh;
+        bp[7] |= (b & 1) << sh;
+    }
+    aes_sbox_bitslice(bp);
+    for i in buf.len {
+        let sh = i as u32;
+        let b = (((bp[0] >> sh) & 1) << 7) | (((bp[1] >> sh) & 1) << 6) |
+                (((bp[2] >> sh) & 1) << 5) | (((bp[3] >> sh) & 1) << 4) |
+                (((bp[4] >> sh) & 1) << 3) | (((bp[5] >> sh) & 1) << 2) |
+                (((bp[6] >> sh) & 1) << 1) | ((bp[7] >> sh) & 1);
+        buf[i] = b as u8;
+    }
+}
+
+// Constant-time bitsliced AES SubWord over 4 bytes in parallel.
+// crap:ignore
 inline fn aes_sub_word(w: u32) -> u32 {
-    return ((AES_SBOX[(w >> 24) & 0xFF] as u32) << 24) |
-           ((AES_SBOX[(w >> 16) & 0xFF] as u32) << 16) |
-           ((AES_SBOX[(w >> 8) & 0xFF] as u32) << 8) |
-           AES_SBOX[w & 0xFF];
+    var bytes: u8[4] = [
+        ((w >> 24) & 0xFF) as u8,
+        ((w >> 16) & 0xFF) as u8,
+        ((w >> 8) & 0xFF) as u8,
+        (w & 0xFF) as u8,
+    ];
+    aes_sub_slice(bytes[..]);
+    return ((bytes[0] as u32) << 24) |
+           ((bytes[1] as u32) << 16) |
+           ((bytes[2] as u32) << 8) |
+           bytes[3];
 }
 
 inline fn aes_rot_word(w: u32) -> u32 {
@@ -139,7 +270,7 @@ fn aes_encrypt_block(ks: const Aes256KeySchedule&, input: const u8[16]&) -> u8[1
     // 13 main rounds
     for round in 1..14 {
         // SubBytes
-        for i in 16 { state[i] = AES_SBOX[state[i]]; }
+        aes_sub_slice(state[..]);
         // ShiftRows
         let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
         let t2 = state[2]; state[2] = state[10]; state[10] = t2;
@@ -167,7 +298,7 @@ fn aes_encrypt_block(ks: const Aes256KeySchedule&, input: const u8[16]&) -> u8[1
     }
 
     // Final round (no MixColumns)
-    for i in 16 { state[i] = AES_SBOX[state[i]]; }
+    aes_sub_slice(state[..]);
     let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
     let t2 = state[2]; state[2] = state[10]; state[10] = t2;
     let t6 = state[6]; state[6] = state[14]; state[14] = t6;
@@ -232,7 +363,7 @@ fn aes128_encrypt_block(ks: const Aes128KeySchedule&, input: const u8[16]&) -> u
 
     // 9 main rounds
     for round in 1..10 {
-        for i in 16 { state[i] = AES_SBOX[state[i]]; }
+        aes_sub_slice(state[..]);
         let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
         let t2 = state[2]; state[2] = state[10]; state[10] = t2;
         let t6 = state[6]; state[6] = state[14]; state[14] = t6;
@@ -259,7 +390,7 @@ fn aes128_encrypt_block(ks: const Aes128KeySchedule&, input: const u8[16]&) -> u
     }
 
     // Final round (no MixColumns)
-    for i in 16 { state[i] = AES_SBOX[state[i]]; }
+    aes_sub_slice(state[..]);
     let t1 = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t1;
     let t2 = state[2]; state[2] = state[10]; state[10] = t2;
     let t6 = state[6]; state[6] = state[14]; state[14] = t6;
@@ -275,7 +406,14 @@ fn aes128_encrypt_block(ks: const Aes128KeySchedule&, input: const u8[16]&) -> u
     return state;
 }
 
-// GHASH in GF(2^128)
+// Converts a 1-bit predicate into an all-ones or all-zeros 64-bit constant-time mask.
+// crap:ignore
+inline fn ghash_bit_mask64(bit: u64) -> u64 {
+    return 0 - (bit & 1);
+}
+
+// Constant-time GHASH multiplication in GF(2^128).
+// crap:ignore
 fn ghash_mul(x: const u8[16]&, y: const u8[16]&) -> u8[16] {
     var v_hi = ((y[0] as u64) << 56) | ((y[1] as u64) << 48) | ((y[2] as u64) << 40) | ((y[3] as u64) << 32) |
                ((y[4] as u64) << 24) | ((y[5] as u64) << 16) | ((y[6] as u64) << 8) | y[7];
@@ -288,17 +426,13 @@ fn ghash_mul(x: const u8[16]&, y: const u8[16]&) -> u8[16] {
     for i in 16 {
         var bb = x[i];
         for _ in 8 {
-            if (bb & 0x80) != 0 {
-                z_hi ^= v_hi;
-                z_lo ^= v_lo;
-            }
+            let b_mask = ghash_bit_mask64(bb >> 7);
+            z_hi ^= v_hi & b_mask;
+            z_lo ^= v_lo & b_mask;
             bb <<= 1;
-            let lsb = v_lo & 1;
+            let lsb_mask = ghash_bit_mask64(v_lo & 1);
             v_lo = (v_lo >> 1) | ((v_hi & 1) << 63);
-            v_hi = v_hi >> 1;
-            if lsb != 0 {
-                v_hi ^= 0xe100000000000000;
-            }
+            v_hi = (v_hi >> 1) ^ (lsb_mask & 0xe100000000000000);
         }
     }
 

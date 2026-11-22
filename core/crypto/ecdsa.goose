@@ -51,15 +51,35 @@ inline fn u256_is_zero(a: U256) -> bool {
     return acc == 0;
 }
 
+// Branchless 256-bit limb subtraction returning `(a - b, borrow)` where `borrow` is 0 or 1.
+// crap:ignore
+inline fn u256_sub_borrow(a: U256, b: const u32[8]&) -> U256, u64 {
+    var diff = U256 { .. };
+    var borrow: u64 = 0;
+    for i in 8 {
+        let d = (a.v[i] as u64) - b[i] - borrow;
+        diff.v[i] = (d & 0xFFFFFFFF) as u32;
+        borrow = d >> 63;
+    }
+    return diff, borrow;
+}
+
+// Branchless nonzero predicate returning 1 if `a != 0`, else 0.
+// crap:ignore
+inline fn u256_nonzero_bit(a: U256) -> i32 {
+    var acc: u32 = 0;
+    for i in 8 { acc |= a.v[i]; }
+    return ((acc | (0 - acc)) >> 31) as i32;
+}
+
+// Branchless constant-time 256-bit comparison: returns -1 if a < b, 0 if a == b, 1 if a > b.
 // crap:ignore
 inline fn u256_cmp(a: U256, b: const u32[8]&) -> i32 {
-    var idx: i64 = 7;
-    while idx >= 0 {
-        if a.v[idx] > b[idx] { return 1; }
-        if a.v[idx] < b[idx] { return -1; }
-        idx -= 1;
-    }
-    return 0;
+    let diff, borrow = u256_sub_borrow(a, b);
+    let nz = u256_nonzero_bit(diff);
+    let lt = borrow as i32;
+    let gt = nz & (1 ^ lt);
+    return gt - lt;
 }
 
 // crap:ignore
@@ -89,6 +109,7 @@ inline fn u256_to_be(a: U256) -> u8[32] {
     return out;
 }
 
+// Branchless constant-time modular addition: `(a + b) mod m`.
 // crap:ignore
 fn u256_add_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
     var sum = U256 { .. };
@@ -98,35 +119,23 @@ fn u256_add_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
         sum.v[i] = (s & 0xFFFFFFFF) as u32;
         carry = s >> 32;
     }
-    if carry != 0 || u256_cmp(sum, m) >= 0 {
-        var borrow: i64 = 0;
-        for i in 8 {
-            let d = (sum.v[i] as i64) - m[i] - borrow;
-            sum.v[i] = (d & 0xFFFFFFFF) as u32;
-            borrow = if d < 0 { 1 } else { 0 };
-        }
-    }
-    return sum;
+    let diff, borrow = u256_sub_borrow(sum, m);
+    let do_sub = ((carry | (1 ^ borrow)) & 1) as u32;
+    return u256_select(do_sub, diff, sum);
 }
 
+// Branchless constant-time modular subtraction: `(a - b) mod m`.
 // crap:ignore
 fn u256_sub_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
-    var diff = U256 { .. };
-    var borrow: i64 = 0;
+    let diff, borrow = u256_sub_borrow(a, b.v);
+    var sum = U256 { .. };
+    var carry: u64 = 0;
     for i in 8 {
-        let d = (a.v[i] as i64) - b.v[i] - borrow;
-        diff.v[i] = (d & 0xFFFFFFFF) as u32;
-        borrow = if d < 0 { 1 } else { 0 };
+        let s = (diff.v[i] as u64) + m[i] + carry;
+        sum.v[i] = (s & 0xFFFFFFFF) as u32;
+        carry = s >> 32;
     }
-    if borrow != 0 {
-        var carry: u64 = 0;
-        for i in 8 {
-            let s = (diff.v[i] as u64) + m[i] + carry;
-            diff.v[i] = (s & 0xFFFFFFFF) as u32;
-            carry = s >> 32;
-        }
-    }
-    return diff;
+    return u256_select(borrow as u32, sum, diff);
 }
 
 // Constant-time 256-bit integer selection.
@@ -180,18 +189,17 @@ fn u256_monty_mul(a: U256, b: U256, m: const u32[8]&, m0i: u32) -> U256 {
         t[9] = 0;
     }
     var out = U256 { .. };
-    for i in 8 {
-        out.v[i] = t[i];
+    var diff = U256 { .. };
+    var borrow: u64 = 0;
+    for j in 8 {
+        out.v[j] = t[j];
+        let d = (t[j] as u64) - m[j] - borrow;
+        diff.v[j] = (d & 0xFFFFFFFF) as u32;
+        borrow = d >> 63;
     }
-    if t[8] != 0 || u256_cmp(out, m) >= 0 {
-        var borrow: i64 = 0;
-        for j in 8 {
-            let d = (out.v[j] as i64) - m[j] - borrow;
-            out.v[j] = (d & 0xFFFFFFFF) as u32;
-            borrow = if d < 0 { 1 } else { 0 };
-        }
-    }
-    return out;
+    let has_carry = ((t[8] | (0 - t[8])) >> 31) as u64;
+    let do_sub = ((has_carry | (1 - borrow)) & 1) as u32;
+    return u256_select(do_sub, diff, out);
 }
 
 // Fast 8x8 limb Montgomery modular multiplication: `(a * b) mod m`.
@@ -223,9 +231,9 @@ fn u256_mul_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
     for i in 256 {
         let limb = i >> 5;
         let bit = i & 31;
-        if ((b.v[limb] >> bit) & 1) == 1 {
-            res = u256_add_mod(res, cur, m);
-        }
+        let bit_val = (b.v[limb] >> bit) & 1;
+        let next_res = u256_add_mod(res, cur, m);
+        res = u256_select(bit_val, next_res, res);
         cur = u256_add_mod(cur, cur, m);
     }
     return res;
@@ -235,15 +243,16 @@ fn u256_mul_mod(a: U256, b: U256, m: const u32[8]&) -> U256 {
 // crap:ignore
 fn u256_inv_mod(a: U256, m: const u32[8]&) -> U256 {
     var exp = U256 { .. };
-    var borrow: i64 = 2;
+    var borrow: u64 = 2;
     for i in 8 {
         let d = m[i] - borrow;
         exp.v[i] = (d & 0xFFFFFFFF) as u32;
-        borrow = if d < 0 { 1 } else { 0 };
+        borrow = d >> 63;
     }
     var res = U256 { .. };
     res.v[0] = 1;
     var base = a;
+    defer zeroize_u256(base);
     for i in 256 {
         let limb = i >> 5;
         let bit = i & 31;
@@ -261,175 +270,173 @@ struct P256Point {
     infinity: bool = true,
 }
 
-struct P256Jacobian {
-    x:        U256 = U256 { .. },
-    y:        U256 = U256 { .. },
-    z:        U256 = U256 { .. },
-    infinity: bool = true,
+// Homogeneous projective P-256 point `(X : Y : Z)` representing affine `(X/Z, Y/Z)`; infinity is `(0 : 1 : 0)`.
+struct P256Projective {
+    x: U256 = U256 { .. },
+    y: U256 = U256 { v: [1, 0, 0, 0, 0, 0, 0, 0] },
+    z: U256 = U256 { .. },
 }
 
-// Constant-time P-256 Jacobian point selection.
+// Constant-time P-256 projective point selection.
 // crap:ignore
-inline fn p256_jacobian_select(bit: u32, if_true: P256Jacobian, if_false: P256Jacobian) -> P256Jacobian {
-    let mask = 0 - (bit & 1);
-    let inf_t: u32 = if if_true.infinity { 1 } else { 0 };
-    let inf_f: u32 = if if_false.infinity { 1 } else { 0 };
-    return P256Jacobian {
-        x:        u256_select(bit, if_true.x, if_false.x),
-        y:        u256_select(bit, if_true.y, if_false.y),
-        z:        u256_select(bit, if_true.z, if_false.z),
-        infinity: ((inf_f & (~mask)) | (inf_t & mask)) != 0,
+inline fn p256_projective_select(bit: u32, if_true: P256Projective, if_false: P256Projective) -> P256Projective {
+    return P256Projective {
+        x: u256_select(bit, if_true.x, if_false.x),
+        y: u256_select(bit, if_true.y, if_false.y),
+        z: u256_select(bit, if_true.z, if_false.z),
+    };
+}
+
+// Branchless conversion from affine P-256 point to homogeneous projective `(X : Y : Z)`.
+// crap:ignore
+inline fn p256_to_projective(pt: P256Point) -> P256Projective {
+    let inf: u32 = if pt.infinity { 1 } else { 0 };
+    let zero = U256 { .. };
+    let one = U256 { v: [1, 0, 0, 0, 0, 0, 0, 0] };
+    return P256Projective {
+        x: u256_select(inf, zero, pt.x),
+        y: u256_select(inf, one, pt.y),
+        z: u256_select(inf, zero, one),
+    };
+}
+
+// Complete exception-free doubling for a = -3 prime-order curves (Renes-Costello-Batina 2015, Algorithm 6).
+// Zero branches; handles O = (0 : Y : 0) and all finite points uniformly.
+// crap:ignore
+fn p256_projective_double(pt: P256Projective) -> P256Projective {
+    let b_coeff = U256 { v: P256_B };
+    var t0 = u256_mul_mod(pt.x, pt.x, P256_MOD);
+    let t1 = u256_mul_mod(pt.y, pt.y, P256_MOD);
+    var t2 = u256_mul_mod(pt.z, pt.z, P256_MOD);
+    var t3 = u256_mul_mod(pt.x, pt.y, P256_MOD);
+    t3 = u256_add_mod(t3, t3, P256_MOD);
+    var z3 = u256_mul_mod(pt.x, pt.z, P256_MOD);
+    z3 = u256_add_mod(z3, z3, P256_MOD);
+    var y3 = u256_sub_mod(u256_mul_mod(b_coeff, t2, P256_MOD), z3, P256_MOD);
+    var x3 = u256_add_mod(y3, y3, P256_MOD);
+    y3 = u256_add_mod(x3, y3, P256_MOD);
+    x3 = u256_sub_mod(t1, y3, P256_MOD);
+    y3 = u256_mul_mod(x3, u256_add_mod(t1, y3, P256_MOD), P256_MOD);
+    x3 = u256_mul_mod(x3, t3, P256_MOD);
+    t3 = u256_add_mod(t2, t2, P256_MOD);
+    t2 = u256_add_mod(t2, t3, P256_MOD);
+    z3 = u256_sub_mod(u256_sub_mod(u256_mul_mod(b_coeff, z3, P256_MOD), t2, P256_MOD), t0, P256_MOD);
+    t3 = u256_add_mod(z3, z3, P256_MOD);
+    z3 = u256_add_mod(z3, t3, P256_MOD);
+    t3 = u256_add_mod(t0, t0, P256_MOD);
+    t0 = u256_mul_mod(u256_sub_mod(u256_add_mod(t3, t0, P256_MOD), t2, P256_MOD), z3, P256_MOD);
+    y3 = u256_add_mod(y3, t0, P256_MOD);
+    t0 = u256_mul_mod(pt.y, pt.z, P256_MOD);
+    t0 = u256_add_mod(t0, t0, P256_MOD);
+    x3 = u256_sub_mod(x3, u256_mul_mod(t0, z3, P256_MOD), P256_MOD);
+    z3 = u256_mul_mod(t0, t1, P256_MOD);
+    z3 = u256_add_mod(z3, z3, P256_MOD);
+    z3 = u256_add_mod(z3, z3, P256_MOD);
+    return P256Projective { x: x3, y: y3, z: z3 };
+}
+
+// Complete exception-free addition for a = -3 prime-order curves (Renes-Costello-Batina 2015, Algorithm 4).
+// Zero branches; handles O + P, P + O, P + P, and P + (-P) uniformly in constant time.
+// crap:ignore
+fn p256_projective_add(p1: P256Projective, p2: P256Projective) -> P256Projective {
+    let b_coeff = U256 { v: P256_B };
+    var t0 = u256_mul_mod(p1.x, p2.x, P256_MOD);
+    var t1 = u256_mul_mod(p1.y, p2.y, P256_MOD);
+    var t2 = u256_mul_mod(p1.z, p2.z, P256_MOD);
+    var t3 = u256_mul_mod(u256_add_mod(p1.x, p1.y, P256_MOD), u256_add_mod(p2.x, p2.y, P256_MOD), P256_MOD);
+    t3 = u256_sub_mod(t3, u256_add_mod(t0, t1, P256_MOD), P256_MOD);
+    var t4 = u256_mul_mod(u256_add_mod(p1.y, p1.z, P256_MOD), u256_add_mod(p2.y, p2.z, P256_MOD), P256_MOD);
+    t4 = u256_sub_mod(t4, u256_add_mod(t1, t2, P256_MOD), P256_MOD);
+    var x3 = u256_mul_mod(u256_add_mod(p1.x, p1.z, P256_MOD), u256_add_mod(p2.x, p2.z, P256_MOD), P256_MOD);
+    var y3 = u256_sub_mod(x3, u256_add_mod(t0, t2, P256_MOD), P256_MOD);
+    var z3 = u256_mul_mod(b_coeff, t2, P256_MOD);
+    x3 = u256_sub_mod(y3, z3, P256_MOD);
+    z3 = u256_add_mod(x3, x3, P256_MOD);
+    x3 = u256_add_mod(x3, z3, P256_MOD);
+    z3 = u256_sub_mod(t1, x3, P256_MOD);
+    x3 = u256_add_mod(t1, x3, P256_MOD);
+    y3 = u256_mul_mod(b_coeff, y3, P256_MOD);
+    t1 = u256_add_mod(t2, t2, P256_MOD);
+    t2 = u256_add_mod(t1, t2, P256_MOD);
+    y3 = u256_sub_mod(u256_sub_mod(y3, t2, P256_MOD), t0, P256_MOD);
+    t1 = u256_add_mod(y3, y3, P256_MOD);
+    y3 = u256_add_mod(t1, y3, P256_MOD);
+    t1 = u256_add_mod(t0, t0, P256_MOD);
+    t0 = u256_sub_mod(u256_add_mod(t1, t0, P256_MOD), t2, P256_MOD);
+    t1 = u256_mul_mod(t4, y3, P256_MOD);
+    t2 = u256_mul_mod(t0, y3, P256_MOD);
+    y3 = u256_add_mod(u256_mul_mod(x3, z3, P256_MOD), t2, P256_MOD);
+    x3 = u256_sub_mod(u256_mul_mod(t3, x3, P256_MOD), t1, P256_MOD);
+    z3 = u256_add_mod(u256_mul_mod(t4, z3, P256_MOD), u256_mul_mod(t3, t0, P256_MOD), P256_MOD);
+    return P256Projective { x: x3, y: y3, z: z3 };
+}
+
+// Converts a homogeneous projective P-256 point `(X : Y : Z)` to affine `(X / Z, Y / Z)`.
+// crap:ignore
+fn p256_projective_to_affine(pt: P256Projective) -> P256Point {
+    let z_zero = u256_is_zero(pt.z);
+    let z_inv = u256_inv_mod(pt.z, P256_MOD);
+    let x = u256_mul_mod(pt.x, z_inv, P256_MOD);
+    let y = u256_mul_mod(pt.y, z_inv, P256_MOD);
+    let inf_bit: u32 = if z_zero { 1 } else { 0 };
+    let zero = U256 { .. };
+    return P256Point {
+        x:        u256_select(inf_bit, zero, x),
+        y:        u256_select(inf_bit, zero, y),
+        infinity: z_zero,
     };
 }
 
 // crap:ignore
-inline fn p256_to_jacobian(pt: P256Point) -> P256Jacobian {
-    if pt.infinity {
-        return P256Jacobian { .. };
-    }
-    var one = U256 { .. };
-    one.v[0] = 1;
-    return P256Jacobian { x: pt.x, y: pt.y, z: one, infinity: false };
-}
-
-// Doubles a P-256 point in Jacobian coordinates (X : Y : Z) using the a = -3 formula (4M + 4S, 0 inversions).
-// crap:ignore
-fn p256_jacobian_double(pt: P256Jacobian) -> P256Jacobian {
-    if pt.infinity || u256_is_zero(pt.y) {
-        return P256Jacobian { .. };
-    }
-    let y2 = u256_mul_mod(pt.y, pt.y, P256_MOD);
-    let two_y2 = u256_add_mod(y2, y2, P256_MOD);
-    let four_y2 = u256_add_mod(two_y2, two_y2, P256_MOD);
-    let s = u256_mul_mod(pt.x, four_y2, P256_MOD);
-
-    let z2 = u256_mul_mod(pt.z, pt.z, P256_MOD);
-    let x_minus_z2 = u256_sub_mod(pt.x, z2, P256_MOD);
-    let x_plus_z2 = u256_add_mod(pt.x, z2, P256_MOD);
-    let prod = u256_mul_mod(x_minus_z2, x_plus_z2, P256_MOD);
-    let two_prod = u256_add_mod(prod, prod, P256_MOD);
-    let m = u256_add_mod(two_prod, prod, P256_MOD);
-
-    let m2 = u256_mul_mod(m, m, P256_MOD);
-    let two_s = u256_add_mod(s, s, P256_MOD);
-    let x3 = u256_sub_mod(m2, two_s, P256_MOD);
-
-    let four_y4 = u256_mul_mod(two_y2, two_y2, P256_MOD);
-    let eight_y4 = u256_add_mod(four_y4, four_y4, P256_MOD);
-    let s_minus_x3 = u256_sub_mod(s, x3, P256_MOD);
-    let y3 = u256_sub_mod(u256_mul_mod(m, s_minus_x3, P256_MOD), eight_y4, P256_MOD);
-
-    let yz = u256_mul_mod(pt.y, pt.z, P256_MOD);
-    let z3 = u256_add_mod(yz, yz, P256_MOD);
-    return P256Jacobian { x: x3, y: y3, z: z3, infinity: false };
-}
-
-// Adds two P-256 points in Jacobian coordinates (12M + 4S, 0 inversions).
-// crap:ignore
-fn p256_jacobian_add(p1: P256Jacobian, p2: P256Jacobian) -> P256Jacobian {
-    if p1.infinity { return p2; }
-    if p2.infinity { return p1; }
-
-    let z1_sq = u256_mul_mod(p1.z, p1.z, P256_MOD);
-    let z2_sq = u256_mul_mod(p2.z, p2.z, P256_MOD);
-    let u1 = u256_mul_mod(p1.x, z2_sq, P256_MOD);
-    let u2 = u256_mul_mod(p2.x, z1_sq, P256_MOD);
-
-    let z1_cu = u256_mul_mod(p1.z, z1_sq, P256_MOD);
-    let z2_cu = u256_mul_mod(p2.z, z2_sq, P256_MOD);
-    let s1 = u256_mul_mod(p1.y, z2_cu, P256_MOD);
-    let s2 = u256_mul_mod(p2.y, z1_cu, P256_MOD);
-
-    if u256_cmp(u1, u2.v) == 0 {
-        if u256_cmp(s1, s2.v) == 0 {
-            return p256_jacobian_double(p1);
-        }
-        return P256Jacobian { .. };
-    }
-
-    let h = u256_sub_mod(u2, u1, P256_MOD);
-    let r = u256_sub_mod(s2, s1, P256_MOD);
-    let h2 = u256_mul_mod(h, h, P256_MOD);
-    let h3 = u256_mul_mod(h, h2, P256_MOD);
-    let u1_h2 = u256_mul_mod(u1, h2, P256_MOD);
-
-    let r2 = u256_mul_mod(r, r, P256_MOD);
-    let two_u1_h2 = u256_add_mod(u1_h2, u1_h2, P256_MOD);
-    let x3 = u256_sub_mod(u256_sub_mod(r2, h3, P256_MOD), two_u1_h2, P256_MOD);
-
-    let u1_h2_minus_x3 = u256_sub_mod(u1_h2, x3, P256_MOD);
-    let s1_h3 = u256_mul_mod(s1, h3, P256_MOD);
-    let y3 = u256_sub_mod(u256_mul_mod(r, u1_h2_minus_x3, P256_MOD), s1_h3, P256_MOD);
-
-    let z1_z2 = u256_mul_mod(p1.z, p2.z, P256_MOD);
-    let z3 = u256_mul_mod(z1_z2, h, P256_MOD);
-    return P256Jacobian { x: x3, y: y3, z: z3, infinity: false };
-}
-
-// Converts a Jacobian P-256 point (X : Y : Z) to affine (X / Z^2, Y / Z^3) with a single modular inversion.
-// crap:ignore
-fn p256_jacobian_to_affine(pt: P256Jacobian) -> P256Point {
-    if pt.infinity || u256_is_zero(pt.z) {
-        return P256Point { .. };
-    }
-    let z_inv = u256_inv_mod(pt.z, P256_MOD);
-    let z_inv2 = u256_mul_mod(z_inv, z_inv, P256_MOD);
-    let z_inv3 = u256_mul_mod(z_inv2, z_inv, P256_MOD);
-    let x = u256_mul_mod(pt.x, z_inv2, P256_MOD);
-    let y = u256_mul_mod(pt.y, z_inv3, P256_MOD);
-    return P256Point { x: x, y: y, infinity: false };
-}
-
-// crap:ignore
 fn p256_point_double(pt: P256Point) -> P256Point {
-    return p256_jacobian_to_affine(p256_jacobian_double(p256_to_jacobian(pt)));
+    return p256_projective_to_affine(p256_projective_double(p256_to_projective(pt)));
 }
 
 // crap:ignore
 fn p256_point_add(p1: P256Point, p2: P256Point) -> P256Point {
-    return p256_jacobian_to_affine(p256_jacobian_add(p256_to_jacobian(p1), p256_to_jacobian(p2)));
+    return p256_projective_to_affine(p256_projective_add(p256_to_projective(p1), p256_to_projective(p2)));
 }
 
-// Constant-time scalar multiplication: `[scalar] * pt` using branchless Jacobian selection.
+// Constant-time scalar multiplication: `[scalar] * pt` using complete projective formulas and branchless selection.
 // crap:ignore
 fn p256_scalar_mul(pt: P256Point, scalar: U256) -> P256Point {
-    var acc = P256Jacobian { .. };
-    var addend = p256_to_jacobian(pt);
+    var acc = P256Projective { .. };
+    var addend = p256_to_projective(pt);
     for i in 256 {
         let limb = i >> 5;
         let bit = i & 31;
         let bit_val = (scalar.v[limb] >> bit) & 1;
-        let sum = p256_jacobian_add(acc, addend);
-        acc = p256_jacobian_select(bit_val, sum, acc);
-        addend = p256_jacobian_double(addend);
+        let sum = p256_projective_add(acc, addend);
+        acc = p256_projective_select(bit_val, sum, acc);
+        addend = p256_projective_double(addend);
     }
-    return p256_jacobian_to_affine(acc);
+    return p256_projective_to_affine(acc);
 }
 
-// Computes `u1 * G + u2 * Q` via Shamir's trick in Jacobian coordinates with a single final inversion.
+// Computes `u1 * G + u2 * Q` via Shamir's trick in complete projective coordinates with a single final inversion.
 // crap:ignore
 fn p256_muladd_shamir(g: P256Point, u1: U256, q: P256Point, u2: U256) -> P256Point {
-    let g_jac = p256_to_jacobian(g);
-    let q_jac = p256_to_jacobian(q);
-    let gq_jac = p256_jacobian_add(g_jac, q_jac);
+    let g_proj = p256_to_projective(g);
+    let q_proj = p256_to_projective(q);
+    let gq_proj = p256_projective_add(g_proj, q_proj);
 
-    var acc = P256Jacobian { .. };
+    var acc = P256Projective { .. };
     for i in 256 {
         let bit_idx = 255 - i;
-        acc = p256_jacobian_double(acc);
+        acc = p256_projective_double(acc);
         let limb = bit_idx >> 5;
         let bit = bit_idx & 31;
         let b1 = (u1.v[limb] >> bit) & 1;
         let b2 = (u2.v[limb] >> bit) & 1;
         if b1 == 1 && b2 == 1 {
-            acc = p256_jacobian_add(acc, gq_jac);
+            acc = p256_projective_add(acc, gq_proj);
         } else if b1 == 1 {
-            acc = p256_jacobian_add(acc, g_jac);
+            acc = p256_projective_add(acc, g_proj);
         } else if b2 == 1 {
-            acc = p256_jacobian_add(acc, q_jac);
+            acc = p256_projective_add(acc, q_proj);
         }
     }
-    return p256_jacobian_to_affine(acc);
+    return p256_projective_to_affine(acc);
 }
 
 // crap:ignore
@@ -566,22 +573,15 @@ fn ecdsa_p256_encode_der_sig(raw_sig: const u8[64]&, out: u8[..72]&) -> bool {
 // Derives the 65-byte uncompressed SEC1 public key (`0x04 || X || Y`) from a 32-byte P-256 private scalar.
 // crap:ignore
 fn ecdsa_p256_public_key(priv_key: const u8[32]&) -> u8[65] {
-    let ord = U256 { v: P256_ORDER };
-    var d = u256_from_be(priv_key);
-    if u256_cmp(d, P256_ORDER) >= 0 {
-        d = u256_sub_mod(d, ord, P256_ORDER);
-    }
-    guard !u256_is_zero(d) else {
-        zeroize_u256(d);
-        return [0; 65];
-    }
+    var d = u256_add_mod(u256_from_be(priv_key), U256 { .. }, P256_ORDER);
+    defer zeroize_u256(d);
+    guard !u256_is_zero(d) else { return [0; 65]; }
     let g = P256Point {
         x:        U256 { v: P256_GX },
         y:        U256 { v: P256_GY },
         infinity: false,
     };
     let pub_pt = p256_scalar_mul(g, d);
-    zeroize_u256(d);
     let xb = u256_to_be(pub_pt.x);
     let yb = u256_to_be(pub_pt.y);
     var out: u8[65] = [0; 65];
@@ -600,43 +600,37 @@ fn rfc6979_p256_init(
     z_be:     const u8[32]&,
     k_hmac:   u8[32]&,
     v_hmac:   u8[32]&,
-    seed_buf: u8[..97]&,
+    seed_buf: u8[97]&,
 ) {
     v_hmac = [0x01; 32];
     k_hmac = [0x00; 32];
-    seed_buf.clear();
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x00);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
+    ct_copy_bytes(seed_buf[0..32], v_hmac[..]);
+    seed_buf[32] = 0x00;
+    ct_copy_bytes(seed_buf[33..65], x_be[..]);
+    ct_copy_bytes(seed_buf[65..97], z_be[..]);
     k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
-    seed_buf.clear();
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x01);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
+    ct_copy_bytes(seed_buf[0..32], v_hmac[..]);
+    seed_buf[32] = 0x01;
     k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
 }
 
 // Draws the next valid RFC 6979 §3.2 candidate scalar `k in [1, n - 1]` from the HMAC-SHA256 DRBG state.
 // crap:ignore
-fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[..97]&, retry: bool) -> U256 {
+fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[97]&, retry: bool) -> U256 {
     if retry {
-        seed_buf.clear();
-        seed_buf.append(v_hmac[..]);
-        seed_buf.push(0x00);
-        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
+        for i in 32 { seed_buf[i] = v_hmac[i]; }
+        seed_buf[32] = 0x00;
+        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..33]);
         v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
     }
     v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
     var k_scalar = u256_from_be(v_hmac);
     while u256_is_zero(k_scalar) || u256_cmp(k_scalar, P256_ORDER) >= 0 {
-        seed_buf.clear();
-        seed_buf.append(v_hmac[..]);
-        seed_buf.push(0x00);
-        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..]);
+        for i in 32 { seed_buf[i] = v_hmac[i]; }
+        seed_buf[32] = 0x00;
+        k_hmac = hmac_sha256(k_hmac[..], seed_buf[..33]);
         v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
         v_hmac = hmac_sha256(k_hmac[..], v_hmac[..]);
         k_scalar = u256_from_be(v_hmac);
@@ -647,53 +641,44 @@ fn rfc6979_p256_next_k(k_hmac: u8[32]&, v_hmac: u8[32]&, seed_buf: u8[..97]&, re
 // Deterministic RFC 6979 ECDSA P-256 SHA-256 signature generation returning 64-byte `r || s`.
 // crap:ignore
 fn ecdsa_p256_sign(priv_key: const u8[32]&, message: const u8[:]) -> u8[64] {
-    let ord = U256 { v: P256_ORDER };
-    var d = u256_from_be(priv_key);
-    if u256_cmp(d, P256_ORDER) >= 0 {
-        d = u256_sub_mod(d, ord, P256_ORDER);
-    }
-    guard !u256_is_zero(d) else {
-        zeroize_u256(d);
-        return [0; 64];
-    }
+    var d = u256_add_mod(u256_from_be(priv_key), U256 { .. }, P256_ORDER);
+    defer zeroize_u256(d);
+    guard !u256_is_zero(d) else { return [0; 64]; }
     let msg_hash = sha256(message);
-    var z = u256_from_be(msg_hash);
-    if u256_cmp(z, P256_ORDER) >= 0 {
-        z = u256_sub_mod(z, ord, P256_ORDER);
-    }
+    let z = u256_add_mod(u256_from_be(msg_hash), U256 { .. }, P256_ORDER);
     var x_be = u256_to_be(d);
+    defer secure_zeroize_32(x_be);
     let z_be = u256_to_be(z);
-    var v_hmac:   u8[32]   = [0; 32];
-    var k_hmac:   u8[32]   = [0; 32];
-    var seed_buf: u8[..97] = [];
+    var v_hmac:   u8[32] = [0; 32];
+    var k_hmac:   u8[32] = [0; 32];
+    var seed_buf: u8[97] = [0; 97];
+    defer secure_zeroize_32(v_hmac);
+    defer secure_zeroize_32(k_hmac);
+    defer secure_zeroize_slice(seed_buf[..]);
     rfc6979_p256_init(x_be, z_be, k_hmac, v_hmac, seed_buf);
 
     let g = P256Point { x: U256 { v: P256_GX }, y: U256 { v: P256_GY }, infinity: false };
     var r_val = U256 { .. };
     var s_val = U256 { .. };
+    var k_scalar = U256 { .. };
+    var k_inv = U256 { .. };
+    var rd = U256 { .. };
+    var z_plus_rd = U256 { .. };
+    defer zeroize_u256(k_scalar);
+    defer zeroize_u256(k_inv);
+    defer zeroize_u256(rd);
+    defer zeroize_u256(z_plus_rd);
     var retry = false;
     while u256_is_zero(r_val) || u256_is_zero(s_val) {
-        var k_scalar = rfc6979_p256_next_k(k_hmac, v_hmac, seed_buf, retry);
+        k_scalar = rfc6979_p256_next_k(k_hmac, v_hmac, seed_buf, retry);
         retry = true;
         let r_pt = p256_scalar_mul(g, k_scalar);
-        r_val = r_pt.x;
-        if u256_cmp(r_val, P256_ORDER) >= 0 {
-            r_val = u256_sub_mod(r_val, ord, P256_ORDER);
-        }
-        var k_inv = u256_inv_mod(k_scalar, P256_ORDER);
-        var rd = u256_mul_mod(r_val, d, P256_ORDER);
-        var z_plus_rd = u256_add_mod(z, rd, P256_ORDER);
+        r_val = u256_add_mod(r_pt.x, U256 { .. }, P256_ORDER);
+        k_inv = u256_inv_mod(k_scalar, P256_ORDER);
+        rd = u256_mul_mod(r_val, d, P256_ORDER);
+        z_plus_rd = u256_add_mod(z, rd, P256_ORDER);
         s_val = u256_mul_mod(k_inv, z_plus_rd, P256_ORDER);
-        zeroize_u256(rd);
-        zeroize_u256(z_plus_rd);
-        zeroize_u256(k_scalar);
-        zeroize_u256(k_inv);
     }
-    secure_zeroize_slice(seed_buf[..]);
-    secure_zeroize_32(k_hmac);
-    secure_zeroize_32(v_hmac);
-    secure_zeroize_32(x_be);
-    zeroize_u256(d);
 
     let r_be = u256_to_be(r_val);
     let s_be = u256_to_be(s_val);
@@ -831,15 +816,35 @@ inline fn u384_is_zero(a: U384) -> bool {
     return acc == 0;
 }
 
+// Branchless 384-bit limb subtraction returning `(a - b, borrow)` where `borrow` is 0 or 1.
+// crap:ignore
+inline fn u384_sub_borrow(a: U384, b: const u32[12]&) -> U384, u64 {
+    var diff = U384 { .. };
+    var borrow: u64 = 0;
+    for i in 12 {
+        let d = (a.v[i] as u64) - b[i] - borrow;
+        diff.v[i] = (d & 0xFFFFFFFF) as u32;
+        borrow = d >> 63;
+    }
+    return diff, borrow;
+}
+
+// Branchless nonzero predicate returning 1 if `a != 0`, else 0.
+// crap:ignore
+inline fn u384_nonzero_bit(a: U384) -> i32 {
+    var acc: u32 = 0;
+    for i in 12 { acc |= a.v[i]; }
+    return ((acc | (0 - acc)) >> 31) as i32;
+}
+
+// Branchless constant-time 384-bit comparison: returns -1 if a < b, 0 if a == b, 1 if a > b.
 // crap:ignore
 inline fn u384_cmp(a: U384, b: const u32[12]&) -> i32 {
-    var idx: i64 = 11;
-    while idx >= 0 {
-        if a.v[idx] > b[idx] { return 1; }
-        if a.v[idx] < b[idx] { return -1; }
-        idx -= 1;
-    }
-    return 0;
+    let diff, borrow = u384_sub_borrow(a, b);
+    let nz = u384_nonzero_bit(diff);
+    let lt = borrow as i32;
+    let gt = nz & (1 ^ lt);
+    return gt - lt;
 }
 
 // crap:ignore
@@ -869,6 +874,7 @@ inline fn u384_to_be(a: U384) -> u8[48] {
     return out;
 }
 
+// Branchless constant-time modular addition: `(a + b) mod m`.
 // crap:ignore
 fn u384_add_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
     var sum = U384 { .. };
@@ -878,35 +884,23 @@ fn u384_add_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
         sum.v[i] = (s & 0xFFFFFFFF) as u32;
         carry = s >> 32;
     }
-    if carry != 0 || u384_cmp(sum, m) >= 0 {
-        var borrow: i64 = 0;
-        for i in 12 {
-            let d = (sum.v[i] as i64) - m[i] - borrow;
-            sum.v[i] = (d & 0xFFFFFFFF) as u32;
-            borrow = if d < 0 { 1 } else { 0 };
-        }
-    }
-    return sum;
+    let diff, borrow = u384_sub_borrow(sum, m);
+    let do_sub = ((carry | (1 ^ borrow)) & 1) as u32;
+    return u384_select(do_sub, diff, sum);
 }
 
+// Branchless constant-time modular subtraction: `(a - b) mod m`.
 // crap:ignore
 fn u384_sub_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
-    var diff = U384 { .. };
-    var borrow: i64 = 0;
+    let diff, borrow = u384_sub_borrow(a, b.v);
+    var sum = U384 { .. };
+    var carry: u64 = 0;
     for i in 12 {
-        let d = (a.v[i] as i64) - b.v[i] - borrow;
-        diff.v[i] = (d & 0xFFFFFFFF) as u32;
-        borrow = if d < 0 { 1 } else { 0 };
+        let s = (diff.v[i] as u64) + m[i] + carry;
+        sum.v[i] = (s & 0xFFFFFFFF) as u32;
+        carry = s >> 32;
     }
-    if borrow != 0 {
-        var carry: u64 = 0;
-        for i in 12 {
-            let s = (diff.v[i] as u64) + m[i] + carry;
-            diff.v[i] = (s & 0xFFFFFFFF) as u32;
-            carry = s >> 32;
-        }
-    }
-    return diff;
+    return u384_select(borrow as u32, sum, diff);
 }
 
 // Constant-time 384-bit integer selection.
@@ -960,18 +954,17 @@ fn u384_monty_mul(a: U384, b: U384, m: const u32[12]&, m0i: u32) -> U384 {
         t[13] = 0;
     }
     var out = U384 { .. };
-    for i in 12 {
-        out.v[i] = t[i];
+    var diff = U384 { .. };
+    var borrow: u64 = 0;
+    for j in 12 {
+        out.v[j] = t[j];
+        let d = (t[j] as u64) - m[j] - borrow;
+        diff.v[j] = (d & 0xFFFFFFFF) as u32;
+        borrow = d >> 63;
     }
-    if t[12] != 0 || u384_cmp(out, m) >= 0 {
-        var borrow: i64 = 0;
-        for j in 12 {
-            let d = (out.v[j] as i64) - m[j] - borrow;
-            out.v[j] = (d & 0xFFFFFFFF) as u32;
-            borrow = if d < 0 { 1 } else { 0 };
-        }
-    }
-    return out;
+    let has_carry = ((t[12] | (0 - t[12])) >> 31) as u64;
+    let do_sub = ((has_carry | (1 - borrow)) & 1) as u32;
+    return u384_select(do_sub, diff, out);
 }
 
 // Fast 12x12 limb Montgomery modular multiplication: `(a * b) mod m`.
@@ -1005,9 +998,9 @@ fn u384_mul_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
     for i in 384 {
         let limb = i >> 5;
         let bit = i & 31;
-        if ((b.v[limb] >> bit) & 1) == 1 {
-            res = u384_add_mod(res, cur, m);
-        }
+        let bit_val = (b.v[limb] >> bit) & 1;
+        let next_res = u384_add_mod(res, cur, m);
+        res = u384_select(bit_val, next_res, res);
         cur = u384_add_mod(cur, cur, m);
     }
     return res;
@@ -1016,15 +1009,16 @@ fn u384_mul_mod(a: U384, b: U384, m: const u32[12]&) -> U384 {
 // crap:ignore
 fn u384_inv_mod(a: U384, m: const u32[12]&) -> U384 {
     var exp = U384 { .. };
-    var borrow: i64 = 2;
+    var borrow: u64 = 2;
     for i in 12 {
         let d = m[i] - borrow;
         exp.v[i] = (d & 0xFFFFFFFF) as u32;
-        borrow = if d < 0 { 1 } else { 0 };
+        borrow = d >> 63;
     }
     var res = U384 { .. };
     res.v[0] = 1;
     var base = a;
+    defer zeroize_u384(base);
     for i in 384 {
         let limb = i >> 5;
         let bit = i & 31;
@@ -1042,175 +1036,173 @@ struct P384Point {
     infinity: bool = true,
 }
 
-struct P384Jacobian {
-    x:        U384 = U384 { .. },
-    y:        U384 = U384 { .. },
-    z:        U384 = U384 { .. },
-    infinity: bool = true,
+// Homogeneous projective P-384 point `(X : Y : Z)` representing affine `(X/Z, Y/Z)`; infinity is `(0 : 1 : 0)`.
+struct P384Projective {
+    x: U384 = U384 { .. },
+    y: U384 = U384 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+    z: U384 = U384 { .. },
 }
 
-// Constant-time P-384 Jacobian point selection.
+// Constant-time P-384 projective point selection.
 // crap:ignore
-inline fn p384_jacobian_select(bit: u32, if_true: P384Jacobian, if_false: P384Jacobian) -> P384Jacobian {
-    let mask = 0 - (bit & 1);
-    let inf_t: u32 = if if_true.infinity { 1 } else { 0 };
-    let inf_f: u32 = if if_false.infinity { 1 } else { 0 };
-    return P384Jacobian {
-        x:        u384_select(bit, if_true.x, if_false.x),
-        y:        u384_select(bit, if_true.y, if_false.y),
-        z:        u384_select(bit, if_true.z, if_false.z),
-        infinity: ((inf_f & (~mask)) | (inf_t & mask)) != 0,
+inline fn p384_projective_select(bit: u32, if_true: P384Projective, if_false: P384Projective) -> P384Projective {
+    return P384Projective {
+        x: u384_select(bit, if_true.x, if_false.x),
+        y: u384_select(bit, if_true.y, if_false.y),
+        z: u384_select(bit, if_true.z, if_false.z),
+    };
+}
+
+// Branchless conversion from affine P-384 point to homogeneous projective `(X : Y : Z)`.
+// crap:ignore
+inline fn p384_to_projective(pt: P384Point) -> P384Projective {
+    let inf: u32 = if pt.infinity { 1 } else { 0 };
+    let zero = U384 { .. };
+    let one = U384 { v: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
+    return P384Projective {
+        x: u384_select(inf, zero, pt.x),
+        y: u384_select(inf, one, pt.y),
+        z: u384_select(inf, zero, one),
+    };
+}
+
+// Complete exception-free doubling for a = -3 prime-order curves (Renes-Costello-Batina 2015, Algorithm 6).
+// Zero branches; handles O = (0 : Y : 0) and all finite points uniformly.
+// crap:ignore
+fn p384_projective_double(pt: P384Projective) -> P384Projective {
+    let b_coeff = U384 { v: P384_B };
+    var t0 = u384_mul_mod(pt.x, pt.x, P384_MOD);
+    let t1 = u384_mul_mod(pt.y, pt.y, P384_MOD);
+    var t2 = u384_mul_mod(pt.z, pt.z, P384_MOD);
+    var t3 = u384_mul_mod(pt.x, pt.y, P384_MOD);
+    t3 = u384_add_mod(t3, t3, P384_MOD);
+    var z3 = u384_mul_mod(pt.x, pt.z, P384_MOD);
+    z3 = u384_add_mod(z3, z3, P384_MOD);
+    var y3 = u384_sub_mod(u384_mul_mod(b_coeff, t2, P384_MOD), z3, P384_MOD);
+    var x3 = u384_add_mod(y3, y3, P384_MOD);
+    y3 = u384_add_mod(x3, y3, P384_MOD);
+    x3 = u384_sub_mod(t1, y3, P384_MOD);
+    y3 = u384_mul_mod(x3, u384_add_mod(t1, y3, P384_MOD), P384_MOD);
+    x3 = u384_mul_mod(x3, t3, P384_MOD);
+    t3 = u384_add_mod(t2, t2, P384_MOD);
+    t2 = u384_add_mod(t2, t3, P384_MOD);
+    z3 = u384_sub_mod(u384_sub_mod(u384_mul_mod(b_coeff, z3, P384_MOD), t2, P384_MOD), t0, P384_MOD);
+    t3 = u384_add_mod(z3, z3, P384_MOD);
+    z3 = u384_add_mod(z3, t3, P384_MOD);
+    t3 = u384_add_mod(t0, t0, P384_MOD);
+    t0 = u384_mul_mod(u384_sub_mod(u384_add_mod(t3, t0, P384_MOD), t2, P384_MOD), z3, P384_MOD);
+    y3 = u384_add_mod(y3, t0, P384_MOD);
+    t0 = u384_mul_mod(pt.y, pt.z, P384_MOD);
+    t0 = u384_add_mod(t0, t0, P384_MOD);
+    x3 = u384_sub_mod(x3, u384_mul_mod(t0, z3, P384_MOD), P384_MOD);
+    z3 = u384_mul_mod(t0, t1, P384_MOD);
+    z3 = u384_add_mod(z3, z3, P384_MOD);
+    z3 = u384_add_mod(z3, z3, P384_MOD);
+    return P384Projective { x: x3, y: y3, z: z3 };
+}
+
+// Complete exception-free addition for a = -3 prime-order curves (Renes-Costello-Batina 2015, Algorithm 4).
+// Zero branches; handles O + P, P + O, P + P, and P + (-P) uniformly in constant time.
+// crap:ignore
+fn p384_projective_add(p1: P384Projective, p2: P384Projective) -> P384Projective {
+    let b_coeff = U384 { v: P384_B };
+    var t0 = u384_mul_mod(p1.x, p2.x, P384_MOD);
+    var t1 = u384_mul_mod(p1.y, p2.y, P384_MOD);
+    var t2 = u384_mul_mod(p1.z, p2.z, P384_MOD);
+    var t3 = u384_mul_mod(u384_add_mod(p1.x, p1.y, P384_MOD), u384_add_mod(p2.x, p2.y, P384_MOD), P384_MOD);
+    t3 = u384_sub_mod(t3, u384_add_mod(t0, t1, P384_MOD), P384_MOD);
+    var t4 = u384_mul_mod(u384_add_mod(p1.y, p1.z, P384_MOD), u384_add_mod(p2.y, p2.z, P384_MOD), P384_MOD);
+    t4 = u384_sub_mod(t4, u384_add_mod(t1, t2, P384_MOD), P384_MOD);
+    var x3 = u384_mul_mod(u384_add_mod(p1.x, p1.z, P384_MOD), u384_add_mod(p2.x, p2.z, P384_MOD), P384_MOD);
+    var y3 = u384_sub_mod(x3, u384_add_mod(t0, t2, P384_MOD), P384_MOD);
+    var z3 = u384_mul_mod(b_coeff, t2, P384_MOD);
+    x3 = u384_sub_mod(y3, z3, P384_MOD);
+    z3 = u384_add_mod(x3, x3, P384_MOD);
+    x3 = u384_add_mod(x3, z3, P384_MOD);
+    z3 = u384_sub_mod(t1, x3, P384_MOD);
+    x3 = u384_add_mod(t1, x3, P384_MOD);
+    y3 = u384_mul_mod(b_coeff, y3, P384_MOD);
+    t1 = u384_add_mod(t2, t2, P384_MOD);
+    t2 = u384_add_mod(t1, t2, P384_MOD);
+    y3 = u384_sub_mod(u384_sub_mod(y3, t2, P384_MOD), t0, P384_MOD);
+    t1 = u384_add_mod(y3, y3, P384_MOD);
+    y3 = u384_add_mod(t1, y3, P384_MOD);
+    t1 = u384_add_mod(t0, t0, P384_MOD);
+    t0 = u384_sub_mod(u384_add_mod(t1, t0, P384_MOD), t2, P384_MOD);
+    t1 = u384_mul_mod(t4, y3, P384_MOD);
+    t2 = u384_mul_mod(t0, y3, P384_MOD);
+    y3 = u384_add_mod(u384_mul_mod(x3, z3, P384_MOD), t2, P384_MOD);
+    x3 = u384_sub_mod(u384_mul_mod(t3, x3, P384_MOD), t1, P384_MOD);
+    z3 = u384_add_mod(u384_mul_mod(t4, z3, P384_MOD), u384_mul_mod(t3, t0, P384_MOD), P384_MOD);
+    return P384Projective { x: x3, y: y3, z: z3 };
+}
+
+// Converts a homogeneous projective P-384 point `(X : Y : Z)` to affine `(X / Z, Y / Z)`.
+// crap:ignore
+fn p384_projective_to_affine(pt: P384Projective) -> P384Point {
+    let z_zero = u384_is_zero(pt.z);
+    let z_inv = u384_inv_mod(pt.z, P384_MOD);
+    let x = u384_mul_mod(pt.x, z_inv, P384_MOD);
+    let y = u384_mul_mod(pt.y, z_inv, P384_MOD);
+    let inf_bit: u32 = if z_zero { 1 } else { 0 };
+    let zero = U384 { .. };
+    return P384Point {
+        x:        u384_select(inf_bit, zero, x),
+        y:        u384_select(inf_bit, zero, y),
+        infinity: z_zero,
     };
 }
 
 // crap:ignore
-inline fn p384_to_jacobian(pt: P384Point) -> P384Jacobian {
-    if pt.infinity {
-        return P384Jacobian { .. };
-    }
-    var one = U384 { .. };
-    one.v[0] = 1;
-    return P384Jacobian { x: pt.x, y: pt.y, z: one, infinity: false };
-}
-
-// Doubles a P-384 point in Jacobian coordinates (X : Y : Z) using the a = -3 formula (4M + 4S, 0 inversions).
-// crap:ignore
-fn p384_jacobian_double(pt: P384Jacobian) -> P384Jacobian {
-    if pt.infinity || u384_is_zero(pt.y) {
-        return P384Jacobian { .. };
-    }
-    let y2 = u384_mul_mod(pt.y, pt.y, P384_MOD);
-    let two_y2 = u384_add_mod(y2, y2, P384_MOD);
-    let four_y2 = u384_add_mod(two_y2, two_y2, P384_MOD);
-    let s = u384_mul_mod(pt.x, four_y2, P384_MOD);
-
-    let z2 = u384_mul_mod(pt.z, pt.z, P384_MOD);
-    let x_minus_z2 = u384_sub_mod(pt.x, z2, P384_MOD);
-    let x_plus_z2 = u384_add_mod(pt.x, z2, P384_MOD);
-    let prod = u384_mul_mod(x_minus_z2, x_plus_z2, P384_MOD);
-    let two_prod = u384_add_mod(prod, prod, P384_MOD);
-    let m = u384_add_mod(two_prod, prod, P384_MOD);
-
-    let m2 = u384_mul_mod(m, m, P384_MOD);
-    let two_s = u384_add_mod(s, s, P384_MOD);
-    let x3 = u384_sub_mod(m2, two_s, P384_MOD);
-
-    let four_y4 = u384_mul_mod(two_y2, two_y2, P384_MOD);
-    let eight_y4 = u384_add_mod(four_y4, four_y4, P384_MOD);
-    let s_minus_x3 = u384_sub_mod(s, x3, P384_MOD);
-    let y3 = u384_sub_mod(u384_mul_mod(m, s_minus_x3, P384_MOD), eight_y4, P384_MOD);
-
-    let yz = u384_mul_mod(pt.y, pt.z, P384_MOD);
-    let z3 = u384_add_mod(yz, yz, P384_MOD);
-    return P384Jacobian { x: x3, y: y3, z: z3, infinity: false };
-}
-
-// Adds two P-384 points in Jacobian coordinates (12M + 4S, 0 inversions).
-// crap:ignore
-fn p384_jacobian_add(p1: P384Jacobian, p2: P384Jacobian) -> P384Jacobian {
-    if p1.infinity { return p2; }
-    if p2.infinity { return p1; }
-
-    let z1_sq = u384_mul_mod(p1.z, p1.z, P384_MOD);
-    let z2_sq = u384_mul_mod(p2.z, p2.z, P384_MOD);
-    let u1 = u384_mul_mod(p1.x, z2_sq, P384_MOD);
-    let u2 = u384_mul_mod(p2.x, z1_sq, P384_MOD);
-
-    let z1_cu = u384_mul_mod(p1.z, z1_sq, P384_MOD);
-    let z2_cu = u384_mul_mod(p2.z, z2_sq, P384_MOD);
-    let s1 = u384_mul_mod(p1.y, z2_cu, P384_MOD);
-    let s2 = u384_mul_mod(p2.y, z1_cu, P384_MOD);
-
-    if u384_cmp(u1, u2.v) == 0 {
-        if u384_cmp(s1, s2.v) == 0 {
-            return p384_jacobian_double(p1);
-        }
-        return P384Jacobian { .. };
-    }
-
-    let h = u384_sub_mod(u2, u1, P384_MOD);
-    let r = u384_sub_mod(s2, s1, P384_MOD);
-    let h2 = u384_mul_mod(h, h, P384_MOD);
-    let h3 = u384_mul_mod(h, h2, P384_MOD);
-    let u1_h2 = u384_mul_mod(u1, h2, P384_MOD);
-
-    let r2 = u384_mul_mod(r, r, P384_MOD);
-    let two_u1_h2 = u384_add_mod(u1_h2, u1_h2, P384_MOD);
-    let x3 = u384_sub_mod(u384_sub_mod(r2, h3, P384_MOD), two_u1_h2, P384_MOD);
-
-    let u1_h2_minus_x3 = u384_sub_mod(u1_h2, x3, P384_MOD);
-    let s1_h3 = u384_mul_mod(s1, h3, P384_MOD);
-    let y3 = u384_sub_mod(u384_mul_mod(r, u1_h2_minus_x3, P384_MOD), s1_h3, P384_MOD);
-
-    let z1_z2 = u384_mul_mod(p1.z, p2.z, P384_MOD);
-    let z3 = u384_mul_mod(z1_z2, h, P384_MOD);
-    return P384Jacobian { x: x3, y: y3, z: z3, infinity: false };
-}
-
-// Converts a Jacobian P-384 point (X : Y : Z) to affine (X / Z^2, Y / Z^3) with a single modular inversion.
-// crap:ignore
-fn p384_jacobian_to_affine(pt: P384Jacobian) -> P384Point {
-    if pt.infinity || u384_is_zero(pt.z) {
-        return P384Point { .. };
-    }
-    let z_inv = u384_inv_mod(pt.z, P384_MOD);
-    let z_inv2 = u384_mul_mod(z_inv, z_inv, P384_MOD);
-    let z_inv3 = u384_mul_mod(z_inv2, z_inv, P384_MOD);
-    let x = u384_mul_mod(pt.x, z_inv2, P384_MOD);
-    let y = u384_mul_mod(pt.y, z_inv3, P384_MOD);
-    return P384Point { x: x, y: y, infinity: false };
-}
-
-// crap:ignore
 fn p384_point_double(pt: P384Point) -> P384Point {
-    return p384_jacobian_to_affine(p384_jacobian_double(p384_to_jacobian(pt)));
+    return p384_projective_to_affine(p384_projective_double(p384_to_projective(pt)));
 }
 
 // crap:ignore
 fn p384_point_add(p1: P384Point, p2: P384Point) -> P384Point {
-    return p384_jacobian_to_affine(p384_jacobian_add(p384_to_jacobian(p1), p384_to_jacobian(p2)));
+    return p384_projective_to_affine(p384_projective_add(p384_to_projective(p1), p384_to_projective(p2)));
 }
 
-// Constant-time scalar multiplication: `[scalar] * pt` using branchless Jacobian selection.
+// Constant-time scalar multiplication: `[scalar] * pt` using complete projective formulas and branchless selection.
 // crap:ignore
 fn p384_scalar_mul(pt: P384Point, scalar: U384) -> P384Point {
-    var acc = P384Jacobian { .. };
-    var addend = p384_to_jacobian(pt);
+    var acc = P384Projective { .. };
+    var addend = p384_to_projective(pt);
     for i in 384 {
         let limb = i >> 5;
         let bit = i & 31;
         let bit_val = (scalar.v[limb] >> bit) & 1;
-        let sum = p384_jacobian_add(acc, addend);
-        acc = p384_jacobian_select(bit_val, sum, acc);
-        addend = p384_jacobian_double(addend);
+        let sum = p384_projective_add(acc, addend);
+        acc = p384_projective_select(bit_val, sum, acc);
+        addend = p384_projective_double(addend);
     }
-    return p384_jacobian_to_affine(acc);
+    return p384_projective_to_affine(acc);
 }
 
-// Computes `u1 * G + u2 * Q` via Shamir's trick in Jacobian coordinates with a single final inversion.
+// Computes `u1 * G + u2 * Q` via Shamir's trick in complete projective coordinates with a single final inversion.
 // crap:ignore
 fn p384_muladd_shamir(g: P384Point, u1: U384, q: P384Point, u2: U384) -> P384Point {
-    let g_jac = p384_to_jacobian(g);
-    let q_jac = p384_to_jacobian(q);
-    let gq_jac = p384_jacobian_add(g_jac, q_jac);
+    let g_proj = p384_to_projective(g);
+    let q_proj = p384_to_projective(q);
+    let gq_proj = p384_projective_add(g_proj, q_proj);
 
-    var acc = P384Jacobian { .. };
+    var acc = P384Projective { .. };
     for i in 384 {
         let bit_idx = 383 - i;
-        acc = p384_jacobian_double(acc);
+        acc = p384_projective_double(acc);
         let limb = bit_idx >> 5;
         let bit = bit_idx & 31;
         let b1 = (u1.v[limb] >> bit) & 1;
         let b2 = (u2.v[limb] >> bit) & 1;
         if b1 == 1 && b2 == 1 {
-            acc = p384_jacobian_add(acc, gq_jac);
+            acc = p384_projective_add(acc, gq_proj);
         } else if b1 == 1 {
-            acc = p384_jacobian_add(acc, g_jac);
+            acc = p384_projective_add(acc, g_proj);
         } else if b2 == 1 {
-            acc = p384_jacobian_add(acc, q_jac);
+            acc = p384_projective_add(acc, q_proj);
         }
     }
-    return p384_jacobian_to_affine(acc);
+    return p384_projective_to_affine(acc);
 }
 
 // crap:ignore
@@ -1280,22 +1272,15 @@ fn ecdsa_p384_decode_der_sig(der_sig: const u8[:], out_raw: u8[96]&) -> bool {
 // Derives the 97-byte uncompressed SEC1 public key (`0x04 || X || Y`) from a 48-byte P-384 private scalar.
 // crap:ignore
 fn ecdsa_p384_public_key(priv_key: const u8[48]&) -> u8[97] {
-    let ord = U384 { v: P384_ORDER };
-    var d = u384_from_be(priv_key);
-    if u384_cmp(d, P384_ORDER) >= 0 {
-        d = u384_sub_mod(d, ord, P384_ORDER);
-    }
-    guard !u384_is_zero(d) else {
-        zeroize_u384(d);
-        return [0; 97];
-    }
+    var d = u384_add_mod(u384_from_be(priv_key), U384 { .. }, P384_ORDER);
+    defer zeroize_u384(d);
+    guard !u384_is_zero(d) else { return [0; 97]; }
     let g = P384Point {
         x:        U384 { v: P384_GX },
         y:        U384 { v: P384_GY },
         infinity: false,
     };
     let pub_pt = p384_scalar_mul(g, d);
-    zeroize_u384(d);
     let xb = u384_to_be(pub_pt.x);
     let yb = u384_to_be(pub_pt.y);
     var out: u8[97] = [0; 97];
@@ -1314,43 +1299,37 @@ fn rfc6979_p384_init(
     z_be:     const u8[48]&,
     k_hmac:   u8[48]&,
     v_hmac:   u8[48]&,
-    seed_buf: u8[..145]&,
+    seed_buf: u8[145]&,
 ) {
     v_hmac = [0x01; 48];
     k_hmac = [0x00; 48];
-    seed_buf.clear();
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x00);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
+    ct_copy_bytes(seed_buf[0..48], v_hmac[..]);
+    seed_buf[48] = 0x00;
+    ct_copy_bytes(seed_buf[49..97], x_be[..]);
+    ct_copy_bytes(seed_buf[97..145], z_be[..]);
     k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
-    seed_buf.clear();
-    seed_buf.append(v_hmac[..]);
-    seed_buf.push(0x01);
-    seed_buf.append(x_be[..]);
-    seed_buf.append(z_be[..]);
+    ct_copy_bytes(seed_buf[0..48], v_hmac[..]);
+    seed_buf[48] = 0x01;
     k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
 }
 
 // Draws the next valid RFC 6979 §3.2 candidate scalar `k in [1, n - 1]` from the HMAC-SHA384 DRBG state.
 // crap:ignore
-fn rfc6979_p384_next_k(k_hmac: u8[48]&, v_hmac: u8[48]&, seed_buf: u8[..145]&, retry: bool) -> U384 {
+fn rfc6979_p384_next_k(k_hmac: u8[48]&, v_hmac: u8[48]&, seed_buf: u8[145]&, retry: bool) -> U384 {
     if retry {
-        seed_buf.clear();
-        seed_buf.append(v_hmac[..]);
-        seed_buf.push(0x00);
-        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
+        for i in 48 { seed_buf[i] = v_hmac[i]; }
+        seed_buf[48] = 0x00;
+        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..49]);
         v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
     }
     v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
     var k_scalar = u384_from_be(v_hmac);
     while u384_is_zero(k_scalar) || u384_cmp(k_scalar, P384_ORDER) >= 0 {
-        seed_buf.clear();
-        seed_buf.append(v_hmac[..]);
-        seed_buf.push(0x00);
-        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..]);
+        for i in 48 { seed_buf[i] = v_hmac[i]; }
+        seed_buf[48] = 0x00;
+        k_hmac = hmac_sha384(k_hmac[..], seed_buf[..49]);
         v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
         v_hmac = hmac_sha384(k_hmac[..], v_hmac[..]);
         k_scalar = u384_from_be(v_hmac);
@@ -1361,53 +1340,44 @@ fn rfc6979_p384_next_k(k_hmac: u8[48]&, v_hmac: u8[48]&, seed_buf: u8[..145]&, r
 // Deterministic RFC 6979 ECDSA P-384 SHA-384 signature generation returning 96-byte `r || s`.
 // crap:ignore
 fn ecdsa_p384_sign(priv_key: const u8[48]&, message: const u8[:]) -> u8[96] {
-    let ord = U384 { v: P384_ORDER };
-    var d = u384_from_be(priv_key);
-    if u384_cmp(d, P384_ORDER) >= 0 {
-        d = u384_sub_mod(d, ord, P384_ORDER);
-    }
-    guard !u384_is_zero(d) else {
-        zeroize_u384(d);
-        return [0; 96];
-    }
+    var d = u384_add_mod(u384_from_be(priv_key), U384 { .. }, P384_ORDER);
+    defer zeroize_u384(d);
+    guard !u384_is_zero(d) else { return [0; 96]; }
     let msg_hash = sha384(message);
-    var z = u384_from_be(msg_hash);
-    if u384_cmp(z, P384_ORDER) >= 0 {
-        z = u384_sub_mod(z, ord, P384_ORDER);
-    }
+    let z = u384_add_mod(u384_from_be(msg_hash), U384 { .. }, P384_ORDER);
     var x_be = u384_to_be(d);
+    defer secure_zeroize_48(x_be);
     let z_be = u384_to_be(z);
-    var v_hmac:   u8[48]    = [0; 48];
-    var k_hmac:   u8[48]    = [0; 48];
-    var seed_buf: u8[..145] = [];
+    var v_hmac:   u8[48]  = [0; 48];
+    var k_hmac:   u8[48]  = [0; 48];
+    var seed_buf: u8[145] = [0; 145];
+    defer secure_zeroize_48(v_hmac);
+    defer secure_zeroize_48(k_hmac);
+    defer secure_zeroize_slice(seed_buf[..]);
     rfc6979_p384_init(x_be, z_be, k_hmac, v_hmac, seed_buf);
 
     let g = P384Point { x: U384 { v: P384_GX }, y: U384 { v: P384_GY }, infinity: false };
     var r_val = U384 { .. };
     var s_val = U384 { .. };
+    var k_scalar = U384 { .. };
+    var k_inv = U384 { .. };
+    var rd = U384 { .. };
+    var z_plus_rd = U384 { .. };
+    defer zeroize_u384(k_scalar);
+    defer zeroize_u384(k_inv);
+    defer zeroize_u384(rd);
+    defer zeroize_u384(z_plus_rd);
     var retry = false;
     while u384_is_zero(r_val) || u384_is_zero(s_val) {
-        var k_scalar = rfc6979_p384_next_k(k_hmac, v_hmac, seed_buf, retry);
+        k_scalar = rfc6979_p384_next_k(k_hmac, v_hmac, seed_buf, retry);
         retry = true;
         let r_pt = p384_scalar_mul(g, k_scalar);
-        r_val = r_pt.x;
-        if u384_cmp(r_val, P384_ORDER) >= 0 {
-            r_val = u384_sub_mod(r_val, ord, P384_ORDER);
-        }
-        var k_inv = u384_inv_mod(k_scalar, P384_ORDER);
-        var rd = u384_mul_mod(r_val, d, P384_ORDER);
-        var z_plus_rd = u384_add_mod(z, rd, P384_ORDER);
+        r_val = u384_add_mod(r_pt.x, U384 { .. }, P384_ORDER);
+        k_inv = u384_inv_mod(k_scalar, P384_ORDER);
+        rd = u384_mul_mod(r_val, d, P384_ORDER);
+        z_plus_rd = u384_add_mod(z, rd, P384_ORDER);
         s_val = u384_mul_mod(k_inv, z_plus_rd, P384_ORDER);
-        zeroize_u384(rd);
-        zeroize_u384(z_plus_rd);
-        zeroize_u384(k_scalar);
-        zeroize_u384(k_inv);
     }
-    secure_zeroize_slice(seed_buf[..]);
-    secure_zeroize_48(k_hmac);
-    secure_zeroize_48(v_hmac);
-    secure_zeroize_48(x_be);
-    zeroize_u384(d);
 
     let r_be = u384_to_be(r_val);
     let s_be = u384_to_be(s_val);
