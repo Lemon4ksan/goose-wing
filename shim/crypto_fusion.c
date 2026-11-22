@@ -1040,6 +1040,173 @@ static void wing_chacha20_block_scalar(const uint32_t state[16], uint8_t out[64]
     wing_fusion_zeroize(x, sizeof(x));
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
+
+#if defined(__GNUC__) || defined(__clang__)
+#define WING_TARGET_SSSE3 __attribute__((target("sse2,ssse3")))
+static inline int wing_cpu_has_ssse3(void) { return __builtin_cpu_supports("ssse3"); }
+#else
+#define WING_TARGET_SSSE3
+static inline int wing_cpu_has_ssse3(void) { return 1; }
+#endif
+
+#define WING_SSE_ROTL16(v) _mm_shuffle_epi8((v), rot16_mask)
+#define WING_SSE_ROTL8(v) _mm_shuffle_epi8((v), rot8_mask)
+#define WING_SSE_ROTL12(v) _mm_or_si128(_mm_slli_epi32((v), 12), _mm_srli_epi32((v), 20))
+#define WING_SSE_ROTL7(v) _mm_or_si128(_mm_slli_epi32((v), 7), _mm_srli_epi32((v), 25))
+
+#define WING_SSE_QR(a, b, c, d)                                                                                        \
+    do {                                                                                                               \
+        (a) = _mm_add_epi32((a), (b));                                                                                 \
+        (d) = WING_SSE_ROTL16(_mm_xor_si128((d), (a)));                                                                \
+        (c) = _mm_add_epi32((c), (d));                                                                                 \
+        (b) = WING_SSE_ROTL12(_mm_xor_si128((b), (c)));                                                                \
+        (a) = _mm_add_epi32((a), (b));                                                                                 \
+        (d) = WING_SSE_ROTL8(_mm_xor_si128((d), (a)));                                                                 \
+        (c) = _mm_add_epi32((c), (d));                                                                                 \
+        (b) = WING_SSE_ROTL7(_mm_xor_si128((b), (c)));                                                                 \
+    } while (0)
+
+WING_TARGET_SSSE3
+static void wing_chacha20_block_ssse3(const uint32_t state[16], uint8_t out[64]) {
+    const __m128i rot16_mask = _mm_set_epi8(13, 12, 15, 14, 9, 8, 11, 10, 5, 4, 7, 6, 1, 0, 3, 2);
+    const __m128i rot8_mask = _mm_set_epi8(14, 13, 12, 15, 10, 9, 8, 11, 6, 5, 4, 7, 2, 1, 0, 3);
+    __m128i s0 = _mm_loadu_si128((const __m128i *)(state + 0));
+    __m128i s1 = _mm_loadu_si128((const __m128i *)(state + 4));
+    __m128i s2 = _mm_loadu_si128((const __m128i *)(state + 8));
+    __m128i s3 = _mm_loadu_si128((const __m128i *)(state + 12));
+    __m128i r0 = s0, r1 = s1, r2 = s2, r3 = s3;
+    for (int i = 0; i < 10; i++) {
+        WING_SSE_QR(r0, r1, r2, r3);
+        r1 = _mm_shuffle_epi32(r1, _MM_SHUFFLE(0, 3, 2, 1));
+        r2 = _mm_shuffle_epi32(r2, _MM_SHUFFLE(1, 0, 3, 2));
+        r3 = _mm_shuffle_epi32(r3, _MM_SHUFFLE(2, 1, 0, 3));
+        WING_SSE_QR(r0, r1, r2, r3);
+        r1 = _mm_shuffle_epi32(r1, _MM_SHUFFLE(2, 1, 0, 3));
+        r2 = _mm_shuffle_epi32(r2, _MM_SHUFFLE(1, 0, 3, 2));
+        r3 = _mm_shuffle_epi32(r3, _MM_SHUFFLE(0, 3, 2, 1));
+    }
+    _mm_storeu_si128((__m128i *)(out + 0), _mm_add_epi32(r0, s0));
+    _mm_storeu_si128((__m128i *)(out + 16), _mm_add_epi32(r1, s1));
+    _mm_storeu_si128((__m128i *)(out + 32), _mm_add_epi32(r2, s2));
+    _mm_storeu_si128((__m128i *)(out + 48), _mm_add_epi32(r3, s3));
+}
+
+WING_TARGET_SSSE3
+static inline void wing_sse_xor_4rows(__m128i r0, __m128i r1, __m128i r2, __m128i r3, const uint8_t *src, uint8_t *dst,
+                                      int row_off) {
+    __m128i t0 = _mm_unpacklo_epi32(r0, r1);
+    __m128i t1 = _mm_unpackhi_epi32(r0, r1);
+    __m128i t2 = _mm_unpacklo_epi32(r2, r3);
+    __m128i t3 = _mm_unpackhi_epi32(r2, r3);
+
+    __m128i u0 = _mm_unpacklo_epi64(t0, t2);
+    __m128i u1 = _mm_unpackhi_epi64(t0, t2);
+    __m128i u2 = _mm_unpacklo_epi64(t1, t3);
+    __m128i u3 = _mm_unpackhi_epi64(t1, t3);
+
+    _mm_storeu_si128((__m128i *)(dst + 0 * 64 + row_off),
+                     _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + 0 * 64 + row_off)), u0));
+    _mm_storeu_si128((__m128i *)(dst + 1 * 64 + row_off),
+                     _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + 1 * 64 + row_off)), u1));
+    _mm_storeu_si128((__m128i *)(dst + 2 * 64 + row_off),
+                     _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + 2 * 64 + row_off)), u2));
+    _mm_storeu_si128((__m128i *)(dst + 3 * 64 + row_off),
+                     _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + 3 * 64 + row_off)), u3));
+}
+
+WING_TARGET_SSSE3
+static int64_t wing_chacha20_xor_ssse3(uint32_t init_state[16], const uint8_t *src, uint8_t *dst, int64_t len) {
+    const __m128i rot16_mask = _mm_set_epi8(13, 12, 15, 14, 9, 8, 11, 10, 5, 4, 7, 6, 1, 0, 3, 2);
+    const __m128i rot8_mask = _mm_set_epi8(14, 13, 12, 15, 10, 9, 8, 11, 6, 5, 4, 7, 2, 1, 0, 3);
+    const __m128i ctr_offsets = _mm_setr_epi32(0, 1, 2, 3);
+
+    int64_t off = 0;
+    while (off + 256 <= len) {
+        __m128i x0 = _mm_set1_epi32((int)init_state[0]);
+        __m128i x1 = _mm_set1_epi32((int)init_state[1]);
+        __m128i x2 = _mm_set1_epi32((int)init_state[2]);
+        __m128i x3 = _mm_set1_epi32((int)init_state[3]);
+        __m128i x4 = _mm_set1_epi32((int)init_state[4]);
+        __m128i x5 = _mm_set1_epi32((int)init_state[5]);
+        __m128i x6 = _mm_set1_epi32((int)init_state[6]);
+        __m128i x7 = _mm_set1_epi32((int)init_state[7]);
+        __m128i x8 = _mm_set1_epi32((int)init_state[8]);
+        __m128i x9 = _mm_set1_epi32((int)init_state[9]);
+        __m128i x10 = _mm_set1_epi32((int)init_state[10]);
+        __m128i x11 = _mm_set1_epi32((int)init_state[11]);
+        __m128i x12 = _mm_add_epi32(_mm_set1_epi32((int)init_state[12]), ctr_offsets);
+        __m128i x13 = _mm_set1_epi32((int)init_state[13]);
+        __m128i x14 = _mm_set1_epi32((int)init_state[14]);
+        __m128i x15 = _mm_set1_epi32((int)init_state[15]);
+
+        for (int r = 0; r < 10; r++) {
+            WING_SSE_QR(x0, x4, x8, x12);
+            WING_SSE_QR(x1, x5, x9, x13);
+            WING_SSE_QR(x2, x6, x10, x14);
+            WING_SSE_QR(x3, x7, x11, x15);
+            WING_SSE_QR(x0, x5, x10, x15);
+            WING_SSE_QR(x1, x6, x11, x12);
+            WING_SSE_QR(x2, x7, x8, x13);
+            WING_SSE_QR(x3, x4, x9, x14);
+        }
+
+        wing_sse_xor_4rows(_mm_add_epi32(x0, _mm_set1_epi32((int)init_state[0])),
+                           _mm_add_epi32(x1, _mm_set1_epi32((int)init_state[1])),
+                           _mm_add_epi32(x2, _mm_set1_epi32((int)init_state[2])),
+                           _mm_add_epi32(x3, _mm_set1_epi32((int)init_state[3])), src + off, dst + off, 0);
+        wing_sse_xor_4rows(_mm_add_epi32(x4, _mm_set1_epi32((int)init_state[4])),
+                           _mm_add_epi32(x5, _mm_set1_epi32((int)init_state[5])),
+                           _mm_add_epi32(x6, _mm_set1_epi32((int)init_state[6])),
+                           _mm_add_epi32(x7, _mm_set1_epi32((int)init_state[7])), src + off, dst + off, 16);
+        wing_sse_xor_4rows(_mm_add_epi32(x8, _mm_set1_epi32((int)init_state[8])),
+                           _mm_add_epi32(x9, _mm_set1_epi32((int)init_state[9])),
+                           _mm_add_epi32(x10, _mm_set1_epi32((int)init_state[10])),
+                           _mm_add_epi32(x11, _mm_set1_epi32((int)init_state[11])), src + off, dst + off, 32);
+        wing_sse_xor_4rows(_mm_add_epi32(x12, _mm_add_epi32(_mm_set1_epi32((int)init_state[12]), ctr_offsets)),
+                           _mm_add_epi32(x13, _mm_set1_epi32((int)init_state[13])),
+                           _mm_add_epi32(x14, _mm_set1_epi32((int)init_state[14])),
+                           _mm_add_epi32(x15, _mm_set1_epi32((int)init_state[15])), src + off, dst + off, 48);
+
+        init_state[12] += 4u;
+        off += 256;
+    }
+
+    const __m128i one_ctr = _mm_setr_epi32(1, 0, 0, 0);
+    if (off + 64 <= len) {
+        const __m128i s0 = _mm_loadu_si128((const __m128i *)(init_state + 0));
+        const __m128i s1 = _mm_loadu_si128((const __m128i *)(init_state + 4));
+        const __m128i s2 = _mm_loadu_si128((const __m128i *)(init_state + 8));
+        __m128i s3 = _mm_loadu_si128((const __m128i *)(init_state + 12));
+        while (off + 64 <= len) {
+            __m128i r0 = s0, r1 = s1, r2 = s2, r3 = s3;
+            for (int i = 0; i < 10; i++) {
+                WING_SSE_QR(r0, r1, r2, r3);
+                r1 = _mm_shuffle_epi32(r1, _MM_SHUFFLE(0, 3, 2, 1));
+                r2 = _mm_shuffle_epi32(r2, _MM_SHUFFLE(1, 0, 3, 2));
+                r3 = _mm_shuffle_epi32(r3, _MM_SHUFFLE(2, 1, 0, 3));
+                WING_SSE_QR(r0, r1, r2, r3);
+                r1 = _mm_shuffle_epi32(r1, _MM_SHUFFLE(2, 1, 0, 3));
+                r2 = _mm_shuffle_epi32(r2, _MM_SHUFFLE(1, 0, 3, 2));
+                r3 = _mm_shuffle_epi32(r3, _MM_SHUFFLE(0, 3, 2, 1));
+            }
+            _mm_storeu_si128((__m128i *)(dst + off + 0),
+                             _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + off + 0)), _mm_add_epi32(r0, s0)));
+            _mm_storeu_si128((__m128i *)(dst + off + 16),
+                             _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + off + 16)), _mm_add_epi32(r1, s1)));
+            _mm_storeu_si128((__m128i *)(dst + off + 32),
+                             _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + off + 32)), _mm_add_epi32(r2, s2)));
+            _mm_storeu_si128((__m128i *)(dst + off + 48),
+                             _mm_xor_si128(_mm_loadu_si128((const __m128i *)(src + off + 48)), _mm_add_epi32(r3, s3)));
+            s3 = _mm_add_epi32(s3, one_ctr);
+            init_state[12] += 1u;
+            off += 64;
+        }
+    }
+    return off;
+}
+#endif
+
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(__GNUC__) && !(defined(__MINGW32__) && !defined(__clang__))
 
 #define WING_TARGET_AVX2 __attribute__((target("avx2")))
@@ -1173,49 +1340,62 @@ static void wing_chacha20_xor_avx2(uint32_t init_state[16], const uint8_t *src, 
 }
 #endif
 
-static void wing_chacha20_xor_stream(const uint8_t key[32], const uint8_t iv[12], uint32_t ctr, const uint8_t *src,
-                                     uint8_t *dst, int64_t len) {
-    uint32_t st[16];
-    st[0] = 0x61707865u;
-    st[1] = 0x3320646eu;
-    st[2] = 0x79622d32u;
-    st[3] = 0x6b206574u;
-    for (int i = 0; i < 8; i++) {
-        st[4 + i] = wing_load32_le(key + i * 4);
+static inline void wing_chacha20_block_fast(const uint32_t state[16], uint8_t out[64]) {
+#if defined(__x86_64__) || defined(_M_X64)
+    if (wing_cpu_has_ssse3()) {
+        wing_chacha20_block_ssse3(state, out);
+        return;
     }
-    st[12] = ctr;
-    st[13] = wing_load32_le(iv + 0);
-    st[14] = wing_load32_le(iv + 4);
-    st[15] = wing_load32_le(iv + 8);
+#endif
+    wing_chacha20_block_scalar(state, out);
+}
 
+static inline void wing_xor_bytes_fast(uint8_t *dst, const uint8_t *src, const uint8_t *ks, int64_t take) {
+    int64_t i = 0;
+    for (; i + 8 <= take; i += 8) {
+        uint64_t a = wing_load64_le(src + i);
+        uint64_t b = wing_load64_le(ks + i);
+        wing_store64_le(dst + i, a ^ b);
+    }
+    for (; i < take; i++) {
+        dst[i] = src[i] ^ ks[i];
+    }
+}
+
+static void wing_chacha20_xor_state(uint32_t st[16], const uint8_t *src, uint8_t *dst, int64_t len) {
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(__GNUC__) && !(defined(__MINGW32__) && !defined(__clang__))
     if (len >= 512 && wing_cpu_has_avx2()) {
         wing_chacha20_xor_avx2(st, src, dst, len);
-        wing_fusion_zeroize(st, sizeof(st));
         return;
     }
 #endif
 
     int64_t off = 0;
+#if defined(__x86_64__) || defined(_M_X64)
+    if (len >= 64 && wing_cpu_has_ssse3()) {
+        off = wing_chacha20_xor_ssse3(st, src, dst, len);
+    }
+#endif
+
     while (off < len) {
         uint8_t ks[64];
-        wing_chacha20_block_scalar(st, ks);
+        wing_chacha20_block_fast(st, ks);
         st[12] += 1u;
         int64_t take = (len - off >= 64) ? 64 : (len - off);
-        for (int64_t i = 0; i < take; i++) {
-            dst[off + i] = src[off + i] ^ ks[i];
-        }
+        wing_xor_bytes_fast(dst + off, src + off, ks, take);
         wing_fusion_zeroize(ks, sizeof(ks));
         off += take;
     }
-    wing_fusion_zeroize(st, sizeof(st));
 }
 
 typedef struct {
     uint64_t r0, r1, r2;
     uint64_t s1, s2;
+    uint64_t r2_0, r2_1, r2_2;
+    uint64_t s2_1, s2_2;
     uint64_t h0, h1, h2;
     uint64_t pad0, pad1;
+    int has_r2;
 } wing_poly1305_state;
 
 static void wing_poly1305_init(wing_poly1305_state *st, const uint8_t key[32]) {
@@ -1234,13 +1414,85 @@ static void wing_poly1305_init(wing_poly1305_state *st, const uint8_t key[32]) {
     st->h2 = 0;
     st->pad0 = wing_load64_le(key + 16);
     st->pad1 = wing_load64_le(key + 24);
+    st->has_r2 = 0;
 }
 
 #ifdef __SIZEOF_INT128__
+static inline void wing_poly1305_ensure_r2(wing_poly1305_state *st) {
+    if (st->has_r2) return;
+    const uint64_t r0 = st->r0, r1 = st->r1, r2 = st->r2;
+    const uint64_t s1 = st->s1, s2 = st->s2;
+    __uint128_t d0 = ((__uint128_t)r0 * r0) + ((__uint128_t)r1 * s2) + ((__uint128_t)r2 * s1);
+    __uint128_t d1 = ((__uint128_t)r0 * r1) + ((__uint128_t)r1 * r0) + ((__uint128_t)r2 * s2);
+    __uint128_t d2 = ((__uint128_t)r0 * r2) + ((__uint128_t)r1 * r1) + ((__uint128_t)r2 * r0);
+    uint64_t c = (uint64_t)(d0 >> 44);
+    uint64_t q0 = (uint64_t)d0 & 0x0fffffffffffULL;
+    d1 += c;
+    c = (uint64_t)(d1 >> 44);
+    uint64_t q1 = (uint64_t)d1 & 0x0fffffffffffULL;
+    d2 += c;
+    c = (uint64_t)(d2 >> 42);
+    uint64_t q2 = (uint64_t)d2 & 0x03ffffffffffULL;
+    q0 += c * 5u;
+    c = q0 >> 44;
+    q0 &= 0x0fffffffffffULL;
+    q1 += c;
+    st->r2_0 = q0;
+    st->r2_1 = q1;
+    st->r2_2 = q2;
+    st->s2_1 = q1 * 20u;
+    st->s2_2 = q2 * 20u;
+    st->has_r2 = 1;
+}
+
 static void wing_poly1305_blocks(wing_poly1305_state *st, const uint8_t *m, int64_t len, uint64_t hibit_40) {
     uint64_t h0 = st->h0, h1 = st->h1, h2 = st->h2;
     const uint64_t r0 = st->r0, r1 = st->r1, r2 = st->r2;
     const uint64_t s1 = st->s1, s2 = st->s2;
+
+    if (len >= 32) {
+        wing_poly1305_ensure_r2(st);
+        const uint64_t r2_0 = st->r2_0, r2_1 = st->r2_1, r2_2 = st->r2_2;
+        const uint64_t s2_1 = st->s2_1, s2_2 = st->s2_2;
+
+        while (len >= 32) {
+            uint64_t t0 = wing_load64_le(m + 0);
+            uint64_t t1 = wing_load64_le(m + 8);
+            uint64_t t2 = wing_load64_le(m + 16);
+            uint64_t t3 = wing_load64_le(m + 24);
+
+            h0 += t0 & 0x0fffffffffffULL;
+            h1 += ((t0 >> 44) | (t1 << 20)) & 0x0fffffffffffULL;
+            h2 += (t1 >> 24) | hibit_40;
+
+            uint64_t m1_0 = t2 & 0x0fffffffffffULL;
+            uint64_t m1_1 = ((t2 >> 44) | (t3 << 20)) & 0x0fffffffffffULL;
+            uint64_t m1_2 = (t3 >> 24) | hibit_40;
+
+            __uint128_t d0 = ((__uint128_t)h0 * r2_0) + ((__uint128_t)h1 * s2_2) + ((__uint128_t)h2 * s2_1) +
+                             ((__uint128_t)m1_0 * r0) + ((__uint128_t)m1_1 * s2) + ((__uint128_t)m1_2 * s1);
+            __uint128_t d1 = ((__uint128_t)h0 * r2_1) + ((__uint128_t)h1 * r2_0) + ((__uint128_t)h2 * s2_2) +
+                             ((__uint128_t)m1_0 * r1) + ((__uint128_t)m1_1 * r0) + ((__uint128_t)m1_2 * s2);
+            __uint128_t d2 = ((__uint128_t)h0 * r2_2) + ((__uint128_t)h1 * r2_1) + ((__uint128_t)h2 * r2_0) +
+                             ((__uint128_t)m1_0 * r2) + ((__uint128_t)m1_1 * r1) + ((__uint128_t)m1_2 * r0);
+
+            uint64_t c = (uint64_t)(d0 >> 44);
+            h0 = (uint64_t)d0 & 0x0fffffffffffULL;
+            d1 += c;
+            c = (uint64_t)(d1 >> 44);
+            h1 = (uint64_t)d1 & 0x0fffffffffffULL;
+            d2 += c;
+            c = (uint64_t)(d2 >> 42);
+            h2 = (uint64_t)d2 & 0x03ffffffffffULL;
+            h0 += c * 5u;
+            c = h0 >> 44;
+            h0 &= 0x0fffffffffffULL;
+            h1 += c;
+
+            m += 32;
+            len -= 32;
+        }
+    }
 
     while (len >= 16) {
         uint64_t t0 = wing_load64_le(m + 0);
@@ -1433,12 +1685,13 @@ int64_t wing_chacha_poly_seal_aead(wing_slice key, wing_slice iv, wing_slice src
         wing_load32_le(iv.ptr + 8),
     };
     uint8_t otk_block[64];
-    wing_chacha20_block_scalar(st0, otk_block);
-    wing_fusion_zeroize(st0, sizeof(st0));
+    wing_chacha20_block_fast(st0, otk_block);
 
     if (src.len > 0) {
-        wing_chacha20_xor_stream(key.ptr, iv.ptr, 1u, src.ptr, dst.ptr, src.len);
+        st0[12] = 1u;
+        wing_chacha20_xor_state(st0, src.ptr, dst.ptr, src.len);
     }
+    wing_fusion_zeroize(st0, sizeof(st0));
 
     wing_poly1305_state poly;
     wing_poly1305_init(&poly, otk_block);
@@ -1490,8 +1743,7 @@ int64_t wing_chacha_poly_open_aead(wing_slice key, wing_slice iv, wing_slice src
         wing_load32_le(iv.ptr + 8),
     };
     uint8_t otk_block[64];
-    wing_chacha20_block_scalar(st0, otk_block);
-    wing_fusion_zeroize(st0, sizeof(st0));
+    wing_chacha20_block_fast(st0, otk_block);
 
     wing_poly1305_state poly;
     wing_poly1305_init(&poly, otk_block);
@@ -1518,6 +1770,7 @@ int64_t wing_chacha_poly_open_aead(wing_slice key, wing_slice iv, wing_slice src
     wing_fusion_zeroize(computed_tag, sizeof(computed_tag));
 
     if (diff != 0) {
+        wing_fusion_zeroize(st0, sizeof(st0));
         if (src.len > 0) {
             wing_fusion_zeroize(dst.ptr, (size_t)src.len);
         }
@@ -1525,8 +1778,10 @@ int64_t wing_chacha_poly_open_aead(wing_slice key, wing_slice iv, wing_slice src
     }
 
     if (src.len > 0) {
-        wing_chacha20_xor_stream(key.ptr, iv.ptr, 1u, src.ptr, dst.ptr, src.len);
+        st0[12] = 1u;
+        wing_chacha20_xor_state(st0, src.ptr, dst.ptr, src.len);
     }
+    wing_fusion_zeroize(st0, sizeof(st0));
     return src.len;
 }
 
