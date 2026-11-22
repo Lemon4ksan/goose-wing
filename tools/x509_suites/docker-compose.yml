@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Lemon4ksan
+
+services:
+  bettertls-server:
+    build:
+      context: ../..
+      dockerfile: tools/x509_suites/Dockerfile
+    container_name: goose-wing-bettertls-server
+    entrypoint: ["bettertls", "server", "--host", "0.0.0.0", "--port", "8443"]
+    restart: "no"
+
+  x509-runner:
+    build:
+      context: ../..
+      dockerfile: tools/x509_suites/Dockerfile
+    container_name: goose-wing-x509-runner
+    depends_on:
+      - bettertls-server
+    command: ["--local", "--suite", "all"]
+    restart: "no"
