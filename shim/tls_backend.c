@@ -16,7 +16,9 @@
 #ifdef WING_TLS_LINK_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
+#include <openssl/x509.h>
 #include <openssl/x509v3.h>
+#include <openssl/err.h>
 #endif
 
 #ifdef _WIN32
@@ -53,7 +55,7 @@
 #define WING_TLS_ST_VERIFY_ERR 6
 #define WING_TLS_ST_ERR 7
 
-#define WING_TLS_MAX_HANDLES 64
+#define WING_TLS_MAX_HANDLES 4096
 #define WING_TLS_MAX_BUF_CAP (4 * 1024 * 1024)
 
 #pragma pack(push, 1)
@@ -165,6 +167,7 @@ typedef struct {
     void *(*SSL_CTX_new)(const void *);
     void (*SSL_CTX_free)(void *);
     long (*SSL_CTX_ctrl)(void *, int, long, void *);
+    void *(*SSL_CTX_get_cert_store)(const void *);
     int (*SSL_CTX_set_default_verify_paths)(void *);
     int (*SSL_CTX_load_verify_locations)(void *, const char *, const char *);
     void (*SSL_CTX_set_verify)(void *, int, void *);
@@ -186,6 +189,10 @@ typedef struct {
     int (*SSL_set1_host)(void *, const char *);
     void *(*SSL_get0_param)(void *);
     int (*X509_VERIFY_PARAM_set1_ip_asc)(void *, const char *);
+    void *(*d2i_X509)(void **, const unsigned char **, long);
+    int (*X509_STORE_add_cert)(void *, void *);
+    void (*X509_free)(void *);
+    void (*ERR_clear_error)(void);
     int (*SSL_set_alpn_protos)(void *, const unsigned char *, unsigned int);
     void (*SSL_get0_alpn_selected)(const void *, const unsigned char **, unsigned int *);
     long (*SSL_get_verify_result)(const void *);
@@ -235,6 +242,7 @@ static void lk_SSL_CTX_free(void *c) { SSL_CTX_free((SSL_CTX *)c); }
 static long lk_SSL_CTX_ctrl(void *c, int cmd, long larg, void *parg) {
     return SSL_CTX_ctrl((SSL_CTX *)c, cmd, larg, parg);
 }
+static void *lk_SSL_CTX_get_cert_store(const void *c) { return (void *)SSL_CTX_get_cert_store((const SSL_CTX *)c); }
 static int lk_SSL_CTX_set_default_verify_paths(void *c) { return SSL_CTX_set_default_verify_paths((SSL_CTX *)c); }
 static int lk_SSL_CTX_load_verify_locations(void *c, const char *f, const char *p) {
     return SSL_CTX_load_verify_locations((SSL_CTX *)c, f, p);
@@ -277,6 +285,13 @@ static void *lk_SSL_get0_param(void *s) { return (void *)SSL_get0_param((SSL *)s
 static int lk_X509_VERIFY_PARAM_set1_ip_asc(void *p, const char *ip) {
     return X509_VERIFY_PARAM_set1_ip_asc((X509_VERIFY_PARAM *)p, ip);
 }
+static void *lk_d2i_X509(void **px, const unsigned char **in, long len) {
+    (void)px;
+    return (void *)d2i_X509(NULL, in, len);
+}
+static int lk_X509_STORE_add_cert(void *s, void *x) { return X509_STORE_add_cert((X509_STORE *)s, (X509 *)x); }
+static void lk_X509_free(void *x) { X509_free((X509 *)x); }
+static void lk_ERR_clear_error(void) { ERR_clear_error(); }
 static int lk_SSL_set_alpn_protos(void *s, const unsigned char *p, unsigned int n) {
     return SSL_set_alpn_protos((SSL *)s, p, n);
 }
@@ -291,14 +306,14 @@ static int lk_BIO_write(void *b, const void *d, int n) { return BIO_write((BIO *
 static int lk_BIO_read(void *b, void *d, int n) { return BIO_read((BIO *)b, d, n); }
 static long lk_BIO_ctrl(void *b, int cmd, long larg, void *parg) { return BIO_ctrl((BIO *)b, cmd, larg, parg); }
 
-static int ossl_probe(void) {
-    if (g_ossl.probed) return g_ossl.available;
+static void ossl_probe_impl(void) {
     g_ossl.probed = 1;
     g_ossl.TLS_client_method = lk_TLS_client_method;
     g_ossl.TLS_server_method = lk_TLS_server_method;
     g_ossl.SSL_CTX_new = lk_SSL_CTX_new;
     g_ossl.SSL_CTX_free = lk_SSL_CTX_free;
     g_ossl.SSL_CTX_ctrl = lk_SSL_CTX_ctrl;
+    g_ossl.SSL_CTX_get_cert_store = lk_SSL_CTX_get_cert_store;
     g_ossl.SSL_CTX_set_default_verify_paths = lk_SSL_CTX_set_default_verify_paths;
     g_ossl.SSL_CTX_load_verify_locations = lk_SSL_CTX_load_verify_locations;
     g_ossl.SSL_CTX_set_verify = lk_SSL_CTX_set_verify;
@@ -320,6 +335,10 @@ static int ossl_probe(void) {
     g_ossl.SSL_set1_host = lk_SSL_set1_host;
     g_ossl.SSL_get0_param = lk_SSL_get0_param;
     g_ossl.X509_VERIFY_PARAM_set1_ip_asc = lk_X509_VERIFY_PARAM_set1_ip_asc;
+    g_ossl.d2i_X509 = lk_d2i_X509;
+    g_ossl.X509_STORE_add_cert = lk_X509_STORE_add_cert;
+    g_ossl.X509_free = lk_X509_free;
+    g_ossl.ERR_clear_error = lk_ERR_clear_error;
     g_ossl.SSL_set_alpn_protos = lk_SSL_set_alpn_protos;
     g_ossl.SSL_get0_alpn_selected = lk_SSL_get0_alpn_selected;
     g_ossl.SSL_get_verify_result = lk_SSL_get_verify_result;
@@ -330,11 +349,9 @@ static int ossl_probe(void) {
     g_ossl.BIO_read = lk_BIO_read;
     g_ossl.BIO_ctrl = lk_BIO_ctrl;
     g_ossl.available = 1;
-    return 1;
 }
 #else
-static int ossl_probe(void) {
-    if (g_ossl.probed) return g_ossl.available;
+static void ossl_probe_impl(void) {
     g_ossl.probed = 1;
 #ifdef _WIN32
     static const char *const ssl_names[] = {"libssl-3-x64.dll", "libssl-3.dll", "libssl-1_1-x64.dll", "libssl.dll",
@@ -366,7 +383,7 @@ static int ossl_probe(void) {
     void *slib = dyn_open_one(getenv("WING_OPENSSL_LIB"));
     if (clib == NULL) clib = dyn_open_any(cry_names);
     if (slib == NULL) slib = dyn_open_any(ssl_names);
-    if (slib == NULL) return 0;
+    if (slib == NULL) return;
     if (clib == NULL) clib = slib;
 
     int ok = 1;
@@ -375,6 +392,7 @@ static int ossl_probe(void) {
     ok &= load_fn_sym(&g_ossl.SSL_CTX_new, dyn_sym(slib, "SSL_CTX_new"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_free, dyn_sym(slib, "SSL_CTX_free"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_ctrl, dyn_sym(slib, "SSL_CTX_ctrl"));
+    (void)load_fn_sym(&g_ossl.SSL_CTX_get_cert_store, dyn_sym(slib, "SSL_CTX_get_cert_store"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_set_default_verify_paths, dyn_sym(slib, "SSL_CTX_set_default_verify_paths"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_load_verify_locations, dyn_sym(slib, "SSL_CTX_load_verify_locations"));
     ok &= load_fn_sym(&g_ossl.SSL_CTX_set_verify, dyn_sym(slib, "SSL_CTX_set_verify"));
@@ -396,6 +414,10 @@ static int ossl_probe(void) {
     ok &= load_fn_sym(&g_ossl.SSL_set1_host, dyn_sym(slib, "SSL_set1_host"));
     (void)load_fn_sym(&g_ossl.SSL_get0_param, dyn_sym(slib, "SSL_get0_param"));
     (void)load_fn_sym(&g_ossl.X509_VERIFY_PARAM_set1_ip_asc, dyn_sym(clib, "X509_VERIFY_PARAM_set1_ip_asc"));
+    (void)load_fn_sym(&g_ossl.d2i_X509, dyn_sym(clib, "d2i_X509"));
+    (void)load_fn_sym(&g_ossl.X509_STORE_add_cert, dyn_sym(clib, "X509_STORE_add_cert"));
+    (void)load_fn_sym(&g_ossl.X509_free, dyn_sym(clib, "X509_free"));
+    (void)load_fn_sym(&g_ossl.ERR_clear_error, dyn_sym(clib, "ERR_clear_error"));
     ok &= load_fn_sym(&g_ossl.SSL_set_alpn_protos, dyn_sym(slib, "SSL_set_alpn_protos"));
     ok &= load_fn_sym(&g_ossl.SSL_get0_alpn_selected, dyn_sym(slib, "SSL_get0_alpn_selected"));
     (void)load_fn_sym(&g_ossl.SSL_get_verify_result, dyn_sym(slib, "SSL_get_verify_result"));
@@ -407,6 +429,29 @@ static int ossl_probe(void) {
     ok &= load_fn_sym(&g_ossl.BIO_ctrl, dyn_sym(clib, "BIO_ctrl"));
 
     g_ossl.available = ok;
+}
+#endif
+
+#ifdef _WIN32
+static INIT_ONCE g_ossl_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK ossl_probe_once_cb(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
+    ossl_probe_impl();
+    return TRUE;
+}
+
+static int ossl_probe(void) {
+    InitOnceExecuteOnce(&g_ossl_once, ossl_probe_once_cb, NULL, NULL);
+    return g_ossl.available;
+}
+#else
+static pthread_once_t g_ossl_once = PTHREAD_ONCE_INIT;
+
+static int ossl_probe(void) {
+    pthread_once(&g_ossl_once, ossl_probe_impl);
     return g_ossl.available;
 }
 #endif
@@ -471,13 +516,16 @@ typedef struct {
 } schannel_api_t;
 
 static schannel_api_t g_sch;
+static INIT_ONCE g_sch_once = INIT_ONCE_STATIC_INIT;
 
-static int schannel_probe(void) {
-    if (g_sch.probed) return g_sch.available;
+static BOOL CALLBACK schannel_probe_once_cb(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
     g_sch.probed = 1;
     static const char *const names[] = {"secur32.dll", "security.dll", NULL};
     void *lib = dyn_open_any(names);
-    if (lib == NULL) return 0;
+    if (lib == NULL) return TRUE;
     int ok = 1;
     ok &= load_fn_sym(&g_sch.AcquireCredentialsHandleA, dyn_sym(lib, "AcquireCredentialsHandleA"));
     ok &= load_fn_sym(&g_sch.FreeCredentialsHandle, dyn_sym(lib, "FreeCredentialsHandle"));
@@ -489,6 +537,11 @@ static int schannel_probe(void) {
     ok &= load_fn_sym(&g_sch.EncryptMessage, dyn_sym(lib, "EncryptMessage"));
     ok &= load_fn_sym(&g_sch.DecryptMessage, dyn_sym(lib, "DecryptMessage"));
     g_sch.available = ok;
+    return TRUE;
+}
+
+static int schannel_probe(void) {
+    InitOnceExecuteOnce(&g_sch_once, schannel_probe_once_cb, NULL, NULL);
     return g_sch.available;
 }
 #else
@@ -535,15 +588,15 @@ typedef struct {
 } secure_transport_api_t;
 
 static secure_transport_api_t g_st;
+static pthread_once_t g_st_once = PTHREAD_ONCE_INIT;
 
-static int secure_transport_probe(void) {
-    if (g_st.probed) return g_st.available;
+static void secure_transport_probe_impl(void) {
     g_st.probed = 1;
     static const char *const sec_names[] = {"/System/Library/Frameworks/Security.framework/Security",
                                             "/System/Library/Frameworks/Security.framework/Versions/A/Security", NULL};
     static const char *const cf_names[] = {"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", NULL};
     void *slib = dyn_open_any(sec_names);
-    if (slib == NULL) return 0;
+    if (slib == NULL) return;
     void *cflib = dyn_open_any(cf_names);
     if (cflib == NULL) cflib = slib;
 
@@ -560,6 +613,10 @@ static int secure_transport_probe(void) {
     ok &= load_fn_sym(&g_st.SSLClose, dyn_sym(slib, "SSLClose"));
     ok &= load_fn_sym(&g_st.CFRelease, dyn_sym(cflib, "CFRelease"));
     g_st.available = ok;
+}
+
+static int secure_transport_probe(void) {
+    pthread_once(&g_st_once, secure_transport_probe_impl);
     return g_st.available;
 }
 #else
@@ -570,6 +627,15 @@ static int secure_transport_probe(void) { return 0; }
 
 typedef struct {
     int in_use;
+    int closing;
+    uint32_t refcount;
+    uint32_t generation;
+#ifdef _WIN32
+    SRWLOCK io_lock;
+#elif !defined(__wasm__)
+    pthread_mutex_t io_lock;
+    int io_lock_init;
+#endif
     int kind;
     int is_server;
     int insecure_skip_verify;
@@ -609,26 +675,64 @@ typedef struct {
 } wing_tls_ep_t;
 
 static wing_tls_ep_t *g_eps[WING_TLS_MAX_HANDLES];
+static int g_eps_cursor = 0;
+static uint32_t g_next_gen = 0;
+
+static void wing_tls_ep_destroy(wing_tls_ep_t *ep);
 
 #ifdef _WIN32
 static SRWLOCK g_eps_lock = SRWLOCK_INIT;
 static void eps_lock(void) { AcquireSRWLockExclusive(&g_eps_lock); }
 static void eps_unlock(void) { ReleaseSRWLockExclusive(&g_eps_lock); }
+static void ep_io_lock(wing_tls_ep_t *ep) { AcquireSRWLockExclusive(&ep->io_lock); }
+static void ep_io_unlock(wing_tls_ep_t *ep) { ReleaseSRWLockExclusive(&ep->io_lock); }
 #elif !defined(__wasm__)
 static pthread_mutex_t g_eps_lock = PTHREAD_MUTEX_INITIALIZER;
 static void eps_lock(void) { pthread_mutex_lock(&g_eps_lock); }
 static void eps_unlock(void) { pthread_mutex_unlock(&g_eps_lock); }
+static void ep_io_lock(wing_tls_ep_t *ep) { pthread_mutex_lock(&ep->io_lock); }
+static void ep_io_unlock(wing_tls_ep_t *ep) { pthread_mutex_unlock(&ep->io_lock); }
 #else
 static void eps_lock(void) {}
 static void eps_unlock(void) {}
+static void ep_io_lock(wing_tls_ep_t *ep) { (void)ep; }
+static void ep_io_unlock(wing_tls_ep_t *ep) { (void)ep; }
 #endif
 
-static wing_tls_ep_t *get_ep(int64_t handle) {
-    if (handle < 1 || handle > WING_TLS_MAX_HANDLES) return NULL;
+static int decode_ep_handle(int64_t handle, size_t *out_slot, uint32_t *out_gen) {
+    if (handle <= 0) return 0;
+    uint64_t h = (uint64_t)handle;
+    uint64_t idx1 = h & 0xFFFFU;
+    uint32_t gen = (uint32_t)(h >> 16);
+    if (idx1 < 1 || idx1 > WING_TLS_MAX_HANDLES || gen == 0) return 0;
+    *out_slot = (size_t)(idx1 - 1);
+    *out_gen = gen;
+    return 1;
+}
+
+static wing_tls_ep_t *acquire_ep(int64_t handle) {
+    size_t slot = 0;
+    uint32_t gen = 0;
+    if (!decode_ep_handle(handle, &slot, &gen)) return NULL;
     eps_lock();
-    wing_tls_ep_t *ep = g_eps[handle - 1];
+    wing_tls_ep_t *ep = g_eps[slot];
+    if (ep != NULL && ep->in_use && !ep->closing && ep->generation == gen && ep->refcount < UINT32_MAX) {
+        ep->refcount++;
+    } else {
+        ep = NULL;
+    }
     eps_unlock();
-    return (ep != NULL && ep->in_use) ? ep : NULL;
+    return ep;
+}
+
+static void release_ep(wing_tls_ep_t *ep) {
+    if (ep == NULL) return;
+    int should_destroy = 0;
+    eps_lock();
+    if (ep->refcount > 0) ep->refcount--;
+    if (ep->refcount == 0 && ep->closing) should_destroy = 1;
+    eps_unlock();
+    if (should_destroy) wing_tls_ep_destroy(ep);
 }
 
 static void copy_cstr_ro(char *dst, size_t cap, wing_tls_ro src) {
@@ -694,35 +798,37 @@ static void ossl_cleanup_ep(wing_tls_ep_t *ep) {
         g_ossl.SSL_CTX_free(ep->ossl_ctx);
         ep->ossl_ctx = NULL;
     }
+    if (g_ossl.ERR_clear_error != NULL) {
+        g_ossl.ERR_clear_error();
+    }
 }
 
-static int ossl_is_ipv4_literal(const char *s) {
-    if (s == NULL || s[0] == '\0') return 0;
+static int is_ipv4_literal_n(const char *s, size_t len) {
+    if (s == NULL || len == 0) return 0;
     int parts = 0;
-    const char *p = s;
-    while (*p != '\0') {
-        if (parts >= 4 || *p < '0' || *p > '9') return 0;
+    size_t i = 0;
+    while (i < len) {
+        if (parts >= 4 || s[i] < '0' || s[i] > '9') return 0;
         int val = 0;
         int digits = 0;
-        while (*p >= '0' && *p <= '9') {
-            val = val * 10 + (*p - '0');
+        while (i < len && s[i] >= '0' && s[i] <= '9') {
+            val = val * 10 + (s[i] - '0');
             if (val > 255) return 0;
             digits++;
-            p++;
+            i++;
         }
         if (digits == 0) return 0;
         parts++;
-        if (*p == '.') {
-            p++;
-            if (*p == '\0') return 0;
-        } else if (*p != '\0') {
-            return 0;
+        if (i < len) {
+            if (s[i] != '.') return 0;
+            i++;
+            if (i == len) return 0;
         }
     }
     return parts == 4;
 }
 
-static int ossl_extract_ip_literal(const char *host, char *out_ip, size_t out_cap) {
+static int strip_ip_brackets(const char *host, char *out_ip, size_t out_cap) {
     if (host == NULL || host[0] == '\0' || out_cap < 2) return 0;
     size_t len = strlen(host);
     const char *start = host;
@@ -733,23 +839,36 @@ static int ossl_extract_ip_literal(const char *host, char *out_ip, size_t out_ca
     if (len == 0 || len >= out_cap) return 0;
     memcpy(out_ip, start, len);
     out_ip[len] = '\0';
-    if (ossl_is_ipv4_literal(out_ip) || strchr(out_ip, ':') != NULL) {
-        return 1;
+    return 1;
+}
+
+static int is_ip_literal(const char *host) {
+    if (host == NULL || host[0] == '\0') return 0;
+    size_t len = strlen(host);
+    const char *start = host;
+    if (len >= 2 && host[0] == '[' && host[len - 1] == ']') {
+        start = host + 1;
+        len -= 2;
     }
-    return 0;
+    if (len == 0) return 0;
+    if (is_ipv4_literal_n(start, len)) return 1;
+    return memchr(start, ':', len) != NULL;
 }
 
 static int ossl_configure_client_host(wing_tls_ep_t *ep) {
     if (ep->sni[0] == '\0') return WING_TLS_ST_OK;
-    char ip_lit[256];
-    if (ossl_extract_ip_literal(ep->sni, ip_lit, sizeof(ip_lit))) {
-        // RFC 6066 Section 3: literal IPv4 and IPv6 addresses are not permitted in TLS SNI.
+    if (is_ip_literal(ep->sni)) {
+        /* RFC 6066 Section 3: literal IPv4 and IPv6 addresses are not permitted in TLS SNI. */
         if (ep->insecure_skip_verify) return WING_TLS_ST_OK;
         if (g_ossl.SSL_get0_param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc == NULL) {
             return WING_TLS_ST_VERIFY_ERR;
         }
+        char clean_ip[sizeof(ep->sni)];
+        if (!strip_ip_brackets(ep->sni, clean_ip, sizeof(clean_ip))) {
+            return WING_TLS_ST_VERIFY_ERR;
+        }
         void *param = g_ossl.SSL_get0_param(ep->ossl_ssl);
-        if (param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc(param, ip_lit) != 1) {
+        if (param == NULL || g_ossl.X509_VERIFY_PARAM_set1_ip_asc(param, clean_ip) != 1) {
             return WING_TLS_ST_VERIFY_ERR;
         }
         return WING_TLS_ST_OK;
@@ -760,6 +879,10 @@ static int ossl_configure_client_host(wing_tls_ep_t *ep) {
     }
     return WING_TLS_ST_OK;
 }
+
+#ifdef _WIN32
+static int ossl_load_win_root_store(void *ssl_ctx);
+#endif
 
 static int ossl_open_ep(wing_tls_ep_t *ep) {
     if (!ossl_probe()) return WING_TLS_ST_UNAVAILABLE;
@@ -813,17 +936,26 @@ static int ossl_open_ep(wing_tls_ep_t *ep) {
             }
         } else {
             (void)g_ossl.SSL_CTX_set_default_verify_paths(ep->ossl_ctx);
+#ifdef _WIN32
+            (void)ossl_load_win_root_store(ep->ossl_ctx);
+#endif
         }
         g_ossl.SSL_CTX_set_verify(ep->ossl_ctx, OSSL_SSL_VERIFY_PEER, NULL);
     }
 
-    ep->ossl_ssl = g_ossl.SSL_new(ep->ossl_ctx);
-    ep->ossl_rbio = g_ossl.BIO_new(g_ossl.BIO_s_mem());
-    ep->ossl_wbio = g_ossl.BIO_new(g_ossl.BIO_s_mem());
-    if (ep->ossl_ssl == NULL || ep->ossl_rbio == NULL || ep->ossl_wbio == NULL) {
+    void *ssl = g_ossl.SSL_new(ep->ossl_ctx);
+    void *rbio = g_ossl.BIO_new(g_ossl.BIO_s_mem());
+    void *wbio = g_ossl.BIO_new(g_ossl.BIO_s_mem());
+    if (ssl == NULL || rbio == NULL || wbio == NULL) {
+        if (ssl != NULL) g_ossl.SSL_free(ssl);
+        if (rbio != NULL && g_ossl.BIO_free != NULL) g_ossl.BIO_free(rbio);
+        if (wbio != NULL && g_ossl.BIO_free != NULL) g_ossl.BIO_free(wbio);
         ossl_cleanup_ep(ep);
         return WING_TLS_ST_ERR;
     }
+    ep->ossl_ssl = ssl;
+    ep->ossl_rbio = rbio;
+    ep->ossl_wbio = wbio;
     g_ossl.SSL_set_bio(ep->ossl_ssl, ep->ossl_rbio, ep->ossl_wbio);
 
     if (ep->is_server) {
@@ -1217,6 +1349,12 @@ static void wing_tls_ep_destroy(wing_tls_ep_t *ep) {
         st_cleanup_ep(ep);
     }
 #endif
+#if !defined(_WIN32) && !defined(__wasm__)
+    if (ep->io_lock_init) {
+        pthread_mutex_destroy(&ep->io_lock);
+        ep->io_lock_init = 0;
+    }
+#endif
     wing_tls_zeroize(ep, sizeof(*ep));
     free(ep);
 }
@@ -1246,7 +1384,19 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
         *out_status = WING_TLS_ST_ERR;
         return -1;
     }
+#ifdef _WIN32
+    InitializeSRWLock(&ep->io_lock);
+#elif !defined(__wasm__)
+    if (pthread_mutex_init(&ep->io_lock, NULL) != 0) {
+        free(ep);
+        *out_status = WING_TLS_ST_ERR;
+        return -1;
+    }
+    ep->io_lock_init = 1;
+#endif
     ep->in_use = 1;
+    ep->closing = 0;
+    ep->refcount = 0;
     ep->kind = resolved;
     ep->is_server = is_server ? 1 : 0;
     ep->insecure_skip_verify = insecure_skip_verify ? 1 : 0;
@@ -1278,10 +1428,17 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     }
 
     int slot = -1;
+    uint32_t gen = 0;
     eps_lock();
-    for (int i = 0; i < WING_TLS_MAX_HANDLES; i++) {
+    for (int step = 0; step < WING_TLS_MAX_HANDLES; step++) {
+        int i = (g_eps_cursor + step) % WING_TLS_MAX_HANDLES;
         if (g_eps[i] == NULL) {
+            g_next_gen = (g_next_gen + 1U) & 0x7FFFFFFFU;
+            if (g_next_gen == 0U) g_next_gen = 1U;
+            gen = g_next_gen;
+            ep->generation = gen;
             g_eps[i] = ep;
+            g_eps_cursor = (i + 1) % WING_TLS_MAX_HANDLES;
             slot = i;
             break;
         }
@@ -1294,112 +1451,128 @@ int64_t wing_tls_backend_open(int32_t kind, int32_t is_server, int32_t insecure_
     }
     *out_status = WING_TLS_ST_OK;
     *out_active_kind = resolved;
-    return (int64_t)(slot + 1);
+    return (int64_t)(((uint64_t)gen << 16) | (uint64_t)(slot + 1));
 }
 
 void wing_tls_backend_close(int64_t handle) {
-    if (handle < 1 || handle > WING_TLS_MAX_HANDLES) return;
+    size_t slot = 0;
+    uint32_t gen = 0;
+    if (!decode_ep_handle(handle, &slot, &gen)) return;
+    wing_tls_ep_t *ep = NULL;
+    int should_destroy = 0;
     eps_lock();
-    wing_tls_ep_t *ep = g_eps[handle - 1];
-    g_eps[handle - 1] = NULL;
+    wing_tls_ep_t *cand = g_eps[slot];
+    if (cand != NULL && cand->generation == gen) {
+        g_eps[slot] = NULL;
+        cand->closing = 1;
+        ep = cand;
+        if (ep->refcount == 0) should_destroy = 1;
+    }
     eps_unlock();
-    wing_tls_ep_destroy(ep);
+    if (should_destroy) wing_tls_ep_destroy(ep);
 }
 
 int64_t wing_tls_backend_feed_wire(int64_t handle, wing_tls_ro ct, int32_t *out_status) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    if (ep == NULL || ep->closed) {
-        *out_status = WING_TLS_ST_CLOSED;
-        return 0;
-    }
-    if (ct.data == NULL || ct.len <= 0) {
-        *out_status = WING_TLS_ST_OK;
-        return 0;
-    }
-    if (ep->kind == WING_TLS_KIND_OPENSSL) {
-        int n = g_ossl.BIO_write(ep->ossl_rbio, ct.data, clamp_i32(ct.len));
-        *out_status = (n >= 0) ? WING_TLS_ST_OK : WING_TLS_ST_ERR;
-        return n > 0 ? (int64_t)n : 0;
-    }
-#ifdef _WIN32
-    if (ep->kind == WING_TLS_KIND_SCHANNEL) {
-        if (!tls_buf_append(&ep->sch_in, ct.data, (size_t)ct.len)) {
-            *out_status = WING_TLS_ST_ERR;
-            return 0;
-        }
-        *out_status = WING_TLS_ST_OK;
-        return ct.len;
-    }
-#endif
-#ifdef __APPLE__
-    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
-        if (!tls_buf_append(&ep->st_in, ct.data, (size_t)ct.len)) {
-            *out_status = WING_TLS_ST_ERR;
-            return 0;
-        }
-        *out_status = WING_TLS_ST_OK;
-        return ct.len;
-    }
-#endif
-    *out_status = WING_TLS_ST_UNAVAILABLE;
-    return 0;
-}
-
-int64_t wing_tls_backend_drain_wire(int64_t handle, wing_tls_rw dst, int32_t *out_status) {
-    wing_tls_ep_t *ep = get_ep(handle);
+    wing_tls_ep_t *ep = acquire_ep(handle);
     if (ep == NULL) {
         *out_status = WING_TLS_ST_CLOSED;
         return 0;
     }
-    if (dst.data == NULL || dst.len <= 0) {
-        *out_status = WING_TLS_ST_OK;
-        return 0;
-    }
-    if (ep->kind == WING_TLS_KIND_OPENSSL) {
-        long pend = g_ossl.BIO_ctrl(ep->ossl_wbio, OSSL_BIO_CTRL_PENDING, 0, NULL);
-        if (pend <= 0) {
-            *out_status = WING_TLS_ST_OK;
-            return 0;
-        }
-        int n = g_ossl.BIO_read(ep->ossl_wbio, dst.data, clamp_i32(dst.len));
-        *out_status = WING_TLS_ST_OK;
-        return n > 0 ? (int64_t)n : 0;
+    int64_t res = 0;
+    int32_t st = WING_TLS_ST_UNAVAILABLE;
+    ep_io_lock(ep);
+    if (ep->closed) {
+        st = WING_TLS_ST_CLOSED;
+    } else if (ct.data == NULL || ct.len <= 0) {
+        st = WING_TLS_ST_OK;
+    } else if (ep->kind == WING_TLS_KIND_OPENSSL) {
+        int n = g_ossl.BIO_write(ep->ossl_rbio, ct.data, clamp_i32(ct.len));
+        st = (n >= 0) ? WING_TLS_ST_OK : WING_TLS_ST_ERR;
+        res = n > 0 ? (int64_t)n : 0;
     }
 #ifdef _WIN32
-    if (ep->kind == WING_TLS_KIND_SCHANNEL) {
-        if (ep->sch_out.len == 0) {
-            *out_status = WING_TLS_ST_OK;
-            return 0;
+    else if (ep->kind == WING_TLS_KIND_SCHANNEL) {
+        if (!tls_buf_append(&ep->sch_in, ct.data, (size_t)ct.len)) {
+            st = WING_TLS_ST_ERR;
+        } else {
+            st = WING_TLS_ST_OK;
+            res = ct.len;
         }
-        size_t take = ep->sch_out.len < (size_t)dst.len ? ep->sch_out.len : (size_t)dst.len;
-        memcpy(dst.data, ep->sch_out.data, take);
-        tls_buf_consume(&ep->sch_out, take);
-        *out_status = WING_TLS_ST_OK;
-        return (int64_t)take;
     }
 #endif
 #ifdef __APPLE__
-    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
-        if (ep->st_out.len == 0) {
-            *out_status = WING_TLS_ST_OK;
-            return 0;
+    else if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        if (!tls_buf_append(&ep->st_in, ct.data, (size_t)ct.len)) {
+            st = WING_TLS_ST_ERR;
+        } else {
+            st = WING_TLS_ST_OK;
+            res = ct.len;
         }
-        size_t take = ep->st_out.len < (size_t)dst.len ? ep->st_out.len : (size_t)dst.len;
-        memcpy(dst.data, ep->st_out.data, take);
-        tls_buf_consume(&ep->st_out, take);
-        *out_status = WING_TLS_ST_OK;
-        return (int64_t)take;
     }
 #endif
-    *out_status = WING_TLS_ST_UNAVAILABLE;
-    return 0;
+    ep_io_unlock(ep);
+    release_ep(ep);
+    *out_status = st;
+    return res;
+}
+
+int64_t wing_tls_backend_drain_wire(int64_t handle, wing_tls_rw dst, int32_t *out_status) {
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) {
+        *out_status = WING_TLS_ST_CLOSED;
+        return 0;
+    }
+    int64_t res = 0;
+    int32_t st = WING_TLS_ST_UNAVAILABLE;
+    ep_io_lock(ep);
+    if (dst.data == NULL || dst.len <= 0) {
+        st = WING_TLS_ST_OK;
+    } else if (ep->kind == WING_TLS_KIND_OPENSSL) {
+        long pend = g_ossl.BIO_ctrl(ep->ossl_wbio, OSSL_BIO_CTRL_PENDING, 0, NULL);
+        st = WING_TLS_ST_OK;
+        if (pend > 0) {
+            int n = g_ossl.BIO_read(ep->ossl_wbio, dst.data, clamp_i32(dst.len));
+            res = n > 0 ? (int64_t)n : 0;
+        }
+    }
+#ifdef _WIN32
+    else if (ep->kind == WING_TLS_KIND_SCHANNEL) {
+        st = WING_TLS_ST_OK;
+        if (ep->sch_out.len > 0) {
+            size_t take = ep->sch_out.len < (size_t)dst.len ? ep->sch_out.len : (size_t)dst.len;
+            memcpy(dst.data, ep->sch_out.data, take);
+            tls_buf_consume(&ep->sch_out, take);
+            res = (int64_t)take;
+        }
+    }
+#endif
+#ifdef __APPLE__
+    else if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        st = WING_TLS_ST_OK;
+        if (ep->st_out.len > 0) {
+            size_t take = ep->st_out.len < (size_t)dst.len ? ep->st_out.len : (size_t)dst.len;
+            memcpy(dst.data, ep->st_out.data, take);
+            tls_buf_consume(&ep->st_out, take);
+            res = (int64_t)take;
+        }
+    }
+#endif
+    ep_io_unlock(ep);
+    release_ep(ep);
+    *out_status = st;
+    return res;
 }
 
 int32_t wing_tls_backend_step_handshake(int64_t handle) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    if (ep == NULL || ep->closed) return WING_TLS_ST_CLOSED;
-    if (ep->established) return WING_TLS_ST_OK;
-    if (ep->kind == WING_TLS_KIND_OPENSSL) {
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) return WING_TLS_ST_CLOSED;
+    int32_t st = WING_TLS_ST_UNAVAILABLE;
+    ep_io_lock(ep);
+    if (ep->closed) {
+        st = WING_TLS_ST_CLOSED;
+    } else if (ep->established) {
+        st = WING_TLS_ST_OK;
+    } else if (ep->kind == WING_TLS_KIND_OPENSSL) {
         int r = g_ossl.SSL_do_handshake(ep->ossl_ssl);
         if (r == 1) {
             ep->established = 1;
@@ -1411,129 +1584,171 @@ int32_t wing_tls_backend_step_handshake(int64_t handle) {
                 memcpy(ep->selected_alpn, alpn, n);
                 ep->selected_alpn_len = n;
             }
-            return WING_TLS_ST_OK;
+            st = WING_TLS_ST_OK;
+        } else {
+            st = ossl_map_err(ep, r, 1);
         }
-        return ossl_map_err(ep, r, 1);
     }
 #ifdef _WIN32
-    if (ep->kind == WING_TLS_KIND_SCHANNEL) return schannel_step_hs(ep);
+    else if (ep->kind == WING_TLS_KIND_SCHANNEL) {
+        st = schannel_step_hs(ep);
+    }
 #endif
 #ifdef __APPLE__
-    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) return st_step_hs(ep);
+    else if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        st = st_step_hs(ep);
+    }
 #endif
-    return WING_TLS_ST_UNAVAILABLE;
+    ep_io_unlock(ep);
+    release_ep(ep);
+    return st;
 }
 
 int64_t wing_tls_backend_write_app(int64_t handle, wing_tls_ro plain, int32_t *out_status) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    if (ep == NULL || ep->closed) {
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) {
         *out_status = WING_TLS_ST_CLOSED;
         return 0;
     }
-    if (!ep->established) {
-        *out_status = WING_TLS_ST_HS_ERR;
-        return 0;
-    }
-    if (plain.data == NULL || plain.len <= 0) {
-        *out_status = WING_TLS_ST_OK;
-        return 0;
-    }
-    if (ep->kind == WING_TLS_KIND_OPENSSL) {
+    int64_t res = 0;
+    int32_t st = WING_TLS_ST_UNAVAILABLE;
+    ep_io_lock(ep);
+    if (ep->closed) {
+        st = WING_TLS_ST_CLOSED;
+    } else if (!ep->established) {
+        st = WING_TLS_ST_HS_ERR;
+    } else if (plain.data == NULL || plain.len <= 0) {
+        st = WING_TLS_ST_OK;
+    } else if (ep->kind == WING_TLS_KIND_OPENSSL) {
         int n = g_ossl.SSL_write(ep->ossl_ssl, plain.data, clamp_i32(plain.len));
         if (n > 0) {
-            *out_status = WING_TLS_ST_OK;
-            return (int64_t)n;
+            st = WING_TLS_ST_OK;
+            res = (int64_t)n;
+        } else {
+            st = ossl_map_err(ep, n, 0);
         }
-        *out_status = ossl_map_err(ep, n, 0);
-        return 0;
     }
 #ifdef _WIN32
-    if (ep->kind == WING_TLS_KIND_SCHANNEL) return schannel_write_app(ep, plain, out_status);
+    else if (ep->kind == WING_TLS_KIND_SCHANNEL) {
+        res = schannel_write_app(ep, plain, &st);
+    }
 #endif
 #ifdef __APPLE__
-    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) return st_write_app(ep, plain, out_status);
+    else if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        res = st_write_app(ep, plain, &st);
+    }
 #endif
-    *out_status = WING_TLS_ST_UNAVAILABLE;
-    return 0;
+    ep_io_unlock(ep);
+    release_ep(ep);
+    *out_status = st;
+    return res;
 }
 
 int64_t wing_tls_backend_read_app(int64_t handle, wing_tls_rw dst, int32_t *out_status) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    if (ep == NULL || ep->closed) {
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) {
         *out_status = WING_TLS_ST_CLOSED;
         return 0;
     }
-    if (!ep->established) {
-        *out_status = WING_TLS_ST_HS_ERR;
-        return 0;
-    }
-    if (dst.data == NULL || dst.len <= 0) {
-        *out_status = WING_TLS_ST_OK;
-        return 0;
-    }
-    if (ep->kind == WING_TLS_KIND_OPENSSL) {
+    int64_t res = 0;
+    int32_t st = WING_TLS_ST_UNAVAILABLE;
+    ep_io_lock(ep);
+    if (ep->closed) {
+        st = WING_TLS_ST_CLOSED;
+    } else if (!ep->established) {
+        st = WING_TLS_ST_HS_ERR;
+    } else if (dst.data == NULL || dst.len <= 0) {
+        st = WING_TLS_ST_OK;
+    } else if (ep->kind == WING_TLS_KIND_OPENSSL) {
         int n = g_ossl.SSL_read(ep->ossl_ssl, dst.data, clamp_i32(dst.len));
         if (n > 0) {
-            *out_status = WING_TLS_ST_OK;
-            return (int64_t)n;
+            st = WING_TLS_ST_OK;
+            res = (int64_t)n;
+        } else {
+            st = ossl_map_err(ep, n, 0);
         }
-        *out_status = ossl_map_err(ep, n, 0);
-        return 0;
     }
 #ifdef _WIN32
-    if (ep->kind == WING_TLS_KIND_SCHANNEL) return schannel_read_app(ep, dst, out_status);
+    else if (ep->kind == WING_TLS_KIND_SCHANNEL) {
+        res = schannel_read_app(ep, dst, &st);
+    }
 #endif
 #ifdef __APPLE__
-    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) return st_read_app(ep, dst, out_status);
+    else if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+        res = st_read_app(ep, dst, &st);
+    }
 #endif
-    *out_status = WING_TLS_ST_UNAVAILABLE;
-    return 0;
+    ep_io_unlock(ep);
+    release_ep(ep);
+    *out_status = st;
+    return res;
 }
 
 int64_t wing_tls_backend_selected_alpn(int64_t handle, wing_tls_rw dst) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    if (ep == NULL || dst.data == NULL || dst.len <= 0 || ep->selected_alpn_len == 0) return 0;
-    size_t n = ep->selected_alpn_len < (size_t)dst.len ? ep->selected_alpn_len : (size_t)dst.len;
-    memcpy(dst.data, ep->selected_alpn, n);
-    return (int64_t)n;
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) return 0;
+    int64_t res = 0;
+    ep_io_lock(ep);
+    if (dst.data != NULL && dst.len > 0 && ep->selected_alpn_len > 0) {
+        size_t n = ep->selected_alpn_len < (size_t)dst.len ? ep->selected_alpn_len : (size_t)dst.len;
+        memcpy(dst.data, ep->selected_alpn, n);
+        res = (int64_t)n;
+    }
+    ep_io_unlock(ep);
+    release_ep(ep);
+    return res;
 }
 
 int32_t wing_tls_backend_is_established(int64_t handle) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    return (ep != NULL && !ep->closed && ep->established) ? 1 : 0;
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) return 0;
+    ep_io_lock(ep);
+    int32_t res = (!ep->closed && ep->established) ? 1 : 0;
+    ep_io_unlock(ep);
+    release_ep(ep);
+    return res;
 }
 
 int64_t wing_tls_backend_pending_wire(int64_t handle) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    if (ep == NULL || ep->closed) return 0;
-    if (ep->kind == WING_TLS_KIND_OPENSSL) {
-        long pend = g_ossl.BIO_ctrl(ep->ossl_wbio, OSSL_BIO_CTRL_PENDING, 0, NULL);
-        return pend > 0 ? (int64_t)pend : 0;
-    }
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) return 0;
+    int64_t res = 0;
+    ep_io_lock(ep);
+    if (!ep->closed) {
+        if (ep->kind == WING_TLS_KIND_OPENSSL) {
+            long pend = g_ossl.BIO_ctrl(ep->ossl_wbio, OSSL_BIO_CTRL_PENDING, 0, NULL);
+            res = pend > 0 ? (int64_t)pend : 0;
+        }
 #ifdef _WIN32
-    if (ep->kind == WING_TLS_KIND_SCHANNEL) {
-        return (int64_t)ep->sch_out.len;
-    }
+        else if (ep->kind == WING_TLS_KIND_SCHANNEL) {
+            res = (int64_t)ep->sch_out.len;
+        }
 #endif
 #ifdef __APPLE__
-    if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
-        return (int64_t)ep->st_out.len;
-    }
+        else if (ep->kind == WING_TLS_KIND_SECURE_TRANSPORT) {
+            res = (int64_t)ep->st_out.len;
+        }
 #endif
-    return 0;
+    }
+    ep_io_unlock(ep);
+    release_ep(ep);
+    return res;
 }
 
 int32_t wing_tls_backend_shutdown(int64_t handle) {
-    wing_tls_ep_t *ep = get_ep(handle);
-    if (ep == NULL || ep->closed) return WING_TLS_ST_CLOSED;
-    if (!ep->established) return WING_TLS_ST_OK;
-    if (ep->kind == WING_TLS_KIND_OPENSSL) {
-        if (g_ossl.SSL_shutdown == NULL) return WING_TLS_ST_OK;
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) return WING_TLS_ST_CLOSED;
+    int32_t st = WING_TLS_ST_OK;
+    ep_io_lock(ep);
+    if (ep->closed) {
+        st = WING_TLS_ST_CLOSED;
+    } else if (ep->established && ep->kind == WING_TLS_KIND_OPENSSL && g_ossl.SSL_shutdown != NULL) {
         int r = g_ossl.SSL_shutdown(ep->ossl_ssl);
-        if (r >= 0) return WING_TLS_ST_OK;
-        return ossl_map_err(ep, r, 0);
+        if (r < 0) st = ossl_map_err(ep, r, 0);
     }
-    return WING_TLS_ST_OK;
+    ep_io_unlock(ep);
+    release_ep(ep);
+    return st;
 }
 
 /* ---- OS System Root CA Lookup (Windows Crypt32 dynamic loader) --------- */
@@ -1616,6 +1831,50 @@ static int crypt32_allows_server_auth(PCCERT_CONTEXT ctx) {
     }
     if (buf != stack_buf) free(buf);
     return allowed;
+}
+
+static int ossl_load_win_root_store(void *ssl_ctx) {
+    if (ssl_ctx == NULL || g_ossl.SSL_CTX_get_cert_store == NULL || g_ossl.d2i_X509 == NULL ||
+        g_ossl.X509_STORE_add_cert == NULL || g_ossl.X509_free == NULL || g_ossl.ERR_clear_error == NULL) {
+        return 0;
+    }
+    if (!crypt32_ensure_loaded()) return 0;
+    void *store = g_ossl.SSL_CTX_get_cert_store(ssl_ctx);
+    if (store == NULL) return 0;
+    HCERTSTORE hStore = g_crypt32.CertOpenSystemStoreA(0, "ROOT");
+    if (hStore == NULL) return 0;
+    HCERTSTORE hDisallowed = g_crypt32.CertOpenSystemStoreA(0, "Disallowed");
+
+    int loaded = 0;
+    PCCERT_CONTEXT ctx = NULL;
+    while ((ctx = g_crypt32.CertEnumCertificatesInStore(hStore, ctx)) != NULL) {
+        if ((ctx->dwCertEncodingType & X509_ASN_ENCODING) == 0) continue;
+        if (ctx->pbCertEncoded == NULL || ctx->cbCertEncoded == 0) continue;
+        if (hDisallowed != NULL) {
+            PCCERT_CONTEXT hit =
+                g_crypt32.CertFindCertificateInStore(hDisallowed, X509_ASN_ENCODING, 0, CERT_FIND_EXISTING, ctx, NULL);
+            if (hit != NULL) {
+                g_crypt32.CertFreeCertificateContext(hit);
+                continue;
+            }
+        }
+        if (!crypt32_allows_server_auth(ctx)) continue;
+        const unsigned char *der = (const unsigned char *)ctx->pbCertEncoded;
+        void *x509 = g_ossl.d2i_X509(NULL, &der, (long)ctx->cbCertEncoded);
+        if (x509 != NULL) {
+            if (g_ossl.X509_STORE_add_cert(store, x509) == 1) {
+                loaded++;
+            } else {
+                g_ossl.ERR_clear_error();
+            }
+            g_ossl.X509_free(x509);
+        } else {
+            g_ossl.ERR_clear_error();
+        }
+    }
+    if (hDisallowed != NULL) g_crypt32.CertCloseStore(hDisallowed, 0);
+    g_crypt32.CertCloseStore(hStore, 0);
+    return loaded;
 }
 #endif
 

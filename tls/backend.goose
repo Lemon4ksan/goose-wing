@@ -70,6 +70,7 @@ struct TlsEndpoint {
     established: bool           = false,
     closed:      bool           = false,
     pure_slot:   i32            = -1,
+    pure_gen:    u32            = 0,
     native_id:   i64            = -1,
 }
 
@@ -175,7 +176,7 @@ inline fn native_i32_to_status(code: i32) -> TlsBackendStatus {
 
 // ---- PureGoose Sans-IO Endpoint Slot Storage -------------------------------
 
-const MAX_PURE_TLS_SLOTS: i64 = 32;
+const MAX_PURE_TLS_SLOTS: i64 = 4096;
 
 enum PureHsStage {
     ClientInit,
@@ -192,6 +193,7 @@ enum PureHsStage {
 
 struct PureTlsSlot {
     in_use:               bool                      = false,
+    generation:           u32                       = 0,
     is_server:            bool                      = false,
     insecure_skip_verify: bool                      = false,
     peer_closed:          bool                      = false,
@@ -226,7 +228,13 @@ struct PureTlsSlot {
     app_in_pos:           i64                       = 0,
 }
 
-var g_pure_tls_slots: PureTlsSlot[>..] = [];
+var g_pure_tls_slots:    PureTlsSlot[>..] = [];
+var g_pure_tls_active:   i64              = 0;
+var g_pure_tls_next_gen: u32              = 0;
+
+inline fn is_live_pure_slot(slot: const PureTlsSlot&, gen: u32) -> bool {
+    return slot.in_use && slot.generation == gen && gen != 0;
+}
 
 fn wipe_pure_hs_secrets(slot: PureTlsSlot&) {
     core::secure_zeroize_32(slot.eph_priv);
@@ -240,6 +248,9 @@ fn wipe_pure_hs_secrets(slot: PureTlsSlot&) {
 }
 
 fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
+    if slot.in_use {
+        g_pure_tls_active = core::sub_sat_i64(g_pure_tls_active, 1);
+    }
     if slot.cipher_slot != 0xFFFF {
         free_cipher_slot(slot.cipher_slot);
     }
@@ -252,18 +263,27 @@ fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
     slot = PureTlsSlot { .. };
 }
 
-fn alloc_pure_tls_slot() -> i32 {
+fn alloc_pure_tls_slot() -> i32, u32 {
+    let gen = if g_pure_tls_next_gen == 0xFFFFFFFF { 1 } else { core::add_sat_u32(g_pure_tls_next_gen, 1) };
+    g_pure_tls_next_gen = gen;
+    if g_pure_tls_active == g_pure_tls_slots.len {
+        guard g_pure_tls_slots.len < MAX_PURE_TLS_SLOTS else { return -1, 0; }
+        let idx = g_pure_tls_slots.len;
+        g_pure_tls_slots.push(PureTlsSlot { in_use: true, generation: gen, .. });
+        g_pure_tls_active = core::add_sat_i64(g_pure_tls_active, 1);
+        return idx as i32, gen;
+    }
     for i in g_pure_tls_slots.len {
-        if !g_pure_tls_slots[i].in_use {
-            reset_and_wipe_pure_slot(g_pure_tls_slots[i]);
-            g_pure_tls_slots[i].in_use = true;
-            return i as i32;
+        let slot .= g_pure_tls_slots[i];
+        if !slot.in_use {
+            reset_and_wipe_pure_slot(slot);
+            slot.in_use = true;
+            slot.generation = gen;
+            g_pure_tls_active = core::add_sat_i64(g_pure_tls_active, 1);
+            return i as i32, gen;
         }
     }
-    guard g_pure_tls_slots.len < MAX_PURE_TLS_SLOTS else { return -1; }
-    let idx = g_pure_tls_slots.len;
-    g_pure_tls_slots.push(PureTlsSlot { in_use: true, .. });
-    return idx as i32;
+    return -1, 0;
 }
 
 // Decodes RFC 7301 length-prefixed ALPN wire bytes into comma-separated protocol names.
@@ -899,7 +919,7 @@ fn open_pure_endpoint(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpo
     if is_server && cfg.cert_der.len == 0 && !has_pem {
         return TlsEndpoint { .. }, TlsBackendStatus.HandshakeError;
     }
-    let idx = alloc_pure_tls_slot();
+    let idx, gen = alloc_pure_tls_slot();
     guard idx >= 0 else { return TlsEndpoint { .. }, TlsBackendStatus.Error; }
     let slot .= g_pure_tls_slots[idx as i64];
     slot.is_server = is_server;
@@ -919,17 +939,26 @@ fn open_pure_endpoint(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpo
         established: false,
         closed:      false,
         pure_slot:   idx,
+        pure_gen:    gen,
         native_id:   -1,
     }, TlsBackendStatus.Ok;
 }
 
+fn should_route_to_pure_backend(cfg: const TlsBackendConfig&, is_server: bool) -> bool {
+    if cfg.kind == TlsBackendKind.PureGoose { return true; }
+    guard cfg.kind == TlsBackendKind.Auto else { return false; }
+    if is_server {
+        return cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0;
+    }
+    guard !cfg.insecure_skip_verify else { return false; }
+    if cfg.trust_store.anchors.len > 0 && cfg.ca_file.len == 0 {
+        return true;
+    }
+    return cfg.ca_file.len > 0 && !tls_backend_available(TlsBackendKind.SystemOpenSsl);
+}
+
 fn open_endpoint_with_role(cfg: const TlsBackendConfig&, is_server: bool) -> TlsEndpoint, TlsBackendStatus {
-    let pure_server_der = cfg.kind == TlsBackendKind.Auto && is_server &&
-        cfg.cert_der.len > 0 && cfg.cert_pem_file.len == 0;
-    let pure_client_custom_ca = cfg.kind == TlsBackendKind.Auto && !is_server &&
-        !cfg.insecure_skip_verify && (cfg.ca_file.len > 0 || cfg.trust_store.anchors.len > 0) &&
-        !tls_backend_available(TlsBackendKind.SystemOpenSsl);
-    if cfg.kind == TlsBackendKind.PureGoose || pure_server_der || pure_client_custom_ca {
+    if should_route_to_pure_backend(cfg, is_server) {
         return open_pure_endpoint(cfg, is_server);
     }
 
@@ -986,13 +1015,14 @@ fn tls_endpoint_close(ep: TlsEndpoint&) {
     guard !ep.closed else { return; }
     if ep.active_kind == TlsBackendKind.PureGoose {
         let idx = ep.pure_slot as i64;
-        if idx >= 0 && idx < g_pure_tls_slots.len {
+        if idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) {
             reset_and_wipe_pure_slot(g_pure_tls_slots[idx]);
         }
     } else if ep.native_id > 0 {
         native_tls_backend_close(ep.native_id);
     }
     ep.pure_slot = -1;
+    ep.pure_gen = 0;
     ep.native_id = -1;
     ep.established = false;
     ep.closed = true;
@@ -1008,7 +1038,7 @@ fn tls_endpoint_feed_wire(ep: TlsEndpoint&, ciphertext: const u8[:]) -> i64, Tls
         return n, native_i32_to_status(st_i32);
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else {
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
         return 0, TlsBackendStatus.Closed;
     }
     let slot .= g_pure_tls_slots[idx];
@@ -1029,7 +1059,7 @@ fn tls_endpoint_drain_wire(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatu
         return n, native_i32_to_status(st_i32);
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else {
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
         return 0, TlsBackendStatus.Closed;
     }
     let slot .= g_pure_tls_slots[idx];
@@ -1052,7 +1082,7 @@ fn tls_endpoint_step_handshake(ep: TlsEndpoint&) -> TlsBackendStatus {
         return st;
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else {
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
         return TlsBackendStatus.Closed;
     }
     let st = pure_step_handshake_loop(g_pure_tls_slots[idx]);
@@ -1073,7 +1103,7 @@ fn tls_endpoint_write_app(ep: TlsEndpoint&, plaintext: const u8[:]) -> i64, TlsB
         return n, native_i32_to_status(st_i32);
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else {
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
         return 0, TlsBackendStatus.Closed;
     }
     let slot .= g_pure_tls_slots[idx];
@@ -1116,7 +1146,7 @@ fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus 
         return n, native_i32_to_status(st_i32);
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else {
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
         return 0, TlsBackendStatus.Closed;
     }
     let slot .= g_pure_tls_slots[idx];
@@ -1152,7 +1182,9 @@ fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64] {
         return out;
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else { return out; }
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
+        return out;
+    }
     let _ = out.try_set(g_pure_tls_slots[idx].selected_alpn[..]);
     return out;
 }
@@ -1161,10 +1193,12 @@ fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64] {
 fn tls_endpoint_is_established(ep: const TlsEndpoint&) -> bool {
     guard !ep.closed else { return false; }
     if ep.active_kind != TlsBackendKind.PureGoose {
-        return ep.established || native_tls_backend_is_established(ep.native_id) != 0;
+        return native_tls_backend_is_established(ep.native_id) != 0;
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else { return false; }
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
+        return false;
+    }
     return ep.established && g_pure_tls_slots[idx].stage == PureHsStage.Established;
 }
 
@@ -1175,7 +1209,9 @@ fn tls_endpoint_pending_wire(ep: const TlsEndpoint&) -> i64 {
         return native_tls_backend_pending_wire(ep.native_id);
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else { return 0; }
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
+        return 0;
+    }
     return g_pure_tls_slots[idx].wire_out.len;
 }
 
@@ -1188,7 +1224,7 @@ fn tls_endpoint_shutdown(ep: TlsEndpoint&) -> TlsBackendStatus {
         return native_i32_to_status(native_tls_backend_shutdown(ep.native_id));
     }
     let idx = ep.pure_slot as i64;
-    guard idx >= 0 && idx < g_pure_tls_slots.len && g_pure_tls_slots[idx].in_use else {
+    guard idx >= 0 && idx < g_pure_tls_slots.len && is_live_pure_slot(g_pure_tls_slots[idx], ep.pure_gen) else {
         return TlsBackendStatus.Closed;
     }
     let slot .= g_pure_tls_slots[idx];
@@ -1203,7 +1239,7 @@ fn tls_endpoint_shutdown(ep: TlsEndpoint&) -> TlsBackendStatus {
 
 // ---- Socket-Bridged Transport Adapter (TCP & Virtual Pipe Descriptors) -----
 
-const MAX_BACKEND_TRANSPORT_SLOTS: i64 = 64;
+const MAX_BACKEND_TRANSPORT_SLOTS: i64 = 4096;
 
 struct TlsBackendTransportSlot {
     in_use:     bool        = false,
@@ -1212,9 +1248,17 @@ struct TlsBackendTransportSlot {
     rx_pos:     i64         = 0,
 }
 
-var g_backend_transport_slots: TlsBackendTransportSlot[>..] = [];
+var g_backend_transport_slots:  TlsBackendTransportSlot[>..] = [];
+var g_backend_transport_active: i64                          = 0;
 
 fn alloc_backend_transport_slot(ep: TlsEndpoint) -> i64 {
+    if g_backend_transport_active == g_backend_transport_slots.len {
+        guard g_backend_transport_slots.len < MAX_BACKEND_TRANSPORT_SLOTS else { return -1; }
+        let idx = g_backend_transport_slots.len;
+        g_backend_transport_slots.push(TlsBackendTransportSlot { in_use: true, ep: ep, .. });
+        g_backend_transport_active = core::add_sat_i64(g_backend_transport_active, 1);
+        return idx;
+    }
     for i in g_backend_transport_slots.len {
         let slot .= g_backend_transport_slots[i];
         if !slot.in_use {
@@ -1222,13 +1266,11 @@ fn alloc_backend_transport_slot(ep: TlsEndpoint) -> i64 {
             slot.rx_pending.clear();
             slot.rx_pos = 0;
             slot.in_use = true;
+            g_backend_transport_active = core::add_sat_i64(g_backend_transport_active, 1);
             return i;
         }
     }
-    guard g_backend_transport_slots.len < MAX_BACKEND_TRANSPORT_SLOTS else { return -1; }
-    let idx = g_backend_transport_slots.len;
-    g_backend_transport_slots.push(TlsBackendTransportSlot { in_use: true, ep: ep, .. });
-    return idx;
+    return -1;
 }
 
 fn release_backend_transport_slot(slot_id: i64) {
@@ -1240,6 +1282,7 @@ fn release_backend_transport_slot(slot_id: i64) {
     slot.rx_pending.clear();
     slot.rx_pos = 0;
     slot.in_use = false;
+    g_backend_transport_active = core::sub_sat_i64(g_backend_transport_active, 1);
 }
 
 fn endpoint_fd_send_all(fd: i64, data: const u8[:]) -> bool {
