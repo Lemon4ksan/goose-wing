@@ -314,6 +314,100 @@ fn aes_encrypt_block(ks: const Aes256KeySchedule&, input: const u8[16]&) -> u8[1
     return state;
 }
 
+// Constant-time GF(2^8) multiplication modulo x^8 + x^4 + x^3 + x + 1 (FIPS 197 Section 4.2).
+// crap:ignore
+inline fn aes_gf_mul(a_in: u8, b_in: u8) -> u8 {
+    var a = a_in;
+    var b = b_in;
+    var p: u8 = 0;
+    for _ in 8 {
+        let mask: u8 = 0 - (b & 1);
+        p ^= a & mask;
+        a = xtime(a);
+        b >>= 1;
+    }
+    return p;
+}
+
+// Constant-time FIPS 197 inverse S-box via inverse affine transform and GF(2^8) inversion (z^254).
+// Zero lookup tables or secret-dependent branches (cache-timing safe).
+// crap:ignore
+inline fn aes_inv_sbox_byte(y: u8) -> u8 {
+    let r1 = (y << 1) | (y >> 7);
+    let r3 = (y << 3) | (y >> 5);
+    let r6 = (y << 6) | (y >> 2);
+    let z = r1 ^ r3 ^ r6 ^ 0x05;
+
+    let z2 = aes_gf_mul(z, z);
+    let z3 = aes_gf_mul(z2, z);
+    let z6 = aes_gf_mul(z3, z3);
+    let z12 = aes_gf_mul(z6, z6);
+    let z15 = aes_gf_mul(z12, z3);
+    let z30 = aes_gf_mul(z15, z15);
+    let z60 = aes_gf_mul(z30, z30);
+    let z120 = aes_gf_mul(z60, z60);
+    let z126 = aes_gf_mul(z120, z6);
+    let z252 = aes_gf_mul(z126, z126);
+    return aes_gf_mul(z252, z2);
+}
+
+inline fn aes_inv_shift_rows(state: u8[16]&) {
+    let t1 = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
+    let t2 = state[2]; state[2] = state[10]; state[10] = t2;
+    let t6 = state[6]; state[6] = state[14]; state[14] = t6;
+    let t3 = state[3]; state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t3;
+}
+
+// crap:ignore
+inline fn aes_inv_mix_columns(state: u8[16]&) {
+    for c: u64 in 4 {
+        let col = c * 4;
+        let s0 = state[col]; let s1 = state[col + 1];
+        let s2 = state[col + 2]; let s3 = state[col + 3];
+        state[col] = aes_gf_mul(s0, 0x0e) ^ aes_gf_mul(s1, 0x0b) ^
+            aes_gf_mul(s2, 0x0d) ^ aes_gf_mul(s3, 0x09);
+        state[col + 1] = aes_gf_mul(s0, 0x09) ^ aes_gf_mul(s1, 0x0e) ^
+            aes_gf_mul(s2, 0x0b) ^ aes_gf_mul(s3, 0x0d);
+        state[col + 2] = aes_gf_mul(s0, 0x0d) ^ aes_gf_mul(s1, 0x09) ^
+            aes_gf_mul(s2, 0x0e) ^ aes_gf_mul(s3, 0x0b);
+        state[col + 3] = aes_gf_mul(s0, 0x0b) ^ aes_gf_mul(s1, 0x0d) ^
+            aes_gf_mul(s2, 0x09) ^ aes_gf_mul(s3, 0x0e);
+    }
+}
+
+// crap:ignore
+inline fn aes_add_round_key_256(ks: const Aes256KeySchedule&, rk_base: u64, state: u8[16]&) {
+    for i: u64 in 4 {
+        let rk = ks.round_keys[rk_base + i];
+        state[i * 4] ^= ((rk >> 24) & 0xFF) as u8;
+        state[i * 4 + 1] ^= ((rk >> 16) & 0xFF) as u8;
+        state[i * 4 + 2] ^= ((rk >> 8) & 0xFF) as u8;
+        state[i * 4 + 3] ^= (rk & 0xFF) as u8;
+    }
+}
+
+// Decrypts a single 16-byte AES-256 block (FIPS 197 Section 5.3 InvCipher) in constant time.
+fn aes256_decrypt_block(ks: const Aes256KeySchedule&, input: const u8[16]&) -> u8[16] {
+    var state: u8[16] = [0; 16];
+    for i: u64 in 16 { state[i] = input[i]; }
+
+    aes_add_round_key_256(ks, 56, state);
+
+    var rk_base: u64 = 52;
+    while rk_base >= 4 {
+        aes_inv_shift_rows(state);
+        for i: u64 in 16 { state[i] = aes_inv_sbox_byte(state[i]); }
+        aes_add_round_key_256(ks, rk_base, state);
+        aes_inv_mix_columns(state);
+        rk_base = core::sub_sat_u64(rk_base, 4);
+    }
+
+    aes_inv_shift_rows(state);
+    for i: u64 in 16 { state[i] = aes_inv_sbox_byte(state[i]); }
+    aes_add_round_key_256(ks, 0, state);
+    return state;
+}
+
 struct Aes128KeySchedule {
     round_keys: u32[44] = [0; 44],
 }

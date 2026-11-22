@@ -374,6 +374,44 @@ fn try_prepare_single_h1_wire_turn(
     return true;
 }
 
+// Runs `WsUpgradeAuth` on `<Stage>` prior to emitting `101 Switching Protocols`.
+// Serializes the stage's rejection response (`401`/`403`/etc.) and returns `false` if denied.
+fn authorize_ws_upgrade_stage<Stage, B>(
+    server:   server::HttpServer&,
+    req:      const http::Request&,
+    ws_idx:   i32,
+    now_ns:   u64,
+    res:      http::Response&,
+    wire_out: B&,
+    stage:    Stage&,
+) -> bool {
+    if is_noop_server_stage(stage) { return true; }
+    reset_server_response_fast(res);
+    var sctx = server::ServerStageCtx { handler_id: ws_idx, now_ns: now_ns, .. };
+    let verdict = server::on_server_stage(
+        stage, wire::ServerHookPhase.WsUpgradeAuth, server.pipeline, req, sctx, res,
+    );
+    let allowed = match verdict {
+        Continue => true,
+        ShortCircuit sc => {
+            if res.status_code < 400 { res.status_code = sc.status_code as i32; }
+            false
+        },
+        _ => {
+            if res.status_code < 400 { res.status_code = 403; }
+            false
+        },
+    };
+    if !allowed {
+        res.set_header("Connection", "close");
+        server::serialize_http1_response(
+            res, server.server_name[..], wire_out, 0, resolve_server_header_policy(server),
+        );
+        server.requests_processed = core::add_sat_u64(server.requests_processed, 1);
+    }
+    return allowed;
+}
+
 fn finish_single_h1_wire_turn<Stage, B>(
     server:       server::HttpServer&,
     effective_ip: const u8[:],
@@ -387,8 +425,13 @@ fn finish_single_h1_wire_turn<Stage, B>(
         && (g_turn_req.presence_mask & http::HDR_PRESENCE_UPGRADE) != 0
         && realtime::is_websocket_upgrade_request(g_turn_req) {
         let ws_idx = server::find_ws_route(server, g_turn_req.url[..]);
-        if ws_idx >= 0 && server::complete_ws_upgrade(server, g_turn_req, server.ws_routes[ws_idx as i64], wire_out) {
-            return server::PipelineOutcome.Handled;
+        if ws_idx >= 0 {
+            if !authorize_ws_upgrade_stage(server, g_turn_req, ws_idx, now_ns, g_turn_res, wire_out, stage) {
+                return server::PipelineOutcome.Handled;
+            }
+            if server::complete_ws_upgrade(server, g_turn_req, server.ws_routes[ws_idx as i64], wire_out) {
+                return server::PipelineOutcome.Handled;
+            }
         }
     }
 
@@ -434,13 +477,18 @@ fn execute_single_h1_wire_turn<Stage, B>(
         return server::PipelineOutcome.Handled, false;
     }
 
-    // WebSocket Upgrade Interception (uWebSockets app.ws pattern)
+    // WebSocket Upgrade Interception (uWebSockets app.ws pattern) with pre-101 auth hook
     if server.ws_route_count > 0
         && (req.presence_mask & http::HDR_PRESENCE_UPGRADE) != 0
         && realtime::is_websocket_upgrade_request(req) {
         let ws_idx = server::find_ws_route(server, req.url[..]);
-        if ws_idx >= 0 && server::complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
-            return server::PipelineOutcome.Handled, true;
+        if ws_idx >= 0 {
+            if !authorize_ws_upgrade_stage(server, req, ws_idx, now_ns, res, wire_out, stage) {
+                return server::PipelineOutcome.Handled, false;
+            }
+            if server::complete_ws_upgrade(server, req, server.ws_routes[ws_idx as i64], wire_out) {
+                return server::PipelineOutcome.Handled, true;
+            }
         }
     }
 

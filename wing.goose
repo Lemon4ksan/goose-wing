@@ -240,6 +240,7 @@ import realtime.internal;
 import realtime.ws_deflate;
 import realtime.ws_handshake;
 import realtime.websocket;
+import realtime.ws_live;
 import realtime.topic_tree;
 import realtime.sse;
 import realtime.webtransport;
@@ -262,6 +263,7 @@ import client.replay_guard;
 import client.telemetry;
 import client.interceptor;
 import client.stream;
+import client.live_realtime;
 
 type Client = client::Client;
 type Session = client::Session;
