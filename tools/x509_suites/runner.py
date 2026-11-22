@@ -800,6 +800,28 @@ def run_limbo_document(
             cid, peer_der, inter_der, trusted_der,
             peer=peer_val, now_unix=now_u, role=role, mode=mode,
         )
+        crl_pems = tc.get("crls") or []
+        if got_ok and crl_pems:
+            issuers = [c for c in (inter_der + trusted_der) if c]
+            for crl_pem in crl_pems:
+                crl_der = pem_to_der(str(crl_pem))
+                crl_ok = False
+                last_reason = "CrlRejected"
+                for iss in issuers:
+                    crl_st, crl_r = client.check_crl(cid, peer_der, iss, crl_der, now_unix=now_u)
+                    if crl_st == "BAD_ISSUER":
+                        last_reason = crl_r
+                        continue
+                    if crl_st == "OK":
+                        crl_ok = True
+                        break
+                    last_reason = f"{crl_st}:{crl_r}"
+                    crl_ok = False
+                    break
+                if not crl_ok:
+                    got_ok = False
+                    reason = last_reason
+                    break
         want_ok = expected_str == "SUCCESS"
         stats.record(
             "limbo",
