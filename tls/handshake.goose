@@ -272,24 +272,30 @@ fn parse_new_session_ticket(payload: const u8[:], out: NewSessionTicketMsg&) -> 
     return true;
 }
 
+const MAX_SESSION_TICKETS_PER_CONN: u32 = 64;
+
 // Stores a validated NewSessionTicket into bounded SessionTicketCache using circular eviction.
-// Handles multiple NewSessionTickets without heap allocation or state corruption.
+// Enforces a per-connection NewSessionTicket flood ceiling including zero-lifetime tickets.
 fn cache_session_ticket(cache: SessionTicketCache&, ticket: const NewSessionTicketMsg&) -> bool {
-    // RFC 8446 Section 4.6.1: ticket_lifetime == 0 indicates ticket should be discarded immediately
-    guard ticket.ticket_lifetime > 0 else { return true; }
+    guard cache.total_received < MAX_SESSION_TICKETS_PER_CONN else { return false; }
     guard ticket.ticket_lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else { return false; }
+    // RFC 8446 Section 4.6.1: ticket_lifetime == 0 indicates ticket should be discarded immediately,
+    // while still counting toward the connection-wide post-handshake NST DoS budget.
+    if ticket.ticket_lifetime == 0 {
+        cache.total_received = core::add_sat_u32(cache.total_received, 1);
+        return true;
+    }
 
     // RFC 8446 Section 4.6.1: Each ticket MUST have a unique ticket_nonce on this connection.
     // Reject duplicate nonce or duplicate ticket bytes to prevent post-handshake ticket confusion
     // and resumption PSK collisions in ks_derive_resumption_psk.
     guard !tls_internal::has_conflicting_ticket(cache, ticket) else { return false; }
 
-    cache.total_received++;
+    cache.total_received = core::add_sat_u32(cache.total_received, 1);
     if cache.tickets.len < cache.tickets.cap {
         cache.tickets.push(ticket);
         return true;
     }
-    // Shift oldest ticket out
     for i in cache.tickets.len - 1 {
         cache.tickets[i] = cache.tickets[i + 1];
     }

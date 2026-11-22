@@ -420,6 +420,13 @@ fn apply_hrr_server_hello_exts(
     if has_cookie {
         guard parse_cookie_extension(cookie_data, out.hrr_cookie) else { return false; }
     }
+    let ech_data, has_ech = tls::find_extension(entries, rfc::EXT_ENCRYPTED_CLIENT_HELLO);
+    if has_ech {
+        guard ech_data.len == rfc::ECH_ACCEPT_CONFIRM_LEN && out.ech_ext_data.try_set(ech_data) else {
+            return false;
+        }
+        out.has_ech_ext = true;
+    }
     return has_ks || has_cookie;
 }
 

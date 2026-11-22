@@ -37,6 +37,8 @@ enum PureHsStage {
     ClientWaitCV,
     ClientWaitFinished,
     ServerWaitClientHello,
+    ServerWaitClientCert,
+    ServerWaitClientCV,
     ServerWaitClientFinished,
     Established,
     Failed,
@@ -46,6 +48,7 @@ struct PureTlsSlot {
     in_use:                 bool                  = false,
     generation:             u32                   = 0,
     is_server:              bool                  = false,
+    require_client_cert:    bool                  = false,
     insecure_skip_verify:   bool                  = false,
     use_system_roots:       bool                  = true,
     enable_pq_hybrid:       bool                  = false,
@@ -188,14 +191,18 @@ fn decode_alpn_wire_to_csv(alpn_wire: const u8[:], out_csv: u8[..64]&) {
     let _ = out_csv.try_set(alpn_wire[..take]);
 }
 
-fn pure_append_plaintext_hs(out: u8[..32768]&, hs_msg: const u8[:]) -> bool {
+fn pure_append_plaintext_hs(
+    out:              u8[..32768]&,
+    hs_msg:           const u8[:],
+    legacy_ver_minor: u8 = 0x03,
+) -> bool {
     guard hs_msg.len > 0 && hs_msg.len <= rfc::TLS_MAX_RECORD_PLAINTEXT_LEN else { return false; }
     let saved = out.len;
     var committed = false;
     defer if !committed { out.resize(saved); };
     guard out.try_push(rfc::TLS_CONTENT_HANDSHAKE) &&
         out.try_push(0x03) &&
-        out.try_push(0x01) else {
+        out.try_push(legacy_ver_minor) else {
         return false;
     }
     let len_u16 = hs_msg.len as u16;
@@ -359,16 +366,15 @@ fn pure_derive_hs_traffic_keys(
     early_ikm:    const u8[:] = "",
 ) -> bool {
     var ks, ok_ks = ks_init(slot.cipher_suite);
+    defer ks_zeroize(ks);
     guard ok_ks &&
         ks_init_early_secret(ks, early_ikm) &&
         ks_advance_to_handshake(ks, ecdhe_secret) else {
-        ks_zeroize(ks);
         return false;
     }
     var ch_sh_hash: u8[..48] = [];
     transcript_current_hash(slot.transcript, ks.hash_id, ch_sh_hash);
     guard ks_derive_handshake_traffic(ks, ch_sh_hash[..]) else {
-        ks_zeroize(ks);
         return false;
     }
     let klen_u16 = rfc::tls13_cipher_suite_key_len(slot.cipher_suite);
@@ -379,7 +385,6 @@ fn pure_derive_hs_traffic_keys(
     let ok_tx = ks_derive_key_iv(ks.hash_id, tx_sec, klen_u16, slot.hs_tx_key[..klen], slot.hs_tx_iv);
     let ok_rx = ks_derive_key_iv(ks.hash_id, rx_sec, klen_u16, slot.hs_rx_key[..klen], slot.hs_rx_iv);
     guard ok_tx && ok_rx else {
-        ks_zeroize(ks);
         return false;
     }
     slot.key_len = klen_u16;
@@ -421,6 +426,7 @@ fn pure_install_app_keys(slot: PureTlsSlot&) -> bool {
         );
         if c_slot_i >= 0 && c_slot_i < tls::g_tls_cipher_slots.len {
             let _ = tls::g_tls_cipher_slots[c_slot_i].negotiated_alpn.try_set(slot.selected_alpn[..]);
+            tls::g_tls_cipher_slots[c_slot_i].client_authenticated = slot.require_client_cert;
         }
     } else {
         tls_setup_client_cipher_slot(

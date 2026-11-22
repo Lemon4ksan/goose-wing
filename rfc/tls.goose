@@ -247,6 +247,7 @@ const TLS_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE: u8 = 113;
 const TLS_ALERT_UNKNOWN_PSK_IDENTITY:            u8 = 115;
 const TLS_ALERT_CERTIFICATE_REQUIRED:            u8 = 116;
 const TLS_ALERT_NO_APPLICATION_PROTOCOL:         u8 = 120;
+const TLS_ALERT_ECH_REQUIRED:                    u8 = 121; // RFC 9849 Section 6.1.6
 
 // ---- TLS 1.3 Cipher Suites, HRR, Downgrade Sentinels & Ticket Limits ------
 

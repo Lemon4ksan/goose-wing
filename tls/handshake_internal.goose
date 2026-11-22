@@ -398,7 +398,8 @@ fn validate_sh_or_hrr_extensions(entries: const tls::ExtensionEntry[:], is_hrr: 
         if is_hrr {
             let allowed_hrr = t == rfc::TLS_EXT_SUPPORTED_VERSIONS ||
                 t == rfc::TLS_EXT_KEY_SHARE ||
-                t == rfc::TLS_EXT_COOKIE;
+                t == rfc::TLS_EXT_COOKIE ||
+                t == rfc::EXT_ENCRYPTED_CLIENT_HELLO;
             guard allowed_hrr else { return false; }
         } else {
             let allowed_sh = t == rfc::TLS_EXT_SUPPORTED_VERSIONS ||

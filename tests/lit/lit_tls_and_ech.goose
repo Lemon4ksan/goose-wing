@@ -1133,8 +1133,35 @@ fn run_04_rfc_repro_tls_bug_fixes() {
     assert(ok_conf2 && confirm1 == confirm2);
     assert(tls::verify_ech_acceptance_confirmation(sh_wire2[30..38], confirm2));
 
-    let hrr_confirm, ok_hrr_conf = tls_internal::compute_ech_accept_confirmation(inner_rand, ch_inner_buf[..], sh_wire[..], true);
+    let confirm1_384, ok_conf1_384 = tls_internal::compute_ech_accept_confirmation(
+        inner_rand, ch_inner_buf[..], sh_wire[..], false, tls_internal::HASH_SHA384,
+    );
+    assert(ok_conf1_384 && confirm1_384 != confirm1);
+
+    // RFC 9849 §7.2.1 HRR confirmation zeroes the 8-byte HRR ECH extension payload, NOT HRR.random[24..32].
+    var hrr_wire: u8[..96] = [];
+    hrr_wire.push(rfc::TLS_HS_SERVER_HELLO);
+    hrr_wire.append_u24_be(54);
+    hrr_wire.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
+    hrr_wire.append(rfc::HRR_RANDOM[..]);
+    hrr_wire.push(0); // session_id_len = 0
+    hrr_wire.append_u16_be(rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    hrr_wire.push(0); // compression
+    hrr_wire.append_u16_be(12); // extensions_len = 12 (2+2+8)
+    hrr_wire.append_u16_be(rfc::EXT_ENCRYPTED_CLIENT_HELLO);
+    hrr_wire.append_u16_be(8);
+    let hrr_ext_off = hrr_wire.len;
+    for _ in 8 { hrr_wire.push(0xAA); }
+    let hrr_confirm, ok_hrr_conf = tls_internal::compute_ech_accept_confirmation(
+        inner_rand, ch_inner_buf[..], hrr_wire[..], true,
+    );
     assert(ok_hrr_conf && hrr_confirm != confirm1);
+    var hrr_wire2 = copy(hrr_wire);
+    core::ct_copy_bytes(hrr_wire2[hrr_ext_off..core::add_sat_i64(hrr_ext_off, 8)], hrr_confirm[..]);
+    let hrr_confirm2, ok_hrr_conf2 = tls_internal::compute_ech_accept_confirmation(
+        inner_rand, ch_inner_buf[..], hrr_wire2[..], true,
+    );
+    assert(ok_hrr_conf2 && hrr_confirm2 == hrr_confirm);
     print("TLS_ECH_CONFIRMATION_OK: true");
 
     // ---- 6. RFC 8446 §7.5 Exporters: >255B Context & Early Exporter Secret (TLSMOD-005) ----
@@ -1467,10 +1494,10 @@ fn test_bug5_post_handshake_server_rejects_client_nst() {
     hs_msg.append(nst_body[..]);
 
     // Server MUST NOT accept NewSessionTicket from client (RFC 8446 §4.6.1)
-    assert(tls_internal::dispatch_post_handshake_record(-1, slot_idx, hs_msg[..]) != tls::Alert.CloseNotify);
+    assert(tls_internal::dispatch_post_handshake_record(slot_idx, hs_msg[..]) != tls::Alert.CloseNotify);
     // Malformed post-handshake message MUST also return a fatal alert
     let bad_post_hs: u8[3] = [rfc::TLS_HS_KEY_UPDATE, 0x00, 0x00];
-    assert(tls_internal::dispatch_post_handshake_record(-1, slot_idx, bad_post_hs[..]) != tls::Alert.CloseNotify);
+    assert(tls_internal::dispatch_post_handshake_record(slot_idx, bad_post_hs[..]) != tls::Alert.CloseNotify);
     // Fragmented plaintext handshake message (declared len 10, only 6 bytes received) MUST wait for next record
     let frag_hs: u8[6] = [rfc::TLS_HS_CLIENT_HELLO, 0x00, 0x00, 0x0A, 0x03, 0x03];
     assert(!tls_internal::has_complete_plaintext_handshake_msg(frag_hs[..]));

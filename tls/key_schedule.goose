@@ -148,6 +148,8 @@ fn ks_init(cipher_suite: u16) -> KeySchedule, bool {
 // For external PSK: derives "ext binder"
 // For resumption PSK / no PSK: derives "res binder"
 fn ks_init_early_secret_with_mode(ks: KeySchedule&, psk: const u8[:], is_external: bool) -> bool {
+    var committed = false;
+    defer if !committed { ks_zeroize(ks); };
     let zeros: u8[48] = [0; 48];
     let zero_salt = zeros[..ks.hash_len];
     let ikm = if psk.len > 0 { psk } else { zero_salt };
@@ -176,6 +178,7 @@ fn ks_init_early_secret_with_mode(ks: KeySchedule&, psk: const u8[:], is_externa
         return false;
     }
     ks.stage = KS_STAGE_EARLY;
+    committed = true;
     return true;
 }
 
@@ -280,6 +283,9 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
     guard ks.stage == KS_STAGE_HANDSHAKE else { return false; }
     guard transcript_hash.len == ks.hash_len else { return false; }
 
+    var committed = false;
+    defer if !committed { ks_zeroize(ks); };
+
     var derived: u8[48] = [0; 48];
     defer core::secure_zeroize_48(derived);
     if !derive_secret(
@@ -334,6 +340,7 @@ fn ks_advance_to_master(ks: KeySchedule&, transcript_hash: const u8[:]) -> bool 
     );
     guard ok_c && ok_s && ok_exp else { return false; }
     ks.stage = KS_STAGE_MASTER;
+    committed = true;
     return true;
 }
 
@@ -586,25 +593,34 @@ struct ZeroRttStrikeRegister {
     current_epoch:        i64     = 0,
     bitmap_current:       u64[64] = [0; 64],
     bitmap_previous:      u64[64] = [0; 64],
+    hash_key:             u8[32]  = [0; 32],
+    keyed:                bool    = false,
 }
 
 fn strike_register_init(epoch_window_ms: i64 = 10000, max_age_tolerance_ms: i64 = 2000) -> ZeroRttStrikeRegister {
-    return ZeroRttStrikeRegister {
+    var reg = ZeroRttStrikeRegister {
         epoch_window_ms:      epoch_window_ms,
         max_age_tolerance_ms: max_age_tolerance_ms,
         current_epoch:        0,
         bitmap_current:       [0; 64],
         bitmap_previous:      [0; 64],
+        hash_key:             [0; 32],
+        keyed:                false,
     };
+    reg.keyed = core::csprng_fill(reg.hash_key[..]);
+    return reg;
 }
 
-// Internal k=4 bit hash computation over ticket identifier / nonce.
-inline fn strike_reg_hash_bit(data: const u8[:], seed: u32) -> u32 {
-    var h: u32 = 0x811c9dc5 ^ seed;
-    for b in data {
-        h = (h ^ b) * 16777619;
+// Computes k=4 independent 12-bit Bloom indices via per-instance keyed HMAC-SHA256
+// to prevent algorithmic complexity saturation attacks (RFC 8446 Section 8.2).
+inline fn strike_reg_hash_bits(hash_key: const u8[32]&, data: const u8[:]) -> u32[4] {
+    let mac = core::hmac_sha256(hash_key[..], data);
+    var bits: u32[4] = [0; 4];
+    for i in 4 {
+        let off = core::add_sat_i64(i, i);
+        bits[i] = (core::read_be_u16(mac[..], off) as u32) & 4095;
     }
-    return h & 4095;
+    return bits;
 }
 
 // Rotates epoch bitmaps when epoch_window_ms has elapsed.
@@ -627,9 +643,9 @@ fn strike_register_rotate(reg: ZeroRttStrikeRegister&, now_ms: i64) {
     }
 }
 
-fn strike_register_insert_bits(bitmap: u64[64]&, ticket_id: const u8[:], seeds: const u32[4]&) {
+fn strike_register_insert_bits(bitmap: u64[64]&, bits: const u32[4]&) {
     for i in 4 {
-        let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
+        let bit = bits[i];
         let word_idx = ((bit >> 6) & 63) as i64;
         let bit_mask: u64 = (1 as u64) << (bit & 63);
         bitmap[word_idx] |= bit_mask;
@@ -637,23 +653,25 @@ fn strike_register_insert_bits(bitmap: u64[64]&, ticket_id: const u8[:], seeds: 
 }
 
 // Checks if ticket_id was already accepted; if not, registers it and returns true.
-// Returns false on replay detection, invalid arguments, or backward clock skew.
+// Returns false on replay detection, invalid arguments, CSPRNG failure, or backward clock skew.
 fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: const u8[:], now_ms: i64) -> bool {
-    guard now_ms >= 0 else { return false; }
-    guard ticket_id.len > 0 else { return false; }
-    guard reg.epoch_window_ms > 0 else { return false; }
+    guard now_ms >= 0 && ticket_id.len > 0 && reg.epoch_window_ms > 0 else { return false; }
+    if !reg.keyed {
+        guard core::csprng_fill(reg.hash_key[..]) else { return false; }
+        reg.keyed = true;
+    }
 
     let epoch = now_ms / reg.epoch_window_ms;
     guard epoch >= reg.current_epoch - 1 else { return false; }
 
     strike_register_rotate(reg, now_ms);
 
-    let seeds: u32[4] = [0x12345678, 0x87654321, 0xdeadbeef, 0xcafebabe];
+    let bits = strike_reg_hash_bits(reg.hash_key, ticket_id);
     var in_current = true;
     var in_previous = true;
 
     for i in 4 {
-        let bit = strike_reg_hash_bit(ticket_id, seeds[i]);
+        let bit = bits[i];
         let word_idx = ((bit >> 6) & 63) as i64;
         let bit_mask: u64 = (1 as u64) << (bit & 63);
 
@@ -665,16 +683,14 @@ fn strike_register_check_and_insert(reg: ZeroRttStrikeRegister&, ticket_id: cons
         }
     }
 
-    // Replay detected if present in either current or previous window
     if in_current || in_previous {
         return false;
     }
 
-    // Insert into current bitmap (and previous bitmap when in previous epoch) so rotation does not evict early
     if epoch == reg.current_epoch - 1 {
-        strike_register_insert_bits(reg.bitmap_previous, ticket_id, seeds);
+        strike_register_insert_bits(reg.bitmap_previous, bits);
     }
-    strike_register_insert_bits(reg.bitmap_current, ticket_id, seeds);
+    strike_register_insert_bits(reg.bitmap_current, bits);
 
     return true;
 }

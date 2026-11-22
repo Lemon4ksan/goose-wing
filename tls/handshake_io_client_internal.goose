@@ -34,6 +34,7 @@ import net.transport;
 import .handshake_wire_internal;
 import .session_slot_internal;
 import .session_wire_internal;
+import security.hpke;
 
 fn parse_server_cert_chain_tail(
     chain_slices:  const (const u8[:])[..64]&,
@@ -90,14 +91,13 @@ fn verify_server_chain_and_san(
     config:        const tls::ClientHandshakeConfig&,
 ) -> bool {
     guard !config.insecure_skip_verify else { return true; }
+    // RFC 6125 / RFC 8446 Section 4.4.2: Require explicit target server_name when verifying certificates.
+    guard config.server_name.len > 0 else { return false; }
     let eff_clock = if config.virtual_clock_sec > 0 { config.virtual_clock_sec } else { core::now().wall_sec };
     guard verify_chain_ocsp_and_crl(chain_parsed, verify_slices, leaf_ocsp, config, eff_clock) else {
         return false;
     }
-    if config.server_name.len > 0 {
-        guard tls::match_cert_san_host(leaf_cert, verify_slices[0], config.server_name[..]) else { return false; }
-    }
-    return true;
+    return tls::match_cert_san_host(leaf_cert, verify_slices[0], config.server_name[..]);
 }
 
 // Validates server Certificate and CertificateVerify against trust anchor store and transcript (RFC 8446 §4.4).
@@ -218,6 +218,7 @@ fn tls_client_recv_ee<B>(
     client_hs_iv:  const u8[12]&,
     transcript:    tls::Transcript&,
     config:        const tls::ClientHandshakeConfig&,
+    ech_state:     EchClientState&,
     out_alpn:      B&,
 ) -> bool {
     var msg_ee:  u8          = 0;
@@ -232,18 +233,35 @@ fn tls_client_recv_ee<B>(
         send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.UnexpectedMessage);
         return false;
     }
-    let sni_state = if validate_sni_host_bytes(config.server_name[..]) {
+    let active_sni = if ech_state.active && ech_state.fsm.mode != tls::EchHandshakeMode.Accepted {
+        ech_state.cfg.public_name[..]
+    } else {
+        config.server_name[..]
+    };
+    let sni_state = if validate_sni_host_bytes(active_sni) {
         tls::SniOfferState.Offered
     } else {
         tls::SniOfferState.Omitted
     };
+    let allow_ech_retry = ech_state.active && ech_state.fsm.mode == tls::EchHandshakeMode.Bypassed;
     guard parse_encrypted_extensions_alpn(
-        ee_body[..], out_alpn, config.alpn[..], sni_state, config.ech_config_list.len > 0,
+        ee_body[..], out_alpn, config.alpn[..], sni_state, allow_ech_retry,
     ) else {
         send_hs_fatal_alert(
             fd, cipher_suite, client_hs_key, client_hs_iv, classify_ee_failure_alert(ee_body[..]),
         );
         return false;
+    }
+    if ech_state.active {
+        var entries: tls::ExtensionEntry[..32] = [];
+        guard tls::parse_extensions_block(ee_body[..], entries) else { return false; }
+        let ech_ext_data, has_ech_ext = tls::find_extension(entries, rfc::EXT_ENCRYPTED_CLIENT_HELLO);
+        guard tls::ech_fsm_on_encrypted_extensions(
+            ech_state.fsm, has_ech_ext, ech_ext_data, ech_state.retry_configs,
+        ) else {
+            send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.UnsupportedExtension);
+            return false;
+        }
     }
     transcript_update_msg(transcript, msg_ee, ee_body[..]);
     return true;
@@ -397,6 +415,7 @@ fn tls_client_process_server_flight<B>(
     ks:                    const KeySchedule&,
     transcript:            tls::Transcript&,
     config:                const tls::ClientHandshakeConfig&,
+    ech_state:             EchClientState&,
     psk_resumed:           bool,
     out_alpn:              B&,
     out_cert_req_received: bool&,
@@ -407,21 +426,31 @@ fn tls_client_process_server_flight<B>(
     out_cert_req.context.clear();
     guard tls_client_recv_ee(
         hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv,
-        client_hs_key, client_hs_iv, transcript, config, out_alpn,
+        client_hs_key, client_hs_iv, transcript, config, ech_state, out_alpn,
     ) else { return false; }
 
+    var verify_cfg = config;
+    if ech_state.active && ech_state.fsm.mode != tls::EchHandshakeMode.Accepted {
+        guard verify_cfg.server_name.try_set(ech_state.cfg.public_name[..]) else { return false; }
+    }
     if !psk_resumed {
         guard tls_client_recv_server_cert_and_cv(
             hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv,
-            client_hs_key, client_hs_iv, ks, transcript, config,
+            client_hs_key, client_hs_iv, ks, transcript, verify_cfg,
             out_cert_req_received, out_cert_req, slot_idx,
         ) else { return false; }
     }
 
-    return tls_client_recv_server_finished(
+    guard tls_client_recv_server_finished(
         hs_reader, fd, cipher_suite, server_hs_key, server_hs_iv,
         client_hs_key, client_hs_iv, ks, transcript, config.handshake_timeout_ms,
-    );
+    ) else { return false; }
+    // RFC 9849 Section 6.1.6: Abort with ech_required if ECH was offered and rejected by server.
+    if ech_state.active && ech_state.fsm.mode != tls::EchHandshakeMode.Accepted {
+        send_hs_fatal_alert(fd, cipher_suite, client_hs_key, client_hs_iv, tls::Alert.EchRequired);
+        return false;
+    }
+    return true;
 }
 
 fn tls_client_send_client_cert(
@@ -592,32 +621,180 @@ fn patch_client_hello_psk_binder<B>(ch_msg: B&, psk_secret: const u8[:], psk_sui
     ch_msg.append(binder[..]);
 }
 
-fn prepare_ech_outer_extension(config: const tls::ClientHandshakeConfig&, out: u8[..512]&) {
-    let ech_config_list = config.ech_config_list[..];
-    guard ech_config_list.len > 0 else { return; }
+// Locates the ciphertext payload offset of `encrypted_client_hello` inside a ClientHelloOuter body.
+//
+// Example:
+//   ch_payload = [0x03, 0x03, ...extensions containing 0xFE0D...], ct_len = 160
+//   returns: offset to payload[0..160], ok = true
+fn find_ch_outer_ech_payload_offset(ch_payload: const u8[:], ct_len: i64) -> i64, bool {
+    var c = core::cursor_from(ch_payload);
+    let _, ok_v = c.read_u16();
+    let _, ok_r = c.read_bytes(32);
+    let _, ok_s = c.read_u8_prefixed();
+    let _, ok_cs = c.read_u16_prefixed();
+    let _, ok_cm = c.read_u8_prefixed();
+    guard ok_v && ok_r && ok_s && ok_cs && ok_cm else { return 0, false; }
+    var exts, ok_e = c.read_u16_sub_cursor();
+    guard ok_e && c.buf.len == 0 else { return 0, false; }
+
+    var ext_base = core::sub_sat_i64(ch_payload.len, exts.buf.len);
+    while exts.buf.len > 0 {
+        let et, ok_t = exts.read_u16();
+        let data, ok_d = exts.read_u16_prefixed();
+        guard ok_t && ok_d else { return 0, false; }
+        let data_off = core::add_sat_i64(ext_base, 4);
+        if et == rfc::EXT_ENCRYPTED_CLIENT_HELLO {
+            var ec = core::cursor_from(data);
+            let _, ok_hdr = ec.read_bytes(6);
+            let enc, ok_enc = ec.read_u16_prefixed();
+            let pay, ok_pay = ec.read_u16_prefixed();
+            guard ok_hdr && ok_enc && ok_pay && ec.buf.len == 0 && pay.len == ct_len else {
+                return 0, false;
+            }
+            let pay_off = core::add_sat_i64(data_off, core::add_sat_i64(10, enc.len));
+            guard core::add_sat_i64(pay_off, ct_len) <= ch_payload.len else { return 0, false; }
+            return pay_off, true;
+        }
+        ext_base = core::add_sat_i64(data_off, data.len);
+    }
+    return 0, false;
+}
+
+fn init_ech_sender_state(
+    config:    const tls::ClientHandshakeConfig&,
+    ech_state: EchClientState&,
+    out_enc:   u8[32]&,
+) -> bool {
     var ech_list = tls::EchConfigList { .. };
-    guard tls::parse_ech_config_list(ech_config_list, ech_list) else { return; }
-    var ech_cfg = tls::EchConfig { .. };
-    var ech_cs = tls::EchCipherSuite { .. };
-    guard tls::select_ech_config(ech_list, ech_cfg, ech_cs) else { return; }
-    let inner_random = random_bytes_32();
+    guard tls::parse_ech_config_list(config.ech_config_list[..], ech_list) else { return false; }
+    guard tls::select_ech_config(ech_list, ech_state.cfg, ech_state.cs) else { return false; }
+    var eph_sk: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(eph_sk);
+    guard random_bytes_32_checked(ech_state.inner_random) && random_bytes_32_checked(eph_sk) else {
+        return false;
+    }
+    var info: u8[..2064] = [];
+    info.append("tls ech");
+    info.push(0x00);
+    guard info.try_append(ech_state.cfg.raw_bytes[..]) else { return false; }
+    guard security::hpke_setup_base_s(
+        ech_state.cfg.public_key, info[..], ech_state.cfg.kem_id,
+        ech_state.cs.kdf_id, ech_state.cs.aead_id, eph_sk, out_enc, ech_state.hpke_ctx,
+    ) else { return false; }
+    ech_state.active = true;
+    ech_state.fsm = tls::EchFsm {
+        mode:              tls::EchHandshakeMode.Offered,
+        has_hrr:           false,
+        offered_config_id: ech_state.cfg.config_id,
+    };
+    return true;
+}
+
+// Builds RFC 9849 ClientHelloOuter sealed with ClientHelloOuterAAD (zeroed payload bytes)
+// and records ClientHelloInner into `ech_state.inner_tr`. Fails closed on any ECH error.
+fn build_ech_sealed_client_hello(
+    config:        const tls::ClientHandshakeConfig&,
+    client_random: const u8[32]&,
+    client_pub:    const u8[32]&,
+    enable_pq:     bool,
+    pq_pub:        const u8[:],
+    hrr_cookie:    const u8[:],
+    nist_pub:      const u8[:],
+    is_hrr_ch2:    bool,
+    ech_state:     EchClientState&,
+    out_ch_msg:    u8[..4096]&,
+) -> bool {
+    var ech_enc: u8[32] = [0; 32];
+    if !is_hrr_ch2 {
+        guard init_ech_sender_state(config, ech_state, ech_enc) else { return false; }
+    }
     let outer_exts: u16[3] = [
         rfc::TLS_EXT_SUPPORTED_GROUPS,
         rfc::TLS_EXT_SIGNATURE_ALGORITHMS,
         rfc::TLS_EXT_KEY_SHARE,
     ];
-    let inner_sni = if config.server_name.len > 0 { config.server_name[..] } else { ech_cfg.public_name[..] };
-    var inner_padded: u8[..384] = [];
+    let inner_sni = if config.server_name.len > 0 { config.server_name[..] } else { ech_state.cfg.public_name[..] };
+    var inner_padded: u8[..512] = [];
+    defer core::secure_zeroize_slice(inner_padded[..]);
     guard build_encoded_client_hello_inner(
-        inner_padded, inner_random, inner_sni, "h2", outer_exts[..], ech_cfg.maximum_name_length,
-    ) else { return; }
-    var eph_sk = random_bytes_32();
-    defer core::secure_zeroize_32(eph_sk);
-    var ech_enc: u8[32]    = [0; 32];
-    var ech_ct:  u8[..448] = [];
-    let outer_aad = ech_cfg.public_name[..];
-    guard tls::seal_ech_inner(ech_cfg, ech_cs, outer_aad, inner_padded[..], eph_sk, ech_enc, ech_ct) else { return; }
-    build_ech_outer_extension(ech_cfg.config_id, ech_cs, ech_enc, ech_ct[..], out);
+        inner_padded, ech_state.inner_random, inner_sni, config.alpn[..],
+        outer_exts[..], ech_state.cfg.maximum_name_length,
+    ) else { return false; }
+
+    var ch_inner_pay: u8[..4096] = [];
+    let inner_ech_ext: u8[1] = [rfc::ECH_CLIENT_INNER];
+    build_client_hello_payload(
+        ech_state.inner_random, client_pub, inner_sni, config.alpn[..],
+        ch_inner_pay, "", 0, enable_pq, pq_pub, inner_ech_ext[..],
+        hrr_cookie, config.client_cert_der.len > 0, 32, nist_pub,
+    );
+    guard frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch_inner_pay[..], ech_state.ch_inner_msg) else {
+        return false;
+    }
+    transcript_update(ech_state.inner_tr, ech_state.ch_inner_msg[..]);
+
+    let ct_len = core::add_sat_i64(inner_padded.len, 16);
+    var zero_ct: u8[..544] = [];
+    guard ct_len <= zero_ct.cap else { return false; }
+    zero_ct.resize(ct_len, 0);
+    var placeholder_ext: u8[..640] = [];
+    guard build_ech_outer_extension(
+        ech_state.cfg.config_id, ech_state.cs, ech_enc, zero_ct[..], placeholder_ext, !is_hrr_ch2,
+    ) else { return false; }
+
+    // RFC 9849 Section 5.2: Outer SNI MUST be public_name (never secret target server_name).
+    var ch_outer_pay: u8[..4096] = [];
+    build_client_hello_payload(
+        client_random, client_pub, ech_state.cfg.public_name[..], config.alpn[..],
+        ch_outer_pay, "", 0, enable_pq, pq_pub, placeholder_ext[..],
+        hrr_cookie, config.client_cert_der.len > 0, 32, nist_pub,
+    );
+    let pay_off, ok_off = find_ch_outer_ech_payload_offset(ch_outer_pay[..], ct_len);
+    guard ok_off else { return false; }
+
+    var ech_ct: u8[..544] = [];
+    guard security::hpke_seal(ech_state.hpke_ctx, ch_outer_pay[..], inner_padded[..], ech_ct) &&
+        ech_ct.len == ct_len else { return false; }
+    core::ct_copy_bytes(ch_outer_pay[pay_off..core::add_sat_i64(pay_off, ct_len)], ech_ct[..]);
+    return frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch_outer_pay[..], out_ch_msg);
+}
+
+fn verify_ech_server_hello_acceptance(
+    ech_state:  EchClientState&,
+    sh:         const tls::ParsedServerHello&,
+    sh_msg:     const u8[:],
+    transcript: tls::Transcript&,
+) -> bool {
+    guard ech_state.active else {
+        transcript_update(transcript, sh_msg);
+        return true;
+    }
+    guard sh_msg.len >= rfc::ECH_SH_MIN_HEADER_LEN else { return false; }
+    let hash_id: u8 = if sh.cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
+        HASH_SHA384
+    } else {
+        HASH_SHA256
+    };
+    let expected_confirm, ok_c = compute_ech_confirm_from_transcript(
+        ech_state.inner_random, ech_state.inner_tr, sh_msg, false, hash_id,
+    );
+    guard ok_c && ech_fsm_on_server_hello(
+        ech_state.fsm, tls::EchServerHelloType.ServerHello, sh.has_ech_ext,
+        sh_msg[rfc::ECH_SH_CONFIRM_START..rfc::ECH_SH_MIN_HEADER_LEN],
+        expected_confirm, ech_state.retry_configs,
+    ) else { return false; }
+    if ech_state.fsm.mode == tls::EchHandshakeMode.Accepted {
+        transcript = ech_state.inner_tr;
+    }
+    transcript_update(transcript, sh_msg);
+    return true;
+}
+
+inline fn is_group_offered_in_client_hello(selected_group: u16, offered_group: u16, offered_pq: bool) -> bool {
+    if selected_group == rfc::GROUP_X25519_MLKEM768 {
+        return offered_pq;
+    }
+    return selected_group != 0 && selected_group == offered_group;
 }
 
 fn regenerate_client_hrr_keyshare(
@@ -629,45 +806,48 @@ fn regenerate_client_hrr_keyshare(
     pq_pub:         u8[1184]&,
     out_p384_priv:  u8[48]&,
     out_nist_pub:   u8[..97]&,
-) -> bool, bool {
+) -> bool, u16, bool {
     out_nist_pub.clear();
-    guard selected_group != 0 else { return enable_pq_cfg, true; }
+    guard selected_group != 0 else { return enable_pq_cfg, rfc::GROUP_X25519, true; }
     if selected_group == rfc::GROUP_X25519 {
-        client_priv = random_bytes_32();
+        guard random_bytes_32_checked(client_priv) else { return false, 0, false; }
         client_pub = core::x25519_base_scalarmult(client_priv);
-        return false, true;
+        return false, rfc::GROUP_X25519, true;
     }
     if selected_group == rfc::GROUP_SECP256R1 {
-        client_priv = random_bytes_32();
+        guard random_bytes_32_checked(client_priv) else { return false, 0, false; }
         let pub65 = core::ecdsa_p256_public_key(client_priv);
-        guard out_nist_pub.try_set(pub65[..]) else { return false, false; }
-        return false, true;
+        guard out_nist_pub.try_set(pub65[..]) else { return false, 0, false; }
+        return false, rfc::GROUP_SECP256R1, true;
     }
     if selected_group == rfc::GROUP_SECP384R1 {
-        var r1 = random_bytes_32();
-        var r2 = random_bytes_32();
+        var r1: u8[32] = [0; 32];
+        var r2: u8[32] = [0; 32];
         defer core::secure_zeroize_32(r1);
         defer core::secure_zeroize_32(r2);
+        guard random_bytes_32_checked(r1) && random_bytes_32_checked(r2) else { return false, 0, false; }
         core::ct_copy_bytes(out_p384_priv[0..32], r1[..]);
         core::ct_copy_bytes(out_p384_priv[32..48], r2[0..16]);
         let pub97, ok_p384 = core::p384_ecdh_public_key(out_p384_priv);
-        guard ok_p384 && out_nist_pub.try_set(pub97[..]) else { return false, false; }
-        return false, true;
+        guard ok_p384 && out_nist_pub.try_set(pub97[..]) else { return false, 0, false; }
+        return false, rfc::GROUP_SECP384R1, true;
     }
     guard enable_pq_cfg && selected_group == rfc::GROUP_X25519_MLKEM768 else {
-        return false, false;
+        return false, 0, false;
     }
-    client_priv = random_bytes_32();
-    client_pub = core::x25519_base_scalarmult(client_priv);
-    var pq_d = random_bytes_32();
-    var pq_z = random_bytes_32();
+    var pq_d: u8[32] = [0; 32];
+    var pq_z: u8[32] = [0; 32];
     defer core::secure_zeroize_32(pq_d);
     defer core::secure_zeroize_32(pq_z);
+    guard random_bytes_32_checked(client_priv) &&
+        random_bytes_32_checked(pq_d) &&
+        random_bytes_32_checked(pq_z) else { return false, 0, false; }
+    client_pub = core::x25519_base_scalarmult(client_priv);
     var ek, dk = tls_internal::mlkem768_keygen(pq_d, pq_z);
     defer core::secure_zeroize_slice(dk[..]);
     pq_priv = dk;
     pq_pub = ek;
-    return true, true;
+    return true, rfc::GROUP_X25519, true;
 }
 
 fn recv_and_validate_hrr_sh2(
@@ -676,6 +856,9 @@ fn recv_and_validate_hrr_sh2(
     client_random: const u8[32]&,
     hrr_cipher:    u16,
     hrr_group:     u16,
+    offered_group: u16,
+    offered_pq:    bool,
+    ech_state:     EchClientState&,
     transcript:    tls::Transcript&,
     sh:            tls::ParsedServerHello&,
 ) -> bool {
@@ -689,29 +872,39 @@ fn recv_and_validate_hrr_sh2(
         send_plaintext_fatal_alert(fd, tls::Alert.UnexpectedMessage);
         return false;
     }
+    let group_ok = if hrr_group != 0 {
+        sh.selected_group == hrr_group
+    } else {
+        is_group_offered_in_client_hello(sh.selected_group, offered_group, offered_pq)
+    };
     guard validate_live_client_sh(sh, client_random) &&
         validate_hrr_cipher_suite(hrr_cipher, sh.cipher_suite) &&
-        (hrr_group == 0 || sh.selected_group == hrr_group) else {
+        group_ok else {
         send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
         return false;
     }
-    transcript_update(transcript, sh2_msg[..]);
+    guard verify_ech_server_hello_acceptance(ech_state, sh, sh2_msg[..], transcript) else {
+        send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
+        return false;
+    }
     return true;
 }
 
 fn handle_client_hrr_transition(
-    fd:            i64,
-    config:        const tls::ClientHandshakeConfig&,
-    client_random: const u8[32]&,
-    client_priv:   u8[32]&,
-    client_pub:    u8[32]&,
-    p384_priv:     u8[48]&,
-    pq_priv:       u8[2400]&,
-    pq_pub:        u8[1184]&,
-    ech_ext_raw:   const u8[:],
-    transcript:    tls::Transcript&,
-    hrr_raw_msg:   const u8[:],
-    sh:            tls::ParsedServerHello&,
+    fd:                i64,
+    config:            const tls::ClientHandshakeConfig&,
+    client_random:     const u8[32]&,
+    client_priv:       u8[32]&,
+    client_pub:        u8[32]&,
+    p384_priv:         u8[48]&,
+    pq_priv:           u8[2400]&,
+    pq_pub:            u8[1184]&,
+    ech_state:         EchClientState&,
+    transcript:        tls::Transcript&,
+    hrr_raw_msg:       const u8[:],
+    sh:                tls::ParsedServerHello&,
+    out_offered_group: u16&,
+    out_offered_pq:    bool&,
 ) -> bool {
     guard validate_live_client_sh(sh, client_random) else {
         send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
@@ -719,12 +912,11 @@ fn handle_client_hrr_transition(
     }
     let hrr_cipher = sh.cipher_suite;
     let hrr_group = sh.selected_group;
-    let has_group = hrr_group != 0;
-    guard has_group || sh.hrr_cookie.len > 0 else {
+    guard hrr_group != 0 || sh.hrr_cookie.len > 0 else {
         send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
         return false;
     }
-    if has_group {
+    if hrr_group != 0 {
         let all_groups: u16[4] = [
             rfc::GROUP_X25519_MLKEM768,
             rfc::GROUP_X25519,
@@ -740,10 +932,12 @@ fn handle_client_hrr_transition(
     }
 
     var nist_pub: u8[..97] = [];
-    let enable_pq_ch2, ok_regen = regenerate_client_hrr_keyshare(
+    let enable_pq_ch2, ch2_group, ok_regen = regenerate_client_hrr_keyshare(
         hrr_group, config.enable_pq_hybrid, client_priv, client_pub, pq_priv, pq_pub, p384_priv, nist_pub,
     );
     guard ok_regen else { return false; }
+    out_offered_group = ch2_group;
+    out_offered_pq = enable_pq_ch2;
 
     // RFC 8446 Section 4.4.1: The Transcript Hash - Replace CH1 with synthetic message_hash before appending HRR.
     var ks_hrr, ok_kshr = tls_internal::ks_init(hrr_cipher);
@@ -752,19 +946,43 @@ fn handle_client_hrr_transition(
     }
     transcript_update(transcript, hrr_raw_msg);
 
-    var ch2_payload: u8[..4096] = [];
-    build_client_hello_payload(
-        client_random, client_pub, config.server_name[..], config.alpn[..],
-        ch2_payload, "", 0,
-        enable_pq_ch2, if enable_pq_ch2 { pq_pub[..] } else { "" },
-        ech_ext_raw, sh.hrr_cookie[..], config.client_cert_der.len > 0, 32, nist_pub[..],
-    );
     var ch2_msg: u8[..4096] = [];
-    guard frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch2_payload[..], ch2_msg) else {
-        return false;
+    if ech_state.active {
+        let exp_hrr, ok_hc = compute_ech_confirm_from_transcript(
+            ech_state.inner_random, ech_state.inner_tr, hrr_raw_msg, true, ks_hrr.hash_id,
+        );
+        guard ok_hc && ech_fsm_on_server_hello(
+            ech_state.fsm, tls::EchServerHelloType.HelloRetryRequest,
+            sh.has_ech_ext, sh.ech_ext_data[..], exp_hrr, ech_state.retry_configs,
+        ) else {
+            send_plaintext_fatal_alert(fd, tls::Alert.IllegalParameter);
+            return false;
+        }
+        guard transcript_replace_with_message_hash(ech_state.inner_tr, ks_hrr.hash_id, ks_hrr.hash_len) else {
+            return false;
+        }
+        transcript_update(ech_state.inner_tr, hrr_raw_msg);
+        guard build_ech_sealed_client_hello(
+            config, client_random, client_pub, enable_pq_ch2,
+            if enable_pq_ch2 { pq_pub[..] } else { "" }, sh.hrr_cookie[..],
+            nist_pub[..], true, ech_state, ch2_msg,
+        ) else { return false; }
+    } else {
+        var ch2_payload: u8[..4096] = [];
+        build_client_hello_payload(
+            client_random, client_pub, config.server_name[..], config.alpn[..],
+            ch2_payload, "", 0,
+            enable_pq_ch2, if enable_pq_ch2 { pq_pub[..] } else { "" },
+            "", sh.hrr_cookie[..], config.client_cert_der.len > 0, 32, nist_pub[..],
+        );
+        guard frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch2_payload[..], ch2_msg) else {
+            return false;
+        }
     }
 
     guard send_plaintext_handshake_record(fd, ch2_msg[..], rfc::TLS_LEGACY_VERSION_1_2) else { return false; }
     transcript_update(transcript, ch2_msg[..]);
-    return recv_and_validate_hrr_sh2(fd, config, client_random, hrr_cipher, hrr_group, transcript, sh);
+    return recv_and_validate_hrr_sh2(
+        fd, config, client_random, hrr_cipher, hrr_group, ch2_group, enable_pq_ch2, ech_state, transcript, sh,
+    );
 }

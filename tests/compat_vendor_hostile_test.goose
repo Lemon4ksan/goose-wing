@@ -433,9 +433,9 @@ fn test_vendor_tls13_keyupdate_and_unknown_psk(t: lit::T&) {
         sub.assert_true(ok_unknown, "unknown PSK identity does not abort ClientHello");
         sub.assert_false(resumed, "unknown PSK identity falls back to full 1-RTT handshake");
 
-        // Register "expired-ticket-id" with a DIFFERENT secret so binder verification fails
+        // Register "expired-ticket-id" in server ticket table with a DIFFERENT secret so binder verification fails
         let server_psk: u8[32] = [0x77; 32];
-        tls::store_session_ticket(
+        tls_internal::store_server_session_ticket(
             "api.example.com", "expired-ticket-id", server_psk[..], 0, 3600, rfc::TLS_CIPHER_AES_128_GCM_SHA256,
         );
         let ok_forged = tls_internal::parse_client_hello_for_server(

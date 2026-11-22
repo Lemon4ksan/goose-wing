@@ -74,6 +74,7 @@ fn alert_name(a: tls::Alert) -> const u8[:] {
         UnknownPskIdentity => "UnknownPskIdentity",
         CertificateRequired => "CertificateRequired",
         NoApplicationProtocol => "NoApplicationProtocol",
+        EchRequired => "EchRequired",
     };
 }
 

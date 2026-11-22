@@ -177,14 +177,15 @@ const STEK_TICKET_PLAINTEXT_LEN: i64 = 63; // 1B psk_len + 48B psk + 2B suite + 
 const STEK_TICKET_WIRE_LEN:      i64 = 95; // 4B key_name + 12B iv + 63B ciphertext + 16B tag
 
 struct CachedSessionTicket {
-    in_use:       bool       = false,
-    server_name:  u8[..256]  = [],
-    ticket:       u8[..1536] = [],
-    psk:          u8[..48]   = [],
-    age_add:      u32        = 0,
-    lifetime:     u32        = 0,
-    cipher_suite: u16        = 0,
-    issued_at_ms: i64        = 0,
+    in_use:               bool       = false,
+    client_authenticated: bool       = false,
+    server_name:          u8[..256]  = [],
+    ticket:               u8[..1536] = [],
+    psk:                  u8[..48]   = [],
+    age_add:              u32        = 0,
+    lifetime:             u32        = 0,
+    cipher_suite:         u16        = 0,
+    issued_at_ms:         i64        = 0,
 }
 
 struct TicketStek {
@@ -318,6 +319,8 @@ struct ParsedServerHello {
     hrr_cookie:      u8[..256]  = [],
     psk_resumed:     bool       = false,
     session_id_echo: u8[..32]   = [],
+    has_ech_ext:     bool       = false,
+    ech_ext_data:    u8[..16]   = [],
 }
 
 struct NewSessionTicketMsg {
@@ -402,6 +405,7 @@ struct CipherSlot {
     resumption_secret:      u8[48]             = [0; 48],
     peer_closed:            bool               = false,
     resumed:                bool               = false,
+    client_authenticated:   bool               = false,
     enable_session_tickets: bool               = true,
     negotiated_alpn:        u8[..255]          = [],
     server_name:            u8[..256]          = [],
@@ -505,6 +509,7 @@ struct TlsBackendConfig {
     cert_der:               u8[..4096]       = [],
     priv_seed:              u8[32]           = [0; 32],
     trust_store:            TrustAnchorStore = TrustAnchorStore { .. },
+    require_client_cert:    bool             = false,
     enable_pq_hybrid:       bool             = false,
     enable_session_tickets: bool             = true,
     require_ocsp_stapling:  bool             = false,

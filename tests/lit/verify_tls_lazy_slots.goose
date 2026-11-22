@@ -63,7 +63,7 @@ fn test_zero_startup_and_oob_rejection() {
     assert(tls::transport_recv_slice(1, 0xFFFF, rx_buf[..], 10) == -1);
     assert(!tls::send_key_update(1, 0, 0));
     assert(!tls::send_new_session_ticket(1, 0, 60, "n", "t"));
-    assert(tls_internal::dispatch_post_handshake_record(-1, 0, "\x18\x00\x00\x01\x00") != tls::Alert.CloseNotify);
+    assert(tls_internal::dispatch_post_handshake_record(0, "\x18\x00\x00\x01\x00") != tls::Alert.CloseNotify);
     assert(!tls_internal::process_received_nst(0, "1234"));
     assert(!tls_internal::process_received_nst(-1, "1234"));
     tls::transport_close(-1, 0);

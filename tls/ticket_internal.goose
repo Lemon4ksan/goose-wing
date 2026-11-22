@@ -9,7 +9,9 @@ import core;
 import .internal;
 import .types;
 
-var g_tls13_tickets: tls::CachedSessionTicket[16] = [tls::CachedSessionTicket { .. }; 16];
+var g_tls13_client_tickets: tls::CachedSessionTicket[16] = [tls::CachedSessionTicket { .. }; 16];
+
+var g_tls13_server_tickets: tls::CachedSessionTicket[16] = [tls::CachedSessionTicket { .. }; 16];
 
 fn select_matching_stek(ring: const tls::TicketKeyRing&, key_name: const u8[:]) -> tls::TicketStek, bool {
     var matched = tls::TicketStek { .. };
@@ -36,8 +38,8 @@ fn unpack_stateless_ticket_plaintext(
     let issued_ms = (issued_u64 & 0x7FFFFFFFFFFFFFFF) as i64;
     let lifetime = core::read_be_u32(pt, 59);
     let psk_len = pt[0] as i64;
-    guard (psk_len == 32 || psk_len == 48) &&
-        rfc::is_supported_tls13_cipher_suite(cs) &&
+    guard rfc::is_supported_tls13_cipher_suite(cs) &&
+        psk_len == rfc::tls13_cipher_suite_hash_len(cs) &&
         is_stateless_ticket_within_lifetime(issued_ms, now_ms, lifetime) else {
         return false;
     }
@@ -57,17 +59,19 @@ inline fn is_cached_ticket_fresh(entry: const tls::CachedSessionTicket&, now_ms:
 }
 
 inline fn populate_cached_ticket_slot(
-    slot:         tls::CachedSessionTicket&,
-    server_name:  const u8[:],
-    ticket:       const u8[:],
-    psk:          const u8[:],
-    age_add:      u32,
-    lifetime:     u32,
-    cipher_suite: u16,
-    stamp_ms:     i64,
+    slot:                 tls::CachedSessionTicket&,
+    server_name:          const u8[:],
+    ticket:               const u8[:],
+    psk:                  const u8[:],
+    age_add:              u32,
+    lifetime:             u32,
+    cipher_suite:         u16,
+    stamp_ms:             i64,
+    client_authenticated: bool = false,
 ) {
     core::secure_zeroize_slice(slot.psk[..]);
     slot.in_use = true;
+    slot.client_authenticated = client_authenticated;
     let _ = slot.server_name.try_set(server_name);
     let _ = slot.ticket.try_set(ticket);
     let _ = slot.psk.try_set(psk);
@@ -77,13 +81,59 @@ inline fn populate_cached_ticket_slot(
     slot.issued_at_ms = stamp_ms;
 }
 
-// Looks up a cached TLS 1.3 session ticket by opaque ticket identity bytes with
-// full PSK (32 or 48 bytes) and cipher suite.
-fn lookup_ticket_by_identity_full(
-    ticket_id:        const u8[:],
-    out_psk:          u8[..48]&,
-    out_cipher_suite: u16&,
-    now_ms:           i64 = 0,
+// Stores a server-issued TLS 1.3 resumption ticket in the isolated server table with mTLS binding.
+fn store_server_session_ticket(
+    server_name:          const u8[:],
+    ticket:               const u8[:],
+    psk:                  const u8[:],
+    age_add:              u32,
+    lifetime:             u32,
+    cipher_suite:         u16  = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+    client_authenticated: bool = false,
+    issued_at_ms:         i64  = 0,
+) {
+    guard server_name.len > 0 && server_name.len <= 255 else { return; }
+    guard ticket.len > 0 && ticket.len <= 1536 &&
+        lifetime > 0 && lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else {
+        return;
+    }
+    guard rfc::is_supported_tls13_cipher_suite(cipher_suite) &&
+        psk.len == rfc::tls13_cipher_suite_hash_len(cipher_suite) else {
+        return;
+    }
+    let stamp_ms = if issued_at_ms > 0 { issued_at_ms } else { core::unix_milli(core::now()) };
+    native_tls_state_lock(TLS_LOCK_TICKET_CACHE);
+    defer native_tls_state_unlock(TLS_LOCK_TICKET_CACHE);
+    for &entry in g_tls13_server_tickets {
+        if entry.in_use && core::ct_eq_bytes(entry.ticket[..], ticket) {
+            populate_cached_ticket_slot(
+                entry, server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms, client_authenticated,
+            );
+            return;
+        }
+    }
+    for &entry in g_tls13_server_tickets {
+        if !entry.in_use {
+            populate_cached_ticket_slot(
+                entry, server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms, client_authenticated,
+            );
+            return;
+        }
+    }
+    populate_cached_ticket_slot(
+        g_tls13_server_tickets[0], server_name, ticket, psk, age_add,
+        lifetime, cipher_suite, stamp_ms, client_authenticated,
+    );
+}
+
+// Looks up a server-issued TLS 1.3 session ticket by opaque ticket identity bytes.
+// Enforces server-only table isolation, cipher-suite hash-length match, and mTLS authentication binding.
+fn lookup_server_ticket_by_identity(
+    ticket_id:           const u8[:],
+    require_client_cert: bool,
+    out_psk:             u8[..48]&,
+    out_cipher_suite:    u16&,
+    now_ms:              i64 = 0,
 ) -> bool {
     var committed = false;
     defer if !committed {
@@ -95,14 +145,64 @@ fn lookup_ticket_by_identity_full(
     let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
     native_tls_state_lock(TLS_LOCK_TICKET_CACHE);
     defer native_tls_state_unlock(TLS_LOCK_TICKET_CACHE);
-    for &entry in g_tls13_tickets {
+    for &entry in g_tls13_server_tickets {
         if entry.in_use && core::ct_eq_bytes(entry.ticket[..], ticket_id) {
+            let expected_hlen = rfc::tls13_cipher_suite_hash_len(entry.cipher_suite) as i64;
             guard is_cached_ticket_fresh(entry, cur_ms) &&
-                out_psk.try_set(entry.psk[..]) else { continue; }
+                (!require_client_cert || entry.client_authenticated) &&
+                entry.psk.len == expected_hlen &&
+                out_psk.try_set(entry.psk[..]) else {
+                continue;
+            }
             out_cipher_suite = entry.cipher_suite;
             committed = true;
             return true;
         }
+    }
+    return false;
+}
+
+// Computes RFC 8446 Section 4.2.11.1 obfuscated_ticket_age = ((now_ms - issued_at_ms) + age_add) mod 2^32.
+inline fn compute_obfuscated_ticket_age(cur_ms: i64, issued_at_ms: i64, age_add: u32) -> u32 {
+    let elapsed_ms = core::sub_sat_i64(cur_ms, issued_at_ms);
+    let elapsed_u64 = (if elapsed_ms > 0 { elapsed_ms } else { 0 }) as u64;
+    let sum = core::add_sat_u64(elapsed_u64 & 0xFFFFFFFF, age_add as u64);
+    return (sum & 0xFFFFFFFF) as u32;
+}
+
+// Looks up a client-cached TLS 1.3 session ticket and computes RFC 8446 Section 4.2.11.1
+// obfuscated_ticket_age = ((now_ms - issued_at_ms) + ticket_age_add) mod 2^32.
+fn lookup_client_ticket_for_ch<B>(
+    server_name:        const u8[:],
+    out_ticket:         B&,
+    out_psk:            u8[..48]&,
+    out_obfuscated_age: u32&,
+    out_cipher_suite:   u16&,
+    now_ms:             i64 = 0,
+) -> bool {
+    var committed = false;
+    defer if !committed {
+        out_ticket.clear();
+        core::secure_zeroize_slice(out_psk[..]);
+        out_psk.clear();
+        out_obfuscated_age = 0;
+        out_cipher_suite = 0;
+    };
+    guard server_name.len > 0 else { return false; }
+    let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
+    native_tls_state_lock(TLS_LOCK_TICKET_CACHE);
+    defer native_tls_state_unlock(TLS_LOCK_TICKET_CACHE);
+    for &entry in g_tls13_client_tickets {
+        guard entry.in_use && entry.server_name[..] == server_name else { continue; }
+        guard is_cached_ticket_fresh(entry, cur_ms) &&
+            out_ticket.try_set(entry.ticket[..]) &&
+            out_psk.try_set(entry.psk[..]) else {
+            continue;
+        }
+        out_obfuscated_age = compute_obfuscated_ticket_age(cur_ms, entry.issued_at_ms, entry.age_add);
+        out_cipher_suite = entry.cipher_suite;
+        committed = true;
+        return true;
     }
     return false;
 }

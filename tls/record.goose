@@ -38,6 +38,7 @@ enum Alert {
     UnknownPskIdentity,
     CertificateRequired,
     NoApplicationProtocol,
+    EchRequired,
 }
 
 checkfree inline fn alert_to_u8(alert: Alert) -> u8 {
@@ -69,6 +70,7 @@ checkfree inline fn alert_to_u8(alert: Alert) -> u8 {
         UnknownPskIdentity => rfc::TLS_ALERT_UNKNOWN_PSK_IDENTITY,
         CertificateRequired => rfc::TLS_ALERT_CERTIFICATE_REQUIRED,
         NoApplicationProtocol => rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL,
+        EchRequired => rfc::TLS_ALERT_ECH_REQUIRED,
     };
 }
 
@@ -101,6 +103,7 @@ checkfree fn u8_to_alert(code: u8) -> Alert, bool {
         rfc::TLS_ALERT_UNKNOWN_PSK_IDENTITY => Alert.UnknownPskIdentity,
         rfc::TLS_ALERT_CERTIFICATE_REQUIRED => Alert.CertificateRequired,
         rfc::TLS_ALERT_NO_APPLICATION_PROTOCOL => Alert.NoApplicationProtocol,
+        rfc::TLS_ALERT_ECH_REQUIRED => Alert.EchRequired,
         _ => Alert.DecodeError,
     };
     if alert == Alert.DecodeError && code != rfc::TLS_ALERT_DECODE_ERROR {

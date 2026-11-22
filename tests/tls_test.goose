@@ -4470,13 +4470,45 @@ fn test_live_tls_transport_session(t: lit::T&) {
         var srv_alpn:    u8[..32] = [];
         var srv_resumed: bool     = false;
         var srv_psk:     u8[32]   = [0; 32];
+        let ok_ch_client_only = tls_internal::parse_client_hello_for_server(
+            ch_msg[..], "h2,http/1.1", srv_sid, srv_cli_pub,
+            srv_alpn, srv_resumed, srv_psk,
+        );
+        sub.assert_true(ok_ch_client_only, "server parsed ClientHello when ticket is only in client cache");
+        sub.assert_false(srv_resumed, "server must not resume from client-only ticket cache (TLS-01)");
+
+        tls_internal::store_server_session_ticket(
+            "example.com", "ticket-id-01", psk[..], 0x11223344, 3600,
+            rfc::TLS_CIPHER_AES_128_GCM_SHA256, false,
+        );
         let ok_ch = tls_internal::parse_client_hello_for_server(
             ch_msg[..], "h2,http/1.1", srv_sid, srv_cli_pub,
             srv_alpn, srv_resumed, srv_psk,
         );
-        sub.assert_true(ok_ch, "server parsed ClientHello with multi-ALPN and PSK");
+        sub.assert_true(ok_ch, "server parsed ClientHello with multi-ALPN and server-issued PSK");
         sub.assert_bytes_eq(srv_alpn[..], "h2", "server selected h2 from client ALPN list");
         sub.assert_true(srv_resumed, "server verified PSK binder and accepted resumption");
+
+        var srv_sni:    u8[..255] = [];
+        var srv_cs:     u16       = 0;
+        var srv_psk48:  u8[..48]  = [];
+        var srv_psk_id: u16       = 0;
+        let ok_ch_mtls_deny = tls_internal::parse_client_hello_for_server_full(
+            ch_msg[..], "h2,http/1.1", 0, srv_sid, srv_cli_pub,
+            srv_alpn, srv_sni, srv_cs, srv_resumed, srv_psk48, srv_psk_id, true,
+        );
+        sub.assert_true(ok_ch_mtls_deny, "server parsed ClientHello in mTLS mode with unauthenticated ticket");
+        sub.assert_false(srv_resumed, "mTLS server refuses resumption of non-mTLS ticket (TLS-01)");
+
+        tls_internal::store_server_session_ticket(
+            "example.com", "ticket-id-01", psk[..], 0x11223344, 3600,
+            rfc::TLS_CIPHER_AES_128_GCM_SHA256, true,
+        );
+        let ok_ch_mtls_ok = tls_internal::parse_client_hello_for_server_full(
+            ch_msg[..], "h2,http/1.1", 0, srv_sid, srv_cli_pub,
+            srv_alpn, srv_sni, srv_cs, srv_resumed, srv_psk48, srv_psk_id, true,
+        );
+        sub.assert_true(ok_ch_mtls_ok && srv_resumed, "mTLS server accepts client-authenticated ticket");
 
         tls::clear_session_tickets();
     };

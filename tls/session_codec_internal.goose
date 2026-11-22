@@ -201,18 +201,19 @@ fn frame_handshake_msg_4k(msg_type: u8, payload: const u8[:], out_msg: u8[..4096
 }
 
 fn try_match_single_psk_binder(
-    ticket_id:    const u8[:],
-    binder_slice: const u8[:],
-    ch_msg:       const u8[:],
-    binders_len:  u16,
-    selected_cs:  u16,
-    out_psk:      u8[..48]&,
+    ticket_id:           const u8[:],
+    binder_slice:        const u8[:],
+    ch_msg:              const u8[:],
+    binders_len:         u16,
+    selected_cs:         u16,
+    out_psk:             u8[..48]&,
+    require_client_cert: bool = false,
 ) -> bool, bool {
     out_psk.clear();
     var full_psk: u8[..48] = [];
     defer core::secure_zeroize_slice(full_psk[..]);
     var cs: u16 = 0;
-    if !lookup_ticket_by_identity_full(ticket_id, full_psk, cs) ||
+    if !lookup_server_ticket_by_identity(ticket_id, require_client_cert, full_psk, cs) ||
         (full_psk.len != 32 && full_psk.len != 48) {
         return false, true;
     }
@@ -266,11 +267,12 @@ inline fn parse_psk_extension_lists(psk_ext: const u8[:]) -> const u8[:], const 
 }
 
 fn eval_client_hello_psk_binders(
-    ch_msg:          const u8[:],
-    psk_ext:         const u8[:],
-    selected_cs:     u16,
-    out_psk:         u8[..48]&,
-    out_selected_id: u16&,
+    ch_msg:              const u8[:],
+    psk_ext:             const u8[:],
+    selected_cs:         u16,
+    out_psk:             u8[..48]&,
+    out_selected_id:     u16&,
+    require_client_cert: bool = false,
 ) -> bool, bool {
     core::secure_zeroize_slice(out_psk[..]);
     out_psk.clear();
@@ -292,7 +294,8 @@ fn eval_client_hello_psk_binders(
         guard ok_entry && cur_idx < 0xFFFF else { return false, false; }
         if !matched {
             let entry_matched, entry_ok = try_match_single_psk_binder(
-                ticket_id, binder_slice, ch_msg, binders_bytes.len as u16, selected_cs, matched_psk,
+                ticket_id, binder_slice, ch_msg, binders_bytes.len as u16, selected_cs,
+                matched_psk, require_client_cert,
             );
             guard entry_ok else { return false, false; }
             if entry_matched {
@@ -324,19 +327,22 @@ fn has_valid_psk_dhe_ke_mode(modes_ext: const u8[:]) -> bool {
 }
 
 fn eval_client_hello_psk_entry(
-    entries:         const tls::ExtensionEntry[..32]&,
-    payload:         const u8[:],
-    psk_ext:         const u8[:],
-    selected_cs:     u16,
-    out_psk:         u8[..48]&,
-    out_selected_id: u16&,
+    entries:             const tls::ExtensionEntry[..32]&,
+    payload:             const u8[:],
+    psk_ext:             const u8[:],
+    selected_cs:         u16,
+    out_psk:             u8[..48]&,
+    out_selected_id:     u16&,
+    require_client_cert: bool = false,
 ) -> bool, bool {
     let last_idx = core::sub_sat_i64(entries.len, 1);
     guard entries.len > 0 && last_idx >= 0 && last_idx < entries.len else { return false, false; }
     guard entries[last_idx].ext_type == rfc::TLS_EXT_PRE_SHARED_KEY else { return false, false; }
     let modes_ext, has_modes = tls::find_extension(entries, rfc::TLS_EXT_PSK_KEY_EXCHANGE_MODES);
     guard has_modes && has_valid_psk_dhe_ke_mode(modes_ext) else { return false, false; }
-    return eval_client_hello_psk_binders(payload, psk_ext, selected_cs, out_psk, out_selected_id);
+    return eval_client_hello_psk_binders(
+        payload, psk_ext, selected_cs, out_psk, out_selected_id, require_client_cert,
+    );
 }
 
 // Extracts the 32-byte X25519 key share from a parsed KeyShareEntry list.
@@ -574,7 +580,12 @@ fn append_keylog_secret_line(
 ) -> bool {
     let saved = out.len;
     var committed = false;
-    defer if !committed { out.resize(saved); };
+    defer if !committed {
+        if out.len > saved {
+            core::secure_zeroize_slice(out[saved..out.len]);
+        }
+        out.resize(saved);
+    };
     guard label.len > 0 && (secret.len == 32 || secret.len == 48) else { return false; }
     let hex_secret_len = core::add_sat_i64(secret.len, secret.len);
     let line_len = core::add_sat_i64(core::add_sat_i64(label.len, 67), hex_secret_len);

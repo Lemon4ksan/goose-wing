@@ -157,8 +157,16 @@ fn tls_endpoint_write_app(ep: TlsEndpoint&, plaintext: const u8[:]) -> i64, TlsB
     }
     let slot .= tls_internal::g_pure_tls_slots[idx];
     let avail = core::sub_sat_i64(slot.wire_out.cap, slot.wire_out.len);
-    guard avail > 22 else { return 0, TlsBackendStatus.WantWrite; }
-    let max_plain = min(core::sub_sat_i64(avail, 22), rfc::TLS_MAX_RECORD_PLAINTEXT_LEN);
+    let cs_i = slot.cipher_slot as i64;
+    let ku_reserve: i64 = if cs_i >= 0 && cs_i < g_tls_cipher_slots.len &&
+        tls_internal::slot_needs_sans_io_key_update(g_tls_cipher_slots[cs_i]) {
+        27
+    } else {
+        0
+    };
+    let overhead = core::add_sat_i64(22, ku_reserve);
+    guard avail > overhead else { return 0, TlsBackendStatus.WantWrite; }
+    let max_plain = min(core::sub_sat_i64(avail, overhead), rfc::TLS_MAX_RECORD_PLAINTEXT_LEN);
     let take = min(plaintext.len, max_plain);
     guard cipher_slot_seal_app_data(slot.cipher_slot, plaintext[..take], slot.wire_out) else {
         return 0, TlsBackendStatus.Error;

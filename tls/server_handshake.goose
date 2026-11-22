@@ -56,6 +56,7 @@ fn server_handshake_with_ch(
     guard tls_internal::parse_client_hello_for_server_full(
         ch_msg, config.alpn[..], req_sig, session_id, client_pub,
         neg_alpn, client_sni, cipher_suite, psk_resumed, psk_secret, selected_psk_id,
+        config.require_client_cert,
     ) else {
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
@@ -183,6 +184,7 @@ fn server_handshake_with_ch(
     var h_before_cli_fin: u8[..48] = [];
     tls_internal::transcript_current_hash(transcript, ks.hash_id, h_before_cli_fin);
     var exp_cli_fin: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(exp_cli_fin);
     let ok_exp_fin = tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.client_hs_traffic[..hlen],
         h_before_cli_fin[..], exp_cli_fin[..hlen],
@@ -230,6 +232,7 @@ fn server_handshake_with_ch(
         client_ap_key[..klen], client_ap_iv,
     );
     g_tls_cipher_slots[idx].resumed = psk_resumed;
+    g_tls_cipher_slots[idx].client_authenticated = config.require_client_cert;
     let _ = g_tls_cipher_slots[idx].negotiated_alpn.try_set(neg_alpn[..]);
     return slot_idx, true;
 }

@@ -38,7 +38,8 @@ fn seal_stateless_ticket<B>(
     guard issued_at_ms >= 0 && valid_stek else {
         return false;
     }
-    guard (psk.len == 32 || psk.len == 48) && rfc::is_supported_tls13_cipher_suite(cipher_suite) else {
+    guard rfc::is_supported_tls13_cipher_suite(cipher_suite) &&
+        psk.len == rfc::tls13_cipher_suite_hash_len(cipher_suite) else {
         return false;
     }
     guard out_ticket.cap >= STEK_TICKET_WIRE_LEN else { return false; }
@@ -129,11 +130,14 @@ fn store_session_ticket(
         lifetime > 0 && lifetime <= rfc::MAX_TICKET_LIFETIME_SECS else {
         return;
     }
-    guard psk.len == 32 || psk.len == 48 else { return; }
+    guard rfc::is_supported_tls13_cipher_suite(cipher_suite) &&
+        psk.len == rfc::tls13_cipher_suite_hash_len(cipher_suite) else {
+        return;
+    }
     let stamp_ms = if issued_at_ms > 0 { issued_at_ms } else { core::unix_milli(core::now()) };
     tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
     defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
-    for &entry in tls_internal::g_tls13_tickets {
+    for &entry in tls_internal::g_tls13_client_tickets {
         if entry.in_use && entry.server_name[..] == server_name {
             tls_internal::populate_cached_ticket_slot(
                 entry, server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
@@ -141,7 +145,7 @@ fn store_session_ticket(
             return;
         }
     }
-    for &entry in tls_internal::g_tls13_tickets {
+    for &entry in tls_internal::g_tls13_client_tickets {
         if !entry.in_use {
             tls_internal::populate_cached_ticket_slot(
                 entry, server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
@@ -150,7 +154,7 @@ fn store_session_ticket(
         }
     }
     tls_internal::populate_cached_ticket_slot(
-        tls_internal::g_tls13_tickets[0], server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
+        tls_internal::g_tls13_client_tickets[0], server_name, ticket, psk, age_add, lifetime, cipher_suite, stamp_ms,
     );
 }
 
@@ -175,7 +179,7 @@ fn lookup_session_ticket_full<B>(
     let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
     tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
     defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
-    for &entry in tls_internal::g_tls13_tickets {
+    for &entry in tls_internal::g_tls13_client_tickets {
         if entry.in_use && entry.server_name[..] == server_name {
             guard tls_internal::is_cached_ticket_fresh(entry, cur_ms) &&
                 out_ticket.try_set(entry.ticket[..]) &&
@@ -209,7 +213,7 @@ fn lookup_session_ticket<B>(
     let cur_ms = if now_ms > 0 { now_ms } else { core::unix_milli(core::now()) };
     tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
     defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
-    for &entry in tls_internal::g_tls13_tickets {
+    for &entry in tls_internal::g_tls13_client_tickets {
         if entry.in_use && entry.server_name[..] == server_name {
             guard tls_internal::is_cached_ticket_fresh(entry, cur_ms) &&
                 entry.psk.len >= 32 &&
@@ -225,15 +229,24 @@ fn lookup_session_ticket<B>(
     return false;
 }
 
-// Clears all cached TLS 1.3 session tickets and wipes their PSKs.
+// Clears all cached TLS 1.3 client and server session tickets and wipes their PSKs.
 fn clear_session_tickets() {
     tls_internal::native_tls_state_lock(tls_internal::TLS_LOCK_TICKET_CACHE);
     defer tls_internal::native_tls_state_unlock(tls_internal::TLS_LOCK_TICKET_CACHE);
-    for &entry in tls_internal::g_tls13_tickets {
+    for &entry in tls_internal::g_tls13_client_tickets {
         core::secure_zeroize_slice(entry.psk[..]);
         entry.psk.clear();
         entry.ticket.clear();
         entry.server_name.clear();
+        entry.client_authenticated = false;
+        entry.in_use = false;
+    }
+    for &entry in tls_internal::g_tls13_server_tickets {
+        core::secure_zeroize_slice(entry.psk[..]);
+        entry.psk.clear();
+        entry.ticket.clear();
+        entry.server_name.clear();
+        entry.client_authenticated = false;
         entry.in_use = false;
     }
 }

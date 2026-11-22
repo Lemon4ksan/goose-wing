@@ -341,11 +341,15 @@ fn send_new_session_ticket(
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < g_tls_cipher_slots.len && g_tls_cipher_slots[idx].in_use else { return false; }
 
+    var age_bytes: u8[4] = [0; 4];
+    guard core::csprng_fill(age_bytes[..]) else { return false; }
+    let ticket_age_add = core::read_be_u32(age_bytes[..], 0);
+
     var nst_body: u8[..512] = [];
     guard tls_internal::encode_new_session_ticket(
         nst_body,
         ticket_lifetime,
-        0,
+        ticket_age_add,
         ticket_nonce,
         ticket,
         max_early_data_size,
@@ -377,13 +381,14 @@ fn send_new_session_ticket(
             } else {
                 "server"
             };
-            store_session_ticket(
+            tls_internal::store_server_session_ticket(
                 sni,
                 ticket,
                 psk_full[..h_len],
-                0,
+                ticket_age_add,
                 ticket_lifetime,
                 g_tls_cipher_slots[idx].cipher_suite,
+                g_tls_cipher_slots[idx].client_authenticated,
             );
         }
     }
@@ -402,27 +407,34 @@ recursive fn send_key_update(fd: i64, slot_idx: u16, request_update: u8) -> bool
     hs_msg.push(rfc::TLS_HS_KEY_UPDATE);
     hs_msg.push(0x00); hs_msg.push(0x00); hs_msg.push(0x01);
     hs_msg.append(ku_body[..]);
-    let ok_s = tls_internal::send_encrypted_record_raw(fd, slot_idx, rfc::TLS_CONTENT_HANDSHAKE, hs_msg[..]);
-    guard ok_s else { return false; }
 
     let h_id = g_tls_cipher_slots[idx].hash_id;
     let h_len = g_tls_cipher_slots[idx].hash_len;
     let k_len = g_tls_cipher_slots[idx].key_len;
-    tls_internal::ks_update_traffic_secret(
-        h_id,
-        h_len,
-        g_tls_cipher_slots[idx].tx_traffic_secret[..h_len as i64],
-    );
-    tls_internal::ks_derive_key_iv(
-        h_id,
-        g_tls_cipher_slots[idx].tx_traffic_secret[..h_len as i64],
-        k_len,
-        g_tls_cipher_slots[idx].tx_key[..k_len as i64],
-        g_tls_cipher_slots[idx].tx_iv,
-    );
+    let h_len_i64 = h_len as i64;
+    let k_len_i64 = k_len as i64;
+    guard (h_len_i64 == 32 || h_len_i64 == 48) && (k_len_i64 == 16 || k_len_i64 == 32) else { return false; }
+
+    var next_secret: u8[48] = g_tls_cipher_slots[idx].tx_traffic_secret;
+    var next_key:    u8[32] = [0; 32];
+    var next_iv:     u8[12] = [0; 12];
+    defer core::secure_zeroize_48(next_secret);
+    defer core::secure_zeroize_32(next_key);
+    defer core::secure_zeroize_slice(next_iv[..]);
+    guard tls_internal::ks_update_traffic_secret(h_id, h_len, next_secret[..h_len_i64]) &&
+        tls_internal::ks_derive_key_iv(h_id, next_secret[..h_len_i64], k_len, next_key[..k_len_i64], next_iv) else {
+        return false;
+    }
+
+    let ok_s = tls_internal::send_encrypted_record_raw(fd, slot_idx, rfc::TLS_CONTENT_HANDSHAKE, hs_msg[..]);
+    guard ok_s else { return false; }
+
+    g_tls_cipher_slots[idx].tx_traffic_secret = next_secret;
+    g_tls_cipher_slots[idx].tx_key = next_key;
+    g_tls_cipher_slots[idx].tx_iv = next_iv;
     tls_internal::prepare_cipher_aes_key(
         g_tls_cipher_slots[idx].cipher_suite,
-        g_tls_cipher_slots[idx].tx_key[..k_len as i64],
+        g_tls_cipher_slots[idx].tx_key[..k_len_i64],
         g_tls_cipher_slots[idx].tx_aes_key,
     );
     g_tls_cipher_slots[idx].tx_seq = 0;

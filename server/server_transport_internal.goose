@@ -137,6 +137,7 @@ fn populate_server_tls_backend_config(
         bcfg.key_pem_file.try_set(srv.tls_key_pem_file[..]) else {
         return false, tls::TlsBackendStatus.Error;
     }
+    bcfg.require_client_cert = srv.tls_require_client_cert;
     if srv.tls_require_client_cert {
         guard srv.tls_ca_file.len > 0 && bcfg.ca_file.try_set(srv.tls_ca_file[..]) else {
             return false, tls::TlsBackendStatus.VerifyError;

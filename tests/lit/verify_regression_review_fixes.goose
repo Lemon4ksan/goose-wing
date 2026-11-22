@@ -431,10 +431,12 @@ fn test_http_sfv_dcb_and_cache_lru() {
 // ---- 4. TLS CSPRNG, FIPS 203 SHA-3/ML-KEM, CRL Serials, Span & Ciphers ------
 
 fn test_tls_crypto_x509_and_cipher_selection() {
-    // 4a. CSPRNG state ratchet regression (tls_random_bytes_32)
-    let r1 = tls_internal::random_bytes_32();
+    // 4a. CSPRNG state ratchet regression (random_bytes_32_checked)
+    var r1: u8[32] = [0; 32];
+    var r2: u8[32] = [0; 32];
+    assert(tls_internal::random_bytes_32_checked(r1));
     let pool_after_r1 = tls::g_tls_entropy_pool;
-    let r2 = tls_internal::random_bytes_32();
+    assert(tls_internal::random_bytes_32_checked(r2));
     assert(!core::ct_eq_bytes(r1[..], r2[..]));
     assert(!core::ct_eq_bytes(pool_after_r1[..], r1[..]));
     assert(!core::ct_eq_bytes(tls::g_tls_entropy_pool[..], r2[..]));

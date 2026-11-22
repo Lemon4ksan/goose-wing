@@ -16,6 +16,7 @@ import .x509;
 import .ocsp;
 import .crl;
 import .ticket;
+import .ticket_internal;
 import .pq_ntt_internal;
 import .pq_mlkem_internal;
 import .cert_compression;
@@ -58,30 +59,41 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     var psk_ticket: u8[..1536] = [];
     var psk_secret: u8[..48]   = [];
     defer core::secure_zeroize_slice(psk_secret[..]);
-    var psk_age_add: u32 = 0;
+    var psk_obf_age: u32 = 0;
     var psk_suite:   u16 = 0;
-    let has_ticket = config.enable_session_tickets && lookup_session_ticket_full(
-        config.server_name[..], psk_ticket, psk_secret, psk_age_add, psk_suite,
+    let use_ech = config.ech_config_list.len > 0;
+    var offered_psk = !use_ech && config.enable_session_tickets && tls_internal::lookup_client_ticket_for_ch(
+        config.server_name[..], psk_ticket, psk_secret, psk_obf_age, psk_suite,
     );
-    let psk_hash_len: u8 = if has_ticket && rfc::tls13_cipher_suite_hash_len(psk_suite) == 48 { 48 } else { 32 };
+    let psk_hash_len: u8 = if offered_psk && rfc::tls13_cipher_suite_hash_len(psk_suite) == 48 { 48 } else { 32 };
 
-    var ech_ext_raw: u8[..512] = [];
-    tls_internal::prepare_ech_outer_extension(config, ech_ext_raw);
-
-    var ch_payload: u8[..4096] = [];
-    tls_internal::build_client_hello_payload(
-        client_random, client_pub, config.server_name[..], config.alpn[..],
-        ch_payload, psk_ticket[..], psk_age_add,
-        config.enable_pq_hybrid, if config.enable_pq_hybrid { pq_pub[..] } else { "" },
-        ech_ext_raw[..], "", config.client_cert_der.len > 0, psk_hash_len,
-    );
+    var ech_state = tls_internal::EchClientState { .. };
+    defer tls_internal::zeroize_ech_client_state(ech_state);
     var ch_msg: u8[..4096] = [];
-    ch_msg.push(rfc::TLS_HS_CLIENT_HELLO);
-    ch_msg.append_u24_be(ch_payload.len as u32);
-    ch_msg.append(ch_payload[..]);
-
-    if has_ticket {
-        tls_internal::patch_client_hello_psk_binder(ch_msg, psk_secret[..], psk_suite);
+    if use_ech {
+        guard tls_internal::build_ech_sealed_client_hello(
+            config, client_random, client_pub, config.enable_pq_hybrid,
+            if config.enable_pq_hybrid { pq_pub[..] } else { "" },
+            "", "", false, ech_state, ch_msg,
+        ) else {
+            free_cipher_slot(slot_idx);
+            return 0xFFFF, false;
+        }
+    } else {
+        var ch_payload: u8[..4096] = [];
+        tls_internal::build_client_hello_payload(
+            client_random, client_pub, config.server_name[..], config.alpn[..],
+            ch_payload, psk_ticket[..], psk_obf_age,
+            config.enable_pq_hybrid, if config.enable_pq_hybrid { pq_pub[..] } else { "" },
+            "", "", config.client_cert_der.len > 0, psk_hash_len,
+        );
+        guard tls_internal::frame_handshake_msg_4k(rfc::TLS_HS_CLIENT_HELLO, ch_payload[..], ch_msg) else {
+            free_cipher_slot(slot_idx);
+            return 0xFFFF, false;
+        }
+        if offered_psk {
+            tls_internal::patch_client_hello_psk_binder(ch_msg, psk_secret[..], psk_suite);
+        }
     }
 
     guard tls_internal::send_plaintext_handshake_record(fd, ch_msg[..]) else {
@@ -107,22 +119,26 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
         return 0xFFFF, false;
     }
 
+    var offered_group: u16 = rfc::GROUP_X25519;
+    var offered_pq = config.enable_pq_hybrid;
     if sh.is_hrr {
+        offered_psk = false;
         let ok_hrr = tls_internal::handle_client_hrr_transition(
             fd, config, client_random, client_priv, client_pub, p384_priv,
-            pq_priv, pq_pub, ech_ext_raw[..], transcript, sh_msg[..], sh,
+            pq_priv, pq_pub, ech_state, transcript, sh_msg[..], sh, offered_group, offered_pq,
         );
         guard ok_hrr else {
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
     } else {
-        guard tls_internal::validate_live_client_sh(sh, client_random) else {
+        guard tls_internal::validate_live_client_sh(sh, client_random) &&
+            tls_internal::is_group_offered_in_client_hello(sh.selected_group, offered_group, offered_pq) &&
+            tls_internal::verify_ech_server_hello_acceptance(ech_state, sh, sh_msg[..], transcript) else {
             tls_internal::send_plaintext_fatal_alert(fd, Alert.IllegalParameter);
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-        tls_internal::transcript_update(transcript, sh_msg[..]);
     }
 
     let cipher_suite = sh.cipher_suite;
@@ -130,14 +146,15 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     let srv_share = sh.server_share[..];
     let psk_resumed = sh.psk_resumed;
 
-    if psk_resumed && (!has_ticket || rfc::tls13_cipher_suite_hash_len(cipher_suite) != psk_hash_len) {
+    if psk_resumed && (!offered_psk || rfc::tls13_cipher_suite_hash_len(cipher_suite) != psk_hash_len) {
+        tls_internal::send_plaintext_fatal_alert(fd, Alert.IllegalParameter);
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
 
     var ecdhe_secret: u8[..80] = [];
     defer core::secure_zeroize_slice(ecdhe_secret[..]);
-    if srv_group == rfc::GROUP_X25519_MLKEM768 {
+    if srv_group == rfc::GROUP_X25519_MLKEM768 && offered_pq {
         var srv_share_raw: u8[..2048] = [];
         srv_share_raw.append_u16_be(srv_group);
         srv_share_raw.append_u16_be(srv_share.len as u16);
@@ -168,7 +185,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-    } else if srv_group == rfc::GROUP_X25519 && srv_share.len == 32 {
+    } else if srv_group == rfc::GROUP_X25519 && offered_group == rfc::GROUP_X25519 && srv_share.len == 32 {
         var srv_pub: u8[32] = [0; 32];
         core::ct_copy_bytes(srv_pub[..], srv_share[..]);
         var ss, ok_ss = core::x25519_shared_secret(client_priv, srv_pub);
@@ -177,7 +194,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-    } else if srv_group == rfc::GROUP_SECP256R1 && srv_share.len == 65 {
+    } else if srv_group == rfc::GROUP_SECP256R1 && offered_group == rfc::GROUP_SECP256R1 && srv_share.len == 65 {
         var ss256, ok_ss256 = core::p256_ecdh_shared_secret(client_priv, srv_share[..]);
         defer core::secure_zeroize_32(ss256);
         guard ok_ss256 && ecdhe_secret.try_set(ss256[..]) else {
@@ -185,7 +202,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
             free_cipher_slot(slot_idx);
             return 0xFFFF, false;
         }
-    } else if srv_group == rfc::GROUP_SECP384R1 && srv_share.len == 97 {
+    } else if srv_group == rfc::GROUP_SECP384R1 && offered_group == rfc::GROUP_SECP384R1 && srv_share.len == 97 {
         var ss384, ok_ss384 = core::p384_ecdh_shared_secret(p384_priv, srv_share[..]);
         defer core::secure_zeroize_48(ss384);
         guard ok_ss384 && ecdhe_secret.try_set(ss384[..]) else {
@@ -194,6 +211,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
             return 0xFFFF, false;
         }
     } else {
+        tls_internal::send_plaintext_fatal_alert(fd, Alert.IllegalParameter);
         free_cipher_slot(slot_idx);
         return 0xFFFF, false;
     }
@@ -250,7 +268,7 @@ fn client_handshake(fd: i64, config: const ClientHandshakeConfig&) -> u16, bool 
     let ok_flight = tls_internal::tls_client_process_server_flight(
         hs_reader, fd, cipher_suite, server_hs_key[..klen],
         server_hs_iv, client_hs_key[..klen], client_hs_iv,
-        ks, transcript, config, psk_resumed, neg_alpn,
+        ks, transcript, config, ech_state, psk_resumed, neg_alpn,
         cert_req_received, cert_req, slot_idx,
     );
     guard ok_flight else {

@@ -17,6 +17,7 @@ import .types;
 import .x509;
 import .pem;
 import .ticket;
+import .ticket_internal;
 import .pq_ntt_internal;
 import .pq_mlkem_internal;
 import .session_internal;
@@ -42,7 +43,7 @@ fn pure_client_step_init(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var psk_age_add: u32        = 0;
     var psk_suite:   u16        = 0;
     slot.psk_secret.clear();
-    slot.has_psk_ticket = slot.enable_session_tickets && tls::lookup_session_ticket_full(
+    slot.has_psk_ticket = slot.enable_session_tickets && lookup_client_ticket_for_ch(
         slot.server_name[..], psk_ticket, slot.psk_secret, psk_age_add, psk_suite,
     );
     slot.psk_hash_len = if slot.has_psk_ticket && rfc::tls13_cipher_suite_hash_len(psk_suite) == 48 {
@@ -66,7 +67,7 @@ fn pure_client_step_init(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
         patch_client_hello_psk_binder(ch_msg, slot.psk_secret[..], psk_suite);
     }
     let ccs: u8[6] = [rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
-    guard pure_append_plaintext_hs(slot.wire_out, ch_msg[..]) && slot.wire_out.try_append(ccs[..]) else {
+    guard pure_append_plaintext_hs(slot.wire_out, ch_msg[..], 0x01) && slot.wire_out.try_append(ccs[..]) else {
         return tls::TlsBackendStatus.Error;
     }
     transcript_update(slot.transcript, ch_msg[..]);
@@ -119,6 +120,8 @@ fn pure_client_step_sh(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var sh_msg: u8[..16384] = [];
     let st = pure_pop_plaintext_hs_msg(slot, sh_msg);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
+    // RFC 8446 Section 5.1: Record Layer - No plaintext bytes may cross the ServerHello key-change epoch.
+    guard slot.hs_plain.len == 0 else { return tls::TlsBackendStatus.HandshakeError; }
 
     var sh = tls::ParsedServerHello { .. };
     guard tls::parse_live_server_hello(sh_msg[..], sh) &&
@@ -171,7 +174,10 @@ fn pure_client_verify_cv(slot: PureTlsSlot&, cv_body: const u8[:]) -> tls::TlsBa
 
 fn pure_client_finish_hs(slot: PureTlsSlot&, fin_body: const u8[:]) -> tls::TlsBackendStatus {
     let hlen = slot.ks.hash_len as i64;
-    guard fin_body.len == hlen else { return tls::TlsBackendStatus.HandshakeError; }
+    // RFC 8446 Section 5.1: Record Layer - No handshake bytes may cross the Finished key-change epoch.
+    guard fin_body.len == hlen && slot.hs_plain_pos == slot.hs_plain.len else {
+        return tls::TlsBackendStatus.HandshakeError;
+    }
     var h_to_cv: u8[..48] = [];
     transcript_current_hash(slot.transcript, slot.ks.hash_id, h_to_cv);
     var exp_srv_fin: u8[48] = [0; 48];
@@ -250,6 +256,24 @@ fn pure_client_step_encrypted(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     return pure_client_finish_hs(slot, body[..]);
 }
 
+inline fn pure_server_emit_cert_req(slot: PureTlsSlot&) -> bool {
+    let sig_algs: u16[5] = [
+        rfc::SIG_SCHEME_ED25519,
+        rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256,
+        rfc::SIG_SCHEME_ECDSA_SECP384R1_SHA384,
+        rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256,
+        rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA384,
+    ];
+    var cr_payload: u8[..128] = [];
+    guard tls::encode_certificate_request(cr_payload, "", sig_algs[..]) else { return false; }
+    var cr_msg: u8[..140] = [];
+    guard cr_msg.try_push(rfc::TLS_HS_CERTIFICATE_REQUEST) else { return false; }
+    cr_msg.append_u24_be(cr_payload.len as u32);
+    guard cr_msg.try_append(cr_payload[..]) && pure_seal_hs_to_wire(slot, cr_msg[..]) else { return false; }
+    transcript_update(slot.transcript, cr_msg[..]);
+    return true;
+}
+
 fn pure_server_emit_encrypted_flight(slot: PureTlsSlot&) -> bool {
     var ee_ext: u8[..264] = [];
     if slot.selected_alpn.len > 0 {
@@ -261,6 +285,10 @@ fn pure_server_emit_encrypted_flight(slot: PureTlsSlot&) -> bool {
     ee_msg.append_u16_be(ee_ext.len as u16);
     guard ee_msg.try_append(ee_ext[..]) && pure_seal_hs_to_wire(slot, ee_msg[..]) else { return false; }
     transcript_update(slot.transcript, ee_msg[..]);
+
+    if slot.require_client_cert {
+        guard pure_server_emit_cert_req(slot) else { return false; }
+    }
 
     var srv_cfg = tls::ServerHandshakeConfig { priv_seed: slot.priv_seed, .. };
     guard srv_cfg.cert_der.try_set(slot.cert_der[..]) else { return false; }
@@ -309,6 +337,8 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var ch_msg: u8[..16384] = [];
     let st = pure_pop_plaintext_hs_msg(slot, ch_msg);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
+    // RFC 8446 Section 5.1: Record Layer - No plaintext bytes may cross the ClientHello key-change epoch.
+    guard slot.hs_plain.len == 0 else { return tls::TlsBackendStatus.HandshakeError; }
 
     transcript_update(slot.transcript, ch_msg[..]);
     var sid:        u8[..32]  = [];
@@ -322,12 +352,16 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     guard parse_client_hello_for_server_full(
         ch_msg[..], slot.alpn_csv[..], req_sig, sid, client_pub,
         slot.selected_alpn, client_sni, slot.cipher_suite, psk_res, psk_sec, sel_psk_id,
+        slot.require_client_cert,
     ) else { return tls::TlsBackendStatus.HandshakeError; }
     let _ = extract_ch_client_random(ch_msg[..], slot.client_random);
 
-    let srv_rand = random_bytes_32();
-    var srv_priv = random_bytes_32();
+    var srv_rand: u8[32] = [0; 32];
+    var srv_priv: u8[32] = [0; 32];
     defer core::secure_zeroize_32(srv_priv);
+    guard random_bytes_32_checked(srv_rand) && random_bytes_32_checked(srv_priv) else {
+        return tls::TlsBackendStatus.HandshakeError;
+    }
     let srv_pub = core::x25519_base_scalarmult(srv_priv);
     var ecdhe, ok_ss = core::x25519_shared_secret(srv_priv, client_pub);
     defer core::secure_zeroize_32(ecdhe);
@@ -340,7 +374,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     sh_msg.append_u24_be(sh_pay.len as u32);
     let ccs: u8[6] = [rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
     guard sh_msg.try_append(sh_pay[..]) &&
-        pure_append_plaintext_hs(slot.wire_out, sh_msg[..]) &&
+        pure_append_plaintext_hs(slot.wire_out, sh_msg[..], 0x03) &&
         slot.wire_out.try_append(ccs[..]) else {
         return tls::TlsBackendStatus.Error;
     }
@@ -353,8 +387,47 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     guard ks_advance_to_master(slot.ks, slot.srv_fin_hash[..]) else {
         return tls::TlsBackendStatus.HandshakeError;
     }
-    slot.stage = PureHsStage.ServerWaitClientFinished;
+    slot.stage = if slot.require_client_cert {
+        PureHsStage.ServerWaitClientCert
+    } else {
+        PureHsStage.ServerWaitClientFinished
+    };
     return tls::TlsBackendStatus.WantRead;
+}
+
+fn pure_server_step_client_cert(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
+    var msg_t: u8          = 0;
+    var body:  u8[..16384] = [];
+    let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
+    guard st == tls::TlsBackendStatus.Ok else { return st; }
+    guard msg_t == rfc::TLS_HS_CERTIFICATE && slot.peer_cert_body.try_set(body[..]) else {
+        return tls::TlsBackendStatus.HandshakeError;
+    }
+    transcript_update_msg(slot.transcript, msg_t, body[..]);
+    slot.stage = PureHsStage.ServerWaitClientCV;
+    return tls::TlsBackendStatus.Ok;
+}
+
+fn pure_server_step_client_cv(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
+    var msg_t: u8          = 0;
+    var body:  u8[..16384] = [];
+    let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
+    guard st == tls::TlsBackendStatus.Ok else { return st; }
+    guard msg_t == rfc::TLS_HS_CERTIFICATE_VERIFY else {
+        slot.peer_cert_body.clear();
+        return tls::TlsBackendStatus.HandshakeError;
+    }
+    var h_to_cert: u8[..48] = [];
+    transcript_current_hash(slot.transcript, slot.ks.hash_id, h_to_cert);
+    let now_unix = core::now().wall_sec;
+    let ok_cli = verify_client_cert_and_signature(
+        slot.peer_cert_body[..], body[..], h_to_cert[..], slot.trust_store, now_unix,
+    );
+    slot.peer_cert_body.clear();
+    guard ok_cli else { return tls::TlsBackendStatus.VerifyError; }
+    transcript_update_msg(slot.transcript, msg_t, body[..]);
+    slot.stage = PureHsStage.ServerWaitClientFinished;
+    return tls::TlsBackendStatus.Ok;
 }
 
 fn pure_server_step_fin(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
@@ -364,13 +437,16 @@ fn pure_server_step_fin(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     guard st == tls::TlsBackendStatus.Ok else { return st; }
 
     let hlen = slot.ks.hash_len as i64;
-    guard msg_t == rfc::TLS_HS_FINISHED && body.len == hlen else {
+    // RFC 8446 Section 5.1: Record Layer - No handshake bytes may cross the Finished key-change epoch.
+    guard msg_t == rfc::TLS_HS_FINISHED && body.len == hlen && slot.hs_plain_pos == slot.hs_plain.len else {
         return tls::TlsBackendStatus.HandshakeError;
     }
+    var h_before_fin: u8[..48] = [];
+    transcript_current_hash(slot.transcript, slot.ks.hash_id, h_before_fin);
     var exp_fin: u8[48] = [0; 48];
     defer core::secure_zeroize_48(exp_fin);
     guard ks_compute_finished_verify_data(
-        slot.ks.hash_id, slot.ks.hash_len, slot.ks.client_hs_traffic[..hlen], slot.srv_fin_hash[..], exp_fin[..hlen],
+        slot.ks.hash_id, slot.ks.hash_len, slot.ks.client_hs_traffic[..hlen], h_before_fin[..], exp_fin[..hlen],
     ) && core::ct_eq_bytes(exp_fin[..hlen], body[..hlen]) else {
         return tls::TlsBackendStatus.HandshakeError;
     }
@@ -383,7 +459,7 @@ fn pure_server_step_fin(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
 }
 
 fn pure_step_handshake_loop(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
-    for _ in 8 {
+    for _ in 10 {
         if slot.stage == PureHsStage.Established { return tls::TlsBackendStatus.Ok; }
         if slot.stage == PureHsStage.Failed { return tls::TlsBackendStatus.HandshakeError; }
         let st = match slot.stage {
@@ -394,6 +470,8 @@ fn pure_step_handshake_loop(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
             ClientWaitCV => pure_client_step_encrypted(slot),
             ClientWaitFinished => pure_client_step_encrypted(slot),
             ServerWaitClientHello => pure_server_step_ch(slot),
+            ServerWaitClientCert => pure_server_step_client_cert(slot),
+            ServerWaitClientCV => pure_server_step_client_cv(slot),
             ServerWaitClientFinished => pure_server_step_fin(slot),
             _ => tls::TlsBackendStatus.Ok,
         };
@@ -437,12 +515,22 @@ fn pure_init_slot_credentials(
 ) -> tls::TlsBackendStatus {
     if is_server {
         if cfg.cert_der.len > 0 {
-            let _ = slot.cert_der.try_set(cfg.cert_der[..]);
+            guard slot.cert_der.try_set(cfg.cert_der[..]) else {
+                return tls::TlsBackendStatus.HandshakeError;
+            }
             slot.priv_seed = cfg.priv_seed;
-            return tls::TlsBackendStatus.Ok;
+        } else {
+            guard pure_load_server_pem_files(cfg.cert_pem_file[..], cfg.key_pem_file[..], slot) else {
+                return tls::TlsBackendStatus.HandshakeError;
+            }
         }
-        guard pure_load_server_pem_files(cfg.cert_pem_file[..], cfg.key_pem_file[..], slot) else {
-            return tls::TlsBackendStatus.HandshakeError;
+        if slot.require_client_cert {
+            slot.trust_store = cfg.trust_store;
+            if slot.trust_store.anchors.len == 0 && cfg.ca_file.len > 0 {
+                let _, ok_ca = tls::load_trust_anchors_pem_file(slot.trust_store, cfg.ca_file[..]);
+                guard ok_ca else { return tls::TlsBackendStatus.VerifyError; }
+            }
+            guard slot.trust_store.anchors.len > 0 else { return tls::TlsBackendStatus.VerifyError; }
         }
         return tls::TlsBackendStatus.Ok;
     }
@@ -467,6 +555,7 @@ fn open_pure_endpoint(cfg: const tls::TlsBackendConfig&, is_server: bool) -> tls
     guard idx >= 0 else { return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Error; }
     let slot .= g_pure_tls_slots[idx as i64];
     slot.is_server = is_server;
+    slot.require_client_cert = cfg.require_client_cert;
     slot.insecure_skip_verify = cfg.insecure_skip_verify;
     slot.use_system_roots = cfg.use_system_roots;
     slot.enable_pq_hybrid = cfg.enable_pq_hybrid;
@@ -501,6 +590,9 @@ fn open_endpoint_with_role(
     if should_route_to_pure_backend(cfg, is_server) {
         return open_pure_endpoint(cfg, is_server);
     }
+    if cfg.kind != tls::TlsBackendKind.Auto && native_backend_rejects_cfg(cfg, is_server) {
+        return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Unavailable;
+    }
 
     var st_i32:     i32 = 0;
     var active_i32: i32 = 0;
@@ -531,8 +623,9 @@ fn open_endpoint_with_role(
             native_id:   nid,
         }, tls::TlsBackendStatus.Ok;
     }
-    if cfg.kind == tls::TlsBackendKind.Auto {
+    let native_st = native_i32_to_status(st_i32);
+    if cfg.kind == tls::TlsBackendKind.Auto && native_st == tls::TlsBackendStatus.Unavailable {
         return open_pure_endpoint(cfg, is_server);
     }
-    return tls::TlsEndpoint { .. }, native_i32_to_status(st_i32);
+    return tls::TlsEndpoint { .. }, native_st;
 }

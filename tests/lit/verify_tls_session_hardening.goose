@@ -58,10 +58,6 @@ fn test_csprng_checked_dst_and_fail_closed() {
     assert(all_bytes_zero(tls::g_tls_entropy_pool[..]));
     assert(tls::g_tls_entropy_counter == 0);
 
-    let zero_fallback = tls_internal::random_bytes_32();
-    assert(all_bytes_zero(zero_fallback[..]));
-    assert(all_bytes_zero(tls::g_tls_entropy_pool[..]));
-
     // Handshake entry points abort and release cipher slots on CSPRNG failure.
     var cli_cfg = tls::ClientHandshakeConfig { enable_pq_hybrid: true, .. };
     let cli_slot, ok_cli = tls::client_handshake(-1, cli_cfg);
@@ -134,12 +130,41 @@ fn test_locked_cipher_slots_and_ticket_cache() {
 
     var id_psk: u8[..48] = [];
     var id_cs:  u16      = 0;
-    assert(tls_internal::lookup_ticket_by_identity_full("TICKET_ID_LOCK_01", id_psk, id_cs, 20000));
+    // Client-cached ticket MUST NOT be visible in server ticket lookup (TLS-01 isolation).
+    assert(!tls_internal::lookup_server_ticket_by_identity("TICKET_ID_LOCK_01", false, id_psk, id_cs, 20000));
+
+    // Server-issued non-mTLS ticket MUST be rejected when require_client_cert = true.
+    tls_internal::store_server_session_ticket(
+        "locktest.example",
+        "SRV_TKT_NO_MTLS",
+        psk32[..],
+        0x22334455,
+        3600,
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        false,
+        10000,
+    );
+    assert(tls_internal::lookup_server_ticket_by_identity("SRV_TKT_NO_MTLS", false, id_psk, id_cs, 20000));
+    assert(id_psk.len == 32 && id_cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256);
+    assert(!tls_internal::lookup_server_ticket_by_identity("SRV_TKT_NO_MTLS", true, id_psk, id_cs, 20000));
+
+    // Server-issued mTLS-authenticated ticket MUST succeed when require_client_cert = true.
+    tls_internal::store_server_session_ticket(
+        "locktest.example",
+        "SRV_TKT_MTLS",
+        psk32[..],
+        0x33445566,
+        3600,
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+        true,
+        10000,
+    );
+    assert(tls_internal::lookup_server_ticket_by_identity("SRV_TKT_MTLS", true, id_psk, id_cs, 20000));
     assert(id_psk.len == 32 && id_cs == rfc::TLS_CIPHER_AES_128_GCM_SHA256);
 
     tls::clear_session_tickets();
     assert(!tls::lookup_session_ticket_full("locktest.example", out_tkt, out_psk, out_age, out_cs, 20000));
-    assert(!tls_internal::lookup_ticket_by_identity_full("TICKET_ID_LOCK_01", id_psk, id_cs, 20000));
+    assert(!tls_internal::lookup_server_ticket_by_identity("SRV_TKT_MTLS", true, id_psk, id_cs, 20000));
     print("LOCKED_SLOTS_AND_TICKETS: OK");
 }
 
@@ -294,15 +319,109 @@ fn test_hard_limit_fail_closed() {
     print("AEAD_HARD_LIMIT_FAIL_CLOSED: OK");
 }
 
+fn test_wave2_key_update_and_backend_guards() {
+    let slot_c = tls::alloc_cipher_slot();
+    let slot_s = tls::alloc_cipher_slot();
+    assert(slot_c != 0xFFFF && slot_s != 0xFFFF);
+    defer tls::free_cipher_slot(slot_c);
+    defer tls::free_cipher_slot(slot_s);
+
+    let sec_a: u8[32] = [0x31; 32];
+    let sec_b: u8[32] = [0x62; 32];
+    var ka:  u8[16] = [0; 16];
+    var iva: u8[12] = [0; 12];
+    var kb:  u8[16] = [0; 16];
+    var ivb: u8[12] = [0; 12];
+    assert(tls_internal::ks_derive_key_iv(tls_internal::HASH_SHA256, sec_a[..], 16, ka[..], iva));
+    assert(tls_internal::ks_derive_key_iv(tls_internal::HASH_SHA256, sec_b[..], 16, kb[..], ivb));
+
+    tls_internal::init_cipher_slot_for_test(slot_c, rfc::TLS_CIPHER_AES_128_GCM_SHA256, ka[..], iva, kb[..], ivb);
+    tls_internal::init_cipher_slot_for_test(slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, kb[..], ivb, ka[..], iva);
+    let c_idx = slot_c as i64;
+    let s_idx = slot_s as i64;
+    for i in 32 {
+        tls::g_tls_cipher_slots[c_idx].tx_traffic_secret[i] = sec_a[i];
+        tls::g_tls_cipher_slots[c_idx].rx_traffic_secret[i] = sec_b[i];
+        tls::g_tls_cipher_slots[s_idx].tx_traffic_secret[i] = sec_b[i];
+        tls::g_tls_cipher_slots[s_idx].rx_traffic_secret[i] = sec_a[i];
+    }
+
+    // Trailing coalesced bytes after KeyUpdate inside one handshake record MUST fail closed (RFC 8446 §5.1).
+    let coalesced_ku: u8[6] = [rfc::TLS_HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x00, 0x00];
+    var bad_rec: u8[128] = [0; 128];
+    let bad_len, _, ok_bad = tls::record_seal_into(
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256, ka[..], iva, 0,
+        rfc::TLS_CONTENT_HANDSHAKE, coalesced_ku[..], bad_rec[..],
+    );
+    assert(ok_bad && bad_len > 0);
+    var out_plain: u8[..128] = [];
+    let c_bad, st_bad = tls::cipher_slot_unseal_records(slot_s, bad_rec[..bad_len], out_plain);
+    assert(c_bad == 0 && st_bad == tls::SliceUnsealStatus.Error);
+
+    // Reset slot_s after fatal protocol error, then test valid KeyUpdate(update_requested=1) -> reply.
+    tls_internal::init_cipher_slot_for_test(slot_s, rfc::TLS_CIPHER_AES_128_GCM_SHA256, kb[..], ivb, ka[..], iva);
+    for i in 32 {
+        tls::g_tls_cipher_slots[s_idx].tx_traffic_secret[i] = sec_b[i];
+        tls::g_tls_cipher_slots[s_idx].rx_traffic_secret[i] = sec_a[i];
+    }
+
+    // Valid KeyUpdate(update_requested=1) from C -> S sets pending reply on S; S emits KeyUpdate(0) on next seal.
+    let ku_req: u8[5] = [rfc::TLS_HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x01];
+    var ku_rec: u8[128] = [0; 128];
+    let ku_len, _, ok_ku = tls::record_seal_into(
+        rfc::TLS_CIPHER_AES_128_GCM_SHA256, ka[..], iva, 0,
+        rfc::TLS_CONTENT_HANDSHAKE, ku_req[..], ku_rec[..],
+    );
+    assert(ok_ku && ku_len > 0);
+    let c_ku, st_ku = tls::cipher_slot_unseal_records(slot_s, ku_rec[..ku_len], out_plain);
+    assert(st_ku == tls::SliceUnsealStatus.ControlHandled && c_ku == ku_len && out_plain.len == 0);
+    assert(tls::g_tls_cipher_slots[s_idx].key_update_tracker.pending_response);
+
+    var s_out: u8[..256] = [];
+    assert(tls::cipher_slot_seal_app_data(slot_s, "after-ku-reply", s_out));
+    assert(!tls::g_tls_cipher_slots[s_idx].key_update_tracker.pending_response);
+    out_plain.clear();
+    let c_reply, st_reply = tls::cipher_slot_unseal_records(slot_c, s_out[..], out_plain);
+    assert(st_reply == tls::SliceUnsealStatus.Ok && c_reply == s_out.len && out_plain[..] == "after-ku-reply");
+
+    // Explicit native backend MUST reject mTLS require_client_cert without ca_file (EDGE-01).
+    var mtls_cfg = tls::TlsBackendConfig {
+        kind:                tls::TlsBackendKind.SystemOpenSsl,
+        is_server:           true,
+        require_client_cert: true,
+        ..
+    };
+    let _, st_native = tls::tls_endpoint_open(mtls_cfg);
+    assert(st_native == tls::TlsBackendStatus.Error || st_native == tls::TlsBackendStatus.Unavailable);
+
+    // PureGoose mTLS server with no trust anchors MUST fail closed with VerifyError (TLS-02).
+    var pure_mtls_cfg = tls::TlsBackendConfig {
+        kind:                tls::TlsBackendKind.PureGoose,
+        is_server:           true,
+        require_client_cert: true,
+        ..
+    };
+    let srv_seed: u8[32] = [0x44; 32];
+    pure_mtls_cfg.priv_seed = srv_seed;
+    var cert2k: u8[..2048] = [];
+    assert(tls::build_test_ed25519_cert_der(srv_seed, "mtls.test", "mtls.test", "", cert2k));
+    assert(pure_mtls_cfg.cert_der.try_set(cert2k[..]));
+    let _, st_pure_mtls = tls::tls_endpoint_open(pure_mtls_cfg);
+    assert(st_pure_mtls == tls::TlsBackendStatus.VerifyError);
+    print("WAVE2_KEY_UPDATE_AND_GUARDS: OK");
+}
+
 // CHECK: CSPRNG_FAIL_CLOSED_AND_DST: OK
 // CHECK: LOCKED_SLOTS_AND_TICKETS: OK
 // CHECK: AEAD_LIMIT_PREDICATES: OK
 // CHECK: AUTO_KEY_UPDATE_ROTATION: OK
 // CHECK: AEAD_HARD_LIMIT_FAIL_CLOSED: OK
+// CHECK: WAVE2_KEY_UPDATE_AND_GUARDS: OK
 fn main() {
     test_csprng_checked_dst_and_fail_closed();
     test_locked_cipher_slots_and_ticket_cache();
     test_aead_limit_predicates();
     test_auto_key_update_and_hard_limit_fail_closed();
     test_hard_limit_fail_closed();
+    test_wave2_key_update_and_backend_guards();
 }

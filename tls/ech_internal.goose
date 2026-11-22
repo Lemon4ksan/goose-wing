@@ -348,23 +348,21 @@ fn pad_ech_inner<B>(inner_bytes: const u8[:], max_name_len: u8, real_sni_len: i6
     return true;
 }
 
-// Builds the ECH extension wire bytes for ClientHelloOuter.
-// wire format:
-//   type (1B) = 0x00 (outer)
-//   cipher_suite (4B) = kdf_id (2B) || aead_id (2B)
-//   config_id (1B)
-//   enc (opaque<1..2^16-1>)
-//   payload (opaque<1..2^16-1>)
+// Builds the ECH extension wire bytes for ClientHelloOuter (RFC 9849 Section 5).
+// Set `include_enc = false` for ClientHelloOuter2 after HelloRetryRequest (empty `enc`).
 fn build_ech_outer_extension<B>(
-    config_id:  u8,
-    cs:         const tls::EchCipherSuite&,
-    enc:        const u8[32]&,
-    ciphertext: const u8[:],
-    out:        B&,
+    config_id:   u8,
+    cs:          const tls::EchCipherSuite&,
+    enc:         const u8[32]&,
+    ciphertext:  const u8[:],
+    out:         B&,
+    include_enc: bool = true,
 ) -> bool {
     let ct_len = ciphertext.len;
     guard ct_len >= 1 && ct_len <= 65535 else { return false; }
-    guard core::add_sat_i64(out.len, core::add_sat_i64(42, ct_len)) <= out.cap else { return false; }
+    let enc_len: i64 = if include_enc { 32 } else { 0 };
+    let needed = core::add_sat_i64(core::add_sat_i64(10, enc_len), ct_len);
+    guard core::add_sat_i64(out.len, needed) <= out.cap else { return false; }
 
     out.push(rfc::ECH_CLIENT_OUTER);
     out.push(((cs.kdf_id >> 8) & 0xFF) as u8);
@@ -373,10 +371,12 @@ fn build_ech_outer_extension<B>(
     out.push((cs.aead_id & 0xFF) as u8);
     out.push(config_id);
 
-    // enc: opaque<1..2^16-1>
+    // enc: opaque<0..2^16-1> (32 bytes on CH1, 0 bytes on CH2 after HRR)
     out.push(0x00);
-    out.push(32);
-    for i in 32 { out.push(enc[i]); }
+    out.push(enc_len as u8);
+    if include_enc {
+        for i in 32 { out.push(enc[i]); }
+    }
 
     // payload: opaque<1..2^16-1>
     out.push(((ct_len >> 8) & 0xFF) as u8);
@@ -468,10 +468,157 @@ fn build_encoded_client_hello_inner<B>(
     return pad_ech_inner(raw_inner[..], max_name_len, inner_sni.len, out);
 }
 
-// Computes the 8-byte RFC 9849 §7.2 ECH transcript acceptance confirmation signal.
-// Zeroes bytes [30..38] (the last 8 bytes of ServerHello.random) in the transcript hash,
-// extracts PRK = HKDF-Extract(0, ClientHelloInner.random), and expands with label
-// "ech accept confirmation" (or "hrr ech accept confirmation" when `is_hrr == true`).
+struct EchClientState {
+    active:        bool                  = false,
+    fsm:           tls::EchFsm           = tls::EchFsm { .. },
+    cfg:           tls::EchConfig        = tls::EchConfig { .. },
+    cs:            tls::EchCipherSuite   = tls::EchCipherSuite { .. },
+    hpke_ctx:      security::HpkeContext = security::HpkeContext { .. },
+    inner_random:  u8[32]                = [0; 32],
+    ch_inner_msg:  u8[..4096]            = [],
+    inner_tr:      tls::Transcript       = tls::Transcript { .. },
+    retry_configs: tls::EchConfigList    = tls::EchConfigList { .. },
+}
+
+fn zeroize_ech_client_state(st: EchClientState&) {
+    core::secure_zeroize_32(st.hpke_ctx.key);
+    core::secure_zeroize_slice(st.hpke_ctx.base_nonce[..]);
+    core::secure_zeroize_32(st.hpke_ctx.exporter_secret);
+    st.hpke_ctx.seq = 0;
+    core::secure_zeroize_32(st.inner_random);
+    core::secure_zeroize_slice(st.ch_inner_msg[..]);
+    st.ch_inner_msg.clear();
+}
+
+// Locates the 8-byte confirmation payload offset inside an HRR `encrypted_client_hello`
+// extension (`0xFE0D`) per RFC 9849 Section 7.2.1.
+//
+// Example:
+//   hrr_msg = [0x02, ..., 0xFE, 0x0D, 0x00, 0x08, <8B confirm>]
+//   returns: offset pointing to <8B confirm>, ok = true
+fn find_hrr_ech_confirm_offset(hrr_msg: const u8[:]) -> i64, bool {
+    guard hrr_msg.len >= rfc::ECH_SH_MIN_HEADER_LEN && hrr_msg[0] == rfc::TLS_HS_SERVER_HELLO else {
+        return 0, false;
+    }
+    var c = core::cursor_from(hrr_msg);
+    let _, ok_h = c.read_bytes(4);
+    let _, ok_v = c.read_u16();
+    let _, ok_r = c.read_bytes(32);
+    let _, ok_s = c.read_u8_prefixed();
+    let _, ok_c = c.read_bytes(3);
+    guard ok_h && ok_v && ok_r && ok_s && ok_c else { return 0, false; }
+    var exts, ok_e = c.read_u16_sub_cursor();
+    guard ok_e && c.buf.len == 0 else { return 0, false; }
+
+    var ext_base = core::sub_sat_i64(hrr_msg.len, exts.buf.len);
+    while exts.buf.len > 0 {
+        let et, ok_t = exts.read_u16();
+        let data, ok_d = exts.read_u16_prefixed();
+        guard ok_t && ok_d else { return 0, false; }
+        let data_off = core::add_sat_i64(ext_base, 4);
+        if et == rfc::EXT_ENCRYPTED_CLIENT_HELLO {
+            guard data.len == rfc::ECH_ACCEPT_CONFIRM_LEN &&
+                core::add_sat_i64(data_off, rfc::ECH_ACCEPT_CONFIRM_LEN) <= hrr_msg.len else {
+                return 0, false;
+            }
+            return data_off, true;
+        }
+        ext_base = core::add_sat_i64(data_off, data.len);
+    }
+    return 0, false;
+}
+
+fn hash_ech_confirm_transcript(
+    base_tr:         const tls::Transcript&,
+    sh_msg_with_hdr: const u8[:],
+    zero_start:      i64,
+    hash_id:         u8,
+    out_hash:        u8[..48]&,
+) -> bool {
+    out_hash.clear();
+    let zero_end = core::add_sat_i64(zero_start, rfc::ECH_ACCEPT_CONFIRM_LEN);
+    guard zero_start >= 0 && zero_end <= sh_msg_with_hdr.len else { return false; }
+    let zero8: u8[8] = [0; 8];
+    if hash_id == HASH_SHA256 {
+        var sha_ctx = base_tr.sha256_ctx;
+        core::sha256_update(sha_ctx, sh_msg_with_hdr[0..zero_start]);
+        core::sha256_update(sha_ctx, zero8[..]);
+        if zero_end < sh_msg_with_hdr.len {
+            core::sha256_update(sha_ctx, sh_msg_with_hdr[zero_end..]);
+        }
+        let digest = core::sha256_final(sha_ctx);
+        return out_hash.try_set(digest[..]);
+    }
+    if hash_id == HASH_SHA384 {
+        var sha_ctx = base_tr.sha384_ctx;
+        core::sha384_update(sha_ctx, sh_msg_with_hdr[0..zero_start]);
+        core::sha384_update(sha_ctx, zero8[..]);
+        if zero_end < sh_msg_with_hdr.len {
+            core::sha384_update(sha_ctx, sh_msg_with_hdr[zero_end..]);
+        }
+        let digest = core::sha384_final(sha_ctx);
+        return out_hash.try_set(digest[..]);
+    }
+    return false;
+}
+
+fn expand_ech_accept_confirm(
+    inner_random:    const u8[32]&,
+    transcript_hash: const u8[:],
+    is_hrr:          bool,
+    hash_id:         u8,
+) -> u8[8], bool {
+    var confirm: u8[8] = [0; 8];
+    let label = if is_hrr { "hrr ech accept confirmation" } else { "ech accept confirmation" };
+    if hash_id == HASH_SHA256 {
+        let zero_salt: u8[32] = [0; 32];
+        var prk = core::hkdf_extract(zero_salt[..], inner_random[..]);
+        defer core::secure_zeroize_32(prk);
+        let ok = hkdf_expand_label(
+            HASH_SHA256, prk[..], label, transcript_hash, rfc::ECH_ACCEPT_CONFIRM_LEN, confirm[..],
+        );
+        return confirm, ok;
+    }
+    if hash_id == HASH_SHA384 {
+        let zero_salt: u8[48] = [0; 48];
+        var prk = core::hkdf_extract_384(zero_salt[..], inner_random[..]);
+        defer core::secure_zeroize_48(prk);
+        let ok = hkdf_expand_label(
+            HASH_SHA384, prk[..], label, transcript_hash, rfc::ECH_ACCEPT_CONFIRM_LEN, confirm[..],
+        );
+        return confirm, ok;
+    }
+    return confirm, false;
+}
+
+// Computes the 8-byte RFC 9849 §7.2 / §7.2.1 ECH acceptance confirmation signal from an active
+// inner transcript (`ClientHelloInner`, or `message_hash || HRR || ClientHelloInner2`).
+fn compute_ech_confirm_from_transcript(
+    inner_random:    const u8[32]&,
+    inner_tr:        const tls::Transcript&,
+    sh_msg_with_hdr: const u8[:],
+    is_hrr:          bool,
+    hash_id:         u8 = HASH_SHA256,
+) -> u8[8], bool {
+    var zero_start: i64 = rfc::ECH_SH_CONFIRM_START;
+    if is_hrr {
+        let off, ok_off = find_hrr_ech_confirm_offset(sh_msg_with_hdr);
+        guard ok_off else { return [0; 8], false; }
+        zero_start = off;
+    } else {
+        guard sh_msg_with_hdr.len >= rfc::ECH_SH_MIN_HEADER_LEN else { return [0; 8], false; }
+    }
+    var th: u8[..48] = [];
+    guard hash_ech_confirm_transcript(inner_tr, sh_msg_with_hdr, zero_start, hash_id, th) else {
+        return [0; 8], false;
+    }
+    return expand_ech_accept_confirm(inner_random, th[..], is_hrr, hash_id);
+}
+
+// Computes the 8-byte RFC 9849 §7.2 / §7.2.1 ECH transcript acceptance confirmation signal.
+// For ServerHello (`is_hrr == false`), zeroes bytes [30..38] (last 8 bytes of ServerHello.random).
+// For HelloRetryRequest (`is_hrr == true`), zeroes the 8-byte payload of the HRR ECH extension.
+// Supports both SHA-256 (`HASH_SHA256`) and SHA-384 (`HASH_SHA384`) cipher suites.
 //
 // Example:
 //   inner_random = [0x22; 32], ch_inner_bytes = [0x01, ...],
@@ -482,34 +629,13 @@ fn compute_ech_accept_confirmation(
     ch_inner_bytes:  const u8[:],
     sh_msg_with_hdr: const u8[:],
     is_hrr:          bool,
+    hash_id:         u8 = HASH_SHA256,
 ) -> u8[8], bool {
-    var confirm: u8[8] = [0; 8];
-    guard ch_inner_bytes.len > 0 else { return confirm, false; }
-    guard sh_msg_with_hdr.len >= rfc::ECH_SH_MIN_HEADER_LEN else { return confirm, false; }
-
-    var sha_ctx = core::Sha256Ctx { .. };
-    core::sha256_update(sha_ctx, ch_inner_bytes);
-    core::sha256_update(sha_ctx, sh_msg_with_hdr[0..rfc::ECH_SH_CONFIRM_START]);
-    let zero8: u8[8] = [0; 8];
-    core::sha256_update(sha_ctx, zero8[..]);
-    if sh_msg_with_hdr.len > rfc::ECH_SH_MIN_HEADER_LEN {
-        core::sha256_update(sha_ctx, sh_msg_with_hdr[rfc::ECH_SH_MIN_HEADER_LEN..]);
-    }
-    let transcript_hash = core::sha256_final(sha_ctx);
-
-    let zero_salt: u8[32] = [0; 32];
-    var prk = core::hkdf_extract(zero_salt[..], inner_random[..]);
-    defer core::secure_zeroize_32(prk);
-    let label = if is_hrr { "hrr ech accept confirmation" } else { "ech accept confirmation" };
-    let ok = hkdf_expand_label(
-        HASH_SHA256,
-        prk[..],
-        label,
-        transcript_hash[..],
-        rfc::ECH_ACCEPT_CONFIRM_LEN,
-        confirm[..],
-    );
-    return confirm, ok;
+    guard ch_inner_bytes.len > 0 else { return [0; 8], false; }
+    var tr = tls::Transcript { .. };
+    core::sha256_update(tr.sha256_ctx, ch_inner_bytes);
+    core::sha384_update(tr.sha384_ctx, ch_inner_bytes);
+    return compute_ech_confirm_from_transcript(inner_random, tr, sh_msg_with_hdr, is_hrr, hash_id);
 }
 
 // RFC 9849 Section 6.1.4: Determining ECH Acceptance - Advances ECH state machine on HelloRetryRequest extension or ServerHello.random[24..32].

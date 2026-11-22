@@ -29,7 +29,7 @@ inline fn rsa_be_cmp(a: const u8[:], b: const u8[:]) -> i32 {
         gt |= undecided & bi_gt;
         lt |= undecided & bi_lt;
     }
-    return core::sub_sat_i64(gt as i64, lt as i64) as i32;
+    return core::sub_sat_i64(gt, lt) as i32;
 }
 
 // Zeroizes a mutable `u32` limb slice in place using an opaque zeroization barrier.

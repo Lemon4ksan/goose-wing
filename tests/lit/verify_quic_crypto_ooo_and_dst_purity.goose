@@ -273,8 +273,8 @@ fn run_dst_purity_sample(seed: u64) -> DstPuritySample {
     s.csprng_u64_a = u_a;
     s.csprng_u64_b = u_b;
 
-    s.tls_rand_a = tls_internal::random_bytes_32();
-    s.tls_rand_b = tls_internal::random_bytes_32();
+    assert(tls_internal::random_bytes_32_checked(s.tls_rand_a));
+    assert(tls_internal::random_bytes_32_checked(s.tls_rand_b));
     assert(s.tls_rand_a[..] != s.tls_rand_b[..]);
 
     s.boundary_a = http::generate_multipart_boundary();
@@ -318,8 +318,9 @@ fn test_dst_purity_and_os_resume() {
     let lu2, ok_l2 = core::csprng_u64();
     assert(ok_l1 && ok_l2 && lu1 != lu2);
 
-    let lt1 = tls_internal::random_bytes_32();
-    let lt2 = tls_internal::random_bytes_32();
+    var lt1: u8[32] = [0; 32];
+    var lt2: u8[32] = [0; 32];
+    assert(tls_internal::random_bytes_32_checked(lt1) && tls_internal::random_bytes_32_checked(lt2));
     assert(lt1[..] != lt2[..] && lt1[..] != run1.tls_rand_a[..]);
 
     let lb1 = http::generate_multipart_boundary();

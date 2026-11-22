@@ -63,6 +63,10 @@ fn verify_client_cert_and_signature(
     guard alert == tls::Alert.CloseNotify else { return false; }
 
     let leaf_cert .= chain_parsed[0];
+    // RFC 8446 Section 4.4.2.2: Server Certificate - Signing certificates must include digitalSignature KeyUsage.
+    if leaf_cert.has_key_usage && (leaf_cert.key_usage & rfc::KEY_USAGE_DIGITAL_SIGNATURE) == 0 {
+        return false;
+    }
     var leaf_pub = tls::span_slice(chain_slices[0], leaf_cert.spki_pubkey);
     if leaf_pub.len >= 2 && leaf_pub[0] == 0 { leaf_pub = leaf_pub[1..]; }
 
@@ -95,6 +99,7 @@ fn parse_client_hello_for_server_full<A>(
     out_psk_resumed:     bool&,
     out_psk_secret:      u8[..48]&,
     out_selected_psk_id: u16&,
+    require_client_cert: bool = false,
 ) -> bool {
     out_session_id.clear();
     core::secure_zeroize_32(out_client_pub);
@@ -135,7 +140,7 @@ fn parse_client_hello_for_server_full<A>(
     let psk_ext, has_psk = tls::find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
     if has_psk {
         let psk_matched, psk_ok = eval_client_hello_psk_entry(
-            entries, payload, psk_ext, sel_cs, out_psk_secret, out_selected_psk_id,
+            entries, payload, psk_ext, sel_cs, out_psk_secret, out_selected_psk_id, require_client_cert,
         );
         guard psk_ok else { return false; }
         out_psk_resumed = psk_matched;
@@ -331,6 +336,7 @@ fn tls_server_send_flight(
     var h_to_cv: u8[..48] = [];
     transcript_current_hash(transcript, ks.hash_id, h_to_cv);
     var srv_fin_data: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(srv_fin_data);
     let hlen = ks.hash_len as i64;
     let ok_fin_calc = tls_internal::ks_compute_finished_verify_data(
         ks.hash_id, ks.hash_len, ks.server_hs_traffic[..hlen],

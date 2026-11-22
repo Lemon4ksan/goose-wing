@@ -71,22 +71,58 @@ fn init_cipher_slot_for_test(
     for i in 12 { slot.rx_iv[i] = rx_iv[i]; }
 }
 
-fn ratchet_slot_rx_traffic_keys(slot: tls::CipherSlot&) {
+fn ratchet_slot_rx_traffic_keys(slot: tls::CipherSlot&) -> bool {
     let h_id = slot.hash_id;
     let h_len = slot.hash_len;
     let k_len = slot.key_len;
     let h_len_i64 = h_len as i64;
     let k_len_i64 = k_len as i64;
-    ks_update_traffic_secret(h_id, h_len, slot.rx_traffic_secret[..h_len_i64]);
-    ks_derive_key_iv(
-        h_id,
-        slot.rx_traffic_secret[..h_len_i64],
-        k_len,
-        slot.rx_key[..k_len_i64],
-        slot.rx_iv,
-    );
+    guard (h_len_i64 == 32 || h_len_i64 == 48) && (k_len_i64 == 16 || k_len_i64 == 32) else { return false; }
+
+    var next_secret: u8[48] = slot.rx_traffic_secret;
+    var next_key:    u8[32] = [0; 32];
+    var next_iv:     u8[12] = [0; 12];
+    defer core::secure_zeroize_48(next_secret);
+    defer core::secure_zeroize_32(next_key);
+    defer core::secure_zeroize_slice(next_iv[..]);
+    guard ks_update_traffic_secret(h_id, h_len, next_secret[..h_len_i64]) &&
+        ks_derive_key_iv(h_id, next_secret[..h_len_i64], k_len, next_key[..k_len_i64], next_iv) else {
+        return false;
+    }
+
+    slot.rx_traffic_secret = next_secret;
+    slot.rx_key = next_key;
+    slot.rx_iv = next_iv;
     prepare_cipher_aes_key(slot.cipher_suite, slot.rx_key[..k_len_i64], slot.rx_aes_key);
     slot.rx_seq = 0;
+    return true;
+}
+
+fn ratchet_slot_tx_traffic_keys(slot: tls::CipherSlot&) -> bool {
+    let h_id = slot.hash_id;
+    let h_len = slot.hash_len;
+    let k_len = slot.key_len;
+    let h_len_i64 = h_len as i64;
+    let k_len_i64 = k_len as i64;
+    guard (h_len_i64 == 32 || h_len_i64 == 48) && (k_len_i64 == 16 || k_len_i64 == 32) else { return false; }
+
+    var next_secret: u8[48] = slot.tx_traffic_secret;
+    var next_key:    u8[32] = [0; 32];
+    var next_iv:     u8[12] = [0; 12];
+    defer core::secure_zeroize_48(next_secret);
+    defer core::secure_zeroize_32(next_key);
+    defer core::secure_zeroize_slice(next_iv[..]);
+    guard ks_update_traffic_secret(h_id, h_len, next_secret[..h_len_i64]) &&
+        ks_derive_key_iv(h_id, next_secret[..h_len_i64], k_len, next_key[..k_len_i64], next_iv) else {
+        return false;
+    }
+
+    slot.tx_traffic_secret = next_secret;
+    slot.tx_key = next_key;
+    slot.tx_iv = next_iv;
+    prepare_cipher_aes_key(slot.cipher_suite, slot.tx_key[..k_len_i64], slot.tx_aes_key);
+    slot.tx_seq = 0;
+    return true;
 }
 
 fn store_slot_nst_global(slot: const tls::CipherSlot&, nst: const tls::NewSessionTicketMsg&) {
@@ -129,9 +165,15 @@ inline fn apply_unsealed_slot_handshake_control(
         guard rem.len >= full_len else { return tls::SliceUnsealStatus.Error; }
         let msg_body = rem[4..full_len];
         if msg_type == rfc::TLS_HS_KEY_UPDATE {
-            let _, ok_ku = track_received_key_update(slot.key_update_tracker, tls::HsState.Connected, msg_body);
-            guard ok_ku else { return tls::SliceUnsealStatus.Error; }
-            ratchet_slot_rx_traffic_keys(slot);
+            // RFC 8446 Section 5.1: Record Layer - KeyUpdate MUST end on a record boundary.
+            guard rem.len == full_len else { return tls::SliceUnsealStatus.Error; }
+            let needs_resp, ok_ku = track_received_key_update(
+                slot.key_update_tracker, tls::HsState.Connected, msg_body,
+            );
+            guard ok_ku && ratchet_slot_rx_traffic_keys(slot) else { return tls::SliceUnsealStatus.Error; }
+            if needs_resp {
+                slot.key_update_tracker.pending_response = true;
+            }
         } else if msg_type == rfc::TLS_HS_NEW_SESSION_TICKET {
             guard !slot.is_server else { return tls::SliceUnsealStatus.Error; }
             var nst = tls::NewSessionTicketMsg { .. };
@@ -237,8 +279,14 @@ fn tls_unseal_records_with_scratch<B>(
         }
         if st == tls::SliceUnsealStatus.NeedMore { break; }
         if st == tls::SliceUnsealStatus.Error {
+            if out_plain.len > saved_len {
+                core::secure_zeroize_slice(out_plain[saved_len..out_plain.len]);
+            }
             out_plain.resize(saved_len);
-            return 0, tls::SliceUnsealStatus.Error;
+            if consumed > 0 {
+                slot.peer_closed = true;
+            }
+            return consumed, tls::SliceUnsealStatus.Error;
         }
         consumed = core::add_sat_i64(consumed, total_rec);
         rem = rem[total_rec..];
@@ -249,12 +297,61 @@ fn tls_unseal_records_with_scratch<B>(
     return consumed, final_status;
 }
 
+inline fn slot_needs_sans_io_key_update(slot: const tls::CipherSlot&) -> bool {
+    if slot.key_update_tracker.pending_response {
+        return true;
+    }
+    guard tls::aead_needs_key_update(slot.cipher_suite, slot.tx_seq) else { return false; }
+    let h_len = slot.hash_len as i64;
+    guard h_len == 32 || h_len == 48 else { return false; }
+    return !is_all_zero_slice(slot.tx_traffic_secret[..h_len]);
+}
+
+inline fn seal_sans_io_key_update_if_needed<B>(
+    slot:       tls::CipherSlot&,
+    rec_buf:    u8[:],
+    out_cipher: B&,
+) -> bool {
+    guard slot_needs_sans_io_key_update(slot) else { return true; }
+    guard !tls::aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else { return false; }
+    let ku_msg: u8[5] = [rfc::TLS_HS_KEY_UPDATE, 0x00, 0x00, 0x01, rfc::KEY_UPDATE_NOT_REQUESTED];
+    let klen = slot.key_len as i64;
+    let sealed_len, _, ok_ku = record_seal_prepared_into(
+        slot.cipher_suite,
+        slot.tx_key[..klen],
+        slot.tx_aes_key,
+        slot.tx_iv,
+        slot.tx_seq,
+        rfc::TLS_CONTENT_HANDSHAKE,
+        ku_msg[..],
+        rec_buf,
+    );
+    guard ok_ku && sealed_len > 0 && out_cipher.try_append(rec_buf[..sealed_len]) else { return false; }
+    tls::increment_record_seq_num(slot.tx_seq);
+    guard ratchet_slot_tx_traffic_keys(slot) else { return false; }
+    slot.key_update_tracker.pending_response = false;
+    return true;
+}
+
 fn tls_seal_app_data_with_buf<B>(
     slot:       tls::CipherSlot&,
     plain_in:   const u8[:],
     rec_buf:    u8[:],
     out_cipher: B&,
 ) -> bool {
+    guard !tls::aead_exceeds_hard_limit(slot.cipher_suite, slot.tx_seq) else { return false; }
+    let needs_ku = slot_needs_sans_io_key_update(slot);
+    let ku_wire_len: i64 = if needs_ku { 27 } else { 0 };
+    let rec_cnt = if plain_in.len == 0 {
+        0
+    } else {
+        core::add_sat_i64(plain_in.len, 16383) >> 14
+    };
+    let app_wire_len = core::add_sat_i64(plain_in.len, core::mul_sat_u64(rec_cnt as u64, 22) as i64);
+    guard core::sub_sat_i64(out_cipher.cap, out_cipher.len) >= core::add_sat_i64(ku_wire_len, app_wire_len) else {
+        return false;
+    }
+
     let saved_len = out_cipher.len;
     let saved_seq = slot.tx_seq;
     var committed = false;
@@ -262,6 +359,8 @@ fn tls_seal_app_data_with_buf<B>(
         out_cipher.resize(saved_len);
         slot.tx_seq = saved_seq;
     };
+
+    guard seal_sans_io_key_update_if_needed(slot, rec_buf, out_cipher) else { return false; }
 
     let klen = slot.key_len as i64;
     var rem = plain_in;
@@ -383,32 +482,16 @@ recursive fn send_encrypted_record(
     return send_encrypted_record_raw(fd, slot_idx, inner_type, payload);
 }
 
-recursive fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool, fd: i64) {
+fn tls_apply_rx_key_update(slot_idx: u16, needs_resp: bool) -> bool {
     let idx = slot_idx as i64;
-    guard idx >= 0 && idx < tls::g_tls_cipher_slots.len && tls::g_tls_cipher_slots[idx].in_use else { return; }
-    let h_id = tls::g_tls_cipher_slots[idx].hash_id;
-    let h_len = tls::g_tls_cipher_slots[idx].hash_len;
-    let k_len = tls::g_tls_cipher_slots[idx].key_len;
-    let h_len_i64 = h_len as i64;
-    let k_len_i64 = k_len as i64;
-
-    ks_update_traffic_secret(h_id, h_len, tls::g_tls_cipher_slots[idx].rx_traffic_secret[..h_len_i64]);
-    ks_derive_key_iv(
-        h_id,
-        tls::g_tls_cipher_slots[idx].rx_traffic_secret[..h_len_i64],
-        k_len,
-        tls::g_tls_cipher_slots[idx].rx_key[..k_len_i64],
-        tls::g_tls_cipher_slots[idx].rx_iv,
-    );
-    prepare_cipher_aes_key(
-        tls::g_tls_cipher_slots[idx].cipher_suite,
-        tls::g_tls_cipher_slots[idx].rx_key[..k_len_i64],
-        tls::g_tls_cipher_slots[idx].rx_aes_key,
-    );
-    tls::g_tls_cipher_slots[idx].rx_seq = 0;
+    guard idx >= 0 && idx < tls::g_tls_cipher_slots.len && tls::g_tls_cipher_slots[idx].in_use else {
+        return false;
+    }
+    guard ratchet_slot_rx_traffic_keys(tls::g_tls_cipher_slots[idx]) else { return false; }
     if needs_resp {
         tls::g_tls_cipher_slots[idx].key_update_tracker.pending_response = true;
     }
+    return true;
 }
 
 fn process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
@@ -421,7 +504,7 @@ fn process_received_nst(idx: i64, msg_body: const u8[:]) -> bool {
     return true;
 }
 
-recursive fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: const u8[:]) -> tls::Alert {
+fn dispatch_post_handshake_record(slot_idx: u16, hs_bytes: const u8[:]) -> tls::Alert {
     guard hs_bytes.len >= 4 else { return tls::Alert.DecodeError; }
     let idx = slot_idx as i64;
     guard idx >= 0 && idx < tls::g_tls_cipher_slots.len && tls::g_tls_cipher_slots[idx].in_use else {
@@ -442,13 +525,17 @@ recursive fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: co
                 return classify_nst_failure_alert(msg_body);
             }
         } else if msg_type == rfc::TLS_HS_KEY_UPDATE {
+            // RFC 8446 Section 5.1: Record Layer - KeyUpdate MUST end on a record boundary.
+            guard core::add_sat_i64(off, full_msg_len) == hs_bytes.len else {
+                return tls::Alert.UnexpectedMessage;
+            }
             let needs_resp, ok_ku = track_received_key_update(
                 tls::g_tls_cipher_slots[idx].key_update_tracker,
                 tls::HsState.Connected,
                 msg_body,
             );
             guard ok_ku else { return tls::Alert.UnexpectedMessage; }
-            tls_apply_rx_key_update(slot_idx, needs_resp, fd);
+            guard tls_apply_rx_key_update(slot_idx, needs_resp) else { return tls::Alert.InternalError; }
         } else {
             return tls::Alert.UnexpectedMessage;
         }
@@ -459,7 +546,7 @@ recursive fn dispatch_post_handshake_record(fd: i64, slot_idx: u16, hs_bytes: co
 
 // Reads and decrypts a single application-layer TLS 1.3 ciphertext record from `fd`.
 // Returns: >0 (decrypted payload length in `plain_dec`), 0 (clean EOF), -2 (timeout), -1 (error).
-recursive fn tls_read_and_unseal_app_record(
+fn tls_read_and_unseal_app_record(
     fd:             i64,
     slot_idx:       u16,
     idx:            i64,
@@ -552,50 +639,55 @@ fn tls_deliver_rx_app_data(idx: i64, plain: const u8[:], dst: u8[:]) -> i32 {
     return to_user as i32;
 }
 
-recursive fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
-    guard idx >= 0 && idx < tls::g_tls_cipher_slots.len && tls::g_tls_cipher_slots[idx].in_use else { return -1; }
-    guard !tls::aead_exceeds_hard_limit(
-        tls::g_tls_cipher_slots[idx].cipher_suite, tls::g_tls_cipher_slots[idx].rx_seq,
-    ) else {
-        return -1;
-    }
+const MAX_POST_HANDSHAKE_CTRL_RECORDS_PER_READ: u32 = 64;
 
+fn tls_recv_app_record(fd: i64, slot_idx: u16, idx: i64, dst: u8[:], timeout_ms: u32) -> i32 {
+    guard idx >= 0 && idx < tls::g_tls_cipher_slots.len && tls::g_tls_cipher_slots[idx].in_use else { return -1; }
     var plain_dec: u8[16640] = [0; 16640];
     defer core::secure_zeroize_slice(plain_dec[..]);
-    var inner_type: u8 = 0;
-    let dec_len = tls_read_and_unseal_app_record(fd, slot_idx, idx, timeout_ms, plain_dec[..], inner_type);
-    if dec_len <= 0 && inner_type == 0 {
-        return dec_len as i32;
-    }
+    var ctrl_records: u32 = 0;
 
-    if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA {
-        if dec_len == 0 {
+    while ctrl_records < MAX_POST_HANDSHAKE_CTRL_RECORDS_PER_READ {
+        guard !tls::aead_exceeds_hard_limit(
+            tls::g_tls_cipher_slots[idx].cipher_suite, tls::g_tls_cipher_slots[idx].rx_seq,
+        ) else {
+            return -1;
+        }
+        var inner_type: u8 = 0;
+        let dec_len = tls_read_and_unseal_app_record(fd, slot_idx, idx, timeout_ms, plain_dec[..], inner_type);
+        if dec_len <= 0 && inner_type == 0 {
+            return dec_len as i32;
+        }
+        if inner_type == rfc::TLS_CONTENT_APPLICATION_DATA {
+            if dec_len > 0 {
+                return tls_deliver_rx_app_data(idx, plain_dec[..dec_len], dst);
+            }
             let empty_cnt = core::add_sat_u64(tls::g_tls_cipher_slots[idx].empty_app_records, 1);
             guard empty_cnt <= 32 else {
                 send_encrypted_fatal_alert(fd, slot_idx, tls::Alert.UnexpectedMessage);
                 return -1;
             }
             tls::g_tls_cipher_slots[idx].empty_app_records = empty_cnt as u8;
-            return tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
+            ctrl_records = core::add_sat_u32(ctrl_records, 1);
+            continue;
         }
-        return tls_deliver_rx_app_data(idx, plain_dec[..dec_len], dst);
-    }
-
-    if inner_type == rfc::TLS_CONTENT_ALERT {
-        let alert_rc = tls_handle_rx_alert_record(fd, slot_idx, idx, plain_dec[..dec_len]);
-        if alert_rc == 1 {
-            return tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
+        if inner_type == rfc::TLS_CONTENT_ALERT {
+            let alert_rc = tls_handle_rx_alert_record(fd, slot_idx, idx, plain_dec[..dec_len]);
+            guard alert_rc == 1 else { return alert_rc; }
+            ctrl_records = core::add_sat_u32(ctrl_records, 1);
+            continue;
         }
-        return alert_rc;
-    }
-
-    if inner_type == rfc::TLS_CONTENT_HANDSHAKE {
-        let ph_alert = dispatch_post_handshake_record(fd, slot_idx, plain_dec[..dec_len]);
-        guard ph_alert == tls::Alert.CloseNotify else {
-            send_encrypted_fatal_alert(fd, slot_idx, ph_alert);
-            return -1;
+        if inner_type == rfc::TLS_CONTENT_HANDSHAKE {
+            let ph_alert = dispatch_post_handshake_record(slot_idx, plain_dec[..dec_len]);
+            guard ph_alert == tls::Alert.CloseNotify else {
+                send_encrypted_fatal_alert(fd, slot_idx, ph_alert);
+                return -1;
+            }
+            ctrl_records = core::add_sat_u32(ctrl_records, 1);
+            continue;
         }
-        return tls_recv_app_record(fd, slot_idx, idx, dst, timeout_ms);
+        send_encrypted_fatal_alert(fd, slot_idx, tls::Alert.UnexpectedMessage);
+        return -1;
     }
     send_encrypted_fatal_alert(fd, slot_idx, tls::Alert.UnexpectedMessage);
     return -1;

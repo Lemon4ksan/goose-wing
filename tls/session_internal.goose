@@ -638,16 +638,6 @@ fn random_bytes_32_checked(out: u8[32]&) -> bool {
     return true;
 }
 
-// Returns 32 cryptographically secure random bytes, failing closed with zeroed output
-// and a wiped entropy pool if the OS CSPRNG fails.
-fn random_bytes_32() -> u8[32] {
-    var out: u8[32] = [0; 32];
-    if !random_bytes_32_checked(out) {
-        core::secure_zeroize_32(out);
-    }
-    return out;
-}
-
 fn read_plaintext_handshake_record(
     fd:          i64,
     out_payload: u8[..16384]&,
