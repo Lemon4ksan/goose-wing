@@ -60,15 +60,15 @@ fn verify_gzip_roundtrip(compressed: const u8[:], expected: const u8[:]) {
 }
 
 fn test_dynamic_level_selection() {
-    let l0 = server::select_dynamic_gzip_level(0);
-    let l64 = server::select_dynamic_gzip_level(64);
-    let l127 = server::select_dynamic_gzip_level(127);
-    let l128 = server::select_dynamic_gzip_level(128);
-    let l500 = server::select_dynamic_gzip_level(500);
-    let l6000 = server::select_dynamic_gzip_level(6000);
-    let l6_custom = server::select_dynamic_gzip_level(500, 6);
-    let l6_tiny = server::select_dynamic_gzip_level(64, 6);
-    let l_fallback = server::select_dynamic_gzip_level(500, 0);
+    let l0 = server_internal::select_dynamic_gzip_level(0);
+    let l64 = server_internal::select_dynamic_gzip_level(64);
+    let l127 = server_internal::select_dynamic_gzip_level(127);
+    let l128 = server_internal::select_dynamic_gzip_level(128);
+    let l500 = server_internal::select_dynamic_gzip_level(500);
+    let l6000 = server_internal::select_dynamic_gzip_level(6000);
+    let l6_custom = server_internal::select_dynamic_gzip_level(500, 6);
+    let l6_tiny = server_internal::select_dynamic_gzip_level(64, 6);
+    let l_fallback = server_internal::select_dynamic_gzip_level(500, 0);
 
     assert(l0 == 0 && l64 == 0 && l127 == 0);
     assert(l128 == 1 && l500 == 1 && l6000 == 1);
@@ -94,7 +94,7 @@ fn test_small_500b_memoized_gzip() {
     http::set_header(res1, "ETag", "\"small-v1\"");
     let _ = res1.body.try_set(json_500[..]);
 
-    let _ = server::stage_server_compress(req, res1, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
+    let _ = server_internal::stage_server_compress(req, res1, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
     assert(http::header(res1, "Content-Encoding") == "gzip");
     assert(http::header(res1, "Vary") == "Accept-Encoding");
     assert(http::header(res1, "ETag") == "\"small-v1-gzip\"");
@@ -111,7 +111,7 @@ fn test_small_500b_memoized_gzip() {
     http::set_header(res2, "ETag", "\"small-v1\"");
     let _ = res2.body.try_set(json_500[..]);
 
-    let _ = server::stage_server_compress(req, res2, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
+    let _ = server_internal::stage_server_compress(req, res2, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
     assert(res2.body[..] == res1.body[..]);
     assert(http::header(res2, "Content-Encoding") == "gzip");
     assert(http::header(res2, "Vary") == "Accept-Encoding");
@@ -137,7 +137,7 @@ fn test_feed_6000b_and_24000b_payloads() {
     http::set_header(res_6k, "ETag", "\"feed20\"");
     let _ = res_6k.body.try_set(feed_6k[..]);
 
-    let _ = server::stage_server_compress(req, res_6k, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
+    let _ = server_internal::stage_server_compress(req, res_6k, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
     assert(http::header(res_6k, "Content-Encoding") == "gzip");
     assert(http::header(res_6k, "Vary") == "Accept-Encoding");
     assert(http::header(res_6k, "ETag") == "\"feed20-gzip\"");
@@ -151,7 +151,7 @@ fn test_feed_6000b_and_24000b_payloads() {
     http::set_header(res_24k, "ETag", "\"feed80\"");
     let _ = res_24k.body.try_set(feed_24k[..]);
 
-    let _ = server::stage_server_compress(req, res_24k, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
+    let _ = server_internal::stage_server_compress(req, res_24k, server::STAGE_EGRESS_COMPRESS_GZIP, memo);
     assert(http::header(res_24k, "Content-Encoding") == "gzip");
     assert(http::header(res_24k, "Vary") == "Accept-Encoding");
     assert(http::header(res_24k, "ETag") == "\"feed80-gzip\"");
@@ -176,7 +176,7 @@ fn test_zstd_and_brotli_large_feeds() {
     var res_zstd = http::Response { status_code: 200, .. };
     http::set_header(res_zstd, "ETag", "\"z24\"");
     let _ = res_zstd.body.try_set(feed_24k[..]);
-    let _ = server::stage_server_compress(req_zstd, res_zstd, server::STAGE_EGRESS_COMPRESS_ZSTD, memo);
+    let _ = server_internal::stage_server_compress(req_zstd, res_zstd, server::STAGE_EGRESS_COMPRESS_ZSTD, memo);
     assert(http::header(res_zstd, "Content-Encoding") == "zstd");
     assert(http::header(res_zstd, "ETag") == "\"z24-zstd\"");
     var z_dec: u8[>..] = [];
@@ -188,7 +188,7 @@ fn test_zstd_and_brotli_large_feeds() {
     var res_br = http::Response { status_code: 200, .. };
     http::set_header(res_br, "ETag", "\"b6\"");
     let _ = res_br.body.try_set(feed_6k[..]);
-    let _ = server::stage_server_compress(req_br, res_br, server::STAGE_EGRESS_COMPRESS_BROTLI, memo);
+    let _ = server_internal::stage_server_compress(req_br, res_br, server::STAGE_EGRESS_COMPRESS_BROTLI, memo);
     assert(http::header(res_br, "Content-Encoding") == "br");
     assert(http::header(res_br, "ETag") == "\"b6-br\"");
     var b_dec: u8[>..] = [];
@@ -215,7 +215,7 @@ fn test_pipeline_config_gzip_level_override() {
     var res_l1 = http::Response { status_code: 200, .. };
     http::set_header(res_l1, "ETag", "\"cfg-l1\"");
     let _ = res_l1.body.try_set(json_500[..]);
-    server::dispatch_egress_pipeline(cfg, req, res_l1, pso_gz, 1000, -1);
+    server_internal::dispatch_egress_pipeline(cfg, req, res_l1, pso_gz, 1000, -1);
     assert(res_l1.body[8] == 4);
     verify_gzip_roundtrip(res_l1.body[..], json_500[..]);
 
@@ -223,7 +223,7 @@ fn test_pipeline_config_gzip_level_override() {
     var res_500_l6 = http::Response { status_code: 200, .. };
     http::set_header(res_500_l6, "ETag", "\"cfg-l6-small\"");
     let _ = res_500_l6.body.try_set(json_500[..]);
-    server::dispatch_egress_pipeline(cfg, req, res_500_l6, pso_gz, 1000, -1);
+    server_internal::dispatch_egress_pipeline(cfg, req, res_500_l6, pso_gz, 1000, -1);
     assert(res_500_l6.body[8] == 2); // RFC 1952 XFL=2 for level >= 6
     assert(http::header(res_500_l6, "Content-Encoding") == "gzip");
     assert(http::header(res_500_l6, "Vary") == "Accept-Encoding");
@@ -233,7 +233,7 @@ fn test_pipeline_config_gzip_level_override() {
     var res_6k_l6 = http::Response { status_code: 200, .. };
     http::set_header(res_6k_l6, "ETag", "\"cfg-l6-feed\"");
     let _ = res_6k_l6.body.try_set(feed_6k[..]);
-    server::dispatch_egress_pipeline(cfg, req, res_6k_l6, pso_gz, 1000, -1);
+    server_internal::dispatch_egress_pipeline(cfg, req, res_6k_l6, pso_gz, 1000, -1);
     assert(res_6k_l6.body[8] == 2);
     assert(http::header(res_6k_l6, "Content-Encoding") == "gzip");
     assert(http::header(res_6k_l6, "Vary") == "Accept-Encoding");

@@ -11,7 +11,9 @@ import .router;
 import .pool;
 import .pipeline;
 import .profiler;
-import .h2_multiplexer;
+import .h2_mux_types_internal;
+import .h2_mux_frames_internal;
+import .h2_mux_streams_internal;
 import .soa_timer;
 import realtime.topic_tree;
 import http.compression_dict;
@@ -22,7 +24,9 @@ import .sni;
 import net.accel;
 import net.transport;
 import tls.backend;
-import .server_internal;
+import .server_h1_internal;
+import .server_fast_l0_internal;
+import .server_transport_internal;
 import .h1_codec_internal;
 import .pipeline_internal;
 import .router_internal;
@@ -104,10 +108,6 @@ fn set_header_memoization(server: HttpServer&, enabled: bool) {
         server.fast_l0_last_host.clear();
         server.pipeline.has_valid_host = false;
     }
-}
-
-inline fn refresh_http_server_date(server: HttpServer&, now_sec: i64) {
-    server_internal::update_server_cached_date(server.cached_date, now_sec, server.server_name[..]);
 }
 
 fn new_http_server(
@@ -471,68 +471,6 @@ fn handle_connection_wire<B>(
     return handle_connection_wire(server, client_ip, wire_in, now_ns, wire_out, noop);
 }
 
-// Handles incomplete pipelined HTTP stream or syntax errors.
-fn handle_pipelined_parse_failure<B>(
-    server_name:     const u8[:],
-    stream:          const u8[:],
-    req:             const http::Request&,
-    wire_out:        B&,
-    out_keep_stream: bool&,
-) -> bool {
-    let hdr_end = core::fast_find_crlfcrlf(stream);
-    let is_valid_prefix = server_internal::is_possible_http_method_prefix(stream);
-
-    if hdr_end >= 0 && hdr_end + 4 <= 8192 && is_valid_prefix && req.headers.entries.len > 0 {
-        let has_te = http::has_header(req, "transfer-encoding");
-        let has_cl = http::has_header(req, "content-length");
-        // If both TE and CL are present, reject immediately as smuggling attempt (RFC 9112 §6.1, §6.3)
-        if has_te && has_cl {
-            serialize_bad_request_error(server_name, wire_out);
-            out_keep_stream = false;
-            return false;
-        }
-
-        // Headers are complete; check if Content-Length body is still incomplete
-        let cl_str = req.header("content-length");
-        var cl_handled_keep = false;
-        if has_cl {
-            let cl_done = server_internal::check_pipelined_content_length(
-                stream,
-                hdr_end,
-                cl_str,
-                server_name,
-                wire_out,
-                cl_handled_keep,
-            );
-            if cl_done {
-                out_keep_stream = cl_handled_keep;
-                return cl_handled_keep;
-            }
-        }
-        let te_str = req.header("transfer-encoding");
-        if has_te && server_internal::validate_decodeable_chunked_te(te_str) {
-            return server_internal::check_pipelined_chunked_head(
-                stream,
-                hdr_end,
-                server_name,
-                wire_out,
-                out_keep_stream,
-            );
-        }
-    }
-
-    if hdr_end >= 0 || stream.len > 8192 || !is_valid_prefix {
-        // Complete headers but invalid syntax, or header overflow > 8192,
-        // or trailing unparseable poison bytes: 400 Bad Request
-        serialize_bad_request_error(server_name, wire_out);
-        out_keep_stream = false;
-        return false;
-    }
-    // Legitimate incomplete request across packet boundary: return so caller preserves stream in leftover
-    out_keep_stream = true;
-    return true;
-}
-
 inline fn reset_server_request_fast(req: http::Request&) {
     req.method.clear();
     req.url.clear();
@@ -551,11 +489,6 @@ struct ServerRequest {
 inline fn reset_server_request(sreq: ServerRequest&) {
     reset_server_request_fast(sreq.req);
     sreq.raw_header_arena.clear();
-}
-
-// Converts monotonic nanoseconds to seconds for HTTP Date header caching.
-inline fn nanos_to_http_date_sec(now_ns: u64) -> i64 {
-    return div_euclid(now_ns, 1000000000) as i64;
 }
 
 // Processes an incoming connection stream that may contain multiple pipelined HTTP requests with `<Stage>`.
@@ -845,7 +778,7 @@ inline fn init_run_state(server: HttpServer&) {
 inline fn has_ready_http1_request(in_buf: const u8[:], hdr_scan_cursor: i64&) -> bool {
     guard !is_partial_h2_client_preface(in_buf) && !is_h2_client_preface(in_buf) else { return false; }
     guard !server_internal::is_invalid_connection_preface(in_buf) else { return false; }
-    let hdr_end = scan_crlfcrlf_incremental(in_buf, hdr_scan_cursor);
+    let hdr_end = server_internal::scan_crlfcrlf_incremental(in_buf, hdr_scan_cursor);
     guard hdr_end >= 0 else { return false; }
     return is_http1_request_ready(in_buf, hdr_end);
 }
@@ -1076,21 +1009,10 @@ fn configure_server_mtls(
     return true;
 }
 
-inline fn is_valid_alpn_wire(alpn_wire: const u8[:]) -> bool {
-    var pos: i64 = 0;
-    while pos < alpn_wire.len {
-        let plen = alpn_wire[pos] as i64;
-        let next_pos = core::add_sat_i64(core::add_sat_i64(pos, 1), plen);
-        guard plen > 0 && next_pos <= alpn_wire.len else { return false; }
-        pos = next_pos;
-    }
-    return true;
-}
-
 // Configures default RFC 7301 length-prefixed ALPN wire protocol list on `srv` transactionally.
 // Pass an empty slice to revert to the default `h2` + `http/1.1` preference list.
 fn set_server_tls_alpn(srv: HttpServer&, alpn_wire: const u8[:]) -> bool {
-    guard alpn_wire.len <= srv.tls_alpn_wire.cap && is_valid_alpn_wire(alpn_wire) else {
+    guard alpn_wire.len <= srv.tls_alpn_wire.cap && server_internal::is_valid_alpn_wire(alpn_wire) else {
         return false;
     }
     var alpn_buf: u8[..64] = [];

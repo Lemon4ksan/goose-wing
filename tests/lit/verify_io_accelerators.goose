@@ -513,22 +513,22 @@ fn test_review_fixes_timeouts_rio_cancel_and_ktls_keyupdate(srv: server::HttpSer
     }
 
     // 3. Important #3: kTLS post-handshake KeyUpdate disconnect + EAGAIN non-close + NewSessionTicket skip
-    let add_eagain, any_eagain, cls_eagain = server::classify_ktls_recv_turn(-2, 0, "", 0);
+    let add_eagain, any_eagain, cls_eagain = server_internal::classify_ktls_recv_turn(-2, 0, "", 0);
     assert(add_eagain == 0 && !any_eagain && !cls_eagain);
 
     let nst_rec: u8[8] = [rfc::TLS_HS_NEW_SESSION_TICKET, 0, 0, 4, 0, 0, 0, 1];
-    let add_nst, any_nst, cls_nst = server::classify_ktls_recv_turn(8, rfc::TLS_CONTENT_HANDSHAKE, nst_rec[..], 0);
+    let add_nst, any_nst, cls_nst = server_internal::classify_ktls_recv_turn(8, rfc::TLS_CONTENT_HANDSHAKE, nst_rec[..], 0);
     assert(add_nst == 0 && !any_nst && !cls_nst);
 
     let ku_rec: u8[5] = [rfc::TLS_HS_KEY_UPDATE, 0, 0, 1, 0];
-    let add_ku, any_ku, cls_ku = server::classify_ktls_recv_turn(5, rfc::TLS_CONTENT_HANDSHAKE, ku_rec[..], 0);
+    let add_ku, any_ku, cls_ku = server_internal::classify_ktls_recv_turn(5, rfc::TLS_CONTENT_HANDSHAKE, ku_rec[..], 0);
     assert(add_ku == 0 && !any_ku && cls_ku);
 
     let al_rec: u8[2] = [1, 0];
-    let add_al, any_al, cls_al = server::classify_ktls_recv_turn(2, rfc::TLS_CONTENT_ALERT, al_rec[..], 0);
+    let add_al, any_al, cls_al = server_internal::classify_ktls_recv_turn(2, rfc::TLS_CONTENT_ALERT, al_rec[..], 0);
     assert(add_al == 0 && !any_al && cls_al);
 
-    let add_app, any_app, cls_app = server::classify_ktls_recv_turn(4, rfc::TLS_CONTENT_APPLICATION_DATA, "PING", 0);
+    let add_app, any_app, cls_app = server_internal::classify_ktls_recv_turn(4, rfc::TLS_CONTENT_APPLICATION_DATA, "PING", 0);
     assert(add_app == 4 && any_app && !cls_app);
 
     print("FINAL_REVIEW_FIXES: OK");

@@ -1494,27 +1494,27 @@ fn test_srvproxy_05_06_07_08_headers_crc32c_and_memo() {
 
     var last_host: u8[..128] = [];
     var has_host = false;
-    assert(server::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
+    assert(server_internal::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
     assert(has_host && last_host[..] == "edge.example.com");
-    assert(server::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
+    assert(server_internal::validate_span_host_header_memoized(post_hdr, 0, last_host, has_host));
 
     var scan_cur: i64 = 0;
     let partial_req = "GET / HTTP/1.1\r\nHost: edge.example.com\r\n";
-    assert(server::scan_crlfcrlf_incremental(partial_req, scan_cur) == -1 && scan_cur == partial_req.len);
+    assert(server_internal::scan_crlfcrlf_incremental(partial_req, scan_cur) == -1 && scan_cur == partial_req.len);
     let full_req = "GET / HTTP/1.1\r\nHost: edge.example.com\r\n\r\n";
-    assert(server::scan_crlfcrlf_incremental(full_req, scan_cur) == 38 && scan_cur == 0);
+    assert(server_internal::scan_crlfcrlf_incremental(full_req, scan_cur) == 38 && scan_cur == 0);
 
     var date_buf: u8[..64] = [];
-    server::format_local_http_date(date_buf, 1700000000);
+    server_internal::format_local_http_date(date_buf, 1700000000);
     var srv = server::new_http_server_with_quota("127.0.0.1", 8080, security::new_gcra_quota(100, wing::secs(1), 10));
-    server::refresh_http_server_date(srv, 1700000000);
+    server_internal::refresh_http_server_date(srv, 1700000000);
     server::add_put_route(srv, "/put", 1);
     server::add_delete_route(srv, "/del", 2);
     var stg_req = http::new_request("PUT", "/put");
     var stg_match = server::RouteMatchResult.NotFound;
-    let _ = server::stage_server_route_match(srv.pipeline.router, stg_req, srv.pipeline.ext_pool.slots[0], stg_match, res_304);
+    let _ = server_internal::stage_server_route_match(srv.pipeline.router, stg_req, srv.pipeline.ext_pool.slots[0], stg_match, res_304);
     var te_buf: u8[..64] = [];
-    let _ = server::collect_transfer_encoding_headers(stg_req.headers, te_buf);
+    let _ = server_internal::collect_transfer_encoding_headers(stg_req.headers, te_buf);
     assert(server::serve_page_ring(srv, -1, 0) == 0);
     assert(!server::send_static_mmap_file(-1, "/nonexistent", "text/plain"));
     print("SRVPROXY_05_06_07_08_ALL: ok\n");

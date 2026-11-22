@@ -150,7 +150,7 @@ fn test_pipeline_64_slot_and_user_stages() {
     var srv_sctx = server::ServerStageCtx { .. };
     var srv_chain = wire::chain_stages(ServerUserStageA { .. }, ServerUserStageB { .. });
 
-    let srv_outcome, is_term = server::dispatch_custom_stage_bindings(
+    let srv_outcome, is_term = server_internal::dispatch_custom_stage_bindings(
         srv_cfg,
         req,
         srv_res,
@@ -179,8 +179,8 @@ fn test_pipeline_64_slot_and_user_stages() {
 
 fn test_server_time_methods_h2_and_memo() {
     // 2a. nanos_to_http_date_sec exact division vs >> 30 drift regression
-    let sec_1 = server::nanos_to_http_date_sec(1000000000);
-    let sec_1700m = server::nanos_to_http_date_sec(1700000000000000000);
+    let sec_1 = server_internal::nanos_to_http_date_sec(1000000000);
+    let sec_1700m = server_internal::nanos_to_http_date_sec(1700000000000000000);
     assert(sec_1 == 1);
     assert(sec_1700m == 1700000000);
 
@@ -270,8 +270,8 @@ fn test_server_time_methods_h2_and_memo() {
     var res_b = http::Response { status_code: 200, .. };
     res_b.body.append("beta-memo-payload");
 
-    let _ = server::stage_server_etag(req_etag, res_a, cfg_a.memo);
-    let _ = server::stage_server_etag(req_etag, res_b, cfg_b.memo);
+    let _ = server_internal::stage_server_etag(req_etag, res_a, cfg_a.memo);
+    let _ = server_internal::stage_server_etag(req_etag, res_b, cfg_b.memo);
     assert(cfg_a.memo.etag_src[..] == "alpha-memo-payload");
     assert(cfg_b.memo.etag_src[..] == "beta-memo-payload");
     assert(cfg_a.memo.etag_val[..] != cfg_b.memo.etag_val[..]);

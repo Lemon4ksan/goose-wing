@@ -1910,7 +1910,7 @@ fn srv_reg1_run_round2_part3(t: lit::T&) {
         let _, _ = server::parse_http1_wire_request(chunk_wire, req_huge);
         var keep_huge = true;
         var huge_out: u8[..512] = [];
-        let _ = server::handle_pipelined_parse_failure("goose-wing/1.0", chunk_wire, req_huge, huge_out, keep_huge);
+        let _ = server_internal::handle_pipelined_parse_failure("goose-wing/1.0", chunk_wire, req_huge, huge_out, keep_huge);
         sub.assert_false(keep_huge, "Oversized chunk size > 10MB in pipelined stream closes connection");
         sub.assert_contains(huge_out[..], "HTTP/1.1 413", "Oversized chunk emits 413 Payload Too Large");
 
@@ -2180,19 +2180,19 @@ fn test_srv_reg3_r1_cache_and_edge_filter(t: lit::T&) {
         http::set_header(req1, "Host", "127.0.0.1");
         var res1 = http::Response { status_code: 200, .. };
         res1.body.append("payload-alice");
-        let v_m1 = server::stage_server_cache_lookup(cfg.route_cache, req1, 1000, res1, 201);
+        let v_m1 = server_internal::stage_server_cache_lookup(cfg.route_cache, req1, 1000, res1, 201);
         sub.assert_true(v_m1 == wire::StageVerdict.Continue, "Initial /items/alice is cache miss");
-        let _ = server::stage_server_cache_store(cfg.route_cache, 1000, res1, 201, req1.url[..]);
+        let _ = server_internal::stage_server_cache_store(cfg.route_cache, 1000, res1, 201, req1.url[..]);
 
         var req2 = http::new_request("GET", "/items/bob");
         http::set_header(req2, "Host", "127.0.0.1");
         var res2 = http::Response { status_code: 200, .. };
-        let v_m2 = server::stage_server_cache_lookup(cfg.route_cache, req2, 1001, res2, 201);
+        let v_m2 = server_internal::stage_server_cache_lookup(cfg.route_cache, req2, 1001, res2, 201);
         sub.assert_true(v_m2 == wire::StageVerdict.Continue, "/items/bob sharing handler_id 201 must not hit /items/alice cache entry");
 
         // F001b: SWR HitStaleNeedsUpdate sets is_updating=true; oversized/failed store must still clear is_updating
         var res_swr = http::Response { status_code: 200, .. };
-        let v_swr = server::stage_server_cache_lookup(cfg.route_cache, req1, 2500, res_swr, 201);
+        let v_swr = server_internal::stage_server_cache_lookup(cfg.route_cache, req1, 2500, res_swr, 201);
         sub.assert_true(v_swr == wire::StageVerdict.Continue, "First stale request triggers background update (HitStaleNeedsUpdate)");
         sub.assert_true(cfg.route_cache.is_updating, "is_updating is true during refresh");
         var huge_payload: u8[..16400] = [];
@@ -2235,7 +2235,7 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
             res_c.body.push('A');
         }
         let pso_gzip_only = (server::DEFAULT_ROUTE_PSO_MASK & ~(server::STAGE_EGRESS_COMPRESS_BROTLI | server::STAGE_EGRESS_COMPRESS_ZSTD)) | server::STAGE_EGRESS_COMPRESS_GZIP;
-        server::dispatch_egress_pipeline(cfg, req_c, res_c, pso_gzip_only, 1000, -1);
+        server_internal::dispatch_egress_pipeline(cfg, req_c, res_c, pso_gzip_only, 1000, -1);
         sub.assert_eq(http::header(res_c, "content-encoding"), "gzip", "Only gzip enabled in egress PSO must not select zstd");
 
         // F005: Compression must strip stale Content-Length and weaken/qualify strong ETag
@@ -2271,7 +2271,7 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
         var req_ck = http::new_request("GET", "/");
         http::set_header(req_ck, "Cookie", hdr_cookie[..]);
         var ext_ck = server_internal::RequestExtensions { .. };
-        let _ = server::stage_server_auth_cookie(cfg.private_jar, req_ck, ext_ck, 1000000000);
+        let _ = server_internal::stage_server_auth_cookie(cfg.private_jar, req_ck, ext_ck, 1000000000);
         sub.assert_eq(ext_ck.session_data[..], "uid=42", "Valid second session cookie accepted after tossed first cookie");
 
         // F006b: Forwarded multi-element & X-Forwarded-For port stripping + ConnectionTimer activity reset

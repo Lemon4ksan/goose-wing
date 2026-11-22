@@ -13,12 +13,19 @@ import core;
 import .router;
 import .pool;
 import .pipeline;
-import .h2_multiplexer;
+import .h2_mux_types_internal;
+import .h2_mux_frames_internal;
+import .h2_mux_streams_internal;
 import .soa_timer;
 import .server;
 import net.accel;
-import .reactor_internal;
-import .server_internal;
+import .reactor_async_internal;
+import .reactor_conn_internal;
+import .reactor_io_internal;
+import .reactor_accel_internal;
+import .server_h1_internal;
+import .server_fast_l0_internal;
+import .server_transport_internal;
 import .h1_codec;
 import .h1_codec_internal;
 import .internal;
@@ -150,43 +157,6 @@ fn slot_transport(table: const SoAConnTable&, slot: i64) -> net::Transport {
     return net::Transport.Tcp { fd: fd };
 }
 
-// Classifies a single kTLS `smartnic_recv_record` outcome into `(app_bytes, any_recvd, should_close)`.
-fn classify_ktls_recv_turn(
-    recvd:        i32,
-    rtype:        u8,
-    rec_bytes:    const u8[:],
-    buffered_len: i64,
-) -> i64, bool, bool {
-    if recvd == -2 {
-        return 0, buffered_len > 0, false;
-    }
-    if recvd <= 0 || rtype == rfc::TLS_CONTENT_ALERT {
-        return 0, buffered_len > 0, buffered_len == 0;
-    }
-    if rtype == rfc::TLS_CONTENT_APPLICATION_DATA {
-        return recvd, true, false;
-    }
-    if rtype == rfc::TLS_CONTENT_HANDSHAKE {
-        let hs_len = min(recvd as i64, rec_bytes.len);
-        let ctl = tls::inspect_unsealed_handshake_control(rec_bytes[..hs_len]);
-        return 0, buffered_len > 0, ctl != tls::SliceUnsealStatus.ControlHandled;
-    }
-    return 0, buffered_len > 0, false;
-}
-
-inline fn resolve_reactor_slot_cap(server: const HttpServer&) -> i64 {
-    if server.max_connections > 0 {
-        return min(server.max_connections as i64, server_internal::REACTOR_MAX_DYNAMIC_SLOTS);
-    }
-    return server_internal::REACTOR_MAX_DYNAMIC_SLOTS;
-}
-
-inline fn resolve_reactor_idle_sec(server: const HttpServer&) -> u8 {
-    guard server.idle_timeout_ms > 0 else { return 15; }
-    let sec = max(div_euclid(core::add_sat_u64(server.idle_timeout_ms, 999), 1000), 1);
-    return min(sec, core::TICK_TIMER_MAX_DELTA) as u8;
-}
-
 // Executes a share-nothing reactor loop with OS completion/readiness acceleration and a `<Stage>` hook.
 fn serve_reactor_with_stage<Stage>(
     server:          HttpServer&,
@@ -198,7 +168,7 @@ fn serve_reactor_with_stage<Stage>(
     guard server_internal::reactor_prepare_loop(server, listener_fd) else { return 0; }
     defer net::reactor_close_accel(g_reactor_accel);
 
-    let slot_cap = resolve_reactor_slot_cap(server);
+    let slot_cap = server_internal::resolve_reactor_slot_cap(server);
     var table = SoAConnTable { max_slots: slot_cap, .. };
     var slot_pool = server_internal::ReactorSlotPool { max_slots: slot_cap, .. };
     var leftover_pool = slice_pool<u8> {};
@@ -206,7 +176,7 @@ fn serve_reactor_with_stage<Stage>(
     let dummy_tls_cfg = tls::ServerHandshakeConfig { .. };
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
-    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: resolve_reactor_idle_sec(server), .. };
+    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: server_internal::resolve_reactor_idle_sec(server), .. };
     var last_sweep_sec:    i64  = 0;
     var turn_counter:      i64  = 0;
     var cached_now_ns:     u64  = 0;
@@ -271,14 +241,14 @@ fn serve_reactor_tls_with_stage<Stage>(
     guard server_internal::reactor_prepare_loop(server, listener_fd) else { return 0; }
     defer net::reactor_close_accel(g_reactor_accel);
 
-    let slot_cap = resolve_reactor_slot_cap(server);
+    let slot_cap = server_internal::resolve_reactor_slot_cap(server);
     var table = SoAConnTable { max_slots: slot_cap, .. };
     var slot_pool = server_internal::ReactorSlotPool { max_slots: slot_cap, .. };
     var leftover_pool = slice_pool<u8> {};
 
     var ready_udata:  u64[4096] = [0; 4096];
     var total_served: i64       = 0;
-    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: resolve_reactor_idle_sec(server), .. };
+    var timer_wheel = core::TickTimerWheel { idle_timeout_sec: server_internal::resolve_reactor_idle_sec(server), .. };
     var last_sweep_sec:    i64  = 0;
     var turn_counter:      i64  = 0;
     var cached_now_ns:     u64  = 0;

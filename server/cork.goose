@@ -16,6 +16,7 @@ import http.response;
 import realtime.sse;
 import .h1_codec;
 import .internal;
+import .stream_internal;
 
 const CORK_WOULD_BLOCK: i32 = -2;
 
@@ -57,13 +58,6 @@ fn cork_send_raw2(fd: i64, head: const u8[:], body: const u8[:]) -> i32 {
     return net::tcp_send2(fd, head, body);
 }
 
-inline fn cork_flush_error_code(flushed: i32, is_empty: bool) -> i32 {
-    if flushed == CORK_WOULD_BLOCK || (flushed >= 0 && !is_empty) {
-        return CORK_WOULD_BLOCK;
-    }
-    return -1;
-}
-
 // Writes data into the cork buffer. If it fits, data is buffered without any syscall.
 // If the buffer would overflow, pending data is flushed first, then data is buffered or sent directly.
 // Returns bytes written (>= 0), `-2` on non-blocking WouldBlock, or `-1` on socket error.
@@ -78,7 +72,7 @@ fn server_cork_write(sc: ServerCork&, data: const u8[:]) -> i32 {
     // Buffer would overflow: flush current pending bytes first
     let flushed = server_cork_flush(sc);
     guard flushed >= 0 && sc.buffer.cork_is_empty() else {
-        return cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
+        return server_internal::cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
     }
 
     if data.len >= core::CORK_BUFFER_CAP {
@@ -107,7 +101,7 @@ fn server_cork_write2(sc: ServerCork&, head: const u8[:], body: const u8[:]) -> 
 
     let flushed = server_cork_flush(sc);
     guard flushed >= 0 && sc.buffer.cork_is_empty() else {
-        return cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
+        return server_internal::cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
     }
 
     if total_len >= core::CORK_BUFFER_CAP {
@@ -201,7 +195,7 @@ fn cork_write_http1_chunk(sc: ServerCork&, payload: const u8[:]) -> i32 {
     }
     let flushed = server_cork_flush(sc);
     guard flushed >= 0 && sc.buffer.cork_is_empty() else {
-        return cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
+        return server_internal::cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
     }
     if frame_len < core::CORK_BUFFER_CAP {
         let _ = sc.buffer.cork_write(chunk_hdr[..]);
@@ -223,7 +217,7 @@ fn cork_end_http1_chunked(sc: ServerCork&, flush_now: bool = true) -> i32 {
     if flush_now {
         let flushed = server_cork_flush(sc);
         guard flushed >= 0 && sc.buffer.cork_is_empty() else {
-            return cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
+            return server_internal::cork_flush_error_code(flushed, sc.buffer.cork_is_empty());
         }
     }
     return w;

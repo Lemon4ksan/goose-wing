@@ -233,11 +233,11 @@ fn verify_pipeline_fixes_and_cork() {
     var res_nt = http::Response { status_code: 200, .. };
     res_nt.body.append("hello world hello world");
     http::set_header(res_nt, "Cache-Control", "public, no-transform");
-    let has_nt = server::has_cache_no_transform(res_nt.headers);
-    let comp_nt = server::is_compressible_response(res_nt);
+    let has_nt = server_internal::has_cache_no_transform(res_nt.headers);
+    let comp_nt = server_internal::is_compressible_response(res_nt);
     var res_206 = http::Response { status_code: 206, .. };
     res_206.body.append("partial content bytes");
-    let comp_206 = server::is_compressible_response(res_206);
+    let comp_206 = server_internal::is_compressible_response(res_206);
     print("compress_guard:", has_nt, " ", comp_nt, " ", comp_206);
     // CHECK: compress_guard:true false false
 

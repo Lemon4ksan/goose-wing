@@ -17,6 +17,7 @@ import http.response;
 import wire.h1;
 import .profiler;
 import .h1_codec;
+import .h1_serialize_internal;
 
 // Appends transfer-encoding header value with comma delimiter.
 fn append_te_header_value<B>(te_buf: B&, val: const u8[:]) -> bool {
@@ -236,7 +237,7 @@ fn validate_request_host_presence<Req>(
     }
     if has_host {
         if server::g_h1_parse_cache.enabled {
-            guard server::validate_span_host_header_memoized(
+            guard validate_span_host_header_memoized(
                 out_req.headers,
                 presence_tracker.host_idx,
                 server::g_h1_parse_cache.valid_host,
@@ -641,213 +642,170 @@ checkfree inline fn clear_parsed_wire_response<Res>(out_res: Res&) {
     out_res.presence_mask = 0;
 }
 
-// Serializes an HTTP/1.1 response status line (RFC 9112 Section 4).
-fn serialize_status_line<B>(status_code: i32, out: B&) {
-    let pre = rfc::status_line_h1(status_code);
-    if pre.len > 0 {
-        out.append(pre);
-        return;
-    }
-    out.append("HTTP/1.1 ");
-    var code_buf: u8[16] = [0; 16];
-    let n = core::fast_u64toa(status_code as u64, code_buf[..]);
-    if n > 0 {
-        out.append(code_buf[..n]);
-    } else {
-        status_code.format_i64_dec(out);
-    }
-    out.push(' ');
-    out.append(rfc::status_phrase(status_code));
-    out.append("\r\n");
-}
-
-fn serialize_server_header<B>(server_name: const u8[:], out: B&) {
-    guard server_name.len > 0 else { return; }
-    if server_name == "goose-wing" {
-        out.append(server::DEFAULT_SERVER_HEADER);
-        return;
-    }
-    out.append("Server: ");
-    out.append(server_name);
-    out.append("\r\n");
-}
-
-fn serialize_http1_chunked_response<Res, B>(
-    res:         const Res&,
-    server_name: const u8[:],
-    chunk_size:  i64,
-    out_wire:    B&,
-) {
-    serialize_status_line(res.status_code, out_wire);
-    serialize_server_header(server_name, out_wire);
-    if !res.has_header("date") {
-        out_wire.append(server::get_cached_http_date_header(0));
-    }
-    out_wire.append("Transfer-Encoding: chunked\r\n");
-
-    if res.trailers.entries.len > 0 {
-        out_wire.append("Trailer: ");
-        for i in res.trailers.entries.len {
-            if i > 0 { out_wire.append(", "); }
-            out_wire.append(http::entry_name(res.trailers, res.trailers.entries[i]));
-        }
-        out_wire.append("\r\n");
-    }
-
-    let has_conn = res.has_header("connection");
-    for &e in res.headers.entries {
-        let hname = http::entry_name(res.headers, e);
-        let hval = http::entry_value(res.headers, e);
-        if hname.eq_ascii_fold("content-length") { continue; }
-        if hname.eq_ascii_fold("transfer-encoding") { continue; }
-        if hname.eq_ascii_fold("trailer") && res.trailers.entries.len > 0 { continue; }
-
-        out_wire.append(hname);
-        out_wire.append(": ");
-        out_wire.append(hval);
-        out_wire.append("\r\n");
-    }
-
-    if !has_conn {
-        out_wire.append("Connection: keep-alive\r\n");
-    }
-    out_wire.append("\r\n");
-
-    client::encode_chunked_payload(res.body[..], res.trailers, chunk_size, out_wire);
-}
-
-const HTTP1_200_SERVER_GOOSE: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing\r\n";
-
-const HTTP1_200_SERVER_GOOSE_V1: const u8[:] = "HTTP/1.1 200 OK\r\nServer: goose-wing/1.0\r\n";
-
-fn update_server_cached_date(
-    date:        server::CachedHttpDate&,
-    now_sec:     i64,
-    server_name: const u8[:] = "goose-wing",
-) {
-    let tick_sec = if now_sec > 0 { now_sec } else { core::now().wall_sec };
-    if date.header_str.len == 0 || date.last_sec != tick_sec {
-        date.last_sec = tick_sec;
-        date.last_tsc = server::prof_rdtsc();
-        let wall_sec = if now_sec >= 1577836800 { now_sec } else { core::now().wall_sec };
-        date.header_str.clear();
-        date.header_str.append("Date: ");
-        core::format_http(date.header_str, core::unix(wall_sec, 0));
-        date.header_str.append("\r\n");
-
-        date.fast_prefix.clear();
-        date.fast_prefix.append("HTTP/1.1 200 OK\r\n");
-        serialize_server_header(server_name, date.fast_prefix);
-        date.fast_prefix.append(date.header_str[..]);
-
-        date.fast_prefix_v1.clear();
-        date.fast_prefix_v1.append(HTTP1_200_SERVER_GOOSE_V1);
-        date.fast_prefix_v1.append(date.header_str[..]);
-    }
-}
-
-var g_compat_date: server::CachedHttpDate = server::CachedHttpDate { .. };
-
-// Formats Content-Length decimal header fast without divisions for common lengths.
-const CL_HEADER_PREFIX: const u8[:] = "Content-Length: ";
-
-fn serialize_content_length_header<B>(body_len: i64, out: B&) {
-    if body_len <= 0 {
-        out.append("Content-Length: 0\r\n");
-        return;
-    }
-    var buf: u8[48] = [0; 48];
-    for i in 16 {
-        buf[i] = CL_HEADER_PREFIX[i];
-    }
-    var pos: i64 = 16;
-    if body_len > 0 && body_len < 10 {
-        buf[pos] = ('0' + (body_len as u8));
-        pos += 1;
-    } else if body_len >= 10 && body_len < 100 {
-        buf[pos] = ('0' + ((body_len / 10) as u8));
-        buf[pos + 1] = ('0' + ((body_len % 10) as u8));
-        pos += 2;
-    } else {
-        let n = core::fast_u64toa(body_len as u64, buf[pos..]);
-        pos += n;
-    }
-    buf[pos] = '\r';
-    buf[pos + 1] = '\n';
-    pos += 2;
-    out.append(buf[..pos]);
-}
-
-fn detect_response_presence_mask(headers: const http::HeaderMap&) -> u16 {
-    var mask: u16 = 0;
-    for &e in headers.entries {
-        let hname = http::entry_name(headers, e);
-        let nlen = hname.len;
-        if nlen == 4 {
-            if (hname[0] == 'd' || hname[0] == 'D') && hname.eq_ascii_fold("date") {
-                mask = mask | http::RES_PRESENCE_DATE;
-            }
-        } else if nlen == 6 {
-            if (hname[0] == 's' || hname[0] == 'S') && hname.eq_ascii_fold("server") {
-                mask = mask | http::RES_PRESENCE_SERVER;
-            }
-        } else if nlen == 10 {
-            if (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold("connection") {
-                mask = mask | http::RES_PRESENCE_CONNECTION;
-            }
-        } else if nlen == 12 {
-            if (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold("content-type") {
-                mask = mask | http::RES_PRESENCE_CONTENT_TYPE;
-            }
-        } else if nlen == 14 {
-            if (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold("content-length") {
-                mask = mask | http::RES_PRESENCE_CONTENT_LENGTH;
-            }
-        } else if nlen == 17 {
-            if (hname[0] == 't' || hname[0] == 'T') && hname.eq_ascii_fold("transfer-encoding") {
-                mask = mask | http::RES_PRESENCE_TRANSFER_ENCODING;
+// Collects transfer-encoding headers into `out_te`. Rolls back `out_te` on overflow.
+fn collect_transfer_encoding_headers<B>(headers: const http::HeaderMap&, out_te: B&) -> bool {
+    let saved_len = out_te.len;
+    var committed = false;
+    defer if !committed { out_te.resize(saved_len); };
+    for &hdr in headers.entries {
+        if http::entry_name(headers, hdr).eq_ascii_fold("transfer-encoding") {
+            guard append_te_header_value(out_te, http::entry_value(headers, hdr)) else {
+                return false;
             }
         }
     }
-    return mask;
+    committed = true;
+    return true;
 }
 
-fn serialize_response_headers_list<B>(headers: const http::HeaderMap&, status_code: i32, has_te: bool, out: B&) {
-    // RFC 9110 §8.6: Forbid Content-Length on 1xx and 204 responses, but allow explicit Content-Length on 304 Not Modified.
-    let forbid_wire_cl = (status_code >= 100 && status_code < 200) || status_code == 204;
-    let is_no_te_status = forbid_wire_cl || status_code == 304;
-    for &e in headers.entries {
-        let hname = http::entry_name(headers, e);
-        let hval = http::entry_value(headers, e);
-        let nlen = hname.len;
-        if (forbid_wire_cl || has_te) && nlen == 14 && hname.eq_ascii_fold("content-length") {
-            continue;
-        }
-        if is_no_te_status && nlen == 17 && hname.eq_ascii_fold("transfer-encoding") {
-            continue;
-        }
-
-        if nlen == 12 && (hname[0] == 'c' || hname[0] == 'C') && hname.eq_ascii_fold(rfc::HEADER_CONTENT_TYPE) {
-            if hval == rfc::MIME_TEXT_PLAIN {
-                out.append(rfc::HTTP1_CT_TEXT_PLAIN);
-                continue;
-            }
-            if hval == rfc::MIME_APPLICATION_JSON {
-                out.append(rfc::HTTP1_CT_APP_JSON);
-                continue;
-            }
-        }
-
-        out.append(hname);
-        out.append(": ");
-        out.append(hval);
-        out.append("\r\n");
+inline fn validate_http1_request_target_for_mode(
+    path_slice:  const u8[:],
+    verb:        server::RequestTargetVerb,
+    target_mode: server::RequestTargetMode,
+) -> bool {
+    if path_slice[0] == '/' {
+        return verb != server::RequestTargetVerb.Connect;
     }
+    if path_slice.len == 1 && path_slice[0] == '*' {
+        return verb == server::RequestTargetVerb.Options;
+    }
+    if verb == server::RequestTargetVerb.Connect {
+        return validate_connect_authority(path_slice);
+    }
+    guard target_mode == server::RequestTargetMode.AllowAbsoluteForm && verb != server::RequestTargetVerb.Options else {
+        return false;
+    }
+    let uv, _ = core::parse_url_view(path_slice);
+    return uv.valid && uv.host.len > 0 &&
+        (uv.scheme.eq_ascii_fold("http") || uv.scheme.eq_ascii_fold("https"));
 }
 
-fn serialize_payload_too_large_error<B>(server_name: const u8[:], wire_out: B&) {
-    var err_resp = http::Response { .. };
-    err_resp.status_code = 413; // Payload Too Large
-    http::set_header(err_resp, "Connection", "close");
-    server::serialize_http1_response(err_resp, server_name, wire_out);
+// Validates the `Host` header, skipping redundant character/authority parsing when the keep-alive
+// `Host` slice matches the previously validated `last_valid_host` on the connection (FastHTTP parity).
+fn validate_span_host_header_memoized(
+    headers:         const http::HeaderMap&,
+    host_idx:        i16,
+    last_valid_host: u8[..128]&,
+    has_valid_host:  bool&,
+) -> bool {
+    let idx = host_idx as i64;
+    guard idx >= 0 && idx < headers.entries.len else { return false; }
+    let host_val = http::entry_value(headers, headers.entries[idx]);
+    if has_valid_host && host_val == last_valid_host[..] {
+        return true;
+    }
+    guard validate_span_host_header(headers, host_idx) else { return false; }
+    if last_valid_host.try_set(host_val) {
+        has_valid_host = true;
+    }
+    return true;
+}
+
+// Incrementally scans `active_wire` for the `\r\n\r\n` header terminator starting at `max(hdr_scan_cursor - 3, 0)`.
+// Updates `hdr_scan_cursor` to `active_wire.len` if incomplete, or resets to `0` when found (FastHTTP parity).
+//
+// Example:
+//   active_wire = "GET / HTTP/1.1\r\nHost: a\r\n\r\n", hdr_scan_cursor = 14
+//   returns: 23, hdr_scan_cursor = 0
+fn scan_crlfcrlf_incremental(active_wire: const u8[:], hdr_scan_cursor: i64&) -> i64 {
+    let cur_val = hdr_scan_cursor;
+    let clamped_cursor = min(max(cur_val, 0), active_wire.len);
+    let scan_start = max(core::sub_sat_i64(clamped_cursor, 3), 0);
+    let rel_idx = core::fast_find_crlfcrlf(active_wire[scan_start..]);
+    if rel_idx < 0 {
+        hdr_scan_cursor = active_wire.len;
+        return -1;
+    }
+    hdr_scan_cursor = 0;
+    return core::add_sat_i64(scan_start, rel_idx);
+}
+
+inline fn strip_leading_h1_wire_crlf(wire: const u8[:]) -> const u8[:], server::H1WireParseStatus {
+    guard wire.len > 0 else { return "", server::H1WireParseStatus.Incomplete; }
+    guard wire[0] != ' ' && wire[0] != '\t' else { return "", server::H1WireParseStatus.BadRequest; }
+    if wire.len == 1 && wire[0] == '\r' {
+        return "", server::H1WireParseStatus.Incomplete;
+    }
+    guard wire.len >= 2 && wire[0] == '\r' && wire[1] == '\n' else {
+        return wire, server::H1WireParseStatus.Ok;
+    }
+    guard wire.len > 2 else { return "", server::H1WireParseStatus.Incomplete; }
+    let b0 = wire[2];
+    guard b0 != '\r' && b0 != '\n' && b0 != ' ' && b0 != '\t' else {
+        return "", server::H1WireParseStatus.BadRequest;
+    }
+    return wire[2..], server::H1WireParseStatus.Ok;
+}
+
+// Checks HTTP/1.1 wire prefix framing and header block byte cap before full header parsing.
+//
+// Example:
+//   wire = "GET / HTTP/1.1\r\nHost: a\r\n\r\n", max_header_bytes = 16
+//   returns: server::H1WireParseStatus.HeadersTooLarge
+fn inspect_h1_wire_header_limit(wire: const u8[:], max_header_bytes: i64) -> server::H1WireParseStatus {
+    let active, pre_st = strip_leading_h1_wire_crlf(wire);
+    guard pre_st == server::H1WireParseStatus.Ok else { return pre_st; }
+    let hdr_end = core::fast_find_crlfcrlf(active);
+    if max_header_bytes > 0 {
+        let measured = if hdr_end >= 0 { core::add_sat_i64(hdr_end, 4) } else { active.len };
+        if measured > max_header_bytes {
+            return server::H1WireParseStatus.HeadersTooLarge;
+        }
+    }
+    if hdr_end < 0 {
+        return if active.len > 8192 {
+            server::H1WireParseStatus.BadRequest
+        } else {
+            server::H1WireParseStatus.Incomplete
+        };
+    }
+    return server::H1WireParseStatus.Ok;
+}
+
+// Parses a chunked HTTP/1.1 request body while enforcing `eff_body` bytes maximum payload size.
+//
+// Example:
+//   wire = "...\r\n\r\n5\r\nhello\r\n0\r\n\r\n", eff_body = 64
+//   returns: server::H1WireParseStatus.Ok, total_consumed
+fn parse_http1_wire_chunked_body_with_limit<Req>(
+    wire:           const u8[:],
+    body_start_idx: i64,
+    te_idx:         i16,
+    out_req:        Req&,
+    eff_body:       i64,
+) -> server::H1WireParseStatus, i64 {
+    let _pbf = server::prof_enter("http1.body_framing");
+    defer server::prof_leave(_pbf);
+    guard validate_span_te_header(out_req.headers, te_idx) else {
+        clear_request_headers_state(out_req);
+        return server::H1WireParseStatus.BadRequest, 0;
+    }
+    let body_wire = wire[body_start_idx..];
+    let dec_err, chunked_consumed = http::decode_chunked_body_with_trailers(
+        body_wire, out_req.body, out_req.trailers,
+    );
+    if out_req.body.len > eff_body {
+        out_req.body.clear();
+        out_req.trailers.clear();
+        clear_request_headers_state(out_req);
+        return server::H1WireParseStatus.ContentTooLarge, 0;
+    }
+    if dec_err == http::ChunkedDecodeError.UnexpectedEof || dec_err == http::ChunkedDecodeError.EmptyInput {
+        var cur: i64 = 0;
+        let csz, sz_err = http::read_chunk_size_line(body_wire, cur);
+        out_req.body.clear();
+        out_req.trailers.clear();
+        if sz_err == http::ChunkedDecodeError.None && csz > (eff_body as u64) {
+            clear_request_headers_state(out_req);
+            return server::H1WireParseStatus.ContentTooLarge, 0;
+        }
+        return server::H1WireParseStatus.Incomplete, 0;
+    }
+    guard dec_err == http::ChunkedDecodeError.None else {
+        out_req.body.clear();
+        out_req.trailers.clear();
+        clear_request_headers_state(out_req);
+        return server::H1WireParseStatus.BadRequest, 0;
+    }
+    return server::H1WireParseStatus.Ok, core::add_sat_i64(body_start_idx, chunked_consumed);
 }

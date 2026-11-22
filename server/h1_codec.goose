@@ -17,6 +17,7 @@ import http.request;
 import http.response;
 import .profiler;
 import .h1_codec_internal;
+import .h1_serialize_internal;
 import .internal;
 
 // RFC 3986 §3.2.2 & RFC 9112 §3.2: Validates structural host header integrity.
@@ -64,22 +65,6 @@ fn validate_host_header_structure(host_val: const u8[:]) -> bool {
     return p_ok && p_num >= 1 && p_num <= 65535;
 }
 
-// Collects transfer-encoding headers into `out_te`. Rolls back `out_te` on overflow.
-fn collect_transfer_encoding_headers<B>(headers: const http::HeaderMap&, out_te: B&) -> bool {
-    let saved_len = out_te.len;
-    var committed = false;
-    defer if !committed { out_te.resize(saved_len); };
-    for &hdr in headers.entries {
-        if http::entry_name(headers, hdr).eq_ascii_fold("transfer-encoding") {
-            guard server_internal::append_te_header_value(out_te, http::entry_value(headers, hdr)) else {
-                return false;
-            }
-        }
-    }
-    committed = true;
-    return true;
-}
-
 // Controls whether parse_http1_request_line accepts forward-proxy absolute-form URIs (RFC 9112 §3.2.2).
 enum RequestTargetMode {
     OriginOnly,
@@ -90,28 +75,6 @@ enum RequestTargetVerb {
     Regular,
     Connect,
     Options,
-}
-
-inline fn validate_http1_request_target_for_mode(
-    path_slice:  const u8[:],
-    verb:        RequestTargetVerb,
-    target_mode: RequestTargetMode,
-) -> bool {
-    if path_slice[0] == '/' {
-        return verb != RequestTargetVerb.Connect;
-    }
-    if path_slice.len == 1 && path_slice[0] == '*' {
-        return verb == RequestTargetVerb.Options;
-    }
-    if verb == RequestTargetVerb.Connect {
-        return server_internal::validate_connect_authority(path_slice);
-    }
-    guard target_mode == RequestTargetMode.AllowAbsoluteForm && verb != RequestTargetVerb.Options else {
-        return false;
-    }
-    let uv, _ = core::parse_url_view(path_slice);
-    return uv.valid && uv.host.len > 0 &&
-        (uv.scheme.eq_ascii_fold("http") || uv.scheme.eq_ascii_fold("https"));
 }
 
 // Parses the HTTP/1.x request line (Method SP Request-URI SP HTTP-Version).
@@ -156,7 +119,7 @@ fn parse_http1_request_line<Req>(
     let path_slice = req_line[(sp1 + 1)..sp2];
     guard path_slice.len <= out_req.url.cap else { return false; }
     guard server_internal::validate_request_target_chars(path_slice) else { return false; }
-    guard validate_http1_request_target_for_mode(path_slice, verb, target_mode) else { return false; }
+    guard server_internal::validate_http1_request_target_for_mode(path_slice, verb, target_mode) else { return false; }
 
     guard req_line.len - (sp2 + 1) == 8 else { return false; }
     let proto_u64 = core::read_le_u64(req_line, sp2 + 1);
@@ -165,46 +128,6 @@ fn parse_http1_request_line<Req>(
     let _ = out_req.url.try_set(path_slice);
     out_req.is_http10 = (proto_u64 == rfc::HTTP_VERSION_1_0_U64);
     return true;
-}
-
-// Validates the `Host` header, skipping redundant character/authority parsing when the keep-alive
-// `Host` slice matches the previously validated `last_valid_host` on the connection (FastHTTP parity).
-fn validate_span_host_header_memoized(
-    headers:         const http::HeaderMap&,
-    host_idx:        i16,
-    last_valid_host: u8[..128]&,
-    has_valid_host:  bool&,
-) -> bool {
-    let idx = host_idx as i64;
-    guard idx >= 0 && idx < headers.entries.len else { return false; }
-    let host_val = http::entry_value(headers, headers.entries[idx]);
-    if has_valid_host && host_val == last_valid_host[..] {
-        return true;
-    }
-    guard server_internal::validate_span_host_header(headers, host_idx) else { return false; }
-    if last_valid_host.try_set(host_val) {
-        has_valid_host = true;
-    }
-    return true;
-}
-
-// Incrementally scans `active_wire` for the `\r\n\r\n` header terminator starting at `max(hdr_scan_cursor - 3, 0)`.
-// Updates `hdr_scan_cursor` to `active_wire.len` if incomplete, or resets to `0` when found (FastHTTP parity).
-//
-// Example:
-//   active_wire = "GET / HTTP/1.1\r\nHost: a\r\n\r\n", hdr_scan_cursor = 14
-//   returns: 23, hdr_scan_cursor = 0
-fn scan_crlfcrlf_incremental(active_wire: const u8[:], hdr_scan_cursor: i64&) -> i64 {
-    let cur_val = hdr_scan_cursor;
-    let clamped_cursor = min(max(cur_val, 0), active_wire.len);
-    let scan_start = max(core::sub_sat_i64(clamped_cursor, 3), 0);
-    let rel_idx = core::fast_find_crlfcrlf(active_wire[scan_start..]);
-    if rel_idx < 0 {
-        hdr_scan_cursor = active_wire.len;
-        return -1;
-    }
-    hdr_scan_cursor = 0;
-    return core::add_sat_i64(scan_start, rel_idx);
 }
 
 var g_h1_parse_cache: server_internal::H1HeaderParseCache = server_internal::H1HeaderParseCache { .. };
@@ -334,92 +257,6 @@ enum H1WireParseStatus {
     ContentTooLarge,
 }
 
-inline fn strip_leading_h1_wire_crlf(wire: const u8[:]) -> const u8[:], H1WireParseStatus {
-    guard wire.len > 0 else { return "", H1WireParseStatus.Incomplete; }
-    guard wire[0] != ' ' && wire[0] != '\t' else { return "", H1WireParseStatus.BadRequest; }
-    if wire.len == 1 && wire[0] == '\r' {
-        return "", H1WireParseStatus.Incomplete;
-    }
-    guard wire.len >= 2 && wire[0] == '\r' && wire[1] == '\n' else {
-        return wire, H1WireParseStatus.Ok;
-    }
-    guard wire.len > 2 else { return "", H1WireParseStatus.Incomplete; }
-    let b0 = wire[2];
-    guard b0 != '\r' && b0 != '\n' && b0 != ' ' && b0 != '\t' else {
-        return "", H1WireParseStatus.BadRequest;
-    }
-    return wire[2..], H1WireParseStatus.Ok;
-}
-
-// Checks HTTP/1.1 wire prefix framing and header block byte cap before full header parsing.
-//
-// Example:
-//   wire = "GET / HTTP/1.1\r\nHost: a\r\n\r\n", max_header_bytes = 16
-//   returns: H1WireParseStatus.HeadersTooLarge
-fn inspect_h1_wire_header_limit(wire: const u8[:], max_header_bytes: i64) -> H1WireParseStatus {
-    let active, pre_st = strip_leading_h1_wire_crlf(wire);
-    guard pre_st == H1WireParseStatus.Ok else { return pre_st; }
-    let hdr_end = core::fast_find_crlfcrlf(active);
-    if max_header_bytes > 0 {
-        let measured = if hdr_end >= 0 { core::add_sat_i64(hdr_end, 4) } else { active.len };
-        if measured > max_header_bytes {
-            return H1WireParseStatus.HeadersTooLarge;
-        }
-    }
-    if hdr_end < 0 {
-        return if active.len > 8192 { H1WireParseStatus.BadRequest } else { H1WireParseStatus.Incomplete };
-    }
-    return H1WireParseStatus.Ok;
-}
-
-// Parses a chunked HTTP/1.1 request body while enforcing `eff_body` bytes maximum payload size.
-//
-// Example:
-//   wire = "...\r\n\r\n5\r\nhello\r\n0\r\n\r\n", eff_body = 64
-//   returns: H1WireParseStatus.Ok, total_consumed
-fn parse_http1_wire_chunked_body_with_limit<Req>(
-    wire:           const u8[:],
-    body_start_idx: i64,
-    te_idx:         i16,
-    out_req:        Req&,
-    eff_body:       i64,
-) -> H1WireParseStatus, i64 {
-    let _pbf = prof_enter("http1.body_framing");
-    defer prof_leave(_pbf);
-    guard server_internal::validate_span_te_header(out_req.headers, te_idx) else {
-        server_internal::clear_request_headers_state(out_req);
-        return H1WireParseStatus.BadRequest, 0;
-    }
-    let body_wire = wire[body_start_idx..];
-    let dec_err, chunked_consumed = http::decode_chunked_body_with_trailers(
-        body_wire, out_req.body, out_req.trailers,
-    );
-    if out_req.body.len > eff_body {
-        out_req.body.clear();
-        out_req.trailers.clear();
-        server_internal::clear_request_headers_state(out_req);
-        return H1WireParseStatus.ContentTooLarge, 0;
-    }
-    if dec_err == http::ChunkedDecodeError.UnexpectedEof || dec_err == http::ChunkedDecodeError.EmptyInput {
-        var cur: i64 = 0;
-        let csz, sz_err = http::read_chunk_size_line(body_wire, cur);
-        out_req.body.clear();
-        out_req.trailers.clear();
-        if sz_err == http::ChunkedDecodeError.None && csz > (eff_body as u64) {
-            server_internal::clear_request_headers_state(out_req);
-            return H1WireParseStatus.ContentTooLarge, 0;
-        }
-        return H1WireParseStatus.Incomplete, 0;
-    }
-    guard dec_err == http::ChunkedDecodeError.None else {
-        out_req.body.clear();
-        out_req.trailers.clear();
-        server_internal::clear_request_headers_state(out_req);
-        return H1WireParseStatus.BadRequest, 0;
-    }
-    return H1WireParseStatus.Ok, core::add_sat_i64(body_start_idx, chunked_consumed);
-}
-
 // Parses an incoming HTTP/1.1 wire request while enforcing configurable header and body byte ceilings.
 // Distinguishes 431 (`HeadersTooLarge`), 413 (`ContentTooLarge`), incomplete segments, and 400 (`BadRequest`).
 //
@@ -432,7 +269,7 @@ fn parse_http1_wire_request_with_limits<Req>(
     max_header_bytes: i64 = 16384,
     max_body_bytes:   i64 = MAX_SERVER_BODY_LIMIT,
 ) -> H1WireParseStatus, i64 {
-    let pre_st = inspect_h1_wire_header_limit(wire, max_header_bytes);
+    let pre_st = server_internal::inspect_h1_wire_header_limit(wire, max_header_bytes);
     guard pre_st == H1WireParseStatus.Ok else { return pre_st, 0; }
 
     var presence_tracker = http::HeaderPresenceTracker { .. };
@@ -442,7 +279,7 @@ fn parse_http1_wire_request_with_limits<Req>(
     }
     let eff_body = if max_body_bytes >= 0 { max_body_bytes } else { MAX_SERVER_BODY_LIMIT };
     if (presence_tracker.mask & http::HDR_PRESENCE_TRANSFER_ENCODING) != 0 {
-        return parse_http1_wire_chunked_body_with_limit(
+        return server_internal::parse_http1_wire_chunked_body_with_limit(
             wire, body_start_idx, presence_tracker.te_idx, out_req, eff_body,
         );
     }
@@ -580,89 +417,9 @@ struct CachedHttpDate {
     last_tsc:       u64       = 0,
 }
 
-fn format_local_http_date(out: u8[..64]&, now_sec: i64) {
-    let _ = out.try_set(get_cached_http_date_header(now_sec));
-}
-
 fn get_cached_http_date_header(now_sec: i64 = 0) -> const u8[:] {
     server_internal::update_server_cached_date(server_internal::g_compat_date, now_sec);
     return server_internal::g_compat_date.header_str[..];
-}
-
-inline fn serialize_http1_fast_single_ct<Res, B>(
-    res:          const Res&,
-    server_name:  const u8[:],
-    eff_body_len: i64,
-    mask:         u16,
-    out_wire:     B&,
-) -> bool {
-    guard res.status_code == 200 && (server_name == "goose-wing" || server_name == "goose-wing/1.0") else {
-        return false;
-    }
-    guard mask == http::RES_PRESENCE_CONTENT_TYPE
-        && res.headers.entries.len == 1
-        && res.trailers.entries.len == 0 else {
-        return false;
-    }
-    let h0_name = http::entry_name(res.headers, res.headers.entries[0]);
-    guard h0_name.eq_ascii_fold("content-type") else { return false; }
-    if server_name == "goose-wing" {
-        out_wire.append(server_internal::g_compat_date.fast_prefix[..]);
-    } else {
-        out_wire.append(server_internal::g_compat_date.fast_prefix_v1[..]);
-    }
-    server_internal::serialize_content_length_header(eff_body_len, out_wire);
-    let h0_val = http::entry_value(res.headers, res.headers.entries[0]);
-    if h0_val == rfc::MIME_TEXT_PLAIN {
-        out_wire.append(rfc::HTTP1_CT_TEXT_PLAIN);
-    } else if h0_val == rfc::MIME_APPLICATION_JSON {
-        out_wire.append(rfc::HTTP1_CT_APP_JSON);
-    } else {
-        out_wire.append(h0_name);
-        out_wire.append(": ");
-        out_wire.append(h0_val);
-        out_wire.append("\r\n");
-    }
-    out_wire.append(rfc::HTTP1_CONN_KEEP_ALIVE);
-    return true;
-}
-
-inline fn policy_omits_server_header(policy: ServerHeaderPolicy) -> bool {
-    return policy == ServerHeaderPolicy.OmitServer || policy == ServerHeaderPolicy.OmitBoth;
-}
-
-inline fn policy_omits_date_header(policy: ServerHeaderPolicy) -> bool {
-    return policy == ServerHeaderPolicy.OmitDate || policy == ServerHeaderPolicy.OmitBoth;
-}
-
-inline fn serialize_http1_status_and_meta<B>(
-    status_code:   i32,
-    server_name:   const u8[:],
-    date_hdr:      const u8[:],
-    mask:          u16,
-    header_policy: ServerHeaderPolicy,
-    out_wire:      B&,
-) {
-    let omit_server = policy_omits_server_header(header_policy);
-    let omit_date = policy_omits_date_header(header_policy);
-    if header_policy == ServerHeaderPolicy.Standard && status_code == 200
-        && (mask & (http::RES_PRESENCE_SERVER | http::RES_PRESENCE_DATE)) == 0 {
-        if server_name == "goose-wing" {
-            out_wire.append(server_internal::g_compat_date.fast_prefix[..]);
-            return;
-        }
-        if server_name == "goose-wing/1.0" {
-            out_wire.append(server_internal::g_compat_date.fast_prefix_v1[..]);
-            return;
-        }
-    }
-    server_internal::serialize_status_line(status_code, out_wire);
-    if !omit_server && (mask & http::RES_PRESENCE_SERVER) == 0 {
-        server_internal::serialize_server_header(server_name, out_wire);
-    }
-    if !omit_date && (mask & http::RES_PRESENCE_DATE) == 0 {
-        out_wire.append(date_hdr);
-    }
 }
 
 // Serializes only the HTTP/1.1 response status line and headers into out_wire,
@@ -683,11 +440,13 @@ fn serialize_http1_headers<Res, B>(
         mask = server_internal::detect_response_presence_mask(res.headers);
     }
     if header_policy == ServerHeaderPolicy.Standard
-        && serialize_http1_fast_single_ct(res, server_name, eff_body_len, mask, out_wire) {
+        && server_internal::serialize_http1_fast_single_ct(res, server_name, eff_body_len, mask, out_wire) {
         return;
     }
 
-    serialize_http1_status_and_meta(res.status_code, server_name, date_hdr, mask, header_policy, out_wire);
+    server_internal::serialize_http1_status_and_meta(
+        res.status_code, server_name, date_hdr, mask, header_policy, out_wire,
+    );
 
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     let has_te = (mask & http::RES_PRESENCE_TRANSFER_ENCODING) != 0;
@@ -705,59 +464,6 @@ fn serialize_http1_headers<Res, B>(
     }
 }
 
-inline fn serialize_chunked_header_fields<B>(
-    headers:      const http::HeaderMap&,
-    has_trailers: bool,
-    out_wire:     B&,
-) {
-    for &e in headers.entries {
-        let hname = http::entry_name(headers, e);
-        let skip = hname.eq_ascii_fold("content-length")
-            || hname.eq_ascii_fold("transfer-encoding")
-            || (has_trailers && hname.eq_ascii_fold("trailer"));
-        guard !skip else { continue; }
-        out_wire.append(hname);
-        out_wire.append(": ");
-        out_wire.append(http::entry_value(headers, e));
-        out_wire.append("\r\n");
-    }
-}
-
-fn serialize_http1_chunked_with_policy<Res, B>(
-    res:           const Res&,
-    server_name:   const u8[:],
-    chunk_size:    i64,
-    out_wire:      B&,
-    header_policy: ServerHeaderPolicy,
-) {
-    if header_policy == ServerHeaderPolicy.Standard {
-        server_internal::serialize_http1_chunked_response(res, server_name, chunk_size, out_wire);
-        return;
-    }
-    server_internal::serialize_status_line(res.status_code, out_wire);
-    if !policy_omits_server_header(header_policy) {
-        server_internal::serialize_server_header(server_name, out_wire);
-    }
-    if !policy_omits_date_header(header_policy) && !res.has_header("date") {
-        out_wire.append(get_cached_http_date_header(0));
-    }
-    out_wire.append("Transfer-Encoding: chunked\r\n");
-    if res.trailers.entries.len > 0 {
-        out_wire.append("Trailer: ");
-        for i in res.trailers.entries.len {
-            if i > 0 { out_wire.append(", "); }
-            out_wire.append(http::entry_name(res.trailers, res.trailers.entries[i]));
-        }
-        out_wire.append("\r\n");
-    }
-    serialize_chunked_header_fields(res.headers, res.trailers.entries.len > 0, out_wire);
-    if !res.has_header("connection") {
-        out_wire.append("Connection: keep-alive\r\n");
-    }
-    out_wire.append("\r\n");
-    client::encode_chunked_payload(res.body[..], res.trailers, chunk_size, out_wire);
-}
-
 // Serializes a complete HTTP/1.1 response into raw wire bytes.
 // Automatically uses chunked transfer encoding if Transfer-Encoding: chunked is requested or if trailers are present.
 fn serialize_http1_response<Res, B>(
@@ -772,7 +478,7 @@ fn serialize_http1_response<Res, B>(
     let is_empty_status = rfc::is_empty_body_status(res.status_code);
     if !is_empty_status {
         if res.trailers.entries.len > 0 {
-            serialize_http1_chunked_with_policy(res, server_name, 4096, out_wire, header_policy);
+            server_internal::serialize_http1_chunked_with_policy(res, server_name, 4096, out_wire, header_policy);
             return;
         }
         let has_te = if res.presence_mask != 0 {
@@ -783,7 +489,7 @@ fn serialize_http1_response<Res, B>(
             false
         };
         if has_te && http::header(res, "transfer-encoding").eq_ascii_fold("chunked") {
-            serialize_http1_chunked_with_policy(res, server_name, 4096, out_wire, header_policy);
+            server_internal::serialize_http1_chunked_with_policy(res, server_name, 4096, out_wire, header_policy);
             return;
         }
     }

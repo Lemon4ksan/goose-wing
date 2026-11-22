@@ -17,6 +17,7 @@ import quic.packet;
 import .h1_codec;
 import .internal;
 import .h1_codec_internal;
+import .stream_internal;
 
 // State of a streaming HTTP/1.1 request body consumer (uWebSockets onData / onDataV2 pattern)
 struct HttpStreamConsumer {
@@ -243,34 +244,6 @@ fn request_window_available(win: const RequestStreamWindow&) -> u64 {
     return min(rem_strm, rem_conn);
 }
 
-inline fn calc_window_threshold(window_size: u64, pct: u32) -> u64 {
-    let scaled, _ = core::div_rem_u64(core::mul_sat_u64(window_size, pct), 100);
-    return max(scaled, 1);
-}
-
-fn replenish_single_window(
-    protocol:       WindowProtocol,
-    window_size:    u64,
-    threshold_pct:  u32,
-    unacked_bytes:  u64&,
-    advertised_max: u64&,
-) -> u64, bool {
-    let thresh = calc_window_threshold(window_size, threshold_pct);
-    guard unacked_bytes >= thresh else { return 0, false; }
-    let pending = unacked_bytes;
-    let delta = if protocol == WindowProtocol.Http2 {
-        min(pending, rfc::H2_MAX_WINDOW_SIZE)
-    } else {
-        pending
-    };
-    let next_max = min(core::add_sat_u64(advertised_max, delta), rfc::QUIC_VARINT_MAX);
-    guard next_max > advertised_max else { return 0, false; }
-    advertised_max = next_max;
-    unacked_bytes = core::sub_sat_u64(unacked_bytes, delta);
-    let reported = if protocol == WindowProtocol.Http3 { next_max } else { delta };
-    return reported, true;
-}
-
 // Records bytes pulled by the application consumer and emits replenishment commands once
 // consumed bytes cross the configured threshold (`update_threshold_pct`).
 fn request_window_on_consume(win: RequestStreamWindow&, consumed_bytes: u64) -> WindowReplenishment {
@@ -285,7 +258,7 @@ fn request_window_on_consume(win: RequestStreamWindow&, consumed_bytes: u64) -> 
     win.unacked_stream_bytes = core::add_sat_u64(win.unacked_stream_bytes, take);
     win.unacked_conn_bytes = core::add_sat_u64(win.unacked_conn_bytes, take);
 
-    let strm_val, strm_ok = replenish_single_window(
+    let strm_val, strm_ok = server_internal::replenish_single_window(
         win.protocol,
         win.stream_window_size,
         win.update_threshold_pct,
@@ -297,7 +270,7 @@ fn request_window_on_consume(win: RequestStreamWindow&, consumed_bytes: u64) -> 
         rep.stream_increment = strm_val;
     }
 
-    let conn_val, conn_ok = replenish_single_window(
+    let conn_val, conn_ok = server_internal::replenish_single_window(
         win.protocol,
         win.conn_window_size,
         win.update_threshold_pct,

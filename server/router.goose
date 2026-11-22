@@ -9,6 +9,7 @@ import core;
 import http.bind;
 import wire.pipeline;
 import .router_internal;
+import .router_l0_internal;
 
 // Ingress Stages (Bits 0..31): Inbound filters executed prior to route handler
 const STAGE_INGRESS_SLOWLORIS: u64 = (1 as u64) << 0; // RFC 9112 Connection liveliness timeout
