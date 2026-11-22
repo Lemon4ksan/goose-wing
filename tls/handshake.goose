@@ -1110,9 +1110,11 @@ fn verify_certificate_verify_sig(
         return core::ecdsa_p384_verify_der(pubkey, msg, signature);
     }
     if sig_scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256 {
+        guard tls_internal::is_valid_rsa_pubkey_min_bits(pubkey) else { return false; }
         return core::rsa_pss_sha256_verify_der(pubkey, msg, signature);
     }
     if sig_scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA384 {
+        guard tls_internal::is_valid_rsa_pubkey_min_bits(pubkey) else { return false; }
         return core::rsa_pss_sha384_verify_der(pubkey, msg, signature);
     }
     return false;

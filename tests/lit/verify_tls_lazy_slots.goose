@@ -197,7 +197,7 @@ fn test_virtual_pipe_lazy_alloc_and_reuse() {
 }
 
 fn test_capacity_ceilings() {
-    var tls_slots: u16[..256] = [];
+    var tls_slots: u16[..4096] = [];
     for _ in tls::MAX_CIPHER_SLOTS {
         let s = tls::alloc_cipher_slot();
         assert(s != 0xFFFF);

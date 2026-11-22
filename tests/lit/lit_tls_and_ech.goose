@@ -818,18 +818,18 @@ fn verify_x509_crl_binary_search() {
     assert(tls::crl_is_revoked(crl, 0x0300));
     assert(!tls::crl_is_revoked(crl, 99));
 
-    // Fill up to 128 serials and verify 129th returns false (Invariant 13)
+    // Fill up to MAX_CRL_SERIALS (1024) serials and verify 1025th returns false (Invariant 13)
     var full_crl = tls::ParsedCrl { .. };
-    for i in 128 {
-        let s = (200 - i) as u64;
+    for i in tls_internal::MAX_CRL_SERIALS {
+        let s = (2000 - i) as u64;
         assert(tls::crl_insert_serial(full_crl, s));
     }
-    assert(full_crl.serial_count == 128);
-    assert(tls::crl_is_revoked(full_crl, 73));
-    assert(tls::crl_is_revoked(full_crl, 200));
+    assert(full_crl.serial_count == (tls_internal::MAX_CRL_SERIALS as i32));
+    assert(tls::crl_is_revoked(full_crl, 977));
+    assert(tls::crl_is_revoked(full_crl, 2000));
     assert(!tls::crl_is_revoked(full_crl, 500));
 
-    let overflow_ok = tls::crl_insert_serial(full_crl, 999);
+    let overflow_ok = tls::crl_insert_serial(full_crl, 9999);
     if overflow_ok {
         print("WING_BUFFER_OVERFLOW_SILENT_DROP");
     }
