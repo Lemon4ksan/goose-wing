@@ -407,16 +407,14 @@ inline fn sync_cluster_target_health(
             target.fails = max(target.fails, health.consecutive_failures as i32);
         }
         target.health_state = proxy::UpstreamHealthState.Up;
-        cluster.circuit_open = false;
     } else if new_state == proxy::HealthState.Probing {
         target.health_state = proxy::UpstreamHealthState.Probing;
         target.successes = max(health.consecutive_successes as i32, 1);
-        cluster.circuit_open = false;
     } else {
         target.fails = max(cluster.max_fails, health.consecutive_failures as i32);
         target.health_state = proxy::UpstreamHealthState.Down;
-        update_cluster_circuit_state(cluster);
     }
+    update_cluster_circuit_state(cluster);
 }
 
 inline fn inc_timeouts_count(cnt: i32&) {

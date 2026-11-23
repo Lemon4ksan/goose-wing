@@ -260,22 +260,19 @@ fn record_upstream_success(cluster: UpstreamCluster&, target_idx: i32) {
         if s >= healthy_thresh {
             target.health_state = UpstreamHealthState.Up;
             target.is_healthy = true;
-            cluster.circuit_open = false;
         }
     } else if target.health_state == UpstreamHealthState.Down {
         if s >= healthy_thresh {
             target.health_state = UpstreamHealthState.Up;
             target.is_healthy = true;
-            cluster.circuit_open = false;
         } else {
             target.health_state = UpstreamHealthState.Probing;
-            cluster.circuit_open = false;
         }
     } else {
         target.health_state = UpstreamHealthState.Up;
         target.is_healthy = true;
-        cluster.circuit_open = false;
     }
+    proxy_internal::update_cluster_circuit_state(cluster);
 }
 
 // Records connection or timeout failure, tripping circuit breaker if ceiling reached.
@@ -311,7 +308,7 @@ fn set_upstream_probing(cluster: UpstreamCluster&, target_idx: i32) -> bool {
     guard target.health_state == UpstreamHealthState.Down else { return false; }
     target.health_state = UpstreamHealthState.Probing;
     target.successes = 0;
-    cluster.circuit_open = false;
+    proxy_internal::update_cluster_circuit_state(cluster);
     return true;
 }
 

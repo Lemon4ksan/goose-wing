@@ -175,10 +175,45 @@ fn test_add_upstream_target_tls_100b_fqdn() {
     // CHECK: TLS_100B_FQDN_TARGET: ok
 }
 
+fn test_draining_preserves_circuit_open_on_success_and_probe() {
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 2);
+    assert(proxy::add_upstream_target(cluster, "10.0.5.1", 8080, 1));
+    var checker = proxy::new_cluster_health_checker(proxy::new_health_check_config(1000, 500, 1, 2));
+    assert(proxy::register_target_for_probing(checker, 0));
+
+    let chosen, ok_sel = proxy::select_upstream(cluster);
+    assert(ok_sel && chosen == 0);
+    assert(!cluster.circuit_open);
+
+    // Mark the only healthy target as draining -> circuit_open must trip true.
+    assert(proxy::set_target_draining(cluster, 0, true));
+    assert(cluster.circuit_open);
+
+    // Completing an in-flight request or active probe on the draining target must NOT clear circuit_open.
+    proxy::record_upstream_success(cluster, 0);
+    proxy::release_upstream_connection(cluster, 0);
+    assert(cluster.circuit_open);
+    let _ = proxy::on_probe_success(checker, cluster, 0, 100);
+    assert(cluster.circuit_open);
+
+    let _, ok_while_draining = proxy::select_upstream(cluster);
+    assert(!ok_while_draining);
+
+    // Undraining restores circuit_open = false and routes cleanly again.
+    assert(proxy::set_target_draining(cluster, 0, false));
+    assert(!cluster.circuit_open);
+    let restored, ok_restored = proxy::select_upstream(cluster);
+    assert(ok_restored && restored == 0);
+
+    print("DRAINING_CIRCUIT_OPEN_PRESERVED: ok\n");
+    // CHECK: DRAINING_CIRCUIT_OPEN_PRESERVED: ok
+}
+
 fn main() {
     test_consistent_hash_keyed_and_empty_fallback();
     test_draining_failover_and_active_conns();
     test_smooth_weighted_round_robin();
     test_remove_upstream_target_rebuilds_ketama();
     test_add_upstream_target_tls_100b_fqdn();
+    test_draining_preserves_circuit_open_on_success_and_probe();
 }
