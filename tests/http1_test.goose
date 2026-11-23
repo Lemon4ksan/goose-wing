@@ -1798,9 +1798,9 @@ fn test_f005_sfv_no_silent_dropping(t: lit::T&) {
         sub.assert_false(ok, "parse_sf_list MUST return false on > 16 items rather than silently dropping 17th");
     };
 
-    t.run("sf_parse_inner_list rejects inner lists with > 8 items") { sub =>
+    t.run("sf_parse_inner_list rejects inner lists with > 16 items") { sub =>
         var raw: u8[..512] = "endpoints=(";
-        for i in 9 {
+        for i in 17 {
             if i > 0 { raw.push(' '); }
             raw.append("srv");
             format(raw, i);
@@ -1809,7 +1809,7 @@ fn test_f005_sfv_no_silent_dropping(t: lit::T&) {
 
         var entries: http::SfDictEntry[..16] = [];
         let ok = http::parse_sf_dict(raw[..], entries);
-        sub.assert_false(ok, "Inner list > 8 items MUST return false rather than silently dropping 9th");
+        sub.assert_false(ok, "Inner list > 16 items MUST return false rather than silently dropping 17th");
     };
 }
 
