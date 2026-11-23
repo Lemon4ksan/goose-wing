@@ -192,3 +192,85 @@ fn allow_service_key(limiter: GatewayRateLimiter&, key: const u8[:], now_ns: u64
     let dec = check_gateway_rate_limit(limiter, key, 1, eff_now);
     return dec.allowed;
 }
+
+// ---- High-Capacity Arena-Backed Edge Rate Limiter --------------------------
+
+const DEFAULT_EDGE_RL_MAX_CLIENTS: i64 = 4096;
+
+// High-capacity arena-backed GCRA rate limiter handle supporting 4096+ client IPs in O(1).
+struct EdgeRateLimiter {
+    config:            GcraConfig = GcraConfig { .. },
+    max_clients:       i64        = DEFAULT_EDGE_RL_MAX_CLIENTS,
+    fallback_cell:     GcraCell   = GcraCell { .. },
+    total_allowed:     u64        = 0,
+    total_rejected:    u64        = 0,
+    evictions:         u64        = 0,
+    next_evict_cursor: i64        = 0,
+    arena_slot:        i64        = -1,
+}
+
+// Instantiates an O(1) arena-backed EdgeRateLimiter with configurable client capacity.
+fn new_edge_rate_limiter(
+    rate_per_sec:   u64,
+    burst_capacity: u64,
+    max_clients:    i64 = DEFAULT_EDGE_RL_MAX_CLIENTS,
+) -> EdgeRateLimiter {
+    let eff_max = security_internal::clamp_edge_max_clients(max_clients);
+    let slot = security_internal::alloc_edge_arena_slot(eff_max);
+    return EdgeRateLimiter {
+        config:      new_gcra_config(rate_per_sec, burst_capacity),
+        max_clients: eff_max,
+        arena_slot:  slot,
+        ..
+    };
+}
+
+// Releases the limiter's thread-local arena slot so subsequent limiters can reuse it.
+fn release_edge_rate_limiter(limiter: EdgeRateLimiter&) {
+    security_internal::release_edge_arena_slot(limiter.arena_slot);
+    limiter.arena_slot = -1;
+    limiter.next_evict_cursor = 0;
+}
+
+// Checks and updates rate limit for a client ID in the high-capacity edge limiter.
+fn check_edge_rate_limit(
+    limiter:   EdgeRateLimiter&,
+    client_id: const u8[:],
+    cost:      u64,
+    now_ns:    u64,
+) -> GcraDecision {
+    if client_id.len > 0 && client_id.len <= 64 && limiter.arena_slot >= 0 {
+        let abs_entry, evicted, ok = security_internal::edge_lookup_or_insert(
+            limiter,
+            client_id,
+            now_ns,
+        );
+        if evicted {
+            limiter.evictions = core::add_sat_u64(limiter.evictions, 1);
+        }
+        if ok && abs_entry >= 0 && abs_entry < security_internal::g_edge_rl_arena.entries.len {
+            let entry .= security_internal::g_edge_rl_arena.entries[abs_entry];
+            entry.last_seen_ns = now_ns;
+            let dec = gcra_check(limiter.config, entry.cell, cost, now_ns);
+            security_internal::record_edge_admission(limiter, abs_entry, dec);
+            return dec;
+        }
+    }
+    let dec = gcra_check(limiter.config, limiter.fallback_cell, cost, now_ns);
+    security_internal::record_edge_fallback_admission(limiter, dec);
+    return dec;
+}
+
+// Evicts idle entries exceeding max_idle_ns that have no pending TAT delay.
+fn evict_idle_edge_clients(limiter: EdgeRateLimiter&, max_idle_ns: u64, now_ns: u64) -> i32 {
+    guard limiter.arena_slot >= 0 else { return 0; }
+    let evicted = security_internal::evict_idle_edge_arena_clients(
+        limiter.arena_slot,
+        max_idle_ns,
+        now_ns,
+    );
+    if evicted > 0 {
+        limiter.evictions = core::add_sat_u64(limiter.evictions, evicted as u64);
+    }
+    return evicted;
+}

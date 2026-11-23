@@ -419,3 +419,342 @@ fn sample_gcra_jitter_ns(jitter: const security::GcraJitter&, prng_state: u64&) 
     let offset = (min(rem, 0x7FFFFFFFFFFFFFFF)) as i64;
     return core::add_sat_i64(min_val, offset);
 }
+
+// ---- EdgeRateLimiter thread-local arena & open-addressed hash table --------
+
+const EDGE_BUCKET_EMPTY:      i64 = -1;
+const EDGE_BUCKET_TOMBSTONE:  i64 = -2;
+const EDGE_CLOCK_SCAN_LIMIT:  i64 = 32;
+const EDGE_MIN_BUCKET_CAP:    i64 = 8;
+const EDGE_MAX_CLIENTS_LIMIT: i64 = 1048576;
+
+struct EdgeRateSlotMeta {
+    entries_offset: i64  = 0,
+    entries_len:    i64  = 0,
+    entries_cap:    i64  = 0,
+    buckets_offset: i64  = 0,
+    buckets_cap:    i64  = 0,
+    tombstones:     i64  = 0,
+    active:         bool = false,
+}
+
+root struct EdgeRateArena {
+    slots:   EdgeRateSlotMeta[>..]             = [],
+    entries: security::GatewayClientEntry[>..] = [],
+    buckets: i64[>..]                          = [],
+}
+
+var g_edge_rl_arena: EdgeRateArena = EdgeRateArena { .. };
+
+inline fn clamp_edge_max_clients(max_clients: i64) -> i64 {
+    return min(max(max_clients, 1), EDGE_MAX_CLIENTS_LIMIT);
+}
+
+fn calc_edge_bucket_cap(eff_max: i64) -> i64 {
+    let target = core::add_sat_i64(eff_max, eff_max);
+    var cap = EDGE_MIN_BUCKET_CAP;
+    while cap < target && cap < 0x20000000 {
+        cap = core::add_sat_i64(cap, cap);
+    }
+    return cap;
+}
+
+fn clear_edge_arena_slot(slot_idx: i64) {
+    guard slot_idx >= 0 && slot_idx < g_edge_rl_arena.slots.len else { return; }
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    for i in meta.entries_len {
+        let e_idx = core::add_sat_i64(meta.entries_offset, i);
+        if e_idx < g_edge_rl_arena.entries.len {
+            reset_entry_slot(g_edge_rl_arena.entries[e_idx]);
+        }
+    }
+    for b in meta.buckets_cap {
+        let b_idx = core::add_sat_i64(meta.buckets_offset, b);
+        if b_idx < g_edge_rl_arena.buckets.len {
+            g_edge_rl_arena.buckets[b_idx] = EDGE_BUCKET_EMPTY;
+        }
+    }
+    meta.entries_len = 0;
+    meta.tombstones = 0;
+}
+
+fn alloc_edge_arena_slot(max_clients: i64) -> i64 {
+    let eff_max = clamp_edge_max_clients(max_clients);
+    let req_buckets = calc_edge_bucket_cap(eff_max);
+
+    for &meta, i in g_edge_rl_arena.slots {
+        if !meta.active && meta.entries_cap >= eff_max && meta.buckets_cap >= req_buckets {
+            clear_edge_arena_slot(i);
+            g_edge_rl_arena.slots[i].active = true;
+            return i;
+        }
+    }
+
+    let entries_off = g_edge_rl_arena.entries.len;
+    let buckets_off = g_edge_rl_arena.buckets.len;
+    for _ in eff_max {
+        g_edge_rl_arena.entries.push(security::GatewayClientEntry { in_use: false, .. });
+    }
+    for _ in req_buckets {
+        g_edge_rl_arena.buckets.push(EDGE_BUCKET_EMPTY);
+    }
+    g_edge_rl_arena.slots.push(EdgeRateSlotMeta {
+        entries_offset: entries_off,
+        entries_len:    0,
+        entries_cap:    eff_max,
+        buckets_offset: buckets_off,
+        buckets_cap:    req_buckets,
+        tombstones:     0,
+        active:         true,
+    });
+    return core::sub_sat_i64(g_edge_rl_arena.slots.len, 1);
+}
+
+fn release_edge_arena_slot(slot_idx: i64) {
+    guard slot_idx >= 0 && slot_idx < g_edge_rl_arena.slots.len else { return; }
+    guard g_edge_rl_arena.slots[slot_idx].active else { return; }
+    clear_edge_arena_slot(slot_idx);
+    g_edge_rl_arena.slots[slot_idx].active = false;
+}
+
+fn edge_hash_start_pos(client_id: const u8[:], buckets_cap: i64) -> i64 {
+    let cap_pos = max(buckets_cap, 1);
+    let mask = (core::sub_sat_i64(cap_pos, 1)) as u64;
+    let masked = core::fnv1a_64(client_id) & mask;
+    return (min(masked, 0x7FFFFFFFFFFFFFFF)) as i64;
+}
+
+inline fn edge_bucket_matches(
+    meta:      const EdgeRateSlotMeta&,
+    b_val:     i64,
+    client_id: const u8[:],
+) -> bool {
+    guard b_val >= 0 && b_val < meta.entries_len else { return false; }
+    let e .= g_edge_rl_arena.entries[core::add_sat_i64(meta.entries_offset, b_val)];
+    return e.in_use && e.client_id[..] == client_id;
+}
+
+fn edge_probe_bucket(slot_idx: i64, client_id: const u8[:]) -> i64, i64, i64, bool {
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    guard meta.buckets_cap > 0 else { return 0, -1, -1, false; }
+    var pos = edge_hash_start_pos(client_id, meta.buckets_cap);
+    var first_tomb: i64 = -1;
+
+    for _ in meta.buckets_cap {
+        let b_val = g_edge_rl_arena.buckets[core::add_sat_i64(meta.buckets_offset, pos)];
+        if b_val == EDGE_BUCKET_EMPTY {
+            return 0, pos, first_tomb, false;
+        }
+        if b_val == EDGE_BUCKET_TOMBSTONE && first_tomb < 0 {
+            first_tomb = pos;
+        } else if edge_bucket_matches(meta, b_val, client_id) {
+            return b_val, pos, first_tomb, true;
+        }
+        pos = core::add_sat_i64(pos, 1);
+        if pos >= meta.buckets_cap { pos = 0; }
+    }
+    return 0, -1, first_tomb, false;
+}
+
+fn edge_insert_clean_bucket(slot_idx: i64, client_id: const u8[:], local_idx: i64) {
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    guard meta.buckets_cap > 0 else { return; }
+    var pos = edge_hash_start_pos(client_id, meta.buckets_cap);
+    for _ in meta.buckets_cap {
+        let abs_b = core::add_sat_i64(meta.buckets_offset, pos);
+        if g_edge_rl_arena.buckets[abs_b] < 0 {
+            g_edge_rl_arena.buckets[abs_b] = local_idx;
+            return;
+        }
+        pos = core::add_sat_i64(pos, 1);
+        if pos >= meta.buckets_cap { pos = 0; }
+    }
+}
+
+fn rebuild_edge_slot_buckets(slot_idx: i64) {
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    for b in meta.buckets_cap {
+        g_edge_rl_arena.buckets[core::add_sat_i64(meta.buckets_offset, b)] = EDGE_BUCKET_EMPTY;
+    }
+    meta.tombstones = 0;
+    for i in meta.entries_len {
+        let e .= g_edge_rl_arena.entries[core::add_sat_i64(meta.entries_offset, i)];
+        if e.in_use {
+            edge_insert_clean_bucket(slot_idx, e.client_id[..], i);
+        }
+    }
+}
+
+fn edge_remove_bucket_key(slot_idx: i64, client_id: const u8[:]) {
+    let _, hit_pos, _, found = edge_probe_bucket(slot_idx, client_id);
+    guard found && hit_pos >= 0 else { return; }
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    let abs_b = core::add_sat_i64(meta.buckets_offset, hit_pos);
+    g_edge_rl_arena.buckets[abs_b] = EDGE_BUCKET_TOMBSTONE;
+    meta.tombstones = core::add_sat_i64(meta.tombstones, 1);
+}
+
+fn edge_pick_clock_victim(
+    slot_idx:     i64,
+    start_cursor: i64,
+    eff_max:      i64,
+    now_ns:       u64,
+) -> i64, i64 {
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    let count = min(meta.entries_len, eff_max);
+    guard count > 0 else { return 0, 0; }
+    var idx = if start_cursor >= 0 && start_cursor < count { start_cursor } else { 0 };
+    let scan_len = min(EDGE_CLOCK_SCAN_LIMIT, count);
+    var idle_idx:    i64 = -1;
+    var idle_seen:   u64 = 0xFFFFFFFFFFFFFFFF;
+    var oldest_idx:  i64 = idx;
+    var oldest_seen: u64 = 0xFFFFFFFFFFFFFFFF;
+
+    for _ in scan_len {
+        let e .= g_edge_rl_arena.entries[core::add_sat_i64(meta.entries_offset, idx)];
+        if e.last_seen_ns <= oldest_seen {
+            oldest_seen = e.last_seen_ns;
+            oldest_idx = idx;
+        }
+        if e.cell.tat_ns <= now_ns && e.last_seen_ns <= idle_seen {
+            idle_seen = e.last_seen_ns;
+            idle_idx = idx;
+        }
+        idx = core::add_sat_i64(idx, 1);
+        if idx >= count { idx = 0; }
+    }
+    let victim = if idle_idx >= 0 { idle_idx } else { oldest_idx };
+    var next_cur = core::add_sat_i64(victim, 1);
+    if next_cur >= count { next_cur = 0; }
+    return victim, next_cur;
+}
+
+inline fn edge_write_bucket_slot(slot_idx: i64, bucket_rel: i64, local_idx: i64) {
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    let abs_b = core::add_sat_i64(meta.buckets_offset, bucket_rel);
+    if g_edge_rl_arena.buckets[abs_b] == EDGE_BUCKET_TOMBSTONE {
+        meta.tombstones = core::sub_sat_i64(meta.tombstones, 1);
+    }
+    g_edge_rl_arena.buckets[abs_b] = local_idx;
+}
+
+fn edge_evict_and_insert(
+    limiter:    security::EdgeRateLimiter&,
+    slot_idx:   i64,
+    client_id:  const u8[:],
+    ins_bucket: i64,
+    eff_max:    i64,
+    now_ns:     u64,
+) -> i64, bool, bool {
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    let victim_local, next_cur = edge_pick_clock_victim(
+        slot_idx,
+        limiter.next_evict_cursor,
+        eff_max,
+        now_ns,
+    );
+    limiter.next_evict_cursor = next_cur;
+    let abs_victim = core::add_sat_i64(meta.entries_offset, victim_local);
+    edge_remove_bucket_key(slot_idx, g_edge_rl_arena.entries[abs_victim].client_id[..]);
+    guard populate_entry(g_edge_rl_arena.entries[abs_victim], client_id, now_ns) else {
+        return 0, false, false;
+    }
+    if meta.tombstones > (meta.buckets_cap >> 2) {
+        rebuild_edge_slot_buckets(slot_idx);
+    } else {
+        edge_write_bucket_slot(slot_idx, ins_bucket, victim_local);
+    }
+    return abs_victim, true, true;
+}
+
+fn edge_lookup_or_insert(
+    limiter:   security::EdgeRateLimiter&,
+    client_id: const u8[:],
+    now_ns:    u64,
+) -> i64, bool, bool {
+    let slot_idx = limiter.arena_slot;
+    guard slot_idx >= 0 && slot_idx < g_edge_rl_arena.slots.len else { return 0, false, false; }
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    guard meta.active else { return 0, false, false; }
+
+    let local_idx, empty_pos, first_tomb, found = edge_probe_bucket(slot_idx, client_id);
+    if found {
+        return core::add_sat_i64(meta.entries_offset, local_idx), false, true;
+    }
+
+    var ins_bucket = if first_tomb >= 0 { first_tomb } else { empty_pos };
+    if meta.tombstones > (meta.buckets_cap >> 2) || ins_bucket < 0 {
+        rebuild_edge_slot_buckets(slot_idx);
+        let _, re_empty, re_tomb, _ = edge_probe_bucket(slot_idx, client_id);
+        ins_bucket = if re_tomb >= 0 { re_tomb } else { re_empty };
+    }
+    guard ins_bucket >= 0 else { return 0, false, false; }
+
+    let eff_max = min(limiter.max_clients, meta.entries_cap);
+    if meta.entries_len < eff_max {
+        let new_local = meta.entries_len;
+        let abs_entry = core::add_sat_i64(meta.entries_offset, new_local);
+        guard populate_entry(g_edge_rl_arena.entries[abs_entry], client_id, now_ns) else {
+            return 0, false, false;
+        }
+        edge_write_bucket_slot(slot_idx, ins_bucket, new_local);
+        meta.entries_len = core::add_sat_i64(meta.entries_len, 1);
+        return abs_entry, false, true;
+    }
+    return edge_evict_and_insert(limiter, slot_idx, client_id, ins_bucket, eff_max, now_ns);
+}
+
+inline fn record_edge_admission(
+    limiter:   security::EdgeRateLimiter&,
+    abs_entry: i64,
+    dec:       const security::GcraDecision&,
+) {
+    if dec.allowed {
+        limiter.total_allowed = core::add_sat_u64(limiter.total_allowed, 1);
+        g_edge_rl_arena.entries[abs_entry].consecutive_rejects = 0;
+    } else {
+        limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
+        let next_rej = core::add_sat_u64(g_edge_rl_arena.entries[abs_entry].consecutive_rejects, 1);
+        g_edge_rl_arena.entries[abs_entry].consecutive_rejects = next_rej as u32;
+    }
+}
+
+inline fn record_edge_fallback_admission(
+    limiter: security::EdgeRateLimiter&,
+    dec:     const security::GcraDecision&,
+) {
+    if dec.allowed {
+        limiter.total_allowed = core::add_sat_u64(limiter.total_allowed, 1);
+    } else {
+        limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
+    }
+}
+
+fn evict_idle_edge_arena_clients(slot_idx: i64, max_idle_ns: u64, now_ns: u64) -> i32 {
+    guard slot_idx >= 0 && slot_idx < g_edge_rl_arena.slots.len else { return 0; }
+    let meta .= g_edge_rl_arena.slots[slot_idx];
+    guard meta.active else { return 0; }
+
+    var i:       i64 = 0;
+    var evicted: i64 = 0;
+    while i < meta.entries_len {
+        let e_idx = core::add_sat_i64(meta.entries_offset, i);
+        if should_evict_client(g_edge_rl_arena.entries[e_idx], max_idle_ns, now_ns) {
+            deactivate_client_slot(g_edge_rl_arena.entries[e_idx]);
+            let last_idx = core::sub_sat_i64(meta.entries_len, 1);
+            if i < last_idx {
+                let last_abs = core::add_sat_i64(meta.entries_offset, last_idx);
+                g_edge_rl_arena.entries[e_idx] = g_edge_rl_arena.entries[last_abs];
+                reset_entry_slot(g_edge_rl_arena.entries[last_abs]);
+            }
+            meta.entries_len = last_idx;
+            evicted = core::add_sat_i64(evicted, 1);
+        } else {
+            i = core::add_sat_i64(i, 1);
+        }
+    }
+    if evicted > 0 {
+        rebuild_edge_slot_buckets(slot_idx);
+    }
+    return evicted as i32;
+}
