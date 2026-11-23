@@ -214,10 +214,10 @@ fn poly1305_finalize(
     let f3 = (((h3 >> 18) | (h4 << 8)) & 0xFFFFFFFF) + core::read_le_u32(key32[..], 28) + c;
 
     var out: u8[16] = [0; 16];
-    store_u32_le(out[..], 0, f0 as u32);
-    store_u32_le(out[..], 4, f1 as u32);
-    store_u32_le(out[..], 8, f2 as u32);
-    store_u32_le(out[..], 12, f3 as u32);
+    store_u32_le(out[..], 0, (f0 & 0xFFFFFFFF) as u32);
+    store_u32_le(out[..], 4, (f1 & 0xFFFFFFFF) as u32);
+    store_u32_le(out[..], 8, (f2 & 0xFFFFFFFF) as u32);
+    store_u32_le(out[..], 12, (f3 & 0xFFFFFFFF) as u32);
     return out;
 }
 
@@ -306,8 +306,8 @@ fn poly1305_aead_mac(key32: const u8[32]&, aad: const u8[:], ct: const u8[:]) ->
     }
 
     var len_m: u8[17] = [0; 17];
-    for b in 8 { len_m[b] = ((aad.len as u64) >> (b * 8)) as u8; }
-    for b in 8 { len_m[8 + b] = ((ct.len as u64) >> (b * 8)) as u8; }
+    for b in 8 { len_m[b] = (((aad.len as u64) >> (b * 8)) & 0xFF) as u8; }
+    for b in 8 { len_m[8 + b] = (((ct.len as u64) >> (b * 8)) & 0xFF) as u8; }
     len_m[16] = 1;
     poly1305_process_block(len_m, r0, r1, r2, r3, r4, s1, s2, s3, s4, h0, h1, h2, h3, h4);
 

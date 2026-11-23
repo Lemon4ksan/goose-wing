@@ -165,8 +165,12 @@ fn pure_client_verify_cv(slot: PureTlsSlot&, cv_body: const u8[:]) -> tls::TlsBa
     let ok_v = verify_server_cert_and_signature(
         slot.peer_cert_body[..], cv_body, h_to_cert[..], cfg, 0xFFFF,
     );
+    let ok_leaf = ok_v && extract_leaf_cert_der(slot.peer_cert_body[..], slot.peer_leaf_der);
     slot.peer_cert_body.clear();
-    guard ok_v else { return tls::TlsBackendStatus.VerifyError; }
+    guard ok_v && ok_leaf else {
+        slot.peer_leaf_der.clear();
+        return tls::TlsBackendStatus.VerifyError;
+    }
     transcript_update_msg(slot.transcript, rfc::TLS_HS_CERTIFICATE_VERIFY, cv_body);
     slot.stage = PureHsStage.ClientWaitFinished;
     return tls::TlsBackendStatus.Ok;
@@ -423,8 +427,12 @@ fn pure_server_step_client_cv(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     let ok_cli = verify_client_cert_and_signature(
         slot.peer_cert_body[..], body[..], h_to_cert[..], slot.trust_store, now_unix,
     );
+    let ok_leaf = ok_cli && extract_leaf_cert_der(slot.peer_cert_body[..], slot.peer_leaf_der);
     slot.peer_cert_body.clear();
-    guard ok_cli else { return tls::TlsBackendStatus.VerifyError; }
+    guard ok_cli && ok_leaf else {
+        slot.peer_leaf_der.clear();
+        return tls::TlsBackendStatus.VerifyError;
+    }
     transcript_update_msg(slot.transcript, msg_t, body[..]);
     slot.stage = PureHsStage.ServerWaitClientFinished;
     return tls::TlsBackendStatus.Ok;

@@ -101,10 +101,10 @@ inline fn u256_to_be(a: U256) -> u8[32] {
     for i in 8 {
         let off = (7 - i) * 4;
         let w = a.v[i];
-        out[off] = (w >> 24) as u8;
-        out[off + 1] = (w >> 16) as u8;
-        out[off + 2] = (w >> 8) as u8;
-        out[off + 3] = w as u8;
+        out[off] = ((w >> 24) & 0xFF) as u8;
+        out[off + 1] = ((w >> 16) & 0xFF) as u8;
+        out[off + 2] = ((w >> 8) & 0xFF) as u8;
+        out[off + 3] = (w & 0xFF) as u8;
     }
     return out;
 }
@@ -881,10 +881,10 @@ inline fn u384_to_be(a: U384) -> u8[48] {
     for i in 12 {
         let off = (11 - i) * 4;
         let w = a.v[i];
-        out[off] = (w >> 24) as u8;
-        out[off + 1] = (w >> 16) as u8;
-        out[off + 2] = (w >> 8) as u8;
-        out[off + 3] = w as u8;
+        out[off] = ((w >> 24) & 0xFF) as u8;
+        out[off + 1] = ((w >> 16) & 0xFF) as u8;
+        out[off + 2] = ((w >> 8) & 0xFF) as u8;
+        out[off + 3] = (w & 0xFF) as u8;
     }
     return out;
 }

@@ -100,6 +100,21 @@ fn parse_certificate_chain_and_ocsp<CertList>(
     return out_leaf_ocsp, true;
 }
 
+// Extracts the DER-encoded leaf X.509 certificate from a verified TLS 1.3 Certificate payload.
+//
+// Example:
+//   cert_body = [0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x04, 'C', 'E', 'R', 'T', 0x00, 0x00]
+//   returns: out_leaf_der = "CERT", ok = true
+fn extract_leaf_cert_der(cert_body: const u8[:], out_leaf_der: u8[..8192]&) -> bool {
+    var chain_slices: const u8[:][..64] = [];
+    let _, ok = parse_certificate_chain_and_ocsp(cert_body, chain_slices);
+    guard ok && chain_slices.len > 0 && out_leaf_der.try_set(chain_slices[0]) else {
+        out_leaf_der.clear();
+        return false;
+    }
+    return true;
+}
+
 // Computes a TLS 1.3 SHA-256 PSK binder tag over a truncated ClientHello handshake message (RFC 8446 §4.2.11.2).
 fn compute_psk_binder(
     binder_key:   const u8[32]&,

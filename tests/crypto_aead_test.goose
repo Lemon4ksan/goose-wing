@@ -551,6 +551,23 @@ fn test_aes_gcm_prepared_key_contexts(t: lit::T&) {
     };
 }
 
+fn test_poly1305_carry_and_long_len_debug(t: lit::T&) {
+    t.run("Poly1305 >=256B length block and carry word never trap in debug mode") { sub =>
+        let key:   u8[32] = [0xFF; 32];
+        let nonce: u8[12] = [0xAA; 12];
+        var pt:  u8[300] = [0x5A; 300];
+        var aad: u8[300] = [0x33; 300];
+        var ct:  u8[300] = [0; 300];
+        var dec: u8[300] = [0; 300];
+
+        let tag, n_s, ok_s = core::chacha20_poly1305_seal(key, nonce, pt[..], aad[..], ct[..]);
+        sub.assert_true(ok_s && n_s == 300, "seal >=256B succeeds with carry key");
+        let n_o, ok_o = core::chacha20_poly1305_open_into(key, nonce, ct[..], aad[..], tag, dec[..]);
+        sub.assert_true(ok_o && n_o == 300, "open >=256B succeeds");
+        sub.assert_eq(dec[..], pt[..], "roundtrip matches >=256B plaintext");
+    };
+}
+
 fn main() {
     let runner = lit::new_runner("Symmetric AEAD In-Place & Destination Slices Suite");
 
@@ -560,6 +577,7 @@ fn main() {
     lit::run_case(runner, "4. In-Place Auto-Zeroization on Tamper", test_aead_auto_zeroization_on_tamper);
     lit::run_case(runner, "5. HKDF-SHA256 AES-256-GCM Scheme", test_hkdf_aes256_gcm_scheme);
     lit::run_case(runner, "6. Prepared AES-128/256-GCM Key Schedule Contexts", test_aes_gcm_prepared_key_contexts);
+    lit::run_case(runner, "7. Poly1305 Carry & >=256B Length Regression", test_poly1305_carry_and_long_len_debug);
 
     let ok = lit::finish(runner);
     assert(ok);

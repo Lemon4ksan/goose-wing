@@ -4768,6 +4768,20 @@ fn check_goose2rfc_handshake_and_session_regressions(t: lit::T&) {
     };
 }
 
+fn check_sni_extension_duplicate_dirty_out_regression(t: lit::T&) {
+    t.run("Duplicate or corrupt trailing SNI entry clears out_sni on failure") { sub =>
+        // ServerNameList len=32: entry1 "a.example.com" (16B) + entry2 "b.example.com" (16B)
+        var sni_ext: u8[..64] = [0x00, 0x20];
+        sni_ext.push(0x00); sni_ext.push(0x00); sni_ext.push(0x0D);
+        sni_ext.append("a.example.com");
+        sni_ext.push(0x00); sni_ext.push(0x00); sni_ext.push(0x0D);
+        sni_ext.append("b.example.com");
+        var out_sni: u8[..255] = "stale.invalid";
+        sub.assert_false(tls::parse_sni_extension(sni_ext[..], out_sni), "duplicate SNI rejected");
+        sub.assert_eq(out_sni.len, 0, "out_sni cleared on SNI rejection");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("TLS 1.3 & X.509 PKI Zero-Allocation Conformance Suite", lit::Verbosity.Verbose);
 
@@ -4792,6 +4806,7 @@ fn main() {
     lit::run_case(runner, "19. TLS 1.3 CertificateRequest certificate_authorities Extension", test_tls13_cert_authorities_extension_validation);
     lit::run_case(runner, "20a. RFC Audit Regressions: PKI, SCT, and ECH", check_goose2rfc_pki_and_ech_regressions);
     lit::run_case(runner, "20b. RFC Audit Regressions: Record, KeyShare, PSK & Tickets", check_goose2rfc_handshake_and_session_regressions);
+    lit::run_case(runner, "21. Duplicate SNI Cleans Output Buffer on Failure", check_sni_extension_duplicate_dirty_out_regression);
 
     let ok = lit::finish(runner);
     assert(ok);

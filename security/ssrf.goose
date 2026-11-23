@@ -248,7 +248,17 @@ fn is_forbidden_proxy_port(port: u16) -> bool {
     return port == 0 || port == 25 || port == 445 || port == 465 || port == 587;
 }
 
-// Returns true for UDP amplification/reflection risk ports (RPC 111, NTP 123, SSDP 1900, mDNS 5353).
+// Returns true for UDP amplification/reflection risk ports (QOTD 17, Chargen 19, RPC 111,
+// NTP 123, NetBIOS 137, SNMP 161, CLDAP 389, SSDP 1900, mDNS 5353, Memcached 11211).
 fn is_udp_amplification_port(port: u16) -> bool {
-    return port == 111 || port == 123 || port == 1900 || port == 5353;
+    return port == 17 ||
+        port == 19 ||
+        port == 111 ||
+        port == 123 ||
+        port == 137 ||
+        port == 161 ||
+        port == 389 ||
+        port == 1900 ||
+        port == 5353 ||
+        port == 11211;
 }

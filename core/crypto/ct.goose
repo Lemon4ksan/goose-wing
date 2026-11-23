@@ -72,6 +72,10 @@ fn ct_eq_tag48(tag_a: const u8[48]&, tag_b: const u8[48]&) -> bool {
 }
 
 extern fn native_secure_zeroize(slice: u8[:]) = "wing_secure_zeroize";
+extern fn native_secure_zeroize_u16(slice: u16[:]) = "wing_secure_zeroize_u16";
+extern fn native_secure_zeroize_u32(slice: u32[:]) = "wing_secure_zeroize_u32";
+extern fn native_secure_zeroize_u64(slice: u64[:]) = "wing_secure_zeroize_u64";
+extern fn native_secure_zeroize_i32(slice: i32[:]) = "wing_secure_zeroize_i32";
 extern fn native_ct_copy_bytes(dst: u8[:], src: const u8[:]) = "wing_ct_copy_bytes";
 
 fn ct_copy_bytes(dst: u8[:], src: const u8[:]) {
@@ -101,36 +105,24 @@ fn secure_zeroize_slice(buf: u8[:]) {
     native_secure_zeroize(buf);
 }
 
-// Zeroizes a u32 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+// Zeroizes a u32 word slice using volatile C stores immune to compiler DSE.
 inline fn secure_zeroize_u32_slice(buf: u32[:]) {
-    var z_bytes: u8[32] = [0; 32];
-    native_secure_zeroize(z_bytes[..]);
-    let z: u32 = z_bytes[0];
-    for i in buf.len { buf[i] = z; }
+    native_secure_zeroize_u32(buf);
 }
 
-// Zeroizes a u64 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+// Zeroizes a u64 word slice using volatile C stores immune to compiler DSE.
 inline fn secure_zeroize_u64_slice(buf: u64[:]) {
-    var z_bytes: u8[32] = [0; 32];
-    native_secure_zeroize(z_bytes[..]);
-    let z: u64 = z_bytes[0];
-    for i in buf.len { buf[i] = z; }
+    native_secure_zeroize_u64(buf);
 }
 
-// Zeroizes a u16 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+// Zeroizes a u16 word slice using volatile C stores immune to compiler DSE.
 inline fn secure_zeroize_u16_slice(buf: u16[:]) {
-    var z_bytes: u8[32] = [0; 32];
-    native_secure_zeroize(z_bytes[..]);
-    let z: u16 = z_bytes[0];
-    for i in buf.len { buf[i] = z; }
+    native_secure_zeroize_u16(buf);
 }
 
-// Zeroizes an i32 word slice using an opaque zero barrier so optimizing compilers cannot DSE the loop.
+// Zeroizes an i32 word slice using volatile C stores immune to compiler DSE.
 inline fn secure_zeroize_i32_slice(buf: i32[:]) {
-    var z_bytes: u8[32] = [0; 32];
-    native_secure_zeroize(z_bytes[..]);
-    let z: i32 = z_bytes[0];
-    for i in buf.len { buf[i] = z; }
+    native_secure_zeroize_i32(buf);
 }
 
 inline fn crypto_buf_has_room<A>(arr: const A&, needed: i64) -> bool {

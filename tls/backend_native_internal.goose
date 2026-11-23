@@ -74,6 +74,8 @@ extern fn native_tls_backend_read_app(
 
 extern fn native_tls_backend_selected_alpn(handle: i64, dst: u8[:]) -> i64 = "wing_tls_backend_selected_alpn";
 
+extern fn native_tls_backend_peer_cert_der(handle: i64, dst: u8[:]) -> i64 = "wing_tls_backend_peer_cert_der";
+
 extern fn native_tls_backend_is_established(handle: i64) -> i32 = "wing_tls_backend_is_established";
 
 extern fn native_tls_backend_pending_wire(handle: i64) -> i64 = "wing_tls_backend_pending_wire";

@@ -740,10 +740,10 @@ fn rsa_mgf1_xor(seed: const u8[:], hash_len: i64, dst: u8[:]) {
     while offset < dst.len {
         hash_in.clear();
         hash_in.append(seed);
-        hash_in.push((counter >> 24) as u8);
-        hash_in.push((counter >> 16) as u8);
-        hash_in.push((counter >> 8) as u8);
-        hash_in.push(counter as u8);
+        hash_in.push(((counter >> 24) & 0xFF) as u8);
+        hash_in.push(((counter >> 16) & 0xFF) as u8);
+        hash_in.push(((counter >> 8) & 0xFF) as u8);
+        hash_in.push((counter & 0xFF) as u8);
         if hash_len == 32 {
             let blk = sha256(hash_in[..]);
             rsa_mgf1_xor_block(blk[..], dst, offset);

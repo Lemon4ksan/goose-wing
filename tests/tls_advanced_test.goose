@@ -1694,8 +1694,10 @@ fn test_crypto_jar_container(t: lit::T&) {
         var store = security::KeyStore { .. };
         let k1: u8[32] = [0x11; 32];
         let k2: u8[32] = [0x22; 32];
-        security::add_key(store, security::KeySlot { key_id: 10, master_key: k1, created_at_sec: 1700000000, .. });
-        security::add_key(store, security::KeySlot { key_id: 20, master_key: k2, created_at_sec: 1700086400, .. }); // 24h later
+        let slot10 = security::KeySlot { key_id: 10, master_key: k1, created_at_sec: 1700000000, .. };
+        let slot20 = security::KeySlot { key_id: 20, master_key: k2, created_at_sec: 1700086400, .. }; // 24h later
+        security::add_key(store, slot10);
+        security::add_key(store, slot20);
 
         // Rotate active key to key 20
         sub.assert_true(security::set_active_key_id(store, 20), "rotated active key to id 20");
@@ -2304,6 +2306,18 @@ fn test_x509_san_tld_wildcard(t: lit::T&) {
     t.assert_false(tls::match_dns_san("*.168.1.1", "192.168.1.1"), "Wildcard must not match IPv4 literal");
 }
 
+// ----------------------------------------------------------------------------
+// 35. TLS Endpoint SPIFFE Workload Identity Pinning Fail-Closed Validation
+// ----------------------------------------------------------------------------
+fn test_spiffe_uri_pinning_validation(t: lit::T&) {
+    let ep = tls::TlsEndpoint { closed: true, .. };
+    t.assert_false(tls::tls_endpoint_verify_spiffe_uri(ep, ""), "empty SPIFFE URI rejected");
+    t.assert_false(tls::tls_endpoint_verify_spiffe_uri(ep, "https://prod/node"), "non-spiffe scheme rejected");
+    t.assert_false(tls::tls_endpoint_verify_spiffe_uri(ep, "spiffe:///workload"), "empty trust domain rejected");
+    t.assert_false(tls::tls_endpoint_verify_spiffe_uri(ep, "spiffe://prod%2f/w"), "percent-encoded SPIFFE URI rejected");
+    t.assert_false(tls::tls_endpoint_verify_spiffe_uri(ep, "spiffe://prod/node-1"), "closed endpoint fails closed");
+}
+
 fn main() {
     var runner = lit::new_runner("TLS 1.3 Record Layer, ECH, mTLS, and PKI Extensions Suite", lit::Verbosity.Verbose);
 
@@ -2341,6 +2355,7 @@ fn main() {
     lit::run_case(runner, "32. X.509 Basic Constraints Negative or Non-CA PathLen Defense", test_x509_basic_constraints_negative_or_non_ca_pathlen);
     lit::run_case(runner, "33. X.509 Name Constraints Subtree Base dNSName Validation", test_x509_name_constraints_subtree_dns_nul);
     lit::run_case(runner, "34. X.509 DNS SAN TLD Wildcard & IP Literal Defense", test_x509_san_tld_wildcard);
+    lit::run_case(runner, "35. TLS Endpoint SPIFFE Workload Identity Validation", test_spiffe_uri_pinning_validation);
 
     let ok = lit::finish(runner);
     assert(ok);

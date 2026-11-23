@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
@@ -3525,6 +3526,35 @@ int32_t wing_udp_recvfrom_dual(int64_t sock_fd, wing_bytes_rw out_buf, wing_byte
     return (int32_t)got;
 }
 
+static uint64_t wing_udp_mono_ms(void) {
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000L);
+    }
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)(tv.tv_usec / 1000L);
+#endif
+}
+
+static int wing_udp_sockaddr_matches(const struct sockaddr_storage *expected, const struct sockaddr_storage *peer) {
+    if (expected->ss_family == AF_INET && peer->ss_family == AF_INET) {
+        const struct sockaddr_in *a = (const struct sockaddr_in *)expected;
+        const struct sockaddr_in *b = (const struct sockaddr_in *)peer;
+        return a->sin_port == b->sin_port && a->sin_addr.s_addr == b->sin_addr.s_addr;
+    }
+    if (expected->ss_family == AF_INET6 && peer->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)expected;
+        const struct sockaddr_in6 *b = (const struct sockaddr_in6 *)peer;
+        return a->sin6_port == b->sin6_port && memcmp(&a->sin6_addr, &b->sin6_addr, sizeof(a->sin6_addr)) == 0 &&
+               (a->sin6_scope_id == 0 || a->sin6_scope_id == b->sin6_scope_id);
+    }
+    return 0;
+}
+
 int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wing_bytes_ro query,
                                wing_bytes_rw out_resp, uint32_t timeout_ms) {
     if (server_ip.data == NULL || server_ip.len <= 0 || server_ip.len >= 128) return -1;
@@ -3542,8 +3572,8 @@ int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wi
     SOCKET s = socket(family, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return -1;
 
+    wing_prepare_nonblocking_cloexec(s);
 #ifdef _WIN32
-    SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
     int sent = sendto(s, (const char *)query.data, (int)query.len, 0, (struct sockaddr *)&ss, ss_len);
 #else
     int sent = (int)sendto(s, query.data, (size_t)query.len, 0, (struct sockaddr *)&ss, (socklen_t)ss_len);
@@ -3553,15 +3583,47 @@ int32_t wing_udp_exchange_dual(wing_bytes_ro server_ip, uint16_t server_port, wi
         return -1;
     }
 
-    int sel = wing_wait_fd(s, 0, timeout_ms);
-    if (sel <= 0) {
+    uint64_t deadline = wing_udp_mono_ms() + (uint64_t)timeout_ms;
+    for (int attempt = 0; attempt < 128; attempt++) {
+        uint64_t now = wing_udp_mono_ms();
+        if (attempt > 0 && now >= deadline) {
+            closesocket(s);
+            return -2;
+        }
+        uint32_t rem_ms = (now < deadline) ? (uint32_t)(deadline - now) : 0U;
+        int sel = wing_wait_fd(s, 0, rem_ms);
+        if (sel <= 0) {
+            closesocket(s);
+            return sel == 0 ? -2 : -1;
+        }
+
+        struct sockaddr_storage peer_ss;
+        memset(&peer_ss, 0, sizeof(peer_ss));
+#ifdef _WIN32
+        int peer_len = (int)sizeof(peer_ss);
+#else
+        socklen_t peer_len = (socklen_t)sizeof(peer_ss);
+#endif
+        int got = recvfrom(s, (char *)out_resp.data, (int)out_resp.len, 0, (struct sockaddr *)&peer_ss, &peer_len);
+        if (got < 0) {
+            int err = wing_last_sock_err();
+#ifdef _WIN32
+            if (err == WSAEWOULDBLOCK) continue;
+#else
+            if (err == EAGAIN || err == EWOULDBLOCK) continue;
+#endif
+            closesocket(s);
+            return -1;
+        }
+        if (got == 0 || !wing_udp_sockaddr_matches(&ss, &peer_ss)) {
+            continue;
+        }
         closesocket(s);
-        return sel == 0 ? -2 : -1;
+        return (int32_t)got;
     }
 
-    int got = recvfrom(s, (char *)out_resp.data, (int)out_resp.len, 0, NULL, NULL);
     closesocket(s);
-    return (got > 0) ? (int32_t)got : -1;
+    return -2;
 }
 
 int32_t wing_fs_disk_usage_percent(wing_bytes_ro path) {

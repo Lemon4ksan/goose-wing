@@ -115,8 +115,13 @@ static int tls_buf_append(tls_buf_t *b, const uint8_t *src, size_t n) {
         while (ncap < need)
             ncap *= 2;
         if (ncap > WING_TLS_MAX_BUF_CAP) ncap = need;
-        uint8_t *nb = (uint8_t *)realloc(b->data, ncap);
+        uint8_t *nb = (uint8_t *)malloc(ncap);
         if (nb == NULL) return 0;
+        if (b->data != NULL) {
+            if (b->len > 0) memcpy(nb, b->data, b->len);
+            wing_tls_zeroize(b->data, b->cap);
+            free(b->data);
+        }
         b->data = nb;
         b->cap = ncap;
     }
@@ -209,6 +214,8 @@ typedef struct {
     void *(*SSL_get0_param)(void *);
     int (*X509_VERIFY_PARAM_set1_ip_asc)(void *, const char *);
     void *(*d2i_X509)(void **, const unsigned char **, long);
+    int (*i2d_X509)(void *, unsigned char **);
+    void *(*SSL_get1_peer_certificate)(void *);
     int (*X509_STORE_add_cert)(void *, void *);
     void (*X509_free)(void *);
     void (*ERR_clear_error)(void);
@@ -352,6 +359,14 @@ static void *lk_d2i_X509(void **px, const unsigned char **in, long len) {
     (void)px;
     return (void *)d2i_X509(NULL, in, len);
 }
+static int lk_i2d_X509(void *x, unsigned char **out) { return i2d_X509((X509 *)x, out); }
+static void *lk_SSL_get1_peer_certificate(void *s) {
+#if defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x30000000L && !defined(OPENSSL_IS_BORINGSSL)
+    return (void *)SSL_get1_peer_certificate((const SSL *)s);
+#else
+    return (void *)SSL_get_peer_certificate((const SSL *)s);
+#endif
+}
 static int lk_X509_STORE_add_cert(void *s, void *x) { return X509_STORE_add_cert((X509_STORE *)s, (X509 *)x); }
 static void lk_X509_free(void *x) { X509_free((X509 *)x); }
 static void lk_ERR_clear_error(void) { ERR_clear_error(); }
@@ -404,6 +419,8 @@ static void ossl_probe_impl(void) {
     g_ossl.SSL_get0_param = lk_SSL_get0_param;
     g_ossl.X509_VERIFY_PARAM_set1_ip_asc = lk_X509_VERIFY_PARAM_set1_ip_asc;
     g_ossl.d2i_X509 = lk_d2i_X509;
+    g_ossl.i2d_X509 = lk_i2d_X509;
+    g_ossl.SSL_get1_peer_certificate = lk_SSL_get1_peer_certificate;
     g_ossl.X509_STORE_add_cert = lk_X509_STORE_add_cert;
     g_ossl.X509_free = lk_X509_free;
     g_ossl.ERR_clear_error = lk_ERR_clear_error;
@@ -509,6 +526,10 @@ static void ossl_probe_impl(void) {
     (void)load_fn_sym(&g_ossl.SSL_get0_param, dyn_sym(slib, "SSL_get0_param"));
     (void)load_fn_sym(&g_ossl.X509_VERIFY_PARAM_set1_ip_asc, dyn_sym(clib, "X509_VERIFY_PARAM_set1_ip_asc"));
     (void)load_fn_sym(&g_ossl.d2i_X509, dyn_sym(clib, "d2i_X509"));
+    (void)load_fn_sym(&g_ossl.i2d_X509, dyn_sym(clib, "i2d_X509"));
+    void *sym_peer = dyn_sym(slib, "SSL_get1_peer_certificate");
+    if (sym_peer == NULL) sym_peer = dyn_sym(slib, "SSL_get_peer_certificate");
+    (void)load_fn_sym(&g_ossl.SSL_get1_peer_certificate, sym_peer);
     (void)load_fn_sym(&g_ossl.X509_STORE_add_cert, dyn_sym(clib, "X509_STORE_add_cert"));
     (void)load_fn_sym(&g_ossl.X509_free, dyn_sym(clib, "X509_free"));
     (void)load_fn_sym(&g_ossl.ERR_clear_error, dyn_sym(clib, "ERR_clear_error"));
@@ -2233,4 +2254,53 @@ int32_t wing_tls_system_roots_by_subject(wing_tls_ro subject_der_tlv, wing_tls_r
     (void)out_buf;
     return -1;
 #endif
+}
+
+#ifdef _WIN32
+#ifndef SECPKG_ATTR_REMOTE_CERT_CONTEXT
+#define SECPKG_ATTR_REMOTE_CERT_CONTEXT 0x53
+#endif
+#endif
+
+int64_t wing_tls_backend_peer_cert_der(int64_t handle, wing_tls_rw dst) {
+    if (dst.data == NULL || dst.len <= 0) return 0;
+    wing_tls_ep_t *ep = acquire_ep(handle);
+    if (ep == NULL) return 0;
+    int64_t res = 0;
+    ep_io_lock(ep);
+    if (!ep->closed && ep->established) {
+        if (ep->kind == WING_TLS_KIND_OPENSSL && g_ossl.SSL_get1_peer_certificate != NULL && g_ossl.i2d_X509 != NULL &&
+            g_ossl.X509_free != NULL) {
+            void *cert = g_ossl.SSL_get1_peer_certificate(ep->ossl_ssl);
+            if (cert != NULL) {
+                int der_len = g_ossl.i2d_X509(cert, NULL);
+                if (der_len > 0 && (int64_t)der_len <= dst.len) {
+                    unsigned char *p = (unsigned char *)dst.data;
+                    if (g_ossl.i2d_X509(cert, &p) == der_len) {
+                        res = (int64_t)der_len;
+                    }
+                }
+                g_ossl.X509_free(cert);
+            }
+        }
+#ifdef _WIN32
+        else if (ep->kind == WING_TLS_KIND_SCHANNEL && ep->has_ctxt && g_sch.QueryContextAttributesA != NULL &&
+                 crypt32_ensure_loaded()) {
+            PCCERT_CONTEXT peer_ctx = NULL;
+            SECURITY_STATUS sec_st =
+                g_sch.QueryContextAttributesA(&ep->ctxt, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &peer_ctx);
+            if (sec_st == SEC_E_OK && peer_ctx != NULL) {
+                if (peer_ctx->pbCertEncoded != NULL && peer_ctx->cbCertEncoded > 0 &&
+                    (int64_t)peer_ctx->cbCertEncoded <= dst.len) {
+                    memcpy(dst.data, peer_ctx->pbCertEncoded, (size_t)peer_ctx->cbCertEncoded);
+                    res = (int64_t)peer_ctx->cbCertEncoded;
+                }
+                g_crypt32.CertFreeCertificateContext(peer_ctx);
+            }
+        }
+#endif
+    }
+    ep_io_unlock(ep);
+    release_ep(ep);
+    return res;
 }

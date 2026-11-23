@@ -34,6 +34,7 @@ import .backend_native_internal;
 import .backend_pure_internal;
 import .backend_pure_hs_internal;
 import .backend_transport_internal;
+import .pki_nc_san_internal;
 
 // Reports whether `kind` is available in the current runtime environment.
 fn tls_backend_available(kind: TlsBackendKind) -> bool {
@@ -230,6 +231,56 @@ fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64] {
     }
     let _ = out.try_set(tls_internal::g_pure_tls_slots[idx].selected_alpn[..]);
     return out;
+}
+
+// Extracts the authenticated peer leaf X.509 certificate in DER form.
+fn tls_endpoint_peer_cert_der(ep: const TlsEndpoint&) -> u8[..8192], bool {
+    var out: u8[..8192] = [];
+    guard !ep.closed && tls_endpoint_is_established(ep) else { return out, false; }
+    if ep.active_kind != TlsBackendKind.PureGoose {
+        var raw: u8[8192] = [0; 8192];
+        let n = tls_internal::native_tls_backend_peer_cert_der(ep.native_id, raw[..]);
+        guard n > 0 && n <= 8192 && out.try_set(raw[..n]) else { return out, false; }
+        return out, true;
+    }
+    let idx = ep.pure_slot as i64;
+    guard idx >= 0 &&
+        idx < tls_internal::g_pure_tls_slots.len &&
+        tls_internal::is_live_pure_slot(tls_internal::g_pure_tls_slots[idx], ep.pure_gen) else {
+        return out, false;
+    }
+    let leaf .= tls_internal::g_pure_tls_slots[idx].peer_leaf_der;
+    guard leaf.len > 0 && out.try_set(leaf[..]) else { return out, false; }
+    return out, true;
+}
+
+// Verifies that the established peer's leaf certificate includes an exact URI SAN matching `expected_uri`
+// (for SPIFFE workload identity pinning such as `spiffe://trust-domain/workload`).
+fn tls_endpoint_verify_spiffe_uri(ep: const TlsEndpoint&, expected_uri: const u8[:]) -> bool {
+    guard expected_uri.len > 9 && expected_uri.starts_with("spiffe://") else { return false; }
+    guard expected_uri[9] != '/' &&
+        !expected_uri.contains_byte(0) &&
+        !expected_uri.contains_byte('%') else {
+        return false;
+    }
+    let peer_der, ok_der = tls_endpoint_peer_cert_der(ep);
+    guard ok_der && peer_der.len > 0 else { return false; }
+
+    var cert = ParsedCert { .. };
+    guard parse_x509_certificate(peer_der[..], cert) && cert.has_san else { return false; }
+    var names_seq = core::cursor_from(peer_der[..0]);
+    guard tls_internal::x509_open_san_sequence(span_slice(peer_der[..], cert.san_raw), names_seq) else {
+        return false;
+    }
+    var matched = false;
+    while names_seq.cursor_len() > 0 {
+        let entry, ok_entry = tls_internal::x509_next_san_entry(names_seq);
+        guard ok_entry else { return false; }
+        if entry.san_type == SanType.Uri && entry.val == expected_uri {
+            matched = true;
+        }
+    }
+    return matched;
 }
 
 // Reports whether `ep` has completed the TLS handshake and is ready for application data.

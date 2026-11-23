@@ -125,6 +125,9 @@ fn validate_server_random_downgrade(
 //   ext_bytes = 0x00 0x0E 0x00 0x00 0x0B "example.com"
 //   returns: ok = true, out_sni = "example.com"
 fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
+    var committed = false;
+    defer if !committed { out_sni.clear(); };
+
     var cursor = core::cursor_from(ext_bytes);
     var list_cursor, ok_l = cursor.read_u16_sub_cursor();
     guard ok_l && list_cursor.cursor_len() > 0 && cursor.cursor_len() == 0 else { return false; }
@@ -134,7 +137,9 @@ fn parse_sni_extension(ext_bytes: const u8[:], out_sni: u8[..255]&) -> bool {
     while list_cursor.cursor_len() > 0 {
         guard tls_internal::read_sni_entry(list_cursor, found_host_name, out_sni) else { return false; }
     }
-    return found_host_name;
+    guard found_host_name else { return false; }
+    committed = true;
+    return true;
 }
 
 // Parses ALPN ProtocolNameList and negotiates best matching protocol.

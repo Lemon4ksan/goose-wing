@@ -37,6 +37,22 @@ typedef struct {
     int64_t len;
 } wing_bytes_ro;
 typedef struct {
+    uint16_t *data;
+    int64_t len;
+} wing_u16_rw;
+typedef struct {
+    uint32_t *data;
+    int64_t len;
+} wing_u32_rw;
+typedef struct {
+    uint64_t *data;
+    int64_t len;
+} wing_u64_rw;
+typedef struct {
+    int32_t *data;
+    int64_t len;
+} wing_i32_rw;
+typedef struct {
     const uint32_t *data;
     int64_t len;
 } wing_u32_ro;
@@ -953,23 +969,48 @@ void wing_prefetch_nta(wing_bytes_ro slice) {
     }
 }
 
-// Cryptographically secure memory zeroization immune to dead-store elimination (DSE).
-void wing_secure_zeroize(wing_bytes_rw slice) {
-    if (!slice.data || slice.len <= 0) return;
+static inline void wing_zeroize_raw(void *ptr, size_t byte_len) {
+    if (!ptr || byte_len == 0) return;
 #if defined(_MSC_VER)
-    SecureZeroMemory(slice.data, (size_t)slice.len);
+    SecureZeroMemory(ptr, byte_len);
 #elif defined(__STDC_LIB_EXT1__)
-    memset_s(slice.data, (rsize_t)slice.len, 0, (rsize_t)slice.len);
+    memset_s(ptr, (rsize_t)byte_len, 0, (rsize_t)byte_len);
 #else
-    volatile uint8_t *p = (volatile uint8_t *)slice.data;
-    size_t len = (size_t)slice.len;
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+    size_t len = byte_len;
     while (len--) {
         *p++ = 0;
     }
 #if defined(__GNUC__) || defined(__clang__)
-    __asm__ __volatile__("" : : "r"(slice.data) : "memory");
+    __asm__ __volatile__("" : : "r"(ptr) : "memory");
 #endif
 #endif
+}
+
+// Cryptographically secure memory zeroization immune to dead-store elimination (DSE).
+void wing_secure_zeroize(wing_bytes_rw slice) {
+    if (!slice.data || slice.len <= 0) return;
+    wing_zeroize_raw(slice.data, (size_t)slice.len);
+}
+
+void wing_secure_zeroize_u16(wing_u16_rw slice) {
+    if (!slice.data || slice.len <= 0 || (uint64_t)slice.len > SIZE_MAX / sizeof(uint16_t)) return;
+    wing_zeroize_raw(slice.data, (size_t)slice.len * sizeof(uint16_t));
+}
+
+void wing_secure_zeroize_u32(wing_u32_rw slice) {
+    if (!slice.data || slice.len <= 0 || (uint64_t)slice.len > SIZE_MAX / sizeof(uint32_t)) return;
+    wing_zeroize_raw(slice.data, (size_t)slice.len * sizeof(uint32_t));
+}
+
+void wing_secure_zeroize_u64(wing_u64_rw slice) {
+    if (!slice.data || slice.len <= 0 || (uint64_t)slice.len > SIZE_MAX / sizeof(uint64_t)) return;
+    wing_zeroize_raw(slice.data, (size_t)slice.len * sizeof(uint64_t));
+}
+
+void wing_secure_zeroize_i32(wing_i32_rw slice) {
+    if (!slice.data || slice.len <= 0 || (uint64_t)slice.len > SIZE_MAX / sizeof(int32_t)) return;
+    wing_zeroize_raw(slice.data, (size_t)slice.len * sizeof(int32_t));
 }
 
 // Constant-time byte copy using 64-bit SWAR words
@@ -1574,16 +1615,6 @@ uint32_t wing_simd_adler32_update(uint32_t initial, wing_bytes_ro slice) {
 /* =========================================================================
  * SIMD-Accelerated Deflate Level-1 Fast Encoder (RFC 1951 Fixed + Stored)
  * ========================================================================= */
-
-typedef struct {
-    uint32_t *data;
-    int64_t len;
-} wing_u32_rw;
-
-typedef struct {
-    uint64_t *data;
-    int64_t len;
-} wing_u64_rw;
 
 static uint16_t wing_fix_lit_pack[288];
 static uint32_t wing_fix_len_pack[259];

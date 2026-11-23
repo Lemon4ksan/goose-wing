@@ -34,6 +34,7 @@ struct Sha256Ctx {
 
 fn sha256_transform(ctx: Sha256Ctx&, chunk: const u8[:]) {
     var w: u32[64] = [0; 64];
+    defer secure_zeroize_u32_slice(w[..]);
     for i in 16 {
         let off = i * 4;
         w[i] = ((chunk[off] as u32) << 24) |
@@ -277,6 +278,7 @@ let SHA512_K: const u64[80] = [
 // Shared transform block for SHA-384 and SHA-512
 fn sha512_transform(h_state: u64[8]&, chunk: const u8[:]) {
     var w: u64[80] = [0; 80];
+    defer secure_zeroize_u64_slice(w[..]);
     for i in 16 {
         let off = i * 8;
         w[i] = ((chunk[off] as u64) << 56) |
@@ -743,6 +745,7 @@ fn hkdf_expand_bytes_384(prk: const u8[:], info: const u8[:], length: u16, out: 
 
 fn sha1_compress(state: u32[5]&, chunk: const u8[:]) {
     var w: u32[80] = [0; 80];
+    defer secure_zeroize_u32_slice(w[..]);
     for t in 16 {
         let off = t * 4;
         w[t] = ((chunk[off] as u32) << 24) |
@@ -800,6 +803,7 @@ fn sha1(data: const u8[:]) -> u8[20] {
         0x10325476,
         0xC3D2E1F0,
     ];
+    defer secure_zeroize_u32_slice(state[..]);
 
     let total_len = data.len;
     var offset = 0;
@@ -810,6 +814,7 @@ fn sha1(data: const u8[:]) -> u8[20] {
 
     let rem = total_len - offset;
     var blk: u8[64] = [0; 64];
+    defer secure_zeroize_64(blk);
     for i in rem { blk[i] = data[offset + i]; }
     blk[rem] = 0x80;
 

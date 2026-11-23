@@ -85,6 +85,7 @@ struct PureTlsSlot {
     ks:                     KeySchedule           = KeySchedule { .. },
     srv_fin_hash:           u8[..48]              = [],
     peer_cert_body:         u8[..8192]            = [],
+    peer_leaf_der:          u8[..8192]            = [],
     hs_plain:               u8[..16384]           = [],
     hs_plain_pos:           i64                   = 0,
     wire_in:                u8[..32768]           = [],
