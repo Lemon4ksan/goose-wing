@@ -393,6 +393,27 @@ fn test_websocket_upgrade_policy_and_prepare_head() {
     assert(core::ends_with(stream_head[..], "\r\n\r\n"));
     proxy::release_upstream_connection(rp.cluster, st_idx);
 
+    // Compound Transfer-Encoding (e.g. "gzip, chunked") is preserved on forwarded heads.
+    var te_hdrs = http::HeaderMap { .. };
+    assert(http::append_header(te_hdrs, "Host", "edge.example.com"));
+    assert(http::append_header(te_hdrs, "Transfer-Encoding", "gzip, chunked"));
+    var te_head: u8[>..] = [];
+    let te_idx, ok_te = proxy::prepare_proxy_head_with_key_at(
+        rp,
+        "POST",
+        "/stream-gzip",
+        te_hdrs,
+        "203.0.113.9",
+        "https",
+        "stream-gzip",
+        te_head,
+        1000000004,
+    );
+    assert(ok_te && te_idx == 0);
+    assert(core::contains(te_head[..], "Transfer-Encoding: gzip, chunked\r\n"));
+    assert(!core::contains(te_head[..], "Transfer-Encoding: chunked\r\n"));
+    proxy::release_upstream_connection(rp.cluster, te_idx);
+
     print("WS_UPGRADE_AND_PREPARE_HEAD: ok\n");
     // CHECK: WS_UPGRADE_AND_PREPARE_HEAD: ok
 }
@@ -403,7 +424,7 @@ fn test_parse_upstream_response_head() {
     // 1. Incomplete head -> 0.
     assert(proxy::parse_upstream_response_head("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n", "GET", res) == 0);
 
-    // 2. 101 Switching Protocols -> 1, is_upgrade_101 == true, preserves Upgrade/Connection.
+    // 2. 101 Switching Protocols -> 1, is_upgrade_101 == true, preserves Upgrade/Connection (including multi-Upgrade).
     let ws_101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\nWS_DATA";
     assert(proxy::parse_upstream_response_head(ws_101, "GET", res) == 1);
     assert(res.status_code == 101);
@@ -413,6 +434,36 @@ fn test_parse_upstream_response_head() {
     assert(http::get_header(res.headers, "Connection") == "Upgrade");
     assert(http::get_header(res.headers, "Upgrade") == "websocket");
     assert(http::get_header(res.headers, "Sec-WebSocket-Accept") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+
+    let multi_101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nUpgrade: h2c\r\nConnection: Upgrade\r\n\r\n";
+    assert(proxy::parse_upstream_response_head(multi_101, "GET", res) == 1);
+    var upgrade_vals: u8[>..] = [];
+    for &entry in res.headers.entries {
+        if http::entry_name(res.headers, entry).eq_ascii_fold("upgrade") {
+            if upgrade_vals.len > 0 {
+                assert(upgrade_vals.try_append(","));
+            }
+            assert(upgrade_vals.try_append(http::entry_value(res.headers, entry)));
+        }
+    }
+    assert(upgrade_vals[..] == "websocket,h2c");
+
+    // Reject 101 with forbidden Content-Length, Transfer-Encoding, or missing Upgrade/Connection: Upgrade.
+    let bad_101_cl = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nContent-Length: 5\r\n\r\nhello";
+    assert(proxy::parse_upstream_response_head(bad_101_cl, "GET", res) == -1);
+    assert(res.status_code == 0);
+
+    let bad_101_te = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
+    assert(proxy::parse_upstream_response_head(bad_101_te, "GET", res) == -1);
+    assert(res.status_code == 0);
+
+    let bad_101_no_upg = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n";
+    assert(proxy::parse_upstream_response_head(bad_101_no_upg, "GET", res) == -1);
+    assert(res.status_code == 0);
+
+    let bad_101_no_conn = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: keep-alive\r\n\r\n";
+    assert(proxy::parse_upstream_response_head(bad_101_no_conn, "GET", res) == -1);
+    assert(res.status_code == 0);
 
     // 3. 200 OK + Content-Type: text/event-stream; charset=utf-8 -> is_sse == true, disable_buffering == true.
     let sse_raw = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nTransfer-Encoding: chunked\r\n\r\n5\r\ndata\n\r\n0\r\n\r\n";
@@ -667,17 +718,51 @@ fn test_upstream_tls_exchange_and_overflow() {
     var in_hdr = http::HeaderMap { .. };
     assert(http::append_header(in_hdr, "Host", "edge.example.com"));
 
-    // 1. Pooled TLS 1.3 exchange + keep-alive reuse keyed by PoolScheme.Https and sni_host.
+    // 1. Pooled TLS 1.3 exchange + shared-SNI target isolation + keep-alive reuse.
     var pool = net::new_stream_pool(6, 32, 64);
+    var other_backend = proxy::UpstreamTarget {
+        port:    port,
+        use_tls: true,
+        ..
+    };
+    assert(other_backend.host.try_set("10.0.0.2"));
+    assert(other_backend.sni_host.try_set("upstream.internal.test"));
+    let k_primary = proxy_internal::build_upstream_pool_key(rp.cluster.targets[0]);
+    let k_other = proxy_internal::build_upstream_pool_key(other_backend);
+    assert(k_primary.origin_endpoint.host[..] == "upstream.internal.test");
+    assert(k_other.origin_endpoint.host[..] == "upstream.internal.test");
+    assert(!net::pool_key_equals(k_primary, k_other));
+    assert(k_primary.tls_and_dns_policy.target_network_id != k_other.tls_and_dns_policy.target_network_id);
+
+    // Pre-register an idle pooled entry for 10.0.0.2 sharing the same (port, sni_host);
+    // 127.0.0.1 MUST NOT collide with or reuse 10.0.0.2's pooled socket.
+    let other_cid = net::register_connection(
+        pool,
+        k_other,
+        net::NegotiatedProtocol.Http11,
+        net::Transport.Mock { route_idx: 0, cursor: 0 },
+        "",
+        1,
+        1000000000,
+    );
+    assert(other_cid > 0);
+    pool.release_connection(other_cid, 1000000000);
+
     var resp1 = http::Response { .. };
     assert(proxy::execute_proxy_exchange_with_key(
         rp, pool, "GET", "/tls-hello", in_hdr, "192.0.2.1", "https", "tls-k1", "", resp1, 5000, 1000000000,
     ));
     assert(resp1.status_code == 200);
     assert(resp1.body[..] == "tls-ok-body");
-    assert(pool.conns.len == 1);
-    assert(pool.conns[0].key.scheme == net::PoolScheme.Https);
-    assert(pool.conns[0].key.origin_endpoint.host[..] == "upstream.internal.test");
+    assert(pool.conns.len == 2);
+    assert(pool.conns[0].use_count == 1);
+    assert(pool.conns[1].key.scheme == net::PoolScheme.Https);
+    assert(pool.conns[1].key.origin_endpoint.host[..] == "upstream.internal.test");
+
+    // Cross-backend pool lookup for 10.0.0.2 still hits only its own slot, not 127.0.0.1's slot.
+    let acquired_other_cid, has_other = net::acquire_pooled_connection(pool, k_other, "", 1000000000);
+    assert(has_other && acquired_other_cid == other_cid);
+    pool.release_connection(other_cid, 1000000000);
 
     var resp1_reuse = http::Response { .. };
     assert(proxy::execute_proxy_exchange_with_key(
@@ -685,8 +770,9 @@ fn test_upstream_tls_exchange_and_overflow() {
     ));
     assert(resp1_reuse.status_code == 200);
     assert(resp1_reuse.body[..] == "tls-ok-body");
-    assert(pool.conns.len == 1);
+    assert(pool.conns.len == 2);
     assert(pool.conns[0].use_count == 2);
+    assert(pool.conns[1].use_count == 2);
     net::drain_stream_pool(pool);
 
     // 2. Full 64-entry StreamPool overflow over TLS -> succeeds and closes TLS slot cleanly.

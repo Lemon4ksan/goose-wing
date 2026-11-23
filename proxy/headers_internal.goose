@@ -392,7 +392,9 @@ fn ensure_forwarded_head_framing(
     if http::has_header(in_headers, "transfer-encoding") {
         guard !has_cl && http_version != "HTTP/1.0" else { return false; }
         if !http::has_header(forward_headers, "transfer-encoding") {
-            return http::append_header(forward_headers, "Transfer-Encoding", "chunked");
+            let te_val = http::get_header(in_headers, "transfer-encoding").trim_lws();
+            guard te_val.len > 0 else { return false; }
+            return http::append_header(forward_headers, "Transfer-Encoding", te_val);
         }
         return true;
     }

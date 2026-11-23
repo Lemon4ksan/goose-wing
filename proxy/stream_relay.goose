@@ -62,18 +62,21 @@ fn capture_interim_early_hints(
     }
 }
 
-inline fn preserve_101_upgrade_headers(
+// RFC 9110 Section 15.2.2: 101 Switching Protocols - require Upgrade and Connection: upgrade headers.
+fn preserve_101_upgrade_headers(
     raw_hdrs: const http::HeaderMap&,
     out_hdrs: http::HeaderMap&,
 ) -> bool {
-    if http::has_header(raw_hdrs, "upgrade") {
-        let upg = http::get_header(raw_hdrs, "upgrade");
-        guard http::append_header(out_hdrs, "Upgrade", upg) else { return false; }
+    guard http::has_header(raw_hdrs, "upgrade") else { return false; }
+    guard http::is_token_in_connection_header_map(raw_hdrs, "upgrade") else { return false; }
+    for &entry in raw_hdrs.entries {
+        if http::entry_name(raw_hdrs, entry).eq_ascii_fold("upgrade") {
+            let val = http::entry_value(raw_hdrs, entry);
+            guard val.trim_lws().len > 0 else { return false; }
+            guard http::append_header(out_hdrs, "Upgrade", val) else { return false; }
+        }
     }
-    if http::is_token_in_connection_header_map(raw_hdrs, "upgrade") {
-        guard http::append_header(out_hdrs, "Connection", "Upgrade") else { return false; }
-    }
-    return true;
+    return http::append_header(out_hdrs, "Connection", "Upgrade");
 }
 
 inline fn compute_upstream_keep_alive(
@@ -104,12 +107,14 @@ fn resolve_upstream_head_framing(
     guard !(is_h10 && has_te) else { return false; }
 
     let is_101 = (sc == rfc::STATUS_SWITCHING_PROTOCOLS);
+    // RFC 9112 Section 6.1: Transfer-Encoding - 1xx responses MUST NOT carry Transfer-Encoding or Content-Length.
+    guard !(is_101 && (has_te || has_cl)) else { return false; }
     out_res.is_upgrade_101 = is_101;
     let empty_body = method.eq_ascii_fold("HEAD") || rfc::is_empty_body_status(sc);
     if empty_body {
         out_res.content_length = 0;
         out_res.is_chunked = false;
-        let rogue_empty = !is_101 && wing::has_rogue_empty_status_framing(method, sc, raw_hdrs);
+        let rogue_empty = wing::has_rogue_empty_status_framing(method, sc, raw_hdrs);
         out_res.keep_alive = !rogue_empty && compute_upstream_keep_alive(raw_hdrs, sc);
         return true;
     }

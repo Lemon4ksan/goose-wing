@@ -499,6 +499,25 @@ fn acquire_warm_upstream_conn(
     return 0, warm_fd, true;
 }
 
+inline fn build_upstream_pool_key(target: const proxy::UpstreamTarget&) -> net::PoolKey {
+    let scheme = if target.use_tls { net::PoolScheme.Https } else { net::PoolScheme.Http };
+    let use_sni = target.use_tls && target.sni_host.len > 0;
+    let key_host = if use_sni { target.sni_host[..] } else { target.host[..] };
+    var tls_policy = net::TlsAndDnsPolicy { .. };
+    if use_sni {
+        let host_hash = core::wyhash64(target.host[..], 0x57494E47);
+        tls_policy.target_network_id = if host_hash == 0 { 1 } else { host_hash };
+    }
+    return net::new_pool_key(
+        scheme,
+        key_host,
+        target.port,
+        net::new_direct_proxy_chain(),
+        net::NetworkAnonymizationKey { .. },
+        tls_policy,
+    );
+}
+
 fn acquire_or_dial_upstream_conn(
     pool:       net::StreamPool&,
     warm_pool:  net::UpstreamPool&,
@@ -509,20 +528,7 @@ fn acquire_or_dial_upstream_conn(
     out_conn:   net::PooledConnection&,
 ) -> i32, i32, bool {
     out_conn = net::PooledConnection { .. };
-    let scheme = if target.use_tls { net::PoolScheme.Https } else { net::PoolScheme.Http };
-    let key_host = if target.use_tls && target.sni_host.len > 0 {
-        target.sni_host[..]
-    } else {
-        target.host[..]
-    };
-    let pool_key = net::new_pool_key(
-        scheme,
-        key_host,
-        target.port,
-        net::new_direct_proxy_chain(),
-        net::NetworkAnonymizationKey { .. },
-        net::TlsAndDnsPolicy { .. },
-    );
+    let pool_key = build_upstream_pool_key(target);
     let existing_cid, has_pooled = net::acquire_pooled_connection(pool, pool_key, "", now_ns);
     if has_pooled && existing_cid > 0 {
         return existing_cid, -1, true;
