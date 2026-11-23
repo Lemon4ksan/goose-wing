@@ -3,11 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Lemon4ksan
 
-"""
-Multi-core native OSS-Fuzz orchestrator and background daemon for goose-wing.
-Compiles `tests/fuzz/background_runner.goose` with `-O2`, discovers OSS-Fuzz binary
-corpus seeds across `vendor/`, and continuously fuzzes all 18 protocol, codec, and
-cryptographic targets across CPU cores.
+"""Multi-core OSS-Fuzz / SanitizerCoverage orchestrator and background daemon.
+
+Supports two execution engines across all 27 protocol, codec, PKI, and crypto targets:
+  - ``sancov`` (default): compiles ``c_fuzz_entry.goose`` + ``libfuzzer_driver.c`` with
+    ``-fsanitize-coverage=trace-pc`` for real 64 KB AFL++ edge-transition feedback,
+    persistent evolved corpora under ``.lit/cache/fuzz/evolved/<target>/``, constant-RAM
+    RSS drift checks, and 50 ms per-input DoS timeout guards.
+  - ``native``: compiles ``tests/fuzz/background_runner.goose`` with ``-O2`` and drives
+    Goose's built-in libFuzzer mutator directly.
 """
 
 import argparse
@@ -15,6 +19,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -22,20 +27,31 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import sancov_runner
+
 RUNNER_SRC = ROOT / "tests" / "fuzz" / "background_runner.goose"
 LIT_DIR = ROOT / ".lit" / "cache" / "fuzz"
 EXE_NAME = "fuzz_runner.exe" if os.name == "nt" else "fuzz_runner"
 RUNNER_EXE = LIT_DIR / EXE_NAME
+EVOLVED_DIR = LIT_DIR / "evolved"
+MANIFEST_DIR = LIT_DIR / "manifests"
 CRASH_DIR = LIT_DIR / "crashes"
 STATUS_FILE = LIT_DIR / "fuzz_status.json"
 STOP_SIGNAL_FILE = LIT_DIR / "fuzz_stop.signal"
 LOG_FILE = LIT_DIR / "fuzz_background.log"
 
+MAX_EVOLVED_PER_TARGET = 512
+
 # Windows process creation flags for zero-console, zero-lag background execution:
-# CREATE_NO_WINDOW (0x08000000) prevents any flashing console windows.
-# IDLE_PRIORITY_CLASS (0x00000040) ensures OS scheduler yields 100% immediately to user apps.
+# CREATE_NO_WINDOW (0x08000000) prevents flashing console windows.
+# IDLE_PRIORITY_CLASS (0x00000040) yields CPU immediately to interactive user apps.
 WIN_HEADLESS_IDLE_FLAGS = (subprocess.CREATE_NO_WINDOW | 0x00000040) if os.name == "nt" else 0
 
+# Must match `FUZZ_TARGET_NAMES` order in `tests/fuzz/oss_fuzz.goose` (0..26).
 ALL_TARGETS = [
     "http1",
     "h2_hpack",
@@ -55,9 +71,21 @@ ALL_TARGETS = [
     "jose_jwt_jwe_oauth",
     "idna_psl_url_ip",
     "http_ext_headers_trace",
+    "multipart_writer",
+    "tls_endpoint",
+    "stream_flow_control",
+    "dst_world",
+    "ingress_budget",
+    "crypto_pk_kem",
+    "hpke_ohttp_privacypass",
+    "http_sig_digest_auth",
+    "x509_pki_quic_retry",
 ]
 
-CORPUS_ROOTS = {
+BORINGSSL_FUZZ = ROOT / "vendor" / "uWebSockets" / "uSockets" / "boringssl" / "fuzz"
+S2N_FUZZ = ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus"
+
+CORPUS_ROOTS: dict[str, list[Path]] = {
     "h3_conn": [
         ROOT / "vendor" / "nghttp3" / "fuzz" / "corpus" / "fuzz_http3serverreq",
         ROOT / "vendor" / "h2o" / "fuzz" / "http3-corpus",
@@ -80,26 +108,22 @@ CORPUS_ROOTS = {
     "quic_conn": [
         ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus",
         ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packet_recv_server",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packets_posths_server",
     ],
     "tls13": [
         ROOT / "vendor" / "rustls" / "fuzz" / "corpus",
         ROOT / "vendor" / "picotls" / "fuzz" / "fuzz-client-hello-corpus",
         ROOT / "vendor" / "picotls" / "fuzz" / "fuzz-server-hello-corpus",
-        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_client_hello_recv_test",
-        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_server_hello_recv_test",
-        ROOT / "vendor" / "uWebSockets" / "uSockets" / "boringssl" / "fuzz" / "client_corpus",
-        ROOT / "vendor" / "uWebSockets" / "uSockets" / "boringssl" / "fuzz" / "server_corpus",
+        S2N_FUZZ / "s2n_client_hello_recv_fuzz_test",
+        S2N_FUZZ / "s2n_server_hello_recv_test",
+        BORINGSSL_FUZZ / "client_corpus",
+        BORINGSSL_FUZZ / "server_corpus",
     ],
     "x509": [
-        ROOT
-        / "vendor"
-        / "uWebSockets"
-        / "uSockets"
-        / "boringssl"
-        / "fuzz"
-        / "parse_certificate_fuzzer_corpus",
-        ROOT / "vendor" / "uWebSockets" / "uSockets" / "boringssl" / "fuzz" / "cert_corpus",
-        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_x509_validator_test",
+        BORINGSSL_FUZZ / "parse_certificate_fuzzer_corpus",
+        BORINGSSL_FUZZ / "cert_corpus",
+        BORINGSSL_FUZZ / "der_roundtrip_corpus",
+        BORINGSSL_FUZZ / "verify_name_match_fuzzer_corpus",
     ],
     "ws_grpc": [
         ROOT / "vendor" / "tungstenite" / "fuzz" / "seeds" / "read_message_server",
@@ -142,11 +166,13 @@ CORPUS_ROOTS = {
     ],
     "crypto_aead_kdf": [
         ROOT / "vendor" / "picotls" / "fuzz" / "fuzz-client-hello-corpus",
-        ROOT / "vendor" / "s2n-tls" / "tests" / "fuzz" / "corpus" / "s2n_tls13_keys_test",
+        S2N_FUZZ / "s2n_tls13_client_finished_recv_test",
+        S2N_FUZZ / "s2n_tls13_server_finished_recv_test",
     ],
     "jose_jwt_jwe_oauth": [
         ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
         ROOT / "vendor" / "h2o" / "fuzz" / "url-corpus",
+        ROOT / "vendor" / "cjose" / "test",
     ],
     "idna_psl_url_ip": [
         ROOT / "vendor" / "libpsl" / "fuzz" / "libpsl_load_dafsa_fuzzer.in",
@@ -157,7 +183,88 @@ CORPUS_ROOTS = {
         ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
         ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
     ],
+    "multipart_writer": [
+        ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
+        ROOT / "vendor" / "uWebSockets" / "fuzzing" / "Http_seed_corpus",
+    ],
+    "tls_endpoint": [
+        ROOT / "vendor" / "rustls" / "fuzz" / "corpus",
+        BORINGSSL_FUZZ / "client_corpus",
+        BORINGSSL_FUZZ / "server_corpus",
+        S2N_FUZZ / "s2n_client_fuzz_test",
+        S2N_FUZZ / "s2n_server_fuzz_test",
+    ],
+    "stream_flow_control": [
+        ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packets_posths_server",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http2-corpus",
+    ],
+    "dst_world": [
+        ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packet_recv_server",
+    ],
+    "ingress_budget": [
+        ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http2-corpus",
+        ROOT / "vendor" / "uWebSockets" / "fuzzing" / "Http_seed_corpus",
+    ],
+    "crypto_pk_kem": [
+        BORINGSSL_FUZZ / "spki_corpus",
+        BORINGSSL_FUZZ / "privkey_corpus",
+        BORINGSSL_FUZZ / "pkcs8_corpus",
+        BORINGSSL_FUZZ / "bn_mod_exp_corpus",
+        BORINGSSL_FUZZ / "der_roundtrip_corpus",
+        S2N_FUZZ / "s2n_extensions_client_key_share_recv_test",
+        S2N_FUZZ / "s2n_extensions_server_key_share_recv_test",
+    ],
+    "hpke_ohttp_privacypass": [
+        BORINGSSL_FUZZ / "decode_client_hello_inner_corpus",
+        ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packet_recv_client",
+    ],
+    "http_sig_digest_auth": [
+        ROOT / "vendor" / "sfparse" / "fuzz" / "corpus",
+        ROOT / "vendor" / "h2o" / "fuzz" / "http1-corpus",
+        ROOT / "vendor" / "uWebSockets" / "fuzzing" / "Http_seed_corpus",
+    ],
+    "x509_pki_quic_retry": [
+        BORINGSSL_FUZZ / "read_pem_corpus",
+        BORINGSSL_FUZZ / "crl_parse_crl_certificatelist_fuzzer_corpus",
+        BORINGSSL_FUZZ / "crl_parse_crl_tbscertlist_fuzzer_corpus",
+        BORINGSSL_FUZZ / "ocsp_parse_ocsp_response_fuzzer_corpus",
+        BORINGSSL_FUZZ / "ocsp_parse_ocsp_response_data_fuzzer_corpus",
+        S2N_FUZZ / "s2n_openssl_diff_pem_parsing_test",
+        S2N_FUZZ / "s2n_stuffer_pem_fuzz_test",
+        ROOT / "vendor" / "grpc-go" / "security" / "advancedtls" / "testdata" / "crl",
+        ROOT / "vendor" / "quiche" / "fuzz" / "corpus" / "packet_recv_server",
+        ROOT / "vendor" / "ngtcp2" / "fuzz" / "corpus",
+    ],
 }
+
+SANCOV_LINE_RE = re.compile(
+    r"OK SANCOV_EXECS:\s*(\d+)\s+TARGETS:\s*\d+/\d+\s+CORPUS:\s*(\d+)\s+\(\d+\s*B\)"
+    r"\s+EDGES:\s*(\d+)\s+NEW_COV:\s*(\d+)\s+MAX_INPUT_MS:\s*([0-9.]+)"
+    r"\s+RSS_DRIFT_KB:\s*([0-9.]+)/[0-9.]+(?:\s+SAVED:\s*(\d+))?"
+)
+
+
+def is_pid_alive(pid: int) -> bool:
+    if not pid or pid <= 0:
+        return False
+    if os.name == "nt":
+        res = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return str(pid) in res.stdout
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def discover_corpus() -> dict[str, list[str]]:
@@ -186,14 +293,26 @@ def discover_corpus() -> dict[str, list[str]]:
                         all_files.append(s)
                         seen.add(s)
                     count += 1
-                    if count >= 600:
+                    if count >= 400:
                         break
 
     by_target["all"] = all_files
     return by_target
 
 
-def build_runner(force: bool = False) -> Path:
+def prune_evolved_dir(target_dir: Path, max_files: int = MAX_EVOLVED_PER_TARGET) -> int:
+    if not target_dir.exists():
+        return 0
+    files = [p for p in target_dir.iterdir() if p.is_file()]
+    if len(files) > max_files:
+        files.sort(key=lambda p: p.stat().st_mtime)
+        for old in files[: len(files) - max_files]:
+            old.unlink(missing_ok=True)
+        return max_files
+    return len(files)
+
+
+def build_native_runner(force: bool = False) -> Path:
     LIT_DIR.mkdir(parents=True, exist_ok=True)
     if RUNNER_EXE.exists() and not force:
         src_mtime = max(
@@ -212,7 +331,7 @@ def build_runner(force: bool = False) -> Path:
     return RUNNER_EXE
 
 
-def isolate_crashing_seed(
+def isolate_native_crash(
     exe: Path, target: str, batch_files: list[str], rng_seed: int, iters: int
 ) -> None:
     CRASH_DIR.mkdir(parents=True, exist_ok=True)
@@ -233,6 +352,7 @@ def isolate_crashing_seed(
             crash_meta = CRASH_DIR / f"crash_{target}_{digest}.txt"
             crash_bin.write_bytes(raw)
             crash_meta.write_text(
+                f"Mode: native\n"
                 f"Target: {target}\n"
                 f"Source Seed: {fpath}\n"
                 f"RNG Seed: {rng_seed}\n"
@@ -244,13 +364,47 @@ def isolate_crashing_seed(
                 encoding="utf-8",
             )
             print(f"\n[!] CRASH ISOLATED in target '{target}' -> {crash_bin}", flush=True)
-            print(f'    Reproduce: {exe} {target} {iters} {rng_seed} "{crash_bin}"', flush=True)
             return
 
 
-def run_batch(
+def record_sancov_crash(
+    exe: Path,
+    target: str,
+    target_id: int,
+    rng_seed: int,
+    batch_seconds: int,
+    manifest_files: list[str],
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> Path:
+    CRASH_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"crash_sancov_{target}_{rng_seed}"
+    crash_manifest = CRASH_DIR / f"{stem}.manifest"
+    crash_meta = CRASH_DIR / f"{stem}.txt"
+    crash_manifest.write_text("\n".join(manifest_files) + "\n", encoding="utf-8")
+    repro_cmd = (
+        f'"{exe}" {target_id} 0 --seconds {batch_seconds} --seed {rng_seed} "@{crash_manifest}"'
+    )
+    crash_meta.write_text(
+        f"Mode: sancov\n"
+        f"Target: {target} (id={target_id})\n"
+        f"RNG Seed: {rng_seed}\n"
+        f"Batch Seconds: {batch_seconds}\n"
+        f"Exit Code: {returncode}\n"
+        f"Reproduce: {repro_cmd}\n"
+        f"\n--- Stdout ---\n{stdout}\n"
+        f"\n--- Stderr ---\n{stderr}\n",
+        encoding="utf-8",
+    )
+    print(f"\n[!] SANCOV FAILURE in target '{target}' -> {crash_meta}", flush=True)
+    print(f"    Reproduce: {repro_cmd}", flush=True)
+    return crash_meta
+
+
+def run_native_batch(
     exe: Path, target: str, batch_files: list[str], iters: int, rng_seed: int
-) -> tuple[bool, int, int, int, str, list[str], int]:
+) -> dict:
     cmd = [str(exe), target, str(iters), str(rng_seed), *batch_files]
     res = None
     for attempt in range(3):
@@ -265,17 +419,31 @@ def run_batch(
             )
             break
         except subprocess.TimeoutExpired:
-            return False, 0, 0, 0, target, batch_files, rng_seed
+            return {
+                "ok": False,
+                "target": target,
+                "rng_seed": rng_seed,
+                "batch_files": batch_files,
+                "returncode": -1,
+                "stdout": "",
+                "stderr": "TimeoutExpired",
+            }
         except OSError as exc:
-            # WinError 1455 (ERROR_COMMITMENT_LIMIT): transient Windows pagefile exhaustion
-            # when multiple Goose processes reserve data-stack virtual memory simultaneously.
             if getattr(exc, "winerror", 0) == 1455 and attempt < 2:
                 time.sleep(1.0 * (attempt + 1))
                 continue
-            return True, 0, 0, 0, target, batch_files, rng_seed
+            return {"ok": True, "target": target, "execs": 0, "seeds": 0, "new_cov": 0}
 
     if res is None or res.returncode != 0:
-        return False, 0, 0, 0, target, batch_files, rng_seed
+        return {
+            "ok": False,
+            "target": target,
+            "rng_seed": rng_seed,
+            "batch_files": batch_files,
+            "returncode": -1 if res is None else res.returncode,
+            "stdout": "" if res is None else res.stdout,
+            "stderr": "" if res is None else res.stderr,
+        }
 
     execs = 0
     seeds = 0
@@ -288,19 +456,298 @@ def run_batch(
                 seeds = int(parts[4])
             if len(parts) >= 7:
                 new_states = int(parts[6])
-    return True, execs, seeds, new_states, target, batch_files, rng_seed
+    return {
+        "ok": True,
+        "target": target,
+        "execs": execs,
+        "seeds": seeds,
+        "edges": 0,
+        "new_cov": new_states,
+        "saved": 0,
+        "max_input_ms": 0.0,
+        "rss_drift_kb": 0.0,
+    }
+
+
+def run_sancov_batch(
+    exe: Path,
+    target: str,
+    target_id: int,
+    batch_files: list[str],
+    batch_seconds: int,
+    rng_seed: int,
+    batch_num: int,
+    max_rss_drift_kb: int,
+    max_input_ms: int,
+) -> dict:
+    evolved_target_dir = EVOLVED_DIR / target
+    evolved_target_dir.mkdir(parents=True, exist_ok=True)
+    MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+
+    evolved_files = [str(p) for p in evolved_target_dir.iterdir() if p.is_file()]
+    if len(evolved_files) > 64:
+        evolved_files = random.sample(evolved_files, 64)
+    manifest_files = list(dict.fromkeys([*evolved_files, *batch_files]))
+
+    manifest_path = MANIFEST_DIR / f"batch_{batch_num}_{target}.txt"
+    manifest_path.write_text("\n".join(manifest_files) + "\n", encoding="utf-8")
+
+    cmd = [
+        str(exe),
+        str(target_id),
+        "0",
+        "--seconds",
+        str(batch_seconds),
+        "--seed",
+        str(rng_seed),
+        "--corpus-out",
+        str(evolved_target_dir),
+        "--max-rss-drift-kb",
+        str(max_rss_drift_kb),
+        "--max-input-ms",
+        str(max_input_ms),
+        f"@{manifest_path}",
+    ]
+
+    res = None
+    timeout_s = max(30, batch_seconds * 4)
+    try:
+        for attempt in range(3):
+            try:
+                res = subprocess.run(
+                    cmd,
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                    creationflags=WIN_HEADLESS_IDLE_FLAGS,
+                )
+                break
+            except subprocess.TimeoutExpired:
+                return {
+                    "ok": False,
+                    "target": target,
+                    "target_id": target_id,
+                    "rng_seed": rng_seed,
+                    "batch_files": manifest_files,
+                    "returncode": -1,
+                    "stdout": "",
+                    "stderr": f"TimeoutExpired ({timeout_s}s)",
+                }
+            except OSError as exc:
+                if getattr(exc, "winerror", 0) == 1455 and attempt < 2:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                return {
+                    "ok": True,
+                    "target": target,
+                    "execs": 0,
+                    "seeds": len(manifest_files),
+                    "edges": 0,
+                    "new_cov": 0,
+                    "saved": 0,
+                    "max_input_ms": 0.0,
+                    "rss_drift_kb": 0.0,
+                }
+    finally:
+        manifest_path.unlink(missing_ok=True)
+
+    if res is None or res.returncode != 0:
+        return {
+            "ok": False,
+            "target": target,
+            "target_id": target_id,
+            "rng_seed": rng_seed,
+            "batch_files": manifest_files,
+            "returncode": -1 if res is None else res.returncode,
+            "stdout": "" if res is None else res.stdout,
+            "stderr": "" if res is None else res.stderr,
+        }
+
+    execs = 0
+    edges = 0
+    new_cov = 0
+    saved = 0
+    max_ms = 0.0
+    rss_kb = 0.0
+    for line in res.stdout.splitlines():
+        m = SANCOV_LINE_RE.search(line)
+        if m:
+            execs = int(m.group(1))
+            edges = int(m.group(3))
+            new_cov = int(m.group(4))
+            max_ms = float(m.group(5))
+            rss_kb = float(m.group(6))
+            saved = int(m.group(7)) if m.group(7) else 0
+            break
+
+    evolved_count = prune_evolved_dir(evolved_target_dir)
+    return {
+        "ok": True,
+        "target": target,
+        "execs": execs,
+        "seeds": len(manifest_files),
+        "edges": edges,
+        "new_cov": new_cov,
+        "saved": saved,
+        "evolved_count": evolved_count,
+        "max_input_ms": max_ms,
+        "rss_drift_kb": rss_kb,
+    }
+
+
+def handle_stop() -> None:
+    LIT_DIR.mkdir(parents=True, exist_ok=True)
+    STOP_SIGNAL_FILE.write_text("stop", encoding="utf-8")
+    pid = None
+    if STATUS_FILE.exists():
+        try:
+            st = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+            pid = st.get("pid")
+            st["running"] = False
+            st["state"] = "stopped"
+            STATUS_FILE.write_text(json.dumps(st, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    if pid and os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    elif pid and os.name != "nt":
+        try:
+            os.kill(int(pid), 15)
+        except OSError:
+            pass
+    print(f"[OSS-Fuzz] Background fuzzer stopped (PID {pid}).")
+
+
+def handle_status() -> None:
+    if not STATUS_FILE.exists():
+        print("No background fuzzer status found.")
+        return
+    try:
+        st = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        pid = int(st.get("pid") or 0)
+        alive = is_pid_alive(pid)
+        st["pid_alive"] = alive
+        if st.get("running") and not alive:
+            st["running"] = False
+            st["state"] = "exited"
+        print(json.dumps(st, indent=2))
+    except Exception:
+        print(STATUS_FILE.read_text(encoding="utf-8"))
+
+
+def spawn_daemon(args: argparse.Namespace) -> None:
+    if STOP_SIGNAL_FILE.exists():
+        STOP_SIGNAL_FILE.unlink(missing_ok=True)
+    py_exe = Path(sys.executable)
+    pyw_exe = py_exe.with_name("pythonw.exe")
+    launcher = str(pyw_exe if (os.name == "nt" and pyw_exe.exists()) else py_exe)
+    daemon_dur = 0 if "--duration" not in sys.argv else args.duration
+    daemon_workers = (
+        max(1, min(3, (os.cpu_count() or 4) // 4)) if "--workers" not in sys.argv else args.workers
+    )
+    cmd = [
+        launcher,
+        str(Path(__file__).resolve()),
+        "--mode",
+        args.mode,
+        "--cc",
+        args.cc,
+        "--opt",
+        args.opt,
+        "--target",
+        args.target,
+        "--workers",
+        str(daemon_workers),
+        "--duration",
+        str(daemon_dur),
+        "--mutations",
+        str(args.mutations),
+        "--batch-size",
+        str(args.batch_size),
+        "--batch-seconds",
+        str(args.batch_seconds),
+        "--max-rss-drift-kb",
+        str(args.max_rss_drift_kb),
+        "--max-input-ms",
+        str(args.max_input_ms),
+    ]
+    if args.rebuild:
+        cmd.append("--rebuild")
+    if args.debug_no_bce:
+        cmd.append("--debug-no-bce")
+
+    LIT_DIR.mkdir(parents=True, exist_ok=True)
+    log_f = open(LOG_FILE, "w", encoding="utf-8")  # noqa: SIM115
+    creationflags = (
+        subprocess.CREATE_NO_WINDOW
+        | subprocess.CREATE_NEW_PROCESS_GROUP
+        | subprocess.DETACHED_PROCESS
+        | 0x00000040  # IDLE_PRIORITY_CLASS
+        if os.name == "nt"
+        else 0
+    )
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        creationflags=creationflags,
+        start_new_session=(os.name != "nt"),
+    )
+    STATUS_FILE.write_text(
+        json.dumps(
+            {
+                "pid": proc.pid,
+                "running": True,
+                "mode": args.mode,
+                "state": "compiling_or_starting",
+                "workers": daemon_workers,
+                "target": args.target,
+                "targets_total": len(ALL_TARGETS) if args.target == "all" else 1,
+                "batch_seconds": args.batch_seconds,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(
+        f"[OSS-Fuzz] Started background daemon (PID {proc.pid}, mode={args.mode}, "
+        f"priority=IDLE, workers={daemon_workers}, duration={'infinite' if daemon_dur == 0 else f'{daemon_dur}s'})"
+    )
+    print("           Check status: python scripts/fuzz_runner.py --status")
+    print("           Stop daemon:  python scripts/fuzz_runner.py --stop")
+    print(f"           Log file:     {LOG_FILE}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="goose-wing Native Multi-Core OSS-Fuzz Runner")
+    parser = argparse.ArgumentParser(
+        description="goose-wing Multi-Core SanitizerCoverage & Native OSS-Fuzz Runner"
+    )
     parser.add_argument(
-        "--target", default="all", choices=["all", *ALL_TARGETS], help="Target protocol subsystem"
+        "--mode",
+        default="sancov",
+        choices=["sancov", "native"],
+        help="Fuzzing engine: sancov (64KB edge feedback + RSS/DoS gates) or native (default: sancov)",
+    )
+    parser.add_argument("--cc", default="gcc", help="C compiler for sancov mode (default: gcc)")
+    parser.add_argument("--opt", default="-O2", help="C compiler opt flag (default: -O2)")
+    parser.add_argument(
+        "--target",
+        default="all",
+        choices=["all", *ALL_TARGETS],
+        help="Target protocol subsystem (default: all 27 targets)",
     )
     parser.add_argument(
         "--workers",
         type=int,
-        default=max(1, (os.cpu_count() or 4) // 2),
-        help="Parallel worker threads",
+        default=max(1, min(4, (os.cpu_count() or 4) // 2)),
+        help="Parallel worker processes",
     )
     parser.add_argument(
         "--duration",
@@ -309,14 +756,41 @@ def main() -> None:
         help="Run duration in seconds (0 = infinite background loop)",
     )
     parser.add_argument(
-        "--mutations", type=int, default=256, help="libFuzzer mutations per seed per batch"
+        "--mutations",
+        type=int,
+        default=256,
+        help="libFuzzer mutations per seed per batch (native mode)",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=48, help="Number of corpus files per worker invocation"
+        "--batch-size",
+        type=int,
+        default=48,
+        help="Vendor seed files sampled per worker invocation",
     )
     parser.add_argument(
-        "--rebuild", action="store_true", help="Force recompilation of background_runner.goose"
+        "--batch-seconds",
+        type=int,
+        default=15,
+        help="Wall-clock seconds per SanCov worker batch (default: 15)",
     )
+    parser.add_argument(
+        "--max-rss-drift-kb",
+        type=int,
+        default=8192,
+        help="Max target RSS drift ceiling in KB in sancov mode (default: 8192)",
+    )
+    parser.add_argument(
+        "--max-input-ms",
+        type=int,
+        default=50,
+        help="Max per-input execution ceiling in ms in sancov mode (default: 50)",
+    )
+    parser.add_argument(
+        "--debug-no-bce",
+        action="store_true",
+        help="Build SanCov fuzzer with --debug --no-bce bounds traps enabled",
+    )
+    parser.add_argument("--rebuild", action="store_true", help="Force fuzzer binary recompilation")
     parser.add_argument(
         "--daemon",
         action="store_true",
@@ -328,106 +802,35 @@ def main() -> None:
     parser.add_argument(
         "--stop", action="store_true", help="Gracefully stop running background fuzzer daemon"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(sancov_runner.normalize_argv(sys.argv[1:]))
 
     if args.stop:
-        LIT_DIR.mkdir(parents=True, exist_ok=True)
-        STOP_SIGNAL_FILE.write_text("stop", encoding="utf-8")
-        pid = None
-        if STATUS_FILE.exists():
-            try:
-                st = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-                pid = st.get("pid")
-                st["running"] = False
-                STATUS_FILE.write_text(json.dumps(st, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-        if pid and os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        print(f"[OSS-Fuzz] Background fuzzer stopped (PID {pid}).")
+        handle_stop()
         return
-
     if args.status:
-        if STATUS_FILE.exists():
-            print(STATUS_FILE.read_text(encoding="utf-8"))
-        else:
-            print("No background fuzzer status found.")
+        handle_status()
         return
-
     if args.daemon:
-        if STOP_SIGNAL_FILE.exists():
-            STOP_SIGNAL_FILE.unlink(missing_ok=True)
-        py_exe = Path(sys.executable)
-        pyw_exe = py_exe.with_name("pythonw.exe")
-        launcher = str(pyw_exe if (os.name == "nt" and pyw_exe.exists()) else py_exe)
-        # Default daemon duration to 0 (continuous) unless explicitly specified
-        daemon_dur = 0 if "--duration" not in sys.argv else args.duration
-        daemon_workers = (
-            max(1, min(3, (os.cpu_count() or 4) // 4))
-            if "--workers" not in sys.argv
-            else args.workers
-        )
-        cmd = [
-            launcher,
-            str(Path(__file__).resolve()),
-            "--target",
-            args.target,
-            "--workers",
-            str(daemon_workers),
-            "--duration",
-            str(daemon_dur),
-            "--mutations",
-            str(args.mutations),
-            "--batch-size",
-            str(args.batch_size),
-        ]
-        if args.rebuild:
-            cmd.append("--rebuild")
-        LIT_DIR.mkdir(parents=True, exist_ok=True)
-        log_f = open(LOG_FILE, "w", encoding="utf-8")  # noqa: SIM115
-        creationflags = (
-            subprocess.CREATE_NO_WINDOW
-            | subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.DETACHED_PROCESS
-            | 0x00000040  # IDLE_PRIORITY_CLASS
-            if os.name == "nt"
-            else 0
-        )
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(ROOT),
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags,
-            start_new_session=(os.name != "nt"),
-        )
-        STATUS_FILE.write_text(
-            json.dumps(
-                {
-                    "pid": proc.pid,
-                    "running": True,
-                    "state": "compiling_or_starting",
-                    "workers": daemon_workers,
-                    "target": args.target,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        print(
-            f"[OSS-Fuzz] Started background daemon (PID {proc.pid}, priority=IDLE, workers={daemon_workers})"
-        )
-        print("           Check status: python scripts/fuzz_runner.py --status")
-        print("           Stop daemon:  python scripts/fuzz_runner.py --stop")
-        print(f"           Log file:     {LOG_FILE}")
+        spawn_daemon(args)
         return
 
-    exe = build_runner(force=args.rebuild)
+    LIT_DIR.mkdir(parents=True, exist_ok=True)
+    if args.mode == "sancov":
+        print(
+            f"[OSS-Fuzz] Preparing SanCov fuzzer (cc={args.cc}, opt={args.opt}, "
+            f"debug_no_bce={args.debug_no_bce})...",
+            flush=True,
+        )
+        exe = sancov_runner.build_fuzzer(
+            ROOT,
+            args.cc,
+            args.opt,
+            use_libfuzzer=False,
+            debug_no_bce=args.debug_no_bce,
+            force=args.rebuild,
+        )
+    else:
+        exe = build_native_runner(force=args.rebuild)
 
     if STOP_SIGNAL_FILE.exists():
         STOP_SIGNAL_FILE.unlink(missing_ok=True)
@@ -435,10 +838,13 @@ def main() -> None:
     corpus_map = discover_corpus()
     total_corpus_files = len(corpus_map["all"])
     targets_to_run = ALL_TARGETS if args.target == "all" else [args.target]
+    target_id_map = {name: idx for idx, name in enumerate(ALL_TARGETS)}
 
+    batch_desc = f"{args.batch_seconds}s" if args.mode == "sancov" else f"{args.mutations} mut/seed"
     print(
-        f"[OSS-Fuzz] Starting {args.workers} workers | targets={len(targets_to_run)} | "
-        f"vendor corpus={total_corpus_files} binary seeds | mutations/seed={args.mutations} | "
+        f"[OSS-Fuzz] Starting mode={args.mode} | workers={args.workers} | "
+        f"targets={len(targets_to_run)} | vendor_seeds={total_corpus_files} | "
+        f"batch={batch_desc} | "
         f"duration={'infinite' if args.duration == 0 else f'{args.duration}s'}",
         flush=True,
     )
@@ -446,9 +852,54 @@ def main() -> None:
     start_time = time.time()
     total_execs = 0
     total_seeds_processed = 0
-    total_new_states = 0
+    total_new_cov = 0
+    total_saved = 0
     total_crashes = 0
+    worst_input_ms = 0.0
+    max_rss_drift_kb_seen = 0.0
     batch_idx = 0
+    per_target: dict[str, dict] = {
+        t: {
+            "execs": 0,
+            "batches": 0,
+            "max_edges": 0,
+            "new_cov": 0,
+            "evolved_seeds": len(list((EVOLVED_DIR / t).glob("*.bin")))
+            if (EVOLVED_DIR / t).exists()
+            else 0,
+            "worst_input_ms": 0.0,
+            "crashes": 0,
+        }
+        for t in targets_to_run
+    }
+
+    def write_status(running: bool, state: str) -> None:
+        elapsed = max(0.001, time.time() - start_time)
+        evolved_total = sum(v["evolved_seeds"] for v in per_target.values())
+        payload = {
+            "pid": os.getpid(),
+            "running": running,
+            "state": state,
+            "mode": args.mode,
+            "elapsed_sec": round(elapsed, 2),
+            "total_execs": total_execs,
+            "execs_per_sec": int(total_execs / elapsed),
+            "seeds_processed": total_seeds_processed,
+            "new_cov_events": total_new_cov,
+            "evolved_corpus_files": evolved_total,
+            "vendor_corpus_size": total_corpus_files,
+            "worst_input_ms": round(worst_input_ms, 3),
+            "max_rss_drift_kb": round(max_rss_drift_kb_seen, 2),
+            "crashes": total_crashes,
+            "workers": args.workers,
+            "target": args.target,
+            "targets_total": len(targets_to_run),
+            "targets_covered": sum(1 for v in per_target.values() if v["execs"] > 0),
+            "per_target": per_target,
+        }
+        STATUS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    write_status(True, "fuzzing")
 
     try:
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -457,60 +908,93 @@ def main() -> None:
             def submit_next():
                 nonlocal batch_idx
                 t = targets_to_run[batch_idx % len(targets_to_run)]
+                cur_batch_num = batch_idx
                 batch_idx += 1
                 files = corpus_map.get(t) or corpus_map["all"]
-                if files:
-                    chosen = random.sample(files, min(args.batch_size, len(files)))
-                else:
-                    chosen = []
+                chosen = random.sample(files, min(args.batch_size, len(files))) if files else []
                 rng_seed = random.getrandbits(64)
-                return pool.submit(run_batch, exe, t, chosen, args.mutations, rng_seed)
+                if args.mode == "sancov":
+                    eff_sec = args.batch_seconds
+                    if args.duration > 0:
+                        rem = int(args.duration - (time.time() - start_time))
+                        eff_sec = max(1, min(args.batch_seconds, max(1, rem)))
+                    return pool.submit(
+                        run_sancov_batch,
+                        exe,
+                        t,
+                        target_id_map[t],
+                        chosen,
+                        eff_sec,
+                        rng_seed,
+                        cur_batch_num,
+                        args.max_rss_drift_kb,
+                        args.max_input_ms,
+                    )
+                return pool.submit(run_native_batch, exe, t, chosen, args.mutations, rng_seed)
 
-            for _ in range(args.workers * 2):
+            initial_slots = args.workers if args.mode == "sancov" else args.workers * 2
+            for _ in range(initial_slots):
                 futures.add(submit_next())
 
             while futures:
-                done_iter = as_completed(futures)
-                fut = next(done_iter)
+                fut = next(as_completed(futures))
                 futures.remove(fut)
 
-                ok, execs, seeds, new_states, t, batch_files, rng_seed = fut.result()
-                if not ok:
+                res = fut.result()
+                t = res["target"]
+                stats = per_target[t]
+                if not res["ok"]:
                     total_crashes += 1
-                    print(
-                        f"[!] Batch failed on target '{t}' (seed={rng_seed}), isolating...",
-                        flush=True,
-                    )
-                    isolate_crashing_seed(exe, t, batch_files, rng_seed, args.mutations)
+                    stats["crashes"] += 1
+                    if args.mode == "sancov":
+                        record_sancov_crash(
+                            exe,
+                            t,
+                            res["target_id"],
+                            res["rng_seed"],
+                            args.batch_seconds,
+                            res["batch_files"],
+                            res["returncode"],
+                            res["stdout"],
+                            res["stderr"],
+                        )
+                    else:
+                        print(
+                            f"[!] Batch failed on target '{t}' (seed={res['rng_seed']}), isolating...",
+                            flush=True,
+                        )
+                        isolate_native_crash(
+                            exe, t, res["batch_files"], res["rng_seed"], args.mutations
+                        )
                 else:
-                    total_execs += execs
-                    total_seeds_processed += seeds
-                    total_new_states += new_states
+                    total_execs += res["execs"]
+                    total_seeds_processed += res["seeds"]
+                    total_new_cov += res["new_cov"]
+                    total_saved += res.get("saved", 0)
+                    stats["execs"] += res["execs"]
+                    stats["batches"] += 1
+                    stats["new_cov"] += res["new_cov"]
+                    if res.get("edges", 0) > stats["max_edges"]:
+                        stats["max_edges"] = res["edges"]
+                    if "evolved_count" in res:
+                        stats["evolved_seeds"] = res["evolved_count"]
+                    if res.get("max_input_ms", 0.0) > stats["worst_input_ms"]:
+                        stats["worst_input_ms"] = round(res["max_input_ms"], 3)
+                    if res.get("max_input_ms", 0.0) > worst_input_ms:
+                        worst_input_ms = res["max_input_ms"]
+                    if res.get("rss_drift_kb", 0.0) > max_rss_drift_kb_seen:
+                        max_rss_drift_kb_seen = res["rss_drift_kb"]
 
                 elapsed = max(0.001, time.time() - start_time)
                 exec_per_sec = int(total_execs / elapsed)
+                write_status(True, "fuzzing")
 
-                status_payload = {
-                    "pid": os.getpid(),
-                    "running": True,
-                    "elapsed_sec": round(elapsed, 2),
-                    "total_execs": total_execs,
-                    "execs_per_sec": exec_per_sec,
-                    "seeds_processed": total_seeds_processed,
-                    "new_states_discovered": total_new_states,
-                    "vendor_corpus_size": total_corpus_files,
-                    "crashes": total_crashes,
-                    "workers": args.workers,
-                    "target": args.target,
-                }
-                STATUS_FILE.write_text(json.dumps(status_payload, indent=2), encoding="utf-8")
-
-                if batch_idx % max(1, args.workers) == 0:
-                    print(
-                        f"[{elapsed:6.1f}s] execs: {total_execs:,} ({exec_per_sec:,} exec/s) | "
-                        f"seeds: {total_seeds_processed:,} | states: {total_new_states:,} | crashes: {total_crashes}",
-                        flush=True,
-                    )
+                print(
+                    f"[{elapsed:7.1f}s] target={t:<22} | execs={total_execs:,} ({exec_per_sec:,}/s) | "
+                    f"edges={stats['max_edges']:,} | new_cov={total_new_cov:,} | "
+                    f"max_ms={worst_input_ms:.2f} | rss={max_rss_drift_kb_seen:.1f}KB | crashes={total_crashes}",
+                    flush=True,
+                )
 
                 if STOP_SIGNAL_FILE.exists():
                     STOP_SIGNAL_FILE.unlink(missing_ok=True)
@@ -522,10 +1006,12 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[OSS-Fuzz] Stopping on user interrupt...", flush=True)
 
+    write_status(False, "completed")
     elapsed = max(0.001, time.time() - start_time)
     print(
-        f"\n[OSS-Fuzz] Completed in {elapsed:.1f}s | Total executions: {total_execs:,} "
-        f"({int(total_execs / elapsed):,} exec/s) | Crashes: {total_crashes}",
+        f"\n[OSS-Fuzz] Completed in {elapsed:.1f}s | mode={args.mode} | "
+        f"Total executions: {total_execs:,} ({int(total_execs / elapsed):,} exec/s) | "
+        f"New cov events: {total_new_cov:,} | Crashes: {total_crashes}",
         flush=True,
     )
     if total_crashes > 0:

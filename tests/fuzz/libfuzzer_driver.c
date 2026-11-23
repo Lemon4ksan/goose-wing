@@ -178,7 +178,9 @@ NO_SANITIZE_COV static uint64_t read_process_rss_bytes(void) {
     if (!fn(GetCurrentProcess(), &pmc, pmc.cb)) {
         return 0;
     }
-    return (uint64_t)pmc.WorkingSetSize;
+    // Prefer private committed bytes (PagefileUsage) over WorkingSetSize so lazy demand-paging of
+    // read-only .text/.rdata code pages during coverage expansion does not trigger false RSS drift.
+    return (uint64_t)(pmc.PagefileUsage != 0 ? pmc.PagefileUsage : pmc.WorkingSetSize);
 #elif defined(__linux__)
     FILE *f = fopen("/proc/self/statm", "r");
     if (f == NULL) {
@@ -345,6 +347,46 @@ static CorpusEntry g_corpus[MAX_CORPUS_CAP];
 static size_t g_corpus_count = 0;
 static size_t g_driver_corpus_bytes = 0;
 static uint64_t g_rng_state = 0xCAFEBABE98765432ULL;
+static const char *g_corpus_out_dir = NULL;
+static size_t g_saved_corpus_files = 0;
+
+#define MAX_PERSIST_CORPUS_PER_RUN 256U
+
+NO_SANITIZE_COV static uint64_t fnv1a64(const uint8_t *buf, size_t len) {
+    uint64_t h = 0xCBF29CE484222325ULL;
+    for (size_t i = 0; i < len; i++) {
+        h ^= (uint64_t)buf[i];
+        h *= 0x100000001B3ULL;
+    }
+    return h;
+}
+
+NO_SANITIZE_COV static void persist_corpus_entry(const uint8_t *buf, size_t len) {
+    if (g_corpus_out_dir == NULL || g_corpus_out_dir[0] == '\0') {
+        return;
+    }
+    if (len == 0 || len > MAX_INPUT_LEN || g_saved_corpus_files >= MAX_PERSIST_CORPUS_PER_RUN) {
+        return;
+    }
+    uint64_t h = fnv1a64(buf, len);
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/cov_%016" PRIx64 ".bin", g_corpus_out_dir, h);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        return;
+    }
+    FILE *probe = fopen(path, "rb");
+    if (probe != NULL) {
+        fclose(probe);
+        return;
+    }
+    FILE *out = fopen(path, "wb");
+    if (out == NULL) {
+        return;
+    }
+    (void)fwrite(buf, 1, len, out);
+    fclose(out);
+    g_saved_corpus_files++;
+}
 
 NO_SANITIZE_COV static uint64_t xorshift64(uint64_t *state) {
     uint64_t x = *state;
@@ -423,29 +465,55 @@ NO_SANITIZE_COV static void add_to_corpus(const uint8_t *buf, size_t len) {
     }
 }
 
+typedef struct {
+    const char *bytes;
+    size_t len;
+} FuzzDictToken;
+
+#define FUZZ_DICT_ENTRY(lit) {(lit), sizeof(lit) - 1U}
+
 NO_SANITIZE_COV static size_t mutate_buffer(uint8_t *buf, size_t len, size_t max_cap, uint64_t *rng) {
-    static const char *const kDict[] = {
-        "\r\n\r\n",
-        "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
-        "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
-        "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
-        ":method",
-        ":path",
-        ":authority",
-        ":scheme",
-        ":status",
-        "__Host-sid=1; Secure; Path=/",
-        "u=3, i=?0",
-        "--boundary\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nv\r\n--boundary--\r\n",
-        "\x16\x03\x03\x00\x35\x01\x00\x00\x31\x03\x03",
-        "\xc3\x00\x00\x00\x01\x08\x83\x94\xc8\xf0\x3e\x51\x57\x08",
-        "\x6b\x33\x43\xcf",
-        "\x30\x82\x01\x0a\x02\x82\x01\x01\x00"};
+    static const FuzzDictToken kDict[] = {
+        FUZZ_DICT_ENTRY("\r\n\r\n"),
+        FUZZ_DICT_ENTRY("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+        FUZZ_DICT_ENTRY("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"),
+        FUZZ_DICT_ENTRY("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"),
+        FUZZ_DICT_ENTRY(":method"),
+        FUZZ_DICT_ENTRY(":path"),
+        FUZZ_DICT_ENTRY(":authority"),
+        FUZZ_DICT_ENTRY(":scheme"),
+        FUZZ_DICT_ENTRY(":status"),
+        FUZZ_DICT_ENTRY("__Host-sid=1; Secure; Path=/"),
+        FUZZ_DICT_ENTRY("u=3, i=?0"),
+        FUZZ_DICT_ENTRY("--boundary\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nv\r\n--boundary--\r\n"),
+        FUZZ_DICT_ENTRY("\x16\x03\x03\x00\x35\x01\x00\x00\x31\x03\x03"),
+        FUZZ_DICT_ENTRY("\xc3\x00\x00\x00\x01\x08\x83\x94\xc8\xf0\x3e\x51\x57\x08"),
+        FUZZ_DICT_ENTRY("\x6b\x33\x43\xcf"),
+        FUZZ_DICT_ENTRY("\x30\x82\x01\x0a\x02\x82\x01\x01\x00"),
+        FUZZ_DICT_ENTRY("-----BEGIN CERTIFICATE-----\n"),
+        FUZZ_DICT_ENTRY("-----END CERTIFICATE-----\n"),
+        FUZZ_DICT_ENTRY("-----BEGIN PRIVATE KEY-----\n"),
+        FUZZ_DICT_ENTRY("-----END PRIVATE KEY-----\n"),
+        FUZZ_DICT_ENTRY(
+            "sig1=(\"@method\" \"@authority\" \"@path\");created=1700000000;keyid=\"k1\";alg=\"hmac-sha256\""),
+        FUZZ_DICT_ENTRY("sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:"),
+        FUZZ_DICT_ENTRY("Digest realm=\"api\", nonce=\"abcd\", qop=\"auth\", algorithm=SHA-256"),
+        FUZZ_DICT_ENTRY("PrivateToken challenge=AAAA, token-key=BBBB"),
+        FUZZ_DICT_ENTRY("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"kid\":\"k1\",\"x\":\"11qYAYKxCrfVS_"
+                        "7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}]}"),
+        FUZZ_DICT_ENTRY(
+            "eyJhbGciOiJFZERTQSIsInR5cCI6ImRwb3Arand0In0."
+            "eyJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20vdG9rIiwiaWF0IjoxNzAwMDAwMDAwLCJqdGkiOiIxIn0."),
+        FUZZ_DICT_ENTRY("\x00\x00\x20\x00\x04\x00\x01\x00\x01"),
+        FUZZ_DICT_ENTRY("\x00\x03GET\x05https\x0bexample.com\x01/"),
+        FUZZ_DICT_ENTRY("\x00\x31\x00\x2f\x00"),
+        FUZZ_DICT_ENTRY("\xf0\x00\x00\x00\x01\x08"),
+        FUZZ_DICT_ENTRY("\xff\x6b\x33\x43\xcf\x08")};
     const size_t dict_len = sizeof(kDict) / sizeof(kDict[0]);
     if (len == 0) {
-        const char *seed = kDict[xorshift64(rng) % dict_len];
-        size_t slen = strlen(seed);
-        memcpy(buf, seed, slen);
+        const FuzzDictToken *seed = &kDict[xorshift64(rng) % dict_len];
+        size_t slen = seed->len > max_cap ? max_cap : seed->len;
+        memcpy(buf, seed->bytes, slen);
         return slen;
     }
 
@@ -466,12 +534,12 @@ NO_SANITIZE_COV static size_t mutate_buffer(uint8_t *buf, size_t len, size_t max
                 len -= del;
             }
         } else if (op == 3) {
-            const char *tok = kDict[xorshift64(rng) % dict_len];
-            size_t tlen = strlen(tok);
+            const FuzzDictToken *tok = &kDict[xorshift64(rng) % dict_len];
+            size_t tlen = tok->len;
             if (len + tlen <= max_cap) {
                 size_t pos = (size_t)(xorshift64(rng) % (len + 1U));
                 memmove(buf + pos + tlen, buf + pos, len - pos);
-                memcpy(buf + pos, tok, tlen);
+                memcpy(buf + pos, tok->bytes, tlen);
                 len += tlen;
             }
         } else if (op == 4 && g_corpus_count > 1) {
@@ -827,6 +895,7 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
 
     int32_t target_id = g_target_id;
     uint64_t max_iters = 5000;
+    uint64_t max_seconds = 0;
     int check_complexity = 0;
     int has_explicit_seed = 0;
     uint64_t explicit_seed = 0;
@@ -835,6 +904,10 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
     if (env_seed != NULL && env_seed[0] != '\0') {
         explicit_seed = (uint64_t)strtoull(env_seed, NULL, 10);
         has_explicit_seed = 1;
+    }
+    const char *env_sec = getenv("WING_FUZZ_SECONDS");
+    if (env_sec != NULL && env_sec[0] != '\0') {
+        max_seconds = (uint64_t)strtoull(env_sec, NULL, 10);
     }
 
     int positional_idx = 0;
@@ -849,6 +922,10 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
             target_id = (int32_t)atoi(argv[++i]);
         } else if (strcmp(arg, "--execs") == 0 && i + 1 < argc) {
             max_iters = (uint64_t)strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(arg, "--seconds") == 0 && i + 1 < argc) {
+            max_seconds = (uint64_t)strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(arg, "--corpus-out") == 0 && i + 1 < argc) {
+            g_corpus_out_dir = argv[++i];
         } else if (strcmp(arg, "--max-rss-drift-kb") == 0 && i + 1 < argc) {
             g_max_rss_drift_kb = (uint64_t)strtoull(argv[++i], NULL, 10);
         } else if (strcmp(arg, "--max-input-ms") == 0 && i + 1 < argc) {
@@ -889,7 +966,7 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
     size_t total_edges = 0;
     size_t new_cov_events = 0;
 
-    uint64_t warmup_iters = max_iters / 5ULL;
+    uint64_t warmup_iters = (max_iters > 0) ? (max_iters / 5ULL) : 200ULL;
     if (warmup_iters > 500ULL) {
         warmup_iters = 500ULL;
     }
@@ -899,15 +976,20 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
     uint64_t peak_rss = 0;
     int64_t peak_drift_bytes = 0;
     uint64_t max_rss_drift_bytes = g_max_rss_drift_kb * 1024ULL;
+    uint64_t deadline_ns = (max_seconds > 0) ? (monotonic_ns() + max_seconds * 1000000000ULL) : 0ULL;
+    uint64_t actual_iters = 0;
 
-    if (max_iters > 0 && warmup_iters == 0) {
+    if ((max_iters > 0 || max_seconds > 0) && warmup_iters == 0) {
         baseline_rss = read_process_rss_bytes();
         baseline_corpus_bytes = g_driver_corpus_bytes;
         peak_rss = baseline_rss;
         baseline_captured = 1;
     }
 
-    for (uint64_t iter = 0; iter < max_iters; iter++) {
+    for (uint64_t iter = 0; (max_iters == 0 && max_seconds > 0) || iter < max_iters; iter++) {
+        if (deadline_ns > 0 && iter > 0 && (iter & 15ULL) == 0ULL && monotonic_ns() >= deadline_ns) {
+            break;
+        }
         const CorpusEntry *base = &g_corpus[xorshift64(&g_rng_state) % g_corpus_count];
         size_t cur_len = base->len;
         memcpy(work_buf, base->bytes, cur_len);
@@ -921,10 +1003,12 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
         memset(g_trace_bits, 0, sizeof(g_trace_bits));
         g_prev_loc = 0;
         LLVMFuzzerTestOneInput(work_buf, cur_len);
+        actual_iters = iter + 1ULL;
 
         size_t discovered = evaluate_new_coverage(&total_edges);
         if (discovered > 0) {
             add_to_corpus(work_buf, cur_len);
+            persist_corpus_entry(work_buf, cur_len);
             new_cov_events++;
         }
 
@@ -987,12 +1071,13 @@ NO_SANITIZE_COV int main(int argc, char **argv) {
     }
 
     printf("OK SANCOV_EXECS: %" PRIu64 " TARGETS: %d/%d CORPUS: %zu (%zu B) EDGES: %zu NEW_COV: %zu"
-           " MAX_INPUT_MS: %.3f RSS_DRIFT_KB: %.2f/%.0f\n",
-           max_iters, (int)targets_covered, (int)g_target_count, g_corpus_count, g_driver_corpus_bytes, total_edges,
-           new_cov_events, (double)worst_input_ns / 1e6, (double)peak_drift_bytes / 1024.0, (double)g_max_rss_drift_kb);
+           " MAX_INPUT_MS: %.3f RSS_DRIFT_KB: %.2f/%.0f SAVED: %zu\n",
+           actual_iters, (int)targets_covered, (int)g_target_count, g_corpus_count, g_driver_corpus_bytes, total_edges,
+           new_cov_events, (double)worst_input_ns / 1e6, (double)peak_drift_bytes / 1024.0, (double)g_max_rss_drift_kb,
+           g_saved_corpus_files);
 
     if (check_complexity) {
-        int rc = run_complexity_gate(target_id, max_iters == 0);
+        int rc = run_complexity_gate(target_id, actual_iters == 0);
         if (rc != 0) {
             return EXIT_FAILURE;
         }

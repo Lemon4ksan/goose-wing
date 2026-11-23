@@ -115,6 +115,28 @@ fn test_oss_fuzz_all_12_protocol_targets(t: lit::T&) {
         oss_fuzz_run_target_id(tid, buf[..]);
         sub.assert_true(true, "TLS 1.3, X.509, WebSocket, gRPC, SFV, Cookie, URL & Compress targets survived 216 mutated inputs");
     };
+
+    t.run("OSS-FUZZ-04: Post-Audit Crypto/PK/ML-KEM, HPKE/OHTTP/PrivacyPass, RFC 9421/9530/DPoP & X.509/QUIC Retry") { sub =>
+        var rng = new_fuzz_rng(0xDEAD1234BEEF5678);
+        var buf: u8[..1024] = [];
+
+        for i in 24 {
+            let _ = buf.try_set(OSS_FUZZ_DICT[i]);
+            let _ = fuzz_target_crypto_pk_kem(buf[..]);
+            let _ = fuzz_target_hpke_ohttp_privacypass(buf[..]);
+            let _ = fuzz_target_http_sig_digest_auth(buf[..]);
+            let _ = fuzz_target_x509_pki_quic_retry(buf[..]);
+
+            for _ in 4 {
+                libfuzzer_mutate_inplace(rng, buf);
+                let _ = fuzz_target_crypto_pk_kem(buf[..]);
+                let _ = fuzz_target_hpke_ohttp_privacypass(buf[..]);
+                let _ = fuzz_target_http_sig_digest_auth(buf[..]);
+                let _ = fuzz_target_x509_pki_quic_retry(buf[..]);
+            }
+        }
+        sub.assert_eq(FUZZ_TARGET_COUNT, 27, "27 OSS-Fuzz targets registered");
+    };
 }
 
 fn main() {

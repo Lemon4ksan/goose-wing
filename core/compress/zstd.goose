@@ -3208,22 +3208,6 @@ fn zstd_decompress_frames_incremental<B>(
     return consumed, err;
 }
 
-// Extracts dictionary content slice from a raw or formatted RFC 8878 Section 5 dictionary.
-//
-// Example:
-//   dict = [0x37, 0xA4, 0x30, 0xEC, 0x01, 0x00, 0x00, 0x00, 'a', 'b']
-//   returns: "ab"
-fn extract_zstd_dict_prefix(dict: const u8[:]) -> const u8[:] {
-    if dict.len >= 8 && read_le_u32(dict, 0) == ZSTD_MAGIC_DICTIONARY {
-        var parsed = ParsedZstdDict {};
-        if parse_zstd_dictionary(dict, parsed) == CompressError.None {
-            return dict[parsed.content_offset..];
-        }
-        return dict[8..];
-    }
-    return dict;
-}
-
 // Decompresses RFC 8878 Zstandard frame with a raw or formatted prefix dictionary (RFC 8878 §5, RFC 9842 §6).
 fn zstd_decompress_with_dict<B>(
     src:              const u8[:],
@@ -4144,7 +4128,9 @@ fn zstd_compress_with_dict<B>(
     level:            i32  = 3,
     include_checksum: bool = true,
 ) -> bool {
-    let raw_dict = extract_zstd_dict_prefix(dict);
+    var parsed_dict = ParsedZstdDict {};
+    let raw_dict, dict_err = prepare_zstd_dict_context(dict, parsed_dict);
+    guard dict_err == CompressError.None else { return false; }
     if raw_dict.len < 4 || level <= 0 || src.len < 4 || src.len > ZSTD_BLOCKSIZE_MAX {
         return zstd_compress_level(src, out_buf, level, include_checksum);
     }
@@ -4161,17 +4147,8 @@ fn zstd_compress_with_dict<B>(
         return zstd_compress_level(src, out_buf, level, include_checksum);
     }
 
-    let saved_len = out_buf.len;
-    var committed = false;
-    defer if !committed { out_buf.resize(saved_len); };
-
-    guard emit_zstd_magic_number(out_buf) &&
-          emit_zstd_frame_header(total, include_checksum, out_buf) else {
-        return false;
-    }
     init_global_ctables();
-
-    var rep:  u32[3]       = [1, 4, 8];
+    var rep = parsed_dict.rep;
     var seqs: ZstdSeq[>..] = [];
     var lits: u8[>..]      = [];
     seqs.push(ZstdSeq {
@@ -4190,7 +4167,22 @@ fn zstd_compress_with_dict<B>(
 
     var seq_sec: u8[>..] = [];
     encode_sequences(seqs[..], rep, seq_sec);
-    let b_size = min(add_sat_i64(lit_sec.len, seq_sec.len), 131072) as u64;
+    let b_size_i64 = add_sat_i64(lit_sec.len, seq_sec.len);
+    // RFC 8878 Section 3.1.1.2: Compressed_Block size must stay strictly below regenerated size.
+    if b_size_i64 >= total {
+        return zstd_compress_level(src, out_buf, level, include_checksum);
+    }
+
+    let saved_len = out_buf.len;
+    var committed = false;
+    defer if !committed { out_buf.resize(saved_len); };
+
+    guard emit_zstd_magic_number(out_buf) &&
+          emit_zstd_frame_header(total, include_checksum, out_buf) else {
+        return false;
+    }
+
+    let b_size = min(b_size_i64, 131072) as u64;
     let hdr_val = add_sat_u64(5, mul_sat_u64(b_size, 8)) as u32;
     guard emit_zstd_u24_le(out_buf, hdr_val) &&
           comp_try_append(out_buf, lit_sec[..]) &&

@@ -36,15 +36,34 @@ SHIM_SOURCES = [
 ]
 
 
+def _fuzzer_is_up_to_date(root: Path, exe_out: Path) -> bool:
+    if not exe_out.exists():
+        return False
+    exe_mtime = exe_out.stat().st_mtime
+    watch_paths = [
+        root / "tests" / "fuzz" / "c_fuzz_entry.goose",
+        root / "tests" / "fuzz" / "oss_fuzz.goose",
+        root / "tests" / "fuzz" / "libfuzzer_driver.c",
+        *(root / s for s in SHIM_SOURCES),
+    ]
+    return all(not (p.exists() and p.stat().st_mtime > exe_mtime) for p in watch_paths)
+
+
 def build_fuzzer(
     root: Path,
     cc: str,
     opt: str,
     use_libfuzzer: bool,
     debug_no_bce: bool,
+    force: bool = True,
 ) -> Path:
     cache_dir = root / ".lit" / "cache" / "fuzz"
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    exe_name = "sancov_fuzzer.exe" if os.name == "nt" else "sancov_fuzzer"
+    exe_out = cache_dir / exe_name
+    if not force and _fuzzer_is_up_to_date(root, exe_out):
+        return exe_out
 
     c_out = cache_dir / "c_fuzz_entry.c"
     h_out = cache_dir / "c_fuzz_entry.h"
@@ -60,12 +79,15 @@ def build_fuzzer(
         sys.stderr.write(f"goose codegen failed:\n{res.stdout}\n{res.stderr}\n")
         raise RuntimeError("goose codegen failed")
 
-    exe_name = "sancov_fuzzer.exe" if os.name == "nt" else "sancov_fuzzer"
-    exe_out = cache_dir / exe_name
     driver_c = root / "tests" / "fuzz" / "libfuzzer_driver.c"
     driver_obj = cache_dir / "libfuzzer_driver.o"
+    is_win_gcc = os.name == "nt" and "gcc" in Path(cc).name.lower()
+    arch = platform.machine().lower()
+    is_x86 = arch in ("x86_64", "amd64", "i386", "i686")
 
     drv_cmd = [cc, opt, "-Wall", "-Wextra", "-Werror", "-c", str(driver_c), "-o", str(driver_obj)]
+    if is_win_gcc and is_x86:
+        drv_cmd.append("-mno-avx")
     if use_libfuzzer:
         drv_cmd.append("-DLIBFUZZER_EXTERNAL_MAIN=1")
     res_drv = subprocess.run(drv_cmd, cwd=root, capture_output=True, text=True)
@@ -74,9 +96,25 @@ def build_fuzzer(
         raise RuntimeError("Driver compilation failed")
 
     cc_cmd = [cc, opt]
-    arch = platform.machine().lower()
-    if arch in ("x86_64", "amd64", "i386", "i686"):
+    if is_x86:
         cc_cmd.append("-mstackrealign")
+    if is_win_gcc and is_x86:
+        cc_cmd.extend(
+            [
+                "-mno-avx",
+                "-fno-ipa-cp-clone",
+                "--param",
+                "inline-unit-growth=15",
+                "--param",
+                "max-inline-insns-auto=15",
+                "--param",
+                "max-inline-insns-single=30",
+                "--param",
+                "ggc-min-expand=20",
+                "--param",
+                "ggc-min-heapsize=32768",
+            ]
+        )
     if use_libfuzzer:
         cc_cmd.extend(["-fsanitize=fuzzer,address,undefined", "-DLIBFUZZER_EXTERNAL_MAIN=1"])
     else:
@@ -88,6 +126,8 @@ def build_fuzzer(
 
     if os.name == "nt":
         cc_cmd.extend(["-lws2_32", "-lmswsock", "-lbcrypt"])
+        if is_win_gcc:
+            cc_cmd.extend(["-Wl,--stack,33554432", "-Wl,--allow-multiple-definition"])
     elif sys.platform.startswith("linux"):
         cc_cmd.extend(["-lpthread", "-lm", "-ldl"])
     else:
@@ -136,7 +176,18 @@ def main() -> int:
         help="Fuzz target ID (0..N-1, or -1 for all targets)",
     )
     parser.add_argument("--execs", type=int, default=5000, help="Number of fuzzing executions")
+    parser.add_argument(
+        "--seconds",
+        type=int,
+        default=0,
+        help="Optional wall-clock budget in seconds (set --execs 0 for pure time-bounded run)",
+    )
     parser.add_argument("--corpus", default="", help="Optional seed corpus directory or @manifest")
+    parser.add_argument(
+        "--corpus-out",
+        default="",
+        help="Optional directory to persist coverage-expanding inputs",
+    )
     parser.add_argument(
         "--max-rss-drift-kb",
         type=int,
@@ -200,6 +251,11 @@ def main() -> int:
             "--max-input-ms",
             str(args.max_input_ms),
         ]
+        if args.seconds > 0:
+            run_cmd.extend(["--seconds", str(args.seconds)])
+        if args.corpus_out:
+            Path(args.corpus_out).mkdir(parents=True, exist_ok=True)
+            run_cmd.extend(["--corpus-out", args.corpus_out])
         if args.check_complexity:
             run_cmd.append("--check-complexity")
         if args.seed is not None:

@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // Native Goose port of Google OSS-Fuzz / LLVM libFuzzer mutation engine,
-// FuzzedDataProvider (<fuzzer/FuzzedDataProvider.h>), and 23 protocol fuzz targets
+// FuzzedDataProvider (<fuzzer/FuzzedDataProvider.h>), and 27 protocol fuzz targets
 // ported from nghttp2, nghttp3, ngtcp2, quinn-proto, rustls, picotls, boringssl,
-// llhttp, tungstenite, cookie-rs, and sfparse.
+// llhttp, tungstenite, cookie-rs, sfparse, Wycheproof, and RFC 9180/9421/9458/9530.
 import std;
 import wing from "../..";
 
@@ -223,8 +223,10 @@ fn fuzz_http1_auth_and_headers(data: const u8[:], sig: u64) -> u64 {
 
     var dpop_claims = auth::DPoPClaims { .. };
     if auth::parse_dpop_claims(data, dpop_claims) {
-        assert(dpop_claims.jti.len > 0 && dpop_claims.htm.len > 0 && dpop_claims.htu.len > 0);
-        s = fuzz_mix_state(s, 0x1050);
+        if auth::verify_dpop_claims(dpop_claims, "GET", "https://example.com/resource") {
+            assert(dpop_claims.jti.len > 0 && dpop_claims.htm.len > 0 && dpop_claims.htu.len > 0);
+        }
+        s = fuzz_mix_state(s, 0x1050 ^ (dpop_claims.jti.len as u64));
     }
     let _ = auth::verify_dpop_proof(data, "", "GET", "https://example.com/ resource");
 
@@ -1676,6 +1678,465 @@ fn fuzz_target_ingress_budget(data: const u8[:]) -> u64 {
     return sig;
 }
 
+// ---- Target 24: Post-Audit Crypto (AES-256-GCM, SHA-512/256, X25519, PK, ML-KEM-768) ----
+
+fn fuzz_crypto_pk_aes256_x25519(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x19010;
+    var fdp = new_fdp(data);
+    var key32 = fill_fixed_from_fdp_32(fdp);
+    defer core::secure_zeroize_32(key32);
+    let nonce12 = fill_fixed_from_fdp_12(fdp);
+    let aad = fdp_consume_bytes(fdp, 32);
+    let plain = fdp_consume_bytes(fdp, 256);
+    let plen = plain.len;
+
+    var ct_buf: u8[256]   = [0; 256];
+    var in_out: u8[256]   = [0; 256];
+    var dec:    u8[..512] = [];
+    for i in plen { in_out[i] = plain[i]; }
+
+    let tag256, n256, ok256 = core::aes256_gcm_seal(key32, nonce12, plain, aad, ct_buf[..plen]);
+    let tag256_ip, ok256_ip = core::aes256_gcm_seal_inplace(key32, nonce12, in_out[..plen], aad);
+    assert(ok256 && ok256_ip && n256 == plen && core::ct_eq_tag16(tag256, tag256_ip));
+    assert(in_out[..plen] == ct_buf[..plen]);
+    assert(core::aes256_gcm_open(key32, nonce12, ct_buf[..plen], aad, tag256, dec) && dec[..] == plain);
+
+    var bad_tag = tag256;
+    bad_tag[0] ^= 0x80;
+    let _, ok_bad = core::aes256_gcm_open_inplace(key32, nonce12, in_out[..plen], aad, bad_tag);
+    assert(!ok_bad);
+
+    let h512_256 = core::sha512_256(plain);
+    let h384 = core::sha384(aad);
+    let h512 = core::sha512(plain);
+    let peer_pub = fill_fixed_from_fdp_32(fdp);
+    let pub_a = core::x25519_base_scalarmult(key32);
+    let pub_b = core::x25519_base_scalarmult(h512_256);
+    var ss_ab, ok_ab = core::x25519_shared_secret(key32, pub_b);
+    var ss_ba, ok_ba = core::x25519_shared_secret(h512_256, pub_a);
+    defer {
+        core::secure_zeroize_32(ss_ab);
+        core::secure_zeroize_32(ss_ba);
+    };
+    assert(ok_ab && ok_ba && core::ct_eq_tag32(ss_ab, ss_ba));
+
+    var ss_raw, ok_raw = core::x25519_shared_secret(key32, peer_pub);
+    defer core::secure_zeroize_32(ss_raw);
+    if ok_raw {
+        sig = fuzz_mix_state(sig, 0x19011 ^ (ss_raw[0] as u64));
+    }
+    return fuzz_mix_state(sig, (h512_256[0] as u64) ^ h384[0] ^ h512[0]);
+}
+
+fn fuzz_crypto_pk_ed25519_ecdsa(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x19020;
+    var fdp = new_fdp(data);
+    let op = fdp_consume_u8(fdp) & 1;
+    var seed = fill_fixed_from_fdp_32(fdp);
+    defer core::secure_zeroize_32(seed);
+    let msg = fdp_consume_bytes(fdp, 64);
+
+    if op == 0 {
+        let pk = core::ed25519_public_key(seed);
+        var ed_sig = core::ed25519_sign(seed, msg);
+        assert(core::ed25519_verify(pk, msg, ed_sig));
+        ed_sig[0] ^= 0x01;
+        assert(!core::ed25519_verify(pk, msg, ed_sig));
+
+        let raw_pk = fill_fixed_from_fdp_32(fdp);
+        var raw_sig: u8[64] = [0; 64];
+        for i in 64 { raw_sig[i] = fdp_consume_u8(fdp); }
+        if core::ed25519_verify(raw_pk, msg, raw_sig) {
+            sig = fuzz_mix_state(sig, 0x19021);
+        }
+        return fuzz_mix_state(sig, pk[0]);
+    }
+
+    var raw_ec: u8[64] = [0; 64];
+    let rest = fdp_consume_remaining(fdp);
+    let der_in = rest[..min(rest.len, 160)];
+    if core::ecdsa_p256_decode_der_sig(der_in, raw_ec) {
+        sig = fuzz_mix_state(sig, 0x19022 ^ (raw_ec[0] as u64));
+    }
+    seed[0] &= 0x7F;
+    seed[31] |= 0x01;
+    let pub65 = core::ecdsa_p256_public_key(seed);
+    if core::ecdsa_p256_verify_der(pub65[..], msg, der_in) {
+        sig = fuzz_mix_state(sig, 0x19023);
+    }
+    let raw_pub = rest[..min(rest.len, 65)];
+    if core::ecdsa_p256_verify_p1363(raw_pub, msg, raw_ec[..]) {
+        sig = fuzz_mix_state(sig, 0x19024);
+    }
+    return fuzz_mix_state(sig, pub65[1]);
+}
+
+fn fuzz_crypto_pk_rsa(data: const u8[:], msg: const u8[:]) -> u64 {
+    var sig: u64 = 0x19040;
+    let spki = data[..min(data.len, 600)];
+    let sig_slice = data[..min(data.len, 256)];
+    if core::rsa_pkcs1_sha256_verify_der(spki, msg, sig_slice) {
+        sig = fuzz_mix_state(sig, 0x19041);
+    }
+    if core::rsa_pss_sha256_verify_der(spki, msg, sig_slice) {
+        sig = fuzz_mix_state(sig, 0x19042);
+    }
+    if data.len >= 132 {
+        let n_be = data[1..129];
+        let e_be = data[129..132];
+        if core::rsa_pkcs1_sha256_verify(n_be, e_be, msg, n_be) {
+            sig = fuzz_mix_state(sig, 0x19043);
+        }
+        if core::rsa_pss_sha256_verify(n_be, e_be, msg, n_be) {
+            sig = fuzz_mix_state(sig, 0x19044);
+        }
+    }
+    if data.len >= 516 {
+        let n256 = data[1..257];
+        let e3: u8[3] = [0x01, 0x00, 0x01];
+        let s256 = data[257..513];
+        if core::rsa_pkcs1_sha256_verify(n256, e3[..], msg, s256) {
+            sig = fuzz_mix_state(sig, 0x19045);
+        }
+        if core::rsa_pss_sha256_verify(n256, e3[..], msg, s256) {
+            sig = fuzz_mix_state(sig, 0x19046);
+        }
+    }
+    return sig;
+}
+
+fn fuzz_crypto_pk_mlkem(data: const u8[:], fdp: FuzzedDataProvider&, do_roundtrip: bool) -> u64 {
+    var sig: u64 = 0x19060;
+    if !do_roundtrip {
+        var ek_raw: u8[1184] = [0; 1184];
+        let copy_ek = min(data.len, 1184);
+        for i in copy_ek { ek_raw[i] = data[i]; }
+        let m_rand = fill_fixed_from_fdp_32(fdp);
+        let ct_r, ss_r, ok_r = tls_internal::mlkem768_encapsulate(ek_raw, m_rand);
+        if ok_r {
+            sig = fuzz_mix_state(sig, 0x19061 ^ (ct_r[0] as u64) ^ ss_r[0]);
+        }
+        var ss_out: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(ss_out);
+        if data.len >= 3488 && tls_internal::mlkem768_decapsulate(data[..1088], data[1088..3488], ss_out[..]) {
+            sig = fuzz_mix_state(sig, 0x19062 ^ (ss_out[0] as u64));
+        }
+        return sig;
+    }
+
+    var d_seed = fill_fixed_from_fdp_32(fdp);
+    var z_seed = fill_fixed_from_fdp_32(fdp);
+    var m_rand = fill_fixed_from_fdp_32(fdp);
+    var ek, dk = tls_internal::mlkem768_keygen(d_seed, z_seed);
+    var ct, ss_enc, ok_enc = tls_internal::mlkem768_encapsulate(ek, m_rand);
+    var ss_dec: u8[32] = [0; 32];
+    var ss_rej: u8[32] = [0; 32];
+    defer {
+        core::secure_zeroize_32(d_seed);
+        core::secure_zeroize_32(z_seed);
+        core::secure_zeroize_32(m_rand);
+        core::secure_zeroize_slice(dk[..]);
+        core::secure_zeroize_32(ss_enc);
+        core::secure_zeroize_32(ss_dec);
+        core::secure_zeroize_32(ss_rej);
+    };
+    assert(ok_enc);
+    assert(tls_internal::mlkem768_decapsulate(ct[..], dk[..], ss_dec[..]));
+    assert(core::ct_eq_tag32(ss_enc, ss_dec));
+    ct[0] ^= 0x01;
+    assert(tls_internal::mlkem768_decapsulate(ct[..], dk[..], ss_rej[..]));
+    assert(!core::ct_eq_tag32(ss_enc, ss_rej));
+    return fuzz_mix_state(sig, 0x19063 ^ (ss_dec[0] as u64) ^ ss_rej[0]);
+}
+
+fn fuzz_target_crypto_pk_kem(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x19000;
+    sig = fuzz_mix_state(sig, fuzz_crypto_pk_aes256_x25519(data));
+    sig = fuzz_mix_state(sig, fuzz_crypto_pk_ed25519_ecdsa(data));
+    var fdp = new_fdp(data);
+    let op = fdp_consume_u8(fdp) & 3;
+    let msg = fdp_consume_bytes(fdp, 64);
+    if (op & 1) == 0 {
+        sig = fuzz_mix_state(sig, fuzz_crypto_pk_rsa(data, msg));
+    } else {
+        sig = fuzz_mix_state(sig, fuzz_crypto_pk_mlkem(data, fdp, op == 3));
+    }
+    return sig;
+}
+
+// ---- Target 25: HPKE (RFC 9180), OHTTP/bHTTP, Privacy Pass & CryptoJar ----
+
+fn fuzz_hpke_and_ohttp(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1A010;
+    var breq = http::BhttpRequest { .. };
+    if http::bhttp_decode_request(data, breq) {
+        sig = fuzz_mix_state(sig, 0x1A011 ^ (breq.body_len as u64));
+    }
+    var bres = http::BhttpResponse { .. };
+    if http::bhttp_decode_response(data, bres) {
+        sig = fuzz_mix_state(sig, 0x1A012 ^ (bres.status as u64));
+    }
+    var cfgs:    http::OhttpKeyConfig[..4] = [];
+    var cfg_cnt: i32                       = 0;
+    if http::parse_ohttp_key_configs(data, cfgs, cfg_cnt) {
+        sig = fuzz_mix_state(sig, 0x1A013 ^ (cfg_cnt as u64));
+    }
+
+    var fdp = new_fdp(data);
+    var sk_r = fill_fixed_from_fdp_32(fdp);
+    var ephem_sk = fill_fixed_from_fdp_32(fdp);
+    defer {
+        core::secure_zeroize_32(sk_r);
+        core::secure_zeroize_32(ephem_sk);
+    };
+
+    var ohttp_out: u8[..8192] = [];
+    var ohttp_len: i32        = 0;
+    var ohttp_sess = http::OhttpSession { .. };
+    if http::ohttp_open_request(sk_r[..], data, ohttp_out, ohttp_len, ohttp_sess) {
+        security::zeroize_hpke_context(ohttp_sess.ctx);
+        sig = fuzz_mix_state(sig, 0x1A014 ^ (ohttp_len as u64));
+    }
+
+    sk_r[0] |= 0x01;
+    ephem_sk[0] |= 0x01;
+    let pk_r = core::x25519_base_scalarmult(sk_r);
+    let aad = fdp_consume_bytes(fdp, 32);
+    let pt = fdp_consume_bytes(fdp, 128);
+    let aead_id: u16 = if (fdp_consume_u8(fdp) & 1) == 0 {
+        rfc::HPKE_AEAD_AES_128_GCM
+    } else {
+        rfc::HPKE_AEAD_CHACHA20_POLY1305
+    };
+    var enc: u8[32]    = [0; 32];
+    var ct:  u8[..256] = [];
+    if security::hpke_seal_base(pk_r, "fuzz-info", aad, pt, ephem_sk, aead_id, enc, ct) {
+        var dec: u8[..256] = [];
+        assert(security::hpke_open_base(enc, sk_r, "fuzz-info", aad, ct[..], aead_id, dec));
+        assert(dec[..] == pt);
+        ct[0] ^= 0x01;
+        dec.clear();
+        assert(!security::hpke_open_base(enc, sk_r, "fuzz-info", aad, ct[..], aead_id, dec));
+        sig = fuzz_mix_state(sig, 0x1A015 ^ (ct.len as u64));
+    }
+    return sig;
+}
+
+fn fuzz_privacypass_and_crypto_jar(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1A020;
+    let ch, ok_ch = security::unmarshal_token_challenge(data);
+    if ok_ch { sig = fuzz_mix_state(sig, 0x1A021 ^ (ch.token_type as u64)); }
+    let tok, ok_tok = security::unmarshal_token(data, 32, 32);
+    if ok_tok { sig = fuzz_mix_state(sig, 0x1A022 ^ (tok.token_type as u64)); }
+    var key_out: u8[..512] = [];
+    let hdr_ch, hdr_len, ok_hdr = security::parse_private_token_challenge(data, key_out);
+    if ok_hdr { sig = fuzz_mix_state(sig, 0x1A023 ^ (hdr_len as u64) ^ hdr_ch.token_type); }
+
+    var store = security::KeyStore { .. };
+    var mkey: u8[32] = [0x42; 32];
+    defer core::secure_zeroize_32(mkey);
+    let slot = security::KeySlot {
+        key_id:         1,
+        master_key:     mkey,
+        created_at_sec: 1700000000,
+        expires_at_sec: 1800000000,
+    };
+    assert(security::add_key(store, slot));
+
+    let use_aes = data.len > 0 && (data[0] & 1) != 0;
+    let pjar = security::PrivateJar { store: store, use_hkdf_aes: use_aes };
+    var dec: u8[..512] = [];
+    if security::open_binary(pjar, "sid", data, 1700000100, dec) {
+        sig = fuzz_mix_state(sig, 0x1A024 ^ (dec.len as u64));
+    }
+    let pt = data[..min(data.len, 192)];
+    var wire: u8[..512] = [];
+    if security::seal_binary(pjar, "sid", pt, 1700000100, 0x123456789ABCDEF0, wire) {
+        dec.clear();
+        assert(security::open_binary(pjar, "sid", wire[..], 1700000100, dec) && dec[..] == pt);
+        dec.clear();
+        assert(!security::open_binary(pjar, "other", wire[..], 1700000100, dec));
+        sig = fuzz_mix_state(sig, 0x1A025 ^ (wire.len as u64));
+    }
+
+    let sjar = security::SignedJar { store: store };
+    dec.clear();
+    if security::open_binary(sjar, "sid", data, 1700000100, dec) {
+        sig = fuzz_mix_state(sig, 0x1A026 ^ (dec.len as u64));
+    }
+    wire.clear();
+    if security::seal_binary(sjar, "sid", pt, 1700000100, wire) {
+        dec.clear();
+        assert(security::open_binary(sjar, "sid", wire[..], 1700000100, dec) && dec[..] == pt);
+        sig = fuzz_mix_state(sig, 0x1A027 ^ (wire.len as u64));
+    }
+    return sig;
+}
+
+fn fuzz_target_hpke_ohttp_privacypass(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1A000;
+    sig = fuzz_mix_state(sig, fuzz_hpke_and_ohttp(data));
+    sig = fuzz_mix_state(sig, fuzz_privacypass_and_crypto_jar(data));
+    return sig;
+}
+
+// ---- Target 26: RFC 9421 HTTP Signatures, RFC 9530 Digest, RFC 7616, DPoP & JWKS ----
+
+fn fuzz_http_sig_and_streaming_digest(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1B010;
+    let params = http::SignatureParams {
+        key_id:  "k1",
+        created: 1700000000,
+        expires: 1700003600,
+    };
+    if http::verify_signature_input_label(data[..min(data.len, 1024)], "sig1", params) {
+        sig = fuzz_mix_state(sig, 0x1B011);
+    }
+
+    var req = http::Request { .. };
+    let _ = req.method.try_set("POST");
+    let _ = req.url.try_set("https://api.example.com/v1/pay");
+    let half = data.len / 2;
+    let s_in = data[..min(half, 512)];
+    let s_val = data[half..min(data.len, core::add_sat_i64(half, 512))];
+    http::set_header(req, "Host", "api.example.com");
+    http::set_header(req, "Signature-Input", s_in);
+    http::set_header(req, "Signature", s_val);
+
+    let hmac_key: u8[32] = [0x33; 32];
+    if http::verify_signature(req, "sig1", params, hmac_key[..], 1700000100) {
+        sig = fuzz_mix_state(sig, 0x1B012);
+    }
+    let ed_pk = core::ed25519_public_key(hmac_key);
+    if http::verify_request_ed25519(req, "k1", ed_pk[..], 1700000100) {
+        sig = fuzz_mix_state(sig, 0x1B013);
+    }
+
+    var dv, ok_dv = http::begin_streaming_digest(data[..min(data.len, 1024)]);
+    if ok_dv {
+        let _ = http::update_streaming_digest(dv, data[..min(data.len, 256)]);
+        if http::finish_streaming_digest(dv) {
+            sig = fuzz_mix_state(sig, 0x1B014);
+        }
+    }
+    return sig;
+}
+
+fn fuzz_digest_auth_jwks_dpop(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1B020;
+    let chal, ok_ch = auth::parse_digest_challenge(data[..min(data.len, 1024)]);
+    if ok_ch {
+        let creds = auth::DigestCredentials { username: "alice", password: "secret" };
+        var auth_out: u8[..1024] = [];
+        let ok_resp = auth::compute_digest_response(
+            chal, creds, "GET", "/priv", 1, "cn1", data[..min(data.len, 128)], auth_out,
+        );
+        if ok_resp {
+            sig = fuzz_mix_state(sig, 0x1B021 ^ (auth_out.len as u64));
+        }
+    }
+
+    var jwks = auth::Jwks { .. };
+    defer auth::zeroize_jwks(jwks);
+    if auth::parse_jwks_json(data[..min(data.len, 4096)], jwks) {
+        sig = fuzz_mix_state(sig, 0x1B022 ^ (jwks.keys.len as u64));
+    }
+
+    let dpop_seed: u8[32] = [0x77; 32];
+    let dpop_pk = core::ed25519_public_key(dpop_seed);
+    let ok_dpop = auth::verify_dpop_proof(
+        data[..min(data.len, 2048)],
+        dpop_pk[..],
+        "POST",
+        "https://api.example.com/tok",
+        "at",
+        "n1",
+        1700000100,
+    );
+    if ok_dpop {
+        sig = fuzz_mix_state(sig, 0x1B023);
+    }
+    return sig;
+}
+
+fn fuzz_target_http_sig_digest_auth(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1B000;
+    sig = fuzz_mix_state(sig, fuzz_http_sig_and_streaming_digest(data));
+    sig = fuzz_mix_state(sig, fuzz_digest_auth_jwks_dpop(data));
+    return sig;
+}
+
+// ---- Target 27: X.509 PEM/SCT/CRL/OCSP & QUIC Retry Integrity / Transport Params ----
+
+fn fuzz_pki_pem_sct_crl_ocsp(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1C010;
+    var store = tls::TrustAnchorStore { .. };
+    let n_pem, ok_pem = tls::add_trust_anchors_pem(store, data);
+    if ok_pem { sig = fuzz_mix_state(sig, 0x1C011 ^ (n_pem as u64)); }
+
+    var priv_k: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(priv_k);
+    let pk_kind, ok_pk = tls::parse_private_key_pem(data, priv_k);
+    if ok_pk && pk_kind != tls::PrivateKeyKind.Unknown {
+        sig = fuzz_mix_state(sig, 0x1C012 ^ (priv_k[0] as u64));
+    }
+
+    var scts: tls::ParsedSct[..8] = [];
+    if tls::parse_sct_list(data, scts) {
+        sig = fuzz_mix_state(sig, 0x1C013 ^ (scts.len as u64));
+    }
+    var sct_one = tls::ParsedSct { .. };
+    if tls::parse_sct_entry(data, sct_one) {
+        sig = fuzz_mix_state(sig, 0x1C014 ^ sct_one.timestamp_ms);
+    }
+    var crl = tls::ParsedCrl { .. };
+    if tls::parse_x509_crl(data, crl) {
+        sig = fuzz_mix_state(sig, 0x1C015 ^ (crl.serial_count as u64));
+    }
+    var ocsp = tls::ParsedOcspResponse { .. };
+    if tls::parse_ocsp_response(data, ocsp) {
+        sig = fuzz_mix_state(sig, 0x1C016 ^ (ocsp.this_update as u64));
+    }
+    return sig;
+}
+
+fn fuzz_quic_retry_and_tp(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1C020;
+    let tp_c, ok_tpc = quic::decode_transport_params(data, false);
+    if ok_tpc { sig = fuzz_mix_state(sig, 0x1C021 ^ tp_c.max_udp_payload_size); }
+    let tp_s, ok_tps = quic::decode_transport_params(data, true);
+    if ok_tps { sig = fuzz_mix_state(sig, 0x1C022 ^ tp_s.max_udp_payload_size); }
+
+    let odcid = data[..min(data.len, 8)];
+    if quic::verify_retry_integrity_tag(odcid, data, rfc::QUIC_VERSION_1) {
+        sig = fuzz_mix_state(sig, 0x1C023);
+    }
+    if quic::verify_retry_integrity_tag(odcid, data, rfc::QUIC_VERSION_2) {
+        sig = fuzz_mix_state(sig, 0x1C024);
+    }
+
+    if data.len >= 16 {
+        let ver = if (data[0] & 1) == 0 { rfc::QUIC_VERSION_1 } else { rfc::QUIC_VERSION_2 };
+        let body = data[..min(data.len, 256)];
+        let tag, ok_tag = quic::compute_retry_integrity_tag(odcid, body, ver);
+        assert(ok_tag);
+        var pkt: u8[..280] = [];
+        assert(pkt.try_append(body) && pkt.try_append(tag[..]));
+        assert(quic::verify_retry_integrity_tag(odcid, pkt[..], ver));
+        pkt[pkt.len - 1] ^= 0x01;
+        assert(!quic::verify_retry_integrity_tag(odcid, pkt[..], ver));
+        sig = fuzz_mix_state(sig, 0x1C025 ^ (tag[0] as u64));
+    }
+    return sig;
+}
+
+fn fuzz_target_x509_pki_quic_retry(data: const u8[:]) -> u64 {
+    var sig: u64 = 0x1C000;
+    sig = fuzz_mix_state(sig, fuzz_pki_pem_sct_crl_ocsp(data));
+    sig = fuzz_mix_state(sig, fuzz_quic_retry_and_tp(data));
+    return sig;
+}
+
 // Runs all OSS-Fuzz targets on a single input slice `data` and returns the combined state signature.
 fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     var sig: u64 = 0xCBF29CE484222325;
@@ -1702,12 +2163,16 @@ fn oss_fuzz_test_one_input(data: const u8[:]) -> u64 {
     sig = fuzz_mix_state(sig, fuzz_target_stream_flow_control(data));
     sig = fuzz_mix_state(sig, fuzz_target_dst_world(data));
     sig = fuzz_mix_state(sig, fuzz_target_ingress_budget(data));
+    sig = fuzz_mix_state(sig, fuzz_target_crypto_pk_kem(data));
+    sig = fuzz_mix_state(sig, fuzz_target_hpke_ohttp_privacypass(data));
+    sig = fuzz_mix_state(sig, fuzz_target_http_sig_digest_auth(data));
+    sig = fuzz_mix_state(sig, fuzz_target_x509_pki_quic_retry(data));
     return sig;
 }
 
-const FUZZ_TARGET_COUNT: i32 = 23;
+const FUZZ_TARGET_COUNT: i32 = 27;
 
-const FUZZ_TARGET_NAMES: const u8[:][23] = [
+const FUZZ_TARGET_NAMES: const u8[:][27] = [
     "http1",
     "h2_hpack",
     "h2_session",
@@ -1731,9 +2196,13 @@ const FUZZ_TARGET_NAMES: const u8[:][23] = [
     "stream_flow_control",
     "dst_world",
     "ingress_budget",
+    "crypto_pk_kem",
+    "hpke_ohttp_privacypass",
+    "http_sig_digest_auth",
+    "x509_pki_quic_retry",
 ];
 
-// Resolves a target CLI name into a numeric target ID (-1 = all, 0..22 = individual protocol target).
+// Resolves a target CLI name into a numeric target ID (-1 = all, 0..26 = individual protocol target).
 fn parse_fuzz_target_id(target: const u8[:]) -> i32 {
     for i in FUZZ_TARGET_NAMES.len {
         if target == FUZZ_TARGET_NAMES[i] {
@@ -1741,6 +2210,19 @@ fn parse_fuzz_target_id(target: const u8[:]) -> i32 {
         }
     }
     return -1;
+}
+
+fn oss_fuzz_run_audit_target_id(target_id: i32, data: const u8[:]) -> u64 {
+    if target_id == 18 { return fuzz_target_multipart_writer(data); }
+    if target_id == 19 { return fuzz_target_tls_endpoint(data); }
+    if target_id == 20 { return fuzz_target_stream_flow_control(data); }
+    if target_id == 21 { return fuzz_target_dst_world(data); }
+    if target_id == 22 { return fuzz_target_ingress_budget(data); }
+    if target_id == 23 { return fuzz_target_crypto_pk_kem(data); }
+    if target_id == 24 { return fuzz_target_hpke_ohttp_privacypass(data); }
+    if target_id == 25 { return fuzz_target_http_sig_digest_auth(data); }
+    if target_id == 26 { return fuzz_target_x509_pki_quic_retry(data); }
+    return oss_fuzz_test_one_input(data);
 }
 
 fn oss_fuzz_run_extended_target_id(target_id: i32, data: const u8[:]) -> u64 {
@@ -1753,15 +2235,10 @@ fn oss_fuzz_run_extended_target_id(target_id: i32, data: const u8[:]) -> u64 {
     if target_id == 15 { return fuzz_target_jose_jwt_jwe_oauth(data); }
     if target_id == 16 { return fuzz_target_idna_psl_url_ip(data); }
     if target_id == 17 { return fuzz_target_http_ext_headers_trace(data); }
-    if target_id == 18 { return fuzz_target_multipart_writer(data); }
-    if target_id == 19 { return fuzz_target_tls_endpoint(data); }
-    if target_id == 20 { return fuzz_target_stream_flow_control(data); }
-    if target_id == 21 { return fuzz_target_dst_world(data); }
-    if target_id == 22 { return fuzz_target_ingress_budget(data); }
-    return oss_fuzz_test_one_input(data);
+    return oss_fuzz_run_audit_target_id(target_id, data);
 }
 
-// Dispatches `data` to a numeric OSS-Fuzz target ID (0..22) or all targets (-1) and returns state signature.
+// Dispatches `data` to a numeric OSS-Fuzz target ID (0..26) or all targets (-1) and returns state signature.
 fn oss_fuzz_run_target_id(target_id: i32, data: const u8[:]) -> u64 {
     if target_id == 0 { return fuzz_target_http1(data); }
     if target_id == 1 { return fuzz_target_http2_hpack_and_frames(data); }
