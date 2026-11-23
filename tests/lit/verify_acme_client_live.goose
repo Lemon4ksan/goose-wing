@@ -941,8 +941,142 @@ fn test_acme_client_boundary_guards() {
     print("ACME_CLIENT_BOUNDARY_GUARDS: PASS\n");
 }
 
+thread_fn mock_acme_redirect_trap_server(cfg: MockAcmeServerCfg) {
+    var u_nonce: u8[..256] = [];
+    var u_acct:  u8[..256] = [];
+    var u_order: u8[..256] = [];
+    var u_trap:  u8[..256] = [];
+    make_base_url(cfg.port, "/new-nonce", u_nonce);
+    make_base_url(cfg.port, "/new-acct", u_acct);
+    make_base_url(cfg.port, "/new-order", u_order);
+    make_base_url(cfg.port, "/redirect-trap", u_trap);
+
+    var trap_hits:    i32       = 0;
+    var active_nonce: u8[..128] = "redir-nonce-1";
+    var payload:      u8[>..]   = [];
+    var done = false;
+
+    while !done {
+        let conn = net::tcp_accept(cfg.listener_fd, 5000);
+        assert(conn > 0);
+        var req = MockHttpReq { .. };
+        assert(read_mock_http_request(conn, req));
+
+        if req.method[..] == "GET" && req.path[..] == "/directory" {
+            let body = str(
+                "{\"newNonce\":\"", u_nonce[..],
+                "\",\"newAccount\":\"", u_acct[..],
+                "\",\"newOrder\":\"", u_order[..], "\"}",
+            );
+            send_mock_http_resp(conn, "HTTP/1.1 200 OK\r\n", "application/json", "", "", body[..]);
+        } else if req.method[..] == "HEAD" && req.path[..] == "/new-nonce" {
+            assert(active_nonce.try_set("redir-nonce-1"));
+            send_mock_http_resp(conn, "HTTP/1.1 200 OK\r\n", "", active_nonce[..], "", "", true);
+        } else if req.path[..] == "/new-acct" {
+            verify_acme_jws_request(req, cfg.acct_pub[..], u_acct[..], active_nonce[..], "", payload);
+            assert(active_nonce.try_set("redir-nonce-307-acct"));
+            send_mock_http_resp(
+                conn, "HTTP/1.1 307 Temporary Redirect\r\n", "application/json",
+                active_nonce[..], u_trap[..], "{\"status\":\"redirected\"}",
+            );
+        } else if req.path[..] == "/new-order" {
+            var acct1_url: u8[..256] = [];
+            make_base_url(cfg.port, "/acct/1", acct1_url);
+            verify_acme_jws_request(req, cfg.acct_pub[..], u_order[..], active_nonce[..], acct1_url[..], payload);
+            assert(active_nonce.try_set("redir-nonce-307-ord"));
+            send_mock_http_resp(
+                conn, "HTTP/1.1 307 Temporary Redirect\r\n", "application/json",
+                active_nonce[..], u_trap[..], "{\"status\":\"redirected\"}",
+            );
+        } else if req.path[..] == "/redirect-trap" {
+            trap_hits += 1;
+            send_mock_http_resp(conn, "HTTP/1.1 200 OK\r\n", "text/plain", "", "", "trapped");
+        } else if req.method[..] == "GET" && req.path[..] == "/_verify_trap" {
+            assert(trap_hits == 0);
+            send_mock_http_resp(conn, "HTTP/1.1 200 OK\r\n", "text/plain", "", "", "trap_hits=0");
+            done = true;
+        } else {
+            assert(false);
+        }
+        net::tcp_close(conn);
+    }
+    assert(trap_hits == 0);
+}
+
+// 4. Signed JWS POST must not auto-follow 3xx redirects or replay JWS, and must restore redirect state
+// CHECK: ACME_LIVE_NO_REDIRECT_REPLAY: PASS
+fn test_live_acme_signed_post_rejects_redirect() {
+    let acct_priv = make_account_priv();
+    let cert_priv = make_cert_priv();
+    let acct_pub = core::ecdsa_p256_public_key(acct_priv);
+
+    let lst = net::tcp_listen("127.0.0.1", 0, 16);
+    assert(lst > 0);
+    let port = net::tcp_getsockname_port(lst);
+    assert(port > 0);
+
+    let tid = thread_spawn(mock_acme_redirect_trap_server, MockAcmeServerCfg {
+        listener_fd: lst,
+        port:        port,
+        cert_priv:   cert_priv,
+        acct_pub:    acct_pub,
+    });
+
+    var sess = client::new_session(client::Config {
+        timeout_ms:       5000,
+        follow_redirects: true,
+        redirect_mode:    client::RedirectMode.Follow,
+        ..
+    });
+    defer sess.close();
+    sess.ssrf_guard.enabled = false;
+    assert(sess.redirect_mode == client::RedirectMode.Follow && sess.follow_redirects);
+
+    var dir_url: u8[..256] = [];
+    make_base_url(port, "/directory", dir_url);
+    let cfg = client::AcmeClientConfig {
+        directory_url: dir_url,
+        accept_tos:    true,
+        ..
+    };
+    var acme = client::AcmeSession { .. };
+
+    // 307 on /new-acct fails closed, does not hit /redirect-trap, captures nonce, restores Follow
+    assert(!client::acme_ensure_account(sess, acme, acct_priv, cfg));
+    assert(acme.kid.len == 0 && acme.nonce[..] == "redir-nonce-307-acct");
+    assert(sess.redirect_mode == client::RedirectMode.Follow && sess.follow_redirects);
+
+    // 307 on /new-order with non-Follow initial mode (Error) fails closed and restores Error
+    client::set_redirect_mode(sess, client::RedirectMode.Error);
+    assert(!sess.follow_redirects);
+    var acct1_url: u8[..256] = [];
+    make_base_url(port, "/acct/1", acct1_url);
+    assert(acme.kid.try_set(acct1_url[..]));
+
+    var domains: u8[..255][..1] = [];
+    var d1:      u8[..255]      = "example.com";
+    domains.push(d1);
+    var hook = MockHttp01Hook { .. };
+    var pem: u8[>..] = "stale";
+    assert(!client::acme_obtain_cert_http01(
+        sess, acme, acct_priv, cert_priv, cfg, domains[..], hook, pem,
+    ));
+    assert(pem.len == 0 && acme.nonce[..] == "redir-nonce-307-ord");
+    assert(sess.redirect_mode == client::RedirectMode.Error && !sess.follow_redirects);
+
+    var verify_url: u8[..256] = [];
+    make_base_url(port, "/_verify_trap", verify_url);
+    let resp, err = client::get(sess, verify_url[..]);
+    assert(http::ok(err) && resp.status_code == 200 && resp.body[..] == "trap_hits=0");
+    assert(thread_wait(tid));
+    net::tcp_close(lst);
+
+    print("ACME_LIVE_NO_REDIRECT_REPLAY: PASS\n");
+}
+
 fn main() {
     test_live_acme_happy_issuance();
     test_live_acme_invalid_order_defer_cleanup();
     test_acme_client_boundary_guards();
+    test_live_acme_signed_post_rejects_redirect();
 }

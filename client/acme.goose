@@ -180,8 +180,17 @@ fn send_acme_signed_post(
     out_nonce:   u8[..128]&,
     out_resp:    http::Response&,
 ) -> bool {
+    // RFC 8555 Section 6.2 / 6.4: JWS protected "url" binds to the exact target; never auto-follow redirects.
+    let saved_redirect_mode = sess.redirect_mode;
+    let saved_follow_redirects = sess.follow_redirects;
+    defer {
+        sess.redirect_mode = saved_redirect_mode;
+        sess.follow_redirects = saved_follow_redirects;
+    };
+    set_redirect_mode(sess, RedirectMode.Manual);
+
     var req = http::new_post(url);
-    http::set_stream_body(req, jws_bytes, true);
+    http::set_stream_body(req, jws_bytes, false);
     http::set_header(req, rfc::HEADER_CONTENT_TYPE, ACME_CONTENT_TYPE_JOSE_JSON);
     let accept_hdr = if accept_kind == AcmeAcceptKind.PemChain {
         ACME_ACCEPT_PEM_CHAIN
