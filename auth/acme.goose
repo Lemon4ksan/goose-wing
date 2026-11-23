@@ -69,7 +69,7 @@ fn match_acme_http01(path: const u8[:], token: const u8[:]) -> bool {
 //   path = "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SC"
 //   returns: true, out = "<token>.<thumbprint>"
 fn find_acme_challenge<B>(
-    table: const AcmeChallenge[..8]&,
+    table: const AcmeChallenge[:],
     path:  const u8[:],
     out:   B&,
 ) -> bool {

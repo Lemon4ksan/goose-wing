@@ -141,6 +141,7 @@ import auth.jwe;
 import auth.jwk;
 import auth.jwks;
 import auth.acme;
+import auth.acme_wire;
 
 // ---- fingerprinting & resilient l4 networking (Layer 5) --------------------
 
@@ -203,6 +204,7 @@ import tls.pki_crl_internal;
 import tls.x509_san;
 import tls.x509_chain_internal;
 import tls.x509;
+import tls.csr;
 import tls.ocsp;
 import tls.crl;
 import tls.pq_ntt_internal;
