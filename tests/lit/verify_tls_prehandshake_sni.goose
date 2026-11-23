@@ -611,15 +611,43 @@ fn test_arena_sni_registry(fx: const SniTestFixtures&) {
     // Clear zeroizes all key spans & releases arena slot for reuse
     let clear_secret = "-----BEGIN PRIVATE KEY-----\nCLEAR_ALL_SECRET_CHECK_888\n-----END PRIVATE KEY-----\n";
     assert(server::add_sni_registry_entry(reg, "clear.example.test", fx.ed_cert_pem[..], clear_secret));
+    let stale_before_clear = reg;
     let old_slot = reg.arena_slot;
     let regs_before = server::g_sni_regs.len;
     server::clear_sni_registry(reg);
-    assert(reg.count == 0 && reg.arena_slot == -1);
+    assert(reg.count == 0 && reg.arena_slot == -1 && reg.generation == 0);
     assert(core::find(server::g_sni_key_arena[..], "CLEAR_ALL_SECRET_CHECK_888") < 0);
 
-    var reg2 = server::SniRegistry { .. };
-    assert(server::add_sni_registry_entry(reg2, "reused.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
-    assert(reg2.arena_slot == old_slot && server::g_sni_regs.len == regs_before);
+    // Stale handle before slot reuse cannot resolve, mutate, or remove
+    let _, ok_stale_pre = server::resolve_sni_registry(stale_before_clear, "a.example.test");
+    assert(!ok_stale_pre);
+    var stale_mut_pre = stale_before_clear;
+    assert(!server::add_sni_registry_entry(stale_mut_pre, "evil.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
+    assert(!server::remove_sni_registry_entry(stale_mut_pre, "a.example.test"));
+
+    // Reusing larger cleared arena slot with smaller max_entries enforces max_entries == 2
+    var reg2 = server::SniRegistry { max_entries: 2, .. };
+    assert(server::add_sni_registry_entry(reg2, "reused1.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
+    assert(reg2.arena_slot == old_slot && server::g_sni_regs.len == regs_before && reg2.count == 1);
+    let live_copy = reg2;
+    assert(server::add_sni_registry_entry(reg2, "reused2.example.test", fx.rsa_cert_pem[..], fx.rsa_key_pem[..]));
+    assert(reg2.count == 2);
+    assert(!server::add_sni_registry_entry(reg2, "reused3.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
+    assert(reg2.count == 2);
+    // Updating existing pattern at capacity still succeeds; live copied handle resolves newer entry too
+    assert(server::add_sni_registry_entry(reg2, "reused2.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
+    let lc_res, ok_lc = server::resolve_sni_registry(live_copy, "reused2.example.test");
+    assert(ok_lc && lc_res.cert_pem == fx.ed_cert_pem[..]);
+
+    // Stale handle after slot reuse (ABA check) cannot resolve, add, remove, or clear reg2
+    let _, ok_stale_post = server::resolve_sni_registry(stale_before_clear, "reused1.example.test");
+    assert(!ok_stale_post);
+    var stale_mut_post = stale_before_clear;
+    assert(!server::add_sni_registry_entry(stale_mut_post, "aba.example.test", fx.ed_cert_pem[..], fx.ed_key_pem[..]));
+    assert(!server::remove_sni_registry_entry(stale_mut_post, "reused1.example.test"));
+    server::clear_sni_registry(stale_mut_post);
+    let c_r1, ok_r1 = server::resolve_sni_registry(reg2, "reused1.example.test");
+    assert(ok_r1 && c_r1.cert_pem == fx.ed_cert_pem[..]);
     server::clear_sni_registry(reg2);
 
     print("ARENA_SNI_REGISTRY: OK");
@@ -845,6 +873,12 @@ thread_fn sni_loopback_server_worker(listener_fd: i64) {
     let bad_slot, ok_bad = server_internal::server_accept_tls_handshake(srv, c5, empty_def);
     assert(!ok_bad && bad_slot == 0xFFFF);
     net::tcp_close(c5);
+
+    // 6th connection: default_cfg compressed_cert_algo / data must NOT leak onto SNI-resolved credentials
+    var comp_def_cfg = default_cfg;
+    comp_def_cfg.compressed_cert_algo = 2;
+    assert(comp_def_cfg.compressed_cert_data.try_set("DUMMY_DEFAULT_COMPRESSED_CERT_BYTES"));
+    assert(server::serve_tls(srv, listener_fd, comp_def_cfg, 1) == 1);
 }
 
 fn do_https_get_with_trust(
@@ -927,6 +961,9 @@ fn test_blocking_prehandshake_sni(fx: const SniTestFixtures&) {
     let r5 = net::tcp_recv(fd5, eof_buf, 64, 2000);
     assert(r5 <= 0);
     net::tcp_close(fd5);
+
+    // Conn 6: SNI handshake succeeds even when server's default_cfg carries dummy compressed cert payload
+    do_https_get_with_trust(port, "a.example.test", fx.ec_root_der[..]);
 
     assert(thread_wait(tid));
     net::tcp_close(listener);

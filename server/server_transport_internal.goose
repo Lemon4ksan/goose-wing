@@ -731,8 +731,6 @@ fn server_accept_tls_handshake(
         if ok_sni {
             var sni_cfg = tls::ServerHandshakeConfig {
                 alpn:                 default_cfg.alpn,
-                compressed_cert_algo: default_cfg.compressed_cert_algo,
-                compressed_cert_data: default_cfg.compressed_cert_data,
                 handshake_timeout_ms: default_cfg.handshake_timeout_ms,
                 keylog_file:          default_cfg.keylog_file,
                 require_client_cert:  default_cfg.require_client_cert,

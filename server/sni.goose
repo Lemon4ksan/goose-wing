@@ -34,9 +34,11 @@ struct SniCertSlot {
 }
 
 struct SniRegistryMeta {
-    slots_off: i64  = 0,
-    slots_cap: i64  = 0,
-    active:    bool = false,
+    slots_off:  i64  = 0,
+    slots_cap:  i64  = 0,
+    count:      i32  = 0,
+    generation: u64  = 0,
+    active:     bool = false,
 }
 
 // Separate top-level resizable arrays avoid placing a `root struct` global on the worker thread-copy forbid list.
@@ -44,11 +46,13 @@ var g_sni_regs:       SniRegistryMeta[>..] = [];
 var g_sni_slots:      SniCertSlot[>..]     = [];
 var g_sni_cert_arena: u8[>..]              = [];
 var g_sni_key_arena:  u8[>..]              = [];
+var g_sni_next_gen:   u64                  = 0;
 
-// Fixed-size SNI registry handle referencing a lazily allocated slot in `g_sni_regs`.
+// Fixed-size SNI registry handle referencing a lazily allocated, generation-tagged slot in `g_sni_regs`.
 struct SniRegistry {
     count:       i32 = 0,
     arena_slot:  i64 = -1,
+    generation:  u64 = 0,
     max_entries: i32 = 64,
 }
 
@@ -82,21 +86,41 @@ fn sni_clear_meta_slots(meta: const SniRegistryMeta&) {
     }
 }
 
+inline fn sni_next_generation() -> u64 {
+    g_sni_next_gen = core::add_sat_u64(g_sni_next_gen, 1);
+    if g_sni_next_gen == 0 {
+        g_sni_next_gen = 1;
+    }
+    return g_sni_next_gen;
+}
+
+inline fn sni_effective_cap(reg: const SniRegistry&) -> i64 {
+    return if reg.max_entries > 0 { min(reg.max_entries as i64, MAX_SNI_DOMAINS) } else { MAX_SNI_DOMAINS };
+}
+
+inline fn sni_is_live_handle(reg: const SniRegistry&) -> bool {
+    guard reg.arena_slot >= 0 && reg.arena_slot < g_sni_regs.len && reg.generation != 0 else {
+        return false;
+    }
+    let meta = &g_sni_regs[reg.arena_slot];
+    return meta.active && meta.generation == reg.generation;
+}
+
 fn sni_ensure_arena_slot(reg: SniRegistry&) -> bool {
     if reg.arena_slot >= 0 {
-        return reg.arena_slot < g_sni_regs.len && g_sni_regs[reg.arena_slot].active;
+        return sni_is_live_handle(reg);
     }
-    let want_cap: i64 = if reg.max_entries > 0 {
-        min(reg.max_entries as i64, MAX_SNI_DOMAINS)
-    } else {
-        MAX_SNI_DOMAINS
-    };
+    let want_cap = sni_effective_cap(reg);
     for i in g_sni_regs.len {
         let meta .= g_sni_regs[i];
         if !meta.active && meta.slots_cap >= want_cap {
             sni_clear_meta_slots(meta);
+            let gen = sni_next_generation();
             meta.active = true;
+            meta.count = 0;
+            meta.generation = gen;
             reg.arena_slot = i;
+            reg.generation = gen;
             reg.count = 0;
             return true;
         }
@@ -105,12 +129,16 @@ fn sni_ensure_arena_slot(reg: SniRegistry&) -> bool {
     for _ in want_cap {
         g_sni_slots.push(SniCertSlot { .. });
     }
+    let gen = sni_next_generation();
     g_sni_regs.push(SniRegistryMeta {
-        slots_off: slots_off,
-        slots_cap: want_cap,
-        active:    true,
+        slots_off:  slots_off,
+        slots_cap:  want_cap,
+        count:      0,
+        generation: gen,
+        active:     true,
     });
     reg.arena_slot = core::sub_sat_i64(g_sni_regs.len, 1);
+    reg.generation = gen;
     reg.count = 0;
     return true;
 }
@@ -217,15 +245,18 @@ fn sni_pattern_matches(pattern: const u8[:], hostname: const u8[:]) -> bool {
 }
 
 // Zeroizes every private key span belonging to `reg`, marks its arena slot inactive for reuse,
-// and resets `reg` to an unallocated empty state.
+// and resets `reg` to an unallocated empty state. Ignores stale handles whose generation no longer matches.
 fn clear_sni_registry(reg: SniRegistry&) {
-    if reg.arena_slot >= 0 && reg.arena_slot < g_sni_regs.len {
+    if sni_is_live_handle(reg) {
         let meta .= g_sni_regs[reg.arena_slot];
         sni_clear_meta_slots(meta);
         meta.active = false;
+        meta.count = 0;
+        meta.generation = sni_next_generation();
     }
     reg.count = 0;
     reg.arena_slot = -1;
+    reg.generation = 0;
 }
 
 // Registers or updates an SNI domain pattern with PEM certificate chain (<= 16 KiB) and key (<= 8 KiB)
@@ -243,36 +274,37 @@ fn add_sni_registry_entry(
         return false;
     }
     guard sni_ensure_arena_slot(reg) else { return false; }
-    let meta = g_sni_regs[reg.arena_slot];
+    let meta .= g_sni_regs[reg.arena_slot];
     let existing_idx = sni_find_exact_slot(meta, p_norm);
     if existing_idx >= 0 {
         sni_store_slot_pems(g_sni_slots[existing_idx], cert_pem, key_pem);
+        reg.count = meta.count;
         return true;
     }
-    guard reg.count < meta.slots_cap else { return false; }
+    let cap_limit = min(meta.slots_cap, sni_effective_cap(reg));
+    guard meta.count < cap_limit else { return false; }
     let free_idx = sni_find_free_slot(meta);
     guard free_idx >= 0 else { return false; }
     let slot .= g_sni_slots[free_idx];
     guard slot.pattern.try_set(p_norm) else { return false; }
     sni_store_slot_pems(slot, cert_pem, key_pem);
     slot.in_use = true;
-    reg.count = core::add_sat_i64(reg.count, 1) as i32;
+    meta.count = core::add_sat_i64(meta.count, 1) as i32;
+    reg.count = meta.count;
     return true;
 }
 
 // Removes a registered SNI domain pattern from `reg` and zeroizes its key span in `g_sni_key_arena`.
 fn remove_sni_registry_entry(reg: SniRegistry&, pattern: const u8[:]) -> bool {
     let p_norm = tls::x509_strip_trailing_dot(pattern);
-    guard p_norm.len > 0 && reg.count > 0 &&
-        reg.arena_slot >= 0 && reg.arena_slot < g_sni_regs.len else {
-        return false;
-    }
-    let meta = g_sni_regs[reg.arena_slot];
-    guard meta.active else { return false; }
+    guard p_norm.len > 0 && sni_is_live_handle(reg) else { return false; }
+    let meta .= g_sni_regs[reg.arena_slot];
+    guard meta.count > 0 else { return false; }
     let idx = sni_find_exact_slot(meta, p_norm);
     guard idx >= 0 else { return false; }
     sni_clear_slot(g_sni_slots[idx]);
-    reg.count = core::sub_sat_i64(reg.count, 1) as i32;
+    meta.count = core::sub_sat_i64(meta.count, 1) as i32;
+    reg.count = meta.count;
     return true;
 }
 
@@ -282,14 +314,11 @@ fn resolve_sni_registry(
     sni_hostname: const u8[:],
 ) -> SniCredentials, bool {
     let h_norm = tls::x509_strip_trailing_dot(sni_hostname);
-    guard reg.count > 0 &&
-        reg.arena_slot >= 0 &&
-        reg.arena_slot < g_sni_regs.len &&
-        server_internal::is_valid_sni_hostname(h_norm) else {
+    guard sni_is_live_handle(reg) && server_internal::is_valid_sni_hostname(h_norm) else {
         return SniCredentials { .. }, false;
     }
-    let meta = g_sni_regs[reg.arena_slot];
-    guard meta.active else { return SniCredentials { .. }, false; }
+    let meta = &g_sni_regs[reg.arena_slot];
+    guard meta.count > 0 else { return SniCredentials { .. }, false; }
 
     let exact_idx = sni_find_exact_slot(meta, h_norm);
     if exact_idx >= 0 {
