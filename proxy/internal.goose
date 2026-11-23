@@ -79,6 +79,7 @@ inline fn current_monotonic_ms() -> i64 {
 }
 
 inline fn is_backend_routable(target: const proxy::UpstreamTarget&, now_ms: i64) -> bool {
+    guard !target.draining else { return false; }
     if target.ejected_until_ms > 0 && now_ms < target.ejected_until_ms {
         return false;
     }
@@ -101,6 +102,32 @@ fn select_round_robin(cluster: proxy::UpstreamCluster&, n: i32) -> i32, bool {
         }
     }
     return NO_UPSTREAM_TARGET, false;
+}
+
+// Nginx smooth weighted round-robin: adds weight to wrr_current_weight for each routable target,
+// picks the target with maximum current weight, and subtracts total routable weight.
+fn select_weighted_rr(cluster: proxy::UpstreamCluster&, n: i32) -> i32, bool {
+    var total_weight: i64 = 0;
+    var best_idx:     i32 = NO_UPSTREAM_TARGET;
+    var best_cw:      i32 = 0;
+
+    for i in n {
+        let t .= cluster.targets[i];
+        guard is_target_selectable(t) else { continue; }
+        let w = max(t.weight as i64, 1);
+        let next_cw = core::add_sat_i64(t.wrr_current_weight, w) as i32;
+        t.wrr_current_weight = next_cw;
+        total_weight = core::add_sat_i64(total_weight, w);
+        if best_idx == NO_UPSTREAM_TARGET || next_cw > best_cw {
+            best_idx = i;
+            best_cw = next_cw;
+        }
+    }
+    guard best_idx >= 0 else { return NO_UPSTREAM_TARGET, false; }
+    let chosen .= cluster.targets[best_idx];
+    chosen.wrr_current_weight = core::sub_sat_i64(chosen.wrr_current_weight, total_weight) as i32;
+    record_target_dispatch(chosen);
+    return best_idx, true;
 }
 
 fn find_least_conn_target(cluster: const proxy::UpstreamCluster&, n: i32) -> i32 {
@@ -226,9 +253,7 @@ fn update_cluster_circuit_state(cluster: proxy::UpstreamCluster&) {
             break;
         }
     }
-    if !any_healthy {
-        cluster.circuit_open = true;
-    }
+    cluster.circuit_open = !any_healthy;
 }
 
 // Inserts `pt` into sorted `ring.points`, deduplicating identical 32-bit hash positions.
@@ -407,8 +432,8 @@ inline fn is_target_concurrency_saturated(target: const proxy::UpstreamTarget&, 
 
 // Formats upstream Host authority per RFC 9110 §7.2 and RFC 3986 §3.2.2,
 // bracketing bare IPv6 literals and avoiding duplicate :port suffixes.
-fn format_upstream_authority(host: const u8[:], port: u16, preserve_host: bool, out: u8[..128]&) -> bool {
-    guard host.len > 0 && host.len <= 112 else { return false; }
+fn format_upstream_authority(host: const u8[:], port: u16, preserve_host: bool, out: u8[..160]&) -> bool {
+    guard host.len > 0 && host.len <= 128 else { return false; }
     var committed = false;
     defer if !committed { out.clear(); };
     let _, after_colon, has_colon = host.split_once_byte(':');

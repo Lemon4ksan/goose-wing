@@ -245,7 +245,7 @@ fn prepare_proxy_request_at<B>(
 
     // 4. Header filtering and metadata injection.
     var forward_headers = http::HeaderMap { .. };
-    var host_buf: u8[..128] = [];
+    var host_buf: u8[..160] = [];
     let ok_prep = proxy_internal::format_upstream_authority(
         target.host[..],
         target.port,

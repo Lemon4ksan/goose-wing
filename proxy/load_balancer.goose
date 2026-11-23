@@ -14,6 +14,7 @@ enum LbPolicy {
     RandomTwoChoice,
     LeastConnections,
     ConsistentHash,
+    WeightedRoundRobin,
 }
 
 struct KetamaPoint {
@@ -32,7 +33,7 @@ enum UpstreamHealthState {
 }
 
 struct UpstreamTarget {
-    host:                    u8[..64]            = [],
+    host:                    u8[..128]           = [],
     port:                    u16                 = 80,
     active_conns:            i32                 = 0,
     weight:                  u16                 = 1,
@@ -45,6 +46,10 @@ struct UpstreamTarget {
     total_requests:          u64                 = 0,
     ejected_until_ms:        i64                 = 0,
     has_explicit_thresholds: bool                = false,
+    draining:                bool                = false,
+    use_tls:                 bool                = false,
+    sni_host:                u8[..128]           = [],
+    wrr_current_weight:      i32                 = 0,
 }
 
 struct UpstreamCluster {
@@ -69,21 +74,39 @@ fn new_upstream_cluster(policy: LbPolicy = LbPolicy.RoundRobin, max_fails: i32 =
     };
 }
 
-fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, weight: u16 = 1) -> bool {
+// Registers an upstream backend target with optional TLS and SNI override configuration.
+fn add_upstream_target_tls(
+    cluster:  UpstreamCluster&,
+    host:     const u8[:],
+    port:     u16,
+    weight:   u16,
+    use_tls:  bool,
+    sni_host: const u8[:],
+) -> bool {
     guard port > 0 && proxy_internal::is_valid_upstream_host(host) else { return false; }
+    if sni_host.len > 0 {
+        guard proxy_internal::is_valid_upstream_host(sni_host) else { return false; }
+    }
 
     var target = UpstreamTarget {
         port:       port,
         weight:     max(weight, 1),
         is_healthy: true,
+        use_tls:    use_tls,
         ..
     };
     guard target.host.try_set(host) else { return false; }
+    guard target.sni_host.try_set(sni_host) else { return false; }
     guard cluster.targets.try_push(target) else { return false; }
+    proxy_internal::update_cluster_circuit_state(cluster);
     if cluster.policy == LbPolicy.ConsistentHash {
         build_ketama_ring(cluster, cluster.ketama_ring);
     }
     return true;
+}
+
+fn add_upstream_target(cluster: UpstreamCluster&, host: const u8[:], port: u16, weight: u16 = 1) -> bool {
+    return add_upstream_target_tls(cluster, host, port, weight, false, "");
 }
 
 // 64-bit LCG pseudo-random generator with Knuth MMIX multiplier.
@@ -107,8 +130,8 @@ inline fn evaluate_two_choice(
     return if load1 <= load2 { r1 } else { r2 };
 }
 
-// Selects next healthy upstream target index according to configured LbPolicy.
-fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
+// Selects next healthy upstream target index according to configured LbPolicy and optional routing key.
+fn select_upstream_with_key(cluster: UpstreamCluster&, hash_key: const u8[:]) -> i32, bool {
     guard !cluster.circuit_open else { return proxy_internal::NO_UPSTREAM_TARGET, false; }
     let n = cluster.targets.len as i32;
     guard n > 0 else { return proxy_internal::NO_UPSTREAM_TARGET, false; }
@@ -119,16 +142,78 @@ fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
     if cluster.policy == LbPolicy.LeastConnections {
         return proxy_internal::select_least_connections(cluster, n);
     }
+    if cluster.policy == LbPolicy.WeightedRoundRobin {
+        return proxy_internal::select_weighted_rr(cluster, n);
+    }
     if cluster.policy == LbPolicy.ConsistentHash {
         if cluster.ketama_ring.points.len == 0 {
             build_ketama_ring(cluster, cluster.ketama_ring);
         }
+        if hash_key.len == 0 {
+            return proxy_internal::select_round_robin(cluster, n);
+        }
         let now_ms = proxy_internal::current_monotonic_ms();
-        let idx64, ok_ch = select_consistent_backend(cluster, cluster.ketama_ring, "default", now_ms);
+        let idx64, ok_ch = select_consistent_backend(cluster, cluster.ketama_ring, hash_key, now_ms);
         guard ok_ch else { return proxy_internal::NO_UPSTREAM_TARGET, false; }
         return idx64 as i32, true;
     }
     return proxy_internal::select_p2c(cluster, n);
+}
+
+// Selects next healthy upstream target index according to configured LbPolicy.
+fn select_upstream(cluster: UpstreamCluster&) -> i32, bool {
+    return select_upstream_with_key(cluster, "");
+}
+
+// Marks target `target_idx` as draining or active without dropping in-flight connections.
+fn set_target_draining(cluster: UpstreamCluster&, target_idx: i32, draining: bool) -> bool {
+    guard target_idx >= 0 && target_idx < cluster.targets.len else { return false; }
+    cluster.targets[target_idx].draining = draining;
+    proxy_internal::update_cluster_circuit_state(cluster);
+    return true;
+}
+
+// Updates target `target_idx` weight, resets WRR accumulator state, and rebuilds Ketama ring if active.
+fn set_target_weight(cluster: UpstreamCluster&, target_idx: i32, weight: u16) -> bool {
+    guard target_idx >= 0 && target_idx < cluster.targets.len else { return false; }
+    cluster.targets[target_idx].weight = max(weight, 1);
+    for &t in cluster.targets {
+        t.wrr_current_weight = 0;
+    }
+    if cluster.policy == LbPolicy.ConsistentHash {
+        build_ketama_ring(cluster, cluster.ketama_ring);
+    }
+    return true;
+}
+
+// Removes target at `target_idx`, shifting remaining targets in order and updating ring/circuit state.
+fn remove_upstream_target(cluster: UpstreamCluster&, target_idx: i32) -> bool {
+    let n = cluster.targets.len;
+    guard target_idx >= 0 && target_idx < n else { return false; }
+    var i = target_idx as i64;
+    let last = core::sub_sat_i64(n, 1);
+    while i < last {
+        let next_i = core::add_sat_i64(i, 1);
+        cluster.targets[i] = cluster.targets[next_i];
+        i = next_i;
+    }
+    cluster.targets.resize(last);
+    for &t in cluster.targets {
+        t.wrr_current_weight = 0;
+    }
+    if last == 0 {
+        cluster.rr_index = 0;
+    } else if cluster.rr_index > target_idx {
+        cluster.rr_index = core::sub_sat_i64(cluster.rr_index, 1) as i32;
+    }
+    if cluster.rr_index < 0 || cluster.rr_index >= (last as i32) {
+        cluster.rr_index = 0;
+    }
+    if cluster.policy == LbPolicy.ConsistentHash {
+        build_ketama_ring(cluster, cluster.ketama_ring);
+    }
+    proxy_internal::update_cluster_circuit_state(cluster);
+    return true;
 }
 
 // Releases an active connection for an upstream target upon response completion.
@@ -260,7 +345,7 @@ fn build_ketama_ring(pool: const UpstreamCluster&, ring: KetamaRing&) {
     for &target, idx in pool.targets {
         let w = max(target.weight as i64, 1);
         let num_pts = proxy_internal::calc_ketama_target_points(w, total_weight, n, ring_cap);
-        var base_key: u8[..96] = [];
+        var base_key: u8[..160] = [];
         guard base_key.try_append(target.host[..]) && base_key.try_push(0) else { continue; }
         target.port.format_u64_dec(base_key);
         let base_crc = core::crc32(base_key[..]);
