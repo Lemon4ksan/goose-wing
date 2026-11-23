@@ -236,7 +236,7 @@ fn pure_client_step_ee(slot: PureTlsSlot&, body: const u8[:]) -> tls::TlsBackend
 
 fn pure_client_step_encrypted(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var msg_t: u8          = 0;
-    var body:  u8[..16384] = [];
+    var body:  u8[..20480] = [];
     let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
 
@@ -294,10 +294,8 @@ fn pure_server_emit_encrypted_flight(slot: PureTlsSlot&) -> bool {
         guard pure_server_emit_cert_req(slot) else { return false; }
     }
 
-    var srv_cfg = tls::ServerHandshakeConfig { priv_seed: slot.priv_seed, .. };
-    guard srv_cfg.cert_der.try_set(slot.cert_der[..]) else { return false; }
-    var cert_msg: u8[..4096] = [];
-    guard encode_server_cert_or_compressed_msg(srv_cfg, 0, cert_msg) &&
+    var cert_msg: u8[..20480] = [];
+    guard encode_server_cert_chain_msg(slot.cert_der[..], slot.extra_certs_der[..], cert_msg) &&
         pure_seal_hs_to_wire(slot, cert_msg[..]) else { return false; }
     transcript_update(slot.transcript, cert_msg[..]);
 
@@ -305,18 +303,19 @@ fn pure_server_emit_encrypted_flight(slot: PureTlsSlot&) -> bool {
     transcript_current_hash(slot.transcript, slot.ks.hash_id, h_to_cert);
     var cv_input: u8[160] = [0; 160];
     let cv_len, ok_cv = tls::build_certificate_verify_message(true, h_to_cert[..], cv_input[..]);
-    var sig_buf: u8[..128] = [];
-    let sig_scheme, ok_sig = sign_certificate_verify(slot.cert_der[..], slot.priv_seed, cv_input[..cv_len], sig_buf);
-    var cv_pay: u8[..512] = [];
+    var sig_buf: u8[..512] = [];
+    let sig_scheme, ok_sig = sign_certificate_verify(
+        slot.cert_der[..], slot.priv_seed, cv_input[..cv_len], sig_buf, slot.rsa_key_slot,
+    );
+    var cv_pay: u8[..1024] = [];
     guard ok_cv &&
         ok_sig &&
         tls::encode_client_certificate_verify(cv_pay, sig_scheme, sig_buf[..]) else {
         return false;
     }
-    var cv_msg: u8[..512] = [];
-    cv_msg.push(rfc::TLS_HS_CERTIFICATE_VERIFY);
-    cv_msg.append_u24_be(cv_pay.len as u32);
-    guard cv_msg.try_append(cv_pay[..]) && pure_seal_hs_to_wire(slot, cv_msg[..]) else { return false; }
+    var cv_msg: u8[..1024] = [];
+    guard frame_handshake_msg_4k(rfc::TLS_HS_CERTIFICATE_VERIFY, cv_pay[..], cv_msg) &&
+        pure_seal_hs_to_wire(slot, cv_msg[..]) else { return false; }
     transcript_update(slot.transcript, cv_msg[..]);
 
     var h_to_cv: u8[..48] = [];
@@ -337,6 +336,33 @@ fn pure_server_emit_encrypted_flight(slot: PureTlsSlot&) -> bool {
     return true;
 }
 
+fn pure_server_emit_hrr(
+    slot:      PureTlsSlot&,
+    ch_choice: const ServerClientHelloChoice&,
+) -> tls::TlsBackendStatus {
+    var hrr_pay: u8[..256] = [];
+    build_hrr_payload(ch_choice.session_id[..], ch_choice.cipher_suite, ch_choice.selected_group, hrr_pay);
+    var hrr_msg: u8[..280] = [];
+    let ccs: u8[6] = [rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
+    guard frame_handshake_msg_4k(rfc::TLS_HS_SERVER_HELLO, hrr_pay[..], hrr_msg) &&
+        pure_append_plaintext_hs(slot.wire_out, hrr_msg[..], 0x03) &&
+        slot.wire_out.try_append(ccs[..]) else {
+        return tls::TlsBackendStatus.Error;
+    }
+    var ks_hrr, ok_kshr = ks_init(ch_choice.cipher_suite);
+    defer ks_zeroize(ks_hrr);
+    guard ok_kshr &&
+        transcript_replace_with_message_hash(slot.transcript, ks_hrr.hash_id, ks_hrr.hash_len) else {
+        return tls::TlsBackendStatus.HandshakeError;
+    }
+    transcript_update(slot.transcript, hrr_msg[..]);
+    slot.hrr_sent = true;
+    slot.hrr_group = ch_choice.selected_group;
+    slot.hrr_cipher = ch_choice.cipher_suite;
+    let _ = slot.hrr_sid.try_set(ch_choice.session_id[..]);
+    return tls::TlsBackendStatus.WantRead;
+}
+
 fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var ch_msg: u8[..16384] = [];
     let st = pure_pop_plaintext_hs_msg(slot, ch_msg);
@@ -344,43 +370,52 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     // RFC 8446 Section 5.1: Record Layer - No plaintext bytes may cross the ClientHello key-change epoch.
     guard slot.hs_plain.len == 0 else { return tls::TlsBackendStatus.HandshakeError; }
 
-    transcript_update(slot.transcript, ch_msg[..]);
-    var sid:        u8[..32]  = [];
-    var client_pub: u8[32]    = [0; 32];
-    var client_sni: u8[..255] = [];
-    var psk_res:    bool      = false;
-    var psk_sec:    u8[..48]  = [];
-    var sel_psk_id: u16       = 0;
-    defer core::secure_zeroize_slice(psk_sec[..]);
+    var ch_choice = ServerClientHelloChoice { .. };
+    defer zeroize_server_ch_choice(ch_choice);
     let req_sig = detect_cert_sig_scheme(slot.cert_der[..]);
-    guard parse_client_hello_for_server_full(
-        ch_msg[..], slot.alpn_csv[..], req_sig, sid, client_pub,
-        slot.selected_alpn, client_sni, slot.cipher_suite, psk_res, psk_sec, sel_psk_id,
-        slot.require_client_cert,
+    let hrr_mode = if slot.hrr_sent { ServerHrrMode.Reject } else { ServerHrrMode.Allow };
+    guard parse_server_client_hello(
+        ch_msg[..], slot.alpn_csv[..], req_sig, 0, hrr_mode, ch_choice, slot.require_client_cert,
     ) else { return tls::TlsBackendStatus.HandshakeError; }
-    let _ = extract_ch_client_random(ch_msg[..], slot.client_random);
 
-    var srv_rand: u8[32] = [0; 32];
-    var srv_priv: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(srv_priv);
-    guard random_bytes_32_checked(srv_rand) && random_bytes_32_checked(srv_priv) else {
-        return tls::TlsBackendStatus.HandshakeError;
+    if !slot.hrr_sent && ch_choice.needs_hrr {
+        transcript_update(slot.transcript, ch_msg[..]);
+        return pure_server_emit_hrr(slot, ch_choice);
     }
-    let srv_pub = core::x25519_base_scalarmult(srv_priv);
-    var ecdhe, ok_ss = core::x25519_shared_secret(srv_priv, client_pub);
+    if slot.hrr_sent {
+        guard ch_choice.cipher_suite == slot.hrr_cipher &&
+            ch_choice.selected_group == slot.hrr_group &&
+            ch_choice.session_id[..] == slot.hrr_sid[..] else {
+            return tls::TlsBackendStatus.HandshakeError;
+        }
+    }
+
+    transcript_update(slot.transcript, ch_msg[..]);
+    slot.cipher_suite = ch_choice.cipher_suite;
+    slot.client_random = ch_choice.client_random;
+    let _ = slot.selected_alpn.try_set(ch_choice.negotiated_alpn[..]);
+
+    var srv_rand:  u8[32]   = [0; 32];
+    var srv_share: u8[..65] = [];
+    var ecdhe:     u8[32]   = [0; 32];
     defer core::secure_zeroize_32(ecdhe);
-    guard ok_ss else { return tls::TlsBackendStatus.HandshakeError; }
+    guard generate_server_handshake_keys_for_group(
+        ch_choice.selected_group, ch_choice.client_share[..], srv_rand, srv_share, ecdhe,
+    ) else { return tls::TlsBackendStatus.HandshakeError; }
 
     var sh_pay: u8[..2048] = [];
-    build_server_hello_payload(srv_rand, sid[..], srv_pub, sh_pay, false, slot.cipher_suite, 0);
+    build_server_hello_payload_for_group(
+        srv_rand, ch_choice.session_id[..], ch_choice.selected_group, srv_share[..],
+        sh_pay, false, slot.cipher_suite, 0,
+    );
     var sh_msg: u8[..2048] = [];
-    sh_msg.push(rfc::TLS_HS_SERVER_HELLO);
-    sh_msg.append_u24_be(sh_pay.len as u32);
-    let ccs: u8[6] = [rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
-    guard sh_msg.try_append(sh_pay[..]) &&
-        pure_append_plaintext_hs(slot.wire_out, sh_msg[..], 0x03) &&
-        slot.wire_out.try_append(ccs[..]) else {
+    guard frame_handshake_msg_4k(rfc::TLS_HS_SERVER_HELLO, sh_pay[..], sh_msg) &&
+        pure_append_plaintext_hs(slot.wire_out, sh_msg[..], 0x03) else {
         return tls::TlsBackendStatus.Error;
+    }
+    if !slot.hrr_sent {
+        let ccs: u8[6] = [rfc::TLS_CONTENT_CHANGE_CIPHER_SPEC, 0x03, 0x03, 0x00, 0x01, 0x01];
+        guard slot.wire_out.try_append(ccs[..]) else { return tls::TlsBackendStatus.Error; }
     }
     transcript_update(slot.transcript, sh_msg[..]);
     guard pure_derive_hs_traffic_keys(slot, ecdhe[..]) && pure_server_emit_encrypted_flight(slot) else {
@@ -401,7 +436,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
 
 fn pure_server_step_client_cert(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     var msg_t: u8          = 0;
-    var body:  u8[..16384] = [];
+    var body:  u8[..20480] = [];
     let st = pure_next_encrypted_hs_msg(slot, msg_t, body);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
     guard msg_t == rfc::TLS_HS_CERTIFICATE && slot.peer_cert_body.try_set(body[..]) else {
@@ -509,10 +544,14 @@ fn pure_load_server_pem_files(
     defer core::secure_zeroize_slice(key_pem[..]);
     guard read_file(cert_path, cert_pem) && read_file(key_path, key_pem) else { return false; }
     var srv_cfg = tls::ServerHandshakeConfig { .. };
-    defer core::secure_zeroize_32(srv_cfg.priv_seed);
+    defer tls::release_server_credentials(srv_cfg);
     guard tls::load_server_credentials_pem(cert_pem[..], key_pem[..], srv_cfg) else { return false; }
     guard slot.cert_der.try_set(srv_cfg.cert_der[..]) else { return false; }
+    slot.extra_certs_der = copy(srv_cfg.extra_certs_der);
     slot.priv_seed = srv_cfg.priv_seed;
+    slot.key_kind = srv_cfg.key_kind;
+    slot.rsa_key_slot = srv_cfg.rsa_key_slot;
+    srv_cfg.rsa_key_slot = -1;
     return true;
 }
 

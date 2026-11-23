@@ -392,14 +392,15 @@ fn parse_supported_groups_extension<G>(
 //   data = [0x04, 0xC5, 0x11, 0xEB, 0x04, 0xC1, ... (1221 bytes)]
 //   returns: ok = true, out_shares = [0x11, 0xEB, 0x04, 0xC1, ...]
 fn parse_key_share_client_extension(
-    data:       const u8[:],
-    out_shares: u8[..4096]&,
+    data:        const u8[:],
+    out_shares:  u8[..4096]&,
+    allow_empty: bool = false,
 ) -> bool {
     var committed = false;
     defer if !committed { out_shares.clear(); };
     var c = core::cursor_from(data);
     let shares_c, ok = c.read_u16_sub_cursor();
-    guard ok && c.buf.len == 0 && validate_client_key_share_entries(shares_c.buf) else {
+    guard ok && c.buf.len == 0 && validate_client_key_share_entries(shares_c.buf, allow_empty) else {
         return false;
     }
     guard out_shares.try_set(shares_c.buf) else { return false; }

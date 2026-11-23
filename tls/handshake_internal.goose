@@ -348,7 +348,10 @@ fn encode_key_share_client_extension<B>(out: B&, client_shares_raw: const u8[:])
     out.append(client_shares_raw);
 }
 
-fn validate_client_key_share_entries(shares: const u8[:]) -> bool {
+fn validate_client_key_share_entries(shares: const u8[:], allow_empty: bool = false) -> bool {
+    if shares.len == 0 {
+        return allow_empty;
+    }
     guard shares.len >= 5 else { return false; }
     var sc = core::cursor_from(shares);
     var seen_groups: u16[..32] = [];

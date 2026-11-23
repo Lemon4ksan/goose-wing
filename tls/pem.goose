@@ -130,9 +130,103 @@ fn parse_private_key_pem(pem: const u8[:], out_key: u8[32]&) -> PrivateKeyKind, 
     return PrivateKeyKind.Unknown, false;
 }
 
-// Loads a PEM certificate and matching PEM private key into `TlsServerHandshakeConfig`.
-// Validates X.509 DER structure and ensures the private key algorithm matches the certificate SPKI.
-// On failure, clears `out_cfg.cert_der` and zeroizes `out_cfg.priv_seed`.
+fn bind_server_rsa_key(
+    n_be:     const u8[:],
+    e_be:     const u8[:],
+    d_be:     const u8[:],
+    spki_oid: const u8[:],
+    cert_pub: const u8[:],
+    out_cfg:  ServerHandshakeConfig&,
+) -> bool {
+    guard spki_oid == rfc::OID_RSA_ENCRYPTION[..] else { return false; }
+    let cert_n, cert_e, ok_pub = core::parse_rsa_public_key_der(cert_pub);
+    guard ok_pub && core::ct_eq_bytes(n_be, cert_n) && core::ct_eq_bytes(e_be, cert_e) else {
+        return false;
+    }
+    let slot = alloc_rsa_key_slot(n_be, e_be, d_be);
+    guard slot >= 0 else { return false; }
+    out_cfg.rsa_key_slot = slot;
+    out_cfg.key_kind = PrivateKeyKind.Rsa;
+    return true;
+}
+
+fn bind_server_seed_key(
+    key_kind: PrivateKeyKind,
+    spki_oid: const u8[:],
+    cert_pub: const u8[:],
+    out_cfg:  ServerHandshakeConfig&,
+) -> bool {
+    if key_kind == PrivateKeyKind.Ed25519 {
+        let derived_ed = core::ed25519_public_key(out_cfg.priv_seed);
+        guard spki_oid == rfc::OID_ED25519[..] && core::ct_eq_bytes(derived_ed[..], cert_pub) else {
+            return false;
+        }
+        out_cfg.key_kind = PrivateKeyKind.Ed25519;
+        return true;
+    }
+    if key_kind == PrivateKeyKind.EcdsaP256 {
+        let derived_p256 = core::ecdsa_p256_public_key(out_cfg.priv_seed);
+        guard spki_oid == rfc::OID_SECP256R1[..] && core::ct_eq_bytes(derived_p256[..], cert_pub) else {
+            return false;
+        }
+        out_cfg.key_kind = PrivateKeyKind.EcdsaP256;
+        return true;
+    }
+    return false;
+}
+
+fn bind_server_pem_key(
+    key_label: const u8[:],
+    key_der:   const u8[:],
+    spki_oid:  const u8[:],
+    cert_pub:  const u8[:],
+    out_cfg:   ServerHandshakeConfig&,
+) -> bool {
+    if key_label == "RSA PRIVATE KEY" {
+        let n_be, e_be, d_be, ok_r = tls_internal::parse_rsa_pkcs1_private_key_der(key_der);
+        guard ok_r else { return false; }
+        return bind_server_rsa_key(n_be, e_be, d_be, spki_oid, cert_pub, out_cfg);
+    }
+    if key_label == "EC PRIVATE KEY" {
+        guard tls_internal::parse_sec1_ec_private_key_der(key_der, out_cfg.priv_seed) else { return false; }
+        return bind_server_seed_key(PrivateKeyKind.EcdsaP256, spki_oid, cert_pub, out_cfg);
+    }
+    if key_label == "PRIVATE KEY" {
+        let key_kind, ok_ec = tls_internal::parse_pkcs8_private_key_der(key_der, out_cfg.priv_seed);
+        if ok_ec {
+            return bind_server_seed_key(key_kind, spki_oid, cert_pub, out_cfg);
+        }
+        let n_be, e_be, d_be, ok_r = tls_internal::parse_pkcs8_rsa_private_key_der(key_der);
+        guard ok_r else { return false; }
+        return bind_server_rsa_key(n_be, e_be, d_be, spki_oid, cert_pub, out_cfg);
+    }
+    return false;
+}
+
+fn pem_load_extra_certs(
+    cert_pem:  const u8[:],
+    start_idx: i64,
+    out_cfg:   ServerHandshakeConfig&,
+) -> bool {
+    var idx = start_idx;
+    var label: u8[..64]   = [];
+    var der:   u8[..4096] = [];
+    var parsed = ParsedCert { .. };
+    while idx < cert_pem.len {
+        let rel_begin = core::find(cert_pem[idx..], tls_internal::PEM_PRE_EB);
+        if rel_begin < 0 { break; }
+        guard pem_next_block(cert_pem, idx, label, der) else { return false; }
+        if label[..] == "CERTIFICATE" {
+            guard parse_x509_certificate(der[..], parsed) else { return false; }
+            guard out_cfg.extra_certs_der.try_push(copy(der)) else { return false; }
+        }
+    }
+    return true;
+}
+
+// Loads a leaf PEM certificate (plus up to 3 intermediate certs) and matching PEM private key
+// (Ed25519, ECDSA P-256, or PKCS#1/PKCS#8 RSA) into `ServerHandshakeConfig`.
+// On failure, clears certificate buffers, frees any RSA key slot, and zeroizes key material.
 //
 // Example:
 //   load_server_credentials_pem(cert_pem, key_pem, cfg) -> true
@@ -141,10 +235,10 @@ fn load_server_credentials_pem(
     key_pem:  const u8[:],
     out_cfg:  ServerHandshakeConfig&,
 ) -> bool {
+    release_server_credentials(out_cfg);
     var committed = false;
     defer if !committed {
-        out_cfg.cert_der.clear();
-        core::secure_zeroize_32(out_cfg.priv_seed);
+        release_server_credentials(out_cfg);
     };
 
     var idx:   i64        = 0;
@@ -153,33 +247,52 @@ fn load_server_credentials_pem(
     guard pem_next_block(cert_pem, idx, label, der) && label[..] == "CERTIFICATE" else {
         return false;
     }
-    var parsed_cert = ParsedCert { .. };
-    guard parse_x509_certificate(der[..], parsed_cert) else { return false; }
+    var parsed_leaf = ParsedCert { .. };
+    guard parse_x509_certificate(der[..], parsed_leaf) else { return false; }
     guard out_cfg.cert_der.try_set(der[..]) else { return false; }
+    guard pem_load_extra_certs(cert_pem, idx, out_cfg) else { return false; }
 
-    let key_kind, ok_key = parse_private_key_pem(key_pem, out_cfg.priv_seed);
-    guard ok_key else { return false; }
+    var key_idx:   i64        = 0;
+    var key_label: u8[..64]   = [];
+    var key_der:   u8[..4096] = [];
+    defer core::secure_zeroize_slice(key_der[..]);
+    guard pem_next_block(key_pem, key_idx, key_label, key_der) else { return false; }
 
-    let spki_oid = span_slice(der[..], parsed_cert.spki_alg_oid);
-    var cert_pub = span_slice(der[..], parsed_cert.spki_pubkey);
+    let spki_oid = span_slice(out_cfg.cert_der[..], parsed_leaf.spki_alg_oid);
+    var cert_pub = span_slice(out_cfg.cert_der[..], parsed_leaf.spki_pubkey);
     if cert_pub.len >= 2 && cert_pub[0] == 0 {
         cert_pub = cert_pub[1..];
     }
-    if key_kind == PrivateKeyKind.Ed25519 {
-        let derived_ed = core::ed25519_public_key(out_cfg.priv_seed);
-        guard spki_oid == rfc::OID_ED25519[..] && core::ct_eq_bytes(derived_ed[..], cert_pub) else {
-            return false;
-        }
-    } else if key_kind == PrivateKeyKind.EcdsaP256 {
-        let derived_p256 = core::ecdsa_p256_public_key(out_cfg.priv_seed);
-        guard spki_oid == rfc::OID_SECP256R1[..] && core::ct_eq_bytes(derived_p256[..], cert_pub) else {
-            return false;
-        }
-    } else {
+    guard bind_server_pem_key(key_label[..], key_der[..], spki_oid, cert_pub, out_cfg) else {
         return false;
     }
-
     committed = true;
+    return true;
+}
+
+// Returns true when the leaf certificate in `cert_pem` expires within `renew_before_sec`
+// seconds of `now_unix` or when `cert_pem` cannot be decoded (RFC 5280 Section 4.1.2.5: Validity).
+//
+// Example:
+//   cert_expires_within_sec(cert_pem, now_unix, 86400) -> false
+fn cert_expires_within_sec(
+    cert_pem:         const u8[:],
+    now_unix:         i64,
+    renew_before_sec: i64,
+) -> bool {
+    var idx:   i64        = 0;
+    var label: u8[..64]   = [];
+    var der:   u8[..4096] = [];
+    while idx < cert_pem.len {
+        let rel = core::find(cert_pem[idx..], tls_internal::PEM_PRE_EB);
+        if rel < 0 { break; }
+        guard pem_next_block(cert_pem, idx, label, der) else { return true; }
+        if label[..] == "CERTIFICATE" {
+            var parsed = ParsedCert { .. };
+            guard parse_x509_certificate(der[..], parsed) else { return true; }
+            return core::sub_sat_i64(parsed.validity_not_after, now_unix) <= renew_before_sec;
+        }
+    }
     return true;
 }
 

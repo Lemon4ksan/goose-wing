@@ -343,13 +343,14 @@ fn verify_crl_for_chain(
     return verify_crl_for_chain_with_store(crl_der, chain_parsed, chain_slices, now_unix, empty_store);
 }
 
-// Signs a TLS 1.3 CertificateVerify message using Ed25519 (`0x0807`) or ECDSA P-256 (`0x0403` DER)
-// according to the certificate's SubjectPublicKeyInfo algorithm (RFC 8446 Section 4.4.3).
-fn sign_certificate_verify(
-    cert_der:  const u8[:],
-    priv_seed: const u8[32]&,
-    cv_msg:    const u8[:],
-    out_sig:   u8[..128]&,
+// Signs a TLS 1.3 CertificateVerify message using Ed25519 (`0x0807`), ECDSA P-256 (`0x0403` DER),
+// or RSA-PSS-SHA256 (`0x0804`) according to the certificate SPKI OID (RFC 8446 Section 4.4.3).
+fn sign_certificate_verify<B>(
+    cert_der:     const u8[:],
+    priv_seed:    const u8[32]&,
+    cv_msg:       const u8[:],
+    out_sig:      B&,
+    rsa_key_slot: i32 = -1,
 ) -> u16, bool {
     out_sig.clear();
     let scheme = detect_cert_sig_scheme(cert_der);
@@ -357,6 +358,23 @@ fn sign_certificate_verify(
         let raw_sig = core::ecdsa_p256_sign(priv_seed, cv_msg);
         var der_sig: u8[..72] = [];
         guard core::ecdsa_p256_encode_der_sig(raw_sig, der_sig) && out_sig.try_set(der_sig[..]) else {
+            return 0, false;
+        }
+        return scheme, true;
+    }
+    if scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256 {
+        let slot_i = rsa_key_slot as i64;
+        guard slot_i >= 0 && slot_i < tls::g_tls_rsa_keys.len else { return 0, false; }
+        let rkey .= tls::g_tls_rsa_keys[slot_i];
+        guard rkey.in_use else { return 0, false; }
+        var salt: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(salt);
+        guard random_bytes_32_checked(salt) else { return 0, false; }
+        var rsa_sig: u8[..512] = [];
+        defer core::secure_zeroize_slice(rsa_sig[..]);
+        guard core::rsa_pss_sha256_sign_blinded(
+            rkey.n[..], rkey.d[..], rkey.e[..], salt[..], cv_msg, rsa_sig,
+        ) && out_sig.try_set(rsa_sig[..]) else {
             return 0, false;
         }
         return scheme, true;
@@ -434,11 +452,12 @@ fn select_cipher_suite(raw: const u8[:]) -> u16, bool {
     return select_cipher_suite_from_list(ch_cipher_suites_slice(raw));
 }
 
-// Builds a minimal TLS 1.3 ServerHello wire payload echoing session ID and offering X25519 share.
-fn build_server_hello_payload<B>(
+// Builds a TLS 1.3 ServerHello wire payload echoing session ID and selected group share (RFC 8446 §4.1.3).
+fn build_server_hello_payload_for_group<B>(
     server_random:   const u8[32]&,
     session_id:      const u8[:],
-    server_pub:      const u8[32]&,
+    selected_group:  u16,
+    server_share:    const u8[:],
     out:             B&,
     psk_resumed:     bool = false,
     cipher_suite:    u16  = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
@@ -457,12 +476,55 @@ fn build_server_hello_payload<B>(
     ext_buf.append_u16_be(2);
     ext_buf.append_u16_be(rfc::TLS_VERSION_1_3);
 
-    encode_key_share_server_extension(ext_buf, rfc::GROUP_X25519, server_pub[..]);
+    encode_key_share_server_extension(ext_buf, selected_group, server_share);
     if psk_resumed {
         ext_buf.append_u16_be(rfc::TLS_EXT_PRE_SHARED_KEY);
         ext_buf.append_u16_be(2);
         ext_buf.append_u16_be(selected_psk_id);
     }
+    out.append_u16_be(ext_buf.len as u16);
+    out.append(ext_buf[..]);
+}
+
+// Builds a minimal TLS 1.3 ServerHello wire payload echoing session ID and offering X25519 share.
+fn build_server_hello_payload<B>(
+    server_random:   const u8[32]&,
+    session_id:      const u8[:],
+    server_pub:      const u8[32]&,
+    out:             B&,
+    psk_resumed:     bool = false,
+    cipher_suite:    u16  = rfc::TLS_CIPHER_AES_128_GCM_SHA256,
+    selected_psk_id: u16  = 0,
+) {
+    build_server_hello_payload_for_group(
+        server_random, session_id, rfc::GROUP_X25519, server_pub[..],
+        out, psk_resumed, cipher_suite, selected_psk_id,
+    );
+}
+
+// RFC 8446 Section 4.1.4: Hello Retry Request - Builds HRR payload with HRR_RANDOM and selected key_share group.
+fn build_hrr_payload<B>(
+    session_id:     const u8[:],
+    cipher_suite:   u16,
+    selected_group: u16,
+    out:            B&,
+) {
+    out.clear();
+    out.append_u16_be(rfc::TLS_LEGACY_VERSION_1_2);
+    out.append(rfc::HRR_RANDOM[..]);
+    out.push(session_id.len as u8);
+    out.append(session_id);
+    out.append_u16_be(cipher_suite);
+    out.push(0);
+
+    var ext_buf: u8[..64] = [];
+    ext_buf.append_u16_be(rfc::TLS_EXT_SUPPORTED_VERSIONS);
+    ext_buf.append_u16_be(2);
+    ext_buf.append_u16_be(rfc::TLS_VERSION_1_3);
+    ext_buf.append_u16_be(rfc::TLS_EXT_KEY_SHARE);
+    ext_buf.append_u16_be(2);
+    ext_buf.append_u16_be(selected_group);
+
     out.append_u16_be(ext_buf.len as u16);
     out.append(ext_buf[..]);
 }
@@ -485,29 +547,42 @@ fn select_server_cert_comp_algo(ch_msg: const u8[:], server_algo: u16) -> u16 {
 
     var entries: tls::ExtensionEntry[..32] = [];
     guard tls::parse_extensions_block(bc.buf, entries) else { return 0; }
-    let comp_ext, has_comp = tls::find_extension(entries, rfc::TLS_EXT_COMPRESS_CERTIFICATE);
-    guard has_comp else { return 0; }
-    var algos: u16[..127] = [];
-    guard parse_compress_certificate_ext(comp_ext, algos) else { return 0; }
-    if algos.contains(server_algo) {
-        return server_algo;
-    }
-    return 0;
+    return select_server_cert_comp_algo_from_entries(entries, server_algo);
 }
 
-fn encode_server_cert_or_compressed_msg(
-    config:                    const tls::ServerHandshakeConfig&,
-    negotiated_cert_comp_algo: u16,
-    out_msg:                   u8[..4096]&,
+// RFC 8446 Section 4.4.2: Certificate - Encodes framed Certificate message containing leaf and intermediate chain.
+fn encode_server_cert_chain_msg<B>(
+    cert_der:        const u8[:],
+    extra_certs_der: const u8[..4096][:],
+    out_msg:         B&,
 ) -> bool {
     out_msg.clear();
-    var cert_payload: u8[..4096] = [];
-    guard tls::encode_client_certificate(cert_payload, "", config.cert_der[..]) else { return false; }
+    guard cert_der.len > 0 else { return false; }
+    var cert_payload: u8[..20480] = [];
+    guard encode_client_certificate_chain(cert_payload, "", cert_der, extra_certs_der) else {
+        return false;
+    }
+    return frame_handshake_msg_4k(rfc::TLS_HS_CERTIFICATE, cert_payload[..], out_msg);
+}
+
+fn encode_server_cert_or_compressed_msg<B>(
+    config:                    const tls::ServerHandshakeConfig&,
+    negotiated_cert_comp_algo: u16,
+    out_msg:                   B&,
+) -> bool {
+    out_msg.clear();
+    guard config.cert_der.len > 0 else { return false; }
 
     let can_compress = negotiated_cert_comp_algo != 0 &&
         negotiated_cert_comp_algo == config.compressed_cert_algo &&
         config.compressed_cert_data.len > 0;
     if can_compress {
+        var cert_payload: u8[..20480] = [];
+        guard encode_client_certificate_chain(
+            cert_payload, "", config.cert_der[..], config.extra_certs_der[..],
+        ) else {
+            return false;
+        }
         var comp_payload: u8[..4096] = [];
         guard build_compressed_cert_payload(
             config.compressed_cert_algo,
@@ -520,7 +595,7 @@ fn encode_server_cert_or_compressed_msg(
         return frame_handshake_msg_4k(rfc::TLS_HS_COMPRESSED_CERTIFICATE, comp_payload[..], out_msg);
     }
 
-    return frame_handshake_msg_4k(rfc::TLS_HS_CERTIFICATE, cert_payload[..], out_msg);
+    return encode_server_cert_chain_msg(config.cert_der[..], config.extra_certs_der[..], out_msg);
 }
 
 fn generate_client_handshake_keys(

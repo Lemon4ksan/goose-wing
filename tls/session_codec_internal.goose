@@ -159,7 +159,7 @@ fn validate_ee_solicited_extensions(
     return true;
 }
 
-// Detects the TLS 1.3 SignatureScheme (`SIG_SCHEME_ECDSA_SECP256R1_SHA256` or `SIG_SCHEME_ED25519`)
+// Detects the TLS 1.3 SignatureScheme (Ed25519, ECDSA P-256, or RSA-PSS-SHA256)
 // from the leaf certificate's SubjectPublicKeyInfo OID (RFC 8446 Section 4.4.3).
 fn detect_cert_sig_scheme(cert_der: const u8[:]) -> u16 {
     var cert = tls::ParsedCert { .. };
@@ -167,6 +167,9 @@ fn detect_cert_sig_scheme(cert_der: const u8[:]) -> u16 {
         let spki_oid = tls::span_slice(cert_der, cert.spki_alg_oid);
         if spki_oid == rfc::OID_SECP256R1[..] {
             return rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256;
+        }
+        if spki_oid == rfc::OID_RSA_ENCRYPTION[..] {
+            return rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
         }
     }
     return rfc::SIG_SCHEME_ED25519;
@@ -188,11 +191,14 @@ fn validate_live_client_sh(sh: const tls::ParsedServerHello&, client_random: con
     return sh.is_hrr || sh.server_share.len > 0;
 }
 
-fn frame_handshake_msg_4k(msg_type: u8, payload: const u8[:], out_msg: u8[..4096]&) -> bool {
+fn frame_handshake_msg_4k<B>(msg_type: u8, payload: const u8[:], out_msg: B&) -> bool {
     out_msg.clear();
+    guard payload.len >= 0 && payload.len <= (rfc::MAX_HANDSHAKE_MSG_LEN as i64) else {
+        return false;
+    }
     let payload_u32 = (payload.len & 0xFFFFFF) as u32;
     let total_len = core::add_sat_i64(payload.len, 4);
-    guard payload.len >= 0 && total_len <= out_msg.cap else { return false; }
+    guard total_len <= out_msg.cap else { return false; }
     var hdr: u8[4] = [0; 4];
     guard encode_handshake_header(msg_type, payload_u32, hdr) else { return false; }
     out_msg.append(hdr[..]);
@@ -345,26 +351,62 @@ fn eval_client_hello_psk_entry(
     );
 }
 
-// Extracts the 32-byte X25519 key share from a parsed KeyShareEntry list.
+inline fn select_hrr_group_from_ext(grp_ext: const u8[:]) -> u16, bool {
+    var gc = core::cursor_from(grp_ext);
+    let grp_bytes, ok_gb = gc.read_u16_prefixed();
+    guard ok_gb && gc.buf.len == 0 else { return 0, false; }
+    if group_bytes_contains(grp_bytes, rfc::GROUP_X25519) {
+        return rfc::GROUP_X25519, true;
+    }
+    if group_bytes_contains(grp_bytes, rfc::GROUP_SECP256R1) {
+        return rfc::GROUP_SECP256R1, true;
+    }
+    return 0, false;
+}
+
+// Extracts client key_share (preferring X25519, falling back to secp256r1) or selects
+// an HRR group from `supported_groups` when `allow_hrr` is true (RFC 8446 Section 4.1.4).
 //
 // Example:
-//   shares = [0x00, 0x1D, 0x00, 0x20, ...32 bytes...]
-//   returns: true, out_client_pub = [32 bytes]
-fn extract_x25519_client_share(shares: const u8[:], out_client_pub: u8[32]&) -> bool {
-    guard validate_client_key_share_entries(shares) else { return false; }
+//   grp_ext = [0x00, 0x02, 0x00, 0x17], shares = [0x00, 0x17, 0x00, 0x41, 0x04, ...], allow_hrr = false
+//   returns: selected_group = 0x0017, needs_hrr = false, ok = true
+fn extract_server_group_and_share(
+    grp_ext:   const u8[:],
+    shares:    const u8[:],
+    allow_hrr: bool,
+    out_share: u8[..65]&,
+) -> u16, bool, bool {
+    out_share.clear();
+    var x_kex = shares[..0];
+    var p_kex = shares[..0];
+    var has_x = false;
+    var has_p256 = false;
     var sc = core::cursor_from(shares);
-    var found = false;
     while sc.buf.len > 0 {
-        let group, ok_g = sc.read_u16();
-        let kex_bytes, ok_k = sc.read_u16_prefixed();
-        guard ok_g && ok_k else { return false; }
-        if group == rfc::GROUP_X25519 {
-            guard kex_bytes.len == 32 else { return false; }
-            for i in 32 { out_client_pub[i] = kex_bytes[i]; }
-            found = true;
+        let grp, ok_g = sc.read_u16();
+        let kex, ok_k = sc.read_u16_prefixed();
+        guard ok_g && ok_k else { return 0, false, false; }
+        if grp == rfc::GROUP_X25519 {
+            guard kex.len == 32 else { return 0, false, false; }
+            x_kex = kex;
+            has_x = true;
+        } else if grp == rfc::GROUP_SECP256R1 {
+            let _, ok_pt = core::decode_p256_public_key(kex);
+            guard ok_pt else { return 0, false, false; }
+            p_kex = kex;
+            has_p256 = true;
         }
     }
-    return found;
+    if has_x {
+        return rfc::GROUP_X25519, false, out_share.try_set(x_kex);
+    }
+    if has_p256 {
+        return rfc::GROUP_SECP256R1, false, out_share.try_set(p_kex);
+    }
+    guard allow_hrr else { return 0, false, false; }
+    let hrr_grp, ok_hrr = select_hrr_group_from_ext(grp_ext);
+    guard ok_hrr else { return 0, false, false; }
+    return hrr_grp, true, true;
 }
 
 fn ch_cipher_suites_slice(raw: const u8[:]) -> const u8[:] {
@@ -419,7 +461,9 @@ fn validate_ch_sig_algorithms(sig_ext: const u8[:], required_scheme: u16) -> boo
         guard ok_s else { return false; }
         if required_scheme != 0 {
             if scheme == required_scheme { has_supported = true; }
-        } else if scheme == rfc::SIG_SCHEME_ED25519 || scheme == rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256 {
+        } else if scheme == rfc::SIG_SCHEME_ED25519 ||
+            scheme == rfc::SIG_SCHEME_ECDSA_SECP256R1_SHA256 ||
+            scheme == rfc::SIG_SCHEME_RSA_PSS_RSAE_SHA256 {
             has_supported = true;
         }
     }
@@ -440,7 +484,9 @@ fn validate_ch_groups_and_shares(grp_ext: const u8[:], shares: const u8[:]) -> b
     var c = core::cursor_from(grp_ext);
     let grp_bytes, ok = c.read_u16_prefixed();
     guard ok && c.buf.len == 0 && grp_bytes.len >= 2 && (grp_bytes.len & 1) == 0 else { return false; }
-    guard group_bytes_contains(grp_bytes, rfc::GROUP_X25519) else { return false; }
+    let has_supported = group_bytes_contains(grp_bytes, rfc::GROUP_X25519) ||
+        group_bytes_contains(grp_bytes, rfc::GROUP_SECP256R1);
+    guard has_supported else { return false; }
 
     var sc = core::cursor_from(shares);
     var gc = core::cursor_from(grp_bytes);
@@ -510,16 +556,21 @@ fn decode_ch_server_preamble(
     return sel_cs, true;
 }
 
-// Validates mandatory TLS 1.3 ClientHello extensions and extracts the client X25519 share and sig_algs slice.
+// Validates mandatory TLS 1.3 ClientHello extensions and extracts key_share or HRR target group.
 //
 // Example:
 //   entries = [supported_versions, signature_algorithms, supported_groups, key_share]
-//   returns: sig_ext, ok = true, out_client_pub = [32 bytes]
+//   returns: sig_ext, ok = true, out_group = 0x001D, out_needs_hrr = false
 fn extract_ch_mandatory_exts(
-    entries:        const tls::ExtensionEntry[..32]&,
-    out_client_pub: u8[32]&,
+    entries:       const tls::ExtensionEntry[..32]&,
+    allow_hrr:     bool,
+    out_group:     u16&,
+    out_needs_hrr: bool&,
+    out_share:     u8[..65]&,
 ) -> const u8[:], bool {
-    core::secure_zeroize_32(out_client_pub);
+    out_group = 0;
+    out_needs_hrr = false;
+    out_share.clear();
     let sv_ext, has_sv = tls::find_extension(entries, rfc::TLS_EXT_SUPPORTED_VERSIONS);
     guard has_sv else { return "", false; }
     let supports_13, ok_sv = parse_client_supported_versions(sv_ext);
@@ -532,13 +583,32 @@ fn extract_ch_mandatory_exts(
     let ks_data, has_ks = tls::find_extension(entries, rfc::TLS_EXT_KEY_SHARE);
     guard has_grp && has_ks else { return "", false; }
     var shares: u8[..4096] = [];
-    guard parse_key_share_client_extension(ks_data, shares) &&
-        validate_ch_groups_and_shares(grp_ext, shares[..]) &&
-        extract_x25519_client_share(shares[..], out_client_pub) else {
-        core::secure_zeroize_32(out_client_pub);
+    guard parse_key_share_client_extension(ks_data, shares, allow_hrr) &&
+        validate_ch_groups_and_shares(grp_ext, shares[..]) else {
         return "", false;
     }
+    let sel_grp, needs_hrr, ok_ks = extract_server_group_and_share(
+        grp_ext, shares[..], allow_hrr, out_share,
+    );
+    guard ok_ks else { return "", false; }
+    out_group = sel_grp;
+    out_needs_hrr = needs_hrr;
     return sig_ext, true;
+}
+
+fn select_server_cert_comp_algo_from_entries(
+    entries:     const tls::ExtensionEntry[..32]&,
+    server_algo: u16,
+) -> u16 {
+    guard server_algo != 0 && rfc::is_valid_compression_algorithm(server_algo) else { return 0; }
+    let comp_ext, has_comp = tls::find_extension(entries, rfc::TLS_EXT_COMPRESS_CERTIFICATE);
+    guard has_comp else { return 0; }
+    var algos: u16[..127] = [];
+    guard parse_compress_certificate_ext(comp_ext, algos) else { return 0; }
+    if algos.contains(server_algo) {
+        return server_algo;
+    }
+    return 0;
 }
 
 fn build_compressed_cert_payload(

@@ -56,7 +56,11 @@ struct PureTlsSlot {
     require_ocsp_stapling:  bool                  = false,
     has_psk_ticket:         bool                  = false,
     psk_resumed:            bool                  = false,
+    hrr_sent:               bool                  = false,
     psk_hash_len:           u8                    = 32,
+    hrr_group:              u16                   = 0,
+    hrr_cipher:             u16                   = 0,
+    hrr_sid:                u8[..32]              = [],
     peer_closed:            bool                  = false,
     stage:                  PureHsStage           = PureHsStage.ClientInit,
     cipher_slot:            u16                   = 0xFFFF,
@@ -66,6 +70,9 @@ struct PureTlsSlot {
     alpn_csv:               u8[..64]              = [],
     selected_alpn:          u8[..64]              = [],
     cert_der:               u8[..4096]            = [],
+    extra_certs_der:        u8[..4096][..3]       = [],
+    key_kind:               tls::PrivateKeyKind   = tls::PrivateKeyKind.Unknown,
+    rsa_key_slot:           i32                   = -1,
     priv_seed:              u8[32]                = [0; 32],
     trust_store:            tls::TrustAnchorStore = tls::TrustAnchorStore { .. },
     crl_der:                u8[..4096]            = [],
@@ -84,9 +91,9 @@ struct PureTlsSlot {
     transcript:             tls::Transcript       = tls::Transcript { .. },
     ks:                     KeySchedule           = KeySchedule { .. },
     srv_fin_hash:           u8[..48]              = [],
-    peer_cert_body:         u8[..8192]            = [],
+    peer_cert_body:         u8[..20480]           = [],
     peer_leaf_der:          u8[..8192]            = [],
-    hs_plain:               u8[..16384]           = [],
+    hs_plain:               u8[..20480]           = [],
     hs_plain_pos:           i64                   = 0,
     wire_in:                u8[..32768]           = [],
     wire_out:               u8[..32768]           = [],
@@ -124,6 +131,9 @@ fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
     }
     if slot.cipher_slot != 0xFFFF {
         tls::free_cipher_slot(slot.cipher_slot);
+    }
+    if slot.rsa_key_slot >= 0 {
+        tls::release_rsa_key_slot(slot.rsa_key_slot);
     }
     wipe_pure_hs_secrets(slot);
     core::secure_zeroize_32(slot.priv_seed);
@@ -217,21 +227,29 @@ fn pure_append_plaintext_hs(
 }
 
 fn pure_seal_hs_to_wire(slot: PureTlsSlot&, hs_msg: const u8[:]) -> bool {
+    guard hs_msg.len > 0 else { return false; }
     let klen = slot.key_len as i64;
-    let needed = core::add_sat_i64(hs_msg.len, 32);
-    guard needed <= 8192 else { return false; }
-    var ct_buf: u8[8192] = [0; 8192];
-    let s_len, _, ok_s = tls::record_seal_into(
-        slot.cipher_suite,
-        slot.hs_tx_key[..klen],
-        slot.hs_tx_iv,
-        slot.hs_tx_seq,
-        rfc::TLS_CONTENT_HANDSHAKE,
-        hs_msg,
-        ct_buf[..needed],
-    );
-    guard ok_s && s_len > 0 && slot.wire_out.try_append(ct_buf[..s_len]) else { return false; }
-    let _ = tls::increment_record_seq_num(slot.hs_tx_seq);
+    var ct_buf: u8[16640] = [0; 16640];
+    var off:    i64       = 0;
+    while off < hs_msg.len {
+        let rem = core::sub_sat_i64(hs_msg.len, off);
+        let chunk_len = min(rfc::TLS_MAX_RECORD_PLAINTEXT_LEN, rem);
+        let end_off = core::add_sat_i64(off, chunk_len);
+        let needed = core::add_sat_i64(chunk_len, 32);
+        guard needed <= ct_buf.len else { return false; }
+        let s_len, _, ok_s = tls::record_seal_into(
+            slot.cipher_suite,
+            slot.hs_tx_key[..klen],
+            slot.hs_tx_iv,
+            slot.hs_tx_seq,
+            rfc::TLS_CONTENT_HANDSHAKE,
+            hs_msg[off..end_off],
+            ct_buf[..needed],
+        );
+        guard ok_s && s_len > 0 && slot.wire_out.try_append(ct_buf[..s_len]) else { return false; }
+        guard tls::increment_record_seq_num(slot.hs_tx_seq) else { return false; }
+        off = end_off;
+    }
     return true;
 }
 
@@ -279,10 +297,10 @@ fn pure_pop_plaintext_hs_msg(slot: PureTlsSlot&, out_msg: u8[..16384]&) -> tls::
     return tls::TlsBackendStatus.WantRead;
 }
 
-fn pure_try_consume_hs_plain_msg(
+fn pure_try_consume_hs_plain_msg<B>(
     slot:     PureTlsSlot&,
     out_type: u8&,
-    out_body: u8[..16384]&,
+    out_body: B&,
 ) -> bool {
     let rem = core::sub_sat_i64(slot.hs_plain.len, slot.hs_plain_pos);
     guard rem >= 4 else { return false; }
@@ -346,10 +364,10 @@ fn pure_decrypt_one_hs_record(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     return tls::TlsBackendStatus.Ok;
 }
 
-fn pure_next_encrypted_hs_msg(
+fn pure_next_encrypted_hs_msg<B>(
     slot:     PureTlsSlot&,
     out_type: u8&,
-    out_body: u8[..16384]&,
+    out_body: B&,
 ) -> tls::TlsBackendStatus {
     while true {
         if pure_try_consume_hs_plain_msg(slot, out_type, out_body) {

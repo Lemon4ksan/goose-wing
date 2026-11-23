@@ -82,6 +82,116 @@ fn verify_client_cert_and_signature(
     return verify_cv_sig_with_min_rsa(sig_scheme, sig_bytes, leaf_pub, cv_msg_buf[..cv_len]);
 }
 
+enum ServerHrrMode {
+    Allow,
+    Reject,
+}
+
+struct ServerClientHelloChoice {
+    session_id:      u8[..32]  = [],
+    client_random:   u8[32]    = [0; 32],
+    client_sni:      u8[..255] = [],
+    negotiated_alpn: u8[..255] = [],
+    cipher_suite:    u16       = 0,
+    selected_group:  u16       = 0,
+    needs_hrr:       bool      = false,
+    client_share:    u8[..65]  = [],
+    psk_resumed:     bool      = false,
+    psk_secret:      u8[..48]  = [],
+    selected_psk_id: u16       = 0,
+    cert_comp_algo:  u16       = 0,
+}
+
+fn zeroize_server_ch_choice(c: ServerClientHelloChoice&) {
+    core::secure_zeroize_slice(c.psk_secret[..]);
+    core::secure_zeroize_32(c.client_random);
+    c = ServerClientHelloChoice { .. };
+}
+
+fn tls_seal_and_send_hs_fragmented(
+    fd:           i64,
+    cipher_suite: u16,
+    key:          const u8[:],
+    iv:           const u8[12]&,
+    seq:          u64&,
+    hs_msg:       const u8[:],
+) -> bool {
+    guard hs_msg.len > 0 else { return false; }
+    var ct_buf: u8[16640] = [0; 16640];
+    var off:    i64       = 0;
+    while off < hs_msg.len {
+        let rem = core::sub_sat_i64(hs_msg.len, off);
+        let chunk_len = min(rfc::TLS_MAX_RECORD_PLAINTEXT_LEN, rem);
+        let end_off = core::add_sat_i64(off, chunk_len);
+        let needed = core::add_sat_i64(chunk_len, 32);
+        guard needed <= ct_buf.len else { return false; }
+        let s_len, _, ok_seal = tls::record_seal_into(
+            cipher_suite, key, iv, seq,
+            rfc::TLS_CONTENT_HANDSHAKE, hs_msg[off..end_off], ct_buf[..needed],
+        );
+        guard ok_seal && s_len > 0 && tls_write_all(fd, ct_buf[..s_len]) else { return false; }
+        guard tls::increment_record_seq_num(seq) else { return false; }
+        off = end_off;
+    }
+    return true;
+}
+
+// Parses a TLS 1.3 ClientHello for server negotiation supporting X25519, secp256r1, and HRR
+// (RFC 8446 Section 4.1.2 & RFC 8446 Section 4.1.4).
+//
+// Example:
+//   payload = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, ...0x13, 0x01...]
+//   returns: true, out.cipher_suite = 0x1301
+fn parse_server_client_hello(
+    payload:             const u8[:],
+    server_alpn_csv:     const u8[:],
+    required_sig_scheme: u16,
+    config_comp_algo:    u16,
+    hrr_mode:            ServerHrrMode,
+    out:                 ServerClientHelloChoice&,
+    require_client_cert: bool = false,
+) -> bool {
+    zeroize_server_ch_choice(out);
+    var committed = false;
+    defer if !committed { zeroize_server_ch_choice(out); };
+
+    var entries: tls::ExtensionEntry[..32] = [];
+    let sel_cs, ok_pre = decode_ch_server_preamble(payload, out.session_id, entries);
+    guard ok_pre else { return false; }
+    let allow_hrr = hrr_mode == ServerHrrMode.Allow;
+    let sig_ext, ok_mand = extract_ch_mandatory_exts(
+        entries, allow_hrr, out.selected_group, out.needs_hrr, out.client_share,
+    );
+    guard ok_mand else { return false; }
+
+    let sni_ext, has_sni = tls::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
+    if has_sni {
+        guard tls::parse_sni_extension(sni_ext, out.client_sni) else { return false; }
+    }
+    let alpn_ext, has_alpn = tls::find_extension(entries, rfc::TLS_EXT_ALPN);
+    if has_alpn {
+        guard select_server_alpn_from_ext(alpn_ext, server_alpn_csv, out.negotiated_alpn) else {
+            return false;
+        }
+    }
+    let psk_ext, has_psk = tls::find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
+    if has_psk {
+        let psk_matched, psk_ok = eval_client_hello_psk_entry(
+            entries, payload, psk_ext, sel_cs, out.psk_secret, out.selected_psk_id, require_client_cert,
+        );
+        guard psk_ok else { return false; }
+        out.psk_resumed = psk_matched;
+    }
+    if !out.psk_resumed && required_sig_scheme != 0 {
+        guard validate_ch_sig_algorithms(sig_ext, required_sig_scheme) else { return false; }
+    }
+    out.cert_comp_algo = select_server_cert_comp_algo_from_entries(entries, config_comp_algo);
+    let _ = extract_ch_client_random(payload, out.client_random);
+    out.cipher_suite = sel_cs;
+    committed = true;
+    return true;
+}
+
 // Parses a TLS 1.3 ClientHello message for server-side negotiation (RFC 8446 Section 4.1.2).
 //
 // Example:
@@ -123,32 +233,24 @@ fn parse_client_hello_for_server_full<A>(
         out_selected_psk_id = 0;
     };
 
-    var entries: tls::ExtensionEntry[..32] = [];
-    let sel_cs, ok_pre = decode_ch_server_preamble(payload, out_session_id, entries);
-    guard ok_pre else { return false; }
-    let sig_ext, ok_mand = extract_ch_mandatory_exts(entries, out_client_pub);
-    guard ok_mand else { return false; }
-
-    let sni_ext, has_sni = tls::find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
-    if has_sni {
-        guard tls::parse_sni_extension(sni_ext, out_sni) else { return false; }
+    var ch = ServerClientHelloChoice { .. };
+    defer zeroize_server_ch_choice(ch);
+    guard parse_server_client_hello(
+        payload, server_alpn_csv, required_sig_scheme, 0, ServerHrrMode.Reject, ch, require_client_cert,
+    ) else { return false; }
+    guard !ch.needs_hrr && ch.selected_group == rfc::GROUP_X25519 && ch.client_share.len == 32 else {
+        return false;
     }
-    let alpn_ext, has_alpn = tls::find_extension(entries, rfc::TLS_EXT_ALPN);
-    if has_alpn {
-        guard select_server_alpn_from_ext(alpn_ext, server_alpn_csv, out_alpn) else { return false; }
+    guard out_session_id.try_set(ch.session_id[..]) &&
+        out_alpn.try_set(ch.negotiated_alpn[..]) &&
+        out_sni.try_set(ch.client_sni[..]) &&
+        out_psk_secret.try_set(ch.psk_secret[..]) else {
+        return false;
     }
-    let psk_ext, has_psk = tls::find_extension(entries, rfc::TLS_EXT_PRE_SHARED_KEY);
-    if has_psk {
-        let psk_matched, psk_ok = eval_client_hello_psk_entry(
-            entries, payload, psk_ext, sel_cs, out_psk_secret, out_selected_psk_id, require_client_cert,
-        );
-        guard psk_ok else { return false; }
-        out_psk_resumed = psk_matched;
-    }
-    if !out_psk_resumed && required_sig_scheme != 0 {
-        guard validate_ch_sig_algorithms(sig_ext, required_sig_scheme) else { return false; }
-    }
-    out_cipher_suite = sel_cs;
+    core::ct_copy_bytes(out_client_pub[..], ch.client_share[..]);
+    out_cipher_suite = ch.cipher_suite;
+    out_psk_resumed = ch.psk_resumed;
+    out_selected_psk_id = ch.selected_psk_id;
     committed = true;
     return true;
 }
@@ -162,6 +264,7 @@ fn tls_server_send_cv(
     priv_seed:     const u8[32]&,
     transcript:    tls::Transcript&,
     cert_der:      const u8[:] = "",
+    rsa_key_slot:  i32         = -1,
 ) -> bool {
     let hash_id: u8 = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 {
         tls_internal::HASH_SHA384
@@ -174,23 +277,23 @@ fn tls_server_send_cv(
     while cv_msg_buf.len < 160 { cv_msg_buf.push(0); }
     let cv_len, ok_cv_msg = tls::build_certificate_verify_message(true, h_to_cert[..], cv_msg_buf[..]);
     guard ok_cv_msg else { return false; }
-    var sig_buf: u8[..128] = [];
+    var sig_buf: u8[..512] = [];
     let sig_scheme, ok_sig = sign_certificate_verify(
-        cert_der, priv_seed, cv_msg_buf[..cv_len], sig_buf,
+        cert_der, priv_seed, cv_msg_buf[..cv_len], sig_buf, rsa_key_slot,
     );
     guard ok_sig else { return false; }
 
-    var cv_payload: u8[..512] = [];
+    var cv_payload: u8[..1024] = [];
     guard tls::encode_client_certificate_verify(cv_payload, sig_scheme, sig_buf[..]) else { return false; }
-    var cv_msg: u8[..512] = [];
-    cv_msg.push(rfc::TLS_HS_CERTIFICATE_VERIFY);
-    cv_msg.append_u24_be(cv_payload.len as u32);
-    cv_msg.append(cv_payload[..]);
-
-    guard tls_seal_and_send_hs(fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, cv_msg[..]) else {
+    var cv_msg: u8[..1024] = [];
+    guard frame_handshake_msg_4k(rfc::TLS_HS_CERTIFICATE_VERIFY, cv_payload[..], cv_msg) else {
         return false;
     }
-    server_seq = core::add_sat_u64(server_seq, 1);
+    guard tls_seal_and_send_hs_fragmented(
+        fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, cv_msg[..],
+    ) else {
+        return false;
+    }
     transcript_update(transcript, cv_msg[..]);
     return true;
 }
@@ -213,10 +316,11 @@ fn tls_server_send_ee(
     ee_msg.append_u24_be(core::add_sat_i64(2, ee_ext.len) as u32);
     ee_msg.append_u16_be(ee_ext.len as u16);
     ee_msg.append(ee_ext[..]);
-    guard tls_seal_and_send_hs(fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, ee_msg[..]) else {
+    guard tls_seal_and_send_hs_fragmented(
+        fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, ee_msg[..],
+    ) else {
         return false;
     }
-    server_seq = core::add_sat_u64(server_seq, 1);
     transcript_update(transcript, ee_msg[..]);
     return true;
 }
@@ -239,13 +343,14 @@ fn tls_server_send_cert_req(
     var cr_payload: u8[..128] = [];
     guard tls::encode_certificate_request(cr_payload, "", sig_algs[..]) else { return false; }
     var cr_msg: u8[..140] = [];
-    guard cr_msg.try_push(rfc::TLS_HS_CERTIFICATE_REQUEST) else { return false; }
-    cr_msg.append_u24_be(cr_payload.len as u32);
-    guard cr_msg.try_append(cr_payload[..]) else { return false; }
-    guard tls_seal_and_send_hs(fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, cr_msg[..]) else {
+    guard frame_handshake_msg_4k(rfc::TLS_HS_CERTIFICATE_REQUEST, cr_payload[..], cr_msg) else {
         return false;
     }
-    server_seq = core::add_sat_u64(server_seq, 1);
+    guard tls_seal_and_send_hs_fragmented(
+        fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, cr_msg[..],
+    ) else {
+        return false;
+    }
     transcript_update(transcript, cr_msg[..]);
     return true;
 }
@@ -314,20 +419,20 @@ fn tls_server_send_flight(
     }
 
     if !psk_resumed {
-        var cert_msg: u8[..4096] = [];
+        var cert_msg: u8[..20480] = [];
         guard encode_server_cert_or_compressed_msg(config, negotiated_cert_comp_algo, cert_msg) else {
             return false;
         }
-
-        guard tls_seal_and_send_hs(fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, cert_msg[..]) else {
+        guard tls_seal_and_send_hs_fragmented(
+            fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, cert_msg[..],
+        ) else {
             return false;
         }
-        server_seq = core::add_sat_u64(server_seq, 1);
         transcript_update(transcript, cert_msg[..]);
 
         guard tls_server_send_cv(
             fd, cipher_suite, server_hs_key, server_hs_iv,
-            server_seq, config.priv_seed, transcript, config.cert_der[..],
+            server_seq, config.priv_seed, transcript, config.cert_der[..], config.rsa_key_slot,
         ) else {
             return false;
         }
@@ -350,10 +455,9 @@ fn tls_server_send_flight(
     srv_fin_msg[1] = 0; srv_fin_msg[2] = 0; srv_fin_msg[3] = ks.hash_len;
     core::ct_copy_bytes(srv_fin_msg[4..fin_len], srv_fin_data[..hlen]);
 
-    let ok_send_fin = tls_seal_and_send_hs(
+    guard tls_seal_and_send_hs_fragmented(
         fd, cipher_suite, server_hs_key, server_hs_iv, server_seq, srv_fin_msg[..fin_len],
-    );
-    guard ok_send_fin else { return false; }
+    ) else { return false; }
     transcript_update(transcript, srv_fin_msg[..fin_len]);
     return true;
 }
@@ -439,30 +543,72 @@ fn parse_client_hello_for_server(
     );
 }
 
-// Generates ephemeral server randomness, X25519 keypair, and ECDHE shared secret.
-// Fails closed and wipes secret material if OS CSPRNG or X25519 key exchange fails.
-fn generate_server_handshake_keys(
-    client_pub:       const u8[32]&,
+fn derive_server_p256_ecdhe(
+    client_share:     const u8[:],
+    out_server_share: u8[..65]&,
+    out_ecdhe_secret: u8[32]&,
+) -> bool {
+    var server_priv: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(server_priv);
+    var scalar_ok = false;
+    for _ in 16 {
+        guard random_bytes_32_checked(server_priv) else { return false; }
+        if is_valid_p256_scalar(server_priv[..]) {
+            scalar_ok = true;
+            break;
+        }
+    }
+    guard scalar_ok else { return false; }
+    let srv_pub = core::ecdsa_p256_public_key(server_priv);
+    guard srv_pub[0] == 0x04 else { return false; }
+    var ecdhe, ok_ss = core::p256_ecdh_shared_secret(server_priv, client_share);
+    defer core::secure_zeroize_32(ecdhe);
+    guard ok_ss && out_server_share.try_set(srv_pub[..]) else { return false; }
+    out_ecdhe_secret = ecdhe;
+    return true;
+}
+
+// Generates ephemeral server randomness, keypair, and ECDHE secret for X25519 or secp256r1.
+// Fails closed and wipes secret material if CSPRNG or key exchange fails.
+fn generate_server_handshake_keys_for_group(
+    selected_group:   u16,
+    client_share:     const u8[:],
     out_random:       u8[32]&,
-    out_server_pub:   u8[32]&,
+    out_server_share: u8[..65]&,
     out_ecdhe_secret: u8[32]&,
 ) -> bool {
     var committed = false;
     defer if !committed {
         core::secure_zeroize_32(out_random);
-        core::secure_zeroize_32(out_server_pub);
+        out_server_share.clear();
         core::secure_zeroize_32(out_ecdhe_secret);
     };
-    var server_priv: u8[32] = [0; 32];
-    defer core::secure_zeroize_32(server_priv);
-    guard random_bytes_32_checked(out_random) && random_bytes_32_checked(server_priv) else {
-        return false;
+    out_server_share.clear();
+    guard random_bytes_32_checked(out_random) else { return false; }
+
+    if selected_group == rfc::GROUP_X25519 {
+        guard client_share.len == 32 else { return false; }
+        var server_priv: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(server_priv);
+        guard random_bytes_32_checked(server_priv) else { return false; }
+        var cli_pub: u8[32] = [0; 32];
+        core::ct_copy_bytes(cli_pub[..], client_share);
+        let srv_pub = core::x25519_base_scalarmult(server_priv);
+        var ecdhe, ok_ecdhe = core::x25519_shared_secret(server_priv, cli_pub);
+        defer core::secure_zeroize_32(ecdhe);
+        guard ok_ecdhe && out_server_share.try_set(srv_pub[..]) else { return false; }
+        out_ecdhe_secret = ecdhe;
+        committed = true;
+        return true;
     }
-    out_server_pub = core::x25519_base_scalarmult(server_priv);
-    var ecdhe, ok_ecdhe = core::x25519_shared_secret(server_priv, client_pub);
-    defer core::secure_zeroize_32(ecdhe);
-    guard ok_ecdhe else { return false; }
-    out_ecdhe_secret = ecdhe;
-    committed = true;
-    return true;
+
+    if selected_group == rfc::GROUP_SECP256R1 {
+        guard derive_server_p256_ecdhe(client_share, out_server_share, out_ecdhe_secret) else {
+            return false;
+        }
+        committed = true;
+        return true;
+    }
+
+    return false;
 }

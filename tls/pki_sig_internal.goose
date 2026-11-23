@@ -485,3 +485,99 @@ fn parse_pkcs8_private_key_der(der: const u8[:], out_key: u8[32]&) -> tls::Priva
 
     return tls::PrivateKeyKind.Unknown, false;
 }
+
+// Extracts a non-zero positive canonical ASN.1 DER INTEGER slice, stripping any sign-extension zero.
+//
+// Example:
+//   c = [0x02, 0x02, 0x00, 0x81]
+//   returns: [0x81], ok = true
+fn extract_asn1_positive_int(c: core::ByteCursor&) -> const u8[:], bool {
+    var val = core::cursor_from(c.buf[..0]);
+    guard tls::get_asn1_element(c, rfc::ASN1_TAG_INTEGER, val) else { return "", false; }
+    guard tls::validate_asn1_integer(val.buf, false) && (val.buf[0] & 0x80) == 0 else { return "", false; }
+    if val.buf[0] == 0x00 {
+        guard val.buf.len > 1 else { return "", false; }
+        return val.buf[1..], true;
+    }
+    return val.buf, true;
+}
+
+fn validate_rsa_crt_tail(seq: core::ByteCursor&, mod_len: i64) -> bool {
+    let p, ok_p = extract_asn1_positive_int(seq);
+    let q, ok_q = extract_asn1_positive_int(seq);
+    guard ok_p && ok_q && p.len <= mod_len && q.len <= mod_len else { return false; }
+    let p_lsb = p[core::sub_sat_i64(p.len, 1)];
+    let q_lsb = q[core::sub_sat_i64(q.len, 1)];
+    guard (p_lsb & 1) == 1 && (q_lsb & 1) == 1 else { return false; }
+    for _ in 3 {
+        let crt_comp, ok_c = extract_asn1_positive_int(seq);
+        guard ok_c && crt_comp.len <= mod_len else { return false; }
+    }
+    return seq.cursor_len() == 0;
+}
+
+// Parses a DER PKCS#1 two-prime RSAPrivateKey sequence (2048..4096 bits) into `(n, e, d)` slices.
+// Validates odd >=2048-bit modulus, public exponent, odd private exponent, and non-empty CRT fields.
+//
+// Example:
+//   der = [0x30, ..., 0x02, 0x01, 0x00, ...n, e, d, p, q, dp, dq, qinv...]
+//   returns: n_be, e_be, d_be, ok = true
+fn parse_rsa_pkcs1_private_key_der(der: const u8[:]) -> const u8[:], const u8[:], const u8[:], bool {
+    var root = core::cursor_from(der);
+    var seq = core::cursor_from(der[..0]);
+    guard tls::get_asn1_element(root, rfc::ASN1_TAG_SEQUENCE, seq) && root.cursor_len() == 0 else {
+        return "", "", "", false;
+    }
+    var version: i64 = -1;
+    guard tls::get_asn1_integer(seq, version) && version == 0 else { return "", "", "", false; }
+
+    let n_be, ok_n = extract_asn1_positive_int(seq);
+    let e_be, ok_e = extract_asn1_positive_int(seq);
+    let d_be, ok_d = extract_asn1_positive_int(seq);
+    guard ok_n && ok_e && ok_d else { return "", "", "", false; }
+    let d_lsb = d_be[core::sub_sat_i64(d_be.len, 1)];
+    guard n_be.len >= MIN_RSA_MODULUS_BYTES && n_be.len <= 512 &&
+        (n_be.len > MIN_RSA_MODULUS_BYTES || (n_be[0] & 0x80) != 0) &&
+        core::is_valid_rsa_public_exponent(e_be, n_be) &&
+        d_be.len <= n_be.len && (d_lsb & 1) == 1 else {
+        return "", "", "", false;
+    }
+    guard validate_rsa_crt_tail(seq, n_be.len) else { return "", "", "", false; }
+    return n_be, e_be, d_be, true;
+}
+
+// Parses an unencrypted PKCS#8 PrivateKeyInfo DER sequence wrapping an RSA key (OID 1.2.840.113549.1.1.1).
+//
+// Example:
+//   der = [0x30, ..., 0x02, 0x01, 0x00, 0x30, ..., OID_RSA_ENCRYPTION, 0x04, ..., PKCS1...]
+//   returns: n_be, e_be, d_be, ok = true
+fn parse_pkcs8_rsa_private_key_der(der: const u8[:]) -> const u8[:], const u8[:], const u8[:], bool {
+    var root = core::cursor_from(der);
+    var pki_seq = core::cursor_from(der[..0]);
+    guard tls::get_asn1_element(root, rfc::ASN1_TAG_SEQUENCE, pki_seq) && root.cursor_len() == 0 else {
+        return "", "", "", false;
+    }
+    var version: i64 = -1;
+    guard tls::get_asn1_integer(pki_seq, version) && version == 0 else { return "", "", "", false; }
+
+    var alg_seq = core::cursor_from(der[..0]);
+    var alg_oid = core::cursor_from(der[..0]);
+    var priv_oct = core::cursor_from(der[..0]);
+    guard tls::get_asn1_element(pki_seq, rfc::ASN1_TAG_SEQUENCE, alg_seq) &&
+        tls::get_asn1_element(alg_seq, rfc::ASN1_TAG_OID, alg_oid) &&
+        alg_oid.buf == rfc::OID_RSA_ENCRYPTION[..] else {
+        return "", "", "", false;
+    }
+    if alg_seq.cursor_len() > 0 {
+        var null_el = core::cursor_from(der[..0]);
+        guard tls::get_asn1_element(alg_seq, rfc::ASN1_TAG_NULL, null_el) &&
+            null_el.cursor_len() == 0 && alg_seq.cursor_len() == 0 else {
+            return "", "", "", false;
+        }
+    }
+    guard tls::get_asn1_element(pki_seq, rfc::ASN1_TAG_OCTET_STRING, priv_oct) &&
+        pki_check_optional_tail(pki_seq) else {
+        return "", "", "", false;
+    }
+    return parse_rsa_pkcs1_private_key_der(priv_oct.buf);
+}

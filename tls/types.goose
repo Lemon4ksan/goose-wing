@@ -176,6 +176,7 @@ enum PrivateKeyKind {
     Unknown,
     Ed25519,
     EcdsaP256,
+    Rsa,
 }
 
 // ---- Stateless Session Ticket & STEK Types (RFC 8446 §4.6.1) --------------
@@ -453,9 +454,21 @@ struct ClientHandshakeConfig {
     keylog_file:            u8[..256]        = [],
 }
 
+const MAX_RSA_SERVER_KEYS: i64 = 256;
+
+struct RsaServerKey {
+    in_use: bool      = false,
+    n:      u8[..512] = [],
+    e:      u8[..512] = [],
+    d:      u8[..512] = [],
+}
+
 struct ServerHandshakeConfig {
     cert_der:             u8[..4096]       = [],
+    extra_certs_der:      u8[..4096][..3]  = [],
     priv_seed:            u8[32]           = [0; 32],
+    key_kind:             PrivateKeyKind   = PrivateKeyKind.Unknown,
+    rsa_key_slot:         i32              = -1,
     alpn:                 u8[..255]        = [],
     compressed_cert_algo: u16              = 0,
     compressed_cert_data: u8[..4096]       = [],
@@ -472,9 +485,70 @@ enum SniOfferState {
 
 // ---- Global Lazy Cipher Slot Table & CSPRNG Pool --------------------------
 
-var g_tls_entropy_pool:    u8[32]          = [0; 32];
-var g_tls_entropy_counter: u64             = 0;
-var g_tls_cipher_slots:    CipherSlot[>..] = [];
+var g_tls_entropy_pool:    u8[32]            = [0; 32];
+var g_tls_entropy_counter: u64               = 0;
+var g_tls_cipher_slots:    CipherSlot[>..]   = [];
+var g_tls_rsa_keys:        RsaServerKey[>..] = [];
+
+fn zeroize_rsa_server_key(key: RsaServerKey&) {
+    core::secure_zeroize_slice(key.n[..]);
+    core::secure_zeroize_slice(key.e[..]);
+    core::secure_zeroize_slice(key.d[..]);
+    key.n.clear();
+    key.e.clear();
+    key.d.clear();
+    key.in_use = false;
+}
+
+fn fill_rsa_server_key(
+    key:  RsaServerKey&,
+    n_be: const u8[:],
+    e_be: const u8[:],
+    d_be: const u8[:],
+) -> bool {
+    zeroize_rsa_server_key(key);
+    guard key.n.try_set(n_be) && key.e.try_set(e_be) && key.d.try_set(d_be) else {
+        zeroize_rsa_server_key(key);
+        return false;
+    }
+    key.in_use = true;
+    return true;
+}
+
+fn alloc_rsa_key_slot(n_be: const u8[:], e_be: const u8[:], d_be: const u8[:]) -> i32 {
+    guard n_be.len >= 256 && n_be.len <= 512 &&
+        e_be.len >= 1 && e_be.len <= n_be.len &&
+        d_be.len >= 1 && d_be.len <= 512 else {
+        return -1;
+    }
+    for i in g_tls_rsa_keys.len {
+        let slot .= g_tls_rsa_keys[i];
+        if !slot.in_use {
+            return if fill_rsa_server_key(slot, n_be, e_be, d_be) { i as i32 } else { -1 };
+        }
+    }
+    guard g_tls_rsa_keys.len < MAX_RSA_SERVER_KEYS else { return -1; }
+    let new_idx = g_tls_rsa_keys.len;
+    g_tls_rsa_keys.push(RsaServerKey { .. });
+    let slot .= g_tls_rsa_keys[new_idx];
+    guard fill_rsa_server_key(slot, n_be, e_be, d_be) else { return -1; }
+    return new_idx as i32;
+}
+
+fn release_rsa_key_slot(slot_idx: i32) {
+    let idx = slot_idx as i64;
+    guard idx >= 0 && idx < g_tls_rsa_keys.len else { return; }
+    zeroize_rsa_server_key(g_tls_rsa_keys[idx]);
+}
+
+fn release_server_credentials(cfg: ServerHandshakeConfig&) {
+    core::secure_zeroize_32(cfg.priv_seed);
+    release_rsa_key_slot(cfg.rsa_key_slot);
+    cfg.rsa_key_slot = -1;
+    cfg.key_kind = PrivateKeyKind.Unknown;
+    cfg.cert_der.clear();
+    cfg.extra_certs_der.clear();
+}
 
 // ---- Pluggable TLS Backend Contract Types ---------------------------------
 
