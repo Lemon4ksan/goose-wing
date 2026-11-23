@@ -69,8 +69,13 @@ inline fn acme_make_p256_jwk(priv_key: const u8[32]&) -> JwksKey, bool {
 
 inline fn is_valid_acme_http_url(url: const u8[:]) -> bool {
     guard url.len > 0 && url.len <= 256 else { return false; }
+    guard core::swar_find_ctl(url) == url.len && !url.contains_byte(' ') && !url.contains_byte('\\') else {
+        return false;
+    }
     let parsed, err = core::parse_url(url);
-    guard err == core::UrlParseError.None && parsed.hostname().len > 0 else { return false; }
+    guard err == core::UrlParseError.None && parsed.hostname().len > 0 && !parsed.has_credentials() else {
+        return false;
+    }
     return parsed.scheme().eq_ascii_fold("https") || parsed.scheme().eq_ascii_fold("http");
 }
 
@@ -443,21 +448,25 @@ inline fn parse_acme_challenge_member(
     json::skip(reader);
 }
 
+const ACME_AUTHZ_SEEN_STATUS:     u32 = 1;
+const ACME_AUTHZ_SEEN_CHALLENGES: u32 = 2;
+const ACME_AUTHZ_FOUND_HTTP01:    u32 = 4;
+const ACME_AUTHZ_HAD_ERROR:       u32 = 8;
+
 // Parses a single object from the `"challenges"` array, keeping the `"http-01"` challenge.
 //
 // Example:
 //   reader at "{\"type\":\"http-01\",\"url\":\"https://ex/c\",\"status\":\"pending\",\"token\":\"<22+ chars>\"}"
-//   sets: found_http01 = true, out_ch populated
+//   sets: ACME_AUTHZ_FOUND_HTTP01 in state_mask, out_ch populated
 inline fn parse_single_acme_challenge_obj(
-    reader:       json::Reader&,
-    thumbprint:   const u8[:],
-    out_ch:       AcmeHttp01Challenge&,
-    found_http01: bool&,
-    had_err:      bool&,
+    reader:     json::Reader&,
+    thumbprint: const u8[:],
+    out_ch:     AcmeHttp01Challenge&,
+    state_mask: u32&,
 ) {
     guard json::peek(reader) == '{' else {
         json::skip(reader);
-        had_err = true;
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
     var ch_type: u8[..32] = [];
@@ -468,65 +477,66 @@ inline fn parse_single_acme_challenge_obj(
         parse_acme_challenge_member(key, reader, ch_type, cand, seen_mask, item_err);
     };
     if item_err || (seen_mask & 1) == 0 {
-        had_err = true;
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
     if ch_type[..] != "http-01" { return; }
-    if found_http01 || (seen_mask & 15) != 15 {
-        had_err = true;
+    if (state_mask & ACME_AUTHZ_FOUND_HTTP01) != 0 || (seen_mask & 15) != 15 {
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
     guard build_acme_key_authorization(cand.token[..], thumbprint, cand.key_auth) else {
-        had_err = true;
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
         return;
     }
-    found_http01 = true;
+    state_mask |= ACME_AUTHZ_FOUND_HTTP01;
     out_ch = cand;
+}
+
+inline fn read_acme_authz_status_field(reader: json::Reader&, state_mask: u32&) {
+    if json::peek(reader) != '"' {
+        json::skip(reader);
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
+        return;
+    }
+    var st_buf: u8[..32] = [];
+    if !core::read_json_string_into(reader, st_buf) || !is_valid_acme_authz_status(st_buf[..]) {
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
+    }
 }
 
 // Parses one member of an RFC 8555 Section 7.1.4 Authorization JSON object.
 //
 // Example:
 //   key = "status", reader at "\"pending\""
-//   sets: seen_status = true
+//   sets: ACME_AUTHZ_SEEN_STATUS in state_mask
 inline fn parse_acme_authz_member(
-    key:             const u8[:],
-    reader:          json::Reader&,
-    thumbprint:      const u8[:],
-    ch:              AcmeHttp01Challenge&,
-    seen_challenges: bool&,
-    seen_status:     bool&,
-    found_http01:    bool&,
-    had_err:         bool&,
+    key:        const u8[:],
+    reader:     json::Reader&,
+    thumbprint: const u8[:],
+    ch:         AcmeHttp01Challenge&,
+    state_mask: u32&,
 ) {
     if key.contains('\\') {
-        had_err = true;
+        state_mask |= ACME_AUTHZ_HAD_ERROR;
         json::skip(reader);
         return;
     }
     if key == "status" {
-        if seen_status { had_err = true; }
-        seen_status = true;
-        if json::peek(reader) != '"' {
-            json::skip(reader);
-            had_err = true;
-            return;
-        }
-        var st_buf: u8[..32] = [];
-        if !core::read_json_string_into(reader, st_buf) || !is_valid_acme_authz_status(st_buf[..]) {
-            had_err = true;
-        }
+        if (state_mask & ACME_AUTHZ_SEEN_STATUS) != 0 { state_mask |= ACME_AUTHZ_HAD_ERROR; }
+        state_mask |= ACME_AUTHZ_SEEN_STATUS;
+        read_acme_authz_status_field(reader, state_mask);
         return;
     }
     if key == "challenges" {
-        if seen_challenges || json::peek(reader) != '[' {
+        if (state_mask & ACME_AUTHZ_SEEN_CHALLENGES) != 0 || json::peek(reader) != '[' {
             json::skip(reader);
-            had_err = true;
+            state_mask |= ACME_AUTHZ_HAD_ERROR;
             return;
         }
-        seen_challenges = true;
+        state_mask |= ACME_AUTHZ_SEEN_CHALLENGES;
         json::each_element(reader) {
-            parse_single_acme_challenge_obj(reader, thumbprint, ch, found_http01, had_err);
+            parse_single_acme_challenge_obj(reader, thumbprint, ch, state_mask);
         };
         return;
     }
@@ -552,23 +562,14 @@ fn acme_parse_authz_http01(
     guard json::peek(reader) == '{' else { return false; }
 
     var ch = AcmeHttp01Challenge { .. };
-    var seen_challenges = false;
-    var seen_status = false;
-    var found_http01 = false;
-    var had_err = false;
+    var state_mask: u32 = 0;
     json::each_member(reader) { key =>
-        parse_acme_authz_member(
-            key,
-            reader,
-            thumbprint,
-            ch,
-            seen_challenges,
-            seen_status,
-            found_http01,
-            had_err,
-        );
+        parse_acme_authz_member(key, reader, thumbprint, ch, state_mask);
     };
-    guard json::finish(reader) && !had_err && seen_challenges && found_http01 else { return false; }
+    let want_mask = ACME_AUTHZ_SEEN_STATUS | ACME_AUTHZ_SEEN_CHALLENGES | ACME_AUTHZ_FOUND_HTTP01;
+    guard json::finish(reader) && (state_mask & (want_mask | ACME_AUTHZ_HAD_ERROR)) == want_mask else {
+        return false;
+    }
     out_ch = ch;
     return true;
 }

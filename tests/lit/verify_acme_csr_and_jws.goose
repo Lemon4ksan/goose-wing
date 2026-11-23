@@ -411,6 +411,19 @@ fn test_acme_json_parsers() {
     let bad_authz_status = "{\"status\":\"bogus\",\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/chall/http\",\"status\":\"pending\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}]}";
     assert(!auth::acme_parse_authz_http01(bad_authz_status, tp, ch));
 
+    // Reject missing top-level authz "status"
+    let missing_authz_status = "{\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/chall/http\",\"status\":\"pending\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}]}";
+    assert(!auth::acme_parse_authz_http01(missing_authz_status, tp, ch));
+    assert(ch.url.len == 0 && ch.token.len == 0 && ch.status == auth::AcmeOrderStatus.Unknown);
+
+    // Reject CRLF, spaces, backslashes, and embedded user:pass@ credentials in ACME URLs
+    assert(!auth::acme_parse_directory("{\"newNonce\":\"https://acme.example/n\\r\\n\",\"newAccount\":\"https://acme.example/a\",\"newOrder\":\"https://acme.example/o\"}", dir));
+    assert(!auth::acme_parse_directory("{\"newNonce\":\"https://acme.example/n \",\"newAccount\":\"https://acme.example/a\",\"newOrder\":\"https://acme.example/o\"}", dir));
+    assert(!auth::acme_parse_directory("{\"newNonce\":\"https://acme.example\\\\n\",\"newAccount\":\"https://acme.example/a\",\"newOrder\":\"https://acme.example/o\"}", dir));
+    assert(!auth::acme_parse_directory("{\"newNonce\":\"https://user:pass@acme.example/n\",\"newAccount\":\"https://acme.example/a\",\"newOrder\":\"https://acme.example/o\"}", dir));
+    assert(!auth::acme_parse_order("{\"status\":\"pending\",\"authorizations\":[\"https://user:pass@acme.example/az\"],\"finalize\":\"https://acme.example/fin\"}", ord));
+    assert(!auth::acme_parse_authz_http01("{\"status\":\"pending\",\"challenges\":[{\"type\":\"http-01\",\"url\":\"https://acme.example/c\\r\\n\",\"status\":\"pending\",\"token\":\"LoqXcYV8q5ONbJQxbmR7SC\"}]}", tp, ch));
+
     print("ACME_JSON_PARSERS: PASS\n");
 }
 
