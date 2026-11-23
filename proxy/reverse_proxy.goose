@@ -24,6 +24,7 @@ import wire.h1_exchange;
 import security.gcra;
 import rfc.http;
 import wire.h1;
+import tls.types;
 import .load_balancer;
 import .health_check;
 import .internal;
@@ -31,21 +32,28 @@ import .headers_internal;
 
 const TARGET_NONE: i32 = -1;
 
+enum UpgradePolicy {
+    Strip,
+    AllowWebSocket,
+}
+
 struct Config {
-    strip_hop_by_hop:            bool       = true,
-    append_forwarded:            bool       = true,
-    emit_rfc7239_forwarded:      bool       = false,
-    preserve_host:               bool       = false,
-    trust_incoming_xff:          bool       = false,
-    max_active_conns_per_target: i32        = 1024,
-    enable_rate_limiting:        bool       = false,
-    rate_limit_rps:              u64        = 100,
-    rate_limit_burst:            u64        = 20,
-    forward_client_cert:         bool       = false,
-    client_cert_der_len:         i32        = 0,
-    client_cert_der:             u8[..4096] = [],
-    via_pseudonym:               u8[..32]   = "wing",
-    http_version:                u8[..8]    = "HTTP/1.1",
+    strip_hop_by_hop:            bool          = true,
+    append_forwarded:            bool          = true,
+    emit_rfc7239_forwarded:      bool          = false,
+    preserve_host:               bool          = false,
+    trust_incoming_xff:          bool          = false,
+    max_active_conns_per_target: i32           = 1024,
+    enable_rate_limiting:        bool          = false,
+    rate_limit_rps:              u64           = 100,
+    rate_limit_burst:            u64           = 20,
+    forward_client_cert:         bool          = false,
+    client_cert_der_len:         i32           = 0,
+    client_cert_der:             u8[..4096]    = [],
+    via_pseudonym:               u8[..32]      = "wing",
+    http_version:                u8[..8]       = "HTTP/1.1",
+    upgrade_policy:              UpgradePolicy = UpgradePolicy.Strip,
+    max_buffered_body_bytes:     i64           = 1048576,
 }
 
 // Identifies untrusted forwarding metadata headers to strip before re-injection.
@@ -79,6 +87,11 @@ fn filter_and_forward_headers(
     defer if !committed { out_headers.clear(); };
 
     guard proxy_internal::copy_filtered_headers(in_headers, out_headers, config) else { return false; }
+
+    if config.strip_hop_by_hop && proxy_internal::is_valid_websocket_upgrade_headers(in_headers, config) {
+        guard http::append_header(out_headers, "Connection", "Upgrade") else { return false; }
+        guard http::append_header(out_headers, "Upgrade", "websocket") else { return false; }
+    }
 
     // RFC 9440 §2.4: place the validated end-entity certificate in Client-Cert only when configured.
     let cert_der_len = config.client_cert_der_len;
@@ -142,6 +155,7 @@ struct ReverseProxy {
     cluster:            UpstreamCluster              = UpstreamCluster { .. },
     warm_upstreams:     net::UpstreamPool            = net::UpstreamPool { .. },
     config:             Config                       = Config { .. },
+    ca_store:           const tls::TrustAnchorStore? = null,
     rate_limiter:       security::GatewayRateLimiter = security::GatewayRateLimiter { .. },
     health_checker:     ClusterHealthChecker         = ClusterHealthChecker { .. },
     total_forwarded:    u64                          = 0,
@@ -203,6 +217,145 @@ fn set_proxy_rate_limit(rp: ReverseProxy&, rps: u64, burst: u64) {
     rp.rate_limiter.config = security::new_gcra_config(rps, burst);
 }
 
+enum WirePrepareMode {
+    FullRequest,
+    HeadOnly,
+}
+
+inline fn check_proxy_ingress_rate_limit(rp: ReverseProxy&, client_ip: const u8[:], effective_now: u64) -> bool {
+    guard rp.config.enable_rate_limiting && client_ip.len > 0 && effective_now > 0 else {
+        return true;
+    }
+    let dec = security::check_gateway_rate_limit(rp.rate_limiter, client_ip, 1, effective_now);
+    if !dec.allowed {
+        rp.total_rate_limited = core::add_sat_u64(rp.total_rate_limited, 1);
+        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
+        return false;
+    }
+    return true;
+}
+
+fn build_and_serialize_proxy_wire<B>(
+    rp:         const ReverseProxy&,
+    target:     const UpstreamTarget&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    in_headers: const http::HeaderMap&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    body:       const u8[:],
+    out_wire:   B&,
+    mode:       WirePrepareMode,
+) -> bool {
+    var forward_headers = http::HeaderMap { .. };
+    var host_buf: u8[..160] = [];
+    guard proxy_internal::format_upstream_authority(
+        target.host[..], target.port, rp.config.preserve_host, host_buf,
+    ) else { return false; }
+    guard filter_and_forward_headers(
+        in_headers, forward_headers, client_ip, proto, host_buf[..], rp.config,
+    ) else { return false; }
+    guard proxy_internal::apply_max_forwards_policy(method, forward_headers) else { return false; }
+
+    let ok_framing = if mode == WirePrepareMode.HeadOnly {
+        proxy_internal::ensure_forwarded_head_framing(
+            in_headers, forward_headers, method, rp.config.http_version[..],
+        )
+    } else {
+        proxy_internal::ensure_forwarded_body_framing(forward_headers, body, method)
+    };
+    guard ok_framing else { return false; }
+
+    let wire_body = if mode == WirePrepareMode.HeadOnly { "" } else { body };
+    return serialize_upstream_request(
+        method, uri, forward_headers, wire_body, out_wire, rp.config.http_version[..],
+    );
+}
+
+fn prepare_proxy_wire_impl<B>(
+    rp:         ReverseProxy&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    in_headers: const http::HeaderMap&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    hash_key:   const u8[:],
+    body:       const u8[:],
+    out_wire:   B&,
+    now_ns:     u64,
+    mode:       WirePrepareMode,
+) -> i32, bool {
+    let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
+    guard check_proxy_ingress_rate_limit(rp, client_ip, effective_now) else {
+        return TARGET_NONE, false;
+    }
+
+    let target_idx, ok = select_upstream_with_key(rp.cluster, hash_key);
+    guard ok && target_idx >= 0 && target_idx < rp.cluster.targets.len else {
+        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
+        return TARGET_NONE, false;
+    }
+    var committed = false;
+    defer if !committed {
+        release_upstream_connection(rp.cluster, target_idx);
+        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
+        out_wire.clear();
+    };
+
+    let target .= rp.cluster.targets[target_idx];
+    if proxy_internal::is_target_concurrency_saturated(target, rp.config.max_active_conns_per_target) {
+        rp.total_overloaded = core::add_sat_u64(rp.total_overloaded, 1);
+        return TARGET_NONE, false;
+    }
+
+    guard build_and_serialize_proxy_wire(
+        rp, target, method, uri, in_headers, client_ip, proto, body, out_wire, mode,
+    ) else {
+        return TARGET_NONE, false;
+    }
+
+    committed = true;
+    rp.total_forwarded = core::add_sat_u64(rp.total_forwarded, 1);
+    return target_idx, true;
+}
+
+// Selects upstream target with optional routing key, applies GCRA rate limiting and
+// concurrency backpressure defenses, rewrites headers, and serializes forward wire request.
+fn prepare_proxy_request_with_key_at<B>(
+    rp:         ReverseProxy&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    in_headers: const http::HeaderMap&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    hash_key:   const u8[:],
+    body:       const u8[:],
+    out_wire:   B&,
+    now_ns:     u64,
+) -> i32, bool {
+    return prepare_proxy_wire_impl(
+        rp, method, uri, in_headers, client_ip, proto, hash_key, body, out_wire, now_ns, WirePrepareMode.FullRequest,
+    );
+}
+
+// Selects upstream target with optional routing key and serializes only the HTTP/1.1 request
+// head (without body bytes) for zero-copy streaming relay.
+fn prepare_proxy_head_with_key_at<B>(
+    rp:         ReverseProxy&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    in_headers: const http::HeaderMap&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    hash_key:   const u8[:],
+    out_head:   B&,
+    now_ns:     u64,
+) -> i32, bool {
+    return prepare_proxy_wire_impl(
+        rp, method, uri, in_headers, client_ip, proto, hash_key, "", out_head, now_ns, WirePrepareMode.HeadOnly,
+    );
+}
+
 // Selects upstream target, applies GCRA rate limiting and concurrency backpressure defenses,
 // rewrites headers, and serializes forward wire request.
 fn prepare_proxy_request_at<B>(
@@ -216,59 +369,9 @@ fn prepare_proxy_request_at<B>(
     out_wire:   B&,
     now_ns:     u64,
 ) -> i32, bool {
-    let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
-
-    // 1. Rate limiter defense against client flooding and downstream backpressure.
-    if rp.config.enable_rate_limiting && client_ip.len > 0 && effective_now > 0 {
-        let dec = security::check_gateway_rate_limit(rp.rate_limiter, client_ip, 1, effective_now);
-        if !dec.allowed {
-            rp.total_rate_limited = core::add_sat_u64(rp.total_rate_limited, 1);
-            rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
-            return TARGET_NONE, false;
-        }
-    }
-
-    // 2. Upstream target selection.
-    let target_idx, ok = select_upstream(rp.cluster);
-    guard ok && target_idx >= 0 && target_idx < rp.cluster.targets.len else {
-        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
-        return TARGET_NONE, false;
-    }
-    var committed = false;
-    defer if !committed {
-        release_upstream_connection(rp.cluster, target_idx);
-        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
-        out_wire.clear();
-    };
-
-    // 3. Concurrency ceiling defense against connection exhaustion.
-    let target .= rp.cluster.targets[target_idx];
-    let max_conns = rp.config.max_active_conns_per_target;
-    if proxy_internal::is_target_concurrency_saturated(target, max_conns) {
-        rp.total_overloaded = core::add_sat_u64(rp.total_overloaded, 1);
-        return TARGET_NONE, false;
-    }
-
-    // 4. Header filtering and metadata injection.
-    var forward_headers = http::HeaderMap { .. };
-    var host_buf: u8[..160] = [];
-    let ok_prep = proxy_internal::format_upstream_authority(
-        target.host[..],
-        target.port,
-        rp.config.preserve_host,
-        host_buf,
-    ) &&
-        filter_and_forward_headers(in_headers, forward_headers, client_ip, proto, host_buf[..], rp.config) &&
-        proxy_internal::apply_max_forwards_policy(method, forward_headers) &&
-        proxy_internal::ensure_forwarded_body_framing(forward_headers, body, method) &&
-        serialize_upstream_request(method, uri, forward_headers, body, out_wire, rp.config.http_version[..]);
-    guard ok_prep else {
-        return TARGET_NONE, false;
-    }
-
-    committed = true;
-    rp.total_forwarded = core::add_sat_u64(rp.total_forwarded, 1);
-    return target_idx, true;
+    return prepare_proxy_wire_impl(
+        rp, method, uri, in_headers, client_ip, proto, "", body, out_wire, now_ns, WirePrepareMode.FullRequest,
+    );
 }
 
 // Prepares an upstream wire request using the current monotonic clock timestamp.
@@ -600,6 +703,158 @@ fn capture_upstream_early_hints(in_resp: const http::Response&, out_upstream: Up
     }
 }
 
+fn run_prepared_exchange_on_conn(
+    rp:         ReverseProxy&,
+    target:     const UpstreamTarget&,
+    conn:       net::PooledConnection&,
+    method:     const u8[:],
+    wire_req:   const u8[:],
+    out_resp:   http::Response&,
+    timeout_ms: u32,
+) -> bool, bool, u32 {
+    conn.rx_buf.clear();
+    let start_inst = core::monotonic_now();
+    let reuse, ok_ex = exchange_prepared_wire_on_conn(
+        conn, method, wire_req, out_resp, timeout_ms,
+    );
+    var headers_valid = ok_ex && !out_resp.had_te_cl_conflict;
+    if headers_valid {
+        var filtered_hdrs = http::HeaderMap { .. };
+        var loc_buf: u8[..512] = [];
+        var accel = UpstreamAccelControl { .. };
+        headers_valid = process_and_filter_upstream_response_headers(
+            out_resp.headers, "", "", filtered_hdrs, loc_buf, accel,
+        );
+        if headers_valid {
+            out_resp.headers = filtered_hdrs;
+            var ps_entry = http::ProxyStatusEntry {
+                received_status: out_resp.status_code,
+                ..
+            };
+            let _ = ps_entry.proxy_name.try_set(rp.config.via_pseudonym[..]);
+            let _ = ps_entry.next_hop.try_set(target.host[..]);
+            var ps_buf: u8[..256] = [];
+            http::format_proxy_status(ps_entry, ps_buf);
+            out_resp.set_header("Proxy-Status", ps_buf[..]);
+        }
+    }
+    let can_reuse = headers_valid && reuse == WireReuse.KeepAlive && conn.rx_buf.len == 0;
+    let rtt_us = if headers_valid { proxy_internal::calc_probe_rtt_us(start_inst) } else { 0 };
+    return headers_valid, can_reuse, rtt_us;
+}
+
+fn execute_non_pooled_exchange(
+    rp:            ReverseProxy&,
+    target:        const UpstreamTarget&,
+    target_idx:    i32,
+    fallback_conn: net::PooledConnection&,
+    warm_fd:       i32,
+    method:        const u8[:],
+    wire_req:      const u8[:],
+    out_resp:      http::Response&,
+    timeout_ms:    u32,
+) -> bool {
+    var headers_valid = false;
+    var can_reuse = false;
+    var rtt_us: u32 = 0;
+    if warm_fd >= 0 {
+        headers_valid, can_reuse, rtt_us = run_prepared_exchange_on_conn(
+            rp, target, fallback_conn, method, wire_req, out_resp, timeout_ms,
+        );
+        fallback_conn.transport = net::Transport.Disconnected;
+        let ev: u32 = if can_reuse { 0 } else { net::EPOLLRDHUP };
+        let _ = net::release_upstream_conn(rp.warm_upstreams, warm_fd, ev);
+    } else {
+        defer fallback_conn.transport.close();
+        headers_valid, can_reuse, rtt_us = run_prepared_exchange_on_conn(
+            rp, target, fallback_conn, method, wire_req, out_resp, timeout_ms,
+        );
+    }
+    let recorded_status = if headers_valid { out_resp.status_code } else { 0 };
+    complete_upstream_exchange(rp, target_idx, recorded_status, headers_valid, rtt_us);
+    return headers_valid;
+}
+
+fn execute_pooled_exchange(
+    rp:         ReverseProxy&,
+    pool:       net::StreamPool&,
+    target:     const UpstreamTarget&,
+    target_idx: i32,
+    conn_id:    i32,
+    warm_fd:    i32,
+    method:     const u8[:],
+    wire_req:   const u8[:],
+    out_resp:   http::Response&,
+    timeout_ms: u32,
+    now_i64:    i64,
+) -> bool {
+    let c_idx = pool.find_connection_index(conn_id);
+    guard c_idx >= 0 else {
+        if warm_fd >= 0 {
+            let _ = net::release_upstream_conn(rp.warm_upstreams, warm_fd, net::EPOLLRDHUP);
+        } else {
+            pool.close_pooled_connection(conn_id);
+        }
+        complete_upstream_exchange(rp, target_idx, 0, false);
+        return false;
+    }
+    let headers_valid, can_reuse, rtt_us = run_prepared_exchange_on_conn(
+        rp, target, pool.conns[c_idx], method, wire_req, out_resp, timeout_ms,
+    );
+    proxy_internal::finalize_proxy_upstream_conn(rp, pool, conn_id, c_idx, warm_fd, can_reuse, now_i64);
+    let recorded_status = if headers_valid { out_resp.status_code } else { 0 };
+    complete_upstream_exchange(rp, target_idx, recorded_status, headers_valid, rtt_us);
+    return headers_valid;
+}
+
+// Executes a full reverse proxy exchange over `StreamPool` using `hash_key` for consistent-hash
+// target selection, supporting >16 KiB request bodies, upstream TLS, and non-pooled overflow fallback.
+fn execute_proxy_exchange_with_key(
+    rp:         ReverseProxy&,
+    pool:       net::StreamPool&,
+    method:     const u8[:],
+    uri:        const u8[:],
+    in_headers: const http::HeaderMap&,
+    client_ip:  const u8[:],
+    proto:      const u8[:],
+    hash_key:   const u8[:],
+    body:       const u8[:],
+    out_resp:   http::Response&,
+    timeout_ms: u32 = 5000,
+    now_ns:     u64 = 0,
+) -> bool {
+    guard rp.config.max_buffered_body_bytes <= 0 || body.len <= rp.config.max_buffered_body_bytes else {
+        rp.total_dropped = core::add_sat_u64(rp.total_dropped, 1);
+        return false;
+    }
+    let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
+    var wire_req: u8[>..] = [];
+    let target_idx, ok_prep = prepare_proxy_request_with_key_at(
+        rp, method, uri, in_headers, client_ip, proto, hash_key, body, wire_req, effective_now,
+    );
+    guard ok_prep && target_idx >= 0 else { return false; }
+
+    let target .= rp.cluster.targets[target_idx];
+    let now_i64 = effective_now as i64;
+    var fallback_conn = net::PooledConnection { .. };
+    let conn_id, warm_fd, ok_conn = proxy_internal::acquire_or_dial_upstream_conn(
+        pool, rp.warm_upstreams, target, timeout_ms, now_i64, rp.ca_store, fallback_conn,
+    );
+    guard ok_conn else {
+        complete_upstream_exchange(rp, target_idx, 0, false);
+        return false;
+    }
+
+    if conn_id == 0 {
+        return execute_non_pooled_exchange(
+            rp, target, target_idx, fallback_conn, warm_fd, method, wire_req[..], out_resp, timeout_ms,
+        );
+    }
+    return execute_pooled_exchange(
+        rp, pool, target, target_idx, conn_id, warm_fd, method, wire_req[..], out_resp, timeout_ms, now_i64,
+    );
+}
+
 // Executes a full reverse proxy exchange over `StreamPool`: selects an upstream target,
 // rewrites and serializes the HTTP/1.1 request (`prepare_proxy_request_at`), acquires or dials
 // a pooled backend connection, reads the upstream response, and records health via `complete_upstream_exchange`.
@@ -616,66 +871,7 @@ fn execute_proxy_exchange(
     timeout_ms: u32 = 5000,
     now_ns:     u64 = 0,
 ) -> bool {
-    let effective_now = if now_ns > 0 { now_ns } else { core::as_nanos(core::monotonic_now()) };
-    var wire_req: u8[..16384] = [];
-    let target_idx, ok_prep = prepare_proxy_request_at(
-        rp, method, uri, in_headers, client_ip, proto, body, wire_req, effective_now,
+    return execute_proxy_exchange_with_key(
+        rp, pool, method, uri, in_headers, client_ip, proto, "", body, out_resp, timeout_ms, now_ns,
     );
-    guard ok_prep && target_idx >= 0 else { return false; }
-
-    let target .= rp.cluster.targets[target_idx];
-    let now_i64 = effective_now as i64;
-    let conn_id, warm_fd, ok_conn = proxy_internal::acquire_or_dial_upstream_conn(
-        pool, rp.warm_upstreams, target, timeout_ms, now_i64,
-    );
-    guard ok_conn && conn_id > 0 else {
-        complete_upstream_exchange(rp, target_idx, 0, false);
-        return false;
-    }
-
-    let c_idx = pool.find_connection_index(conn_id);
-    guard c_idx >= 0 else {
-        if warm_fd >= 0 {
-            let _ = net::release_upstream_conn(rp.warm_upstreams, warm_fd, net::EPOLLRDHUP);
-        } else {
-            pool.close_pooled_connection(conn_id);
-        }
-        complete_upstream_exchange(rp, target_idx, 0, false);
-        return false;
-    }
-
-    pool.conns[c_idx].rx_buf.clear();
-    let start_inst = core::monotonic_now();
-    let reuse, ok_ex = exchange_prepared_wire_on_conn(
-        pool.conns[c_idx], method, wire_req[..], out_resp, timeout_ms,
-    );
-    var headers_valid = ok_ex && !out_resp.had_te_cl_conflict;
-    if headers_valid {
-        var filtered_hdrs = http::HeaderMap { .. };
-        var loc_buf: u8[..512] = [];
-        var accel = UpstreamAccelControl { .. };
-        headers_valid = process_and_filter_upstream_response_headers(
-            out_resp.headers, "", "", filtered_hdrs, loc_buf, accel,
-        );
-        if headers_valid {
-            out_resp.headers = filtered_hdrs;
-        }
-    }
-    let can_reuse = headers_valid && reuse == WireReuse.KeepAlive && pool.conns[c_idx].rx_buf.len == 0;
-    proxy_internal::finalize_proxy_upstream_conn(rp, pool, conn_id, c_idx, warm_fd, can_reuse, now_i64);
-    if headers_valid {
-        var ps_entry = http::ProxyStatusEntry {
-            received_status: out_resp.status_code,
-            ..
-        };
-        let _ = ps_entry.proxy_name.try_set(rp.config.via_pseudonym[..]);
-        let _ = ps_entry.next_hop.try_set(target.host[..]);
-        var ps_buf: u8[..256] = [];
-        http::format_proxy_status(ps_entry, ps_buf);
-        out_resp.set_header("Proxy-Status", ps_buf[..]);
-    }
-    let recorded_status = if headers_valid { out_resp.status_code } else { 0 };
-    let rtt_us = if headers_valid { proxy_internal::calc_probe_rtt_us(start_inst) } else { 0 };
-    complete_upstream_exchange(rp, target_idx, recorded_status, headers_valid, rtt_us);
-    return headers_valid;
 }

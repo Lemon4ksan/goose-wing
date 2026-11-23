@@ -45,6 +45,37 @@ inline fn is_standard_h2_request_pseudo(name: const u8[:]) -> bool {
         name == ":protocol";
 }
 
+inline fn header_map_has_token(
+    headers:    const http::HeaderMap&,
+    hdr_name:   const u8[:],
+    target_tok: const u8[:],
+) -> bool {
+    for &entry in headers.entries {
+        guard http::entry_name(headers, entry).eq_ascii_fold(hdr_name) else { continue; }
+        let val = http::entry_value(headers, entry);
+        var tok = core::make_byte_tokenizer(val, ',');
+        loop {
+            let raw_tok, ok = core::token_next(tok);
+            guard ok else { break; }
+            if raw_tok.trim_lws().eq_ascii_fold(target_tok) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Validates RFC 6455 Section 4.1 WebSocket upgrade headers under `UpgradePolicy.AllowWebSocket`.
+fn is_valid_websocket_upgrade_headers(in_headers: const http::HeaderMap&, config: const proxy::Config&) -> bool {
+    guard config.upgrade_policy == proxy::UpgradePolicy.AllowWebSocket else { return false; }
+    // RFC 6455 Section 4.1: Client Requirements - require Connection: upgrade, Upgrade: websocket, key, and version 13.
+    guard http::is_token_in_connection_header_map(in_headers, "upgrade") else { return false; }
+    guard header_map_has_token(in_headers, "upgrade", "websocket") else { return false; }
+    let ws_key = http::get_header(in_headers, "sec-websocket-key").trim_lws();
+    let ws_ver = http::get_header(in_headers, "sec-websocket-version").trim_lws();
+    return ws_key.len > 0 && ws_ver == "13";
+}
+
 fn should_forward_header(
     name:       const u8[:],
     val:        const u8[:],
@@ -135,6 +166,7 @@ fn copy_filtered_headers(
     out_headers: http::HeaderMap&,
     config:      const proxy::Config&,
 ) -> bool {
+    let allow_ws = config.strip_hop_by_hop && is_valid_websocket_upgrade_headers(in_headers, config);
     for &entry in in_headers.entries {
         let name = http::entry_name(in_headers, entry);
         let val = http::entry_value(in_headers, entry);
@@ -144,6 +176,10 @@ fn copy_filtered_headers(
         }
         // RFC 9113 Section 8.3: HTTP Control Data - reject non-standard or unstripped pseudo-headers.
         guard http::is_valid_header_name(name) && http::is_valid_header_value(val) else { return false; }
+        if allow_ws && name.starts_with_fold("sec-websocket-") {
+            guard http::append_header(out_headers, name, val) else { return false; }
+            continue;
+        }
         if !should_forward_header(name, val, in_headers, config) {
             continue;
         }
@@ -342,6 +378,27 @@ fn inject_forwarded_metadata(
         guard elem.host.try_set(orig_host) else { return false; }
         guard elem.proto.try_set(proto) else { return false; }
         guard http::append_forwarded_header(out_headers, elem) else { return false; }
+    }
+    return true;
+}
+
+fn ensure_forwarded_head_framing(
+    in_headers:      const http::HeaderMap&,
+    forward_headers: http::HeaderMap&,
+    method:          const u8[:],
+    http_version:    const u8[:],
+) -> bool {
+    let has_cl = http::has_header(forward_headers, "content-length");
+    if http::has_header(in_headers, "transfer-encoding") {
+        guard !has_cl && http_version != "HTTP/1.0" else { return false; }
+        if !http::has_header(forward_headers, "transfer-encoding") {
+            return http::append_header(forward_headers, "Transfer-Encoding", "chunked");
+        }
+        return true;
+    }
+    guard !has_cl else { return true; }
+    if method == "POST" || method == "PUT" || method == "PATCH" {
+        return http::append_header(forward_headers, "Content-Length", "0");
     }
     return true;
 }

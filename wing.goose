@@ -387,3 +387,4 @@ import proxy.headers_internal;
 import proxy.health_check;
 import proxy.load_balancer;
 import proxy.reverse_proxy;
+import proxy.stream_relay;

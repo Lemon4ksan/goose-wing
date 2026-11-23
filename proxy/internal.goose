@@ -463,16 +463,61 @@ inline fn transport_from_upstream_fd(fd: i32) -> net::Transport {
     return net::Transport.Tcp { fd: fd };
 }
 
+fn acquire_warm_upstream_conn(
+    pool:      net::StreamPool&,
+    warm_pool: net::UpstreamPool&,
+    pool_key:  const net::PoolKey&,
+    now_ns:    i64,
+    out_conn:  net::PooledConnection&,
+) -> i32, i32, bool {
+    let warm_fd, has_warm = net::acquire_upstream_conn(warm_pool, pool_key.origin_endpoint, 0, 0);
+    guard has_warm && warm_fd >= 0 else { return -1, -1, false; }
+
+    let warm_t = transport_from_upstream_fd(warm_fd);
+    let warm_cid = net::register_connection(
+        pool, pool_key, net::NegotiatedProtocol.Http11, "", 1, now_ns,
+    );
+    if warm_cid > 0 {
+        let w_idx = pool.find_connection_index(warm_cid);
+        if w_idx >= 0 {
+            pool.conns[w_idx].transport = warm_t;
+            return warm_cid, warm_fd, true;
+        }
+        pool.close_pooled_connection(warm_cid);
+        let _ = net::release_upstream_conn(warm_pool, warm_fd, net::EPOLLRDHUP);
+        return -1, -1, false;
+    }
+
+    out_conn = net::PooledConnection {
+        conn_id:            0,
+        key:                pool_key,
+        protocol:           net::NegotiatedProtocol.Http11,
+        transport:          warm_t,
+        active_allocations: 1,
+        ..
+    };
+    return 0, warm_fd, true;
+}
+
 fn acquire_or_dial_upstream_conn(
     pool:       net::StreamPool&,
     warm_pool:  net::UpstreamPool&,
     target:     const proxy::UpstreamTarget&,
     timeout_ms: u32,
     now_ns:     i64,
+    ca_store:   const tls::TrustAnchorStore?,
+    out_conn:   net::PooledConnection&,
 ) -> i32, i32, bool {
+    out_conn = net::PooledConnection { .. };
+    let scheme = if target.use_tls { net::PoolScheme.Https } else { net::PoolScheme.Http };
+    let key_host = if target.use_tls && target.sni_host.len > 0 {
+        target.sni_host[..]
+    } else {
+        target.host[..]
+    };
     let pool_key = net::new_pool_key(
-        net::PoolScheme.Http,
-        target.host[..],
+        scheme,
+        key_host,
         target.port,
         net::new_direct_proxy_chain(),
         net::NetworkAnonymizationKey { .. },
@@ -482,27 +527,53 @@ fn acquire_or_dial_upstream_conn(
     if has_pooled && existing_cid > 0 {
         return existing_cid, -1, true;
     }
-    let warm_fd, has_warm = net::acquire_upstream_conn(warm_pool, pool_key.origin_endpoint, 0, 0);
-    if has_warm && warm_fd >= 0 {
-        let warm_t = transport_from_upstream_fd(warm_fd);
-        let warm_cid = net::register_connection(
-            pool, pool_key, net::NegotiatedProtocol.Http11, warm_t, "", 1, now_ns,
-        );
-        guard warm_cid > 0 else {
-            let _ = net::release_upstream_conn(warm_pool, warm_fd, net::EPOLLRDHUP);
-            return -1, -1, false;
+
+    if !target.use_tls {
+        let w_cid, w_fd, ok_warm = acquire_warm_upstream_conn(pool, warm_pool, pool_key, now_ns, out_conn);
+        if ok_warm {
+            return w_cid, w_fd, true;
         }
-        return warm_cid, warm_fd, true;
     }
+
     let sock = net::tcp_connect(target.host[..], target.port, timeout_ms);
     guard sock > 0 else { return -1, -1, false; }
-    var t = net::Transport.Tcp { fd: sock };
-    let new_cid = net::register_connection(pool, pool_key, net::NegotiatedProtocol.Http11, t, "", 1, now_ns);
-    guard new_cid > 0 else {
-        t.close();
+    var trans: net::Transport = net::Transport.Tcp { fd: sock };
+    var ownership_transferred = false;
+    defer if !ownership_transferred { trans.close(); };
+
+    if target.use_tls {
+        let tls_trans, ok_tls = setup_probe_tls_transport(sock, target, timeout_ms, ca_store);
+        guard ok_tls else { return -1, -1, false; }
+        trans = tls_trans;
+    }
+
+    let new_cid = net::register_connection(pool, pool_key, net::NegotiatedProtocol.Http11, "", 1, now_ns);
+    if new_cid > 0 {
+        let c_idx = pool.find_connection_index(new_cid);
+        if c_idx >= 0 {
+            let conn .= pool.conns[c_idx];
+            conn.transport = trans;
+            match trans {
+                Tls tl => tls::copy_slot_san_hosts(tl.cipher_slot, conn.san_hosts),
+                _ => {},
+            };
+            ownership_transferred = true;
+            return new_cid, -1, true;
+        }
+        pool.close_pooled_connection(new_cid);
         return -1, -1, false;
     }
-    return new_cid, -1, true;
+
+    out_conn = net::PooledConnection {
+        conn_id:            0,
+        key:                pool_key,
+        protocol:           net::NegotiatedProtocol.Http11,
+        transport:          trans,
+        active_allocations: 1,
+        ..
+    };
+    ownership_transferred = true;
+    return 0, -1, true;
 }
 
 inline fn finalize_proxy_upstream_conn(
