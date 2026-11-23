@@ -332,7 +332,11 @@ fn test_http_sfv_dcb_and_cache_lru() {
     let _ = expected_sig_params.key_id.try_set("test-key");
     expected_sig_params.components.push("@authority;req");
     expected_sig_params.components.push("@path;req");
-    assert(http::verify_signature_input_label(sig_input_hdr, "sig1", expected_sig_params));
+    // RFC 9421 Section 2.1 (AUTH-08): unsupported `;bs` component parameter must be rejected,
+    // while exact `;req` component parameters match.
+    assert(!http::verify_signature_input_label(sig_input_hdr, "sig1", expected_sig_params));
+    let sig_input_req_only = "sig1=(\"@authority\";req \"@path\";req);created=1618884473;keyid=\"test-key\"";
+    assert(http::verify_signature_input_label(sig_input_req_only, "sig1", expected_sig_params));
 
     // 3b. cache_group_list_wire_len (RFC 9875)
     var groups: http::CacheGroupTag[..32] = [];

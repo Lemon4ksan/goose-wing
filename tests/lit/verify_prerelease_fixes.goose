@@ -277,9 +277,9 @@ fn test_live_tls_interop_fixes() {
     var c_p = core::cursor_from(ser_pad_tlv[..]);
     var dummy_cert = tls::ParsedCert { .. };
     let zero_arr: u8[1] = [0x00];
-    let f11_ok = tls_internal::read_tbs_serial(ser_zero_tlv[..], c_z, dummy_cert) &&
-        !tls_internal::read_tbs_serial(ser_neg_tlv[..], c_n, dummy_cert) &&
-        !tls_internal::read_tbs_serial(ser_pad_tlv[..], c_p, dummy_cert) &&
+    let f11_ok = tls_internal::read_tbs_serial(ser_zero_tlv[..], c_z, ser_zero_tlv.len, dummy_cert) &&
+        !tls_internal::read_tbs_serial(ser_neg_tlv[..], c_n, ser_neg_tlv.len, dummy_cert) &&
+        !tls_internal::read_tbs_serial(ser_pad_tlv[..], c_p, ser_pad_tlv.len, dummy_cert) &&
         !tls::validate_asn1_integer(zero_arr[..], true);
 
     // 4. Finding #12: RFC 6960 §4.1.1 issuerNameHash hashes DER SEQUENCE TLV of Name
