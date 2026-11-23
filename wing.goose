@@ -312,6 +312,7 @@ import client.telemetry;
 import client.interceptor;
 import client.stream;
 import client.live_realtime;
+import client.acme;
 
 type Client = client::Client;
 type Session = client::Session;
