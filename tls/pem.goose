@@ -289,8 +289,12 @@ fn cert_expires_within_sec(
         guard pem_next_block(cert_pem, idx, label, der) else { return true; }
         if label[..] == "CERTIFICATE" {
             var parsed = ParsedCert { .. };
-            guard parse_x509_certificate(der[..], parsed) else { return true; }
-            return core::sub_sat_i64(parsed.validity_not_after, now_unix) <= renew_before_sec;
+            guard parse_x509_certificate(der[..], parsed) &&
+                parsed.validity_not_after > 0 else {
+                return true;
+            }
+            let window = max(0, renew_before_sec);
+            return core::sub_sat_i64(parsed.validity_not_after, now_unix) <= window;
         }
     }
     return true;

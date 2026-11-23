@@ -510,6 +510,9 @@ fn test_pem_fullchain_rsa_and_expiry() {
     assert(tls::cert_expires_within_sec(fullchain_pem[..], na - 86400, 86400));
     assert(!tls::cert_expires_within_sec(fullchain_pem[..], na - 86401, 86400));
     assert(tls::cert_expires_within_sec(fullchain_pem[..], na + 10, 0));
+    assert(tls::cert_expires_within_sec(fullchain_pem[..], na + 10, -1000));
+    assert(tls::cert_expires_within_sec(fullchain_pem[..], na, -1000));
+    assert(!tls::cert_expires_within_sec(fullchain_pem[..], na - 1, -1000));
     assert(!tls::cert_expires_within_sec(fullchain_pem[..], -1000, 86400));
     assert(tls::cert_expires_within_sec("NOT-A-PEM", 1750000000, 86400));
 
