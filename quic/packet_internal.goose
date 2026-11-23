@@ -223,6 +223,18 @@ checkfree inline fn decode_unmasked_pn(src: const u8[:], idx: i64, pn_len: i64) 
     return pn_val;
 }
 
+// Extracts the mandatory Retry Token (excluding the trailing 16-byte Retry Integrity Tag) (RFC 9000 §17.2.5).
+//
+// Example:
+//   src = [..., 't', 'o', 'k', <16-byte tag>], idx = header_len
+//   returns: true, token = "tok"
+checkfree inline fn parse_quic_retry_token(src: const u8[:], idx: i64, token: u8[..512]&) -> bool {
+    guard idx >= 0 && idx <= src.len else { return false; }
+    let tail = src[idx..];
+    guard tail.len >= 17 else { return false; }
+    return quic_append_token(token, tail[..^16]);
+}
+
 // Parses a QUIC Long Header (RFC 9000 §17.2).
 //
 // Example:
@@ -271,6 +283,7 @@ checkfree fn parse_quic_long_header(
     }
 
     if hdr.header_type == quic::QuicHeaderType.Retry {
+        guard parse_quic_retry_token(src, idx, hdr.token) else { return hdr, false; }
         hdr.header_len = idx as u32;
         return hdr, true;
     }
@@ -442,15 +455,19 @@ fn encode_quic_long_header<B>(
 
 // Generates 5-byte header protection mask using AES-128-ECB (RFC 9001 Section 5.4.3).
 fn aes128_header_protect_mask(hp_key: const u8[16]&, sample: const u8[16]&) -> u8[5] {
-    let ks = core::aes128_key_schedule(hp_key);
-    let enc = core::aes128_encrypt_block(ks, sample);
+    var ks = core::aes128_key_schedule(hp_key);
+    defer core::zeroize_aes128_ks(ks);
+    var enc = core::aes128_encrypt_block(ks, sample);
+    defer core::secure_zeroize_16(enc);
     return [enc[0], enc[1], enc[2], enc[3], enc[4]];
 }
 
 // Generates 5-byte header protection mask using AES-256-ECB.
 fn aes256_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) -> u8[5] {
-    let ks = core::aes256_key_schedule(hp_key);
-    let enc = core::aes_encrypt_block(ks, sample);
+    var ks = core::aes256_key_schedule(hp_key);
+    defer core::zeroize_aes256_ks(ks);
+    var enc = core::aes_encrypt_block(ks, sample);
+    defer core::secure_zeroize_16(enc);
     return [enc[0], enc[1], enc[2], enc[3], enc[4]];
 }
 
@@ -459,7 +476,8 @@ fn chacha20_header_protect_mask(hp_key: const u8[32]&, sample: const u8[16]&) ->
     let counter = core::load_u32_le(sample[..], 0);
     var nonce12: u8[12] = [0; 12];
     for i in 12 { nonce12[i] = sample[4 + i]; }
-    let blk = core::chacha20_block(hp_key, counter, nonce12);
+    var blk = core::chacha20_block(hp_key, counter, nonce12);
+    defer core::secure_zeroize_64(blk);
     return [blk[0], blk[1], blk[2], blk[3], blk[4]];
 }
 
@@ -473,9 +491,11 @@ inline fn compute_batch_aes128_masks(
     var k16: u8[16] = [0; 16];
     defer core::secure_zeroize_16(k16);
     for i in 16 { k16[i] = hp_key[i]; }
-    let ks = core::aes128_key_schedule(k16);
+    var ks = core::aes128_key_schedule(k16);
+    defer core::zeroize_aes128_ks(ks);
     for b in n {
-        let enc = core::aes128_encrypt_block(ks, samples[b]);
+        var enc = core::aes128_encrypt_block(ks, samples[b]);
+        defer core::secure_zeroize_16(enc);
         masks[b] = [enc[0], enc[1], enc[2], enc[3], enc[4]];
     }
     return n;
@@ -491,9 +511,11 @@ inline fn compute_batch_aes256_masks(
     var k32: u8[32] = [0; 32];
     defer core::secure_zeroize_32(k32);
     for i in 32 { k32[i] = hp_key[i]; }
-    let ks = core::aes256_key_schedule(k32);
+    var ks = core::aes256_key_schedule(k32);
+    defer core::zeroize_aes256_ks(ks);
     for b in n {
-        let enc = core::aes_encrypt_block(ks, samples[b]);
+        var enc = core::aes_encrypt_block(ks, samples[b]);
+        defer core::secure_zeroize_16(enc);
         masks[b] = [enc[0], enc[1], enc[2], enc[3], enc[4]];
     }
     return n;

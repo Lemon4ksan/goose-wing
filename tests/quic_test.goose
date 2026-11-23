@@ -1409,7 +1409,6 @@ fn test_rfc9000_packet_number_decoding(t: lit::T&) {
 fn test_connection_datagram_demuxing(t: lit::T&) {
     let scid: u8[4] = [0x01, 0x02, 0x03, 0x04];
     var conn = quic::new_server_connection(scid[..]);
-    conn.allow_unencrypted_test_packets = true;
 
     // Construct a synthetic 1-RTT packet:
     // Byte 0: 0x40 (Short header, 1-RTT, 1-byte PN)
@@ -1426,7 +1425,7 @@ fn test_connection_datagram_demuxing(t: lit::T&) {
     t.assert_true(ok_enc, "stream frame encoded into datagram");
 
     var out_ack = quic::AckFrame { .. };
-    let _pr_handled = quic::process_datagram(conn, dgram[..], 1000, out_ack);
+    let _pr_handled = quic_internal::process_unencrypted_test_datagram(conn, dgram[..], 1000, out_ack);
     let handled = _pr_handled.handled;
     let needs_ack = _pr_handled.needs_ack;
     t.assert_true(handled, "datagram handled successfully");
@@ -1441,7 +1440,6 @@ fn test_connection_datagram_demuxing(t: lit::T&) {
     // Now test connection-level ingress violation with exceeding payload
     let scid2: u8[4] = [0x05, 0x06, 0x07, 0x08];
     var conn2 = quic::new_server_connection(scid2[..]);
-    conn2.allow_unencrypted_test_packets = true;
     conn2.flow_ctrl.max_data_local = 10; // Low limit
 
     var dgram2: u8[..128] = [];
@@ -1452,7 +1450,7 @@ fn test_connection_datagram_demuxing(t: lit::T&) {
     let _ = quic::encode_stream_frame(0, 0, "0123456789ABCDEFGHIJ", dgram2, quic::QuicStreamFlags { fin: true, with_len: false }); // 20 bytes > 10
 
     var out_ack2 = quic::AckFrame { .. };
-    let _pr_handled2 = quic::process_datagram(conn2, dgram2[..], 2000, out_ack2);
+    let _pr_handled2 = quic_internal::process_unencrypted_test_datagram(conn2, dgram2[..], 2000, out_ack2);
     let handled2 = _pr_handled2.handled;
     t.assert_false(handled2, "violating datagram returns handled=false");
     t.assert_eq(conn2.state, quic::QuicConnState.Closing, "connection transitioned to Closing");
@@ -1639,8 +1637,8 @@ fn test_connection_migration(t: lit::T&) {
         sub.assert_eq(active_addr.port, 4433, "initial port is 4433");
         sub.assert_true(quic::addr_eq(active_addr, initial_addr), "initial addr matched");
 
-        var seed: u64 = 0xDEADBEEFCAFE;
-        let token = quic::generate_path_challenge_token(seed);
+        let token, ok_tok = quic::generate_path_challenge_token();
+        sub.assert_true(ok_tok, "CSPRNG path challenge token generated");
 
         let new_addr = quic::new_endpoint_addr("203.0.113.50", 9000);
         quic::start_probing(mgr, new_addr, token);
@@ -1840,7 +1838,6 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-01: Flow Control & ResetStream field mapping (RFC 9000)") { sub =>
         let scid: u8[4] = [0x11, 0x22, 0x33, 0x44];
         var conn = quic::new_server_connection(scid[..]);
-        conn.allow_unencrypted_test_packets = true;
 
         // 1. MAX_DATA datagram updates conn.flow_ctrl.max_data_remote
         var dgram_md: u8[..64] = [];
@@ -1850,7 +1847,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         quic::encode_max_data_frame(750000, dgram_md);
 
         var ack_out = quic::AckFrame { .. };
-        let _pr_handled_md = quic::process_datagram(conn, dgram_md[..], 1000, ack_out);
+        let _pr_handled_md = quic_internal::process_unencrypted_test_datagram(conn, dgram_md[..], 1000, ack_out);
         let handled_md = _pr_handled_md.handled;
         sub.assert_true(handled_md, "max_data datagram handled");
         sub.assert_eq(conn.flow_ctrl.max_data_remote, 750000, "remote max_data updated to 750000");
@@ -1861,7 +1858,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         dgram_st.append(scid[..]);
         dgram_st.push(0x02);
         quic::encode_stream_frame(0, 0, "ping", dgram_st, quic::QuicStreamFlags { fin: false, with_len: true });
-        let _pr_handled_st = quic::process_datagram(conn, dgram_st[..], 1001, ack_out);
+        let _pr_handled_st = quic_internal::process_unencrypted_test_datagram(conn, dgram_st[..], 1001, ack_out);
         let handled_st = _pr_handled_st.handled;
         sub.assert_true(handled_st, "stream 0 created");
 
@@ -1871,7 +1868,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         dgram_msd.append(scid[..]);
         dgram_msd.push(0x03);
         quic::encode_max_stream_data_frame(0, 350000, dgram_msd);
-        let _pr_handled_msd = quic::process_datagram(conn, dgram_msd[..], 1002, ack_out);
+        let _pr_handled_msd = quic_internal::process_unencrypted_test_datagram(conn, dgram_msd[..], 1002, ack_out);
         let handled_msd = _pr_handled_msd.handled;
         sub.assert_true(handled_msd, "max_stream_data datagram handled");
         let _fs_st_idx_idx, _fs_st_idx_ok = quic::find_stream(conn.stream_table, 0);
@@ -1889,7 +1886,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         dgram_rst.append(scid[..]);
         dgram_rst.push(0x04);
         quic::encode_reset_stream_frame(0, 0x99, 1200, dgram_rst);
-        let _pr_handled_rst = quic::process_datagram(conn, dgram_rst[..], 1003, ack_out);
+        let _pr_handled_rst = quic_internal::process_unencrypted_test_datagram(conn, dgram_rst[..], 1003, ack_out);
         let handled_rst = _pr_handled_rst.handled;
         sub.assert_true(handled_rst, "reset_stream datagram handled");
         sub.assert_eq(conn.stream_table.streams[st_idx as i64].recv_final_size, 1200, "stream recv_final_size set to 1200");
@@ -1899,7 +1896,6 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-02: Multiplexed ACK and STREAM payload processing & Frame Error") { sub =>
         let scid: u8[4] = [0x21, 0x22, 0x23, 0x24];
         var conn = quic::new_server_connection(scid[..]);
-        conn.allow_unencrypted_test_packets = true;
         quic::record_sent(conn, quic::PnSpaceId.ApplicationData, 0, 1200, true, 1000);
 
         // Synthesize datagram containing ACK frame followed by STREAM frame
@@ -1919,7 +1915,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         quic::encode_stream_frame(0, 0, "ACK+STREAM", dgram, quic::QuicStreamFlags { fin: true, with_len: true });
 
         var ack_out = quic::AckFrame { .. };
-        let _pr_handled = quic::process_datagram(conn, dgram[..], 2000, ack_out);
+        let _pr_handled = quic_internal::process_unencrypted_test_datagram(conn, dgram[..], 2000, ack_out);
         let handled = _pr_handled.handled;
         let needs_ack = _pr_handled.needs_ack;
         sub.assert_true(handled, "multiplexed ACK+STREAM datagram handled successfully");
@@ -1937,7 +1933,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         // Varint with 2-bit prefix 11 (requires 8 bytes) but only 1 byte present
         bad_dgram.push(0xC0);
 
-        let _pr_bad_handled = quic::process_datagram(conn, bad_dgram[..], 2001, ack_out);
+        let _pr_bad_handled = quic_internal::process_unencrypted_test_datagram(conn, bad_dgram[..], 2001, ack_out);
         let bad_handled = _pr_bad_handled.handled;
         sub.assert_false(bad_handled, "corrupt frame payload rejected");
         sub.assert_true(conn.state == quic::QuicConnState.Closing, "connection moved to Closing on corrupt frame");
@@ -1947,7 +1943,6 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-03: Peer Stream Limit Enforcement (RFC 9000 §4.6)") { sub =>
         let scid: u8[4] = [0x31, 0x32, 0x33, 0x34];
         var conn = quic::new_server_connection(scid[..]);
-        conn.allow_unencrypted_test_packets = true;
         conn.stream_table.max_streams_bidi = 5; // Allow streams 0, 4, 8, 12, 16 (stream_idx 0..4)
 
         // Stream ID 20 corresponds to stream_idx 5 -> exceeds limit 5!
@@ -1958,7 +1953,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         quic::encode_stream_frame(20, 0, "limit-exceeded", dgram, quic::QuicStreamFlags { fin: false, with_len: true });
 
         var ack_out = quic::AckFrame { .. };
-        let _pr_handled = quic::process_datagram(conn, dgram[..], 3000, ack_out);
+        let _pr_handled = quic_internal::process_unencrypted_test_datagram(conn, dgram[..], 3000, ack_out);
         let handled = _pr_handled.handled;
         sub.assert_false(handled, "stream ID exceeding max_streams_bidi rejected");
         sub.assert_true(conn.state == quic::QuicConnState.Closing, "connection in Closing state");
@@ -1968,7 +1963,6 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
     t.run("FIX-04: HANDSHAKE_DONE server rejection and PATH_CHALLENGE accounting") { sub =>
         let scid: u8[4] = [0x41, 0x42, 0x43, 0x44];
         var conn = quic::new_server_connection(scid[..]);
-        conn.allow_unencrypted_test_packets = true;
 
         // Server receives HANDSHAKE_DONE frame (0x1E)
         var dgram_hd: u8[..32] = [];
@@ -1978,7 +1972,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         quic::encode_handshake_done_frame(dgram_hd);
 
         var ack_out = quic::AckFrame { .. };
-        let _pr_handled_hd = quic::process_datagram(conn, dgram_hd[..], 4000, ack_out);
+        let _pr_handled_hd = quic_internal::process_unencrypted_test_datagram(conn, dgram_hd[..], 4000, ack_out);
         let handled_hd = _pr_handled_hd.handled;
         sub.assert_false(handled_hd, "server rejects HANDSHAKE_DONE");
         sub.assert_true(conn.state == quic::QuicConnState.Closing, "connection Closing");
@@ -1986,7 +1980,6 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
 
         // Fresh connection: PATH_CHALLENGE byte accounting
         var conn2 = quic::new_server_connection(scid[..]);
-        conn2.allow_unencrypted_test_packets = true;
         var dgram_pc: u8[..32] = [];
         dgram_pc.push(0x40);
         dgram_pc.append(scid[..]);
@@ -1995,7 +1988,7 @@ fn test_quic_cross_module_bug_fixes(t: lit::T&) {
         quic::encode_path_challenge_frame(challenge_data, dgram_pc);
 
         let initial_bytes = conn2.bytes_received;
-        let _pr_handled_pc = quic::process_datagram(conn2, dgram_pc[..], 4001, ack_out);
+        let _pr_handled_pc = quic_internal::process_unencrypted_test_datagram(conn2, dgram_pc[..], 4001, ack_out);
         let handled_pc = _pr_handled_pc.handled;
         sub.assert_true(handled_pc, "path challenge processed");
         sub.assert_eq(
@@ -2742,7 +2735,6 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
     t.run("QUINN-CONN-02: Out-of-Order STREAM + Early FIN + Conflicting RESET_STREAM Final-Size Guard (RFC 9000 §4.5)") { sub =>
         let scid: u8[4] = [0x10, 0x20, 0x30, 0x40];
         var srv = quic::new_server_connection(scid[..]);
-        srv.allow_unencrypted_test_packets = true;
         var ack_out = quic::AckFrame { .. };
 
         // 1. Arrive out-of-order tail fragment [offset=10, len=5, fin=true] -> establishes final_size = 15 (SizeKnown)
@@ -2754,7 +2746,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
             quic::encode_stream_frame(0, 10, "KLMNO", dgram1, quic::QuicStreamFlags { fin: true, with_len: true }),
             "encode tail FIN fragment at offset 10..15",
         );
-        let _pr_ok1 = quic::process_datagram(srv, dgram1[..], 1000, ack_out);
+        let _pr_ok1 = quic_internal::process_unencrypted_test_datagram(srv, dgram1[..], 1000, ack_out);
         let ok1 = _pr_ok1.handled;
         sub.assert_true(ok1, "tail FIN fragment accepted");
         let _fs_idx_idx, _fs_idx_ok = quic::find_stream(srv.stream_table, 0);
@@ -2776,7 +2768,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
             quic::encode_stream_frame(0, 5, "FGHIJ", dgram2, quic::QuicStreamFlags { fin: false, with_len: true }),
             "encode middle fragment 5..10",
         );
-        let _pr_ok2 = quic::process_datagram(srv, dgram2[..], 1010, ack_out);
+        let _pr_ok2 = quic_internal::process_unencrypted_test_datagram(srv, dgram2[..], 1010, ack_out);
         let ok2 = _pr_ok2.handled;
         sub.assert_true(ok2, "middle fragment accepted");
         sub.assert_true(
@@ -2797,7 +2789,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
             quic::encode_reset_stream_frame(0, 0x42, 25, dgram_bad_rst),
             "encode conflicting RESET_STREAM final_size=25",
         );
-        let _pr_ok_bad_rst = quic::process_datagram(srv_conflict, dgram_bad_rst[..], 1020, ack_out);
+        let _pr_ok_bad_rst = quic_internal::process_unencrypted_test_datagram(srv_conflict, dgram_bad_rst[..], 1020, ack_out);
         let ok_bad_rst = _pr_ok_bad_rst.handled;
         sub.assert_false(ok_bad_rst, "conflicting RESET_STREAM final_size=25 (!= 15) rejected");
         sub.assert_eq(
@@ -2817,7 +2809,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
             quic::encode_stream_frame(0, 12, "PQRST", dgram_past, quic::QuicStreamFlags { fin: false, with_len: true }),
             "encode STREAM past established FIN",
         );
-        let _pr_ok_past = quic::process_datagram(srv_past_fin, dgram_past[..], 1020, ack_out);
+        let _pr_ok_past = quic_internal::process_unencrypted_test_datagram(srv_past_fin, dgram_past[..], 1020, ack_out);
         let ok_past = _pr_ok_past.handled;
         sub.assert_false(ok_past, "STREAM past established final_size rejected");
         sub.assert_eq(srv_past_fin.close_code, rfc::QUIC_ERR_FINAL_SIZE, "closed with FINAL_SIZE_ERROR (0x06)");
@@ -2831,7 +2823,7 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
             quic::encode_stream_frame(0, 0, "ABCDE", dgram3, quic::QuicStreamFlags { fin: false, with_len: true }),
             "encode head fragment 0..5",
         );
-        let _pr_ok3 = quic::process_datagram(srv, dgram3[..], 1030, ack_out);
+        let _pr_ok3 = quic_internal::process_unencrypted_test_datagram(srv, dgram3[..], 1030, ack_out);
         let ok3 = _pr_ok3.handled;
         sub.assert_true(ok3, "head fragment 0..5 accepted");
         sub.assert_true(
@@ -2861,7 +2853,6 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // Case A: Server receives STREAM on Server-Initiated Uni stream (ID 3) -> STREAM_STATE_ERROR (cannot receive on send-only stream)
         var srv_a = quic::new_server_connection(scid[..]);
-        srv_a.allow_unencrypted_test_packets = true;
         let sid_a, _, ok_open_s3 = quic::open_local_stream(srv_a.stream_table, false);
         sub.assert_true(ok_open_s3, "server opens its own Uni stream 3");
         sub.assert_eq(sid_a, 3, "server local Uni stream ID is 3");
@@ -2870,86 +2861,80 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
         d_s3.append(scid[..]);
         d_s3.push(0x01);
         quic::encode_stream_frame(3, 0, "illegal", d_s3, quic::QuicStreamFlags { fin: false, with_len: true });
-        let _pr_ok_a = quic::process_datagram(srv_a, d_s3[..], 1000, ack_out);
+        let _pr_ok_a = quic_internal::process_unencrypted_test_datagram(srv_a, d_s3[..], 1000, ack_out);
         let ok_a = _pr_ok_a.handled;
         sub.assert_false(ok_a, "Server rejects inbound STREAM on Server-Uni stream 3");
         sub.assert_eq(srv_a.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
 
         // Case B: Server receives STREAM on unopened Server-Initiated Bidi stream (ID 1) -> STREAM_STATE_ERROR
         var srv_b = quic::new_server_connection(scid[..]);
-        srv_b.allow_unencrypted_test_packets = true;
         var d_s1: u8[..64] = [];
         d_s1.push(0x40);
         d_s1.append(scid[..]);
         d_s1.push(0x01);
         quic::encode_stream_frame(1, 0, "unopened-local", d_s1, quic::QuicStreamFlags { fin: false, with_len: true });
-        let _pr_ok_b = quic::process_datagram(srv_b, d_s1[..], 1000, ack_out);
+        let _pr_ok_b = quic_internal::process_unencrypted_test_datagram(srv_b, d_s1[..], 1000, ack_out);
         let ok_b = _pr_ok_b.handled;
         sub.assert_false(ok_b, "Server rejects inbound STREAM on unopened local Bidi stream 1");
         sub.assert_eq(srv_b.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
 
         // Case C: Server receives STOP_SENDING on Client-Initiated Uni stream (ID 2, recv-only for server) -> STREAM_STATE_ERROR
         var srv_c = quic::new_server_connection(scid[..]);
-        srv_c.allow_unencrypted_test_packets = true;
         var d_ss2: u8[..64] = [];
         d_ss2.push(0x40);
         d_ss2.append(scid[..]);
         d_ss2.push(0x01);
         quic::encode_stop_sending_frame(2, 0x01, d_ss2);
-        let _pr_ok_c = quic::process_datagram(srv_c, d_ss2[..], 1000, ack_out);
+        let _pr_ok_c = quic_internal::process_unencrypted_test_datagram(srv_c, d_ss2[..], 1000, ack_out);
         let ok_c = _pr_ok_c.handled;
         sub.assert_false(ok_c, "Server rejects STOP_SENDING on Client-Uni stream 2 (server has no send side)");
         sub.assert_eq(srv_c.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
 
         // Case D: Server receives MAX_STREAM_DATA on Client-Initiated Uni stream (ID 2) -> STREAM_STATE_ERROR
         var srv_d = quic::new_server_connection(scid[..]);
-        srv_d.allow_unencrypted_test_packets = true;
         var d_msd2: u8[..64] = [];
         d_msd2.push(0x40);
         d_msd2.append(scid[..]);
         d_msd2.push(0x01);
         quic::encode_max_stream_data_frame(2, 65536, d_msd2);
-        let _pr_ok_d = quic::process_datagram(srv_d, d_msd2[..], 1000, ack_out);
+        let _pr_ok_d = quic_internal::process_unencrypted_test_datagram(srv_d, d_msd2[..], 1000, ack_out);
         let ok_d = _pr_ok_d.handled;
         sub.assert_false(ok_d, "Server rejects MAX_STREAM_DATA on recv-only Client-Uni stream 2");
         sub.assert_eq(srv_d.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
 
         // Case E: Server receives STREAM_DATA_BLOCKED on Server-Initiated Uni stream (ID 3) -> STREAM_STATE_ERROR
         var srv_e = quic::new_server_connection(scid[..]);
-        srv_e.allow_unencrypted_test_packets = true;
         let _, _, _ = quic::open_local_stream(srv_e.stream_table, false);
         var d_sdb3: u8[..64] = [];
         d_sdb3.push(0x40);
         d_sdb3.append(scid[..]);
         d_sdb3.push(0x01);
         quic::encode_stream_data_blocked_frame(3, 1024, d_sdb3);
-        let _pr_ok_e = quic::process_datagram(srv_e, d_sdb3[..], 1000, ack_out);
+        let _pr_ok_e = quic_internal::process_unencrypted_test_datagram(srv_e, d_sdb3[..], 1000, ack_out);
         let ok_e = _pr_ok_e.handled;
         sub.assert_false(ok_e, "Server rejects STREAM_DATA_BLOCKED on send-only Server-Uni stream 3");
         sub.assert_eq(srv_e.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
 
         // Case F: Client connection receives STREAM on Server-Initiated Uni stream (ID 3) -> VALID!
         var cli_f = quic::new_client_connection(scid[..], scid[..]);
-        cli_f.allow_unencrypted_test_packets = true;
         var d_cli3: u8[..64] = [];
         d_cli3.push(0x40);
         d_cli3.append(scid[..]);
         d_cli3.push(0x01);
         quic::encode_stream_frame(3, 0, "server-push-uni", d_cli3, quic::QuicStreamFlags { fin: true, with_len: true });
-        let _pr_ok_f = quic::process_datagram(cli_f, d_cli3[..], 1000, ack_out);
+        let _pr_ok_f = quic_internal::process_unencrypted_test_datagram(cli_f, d_cli3[..], 1000, ack_out);
         let ok_f = _pr_ok_f.handled;
         sub.assert_true(ok_f, "Client accepts inbound STREAM on Server-Uni stream 3");
 
         // Case G: Client connection receives RESET_STREAM on Client-Initiated Uni stream (ID 2) -> STREAM_STATE_ERROR
         var cli_g = quic::new_client_connection(scid[..], scid[..]);
-        cli_g.allow_unencrypted_test_packets = true;
         let _, _, _ = quic::open_local_stream(cli_g.stream_table, false);
         var d_rst2: u8[..64] = [];
         d_rst2.push(0x40);
         d_rst2.append(scid[..]);
         d_rst2.push(0x02);
         quic::encode_reset_stream_frame(2, 0x01, 0, d_rst2);
-        let _pr_ok_g = quic::process_datagram(cli_g, d_rst2[..], 1010, ack_out);
+        let _pr_ok_g = quic_internal::process_unencrypted_test_datagram(cli_g, d_rst2[..], 1010, ack_out);
         let ok_g = _pr_ok_g.handled;
         sub.assert_false(ok_g, "Client rejects inbound RESET_STREAM on its own send-only Uni stream 2");
         sub.assert_eq(cli_g.close_code, rfc::QUIC_ERR_STREAM_STATE, "STREAM_STATE_ERROR (0x05)");
@@ -3185,7 +3170,6 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
 
         // 1. Valid NEW_CONNECTION_ID (seq=2, retire_prior_to=1 <= seq) on connection with non-empty peer DCID
         var srv1 = quic::new_client_connection(scid[..], scid[..]);
-        srv1.allow_unencrypted_test_packets = true;
         var d_ncid_ok: u8[..64] = [];
         d_ncid_ok.push(0x40);
         d_ncid_ok.append(scid[..]);
@@ -3196,21 +3180,19 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
             quic::encode_new_conn_id_frame(2, 1, new_cid[..], reset_tok, d_ncid_ok),
             "encode valid NEW_CONNECTION_ID",
         );
-        let _pr_ok_ncid = quic::process_datagram(srv1, d_ncid_ok[..], 1000, ack_out);
+        let _pr_ok_ncid = quic_internal::process_unencrypted_test_datagram(srv1, d_ncid_ok[..], 1000, ack_out);
         let ok_ncid = _pr_ok_ncid.handled;
         sub.assert_true(ok_ncid, "valid NEW_CONNECTION_ID accepted");
 
         // 1b. NEW_CONNECTION_ID on endpoint with 0-length peer DCID -> PROTOCOL_VIOLATION (RFC 9000 §19.15)
         var srv1_zero_dcid = quic::new_server_connection(scid[..]); // dcid is initially empty
-        srv1_zero_dcid.allow_unencrypted_test_packets = true;
-        let _pr_ok_ncid_zero = quic::process_datagram(srv1_zero_dcid, d_ncid_ok[..], 1000, ack_out);
+        let _pr_ok_ncid_zero = quic_internal::process_unencrypted_test_datagram(srv1_zero_dcid, d_ncid_ok[..], 1000, ack_out);
         let ok_ncid_zero = _pr_ok_ncid_zero.handled;
         sub.assert_false(ok_ncid_zero, "NEW_CONNECTION_ID rejected when peer DCID is 0-length (RFC 9000 §19.15)");
         sub.assert_eq(srv1_zero_dcid.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "PROTOCOL_VIOLATION (0x0A)");
 
         // 2. Invalid NEW_CONNECTION_ID with retire_prior_to (5) > seq_num (3) -> rejected at frame decode as FRAME_ENCODING_ERROR
         var srv2 = quic::new_server_connection(scid[..]);
-        srv2.allow_unencrypted_test_packets = true;
         var d_ncid_bad: u8[..64] = [];
         d_ncid_bad.push(0x40);
         d_ncid_bad.append(scid[..]);
@@ -3221,34 +3203,32 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
         d_ncid_bad.push(0x04); // cid len = 4
         d_ncid_bad.append("1234");
         d_ncid_bad.append(reset_tok[..]);
-        let _pr_ok_ncid_bad = quic::process_datagram(srv2, d_ncid_bad[..], 1000, ack_out);
+        let _pr_ok_ncid_bad = quic_internal::process_unencrypted_test_datagram(srv2, d_ncid_bad[..], 1000, ack_out);
         let ok_ncid_bad = _pr_ok_ncid_bad.handled;
         sub.assert_false(ok_ncid_bad, "NEW_CONNECTION_ID with retire_prior_to > seq_num rejected");
         sub.assert_eq(srv2.close_code, rfc::QUIC_ERR_FRAME_ENCODING, "FRAME_ENCODING_ERROR (0x07)");
 
         // 3. Server receiving NEW_TOKEN (0x07) -> PROTOCOL_VIOLATION (RFC 9000 §19.7: only client may receive NEW_TOKEN)
         var srv3 = quic::new_server_connection(scid[..]);
-        srv3.allow_unencrypted_test_packets = true;
         var d_nt_srv: u8[..64] = [];
         d_nt_srv.push(0x40);
         d_nt_srv.append(scid[..]);
         d_nt_srv.push(0x01);
         quic::encode_new_token_frame("address-validation-token", d_nt_srv);
-        let _pr_ok_nt_srv = quic::process_datagram(srv3, d_nt_srv[..], 1000, ack_out);
+        let _pr_ok_nt_srv = quic_internal::process_unencrypted_test_datagram(srv3, d_nt_srv[..], 1000, ack_out);
         let ok_nt_srv = _pr_ok_nt_srv.handled;
         sub.assert_false(ok_nt_srv, "Server rejects inbound NEW_TOKEN frame");
         sub.assert_eq(srv3.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "PROTOCOL_VIOLATION (0x0A)");
 
         // 4. Client receiving NEW_TOKEN + HANDSHAKE_DONE -> accepted and sets handshake_confirmed = true
         var cli4 = quic::new_client_connection(scid[..], scid[..]);
-        cli4.allow_unencrypted_test_packets = true;
         var d_cli_ok: u8[..64] = [];
         d_cli_ok.push(0x40);
         d_cli_ok.append(scid[..]);
         d_cli_ok.push(0x01);
         quic::encode_new_token_frame("address-validation-token", d_cli_ok);
         quic::encode_handshake_done_frame(d_cli_ok);
-        let _pr_ok_cli = quic::process_datagram(cli4, d_cli_ok[..], 1000, ack_out);
+        let _pr_ok_cli = quic_internal::process_unencrypted_test_datagram(cli4, d_cli_ok[..], 1000, ack_out);
         let ok_cli = _pr_ok_cli.handled;
         let needs_ack_cli = _pr_ok_cli.needs_ack;
         sub.assert_true(ok_cli, "Client accepts NEW_TOKEN + HANDSHAKE_DONE");
@@ -3258,13 +3238,12 @@ fn test_ngtcp2_and_quinn_connection_dynamics(t: lit::T&) {
         // 5. RETIRE_CONNECTION_ID on connection with 0-length local SCID -> PROTOCOL_VIOLATION (RFC 9000 §19.16)
         let empty_cid: u8[0] = [];
         var srv5 = quic::new_server_connection(empty_cid[..]);
-        srv5.allow_unencrypted_test_packets = true;
         var d_ret: u8[..32] = [];
         d_ret.push(0x40);
         d_ret.push(0x01);
         d_ret.push(0x19); // RETIRE_CONNECTION_ID (0x19)
         d_ret.push(0x00); // sequence_number = 0
-        let _pr_ok_ret_empty = quic::process_datagram(srv5, d_ret[..], 1000, ack_out);
+        let _pr_ok_ret_empty = quic_internal::process_unencrypted_test_datagram(srv5, d_ret[..], 1000, ack_out);
         let ok_ret_empty = _pr_ok_ret_empty.handled;
         sub.assert_false(ok_ret_empty, "RETIRE_CONNECTION_ID on 0-len SCID connection rejected");
         sub.assert_eq(srv5.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "PROTOCOL_VIOLATION (0x0A)");
@@ -3476,6 +3455,219 @@ fn test_quic_ack_underflow(t: lit::T&) {
     t.assert_false(ok, "Huge gap wrapping in gap + 2 must be safely rejected");
 }
 
+// ----------------------------------------------------------------------------
+// 36. Wave 4 Crypto Audit Hardening: Retry Tag, 0-RTT, KeyUpdate, AEAD Limits
+// ----------------------------------------------------------------------------
+fn test_quic_wave4_crypto_audit_hardening(t: lit::T&) {
+    t.run("TLS-08: RFC 9369 Appendix A.4 Retry Integrity Tag & Client State Binding") { sub =>
+        // RFC 9369 Appendix A.4 exact QUIC v2 Retry packet vector
+        let odcid_v2: u8[8] = [0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08];
+        let retry_v2: u8[36] = [
+            0xcf, 0x6b, 0x33, 0x43, 0xcf, 0x00, 0x08, 0xf0,
+            0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62, 0xb5, 0x74,
+            0x6f, 0x6b, 0x65, 0x6e, 0xc8, 0x64, 0x6c, 0xe8,
+            0xbf, 0xe3, 0x39, 0x52, 0xd9, 0x55, 0x54, 0x36,
+            0x65, 0xdc, 0xc7, 0xb6,
+        ];
+        sub.assert_true(
+            quic::verify_retry_integrity_tag(odcid_v2[..], retry_v2[..], rfc::QUIC_VERSION_2),
+            "RFC 9369 Appendix A.4 v2 Retry tag verifies",
+        );
+
+        var tampered_v2 = retry_v2;
+        tampered_v2[35] ^= 0x01;
+        sub.assert_false(
+            quic::verify_retry_integrity_tag(odcid_v2[..], tampered_v2[..], rfc::QUIC_VERSION_2),
+            "tampered v2 Retry tag rejected",
+        );
+
+        // Client in Initial accepts valid Retry once, updates DCID & token, rejects duplicate Retry
+        let empty_scid: u8[0] = [];
+        var cli = quic::new_client_connection(odcid_v2[..], empty_scid[..]);
+        sub.assert_true(quic::install_initial_keys(cli, odcid_v2[..], rfc::QUIC_VERSION_2), "install initial v2 keys");
+        var out_ack = quic::AckFrame { .. };
+        let res_bad = quic::process_datagram(cli, tampered_v2[..], 1000, out_ack);
+        sub.assert_false(res_bad.handled, "client rejects tampered Retry");
+        sub.assert_false(cli.retry_received, "retry_received stays false after bad Retry");
+
+        let res_ok = quic::process_datagram(cli, retry_v2[..], 1001, out_ack);
+        sub.assert_true(res_ok.handled, "client accepts valid v2 Retry");
+        sub.assert_true(cli.retry_received, "retry_received set to true");
+        sub.assert_eq(cli.retry_token[..], "token", "Retry token stored");
+        let new_scid: u8[8] = [0xf0, 0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62, 0xb5];
+        sub.assert_eq(cli.dcid[..], new_scid[..], "client DCID switched to Retry SCID");
+
+        let res_dup = quic::process_datagram(cli, retry_v2[..], 1002, out_ack);
+        sub.assert_false(res_dup.handled, "second Retry rejected");
+
+        // Server MUST reject Retry packets
+        var srv = quic::new_server_connection(empty_scid[..]);
+        let res_srv = quic::process_datagram(srv, retry_v2[..], 1003, out_ack);
+        sub.assert_false(res_srv.handled, "server discards Retry packet");
+    };
+
+    t.run("TLS-09: 0-RTT Key Separation, Client Rejection & Replay Protection") { sub =>
+        let srv_cid = "srv0rtt1";
+        let cli_cid = "cli0rtt1";
+        let hp0: u8[16] = [0x11; 16];
+        let k0:  u8[16] = [0x22; 16];
+        let iv0: u8[12] = [0x33; 12];
+        let hp1: u8[16] = [0x44; 16];
+        let k1:  u8[16] = [0x55; 16];
+        let iv1: u8[12] = [0x66; 12];
+
+        var tx0 = quic::PnSpaceState { space_id: quic::PnSpaceId.ApplicationData, .. };
+        sub.assert_true(quic::install_keys(tx0, hp0[..], k0[..], iv0[..], 0x1301), "install tx 0-RTT keys");
+
+        var hdr0 = quic::QuicHeader {
+            header_type:   quic::QuicHeaderType.ZeroRtt,
+            version:       rfc::QUIC_VERSION_1,
+            packet_number: 7,
+            ..
+        };
+        hdr0.dcid.append(srv_cid);
+        hdr0.scid.append(cli_cid);
+        var ping_pl: u8[2]     = [0x01, 0x00]; // PING + PADDING (>= 2B so pn_len=2 + ct + 16B tag >= 20B HP sample)
+        var pkt0:    u8[..256] = [];
+        sub.assert_true(quic::seal_packet(tx0, hdr0, 2, ping_pl[..], pkt0), "seal 0-RTT packet");
+
+        // Client MUST reject 0-RTT packets with PROTOCOL_VIOLATION
+        var cli = quic::new_client_connection(srv_cid, cli_cid);
+        var ack_out = quic::AckFrame { .. };
+        let res_cli = quic::process_datagram(cli, pkt0[..], 1000, ack_out);
+        sub.assert_false(res_cli.handled, "client rejects 0-RTT packet");
+        sub.assert_eq(cli.close_code, rfc::QUIC_ERR_PROTOCOL_VIOLATION, "client closes with PROTOCOL_VIOLATION");
+
+        // Server with ONLY 1-RTT app_space keys (even matching values) MUST NOT decrypt 0-RTT
+        var srv_only_1rtt = quic::new_server_connection(srv_cid);
+        sub.assert_true(quic::install_keys(srv_only_1rtt.app_space, hp0[..], k0[..], iv0[..], 0x1301), "install 1-RTT only");
+        let res_no0 = quic::process_datagram(srv_only_1rtt, pkt0[..], 1000, ack_out);
+        sub.assert_false(res_no0.handled, "server without zero_rtt_keys does not use 1-RTT keys for 0-RTT");
+
+        // Server with separate zero_rtt_keys accepts first 0-RTT packet and suppresses replay
+        var srv = quic::new_server_connection(srv_cid);
+        sub.assert_true(quic::install_keys(srv.app_space, hp1[..], k1[..], iv1[..], 0x1301), "install separate 1-RTT keys");
+        sub.assert_true(quic::install_zero_rtt_keys(srv, hp0[..], k0[..], iv0[..], 0x1301), "install separate 0-RTT keys");
+        let res_first = quic::process_datagram(srv, pkt0[..], 1000, ack_out);
+        sub.assert_true(res_first.handled, "server accepts valid 0-RTT packet");
+        sub.assert_true(srv.state == quic::QuicConnState.Initial, "0-RTT does not prematurely promote state to Established");
+        let res_replay = quic::process_datagram(srv, pkt0[..], 1001, ack_out);
+        sub.assert_false(res_replay.handled, "replayed 0-RTT PN rejected");
+    };
+
+    t.run("TLS-10, TLS-12, TLS-13, EDGE-16: CSPRNG Path Token, KeyUpdate, AEAD Limits & Fail-Closed") { sub =>
+        // TLS-10: OS CSPRNG path challenge tokens
+        let tok1, ok_t1 = quic::generate_path_challenge_token();
+        let tok2, ok_t2 = quic::generate_path_challenge_token();
+        sub.assert_true(ok_t1 && ok_t2, "CSPRNG path challenge tokens generated");
+        sub.assert_false(tok1[..] == tok2[..], "consecutive CSPRNG path tokens differ");
+
+        // TLS-12: RFC 9369 Appendix A.5 ChaCha20-Poly1305 QUIC v2 "quicv2 ku" vector
+        let sec_a5: u8[32] = [
+            0x9a, 0xc3, 0x12, 0xa7, 0xf8, 0x77, 0x46, 0x8e, 0xbe, 0x69, 0x42, 0x27, 0x48, 0xad, 0x00, 0xa1,
+            0x54, 0x43, 0xf1, 0x82, 0x03, 0xa0, 0x7d, 0x60, 0x60, 0xf6, 0x88, 0xf3, 0x0f, 0x21, 0x63, 0x2b,
+        ];
+        let exp_ku_a5: u8[32] = [
+            0xc6, 0x93, 0x74, 0xc4, 0x9e, 0x3d, 0x2a, 0x94, 0x66, 0xfa, 0x68, 0x9e, 0x49, 0xd4, 0x76, 0xdb,
+            0x5d, 0x0d, 0xfb, 0xc8, 0x7d, 0x32, 0xce, 0xea, 0xa6, 0x34, 0x3f, 0xd0, 0xae, 0x4c, 0x7d, 0x88,
+        ];
+        let hp_a5: u8[32] = [
+            0xd6, 0x59, 0x76, 0x0d, 0x2b, 0xa4, 0x34, 0xa2, 0x26, 0xfd, 0x37, 0xb3, 0x5c, 0x69, 0xe2, 0xda,
+            0x82, 0x11, 0xd1, 0x0c, 0x4f, 0x12, 0x53, 0x87, 0x87, 0xd6, 0x56, 0x45, 0xd5, 0xd1, 0xb8, 0xe2,
+        ];
+        let k_a5: u8[32] = [
+            0x3b, 0xfc, 0xdd, 0xd7, 0x2b, 0xcf, 0x02, 0x54, 0x1d, 0x7f, 0xa0, 0xdd, 0x1f, 0x5f, 0x9e, 0xee,
+            0xa8, 0x17, 0xe0, 0x9a, 0x69, 0x63, 0xa0, 0xe6, 0xc7, 0xdf, 0x0f, 0x9a, 0x1b, 0xab, 0x90, 0xf2,
+        ];
+        let iv_a5: u8[12] = [0xa6, 0xb5, 0xbc, 0x6a, 0xb7, 0xda, 0xfc, 0xe3, 0x0f, 0xff, 0xf5, 0xdd];
+
+        var cli_ku = quic::new_client_connection("ku_srv", "ku_cli");
+        cli_ku.version = rfc::QUIC_VERSION_2;
+        var srv_ku = quic::new_server_connection("ku_srv");
+        srv_ku.version = rfc::QUIC_VERSION_2;
+        sub.assert_true(
+            quic::install_keys_with_secret(
+                cli_ku.tx_app_space, hp_a5[..], k_a5[..], iv_a5[..], sec_a5[..], rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
+            ),
+            "install client 1-RTT secret",
+        );
+        sub.assert_true(
+            quic::install_keys_with_secret(
+                srv_ku.app_space, hp_a5[..], k_a5[..], iv_a5[..], sec_a5[..], rfc::TLS_CIPHER_CHACHA20_POLY1305_SHA256,
+            ),
+            "install server 1-RTT secret",
+        );
+
+        // Forged key_phase=1 sealed under phase-0 keys MUST be rejected
+        var forged_tx = cli_ku.tx_app_space;
+        forged_tx.key_phase = true;
+        var h_bad_kp = quic::QuicHeader { header_type: quic::QuicHeaderType.OneRtt, packet_number: 1, .. };
+        h_bad_kp.dcid.append("ku_srv");
+        var ping:       u8[2]     = [0x01, 0x00];
+        var pkt_bad_kp: u8[..128] = [];
+        sub.assert_true(quic::seal_packet(forged_tx, h_bad_kp, 2, ping[..], pkt_bad_kp), "seal forged key_phase pkt");
+        var ack_out = quic::AckFrame { .. };
+        sub.assert_false(
+            quic::process_datagram(srv_ku, pkt_bad_kp[..], 1000, ack_out).handled,
+            "mismatched key_phase rejected without ratcheting keys",
+        );
+        sub.assert_false(srv_ku.app_space.key_phase, "server stays on key_phase 0 after forged packet");
+        sub.assert_eq(srv_ku.aead_failed_decrypts, 1, "failed decrypt counter incremented");
+
+        // Send phase-0 packet PN=5, then initiate legitimate Key Update (phase 1) PN=10, then delayed phase-0 PN=3
+        var h_p0_5 = quic::QuicHeader { header_type: quic::QuicHeaderType.OneRtt, packet_number: 5, .. };
+        h_p0_5.dcid.append("ku_srv");
+        var pkt_p0_5: u8[..128] = [];
+        sub.assert_true(quic::seal_packet_tracked(cli_ku.tx_app_space, h_p0_5, 2, ping[..], pkt_p0_5), "seal p0 PN=5");
+        var h_p0_3 = quic::QuicHeader { header_type: quic::QuicHeaderType.OneRtt, packet_number: 3, .. };
+        h_p0_3.dcid.append("ku_srv");
+        var pkt_p0_3: u8[..128] = [];
+        sub.assert_true(quic::seal_packet_tracked(cli_ku.tx_app_space, h_p0_3, 2, ping[..], pkt_p0_3), "seal delayed p0 PN=3");
+
+        sub.assert_true(quic::initiate_key_update(cli_ku.tx_app_space, rfc::QUIC_VERSION_2), "client key update");
+        sub.assert_eq(cli_ku.tx_app_space.traffic_secret[..], exp_ku_a5[..], "RFC 9369 A.5 quicv2 ku matches verbatim");
+        sub.assert_true(cli_ku.tx_app_space.key_phase, "client key_phase flipped to 1");
+
+        var h_p1_10 = quic::QuicHeader { header_type: quic::QuicHeaderType.OneRtt, packet_number: 10, .. };
+        h_p1_10.dcid.append("ku_srv");
+        var pkt_p1_10: u8[..128] = [];
+        sub.assert_true(quic::seal_packet_tracked(cli_ku.tx_app_space, h_p1_10, 2, ping[..], pkt_p1_10), "seal p1 PN=10");
+
+        sub.assert_true(quic::process_datagram(srv_ku, pkt_p0_5[..], 1010, ack_out).handled, "server accepts p0 PN=5");
+        sub.assert_true(quic::process_datagram(srv_ku, pkt_p1_10[..], 1020, ack_out).handled, "server ratchets on p1 PN=10");
+        sub.assert_true(srv_ku.app_space.key_phase, "server key_phase flipped to 1");
+        sub.assert_eq(srv_ku.app_space.traffic_secret[..], exp_ku_a5[..], "server ratcheted secret matches RFC 9369 A.5");
+        sub.assert_true(quic::process_datagram(srv_ku, pkt_p0_3[..], 1030, ack_out).handled, "delayed p0 PN=3 opened via prev keys");
+        sub.assert_true(srv_ku.app_space.key_phase, "delayed p0 packet keeps server on key_phase 1");
+
+        // TLS-13: PN ceiling (> 2^62 - 1), AES-GCM confidentiality limit (2^23), and integrity limit (AEAD_LIMIT_REACHED)
+        var h_over_pn = quic::QuicHeader {
+            header_type:   quic::QuicHeaderType.OneRtt,
+            packet_number: rfc::QUIC_PN_LIMIT,
+            ..
+        };
+        h_over_pn.dcid.append("ku_srv");
+        var pkt_over: u8[..128] = [];
+        sub.assert_false(quic::seal_packet(cli_ku.tx_app_space, h_over_pn, 4, ping[..], pkt_over), "PN >= 2^62 rejected");
+
+        var gcm_tx = quic::PnSpaceState { space_id: quic::PnSpaceId.ApplicationData, .. };
+        let g16: u8[16] = [0x77; 16];
+        let giv: u8[12] = [0x88; 12];
+        sub.assert_true(quic::install_keys(gcm_tx, g16[..], g16[..], giv[..], 0x1301), "install AES-128-GCM tx");
+        gcm_tx.aead_encrypted_packets = rfc::QUIC_AES_GCM_CONFIDENTIALITY_LIMIT;
+        sub.assert_false(quic::seal_packet(gcm_tx, h_p0_5, 2, ping[..], pkt_over), "AES-GCM confidentiality limit enforced");
+
+        srv_ku.aead_failed_decrypts = rfc::QUIC_CHACHA20_INTEGRITY_LIMIT - 1;
+        sub.assert_false(quic::process_datagram(srv_ku, pkt_bad_kp[..], 1040, ack_out).handled, "final bad decrypt rejected");
+        sub.assert_eq(srv_ku.close_code, rfc::QUIC_ERR_AEAD_LIMIT_REACHED, "connection closed with AEAD_LIMIT_REACHED");
+
+        // EDGE-16: production process_datagram fails closed when keys are not installed
+        var unkeyed = quic::new_server_connection("nk01");
+        var raw_pkt: u8[..32] = [0x40, 'n', 'k', '0', '1', 0x01, 0x01];
+        sub.assert_false(quic::process_datagram(unkeyed, raw_pkt[..], 1000, ack_out).handled, "unkeyed process_datagram fails closed");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("QUIC Protocol, Framing, Flow Control & ACK Verification Suite", lit::Verbosity.Verbose);
 
@@ -3514,6 +3706,7 @@ fn main() {
     lit::run_case(runner, "33. ngtcp2 & quinn Connection Lifecycle, Stream Polarity & BBRv3/PTO", test_ngtcp2_and_quinn_connection_dynamics);
     lit::run_case(runner, "34. QUIC Packet Headers, Header Protection & Interval Reassembly", test_quic_packet_and_reassembly);
     lit::run_case(runner, "35. QUIC ACK Frame Gap Addition Overflow Defense", test_quic_ack_underflow);
+    lit::run_case(runner, "36. Wave 4 Crypto Audit Hardening: Retry, 0-RTT, KeyUpdate, AEAD Limits", test_quic_wave4_crypto_audit_hardening);
 
     let ok = lit::finish(runner);
     assert(ok);

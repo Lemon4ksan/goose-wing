@@ -58,6 +58,14 @@ struct SentPacketMeta {
     ecn_marked:    bool = false,
 }
 
+struct QuicZeroRttKeys {
+    hp_key:         u8[..32] = [],
+    aead_key:       u8[..32] = [],
+    aead_iv:        u8[..12] = [],
+    cipher_suite:   u16      = 0x1301,
+    keys_installed: bool     = false,
+}
+
 struct PnSpaceState {
     space_id:                      PnSpaceId             = PnSpaceId.Initial,
     largest_sent_pn:               u64                   = 0,
@@ -80,6 +88,14 @@ struct PnSpaceState {
     aead_iv:                       u8[..12]              = [],
     cipher_suite:                  u16                   = 0x1301,
     keys_installed:                bool                  = false,
+    key_phase:                     bool                  = false,
+    has_app_secret:                bool                  = false,
+    traffic_secret:                u8[..48]              = [],
+    prev_aead_key:                 u8[..32]              = [],
+    prev_aead_iv:                  u8[..12]              = [],
+    has_prev_keys:                 bool                  = false,
+    phase_highest_pn:              u64                   = 0,
+    aead_encrypted_packets:        u64                   = 0,
 }
 
 // Installs cryptographic keys for a QUIC packet number space (RFC 9001 §5).
@@ -106,6 +122,34 @@ fn install_keys(
     }
     space.cipher_suite = cipher_suite;
     space.keys_installed = true;
+    space.key_phase = false;
+    space.has_app_secret = false;
+    core::secure_zeroize_slice(space.traffic_secret[..]);
+    space.traffic_secret.clear();
+    core::secure_zeroize_slice(space.prev_aead_key[..]);
+    space.prev_aead_key.clear();
+    space.prev_aead_iv.clear();
+    space.has_prev_keys = false;
+    space.phase_highest_pn = 0;
+    space.aead_encrypted_packets = 0;
+    return true;
+}
+
+// Installs 1-RTT packet protection keys together with the application traffic secret
+// so RFC 9001 Section 6 Key Updates ("quic ku" / "quicv2 ku") can ratchet keys safely.
+fn install_keys_with_secret(
+    space:          PnSpaceState&,
+    hp_key:         const u8[:],
+    aead_key:       const u8[:],
+    aead_iv:        const u8[:],
+    traffic_secret: const u8[:],
+    cipher_suite:   u16 = 0x1301,
+) -> bool {
+    let expected_hash_len: i64 = if cipher_suite == rfc::TLS_CIPHER_AES_256_GCM_SHA384 { 48 } else { 32 };
+    guard traffic_secret.len == expected_hash_len else { return false; }
+    guard install_keys(space, hp_key, aead_key, aead_iv, cipher_suite) else { return false; }
+    guard space.traffic_secret.try_set(traffic_secret) else { return false; }
+    space.has_app_secret = true;
     return true;
 }
 

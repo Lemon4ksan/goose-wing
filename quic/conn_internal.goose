@@ -281,6 +281,12 @@ fn dispatch_packet_type(
         return quic::ProcessResult { handled: true, needs_ack: needs_ack };
     }
 
+    if hdr.header_type == quic::QuicHeaderType.ZeroRtt {
+        // RFC 9000 Section 12.3: Packet Numbers - 0-RTT packets share the Application Data PN space for duplicate suppression.
+        record_space_recv_packet(conn.app_space, hdr.packet_number);
+        return quic::ProcessResult { handled: true, needs_ack: false };
+    }
+
     if hdr.header_type == quic::QuicHeaderType.OneRtt {
         if conn.state == quic::QuicConnState.Handshake || conn.state == quic::QuicConnState.Initial {
             conn.state = quic::QuicConnState.Established;
@@ -292,7 +298,11 @@ fn dispatch_packet_type(
         return quic::ProcessResult { handled: true, needs_ack: needs_ack };
     }
 
-    return quic::ProcessResult { handled: true, needs_ack: false };
+    if hdr.header_type == quic::QuicHeaderType.VersionNegotiation {
+        return quic::ProcessResult { handled: true, needs_ack: false };
+    }
+
+    return quic::ProcessResult { handled: false, needs_ack: false };
 }
 
 inline fn get_bounded_payload(

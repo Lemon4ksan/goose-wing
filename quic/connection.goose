@@ -36,36 +36,40 @@ struct ProcessResult {
 }
 
 struct QuicConnection {
-    role:                           QuicRole              = QuicRole.Server,
-    state:                          QuicConnState         = QuicConnState.Initial,
-    scid:                           u8[..20]              = [],
-    dcid:                           u8[..20]              = [],
-    original_dcid:                  u8[..20]              = [],
-    initial_space:                  PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    handshake_space:                PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    app_space:                      PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    tx_initial_space:               PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
-    tx_handshake_space:             PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
-    tx_app_space:                   PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
-    initial_crypto:                 tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
-    handshake_crypto:               tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
-    app_crypto:                     tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
-    rtt:                            RttState              = RttState { .. },
-    pacer:                          Pacer                 = Pacer { .. },
-    bbr:                            BbrState              = BbrState { .. },
-    stream_table:                   QuicStreamTable       = QuicStreamTable { .. },
-    flow_ctrl:                      QuicFlowControl       = QuicFlowControl { .. },
-    bytes_received:                 u64                   = 0,
-    bytes_sent:                     u64                   = 0,
-    validated_address:              bool                  = false,
-    packets_rx:                     u64                   = 0,
-    packets_tx:                     u64                   = 0,
-    close_code:                     u64                   = 0,
-    allow_grease_quic_bit:          bool                  = false,
-    allow_unencrypted_test_packets: bool                  = false,
-    peer_reset_tokens:              u8[16][..8]           = [],
-    migration:                      QuicMigrationManager  = QuicMigrationManager { .. },
-    dplpmtud:                       Dplpmtud              = Dplpmtud { .. },
+    role:                  QuicRole              = QuicRole.Server,
+    state:                 QuicConnState         = QuicConnState.Initial,
+    version:               u32                   = rfc::QUIC_VERSION_1,
+    scid:                  u8[..20]              = [],
+    dcid:                  u8[..20]              = [],
+    original_dcid:         u8[..20]              = [],
+    initial_space:         PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    handshake_space:       PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    app_space:             PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    tx_initial_space:      PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Initial, .. },
+    tx_handshake_space:    PnSpaceState          = PnSpaceState { space_id: PnSpaceId.Handshake, .. },
+    tx_app_space:          PnSpaceState          = PnSpaceState { space_id: PnSpaceId.ApplicationData, .. },
+    zero_rtt_keys:         QuicZeroRttKeys       = QuicZeroRttKeys { .. },
+    initial_crypto:        tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    handshake_crypto:      tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    app_crypto:            tls::QuicCryptoStream = tls::QuicCryptoStream { .. },
+    rtt:                   RttState              = RttState { .. },
+    pacer:                 Pacer                 = Pacer { .. },
+    bbr:                   BbrState              = BbrState { .. },
+    stream_table:          QuicStreamTable       = QuicStreamTable { .. },
+    flow_ctrl:             QuicFlowControl       = QuicFlowControl { .. },
+    bytes_received:        u64                   = 0,
+    bytes_sent:            u64                   = 0,
+    validated_address:     bool                  = false,
+    packets_rx:            u64                   = 0,
+    packets_tx:            u64                   = 0,
+    close_code:            u64                   = 0,
+    allow_grease_quic_bit: bool                  = false,
+    retry_received:        bool                  = false,
+    retry_token:           u8[..512]             = [],
+    aead_failed_decrypts:  u64                   = 0,
+    peer_reset_tokens:     u8[16][..8]           = [],
+    migration:             QuicMigrationManager  = QuicMigrationManager { .. },
+    dplpmtud:              Dplpmtud              = Dplpmtud { .. },
 }
 
 fn new_server_connection(scid: const u8[:]) -> QuicConnection {
@@ -94,7 +98,9 @@ fn new_client_connection(server_dcid: const u8[:], client_scid: const u8[:]) -> 
         ..
     };
     conn.pacer = conn.bbr.pacer;
-    conn.dcid.append(server_dcid[..min(server_dcid.len, conn.dcid.cap)]);
+    let dcid_slice = server_dcid[..min(server_dcid.len, conn.dcid.cap)];
+    conn.dcid.append(dcid_slice);
+    conn.original_dcid.append(dcid_slice);
     conn.scid.append(client_scid[..min(client_scid.len, conn.scid.cap)]);
     return conn;
 }
@@ -156,9 +162,27 @@ fn record_sent(
     };
 
     match space_id {
-        Initial => quic_internal::record_space_sent_packet(conn.initial_space, meta),
-        Handshake => quic_internal::record_space_sent_packet(conn.handshake_space, meta),
-        ApplicationData => quic_internal::record_space_sent_packet(conn.app_space, meta),
+        Initial => {
+            quic_internal::record_space_sent_packet(conn.initial_space, meta);
+            conn.tx_initial_space.aead_encrypted_packets = core::add_sat_u64(
+                conn.tx_initial_space.aead_encrypted_packets,
+                1,
+            );
+        },
+        Handshake => {
+            quic_internal::record_space_sent_packet(conn.handshake_space, meta);
+            conn.tx_handshake_space.aead_encrypted_packets = core::add_sat_u64(
+                conn.tx_handshake_space.aead_encrypted_packets,
+                1,
+            );
+        },
+        ApplicationData => {
+            quic_internal::record_space_sent_packet(conn.app_space, meta);
+            conn.tx_app_space.aead_encrypted_packets = core::add_sat_u64(
+                conn.tx_app_space.aead_encrypted_packets,
+                1,
+            );
+        },
     }
 }
 
@@ -264,13 +288,89 @@ fn install_initial_keys(
     dcid:    const u8[:],
     version: u32 = rfc::QUIC_VERSION_1,
 ) -> bool {
-    return quic_internal::quic_derive_initial_space_keys(
+    guard quic_internal::quic_derive_initial_space_keys(
         dcid,
         version,
         conn.role,
         conn.initial_space,
         conn.tx_initial_space,
-    );
+    ) else {
+        return false;
+    }
+    conn.version = version;
+    return true;
+}
+
+// Installs separate 0-RTT receive keys on a server connection (RFC 9001 Section 5.3).
+fn install_zero_rtt_keys(
+    conn:         QuicConnection&,
+    hp_key:       const u8[:],
+    aead_key:     const u8[:],
+    aead_iv:      const u8[:],
+    cipher_suite: u16 = 0x1301,
+) -> bool {
+    guard conn.role == QuicRole.Server else { return false; }
+    guard hp_key.len <= conn.zero_rtt_keys.hp_key.cap
+        && aead_key.len <= conn.zero_rtt_keys.aead_key.cap
+        && aead_iv.len == 12 else {
+        return false;
+    }
+    guard conn.zero_rtt_keys.hp_key.try_set(hp_key)
+        && conn.zero_rtt_keys.aead_key.try_set(aead_key)
+        && conn.zero_rtt_keys.aead_iv.try_set(aead_iv) else {
+        return false;
+    }
+    conn.zero_rtt_keys.cipher_suite = cipher_suite;
+    conn.zero_rtt_keys.keys_installed = true;
+    return true;
+}
+
+// Computes the 16-byte Retry Integrity Tag over the Retry Pseudo-Packet (RFC 9001 §5.8, RFC 9369 §3.3.3).
+fn compute_retry_integrity_tag(
+    odcid:             const u8[:],
+    retry_without_tag: const u8[:],
+    version:           u32 = rfc::QUIC_VERSION_1,
+) -> u8[16], bool {
+    guard odcid.len <= rfc::QUIC_MAX_CID_LEN && retry_without_tag.len >= 8 else {
+        return [0; 16], false;
+    }
+    let key_slice = rfc::quic_retry_key(version);
+    let nonce_slice = rfc::quic_retry_nonce(version);
+    guard key_slice.len == 16 && nonce_slice.len == 12 else { return [0; 16], false; }
+
+    var pseudo: u8[..1280] = [];
+    guard pseudo.try_push(odcid.len as u8)
+        && pseudo.try_append(odcid)
+        && pseudo.try_append(retry_without_tag) else {
+        return [0; 16], false;
+    }
+
+    var key16: u8[16] = [0; 16];
+    defer core::secure_zeroize_16(key16);
+    for i in 16 { key16[i] = key_slice[i]; }
+    var nonce12: u8[12] = [0; 12];
+    for i in 12 { nonce12[i] = nonce_slice[i]; }
+    var empty_ct: u8[..1] = [];
+    return core::aes128_gcm_seal_inplace(key16, nonce12, empty_ct[..], pseudo[..]);
+}
+
+// Verifies the 16-byte Retry Integrity Tag in constant time (RFC 9001 §5.8, RFC 9369 §3.3.3).
+fn verify_retry_integrity_tag(
+    odcid:     const u8[:],
+    retry_pkt: const u8[:],
+    version:   u32 = rfc::QUIC_VERSION_1,
+) -> bool {
+    guard retry_pkt.len >= 24 else { return false; }
+    let tag_off = core::sub_sat_i64(retry_pkt.len, 16);
+    let expected_tag, ok = compute_retry_integrity_tag(odcid, retry_pkt[..tag_off], version);
+    guard ok else { return false; }
+    return core::ct_eq_bytes(expected_tag[..], retry_pkt[tag_off..]);
+}
+
+// Advances a 1-RTT packet number space to the next RFC 9001 Section 6 Key Update phase.
+fn initiate_key_update(space: PnSpaceState&, version: u32 = rfc::QUIC_VERSION_1) -> bool {
+    guard space.keys_installed && space.has_app_secret else { return false; }
+    return quic_internal::quic_ratchet_space_keys(space, version);
 }
 
 // Seals and applies RFC 9001 Header Protection to a QUIC packet payload in `space`.
@@ -283,9 +383,16 @@ fn seal_packet<B>(
 ) -> bool {
     guard space.keys_installed && space.aead_iv.len == 12 else { return false; }
     guard pn_len >= 1 && pn_len <= 4 && plaintext.len > 0 else { return false; }
+    // RFC 9000 Section 12.3 & RFC 9001 Section 6.6: Enforce PN ceiling and AEAD confidentiality limit.
+    guard hdr.packet_number <= rfc::QUIC_MAX_PN else { return false; }
+    guard space.aead_encrypted_packets < quic_internal::quic_aead_confidentiality_limit(space.cipher_suite) else {
+        return false;
+    }
 
     var hdr_wire = hdr;
-    if hdr_wire.header_type != QuicHeaderType.OneRtt {
+    if hdr_wire.header_type == QuicHeaderType.OneRtt {
+        hdr_wire.key_phase = space.key_phase;
+    } else {
         hdr_wire.payload_length = (pn_len as u64) + (plaintext.len as u64) + 16;
     }
 
@@ -317,6 +424,19 @@ fn seal_packet<B>(
 
     apply_header_protection(full_pkt[..], pn_offset, pn_len, hp_mask);
     return out.try_append(full_pkt[..]);
+}
+
+// Seals a packet and increments `space.aead_encrypted_packets` for RFC 9001 Section 6.6 accounting.
+fn seal_packet_tracked<B>(
+    space:     PnSpaceState&,
+    hdr:       const QuicHeader&,
+    pn_len:    u8,
+    plaintext: const u8[:],
+    out:       B&,
+) -> bool {
+    guard seal_packet(space, hdr, pn_len, plaintext, out) else { return false; }
+    space.aead_encrypted_packets = core::add_sat_u64(space.aead_encrypted_packets, 1);
+    return true;
 }
 
 // RFC 9000 Section 12.2: Coalescing Packets - Processes an inbound UDP datagram containing one or more coalesced QUIC packets.

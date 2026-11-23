@@ -200,6 +200,28 @@ const QUIC_V2_INITIAL_SALT: const u8[..20] = [
     0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
 ]; // RFC 9369 Section 3.3.1
 
+const QUIC_V1_RETRY_KEY: const u8[..16] = [
+    0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a,
+    0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8, 0x4e,
+]; // RFC 9001 Section 5.8
+
+const QUIC_V1_RETRY_NONCE: const u8[..12] = [
+    0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2, 0x23, 0x98, 0x25, 0xbb,
+]; // RFC 9001 Section 5.8
+
+const QUIC_V2_RETRY_KEY: const u8[..16] = [
+    0x8f, 0xb4, 0xb0, 0x1b, 0x56, 0xac, 0x48, 0xe2,
+    0x60, 0xfb, 0xcb, 0xce, 0xad, 0x7c, 0xcc, 0x92,
+]; // RFC 9369 Section 3.3.3
+
+const QUIC_V2_RETRY_NONCE: const u8[..12] = [
+    0xd8, 0x69, 0x69, 0xbc, 0x2d, 0x7c, 0x6d, 0x99, 0x90, 0xef, 0xb0, 0x4a,
+]; // RFC 9369 Section 3.3.3
+
+const QUIC_AES_GCM_CONFIDENTIALITY_LIMIT: u64 = (1 as u64) << 23; // RFC 9001 Section 6.6
+const QUIC_AES_GCM_INTEGRITY_LIMIT:       u64 = (1 as u64) << 52; // RFC 9001 Section 6.6
+const QUIC_CHACHA20_INTEGRITY_LIMIT:      u64 = (1 as u64) << 36; // RFC 9001 Section 6.6
+
 const QUIC_LOSS_PACKET_THRESHOLD: u64 = 3;    // RFC 9002 Section 6.1.1 (kPacketThreshold)
 const QUIC_LOSS_TIME_NUMERATOR:   u64 = 9;    // RFC 9002 Section 6.1.2 (9/8 kTimeThreshold)
 const QUIC_LOSS_TIME_DENOMINATOR: u64 = 8;    // RFC 9002 Section 6.1.2
@@ -318,5 +340,19 @@ fn quic_initial_salt(version: u32) -> const u8[:] {
 fn quic_hkdf_label_prefix(version: u32) -> const u8[:] {
     if version == QUIC_VERSION_1 { return "quic "; }
     if version == QUIC_VERSION_2 { return "quicv2 "; }
+    return "";
+}
+
+// Returns the 16-byte Retry Integrity Tag AES-128-GCM key (RFC 9001 §5.8, RFC 9369 §3.3.3).
+fn quic_retry_key(version: u32) -> const u8[:] {
+    if version == QUIC_VERSION_1 { return QUIC_V1_RETRY_KEY[..]; }
+    if version == QUIC_VERSION_2 { return QUIC_V2_RETRY_KEY[..]; }
+    return "";
+}
+
+// Returns the 12-byte Retry Integrity Tag AES-128-GCM nonce (RFC 9001 §5.8, RFC 9369 §3.3.3).
+fn quic_retry_nonce(version: u32) -> const u8[:] {
+    if version == QUIC_VERSION_1 { return QUIC_V1_RETRY_NONCE[..]; }
+    if version == QUIC_VERSION_2 { return QUIC_V2_RETRY_NONCE[..]; }
     return "";
 }

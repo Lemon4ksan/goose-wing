@@ -179,7 +179,8 @@ fn send_path_challenge_for_new_addr(
         let _ = net::send(udp_tr, "MIG_SAME_PATH");
         return;
     }
-    let tok = quic::generate_path_challenge_token(mig.rng_seed);
+    let tok, ok_tok = quic::generate_path_challenge_token();
+    guard ok_tok else { return; }
     quic::start_probing(mig.mgr, cand_addr, tok);
     mig.mgr.probing_path.bytes_received = dgram_len;
     guard quic::can_send(mig.mgr.probing_path, 9) else { return; }

@@ -242,7 +242,6 @@ fn test_coalesced_quic_datagram_demux() {
     let srv_cid = "12345678";
     let cli_cid = "87654321";
     var srv = quic::new_server_connection(srv_cid);
-    srv.allow_unencrypted_test_packets = true;
 
     var coalesced_dgram: u8[..256] = [];
 
@@ -284,7 +283,7 @@ fn test_coalesced_quic_datagram_demux() {
     let ok_sf = quic::encode_stream_frame(0, 0, "hello", coalesced_dgram, sf_flags);
 
     var out_ack = quic::AckFrame { .. };
-    let _pr_handled = quic::process_datagram(srv, coalesced_dgram[..], 50000, out_ack);
+    let _pr_handled = quic_internal::process_unencrypted_test_datagram(srv, coalesced_dgram[..], 50000, out_ack);
     let handled = _pr_handled.handled;
     let needs_ack = _pr_handled.needs_ack;
 
@@ -924,7 +923,6 @@ fn test_f023_to_f027_stream_invariants() {
 fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
     // F028: Non-ACK-eliciting packet (PADDING-only) MUST NOT set needs_ack = true (RFC 9000 §13.2.1)
     var conn_pad = quic::new_server_connection("scid");
-    conn_pad.allow_unencrypted_test_packets = true;
     var pad_pkt: u8[..64] = [];
     var hdr_pad = quic::QuicHeader {
         header_type:   quic::QuicHeaderType.OneRtt,
@@ -936,7 +934,7 @@ fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
     assert(quic::encode_header(hdr_pad, 1, pad_pkt));
     pad_pkt.push(0x00); // PADDING frame only
     var out_ack_pad = quic::AckFrame { .. };
-    let _pr_handled_pad = quic::process_datagram(conn_pad, pad_pkt[..], 1000, out_ack_pad);
+    let _pr_handled_pad = quic_internal::process_unencrypted_test_datagram(conn_pad, pad_pkt[..], 1000, out_ack_pad);
     let handled_pad = _pr_handled_pad.handled;
     let needs_ack_pad = _pr_handled_pad.needs_ack;
     assert(handled_pad);
@@ -944,7 +942,6 @@ fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
 
     // F029a: RTT sample generated when largest_acked is non-ack-eliciting if batch has ack-eliciting (RFC 9002 §5.1)
     var conn_rtt = quic::new_client_connection("scid", "dcid");
-    conn_rtt.allow_unencrypted_test_packets = true;
     conn_rtt.state = quic::QuicConnState.Handshake;
     conn_rtt.rtt.first_sample_time_us = 1;
     conn_rtt.rtt.min_rtt_us = 10000;
@@ -969,7 +966,7 @@ fn test_f028_to_f030_cross_component_ack_rtt_bbr() {
     };
     assert(quic::encode_ack_frame(ack_f, pkt_ack));
     var out_ack_rtt = quic::AckFrame { .. };
-    let _pr_handled_ack = quic::process_datagram(conn_rtt, pkt_ack[..], 50000, out_ack_rtt);
+    let _pr_handled_ack = quic_internal::process_unencrypted_test_datagram(conn_rtt, pkt_ack[..], 50000, out_ack_rtt);
     let handled_ack = _pr_handled_ack.handled;
     let needs_ack_ack = _pr_handled_ack.needs_ack;
     assert(handled_ack);
@@ -1210,7 +1207,6 @@ fn test_regress_conn_traffic_counter_saturation() {
 
 fn test_grease_quic_bit_rfc9287() {
     var conn = quic::new_server_connection("scid");
-    conn.allow_unencrypted_test_packets = true;
     // Short header with Fixed Bit (0x40) cleared: 0x00, DCID="scid", PN=0x01, PING frame (0x01)
     let greased_pkt: u8[7] = [0x00, 's', 'c', 'i', 'd', 0x01, 0x01];
     let _, ok_disabled = quic_internal::parse_quic_packet_pre_hp(conn, greased_pkt[..], 4);
@@ -1221,7 +1217,7 @@ fn test_grease_quic_bit_rfc9287() {
     assert(ok_enabled && hdr_enabled.header_type == quic::QuicHeaderType.OneRtt);
 
     var out_ack = quic::AckFrame { .. };
-    let _pr_handled = quic::process_datagram(conn, greased_pkt[..], 2000, out_ack);
+    let _pr_handled = quic_internal::process_unencrypted_test_datagram(conn, greased_pkt[..], 2000, out_ack);
     let handled = _pr_handled.handled;
     let needs_ack = _pr_handled.needs_ack;
     assert(handled && needs_ack);
@@ -1414,7 +1410,6 @@ fn test_quic_pn_space_segregation() {
 
 fn test_quic_datagram_ack_generation() {
     var conn = quic::new_server_connection("server_cid_01");
-    conn.allow_unencrypted_test_packets = true;
 
     // Construct valid wire Initial packet
     var initial_pkt: u8[..128] = [];
@@ -1439,7 +1434,7 @@ fn test_quic_datagram_ack_generation() {
     initial_pkt.push(0x00);
 
     var ack_frame = quic::AckFrame { .. };
-    let _pr_handled = quic::process_datagram(conn, initial_pkt[..], 2000, ack_frame);
+    let _pr_handled = quic_internal::process_unencrypted_test_datagram(conn, initial_pkt[..], 2000, ack_frame);
     let handled = _pr_handled.handled;
     let needs_ack = _pr_handled.needs_ack;
 

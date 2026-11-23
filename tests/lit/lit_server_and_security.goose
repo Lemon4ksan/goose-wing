@@ -644,7 +644,6 @@ fn test_quic_role_polarity() {
 
     // Case A: Server receives HANDSHAKE_DONE
     var server_conn = quic::new_server_connection(scid[..]);
-    server_conn.allow_unencrypted_test_packets = true;
     var dgram_serv: u8[..64] = [];
     dgram_serv.push(0x40); // 1-RTT Short Header
     dgram_serv.append(scid[..]);
@@ -652,7 +651,7 @@ fn test_quic_role_polarity() {
     assert(quic::encode_handshake_done_frame(dgram_serv));
 
     var ack_out = quic::AckFrame { .. };
-    let _pr_handled_s = quic::process_datagram(server_conn, dgram_serv[..], 1000, ack_out);
+    let _pr_handled_s = quic_internal::process_unencrypted_test_datagram(server_conn, dgram_serv[..], 1000, ack_out);
     let handled_s = _pr_handled_s.handled;
     assert(!handled_s);
     assert(server_conn.state == quic::QuicConnState.Closing);
@@ -660,14 +659,13 @@ fn test_quic_role_polarity() {
 
     // Case B: Client receives HANDSHAKE_DONE
     var client_conn = quic::new_client_connection(scid[..], scid[..]);
-    client_conn.allow_unencrypted_test_packets = true;
     var dgram_cli: u8[..64] = [];
     dgram_cli.push(0x40); // 1-RTT Short Header
     dgram_cli.append(scid[..]);
     dgram_cli.push(0x01); // Packet number = 1
     assert(quic::encode_handshake_done_frame(dgram_cli));
 
-    let _pr_handled_c = quic::process_datagram(client_conn, dgram_cli[..], 1000, ack_out);
+    let _pr_handled_c = quic_internal::process_unencrypted_test_datagram(client_conn, dgram_cli[..], 1000, ack_out);
     let handled_c = _pr_handled_c.handled;
     assert(handled_c);
     assert(client_conn.state == quic::QuicConnState.Established);

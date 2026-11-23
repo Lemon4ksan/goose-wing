@@ -2395,7 +2395,6 @@ fn test_h2_wire_loopback() {
 fn test_quic_wire_loopback() {
     let scid: u8[4] = [0x50, 0x51, 0x52, 0x53];
     var server_conn = quic::new_server_connection(scid[..]);
-    server_conn.allow_unencrypted_test_packets = true;
 
     var dgram: u8[..256] = [];
     dgram.push(0x40); // 1-RTT Short Header
@@ -2406,7 +2405,7 @@ fn test_quic_wire_loopback() {
     quic::encode_stream_frame(0, 0, "PING_LOOPBACK", dgram, quic::QuicStreamFlags { fin: true, with_len: true });
 
     var ack_out = quic::AckFrame { .. };
-    let _pr_handled = quic::process_datagram(server_conn, dgram[..], 1000, ack_out);
+    let _pr_handled = quic_internal::process_unencrypted_test_datagram(server_conn, dgram[..], 1000, ack_out);
     let handled = _pr_handled.handled;
     let needs_ack = _pr_handled.needs_ack;
     assert(handled);

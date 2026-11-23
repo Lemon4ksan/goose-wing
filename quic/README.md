@@ -122,12 +122,14 @@ enum PnSpaceId { Initial, Handshake, ApplicationData }
 enum QuicEcnState { Testing, Unknown, Capable, Failed }
 enum PtoTimerMode { None, LossTime, AntiAmplification, AntiDeadlock, StandardPto }
 struct AckFrame
+struct QuicZeroRttKeys
 struct PnSpaceState
 struct RttState
 struct PtoTimerDecision
 struct PtoContext
 
 fn install_keys(space: PnSpaceState&, hp_key: const u8[:], aead_key: const u8[:], aead_iv: const u8[:], cipher_suite: u16 = 0x1301) -> bool
+fn install_keys_with_secret(space: PnSpaceState&, hp_key: const u8[:], aead_key: const u8[:], aead_iv: const u8[:], traffic_secret: const u8[:], cipher_suite: u16 = 0x1301) -> bool
 fn encode_ack_frame<B>(ack: const AckFrame&, out: B&) -> bool
 fn decode_ack_frame(src: const u8[:], offset: u64) -> AckFrame, u64, bool
 fn build_ack_frame(ranges: const AckInterval[..64]&, ack_delay: u64, is_ecn: bool = false) -> AckFrame, bool
@@ -222,7 +224,12 @@ fn on_probe_lost(conn: QuicConnection&, lost_size: u32) -> bool
 fn is_frame_allowed_in_packet(ftype: QuicFrameType, htype: QuicHeaderType) -> bool
 fn process_payload(conn: QuicConnection&, payload: const u8[:], htype: QuicHeaderType = QuicHeaderType.OneRtt, now_us: u64 = 100000) -> ProcessResult
 fn install_initial_keys(conn: QuicConnection&, dcid: const u8[:], version: u32 = rfc::QUIC_VERSION_1) -> bool
+fn install_zero_rtt_keys(conn: QuicConnection&, hp_key: const u8[:], aead_key: const u8[:], aead_iv: const u8[:], cipher_suite: u16 = 0x1301) -> bool
+fn compute_retry_integrity_tag(odcid: const u8[:], retry_without_tag: const u8[:], version: u32 = rfc::QUIC_VERSION_1) -> u8[16], bool
+fn verify_retry_integrity_tag(odcid: const u8[:], retry_pkt: const u8[:], version: u32 = rfc::QUIC_VERSION_1) -> bool
+fn initiate_key_update(space: PnSpaceState&, version: u32 = rfc::QUIC_VERSION_1) -> bool
 fn seal_packet<B>(space: const PnSpaceState&, hdr: const QuicHeader&, pn_len: u8, plaintext: const u8[:], out: B&) -> bool
+fn seal_packet_tracked<B>(space: PnSpaceState&, hdr: const QuicHeader&, pn_len: u8, plaintext: const u8[:], out: B&) -> bool
 fn process_datagram(conn: QuicConnection&, dgram: const u8[:], now_us: u64, ack: AckFrame&) -> ProcessResult
 
 // quic/migration.goose (RFC 9000 §9)
@@ -237,7 +244,7 @@ fn addr_eq(a: const QuicEndpointAddr&, b: const QuicEndpointAddr&) -> bool
 fn decode_preferred_address(src: const u8[:]) -> QuicPreferredAddress, bool
 fn new_migration_manager(initial_addr: const QuicEndpointAddr&) -> QuicMigrationManager
 fn can_send(path: const QuicPath&, bytes_to_send: u64) -> bool
-fn generate_path_challenge_token(rng_seed: u64&) -> u8[8]
+fn generate_path_challenge_token() -> u8[8], bool
 fn verify_path_response_token(expected: const u8[8]&, received: const u8[:]) -> bool
 fn start_probing(mgr: QuicMigrationManager&, new_addr: const QuicEndpointAddr&, token: const u8[8]&)
 fn probe_preferred_address(mgr: QuicMigrationManager&, pref: const QuicPreferredAddress&, prefer_ipv6: bool, token: const u8[8]&) -> bool

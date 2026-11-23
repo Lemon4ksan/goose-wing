@@ -153,14 +153,14 @@ fn can_send(path: const QuicPath&, bytes_to_send: u64) -> bool {
 
 // ---- Token Generation & Constant-Time Verification ----------------------
 
-// RFC 9000 Section 8.2.1: Initiating Path Validation - Generation of 8-byte unpredictable challenge token
-fn generate_path_challenge_token(rng_seed: u64&) -> u8[8] {
-    let rand_val = core::splitmix64(rng_seed);
+// RFC 9000 Section 8.2.1: Initiating Path Validation - Generation of 8-byte unpredictable CSPRNG challenge token.
+fn generate_path_challenge_token() -> u8[8], bool {
     var token: u8[8] = [0; 8];
-    for i in 8 {
-        token[i] = ((rand_val >> ((i as u64) * 8)) & 0xFF) as u8;
+    guard core::csprng_fill(token[..]) else {
+        core::secure_zeroize_slice(token[..]);
+        return [0; 8], false;
     }
-    return token;
+    return token, true;
 }
 
 // RFC 9000 Section 8.2.2: Path Validation Responses - Constant-time PATH_RESPONSE verification
