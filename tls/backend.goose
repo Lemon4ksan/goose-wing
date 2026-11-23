@@ -211,6 +211,65 @@ fn tls_endpoint_read_app(ep: TlsEndpoint&, dst: u8[:]) -> i64, TlsBackendStatus 
     return 0, if slot.peer_closed { TlsBackendStatus.Closed } else { TlsBackendStatus.WantRead };
 }
 
+// Returns the normalized client-offered SNI hostname extracted from ClientHello (empty if omitted).
+fn tls_endpoint_client_sni(ep: const TlsEndpoint&) -> u8[..255] {
+    var out: u8[..255] = [];
+    guard !ep.closed && ep.active_kind == TlsBackendKind.PureGoose else { return out; }
+    let idx = ep.pure_slot as i64;
+    guard idx >= 0 &&
+        idx < tls_internal::g_pure_tls_slots.len &&
+        tls_internal::is_live_pure_slot(tls_internal::g_pure_tls_slots[idx], ep.pure_gen) else {
+        return out;
+    }
+    let _ = out.try_set(tls_internal::g_pure_tls_slots[idx].server_name[..]);
+    return out;
+}
+
+// Installs PEM-encoded server certificate chain and matching private key on a deferred-SNI endpoint
+// paused at `TlsBackendStatus.NeedSniCredentials`. Fails closed and releases temporary key material on error.
+fn tls_endpoint_set_server_credentials_pem(
+    ep:       TlsEndpoint&,
+    cert_pem: const u8[:],
+    key_pem:  const u8[:],
+) -> TlsBackendStatus {
+    guard !ep.closed else { return TlsBackendStatus.Closed; }
+    guard ep.active_kind == TlsBackendKind.PureGoose else { return TlsBackendStatus.Unavailable; }
+    let idx = ep.pure_slot as i64;
+    guard idx >= 0 &&
+        idx < tls_internal::g_pure_tls_slots.len &&
+        tls_internal::is_live_pure_slot(tls_internal::g_pure_tls_slots[idx], ep.pure_gen) else {
+        return TlsBackendStatus.Closed;
+    }
+    let slot .= tls_internal::g_pure_tls_slots[idx];
+    guard slot.is_server && slot.stage == tls_internal::PureHsStage.ServerNeedSniCredentials else {
+        return TlsBackendStatus.HandshakeError;
+    }
+    guard cert_pem.len > 0 && key_pem.len > 0 else {
+        slot.stage = tls_internal::PureHsStage.Failed;
+        return TlsBackendStatus.HandshakeError;
+    }
+
+    var srv_cfg = ServerHandshakeConfig { .. };
+    defer release_server_credentials(srv_cfg);
+    guard load_server_credentials_pem(cert_pem, key_pem, srv_cfg) &&
+        slot.cert_der.try_set(srv_cfg.cert_der[..]) else {
+        slot.stage = tls_internal::PureHsStage.Failed;
+        return TlsBackendStatus.HandshakeError;
+    }
+    if slot.rsa_key_slot >= 0 {
+        release_rsa_key_slot(slot.rsa_key_slot);
+        slot.rsa_key_slot = -1;
+    }
+    slot.extra_certs_der = copy(srv_cfg.extra_certs_der);
+    slot.priv_seed = srv_cfg.priv_seed;
+    slot.key_kind = srv_cfg.key_kind;
+    slot.rsa_key_slot = srv_cfg.rsa_key_slot;
+    srv_cfg.rsa_key_slot = -1;
+    slot.defer_sni_credentials = false;
+    slot.stage = tls_internal::PureHsStage.ServerWaitClientHello;
+    return TlsBackendStatus.Ok;
+}
+
 // Returns the negotiated ALPN protocol name (empty if none was negotiated).
 fn tls_endpoint_selected_alpn(ep: const TlsEndpoint&) -> u8[..64] {
     var out: u8[..64] = [];

@@ -1168,13 +1168,9 @@ fn serve_tls(
         if conn <= 0 { continue; }
         let _ = net::tcp_set_nodelay(conn, server.tcp_nodelay);
 
-        let slot_idx, ok_hs = tls::server_handshake(conn, tls_config);
-        if !ok_hs || !server_internal::verify_tls_slot_sni(server, slot_idx) {
-            if ok_hs {
-                tls::transport_close(conn, slot_idx);
-            } else {
-                net::tcp_close(conn);
-            }
+        let slot_idx, ok_hs = server_internal::server_accept_tls_handshake(server, conn, tls_config);
+        if !ok_hs {
+            net::tcp_close(conn);
             total_served = core::add_sat_i64(total_served, 1);
             continue;
         }

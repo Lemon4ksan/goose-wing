@@ -27,8 +27,46 @@ import .handshake_wire_internal;
 import .session_slot_internal;
 import .session_wire_internal;
 
-// Parses ClientHello payload for server handshake, extracting session ID,
-// client X25519 key share, ALPN, SNI, and PSK.
+// Reads and validates a single TLS 1.3 plaintext ClientHello handshake message from `fd` (RFC 8446 Section 4.1.2).
+// Clears `out_ch_msg` and returns false on timeout, I/O error, or malformed framing.
+fn read_client_hello(
+    fd:         i64,
+    out_ch_msg: u8[..16384]&,
+    timeout_ms: u32 = 5000,
+) -> bool {
+    out_ch_msg.clear();
+    guard fd > 0 && tls_internal::read_plaintext_handshake_record(fd, out_ch_msg, timeout_ms) else {
+        out_ch_msg.clear();
+        return false;
+    }
+    let msg_type, msg_len, ok_h = parse_handshake_header(out_ch_msg[..]);
+    guard ok_h && msg_type == rfc::TLS_HS_CLIENT_HELLO && out_ch_msg.len == core::add_sat_i64(4, msg_len) else {
+        out_ch_msg.clear();
+        return false;
+    }
+    return true;
+}
+
+// Parses a TLS 1.3 ClientHello handshake message and extracts the normalized SNI hostname (RFC 6066 Section 3).
+// Returns true if a valid server_name extension was extracted into `out_sni`; clears `out_sni`
+// and returns false if the ClientHello is malformed, omits SNI, or carries an invalid host_name.
+//
+// Example:
+//   ch_msg = [0x01, 0x00, 0x00, 0x46, 0x03, 0x03, ...server_name "Api.Example.COM"...]
+//   returns: true, out_sni = "api.example.com"
+fn extract_client_hello_sni(ch_msg: const u8[:], out_sni: u8[..255]&) -> bool {
+    out_sni.clear();
+    var sid:     u8[..32]             = [];
+    var entries: ExtensionEntry[..32] = [];
+    let _, ok_pre = tls_internal::decode_ch_server_preamble(ch_msg, sid, entries);
+    guard ok_pre else { return false; }
+    let sni_ext, has_sni = find_extension(entries, rfc::TLS_EXT_SERVER_NAME);
+    guard has_sni && parse_sni_extension(sni_ext, out_sni) else {
+        out_sni.clear();
+        return false;
+    }
+    return true;
+}
 
 fn server_emit_hrr_and_recv_ch2(
     fd:        i64,
@@ -39,6 +77,7 @@ fn server_emit_hrr_and_recv_ch2(
     let hrr_cipher = ch_choice.cipher_suite;
     let hrr_group = ch_choice.selected_group;
     let hrr_sid = ch_choice.session_id;
+    let hrr_sni = ch_choice.client_sni;
     var hrr_pay: u8[..256] = [];
     tls_internal::build_hrr_payload(hrr_sid[..], hrr_cipher, hrr_group, hrr_pay);
     var hrr_msg: u8[..280] = [];
@@ -69,7 +108,8 @@ fn server_emit_hrr_and_recv_ch2(
     ) else { return false; }
     guard ch_choice.cipher_suite == hrr_cipher &&
         ch_choice.selected_group == hrr_group &&
-        ch_choice.session_id[..] == hrr_sid[..] else {
+        ch_choice.session_id[..] == hrr_sid[..] &&
+        ch_choice.client_sni[..] == hrr_sni[..] else {
         return false;
     }
     tls_internal::transcript_update(tr, ch2_msg[..]);
@@ -236,7 +276,7 @@ fn server_handshake_with_ch(
 // Executes full TLS 1.3 server handshake over raw TCP socket, returning slot index (RFC 8446 §4).
 fn server_handshake(fd: i64, config: const ServerHandshakeConfig&) -> u16, bool {
     var ch_msg: u8[..16384] = [];
-    guard tls_internal::read_plaintext_handshake_record(fd, ch_msg, config.handshake_timeout_ms) else {
+    guard read_client_hello(fd, ch_msg, config.handshake_timeout_ms) else {
         return 0xFFFF, false;
     }
     return server_handshake_with_ch(fd, ch_msg[..], config);

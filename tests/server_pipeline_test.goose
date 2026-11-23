@@ -1884,9 +1884,12 @@ fn srv_reg1_run_round2_part2(t: lit::T&) {
         sub.assert_true(server::add_ws_route(srv, "/ws/live", ws_b), "Registered /ws/live");
         sub.assert_ge(server::find_ws_route(srv, "/ws/live?token=abc"), 0, "find_ws_route matches request URL with query string");
 
-        var oversize_pem: u8[..4200] = [];
-        for k in 4100 { oversize_pem.push('A'); }
-        sub.assert_false(server::add_server_name(srv, "api.example.com", "CERT", oversize_pem[..]), "add_server_name rejects >4096B PEM");
+        var oversize_key_pem: u8[>..] = [];
+        oversize_key_pem.resize(8200, 'A');
+        var oversize_cert_pem: u8[>..] = [];
+        oversize_cert_pem.resize(16400, 'B');
+        sub.assert_false(server::add_server_name(srv, "api.example.com", "CERT", oversize_key_pem[..]), "add_server_name rejects >8192B key PEM");
+        sub.assert_false(server::add_server_name(srv, "api.example.com", oversize_cert_pem[..], "KEY"), "add_server_name rejects >16384B cert PEM");
         sub.assert_true(server::add_server_name(srv, "*.wildcard.org", "CERT_WILD", "KEY_WILD"), "Registered wildcard SNI");
         sub.assert_true(server::add_server_name(srv, "special.wildcard.org", "CERT_EXACT", "KEY_EXACT"), "Registered exact SNI");
         let sni_cred, ok_sni = server::resolve_sni_credentials(srv, "special.wildcard.org.");

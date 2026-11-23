@@ -37,6 +37,7 @@ enum PureHsStage {
     ClientWaitCV,
     ClientWaitFinished,
     ServerWaitClientHello,
+    ServerNeedSniCredentials,
     ServerWaitClientCert,
     ServerWaitClientCV,
     ServerWaitClientFinished,
@@ -48,6 +49,7 @@ struct PureTlsSlot {
     in_use:                 bool                  = false,
     generation:             u32                   = 0,
     is_server:              bool                  = false,
+    defer_sni_credentials:  bool                  = false,
     require_client_cert:    bool                  = false,
     insecure_skip_verify:   bool                  = false,
     use_system_roots:       bool                  = true,
@@ -57,10 +59,12 @@ struct PureTlsSlot {
     has_psk_ticket:         bool                  = false,
     psk_resumed:            bool                  = false,
     hrr_sent:               bool                  = false,
+    hrr_sni_recorded:       bool                  = false,
     psk_hash_len:           u8                    = 32,
     hrr_group:              u16                   = 0,
     hrr_cipher:             u16                   = 0,
     hrr_sid:                u8[..32]              = [],
+    hrr_sni:                u8[..255]             = [],
     peer_closed:            bool                  = false,
     stage:                  PureHsStage           = PureHsStage.ClientInit,
     cipher_slot:            u16                   = 0xFFFF,
@@ -77,6 +81,7 @@ struct PureTlsSlot {
     trust_store:            tls::TrustAnchorStore = tls::TrustAnchorStore { .. },
     crl_der:                u8[..4096]            = [],
     keylog_file:            u8[..256]             = [],
+    pending_ch_msg:         u8[..16384]           = [],
     client_random:          u8[32]                = [0; 32],
     eph_priv:               u8[32]                = [0; 32],
     pq_priv:                u8[2400]              = [0; 2400],
@@ -137,6 +142,7 @@ fn reset_and_wipe_pure_slot(slot: PureTlsSlot&) {
     }
     wipe_pure_hs_secrets(slot);
     core::secure_zeroize_32(slot.priv_seed);
+    slot.pending_ch_msg.clear();
     core::secure_zeroize_slice(slot.wire_in[..]);
     core::secure_zeroize_slice(slot.wire_out[..]);
     core::secure_zeroize_slice(slot.app_in[..]);

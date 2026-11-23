@@ -363,29 +363,70 @@ fn pure_server_emit_hrr(
     return tls::TlsBackendStatus.WantRead;
 }
 
-fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
-    var ch_msg: u8[..16384] = [];
-    let st = pure_pop_plaintext_hs_msg(slot, ch_msg);
+fn pure_server_pop_or_resume_ch(slot: PureTlsSlot&, out_ch: u8[..16384]&) -> tls::TlsBackendStatus {
+    if slot.pending_ch_msg.len > 0 {
+        guard out_ch.try_set(slot.pending_ch_msg[..]) else {
+            return tls::TlsBackendStatus.Error;
+        }
+        slot.pending_ch_msg.clear();
+        return tls::TlsBackendStatus.Ok;
+    }
+    let st = pure_pop_plaintext_hs_msg(slot, out_ch);
     guard st == tls::TlsBackendStatus.Ok else { return st; }
     // RFC 8446 Section 5.1: Record Layer - No plaintext bytes may cross the ClientHello key-change epoch.
     guard slot.hs_plain.len == 0 else { return tls::TlsBackendStatus.HandshakeError; }
+    return tls::TlsBackendStatus.Ok;
+}
+
+fn pure_server_stash_deferred_sni(
+    slot:     PureTlsSlot&,
+    ch_msg:   const u8[:],
+    hrr_mode: ServerHrrMode,
+) -> tls::TlsBackendStatus {
+    var pre_ch = ServerClientHelloChoice { .. };
+    defer zeroize_server_ch_choice(pre_ch);
+    guard parse_server_client_hello(
+        ch_msg, slot.alpn_csv[..], 0, 0, hrr_mode, pre_ch, slot.require_client_cert,
+    ) else {
+        return tls::TlsBackendStatus.HandshakeError;
+    }
+    guard slot.server_name.try_set(pre_ch.client_sni[..]) &&
+        slot.pending_ch_msg.try_set(ch_msg) else {
+        return tls::TlsBackendStatus.Error;
+    }
+    slot.stage = PureHsStage.ServerNeedSniCredentials;
+    return tls::TlsBackendStatus.NeedSniCredentials;
+}
+
+fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
+    var ch_msg: u8[..16384] = [];
+    let pop_st = pure_server_pop_or_resume_ch(slot, ch_msg);
+    guard pop_st == tls::TlsBackendStatus.Ok else { return pop_st; }
+
+    let hrr_mode = if slot.hrr_sent { ServerHrrMode.Reject } else { ServerHrrMode.Allow };
+    if slot.defer_sni_credentials {
+        return pure_server_stash_deferred_sni(slot, ch_msg[..], hrr_mode);
+    }
+    guard slot.cert_der.len > 0 else { return tls::TlsBackendStatus.HandshakeError; }
 
     var ch_choice = ServerClientHelloChoice { .. };
     defer zeroize_server_ch_choice(ch_choice);
     let req_sig = detect_cert_sig_scheme(slot.cert_der[..]);
-    let hrr_mode = if slot.hrr_sent { ServerHrrMode.Reject } else { ServerHrrMode.Allow };
     guard parse_server_client_hello(
         ch_msg[..], slot.alpn_csv[..], req_sig, 0, hrr_mode, ch_choice, slot.require_client_cert,
     ) else { return tls::TlsBackendStatus.HandshakeError; }
 
     if !slot.hrr_sent && ch_choice.needs_hrr {
+        slot.hrr_sni_recorded = true;
+        let _ = slot.hrr_sni.try_set(ch_choice.client_sni[..]);
         transcript_update(slot.transcript, ch_msg[..]);
         return pure_server_emit_hrr(slot, ch_choice);
     }
     if slot.hrr_sent {
         guard ch_choice.cipher_suite == slot.hrr_cipher &&
             ch_choice.selected_group == slot.hrr_group &&
-            ch_choice.session_id[..] == slot.hrr_sid[..] else {
+            ch_choice.session_id[..] == slot.hrr_sid[..] &&
+            (!slot.hrr_sni_recorded || ch_choice.client_sni[..] == slot.hrr_sni[..]) else {
             return tls::TlsBackendStatus.HandshakeError;
         }
     }
@@ -393,6 +434,7 @@ fn pure_server_step_ch(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
     transcript_update(slot.transcript, ch_msg[..]);
     slot.cipher_suite = ch_choice.cipher_suite;
     slot.client_random = ch_choice.client_random;
+    let _ = slot.server_name.try_set(ch_choice.client_sni[..]);
     let _ = slot.selected_alpn.try_set(ch_choice.negotiated_alpn[..]);
 
     var srv_rand:  u8[32]   = [0; 32];
@@ -513,13 +555,16 @@ fn pure_step_handshake_loop(slot: PureTlsSlot&) -> tls::TlsBackendStatus {
             ClientWaitCV => pure_client_step_encrypted(slot),
             ClientWaitFinished => pure_client_step_encrypted(slot),
             ServerWaitClientHello => pure_server_step_ch(slot),
+            ServerNeedSniCredentials => tls::TlsBackendStatus.NeedSniCredentials,
             ServerWaitClientCert => pure_server_step_client_cert(slot),
             ServerWaitClientCV => pure_server_step_client_cv(slot),
             ServerWaitClientFinished => pure_server_step_fin(slot),
             _ => tls::TlsBackendStatus.Ok,
         };
         if st != tls::TlsBackendStatus.Ok {
-            if st != tls::TlsBackendStatus.WantRead && st != tls::TlsBackendStatus.WantWrite {
+            if st != tls::TlsBackendStatus.WantRead &&
+                st != tls::TlsBackendStatus.WantWrite &&
+                st != tls::TlsBackendStatus.NeedSniCredentials {
                 slot.stage = PureHsStage.Failed;
             }
             return st;
@@ -566,8 +611,12 @@ fn pure_init_slot_credentials(
                 return tls::TlsBackendStatus.HandshakeError;
             }
             slot.priv_seed = cfg.priv_seed;
-        } else {
+        } else if cfg.cert_pem_file.len > 0 || cfg.key_pem_file.len > 0 {
             guard pure_load_server_pem_files(cfg.cert_pem_file[..], cfg.key_pem_file[..], slot) else {
+                return tls::TlsBackendStatus.HandshakeError;
+            }
+        } else {
+            guard cfg.defer_sni_credentials else {
                 return tls::TlsBackendStatus.HandshakeError;
             }
         }
@@ -595,13 +644,18 @@ fn pure_init_slot_credentials(
 
 fn open_pure_endpoint(cfg: const tls::TlsBackendConfig&, is_server: bool) -> tls::TlsEndpoint, tls::TlsBackendStatus {
     let has_pem = cfg.cert_pem_file.len > 0 && cfg.key_pem_file.len > 0;
-    if is_server && cfg.cert_der.len == 0 && !has_pem {
+    let half_pem = (cfg.cert_pem_file.len > 0) != (cfg.key_pem_file.len > 0);
+    guard !half_pem else {
+        return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.HandshakeError;
+    }
+    if is_server && !cfg.defer_sni_credentials && cfg.cert_der.len == 0 && !has_pem {
         return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.HandshakeError;
     }
     let idx, gen = alloc_pure_tls_slot();
     guard idx >= 0 else { return tls::TlsEndpoint { .. }, tls::TlsBackendStatus.Error; }
     let slot .= g_pure_tls_slots[idx as i64];
     slot.is_server = is_server;
+    slot.defer_sni_credentials = is_server && cfg.defer_sni_credentials;
     slot.require_client_cert = cfg.require_client_cert;
     slot.insecure_skip_verify = cfg.insecure_skip_verify;
     slot.use_system_roots = cfg.use_system_roots;

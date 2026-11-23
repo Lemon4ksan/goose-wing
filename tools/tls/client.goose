@@ -104,6 +104,7 @@ fn status_name(st: tls::TlsBackendStatus) -> const u8[:] {
         Ok => "Ok",
         WantRead => "WantRead",
         WantWrite => "WantWrite",
+        NeedSniCredentials => "NeedSniCredentials",
         Closed => "Closed",
         Unavailable => "Unavailable",
         HandshakeError => "HandshakeError",

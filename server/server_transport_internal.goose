@@ -19,6 +19,8 @@ import net.tcp;
 import net.proxy_protocol;
 import net.accel;
 import tls.session;
+import tls.pem;
+import tls.server_handshake;
 import tls.backend;
 import realtime.ws_handshake;
 import realtime.websocket;
@@ -704,11 +706,49 @@ fn serve_pipe_loop(server: server::HttpServer&, listener_fd: i64, max_connection
     return serve_pipe_loop(server, listener_fd, max_connections, noop);
 }
 
-inline fn verify_tls_slot_sni(server: const server::HttpServer&, slot_idx: i32) -> bool {
-    guard server.sni_registry.count > 0 else { return true; }
-    let sni_host = tls::g_tls_cipher_slots[slot_idx as i64].server_name[..];
-    let _, ok_sni = server::resolve_sni_credentials(server, sni_host);
-    return ok_sni;
+// Performs blocking pre-handshake SNI selection when `server.sni_registry.count > 0`
+// by reading ClientHello, matching SNI against `sni_registry`, and falling back to
+// `default_cfg` if configured (else failing closed).
+fn server_accept_tls_handshake(
+    server:      const server::HttpServer&,
+    conn_fd:     i64,
+    default_cfg: const tls::ServerHandshakeConfig&,
+) -> u16, bool {
+    guard conn_fd > 0 else { return 0xFFFF, false; }
+    if server.sni_registry.count <= 0 {
+        guard default_cfg.cert_der.len > 0 else { return 0xFFFF, false; }
+        return tls::server_handshake(conn_fd, default_cfg);
+    }
+
+    var ch_msg: u8[..16384] = [];
+    guard tls::read_client_hello(conn_fd, ch_msg, default_cfg.handshake_timeout_ms) else {
+        return 0xFFFF, false;
+    }
+
+    var sni_host: u8[..255] = [];
+    if tls::extract_client_hello_sni(ch_msg[..], sni_host) {
+        let creds, ok_sni = server::resolve_sni_credentials(server, sni_host[..]);
+        if ok_sni {
+            var sni_cfg = tls::ServerHandshakeConfig {
+                alpn:                 default_cfg.alpn,
+                compressed_cert_algo: default_cfg.compressed_cert_algo,
+                compressed_cert_data: default_cfg.compressed_cert_data,
+                handshake_timeout_ms: default_cfg.handshake_timeout_ms,
+                keylog_file:          default_cfg.keylog_file,
+                require_client_cert:  default_cfg.require_client_cert,
+                client_trust_store:   default_cfg.client_trust_store,
+                ..
+            };
+            defer tls::release_server_credentials(sni_cfg);
+            guard tls::load_server_credentials_pem(creds.cert_pem, creds.key_pem, sni_cfg) else {
+                return 0xFFFF, false;
+            }
+            return tls::server_handshake_with_ch(conn_fd, ch_msg[..], sni_cfg);
+        }
+    }
+
+    guard default_cfg.cert_der.len > 0 else { return 0xFFFF, false; }
+    return tls::server_handshake_with_ch(conn_fd, ch_msg[..], default_cfg);
 }
 
 fn step_tls_loop_conn(
