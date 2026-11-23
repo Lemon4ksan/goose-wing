@@ -199,7 +199,12 @@ fn header_has_token(hdr: const u8[:], token: const u8[:]) -> bool {
 // Initiates a WebSocket connection with automatic RFC 6455 handshake negotiation.
 fn ws(session: Session&, url: const u8[:]) -> realtime::WebSocketSession, http::Response, http::Error {
     var client_key: u8[..32] = [];
-    var req = client_internal::prepare_ws_upgrade_request(session, url, client_key);
+    var req, ok_req = client_internal::prepare_ws_upgrade_request(session, url, client_key);
+    guard ok_req else {
+        return realtime::new_websocket_session(true),
+            http::Response { .. },
+            http::make_error(500, "websocket_handshake", "CSPRNG failure generating WebSocket key");
+    }
     return client_internal::ws_perform_handshake(session, req, client_key[..]);
 }
 
@@ -209,7 +214,12 @@ fn ws<F: fn(http::Request&)>(
     url:     const u8[:],
 ) -> realtime::WebSocketSession, http::Response, http::Error {
     var client_key: u8[..32] = [];
-    var req = client_internal::prepare_ws_upgrade_request(session, url, client_key);
+    var req, ok_req = client_internal::prepare_ws_upgrade_request(session, url, client_key);
+    guard ok_req else {
+        return realtime::new_websocket_session(true),
+            http::Response { .. },
+            http::make_error(500, "websocket_handshake", "CSPRNG failure generating WebSocket key");
+    }
     F(&req);
     let eff_key = http::header(req, "Sec-WebSocket-Key");
     return client_internal::ws_perform_handshake(session, req, if eff_key.len > 0 { eff_key } else { client_key[..] });

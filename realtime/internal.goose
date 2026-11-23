@@ -12,7 +12,6 @@ import .websocket;
 
 // ---- Native CSPRNG & SIMD Shims ------------------------------------------
 
-extern fn native_crypto_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
 extern fn native_simd_mask_websocket(data: u8[:], mask: const u8[4]&) = "wing_simd_mask_websocket";
 extern fn native_simd_unmask_shifted(
     slice:       u8[:],
@@ -124,19 +123,14 @@ fn try_encode_ws_frame<B>(
 }
 
 // Generates cryptographically secure 4-byte masking key for client frames per RFC 6455 Section 5.3.
-fn ws_next_mask_key(ws: realtime::WebSocketSession&) -> u8[4] {
+// Returns `([0; 4], true)` for server sessions; fails closed `([0; 4], false)` on CSPRNG error.
+fn ws_next_mask_key(ws: const realtime::WebSocketSession&) -> u8[4], bool {
+    guard ws.is_client else { return [0, 0, 0, 0], true; }
     var mask: u8[4] = [0; 4];
-    if core::sim_rng_fill(mask[..]) || native_crypto_random_bytes(mask[..]) == 0 {
-        return mask;
+    if core::sim_rng_is_active() {
+        return mask, core::sim_rng_fill(mask[..]);
     }
-    ws.mask_rng_state = ws.mask_rng_state * 1664525 + 1013904223;
-    let s = ws.mask_rng_state;
-    return [
-        ((s >> 24) & 0xFF) as u8,
-        ((s >> 16) & 0xFF) as u8,
-        ((s >> 8) & 0xFF) as u8,
-        (s & 0xFF) as u8,
-    ];
+    return mask, core::csprng_fill(mask[..]);
 }
 
 inline fn has_ws_header_ctl(s: const u8[:]) -> bool {

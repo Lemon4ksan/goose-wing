@@ -1658,7 +1658,7 @@ fn test_grpc_h2_large_multiframe_and_sni_ip_seam() {
 //   on `req.headers` for `validate_h2_websocket_handshake`.
 fn test_proxy_cache_h2_extended_connect_seams() {
     g_seam_session = client::Client { .. };
-    g_seam_session.virtual_clock_us = 0;
+    g_seam_session.virtual_clock_us = 1000000;
     g_seam_session.enable_cache = true;
     let parsed_root = core::new_url("http://127.0.0.1:18080");
     var req_root = http::new_request("GET", "http://127.0.0.1:18080");
@@ -1666,7 +1666,7 @@ fn test_proxy_cache_h2_extended_connect_seams() {
     let _ = http::append_header(cached_resp.headers, "Cache-Control", "max-age=60");
     let _ = http::append_header(cached_resp.headers, "ETag", "\"v1\"");
     cached_resp.body.append("CACHED_ROOT_PAYLOAD");
-    var ts = http::CacheTimestamps { .. };
+    var ts = http::CacheTimestamps { request_sec: 1, response_sec: 1, now_sec: 1, .. };
     let _ = client_internal::stage_cache_store(
         req_root, req_root.headers, parsed_root.href[..], "GET", cached_resp, ts, -1, g_seam_session.cache, g_seam_session.enable_cache,
     );

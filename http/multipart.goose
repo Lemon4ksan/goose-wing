@@ -10,8 +10,6 @@ import core;
 import .request;
 import http.internal;
 
-extern fn multipart_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
-
 const MULTIPART_MAX_BOUNDARY_LEN: i64 = 70; // RFC 2046 Section 5.1.1
 
 var g_multipart_boundary_counter: u64 = 0;
@@ -168,25 +166,25 @@ struct MultipartWriter {
     body:       u8[>..]  = [],
 }
 
-fn generate_multipart_boundary() -> u8[..70] {
+fn generate_multipart_boundary() -> u8[..70], bool {
     var seed: u8[48] = [0; 48];
+    defer core::secure_zeroize_48(seed);
     if core::sim_rng_is_active() {
-        let _ = core::sim_rng_fill(seed[0..32]);
+        guard core::sim_rng_fill(seed[0..32]) else { return [], false; }
         core::write_le_u64_at(seed[..], 32, core::sim_now_ns() as u64);
     } else {
+        guard core::csprng_fill(seed[0..32]) else { return [], false; }
         g_multipart_boundary_counter = core::add_sat_u64(g_multipart_boundary_counter, 1);
-        let _ = multipart_random_bytes(seed[0..32]);
         core::write_le_u64_at(seed[..], 32, core::sim_now_ns() as u64);
         core::write_le_u64_at(seed[..], 40, g_multipart_boundary_counter);
     }
     let digest = core::sha256(seed[..]);
-    core::secure_zeroize_48(seed);
 
     var out: u8[..70] = "----GooseWing";
     for i in 16 {
         core::format_u8_hex(digest[i], out, false);
     }
-    return out;
+    return out, true;
 }
 
 // Creates an RFC 7578 multipart/form-data writer.
@@ -198,7 +196,8 @@ fn generate_multipart_boundary() -> u8[..70] {
 //   boundary = "bad\r\n" -> ok = false
 fn new_multipart_writer(boundary: const u8[:] = "") -> MultipartWriter, bool {
     if boundary.len == 0 {
-        let gen = generate_multipart_boundary();
+        let gen, ok_gen = generate_multipart_boundary();
+        guard ok_gen else { return MultipartWriter { .. }, false; }
         return MultipartWriter { boundary: gen, .. }, true;
     }
     guard boundary.len <= MULTIPART_MAX_BOUNDARY_LEN &&

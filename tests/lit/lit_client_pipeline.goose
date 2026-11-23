@@ -632,7 +632,7 @@ fn test_f011_exec_bounds_and_auth_retry_cookie() {
     client_internal::build_effective_url(base_big[..], rel_big[..], q_items[..], out_url);
 
     var session = client::new_session();
-    cookie::set_cookie_header(session.jar, "https://auth.example.com/resource", "sid=initial_token; Path=/", session.virtual_clock_us);
+    cookie::set_cookie_header(session.jar, "https://auth.example.com/resource", "sid=initial_token; Path=/", client::effective_clock_us(session));
     var ctx = client_internal::RequestExecutionContext {
         site_for_cookies: cookie::site_for_cookies_from_url("https://auth.example.com/resource"),
         is_main_frame:    true,
@@ -1266,7 +1266,7 @@ fn test_f001_samesite_lax_after_cross_site_redirect() {
         session.jar,
         "https://target.example.com/landing",
         "def_sid=abc123; Path=/; Secure",
-        session.virtual_clock_us,
+        client::effective_clock_us(session),
     );
     assert(ok_set);
 
@@ -1287,7 +1287,7 @@ fn test_f001_samesite_lax_after_cross_site_redirect() {
         ctx.is_main_frame,
         "",
         false,
-        session.virtual_clock_us,
+        client::effective_clock_us(session),
         session.jar,
         true,
     );

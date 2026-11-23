@@ -215,6 +215,8 @@ fn verify_response_signature(
     headers:     const http::HeaderMap&,
     resp:        const http::Response&,
 ) -> bool {
+    guard !session.has_invalid_sig_config else { return false; }
+    guard session.sig_public_key.len == 0 || session.sig_public_key.len == 32 else { return false; }
     guard session.sig_public_key.len == 32 else { return true; }
     let has_sig = http::has_header(resp, rfc::HEADER_SIGNATURE) && http::has_header(resp, rfc::HEADER_SIGNATURE_INPUT);
     guard has_sig else { return false; }
@@ -222,7 +224,8 @@ fn verify_response_signature(
     let _ = hop_req.method.try_set(method);
     let _ = hop_req.url.try_set(current_url.href[..]);
     hop_req.headers = copy(headers);
-    return http::verify_response_ed25519(resp, hop_req, session.sig_key_id[..], session.sig_public_key[..]);
+    let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
+    return http::verify_response_ed25519(resp, hop_req, session.sig_key_id[..], session.sig_public_key[..], now_sec);
 }
 
 fn stage_client_ssrf_guard(
@@ -501,7 +504,7 @@ fn run_client_decompress_and_limit_stage(
         out_resp,
         session.dict_cache,
         strict_dec,
-        div_euclid(session.virtual_clock_us, 1000000),
+        div_euclid(client::effective_clock_us(session), 1000000),
     );
     match dec_v {
         Abort ab => {

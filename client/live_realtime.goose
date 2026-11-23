@@ -7,6 +7,9 @@ namespace client;
 
 import std;
 import core;
+import http.response;
+import http.hsts;
+import security.ssrf;
 import net.tcp;
 import net.socks5;
 import net.http_connect;
@@ -18,7 +21,11 @@ import realtime.ws_handshake;
 import realtime.websocket;
 import realtime.ws_live;
 import realtime.sse;
+import .redirect;
 import .client;
+import .session.ssrf;
+import .session.tls_hop_internal;
+import .session.dns_dial_internal;
 
 const LIVE_DEFAULT_TIMEOUT_MS: u32 = 10000;
 const SSE_MAX_CHUNK_BYTES:     u64 = 65536;
@@ -77,19 +84,9 @@ fn upgrade_live_tls_fd(
     sess:       const Session&,
     timeout_ms: u32,
 ) -> net::Transport, bool {
-    var tcfg = tls::ClientHandshakeConfig {
-        trust_store:          sess.trust_store,
-        use_system_roots:     sess.tls_use_system_roots,
-        insecure_skip_verify: sess.insecure_skip_verify,
-        handshake_timeout_ms: timeout_ms,
-        ..
-    };
-    guard tcfg.server_name.try_set(sni) && tcfg.alpn.try_set("http/1.1") else {
-        return net::Transport.Disconnected, false;
-    }
-    let slot, ok = tls::client_handshake(fd, tcfg);
-    guard ok else { return net::Transport.Disconnected, false; }
-    return net::Transport.Tls { fd: fd, record_seq_rx: 0, record_seq_tx: 0, cipher_slot: slot }, true;
+    let now_sec = div_euclid(effective_clock_us(sess), 1000000);
+    let tr, err = client_internal::establish_https_proxy_transport(sess, fd, sni, timeout_ms, now_sec);
+    return tr, http::ok(err);
 }
 
 fn dial_live_http_connect_proxy(
@@ -198,6 +195,28 @@ fn dial_live_via_proxy(
     );
 }
 
+fn dial_live_direct_fd(
+    sess:        const Session&,
+    target_host: const u8[:],
+    target_port: u16,
+    timeout_ms:  u32,
+) -> i64 {
+    guard sess.ssrf_guard.enabled else {
+        return net::tcp_connect(target_host, target_port, timeout_ms);
+    }
+    var resolved_ips: u8[..64][..16] = [];
+    guard net::resolve_host_ips(target_host, resolved_ips, sess.ip_family) && resolved_ips.len > 0 else {
+        return -1;
+    }
+    for &ip in resolved_ips {
+        guard security::is_valid_resolved_ip_literal(ip[..]) &&
+            !client_internal::is_ssrf_blocked_ip(sess.ssrf_guard, ip[..]) else {
+            return -1;
+        }
+    }
+    return net::tcp_connect(resolved_ips[0][..], target_port, timeout_ms);
+}
+
 fn dial_live_transport(
     sess:         const Session&,
     target_host:  const u8[:],
@@ -205,6 +224,21 @@ fn dial_live_transport(
     use_tls:      bool,
     sni_override: const u8[:] = "",
 ) -> net::Transport, bool {
+    guard use_tls || !sess.https_only else { return net::Transport.Disconnected, false; }
+    let now_sec = div_euclid(effective_clock_us(sess), 1000000);
+    guard use_tls || !sess.enable_hsts || !sess.hsts.is_hsts_host(target_host, now_sec) else {
+        return net::Transport.Disconnected, false;
+    }
+    if sess.ssrf_guard.enabled {
+        guard !security::is_cloud_metadata_domain(target_host) else {
+            return net::Transport.Disconnected, false;
+        }
+        if sess.ssrf_guard.deny_local_network {
+            guard !security::is_forbidden_internal_host(target_host) else {
+                return net::Transport.Disconnected, false;
+            }
+        }
+    }
     let timeout_ms = resolve_live_connect_timeout_ms(sess);
     var fd: i64 = -1;
     if sess.proxy_url.len > 0 {
@@ -212,7 +246,7 @@ fn dial_live_transport(
         guard ok_p && pfd > 0 else { return net::Transport.Disconnected, false; }
         fd = pfd;
     } else {
-        fd = net::tcp_connect(target_host, target_port, timeout_ms);
+        fd = dial_live_direct_fd(sess, target_host, target_port, timeout_ms);
         guard fd > 0 else { return net::Transport.Disconnected, false; }
     }
     if !use_tls {
@@ -297,11 +331,6 @@ fn finalize_client_ws_conn(
 ) {
     out_conn.tr = tr;
     out_conn.ws = realtime::new_websocket_session(true);
-    let r_seed, ok_r = core::csprng_u64();
-    if ok_r {
-        let low = (r_seed & 0xFFFFFFFF) as u32;
-        out_conn.ws.mask_rng_state = if low != 0 { low } else { 0x9E3779B9 };
-    }
     if neg_proto.len > 0 {
         let _ = out_conn.negotiated_subprotocol.try_set(neg_proto);
         let _ = out_conn.ws.subprotocol.try_set(neg_proto);
@@ -332,13 +361,21 @@ fn dial_ws(
         eff_port > 0 && eff_port <= 65535 else {
         return false;
     }
+    guard validate_url_against_ssrf(u, sess.ssrf_guard) == RedirectError.None else {
+        return false;
+    }
 
     var target: u8[..1024] = [];
     var nonce:  u8[16]     = [0; 16];
-    guard build_live_request_target(u, target) && core::csprng_fill(nonce[..]) else { return false; }
+    defer core::secure_zeroize_16(nonce);
+    let got_rng = if core::sim_rng_is_active() {
+        core::sim_rng_fill(nonce[..])
+    } else {
+        core::csprng_fill(nonce[..])
+    };
+    guard build_live_request_target(u, target) && got_rng else { return false; }
     var client_key: u8[..64] = [];
     realtime::generate_websocket_key(nonce, client_key);
-    core::secure_zeroize_16(nonce);
 
     var req_wire: u8[..2048] = [];
     defer core::secure_zeroize_slice(req_wire[..]);
@@ -531,6 +568,9 @@ fn dial_sse(
     let eff_port = u.effective_port();
     guard u.valid && u.hostname().len > 0 && (use_tls || u.scheme() == "http") &&
         eff_port > 0 && eff_port <= 65535 else {
+        return false;
+    }
+    guard validate_url_against_ssrf(u, sess.ssrf_guard) == RedirectError.None else {
         return false;
     }
 

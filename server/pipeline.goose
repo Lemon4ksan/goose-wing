@@ -64,7 +64,7 @@ struct ServerPipelineConfig {
     ext_pool:                  server_internal::ExtensionsPool   = server_internal::ExtensionsPool { .. },
     slab_pool:                 server_internal::SpillSlabPool    = server_internal::SpillSlabPool { .. },
     memo:                      ServerCompressAndEtagMemo         = ServerCompressAndEtagMemo { .. },
-    target_host:               u8[..256]                         = "example.com",
+    target_host:               u8[..256]                         = [],
     deadline_ns:               u64                               = 30000000000, // 30s
     gzip_level:                i32                               = 1,
     enable_rate_limiter:       bool                              = true,
@@ -210,17 +210,22 @@ fn peer_ip(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> cons
 // Returns the verified JWT `sub` claim populated by `stage_server_auth_jwt`.
 fn auth_subject(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:] {
     guard ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len else { return ""; }
-    return cfg.ext_pool.slots[ctx.ext_slot_idx].auth_subject[..];
+    let slot .= cfg.ext_pool.slots[ctx.ext_slot_idx];
+    guard (slot.populated_entries & server_internal::ENTRY_SECURITY) != 0 else { return ""; }
+    return slot.auth_subject[..];
 }
 
-// Returns the verified `JwtClaims` populated by `stage_server_auth_jwt`.
-fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const auth::JwtClaims& {
-    let idx = if ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len {
-        ctx.ext_slot_idx
-    } else {
-        0
-    };
-    return cfg.ext_pool.slots[idx].jwt_claims;
+// Returns the verified `JwtClaims` populated by `stage_server_auth_jwt` and `true`,
+// or `(empty, false)` when the request has no authenticated security slot.
+fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> auth::JwtClaims, bool {
+    guard ctx.ext_slot_idx >= 0 && ctx.ext_slot_idx < cfg.ext_pool.slots.len else {
+        return auth::JwtClaims { .. }, false;
+    }
+    let slot .= cfg.ext_pool.slots[ctx.ext_slot_idx];
+    guard (slot.populated_entries & server_internal::ENTRY_SECURITY) != 0 else {
+        return auth::JwtClaims { .. }, false;
+    }
+    return slot.jwt_claims, true;
 }
 
 // Returns the decrypted `PrivateJar` session cookie payload populated by `stage_server_auth_cookie`.

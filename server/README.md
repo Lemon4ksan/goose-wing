@@ -283,7 +283,7 @@ fn route_param(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&, url
 fn route_param_or(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&, url: const u8[:], name: const u8[:], fallback: const u8[:]) -> const u8[:]
 fn peer_ip(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:]
 fn auth_subject(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:]
-fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const auth::JwtClaims&, bool
+fn auth_claims(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> auth::JwtClaims, bool
 fn session_data(cfg: const ServerPipelineConfig&, ctx: const ServerStageCtx&) -> const u8[:]
 fn suspend_server_request(sctx: ServerStageCtx&) -> bool
 fn on_server_stage<First, Next>(chain: wire::StageChain<First, Next>&, phase: wire::ServerHookPhase, cfg: ServerPipelineConfig&, req: const http::Request&, ctx: ServerStageCtx&, res: http::Response&) -> wire::StageVerdict

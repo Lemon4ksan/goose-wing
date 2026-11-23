@@ -893,7 +893,8 @@ fn run_clock_and_entropy_dst_scenario(world: net::DstWorld&, ep_c: u16, ep_s: u1
     security::apply_jitter_to_decision(jdec, gcra_jit, prng_s);
 
     var ws_sess = realtime::WebSocketSession { is_client: true, .. };
-    let ws_mask = realtime_internal::ws_next_mask_key(ws_sess);
+    let ws_mask, ok_ws_mask = realtime_internal::ws_next_mask_key(ws_sess);
+    assert(ok_ws_mask);
 
     var mw, ok_mw = http::new_multipart_writer();
     assert(ok_mw && mw.boundary.len > 16);

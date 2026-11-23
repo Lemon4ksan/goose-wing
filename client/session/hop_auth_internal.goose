@@ -116,7 +116,7 @@ fn apply_client_request_signature(
     ctx:         RequestExecutionContext&,
     current_url: const core::Url&,
 ) {
-    guard session.sig_private_key.len == 32 else { return; }
+    guard !session.has_invalid_sig_config && session.sig_private_key.len == 32 else { return; }
     guard is_same_origin_session_hop(ctx, current_url) else {
         http::remove_header_by_name(ctx.headers, rfc::HEADER_SIGNATURE);
         http::remove_header_by_name(ctx.headers, rfc::HEADER_SIGNATURE_INPUT);
@@ -139,6 +139,34 @@ inline fn has_auth_scheme_prefix(hdr: const u8[:], scheme_tok: const u8[:]) -> b
     let s = hdr.trim_lws();
     guard s.starts_with_fold(scheme_tok) else { return false; }
     return s.len == scheme_tok.len || s[scheme_tok.len] == ' ' || s[scheme_tok.len] == '\t';
+}
+
+inline fn generate_digest_cnonce_hex(out: u8[..32]&) -> bool {
+    out.clear();
+    var raw_cn: u8[16] = [0; 16];
+    defer core::secure_zeroize_16(raw_cn);
+    let got_cn = if core::sim_rng_is_active() {
+        core::sim_rng_fill(raw_cn[..])
+    } else {
+        core::csprng_fill(raw_cn[..])
+    };
+    guard got_cn else { return false; }
+    for b in raw_cn {
+        core::format_u8_hex(b, out, false);
+    }
+    return true;
+}
+
+inline fn is_allowed_digest_challenge(
+    allow_legacy_md5: bool,
+    chal:             const auth::DigestChallenge&,
+) -> bool {
+    guard !allow_legacy_md5 else { return true; }
+    let alg_slice = chal.algorithm[..];
+    let is_md5 = alg_slice.len == 0 ||
+        alg_slice.eq_ascii_fold(rfc::DIGEST_ALGO_MD5) ||
+        alg_slice.eq_ascii_fold(rfc::DIGEST_ALGO_MD5_SESS);
+    return !is_md5 && chal.qop.len > 0;
 }
 
 fn compute_401_digest_header<B>(
@@ -166,10 +194,20 @@ fn compute_401_digest_header<B>(
     } else {
         session.creds.last_digest = chal;
     }
+    guard is_allowed_digest_challenge(session.allow_legacy_md5_digest, active_chal) else {
+        return false;
+    }
+
+    var fresh_cnonce: u8[..32] = [];
+    defer core::secure_zeroize_slice(fresh_cnonce[..]);
+    if session.creds.cnonce.len == 0 {
+        guard generate_digest_cnonce_hex(fresh_cnonce) else { return false; }
+    }
+    let eff_cnonce = if session.creds.cnonce.len > 0 { session.creds.cnonce[..] } else { fresh_cnonce[..] };
 
     let ok_d = auth::compute_digest_response(
         active_chal, c_creds, ctx.current_method[..], uri_target[..],
-        session.creds.nonce_counter, session.creds.cnonce[..], ctx.body[..], out,
+        session.creds.nonce_counter, eff_cnonce, ctx.body[..], out,
     );
     guard ok_d else { return false; }
     session.creds.nonce_counter = min(core::add_sat_u64(session.creds.nonce_counter, 1), 0xFFFFFFFF) as u32;
@@ -212,10 +250,9 @@ fn compute_401_auth_header<B>(
         let chal, _, ok_ch = security::parse_private_token_challenge(www_auth, tok_key);
         guard ok_ch else { return false; }
         var raw_tok: u8[..512] = [];
-        let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+        let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
         let _, ok_tok = security::get_private_token(session.private_token_cache, chal, now_sec, raw_tok);
-        guard ok_tok else { return false; }
-        security::format_private_token_authorization(raw_tok[..], out);
+        guard ok_tok && security::format_private_token_authorization(raw_tok[..], out) else { return false; }
         committed = true;
         return true;
     }
@@ -319,7 +356,7 @@ fn try_handle_early_data_or_dpop_challenge(
     let is_dpop_status = resp.status_code == rfc::STATUS_UNAUTHORIZED || resp.status_code == rfc::STATUS_BAD_REQUEST;
     guard session.dpop.has_key && is_dpop_status else { return false; }
     guard auth::extract_dpop_nonce(resp.headers, session.dpop.last_nonce) else { return false; }
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
     let htu_no_q, _, _ = current_url.href[..].partition_byte('?');
     let htu_clean, _, _ = htu_no_q.partition_byte('#');
     var proof: u8[..2048] = [];
@@ -385,7 +422,7 @@ fn evaluate_response_retry_after(
 ) {
     let ra_val = resp.header("Retry-After");
     guard ra_val.len > 0 else { return; }
-    let now_ms = div_euclid(session.virtual_clock_us, 1000);
+    let now_ms = div_euclid(client::effective_clock_us(session), 1000);
     let wait_ms, ok_ra = net::parse_retry_after_ms(ra_val, now_ms);
     if ok_ra {
         let _ = net::trip_circuit_breaker_if_exceeded(session.circuit_breaker, host_str, wait_ms, now_ns);
@@ -435,7 +472,7 @@ fn attach_dictionary_request_headers(
     req:      http::Request&,
 ) -> bool {
     guard session.enable_compression_dict && is_secure_dict_origin(origin) else { return false; }
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
     let best_idx = http::find_best_matching_dict_idx(session.dict_cache, origin, url_path, now_sec);
     guard best_idx >= 0 && best_idx < session.dict_cache.entries.len else { return false; }
     let entry .= session.dict_cache.entries[best_idx];
@@ -480,7 +517,7 @@ fn process_dictionary_response<B>(
     if session.enable_compression_dict && use_as_dict_hdr.len > 0 {
         let params, ok_p = http::parse_use_as_dictionary_header(use_as_dict_hdr);
         if ok_p {
-            let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+            let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
             http::dictionary_cache_insert(
                 session.dict_cache,
                 origin,

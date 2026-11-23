@@ -277,8 +277,11 @@ fn run_dst_purity_sample(seed: u64) -> DstPuritySample {
     assert(tls_internal::random_bytes_32_checked(s.tls_rand_b));
     assert(s.tls_rand_a[..] != s.tls_rand_b[..]);
 
-    s.boundary_a = http::generate_multipart_boundary();
-    s.boundary_b = http::generate_multipart_boundary();
+    let ba, ok_ba = http::generate_multipart_boundary();
+    let bb, ok_bb = http::generate_multipart_boundary();
+    assert(ok_ba && ok_bb);
+    s.boundary_a = ba;
+    s.boundary_b = bb;
     assert(s.boundary_a.len == 45 && s.boundary_b.len == 45);
     assert(s.boundary_a[..] != s.boundary_b[..]);
     return s;
@@ -323,9 +326,9 @@ fn test_dst_purity_and_os_resume() {
     assert(tls_internal::random_bytes_32_checked(lt1) && tls_internal::random_bytes_32_checked(lt2));
     assert(lt1[..] != lt2[..] && lt1[..] != run1.tls_rand_a[..]);
 
-    let lb1 = http::generate_multipart_boundary();
-    let lb2 = http::generate_multipart_boundary();
-    assert(lb1.len == 45 && lb2.len == 45 && lb1[..] != lb2[..]);
+    let lb1, ok_lb1 = http::generate_multipart_boundary();
+    let lb2, ok_lb2 = http::generate_multipart_boundary();
+    assert(ok_lb1 && ok_lb2 && lb1.len == 45 && lb2.len == 45 && lb1[..] != lb2[..]);
     assert(lb1[..] != run1.boundary_a[..]);
     print("DST_OS_RESUME: OK");
 }

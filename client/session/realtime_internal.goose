@@ -16,8 +16,6 @@ import net.masque;
 import client.client;
 import .verbs;
 
-extern fn native_crypto_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
-
 fn normalize_realtime_url<B>(url: const u8[:], out: B&) {
     out.clear();
     if url.starts_with_fold("ws://") {
@@ -35,7 +33,7 @@ fn prepare_ws_upgrade_request<B>(
     session:        client::Session&,
     url:            const u8[:],
     out_client_key: B&,
-) -> http::Request {
+) -> http::Request, bool {
     var eff_url: u8[..2048] = [];
     normalize_realtime_url(url, eff_url);
 
@@ -45,21 +43,21 @@ fn prepare_ws_upgrade_request<B>(
     http::set_header(req, "Sec-WebSocket-Version", "13");
 
     var nonce: u8[16] = [0; 16];
-    if !core::sim_rng_fill(nonce[..]) {
-        let _ = native_crypto_random_bytes(nonce[..]);
-    }
-    var seed: u64 = (session.virtual_clock_us as u64) ^ (session.creds.nonce_counter as u64) ^ 0x5DEECE66D;
-    for &b in nonce {
-        seed ^= core::shl_sat_u64(seed, 13);
-        seed ^= seed >> 7;
-        seed ^= core::shl_sat_u64(seed, 17);
-        b ^= (seed & 0xFF) as u8;
+    defer core::secure_zeroize_16(nonce);
+    let got_rng = if core::sim_rng_is_active() {
+        core::sim_rng_fill(nonce[..])
+    } else {
+        core::csprng_fill(nonce[..])
+    };
+    guard got_rng else {
+        out_client_key.clear();
+        return req, false;
     }
     session.creds.nonce_counter = core::add_sat_u64(session.creds.nonce_counter as u64, 1) as u32;
     out_client_key.clear();
     realtime::generate_websocket_key(nonce, out_client_key);
     http::set_header(req, "Sec-WebSocket-Key", out_client_key[..]);
-    return req;
+    return req, true;
 }
 
 fn ws_perform_handshake(

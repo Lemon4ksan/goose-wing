@@ -87,7 +87,7 @@ fn run_preflight_user_hook<UserStage>(
         pipeline:       session.wire_pipeline,
         redirect_count: ctx.redirect_count as i32,
         auth_retried:   ctx.auth_retried,
-        now_us:         session.virtual_clock_us,
+        now_us:         client::effective_clock_us(session),
         last_error:     out_err,
         resp:           copy(out_resp),
     };
@@ -125,7 +125,7 @@ fn run_client_preflight_stages<UserStage>(
     cache_revalidate_idx: i64&,
     user_stage:           UserStage&,
 ) -> wire::StageVerdict {
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
     if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_URL_HSTS) {
         let _ = stage_client_url_hsts(raw_eff_url, session.hsts, session.enable_hsts, now_sec);
     }
@@ -165,7 +165,7 @@ fn invoke_client_custom_slot<UserStage>(
         pipeline:       session.wire_pipeline,
         redirect_count: ctx.redirect_count as i32,
         auth_retried:   ctx.auth_retried,
-        now_us:         session.virtual_clock_us,
+        now_us:         client::effective_clock_us(session),
         last_error:     out_err,
         ..
     };
@@ -244,7 +244,7 @@ fn dispatch_client_ingress_stage(
             ctx.is_main_frame,
             part_key[..],
             safe_method,
-            session.virtual_clock_us,
+            client::effective_clock_us(session),
             session.jar,
             session.enable_cookie_jar,
         );
@@ -314,7 +314,7 @@ fn run_pre_hop_stages<UserStage>(
             pipeline:       session.wire_pipeline,
             redirect_count: ctx.redirect_count as i32,
             auth_retried:   ctx.auth_retried,
-            now_us:         session.virtual_clock_us,
+            now_us:         client::effective_clock_us(session),
             last_error:     out_err,
             resp:           copy(out_resp),
         };
@@ -361,7 +361,7 @@ fn dispatch_client_egress_stage(
             resp_samesite,
             ctx.is_main_frame,
             part_key[..],
-            session.virtual_clock_us,
+            client::effective_clock_us(session),
             session.jar,
             session.enable_cookie_jar,
         );
@@ -371,7 +371,7 @@ fn dispatch_client_egress_stage(
         var origin_buf: u8[..128] = [];
         format_url_origin(current_url, origin_buf);
         let curr_path = current_url.pathname();
-        let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+        let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
         ingest_session_dictionary_response(session, is_https, origin_buf[..], out_resp);
         return stage_client_alt_svc(
             out_resp,
@@ -432,7 +432,7 @@ fn run_client_post_hop_stages<UserStage>(
             pipeline:       session.wire_pipeline,
             redirect_count: ctx.redirect_count as i32,
             auth_retried:   ctx.auth_retried,
-            now_us:         session.virtual_clock_us,
+            now_us:         client::effective_clock_us(session),
             last_error:     out_err,
             resp:           copy(out_resp),
         };
@@ -478,7 +478,7 @@ fn execute_client_auth_retry_hop<UserStage>(
     hop_err:              http::Error&,
     user_stage:           UserStage&,
 ) -> wire::StageVerdict, bool {
-    let retry_start_us = session.virtual_clock_us;
+    let retry_start_us = client::effective_clock_us(session);
     if wire::is_ingress_stage_enabled(session.wire_pipeline, wire::STAGE_ID_CLI_IN_INTERCEPTOR_AUTH) {
         let _ = stage_client_auth_header(
             session.pipeline, ctx.headers, current_url.href[..], ctx.current_method[..],
@@ -487,7 +487,7 @@ fn execute_client_auth_retry_hop<UserStage>(
         apply_client_request_signature(session, ctx, current_url);
     }
     resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
-    let retry_dur_us = core::sub_sat_i64(session.virtual_clock_us, retry_start_us);
+    let retry_dur_us = core::sub_sat_i64(client::effective_clock_us(session), retry_start_us);
     apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, retry_dur_us);
     guard http::ok(hop_err) else { return wire::StageVerdict.Abort { err_code: hop_err.code }, false; }
     guard check_response_body_size_limit(session, resp, hop_err) else {
@@ -578,7 +578,7 @@ fn execute_single_client_hop_iteration<UserStage>(
     var current_url = ctx.url_chain[last_idx];
     let safe_method = rfc::is_safe_http_method(ctx.current_method[..]);
     var samesite_eval = compute_hop_samesite_context(ctx, current_url, safe_method);
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
 
     let pre_hop_v = run_pre_hop_stages(
         session, ctx, current_url, samesite_eval, safe_method, now_sec, resp, hop_err, user_stage,
@@ -606,13 +606,13 @@ fn execute_single_client_hop_iteration<UserStage>(
         }
     }
 
-    let hop_start_us = session.virtual_clock_us;
+    let hop_start_us = client::effective_clock_us(session);
     resp, hop_err = execute_mock_or_echo_hop(session, ctx, current_url);
     guard http::ok(hop_err) else { return true; }
     guard check_response_body_size_limit(session, resp, hop_err) else { return true; }
     ctx.body_consumed = true;
 
-    let hop_dur_us = core::sub_sat_i64(session.virtual_clock_us, hop_start_us);
+    let hop_dur_us = core::sub_sat_i64(client::effective_clock_us(session), hop_start_us);
     apply_network_interceptors_response(session.pipeline, resp, ctx.redirect_count, hop_dur_us);
 
     var post_v = run_client_post_hop_stages(

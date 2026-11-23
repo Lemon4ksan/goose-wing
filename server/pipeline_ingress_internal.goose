@@ -377,7 +377,11 @@ fn stage_server_cors(
     if cors_res == security::CorsResult.AllowedPreflight {
         return wire::StageVerdict.ShortCircuit { status_code: res.status_code as u16 };
     }
-    if cors_res == security::CorsResult.RejectedOrigin || cors_res == security::CorsResult.InvalidConfig {
+    if cors_res == security::CorsResult.InvalidConfig {
+        res.status_code = 500;
+        return wire::StageVerdict.ShortCircuit { status_code: 500 };
+    }
+    if cors_res == security::CorsResult.RejectedOrigin {
         let has_acrm = http::header(req, rfc::HEADER_ACCESS_CONTROL_REQUEST_METHOD).len > 0;
         let is_preflight = req.method[..] == rfc::METHOD_OPTIONS && has_acrm;
         if is_preflight || cors_policy.reject_non_matching_origin {
@@ -423,7 +427,7 @@ fn stage_server_auth_cookie<Jar>(
     }
     let _prof = server::prof_enter("stage.auth_cookie");
     defer server::prof_leave(_prof);
-    let now_sec = div_euclid(now_ns, 1000000000) as i64;
+    let now_sec = if now_ns > 0 { div_euclid(now_ns, 1000000000) as i64 } else { core::now().wall_sec };
     for &e in req.headers.entries {
         guard http::entry_name(req.headers, e).eq_ascii_fold(rfc::HEADER_COOKIE) else { continue; }
         var rem = http::entry_value(req.headers, e);
@@ -452,7 +456,10 @@ fn stage_server_auth_jwt(
     now_ns:      u64,
     res:         http::Response&,
 ) -> wire::StageVerdict {
-    guard jwks.keys.len > 0 else { return wire::StageVerdict.Continue; }
+    guard jwks.keys.len > 0 else {
+        res.status_code = 503;
+        return wire::StageVerdict.ShortCircuit { status_code: 503 };
+    }
     let _prof = server::prof_enter("stage.auth_jwt");
     defer server::prof_leave(_prof);
     let auth_val = http::header(req, rfc::HEADER_AUTHORIZATION);
@@ -464,7 +471,7 @@ fn stage_server_auth_jwt(
     }
     var out_hdr = auth::JwtHeader { .. };
     var out_claims = auth::JwtClaims { .. };
-    let now_sec = div_euclid(now_ns, 1000000000) as i64;
+    let now_sec = if now_ns > 0 { div_euclid(now_ns, 1000000000) as i64 } else { core::now().wall_sec };
     let err = auth::verify_jwt(jwks, token, jwt_options, now_sec, out_hdr, out_claims);
     guard err == auth::JwtError.None else {
         res.status_code = 401;

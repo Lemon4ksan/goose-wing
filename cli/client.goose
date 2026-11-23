@@ -12,7 +12,7 @@ import term;
 const MULTIPART_BOUNDARY: const u8[:] = "------------------------WingFormBoundary7MA4YWxkTrZu0gW";
 
 fn apply_resolve_overrides(sess: client::Client&, cfg: const CliConfig&) {
-    let now_sec = core::micros(max(0, sess.virtual_clock_us)).as_secs();
+    let now_sec = core::micros(max(0, client::effective_clock_us(sess))).as_secs();
     for &r in cfg.resolves {
         let ip4, ok_ip = parse_ipv4_be_u32(r.ip[..]);
         if ok_ip {
@@ -281,16 +281,17 @@ fn load_and_save_cookie_jars(sess: client::Client&, cfg: const CliConfig&, save_
         }
         return;
     }
+    let now_us = client::effective_clock_us(sess);
     if cfg.cookie_jar_in.len > 0 && file_exists(cfg.cookie_jar_in[..]) {
         var raw_jar: u8[>..] = [];
         if read_file(cfg.cookie_jar_in[..], raw_jar) {
-            let _ = sess.jar.import_netscape(raw_jar[..], sess.virtual_clock_us);
+            let _ = sess.jar.import_netscape(raw_jar[..], now_us);
         }
     }
-    seed_inline_cookies_to_jar(sess.jar, cfg.url[..], cfg.cookie_header[..], sess.virtual_clock_us);
+    seed_inline_cookies_to_jar(sess.jar, cfg.url[..], cfg.cookie_header[..], now_us);
     for &h in cfg.headers {
         if h.name[..].eq_ascii_fold("Cookie") {
-            seed_inline_cookies_to_jar(sess.jar, cfg.url[..], h.value[..], sess.virtual_clock_us);
+            seed_inline_cookies_to_jar(sess.jar, cfg.url[..], h.value[..], now_us);
         }
     }
 }

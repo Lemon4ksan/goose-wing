@@ -403,31 +403,45 @@ fn clone_isolated_transport_client(session: const client::Session&) -> client::C
     var proxy_buf: u8[..256] = [];
     let _ = proxy_buf.try_set(session.proxy_url[..]);
     return client::Client {
-        profile:                 def_p.kind,
-        profile_spec:            def_p,
-        proxy_url:               proxy_buf,
-        timeout_ms:              session.timeout_ms,
-        default_headers:         def_hdrs,
-        ssrf_guard:              copy(session.ssrf_guard),
-        virtual_clock_us:        session.virtual_clock_us,
-        mock_routes:             copy(session.mock_routes),
-        cache:                   http::Cache { .. },
-        enable_cache:            false,
-        altsvc:                  http::AltSvcCache { .. },
-        enable_altsvc:           true,
-        enable_protocol_racing:  true,
-        quic_race_delay_ms:      200,
-        dict_cache:              http::DictionaryCache { .. },
-        enable_compression_dict: true,
-        pipeline:                client::InterceptorPipeline { .. },
-        wire_pipeline:           wire::default_client_pipeline(),
-        hsts:                    http::HstsCache { .. },
-        enable_hsts:             true,
-        pool:                    net::new_stream_pool(),
-        enable_cookie_jar:       true,
-        trust_store:             copy(session.trust_store),
-        insecure_skip_verify:    session.insecure_skip_verify,
-        jar:                     cookie::CanonicalCookieJar { .. },
+        profile:                    def_p.kind,
+        profile_spec:               def_p,
+        proxy_url:                  proxy_buf,
+        timeout_ms:                 session.timeout_ms,
+        https_only:                 session.https_only,
+        default_headers:            def_hdrs,
+        ssrf_guard:                 copy(session.ssrf_guard),
+        virtual_clock_us:           session.virtual_clock_us,
+        mock_routes:                copy(session.mock_routes),
+        cache:                      http::Cache { .. },
+        enable_cache:               false,
+        altsvc:                     http::AltSvcCache { .. },
+        enable_altsvc:              true,
+        enable_protocol_racing:     true,
+        quic_race_delay_ms:         200,
+        dict_cache:                 http::DictionaryCache { .. },
+        enable_compression_dict:    true,
+        pipeline:                   client::InterceptorPipeline { .. },
+        wire_pipeline:              wire::default_client_pipeline(),
+        hsts:                       copy(session.hsts),
+        enable_hsts:                session.enable_hsts,
+        pool:                       net::new_stream_pool(),
+        enable_cookie_jar:          true,
+        trust_store:                copy(session.trust_store),
+        insecure_skip_verify:       session.insecure_skip_verify,
+        tls_backend:                session.tls_backend,
+        tls_min_version:            session.tls_min_version,
+        tls_ca_file:                copy(session.tls_ca_file),
+        tls_use_system_roots:       session.tls_use_system_roots,
+        tls_client_cert_file:       copy(session.tls_client_cert_file),
+        tls_client_key_file:        copy(session.tls_client_key_file),
+        tls_enable_pq_hybrid:       session.tls_enable_pq_hybrid,
+        tls_enable_session_tickets: session.tls_enable_session_tickets,
+        tls_require_ocsp_stapling:  session.tls_require_ocsp_stapling,
+        tls_crl_file:               copy(session.tls_crl_file),
+        tls_keylog_file:            copy(session.tls_keylog_file),
+        allow_loopback_ssrf:        session.allow_loopback_ssrf,
+        has_invalid_tls_config:     session.has_invalid_tls_config,
+        jar:                        cookie::CanonicalCookieJar { .. },
         ..
     };
 }
@@ -544,10 +558,10 @@ inline fn is_dict_entry_usable_for_session(
         return false;
     }
     guard entry.ttl_sec > 0 else { return true; }
-    if session.virtual_clock_us == 1700000000000000 && entry.inserted_at_sec > 0 && entry.inserted_at_sec < 100000000 {
+    if session.virtual_clock_us == 0 && entry.inserted_at_sec > 0 && entry.inserted_at_sec < 100000000 {
         return true;
     }
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
     return now_sec >= entry.inserted_at_sec && core::sub_sat_i64(now_sec, entry.inserted_at_sec) < entry.ttl_sec;
 }
 

@@ -463,7 +463,7 @@ fn prepare_hop_cookie_header(
         current_url.effective_port(),
         cookie::SourceOptions { is_http_api: true, url_is_secure: is_sec_channel },
         part_key[..],
-        session.virtual_clock_us,
+        client::effective_clock_us(session),
         cookie::AccessOptions {
             is_same_site:            samesite_eval.context_type == cookie::SameSiteContextType.SameSiteStrict,
             is_top_level_navigation: allow_lax,
@@ -494,6 +494,7 @@ fn ingest_hop_response_cookies(
     var part_key: u8[..256] = [];
     compute_hop_partition_key(ctx, current_url, part_key);
 
+    let now_us = client::effective_clock_us(session);
     for &e in resp_headers.entries {
         let ename = http::entry_name(resp_headers, e);
         guard ename.eq_ascii_fold("set-cookie") else { continue; }
@@ -502,12 +503,12 @@ fn ingest_hop_response_cookies(
             set_cookie_str,
             current_url.hostname(),
             def_path[..],
-            session.virtual_clock_us,
+            now_us,
         );
         guard cookie_ok else { continue; }
         let _, can_write = cookie::can_set_for_context(parsed_cookie, resp_samesite, opts);
         guard can_write else { continue; }
-        session.jar.set_cookie_header(current_url.href[..], set_cookie_str, session.virtual_clock_us, part_key[..]);
+        session.jar.set_cookie_header(current_url.href[..], set_cookie_str, now_us, part_key[..]);
     }
 }
 
@@ -606,7 +607,7 @@ fn process_redirect_hop(
     if session.enable_hsts && hsts_stage_on && loc_hdr.len > 0 {
         let prelim_target, prelim_err = core::parse_url_with_base(loc_hdr.trim_lws(), current_url);
         if prelim_err == core::UrlParseError.None && prelim_target.valid && !prelim_target.is_secure_scheme() {
-            let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+            let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
             hsts_upgraded = http::hsts_upgrade_url(session.hsts, prelim_target.href[..], now_sec, upgraded_loc_buf);
         }
     }

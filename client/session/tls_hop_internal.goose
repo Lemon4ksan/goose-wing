@@ -76,14 +76,25 @@ fn apply_client_config_knobs(c: client::Client&, cfg: const client::Config&) {
     c.tls_handshake_timeout_ms = max(cfg.tls_handshake_timeout_ms, 0);
     c.read_timeout_ms = max(cfg.read_timeout_ms, 0);
     c.pool_idle_timeout_ms = max(cfg.pool_idle_timeout_ms, 0);
-    let _ = c.tls_client_cert_file.try_set(cfg.tls_client_cert_file);
-    let _ = c.tls_client_key_file.try_set(cfg.tls_client_key_file);
+    c.allow_legacy_md5_digest = cfg.allow_legacy_md5_digest;
+    if cfg.tls_client_cert_file.len > 0 && !c.tls_client_cert_file.try_set(cfg.tls_client_cert_file) {
+        c.has_invalid_tls_config = true;
+    }
+    if cfg.tls_client_key_file.len > 0 && !c.tls_client_key_file.try_set(cfg.tls_client_key_file) {
+        c.has_invalid_tls_config = true;
+    }
     c.tls_enable_pq_hybrid = cfg.tls_enable_pq_hybrid;
-    let _ = c.tls_alpn.try_set(cfg.tls_alpn);
+    if cfg.tls_alpn.len > 0 && !c.tls_alpn.try_set(cfg.tls_alpn) {
+        c.has_invalid_tls_config = true;
+    }
     c.tls_enable_session_tickets = cfg.tls_enable_session_tickets;
     c.tls_require_ocsp_stapling = cfg.tls_require_ocsp_stapling;
-    let _ = c.tls_crl_file.try_set(cfg.tls_crl_file);
-    let _ = c.tls_keylog_file.try_set(cfg.tls_keylog_file);
+    if cfg.tls_crl_file.len > 0 && !c.tls_crl_file.try_set(cfg.tls_crl_file) {
+        c.has_invalid_tls_config = true;
+    }
+    if cfg.tls_keylog_file.len > 0 && !c.tls_keylog_file.try_set(cfg.tls_keylog_file) {
+        c.has_invalid_tls_config = true;
+    }
     c.enable_ktls_offload = cfg.enable_ktls_offload;
     c.ip_family = cfg.ip_family;
     let _ = c.local_bind_addr.try_set(cfg.local_bind_addr);
@@ -272,46 +283,30 @@ fn establish_https_proxy_transport(
     eff_timeout: u32,
     now_sec:     i64,
 ) -> net::Transport, http::Error {
+    guard !session.has_invalid_tls_config else {
+        return net::Transport.Disconnected,
+            http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "invalid TLS client configuration");
+    }
     let host_is_hsts = session.enable_hsts && session.hsts.is_hsts_host(proxy_host, now_sec);
     let effective_insecure_skip = session.insecure_skip_verify && !host_is_hsts;
     if session.tls_backend != tls::TlsBackendKind.PureGoose {
-        var bcfg = tls::TlsBackendConfig {
-            kind:                   session.tls_backend,
-            min_version:            session.tls_min_version,
-            is_server:              false,
-            insecure_skip_verify:   effective_insecure_skip,
-            use_system_roots:       session.tls_use_system_roots,
-            trust_store:            session.trust_store,
-            enable_pq_hybrid:       session.tls_enable_pq_hybrid,
-            enable_session_tickets: session.tls_enable_session_tickets,
-            require_ocsp_stapling:  session.tls_require_ocsp_stapling,
-            ..
-        };
-        let _ = bcfg.server_name.try_set(proxy_host);
-        let alpn_h1: u8[9] = [8, 'h', 't', 't', 'p', '/', '1', '.', '1'];
-        let _ = bcfg.alpn_wire.try_set(alpn_h1[..]);
-        if session.tls_ca_file.len > 0 {
-            let _ = bcfg.ca_file.try_set(session.tls_ca_file[..]);
-        }
-        let ep_slot, _, st = tls::endpoint_client_handshake_fd(raw_sock, bcfg, eff_timeout);
-        guard st == tls::TlsBackendStatus.Ok && ep_slot >= 0 else {
-            return net::Transport.Disconnected,
-                http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "HTTPS proxy TLS handshake failed");
+        let ep_slot, _, tls_err = establish_backend_tls_connection(
+            session, raw_sock, proxy_host, effective_insecure_skip, eff_timeout, "http/1.1",
+        );
+        guard http::ok(tls_err) && ep_slot >= 0 else {
+            return net::Transport.Disconnected, tls_err;
         }
         return net::Transport.TlsBackend { fd: raw_sock, endpoint_slot: ep_slot }, http::Error { .. };
     }
 
     var tls_cfg = tls::ClientHandshakeConfig { .. };
-    let _ = tls_cfg.server_name.try_set(proxy_host);
-    let _ = tls_cfg.alpn.try_set("http/1.1");
-    tls_cfg.trust_store = session.trust_store;
-    tls_cfg.insecure_skip_verify = effective_insecure_skip;
-    tls_cfg.use_system_roots = session.tls_use_system_roots;
-    tls_cfg.enable_pq_hybrid = session.tls_enable_pq_hybrid;
-    tls_cfg.enable_session_tickets = session.tls_enable_session_tickets;
-    tls_cfg.require_ocsp_stapling = session.tls_require_ocsp_stapling;
-    tls_cfg.handshake_timeout_ms = eff_timeout;
-    tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
+    defer core::secure_zeroize_32(tls_cfg.client_priv_seed);
+    let prep_err = prepare_pure_tls_client_config(
+        session, proxy_host, "", effective_insecure_skip, eff_timeout, now_sec, tls_cfg, "http/1.1",
+    );
+    guard http::ok(prep_err) else {
+        return net::Transport.Disconnected, prep_err;
+    }
     let slot_idx, ok_tls = tls::client_handshake(raw_sock, tls_cfg);
     guard ok_tls else {
         return net::Transport.Disconnected,
@@ -327,7 +322,11 @@ fn establish_backend_tls_connection(
     host_str:                const u8[:],
     effective_insecure_skip: bool,
     tls_timeout_ms:          u32,
+    alpn_override:           const u8[:] = "",
 ) -> i64, u8[..64], http::Error {
+    guard !session.has_invalid_tls_config else {
+        return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "invalid TLS client configuration");
+    }
     var bcfg = tls::TlsBackendConfig {
         kind:                   session.tls_backend,
         min_version:            session.tls_min_version,
@@ -340,20 +339,30 @@ fn establish_backend_tls_connection(
         require_ocsp_stapling:  session.tls_require_ocsp_stapling,
         ..
     };
-    let _ = bcfg.server_name.try_set(host_str);
-    let alpn_csv = if session.tls_alpn.len > 0 { session.tls_alpn[..] } else { "h2,http/1.1" };
+    guard bcfg.server_name.try_set(host_str) else {
+        return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS server_name exceeds capacity");
+    }
+    let alpn_csv = if alpn_override.len > 0 {
+        alpn_override
+    } else if session.tls_alpn.len > 0 {
+        session.tls_alpn[..]
+    } else {
+        "h2,http/1.1"
+    };
     guard encode_alpn_csv_to_wire(alpn_csv, bcfg.alpn_wire) else {
         return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "invalid TLS ALPN configuration");
     }
     if session.tls_ca_file.len > 0 {
-        let _ = bcfg.ca_file.try_set(session.tls_ca_file[..]);
+        guard bcfg.ca_file.try_set(session.tls_ca_file[..]) else {
+            return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS CA file path exceeds capacity");
+        }
     }
     if session.tls_client_cert_file.len > 0 || session.tls_client_key_file.len > 0 {
-        guard session.tls_client_cert_file.len > 0 && session.tls_client_key_file.len > 0 else {
+        guard session.tls_client_cert_file.len > 0 && session.tls_client_key_file.len > 0 &&
+            bcfg.cert_pem_file.try_set(session.tls_client_cert_file[..]) &&
+            bcfg.key_pem_file.try_set(session.tls_client_key_file[..]) else {
             return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "incomplete client mTLS configuration");
         }
-        let _ = bcfg.cert_pem_file.try_set(session.tls_client_cert_file[..]);
-        let _ = bcfg.key_pem_file.try_set(session.tls_client_key_file[..]);
     }
     if session.tls_crl_file.len > 0 {
         guard load_crl_der_file(session.tls_crl_file[..], bcfg.crl_der) else {
@@ -361,7 +370,9 @@ fn establish_backend_tls_connection(
         }
     }
     if session.tls_keylog_file.len > 0 {
-        let _ = bcfg.keylog_file.try_set(session.tls_keylog_file[..]);
+        guard bcfg.keylog_file.try_set(session.tls_keylog_file[..]) else {
+            return -1, [], http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS keylog path exceeds capacity");
+        }
     }
     let ep_slot, neg_alpn, st = tls::endpoint_client_handshake_fd(sock, bcfg, tls_timeout_ms);
     if st == tls::TlsBackendStatus.Ok && ep_slot >= 0 {
@@ -383,10 +394,21 @@ fn prepare_pure_tls_client_config(
     tls_timeout_ms:          u32,
     now_sec:                 i64,
     tls_cfg:                 tls::ClientHandshakeConfig&,
+    alpn_override:           const u8[:] = "",
 ) -> http::Error {
-    let _ = tls_cfg.server_name.try_set(host_str);
-    let alpn_csv = if session.tls_alpn.len > 0 { session.tls_alpn[..] } else { "h2,http/1.1" };
-    let _ = tls_cfg.alpn.try_set(alpn_csv);
+    guard !session.has_invalid_tls_config else {
+        return http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "invalid TLS client configuration");
+    }
+    let alpn_csv = if alpn_override.len > 0 {
+        alpn_override
+    } else if session.tls_alpn.len > 0 {
+        session.tls_alpn[..]
+    } else {
+        "h2,http/1.1"
+    };
+    guard tls_cfg.server_name.try_set(host_str) && tls_cfg.alpn.try_set(alpn_csv) else {
+        return http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS server_name or ALPN exceeds capacity");
+    }
     tls_cfg.trust_store = session.trust_store;
     if !effective_insecure_skip && tls_cfg.trust_store.anchors.len == 0 && session.tls_ca_file.len > 0 {
         let _, ok_ca = tls::load_trust_anchors_pem_file(tls_cfg.trust_store, session.tls_ca_file[..]);
@@ -396,16 +418,20 @@ fn prepare_pure_tls_client_config(
     }
     tls_cfg.insecure_skip_verify = effective_insecure_skip;
     tls_cfg.use_system_roots = session.tls_use_system_roots;
-    tls_cfg.virtual_clock_sec = if session.virtual_clock_us == 1700000000000000 { 0 } else { now_sec };
+    tls_cfg.virtual_clock_sec = if session.virtual_clock_us > 0 { now_sec } else { 0 };
     tls_cfg.enable_pq_hybrid = session.tls_enable_pq_hybrid;
     tls_cfg.enable_session_tickets = session.tls_enable_session_tickets;
     tls_cfg.require_ocsp_stapling = session.tls_require_ocsp_stapling;
     tls_cfg.handshake_timeout_ms = tls_timeout_ms;
     if session.tls_keylog_file.len > 0 {
-        let _ = tls_cfg.keylog_file.try_set(session.tls_keylog_file[..]);
+        guard tls_cfg.keylog_file.try_set(session.tls_keylog_file[..]) else {
+            return http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS keylog path exceeds capacity");
+        }
     }
     if ech_list.len > 0 {
-        let _ = tls_cfg.ech_config_list.try_set(ech_list);
+        guard tls_cfg.ech_config_list.try_set(ech_list) else {
+            return http::make_error(rfc::STATUS_BAD_GATEWAY, "tls", "TLS ECH config list exceeds capacity");
+        }
     }
     if session.tls_client_cert_file.len > 0 || session.tls_client_key_file.len > 0 {
         guard load_client_mtls_pem_files(

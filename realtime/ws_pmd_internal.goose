@@ -101,7 +101,8 @@ fn send_ws_pmd_echo<OutBuf>(
     let eff_len = strip_pmd_sync_flush_tail(pmd.tx_comp_buf[..]);
     guard eff_len > 0 else { return false; }
 
-    let mask: u8[4] = if ws.is_client { ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = ws_next_mask_key(ws);
+    guard ok_mask else { return false; }
     realtime::encode_ws_frame_compressed(out_wire, opcode, pmd.tx_comp_buf[..eff_len], ws.is_client, mask, true);
     if reset_tx {
         pmd.tx_history.clear();

@@ -558,7 +558,8 @@ fn build_handshake_request<B>(
 fn send_text<B>(ws: WebSocketSession&, text: const u8[:], out: B&) {
     // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing message writes
     guard !ws.is_closed && !ws.close_sent && !ws.close_received && !ws.tx_fragmented else { return; }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return; }
     encode_ws_frame(out, rfc::WS_OPCODE_TEXT, text, ws.is_client, mask, true);
 }
 
@@ -571,12 +572,13 @@ fn send_text_with_status<B>(
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return WsSendStatus.Dropped; }
     let frame_len = realtime_internal::calc_ws_frame_len(text.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
     }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_TEXT, text, ws.is_client, mask, true);
     return status;
 }
@@ -591,7 +593,8 @@ fn send_text_compressed_with_status<B>(
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return WsSendStatus.Dropped; }
 
     if compress && ws.permessage_deflate && text.len > 0 {
         let reset_win = ws_should_reset_compressor(ws);
@@ -620,7 +623,8 @@ fn send_text_compressed_with_status<B>(
 fn send_binary<B>(ws: WebSocketSession&, data: const u8[:], out: B&) {
     // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing message writes
     guard !ws.is_closed && !ws.close_sent && !ws.close_received && !ws.tx_fragmented else { return; }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return; }
     encode_ws_frame(out, rfc::WS_OPCODE_BINARY, data, ws.is_client, mask, true);
 }
 
@@ -633,12 +637,13 @@ fn send_binary_with_status<B>(
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return WsSendStatus.Dropped; }
     let frame_len = realtime_internal::calc_ws_frame_len(data.len as u64, ws.is_client);
     let status = notify_buffered(ws, frame_len, out);
     if status == WsSendStatus.Dropped || status == WsSendStatus.Closed {
         return status;
     }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_BINARY, data, ws.is_client, mask, true);
     return status;
 }
@@ -653,7 +658,8 @@ fn send_binary_compressed_with_status<B>(
 ) -> WsSendStatus {
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return WsSendStatus.Closed; }
     guard !ws.tx_fragmented else { return WsSendStatus.Dropped; }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return WsSendStatus.Dropped; }
 
     if compress && ws.permessage_deflate && data.len > 0 {
         let reset_win = ws_should_reset_compressor(ws);
@@ -682,7 +688,8 @@ fn send_binary_compressed_with_status<B>(
 fn send_ping<B>(ws: WebSocketSession&, ping_payload: const u8[:], out: B&) {
     // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing heartbeat writes
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return; }
     encode_ws_frame(out, rfc::WS_OPCODE_PING, ping_payload, ws.is_client, mask, true);
     ws.pings_sent += 1;
 }
@@ -691,7 +698,8 @@ fn send_ping<B>(ws: WebSocketSession&, ping_payload: const u8[:], out: B&) {
 fn send_pong<B>(ws: WebSocketSession&, pong_payload: const u8[:], out: B&) {
     // RFC 6455 §5.5.1 & uWS #1932: Once closed or close sent/received, drop outgoing heartbeat writes
     guard !ws.is_closed && !ws.close_sent && !ws.close_received else { return; }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return; }
     encode_ws_frame(out, rfc::WS_OPCODE_PONG, pong_payload, ws.is_client, mask, true);
 }
 
@@ -703,7 +711,8 @@ fn send_fragment<B>(ws: WebSocketSession&, opcode: u8, payload: const u8[:], fin
     } else {
         guard opcode == rfc::WS_OPCODE_TEXT || opcode == rfc::WS_OPCODE_BINARY else { return; }
     }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return; }
     if realtime_internal::try_encode_ws_frame(out, opcode, payload, ws.is_client, mask, fin) {
         ws.tx_fragmented = !fin;
     }
@@ -712,12 +721,13 @@ fn send_fragment<B>(ws: WebSocketSession&, opcode: u8, payload: const u8[:], fin
 // High-level method: initiates active Close handshake (half-closed CloseSent state) and records timestamp.
 fn close_at<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], now_ms: u64, out: B&) {
     guard !ws.is_closed && !ws.close_sent else { return; }
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return; }
     var payload: u8[..128] = [];
     if rfc::is_valid_ws_close_code(status_code) {
         let eff_reason = if reason.len > 0 && reason.validate_utf8() { reason } else { "" };
         encode_close_payload(payload, status_code, eff_reason);
     }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
     ws.close_sent = true;
     ws.close_sent_ms = now_ms;
@@ -735,6 +745,8 @@ fn is_close_handshake_expired(ws: const WebSocketSession&, now_ms: u64) -> bool 
 // High-level method: sends Close handshake.
 fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B&) {
     guard !ws.is_closed && !ws.close_sent else { return; }
+    let mask, ok_mask = realtime_internal::ws_next_mask_key(ws);
+    guard ok_mask else { return; }
     var payload: u8[..128] = [];
     // RFC 6455 §7.4.1 / Autobahn 7.1.x:
     // Status codes 1005 (No Status), 1006 (Abnormal), and 0 are internal and MUST NOT be sent on the wire.
@@ -743,7 +755,6 @@ fn close<B>(ws: WebSocketSession&, status_code: u16, reason: const u8[:], out: B
         let eff_reason = if reason.len > 0 && reason.validate_utf8() { reason } else { "" };
         encode_close_payload(payload, status_code, eff_reason);
     }
-    let mask: u8[4] = if ws.is_client { realtime_internal::ws_next_mask_key(ws) } else { [0, 0, 0, 0] };
     encode_ws_frame(out, rfc::WS_OPCODE_CLOSE, payload[..], ws.is_client, mask, true);
     ws.close_sent = true;
     ws.is_closed = true;

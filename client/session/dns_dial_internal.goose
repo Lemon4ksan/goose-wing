@@ -135,9 +135,7 @@ fn collect_ipv4_dns_candidates(
     var ip4_buf: u8[..64] = [];
     for ip4 in a_entry.ipv4_hints {
         core::format_ipv4_u32(ip4, ip4_buf);
-        if ssrf_guard.enabled && ssrf_guard.deny_local_network {
-            guard !security::is_private_or_reserved_ip(ip4_buf[..]) else { return false; }
-        }
+        guard !is_ssrf_blocked_ip(ssrf_guard, ip4_buf[..]) else { return false; }
         let _ = out_list.try_push(
             net::new_dns_candidate(net::AddressFamily.IPv4, ip4_buf[..], port_num, net::L4Protocol.Tcp, 40),
         );
@@ -154,9 +152,7 @@ fn collect_ipv6_dns_candidates(
     var ip6_buf: u8[..64] = [];
     for &ip6 in aaaa_entry.ipv6_hints {
         core::format_ipv6_bytes(ip6, ip6_buf);
-        if ssrf_guard.enabled && ssrf_guard.deny_local_network {
-            guard !security::is_private_or_reserved_ip(ip6_buf[..]) else { return false; }
-        }
+        guard !is_ssrf_blocked_ip(ssrf_guard, ip6_buf[..]) else { return false; }
         let _ = out_list.try_push(
             net::new_dns_candidate(net::AddressFamily.IPv6, ip6_buf[..], port_num, net::L4Protocol.Tcp, 50),
         );
@@ -172,9 +168,7 @@ fn append_svcb_hint_candidate(
     priority:   u8,
     out_list:   net::DnsCandidate[..8]&,
 ) -> bool {
-    if ssrf_guard.enabled && ssrf_guard.deny_local_network {
-        guard !security::is_private_or_reserved_ip(ip_str) else { return false; }
-    }
+    guard !is_ssrf_blocked_ip(ssrf_guard, ip_str) else { return false; }
     let _ = out_list.try_push(net::new_dns_candidate(fam, ip_str, eff_port, net::L4Protocol.Tcp, priority));
     return true;
 }

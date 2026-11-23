@@ -481,7 +481,7 @@ fn test_client_cache_integration(t: lit::T&) {
         sub.assert_eq(client.cache.total_stores, 1, "stored in cache");
 
         // Advance virtual clock by 60 seconds
-        client.virtual_clock_us += 60000000;
+        client::set_clock_us(client, client::effective_clock_us(client) + 60000000);
 
         // 2nd request: Cache Hit -> served directly from cache with Age header!
         var req2 = http::new_get("https://api.example.com/data");
@@ -1510,7 +1510,7 @@ fn test_dns_https_svcb_h3_protocol_racing(t: lit::T&) {
         };
         https_rec.alpns.push("h3");
         https_rec.alpns.push("h2");
-        let now_sec = cli.virtual_clock_us / 1000000;
+        let now_sec = client::effective_clock_us(cli) / 1000000;
         var entry = dns::CacheEntry {
             qtype:           rfc::DNS_QTYPE_HTTPS,
             inserted_at_sec: now_sec,
@@ -1545,7 +1545,7 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
         http::set_header(seed_resp.headers, "Cache-Control", "max-age=3600");
         http::set_header(seed_resp.headers, "No-Vary-Search", "params=(\"utm_campaign\")");
         seed_resp.body.append("cached_bundle_v1_payload");
-        let now_sec = cli.virtual_clock_us / 1000000;
+        let now_sec = client::effective_clock_us(cli) / 1000000;
         let ts = http::CacheTimestamps {
             request_sec:  now_sec,
             response_sec: now_sec,
@@ -1588,7 +1588,7 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
 
     t.run("RFC 9842 Shared Dictionary longest-match negotiation + 40-byte dcz magic decompression") { sub =>
         var cli = client::new_client();
-        let now_sec = cli.virtual_clock_us / 1000000;
+        let now_sec = client::effective_clock_us(cli) / 1000000;
 
         // Register two dictionaries with overlapping patterns: "/app/*" (len 6) and "/app/v2/*" (len 9)
         var dict_short = http::Response { status_code: 200, .. };
@@ -1635,13 +1635,13 @@ fn test_chromium_multi_component_pipeline_integration(t: lit::T&) {
 
     t.run("RFC 9577 PrivateToken 401 challenge redemption and SameSite=Lax subresource cookie transmission") { sub =>
         var cli = client::new_client();
-        let now_sec = cli.virtual_clock_us / 1000000;
+        let now_sec = client::effective_clock_us(cli) / 1000000;
 
         // Seed a SameSite=Lax cookie for api.example.com
         let _ = cli.jar.set_cookie_header(
             "https://api.example.com/",
             "lax_sess=ok_lax_1; Path=/; Secure; SameSite=Lax",
-            cli.virtual_clock_us,
+            client::effective_clock_us(cli),
         );
 
         // Subresource request (is_main_frame=false) with same-site SiteForCookies and cross-site initiator
@@ -1877,6 +1877,107 @@ fn test_goose2rfc_client_audit_regressions(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 32. Wave 7 Cryptographic Audit Regressions
+// ----------------------------------------------------------------------------
+fn test_wave7_client_audit_regressions(t: lit::T&) {
+    t.run("Wall clock default, random Digest cnonce, MD5/no-qop rejection & opt-in") { sub =>
+        var cli = client::new_client();
+        sub.assert_eq(cli.virtual_clock_us, 0, "Client.virtual_clock_us defaults to 0 (live clock, EDGE-14)");
+        sub.assert_true(client::effective_clock_us(cli) > 1700000000000000, "effective_clock_us resolves live wall clock");
+        sub.assert_eq(cli.creds.cnonce.len, 0, "Credentials.cnonce defaults empty (no static cnonce, EDGE-05)");
+
+        let _ = client::set_credentials(cli, "alice", "secret");
+        let u = core::new_url("https://api.example.com/protected");
+        var ctx = client_internal::RequestExecutionContext { .. };
+        let _ = ctx.current_method.try_set("GET");
+
+        var out_md5: u8[..1024] = [];
+        sub.assert_false(
+            client_internal::compute_401_digest_header(
+                cli, ctx, u, "Digest realm=\"api\", nonce=\"abc\", algorithm=MD5, qop=\"auth\"", out_md5,
+            ),
+            "MD5 Digest rejected by default (EDGE-12)",
+        );
+        sub.assert_false(
+            client_internal::compute_401_digest_header(
+                cli, ctx, u, "Digest realm=\"api\", nonce=\"abc\", algorithm=SHA-256", out_md5,
+            ),
+            "Digest without qop rejected by default (EDGE-12)",
+        );
+
+        var out_sha1: u8[..1024] = [];
+        var out_sha2: u8[..1024] = [];
+        let sha_chal = "Digest realm=\"api\", nonce=\"abc\", algorithm=SHA-256, qop=\"auth\"";
+        sub.assert_true(client_internal::compute_401_digest_header(cli, ctx, u, sha_chal, out_sha1), "SHA-256+qop Digest succeeds #1");
+        sub.assert_true(client_internal::compute_401_digest_header(cli, ctx, u, sha_chal, out_sha2), "SHA-256+qop Digest succeeds #2");
+        sub.assert_false(out_sha1[..] == out_sha2[..], "Fresh CSPRNG cnonce produces distinct Digest headers (EDGE-05)");
+
+        cli.allow_legacy_md5_digest = true;
+        sub.assert_true(
+            client_internal::compute_401_digest_header(
+                cli, ctx, u, "Digest realm=\"api\", nonce=\"abc\", algorithm=MD5, qop=\"auth\"", out_md5,
+            ),
+            "Legacy MD5 allowed when explicitly opted in",
+        );
+    };
+
+    t.run("Invalid TLS/sig config fail-closed, DoH clone TLS propagation, and live WS/SSE guards") { sub =>
+        var long_path: u8[..300] = [];
+        for _ in 270 { long_path.push('a'); }
+        var bad_tls_cli = client::new_client(client::Config { tls_ca_file: long_path[..], .. });
+        sub.assert_true(bad_tls_cli.has_invalid_tls_config, "Oversize tls_ca_file flags has_invalid_tls_config (EDGE-08)");
+
+        var bad_sig_cli = client::new_client(client::Config { sig_key_id: "k", sig_public_key: "short", .. });
+        sub.assert_true(bad_sig_cli.has_invalid_sig_config, "Malformed sig_public_key flags has_invalid_sig_config");
+        let req_s = http::new_get("https://api.example.com/v1");
+        let u_s = core::new_url("https://api.example.com/v1");
+        let resp_s = http::Response { status_code: 200, .. };
+        sub.assert_false(
+            client_internal::verify_response_signature(bad_sig_cli, req_s, u_s, "GET", req_s.headers, resp_s),
+            "Malformed sig_public_key fails closed in verify_response_signature",
+        );
+
+        var parent_cli = client::new_client(client::Config {
+            https_only:                true,
+            tls_use_system_roots:      false,
+            tls_require_ocsp_stapling: true,
+            tls_ca_file:               "/etc/ca.pem",
+            tls_crl_file:              "/etc/crl.der",
+            tls_client_cert_file:      "/etc/client.pem",
+            tls_client_key_file:       "/etc/client.key",
+            ..
+        });
+        let cloned = client_internal::clone_isolated_transport_client(parent_cli);
+        sub.assert_true(cloned.https_only, "DoH clone preserves https_only");
+        sub.assert_false(cloned.tls_use_system_roots, "DoH clone preserves tls_use_system_roots");
+        sub.assert_true(cloned.tls_require_ocsp_stapling, "DoH clone preserves tls_require_ocsp_stapling");
+        sub.assert_bytes_eq(cloned.tls_ca_file[..], "/etc/ca.pem", "DoH clone preserves tls_ca_file");
+        sub.assert_bytes_eq(cloned.tls_crl_file[..], "/etc/crl.der", "DoH clone preserves tls_crl_file");
+        sub.assert_bytes_eq(cloned.tls_client_cert_file[..], "/etc/client.pem", "DoH clone preserves mTLS cert");
+        sub.assert_bytes_eq(cloned.tls_client_key_file[..], "/etc/client.key", "DoH clone preserves mTLS key");
+
+        var ws_conn = client::WsConn { .. };
+        var sse_conn = client::SseConn { .. };
+        sub.assert_false(client::dial_ws(parent_cli, "ws://example.com/ws", ws_conn), "dial_ws enforces https_only (EDGE-08)");
+        sub.assert_false(client::dial_sse(parent_cli, "http://example.com/ev", sse_conn), "dial_sse enforces https_only (EDGE-08)");
+
+        var ssrf_cli = client::new_client();
+        ssrf_cli.ssrf_guard.enabled = true;
+        sub.assert_false(client::dial_ws(ssrf_cli, "ws://169.254.169.254/latest", ws_conn), "dial_ws enforces ssrf_guard (EDGE-08)");
+        sub.assert_false(client::dial_sse(ssrf_cli, "http://127.0.0.1:8080/ev", sse_conn), "dial_sse enforces ssrf_guard (EDGE-08)");
+
+        var hsts_cli = client::new_client();
+        http::hsts_cache_update(hsts_cli.hsts, "strict.example.com", "max-age=31536000", div_euclid(client::effective_clock_us(hsts_cli), 1000000));
+        sub.assert_false(client::dial_ws(hsts_cli, "ws://strict.example.com/ws", ws_conn), "dial_ws rejects plaintext on HSTS host (EDGE-08)");
+        sub.assert_false(client::dial_sse(hsts_cli, "http://strict.example.com/ev", sse_conn), "dial_sse rejects plaintext on HSTS host (EDGE-08)");
+
+        let b1, ok_b1 = http::generate_multipart_boundary();
+        let b2, ok_b2 = http::generate_multipart_boundary();
+        sub.assert_true(ok_b1 && ok_b2 && b1.len == 45 && b1[..] != b2[..], "generate_multipart_boundary checked CSPRNG (EDGE-05)");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("HTTP Client, Interceptors, and Pipeline Verification Suite", lit::Verbosity.Verbose);
 
@@ -1911,6 +2012,7 @@ fn main() {
     lit::run_case(runner, "29. DNS HTTPS/SVCB (RFC 9460) Auto-H3 Protocol Racing", test_dns_https_svcb_h3_protocol_racing);
     lit::run_case(runner, "30. Chromium-Style Multi-Component Pipeline Integration", test_chromium_multi_component_pipeline_integration);
     lit::run_case(runner, "31. goose2rfc Client Pipeline Audit Regressions", test_goose2rfc_client_audit_regressions);
+    lit::run_case(runner, "32. Wave 7 Cryptographic Audit Regressions", test_wave7_client_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

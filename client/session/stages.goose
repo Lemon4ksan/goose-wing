@@ -133,7 +133,7 @@ fn execute_pipeline_with_stage<UserStage>(
     var raw_eff_url: u8[..2048] = [];
     client_internal::build_effective_url(session.base_url[..], req.url[..], req.query_params[..], raw_eff_url);
 
-    let req_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let req_sec = div_euclid(effective_clock_us(session), 1000000);
     var cache_ts = http::CacheTimestamps {
         request_sec: req_sec,
         now_sec:     req_sec,

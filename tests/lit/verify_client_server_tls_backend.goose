@@ -579,20 +579,20 @@ fn test_server_config_and_dst_nonce() {
     core::sim_rng_enable(0xBEEF2026);
     var s_a = client::new_session();
     var key_a: u8[..64] = [];
-    let _ = client_internal::prepare_ws_upgrade_request(s_a, "wss://example.com/ws", key_a);
+    let _, ok_ka = client_internal::prepare_ws_upgrade_request(s_a, "wss://example.com/ws", key_a);
 
     core::sim_rng_enable(0xBEEF2026);
     var s_b = client::new_session();
     var key_b: u8[..64] = [];
-    let _ = client_internal::prepare_ws_upgrade_request(s_b, "wss://example.com/ws", key_b);
+    let _, ok_kb = client_internal::prepare_ws_upgrade_request(s_b, "wss://example.com/ws", key_b);
 
     core::sim_rng_enable(0xCAFE9999);
     var s_c = client::new_session();
     var key_c: u8[..64] = [];
-    let _ = client_internal::prepare_ws_upgrade_request(s_c, "wss://example.com/ws", key_c);
+    let _, ok_kc = client_internal::prepare_ws_upgrade_request(s_c, "wss://example.com/ws", key_c);
     core::sim_rng_disable();
 
-    let dst_det_ok = (key_a.len > 0) && (key_a[..] == key_b[..]) && (key_a[..] != key_c[..]);
+    let dst_det_ok = ok_ka && ok_kb && ok_kc && (key_a.len > 0) && (key_a[..] == key_b[..]) && (key_a[..] != key_c[..]);
 
     print("srv_cfg_ok=", def_srv_ok && set_srv_ok && reject_half && reject_big && preserved && reject_fd,
         " dst_ws_nonce_det=", dst_det_ok);

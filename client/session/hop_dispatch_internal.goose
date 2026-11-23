@@ -253,9 +253,10 @@ fn execute_live_network_hop(
     h3_ep:       const http::AltSvcEndpoint&,
     resp:        http::Response&,
 ) -> http::Error {
-    let now_ns = core::mul_sat_i64(session.virtual_clock_us, 1000);
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
-    let now_ms = div_euclid(session.virtual_clock_us, 1000);
+    let now_us = client::effective_clock_us(session);
+    let now_ns = core::mul_sat_i64(now_us, 1000);
+    let now_sec = div_euclid(now_us, 1000000);
+    let now_ms = div_euclid(now_us, 1000);
     let host_str = current_url.hostname();
     sync_session_pool_knobs(session);
     guard !is_ssrf_blocked_ip(session.ssrf_guard, host_str) else {
@@ -309,7 +310,7 @@ fn execute_mock_or_echo_hop(
 ) -> http::Response, http::Error {
     var origin_buf: u8[..128] = [];
     format_url_origin(current_url, origin_buf);
-    let now_sec = div_euclid(session.virtual_clock_us, 1000000);
+    let now_sec = div_euclid(client::effective_clock_us(session), 1000000);
     let is_https = current_url.is_secure_scheme();
 
     var candidate_h3_ep = http::AltSvcEndpoint { .. };

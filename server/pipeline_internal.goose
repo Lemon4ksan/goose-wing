@@ -200,9 +200,9 @@ fn evaluate_server_integrity_and_crypto(
         }
         return false;
     }
+    let now_sec = if now_ns > 0 { div_euclid(now_ns, 1000000000) as i64 } else { core::now().wall_sec };
     if cfg.dpop_public_key.len > 0 {
         let dpop_jwt = http::header(req, "DPoP");
-        let now_sec = (now_ns / 1000000000) as i64;
         let ok_dpop = dpop_jwt.len > 0 && auth::verify_dpop_proof_with_replay_cache(
             cfg.dpop_replay_cache, dpop_jwt, cfg.dpop_public_key[..], req.method[..], req.url[..], now_sec,
         );
@@ -212,7 +212,7 @@ fn evaluate_server_integrity_and_crypto(
         }
     }
     if cfg.sig_public_key.len > 0 {
-        if !http::verify_request_ed25519(req, cfg.sig_key_id[..], cfg.sig_public_key[..]) {
+        if !http::verify_request_ed25519(req, cfg.sig_key_id[..], cfg.sig_public_key[..], now_sec) {
             res.status_code = 401;
             return false;
         }

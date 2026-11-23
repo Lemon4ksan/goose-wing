@@ -1334,7 +1334,7 @@ fn server::on_server_stage(
             http::respond_json(res, 200, dto);
         } else if ctx.handler_id == 102 {
             let sub = cfg.auth_subject(ctx);
-            let claims = cfg.auth_claims(ctx);
+            let claims, _ = cfg.auth_claims(ctx);
             let tenant = auth::claim_str(claims, "tenant");
             let sess = cfg.session_data(ctx);
             var out_txt: u8[..128] = [];
@@ -2262,7 +2262,8 @@ fn test_srv_reg3_r2_pipeline_and_pool(t: lit::T&) {
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
             17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
         ];
-        assert(security::add_key(cfg.private_jar.store, security::KeySlot { key_id: 1, master_key: key, .. }));
+        let jar_slot = security::KeySlot { key_id: 1, master_key: key, .. };
+        assert(security::add_key(cfg.private_jar.store, jar_slot));
         var sealed_val: u8[..256] = [];
         assert(security::seal(cfg.private_jar, "session", "uid=42", 1, 999, sealed_val));
         var hdr_cookie: u8[..320] = [];
@@ -2558,6 +2559,91 @@ fn test_goose2rfc_server_audit_regressions(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 36. Wave 7 Cryptographic Audit Regressions
+// ----------------------------------------------------------------------------
+fn test_wave7_server_audit_regressions(t: lit::T&) {
+    t.run("CORS InvalidConfig short-circuits 500 unconditionally & empty JWKS fails closed 503") { sub =>
+        let def_cfg = server::ServerPipelineConfig { .. };
+        sub.assert_eq(def_cfg.target_host.len, 0, "ServerPipelineConfig.target_host defaults empty (EDGE-13)");
+
+        var bad_cors = security::CorsPolicy {
+            allow_credentials:          true,
+            reject_non_matching_origin: false,
+            ..
+        };
+        let _ = security::add_allowed_origin(bad_cors, "*");
+        var req_get = http::new_get("/api/data");
+        http::set_header(req_get, "Origin", "https://app.example.com");
+        var res_cors = http::Response { .. };
+        let v_cors = server_internal::stage_server_cors(bad_cors, true, req_get, res_cors);
+        let is_sc_500 = match v_cors {
+            ShortCircuit sc => sc.status_code == 500,
+            _ => false,
+        };
+        sub.assert_true(is_sc_500 && res_cors.status_code == 500, "InvalidConfig CORS fails closed 500 on GET (EDGE-03)");
+
+        var empty_jwks = auth::Jwks { .. };
+        let jwt_opts = auth::default_jwt_validation_options(auth::JwtAlg.HS256);
+        var ext = server_internal::RequestExtensions { .. };
+        var res_jwt = http::Response { .. };
+        let v_jwt = server_internal::stage_server_auth_jwt(empty_jwks, jwt_opts, req_get, ext, 1000000000, res_jwt);
+        let is_sc_503 = match v_jwt {
+            ShortCircuit sc => sc.status_code == 503,
+            _ => false,
+        };
+        sub.assert_true(is_sc_503 && res_jwt.status_code == 503, "Empty JWKS fails closed 503 (EDGE-03/EDGE-16)");
+    };
+
+    t.run("auth_claims / auth_subject never fall back to slot 0 & Ed25519 checks real clock") { sub =>
+        var cfg = server::new_default_server_pipeline_config("api.example.com");
+        while cfg.ext_pool.slots.len < 2 {
+            let _ = cfg.ext_pool.slots.try_push(server_internal::RequestExtensions { .. });
+        }
+        let s0 .= cfg.ext_pool.slots[0];
+        let _ = s0.auth_subject.try_set("admin-slot0");
+        let _ = s0.jwt_claims.sub.try_set("admin-slot0");
+        s0.populated_entries |= server_internal::ENTRY_SECURITY;
+
+        let s1 .= cfg.ext_pool.slots[1];
+        let _ = s1.auth_subject.try_set("stale-unauth");
+        let _ = s1.jwt_claims.sub.try_set("stale-unauth");
+        s1.populated_entries = 0;
+
+        let bad_ctx = server::ServerStageCtx { ext_slot_idx: -1, .. };
+        let c_neg, ok_neg = cfg.auth_claims(bad_ctx);
+        sub.assert_false(ok_neg, "ext_slot_idx=-1 returns ok=false instead of slot 0 (EDGE-03)");
+        sub.assert_eq(c_neg.sub.len, 0, "ext_slot_idx=-1 returns empty claims");
+        sub.assert_eq(cfg.auth_subject(bad_ctx).len, 0, "ext_slot_idx=-1 returns empty subject");
+
+        let unauth_ctx = server::ServerStageCtx { ext_slot_idx: 1, .. };
+        let _, ok_unauth = cfg.auth_claims(unauth_ctx);
+        sub.assert_false(ok_unauth, "slot without ENTRY_SECURITY returns ok=false");
+        sub.assert_eq(cfg.auth_subject(unauth_ctx).len, 0, "slot without ENTRY_SECURITY returns empty subject");
+
+        let auth_ctx = server::ServerStageCtx { ext_slot_idx: 0, .. };
+        let c_ok, ok_auth = cfg.auth_claims(auth_ctx);
+        sub.assert_true(ok_auth && c_ok.sub[..] == "admin-slot0", "authenticated slot 0 returns claims");
+
+        let seed: u8[32] = [0x44; 32];
+        let pub_k = core::ed25519_public_key(seed);
+        let _ = cfg.sig_key_id.try_set("k-ed");
+        let _ = cfg.sig_public_key.try_set(pub_k[..]);
+        var req_exp = http::new_request("GET", "https://api.example.com/v1");
+        var sp = http::SignatureParams { label: "sig1", created: 50, expires: 100, .. };
+        sp.components.push("@method");
+        let _ = sp.alg.try_set("ed25519");
+        let _ = sp.key_id.try_set("k-ed");
+        sub.assert_true(http::sign_request(req_exp, sp, seed[..]), "signed historical expired Ed25519 request");
+        var res_exp = http::Response { .. };
+        sub.assert_false(
+            server_internal::evaluate_server_integrity_and_crypto(cfg, req_exp, 0, res_exp),
+            "expired Ed25519 request rejected with real wall clock when now_ns=0 (EDGE-14)",
+        );
+        sub.assert_eq(res_exp.status_code, 401, "expired Ed25519 request sets 401");
+    };
+}
+
 fn main() {
     var runner = lit::new_runner("Server Router, Pipeline, and Fault Tolerance Verification Suite", lit::Verbosity.Verbose);
 
@@ -2596,6 +2682,7 @@ fn main() {
     lit::run_case(runner, "33. H2 & Router", test_srv_reg3_r3_h2_and_router);
     lit::run_case(runner, "34. Server Wire", test_srv_reg3_r4_server_wire);
     lit::run_case(runner, "35. goose2rfc Server Audit Regressions", test_goose2rfc_server_audit_regressions);
+    lit::run_case(runner, "36. Wave 7 Cryptographic Audit Regressions", test_wave7_server_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

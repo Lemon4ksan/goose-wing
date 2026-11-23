@@ -12,7 +12,7 @@ import security.ssrf;
 fn validate_url_against_ssrf(url_val: const core::Url&, policy: const security::SsrfGuardPolicy&) -> RedirectError {
     guard policy.enabled else { return RedirectError.None; }
 
-    if policy.https_only && url_val.scheme() != "https" {
+    if policy.https_only && url_val.scheme() != "https" && url_val.scheme() != "wss" {
         return RedirectError.SchemeDowngradeBlocked;
     }
 

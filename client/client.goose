@@ -113,6 +113,7 @@ struct Config {
     sig_key_id:                 const u8[:]          = "",
     sig_private_key:            const u8[:]          = "",
     sig_public_key:             const u8[:]          = "",
+    allow_legacy_md5_digest:    bool                 = false,
 }
 
 type SessionConfig = Config;
@@ -122,7 +123,7 @@ struct Credentials {
     password:        u8[..128]             = [],
     has_credentials: bool                  = false,
     nonce_counter:   u32                   = 1,
-    cnonce:          u8[..32]              = "f2/IZUnWe0rEzWeA",
+    cnonce:          u8[..32]              = [],
     last_digest:     auth::DigestChallenge = auth::DigestChallenge { .. },
 }
 
@@ -153,7 +154,7 @@ struct Client {
     default_referrer_policy: ReferrerPolicy             = ReferrerPolicy.StrictOriginWhenCrossOrigin,
     default_headers:         http::HeaderMap            = http::HeaderMap { .. },
     ssrf_guard:              security::SsrfGuardPolicy  = security::SsrfGuardPolicy { enabled: false, .. },
-    virtual_clock_us:        i64                        = 1700000000000000,
+    virtual_clock_us:        i64                        = 0,
     trusted_location_hosts:  u8[..128][..8]             = [],
     mock_routes:             MockExchange[..8]          = [],
 
@@ -242,6 +243,9 @@ struct Client {
     max_retries:                i32                      = 0,
     auto_decompress:            bool                     = true,
     max_response_body_bytes:    i64                      = 0,
+    allow_legacy_md5_digest:    bool                     = false,
+    has_invalid_tls_config:     bool                     = false,
+    has_invalid_sig_config:     bool                     = false,
 
     // Resizable field must be final
     jar: cookie::CanonicalCookieJar = cookie::CanonicalCookieJar { .. },
@@ -284,7 +288,7 @@ fn new_client(cfg: Config) -> Client {
     var ca_file_buf: u8[..256] = [];
     let _ = base_buf.try_set(cfg.base_url);
     let _ = proxy_buf.try_set(cfg.proxy_url);
-    let _ = ca_file_buf.try_set(cfg.tls_ca_file);
+    let bad_ca_cfg = cfg.tls_ca_file.len > 0 && !ca_file_buf.try_set(cfg.tls_ca_file);
 
     let prof_spec = client_internal::resolve_profile_spec(cfg.profile);
     let def_hdrs = client_internal::build_profile_headers(prof_spec);
@@ -302,6 +306,7 @@ fn new_client(cfg: Config) -> Client {
         let _ = sig_priv.try_set(cfg.sig_private_key);
         let _ = sig_pub.try_set(cfg.sig_public_key);
     }
+    let bad_sig_cfg = has_sig && !valid_sig;
 
     var c = Client {
         base_url:                base_buf,
@@ -333,6 +338,9 @@ fn new_client(cfg: Config) -> Client {
         tls_min_version:         cfg.tls_min_version,
         tls_ca_file:             ca_file_buf,
         tls_use_system_roots:    cfg.tls_use_system_roots,
+        allow_legacy_md5_digest: cfg.allow_legacy_md5_digest,
+        has_invalid_tls_config:  bad_ca_cfg,
+        has_invalid_sig_config:  bad_sig_cfg,
         jar:                     cookie::CanonicalCookieJar { .. },
         ..
     };
@@ -516,7 +524,7 @@ fn enable_protocol_racing(session: Session&, enabled: bool = true, quic_delay_ms
 fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
     var origin_buf: u8[..128] = [];
     client_internal::resolve_target_origin(target, origin_buf);
-    let now_sec = session.virtual_clock_us / 1000000;
+    let now_sec = div_euclid(effective_clock_us(session), 1000000);
     var ep = http::AltSvcEndpoint { .. };
     return http::lookup_h3(session.altsvc, origin_buf[..], now_sec, ep);
 }
@@ -524,7 +532,7 @@ fn has_altsvc_h3(session: const Session&, target: const u8[:]) -> bool {
 fn is_altsvc_broken(session: const Session&, target: const u8[:]) -> bool {
     var origin_buf: u8[..128] = [];
     client_internal::resolve_target_origin(target, origin_buf);
-    let now_sec = session.virtual_clock_us / 1000000;
+    let now_sec = div_euclid(effective_clock_us(session), 1000000);
     return http::is_broken(session.altsvc, origin_buf[..], now_sec);
 }
 
@@ -544,7 +552,7 @@ fn has_dictionary_for(session: const Session&, target_url: const u8[:]) -> bool 
     } else {
         let _ = path_buf.try_set("/");
     }
-    let now_sec = session.virtual_clock_us / 1000000;
+    let now_sec = div_euclid(effective_clock_us(session), 1000000);
     let _, found = http::dictionary_lookup_for_request(session.dict_cache, origin_buf[..], path_buf[..], now_sec);
     return found;
 }
@@ -632,6 +640,7 @@ fn set_http_signature_keys(
         && session.sig_public_key.try_set(public_key) else {
         return false;
     }
+    session.has_invalid_sig_config = false;
     return true;
 }
 
@@ -642,17 +651,17 @@ fn enable_hsts(session: Session&, enabled: bool = true) {
 }
 
 fn is_hsts(session: const Session&, hostname: const u8[:]) -> bool {
-    let now_sec = session.virtual_clock_us / 1000000;
+    let now_sec = div_euclid(effective_clock_us(session), 1000000);
     return http::is_hsts_host(session.hsts, hostname, now_sec);
 }
 
 fn export_hsts<B>(session: const Session&, out: B&) -> i64 {
-    let now_sec = session.virtual_clock_us / 1000000;
+    let now_sec = div_euclid(effective_clock_us(session), 1000000);
     return http::save_hsts_cache(session.hsts, now_sec, out);
 }
 
 fn import_hsts(session: Session&, data: const u8[:]) -> i64 {
-    let now_sec = session.virtual_clock_us / 1000000;
+    let now_sec = div_euclid(effective_clock_us(session), 1000000);
     return http::load_hsts_cache(session.hsts, data, now_sec);
 }
 
@@ -668,6 +677,15 @@ fn deny_port(session: Session&, port_num: i32) -> bool {
 
 fn set_clock_us(session: Session&, now_us: i64) {
     session.virtual_clock_us = now_us;
+}
+
+// Returns the active clock in microseconds: explicit `virtual_clock_us` when > 0,
+// or the live system/simulation wall clock (`core::now().unix_micro()`) otherwise.
+fn effective_clock_us(session: const Session&) -> i64 {
+    if session.virtual_clock_us > 0 {
+        return session.virtual_clock_us;
+    }
+    return core::now().unix_micro();
 }
 
 fn trust_location_host(session: Session&, host_name: const u8[:]) -> bool {
@@ -992,10 +1010,11 @@ fn set_cookie(session: Session&, name: const u8[:], value: const u8[:]) {
         && raw_hdr.try_push('=')
         && raw_hdr.try_append(value)
         && raw_hdr.try_append("; Path=/") else { return; }
+    let now_us = effective_clock_us(session);
     if session.base_url.len > 0 {
-        session.jar.set_cookie_header(session.base_url[..], raw_hdr[..], session.virtual_clock_us);
+        session.jar.set_cookie_header(session.base_url[..], raw_hdr[..], now_us);
     } else {
-        session.jar.set_cookie_header("https://example.com/", raw_hdr[..], session.virtual_clock_us);
+        session.jar.set_cookie_header("https://example.com/", raw_hdr[..], now_us);
     }
 }
 
