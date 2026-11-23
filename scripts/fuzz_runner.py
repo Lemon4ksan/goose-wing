@@ -253,13 +253,21 @@ def is_pid_alive(pid: int) -> bool:
     if not pid or pid <= 0:
         return False
     if os.name == "nt":
-        res = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        return str(pid) in res.stdout
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        k32 = ctypes.windll.kernel32
+        handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong(0)
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
@@ -643,9 +651,7 @@ def handle_status() -> None:
 def spawn_daemon(args: argparse.Namespace) -> None:
     if STOP_SIGNAL_FILE.exists():
         STOP_SIGNAL_FILE.unlink(missing_ok=True)
-    py_exe = Path(sys.executable)
-    pyw_exe = py_exe.with_name("pythonw.exe")
-    launcher = str(pyw_exe if (os.name == "nt" and pyw_exe.exists()) else py_exe)
+    launcher = sys.executable
     daemon_dur = 0 if "--duration" not in sys.argv else args.duration
     daemon_workers = (
         max(1, min(3, (os.cpu_count() or 4) // 4)) if "--workers" not in sys.argv else args.workers
@@ -683,10 +689,11 @@ def spawn_daemon(args: argparse.Namespace) -> None:
 
     LIT_DIR.mkdir(parents=True, exist_ok=True)
     log_f = open(LOG_FILE, "w", encoding="utf-8")  # noqa: SIM115
+    # Windows CreateProcess forbids combining CREATE_NO_WINDOW and DETACHED_PROCESS;
+    # CREATE_NO_WINDOW alone hides console popups while keeping file log redirection intact.
     creationflags = (
         subprocess.CREATE_NO_WINDOW
         | subprocess.CREATE_NEW_PROCESS_GROUP
-        | subprocess.DETACHED_PROCESS
         | 0x00000040  # IDLE_PRIORITY_CLASS
         if os.name == "nt"
         else 0
