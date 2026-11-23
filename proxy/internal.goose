@@ -635,14 +635,20 @@ fn setup_probe_tls_transport(
 }
 
 fn read_probe_status_wire(
-    trans:      net::Transport&,
-    rx_buf:     u8[..512]&,
-    timeout_ms: u32,
+    trans:       net::Transport&,
+    rx_buf:      u8[..512]&,
+    start_inst:  core::MonotonicInstant,
+    eff_timeout: u32,
 ) {
+    let eff_timeout_u64 = eff_timeout as u64;
     var chunk: u8[512] = [0; 512];
     while rx_buf.len < rx_buf.cap {
+        let raw_elapsed = core::as_millis(core::duration_since(core::monotonic_now(), start_inst));
+        let elapsed_ms = max(raw_elapsed, 0) as u64;
+        guard elapsed_ms < eff_timeout_u64 else { break; }
+        let remaining_ms = max(core::sub_sat_u64(eff_timeout_u64, elapsed_ms), 1) as u32;
         let rem = core::sub_sat_i64(rx_buf.cap, rx_buf.len);
-        let n = trans.recv_slice(chunk[..rem], timeout_ms);
+        let n = trans.recv_slice(chunk[..rem], remaining_ms);
         guard n > 0 else { break; }
         guard rx_buf.try_append(chunk[..n]) else { break; }
         let _, _, has_crlf = rx_buf[..].split_once("\r\n");
@@ -674,7 +680,7 @@ fn run_active_probe_io(
     guard wing::send_all(trans, req_wire) else { return 0, false; }
 
     var rx_buf: u8[..512] = [];
-    read_probe_status_wire(trans, rx_buf, eff_timeout);
+    read_probe_status_wire(trans, rx_buf, start_inst, eff_timeout);
     guard proxy::evaluate_probe_response(rx_buf[..], expected_status) else { return 0, false; }
     return calc_probe_rtt_us(start_inst), true;
 }

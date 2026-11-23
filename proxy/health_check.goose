@@ -262,22 +262,23 @@ fn unregister_target_for_probing(checker: ClusterHealthChecker&, target_idx: i32
     guard target_idx >= 0 else { return false; }
     let slot_idx = proxy_internal::find_probe_slot(checker, target_idx);
     let found = slot_idx != proxy_internal::HEALTH_SLOT_NONE && slot_idx < checker.slots.len;
-    if found {
-        var i = slot_idx as i64;
-        let last = core::sub_sat_i64(checker.slots.len, 1);
-        while i < last {
-            let next_i = core::add_sat_i64(i, 1);
-            checker.slots[i] = checker.slots[next_i];
-            i = next_i;
-        }
-        checker.slots.resize(last);
+    guard found else { return false; }
+
+    var i = slot_idx as i64;
+    let last = core::sub_sat_i64(checker.slots.len, 1);
+    while i < last {
+        let next_i = core::add_sat_i64(i, 1);
+        checker.slots[i] = checker.slots[next_i];
+        i = next_i;
     }
+    checker.slots.resize(last);
+
     for &slot in checker.slots {
         if slot.in_use && slot.target_idx > target_idx {
             slot.target_idx = core::sub_sat_i64(slot.target_idx, 1) as i32;
         }
     }
-    return found;
+    return true;
 }
 
 // Executes a live HTTP/HTTPS health probe against `cluster.targets[target_idx]` and updates health state.

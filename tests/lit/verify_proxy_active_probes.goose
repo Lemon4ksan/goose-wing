@@ -237,8 +237,60 @@ fn test_unregister_target_and_slot_compaction() {
     // Unregistering already-removed slot index > current slots returns false.
     assert(!proxy::unregister_target_for_probing(checker, 1));
 
+    // Unregistering an unregistered middle index must return false without mutating higher indices.
+    var sparse_checker = proxy::new_cluster_health_checker(proxy::new_health_check_config(1000, 500, 2, 3));
+    assert(proxy::register_target_for_probing(sparse_checker, 0));
+    assert(proxy::register_target_for_probing(sparse_checker, 2));
+    assert(!proxy::unregister_target_for_probing(sparse_checker, 1));
+    assert(sparse_checker.slots.len == 2);
+    assert(sparse_checker.slots[0].target_idx == 0);
+    assert(sparse_checker.slots[1].target_idx == 2);
+
     print("UNREGISTER_SLOT_COMPACTION: ok\n");
     // CHECK: UNREGISTER_SLOT_COMPACTION: ok
+}
+
+thread_fn mock_trickle_http_server(listener_fd: i64) {
+    let conn = net::tcp_accept(listener_fd, 5000);
+    assert(conn > 0);
+    var rx: u8[1024] = [0; 1024];
+    let n = net::tcp_recv_slice(conn, rx[..], 2000);
+    assert(n > 0);
+    // Trickle 1 byte every 50 ms without CRLF (600 ms total if uninterrupted).
+    for _ in 12 {
+        let sent = net::tcp_send(conn, "X");
+        if sent <= 0 { break; }
+        sleep_ms(50);
+    }
+    net::tcp_close(conn);
+}
+
+fn test_cumulative_probe_deadline() {
+    let listener = net::tcp_listen("127.0.0.1", 0, 8);
+    assert(listener > 0);
+    let port = net::tcp_getsockname_port(listener);
+    assert(port > 0);
+
+    let tid = thread_spawn(mock_trickle_http_server, listener);
+
+    var cluster = proxy::new_upstream_cluster(proxy::LbPolicy.RoundRobin, 1);
+    assert(proxy::add_upstream_target(cluster, "127.0.0.1", port, 1));
+    var checker = proxy::new_cluster_health_checker(proxy::new_health_check_config(1000, 120, 1, 1));
+    assert(proxy::register_target_for_probing(checker, 0));
+
+    let start = core::monotonic_now();
+    let st = proxy::execute_active_health_probe(checker, cluster, 0, 1000);
+    let elapsed_ms = core::as_millis(core::duration_since(core::monotonic_now(), start));
+
+    assert(st == proxy::HealthState.Down);
+    assert(checker.slots[0].health.failed_probes == 1);
+    assert(elapsed_ms < 500);
+
+    assert(thread_wait(tid));
+    net::tcp_close(listener);
+
+    print("CUMULATIVE_PROBE_DEADLINE: ok\n");
+    // CHECK: CUMULATIVE_PROBE_DEADLINE: ok
 }
 
 fn test_complete_upstream_exchange_measured_rtt() {
@@ -265,5 +317,6 @@ fn main() {
     test_live_http_active_probes_and_recovery();
     test_live_https_active_probe_with_sni_and_ca_store();
     test_unregister_target_and_slot_compaction();
+    test_cumulative_probe_deadline();
     test_complete_upstream_exchange_measured_rtt();
 }
