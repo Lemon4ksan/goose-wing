@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Lemon4ksan
 
 // RFC 9576 Privacy Pass Architecture, RFC 9577 PrivateToken HTTP Authentication,
-// and RFC 9578 Blind RSA Token Issuance for anti-bot WAF bypass and privacy authorization.
-// Zero-heap binary wire serialization, challenge parsing, redemption caching, and header codecs.
+// and RFC 9578 Token wire formats (header codecs, binary marshaling, and single-use redemption cache).
+// Cryptographic token issuance (Blind RSA / VOPRF blinding and unblinding) is supplied externally.
 namespace security;
 
 import std;
@@ -46,7 +46,18 @@ struct PrivateTokenCache {
 
 // Marshals TokenChallenge into RFC 9577 §2.1.1 wire presentation format:
 // token_type(2) + issuer_len(2) + issuer + ctx_len(1) + ctx + origin_len(2) + origin.
-fn marshal_token_challenge<B>(challenge: const TokenChallenge&, out: B&) {
+fn marshal_token_challenge<B>(challenge: const TokenChallenge&, out: B&) -> bool {
+    let needed = core::add_sat_i64(
+        7,
+        core::add_sat_i64(
+            challenge.issuer_name.len,
+            core::add_sat_i64(challenge.redemption_context.len, challenge.origin_info.len),
+        ),
+    );
+    guard security_internal::can_fit(out, needed) else {
+        out.clear();
+        return false;
+    }
     out.clear();
     out.append_u16_be(challenge.token_type);
     out.append_u16_be(challenge.issuer_name.len as u16);
@@ -55,6 +66,7 @@ fn marshal_token_challenge<B>(challenge: const TokenChallenge&, out: B&) {
     out.append(challenge.redemption_context[..]);
     out.append_u16_be(challenge.origin_info.len as u16);
     out.append(challenge.origin_info[..]);
+    return true;
 }
 
 // Unmarshals TokenChallenge from RFC 9577 §2.1.1 binary wire representation.
@@ -92,19 +104,28 @@ fn unmarshal_token_challenge(data: const u8[:]) -> TokenChallenge, bool {
 // Computes SHA-256(TokenChallenge) as defined in RFC 9577 §2.2.1.
 fn compute_challenge_digest(challenge: const TokenChallenge&) -> u8[32] {
     var raw: u8[..512] = [];
-    marshal_token_challenge(challenge, raw);
+    let _ = marshal_token_challenge(challenge, raw);
     return core::sha256(raw[..]);
 }
 
 // Marshals Token into RFC 9577 §2.2.1 wire format:
 // token_type(2) + nonce(32) + challenge_digest(32) + key_id(Nid) + authenticator(Nk).
-fn marshal_token<B>(token: const Token&, out: B&) {
+fn marshal_token<B>(token: const Token&, out: B&) -> bool {
+    let needed = core::add_sat_i64(
+        66,
+        core::add_sat_i64(token.token_key_id.len, token.authenticator.len),
+    );
+    guard security_internal::can_fit(out, needed) else {
+        out.clear();
+        return false;
+    }
     out.clear();
     out.append_u16_be(token.token_type);
     out.append(token.nonce[..]);
     out.append(token.challenge_digest[..]);
     out.append(token.token_key_id[..]);
     out.append(token.authenticator[..]);
+    return true;
 }
 
 // Unmarshals Token from RFC 9577 §2.2.1 binary representation.
@@ -181,7 +202,7 @@ fn parse_private_token_challenge<B>(header_val: const u8[:], out: B&) -> TokenCh
             var raw_challenge: u8[..512] = [];
             guard core::base64url_decode(challenge_b64[..], raw_challenge) else { continue; }
             let temp_chal, ok_uc = unmarshal_token_challenge(raw_challenge[..]);
-            if ok_uc && temp_chal.token_type != 0 {
+            if ok_uc && !rfc::is_grease_token_type(temp_chal.token_type) {
                 best_chal = temp_chal;
                 best_key = temp_token_key;
                 best_age = temp_max_age;
@@ -209,30 +230,46 @@ fn parse_private_token_challenge<B>(header_val: const u8[:], out: B&) -> TokenCh
 }
 
 // Encodes binary bytes as RFC 4648 Section 5 base64url with mandatory '=' padding.
-fn encode_padded_base64url<B>(data: const u8[:], out: B&) {
+fn encode_padded_base64url<B>(data: const u8[:], out: B&) -> bool {
     let start_len = out.len;
+    let b64_len = core::mul_sat_i64(div_euclid(core::add_sat_i64(data.len, 2), 3), 4);
+    guard security_internal::can_fit(out, core::add_sat_i64(start_len, b64_len)) else {
+        return false;
+    }
     core::base64url_encode(data, out);
     let rem = core::sub_sat_i64(out.len, start_len) & 3;
     if rem == 2 {
-        out.append("==");
-    } else if rem == 3 {
-        out.push('=' as u8);
+        return out.try_append("==");
     }
+    if rem == 3 {
+        return out.try_push('=' as u8);
+    }
+    return true;
 }
 
 // Formats `Authorization: PrivateToken token="..."` header.
-fn format_private_token_authorization<B>(token_bytes: const u8[:], out: B&) {
+fn format_private_token_authorization<B>(token_bytes: const u8[:], out: B&) -> bool {
     // RFC 9577 Section 2.2.2: Sending Tokens - The token base64url value MUST include padding.
     out.clear();
-    out.append("PrivateToken token=\"");
-    encode_padded_base64url(token_bytes, out);
-    out.push('"' as u8);
+    var committed = false;
+    defer if !committed { out.clear(); };
+    guard out.try_append("PrivateToken token=\"") &&
+        encode_padded_base64url(token_bytes, out) &&
+        out.try_push('"' as u8) else {
+        return false;
+    }
+    committed = true;
+    return true;
 }
 
 // Formats W3C `Sec-Private-State-Token` header with padded base64url.
-fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&) {
+fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&) -> bool {
     out.clear();
-    encode_padded_base64url(token_bytes, out);
+    guard encode_padded_base64url(token_bytes, out) else {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 // ---- Private Token Cache & Redemption Management -------------------------
@@ -300,10 +337,11 @@ fn pop_private_token<B>(
 }
 
 // Attaches an Authorization: PrivateToken header to an outbound request.
-fn attach_private_token<R>(req: R&, token_bytes: const u8[:]) {
+fn attach_private_token<R>(req: R&, token_bytes: const u8[:]) -> bool {
     var auth_header: u8[..1024] = [];
-    format_private_token_authorization(token_bytes, auth_header);
+    guard format_private_token_authorization(token_bytes, auth_header) else { return false; }
     req.set_header("Authorization", auth_header[..]);
+    return true;
 }
 
 // Checks whether an HTTP response has a PrivateToken challenge.

@@ -27,8 +27,6 @@ inline fn can_fit_base64url(buf: const u8[>..]&, raw_len: i64) -> bool {
 
 // ---- CryptoJar internal constants & helpers --------------------------------
 
-extern fn jar_crypto_random_bytes(out: u8[:]) -> i32 = "wing_crypto_random_bytes";
-
 const WIRE_VER_XCHACHA20:    u8 = 0x01;
 const WIRE_VER_HKDF_AES_GCM: u8 = 0x02;
 const WIRE_VER_HMAC_SHA256:  u8 = 0x03;
@@ -39,7 +37,30 @@ const K_OVERHEAD_HMAC_SHA256:  i64 = 45; // 1 + 4 + 8 + 32
 const MAX_COOKIE_NAME_LEN:     i64 = 4096;
 const MAX_ENCODED_COOKIE_LEN:  i64 = 16384;
 
-var g_jar_nonce_counter: u64 = 1;
+inline fn is_nonzero_key_32(key: const u8[32]&) -> bool {
+    var acc: u8 = 0;
+    for b in key {
+        acc |= b;
+    }
+    return acc != 0;
+}
+
+inline fn find_active_key_idx(store: const security::KeyStore&) -> i64, bool {
+    guard store.active_idx >= 0 && store.active_idx < store.keys.len else {
+        return -1, false;
+    }
+    guard !store.keys[store.active_idx].revoked else { return -1, false; }
+    return store.active_idx, true;
+}
+
+inline fn find_key_idx(store: const security::KeyStore&, key_id: u32) -> i64, bool {
+    for &k, idx in store.keys {
+        if k.key_id == key_id && !k.revoked {
+            return idx, true;
+        }
+    }
+    return -1, false;
+}
 
 // Additional Authenticated Data (AAD) for context binding:
 // ver (1B) || key_id (4B) || timestamp_sec (8B) || cookie_name_len (2B) || cookie_name.
@@ -98,31 +119,30 @@ inline fn is_jar_key_valid_at(slot: const security::KeySlot&, now_sec: i64) -> b
     return true;
 }
 
-// RFC 8439 Section 4: Security Considerations - Mix OS CSPRNG, counter, clock, and cookie name for AEAD nonce uniqueness.
+// RFC 8439 Section 4: Security Considerations - Mix OS CSPRNG, clock, and cookie name for AEAD nonce uniqueness.
+// Fails closed if CSPRNG entropy cannot be obtained (AUTH-06 / EDGE-05).
 fn generate_jar_entropy(
     seed:        u64,
     now_sec:     i64,
     cookie_name: const u8[:] = "",
     domain:      u64         = 0,
-) -> u8[32] {
+) -> u8[32], bool {
     let now_ns = core::sim_now_ns() as u64;
     let name_hash = core::fnv1a_64(cookie_name);
     var entropy_in: u8[64] = [0; 64];
-    var seq:        u64    = 0;
-    if core::sim_rng_fill(entropy_in[0..32]) {
+    defer core::secure_zeroize_64(entropy_in);
+    var seq: u64 = 0;
+    if core::sim_rng_is_active() {
+        guard core::sim_rng_fill(entropy_in[0..32]) else { return [0; 32], false; }
         seq = core::sim_rng_next_u64();
     } else {
-        g_jar_nonce_counter = core::add_sat_u64(g_jar_nonce_counter, 1);
-        seq = g_jar_nonce_counter;
-        let _ = jar_crypto_random_bytes(entropy_in[0..32]);
+        guard core::csprng_fill(entropy_in[0..32]) else { return [0; 32], false; }
     }
     core::write_le_u64_at(entropy_in[..], 32, seed ^ domain ^ name_hash);
     core::write_le_u64_at(entropy_in[..], 40, seq);
     core::write_le_u64_at(entropy_in[..], 48, now_ns);
     core::write_le_u64_at(entropy_in[..], 56, now_sec as u64);
-    let out = core::sha256(entropy_in[..]);
-    core::secure_zeroize_64(entropy_in);
-    return out;
+    return core::sha256(entropy_in[..]), true;
 }
 
 inline fn init_hkdf_salt_nonce(
@@ -131,14 +151,25 @@ inline fn init_hkdf_salt_nonce(
     cookie_name: const u8[:],
     salt:        u8[32]&,
     nonce12:     u8[12]&,
-) {
-    var entropy1 = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x73616c745f686b64);
-    var entropy2 = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x6e6f6e63655f3132);
+) -> bool {
+    var entropy1, ok1 = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x73616c745f686b64);
+    defer core::secure_zeroize_32(entropy1);
+    guard ok1 else {
+        core::secure_zeroize_32(salt);
+        core::secure_zeroize_slice(nonce12[..]);
+        return false;
+    }
+    var entropy2, ok2 = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x6e6f6e63655f3132);
+    defer core::secure_zeroize_32(entropy2);
+    guard ok2 else {
+        core::secure_zeroize_32(salt);
+        core::secure_zeroize_slice(nonce12[..]);
+        return false;
+    }
     salt = entropy1;
     core::write_le_u64_at(salt[..], 8, now_sec as u64);
     core::ct_copy_bytes(nonce12[..], entropy2[..12]);
-    core::secure_zeroize_32(entropy1);
-    core::secure_zeroize_32(entropy2);
+    return true;
 }
 
 fn seal_binary_hkdf_aes<B>(
@@ -153,31 +184,34 @@ fn seal_binary_hkdf_aes<B>(
         cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard can_fit(out, core::add_sat_i64(K_OVERHEAD_HKDF_AES_GCM, plaintext.len)) else { return false; }
 
+    var salt:    u8[32] = [0; 32];
+    var nonce12: u8[12] = [0; 12];
+    defer core::secure_zeroize_32(salt);
+    defer core::secure_zeroize_slice(nonce12[..]);
+    guard init_hkdf_salt_nonce(nonce_seed, now_sec, cookie_name, salt, nonce12) else { return false; }
+
     let saved_len = out.len;
     var committed = false;
-    defer if !committed {
-        core::secure_zeroize_slice(out[..]);
-        out.resize(saved_len);
-    };
+    defer if !committed { core::secure_zeroize_slice(out[..]); out.resize(saved_len); };
 
     out.clear();
     out.push(WIRE_VER_HKDF_AES_GCM);
     out.append_u32_be(slot.key_id);
-
-    var salt:    u8[32] = [0; 32];
-    var nonce12: u8[12] = [0; 12];
-    init_hkdf_salt_nonce(nonce_seed, now_sec, cookie_name, salt, nonce12);
     out.append(salt[..]);
     out.append(nonce12[..]);
 
     var aad_stack: u8[..4128] = [];
+    defer core::secure_zeroize_slice(aad_stack[..]);
     build_cookie_aad(WIRE_VER_HKDF_AES_GCM, slot.key_id, now_sec as u64, cookie_name, aad_stack);
     let ct_start = out.len;
     out.resize(core::add_sat_i64(ct_start, plaintext.len), 0);
     let tag, _, ok_seal = core::hkdf_aes256_gcm_seal(
         slot.encryption_key, salt, nonce12, plaintext, aad_stack[..], out[ct_start..],
     );
-    guard ok_seal else { return false; }
+    guard ok_seal else {
+        out.clear();
+        return false;
+    }
     out.append(tag[..]);
     committed = true;
     return true;
@@ -195,19 +229,27 @@ fn seal_binary_xchacha20<B>(
         cookie_name.len > 0 && cookie_name.len <= MAX_COOKIE_NAME_LEN else { return false; }
     guard can_fit(out, core::add_sat_i64(K_OVERHEAD_XCHACHA20, plaintext.len)) else { return false; }
 
+    var entropy, ok_ent = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x7863686163686132);
+    defer core::secure_zeroize_32(entropy);
+    guard ok_ent else { return false; }
+
+    let saved_len = out.len;
+    var committed = false;
+    defer if !committed { core::secure_zeroize_slice(out[..]); out.resize(saved_len); };
+
     out.clear();
     let now_u = now_sec as u64;
     out.push(WIRE_VER_XCHACHA20);
     out.append_u32_be(slot.key_id);
     out.append_u64_be(now_u);
 
-    var entropy = generate_jar_entropy(nonce_seed, now_sec, cookie_name, 0x7863686163686132);
     var nonce24: u8[24] = [0; 24];
+    defer core::secure_zeroize_slice(nonce24[..]);
     core::ct_copy_bytes(nonce24[..], entropy[..24]);
-    core::secure_zeroize_32(entropy);
     out.append(nonce24[..]);
 
     var aad_stack: u8[..4128] = [];
+    defer core::secure_zeroize_slice(aad_stack[..]);
     build_cookie_aad(WIRE_VER_XCHACHA20, slot.key_id, now_u, cookie_name, aad_stack);
     let tag, ok_seal = core::xchacha20_poly1305_seal(slot.encryption_key, nonce24, plaintext, aad_stack[..], out);
     guard ok_seal else {
@@ -215,6 +257,7 @@ fn seal_binary_xchacha20<B>(
         return false;
     }
     out.append(tag[..]);
+    committed = true;
     return true;
 }
 
@@ -318,12 +361,14 @@ fn compute_signed_jar_mac(
     payload:     const u8[:],
 ) -> u8[32] {
     var to_sign_stack: u8[..8320] = [];
+    defer core::secure_zeroize_slice(to_sign_stack[..]);
     let sign_len = core::add_sat_i64(19, core::add_sat_i64(cookie_name.len, payload.len));
     if sign_len <= to_sign_stack.cap {
         build_signed_to_sign(key_id, cookie_u, cookie_name, payload, to_sign_stack);
         return core::hmac_sha256(signing_key[..], to_sign_stack[..]);
     }
     var to_sign_dyn: u8[>..] = [];
+    defer core::secure_zeroize_slice(to_sign_dyn[..]);
     build_signed_to_sign(key_id, cookie_u, cookie_name, payload, to_sign_dyn);
     return core::hmac_sha256(signing_key[..], to_sign_dyn[..]);
 }

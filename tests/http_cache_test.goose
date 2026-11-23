@@ -1572,7 +1572,7 @@ fn test_http_signatures(t: lit::T&) {
         sub.assert_contains(sig_base[..], "\"@query\": ?filter=active&sort=desc\n", "Contains @query");
         sub.assert_contains(sig_base[..], "\"x-custom\": spaced   value\n", "Leading/trailing OWS trimmed while preserving internal whitespace per RFC 9421 §2.1");
 
-        let key = "hmac_key_test_secret_32_bytes!!";
+        let key = "hmac_key_test_secret_32_bytes!!!";
         let sign_ok = http::sign_request(req, params, key);
         sub.assert_true(sign_ok, "Request signed");
 

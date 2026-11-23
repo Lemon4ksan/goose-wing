@@ -175,8 +175,20 @@ fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&) {
 }
 
 // Evaluates GCRA rate-limit allowance for `key` at `now_ns` (UFCS hook for `wire::RateLimitService`).
+// Resolves `now_ns == 0` via `core::sim_now_ns()` (failing closed if still 0) and routes empty keys
+// through `limiter.fallback_cell` instead of bypassing rate limits.
 fn allow_service_key(limiter: GatewayRateLimiter&, key: const u8[:], now_ns: u64) -> bool {
-    guard key.len > 0 && now_ns > 0 else { return true; }
-    let dec = check_gateway_rate_limit(limiter, key, 1, now_ns);
+    let eff_now = if now_ns > 0 { now_ns } else { core::sim_now_ns() as u64 };
+    guard eff_now > 0 else { return false; }
+    if key.len == 0 {
+        let dec = gcra_check(limiter.config, limiter.fallback_cell, 1, eff_now);
+        if dec.allowed {
+            limiter.total_allowed = core::add_sat_u64(limiter.total_allowed, 1);
+        } else {
+            limiter.total_rejected = core::add_sat_u64(limiter.total_rejected, 1);
+        }
+        return dec.allowed;
+    }
+    let dec = check_gateway_rate_limit(limiter, key, 1, eff_now);
     return dec.allowed;
 }

@@ -150,12 +150,16 @@ fn ohttp_seal_request(
         return false;
     }
 
-    guard rfc::OHTTP_HDR_LEN + 32 + inner_bhttp.len + 16 <= out.cap else { return false; }
+    guard rfc::OHTTP_HDR_LEN + 32 + inner_bhttp.len + 16 <= out.cap else {
+        security::zeroize_hpke_context(session.ctx);
+        return false;
+    }
 
     out.clear();
     out.append(hdr[..]);
     out.append(enc[..]);
     guard security::hpke_seal(session.ctx, [], inner_bhttp, out) else {
+        security::zeroize_hpke_context(session.ctx);
         out.clear();
         return false;
     }
@@ -205,9 +209,9 @@ fn ohttp_open_request(
 
     out.clear();
     guard security::hpke_open(session.ctx, [], ct, out) else {
-        core::secure_zeroize_32(session.ctx.exporter_secret);
-        core::secure_zeroize_32(session.ctx.key);
-        session.ctx = security::HpkeContext { .. };
+        security::zeroize_hpke_context(session.ctx);
+        session.enc.clear();
+        session.enc_len = 0;
         return false;
     }
     let _ = session.enc.try_set(enc[..]);
@@ -237,6 +241,8 @@ fn ohttp_seal_response(
 
     var key:   u8[32] = [0; 32];
     var nonce: u8[12] = [0; 12];
+    defer core::secure_zeroize_32(key);
+    defer core::secure_zeroize_slice(nonce[..]);
     guard http_internal::ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
 
     var ct: u8[..8192] = [];
@@ -244,9 +250,9 @@ fn ohttp_seal_response(
     var seal_ok = false;
     if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(key16);
         for i in 16 { key16[i] = key[i]; }
         let tag, _, ok = core::aes128_gcm_seal(key16, nonce, response, [], ct[..]);
-        core::secure_zeroize_16(key16);
         if ok {
             for i in 16 { ct.push(tag[i]); }
             seal_ok = true;
@@ -258,7 +264,6 @@ fn ohttp_seal_response(
             seal_ok = true;
         }
     }
-    core::secure_zeroize_32(key);
     guard seal_ok else { return false; }
 
     out.clear();
@@ -291,6 +296,8 @@ fn ohttp_open_response(
 
     var key:   u8[32] = [0; 32];
     var nonce: u8[12] = [0; 12];
+    defer core::secure_zeroize_32(key);
+    defer core::secure_zeroize_slice(nonce[..]);
     guard http_internal::ohttp_derive_response_aead(session, response_nonce, key, nonce) else { return false; }
 
     var tag: u8[16] = [0; 16];
@@ -301,13 +308,12 @@ fn ohttp_open_response(
     var open_ok = false;
     if session.ctx.aead_id == rfc::HPKE_AEAD_AES_128_GCM {
         var key16: u8[16] = [0; 16];
+        defer core::secure_zeroize_16(key16);
         for i in 16 { key16[i] = key[i]; }
         open_ok = core::aes128_gcm_open(key16, nonce, body, [], tag, out);
-        core::secure_zeroize_16(key16);
     } else if session.ctx.aead_id == rfc::HPKE_AEAD_CHACHA20_POLY1305 {
         open_ok = core::chacha20_poly1305_open(key, nonce, body, [], tag, out);
     }
-    core::secure_zeroize_32(key);
     guard open_ok else {
         out.clear();
         return false;

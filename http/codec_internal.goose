@@ -689,12 +689,19 @@ inline fn apply_streaming_digest_entry(v: http::StreamingDigestVerifier&, entry:
     let req_len: i64 = if is_sha512 { 64 } else { 32 };
     guard decoded.len == req_len else { return false; }
 
+    if is_sha256 {
+        core::ct_copy_bytes(v.expected_sha256[..], decoded[..]);
+        v.has_sha256 = true;
+    } else {
+        core::ct_copy_bytes(v.expected_sha512[..], decoded[..]);
+        v.has_sha512 = true;
+    }
     if !v.is_valid_init || is_sha512 {
         v.algo = if is_sha512 { http::StreamingDigestAlgo.Sha512 } else { http::StreamingDigestAlgo.Sha256 };
         v.expected_hash.clear();
         v.expected_hash.append(decoded[..]);
-        v.is_valid_init = true;
     }
+    v.is_valid_init = true;
     return true;
 }
 

@@ -2148,6 +2148,202 @@ fn test_goose2rfc_security_audit_regressions(t: lit::T&) {
     };
 }
 
+// ----------------------------------------------------------------------------
+// 25. Wave 6 Cryptographic Audit Regressions
+// ----------------------------------------------------------------------------
+fn test_wave6_hpke_and_jar(sub: lit::T&) {
+    var uninit_ctx = security::HpkeContext { .. };
+    var ct_uninit:  u8[..128] = [];
+    var pt_uninit:  u8[..128] = [];
+    var exp_uninit: u8[32]    = [0; 32];
+    sub.assert_false(security::hpke_seal(uninit_ctx, "aad", "hi", ct_uninit), "uninitialized HPKE context cannot seal");
+    sub.assert_false(security::hpke_open(uninit_ctx, "aad", "0123456789abcdef01", pt_uninit), "uninitialized HPKE context cannot open");
+    sub.assert_false(security::hpke_export(uninit_ctx, "ctx", exp_uninit[..]), "uninitialized HPKE context cannot export");
+
+    let sk_r: u8[32] = [0x11; 32];
+    let pk_r = core::x25519_base_scalarmult(sk_r);
+    let eph_s: u8[32] = [0x22; 32];
+    var enc: u8[32] = [0; 32];
+    var s_ctx = security::HpkeContext { .. };
+    var r_ctx = security::HpkeContext { .. };
+    sub.assert_true(
+        security::hpke_setup_base_s(
+            pk_r, "info", rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+            rfc::HPKE_KDF_HKDF_SHA256, rfc::HPKE_AEAD_AES_128_GCM, eph_s, enc, s_ctx,
+        ),
+        "HPKE sender setup succeeds",
+    );
+    sub.assert_true(
+        security::hpke_setup_base_r(
+            enc, sk_r, "info", rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
+            rfc::HPKE_KDF_HKDF_SHA256, rfc::HPKE_AEAD_AES_128_GCM, r_ctx,
+        ),
+        "HPKE recipient setup succeeds",
+    );
+    var ct_role: u8[..128] = [];
+    sub.assert_true(security::hpke_seal(s_ctx, "aad", "secret", ct_role), "sender seals");
+    var pt_bad: u8[..128] = [];
+    var ct_bad: u8[..128] = [];
+    sub.assert_false(security::hpke_open(s_ctx, "aad", ct_role[..], pt_bad), "sender context cannot open (role enforcement)");
+    sub.assert_false(security::hpke_seal(r_ctx, "aad", "secret", ct_bad), "recipient context cannot seal (role enforcement)");
+    security::zeroize_hpke_context(s_ctx);
+    sub.assert_false(security::hpke_seal(s_ctx, "aad", "after-zeroize", ct_bad), "zeroized HPKE context rejects seal");
+}
+
+fn test_wave6_hpke_random_and_jar(sub: lit::T&) {
+    let sk_r: u8[32] = [0x33; 32];
+    let pk_r = core::x25519_base_scalarmult(sk_r);
+    var enc1: u8[32]    = [0; 32];
+    var enc2: u8[32]    = [0; 32];
+    var ct1:  u8[..128] = [];
+    var ct2:  u8[..128] = [];
+    sub.assert_true(
+        security::hpke_seal_base_random(pk_r, "info", "aad", "hello-hpke", rfc::HPKE_AEAD_AES_128_GCM, enc1, ct1),
+        "hpke_seal_base_random #1 succeeds",
+    );
+    sub.assert_true(
+        security::hpke_seal_base_random(pk_r, "info", "aad", "hello-hpke", rfc::HPKE_AEAD_AES_128_GCM, enc2, ct2),
+        "hpke_seal_base_random #2 succeeds",
+    );
+    sub.assert_false(enc1[..] == enc2[..], "hpke_seal_base_random uses fresh ephemeral key per call");
+    var pt1: u8[..128] = [];
+    sub.assert_true(
+        security::hpke_open_base(enc1, sk_r, "info", "aad", ct1[..], rfc::HPKE_AEAD_AES_128_GCM, pt1),
+        "hpke_open_base decrypts hpke_seal_base_random output",
+    );
+    sub.assert_bytes_eq(pt1[..], "hello-hpke", "decrypted plaintext matches");
+
+    var store = security::KeyStore { .. };
+    let zero_slot = security::KeySlot { key_id: 1, master_key: [0; 32], created_at_sec: 1, .. };
+    sub.assert_false(security::add_key(store, zero_slot), "CryptoJar KeyStore rejects all-zero master_key");
+    let def_ssrf = security::SsrfGuardPolicy { .. };
+    sub.assert_true(def_ssrf.enabled, "SsrfGuardPolicy defaults to enabled=true (EDGE-13)");
+}
+
+fn test_wave6_csrf_privacypass_gcra_digest(sub: lit::T&) {
+    sub.assert_false(security::validate_csrf_token("123456789012345", "123456789012345"), "CSRF token < 16B rejected");
+    var mask_out: u8[..64] = [];
+    let zero_mask: u8[16] = [0; 16];
+    sub.assert_false(security::mask_csrf_token(zero_mask[..], "0123456789abcdef", mask_out), "all-zero CSRF mask rejected");
+    var zero_masked: u8[32] = [0; 32];
+    for i in 16 { zero_masked[16 + i] = "0123456789abcdef"[i]; }
+    sub.assert_false(security::verify_masked_csrf_token(zero_masked[..], "0123456789abcdef"), "verify rejects all-zero CSRF mask");
+    sub.assert_true(security::generate_masked_csrf_token("0123456789abcdef", mask_out), "generate_masked_csrf_token succeeds");
+    sub.assert_true(security::verify_masked_csrf_token(mask_out[..], "0123456789abcdef"), "generated masked CSRF token verifies");
+
+    sub.assert_eq(rfc::TOKEN_TYPE_VOPRF_P384 as i64, 0x0001, "RFC 9578 VOPRF(P-384) token_type == 0x0001");
+    sub.assert_eq(rfc::TOKEN_TYPE_BLIND_RSA as i64, 0x0002, "RFC 9578 Blind RSA token_type == 0x0002");
+    sub.assert_eq(rfc::TOKEN_TYPE_PUBLICLY_VERIFIABLE as i64, 0x0002, "RFC 9578 publicly verifiable == 0x0002");
+
+    var grease_chal = security::TokenChallenge { token_type: 0x02AA, .. };
+    let _ = grease_chal.issuer_name.try_set("grease.example");
+    var grease_raw: u8[..128] = [];
+    sub.assert_true(security::marshal_token_challenge(grease_chal, grease_raw), "marshal GREASE challenge");
+    var grease_b64: u8[..256] = [];
+    sub.assert_true(security::encode_padded_base64url(grease_raw[..], grease_b64), "encode GREASE challenge");
+    var hdr_grease: u8[..512] = [];
+    hdr_grease.append("PrivateToken challenge=\"");
+    hdr_grease.append(grease_b64[..]);
+    hdr_grease.append("\", token-key=\"AQID\"");
+    var key_out: u8[..64] = [];
+    let _, _, ok_g = security::parse_private_token_challenge(hdr_grease[..], key_out);
+    sub.assert_false(ok_g, "GREASE-only PrivateToken challenge skipped/rejected (AUTH-14)");
+    var tiny_buf: u8[..4] = [];
+    sub.assert_false(security::marshal_token_challenge(grease_chal, tiny_buf), "oversize marshal_token_challenge returns false");
+
+    var gw = security::new_gateway_rate_limiter(1, 1);
+    sub.assert_true(security::allow_service_key(gw, "", 0), "empty key + now_ns=0 allowed #1 within burst+1");
+    sub.assert_true(security::allow_service_key(gw, "", 0), "empty key + now_ns=0 allowed #2 within burst+1");
+    sub.assert_false(security::allow_service_key(gw, "", 0), "empty key + now_ns=0 rate-limited on #3 (EDGE-09)");
+
+    let body = "hello-multi-digest";
+    let d256 = core::sha256(body);
+    let d512 = core::sha512(body);
+    var b64_256: u8[..128] = [];
+    var b64_512: u8[..128] = [];
+    core::base64_encode(d256[..], b64_256);
+    core::base64_encode(d512[..], b64_512);
+    var good_hdr: u8[..300] = [];
+    good_hdr.append("sha-512=:");
+    good_hdr.append(b64_512[..]);
+    good_hdr.append(":, sha-256=:");
+    good_hdr.append(b64_256[..]);
+    good_hdr.append(":");
+    var v_ok, ok_init = http::begin_streaming_digest(good_hdr[..]);
+    sub.assert_true(ok_init && http::update_streaming_digest(v_ok, body) && http::finish_streaming_digest(v_ok), "multi-algo digest passes when both match");
+
+    var bad_hdr: u8[..300] = [];
+    bad_hdr.append("sha-512=:");
+    bad_hdr.append(b64_512[..]);
+    bad_hdr.append(":, sha-256=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:");
+    var v_bad, ok_init_bad = http::begin_streaming_digest(bad_hdr[..]);
+    sub.assert_true(ok_init_bad && http::update_streaming_digest(v_bad, body), "multi-algo bad digest initialized");
+    sub.assert_false(http::finish_streaming_digest(v_bad), "multi-algo digest rejects tampered sha-256 alongside valid sha-512 (AUTH-22)");
+}
+
+fn test_wave6_http_signatures(sub: lit::T&) {
+    var req_short = http::new_request("GET", "https://api.example.com/v1");
+    var p_short = http::SignatureParams { label: "sig1", created: 1700000000, .. };
+    p_short.components.push("@method");
+    let _ = p_short.alg.try_set("hmac-sha256");
+    let _ = p_short.key_id.try_set("k1");
+    sub.assert_false(http::sign_request(req_short, p_short, "short-15-bytes!"), "RFC 9421 rejects < 32B HMAC key (AUTH-15)");
+
+    var p_bad_kid = p_short;
+    let _ = p_bad_kid.key_id.try_set("bad\x01kid");
+    let k32: u8[32] = [0x5A; 32];
+    sub.assert_false(http::sign_request(req_short, p_bad_kid, k32[..]), "RFC 9421 rejects non-printable key_id (AUTH-17)");
+
+    var req_9 = http::new_request("POST", "https://api.example.com/items?a=1");
+    http::set_header(req_9, "Host", "api.example.com");
+    http::set_header(req_9, "X-H1", "v1");
+    http::set_header(req_9, "X-H2", "v2");
+    http::set_header(req_9, "X-H3", "v3");
+    http::set_header(req_9, "X-H4", "v4");
+    http::set_header(req_9, "X-H5", "v5");
+    var p_9 = http::SignatureParams { label: "sig9", created: 1700000000, expires: 1700003600, .. };
+    p_9.components.push("@method");
+    p_9.components.push("@authority");
+    p_9.components.push("@path");
+    p_9.components.push("@query");
+    p_9.components.push("x-h1");
+    p_9.components.push("x-h2");
+    p_9.components.push("x-h3");
+    p_9.components.push("x-h4");
+    p_9.components.push("x-h5");
+    let _ = p_9.alg.try_set("hmac-sha256");
+    let _ = p_9.key_id.try_set("k9");
+    sub.assert_true(http::sign_request(req_9, p_9, k32[..]), "RFC 9421 signs 9-component list (AUTH-08)");
+    sub.assert_true(http::verify_signature(req_9, "sig9", p_9, k32[..], 1700000100), "RFC 9421 verifies 9-component list");
+
+    var req_exp0 = http::new_request("GET", "https://api.example.com/v1");
+    http::set_header(req_exp0, "Signature-Input", "sig1=(\"@method\");created=0;expires=0;keyid=\"k1\";alg=\"hmac-sha256\"");
+    http::set_header(req_exp0, "Signature", "sig1=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:");
+    var p_exp0 = http::SignatureParams { label: "sig1", .. };
+    p_exp0.components.push("@method");
+    let _ = p_exp0.alg.try_set("hmac-sha256");
+    let _ = p_exp0.key_id.try_set("k1");
+    sub.assert_false(http::verify_signature(req_exp0, "sig1", p_exp0, k32[..], 0), "RFC 9421 rejects wire expires=0 (AUTH-07)");
+
+    var req_bs = http::new_request("GET", "https://api.example.com/v1");
+    http::set_header(req_bs, "Signature-Input", "sig1=(\"@method\";bs);created=1700000000;keyid=\"k1\";alg=\"hmac-sha256\"");
+    http::set_header(req_bs, "Signature", "sig1=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:");
+    sub.assert_false(http::verify_signature(req_bs, "sig1", p_exp0, k32[..], 1700000000), "RFC 9421 rejects unsupported ;bs component param (AUTH-08)");
+}
+
+fn test_wave6_cryptographic_audit_regressions(t: lit::T&) {
+    t.run("HPKE roles, random ephemeral sealing, CryptoJar zero-key, SSRF default") { sub =>
+        test_wave6_hpke_and_jar(sub);
+        test_wave6_hpke_random_and_jar(sub);
+    };
+    t.run("CSRF 16B/non-zero mask, Privacy Pass RFC 9578/GREASE, GCRA empty/now=0, Multi-algo Digest") { sub =>
+        test_wave6_csrf_privacypass_gcra_digest(sub);
+    };
+    t.run("RFC 9421 HMAC key floor, 9 components, wire expires=0, ;bs rejection, printable params") { sub =>
+        test_wave6_http_signatures(sub);
+    };
+}
+
 fn main() {
     let title = "Application Perimeter Security, CSRF, HSTS, and Policy Suite";
     var runner = lit::new_runner(title, lit::Verbosity.Verbose);
@@ -2176,6 +2372,7 @@ fn main() {
     lit::run_case(runner, "22. CORS Wildcard Origin Authority Smuggling & CSRF Userinfo Spoofing", test_cors_wildcard_origin_smuggling_and_csrf_userinfo);
     lit::run_case(runner, "23. CORS Preflight Validation, Client CORS & HSTS Localhost Exemption", test_cors_preflight_validation_and_hsts_localhost);
     lit::run_case(runner, "24. goose2rfc Security Audit Regressions (SEC2_C08 & SEC1_C01..C09)", test_goose2rfc_security_audit_regressions);
+    lit::run_case(runner, "25. Wave 6 Cryptographic Audit Regressions", test_wave6_cryptographic_audit_regressions);
 
     let ok = lit::finish(runner);
     assert(ok);

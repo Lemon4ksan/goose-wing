@@ -23,17 +23,45 @@ fn is_default_port(scheme: const u8[:], port: i32) -> bool {
     return false;
 }
 
-// RFC 9421 Section 2.1: HTTP Fields - Component names MUST be lowercased and MUST NOT be @signature-params.
+inline fn is_valid_derived_sig_component(name: const u8[:]) -> bool {
+    return name == "@method" ||
+        name == "@target-uri" ||
+        name == "@authority" ||
+        name == "@scheme" ||
+        name == "@request-target" ||
+        name == "@path" ||
+        name == "@query" ||
+        name == "@query-param" ||
+        name == "@status";
+}
+
+// RFC 9421 Section 2.1: HTTP Fields - Component names MUST be lowercase tchar or valid derived identifiers.
 fn is_valid_component_name(comp: const u8[:]) -> bool {
-    guard comp.len > 0 && comp != "@signature-params" && comp != "@signature-params;req" else {
+    let base, _ = strip_req_component_suffix(comp);
+    guard base.len > 0 && base != "@signature-params" else {
         return false;
     }
-    for b in comp {
-        if b >= 'A' && b <= 'Z' {
+    if base[0] == '@' {
+        return is_valid_derived_sig_component(base);
+    }
+    for b in base {
+        guard core::is_tchar(b) && !(b >= 'A' && b <= 'Z') else {
             return false;
         }
     }
     return true;
+}
+
+inline fn has_nonzero_bytes(buf: const u8[:]) -> bool {
+    var acc: u8 = 0;
+    for b in buf {
+        acc |= b;
+    }
+    return acc != 0;
+}
+
+inline fn is_valid_rsa_modulus_2048(n_be: const u8[:]) -> bool {
+    return n_be.len >= 256 && n_be.len <= 512 && (n_be[0] & 0x80) != 0;
 }
 
 fn has_duplicate_component_before(
@@ -137,7 +165,8 @@ inline fn consume_obs_fold_wsp(s: const u8[:], start: i64) -> i64, bool {
 }
 
 fn normalize_header_value<B>(val: const u8[:], out: B&) -> bool {
-    let trimmed = val.trim_lws_start().trim_end_bytes(" \t\r\n");
+    // RFC 9421 Section 2.1: Strip only OWS (SP/HTAB); trailing bare CR/LF MUST fail closed.
+    let trimmed = val.trim_lws();
     if trimmed.len == 0 {
         return true;
     }
@@ -258,6 +287,7 @@ fn extract_response_component_value<B>(
 
 fn append_escaped_string_param<B>(s: const u8[:], out: B&) -> bool {
     for b in s {
+        guard core::is_ascii_printable(b) else { return false; }
         if (b == '"' || b == '\\') && !out.try_push('\\' as u8) {
             return false;
         }
@@ -381,20 +411,27 @@ fn compute_rsa_raw_signature(
 ) -> bool {
     out_sig.clear();
     let klen = secret_key.len;
-    guard klen > 0 && (klen & 1) == 0 else { return false; }
+    guard klen >= 512 && (klen & 1) == 0 else { return false; }
     let half = klen >> 1;
+    guard is_valid_rsa_modulus_2048(secret_key[..half]) else { return false; }
     if alg == rfc::SIG_ALG_RSA_V1_5_SHA256 {
-        guard klen >= 128 &&
-              core::rsa_pkcs1_sha256_sign(secret_key[..half], secret_key[half..], sig_base, out_sig) else {
+        guard core::rsa_pkcs1_sha256_sign(secret_key[..half], secret_key[half..], sig_base, out_sig) else {
             out_sig.clear();
             return false;
         }
         return true;
     }
     if alg == rfc::SIG_ALG_RSA_PSS_SHA512 {
-        let salt64 = core::sha512(sig_base);
-        guard klen >= 256 &&
-              core::rsa_pss_sha512_sign(secret_key[..half], secret_key[half..], salt64[..], sig_base, out_sig) else {
+        // RFC 9421 Section 3.3.1 & RFC 8017 Section 9.1.1: 64-byte random PSS salt from CSPRNG.
+        var salt64: u8[64] = [0; 64];
+        defer core::secure_zeroize_64(salt64);
+        let got_rng = if core::sim_rng_is_active() {
+            core::sim_rng_fill(salt64[..])
+        } else {
+            core::csprng_fill(salt64[..])
+        };
+        guard got_rng else { return false; }
+        guard core::rsa_pss_sha512_sign(secret_key[..half], secret_key[half..], salt64[..], sig_base, out_sig) else {
             out_sig.clear();
             return false;
         }
@@ -403,29 +440,57 @@ fn compute_rsa_raw_signature(
     return false;
 }
 
-// RFC 9421 Section 2.3: Signature Parameters - Reject negative timestamps and enforce clock skew.
-fn validate_signature_created(created: i64, expires: i64, now_sec: i64) -> bool {
-    guard created >= 0 && expires >= 0 else { return false; }
-    if created > 0 && expires > 0 {
-        guard created < expires else { return false; }
-    }
-    if created > 0 && now_sec > 0 {
-        guard core::add_sat_i64(now_sec, 60) >= created else { return false; }
+struct SigWireTimestamps {
+    created:     i64  = 0,
+    expires:     i64  = 0,
+    has_created: bool = false,
+    has_expires: bool = false,
+}
+
+inline fn resolve_sig_verify_now_sec(now_sec: i64) -> i64 {
+    if now_sec > 0 { return now_sec; }
+    if now_sec < 0 { return -1; }
+    return core::now().wall_sec;
+}
+
+// Structural timestamp sanity check used at signing time (no wall-clock enforcement).
+fn validate_sign_params_timestamps(params: const http::SignatureParams&) -> bool {
+    guard params.created >= 0 && params.expires >= 0 else { return false; }
+    if params.created > 0 && params.expires > 0 {
+        guard params.created < params.expires else { return false; }
     }
     return true;
 }
 
-fn validate_signature_expires(expires: i64, now_sec: i64) -> bool {
-    guard expires >= 0 else { return false; }
-    if expires > 0 && now_sec > 0 {
-        guard core::sub_sat_i64(now_sec, 60) <= expires else { return false; }
+// RFC 9421 Section 2.3: Signature Parameters - Enforce created/expires bounds including wire expires=0 (AUTH-07).
+fn validate_wire_signature_timestamps(ts: const SigWireTimestamps&, now_sec: i64) -> bool {
+    guard ts.created >= 0 && ts.expires >= 0 else { return false; }
+    if ts.has_created && ts.has_expires {
+        guard ts.created < ts.expires else { return false; }
+    }
+    if !ts.has_created && !ts.has_expires {
+        return true;
+    }
+    let eff_now = resolve_sig_verify_now_sec(now_sec);
+    guard eff_now > 0 else { return false; }
+    if ts.has_created {
+        guard core::add_sat_i64(eff_now, 60) >= ts.created else { return false; }
+    }
+    if ts.has_expires {
+        guard core::sub_sat_i64(eff_now, 60) <= ts.expires else { return false; }
     }
     return true;
 }
 
 fn validate_signature_timestamps(params: const http::SignatureParams&, now_sec: i64) -> bool {
-    guard validate_signature_created(params.created, params.expires, now_sec) else { return false; }
-    return validate_signature_expires(params.expires, now_sec);
+    guard validate_sign_params_timestamps(params) else { return false; }
+    let ts = SigWireTimestamps {
+        created:     params.created,
+        expires:     params.expires,
+        has_created: params.created > 0,
+        has_expires: params.expires > 0,
+    };
+    return validate_wire_signature_timestamps(ts, now_sec);
 }
 
 fn format_signature_header_value<B>(label: const u8[:], b64_sig: const u8[:], out: B&) -> bool {
@@ -540,11 +605,10 @@ inline fn sf_str_param_matches(item: const http::SfItem&, expected: const u8[:])
 }
 
 fn check_sig_entry_param(
-    p:            const http::SfParameter&,
-    params:       const http::SignatureParams&,
-    seen_mask:    u32&,
-    wire_created: i64&,
-    wire_expires: i64&,
+    p:         const http::SfParameter&,
+    params:    const http::SignatureParams&,
+    seen_mask: u32&,
+    wire_ts:   SigWireTimestamps&,
 ) -> bool {
     if p.key == "alg" {
         return sf_str_param_matches(p.item, params.alg[..]);
@@ -559,7 +623,8 @@ fn check_sig_entry_param(
               (params.created == 0 || p.item.int_val == params.created) else {
             return false;
         }
-        wire_created = p.item.int_val;
+        wire_ts.created = p.item.int_val;
+        wire_ts.has_created = true;
         seen_mask = seen_mask | 2;
         return true;
     }
@@ -568,7 +633,8 @@ fn check_sig_entry_param(
               (params.expires == 0 || p.item.int_val == params.expires) else {
             return false;
         }
-        wire_expires = p.item.int_val;
+        wire_ts.expires = p.item.int_val;
+        wire_ts.has_expires = true;
         seen_mask = seen_mask | 4;
         return true;
     }
@@ -581,10 +647,9 @@ fn check_sig_entry_param(
 }
 
 fn verify_sig_entry_match(
-    entry:        const http::SfDictEntry&,
-    params:       const http::SignatureParams&,
-    wire_created: i64&,
-    wire_expires: i64&,
+    entry:   const http::SfDictEntry&,
+    params:  const http::SignatureParams&,
+    wire_ts: SigWireTimestamps&,
 ) -> bool {
     guard entry.inner_items.len == params.components.len else { return false; }
     for i in params.components.len {
@@ -594,7 +659,7 @@ fn verify_sig_entry_match(
     }
     var seen_mask: u32 = 0;
     for &p in entry.params {
-        guard check_sig_entry_param(p, params, seen_mask, wire_created, wire_expires) else {
+        guard check_sig_entry_param(p, params, seen_mask, wire_ts) else {
             return false;
         }
     }
@@ -611,12 +676,10 @@ fn find_verified_sig_params_line<B>(
     label:          const u8[:],
     params:         const http::SignatureParams&,
     out_sig_params: B&,
-    out_created:    i64&,
-    out_expires:    i64&,
+    out_ts:         SigWireTimestamps&,
 ) -> bool {
     out_sig_params.clear();
-    out_created = 0;
-    out_expires = 0;
+    out_ts = SigWireTimestamps { .. };
     guard params.created >= 0 && params.expires >= 0 && has_valid_unique_components(params.components) else {
         return false;
     }
@@ -624,15 +687,13 @@ fn find_verified_sig_params_line<B>(
     guard http::parse_sf_dict(sig_input_val, entries) else { return false; }
     for &entry in entries {
         guard entry.key == label && entry.is_inner_list else { continue; }
-        var wc: i64 = 0;
-        var we: i64 = 0;
-        guard verify_sig_entry_match(entry, params, wc, we) &&
+        var wt = SigWireTimestamps { .. };
+        guard verify_sig_entry_match(entry, params, wt) &&
               serialize_wire_sig_params(entry, out_sig_params) else {
             out_sig_params.clear();
             return false;
         }
-        out_created = wc;
-        out_expires = we;
+        out_ts = wt;
         return true;
     }
     return false;
@@ -653,20 +714,17 @@ fn validate_and_decode_signature_headers(
           headers.get_combined(rfc::HEADER_SIGNATURE_INPUT, comb_in, 4096) else {
         return false;
     }
-    var wire_created: i64 = 0;
-    var wire_expires: i64 = 0;
+    var wire_ts = SigWireTimestamps { .. };
     guard find_verified_sig_params_line(
         comb_in[..],
         label,
         params,
         out_sig_params,
-        wire_created,
-        wire_expires,
+        wire_ts,
     ) else {
         return false;
     }
-    guard validate_signature_created(wire_created, wire_expires, now_sec) &&
-          validate_signature_expires(wire_expires, now_sec) else {
+    guard validate_wire_signature_timestamps(wire_ts, now_sec) else {
         out_sig_params.clear();
         return false;
     }

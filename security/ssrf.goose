@@ -11,7 +11,7 @@ import .policy_internal;
 // ---- SSRF guard policy and 3-tier checks -----------------------------------
 
 struct SsrfGuardPolicy {
-    enabled:            bool      = false,
+    enabled:            bool      = true,
     https_only:         bool      = false,
     deny_local_network: bool      = true,
     allowed_ports:      i32[..16] = [],
@@ -173,12 +173,17 @@ inline fn is_valid_resolved_ip_literal(ip_str: const u8[:]) -> bool {
 fn is_reserved_ipv4_octets(octs: const u8[4]&) -> bool {
     let b0 = octs[0];
     let b1 = octs[1];
+    let b2 = octs[2];
     if b0 == 0 || b0 == 10 || b0 == 127 { return true; }
     if b0 == 100 && (b1 & 0xC0) == 64 { return true; }
     if b0 == 169 && b1 == 254 { return true; }
     if b0 == 172 && b1 >= 16 && b1 <= 31 { return true; }
     if b0 == 192 && b1 == 168 { return true; }
+    if b0 == 192 && b1 == 0 && (b2 == 0 || b2 == 2) { return true; }
+    if b0 == 192 && b1 == 88 && b2 == 99 { return true; }
     if b0 == 198 && (b1 == 18 || b1 == 19) { return true; }
+    if b0 == 198 && b1 == 51 && b2 == 100 { return true; }
+    if b0 == 203 && b1 == 0 && b2 == 113 { return true; }
     return b0 >= 224;
 }
 
@@ -190,23 +195,40 @@ fn is_ipv4_mapped_v6_octets(octs: const u8[16]&) -> bool {
     return octs[10] == 0xFF && octs[11] == 0xFF;
 }
 
-// Returns true if 16 network-order IPv6 octets are unspecified, loopback, ULA, link-local, or mapped v4.
-fn is_reserved_ipv6_octets(octs: const u8[16]&) -> bool {
-    var all_zero = true;
-    for i in 15 {
-        if octs[i] != 0 { all_zero = false; }
+inline fn octets_all_zero(slice: const u8[:]) -> bool {
+    for b in slice {
+        if b != 0 { return false; }
     }
-    if all_zero && (octs[15] == 0 || octs[15] == 1) { return true; }
-    let b0 = octs[0];
-    let b1 = octs[1];
-    if (b0 & 0xFE) == 0xFC { return true; }
-    if b0 == 0xFE && (b1 & 0xC0) == 0x80 { return true; }
-    if b0 == 0xFF { return true; }
+    return true;
+}
+
+// Returns true if 16 network-order IPv6 octets fall in reserved, local, tunnel, or mapped private v4 ranges.
+fn is_reserved_ipv6_octets(octs: const u8[16]&) -> bool {
     if is_ipv4_mapped_v6_octets(octs) {
         let mapped: u8[4] = [octs[12], octs[13], octs[14], octs[15]];
         return is_reserved_ipv4_octets(mapped);
     }
-    return false;
+    // ::/96 (unspecified ::, loopback ::1, deprecated IPv4-compatible ::/96)
+    if octets_all_zero(octs[..12]) { return true; }
+    let b0 = octs[0];
+    let b1 = octs[1];
+    // fc00::/7 (ULA), fe80::/10 (Link-Local), fec0::/10 (Deprecated Site-Local), ff00::/8 (Multicast)
+    if (b0 & 0xFE) == 0xFC || (b0 == 0xFE && b1 >= 0x80) || b0 == 0xFF { return true; }
+    // 100::/64 (Discard-Only RFC 6666)
+    if b0 == 0x01 && b1 == 0x00 && octets_all_zero(octs[2..8]) { return true; }
+    // 64:ff9b::/96 and 64:ff9b:1::/48 (NAT64 RFC 6052 / RFC 8215)
+    if b0 == 0x00 && b1 == 0x64 && octs[2] == 0xFF && octs[3] == 0x9B {
+        if octs[4] == 0x00 && octs[5] == 0x01 { return true; }
+        if octets_all_zero(octs[4..12]) {
+            let nat_v4: u8[4] = [octs[12], octs[13], octs[14], octs[15]];
+            return is_reserved_ipv4_octets(nat_v4);
+        }
+    }
+    // 2001::/23 (IETF Protocol Assignments / Teredo RFC 6890), 2001:db8::/32 (Docs), 2002::/16 (6to4)
+    if b0 == 0x20 && b1 == 0x01 && ((octs[2] & 0xFE) == 0x00 || (octs[2] == 0x0D && octs[3] == 0xB8)) {
+        return true;
+    }
+    return b0 == 0x20 && b1 == 0x02;
 }
 
 // Returns true if a parsed binary IpAddr is reserved, private, loopback, link-local, or unknown.

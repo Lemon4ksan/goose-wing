@@ -489,7 +489,7 @@ fn copy_inner_item_params(src: const http::SfParameter[..8]&, dst: http::SfItemP
 fn sf_parse_inner_list_items(
     src:         const u8[:],
     pos:         i64,
-    inner_items: http::SfItem[..8]&,
+    inner_items: http::SfItem[..16]&,
     out_next:    i64&,
 ) -> bool {
     var p = core::add_sat_i64(pos, 1); // skip '('
@@ -508,7 +508,7 @@ fn sf_parse_inner_list_items(
         guard sf_parse_bare_item(src, p, inner_item, in_next) &&
               sf_parse_parameters(src, in_next, item_params, params_next) &&
               copy_inner_item_params(item_params, inner_item.params) &&
-              inner_items.len < 8 else {
+              inner_items.len < 16 else {
             return false;
         }
         inner_items.push(inner_item);

@@ -29,10 +29,11 @@ struct KeyStore {
     clock_skew_tolerance_sec: i64          = 300,     // 5 minutes skew tolerance
 }
 
-// Appends a KeySlot to the store if capacity permits and key_id is not already present.
+// Appends a KeySlot to the store if capacity permits, master_key is non-zero, and key_id is unique.
 // Derives domain-separated signing and encryption subkeys via HKDF-SHA256.
-fn add_key(store: KeyStore&, slot: KeySlot) -> bool {
+fn add_key(store: KeyStore&, slot: const KeySlot&) -> bool {
     guard !slot.revoked && store.keys.len < store.keys.cap else { return false; }
+    guard security_internal::is_nonzero_key_32(slot.master_key) else { return false; }
     for &existing in store.keys {
         if existing.key_id == slot.key_id {
             return false;
@@ -145,19 +146,15 @@ fn seal_binary<B>(
     nonce_seed:  u64,
     out:         B&,
 ) -> bool {
-    var slot, ok_key = active_key(jar.store);
-    guard ok_key && security_internal::is_jar_key_valid_at(slot, now_sec) else {
-        security_internal::zeroize_jar_key_slot(slot);
-        return false;
-    }
+    let idx, ok_key = security_internal::find_active_key_idx(jar.store);
+    guard ok_key else { return false; }
+    let slot .= jar.store.keys[idx];
+    guard security_internal::is_jar_key_valid_at(slot, now_sec) else { return false; }
 
-    let ok = if jar.use_hkdf_aes {
-        security_internal::seal_binary_hkdf_aes(slot, cookie_name, plaintext, now_sec, nonce_seed, out)
-    } else {
-        security_internal::seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out)
-    };
-    security_internal::zeroize_jar_key_slot(slot);
-    return ok;
+    if jar.use_hkdf_aes {
+        return security_internal::seal_binary_hkdf_aes(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
+    }
+    return security_internal::seal_binary_xchacha20(slot, cookie_name, plaintext, now_sec, nonce_seed, out);
 }
 
 // Verifies authentication tag, context binding, and decrypts payload into `out`.
@@ -178,21 +175,19 @@ fn open_binary<B>(
     guard ver == expected_ver else { return false; }
     let key_id = core::read_be_u32(raw_wire, 1);
 
-    var slot, ok_key = find_key(jar.store, key_id);
-    guard ok_key && security_internal::is_jar_key_valid_at(slot, now_sec) else {
-        security_internal::zeroize_jar_key_slot(slot);
-        return false;
-    }
+    let idx, ok_key = security_internal::find_key_idx(jar.store, key_id);
+    guard ok_key else { return false; }
+    let slot .= jar.store.keys[idx];
+    guard security_internal::is_jar_key_valid_at(slot, now_sec) else { return false; }
 
     out.clear();
-    var ok = false;
     if ver == security_internal::WIRE_VER_XCHACHA20 {
-        ok = security_internal::open_binary_xchacha20(jar, slot, cookie_name, raw_wire, now_sec, out);
-    } else if ver == security_internal::WIRE_VER_HKDF_AES_GCM {
-        ok = security_internal::open_binary_hkdf_aes(jar, slot, cookie_name, raw_wire, now_sec, out);
+        return security_internal::open_binary_xchacha20(jar, slot, cookie_name, raw_wire, now_sec, out);
     }
-    security_internal::zeroize_jar_key_slot(slot);
-    return ok;
+    if ver == security_internal::WIRE_VER_HKDF_AES_GCM {
+        return security_internal::open_binary_hkdf_aes(jar, slot, cookie_name, raw_wire, now_sec, out);
+    }
+    return false;
 }
 
 // Encodes encrypted cookie to Base64URL string for HTTP header transmission.
@@ -205,6 +200,7 @@ fn seal<B>(
     out:         B&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
+    defer core::secure_zeroize_slice(raw_wire[..]);
     guard seal_binary(jar, cookie_name, plaintext, now_sec, nonce_seed, raw_wire) else {
         return false;
     }
@@ -224,6 +220,8 @@ fn open<B>(
 ) -> bool {
     var raw_wire_stack: u8[..4200] = [];
     var raw_wire_dyn:   u8[>..]    = [];
+    defer core::secure_zeroize_slice(raw_wire_stack[..]);
+    defer core::secure_zeroize_slice(raw_wire_dyn[..]);
     let raw_wire, ok_b64 = security_internal::decode_jar_base64url(
         encoded_val,
         raw_wire_stack,
@@ -266,26 +264,23 @@ fn seal_binary<B>(
             return false;
         }
 
-    var slot, ok_key = active_key(jar.store);
-    guard ok_key && security_internal::is_jar_key_valid_at(slot, now_sec) else {
-        security_internal::zeroize_jar_key_slot(slot);
-        return false;
-    }
+    let idx, ok_key = security_internal::find_active_key_idx(jar.store);
+    guard ok_key else { return false; }
+    let slot .= jar.store.keys[idx];
+    guard security_internal::is_jar_key_valid_at(slot, now_sec) else { return false; }
 
     let now_u = now_sec as u64;
     var mac = security_internal::compute_signed_jar_mac(
         slot.signing_key, slot.key_id, now_u, cookie_name, payload,
     );
-    let key_id = slot.key_id;
-    security_internal::zeroize_jar_key_slot(slot);
+    defer core::secure_zeroize_32(mac);
 
     out.clear();
     out.push(security_internal::WIRE_VER_HMAC_SHA256);
-    out.append_u32_be(key_id);
+    out.append_u32_be(slot.key_id);
     out.append_u64_be(now_u);
     out.append(payload);
     out.append(mac[..]);
-    core::secure_zeroize_32(mac);
     return true;
 }
 
@@ -306,11 +301,10 @@ fn open_binary<B>(
     guard payload_len <= 0x7FFFFFFF else { return false; }
 
     let key_id = core::read_be_u32(raw_wire, 1);
-    var slot, ok_key = find_key(jar.store, key_id);
-    guard ok_key && security_internal::is_jar_key_valid_at(slot, now_sec) else {
-        security_internal::zeroize_jar_key_slot(slot);
-        return false;
-    }
+    let idx, ok_key = security_internal::find_key_idx(jar.store, key_id);
+    guard ok_key else { return false; }
+    let slot .= jar.store.keys[idx];
+    guard security_internal::is_jar_key_valid_at(slot, now_sec) else { return false; }
 
     let cookie_u = core::read_be_u64(raw_wire, 5);
     let tag_off = core::add_sat_i64(13, payload_len);
@@ -322,9 +316,8 @@ fn open_binary<B>(
     var expected_mac = security_internal::compute_signed_jar_mac(
         slot.signing_key, slot.key_id, cookie_u, cookie_name, payload,
     );
-    security_internal::zeroize_jar_key_slot(slot);
+    defer core::secure_zeroize_32(expected_mac);
     let mac_ok = core::ct_eq_tag32(expected_mac, tag);
-    core::secure_zeroize_32(expected_mac);
     guard mac_ok && is_cookie_timestamp_valid(jar.store, cookie_u, now_sec) else { return false; }
     guard security_internal::can_fit(out, payload_len) else { return false; }
 
@@ -341,6 +334,7 @@ fn seal<B>(
     out:         B&,
 ) -> bool {
     var raw_wire: u8[>..] = [];
+    defer core::secure_zeroize_slice(raw_wire[..]);
     guard seal_binary(jar, cookie_name, payload, now_sec, raw_wire) else { return false; }
     guard security_internal::can_fit_base64url(out, raw_wire.len) else { return false; }
     out.clear();

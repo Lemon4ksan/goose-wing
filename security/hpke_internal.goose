@@ -110,19 +110,6 @@ fn dhkem_x25519_decap(
     return derive_kem_shared_secret(kem_suite_id[..], dh, enc, pkR, out_shared_secret);
 }
 
-// RFC 9180 Section 5.1: Creating the Encryption Context - Zeroizes derived AEAD and exporter secrets.
-inline fn zeroize_hpke_context(ctx: security::HpkeContext&) {
-    core::secure_zeroize_32(ctx.key);
-    core::secure_zeroize_slice(ctx.base_nonce[..]);
-    core::secure_zeroize_32(ctx.exporter_secret);
-    ctx.aead_id = 0;
-    ctx.kem_id = 0;
-    ctx.kdf_id = 0;
-    ctx.key_len = 0;
-    ctx.nonce_len = 0;
-    ctx.seq = 0;
-}
-
 // RFC 9180 Section 5.1: Creating the Encryption Context - Derives base-mode HPKE key schedule and exporter secret.
 fn hpke_key_schedule_base(
     kem_id:        u16,
@@ -132,6 +119,9 @@ fn hpke_key_schedule_base(
     info:          const u8[:],
     out_ctx:       security::HpkeContext&,
 ) -> bool {
+    var committed = false;
+    defer if !committed { security::zeroize_hpke_context(out_ctx); };
+
     let hpke_suite_id = build_hpke_suite_id(kem_id, kdf_id, aead_id);
     let psk_id_hash = hpke_labeled_extract(hpke_suite_id[..], [], "psk_id_hash", []);
     let info_hash = hpke_labeled_extract(hpke_suite_id[..], [], "info_hash", info);
@@ -171,6 +161,7 @@ fn hpke_key_schedule_base(
     out_ctx.key_len = key_len;
     out_ctx.nonce_len = nonce_len;
     out_ctx.seq = 0;
+    committed = true;
     return true;
 }
 

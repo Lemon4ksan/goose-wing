@@ -2694,7 +2694,7 @@ fn test_f003_signature_input_verification(t: lit::T&) {
         params.components.push("@method");
         params.components.push("@target-uri");
 
-        let key = "secret-key-12345678901234567890";
+        let key = "secret-key-123456789012345678901";
         sub.assert_true(http::sign_request(req, params, key), "Request signed successfully");
 
         // Tamper Signature-Input to define a different label "sig_other"
@@ -2748,7 +2748,7 @@ fn test_f014_sfv_and_signatures(t: lit::T&) {
         params.components.push("@method");
         params.components.push("@target-uri");
 
-        let key = "secret-key-12345678901234567890";
+        let key = "secret-key-123456789012345678901";
         sub.assert_true(http::sign_request(req, params, key), "Signed request");
 
         // Tamper Signature-Input to omit @target-uri (empty inner list)
@@ -2825,7 +2825,7 @@ fn test_http_extensions_signatures_hsts_trace(t: lit::T&) {
         params.components.push("@method");
         params.components.push("@target-uri");
 
-        let key = "secret-key-1234";
+        let key = "secret-key-123456789012345678901";
         sub.assert_true(http::sign_request(req, params, key), "Request signed successfully");
 
         // Verify with matching label

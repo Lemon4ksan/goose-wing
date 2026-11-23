@@ -51,7 +51,7 @@ struct SfParameterizedItem {
     item:          SfItem           = SfItem { .. },
     params:        SfParameter[..8] = [],
     is_inner_list: bool             = false,
-    inner_items:   SfItem[..8]      = [],
+    inner_items:   SfItem[..16]     = [],
 }
 
 struct SfDictEntry {
@@ -59,7 +59,7 @@ struct SfDictEntry {
     is_inner_list: bool             = false,
     item:          SfItem           = SfItem { .. },
     params:        SfParameter[..8] = [],
-    inner_items:   SfItem[..8]      = [],
+    inner_items:   SfItem[..16]     = [],
 }
 
 enum SfvType {

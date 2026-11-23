@@ -14,18 +14,40 @@ import .hpke_internal;
 // RFC 9180 Section 7.3: Authenticated Encryption with Associated Data (AEAD) Functions - Export-only AEAD identifier.
 const HPKE_AEAD_EXPORT_ONLY: u16 = 0xFFFF;
 
+// RFC 9180 Section 5.2: Role discriminator prevents reusing a context across Seal and Open.
+enum HpkeRole {
+    Uninitialized,
+    Sender,
+    Recipient,
+}
+
 // kem_id/kdf_id are retained so suite_id is recoverable for Secret Export
 // (RFC 9180 Section 5.3) after the key schedule completes.
 struct HpkeContext {
-    key:             u8[32] = [0; 32],
-    base_nonce:      u8[12] = [0; 12],
-    seq:             u64    = 0,
-    exporter_secret: u8[32] = [0; 32],
-    aead_id:         u16    = rfc::HPKE_AEAD_AES_128_GCM,
-    kem_id:          u16    = rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-    kdf_id:          u16    = rfc::HPKE_KDF_HKDF_SHA256,
-    key_len:         u16    = 16,
-    nonce_len:       u16    = 12,
+    key:             u8[32]   = [0; 32],
+    base_nonce:      u8[12]   = [0; 12],
+    seq:             u64      = 0,
+    exporter_secret: u8[32]   = [0; 32],
+    aead_id:         u16      = 0,
+    kem_id:          u16      = 0,
+    kdf_id:          u16      = 0,
+    key_len:         u16      = 0,
+    nonce_len:       u16      = 0,
+    role:            HpkeRole = HpkeRole.Uninitialized,
+}
+
+// RFC 9180 Section 5.1: Zeroizes all derived AEAD/exporter secrets and resets the context role.
+fn zeroize_hpke_context(ctx: HpkeContext&) {
+    core::secure_zeroize_32(ctx.key);
+    core::secure_zeroize_slice(ctx.base_nonce[..]);
+    core::secure_zeroize_32(ctx.exporter_secret);
+    ctx.aead_id = 0;
+    ctx.kem_id = 0;
+    ctx.kdf_id = 0;
+    ctx.key_len = 0;
+    ctx.nonce_len = 0;
+    ctx.seq = 0;
+    ctx.role = HpkeRole.Uninitialized;
 }
 
 // ---- Labeled KDF Expansion (RFC 9180 Section 4) --------------------------
@@ -69,11 +91,11 @@ fn hpke_setup_base_s(
     out_ctx:      HpkeContext&,
 ) -> bool {
     core::secure_zeroize_32(out_enc);
-    security_internal::zeroize_hpke_context(out_ctx);
+    zeroize_hpke_context(out_ctx);
     var committed = false;
     defer if !committed {
         core::secure_zeroize_32(out_enc);
-        security_internal::zeroize_hpke_context(out_ctx);
+        zeroize_hpke_context(out_ctx);
     };
 
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
@@ -90,6 +112,7 @@ fn hpke_setup_base_s(
         return false;
     }
 
+    out_ctx.role = HpkeRole.Sender;
     committed = true;
     return true;
 }
@@ -104,9 +127,9 @@ fn hpke_setup_base_r(
     aead_id: u16,
     out_ctx: HpkeContext&,
 ) -> bool {
-    security_internal::zeroize_hpke_context(out_ctx);
+    zeroize_hpke_context(out_ctx);
     var committed = false;
-    defer if !committed { security_internal::zeroize_hpke_context(out_ctx); };
+    defer if !committed { zeroize_hpke_context(out_ctx); };
 
     guard kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 else { return false; }
     guard kdf_id == rfc::HPKE_KDF_HKDF_SHA256 else { return false; }
@@ -121,21 +144,23 @@ fn hpke_setup_base_r(
         return false;
     }
 
+    out_ctx.role = HpkeRole.Recipient;
     committed = true;
     return true;
 }
 
 // ---- HPKE Seal and Open (RFC 9180 Section 5.2) ---------------------------
 
-// Encrypts plaintext with current context key/nonce, increments seq, and appends ciphertext + 16B tag.
+// Encrypts plaintext with current sender context key/nonce, increments seq, and appends ciphertext + 16B tag.
 fn hpke_seal<B>(
     ctx: HpkeContext&,
     aad: const u8[:],
     pt:  const u8[:],
     out: B&,
 ) -> bool {
-    guard ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
-    let nonce = security_internal::hpke_compute_nonce(ctx);
+    guard ctx.role == HpkeRole.Sender && ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
+    var nonce = security_internal::hpke_compute_nonce(ctx);
+    defer core::secure_zeroize_slice(nonce[..]);
     guard security_internal::hpke_dispatch_seal(ctx.aead_id, ctx.key, nonce, pt, aad, out) else {
         return false;
     }
@@ -143,14 +168,14 @@ fn hpke_seal<B>(
     return true;
 }
 
-// Decrypts ciphertext + 16B tag with current context key/nonce, increments seq.
+// Decrypts ciphertext + 16B tag with current recipient context key/nonce, increments seq.
 fn hpke_open<B>(
     ctx:         HpkeContext&,
     aad:         const u8[:],
     ct_with_tag: const u8[:],
     out:         B&,
 ) -> bool {
-    guard ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
+    guard ctx.role == HpkeRole.Recipient && ctx.seq < 0xFFFFFFFFFFFFFFFF else { return false; }
     guard ct_with_tag.len >= 16 else { return false; }
 
     let saved_len = out.len;
@@ -166,7 +191,8 @@ fn hpke_open<B>(
     var tag: u8[16] = [0; 16];
     core::ct_copy_bytes(tag[..], ct_with_tag[ct_len..]);
 
-    let nonce = security_internal::hpke_compute_nonce(ctx);
+    var nonce = security_internal::hpke_compute_nonce(ctx);
+    defer core::secure_zeroize_slice(nonce[..]);
     guard security_internal::hpke_dispatch_open(ctx.aead_id, ctx.key, nonce, ct, aad, tag, out) else {
         return false;
     }
@@ -180,6 +206,12 @@ fn hpke_open<B>(
 // Exports a secret of length out.len from an established context:
 // Context.Export(exporter_context, L) = LabeledExpand(exporter_secret, "sec", exporter_context, L).
 fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:]) -> bool {
+    guard ctx.role != HpkeRole.Uninitialized else { return false; }
+    guard ctx.kem_id == rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256 &&
+        ctx.kdf_id == rfc::HPKE_KDF_HKDF_SHA256 &&
+        security_internal::is_valid_hpke_aead(ctx.aead_id) else {
+        return false;
+    }
     // RFC 9180 Section 5.3: Secret Export - Enforce L <= 255 * Nh (8160 bytes for SHA-256).
     guard out.len > 0 && out.len <= 8160 else { return false; }
     guard core::add_sat_i64(exporter_context.len, 22) <= 4096 else { return false; }
@@ -194,7 +226,7 @@ fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:
     );
 }
 
-// Single-shot seal for ECH: generates ephemeral keys, encapsulates, and seals in one pass.
+// Single-shot seal with caller-supplied ephemeral_sk (for deterministic RFC 9180 vectors or pre-generated keys).
 fn hpke_seal_base<B>(
     pkR:          const u8[32]&,
     info:         const u8[:],
@@ -205,8 +237,10 @@ fn hpke_seal_base<B>(
     out_enc:      u8[32]&,
     out:          B&,
 ) -> bool {
+    var committed = false;
+    defer if !committed { core::secure_zeroize_32(out_enc); };
     var ctx = HpkeContext { .. };
-    defer security_internal::zeroize_hpke_context(ctx);
+    defer zeroize_hpke_context(ctx);
     guard hpke_setup_base_s(
         pkR,
         info,
@@ -219,7 +253,33 @@ fn hpke_seal_base<B>(
     ) else {
         return false;
     }
-    return hpke_seal(ctx, aad, pt, out);
+    guard hpke_seal(ctx, aad, pt, out) else { return false; }
+    committed = true;
+    return true;
+}
+
+// Single-shot seal generating a fresh CSPRNG ephemeral X25519 key internally.
+fn hpke_seal_base_random<B>(
+    pkR:     const u8[32]&,
+    info:    const u8[:],
+    aad:     const u8[:],
+    pt:      const u8[:],
+    aead_id: u16,
+    out_enc: u8[32]&,
+    out:     B&,
+) -> bool {
+    var ephemeral_sk: u8[32] = [0; 32];
+    defer core::secure_zeroize_32(ephemeral_sk);
+    let got_rng = if core::sim_rng_is_active() {
+        core::sim_rng_fill(ephemeral_sk[..])
+    } else {
+        core::csprng_fill(ephemeral_sk[..])
+    };
+    guard got_rng else {
+        core::secure_zeroize_32(out_enc);
+        return false;
+    }
+    return hpke_seal_base(pkR, info, aad, pt, ephemeral_sk, aead_id, out_enc, out);
 }
 
 // Single-shot open for ECH recipient.
@@ -233,7 +293,7 @@ fn hpke_open_base<B>(
     out:         B&,
 ) -> bool {
     var ctx = HpkeContext { .. };
-    defer security_internal::zeroize_hpke_context(ctx);
+    defer zeroize_hpke_context(ctx);
     guard hpke_setup_base_r(
         enc,
         skR,

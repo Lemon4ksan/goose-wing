@@ -158,7 +158,8 @@ fn exchange<Inner, Limiter, Req, Res>(
     res: Res&,
 ) -> StageVerdict {
     let key = req.service_key();
-    if !svc.limiter.allow_service_key(key, svc.now_ns) {
+    let eff_now = if svc.now_ns > 0 { svc.now_ns } else { core::sim_now_ns() as u64 };
+    if !svc.limiter.allow_service_key(key, eff_now) {
         svc.rejected_count = core::add_sat_u64(svc.rejected_count, 1);
         return StageVerdict.ShortCircuit { status_code: SERVICE_STATUS_TOO_MANY_REQUESTS };
     }

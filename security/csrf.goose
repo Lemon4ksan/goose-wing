@@ -195,33 +195,68 @@ fn subtle_equal_ascii_fold(a: const u8[:], b: const u8[:]) -> bool {
     return diff == 0;
 }
 
-// Constant-time double-submit CSRF token validation.
+// Minimum CSRF token entropy floor: 16 bytes (128 bits).
+const MIN_CSRF_TOKEN_LEN: i64 = 16;
+
+// Constant-time non-zero scan over a CSRF mask slice.
+inline fn is_nonzero_csrf_mask(mask: const u8[:]) -> bool {
+    var acc: u8 = 0;
+    for b in mask {
+        acc |= b;
+    }
+    return acc != 0;
+}
+
+// Constant-time double-submit CSRF token validation (requires >= 16 bytes).
 fn validate_csrf_token(cookie_token: const u8[:], request_token: const u8[:]) -> bool {
-    guard cookie_token.len > 0 && request_token.len > 0 else { return false; }
+    guard cookie_token.len >= MIN_CSRF_TOKEN_LEN && request_token.len >= MIN_CSRF_TOKEN_LEN else { return false; }
     return core::ct_eq_bytes(cookie_token, request_token);
 }
 
 // Masks a CSRF token using a one-time pad XOR mask into out: [mask (N bytes) | masked_secret (N bytes)].
+// Rejects tokens < 16 bytes and all-zero masks (AUTH-21).
 fn mask_csrf_token<B>(mask: const u8[:], raw_secret: const u8[:], out: B&) -> bool {
-    guard mask.len > 0 && mask.len == raw_secret.len else { return false; }
+    guard mask.len >= MIN_CSRF_TOKEN_LEN && mask.len == raw_secret.len else { return false; }
+    guard is_nonzero_csrf_mask(mask) else { return false; }
     guard core::mul_sat_i64(mask.len, 2) <= out.cap else { return false; }
     guard out.try_set(mask) else { return false; }
     for i in mask.len { out.push(raw_secret[i] ^ mask[i]); }
     return true;
 }
 
+// Generates a fresh CSPRNG one-time pad mask and masks `raw_secret` (>= 16, <= 128 bytes) into `out`.
+fn generate_masked_csrf_token<B>(raw_secret: const u8[:], out: B&) -> bool {
+    guard raw_secret.len >= MIN_CSRF_TOKEN_LEN && raw_secret.len <= 128 else { return false; }
+    var mask: u8[..128] = [];
+    mask.resize(raw_secret.len, 0);
+    defer core::secure_zeroize_slice(mask[..]);
+    let got_rng = if core::sim_rng_is_active() {
+        core::sim_rng_fill(mask[..])
+    } else {
+        core::csprng_fill(mask[..])
+    };
+    guard got_rng && is_nonzero_csrf_mask(mask[..]) else {
+        out.clear();
+        return false;
+    }
+    return mask_csrf_token(mask[..], raw_secret, out);
+}
+
 // Unmasks and validates a masked CSRF token against expected raw secret in constant time.
+// Rejects tokens < 16 bytes and all-zero masks (AUTH-21).
 fn verify_masked_csrf_token(masked_token: const u8[:], expected_unmasked: const u8[:]) -> bool {
     let n = expected_unmasked.len;
-    guard n > 0 && masked_token.len == core::mul_sat_i64(n, 2) else { return false; }
-    var diff: u32 = 0;
+    guard n >= MIN_CSRF_TOKEN_LEN && masked_token.len == core::mul_sat_i64(n, 2) else { return false; }
+    var mask_or: u32 = 0;
+    var diff:    u32 = 0;
     for i in n {
         let mask_byte = masked_token[i];
+        mask_or |= mask_byte;
         let masked_secret_byte = masked_token[core::add_sat_i64(n, i)];
         let unmasked_byte = masked_secret_byte ^ mask_byte;
         diff |= (unmasked_byte ^ expected_unmasked[i]);
     }
-    return diff == 0;
+    return mask_or != 0 && diff == 0;
 }
 
 // Extracts scheme + authority origin prefix from a URL or Origin string (RFC 6454 §4).

@@ -79,9 +79,9 @@ Structured Field parsers decode RFC 9651 Items, Lists
 by `SfType` (`Integer`, `Decimal`, `String`, `Token`, `Binary`, `Boolean`,
 `Date`, `DisplayString`). Each `SfParameterizedItem` pairs a bare `SfItem` with
 up to 8 `SfParameter` key-value pairs, and each `SfDictEntry` holds a single
-item or an inner list of up to 8 `SfItem` elements (`inner_items: SfItem[..8]`).
-`sf_decode_display_string` decodes and validates percent-encoded UTF-8 Display
-Strings (`%"..."` per RFC 9651 §3.3.8).
+item or an inner list of up to 16 `SfItem` elements
+(`inner_items: SfItem[..16]`). `sf_decode_display_string` decodes and validates
+percent-encoded UTF-8 Display Strings (`%"..."` per RFC 9651 §3.3.8).
 
 ### Binary HTTP & Oblivious HTTP (`bhttp.goose`, `ohttp.goose`, RFC 9292 / RFC 9458)
 
@@ -122,9 +122,9 @@ fn verify_signature(req: const Request&, label: const u8[:], params: const Signa
 fn sign_response(res: Response&, req: const Request&, params: const SignatureParams&, secret_key: const u8[:]) -> bool
 fn verify_response_signature(res: const Response&, req: const Request&, label: const u8[:], params: const SignatureParams&, key_bytes: const u8[:], now_sec: i64 = 0) -> bool
 fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u8[:]) -> bool
-fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool
+fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: const u8[:], now_sec: i64 = 0) -> bool
 fn sign_response_ed25519(res: Response&, req: const Request&, key_id: const u8[:], private_key: const u8[:]) -> bool
-fn verify_response_ed25519(res: const Response&, req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool
+fn verify_response_ed25519(res: const Response&, req: const Request&, key_id: const u8[:], public_key: const u8[:], now_sec: i64 = 0) -> bool
 ```
 
 `SignatureParams` configures the key identifier, signature algorithm,

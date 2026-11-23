@@ -75,19 +75,29 @@ fn compute_raw_signature(
     if alg == rfc::SIG_ALG_ED25519 {
         guard klen == 32 else { return false; }
         var seed_arr: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(seed_arr);
         for i in 32 { seed_arr[i] = secret_key[i]; }
-        let ed_sig = core::ed25519_sign(seed_arr, sig_base);
-        core::secure_zeroize_32(seed_arr);
+        var ed_sig = core::ed25519_sign(seed_arr, sig_base);
+        defer core::secure_zeroize_64(ed_sig);
         return out_sig.try_set(ed_sig[..]);
     } else if alg == rfc::SIG_ALG_ECDSA_P256_SHA256 {
         guard klen == 32 else { return false; }
         var priv_arr: u8[32] = [0; 32];
+        defer core::secure_zeroize_32(priv_arr);
         for i in 32 { priv_arr[i] = secret_key[i]; }
-        let ec_sig = core::ecdsa_p256_sign(priv_arr, sig_base);
-        core::secure_zeroize_32(priv_arr);
+        var ec_sig = core::ecdsa_p256_sign(priv_arr, sig_base);
+        defer core::secure_zeroize_64(ec_sig);
+        // Reject silent all-zero output from invalid P-256 scalar (EDGE-15).
+        guard http_internal::has_nonzero_bytes(ec_sig[..32]) &&
+              http_internal::has_nonzero_bytes(ec_sig[32..]) else {
+            return false;
+        }
         return out_sig.try_set(ec_sig[..]);
     } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
-        let hmac_sig = core::hmac_sha256(secret_key, sig_base);
+        // RFC 9421 Section 3.3.3: HMAC Using SHA-256 requires a key of at least 256 bits (32 bytes).
+        guard klen >= rfc::HMAC_SHA256_MAC_LEN else { return false; }
+        var hmac_sig = core::hmac_sha256(secret_key, sig_base);
+        defer core::secure_zeroize_32(hmac_sig);
         return out_sig.try_set(hmac_sig[..]);
     }
     return http_internal::compute_rsa_raw_signature(alg, secret_key, sig_base, out_sig);
@@ -138,16 +148,20 @@ fn verify_crypto_signature(
         if key_bytes.len > 0 && key_bytes[0] == 0x30 {
             return core::rsa_pkcs1_sha256_verify_der(key_bytes, sig_base, received_sig);
         }
+        guard http_internal::is_valid_rsa_modulus_2048(key_bytes) else { return false; }
         let default_e: const u8[3] = [0x01, 0x00, 0x01];
         return core::rsa_pkcs1_sha256_verify(key_bytes, default_e[..], sig_base, received_sig);
     } else if alg == rfc::SIG_ALG_RSA_PSS_SHA512 {
         if key_bytes.len > 0 && key_bytes[0] == 0x30 {
             return core::rsa_pss_sha512_verify_der(key_bytes, sig_base, received_sig);
         }
+        guard http_internal::is_valid_rsa_modulus_2048(key_bytes) else { return false; }
         let default_e: const u8[3] = [0x01, 0x00, 0x01];
         return core::rsa_pss_sha512_verify(key_bytes, default_e[..], sig_base, received_sig);
     } else if alg == rfc::SIG_ALG_HMAC_SHA256 {
-        let expected_sig = core::hmac_sha256(key_bytes, sig_base);
+        guard key_bytes.len >= rfc::HMAC_SHA256_MAC_LEN else { return false; }
+        var expected_sig = core::hmac_sha256(key_bytes, sig_base);
+        defer core::secure_zeroize_32(expected_sig);
         guard received_sig.len == expected_sig.len else { return false; }
         return core::ct_eq_bytes(received_sig, expected_sig[..]);
     }
@@ -178,13 +192,15 @@ fn sign_request_with<Signer>(
     params: const SignatureParams&,
     signer: Signer&,
 ) -> bool {
-    guard http_internal::validate_signature_timestamps(params, 0) else { return false; }
+    guard http_internal::validate_sign_params_timestamps(params) else { return false; }
     var sig_base: u8[..4096] = [];
+    defer core::secure_zeroize_slice(sig_base[..]);
     guard build_signature_base(req, params, sig_base) else {
         return false;
     }
 
     var raw_sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(raw_sig[..]);
     guard signer.sign_message(params.alg[..], sig_base[..], raw_sig) else {
         return false;
     }
@@ -212,12 +228,11 @@ fn matches_signature_component(item: const SfItem&, exp_comp: const u8[:]) -> bo
     guard item.str_val == base_comp else { return false; }
     var saw_req_flag = false;
     for &p in item.params {
-        if p.key[..] == "req" {
-            guard exp_has_req && p.kind == SfType.Boolean && p.bool_val else {
-                return false;
-            }
-            saw_req_flag = true;
+        // RFC 9421 Section 2.1: Reject unsupported/unrecognized component parameters (AUTH-08).
+        guard p.key[..] == "req" && exp_has_req && p.kind == SfType.Boolean && p.bool_val else {
+            return false;
         }
+        saw_req_flag = true;
     }
     return !exp_has_req || saw_req_flag;
 }
@@ -267,9 +282,8 @@ fn verify_signature_input_label(
     params:        const SignatureParams&,
 ) -> bool {
     var wire_sp: u8[..2048] = [];
-    var wc:      i64        = 0;
-    var we:      i64        = 0;
-    return http_internal::find_verified_sig_params_line(sig_input_val, label, params, wire_sp, wc, we);
+    var wt = http_internal::SigWireTimestamps { .. };
+    return http_internal::find_verified_sig_params_line(sig_input_val, label, params, wire_sp, wt);
 }
 
 // Verifies an RFC 9421 signature on a Request using an injected UFCS `<Verifier>`.
@@ -285,6 +299,7 @@ fn verify_signature_with<Verifier>(
 
     var wire_sig_params: u8[..2048] = [];
     var received_sig:    u8[..512]  = [];
+    defer core::secure_zeroize_slice(received_sig[..]);
     guard http_internal::validate_and_decode_signature_headers(
         req.headers,
         label,
@@ -297,6 +312,7 @@ fn verify_signature_with<Verifier>(
     }
 
     var sig_base: u8[..4096] = [];
+    defer core::secure_zeroize_slice(sig_base[..]);
     guard http_internal::build_signature_base_from_params_line(
         req, params.components, wire_sig_params[..], sig_base,
     ) else {
@@ -329,13 +345,15 @@ fn sign_response_with<Signer>(
     params: const SignatureParams&,
     signer: Signer&,
 ) -> bool {
-    guard http_internal::validate_signature_timestamps(params, 0) else { return false; }
+    guard http_internal::validate_sign_params_timestamps(params) else { return false; }
     var sig_base: u8[..4096] = [];
+    defer core::secure_zeroize_slice(sig_base[..]);
     guard http_internal::build_response_signature_base(res, req, params, sig_base) else {
         return false;
     }
 
     var raw_sig: u8[..512] = [];
+    defer core::secure_zeroize_slice(raw_sig[..]);
     guard signer.sign_message(params.alg[..], sig_base[..], raw_sig) else {
         return false;
     }
@@ -372,6 +390,7 @@ fn verify_response_signature_with<Verifier>(
 
     var wire_sig_params: u8[..2048] = [];
     var received_sig:    u8[..512]  = [];
+    defer core::secure_zeroize_slice(received_sig[..]);
     guard http_internal::validate_and_decode_signature_headers(
         res.headers,
         label,
@@ -384,6 +403,7 @@ fn verify_response_signature_with<Verifier>(
     }
 
     var sig_base: u8[..4096] = [];
+    defer core::secure_zeroize_slice(sig_base[..]);
     guard http_internal::build_response_signature_base_from_params_line(
         res,
         req,
@@ -429,8 +449,13 @@ fn sign_request_ed25519(req: Request&, key_id: const u8[:], private_key: const u
     return sign_request(req, params, private_key);
 }
 
-// Verifies request signature using Ed25519 public key and key_id.
-fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: const u8[:]) -> bool {
+// Verifies request signature using Ed25519 public key, key_id, and timestamp (`now_sec == 0` uses wall clock).
+fn verify_request_ed25519(
+    req:        const Request&,
+    key_id:     const u8[:],
+    public_key: const u8[:],
+    now_sec:    i64 = 0,
+) -> bool {
     var params = SignatureParams { .. };
     if key_id.len > 0 {
         guard params.key_id.try_set(key_id) else { return false; }
@@ -440,7 +465,7 @@ fn verify_request_ed25519(req: const Request&, key_id: const u8[:], public_key: 
     params.components.push("@authority");
     params.components.push("@path");
     params.components.push("@query");
-    return verify_signature(req, "sig1", params, public_key);
+    return verify_signature(req, "sig1", params, public_key, now_sec);
 }
 
 // Signs response with RFC 9421 HTTP Message Signatures using Ed25519.
@@ -461,12 +486,13 @@ fn sign_response_ed25519(
     return sign_response(res, req, params, private_key);
 }
 
-// Verifies response signature using Ed25519 public key and key_id.
+// Verifies response signature using Ed25519 public key, key_id, and timestamp (`now_sec == 0` uses wall clock).
 fn verify_response_ed25519(
     res:        const Response&,
     req:        const Request&,
     key_id:     const u8[:],
     public_key: const u8[:],
+    now_sec:    i64 = 0,
 ) -> bool {
     var params = SignatureParams { .. };
     if key_id.len > 0 {
@@ -475,5 +501,5 @@ fn verify_response_ed25519(
     let _ = params.alg.try_set(rfc::SIG_ALG_ED25519);
     params.components.push("@status");
     params.components.push("content-type");
-    return verify_response_signature(res, req, "sig1", params, public_key);
+    return verify_response_signature(res, req, "sig1", params, public_key, now_sec);
 }

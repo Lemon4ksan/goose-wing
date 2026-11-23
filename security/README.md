@@ -122,7 +122,7 @@ struct SignedJar {
     store: KeyStore = KeyStore { .. },
 }
 
-fn add_key(store: KeyStore&, slot: KeySlot) -> bool
+fn add_key(store: KeyStore&, slot: const KeySlot&) -> bool
 fn active_key(store: const KeyStore&) -> KeySlot, bool
 fn set_active_key_id(store: KeyStore&, key_id: u32) -> bool
 fn find_key(store: const KeyStore&, key_id: u32) -> KeySlot, bool
@@ -212,6 +212,7 @@ fn add_exempt_path(guard_cfg: CrossOriginGuard&, path_str: const u8[:]) -> bool
 fn subtle_equal_ascii_fold(a: const u8[:], b: const u8[:]) -> bool
 fn validate_csrf_token(cookie_token: const u8[:], request_token: const u8[:]) -> bool
 fn mask_csrf_token<B>(mask: const u8[:], raw_secret: const u8[:], out: B&) -> bool
+fn generate_masked_csrf_token<B>(raw_secret: const u8[:], out: B&) -> bool
 fn verify_masked_csrf_token(masked_token: const u8[:], expected_unmasked: const u8[:]) -> bool
 fn extract_origin_from_url(url_or_origin: const u8[:]) -> const u8[:]
 fn extract_host_from_url(url_or_origin: const u8[:]) -> const u8[:]
@@ -259,19 +260,19 @@ struct PrivateTokenCache {
     entries: CachedToken[..16] = [],
 }
 
-fn marshal_token_challenge<B>(challenge: const TokenChallenge&, out: B&)
+fn marshal_token_challenge<B>(challenge: const TokenChallenge&, out: B&) -> bool
 fn unmarshal_token_challenge(data: const u8[:]) -> TokenChallenge, bool
 fn compute_challenge_digest(challenge: const TokenChallenge&) -> u8[32]
-fn marshal_token<B>(token: const Token&, out: B&)
+fn marshal_token<B>(token: const Token&, out: B&) -> bool
 fn unmarshal_token(data: const u8[:], key_id_len: i64, auth_len: i64) -> Token, bool
 fn parse_private_token_challenge<B>(header_val: const u8[:], out: B&) -> TokenChallenge, i64, bool
-fn encode_padded_base64url<B>(data: const u8[:], out: B&)
-fn format_private_token_authorization<B>(token_bytes: const u8[:], out: B&)
-fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&)
+fn encode_padded_base64url<B>(data: const u8[:], out: B&) -> bool
+fn format_private_token_authorization<B>(token_bytes: const u8[:], out: B&) -> bool
+fn format_sec_private_state_token<B>(token_bytes: const u8[:], out: B&) -> bool
 fn put_private_token(cache: PrivateTokenCache&, challenge: const TokenChallenge&, token: const Token&, raw_token: const u8[:], ttl_sec: i64, now_sec: i64) -> bool
 fn get_private_token<B>(cache: PrivateTokenCache&, challenge: const TokenChallenge&, now_sec: i64, out: B&) -> Token, bool
 fn pop_private_token<B>(cache: PrivateTokenCache&, challenge_digest: const u8[32]&, now_sec: i64, out: B&) -> bool
-fn attach_private_token<R>(req: R&, token_bytes: const u8[:])
+fn attach_private_token<R>(req: R&, token_bytes: const u8[:]) -> bool
 fn has_private_token_challenge<Res>(res: const Res&) -> bool
 ```
 
@@ -390,20 +391,23 @@ struct GatewayRateLimiter {
     total_rejected: u64                      = 0,
 }
 
+enum HpkeRole { Uninitialized, Sender, Recipient }
+
 struct HpkeContext {
-    key:             u8[32] = [0; 32],
-    base_nonce:      u8[12] = [0; 12],
-    seq:             u64    = 0,
-    exporter_secret: u8[32] = [0; 32],
-    aead_id:         u16    = rfc::HPKE_AEAD_AES_128_GCM,
-    kem_id:          u16    = rfc::HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-    kdf_id:          u16    = rfc::HPKE_KDF_HKDF_SHA256,
-    key_len:         u16    = 16,
-    nonce_len:       u16    = 12,
+    key:             u8[32]   = [0; 32],
+    base_nonce:      u8[12]   = [0; 12],
+    seq:             u64      = 0,
+    exporter_secret: u8[32]   = [0; 32],
+    aead_id:         u16      = 0,
+    kem_id:          u16      = 0,
+    kdf_id:          u16      = 0,
+    key_len:         u16      = 0,
+    nonce_len:       u16      = 0,
+    role:            HpkeRole = HpkeRole.Uninitialized,
 }
 
 struct SsrfGuardPolicy {
-    enabled:            bool      = false,
+    enabled:            bool      = true,
     https_only:         bool      = false,
     deny_local_network: bool      = true,
     allowed_ports:      i32[..16] = [],
@@ -422,6 +426,7 @@ fn penalize_gateway_client(limiter: GatewayRateLimiter&, client_id: const u8[:],
 fn evict_idle_gateway_clients(limiter: GatewayRateLimiter&, max_idle_ns: u64, now_ns: u64) -> i32
 fn reset_gateway_rate_limiter(limiter: GatewayRateLimiter&)
 fn allow_service_key(limiter: GatewayRateLimiter&, key: const u8[:], now_ns: u64) -> bool
+fn zeroize_hpke_context(ctx: HpkeContext&)
 fn hpke_labeled_expand(suite_id: const u8[:], prk: const u8[:], label: const u8[:], info: const u8[:], length: u16, out: u8[:]) -> bool
 fn hpke_setup_base_s(pkR: const u8[32]&, info: const u8[:], kem_id: u16, kdf_id: u16, aead_id: u16, ephemeral_sk: const u8[32]&, out_enc: u8[32]&, out_ctx: HpkeContext&) -> bool
 fn hpke_setup_base_r(enc: const u8[32]&, skR: const u8[32]&, info: const u8[:], kem_id: u16, kdf_id: u16, aead_id: u16, out_ctx: HpkeContext&) -> bool
@@ -429,6 +434,7 @@ fn hpke_seal<B>(ctx: HpkeContext&, aad: const u8[:], pt: const u8[:], out: B&) -
 fn hpke_open<B>(ctx: HpkeContext&, aad: const u8[:], ct_with_tag: const u8[:], out: B&) -> bool
 fn hpke_export(ctx: const HpkeContext&, exporter_context: const u8[:], out: u8[:]) -> bool
 fn hpke_seal_base<B>(pkR: const u8[32]&, info: const u8[:], aad: const u8[:], pt: const u8[:], ephemeral_sk: const u8[32]&, aead_id: u16, out_enc: u8[32]&, out: B&) -> bool
+fn hpke_seal_base_random<B>(pkR: const u8[32]&, info: const u8[:], aad: const u8[:], pt: const u8[:], aead_id: u16, out_enc: u8[32]&, out: B&) -> bool
 fn hpke_open_base<B>(enc: const u8[32]&, skR: const u8[32]&, info: const u8[:], aad: const u8[:], ct_with_tag: const u8[:], aead_id: u16, out: B&) -> bool
 fn new_ssrf_guard_policy() -> SsrfGuardPolicy
 fn is_localhost_name(host: const u8[:]) -> bool

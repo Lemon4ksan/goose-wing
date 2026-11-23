@@ -652,7 +652,8 @@ const HMAC_SHA512_MAC_LEN: i64 = 64; // RFC 7518 Section 3.2
 
 const SCHEME_PRIVATE_TOKEN:           const u8[:] = "PrivateToken";            // RFC 9577 Section 2
 const HEADER_SEC_PRIVATE_STATE_TOKEN: const u8[:] = "Sec-Private-State-Token";
-const TOKEN_TYPE_BLIND_RSA:           u16         = 0x0001;                    // RFC 9578 Section 5
+const TOKEN_TYPE_VOPRF_P384:          u16         = 0x0001;                    // RFC 9578 Section 5
+const TOKEN_TYPE_BLIND_RSA:           u16         = 0x0002;                    // RFC 9578 Section 6
 const TOKEN_TYPE_PUBLICLY_VERIFIABLE: u16         = 0x0002;                    // RFC 9578 Section 6
 
 // RFC 9577 Section 6.2.1: Creation of Token Type Registry - Checks whether token type is a reserved GREASE identifier.
