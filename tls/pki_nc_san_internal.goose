@@ -178,8 +178,14 @@ fn x509_match_ipv6_uri_constraint_3state(host_part: const u8[:], constraint: con
     if after_bracket < host_part.len {
         guard host_part[after_bracket] == ':' else { return NcMatchResult.Invalid; }
     }
-    let inner_ip = host_part[1..close_bracket];
-    guard !inner_ip.contains_byte('%') else { return NcMatchResult.Invalid; }
+    var inner_ip = host_part[1..close_bracket];
+    let pct_idx = inner_ip.index_of_byte('%');
+    if pct_idx >= 0 {
+        guard pct_idx > 0 && core::add_sat_i64(pct_idx, 1) < inner_ip.len else {
+            return NcMatchResult.Invalid;
+        }
+        inner_ip = inner_ip[..pct_idx];
+    }
     let cand_v6, ok_cand = core::parse_ipv6_octets(inner_ip);
     guard ok_cand else { return NcMatchResult.Invalid; }
 
